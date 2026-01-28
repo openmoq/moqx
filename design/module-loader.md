@@ -421,7 +421,7 @@ plugins:
 
 ### Platform Support
 
-This plugin system uses `dlopen`/`dlsym` and works on systems that support these APIs (Linux, macOS, other POSIX systems). Windows is not currently supported.
+This plugin system uses `dlopen`/`dlsym` and works on systems that support these APIs (Linux, macOS, other POSIX systems). Windows is not currently supported. Multiple `.so` or those that have dependencies on other `.so` is disallowed on macOS; this will require special handling when macOS is the target OS.
 
 ### C++ vs Pure C Interface
 
