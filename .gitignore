@@ -1,0 +1,55 @@
+# Build outputs
+/build/
+/build-*/
+/cmake-build-*/
+/CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+
+# Ninja
+.ninja_deps
+.ninja_log
+
+# CTest
+Testing/
+DartConfiguration.tcl
+
+# CPack
+_CPack_Packages/
+
+# IDE/editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# CLion
+*.iml
+cmake-build-*/
+
+# Visual Studio / VS Code CMake
+.vs/
+CMakeSettings.json
+
+# Xcode
+*.xcodeproj/
+*.xcworkspace/
+*.xcuserdata/
+DerivedData/
+
+# OS
+.DS_Store
+
+# Logs
+*.log
+
+# Sanitizers/profilers
+*.profraw
+*.profdata
+
+# Generated binaries (local)
+o_rly
+o_rly_smoke
