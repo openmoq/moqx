@@ -1,5 +1,5 @@
 # o-rly
-The OpenMOQ Relay (reference implementation).
+The OpenMOQ Relay
 
 ## Build
 
