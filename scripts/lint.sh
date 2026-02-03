@@ -16,4 +16,4 @@ if [[ -z "${FILES}" ]]; then
 fi
 
 echo "Running clang-tidy..."
-clang-tidy -p "${BUILD_DIR}" ${FILES}
+clang-tidy -p "${BUILD_DIR}" "${FILES}"
