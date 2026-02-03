@@ -1,4 +1,4 @@
-FROM ubuntu:20.04
+FROM bookworm
 
 ENV DEBIAN_FRONTEND=noninteractive
 
