@@ -1,0 +1,87 @@
+
+global:
+  worker_threads: 4               # I/O threads; 0 = auto (num CPUs)
+  pid_file: /var/run/o-rly.pid
+
+  log_level: info                  # trace, debug, info, warn, error
+  max_connections: 100000          # Per-process connection limit
+
+  slow_subscriber_queue_max: 1000  # Max queued objects before terminating subscription
+  delivery_timeout_ms: 500         # Default delivery timeout
+
+  cache:
+    memory_max_mb: 4096
+    eviction_policy: lru           # lru, lfu
+    disk_path: ""                  # Empty = disabled
+    disk_max_mb: 0
+
+  telemetry:
+    metrics_endpoint: "0.0.0.0:9090"
+    metrics_format: opentelemetry
+    qlog_enabled: true
+    qlog_dir: /var/log/o-rly/qlog
+    mlog_enabled: true
+
+listeners:
+- name: main
+  address: "0.0.0.0"
+  port: 4433
+  protocols:
+  - quic
+  - webtransport
+  tls:
+    cert_file: /etc/o-rly/tls/cert.pem
+    key_file: /etc/o-rly/tls/key.pem
+    # ... Aditional tls config as necessary
+  quic:
+    congestion_control: bbr
+    initial_rtt_ms: 100
+
+- name: wt-main
+  address: "0.0.0.0"
+  port: 443
+  protocols:
+  - webtransport
+  tls:
+    cert_file: /etc/o-rly/tls/cert.pem
+    key_file: /etc/o-rly/tls/key.pem
+
+services:
+- name: live-streaming
+  authority: "live.example.com"
+  path: "/"
+
+  auth_plugins:
+      #......
+  max_sessions: 50000
+
+  provider:
+    type: static_upstream
+    config:
+      upstream_uri: "moqt://origin.example.com:4433"
+
+  cache:
+    memory_max_mb: 2048          # Override global cache for this service
+    eviction_policy: lfu
+
+  congestion_control: bbr        # Per-service override
+
+  namespaces:
+  - prefix: ["live", "sports"]
+    max_max_cache_duration_ms: 200
+    slow_subscriber_queue_max: 500
+
+  - prefix: ["live", "sports"]
+    max_max_cache_duration_ms: 2000
+
+- name: catch-all
+  authority: "*"
+  path: "/"
+  auth_plugins:
+  - anonymous
+
+  provider:
+    type: local-only
+
+services_include:
+- /etc/o-rly/services.d/*.yaml
