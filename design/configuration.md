@@ -72,6 +72,7 @@ A client connects to a **listener** (transport), then sends `CLIENT_SETUP` with 
 Same priority order applies to `path` and `namespace_prefix`.
 
 > **Performance note**: Regex matching is evaluated only when exact and prefix matches fail. For high-throughput paths (per-object routing), prefer prefix matching. Regex is appropriate for service-level matching (per-connection), which happens once at session setup. Namespace-level regex should be used sparingly and is explicitly not evaluated per-object — only at subscription setup time.
+> **Specificity rule**: When multiple prefix rules match within the same priority category, the more specific prefix wins. "More specific" means a longer tuple (more fields) or a domain with more segments (more dots), not longer in terms of bytes.
 
 > **MOQT Scope note**: The combination of authority + path defines a MOQT scope ([moq-transport#1432](https://github.com/moq-wg/moq-transport/issues/1432). Sessions within the same scope share namespace trees and cache. The config hierarchy reflects this: each service (authority + path pair) is an isolated scope by default. Cross-scope sharing (e.g., shared cache across authorities) can be configured explicitly via named shared resources.
 
