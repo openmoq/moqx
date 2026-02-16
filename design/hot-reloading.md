@@ -9,7 +9,7 @@
 
 ### 1. File-Based Config Reload (SIGHUP)
 
-Sending `SIGHUP` to the relay process triggers config reload, it does never trigger graceful restart.
+Sending `SIGHUP` to the relay process triggers config reload only.
 Attempting to change static config triggers an error. 
 
 ### 2. Runtime API
