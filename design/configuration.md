@@ -1,5 +1,11 @@
 # Configuration & Hot-Reloading Design
 
+## TODO
+
+- Single MOQT implementation per listner?
+  - Different ALPNs and SNI could have different moqt handlers.
+- In "panel-to-audience" model (i.e. few real-time participatns, many low-latency viewers), how to define different tunables for the panel as oposite to the audience?
+
 ## Overview
 
 The relay needs both file-based configuration for base deployment and a runtime API for dynamic updates. Configuration must be hierarchical, mapping naturally to MOQT's connection model (authority, path, namespace).
@@ -20,13 +26,13 @@ The relay needs both file-based configuration for base deployment and a runtime 
 
 ## Prior Art
 
-| Project | Config Format | Hierarchy | Dynamic Reload | Runtime API | Binary Restart |
-|---------|--------------|-----------|----------------|-------------|----------------|
-| **nginx** | Custom DSL | `http` → `server` → `location` | `SIGHUP`: new workers, old drain | nginx+ only (commercial) | New workers inherit listen sockets; old workers drain |
-| **Envoy** | YAML/JSON | `static` (bootstrap) + `dynamic` (xDS) | xDS API: listeners, clusters, routes, endpoints | Full xDS; also admin API | Hot restart via shared memory between old/new |
-| **HAProxy** | Custom DSL | `global` → `defaults` → `frontend` → `backend` | `-sf` soft reload; new process inherits sockets | Runtime API for limited changes (server weights, health) | Socket inheritance via Unix domain sockets |
-| **Caddy** | JSON + Caddyfile | Sites → routes → handlers | Full config reload via API, zero-downtime | First-class JSON API for all config | Socket inheritance via `SO_REUSEPORT` |
-| **Traefik** | YAML/TOML + providers | `static` (entrypoints, global) + `dynamic` (routers, services) | File provider watches for changes | Kubernetes/Docker/file providers | Relies on orchestrator (no built-in) |
+| Project     | Config Format         | Hierarchy                                                      | Dynamic Reload                                  | Runtime API                                              | Binary Restart                                        |
+| ----------- | --------------------- | -------------------------------------------------------------- | ----------------------------------------------- | -------------------------------------------------------- | ----------------------------------------------------- |
+| **nginx**   | Custom DSL            | `http` → `server` → `location`                                 | `SIGHUP`: new workers, old drain                | nginx+ only (commercial)                                 | New workers inherit listen sockets; old workers drain |
+| **Envoy**   | YAML/JSON             | `static` (bootstrap) + `dynamic` (xDS)                         | xDS API: listeners, clusters, routes, endpoints | Full xDS; also admin API                                 | Hot restart via shared memory between old/new         |
+| **HAProxy** | Custom DSL            | `global` → `defaults` → `frontend` → `backend`                 | `-sf` soft reload; new process inherits sockets | Runtime API for limited changes (server weights, health) | Socket inheritance via Unix domain sockets            |
+| **Caddy**   | JSON + Caddyfile      | Sites → routes → handlers                                      | Full config reload via API, zero-downtime       | First-class JSON API for all config                      | Socket inheritance via `SO_REUSEPORT`                 |
+| **Traefik** | YAML/TOML + providers | `static` (entrypoints, global) + `dynamic` (routers, services) | File provider watches for changes               | Kubernetes/Docker/file providers                         | Relies on orchestrator (no built-in)                  |
 
 ### Key Takeaways
 
@@ -41,45 +47,56 @@ The relay needs both file-based configuration for base deployment and a runtime 
 **Chosen**: YAML as the file-based configuration format.
 
 **Rationale:**
+
 - Widely used in infrastructure tooling. Operators already know it.
 - Supported by mature C++ parsing libraries ([yaml-cpp](https://github.com/jbeder/yaml-cpp), [rapidyaml](https://github.com/biojppm/rapidyaml)).
 
 **YAML pitfalls** (e.g., the "Norway problem" where `NO` is parsed as boolean): mitigated by always deserializing into strongly-typed C++ structs. The relay never interprets raw YAML scalars as implicit types. Values are always parsed as the expected type defined in the config schema, or rejected. This is consistent with how Envoy and Kubernetes handle YAML.
 
-For the API we can use the same format, require JSON serialization or go with something completly else (e.g. JSON Patch for updating). 
+For the API we can use the same format, require JSON serialization or go with something completly else (e.g. JSON Patch for updating).
 
 ## Configuration Hierarchy
 
 The hierarchy should map to the MOQT connection model.
 
 ```
-global          ─── process-wide settings
-├── listeners   ─── listen address/port/protocol/TLS (maps to transport layer)
-└── services    ─── matched by MOQT authority + path (maps to CLIENT_SETUP)
-    └── namespaces ─── matched by track namespace prefix (maps to SUBSCRIBE/PUBLISH)
+global              ─── process-wide settings (worker_threads, log_level, telemetry)
+├── listeners[]     ─── named listener definitions
+│   ├── udp/tcp     ─── transport type (exactly one)
+│   │   ├── socket  ─── address, port, ipv6_only
+│   │   └── transport ─── implementation-specific config (e.g. mvfst, proxygen)
+│   │       └── protocols, tunables
+│   ├── moqt_implementation ─── MOQT library to use (e.g. moxygen, libquicr)
+│   └── tls_credentials     ─── TLS cert/key provider config
+├── service_defaults ─── defaults inherited by all services
+└── services[]       ─── matched by MOQT authority + path (maps to CLIENT_SETUP), defines MOQT scope
+    ├── listeners    ─── optional: restrict which listeners serve this service
+    ├── provider     ─── upstream/origin configuration (type + config)
+    └── tracks[]     ─── matched by namespace and track matchers (maps to SUBSCRIBE/PUBLISH)
 ```
 
 ### Matching Model
 
-A client connects to a **listener** (transport), then sends `CLIENT_SETUP` with **authority** and **path**. These are matched against **services**. Subsequent `SUBSCRIBE`/`PUBLISH` messages carry track namespaces, matched against **namespace** rules within the matched service.
+A client connects to a **listener** (transport), then sends `CLIENT_SETUP` with **authority** and **path**. These are matched against **services**.
 
 **Matching priority** (highest to lowest):
-1. **Exact match**: `authority: "live.example.com"`
-2. **Wildcard prefix**: `authority: "*.example.com"`
-3. **Regex**: `authority_regex: "^[a-z]+-region[0-9]+\\.example\\.com$"`
-4. **Default/catch-all**: `authority: "*"`
 
-Same priority order applies to `path` and `namespace_prefix`.
+1. **Exact match**: `authorities: ["live.example.com"]`
+2. **Wildcard**: `authority: { wildcard: "*.moq-relay.example.com" }`
+3. **Regex**: regex components in namespace/track matchers
+4. **Default/catch-all**
+
+Same priority order applies to `path` and `namespace` matching.
 
 > **Specificity rule**: When multiple prefix rules match within the same priority category, the more specific prefix wins. "More specific" means a longer tuple (more fields) or a domain with more segments (more dots), not longer in terms of bytes.
 
-> **Performance note**: Regex matching is evaluated only when exact and prefix matches fail. Regex is appropriate for service-level matching (per-connection), which happens once at session setup. Namespace-level regex should be used sparingly and is explicitly not evaluated per-object — only at subscription setup time.
-
-> **MOQT Scope note**: The combination of authority + path defines a MOQT scope ([moq-transport#1432](https://github.com/moq-wg/moq-transport/issues/1432). Sessions within the same scope share namespace trees and cache. The config hierarchy reflects this: each service (authority + path pair) is an isolated scope by default. Cross-scope sharing (e.g., shared cache across authorities) can be configured explicitly via named shared resources.
+> **Performance note**: Regex matching is evaluated only when exact and prefix matches fail. Regex is appropriate for service-level matching (per-connection), which happens once at session setup. Track-level regex (in namespace/track matchers) should be used sparingly and is explicitly not evaluated per-object — only at subscription setup time.
 
 ### Inheritance
 
 Configuration parameters are inherited down the hierarchy. A more specific level overrides its parent. This follows the nginx model where `server` inherits from `http`, and `location` overrides `server`.
+
+The `service_defaults` block provides defaults inherited by all services. Individual services can override any of these values.
 
 ### Include Directives
 
@@ -87,10 +104,10 @@ Includes are supported **only at the service level**: a `services_include` direc
 
 ```yaml
 services_include:
-  - /etc/o-rly/services.d/*.yaml  # Each file defines one or more services
+  - /etc/o-rly/services.d/*.yaml # Each file defines one or more services
 ```
 
-Each included file must contain complete service definitions. Partial overrides or nested includes are not supported. This is intentional.
+Each included file must contain complete service definitions. Partial overrides or nested includes are not supported.
 
 ## Configuration Schema
 
@@ -98,12 +115,12 @@ Each included file must contain complete service definitions. Partial overrides 
 
 Every configuration parameter belongs to one of four lifecycle categories. The config schema documentation (generated from the C++ struct definitions) must annotate each parameter with its lifecycle.
 
-| Lifecycle | Meaning | Examples                                                                            |
-|-----------|---------|-------------------------------------------------------------------------------------|
-| **Static** | Requires process restart. Cannot be changed at runtime. | `worker_threads`, `listeners[].address`, `listeners[].port`|
-| **Reload:NewConn** | Applied on config reload. Affects new connections/sessions only. Existing sessions keep old values. | `services[].auth_plugin`, `services[].provider`, TLS cert/key, service matching rules |
-| **Reload:NewSub** | Applied on config reload. Affects new subscriptions/tracks only. Existing subscriptions keep old values. | `namespaces[].max_max_cache_duration_ms`, routing rules, authorization rules        |
-| **Reload:Immediate** | Applied on config reload. Takes effect on all existing connections/subscriptions. | `log_level`, `slow_subscriber_queue_max`, cache eviction policy, metrics config     |
+| Lifecycle            | Meaning                                                                                                  | Examples                                                                              |
+| -------------------- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| **Static**           | Requires process restart. Cannot be changed at runtime.                                                  | `worker_threads`, `listeners[].udp.socket.address`, `listeners[].udp.socket.port`     |
+| **Reload:NewConn**   | Applied on config reload. Affects new connections/sessions only. Existing sessions keep old values.      | `services[].auth`, `services[].provider`, TLS cert/key, service matching rules        |
+| **Reload:NewSub**    | Applied on config reload. Affects new subscriptions/tracks only. Existing subscriptions keep old values. | `tracks[].max_max_cache_duration_ms`, routing rules, authorization rules              |
+| **Reload:Immediate** | Applied on config reload. Takes effect on all existing connections/subscriptions.                        | `log_level`, `slow_subscriber_queue_max_bytes`, cache eviction policy, metrics config |
 
 ## Design Decisions
 
@@ -114,15 +131,16 @@ A custom DSL (like nginx's config language) would be more concise for our domain
 - Requires building and maintaining a parser, error reporting, syntax highlighting, linting tools.
 - Creates a learning curve for every new operator.
 - nginx's DSL is frequently cited as a source of misconfiguration (e.g., [trailing slash behavior](https://www.nginx.com/resources/wiki/start/topics/tutorials/config_pitfalls/), `if` is evil).
-- YAML gets us most of the expressiveness with zero parser maintenance and existing tooling (IDE support, linting, schema validation).
+- YAML gets us most of the expressiveness with minimal parser maintenance and existing tooling (IDE support, linting, schema validation).
 
 ### Hierarchical Services Over Flat Config
 
-**Chosen**: Hierarchical (authority → path → namespace) with inheritance.
+**Chosen**: Hierarchical (authority → path → tracks) with inheritance.
 
 **Alternative**: Flat list of rules with explicit matchers (like Envoy's route table).
 
 Hierarchical is chosen because:
+
 - Maps directly to the MOQT connection model: authority and path are per-session (CLIENT_SETUP), namespaces are per-subscription.
 - Inheritance reduces repetition. If 50 namespace prefixes under one authority share the same auth and upstream, you define those once at the service level.
 - Operators think in terms of "services" (the nginx `server` block mental model is pervasive).
@@ -142,7 +160,7 @@ The runtime API's (e.g. `POST /v1/config/reload`) provides the same functionalit
 Regex matching is available at all hierarchy levels but is documented as a last resort:
 
 - **Service matching** (per-connection): Regex is acceptable. Evaluated once at session setup.
-- **Namespace matching** (per-subscription): Regex is acceptable but should be simple. Evaluated once at subscription setup.
+- **Track matching** (per-subscription): Regex in namespace/track matchers is acceptable but should be simple. Evaluated once at subscription setup.
 
 Matching order within a hierarchy level: exact → prefix (longest match) → regex (first match, config order) → default. This is the same precedence as nginx's location matching.
 

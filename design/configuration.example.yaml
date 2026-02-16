@@ -1,87 +1,99 @@
-
 global:
-  worker_threads: 4               # I/O threads; 0 = auto (num CPUs)
-  pid_file: /var/run/o-rly.pid
+  worker_threads: 4 # I/O threads; 0 = auto (num CPUs)
+  log_level: info
 
-  log_level: info                  # trace, debug, info, warn, error
-  max_connections: 100000          # Per-process connection limit
-
-  slow_subscriber_queue_max: 1000  # Max queued objects before terminating subscription
-  delivery_timeout_ms: 500         # Default delivery timeout
-
-  cache:
-    memory_max_mb: 4096
-    eviction_policy: lru           # lru, lfu
-    disk_path: ""                  # Empty = disabled
-    disk_max_mb: 0
-
-  telemetry:
-    metrics_endpoint: "0.0.0.0:9090"
-    metrics_format: opentelemetry
-    qlog_enabled: true
-    qlog_dir: /var/log/o-rly/qlog
-    mlog_enabled: true
+  telemetry: ....
 
 listeners:
-- name: main
-  address: "0.0.0.0"
-  port: 4433
-  protocols:
-  - quic
-  - webtransport
-  tls:
-    cert_file: /etc/o-rly/tls/cert.pem
-    key_file: /etc/o-rly/tls/key.pem
-    # ... Aditional tls config as necessary
-  quic:
-    congestion_control: bbr
-    initial_rtt_ms: 100
+  - name: main
+    udp: # Exactly one of udp, tcp (maybe pipe, qmux?)
+      socket:
+        address: "::"
+        port: 433
+        ipv6_only: false
+      transport:
+        mvfst: # implementation specific config
+          protocols:
+            quic:
+            webtransport:
+          tunables:
+            initial_congestion_control: bbr
+            initial_rtt_ms: 100
 
-- name: wt-main
-  address: "0.0.0.0"
-  port: 443
-  protocols:
-  - webtransport
-  tls:
-    cert_file: /etc/o-rly/tls/cert.pem
-    key_file: /etc/o-rly/tls/key.pem
+    tls_credentials:
+      # TODO: Tls credential providers
+      # - Do we support more then one provider at a time?
 
-services:
-- name: live-streaming
-  authority: "live.example.com"
-  path: "/"
+  - name: tcp-fallback
+    tcp:
+      socket:
+        address: "::"
+        port: 443
+      transport:
+        proxygen: # I don't know who will implement webtransport/h2
+    tls_credantials: ~ #TODO, see above
 
-  auth_plugins:
-      #......
+service_defaults:
+  slow_subscriber_queue_max_bytes: 1000
+  auth: {} #...
+  cache: {} #...
   max_sessions: 50000
 
-  provider:
-    type: static_upstream
-    config:
-      upstream_uri: "moqt://origin.example.com:4433"
+services:
+  - name: live-streaming
+    authorities:
+      - "live.example.com"
+      - "e79.x.akamaiedge.net"
+      - "1234567890.rsc.cdn77.org"
+    path:
+      prefix: "/"
 
-  cache:
-    memory_max_mb: 2048          # Override global cache for this service
-    eviction_policy: lfu
+    # Tune batching e.g. Latency vs performance
+    batching:
+      min_batch_size: 100kib
+      max_batch_delay: 250ms
 
-  congestion_control: bbr        # Per-service override
+    # By defualt all listners, this can limit them
+    listeners: ["main"]
 
-  namespaces:
-  - prefix: ["live", "sports"]
-    max_max_cache_duration_ms: 200
-    slow_subscriber_queue_max: 500
+    auth: #....
 
-  - prefix: ["live", "sports"]
-    max_max_cache_duration_ms: 2000
+    provider:
+      type: static_upstream
+      config:
+        upstream_uri: "moqt://origin.example.com:4433"
 
-- name: catch-all
-  authority: "*"
-  path: "/"
-  auth_plugins:
-  - anonymous
+    cache: #....
 
-  provider:
-    type: local-only
+    # TODO: How to handle per service-overrides?
+    congestion_control: bbr
+
+    tracks:
+      # All tracks in given namespace prefix
+      - namespace:
+          prefix: ["live", "sports"]
+        max_max_cache_duration_ms: 200
+        slow_subscriber_queue_max: 500
+
+      # I do thing that we need fairly advanced matching for examples MSF, where the catalog track may need different params. Is there a simplier way?
+      - namespace:
+          prefix:
+            - exact: "live"
+            - regex: "stream-[a-zA-Z0-9]+"
+        track:
+          exact: "catalog"
+        batching:
+          max_batch_delay: 50ms
+
+  - name: pure-relay
+    authority:
+      wildcard: "moq-relay.example.com"
+    path: "/"
+    auth_plugins:
+      - anonymous
+
+    provider:
+      type: local-only
 
 services_include:
-- /etc/o-rly/services.d/*.yaml
+  - /etc/o-rly/services.d/*.yaml
