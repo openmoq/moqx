@@ -1,0 +1,17 @@
+---
+Checks: >
+  *,
+  -llvm-header-guard,
+  -llvmlibc-restrict-system-libc-headers,
+  -cppcoreguidelines-avoid-magic-numbers,
+  -cppcoreguidelines-pro-type-vararg,
+  -cppcoreguidelines-owning-memory,
+  -google-readability-todo,
+  -google-readability-namespace-comments,
+  -modernize-use-trailing-return-type,
+  -misc-non-private-member-variables-in-classes
+WarningsAsErrors: ''
+HeaderFilterRegex: 'include/.*|src/.*|tests/.*'
+AnalyzeTemporaryDtors: false
+FormatStyle: file
+...

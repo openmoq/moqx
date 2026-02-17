@@ -1,0 +1,23 @@
+# Build outputs
+/build/
+/build-*/
+/cmake-build-*/
+/CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+
+# Ninja
+.ninja_deps
+.ninja_log
+
+# CTest
+Testing/
+DartConfiguration.tcl
+
+# CPack
+_CPack_Packages/
+
+# OS
+.DS_Store
