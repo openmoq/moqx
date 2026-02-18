@@ -19,5 +19,8 @@ DartConfiguration.tcl
 # CPack
 _CPack_Packages/
 
+# Dependency scratch dir
+/.scratch/
+
 # OS
 .DS_Store
