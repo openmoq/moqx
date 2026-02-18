@@ -12,7 +12,8 @@
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "RelWithDebInfo"
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_FIND_LIBRARY_SUFFIXES": ".a"
       }
     },
     {
@@ -22,7 +23,8 @@
       "binaryDir": "${sourceDir}/build-san",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "ORLY_ENABLE_SANITIZERS": "ON"
+        "ORLY_ENABLE_SANITIZERS": "ON",
+        "CMAKE_FIND_LIBRARY_SUFFIXES": ".a"
       }
     }
   ],

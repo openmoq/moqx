@@ -19,6 +19,15 @@ if(ORLY_ENABLE_SANITIZERS AND NOT CMAKE_BUILD_TYPE STREQUAL "Release")
   add_link_options(-fsanitize=address,undefined)
 endif()
 
+# Prefer static libraries for all transitive deps
+set(GFLAGS_SHARED OFF CACHE BOOL "" FORCE)
+
+list(APPEND CMAKE_MODULE_PATH
+  "${PROJECT_SOURCE_DIR}/deps/moxygen/build/fbcode_builder/CMake"
+)
+
+find_package(moxygen REQUIRED)
+
 add_library(o_rly_core STATIC
   src/relay.cpp
 )
@@ -26,6 +35,12 @@ add_library(o_rly_core STATIC
 target_include_directories(o_rly_core
   PUBLIC
     ${PROJECT_SOURCE_DIR}/include
+)
+
+target_link_libraries(o_rly_core PUBLIC
+  moxygen::moxygen_relay_moq_relay
+  moxygen::moxygen_moq_relay_session
+  moxygen::moxygen_moq_server
 )
 
 target_compile_options(o_rly_core PRIVATE -Wall -Wextra -Wpedantic)
