@@ -1,0 +1,32 @@
+# Simplified CI Dockerfile — packages a pre-built o-rly binary.
+#
+# This Dockerfile is for future use when openmoq/moxygen CI publishes
+# per-architecture artifact bundles. At that point, o-rly CI can build
+# the binary natively per-arch and package it here without rebuilding
+# the full Meta dependency stack inside Docker.
+#
+# IMPORTANT: The binary MUST be built on a Debian bookworm (or older glibc)
+# host matching the target architecture. Binaries built on newer glibc
+# (e.g., Ubuntu 24.04) will fail at runtime due to glibc symbol versioning.
+# The moxygen fork CI should build Docker-targeted artifacts inside a
+# debian:bookworm container to guarantee compatibility.
+#
+# For now, the full multi-stage docker/Dockerfile is used for CI Docker
+# image builds (required for multi-arch via QEMU).
+#
+# Usage:
+#   docker build -f docker/Dockerfile.ci \
+#     --build-arg BINARY=build/o_rly \
+#     -t ghcr.io/openmoq/o-rly:latest .
+
+FROM debian:bookworm-slim AS runtime
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libssl3 \
+    ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+ARG BINARY=build/o_rly
+COPY ${BINARY} /usr/local/bin/o-rly
+
+ENTRYPOINT ["o-rly"]

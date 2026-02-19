@@ -1,0 +1,271 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+  checks: write
+
+jobs:
+  # ──────────────────────────────────────────────────────────────
+  # Tier 0: Fast-fail format check (no deps needed)
+  # ──────────────────────────────────────────────────────────────
+  lint:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install clang-format
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang-format
+
+      - name: Check formatting
+        run: |
+          FILES=$(find include src tests tools \
+            -name '*.h' -o -name '*.hpp' \
+            -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' \
+            2>/dev/null || true)
+          if [ -n "$FILES" ]; then
+            echo "Checking: $FILES"
+            echo "$FILES" | xargs clang-format --dry-run --Werror
+          else
+            echo "No source files found to check."
+          fi
+
+  # ──────────────────────────────────────────────────────────────
+  # Tier 1: Native platform builds (run in parallel)
+  # ──────────────────────────────────────────────────────────────
+  build-ubuntu:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build python3 curl pkg-config \
+            libssl-dev m4 clang-tidy lcov
+
+      # Cache the .scratch/ dir keyed by the moxygen submodule commit.
+      # This is the isolated dependency step — will be swapped for
+      # artifact downloads when openmoq/moxygen CI publishes builds.
+      - name: Cache moxygen deps
+        uses: actions/cache@v4
+        id: deps-cache
+        with:
+          path: .scratch
+          key: moxygen-deps-ubuntu-22.04-x86_64-${{ hashFiles('.gitmodules', 'deps/moxygen') }}
+          restore-keys: |
+            moxygen-deps-ubuntu-22.04-x86_64-
+
+      - name: Build dependencies
+        if: steps.deps-cache.outputs.cache-hit != 'true'
+        run: ./scripts/setup-deps.sh
+
+      - name: Configure
+        run: ./scripts/configure.sh build default
+
+      - name: Build
+        run: cmake --build build -j"$(nproc)"
+
+      - name: Run tests
+        run: |
+          ctest --test-dir build --output-on-failure --output-junit test-results.xml
+
+      - name: Publish test results
+        uses: mikepenz/action-junit-report@v4
+        if: always()
+        with:
+          report_paths: build/test-results.xml
+          check_name: "Tests (Ubuntu 22.04 x86_64)"
+
+      - name: Run clang-tidy
+        run: run-clang-tidy -p build
+
+      # ── Code coverage (Ubuntu only) ──
+      - name: Build with coverage
+        run: |
+          cmake -S . -B build-cov -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_FLAGS="--coverage" \
+            -DCMAKE_PREFIX_PATH="$(cat .scratch/cmake_prefix_path.txt)"
+          cmake --build build-cov -j"$(nproc)"
+
+      - name: Run tests for coverage
+        run: ctest --test-dir build-cov --output-on-failure
+
+      - name: Collect coverage
+        run: |
+          lcov --capture --directory build-cov --output-file coverage.info
+          lcov --remove coverage.info '/usr/*' '*/deps/*' '*/tests/*' \
+               --output-file coverage.info
+          genhtml coverage.info --output-directory coverage-html
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: coverage-html/
+
+  build-macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install system dependencies
+        run: brew install cmake ninja openssl pkg-config
+
+      - name: Cache moxygen deps
+        uses: actions/cache@v4
+        id: deps-cache
+        with:
+          path: .scratch
+          key: moxygen-deps-macos-14-arm64-${{ hashFiles('.gitmodules', 'deps/moxygen') }}
+          restore-keys: |
+            moxygen-deps-macos-14-arm64-
+
+      - name: Build dependencies
+        if: steps.deps-cache.outputs.cache-hit != 'true'
+        run: ./scripts/setup-deps.sh
+
+      - name: Configure
+        run: ./scripts/configure.sh build default
+
+      - name: Build
+        run: cmake --build build -j"$(sysctl -n hw.ncpu)"
+
+      - name: Run tests
+        run: |
+          ctest --test-dir build --output-on-failure --output-junit test-results.xml
+
+      - name: Publish test results
+        uses: mikepenz/action-junit-report@v4
+        if: always()
+        with:
+          report_paths: build/test-results.xml
+          check_name: "Tests (macOS ARM64)"
+
+  # ──────────────────────────────────────────────────────────────
+  # Tier 2: Docker multi-arch build (waits for native build)
+  # ──────────────────────────────────────────────────────────────
+  docker:
+    runs-on: ubuntu-22.04
+    needs: [build-ubuntu]
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/openmoq/o-rly
+          tags: |
+            type=sha
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test (amd64)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          docker run --rm ghcr.io/openmoq/o-rly:sha-${GITHUB_SHA::7} \
+            --version || true
+
+  # ──────────────────────────────────────────────────────────────
+  # Tier 3: Notifications (runs after everything, even on failure)
+  # ──────────────────────────────────────────────────────────────
+  notify:
+    runs-on: ubuntu-22.04
+    needs: [lint, build-ubuntu, build-macos, docker]
+    if: always()
+    steps:
+      - name: Determine overall status
+        id: status
+        run: |
+          if [[ "${{ contains(needs.*.result, 'failure') }}" == "true" ]]; then
+            echo "outcome=failure" >> "$GITHUB_OUTPUT"
+            echo "color=#dc3545" >> "$GITHUB_OUTPUT"
+          else
+            echo "outcome=success" >> "$GITHUB_OUTPUT"
+            echo "color=#28a745" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Notify on failure always; on success only for main branch pushes.
+      - name: Notify Slack
+        if: |
+          steps.status.outputs.outcome == 'failure' ||
+          (github.event_name == 'push' && github.ref == 'refs/heads/main')
+        uses: slackapi/slack-github-action@v1.26
+        with:
+          payload: |
+            {
+              "channel": "#github-notifications",
+              "attachments": [
+                {
+                  "color": "${{ steps.status.outputs.color }}",
+                  "text": "*o-rly CI ${{ steps.status.outputs.outcome }}*\nBranch: `${{ github.ref_name }}`  Commit: `${{ github.sha }}`\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View run>"
+                }
+              ]
+            }
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+
+      - name: Notify email
+        if: |
+          steps.status.outputs.outcome == 'failure' ||
+          (github.event_name == 'push' && github.ref == 'refs/heads/main')
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.SMTP_SERVER }}
+          server_port: ${{ secrets.SMTP_PORT }}
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          subject: "[o-rly CI] ${{ steps.status.outputs.outcome }} — ${{ github.ref_name }} (${{ github.sha }})"
+          to: github-notifications@openmoq.org
+          from: github-ci@openmoq.org
+          body: |
+            o-rly CI ${{ steps.status.outputs.outcome }}
+
+            Branch: ${{ github.ref_name }}
+            Commit: ${{ github.sha }}
+            Run:    ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

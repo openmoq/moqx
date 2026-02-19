@@ -1,0 +1,179 @@
+name: Update submodules
+
+on:
+  schedule:
+    - cron: '0 6 * * *'   # Daily at 06:00 UTC
+  workflow_dispatch:
+    inputs:
+      submodule:
+        description: 'Submodule to update (blank = all)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+  pull-requests: write
+
+# Each submodule gets its own branch/PR so they can be reviewed independently.
+# To add a new submodule, add an entry to the matrix below.
+
+jobs:
+  update:
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: moxygen
+            path: deps/moxygen
+            branch: auto/update-moxygen
+            upstream_branch: main
+        # Future submodules go here, e.g.:
+        # - name: picoquic
+        #   path: deps/picoquic
+        #   branch: auto/update-picoquic
+        #   upstream_branch: main
+
+    # Skip matrix entries that don't match the manual input (if provided).
+    name: ${{ matrix.name }}
+    if: >-
+      github.event.inputs.submodule == '' ||
+      github.event.inputs.submodule == matrix.name
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get current submodule commit
+        id: current
+        run: |
+          SHA=$(git -C ${{ matrix.path }} rev-parse HEAD)
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "Current ${{ matrix.name }}: $SHA"
+
+      - name: Get latest upstream commit
+        id: latest
+        run: |
+          git -C ${{ matrix.path }} fetch origin ${{ matrix.upstream_branch }}
+          SHA=$(git -C ${{ matrix.path }} rev-parse origin/${{ matrix.upstream_branch }})
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "Latest ${{ matrix.name }} on ${{ matrix.upstream_branch }}: $SHA"
+
+      - name: Check if update needed
+        id: check
+        run: |
+          if [ "${{ steps.current.outputs.sha }}" = "${{ steps.latest.outputs.sha }}" ]; then
+            echo "needs_update=false" >> "$GITHUB_OUTPUT"
+            echo "${{ matrix.name }} already at latest. Nothing to do."
+          else
+            echo "needs_update=true" >> "$GITHUB_OUTPUT"
+            echo "Update available: ${{ steps.current.outputs.sha }} -> ${{ steps.latest.outputs.sha }}"
+          fi
+
+      - name: Update submodule pointer
+        if: steps.check.outputs.needs_update == 'true'
+        run: git -C ${{ matrix.path }} checkout ${{ steps.latest.outputs.sha }}
+
+      - name: Check for existing update PR
+        if: steps.check.outputs.needs_update == 'true'
+        id: existing-pr
+        run: |
+          PR_NUM=$(gh pr list --head "${{ matrix.branch }}" --json number --jq '.[0].number // empty')
+          echo "number=${PR_NUM}" >> "$GITHUB_OUTPUT"
+          if [ -n "$PR_NUM" ]; then
+            echo "Existing PR: #${PR_NUM}"
+          else
+            echo "No existing PR."
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Force-push to the fixed branch — at most one update PR per submodule.
+      - name: Create or update branch
+        if: steps.check.outputs.needs_update == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B ${{ matrix.branch }}
+          git add ${{ matrix.path }}
+          SHORT_NEW="${{ steps.latest.outputs.sha }}"
+          git commit -m "deps: update ${{ matrix.name }} to ${SHORT_NEW:0:12}"
+          git push --force origin ${{ matrix.branch }}
+
+      - name: Create PR
+        if: steps.check.outputs.needs_update == 'true' && steps.existing-pr.outputs.number == ''
+        run: |
+          SHORT_OLD="${{ steps.current.outputs.sha }}"
+          SHORT_NEW="${{ steps.latest.outputs.sha }}"
+          gh pr create \
+            --head "${{ matrix.branch }}" \
+            --base main \
+            --title "deps: update ${{ matrix.name }} to ${SHORT_NEW:0:12}" \
+            --body "$(cat <<EOF
+          Automated submodule update.
+
+          - **Submodule:** \`${{ matrix.path }}\`
+          - **From:** \`${SHORT_OLD:0:12}\`
+          - **To:** \`${SHORT_NEW:0:12}\`
+
+          This PR was created automatically by the submodule-update workflow.
+          CI must pass before merging.
+          EOF
+          )"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update existing PR
+        if: steps.check.outputs.needs_update == 'true' && steps.existing-pr.outputs.number != ''
+        run: |
+          SHORT_OLD="${{ steps.current.outputs.sha }}"
+          SHORT_NEW="${{ steps.latest.outputs.sha }}"
+          gh pr edit ${{ steps.existing-pr.outputs.number }} \
+            --title "deps: update ${{ matrix.name }} to ${SHORT_NEW:0:12}" \
+            --body "$(cat <<EOF
+          Automated submodule update (refreshed).
+
+          - **Submodule:** \`${{ matrix.path }}\`
+          - **From:** \`${SHORT_OLD:0:12}\`
+          - **To:** \`${SHORT_NEW:0:12}\`
+
+          This PR was updated automatically by the submodule-update workflow.
+          CI must pass before merging.
+          EOF
+          )"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── Notifications ──
+      - name: Notify Slack
+        if: steps.check.outputs.needs_update == 'true'
+        uses: slackapi/slack-github-action@v1.26
+        with:
+          payload: |
+            {
+              "channel": "#github-notifications",
+              "text": ":arrows_counterclockwise: *${{ matrix.name }} submodule update available* for o-rly\nFrom: `${{ steps.current.outputs.sha }}` To: `${{ steps.latest.outputs.sha }}`\n<${{ github.server_url }}/${{ github.repository }}/pulls?q=is:pr+head:${{ matrix.branch }}|View PR>"
+            }
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+
+      - name: Notify email
+        if: steps.check.outputs.needs_update == 'true'
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.SMTP_SERVER }}
+          server_port: ${{ secrets.SMTP_PORT }}
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          subject: "[o-rly] ${{ matrix.name }} submodule update available"
+          to: github-notifications@openmoq.org
+          from: github-ci@openmoq.org
+          body: |
+            Automated ${{ matrix.name }} submodule update is available for o-rly.
+
+            Submodule: ${{ matrix.path }}
+            From: ${{ steps.current.outputs.sha }}
+            To:   ${{ steps.latest.outputs.sha }}
