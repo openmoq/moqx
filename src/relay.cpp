@@ -2,7 +2,7 @@
 
 namespace openmoq::o_rly {
 
-Relay::Relay() = default;
+Relay::Relay() : moqRelay_(std::make_shared<moxygen::MoQRelay>()) {}
 
 std::string Relay::Version() const {
   return "0.1.0";
