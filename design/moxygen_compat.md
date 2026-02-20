@@ -17,28 +17,26 @@ This document describes the moxygen architecture, the compatibility layer design
 
 ## Overview
 
-The goal of this work is to support multiple build configurations to accommodate different deployment scenarios:
-
+ The goal of this work is to support multiple build configurations to accommodate different deployment scenarios:
 - **Full-featured mode**: Uses Folly library and mvfst QUIC stack for relay development
-- **Minimal dependency mode**: Uses only C++ standard library and picoquic QUIC stack with minimal dependecies for
-    relay development, easy integration into existing server systems and lightweight client-side deployments.
+- **Minimal dependency mode**: Uses only C++ standard library and picoquic QUIC stack with minimal dependecies for relay development, easy integration into existing server systems and lightweight client-side deployments.
 - **Hybrid mode**: Mix of Folly utilities with picoquic transport
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        Application Layer                        │
-│              (MoQDateServer, MoQTextClient, etc.)               │
+│                        Application Layer                         │
+│              (MoQDateServer, MoQTextClient, etc.)                │
 ├─────────────────────────────────────────────────────────────────┤
-│                        MoQ Session Layer                        │
+│                        MoQ Session Layer                         │
 │     ┌─────────────────────┐    ┌─────────────────────────┐      │
 │     │    MoQSession       │    │   MoQSessionCompat      │      │
 │     │   (Coroutines)      │    │    (Callbacks)          │      │
 │     └─────────────────────┘    └─────────────────────────┘      │
 ├─────────────────────────────────────────────────────────────────┤
-│                     Transport Abstraction                       │
-│                    WebTransportInterface                        │
+│                     Transport Abstraction                        │
+│                    WebTransportInterface                         │
 ├──────────────────────┬──────────────────────────────────────────┤
-│   Proxygen/mvfst     │              Picoquic                    │
+│   Proxygen/mvfst     │              Picoquic                     │
 │   (WebTransport)     │    ┌────────────────┬─────────────────┐  │
 │                      │    │ Raw Transport  │  H3 Transport   │  │
 │                      │    │  (moq-00)      │  (WebTransport) │  │
@@ -164,6 +162,406 @@ moxygen/compat/
 
 ---
 
+## Transport Abstraction: WebTransportInterface
+
+### Design Goals
+
+The `WebTransportInterface` abstraction enables moxygen to support multiple QUIC stacks without changing the MoQ session layer. Key goals:
+
+1. **QUIC Stack Independence**: MoQSession code works with any QUIC implementation
+2. **Transport Mode Flexibility**: Support both Raw QUIC and HTTP/3 WebTransport
+3. **API Consistency**: Same callback-based API regardless of underlying transport
+4. **Zero-Copy Where Possible**: Efficient buffer handling across all implementations
+
+### Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           MoQSession / MoQSessionCompat                      │
+│                      (Protocol logic, subscribe/publish)                     │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                          WebTransportInterface                               │
+│   createUniStream() | createBidiStream() | sendDatagram() | closeSession()  │
+├──────────────────┬──────────────────┬──────────────────┬────────────────────┤
+│  PicoquicRaw     │  PicoquicH3      │  ProxygenWT      │  MvfstStdMode      │
+│  Transport       │  Transport       │  Adapter         │  Adapter           │
+│  (moq-00)        │  (h3/WT)         │  (h3/WT)         │  (h3/WT)           │
+├──────────────────┴──────────────────┼──────────────────┴────────────────────┤
+│          picoquic QUIC stack        │           mvfst QUIC stack            │
+│          (C, minimal deps)          │           (C++, Folly-based)          │
+└─────────────────────────────────────┴───────────────────────────────────────┘
+```
+
+### WebTransportInterface API
+
+The interface defines all operations needed for MoQ transport:
+
+```cpp
+namespace moxygen::compat {
+
+class WebTransportInterface {
+ public:
+  virtual ~WebTransportInterface() = default;
+
+  // === Stream Creation ===
+
+  // Create outgoing unidirectional stream (for SUBSCRIBE, OBJECT headers)
+  virtual Expected<StreamWriteHandle*, WebTransportError> createUniStream() = 0;
+
+  // Create outgoing bidirectional stream (for control messages)
+  virtual Expected<BidiStreamHandle*, WebTransportError> createBidiStream() = 0;
+
+  // Wait for stream creation credit (MAX_STREAMS flow control)
+  virtual Expected<SemiFuture<Unit>, WebTransportError> awaitUniStreamCredit();
+  virtual Expected<SemiFuture<Unit>, WebTransportError> awaitBidiStreamCredit();
+
+  // === Datagrams ===
+
+  virtual Expected<Unit, WebTransportError> sendDatagram(
+      std::unique_ptr<Payload> data) = 0;
+  virtual void setMaxDatagramSize(size_t maxSize) = 0;
+  virtual size_t getMaxDatagramSize() const = 0;
+
+  // === Session Control ===
+
+  virtual void closeSession(uint32_t errorCode = 0) = 0;
+  virtual void drainSession() = 0;
+
+  // === Connection Info ===
+
+  virtual SocketAddress getPeerAddress() const = 0;
+  virtual SocketAddress getLocalAddress() const = 0;
+  virtual std::string getALPN() const = 0;  // "moq-00" or "h3"
+  virtual bool isConnected() const = 0;
+
+  // === Event Callbacks ===
+
+  // Incoming streams from peer
+  virtual void setNewUniStreamCallback(
+      std::function<void(StreamReadHandle*)> cb) = 0;
+  virtual void setNewBidiStreamCallback(
+      std::function<void(BidiStreamHandle*)> cb) = 0;
+
+  // Incoming datagrams
+  virtual void setDatagramCallback(
+      std::function<void(std::unique_ptr<Payload>)> cb) = 0;
+
+  // Session lifecycle
+  virtual void setSessionCloseCallback(
+      std::function<void(std::optional<uint32_t> error)> cb) = 0;
+  virtual void setSessionDrainCallback(std::function<void()> cb) = 0;
+};
+
+}  // namespace moxygen::compat
+```
+
+### Stream Handle Interfaces
+
+Separate handles for reading and writing enable fine-grained flow control:
+
+```cpp
+// Write handle - for sending data on a stream
+class StreamWriteHandle {
+ public:
+  virtual uint64_t getID() const = 0;
+
+  // Async write with completion callback
+  virtual void writeStreamData(
+      std::unique_ptr<Payload> data,
+      bool fin,
+      std::function<void(bool success)> callback = nullptr) = 0;
+
+  // Sync write (for picoquic JIT send model)
+  virtual Expected<Unit, WebTransportError> writeStreamDataSync(
+      std::unique_ptr<Payload> data, bool fin) = 0;
+
+  virtual void resetStream(uint32_t errorCode) = 0;
+  virtual void setPriority(const StreamPriority& priority) = 0;
+
+  // Flow control: wait until writable
+  virtual void awaitWritable(std::function<void()> callback) = 0;
+  virtual Expected<SemiFuture<Unit>, WebTransportError> awaitWritable();
+
+  // Peer cancellation
+  virtual void setPeerCancelCallback(std::function<void(uint32_t)> cb) = 0;
+  virtual bool isCancelled() const = 0;
+
+  // Delivery tracking (for reliability)
+  virtual Expected<Unit, WebTransportError> registerDeliveryCallback(
+      uint64_t offset, DeliveryCallback* cb) = 0;
+};
+
+// Read handle - for receiving data from a stream
+class StreamReadHandle {
+ public:
+  virtual uint64_t getID() const = 0;
+
+  // Set callback for incoming data
+  virtual void setReadCallback(
+      std::function<void(StreamData, std::optional<uint32_t> error)> cb) = 0;
+
+  virtual void pauseReading() = 0;
+  virtual void resumeReading() = 0;
+
+  // Send STOP_SENDING to peer
+  virtual Expected<Unit, WebTransportError> stopSending(uint32_t error) = 0;
+
+  virtual bool isFinished() const = 0;
+};
+
+// Bidirectional stream combines both
+class BidiStreamHandle {
+ public:
+  virtual StreamWriteHandle* writeHandle() = 0;
+  virtual StreamReadHandle* readHandle() = 0;
+};
+```
+
+### Implementation Details
+
+#### 1. PicoquicRawTransport (Raw QUIC)
+
+Direct QUIC streams without HTTP/3 framing:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                  PicoquicRawTransport                   │
+├─────────────────────────────────────────────────────────┤
+│ ALPN: "moq-00"                                          │
+│ Streams: Native QUIC stream IDs                         │
+│ Send Model: JIT (mark_active_stream + prepare_to_send)  │
+│ Threading: PicoquicThreadDispatcher for thread safety   │
+└─────────────────────────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────────────────────────┐
+│                   picoquic QUIC API                     │
+│   picoquic_cnx_t* | picoquic_callback | stream APIs    │
+└─────────────────────────────────────────────────────────┘
+```
+
+Key implementation aspects:
+
+- **JIT Send Model**: Data is buffered in `OutBuffer` and provided to picoquic
+  when `picoquic_callback_prepare_to_send` fires (flow control aware)
+- **Thread Dispatcher**: All picoquic API calls happen on the picoquic network
+  thread via `PicoquicThreadDispatcher::runOnPicoThread()`
+- **Stream Tracking**: Maps `uint64_t streamId` to `PicoquicStreamWriteHandle`
+  and `PicoquicStreamReadHandle`
+
+```cpp
+class PicoquicStreamWriteHandle : public StreamWriteHandle {
+  // JIT send buffer
+  struct OutBuffer {
+    std::mutex mutex;
+    std::deque<std::unique_ptr<Payload>> chunks;
+    size_t firstChunkOffset{0};  // Partial send tracking
+    bool finQueued{false};
+    bool finSent{false};
+    std::vector<Promise<Unit>> readyWaiters;  // Backpressure
+  };
+
+  // Called by picoquic when flow control allows sending
+  int onPrepareToSend(void* context, size_t maxLength) {
+    std::lock_guard lock(outbuf_.mutex);
+    // Provide buffered data to picoquic
+    // Wake any waiters blocked on backpressure
+  }
+};
+```
+
+#### 2. PicoquicH3Transport (HTTP/3 WebTransport)
+
+HTTP/3 WebTransport using picoquic's h3zero library:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                  PicoquicH3Transport                    │
+├─────────────────────────────────────────────────────────┤
+│ ALPN: "h3"                                              │
+│ Session: HTTP/3 CONNECT to establish WT session         │
+│ Streams: WebTransport stream framing over QUIC          │
+│ Interop: Compatible with mvfst/proxygen servers         │
+└─────────────────────────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────────────────────────┐
+│              h3zero (picoquic HTTP/3)                   │
+│   h3zero_callback_ctx_t | CONNECT handling | framing   │
+└─────────────────────────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────────────────────────┐
+│                   picoquic QUIC API                     │
+└─────────────────────────────────────────────────────────┘
+```
+
+WebTransport session establishment (client-side):
+
+```cpp
+bool PicoquicH3Transport::initiateWebTransportUpgrade() {
+  // 1. Create HTTP/3 context
+  h3Ctx_ = h3zero_callback_create_context(...);
+
+  // 2. Send CONNECT request to establish WebTransport session
+  //    Path: "/moq" or "/moq-relay" depending on endpoint
+  h3zero_send_connect_request(cnx_, path_, ...);
+
+  // 3. Wait for CONNECT response (200 OK = session established)
+  // 4. All subsequent streams are WebTransport streams
+}
+```
+
+#### 3. ProxygenWebTransportAdapter (mvfst/Proxygen)
+
+Wraps Proxygen's WebTransport API for Mode 1 builds:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│              ProxygenWebTransportAdapter                │
+├─────────────────────────────────────────────────────────┤
+│ Wraps: proxygen::WebTransport                           │
+│ Event Loop: Folly EventBase                             │
+│ Streams: proxygen::WebTransport::StreamHandle           │
+└─────────────────────────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────────────────────────┐
+│               proxygen::WebTransport                    │
+│        (Full HTTP/3 WebTransport implementation)        │
+└─────────────────────────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────────────────────────┐
+│                  mvfst QUIC stack                       │
+│              (Folly-based, coroutine-friendly)          │
+└─────────────────────────────────────────────────────────┘
+```
+
+The adapter translates between APIs:
+
+```cpp
+class ProxygenWebTransportAdapter : public WebTransportInterface {
+  folly::MaybeManagedPtr<proxygen::WebTransport> wt_;
+
+  Expected<StreamWriteHandle*, WebTransportError> createUniStream() override {
+    // Call proxygen API and wrap result
+    auto streamId = wt_->createUnidirectionalStream();
+    if (!streamId) {
+      return makeUnexpected(WebTransportError::STREAM_CREATION_ERROR);
+    }
+    auto handle = std::make_unique<ProxygenStreamWriteHandle>(
+        wt_->getStreamWriteHandle(*streamId));
+    // Store and return...
+  }
+};
+```
+
+#### 4. MvfstStdModeAdapter (Hybrid Mode)
+
+Enables std-mode code to use mvfst without exposing Folly types:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                 MvfstStdModeAdapter                     │
+├─────────────────────────────────────────────────────────┤
+│ API: Callback-based (no Folly types exposed)            │
+│ Internal: Owns Folly EventBase thread                   │
+│ Threading: Marshals calls to EventBase thread           │
+└─────────────────────────────────────────────────────────┘
+         │
+         ▼ (internal, hidden from API)
+┌─────────────────────────────────────────────────────────┐
+│     folly::ScopedEventBaseThread (owned internally)     │
+├─────────────────────────────────────────────────────────┤
+│               proxygen::WebTransport                    │
+├─────────────────────────────────────────────────────────┤
+│                  mvfst QUIC stack                       │
+└─────────────────────────────────────────────────────────┘
+```
+
+This enables "Mode 4" style builds where you want mvfst performance
+but std-mode API compatibility:
+
+```cpp
+// User code (std-mode, no Folly includes)
+auto adapter = MvfstStdModeAdapter::create(config);
+adapter->connect([](bool success) {
+  // Use adapter as WebTransportInterface
+  adapter->createUniStream();  // Marshaled to EventBase thread
+});
+```
+
+### Transport Selection Matrix
+
+| Implementation | QUIC Stack | ALPN | Use Case |
+|---------------|------------|------|----------|
+| `PicoquicRawTransport` | picoquic | moq-00 | Direct MoQ, no HTTP/3 overhead |
+| `PicoquicH3Transport` | picoquic | h3 | Interop with other WebTransport impls |
+| `ProxygenWebTransportAdapter` | mvfst | h3 | Full-featured Folly mode |
+| `MvfstStdModeAdapter` | mvfst | h3 | std-mode API with mvfst performance |
+
+### Thread Safety Model
+
+Each implementation handles threading differently:
+
+| Implementation | Threading Model |
+|---------------|-----------------|
+| `PicoquicRawTransport` | `PicoquicThreadDispatcher` marshals to pico thread |
+| `PicoquicH3Transport` | Same as above |
+| `ProxygenWebTransportAdapter` | Folly EventBase (caller must be on evb) |
+| `MvfstStdModeAdapter` | Internal EventBase, callbacks on user thread |
+
+### Flow Control Integration
+
+The interface exposes flow control through several mechanisms:
+
+1. **Stream Creation Credit**: `awaitUniStreamCredit()` / `awaitBidiStreamCredit()`
+   returns a future that completes when MAX_STREAMS allows creation
+
+2. **Write Backpressure**: `awaitWritable()` on `StreamWriteHandle` signals
+   when flow control allows more data
+
+3. **JIT Send Model** (picoquic): Data buffered until `prepare_to_send` callback
+   indicates flow credits are available
+
+```cpp
+// Example: Writing with backpressure handling
+void sendObject(StreamWriteHandle* stream, Payload data) {
+  auto result = stream->writeStreamDataSync(std::move(data), false);
+  if (!result && result.error() == WebTransportError::BLOCKED) {
+    // Wait for flow control
+    stream->awaitWritable([this, stream]() {
+      // Retry send
+    });
+  }
+}
+```
+
+### Cross-Mode Interoperability
+
+WebTransportInterface enables interop between different build modes:
+
+```
+┌─────────────────────┐                    ┌─────────────────────┐
+│   picoquic Client   │                    │   mvfst Server      │
+│  (PicoquicH3Transport)                   │  (proxygen WT)      │
+│                     │◄──── h3/WT ────────│                     │
+│   Mode 2 binary     │                    │   Mode 1 binary     │
+└─────────────────────┘                    └─────────────────────┘
+
+Both use WebTransportInterface internally, but communicate via
+standard HTTP/3 WebTransport protocol on the wire.
+```
+
+Path configuration is critical for interop:
+- mvfst relay: `/moq-relay`
+- mvfst date server: path set via `--ns` flag
+- picoquic default: `/moq`
+- Use `--path` flag on picoquic client to match server
+
+---
+
 ## Compatibility Layer
 
 The compat layer provides Folly-equivalent functionality using only C++ standard library:
@@ -218,66 +616,7 @@ void doWork(ResultCallback<Result, Error> callback);
 
 ---
 
-## Transport Abstraction
 
-### WebTransportInterface
-
-Common interface for all transports:
-
-```cpp
-class WebTransportInterface {
- public:
-  // Stream management
-  virtual StreamId createBidiStream() = 0;
-  virtual StreamId createUniStream() = 0;
-
-  // Data transfer
-  virtual void writeStreamData(StreamId id, ByteBuffer data, bool fin) = 0;
-  virtual void readStreamData(StreamId id, ReadCallback* cb) = 0;
-
-  // Connection state
-  virtual bool isConnected() const = 0;
-  virtual void close(uint32_t errorCode) = 0;
-};
-```
-
-### Transport Implementations
-
-#### Raw QUIC Transport (PicoquicRawTransport)
-
-- ALPN: `moq-00`
-- Direct QUIC streams for MoQ messages
-- Lower overhead, no HTTP/3 framing
-- Not interoperable across implementations
-
-#### HTTP/3 WebTransport (PicoquicH3Transport)
-
-- ALPN: `h3`
-- HTTP/3 CONNECT for session establishment
-- WebTransport datagrams and streams
-- Interoperable with other WebTransport implementations
-
-#### Proxygen WebTransport (Mode 1 only)
-
-- Uses Proxygen's HTTP/3 implementation
-- Integrated with Folly event loop
-- Full WebTransport compliance
-
-### Transport Selection
-
-```cpp
-// Mode 2/3: Picoquic
-if (transportMode == TransportMode::RawQuic) {
-  transport = std::make_unique<PicoquicRawTransport>(cnx);
-} else {
-  transport = std::make_unique<PicoquicH3Transport>(cnx, path);
-}
-
-// Mode 1: Proxygen
-transport = std::make_unique<ProxygenWebTransport>(session);
-```
-
----
 
 ## Session Architecture
 
@@ -331,6 +670,27 @@ session->subscribe(req, makeCallback(
 ));
 ```
 
+### Session State Machine
+
+```
+┌─────────┐     SETUP      ┌───────────┐
+│  INIT   │───────────────>│  SETUP    │
+└─────────┘                └───────────┘
+                                 │
+                           SERVER_SETUP
+                                 │
+                                 v
+┌─────────┐    GOAWAY      ┌───────────┐
+│ CLOSED  │<───────────────│  ACTIVE   │
+└─────────┘                └───────────┘
+                                 │
+                          SUBSCRIBE/PUBLISH
+                                 │
+                                 v
+                           ┌───────────┐
+                           │ STREAMING │
+                           └───────────┘
+```
 
 ---
 
