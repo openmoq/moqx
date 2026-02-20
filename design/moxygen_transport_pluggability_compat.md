@@ -9,7 +9,6 @@ This document describes the moxygen architecture, the compatibility layer design
 - [Architecture Layers](#architecture-layers)
 - [Transport Abstraction](#transport-abstraction)
 - [Compatibility Layer](#compatibility-layer)
-- [Transport Abstraction](#transport-abstraction)
 - [Session Architecture](#session-architecture)
 - [Build Configuration](#build-configuration)
 - [Cross-Mode Interoperability](#cross-mode-interoperability)
@@ -670,28 +669,6 @@ session->subscribe(req, makeCallback(
     handleError(err);
   }
 ));
-```
-
-### Session State Machine
-
-```
-┌─────────┐     SETUP      ┌───────────┐
-│  INIT   │───────────────>│  SETUP    │
-└─────────┘                └───────────┘
-                                 │
-                           SERVER_SETUP
-                                 │
-                                 v
-┌─────────┐    GOAWAY      ┌───────────┐
-│ CLOSED  │<───────────────│  ACTIVE   │
-└─────────┘                └───────────┘
-                                 │
-                          SUBSCRIBE/PUBLISH
-                                 │
-                                 v
-                           ┌───────────┐
-                           │ STREAMING │
-                           └───────────┘
 ```
 
 ---
