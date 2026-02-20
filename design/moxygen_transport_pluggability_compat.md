@@ -1,6 +1,7 @@
 # Moxygen Architecture, Compatibility Layer & Transport Pluggability
 
-This document describes the moxygen architecture, the compatibility layer design, and how the various build modes work together.
+This document describes the moxygen architecture, the compatibility layer design for QUIC stack
+pluggability.
 
 ## Table of Contents
 
@@ -94,6 +95,91 @@ MOXYGEN_QUIC_BACKEND=picoquic
 | Production ready | ✅ | ✅ | ✅ |
 | WebTransport | ✅ | ✅ | ✅ |
 | Raw QUIC | ✅ | ✅ | ✅ |
+
+### Build Sizes & Dependencies
+
+#### Binary Sizes
+
+| Binary | Mode 1 (Folly+mvfst) | Mode 2 (std+picoquic) | Mode 3 (Folly+picoquic) |
+|--------|---------------------|----------------------|------------------------|
+| Date Server | 11 MB | 2.5 MB | 3.4 MB |
+| Relay Server | 11 MB | 2.3 MB | 3.0 MB |
+| Text Client | 8.7 MB | 2.3 MB | 3.1 MB |
+
+#### Build Directory Sizes
+
+| Mode | Total Size | Dependencies |
+|------|-----------|--------------|
+| Mode 1 (Folly + mvfst) | 5.4 GB | 21 packages |
+| Mode 2 (std + picoquic) | 179 MB | 3 packages |
+| Mode 3 (Folly + picoquic) | 4.8 GB | 36 packages |
+
+#### Dependency Trees
+
+##### Mode 1: Folly + mvfst
+
+```
+moxygen
+├── proxygen (HTTP/3, WebTransport)
+│   ├── mvfst (QUIC stack)
+│   │   ├── fizz (TLS 1.3)
+│   │   │   └── folly
+│   │   └── folly
+│   ├── wangle (async framework)
+│   │   └── folly
+│   └── folly
+├── folly
+│   ├── glog (logging)
+│   ├── gflags (command line)
+│   ├── double-conversion
+│   ├── libevent
+│   ├── snappy (compression)
+│   └── zlib
+├── googletest (testing)
+├── libdwarf (debug info)
+├── liboqs (post-quantum crypto)
+└── c-ares (async DNS)
+```
+
+##### Mode 2: std + picoquic
+
+```
+moxygen
+├── picoquic (QUIC stack)
+│   └── picotls (TLS 1.3)
+│       └── OpenSSL
+└── spdlog (logging, header-only)
+```
+
+##### Mode 3: Folly + picoquic
+
+```
+moxygen
+├── picoquic (QUIC stack)
+│   └── picotls (TLS 1.3)
+├── folly
+│   ├── glog
+│   ├── gflags
+│   ├── double-conversion
+│   ├── libevent
+│   ├── snappy
+│   └── zlib
+├── proxygen (HTTP utilities only)
+├── wangle
+├── fizz
+├── googletest
+├── libdwarf
+├── liboqs
+└── c-ares
+```
+
+#### Build Time Comparison
+
+| Mode | Approximate Build Time | Notes |
+|------|----------------------|-------|
+| Mode 1 | ~30 minutes | Full dependency build with getdeps.py |
+| Mode 2 | ~2 minutes | Minimal deps, picoquic fetched via CMake |
+| Mode 3 | ~30 minutes | Full Folly stack + picoquic |
 
 ---
 
@@ -617,8 +703,6 @@ void doWork(ResultCallback<Result, Error> callback);
 
 ---
 
-
-
 ## Session Architecture
 
 ### Coroutine-based Session (Mode 1)
@@ -702,91 +786,6 @@ cmake --build _build_std --parallel
   --allow-system-packages --scratch-path _build_folly_pico \
   --extra-cmake-defines '{"MOXYGEN_QUIC_BACKEND":"picoquic"}'
 ```
-### Build Sizes & Dependencies
-
-#### Binary Sizes
-
-| Binary | Mode 1 (Folly+mvfst) | Mode 2 (std+picoquic) | Mode 3 (Folly+picoquic) |
-|--------|---------------------|----------------------|------------------------|
-| Date Server | 11 MB | 2.5 MB | 3.4 MB |
-| Relay Server | 11 MB | 2.3 MB | 3.0 MB |
-| Text Client | 8.7 MB | 2.3 MB | 3.1 MB |
-
-#### Build Directory Sizes
-
-| Mode | Total Size | Dependencies |
-|------|-----------|--------------|
-| Mode 1 (Folly + mvfst) | 5.4 GB | 21 packages |
-| Mode 2 (std + picoquic) | 179 MB | 3 packages |
-| Mode 3 (Folly + picoquic) | 4.8 GB | 36 packages |
-
-#### Dependency Trees
-
-##### Mode 1: Folly + mvfst
-
-```
-moxygen
-├── proxygen (HTTP/3, WebTransport)
-│   ├── mvfst (QUIC stack)
-│   │   ├── fizz (TLS 1.3)
-│   │   │   └── folly
-│   │   └── folly
-│   ├── wangle (async framework)
-│   │   └── folly
-│   └── folly
-├── folly
-│   ├── glog (logging)
-│   ├── gflags (command line)
-│   ├── double-conversion
-│   ├── libevent
-│   ├── snappy (compression)
-│   └── zlib
-├── googletest (testing)
-├── libdwarf (debug info)
-├── liboqs (post-quantum crypto)
-└── c-ares (async DNS)
-```
-
-##### Mode 2: std + picoquic
-
-```
-moxygen
-├── picoquic (QUIC stack)
-│   └── picotls (TLS 1.3)
-│       └── OpenSSL
-└── spdlog (logging, header-only)
-```
-
-##### Mode 3: Folly + picoquic
-
-```
-moxygen
-├── picoquic (QUIC stack)
-│   └── picotls (TLS 1.3)
-├── folly
-│   ├── glog
-│   ├── gflags
-│   ├── double-conversion
-│   ├── libevent
-│   ├── snappy
-│   └── zlib
-├── proxygen (HTTP utilities only)
-├── wangle
-├── fizz
-├── googletest
-├── libdwarf
-├── liboqs
-└── c-ares
-```
-
-#### Build Time Comparison
-
-| Mode | Approximate Build Time | Notes |
-|------|----------------------|-------|
-| Mode 1 | ~30 minutes | Full dependency build with getdeps.py |
-| Mode 2 | ~2 minutes | Minimal deps, picoquic fetched via CMake |
-| Mode 3 | ~30 minutes | Full Folly stack + picoquic |
-
 ---
 
 ## Cross-Mode Interoperability
