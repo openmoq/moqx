@@ -7,6 +7,7 @@ This document describes the moxygen architecture, the compatibility layer design
 - [Overview](#overview)
 - [Build Modes](#build-modes)
 - [Architecture Layers](#architecture-layers)
+- [Transport Abstraction](#transport-abstraction)
 - [Compatibility Layer](#compatibility-layer)
 - [Transport Abstraction](#transport-abstraction)
 - [Session Architecture](#session-architecture)
@@ -162,7 +163,7 @@ moxygen/compat/
 
 ---
 
-## Transport Abstraction: WebTransportInterface
+## Transport Abstraction
 
 ### Design Goals
 
