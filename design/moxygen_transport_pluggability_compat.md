@@ -1,4 +1,4 @@
-# Moxygen Architecture & Compatibility Layer
+# Moxygen Architecture, Compatibility Layer & Transport Pluggability
 
 This document describes the moxygen architecture, the compatibility layer design, and how the various build modes work together.
 
@@ -18,7 +18,8 @@ This document describes the moxygen architecture, the compatibility layer design
 
 ## Overview
 
- The goal of this work is to support multiple build configurations to accommodate different deployment scenarios:
+ The goal of this work is to support multiple build configurations to accommodate different deployment scenarios and enable easy
+ integration of multiple quic stacks.
 - **Full-featured mode**: Uses Folly library and mvfst QUIC stack for relay development
 - **Minimal dependency mode**: Uses only C++ standard library and picoquic QUIC stack with minimal dependecies for relay development, easy integration into existing server systems and lightweight client-side deployments.
 - **Hybrid mode**: Mix of Folly utilities with picoquic transport
