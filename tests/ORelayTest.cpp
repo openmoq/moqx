@@ -1,7 +1,9 @@
 /*
  * Copyright (c) Meta Platforms, Inc. and affiliates.
- * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree.
+ * Originally from github.com/facebookexperimental/moxygen.
+ * See deps/moxygen/LICENSE for the original license terms.
+ *
+ * Copyright (c) OpenMOQ contributors.
  */
 
 #include <folly/coro/BlockingWait.h>
