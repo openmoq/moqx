@@ -76,6 +76,19 @@ update_meta_repos() {
   done
 }
 
+has_stale_patches() {
+  find "$SCRATCH" -name .getdeps_patched -print -quit 2>/dev/null | grep -q .
+}
+
+warn_stale_patches() {
+  echo ""
+  echo "WARNING: .scratch contains previously patched sources that may conflict."
+  echo "If the build fails with patch errors, reset them with:"
+  echo ""
+  echo "  find ${SCRATCH} -name .getdeps_patched -execdir git checkout -- . \\; -delete"
+  echo ""
+}
+
 save_stamps() {
   mkdir -p "$SCRATCH"
   meta_deps_hash > "$META_HASH_FILE"
@@ -97,11 +110,13 @@ NEED_CONFIGURE=false
 
 if meta_deps_changed; then
   echo "Meta dep pinned revisions changed."
+  has_stale_patches && warn_stale_patches
   update_meta_repos
   "${SCRIPT_DIR}/build-meta-deps.sh"
   NEED_CONFIGURE=true
 elif moxygen_changed; then
   echo "Moxygen source changed."
+  has_stale_patches && warn_stale_patches
   "${SCRIPT_DIR}/build-moxygen.sh"
   NEED_CONFIGURE=true
 fi
