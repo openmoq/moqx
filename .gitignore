@@ -24,3 +24,12 @@ _CPack_Packages/
 
 # OS
 .DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.sln
+*.vcxproj*
+
+# Claude
+.claude/
