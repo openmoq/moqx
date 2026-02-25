@@ -29,7 +29,8 @@ list(APPEND CMAKE_MODULE_PATH
 find_package(moxygen REQUIRED)
 
 add_library(o_rly_core STATIC
-  src/relay.cpp
+  src/ORelay.cpp
+  src/ORelayServer.cpp
 )
 
 target_include_directories(o_rly_core
@@ -38,7 +39,8 @@ target_include_directories(o_rly_core
 )
 
 target_link_libraries(o_rly_core PUBLIC
-  moxygen::moxygen_relay_moq_relay
+  moxygen::moxygen_relay_moq_forwarder
+  moxygen::moxygen_relay_moq_cache
   moxygen::moxygen_moq_relay_session
   moxygen::moxygen_moq_server
 )
@@ -53,9 +55,23 @@ target_link_libraries(o_rly PRIVATE o_rly_core)
 
 if(ORLY_BUILD_TESTS)
   enable_testing()
-  add_executable(o_rly_smoke tests/smoke_test.cpp)
-  target_link_libraries(o_rly_smoke PRIVATE o_rly_core)
-  add_test(NAME o_rly_smoke COMMAND o_rly_smoke)
+  find_package(GTest REQUIRED)
+  add_executable(o_rly_relay_test
+    tests/ORelayTest.cpp
+    ${PROJECT_SOURCE_DIR}/deps/moxygen/moxygen/test/TestUtils.cpp
+  )
+  target_include_directories(o_rly_relay_test PRIVATE
+    ${PROJECT_SOURCE_DIR}/deps/moxygen
+  )
+  target_link_libraries(o_rly_relay_test PRIVATE
+    o_rly_core
+    moxygen::moqtest_utils
+    moxygen::moxygen_events_moq_folly_executor_impl
+    GTest::gtest_main
+    GTest::gmock
+  )
+  include(GoogleTest)
+  gtest_discover_tests(o_rly_relay_test)
 endif()
 
 include(${PROJECT_SOURCE_DIR}/cmake/Lint.cmake)
