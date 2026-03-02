@@ -67,7 +67,7 @@ global              ─── process-wide settings (worker_threads, log_level, 
 │   │   └── transport ─── implementation-specific config (e.g. mvfst, proxygen)
 │   │       └── protocols, tunables
 │   ├── moqt_implementation ─── MOQT library to use (e.g. moxygen, libquicr)
-│   └── tls_credentials     ─── TLS cert/key provider config
+│   └── tls                 ─── TLS cert/key provider config
 ├── service_defaults ─── defaults inherited by all services
 └── services[]       ─── matched by MOQT authority + path (maps to CLIENT_SETUP), defines MOQT scope
     ├── listeners    ─── optional: restrict which listeners serve this service
