@@ -6,9 +6,9 @@
  * Copyright (c) OpenMOQ contributors.
  */
 
-#include <o_rly/ORelay.h>
 #include <moxygen/MoQFilters.h>
 #include <moxygen/MoQTrackProperties.h>
+#include <o_rly/ORelay.h>
 
 using namespace moxygen;
 
@@ -24,28 +24,21 @@ namespace openmoq::o_rly {
 // - subscribe: first forwarding subscriber added (forward=true)
 // - onEmpty: last subscriber left a publish subscription (forward=false)
 // - forwardChanged: forwarding subscriber count changed
-folly::coro::Task<void> ORelay::doSubscribeUpdate(
-    std::shared_ptr<Publisher::SubscriptionHandle> handle,
-    bool forward) {
-  auto updateRes = co_await handle->requestUpdate(
-      {RequestID(0),
-       handle->subscribeOk().requestID,
-       kLocationMin,
-       kLocationMax.group,
-       kDefaultPriority,
-       /*forward=*/forward});
+folly::coro::Task<void>
+ORelay::doSubscribeUpdate(std::shared_ptr<Publisher::SubscriptionHandle> handle, bool forward) {
+  auto updateRes =
+      co_await handle->requestUpdate({RequestID(0), handle->subscribeOk().requestID, kLocationMin,
+                                      kLocationMax.group, kDefaultPriority,
+                                      /*forward=*/forward});
   if (updateRes.hasError()) {
     XLOG(ERR) << "requestUpdate failed: " << updateRes.error().reasonPhrase;
   }
 }
 
-std::shared_ptr<ORelay::NamespaceNode> ORelay::findNamespaceNode(
-    const TrackNamespace& ns,
-    bool createMissingNodes,
-    MatchType matchType,
-    std::vector<std::pair<std::shared_ptr<MoQSession>, bool>>* sessions) {
-  std::shared_ptr<NamespaceNode> nodePtr(
-      std::shared_ptr<void>(), &publishNamespaceRoot_);
+std::shared_ptr<ORelay::NamespaceNode>
+ORelay::findNamespaceNode(const TrackNamespace& ns, bool createMissingNodes, MatchType matchType,
+                          std::vector<std::pair<std::shared_ptr<MoQSession>, bool>>* sessions) {
+  std::shared_ptr<NamespaceNode> nodePtr(std::shared_ptr<void>(), &publishNamespaceRoot_);
   for (auto i = 0ul; i < ns.size(); i++) {
     if (sessions) {
       // Extract session pointers with their forward preferences from the map
@@ -61,9 +54,7 @@ std::shared_ptr<ORelay::NamespaceNode> ORelay::findNamespaceNode(
         nodePtr->children.emplace(name, node);
         // Don't increment yet - only when content is actually added
         nodePtr = std::move(node);
-      } else if (
-          matchType == MatchType::Prefix &&
-          nodePtr.get() != &publishNamespaceRoot_) {
+      } else if (matchType == MatchType::Prefix && nodePtr.get() != &publishNamespaceRoot_) {
         return nodePtr;
       } else {
         XLOG(ERR) << "prefix not found in publishNamespace tree";
@@ -77,31 +68,22 @@ std::shared_ptr<ORelay::NamespaceNode> ORelay::findNamespaceNode(
 }
 
 folly::coro::Task<Subscriber::PublishNamespaceResult>
-ORelay::publishNamespace(
-    PublishNamespace ann,
-    std::shared_ptr<Subscriber::PublishNamespaceCallback> callback) {
+ORelay::publishNamespace(PublishNamespace ann,
+                         std::shared_ptr<Subscriber::PublishNamespaceCallback> callback) {
   XLOG(DBG1) << __func__ << " ns=" << ann.trackNamespace;
   // check auth
   if (!ann.trackNamespace.startsWith(allowedNamespacePrefix_)) {
-    co_return folly::makeUnexpected(
-        PublishNamespaceError{
-            ann.requestID,
-            PublishNamespaceErrorCode::UNINTERESTED,
-            "bad namespace"});
+    co_return folly::makeUnexpected(PublishNamespaceError{
+        ann.requestID, PublishNamespaceErrorCode::UNINTERESTED, "bad namespace"});
   }
   std::vector<std::pair<std::shared_ptr<MoQSession>, bool>> sessions;
-  auto nodePtr = findNamespaceNode(
-      ann.trackNamespace,
-      /*createMissingNodes=*/true,
-      MatchType::Exact,
-      &sessions);
+  auto nodePtr = findNamespaceNode(ann.trackNamespace,
+                                   /*createMissingNodes=*/true, MatchType::Exact, &sessions);
 
   // Log if there is already a session that has publishNamespace-d this track
   if (nodePtr->sourceSession) {
-    XLOG(WARNING) << "PublishNamespace: Existing session ("
-                  << nodePtr->sourceSession.get()
-                  << ") has already published trackNamespace="
-                  << ann.trackNamespace;
+    XLOG(WARNING) << "PublishNamespace: Existing session (" << nodePtr->sourceSession.get()
+                  << ") has already published trackNamespace=" << ann.trackNamespace;
     // Since we don't fully support multiple publishers -- cancel the old
     // publishNamespace and remove ongoing subscriptions to this publisher
     // in that namespace.  Note: it could have publishNamespace-d a more
@@ -141,25 +123,21 @@ ORelay::publishNamespace(
   for (auto& [outSession, forward] : sessions) {
     if (outSession != session) {
       auto exec = outSession->getExecutor();
-      co_withExecutor(exec, publishNamespaceToSession(outSession, ann, nodePtr))
-          .start();
+      co_withExecutor(exec, publishNamespaceToSession(outSession, ann, nodePtr)).start();
     }
   }
   co_return nodePtr;
 }
 
-folly::coro::Task<void> ORelay::publishNamespaceToSession(
-    std::shared_ptr<MoQSession> session,
-    PublishNamespace ann,
-    std::shared_ptr<NamespaceNode> nodePtr) {
+folly::coro::Task<void> ORelay::publishNamespaceToSession(std::shared_ptr<MoQSession> session,
+                                                          PublishNamespace ann,
+                                                          std::shared_ptr<NamespaceNode> nodePtr) {
   auto publishNamespaceHandle = co_await session->publishNamespace(ann);
   if (publishNamespaceHandle.hasError()) {
-    XLOG(ERR) << "PublishNamespace failed err="
-              << publishNamespaceHandle.error().reasonPhrase;
+    XLOG(ERR) << "PublishNamespace failed err=" << publishNamespaceHandle.error().reasonPhrase;
   } else {
     // This can race with unsubscribeNamespace
-    nodePtr->namespacesPublished[session] =
-        std::move(publishNamespaceHandle.value());
+    nodePtr->namespacesPublished[session] = std::move(publishNamespaceHandle.value());
   }
 }
 
@@ -229,9 +207,7 @@ void ORelay::NamespaceNode::tryPruneChild(const std::string& childKey) {
   parentOfNodeToRemove->children.erase(keyToRemove);
 }
 
-void ORelay::publishNamespaceDone(
-    const TrackNamespace& trackNamespace,
-    NamespaceNode*) {
+void ORelay::publishNamespaceDone(const TrackNamespace& trackNamespace, NamespaceNode*) {
   XLOG(DBG1) << __func__ << " ns=" << trackNamespace;
   // Node would be useful if there were back links
   auto nodePtr = findNamespaceNode(trackNamespace);
@@ -286,8 +262,7 @@ void ORelay::onPublishDone(const FullTrackName& ftn) {
         // Prune if node became empty and has a parent
         if (hadLocalContent && !nodePtr->shouldKeep() && nodePtr->parent_ &&
             !ftn.trackNamespace.trackNamespace.empty()) {
-          nodePtr->parent_->tryPruneChild(
-              ftn.trackNamespace.trackNamespace.back());
+          nodePtr->parent_->tryPruneChild(ftn.trackNamespace.trackNamespace.back());
         }
       }
     }
@@ -301,39 +276,31 @@ void ORelay::onPublishDone(const FullTrackName& ftn) {
     // If forwarder has no subscribers, clean up immediately
     // Otherwise onEmpty will be called when last subscriber leaves
     if (it->second.forwarder->empty()) {
-      XLOG(DBG1) << "Publisher terminated with no subscribers, cleaning up "
-                 << ftn;
+      XLOG(DBG1) << "Publisher terminated with no subscribers, cleaning up " << ftn;
       subscriptions_.erase(it);
     }
   }
 }
 
-Subscriber::PublishResult ORelay::publish(
-    PublishRequest pub,
-    std::shared_ptr<Publisher::SubscriptionHandle> handle) {
+Subscriber::PublishResult ORelay::publish(PublishRequest pub,
+                                          std::shared_ptr<Publisher::SubscriptionHandle> handle) {
   XLOG(DBG1) << __func__ << " ftn=" << pub.fullTrackName;
   XCHECK(handle) << "Publish handle cannot be null";
   if (!pub.fullTrackName.trackNamespace.startsWith(allowedNamespacePrefix_)) {
     return folly::makeUnexpected(
-        PublishError{
-            pub.requestID, PublishErrorCode::UNINTERESTED, "bad namespace"});
+        PublishError{pub.requestID, PublishErrorCode::UNINTERESTED, "bad namespace"});
   }
 
   if (pub.fullTrackName.trackNamespace.empty()) {
-    return folly::makeUnexpected(PublishError(
-        {pub.requestID,
-         PublishErrorCode::INTERNAL_ERROR,
-         "namespace required"}));
+    return folly::makeUnexpected(
+        PublishError({pub.requestID, PublishErrorCode::INTERNAL_ERROR, "namespace required"}));
   }
 
   // Find All Nodes that Subscribed to this namespace (including
   // prefix ns)
   std::vector<std::pair<std::shared_ptr<MoQSession>, bool>> sessions = {};
-  auto nodePtr = findNamespaceNode(
-      pub.fullTrackName.trackNamespace,
-      /*createMissingNodes=*/true,
-      MatchType::Exact,
-      &sessions);
+  auto nodePtr = findNamespaceNode(pub.fullTrackName.trackNamespace,
+                                   /*createMissingNodes=*/true, MatchType::Exact, &sessions);
   // Extract session pointers with their forward preferences from the map
   for (const auto& [sessionPtr, forward] : nodePtr->sessions) {
     sessions.emplace_back(sessionPtr, forward);
@@ -349,11 +316,9 @@ Subscriber::PublishResult ORelay::publish(
     XLOG(DBG1) << "New publisher for existing subscription";
     nodePtr->publishes.erase(pub.fullTrackName.trackName);
     it->second.handle->unsubscribe();
-    it->second.forwarder->publishDone(
-        {RequestID(0),
-         PublishDoneStatusCode::SUBSCRIPTION_ENDED,
-         0, // filled in by session
-         "upstream disconnect"});
+    it->second.forwarder->publishDone({RequestID(0), PublishDoneStatusCode::SUBSCRIPTION_ENDED,
+                                       0, // filled in by session
+                                       "upstream disconnect"});
     XLOG(DBG4) << "Erasing subscription to " << it->first;
     subscriptions_.erase(it);
   }
@@ -366,8 +331,7 @@ Subscriber::PublishResult ORelay::publish(
   }
 
   // Create Forwarder for this publish
-  auto forwarder =
-      std::make_shared<MoQForwarder>(pub.fullTrackName, std::nullopt);
+  auto forwarder = std::make_shared<MoQForwarder>(pub.fullTrackName, std::nullopt);
 
   // Set Forwarder Params
   forwarder->setGroupOrder(pub.groupOrder);
@@ -379,10 +343,9 @@ Subscriber::PublishResult ORelay::publish(
     forwarder->setDeliveryTimeout(deliveryTimeout->count());
   }
 
-  auto subRes = subscriptions_.emplace(
-      std::piecewise_construct,
-      std::forward_as_tuple(pub.fullTrackName),
-      std::forward_as_tuple(forwarder, session));
+  auto subRes =
+      subscriptions_.emplace(std::piecewise_construct, std::forward_as_tuple(pub.fullTrackName),
+                             std::forward_as_tuple(forwarder, session));
   auto& rsub = subRes.first->second;
   rsub.promise.setValue(folly::unit);
   rsub.requestID = pub.requestID;
@@ -394,41 +357,32 @@ Subscriber::PublishResult ORelay::publish(
     if (outSession != session) {
       nSubscribers++;
       auto exec = outSession->getExecutor();
-      co_withExecutor(
-          exec, publishToSession(outSession, forwarder, pub, forward))
-          .start();
+      co_withExecutor(exec, publishToSession(outSession, forwarder, pub, forward)).start();
     }
   }
   forwarder->setCallback(shared_from_this());
 
   // Wrap forwarder in filter to intercept publishDone
-  auto filterImpl = std::make_shared<TerminationFilter>(
-      shared_from_this(), pub.fullTrackName, forwarder);
-  std::shared_ptr<TrackConsumer> filter =
-      std::static_pointer_cast<TrackConsumer>(filterImpl);
+  auto filterImpl =
+      std::make_shared<TerminationFilter>(shared_from_this(), pub.fullTrackName, forwarder);
+  std::shared_ptr<TrackConsumer> filter = std::static_pointer_cast<TrackConsumer>(filterImpl);
 
   return PublishConsumerAndReplyTask{
       filter, // Return filter, not forwarder directly
-      folly::coro::makeTask<folly::Expected<PublishOk, PublishError>>(PublishOk{
-          pub.requestID,
-          /*forward=*/(nSubscribers > 0),
-          kDefaultPriority,
-          pub.groupOrder,
-          LocationType::AbsoluteRange,
-          kLocationMin,
-          kLocationMax.group})};
+      folly::coro::makeTask<folly::Expected<PublishOk, PublishError>>(
+          PublishOk{pub.requestID,
+                    /*forward=*/(nSubscribers > 0), kDefaultPriority, pub.groupOrder,
+                    LocationType::AbsoluteRange, kLocationMin, kLocationMax.group})};
 }
 
-folly::coro::Task<void> ORelay::publishToSession(
-    std::shared_ptr<MoQSession> session,
-    std::shared_ptr<MoQForwarder> forwarder,
-    PublishRequest pub,
-    bool forward) {
+folly::coro::Task<void> ORelay::publishToSession(std::shared_ptr<MoQSession> session,
+                                                 std::shared_ptr<MoQForwarder> forwarder,
+                                                 PublishRequest pub, bool forward) {
   pub.forward = forward;
   auto subscriber = forwarder->addSubscriber(session, pub);
   if (!subscriber) {
-    XLOG(ERR) << "Subscribe failed: addSubscriber returned null for "
-              << forwarder->fullTrackName() << " reqID=" << pub.requestID;
+    XLOG(ERR) << "Subscribe failed: addSubscriber returned null for " << forwarder->fullTrackName()
+              << " reqID=" << pub.requestID;
     co_return;
   }
   XLOG(DBG4) << "added subscriber for ftn=" << pub.fullTrackName;
@@ -450,8 +404,7 @@ folly::coro::Task<void> ORelay::publishToSession(
     co_return;
   }
   if (pubResult.value().hasError()) {
-    XLOG(ERR) << "Publish failed err="
-              << pubResult.value().error().reasonPhrase;
+    XLOG(ERR) << "Publish failed err=" << pubResult.value().error().reasonPhrase;
     co_return;
   }
   guard.dismiss();
@@ -461,23 +414,16 @@ folly::coro::Task<void> ORelay::publishToSession(
   if (pubOk.endGroup) {
     end = AbsoluteLocation{*pubOk.endGroup, 0};
   }
-  subscriber->range =
-      toSubscribeRange(pubOk.start, end, pubOk.locType, forwarder->largest());
+  subscriber->range = toSubscribeRange(pubOk.start, end, pubOk.locType, forwarder->largest());
   subscriber->shouldForward = pubOk.forward;
 }
 
-class ORelay::NamespaceSubscription
-    : public Publisher::SubscribeNamespaceHandle {
- public:
-  NamespaceSubscription(
-      std::shared_ptr<ORelay> relay,
-      std::shared_ptr<MoQSession> session,
-      SubscribeNamespaceOk ok,
-      TrackNamespace trackNamespacePrefix)
-      : Publisher::SubscribeNamespaceHandle(std::move(ok)),
-        relay_(std::move(relay)),
-        session_(std::move(session)),
-        trackNamespacePrefix_(std::move(trackNamespacePrefix)) {}
+class ORelay::NamespaceSubscription : public Publisher::SubscribeNamespaceHandle {
+public:
+  NamespaceSubscription(std::shared_ptr<ORelay> relay, std::shared_ptr<MoQSession> session,
+                        SubscribeNamespaceOk ok, TrackNamespace trackNamespacePrefix)
+      : Publisher::SubscribeNamespaceHandle(std::move(ok)), relay_(std::move(relay)),
+        session_(std::move(session)), trackNamespacePrefix_(std::move(trackNamespacePrefix)) {}
 
   void unsubscribeNamespace() override {
     if (relay_) {
@@ -486,16 +432,13 @@ class ORelay::NamespaceSubscription
     }
   }
 
-  folly::coro::Task<RequestUpdateResult> requestUpdate(
-      RequestUpdate reqUpdate) override {
+  folly::coro::Task<RequestUpdateResult> requestUpdate(RequestUpdate reqUpdate) override {
     co_return folly::makeUnexpected(
-        RequestError{
-            reqUpdate.requestID,
-            RequestErrorCode::NOT_SUPPORTED,
-            "REQUEST_UPDATE not supported for relay SUBSCRIBE_NAMESPACE"});
+        RequestError{reqUpdate.requestID, RequestErrorCode::NOT_SUPPORTED,
+                     "REQUEST_UPDATE not supported for relay SUBSCRIBE_NAMESPACE"});
   }
 
- private:
+private:
   std::shared_ptr<ORelay> relay_;
   std::shared_ptr<MoQSession> session_;
   TrackNamespace trackNamespacePrefix_;
@@ -503,17 +446,13 @@ class ORelay::NamespaceSubscription
 
 // Filter TrackConsumer that intercepts publishDone to clean up relay state
 class ORelay::TerminationFilter : public TrackConsumerFilter {
- public:
-  TerminationFilter(
-      std::shared_ptr<ORelay> relay,
-      FullTrackName ftn,
-      std::shared_ptr<TrackConsumer> downstream)
-      : TrackConsumerFilter(std::move(downstream)),
-        relay_(std::move(relay)),
-        ftn_(std::move(ftn)) {}
+public:
+  TerminationFilter(std::shared_ptr<ORelay> relay, FullTrackName ftn,
+                    std::shared_ptr<TrackConsumer> downstream)
+      : TrackConsumerFilter(std::move(downstream)), relay_(std::move(relay)), ftn_(std::move(ftn)) {
+  }
 
-  folly::Expected<folly::Unit, MoQPublishError> publishDone(
-      PublishDone pubDone) override {
+  folly::Expected<folly::Unit, MoQPublishError> publishDone(PublishDone pubDone) override {
     // Notify relay that publisher is done - this will:
     // 1. Remove from nodePtr->publishes
     // 2. Clear subscription.handle
@@ -524,38 +463,31 @@ class ORelay::TerminationFilter : public TrackConsumerFilter {
     return TrackConsumerFilter::publishDone(std::move(pubDone));
   }
 
- private:
+private:
   std::shared_ptr<ORelay> relay_;
   FullTrackName ftn_;
 };
 
-std::shared_ptr<TrackConsumer> ORelay::getSubscribeWriteback(
-    const FullTrackName& ftn,
-    std::shared_ptr<TrackConsumer> consumer) {
-  auto baseConsumer = cache_
-      ? cache_->getSubscribeWriteback(ftn, std::move(consumer))
-      : std::move(consumer);
-  auto filterConsumer = std::make_shared<TerminationFilter>(
-      shared_from_this(), ftn, std::move(baseConsumer));
+std::shared_ptr<TrackConsumer>
+ORelay::getSubscribeWriteback(const FullTrackName& ftn, std::shared_ptr<TrackConsumer> consumer) {
+  auto baseConsumer =
+      cache_ ? cache_->getSubscribeWriteback(ftn, std::move(consumer)) : std::move(consumer);
+  auto filterConsumer =
+      std::make_shared<TerminationFilter>(shared_from_this(), ftn, std::move(baseConsumer));
   return std::static_pointer_cast<TrackConsumer>(filterConsumer);
 }
 
 folly::coro::Task<Publisher::SubscribeNamespaceResult>
-ORelay::subscribeNamespace(
-    SubscribeNamespace subNs,
-    std::shared_ptr<NamespacePublishHandle> namespacePublishHandle) {
+ORelay::subscribeNamespace(SubscribeNamespace subNs,
+                           std::shared_ptr<NamespacePublishHandle> namespacePublishHandle) {
   XLOG(DBG1) << __func__ << " nsp=" << subNs.trackNamespacePrefix;
   // check auth
   if (subNs.trackNamespacePrefix.empty()) {
-    co_return folly::makeUnexpected(
-        SubscribeNamespaceError{
-            subNs.requestID,
-            SubscribeNamespaceErrorCode::NAMESPACE_PREFIX_UNKNOWN,
-            "empty"});
+    co_return folly::makeUnexpected(SubscribeNamespaceError{
+        subNs.requestID, SubscribeNamespaceErrorCode::NAMESPACE_PREFIX_UNKNOWN, "empty"});
   }
   auto session = MoQSession::getRequestSession();
-  auto nodePtr = findNamespaceNode(
-      subNs.trackNamespacePrefix, /*createMissingNodes=*/true);
+  auto nodePtr = findNamespaceNode(subNs.trackNamespacePrefix, /*createMissingNodes=*/true);
 
   // Check if this is the first session subscriber for this node
   bool wasEmpty = !nodePtr->hasLocalSessions();
@@ -575,42 +507,33 @@ ORelay::subscribeNamespace(
     nodes.pop_front();
     if (nodePtr->sourceSession && nodePtr->sourceSession != session) {
       // TODO: Auth/params
-      co_withExecutor(
-          exec,
-          publishNamespaceToSession(
-              session, {subNs.requestID, prefix}, nodePtr))
+      co_withExecutor(exec, publishNamespaceToSession(session, {subNs.requestID, prefix}, nodePtr))
           .start();
     }
-    PublishRequest pub{
-        0,
-        FullTrackName{prefix, ""},
-        TrackAlias(0), // filled in by library
-        GroupOrder::Default,
-        std::nullopt,
-        /*forward=*/false};
+    PublishRequest pub{0,
+                       FullTrackName{prefix, ""},
+                       TrackAlias(0), // filled in by library
+                       GroupOrder::Default,
+                       std::nullopt,
+                       /*forward=*/false};
     for (auto& publishEntry : nodePtr->publishes) {
       auto& publishSession = publishEntry.second;
       pub.fullTrackName.trackName = publishEntry.first;
       auto subscriptionIt = subscriptions_.find(pub.fullTrackName);
       if (subscriptionIt == subscriptions_.end()) {
-        XLOG(ERR) << "Invalid state, no subscription for publish ftn="
-                  << pub.fullTrackName;
+        XLOG(ERR) << "Invalid state, no subscription for publish ftn=" << pub.fullTrackName;
         continue;
       }
       auto& forwarder = subscriptionIt->second.forwarder;
       if (forwarder->empty()) {
         // Use forward value from this namespace subscription
-        co_withExecutor(
-            exec,
-            doSubscribeUpdate(subscriptionIt->second.handle, subNs.forward))
+        co_withExecutor(exec, doSubscribeUpdate(subscriptionIt->second.handle, subNs.forward))
             .start();
       }
       pub.groupOrder = forwarder->groupOrder();
       pub.largest = forwarder->largest();
       if (publishSession != session) {
-        co_withExecutor(
-            exec, publishToSession(session, forwarder, pub, subNs.forward))
-            .start();
+        co_withExecutor(exec, publishToSession(session, forwarder, pub, subNs.forward)).start();
       }
     }
     for (auto& nextNodeIt : nodePtr->children) {
@@ -619,16 +542,13 @@ ORelay::subscribeNamespace(
       nodes.emplace_back(std::forward_as_tuple(nodePrefix, nextNodeIt.second));
     }
   }
-  co_return std::make_shared<NamespaceSubscription>(
-      shared_from_this(),
-      std::move(session),
-      SubscribeNamespaceOk{subNs.requestID},
-      subNs.trackNamespacePrefix);
+  co_return std::make_shared<NamespaceSubscription>(shared_from_this(), std::move(session),
+                                                    SubscribeNamespaceOk{subNs.requestID},
+                                                    subNs.trackNamespacePrefix);
 }
 
-void ORelay::unsubscribeNamespace(
-    const TrackNamespace& trackNamespacePrefix,
-    std::shared_ptr<MoQSession> session) {
+void ORelay::unsubscribeNamespace(const TrackNamespace& trackNamespacePrefix,
+                                  std::shared_ptr<MoQSession> session) {
   XLOG(DBG1) << __func__ << " nsp=" << trackNamespacePrefix;
   auto nodePtr = findNamespaceNode(trackNamespacePrefix);
   if (!nodePtr) {
@@ -646,8 +566,7 @@ void ORelay::unsubscribeNamespace(
     // Prune if node became empty and has a parent
     if (hadLocalContent && !nodePtr->shouldKeep() && nodePtr->parent_ &&
         !trackNamespacePrefix.trackNamespace.empty()) {
-      nodePtr->parent_->tryPruneChild(
-          trackNamespacePrefix.trackNamespace.back());
+      nodePtr->parent_->tryPruneChild(trackNamespacePrefix.trackNamespace.back());
     }
     return;
   }
@@ -655,16 +574,14 @@ void ORelay::unsubscribeNamespace(
   XLOG(DBG1) << "Namespace prefix was not subscribed by this session";
 }
 
-std::shared_ptr<MoQSession> ORelay::findPublishNamespaceSession(
-    const TrackNamespace& ns) {
+std::shared_ptr<MoQSession> ORelay::findPublishNamespaceSession(const TrackNamespace& ns) {
   /*
    * This function is called from subscribe() and fetch().
    * We use MatchType::Prefix here because the relay routes SUBSCRIBE and FETCH
    * to the publisher who published the closest matching broader
    * namespace, not necessarily the exact match.
    */
-  auto nodePtr =
-      findNamespaceNode(ns, /*createMissingNodes=*/false, MatchType::Prefix);
+  auto nodePtr = findNamespaceNode(ns, /*createMissingNodes=*/false, MatchType::Prefix);
   if (!nodePtr) {
     return nullptr;
   }
@@ -673,8 +590,8 @@ std::shared_ptr<MoQSession> ORelay::findPublishNamespaceSession(
 
 ORelay::PublishState ORelay::findPublishState(const FullTrackName& ftn) {
   PublishState state;
-  auto nodePtr = findNamespaceNode(
-      ftn.trackNamespace, /*createMissingNodes=*/false, MatchType::Exact);
+  auto nodePtr =
+      findNamespaceNode(ftn.trackNamespace, /*createMissingNodes=*/false, MatchType::Exact);
 
   if (!nodePtr) {
     // Node doesn't exist - tree was properly pruned
@@ -691,9 +608,8 @@ ORelay::PublishState ORelay::findPublishState(const FullTrackName& ftn) {
   return state;
 }
 
-folly::coro::Task<Publisher::SubscribeResult> ORelay::subscribe(
-    SubscribeRequest subReq,
-    std::shared_ptr<TrackConsumer> consumer) {
+folly::coro::Task<Publisher::SubscribeResult>
+ORelay::subscribe(SubscribeRequest subReq, std::shared_ptr<TrackConsumer> consumer) {
   auto session = MoQSession::getRequestSession();
   auto subscriptionIt = subscriptions_.find(subReq.fullTrackName);
   if (subscriptionIt == subscriptions_.end()) {
@@ -704,31 +620,24 @@ folly::coro::Task<Publisher::SubscribeResult> ORelay::subscribe(
     if (subReq.fullTrackName.trackNamespace.empty()) {
       // message error?
       co_return folly::makeUnexpected(SubscribeError(
-          {subReq.requestID,
-           SubscribeErrorCode::TRACK_NOT_EXIST,
-           "namespace required"}));
+          {subReq.requestID, SubscribeErrorCode::TRACK_NOT_EXIST, "namespace required"}));
     }
-    auto upstreamSession =
-        findPublishNamespaceSession(subReq.fullTrackName.trackNamespace);
+    auto upstreamSession = findPublishNamespaceSession(subReq.fullTrackName.trackNamespace);
     if (!upstreamSession) {
       // no such namespace has been published
       co_return folly::makeUnexpected(SubscribeError(
-          {subReq.requestID,
-           SubscribeErrorCode::TRACK_NOT_EXIST,
-           "no such namespace or track"}));
+          {subReq.requestID, SubscribeErrorCode::TRACK_NOT_EXIST, "no such namespace or track"}));
     }
     subReq.priority = kDefaultUpstreamPriority;
     subReq.groupOrder = GroupOrder::Default;
     // We only subscribe upstream with LargestObject. This is to satisfy other
     // subscribers that join with narrower filters
     subReq.locType = LocationType::LargestObject;
-    auto forwarder =
-        std::make_shared<MoQForwarder>(subReq.fullTrackName, std::nullopt);
+    auto forwarder = std::make_shared<MoQForwarder>(subReq.fullTrackName, std::nullopt);
     forwarder->setCallback(shared_from_this());
-    auto emplaceRes = subscriptions_.emplace(
-        std::piecewise_construct,
-        std::forward_as_tuple(subReq.fullTrackName),
-        std::forward_as_tuple(forwarder, upstreamSession));
+    auto emplaceRes = subscriptions_.emplace(std::piecewise_construct,
+                                             std::forward_as_tuple(subReq.fullTrackName),
+                                             std::forward_as_tuple(forwarder, upstreamSession));
     // The iterator returned from emplace does not survive across coroutine
     // resumption, so both the guard and updating the RelaySubscription below
     // require another lookup in the subscriptions_ map.
@@ -741,16 +650,12 @@ folly::coro::Task<Publisher::SubscribeResult> ORelay::subscribe(
       }
     });
     // Add subscriber first in case objects come before subscribe OK.
-    auto subscriber = forwarder->addSubscriber(
-        std::move(session), subReq, std::move(consumer));
+    auto subscriber = forwarder->addSubscriber(std::move(session), subReq, std::move(consumer));
     if (!subscriber) {
-      XLOG(ERR) << "addSubscriber returned null (draining?) for "
-                << subReq.fullTrackName << " reqID=" << subReq.requestID;
-      co_return folly::makeUnexpected(
-          SubscribeError{
-              subReq.requestID,
-              SubscribeErrorCode::INTERNAL_ERROR,
-              "failed to add subscriber"});
+      XLOG(ERR) << "addSubscriber returned null (draining?) for " << subReq.fullTrackName
+                << " reqID=" << subReq.requestID;
+      co_return folly::makeUnexpected(SubscribeError{
+          subReq.requestID, SubscribeErrorCode::INTERNAL_ERROR, "failed to add subscriber"});
     }
     XLOG(DBG4) << "added subscriber for ftn=" << subReq.fullTrackName;
     // As per the spec, we must set forward = true in the subscribe request
@@ -763,10 +668,8 @@ folly::coro::Task<Publisher::SubscribeResult> ORelay::subscribe(
         subReq, getSubscribeWriteback(subReq.fullTrackName, forwarder));
     if (subRes.hasError()) {
       co_return folly::makeUnexpected(SubscribeError(
-          {subReq.requestID,
-           subRes.error().errorCode,
-           folly::to<std::string>(
-               "upstream subscribe failed: ", subRes.error().reasonPhrase)}));
+          {subReq.requestID, subRes.error().errorCode,
+           folly::to<std::string>("upstream subscribe failed: ", subRes.error().reasonPhrase)}));
     }
     // is it more correct to co_await folly::coro::co_safe_point here?
     g.dismiss();
@@ -779,16 +682,14 @@ folly::coro::Task<Publisher::SubscribeResult> ORelay::subscribe(
     forwarder->setGroupOrder(pubGroupOrder);
 
     // Store upstream delivery timeout in forwarder
-    auto deliveryTimeout =
-        getPublisherDeliveryTimeout(subRes.value()->subscribeOk());
+    auto deliveryTimeout = getPublisherDeliveryTimeout(subRes.value()->subscribeOk());
 
     // Add delivery timeout to downstream subscriber explicitly as this is the
     // first subscriber. Forwarder can add it to subsequent subscribers
     if (deliveryTimeout && deliveryTimeout->count() > 0) {
       forwarder->setDeliveryTimeout(deliveryTimeout->count());
-      subscriber->setParam(
-          {folly::to_underlying(TrackRequestParamKey::DELIVERY_TIMEOUT),
-           static_cast<uint64_t>(deliveryTimeout->count())});
+      subscriber->setParam({folly::to_underlying(TrackRequestParamKey::DELIVERY_TIMEOUT),
+                            static_cast<uint64_t>(deliveryTimeout->count())});
     }
 
     subscriber->setPublisherGroupOrder(pubGroupOrder);
@@ -798,8 +699,7 @@ folly::coro::Task<Publisher::SubscribeResult> ORelay::subscribe(
     // and then gets flushed
     if (it == subscriptions_.end()) {
       XLOG(ERR) << "Subscription is GONE, returning exception";
-      co_yield folly::coro::co_error(
-          std::runtime_error("subscription is gone"));
+      co_yield folly::coro::co_error(std::runtime_error("subscription is gone"));
     }
     auto& rsub = it->second;
     rsub.requestID = subRes.value()->subscribeOk().requestID;
@@ -815,51 +715,38 @@ folly::coro::Task<Publisher::SubscribeResult> ORelay::subscribe(
     auto& forwarder = subscriptionIt->second.forwarder;
     if (forwarder->largest() && subReq.locType == LocationType::AbsoluteRange &&
         subReq.endGroup < forwarder->largest()->group) {
-      co_return folly::makeUnexpected(
-          SubscribeError{
-              subReq.requestID,
-              SubscribeErrorCode::INVALID_RANGE,
-              "Range in the past, use FETCH"});
+      co_return folly::makeUnexpected(SubscribeError{
+          subReq.requestID, SubscribeErrorCode::INVALID_RANGE, "Range in the past, use FETCH"});
       // start may be in the past, it will get adjusted forward to largest
     }
-    bool forwarding =
-        subscriptionIt->second.forwarder->numForwardingSubscribers() > 0;
-    auto subscriber = subscriptionIt->second.forwarder->addSubscriber(
-        std::move(session), subReq, std::move(consumer));
+    bool forwarding = subscriptionIt->second.forwarder->numForwardingSubscribers() > 0;
+    auto subscriber = subscriptionIt->second.forwarder->addSubscriber(std::move(session), subReq,
+                                                                      std::move(consumer));
     if (!subscriber) {
-      XLOG(ERR) << "addSubscriber returned null (draining?) for "
-                << subReq.fullTrackName << " reqID=" << subReq.requestID;
-      co_return folly::makeUnexpected(
-          SubscribeError{
-              subReq.requestID,
-              SubscribeErrorCode::INTERNAL_ERROR,
-              "failed to add subscriber"});
+      XLOG(ERR) << "addSubscriber returned null (draining?) for " << subReq.fullTrackName
+                << " reqID=" << subReq.requestID;
+      co_return folly::makeUnexpected(SubscribeError{
+          subReq.requestID, SubscribeErrorCode::INTERNAL_ERROR, "failed to add subscriber"});
     }
     XLOG(DBG4) << "added subscriber for ftn=" << subReq.fullTrackName;
-    if (!forwarding &&
-        subscriptionIt->second.forwarder->numForwardingSubscribers() > 0) {
+    if (!forwarding && subscriptionIt->second.forwarder->numForwardingSubscribers() > 0) {
       auto exec = subscriptionIt->second.upstream->getExecutor();
-      co_withExecutor(
-          exec,
-          doSubscribeUpdate(subscriptionIt->second.handle, /*forward=*/true))
+      co_withExecutor(exec, doSubscribeUpdate(subscriptionIt->second.handle, /*forward=*/true))
           .start();
     }
     co_return subscriber;
   }
 }
 
-folly::coro::Task<Publisher::FetchResult> ORelay::fetch(
-    Fetch fetch,
-    std::shared_ptr<FetchConsumer> consumer) {
+folly::coro::Task<Publisher::FetchResult> ORelay::fetch(Fetch fetch,
+                                                        std::shared_ptr<FetchConsumer> consumer) {
   auto session = MoQSession::getRequestSession();
 
   // check auth
   // get trackNamespace
   if (fetch.fullTrackName.trackNamespace.empty()) {
-    co_return folly::makeUnexpected(FetchError(
-        {fetch.requestID,
-         FetchErrorCode::TRACK_NOT_EXIST,
-         "namespace required"}));
+    co_return folly::makeUnexpected(
+        FetchError({fetch.requestID, FetchErrorCode::TRACK_NOT_EXIST, "namespace required"}));
   }
 
   auto [standalone, joining] = fetchType(fetch);
@@ -869,12 +756,9 @@ folly::coro::Task<Publisher::FetchResult> ORelay::fetch(
       XLOG(ERR) << "No subscription for joining fetch";
       // message error
       co_return folly::makeUnexpected(FetchError(
-          {fetch.requestID,
-           FetchErrorCode::TRACK_NOT_EXIST,
-           "No subscription for joining fetch"}));
+          {fetch.requestID, FetchErrorCode::TRACK_NOT_EXIST, "No subscription for joining fetch"}));
     } else if (subscriptionIt->second.promise.isFulfilled()) {
-      auto res = subscriptionIt->second.forwarder->resolveJoiningFetch(
-          session, *joining);
+      auto res = subscriptionIt->second.forwarder->resolveJoiningFetch(session, *joining);
       if (res.hasError()) {
         co_return folly::makeUnexpected(res.error());
       }
@@ -886,8 +770,7 @@ folly::coro::Task<Publisher::FetchResult> ORelay::fetch(
     }
   }
 
-  auto upstreamSession =
-      findPublishNamespaceSession(fetch.fullTrackName.trackNamespace);
+  auto upstreamSession = findPublishNamespaceSession(fetch.fullTrackName.trackNamespace);
   if (!upstreamSession) {
     // Attempt to find matching upstream subscription (from publish)
     auto subscriptionIt = subscriptions_.find(fetch.fullTrackName);
@@ -895,15 +778,13 @@ folly::coro::Task<Publisher::FetchResult> ORelay::fetch(
       upstreamSession = subscriptionIt->second.upstream;
     } else {
       // no such namespace has been published
-      co_return folly::makeUnexpected(FetchError(
-          {fetch.requestID,
-           FetchErrorCode::TRACK_NOT_EXIST,
-           "no such namespace"}));
+      co_return folly::makeUnexpected(
+          FetchError({fetch.requestID, FetchErrorCode::TRACK_NOT_EXIST, "no such namespace"}));
     }
   }
   if (session.get() == upstreamSession.get()) {
-    co_return folly::makeUnexpected(FetchError(
-        {fetch.requestID, FetchErrorCode::INTERNAL_ERROR, "self fetch"}));
+    co_return folly::makeUnexpected(
+        FetchError({fetch.requestID, FetchErrorCode::INTERNAL_ERROR, "self fetch"}));
   }
   fetch.priority = kDefaultUpstreamPriority;
   if (!cache_ || joining) {
@@ -911,14 +792,12 @@ folly::coro::Task<Publisher::FetchResult> ORelay::fetch(
     // which objects are being requested.  However, once we have that resolved,
     // we SHOULD be able to serve from cache.
     if (standalone) {
-      XLOG(DBG1) << "Upstream fetch {" << standalone->start.group << ","
-                 << standalone->start.object << "}.." << standalone->end.group
-                 << "," << standalone->end.object << "}";
+      XLOG(DBG1) << "Upstream fetch {" << standalone->start.group << "," << standalone->start.object
+                 << "}.." << standalone->end.group << "," << standalone->end.object << "}";
     }
     co_return co_await upstreamSession->fetch(fetch, std::move(consumer));
   }
-  co_return co_await cache_->fetch(
-      fetch, std::move(consumer), std::move(upstreamSession));
+  co_return co_await cache_->fetch(fetch, std::move(consumer), std::move(upstreamSession));
 }
 
 void ORelay::onEmpty(MoQForwarder* forwarder) {
@@ -941,9 +820,7 @@ void ORelay::onEmpty(MoQForwarder* forwarder) {
     // if it's publish, don't unsubscribe, just subscribeUpdate forward=false
     XLOG(DBG1) << "Updating upstream subscription forward=false";
     auto exec = subscription.upstream->getExecutor();
-    co_withExecutor(
-        exec, doSubscribeUpdate(subscription.handle, /*forward=*/false))
-        .start();
+    co_withExecutor(exec, doSubscribeUpdate(subscription.handle, /*forward=*/false)).start();
   } else {
     subscription.handle->unsubscribe();
     XLOG(DBG4) << "Erasing subscription to " << subscriptionIt->first;
@@ -965,11 +842,8 @@ void ORelay::forwardChanged(MoQForwarder* forwarder) {
              << " numForwardingSubs=" << forwarder->numForwardingSubscribers();
 
   auto exec = subscription.upstream->getExecutor();
-  co_withExecutor(
-      exec,
-      doSubscribeUpdate(
-          subscription.handle,
-          /*forward=*/forwarder->numForwardingSubscribers() > 0))
+  co_withExecutor(exec, doSubscribeUpdate(subscription.handle,
+                                          /*forward=*/forwarder->numForwardingSubscribers() > 0))
       .start();
 }
 
