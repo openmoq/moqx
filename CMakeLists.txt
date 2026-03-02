@@ -28,6 +28,33 @@ list(APPEND CMAKE_MODULE_PATH
 
 find_package(moxygen REQUIRED)
 
+# --- yaml-cpp (FetchContent) ---
+
+include(FetchContent)
+
+set(YAML_CPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(YAML_CPP_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+set(YAML_CPP_FORMAT_SOURCE OFF CACHE BOOL "" FORCE)
+
+FetchContent_Declare(yaml-cpp
+  GIT_REPOSITORY https://github.com/jbeder/yaml-cpp.git
+  GIT_TAG 0.8.0
+)
+FetchContent_MakeAvailable(yaml-cpp)
+
+# --- reflect-cpp (FetchContent, needs yaml-cpp available) ---
+
+set(REFLECTCPP_YAML ON CACHE BOOL "" FORCE)
+set(REFLECTCPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+
+FetchContent_Declare(reflectcpp
+  GIT_REPOSITORY https://github.com/getml/reflect-cpp.git
+  GIT_TAG v0.18.0
+)
+FetchContent_MakeAvailable(reflectcpp)
+
+# --- Core library ---
+
 add_library(o_rly_core STATIC
   src/ORelay.cpp
   src/ORelayServer.cpp
@@ -47,15 +74,38 @@ target_link_libraries(o_rly_core PUBLIC
 
 target_compile_options(o_rly_core PRIVATE -Wall -Wextra -Wpedantic)
 
+# --- Config library ---
+
+add_library(o_rly_config STATIC
+  src/config/loader.cpp
+)
+
+target_include_directories(o_rly_config
+  PUBLIC
+    ${PROJECT_SOURCE_DIR}/include
+)
+
+target_link_libraries(o_rly_config PUBLIC
+  reflectcpp
+  yaml-cpp
+)
+
+target_compile_options(o_rly_config PRIVATE -Wall -Wextra -Wpedantic)
+
+# --- Main executable ---
+
 add_executable(o_rly
   src/main.cpp
 )
 
-target_link_libraries(o_rly PRIVATE o_rly_core)
+target_link_libraries(o_rly PRIVATE o_rly_core o_rly_config)
+
+# --- Tests ---
 
 if(ORLY_BUILD_TESTS)
   enable_testing()
   find_package(GTest REQUIRED)
+
   add_executable(o_rly_relay_test
     tests/ORelayTest.cpp
     ${PROJECT_SOURCE_DIR}/deps/moxygen/moxygen/test/TestUtils.cpp
@@ -72,8 +122,20 @@ if(ORLY_BUILD_TESTS)
   )
   include(GoogleTest)
   gtest_discover_tests(o_rly_relay_test)
+
+  add_executable(o_rly_config_test
+    tests/config/loader_test.cpp
+  )
+  target_link_libraries(o_rly_config_test PRIVATE
+    o_rly_config
+    GTest::gtest_main
+  )
+  target_compile_definitions(o_rly_config_test PRIVATE
+    CONFIG_EXAMPLE_PATH="${PROJECT_SOURCE_DIR}/config.example.yaml"
+  )
+  gtest_discover_tests(o_rly_config_test)
 endif()
 
 include(${PROJECT_SOURCE_DIR}/cmake/Lint.cmake)
 
-install(TARGETS o_rly o_rly_core)
+install(TARGETS o_rly o_rly_core o_rly_config)
