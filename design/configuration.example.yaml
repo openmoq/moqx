@@ -20,7 +20,7 @@ listeners:
             initial_congestion_control: bbr
             initial_rtt_ms: 100
 
-    tls_credentials:
+    tls:
       # TODO: Tls credential providers
       # - Do we support more then one provider at a time?
 
@@ -31,7 +31,7 @@ listeners:
         port: 443
       transport:
         proxygen: # I don't know who will implement webtransport/h2
-    tls_credantials: ~ #TODO, see above
+    tls: ~ #TODO, see above
 
 service_defaults:
   slow_subscriber_queue_max_bytes: 1000
