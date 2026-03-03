@@ -21,14 +21,13 @@ class ORelay : public moxygen::Publisher,
                public moxygen::Subscriber,
                public std::enable_shared_from_this<ORelay>,
                public moxygen::MoQForwarder::Callback {
- public:
+public:
   explicit ORelay(
       size_t maxCachedTracks = moxygen::kDefaultMaxCachedTracks,
-      size_t maxCachedGroupsPerTrack =
-          moxygen::kDefaultMaxCachedGroupsPerTrack) {
+      size_t maxCachedGroupsPerTrack = moxygen::kDefaultMaxCachedGroupsPerTrack
+  ) {
     if (maxCachedTracks > 0) {
-      cache_ = std::make_unique<moxygen::MoQCache>(
-          maxCachedTracks, maxCachedGroupsPerTrack);
+      cache_ = std::make_unique<moxygen::MoQCache>(maxCachedTracks, maxCachedGroupsPerTrack);
     }
   }
 
@@ -38,33 +37,32 @@ class ORelay : public moxygen::Publisher,
 
   folly::coro::Task<SubscribeResult> subscribe(
       moxygen::SubscribeRequest subReq,
-      std::shared_ptr<moxygen::TrackConsumer> consumer) override;
+      std::shared_ptr<moxygen::TrackConsumer> consumer
+  ) override;
 
-  folly::coro::Task<FetchResult> fetch(
-      moxygen::Fetch fetch,
-      std::shared_ptr<moxygen::FetchConsumer> consumer) override;
+  folly::coro::Task<FetchResult>
+  fetch(moxygen::Fetch fetch, std::shared_ptr<moxygen::FetchConsumer> consumer) override;
 
   folly::coro::Task<SubscribeNamespaceResult> subscribeNamespace(
       moxygen::SubscribeNamespace subAnn,
-      std::shared_ptr<NamespacePublishHandle> namespacePublishHandle)
-      override;
+      std::shared_ptr<NamespacePublishHandle> namespacePublishHandle
+  ) override;
 
   folly::coro::Task<moxygen::Subscriber::PublishNamespaceResult>
-  publishNamespace(
-      moxygen::PublishNamespace ann,
-      std::shared_ptr<moxygen::Subscriber::PublishNamespaceCallback>) override;
+  publishNamespace(moxygen::PublishNamespace ann, std::shared_ptr<moxygen::Subscriber::PublishNamespaceCallback>)
+      override;
 
   PublishResult publish(
       moxygen::PublishRequest pubReq,
-      std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle =
-          nullptr) override;
+      std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle = nullptr
+  ) override;
 
   void goaway(moxygen::Goaway goaway) override {
     XLOG(INFO) << "Processing goaway uri=" << goaway.newSessionUri;
   }
 
-  std::shared_ptr<moxygen::MoQSession> findPublishNamespaceSession(
-      const moxygen::TrackNamespace& ns);
+  std::shared_ptr<moxygen::MoQSession> findPublishNamespaceSession(const moxygen::TrackNamespace& ns
+  );
 
   // Wrapper for compatibility - returns single session as vector
   std::vector<std::shared_ptr<moxygen::MoQSession>>
@@ -83,44 +81,40 @@ class ORelay : public moxygen::Publisher,
   };
   PublishState findPublishState(const moxygen::FullTrackName& ftn);
 
- private:
+private:
   class NamespaceSubscription;
   class TerminationFilter;
 
   void unsubscribeNamespace(
       const moxygen::TrackNamespace& prefix,
-      std::shared_ptr<moxygen::MoQSession> session);
+      std::shared_ptr<moxygen::MoQSession> session
+  );
 
   void onPublishDone(const moxygen::FullTrackName& ftn);
 
-  struct NamespaceNode
-      : public moxygen::Subscriber::PublishNamespaceHandle {
+  struct NamespaceNode : public moxygen::Subscriber::PublishNamespaceHandle {
     explicit NamespaceNode(ORelay& relay, NamespaceNode* parent = nullptr)
         : relay_(relay), parent_(parent) {}
 
-    void publishNamespaceDone() override {
-      relay_.publishNamespaceDone(trackNamespace_, this);
-    }
+    void publishNamespaceDone() override { relay_.publishNamespaceDone(trackNamespace_, this); }
 
-    folly::coro::Task<RequestUpdateResult> requestUpdate(
-        moxygen::RequestUpdate reqUpdate) override {
-      co_return folly::makeUnexpected(
-          moxygen::RequestError{
-              reqUpdate.requestID,
-              moxygen::RequestErrorCode::NOT_SUPPORTED,
-              "REQUEST_UPDATE not supported for relay PUBLISH_NAMESPACE"});
+    folly::coro::Task<RequestUpdateResult> requestUpdate(moxygen::RequestUpdate reqUpdate
+    ) override {
+      co_return folly::makeUnexpected(moxygen::RequestError{
+          reqUpdate.requestID,
+          moxygen::RequestErrorCode::NOT_SUPPORTED,
+          "REQUEST_UPDATE not supported for relay PUBLISH_NAMESPACE"
+      });
     }
 
     // Helper to check if THIS node (excluding children) has content
     bool hasLocalSessions() const {
-      return !publishes.empty() || !sessions.empty() ||
-          !namespacesPublished.empty() || sourceSession != nullptr;
+      return !publishes.empty() || !sessions.empty() || !namespacesPublished.empty() ||
+             sourceSession != nullptr;
     }
 
     // Check if node should be kept (has content OR non-empty children)
-    bool shouldKeep() const {
-      return hasLocalSessions() || activeChildCount_ > 0;
-    }
+    bool shouldKeep() const { return hasLocalSessions() || activeChildCount_ > 0; }
 
     using moxygen::Subscriber::PublishNamespaceHandle::setPublishNamespaceOk;
 
@@ -128,15 +122,12 @@ class ORelay : public moxygen::Publisher,
     folly::F14FastMap<std::string, std::shared_ptr<NamespaceNode>> children;
 
     // Maps a track name to a the session performing the PUBLISH
-    folly::F14FastMap<std::string, std::shared_ptr<moxygen::MoQSession>>
-        publishes;
+    folly::F14FastMap<std::string, std::shared_ptr<moxygen::MoQSession>> publishes;
     // Sessions with a SUBSCRIBE_NAMESPACE here, with their forward preference
     // Key: session, Value: forward (true = forward data, false = don't forward)
     folly::F14FastMap<std::shared_ptr<moxygen::MoQSession>, bool> sessions;
     // All active PUBLISH_NAMESPACEs for this node (includes prefix sessions)
-    folly::F14FastMap<
-        std::shared_ptr<moxygen::MoQSession>,
-        std::shared_ptr<PublishNamespaceHandle>>
+    folly::F14FastMap<std::shared_ptr<moxygen::MoQSession>, std::shared_ptr<PublishNamespaceHandle>>
         namespacesPublished;
     // The session that PUBLISH_NAMESPACEd this node
     std::shared_ptr<moxygen::MoQSession> sourceSession;
@@ -161,13 +152,14 @@ class ORelay : public moxygen::Publisher,
       const moxygen::TrackNamespace& ns,
       bool createMissingNodes = false,
       MatchType matchType = MatchType::Exact,
-      std::vector<std::pair<std::shared_ptr<moxygen::MoQSession>, bool>>*
-          sessions = nullptr);
+      std::vector<std::pair<std::shared_ptr<moxygen::MoQSession>, bool>>* sessions = nullptr
+  );
 
   struct RelaySubscription {
     RelaySubscription(
         std::shared_ptr<moxygen::MoQForwarder> f,
-        std::shared_ptr<moxygen::MoQSession> u)
+        std::shared_ptr<moxygen::MoQSession> u
+    )
         : forwarder(std::move(f)), upstream(std::move(u)) {}
 
     std::shared_ptr<moxygen::MoQForwarder> forwarder;
@@ -184,32 +176,29 @@ class ORelay : public moxygen::Publisher,
   folly::coro::Task<void> publishNamespaceToSession(
       std::shared_ptr<moxygen::MoQSession> session,
       moxygen::PublishNamespace ann,
-      std::shared_ptr<NamespaceNode> nodePtr);
+      std::shared_ptr<NamespaceNode> nodePtr
+  );
 
   folly::coro::Task<void> publishToSession(
       std::shared_ptr<moxygen::MoQSession> session,
       std::shared_ptr<moxygen::MoQForwarder> forwarder,
       moxygen::PublishRequest pub,
-      bool forward);
+      bool forward
+  );
 
-  folly::coro::Task<void> doSubscribeUpdate(
-      std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle,
-      bool forward);
+  folly::coro::Task<void>
+  doSubscribeUpdate(std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle, bool forward);
 
-  void publishNamespaceDone(
-      const moxygen::TrackNamespace& trackNamespace,
-      NamespaceNode* node);
+  void publishNamespaceDone(const moxygen::TrackNamespace& trackNamespace, NamespaceNode* node);
 
   moxygen::TrackNamespace allowedNamespacePrefix_;
-  folly::F14FastMap<
-      moxygen::FullTrackName,
-      RelaySubscription,
-      moxygen::FullTrackName::hash>
+  folly::F14FastMap<moxygen::FullTrackName, RelaySubscription, moxygen::FullTrackName::hash>
       subscriptions_;
 
   std::shared_ptr<moxygen::TrackConsumer> getSubscribeWriteback(
       const moxygen::FullTrackName& ftn,
-      std::shared_ptr<moxygen::TrackConsumer> consumer);
+      std::shared_ptr<moxygen::TrackConsumer> consumer
+  );
   std::unique_ptr<moxygen::MoQCache> cache_;
 };
 
