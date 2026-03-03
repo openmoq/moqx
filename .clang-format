@@ -1,7 +1,13 @@
 BasedOnStyle: LLVM
 IndentWidth: 2
 ColumnLimit: 100
+
+AlignAfterOpenBracket: BlockIndent
+AllowAllArgumentsOnNextLine: false
+AllowAllParametersOfDeclarationOnNextLine: false
 AllowShortFunctionsOnASingleLine: Inline
+BinPackArguments: false
+BinPackParameters: false
 DerivePointerAlignment: false
 PointerAlignment: Left
 SortIncludes: true
