@@ -12,10 +12,10 @@
 #include <folly/portability/GTest.h>
 #include <moxygen/events/MoQFollyExecutorImpl.h>
 #include <moxygen/relay/MoQForwarder.h>
-#include <o_rly/ORelay.h>
 #include <moxygen/test/MockMoQSession.h>
 #include <moxygen/test/Mocks.h>
 #include <moxygen/test/TestUtils.h>
+#include <o_rly/ORelay.h>
 
 using namespace testing;
 using namespace moxygen;
@@ -28,15 +28,12 @@ const TrackNamespace kAllowedPrefix{{"test"}};
 const FullTrackName kTestTrackName{kTestNamespace, "track1"};
 
 // TestMoQExecutor that can be driven for tests
-class TestMoQExecutor : public MoQFollyExecutorImpl,
-                        public folly::DrivableExecutor {
- public:
+class TestMoQExecutor : public MoQFollyExecutorImpl, public folly::DrivableExecutor {
+public:
   explicit TestMoQExecutor() : MoQFollyExecutorImpl(&evb_) {}
   ~TestMoQExecutor() override = default;
 
-  void add(folly::Func func) override {
-    MoQFollyExecutorImpl::add(std::move(func));
-  }
+  void add(folly::Func func) override { MoQFollyExecutorImpl::add(std::move(func)); }
 
   // Implements DrivableExec::drive
   void drive() override {
@@ -47,7 +44,7 @@ class TestMoQExecutor : public MoQFollyExecutorImpl,
     }
   }
 
- private:
+private:
   folly::EventBase evb_;
 };
 
@@ -56,16 +53,14 @@ class TestMoQExecutor : public MoQFollyExecutorImpl,
 // Full integration tests with real sessions will be added when implementing
 // multi-publisher support.
 class ORelayTest : public ::testing::Test {
- protected:
+protected:
   void SetUp() override {
     exec_ = std::make_shared<TestMoQExecutor>();
     relay_ = std::make_shared<ORelay>(/*enableCache=*/false);
     relay_->setAllowedNamespacePrefix(kAllowedPrefix);
   }
 
-  void TearDown() override {
-    relay_.reset();
-  }
+  void TearDown() override { relay_.reset(); }
 
   // Helper to create a mock session
   std::shared_ptr<MockMoQSession> createMockSession() {
@@ -77,32 +72,26 @@ class ORelayTest : public ::testing::Test {
   }
 
   // Helper to create a mock subscription handle for publish calls
-  std::shared_ptr<Publisher::SubscriptionHandle>
-  createMockSubscriptionHandle() {
+  std::shared_ptr<Publisher::SubscriptionHandle> createMockSubscriptionHandle() {
     SubscribeOk ok;
     ok.requestID = RequestID(0);
     ok.trackAlias = TrackAlias(0);
     ok.expires = std::chrono::milliseconds(0);
     ok.groupOrder = GroupOrder::Default;
-    auto handle =
-        std::make_shared<NiceMock<MockSubscriptionHandle>>(std::move(ok));
+    auto handle = std::make_shared<NiceMock<MockSubscriptionHandle>>(std::move(ok));
     return handle;
   }
 
   // Helper to remove a session from the relay and clean up mock state
-  void removeSession(std::shared_ptr<MoQSession> sess) {
-    cleanupMockSession(std::move(sess));
-  }
+  void removeSession(std::shared_ptr<MoQSession> sess) { cleanupMockSession(std::move(sess)); }
 
   // Helper to create a mock consumer with default actions
   std::shared_ptr<MockTrackConsumer> createMockConsumer() {
     auto consumer = std::make_shared<NiceMock<MockTrackConsumer>>();
     ON_CALL(*consumer, setTrackAlias(_))
-        .WillByDefault(
-            Return(folly::makeExpected<MoQPublishError>(folly::unit)));
+        .WillByDefault(Return(folly::makeExpected<MoQPublishError>(folly::unit)));
     ON_CALL(*consumer, publishDone(_))
-        .WillByDefault(
-            Return(folly::makeExpected<MoQPublishError>(folly::unit)));
+        .WillByDefault(Return(folly::makeExpected<MoQPublishError>(folly::unit)));
     return consumer;
   }
 
@@ -113,7 +102,8 @@ class ORelayTest : public ::testing::Test {
       std::shared_ptr<TrackConsumer> consumer,
       RequestID requestID = RequestID(0),
       bool addToState = true,
-      folly::Optional<SubscribeErrorCode> expectedError = folly::none) {
+      folly::Optional<SubscribeErrorCode> expectedError = folly::none
+  ) {
     SubscribeRequest sub;
     sub.fullTrackName = trackName;
     sub.requestID = requestID;
@@ -144,13 +134,12 @@ class ORelayTest : public ::testing::Test {
 
   // Helper to set up RequestContext for a session (simulates incoming request)
   template <typename Func>
-  auto withSessionContext(std::shared_ptr<MoQSession> session, Func&& func)
-      -> decltype(func()) {
+  auto withSessionContext(std::shared_ptr<MoQSession> session, Func&& func) -> decltype(func()) {
     folly::RequestContextScopeGuard guard;
     folly::RequestContext::get()->setContextData(
         sessionRequestToken(),
-        std::make_unique<MoQSession::MoQSessionRequestData>(
-            std::move(session)));
+        std::make_unique<MoQSession::MoQSessionRequestData>(std::move(session))
+    );
     return func();
   }
 
@@ -167,12 +156,9 @@ class ORelayTest : public ::testing::Test {
     std::vector<std::shared_ptr<TrackConsumer>> publishConsumers;
     // Handles for results from publishNamespace, subscribeNamespace,
     // and subscribe
-    std::vector<std::shared_ptr<Subscriber::PublishNamespaceHandle>>
-        publishNamespaceHandles;
-    std::vector<std::shared_ptr<Publisher::SubscribeNamespaceHandle>>
-        subscribeNamespaceHandles;
-    std::vector<std::shared_ptr<Publisher::SubscriptionHandle>>
-        subscribeHandles;
+    std::vector<std::shared_ptr<Subscriber::PublishNamespaceHandle>> publishNamespaceHandles;
+    std::vector<std::shared_ptr<Publisher::SubscribeNamespaceHandle>> subscribeNamespaceHandles;
+    std::vector<std::shared_ptr<Publisher::SubscriptionHandle>> subscribeHandles;
 
     void cleanup() {
       // Simulate MoQSession::cleanup() for publish tracks
@@ -180,10 +166,8 @@ class ORelayTest : public ::testing::Test {
       // FilterConsumer callbacks that properly clean up relay state
       for (auto& consumer : publishConsumers) {
         consumer->publishDone(
-            {RequestID(0),
-             PublishDoneStatusCode::SESSION_CLOSED,
-             0,
-             "mock session cleanup"});
+            {RequestID(0), PublishDoneStatusCode::SESSION_CLOSED, 0, "mock session cleanup"}
+        );
       }
       publishConsumers.clear();
 
@@ -215,8 +199,7 @@ class ORelayTest : public ::testing::Test {
 
   std::map<MoQSession*, std::shared_ptr<MockSessionState>> mockSessions_;
 
-  std::shared_ptr<MockSessionState> getOrCreateMockState(
-      std::shared_ptr<MoQSession> session) {
+  std::shared_ptr<MockSessionState> getOrCreateMockState(std::shared_ptr<MoQSession> session) {
     auto it = mockSessions_.find(session.get());
     if (it == mockSessions_.end()) {
       auto state = std::make_shared<MockSessionState>();
@@ -243,7 +226,8 @@ class ORelayTest : public ::testing::Test {
   std::shared_ptr<Subscriber::PublishNamespaceHandle> doPublishNamespace(
       std::shared_ptr<MoQSession> session,
       const TrackNamespace& ns,
-      bool addToState = true) {
+      bool addToState = true
+  ) {
     PublishNamespace ann;
     ann.trackNamespace = ns;
     return withSessionContext(session, [&]() {
@@ -252,8 +236,7 @@ class ORelayTest : public ::testing::Test {
       EXPECT_TRUE(res.hasValue());
       if (res.hasValue()) {
         if (addToState) {
-          getOrCreateMockState(session)->publishNamespaceHandles.push_back(
-              *res);
+          getOrCreateMockState(session)->publishNamespaceHandles.push_back(*res);
         }
         return *res;
       }
@@ -268,17 +251,16 @@ class ORelayTest : public ::testing::Test {
   std::shared_ptr<TrackConsumer> doPublish(
       std::shared_ptr<MoQSession> session,
       const FullTrackName& trackName,
-      bool addToState = true) {
+      bool addToState = true
+  ) {
     PublishRequest pub;
     pub.fullTrackName = trackName;
     return withSessionContext(session, [&]() {
-      auto res =
-          relay_->publish(std::move(pub), createMockSubscriptionHandle());
+      auto res = relay_->publish(std::move(pub), createMockSubscriptionHandle());
       EXPECT_TRUE(res.hasValue());
       if (res.hasValue()) {
         if (addToState) {
-          getOrCreateMockState(session)->publishConsumers.push_back(
-              res->consumer);
+          getOrCreateMockState(session)->publishConsumers.push_back(res->consumer);
         }
         return res->consumer;
       }
@@ -293,7 +275,8 @@ class ORelayTest : public ::testing::Test {
   std::shared_ptr<Publisher::SubscribeNamespaceHandle> doSubscribeNamespace(
       std::shared_ptr<MoQSession> session,
       const TrackNamespace& nsPrefix,
-      bool addToState = true) {
+      bool addToState = true
+  ) {
     SubscribeNamespace subNs;
     subNs.trackNamespacePrefix = nsPrefix;
     return withSessionContext(session, [&]() {
@@ -302,8 +285,7 @@ class ORelayTest : public ::testing::Test {
       EXPECT_TRUE(res.hasValue());
       if (res.hasValue()) {
         if (addToState) {
-          getOrCreateMockState(session)->subscribeNamespaceHandles.push_back(
-              *res);
+          getOrCreateMockState(session)->subscribeNamespaceHandles.push_back(*res);
         }
         return *res;
       }
@@ -315,21 +297,16 @@ class ORelayTest : public ::testing::Test {
   std::shared_ptr<MockSubgroupConsumer> createMockSubgroupConsumer() {
     auto sg = std::make_shared<NiceMock<MockSubgroupConsumer>>();
     ON_CALL(*sg, beginObject(_, _, _, _))
-        .WillByDefault(
-            Return(folly::makeExpected<MoQPublishError>(folly::unit)));
+        .WillByDefault(Return(folly::makeExpected<MoQPublishError>(folly::unit)));
     ON_CALL(*sg, objectPayload(_, _))
-        .WillByDefault(Return(
-            folly::makeExpected<MoQPublishError>(
-                ObjectPublishStatus::IN_PROGRESS)));
+        .WillByDefault(Return(folly::makeExpected<MoQPublishError>(ObjectPublishStatus::IN_PROGRESS)
+        ));
     ON_CALL(*sg, endOfSubgroup())
-        .WillByDefault(
-            Return(folly::makeExpected<MoQPublishError>(folly::unit)));
+        .WillByDefault(Return(folly::makeExpected<MoQPublishError>(folly::unit)));
     ON_CALL(*sg, endOfGroup(_))
-        .WillByDefault(
-            Return(folly::makeExpected<MoQPublishError>(folly::unit)));
+        .WillByDefault(Return(folly::makeExpected<MoQPublishError>(folly::unit)));
     ON_CALL(*sg, endOfTrackAndGroup(_))
-        .WillByDefault(
-            Return(folly::makeExpected<MoQPublishError>(folly::unit)));
+        .WillByDefault(Return(folly::makeExpected<MoQPublishError>(folly::unit)));
     return sg;
   }
 
@@ -382,16 +359,14 @@ TEST_F(ORelayTest, PruneLeafKeepSiblings) {
   // PublishNamespace test/A/B/C (don't add to state because we
   // publishNamespaceDone manually)
   TrackNamespace nsABC{{"test", "A", "B", "C"}};
-  auto handleABC =
-      doPublishNamespace(publisherABC, nsABC, /*addToState=*/false);
+  auto handleABC = doPublishNamespace(publisherABC, nsABC, /*addToState=*/false);
 
   // PublishNamespace test/A/D
   TrackNamespace nsAD{{"test", "A", "D"}};
   doPublishNamespace(publisherAD, nsAD);
 
   // PublishNamespaceDone test/A/B/C - should prune B (and C) but keep A and D
-  withSessionContext(
-      publisherABC, [&]() { handleABC->publishNamespaceDone(); });
+  withSessionContext(publisherABC, [&]() { handleABC->publishNamespaceDone(); });
 
   // Verify test/A/D still exists using findPublishNamespaceSessions
   auto sessions = relay_->findPublishNamespaceSessions(nsAD);
@@ -485,9 +460,7 @@ TEST_F(ORelayTest, PruneOnPublishDoneBug) {
 
   // PublishNamespaceDone - node should stay because publish is still active
   withSessionContext(publisher, [&]() {
-    getOrCreateMockState(publisher)
-        ->publishNamespaceHandles[0]
-        ->publishNamespaceDone();
+    getOrCreateMockState(publisher)->publishNamespaceHandles[0]->publishNamespaceDone();
     getOrCreateMockState(publisher)->publishNamespaceHandles.clear();
   });
 
@@ -499,10 +472,8 @@ TEST_F(ORelayTest, PruneOnPublishDoneBug) {
   // End the publish - onPublishDone gets called
   withSessionContext(publisher, [&]() {
     consumer->publishDone(
-        {RequestID(0),
-         PublishDoneStatusCode::SUBSCRIPTION_ENDED,
-         0,
-         "publisher done"});
+        {RequestID(0), PublishDoneStatusCode::SUBSCRIPTION_ENDED, 0, "publisher done"}
+    );
   });
 
   // BUG EXPOSED: The publish is removed from the map but the node still exists
@@ -510,11 +481,11 @@ TEST_F(ORelayTest, PruneOnPublishDoneBug) {
   EXPECT_EQ(state.session, nullptr); // No session - PASS
 
   // THIS FAILS: Node should have been pruned but still exists (memory leak)
-  EXPECT_FALSE(state.nodeExists)
-      << "BUG: Node test/A/B/C still exists after publish ended and was the "
-         "only content. "
-         "onPublishDone should have called tryPruneChild to clean up empty "
-         "nodes.";
+  EXPECT_FALSE(state.nodeExists
+  ) << "BUG: Node test/A/B/C still exists after publish ended and was the "
+       "only content. "
+       "onPublishDone should have called tryPruneChild to clean up empty "
+       "nodes.";
 
   removeSession(publisher);
 }
@@ -532,9 +503,7 @@ TEST_F(ORelayTest, MixedContentPublishNamespaceAndPublish) {
 
   // PublishNamespaceDone - should NOT prune because publish still exists
   withSessionContext(publisher, [&]() {
-    getOrCreateMockState(publisher)
-        ->publishNamespaceHandles[0]
-        ->publishNamespaceDone();
+    getOrCreateMockState(publisher)->publishNamespaceHandles[0]->publishNamespaceDone();
     getOrCreateMockState(publisher)->publishNamespaceHandles.clear();
   });
 
@@ -675,8 +644,7 @@ TEST_F(ORelayTest, StalePublishNamespaceDoneDoesNotAffectNewOwner) {
   EXPECT_EQ(sessions.size(), 1)
       << "Ownership check failed: findPublishNamespaceSessions returned wrong count";
   if (!sessions.empty()) {
-    EXPECT_EQ(sessions[0], publisher1)
-        << "Ownership check failed: wrong session returned";
+    EXPECT_EQ(sessions[0], publisher1) << "Ownership check failed: wrong session returned";
   }
 
   // Publisher1 should still be able to properly publishNamespaceDone its own
@@ -739,8 +707,7 @@ TEST_F(ORelayTest, EmptyNamespacePublishNamespaceDone) {
     auto res = folly::coro::blockingWait(std::move(task), exec_.get());
     // Don't assert on success/failure, just verify no crash
     if (res.hasValue()) {
-      getOrCreateMockState(publisher)->publishNamespaceHandles.push_back(
-          res.value());
+      getOrCreateMockState(publisher)->publishNamespaceHandles.push_back(res.value());
     }
   });
 
@@ -822,15 +789,12 @@ TEST_F(ORelayTest, ForwarderOnlyCreatesSubgroupsBeforeObjectData) {
 
   auto setupSubgroupConsumer = [](auto& sg) {
     ON_CALL(*sg, beginObject(_, _, _, _))
-        .WillByDefault(
-            Return(folly::makeExpected<MoQPublishError>(folly::unit)));
+        .WillByDefault(Return(folly::makeExpected<MoQPublishError>(folly::unit)));
     ON_CALL(*sg, objectPayload(_, _))
-        .WillByDefault(Return(
-            folly::makeExpected<MoQPublishError>(
-                ObjectPublishStatus::IN_PROGRESS)));
+        .WillByDefault(Return(folly::makeExpected<MoQPublishError>(ObjectPublishStatus::IN_PROGRESS)
+        ));
     ON_CALL(*sg, endOfSubgroup())
-        .WillByDefault(
-            Return(folly::makeExpected<MoQPublishError>(folly::unit)));
+        .WillByDefault(Return(folly::makeExpected<MoQPublishError>(folly::unit)));
   };
 
   // Subscriber 1 and 2 should get beginSubgroup
@@ -838,18 +802,14 @@ TEST_F(ORelayTest, ForwarderOnlyCreatesSubgroupsBeforeObjectData) {
       .WillOnce([&](uint64_t, uint64_t, uint8_t, bool) {
         auto sg = std::make_shared<NiceMock<MockSubgroupConsumer>>();
         setupSubgroupConsumer(sg);
-        return folly::
-            makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(
-                sg);
+        return folly::makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(sg);
       });
 
   EXPECT_CALL(*mockConsumer2, beginSubgroup(_, _, _, _))
       .WillOnce([&](uint64_t, uint64_t, uint8_t, bool) {
         auto sg = std::make_shared<NiceMock<MockSubgroupConsumer>>();
         setupSubgroupConsumer(sg);
-        return folly::
-            makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(
-                sg);
+        return folly::makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(sg);
       });
 
   // Subscriber 3 joins mid-object and should NOT get beginSubgroup
@@ -868,8 +828,7 @@ TEST_F(ORelayTest, ForwarderOnlyCreatesSubgroupsBeforeObjectData) {
 
   // First object -> goes to subscriber 1
   EXPECT_TRUE(subgroup->beginObject(0, 4, 0).hasValue());
-  EXPECT_TRUE(subgroup->objectPayload(folly::IOBuf::copyBuffer("test"), false)
-                  .hasValue());
+  EXPECT_TRUE(subgroup->objectPayload(folly::IOBuf::copyBuffer("test"), false).hasValue());
 
   // Subscriber 2 joins after first object
   subscribeToTrack(subscriber2, kTestTrackName, mockConsumer2, RequestID(2));
@@ -881,9 +840,7 @@ TEST_F(ORelayTest, ForwarderOnlyCreatesSubgroupsBeforeObjectData) {
   subscribeToTrack(subscriber3, kTestTrackName, mockConsumer3, RequestID(3));
 
   // Payload and endOfSubgroup -> only to subscribers 1, 2 (NOT 3)
-  EXPECT_TRUE(
-      subgroup->objectPayload(folly::IOBuf::copyBuffer("more data"), false)
-          .hasValue());
+  EXPECT_TRUE(subgroup->objectPayload(folly::IOBuf::copyBuffer("more data"), false).hasValue());
   EXPECT_TRUE(subgroup->endOfSubgroup().hasValue());
 
   removeSession(publisherSession);
@@ -921,9 +878,8 @@ TEST_F(ORelayTest, GracefulSessionDraining) {
     EXPECT_CALL(*consumers[0], beginSubgroup(i, 0, _, _))
         .WillOnce([this, i, &sub0_sgs](uint64_t, uint64_t, uint8_t, bool) {
           sub0_sgs[i] = createMockSubgroupConsumer();
-          return folly::
-              makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(
-                  sub0_sgs[i]);
+          return folly::makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(sub0_sgs[i]
+          );
         });
   }
 
@@ -931,9 +887,7 @@ TEST_F(ORelayTest, GracefulSessionDraining) {
   EXPECT_CALL(*consumers[1], beginSubgroup(1, 0, _, _))
       .WillOnce([this, &sub1_sg0](uint64_t, uint64_t, uint8_t, bool) {
         sub1_sg0 = createMockSubgroupConsumer();
-        return folly::
-            makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(
-                sub1_sg0);
+        return folly::makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(sub1_sg0);
       });
 
   std::array<std::shared_ptr<SubgroupConsumer>, 2> sgs;
@@ -957,11 +911,8 @@ TEST_F(ORelayTest, GracefulSessionDraining) {
   EXPECT_CALL(*sub1_sg0, reset(_)).Times(0);
 
   publishConsumer->publishDone(
-      PublishDone{
-          RequestID(0),
-          PublishDoneStatusCode::SUBSCRIPTION_ENDED,
-          0,
-          "publisher ended"});
+      PublishDone{RequestID(0), PublishDoneStatusCode::SUBSCRIPTION_ENDED, 0, "publisher ended"}
+  );
 
   // At this point:
   // - subscriber3 removed (had no subgroups)
@@ -996,14 +947,12 @@ TEST_F(ORelayTest, RemoveSessionResetsOpenSubgroups) {
           sgs[i] = createMockSubgroupConsumer();
           EXPECT_CALL(*sgs[i], object(0, testing::_, testing::_, false))
               .WillOnce(testing::Return(folly::unit));
-          return folly::
-              makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(
-                  sgs[i]);
+          return folly::makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(sgs[i]);
         });
   }
 
-  auto subHandle = subscribeToTrack(
-      subscriber, kTestTrackName, consumer, RequestID(1), /*addToState=*/false);
+  auto subHandle =
+      subscribeToTrack(subscriber, kTestTrackName, consumer, RequestID(1), /*addToState=*/false);
 
   // Publish data to create subgroups and first objects
   std::array<std::shared_ptr<SubgroupConsumer>, 2> pubSgs;
@@ -1046,9 +995,7 @@ TEST_F(ORelayTest, DrainingSubscriberRemovedOnSubgroupError) {
     EXPECT_CALL(*consumer, beginSubgroup(i, 0, _, _))
         .WillOnce([this, i, &sgs](uint64_t, uint64_t, uint8_t, bool) {
           sgs[i] = createMockSubgroupConsumer();
-          return folly::
-              makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(
-                  sgs[i]);
+          return folly::makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(sgs[i]);
         });
   }
 
@@ -1065,8 +1012,7 @@ TEST_F(ORelayTest, DrainingSubscriberRemovedOnSubgroupError) {
   // Note: publishDone may be called multiple times (during drain and cleanup)
   EXPECT_CALL(*consumer, publishDone(_))
       .Times(AtLeast(1))
-      .WillRepeatedly(
-          Return(folly::makeExpected<MoQPublishError>(folly::unit)));
+      .WillRepeatedly(Return(folly::makeExpected<MoQPublishError>(folly::unit)));
 
   // Subgroups should NOT be reset during drain
   EXPECT_CALL(*sgs[0], reset(_)).Times(0);
@@ -1074,11 +1020,8 @@ TEST_F(ORelayTest, DrainingSubscriberRemovedOnSubgroupError) {
   EXPECT_CALL(*sgs[2], reset(_)).Times(0);
 
   publishConsumer->publishDone(
-      PublishDone{
-          RequestID(0),
-          PublishDoneStatusCode::SUBSCRIPTION_ENDED,
-          0,
-          "publisher ended"});
+      PublishDone{RequestID(0), PublishDoneStatusCode::SUBSCRIPTION_ENDED, 0, "publisher ended"}
+  );
 
   // Now close subgroups one by one
   // Test 1: Send error on subgroup 0 -> subscriber NOT removed (still has 1, 2)
@@ -1114,17 +1057,14 @@ TEST_F(ORelayTest, SubscriberUnsubscribeDoesNotReceiveNewObjects) {
         auto sg = std::make_shared<NiceMock<MockSubgroupConsumer>>();
         EXPECT_CALL(*sg, beginObject(_, _, _, _)).WillOnce(Return(folly::unit));
         EXPECT_CALL(*sg, reset(_));
-        return folly::
-            makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(
-                sg);
+        return folly::makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(sg);
       });
 
   // Sub2 should also get beginSubgroup
   EXPECT_CALL(*mockConsumer2, beginSubgroup(_, _, _, _)).Times(0);
 
   // Publish track
-  auto publishConsumer =
-      doPublish(publisherSession, kTestTrackName, /*addToState=*/false);
+  auto publishConsumer = doPublish(publisherSession, kTestTrackName, /*addToState=*/false);
 
   // Subscriber 1 joins
   subscribeToTrack(subscriber1, kTestTrackName, mockConsumer1, RequestID(1));
@@ -1137,11 +1077,8 @@ TEST_F(ORelayTest, SubscriberUnsubscribeDoesNotReceiveNewObjects) {
   // publisher ends subscription
   EXPECT_CALL(*mockConsumer1, publishDone(testing::_));
   EXPECT_TRUE(publishConsumer
-                  ->publishDone(
-                      {RequestID(1),
-                       PublishDoneStatusCode::TRACK_ENDED,
-                       0,
-                       "track ended"})
+                  ->publishDone({RequestID(1), PublishDoneStatusCode::TRACK_ENDED, 0, "track ended"}
+                  )
                   .hasValue());
 
   // Subscriber 2 joins after publishDone
@@ -1151,7 +1088,8 @@ TEST_F(ORelayTest, SubscriberUnsubscribeDoesNotReceiveNewObjects) {
       mockConsumer2,
       RequestID(2),
       /*addToState=*/false,
-      SubscribeErrorCode::INTERNAL_ERROR);
+      SubscribeErrorCode::INTERNAL_ERROR
+  );
 
   // Send object - should only go to subscriber 1 (sub2 is gone)
   EXPECT_TRUE(subgroup->beginObject(0, 4, 0).hasValue());
@@ -1172,43 +1110,41 @@ TEST_F(ORelayTest, SubscribeNamespaceDoesntAddDrainingPublish) {
   auto subscriber2 = createMockSession();
 
   // Subscriber 1 subscribes to publishNamespaces
-  auto handle1 =
-      doSubscribeNamespace(subscriber1, kTestNamespace, /*addToState=*/false);
+  auto handle1 = doSubscribeNamespace(subscriber1, kTestNamespace, /*addToState=*/false);
 
   // Publish first track - subscriber 1 should receive it
   auto mockConsumer1 = createMockConsumer();
   EXPECT_CALL(*subscriber1, publish(testing::_, testing::_))
       .WillOnce([mockConsumer1](auto pubReq, auto subHandle) {
-        return Subscriber::PublishResult(
-            Subscriber::PublishConsumerAndReplyTask{
-                mockConsumer1,
-                []() -> folly::coro::Task<
-                         folly::Expected<PublishOk, PublishError>> {
-                  co_return PublishOk{/*requestID=*/RequestID(1),
-                                      /*forward=*/true,
-                                      /*subscriberPriority=*/0,
-                                      /*groupOrder=*/GroupOrder::OldestFirst,
-                                      /*locType=*/LocationType::LargestObject,
-                                      /*start=*/std::nullopt,
-                                      /*endGroup=*/std::nullopt};
-                }()});
+        return Subscriber::PublishResult(Subscriber::PublishConsumerAndReplyTask{
+            mockConsumer1,
+            []() -> folly::coro::Task<folly::Expected<PublishOk, PublishError>> {
+              co_return PublishOk{
+                  /*requestID=*/RequestID(1),
+                  /*forward=*/true,
+                  /*subscriberPriority=*/0,
+                  /*groupOrder=*/GroupOrder::OldestFirst,
+                  /*locType=*/LocationType::LargestObject,
+                  /*start=*/std::nullopt,
+                  /*endGroup=*/std::nullopt
+              };
+            }()
+        });
       });
 
   EXPECT_CALL(*mockConsumer1, beginSubgroup(_, _, _, _))
       .WillOnce([&](uint64_t, uint64_t, uint8_t, bool) {
         auto sg = std::make_shared<NiceMock<MockSubgroupConsumer>>();
-        EXPECT_CALL(*sg, endOfSubgroup())
-            .WillOnce(testing::Return(folly::unit));
-        return folly::
-            makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(
-                sg);
+        EXPECT_CALL(*sg, endOfSubgroup()).WillOnce(testing::Return(folly::unit));
+        return folly::makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(sg);
       });
 
   // Begin a subgroup for ongoing publish activity
   auto pubConsumer = doPublish(
       publisherSession,
       FullTrackName{kTestNamespace, "track_stream"},
-      /*addToState=*/false);
+      /*addToState=*/false
+  );
   // TODO: bug subscriber not added until next loop?
   exec_->drive();
   auto subgroupRes = pubConsumer->beginSubgroup(0, 0, 0);
@@ -1217,13 +1153,10 @@ TEST_F(ORelayTest, SubscribeNamespaceDoesntAddDrainingPublish) {
 
   // publisher ends subscription
   EXPECT_CALL(*mockConsumer1, publishDone(testing::_));
-  EXPECT_TRUE(pubConsumer
-                  ->publishDone(
-                      {RequestID(1),
-                       PublishDoneStatusCode::TRACK_ENDED,
-                       0,
-                       "track ended"})
-                  .hasValue());
+  EXPECT_TRUE(
+      pubConsumer->publishDone({RequestID(1), PublishDoneStatusCode::TRACK_ENDED, 0, "track ended"})
+          .hasValue()
+  );
   subgroup->endOfSubgroup();
 
   // Subscriber 2 subscribes to publishNamespaces but doesn't get finished track
@@ -1242,8 +1175,7 @@ TEST_F(ORelayTest, SubscribeNamespaceDoesntAddDrainingPublish) {
         return folly::makeUnexpected(PublishError{});
       });
 
-  auto pubConsumer2 = doPublish(
-      publisherSession, FullTrackName{kTestNamespace, "track_stream_2"});
+  auto pubConsumer2 = doPublish(publisherSession, FullTrackName{kTestNamespace, "track_stream_2"});
   exec_->drive();
 
   removeSession(publisherSession);
@@ -1274,23 +1206,19 @@ TEST_F(ORelayTest, DataOperationCancelledWhenAllSubscribersFail) {
         .WillOnce([this, i, &sgs](uint64_t, uint64_t, uint8_t, bool) {
           sgs[i] = createMockSubgroupConsumer();
           EXPECT_CALL(*sgs[i], objectPayload(_, false))
-              .WillOnce(Return(
-                  folly::makeExpected<MoQPublishError>(
-                      ObjectPublishStatus::IN_PROGRESS)))
-              .WillOnce(Return(
-                  folly::makeUnexpected(MoQPublishError(
-                      MoQPublishError::WRITE_ERROR, "write failed"))));
-          return folly::
-              makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(
-                  sgs[i]);
+              .WillOnce(Return(folly::makeExpected<MoQPublishError>(ObjectPublishStatus::IN_PROGRESS
+              )))
+              .WillOnce(Return(folly::makeUnexpected(
+                  MoQPublishError(MoQPublishError::WRITE_ERROR, "write failed")
+              )));
+          return folly::makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(sgs[i]);
         });
   }
 
   // Publish track and add subscribers
   auto publishConsumer = doPublish(publisherSession, kTestTrackName);
   for (size_t i = 0; i < 2; ++i) {
-    subscribeToTrack(
-        subscribers[i], kTestTrackName, consumers[i], RequestID(i + 1));
+    subscribeToTrack(subscribers[i], kTestTrackName, consumers[i], RequestID(i + 1));
   }
 
   // Begin subgroup and object
@@ -1340,17 +1268,14 @@ TEST_F(ORelayTest, PartialSubscriberFailureDoesNotCancelData) {
       .WillOnce([this, &sgs](uint64_t, uint64_t, uint8_t, bool) {
         sgs[0] = createMockSubgroupConsumer();
         EXPECT_CALL(*sgs[0], objectPayload(_, false))
+            .WillOnce(Return(folly::makeExpected<MoQPublishError>(ObjectPublishStatus::IN_PROGRESS))
+            )
             .WillOnce(Return(
-                folly::makeExpected<MoQPublishError>(
-                    ObjectPublishStatus::IN_PROGRESS)))
-            .WillOnce(Return(
-                folly::makeUnexpected(MoQPublishError(
-                    MoQPublishError::WRITE_ERROR, "write failed"))));
+                folly::makeUnexpected(MoQPublishError(MoQPublishError::WRITE_ERROR, "write failed"))
+            ));
         // Expect reset when subscriber is removed
         EXPECT_CALL(*sgs[0], reset(_)).Times(1);
-        return folly::
-            makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(
-                sgs[0]);
+        return folly::makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(sgs[0]);
       });
 
   // Setup subscribers 1 and 2 - will succeed on objectPayload
@@ -1360,23 +1285,19 @@ TEST_F(ORelayTest, PartialSubscriberFailureDoesNotCancelData) {
         .WillOnce([this, i, &sgs](uint64_t, uint64_t, uint8_t, bool) {
           sgs[i] = createMockSubgroupConsumer();
           EXPECT_CALL(*sgs[i], objectPayload(_, false))
-              .WillRepeatedly(Return(
-                  folly::makeExpected<MoQPublishError>(
-                      ObjectPublishStatus::IN_PROGRESS)));
+              .WillRepeatedly(
+                  Return(folly::makeExpected<MoQPublishError>(ObjectPublishStatus::IN_PROGRESS))
+              );
           // Will be reset by cleanup code at end of test
-          EXPECT_CALL(*sgs[i], reset(ResetStreamErrorCode::SESSION_CLOSED))
-              .Times(1);
-          return folly::
-              makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(
-                  sgs[i]);
+          EXPECT_CALL(*sgs[i], reset(ResetStreamErrorCode::SESSION_CLOSED)).Times(1);
+          return folly::makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(sgs[i]);
         });
   }
 
   // Publish track and add subscribers
   auto publishConsumer = doPublish(publisherSession, kTestTrackName);
   for (size_t i = 0; i < 3; ++i) {
-    subscribeToTrack(
-        subscribers[i], kTestTrackName, consumers[i], RequestID(i + 1));
+    subscribeToTrack(subscribers[i], kTestTrackName, consumers[i], RequestID(i + 1));
   }
 
   // Begin subgroup and object
@@ -1445,12 +1366,11 @@ TEST_F(ORelayTest, SubscribeUpdateStartLocationCanDecrease) {
       AbsoluteLocation{5, 0}, // Start decreased from {10, 0} to {5, 0}
       0,                      // endGroup (open-ended)
       kDefaultPriority,
-      true}; // forward
+      true
+  }; // forward
 
-  auto updateRes =
-      folly::coro::blockingWait(subscriber->requestUpdate(subscribeUpdate));
-  EXPECT_TRUE(updateRes.hasValue())
-      << "RequestUpdate with decreased start should succeed";
+  auto updateRes = folly::coro::blockingWait(subscriber->requestUpdate(subscribeUpdate));
+  EXPECT_TRUE(updateRes.hasValue()) << "RequestUpdate with decreased start should succeed";
 
   // Verify start location was updated
   EXPECT_EQ(subscriber->range.start, (AbsoluteLocation{5, 0}))
@@ -1481,12 +1401,10 @@ TEST_F(ORelayTest, SubgroupTombstonedAfterCancelledError) {
         EXPECT_CALL(*sg, object(0, _, _, false)).WillOnce(Return(folly::unit));
         EXPECT_CALL(*sg, object(1, _, _, false))
             .WillOnce(Return(
-                folly::makeUnexpected(MoQPublishError(
-                    MoQPublishError::CANCELLED, "STOP_SENDING"))));
+                folly::makeUnexpected(MoQPublishError(MoQPublishError::CANCELLED, "STOP_SENDING"))
+            ));
         // Per API contract, error implies implicit reset - no reset() call
-        return folly::
-            makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(
-                sg);
+        return folly::makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(sg);
       });
 
   // Second subgroup should still be created (subscription is alive)
@@ -1495,9 +1413,7 @@ TEST_F(ORelayTest, SubgroupTombstonedAfterCancelledError) {
       .WillOnce([this, &sg2](uint64_t, uint64_t, uint8_t, bool) {
         sg2 = createMockSubgroupConsumer();
         EXPECT_CALL(*sg2, endOfSubgroup()).WillOnce(Return(folly::unit));
-        return folly::
-            makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(
-                sg2);
+        return folly::makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(sg2);
       });
 
   subscribeToTrack(subscriber, kTestTrackName, consumer, RequestID(1));
@@ -1546,16 +1462,14 @@ TEST_F(ORelayTest, TombstonedSubgroupIgnoresSubsequentObjects) {
         sg = createMockSubgroupConsumer();
         // First object fails with CANCELLED
         EXPECT_CALL(*sg, object(0, _, _, false))
-            .WillOnce(Return(
-                folly::makeUnexpected(MoQPublishError(
-                    MoQPublishError::CANCELLED, "delivery timeout"))));
+            .WillOnce(Return(folly::makeUnexpected(
+                MoQPublishError(MoQPublishError::CANCELLED, "delivery timeout")
+            )));
         // Per API contract, error implies implicit reset - no reset() call
         // After tombstoning, should NOT receive any more objects
         EXPECT_CALL(*sg, object(1, _, _, _)).Times(0);
         EXPECT_CALL(*sg, object(2, _, _, _)).Times(0);
-        return folly::
-            makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(
-                sg);
+        return folly::makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(sg);
       });
 
   subscribeToTrack(subscriber, kTestTrackName, consumer, RequestID(1));
@@ -1601,12 +1515,10 @@ TEST_F(ORelayTest, LateJoinerGetsSubgroupAfterTombstone) {
         sg1 = createMockSubgroupConsumer();
         EXPECT_CALL(*sg1, object(0, _, _, false))
             .WillOnce(Return(
-                folly::makeUnexpected(MoQPublishError(
-                    MoQPublishError::CANCELLED, "STOP_SENDING"))));
+                folly::makeUnexpected(MoQPublishError(MoQPublishError::CANCELLED, "STOP_SENDING"))
+            ));
         // Per API contract, error implies implicit reset - no reset() call
-        return folly::
-            makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(
-                sg1);
+        return folly::makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(sg1);
       });
 
   // Second subscriber (late joiner) should still get the subgroup
@@ -1618,9 +1530,7 @@ TEST_F(ORelayTest, LateJoinerGetsSubgroupAfterTombstone) {
         sg2 = createMockSubgroupConsumer();
         EXPECT_CALL(*sg2, object(1, _, _, false)).WillOnce(Return(folly::unit));
         EXPECT_CALL(*sg2, endOfSubgroup()).WillOnce(Return(folly::unit));
-        return folly::
-            makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(
-                sg2);
+        return folly::makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(sg2);
       });
 
   // Subscribe first subscriber
@@ -1664,14 +1574,12 @@ TEST_F(ORelayTest, HardErrorsRemoveSubscriber) {
       .WillOnce([this, &sg](uint64_t, uint64_t, uint8_t, bool) {
         sg = createMockSubgroupConsumer();
         EXPECT_CALL(*sg, object(0, _, _, false))
-            .WillOnce(Return(
-                folly::makeUnexpected(MoQPublishError(
-                    MoQPublishError::WRITE_ERROR, "transport broken"))));
+            .WillOnce(Return(folly::makeUnexpected(
+                MoQPublishError(MoQPublishError::WRITE_ERROR, "transport broken")
+            )));
         // Should be reset when subscriber is removed
         EXPECT_CALL(*sg, reset(_)).Times(1);
-        return folly::
-            makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(
-                sg);
+        return folly::makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(sg);
       });
 
   // publishDone should be called because subscription is being removed
@@ -1726,12 +1634,10 @@ TEST_F(ORelayTest, EndOfSubgroupHardErrorDoesNotCrash) {
         sg = createMockSubgroupConsumer();
         // Override endOfSubgroup to return a hard error (WRITE_ERROR)
         EXPECT_CALL(*sg, endOfSubgroup())
-            .WillOnce(Return(
-                folly::makeUnexpected(MoQPublishError(
-                    MoQPublishError::WRITE_ERROR, "transport broken"))));
-        return folly::
-            makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(
-                sg);
+            .WillOnce(Return(folly::makeUnexpected(
+                MoQPublishError(MoQPublishError::WRITE_ERROR, "transport broken")
+            )));
+        return folly::makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(sg);
       });
 
   // publishDone is called when subscription is removed due to hard error
@@ -1743,7 +1649,8 @@ TEST_F(ORelayTest, EndOfSubgroupHardErrorDoesNotCrash) {
       kTestTrackName,
       consumer,
       RequestID(1),
-      /*addToState=*/false);
+      /*addToState=*/false
+  );
 
   // Begin subgroup - sets up the subscriber's subgroup consumer
   auto subgroupRes = publishConsumer->beginSubgroup(0, 0, 0);

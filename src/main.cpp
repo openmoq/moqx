@@ -9,23 +9,15 @@ DEFINE_string(key, "", "Key path");
 DEFINE_string(endpoint, "/moq-relay", "End point");
 DEFINE_int32(port, 9668, "Relay Server Port");
 DEFINE_bool(enable_cache, true, "Enable relay cache");
-DEFINE_bool(
-    insecure,
-    false,
-    "Use insecure verifier (skip certificate validation)");
+DEFINE_bool(insecure, false, "Use insecure verifier (skip certificate validation)");
 DEFINE_string(
     versions,
     "",
     "Comma-separated MoQ draft versions (e.g. \"14,16\"). Empty = all "
-    "supported.");
-DEFINE_int32(
-    max_cached_tracks,
-    100,
-    "Maximum number of cached tracks (0 to disable caching)");
-DEFINE_int32(
-    max_cached_groups_per_track,
-    3,
-    "Maximum groups per track in cache");
+    "supported."
+);
+DEFINE_int32(max_cached_tracks, 100, "Maximum number of cached tracks (0 to disable caching)");
+DEFINE_int32(max_cached_groups_per_track, 3, "Maximum groups per track in cache");
 
 int main(int argc, char* argv[]) {
 
@@ -33,10 +25,8 @@ int main(int argc, char* argv[]) {
   // CLI args, config files, env vars
   folly::Init init(&argc, &argv, true);
 
-  size_t maxCachedTracks =
-      FLAGS_enable_cache ? static_cast<size_t>(FLAGS_max_cached_tracks) : 0;
-  size_t maxCachedGroupsPerTrack =
-      static_cast<size_t>(FLAGS_max_cached_groups_per_track);
+  size_t maxCachedTracks = FLAGS_enable_cache ? static_cast<size_t>(FLAGS_max_cached_tracks) : 0;
+  size_t maxCachedGroupsPerTrack = static_cast<size_t>(FLAGS_max_cached_groups_per_track);
 
   // === 2. Set up logging/observability ===
   // TODO: logging framework, log levels, structured logging
@@ -62,7 +52,8 @@ int main(int argc, char* argv[]) {
         FLAGS_endpoint,
         FLAGS_versions,
         maxCachedTracks,
-        maxCachedGroupsPerTrack);
+        maxCachedGroupsPerTrack
+    );
   } else {
     server = std::make_shared<openmoq::o_rly::ORelayServer>(
         FLAGS_cert,
@@ -70,7 +61,8 @@ int main(int argc, char* argv[]) {
         FLAGS_endpoint,
         FLAGS_versions,
         maxCachedTracks,
-        maxCachedGroupsPerTrack);
+        maxCachedGroupsPerTrack
+    );
   }
 
   // === 7. Start health checks / admin endpoints ===
