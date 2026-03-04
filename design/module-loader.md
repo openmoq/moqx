@@ -448,7 +448,7 @@ extern "C" {
 }
 ```
 
-**Decision**: For moxygen, C++ returns are acceptable since plugins will be built with the same toolchain. If third-party plugins with arbitrary compilers become a requirement, a pure C adapter layer can be added later.
+**Decision**: We will build a C <-> C++ Translation layer option on both sides of the plugin
 
 ## Interface Versioning
 
