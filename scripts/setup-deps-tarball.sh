@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# setup-deps-tarball.sh — Populate .scratch with prebuilt moxygen release artifacts.
+#
+# Downloads the release tarball from openmoq/moxygen matching the current
+# submodule commit. Writes .scratch/cmake_prefix_path.txt for configure.sh.
+#
+# Usage:
+#   ./scripts/setup-deps-tarball.sh
+#
+# Requires: gh CLI authenticated, deps/moxygen submodule initialized.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+SCRATCH="${ORLY_SCRATCH_PATH:-${PROJECT_ROOT}/.scratch}"
+MOXYGEN_DIR="${PROJECT_ROOT}/deps/moxygen"
+
+if [[ ! -e "$MOXYGEN_DIR/.git" ]]; then
+    echo "Error: deps/moxygen submodule not initialized." >&2
+    echo "  Run: git submodule update --init" >&2
+    exit 1
+fi
+
+# ── Platform detection ────────────────────────────────────────────────────────
+
+detect_platform() {
+    local os arch
+    os=$(uname -s)
+    arch=$(uname -m)
+
+    if [[ "$os" == "Darwin" ]]; then
+        local ver
+        ver=$(sw_vers -productVersion | cut -d. -f1)
+        echo "macos-${ver}-arm64"
+    elif [[ "$os" == "Linux" ]]; then
+        if [[ ! -f /etc/os-release ]]; then
+            echo "Error: cannot detect Linux distro (no /etc/os-release)" >&2
+            exit 1
+        fi
+        # shellcheck disable=SC1091
+        local ID VERSION_ID
+        ID=$(. /etc/os-release && echo "$ID")
+        VERSION_ID=$(. /etc/os-release && echo "${VERSION_ID:-}")
+        local darch="${arch/x86_64/amd64}"
+        darch="${darch/aarch64/arm64}"
+        case "$ID" in
+            ubuntu) echo "ubuntu-${VERSION_ID}-${arch}" ;;
+            debian) echo "bookworm-${darch}" ;;
+            *)
+                echo "Error: unsupported Linux distro: $ID" >&2
+                exit 1
+                ;;
+        esac
+    else
+        echo "Error: unsupported OS: $os" >&2
+        exit 1
+    fi
+}
+
+PLATFORM=$(detect_platform)
+echo "==> Platform: $PLATFORM"
+
+# ── Find release matching submodule SHA ───────────────────────────────────────
+
+SHA=$(git -C "$MOXYGEN_DIR" rev-parse HEAD)
+TAG="build-${SHA:0:12}"
+echo "==> Moxygen SHA: ${SHA:0:12}  →  release tag: $TAG"
+
+if ! gh api "repos/openmoq/moxygen/releases/tags/$TAG" --jq '.tag_name' >/dev/null 2>&1; then
+    echo "Error: release $TAG not found in openmoq/moxygen." >&2
+    echo "  The publish workflow may not have run yet for this commit." >&2
+    exit 1
+fi
+
+# ── Download ──────────────────────────────────────────────────────────────────
+
+TARBALL="moxygen-${PLATFORM}.tar.gz"
+DOWNLOAD_DIR="${SCRATCH}/downloads"
+mkdir -p "$DOWNLOAD_DIR"
+
+echo "==> Downloading $TARBALL..."
+rm -f "${DOWNLOAD_DIR}/${TARBALL}"
+gh release download "$TAG" \
+    --repo openmoq/moxygen \
+    --pattern "$TARBALL" \
+    --dir "$DOWNLOAD_DIR"
+
+# ── Extract ───────────────────────────────────────────────────────────────────
+
+INSTALL_DIR="${SCRATCH}/moxygen-install"
+echo "==> Extracting to $INSTALL_DIR..."
+rm -rf "$INSTALL_DIR"
+mkdir -p "$INSTALL_DIR"
+tar xzf "${DOWNLOAD_DIR}/${TARBALL}" -C "$INSTALL_DIR"
+
+# ── Write cmake_prefix_path.txt ───────────────────────────────────────────────
+
+echo "$INSTALL_DIR" > "${SCRATCH}/cmake_prefix_path.txt"
+echo "tarball" > "${SCRATCH}/deps-mode"
+
+NLIBS=$(find "$INSTALL_DIR/lib" -name '*.a' 2>/dev/null | wc -l)
+echo "==> Done: $NLIBS static libs in $INSTALL_DIR"
