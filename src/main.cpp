@@ -1,4 +1,6 @@
 #include <o_rly/ORelayServer.h>
+#include <o_rly/admin/AdminServer.h>
+#include <o_rly/admin/BuiltinRoutes.h>
 #include <o_rly/config/loader/config_init.h>
 
 #include <folly/init/Init.h>
@@ -9,6 +11,7 @@
 
 DEFINE_string(config, "", "Path to config file (required)");
 DEFINE_bool(strict_config, false, "Reject unknown config fields");
+DEFINE_int32(admin_port, 9669, "HTTP admin port (0 to disable)");
 
 namespace {
 
@@ -101,8 +104,15 @@ int main(int argc, char* argv[]) {
   auto server = createServer(config);
 
   // === 7. Start health checks / admin endpoints ===
-  // TODO: readiness/liveness probes
-  // Health state machine: starting -> healthy -> draining -> stopped
+  openmoq::o_rly::admin::AdminServer adminServer;
+  if (FLAGS_admin_port != 0) {
+    openmoq::o_rly::admin::registerBuiltinRoutes(adminServer);
+    if (!adminServer.start(static_cast<uint16_t>(FLAGS_admin_port))) {
+      XLOG(ERR) << "Failed to start admin server on port " << FLAGS_admin_port;
+    } else {
+      XLOG(INFO) << "Admin server listening on port " << FLAGS_admin_port;
+    }
+  }
 
   // === 8. Start serving ===
   // Bind listeners, accept connections, enter event loop
@@ -127,7 +137,8 @@ int main(int argc, char* argv[]) {
   // TODO: ensure observability data is sent
 
   // === 13. Clean up resources ===
-  // TODO: TBD
+  // Stop admin last — allows a final metrics scrape during drain.
+  adminServer.stop();
 
   // === 14. Exit with appropriate code ===
   return 0;
