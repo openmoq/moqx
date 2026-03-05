@@ -72,6 +72,8 @@ FetchContent_MakeAvailable(reflectcpp)
 add_library(o_rly_core STATIC
   src/ORelay.cpp
   src/ORelayServer.cpp
+  src/admin/AdminServer.cpp
+  src/admin/BuiltinRoutes.cpp
 )
 
 target_include_directories(o_rly_core
@@ -84,6 +86,10 @@ target_link_libraries(o_rly_core PUBLIC
   moxygen::moxygen_relay_moq_cache
   moxygen::moxygen_moq_relay_session
   moxygen::moxygen_moq_server
+  proxygen::proxygenhttpserver
+  # Workaround: wangle::wangle_acceptor_acceptor_core uses AsyncFdSocket from
+  # FizzAcceptorHandshakeHelper but omits this dep from its cmake config.
+  Folly::folly_io_async_fdsock_async_fd_socket
 )
 
 target_compile_options(o_rly_core PRIVATE -Wall -Wextra -Wpedantic)
