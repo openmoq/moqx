@@ -1,8 +1,9 @@
 #include <o_rly/ORelayServer.h>
+#include <o_rly/admin/AdminServer.h>
+#include <o_rly/admin/BuiltinRoutes.h>
 
 #include <folly/init/Init.h>
-
-using namespace proxygen;
+#include <folly/logging/xlog.h>
 
 DEFINE_string(cert, "", "Cert path");
 DEFINE_string(key, "", "Key path");
@@ -18,6 +19,7 @@ DEFINE_string(
 );
 DEFINE_int32(max_cached_tracks, 100, "Maximum number of cached tracks (0 to disable caching)");
 DEFINE_int32(max_cached_groups_per_track, 3, "Maximum groups per track in cache");
+DEFINE_int32(admin_port, 9669, "HTTP admin port (0 to disable)");
 
 int main(int argc, char* argv[]) {
 
@@ -66,8 +68,15 @@ int main(int argc, char* argv[]) {
   }
 
   // === 7. Start health checks / admin endpoints ===
-  // TODO: readiness/liveness probes
-  // Health state machine: starting → healthy → draining → stopped
+  openmoq::o_rly::admin::AdminServer adminServer;
+  if (FLAGS_admin_port != 0) {
+    openmoq::o_rly::admin::registerBuiltinRoutes(adminServer);
+    if (!adminServer.start(static_cast<uint16_t>(FLAGS_admin_port))) {
+      XLOG(ERR) << "Failed to start admin server on port " << FLAGS_admin_port;
+    } else {
+      XLOG(INFO) << "Admin server listening on port " << FLAGS_admin_port;
+    }
+  }
 
   // === 8. Start serving ===
   // Bind listeners, accept connections, enter event loop
@@ -93,7 +102,8 @@ int main(int argc, char* argv[]) {
   // TODO: ensure observability data is sent
 
   // === 13. Clean up resources ===
-  // TODO: TBD
+  // Stop admin last — allows a final metrics scrape during drain.
+  adminServer.stop();
 
   // === 14. Exit with appropriate code ===
   return 0;
