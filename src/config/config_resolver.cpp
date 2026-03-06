@@ -1,6 +1,4 @@
-#include "o_rly/config/config_resolver.h"
-
-#include <cassert>
+#include "o_rly/config/loader/config_resolver.h"
 
 #include <folly/String.h>
 
@@ -17,27 +15,28 @@ std::string moqtVersionsToString(const ParsedListenerConfig& listener) {
 
 } // namespace
 
-ConfigDiagnostics diagnoseConfig(const ParsedConfig& config) {
-  ConfigDiagnostics diag;
+folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& config) {
+  std::vector<std::string> errors;
+  std::vector<std::string> warnings;
 
   // Exactly one listener required
   if (config.listeners.value().empty()) {
-    diag.errors.push_back("At least one listener is required");
-    return diag;
+    errors.push_back("At least one listener is required");
+    return folly::makeUnexpected(errors[0]);
   }
   if (config.listeners.value().size() > 1) {
-    diag.errors.push_back(
+    errors.push_back(
         "Currently only one listener is supported, got " +
         std::to_string(config.listeners.value().size())
     );
-    return diag;
+    return folly::makeUnexpected(errors[0]);
   }
 
   const auto& listener = config.listeners.value()[0];
 
   // Listener must have udp configured
   if (!listener.udp.value().has_value()) {
-    diag.errors.push_back(
+    errors.push_back(
         "Listener '" + listener.name.value() + "' must have 'udp' transport configured"
     );
   } else {
@@ -45,7 +44,7 @@ ConfigDiagnostics diagnoseConfig(const ParsedConfig& config) {
     auto sock = listener.udp.value()->socketOrDefault();
     uint16_t port = sock.portOrDefault();
     if (port == 0) {
-      diag.errors.push_back("Listener '" + listener.name.value() + "' port must be 1-65535, got 0");
+      errors.push_back("Listener '" + listener.name.value() + "' port must be 1-65535, got 0");
     }
   }
 
@@ -56,7 +55,7 @@ ConfigDiagnostics diagnoseConfig(const ParsedConfig& config) {
       bool hasCert = tls.cert_file.value().has_value() && !tls.cert_file.value()->empty();
       bool hasKey = tls.key_file.value().has_value() && !tls.key_file.value()->empty();
       if (!hasCert || !hasKey) {
-        diag.errors.push_back(
+        errors.push_back(
             "Listener '" + listener.name.value() +
             "': cert_file and key_file are required when insecure=false"
         );
@@ -66,7 +65,7 @@ ConfigDiagnostics diagnoseConfig(const ParsedConfig& config) {
       bool hasCert = tls.cert_file.value().has_value() && !tls.cert_file.value()->empty();
       bool hasKey = tls.key_file.value().has_value() && !tls.key_file.value()->empty();
       if (hasCert || hasKey) {
-        diag.warnings.push_back(
+        warnings.push_back(
             "Listener '" + listener.name.value() +
             "': cert_file/key_file are ignored when insecure=true"
         );
@@ -74,7 +73,7 @@ ConfigDiagnostics diagnoseConfig(const ParsedConfig& config) {
     }
   } else {
     // No tls config at all — default insecure=false requires certs
-    diag.errors.push_back(
+    errors.push_back(
         "Listener '" + listener.name.value() +
         "': tls is required (set insecure: true for "
         "plaintext mode)"
@@ -85,20 +84,17 @@ ConfigDiagnostics diagnoseConfig(const ParsedConfig& config) {
   auto cache = config.cacheOrDefault();
   if (cache.enabledOrDefault()) {
     if (cache.maxGroupsPerTrackOrDefault() < 1) {
-      diag.errors.push_back("cache.max_groups_per_track must be >= 1 when cache is enabled");
+      errors.push_back("cache.max_groups_per_track must be >= 1 when cache is enabled");
     }
   }
 
-  return diag;
-}
+  if (!errors.empty()) {
+    return folly::makeUnexpected("Config validation failed:\n  - " + folly::join("\n  - ", errors));
+  }
 
-Config resolveConfig(const ParsedConfig& config) {
-  assert(
-      config.listeners.value().size() == 1 && "resolveConfig requires exactly one listener; "
-                                              "call diagnoseConfig() first"
-  );
-  const auto& parsedListener = config.listeners.value()[0];
-  assert(parsedListener.udp.value().has_value() && "listener must have udp configured");
+  // --- Resolve ---
+
+  const auto& parsedListener = listener;
   auto parsedCache = config.cacheOrDefault();
   auto sock = parsedListener.udp.value()->socketOrDefault();
 
@@ -115,7 +111,7 @@ Config resolveConfig(const ParsedConfig& config) {
   }
 
   // Resolve cache
-  CacheConfig cache{
+  CacheConfig cacheConfig{
       .maxCachedTracks = parsedCache.enabledOrDefault()
                              ? static_cast<size_t>(parsedCache.maxTracksOrDefault())
                              : 0,
@@ -123,7 +119,7 @@ Config resolveConfig(const ParsedConfig& config) {
   };
 
   // Resolve listener
-  ListenerConfig listener{
+  ListenerConfig resolvedListener{
       .name = parsedListener.name.value(),
       .address = folly::SocketAddress(sock.addressOrDefault(), sock.portOrDefault()),
       .tlsMode = std::move(tlsMode),
@@ -131,9 +127,13 @@ Config resolveConfig(const ParsedConfig& config) {
       .moqtVersions = moqtVersionsToString(parsedListener),
   };
 
-  return Config{
-      .listener = std::move(listener),
-      .cache = cache,
+  return ResolvedConfig{
+      .config =
+          Config{
+              .listener = std::move(resolvedListener),
+              .cache = cacheConfig,
+          },
+      .warnings = std::move(warnings),
   };
 }
 

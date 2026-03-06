@@ -102,14 +102,15 @@ target_link_libraries(o_rly_config INTERFACE
   Folly::folly_network_address
 )
 
-# --- Config loader (YAML parsing + validation + resolution) ---
-# Application-level: ParsedConfig rfl structs, loadConfig(), diagnoseConfig(),
-# resolveConfig(). Links rfl/yaml-cpp; consumers that only need resolved Config
-# types can depend on o_rly_config alone.
+# --- Config loader (YAML parsing + validation + resolution + init) ---
+# Application-level: ParsedConfig rfl structs, loadConfig(), resolveConfig(),
+# handleConfigSubcommand(). Links rfl/yaml-cpp; consumers that only need
+# resolved Config types can depend on o_rly_config alone.
 
 add_library(o_rly_config_loader STATIC
   src/config/loader.cpp
   src/config/config_resolver.cpp
+  src/config/config_init.cpp
 )
 
 target_include_directories(o_rly_config_loader

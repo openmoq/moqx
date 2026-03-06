@@ -8,7 +8,7 @@
 #include <rfl.hpp>
 #include <rfl/yaml.hpp>
 
-#include "o_rly/config/string_literal.h"
+#include "o_rly/config/loader/string_literal.h"
 
 namespace openmoq::o_rly::config {
 
