@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build + test (ubuntu-22.04)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install system dependencies
+        run: bash deps/moxygen/standalone/install-system-deps.sh
+
+      - name: Download moxygen release tarball
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/setup-deps-tarball.sh
+
+      - name: Configure
+        run: bash scripts/configure.sh
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Test
+        run: bash scripts/test.sh
