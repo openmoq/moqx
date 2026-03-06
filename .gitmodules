@@ -1,4 +1,4 @@
 [submodule "deps/moxygen"]
 	path = deps/moxygen
 	url = git@github.com:openmoq/moxygen.git
-	branch = main
+	branch = openmoq-main
