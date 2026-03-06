@@ -35,57 +35,40 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
   }
 
   const auto& listener = config.listeners.value()[0];
+  const auto& sock = listener.udp.value().socket.value();
 
-  // Listener must have udp configured
-  if (!listener.udp.value().has_value()) {
-    errors.push_back(
-        "Listener '" + listener.name.value() + "' must have 'udp' transport configured"
-    );
-  } else {
-    // Port validation
-    auto sock = listener.udp.value()->socketOrDefault();
-    uint16_t port = sock.portOrDefault();
-    if (port == 0) {
-      errors.push_back("Listener '" + listener.name.value() + "' port must be 1-65535, got 0");
-    }
+  // Port validation
+  if (sock.port.value() == 0) {
+    errors.push_back("Listener '" + listener.name.value() + "' port must be 1-65535, got 0");
   }
 
   // TLS validation
-  if (listener.tls.value().has_value()) {
-    const auto& tls = *listener.tls.value();
-    if (!tls.insecureOrDefault()) {
-      bool hasCert = tls.cert_file.value().has_value() && !tls.cert_file.value()->empty();
-      bool hasKey = tls.key_file.value().has_value() && !tls.key_file.value()->empty();
-      if (!hasCert || !hasKey) {
-        errors.push_back(
-            "Listener '" + listener.name.value() +
-            "': cert_file and key_file are required when insecure=false"
-        );
-      }
-    } else {
-      // Warn if certs provided with insecure=true
-      bool hasCert = tls.cert_file.value().has_value() && !tls.cert_file.value()->empty();
-      bool hasKey = tls.key_file.value().has_value() && !tls.key_file.value()->empty();
-      if (hasCert || hasKey) {
-        warnings.push_back(
-            "Listener '" + listener.name.value() +
-            "': cert_file/key_file are ignored when insecure=true"
-        );
-      }
+  const auto& tls = listener.tls.value();
+  if (!tls.insecure.value()) {
+    bool hasCert = tls.cert_file.value().has_value() && !tls.cert_file.value()->empty();
+    bool hasKey = tls.key_file.value().has_value() && !tls.key_file.value()->empty();
+    if (!hasCert || !hasKey) {
+      errors.push_back(
+          "Listener '" + listener.name.value() +
+          "': cert_file and key_file are required when insecure=false"
+      );
     }
   } else {
-    // No tls config at all — default insecure=false requires certs
-    errors.push_back(
-        "Listener '" + listener.name.value() +
-        "': tls is required (set insecure: true for "
-        "plaintext mode)"
-    );
+    // Warn if certs provided with insecure=true
+    bool hasCert = tls.cert_file.value().has_value() && !tls.cert_file.value()->empty();
+    bool hasKey = tls.key_file.value().has_value() && !tls.key_file.value()->empty();
+    if (hasCert || hasKey) {
+      warnings.push_back(
+          "Listener '" + listener.name.value() +
+          "': cert_file/key_file are ignored when insecure=true"
+      );
+    }
   }
 
   // Cache validation
-  auto cache = config.cacheOrDefault();
-  if (cache.enabledOrDefault()) {
-    if (cache.maxGroupsPerTrackOrDefault() < 1) {
+  const auto& cache = config.cache.value();
+  if (cache.enabled.value()) {
+    if (cache.max_groups_per_track.value() < 1) {
       errors.push_back("cache.max_groups_per_track must be >= 1 when cache is enabled");
     }
   }
@@ -101,37 +84,30 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
 
   // --- Resolve ---
 
-  const auto& parsedListener = listener;
-  auto parsedCache = config.cacheOrDefault();
-  auto sock = parsedListener.udp.value()->socketOrDefault();
-
   // Resolve TLS mode
   TlsMode tlsMode;
-  const auto& tlsOpt = parsedListener.tls.value();
-  if (!tlsOpt.has_value() || tlsOpt->insecureOrDefault()) {
+  if (tls.insecure.value()) {
     tlsMode = Insecure{};
   } else {
     tlsMode = TlsConfig{
-        .certFile = tlsOpt->cert_file.value().value_or(""),
-        .keyFile = tlsOpt->key_file.value().value_or(""),
+        .certFile = tls.cert_file.value().value_or(""),
+        .keyFile = tls.key_file.value().value_or(""),
     };
   }
 
   // Resolve cache
   CacheConfig cacheConfig{
-      .maxCachedTracks = parsedCache.enabledOrDefault()
-                             ? static_cast<size_t>(parsedCache.maxTracksOrDefault())
-                             : 0,
-      .maxCachedGroupsPerTrack = static_cast<size_t>(parsedCache.maxGroupsPerTrackOrDefault()),
+      .maxCachedTracks = cache.enabled.value() ? static_cast<size_t>(cache.max_tracks.value()) : 0,
+      .maxCachedGroupsPerTrack = static_cast<size_t>(cache.max_groups_per_track.value()),
   };
 
   // Resolve listener
   ListenerConfig resolvedListener{
-      .name = parsedListener.name.value(),
-      .address = folly::SocketAddress(sock.addressOrDefault(), sock.portOrDefault()),
+      .name = listener.name.value(),
+      .address = folly::SocketAddress(sock.address.value(), sock.port.value()),
       .tlsMode = std::move(tlsMode),
-      .endpoint = parsedListener.endpointOrDefault(),
-      .moqtVersions = moqtVersionsToString(parsedListener),
+      .endpoint = listener.endpoint.value(),
+      .moqtVersions = moqtVersionsToString(listener),
   };
 
   return ResolvedConfig{

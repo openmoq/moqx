@@ -9,15 +9,31 @@ namespace {
 using ::testing::HasSubstr;
 using ::testing::IsEmpty;
 
-// Build a minimal valid insecure listener config (name + udp defaults + tls insecure).
+ParsedCacheConfig makeDefaultCache() {
+  ParsedCacheConfig cache;
+  cache.enabled = true;
+  cache.max_tracks = uint32_t{100};
+  cache.max_groups_per_track = uint32_t{3};
+  return cache;
+}
+
+// Build a minimal valid insecure listener config.
 ParsedConfig makeMinimalInsecureConfig(std::string name = "test") {
   ParsedConfig cfg;
   ParsedListenerConfig lc;
   lc.name = std::move(name);
-  lc.udp = ParsedUdpConfig{};
-  lc.tls = ParsedTlsConfig{};
-  lc.tls.value()->insecure = true;
+  ParsedSocketConfig sock;
+  sock.address = std::string("::");
+  sock.port = uint16_t{9668};
+  ParsedUdpConfig udp;
+  udp.socket = std::move(sock);
+  lc.udp = std::move(udp);
+  ParsedTlsConfig tls;
+  tls.insecure = true;
+  lc.tls = std::move(tls);
+  lc.endpoint = std::string("/moq-relay");
   cfg.listeners.value().push_back(std::move(lc));
+  cfg.cache = makeDefaultCache();
   return cfg;
 }
 
@@ -25,32 +41,15 @@ ParsedConfig makeMinimalInsecureConfig(std::string name = "test") {
 
 TEST(ResolveConfig, NoListeners) {
   ParsedConfig cfg;
+  cfg.cache = makeDefaultCache();
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasError());
   EXPECT_THAT(result.error(), HasSubstr("At least one listener"));
 }
 
-TEST(ResolveConfig, MissingUdp) {
-  ParsedConfig cfg;
-  ParsedListenerConfig lc;
-  lc.name = "test";
-  lc.tls = ParsedTlsConfig{};
-  lc.tls.value()->insecure = true;
-  cfg.listeners.value().push_back(std::move(lc));
-
-  auto result = resolveConfig(cfg);
-  ASSERT_TRUE(result.hasError());
-  EXPECT_THAT(result.error(), HasSubstr("udp"));
-}
-
 TEST(ResolveConfig, InsecureFalseNoCerts) {
-  ParsedConfig cfg;
-  ParsedListenerConfig lc;
-  lc.name = "test";
-  lc.udp = ParsedUdpConfig{};
-  lc.tls = ParsedTlsConfig{};
-  // insecure defaults to false, no cert/key set
-  cfg.listeners.value().push_back(std::move(lc));
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.listeners.value()[0].tls.value().insecure = false;
 
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasError());
@@ -58,47 +57,18 @@ TEST(ResolveConfig, InsecureFalseNoCerts) {
 }
 
 TEST(ResolveConfig, PortZero) {
-  ParsedConfig cfg;
-  ParsedListenerConfig lc;
-  lc.name = "test";
-  ParsedUdpConfig udp;
-  ParsedSocketConfig sock;
-  sock.port = static_cast<uint16_t>(0);
-  udp.socket = std::move(sock);
-  lc.udp = std::move(udp);
-  lc.tls = ParsedTlsConfig{};
-  lc.tls.value()->insecure = true;
-  cfg.listeners.value().push_back(std::move(lc));
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.listeners.value()[0].udp.value().socket.value().port = uint16_t{0};
 
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasError());
   EXPECT_THAT(result.error(), HasSubstr("port"));
 }
 
-TEST(ResolveConfig, NoTlsConfig) {
-  ParsedConfig cfg;
-  ParsedListenerConfig lc;
-  lc.name = "test";
-  lc.udp = ParsedUdpConfig{};
-  // No tls set at all
-  cfg.listeners.value().push_back(std::move(lc));
-
-  auto result = resolveConfig(cfg);
-  ASSERT_TRUE(result.hasError());
-  EXPECT_THAT(result.error(), HasSubstr("tls"));
-}
-
 TEST(ResolveConfig, InsecureWithCertsWarning) {
-  ParsedConfig cfg;
-  ParsedListenerConfig lc;
-  lc.name = "test";
-  lc.udp = ParsedUdpConfig{};
-  ParsedTlsConfig tls;
-  tls.insecure = true;
-  tls.cert_file = std::string("/some/cert.pem");
-  tls.key_file = std::string("/some/key.pem");
-  lc.tls = std::move(tls);
-  cfg.listeners.value().push_back(std::move(lc));
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.listeners.value()[0].tls.value().cert_file = std::string("/some/cert.pem");
+  cfg.listeners.value()[0].tls.value().key_file = std::string("/some/key.pem");
 
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasValue());
@@ -115,31 +85,24 @@ TEST(ResolveConfig, MinimalInsecure) {
   const auto& resolved = result.value().config;
 
   EXPECT_EQ(resolved.listener.name, "main");
-  EXPECT_EQ(resolved.listener.address.getPort(), ParsedSocketConfig::kDefaultPort);
+  EXPECT_EQ(resolved.listener.address.getPort(), 9668);
   EXPECT_TRUE(std::holds_alternative<Insecure>(resolved.listener.tlsMode));
-  EXPECT_EQ(resolved.listener.endpoint, ParsedListenerConfig::kDefaultEndpoint);
+  EXPECT_EQ(resolved.listener.endpoint, "/moq-relay");
   EXPECT_EQ(resolved.listener.moqtVersions, "");
   EXPECT_THAT(result.value().warnings, IsEmpty());
 
-  // Cache defaults: enabled with default values
-  EXPECT_EQ(
-      resolved.cache.maxCachedTracks,
-      static_cast<size_t>(ParsedCacheConfig::kDefaultMaxTracks)
-  );
-  EXPECT_EQ(
-      resolved.cache.maxCachedGroupsPerTrack,
-      static_cast<size_t>(ParsedCacheConfig::kDefaultMaxGroupsPerTrack)
-  );
+  EXPECT_EQ(resolved.cache.maxCachedTracks, 100u);
+  EXPECT_EQ(resolved.cache.maxCachedGroupsPerTrack, 3u);
 }
 
 TEST(ResolveConfig, FullTls) {
   ParsedConfig cfg;
   ParsedListenerConfig lc;
-  lc.name = "production";
-  ParsedUdpConfig udp;
+  lc.name = std::string("production");
   ParsedSocketConfig sock;
   sock.address = std::string("0.0.0.0");
-  sock.port = static_cast<uint16_t>(4443);
+  sock.port = uint16_t{4443};
+  ParsedUdpConfig udp;
   udp.socket = std::move(sock);
   lc.udp = std::move(udp);
   ParsedTlsConfig tls;
@@ -150,6 +113,7 @@ TEST(ResolveConfig, FullTls) {
   lc.endpoint = std::string("/relay");
   lc.moqt_versions = std::vector<uint32_t>{14, 16};
   cfg.listeners.value().push_back(std::move(lc));
+  cfg.cache = makeDefaultCache();
 
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasValue());
@@ -168,27 +132,20 @@ TEST(ResolveConfig, FullTls) {
 
 TEST(ResolveConfig, CacheDisabled) {
   auto cfg = makeMinimalInsecureConfig();
-  ParsedCacheConfig cache;
-  cache.enabled = false;
-  cfg.cache = std::move(cache);
+  cfg.cache.value().enabled = false;
 
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasValue());
   const auto& resolved = result.value().config;
   EXPECT_EQ(resolved.cache.maxCachedTracks, 0u);
-  EXPECT_EQ(
-      resolved.cache.maxCachedGroupsPerTrack,
-      static_cast<size_t>(ParsedCacheConfig::kDefaultMaxGroupsPerTrack)
-  );
+  EXPECT_EQ(resolved.cache.maxCachedGroupsPerTrack, 3u);
 }
 
 TEST(ResolveConfig, CacheCustomValues) {
   auto cfg = makeMinimalInsecureConfig();
-  ParsedCacheConfig cache;
-  cache.enabled = true;
-  cache.max_tracks = uint32_t{200};
-  cache.max_groups_per_track = uint32_t{5};
-  cfg.cache = std::move(cache);
+  cfg.cache.value().enabled = true;
+  cfg.cache.value().max_tracks = uint32_t{200};
+  cfg.cache.value().max_groups_per_track = uint32_t{5};
 
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasValue());
@@ -214,12 +171,8 @@ TEST(ResolveConfig, VersionsPopulated) {
 
 TEST(ResolveConfig, AddressResolution) {
   auto cfg = makeMinimalInsecureConfig();
-  ParsedUdpConfig udp;
-  ParsedSocketConfig sock;
-  sock.address = std::string("127.0.0.1");
-  sock.port = static_cast<uint16_t>(8080);
-  udp.socket = std::move(sock);
-  cfg.listeners.value()[0].udp = std::move(udp);
+  cfg.listeners.value()[0].udp.value().socket.value().address = std::string("127.0.0.1");
+  cfg.listeners.value()[0].udp.value().socket.value().port = uint16_t{8080};
 
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasValue());
