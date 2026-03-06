@@ -1,4 +1,4 @@
-#include <o_rly/config/loader.h>
+#include <o_rly/config/loader/loader.h>
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>

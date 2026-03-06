@@ -1,13 +1,10 @@
 #include <o_rly/ORelayServer.h>
-#include <o_rly/config/config_resolver.h>
-#include <o_rly/config/loader.h>
+#include <o_rly/config/loader/config_init.h>
 
-#include <folly/Expected.h>
 #include <folly/init/Init.h>
+#include <folly/logging/xlog.h>
 
 #include <iostream>
-#include <sstream>
-#include <string>
 #include <string_view>
 
 DEFINE_string(config, "", "Path to config file (required)");
@@ -18,63 +15,6 @@ namespace {
 namespace cfg = openmoq::o_rly::config;
 
 constexpr std::string_view kServeCommand = "serve";
-constexpr std::string_view kValidateConfigCommand = "validate-config";
-constexpr std::string_view kDumpConfigSchemaCommand = "dump-config-schema";
-
-// On success returns resolved Config for "serve" mode.
-// On error returns an exit code (for early-exit subcommands or failures).
-folly::Expected<cfg::Config, int> handleSubcommand(int argc, char* argv[]) {
-  std::string_view subcommand = kServeCommand;
-  if (argc > 1) {
-    subcommand = argv[1];
-  }
-
-  if (subcommand == kDumpConfigSchemaCommand) {
-    std::cout << cfg::generateSchema() << '\n';
-    return folly::makeUnexpected(0);
-  }
-
-  if (subcommand != kServeCommand && subcommand != kValidateConfigCommand) {
-    std::cerr << "Unknown subcommand: " << subcommand << "\n";
-    google::ShowUsageWithFlags(argv[0]);
-    return folly::makeUnexpected(1);
-  }
-
-  if (FLAGS_config.empty()) {
-    std::cerr << "Error: --config is required\n";
-    google::ShowUsageWithFlags(argv[0]);
-    return folly::makeUnexpected(1);
-  }
-
-  cfg::ParsedConfig parsed;
-  try {
-    parsed = cfg::loadConfig(FLAGS_config, FLAGS_strict_config);
-  } catch (const std::exception& e) {
-    std::cerr << "Error: " << e.what() << std::endl;
-    return folly::makeUnexpected(1);
-  }
-
-  auto diag = cfg::diagnoseConfig(parsed);
-  for (const auto& w : diag.warnings) {
-    std::cerr << "Warning: " << w << std::endl;
-  }
-  if (!diag.errors.empty()) {
-    std::ostringstream oss;
-    oss << "Config validation failed:";
-    for (const auto& err : diag.errors) {
-      oss << "\n  - " << err;
-    }
-    std::cerr << "Error: " << oss.str() << std::endl;
-    return folly::makeUnexpected(1);
-  }
-
-  if (subcommand == kValidateConfigCommand) {
-    std::cout << "Config is valid." << '\n';
-    return folly::makeUnexpected(0);
-  }
-
-  return cfg::resolveConfig(parsed);
-}
 
 std::shared_ptr<openmoq::o_rly::ORelayServer> createServer(const cfg::Config& resolved) {
   const auto& listener = resolved.listener;
@@ -111,19 +51,34 @@ int main(int argc, char* argv[]) {
 
   // === 1. Parse command-line flags/config ===
   // CLI args, config files, env vars
-  google::SetUsageMessage("o-rly MoQ relay server\n\n"
-                          "Subcommands:\n"
-                          "  serve                Start the relay (default)\n"
-                          "  validate-config      Load and validate config, then exit\n"
-                          "  dump-config-schema   Print JSON schema to stdout, then exit\n\n"
-                          "Usage: o_rly [subcommand] --config <path>");
+  google::SetUsageMessage(
+      "o-rly MoQ relay server\n\n"
+      "Subcommands:\n"
+      "  serve                Start the relay (default)\n" +
+      cfg::configSubcommandUsage() + "\nUsage: o_rly [subcommand] --config <path>"
+  );
   folly::Init init(&argc, &argv, true);
 
-  auto result = handleSubcommand(argc, argv);
+  std::string_view subcommand = kServeCommand;
+  if (argc > 1) {
+    subcommand = argv[1];
+  }
+
+  auto result = cfg::handleConfigSubcommand(subcommand, FLAGS_config, FLAGS_strict_config, argv[0]);
   if (result.hasError()) {
     return result.error();
   }
-  const auto& cfg = result.value();
+
+  for (const auto& w : result.value().warnings) {
+    XLOG(WARNING) << w;
+  }
+  const auto& config = result.value().config;
+
+  if (subcommand != kServeCommand) {
+    std::cerr << "Unknown subcommand: " << subcommand << "\n";
+    google::ShowUsageWithFlags(argv[0]);
+    return 1;
+  }
 
   // === 2. Set up logging/observability ===
   // TODO: logging framework, log levels, structured logging
@@ -143,7 +98,7 @@ int main(int argc, char* argv[]) {
   // === 6. Initialize services ===
   // Construct and configure the application's own services
   // (ORelayServer, ORelay, etc.)
-  auto server = createServer(cfg);
+  auto server = createServer(config);
 
   // === 7. Start health checks / admin endpoints ===
   // TODO: readiness/liveness probes
@@ -151,7 +106,7 @@ int main(int argc, char* argv[]) {
 
   // === 8. Start serving ===
   // Bind listeners, accept connections, enter event loop
-  server->start(cfg.listener.address);
+  server->start(config.listener.address);
   evb.loopForever();
 
   // ============================================
