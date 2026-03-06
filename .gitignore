@@ -24,3 +24,7 @@ _CPack_Packages/
 
 # OS
 .DS_Store
+
+# IDE / tools
+.vscode/
+.claude/
