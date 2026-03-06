@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  checks: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux
+            preset: default
+            build_dir: build
+          - name: asan debug
+            preset: san
+            build_dir: build-san
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install system dependencies
+        run: bash deps/moxygen/standalone/install-system-deps.sh
+
+      - name: Download moxygen release tarball
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/setup-deps-tarball.sh
+
+      - name: Configure
+        run: bash scripts/configure.sh ${{ matrix.build_dir }} ${{ matrix.preset }}
+
+      - name: Build
+        run: cmake --build ${{ matrix.build_dir }} -j$(nproc)
+
+      - name: Test
+        env:
+          ASAN_OPTIONS: ${{ matrix.name == 'asan debug' && 'detect_leaks=1:abort_on_error=1' || '' }}
+        run: ctest --test-dir ${{ matrix.build_dir }} --output-on-failure --output-junit test-results.xml
+
+      - name: Publish test results
+        uses: dorny/test-reporter@v1.9.1
+        if: success() || failure()
+        with:
+          name: "test (${{ matrix.name }})"
+          path: ${{ matrix.build_dir }}/test-results.xml
+          reporter: java-junit
