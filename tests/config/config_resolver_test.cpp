@@ -1,4 +1,4 @@
-#include <o_rly/config/config_resolver.h>
+#include <o_rly/config/loader/config_resolver.h>
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
@@ -6,7 +6,6 @@
 namespace openmoq::o_rly::config {
 namespace {
 
-using ::testing::Contains;
 using ::testing::HasSubstr;
 using ::testing::IsEmpty;
 
@@ -22,16 +21,16 @@ ParsedConfig makeMinimalInsecureConfig(std::string name = "test") {
   return cfg;
 }
 
-// --- diagnoseConfig tests (migrated from loader_test.cpp) ---
+// --- Validation error tests ---
 
-TEST(ConfigDiagnostics, NoListeners) {
+TEST(ResolveConfig, NoListeners) {
   ParsedConfig cfg;
-  auto diag = diagnoseConfig(cfg);
-  ASSERT_FALSE(diag.errors.empty());
-  EXPECT_THAT(diag.errors, Contains(HasSubstr("At least one listener")));
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("At least one listener"));
 }
 
-TEST(ConfigDiagnostics, MissingUdp) {
+TEST(ResolveConfig, MissingUdp) {
   ParsedConfig cfg;
   ParsedListenerConfig lc;
   lc.name = "test";
@@ -39,11 +38,12 @@ TEST(ConfigDiagnostics, MissingUdp) {
   lc.tls.value()->insecure = true;
   cfg.listeners.value().push_back(std::move(lc));
 
-  auto diag = diagnoseConfig(cfg);
-  EXPECT_THAT(diag.errors, Contains(HasSubstr("udp")));
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("udp"));
 }
 
-TEST(ConfigDiagnostics, InsecureFalseNoCerts) {
+TEST(ResolveConfig, InsecureFalseNoCerts) {
   ParsedConfig cfg;
   ParsedListenerConfig lc;
   lc.name = "test";
@@ -52,11 +52,12 @@ TEST(ConfigDiagnostics, InsecureFalseNoCerts) {
   // insecure defaults to false, no cert/key set
   cfg.listeners.value().push_back(std::move(lc));
 
-  auto diag = diagnoseConfig(cfg);
-  EXPECT_THAT(diag.errors, Contains(HasSubstr("cert_file")));
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("cert_file"));
 }
 
-TEST(ConfigDiagnostics, PortZero) {
+TEST(ResolveConfig, PortZero) {
   ParsedConfig cfg;
   ParsedListenerConfig lc;
   lc.name = "test";
@@ -69,11 +70,12 @@ TEST(ConfigDiagnostics, PortZero) {
   lc.tls.value()->insecure = true;
   cfg.listeners.value().push_back(std::move(lc));
 
-  auto diag = diagnoseConfig(cfg);
-  EXPECT_THAT(diag.errors, Contains(HasSubstr("port")));
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("port"));
 }
 
-TEST(ConfigDiagnostics, NoTlsConfig) {
+TEST(ResolveConfig, NoTlsConfig) {
   ParsedConfig cfg;
   ParsedListenerConfig lc;
   lc.name = "test";
@@ -81,11 +83,12 @@ TEST(ConfigDiagnostics, NoTlsConfig) {
   // No tls set at all
   cfg.listeners.value().push_back(std::move(lc));
 
-  auto diag = diagnoseConfig(cfg);
-  EXPECT_THAT(diag.errors, Contains(HasSubstr("tls")));
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("tls"));
 }
 
-TEST(ConfigDiagnostics, InsecureWithCertsWarning) {
+TEST(ResolveConfig, InsecureWithCertsWarning) {
   ParsedConfig cfg;
   ParsedListenerConfig lc;
   lc.name = "test";
@@ -97,23 +100,26 @@ TEST(ConfigDiagnostics, InsecureWithCertsWarning) {
   lc.tls = std::move(tls);
   cfg.listeners.value().push_back(std::move(lc));
 
-  auto diag = diagnoseConfig(cfg);
-  EXPECT_THAT(diag.errors, IsEmpty());
-  ASSERT_FALSE(diag.warnings.empty());
-  EXPECT_THAT(diag.warnings, Contains(HasSubstr("ignored")));
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  ASSERT_FALSE(result.value().warnings.empty());
+  EXPECT_THAT(result.value().warnings[0], HasSubstr("ignored"));
 }
 
-// --- resolveConfig tests ---
+// --- Resolution tests ---
 
 TEST(ResolveConfig, MinimalInsecure) {
   auto cfg = makeMinimalInsecureConfig("main");
-  auto resolved = resolveConfig(cfg);
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  const auto& resolved = result.value().config;
 
   EXPECT_EQ(resolved.listener.name, "main");
   EXPECT_EQ(resolved.listener.address.getPort(), ParsedSocketConfig::kDefaultPort);
   EXPECT_TRUE(std::holds_alternative<Insecure>(resolved.listener.tlsMode));
   EXPECT_EQ(resolved.listener.endpoint, ParsedListenerConfig::kDefaultEndpoint);
   EXPECT_EQ(resolved.listener.moqtVersions, "");
+  EXPECT_THAT(result.value().warnings, IsEmpty());
 
   // Cache defaults: enabled with default values
   EXPECT_EQ(
@@ -145,7 +151,9 @@ TEST(ResolveConfig, FullTls) {
   lc.moqt_versions = std::vector<uint32_t>{14, 16};
   cfg.listeners.value().push_back(std::move(lc));
 
-  auto resolved = resolveConfig(cfg);
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  const auto& resolved = result.value().config;
 
   EXPECT_EQ(resolved.listener.name, "production");
   EXPECT_EQ(resolved.listener.address.getPort(), 4443);
@@ -164,7 +172,9 @@ TEST(ResolveConfig, CacheDisabled) {
   cache.enabled = false;
   cfg.cache = std::move(cache);
 
-  auto resolved = resolveConfig(cfg);
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  const auto& resolved = result.value().config;
   EXPECT_EQ(resolved.cache.maxCachedTracks, 0u);
   EXPECT_EQ(
       resolved.cache.maxCachedGroupsPerTrack,
@@ -180,22 +190,26 @@ TEST(ResolveConfig, CacheCustomValues) {
   cache.max_groups_per_track = uint32_t{5};
   cfg.cache = std::move(cache);
 
-  auto resolved = resolveConfig(cfg);
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  const auto& resolved = result.value().config;
   EXPECT_EQ(resolved.cache.maxCachedTracks, 200u);
   EXPECT_EQ(resolved.cache.maxCachedGroupsPerTrack, 5u);
 }
 
 TEST(ResolveConfig, VersionsEmpty) {
   auto cfg = makeMinimalInsecureConfig();
-  auto resolved = resolveConfig(cfg);
-  EXPECT_EQ(resolved.listener.moqtVersions, "");
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  EXPECT_EQ(result.value().config.listener.moqtVersions, "");
 }
 
 TEST(ResolveConfig, VersionsPopulated) {
   auto cfg = makeMinimalInsecureConfig();
   cfg.listeners.value()[0].moqt_versions = std::vector<uint32_t>{14};
-  auto resolved = resolveConfig(cfg);
-  EXPECT_EQ(resolved.listener.moqtVersions, "14");
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  EXPECT_EQ(result.value().config.listener.moqtVersions, "14");
 }
 
 TEST(ResolveConfig, AddressResolution) {
@@ -207,7 +221,9 @@ TEST(ResolveConfig, AddressResolution) {
   udp.socket = std::move(sock);
   cfg.listeners.value()[0].udp = std::move(udp);
 
-  auto resolved = resolveConfig(cfg);
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  const auto& resolved = result.value().config;
   EXPECT_EQ(resolved.listener.address.getPort(), 8080);
   EXPECT_EQ(resolved.listener.address.getAddressStr(), "127.0.0.1");
 }
