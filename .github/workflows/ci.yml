@@ -56,47 +56,38 @@ jobs:
           path: ${{ matrix.build_dir }}/test-results.xml
           reporter: java-junit
 
-  notify-pr-failure:
+  notify-failure:
     runs-on: ubuntu-22.04
     needs: [build]
-    if: failure() && github.event_name == 'pull_request'
+    if: failure()
     steps:
-      - name: Notify Slack (first failure only)
+      - name: Notify Slack
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           SLACK_WEBHOOK_URL: ${{ secrets.OMOQ_SLACK_WEBHOOK_URL }}
         run: |
-          PREV=$(gh api \
-            "repos/${{ github.repository }}/actions/workflows/ci.yml/runs?branch=${{ github.head_ref }}&event=pull_request&per_page=2" \
-            --jq '.workflow_runs[1].conclusion // "none"' 2>/dev/null) || PREV="none"
-          if [ "$PREV" = "failure" ]; then
-            echo "Previous run also failed — skipping"
-            exit 0
-          fi
-          TEXT=":x: *${{ github.repository }}* \`${{ github.head_ref }}\` failed — <${{ github.event.pull_request.html_url }}|PR #${{ github.event.pull_request.number }}> · <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|run> · <${{ github.event.pull_request.html_url }}/checks|tests>"
-          curl -s -X POST "$SLACK_WEBHOOK_URL" \
-            -H "Content-Type: application/json" \
-            --data "{\"text\": \"${TEXT}\"}"
-
-  notify-main-failure:
-    runs-on: ubuntu-22.04
-    needs: [build]
-    if: failure() && github.event_name == 'push'
-    steps:
-      - name: Notify Slack
-        continue-on-error: true
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.OMOQ_SLACK_WEBHOOK_URL }}
-        run: |
-          SHORT="${GITHUB_SHA:0:12}"
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          TEXT=":x: *${{ github.repository }}* \`${{ github.ref_name }}\` \`${SHORT}\` — build failed · <${RUN_URL}|run>"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            # First-failure-only: skip if previous run on this branch also failed
+            PREV=$(gh api \
+              "repos/${{ github.repository }}/actions/workflows/ci.yml/runs?branch=${{ github.head_ref }}&event=pull_request&per_page=2" \
+              --jq '.workflow_runs[1].conclusion // "none"' 2>/dev/null) || PREV="none"
+            if [ "$PREV" = "failure" ]; then
+              echo "Previous run also failed — skipping"
+              exit 0
+            fi
+            TEXT=":x: *${{ github.repository }}* \`${{ github.head_ref }}\` failed — <${{ github.event.pull_request.html_url }}|PR #${{ github.event.pull_request.number }}> · <${RUN_URL}|run> · <${{ github.event.pull_request.html_url }}/checks|tests>"
+          else
+            SHORT="${GITHUB_SHA:0:12}"
+            TEXT=":x: *${{ github.repository }}* \`${{ github.ref_name }}\` \`${SHORT}\` — build failed · <${RUN_URL}|run>"
+          fi
           curl -s -X POST "$SLACK_WEBHOOK_URL" \
             -H "Content-Type: application/json" \
             --data "{\"text\": \"${TEXT}\"}"
 
-      - name: Notify email
+      - name: Notify email (main only)
+        if: github.event_name == 'push'
         continue-on-error: true
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.OMOQ_AWS_ACCESS_KEY_ID }}
