@@ -10,7 +10,7 @@ on:
 
 permissions:
   contents: write
-  packages: write  # reserved for future Docker image publishing
+  packages: write  # for Docker image publishing to GHCR
 
 jobs:
   build:
@@ -57,6 +57,20 @@ jobs:
       - name: Install
         run: cmake --install _build --prefix "$GITHUB_WORKSPACE/install"
 
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Build and push Docker image
+        run: |
+          SHORT="${GITHUB_SHA:0:12}"
+          IMAGE="ghcr.io/${{ github.repository }}"
+          docker build -f docker/Dockerfile \
+            -t "${IMAGE}:build-${SHORT}" \
+            -t "${IMAGE}:latest" \
+            .
+          docker push "${IMAGE}:build-${SHORT}"
+          docker push "${IMAGE}:latest"
+
       - name: Package
         id: package
         run: |
@@ -95,7 +109,7 @@ jobs:
           gh release create "$TAG" artifacts/**/* \
             --repo "${{ github.repository }}" \
             --title "build ${SHORT}" \
-            --notes "Automated release from \`${{ github.ref_name }}\` at \`${SHORT}\`."
+            --notes "Automated release from \`${{ github.ref_name }}\` at \`${SHORT}\`. Docker: \`ghcr.io/${{ github.repository }}:build-${SHORT}\`."
 
           # Prune old releases, keep 20
           gh api "repos/${{ github.repository }}/releases" \
