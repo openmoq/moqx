@@ -6,6 +6,7 @@
 #include <proxygen/httpserver/RequestHandlerFactory.h>
 #include <proxygen/httpserver/ResponseBuilder.h>
 #include <proxygen/httpserver/ScopedHTTPServer.h>
+#include <proxygen/lib/http/HTTPMessage.h>
 
 namespace openmoq::o_rly::admin {
 
@@ -65,7 +66,7 @@ public:
     // Unknown route → 404
     return new AdminRequestHandler([](auto /*req*/, auto /*body*/, auto* downstream) {
       proxygen::ResponseBuilder(downstream)
-          .status(404, "Not Found")
+          .status(404, proxygen::HTTPMessage::getDefaultReason(404))
           .body(folly::IOBuf::copyBuffer("Not Found\n"))
           .sendWithEOM();
     });
@@ -83,12 +84,15 @@ AdminServer::AdminServer() = default;
 AdminServer::~AdminServer() = default;
 
 void AdminServer::addRoute(std::string method, std::string path, RouteHandler handler) {
+  XCHECK(!httpServer_) << "addRoute() called after start()";
   routes_.push_back({std::move(method), std::move(path), std::move(handler)});
 }
 
+static constexpr int kAdminServerThreads = 1;
+
 bool AdminServer::start(uint16_t port) {
   proxygen::HTTPServerOptions options;
-  options.threads = 1;
+  options.threads = kAdminServerThreads;
   options.handlerFactories.push_back(std::make_unique<AdminHandlerFactory>(routes_));
 
   proxygen::HTTPServer::IPConfig cfg{
