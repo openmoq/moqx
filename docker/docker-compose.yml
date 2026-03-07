@@ -2,17 +2,22 @@ name: o-rly
 
 # Usage:
 #
-#   Initial setup:
-#     cp docker/.env.example docker/.env   # fill in DOMAIN, CERTBOT_EMAIL
+#   Initial cert — Cloudflare DNS:
 #     cp docker/cloudflare.ini.example docker/cloudflare.ini  # fill in API token
-#     docker compose -f docker/docker-compose.yml --profile certbot run --rm certbot
+#     docker compose -f docker/docker-compose.yml --profile certbot-cloudflare run --rm certbot-cloudflare
+#
+#   Initial cert — Route53 DNS (AWS):
+#     Add AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY to docker/.env
+#     docker compose -f docker/docker-compose.yml --profile certbot-route53 run --rm certbot-route53
+#
+#   Renew (replace 'certbot-route53' with 'certbot-cloudflare' as appropriate):
+#     docker compose -f docker/docker-compose.yml --profile certbot-route53 run --rm certbot-route53 renew
+#
+#   Run the relay:
 #     docker compose -f docker/docker-compose.yml up -d
 #
-#   Cert renewal (run periodically, e.g. monthly via cron):
-#     docker compose -f docker/docker-compose.yml --profile certbot run --rm certbot renew
-#
-#   Custom cert (e.g. self-signed or purchased):
-#     Set ORLY_CERT and ORLY_KEY in .env to the mounted paths directly.
+#   Custom / self-signed cert (no certbot):
+#     Set ORLY_CERT and ORLY_KEY in docker/.env to point to your mounted cert files.
 
 services:
   o-rly:
@@ -26,10 +31,10 @@ services:
       ORLY_CERT: /certs/live/${DOMAIN}/fullchain.pem
       ORLY_KEY:  /certs/live/${DOMAIN}/privkey.pem
 
-  # Certbot: issue and renew Let's Encrypt certs via DNS-01 challenge (Cloudflare).
-  # Swap the image for your DNS provider: certbot/dns-route53, certbot/dns-google, etc.
-  # See https://eff-certbot.readthedocs.io/en/stable/install.html#running-with-docker
-  certbot:
+  # Cloudflare DNS-01 challenge.
+  # Requires: docker/cloudflare.ini (see cloudflare.ini.example)
+  # Docs: https://certbot-dns-cloudflare.readthedocs.io
+  certbot-cloudflare:
     image: certbot/dns-cloudflare
     volumes:
       - certs:/etc/letsencrypt
@@ -42,7 +47,28 @@ services:
       --dns-cloudflare
       --dns-cloudflare-credentials /run/secrets/cloudflare.ini
       -d ${DOMAIN}
-    profiles: [certbot]
+    profiles: [certbot-cloudflare]
+
+  # Route53 DNS-01 challenge.
+  # Requires: AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY in docker/.env
+  # IAM policy: see route53-iam-policy.json
+  # Docs: https://certbot-dns-route53.readthedocs.io
+  certbot-route53:
+    image: certbot/dns-route53
+    volumes:
+      - certs:/etc/letsencrypt
+    environment:
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
+    command: >
+      certonly
+      --non-interactive
+      --agree-tos
+      --email ${CERTBOT_EMAIL}
+      --dns-route53
+      -d ${DOMAIN}
+    profiles: [certbot-route53]
 
 volumes:
   certs:
