@@ -1,0 +1,48 @@
+name: o-rly
+
+# Usage:
+#
+#   Initial setup:
+#     cp docker/.env.example docker/.env   # fill in DOMAIN, CERTBOT_EMAIL
+#     cp docker/cloudflare.ini.example docker/cloudflare.ini  # fill in API token
+#     docker compose -f docker/docker-compose.yml --profile certbot run --rm certbot
+#     docker compose -f docker/docker-compose.yml up -d
+#
+#   Cert renewal (run periodically, e.g. monthly via cron):
+#     docker compose -f docker/docker-compose.yml --profile certbot run --rm certbot renew
+#
+#   Custom cert (e.g. self-signed or purchased):
+#     Set ORLY_CERT and ORLY_KEY in .env to the mounted paths directly.
+
+services:
+  o-rly:
+    image: ghcr.io/openmoq/o-rly:latest
+    restart: unless-stopped
+    ports:
+      - "${ORLY_PORT:-9668}:9668/udp"
+    volumes:
+      - certs:/certs:ro
+    environment:
+      ORLY_CERT: /certs/live/${DOMAIN}/fullchain.pem
+      ORLY_KEY:  /certs/live/${DOMAIN}/privkey.pem
+
+  # Certbot: issue and renew Let's Encrypt certs via DNS-01 challenge (Cloudflare).
+  # Swap the image for your DNS provider: certbot/dns-route53, certbot/dns-google, etc.
+  # See https://eff-certbot.readthedocs.io/en/stable/install.html#running-with-docker
+  certbot:
+    image: certbot/dns-cloudflare
+    volumes:
+      - certs:/etc/letsencrypt
+      - ./cloudflare.ini:/run/secrets/cloudflare.ini:ro
+    command: >
+      certonly
+      --non-interactive
+      --agree-tos
+      --email ${CERTBOT_EMAIL}
+      --dns-cloudflare
+      --dns-cloudflare-credentials /run/secrets/cloudflare.ini
+      -d ${DOMAIN}
+    profiles: [certbot]
+
+volumes:
+  certs:
