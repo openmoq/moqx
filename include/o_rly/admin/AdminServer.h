@@ -47,7 +47,7 @@ public:
   AdminServer();
   ~AdminServer();
 
-  // Register a route. Must be called before start().
+  // Register a route. Must be called before start(); CHECKs if called after.
   void addRoute(std::string method, std::string path, RouteHandler handler);
 
   // Start the HTTP admin server on the given port. Blocks until the server is

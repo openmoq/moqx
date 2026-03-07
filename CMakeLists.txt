@@ -52,6 +52,7 @@ target_link_libraries(o_rly_core PUBLIC
 )
 
 target_compile_options(o_rly_core PRIVATE -Wall -Wextra -Wpedantic)
+target_compile_definitions(o_rly_core PRIVATE ORLY_VERSION="${PROJECT_VERSION}")
 
 add_executable(o_rly
   src/main.cpp

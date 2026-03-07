@@ -19,7 +19,7 @@ DEFINE_string(
 );
 DEFINE_int32(max_cached_tracks, 100, "Maximum number of cached tracks (0 to disable caching)");
 DEFINE_int32(max_cached_groups_per_track, 3, "Maximum groups per track in cache");
-DEFINE_int32(admin_port, 9669, "HTTP admin port (0 to disable)");
+DEFINE_int32(admin_port, 9669, "HTTP admin port");
 
 int main(int argc, char* argv[]) {
 
@@ -69,14 +69,11 @@ int main(int argc, char* argv[]) {
 
   // === 7. Start health checks / admin endpoints ===
   openmoq::o_rly::admin::AdminServer adminServer;
-  if (FLAGS_admin_port != 0) {
-    openmoq::o_rly::admin::registerBuiltinRoutes(adminServer);
-    if (!adminServer.start(static_cast<uint16_t>(FLAGS_admin_port))) {
-      XLOG(ERR) << "Failed to start admin server on port " << FLAGS_admin_port;
-    } else {
-      XLOG(INFO) << "Admin server listening on port " << FLAGS_admin_port;
-    }
+  openmoq::o_rly::admin::registerBuiltinRoutes(adminServer);
+  if (!adminServer.start(static_cast<uint16_t>(FLAGS_admin_port))) {
+    XLOG(FATAL) << "Failed to start admin server on port " << FLAGS_admin_port;
   }
+  XLOG(INFO) << "Admin server listening on port " << FLAGS_admin_port;
 
   // === 8. Start serving ===
   // Bind listeners, accept connections, enter event loop
