@@ -45,7 +45,7 @@ detect_platform() {
         local darch="${arch/x86_64/amd64}"
         darch="${darch/aarch64/arm64}"
         case "$ID" in
-            ubuntu) echo "ubuntu-${VERSION_ID}-${arch}" ;;
+            ubuntu) echo "ubuntu-${VERSION_ID}-${darch}" ;;
             debian) echo "bookworm-${darch}" ;;
             *)
                 echo "Error: unsupported Linux distro: $ID" >&2
