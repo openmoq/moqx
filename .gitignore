@@ -28,3 +28,7 @@ _CPack_Packages/
 # IDE / tools
 .vscode/
 .claude/
+
+# Docker secrets (never commit)
+docker/.env
+docker/cloudflare.ini
