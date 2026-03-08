@@ -1,0 +1,44 @@
+name: notify ci failure
+
+# Fires after the build workflow completes — invisible to PR checks.
+# Push-to-main failures are handled by the publish release workflow.
+
+on:
+  workflow_run:
+    workflows: ["build"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    if: |
+      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Notify Slack (first failure only)
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SLACK_WEBHOOK_URL: ${{ secrets.OMOQ_SLACK_WEBHOOK_URL }}
+        run: |
+          BRANCH="${{ github.event.workflow_run.head_branch }}"
+          RUN_URL="${{ github.event.workflow_run.html_url }}"
+          PR_NUMBER=$(echo '${{ toJSON(github.event.workflow_run.pull_requests) }}' | jq -r '.[0].number // empty')
+          PR_URL="${{ github.server_url }}/${{ github.repository }}/pull/${PR_NUMBER}"
+
+          # First-failure-only: skip if previous run on this branch also failed
+          PREV=$(gh api \
+            "repos/${{ github.repository }}/actions/workflows/ci.yml/runs?branch=${BRANCH}&event=pull_request&per_page=2" \
+            --jq '.workflow_runs[1].conclusion // "none"' 2>/dev/null) || PREV="none"
+          if [ "$PREV" = "failure" ]; then
+            echo "Previous run also failed — skipping"
+            exit 0
+          fi
+
+          TEXT=":x: *${{ github.repository }}* \`${BRANCH}\` failed — <${PR_URL}|PR #${PR_NUMBER}> · <${RUN_URL}|run> · <${PR_URL}/checks|tests>"
+          curl -s -X POST "$SLACK_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            --data "{\"text\": \"${TEXT}\"}"
