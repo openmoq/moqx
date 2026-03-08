@@ -1,7 +1,7 @@
-name: publish release
+name: publish artifacts
 
 # Builds o-rly on each target platform and publishes per-architecture
-# artifact tarballs as a GitHub Release keyed by commit SHA.
+# artifact tarballs as a rolling GitHub pre-release (snapshot-latest).
 
 on:
   push:
@@ -20,6 +20,8 @@ jobs:
         include:
           - name: ubuntu-22.04-amd64
             runner: ubuntu-22.04
+          - name: macos-15-arm64
+            runner: macos-15
 
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
@@ -52,23 +54,25 @@ jobs:
             -DBUILD_TESTING=OFF
 
       - name: Build
-        run: cmake --build _build -j$(nproc)
+        run: cmake --build _build -j$(getconf _NPROCESSORS_ONLN)
 
       - name: Install
         run: cmake --install _build --prefix "$GITHUB_WORKSPACE/install"
 
       - name: Log in to GHCR
+        if: runner.os == 'Linux'
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
       - name: Build and push Docker image
+        if: runner.os == 'Linux'
         run: |
-          SHORT="${GITHUB_SHA:0:12}"
+          SHORT="${GITHUB_SHA:0:7}"
           IMAGE="ghcr.io/${{ github.repository }}"
           docker build -f docker/Dockerfile \
-            -t "${IMAGE}:build-${SHORT}" \
+            -t "${IMAGE}:${SHORT}" \
             -t "${IMAGE}:latest" \
             .
-          docker push "${IMAGE}:build-${SHORT}"
+          docker push "${IMAGE}:${SHORT}"
           docker push "${IMAGE}:latest"
 
       - name: Package
@@ -99,24 +103,31 @@ jobs:
         with:
           path: artifacts/
 
-      - name: Create release
+      - name: Publish snapshot
         if: needs.build.result == 'success'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          SHORT="${GITHUB_SHA:0:12}"
-          TAG="build-${SHORT}"
-          gh release create "$TAG" artifacts/**/* \
-            --repo "${{ github.repository }}" \
-            --title "build ${SHORT}" \
-            --notes "Automated release from \`${{ github.ref_name }}\` at \`${SHORT}\`. Docker: \`ghcr.io/${{ github.repository }}:build-${SHORT}\`."
+          SHORT="${GITHUB_SHA:0:7}"
+          TAG="snapshot-latest"
 
-          # Prune old releases, keep 20
-          gh api "repos/${{ github.repository }}/releases" \
-            --jq 'sort_by(.created_at) | reverse | .[20:] | .[].tag_name' \
-          | while read -r tag; do
-              gh release delete "$tag" --repo "${{ github.repository }}" --yes --cleanup-tag 2>/dev/null || true
-            done
+          gh release delete "$TAG" --yes 2>/dev/null || true
+          git tag -d "$TAG" 2>/dev/null || true
+          git push origin ":refs/tags/$TAG" 2>/dev/null || true
+
+          gh release create "$TAG" artifacts/**/* \
+            --title "Latest build ($SHORT)" \
+            --prerelease \
+            --notes "$(cat <<EOF
+          Rolling snapshot of the latest build from \`main\`.
+
+          **Commit:** \`${GITHUB_SHA}\`
+          **Built:** $(date -u +%Y-%m-%dT%H:%M:%SZ)
+          **Docker:** \`ghcr.io/${{ github.repository }}:${SHORT}\`
+
+          This pre-release is automatically replaced on every push to \`main\`.
+          EOF
+          )"
 
       - name: Notify Slack
         if: always()
@@ -124,13 +135,13 @@ jobs:
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.OMOQ_SLACK_WEBHOOK_URL }}
         run: |
-          SHORT="${GITHUB_SHA:0:12}"
+          SHORT="${GITHUB_SHA:0:7}"
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           if [ "${{ needs.build.result }}" = "success" ]; then
-            REL_URL="${{ github.server_url }}/${{ github.repository }}/releases/tag/build-${SHORT}"
-            TEXT=":white_check_mark: *${{ github.repository }}* \`${{ github.ref_name }}\` \`${SHORT}\` — <${REL_URL}|release> · <${RUN_URL}|run>"
+            REL_URL="${{ github.server_url }}/${{ github.repository }}/releases/tag/snapshot-latest"
+            TEXT=":white_check_mark: *${{ github.repository }}* \`${{ github.ref_name }}\` \`${SHORT}\` — run: <${RUN_URL}|#${{ github.run_number }}> artifacts: <${REL_URL}|view>"
           else
-            TEXT=":x: *${{ github.repository }}* \`${{ github.ref_name }}\` \`${SHORT}\` — build failed · <${RUN_URL}|run>"
+            TEXT=":x: *${{ github.repository }}* \`${{ github.ref_name }}\` \`${SHORT}\` — run: <${RUN_URL}|#${{ github.run_number }}>"
           fi
           curl -s -X POST "$SLACK_WEBHOOK_URL" \
             -H "Content-Type: application/json" \
@@ -144,21 +155,20 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.OMOQ_AWS_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: us-east-1
         run: |
-          SHORT="${GITHUB_SHA:0:12}"
+          SHORT="${GITHUB_SHA:0:7}"
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          REPO_NAME="${{ github.event.repository.name }}"
-          RESULT="${{ needs.build.result }}"
-          JOB_STATUS="${{ job.status }}"
-          if [ "$RESULT" = "success" ] && [ "$JOB_STATUS" = "success" ]; then
-            SUBJECT="[${REPO_NAME}] published ${{ github.ref_name }} ${SHORT}"
+          if [ "${{ needs.build.result }}" = "success" ]; then
+            REL_URL="${{ github.server_url }}/${{ github.repository }}/releases/tag/snapshot-latest"
+            SUBJECT="[o-rly] published ${{ github.ref_name }} ${SHORT}"
+            BODY="Repository: ${{ github.repository }}\nBranch: ${{ github.ref_name }}\nCommit: ${GITHUB_SHA}\nDocker: ghcr.io/${{ github.repository }}:${SHORT}\nArtifacts: ${REL_URL}\nRun: ${RUN_URL}"
           else
-            SUBJECT="[${REPO_NAME}] build FAILED ${{ github.ref_name }} ${SHORT}"
+            SUBJECT="[o-rly] build FAILED ${{ github.ref_name }} ${SHORT}"
+            BODY="Repository: ${{ github.repository }}\nBranch: ${{ github.ref_name }}\nCommit: ${GITHUB_SHA}\nRun: ${RUN_URL}"
           fi
-          BODY="${{ github.repository }} · ${{ github.ref_name }} · ${SHORT}\n${RUN_URL}"
           aws ses send-email \
             --from "noreply@ci.openmoq.org" \
             --destination '{"ToAddresses":["github-notifications@openmoq.org"]}' \
             --message "{
-              \"Subject\": {\"Data\": \"$SUBJECT\"},
-              \"Body\": {\"Text\": {\"Data\": \"$BODY\"}}
+              \"Subject\": {\"Data\": \"${SUBJECT}\"},
+              \"Body\": {\"Text\": {\"Data\": \"${BODY}\"}}
             }"

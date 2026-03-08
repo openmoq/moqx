@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # setup-deps-tarball.sh — Populate .scratch with prebuilt moxygen release artifacts.
 #
-# Downloads the release tarball from openmoq/moxygen matching the current
-# submodule commit. Writes .scratch/cmake_prefix_path.txt for configure.sh.
+# Downloads the snapshot-latest release tarball from openmoq/moxygen.
+# Writes .scratch/cmake_prefix_path.txt for configure.sh.
 #
 # Usage:
 #   ./scripts/setup-deps-tarball.sh
@@ -61,19 +61,18 @@ detect_platform() {
 PLATFORM=$(detect_platform)
 echo "==> Platform: $PLATFORM"
 
-# ── Find release matching submodule SHA ───────────────────────────────────────
+# ── Download from snapshot-latest ─────────────────────────────────────────────
 
 SHA=$(git -C "$MOXYGEN_DIR" rev-parse HEAD)
-TAG="build-${SHA:0:12}"
-echo "==> Moxygen SHA: ${SHA:0:12}  →  release tag: $TAG"
+TAG="snapshot-latest"
+echo "==> Moxygen submodule SHA: ${SHA:0:7}"
+echo "==> Downloading from release: $TAG"
 
 if ! gh api "repos/openmoq/moxygen/releases/tags/$TAG" --jq '.tag_name' >/dev/null 2>&1; then
     echo "Error: release $TAG not found in openmoq/moxygen." >&2
-    echo "  The publish workflow may not have run yet for this commit." >&2
+    echo "  The publish workflow may not have run yet." >&2
     exit 1
 fi
-
-# ── Download ──────────────────────────────────────────────────────────────────
 
 TARBALL="moxygen-${PLATFORM}.tar.gz"
 DOWNLOAD_DIR="${SCRATCH}/downloads"

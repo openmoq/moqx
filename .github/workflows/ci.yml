@@ -1,4 +1,4 @@
-name: build
+name: verify
 
 on:
   pull_request:
@@ -19,11 +19,17 @@ jobs:
           - name: linux
             preset: default
             build_dir: build
+            runner: ubuntu-22.04
+          - name: macos
+            preset: default
+            build_dir: build
+            runner: macos-15
           - name: asan debug
             preset: san
             build_dir: build-san
+            runner: ubuntu-22.04
     name: ${{ matrix.name }}
-    runs-on: ubuntu-22.04
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -41,7 +47,7 @@ jobs:
         run: bash scripts/configure.sh ${{ matrix.build_dir }} ${{ matrix.preset }}
 
       - name: Build
-        run: cmake --build ${{ matrix.build_dir }} -j$(nproc)
+        run: cmake --build ${{ matrix.build_dir }} -j$(getconf _NPROCESSORS_ONLN)
 
       - name: Test
         env:
