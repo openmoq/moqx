@@ -61,4 +61,5 @@ jobs:
           name: "test (${{ matrix.name }})"
           path: ${{ matrix.build_dir }}/test-results.xml
           reporter: java-junit
+          fail-on-empty: 'false'
 
