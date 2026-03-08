@@ -2,8 +2,29 @@
 #include <o_rly/admin/AdminServer.h>
 #include <o_rly/admin/BuiltinRoutes.h>
 
+#include <csignal>
+
 #include <folly/init/Init.h>
+#include <folly/io/async/AsyncSignalHandler.h>
 #include <folly/logging/xlog.h>
+
+namespace {
+
+class ShutdownSignalHandler : public folly::AsyncSignalHandler {
+public:
+  explicit ShutdownSignalHandler(folly::EventBase* evb)
+      : AsyncSignalHandler(evb) {
+    registerSignalHandler(SIGTERM);
+    registerSignalHandler(SIGINT);
+  }
+
+  void signalReceived(int signum) noexcept override {
+    XLOG(INFO) << "Received signal " << signum << ", shutting down";
+    getEventBase()->terminateLoopSoon();
+  }
+};
+
+} // namespace
 
 DEFINE_string(cert, "", "Cert path");
 DEFINE_string(key, "", "Key path");
@@ -35,12 +56,11 @@ int main(int argc, char* argv[]) {
   // (currently handled implicitly by folly::Init)
 
   // === 3. Set up signal handling ===
-  // TODO: SIGINT, SIGTERM handlers for graceful shutdown
-  // Use a shutdown promise/future triggered by signals
+  folly::EventBase evb;
+  ShutdownSignalHandler signalHandler(&evb);
 
   // === 4. Initialize resources ===
   // TODO: thread pools, event loops, IO contexts
-  folly::EventBase evb;
 
   // === 5. Initialize dependencies ===
   // TODO: TBD
