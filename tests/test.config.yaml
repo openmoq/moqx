@@ -1,0 +1,14 @@
+# Minimal config for integration tests (insecure, no TLS).
+listeners:
+  - name: main
+    udp:
+      socket:
+        address: "::"
+        port: 9668
+    tls:
+      insecure: true
+    endpoint: "/moq-relay"
+cache:
+  enabled: true
+  max_tracks: 100
+  max_groups_per_track: 3
