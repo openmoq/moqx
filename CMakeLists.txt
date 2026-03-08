@@ -79,6 +79,11 @@ if(ORLY_BUILD_TESTS)
   )
   include(GoogleTest)
   gtest_discover_tests(o_rly_relay_test)
+
+  add_test(
+    NAME admin_info_endpoint
+    COMMAND bash ${PROJECT_SOURCE_DIR}/tests/test_admin_info.sh $<TARGET_FILE:o_rly>
+  )
 endif()
 
 include(${PROJECT_SOURCE_DIR}/cmake/Lint.cmake)
