@@ -2,6 +2,7 @@
 set -euo pipefail
 
 BINARY="${1:-$(dirname "$0")/../build/o_rly}"
+TESTDIR="$(cd "$(dirname "$0")" && pwd)"
 ADMIN_PORT=9669
 ADMIN_URL="http://localhost:${ADMIN_PORT}/info"
 
@@ -10,8 +11,8 @@ if [[ ! -x "$BINARY" ]]; then
   exit 1
 fi
 
-# Start o_rly in insecure mode (no TLS needed for this test) in the background.
-"$BINARY" --insecure --admin_port="$ADMIN_PORT" &
+# Start o_rly with test config in the background.
+"$BINARY" --config="$TESTDIR/test.config.yaml" --admin_port="$ADMIN_PORT" &
 O_RLY_PID=$!
 trap 'kill "$O_RLY_PID" 2>/dev/null; wait "$O_RLY_PID" 2>/dev/null || true' EXIT
 
