@@ -2,6 +2,8 @@
 
 #include <folly/String.h>
 
+#include "o_rly/tls/tls_provider_registry.h"
+
 namespace openmoq::o_rly::config {
 
 namespace {
@@ -13,41 +15,12 @@ std::string moqtVersionsToString(const ParsedListenerConfig& listener) {
   return folly::join(',', *listener.moqt_versions.value());
 }
 
-void validateListenerTlsConfig(
-    const ParsedListenerTlsConfig& tls,
-    std::string_view context,
-    std::vector<std::string>& errors,
-    std::vector<std::string>& warnings
-) {
-  bool hasCert = tls.cert_file.value().has_value() && !tls.cert_file.value()->empty();
-  bool hasKey = tls.key_file.value().has_value() && !tls.key_file.value()->empty();
-  if (!tls.insecure.value()) {
-    if (!hasCert || !hasKey) {
-      errors.push_back(
-          std::string(context) + ": cert_file and key_file are required when insecure=false"
-      );
-    }
-  } else if (hasCert || hasKey) {
-    warnings.push_back(
-        std::string(context) + ": cert_file/key_file are ignored when insecure=true"
-    );
-  }
-}
-
 void validateAdminTlsConfig(const ParsedAdminTlsConfig& tls, std::vector<std::string>& errors) {
   bool hasCert = tls.cert_file.value().has_value() && !tls.cert_file.value()->empty();
   bool hasKey = tls.key_file.value().has_value() && !tls.key_file.value()->empty();
   if (!hasCert || !hasKey) {
     errors.push_back("admin.tls: cert_file and key_file are required");
   }
-}
-
-TlsConfig resolveTlsConfig(const ParsedListenerTlsConfig& tls) {
-  return TlsConfig{
-      .certFile = tls.cert_file.value().value_or(""),
-      .keyFile = tls.key_file.value().value_or(""),
-      .alpn = {},
-  };
 }
 
 TlsConfig resolveAdminTlsConfig(
@@ -63,7 +36,8 @@ TlsConfig resolveAdminTlsConfig(
 
 } // namespace
 
-folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& config) {
+folly::Expected<ResolvedConfig, std::string>
+resolveConfig(const ParsedConfig& config, const tls::TlsProviderRegistry& registry) {
   std::vector<std::string> errors;
   std::vector<std::string> warnings;
 
@@ -88,13 +62,29 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
     errors.push_back("Listener '" + listener.name.value() + "' port must be 1-65535, got 0");
   }
 
-  // TLS validation
-  validateListenerTlsConfig(
-      listener.tls.value(),
-      "Listener '" + listener.name.value() + "'",
-      errors,
-      warnings
-  );
+  // TLS: extract type string from variant, look up factory, invoke it
+  std::shared_ptr<tls::TlsCertProvider> tlsProvider;
+  listener.tls.visit([&](const auto& variant) {
+    using T = std::decay_t<decltype(variant)>;
+    auto type = typename T::Tag{}.name();
+
+    auto* factory = registry.getFactory(type);
+    if (!factory) {
+      errors.push_back(
+          "Listener '" + listener.name.value() + "': unknown TLS type '" + type + "'"
+      );
+      return;
+    }
+    auto result = (*factory)(listener.tls);
+    if (result.hasError()) {
+      errors.push_back(
+          "Listener '" + listener.name.value() + "': " + result.error()
+      );
+      return;
+    }
+    tlsProvider = std::move(result.value());
+  });
+
   // Admin config validation
   const auto& adminOptional = config.admin.value();
   if (adminOptional.has_value()) {
@@ -127,15 +117,6 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
 
   // --- Resolve ---
 
-  // Resolve listener TLS mode
-  const auto& tls = listener.tls.value();
-  TlsMode tlsMode;
-  if (tls.insecure.value()) {
-    tlsMode = Insecure{};
-  } else {
-    tlsMode = resolveTlsConfig(tls);
-  }
-
   // Resolve cache
   CacheConfig cacheConfig{
       .maxCachedTracks = cache.enabled.value() ? static_cast<size_t>(cache.max_tracks.value()) : 0,
@@ -146,7 +127,7 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
   ListenerConfig resolvedListener{
       .name = listener.name.value(),
       .address = folly::SocketAddress(sock.address.value(), sock.port.value()),
-      .tlsMode = std::move(tlsMode),
+      .tlsProvider = std::move(tlsProvider),
       .endpoint = listener.endpoint.value(),
       .moqtVersions = moqtVersionsToString(listener),
   };

@@ -2,12 +2,17 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <variant>
 #include <vector>
 
 #include <folly/SocketAddress.h>
+
+namespace openmoq::o_rly::tls {
+class TlsCertProvider;
+} // namespace openmoq::o_rly::tls
 
 namespace openmoq::o_rly::config {
 
@@ -17,10 +22,6 @@ struct TlsConfig {
   std::vector<std::string> alpn; // must be empty for QUIC listener: ALPN derived from moqt_versions
 };
 
-struct Insecure {};
-
-using TlsMode = std::variant<Insecure, TlsConfig>;
-
 struct CacheConfig {
   size_t maxCachedTracks; // 0 when cache disabled
   size_t maxCachedGroupsPerTrack;
@@ -29,7 +30,7 @@ struct CacheConfig {
 struct ListenerConfig {
   std::string name;
   folly::SocketAddress address;
-  TlsMode tlsMode;
+  std::shared_ptr<tls::TlsCertProvider> tlsProvider;
   std::string endpoint;
   std::string moqtVersions; // comma-separated string
 };
