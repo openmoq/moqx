@@ -14,7 +14,6 @@
 
 DEFINE_string(config, "", "Path to config file (required)");
 DEFINE_bool(strict_config, false, "Reject unknown config fields");
-DEFINE_int32(admin_port, 9669, "HTTP admin port");
 
 namespace {
 
@@ -121,10 +120,10 @@ int main(int argc, char* argv[]) {
   // === 7. Start health checks / admin endpoints ===
   openmoq::o_rly::admin::AdminServer adminServer;
   openmoq::o_rly::admin::registerBuiltinRoutes(adminServer);
-  if (!adminServer.start(static_cast<uint16_t>(FLAGS_admin_port))) {
-    XLOG(FATAL) << "Failed to start admin server on port " << FLAGS_admin_port;
+  if (!adminServer.start(config.adminPort)) {
+    XLOG(FATAL) << "Failed to start admin server on port " << config.adminPort;
   }
-  XLOG(INFO) << "Admin server listening on port " << FLAGS_admin_port;
+  XLOG(INFO) << "Admin server listening on port " << config.adminPort;
 
   // === 8. Start serving ===
   // Bind listeners, accept connections, enter event loop

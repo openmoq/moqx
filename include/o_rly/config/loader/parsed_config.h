@@ -49,12 +49,17 @@ struct ParsedCacheConfig {
       max_groups_per_track;
 };
 
+struct ParsedAdminConfig {
+  rfl::Description<"HTTP admin server port, 1-65535", uint16_t> port;
+};
+
 struct ParsedConfig {
   rfl::Description<
       "Listener definitions (currently exactly one supported)",
       std::vector<ParsedListenerConfig>>
       listeners;
   rfl::Description<"Relay cache settings", ParsedCacheConfig> cache;
+  rfl::Description<"Admin HTTP server settings", ParsedAdminConfig> admin;
 };
 
 } // namespace openmoq::o_rly::config

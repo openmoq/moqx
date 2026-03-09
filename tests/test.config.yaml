@@ -12,3 +12,5 @@ cache:
   enabled: true
   max_tracks: 100
   max_groups_per_track: 3
+admin:
+  port: 9669

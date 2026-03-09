@@ -18,3 +18,6 @@ cache:
   enabled: true               # Enable relay cache
   max_tracks: 100             # Max number of cached tracks
   max_groups_per_track: 3     # Max groups per track in cache
+
+admin:
+  port: 9669                  # HTTP admin server port

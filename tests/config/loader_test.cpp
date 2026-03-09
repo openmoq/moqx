@@ -29,6 +29,8 @@ cache:
   enabled: true
   max_tracks: 100
   max_groups_per_track: 3
+admin:
+  port: 9669
 )");
 
   auto cfg = loadConfig(yaml.path());
@@ -65,6 +67,8 @@ cache:
   enabled: true
   max_tracks: 200
   max_groups_per_track: 5
+admin:
+  port: 9669
 )");
 
   auto cfg = loadConfig(yaml.path());
@@ -122,6 +126,8 @@ cache:
   enabled: false
   max_tracks: 100
   max_groups_per_track: 3
+admin:
+  port: 9669
 )");
 
   auto cfg = loadConfig(yaml.path());
@@ -156,6 +162,8 @@ cache:
   enabled: true
   max_tracks: 100
   max_groups_per_track: 3
+admin:
+  port: 9669
 )");
 
   EXPECT_NO_THROW(loadConfig(yaml.path()));
@@ -177,6 +185,8 @@ cache:
   enabled: true
   max_tracks: 100
   max_groups_per_track: 3
+admin:
+  port: 9669
 )");
 
   EXPECT_THROW(loadConfig(yaml.path(), /*strict=*/true), std::runtime_error);

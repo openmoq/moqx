@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <variant>
 
@@ -33,6 +34,7 @@ struct ListenerConfig {
 struct Config {
   ListenerConfig listener;
   CacheConfig cache;
+  uint16_t adminPort;
 };
 
 } // namespace openmoq::o_rly::config
