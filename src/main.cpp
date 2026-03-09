@@ -24,8 +24,7 @@ constexpr std::string_view kServeCommand = "serve";
 
 class ShutdownSignalHandler : public folly::AsyncSignalHandler {
 public:
-  explicit ShutdownSignalHandler(folly::EventBase* evb)
-      : AsyncSignalHandler(evb) {
+  explicit ShutdownSignalHandler(folly::EventBase* evb) : AsyncSignalHandler(evb) {
     registerSignalHandler(SIGTERM);
     registerSignalHandler(SIGINT);
   }
