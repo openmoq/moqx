@@ -13,8 +13,7 @@ void registerBuiltinRoutes(AdminServer& server) {
     proxygen::ResponseBuilder(downstream)
         .status(200, proxygen::HTTPMessage::getDefaultReason(200))
         .header("Content-Type", "application/json")
-        .body(
-            folly::IOBuf::copyBuffer("{\"service\":\"o-rly\",\"version\":\"" ORLY_VERSION "\"}\n")
+        .body(folly::IOBuf::copyBuffer("{\"service\":\"o-rly\",\"version\":\"" ORLY_VERSION "\"}\n")
         )
         .sendWithEOM();
   });
