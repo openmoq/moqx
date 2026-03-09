@@ -11,6 +11,8 @@
 #include "admin/MetricsHandler.h"
 #include "config/loader/ConfigInit.h"
 #include "stats/StatsRegistry.h"
+#include "tls/BuiltinTlsProviders.h"
+#include "tls/TlsProviderRegistry.h"
 
 #include <csignal>
 
@@ -69,7 +71,17 @@ int main(int argc, char* argv[]) {
     subcommand = argv[1];
   }
 
-  auto result = cfg::handleConfigSubcommand(subcommand, FLAGS_config, FLAGS_strict_config, argv[0]);
+  // Create TLS provider registry and register built-in providers
+  openmoq::moqx::tls::TlsProviderRegistry tlsRegistry;
+  openmoq::moqx::tls::registerBuiltinTlsProviders(tlsRegistry);
+
+  auto result = cfg::handleConfigSubcommand(
+      subcommand,
+      FLAGS_config,
+      FLAGS_strict_config,
+      argv[0],
+      tlsRegistry
+  );
   if (result.hasError()) {
     return result.error();
   }

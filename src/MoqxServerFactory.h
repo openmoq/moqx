@@ -13,6 +13,8 @@
 #include "MoqxRelayServer.h"
 #include "config/Config.h"
 #include "stats/StatsRegistry.h"
+#include "tls/FizzContextFactory.h"
+#include "tls/TlsCertLoader.h"
 #include <folly/executors/IOThreadPoolExecutor.h>
 #include <moxygen/MoQServerBase.h>
 namespace openmoq::moqx {
@@ -34,8 +36,19 @@ inline std::shared_ptr<moxygen::MoQServerBase> makeRelayServer(
     server->setStatsRegistry(std::move(statsRegistry));
     return server;
   }
-  auto server =
-      std::make_shared<MoqxRelayServer>(listenerCfg, std::move(context), std::move(ioExecutor));
+
+  auto alpns = openmoq::moqx::tls::buildAlpns(listenerCfg.moqtVersions);
+  auto fizzCtx = listenerCfg.tlsProvider->createContext(alpns);
+  if (fizzCtx.hasError()) {
+    XLOG(FATAL) << "Failed to create TLS context: " << fizzCtx.error();
+  }
+
+  auto server = std::make_shared<MoqxRelayServer>(
+      listenerCfg,
+      std::move(context),
+      std::move(fizzCtx).value(),
+      std::move(ioExecutor)
+  );
   server->setStatsRegistry(std::move(statsRegistry));
   return server;
 }

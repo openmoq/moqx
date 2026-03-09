@@ -86,6 +86,12 @@ add_library(moqx_core STATIC
   src/stats/PicoQuicStatsCollector.cpp
   src/stats/QuicStatsCollector.cpp
   src/UpstreamProvider.cpp
+  src/tls/TlsCertLoader.cpp
+  src/tls/InsecureCertProvider.cpp
+  src/tls/FileCertLoader.cpp
+  src/tls/DirectoryCertLoader.cpp
+  src/tls/FizzContextFactory.cpp
+  src/tls/BuiltinTlsProviders.cpp
 )
 
 target_include_directories(moqx_core
@@ -93,17 +99,21 @@ target_include_directories(moqx_core
     ${PROJECT_SOURCE_DIR}/src
 )
 
-target_link_libraries(moqx_core PUBLIC
-  moxygen::moxygen_relay_moq_forwarder
-  moxygen::moxygen_relay_moq_cache
-  moxygen::moxygen_moq_relay_session
-  moxygen::moxygen_moq_server
-  moxygen::openmoq_pico_evb_server_transport
-  proxygen::proxygenhttpserver
-  # Workaround: wangle::wangle_acceptor_acceptor_core uses AsyncFdSocket from
-  # FizzAcceptorHandshakeHelper but omits this dep from its cmake config.
-  Folly::folly_io_async_fdsock_async_fd_socket
-  moxygen::moxygen_moqclient
+target_link_libraries(moqx_core
+  PUBLIC
+    moxygen::moxygen_relay_moq_forwarder
+    moxygen::moxygen_relay_moq_cache
+    moxygen::moxygen_moq_relay_session
+    moxygen::moxygen_moq_server
+    moxygen::openmoq_pico_evb_server_transport
+    proxygen::proxygenhttpserver
+    # Workaround: wangle::wangle_acceptor_acceptor_core uses AsyncFdSocket from
+    # FizzAcceptorHandshakeHelper but omits this dep from its cmake config.
+    Folly::folly_io_async_fdsock_async_fd_socket
+    moxygen::moxygen_moqclient
+  PRIVATE
+    # builtin_tls_providers.cpp includes parsed_config.h (rfl types)
+    reflectcpp
 )
 
 target_compile_options(moqx_core PRIVATE -Wall -Wextra -Wpedantic)
@@ -133,6 +143,7 @@ add_library(moqx_config_loader STATIC
   src/config/Loader.cpp
   src/config/ConfigResolver.cpp
   src/config/ConfigInit.cpp
+  src/tls/TlsProviderRegistry.cpp
 )
 
 target_include_directories(moqx_config_loader

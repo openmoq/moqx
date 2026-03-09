@@ -25,7 +25,8 @@ folly::Expected<ResolvedConfig, int> handleConfigSubcommand(
     std::string_view subcommand,
     std::string_view configPath,
     bool strictConfig,
-    const char* programName
+    const char* programName,
+    const tls::TlsProviderRegistry& registry
 ) {
   if (subcommand == kDumpConfigSchemaCommand) {
     std::cout << generateSchema() << '\n';
@@ -46,7 +47,7 @@ folly::Expected<ResolvedConfig, int> handleConfigSubcommand(
     return folly::makeUnexpected(1);
   }
 
-  auto result = resolveConfig(parsed);
+  auto result = resolveConfig(parsed, registry);
   if (result.hasError()) {
     std::cerr << "Error: " << result.error() << std::endl;
     return folly::makeUnexpected(1);

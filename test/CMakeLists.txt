@@ -58,6 +58,7 @@ add_executable(moqx_config_resolver_test
 )
 target_link_libraries(moqx_config_resolver_test PRIVATE
   moqx_config_loader
+  moqx_core
   GTest::gtest_main
   GTest::gmock
 )
@@ -118,6 +119,27 @@ target_link_libraries(moqx_relay_context_test PRIVATE
   moxygen::moxygen_events_moq_folly_executor_impl
 )
 gtest_discover_tests(moqx_relay_context_test)
+
+add_executable(moqx_tls_test
+  tls/FileCertLoaderTest.cpp
+  tls/DirectoryCertLoaderTest.cpp
+  tls/FizzContextFactoryTest.cpp
+  tls/InsecureCertProviderTest.cpp
+  tls/TlsProviderRegistryTest.cpp
+)
+target_link_libraries(moqx_tls_test PRIVATE
+  moqx_core
+  moqx_config
+  moqx_config_loader
+  Folly::folly_testing_test_util
+  GTest::gtest_main
+  GTest::gmock
+  "$<LINK_LIBRARY:WHOLE_ARCHIVE,gflags_nothreads_static>"
+)
+set_property(TARGET moqx_tls_test PROPERTY
+  LINK_LIBRARY_OVERRIDE "WHOLE_ARCHIVE,gflags_nothreads_static"
+)
+gtest_discover_tests(moqx_tls_test)
 
 add_test(
   NAME relay_chain

@@ -20,39 +20,6 @@ namespace openmoq::moqx {
 
 namespace {
 
-std::vector<std::string> buildAlpns(const std::string& versions) {
-  std::vector<std::string> alpns = {"h3"};
-  auto moqt = getMoqtProtocols(versions, true);
-  alpns.insert(alpns.end(), moqt.begin(), moqt.end());
-  return alpns;
-}
-
-std::shared_ptr<const fizz::server::FizzServerContext>
-buildFizzContext(const config::ListenerConfig& cfg) {
-  auto alpns = buildAlpns(cfg.moqtVersions);
-  return std::visit(
-      [&alpns](const auto& tls) -> std::shared_ptr<const fizz::server::FizzServerContext> {
-        using T = std::decay_t<decltype(tls)>;
-        if constexpr (std::is_same_v<T, config::Insecure>) {
-          return quic::samples::createFizzServerContextWithInsecureDefault(
-              alpns,
-              fizz::server::ClientAuthMode::None,
-              "",
-              ""
-          );
-        } else {
-          return quic::samples::createFizzServerContext(
-              alpns,
-              fizz::server::ClientAuthMode::Optional,
-              tls.certFile,
-              tls.keyFile
-          );
-        }
-      },
-      cfg.tlsMode
-  );
-}
-
 quic::TransportSettings buildTransportSettings(const config::QuicConfig& quic) {
   // Start with MoQServer's optimized defaults, then apply config overrides.
   quic::TransportSettings ts;
@@ -91,10 +58,11 @@ quic::TransportSettings buildTransportSettings(const config::QuicConfig& quic) {
 MoqxRelayServer::MoqxRelayServer(
     const config::ListenerConfig& listenerCfg,
     std::shared_ptr<MoqxRelayContext> context,
+    std::shared_ptr<const fizz::server::FizzServerContext> fizzContext,
     std::shared_ptr<folly::IOThreadPoolExecutor> ioExecutor
 )
     : MoQServer(
-          buildFizzContext(listenerCfg),
+          std::move(fizzContext),
           listenerCfg.endpoint,
           buildTransportSettings(listenerCfg.quic)
       ),

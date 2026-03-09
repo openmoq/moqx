@@ -13,6 +13,10 @@
 
 #include "config/ResolvedConfig.h"
 
+namespace openmoq::moqx::tls {
+class TlsProviderRegistry;
+} // namespace openmoq::moqx::tls
+
 namespace openmoq::moqx::config {
 
 constexpr std::string_view kDumpConfigSchemaCommand = "dump-config-schema";
@@ -27,7 +31,8 @@ folly::Expected<ResolvedConfig, int> handleConfigSubcommand(
     std::string_view subcommand,
     std::string_view configPath,
     bool strictConfig,
-    const char* programName
+    const char* programName,
+    const tls::TlsProviderRegistry& registry
 );
 
 } // namespace openmoq::moqx::config
