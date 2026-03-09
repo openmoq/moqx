@@ -3,7 +3,8 @@ set -euo pipefail
 
 REQUIRED_CF_VERSION=19
 
-CF_VERSION=$(clang-format --version | sed -n 's/.*version \([0-9]*\)\..*/\1/p' | head -1)
+CF_BIN=${CF_BIN:-$(command -v clang-format-${REQUIRED_CF_VERSION} || command -v clang-format)}
+CF_VERSION=$(${CF_BIN} --version | sed -n 's/.*version \([0-9]*\)\..*/\1/p' | head -1)
 if [[ -z "${CF_VERSION}" ]]; then
   echo "error: could not determine clang-format version" >&2
   exit 1
@@ -26,8 +27,8 @@ fi
 
 if [[ "${1:-}" == "--check" ]]; then
   echo "Checking formatting..."
-  clang-format --dry-run -Werror ${FILES}
+  ${CF_BIN} --dry-run -Werror ${FILES}
 else
   echo "Formatting files..."
-  clang-format -i ${FILES}
+  ${CF_BIN} -i ${FILES}
 fi
