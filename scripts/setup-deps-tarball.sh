@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # setup-deps-tarball.sh — Populate .scratch with prebuilt moxygen release artifacts.
 #
-# Downloads the snapshot-latest release tarball from openmoq/moxygen.
+# Uses the submodule commit SHA to find the exact publish workflow run
+# on openmoq/moxygen, then downloads the matching platform artifact.
 # Writes .scratch/cmake_prefix_path.txt for configure.sh.
 #
 # Usage:
 #   ./scripts/setup-deps-tarball.sh
 #
-# Requires: gh CLI authenticated, deps/moxygen submodule initialized.
+# Requires: gh CLI authenticated (with actions:read on openmoq/moxygen),
+#           deps/moxygen submodule initialized.
 
 set -euo pipefail
 
@@ -61,29 +63,40 @@ detect_platform() {
 PLATFORM=$(detect_platform)
 echo "==> Platform: $PLATFORM"
 
-# ── Download from snapshot-latest ─────────────────────────────────────────────
+# ── Find publish run matching submodule SHA ───────────────────────────────────
 
 SHA=$(git -C "$MOXYGEN_DIR" rev-parse HEAD)
-TAG="snapshot-latest"
 echo "==> Moxygen submodule SHA: ${SHA:0:7}"
-echo "==> Downloading from release: $TAG"
-
-if ! gh api "repos/openmoq/moxygen/releases/tags/$TAG" --jq '.tag_name' >/dev/null 2>&1; then
-    echo "Error: release $TAG not found in openmoq/moxygen." >&2
-    echo "  The publish workflow may not have run yet." >&2
-    exit 1
-fi
 
 TARBALL="moxygen-${PLATFORM}.tar.gz"
 DOWNLOAD_DIR="${SCRATCH}/downloads"
 mkdir -p "$DOWNLOAD_DIR"
 
-echo "==> Downloading $TARBALL..."
-rm -f "${DOWNLOAD_DIR}/${TARBALL}"
-gh release download "$TAG" \
-    --repo openmoq/moxygen \
-    --pattern "$TARBALL" \
-    --dir "$DOWNLOAD_DIR"
+echo "==> Searching for publish run at ${SHA:0:7}..."
+RUN_ID=$(gh api "repos/openmoq/moxygen/actions/workflows/omoq-publish-artifacts.yml/runs?head_sha=${SHA}&status=success&per_page=1" \
+    --jq '.workflow_runs[0].id // empty')
+
+if [[ -n "$RUN_ID" ]]; then
+    echo "==> Found publish run $RUN_ID, downloading $TARBALL..."
+    rm -f "${DOWNLOAD_DIR}/${TARBALL}"
+    gh run download "$RUN_ID" \
+        --repo openmoq/moxygen \
+        --name "$TARBALL" \
+        --dir "$DOWNLOAD_DIR"
+else
+    echo "==> No publish run for ${SHA:0:7}, trying snapshot-latest release..."
+    if ! gh api "repos/openmoq/moxygen/releases/tags/snapshot-latest" --jq '.tag_name' >/dev/null 2>&1; then
+        echo "Error: no artifacts found for SHA ${SHA:0:7} and no snapshot-latest release." >&2
+        echo "  The publish workflow may not have run yet for this commit." >&2
+        exit 1
+    fi
+    rm -f "${DOWNLOAD_DIR}/${TARBALL}"
+    gh release download "snapshot-latest" \
+        --repo openmoq/moxygen \
+        --pattern "$TARBALL" \
+        --dir "$DOWNLOAD_DIR"
+    echo "  Warning: using snapshot-latest (may not match submodule SHA)"
+fi
 
 # ── Extract ───────────────────────────────────────────────────────────────────
 
