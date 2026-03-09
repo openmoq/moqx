@@ -17,6 +17,12 @@ ParsedCacheConfig makeDefaultCache() {
   return cache;
 }
 
+ParsedAdminConfig makeDefaultAdmin() {
+  ParsedAdminConfig admin;
+  admin.port = uint16_t{9669};
+  return admin;
+}
+
 // Build a minimal valid insecure listener config.
 ParsedConfig makeMinimalInsecureConfig(std::string name = "test") {
   ParsedConfig cfg;
@@ -34,6 +40,7 @@ ParsedConfig makeMinimalInsecureConfig(std::string name = "test") {
   lc.endpoint = std::string("/moq-relay");
   cfg.listeners.value().push_back(std::move(lc));
   cfg.cache = makeDefaultCache();
+  cfg.admin = makeDefaultAdmin();
   return cfg;
 }
 
@@ -42,6 +49,7 @@ ParsedConfig makeMinimalInsecureConfig(std::string name = "test") {
 TEST(ResolveConfig, NoListeners) {
   ParsedConfig cfg;
   cfg.cache = makeDefaultCache();
+  cfg.admin = makeDefaultAdmin();
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasError());
   EXPECT_THAT(result.error(), HasSubstr("At least one listener"));
@@ -114,6 +122,7 @@ TEST(ResolveConfig, FullTls) {
   lc.moqt_versions = std::vector<uint32_t>{14, 16};
   cfg.listeners.value().push_back(std::move(lc));
   cfg.cache = makeDefaultCache();
+  cfg.admin = makeDefaultAdmin();
 
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasValue());

@@ -63,6 +63,11 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
     }
   }
 
+  // Admin port validation
+  if (config.admin.value().port.value() == 0) {
+    errors.push_back("admin.port must be 1-65535, got 0");
+  }
+
   // Cache validation
   const auto& cache = config.cache.value();
   if (cache.enabled.value()) {
@@ -108,6 +113,7 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
           Config{
               .listener = std::move(resolvedListener),
               .cache = cacheConfig,
+              .adminPort = config.admin.value().port.value(),
           },
       .warnings = std::move(warnings),
   };

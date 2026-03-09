@@ -12,7 +12,7 @@ if [[ ! -x "$BINARY" ]]; then
 fi
 
 # Start o_rly with test config in the background.
-"$BINARY" --config="$TESTDIR/test.config.yaml" --admin_port="$ADMIN_PORT" &
+"$BINARY" --config="$TESTDIR/test.config.yaml" &
 O_RLY_PID=$!
 trap 'kill "$O_RLY_PID" 2>/dev/null; wait "$O_RLY_PID" 2>/dev/null || true' EXIT
 
