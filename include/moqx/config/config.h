@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <variant>
@@ -9,6 +10,10 @@
 
 #include <folly/SocketAddress.h>
 #include <folly/container/F14Map.h>
+
+namespace openmoq::moqx::tls {
+class TlsCertProvider;
+} // namespace openmoq::moqx::tls
 
 namespace openmoq::moqx::config {
 
@@ -18,10 +23,6 @@ struct TlsConfig {
   std::vector<std::string> alpn; // must be empty for QUIC listener: ALPN derived from moqt_versions
 };
 
-struct Insecure {};
-
-using TlsMode = std::variant<Insecure, TlsConfig>;
-
 struct CacheConfig {
   size_t maxCachedTracks; // 0 when cache disabled
   size_t maxCachedGroupsPerTrack;
@@ -30,7 +31,7 @@ struct CacheConfig {
 struct ListenerConfig {
   std::string name;
   folly::SocketAddress address;
-  TlsMode tlsMode;
+  std::shared_ptr<tls::TlsCertProvider> tlsProvider;
   std::string endpoint;
   std::string moqtVersions; // comma-separated string
 };

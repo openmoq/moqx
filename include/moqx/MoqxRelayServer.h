@@ -13,19 +13,9 @@ namespace openmoq::moqx {
 
 class MoqxRelayServer : public moxygen::MoQServer {
 public:
-  // Used when the insecure flag is false
   MoqxRelayServer(
-      const std::string& cert,
-      const std::string& key,
+      std::shared_ptr<const fizz::server::FizzServerContext> fizzContext,
       const std::string& endpoint,
-      const std::string& versions,
-      folly::F14FastMap<std::string, config::ServiceConfig> services
-  );
-
-  // Used when the insecure flag is true
-  MoqxRelayServer(
-      const std::string& endpoint,
-      const std::string& versions,
       folly::F14FastMap<std::string, config::ServiceConfig> services
   );
 

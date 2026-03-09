@@ -81,6 +81,12 @@ add_library(moqx_core STATIC
   src/admin/MetricsHandler.cpp
   src/stats/StatsRegistry.cpp
   src/stats/MoQStatsCollector.cpp
+  src/tls/tls_cert_loader.cpp
+  src/tls/insecure_cert_provider.cpp
+  src/tls/file_cert_loader.cpp
+  src/tls/directory_cert_loader.cpp
+  src/tls/fizz_context_factory.cpp
+  src/tls/builtin_tls_providers.cpp
 )
 
 target_include_directories(moqx_core
@@ -88,15 +94,22 @@ target_include_directories(moqx_core
     ${PROJECT_SOURCE_DIR}/include
 )
 
-target_link_libraries(moqx_core PUBLIC
-  moxygen::moxygen_relay_moq_forwarder
-  moxygen::moxygen_relay_moq_cache
-  moxygen::moxygen_moq_relay_session
-  moxygen::moxygen_moq_server
-  proxygen::proxygenhttpserver
-  # Workaround: wangle::wangle_acceptor_acceptor_core uses AsyncFdSocket from
-  # FizzAcceptorHandshakeHelper but omits this dep from its cmake config.
-  Folly::folly_io_async_fdsock_async_fd_socket
+target_link_libraries(moqx_core
+  PUBLIC
+    moxygen::moxygen_relay_moq_forwarder
+    moxygen::moxygen_relay_moq_cache
+    moxygen::moxygen_moq_relay_session
+    moxygen::moxygen_moq_server
+    proxygen::proxygenhttpserver
+    proxygen::proxygen_hq_server
+    fizz::fizz
+    Folly::folly_file_util
+    # Workaround: wangle::wangle_acceptor_acceptor_core uses AsyncFdSocket from
+    # FizzAcceptorHandshakeHelper but omits this dep from its cmake config.
+    Folly::folly_io_async_fdsock_async_fd_socket
+  PRIVATE
+    # builtin_tls_providers.cpp includes parsed_config.h (rfl types)
+    reflectcpp
 )
 
 target_compile_options(moqx_core PRIVATE -Wall -Wextra -Wpedantic)
@@ -126,6 +139,7 @@ add_library(moqx_config_loader STATIC
   src/config/loader.cpp
   src/config/config_resolver.cpp
   src/config/config_init.cpp
+  src/tls/tls_provider_registry.cpp
 )
 
 target_include_directories(moqx_config_loader
@@ -202,6 +216,7 @@ if(MOQX_BUILD_TESTS)
   )
   target_link_libraries(moqx_config_resolver_test PRIVATE
     moqx_config_loader
+    moqx_core
     GTest::gtest_main
     GTest::gmock
   )
@@ -237,6 +252,27 @@ if(MOQX_BUILD_TESTS)
     GTest::gmock
   )
   gtest_discover_tests(moqx_service_matcher_test)
+
+  add_executable(moqx_tls_test
+    tests/tls/file_cert_loader_test.cpp
+    tests/tls/directory_cert_loader_test.cpp
+    tests/tls/fizz_context_factory_test.cpp
+    tests/tls/insecure_cert_provider_test.cpp
+    tests/tls/tls_provider_registry_test.cpp
+  )
+  target_link_libraries(moqx_tls_test PRIVATE
+    moqx_core
+    moqx_config
+    moqx_config_loader
+    Folly::folly_testing_test_util
+    GTest::gtest_main
+    GTest::gmock
+    "$<LINK_LIBRARY:WHOLE_ARCHIVE,gflags_nothreads_static>"
+  )
+  set_property(TARGET moqx_tls_test PROPERTY
+    LINK_LIBRARY_OVERRIDE "WHOLE_ARCHIVE,gflags_nothreads_static"
+  )
+  gtest_discover_tests(moqx_tls_test)
 
   add_test(
     NAME admin_info_endpoint

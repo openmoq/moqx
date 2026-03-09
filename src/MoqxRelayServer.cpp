@@ -31,40 +31,11 @@ void MoqxRelayServer::initRelays(
 }
 
 MoqxRelayServer::MoqxRelayServer(
-    const std::string& cert,
-    const std::string& key,
+    std::shared_ptr<const fizz::server::FizzServerContext> fizzContext,
     const std::string& endpoint,
-    const std::string& versions,
     folly::F14FastMap<std::string, config::ServiceConfig> services
 )
-    : MoQServer(
-          quic::samples::createFizzServerContext(
-              buildAlpns(versions),
-              fizz::server::ClientAuthMode::Optional,
-              cert,
-              key
-          ),
-          endpoint
-      ),
-      serviceMatcher_(services) {
-  initRelays(services);
-}
-
-MoqxRelayServer::MoqxRelayServer(
-    const std::string& endpoint,
-    const std::string& versions,
-    folly::F14FastMap<std::string, config::ServiceConfig> services
-)
-    : MoQServer(
-          quic::samples::createFizzServerContextWithInsecureDefault(
-              buildAlpns(versions),
-              fizz::server::ClientAuthMode::None,
-              "" /* cert */,
-              "" /* key */
-          ),
-          endpoint
-      ),
-      serviceMatcher_(services) {
+    : MoQServer(std::move(fizzContext), endpoint), serviceMatcher_(services) {
   initRelays(services);
 }
 

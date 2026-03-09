@@ -4,6 +4,10 @@
 #include <moqx/admin/MetricsHandler.h>
 #include <moqx/config/loader/config_init.h>
 #include <moqx/stats/StatsRegistry.h>
+#include <moqx/tls/builtin_tls_providers.h>
+#include <moqx/tls/fizz_context_factory.h>
+#include <moqx/tls/tls_cert_loader.h>
+#include <moqx/tls/tls_provider_registry.h>
 
 #include <csignal>
 
@@ -40,26 +44,16 @@ std::shared_ptr<openmoq::moqx::MoqxRelayServer> createServer(const cfg::Config& 
   const auto& listener = config.listener;
   auto services = config.services; // copy for move into constructor
 
-  return std::visit(
-      [&](const auto& tls) -> std::shared_ptr<openmoq::moqx::MoqxRelayServer> {
-        using T = std::decay_t<decltype(tls)>;
-        if constexpr (std::is_same_v<T, cfg::Insecure>) {
-          return std::make_shared<openmoq::moqx::MoqxRelayServer>(
-              listener.endpoint,
-              listener.moqtVersions,
-              std::move(services)
-          );
-        } else {
-          return std::make_shared<openmoq::moqx::MoqxRelayServer>(
-              tls.certFile,
-              tls.keyFile,
-              listener.endpoint,
-              listener.moqtVersions,
-              std::move(services)
-          );
-        }
-      },
-      listener.tlsMode
+  auto alpns = openmoq::moqx::tls::buildAlpns(listener.moqtVersions);
+  auto fizzCtx = listener.tlsProvider->createContext(alpns);
+  if (fizzCtx.hasError()) {
+    XLOG(FATAL) << "Failed to create TLS context: " << fizzCtx.error();
+  }
+
+  return std::make_shared<openmoq::moqx::MoqxRelayServer>(
+      std::move(fizzCtx.value()),
+      listener.endpoint,
+      std::move(services)
   );
 }
 
@@ -82,7 +76,17 @@ int main(int argc, char* argv[]) {
     subcommand = argv[1];
   }
 
-  auto result = cfg::handleConfigSubcommand(subcommand, FLAGS_config, FLAGS_strict_config, argv[0]);
+  // Create TLS provider registry and register built-in providers
+  openmoq::moqx::tls::TlsProviderRegistry tlsRegistry;
+  openmoq::moqx::tls::registerBuiltinTlsProviders(tlsRegistry);
+
+  auto result = cfg::handleConfigSubcommand(
+      subcommand,
+      FLAGS_config,
+      FLAGS_strict_config,
+      argv[0],
+      tlsRegistry
+  );
   if (result.hasError()) {
     return result.error();
   }

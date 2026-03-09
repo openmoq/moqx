@@ -1,4 +1,5 @@
 #include "moqx/config/loader/config_resolver.h"
+#include "moqx/tls/tls_provider_registry.h"
 
 #include <unordered_map>
 #include <unordered_set>
@@ -35,41 +36,12 @@ mergeCacheConfigs(const ParsedCacheConfig& base, const ParsedCacheConfig& overla
   return merged;
 }
 
-void validateListenerTlsConfig(
-    const ParsedListenerTlsConfig& tls,
-    std::string_view context,
-    std::vector<std::string>& errors,
-    std::vector<std::string>& warnings
-) {
-  bool hasCert = tls.cert_file.value().has_value() && !tls.cert_file.value()->empty();
-  bool hasKey = tls.key_file.value().has_value() && !tls.key_file.value()->empty();
-  if (!tls.insecure.value()) {
-    if (!hasCert || !hasKey) {
-      errors.push_back(
-          std::string(context) + ": cert_file and key_file are required when insecure=false"
-      );
-    }
-  } else if (hasCert || hasKey) {
-    warnings.push_back(
-        std::string(context) + ": cert_file/key_file are ignored when insecure=true"
-    );
-  }
-}
-
 void validateAdminTlsConfig(const ParsedAdminTlsConfig& tls, std::vector<std::string>& errors) {
   bool hasCert = tls.cert_file.value().has_value() && !tls.cert_file.value()->empty();
   bool hasKey = tls.key_file.value().has_value() && !tls.key_file.value()->empty();
   if (!hasCert || !hasKey) {
     errors.push_back("admin.tls: cert_file and key_file are required");
   }
-}
-
-TlsConfig resolveTlsConfig(const ParsedListenerTlsConfig& tls) {
-  return TlsConfig{
-      .certFile = tls.cert_file.value().value_or(""),
-      .keyFile = tls.key_file.value().value_or(""),
-      .alpn = {},
-  };
 }
 
 TlsConfig resolveAdminTlsConfig(
@@ -114,21 +86,29 @@ std::string makeCompositeKey(
 
 void validateListener(
     const ParsedListenerConfig& listener,
-    std::vector<std::string>& errors,
-    std::vector<std::string>& warnings
+    const tls::TlsProviderRegistry& registry,
+    std::vector<std::string>& errors
 ) {
   const auto& sock = listener.udp.value().socket.value();
   if (sock.port.value() == 0) {
     errors.push_back("Listener '" + listener.name.value() + "' port must be 1-65535, got 0");
   }
 
-  // TLS validation
-  validateListenerTlsConfig(
-      listener.tls.value(),
-      "Listener '" + listener.name.value() + "'",
-      errors,
-      warnings
-  );
+  listener.tls.visit([&](const auto& variant) {
+    using T = std::decay_t<decltype(variant)>;
+    auto type = typename T::Tag{}.name();
+
+    auto* factory = registry.getFactory(type);
+    if (!factory) {
+      errors.push_back("Listener '" + listener.name.value() + "': unknown TLS type '" + type + "'");
+      return;
+    }
+    auto result = (*factory)(listener.tls);
+    if (result.hasError()) {
+      errors.push_back("Listener '" + listener.name.value() + "': " + result.error());
+      return;
+    }
+  });
 }
 
 // --- Admin validation ---
@@ -302,21 +282,31 @@ void validateService(
 
 // --- Resolution helpers ---
 
-ListenerConfig resolveListener(const ParsedListenerConfig& listener) {
+ListenerConfig
+resolveListener(const ParsedListenerConfig& listener, const tls::TlsProviderRegistry& registry) {
   const auto& sock = listener.udp.value().socket.value();
-  const auto& tls = listener.tls.value();
 
-  TlsMode tlsMode;
-  if (tls.insecure.value()) {
-    tlsMode = Insecure{};
-  } else {
-    tlsMode = resolveTlsConfig(tls);
-  }
+  // TLS: extract type string from variant, look up factory, invoke it
+  std::shared_ptr<tls::TlsCertProvider> tlsProvider;
+  listener.tls.visit([&](const auto& variant) {
+    using T = std::decay_t<decltype(variant)>;
+    auto type = typename T::Tag{}.name();
+
+    auto* factory = registry.getFactory(type);
+    if (!factory) {
+      return;
+    }
+    auto result = (*factory)(listener.tls);
+    if (result.hasError()) {
+      return;
+    }
+    tlsProvider = std::move(result.value());
+  });
 
   return ListenerConfig{
       .name = listener.name.value(),
       .address = folly::SocketAddress(sock.address.value(), sock.port.value()),
-      .tlsMode = std::move(tlsMode),
+      .tlsProvider = std::move(tlsProvider),
       .endpoint = listener.endpoint.value(),
       .moqtVersions = moqtVersionsToString(listener),
   };
@@ -365,7 +355,8 @@ ServiceConfig resolveService(const ParsedServiceConfig& svc, const ParsedCacheCo
 
 } // namespace
 
-folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& config) {
+folly::Expected<ResolvedConfig, std::string>
+resolveConfig(const ParsedConfig& config, const tls::TlsProviderRegistry& registry) {
   std::vector<std::string> errors;
   std::vector<std::string> warnings;
 
@@ -382,7 +373,7 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
   }
 
   const auto& listener = config.listeners.value()[0];
-  validateListener(listener, errors, warnings);
+  validateListener(listener, registry, errors);
 
   // === Validate admin ===
   validateAdmin(config, errors);
@@ -406,6 +397,8 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
   }
 
   // === Resolve ===
+
+  auto resolvedListener = resolveListener(listener, registry);
 
   folly::F14FastMap<std::string, ServiceConfig> resolvedServices;
   for (const auto& [name, svc] : services) {
@@ -431,7 +424,7 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
   return ResolvedConfig{
       .config =
           Config{
-              .listener = resolveListener(listener),
+              .listener = std::move(resolvedListener),
               .services = std::move(resolvedServices),
               .admin = std::move(adminConfig),
           },

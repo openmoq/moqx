@@ -1,4 +1,7 @@
 #include <moqx/config/loader/config_resolver.h>
+#include <moqx/tls/builtin_tls_providers.h>
+#include <moqx/tls/tls_cert_loader.h>
+#include <moqx/tls/tls_provider_registry.h>
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
@@ -11,6 +14,37 @@ using ::testing::IsEmpty;
 
 using AuthMatch = ParsedServiceConfig::MatchRule::AuthorityMatch;
 using PMatch = ParsedServiceConfig::MatchRule::PathMatch;
+
+// Lightweight dummy provider — no fizz dependency needed.
+class DummyCertProvider : public tls::TlsCertProvider {
+public:
+  folly::Expected<std::shared_ptr<const fizz::server::FizzServerContext>, std::string>
+  createContext(const std::vector<std::string>&) const override {
+    return folly::makeUnexpected(std::string("dummy — not a real provider"));
+  }
+};
+
+// Build a registry with real validation but dummy providers.
+tls::TlsProviderRegistry makeTestRegistry() {
+  tls::TlsProviderRegistry registry;
+  auto dummy = [] { return std::make_shared<DummyCertProvider>(); };
+
+  registry.registerProvider("insecure", tls::makeInsecureFactory([dummy] { return dummy(); }));
+  registry.registerProvider(
+      "file",
+      tls::makeFileFactory([dummy](auto, auto) -> std::shared_ptr<tls::TlsCertProvider> {
+        return dummy();
+      })
+  );
+  registry.registerProvider(
+      "directory",
+      tls::makeDirectoryFactory([dummy](auto, auto) -> std::shared_ptr<tls::TlsCertProvider> {
+        return dummy();
+      })
+  );
+
+  return registry;
+}
 
 // Shorthand for the common "match any path" path matcher.
 PMatch anyPath() {
@@ -25,12 +59,12 @@ ParsedCacheConfig makeDefaultCache() {
   return cache;
 }
 
-ParsedAdminConfig makeDefaultAdmin() {
+std::optional<ParsedAdminConfig> makeDefaultAdmin() {
   ParsedAdminConfig admin;
   admin.port = uint16_t{9669};
   admin.address = std::string{"::"};
   admin.plaintext = true;
-  return admin;
+  return std::optional{admin};
 }
 
 ParsedAdminConfig makeAdminWithTls(std::string cert = "/cert.pem", std::string key = "/key.pem") {
@@ -55,10 +89,24 @@ ParsedServiceConfig makeDefaultService() {
   return svc;
 }
 
+// Helper: build a ParsedListenerConfig with the given TLS mode.
+// ParsedListenerConfig can't be default-constructed (TaggedUnion has no
+// default ctor), so we aggregate-initialize with a placeholder and then
+// overwrite fields.
+ParsedListenerConfig makeListener(ParsedTlsMode tlsMode) {
+  ParsedListenerConfig lc{
+      .name = std::string(""),
+      .udp = ParsedUdpConfig{},
+      .tls = std::move(tlsMode),
+      .endpoint = std::string(""),
+  };
+  return lc;
+}
+
 // Build a minimal valid insecure config with one any-authority service and admin.
 ParsedConfig makeMinimalInsecureConfig(std::string name = "test") {
   ParsedConfig cfg;
-  ParsedListenerConfig lc;
+  auto lc = makeListener(ParsedTlsMode{ParsedTlsInsecure{}});
   lc.name = std::move(name);
   ParsedSocketConfig sock;
   sock.address = std::string("::");
@@ -66,13 +114,57 @@ ParsedConfig makeMinimalInsecureConfig(std::string name = "test") {
   ParsedUdpConfig udp;
   udp.socket = std::move(sock);
   lc.udp = std::move(udp);
-  ParsedListenerTlsConfig tls;
-  tls.insecure = true;
-  lc.tls = std::move(tls);
+  lc.endpoint = std::string("/moq-relay");
+  cfg.listeners.value().push_back(std::move(lc));
+  cfg.admin = makeDefaultAdmin();
+  cfg.services.value().emplace("default", makeDefaultService());
+  return cfg;
+}
+
+ParsedConfig makeFileConfig(
+    std::string certFile = "/etc/ssl/cert.pem",
+    std::string keyFile = "/etc/ssl/key.pem"
+) {
+  ParsedConfig cfg;
+  ParsedTlsFile tls;
+  tls.cert_file = std::move(certFile);
+  tls.key_file = std::move(keyFile);
+  auto lc = makeListener(ParsedTlsMode{std::move(tls)});
+  lc.name = std::string("production");
+  ParsedSocketConfig sock;
+  sock.address = std::string("0.0.0.0");
+  sock.port = uint16_t{4443};
+  ParsedUdpConfig udp;
+  udp.socket = std::move(sock);
+  lc.udp = std::move(udp);
+  lc.endpoint = std::string("/relay");
+  lc.moqt_versions = std::vector<uint32_t>{14, 16};
+  cfg.listeners.value().push_back(std::move(lc));
+  cfg.admin = makeDefaultAdmin();
+  cfg.services.value().emplace("default", makeDefaultService());
+  return cfg;
+}
+
+ParsedConfig
+makeDirectoryConfig(std::string certDir = "/etc/ssl/certs.d/", std::string defaultCert = "") {
+  ParsedConfig cfg;
+  ParsedTlsDirectory tls;
+  tls.cert_dir = std::move(certDir);
+  if (!defaultCert.empty()) {
+    tls.default_cert = std::move(defaultCert);
+  }
+  auto lc = makeListener(ParsedTlsMode{std::move(tls)});
+  lc.name = std::string("multi");
+  ParsedSocketConfig sock;
+  sock.address = std::string("::");
+  sock.port = uint16_t{4443};
+  ParsedUdpConfig udp;
+  udp.socket = std::move(sock);
+  lc.udp = std::move(udp);
   lc.endpoint = std::string("/moq-relay");
   cfg.listeners.value().push_back(std::move(lc));
   cfg.services.value().emplace("default", makeDefaultService());
-  cfg.admin = std::optional<ParsedAdminConfig>{makeDefaultAdmin()};
+  cfg.admin = makeDefaultAdmin();
   return cfg;
 }
 
@@ -113,39 +205,40 @@ ParsedServiceConfig::MatchRule makeAnyAuthorityMatch(PMatch path = anyPath()) {
 TEST(ResolveConfig, NoListeners) {
   ParsedConfig cfg;
   cfg.services.value().emplace("default", makeDefaultService());
-  cfg.admin = std::optional<ParsedAdminConfig>{makeDefaultAdmin()};
-  auto result = resolveConfig(cfg);
+  cfg.admin = makeDefaultAdmin();
+  auto result = resolveConfig(cfg, makeTestRegistry());
   ASSERT_TRUE(result.hasError());
   EXPECT_THAT(result.error(), HasSubstr("At least one listener"));
 }
 
-TEST(ResolveConfig, InsecureFalseNoCerts) {
-  auto cfg = makeMinimalInsecureConfig();
-  cfg.listeners.value()[0].tls.value().insecure = false;
-
-  auto result = resolveConfig(cfg);
+TEST(ResolveConfig, FileTypeEmptyCertFile) {
+  auto cfg = makeFileConfig("", "/etc/ssl/key.pem");
+  auto result = resolveConfig(cfg, makeTestRegistry());
   ASSERT_TRUE(result.hasError());
   EXPECT_THAT(result.error(), HasSubstr("cert_file"));
+}
+
+TEST(ResolveConfig, FileTypeEmptyKeyFile) {
+  auto cfg = makeFileConfig("/etc/ssl/cert.pem", "");
+  auto result = resolveConfig(cfg, makeTestRegistry());
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("key_file"));
+}
+
+TEST(ResolveConfig, DirectoryTypeEmptyCertDir) {
+  auto cfg = makeDirectoryConfig("");
+  auto result = resolveConfig(cfg, makeTestRegistry());
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("cert_dir"));
 }
 
 TEST(ResolveConfig, PortZero) {
   auto cfg = makeMinimalInsecureConfig();
   cfg.listeners.value()[0].udp.value().socket.value().port = uint16_t{0};
 
-  auto result = resolveConfig(cfg);
+  auto result = resolveConfig(cfg, makeTestRegistry());
   ASSERT_TRUE(result.hasError());
   EXPECT_THAT(result.error(), HasSubstr("port"));
-}
-
-TEST(ResolveConfig, InsecureWithCertsWarning) {
-  auto cfg = makeMinimalInsecureConfig();
-  cfg.listeners.value()[0].tls.value().cert_file = std::string("/some/cert.pem");
-  cfg.listeners.value()[0].tls.value().key_file = std::string("/some/key.pem");
-
-  auto result = resolveConfig(cfg);
-  ASSERT_TRUE(result.hasValue());
-  ASSERT_FALSE(result.value().warnings.empty());
-  EXPECT_THAT(result.value().warnings[0], HasSubstr("ignored"));
 }
 
 // --- Service validation error tests ---
@@ -154,7 +247,7 @@ TEST(ResolveConfig, NoServices) {
   auto cfg = makeMinimalInsecureConfig();
   cfg.services.value().clear();
 
-  auto result = resolveConfig(cfg);
+  auto result = resolveConfig(cfg, makeTestRegistry());
   ASSERT_TRUE(result.hasError());
   EXPECT_THAT(result.error(), HasSubstr("At least one service"));
 }
@@ -172,7 +265,7 @@ TEST(ResolveConfig, DuplicateExactAuthorityAcrossServices) {
       makeAuthorityService({makeExactAuthorityMatch("live.example.com")})
   );
 
-  auto result = resolveConfig(cfg);
+  auto result = resolveConfig(cfg, makeTestRegistry());
   ASSERT_TRUE(result.hasError());
   EXPECT_THAT(result.error(), HasSubstr("Duplicate"));
 }
@@ -188,7 +281,7 @@ TEST(ResolveConfig, NoCacheAndNoServiceDefaultsCache) {
   // No cache set, no service_defaults
   cfg.services.value().emplace("no-cache", std::move(svc));
 
-  auto result = resolveConfig(cfg);
+  auto result = resolveConfig(cfg, makeTestRegistry());
   ASSERT_TRUE(result.hasError());
   EXPECT_THAT(result.error(), HasSubstr("cache.enabled is required"));
 }
@@ -201,7 +294,7 @@ TEST(ResolveConfig, InvalidWildcardMissingStar) {
       makeAuthorityService({makeWildcardAuthorityMatch("example.com")})
   );
 
-  auto result = resolveConfig(cfg);
+  auto result = resolveConfig(cfg, makeTestRegistry());
   ASSERT_TRUE(result.hasError());
   EXPECT_THAT(result.error(), HasSubstr("wildcard must start with '*.'"));
 }
@@ -214,7 +307,7 @@ TEST(ResolveConfig, InvalidWildcardMultipleStars) {
       makeAuthorityService({makeWildcardAuthorityMatch("*.*.example.com")})
   );
 
-  auto result = resolveConfig(cfg);
+  auto result = resolveConfig(cfg, makeTestRegistry());
   ASSERT_TRUE(result.hasError());
   EXPECT_THAT(result.error(), HasSubstr("exactly one '*'"));
 }
@@ -232,7 +325,7 @@ TEST(ResolveConfig, DuplicateWildcardAcrossServices) {
       makeAuthorityService({makeWildcardAuthorityMatch("*.example.com")})
   );
 
-  auto result = resolveConfig(cfg);
+  auto result = resolveConfig(cfg, makeTestRegistry());
   ASSERT_TRUE(result.hasError());
   EXPECT_THAT(result.error(), HasSubstr("Duplicate"));
 }
@@ -242,7 +335,7 @@ TEST(ResolveConfig, ExactAuthorityEmpty) {
   cfg.services.value().clear();
   cfg.services.value().emplace("svc", makeAuthorityService({makeExactAuthorityMatch("")}));
 
-  auto result = resolveConfig(cfg);
+  auto result = resolveConfig(cfg, makeTestRegistry());
   ASSERT_TRUE(result.hasError());
   EXPECT_THAT(result.error(), HasSubstr("exact value must be non-empty"));
 }
@@ -255,7 +348,7 @@ TEST(ResolveConfig, AnyAuthorityFalseRejected) {
   entry.path = anyPath();
   cfg.services.value().emplace("svc", makeAuthorityService({std::move(entry)}));
 
-  auto result = resolveConfig(cfg);
+  auto result = resolveConfig(cfg, makeTestRegistry());
   ASSERT_TRUE(result.hasError());
   EXPECT_THAT(result.error(), HasSubstr("any must be true"));
 }
@@ -268,7 +361,7 @@ TEST(ResolveConfig, DuplicateAnySamePath) {
   cfg.services.value().emplace("svc1", makeAuthorityService({makeAnyAuthorityMatch()}));
   cfg.services.value().emplace("svc2", makeAuthorityService({makeAnyAuthorityMatch()}));
 
-  auto result = resolveConfig(cfg);
+  auto result = resolveConfig(cfg, makeTestRegistry());
   ASSERT_TRUE(result.hasError());
   EXPECT_THAT(result.error(), HasSubstr("Duplicate"));
 }
@@ -290,7 +383,7 @@ TEST(ResolveConfig, MultipleAnyDifferentPaths) {
       )
   );
 
-  auto result = resolveConfig(cfg);
+  auto result = resolveConfig(cfg, makeTestRegistry());
   ASSERT_TRUE(result.hasValue());
 }
 
@@ -306,7 +399,7 @@ TEST(ResolveConfig, PathExactEmpty) {
       )
   );
 
-  auto result = resolveConfig(cfg);
+  auto result = resolveConfig(cfg, makeTestRegistry());
   ASSERT_TRUE(result.hasError());
   EXPECT_THAT(result.error(), HasSubstr("path: value must be non-empty"));
 }
@@ -322,7 +415,7 @@ TEST(ResolveConfig, PathNoSlash) {
       )})
   );
 
-  auto result = resolveConfig(cfg);
+  auto result = resolveConfig(cfg, makeTestRegistry());
   ASSERT_TRUE(result.hasError());
   EXPECT_THAT(result.error(), HasSubstr("must start with '/'"));
 }
@@ -341,7 +434,7 @@ TEST(ResolveConfig, DuplicateAuthorityPathTuple) {
       makeAuthorityService({makeExactAuthorityMatch("a.com", path)})
   );
 
-  auto result = resolveConfig(cfg);
+  auto result = resolveConfig(cfg, makeTestRegistry());
   ASSERT_TRUE(result.hasError());
   EXPECT_THAT(result.error(), HasSubstr("Duplicate"));
 }
@@ -365,7 +458,7 @@ TEST(ResolveConfig, SameAuthorityDifferentPaths) {
       )})
   );
 
-  auto result = resolveConfig(cfg);
+  auto result = resolveConfig(cfg, makeTestRegistry());
   ASSERT_TRUE(result.hasValue());
 }
 
@@ -373,13 +466,13 @@ TEST(ResolveConfig, SameAuthorityDifferentPaths) {
 
 TEST(ResolveConfig, MinimalInsecure) {
   auto cfg = makeMinimalInsecureConfig("main");
-  auto result = resolveConfig(cfg);
-  ASSERT_TRUE(result.hasValue());
+  auto result = resolveConfig(cfg, makeTestRegistry());
+  ASSERT_TRUE(result.hasValue()) << result.error();
   const auto& resolved = result.value().config;
 
   EXPECT_EQ(resolved.listener.name, "main");
   EXPECT_EQ(resolved.listener.address.getPort(), 9668);
-  EXPECT_TRUE(std::holds_alternative<Insecure>(resolved.listener.tlsMode));
+  EXPECT_NE(resolved.listener.tlsProvider, nullptr);
   EXPECT_EQ(resolved.listener.endpoint, "/moq-relay");
   EXPECT_EQ(resolved.listener.moqtVersions, "");
   EXPECT_THAT(result.value().warnings, IsEmpty());
@@ -389,28 +482,9 @@ TEST(ResolveConfig, MinimalInsecure) {
   EXPECT_EQ(resolved.services.at("default").cache.maxCachedGroupsPerTrack, 3u);
 }
 
-TEST(ResolveConfig, FullTls) {
-  ParsedConfig cfg;
-  ParsedListenerConfig lc;
-  lc.name = std::string("production");
-  ParsedSocketConfig sock;
-  sock.address = std::string("0.0.0.0");
-  sock.port = uint16_t{4443};
-  ParsedUdpConfig udp;
-  udp.socket = std::move(sock);
-  lc.udp = std::move(udp);
-  ParsedListenerTlsConfig tls;
-  tls.cert_file = std::string("/etc/ssl/cert.pem");
-  tls.key_file = std::string("/etc/ssl/key.pem");
-  tls.insecure = false;
-  lc.tls = std::move(tls);
-  lc.endpoint = std::string("/relay");
-  lc.moqt_versions = std::vector<uint32_t>{14, 16};
-  cfg.listeners.value().push_back(std::move(lc));
-  cfg.services.value().emplace("default", makeDefaultService());
-  cfg.admin = std::optional<ParsedAdminConfig>{makeDefaultAdmin()};
-
-  auto result = resolveConfig(cfg);
+TEST(ResolveConfig, FullTlsFile) {
+  auto cfg = makeFileConfig();
+  auto result = resolveConfig(cfg, makeTestRegistry());
   ASSERT_TRUE(result.hasValue());
   const auto& resolved = result.value().config;
 
@@ -418,18 +492,30 @@ TEST(ResolveConfig, FullTls) {
   EXPECT_EQ(resolved.listener.address.getPort(), 4443);
   EXPECT_EQ(resolved.listener.endpoint, "/relay");
   EXPECT_EQ(resolved.listener.moqtVersions, "14,16");
+  EXPECT_NE(resolved.listener.tlsProvider, nullptr);
+}
 
-  ASSERT_TRUE(std::holds_alternative<TlsConfig>(resolved.listener.tlsMode));
-  const auto& creds = std::get<TlsConfig>(resolved.listener.tlsMode);
-  EXPECT_EQ(creds.certFile, "/etc/ssl/cert.pem");
-  EXPECT_EQ(creds.keyFile, "/etc/ssl/key.pem");
+TEST(ResolveConfig, TlsDirectory) {
+  auto cfg = makeDirectoryConfig("/etc/ssl/certs.d/", "example.com");
+  auto result = resolveConfig(cfg, makeTestRegistry());
+  ASSERT_TRUE(result.hasValue());
+  const auto& resolved = result.value().config;
+  EXPECT_NE(resolved.listener.tlsProvider, nullptr);
+}
+
+TEST(ResolveConfig, TlsDirectoryNoDefault) {
+  auto cfg = makeDirectoryConfig("/etc/ssl/certs.d/");
+  auto result = resolveConfig(cfg, makeTestRegistry());
+  ASSERT_TRUE(result.hasValue());
+  const auto& resolved = result.value().config;
+  EXPECT_NE(resolved.listener.tlsProvider, nullptr);
 }
 
 TEST(ResolveConfig, CacheDisabled) {
   auto cfg = makeMinimalInsecureConfig();
   cfg.services.value().at("default").cache.value()->enabled = std::optional<bool>{false};
 
-  auto result = resolveConfig(cfg);
+  auto result = resolveConfig(cfg, makeTestRegistry());
   ASSERT_TRUE(result.hasValue());
   const auto& resolved = result.value().config;
   EXPECT_EQ(resolved.services.at("default").cache.maxCachedTracks, 0u);
@@ -443,7 +529,7 @@ TEST(ResolveConfig, CacheCustomValues) {
   cfg.services.value().at("default").cache.value()->max_groups_per_track =
       std::optional<uint32_t>{5};
 
-  auto result = resolveConfig(cfg);
+  auto result = resolveConfig(cfg, makeTestRegistry());
   ASSERT_TRUE(result.hasValue());
   const auto& resolved = result.value().config;
   EXPECT_EQ(resolved.services.at("default").cache.maxCachedTracks, 200u);
@@ -466,7 +552,7 @@ TEST(ResolveConfig, CacheInheritanceFromServiceDefaults) {
   svc.match.value().push_back(makeAnyAuthorityMatch());
   cfg.services.value().emplace("inheritor", std::move(svc));
 
-  auto result = resolveConfig(cfg);
+  auto result = resolveConfig(cfg, makeTestRegistry());
   ASSERT_TRUE(result.hasValue());
   const auto& resolved = result.value().config;
   ASSERT_EQ(resolved.services.size(), 1);
@@ -495,7 +581,7 @@ TEST(ResolveConfig, CachePerServiceOverridesDefaults) {
   svc.cache = std::move(svcCache);
   cfg.services.value().emplace("custom", std::move(svc));
 
-  auto result = resolveConfig(cfg);
+  auto result = resolveConfig(cfg, makeTestRegistry());
   ASSERT_TRUE(result.hasValue());
   const auto& resolved = result.value().config;
   EXPECT_EQ(resolved.services.at("custom").cache.maxCachedTracks, 300u);
@@ -522,7 +608,7 @@ TEST(ResolveConfig, CachePartialOverrideMergesWithDefaults) {
   svc.cache = std::move(svcCache);
   cfg.services.value().emplace("partial", std::move(svc));
 
-  auto result = resolveConfig(cfg);
+  auto result = resolveConfig(cfg, makeTestRegistry());
   ASSERT_TRUE(result.hasValue());
   const auto& resolved = result.value().config;
   ASSERT_EQ(resolved.services.size(), 1);
@@ -542,7 +628,7 @@ TEST(ResolveConfig, CachePartialOverrideWithoutDefaultsFails) {
   svc.cache = std::move(svcCache);
   cfg.services.value().emplace("incomplete", std::move(svc));
 
-  auto result = resolveConfig(cfg);
+  auto result = resolveConfig(cfg, makeTestRegistry());
   ASSERT_TRUE(result.hasError());
   EXPECT_THAT(result.error(), HasSubstr("cache.enabled is required"));
   EXPECT_THAT(result.error(), HasSubstr("cache.max_groups_per_track is required"));
@@ -557,7 +643,7 @@ TEST(ResolveConfig, ResolveExactAuthority) {
       makeAuthorityService({makeExactAuthorityMatch("live.example.com")})
   );
 
-  auto result = resolveConfig(cfg);
+  auto result = resolveConfig(cfg, makeTestRegistry());
   ASSERT_TRUE(result.hasValue());
   const auto& entries = result.value().config.services.at("exact-svc").match;
   ASSERT_EQ(entries.size(), 1);
@@ -580,7 +666,7 @@ TEST(ResolveConfig, ResolveWildcardAuthority) {
       makeAuthorityService({makeWildcardAuthorityMatch("*.example.com")})
   );
 
-  auto result = resolveConfig(cfg);
+  auto result = resolveConfig(cfg, makeTestRegistry());
   ASSERT_TRUE(result.hasValue());
   const auto& entries = result.value().config.services.at("wild-svc").match;
   ASSERT_EQ(entries.size(), 1);
@@ -596,7 +682,7 @@ TEST(ResolveConfig, ResolveWildcardAuthority) {
 TEST(ResolveConfig, ResolveAnyAuthority) {
   auto cfg = makeMinimalInsecureConfig();
 
-  auto result = resolveConfig(cfg);
+  auto result = resolveConfig(cfg, makeTestRegistry());
   ASSERT_TRUE(result.hasValue());
   const auto& match = result.value().config.services.at("default").match;
   ASSERT_EQ(match.size(), 1);
@@ -617,7 +703,7 @@ TEST(ResolveConfig, ResolveExactPath) {
       )})
   );
 
-  auto result = resolveConfig(cfg);
+  auto result = resolveConfig(cfg, makeTestRegistry());
   ASSERT_TRUE(result.hasValue());
   const auto& entries = result.value().config.services.at("svc").match;
   ASSERT_EQ(entries.size(), 1);
@@ -637,7 +723,7 @@ TEST(ResolveConfig, ResolvePrefixPath) {
       )})
   );
 
-  auto result = resolveConfig(cfg);
+  auto result = resolveConfig(cfg, makeTestRegistry());
   ASSERT_TRUE(result.hasValue());
   const auto& entries = result.value().config.services.at("svc").match;
   ASSERT_EQ(entries.size(), 1);
@@ -647,7 +733,7 @@ TEST(ResolveConfig, ResolvePrefixPath) {
 
 TEST(ResolveConfig, VersionsEmpty) {
   auto cfg = makeMinimalInsecureConfig();
-  auto result = resolveConfig(cfg);
+  auto result = resolveConfig(cfg, makeTestRegistry());
   ASSERT_TRUE(result.hasValue());
   EXPECT_EQ(result.value().config.listener.moqtVersions, "");
 }
@@ -655,7 +741,7 @@ TEST(ResolveConfig, VersionsEmpty) {
 TEST(ResolveConfig, VersionsPopulated) {
   auto cfg = makeMinimalInsecureConfig();
   cfg.listeners.value()[0].moqt_versions = std::vector<uint32_t>{14};
-  auto result = resolveConfig(cfg);
+  auto result = resolveConfig(cfg, makeTestRegistry());
   ASSERT_TRUE(result.hasValue());
   EXPECT_EQ(result.value().config.listener.moqtVersions, "14");
 }
@@ -665,7 +751,7 @@ TEST(ResolveConfig, AddressResolution) {
   cfg.listeners.value()[0].udp.value().socket.value().address = std::string("127.0.0.1");
   cfg.listeners.value()[0].udp.value().socket.value().port = uint16_t{8080};
 
-  auto result = resolveConfig(cfg);
+  auto result = resolveConfig(cfg, makeTestRegistry());
   ASSERT_TRUE(result.hasValue());
   const auto& resolved = result.value().config;
   EXPECT_EQ(resolved.listener.address.getPort(), 8080);
@@ -678,7 +764,7 @@ TEST(ResolveConfig, AdminPortZero) {
   auto cfg = makeMinimalInsecureConfig();
   cfg.admin.value()->port = uint16_t{0};
 
-  auto result = resolveConfig(cfg);
+  auto result = resolveConfig(cfg, makeTestRegistry());
   ASSERT_TRUE(result.hasError());
   EXPECT_THAT(result.error(), HasSubstr("admin.port"));
 }
@@ -690,7 +776,7 @@ TEST(ResolveConfig, AdminTlsPartialCreds) {
        }) {
     auto cfg = makeMinimalInsecureConfig();
     cfg.admin = std::optional<ParsedAdminConfig>{makeAdminWithTls(cert, key)};
-    auto result = resolveConfig(cfg);
+    auto result = resolveConfig(cfg, makeTestRegistry());
     ASSERT_TRUE(result.hasError());
     EXPECT_THAT(result.error(), HasSubstr("cert_file and key_file are required"));
   }
@@ -702,7 +788,7 @@ TEST(ResolveConfig, AdminPlaintextAndTlsMutuallyExclusive) {
   admin.plaintext = true;
   cfg.admin = std::optional<ParsedAdminConfig>{std::move(admin)};
 
-  auto result = resolveConfig(cfg);
+  auto result = resolveConfig(cfg, makeTestRegistry());
   ASSERT_TRUE(result.hasError());
   EXPECT_THAT(result.error(), HasSubstr("mutually exclusive"));
 }
@@ -711,7 +797,7 @@ TEST(ResolveConfig, AdminNeitherPlaintextNorTls) {
   auto cfg = makeMinimalInsecureConfig();
   cfg.admin.value()->plaintext = false;
 
-  auto result = resolveConfig(cfg);
+  auto result = resolveConfig(cfg, makeTestRegistry());
   ASSERT_TRUE(result.hasError());
   EXPECT_THAT(result.error(), HasSubstr("plaintext or tls"));
 }
@@ -722,14 +808,14 @@ TEST(ResolveConfig, AdminAbsent) {
   auto cfg = makeMinimalInsecureConfig();
   cfg.admin.value() = std::nullopt;
 
-  auto result = resolveConfig(cfg);
+  auto result = resolveConfig(cfg, makeTestRegistry());
   ASSERT_TRUE(result.hasValue());
   EXPECT_FALSE(result.value().config.admin.has_value());
 }
 
 TEST(ResolveConfig, AdminNoTls) {
   auto cfg = makeMinimalInsecureConfig();
-  auto result = resolveConfig(cfg);
+  auto result = resolveConfig(cfg, makeTestRegistry());
   ASSERT_TRUE(result.hasValue());
   ASSERT_TRUE(result.value().config.admin.has_value());
   EXPECT_FALSE(result.value().config.admin->tls.has_value());
@@ -737,7 +823,7 @@ TEST(ResolveConfig, AdminNoTls) {
 
 TEST(ResolveConfig, AdminAddress) {
   auto cfg = makeMinimalInsecureConfig();
-  auto result = resolveConfig(cfg);
+  auto result = resolveConfig(cfg, makeTestRegistry());
   ASSERT_TRUE(result.hasValue());
   ASSERT_TRUE(result.value().config.admin.has_value());
   EXPECT_EQ(result.value().config.admin->address.getPort(), 9669);
@@ -747,7 +833,7 @@ TEST(ResolveConfig, AdminAddress) {
 TEST(ResolveConfig, AdminCustomAddress) {
   auto cfg = makeMinimalInsecureConfig();
   cfg.admin.value()->address = std::string("127.0.0.1");
-  auto result = resolveConfig(cfg);
+  auto result = resolveConfig(cfg, makeTestRegistry());
   ASSERT_TRUE(result.hasValue());
   ASSERT_TRUE(result.value().config.admin.has_value());
   EXPECT_EQ(result.value().config.admin->address.getAddressStr(), "127.0.0.1");
@@ -757,7 +843,7 @@ TEST(ResolveConfig, AdminTlsResolution) {
   auto cfg = makeMinimalInsecureConfig();
   cfg.admin =
       std::optional<ParsedAdminConfig>{makeAdminWithTls("/etc/ssl/cert.pem", "/etc/ssl/key.pem")};
-  auto result = resolveConfig(cfg);
+  auto result = resolveConfig(cfg, makeTestRegistry());
   ASSERT_TRUE(result.hasValue());
   ASSERT_TRUE(result.value().config.admin.has_value());
   ASSERT_TRUE(result.value().config.admin->tls.has_value());
@@ -769,7 +855,7 @@ TEST(ResolveConfig, AdminTlsResolution) {
 TEST(ResolveConfig, AdminTlsDefaultAlpn) {
   auto cfg = makeMinimalInsecureConfig();
   cfg.admin = std::optional<ParsedAdminConfig>{makeAdminWithTls()};
-  auto result = resolveConfig(cfg);
+  auto result = resolveConfig(cfg, makeTestRegistry());
   ASSERT_TRUE(result.hasValue());
   ASSERT_TRUE(result.value().config.admin.has_value());
   ASSERT_TRUE(result.value().config.admin->tls.has_value());
@@ -781,11 +867,43 @@ TEST(ResolveConfig, AdminTlsCustomAlpn) {
   auto admin = makeAdminWithTls();
   admin.tls.value()->alpn = std::vector<std::string>{"h2"};
   cfg.admin = std::optional<ParsedAdminConfig>{std::move(admin)};
-  auto result = resolveConfig(cfg);
+  auto result = resolveConfig(cfg, makeTestRegistry());
   ASSERT_TRUE(result.hasValue());
   ASSERT_TRUE(result.value().config.admin.has_value());
   ASSERT_TRUE(result.value().config.admin->tls.has_value());
   EXPECT_THAT(result.value().config.admin->tls->alpn, ::testing::ElementsAre("h2"));
+}
+
+// --- Partial registration tests ---
+
+TEST(ResolveConfig, UnregisteredProviderRejected) {
+  // Registry with only "file" — insecure config should fail
+  tls::TlsProviderRegistry registry;
+  registry.registerProvider(
+      "file",
+      tls::makeFileFactory([](auto, auto) -> std::shared_ptr<tls::TlsCertProvider> {
+        return std::make_shared<DummyCertProvider>();
+      })
+  );
+
+  auto cfg = makeMinimalInsecureConfig();
+  auto result = resolveConfig(cfg, registry);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("unknown TLS type"));
+  EXPECT_THAT(result.error(), HasSubstr("insecure"));
+}
+
+TEST(ResolveConfig, RegisteredProviderAccepted) {
+  // Registry with only "insecure" — insecure config should succeed
+  tls::TlsProviderRegistry registry;
+  registry.registerProvider("insecure", tls::makeInsecureFactory([] {
+                              return std::make_shared<DummyCertProvider>();
+                            }));
+
+  auto cfg = makeMinimalInsecureConfig();
+  auto result = resolveConfig(cfg, registry);
+  ASSERT_TRUE(result.hasValue());
+  EXPECT_NE(result.value().config.listener.tlsProvider, nullptr);
 }
 
 } // namespace

@@ -23,7 +23,7 @@ listeners:
         address: "::"
         port: 9668
     tls:
-      insecure: true
+      type: insecure
     endpoint: "/moq-relay"
 services:
   default:
@@ -38,12 +38,13 @@ admin:
   port: 9669
   address: "::1"
   plaintext: true
+admin:
+  port: 9669
 )");
 
   auto cfg = loadConfig(yaml.path());
   EXPECT_EQ(cfg.listeners.value().size(), 1);
   EXPECT_EQ(cfg.listeners.value()[0].name.value(), "main");
-  EXPECT_TRUE(cfg.listeners.value()[0].tls.value().insecure.value());
 
   const auto& sock = cfg.listeners.value()[0].udp.value().socket.value();
   EXPECT_EQ(sock.port.value(), 9668);
@@ -58,7 +59,7 @@ admin:
   EXPECT_EQ(svc.cache.value()->max_groups_per_track.value(), 3);
 }
 
-TEST(ConfigLoader, FullConfig) {
+TEST(ConfigLoader, TlsFileConfig) {
   TempYamlFile yaml(R"(
 listeners:
   - name: production
@@ -67,9 +68,9 @@ listeners:
         address: "0.0.0.0"
         port: 4443
     tls:
+      type: file
       cert_file: /etc/ssl/cert.pem
       key_file: /etc/ssl/key.pem
-      insecure: false
     endpoint: "/relay"
     moqt_versions: [14, 16]
 services:
@@ -85,6 +86,8 @@ admin:
   port: 9669
   address: "::1"
   plaintext: true
+admin:
+  port: 9669
 )");
 
   auto cfg = loadConfig(yaml.path());
@@ -94,9 +97,6 @@ admin:
   const auto& sock = l.udp.value().socket.value();
   EXPECT_EQ(sock.address.value(), "0.0.0.0");
   EXPECT_EQ(sock.port.value(), 4443);
-  EXPECT_EQ(l.tls.value().cert_file.value().value(), "/etc/ssl/cert.pem");
-  EXPECT_EQ(l.tls.value().key_file.value().value(), "/etc/ssl/key.pem");
-  EXPECT_FALSE(l.tls.value().insecure.value());
   EXPECT_EQ(l.endpoint.value(), "/relay");
   ASSERT_TRUE(l.moqt_versions.value().has_value());
   EXPECT_EQ(l.moqt_versions.value()->size(), 2);
@@ -120,7 +120,7 @@ listeners:
         address: "::"
         port: 9668
     tls:
-      insecure: true
+      type: insecure
     endpoint: "/moq-relay"
 services:
   live:
@@ -210,7 +210,7 @@ listeners:
         address: "::"
         port: 9668
     tls:
-      insecure: true
+      type: insecure
     endpoint: "/moq-relay"
 services:
   default:
@@ -258,7 +258,7 @@ listeners:
         address: "::"
         port: 9668
     tls:
-      insecure: true
+      type: insecure
     endpoint: "/moq-relay"
 service_defaults:
   cache:
@@ -280,6 +280,61 @@ services:
 
   ASSERT_EQ(cfg.services.value().size(), 1);
   EXPECT_FALSE(cfg.services.value().at("default").cache.value().has_value());
+}
+
+TEST(ConfigLoader, TlsDirectoryConfig) {
+  TempYamlFile yaml(R"(
+listeners:
+  - name: multi
+    udp:
+      socket:
+        address: "::"
+        port: 4443
+    tls:
+      type: directory
+      cert_dir: /etc/ssl/certs.d/
+      default_cert: example.com
+    endpoint: "/moq-relay"
+cache:
+  enabled: true
+  max_tracks: 100
+  max_groups_per_track: 3
+services:
+  default:
+    match:
+      - authority: {any: true}
+        path: {prefix: "/"}
+)");
+
+  auto cfg = loadConfig(yaml.path());
+  EXPECT_EQ(cfg.listeners.value().size(), 1);
+}
+
+TEST(ConfigLoader, TlsDirectoryConfigNoDefault) {
+  TempYamlFile yaml(R"(
+listeners:
+  - name: multi
+    udp:
+      socket:
+        address: "::"
+        port: 4443
+    tls:
+      type: directory
+      cert_dir: /etc/ssl/certs.d/
+    endpoint: "/moq-relay"
+cache:
+  enabled: true
+  max_tracks: 100
+  max_groups_per_track: 3
+services:
+  default:
+    match:
+      - authority: {any: true}
+        path: {prefix: "/"}
+)");
+
+  auto cfg = loadConfig(yaml.path());
+  EXPECT_EQ(cfg.listeners.value().size(), 1);
 }
 
 // --- Schema generation test ---
@@ -316,7 +371,7 @@ listeners:
         address: "::"
         port: 8080
     tls:
-      insecure: true
+      type: insecure
     endpoint: "/moq-relay"
 services:
   default:
@@ -331,6 +386,8 @@ admin:
   port: 9669
   address: "::1"
   plaintext: true
+admin:
+  port: 9669
 )");
 
   auto cfg = loadConfig(yaml.path());
@@ -359,7 +416,7 @@ listeners:
         address: "::"
         port: 9668
     tls:
-      insecure: true
+      type: insecure
     endpoint: "/moq-relay"
     bogus: 42
 services:
@@ -375,6 +432,8 @@ admin:
   port: 9669
   address: "::1"
   plaintext: true
+admin:
+  port: 9669
 )");
 
   EXPECT_NO_THROW(loadConfig(yaml.path()));
@@ -389,7 +448,7 @@ listeners:
         address: "::"
         port: 9668
     tls:
-      insecure: true
+      type: insecure
     endpoint: "/moq-relay"
     bogus: 42
 services:
@@ -405,6 +464,8 @@ admin:
   port: 9669
   address: "::1"
   plaintext: true
+admin:
+  port: 9669
 )");
 
   EXPECT_THROW(loadConfig(yaml.path(), /*strict=*/true), std::runtime_error);
