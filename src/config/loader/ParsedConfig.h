@@ -32,18 +32,6 @@ struct ParsedUdpConfig {
   rfl::Description<"Socket configuration", ParsedSocketConfig> socket;
 };
 
-struct ParsedListenerTlsConfig {
-  rfl::Description<"Path to TLS certificate file", std::optional<std::string>> cert_file;
-  rfl::Description<"Path to TLS private key file", std::optional<std::string>> key_file;
-  rfl::Description<"Insecure mode, use default compiled-in cert", bool> insecure;
-};
-
-struct ParsedAdminTlsConfig {
-  rfl::Description<"Path to TLS certificate file", std::optional<std::string>> cert_file;
-  rfl::Description<"Path to TLS private key file", std::optional<std::string>> key_file;
-  rfl::Description<"ALPN protocol list", std::optional<std::vector<std::string>>> alpn;
-};
-
 struct ParsedQuicConfig {
   // Flow control
   rfl::Description<
@@ -81,10 +69,39 @@ struct ParsedQuicConfig {
       cc_algo;
 };
 
+// rfl::ExtraFields absorbs the "type" discriminator key that the TaggedUnion
+// parser has already consumed but that would otherwise be rejected by the
+// NoExtraFields processor in strict mode.
+struct ParsedTlsInsecure {
+  using Tag = rfl::Literal<"insecure">;
+  rfl::ExtraFields<rfl::Generic> extra_;
+};
+
+struct ParsedTlsFile {
+  using Tag = rfl::Literal<"file">;
+  rfl::Description<"Path to TLS certificate file (PEM)", std::string> cert_file;
+  rfl::Description<"Path to TLS private key file (PEM)", std::string> key_file;
+  rfl::ExtraFields<rfl::Generic> extra_;
+};
+
+struct ParsedTlsDirectory {
+  using Tag = rfl::Literal<"directory">;
+  rfl::Description<"Directory containing cert/key pairs (<name>.crt + <name>.key)", std::string>
+      cert_dir;
+  rfl::Description<
+      "SNI identity of the default certificate (optional, first cert if omitted)",
+      std::optional<std::string>>
+      default_cert;
+  rfl::ExtraFields<rfl::Generic> extra_;
+};
+
+using ParsedTlsMode =
+    rfl::TaggedUnion<"type", ParsedTlsInsecure, ParsedTlsFile, ParsedTlsDirectory>;
+
 struct ParsedListenerConfig {
   rfl::Description<"Listener name", std::string> name;
   rfl::Description<"UDP/QUIC transport config", ParsedUdpConfig> udp;
-  rfl::Description<"TLS configuration", ParsedListenerTlsConfig> tls;
+  ParsedTlsMode tls;
   rfl::Description<"WebTransport endpoint path", std::string> endpoint;
   rfl::Description<
       "MOQT draft versions (empty = all supported)",
@@ -105,6 +122,12 @@ struct ParsedCacheConfig {
   rfl::Description<"Max cached tracks, ignored when disabled", std::optional<uint32_t>> max_tracks;
   rfl::Description<"Max cached groups per track, ignored when disabled", std::optional<uint32_t>>
       max_groups_per_track;
+};
+
+struct ParsedAdminTlsConfig {
+  rfl::Description<"Path to TLS certificate file", std::optional<std::string>> cert_file;
+  rfl::Description<"Path to TLS private key file", std::optional<std::string>> key_file;
+  rfl::Description<"ALPN protocol list", std::optional<std::vector<std::string>>> alpn;
 };
 
 struct ParsedAdminConfig {

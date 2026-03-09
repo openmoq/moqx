@@ -14,6 +14,8 @@
 
 #include <folly/String.h>
 
+#include "tls/TlsProviderRegistry.h"
+
 namespace openmoq::moqx::config {
 
 namespace {
@@ -47,41 +49,12 @@ mergeCacheConfigs(const ParsedCacheConfig& base, const ParsedCacheConfig& overla
   return merged;
 }
 
-void validateListenerTlsConfig(
-    const ParsedListenerTlsConfig& tls,
-    std::string_view context,
-    std::vector<std::string>& errors,
-    std::vector<std::string>& warnings
-) {
-  bool hasCert = tls.cert_file.value().has_value() && !tls.cert_file.value()->empty();
-  bool hasKey = tls.key_file.value().has_value() && !tls.key_file.value()->empty();
-  if (!tls.insecure.value()) {
-    if (!hasCert || !hasKey) {
-      errors.push_back(
-          std::string(context) + ": cert_file and key_file are required when insecure=false"
-      );
-    }
-  } else if (hasCert || hasKey) {
-    warnings.push_back(
-        std::string(context) + ": cert_file/key_file are ignored when insecure=true"
-    );
-  }
-}
-
 void validateAdminTlsConfig(const ParsedAdminTlsConfig& tls, std::vector<std::string>& errors) {
   bool hasCert = tls.cert_file.value().has_value() && !tls.cert_file.value()->empty();
   bool hasKey = tls.key_file.value().has_value() && !tls.key_file.value()->empty();
   if (!hasCert || !hasKey) {
     errors.push_back("admin.tls: cert_file and key_file are required");
   }
-}
-
-TlsConfig resolveTlsConfig(const ParsedListenerTlsConfig& tls) {
-  return TlsConfig{
-      .certFile = tls.cert_file.value().value_or(""),
-      .keyFile = tls.key_file.value().value_or(""),
-      .alpn = {},
-  };
 }
 
 TlsConfig resolveAdminTlsConfig(
@@ -126,21 +99,29 @@ std::string makeCompositeKey(
 
 void validateListener(
     const ParsedListenerConfig& listener,
-    std::vector<std::string>& errors,
-    std::vector<std::string>& warnings
+    const tls::TlsProviderRegistry& registry,
+    std::vector<std::string>& errors
 ) {
   const auto& sock = listener.udp.value().socket.value();
   if (sock.port.value() == 0) {
     errors.push_back("Listener '" + listener.name.value() + "' port must be 1-65535, got 0");
   }
 
-  // TLS validation
-  validateListenerTlsConfig(
-      listener.tls.value(),
-      "Listener '" + listener.name.value() + "'",
-      errors,
-      warnings
-  );
+  listener.tls.visit([&](const auto& variant) {
+    using T = std::decay_t<decltype(variant)>;
+    auto type = typename T::Tag{}.name();
+
+    auto* factory = registry.getFactory(type);
+    if (!factory) {
+      errors.push_back("Listener '" + listener.name.value() + "': unknown TLS type '" + type + "'");
+      return;
+    }
+    auto result = (*factory)(listener.tls);
+    if (result.hasError()) {
+      errors.push_back("Listener '" + listener.name.value() + "': " + result.error());
+      return;
+    }
+  });
 
   // quic_stack validation
   const auto& stackOpt = listener.quic_stack.value();
@@ -150,7 +131,8 @@ void validateListener(
         "' (expected \"mvfst\" or \"picoquic\")"
     );
   }
-  if (stackOpt.value_or(kStackMvfst) == kStackPicoquic && listener.tls.value().insecure.value()) {
+  if (stackOpt.value_or(kStackMvfst) == kStackPicoquic &&
+      rfl::holds_alternative<ParsedTlsInsecure>(listener.tls.variant())) {
     errors.push_back(
         "Listener '" + listener.name.value() +
         "': quic_stack \"picoquic\" requires real TLS credentials (insecure: true is not supported)"
@@ -503,16 +485,29 @@ void validatePicoServicePaths(
   }
 }
 
-ListenerConfig resolveListener(const ParsedListenerConfig& listener, const QuicConfig& quic) {
+ListenerConfig resolveListener(
+    const ParsedListenerConfig& listener,
+    const QuicConfig& quic,
+    const tls::TlsProviderRegistry& registry
+) {
   const auto& sock = listener.udp.value().socket.value();
-  const auto& tls = listener.tls.value();
 
-  TlsMode tlsMode;
-  if (tls.insecure.value()) {
-    tlsMode = Insecure{};
-  } else {
-    tlsMode = resolveTlsConfig(tls);
-  }
+  // TLS: extract type string from variant, look up factory, invoke it
+  std::shared_ptr<tls::TlsCertProvider> tlsProvider;
+  listener.tls.visit([&](const auto& variant) {
+    using T = std::decay_t<decltype(variant)>;
+    auto type = typename T::Tag{}.name();
+
+    auto* factory = registry.getFactory(type);
+    if (!factory) {
+      return;
+    }
+    auto result = (*factory)(listener.tls);
+    if (result.hasError()) {
+      return;
+    }
+    tlsProvider = std::move(result.value());
+  });
 
   const auto& stackStr = listener.quic_stack.value().value_or(kStackMvfst);
   auto quicStack = (stackStr == kStackPicoquic) ? QuicStack::Picoquic : QuicStack::Mvfst;
@@ -520,7 +515,7 @@ ListenerConfig resolveListener(const ParsedListenerConfig& listener, const QuicC
   return ListenerConfig{
       .name = listener.name.value(),
       .address = folly::SocketAddress(sock.address.value(), sock.port.value()),
-      .tlsMode = std::move(tlsMode),
+      .tlsProvider = std::move(tlsProvider),
       .endpoint = listener.endpoint.value(),
       .moqtVersions = moqtVersionsToString(listener),
       .quicStack = quicStack,
@@ -576,7 +571,8 @@ ServiceConfig resolveService(const ParsedServiceConfig& svc, const ParsedCacheCo
 
 } // namespace
 
-folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& config) {
+folly::Expected<ResolvedConfig, std::string>
+resolveConfig(const ParsedConfig& config, const tls::TlsProviderRegistry& registry) {
   std::vector<std::string> errors;
   std::vector<std::string> warnings;
 
@@ -596,7 +592,7 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
   {
     std::unordered_set<std::string> listenerAddrs;
     for (const auto& listener : config.listeners.value()) {
-      validateListener(listener, errors, warnings);
+      validateListener(listener, registry, errors);
       auto addr = listener.udp.value().socket.value().address.value() + ":" +
                   std::to_string(listener.udp.value().socket.value().port.value());
       if (!listenerAddrs.insert(addr).second) {
@@ -689,7 +685,7 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
                     v.reserve(config.listeners.value().size());
                     const auto& listeners = config.listeners.value();
                     for (size_t i = 0; i < listeners.size(); ++i) {
-                      v.push_back(resolveListener(listeners[i], mergedQuicConfigs[i]));
+                      v.push_back(resolveListener(listeners[i], mergedQuicConfigs[i], registry));
                     }
                     return v;
                   }(),
