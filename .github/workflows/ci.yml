@@ -1,4 +1,4 @@
-name: build
+name: ci
 
 on:
   pull_request:
@@ -11,6 +11,18 @@ permissions:
   checks: write
 
 jobs:
+  format:
+    runs-on: ubuntu-latest
+    container: debian:trixie
+    steps:
+      - name: Install tools
+        run: apt-get update && apt-get install -y --no-install-recommends ca-certificates git clang-format
+
+      - uses: actions/checkout@v4
+
+      - name: Check formatting
+        run: bash scripts/format.sh --check
+
   build:
     strategy:
       fail-fast: false
