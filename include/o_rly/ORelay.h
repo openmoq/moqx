@@ -48,9 +48,10 @@ public:
       std::shared_ptr<NamespacePublishHandle> namespacePublishHandle
   ) override;
 
-  folly::coro::Task<moxygen::Subscriber::PublishNamespaceResult>
-  publishNamespace(moxygen::PublishNamespace ann, std::shared_ptr<moxygen::Subscriber::PublishNamespaceCallback>)
-      override;
+  folly::coro::Task<moxygen::Subscriber::PublishNamespaceResult> publishNamespace(
+      moxygen::PublishNamespace ann,
+      std::shared_ptr<moxygen::Subscriber::PublishNamespaceCallback>
+  ) override;
 
   PublishResult publish(
       moxygen::PublishRequest pubReq,
@@ -61,8 +62,8 @@ public:
     XLOG(INFO) << "Processing goaway uri=" << goaway.newSessionUri;
   }
 
-  std::shared_ptr<moxygen::MoQSession> findPublishNamespaceSession(const moxygen::TrackNamespace& ns
-  );
+  std::shared_ptr<moxygen::MoQSession>
+  findPublishNamespaceSession(const moxygen::TrackNamespace& ns);
 
   // Wrapper for compatibility - returns single session as vector
   std::vector<std::shared_ptr<moxygen::MoQSession>>
@@ -98,13 +99,15 @@ private:
 
     void publishNamespaceDone() override { relay_.publishNamespaceDone(trackNamespace_, this); }
 
-    folly::coro::Task<RequestUpdateResult> requestUpdate(moxygen::RequestUpdate reqUpdate
-    ) override {
-      co_return folly::makeUnexpected(moxygen::RequestError{
-          reqUpdate.requestID,
-          moxygen::RequestErrorCode::NOT_SUPPORTED,
-          "REQUEST_UPDATE not supported for relay PUBLISH_NAMESPACE"
-      });
+    folly::coro::Task<RequestUpdateResult>
+    requestUpdate(moxygen::RequestUpdate reqUpdate) override {
+      co_return folly::makeUnexpected(
+          moxygen::RequestError{
+              reqUpdate.requestID,
+              moxygen::RequestErrorCode::NOT_SUPPORTED,
+              "REQUEST_UPDATE not supported for relay PUBLISH_NAMESPACE"
+          }
+      );
     }
 
     // Helper to check if THIS node (excluding children) has content

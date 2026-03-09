@@ -26,7 +26,8 @@ ParsedConfig loadConfig(const std::string& path, bool strict) {
 
 std::string generateSchema() {
   return rfl::json::to_schema<
-      rfl::Description<"Configuration schema for the o-rly relay.", ParsedConfig>>(rfl::json::pretty
+      rfl::Description<"Configuration schema for the o-rly relay.", ParsedConfig>>(
+      rfl::json::pretty
   );
 }
 

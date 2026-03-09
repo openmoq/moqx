@@ -81,11 +81,13 @@ folly::coro::Task<Subscriber::PublishNamespaceResult> ORelay::publishNamespace(
   XLOG(DBG1) << __func__ << " ns=" << ann.trackNamespace;
   // check auth
   if (!ann.trackNamespace.startsWith(allowedNamespacePrefix_)) {
-    co_return folly::makeUnexpected(PublishNamespaceError{
-        ann.requestID,
-        PublishNamespaceErrorCode::UNINTERESTED,
-        "bad namespace"
-    });
+    co_return folly::makeUnexpected(
+        PublishNamespaceError{
+            ann.requestID,
+            PublishNamespaceErrorCode::UNINTERESTED,
+            "bad namespace"
+        }
+    );
   }
   std::vector<std::pair<std::shared_ptr<MoQSession>, bool>> sessions;
   auto nodePtr = findNamespaceNode(
@@ -476,11 +478,13 @@ public:
   }
 
   folly::coro::Task<RequestUpdateResult> requestUpdate(RequestUpdate reqUpdate) override {
-    co_return folly::makeUnexpected(RequestError{
-        reqUpdate.requestID,
-        RequestErrorCode::NOT_SUPPORTED,
-        "REQUEST_UPDATE not supported for relay SUBSCRIBE_NAMESPACE"
-    });
+    co_return folly::makeUnexpected(
+        RequestError{
+            reqUpdate.requestID,
+            RequestErrorCode::NOT_SUPPORTED,
+            "REQUEST_UPDATE not supported for relay SUBSCRIBE_NAMESPACE"
+        }
+    );
   }
 
 private:
@@ -532,11 +536,13 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> ORelay::subscribeNamespac
   XLOG(DBG1) << __func__ << " nsp=" << subNs.trackNamespacePrefix;
   // check auth
   if (subNs.trackNamespacePrefix.empty()) {
-    co_return folly::makeUnexpected(SubscribeNamespaceError{
-        subNs.requestID,
-        SubscribeNamespaceErrorCode::NAMESPACE_PREFIX_UNKNOWN,
-        "empty"
-    });
+    co_return folly::makeUnexpected(
+        SubscribeNamespaceError{
+            subNs.requestID,
+            SubscribeNamespaceErrorCode::NAMESPACE_PREFIX_UNKNOWN,
+            "empty"
+        }
+    );
   }
   auto session = MoQSession::getRequestSession();
   auto nodePtr = findNamespaceNode(subNs.trackNamespacePrefix, /*createMissingNodes=*/true);
@@ -718,11 +724,13 @@ ORelay::subscribe(SubscribeRequest subReq, std::shared_ptr<TrackConsumer> consum
     if (!subscriber) {
       XLOG(ERR) << "addSubscriber returned null (draining?) for " << subReq.fullTrackName
                 << " reqID=" << subReq.requestID;
-      co_return folly::makeUnexpected(SubscribeError{
-          subReq.requestID,
-          SubscribeErrorCode::INTERNAL_ERROR,
-          "failed to add subscriber"
-      });
+      co_return folly::makeUnexpected(
+          SubscribeError{
+              subReq.requestID,
+              SubscribeErrorCode::INTERNAL_ERROR,
+              "failed to add subscriber"
+          }
+      );
     }
     XLOG(DBG4) << "added subscriber for ftn=" << subReq.fullTrackName;
     // As per the spec, we must set forward = true in the subscribe request
@@ -788,11 +796,13 @@ ORelay::subscribe(SubscribeRequest subReq, std::shared_ptr<TrackConsumer> consum
     auto& forwarder = subscriptionIt->second.forwarder;
     if (forwarder->largest() && subReq.locType == LocationType::AbsoluteRange &&
         subReq.endGroup < forwarder->largest()->group) {
-      co_return folly::makeUnexpected(SubscribeError{
-          subReq.requestID,
-          SubscribeErrorCode::INVALID_RANGE,
-          "Range in the past, use FETCH"
-      });
+      co_return folly::makeUnexpected(
+          SubscribeError{
+              subReq.requestID,
+              SubscribeErrorCode::INVALID_RANGE,
+              "Range in the past, use FETCH"
+          }
+      );
       // start may be in the past, it will get adjusted forward to largest
     }
     bool forwarding = subscriptionIt->second.forwarder->numForwardingSubscribers() > 0;
@@ -801,11 +811,13 @@ ORelay::subscribe(SubscribeRequest subReq, std::shared_ptr<TrackConsumer> consum
     if (!subscriber) {
       XLOG(ERR) << "addSubscriber returned null (draining?) for " << subReq.fullTrackName
                 << " reqID=" << subReq.requestID;
-      co_return folly::makeUnexpected(SubscribeError{
-          subReq.requestID,
-          SubscribeErrorCode::INTERNAL_ERROR,
-          "failed to add subscriber"
-      });
+      co_return folly::makeUnexpected(
+          SubscribeError{
+              subReq.requestID,
+              SubscribeErrorCode::INTERNAL_ERROR,
+              "failed to add subscriber"
+          }
+      );
     }
     XLOG(DBG4) << "added subscriber for ftn=" << subReq.fullTrackName;
     if (!forwarding && subscriptionIt->second.forwarder->numForwardingSubscribers() > 0) {

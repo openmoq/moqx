@@ -299,8 +299,9 @@ protected:
     ON_CALL(*sg, beginObject(_, _, _, _))
         .WillByDefault(Return(folly::makeExpected<MoQPublishError>(folly::unit)));
     ON_CALL(*sg, objectPayload(_, _))
-        .WillByDefault(Return(folly::makeExpected<MoQPublishError>(ObjectPublishStatus::IN_PROGRESS)
-        ));
+        .WillByDefault(
+            Return(folly::makeExpected<MoQPublishError>(ObjectPublishStatus::IN_PROGRESS))
+        );
     ON_CALL(*sg, endOfSubgroup())
         .WillByDefault(Return(folly::makeExpected<MoQPublishError>(folly::unit)));
     ON_CALL(*sg, endOfGroup(_))
@@ -481,7 +482,8 @@ TEST_F(ORelayTest, PruneOnPublishDoneBug) {
   EXPECT_EQ(state.session, nullptr); // No session - PASS
 
   // THIS FAILS: Node should have been pruned but still exists (memory leak)
-  EXPECT_FALSE(state.nodeExists
+  EXPECT_FALSE(
+      state.nodeExists
   ) << "BUG: Node test/A/B/C still exists after publish ended and was the "
        "only content. "
        "onPublishDone should have called tryPruneChild to clean up empty "
@@ -791,8 +793,9 @@ TEST_F(ORelayTest, ForwarderOnlyCreatesSubgroupsBeforeObjectData) {
     ON_CALL(*sg, beginObject(_, _, _, _))
         .WillByDefault(Return(folly::makeExpected<MoQPublishError>(folly::unit)));
     ON_CALL(*sg, objectPayload(_, _))
-        .WillByDefault(Return(folly::makeExpected<MoQPublishError>(ObjectPublishStatus::IN_PROGRESS)
-        ));
+        .WillByDefault(
+            Return(folly::makeExpected<MoQPublishError>(ObjectPublishStatus::IN_PROGRESS))
+        );
     ON_CALL(*sg, endOfSubgroup())
         .WillByDefault(Return(folly::makeExpected<MoQPublishError>(folly::unit)));
   };
@@ -878,7 +881,8 @@ TEST_F(ORelayTest, GracefulSessionDraining) {
     EXPECT_CALL(*consumers[0], beginSubgroup(i, 0, _, _))
         .WillOnce([this, i, &sub0_sgs](uint64_t, uint64_t, uint8_t, bool) {
           sub0_sgs[i] = createMockSubgroupConsumer();
-          return folly::makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(sub0_sgs[i]
+          return folly::makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(
+              sub0_sgs[i]
           );
         });
   }
@@ -1076,10 +1080,11 @@ TEST_F(ORelayTest, SubscriberUnsubscribeDoesNotReceiveNewObjects) {
 
   // publisher ends subscription
   EXPECT_CALL(*mockConsumer1, publishDone(testing::_));
-  EXPECT_TRUE(publishConsumer
-                  ->publishDone({RequestID(1), PublishDoneStatusCode::TRACK_ENDED, 0, "track ended"}
-                  )
-                  .hasValue());
+  EXPECT_TRUE(
+      publishConsumer
+          ->publishDone({RequestID(1), PublishDoneStatusCode::TRACK_ENDED, 0, "track ended"})
+          .hasValue()
+  );
 
   // Subscriber 2 joins after publishDone
   subscribeToTrack(
@@ -1116,20 +1121,20 @@ TEST_F(ORelayTest, SubscribeNamespaceDoesntAddDrainingPublish) {
   auto mockConsumer1 = createMockConsumer();
   EXPECT_CALL(*subscriber1, publish(testing::_, testing::_))
       .WillOnce([mockConsumer1](auto pubReq, auto subHandle) {
-        return Subscriber::PublishResult(Subscriber::PublishConsumerAndReplyTask{
-            mockConsumer1,
-            []() -> folly::coro::Task<folly::Expected<PublishOk, PublishError>> {
-              co_return PublishOk{
-                  /*requestID=*/RequestID(1),
-                  /*forward=*/true,
-                  /*subscriberPriority=*/0,
-                  /*groupOrder=*/GroupOrder::OldestFirst,
-                  /*locType=*/LocationType::LargestObject,
-                  /*start=*/std::nullopt,
-                  /*endGroup=*/std::nullopt
-              };
-            }()
-        });
+        return Subscriber::PublishResult(
+            Subscriber::PublishConsumerAndReplyTask{
+                mockConsumer1,
+                []() -> folly::coro::Task<folly::Expected<PublishOk, PublishError>> {
+                  co_return PublishOk{/*requestID=*/RequestID(1),
+                                      /*forward=*/true,
+                                      /*subscriberPriority=*/0,
+                                      /*groupOrder=*/GroupOrder::OldestFirst,
+                                      /*locType=*/LocationType::LargestObject,
+                                      /*start=*/std::nullopt,
+                                      /*endGroup=*/std::nullopt};
+                }()
+            }
+        );
       });
 
   EXPECT_CALL(*mockConsumer1, beginSubgroup(_, _, _, _))
@@ -1206,11 +1211,14 @@ TEST_F(ORelayTest, DataOperationCancelledWhenAllSubscribersFail) {
         .WillOnce([this, i, &sgs](uint64_t, uint64_t, uint8_t, bool) {
           sgs[i] = createMockSubgroupConsumer();
           EXPECT_CALL(*sgs[i], objectPayload(_, false))
-              .WillOnce(Return(folly::makeExpected<MoQPublishError>(ObjectPublishStatus::IN_PROGRESS
-              )))
-              .WillOnce(Return(folly::makeUnexpected(
-                  MoQPublishError(MoQPublishError::WRITE_ERROR, "write failed")
-              )));
+              .WillOnce(
+                  Return(folly::makeExpected<MoQPublishError>(ObjectPublishStatus::IN_PROGRESS))
+              )
+              .WillOnce(Return(
+                  folly::makeUnexpected(
+                      MoQPublishError(MoQPublishError::WRITE_ERROR, "write failed")
+                  )
+              ));
           return folly::makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(sgs[i]);
         });
   }
@@ -1268,7 +1276,8 @@ TEST_F(ORelayTest, PartialSubscriberFailureDoesNotCancelData) {
       .WillOnce([this, &sgs](uint64_t, uint64_t, uint8_t, bool) {
         sgs[0] = createMockSubgroupConsumer();
         EXPECT_CALL(*sgs[0], objectPayload(_, false))
-            .WillOnce(Return(folly::makeExpected<MoQPublishError>(ObjectPublishStatus::IN_PROGRESS))
+            .WillOnce(
+                Return(folly::makeExpected<MoQPublishError>(ObjectPublishStatus::IN_PROGRESS))
             )
             .WillOnce(Return(
                 folly::makeUnexpected(MoQPublishError(MoQPublishError::WRITE_ERROR, "write failed"))
@@ -1462,9 +1471,11 @@ TEST_F(ORelayTest, TombstonedSubgroupIgnoresSubsequentObjects) {
         sg = createMockSubgroupConsumer();
         // First object fails with CANCELLED
         EXPECT_CALL(*sg, object(0, _, _, false))
-            .WillOnce(Return(folly::makeUnexpected(
-                MoQPublishError(MoQPublishError::CANCELLED, "delivery timeout")
-            )));
+            .WillOnce(Return(
+                folly::makeUnexpected(
+                    MoQPublishError(MoQPublishError::CANCELLED, "delivery timeout")
+                )
+            ));
         // Per API contract, error implies implicit reset - no reset() call
         // After tombstoning, should NOT receive any more objects
         EXPECT_CALL(*sg, object(1, _, _, _)).Times(0);
@@ -1574,9 +1585,11 @@ TEST_F(ORelayTest, HardErrorsRemoveSubscriber) {
       .WillOnce([this, &sg](uint64_t, uint64_t, uint8_t, bool) {
         sg = createMockSubgroupConsumer();
         EXPECT_CALL(*sg, object(0, _, _, false))
-            .WillOnce(Return(folly::makeUnexpected(
-                MoQPublishError(MoQPublishError::WRITE_ERROR, "transport broken")
-            )));
+            .WillOnce(Return(
+                folly::makeUnexpected(
+                    MoQPublishError(MoQPublishError::WRITE_ERROR, "transport broken")
+                )
+            ));
         // Should be reset when subscriber is removed
         EXPECT_CALL(*sg, reset(_)).Times(1);
         return folly::makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(sg);
@@ -1634,9 +1647,11 @@ TEST_F(ORelayTest, EndOfSubgroupHardErrorDoesNotCrash) {
         sg = createMockSubgroupConsumer();
         // Override endOfSubgroup to return a hard error (WRITE_ERROR)
         EXPECT_CALL(*sg, endOfSubgroup())
-            .WillOnce(Return(folly::makeUnexpected(
-                MoQPublishError(MoQPublishError::WRITE_ERROR, "transport broken")
-            )));
+            .WillOnce(Return(
+                folly::makeUnexpected(
+                    MoQPublishError(MoQPublishError::WRITE_ERROR, "transport broken")
+                )
+            ));
         return folly::makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(sg);
       });
 
