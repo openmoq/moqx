@@ -1,0 +1,164 @@
+name: publish release
+
+# Builds o-rly on each target platform and publishes per-architecture
+# artifact tarballs as a GitHub Release keyed by commit SHA.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write  # for Docker image publishing to GHCR
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ubuntu-22.04-amd64
+            runner: ubuntu-22.04
+
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install system dependencies
+        run: bash deps/moxygen/standalone/install-system-deps.sh
+
+      - name: Download moxygen release tarball
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/setup-deps-tarball.sh
+
+      - name: Set up ccache
+        uses: hendrikmuhs/ccache-action@v1
+        with:
+          key: publish-${{ matrix.name }}
+          max-size: 500M
+
+      - name: Configure
+        run: |
+          cmake -S . -B _build --preset default \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_PREFIX_PATH="$(cat .scratch/cmake_prefix_path.txt)" \
+            -DBUILD_TESTING=OFF
+
+      - name: Build
+        run: cmake --build _build -j$(nproc)
+
+      - name: Install
+        run: cmake --install _build --prefix "$GITHUB_WORKSPACE/install"
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Build and push Docker image
+        run: |
+          SHORT="${GITHUB_SHA:0:12}"
+          IMAGE="ghcr.io/${{ github.repository }}"
+          docker build -f docker/Dockerfile \
+            -t "${IMAGE}:build-${SHORT}" \
+            -t "${IMAGE}:latest" \
+            .
+          docker push "${IMAGE}:build-${SHORT}"
+          docker push "${IMAGE}:latest"
+
+      - name: Package
+        id: package
+        run: |
+          ARTIFACT="${{ github.event.repository.name }}-${{ matrix.name }}.tar.gz"
+          tar czf "$ARTIFACT" -C "$GITHUB_WORKSPACE/install" .
+          echo "artifact=$ARTIFACT" >> "$GITHUB_OUTPUT"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.artifact }}
+          path: ${{ steps.package.outputs.artifact }}
+          retention-days: 90
+
+  release:
+    runs-on: ubuntu-22.04
+    needs: [build]
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+        if: needs.build.result == 'success'
+
+      - name: Download all artifacts
+        if: needs.build.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Create release
+        if: needs.build.result == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SHORT="${GITHUB_SHA:0:12}"
+          TAG="build-${SHORT}"
+          gh release create "$TAG" artifacts/**/* \
+            --repo "${{ github.repository }}" \
+            --title "build ${SHORT}" \
+            --notes "Automated release from \`${{ github.ref_name }}\` at \`${SHORT}\`. Docker: \`ghcr.io/${{ github.repository }}:build-${SHORT}\`."
+
+          # Prune old releases, keep 20
+          gh api "repos/${{ github.repository }}/releases" \
+            --jq 'sort_by(.created_at) | reverse | .[20:] | .[].tag_name' \
+          | while read -r tag; do
+              gh release delete "$tag" --repo "${{ github.repository }}" --yes --cleanup-tag 2>/dev/null || true
+            done
+
+      - name: Notify Slack
+        if: always()
+        continue-on-error: true
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.OMOQ_SLACK_WEBHOOK_URL }}
+        run: |
+          SHORT="${GITHUB_SHA:0:12}"
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          if [ "${{ needs.build.result }}" = "success" ]; then
+            REL_URL="${{ github.server_url }}/${{ github.repository }}/releases/tag/build-${SHORT}"
+            TEXT=":white_check_mark: *${{ github.repository }}* \`${{ github.ref_name }}\` \`${SHORT}\` — <${REL_URL}|release> · <${RUN_URL}|run>"
+          else
+            TEXT=":x: *${{ github.repository }}* \`${{ github.ref_name }}\` \`${SHORT}\` — build failed · <${RUN_URL}|run>"
+          fi
+          curl -s -X POST "$SLACK_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            --data "{\"text\": \"${TEXT}\"}"
+
+      - name: Notify email
+        if: always()
+        continue-on-error: true
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.OMOQ_AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.OMOQ_AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-1
+        run: |
+          SHORT="${GITHUB_SHA:0:12}"
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          REPO_NAME="${{ github.event.repository.name }}"
+          RESULT="${{ needs.build.result }}"
+          JOB_STATUS="${{ job.status }}"
+          if [ "$RESULT" = "success" ] && [ "$JOB_STATUS" = "success" ]; then
+            SUBJECT="[${REPO_NAME}] published ${{ github.ref_name }} ${SHORT}"
+          else
+            SUBJECT="[${REPO_NAME}] build FAILED ${{ github.ref_name }} ${SHORT}"
+          fi
+          BODY="${{ github.repository }} · ${{ github.ref_name }} · ${SHORT}\n${RUN_URL}"
+          aws ses send-email \
+            --from "noreply@ci.openmoq.org" \
+            --destination '{"ToAddresses":["github-notifications@openmoq.org"]}' \
+            --message "{
+              \"Subject\": {\"Data\": \"$SUBJECT\"},
+              \"Body\": {\"Text\": {\"Data\": \"$BODY\"}}
+            }"

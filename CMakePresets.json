@@ -13,7 +13,8 @@
       "binaryDir": "${sourceDir}/build",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
-        "CMAKE_FIND_LIBRARY_SUFFIXES": ".a"
+        "CMAKE_FIND_LIBRARY_SUFFIXES": ".a",
+        "CMAKE_MODULE_PATH": "${sourceDir}/cmake"
       }
     },
     {
@@ -24,7 +25,8 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "ORLY_ENABLE_SANITIZERS": "ON",
-        "CMAKE_FIND_LIBRARY_SUFFIXES": ".a"
+        "CMAKE_FIND_LIBRARY_SUFFIXES": ".a",
+        "CMAKE_MODULE_PATH": "${sourceDir}/cmake"
       }
     }
   ],

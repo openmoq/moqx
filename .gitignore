@@ -24,3 +24,11 @@ _CPack_Packages/
 
 # OS
 .DS_Store
+
+# IDE / tools
+.vscode/
+.claude/
+
+# Docker secrets (never commit)
+docker/.env
+docker/cloudflare.ini
