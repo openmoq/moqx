@@ -20,4 +20,9 @@ cache:
   max_groups_per_track: 3     # Max groups per track in cache
 
 admin:
-  port: 9669                  # HTTP admin server port
+  port: 9669                  # HTTP admin server port (1-65535)
+  address: "::1"              # Bind address (e.g. "::1" for localhost only, "::" for all interfaces)
+  plaintext: true             # Allow plain HTTP (mutually exclusive with tls)
+  # tls:
+  #   cert_file: /path/to/cert.pem
+  #   key_file: /path/to/key.pem

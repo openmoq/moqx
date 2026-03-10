@@ -14,3 +14,5 @@ cache:
   max_groups_per_track: 3
 admin:
   port: 9669
+  address: "::1"
+  plaintext: true
