@@ -202,6 +202,10 @@ if(ORLY_BUILD_TESTS)
     NAME admin_info_endpoint
     COMMAND bash ${PROJECT_SOURCE_DIR}/tests/test_admin_info.sh $<TARGET_FILE:o_rly>
   )
+  add_test(
+    NAME admin_tls_endpoint
+    COMMAND bash ${PROJECT_SOURCE_DIR}/tests/test_admin_tls.sh $<TARGET_FILE:o_rly>
+  )
 endif()
 
 include(${PROJECT_SOURCE_DIR}/cmake/Lint.cmake)

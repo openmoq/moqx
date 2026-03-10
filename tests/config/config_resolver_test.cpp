@@ -23,6 +23,17 @@ ParsedAdminConfig makeDefaultAdmin() {
   return admin;
 }
 
+ParsedAdminConfig makeAdminWithTls(std::string cert = "/cert.pem", std::string key = "/key.pem") {
+  ParsedAdminConfig admin;
+  admin.port = uint16_t{9669};
+  ParsedTlsConfig tls;
+  tls.cert_file = std::move(cert);
+  tls.key_file = std::move(key);
+  tls.insecure = false;
+  admin.tls = std::optional<ParsedTlsConfig>{std::move(tls)};
+  return admin;
+}
+
 // Build a minimal valid insecure listener config.
 ParsedConfig makeMinimalInsecureConfig(std::string name = "test") {
   ParsedConfig cfg;
@@ -71,6 +82,16 @@ TEST(ResolveConfig, PortZero) {
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasError());
   EXPECT_THAT(result.error(), HasSubstr("port"));
+}
+
+TEST(ResolveConfig, ListenerAlpnIgnoredWarning) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.listeners.value()[0].tls.value().alpn = std::vector<std::string>{"h2"};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  ASSERT_FALSE(result.value().warnings.empty());
+  EXPECT_THAT(result.value().warnings[0], HasSubstr("alpn is ignored"));
 }
 
 TEST(ResolveConfig, InsecureWithCertsWarning) {
@@ -188,6 +209,100 @@ TEST(ResolveConfig, AddressResolution) {
   const auto& resolved = result.value().config;
   EXPECT_EQ(resolved.listener.address.getPort(), 8080);
   EXPECT_EQ(resolved.listener.address.getAddressStr(), "127.0.0.1");
+}
+
+// --- Admin validation tests ---
+
+TEST(ResolveConfig, AdminPortZero) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.admin.value().port = uint16_t{0};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("admin.port"));
+}
+
+TEST(ResolveConfig, AdminTlsPartialCreds) {
+  for (auto [cert, key] : {
+           std::pair{"/cert.pem", ""},
+           std::pair{"", "/key.pem"},
+       }) {
+    auto cfg = makeMinimalInsecureConfig();
+    cfg.admin = makeAdminWithTls(cert, key);
+    auto result = resolveConfig(cfg);
+    ASSERT_TRUE(result.hasError());
+    EXPECT_THAT(result.error(), HasSubstr("cert_file and key_file are required"));
+  }
+}
+
+TEST(ResolveConfig, AdminTlsInsecureNotSupported) {
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedAdminConfig admin;
+  admin.port = uint16_t{9669};
+  ParsedTlsConfig tls;
+  tls.insecure = true;
+  admin.tls = std::optional<ParsedTlsConfig>{std::move(tls)};
+  cfg.admin = std::move(admin);
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("insecure is not supported"));
+}
+
+// --- Admin resolution tests ---
+
+TEST(ResolveConfig, AdminNoTls) {
+  auto cfg = makeMinimalInsecureConfig();
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  EXPECT_FALSE(result.value().config.admin.tls.has_value());
+}
+
+TEST(ResolveConfig, AdminDefaultAddress) {
+  auto cfg = makeMinimalInsecureConfig();
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  EXPECT_EQ(result.value().config.admin.address.getPort(), 9669);
+  EXPECT_EQ(result.value().config.admin.address.getAddressStr(), "::");
+}
+
+TEST(ResolveConfig, AdminCustomAddress) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.admin.value().address = std::string("127.0.0.1");
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  EXPECT_EQ(result.value().config.admin.address.getAddressStr(), "127.0.0.1");
+}
+
+TEST(ResolveConfig, AdminTlsResolution) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.admin = makeAdminWithTls("/etc/ssl/cert.pem", "/etc/ssl/key.pem");
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  ASSERT_TRUE(result.value().config.admin.tls.has_value());
+  const auto& tls = *result.value().config.admin.tls;
+  EXPECT_EQ(tls.certFile, "/etc/ssl/cert.pem");
+  EXPECT_EQ(tls.keyFile, "/etc/ssl/key.pem");
+}
+
+TEST(ResolveConfig, AdminTlsDefaultAlpn) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.admin = makeAdminWithTls();
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  ASSERT_TRUE(result.value().config.admin.tls.has_value());
+  EXPECT_THAT(result.value().config.admin.tls->alpn, ::testing::ElementsAre("h2", "http/1.1"));
+}
+
+TEST(ResolveConfig, AdminTlsCustomAlpn) {
+  auto cfg = makeMinimalInsecureConfig();
+  auto admin = makeAdminWithTls();
+  admin.tls.value()->alpn = std::vector<std::string>{"h2"};
+  cfg.admin = std::move(admin);
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  ASSERT_TRUE(result.value().config.admin.tls.has_value());
+  EXPECT_THAT(result.value().config.admin.tls->alpn, ::testing::ElementsAre("h2"));
 }
 
 } // namespace

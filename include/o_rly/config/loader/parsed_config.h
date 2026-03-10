@@ -29,6 +29,7 @@ struct ParsedTlsConfig {
   rfl::Description<"Path to TLS certificate file", std::optional<std::string>> cert_file;
   rfl::Description<"Path to TLS private key file", std::optional<std::string>> key_file;
   rfl::Description<"Insecure mode, use default compiled-in cert", bool> insecure;
+  rfl::Description<"ALPN protocol list", std::optional<std::vector<std::string>>> alpn;
 };
 
 struct ParsedListenerConfig {
@@ -51,6 +52,8 @@ struct ParsedCacheConfig {
 
 struct ParsedAdminConfig {
   rfl::Description<"HTTP admin server port, 1-65535", uint16_t> port;
+  rfl::Description<"Bind address (defaults to all interfaces)", std::optional<std::string>> address;
+  rfl::Description<"TLS configuration (absent = plain HTTP)", std::optional<ParsedTlsConfig>> tls;
 };
 
 struct ParsedConfig {

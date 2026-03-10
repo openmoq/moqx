@@ -120,10 +120,10 @@ int main(int argc, char* argv[]) {
   // === 7. Start health checks / admin endpoints ===
   openmoq::o_rly::admin::AdminServer adminServer;
   openmoq::o_rly::admin::registerBuiltinRoutes(adminServer);
-  if (!adminServer.start(config.adminPort)) {
-    XLOG(FATAL) << "Failed to start admin server on port " << config.adminPort;
+  if (!adminServer.start(config.admin)) {
+    XLOG(FATAL) << "Failed to start admin server on " << config.admin.address.describe();
   }
-  XLOG(INFO) << "Admin server listening on port " << config.adminPort;
+  XLOG(INFO) << "Admin server listening on " << config.admin.address.describe();
 
   // === 8. Start serving ===
   // Bind listeners, accept connections, enter event loop

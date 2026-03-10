@@ -13,6 +13,39 @@ std::string moqtVersionsToString(const ParsedListenerConfig& listener) {
   return folly::join(',', *listener.moqt_versions.value());
 }
 
+void validateTlsConfig(
+    const ParsedTlsConfig& tls,
+    std::string_view context,
+    bool allowInsecureMode,
+    std::vector<std::string>& errors,
+    std::vector<std::string>& warnings
+) {
+  bool hasCert = tls.cert_file.value().has_value() && !tls.cert_file.value()->empty();
+  bool hasKey = tls.key_file.value().has_value() && !tls.key_file.value()->empty();
+  if (!tls.insecure.value()) {
+    if (!hasCert || !hasKey) {
+      errors.push_back(
+          std::string(context) + ": cert_file and key_file are required when insecure=false"
+      );
+    }
+  } else if (!allowInsecureMode) {
+    errors.push_back(std::string(context) + ": insecure is not supported and will be ignored");
+  } else if (hasCert || hasKey) {
+    warnings.push_back(
+        std::string(context) + ": cert_file/key_file are ignored when insecure=true"
+    );
+  }
+}
+
+TlsConfig
+resolveTlsConfig(const ParsedTlsConfig& tls, const std::vector<std::string>& defaultAlpn = {}) {
+  return TlsConfig{
+      .certFile = tls.cert_file.value().value_or(""),
+      .keyFile = tls.key_file.value().value_or(""),
+      .alpn = tls.alpn.value().value_or(defaultAlpn),
+  };
+}
+
 } // namespace
 
 folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& config) {
@@ -41,31 +74,34 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
   }
 
   // TLS validation
-  const auto& tls = listener.tls.value();
-  if (!tls.insecure.value()) {
-    bool hasCert = tls.cert_file.value().has_value() && !tls.cert_file.value()->empty();
-    bool hasKey = tls.key_file.value().has_value() && !tls.key_file.value()->empty();
-    if (!hasCert || !hasKey) {
-      errors.push_back(
-          "Listener '" + listener.name.value() +
-          "': cert_file and key_file are required when insecure=false"
-      );
-    }
-  } else {
-    // Warn if certs provided with insecure=true
-    bool hasCert = tls.cert_file.value().has_value() && !tls.cert_file.value()->empty();
-    bool hasKey = tls.key_file.value().has_value() && !tls.key_file.value()->empty();
-    if (hasCert || hasKey) {
-      warnings.push_back(
-          "Listener '" + listener.name.value() +
-          "': cert_file/key_file are ignored when insecure=true"
-      );
-    }
+  validateTlsConfig(
+      listener.tls.value(),
+      "Listener '" + listener.name.value() + "'",
+      /*allowInsecureMode=*/true,
+      errors,
+      warnings
+  );
+  if (listener.tls.value().alpn.value().has_value()) {
+    warnings.push_back(
+        "Listener '" + listener.name.value() +
+        "': alpn is ignored; ALPN is derived automatically from moqt_versions"
+    );
   }
 
-  // Admin port validation
-  if (config.admin.value().port.value() == 0) {
+  // Admin config validation
+  const auto& adminParsed = config.admin.value();
+  if (adminParsed.port.value() == 0) {
     errors.push_back("admin.port must be 1-65535, got 0");
+  }
+  const auto& adminTlsParsed = adminParsed.tls.value();
+  if (adminTlsParsed.has_value()) {
+    validateTlsConfig(
+        *adminTlsParsed,
+        "admin.tls",
+        /*allowInsecureMode=*/false,
+        errors,
+        warnings
+    );
   }
 
   // Cache validation
@@ -82,15 +118,13 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
 
   // --- Resolve ---
 
-  // Resolve TLS mode
+  // Resolve listener TLS mode
+  const auto& tls = listener.tls.value();
   TlsMode tlsMode;
   if (tls.insecure.value()) {
     tlsMode = Insecure{};
   } else {
-    tlsMode = TlsConfig{
-        .certFile = tls.cert_file.value().value_or(""),
-        .keyFile = tls.key_file.value().value_or(""),
-    };
+    tlsMode = resolveTlsConfig(tls);
   }
 
   // Resolve cache
@@ -108,12 +142,25 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
       .moqtVersions = moqtVersionsToString(listener),
   };
 
+  // Resolve admin config
+  static const std::vector<std::string> kDefaultAdminAlpn = {"h2", "http/1.1"};
+  std::optional<TlsConfig> adminTls;
+  if (adminTlsParsed.has_value()) {
+    adminTls = resolveTlsConfig(*adminTlsParsed, kDefaultAdminAlpn);
+  }
+  const std::string adminAddr = adminParsed.address.value().value_or("");
+  AdminConfig adminConfig{
+      .address =
+          folly::SocketAddress(adminAddr.empty() ? "::" : adminAddr, adminParsed.port.value()),
+      .tls = std::move(adminTls),
+  };
+
   return ResolvedConfig{
       .config =
           Config{
               .listener = std::move(resolvedListener),
               .cache = cacheConfig,
-              .adminPort = config.admin.value().port.value(),
+              .admin = std::move(adminConfig),
           },
       .warnings = std::move(warnings),
   };

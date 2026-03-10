@@ -2,8 +2,10 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <variant>
+#include <vector>
 
 #include <folly/SocketAddress.h>
 
@@ -12,6 +14,7 @@ namespace openmoq::o_rly::config {
 struct TlsConfig {
   std::string certFile;
   std::string keyFile;
+  std::vector<std::string> alpn; // must be empty for QUIC listener: ALPN derived from moqt_versions
 };
 
 struct Insecure {};
@@ -31,10 +34,15 @@ struct ListenerConfig {
   std::string moqtVersions; // comma-separated string
 };
 
+struct AdminConfig {
+  folly::SocketAddress address;
+  std::optional<TlsConfig> tls;
+};
+
 struct Config {
   ListenerConfig listener;
   CacheConfig cache;
-  uint16_t adminPort;
+  AdminConfig admin;
 };
 
 } // namespace openmoq::o_rly::config
