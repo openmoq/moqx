@@ -1,4 +1,4 @@
-name: build
+name: verify
 
 on:
   pull_request:
@@ -31,12 +31,21 @@ jobs:
           - name: linux
             preset: default
             build_dir: build
+            runner: ubuntu-22.04
           - name: asan debug
             preset: san
             build_dir: build-san
+            runner: ubuntu-22.04
     name: ${{ matrix.name }}
-    runs-on: ubuntu-22.04
+    runs-on: ${{ matrix.runner }}
     steps:
+      - name: Generate app token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.OMOQ_APP_ID }}
+          private-key: ${{ secrets.OMOQ_APP_PRIV_KEY }}
+
       - uses: actions/checkout@v4
         with:
           submodules: true
@@ -44,16 +53,16 @@ jobs:
       - name: Install system dependencies
         run: bash deps/moxygen/standalone/install-system-deps.sh
 
-      - name: Download moxygen release tarball
+      - name: Download moxygen artifacts
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: bash scripts/setup-deps-tarball.sh
 
       - name: Configure
         run: bash scripts/configure.sh ${{ matrix.build_dir }} ${{ matrix.preset }}
 
       - name: Build
-        run: cmake --build ${{ matrix.build_dir }} -j$(nproc)
+        run: cmake --build ${{ matrix.build_dir }} -j$(getconf _NPROCESSORS_ONLN)
 
       - name: Test
         env:
@@ -67,4 +76,5 @@ jobs:
           name: "test (${{ matrix.name }})"
           path: ${{ matrix.build_dir }}/test-results.xml
           reporter: java-junit
+          fail-on-empty: ${{ job.status == 'success' && 'true' || 'false' }}
 

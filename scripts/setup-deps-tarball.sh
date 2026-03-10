@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # setup-deps-tarball.sh — Populate .scratch with prebuilt moxygen release artifacts.
 #
-# Downloads the release tarball from openmoq/moxygen matching the current
-# submodule commit. Writes .scratch/cmake_prefix_path.txt for configure.sh.
+# Uses the submodule commit SHA to find the exact publish workflow run
+# on openmoq/moxygen, then downloads the matching platform artifact.
+# Writes .scratch/cmake_prefix_path.txt for configure.sh.
 #
 # Usage:
 #   ./scripts/setup-deps-tarball.sh
 #
-# Requires: gh CLI authenticated, deps/moxygen submodule initialized.
+# Requires: gh CLI authenticated (with actions:read on openmoq/moxygen),
+#           deps/moxygen submodule initialized.
 
 set -euo pipefail
 
@@ -61,30 +63,32 @@ detect_platform() {
 PLATFORM=$(detect_platform)
 echo "==> Platform: $PLATFORM"
 
-# ── Find release matching submodule SHA ───────────────────────────────────────
+# ── Find publish run matching submodule SHA ───────────────────────────────────
 
 SHA=$(git -C "$MOXYGEN_DIR" rev-parse HEAD)
-TAG="build-${SHA:0:12}"
-echo "==> Moxygen SHA: ${SHA:0:12}  →  release tag: $TAG"
-
-if ! gh api "repos/openmoq/moxygen/releases/tags/$TAG" --jq '.tag_name' >/dev/null 2>&1; then
-    echo "Error: release $TAG not found in openmoq/moxygen." >&2
-    echo "  The publish workflow may not have run yet for this commit." >&2
-    exit 1
-fi
-
-# ── Download ──────────────────────────────────────────────────────────────────
+echo "==> Moxygen submodule SHA: ${SHA:0:7}"
 
 TARBALL="moxygen-${PLATFORM}.tar.gz"
 DOWNLOAD_DIR="${SCRATCH}/downloads"
 mkdir -p "$DOWNLOAD_DIR"
 
-echo "==> Downloading $TARBALL..."
-rm -f "${DOWNLOAD_DIR}/${TARBALL}"
-gh release download "$TAG" \
-    --repo openmoq/moxygen \
-    --pattern "$TARBALL" \
-    --dir "$DOWNLOAD_DIR"
+echo "==> Searching for publish run at ${SHA:0:7}..."
+RUN_ID=$(gh api "repos/openmoq/moxygen/actions/workflows/omoq-publish-artifacts.yml/runs?head_sha=${SHA}&status=success&per_page=1" \
+    --jq '.workflow_runs[0].id // empty')
+
+if [[ -n "$RUN_ID" ]]; then
+    echo "==> Found publish run $RUN_ID, downloading $TARBALL..."
+    rm -f "${DOWNLOAD_DIR}/${TARBALL}"
+    gh run download "$RUN_ID" \
+        --repo openmoq/moxygen \
+        --name "$TARBALL" \
+        --dir "$DOWNLOAD_DIR"
+else
+    echo "Error: no successful publish run found for moxygen SHA ${SHA:0:7}." >&2
+    echo "  The publish workflow may not have run yet for this commit." >&2
+    echo "  Check: https://github.com/openmoq/moxygen/actions/workflows/omoq-publish-artifacts.yml" >&2
+    exit 1
+fi
 
 # ── Extract ───────────────────────────────────────────────────────────────────
 
