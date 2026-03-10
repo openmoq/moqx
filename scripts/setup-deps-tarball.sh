@@ -84,18 +84,10 @@ if [[ -n "$RUN_ID" ]]; then
         --name "$TARBALL" \
         --dir "$DOWNLOAD_DIR"
 else
-    echo "==> No publish run for ${SHA:0:7}, trying snapshot-latest release..."
-    if ! gh api "repos/openmoq/moxygen/releases/tags/snapshot-latest" --jq '.tag_name' >/dev/null 2>&1; then
-        echo "Error: no artifacts found for SHA ${SHA:0:7} and no snapshot-latest release." >&2
-        echo "  The publish workflow may not have run yet for this commit." >&2
-        exit 1
-    fi
-    rm -f "${DOWNLOAD_DIR}/${TARBALL}"
-    gh release download "snapshot-latest" \
-        --repo openmoq/moxygen \
-        --pattern "$TARBALL" \
-        --dir "$DOWNLOAD_DIR"
-    echo "  Warning: using snapshot-latest (may not match submodule SHA)"
+    echo "Error: no successful publish run found for moxygen SHA ${SHA:0:7}." >&2
+    echo "  The publish workflow may not have run yet for this commit." >&2
+    echo "  Check: https://github.com/openmoq/moxygen/actions/workflows/omoq-publish-artifacts.yml" >&2
+    exit 1
 fi
 
 # ── Extract ───────────────────────────────────────────────────────────────────
