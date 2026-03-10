@@ -25,7 +25,7 @@ jobs:
           SHORT="${{ github.event.workflow_run.head_sha }}"
           SHORT="${SHORT:0:7}"
           RUN_URL="${{ github.event.workflow_run.html_url }}"
-          TEXT=":x: *${{ github.repository }}* \`main\` \`${SHORT}\` — build failed: Run <${RUN_URL}|#${{ github.event.workflow_run.run_number }}>"
+          TEXT=":x: *${{ github.repository }}* \`main\` \`${SHORT}\` — verify failed: <${RUN_URL}|#${{ github.event.workflow_run.run_number }}>"
           curl -s -X POST "$SLACK_WEBHOOK_URL" \
             -H "Content-Type: application/json" \
             --data "{\"text\": \"${TEXT}\"}"
@@ -40,8 +40,8 @@ jobs:
           SHORT="${{ github.event.workflow_run.head_sha }}"
           SHORT="${SHORT:0:7}"
           RUN_URL="${{ github.event.workflow_run.html_url }}"
-          SUBJECT="[o-rly] build failed on main ${SHORT}"
-          BODY="Build failed on main.\n\nCommit: ${{ github.event.workflow_run.head_sha }}\nRun: ${RUN_URL}"
+          SUBJECT="[o-rly] verify failed on main ${SHORT}"
+          BODY="Verify failed on main.\n\nCommit: ${{ github.event.workflow_run.head_sha }}\nRun: ${RUN_URL}"
           aws ses send-email \
             --from "noreply@ci.openmoq.org" \
             --destination '{"ToAddresses":["github-notifications@openmoq.org"]}' \
