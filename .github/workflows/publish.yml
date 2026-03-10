@@ -8,6 +8,10 @@ on:
     branches: [main]
   workflow_dispatch:
 
+concurrency:
+  group: publish
+  cancel-in-progress: true
+
 permissions:
   contents: write
   packages: write  # for Docker image publishing to GHCR
