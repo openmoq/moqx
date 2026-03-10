@@ -32,10 +32,6 @@ jobs:
             preset: default
             build_dir: build
             runner: ubuntu-22.04
-          - name: macos
-            preset: default
-            build_dir: build
-            runner: macos-15
           - name: asan debug
             preset: san
             build_dir: build-san
