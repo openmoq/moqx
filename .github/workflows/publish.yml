@@ -23,12 +23,9 @@ jobs:
       matrix:
         include:
           - name: ubuntu-22.04-amd64
-            runner: ubuntu-22.04
-          - name: macos-15-arm64
-            runner: macos-15
 
     name: ${{ matrix.name }}
-    runs-on: ${{ matrix.runner }}
+    runs-on: ubuntu-22.04
 
     steps:
       - name: Generate app token
