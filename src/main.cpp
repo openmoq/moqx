@@ -2,6 +2,10 @@
 #include <o_rly/admin/AdminServer.h>
 #include <o_rly/admin/BuiltinRoutes.h>
 #include <o_rly/config/loader/config_init.h>
+#include <o_rly/tls/builtin_tls_providers.h>
+#include <o_rly/tls/fizz_context_factory.h>
+#include <o_rly/tls/tls_cert_loader.h>
+#include <o_rly/tls/tls_provider_registry.h>
 
 #include <csignal>
 
@@ -38,28 +42,17 @@ std::shared_ptr<openmoq::o_rly::ORelayServer> createServer(const cfg::Config& re
   const auto& listener = resolved.listener;
   const auto& cache = resolved.cache;
 
-  return std::visit(
-      [&](const auto& tls) -> std::shared_ptr<openmoq::o_rly::ORelayServer> {
-        using T = std::decay_t<decltype(tls)>;
-        if constexpr (std::is_same_v<T, cfg::Insecure>) {
-          return std::make_shared<openmoq::o_rly::ORelayServer>(
-              listener.endpoint,
-              listener.moqtVersions,
-              cache.maxCachedTracks,
-              cache.maxCachedGroupsPerTrack
-          );
-        } else {
-          return std::make_shared<openmoq::o_rly::ORelayServer>(
-              tls.certFile,
-              tls.keyFile,
-              listener.endpoint,
-              listener.moqtVersions,
-              cache.maxCachedTracks,
-              cache.maxCachedGroupsPerTrack
-          );
-        }
-      },
-      listener.tlsMode
+  auto alpns = openmoq::o_rly::tls::buildAlpns(listener.moqtVersions);
+  auto fizzCtx = listener.tlsProvider->createContext(alpns);
+  if (fizzCtx.hasError()) {
+    XLOG(FATAL) << "Failed to create TLS context: " << fizzCtx.error();
+  }
+
+  return std::make_shared<openmoq::o_rly::ORelayServer>(
+      std::move(fizzCtx.value()),
+      listener.endpoint,
+      cache.maxCachedTracks,
+      cache.maxCachedGroupsPerTrack
   );
 }
 
@@ -82,7 +75,17 @@ int main(int argc, char* argv[]) {
     subcommand = argv[1];
   }
 
-  auto result = cfg::handleConfigSubcommand(subcommand, FLAGS_config, FLAGS_strict_config, argv[0]);
+  // Create TLS provider registry and register built-in providers
+  openmoq::o_rly::tls::TlsProviderRegistry tlsRegistry;
+  openmoq::o_rly::tls::registerBuiltinTlsProviders(tlsRegistry);
+
+  auto result = cfg::handleConfigSubcommand(
+      subcommand,
+      FLAGS_config,
+      FLAGS_strict_config,
+      argv[0],
+      tlsRegistry
+  );
   if (result.hasError()) {
     return result.error();
   }

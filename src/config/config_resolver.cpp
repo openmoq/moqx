@@ -2,6 +2,8 @@
 
 #include <folly/String.h>
 
+#include "o_rly/tls/tls_provider_registry.h"
+
 namespace openmoq::o_rly::config {
 
 namespace {
@@ -15,7 +17,8 @@ std::string moqtVersionsToString(const ParsedListenerConfig& listener) {
 
 } // namespace
 
-folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& config) {
+folly::Expected<ResolvedConfig, std::string>
+resolveConfig(const ParsedConfig& config, const tls::TlsProviderRegistry& registry) {
   std::vector<std::string> errors;
   std::vector<std::string> warnings;
 
@@ -40,28 +43,28 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
     errors.push_back("Listener '" + listener.name.value() + "' port must be 1-65535, got 0");
   }
 
-  // TLS validation
-  const auto& tls = listener.tls.value();
-  if (!tls.insecure.value()) {
-    bool hasCert = tls.cert_file.value().has_value() && !tls.cert_file.value()->empty();
-    bool hasKey = tls.key_file.value().has_value() && !tls.key_file.value()->empty();
-    if (!hasCert || !hasKey) {
+  // TLS: extract type string from variant, look up factory, invoke it
+  std::shared_ptr<tls::TlsCertProvider> tlsProvider;
+  listener.tls.visit([&](const auto& variant) {
+    using T = std::decay_t<decltype(variant)>;
+    auto type = typename T::Tag{}.name();
+
+    auto* factory = registry.getFactory(type);
+    if (!factory) {
       errors.push_back(
-          "Listener '" + listener.name.value() +
-          "': cert_file and key_file are required when insecure=false"
+          "Listener '" + listener.name.value() + "': unknown TLS type '" + type + "'"
       );
+      return;
     }
-  } else {
-    // Warn if certs provided with insecure=true
-    bool hasCert = tls.cert_file.value().has_value() && !tls.cert_file.value()->empty();
-    bool hasKey = tls.key_file.value().has_value() && !tls.key_file.value()->empty();
-    if (hasCert || hasKey) {
-      warnings.push_back(
-          "Listener '" + listener.name.value() +
-          "': cert_file/key_file are ignored when insecure=true"
+    auto result = (*factory)(listener.tls);
+    if (result.hasError()) {
+      errors.push_back(
+          "Listener '" + listener.name.value() + "': " + result.error()
       );
+      return;
     }
-  }
+    tlsProvider = std::move(result.value());
+  });
 
   // Admin port validation
   if (config.admin.value().port.value() == 0) {
@@ -82,17 +85,6 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
 
   // --- Resolve ---
 
-  // Resolve TLS mode
-  TlsMode tlsMode;
-  if (tls.insecure.value()) {
-    tlsMode = Insecure{};
-  } else {
-    tlsMode = TlsConfig{
-        .certFile = tls.cert_file.value().value_or(""),
-        .keyFile = tls.key_file.value().value_or(""),
-    };
-  }
-
   // Resolve cache
   CacheConfig cacheConfig{
       .maxCachedTracks = cache.enabled.value() ? static_cast<size_t>(cache.max_tracks.value()) : 0,
@@ -103,7 +95,7 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
   ListenerConfig resolvedListener{
       .name = listener.name.value(),
       .address = folly::SocketAddress(sock.address.value(), sock.port.value()),
-      .tlsMode = std::move(tlsMode),
+      .tlsProvider = std::move(tlsProvider),
       .endpoint = listener.endpoint.value(),
       .moqtVersions = moqtVersionsToString(listener),
   };

@@ -7,20 +7,9 @@ namespace openmoq::o_rly {
 
 class ORelayServer : public moxygen::MoQServer {
 public:
-  // Used when the insecure flag is false
   ORelayServer(
-      const std::string& cert,
-      const std::string& key,
+      std::shared_ptr<const fizz::server::FizzServerContext> fizzContext,
       const std::string& endpoint,
-      const std::string& versions,
-      size_t maxCachedTracks,
-      size_t maxCachedGroupsPerTrack
-  );
-
-  // Used when the insecure flag is true
-  ORelayServer(
-      const std::string& endpoint,
-      const std::string& versions,
       size_t maxCachedTracks,
       size_t maxCachedGroupsPerTrack
   );

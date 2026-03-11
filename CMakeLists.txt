@@ -74,6 +74,11 @@ add_library(o_rly_core STATIC
   src/ORelayServer.cpp
   src/admin/AdminServer.cpp
   src/admin/BuiltinRoutes.cpp
+  src/tls/tls_cert_loader.cpp
+  src/tls/insecure_cert_provider.cpp
+  src/tls/file_cert_loader.cpp
+  src/tls/directory_cert_loader.cpp
+  src/tls/fizz_context_factory.cpp
 )
 
 target_include_directories(o_rly_core
@@ -87,6 +92,9 @@ target_link_libraries(o_rly_core PUBLIC
   moxygen::moxygen_moq_relay_session
   moxygen::moxygen_moq_server
   proxygen::proxygenhttpserver
+  proxygen::proxygen_hq_server
+  fizz::fizz
+  Folly::folly_file_util
   # Workaround: wangle::wangle_acceptor_acceptor_core uses AsyncFdSocket from
   # FizzAcceptorHandshakeHelper but omits this dep from its cmake config.
   Folly::folly_io_async_fdsock_async_fd_socket
@@ -118,6 +126,7 @@ add_library(o_rly_config_loader STATIC
   src/config/loader.cpp
   src/config/config_resolver.cpp
   src/config/config_init.cpp
+  src/tls/tls_provider_registry.cpp
 )
 
 target_include_directories(o_rly_config_loader
@@ -138,6 +147,7 @@ target_compile_options(o_rly_config_loader PRIVATE -Wall -Wextra -Wpedantic)
 
 add_executable(o_rly
   src/main.cpp
+  src/tls/builtin_tls_providers.cpp
 )
 
 target_link_libraries(o_rly PRIVATE o_rly_core o_rly_config_loader)
@@ -189,6 +199,7 @@ if(ORLY_BUILD_TESTS)
   )
   target_link_libraries(o_rly_config_resolver_test PRIVATE
     o_rly_config_loader
+    o_rly_core
     GTest::gtest_main
     GTest::gmock
     "$<LINK_LIBRARY:WHOLE_ARCHIVE,gflags_nothreads_static>"
@@ -197,6 +208,27 @@ if(ORLY_BUILD_TESTS)
     LINK_LIBRARY_OVERRIDE "WHOLE_ARCHIVE,gflags_nothreads_static"
   )
   gtest_discover_tests(o_rly_config_resolver_test)
+
+  add_executable(o_rly_tls_test
+    tests/tls/file_cert_loader_test.cpp
+    tests/tls/directory_cert_loader_test.cpp
+    tests/tls/fizz_context_factory_test.cpp
+    tests/tls/insecure_cert_provider_test.cpp
+    tests/tls/tls_provider_registry_test.cpp
+  )
+  target_link_libraries(o_rly_tls_test PRIVATE
+    o_rly_core
+    o_rly_config
+    o_rly_config_loader
+    Folly::folly_testing_test_util
+    GTest::gtest_main
+    GTest::gmock
+    "$<LINK_LIBRARY:WHOLE_ARCHIVE,gflags_nothreads_static>"
+  )
+  set_property(TARGET o_rly_tls_test PROPERTY
+    LINK_LIBRARY_OVERRIDE "WHOLE_ARCHIVE,gflags_nothreads_static"
+  )
+  gtest_discover_tests(o_rly_tls_test)
 
   add_test(
     NAME admin_info_endpoint
