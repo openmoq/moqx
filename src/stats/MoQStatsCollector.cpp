@@ -6,16 +6,15 @@ namespace openmoq::o_rly::stats {
 
 MoQStatsCollector::MoQStatsCollector(
     folly::Executor::KeepAlive<> owningExecutor,
-    std::shared_ptr<StatsRegistry> registry)
-    : owningExecutor_(std::move(owningExecutor)),
-      registry_(registry) {}
+    std::shared_ptr<StatsRegistry> registry
+)
+    : owningExecutor_(std::move(owningExecutor)), registry_(registry) {}
 
 MoQStatsCollector::~MoQStatsCollector() {
   if (auto registry = registry_.lock()) {
     registry->deregisterCollector(this);
   }
 }
-
 
 StatsSnapshot MoQStatsCollector::snapshot() const {
   StatsSnapshot snap;
@@ -27,9 +26,9 @@ StatsSnapshot MoQStatsCollector::snapshot() const {
 #undef COPY_FIELD
 
   // Copy histogram bucket cumulative counts
-#define COPY_HISTOGRAM(name, bounds)                              \
-  name##_.fillCumulative(snap.name##Buckets);                     \
-  snap.name##Sum = name##_.sum;                                   \
+#define COPY_HISTOGRAM(name, bounds)                                                               \
+  name##_.fillCumulative(snap.name##Buckets);                                                      \
+  snap.name##Sum = name##_.sum;                                                                    \
   snap.name##Count = name##_.count;
   STATS_HISTOGRAM_FIELDS(COPY_HISTOGRAM)
 #undef COPY_HISTOGRAM
@@ -46,8 +45,7 @@ void MoQStatsCollector::onSubscribeSuccess() {
   ++moqActiveSubscriptions_;
 }
 
-void MoQStatsCollector::onSubscribeError(
-    moxygen::SubscribeErrorCode /*errorCode*/) {
+void MoQStatsCollector::onSubscribeError(moxygen::SubscribeErrorCode /*errorCode*/) {
   ++moqSubscribeError_;
 }
 
@@ -64,8 +62,7 @@ void MoQStatsCollector::onPublishNamespaceSuccess() {
   ++moqActivePublishNamespaces_;
 }
 
-void MoQStatsCollector::onPublishNamespaceError(
-    moxygen::PublishNamespaceErrorCode /*errorCode*/) {
+void MoQStatsCollector::onPublishNamespaceError(moxygen::PublishNamespaceErrorCode /*errorCode*/) {
   ++moqPublishNamespaceError_;
 }
 
@@ -84,8 +81,8 @@ void MoQStatsCollector::onSubscribeNamespaceSuccess() {
   ++moqActiveSubscribeNamespaces_;
 }
 
-void MoQStatsCollector::onSubscribeNamespaceError(
-    moxygen::SubscribeNamespaceErrorCode /*errorCode*/) {
+void MoQStatsCollector::
+    onSubscribeNamespaceError(moxygen::SubscribeNamespaceErrorCode /*errorCode*/) {
   ++moqSubscribeNamespaceError_;
 }
 
@@ -102,8 +99,7 @@ void MoQStatsCollector::onUnsubscribe() {
   --moqActiveSubscriptions_;
 }
 
-void MoQStatsCollector::onPublishDone(
-    moxygen::PublishDoneStatusCode /*statusCode*/) {
+void MoQStatsCollector::onPublishDone(moxygen::PublishDoneStatusCode /*statusCode*/) {
   ++moqPublishDone_;
   --moqActivePublishers_;
 }
@@ -122,8 +118,7 @@ void MoQStatsCollector::onSubscriptionStreamClosed() {
   --moqActiveSubscriptionStreams_;
 }
 
-void MoQStatsCollector::recordPublishNamespaceLatency(
-    uint64_t latencyMsec) {
+void MoQStatsCollector::recordPublishNamespaceLatency(uint64_t latencyMsec) {
   moqPublishNamespaceLatency_.addValue(latencyMsec);
 }
 
@@ -131,8 +126,7 @@ void MoQStatsCollector::recordPublishLatency(uint64_t latencyMsec) {
   moqPublishLatency_.addValue(latencyMsec);
 }
 
-void MoQStatsCollector::onPublishError(
-    moxygen::PublishErrorCode /*errorCode*/) {
+void MoQStatsCollector::onPublishError(moxygen::PublishErrorCode /*errorCode*/) {
   ++moqPublishError_;
 }
 

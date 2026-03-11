@@ -15,12 +15,13 @@ namespace openmoq::o_rly::admin {
 void registerMetricsRoute(
     AdminServer& adminServer,
     std::shared_ptr<stats::StatsRegistry> registry,
-    folly::Executor::KeepAlive<> relayExecutor) {
+    folly::Executor::KeepAlive<> relayExecutor
+) {
   adminServer.addRoute(
       "GET",
       "/metrics",
-      [registry = std::move(registry), relayExecutor = std::move(relayExecutor)](
-          auto /*req*/, auto /*body*/, auto* downstream) {
+      [registry = std::move(registry),
+       relayExecutor = std::move(relayExecutor)](auto /*req*/, auto /*body*/, auto* downstream) {
         // Schedule aggregateAsync() on the relay executor and send the
         // response asynchronously. This avoids blocking the admin thread.
         registry->aggregateAsync()
@@ -30,8 +31,7 @@ void registerMetricsRoute(
                 try {
                   result.throwUnlessValue();
                 } catch (const std::exception& e) {
-                  XLOG(ERR) << "MetricsHandler: aggregateAsync threw: "
-                            << e.what();
+                  XLOG(ERR) << "MetricsHandler: aggregateAsync threw: " << e.what();
                   proxygen::ResponseBuilder(downstream)
                       .status(500, proxygen::HTTPMessage::getDefaultReason(500))
                       .body(folly::IOBuf::copyBuffer("internal error\n"))
@@ -46,13 +46,12 @@ void registerMetricsRoute(
               proxygen::ResponseBuilder(downstream)
                   .status(200, proxygen::HTTPMessage::getDefaultReason(200))
                   // Prometheus text exposition format v0.0.4
-                  .header(
-                      "Content-Type",
-                      "text/plain; version=0.0.4; charset=utf-8")
+                  .header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
                   .body(folly::IOBuf::copyBuffer(body))
                   .sendWithEOM();
             });
-      });
+      }
+  );
 }
 
 } // namespace openmoq::o_rly::admin

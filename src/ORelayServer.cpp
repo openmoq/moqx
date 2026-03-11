@@ -52,8 +52,7 @@ ORelayServer::ORelayServer(
       ),
       relay_(std::make_shared<ORelay>(maxCachedTracks, maxCachedGroupsPerTrack)) {}
 
-void ORelayServer::setStatsRegistry(
-    std::shared_ptr<stats::StatsRegistry> registry) {
+void ORelayServer::setStatsRegistry(std::shared_ptr<stats::StatsRegistry> registry) {
   statsRegistry_ = std::move(registry);
 }
 
@@ -67,7 +66,8 @@ void ORelayServer::onNewSession(std::shared_ptr<MoQSession> clientSession) {
     // each session is counted once.
     auto collector = std::make_shared<stats::MoQStatsCollector>(
         folly::getKeepAliveToken(*clientSession->getExecutor()),
-        statsRegistry_);
+        statsRegistry_
+    );
     statsRegistry_->registerCollector(collector);
 
     clientSession->setPublisherStatsCallback(collector);
@@ -77,8 +77,7 @@ void ORelayServer::onNewSession(std::shared_ptr<MoQSession> clientSession) {
   }
 }
 
-void ORelayServer::terminateClientSession(
-    std::shared_ptr<MoQSession> session) {
+void ORelayServer::terminateClientSession(std::shared_ptr<MoQSession> session) {
   if (statsRegistry_) {
     statsRegistry_->onTerminateSession();
   }

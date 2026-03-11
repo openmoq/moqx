@@ -25,7 +25,8 @@ namespace admin {
 void registerMetricsRoute(
     AdminServer& adminServer,
     std::shared_ptr<stats::StatsRegistry> registry,
-    folly::Executor::KeepAlive<> relayExecutor);
+    folly::Executor::KeepAlive<> relayExecutor
+);
 
 } // namespace admin
 

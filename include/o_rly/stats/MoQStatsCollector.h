@@ -22,8 +22,7 @@ namespace openmoq::o_rly::stats {
 //   buckets[N]      = count of observations above the last boundary (+Inf)
 // ---------------------------------------------------------------------------
 
-template <size_t N>
-struct BoundedHistogram {
+template <size_t N> struct BoundedHistogram {
   explicit BoundedHistogram(const std::array<uint64_t, N>& b) : bounds(b) {}
 
   void addValue(uint64_t val) {
@@ -40,8 +39,7 @@ struct BoundedHistogram {
 
   // Fill a Prometheus-style cumulative bucket array of size N+1.
   // cumulative[i] = # observations <= bounds[i]
-  template <size_t M>
-  void fillCumulative(std::array<uint64_t, M>& out) const {
+  template <size_t M> void fillCumulative(std::array<uint64_t, M>& out) const {
     static_assert(M == N + 1, "output array must be N+1");
     uint64_t running = 0;
     for (size_t i = 0; i < N; ++i) {
@@ -69,16 +67,16 @@ struct BoundedHistogram {
 // deregisters on destruction.
 // ---------------------------------------------------------------------------
 
-class MoQStatsCollector
-    : public moxygen::MoQPublisherStatsCallback,
-      public moxygen::MoQSubscriberStatsCallback,
-      public StatsCollectorBase {
- public:
+class MoQStatsCollector : public moxygen::MoQPublisherStatsCallback,
+                          public moxygen::MoQSubscriberStatsCallback,
+                          public StatsCollectorBase {
+public:
   // owningExecutor: the relay's folly EventBase (or equivalent executor).
   // registry: shared registry; the collector registers itself here.
   MoQStatsCollector(
       folly::Executor::KeepAlive<> owningExecutor,
-      std::shared_ptr<StatsRegistry> registry);
+      std::shared_ptr<StatsRegistry> registry
+  );
 
   ~MoQStatsCollector() override;
 
@@ -90,13 +88,11 @@ class MoQStatsCollector
   void onFetchSuccess() override;
   void onFetchError(moxygen::FetchErrorCode errorCode) override;
   void onPublishNamespaceSuccess() override;
-  void onPublishNamespaceError(
-      moxygen::PublishNamespaceErrorCode errorCode) override;
+  void onPublishNamespaceError(moxygen::PublishNamespaceErrorCode errorCode) override;
   void onPublishNamespaceDone() override;
   void onPublishNamespaceCancel() override;
   void onSubscribeNamespaceSuccess() override;
-  void onSubscribeNamespaceError(
-      moxygen::SubscribeNamespaceErrorCode errorCode) override;
+  void onSubscribeNamespaceError(moxygen::SubscribeNamespaceErrorCode errorCode) override;
   void onUnsubscribeNamespace() override;
   void onTrackStatus() override;
   void onUnsubscribe() override;
@@ -115,7 +111,7 @@ class MoQStatsCollector
   void onPublish() override;
   void onPublishOk() override;
 
- private:
+private:
   folly::Executor::KeepAlive<> owningExecutor_;
   std::weak_ptr<StatsRegistry> registry_;
 
@@ -125,8 +121,7 @@ class MoQStatsCollector
   STATS_GAUGE_FIELDS(DEFINE_FIELD)
 #undef DEFINE_FIELD
 
-#define DEFINE_HISTOGRAM(name, bounds) \
-  BoundedHistogram<bounds.size()> name##_{bounds};
+#define DEFINE_HISTOGRAM(name, bounds) BoundedHistogram<bounds.size()> name##_{bounds};
   STATS_HISTOGRAM_FIELDS(DEFINE_HISTOGRAM)
 #undef DEFINE_HISTOGRAM
 };
