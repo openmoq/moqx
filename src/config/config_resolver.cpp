@@ -13,6 +13,54 @@ std::string moqtVersionsToString(const ParsedListenerConfig& listener) {
   return folly::join(',', *listener.moqt_versions.value());
 }
 
+void validateListenerTlsConfig(
+    const ParsedListenerTlsConfig& tls,
+    std::string_view context,
+    std::vector<std::string>& errors,
+    std::vector<std::string>& warnings
+) {
+  bool hasCert = tls.cert_file.value().has_value() && !tls.cert_file.value()->empty();
+  bool hasKey = tls.key_file.value().has_value() && !tls.key_file.value()->empty();
+  if (!tls.insecure.value()) {
+    if (!hasCert || !hasKey) {
+      errors.push_back(
+          std::string(context) + ": cert_file and key_file are required when insecure=false"
+      );
+    }
+  } else if (hasCert || hasKey) {
+    warnings.push_back(
+        std::string(context) + ": cert_file/key_file are ignored when insecure=true"
+    );
+  }
+}
+
+void validateAdminTlsConfig(const ParsedAdminTlsConfig& tls, std::vector<std::string>& errors) {
+  bool hasCert = tls.cert_file.value().has_value() && !tls.cert_file.value()->empty();
+  bool hasKey = tls.key_file.value().has_value() && !tls.key_file.value()->empty();
+  if (!hasCert || !hasKey) {
+    errors.push_back("admin.tls: cert_file and key_file are required");
+  }
+}
+
+TlsConfig resolveTlsConfig(const ParsedListenerTlsConfig& tls) {
+  return TlsConfig{
+      .certFile = tls.cert_file.value().value_or(""),
+      .keyFile = tls.key_file.value().value_or(""),
+      .alpn = {},
+  };
+}
+
+TlsConfig resolveAdminTlsConfig(
+    const ParsedAdminTlsConfig& tls,
+    const std::vector<std::string>& defaultAlpn
+) {
+  return TlsConfig{
+      .certFile = tls.cert_file.value().value_or(""),
+      .keyFile = tls.key_file.value().value_or(""),
+      .alpn = tls.alpn.value().value_or(defaultAlpn),
+  };
+}
+
 } // namespace
 
 folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& config) {
@@ -41,31 +89,28 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
   }
 
   // TLS validation
-  const auto& tls = listener.tls.value();
-  if (!tls.insecure.value()) {
-    bool hasCert = tls.cert_file.value().has_value() && !tls.cert_file.value()->empty();
-    bool hasKey = tls.key_file.value().has_value() && !tls.key_file.value()->empty();
-    if (!hasCert || !hasKey) {
-      errors.push_back(
-          "Listener '" + listener.name.value() +
-          "': cert_file and key_file are required when insecure=false"
-      );
+  validateListenerTlsConfig(
+      listener.tls.value(),
+      "Listener '" + listener.name.value() + "'",
+      errors,
+      warnings
+  );
+  // Admin config validation
+  const auto& adminOptional = config.admin.value();
+  if (adminOptional.has_value()) {
+    if (adminOptional->port.value() == 0) {
+      errors.push_back("admin.port must be 1-65535, got 0");
     }
-  } else {
-    // Warn if certs provided with insecure=true
-    bool hasCert = tls.cert_file.value().has_value() && !tls.cert_file.value()->empty();
-    bool hasKey = tls.key_file.value().has_value() && !tls.key_file.value()->empty();
-    if (hasCert || hasKey) {
-      warnings.push_back(
-          "Listener '" + listener.name.value() +
-          "': cert_file/key_file are ignored when insecure=true"
-      );
+    bool hasTls = adminOptional->tls.value().has_value();
+    bool hasPlaintext = adminOptional->plaintext.value();
+    if (hasTls && hasPlaintext) {
+      errors.push_back("admin: plaintext and tls are mutually exclusive");
+    } else if (!hasTls && !hasPlaintext) {
+      errors.push_back("admin: one of plaintext or tls must be set");
     }
-  }
-
-  // Admin port validation
-  if (config.admin.value().port.value() == 0) {
-    errors.push_back("admin.port must be 1-65535, got 0");
+    if (hasTls) {
+      validateAdminTlsConfig(*adminOptional->tls.value(), errors);
+    }
   }
 
   // Cache validation
@@ -82,15 +127,13 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
 
   // --- Resolve ---
 
-  // Resolve TLS mode
+  // Resolve listener TLS mode
+  const auto& tls = listener.tls.value();
   TlsMode tlsMode;
   if (tls.insecure.value()) {
     tlsMode = Insecure{};
   } else {
-    tlsMode = TlsConfig{
-        .certFile = tls.cert_file.value().value_or(""),
-        .keyFile = tls.key_file.value().value_or(""),
-    };
+    tlsMode = resolveTlsConfig(tls);
   }
 
   // Resolve cache
@@ -108,12 +151,27 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
       .moqtVersions = moqtVersionsToString(listener),
   };
 
+  // Resolve admin config
+  std::optional<AdminConfig> adminConfig;
+  if (adminOptional.has_value()) {
+    static const std::vector<std::string> kDefaultAdminAlpn = {"h2", "http/1.1"};
+    std::optional<TlsConfig> adminTls;
+    if (adminOptional->tls.value().has_value()) {
+      adminTls = resolveAdminTlsConfig(*adminOptional->tls.value(), kDefaultAdminAlpn);
+    }
+    adminConfig = AdminConfig{
+        .address =
+            folly::SocketAddress(adminOptional->address.value(), adminOptional->port.value()),
+        .tls = std::move(adminTls),
+    };
+  }
+
   return ResolvedConfig{
       .config =
           Config{
               .listener = std::move(resolvedListener),
               .cache = cacheConfig,
-              .adminPort = config.admin.value().port.value(),
+              .admin = std::move(adminConfig),
           },
       .warnings = std::move(warnings),
   };
