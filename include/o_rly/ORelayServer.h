@@ -1,7 +1,10 @@
 #pragma once
 
+#include <memory>
+
 #include <moxygen/MoQServer.h>
 #include <o_rly/ORelay.h>
+#include <o_rly/stats/StatsRegistry.h>
 
 namespace openmoq::o_rly {
 
@@ -25,7 +28,11 @@ public:
       size_t maxCachedGroupsPerTrack
   );
 
+  void setStatsRegistry(std::shared_ptr<stats::StatsRegistry> registry);
+
   void onNewSession(std::shared_ptr<moxygen::MoQSession> clientSession) override;
+
+  void terminateClientSession(std::shared_ptr<moxygen::MoQSession> session) override;
 
 protected:
   std::shared_ptr<moxygen::MoQSession> createSession(
@@ -35,6 +42,7 @@ protected:
 
 private:
   std::shared_ptr<ORelay> relay_;
+  std::shared_ptr<stats::StatsRegistry> statsRegistry_;
 };
 
 } // namespace openmoq::o_rly

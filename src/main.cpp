@@ -1,7 +1,9 @@
 #include <o_rly/ORelayServer.h>
 #include <o_rly/admin/AdminServer.h>
 #include <o_rly/admin/BuiltinRoutes.h>
+#include <o_rly/admin/MetricsHandler.h>
 #include <o_rly/config/loader/config_init.h>
+#include <o_rly/stats/StatsRegistry.h>
 
 #include <csignal>
 
@@ -117,12 +119,19 @@ int main(int argc, char* argv[]) {
   // (ORelayServer, ORelay, etc.)
   auto server = createServer(config);
 
+  // === 6a. Stats registry ===
+  auto statsRegistry = std::make_shared<openmoq::o_rly::stats::StatsRegistry>();
+  server->setStatsRegistry(statsRegistry);
+
   // === 7. Start health checks / admin endpoints ===
   openmoq::o_rly::admin::AdminServer adminServer;
   openmoq::o_rly::admin::registerBuiltinRoutes(adminServer);
+  openmoq::o_rly::admin::registerMetricsRoute(
+      adminServer, statsRegistry, folly::getKeepAliveToken(evb));
   if (!adminServer.start(config.adminPort)) {
     XLOG(FATAL) << "Failed to start admin server on port " << config.adminPort;
   }
+
   XLOG(INFO) << "Admin server listening on port " << config.adminPort;
 
   // === 8. Start serving ===

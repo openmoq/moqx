@@ -74,6 +74,9 @@ add_library(o_rly_core STATIC
   src/ORelayServer.cpp
   src/admin/AdminServer.cpp
   src/admin/BuiltinRoutes.cpp
+  src/admin/MetricsHandler.cpp
+  src/stats/StatsRegistry.cpp
+  src/stats/MoQStatsCollector.cpp
 )
 
 target_include_directories(o_rly_core
