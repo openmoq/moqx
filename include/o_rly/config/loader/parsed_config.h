@@ -25,16 +25,22 @@ struct ParsedUdpConfig {
   rfl::Description<"Socket configuration", ParsedSocketConfig> socket;
 };
 
-struct ParsedTlsConfig {
+struct ParsedListenerTlsConfig {
   rfl::Description<"Path to TLS certificate file", std::optional<std::string>> cert_file;
   rfl::Description<"Path to TLS private key file", std::optional<std::string>> key_file;
   rfl::Description<"Insecure mode, use default compiled-in cert", bool> insecure;
 };
 
+struct ParsedAdminTlsConfig {
+  rfl::Description<"Path to TLS certificate file", std::optional<std::string>> cert_file;
+  rfl::Description<"Path to TLS private key file", std::optional<std::string>> key_file;
+  rfl::Description<"ALPN protocol list", std::optional<std::vector<std::string>>> alpn;
+};
+
 struct ParsedListenerConfig {
   rfl::Description<"Listener name", std::string> name;
   rfl::Description<"UDP/QUIC transport config", ParsedUdpConfig> udp;
-  rfl::Description<"TLS configuration", ParsedTlsConfig> tls;
+  rfl::Description<"TLS configuration", ParsedListenerTlsConfig> tls;
   rfl::Description<"WebTransport endpoint path", std::string> endpoint;
   rfl::Description<
       "MOQT draft versions (empty = all supported)",
@@ -51,6 +57,9 @@ struct ParsedCacheConfig {
 
 struct ParsedAdminConfig {
   rfl::Description<"HTTP admin server port, 1-65535", uint16_t> port;
+  rfl::Description<"Bind address", std::string> address;
+  rfl::Description<"Allow plain HTTP (mutually exclusive with tls)", bool> plaintext;
+  rfl::Description<"TLS configuration", std::optional<ParsedAdminTlsConfig>> tls;
 };
 
 struct ParsedConfig {
@@ -59,7 +68,7 @@ struct ParsedConfig {
       std::vector<ParsedListenerConfig>>
       listeners;
   rfl::Description<"Relay cache settings", ParsedCacheConfig> cache;
-  rfl::Description<"Admin HTTP server settings", ParsedAdminConfig> admin;
+  rfl::Description<"Admin HTTP server settings", std::optional<ParsedAdminConfig>> admin;
 };
 
 } // namespace openmoq::o_rly::config

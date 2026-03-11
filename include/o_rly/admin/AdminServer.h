@@ -7,6 +7,8 @@
 
 #include <folly/io/IOBuf.h>
 
+#include <o_rly/config/config.h>
+
 // Forward declarations
 namespace proxygen {
 class ScopedHTTPServer;
@@ -50,9 +52,9 @@ public:
   // Register a route. Must be called before start(); CHECKs if called after.
   void addRoute(std::string method, std::string path, RouteHandler handler);
 
-  // Start the HTTP admin server on the given port. Blocks until the server is
-  // ready to accept connections (or fails). Returns true on success.
-  bool start(uint16_t port);
+  // Start the admin server. Blocks until the server is ready to accept
+  // connections (or fails). Returns true on success.
+  bool start(const config::AdminConfig& config);
 
   // Stop the admin server.
   void stop();
