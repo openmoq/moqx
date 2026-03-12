@@ -1,7 +1,9 @@
 #include <o_rly/stats/StatsRegistry.h>
 
-#include <sstream>
-#include <string_view>
+#include <folly/Conv.h>
+#include <folly/io/Cursor.h>
+#include <folly/io/IOBuf.h>
+#include <folly/io/IOBufQueue.h>
 
 #include <folly/experimental/coro/Collect.h>
 #include <folly/experimental/coro/Task.h>
@@ -13,7 +15,6 @@ StatsSnapshot& StatsSnapshot::operator+=(const StatsSnapshot& o) {
 #define ADD_FIELD(type, name) name += o.name;
   STATS_COUNTER_FIELDS(ADD_FIELD)
   STATS_GAUGE_FIELDS(ADD_FIELD)
-  // Note: STATS_GLOBAL_GAUGE_FIELDS are NOT added — they are assigned, not summed
 #undef ADD_FIELD
 
 #define ADD_HISTOGRAM(name, bounds)                                                                \
@@ -40,55 +41,63 @@ StatsSnapshot& StatsSnapshot::operator+=(const StatsSnapshot& o) {
 // ---------------------------------------------------------------------------
 
 /* static */
-std::string StatsSnapshot::formatPrometheus(const StatsSnapshot& snap) {
-  std::ostringstream out;
+std::unique_ptr<folly::IOBuf> StatsSnapshot::formatPrometheus(const StatsSnapshot& snap) {
+  folly::IOBufQueue queue{folly::IOBufQueue::cacheChainLength()};
+  folly::io::QueueAppender appender{&queue, 8192};
+
+  auto app = [&appender](std::string_view s) {
+    appender.push(reinterpret_cast<const uint8_t*>(s.data()), s.size());
+  };
+  auto appNum = [&app](auto v) { app(folly::to<std::string>(v)); };
 
   // --- Counters --------------------------------------------------------------
 #define EMIT_COUNTER(type, name)                                                                   \
-  out << "# HELP orly_" #name "_total\n"                                                           \
-      << "# TYPE orly_" #name "_total counter\n"                                                   \
-      << "orly_" #name "_total " << snap.name << "\n\n";
+  app("# HELP orly_" #name "_total\n"                                                              \
+      "# TYPE orly_" #name "_total counter\n"                                                      \
+      "orly_" #name "_total ");                                                                    \
+  appNum(snap.name);                                                                               \
+  app("\n\n");
   STATS_COUNTER_FIELDS(EMIT_COUNTER)
 #undef EMIT_COUNTER
 
   // --- Gauges ----------------------------------------------------------------
 #define EMIT_GAUGE(type, name)                                                                     \
-  out << "# HELP orly_" #name "\n"                                                                 \
-      << "# TYPE orly_" #name " gauge\n"                                                           \
-      << "orly_" #name " " << snap.name << "\n\n";
+  app("# HELP orly_" #name "\n"                                                                    \
+      "# TYPE orly_" #name " gauge\n"                                                              \
+      "orly_" #name " ");                                                                          \
+  appNum(snap.name);                                                                               \
+  app("\n\n");
   STATS_GAUGE_FIELDS(EMIT_GAUGE)
 #undef EMIT_GAUGE
 
-  // --- Global Gauges ---------------------------------------------------------
-#define EMIT_GLOBAL_GAUGE(type, name)                                                              \
-  out << "# HELP orly_" #name "\n"                                                                 \
-      << "# TYPE orly_" #name " gauge\n"                                                           \
-      << "orly_" #name " " << snap.name << "\n\n";
-  STATS_GLOBAL_GAUGE_FIELDS(EMIT_GLOBAL_GAUGE)
-#undef EMIT_GLOBAL_GAUGE
-
   // --- Histograms ------------------------------------------------------------
-  // TODO: emit per-boundary _bucket{le="..."} lines by iterating kBoundsRef
-  //       alongside the name##Buckets array.
-  // For now emit just _sum, _count, and +Inf bucket as a minimal scaffold.
 #define EMIT_HISTOGRAM(name, bounds)                                                               \
-  out << "# HELP orly_" #name "_microseconds\n"                                                    \
-      << "# TYPE orly_" #name "_microseconds histogram\n";                                         \
+  app("# HELP orly_" #name "_microseconds\n"                                                       \
+      "# TYPE orly_" #name "_microseconds histogram\n");                                           \
   {                                                                                                \
     const auto& bvals = (bounds);                                                                  \
     const auto& bcounts = snap.name##Buckets;                                                      \
     for (size_t i = 0; i < bvals.size(); ++i) {                                                    \
-      out << "orly_" #name "_microseconds_bucket{le=\"" << bvals[i] << "\"} " << bcounts[i]        \
-          << "\n";                                                                                 \
+      app("orly_" #name "_microseconds_bucket{le=\"");                                             \
+      appNum(bvals[i]);                                                                            \
+      app("\"} ");                                                                                 \
+      appNum(bcounts[i]);                                                                          \
+      app("\n");                                                                                   \
     }                                                                                              \
-    out << "orly_" #name "_microseconds_bucket{le=\"+Inf\"} " << bcounts.back() << "\n";           \
+    app("orly_" #name "_microseconds_bucket{le=\"+Inf\"} ");                                       \
+    appNum(bcounts.back());                                                                        \
+    app("\n");                                                                                     \
   }                                                                                                \
-  out << "orly_" #name "_microseconds_sum " << snap.name##Sum << "\n"                              \
-      << "orly_" #name "_microseconds_count " << snap.name##Count << "\n\n";
+  app("orly_" #name "_microseconds_sum ");                                                         \
+  appNum(snap.name##Sum);                                                                          \
+  app("\n"                                                                                         \
+      "orly_" #name "_microseconds_count ");                                                       \
+  appNum(snap.name##Count);                                                                        \
+  app("\n\n");
   STATS_HISTOGRAM_FIELDS(EMIT_HISTOGRAM)
 #undef EMIT_HISTOGRAM
 
-  return out.str();
+  return queue.move();
 }
 
 void StatsRegistry::registerCollector(std::shared_ptr<StatsCollectorBase> collector) {
@@ -108,35 +117,23 @@ void StatsRegistry::deregisterCollector(StatsCollectorBase* collector) {
   XLOG(DBG1) << "StatsRegistry: deregistered collector (total=" << collectors_.size() << ")";
 }
 
-void StatsRegistry::onNewSession() {
-  std::lock_guard lock(mu_);
-  ++moqActiveSessions_;
-}
-
-void StatsRegistry::onTerminateSession() {
-  std::lock_guard lock(mu_);
-  --moqActiveSessions_;
-}
-
 folly::coro::Task<StatsSnapshot> StatsRegistry::aggregateAsync() {
-  // --- Copy collector list and global gauges, release lock ---
+  // --- Copy collector list, release lock ---
   std::vector<std::shared_ptr<StatsCollectorBase>> collectorsCopy;
   StatsSnapshot combined;
   {
     std::lock_guard lock(mu_);
     collectorsCopy = collectors_;
-    // Copy global gauges directly into the result snapshot
-#define COPY_GLOBAL_GAUGE(type, name) combined.name = name##_;
-    STATS_GLOBAL_GAUGE_FIELDS(COPY_GLOBAL_GAUGE)
-#undef COPY_GLOBAL_GAUGE
   }
 
-  // --- Aggregate collectors ---
-  // TODO: replace with folly::coro::collectAll to schedule each snapshot()
-  // on its owningExecutor() in parallel, instead of sequentially here when multi-threaded
-  // relay is introduced.
+  // --- Aggregate collectors in parallel ---
+  std::vector<folly::coro::Task<StatsSnapshot>> tasks;
   for (const auto& c : collectorsCopy) {
-    combined += c->snapshot();
+    tasks.push_back([c]() -> folly::coro::Task<StatsSnapshot> { co_return c->snapshot(); }());
+  }
+  auto snapshots = co_await folly::coro::collectAllRange(std::move(tasks));
+  for (const auto& snap : snapshots) {
+    combined += snap;
   }
 
   co_return combined;

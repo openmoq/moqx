@@ -14,42 +14,29 @@ namespace openmoq::o_rly::admin {
 
 void registerMetricsRoute(
     AdminServer& adminServer,
-    std::shared_ptr<stats::StatsRegistry> registry,
-    folly::Executor::KeepAlive<> relayExecutor
+    std::shared_ptr<stats::StatsRegistry> registry
 ) {
   adminServer.addRoute(
       "GET",
       "/metrics",
-      [registry = std::move(registry),
-       relayExecutor = std::move(relayExecutor)](auto /*req*/, auto /*body*/, auto* downstream) {
-        // Schedule aggregateAsync() on the relay executor and send the
-        // response asynchronously. This avoids blocking the admin thread.
-        registry->aggregateAsync()
-            .scheduleOn(relayExecutor.get())
-            .start([downstream](auto&& result) {
-              if (result.hasException()) {
-                try {
-                  result.throwUnlessValue();
-                } catch (const std::exception& e) {
-                  XLOG(ERR) << "MetricsHandler: aggregateAsync threw: " << e.what();
-                  proxygen::ResponseBuilder(downstream)
-                      .status(500, proxygen::HTTPMessage::getDefaultReason(500))
-                      .body(folly::IOBuf::copyBuffer("internal error\n"))
-                      .sendWithEOM();
-                }
-                return;
-              }
+      [registry = std::move(registry)](auto /*req*/, auto /*body*/, auto* downstream) {
+        try {
+          const auto& snapshot = folly::coro::blockingWait(registry->aggregateAsync());
+          auto body = stats::StatsSnapshot::formatPrometheus(snapshot);
 
-              const auto& snapshot = result.value();
-              auto body = stats::StatsSnapshot::formatPrometheus(snapshot);
-
-              proxygen::ResponseBuilder(downstream)
-                  .status(200, proxygen::HTTPMessage::getDefaultReason(200))
-                  // Prometheus text exposition format v0.0.4
-                  .header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-                  .body(folly::IOBuf::copyBuffer(body))
-                  .sendWithEOM();
-            });
+          proxygen::ResponseBuilder(downstream)
+              .status(200, proxygen::HTTPMessage::getDefaultReason(200))
+              // Prometheus text exposition format v0.0.4
+              .header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+              .body(std::move(body))
+              .sendWithEOM();
+        } catch (const std::exception& ex) {
+          XLOG(ERR) << "MetricsHandler: aggregateAsync threw: " << ex.what();
+          proxygen::ResponseBuilder(downstream)
+              .status(500, proxygen::HTTPMessage::getDefaultReason(500))
+              .body(folly::IOBuf::copyBuffer("internal error\n"))
+              .sendWithEOM();
+        }
       }
   );
 }

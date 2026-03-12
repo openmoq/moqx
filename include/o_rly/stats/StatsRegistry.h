@@ -9,6 +9,7 @@
 
 #include <folly/executors/SequencedExecutor.h>
 #include <folly/experimental/coro/Task.h>
+#include <folly/io/IOBuf.h>
 
 namespace openmoq::o_rly::stats {
 
@@ -45,10 +46,8 @@ inline constexpr std::array<uint64_t, 11> kLatencyBucketsUs =
   X(int64_t, moqActivePublishers)                                                                  \
   X(int64_t, moqActivePublishNamespaces)                                                           \
   X(int64_t, moqActiveSubscribeNamespaces)                                                         \
-  X(int64_t, moqActiveSubscriptionStreams)
-
-// Global gauges (owned by registry, not summed during aggregation)
-#define STATS_GLOBAL_GAUGE_FIELDS(X) X(int64_t, moqActiveSessions)
+  X(int64_t, moqActiveSubscriptionStreams)                                                         \
+  X(int64_t, moqActiveSessions)
 
 // Histograms: (name, constexpr_bounds_ref)
 // Each expands to: name##Buckets[] (len = bounds.size()+1 for +Inf),
@@ -64,7 +63,6 @@ struct StatsSnapshot {
 #define DEFINE_FIELD(type, name) type name{0};
   STATS_COUNTER_FIELDS(DEFINE_FIELD)
   STATS_GAUGE_FIELDS(DEFINE_FIELD)
-  STATS_GLOBAL_GAUGE_FIELDS(DEFINE_FIELD)
 #undef DEFINE_FIELD
 
   // --- Histogram fields ---
@@ -78,9 +76,7 @@ struct StatsSnapshot {
   StatsSnapshot& operator+=(const StatsSnapshot& o);
 
   // --- Prometheus text format ---
-  // Returns the full Prometheus exposition text for this snapshot.
-  // Emits # HELP / # TYPE / value lines for all fields and histograms.
-  static std::string formatPrometheus(const StatsSnapshot& snap);
+  static std::unique_ptr<folly::IOBuf> formatPrometheus(const StatsSnapshot& snap);
 };
 
 class StatsCollectorBase {
@@ -112,21 +108,12 @@ public:
   // Called by StatsCollectorBase::dtor — deregisters the collector.
   void deregisterCollector(StatsCollectorBase* collector);
 
-  // Global gauge management — called by ORelayServer lifecycle hooks.
-  void onNewSession();
-  void onTerminateSession();
-
   // Aggregates all live collectors into a single StatsSnapshot.
   folly::coro::Task<StatsSnapshot> aggregateAsync();
 
 private:
   mutable std::mutex mu_;
   std::vector<std::shared_ptr<StatsCollectorBase>> collectors_;
-
-  // --- Global gauges ---
-#define DEFINE_GLOBAL_GAUGE(type, name) type name##_{0};
-  STATS_GLOBAL_GAUGE_FIELDS(DEFINE_GLOBAL_GAUGE)
-#undef DEFINE_GLOBAL_GAUGE
 };
 
 } // namespace openmoq::o_rly::stats

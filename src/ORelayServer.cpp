@@ -61,25 +61,31 @@ void ORelayServer::onNewSession(std::shared_ptr<MoQSession> clientSession) {
   clientSession->setSubscribeHandler(relay_);
 
   if (statsRegistry_) {
-    // Create a collector for this session and register it with the registry.
-    // Both publisher and subscriber callbacks share the same collector so
-    // each session is counted once.
-    auto collector = std::make_shared<stats::MoQStatsCollector>(
-        folly::getKeepAliveToken(*clientSession->getExecutor()),
-        statsRegistry_
-    );
-    statsRegistry_->registerCollector(collector);
+    folly::Executor* execKey = clientSession->getExecutor();
 
-    clientSession->setPublisherStatsCallback(collector);
-    clientSession->setSubscriberStatsCallback(collector);
+    auto it = executorCollectors_.find(execKey);
+    if (it == executorCollectors_.end()) {
+      auto collector = stats::MoQStatsCollector::create_moq_stats_collector(
+          folly::getKeepAliveToken(*clientSession->getExecutor()),
+          statsRegistry_
+      );
+      it = executorCollectors_.insert(execKey, std::move(collector)).first;
+    }
 
-    statsRegistry_->onNewSession();
+    clientSession->setPublisherStatsCallback(it->second);
+    clientSession->setSubscriberStatsCallback(it->second);
+
+    it->second->onSessionStart();
   }
 }
 
 void ORelayServer::terminateClientSession(std::shared_ptr<MoQSession> session) {
   if (statsRegistry_) {
-    statsRegistry_->onTerminateSession();
+    folly::Executor* execKey = session->getExecutor();
+    auto it = executorCollectors_.find(execKey);
+    if (it != executorCollectors_.end()) {
+      it->second->onSessionEnd();
+    }
   }
   MoQServer::terminateClientSession(std::move(session));
 }

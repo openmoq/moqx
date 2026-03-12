@@ -126,11 +126,7 @@ int main(int argc, char* argv[]) {
   // === 7. Start health checks / admin endpoints ===
   openmoq::o_rly::admin::AdminServer adminServer;
   openmoq::o_rly::admin::registerBuiltinRoutes(adminServer);
-  openmoq::o_rly::admin::registerMetricsRoute(
-      adminServer,
-      statsRegistry,
-      folly::getKeepAliveToken(evb)
-  );
+  openmoq::o_rly::admin::registerMetricsRoute(adminServer, statsRegistry);
   if (!adminServer.start(config.adminPort)) {
     XLOG(FATAL) << "Failed to start admin server on port " << config.adminPort;
   }

@@ -2,8 +2,6 @@
 
 #include <memory>
 
-#include <folly/Executor.h>
-
 namespace openmoq::o_rly {
 
 namespace admin {
@@ -18,15 +16,10 @@ namespace admin {
 
 // Registers GET /metrics on the given admin server.
 //
-// The handler:
-//   1. Schedules StatsRegistry::aggregateAsync() on relayExecutor.
-//   2. Formats the result as Prometheus exposition text and sends the response
-//      asynchronously (does not block the admin thread).
-void registerMetricsRoute(
-    AdminServer& adminServer,
-    std::shared_ptr<stats::StatsRegistry> registry,
-    folly::Executor::KeepAlive<> relayExecutor
-);
+// The handler aggregates stats and formats the result as Prometheus exposition
+// text. Uses blockingWait to handle aggregation synchronously on the admin
+// thread
+void registerMetricsRoute(AdminServer& adminServer, std::shared_ptr<stats::StatsRegistry> registry);
 
 } // namespace admin
 

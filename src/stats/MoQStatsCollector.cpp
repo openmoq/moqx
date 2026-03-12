@@ -4,11 +4,20 @@
 
 namespace openmoq::o_rly::stats {
 
-MoQStatsCollector::MoQStatsCollector(
+/* static */
+std::shared_ptr<MoQStatsCollector> MoQStatsCollector::create_moq_stats_collector(
     folly::Executor::KeepAlive<> owningExecutor,
     std::shared_ptr<StatsRegistry> registry
-)
-    : owningExecutor_(std::move(owningExecutor)), registry_(registry) {}
+) {
+  auto collector =
+      std::shared_ptr<MoQStatsCollector>(new MoQStatsCollector(std::move(owningExecutor)));
+  collector->registry_ = registry;
+  registry->registerCollector(collector);
+  return collector;
+}
+
+MoQStatsCollector::MoQStatsCollector(folly::Executor::KeepAlive<> owningExecutor)
+    : owningExecutor_(std::move(owningExecutor)) {}
 
 MoQStatsCollector::~MoQStatsCollector() {
   if (auto registry = registry_.lock()) {
@@ -149,6 +158,14 @@ void MoQStatsCollector::onPublish() {
 
 void MoQStatsCollector::onPublishOk() {
   ++moqPublishOkReceived_;
+}
+
+void MoQStatsCollector::onSessionStart() {
+  ++moqActiveSessions_;
+}
+
+void MoQStatsCollector::onSessionEnd() {
+  --moqActiveSessions_;
 }
 
 } // namespace openmoq::o_rly::stats

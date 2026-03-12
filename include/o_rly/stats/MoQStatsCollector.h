@@ -55,25 +55,13 @@ template <size_t N> struct BoundedHistogram {
   uint64_t count{0};
 };
 
-// ---------------------------------------------------------------------------
-// MoQStatsCollector
-//
-// One instance per MoQSession.  Created in ORelayServer::onNewSession()
-//
-// Both callbacks share the same collector so the relay accounts for each
-// session once regardless of which role fires the callback.
-//
-// The collector registers itself with StatsRegistry on construction and
-// deregisters on destruction.
-// ---------------------------------------------------------------------------
-
 class MoQStatsCollector : public moxygen::MoQPublisherStatsCallback,
                           public moxygen::MoQSubscriberStatsCallback,
                           public StatsCollectorBase {
 public:
-  // owningExecutor: the relay's folly EventBase (or equivalent executor).
-  // registry: shared registry; the collector registers itself here.
-  MoQStatsCollector(
+  // Factory: constructs the collector, registers it with the registry, and
+  // returns the shared_ptr.
+  static std::shared_ptr<MoQStatsCollector> create_moq_stats_collector(
       folly::Executor::KeepAlive<> owningExecutor,
       std::shared_ptr<StatsRegistry> registry
   );
@@ -111,11 +99,18 @@ public:
   void onPublish() override;
   void onPublishOk() override;
 
+  // Session lifecycle events
+  void onSessionStart();
+  void onSessionEnd();
+
 private:
+  // Constructor is private; use create().
+  explicit MoQStatsCollector(folly::Executor::KeepAlive<> owningExecutor);
+
   folly::Executor::KeepAlive<> owningExecutor_;
   std::weak_ptr<StatsRegistry> registry_;
 
-// Metric Fields
+  // Metric Fields
 #define DEFINE_FIELD(type, name) type name##_{0};
   STATS_COUNTER_FIELDS(DEFINE_FIELD)
   STATS_GAUGE_FIELDS(DEFINE_FIELD)
