@@ -1,10 +1,15 @@
-name: verify
+name: ci pr
+
+# PR verification: format + build/test matrix.
+# Main push uses ci-main.yml which adds publish/release/notify.
 
 on:
   pull_request:
     branches: [main]
-  push:
-    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -77,4 +82,3 @@ jobs:
           path: ${{ matrix.build_dir }}/test-results.xml
           reporter: java-junit
           fail-on-empty: ${{ job.status == 'success' && 'true' || 'false' }}
-
