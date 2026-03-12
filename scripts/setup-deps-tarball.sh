@@ -73,7 +73,7 @@ DOWNLOAD_DIR="${SCRATCH}/downloads"
 mkdir -p "$DOWNLOAD_DIR"
 
 echo "==> Searching for publish run at ${SHA:0:7}..."
-RUN_ID=$(gh api "repos/openmoq/moxygen/actions/workflows/omoq-publish-artifacts.yml/runs?head_sha=${SHA}&status=success&per_page=1" \
+RUN_ID=$(gh api "repos/openmoq/moxygen/actions/workflows/omoq-ci-main.yml/runs?head_sha=${SHA}&status=success&per_page=1" \
     --jq '.workflow_runs[0].id // empty')
 
 if [[ -n "$RUN_ID" ]]; then
@@ -86,7 +86,7 @@ if [[ -n "$RUN_ID" ]]; then
 else
     echo "Error: no successful publish run found for moxygen SHA ${SHA:0:7}." >&2
     echo "  The publish workflow may not have run yet for this commit." >&2
-    echo "  Check: https://github.com/openmoq/moxygen/actions/workflows/omoq-publish-artifacts.yml" >&2
+    echo "  Check: https://github.com/openmoq/moxygen/actions/workflows/omoq-ci-main.yml" >&2
     exit 1
 fi
 
