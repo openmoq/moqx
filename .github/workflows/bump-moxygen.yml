@@ -1,0 +1,109 @@
+name: bump moxygen
+
+# Advance the deps/moxygen submodule to a new commit.
+# Creates a PR branch bump-moxygen/<short-sha> with the updated submodule.
+#
+# Usage:
+#   gh workflow run bump-moxygen.yml                     # latest moxygen main
+#   gh workflow run bump-moxygen.yml -f target_sha=abc123  # specific commit
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_sha:
+        description: "Moxygen commit SHA (default: latest main HEAD)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Generate app token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.OMOQ_APP_ID }}
+          private-key: ${{ secrets.OMOQ_APP_PRIV_KEY }}
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Resolve target SHA
+        id: resolve
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          INPUT_SHA: ${{ inputs.target_sha }}
+        run: |
+          OLD_SHA=$(git -C deps/moxygen rev-parse HEAD)
+          echo "old_sha=$OLD_SHA" >> "$GITHUB_OUTPUT"
+
+          if [[ -n "$INPUT_SHA" ]]; then
+            TARGET="$INPUT_SHA"
+          else
+            TARGET=$(gh api repos/openmoq/moxygen/commits/main --jq '.sha')
+          fi
+          echo "target_sha=$TARGET" >> "$GITHUB_OUTPUT"
+          echo "short=${TARGET:0:7}" >> "$GITHUB_OUTPUT"
+
+          if [[ "$OLD_SHA" == "$TARGET" ]]; then
+            echo "Submodule already at $TARGET — nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Validate moxygen artifacts exist
+        if: steps.resolve.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          TARGET_SHA: ${{ steps.resolve.outputs.target_sha }}
+        run: |
+          RUN_ID=$(gh api "repos/openmoq/moxygen/actions/workflows/omoq-ci-main.yml/runs?head_sha=${TARGET_SHA}&status=success&per_page=1" \
+              --jq '.workflow_runs[0].id // empty')
+          if [[ -z "$RUN_ID" ]]; then
+            echo "Error: no successful moxygen publish run for ${TARGET_SHA:0:7}" >&2
+            echo "Artifacts must exist before bumping the submodule." >&2
+            exit 1
+          fi
+          echo "Validated: moxygen run $RUN_ID has artifacts for ${TARGET_SHA:0:7}"
+
+      - name: Update submodule
+        if: steps.resolve.outputs.skip != 'true'
+        env:
+          TARGET_SHA: ${{ steps.resolve.outputs.target_sha }}
+        run: |
+          git -C deps/moxygen fetch origin
+          git -C deps/moxygen checkout "$TARGET_SHA"
+
+      - name: Create PR
+        if: steps.resolve.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          OLD_SHA: ${{ steps.resolve.outputs.old_sha }}
+          TARGET_SHA: ${{ steps.resolve.outputs.target_sha }}
+          SHORT: ${{ steps.resolve.outputs.short }}
+        run: |
+          BRANCH="bump-moxygen/${SHORT}"
+          git checkout -b "$BRANCH"
+          git add deps/moxygen
+          git commit -m "Bump moxygen submodule to ${SHORT}"
+          git push -u origin "$BRANCH"
+
+          gh pr create \
+            --title "Bump moxygen to ${SHORT}" \
+            --body "$(cat <<EOF
+          Update \`deps/moxygen\` submodule.
+
+          | | SHA |
+          |---|---|
+          | **Old** | \`${OLD_SHA:0:12}\` |
+          | **New** | \`${TARGET_SHA:0:12}\` |
+
+          [Diff](https://github.com/openmoq/moxygen/compare/${OLD_SHA:0:12}...${TARGET_SHA:0:12})
+          EOF
+          )"

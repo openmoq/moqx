@@ -1,3 +1,5 @@
 .scratch/
 build/
 build-san/
+install/
+_build/
