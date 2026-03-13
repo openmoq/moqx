@@ -61,6 +61,9 @@ public:
     XLOG(INFO) << "Processing goaway uri=" << goaway.newSessionUri;
   }
 
+  folly::coro::Task<moxygen::Publisher::TrackStatusResult> trackStatus(moxygen::TrackStatus req
+  ) override;
+
   std::shared_ptr<moxygen::MoQSession> findPublishNamespaceSession(const moxygen::TrackNamespace& ns
   );
 
@@ -76,8 +79,8 @@ public:
 
   // Test accessor: check if a publish exists and return node/publish state
   struct PublishState {
-    bool nodeExists{false};
-    std::shared_ptr<moxygen::MoQSession> session{nullptr};
+    bool nodeExists{false};                                // true if tree node exists
+    std::shared_ptr<moxygen::MoQSession> session{nullptr}; // publish session if exists
   };
   PublishState findPublishState(const moxygen::FullTrackName& ftn);
 
@@ -123,9 +126,20 @@ private:
 
     // Maps a track name to a the session performing the PUBLISH
     folly::F14FastMap<std::string, std::shared_ptr<moxygen::MoQSession>> publishes;
-    // Sessions with a SUBSCRIBE_NAMESPACE here, with their forward preference
-    // Key: session, Value: forward (true = forward data, false = don't forward)
-    folly::F14FastMap<std::shared_ptr<moxygen::MoQSession>, bool> sessions;
+
+    // Info stored per SUBSCRIBE_NAMESPACE subscriber
+    struct NamespaceSubscriberInfo {
+      bool forward{true};
+      moxygen::SubscribeNamespaceOptions options{moxygen::SubscribeNamespaceOptions::BOTH};
+      // Handle for sending NAMESPACE / NAMESPACE_DONE on the bidi stream
+      // (draft 16+). Null for draft <= 15.
+      std::shared_ptr<moxygen::Publisher::NamespacePublishHandle> namespacePublishHandle;
+      // The namespace prefix this subscriber used for SUBSCRIBE_NAMESPACE
+      moxygen::TrackNamespace trackNamespacePrefix;
+    };
+
+    // Sessions with a SUBSCRIBE_NAMESPACE here, with their preferences
+    folly::F14FastMap<std::shared_ptr<moxygen::MoQSession>, NamespaceSubscriberInfo> sessions;
     // All active PUBLISH_NAMESPACEs for this node (includes prefix sessions)
     folly::F14FastMap<std::shared_ptr<moxygen::MoQSession>, std::shared_ptr<PublishNamespaceHandle>>
         namespacesPublished;
@@ -152,7 +166,9 @@ private:
       const moxygen::TrackNamespace& ns,
       bool createMissingNodes = false,
       MatchType matchType = MatchType::Exact,
-      std::vector<std::pair<std::shared_ptr<moxygen::MoQSession>, bool>>* sessions = nullptr
+      std::vector<
+          std::pair<std::shared_ptr<moxygen::MoQSession>, NamespaceNode::NamespaceSubscriberInfo>>*
+          sessions = nullptr
   );
 
   struct RelaySubscription {
@@ -182,7 +198,6 @@ private:
   folly::coro::Task<void> publishToSession(
       std::shared_ptr<moxygen::MoQSession> session,
       std::shared_ptr<moxygen::MoQForwarder> forwarder,
-      moxygen::PublishRequest pub,
       bool forward
   );
 

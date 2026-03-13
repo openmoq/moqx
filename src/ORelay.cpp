@@ -7,14 +7,13 @@
  */
 
 #include <moxygen/MoQFilters.h>
-#include <moxygen/MoQTrackProperties.h>
 #include <o_rly/ORelay.h>
-
-using namespace moxygen;
 
 namespace {
 constexpr uint8_t kDefaultUpstreamPriority = 128;
 }
+
+using namespace moxygen;
 
 namespace openmoq::o_rly {
 
@@ -43,14 +42,15 @@ std::shared_ptr<ORelay::NamespaceNode> ORelay::findNamespaceNode(
     const TrackNamespace& ns,
     bool createMissingNodes,
     MatchType matchType,
-    std::vector<std::pair<std::shared_ptr<MoQSession>, bool>>* sessions
+    std::vector<std::pair<std::shared_ptr<MoQSession>, NamespaceNode::NamespaceSubscriberInfo>>*
+        sessions
 ) {
   std::shared_ptr<NamespaceNode> nodePtr(std::shared_ptr<void>(), &publishNamespaceRoot_);
   for (auto i = 0ul; i < ns.size(); i++) {
     if (sessions) {
-      // Extract session pointers with their forward preferences from the map
-      for (const auto& [session, forward] : nodePtr->sessions) {
-        sessions->emplace_back(session, forward);
+      // Extract session pointers with their subscriber info from the map
+      for (const auto& [session, info] : nodePtr->sessions) {
+        sessions->emplace_back(session, info);
       }
     }
     auto& name = ns[i];
@@ -87,7 +87,8 @@ folly::coro::Task<Subscriber::PublishNamespaceResult> ORelay::publishNamespace(
         "bad namespace"
     });
   }
-  std::vector<std::pair<std::shared_ptr<MoQSession>, bool>> sessions;
+  std::vector<std::pair<std::shared_ptr<MoQSession>, NamespaceNode::NamespaceSubscriberInfo>>
+      sessions;
   auto nodePtr = findNamespaceNode(
       ann.trackNamespace,
       /*createMissingNodes=*/true,
@@ -127,8 +128,16 @@ folly::coro::Task<Subscriber::PublishNamespaceResult> ORelay::publishNamespace(
 
   // TODO: store auth for forwarding on future SubscribeNamespace?
   auto session = MoQSession::getRequestSession();
+
+  // Include sessions that subscribed exactly this namespace as well.
+  // findNamespaceNode(..., &sessions) collects subscribers attached to prefixes
+  // along the path, but does not include this node's own sessions.
+  for (const auto& [outSession, info] : nodePtr->sessions) {
+    sessions.emplace_back(outSession, info);
+  }
+
   bool wasEmpty = !nodePtr->hasLocalSessions();
-  nodePtr->sourceSession = std::move(session);
+  nodePtr->sourceSession = session;
   nodePtr->publishNamespaceCallback = std::move(callback);
   nodePtr->trackNamespace_ = ann.trackNamespace;
   nodePtr->setPublishNamespaceOk({ann.requestID});
@@ -137,10 +146,21 @@ folly::coro::Task<Subscriber::PublishNamespaceResult> ORelay::publishNamespace(
   if (wasEmpty && nodePtr->parent_) {
     nodePtr->parent_->incrementActiveChildren();
   }
-  for (auto& [outSession, forward] : sessions) {
-    if (outSession != session) {
-      auto exec = outSession->getExecutor();
-      co_withExecutor(exec, publishNamespaceToSession(outSession, ann, nodePtr)).start();
+  for (auto& [outSession, info] : sessions) {
+    if (outSession != session && (info.options == SubscribeNamespaceOptions::NAMESPACE ||
+                                  info.options == SubscribeNamespaceOptions::BOTH)) {
+      if (info.namespacePublishHandle) {
+        // Draft 16+: send NAMESPACE message on the bidi stream
+        TrackNamespace suffix(std::vector<std::string>(
+            ann.trackNamespace.trackNamespace.begin() + info.trackNamespacePrefix.size(),
+            ann.trackNamespace.trackNamespace.end()
+        ));
+        info.namespacePublishHandle->namespaceMsg(suffix);
+      } else {
+        // Draft <= 15: send PUBLISH_NAMESPACE on a new stream
+        auto exec = outSession->getExecutor();
+        co_withExecutor(exec, publishNamespaceToSession(outSession, ann, nodePtr)).start();
+      }
     }
   }
   co_return nodePtr;
@@ -251,11 +271,44 @@ void ORelay::publishNamespaceDone(const TrackNamespace& trackNamespace, Namespac
 
   nodePtr->sourceSession = nullptr;
   nodePtr->publishNamespaceCallback.reset();
-  for (auto& pubNamespace : nodePtr->namespacesPublished) {
-    auto exec = pubNamespace.first->getExecutor();
-    exec->add([publishNamespaceHandle = pubNamespace.second] {
-      publishNamespaceHandle->publishNamespaceDone();
-    });
+
+  // Notify downstream namespace subscribers
+  std::vector<std::pair<std::shared_ptr<MoQSession>, NamespaceNode::NamespaceSubscriberInfo>>
+      sessions;
+  findNamespaceNode(
+      trackNamespace,
+      /*createMissingNodes=*/false,
+      MatchType::Exact,
+      &sessions
+  );
+  // Also include sessions at the target node itself
+  for (const auto& [sessionPtr, info] : nodePtr->sessions) {
+    sessions.emplace_back(sessionPtr, info);
+  }
+  for (auto& [outSession, info] : sessions) {
+    if (outSession != session && (info.options == SubscribeNamespaceOptions::NAMESPACE ||
+                                  info.options == SubscribeNamespaceOptions::BOTH)) {
+      auto maybeVersion = outSession->getNegotiatedVersion();
+      if (maybeVersion.has_value() && getDraftMajorVersion(*maybeVersion) >= 16) {
+        // Draft 16+: send NAMESPACE_DONE on the bidi stream
+        if (info.namespacePublishHandle) {
+          TrackNamespace suffix(std::vector<std::string>(
+              trackNamespace.trackNamespace.begin() + info.trackNamespacePrefix.size(),
+              trackNamespace.trackNamespace.end()
+          ));
+          info.namespacePublishHandle->namespaceDoneMsg(suffix);
+        }
+      } else {
+        // Draft <= 15: send PUBLISH_NAMESPACE_DONE on the existing stream
+        auto it = nodePtr->namespacesPublished.find(outSession);
+        if (it != nodePtr->namespacesPublished.end()) {
+          auto exec = outSession->getExecutor();
+          exec->add([publishNamespaceHandle = it->second] {
+            publishNamespaceHandle->publishNamespaceDone();
+          });
+        }
+      }
+    }
   }
   nodePtr->namespacesPublished.clear();
 
@@ -319,16 +372,17 @@ ORelay::publish(PublishRequest pub, std::shared_ptr<Publisher::SubscriptionHandl
 
   // Find All Nodes that Subscribed to this namespace (including
   // prefix ns)
-  std::vector<std::pair<std::shared_ptr<MoQSession>, bool>> sessions = {};
+  std::vector<std::pair<std::shared_ptr<MoQSession>, NamespaceNode::NamespaceSubscriberInfo>>
+      sessions = {};
   auto nodePtr = findNamespaceNode(
       pub.fullTrackName.trackNamespace,
       /*createMissingNodes=*/true,
       MatchType::Exact,
       &sessions
   );
-  // Extract session pointers with their forward preferences from the map
-  for (const auto& [sessionPtr, forward] : nodePtr->sessions) {
-    sessions.emplace_back(sessionPtr, forward);
+  // Extract session pointers with their subscriber info from the map
+  for (const auto& [sessionPtr, info] : nodePtr->sessions) {
+    sessions.emplace_back(sessionPtr, info);
   }
 
   auto session = MoQSession::getRequestSession();
@@ -359,17 +413,10 @@ ORelay::publish(PublishRequest pub, std::shared_ptr<Publisher::SubscriptionHandl
   }
 
   // Create Forwarder for this publish
-  auto forwarder = std::make_shared<MoQForwarder>(pub.fullTrackName, std::nullopt);
+  auto forwarder = std::make_shared<MoQForwarder>(pub.fullTrackName, pub.largest);
 
   // Set Forwarder Params
-  forwarder->setGroupOrder(pub.groupOrder);
-
-  // Extract delivery timeout from publish request extensions and store in
-  // forwarder
-  auto deliveryTimeout = getPublisherDeliveryTimeout(pub);
-  if (deliveryTimeout && deliveryTimeout->count() > 0) {
-    forwarder->setDeliveryTimeout(deliveryTimeout->count());
-  }
+  forwarder->setExtensions(pub.extensions);
 
   auto subRes = subscriptions_.emplace(
       std::piecewise_construct,
@@ -383,11 +430,12 @@ ORelay::publish(PublishRequest pub, std::shared_ptr<Publisher::SubscriptionHandl
   rsub.isPublish = true;
 
   uint64_t nSubscribers = 0;
-  for (auto& [outSession, forward] : sessions) {
-    if (outSession != session) {
+  for (auto& [outSession, info] : sessions) {
+    if (outSession != session && (info.options == SubscribeNamespaceOptions::PUBLISH ||
+                                  info.options == SubscribeNamespaceOptions::BOTH)) {
       nSubscribers++;
       auto exec = outSession->getExecutor();
-      co_withExecutor(exec, publishToSession(outSession, forwarder, pub, forward)).start();
+      co_withExecutor(exec, publishToSession(outSession, forwarder, info.forward)).start();
     }
   }
   forwarder->setCallback(shared_from_this());
@@ -414,24 +462,17 @@ ORelay::publish(PublishRequest pub, std::shared_ptr<Publisher::SubscriptionHandl
 folly::coro::Task<void> ORelay::publishToSession(
     std::shared_ptr<MoQSession> session,
     std::shared_ptr<MoQForwarder> forwarder,
-    PublishRequest pub,
     bool forward
 ) {
-  pub.forward = forward;
-  auto subscriber = forwarder->addSubscriber(session, pub);
+  auto subscriber = forwarder->addSubscriber(session, forward);
   if (!subscriber) {
-    XLOG(ERR) << "Subscribe failed: addSubscriber returned null for " << forwarder->fullTrackName()
-              << " reqID=" << pub.requestID;
+    XLOG(ERR) << "Subscribe failed: addSubscriber returned null for " << forwarder->fullTrackName();
     co_return;
   }
-  XLOG(DBG4) << "added subscriber for ftn=" << pub.fullTrackName;
+  XLOG(DBG4) << "added subscriber for ftn=" << forwarder->fullTrackName();
   auto guard = folly::makeGuard([subscriber] { subscriber->unsubscribe(); });
-  if (pub.largest) {
-    subscriber->updateLargest(*pub.largest);
-  }
-  subscriber->setPublisherGroupOrder(pub.groupOrder);
 
-  auto pubInitial = session->publish(pub, subscriber);
+  auto pubInitial = session->publish(subscriber->getPublishRequest(), subscriber);
   if (pubInitial.hasError()) {
     XLOG(ERR) << "Publish failed err=" << pubInitial.error().reasonPhrase;
     co_return;
@@ -530,20 +571,36 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> ORelay::subscribeNamespac
     std::shared_ptr<NamespacePublishHandle> namespacePublishHandle
 ) {
   XLOG(DBG1) << __func__ << " nsp=" << subNs.trackNamespacePrefix;
+
+  auto session = MoQSession::getRequestSession();
+  auto maybeNegotiatedVersion = session->getNegotiatedVersion();
+  CHECK(maybeNegotiatedVersion.has_value());
+
   // check auth
-  if (subNs.trackNamespacePrefix.empty()) {
+  // Allow empty namespace prefix only for draft-16 and above.
+  if (subNs.trackNamespacePrefix.empty() && getDraftMajorVersion(*maybeNegotiatedVersion) < 16) {
     co_return folly::makeUnexpected(SubscribeNamespaceError{
         subNs.requestID,
         SubscribeNamespaceErrorCode::NAMESPACE_PREFIX_UNKNOWN,
         "empty"
     });
   }
-  auto session = MoQSession::getRequestSession();
   auto nodePtr = findNamespaceNode(subNs.trackNamespacePrefix, /*createMissingNodes=*/true);
+
+  SubscribeNamespaceOptions effectiveOptions;
+  effectiveOptions = subNs.options;
 
   // Check if this is the first session subscriber for this node
   bool wasEmpty = !nodePtr->hasLocalSessions();
-  nodePtr->sessions.emplace(session, subNs.forward);
+  nodePtr->sessions.emplace(
+      session,
+      NamespaceNode::NamespaceSubscriberInfo{
+          subNs.forward,
+          effectiveOptions,
+          namespacePublishHandle,
+          subNs.trackNamespacePrefix
+      }
+  );
 
   // If this is the first content added to this node, notify parent
   if (wasEmpty && nodePtr->hasLocalSessions() && nodePtr->parent_) {
@@ -559,24 +616,31 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> ORelay::subscribeNamespac
     auto [prefix, nodePtr] = std::move(*nodes.begin());
     nodes.pop_front();
     if (nodePtr->sourceSession && nodePtr->sourceSession != session) {
-      // TODO: Auth/params
-      co_withExecutor(exec, publishNamespaceToSession(session, {subNs.requestID, prefix}, nodePtr))
-          .start();
+      if (getDraftMajorVersion(*maybeNegotiatedVersion) >= 16) {
+        if (subNs.options == SubscribeNamespaceOptions::NAMESPACE ||
+            subNs.options == SubscribeNamespaceOptions::BOTH) {
+          // Compute the suffix: prefix minus subNs.trackNamespacePrefix
+          TrackNamespace suffix(std::vector<std::string>(
+              prefix.trackNamespace.begin() + subNs.trackNamespacePrefix.size(),
+              prefix.trackNamespace.end()
+          ));
+          namespacePublishHandle->namespaceMsg(suffix);
+        }
+      } else {
+        // TODO: Auth/params
+        co_withExecutor(
+            exec,
+            publishNamespaceToSession(session, {subNs.requestID, prefix}, nodePtr)
+        )
+            .start();
+      }
     }
-    PublishRequest pub{
-        0,
-        FullTrackName{prefix, ""},
-        TrackAlias(0), // filled in by library
-        GroupOrder::Default,
-        std::nullopt,
-        /*forward=*/false
-    };
     for (auto& publishEntry : nodePtr->publishes) {
       auto& publishSession = publishEntry.second;
-      pub.fullTrackName.trackName = publishEntry.first;
-      auto subscriptionIt = subscriptions_.find(pub.fullTrackName);
+      FullTrackName ftn{prefix, publishEntry.first};
+      auto subscriptionIt = subscriptions_.find(ftn);
       if (subscriptionIt == subscriptions_.end()) {
-        XLOG(ERR) << "Invalid state, no subscription for publish ftn=" << pub.fullTrackName;
+        XLOG(ERR) << "Invalid state, no subscription for publish ftn=" << ftn;
         continue;
       }
       auto& forwarder = subscriptionIt->second.forwarder;
@@ -585,10 +649,14 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> ORelay::subscribeNamespac
         co_withExecutor(exec, doSubscribeUpdate(subscriptionIt->second.handle, subNs.forward))
             .start();
       }
-      pub.groupOrder = forwarder->groupOrder();
-      pub.largest = forwarder->largest();
-      if (publishSession != session) {
-        co_withExecutor(exec, publishToSession(session, forwarder, pub, subNs.forward)).start();
+      auto maybeNegotiatedVersion = session->getNegotiatedVersion();
+      CHECK(maybeNegotiatedVersion.has_value());
+      if (getDraftMajorVersion(*maybeNegotiatedVersion) <= 15 ||
+          (subNs.options == SubscribeNamespaceOptions::BOTH ||
+           subNs.options == SubscribeNamespaceOptions::PUBLISH)) {
+        if (publishSession != session) {
+          co_withExecutor(exec, publishToSession(session, forwarder, subNs.forward)).start();
+        }
       }
     }
     for (auto& nextNodeIt : nodePtr->children) {
@@ -749,23 +817,14 @@ ORelay::subscribe(SubscribeRequest subReq, std::shared_ptr<TrackConsumer> consum
       forwarder->updateLargest(largest->group, largest->object);
       subscriber->updateLargest(*largest);
     }
-    auto pubGroupOrder = subRes.value()->subscribeOk().groupOrder;
-    forwarder->setGroupOrder(pubGroupOrder);
-
-    // Store upstream delivery timeout in forwarder
-    auto deliveryTimeout = getPublisherDeliveryTimeout(subRes.value()->subscribeOk());
-
-    // Add delivery timeout to downstream subscriber explicitly as this is the
-    // first subscriber. Forwarder can add it to subsequent subscribers
-    if (deliveryTimeout && deliveryTimeout->count() > 0) {
-      forwarder->setDeliveryTimeout(deliveryTimeout->count());
-      subscriber->setParam(
-          {folly::to_underlying(TrackRequestParamKey::DELIVERY_TIMEOUT),
-           static_cast<uint64_t>(deliveryTimeout->count())}
-      );
+    // Save upstream extensions to forwarder (and existing subscribers) and
+    // cache
+    auto& upstreamExtensions = subRes.value()->subscribeOk().extensions;
+    forwarder->setExtensions(upstreamExtensions);
+    if (cache_) {
+      cache_->setTrackExtensions(subReq.fullTrackName, upstreamExtensions);
     }
 
-    subscriber->setPublisherGroupOrder(pubGroupOrder);
     auto it = subscriptions_.find(subReq.fullTrackName);
     // There are cases that remove the subscription like failing to
     // publish a datagram that was received before the subscribeOK
@@ -881,6 +940,70 @@ ORelay::fetch(Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
     co_return co_await upstreamSession->fetch(fetch, std::move(consumer));
   }
   co_return co_await cache_->fetch(fetch, std::move(consumer), std::move(upstreamSession));
+}
+
+folly::coro::Task<Publisher::TrackStatusResult> ORelay::trackStatus(TrackStatus trackStatus) {
+  XLOG(DBG1) << __func__ << " ftn=" << trackStatus.fullTrackName;
+
+  if (trackStatus.fullTrackName.trackNamespace.empty()) {
+    co_return folly::makeUnexpected(TrackStatusError(
+        {trackStatus.requestID, TrackStatusErrorCode::TRACK_NOT_EXIST, "namespace required"}
+    ));
+  }
+
+  auto subscriptionIt = subscriptions_.find(trackStatus.fullTrackName);
+  if (subscriptionIt != subscriptions_.end() &&
+      subscriptionIt->second.forwarder->numForwardingSubscribers() > 0) {
+    // We have active subscription - answer directly from local forwarder state
+    auto& subscription = subscriptionIt->second;
+    auto& forwarder = subscription.forwarder;
+
+    TrackStatusCode statusCode = TrackStatusCode::TRACK_NOT_STARTED;
+    // forwarder->largest() being set means: we have actually
+    // received at least one object for this track.
+    // subscription.handle being non-null means: the relay still has a
+    // live upstream Publisher::SubscriptionHandle for this track
+    if (forwarder->largest()) {
+      if (subscription.handle) {
+        statusCode = TrackStatusCode::IN_PROGRESS;
+      } else {
+        statusCode = TrackStatusCode::UNKNOWN;
+      }
+    }
+
+    TrackStatusOk trackStatusOk;
+    trackStatusOk.requestID = trackStatus.requestID;
+    trackStatusOk.groupOrder = forwarder->groupOrder();
+    trackStatusOk.largest = forwarder->largest();
+    trackStatusOk.fullTrackName = trackStatus.fullTrackName;
+    trackStatusOk.statusCode = statusCode;
+
+    XLOG(DBG1) << "Returning local track status for " << trackStatus.fullTrackName
+               << " statusCode=" << (uint32_t)statusCode;
+    co_return trackStatusOk;
+  } else {
+    // No subscription - forward to upstream
+    auto upstreamSession = findPublishNamespaceSession(trackStatus.fullTrackName.trackNamespace);
+
+    if (!upstreamSession) {
+      XLOG(DBG1) << "No upstream session for track: " << trackStatus.fullTrackName;
+      co_return folly::makeUnexpected(TrackStatusError{
+          trackStatus.requestID,
+          TrackStatusErrorCode::TRACK_NOT_EXIST,
+          "no such namespace or track"
+      });
+    }
+
+    // Forward the trackStatus request to the upstream publisher session
+    auto result = co_await upstreamSession->trackStatus(trackStatus);
+
+    if (result.hasError()) {
+      XLOG(DBG1) << "Upstream trackStatus failed: " << result.error().reasonPhrase;
+    } else {
+      XLOG(DBG1) << "Upstream trackStatus succeeded";
+    }
+    co_return result;
+  }
 }
 
 void ORelay::onEmpty(MoQForwarder* forwarder) {
