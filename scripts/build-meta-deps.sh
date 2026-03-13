@@ -41,6 +41,7 @@ build_dep() {
 
   cmake --build "$build_dir"
   cmake --install "$build_dir"
+  git -C "$src" rev-parse HEAD > "${inst_dir}/.build-rev"
   echo "${name} done."
 }
 
