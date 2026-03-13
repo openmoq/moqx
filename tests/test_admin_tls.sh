@@ -30,7 +30,7 @@ listeners:
         address: "::1"
         port: ${LISTEN_PORT}
     tls:
-      insecure: true
+      type: insecure
     endpoint: "/moq-relay"
 cache:
   enabled: true

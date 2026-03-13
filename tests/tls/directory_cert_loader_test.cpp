@@ -54,7 +54,7 @@ TEST(DirectoryCertLoader, NonexistentDirectory) {
   DirectoryCertLoader loader("/nonexistent/dir", "");
   auto result = loader.load();
   ASSERT_TRUE(result.hasError());
-  EXPECT_THAT(result.error(), HasSubstr("does not exist"));
+  EXPECT_THAT(result.error(), HasSubstr("Failed to read directory"));
 }
 
 TEST(DirectoryCertLoader, CrtWithoutMatchingKey) {
@@ -64,7 +64,7 @@ TEST(DirectoryCertLoader, CrtWithoutMatchingKey) {
   DirectoryCertLoader loader(dir.path(), "");
   auto result = loader.load();
   ASSERT_TRUE(result.hasError());
-  EXPECT_THAT(result.error(), HasSubstr("no matching key"));
+  EXPECT_THAT(result.error(), HasSubstr("Failed to read key file"));
 }
 
 TEST(DirectoryCertLoader, InvalidDefaultCertIdentity) {
@@ -84,7 +84,7 @@ TEST(DirectoryCertLoader, InvalidPem) {
   DirectoryCertLoader loader(dir.path(), "");
   auto result = loader.load();
   ASSERT_TRUE(result.hasError());
-  EXPECT_THAT(result.error(), HasSubstr("Failed to create certificate"));
+  EXPECT_THAT(result.error(), HasSubstr("Failed to parse certificate"));
 }
 
 } // namespace

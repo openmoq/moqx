@@ -16,7 +16,10 @@ using ::testing::UnorderedElementsAre;
 class DummyProvider : public TlsCertProvider {
 public:
   folly::Expected<std::shared_ptr<const fizz::server::FizzServerContext>, std::string>
-  createContext(const std::vector<std::string>&) const override {
+  createContext(
+      const std::vector<std::string>&,
+      const std::vector<TicketSeed>&
+  ) const override {
     return folly::makeUnexpected(std::string("dummy"));
   }
 };

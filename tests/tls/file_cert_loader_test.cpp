@@ -51,7 +51,7 @@ TEST(FileCertLoader, InvalidPem) {
   FileCertLoader loader(dir.filePath("test.crt"), dir.filePath("test.key"));
   auto result = loader.load();
   ASSERT_TRUE(result.hasError());
-  EXPECT_THAT(result.error(), HasSubstr("Failed to create certificate"));
+  EXPECT_THAT(result.error(), HasSubstr("Failed to parse certificate"));
 }
 
 } // namespace

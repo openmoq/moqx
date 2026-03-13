@@ -19,7 +19,8 @@ std::vector<std::string> buildAlpns(const std::string& moqtVersions) {
 folly::Expected<std::shared_ptr<const fizz::server::FizzServerContext>, std::string>
 buildStandardFizzContext(
     std::shared_ptr<fizz::server::CertManager> certManager,
-    const std::vector<std::string>& alpns
+    const std::vector<std::string>& alpns,
+    const std::vector<TicketSeed>& ticketSeeds
 ) {
   auto serverCtx = std::make_shared<fizz::server::FizzServerContext>();
   serverCtx->setCertManager(certManager);
@@ -29,9 +30,19 @@ buildStandardFizzContext(
       serverCtx->getFactoryPtr(),
       std::move(certManager)
   );
-  std::array<uint8_t, 32> ticketSeed;
-  folly::Random::secureRandom(ticketSeed.data(), ticketSeed.size());
-  ticketCipher->setTicketSecrets({{folly::range(ticketSeed)}});
+  // First seed encrypts new tickets; all seeds can decrypt (key rotation).
+  if (!ticketSeeds.empty()) {
+    std::vector<folly::ByteRange> secrets;
+    secrets.reserve(ticketSeeds.size());
+    for (const auto& seed : ticketSeeds) {
+      secrets.emplace_back(folly::range(seed));
+    }
+    ticketCipher->setTicketSecrets(std::move(secrets));
+  } else {
+    std::array<uint8_t, 32> randomSeed;
+    folly::Random::secureRandom(randomSeed.data(), randomSeed.size());
+    ticketCipher->setTicketSecrets({{folly::range(randomSeed)}});
+  }
   serverCtx->setTicketCipher(ticketCipher);
 
   serverCtx->setClientAuthMode(fizz::server::ClientAuthMode::Optional);

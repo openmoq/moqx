@@ -15,7 +15,10 @@ using ::testing::IsEmpty;
 class DummyCertProvider : public tls::TlsCertProvider {
 public:
   folly::Expected<std::shared_ptr<const fizz::server::FizzServerContext>, std::string>
-  createContext(const std::vector<std::string>&) const override {
+  createContext(
+      const std::vector<std::string>&,
+      const std::vector<tls::TicketSeed>&
+  ) const override {
     return folly::makeUnexpected(std::string("dummy — not a real provider"));
   }
 };

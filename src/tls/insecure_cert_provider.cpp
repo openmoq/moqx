@@ -5,7 +5,12 @@
 namespace openmoq::o_rly::tls {
 
 folly::Expected<std::shared_ptr<const fizz::server::FizzServerContext>, std::string>
-InsecureCertProvider::createContext(const std::vector<std::string>& alpns) const {
+InsecureCertProvider::createContext(
+    const std::vector<std::string>& alpns,
+    const std::vector<TicketSeed>& /* ticketSeeds */
+) const {
+  // Seeds intentionally unused — insecure mode uses proxygen's built-in
+  // context and doesn't need session resumption.
   return quic::samples::createFizzServerContextWithInsecureDefault(
       alpns,
       fizz::server::ClientAuthMode::None,

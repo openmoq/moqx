@@ -8,7 +8,10 @@ namespace openmoq::o_rly::tls {
 class InsecureCertProvider : public TlsCertProvider {
 public:
   folly::Expected<std::shared_ptr<const fizz::server::FizzServerContext>, std::string>
-  createContext(const std::vector<std::string>& alpns) const override;
+  createContext(
+      const std::vector<std::string>& alpns,
+      const std::vector<TicketSeed>& ticketSeeds = {}
+  ) const override;
 };
 
 } // namespace openmoq::o_rly::tls

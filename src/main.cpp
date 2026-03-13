@@ -43,6 +43,8 @@ std::shared_ptr<openmoq::o_rly::ORelayServer> createServer(const cfg::Config& re
   const auto& cache = resolved.cache;
 
   auto alpns = openmoq::o_rly::tls::buildAlpns(listener.moqtVersions);
+  // TODO: Load ticket seeds from external source (file/KMS) for TLS session
+  // resumption across restarts. Pass non-empty seeds to createContext() to enable.
   auto fizzCtx = listener.tlsProvider->createContext(alpns);
   if (fizzCtx.hasError()) {
     XLOG(FATAL) << "Failed to create TLS context: " << fizzCtx.error();
