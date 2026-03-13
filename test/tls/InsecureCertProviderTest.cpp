@@ -14,7 +14,7 @@ namespace {
 
 TEST(InsecureCertProvider, CreateContextReturnsValidContext) {
   InsecureCertProvider provider;
-  auto result = provider.createContext({"h3"});
+  auto result = provider.createContext({"h3"}, {});
   ASSERT_TRUE(result.hasValue()) << result.error();
   EXPECT_NE(result.value(), nullptr);
 
@@ -25,7 +25,7 @@ TEST(InsecureCertProvider, CreateContextReturnsValidContext) {
 
 TEST(InsecureCertProvider, CreateContextWithMoqtAlpns) {
   InsecureCertProvider provider;
-  auto result = provider.createContext({"h3", "moq-00"});
+  auto result = provider.createContext({"h3", "moq-00"}, {});
   ASSERT_TRUE(result.hasValue()) << result.error();
   EXPECT_NE(result.value(), nullptr);
 
