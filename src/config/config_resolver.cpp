@@ -303,6 +303,9 @@ resolveListener(const ParsedListenerConfig& listener, const tls::TlsProviderRegi
     tlsProvider = std::move(result.value());
   });
 
+  // TODO: Load ticket seeds from external source (file/KMS) for TLS session
+  // resumption across restarts.
+
   return ListenerConfig{
       .name = listener.name.value(),
       .address = folly::SocketAddress(sock.address.value(), sock.port.value()),

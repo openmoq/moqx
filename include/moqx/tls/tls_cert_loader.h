@@ -8,6 +8,8 @@
 #include <fizz/server/FizzServerContext.h>
 #include <folly/Expected.h>
 
+#include "moqx/tls/fizz_context_factory.h"
+
 namespace openmoq::moqx::tls {
 
 struct LoadedCerts {
@@ -28,7 +30,10 @@ class TlsCertProvider {
 public:
   virtual ~TlsCertProvider() = default;
   virtual folly::Expected<std::shared_ptr<const fizz::server::FizzServerContext>, std::string>
-  createContext(const std::vector<std::string>& alpns) const = 0;
+  createContext(
+      const std::vector<std::string>& alpns,
+      const std::vector<TicketSeed>& ticketSeeds = {}
+  ) const = 0;
 };
 
 /// Convenience base for providers that load all certs upfront.
@@ -39,7 +44,10 @@ class TlsCertLoader : public TlsCertProvider {
 public:
   virtual folly::Expected<LoadedCerts, std::string> load() const = 0;
   folly::Expected<std::shared_ptr<const fizz::server::FizzServerContext>, std::string>
-  createContext(const std::vector<std::string>& alpns) const override;
+  createContext(
+      const std::vector<std::string>& alpns,
+      const std::vector<TicketSeed>& ticketSeeds = {}
+  ) const override;
 };
 
 } // namespace openmoq::moqx::tls

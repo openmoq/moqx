@@ -7,7 +7,10 @@
 namespace openmoq::moqx::tls {
 
 folly::Expected<std::shared_ptr<const fizz::server::FizzServerContext>, std::string>
-TlsCertLoader::createContext(const std::vector<std::string>& alpns) const {
+TlsCertLoader::createContext(
+    const std::vector<std::string>& alpns,
+    const std::vector<TicketSeed>& ticketSeeds
+) const {
   auto loaded = load();
   if (loaded.hasError()) {
     return folly::makeUnexpected(loaded.error());
@@ -22,7 +25,7 @@ TlsCertLoader::createContext(const std::vector<std::string>& alpns) const {
     }
   }
 
-  return buildStandardFizzContext(std::move(certManager), alpns);
+  return buildStandardFizzContext(std::move(certManager), alpns, ticketSeeds);
 }
 
 } // namespace openmoq::moqx::tls
