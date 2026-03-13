@@ -40,7 +40,9 @@ RUN mkdir -p /opt/moxygen && tar xzf /tmp/moxygen.tar.gz -C /opt/moxygen
 # Copy o-rly source (use .dockerignore to exclude build dirs)
 COPY . /build
 
-RUN cmake -S /build -B /build/_build --preset default \
+RUN cmake -S /build -B /build/_build -G Ninja \
+        -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+        -DCMAKE_FIND_LIBRARY_SUFFIXES=".a" \
         -DCMAKE_PREFIX_PATH=/opt/moxygen \
         -DBUILD_TESTING=OFF \
     && cmake --build /build/_build -j"$(nproc)" \
@@ -58,7 +60,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libgflags2.2 \
         libgoogle-glog0v6 \
         libsodium23 \
-        libboost-context1.81.0 \
+        libboost-context1.74.0 \
         libssl3 \
         zlib1g \
     && rm -rf /var/lib/apt/lists/*
