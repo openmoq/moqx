@@ -61,31 +61,25 @@ void ORelayServer::onNewSession(std::shared_ptr<MoQSession> clientSession) {
   clientSession->setSubscribeHandler(relay_);
 
   if (statsRegistry_) {
-    folly::Executor* execKey = clientSession->getExecutor();
-
-    auto it = executorCollectors_.find(execKey);
-    if (it == executorCollectors_.end()) {
-      auto collector = stats::MoQStatsCollector::create_moq_stats_collector(
+    if (!statsCollector_) {
+      statsCollector_ = stats::MoQStatsCollector::create_moq_stats_collector(
           folly::getKeepAliveToken(*clientSession->getExecutor()),
           statsRegistry_
       );
-      it = executorCollectors_.insert(execKey, std::move(collector)).first;
+      // For now we only want to allow one collector registration as we have only one executor
+      statsRegistry_->lock();
     }
 
-    clientSession->setPublisherStatsCallback(it->second);
-    clientSession->setSubscriberStatsCallback(it->second);
+    clientSession->setPublisherStatsCallback(statsCollector_);
+    clientSession->setSubscriberStatsCallback(statsCollector_);
 
-    it->second->onSessionStart();
+    statsCollector_->onSessionStart();
   }
 }
 
 void ORelayServer::terminateClientSession(std::shared_ptr<MoQSession> session) {
-  if (statsRegistry_) {
-    folly::Executor* execKey = session->getExecutor();
-    auto it = executorCollectors_.find(execKey);
-    if (it != executorCollectors_.end()) {
-      it->second->onSessionEnd();
-    }
+  if (statsCollector_) {
+    statsCollector_->onSessionEnd();
   }
   MoQServer::terminateClientSession(std::move(session));
 }

@@ -2,7 +2,6 @@
 
 #include <memory>
 
-#include <folly/concurrency/ConcurrentHashMap.h>
 #include <moxygen/MoQServer.h>
 #include <o_rly/ORelay.h>
 #include <o_rly/stats/MoQStatsCollector.h>
@@ -45,11 +44,7 @@ protected:
 private:
   std::shared_ptr<ORelay> relay_;
   std::shared_ptr<stats::StatsRegistry> statsRegistry_;
-
-  // TODO: replace the get-or-create logic in onNewSession() with an
-  // onNewExecutor() hook once moxygen exposes one.
-  folly::ConcurrentHashMap<folly::Executor*, std::shared_ptr<stats::MoQStatsCollector>>
-      executorCollectors_;
+  std::shared_ptr<stats::MoQStatsCollector> statsCollector_;
 };
 
 } // namespace openmoq::o_rly

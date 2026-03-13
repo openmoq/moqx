@@ -1,5 +1,5 @@
-#include <gtest/gtest.h>
 #include <array>
+#include <gtest/gtest.h>
 
 #include <o_rly/stats/BoundedHistogram.h>
 

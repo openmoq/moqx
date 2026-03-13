@@ -101,13 +101,18 @@ std::unique_ptr<folly::IOBuf> StatsSnapshot::formatPrometheus(const StatsSnapsho
 }
 
 void StatsRegistry::registerCollector(std::shared_ptr<StatsCollectorBase> collector) {
-  std::lock_guard lock(mu_);
+  if (locked_) {
+    XLOG(FATAL) << "StatsRegistry: registration attempted after lock()";
+  }
   collectors_.push_back(std::move(collector));
   XLOG(DBG1) << "StatsRegistry: registered collector (total=" << collectors_.size() << ")";
 }
 
+void StatsRegistry::lock() {
+  locked_ = true;
+  XLOG(DBG1) << "StatsRegistry: locked registration";
+}
 void StatsRegistry::deregisterCollector(StatsCollectorBase* collector) {
-  std::lock_guard lock(mu_);
   auto it = std::find_if(collectors_.begin(), collectors_.end(), [collector](const auto& ptr) {
     return ptr.get() == collector;
   });
@@ -118,18 +123,17 @@ void StatsRegistry::deregisterCollector(StatsCollectorBase* collector) {
 }
 
 folly::coro::Task<StatsSnapshot> StatsRegistry::aggregateAsync() {
-  // --- Copy collector list, release lock ---
-  std::vector<std::shared_ptr<StatsCollectorBase>> collectorsCopy;
+  // --- Copy collector list (no lock needed, registration is locked) ---
+  std::vector<std::shared_ptr<StatsCollectorBase>> collectorsCopy = collectors_;
   StatsSnapshot combined;
-  {
-    std::lock_guard lock(mu_);
-    collectorsCopy = collectors_;
-  }
 
   // --- Aggregate collectors in parallel ---
-  std::vector<folly::coro::Task<StatsSnapshot>> tasks;
+  std::vector<folly::coro::TaskWithExecutor<StatsSnapshot>> tasks;
   for (const auto& c : collectorsCopy) {
-    tasks.push_back([c]() -> folly::coro::Task<StatsSnapshot> { co_return c->snapshot(); }());
+    tasks.push_back(folly::coro::co_withExecutor(
+        c->owningExecutor(),
+        [c]() -> folly::coro::Task<StatsSnapshot> { co_return c->snapshot(); }()
+    ));
   }
   auto snapshots = co_await folly::coro::collectAllRange(std::move(tasks));
   for (const auto& snap : snapshots) {

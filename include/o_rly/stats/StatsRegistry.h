@@ -3,7 +3,6 @@
 #include <array>
 #include <cstdint>
 #include <memory>
-#include <mutex>
 #include <string>
 #include <vector>
 
@@ -102,8 +101,12 @@ public:
   StatsRegistry() = default;
   ~StatsRegistry() = default;
 
-  // Called by StatsCollectorBase::ctor — registers the collector.
+  // Register a collector. Must be called before lock().
   void registerCollector(std::shared_ptr<StatsCollectorBase> collector);
+
+  // Seal the registry. Any further registerCollector calls will XLOG(FATAL).
+  // Call this explicitly once all collectors have been registered.
+  void lock();
 
   // Called by StatsCollectorBase::dtor — deregisters the collector.
   void deregisterCollector(StatsCollectorBase* collector);
@@ -112,7 +115,7 @@ public:
   folly::coro::Task<StatsSnapshot> aggregateAsync();
 
 private:
-  mutable std::mutex mu_;
+  bool locked_ = false;
   std::vector<std::shared_ptr<StatsCollectorBase>> collectors_;
 };
 

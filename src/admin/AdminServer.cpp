@@ -1,5 +1,6 @@
 #include <o_rly/admin/AdminServer.h>
 
+#include <folly/CancellationToken.h>
 #include <folly/io/IOBufQueue.h>
 #include <folly/logging/xlog.h>
 #include <proxygen/httpserver/RequestHandler.h>
@@ -28,18 +29,24 @@ public:
     body_.append(std::move(body));
   }
 
-  void onEOM() noexcept override { handler_(std::move(req_), body_.move(), downstream_); }
+  void onEOM() noexcept override {
+    handler_(std::move(req_), body_.move(), downstream_, cancellationSource_.getToken());
+  }
 
   void onUpgrade(proxygen::UpgradeProtocol /*proto*/) noexcept override {}
 
   void requestComplete() noexcept override { delete this; }
 
-  void onError(proxygen::ProxygenError /*err*/) noexcept override { delete this; }
+  void onError(proxygen::ProxygenError /*err*/) noexcept override {
+    cancellationSource_.requestCancellation();
+    delete this;
+  }
 
 private:
   RouteHandler handler_;
   std::unique_ptr<proxygen::HTTPMessage> req_;
   folly::IOBufQueue body_{folly::IOBufQueue::cacheChainLength()};
+  folly::CancellationSource cancellationSource_;
 };
 
 // ---------------------------------------------------------------------------
@@ -64,12 +71,14 @@ public:
     }
 
     // Unknown route → 404
-    return new AdminRequestHandler([](auto /*req*/, auto /*body*/, auto* downstream) {
-      proxygen::ResponseBuilder(downstream)
-          .status(404, proxygen::HTTPMessage::getDefaultReason(404))
-          .body(folly::IOBuf::copyBuffer("Not Found\n"))
-          .sendWithEOM();
-    });
+    return new AdminRequestHandler(
+        [](auto /*req*/, auto /*body*/, auto* downstream, auto /*cancelToken*/) {
+          proxygen::ResponseBuilder(downstream)
+              .status(404, proxygen::HTTPMessage::getDefaultReason(404))
+              .body(folly::IOBuf::copyBuffer("Not Found\n"))
+              .sendWithEOM();
+        }
+    );
   }
 
 private:
