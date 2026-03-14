@@ -5,9 +5,8 @@ name: ci main
 #
 # Job graph:
 #
-#   format ─────────────────────────────────────────────┐
-#   build (linux, asan debug) ── publish ── release ────┼── notify
-#                                                       │   (always)
+#   format ──────────────────────────────────────────────────────────────────────┐
+#   build (linux, asan debug) ── publish (docker+smoke) ── release ─────────────┼── notify
 
 on:
   push:
@@ -95,17 +94,12 @@ jobs:
           fail-on-empty: ${{ job.status == 'success' && 'true' || 'false' }}
 
   # ════════════════════════════════════════════════════════════════════════════
-  # Publish: build o-rly artifacts + Docker image (needs verify to pass)
+  # Publish: build o-rly, Docker image + smoke test, push
   # ════════════════════════════════════════════════════════════════════════════
 
   publish:
     needs: [build]
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: ubuntu-22.04-amd64
-    name: publish (${{ matrix.name }})
+    name: publish
     runs-on: ubuntu-22.04
     steps:
       - name: Generate app token
@@ -130,7 +124,7 @@ jobs:
       - name: Set up ccache
         uses: hendrikmuhs/ccache-action@v1
         with:
-          key: publish-${{ matrix.name }}
+          key: publish-amd64
           max-size: 500M
 
       - name: Configure
@@ -148,11 +142,9 @@ jobs:
         run: cmake --install _build --prefix "$GITHUB_WORKSPACE/install"
 
       - name: Log in to GHCR
-        if: runner.os == 'Linux'
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
-      - name: Build and push Docker image
-        if: runner.os == 'Linux'
+      - name: Build Docker image
         run: |
           SHORT="${GITHUB_SHA:0:7}"
           IMAGE="ghcr.io/${{ github.repository }}"
@@ -160,14 +152,32 @@ jobs:
             -t "${IMAGE}:${SHORT}" \
             -t "${IMAGE}:latest" \
             .
+
+      - name: Smoke test Docker image
+        run: |
+          IMAGE="ghcr.io/${{ github.repository }}:latest"
+          echo "==> ldd check"
+          docker run --rm --entrypoint ldd "${IMAGE}" /usr/local/bin/o-rly
+          if docker run --rm --entrypoint ldd "${IMAGE}" /usr/local/bin/o-rly 2>&1 | grep -q "not found"; then
+            echo "ERROR: missing shared libraries"
+            exit 1
+          fi
+          echo "==> Running dump-config-schema"
+          docker run --rm "${IMAGE}" dump-config-schema > /dev/null
+          echo "==> Smoke test passed"
+
+      - name: Push Docker image
+        run: |
+          SHORT="${GITHUB_SHA:0:7}"
+          IMAGE="ghcr.io/${{ github.repository }}"
           docker push "${IMAGE}:${SHORT}"
           docker push "${IMAGE}:latest"
 
       - name: Package
         id: package
         run: |
-          ARTIFACT="${{ github.event.repository.name }}-${{ matrix.name }}.tar.gz"
-          tar czf "$ARTIFACT" -C "$GITHUB_WORKSPACE/install" .
+          ARTIFACT="o-rly-bookworm-amd64.tar.gz"
+          tar czf "$ARTIFACT" -C install .
           echo "artifact=$ARTIFACT" >> "$GITHUB_OUTPUT"
 
       - name: Upload artifact
@@ -190,6 +200,7 @@ jobs:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
+          pattern: "*.tar.gz"
           path: artifacts/
 
       - name: Publish snapshot
