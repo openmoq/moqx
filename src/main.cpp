@@ -36,9 +36,9 @@ public:
   }
 };
 
-std::shared_ptr<openmoq::o_rly::ORelayServer> createServer(const cfg::Config& resolved) {
-  const auto& listener = resolved.listener;
-  const auto& cache = resolved.cache;
+std::shared_ptr<openmoq::o_rly::ORelayServer> createServer(const cfg::Config& config) {
+  const auto& listener = config.listener;
+  auto services = config.services; // copy for move into constructor
 
   return std::visit(
       [&](const auto& tls) -> std::shared_ptr<openmoq::o_rly::ORelayServer> {
@@ -47,8 +47,7 @@ std::shared_ptr<openmoq::o_rly::ORelayServer> createServer(const cfg::Config& re
           return std::make_shared<openmoq::o_rly::ORelayServer>(
               listener.endpoint,
               listener.moqtVersions,
-              cache.maxCachedTracks,
-              cache.maxCachedGroupsPerTrack
+              std::move(services)
           );
         } else {
           return std::make_shared<openmoq::o_rly::ORelayServer>(
@@ -56,8 +55,7 @@ std::shared_ptr<openmoq::o_rly::ORelayServer> createServer(const cfg::Config& re
               tls.keyFile,
               listener.endpoint,
               listener.moqtVersions,
-              cache.maxCachedTracks,
-              cache.maxCachedGroupsPerTrack
+              std::move(services)
           );
         }
       },
