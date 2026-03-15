@@ -28,7 +28,7 @@ jobs:
       - name: Check formatting
         run: bash scripts/format.sh --check
 
-  # TEMPORARY: test Docker multi-stage build in PR CI (remove after validation)
+  # TEMPORARY: validate Docker multi-stage build in PR CI (remove before merge)
   docker-test:
     runs-on: ubuntu-22.04
     steps:
@@ -43,15 +43,11 @@ jobs:
         with:
           submodules: true
 
-      # TEMPORARY: pull from PR #80 publish-test run (revert after merge to main)
       - name: Download bookworm moxygen tarball
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          mkdir -p .scratch/downloads .scratch/moxygen-install
-          gh run download 23109570855 --repo openmoq/moxygen \
-            --name moxygen-bookworm-amd64.tar.gz --dir .scratch/downloads
-          tar xzf .scratch/downloads/moxygen-bookworm-amd64.tar.gz -C .scratch/moxygen-install
+          ORLY_PLATFORM: bookworm-amd64
+        run: bash scripts/setup-deps-tarball.sh
 
       - name: Stage tarball for Docker build
         run: |
@@ -116,16 +112,10 @@ jobs:
       - name: Install system dependencies
         run: bash deps/moxygen/standalone/install-system-deps.sh
 
-      # TEMPORARY: pull from PR #80 publish-test run (revert after merge to main)
       - name: Download moxygen artifacts
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          mkdir -p .scratch/downloads .scratch/moxygen-install
-          gh run download 23109570855 --repo openmoq/moxygen \
-            --name moxygen-ubuntu-22.04-amd64.tar.gz --dir .scratch/downloads
-          tar xzf .scratch/downloads/moxygen-ubuntu-22.04-amd64.tar.gz -C .scratch/moxygen-install
-          echo "$PWD/.scratch/moxygen-install" > .scratch/cmake_prefix_path.txt
+        run: bash scripts/setup-deps-tarball.sh
 
       - name: Configure
         run: bash scripts/configure.sh ${{ matrix.build_dir }} ${{ matrix.preset }}
