@@ -14,10 +14,37 @@ listeners:
     endpoint: "/moq-relay"    # WebTransport endpoint path
     # moqt_versions: [14, 16] # MOQT draft versions (empty = all supported)
 
-cache:
-  enabled: true               # Enable relay cache
-  max_tracks: 100             # Max number of cached tracks
-  max_groups_per_track: 3     # Max groups per track in cache
+service_defaults:
+  # Default cache settings inherited by all services.
+  # Per-service cache merges field-by-field: set only the fields you want to override.
+  cache:
+    enabled: true               # Enable relay cache
+    max_tracks: 100             # Max number of cached tracks
+    max_groups_per_track: 3     # Max groups per track in cache
+
+services:
+  - name: live-streaming
+    match:
+      - authority: {exact: "live.example.com"}
+        path: {exact: "/moq-relay"}
+      - authority: {exact: "cdn.example.com"}
+        path: {prefix: "/"}
+      - authority: {wildcard: "*.live.example.com"}
+        path: {prefix: "/live/"}
+    cache:                        # Merges with service_defaults.cache
+      max_tracks: 500             # Override: 100 → 500
+      max_groups_per_track: 10    # Override: 3 → 10
+      # enabled: inherited (true) from service_defaults
+
+  - name: testing
+    match:
+      - authority: {wildcard: "*.test.example.com"}
+        path: {prefix: "/"}
+
+  - name: catch-all
+    match:
+      - authority: {any: true}
+        path: {prefix: "/"}
 
 admin:
   port: 9669                  # HTTP admin server port (1-65535)
