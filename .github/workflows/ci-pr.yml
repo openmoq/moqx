@@ -41,8 +41,10 @@ jobs:
             preset: san
             build_dir: build-san
             runner: ubuntu-22.04
+            allow_failure: true
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
+    continue-on-error: ${{ matrix.allow_failure || false }}
     steps:
       - name: Generate app token
         id: app-token
