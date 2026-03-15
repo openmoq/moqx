@@ -75,6 +75,7 @@ FetchContent_MakeAvailable(reflectcpp)
 add_library(o_rly_core STATIC
   src/ORelay.cpp
   src/ORelayServer.cpp
+  src/ServiceMatcher.cpp
   src/admin/AdminServer.cpp
   src/admin/BuiltinRoutes.cpp
   src/admin/MetricsHandler.cpp
@@ -225,6 +226,17 @@ if(ORLY_BUILD_TESTS)
     GTest::gmock
   )
   gtest_discover_tests(o_rly_bounded_histogram_test)
+
+  add_executable(o_rly_service_matcher_test
+    tests/ServiceMatcherTest.cpp
+  )
+  target_link_libraries(o_rly_service_matcher_test PRIVATE
+    o_rly_core
+    o_rly_config
+    GTest::gtest_main
+    GTest::gmock
+  )
+  gtest_discover_tests(o_rly_service_matcher_test)
 
   add_test(
     NAME admin_info_endpoint

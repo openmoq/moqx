@@ -32,10 +32,15 @@ listeners:
     tls:
       insecure: true
     endpoint: "/moq-relay"
-cache:
-  enabled: true
-  max_tracks: 100
-  max_groups_per_track: 3
+services:
+  - name: default
+    match:
+      - authority: {any: true}
+        path: {prefix: "/"}
+    cache:
+      enabled: true
+      max_tracks: 100
+      max_groups_per_track: 3
 admin:
   port: ${ADMIN_PORT}
   address: "::1"
