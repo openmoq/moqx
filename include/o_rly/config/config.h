@@ -8,6 +8,7 @@
 #include <vector>
 
 #include <folly/SocketAddress.h>
+#include <folly/container/F14Map.h>
 
 namespace openmoq::o_rly::config {
 
@@ -34,6 +35,32 @@ struct ListenerConfig {
   std::string moqtVersions; // comma-separated string
 };
 
+struct ServiceConfig {
+  struct MatchEntry {
+    struct ExactAuthority {
+      std::string value;
+    };
+    struct WildcardAuthority {
+      std::string pattern; // e.g. "*.example.com"
+    };
+    struct AnyAuthority {};
+
+    struct ExactPath {
+      std::string value;
+    };
+    struct PrefixPath {
+      std::string value;
+    };
+    using PathMatcher = std::variant<ExactPath, PrefixPath>;
+
+    std::variant<ExactAuthority, WildcardAuthority, AnyAuthority> authority;
+    PathMatcher path; // PrefixPath{"/"} matches any path
+  };
+
+  std::vector<MatchEntry> match;
+  CacheConfig cache;
+};
+
 struct AdminConfig {
   folly::SocketAddress address;
   std::optional<TlsConfig> tls;
@@ -41,7 +68,7 @@ struct AdminConfig {
 
 struct Config {
   ListenerConfig listener;
-  CacheConfig cache;
+  folly::F14FastMap<std::string, ServiceConfig> services;
   std::optional<AdminConfig> admin;
 };
 

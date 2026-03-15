@@ -113,6 +113,7 @@ target_include_directories(o_rly_config
 
 target_link_libraries(o_rly_config INTERFACE
   Folly::folly_network_address
+  Folly::folly_container_detail_f14_hash_detail
 )
 
 # --- Config loader (YAML parsing + validation + resolution + init) ---
