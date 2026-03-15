@@ -112,6 +112,23 @@ Regex authority matching is planned but not yet implemented.
 
 > **Performance note**: Regex matching is evaluated only when exact and prefix matches fail. Regex is appropriate for service-level matching (per-connection), which happens once at session setup. Track-level regex (in namespace/track matchers) should be used sparingly and is explicitly not evaluated per-object — only at subscription setup time.
 
+> **TODO: WebTransport endpoint gate limitation**
+>
+> How authority and path reach `ServiceMatcher` differs by transport:
+>
+> | Transport | Authority source | Path source | Pre-gate |
+> |-----------|-----------------|-------------|----------|
+> | **WebTransport** | HTTP `Host` header | HTTP URL path | `isAcceptedEndpoint()` exact match — 404 if path not in set |
+> | **Raw QUIC** | `SetupKey::AUTHORITY` in CLIENT_SETUP | `SetupKey::PATH` in CLIENT_SETUP | None |
+>
+> Moxygen's `isAcceptedEndpoint()` check runs *before* the WebTransport upgrade completes. The listener's `endpoint` field is registered as the only accepted path. If a WT client connects with an HTTP path that doesn't match a registered endpoint, moxygen returns 404 before MOQT ever starts — `ServiceMatcher` never sees the connection.
+>
+> This means multi-service path matchers (e.g. `{exact: "/moq-relay"}` and `{prefix: "/live/"}`) only work for WT connections if every matched path is also registered as a listener endpoint via `MoQServerBase::addEndpoint()`. Currently o-rly passes only a single `endpoint` from the listener config.
+>
+> Additionally, moxygen's conflict detection (`MoQSession::onClientSetup()`): if WT already set authority/path from HTTP and CLIENT_SETUP also includes them, the session gets a PROTOCOL_VIOLATION.
+>
+> **Fix needed upstream**: make moxygen's endpoint check prefix-aware, or auto-populate endpoints from service path matchers at startup. Until then, multi-service path routing is effectively limited to raw QUIC, or to WT deployments where all services use the same path (the listener endpoint).
+
 ### Inheritance
 
 Configuration parameters are inherited down the hierarchy. A more specific level overrides its parent. This follows the nginx model where `server` inherits from `http`, and `location` overrides `server`.
