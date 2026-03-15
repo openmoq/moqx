@@ -113,33 +113,16 @@ jobs:
         with:
           submodules: true
 
-      - name: Install system dependencies
-        run: bash deps/moxygen/standalone/install-system-deps.sh
-
-      - name: Download moxygen artifacts
+      - name: Download bookworm moxygen tarball
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          ORLY_PLATFORM: bookworm-amd64
         run: bash scripts/setup-deps-tarball.sh
 
-      - name: Set up ccache
-        uses: hendrikmuhs/ccache-action@v1
-        with:
-          key: publish-amd64
-          max-size: 500M
-
-      - name: Configure
+      - name: Stage tarball for Docker build
         run: |
-          cmake -S . -B _build --preset default \
-            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_PREFIX_PATH="$(cat .scratch/cmake_prefix_path.txt)" \
-            -DBUILD_TESTING=OFF
-
-      - name: Build
-        run: cmake --build _build -j$(getconf _NPROCESSORS_ONLN)
-
-      - name: Install
-        run: cmake --install _build --prefix "$GITHUB_WORKSPACE/install"
+          mkdir -p .docker-deps
+          cp -a .scratch/moxygen-install .docker-deps/moxygen
 
       - name: Log in to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
@@ -190,6 +173,9 @@ jobs:
         id: package
         run: |
           ARTIFACT="o-rly-bookworm-amd64.tar.gz"
+          docker cp "$(docker create --name extract ghcr.io/${{ github.repository }}:latest):/usr/local/bin/o-rly" .
+          docker rm extract
+          mkdir -p install/bin && mv o-rly install/bin/
           tar czf "$ARTIFACT" -C install .
           echo "artifact=$ARTIFACT" >> "$GITHUB_OUTPUT"
 
