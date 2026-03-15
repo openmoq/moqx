@@ -26,7 +26,6 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "ORLY_ENABLE_SANITIZERS": "ON",
-        "CMAKE_FIND_LIBRARY_SUFFIXES": ".a",
         "CMAKE_MODULE_PATH": "${sourceDir}/cmake",
         "CMAKE_POLICY_VERSION_MINIMUM": "3.5"
       }
