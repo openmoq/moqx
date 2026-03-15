@@ -31,7 +31,7 @@ RUN cmake -S . -B _build --preset default \
 FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libunwind8 \
+        libunwind8 libsodium23 libboost-context1.74.0 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /install/bin/o_rly /usr/local/bin/o-rly
