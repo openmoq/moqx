@@ -79,14 +79,34 @@ global              ─── process-wide settings (worker_threads, log_level, 
 
 A client connects to a **listener** (transport), then sends `CLIENT_SETUP` with **authority** and **path**. These are matched against **services**.
 
-**Matching priority** (highest to lowest):
+Each service defines one or more `match` entries. Each entry pairs an **authority** matcher with a **path** matcher:
 
-1. **Exact match**: `authorities: ["live.example.com"]`
-2. **Wildcard**: `authority: { wildcard: "*.moq-relay.example.com" }`
-3. **Regex**: regex components in namespace/track matchers
-4. **Default/catch-all**
+```yaml
+services:
+  - name: example
+    match:
+      - authority: {exact: "live.example.com"}
+        path: {exact: "/moq-relay"}
+      - authority: {wildcard: "*.live.example.com"}
+        path: {prefix: "/live/"}
+      - authority: {any: true}
+        path: {prefix: "/"}
+```
 
-Same priority order applies to `path` and `namespace` matching.
+**Authority matching priority** (highest to lowest):
+
+1. **Exact**: `{exact: "live.example.com"}` — O(1) hash lookup.
+2. **Wildcard**: `{wildcard: "*.example.com"}` — matches single-label subdomains only (e.g. `foo.example.com`), not the bare domain or multi-label subdomains. O(1) suffix lookup.
+3. **Any**: `{any: true}` — catch-all fallback.
+
+Regex authority matching is planned but not yet implemented.
+
+**Path matching priority** (within matched authority tier):
+
+1. **Exact**: `{exact: "/moq-relay"}` — O(1) hash lookup.
+2. **Prefix**: `{prefix: "/live/"}` — longest prefix wins. Uses simple string prefix matching (not segment-aware).
+
+`{prefix: "/"}` matches any valid MOQT path and serves as the catch-all pattern.
 
 > **Specificity rule**: When multiple prefix rules match within the same priority category, the more specific prefix wins. "More specific" means a longer tuple (more fields) or a domain with more segments (more dots), not longer in terms of bytes.
 

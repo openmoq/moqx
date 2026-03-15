@@ -34,6 +34,33 @@ struct ListenerConfig {
   std::string moqtVersions; // comma-separated string
 };
 
+struct ServiceConfig {
+  struct MatchEntry {
+    struct ExactAuthority {
+      std::string value;
+    };
+    struct WildcardAuthority {
+      std::string pattern; // e.g. "*.example.com"
+    };
+    struct AnyAuthority {};
+
+    struct ExactPath {
+      std::string value;
+    };
+    struct PrefixPath {
+      std::string value;
+    };
+    using PathMatcher = std::variant<ExactPath, PrefixPath>;
+
+    std::variant<ExactAuthority, WildcardAuthority, AnyAuthority> authority;
+    PathMatcher path; // PrefixPath{"/"} matches any path
+  };
+
+  std::string name;
+  std::vector<MatchEntry> match;
+  CacheConfig cache;
+};
+
 struct AdminConfig {
   folly::SocketAddress address;
   std::optional<TlsConfig> tls;
@@ -41,7 +68,7 @@ struct AdminConfig {
 
 struct Config {
   ListenerConfig listener;
-  CacheConfig cache;
+  std::vector<ServiceConfig> services;
   std::optional<AdminConfig> admin;
 };
 
