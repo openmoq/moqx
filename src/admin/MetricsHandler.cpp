@@ -4,11 +4,12 @@
 #include <folly/Try.h>
 #include <folly/coro/Task.h>
 #include <folly/coro/WithCancellation.h>
-#include <folly/executors/GlobalExecutor.h>
 #include <folly/io/IOBuf.h>
 #include <folly/logging/xlog.h>
 #include <proxygen/httpserver/ResponseBuilder.h>
 #include <proxygen/lib/http/HTTPMessage.h>
+#include <proxygen/lib/http/session/HTTPSessionBase.h>
+#include <proxygen/lib/http/session/HTTPTransaction.h>
 
 #include <o_rly/admin/AdminServer.h>
 #include <o_rly/stats/StatsRegistry.h>
@@ -24,9 +25,12 @@ void registerMetricsRoute(
       "/metrics",
       [registry = std::move(registry
        )](auto /*req*/, auto /*body*/, auto* downstream, folly::CancellationToken cancelToken) {
+        // Use the proxygen transaction's EventBase as the coroutine executor.
+        auto* evb =
+            downstream->getTransaction()->getTransport().getHTTPSessionBase()->getEventBase();
         folly::coro::co_withCancellation(
             cancelToken,
-            folly::coro::co_withExecutor(folly::getGlobalCPUExecutor(), registry->aggregateAsync())
+            folly::coro::co_withExecutor(folly::getKeepAliveToken(evb), registry->aggregateAsync())
         )
             .start([downstream, cancelToken](folly::Try<stats::StatsSnapshot> result) noexcept {
               if (result.hasException()) {
