@@ -60,7 +60,7 @@ detect_platform() {
     fi
 }
 
-PLATFORM=$(detect_platform)
+PLATFORM="${ORLY_PLATFORM:-$(detect_platform)}"
 echo "==> Platform: $PLATFORM"
 
 # ── Find publish run matching submodule SHA ───────────────────────────────────

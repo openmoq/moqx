@@ -1,3 +1,9 @@
 .scratch/
+.git/
 build/
 build-san/
+_build/
+deps/moxygen/.git/
+deps/moxygen/moxygen/
+deps/moxygen/standalone/
+install/

@@ -16,7 +16,7 @@ permissions:
   checks: write
 
 jobs:
-  format:
+  check-format:
     runs-on: ubuntu-latest
     container: debian:trixie
     steps:
