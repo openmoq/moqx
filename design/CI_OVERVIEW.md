@@ -150,27 +150,43 @@ The build uses a hybrid static/dynamic strategy. Meta's libraries (the hard-to-p
 ones) are statically linked into the binary. Common system libraries stay dynamic so
 the binary tracks the host distro's versions naturally.
 
-### Moxygen tarball (all platforms: ubuntu-22.04, bookworm amd64/arm64, macos)
+### Moxygen tarball
 
-The linkage strategy is defined in `standalone/CMakeLists.txt` and is the same across
-all 4 platform targets. Each tarball is a flat cmake prefix (`lib/*.a` + `lib/cmake/*/`
-+ `include/*/`). Everything below is static `.a` — consumers link it in at build time:
+All platforms share the same intent: Meta deps are always static `.a`, system deps
+are dynamic. The difference is how much else gets bundled statically.
 
-| Component | Linkage | Notes |
-|-----------|---------|-------|
-| folly, fizz, wangle, mvfst, proxygen | Static .a | FetchContent, never installed as .so |
-| fmt, sodium, zlib | Static .a | Bundled to avoid version mismatches |
-| boost | Static .a | `Boost_USE_STATIC_LIBS=ON` |
+Linkage is controlled by `standalone/CMakeLists.txt`. When `BUNDLE_DEPS=ON` (publish
+builds), Linux sets `CMAKE_FIND_LIBRARY_SUFFIXES=".a"` to force static linking of
+most system libraries. macOS skips this because Homebrew doesn't ship `.a` files.
 
-The tarball's cmake configs (e.g. `folly-targets.cmake`) reference these system
-libraries by `.so` path. Consumers inherit the dynamic linkage at configure time:
+Each tarball is a flat cmake prefix (`lib/*.a` + `lib/cmake/*/` + `include/*/`).
+
+**Static on all platforms:**
+
+| Component | Notes |
+|-----------|-------|
+| folly, fizz, wangle, mvfst, proxygen | FetchContent, never installed as .so |
+| fmt | FetchContent (Ubuntu 22.04 only ships .so) |
+| boost | `Boost_USE_STATIC_LIBS=ON` (all platforms) |
+
+**Static on Linux, dynamic on macOS:**
+
+| Component | Why Linux-only |
+|-----------|---------------|
+| sodium | `sodium_USE_STATIC_LIBS=ON` guarded by `CMAKE_SYSTEM_NAME=Linux` |
+| zlib | Picked up via `CMAKE_FIND_LIBRARY_SUFFIXES=".a"` (Linux only) |
+
+**Dynamic on all platforms:**
 
 | Component | Why dynamic |
 |-----------|-------------|
-| glog, gflags, double-conversion | `.so` preference avoids dual-linkage under ASAN |
+| glog, gflags, double-conversion | Linux: `.so` preference avoids dual-linkage under ASAN. macOS: Homebrew default |
 | OpenSSL (libssl, libcrypto) | Distro-managed for security patches |
-| libevent, zstd, lz4, snappy | Common system libs, stable ABI |
-| libunwind | Static `.a` is non-PIC on Ubuntu, won't link |
+| libevent, zstd | Common system libs, stable ABI |
+| libunwind | Linux: static `.a` is non-PIC on Ubuntu, won't link. macOS: system framework |
+
+This explains the tarball size difference: Linux ~950 MB (more static `.a` bundled),
+macOS ~55 MB (just Meta `.a` + headers, everything else is system `.dylib`).
 
 ### o-rly binary (ubuntu-22.04, CI + tarball artifact)
 
