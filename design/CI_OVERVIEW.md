@@ -144,6 +144,69 @@ facebookexperimental/moxygen  (upstream commit lands)
 
 ---
 
+## Linkage profile
+
+The build uses a hybrid static/dynamic strategy. Meta's libraries (the hard-to-package
+ones) are statically linked into the binary. Common system libraries stay dynamic so
+the binary tracks the host distro's versions naturally.
+
+### What's in the moxygen tarball
+
+The tarball is a flat cmake prefix (`lib/*.a` + `lib/cmake/*/` + `include/*/`).
+Everything is static `.a` — consumers link it in at build time:
+
+| Component | Linkage | Notes |
+|-----------|---------|-------|
+| folly, fizz, wangle, mvfst, proxygen | Static .a | FetchContent, never installed as .so |
+| fmt, sodium, zlib | Static .a | Bundled to avoid version mismatches |
+| boost | Static .a | `Boost_USE_STATIC_LIBS=ON` |
+
+The tarball's cmake configs (e.g. `folly-targets.cmake`) reference these system
+libraries by `.so` path. Consumers inherit the dynamic linkage at configure time:
+
+| Component | Why dynamic |
+|-----------|-------------|
+| glog, gflags, double-conversion | `.so` preference avoids dual-linkage under ASAN |
+| OpenSSL (libssl, libcrypto) | Distro-managed for security patches |
+| libevent, zstd, lz4, snappy | Common system libs, stable ABI |
+| libunwind | Static `.a` is non-PIC on Ubuntu, won't link |
+
+### o-rly binary (ubuntu-22.04, CI + tarball artifact)
+
+Single static executable with all Meta deps baked in. At runtime it needs:
+
+```
+libssl3  libcrypto3  libgoogle-glog0v5  libgflags2.2
+libdouble-conversion3  libevent-2.1-7  libzstd1  libunwind8
+libc  libstdc++  libpthread
+```
+
+These are all standard Ubuntu 22.04 system packages — no custom `.so` files needed.
+
+### o-rly Docker image (bookworm, GHCR)
+
+Multi-stage build: build stage has `-dev` packages, runtime stage has only `.so` packages.
+Same binary linkage as above, different distro package names:
+
+```dockerfile
+# Runtime .so packages (debian:bookworm-slim base provides libc, libstdc++, libssl3)
+libunwind8  libsodium23  libboost-context1.74.0
+libgoogle-glog0v6  libgflags2.2  libdouble-conversion3
+```
+
+### Summary
+
+```
+o-rly binary
+  ├── STATIC: folly fizz wangle mvfst proxygen boost fmt sodium zlib
+  └── DYNAMIC: openssl glog gflags double-conversion libevent zstd libunwind libc libstdc++
+```
+
+The static half is ~30 MB in the binary. The dynamic half is ~5 MB of system `.so` files
+that every Linux box already has (or installs via a single `apt install` line).
+
+---
+
 ## Cost summary (per event, GitHub-hosted minutes)
 
 | Event | Billable minutes (approx) |
