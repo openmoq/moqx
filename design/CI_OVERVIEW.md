@@ -150,10 +150,11 @@ The build uses a hybrid static/dynamic strategy. Meta's libraries (the hard-to-p
 ones) are statically linked into the binary. Common system libraries stay dynamic so
 the binary tracks the host distro's versions naturally.
 
-### What's in the moxygen tarball
+### Moxygen tarball (all platforms: ubuntu-22.04, bookworm amd64/arm64, macos)
 
-The tarball is a flat cmake prefix (`lib/*.a` + `lib/cmake/*/` + `include/*/`).
-Everything is static `.a` — consumers link it in at build time:
+The linkage strategy is defined in `standalone/CMakeLists.txt` and is the same across
+all 4 platform targets. Each tarball is a flat cmake prefix (`lib/*.a` + `lib/cmake/*/`
++ `include/*/`). Everything below is static `.a` — consumers link it in at build time:
 
 | Component | Linkage | Notes |
 |-----------|---------|-------|
