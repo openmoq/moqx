@@ -31,6 +31,8 @@ cache:
   max_groups_per_track: 3
 admin:
   port: 9669
+  address: "::1"
+  plaintext: true
 )");
 
   auto cfg = loadConfig(yaml.path());
@@ -69,6 +71,8 @@ cache:
   max_groups_per_track: 5
 admin:
   port: 9669
+  address: "::1"
+  plaintext: true
 )");
 
   auto cfg = loadConfig(yaml.path());
@@ -128,6 +132,8 @@ cache:
   max_groups_per_track: 3
 admin:
   port: 9669
+  address: "::1"
+  plaintext: true
 )");
 
   auto cfg = loadConfig(yaml.path());
@@ -164,6 +170,8 @@ cache:
   max_groups_per_track: 3
 admin:
   port: 9669
+  address: "::1"
+  plaintext: true
 )");
 
   EXPECT_NO_THROW(loadConfig(yaml.path()));
@@ -187,6 +195,8 @@ cache:
   max_groups_per_track: 3
 admin:
   port: 9669
+  address: "::1"
+  plaintext: true
 )");
 
   EXPECT_THROW(loadConfig(yaml.path(), /*strict=*/true), std::runtime_error);

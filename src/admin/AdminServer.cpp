@@ -1,5 +1,7 @@
 #include <o_rly/admin/AdminServer.h>
 
+#include <list>
+
 #include <folly/CancellationToken.h>
 #include <folly/io/IOBufQueue.h>
 #include <folly/logging/xlog.h>
@@ -8,6 +10,7 @@
 #include <proxygen/httpserver/ResponseBuilder.h>
 #include <proxygen/httpserver/ScopedHTTPServer.h>
 #include <proxygen/lib/http/HTTPMessage.h>
+#include <wangle/ssl/SSLContextConfig.h>
 
 namespace openmoq::o_rly::admin {
 
@@ -99,21 +102,32 @@ void AdminServer::addRoute(std::string method, std::string path, RouteHandler ha
 
 static constexpr int kAdminServerThreads = 1;
 
-bool AdminServer::start(uint16_t port) {
+bool AdminServer::start(const config::AdminConfig& adminConfig) {
   proxygen::HTTPServerOptions options;
   options.threads = kAdminServerThreads;
   options.handlerFactories.push_back(std::make_unique<AdminHandlerFactory>(routes_));
 
   proxygen::HTTPServer::IPConfig cfg{
-      folly::SocketAddress("::", port),
-      proxygen::HTTPServer::Protocol::HTTP
+      adminConfig.address,
+      proxygen::HTTPServer::Protocol::HTTP,
   };
+
+  if (adminConfig.tls.has_value()) {
+    const auto& tls = *adminConfig.tls;
+    wangle::SSLContextConfig sslCtx;
+    sslCtx.isDefault = true;
+    sslCtx.setCertificate(tls.certFile, tls.keyFile, "");
+    sslCtx.clientVerification = folly::SSLContext::VerifyClientCertificate::DO_NOT_REQUEST;
+    sslCtx.setNextProtocols(std::list<std::string>(tls.alpn.begin(), tls.alpn.end()));
+    cfg.sslConfigs.push_back(std::move(sslCtx));
+  }
 
   try {
     httpServer_ = proxygen::ScopedHTTPServer::start(std::move(cfg), std::move(options));
     return true;
   } catch (const std::exception& ex) {
-    XLOG(ERR) << "AdminServer failed to start on port " << port << ": " << ex.what();
+    XLOG(ERR) << "AdminServer failed to start on " << adminConfig.address.describe() << ": "
+              << ex.what();
     return false;
   }
 }

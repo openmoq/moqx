@@ -52,7 +52,7 @@ private:
 // This provides a skeleton for testing ORelay functionality.
 // Full integration tests with real sessions will be added when implementing
 // multi-publisher support.
-class ORelayTest : public ::testing::Test {
+class MoQRelayTest : public ::testing::Test {
 protected:
   void SetUp() override {
     exec_ = std::make_shared<TestMoQExecutor>();
@@ -315,12 +315,12 @@ protected:
 };
 
 // Test: Basic relay construction
-TEST_F(ORelayTest, Construction) {
+TEST_F(MoQRelayTest, Construction) {
   EXPECT_NE(relay_, nullptr);
 }
 
 // Test: Verify allowed namespace prefix is set correctly
-TEST_F(ORelayTest, AllowedNamespacePrefix) {
+TEST_F(MoQRelayTest, AllowedNamespacePrefix) {
   // This just verifies the relay can be constructed with a namespace prefix
   // More detailed testing requires full session setup
   auto relay2 = std::make_shared<ORelay>(/*enableCache=*/true);
@@ -329,14 +329,14 @@ TEST_F(ORelayTest, AllowedNamespacePrefix) {
 }
 
 // Test: MockMoQSession can be created
-TEST_F(ORelayTest, MockSessionCreation) {
+TEST_F(MoQRelayTest, MockSessionCreation) {
   auto mockSession = createMockSession();
   EXPECT_NE(mockSession, nullptr);
   EXPECT_NE(mockSession->getExecutor(), nullptr);
 }
 
 // Test: Publish a track through the relay
-TEST_F(ORelayTest, PublishSuccess) {
+TEST_F(MoQRelayTest, PublishSuccess) {
   auto publisherSession = createMockSession();
 
   // Publish the namespace
@@ -352,7 +352,7 @@ TEST_F(ORelayTest, PublishSuccess) {
 // Test: Tree pruning when leaf node is removed
 // Scenario: test/A/B/C and test/A/D exist. Remove C should prune B but keep A
 // and D
-TEST_F(ORelayTest, PruneLeafKeepSiblings) {
+TEST_F(MoQRelayTest, PruneLeafKeepSiblings) {
   auto publisherABC = createMockSession();
   auto publisherAD = createMockSession();
 
@@ -379,7 +379,7 @@ TEST_F(ORelayTest, PruneLeafKeepSiblings) {
 
 // Test: Tree pruning removes highest empty ancestor
 // Scenario: test/A/B/C only. Remove C should prune A (highest empty after test)
-TEST_F(ORelayTest, PruneHighestEmptyAncestor) {
+TEST_F(MoQRelayTest, PruneHighestEmptyAncestor) {
   auto publisher = createMockSession();
 
   // PublishNamespace test/A/B/C (don't add to state because we
@@ -400,7 +400,7 @@ TEST_F(ORelayTest, PruneHighestEmptyAncestor) {
 }
 
 // Test: Pruning happens automatically on removeSession
-TEST_F(ORelayTest, PruneOnRemoveSession) {
+TEST_F(MoQRelayTest, PruneOnRemoveSession) {
   auto publisher = createMockSession();
 
   // PublishNamespace deep tree test/A/B/C/D
@@ -418,7 +418,7 @@ TEST_F(ORelayTest, PruneOnRemoveSession) {
 }
 
 // Test: No pruning when node still has content (multiple publishers)
-TEST_F(ORelayTest, NoPruneWhenNodeHasContent) {
+TEST_F(MoQRelayTest, NoPruneWhenNodeHasContent) {
   auto publisher1 = createMockSession();
   auto publisher2 = createMockSession();
 
@@ -441,7 +441,7 @@ TEST_F(ORelayTest, NoPruneWhenNodeHasContent) {
 // Test: EXPOSES BUG - onPublishDone should trigger pruning but doesn't
 // This test FAILS because onPublishDone removes the publish from the map
 // but doesn't call tryPruneChild to clean up empty nodes
-TEST_F(ORelayTest, PruneOnPublishDoneBug) {
+TEST_F(MoQRelayTest, PruneOnPublishDoneBug) {
   auto publisher = createMockSession();
 
   // Create deep tree test/A/B/C with only a publish (no publishNamespace)
@@ -491,7 +491,7 @@ TEST_F(ORelayTest, PruneOnPublishDoneBug) {
 }
 
 // Test: Mixed content types - node with publishNamespace + publish
-TEST_F(ORelayTest, MixedContentPublishNamespaceAndPublish) {
+TEST_F(MoQRelayTest, MixedContentPublishNamespaceAndPublish) {
   auto publisher = createMockSession();
 
   // PublishNamespace test/A/B
@@ -515,7 +515,7 @@ TEST_F(ORelayTest, MixedContentPublishNamespaceAndPublish) {
 
 // Test: Mixed content types - node with publishNamespace + sessions
 // (subscribers)
-TEST_F(ORelayTest, MixedContentPublishNamespaceAndSessions) {
+TEST_F(MoQRelayTest, MixedContentPublishNamespaceAndSessions) {
   auto publisher = createMockSession();
   auto subscriber = createMockSession();
 
@@ -544,7 +544,7 @@ TEST_F(ORelayTest, MixedContentPublishNamespaceAndSessions) {
 }
 
 // Test: UnsubscribeNamespace triggers pruning
-TEST_F(ORelayTest, PruneOnUnsubscribeNamespace) {
+TEST_F(MoQRelayTest, PruneOnUnsubscribeNamespace) {
   auto subscriber = createMockSession();
 
   // Subscribe to test/A/B/C namespace (creates tree without publishNamespace)
@@ -563,7 +563,7 @@ TEST_F(ORelayTest, PruneOnUnsubscribeNamespace) {
 // Test: Middle empty nodes in deep tree
 // Scenario: test/A (has publishNamespace), test/A/B (empty), test/A/B/C (has
 // publish) Remove C should prune B but keep A
-TEST_F(ORelayTest, PruneMiddleEmptyNode) {
+TEST_F(MoQRelayTest, PruneMiddleEmptyNode) {
   auto publisherA = createMockSession();
   auto publisherC = createMockSession();
 
@@ -593,7 +593,7 @@ TEST_F(ORelayTest, PruneMiddleEmptyNode) {
 }
 
 // Test: Double publishNamespaceDone doesn't crash or corrupt state
-TEST_F(ORelayTest, DoublePublishNamespaceDone) {
+TEST_F(MoQRelayTest, DoublePublishNamespaceDone) {
   auto publisher = createMockSession();
 
   // PublishNamespace test/A/B
@@ -619,7 +619,7 @@ TEST_F(ORelayTest, DoublePublishNamespaceDone) {
 // clearing state When a session calls publishNamespaceDone but is not the owner
 // of the namespace, the publishNamespaceDone should be ignored and the real
 // owner should remain.
-TEST_F(ORelayTest, StalePublishNamespaceDoneDoesNotAffectNewOwner) {
+TEST_F(MoQRelayTest, StalePublishNamespaceDoneDoesNotAffectNewOwner) {
   auto publisher1 = createMockSession();
   auto publisher2 = createMockSession();
 
@@ -659,7 +659,7 @@ TEST_F(ORelayTest, StalePublishNamespaceDoneDoesNotAffectNewOwner) {
 // Test: Pruning with multiple children at same level
 // Scenario: test/A has children B, C, D. Only B has content.
 // Remove B should prune B but keep A, C, D structure intact
-TEST_F(ORelayTest, PruneOneOfMultipleChildren) {
+TEST_F(MoQRelayTest, PruneOneOfMultipleChildren) {
   auto publisherB = createMockSession();
   auto subscriberC = createMockSession();
   auto subscriberD = createMockSession();
@@ -692,7 +692,7 @@ TEST_F(ORelayTest, PruneOneOfMultipleChildren) {
 }
 
 // Test: Empty namespace edge case
-TEST_F(ORelayTest, EmptyNamespacePublishNamespaceDone) {
+TEST_F(MoQRelayTest, EmptyNamespacePublishNamespaceDone) {
   auto publisher = createMockSession();
 
   // Try to publishNamespace empty namespace (edge case)
@@ -715,7 +715,7 @@ TEST_F(ORelayTest, EmptyNamespacePublishNamespaceDone) {
 }
 
 // Test: Verify activeChildCount consistency after complex operations
-TEST_F(ORelayTest, ActiveChildCountConsistency) {
+TEST_F(MoQRelayTest, ActiveChildCountConsistency) {
   auto pub1 = createMockSession();
   auto pub2 = createMockSession();
   auto sub1 = createMockSession();
@@ -750,7 +750,7 @@ TEST_F(ORelayTest, ActiveChildCountConsistency) {
 }
 
 // Test: Publish then publishNamespaceDone shouldn't prune while publish active
-TEST_F(ORelayTest, PublishKeepsNodeAliveAfterPublishNamespaceDone) {
+TEST_F(MoQRelayTest, PublishKeepsNodeAliveAfterPublishNamespaceDone) {
   auto publisher = createMockSession();
 
   // PublishNamespace test/A/B
@@ -776,7 +776,7 @@ TEST_F(ORelayTest, PublishKeepsNodeAliveAfterPublishNamespaceDone) {
 // Sequence: publish, sub1 joins, beginSubgroup (->1), beginObject (->1),
 // sub2 joins, beginObject (->1,2), sub3 joins, objectPayload (->1,2),
 // endOfSubgroup (->1,2)
-TEST_F(ORelayTest, ForwarderOnlyCreatesSubgroupsBeforeObjectData) {
+TEST_F(MoQRelayTest, ForwarderOnlyCreatesSubgroupsBeforeObjectData) {
   auto publisherSession = createMockSession();
   auto subscriber1 = createMockSession();
   auto subscriber2 = createMockSession();
@@ -854,7 +854,7 @@ TEST_F(ORelayTest, ForwarderOnlyCreatesSubgroupsBeforeObjectData) {
 // are drained (receive publishDone) but their open subgroups are NOT reset.
 // Draining subscribers should not receive new subgroups and are removed when
 // their last subgroup closes.
-TEST_F(ORelayTest, GracefulSessionDraining) {
+TEST_F(MoQRelayTest, GracefulSessionDraining) {
   auto publisherSession = createMockSession();
   std::array<std::shared_ptr<MoQSession>, 3> subscribers;
   for (auto& s : subscribers) {
@@ -930,7 +930,7 @@ TEST_F(ORelayTest, GracefulSessionDraining) {
 }
 
 // Test: removeSession (via unsubscribe) immediately resets all open subgroups
-TEST_F(ORelayTest, RemoveSessionResetsOpenSubgroups) {
+TEST_F(MoQRelayTest, RemoveSessionResetsOpenSubgroups) {
   auto publisherSession = createMockSession();
   auto subscriber = createMockSession();
 
@@ -980,7 +980,7 @@ TEST_F(ORelayTest, RemoveSessionResetsOpenSubgroups) {
 }
 
 // Test: Draining subscriber removed when subgroup closes with error
-TEST_F(ORelayTest, DrainingSubscriberRemovedOnSubgroupError) {
+TEST_F(MoQRelayTest, DrainingSubscriberRemovedOnSubgroupError) {
   auto publisherSession = createMockSession();
   auto subscriber = createMockSession();
 
@@ -1042,7 +1042,7 @@ TEST_F(ORelayTest, DrainingSubscriberRemovedOnSubgroupError) {
 // Test: Subscriber that ends subscription doesn't receive subsequent objects
 // Sequence: publish, sub1 subscribes, beginSubgroup, sub1 ends (publishDone),
 // sub2 subscribes, send object -> only goes to sub1
-TEST_F(ORelayTest, SubscriberUnsubscribeDoesNotReceiveNewObjects) {
+TEST_F(MoQRelayTest, SubscriberUnsubscribeDoesNotReceiveNewObjects) {
   auto publisherSession = createMockSession();
   auto subscriber1 = createMockSession();
   auto subscriber2 = createMockSession();
@@ -1104,7 +1104,7 @@ TEST_F(ORelayTest, SubscriberUnsubscribeDoesNotReceiveNewObjects) {
 // Sequence: subscribeNamespace (sub1), publish (sub1 gets it),
 // beginSubgroup, publishDone, subscribeNamespace (sub2), new publish
 // (only sub2 gets it)
-TEST_F(ORelayTest, SubscribeNamespaceDoesntAddDrainingPublish) {
+TEST_F(MoQRelayTest, SubscribeNamespaceDoesntAddDrainingPublish) {
   auto publisherSession = createMockSession();
   auto subscriber1 = createMockSession();
   auto subscriber2 = createMockSession();
@@ -1187,7 +1187,7 @@ TEST_F(ORelayTest, SubscribeNamespaceDoesntAddDrainingPublish) {
 // removed. This verifies that when a data operation (objectPayload with
 // fin=false) causes all subscribers to error out, the operation correctly
 // detects that data went nowhere and returns CANCELLED.
-TEST_F(ORelayTest, DataOperationCancelledWhenAllSubscribersFail) {
+TEST_F(MoQRelayTest, DataOperationCancelledWhenAllSubscribersFail) {
   auto publisherSession = createMockSession();
   std::array<std::shared_ptr<MoQSession>, 2> subscribers;
   std::array<std::shared_ptr<MockTrackConsumer>, 2> consumers;
@@ -1250,7 +1250,7 @@ TEST_F(ORelayTest, DataOperationCancelledWhenAllSubscribersFail) {
 // This verifies that when some subscribers fail but others succeed, the
 // operation continues successfully and only returns CANCELLED when ALL
 // subscribers are gone.
-TEST_F(ORelayTest, PartialSubscriberFailureDoesNotCancelData) {
+TEST_F(MoQRelayTest, PartialSubscriberFailureDoesNotCancelData) {
   auto publisherSession = createMockSession();
   std::array<std::shared_ptr<MoQSession>, 3> subscribers;
   std::array<std::shared_ptr<MockTrackConsumer>, 3> consumers;
@@ -1328,7 +1328,7 @@ TEST_F(ORelayTest, PartialSubscriberFailureDoesNotCancelData) {
 // Test: SubscribeUpdate can decrease start location
 // Per spec, start location can be decreased. The subscriber should use FETCH
 // to retrieve objects between the new start and the current largest location.
-TEST_F(ORelayTest, SubscribeUpdateStartLocationCanDecrease) {
+TEST_F(MoQRelayTest, SubscribeUpdateStartLocationCanDecrease) {
   auto publisherSession = createMockSession();
   auto subscriberSession = createMockSession();
 
@@ -1383,7 +1383,7 @@ TEST_F(ORelayTest, SubscribeUpdateStartLocationCanDecrease) {
 // Test: Subgroup is tombstoned after CANCELLED error (soft error)
 // Verifies that a CANCELLED error on a subgroup sets it to nullptr (tombstone)
 // but keeps the subscription alive
-TEST_F(ORelayTest, SubgroupTombstonedAfterCancelledError) {
+TEST_F(MoQRelayTest, SubgroupTombstonedAfterCancelledError) {
   auto publisherSession = createMockSession();
   auto subscriber = createMockSession();
 
@@ -1446,7 +1446,7 @@ TEST_F(ORelayTest, SubgroupTombstonedAfterCancelledError) {
 
 // Test: Objects published to tombstoned subgroup are skipped for that
 // subscriber
-TEST_F(ORelayTest, TombstonedSubgroupIgnoresSubsequentObjects) {
+TEST_F(MoQRelayTest, TombstonedSubgroupIgnoresSubsequentObjects) {
   auto publisherSession = createMockSession();
   auto subscriber = createMockSession();
 
@@ -1498,7 +1498,7 @@ TEST_F(ORelayTest, TombstonedSubgroupIgnoresSubsequentObjects) {
 }
 
 // Test: Late joiner gets subgroup even after another subscriber tombstoned it
-TEST_F(ORelayTest, LateJoinerGetsSubgroupAfterTombstone) {
+TEST_F(MoQRelayTest, LateJoinerGetsSubgroupAfterTombstone) {
   auto publisherSession = createMockSession();
   auto subscriber1 = createMockSession();
   auto subscriber2 = createMockSession();
@@ -1559,7 +1559,7 @@ TEST_F(ORelayTest, LateJoinerGetsSubgroupAfterTombstone) {
 }
 
 // Test: Hard errors (WRITE_ERROR) remove the entire subscription
-TEST_F(ORelayTest, HardErrorsRemoveSubscriber) {
+TEST_F(MoQRelayTest, HardErrorsRemoveSubscriber) {
   auto publisherSession = createMockSession();
   auto subscriber = createMockSession();
 
@@ -1618,7 +1618,7 @@ TEST_F(ORelayTest, HardErrorsRemoveSubscriber) {
 // removed the subscriber from the map (destroying the shared_ptr). The onError
 // lambda's captured copy was then the last reference. After it was destroyed,
 // closeSubgroupForSubscriber accessed the freed subscriber.
-TEST_F(ORelayTest, EndOfSubgroupHardErrorDoesNotCrash) {
+TEST_F(MoQRelayTest, EndOfSubgroupHardErrorDoesNotCrash) {
   auto publisherSession = createMockSession();
   auto subscriberSession = createMockSession();
 
@@ -1665,6 +1665,494 @@ TEST_F(ORelayTest, EndOfSubgroupHardErrorDoesNotCrash) {
 
   removeSession(publisherSession);
   removeSession(subscriberSession);
+}
+
+// Helper callback that drops the forwarder shared_ptr when onEmpty fires,
+// simulating what happens in production when the last reference holder
+// (e.g., SubscribeWriteback destructor chain) destroys the forwarder.
+class ForwarderDestroyingCallback : public MoQForwarder::Callback {
+public:
+  explicit ForwarderDestroyingCallback(std::shared_ptr<MoQForwarder>& forwarderRef)
+      : forwarderRef_(forwarderRef) {}
+
+  void onEmpty(MoQForwarder*) override {
+    // Drop the last shared_ptr, destroying the forwarder.
+    // This simulates the production scenario where onEmpty ->
+    // subscriptions_.erase -> MoQForwarder destructor.
+    forwarderRef_.reset();
+  }
+
+private:
+  std::shared_ptr<MoQForwarder>& forwarderRef_;
+};
+
+TEST_F(MoQRelayTest, SubscribeNamespaceEmptyPrefixRejectedPreV16) {
+  // Default session uses kVersionDraftCurrent (draft-14, which is < 16)
+  auto session = createMockSession();
+
+  TrackNamespace emptyNs{{}};
+  SubscribeNamespace subNs;
+  subNs.trackNamespacePrefix = emptyNs;
+
+  withSessionContext(session, [&]() {
+    auto task = relay_->subscribeNamespace(std::move(subNs), nullptr);
+    auto res = folly::coro::blockingWait(std::move(task), exec_.get());
+    ASSERT_FALSE(res.hasValue()
+    ) << "Empty namespace prefix should be rejected for pre-v16 sessions";
+    EXPECT_EQ(res.error().errorCode, SubscribeNamespaceErrorCode::NAMESPACE_PREFIX_UNKNOWN);
+    EXPECT_EQ(res.error().reasonPhrase, "empty");
+  });
+
+  removeSession(session);
+}
+
+TEST_F(MoQRelayTest, SubscribeNamespaceEmptyPrefixAllowedV16) {
+  auto session = createMockSession();
+  // Override the negotiated version to draft-16
+  ON_CALL(*session, getNegotiatedVersion())
+      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
+
+  TrackNamespace emptyNs{{}};
+  doSubscribeNamespace(session, emptyNs);
+
+  removeSession(session);
+}
+
+// Regression test: SubgroupForwarder::reset() use-after-free.
+// When the forwarder is draining (publishDone received) and a subscriber's
+// last subgroup is closed via reset(), closeSubgroupForSubscriber calls
+// removeSubscriber -> checkAndFireOnEmpty -> onEmpty callback. The onEmpty
+// callback destroys the MoQForwarder (by dropping the last shared_ptr).
+// But reset() is still inside forEachSubscriberSubgroup, which accesses
+// forwarder_.subscribers_ after the lambda returns, causing
+// heap-use-after-free.
+TEST_F(MoQRelayTest, ResetDuringDrainingDoesNotCrash) {
+  auto session = createMockSession();
+
+  auto forwarder = std::make_shared<MoQForwarder>(kTestTrackName, AbsoluteLocation{0, 0});
+  auto callback = std::make_shared<ForwarderDestroyingCallback>(forwarder);
+  forwarder->setCallback(callback);
+
+  // Create a subscriber
+  auto consumer = createMockConsumer();
+  std::shared_ptr<MockSubgroupConsumer> sg;
+
+  EXPECT_CALL(*consumer, beginSubgroup(0, 0, _, _))
+      .WillOnce([this, &sg](uint64_t, uint64_t, uint8_t, bool) {
+        sg = createMockSubgroupConsumer();
+        return folly::makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(sg);
+      });
+
+  EXPECT_CALL(*consumer, publishDone(_))
+      .WillOnce(Return(folly::makeExpected<MoQPublishError>(folly::unit)));
+
+  SubscribeRequest sub;
+  sub.fullTrackName = kTestTrackName;
+  sub.requestID = RequestID(1);
+  sub.locType = LocationType::LargestGroup;
+  forwarder->addSubscriber(session, sub, consumer);
+
+  // Begin subgroup
+  auto subgroupRes = forwarder->beginSubgroup(0, 0, 0);
+  ASSERT_TRUE(subgroupRes.hasValue());
+  auto subgroup = *subgroupRes;
+
+  // Drain the subscriber
+  forwarder->publishDone(
+      PublishDone{RequestID(0), PublishDoneStatusCode::SUBSCRIPTION_ENDED, 0, "publisher ended"}
+  );
+
+  // Now reset the subgroup. This triggers:
+  //  SubgroupForwarder::reset()
+  //    -> forEachSubscriberSubgroup()
+  //      -> reset subscriber's subgroupConsumer
+  //      -> closeSubgroupForSubscriber()
+  //        -> sub->shouldRemove() returns true (draining, last subgroup)
+  //        -> removeSubscriber()
+  //          -> checkAndFireOnEmpty()
+  //            -> onEmpty destroys the forwarder (drops shared_ptr)
+  //    -> forEachSubscriberSubgroup accesses forwarder_.subscribers_ -> CRASH
+  EXPECT_CALL(*sg, reset(_)).Times(1);
+  subgroup->reset(ResetStreamErrorCode::INTERNAL_ERROR);
+
+  // forwarder should have been destroyed by onEmpty
+  EXPECT_EQ(forwarder, nullptr);
+}
+
+// Same as above but with multiple subscribers draining.
+TEST_F(MoQRelayTest, ResetDuringDrainingMultipleSubscribersDoesNotCrash) {
+  auto session1 = createMockSession();
+  auto session2 = createMockSession();
+
+  auto forwarder = std::make_shared<MoQForwarder>(kTestTrackName, AbsoluteLocation{0, 0});
+  auto callback = std::make_shared<ForwarderDestroyingCallback>(forwarder);
+  forwarder->setCallback(callback);
+
+  // Create two subscribers
+  std::shared_ptr<MockSubgroupConsumer> sg1, sg2;
+  auto consumer1 = createMockConsumer();
+  auto consumer2 = createMockConsumer();
+
+  EXPECT_CALL(*consumer1, beginSubgroup(0, 0, _, _))
+      .WillOnce([this, &sg1](uint64_t, uint64_t, uint8_t, bool) {
+        sg1 = createMockSubgroupConsumer();
+        return folly::makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(sg1);
+      });
+
+  EXPECT_CALL(*consumer2, beginSubgroup(0, 0, _, _))
+      .WillOnce([this, &sg2](uint64_t, uint64_t, uint8_t, bool) {
+        sg2 = createMockSubgroupConsumer();
+        return folly::makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(sg2);
+      });
+
+  EXPECT_CALL(*consumer1, publishDone(_))
+      .WillOnce(Return(folly::makeExpected<MoQPublishError>(folly::unit)));
+  EXPECT_CALL(*consumer2, publishDone(_))
+      .WillOnce(Return(folly::makeExpected<MoQPublishError>(folly::unit)));
+
+  SubscribeRequest sub1;
+  sub1.fullTrackName = kTestTrackName;
+  sub1.requestID = RequestID(1);
+  sub1.locType = LocationType::LargestGroup;
+  forwarder->addSubscriber(session1, sub1, consumer1);
+
+  SubscribeRequest sub2;
+  sub2.fullTrackName = kTestTrackName;
+  sub2.requestID = RequestID(2);
+  sub2.locType = LocationType::LargestGroup;
+  forwarder->addSubscriber(session2, sub2, consumer2);
+
+  // Begin subgroup - both subscribers get it
+  auto subgroupRes = forwarder->beginSubgroup(0, 0, 0);
+  ASSERT_TRUE(subgroupRes.hasValue());
+  auto subgroup = *subgroupRes;
+
+  // Drain both subscribers
+  forwarder->publishDone(
+      PublishDone{RequestID(0), PublishDoneStatusCode::SUBSCRIPTION_ENDED, 0, "publisher ended"}
+  );
+
+  // Reset the subgroup. Both subscribers are draining with only this subgroup.
+  // As each is removed, the second removal triggers onEmpty which destroys
+  // the forwarder while we may still be iterating.
+  EXPECT_CALL(*sg1, reset(_)).Times(1);
+  EXPECT_CALL(*sg2, reset(_)).Times(1);
+  subgroup->reset(ResetStreamErrorCode::INTERNAL_ERROR);
+
+  EXPECT_EQ(forwarder, nullptr);
+}
+
+// Test: Extensions from publish are forwarded to subscribers via
+// subscribeNamespace
+TEST_F(MoQRelayTest, PublishExtensionsForwardedToSubscribers) {
+  auto publisherSession = createMockSession();
+  auto subscriber = createMockSession();
+
+  // Subscribe to namespace first
+  auto mockConsumer = createMockConsumer();
+  Extensions receivedExtensions;
+  EXPECT_CALL(*subscriber, publish(testing::_, testing::_))
+      .WillOnce([&mockConsumer, &receivedExtensions](PublishRequest pubReq, auto subHandle) {
+        receivedExtensions = pubReq.extensions;
+        return Subscriber::PublishResult(Subscriber::PublishConsumerAndReplyTask{
+            mockConsumer,
+            []() -> folly::coro::Task<folly::Expected<PublishOk, PublishError>> {
+              co_return PublishOk{
+                  RequestID(1),
+                  true,
+                  0,
+                  GroupOrder::OldestFirst,
+                  LocationType::LargestObject,
+                  std::nullopt,
+                  std::nullopt
+              };
+            }()
+        });
+      });
+
+  doSubscribeNamespace(subscriber, kTestNamespace);
+
+  // Publish with extensions (both known and unknown)
+  PublishRequest pub;
+  pub.fullTrackName = kTestTrackName;
+  pub.extensions.insertMutableExtension(Extension{kDeliveryTimeoutExtensionType, 5000});
+  pub.extensions.insertMutableExtension(Extension{0xBEEF'0000, 42});
+
+  withSessionContext(publisherSession, [&]() {
+    auto res = relay_->publish(std::move(pub), createMockSubscriptionHandle());
+    EXPECT_TRUE(res.hasValue());
+    if (res.hasValue()) {
+      getOrCreateMockState(publisherSession)->publishConsumers.push_back(res->consumer);
+    }
+  });
+  exec_->drive();
+
+  // Verify extensions were forwarded
+  EXPECT_EQ(receivedExtensions.getIntExtension(kDeliveryTimeoutExtensionType), 5000);
+  EXPECT_EQ(receivedExtensions.getIntExtension(0xBEEF'0000), 42);
+
+  removeSession(publisherSession);
+  removeSession(subscriber);
+}
+
+// Test: Extensions from publish are forwarded to late-joining subscribers
+TEST_F(MoQRelayTest, PublishExtensionsForwardedToLateJoiners) {
+  auto publisherSession = createMockSession();
+  auto subscriber1 = createMockSession();
+  auto subscriber2 = createMockSession();
+
+  // Subscriber 1 subscribes first
+  auto mockConsumer1 = createMockConsumer();
+  EXPECT_CALL(*subscriber1, publish(testing::_, testing::_)).WillOnce([&mockConsumer1](auto, auto) {
+    return Subscriber::PublishResult(Subscriber::PublishConsumerAndReplyTask{
+        mockConsumer1,
+        []() -> folly::coro::Task<folly::Expected<PublishOk, PublishError>> {
+          co_return PublishOk{
+              RequestID(1),
+              true,
+              0,
+              GroupOrder::OldestFirst,
+              LocationType::LargestObject,
+              std::nullopt,
+              std::nullopt
+          };
+        }()
+    });
+  });
+
+  doSubscribeNamespace(subscriber1, kTestNamespace);
+
+  // Publish with extensions
+  PublishRequest pub;
+  pub.fullTrackName = kTestTrackName;
+  pub.extensions.insertMutableExtension(Extension{kDeliveryTimeoutExtensionType, 3000});
+  pub.extensions.insertMutableExtension(Extension{0xCAFE'0000, 99});
+
+  withSessionContext(publisherSession, [&]() {
+    auto res = relay_->publish(std::move(pub), createMockSubscriptionHandle());
+    EXPECT_TRUE(res.hasValue());
+    if (res.hasValue()) {
+      getOrCreateMockState(publisherSession)->publishConsumers.push_back(res->consumer);
+    }
+  });
+  exec_->drive();
+
+  // Late-joining subscriber 2 should also get extensions
+  Extensions receivedExtensions;
+  auto mockConsumer2 = createMockConsumer();
+  EXPECT_CALL(*subscriber2, publish(testing::_, testing::_))
+      .WillOnce([&mockConsumer2, &receivedExtensions](PublishRequest pubReq, auto) {
+        receivedExtensions = pubReq.extensions;
+        return Subscriber::PublishResult(Subscriber::PublishConsumerAndReplyTask{
+            mockConsumer2,
+            []() -> folly::coro::Task<folly::Expected<PublishOk, PublishError>> {
+              co_return PublishOk{
+                  RequestID(2),
+                  true,
+                  0,
+                  GroupOrder::OldestFirst,
+                  LocationType::LargestObject,
+                  std::nullopt,
+                  std::nullopt
+              };
+            }()
+        });
+      });
+
+  doSubscribeNamespace(subscriber2, kTestNamespace);
+  exec_->drive();
+
+  // Verify late-joiner received extensions
+  EXPECT_EQ(receivedExtensions.getIntExtension(kDeliveryTimeoutExtensionType), 3000);
+  EXPECT_EQ(receivedExtensions.getIntExtension(0xCAFE'0000), 99);
+
+  removeSession(publisherSession);
+  removeSession(subscriber1);
+  removeSession(subscriber2);
+}
+
+// Test: Extensions are included in SubscribeOk for subscribe path subscribers
+TEST_F(MoQRelayTest, ExtensionsIncludedInSubscribeOkForSubscribers) {
+  auto session1 = createMockSession();
+  auto session2 = createMockSession();
+
+  // Create forwarder with extensions
+  auto forwarder = std::make_shared<MoQForwarder>(kTestTrackName, AbsoluteLocation{0, 0});
+  Extensions ext;
+  ext.insertMutableExtension(Extension{kDeliveryTimeoutExtensionType, 7000});
+  ext.insertMutableExtension(Extension{0xDEAD'0000, 123});
+  forwarder->setExtensions(ext);
+
+  // Add subscriber via SubscribeRequest
+  auto consumer1 = createMockConsumer();
+  SubscribeRequest sub1;
+  sub1.fullTrackName = kTestTrackName;
+  sub1.requestID = RequestID(1);
+  sub1.locType = LocationType::LargestGroup;
+  auto subscriber1 = forwarder->addSubscriber(session1, sub1, consumer1);
+  ASSERT_NE(subscriber1, nullptr);
+
+  // Verify extensions are in the SubscribeOk
+  EXPECT_EQ(
+      subscriber1->subscribeOk().extensions.getIntExtension(kDeliveryTimeoutExtensionType),
+      7000
+  );
+  EXPECT_EQ(subscriber1->subscribeOk().extensions.getIntExtension(0xDEAD'0000), 123);
+
+  // Second subscriber should also get extensions
+  auto consumer2 = createMockConsumer();
+  SubscribeRequest sub2;
+  sub2.fullTrackName = kTestTrackName;
+  sub2.requestID = RequestID(2);
+  sub2.locType = LocationType::LargestGroup;
+  auto subscriber2 = forwarder->addSubscriber(session2, sub2, consumer2);
+  ASSERT_NE(subscriber2, nullptr);
+
+  EXPECT_EQ(
+      subscriber2->subscribeOk().extensions.getIntExtension(kDeliveryTimeoutExtensionType),
+      7000
+  );
+  EXPECT_EQ(subscriber2->subscribeOk().extensions.getIntExtension(0xDEAD'0000), 123);
+
+  // Add subscriber via publish path (bool forward)
+  auto session3 = createMockSession();
+  auto subscriber3 = forwarder->addSubscriber(session3, /*forward=*/false);
+  ASSERT_NE(subscriber3, nullptr);
+
+  EXPECT_EQ(
+      subscriber3->subscribeOk().extensions.getIntExtension(kDeliveryTimeoutExtensionType),
+      7000
+  );
+  EXPECT_EQ(subscriber3->subscribeOk().extensions.getIntExtension(0xDEAD'0000), 123);
+}
+
+TEST_F(MoQRelayTest, ExactNamespaceSubscriberReceivesPublishNamespace) {
+  auto subscriber = createMockSession();
+  auto publisher = createMockSession();
+
+  // Subscriber subscribes to exact namespace {"test", "namespace"}
+  doSubscribeNamespace(subscriber, kTestNamespace);
+
+  // Expect the subscriber to receive a publishNamespace forwarding when
+  // the publisher announces the same exact namespace
+  EXPECT_CALL(*subscriber, publishNamespace(_, _))
+      .WillOnce(
+          [](PublishNamespace ann, auto) -> folly::coro::Task<Subscriber::PublishNamespaceResult> {
+            EXPECT_EQ(ann.trackNamespace, kTestNamespace);
+            co_return folly::makeUnexpected(PublishNamespaceError{
+                ann.requestID,
+                PublishNamespaceErrorCode::UNINTERESTED,
+                "test"
+            });
+          }
+      );
+
+  // Publisher announces the same exact namespace
+  doPublishNamespace(publisher, kTestNamespace);
+
+  // Drive the executor so the async publishNamespace forwarding runs
+  exec_->drive();
+
+  removeSession(publisher);
+  removeSession(subscriber);
+}
+
+// Test: TrackStatus on non-existent track
+TEST_F(MoQRelayTest, TrackStatusNonExistentTrack) {
+  auto clientSession = createMockSession();
+
+  // Request trackStatus for a track that doesn't exist
+  TrackStatus trackStatus;
+  trackStatus.fullTrackName = kTestTrackName;
+  trackStatus.requestID = RequestID(1);
+
+  withSessionContext(clientSession, [&]() {
+    auto task = relay_->trackStatus(trackStatus);
+    auto res = folly::coro::blockingWait(std::move(task), exec_.get());
+
+    // Should return error indicating track not found
+    EXPECT_FALSE(res.hasValue());
+    EXPECT_EQ(res.error().errorCode, TrackStatusErrorCode::TRACK_NOT_EXIST);
+    EXPECT_FALSE(res.error().reasonPhrase.empty());
+  });
+
+  removeSession(clientSession);
+}
+
+// Test: TrackStatus on existing track - returns forwarder state (no upstream
+// call)
+TEST_F(MoQRelayTest, TrackStatusSuccessfulForward) {
+  auto publisherSession = createMockSession();
+  auto clientSession = createMockSession();
+
+  doPublish(publisherSession, kTestTrackName);
+
+  auto consumer = createMockConsumer();
+  subscribeToTrack(clientSession, kTestTrackName, consumer, RequestID(1));
+
+  TrackStatus trackStatus;
+  trackStatus.fullTrackName = kTestTrackName;
+  trackStatus.requestID = RequestID(2);
+
+  withSessionContext(clientSession, [&]() {
+    auto task = relay_->trackStatus(trackStatus);
+    auto res = folly::coro::blockingWait(std::move(task), exec_.get());
+
+    // Should return status from local forwarder
+    // Since no data was sent, statusCode should be TRACK_NOT_STARTED
+    EXPECT_TRUE(res.hasValue());
+    EXPECT_EQ(res.value().statusCode, TrackStatusCode::TRACK_NOT_STARTED);
+    EXPECT_EQ(res.value().fullTrackName, kTestTrackName);
+  });
+
+  removeSession(clientSession);
+  exec_->drive();
+  removeSession(publisherSession);
+}
+
+// Test: TrackStatus using namespace prefix matching (no exact subscription)
+// Verifies that when there's no exact subscription but a publisher has
+// published a matching namespace prefix, the relay correctly routes
+// TRACK_STATUS upstream using prefix matching
+TEST_F(MoQRelayTest, TrackStatusViaPrefixMatching) {
+  auto publisher = createMockSession();
+  auto requester = createMockSession();
+
+  // Publisher publishes namespace but NOT the specific track
+  doPublishNamespace(publisher, kTestNamespace);
+
+  // No exact subscription exists for kTestTrackName, so trackStatus should
+  // use prefix matching to find the publisher
+
+  // Mock the upstream trackStatus call
+  TrackStatusOk statusOk;
+  statusOk.requestID = RequestID(1);
+  statusOk.trackAlias = TrackAlias(0);
+  statusOk.largest = AbsoluteLocation{50, 25};
+
+  EXPECT_CALL(*publisher, trackStatus(_)).WillOnce([statusOk](auto /*ts*/) {
+    return folly::coro::makeTask<Publisher::TrackStatusResult>(statusOk);
+  });
+
+  // Execute trackStatus from requester's perspective
+  TrackStatus trackStatus;
+  trackStatus.requestID = RequestID(1);
+  trackStatus.fullTrackName = kTestTrackName;
+
+  withSessionContext(requester, [&]() {
+    auto task = relay_->trackStatus(trackStatus);
+    auto result = folly::coro::blockingWait(std::move(task), exec_.get());
+
+    // Should successfully forward via prefix matching and return the result
+    EXPECT_TRUE(result.hasValue()) << "TrackStatus via namespace prefix matching should succeed";
+    EXPECT_EQ(result.value().requestID, RequestID(1));
+    EXPECT_TRUE(result.value().largest.has_value());
+    EXPECT_EQ(result.value().largest->group, 50);
+    EXPECT_EQ(result.value().largest->object, 25);
+  });
+
+  removeSession(publisher);
+  removeSession(requester);
 }
 
 } // namespace moxygen::test

@@ -1,0 +1,326 @@
+name: ci main
+
+# Full pipeline on push to main: format, build/test, publish artifacts + Docker,
+# release snapshot, notify. PRs use ci-pr.yml (format + build/test only).
+#
+# Job graph:
+#
+#   check-format ──────────────────────────────────────────────────────────────────┐
+#   build (linux, asan debug) ── publish (docker+smoke) ── release ────────────────┼── notify
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  checks: write
+  packages: write
+
+jobs:
+  # ════════════════════════════════════════════════════════════════════════════
+  # Verify: format + build/test matrix
+  # ════════════════════════════════════════════════════════════════════════════
+
+  check-format:
+    runs-on: ubuntu-latest
+    container: debian:trixie
+    steps:
+      - name: Install tools
+        run: apt-get update && apt-get install -y --no-install-recommends ca-certificates git clang-format
+
+      - uses: actions/checkout@v4
+
+      - name: Check formatting
+        run: bash scripts/format.sh --check
+
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux
+            preset: default
+            build_dir: build
+            runner: ubuntu-22.04
+          - name: asan debug
+            preset: san
+            build_dir: build-san
+            runner: ubuntu-22.04
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Generate app token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.OMOQ_APP_ID }}
+          private-key: ${{ secrets.OMOQ_APP_PRIV_KEY }}
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install system dependencies
+        run: bash deps/moxygen/standalone/install-system-deps.sh
+
+      - name: Download moxygen artifacts
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: bash scripts/setup-deps-tarball.sh
+
+      - name: Configure
+        run: bash scripts/configure.sh ${{ matrix.build_dir }} ${{ matrix.preset }}
+
+      - name: Build
+        run: cmake --build ${{ matrix.build_dir }} -j$(getconf _NPROCESSORS_ONLN)
+
+      - name: Test
+        env:
+          ASAN_OPTIONS: ${{ matrix.name == 'asan debug' && 'detect_leaks=1:abort_on_error=1' || '' }}
+        run: ctest --test-dir ${{ matrix.build_dir }} --output-on-failure --output-junit test-results.xml
+
+      - name: Publish test results
+        uses: dorny/test-reporter@v1.9.1
+        if: success() || failure()
+        with:
+          name: "test (${{ matrix.name }})"
+          path: ${{ matrix.build_dir }}/test-results.xml
+          reporter: java-junit
+          fail-on-empty: ${{ job.status == 'success' && 'true' || 'false' }}
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # Publish: build o-rly, Docker image + smoke test, push
+  # ════════════════════════════════════════════════════════════════════════════
+
+  publish:
+    needs: [build]
+    name: publish
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Generate app token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.OMOQ_APP_ID }}
+          private-key: ${{ secrets.OMOQ_APP_PRIV_KEY }}
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Download bookworm moxygen tarball
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          ORLY_PLATFORM: bookworm-amd64
+        run: bash scripts/setup-deps-tarball.sh
+
+      - name: Stage tarball for Docker build
+        run: |
+          mkdir -p .docker-deps
+          cp -a .scratch/moxygen-install .docker-deps/moxygen
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Build Docker image
+        run: |
+          SHORT="${GITHUB_SHA:0:7}"
+          IMAGE="ghcr.io/${{ github.repository }}"
+          docker build -f docker/Dockerfile \
+            -t "${IMAGE}:${SHORT}" \
+            -t "${IMAGE}:latest" \
+            .
+
+      - name: Smoke test Docker image
+        run: |
+          IMAGE="ghcr.io/${{ github.repository }}:latest"
+          echo "==> ldd check"
+          docker run --rm --entrypoint ldd "${IMAGE}" /usr/local/bin/o-rly
+          if docker run --rm --entrypoint ldd "${IMAGE}" /usr/local/bin/o-rly 2>&1 | grep -q "not found"; then
+            echo "ERROR: missing shared libraries"; exit 1
+          fi
+          echo "==> Start container with test config"
+          docker run -d --name orly-smoke --network host \
+            -v "$PWD/tests/test.config.yaml:/etc/o-rly/config.yaml:ro" \
+            "${IMAGE}" --config=/etc/o-rly/config.yaml
+          echo "==> Wait for admin /info"
+          for i in $(seq 1 50); do
+            if curl -sf http://[::1]:9669/info >/dev/null 2>&1; then break; fi
+            sleep 0.1
+            if [ "$i" -eq 50 ]; then
+              echo "ERROR: admin server did not start"; docker logs orly-smoke; exit 1
+            fi
+          done
+          RESP=$(curl -sf http://[::1]:9669/info)
+          echo "Response: $RESP"
+          echo "$RESP" | grep -q '"service":"o-rly"' || { echo "FAIL: bad /info response"; exit 1; }
+          docker stop orly-smoke && docker rm orly-smoke
+          echo "==> Smoke test passed"
+
+      - name: Push Docker image
+        run: |
+          SHORT="${GITHUB_SHA:0:7}"
+          IMAGE="ghcr.io/${{ github.repository }}"
+          docker push "${IMAGE}:${SHORT}"
+          docker push "${IMAGE}:latest"
+
+      - name: Package
+        id: package
+        run: |
+          ARTIFACT="o-rly-bookworm-amd64.tar.gz"
+          docker cp "$(docker create --name extract ghcr.io/${{ github.repository }}:latest):/usr/local/bin/o-rly" .
+          docker rm extract
+          mkdir -p install/bin && mv o-rly install/bin/
+          tar czf "$ARTIFACT" -C install .
+          echo "artifact=$ARTIFACT" >> "$GITHUB_OUTPUT"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.artifact }}
+          path: ${{ steps.package.outputs.artifact }}
+          retention-days: 90
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # Release: create/update snapshot-latest pre-release (all green)
+  # ════════════════════════════════════════════════════════════════════════════
+
+  release:
+    needs: [build, publish]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "*.tar.gz"
+          path: artifacts/
+
+      - name: Publish snapshot
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SHORT="${GITHUB_SHA:0:7}"
+          TAG="snapshot-latest"
+
+          gh release delete "$TAG" --yes 2>/dev/null || true
+          git tag -d "$TAG" 2>/dev/null || true
+          git push origin ":refs/tags/$TAG" 2>/dev/null || true
+
+          gh release create "$TAG" artifacts/**/* \
+            --title "Latest build ($SHORT)" \
+            --prerelease \
+            --notes "$(cat <<EOF
+          Rolling snapshot of the latest build from \`main\`.
+
+          **Commit:** \`${GITHUB_SHA}\`
+          **Built:** $(date -u +%Y-%m-%dT%H:%M:%SZ)
+          **Docker:** \`ghcr.io/${{ github.repository }}:${SHORT}\`
+
+          This pre-release is automatically replaced on every push to \`main\`.
+          EOF
+          )"
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # Notify: aggregate status (runs after everything)
+  # ════════════════════════════════════════════════════════════════════════════
+
+  notify:
+    needs: [check-format, build, publish, release]
+    if: always()
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Notify Slack
+        continue-on-error: true
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.OMOQ_SLACK_WEBHOOK_URL }}
+        run: |
+          SHORT="${GITHUB_SHA:0:7}"
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          # Map job results to status symbols
+          fmt_status() {
+            case "$1" in
+              success)   echo "✓" ;;
+              failure)   echo "✗" ;;
+              cancelled) echo "⊘" ;;
+              *)         echo "—" ;;
+            esac
+          }
+
+          # verify = worst of check-format + build
+          if [ "${{ needs.check-format.result }}" = "failure" ] || [ "${{ needs.build.result }}" = "failure" ]; then
+            VER_RESULT="failure"
+          elif [ "${{ needs.check-format.result }}" = "cancelled" ] || [ "${{ needs.build.result }}" = "cancelled" ]; then
+            VER_RESULT="cancelled"
+          elif [ "${{ needs.check-format.result }}" = "success" ] && [ "${{ needs.build.result }}" = "success" ]; then
+            VER_RESULT="success"
+          else
+            VER_RESULT="skipped"
+          fi
+          VER=$(fmt_status "$VER_RESULT")
+          PUB=$(fmt_status "${{ needs.publish.result }}")
+          REL=$(fmt_status "${{ needs.release.result }}")
+
+          STATUS="verify:${VER} publish:${PUB} release:${REL}"
+
+          if [ "${{ needs.release.result }}" = "success" ]; then
+            REL_URL="${{ github.server_url }}/${{ github.repository }}/releases/tag/snapshot-latest"
+            TEXT=":white_check_mark: *${{ github.repository }}* \`${{ github.ref_name }}\` \`${SHORT}\` — ${STATUS}  <${RUN_URL}|#${{ github.run_number }}> artifacts: <${REL_URL}|view>"
+          else
+            TEXT=":x: *${{ github.repository }}* \`${{ github.ref_name }}\` \`${SHORT}\` — ${STATUS}  <${RUN_URL}|#${{ github.run_number }}>"
+          fi
+
+          curl -s -X POST "$SLACK_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            --data "{\"text\": \"${TEXT}\"}"
+
+      - name: Notify email
+        continue-on-error: true
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.OMOQ_AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.OMOQ_AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-1
+        run: |
+          SHORT="${GITHUB_SHA:0:7}"
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          # verify = worst of check-format + build
+          CF="${{ needs.check-format.result }}"
+          BLD="${{ needs.build.result }}"
+          if [ "$CF" = "failure" ] || [ "$BLD" = "failure" ]; then
+            VER="failure"
+          elif [ "$CF" = "cancelled" ] || [ "$BLD" = "cancelled" ]; then
+            VER="cancelled"
+          elif [ "$CF" = "success" ] && [ "$BLD" = "success" ]; then
+            VER="success"
+          else
+            VER="skipped"
+          fi
+          PUB="${{ needs.publish.result }}"
+          REL="${{ needs.release.result }}"
+
+          STATUS="verify:${VER} publish:${PUB} release:${REL}"
+
+          if [ "${{ needs.release.result }}" = "success" ]; then
+            REL_URL="${{ github.server_url }}/${{ github.repository }}/releases/tag/snapshot-latest"
+            SUBJECT="[o-rly] published ${{ github.ref_name }} ${SHORT}"
+            BODY="Repository: ${{ github.repository }}\nBranch: ${{ github.ref_name }}\nCommit: ${GITHUB_SHA}\nStatus: ${STATUS}\nDocker: ghcr.io/${{ github.repository }}:${SHORT}\nArtifacts: ${REL_URL}\nRun: ${RUN_URL}"
+          else
+            SUBJECT="[o-rly] pipeline failed ${{ github.ref_name }} ${SHORT}"
+            BODY="Repository: ${{ github.repository }}\nBranch: ${{ github.ref_name }}\nCommit: ${GITHUB_SHA}\nStatus: ${STATUS}\nRun: ${RUN_URL}"
+          fi
+
+          aws ses send-email \
+            --from "noreply@ci.openmoq.org" \
+            --destination '{"ToAddresses":["github-notifications@openmoq.org"]}' \
+            --message "{
+              \"Subject\": {\"Data\": \"${SUBJECT}\"},
+              \"Body\": {\"Text\": {\"Data\": \"${BODY}\"}}
+            }"
