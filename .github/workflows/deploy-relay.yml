@@ -2,8 +2,7 @@ name: deploy relay
 
 # Deploy o-rly relay Docker container to a self-hosted runner.
 # Uses the repo's docker/docker-compose.yml with secrets-driven .env.
-#
-# Certs must already be provisioned on the target machine.
+# Automatically provisions or renews TLS certs via Route53 DNS challenge.
 
 on:
   workflow_dispatch:
@@ -59,6 +58,25 @@ jobs:
           CERTBOT_EMAIL=gmarzot@openmoq.org
           ORLY_PORT=${{ steps.config.outputs.port }}
           EOF
+
+      - name: Ensure TLS cert
+        env:
+          DOMAIN: ${{ steps.config.outputs.domain }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.OMOQ_AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.OMOQ_AWS_SECRET_ACCESS_KEY }}
+        run: |
+          CERT="/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
+          if [ ! -f "$CERT" ]; then
+            echo "::warning::No cert for ${DOMAIN} — provisioning via Route53"
+            sudo certbot certonly --dns-route53 \
+              -d "$DOMAIN" --non-interactive --agree-tos \
+              --email gmarzot@openmoq.org
+          elif ! sudo openssl x509 -in "$CERT" -noout -checkend 2592000 2>/dev/null; then
+            echo "::warning::Cert for ${DOMAIN} expires within 30 days — renewing"
+            sudo certbot renew --cert-name "$DOMAIN"
+          else
+            echo "Cert for ${DOMAIN} is valid"
+          fi
 
       - name: Pull image
         run: docker pull "ghcr.io/${{ github.repository }}:${IMAGE_TAG}"
