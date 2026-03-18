@@ -26,7 +26,7 @@ services:
     ports:
       - "${ORLY_PORT:-9668}:9668/udp"
     volumes:
-      - certs:/certs:ro
+      - ${ORLY_CERTS_DIR:-/etc/letsencrypt}:/certs:ro
     environment:
       ORLY_CERT: /certs/live/${DOMAIN}/fullchain.pem
       ORLY_KEY:  /certs/live/${DOMAIN}/privkey.pem
@@ -37,7 +37,7 @@ services:
   certbot-cloudflare:
     image: certbot/dns-cloudflare
     volumes:
-      - certs:/etc/letsencrypt
+      - ${ORLY_CERTS_DIR:-/etc/letsencrypt}:/etc/letsencrypt
       - ./cloudflare.ini:/run/secrets/cloudflare.ini:ro
     command: >
       certonly
@@ -56,7 +56,7 @@ services:
   certbot-route53:
     image: certbot/dns-route53
     volumes:
-      - certs:/etc/letsencrypt
+      - ${ORLY_CERTS_DIR:-/etc/letsencrypt}:/etc/letsencrypt
     environment:
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
@@ -69,6 +69,3 @@ services:
       --dns-route53
       -d ${DOMAIN}
     profiles: [certbot-route53]
-
-volumes:
-  certs:
