@@ -49,7 +49,7 @@ All 5 run in parallel. Required checks: `linux`, `macos`.
 build (5 jobs, parallel, ~26min)
   └─► publish (4 jobs, parallel, ~42min)
         └─► release (1 job, ~3min)
-              └─► notify (Slack + email)
+              └─► notify (Slack + email + dispatch moxygen-update to o-rly)
 ```
 
 | Publish platform | Runner | Time | Tarball size |
@@ -86,7 +86,7 @@ Release creates/updates `snapshot-latest` pre-release with all 8 tarballs.
 
 ---
 
-## o-rly — 3 workflows
+## o-rly — 4 workflows
 
 ### 1. `ci pr` — Pull request verification
 
@@ -113,11 +113,21 @@ build (2 jobs, parallel, ~5min)
 Publish builds a multi-stage Docker image (bookworm), runs `ldd` + `/info`
 endpoint smoke test, pushes to `ghcr.io/openmoq/o-rly:{sha}` + `:latest`.
 
-### 3. `update moxygen submodule` — Manual submodule bump
+### 3. `moxygen sync` — Automated submodule update
 
-**Trigger:** manual | **Time:** <1 min
+**Trigger:** `repository_dispatch` from moxygen `ci main` + manual | **Time:** <1 min
 
-- Advances `deps/moxygen` to latest moxygen main, creates a PR
+- Checks for blocking `sync-moxygen/*` PR — aborts and notifies if one exists
+- Updates `deps/moxygen` submodule to the dispatched SHA (or latest main for manual)
+- Creates `sync-moxygen/<sha>` PR, auto-approved (dual identity: bot creates, PAT approves)
+- Notifies Slack/email on block or failure
+
+### 4. `moxygen auto-merge` — Merge green sync PRs
+
+**Trigger:** `ci pr` completes on `sync-moxygen/*` branch | **Time:** <1 min
+
+- Merges the sync PR if CI passed
+- Notifies Slack/email if CI failed
 
 ---
 
@@ -135,12 +145,19 @@ facebookexperimental/moxygen  (upstream commit lands)
         ▼  push to main triggers ci main (~72 min)
    snapshot-latest updated with new tarballs
         │
-        ▼  manual: update moxygen submodule on o-rly
-   PR created, ci pr runs (~5 min), merge
+        ▼  repository_dispatch (automatic)
+   moxygen sync creates sync-moxygen/<sha> PR on o-rly
+        │
+        ▼  ci pr runs (~5 min)
+   moxygen auto-merge merges PR
         │
         ▼  push to main triggers ci main (~10 min)
    Docker image pushed to GHCR, binary tarball released
 ```
+
+The full chain from upstream commit to deployed Docker image is now fully
+automated. The only manual step is the daily sync schedule trigger (07:00 UTC),
+which can also be triggered manually via `workflow_dispatch`.
 
 ---
 
