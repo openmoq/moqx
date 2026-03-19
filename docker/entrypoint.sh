@@ -5,6 +5,7 @@
 #   ORLY_CERT      — path to TLS certificate PEM (required unless ORLY_INSECURE=true)
 #   ORLY_KEY       — path to TLS private key PEM  (required unless ORLY_INSECURE=true)
 #   ORLY_PORT      — UDP listen port (default: 4433)
+#   ORLY_ADMIN_PORT — admin HTTP port (default: 8000)
 #   ORLY_INSECURE  — use built-in dev cert (default: false)
 set -e
 
@@ -29,8 +30,8 @@ cache:
   max_groups_per_track: 3
 
 admin:
-  port: 9669
-  address: "::"
+  port: ${ORLY_ADMIN_PORT:-8000}
+  address: "127.0.0.1"
   plaintext: true
 EOF
 

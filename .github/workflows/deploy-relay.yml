@@ -43,6 +43,7 @@ jobs:
             moqx-000)
               echo "domain=moqx-000.ci.openmoq.org" >> "$GITHUB_OUTPUT"
               echo "port=4433" >> "$GITHUB_OUTPUT"
+              echo "admin_port=8000" >> "$GITHUB_OUTPUT"
               ;;
             *)
               echo "::error::Unknown instance: $INSTANCE"
@@ -57,6 +58,7 @@ jobs:
           DOMAIN=${{ steps.config.outputs.domain }}
           CERTBOT_EMAIL=gmarzot@openmoq.org
           ORLY_PORT=${{ steps.config.outputs.port }}
+          ORLY_ADMIN_PORT=${{ steps.config.outputs.admin_port }}
           EOF
           # Strip leading whitespace from heredoc (YAML indentation artifact)
           sed -i 's/^[[:space:]]*//' .env
@@ -101,7 +103,7 @@ jobs:
 
           echo "==> Waiting for admin endpoint..."
           for i in $(seq 1 30); do
-            if curl -sf http://[::1]:9669/info >/dev/null 2>&1; then
+            if curl -sf http://127.0.0.1:${{ steps.config.outputs.admin_port }}/info >/dev/null 2>&1; then
               break
             fi
             sleep 1
@@ -112,7 +114,7 @@ jobs:
             fi
           done
 
-          RESP=$(curl -sf http://[::1]:9669/info)
+          RESP=$(curl -sf http://127.0.0.1:${{ steps.config.outputs.admin_port }}/info)
           echo "==> Relay running: $RESP"
 
       - name: Notify Slack
