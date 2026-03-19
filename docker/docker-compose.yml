@@ -25,12 +25,14 @@ services:
     restart: unless-stopped
     ports:
       - "${ORLY_PORT:-4433}:${ORLY_PORT:-4433}/udp"
+      - "127.0.0.1:${ORLY_ADMIN_PORT:-8000}:${ORLY_ADMIN_PORT:-8000}/tcp"
     volumes:
       - ${ORLY_CERTS_DIR:-/etc/letsencrypt}:/certs:ro
     environment:
       ORLY_CERT: /certs/live/${DOMAIN}/fullchain.pem
       ORLY_KEY:  /certs/live/${DOMAIN}/privkey.pem
       ORLY_PORT: ${ORLY_PORT:-4433}
+      ORLY_ADMIN_PORT: ${ORLY_ADMIN_PORT:-8000}
 
   # Cloudflare DNS-01 challenge.
   # Requires: docker/cloudflare.ini (see cloudflare.ini.example)
