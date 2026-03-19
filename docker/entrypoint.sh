@@ -1,8 +1,37 @@
 #!/bin/sh
-# Translate ORLY_CERT / ORLY_KEY env vars to --cert / --key flags,
-# then exec o-rly with any additional arguments passed to the container.
+# Generate relay config from env vars and exec o_rly.
+#
+# Env vars:
+#   ORLY_CERT      — path to TLS certificate PEM (required unless ORLY_INSECURE=true)
+#   ORLY_KEY       — path to TLS private key PEM  (required unless ORLY_INSECURE=true)
+#   ORLY_PORT      — UDP listen port (default: 9668)
+#   ORLY_INSECURE  — use built-in dev cert (default: false)
 set -e
-exec /usr/local/bin/o-rly \
-    ${ORLY_CERT:+--cert="$ORLY_CERT"} \
-    ${ORLY_KEY:+--key="$ORLY_KEY"} \
-    "$@"
+
+CONFIG=/tmp/relay.yaml
+
+cat > "$CONFIG" <<EOF
+listeners:
+  - name: relay
+    udp:
+      socket:
+        address: "::"
+        port: ${ORLY_PORT:-9668}
+    tls:
+      cert_file: "${ORLY_CERT:-}"
+      key_file: "${ORLY_KEY:-}"
+      insecure: ${ORLY_INSECURE:-false}
+    endpoint: "/moq-relay"
+
+cache:
+  enabled: true
+  max_tracks: 100
+  max_groups_per_track: 3
+
+admin:
+  port: 9669
+  address: "::"
+  plaintext: true
+EOF
+
+exec /usr/local/bin/o-rly --config "$CONFIG" "$@"

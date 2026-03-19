@@ -30,6 +30,7 @@ services:
     environment:
       ORLY_CERT: /certs/live/${DOMAIN}/fullchain.pem
       ORLY_KEY:  /certs/live/${DOMAIN}/privkey.pem
+      ORLY_PORT: ${ORLY_PORT:-9668}
 
   # Cloudflare DNS-01 challenge.
   # Requires: docker/cloudflare.ini (see cloudflare.ini.example)
