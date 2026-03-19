@@ -9,8 +9,8 @@
 
 namespace openmoq::o_rly::tls {
 
-std::vector<std::string> buildAlpns(const std::string& moqtVersions) {
-  std::vector<std::string> alpns = {"h3"};
+std::vector<std::string> buildMoqtAlpns(const std::string& moqtVersions) {
+  std::vector<std::string> alpns;
   auto moqt = moxygen::getMoqtProtocols(moqtVersions, true);
   alpns.insert(alpns.end(), moqt.begin(), moqt.end());
   return alpns;
@@ -45,7 +45,7 @@ buildStandardFizzContext(
   }
   serverCtx->setTicketCipher(ticketCipher);
 
-  serverCtx->setClientAuthMode(fizz::server::ClientAuthMode::Optional);
+  serverCtx->setClientAuthMode(fizz::server::ClientAuthMode::None);
   serverCtx->setSupportedAlpns(alpns);
   serverCtx->setAlpnMode(fizz::server::AlpnMode::Required);
   serverCtx->setSendNewSessionTicket(false);

@@ -19,16 +19,19 @@ using test::kTestKeyPem;
 using test::TempCertDir;
 using ::testing::HasSubstr;
 
-TEST(BuildAlpns, IncludesH3) {
-  auto alpns = buildAlpns("");
-  ASSERT_FALSE(alpns.empty());
-  EXPECT_EQ(alpns[0], "h3");
+TEST(BuildMoqtAlpns, ReturnsOnlyMoqtAlpns) {
+  auto alpns = buildMoqtAlpns("");
+  for (const auto& alpn : alpns) {
+    EXPECT_NE(alpn, "h3");
+  }
 }
 
-TEST(BuildAlpns, IncludesMoqtVersions) {
-  auto alpns = buildAlpns("14,16");
+TEST(BuildMoqtAlpns, IncludesMoqtVersions) {
+  auto alpns = buildMoqtAlpns("14,16");
   EXPECT_GE(alpns.size(), 2u);
-  EXPECT_EQ(alpns[0], "h3");
+  for (const auto& alpn : alpns) {
+    EXPECT_NE(alpn, "h3");
+  }
 }
 
 TEST(BuildStandardFizzContext, ValidCertManager) {

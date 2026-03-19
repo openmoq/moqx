@@ -27,7 +27,8 @@ buildStandardFizzContext(
     const std::vector<TicketSeed>& ticketSeeds = {}
 );
 
-/// Build ALPN list from a comma-separated MOQT versions string.
-std::vector<std::string> buildAlpns(const std::string& moqtVersions);
+/// Build MOQT ALPN list from a comma-separated versions string.
+/// Does not include "h3" — callers add it when WebTransport is needed.
+std::vector<std::string> buildMoqtAlpns(const std::string& moqtVersions);
 
 } // namespace openmoq::o_rly::tls

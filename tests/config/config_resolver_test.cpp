@@ -1,4 +1,5 @@
 #include <o_rly/config/loader/config_resolver.h>
+#include <o_rly/tls/builtin_tls_providers.h>
 #include <o_rly/tls/tls_cert_loader.h>
 #include <o_rly/tls/tls_provider_registry.h>
 
@@ -23,64 +24,25 @@ public:
   }
 };
 
-// Build a registry with dummy factories that validate required fields
-// (matching the real builtin factories) but return DummyCertProvider.
+// Build a registry with real validation but dummy providers.
 tls::TlsProviderRegistry makeTestRegistry() {
   tls::TlsProviderRegistry registry;
-
+  auto dummy = [] { return std::make_shared<DummyCertProvider>(); };
   registry.registerProvider(
       "insecure",
-      [](const ParsedTlsMode&)
-          -> folly::Expected<std::shared_ptr<tls::TlsCertProvider>, std::string> {
-        return std::shared_ptr<tls::TlsCertProvider>(std::make_shared<DummyCertProvider>());
-      }
-  );
-
+      tls::makeInsecureFactory([dummy] { return dummy(); }));
   registry.registerProvider(
       "file",
-      [](const ParsedTlsMode& tls)
-          -> folly::Expected<std::shared_ptr<tls::TlsCertProvider>, std::string> {
-        return tls.visit([](const auto& variant)
-                             -> folly::Expected<std::shared_ptr<tls::TlsCertProvider>, std::string> {
-          using T = std::decay_t<decltype(variant)>;
-          if constexpr (std::is_same_v<T, ParsedTlsFile>) {
-            if (variant.cert_file.value().empty()) {
-              return folly::makeUnexpected(std::string("cert_file is required"));
-            }
-            if (variant.key_file.value().empty()) {
-              return folly::makeUnexpected(std::string("key_file is required"));
-            }
-            return std::shared_ptr<tls::TlsCertProvider>(std::make_shared<DummyCertProvider>());
-          } else {
-            return folly::makeUnexpected(
-                std::string("'file' factory called with wrong TLS variant")
-            );
-          }
-        });
-      }
-  );
-
+      tls::makeFileFactory(
+          [dummy](auto, auto) -> std::shared_ptr<tls::TlsCertProvider> {
+            return dummy();
+          }));
   registry.registerProvider(
       "directory",
-      [](const ParsedTlsMode& tls)
-          -> folly::Expected<std::shared_ptr<tls::TlsCertProvider>, std::string> {
-        return tls.visit([](const auto& variant)
-                             -> folly::Expected<std::shared_ptr<tls::TlsCertProvider>, std::string> {
-          using T = std::decay_t<decltype(variant)>;
-          if constexpr (std::is_same_v<T, ParsedTlsDirectory>) {
-            if (variant.cert_dir.value().empty()) {
-              return folly::makeUnexpected(std::string("cert_dir is required"));
-            }
-            return std::shared_ptr<tls::TlsCertProvider>(std::make_shared<DummyCertProvider>());
-          } else {
-            return folly::makeUnexpected(
-                std::string("'directory' factory called with wrong TLS variant")
-            );
-          }
-        });
-      }
-  );
-
+      tls::makeDirectoryFactory(
+          [dummy](auto, auto) -> std::shared_ptr<tls::TlsCertProvider> {
+            return dummy();
+          }));
   return registry;
 }
 
@@ -445,6 +407,39 @@ TEST(ResolveConfig, AdminTlsCustomAlpn) {
   ASSERT_TRUE(result.value().config.admin.has_value());
   ASSERT_TRUE(result.value().config.admin->tls.has_value());
   EXPECT_THAT(result.value().config.admin->tls->alpn, ::testing::ElementsAre("h2"));
+}
+
+// --- Partial registration tests ---
+
+TEST(ResolveConfig, UnregisteredProviderRejected) {
+  // Registry with only "file" — insecure config should fail
+  tls::TlsProviderRegistry registry;
+  registry.registerProvider(
+      "file",
+      tls::makeFileFactory(
+          [](auto, auto) -> std::shared_ptr<tls::TlsCertProvider> {
+            return std::make_shared<DummyCertProvider>();
+          }));
+
+  auto cfg = makeMinimalInsecureConfig();
+  auto result = resolveConfig(cfg, registry);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("unknown TLS type"));
+  EXPECT_THAT(result.error(), HasSubstr("insecure"));
+}
+
+TEST(ResolveConfig, RegisteredProviderAccepted) {
+  // Registry with only "insecure" — insecure config should succeed
+  tls::TlsProviderRegistry registry;
+  registry.registerProvider(
+      "insecure",
+      tls::makeInsecureFactory(
+          [] { return std::make_shared<DummyCertProvider>(); }));
+
+  auto cfg = makeMinimalInsecureConfig();
+  auto result = resolveConfig(cfg, registry);
+  ASSERT_TRUE(result.hasValue());
+  EXPECT_NE(result.value().config.listener.tlsProvider, nullptr);
 }
 
 } // namespace

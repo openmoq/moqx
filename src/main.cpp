@@ -42,7 +42,10 @@ std::shared_ptr<openmoq::o_rly::ORelayServer> createServer(const cfg::Config& re
   const auto& listener = resolved.listener;
   const auto& cache = resolved.cache;
 
-  auto alpns = openmoq::o_rly::tls::buildAlpns(listener.moqtVersions);
+  auto alpns = openmoq::o_rly::tls::buildMoqtAlpns(listener.moqtVersions);
+  if (!listener.endpoint.empty()) {
+    alpns.insert(alpns.begin(), "h3");
+  }
   // TODO: Load ticket seeds from external source (file/KMS) for TLS session
   // resumption across restarts. Pass non-empty seeds to createContext() to enable.
   auto fizzCtx = listener.tlsProvider->createContext(alpns);
@@ -78,8 +81,11 @@ int main(int argc, char* argv[]) {
   }
 
   // Create TLS provider registry and register built-in providers
-  openmoq::o_rly::tls::TlsProviderRegistry tlsRegistry;
-  openmoq::o_rly::tls::registerBuiltinTlsProviders(tlsRegistry);
+  namespace tls = openmoq::o_rly::tls;
+  tls::TlsProviderRegistry tlsRegistry;
+  tlsRegistry.registerProvider("insecure", tls::makeInsecureFactory());
+  tlsRegistry.registerProvider("file", tls::makeFileFactory());
+  tlsRegistry.registerProvider("directory", tls::makeDirectoryFactory());
 
   auto result = cfg::handleConfigSubcommand(
       subcommand,

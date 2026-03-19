@@ -1,32 +1,30 @@
 #pragma once
 
-#include <atomic>
-#include <filesystem>
 #include <fstream>
 #include <string>
 #include <string_view>
 
+#include <folly/testing/TestUtil.h>
+
 namespace openmoq::o_rly::config::test {
 
-// RAII helper: writes YAML content to a unique temp file, removes it on destruction.
 class TempYamlFile {
 public:
   explicit TempYamlFile(std::string_view content) {
-    static std::atomic<int> counter{0};
-    path_ = std::filesystem::temp_directory_path() / ("o_rly_test_" + std::to_string(::getpid()) +
-                                                      "_" + std::to_string(counter++) + ".yaml");
-    std::ofstream ofs(path_);
+    auto filePath = dir_.path() / "config.yaml";
+    std::ofstream ofs(filePath);
     ofs << content;
+    path_ = filePath.string();
   }
-  ~TempYamlFile() { std::filesystem::remove(path_); }
 
   TempYamlFile(const TempYamlFile&) = delete;
   TempYamlFile& operator=(const TempYamlFile&) = delete;
 
-  std::string path() const { return path_.string(); }
+  std::string path() const { return path_; }
 
 private:
-  std::filesystem::path path_;
+  folly::test::TemporaryDirectory dir_{"o_rly_config_test"};
+  std::string path_;
 };
 
 } // namespace openmoq::o_rly::config::test

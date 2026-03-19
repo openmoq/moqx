@@ -79,6 +79,7 @@ add_library(o_rly_core STATIC
   src/tls/file_cert_loader.cpp
   src/tls/directory_cert_loader.cpp
   src/tls/fizz_context_factory.cpp
+  src/tls/builtin_tls_providers.cpp
 )
 
 target_include_directories(o_rly_core
@@ -86,18 +87,22 @@ target_include_directories(o_rly_core
     ${PROJECT_SOURCE_DIR}/include
 )
 
-target_link_libraries(o_rly_core PUBLIC
-  moxygen::moxygen_relay_moq_forwarder
-  moxygen::moxygen_relay_moq_cache
-  moxygen::moxygen_moq_relay_session
-  moxygen::moxygen_moq_server
-  proxygen::proxygenhttpserver
-  proxygen::proxygen_hq_server
-  fizz::fizz
-  Folly::folly_file_util
-  # Workaround: wangle::wangle_acceptor_acceptor_core uses AsyncFdSocket from
-  # FizzAcceptorHandshakeHelper but omits this dep from its cmake config.
-  Folly::folly_io_async_fdsock_async_fd_socket
+target_link_libraries(o_rly_core
+  PUBLIC
+    moxygen::moxygen_relay_moq_forwarder
+    moxygen::moxygen_relay_moq_cache
+    moxygen::moxygen_moq_relay_session
+    moxygen::moxygen_moq_server
+    proxygen::proxygenhttpserver
+    proxygen::proxygen_hq_server
+    fizz::fizz
+    Folly::folly_file_util
+    # Workaround: wangle::wangle_acceptor_acceptor_core uses AsyncFdSocket from
+    # FizzAcceptorHandshakeHelper but omits this dep from its cmake config.
+    Folly::folly_io_async_fdsock_async_fd_socket
+  PRIVATE
+    # builtin_tls_providers.cpp includes parsed_config.h (rfl types)
+    reflectcpp
 )
 
 target_compile_options(o_rly_core PRIVATE -Wall -Wextra -Wpedantic)
@@ -147,7 +152,6 @@ target_compile_options(o_rly_config_loader PRIVATE -Wall -Wextra -Wpedantic)
 
 add_executable(o_rly
   src/main.cpp
-  src/tls/builtin_tls_providers.cpp
 )
 
 target_link_libraries(o_rly PRIVATE o_rly_core o_rly_config_loader)
@@ -179,6 +183,7 @@ if(ORLY_BUILD_TESTS)
   )
   target_link_libraries(o_rly_config_test PRIVATE
     o_rly_config_loader
+    Folly::folly_testing_test_util
     GTest::gtest_main
     GTest::gmock
     # LINK_LIBRARY:WHOLE_ARCHIVE requires CMake >= 3.24 (cmake_minimum_required is 3.25).
