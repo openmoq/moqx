@@ -4,7 +4,7 @@
 # Env vars:
 #   ORLY_CERT      — path to TLS certificate PEM (required unless ORLY_INSECURE=true)
 #   ORLY_KEY       — path to TLS private key PEM  (required unless ORLY_INSECURE=true)
-#   ORLY_PORT      — UDP listen port (default: 9668)
+#   ORLY_PORT      — UDP listen port (default: 4433)
 #   ORLY_INSECURE  — use built-in dev cert (default: false)
 set -e
 
@@ -16,7 +16,7 @@ listeners:
     udp:
       socket:
         address: "::"
-        port: ${ORLY_PORT:-9668}
+        port: ${ORLY_PORT:-4433}
     tls:
       cert_file: "${ORLY_CERT:-}"
       key_file: "${ORLY_KEY:-}"
