@@ -58,12 +58,14 @@ jobs:
           CERTBOT_EMAIL=gmarzot@openmoq.org
           ORLY_PORT=${{ steps.config.outputs.port }}
           EOF
+          # Strip leading whitespace from heredoc (YAML indentation artifact)
+          sed -i 's/^[[:space:]]*//' .env
 
       - name: Ensure TLS cert
         env:
           DOMAIN: ${{ steps.config.outputs.domain }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.OMOQ_AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.OMOQ_AWS_SECRET_ACCESS_KEY }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.OMOQ_CERTBOT_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.OMOQ_CERTBOT_SECRET_ACCESS_KEY }}
         run: |
           CERT="/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
           if [ ! -f "$CERT" ]; then

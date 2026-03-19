@@ -24,12 +24,13 @@ services:
     image: ghcr.io/openmoq/o-rly:latest
     restart: unless-stopped
     ports:
-      - "${ORLY_PORT:-9668}:9668/udp"
+      - "${ORLY_PORT:-4433}:${ORLY_PORT:-4433}/udp"
     volumes:
       - ${ORLY_CERTS_DIR:-/etc/letsencrypt}:/certs:ro
     environment:
       ORLY_CERT: /certs/live/${DOMAIN}/fullchain.pem
       ORLY_KEY:  /certs/live/${DOMAIN}/privkey.pem
+      ORLY_PORT: ${ORLY_PORT:-4433}
 
   # Cloudflare DNS-01 challenge.
   # Requires: docker/cloudflare.ini (see cloudflare.ini.example)
