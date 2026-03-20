@@ -22,7 +22,8 @@ void registerMetricsRoute(
   adminServer.addRoute(
       "GET",
       "/metrics",
-      [registry = std::move(registry)](auto /*req*/, auto /*body*/, auto* downstream, folly::CancellationToken cancelToken) {
+      [registry = std::move(registry
+       )](auto /*req*/, auto /*body*/, auto* downstream, folly::CancellationToken cancelToken) {
         auto* evb = folly::EventBaseManager::get()->getEventBase();
 
         folly::coro::co_withCancellation(
@@ -54,7 +55,8 @@ void registerMetricsRoute(
                       .sendWithEOM();
                 }(registry, downstream, cancelToken)
             )
-        ).start();
+        )
+            .start();
       }
   );
 }

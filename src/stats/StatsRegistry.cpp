@@ -111,7 +111,7 @@ std::unique_ptr<folly::IOBuf> StatsSnapshot::formatPrometheus(const StatsSnapsho
       " Error count broken down by RequestErrorCode\n"                                             \
       "# TYPE orly_" #name "_by_code_total counter\n");                                            \
   for (size_t i = 0; i < kRequestErrorCodeCount; ++i) {                                            \
-    app("orly_" #name "_by_code_total{code=\"");                                                    \
+    app("orly_" #name "_by_code_total{code=\"");                                                   \
     app(kRequestErrorCodeLabels[i]);                                                               \
     app("\"} ");                                                                                   \
     appNum(snap.name##ByCodes[i]);                                                                 \
@@ -147,10 +147,8 @@ void StatsRegistry::deregisterCollector(StatsCollectorBase* collector) {
 }
 
 folly::coro::Task<StatsSnapshot> StatsRegistry::aggregateAsync() {
-  static auto snapshotTask =
-      [](std::shared_ptr<StatsCollectorBase> c) -> folly::coro::Task<StatsSnapshot> {
-    co_return c->snapshot();
-  };
+  static auto snapshotTask = [](std::shared_ptr<StatsCollectorBase> c
+                             ) -> folly::coro::Task<StatsSnapshot> { co_return c->snapshot(); };
 
   std::vector<std::shared_ptr<StatsCollectorBase>> copy = collectors_;
   std::vector<folly::coro::TaskWithExecutor<StatsSnapshot>> tasks;

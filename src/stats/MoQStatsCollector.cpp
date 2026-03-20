@@ -26,9 +26,7 @@ std::shared_ptr<MoQStatsCollector> MoQStatsCollector::create_moq_stats_collector
 }
 
 MoQStatsCollector::MoQStatsCollector(folly::Executor::KeepAlive<> owningExecutor)
-    : owningExecutor_(std::move(owningExecutor)),
-      pubCallback_(*this),
-      subCallback_(*this) {}
+    : owningExecutor_(std::move(owningExecutor)), pubCallback_(*this), subCallback_(*this) {}
 
 MoQStatsCollector::~MoQStatsCollector() {
   if (auto registry = registry_.lock()) {
@@ -46,16 +44,16 @@ StatsSnapshot MoQStatsCollector::snapshot() const {
   STATS_GAUGE_FIELDS(COPY_FIELD)
 #undef COPY_FIELD
 
-#define COPY_HISTOGRAM(name, bounds)        \
-  name##_.fillCumulative(snap.name##Buckets); \
-  snap.name##Sum = name##_.sum;               \
+#define COPY_HISTOGRAM(name, bounds)                                                               \
+  name##_.fillCumulative(snap.name##Buckets);                                                      \
+  snap.name##Sum = name##_.sum;                                                                    \
   snap.name##Count = name##_.count;
   STATS_HISTOGRAM_FIELDS(COPY_HISTOGRAM)
 #undef COPY_HISTOGRAM
 
-#define COPY_ERROR_ARRAY(name)                                              \
-  for (size_t i = 0; i < kRequestErrorCodeCount; ++i) {                    \
-    snap.name##ByCodes[i] = name##ByCodes_[i];                              \
+#define COPY_ERROR_ARRAY(name)                                                                     \
+  for (size_t i = 0; i < kRequestErrorCodeCount; ++i) {                                            \
+    snap.name##ByCodes[i] = name##ByCodes_[i];                                                     \
   }
   STATS_ERROR_COUNTER_FIELDS(COPY_ERROR_ARRAY)
 #undef COPY_ERROR_ARRAY
@@ -67,13 +65,11 @@ folly::Executor::KeepAlive<> MoQStatsCollector::owningExecutor() const {
   return owningExecutor_;
 }
 
-std::shared_ptr<moxygen::MoQPublisherStatsCallback>
-MoQStatsCollector::publisherCallback() const {
+std::shared_ptr<moxygen::MoQPublisherStatsCallback> MoQStatsCollector::publisherCallback() const {
   return pubCallbackPtr_;
 }
 
-std::shared_ptr<moxygen::MoQSubscriberStatsCallback>
-MoQStatsCollector::subscriberCallback() const {
+std::shared_ptr<moxygen::MoQSubscriberStatsCallback> MoQStatsCollector::subscriberCallback() const {
   return subCallbackPtr_;
 }
 
@@ -96,8 +92,7 @@ void MoQStatsCollector::PublisherCallback::onSubscribeSuccess() {
   ++parent_.pubActiveSubscriptions_;
 }
 
-void MoQStatsCollector::PublisherCallback::onSubscribeError(
-    moxygen::SubscribeErrorCode errorCode) {
+void MoQStatsCollector::PublisherCallback::onSubscribeError(moxygen::SubscribeErrorCode errorCode) {
   ++parent_.pubSubscribeError_;
   ++parent_.pubSubscribeErrorByCodes_[requestErrorCodeIndex(errorCode)];
 }
@@ -106,8 +101,7 @@ void MoQStatsCollector::PublisherCallback::onFetchSuccess() {
   ++parent_.pubFetchSuccess_;
 }
 
-void MoQStatsCollector::PublisherCallback::onFetchError(
-    moxygen::FetchErrorCode errorCode) {
+void MoQStatsCollector::PublisherCallback::onFetchError(moxygen::FetchErrorCode errorCode) {
   ++parent_.pubFetchError_;
   ++parent_.pubFetchErrorByCodes_[requestErrorCodeIndex(errorCode)];
 }
@@ -118,7 +112,8 @@ void MoQStatsCollector::PublisherCallback::onPublishNamespaceSuccess() {
 }
 
 void MoQStatsCollector::PublisherCallback::onPublishNamespaceError(
-    moxygen::PublishNamespaceErrorCode errorCode) {
+    moxygen::PublishNamespaceErrorCode errorCode
+) {
   ++parent_.pubPublishNamespaceError_;
   ++parent_.pubPublishNamespaceErrorByCodes_[requestErrorCodeIndex(errorCode)];
 }
@@ -139,7 +134,8 @@ void MoQStatsCollector::PublisherCallback::onSubscribeNamespaceSuccess() {
 }
 
 void MoQStatsCollector::PublisherCallback::onSubscribeNamespaceError(
-    moxygen::SubscribeNamespaceErrorCode errorCode) {
+    moxygen::SubscribeNamespaceErrorCode errorCode
+) {
   ++parent_.pubSubscribeNamespaceError_;
   ++parent_.pubSubscribeNamespaceErrorByCodes_[requestErrorCodeIndex(errorCode)];
 }
@@ -158,11 +154,11 @@ void MoQStatsCollector::PublisherCallback::onUnsubscribe() {
   --parent_.pubActiveSubscriptions_;
 }
 
-void MoQStatsCollector::PublisherCallback::onPublishDone(
-    moxygen::PublishDoneStatusCode /*statusCode*/) {
+void MoQStatsCollector::PublisherCallback::
+    onPublishDone(moxygen::PublishDoneStatusCode /*statusCode*/) {
   // Relay (as publisher) sent PUBLISH_DONE to a downstream subscriber.
   ++parent_.pubPublishDone_;
-  --parent_.pubActivePublishers_;
+  --parent_.pubActiveSubscriptions_;
 }
 
 void MoQStatsCollector::PublisherCallback::onRequestUpdate() {
@@ -179,8 +175,7 @@ void MoQStatsCollector::PublisherCallback::onSubscriptionStreamClosed() {
   --parent_.pubActiveSubscriptionStreams_;
 }
 
-void MoQStatsCollector::PublisherCallback::recordPublishNamespaceLatency(
-    uint64_t latencyMsec) {
+void MoQStatsCollector::PublisherCallback::recordPublishNamespaceLatency(uint64_t latencyMsec) {
   parent_.moqPublishNamespaceLatency_.addValue(latencyMsec);
 }
 
@@ -188,8 +183,7 @@ void MoQStatsCollector::PublisherCallback::recordPublishLatency(uint64_t latency
   parent_.moqPublishLatency_.addValue(latencyMsec);
 }
 
-void MoQStatsCollector::PublisherCallback::onPublishError(
-    moxygen::PublishErrorCode errorCode) {
+void MoQStatsCollector::PublisherCallback::onPublishError(moxygen::PublishErrorCode errorCode) {
   // Relay sent PUBLISH; received PUBLISH_ERROR back.
   ++parent_.moqPublishError_;
   ++parent_.moqPublishErrorByCodes_[requestErrorCodeIndex(errorCode)];
@@ -210,8 +204,8 @@ void MoQStatsCollector::SubscriberCallback::onSubscribeSuccess() {
   ++parent_.subActiveSubscriptions_;
 }
 
-void MoQStatsCollector::SubscriberCallback::onSubscribeError(
-    moxygen::SubscribeErrorCode errorCode) {
+void MoQStatsCollector::SubscriberCallback::onSubscribeError(moxygen::SubscribeErrorCode errorCode
+) {
   ++parent_.subSubscribeError_;
   ++parent_.subSubscribeErrorByCodes_[requestErrorCodeIndex(errorCode)];
 }
@@ -220,8 +214,7 @@ void MoQStatsCollector::SubscriberCallback::onFetchSuccess() {
   ++parent_.subFetchSuccess_;
 }
 
-void MoQStatsCollector::SubscriberCallback::onFetchError(
-    moxygen::FetchErrorCode errorCode) {
+void MoQStatsCollector::SubscriberCallback::onFetchError(moxygen::FetchErrorCode errorCode) {
   ++parent_.subFetchError_;
   ++parent_.subFetchErrorByCodes_[requestErrorCodeIndex(errorCode)];
 }
@@ -232,7 +225,8 @@ void MoQStatsCollector::SubscriberCallback::onPublishNamespaceSuccess() {
 }
 
 void MoQStatsCollector::SubscriberCallback::onPublishNamespaceError(
-    moxygen::PublishNamespaceErrorCode errorCode) {
+    moxygen::PublishNamespaceErrorCode errorCode
+) {
   ++parent_.subPublishNamespaceError_;
   ++parent_.subPublishNamespaceErrorByCodes_[requestErrorCodeIndex(errorCode)];
 }
@@ -253,7 +247,8 @@ void MoQStatsCollector::SubscriberCallback::onSubscribeNamespaceSuccess() {
 }
 
 void MoQStatsCollector::SubscriberCallback::onSubscribeNamespaceError(
-    moxygen::SubscribeNamespaceErrorCode errorCode) {
+    moxygen::SubscribeNamespaceErrorCode errorCode
+) {
   ++parent_.subSubscribeNamespaceError_;
   ++parent_.subSubscribeNamespaceErrorByCodes_[requestErrorCodeIndex(errorCode)];
 }
@@ -272,11 +267,11 @@ void MoQStatsCollector::SubscriberCallback::onUnsubscribe() {
   --parent_.subActiveSubscriptions_;
 }
 
-void MoQStatsCollector::SubscriberCallback::onPublishDone(
-    moxygen::PublishDoneStatusCode /*statusCode*/) {
+void MoQStatsCollector::SubscriberCallback::
+    onPublishDone(moxygen::PublishDoneStatusCode /*statusCode*/) {
   // Relay (as subscriber) received PUBLISH_DONE from upstream publisher.
   ++parent_.subPublishDone_;
-  --parent_.subActivePublishers_;
+  --parent_.subActiveSubscriptions_;
 }
 
 void MoQStatsCollector::SubscriberCallback::onRequestUpdate() {
@@ -312,8 +307,7 @@ void MoQStatsCollector::SubscriberCallback::onPublishOk() {
   ++parent_.subActivePublishers_;
 }
 
-void MoQStatsCollector::SubscriberCallback::onPublishError(
-    moxygen::PublishErrorCode errorCode) {
+void MoQStatsCollector::SubscriberCallback::onPublishError(moxygen::PublishErrorCode errorCode) {
   // Relay rejected an upstream publisher with PUBLISH_ERROR.
   ++parent_.subPublishError_;
   ++parent_.subPublishErrorByCodes_[requestErrorCodeIndex(errorCode)];

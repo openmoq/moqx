@@ -140,8 +140,7 @@ private:
 #undef DEFINE_HISTOGRAM
 
   // Per-RequestErrorCode breakdown arrays (parallel to the aggregate counters).
-#define DEFINE_ERROR_ARRAY(name)                                                                   \
-  std::array<uint64_t, kRequestErrorCodeCount> name##ByCodes_{};
+#define DEFINE_ERROR_ARRAY(name) std::array<uint64_t, kRequestErrorCodeCount> name##ByCodes_{};
   STATS_ERROR_COUNTER_FIELDS(DEFINE_ERROR_ARRAY)
 #undef DEFINE_ERROR_ARRAY
 };

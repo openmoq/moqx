@@ -161,8 +161,7 @@ struct StatsSnapshot {
 #undef DEFINE_HISTOGRAM
 
   // --- Per-RequestErrorCode breakdown arrays ---
-#define DEFINE_ERROR_ARRAY(name)                                                                   \
-  std::array<uint64_t, kRequestErrorCodeCount> name##ByCodes{};
+#define DEFINE_ERROR_ARRAY(name) std::array<uint64_t, kRequestErrorCodeCount> name##ByCodes{};
   STATS_ERROR_COUNTER_FIELDS(DEFINE_ERROR_ARRAY)
 #undef DEFINE_ERROR_ARRAY
 
