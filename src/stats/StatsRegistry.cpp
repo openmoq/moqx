@@ -5,7 +5,8 @@
 #include <folly/io/IOBuf.h>
 #include <folly/io/IOBufQueue.h>
 
-#include <folly/experimental/coro/Collect.h>
+#include <folly/coro/Collect.h>
+#include <folly/coro/Task.h>
 #include <folly/experimental/coro/Task.h>
 #include <folly/logging/xlog.h>
 
@@ -26,10 +27,16 @@ StatsSnapshot& StatsSnapshot::operator+=(const StatsSnapshot& o) {
   STATS_HISTOGRAM_FIELDS(ADD_HISTOGRAM)
 #undef ADD_HISTOGRAM
 
+#define ADD_ERROR_ARRAY(name)                                                                      \
+  for (size_t i = 0; i < kRequestErrorCodeCount; ++i) {                                            \
+    name##ByCodes[i] += o.name##ByCodes[i];                                                        \
+  }
+  STATS_ERROR_COUNTER_FIELDS(ADD_ERROR_ARRAY)
+#undef ADD_ERROR_ARRAY
+
   return *this;
 }
 
-// ---------------------------------------------------------------------------
 // StatsSnapshot::formatPrometheus
 //
 // Prometheus exposition format v0.0.4:
@@ -38,7 +45,6 @@ StatsSnapshot& StatsSnapshot::operator+=(const StatsSnapshot& o) {
 // Counters  → _total suffix, TYPE counter
 // Gauges    → no suffix,     TYPE gauge
 // Histograms → _bucket{le=...}/_sum/_count, TYPE histogram
-// ---------------------------------------------------------------------------
 
 /* static */
 std::unique_ptr<folly::IOBuf> StatsSnapshot::formatPrometheus(const StatsSnapshot& snap) {
@@ -50,7 +56,7 @@ std::unique_ptr<folly::IOBuf> StatsSnapshot::formatPrometheus(const StatsSnapsho
   };
   auto appNum = [&app](auto v) { app(folly::to<std::string>(v)); };
 
-  // --- Counters --------------------------------------------------------------
+  // --- Counters ---
 #define EMIT_COUNTER(type, name)                                                                   \
   app("# HELP orly_" #name "_total\n"                                                              \
       "# TYPE orly_" #name "_total counter\n"                                                      \
@@ -60,7 +66,7 @@ std::unique_ptr<folly::IOBuf> StatsSnapshot::formatPrometheus(const StatsSnapsho
   STATS_COUNTER_FIELDS(EMIT_COUNTER)
 #undef EMIT_COUNTER
 
-  // --- Gauges ----------------------------------------------------------------
+  // --- Gauges ---
 #define EMIT_GAUGE(type, name)                                                                     \
   app("# HELP orly_" #name "\n"                                                                    \
       "# TYPE orly_" #name " gauge\n"                                                              \
@@ -70,7 +76,7 @@ std::unique_ptr<folly::IOBuf> StatsSnapshot::formatPrometheus(const StatsSnapsho
   STATS_GAUGE_FIELDS(EMIT_GAUGE)
 #undef EMIT_GAUGE
 
-  // --- Histograms ------------------------------------------------------------
+  // --- Histograms ---
 #define EMIT_HISTOGRAM(name, bounds)                                                               \
   app("# HELP orly_" #name "_microseconds\n"                                                       \
       "# TYPE orly_" #name "_microseconds histogram\n");                                           \
@@ -96,6 +102,24 @@ std::unique_ptr<folly::IOBuf> StatsSnapshot::formatPrometheus(const StatsSnapsho
   app("\n\n");
   STATS_HISTOGRAM_FIELDS(EMIT_HISTOGRAM)
 #undef EMIT_HISTOGRAM
+
+  // --- Per-RequestErrorCode breakdowns ---
+  // Each field emits one labelled counter series:
+  //   orly_<name>_by_code_total{code="<label>"}
+#define EMIT_ERROR_COUNTER(name)                                                                   \
+  app("# HELP orly_" #name "_by_code_total"                                                        \
+      " Error count broken down by RequestErrorCode\n"                                             \
+      "# TYPE orly_" #name "_by_code_total counter\n");                                            \
+  for (size_t i = 0; i < kRequestErrorCodeCount; ++i) {                                            \
+    app("orly_" #name "_by_code_total{code=\"");                                                    \
+    app(kRequestErrorCodeLabels[i]);                                                               \
+    app("\"} ");                                                                                   \
+    appNum(snap.name##ByCodes[i]);                                                                 \
+    app("\n");                                                                                     \
+  }                                                                                                \
+  app("\n");
+  STATS_ERROR_COUNTER_FIELDS(EMIT_ERROR_COUNTER)
+#undef EMIT_ERROR_COUNTER
 
   return queue.move();
 }
@@ -123,23 +147,22 @@ void StatsRegistry::deregisterCollector(StatsCollectorBase* collector) {
 }
 
 folly::coro::Task<StatsSnapshot> StatsRegistry::aggregateAsync() {
-  // --- Copy collector list (no lock needed, registration is locked) ---
-  std::vector<std::shared_ptr<StatsCollectorBase>> collectorsCopy = collectors_;
-  StatsSnapshot combined;
+  static auto snapshotTask =
+      [](std::shared_ptr<StatsCollectorBase> c) -> folly::coro::Task<StatsSnapshot> {
+    co_return c->snapshot();
+  };
 
-  // --- Aggregate collectors in parallel ---
+  std::vector<std::shared_ptr<StatsCollectorBase>> copy = collectors_;
   std::vector<folly::coro::TaskWithExecutor<StatsSnapshot>> tasks;
-  for (const auto& c : collectorsCopy) {
-    tasks.push_back(folly::coro::co_withExecutor(
-        c->owningExecutor(),
-        [c]() -> folly::coro::Task<StatsSnapshot> { co_return c->snapshot(); }()
-    ));
+  tasks.reserve(copy.size());
+  for (const auto& c : copy) {
+    tasks.push_back(folly::coro::co_withExecutor(c->owningExecutor(), snapshotTask(c)));
   }
-  auto snapshots = co_await folly::coro::collectAllRange(std::move(tasks));
-  for (const auto& snap : snapshots) {
+  auto results = co_await folly::coro::collectAllRange(std::move(tasks));
+  StatsSnapshot combined;
+  for (auto& snap : results) {
     combined += snap;
   }
-
   co_return combined;
 }
 

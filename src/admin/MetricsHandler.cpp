@@ -1,15 +1,14 @@
 #include <o_rly/admin/MetricsHandler.h>
 
 #include <folly/CancellationToken.h>
-#include <folly/Try.h>
 #include <folly/coro/Task.h>
-#include <folly/coro/WithCancellation.h>
+#include <folly/experimental/coro/Task.h>
+#include <folly/experimental/coro/WithCancellation.h>
 #include <folly/io/IOBuf.h>
+#include <folly/io/async/EventBaseManager.h>
 #include <folly/logging/xlog.h>
 #include <proxygen/httpserver/ResponseBuilder.h>
 #include <proxygen/lib/http/HTTPMessage.h>
-#include <proxygen/lib/http/session/HTTPSessionBase.h>
-#include <proxygen/lib/http/session/HTTPTransaction.h>
 
 #include <o_rly/admin/AdminServer.h>
 #include <o_rly/stats/StatsRegistry.h>
@@ -23,38 +22,39 @@ void registerMetricsRoute(
   adminServer.addRoute(
       "GET",
       "/metrics",
-      [registry = std::move(registry
-       )](auto /*req*/, auto /*body*/, auto* downstream, folly::CancellationToken cancelToken) {
-        // Use the proxygen transaction's EventBase as the coroutine executor.
-        auto* evb =
-            downstream->getTransaction()->getTransport().getHTTPSessionBase()->getEventBase();
+      [registry = std::move(registry)](auto /*req*/, auto /*body*/, auto* downstream, folly::CancellationToken cancelToken) {
+        auto* evb = folly::EventBaseManager::get()->getEventBase();
+
         folly::coro::co_withCancellation(
             cancelToken,
-            folly::coro::co_withExecutor(folly::getKeepAliveToken(evb), registry->aggregateAsync())
-        )
-            .start([downstream, cancelToken](folly::Try<stats::StatsSnapshot> result) noexcept {
-              if (result.hasException()) {
-                if (cancelToken.isCancellationRequested()) {
-                  // Client disconnected before the response was produced —
-                  // downstream is no longer valid; do nothing.
-                  return;
-                }
-                XLOG(ERR) << "MetricsHandler: aggregateAsync threw: " << result.exception().what();
-                proxygen::ResponseBuilder(downstream)
-                    .status(500, proxygen::HTTPMessage::getDefaultReason(500))
-                    .body(folly::IOBuf::copyBuffer("internal error\n"))
-                    .sendWithEOM();
-                return;
-              }
-
-              auto body = stats::StatsSnapshot::formatPrometheus(result.value());
-              proxygen::ResponseBuilder(downstream)
-                  .status(200, proxygen::HTTPMessage::getDefaultReason(200))
-                  // Prometheus text exposition format v0.0.4
-                  .header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-                  .body(std::move(body))
-                  .sendWithEOM();
-            });
+            folly::coro::co_withExecutor(
+                evb,
+                [](auto reg, auto* ds, auto token) -> folly::coro::Task<void> {
+                  stats::StatsSnapshot snap;
+                  try {
+                    snap = co_await reg->aggregateAsync();
+                  } catch (const std::exception& e) {
+                    XLOG(ERR) << "MetricsHandler: aggregateAsync threw: " << e.what();
+                    if (!token.isCancellationRequested()) {
+                      proxygen::ResponseBuilder(ds)
+                          .status(500, proxygen::HTTPMessage::getDefaultReason(500))
+                          .body(folly::IOBuf::copyBuffer("internal error\n"))
+                          .sendWithEOM();
+                    }
+                    co_return;
+                  }
+                  if (token.isCancellationRequested()) {
+                    co_return;
+                  }
+                  auto body = stats::StatsSnapshot::formatPrometheus(snap);
+                  proxygen::ResponseBuilder(ds)
+                      .status(200, proxygen::HTTPMessage::getDefaultReason(200))
+                      .header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+                      .body(std::move(body))
+                      .sendWithEOM();
+                }(registry, downstream, cancelToken)
+            )
+        ).start();
       }
   );
 }

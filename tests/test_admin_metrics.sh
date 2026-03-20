@@ -79,9 +79,9 @@ fi
 # Validate a representative set of expected metric names.
 EXPECTED_METRICS=(
   "orly_moqActiveSessions"
-  "orly_moqActiveSubscriptions"
-  "orly_moqActivePublishers"
-  "orly_moqSubscribeSuccess_total"
+  "orly_pubActiveSubscriptions"
+  "orly_pubActivePublishers"
+  "orly_pubSubscribeSuccess_total"
   "orly_moqPublishSuccess_total"
   "orly_moqSubscribeLatency_microseconds"
   "orly_moqFetchLatency_microseconds"

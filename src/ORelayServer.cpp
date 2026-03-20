@@ -70,8 +70,8 @@ void ORelayServer::onNewSession(std::shared_ptr<MoQSession> clientSession) {
       statsRegistry_->lock();
     }
 
-    clientSession->setPublisherStatsCallback(statsCollector_);
-    clientSession->setSubscriberStatsCallback(statsCollector_);
+    clientSession->setPublisherStatsCallback(statsCollector_->publisherCallback());
+    clientSession->setSubscriberStatsCallback(statsCollector_->subscriberCallback());
 
     statsCollector_->onSessionStart();
   }
