@@ -16,6 +16,11 @@ export GLOG_logtostderr=1
 export GLOG_minloglevel="${ORLY_LOG_LEVEL:-0}"
 export GLOG_v="${ORLY_VERBOSE:-0}"
 
+# Enable core dumps (requires ulimits.core=-1 in compose)
+if [ -d /var/coredumps ]; then
+  echo "/var/coredumps/core.%e.%p.%t" > /proc/sys/kernel/core_pattern 2>/dev/null || true
+fi
+
 CONFIG=/tmp/relay.yaml
 
 cat > "$CONFIG" <<EOF

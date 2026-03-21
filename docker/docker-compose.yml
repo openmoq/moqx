@@ -28,6 +28,7 @@ services:
       - "127.0.0.1:${ORLY_ADMIN_PORT:-8000}:${ORLY_ADMIN_PORT:-8000}/tcp"
     volumes:
       - ${ORLY_CERTS_DIR:-/etc/letsencrypt}:/certs:ro
+      - orly-coredumps:/var/coredumps
     environment:
       ORLY_CERT: /certs/live/${DOMAIN}/fullchain.pem
       ORLY_KEY:  /certs/live/${DOMAIN}/privkey.pem
@@ -35,6 +36,14 @@ services:
       ORLY_ADMIN_PORT: ${ORLY_ADMIN_PORT:-8000}
       ORLY_LOG_LEVEL: ${ORLY_LOG_LEVEL:-0}
       ORLY_VERBOSE: ${ORLY_VERBOSE:-0}
+    ulimits:
+      core: -1
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:${ORLY_ADMIN_PORT:-8000}/info"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     logging:
       driver: json-file
       options:
@@ -79,3 +88,6 @@ services:
       --dns-route53
       -d ${DOMAIN}
     profiles: [certbot-route53]
+
+volumes:
+  orly-coredumps:
