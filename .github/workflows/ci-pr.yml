@@ -56,32 +56,20 @@ jobs:
           submodules: true
 
       - name: Install system dependencies
-        run: bash deps/moxygen/standalone/install-system-deps.sh
+        run: sudo deps/moxygen/standalone/install-system-deps.sh
 
-      - name: Setup moxygen dependencies
+      - name: Setup dependencies
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          SHA=$(git -C deps/moxygen rev-parse HEAD)
-          RUN_ID=$(gh api "repos/openmoq/moxygen/actions/workflows/omoq-ci-main.yml/runs?head_sha=${SHA}&status=success&per_page=1" \
-            --jq '.workflow_runs[0].id // empty')
-          if [ -n "$RUN_ID" ]; then
-            bash scripts/setup-deps-tarball.sh
-          else
-            echo "::warning::No moxygen tarball for ${SHA:0:7} — building from source"
-            bash scripts/setup-deps-standalone.sh
-          fi
-
-      - name: Configure
-        run: bash scripts/configure.sh ${{ matrix.build_dir }} ${{ matrix.preset }}
+        run: bash scripts/build.sh setup
 
       - name: Build
-        run: cmake --build ${{ matrix.build_dir }} -j$(getconf _NPROCESSORS_ONLN)
+        run: bash scripts/build.sh --preset ${{ matrix.preset }} --build-dir ${{ matrix.build_dir }}
 
       - name: Test
         env:
           ASAN_OPTIONS: ${{ matrix.name == 'asan debug' && 'detect_leaks=1:abort_on_error=1' || '' }}
-        run: ctest --test-dir ${{ matrix.build_dir }} --output-on-failure --output-junit test-results.xml
+        run: bash scripts/build.sh test --build-dir ${{ matrix.build_dir }} -- --output-junit test-results.xml
 
       - name: Publish test results
         uses: dorny/test-reporter@v1.9.1
