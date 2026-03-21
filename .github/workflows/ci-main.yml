@@ -95,7 +95,7 @@ jobs:
   # ════════════════════════════════════════════════════════════════════════════
 
   publish:
-    needs: [build]
+    needs: [check-format, build]
     name: publish
     runs-on: ubuntu-22.04
     steps:
