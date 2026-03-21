@@ -33,6 +33,13 @@ services:
       ORLY_KEY:  /certs/live/${DOMAIN}/privkey.pem
       ORLY_PORT: ${ORLY_PORT:-4433}
       ORLY_ADMIN_PORT: ${ORLY_ADMIN_PORT:-8000}
+      ORLY_LOG_LEVEL: ${ORLY_LOG_LEVEL:-0}
+      ORLY_VERBOSE: ${ORLY_VERBOSE:-0}
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
 
   # Cloudflare DNS-01 challenge.
   # Requires: docker/cloudflare.ini (see cloudflare.ini.example)
