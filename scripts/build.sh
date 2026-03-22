@@ -2,12 +2,12 @@
 # build.sh — Developer build script for o-rly.
 #
 # Mirrors the same build flows used by CI. Supports two dependency modes:
-#   prebuilt — download released moxygen artifacts matching submodule SHA (~1 min)
-#   local    — build moxygen + all Meta deps from source via cmake/FetchContent (~15-30 min)
+#   --from-release  — download released moxygen artifacts (~1 min)
+#   --from-source   — build moxygen + all Meta deps from source (~15-30 min)
 #
 # Usage:
-#   ./scripts/build.sh setup [--prebuilt|--local] [--no-fallback] [--clean]
-#   ./scripts/build.sh [--preset NAME] [--build-dir DIR]
+#   ./scripts/build.sh setup [--from-release [SHA]|--from-source [SHA]] [--no-fallback] [--clean]
+#   ./scripts/build.sh [--profile NAME] [--build-dir DIR]
 #   ./scripts/build.sh test [--build-dir DIR] [-- CTEST_ARGS...]
 #
 # First time:
@@ -21,7 +21,7 @@
 #   ./scripts/build.sh          # rebuilds only what changed
 #
 # After submodule update:
-#   ./scripts/build.sh setup    # re-downloads prebuilt or rebuilds from source
+#   ./scripts/build.sh setup    # re-downloads or rebuilds deps
 #   ./scripts/build.sh
 
 set -euo pipefail
@@ -41,24 +41,26 @@ die() { echo "Error: $*" >&2; exit 1; }
 usage() {
   cat <<'EOF'
 Usage:
-  build.sh setup [--prebuilt|--local] [--no-fallback] [--clean]
-  build.sh [--preset NAME] [--build-dir DIR]
+  build.sh setup [--from-release [SHA]|--from-source [SHA]] [--no-fallback] [--clean]
+  build.sh [--profile NAME] [--build-dir DIR]
   build.sh test [--build-dir DIR] [-- CTEST_ARGS...]
 
 Commands:
-  setup     Install moxygen dependencies (prebuilt or from source)
+  setup     Install moxygen dependencies (from release or source)
   (default) Configure and build o-rly
   test      Run tests
 
 Setup options:
-  --prebuilt      Download released artifacts (default, fast)
-  --local         Build all deps from source (slow, full control)
-  --no-fallback   Fail if requested mode unavailable (don't auto-switch)
-  --clean         Remove .scratch and start fresh
+  --from-release [SHA]  Download released artifacts (default, fast)
+                        Optional SHA overrides submodule commit
+  --from-source [SHA]   Build all deps from source (slow, full control)
+                        Optional SHA overrides submodule commit
+  --no-fallback         Fail if requested mode unavailable (don't auto-switch)
+  --clean               Remove .scratch and start fresh
 
 Build options:
-  --preset NAME   CMake preset (default: "default", also: "san")
-  --build-dir DIR Build directory (default: per preset)
+  --profile NAME  Build profile: "default" (RelWithDebInfo) or "san" (ASAN/UBSAN)
+  --build-dir DIR Build directory (default: per profile)
 
 Test options:
   --build-dir DIR Build directory to test (default: "build")
@@ -172,17 +174,38 @@ check_submodule() {
   fi
 }
 
+# ── Checkout submodule to specific SHA ───────────────────────────────────────
+
+checkout_submodule() {
+  local sha="$1"
+  echo "==> Checking out moxygen submodule at $sha..."
+  git -C "$MOXYGEN_DIR" fetch origin --quiet
+  git -C "$MOXYGEN_DIR" checkout "$sha" --quiet
+}
+
 # ── Setup command ────────────────────────────────────────────────────────────
 
 cmd_setup() {
-  local mode="prebuilt"
+  local mode="from-release"
   local no_fallback=false
   local clean=false
+  local target_sha=""
 
   while (( $# > 0 )); do
     case "$1" in
-      --prebuilt)    mode="prebuilt"; shift ;;
-      --local)       mode="local"; shift ;;
+      --from-release)
+        mode="from-release"; shift
+        # Optional SHA argument (next arg that doesn't start with --)
+        if (( $# > 0 )) && [[ "$1" != --* ]]; then
+          target_sha="$1"; shift
+        fi
+        ;;
+      --from-source)
+        mode="from-source"; shift
+        if (( $# > 0 )) && [[ "$1" != --* ]]; then
+          target_sha="$1"; shift
+        fi
+        ;;
       --no-fallback) no_fallback=true; shift ;;
       --clean)       clean=true; shift ;;
       -h|--help)     usage ;;
@@ -205,26 +228,31 @@ cmd_setup() {
 
   mkdir -p "$SCRATCH"
 
-  if [[ "$mode" == "prebuilt" ]]; then
+  # Checkout specific SHA if requested
+  if [[ -n "$target_sha" ]]; then
+    checkout_submodule "$target_sha"
+  fi
+
+  if [[ "$mode" == "from-release" ]]; then
     echo ""
-    echo "==> Setting up dependencies (prebuilt)..."
+    echo "==> Setting up dependencies (from release)..."
     if bash "$SCRIPT_DIR/setup-deps-tarball.sh"; then
-      echo "prebuilt" > "$DEPS_MODE_FILE"
+      echo "from-release" > "$DEPS_MODE_FILE"
     else
       if $no_fallback; then
-        die "Prebuilt artifacts not available and --no-fallback specified."
+        die "Release artifacts not available and --no-fallback specified."
       fi
       echo ""
-      echo "Prebuilt artifacts not available — falling back to local build..."
-      mode="local"
+      echo "Release artifacts not available — falling back to source build..."
+      mode="from-source"
     fi
   fi
 
-  if [[ "$mode" == "local" ]]; then
+  if [[ "$mode" == "from-source" ]]; then
     echo ""
-    echo "==> Setting up dependencies (local build from source)..."
+    echo "==> Setting up dependencies (from source)..."
     bash "$SCRIPT_DIR/setup-deps-standalone.sh"
-    echo "local" > "$DEPS_MODE_FILE"
+    echo "from-source" > "$DEPS_MODE_FILE"
   fi
 
   echo ""
@@ -235,24 +263,24 @@ cmd_setup() {
 # ── Build command (default) ──────────────────────────────────────────────────
 
 cmd_build() {
-  local preset="default"
+  local profile="default"
   local build_dir=""
 
   while (( $# > 0 )); do
     case "$1" in
-      --preset)    preset="$2"; shift 2 ;;
+      --profile)   profile="$2"; shift 2 ;;
       --build-dir) build_dir="$2"; shift 2 ;;
       -h|--help)   usage ;;
       *)           die "Unknown build option: $1" ;;
     esac
   done
 
-  # Default build dir from preset
+  # Default build dir from profile
   if [[ -z "$build_dir" ]]; then
-    case "$preset" in
+    case "$profile" in
       default) build_dir="build" ;;
       san)     build_dir="build-san" ;;
-      *)       build_dir="build-${preset}" ;;
+      *)       build_dir="build-${profile}" ;;
     esac
   fi
 
@@ -268,7 +296,10 @@ cmd_build() {
   local nproc
   nproc=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 
-  echo "==> Configuring (preset: $preset, build: $build_dir)..."
+  # Map profile to cmake preset
+  local preset="$profile"
+
+  echo "==> Configuring (profile: $profile, build: $build_dir)..."
   cmake -S "$PROJECT_ROOT" -B "$build_dir" \
     --preset "$preset" \
     -DCMAKE_PREFIX_PATH="$prefix_path"
@@ -314,5 +345,5 @@ case "$1" in
   test)   shift; cmd_test "$@" ;;
   -h|--help) usage ;;
   -*)     cmd_build "$@" ;;
-  *)      die "Unknown command: $1. Use: setup, test, or build options (--preset, --build-dir)" ;;
+  *)      die "Unknown command: $1. Use: setup, test, or build options (--profile, --build-dir)" ;;
 esac

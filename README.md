@@ -13,7 +13,7 @@ git clone https://github.com/openmoq/o-rly.git && cd o-rly
 git submodule update --init
 sudo deps/moxygen/standalone/install-system-deps.sh   # Ubuntu/Debian
 
-./scripts/build.sh setup     # prebuilt moxygen deps (~1 min)
+./scripts/build.sh setup     # download moxygen release artifacts (~1 min)
 ./scripts/build.sh           # configure + build
 ./scripts/build.sh test      # run tests
 ```
@@ -22,22 +22,30 @@ sudo deps/moxygen/standalone/install-system-deps.sh   # Ubuntu/Debian
 
 | Mode | Command | Time |
 |------|---------|------|
-| **prebuilt** | `build.sh setup` | ~1 min — downloads CI-built artifacts (requires `gh` CLI) |
-| **local** | `build.sh setup --local` | 15-30 min — builds everything from source |
+| **from-release** | `build.sh setup` | ~1 min — downloads CI-built artifacts (requires `gh` CLI) |
+| **from-source** | `build.sh setup --from-source` | 15-30 min — builds everything from source |
 
-Prebuilt is the default. Falls back to local if artifacts aren't available.
+Both accept an optional commit SHA to override the submodule pointer:
+
+```bash
+build.sh setup --from-release abc1234   # download artifacts for specific commit
+build.sh setup --from-source abc1234    # build specific commit from source
+```
+
+Default (no SHA) uses the current submodule HEAD.
+Falls back from release to source if artifacts aren't available.
 Use `--no-fallback` to fail instead. Use `--clean` to wipe `.scratch/` first.
 
 ## Build Options
 
 ```
-build.sh setup [--prebuilt|--local] [--no-fallback] [--clean]
-build.sh [--preset default|san] [--build-dir DIR]
+build.sh setup [--from-release [SHA]|--from-source [SHA]] [--no-fallback] [--clean]
+build.sh [--profile default|san] [--build-dir DIR]
 build.sh test [--build-dir DIR] [-- CTEST_ARGS...]
 ```
 
-| Preset | Build dir | Description |
-|--------|-----------|-------------|
+| Profile | Build dir | Description |
+|---------|-----------|-------------|
 | `default` | `build/` | RelWithDebInfo |
 | `san` | `build-san/` | Debug + ASAN/UBSAN |
 
