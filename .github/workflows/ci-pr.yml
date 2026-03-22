@@ -64,7 +64,7 @@ jobs:
         run: bash scripts/build.sh setup
 
       - name: Build
-        run: bash scripts/build.sh --preset ${{ matrix.preset }} --build-dir ${{ matrix.build_dir }}
+        run: bash scripts/build.sh --profile ${{ matrix.preset }} --build-dir ${{ matrix.build_dir }}
 
       - name: Test
         env:

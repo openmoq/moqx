@@ -71,10 +71,10 @@ jobs:
       - name: Setup dependencies
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: bash scripts/build.sh setup --prebuilt --no-fallback
+        run: bash scripts/build.sh setup --from-release --no-fallback
 
       - name: Build
-        run: bash scripts/build.sh --preset ${{ matrix.preset }} --build-dir ${{ matrix.build_dir }}
+        run: bash scripts/build.sh --profile ${{ matrix.preset }} --build-dir ${{ matrix.build_dir }}
 
       - name: Test
         env:
@@ -114,7 +114,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           ORLY_PLATFORM: bookworm-amd64
-        run: bash scripts/build.sh setup --prebuilt --no-fallback
+        run: bash scripts/build.sh setup --from-release --no-fallback
 
       - name: Stage tarball for Docker build
         run: |
