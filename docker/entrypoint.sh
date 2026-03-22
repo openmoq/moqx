@@ -43,7 +43,7 @@ cache:
 
 admin:
   port: ${ORLY_ADMIN_PORT:-8000}
-  address: "127.0.0.1"
+  address: "::"
   plaintext: true
 EOF
 
