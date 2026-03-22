@@ -7,6 +7,8 @@
 #   ORLY_PORT       — UDP listen port (default: 4433)
 #   ORLY_ADMIN_PORT — admin HTTP port (default: 8000)
 #   ORLY_INSECURE   — use built-in dev cert (default: false)
+#   ORLY_MAX_TRACKS — max cached tracks (default: 1000)
+#   ORLY_MAX_GROUPS — max groups per track in cache (default: 100)
 #   ORLY_LOG_LEVEL  — min log level: 0=INFO 1=WARNING 2=ERROR 3=FATAL (default: 0)
 #   ORLY_VERBOSE    — verbose/debug level: 0=off, 1-4=increasing detail (default: 0)
 set -e
@@ -38,8 +40,8 @@ listeners:
 
 cache:
   enabled: true
-  max_tracks: 100
-  max_groups_per_track: 3
+  max_tracks: ${ORLY_MAX_TRACKS:-1000}
+  max_groups_per_track: ${ORLY_MAX_GROUPS:-100}
 
 admin:
   port: ${ORLY_ADMIN_PORT:-8000}

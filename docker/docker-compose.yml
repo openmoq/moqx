@@ -35,6 +35,8 @@ services:
       ORLY_KEY:  /certs/live/${DOMAIN}/privkey.pem
       ORLY_PORT: ${ORLY_PORT:-4433}
       ORLY_ADMIN_PORT: ${ORLY_ADMIN_PORT:-8000}
+      ORLY_MAX_TRACKS: ${ORLY_MAX_TRACKS:-1000}
+      ORLY_MAX_GROUPS: ${ORLY_MAX_GROUPS:-100}
       ORLY_LOG_LEVEL: ${ORLY_LOG_LEVEL:-0}
       ORLY_VERBOSE: ${ORLY_VERBOSE:-0}
     ulimits:
