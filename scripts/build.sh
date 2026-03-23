@@ -55,6 +55,8 @@ Setup options:
                         Optional SHA overrides submodule commit
   --from-source [SHA]   Build all deps from source (slow, full control)
                         Optional SHA overrides submodule commit
+  --moxygen-dir DIR     Use a local moxygen directory instead of the submodule
+                        (--from-source only; mutually exclusive with SHA)
   --no-fallback         Fail if requested mode unavailable (don't auto-switch)
   --clean               Remove .scratch and start fresh
 
@@ -190,6 +192,7 @@ cmd_setup() {
   local no_fallback=false
   local clean=false
   local target_sha=""
+  local moxygen_dir=""
 
   while (( $# > 0 )); do
     case "$1" in
@@ -206,6 +209,11 @@ cmd_setup() {
           target_sha="$1"; shift
         fi
         ;;
+      --moxygen-dir)
+        [[ $# -gt 1 ]] || die "--moxygen-dir requires a path argument"
+        moxygen_dir="$(cd "$2" && pwd)" || die "--moxygen-dir: '$2' not found"
+        shift 2
+        ;;
       --no-fallback) no_fallback=true; shift ;;
       --clean)       clean=true; shift ;;
       -h|--help)     usage ;;
@@ -213,7 +221,19 @@ cmd_setup() {
     esac
   done
 
-  check_submodule
+  if [[ -n "$moxygen_dir" && -n "$target_sha" ]]; then
+    die "--moxygen-dir and a SHA override are mutually exclusive"
+  fi
+
+  if [[ -n "$moxygen_dir" ]]; then
+    export ORLY_MOXYGEN_DIR="$moxygen_dir"
+    echo "Using moxygen from: $moxygen_dir"
+  else
+    check_submodule
+    if [[ -n "$target_sha" ]]; then
+      checkout_submodule "$target_sha"
+    fi
+  fi
 
   echo "Checking system dependencies..."
   if ! check_system_deps; then
@@ -227,11 +247,6 @@ cmd_setup() {
   fi
 
   mkdir -p "$SCRATCH"
-
-  # Checkout specific SHA if requested
-  if [[ -n "$target_sha" ]]; then
-    checkout_submodule "$target_sha"
-  fi
 
   if [[ "$mode" == "from-release" ]]; then
     echo ""
