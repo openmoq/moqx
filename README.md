@@ -32,14 +32,21 @@ build.sh setup --from-release abc1234   # download artifacts for specific commit
 build.sh setup --from-source abc1234    # build specific commit from source
 ```
 
-Default (no SHA) uses the current submodule HEAD.
+To build against a local moxygen tree (useful when iterating on moxygen,
+proxygen, folly, etc.):
+
+```bash
+build.sh setup --from-source --moxygen-dir ~/src/moxygen
+```
+
+Default (no SHA or dir) uses the current submodule HEAD.
 Falls back from release to source if artifacts aren't available.
 Use `--no-fallback` to fail instead. Use `--clean` to wipe `.scratch/` first.
 
 ## Build Options
 
 ```
-build.sh setup [--from-release [SHA]|--from-source [SHA]] [--no-fallback] [--clean]
+build.sh setup [--from-release [SHA]|--from-source [SHA]] [--moxygen-dir DIR] [--no-fallback] [--clean]
 build.sh [--profile default|san] [--build-dir DIR]
 build.sh test [--build-dir DIR] [-- CTEST_ARGS...]
 ```
@@ -59,12 +66,25 @@ See `docker/docker-compose.yml` for deployment with TLS.
 
 ## Architecture
 
-`ORelay` is a hard fork of moxygen's `MoQRelay`, evolved independently
-(threading, cache, chained relay support) while using moxygen's transport
-libraries (MoQForwarder, MoQCache, MoQSession, MoQServer).
+### Relay Core: ORelay
 
-`ORelayServer` extends `MoQServer` to wire up `ORelay` as the
-publish/subscribe handler.
+`ORelay` is a hard fork of moxygen's `MoQRelay`. We copy the relay core into
+o-rly so we can evolve it independently (threading model, custom cache miss
+handling, chained caches, etc.) while still using moxygen's lower-level
+building blocks as libraries:
+
+- **MoQForwarder** — fan-out engine, used as-is from moxygen for now. May need
+  to fork in the future to accommodate threading model differences.
+- **MoQCache** — object cache, used as-is from moxygen. Custom miss handling
+  and chained cache support may be upstreamed to openmoq/moxygen or maintained
+  in our fork.
+- **MoQSession / MoQServer / MoQRelaySession** — session and server
+  infrastructure, used as libraries.
+
+### ORelayServer
+
+`ORelayServer` extends `MoQServer` to wire up `ORelay` as the publish/subscribe
+handler and create `MoQRelaySession` instances for incoming connections.
 
 ## Design
 
