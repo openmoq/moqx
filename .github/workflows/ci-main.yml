@@ -50,7 +50,7 @@ jobs:
           - name: asan debug
             preset: san
             build_dir: build-san
-            runner: ubuntu-22.04
+            runner: [self-hosted, linode]
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
     steps:
