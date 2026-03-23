@@ -235,11 +235,15 @@ cmd_setup() {
     fi
   fi
 
-  echo "Checking system dependencies..."
-  if ! check_system_deps; then
-    die "Install missing dependencies and re-run."
+  # Skip system dep check for from-release with --no-fallback (e.g. CI publish
+  # job that only downloads the tarball, doesn't build on the host).
+  if [[ "$mode" != "from-release" ]] || ! $no_fallback; then
+    echo "Checking system dependencies..."
+    if ! check_system_deps; then
+      die "Install missing dependencies and re-run."
+    fi
+    echo "  All system dependencies found."
   fi
-  echo "  All system dependencies found."
 
   if $clean; then
     echo "Cleaning .scratch..."
