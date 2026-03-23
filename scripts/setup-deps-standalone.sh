@@ -43,6 +43,7 @@ cmake -S "$STANDALONE_SRC" -B "$BUILD_DIR" \
     -G Ninja \
     -DCMAKE_BUILD_TYPE=RelWithDebInfo \
     -DCMAKE_INSTALL_PREFIX="$INSTALL_DIR" \
+    -DINSTALL_DEPS=ON \
     -DBUILD_TESTS=OFF \
     -DBUILD_SHARED_LIBS=OFF
 
@@ -57,7 +58,8 @@ cmake --install "$BUILD_DIR"
 
 mkdir -p "$SCRATCH"
 echo "$INSTALL_DIR" > "${SCRATCH}/cmake_prefix_path.txt"
-echo "standalone" > "${SCRATCH}/deps-mode"
+
+echo "from-source" > "${SCRATCH}/deps-mode"
 
 NLIBS=$(find "$INSTALL_DIR/lib" -name '*.a' 2>/dev/null | wc -l)
 echo "==> Done: $NLIBS static libs in $INSTALL_DIR"
