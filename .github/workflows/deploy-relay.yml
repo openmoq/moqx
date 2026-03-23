@@ -59,6 +59,8 @@ jobs:
           CERTBOT_EMAIL=gmarzot@openmoq.org
           ORLY_PORT=${{ steps.config.outputs.port }}
           ORLY_ADMIN_PORT=${{ steps.config.outputs.admin_port }}
+          ORLY_LOG_LEVEL=0
+          ORLY_VERBOSE=0
           EOF
           # Strip leading whitespace from heredoc (YAML indentation artifact)
           sed -i 's/^[[:space:]]*//' .env

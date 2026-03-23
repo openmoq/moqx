@@ -20,19 +20,19 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 SCRATCH="${ORLY_SCRATCH_PATH:-${PROJECT_ROOT}/.scratch}"
-MOXYGEN_DIR="${PROJECT_ROOT}/deps/moxygen"
+MOXYGEN_DIR="${ORLY_MOXYGEN_DIR:-${PROJECT_ROOT}/deps/moxygen}"
 STANDALONE_SRC="${MOXYGEN_DIR}/standalone"
 BUILD_DIR="${SCRATCH}/standalone-build"
 INSTALL_DIR="${SCRATCH}/moxygen-install"
 
-if [[ ! -e "$MOXYGEN_DIR/.git" ]]; then
+if [[ -z "${ORLY_MOXYGEN_DIR:-}" ]] && [[ ! -e "$MOXYGEN_DIR/.git" ]]; then
     echo "Error: deps/moxygen submodule not initialized." >&2
     echo "  Run: git submodule update --init" >&2
     exit 1
 fi
 
 if [[ ! -f "${STANDALONE_SRC}/CMakeLists.txt" ]]; then
-    echo "Error: standalone/CMakeLists.txt not found in moxygen submodule" >&2
+    echo "Error: standalone/CMakeLists.txt not found in ${MOXYGEN_DIR}" >&2
     exit 1
 fi
 
@@ -43,7 +43,6 @@ cmake -S "$STANDALONE_SRC" -B "$BUILD_DIR" \
     -G Ninja \
     -DCMAKE_BUILD_TYPE=RelWithDebInfo \
     -DCMAKE_INSTALL_PREFIX="$INSTALL_DIR" \
-    -DBUNDLE_DEPS=ON \
     -DBUILD_TESTS=OFF \
     -DBUILD_SHARED_LIBS=OFF
 

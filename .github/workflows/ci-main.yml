@@ -50,7 +50,7 @@ jobs:
           - name: asan debug
             preset: san
             build_dir: build-san
-            runner: ubuntu-22.04
+            runner: [self-hosted, linode]
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
     steps:
@@ -66,23 +66,20 @@ jobs:
           submodules: true
 
       - name: Install system dependencies
-        run: bash deps/moxygen/standalone/install-system-deps.sh
+        run: sudo deps/moxygen/standalone/install-system-deps.sh
 
-      - name: Download moxygen artifacts
+      - name: Setup dependencies
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: bash scripts/setup-deps-tarball.sh
-
-      - name: Configure
-        run: bash scripts/configure.sh ${{ matrix.build_dir }} ${{ matrix.preset }}
+        run: bash scripts/build.sh setup --from-release --no-fallback
 
       - name: Build
-        run: cmake --build ${{ matrix.build_dir }} -j$(getconf _NPROCESSORS_ONLN)
+        run: bash scripts/build.sh --profile ${{ matrix.preset }} --build-dir ${{ matrix.build_dir }}
 
       - name: Test
         env:
           ASAN_OPTIONS: ${{ matrix.name == 'asan debug' && 'detect_leaks=1:abort_on_error=1' || '' }}
-        run: ctest --test-dir ${{ matrix.build_dir }} --output-on-failure --output-junit test-results.xml
+        run: bash scripts/build.sh test --build-dir ${{ matrix.build_dir }} -- --output-junit test-results.xml
 
       - name: Publish test results
         uses: dorny/test-reporter@v1.9.1
@@ -98,7 +95,7 @@ jobs:
   # ════════════════════════════════════════════════════════════════════════════
 
   publish:
-    needs: [build]
+    needs: [check-format, build]
     name: publish
     runs-on: ubuntu-22.04
     steps:
@@ -117,7 +114,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           ORLY_PLATFORM: bookworm-amd64
-        run: bash scripts/setup-deps-tarball.sh
+        run: bash scripts/build.sh setup --from-release --no-fallback
 
       - name: Stage tarball for Docker build
         run: |

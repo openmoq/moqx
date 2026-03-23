@@ -3,91 +3,66 @@ The OpenMOQ Relay
 
 ## Prerequisites
 
-- CMake 3.20+
-- Ninja
-- Python 3
-- A C++20 compiler (GCC 11+ or Clang 14+)
-- pkg-config, libssl-dev
+- CMake 3.25+, Ninja, C++20 compiler (GCC 11+ / Clang 14+)
+- System libraries: `build.sh setup` checks and reports what's missing
 
-## Submodules
-
-o-rly depends on [moxygen](https://github.com/openmoq/moxygen), which is
-included as a git submodule under `deps/moxygen` (tracking the
-`orly-integration` branch). After cloning, initialize it with:
+## Quick Start
 
 ```bash
+git clone https://github.com/openmoq/o-rly.git && cd o-rly
 git submodule update --init
+sudo deps/moxygen/standalone/install-system-deps.sh   # Ubuntu/Debian
+
+./scripts/build.sh setup     # download moxygen release artifacts (~1 min)
+./scripts/build.sh           # configure + build
+./scripts/build.sh test      # run tests
 ```
 
-## Building Locally
+## Dependency Modes
 
-The simplest way to build from scratch is the all-in-one build script:
+| Mode | Command | Time |
+|------|---------|------|
+| **from-release** | `build.sh setup` | ~1 min — downloads CI-built artifacts (requires `gh` CLI) |
+| **from-source** | `build.sh setup --from-source` | 15-30 min — builds everything from source |
+
+Both accept an optional commit SHA to override the submodule pointer:
 
 ```bash
-scripts/build.sh
+build.sh setup --from-release abc1234   # download artifacts for specific commit
+build.sh setup --from-source abc1234    # build specific commit from source
 ```
 
-On the first run this will:
-
-1. Run `scripts/setup-deps.sh` — uses moxygen's `getdeps.py` to fetch
-   and build all third-party dependencies (folly, fizz, wangle, mvfst,
-   proxygen) into `.scratch/`.
-2. Run `scripts/configure.sh` — invokes CMake with the `default` preset,
-   pointing `CMAKE_PREFIX_PATH` at the built dependencies.
-3. Build o-rly itself with `cmake --build build`.
-
-On subsequent runs, `build.sh` detects whether dependency versions or
-the moxygen revision have changed and only rebuilds what is needed.
-
-You can also run the steps manually:
+To build against a local moxygen tree (useful when iterating on moxygen,
+proxygen, folly, etc.):
 
 ```bash
-# 1. Build moxygen and all deps (first time only, or after dep changes)
-scripts/setup-deps.sh
-
-# 2. Configure
-scripts/configure.sh
-
-# 3. Build
-cmake --build build
+build.sh setup --from-source --moxygen-dir ~/src/moxygen
 ```
 
-The scratch directory defaults to `.scratch/` in the project root.
-Override it with the `ORLY_SCRATCH_PATH` environment variable.
+Default (no SHA or dir) uses the current submodule HEAD.
+Falls back from release to source if artifacts aren't available.
+Use `--no-fallback` to fail instead. Use `--clean` to wipe `.scratch/` first.
 
-### CMake Presets
+## Build Options
 
-| Preset    | Description           |
-|-----------|-----------------------|
-| `default` | Ninja, RelWithDebInfo |
-| `san`     | Debug with ASAN/UBSAN |
+```
+build.sh setup [--from-release [SHA]|--from-source [SHA]] [--moxygen-dir DIR] [--no-fallback] [--clean]
+build.sh [--profile default|san] [--build-dir DIR]
+build.sh test [--build-dir DIR] [-- CTEST_ARGS...]
+```
 
-## Building with Docker
+| Profile | Build dir | Description |
+|---------|-----------|-------------|
+| `default` | `build/` | RelWithDebInfo |
+| `san` | `build-san/` | Debug + ASAN/UBSAN |
 
-The Docker build requires no local dependencies beyond Docker itself. It
-uses a multi-stage build to cache dependency compilation:
+## Docker
 
 ```bash
-docker build -f docker/Dockerfile -t o-rly .
+docker pull ghcr.io/openmoq/o-rly:latest
 ```
 
-The stages are:
-
-1. **base** — installs OS-level build tools on Debian 13.
-2. **deps** — builds moxygen's third-party dependencies (cached until
-   dependency manifests change).
-3. **moxygen** — builds moxygen itself (cached until `deps/moxygen`
-   changes).
-4. **build** — builds o-rly, statically linking against the
-   dependencies.
-5. **runtime** — minimal Debian slim image containing only the `o-rly`
-   binary.
-
-Run the resulting image:
-
-```bash
-docker run --rm o-rly [args...]
-```
+See `docker/docker-compose.yml` for deployment with TLS.
 
 ## Architecture
 
@@ -115,3 +90,4 @@ handler and create `MoQRelaySession` instances for incoming connections.
 
 - `design/ARCHITECTURE.md`
 - `design/ROADMAP.md`
+- `design/CI_OVERVIEW.md`

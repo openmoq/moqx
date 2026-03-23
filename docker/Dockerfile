@@ -33,6 +33,7 @@ FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libunwind8 libsodium23 libboost-context1.74.0 \
         libgoogle-glog0v6 libgflags2.2 libdouble-conversion3 \
+        curl \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /install/bin/o_rly /usr/local/bin/o-rly

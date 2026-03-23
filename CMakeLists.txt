@@ -29,7 +29,9 @@ list(APPEND CMAKE_MODULE_PATH
 # Folly's config calls FindBoost which was removed in CMake 3.30 (CMP0167).
 # Folly itself works fine with Boost's own config-mode package; silence the
 # policy warning until upstream fixes their config files.
-cmake_policy(SET CMP0167 OLD)
+if(POLICY CMP0167)
+  cmake_policy(SET CMP0167 OLD)
+endif()
 
 find_package(moxygen REQUIRED)
 
