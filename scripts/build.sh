@@ -318,9 +318,20 @@ cmd_build() {
   # Map profile to cmake preset
   local preset="$profile"
 
+  # from-source builds use system libs (e.g. gflags shared-only on CentOS);
+  # override the preset's .a-only suffix to allow shared system libraries.
+  local extra_cmake_args=()
+  local deps_mode=""
+  [[ -f "$DEPS_MODE_FILE" ]] && deps_mode=$(cat "$DEPS_MODE_FILE")
+  if [[ "$deps_mode" == "from-source" ]]; then
+    extra_cmake_args+=("-DCMAKE_FIND_LIBRARY_SUFFIXES=.so;.a")
+    extra_cmake_args+=("-DGFLAGS_SHARED=ON")
+  fi
+
   echo "==> Configuring (profile: $profile, build: $build_dir)..."
   cmake -S "$PROJECT_ROOT" -B "$build_dir" \
     --preset "$preset" \
+    "${extra_cmake_args[@]+"${extra_cmake_args[@]}"}" \
     -DCMAKE_PREFIX_PATH="$prefix_path"
 
   echo "==> Building ($nproc jobs)..."
