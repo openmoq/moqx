@@ -19,8 +19,9 @@ if(ORLY_ENABLE_SANITIZERS AND NOT CMAKE_BUILD_TYPE STREQUAL "Release")
   add_link_options(-fsanitize=address,undefined)
 endif()
 
-# Prefer static libraries for all transitive deps
-set(GFLAGS_SHARED OFF CACHE BOOL "" FORCE)
+# Prefer static libraries for all transitive deps (from-release mode).
+# For from-source builds, build.sh overrides this to ON (system gflags is shared-only).
+set(GFLAGS_SHARED OFF CACHE BOOL "")
 
 list(APPEND CMAKE_MODULE_PATH
   "${PROJECT_SOURCE_DIR}/deps/moxygen/build/fbcode_builder/CMake"
@@ -173,17 +174,22 @@ if(ORLY_BUILD_TESTS)
     o_rly_config_loader
     GTest::gtest_main
     GTest::gmock
-    # LINK_LIBRARY:WHOLE_ARCHIVE requires CMake >= 3.24 (cmake_minimum_required is 3.25).
-    "$<LINK_LIBRARY:WHOLE_ARCHIVE,gflags_nothreads_static>"
-  )
-  # gflags_nothreads_static also appears as a plain transitive dep from folly;
-  # override the feature so CMake doesn't warn about mixed link strategies.
-  set_property(TARGET o_rly_config_test PROPERTY
-    LINK_LIBRARY_OVERRIDE "WHOLE_ARCHIVE,gflags_nothreads_static"
   )
   target_compile_definitions(o_rly_config_test PRIVATE
     CONFIG_EXAMPLE_PATH="${PROJECT_SOURCE_DIR}/config.example.yaml"
   )
+  # When using static gflags (from-release), gflags_nothreads_static also
+  # appears as a plain transitive dep from folly — link it as WHOLE_ARCHIVE
+  # and override the feature to avoid mixed link strategy warnings.
+  # LINK_LIBRARY:WHOLE_ARCHIVE requires CMake >= 3.24 (cmake_minimum_required is 3.25).
+  if(NOT GFLAGS_SHARED)
+    target_link_libraries(o_rly_config_test PRIVATE
+      "$<LINK_LIBRARY:WHOLE_ARCHIVE,gflags_nothreads_static>"
+    )
+    set_property(TARGET o_rly_config_test PROPERTY
+      LINK_LIBRARY_OVERRIDE "WHOLE_ARCHIVE,gflags_nothreads_static"
+    )
+  endif()
   gtest_discover_tests(o_rly_config_test)
 
   add_executable(o_rly_config_resolver_test
@@ -193,11 +199,15 @@ if(ORLY_BUILD_TESTS)
     o_rly_config_loader
     GTest::gtest_main
     GTest::gmock
-    "$<LINK_LIBRARY:WHOLE_ARCHIVE,gflags_nothreads_static>"
   )
-  set_property(TARGET o_rly_config_resolver_test PROPERTY
-    LINK_LIBRARY_OVERRIDE "WHOLE_ARCHIVE,gflags_nothreads_static"
-  )
+  if(NOT GFLAGS_SHARED)
+    target_link_libraries(o_rly_config_resolver_test PRIVATE
+      "$<LINK_LIBRARY:WHOLE_ARCHIVE,gflags_nothreads_static>"
+    )
+    set_property(TARGET o_rly_config_resolver_test PROPERTY
+      LINK_LIBRARY_OVERRIDE "WHOLE_ARCHIVE,gflags_nothreads_static"
+    )
+  endif()
   gtest_discover_tests(o_rly_config_resolver_test)
 
   add_test(
