@@ -167,6 +167,14 @@ if(ORLY_BUILD_TESTS)
     Folly::folly_random
   )
 
+  add_library(o_rly_test_main STATIC
+    tests/TestMain.cpp
+  )
+  target_link_libraries(o_rly_test_main PUBLIC
+    Folly::folly_init_init
+    GTest::gtest
+  )
+
   add_executable(o_rly_relay_test
     tests/ORelayTest.cpp
   )
@@ -176,9 +184,9 @@ if(ORLY_BUILD_TESTS)
   target_link_libraries(o_rly_relay_test PRIVATE
     o_rly_core
     o_rly_test_utils
-    moxygen::moxygen_events_moq_folly_executor_impl
-    GTest::gtest_main
+    o_rly_test_main
     GTest::gmock
+    moxygen::moxygen_events_moq_folly_executor_impl
   )
   include(GoogleTest)
   gtest_discover_tests(o_rly_relay_test)
