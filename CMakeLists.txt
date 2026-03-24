@@ -156,15 +156,23 @@ if(MOQX_BUILD_TESTS)
   enable_testing()
   find_package(GTest REQUIRED CONFIG)
 
+  add_library(moqx_test_utils STATIC
+    tests/TestUtils.cpp
+  )
+  target_include_directories(moqx_test_utils PUBLIC
+    ${PROJECT_SOURCE_DIR}/tests
+  )
+  target_link_libraries(moqx_test_utils PUBLIC
+    Folly::folly_io_iobuf
+    Folly::folly_random
+  )
+
   add_executable(moqx_relay_test
     tests/MoqxRelayTest.cpp
-    ${PROJECT_SOURCE_DIR}/deps/moxygen/moxygen/test/TestUtils.cpp
-  )
-  target_include_directories(moqx_relay_test PRIVATE
-    ${PROJECT_SOURCE_DIR}/deps/moxygen
   )
   target_link_libraries(moqx_relay_test PRIVATE
     moqx_core
+    moqx_test_utils
     moxygen::moxygen_events_moq_folly_executor_impl
     GTest::gtest_main
     GTest::gmock
