@@ -167,15 +167,23 @@ if(MOQX_BUILD_TESTS)
     Folly::folly_random
   )
 
+  add_library(moqx_test_main STATIC
+    tests/TestMain.cpp
+  )
+  target_link_libraries(moqx_test_main PUBLIC
+    Folly::folly_init_init
+    GTest::gtest
+  )
+
   add_executable(moqx_relay_test
     tests/MoqxRelayTest.cpp
   )
   target_link_libraries(moqx_relay_test PRIVATE
     moqx_core
     moqx_test_utils
-    moxygen::moxygen_events_moq_folly_executor_impl
-    GTest::gtest_main
+    moqx_test_main
     GTest::gmock
+    moxygen::moxygen_events_moq_folly_executor_impl
   )
   include(GoogleTest)
   gtest_discover_tests(moqx_relay_test)
