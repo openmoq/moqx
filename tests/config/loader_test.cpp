@@ -26,7 +26,7 @@ listeners:
       insecure: true
     endpoint: "/moq-relay"
 services:
-  - name: default
+  default:
     match:
       - authority: {any: true}
         path: {prefix: "/"}
@@ -51,11 +51,11 @@ admin:
   EXPECT_EQ(cfg.listeners.value()[0].endpoint.value(), "/moq-relay");
 
   ASSERT_EQ(cfg.services.value().size(), 1);
-  EXPECT_EQ(cfg.services.value()[0].name.value(), "default");
-  ASSERT_TRUE(cfg.services.value()[0].cache.value().has_value());
-  EXPECT_EQ(cfg.services.value()[0].cache.value()->enabled.value(), true);
-  EXPECT_EQ(cfg.services.value()[0].cache.value()->max_tracks.value(), 100);
-  EXPECT_EQ(cfg.services.value()[0].cache.value()->max_groups_per_track.value(), 3);
+  const auto& svc = cfg.services.value().at("default");
+  ASSERT_TRUE(svc.cache.value().has_value());
+  EXPECT_EQ(svc.cache.value()->enabled.value(), true);
+  EXPECT_EQ(svc.cache.value()->max_tracks.value(), 100);
+  EXPECT_EQ(svc.cache.value()->max_groups_per_track.value(), 3);
 }
 
 TEST(ConfigLoader, FullConfig) {
@@ -73,7 +73,7 @@ listeners:
     endpoint: "/relay"
     moqt_versions: [14, 16]
 services:
-  - name: live
+  live:
     match:
       - authority: {exact: "live.example.com"}
         path: {exact: "/moq-relay"}
@@ -104,8 +104,7 @@ admin:
   EXPECT_EQ((*l.moqt_versions.value())[1], 16);
 
   ASSERT_EQ(cfg.services.value().size(), 1);
-  const auto& svc = cfg.services.value()[0];
-  EXPECT_EQ(svc.name.value(), "live");
+  const auto& svc = cfg.services.value().at("live");
   ASSERT_TRUE(svc.cache.value().has_value());
   EXPECT_EQ(svc.cache.value()->enabled.value(), true);
   EXPECT_EQ(svc.cache.value()->max_tracks.value(), 200);
@@ -124,7 +123,7 @@ listeners:
       insecure: true
     endpoint: "/moq-relay"
 services:
-  - name: live
+  live:
     match:
       - authority: {exact: "live.example.com"}
         path: {exact: "/moq-relay"}
@@ -134,7 +133,7 @@ services:
       enabled: true
       max_tracks: 500
       max_groups_per_track: 10
-  - name: catch-all
+  catch-all:
     match:
       - authority: {any: true}
         path: {prefix: "/"}
@@ -147,8 +146,7 @@ services:
   auto cfg = loadConfig(yaml.path());
   ASSERT_EQ(cfg.services.value().size(), 2);
 
-  const auto& svc0 = cfg.services.value()[0];
-  EXPECT_EQ(svc0.name.value(), "live");
+  const auto& svc0 = cfg.services.value().at("live");
   ASSERT_EQ(svc0.match.value().size(), 2);
 
   // First match entry: exact authority + exact path
@@ -191,8 +189,7 @@ services:
   });
   EXPECT_EQ(m1PathPrefix, "/live/");
 
-  const auto& svc1 = cfg.services.value()[1];
-  EXPECT_EQ(svc1.name.value(), "catch-all");
+  const auto& svc1 = cfg.services.value().at("catch-all");
   ASSERT_EQ(svc1.match.value().size(), 1);
   bool isAnyAuth = false;
   svc1.match.value()[0].authority.value().visit([&](const auto& alt) {
@@ -216,7 +213,7 @@ listeners:
       insecure: true
     endpoint: "/moq-relay"
 services:
-  - name: default
+  default:
     match:
       - authority: {any: true}
         path: {prefix: "/"}
@@ -228,7 +225,7 @@ services:
 
   auto cfg = loadConfig(yaml.path());
   ASSERT_EQ(cfg.services.value().size(), 1);
-  const auto& svc = cfg.services.value()[0];
+  const auto& svc = cfg.services.value().at("default");
   ASSERT_EQ(svc.match.value().size(), 1);
   bool isAnyAuth = false;
   bool anyVal = false;
@@ -269,7 +266,7 @@ service_defaults:
     max_tracks: 50
     max_groups_per_track: 2
 services:
-  - name: default
+  default:
     match:
       - authority: {any: true}
         path: {prefix: "/"}
@@ -282,8 +279,7 @@ services:
   EXPECT_EQ(cfg.service_defaults.value()->cache.value()->max_groups_per_track.value(), 2);
 
   ASSERT_EQ(cfg.services.value().size(), 1);
-  EXPECT_EQ(cfg.services.value()[0].name.value(), "default");
-  EXPECT_FALSE(cfg.services.value()[0].cache.value().has_value());
+  EXPECT_FALSE(cfg.services.value().at("default").cache.value().has_value());
 }
 
 // --- Schema generation test ---
@@ -300,7 +296,6 @@ TEST(ConfigSchema, GeneratesValidJson) {
   EXPECT_THAT(schema, HasSubstr("listeners"));
   EXPECT_THAT(schema, HasSubstr("services"));
   EXPECT_THAT(schema, HasSubstr("Bind address"));
-  EXPECT_THAT(schema, HasSubstr("Service name"));
   EXPECT_THAT(schema, HasSubstr("Match rules"));
   EXPECT_THAT(schema, HasSubstr("Path matcher"));
   // AuthorityMatch should produce anyOf with exact/wildcard/any
@@ -324,7 +319,7 @@ listeners:
       insecure: true
     endpoint: "/moq-relay"
 services:
-  - name: default
+  default:
     match:
       - authority: {any: true}
         path: {prefix: "/"}
@@ -340,8 +335,8 @@ admin:
 
   auto cfg = loadConfig(yaml.path());
   EXPECT_EQ(cfg.listeners.value()[0].name.value(), "test");
-  ASSERT_TRUE(cfg.services.value()[0].cache.value().has_value());
-  EXPECT_EQ(cfg.services.value()[0].cache.value()->enabled.value(), false);
+  ASSERT_TRUE(cfg.services.value().at("default").cache.value().has_value());
+  EXPECT_EQ(cfg.services.value().at("default").cache.value()->enabled.value(), false);
 }
 
 TEST(ConfigLoader, LoadFromFileNotFound) {
@@ -368,7 +363,7 @@ listeners:
     endpoint: "/moq-relay"
     bogus: 42
 services:
-  - name: default
+  default:
     match:
       - authority: {any: true}
         path: {prefix: "/"}
@@ -398,7 +393,7 @@ listeners:
     endpoint: "/moq-relay"
     bogus: 42
 services:
-  - name: default
+  default:
     match:
       - authority: {any: true}
         path: {prefix: "/"}

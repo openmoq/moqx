@@ -40,7 +40,7 @@ service_defaults:
   max_sessions: 50000
 
 services:
-  - name: live-streaming
+  live-streaming:
     match:
       - authority: {exact: "live.example.com"}
         path: {exact: "/moq-relay"}
@@ -86,7 +86,7 @@ services:
         batching:
           max_batch_delay: 50ms
 
-  - name: pure-relay
+  pure-relay:
     match:
       - authority: {wildcard: "*.moq-relay.example.com"}
         path: {prefix: "/"}
