@@ -23,7 +23,7 @@ service_defaults:
     max_groups_per_track: 3     # Max groups per track in cache
 
 services:
-  - name: live-streaming
+  live-streaming:
     match:
       - authority: {exact: "live.example.com"}
         path: {exact: "/moq-relay"}
@@ -36,12 +36,12 @@ services:
       max_groups_per_track: 10    # Override: 3 → 10
       # enabled: inherited (true) from service_defaults
 
-  - name: testing
+  testing:
     match:
       - authority: {wildcard: "*.test.example.com"}
         path: {prefix: "/"}
 
-  - name: catch-all
+  catch-all:
     match:
       - authority: {any: true}
         path: {prefix: "/"}

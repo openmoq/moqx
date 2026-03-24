@@ -233,18 +233,13 @@ bool validatePath(
 // --- Service validation ---
 
 void validateService(
+    const std::string& name,
     const ParsedServiceConfig& svc,
     const ParsedConfig& config,
-    std::unordered_set<std::string>& serviceNames,
     std::unordered_set<std::string>& compositeKeys,
     std::unordered_map<std::string, ParsedCacheConfig>& mergedCaches,
     std::vector<std::string>& errors
 ) {
-  const auto& name = svc.name.value();
-
-  if (!serviceNames.insert(name).second) {
-    errors.push_back("Duplicate service name: '" + name + "'");
-  }
 
   // Validate each match entry
   const auto& matchEntries = svc.match.value();
@@ -399,12 +394,11 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
     errors.push_back("At least one service is required");
   }
 
-  std::unordered_set<std::string> serviceNames;
   std::unordered_set<std::string> compositeKeys;
   std::unordered_map<std::string, ParsedCacheConfig> mergedCaches;
 
-  for (const auto& svc : services) {
-    validateService(svc, config, serviceNames, compositeKeys, mergedCaches, errors);
+  for (const auto& [name, svc] : services) {
+    validateService(name, svc, config, compositeKeys, mergedCaches, errors);
   }
 
   if (!errors.empty()) {
@@ -414,8 +408,7 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
   // === Resolve ===
 
   folly::F14FastMap<std::string, ServiceConfig> resolvedServices;
-  for (const auto& svc : services) {
-    const auto& name = svc.name.value();
+  for (const auto& [name, svc] : services) {
     resolvedServices.emplace(name, resolveService(svc, mergedCaches.at(name)));
   }
 

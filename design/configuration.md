@@ -83,7 +83,7 @@ Each service defines one or more `match` entries. Each entry pairs an **authorit
 
 ```yaml
 services:
-  - name: example
+  example:
     match:
       - authority: {exact: "live.example.com"}
         path: {exact: "/moq-relay"}

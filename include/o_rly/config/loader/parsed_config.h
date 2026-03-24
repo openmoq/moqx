@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -98,7 +99,6 @@ struct ParsedServiceConfig {
     rfl::Description<"Path matcher", PathMatch> path;
   };
 
-  rfl::Description<"Service name (must be unique)", std::string> name;
   rfl::Description<"Match rules for routing", std::vector<MatchRule>> match;
   rfl::Description<
       "Per-service cache settings (overrides service_defaults)",
@@ -119,7 +119,7 @@ struct ParsedConfig {
       "Default settings inherited by all services",
       std::optional<ParsedServiceDefaultsConfig>>
       service_defaults;
-  rfl::Description<"Service definitions", std::vector<ParsedServiceConfig>> services;
+  rfl::Description<"Service definitions", std::map<std::string, ParsedServiceConfig>> services;
   rfl::Description<"Admin HTTP server settings", std::optional<ParsedAdminConfig>> admin;
 };
 
