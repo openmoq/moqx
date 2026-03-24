@@ -33,7 +33,7 @@ listeners:
       insecure: true
     endpoint: "/moq-relay"
 services:
-  - name: default
+  default:
     match:
       - authority: {any: true}
         path: {prefix: "/"}
