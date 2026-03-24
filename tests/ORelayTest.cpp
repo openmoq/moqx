@@ -14,7 +14,7 @@
 #include <moxygen/relay/MoQForwarder.h>
 #include <moxygen/test/MockMoQSession.h>
 #include <moxygen/test/Mocks.h>
-#include <moxygen/test/TestUtils.h>
+#include "TestUtils.h"
 #include <o_rly/ORelay.h>
 
 using namespace testing;
@@ -22,6 +22,8 @@ using namespace moxygen;
 using namespace openmoq::o_rly;
 
 namespace moxygen::test {
+
+using openmoq::o_rly::test::makeBuf;
 
 const TrackNamespace kTestNamespace{{"test", "namespace"}};
 const TrackNamespace kAllowedPrefix{{"test"}};

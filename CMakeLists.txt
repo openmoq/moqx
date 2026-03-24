@@ -156,15 +156,26 @@ if(ORLY_BUILD_TESTS)
   enable_testing()
   find_package(GTest REQUIRED CONFIG)
 
+  add_library(o_rly_test_utils STATIC
+    tests/TestUtils.cpp
+  )
+  target_include_directories(o_rly_test_utils PUBLIC
+    ${PROJECT_SOURCE_DIR}/tests
+  )
+  target_link_libraries(o_rly_test_utils PUBLIC
+    Folly::folly_io_iobuf
+    Folly::folly_random
+  )
+
   add_executable(o_rly_relay_test
     tests/ORelayTest.cpp
-    ${PROJECT_SOURCE_DIR}/deps/moxygen/moxygen/test/TestUtils.cpp
   )
   target_include_directories(o_rly_relay_test PRIVATE
     ${PROJECT_SOURCE_DIR}/deps/moxygen
   )
   target_link_libraries(o_rly_relay_test PRIVATE
     o_rly_core
+    o_rly_test_utils
     moxygen::moxygen_events_moq_folly_executor_impl
     GTest::gtest_main
     GTest::gmock

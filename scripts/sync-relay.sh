@@ -174,6 +174,9 @@ process_test() {
   # Replace MoQRelay include with ORelay
   sed -i 's|#include <moxygen/relay/MoQRelay\.h>|#include <o_rly/ORelay.h>|g' "$tmp"
 
+  # Use o-rly's own TestUtils instead of moxygen's
+  sed -i 's|#include <moxygen/test/TestUtils\.h>|#include "TestUtils.h"|g' "$tmp"
+
   # Relay class under test
   sed -i 's/\bMoQRelay\b/ORelay/g' "$tmp"
 
@@ -181,6 +184,9 @@ process_test() {
   # The test lives in namespace moxygen::test, but globals defined before that
   # namespace block need explicit usings.
   sed -i 's/^using namespace testing;$/using namespace testing;\nusing namespace moxygen;\nusing namespace openmoq::o_rly;/' "$tmp"
+
+  # Bring makeBuf into scope inside namespace moxygen::test
+  sed -i 's/^namespace moxygen::test {$/namespace moxygen::test {\n\nusing openmoq::o_rly::test::makeBuf;/' "$tmp"
 
   cp "$tmp" "$dst"
 }
