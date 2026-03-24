@@ -11,6 +11,7 @@
 #   ORLY_MAX_GROUPS — max groups per track in cache (default: 100)
 #   ORLY_LOG_LEVEL  — min log level: 0=INFO 1=WARNING 2=ERROR 3=FATAL (default: 0)
 #   ORLY_VERBOSE    — verbose/debug level: 0=off, 1-4=increasing detail (default: 0)
+#   ORLY_BIND_ADDR  — listen address: "0.0.0.0" (IPv4, default) or "::" (IPv6/dual-stack)
 set -e
 
 # Map ORLY_* logging env vars to GLOG_* (used by folly/glog)
@@ -30,7 +31,7 @@ listeners:
   - name: relay
     udp:
       socket:
-        address: "::"
+        address: "${ORLY_BIND_ADDR:-0.0.0.0}"
         port: ${ORLY_PORT:-4433}
     tls:
       cert_file: "${ORLY_CERT:-}"

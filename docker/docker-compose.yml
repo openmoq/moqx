@@ -21,6 +21,7 @@ name: o-rly
 
 services:
   o-rly:
+    container_name: moqx
     image: ghcr.io/openmoq/o-rly:latest
     restart: unless-stopped
     ports:
@@ -80,7 +81,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
-      DOZZLE_FILTER: "name=o-rly"
+      DOZZLE_FILTER: "name=moqx"
     profiles: [debug]
 
   # Route53 DNS-01 challenge.
