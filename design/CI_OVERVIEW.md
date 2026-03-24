@@ -19,7 +19,7 @@
 └─────────────────────────────────────────────────────────────┘
 ```
 
-o-rly's `deps/moxygen` submodule pins a moxygen commit. `setup-deps-tarball.sh`
+o-rly's `deps/moxygen` submodule pins a moxygen commit. `setup-deps-release.sh`
 downloads the matching pre-built tarball from moxygen's release, so o-rly never
 builds moxygen from source in CI.
 

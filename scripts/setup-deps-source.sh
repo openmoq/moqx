@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# setup-deps-standalone.sh — Build moxygen + deps from source (standalone/FetchContent).
+# setup-deps-source.sh — Build moxygen + deps from source (standalone/FetchContent).
 #
 # Uses deps/moxygen/standalone/CMakeLists.txt which fetches Meta OSS deps
 # (folly, fizz, wangle, mvfst, proxygen) via FetchContent and builds them
@@ -10,7 +10,7 @@
 # Subsequent builds are incremental (cmake only rebuilds what changed).
 #
 # Usage:
-#   ./scripts/setup-deps-standalone.sh
+#   ./scripts/setup-deps-source.sh
 #
 # System deps required (Ubuntu):
 #   deps/moxygen/standalone/install-system-deps.sh

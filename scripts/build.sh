@@ -255,7 +255,7 @@ cmd_setup() {
   if [[ "$mode" == "from-release" ]]; then
     echo ""
     echo "==> Setting up dependencies (from release)..."
-    if bash "$SCRIPT_DIR/setup-deps-tarball.sh"; then
+    if bash "$SCRIPT_DIR/setup-deps-release.sh"; then
       echo "from-release" > "$DEPS_MODE_FILE"
     else
       if $no_fallback; then
@@ -270,7 +270,7 @@ cmd_setup() {
   if [[ "$mode" == "from-source" ]]; then
     echo ""
     echo "==> Setting up dependencies (from source)..."
-    bash "$SCRIPT_DIR/setup-deps-standalone.sh"
+    bash "$SCRIPT_DIR/setup-deps-source.sh"
     echo "from-source" > "$DEPS_MODE_FILE"
   fi
 

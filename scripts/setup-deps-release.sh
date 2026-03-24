@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# setup-deps-tarball.sh — Populate .scratch with prebuilt moxygen release artifacts.
+# setup-deps-release.sh — Populate .scratch with prebuilt moxygen release artifacts.
 #
 # Uses the submodule commit SHA to find the exact publish workflow run
 # on openmoq/moxygen, then downloads the matching platform artifact.
