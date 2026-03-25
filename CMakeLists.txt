@@ -149,7 +149,7 @@ target_link_libraries(o_rly PRIVATE o_rly_core o_rly_config_loader)
 
 if(ORLY_BUILD_TESTS)
   enable_testing()
-  find_package(GTest REQUIRED)
+  find_package(GTest REQUIRED CONFIG)
 
   add_executable(o_rly_relay_test
     tests/ORelayTest.cpp
