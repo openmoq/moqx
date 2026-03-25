@@ -77,6 +77,9 @@ add_library(o_rly_core STATIC
   src/ORelayServer.cpp
   src/admin/AdminServer.cpp
   src/admin/BuiltinRoutes.cpp
+  src/admin/MetricsHandler.cpp
+  src/stats/StatsRegistry.cpp
+  src/stats/MoQStatsCollector.cpp
 )
 
 target_include_directories(o_rly_core
@@ -210,6 +213,18 @@ if(ORLY_BUILD_TESTS)
   endif()
   gtest_discover_tests(o_rly_config_resolver_test)
 
+  add_executable(o_rly_bounded_histogram_test
+    tests/stats/BoundedHistogramTest.cpp
+  )
+  target_include_directories(o_rly_bounded_histogram_test PRIVATE
+    ${PROJECT_SOURCE_DIR}/include
+  )
+  target_link_libraries(o_rly_bounded_histogram_test PRIVATE
+    GTest::gtest_main
+    GTest::gmock
+  )
+  gtest_discover_tests(o_rly_bounded_histogram_test)
+
   add_test(
     NAME admin_info_endpoint
     COMMAND bash ${PROJECT_SOURCE_DIR}/tests/test_admin_info.sh $<TARGET_FILE:o_rly>
@@ -217,6 +232,10 @@ if(ORLY_BUILD_TESTS)
   add_test(
     NAME admin_tls_endpoint
     COMMAND bash ${PROJECT_SOURCE_DIR}/tests/test_admin_tls.sh $<TARGET_FILE:o_rly>
+  )
+  add_test(
+    NAME admin_metrics_endpoint
+    COMMAND bash ${PROJECT_SOURCE_DIR}/tests/test_admin_metrics.sh $<TARGET_FILE:o_rly>
   )
 endif()
 

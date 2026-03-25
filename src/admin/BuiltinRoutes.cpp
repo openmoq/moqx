@@ -9,14 +9,18 @@
 namespace openmoq::o_rly::admin {
 
 void registerBuiltinRoutes(AdminServer& server) {
-  server.addRoute("GET", "/info", [](auto /*req*/, auto /*body*/, auto* downstream) {
-    proxygen::ResponseBuilder(downstream)
-        .status(200, proxygen::HTTPMessage::getDefaultReason(200))
-        .header("Content-Type", "application/json")
-        .body(folly::IOBuf::copyBuffer("{\"service\":\"o-rly\",\"version\":\"" ORLY_VERSION "\"}\n")
-        )
-        .sendWithEOM();
-  });
+  server.addRoute(
+      "GET",
+      "/info",
+      [](auto /*req*/, auto /*body*/, auto* downstream, auto /*cancelToken*/) {
+        proxygen::ResponseBuilder(downstream)
+            .status(200, proxygen::HTTPMessage::getDefaultReason(200))
+            .header("Content-Type", "application/json")
+            .body(folly::IOBuf::copyBuffer("{\"service\":\"o-rly\",\"version\":\"" ORLY_VERSION
+                                           "\"}\n"))
+            .sendWithEOM();
+      }
+  );
 }
 
 } // namespace openmoq::o_rly::admin

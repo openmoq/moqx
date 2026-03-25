@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include <folly/CancellationToken.h>
 #include <folly/io/IOBuf.h>
 
 #include <o_rly/config/config.h>
@@ -20,11 +21,13 @@ namespace openmoq::o_rly::admin {
 
 // Route handler: receives the complete request (headers + body) and owns the
 // response. May respond asynchronously — launch a coroutine and send via
-// downstream later.
+// downstream later. cancelToken is signalled if the client disconnects before
+// the response is produced (onError fired on the underlying RequestHandler).
 using RouteHandler = std::function<void(
     std::unique_ptr<proxygen::HTTPMessage> req,
     std::unique_ptr<folly::IOBuf> body,
-    proxygen::ResponseHandler* downstream
+    proxygen::ResponseHandler* downstream,
+    folly::CancellationToken cancelToken
 )>;
 
 struct Route {
