@@ -73,16 +73,15 @@ services:
     profiles: [certbot-cloudflare]
 
   # Log viewer — browse relay logs at http://localhost:${ORLY_LOG_PORT:-9999}
-  # Start with: docker compose --profile debug up -d dozzle
   dozzle:
     image: amir20/dozzle:latest
+    restart: unless-stopped
     ports:
-      - "${ORLY_LOG_PORT:-9999}:8080"
+      - "127.0.0.1:${ORLY_LOG_PORT:-9999}:8080"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
       DOZZLE_FILTER: "name=moqx"
-    profiles: [debug]
 
   # Route53 DNS-01 challenge.
   # Requires: AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY in docker/.env
