@@ -111,7 +111,7 @@ jobs:
           docker compose down --remove-orphans 2>/dev/null || true
 
           echo "==> Starting relay (${INSTANCE} on port ${{ steps.config.outputs.port }})..."
-          docker compose up -d o-rly
+          docker compose up -d
 
 
           echo "==> Waiting for admin endpoint..."
