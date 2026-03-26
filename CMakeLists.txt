@@ -178,9 +178,6 @@ if(ORLY_BUILD_TESTS)
   add_executable(o_rly_relay_test
     tests/ORelayTest.cpp
   )
-  target_include_directories(o_rly_relay_test PRIVATE
-    ${PROJECT_SOURCE_DIR}/deps/moxygen
-  )
   target_link_libraries(o_rly_relay_test PRIVATE
     o_rly_core
     o_rly_test_utils
