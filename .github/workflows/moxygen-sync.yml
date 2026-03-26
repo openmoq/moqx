@@ -177,6 +177,7 @@ jobs:
       # ── Approve PR (different identity for required review) ──
       - name: Approve PR
         if: steps.blocking.outputs.blocked == 'false' && steps.target.outputs.needs_update == 'true'
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.OMOQ_SYNC_TOKEN }}
         run: |
