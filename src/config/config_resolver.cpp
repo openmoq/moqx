@@ -1,5 +1,8 @@
 #include "o_rly/config/loader/config_resolver.h"
 
+#include <iomanip>
+#include <random>
+#include <sstream>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -300,6 +303,38 @@ void validateService(
   mergedCaches.emplace(name, std::move(merged));
 }
 
+// --- Upstream validation and resolution ---
+
+void validateUpstream(const ParsedUpstreamConfig& upstream, std::vector<std::string>& errors) {
+  if (upstream.url.value().empty()) {
+    errors.push_back("upstream.url must be non-empty");
+  }
+  const auto& tls = upstream.tls.value();
+  if (tls.insecure.value() && tls.ca_cert.value().has_value()) {
+    errors.push_back("upstream.tls: insecure=true and ca_cert are mutually exclusive");
+  }
+}
+
+UpstreamConfig resolveUpstream(const ParsedUpstreamConfig& upstream) {
+  const auto& tls = upstream.tls.value();
+  return UpstreamConfig{
+      .url = upstream.url.value(),
+      .tls = UpstreamTlsConfig{
+          .insecure = tls.insecure.value(),
+          .caCertFile = tls.ca_cert.value(),
+      },
+  };
+}
+
+std::string generateRelayID() {
+  std::random_device rd;
+  const uint64_t val =
+      (static_cast<uint64_t>(rd()) << 32) | static_cast<uint64_t>(rd());
+  std::ostringstream oss;
+  oss << std::hex << std::setfill('0') << std::setw(16) << val;
+  return oss.str();
+}
+
 // --- Resolution helpers ---
 
 ListenerConfig resolveListener(const ParsedListenerConfig& listener) {
@@ -387,6 +422,11 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
   // === Validate admin ===
   validateAdmin(config, errors);
 
+  // === Validate upstream ===
+  if (config.upstream.value().has_value()) {
+    validateUpstream(*config.upstream.value(), errors);
+  }
+
   // === Validate services ===
 
   const auto& services = config.services.value();
@@ -428,12 +468,23 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
     };
   }
 
+  // Resolve upstream config
+  std::optional<UpstreamConfig> upstreamConfig;
+  if (config.upstream.value().has_value()) {
+    upstreamConfig = resolveUpstream(*config.upstream.value());
+  }
+
+  // Resolve relayID: use configured value or generate a random hex string
+  std::string relayID = config.relay_id.value().value_or(generateRelayID());
+
   return ResolvedConfig{
       .config =
           Config{
               .listener = resolveListener(listener),
               .services = std::move(resolvedServices),
               .admin = std::move(adminConfig),
+              .upstream = std::move(upstreamConfig),
+              .relayID = std::move(relayID),
           },
       .warnings = std::move(warnings),
   };

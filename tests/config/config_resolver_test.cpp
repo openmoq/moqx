@@ -788,5 +788,91 @@ TEST(ResolveConfig, AdminTlsCustomAlpn) {
   EXPECT_THAT(result.value().config.admin->tls->alpn, ::testing::ElementsAre("h2"));
 }
 
+// --- Upstream config tests ---
+
+ParsedUpstreamConfig makeUpstreamConfig(
+    std::string url = "moqt://origin.example.com:4433/relay",
+    bool insecure = false,
+    std::optional<std::string> caCert = std::nullopt) {
+  ParsedUpstreamConfig upstream;
+  upstream.url = std::move(url);
+  ParsedUpstreamTlsConfig tls;
+  tls.insecure = insecure;
+  tls.ca_cert = std::move(caCert);
+  upstream.tls = std::move(tls);
+  return upstream;
+}
+
+TEST(ResolveConfig, UpstreamAbsent) {
+  auto cfg = makeMinimalInsecureConfig();
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  EXPECT_FALSE(result.value().config.upstream.has_value());
+}
+
+TEST(ResolveConfig, UpstreamInsecureFalseNoCA) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.upstream = std::optional<ParsedUpstreamConfig>{makeUpstreamConfig()};
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  ASSERT_TRUE(result.value().config.upstream.has_value());
+  const auto& up = *result.value().config.upstream;
+  EXPECT_EQ(up.url, "moqt://origin.example.com:4433/relay");
+  EXPECT_FALSE(up.tls.insecure);
+  EXPECT_FALSE(up.tls.caCertFile.has_value());
+}
+
+TEST(ResolveConfig, UpstreamInsecureTrue) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.upstream = std::optional<ParsedUpstreamConfig>{makeUpstreamConfig("moqt://dev:4433/", true)};
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  ASSERT_TRUE(result.value().config.upstream.has_value());
+  EXPECT_TRUE(result.value().config.upstream->tls.insecure);
+}
+
+TEST(ResolveConfig, UpstreamInsecureTrueWithCACertRejected) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.upstream = std::optional<ParsedUpstreamConfig>{
+      makeUpstreamConfig("moqt://dev:4433/", true, "/path/to/ca.pem")};
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("mutually exclusive"));
+}
+
+TEST(ResolveConfig, UpstreamEmptyUrlRejected) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.upstream = std::optional<ParsedUpstreamConfig>{makeUpstreamConfig("")};
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("upstream.url must be non-empty"));
+}
+
+// --- relayID tests ---
+
+TEST(ResolveConfig, RelayIDAbsentGeneratesNonEmpty) {
+  auto cfg = makeMinimalInsecureConfig();
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  EXPECT_FALSE(result.value().config.relayID.empty());
+}
+
+TEST(ResolveConfig, RelayIDGeneratedUniquePerCall) {
+  auto cfg = makeMinimalInsecureConfig();
+  auto r1 = resolveConfig(cfg);
+  auto r2 = resolveConfig(cfg);
+  ASSERT_TRUE(r1.hasValue());
+  ASSERT_TRUE(r2.hasValue());
+  EXPECT_NE(r1.value().config.relayID, r2.value().config.relayID);
+}
+
+TEST(ResolveConfig, RelayIDExplicitPreserved) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.relay_id = std::optional<std::string>{"my-relay-1"};
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  EXPECT_EQ(result.value().config.relayID, "my-relay-1");
+}
+
 } // namespace
 } // namespace openmoq::o_rly::config
