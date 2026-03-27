@@ -13,22 +13,42 @@
 #include <folly/coro/Task.h>
 #include <moxygen/MoQClient.h>
 #include <moxygen/MoQSession.h>
+#include <moxygen/MoQTypes.h>
 #include <moxygen/Publisher.h>
 #include <moxygen/Subscriber.h>
 #include <moxygen/events/MoQExecutor.h>
 #include <proxygen/lib/utils/URL.h>
+#include <optional>
 #include <string>
 
 namespace openmoq::moqx {
 
+// --- Relay peering auth helpers ---
+// Used by UpstreamProvider (initiating peer subNs) and ORelay (reciprocation).
+
+// Returns true if subNs carries a relay peer auth token.
+bool isPeerSubNs(const moxygen::SubscribeNamespace& subNs);
+
+// Builds a wildcard SubscribeNamespace(prefix={}, BOTH).
+// With relayID: includes the relay auth token (initiating peer).
+// Without relayID: no token (reciprocal response — prevents loops).
+moxygen::SubscribeNamespace makePeerSubNs(
+    std::optional<std::string> relayID = std::nullopt);
+
+// Creates a NamespacePublishHandle that bridges NAMESPACE/NAMESPACE_DONE
+// messages from a peer relay into relay->publishNamespace() on session.
+// Used for both the initiating (UpstreamProvider) and reciprocal (ORelay) paths.
+std::shared_ptr<moxygen::Publisher::NamespacePublishHandle>
+makeNamespaceBridgeHandle(
+    std::weak_ptr<moxygen::Subscriber> relay,
+    std::shared_ptr<moxygen::MoQSession> session);
+
 /**
  * UpstreamProvider connects to a remote MoQ endpoint as a client and presents
- * itself locally as both a Publisher and Subscriber. When the relay receives
- * a subscribe from a downstream client, it can forward it through the
- * UpstreamProvider to the upstream server.
- *
- * Session lifecycle: if the session receives a GOAWAY or is disconnected,
- * reconnection is lazy - triggered by the next operation.
+ * itself locally as both a Publisher and Subscriber. After connecting it issues
+ * a wildcard subscribeNamespace(*, BOTH) with a relay auth token to initiate
+ * the relay peering handshake. On disconnect it proactively reconnects with
+ * exponential backoff (1s → 60s cap).
  */
 class UpstreamProvider
     : public moxygen::Publisher,

@@ -5,7 +5,6 @@
  */
 
 #include <moqx/UpstreamProvider.h>
-#include <moqx/relay_auth.h>
 #include <moxygen/MoQFilters.h>
 #include <moxygen/MoQRelaySession.h>
 #include <moxygen/MoQVersions.h>
@@ -14,6 +13,37 @@
 using namespace moxygen;
 
 namespace openmoq::moqx {
+
+// Randomly chosen token type identifying a relay-to-relay peering subNs.
+static constexpr uint64_t kRelayAuthTokenType = 0xA3F7'C291'5B84'E60DULL;
+
+bool isPeerSubNs(const SubscribeNamespace& subNs) {
+  const uint64_t authKey =
+      static_cast<uint64_t>(TrackRequestParamKey::AUTHORIZATION_TOKEN);
+  for (const auto& param : subNs.params) {
+    if (param.key == authKey &&
+        param.asAuthToken.tokenType == kRelayAuthTokenType) {
+      return true;
+    }
+  }
+  return false;
+}
+
+SubscribeNamespace makePeerSubNs(std::optional<std::string> relayID) {
+  SubscribeNamespace subNs;
+  subNs.trackNamespacePrefix = {};
+  subNs.options = SubscribeNamespaceOptions::BOTH;
+  if (relayID) {
+    subNs.params.insertParam(Parameter(
+        static_cast<uint64_t>(TrackRequestParamKey::AUTHORIZATION_TOKEN),
+        AuthToken{
+            .tokenType = kRelayAuthTokenType,
+            .tokenValue = *relayID,
+            .alias = AuthToken::DontRegister,
+        }));
+  }
+  return subNs;
+}
 
 namespace {
 
@@ -29,19 +59,13 @@ class PendingTrackConsumer : public TrackConsumerFilter {
   }
 };
 
-// Bridges NAMESPACE / NAMESPACE_DONE messages (draft 16+) from the upstream
-// relay back into the local relay's publishNamespace machinery.
-//
-// When UpstreamProvider issues a peer subNs to the upstream relay, the upstream
-// relay sends NAMESPACE messages for each announced namespace via this handle.
-// We forward each one as a publishNamespace() call on subscribeHandler_ (ORelay),
-// storing the returned PublishNamespaceHandle so we can signal done later.
-//
-// setRequestSession() is called before each publishNamespace() coroutine so that
-// ORelay::publishNamespace() sees the correct session via getRequestSession().
-//
-// One instance is created per connect; recreated on reconnect so the handle map
-// is always fresh (upstream re-announces all namespaces after reconnect).
+} // namespace
+
+// Bridges NAMESPACE / NAMESPACE_DONE messages (draft 16+) from a peer relay
+// into the local relay's publishNamespace machinery. Used for both the
+// initiating peer subNs (UpstreamProvider) and the reciprocal (ORelay).
+// One instance is created per connect; recreated on reconnect so the handle
+// map is always fresh (peer re-announces all namespaces after reconnect).
 class NamespaceBridgeHandle
     : public Publisher::NamespacePublishHandle,
       public std::enable_shared_from_this<NamespaceBridgeHandle> {
@@ -109,7 +133,12 @@ class NamespaceBridgeHandle
       handles_;
 };
 
-} // namespace
+std::shared_ptr<Publisher::NamespacePublishHandle> makeNamespaceBridgeHandle(
+    std::weak_ptr<Subscriber> relay,
+    std::shared_ptr<MoQSession> session) {
+  return std::make_shared<NamespaceBridgeHandle>(
+      std::move(relay), std::move(session));
+}
 
 UpstreamProvider::UpstreamProvider(
     std::shared_ptr<MoQExecutor> exec,
@@ -415,12 +444,7 @@ folly::coro::Task<void> UpstreamProvider::doConnect() {
     // Bridge NAMESPACE/NAMESPACE_DONE messages (draft 16+) back into the local
     // relay via subscribeHandler_. If subscribeHandler_ is absent, fall back to
     // a no-op handle (namespace announcements arrive via PUBLISH_NAMESPACE only).
-    std::shared_ptr<Publisher::NamespacePublishHandle> handle;
-    if (subscribeHandler_) {
-      handle = std::make_shared<NamespaceBridgeHandle>(subscribeHandler_, session_);
-    } else {
-      handle = std::make_shared<NullNamespacePublishHandle>();
-    }
+    auto handle = makeNamespaceBridgeHandle(subscribeHandler_, session_);
     co_await session_->subscribeNamespace(makePeerSubNs(relayID_), handle);
   }
 
