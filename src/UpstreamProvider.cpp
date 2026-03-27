@@ -8,6 +8,7 @@
 #include <moqx/relay_auth.h>
 #include <moxygen/MoQFilters.h>
 #include <moxygen/MoQRelaySession.h>
+#include <moxygen/MoQVersions.h>
 #include <folly/logging/xlog.h>
 
 using namespace moxygen;
@@ -341,6 +342,22 @@ folly::coro::Task<void> UpstreamProvider::doConnect() {
 
   // Register for close notifications
   session_->setSessionCloseCallback(this);
+
+  // Relay chaining requires draft 16+ for wildcard subscribeNamespace (empty
+  // prefix) and NAMESPACE messages on the bidi stream. Fail without retry if
+  // the upstream negotiates an earlier draft — misconfiguration, not transient.
+  if (!relayID_.empty()) {
+    auto maybeVersion = session_->getNegotiatedVersion();
+    if (!maybeVersion || getDraftMajorVersion(*maybeVersion) < 16) {
+      auto ver = maybeVersion ? std::to_string(getDraftMajorVersion(*maybeVersion))
+                              : std::string("unknown");
+      XLOG(ERR) << "UpstreamProvider: upstream negotiated draft " << ver
+                << " but relay chaining requires draft 16+; "
+                   "disabling peering (no namespace sync)";
+      // Leave relayID_ set so stop() cleans up, but skip the peer subNs.
+      co_return;
+    }
+  }
 
   // Relay peering handshake: subscribe to all namespaces with relay auth token.
   // The upstream relay recognises the token and reciprocates, populating our
