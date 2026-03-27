@@ -133,13 +133,54 @@ UpstreamProvider::~UpstreamProvider() {
 
 folly::coro::Task<void> UpstreamProvider::start() {
   XLOG(DBG1) << "UpstreamProvider::start";
-  co_await getOrConnectSession();
-  XLOG(DBG1) << "UpstreamProvider::start completed, session=" << session_.get();
+  co_await reconnectLoop();
+}
+
+static constexpr auto kInitialReconnectBackoff = std::chrono::seconds(1);
+static constexpr auto kMaxReconnectBackoff = std::chrono::seconds(60);
+
+folly::coro::Task<void> UpstreamProvider::reconnectLoop() {
+  while (!stopped_) {
+    if (reconnectBackoff_.count() > 0) {
+      XLOG(INFO) << "UpstreamProvider: reconnecting in "
+                 << reconnectBackoff_.count() << "ms";
+      try {
+        co_await folly::coro::co_withCancellation(
+            stopSource_.getToken(), folly::coro::sleep(reconnectBackoff_));
+      } catch (const folly::OperationCancelled&) {
+        co_return;
+      }
+    }
+    if (stopped_) {
+      co_return;
+    }
+
+    try {
+      co_await getOrConnectSession();
+      XLOG(DBG1) << "UpstreamProvider::reconnectLoop connected, session="
+                 << session_.get();
+      reconnectBackoff_ = std::chrono::milliseconds(0);
+      co_return; // Connected — exit. onMoQSessionClosed()/goaway() will respawn.
+    } catch (const std::exception& ex) {
+      if (stopped_) {
+        co_return;
+      }
+      reconnectBackoff_ = reconnectBackoff_.count() == 0
+          ? kInitialReconnectBackoff
+          : std::min(reconnectBackoff_ * 2,
+                     std::chrono::milliseconds(kMaxReconnectBackoff));
+      XLOG(ERR) << "UpstreamProvider: connect failed: " << ex.what()
+                << ", retrying in " << reconnectBackoff_.count() << "ms";
+    }
+  }
 }
 
 void UpstreamProvider::stop() {
   XLOG(DBG1) << "UpstreamProvider::stop";
   stopped_ = true;
+
+  // Cancel any in-progress backoff sleep in reconnectLoop().
+  stopSource_.requestCancellation();
 
   if (session_) {
     session_->setSessionCloseCallback(nullptr);
@@ -155,6 +196,7 @@ void UpstreamProvider::stop() {
         std::runtime_error("UpstreamProvider stopped")));
   }
   connectPromise_.reset();
+
 }
 
 // --- Publisher interface ---
@@ -252,15 +294,17 @@ Subscriber::PublishResult UpstreamProvider::publish(
 void UpstreamProvider::goaway(Goaway goaway) {
   XLOG(INFO) << "UpstreamProvider::goaway uri=" << goaway.newSessionUri;
 
-  // Update URL if a new session URI is provided
   if (!goaway.newSessionUri.empty()) {
     XLOG(INFO) << "UpstreamProvider: updating URL from goaway: "
                << goaway.newSessionUri;
     url_ = proxygen::URL(goaway.newSessionUri);
   }
 
-  // Reset session state - next operation will trigger reconnection
   resetSession();
+  if (!stopped_) {
+    reconnectBackoff_ = kInitialReconnectBackoff;
+    co_withExecutor(exec_.get(), reconnectLoop()).start();
+  }
 }
 
 // --- MoQSessionCloseCallback ---
@@ -268,6 +312,10 @@ void UpstreamProvider::goaway(Goaway goaway) {
 void UpstreamProvider::onMoQSessionClosed() {
   XLOG(INFO) << "UpstreamProvider::onMoQSessionClosed";
   resetSession();
+  if (!stopped_) {
+    reconnectBackoff_ = kInitialReconnectBackoff;
+    co_withExecutor(exec_.get(), reconnectLoop()).start();
+  }
 }
 
 // --- Private methods ---

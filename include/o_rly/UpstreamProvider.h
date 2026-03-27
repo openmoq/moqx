@@ -9,6 +9,7 @@
 #include <fizz/protocol/CertificateVerifier.h>
 #include <folly/CancellationToken.h>
 #include <folly/coro/SharedPromise.h>
+#include <folly/coro/Sleep.h>
 #include <folly/coro/Task.h>
 #include <moxygen/MoQClient.h>
 #include <moxygen/MoQSession.h>
@@ -103,6 +104,10 @@ class UpstreamProvider
   // Resets the session state to Disconnected.
   void resetSession();
 
+  // Tries to connect, retrying with exponential backoff until success or stop().
+  // Exits once connected; onMoQSessionClosed()/goaway() spawn it again on drop.
+  folly::coro::Task<void> reconnectLoop();
+
   State state_{State::Disconnected};
   std::unique_ptr<moxygen::MoQClient> client_;
   std::shared_ptr<moxygen::MoQSession> session_;
@@ -116,6 +121,13 @@ class UpstreamProvider
 
   // Connection gating: when Connecting, operations co_await this
   std::optional<folly::coro::SharedPromise<folly::Unit>> connectPromise_;
+
+  // Cancelled by stop() to break the reconnect loop out of backoff sleeps.
+  folly::CancellationSource stopSource_;
+
+  // Current backoff before next connect attempt. Reset to 0 on success,
+  // doubled on failure (capped at kMaxReconnectBackoff).
+  std::chrono::milliseconds reconnectBackoff_{0};
 };
 
 } // namespace openmoq::o_rly
