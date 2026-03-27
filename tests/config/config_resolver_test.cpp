@@ -803,20 +803,26 @@ ParsedUpstreamConfig makeUpstreamConfig(
   return upstream;
 }
 
+// Upstream is per-service: set it on the "default" service in the test config.
+static void setServiceUpstream(ParsedConfig& cfg, ParsedUpstreamConfig upstream) {
+  cfg.services.value().at("default").upstream =
+      std::optional<ParsedUpstreamConfig>{std::move(upstream)};
+}
+
 TEST(ResolveConfig, UpstreamAbsent) {
   auto cfg = makeMinimalInsecureConfig();
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasValue());
-  EXPECT_FALSE(result.value().config.upstream.has_value());
+  EXPECT_FALSE(result.value().config.services.at("default").upstream.has_value());
 }
 
 TEST(ResolveConfig, UpstreamInsecureFalseNoCA) {
   auto cfg = makeMinimalInsecureConfig();
-  cfg.upstream = std::optional<ParsedUpstreamConfig>{makeUpstreamConfig()};
+  setServiceUpstream(cfg, makeUpstreamConfig());
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasValue());
-  ASSERT_TRUE(result.value().config.upstream.has_value());
-  const auto& up = *result.value().config.upstream;
+  ASSERT_TRUE(result.value().config.services.at("default").upstream.has_value());
+  const auto& up = *result.value().config.services.at("default").upstream;
   EXPECT_EQ(up.url, "moqt://origin.example.com:4433/relay");
   EXPECT_FALSE(up.tls.insecure);
   EXPECT_FALSE(up.tls.caCertFile.has_value());
@@ -824,17 +830,16 @@ TEST(ResolveConfig, UpstreamInsecureFalseNoCA) {
 
 TEST(ResolveConfig, UpstreamInsecureTrue) {
   auto cfg = makeMinimalInsecureConfig();
-  cfg.upstream = std::optional<ParsedUpstreamConfig>{makeUpstreamConfig("moqt://dev:4433/", true)};
+  setServiceUpstream(cfg, makeUpstreamConfig("moqt://dev:4433/", true));
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasValue());
-  ASSERT_TRUE(result.value().config.upstream.has_value());
-  EXPECT_TRUE(result.value().config.upstream->tls.insecure);
+  ASSERT_TRUE(result.value().config.services.at("default").upstream.has_value());
+  EXPECT_TRUE(result.value().config.services.at("default").upstream->tls.insecure);
 }
 
 TEST(ResolveConfig, UpstreamInsecureTrueWithCACertRejected) {
   auto cfg = makeMinimalInsecureConfig();
-  cfg.upstream = std::optional<ParsedUpstreamConfig>{
-      makeUpstreamConfig("moqt://dev:4433/", true, "/path/to/ca.pem")};
+  setServiceUpstream(cfg, makeUpstreamConfig("moqt://dev:4433/", true, "/path/to/ca.pem"));
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasError());
   EXPECT_THAT(result.error(), HasSubstr("mutually exclusive"));
@@ -842,7 +847,7 @@ TEST(ResolveConfig, UpstreamInsecureTrueWithCACertRejected) {
 
 TEST(ResolveConfig, UpstreamEmptyUrlRejected) {
   auto cfg = makeMinimalInsecureConfig();
-  cfg.upstream = std::optional<ParsedUpstreamConfig>{makeUpstreamConfig("")};
+  setServiceUpstream(cfg, makeUpstreamConfig(""));
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasError());
   EXPECT_THAT(result.error(), HasSubstr("upstream.url must be non-empty"));

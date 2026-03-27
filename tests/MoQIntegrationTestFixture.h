@@ -51,7 +51,11 @@ class MoQIntegrationTestFixture : public ::testing::Test {
       XLOG(DBG1) << "Server thread starting";
 
       // Create insecure fizz context
+      // Include both experimental (Meta-specific) and standard ALPNs so
+      // clients offering either variant can connect.
       auto alpns = moxygen::getDefaultMoqtProtocols(true);
+      auto standard = moxygen::getMoqtProtocols("", /*useStandard=*/true);
+      alpns.insert(alpns.end(), standard.begin(), standard.end());
       alpns.push_back("h3");
       auto fizzContext =
           quic::samples::createFizzServerContextWithInsecureDefault(

@@ -158,23 +158,49 @@ folly::coro::Task<Publisher::SubscribeResult> UpstreamProvider::subscribe(
     SubscribeRequest sub,
     std::shared_ptr<TrackConsumer> callback) {
   XLOG(DBG1) << "UpstreamProvider::subscribe ftn=" << sub.fullTrackName;
-  auto session = co_await getOrConnectSession();
-  co_return co_await session->subscribe(std::move(sub), std::move(callback));
+  if (auto sess = getSession()) {
+    return sess->subscribe(std::move(sub), std::move(callback));
+  }
+  return coSubscribe(std::move(sub), std::move(callback));
+}
+
+folly::coro::Task<Publisher::SubscribeResult> UpstreamProvider::coSubscribe(
+    SubscribeRequest sub,
+    std::shared_ptr<TrackConsumer> callback) {
+  auto sess = co_await getOrConnectSession();
+  co_return co_await sess->subscribe(std::move(sub), std::move(callback));
 }
 
 folly::coro::Task<Publisher::FetchResult> UpstreamProvider::fetch(
     Fetch fetch,
     std::shared_ptr<FetchConsumer> fetchCallback) {
   XLOG(DBG1) << "UpstreamProvider::fetch ftn=" << fetch.fullTrackName;
-  auto session = co_await getOrConnectSession();
-  co_return co_await session->fetch(std::move(fetch), std::move(fetchCallback));
+  if (auto sess = getSession()) {
+    return sess->fetch(std::move(fetch), std::move(fetchCallback));
+  }
+  return coFetch(std::move(fetch), std::move(fetchCallback));
+}
+
+folly::coro::Task<Publisher::FetchResult> UpstreamProvider::coFetch(
+    Fetch fetch,
+    std::shared_ptr<FetchConsumer> fetchCallback) {
+  auto sess = co_await getOrConnectSession();
+  co_return co_await sess->fetch(std::move(fetch), std::move(fetchCallback));
 }
 
 folly::coro::Task<Publisher::TrackStatusResult> UpstreamProvider::trackStatus(
     TrackStatus req) {
   XLOG(DBG1) << "UpstreamProvider::trackStatus ftn=" << req.fullTrackName;
-  auto session = co_await getOrConnectSession();
-  co_return co_await session->trackStatus(req);
+  if (auto sess = getSession()) {
+    return sess->trackStatus(req);
+  }
+  return coTrackStatus(req);
+}
+
+folly::coro::Task<Publisher::TrackStatusResult> UpstreamProvider::coTrackStatus(
+    TrackStatus req) {
+  auto sess = co_await getOrConnectSession();
+  co_return co_await sess->trackStatus(req);
 }
 
 folly::coro::Task<Publisher::SubscribeNamespaceResult>
@@ -183,21 +209,39 @@ UpstreamProvider::subscribeNamespace(
     std::shared_ptr<NamespacePublishHandle> handle) {
   XLOG(DBG1) << "UpstreamProvider::subscribeNamespace nsp="
              << subNs.trackNamespacePrefix;
-  auto session = co_await getOrConnectSession();
-  co_return co_await session->subscribeNamespace(
-      std::move(subNs), std::move(handle));
+  if (auto sess = getSession()) {
+    return sess->subscribeNamespace(std::move(subNs), std::move(handle));
+  }
+  return coSubscribeNamespace(std::move(subNs), std::move(handle));
+}
+
+folly::coro::Task<Publisher::SubscribeNamespaceResult>
+UpstreamProvider::coSubscribeNamespace(
+    SubscribeNamespace subNs,
+    std::shared_ptr<NamespacePublishHandle> handle) {
+  auto sess = co_await getOrConnectSession();
+  co_return co_await sess->subscribeNamespace(std::move(subNs), std::move(handle));
 }
 
 // --- Subscriber interface ---
 
 folly::coro::Task<Subscriber::PublishNamespaceResult>
 UpstreamProvider::publishNamespace(
-    PublishNamespace ann,
+    PublishNamespace pubNs,
     std::shared_ptr<PublishNamespaceCallback> cb) {
-  XLOG(DBG1) << "UpstreamProvider::publishNamespace ns="
-             << ann.trackNamespace;
-  auto session = co_await getOrConnectSession();
-  co_return co_await session->publishNamespace(std::move(ann), std::move(cb));
+  XLOG(DBG1) << "UpstreamProvider::publishNamespace ns=" << pubNs.trackNamespace;
+  if (auto sess = getSession()) {
+    return sess->publishNamespace(std::move(pubNs), std::move(cb));
+  }
+  return coPublishNamespace(std::move(pubNs), std::move(cb));
+}
+
+folly::coro::Task<Subscriber::PublishNamespaceResult>
+UpstreamProvider::coPublishNamespace(
+    PublishNamespace pubNs,
+    std::shared_ptr<PublishNamespaceCallback> cb) {
+  auto sess = co_await getOrConnectSession();
+  co_return co_await sess->publishNamespace(std::move(pubNs), std::move(cb));
 }
 
 Subscriber::PublishResult UpstreamProvider::publish(
@@ -333,9 +377,12 @@ folly::coro::Task<void> UpstreamProvider::doConnect() {
 
   // Relay chaining requires draft 16+. Only offer standard draft-16 ALPN
   // ("moqt-16") so we fail fast if the upstream doesn't support it.
+  // TODO: make timeouts configurable via UpstreamConfig
+  static constexpr auto kConnectTimeout = std::chrono::milliseconds(5000);
+  static constexpr auto kTransactionTimeout = std::chrono::milliseconds(5000);
   co_await client_->setupMoQSession(
-      std::chrono::milliseconds(5000),
-      std::chrono::milliseconds(5000),
+      kConnectTimeout,
+      kTransactionTimeout,
       publishHandler_,
       subscribeHandler_,
       ts,

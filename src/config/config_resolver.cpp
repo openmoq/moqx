@@ -233,6 +233,29 @@ bool validatePath(
   return valid;
 }
 
+// --- Upstream validation and resolution ---
+
+void validateUpstream(const ParsedUpstreamConfig& upstream, std::vector<std::string>& errors) {
+  if (upstream.url.value().empty()) {
+    errors.push_back("upstream.url must be non-empty");
+  }
+  const auto& tls = upstream.tls.value();
+  if (tls.insecure.value() && tls.ca_cert.value().has_value()) {
+    errors.push_back("upstream.tls: insecure=true and ca_cert are mutually exclusive");
+  }
+}
+
+UpstreamConfig resolveUpstream(const ParsedUpstreamConfig& upstream) {
+  const auto& tls = upstream.tls.value();
+  return UpstreamConfig{
+      .url = upstream.url.value(),
+      .tls = UpstreamTlsConfig{
+          .insecure = tls.insecure.value(),
+          .caCertFile = tls.ca_cert.value(),
+      },
+  };
+}
+
 // --- Service validation ---
 
 void validateService(
@@ -301,29 +324,11 @@ void validateService(
   }
 
   mergedCaches.emplace(name, std::move(merged));
-}
 
-// --- Upstream validation and resolution ---
-
-void validateUpstream(const ParsedUpstreamConfig& upstream, std::vector<std::string>& errors) {
-  if (upstream.url.value().empty()) {
-    errors.push_back("upstream.url must be non-empty");
+  // Validate per-service upstream if present.
+  if (svc.upstream.value().has_value()) {
+    validateUpstream(*svc.upstream.value(), errors);
   }
-  const auto& tls = upstream.tls.value();
-  if (tls.insecure.value() && tls.ca_cert.value().has_value()) {
-    errors.push_back("upstream.tls: insecure=true and ca_cert are mutually exclusive");
-  }
-}
-
-UpstreamConfig resolveUpstream(const ParsedUpstreamConfig& upstream) {
-  const auto& tls = upstream.tls.value();
-  return UpstreamConfig{
-      .url = upstream.url.value(),
-      .tls = UpstreamTlsConfig{
-          .insecure = tls.insecure.value(),
-          .caCertFile = tls.ca_cert.value(),
-      },
-  };
 }
 
 std::string generateRelayID() {
@@ -392,9 +397,14 @@ ServiceConfig resolveService(const ParsedServiceConfig& svc, const ParsedCacheCo
   for (const auto& entry : svc.match.value()) {
     entries.push_back(resolveMatchEntry(entry));
   }
+  std::optional<UpstreamConfig> upstream;
+  if (svc.upstream.value().has_value()) {
+    upstream = resolveUpstream(*svc.upstream.value());
+  }
   return ServiceConfig{
       .match = std::move(entries),
       .cache = resolveCacheConfig(cache),
+      .upstream = std::move(upstream),
   };
 }
 
@@ -422,12 +432,8 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
   // === Validate admin ===
   validateAdmin(config, errors);
 
-  // === Validate upstream ===
-  if (config.upstream.value().has_value()) {
-    validateUpstream(*config.upstream.value(), errors);
-  }
-
   // === Validate services ===
+  // Per-service upstream config is validated inside validateService().
 
   const auto& services = config.services.value();
   if (services.empty()) {
@@ -468,12 +474,6 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
     };
   }
 
-  // Resolve upstream config
-  std::optional<UpstreamConfig> upstreamConfig;
-  if (config.upstream.value().has_value()) {
-    upstreamConfig = resolveUpstream(*config.upstream.value());
-  }
-
   // Resolve relayID: use configured value or generate a random hex string
   std::string relayID = config.relay_id.value().value_or(generateRelayID());
 
@@ -483,7 +483,6 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
               .listener = resolveListener(listener),
               .services = std::move(resolvedServices),
               .admin = std::move(adminConfig),
-              .upstream = std::move(upstreamConfig),
               .relayID = std::move(relayID),
           },
       .warnings = std::move(warnings),

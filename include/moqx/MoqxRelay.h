@@ -26,8 +26,9 @@ class MoqxRelay : public moxygen::Publisher,
 public:
   explicit MoqxRelay(
       size_t maxCachedTracks = moxygen::kDefaultMaxCachedTracks,
-      size_t maxCachedGroupsPerTrack = moxygen::kDefaultMaxCachedGroupsPerTrack
-  ) {
+      size_t maxCachedGroupsPerTrack = moxygen::kDefaultMaxCachedGroupsPerTrack,
+      std::string relayID = {}
+  ) : relayID_(std::move(relayID)) {
     if (maxCachedTracks > 0) {
       cache_ = std::make_unique<moxygen::MoQCache>(maxCachedTracks, maxCachedGroupsPerTrack);
     }
@@ -35,10 +36,6 @@ public:
 
   void setAllowedNamespacePrefix(moxygen::TrackNamespace allowed) {
     allowedNamespacePrefix_ = std::move(allowed);
-  }
-
-  void setRelayID(std::string relayID) {
-    relayID_ = std::move(relayID);
   }
 
   // Store the upstream provider. The provider must have been constructed with
@@ -58,12 +55,12 @@ public:
   fetch(moxygen::Fetch fetch, std::shared_ptr<moxygen::FetchConsumer> consumer) override;
 
   folly::coro::Task<SubscribeNamespaceResult> subscribeNamespace(
-      moxygen::SubscribeNamespace subAnn,
+      moxygen::SubscribeNamespace subNs,
       std::shared_ptr<NamespacePublishHandle> namespacePublishHandle
   ) override;
 
   folly::coro::Task<moxygen::Subscriber::PublishNamespaceResult>
-  publishNamespace(moxygen::PublishNamespace ann, std::shared_ptr<moxygen::Subscriber::PublishNamespaceCallback>)
+  publishNamespace(moxygen::PublishNamespace pubNs, std::shared_ptr<moxygen::Subscriber::PublishNamespaceCallback>)
       override;
 
   PublishResult publish(
@@ -95,7 +92,7 @@ public:
   // Subscriber coroutine interface and directly by ORelayNamespaceHandle
   // (which provides the session explicitly — no getRequestSession() needed).
   std::shared_ptr<moxygen::Subscriber::PublishNamespaceHandle> doPublishNamespace(
-      moxygen::PublishNamespace ann,
+      moxygen::PublishNamespace pubNs,
       std::shared_ptr<moxygen::MoQSession> session,
       std::shared_ptr<moxygen::Subscriber::PublishNamespaceCallback> callback);
 
@@ -217,7 +214,7 @@ private:
 
   folly::coro::Task<void> publishNamespaceToSession(
       std::shared_ptr<moxygen::MoQSession> session,
-      moxygen::PublishNamespace ann,
+      moxygen::PublishNamespace pubNs,
       std::shared_ptr<NamespaceNode> nodePtr
   );
 
