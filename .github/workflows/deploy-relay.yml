@@ -18,6 +18,11 @@ on:
         type: choice
         options:
           - moqx-001
+      restart_only:
+        description: "Restart container without redeploying"
+        required: false
+        type: boolean
+        default: false
       verbose:
         description: "GLOG verbose level (0=off, 1-3=increasing detail)"
         required: false
@@ -60,7 +65,31 @@ jobs:
               ;;
           esac
 
+      - name: Restart container
+        if: inputs.restart_only
+        working-directory: docker
+        run: |
+          echo "==> Restarting ${INSTANCE}..."
+          docker compose restart o-rly
+
+          echo "==> Waiting for admin endpoint..."
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:${{ steps.config.outputs.admin_port }}/info >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+            if [ "$i" -eq 30 ]; then
+              echo "::error::Admin endpoint did not respond within 30s"
+              docker compose logs o-rly
+              exit 1
+            fi
+          done
+
+          RESP=$(curl -sf http://127.0.0.1:${{ steps.config.outputs.admin_port }}/info)
+          echo "==> Relay running: $RESP"
+
       - name: Write .env
+        if: "!inputs.restart_only"
         working-directory: docker
         run: |
           cat > .env <<EOF
@@ -75,6 +104,7 @@ jobs:
           sed -i 's/^[[:space:]]*//' .env
 
       - name: Ensure TLS cert
+        if: "!inputs.restart_only"
         env:
           DOMAIN: ${{ steps.config.outputs.domain }}
           AWS_ACCESS_KEY_ID: ${{ secrets.OMOQ_CERTBOT_ACCESS_KEY_ID }}
@@ -94,9 +124,11 @@ jobs:
           fi
 
       - name: Pull image
+        if: "!inputs.restart_only"
         run: docker pull "ghcr.io/${{ github.repository }}:${IMAGE_TAG}"
 
       - name: Deploy
+        if: "!inputs.restart_only"
         working-directory: docker
         run: |
           IMAGE="ghcr.io/${{ github.repository }}:${IMAGE_TAG}"
@@ -111,7 +143,6 @@ jobs:
 
           echo "==> Starting relay (${INSTANCE} on port ${{ steps.config.outputs.port }})..."
           docker compose up -d
-
 
           echo "==> Waiting for admin endpoint..."
           for i in $(seq 1 30); do
@@ -137,7 +168,8 @@ jobs:
           SHORT="${GITHUB_SHA:0:7}"
           DOMAIN="${{ steps.config.outputs.domain }}"
           PORT="${{ steps.config.outputs.port }}"
-          TEXT=":rocket: *${{ github.repository }}* deployed \`${IMAGE_TAG}\` to \`${DOMAIN}:${PORT}\`"
+          ACTION=${{ inputs.restart_only && '"restarted"' || '"deployed"' }}
+          TEXT=":rocket: *${{ github.repository }}* ${ACTION} \`${IMAGE_TAG}\` on \`${DOMAIN}:${PORT}\`"
           curl -s -X POST "$SLACK_WEBHOOK_URL" \
             -H "Content-Type: application/json" \
             --data "{\"text\": \"${TEXT}\"}"
