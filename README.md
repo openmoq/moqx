@@ -26,10 +26,9 @@ libraries (MoQForwarder, MoQCache, MoQSession, MoQServer).
 `ORelayServer` extends `MoQServer` to wire up `ORelay` as the
 publish/subscribe handler.
 
-## Design
+See [BUILD.md](BUILD.md) for building, testing, deploying, and relay operations.
 
-- [BUILD.md](BUILD.md) — building, testing, deploying
+## Design Documents
+
 - [design/ci-architecture.md](design/ci-architecture.md) — CI pipelines, upstream sync, auto-deploy
 - [design/configuration.md](design/configuration.md) — relay config file reference
-- [design/ARCHITECTURE.md](design/ARCHITECTURE.md) — system design
-- [design/ROADMAP.md](design/ROADMAP.md) — roadmap
