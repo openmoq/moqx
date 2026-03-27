@@ -13,7 +13,6 @@
 #include <moxygen/relay/MoQCache.h>
 #include <moxygen/relay/MoQForwarder.h>
 #include <o_rly/UpstreamProvider.h>
-#include <o_rly/relay_auth.h>
 
 #include <folly/container/F14Set.h>
 #include <string>

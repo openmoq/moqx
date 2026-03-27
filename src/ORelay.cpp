@@ -8,7 +8,6 @@
 
 #include <moxygen/MoQFilters.h>
 #include <o_rly/ORelay.h>
-#include <o_rly/relay_auth.h>
 
 namespace {
 constexpr uint8_t kDefaultUpstreamPriority = 128;
@@ -582,10 +581,11 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> ORelay::subscribeNamespac
   if (!relayID_.empty() && isPeerSubNs(subNs)) {
     XLOG(INFO) << __func__ << ": peer relay detected, reciprocating peer subNs";
     auto peerSession = session;
+    auto self = shared_from_this();
     co_withExecutor(
         peerSession->getExecutor(),
-        [peerSession]() -> folly::coro::Task<void> {
-          auto handle = std::make_shared<NullNamespacePublishHandle>();
+        [peerSession, self]() -> folly::coro::Task<void> {
+          auto handle = makeNamespaceBridgeHandle(self, peerSession);
           auto result = co_await peerSession->subscribeNamespace(
               makePeerSubNs(), handle); // no token: reciprocal, prevents loop
           if (result.hasError()) {
