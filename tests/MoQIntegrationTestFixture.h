@@ -7,8 +7,8 @@
 #pragma once
 
 #include <folly/io/async/EventBase.h>
-#include <folly/portability/GTest.h>
 #include <folly/logging/xlog.h>
+#include <folly/portability/GTest.h>
 #include <folly/synchronization/Baton.h>
 #include <moxygen/MoQClient.h>
 #include <moxygen/MoQRelaySession.h>
@@ -33,15 +33,12 @@ namespace openmoq::o_rly::test {
  * createServerSubscribeHandler() to provide the server-side handlers.
  */
 class MoQIntegrationTestFixture : public ::testing::Test {
- protected:
+protected:
   // Subclasses must override to provide server's Publisher handler
   virtual std::shared_ptr<moxygen::Publisher> createServerPublishHandler() = 0;
 
   // Subclasses optionally override to provide server's Subscriber handler
-  virtual std::shared_ptr<moxygen::Subscriber>
-  createServerSubscribeHandler() {
-    return nullptr;
-  }
+  virtual std::shared_ptr<moxygen::Subscriber> createServerSubscribeHandler() { return nullptr; }
 
   void SetUp() override {
     // Start the server thread. The server must be constructed and started
@@ -57,12 +54,12 @@ class MoQIntegrationTestFixture : public ::testing::Test {
       auto standard = moxygen::getMoqtProtocols("", /*useStandard=*/true);
       alpns.insert(alpns.end(), standard.begin(), standard.end());
       alpns.push_back("h3");
-      auto fizzContext =
-          quic::samples::createFizzServerContextWithInsecureDefault(
-              alpns,
-              fizz::server::ClientAuthMode::None,
-              "" /* cert */,
-              "" /* key */);
+      auto fizzContext = quic::samples::createFizzServerContextWithInsecureDefault(
+          alpns,
+          fizz::server::ClientAuthMode::None,
+          "" /* cert */,
+          "" /* key */
+      );
 
       // Create and start the server on this thread
       server_ = std::make_unique<TestServer>(*this, std::move(fizzContext));
@@ -110,8 +107,7 @@ class MoQIntegrationTestFixture : public ::testing::Test {
 
   // Create a URL pointing at the test server
   proxygen::URL serverUrl() const {
-    return proxygen::URL(
-        folly::to<std::string>("moqt://localhost:", port_, "/test"));
+    return proxygen::URL(folly::to<std::string>("moqt://localhost:", port_, "/test"));
   }
 
   // Create a new MoQ client configured for the test server
@@ -120,42 +116,33 @@ class MoQIntegrationTestFixture : public ::testing::Test {
         clientExec_,
         serverUrl(),
         moxygen::MoQRelaySession::createRelaySessionFactory(),
-        std::make_shared<
-            moxygen::test::InsecureVerifierDangerousDoNotUseInProduction>());
+        std::make_shared<moxygen::test::InsecureVerifierDangerousDoNotUseInProduction>()
+    );
   }
 
   // Get the client executor
-  std::shared_ptr<moxygen::MoQExecutor> clientExec() const {
-    return clientExec_;
-  }
+  std::shared_ptr<moxygen::MoQExecutor> clientExec() const { return clientExec_; }
 
   // Get the server's assigned port
-  uint16_t serverPort() const {
-    return port_;
-  }
+  uint16_t serverPort() const { return port_; }
 
   // Access the client event base for scheduling
-  folly::EventBase& clientEvb() {
-    return clientEvb_;
-  }
+  folly::EventBase& clientEvb() { return clientEvb_; }
 
   // Access the server event base for scheduling
-  folly::EventBase& serverEvb() {
-    return serverEvb_;
-  }
+  folly::EventBase& serverEvb() { return serverEvb_; }
 
- private:
+private:
   // Simple MoQServer subclass that delegates to fixture's handler factories
   class TestServer : public moxygen::MoQServer {
-   public:
+  public:
     TestServer(
         MoQIntegrationTestFixture& fixture,
-        std::shared_ptr<const fizz::server::FizzServerContext> fizzContext)
-        : MoQServer(std::move(fizzContext), "/test"),
-          fixture_(fixture) {}
+        std::shared_ptr<const fizz::server::FizzServerContext> fizzContext
+    )
+        : MoQServer(std::move(fizzContext), "/test"), fixture_(fixture) {}
 
-    void onNewSession(
-        std::shared_ptr<moxygen::MoQSession> session) override {
+    void onNewSession(std::shared_ptr<moxygen::MoQSession> session) override {
       XLOG(DBG1) << "TestServer: new session " << session.get();
       auto pub = fixture_.createServerPublishHandler();
       auto sub = fixture_.createServerSubscribeHandler();
@@ -167,17 +154,19 @@ class MoQIntegrationTestFixture : public ::testing::Test {
       }
     }
 
-   protected:
+  protected:
     std::shared_ptr<moxygen::MoQSession> createSession(
         folly::MaybeManagedPtr<proxygen::WebTransport> wt,
-        std::shared_ptr<moxygen::MoQExecutor> executor) override {
+        std::shared_ptr<moxygen::MoQExecutor> executor
+    ) override {
       return std::make_shared<moxygen::MoQRelaySession>(
           folly::MaybeManagedPtr<proxygen::WebTransport>(std::move(wt)),
           *this,
-          std::move(executor));
+          std::move(executor)
+      );
     }
 
-   private:
+  private:
     MoQIntegrationTestFixture& fixture_;
   };
 

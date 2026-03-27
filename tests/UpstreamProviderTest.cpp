@@ -37,14 +37,10 @@ Publisher::SubscribeResult makeSubscribeOk(const SubscribeRequest& sub) {
 }
 
 struct NoopObjectCallback : public ObjectReceiverCallback {
-  FlowControlState onObject(
-      std::optional<TrackAlias>,
-      const ObjectHeader&,
-      Payload) override {
+  FlowControlState onObject(std::optional<TrackAlias>, const ObjectHeader&, Payload) override {
     return FlowControlState::UNBLOCKED;
   }
-  void onObjectStatus(std::optional<TrackAlias>, const ObjectHeader&) override {
-  }
+  void onObjectStatus(std::optional<TrackAlias>, const ObjectHeader&) override {}
   void onEndOfStream() override {}
   void onError(ResetStreamErrorCode) override {}
   void onPublishDone(PublishDone) override {}
@@ -53,14 +49,10 @@ struct NoopObjectCallback : public ObjectReceiverCallback {
 } // namespace
 
 class UpstreamProviderTest : public MoQIntegrationTestFixture {
- protected:
-  std::shared_ptr<Publisher> createServerPublishHandler() override {
-    return serverPublisher_;
-  }
+protected:
+  std::shared_ptr<Publisher> createServerPublishHandler() override { return serverPublisher_; }
 
-  std::shared_ptr<Subscriber> createServerSubscribeHandler() override {
-    return serverSubscriber_;
-  }
+  std::shared_ptr<Subscriber> createServerSubscribeHandler() override { return serverSubscriber_; }
 
   void SetUp() override {
     serverPublisher_ = std::make_shared<NiceMock<MockPublisher>>();
@@ -71,8 +63,8 @@ class UpstreamProviderTest : public MoQIntegrationTestFixture {
         serverUrl(),
         /*publishHandler=*/nullptr,
         /*subscribeHandler=*/nullptr,
-        std::make_shared<
-            moxygen::test::InsecureVerifierDangerousDoNotUseInProduction>());
+        std::make_shared<moxygen::test::InsecureVerifierDangerousDoNotUseInProduction>()
+    );
   }
 
   void TearDown() override {
@@ -83,7 +75,8 @@ class UpstreamProviderTest : public MoQIntegrationTestFixture {
   std::shared_ptr<ObjectReceiver> makeReceiver() {
     return std::make_shared<ObjectReceiver>(
         ObjectReceiver::SUBSCRIBE,
-        std::make_shared<NoopObjectCallback>());
+        std::make_shared<NoopObjectCallback>()
+    );
   }
 
   SubscribeRequest makeSubscribeRequest() {
@@ -92,27 +85,30 @@ class UpstreamProviderTest : public MoQIntegrationTestFixture {
         kDefaultPriority,
         GroupOrder::OldestFirst,
         /*forward=*/true,
-        LocationType::LargestObject);
+        LocationType::LargestObject
+    );
   }
 
   // Expect exactly one subscribe call that returns SubscribeOk.
   void expectSubscribe() {
     EXPECT_CALL(*serverPublisher_, subscribe(_, _))
         .WillOnce(
-            [](SubscribeRequest sub, std::shared_ptr<TrackConsumer>)
-                -> folly::coro::Task<Publisher::SubscribeResult> {
+            [](SubscribeRequest sub,
+               std::shared_ptr<TrackConsumer>) -> folly::coro::Task<Publisher::SubscribeResult> {
               co_return makeSubscribeOk(sub);
-            });
+            }
+        );
   }
 
   // Allow any number of subscribe calls, each returning SubscribeOk.
   void allowSubscribe() {
     EXPECT_CALL(*serverPublisher_, subscribe(_, _))
         .WillRepeatedly(
-            [](SubscribeRequest sub, std::shared_ptr<TrackConsumer>)
-                -> folly::coro::Task<Publisher::SubscribeResult> {
+            [](SubscribeRequest sub,
+               std::shared_ptr<TrackConsumer>) -> folly::coro::Task<Publisher::SubscribeResult> {
               co_return makeSubscribeOk(sub);
-            });
+            }
+        );
   }
 
   // Expect exactly one publishNamespace call that returns PublishNamespaceOk.
@@ -122,8 +118,10 @@ class UpstreamProviderTest : public MoQIntegrationTestFixture {
             [](PublishNamespace pubNs, std::shared_ptr<Subscriber::PublishNamespaceCallback>)
                 -> folly::coro::Task<Subscriber::PublishNamespaceResult> {
               co_return std::make_shared<MockPublishNamespaceHandle>(
-                  PublishNamespaceOk{pubNs.requestID});
-            });
+                  PublishNamespaceOk{pubNs.requestID}
+              );
+            }
+        );
   }
 
   std::shared_ptr<UpstreamProvider> provider_;
@@ -137,7 +135,8 @@ TEST_F(UpstreamProviderTest, ConnectAndSetup) {
         co_await provider_->start();
         EXPECT_NE(provider_->currentSession(), nullptr);
       }(),
-      &clientEvb());
+      &clientEvb()
+  );
 }
 
 TEST_F(UpstreamProviderTest, SubscribeForwardsToUpstream) {
@@ -145,11 +144,11 @@ TEST_F(UpstreamProviderTest, SubscribeForwardsToUpstream) {
 
   folly::coro::blockingWait(
       [&]() -> folly::coro::Task<void> {
-        auto result = co_await provider_->subscribe(
-            makeSubscribeRequest(), makeReceiver());
+        auto result = co_await provider_->subscribe(makeSubscribeRequest(), makeReceiver());
         EXPECT_TRUE(result.hasValue());
       }(),
-      &clientEvb());
+      &clientEvb()
+  );
 }
 
 TEST_F(UpstreamProviderTest, PublishNamespaceForwardsToUpstream) {
@@ -161,11 +160,11 @@ TEST_F(UpstreamProviderTest, PublishNamespaceForwardsToUpstream) {
         pubNs.requestID = RequestID(1);
         pubNs.trackNamespace = kTestNamespace;
 
-        auto result =
-            co_await provider_->publishNamespace(std::move(pubNs), nullptr);
+        auto result = co_await provider_->publishNamespace(std::move(pubNs), nullptr);
         EXPECT_TRUE(result.hasValue());
       }(),
-      &clientEvb());
+      &clientEvb()
+  );
 }
 
 TEST_F(UpstreamProviderTest, StopFailsPendingOperations) {
@@ -183,7 +182,8 @@ TEST_F(UpstreamProviderTest, StopFailsPendingOperations) {
         }
         EXPECT_TRUE(threw);
       }(),
-      &clientEvb());
+      &clientEvb()
+  );
 }
 
 TEST_F(UpstreamProviderTest, SessionCloseTriggersLazyReconnect) {
@@ -200,13 +200,13 @@ TEST_F(UpstreamProviderTest, SessionCloseTriggersLazyReconnect) {
         co_await folly::coro::sleep(std::chrono::milliseconds(100));
         EXPECT_EQ(provider_->currentSession(), nullptr);
 
-        auto result = co_await provider_->subscribe(
-            makeSubscribeRequest(), makeReceiver());
+        auto result = co_await provider_->subscribe(makeSubscribeRequest(), makeReceiver());
         EXPECT_TRUE(result.hasValue());
         EXPECT_NE(provider_->currentSession(), nullptr);
         EXPECT_NE(provider_->currentSession(), firstSession);
       }(),
-      &clientEvb());
+      &clientEvb()
+  );
 }
 
 TEST_F(UpstreamProviderTest, GoawayResetsSession) {
@@ -221,12 +221,12 @@ TEST_F(UpstreamProviderTest, GoawayResetsSession) {
         provider_->goaway(Goaway{""});
         EXPECT_EQ(provider_->currentSession(), nullptr);
 
-        auto result = co_await provider_->subscribe(
-            makeSubscribeRequest(), makeReceiver());
+        auto result = co_await provider_->subscribe(makeSubscribeRequest(), makeReceiver());
         EXPECT_TRUE(result.hasValue());
         EXPECT_NE(provider_->currentSession(), nullptr);
       }(),
-      &clientEvb());
+      &clientEvb()
+  );
 }
 
 TEST_F(UpstreamProviderTest, PublishFailsWhenStopped) {

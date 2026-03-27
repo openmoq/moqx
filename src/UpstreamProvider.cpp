@@ -4,12 +4,12 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-#include <o_rly/ORelay.h>
-#include <o_rly/UpstreamProvider.h>
+#include <folly/logging/xlog.h>
 #include <moxygen/MoQFilters.h>
 #include <moxygen/MoQRelaySession.h>
 #include <moxygen/MoQVersions.h>
-#include <folly/logging/xlog.h>
+#include <o_rly/ORelay.h>
+#include <o_rly/UpstreamProvider.h>
 
 using namespace moxygen;
 
@@ -20,11 +20,9 @@ namespace openmoq::o_rly {
 static constexpr uint64_t kRelayAuthTokenType = 0x1B2C'3D4E'5F6A'7B8CULL;
 
 bool isPeerSubNs(const SubscribeNamespace& subNs) {
-  const uint64_t authKey =
-      static_cast<uint64_t>(TrackRequestParamKey::AUTHORIZATION_TOKEN);
+  const uint64_t authKey = static_cast<uint64_t>(TrackRequestParamKey::AUTHORIZATION_TOKEN);
   for (const auto& param : subNs.params) {
-    if (param.key == authKey &&
-        param.asAuthToken.tokenType == kRelayAuthTokenType) {
+    if (param.key == authKey && param.asAuthToken.tokenType == kRelayAuthTokenType) {
       return true;
     }
   }
@@ -42,7 +40,8 @@ SubscribeNamespace makePeerSubNs(std::optional<std::string> relayID) {
             .tokenType = kRelayAuthTokenType,
             .tokenValue = *relayID,
             .alias = AuthToken::DontRegister,
-        }));
+        }
+    ));
   }
   return subNs;
 }
@@ -53,7 +52,7 @@ namespace {
 // Per MoQ protocol, publishers must not send data before PublishOk, so
 // setDownstream() is always called before any forwarding methods are used.
 class PendingTrackConsumer : public TrackConsumerFilter {
- public:
+public:
   PendingTrackConsumer() : TrackConsumerFilter(nullptr) {}
 
   void setDownstream(std::shared_ptr<TrackConsumer> downstream) {
@@ -63,19 +62,16 @@ class PendingTrackConsumer : public TrackConsumerFilter {
 
 } // namespace
 
-
 UpstreamProvider::UpstreamProvider(
     std::shared_ptr<MoQExecutor> exec,
     proxygen::URL url,
     std::shared_ptr<Publisher> publishHandler,
     std::shared_ptr<Subscriber> subscribeHandler,
     std::shared_ptr<fizz::CertificateVerifier> verifier,
-    std::string relayID)
-    : publishHandler_(std::move(publishHandler)),
-      subscribeHandler_(std::move(subscribeHandler)),
-      url_(std::move(url)),
-      exec_(std::move(exec)),
-      verifier_(std::move(verifier)),
+    std::string relayID
+)
+    : publishHandler_(std::move(publishHandler)), subscribeHandler_(std::move(subscribeHandler)),
+      url_(std::move(url)), exec_(std::move(exec)), verifier_(std::move(verifier)),
       relayID_(std::move(relayID)) {
   XLOG(DBG1) << "UpstreamProvider created, url=" << url_.getUrl();
 }
@@ -95,11 +91,12 @@ static constexpr auto kMaxReconnectBackoff = std::chrono::seconds(60);
 folly::coro::Task<void> UpstreamProvider::reconnectLoop() {
   while (!stopped_) {
     if (reconnectBackoff_.count() > 0) {
-      XLOG(INFO) << "UpstreamProvider: reconnecting in "
-                 << reconnectBackoff_.count() << "ms";
+      XLOG(INFO) << "UpstreamProvider: reconnecting in " << reconnectBackoff_.count() << "ms";
       try {
         co_await folly::coro::co_withCancellation(
-            stopSource_.getToken(), folly::coro::sleep(reconnectBackoff_));
+            stopSource_.getToken(),
+            folly::coro::sleep(reconnectBackoff_)
+        );
       } catch (const folly::OperationCancelled&) {
         co_return;
       }
@@ -110,20 +107,19 @@ folly::coro::Task<void> UpstreamProvider::reconnectLoop() {
 
     try {
       co_await getOrConnectSession();
-      XLOG(DBG1) << "UpstreamProvider::reconnectLoop connected, session="
-                 << session_.get();
+      XLOG(DBG1) << "UpstreamProvider::reconnectLoop connected, session=" << session_.get();
       reconnectBackoff_ = std::chrono::milliseconds(0);
       co_return; // Connected — exit. onMoQSessionClosed()/goaway() will respawn.
     } catch (const std::exception& ex) {
       if (stopped_) {
         co_return;
       }
-      reconnectBackoff_ = reconnectBackoff_.count() == 0
-          ? kInitialReconnectBackoff
-          : std::min(reconnectBackoff_ * 2,
-                     std::chrono::milliseconds(kMaxReconnectBackoff));
-      XLOG(ERR) << "UpstreamProvider: connect failed: " << ex.what()
-                << ", retrying in " << reconnectBackoff_.count() << "ms";
+      reconnectBackoff_ =
+          reconnectBackoff_.count() == 0
+              ? kInitialReconnectBackoff
+              : std::min(reconnectBackoff_ * 2, std::chrono::milliseconds(kMaxReconnectBackoff));
+      XLOG(ERR) << "UpstreamProvider: connect failed: " << ex.what() << ", retrying in "
+                << reconnectBackoff_.count() << "ms";
     }
   }
 }
@@ -145,18 +141,17 @@ void UpstreamProvider::stop() {
 
   // Fail any waiters on the connect promise (only if not already fulfilled)
   if (connectPromise_ && !connectPromise_->isFulfilled()) {
-    connectPromise_->setException(folly::exception_wrapper(
-        std::runtime_error("UpstreamProvider stopped")));
+    connectPromise_->setException(
+        folly::exception_wrapper(std::runtime_error("UpstreamProvider stopped"))
+    );
   }
   connectPromise_.reset();
-
 }
 
 // --- Publisher interface ---
 
-folly::coro::Task<Publisher::SubscribeResult> UpstreamProvider::subscribe(
-    SubscribeRequest sub,
-    std::shared_ptr<TrackConsumer> callback) {
+folly::coro::Task<Publisher::SubscribeResult>
+UpstreamProvider::subscribe(SubscribeRequest sub, std::shared_ptr<TrackConsumer> callback) {
   XLOG(DBG1) << "UpstreamProvider::subscribe ftn=" << sub.fullTrackName;
   if (auto sess = getSession()) {
     return sess->subscribe(std::move(sub), std::move(callback));
@@ -164,16 +159,14 @@ folly::coro::Task<Publisher::SubscribeResult> UpstreamProvider::subscribe(
   return coSubscribe(std::move(sub), std::move(callback));
 }
 
-folly::coro::Task<Publisher::SubscribeResult> UpstreamProvider::coSubscribe(
-    SubscribeRequest sub,
-    std::shared_ptr<TrackConsumer> callback) {
+folly::coro::Task<Publisher::SubscribeResult>
+UpstreamProvider::coSubscribe(SubscribeRequest sub, std::shared_ptr<TrackConsumer> callback) {
   auto sess = co_await getOrConnectSession();
   co_return co_await sess->subscribe(std::move(sub), std::move(callback));
 }
 
-folly::coro::Task<Publisher::FetchResult> UpstreamProvider::fetch(
-    Fetch fetch,
-    std::shared_ptr<FetchConsumer> fetchCallback) {
+folly::coro::Task<Publisher::FetchResult>
+UpstreamProvider::fetch(Fetch fetch, std::shared_ptr<FetchConsumer> fetchCallback) {
   XLOG(DBG1) << "UpstreamProvider::fetch ftn=" << fetch.fullTrackName;
   if (auto sess = getSession()) {
     return sess->fetch(std::move(fetch), std::move(fetchCallback));
@@ -181,15 +174,13 @@ folly::coro::Task<Publisher::FetchResult> UpstreamProvider::fetch(
   return coFetch(std::move(fetch), std::move(fetchCallback));
 }
 
-folly::coro::Task<Publisher::FetchResult> UpstreamProvider::coFetch(
-    Fetch fetch,
-    std::shared_ptr<FetchConsumer> fetchCallback) {
+folly::coro::Task<Publisher::FetchResult>
+UpstreamProvider::coFetch(Fetch fetch, std::shared_ptr<FetchConsumer> fetchCallback) {
   auto sess = co_await getOrConnectSession();
   co_return co_await sess->fetch(std::move(fetch), std::move(fetchCallback));
 }
 
-folly::coro::Task<Publisher::TrackStatusResult> UpstreamProvider::trackStatus(
-    TrackStatus req) {
+folly::coro::Task<Publisher::TrackStatusResult> UpstreamProvider::trackStatus(TrackStatus req) {
   XLOG(DBG1) << "UpstreamProvider::trackStatus ftn=" << req.fullTrackName;
   if (auto sess = getSession()) {
     return sess->trackStatus(req);
@@ -197,38 +188,36 @@ folly::coro::Task<Publisher::TrackStatusResult> UpstreamProvider::trackStatus(
   return coTrackStatus(req);
 }
 
-folly::coro::Task<Publisher::TrackStatusResult> UpstreamProvider::coTrackStatus(
-    TrackStatus req) {
+folly::coro::Task<Publisher::TrackStatusResult> UpstreamProvider::coTrackStatus(TrackStatus req) {
   auto sess = co_await getOrConnectSession();
   co_return co_await sess->trackStatus(req);
 }
 
-folly::coro::Task<Publisher::SubscribeNamespaceResult>
-UpstreamProvider::subscribeNamespace(
+folly::coro::Task<Publisher::SubscribeNamespaceResult> UpstreamProvider::subscribeNamespace(
     SubscribeNamespace subNs,
-    std::shared_ptr<NamespacePublishHandle> handle) {
-  XLOG(DBG1) << "UpstreamProvider::subscribeNamespace nsp="
-             << subNs.trackNamespacePrefix;
+    std::shared_ptr<NamespacePublishHandle> handle
+) {
+  XLOG(DBG1) << "UpstreamProvider::subscribeNamespace nsp=" << subNs.trackNamespacePrefix;
   if (auto sess = getSession()) {
     return sess->subscribeNamespace(std::move(subNs), std::move(handle));
   }
   return coSubscribeNamespace(std::move(subNs), std::move(handle));
 }
 
-folly::coro::Task<Publisher::SubscribeNamespaceResult>
-UpstreamProvider::coSubscribeNamespace(
+folly::coro::Task<Publisher::SubscribeNamespaceResult> UpstreamProvider::coSubscribeNamespace(
     SubscribeNamespace subNs,
-    std::shared_ptr<NamespacePublishHandle> handle) {
+    std::shared_ptr<NamespacePublishHandle> handle
+) {
   auto sess = co_await getOrConnectSession();
   co_return co_await sess->subscribeNamespace(std::move(subNs), std::move(handle));
 }
 
 // --- Subscriber interface ---
 
-folly::coro::Task<Subscriber::PublishNamespaceResult>
-UpstreamProvider::publishNamespace(
+folly::coro::Task<Subscriber::PublishNamespaceResult> UpstreamProvider::publishNamespace(
     PublishNamespace pubNs,
-    std::shared_ptr<PublishNamespaceCallback> cb) {
+    std::shared_ptr<PublishNamespaceCallback> cb
+) {
   XLOG(DBG1) << "UpstreamProvider::publishNamespace ns=" << pubNs.trackNamespace;
   if (auto sess = getSession()) {
     return sess->publishNamespace(std::move(pubNs), std::move(cb));
@@ -236,22 +225,21 @@ UpstreamProvider::publishNamespace(
   return coPublishNamespace(std::move(pubNs), std::move(cb));
 }
 
-folly::coro::Task<Subscriber::PublishNamespaceResult>
-UpstreamProvider::coPublishNamespace(
+folly::coro::Task<Subscriber::PublishNamespaceResult> UpstreamProvider::coPublishNamespace(
     PublishNamespace pubNs,
-    std::shared_ptr<PublishNamespaceCallback> cb) {
+    std::shared_ptr<PublishNamespaceCallback> cb
+) {
   auto sess = co_await getOrConnectSession();
   co_return co_await sess->publishNamespace(std::move(pubNs), std::move(cb));
 }
 
-Subscriber::PublishResult UpstreamProvider::publish(
-    PublishRequest pub,
-    std::shared_ptr<moxygen::SubscriptionHandle> handle) {
+Subscriber::PublishResult
+UpstreamProvider::publish(PublishRequest pub, std::shared_ptr<moxygen::SubscriptionHandle> handle) {
   XLOG(DBG1) << "UpstreamProvider::publish ftn=" << pub.fullTrackName;
   if (stopped_) {
     return folly::makeUnexpected(
-        PublishError{pub.requestID, PublishErrorCode::INTERNAL_ERROR,
-                     "UpstreamProvider stopped"});
+        PublishError{pub.requestID, PublishErrorCode::INTERNAL_ERROR, "UpstreamProvider stopped"}
+    );
   }
   if (state_ == State::Connected && session_) {
     return session_->publish(std::move(pub), std::move(handle));
@@ -262,13 +250,8 @@ Subscriber::PublishResult UpstreamProvider::publish(
   // guaranteed to be called before any forwarding methods.
   auto pending = std::make_shared<PendingTrackConsumer>();
   auto reqID = pub.requestID;
-  auto reply =
-      [this,
-       pub = std::move(pub),
-       handle = std::move(handle),
-       pending,
-       reqID]() mutable
-      -> folly::coro::Task<folly::Expected<PublishOk, PublishError>> {
+  auto reply = [this, pub = std::move(pub), handle = std::move(handle), pending, reqID](
+               ) mutable -> folly::coro::Task<folly::Expected<PublishOk, PublishError>> {
     try {
       auto session = co_await getOrConnectSession();
       auto result = session->publish(std::move(pub), std::move(handle));
@@ -278,12 +261,12 @@ Subscriber::PublishResult UpstreamProvider::publish(
       pending->setDownstream(std::move(result.value().consumer));
       co_return co_await std::move(result.value().reply);
     } catch (const std::exception& ex) {
-      co_return folly::makeUnexpected(PublishError{
-          reqID, PublishErrorCode::INTERNAL_ERROR, ex.what()});
+      co_return folly::makeUnexpected(
+          PublishError{reqID, PublishErrorCode::INTERNAL_ERROR, ex.what()}
+      );
     }
   }();
-  return Subscriber::PublishConsumerAndReplyTask{
-      std::move(pending), std::move(reply)};
+  return Subscriber::PublishConsumerAndReplyTask{std::move(pending), std::move(reply)};
 }
 
 // --- Goaway ---
@@ -292,8 +275,7 @@ void UpstreamProvider::goaway(Goaway goaway) {
   XLOG(INFO) << "UpstreamProvider::goaway uri=" << goaway.newSessionUri;
 
   if (!goaway.newSessionUri.empty()) {
-    XLOG(INFO) << "UpstreamProvider: updating URL from goaway: "
-               << goaway.newSessionUri;
+    XLOG(INFO) << "UpstreamProvider: updating URL from goaway: " << goaway.newSessionUri;
     url_ = proxygen::URL(goaway.newSessionUri);
   }
 
@@ -317,12 +299,10 @@ void UpstreamProvider::onMoQSessionClosed() {
 
 // --- Private methods ---
 
-folly::coro::Task<std::shared_ptr<MoQSession>>
-UpstreamProvider::getOrConnectSession() {
+folly::coro::Task<std::shared_ptr<MoQSession>> UpstreamProvider::getOrConnectSession() {
   if (stopped_) {
     XLOG(DBG1) << "UpstreamProvider::getOrConnectSession - stopped";
-    co_yield folly::coro::co_error(
-        std::runtime_error("UpstreamProvider stopped"));
+    co_yield folly::coro::co_error(std::runtime_error("UpstreamProvider stopped"));
   }
 
   if (state_ == State::Connected && session_) {
@@ -335,8 +315,7 @@ UpstreamProvider::getOrConnectSession() {
     CHECK(connectPromise_);
     co_await connectPromise_->getFuture();
     if (!session_) {
-      co_yield folly::coro::co_error(
-          std::runtime_error("Connection failed"));
+      co_yield folly::coro::co_error(std::runtime_error("Connection failed"));
     }
     co_return session_;
   }
@@ -349,15 +328,13 @@ UpstreamProvider::getOrConnectSession() {
   try {
     co_await doConnect();
     state_ = State::Connected;
-    XLOG(DBG1) << "UpstreamProvider: connected to upstream, session="
-               << session_.get();
+    XLOG(DBG1) << "UpstreamProvider: connected to upstream, session=" << session_.get();
     connectPromise_->setValue(folly::unit);
     co_return session_;
   } catch (const std::exception& ex) {
     XLOG(ERR) << "UpstreamProvider: connection failed: " << ex.what();
     state_ = State::Disconnected;
-    connectPromise_->setException(
-        folly::exception_wrapper(std::current_exception()));
+    connectPromise_->setException(folly::exception_wrapper(std::current_exception()));
     connectPromise_.reset();
     throw;
   }
@@ -370,7 +347,8 @@ folly::coro::Task<void> UpstreamProvider::doConnect() {
       exec_,
       url_,
       MoQRelaySession::createRelaySessionFactory(),
-      verifier_);
+      verifier_
+  );
 
   quic::TransportSettings ts;
   ts.orderedReadCallbacks = true;
@@ -386,7 +364,8 @@ folly::coro::Task<void> UpstreamProvider::doConnect() {
       publishHandler_,
       subscribeHandler_,
       ts,
-      getMoqtProtocols("16", /*useStandard=*/true));
+      getMoqtProtocols("16", /*useStandard=*/true)
+  );
 
   session_ = client_->moqSession_;
   CHECK(session_) << "setupMoQSession succeeded but session is null";
@@ -404,18 +383,15 @@ folly::coro::Task<void> UpstreamProvider::doConnect() {
     // a no-op handle (namespace announcements arrive via PUBLISH_NAMESPACE only).
     auto relay = std::dynamic_pointer_cast<ORelay>(subscribeHandler_);
     auto nsHandle = makeNamespaceBridgeHandle(relay, session_);
-    auto result = co_await session_->subscribeNamespace(
-        makePeerSubNs(relayID_), nsHandle);
+    auto result = co_await session_->subscribeNamespace(makePeerSubNs(relayID_), nsHandle);
     if (result.hasValue()) {
       peerSubNsHandle_ = std::move(result.value());
     } else {
-      XLOG(ERR) << "UpstreamProvider: peer subNs failed: "
-                << result.error().reasonPhrase;
+      XLOG(ERR) << "UpstreamProvider: peer subNs failed: " << result.error().reasonPhrase;
     }
   }
 
-  XLOG(DBG1) << "UpstreamProvider::doConnect completed, session="
-             << session_.get();
+  XLOG(DBG1) << "UpstreamProvider::doConnect completed, session=" << session_.get();
 }
 
 void UpstreamProvider::resetSession() {

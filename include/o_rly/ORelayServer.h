@@ -5,10 +5,10 @@
 #include <moxygen/MoQServer.h>
 #include <o_rly/ORelay.h>
 #include <o_rly/ServiceMatcher.h>
+#include <o_rly/UpstreamProvider.h>
 #include <o_rly/config/config.h>
 #include <o_rly/stats/MoQStatsCollector.h>
 #include <o_rly/stats/StatsRegistry.h>
-#include <o_rly/UpstreamProvider.h>
 
 namespace openmoq::o_rly {
 
@@ -60,7 +60,8 @@ protected:
 private:
   void initServices(
       const folly::F14FastMap<std::string, config::ServiceConfig>& services,
-      const std::string& relayID);
+      const std::string& relayID
+  );
   void initUpstreams();
 
   struct ServiceEntry {

@@ -65,8 +65,8 @@ struct ParsedAdminConfig {
 
 struct ParsedUpstreamTlsConfig {
   rfl::Description<"Skip TLS certificate verification (dev only)", bool> insecure;
-  rfl::Description<"Path to CA certificate file for peer verification",
-                   std::optional<std::string>> ca_cert;
+  rfl::Description<"Path to CA certificate file for peer verification", std::optional<std::string>>
+      ca_cert;
 };
 
 struct ParsedUpstreamConfig {
@@ -115,8 +115,10 @@ struct ParsedServiceConfig {
       "Per-service cache settings (overrides service_defaults)",
       std::optional<ParsedCacheConfig>>
       cache;
-  rfl::Description<"Upstream MoQ server for this service (optional; enables relay chaining)",
-                   std::optional<ParsedUpstreamConfig>> upstream;
+  rfl::Description<
+      "Upstream MoQ server for this service (optional; enables relay chaining)",
+      std::optional<ParsedUpstreamConfig>>
+      upstream;
 };
 
 struct ParsedServiceDefaultsConfig {
@@ -134,8 +136,10 @@ struct ParsedConfig {
       service_defaults;
   rfl::Description<"Service definitions", std::map<std::string, ParsedServiceConfig>> services;
   rfl::Description<"Admin HTTP server settings", std::optional<ParsedAdminConfig>> admin;
-  rfl::Description<"Relay identity string (optional; random string generated if absent)",
-                   std::optional<std::string>> relay_id;
+  rfl::Description<
+      "Relay identity string (optional; random string generated if absent)",
+      std::optional<std::string>>
+      relay_id;
 };
 
 } // namespace openmoq::o_rly::config

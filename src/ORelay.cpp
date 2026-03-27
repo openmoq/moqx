@@ -21,10 +21,8 @@ namespace openmoq::o_rly {
 // ORelay::doPublishNamespace/doPublishNamespaceDone — no coroutine overhead,
 // no handle map needed.
 class ORelayNamespaceHandle : public Publisher::NamespacePublishHandle {
- public:
-  ORelayNamespaceHandle(
-      std::weak_ptr<ORelay> relay,
-      std::shared_ptr<MoQSession> session)
+public:
+  ORelayNamespaceHandle(std::weak_ptr<ORelay> relay, std::shared_ptr<MoQSession> session)
       : relay_(std::move(relay)), session_(std::move(session)) {}
 
   void namespaceMsg(const TrackNamespace& suffix) override {
@@ -45,16 +43,14 @@ class ORelayNamespaceHandle : public Publisher::NamespacePublishHandle {
     relay->doPublishNamespaceDone(suffix, session_);
   }
 
- private:
+private:
   std::weak_ptr<ORelay> relay_;
   std::shared_ptr<MoQSession> session_;
 };
 
-std::shared_ptr<Publisher::NamespacePublishHandle> makeNamespaceBridgeHandle(
-    std::weak_ptr<ORelay> relay,
-    std::shared_ptr<MoQSession> session) {
-  return std::make_shared<ORelayNamespaceHandle>(
-      std::move(relay), std::move(session));
+std::shared_ptr<Publisher::NamespacePublishHandle>
+makeNamespaceBridgeHandle(std::weak_ptr<ORelay> relay, std::shared_ptr<MoQSession> session) {
+  return std::make_shared<ORelayNamespaceHandle>(std::move(relay), std::move(session));
 }
 
 // Sends SUBSCRIBE_UPDATE to update forwarding state. Called from:
@@ -117,7 +113,8 @@ std::shared_ptr<ORelay::NamespaceNode> ORelay::findNamespaceNode(
 std::shared_ptr<Subscriber::PublishNamespaceHandle> ORelay::doPublishNamespace(
     PublishNamespace pubNs,
     std::shared_ptr<MoQSession> session,
-    std::shared_ptr<Subscriber::PublishNamespaceCallback> callback) {
+    std::shared_ptr<Subscriber::PublishNamespaceCallback> callback
+) {
   XLOG(DBG1) << __func__ << " ns=" << pubNs.trackNamespace;
   if (!pubNs.trackNamespace.startsWith(allowedNamespacePrefix_)) {
     return nullptr;
@@ -125,7 +122,11 @@ std::shared_ptr<Subscriber::PublishNamespaceHandle> ORelay::doPublishNamespace(
   std::vector<std::pair<std::shared_ptr<MoQSession>, NamespaceNode::NamespaceSubscriberInfo>>
       sessions;
   auto nodePtr = findNamespaceNode(
-      pubNs.trackNamespace, /*createMissingNodes=*/true, MatchType::Exact, &sessions);
+      pubNs.trackNamespace,
+      /*createMissingNodes=*/true,
+      MatchType::Exact,
+      &sessions
+  );
 
   // If an existing session already published this namespace, cancel it and
   // clean up its subscriptions before registering the new publisher.
@@ -134,7 +135,9 @@ std::shared_ptr<Subscriber::PublishNamespaceHandle> ORelay::doPublishNamespace(
                   << ") has already published trackNamespace=" << pubNs.trackNamespace;
     if (nodePtr->publishNamespaceCallback) {
       nodePtr->publishNamespaceCallback->publishNamespaceCancel(
-          PublishNamespaceErrorCode::CANCELLED, "New publisher");
+          PublishNamespaceErrorCode::CANCELLED,
+          "New publisher"
+      );
       nodePtr->publishNamespaceCallback.reset();
     }
     for (auto it = subscriptions_.begin(); it != subscriptions_.end();) {
@@ -173,7 +176,8 @@ std::shared_ptr<Subscriber::PublishNamespaceHandle> ORelay::doPublishNamespace(
         // Draft 16+: send NAMESPACE message on the bidi stream
         TrackNamespace suffix(std::vector<std::string>(
             pubNs.trackNamespace.trackNamespace.begin() + info.trackNamespacePrefix.size(),
-            pubNs.trackNamespace.trackNamespace.end()));
+            pubNs.trackNamespace.trackNamespace.end()
+        ));
         info.namespacePublishHandle->namespaceMsg(suffix);
       } else {
         // Draft <= 15: send PUBLISH_NAMESPACE on a new stream
@@ -193,15 +197,12 @@ folly::coro::Task<Subscriber::PublishNamespaceResult> ORelay::publishNamespace(
   auto requestID = pubNs.requestID;
   auto result = doPublishNamespace(std::move(pubNs), session, std::move(callback));
   if (!result) {
-    co_return folly::makeUnexpected(PublishNamespaceError{
-        requestID,
-        PublishNamespaceErrorCode::UNINTERESTED,
-        "bad namespace"
-    });
+    co_return folly::makeUnexpected(
+        PublishNamespaceError{requestID, PublishNamespaceErrorCode::UNINTERESTED, "bad namespace"}
+    );
   }
   co_return result;
 }
-
 
 folly::coro::Task<void> ORelay::publishNamespaceToSession(
     std::shared_ptr<MoQSession> session,
@@ -285,7 +286,8 @@ void ORelay::NamespaceNode::tryPruneChild(const std::string& childKey) {
 
 void ORelay::doPublishNamespaceDone(
     const TrackNamespace& trackNamespace,
-    std::shared_ptr<MoQSession> session) {
+    std::shared_ptr<MoQSession> session
+) {
   XLOG(DBG1) << __func__ << " ns=" << trackNamespace;
   auto nodePtr = findNamespaceNode(trackNamespace);
   if (!nodePtr) {
@@ -617,10 +619,11 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> ORelay::subscribeNamespac
     XLOG(INFO) << __func__ << ": peer relay detected, reciprocating peer subNs";
     auto handle = makeNamespaceBridgeHandle(weak_from_this(), session);
     auto recipResult = co_await session->subscribeNamespace(
-        makePeerSubNs(), handle); // no token: reciprocal, prevents loop
+        makePeerSubNs(),
+        handle
+    ); // no token: reciprocal, prevents loop
     if (recipResult.hasError()) {
-      XLOG(ERR) << "Reciprocal peer subNs failed: "
-                << recipResult.error().reasonPhrase;
+      XLOG(ERR) << "Reciprocal peer subNs failed: " << recipResult.error().reasonPhrase;
     } else {
       peerSubNsHandles_.emplace(session.get(), std::move(recipResult.value()));
     }

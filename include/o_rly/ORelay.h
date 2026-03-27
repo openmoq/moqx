@@ -28,7 +28,8 @@ public:
       size_t maxCachedTracks = moxygen::kDefaultMaxCachedTracks,
       size_t maxCachedGroupsPerTrack = moxygen::kDefaultMaxCachedGroupsPerTrack,
       std::string relayID = {}
-  ) : relayID_(std::move(relayID)) {
+  )
+      : relayID_(std::move(relayID)) {
     if (maxCachedTracks > 0) {
       cache_ = std::make_unique<moxygen::MoQCache>(maxCachedTracks, maxCachedGroupsPerTrack);
     }
@@ -44,7 +45,6 @@ public:
   void setUpstreamProvider(std::shared_ptr<UpstreamProvider> upstream) {
     upstream_ = std::move(upstream);
   }
-
 
   folly::coro::Task<SubscribeResult> subscribe(
       moxygen::SubscribeRequest subReq,
@@ -94,11 +94,13 @@ public:
   std::shared_ptr<moxygen::Subscriber::PublishNamespaceHandle> doPublishNamespace(
       moxygen::PublishNamespace pubNs,
       std::shared_ptr<moxygen::MoQSession> session,
-      std::shared_ptr<moxygen::Subscriber::PublishNamespaceCallback> callback);
+      std::shared_ptr<moxygen::Subscriber::PublishNamespaceCallback> callback
+  );
 
   void doPublishNamespaceDone(
       const moxygen::TrackNamespace& trackNamespace,
-      std::shared_ptr<moxygen::MoQSession> session);
+      std::shared_ptr<moxygen::MoQSession> session
+  );
 
   // Test accessor: check if a publish exists and return node/publish state
   struct PublishState {
@@ -255,6 +257,7 @@ private:
 // Used for both the initiating (UpstreamProvider) and reciprocal (ORelay) paths.
 std::shared_ptr<moxygen::Publisher::NamespacePublishHandle> makeNamespaceBridgeHandle(
     std::weak_ptr<ORelay> relay,
-    std::shared_ptr<moxygen::MoQSession> session);
+    std::shared_ptr<moxygen::MoQSession> session
+);
 
 } // namespace openmoq::o_rly
