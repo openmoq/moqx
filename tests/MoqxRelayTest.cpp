@@ -24,7 +24,7 @@ using namespace openmoq::moqx;
 
 namespace moxygen::test {
 
-using openmoq::o_rly::test::makeBuf;
+using openmoq::moqx::test::makeBuf;
 
 const TrackNamespace kTestNamespace{{"test", "namespace"}};
 const TrackNamespace kAllowedPrefix{{"test"}};

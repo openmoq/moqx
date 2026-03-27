@@ -23,7 +23,7 @@
 
 #include <thread>
 
-namespace openmoq::o_rly::test {
+namespace openmoq::moqx::test {
 
 /**
  * MoQIntegrationTestFixture - Reusable GTest fixture that runs a real MoQ
@@ -185,4 +185,4 @@ class MoQIntegrationTestFixture : public ::testing::Test {
   std::shared_ptr<moxygen::MoQFollyExecutorImpl> clientExec_;
 };
 
-} // namespace openmoq::o_rly::test
+} // namespace openmoq::moqx::test

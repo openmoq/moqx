@@ -11,8 +11,8 @@
 #include <cstdint>
 #include <memory>
 
-namespace openmoq::o_rly::test {
+namespace openmoq::moqx::test {
 
 std::unique_ptr<folly::IOBuf> makeBuf(uint32_t size = 10);
 
-} // namespace openmoq::o_rly::test
+} // namespace openmoq::moqx::test

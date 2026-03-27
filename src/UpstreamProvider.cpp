@@ -28,6 +28,86 @@ class PendingTrackConsumer : public TrackConsumerFilter {
   }
 };
 
+// Bridges NAMESPACE / NAMESPACE_DONE messages (draft 16+) from the upstream
+// relay back into the local relay's publishNamespace machinery.
+//
+// When UpstreamProvider issues a peer subNs to the upstream relay, the upstream
+// relay sends NAMESPACE messages for each announced namespace via this handle.
+// We forward each one as a publishNamespace() call on subscribeHandler_ (ORelay),
+// storing the returned PublishNamespaceHandle so we can signal done later.
+//
+// setRequestSession() is called before each publishNamespace() coroutine so that
+// ORelay::publishNamespace() sees the correct session via getRequestSession().
+//
+// One instance is created per connect; recreated on reconnect so the handle map
+// is always fresh (upstream re-announces all namespaces after reconnect).
+class NamespaceBridgeHandle
+    : public Publisher::NamespacePublishHandle,
+      public std::enable_shared_from_this<NamespaceBridgeHandle> {
+ public:
+  NamespaceBridgeHandle(
+      std::weak_ptr<Subscriber> relay,
+      std::shared_ptr<MoQSession> session)
+      : relay_(std::move(relay)), session_(std::move(session)) {}
+
+  void namespaceMsg(const TrackNamespace& suffix) override {
+    auto relay = relay_.lock();
+    if (!relay || !session_) {
+      return;
+    }
+    auto self = shared_from_this();
+    auto exec = session_->getExecutor();
+    co_withExecutor(
+        exec,
+        [relay, suffix, self]() mutable -> folly::coro::Task<void> {
+          PublishNamespace ann;
+          ann.trackNamespace = suffix;
+          auto result = co_await relay->publishNamespace(ann, nullptr);
+          if (result.hasValue()) {
+            self->storeHandle(suffix, std::move(result.value()));
+          } else {
+            XLOG(ERR) << "NamespaceBridgeHandle::namespaceMsg failed: "
+                      << result.error().reasonPhrase;
+          }
+        }())
+        .start();
+  }
+
+  void namespaceDoneMsg(const TrackNamespace& suffix) override {
+    auto handle = removeHandle(suffix);
+    if (handle) {
+      handle->publishNamespaceDone();
+    }
+  }
+
+ private:
+  void storeHandle(
+      const TrackNamespace& ns,
+      std::shared_ptr<Subscriber::PublishNamespaceHandle> h) {
+    handles_[ns] = std::move(h);
+  }
+
+  std::shared_ptr<Subscriber::PublishNamespaceHandle> removeHandle(
+      const TrackNamespace& ns) {
+    auto it = handles_.find(ns);
+    if (it == handles_.end()) {
+      return nullptr;
+    }
+    auto h = std::move(it->second);
+    handles_.erase(it);
+    return h;
+  }
+
+  std::weak_ptr<Subscriber> relay_;
+  std::shared_ptr<MoQSession> session_;
+  // Namespace → handle map; all callbacks run on the session's EVB so no lock.
+  std::unordered_map<
+      TrackNamespace,
+      std::shared_ptr<Subscriber::PublishNamespaceHandle>,
+      TrackNamespace::hash>
+      handles_;
+};
+
 } // namespace
 
 UpstreamProvider::UpstreamProvider(
@@ -267,8 +347,16 @@ folly::coro::Task<void> UpstreamProvider::doConnect() {
   // local namespace tree via the existing announcement/publish machinery.
   if (!relayID_.empty()) {
     XLOG(DBG1) << "UpstreamProvider: issuing peer subNs, relayID=" << relayID_;
-    auto handle = std::make_shared<NullNamespacePublishHandle>();
-    co_await session_->subscribeNamespace(makePeerSubNs(relayID_), handle); // with token: initiating
+    // Bridge NAMESPACE/NAMESPACE_DONE messages (draft 16+) back into the local
+    // relay via subscribeHandler_. If subscribeHandler_ is absent, fall back to
+    // a no-op handle (namespace announcements arrive via PUBLISH_NAMESPACE only).
+    std::shared_ptr<Publisher::NamespacePublishHandle> handle;
+    if (subscribeHandler_) {
+      handle = std::make_shared<NamespaceBridgeHandle>(subscribeHandler_, session_);
+    } else {
+      handle = std::make_shared<NullNamespacePublishHandle>();
+    }
+    co_await session_->subscribeNamespace(makePeerSubNs(relayID_), handle);
   }
 
   XLOG(DBG1) << "UpstreamProvider::doConnect completed, session="

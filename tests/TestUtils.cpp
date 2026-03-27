@@ -9,7 +9,7 @@
 #include <folly/Random.h>
 #include <folly/io/Cursor.h>
 
-namespace openmoq::o_rly::test {
+namespace openmoq::moqx::test {
 
 std::unique_ptr<folly::IOBuf> makeBuf(uint32_t size) {
   auto out = folly::IOBuf::create(size);
@@ -24,4 +24,4 @@ std::unique_ptr<folly::IOBuf> makeBuf(uint32_t size) {
   return out;
 }
 
-} // namespace openmoq::o_rly::test
+} // namespace openmoq::moqx::test
