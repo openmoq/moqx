@@ -110,6 +110,17 @@ struct ParsedServiceDefaultsConfig {
   rfl::Description<"Default cache settings for services", std::optional<ParsedCacheConfig>> cache;
 };
 
+struct ParsedUpstreamTlsConfig {
+  rfl::Description<"Skip TLS certificate verification (dev only)", bool> insecure;
+  rfl::Description<"Path to CA certificate file for peer verification",
+                   std::optional<std::string>> ca_cert;
+};
+
+struct ParsedUpstreamConfig {
+  rfl::Description<"Upstream MoQ server URL (moqt://host:port/path)", std::string> url;
+  rfl::Description<"TLS configuration for upstream connection", ParsedUpstreamTlsConfig> tls;
+};
+
 struct ParsedConfig {
   rfl::Description<
       "Listener definitions (currently exactly one supported)",
@@ -121,6 +132,10 @@ struct ParsedConfig {
       service_defaults;
   rfl::Description<"Service definitions", std::map<std::string, ParsedServiceConfig>> services;
   rfl::Description<"Admin HTTP server settings", std::optional<ParsedAdminConfig>> admin;
+  rfl::Description<"Upstream MoQ server (optional; enables relay chaining)",
+                   std::optional<ParsedUpstreamConfig>> upstream;
+  rfl::Description<"Relay identity string (optional; random string generated if absent)",
+                   std::optional<std::string>> relay_id;
 };
 
 } // namespace openmoq::moqx::config

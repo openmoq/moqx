@@ -66,10 +66,22 @@ struct AdminConfig {
   std::optional<TlsConfig> tls;
 };
 
+struct UpstreamTlsConfig {
+  bool insecure{false};
+  std::optional<std::string> caCertFile; // mutually exclusive with insecure=true
+};
+
+struct UpstreamConfig {
+  std::string url;
+  UpstreamTlsConfig tls;
+};
+
 struct Config {
   ListenerConfig listener;
   folly::F14FastMap<std::string, ServiceConfig> services;
   std::optional<AdminConfig> admin;
+  std::optional<UpstreamConfig> upstream;
+  std::string relayID; // always set: from config or randomly generated
 };
 
 } // namespace openmoq::moqx::config
