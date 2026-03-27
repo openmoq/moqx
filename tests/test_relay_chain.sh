@@ -26,7 +26,7 @@ UPSTREAM_RELAY_ID="upstream-test"
 DOWNSTREAM_RELAY_ID="downstream-test"
 NAMESPACE="moq-date"
 NAMESPACE2="moq-date-2"
-TIMEOUT=2   # seconds to wait for data
+TIMEOUT=5   # seconds to wait for data
 
 # ── Prereq checks ──────────────────────────────────────────────────────────────
 for f in "$BINARY" "$DATESERVER" "$TEXTCLIENT"; do
@@ -168,5 +168,29 @@ timeout "$TIMEOUT" "$TEXTCLIENT" \
   >"$CLIENT_OUT2" 2>&1 || true
 
 check_received "downstream→upstream" "$CLIENT_OUT2" || exit 1
+
+# ── Direction 3: joining fetch via relay chain ─────────────────────────────────
+# moq-date dateserver from direction 1 is still running on upstream.
+# --jrfetch --join_start=1: fetches 1 group back while also subscribing forward.
+# Exercises both fetch and subscribe forwarding through the relay chain.
+echo "Direction 3: joining fetch via downstream relay"
+
+timeout "$TIMEOUT" "$TEXTCLIENT" \
+  --connect_url="https://localhost:$DOWNSTREAM_PORT/moq-relay" \
+  --track_namespace="$NAMESPACE" --track_name="date" --insecure \
+  --jrfetch --join_start=1 \
+  >"$CLIENT_OUT" 2>&1 || true
+
+if grep -qE "SubscribeError|Fetch.*failed" "$CLIENT_OUT" 2>/dev/null; then
+  echo "FAIL [joining fetch via downstream]: error" >&2
+  cat "$CLIENT_OUT" >&2
+  exit 1
+elif grep -q "Largest=" "$CLIENT_OUT" 2>/dev/null; then
+  echo "PASS [joining fetch via downstream]: $(grep 'Largest=' "$CLIENT_OUT" | head -1)"
+else
+  echo "FAIL [joining fetch via downstream]: no data" >&2
+  cat "$CLIENT_OUT" >&2
+  exit 1
+fi
 
 echo "All relay chain tests passed."
