@@ -34,10 +34,10 @@ facebookexperimental/moxygen  (upstream commit lands)
         ▼  daily 07:00 UTC
    upstream sync creates sync/<sha> PR on openmoq/moxygen
         │
-        ▼  ci pr runs (~15 min)
+        ▼  ci pr runs (~28 min)
    sync auto-merge merges PR
         │
-        ▼  push to main triggers ci main (~72 min)
+        ▼  push to main triggers ci main (~40 min)
    snapshot-latest updated with new tarballs
         │
         ▼  repository_dispatch (automatic)
@@ -61,7 +61,7 @@ The full chain from upstream commit to deployed relay is fully automated.
 
 ### 1. `ci pr` — Pull request verification
 
-**Trigger:** PR to main | **Time:** ~15 min
+**Trigger:** PR to main | **Time:** ~28 min
 
 | Job | Runner | Purpose |
 |-----|--------|---------|
@@ -75,7 +75,7 @@ Required checks: `linux`, `macos`.
 
 ### 2. `ci main` — Build, Publish, Release, Notify
 
-**Trigger:** push to main | **Time:** ~72 min
+**Trigger:** push to main | **Time:** ~40 min
 
 ```
 build (5 jobs) ──► publish (4 platforms) ──► release ──► notify + dispatch to o-rly
@@ -200,16 +200,21 @@ linked; common system libraries stay dynamic.
 **Dynamic (all platforms):** OpenSSL, glog, gflags, double-conversion, libevent,
 zstd, libunwind, libc, libstdc++
 
-See [CI_OVERVIEW.md archive](https://github.com/openmoq/o-rly) for the detailed
-linkage tables by platform.
-
 ---
 
 ## Cost Summary (GitHub-hosted minutes per event)
 
-| Event | Approx minutes |
-|-------|---------------|
-| moxygen PR | ~25 (+ macos 10x multiplier) |
-| moxygen main push | ~130 (4-platform publish) |
-| o-rly PR | ~10 |
-| o-rly main push | ~15 |
+Based on recent runs (March 2026):
+
+| Event | Wall clock | Approx billed minutes |
+|-------|-----------|----------------------|
+| moxygen PR | ~28 min | ~55 (+ macos 10x multiplier) |
+| moxygen main push | ~40 min | ~75 (3-platform publish) |
+| o-rly PR | ~5 min | ~10 |
+| o-rly main push | ~11 min | ~15 |
+
+All build jobs use ccache:
+
+- **~35-50%** hit rate after upstream sync (many changed files)
+- **~65-80%** on incremental builds (typical PR or small change)
+- Warm cache cuts moxygen build time roughly in half

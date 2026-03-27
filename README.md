@@ -6,6 +6,10 @@ The OpenMOQ Relay — a MoQT relay server based on
 
 ## Architecture
 
+For the underlying moxygen library architecture (session model, data plane,
+threading, transport abstraction), see
+[deps/moxygen/ARCHITECTURE.md](deps/moxygen/ARCHITECTURE.md).
+
 `ORelay` is a hard fork of moxygen's `MoQRelay`. We copy the relay core into
 o-rly so we can evolve it independently (threading model, custom cache miss
 handling, chained caches, etc.) while still using moxygen's lower-level
