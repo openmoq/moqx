@@ -18,12 +18,21 @@ See [BUILD.md](BUILD.md) for full build, test, deploy, and operations instructio
 
 ## Architecture
 
-`ORelay` is a hard fork of moxygen's `MoQRelay`, evolved independently
-(threading, cache, multi-service routing) while using moxygen's transport
-libraries (MoQForwarder, MoQCache, MoQSession, MoQServer).
+`ORelay` is a hard fork of moxygen's `MoQRelay`. We copy the relay core into
+o-rly so we can evolve it independently (threading model, custom cache miss
+handling, chained caches, etc.) while still using moxygen's lower-level
+building blocks as libraries:
 
-`ORelayServer` extends `MoQServer` to wire up `ORelay` as the
-publish/subscribe handler.
+- **MoQForwarder** — fan-out engine, used as-is from moxygen for now. May need
+  to fork in the future to accommodate threading model differences.
+- **MoQCache** — object cache, used as-is from moxygen. Custom miss handling
+  and chained cache support may be upstreamed to openmoq/moxygen or maintained
+  in our fork.
+- **MoQSession / MoQServer / MoQRelaySession** — session and server
+  infrastructure, used as libraries.
+
+`ORelayServer` extends `MoQServer` to wire up `ORelay` as the publish/subscribe
+handler and create `MoQRelaySession` instances for incoming connections.
 
 ## Design Documents
 
