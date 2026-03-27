@@ -12,8 +12,10 @@
 #include <moxygen/MoQSession.h>
 #include <moxygen/relay/MoQCache.h>
 #include <moxygen/relay/MoQForwarder.h>
+#include <o_rly/relay_auth.h>
 
 #include <folly/container/F14Set.h>
+#include <string>
 
 namespace openmoq::o_rly {
 
@@ -33,6 +35,10 @@ public:
 
   void setAllowedNamespacePrefix(moxygen::TrackNamespace allowed) {
     allowedNamespacePrefix_ = std::move(allowed);
+  }
+
+  void setRelayID(std::string relayID) {
+    relayID_ = std::move(relayID);
   }
 
   folly::coro::Task<SubscribeResult> subscribe(
@@ -207,6 +213,7 @@ private:
   void publishNamespaceDone(const moxygen::TrackNamespace& trackNamespace, NamespaceNode* node);
 
   moxygen::TrackNamespace allowedNamespacePrefix_;
+  std::string relayID_;
   folly::F14FastMap<moxygen::FullTrackName, RelaySubscription, moxygen::FullTrackName::hash>
       subscriptions_;
 
