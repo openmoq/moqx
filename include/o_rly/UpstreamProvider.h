@@ -35,13 +35,6 @@ bool isPeerSubNs(const moxygen::SubscribeNamespace& subNs);
 moxygen::SubscribeNamespace makePeerSubNs(
     std::optional<std::string> relayID = std::nullopt);
 
-// Creates a NamespacePublishHandle that bridges NAMESPACE/NAMESPACE_DONE
-// messages from a peer relay into relay->publishNamespace() on session.
-// Used for both the initiating (UpstreamProvider) and reciprocal (ORelay) paths.
-std::shared_ptr<moxygen::Publisher::NamespacePublishHandle>
-makeNamespaceBridgeHandle(
-    std::weak_ptr<moxygen::Subscriber> relay,
-    std::shared_ptr<moxygen::MoQSession> session);
 
 /**
  * UpstreamProvider connects to a remote MoQ endpoint as a client and presents
