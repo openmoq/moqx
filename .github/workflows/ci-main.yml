@@ -313,8 +313,9 @@ jobs:
           VER=$(fmt_status "$VER_RESULT")
           PUB=$(fmt_status "${{ needs.publish.result }}")
           REL=$(fmt_status "${{ needs.release.result }}")
+          DEP=$(fmt_status "${{ needs.deploy.result }}")
 
-          STATUS="verify:${VER} publish:${PUB} release:${REL}"
+          STATUS="verify:${VER} publish:${PUB} release:${REL} deploy:${DEP}"
 
           if [ "${{ needs.release.result }}" = "success" ]; then
             REL_URL="${{ github.server_url }}/${{ github.repository }}/releases/tag/snapshot-latest"
@@ -351,8 +352,9 @@ jobs:
           fi
           PUB="${{ needs.publish.result }}"
           REL="${{ needs.release.result }}"
+          DEP="${{ needs.deploy.result }}"
 
-          STATUS="verify:${VER} publish:${PUB} release:${REL}"
+          STATUS="verify:${VER} publish:${PUB} release:${REL} deploy:${DEP}"
 
           if [ "${{ needs.release.result }}" = "success" ]; then
             REL_URL="${{ github.server_url }}/${{ github.repository }}/releases/tag/snapshot-latest"
