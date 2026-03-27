@@ -135,6 +135,10 @@ class UpstreamProvider
   // Connection gating: when Connecting, operations co_await this
   std::optional<folly::coro::SharedPromise<folly::Unit>> connectPromise_;
 
+  // Holds the SubscribeNamespaceHandle returned by the peer subNs call so
+  // the subscription is not immediately cancelled when doConnect() returns.
+  std::shared_ptr<moxygen::Publisher::SubscribeNamespaceHandle> peerSubNsHandle_;
+
   // Cancelled by stop() to break the reconnect loop out of backoff sleeps.
   folly::CancellationSource stopSource_;
 

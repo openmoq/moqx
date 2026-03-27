@@ -16,7 +16,8 @@ using namespace moxygen;
 namespace openmoq::moqx {
 
 // Randomly chosen token type identifying a relay-to-relay peering subNs.
-static constexpr uint64_t kRelayAuthTokenType = 0xA3F7'C291'5B84'E60DULL;
+// Must fit in a QUIC variable-length integer (top 2 bits must be 00, i.e. < 2^62).
+static constexpr uint64_t kRelayAuthTokenType = 0x1B2C'3D4E'5F6A'7B8CULL;
 
 bool isPeerSubNs(const SubscribeNamespace& subNs) {
   const uint64_t authKey =
@@ -330,34 +331,21 @@ folly::coro::Task<void> UpstreamProvider::doConnect() {
   quic::TransportSettings ts;
   ts.orderedReadCallbacks = true;
 
+  // Relay chaining requires draft 16+. Only offer standard draft-16 ALPN
+  // ("moqt-16") so we fail fast if the upstream doesn't support it.
   co_await client_->setupMoQSession(
       std::chrono::milliseconds(5000),
       std::chrono::milliseconds(5000),
       publishHandler_,
       subscribeHandler_,
-      ts);
+      ts,
+      getMoqtProtocols("16", /*useStandard=*/true));
 
   session_ = client_->moqSession_;
   CHECK(session_) << "setupMoQSession succeeded but session is null";
 
   // Register for close notifications
   session_->setSessionCloseCallback(this);
-
-  // Relay chaining requires draft 16+ for wildcard subscribeNamespace (empty
-  // prefix) and NAMESPACE messages on the bidi stream. Fail without retry if
-  // the upstream negotiates an earlier draft — misconfiguration, not transient.
-  if (!relayID_.empty()) {
-    auto maybeVersion = session_->getNegotiatedVersion();
-    if (!maybeVersion || getDraftMajorVersion(*maybeVersion) < 16) {
-      auto ver = maybeVersion ? std::to_string(getDraftMajorVersion(*maybeVersion))
-                              : std::string("unknown");
-      XLOG(ERR) << "UpstreamProvider: upstream negotiated draft " << ver
-                << " but relay chaining requires draft 16+; "
-                   "disabling peering (no namespace sync)";
-      // Leave relayID_ set so stop() cleans up, but skip the peer subNs.
-      co_return;
-    }
-  }
 
   // Relay peering handshake: subscribe to all namespaces with relay auth token.
   // The upstream relay recognises the token and reciprocates, populating our
@@ -368,8 +356,15 @@ folly::coro::Task<void> UpstreamProvider::doConnect() {
     // relay via subscribeHandler_. If subscribeHandler_ is absent, fall back to
     // a no-op handle (namespace announcements arrive via PUBLISH_NAMESPACE only).
     auto relay = std::dynamic_pointer_cast<MoqxRelay>(subscribeHandler_);
-    auto handle = makeNamespaceBridgeHandle(relay, session_);
-    co_await session_->subscribeNamespace(makePeerSubNs(relayID_), handle);
+    auto nsHandle = makeNamespaceBridgeHandle(relay, session_);
+    auto result = co_await session_->subscribeNamespace(
+        makePeerSubNs(relayID_), nsHandle);
+    if (result.hasValue()) {
+      peerSubNsHandle_ = std::move(result.value());
+    } else {
+      XLOG(ERR) << "UpstreamProvider: peer subNs failed: "
+                << result.error().reasonPhrase;
+    }
   }
 
   XLOG(DBG1) << "UpstreamProvider::doConnect completed, session="
@@ -378,6 +373,7 @@ folly::coro::Task<void> UpstreamProvider::doConnect() {
 
 void UpstreamProvider::resetSession() {
   XLOG(DBG1) << "UpstreamProvider::resetSession";
+  peerSubNsHandle_.reset(); // drop before session so unsubscribe is not sent
   if (session_) {
     session_->setSessionCloseCallback(nullptr);
   }
