@@ -8,6 +8,7 @@
 
 #include <moqx/MoqxRelay.h>
 
+#include "TestUtils.h"
 #include <folly/coro/BlockingWait.h>
 #include <folly/io/async/EventBase.h>
 #include <folly/portability/GMock.h>
@@ -16,7 +17,6 @@
 #include <moxygen/relay/MoQForwarder.h>
 #include <moxygen/test/MockMoQSession.h>
 #include <moxygen/test/Mocks.h>
-#include "TestUtils.h"
 
 using namespace testing;
 using namespace moxygen;

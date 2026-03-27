@@ -4,11 +4,11 @@
 
 #include <moqx/MoqxRelay.h>
 #include <moqx/ServiceMatcher.h>
+#include <moqx/UpstreamProvider.h>
 #include <moqx/config/config.h>
 #include <moqx/stats/MoQStatsCollector.h>
 #include <moqx/stats/StatsRegistry.h>
 #include <moxygen/MoQServer.h>
-#include <moqx/UpstreamProvider.h>
 
 namespace openmoq::moqx {
 
@@ -60,7 +60,8 @@ protected:
 private:
   void initServices(
       const folly::F14FastMap<std::string, config::ServiceConfig>& services,
-      const std::string& relayID);
+      const std::string& relayID
+  );
   void initUpstreams();
 
   struct ServiceEntry {

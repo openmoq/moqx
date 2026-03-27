@@ -23,14 +23,20 @@ std::vector<std::string> buildAlpns(const std::string& versions) {
 
 void MoqxRelayServer::initServices(
     const folly::F14FastMap<std::string, config::ServiceConfig>& services,
-    const std::string& relayID) {
+    const std::string& relayID
+) {
   for (const auto& [name, svc] : services) {
     services_.emplace(
         name,
         ServiceEntry{
             svc,
             std::make_shared<MoqxRelay>(
-                svc.cache.maxCachedTracks, svc.cache.maxCachedGroupsPerTrack, relayID)});
+                svc.cache.maxCachedTracks,
+                svc.cache.maxCachedGroupsPerTrack,
+                relayID
+            )
+        }
+    );
   }
 }
 
@@ -51,8 +57,7 @@ MoqxRelayServer::MoqxRelayServer(
           ),
           endpoint
       ),
-      serviceMatcher_(services),
-      relayID_(relayID) {
+      serviceMatcher_(services), relayID_(relayID) {
   initServices(services, relayID);
 }
 
@@ -71,8 +76,7 @@ MoqxRelayServer::MoqxRelayServer(
           ),
           endpoint
       ),
-      serviceMatcher_(services),
-      relayID_(relayID) {
+      serviceMatcher_(services), relayID_(relayID) {
   initServices(services, relayID);
 }
 
@@ -85,11 +89,10 @@ namespace {
 // Relay chaining requires draft 16+ for wildcard subscribeNamespace and
 // NAMESPACE messages on the bidi stream. Connections negotiating an earlier
 // draft will not receive namespace announcements from the upstream relay.
-std::shared_ptr<fizz::CertificateVerifier> makeUpstreamVerifier(
-    const config::UpstreamTlsConfig& tls) {
+std::shared_ptr<fizz::CertificateVerifier> makeUpstreamVerifier(const config::UpstreamTlsConfig& tls
+) {
   if (tls.insecure) {
-    return std::make_shared<
-        moxygen::test::InsecureVerifierDangerousDoNotUseInProduction>();
+    return std::make_shared<moxygen::test::InsecureVerifierDangerousDoNotUseInProduction>();
   }
   if (tls.caCertFile) {
     // TODO: load custom CA cert via fizz OpenSSLCertUtils / X509 store
@@ -121,7 +124,8 @@ void MoqxRelayServer::initUpstreams() {
         /*publishHandler=*/entry.relay,
         /*subscribeHandler=*/entry.relay,
         verifier,
-        relayID_);
+        relayID_
+    );
     entry.relay->setUpstreamProvider(provider);
 
     // Eagerly connect so the peering handshake fires before any subscribers

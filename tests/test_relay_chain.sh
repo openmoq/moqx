@@ -10,12 +10,12 @@
 # moqdateserver and moqtextclient must be at:
 #   .scratch/moxygen-install/bin/  (relative to repo root)
 #
-# Usage: bash scripts/test_relay_chain.sh [path/to/o_rly]
+# Usage: bash scripts/test_relay_chain.sh [path/to/moqx]
 
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-BINARY="${1:-$REPO/build/o_rly}"
+BINARY="${1:-$REPO/build/moqx}"
 MOQBIN="${MOQBIN:-$REPO/.scratch/moxygen-install/bin}"
 DATESERVER="$MOQBIN/moqdateserver"
 TEXTCLIENT="$MOQBIN/moqtextclient"

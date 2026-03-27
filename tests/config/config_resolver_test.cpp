@@ -793,7 +793,8 @@ TEST(ResolveConfig, AdminTlsCustomAlpn) {
 ParsedUpstreamConfig makeUpstreamConfig(
     std::string url = "moqt://origin.example.com:4433/relay",
     bool insecure = false,
-    std::optional<std::string> caCert = std::nullopt) {
+    std::optional<std::string> caCert = std::nullopt
+) {
   ParsedUpstreamConfig upstream;
   upstream.url = std::move(url);
   ParsedUpstreamTlsConfig tls;

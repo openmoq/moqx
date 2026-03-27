@@ -249,10 +249,11 @@ UpstreamConfig resolveUpstream(const ParsedUpstreamConfig& upstream) {
   const auto& tls = upstream.tls.value();
   return UpstreamConfig{
       .url = upstream.url.value(),
-      .tls = UpstreamTlsConfig{
-          .insecure = tls.insecure.value(),
-          .caCertFile = tls.ca_cert.value(),
-      },
+      .tls =
+          UpstreamTlsConfig{
+              .insecure = tls.insecure.value(),
+              .caCertFile = tls.ca_cert.value(),
+          },
   };
 }
 
@@ -333,8 +334,7 @@ void validateService(
 
 std::string generateRelayID() {
   std::random_device rd;
-  const uint64_t val =
-      (static_cast<uint64_t>(rd()) << 32) | static_cast<uint64_t>(rd());
+  const uint64_t val = (static_cast<uint64_t>(rd()) << 32) | static_cast<uint64_t>(rd());
   std::ostringstream oss;
   oss << std::hex << std::setfill('0') << std::setw(16) << val;
   return oss.str();
