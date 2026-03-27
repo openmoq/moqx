@@ -39,6 +39,11 @@ public:
       const std::optional<config::UpstreamConfig>& upstream = std::nullopt,
       const std::string& relayID = {}) {
     MoQServer::start(addr);
+    // Always propagate relayID to all relays so they can reciprocate peer
+    // subNs even when they have no upstream of their own.
+    for (auto& [name, relay] : relays_) {
+      relay->setRelayID(relayID);
+    }
     if (upstream) {
       initUpstream(*upstream, relayID);
     }
