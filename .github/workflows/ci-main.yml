@@ -225,11 +225,60 @@ jobs:
           )"
 
   # ════════════════════════════════════════════════════════════════════════════
+  # Deploy: auto-deploy to moqx-000 after successful release
+  # ════════════════════════════════════════════════════════════════════════════
+
+  deploy:
+    needs: [publish, release]
+    runs-on: [self-hosted, linode]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Write .env
+        working-directory: docker
+        run: |
+          cat > .env <<EOF
+          DOMAIN=moqx-000.ci.openmoq.org
+          CERTBOT_EMAIL=gmarzot@openmoq.org
+          ORLY_PORT=4433
+          ORLY_ADMIN_PORT=8000
+          ORLY_LOG_LEVEL=0
+          ORLY_VERBOSE=0
+          EOF
+          sed -i 's/^[[:space:]]*//' .env
+
+      - name: Pull and deploy
+        working-directory: docker
+        run: |
+          docker compose pull
+          docker compose down --remove-orphans 2>/dev/null || true
+          docker compose up -d
+
+          echo "==> Waiting for admin endpoint..."
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8000/info >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+            if [ "$i" -eq 30 ]; then
+              echo "::error::Admin endpoint did not respond within 30s"
+              docker compose logs moqx
+              exit 1
+            fi
+          done
+
+          RESP=$(curl -sf http://127.0.0.1:8000/info)
+          echo "==> Relay deployed: $RESP"
+
+  # ════════════════════════════════════════════════════════════════════════════
   # Notify: aggregate status (runs after everything)
   # ════════════════════════════════════════════════════════════════════════════
 
   notify:
-    needs: [check-format, build, publish, release]
+    needs: [check-format, build, publish, release, deploy]
     if: always()
     runs-on: ubuntu-22.04
     steps:
