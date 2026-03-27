@@ -16,6 +16,7 @@
 #include <moxygen/Subscriber.h>
 #include <moxygen/events/MoQExecutor.h>
 #include <proxygen/lib/utils/URL.h>
+#include <string>
 
 namespace openmoq::moqx {
 
@@ -39,7 +40,8 @@ class UpstreamProvider
       proxygen::URL url,
       std::shared_ptr<moxygen::Publisher> publishHandler,
       std::shared_ptr<moxygen::Subscriber> subscribeHandler,
-      std::shared_ptr<fizz::CertificateVerifier> verifier = nullptr);
+      std::shared_ptr<fizz::CertificateVerifier> verifier = nullptr,
+      std::string relayID = {});
 
   ~UpstreamProvider() override;
 
@@ -109,6 +111,7 @@ class UpstreamProvider
   proxygen::URL url_;
   std::shared_ptr<moxygen::MoQExecutor> exec_;
   std::shared_ptr<fizz::CertificateVerifier> verifier_;
+  std::string relayID_;
   bool stopped_{false};
 
   // Connection gating: when Connecting, operations co_await this

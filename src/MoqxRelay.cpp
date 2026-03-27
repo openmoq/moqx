@@ -9,6 +9,7 @@
 #include <moqx/MoqxRelay.h>
 
 #include <moxygen/MoQFilters.h>
+#include <moqx/relay_auth.h>
 
 namespace {
 constexpr uint8_t kDefaultUpstreamPriority = 128;
@@ -576,6 +577,28 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
   XLOG(DBG1) << __func__ << " nsp=" << subNs.trackNamespacePrefix;
 
   auto session = MoQSession::getRequestSession();
+
+  // Relay peering: if the incoming subNs carries a relay auth token, the peer
+  // is a relay. Reciprocate with our own peer subNs so the peer gets our
+  // namespace announcements as publishers connect.
+  if (!relayID_.empty() && isPeerSubNs(subNs)) {
+    XLOG(INFO) << __func__ << ": peer relay detected, reciprocating peer subNs";
+    auto peerSession = session;
+    co_withExecutor(
+        peerSession->getExecutor(),
+        [peerSession]() -> folly::coro::Task<void> {
+          auto handle = std::make_shared<NullNamespacePublishHandle>();
+          auto result = co_await peerSession->subscribeNamespace(
+              makePeerSubNs(), handle); // no token: reciprocal, prevents loop
+          if (result.hasError()) {
+            XLOG(ERR) << "Reciprocal peer subNs failed: "
+                      << result.error().reasonPhrase;
+          }
+        }())
+        .start();
+    // Fall through: register the peer as a normal subNs subscriber so it
+    // receives namespace announcements as publishers connect.
+  }
   auto maybeNegotiatedVersion = session->getNegotiatedVersion();
   CHECK(maybeNegotiatedVersion.has_value());
 

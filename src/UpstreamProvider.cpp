@@ -5,6 +5,7 @@
  */
 
 #include <moqx/UpstreamProvider.h>
+#include <moqx/relay_auth.h>
 #include <moxygen/MoQFilters.h>
 #include <moxygen/MoQRelaySession.h>
 #include <folly/logging/xlog.h>
@@ -34,12 +35,14 @@ UpstreamProvider::UpstreamProvider(
     proxygen::URL url,
     std::shared_ptr<Publisher> publishHandler,
     std::shared_ptr<Subscriber> subscribeHandler,
-    std::shared_ptr<fizz::CertificateVerifier> verifier)
+    std::shared_ptr<fizz::CertificateVerifier> verifier,
+    std::string relayID)
     : publishHandler_(std::move(publishHandler)),
       subscribeHandler_(std::move(subscribeHandler)),
       url_(std::move(url)),
       exec_(std::move(exec)),
-      verifier_(std::move(verifier)) {
+      verifier_(std::move(verifier)),
+      relayID_(std::move(relayID)) {
   XLOG(DBG1) << "UpstreamProvider created, url=" << url_.getUrl();
 }
 
@@ -258,6 +261,15 @@ folly::coro::Task<void> UpstreamProvider::doConnect() {
 
   // Register for close notifications
   session_->setSessionCloseCallback(this);
+
+  // Relay peering handshake: subscribe to all namespaces with relay auth token.
+  // The upstream relay recognises the token and reciprocates, populating our
+  // local namespace tree via the existing announcement/publish machinery.
+  if (!relayID_.empty()) {
+    XLOG(DBG1) << "UpstreamProvider: issuing peer subNs, relayID=" << relayID_;
+    auto handle = std::make_shared<NullNamespacePublishHandle>();
+    co_await session_->subscribeNamespace(makePeerSubNs(relayID_), handle); // with token: initiating
+  }
 
   XLOG(DBG1) << "UpstreamProvider::doConnect completed, session="
              << session_.get();

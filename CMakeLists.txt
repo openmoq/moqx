@@ -82,6 +82,7 @@ add_library(moqx_core STATIC
   src/stats/StatsRegistry.cpp
   src/stats/MoQStatsCollector.cpp
   src/UpstreamProvider.cpp
+  src/relay_auth.cpp
 )
 
 target_include_directories(moqx_core
