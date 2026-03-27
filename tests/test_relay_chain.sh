@@ -26,6 +26,7 @@ UPSTREAM_RELAY_ID="upstream-test"
 DOWNSTREAM_RELAY_ID="downstream-test"
 NAMESPACE="moq-date"
 NAMESPACE2="moq-date-2"
+NAMESPACE3="moq-publish"  # for --publish push-mode test
 TIMEOUT=5   # seconds to wait for data
 
 # ── Prereq checks ──────────────────────────────────────────────────────────────
@@ -42,6 +43,7 @@ UPSTREAM_CFG="$TMPDIR_SCRIPT/upstream.yaml"
 DOWNSTREAM_CFG="$TMPDIR_SCRIPT/downstream.yaml"
 CLIENT_OUT="$TMPDIR_SCRIPT/client.out"
 CLIENT_OUT2="$TMPDIR_SCRIPT/client2.out"
+CLIENT_OUT3="$TMPDIR_SCRIPT/client3.out"
 
 # ── Cleanup ────────────────────────────────────────────────────────────────────
 PIDS=()
@@ -190,6 +192,39 @@ elif grep -q "Largest=" "$CLIENT_OUT" 2>/dev/null; then
 else
   echo "FAIL [joining fetch via downstream]: no data" >&2
   cat "$CLIENT_OUT" >&2
+  exit 1
+fi
+
+# ── Direction 4: --publish push mode through relay chain ───────────────────────
+# textclient registers subscribeNamespace on downstream; dateserver --publish
+# pushes via PUBLISH to upstream; relay chain routes it to textclient.
+echo "Direction 4: --publish push mode (upstream→downstream)"
+
+# Start textclient --publish first so it registers subscribeNamespace.
+timeout "$TIMEOUT" "$TEXTCLIENT" \
+  --connect_url="https://localhost:$DOWNSTREAM_PORT/moq-relay" \
+  --track_namespace="$NAMESPACE3" --track_name="date" --insecure \
+  --publish \
+  >"$CLIENT_OUT3" 2>&1 &
+TCPID=$!
+
+sleep 1
+
+# dateserver --publish: connects to upstream and pushes via PUBLISH.
+"$DATESERVER" \
+  --relay_url="https://localhost:$UPSTREAM_PORT/moq-relay" \
+  --ns="$NAMESPACE3" --insecure --publish \
+  &>/dev/null &
+PIDS+=($!)
+
+wait $TCPID || true
+
+# Success: textclient received date objects printed to stdout by onObject().
+if grep -qE "^[0-9]|PublishDone" "$CLIENT_OUT3" 2>/dev/null; then
+  echo "PASS [--publish mode]: data received via PUBLISH push"
+else
+  echo "FAIL [--publish mode]: no data" >&2
+  cat "$CLIENT_OUT3" >&2
   exit 1
 fi
 
