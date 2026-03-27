@@ -56,8 +56,12 @@ admin:
 
 # relay_id: "my-relay-1"     # Relay identity (optional; random hex string generated if absent)
 
-# upstream:                  # Upstream MoQ relay (optional; enables relay chaining)
-#   url: "moqt://origin.example.com:4433/moq-relay"
-#   tls:
-#     insecure: false         # true = skip cert verification (dev only)
-#     # ca_cert: /path/to/ca.pem  # Custom CA cert (mutually exclusive with insecure: true)
+# Per-service upstream (enables relay chaining for that service):
+# services:
+#   my-service:
+#     ...
+#     upstream:
+#       url: "moqt://origin.example.com:4433/moq-relay"
+#       tls:
+#         insecure: false         # true = skip cert verification (dev only)
+#         # ca_cert: /path/to/ca.pem  # Custom CA cert (mutually exclusive with insecure: true)

@@ -106,10 +106,34 @@ class UpstreamProvider
  private:
   enum class State { Disconnected, Connecting, Connected };
 
-  // Ensures a session exists, connecting if needed. All forwarding methods
-  // call this before accessing session_.
+  // Returns the current session if already connected, null otherwise.
+  // Used for the synchronous fast path in forwarding methods.
+  std::shared_ptr<moxygen::MoQSession> getSession() const {
+    if (state_ == State::Connected && session_) {
+      return session_;
+    }
+    return nullptr;
+  }
+
+  // Ensures a session exists, connecting if needed. Called by slow-path
+  // coroutines when getSession() returns null.
   folly::coro::Task<std::shared_ptr<moxygen::MoQSession>>
   getOrConnectSession();
+
+  // Slow-path coroutine forwarders: called when not yet connected.
+  folly::coro::Task<SubscribeResult> coSubscribe(
+      moxygen::SubscribeRequest sub,
+      std::shared_ptr<moxygen::TrackConsumer> callback);
+  folly::coro::Task<FetchResult> coFetch(
+      moxygen::Fetch fetch,
+      std::shared_ptr<moxygen::FetchConsumer> fetchCallback);
+  folly::coro::Task<TrackStatusResult> coTrackStatus(moxygen::TrackStatus req);
+  folly::coro::Task<SubscribeNamespaceResult> coSubscribeNamespace(
+      moxygen::SubscribeNamespace subNs,
+      std::shared_ptr<NamespacePublishHandle> handle);
+  folly::coro::Task<PublishNamespaceResult> coPublishNamespace(
+      moxygen::PublishNamespace pubNs,
+      std::shared_ptr<PublishNamespaceCallback> cb);
 
   // Performs the actual connection to upstream.
   folly::coro::Task<void> doConnect();

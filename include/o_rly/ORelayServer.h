@@ -20,33 +20,25 @@ public:
       const std::string& key,
       const std::string& endpoint,
       const std::string& versions,
-      folly::F14FastMap<std::string, config::ServiceConfig> services
+      folly::F14FastMap<std::string, config::ServiceConfig> services,
+      const std::string& relayID = {}
   );
 
   // Used when the insecure flag is true
   ORelayServer(
       const std::string& endpoint,
       const std::string& versions,
-      folly::F14FastMap<std::string, config::ServiceConfig> services
+      folly::F14FastMap<std::string, config::ServiceConfig> services,
+      const std::string& relayID = {}
   );
 
   void setStatsRegistry(std::shared_ptr<stats::StatsRegistry> registry);
 
-  // Binds listeners and optionally initialises relay chaining (requires
-  // draft 16+). Equivalent to start(addr) followed by initUpstream(upstream, relayID).
-  void start(
-      const folly::SocketAddress& addr,
-      const std::optional<config::UpstreamConfig>& upstream = std::nullopt,
-      const std::string& relayID = {}) {
+  // Binds listeners then initialises per-service upstream providers (requires
+  // draft 16+ for relay chaining).
+  void start(const folly::SocketAddress& addr) {
     MoQServer::start(addr);
-    // Always propagate relayID to all relays so they can reciprocate peer
-    // subNs even when they have no upstream of their own.
-    for (auto& [name, relay] : relays_) {
-      relay->setRelayID(relayID);
-    }
-    if (upstream) {
-      initUpstream(*upstream, relayID);
-    }
+    initUpstreams();
   }
 
   void onNewSession(std::shared_ptr<moxygen::MoQSession> clientSession) override;
@@ -66,11 +58,18 @@ protected:
   ) override;
 
 private:
-  void initRelays(const folly::F14FastMap<std::string, config::ServiceConfig>& services);
-  void initUpstream(const config::UpstreamConfig& cfg, const std::string& relayID);
+  void initServices(
+      const folly::F14FastMap<std::string, config::ServiceConfig>& services,
+      const std::string& relayID);
+  void initUpstreams();
 
-  folly::F14FastMap<std::string, std::shared_ptr<ORelay>> relays_;
+  struct ServiceEntry {
+    config::ServiceConfig config;
+    std::shared_ptr<ORelay> relay;
+  };
+  folly::F14FastMap<std::string, ServiceEntry> services_;
   ServiceMatcher serviceMatcher_;
+  std::string relayID_;
   std::shared_ptr<stats::StatsRegistry> statsRegistry_;
   std::shared_ptr<stats::MoQStatsCollector> statsCollector_;
 };

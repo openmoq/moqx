@@ -21,13 +21,16 @@ std::vector<std::string> buildAlpns(const std::string& versions) {
 
 } // namespace
 
-void ORelayServer::initRelays(const folly::F14FastMap<std::string, config::ServiceConfig>& services
-) {
+void ORelayServer::initServices(
+    const folly::F14FastMap<std::string, config::ServiceConfig>& services,
+    const std::string& relayID) {
   for (const auto& [name, svc] : services) {
-    relays_.emplace(
+    services_.emplace(
         name,
-        std::make_shared<ORelay>(svc.cache.maxCachedTracks, svc.cache.maxCachedGroupsPerTrack)
-    );
+        ServiceEntry{
+            svc,
+            std::make_shared<ORelay>(
+                svc.cache.maxCachedTracks, svc.cache.maxCachedGroupsPerTrack, relayID)});
   }
 }
 
@@ -36,7 +39,8 @@ ORelayServer::ORelayServer(
     const std::string& key,
     const std::string& endpoint,
     const std::string& versions,
-    folly::F14FastMap<std::string, config::ServiceConfig> services
+    folly::F14FastMap<std::string, config::ServiceConfig> services,
+    const std::string& relayID
 )
     : MoQServer(
           quic::samples::createFizzServerContext(
@@ -47,14 +51,16 @@ ORelayServer::ORelayServer(
           ),
           endpoint
       ),
-      serviceMatcher_(services) {
-  initRelays(services);
+      serviceMatcher_(services),
+      relayID_(relayID) {
+  initServices(services, relayID);
 }
 
 ORelayServer::ORelayServer(
     const std::string& endpoint,
     const std::string& versions,
-    folly::F14FastMap<std::string, config::ServiceConfig> services
+    folly::F14FastMap<std::string, config::ServiceConfig> services,
+    const std::string& relayID
 )
     : MoQServer(
           quic::samples::createFizzServerContextWithInsecureDefault(
@@ -65,8 +71,9 @@ ORelayServer::ORelayServer(
           ),
           endpoint
       ),
-      serviceMatcher_(services) {
-  initRelays(services);
+      serviceMatcher_(services),
+      relayID_(relayID) {
+  initServices(services, relayID);
 }
 
 void ORelayServer::setStatsRegistry(std::shared_ptr<stats::StatsRegistry> registry) {
@@ -94,27 +101,28 @@ std::shared_ptr<fizz::CertificateVerifier> makeUpstreamVerifier(
 
 } // namespace
 
-void ORelayServer::initUpstream(
-    const config::UpstreamConfig& cfg,
-    const std::string& relayID) {
+void ORelayServer::initUpstreams() {
   auto evbs = getWorkerEvbs();
-  CHECK(!evbs.empty()) << "initUpstream must be called after start()";
-
-  auto verifier = makeUpstreamVerifier(cfg.tls);
+  CHECK(!evbs.empty()) << "initUpstreams must be called after start()";
 
   // Use the first worker EVB for all upstream connections.
   // Per-EVB providers (one per worker thread) are a follow-up.
   auto exec = std::make_shared<MoQFollyExecutorImpl>(evbs[0]);
 
-  for (auto& [name, relay] : relays_) {
+  for (auto& [name, entry] : services_) {
+    if (!entry.config.upstream) {
+      continue;
+    }
+    const auto& cfg = *entry.config.upstream;
+    auto verifier = makeUpstreamVerifier(cfg.tls);
     auto provider = std::make_shared<UpstreamProvider>(
         exec,
         proxygen::URL(cfg.url),
-        /*publishHandler=*/relay,
-        /*subscribeHandler=*/relay,
+        /*publishHandler=*/entry.relay,
+        /*subscribeHandler=*/entry.relay,
         verifier,
-        relayID);
-    relay->setUpstreamProvider(provider);
+        relayID_);
+    entry.relay->setUpstreamProvider(provider);
 
     // Eagerly connect so the peering handshake fires before any subscribers
     // arrive. The connection is lazy in UpstreamProvider but we kick it off
@@ -171,10 +179,10 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> ORelayServer::validateAuthor
   }
 
   // Route: set per-service relay as handler
-  auto it = relays_.find(*matchedName);
-  CHECK(it != relays_.end()) << "Service '" << *matchedName << "' matched but no relay found";
-  session->setPublishHandler(it->second);
-  session->setSubscribeHandler(it->second);
+  auto it = services_.find(*matchedName);
+  CHECK(it != services_.end()) << "Service '" << *matchedName << "' matched but no entry found";
+  session->setPublishHandler(it->second.relay);
+  session->setSubscribeHandler(it->second.relay);
   return folly::unit;
 }
 

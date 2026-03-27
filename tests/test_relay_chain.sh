@@ -16,7 +16,7 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 BINARY="${1:-$REPO/build/o_rly}"
-MOQBIN="$REPO/.scratch/moxygen-install/bin"
+MOQBIN="${MOQBIN:-$REPO/.scratch/moxygen-install/bin}"
 DATESERVER="$MOQBIN/moqdateserver"
 TEXTCLIENT="$MOQBIN/moqtextclient"
 
@@ -26,7 +26,7 @@ UPSTREAM_RELAY_ID="upstream-test"
 DOWNSTREAM_RELAY_ID="downstream-test"
 NAMESPACE="moq-date"
 NAMESPACE2="moq-date-2"
-TIMEOUT=15   # seconds to wait for data
+TIMEOUT=2   # seconds to wait for data
 
 # ── Prereq checks ──────────────────────────────────────────────────────────────
 for f in "$BINARY" "$DATESERVER" "$TEXTCLIENT"; do
@@ -99,10 +99,10 @@ services:
       enabled: false
       max_tracks: 100
       max_groups_per_track: 3
-upstream:
-  url: "moqt://localhost:$UPSTREAM_PORT/moq-relay"
-  tls:
-    insecure: true
+    upstream:
+      url: "moqt://localhost:$UPSTREAM_PORT/moq-relay"
+      tls:
+        insecure: true
 EOF
 
 # ── Start relays ───────────────────────────────────────────────────────────────
@@ -115,7 +115,7 @@ echo "Starting downstream relay on port $DOWNSTREAM_PORT..."
 PIDS+=($!)
 
 # Give relays time to start and complete the peering handshake.
-sleep 2
+sleep 1
 
 check_received() {
   local label="$1" out="$2"
@@ -142,7 +142,7 @@ echo "Direction 1: moqdateserver → upstream, subscribe via downstream"
   &>/dev/null &
 PIDS+=($!)
 
-sleep 3
+sleep 1
 
 timeout "$TIMEOUT" "$TEXTCLIENT" \
   --connect_url="https://localhost:$DOWNSTREAM_PORT/moq-relay" \
@@ -160,7 +160,7 @@ echo "Direction 2: moqdateserver → downstream, subscribe via upstream"
   &>/dev/null &
 PIDS+=($!)
 
-sleep 3
+sleep 1
 
 timeout "$TIMEOUT" "$TEXTCLIENT" \
   --connect_url="https://localhost:$UPSTREAM_PORT/moq-relay" \
