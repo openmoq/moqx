@@ -13,10 +13,11 @@ on:
         default: "latest"
         type: string
       instance:
-        description: "Instance name (moqx-000 is reserved for CI auto-deploy)"
+        description: "Instance name"
         required: true
         type: choice
         options:
+          - moqx-000
           - moqx-001
       restart_only:
         description: "Restart container without redeploying"
@@ -113,12 +114,12 @@ jobs:
           CERT="/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
           if [ ! -f "$CERT" ]; then
             echo "::warning::No cert for ${DOMAIN} — provisioning via Route53"
-            sudo certbot certonly --dns-route53 \
+            sudo -E certbot certonly --dns-route53 \
               -d "$DOMAIN" --non-interactive --agree-tos \
               --email gmarzot@openmoq.org
           elif ! sudo openssl x509 -in "$CERT" -noout -checkend 2592000 2>/dev/null; then
             echo "::warning::Cert for ${DOMAIN} expires within 30 days — renewing"
-            sudo certbot renew --cert-name "$DOMAIN"
+            sudo -E certbot renew --cert-name "$DOMAIN"
           else
             echo "Cert for ${DOMAIN} is valid"
           fi
