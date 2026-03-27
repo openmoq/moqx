@@ -1,20 +1,8 @@
 # o-rly
 
-The OpenMOQ Relay — a MoQT relay server built on [moxygen](https://github.com/openmoq/moxygen).
-
-## Quick Start
-
-```bash
-git clone https://github.com/openmoq/o-rly.git && cd o-rly
-git submodule update --init
-sudo deps/moxygen/standalone/install-system-deps.sh
-
-./scripts/build.sh setup     # download prebuilt deps (~1 min)
-./scripts/build.sh           # build
-./scripts/build.sh test      # test
-```
-
-See [BUILD.md](BUILD.md) for full build, test, deploy, and operations instructions.
+The OpenMOQ Relay — a MoQT relay server based on
+[moxygen](https://github.com/openmoq/moxygen)
+(upstream: [facebookexperimental/moxygen](https://github.com/facebookexperimental/moxygen)).
 
 ## Architecture
 
@@ -41,3 +29,22 @@ handler and create `MoQRelaySession` instances for incoming connections.
 - [design/gummy-bear.md](design/gummy-bear.md) — cache and forwarding design
 - [design/hot-reloading.md](design/hot-reloading.md) — hot config reload
 - [design/miss-handler.md](design/miss-handler.md) — cache miss handling
+
+## Quick Start
+
+```bash
+git clone https://github.com/openmoq/o-rly.git && cd o-rly
+git submodule update --init
+sudo deps/moxygen/standalone/install-system-deps.sh
+
+./scripts/build.sh setup     # download prebuilt deps (~1 min)
+./scripts/build.sh           # build
+./scripts/build.sh test      # test
+```
+
+See [BUILD.md](BUILD.md) for build and test instructions, and
+[RUNNING.md](RUNNING.md) for Docker deployment and relay operations.
+
+## License
+
+Apache 2.0 — see [LICENSE](LICENSE).

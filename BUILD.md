@@ -1,16 +1,66 @@
-# Building and Running o-rly
+# Building o-rly
+
+## Supported Platforms
+
+| Platform | Status | Notes |
+|----------|--------|-------|
+| Ubuntu 22.04 (Jammy) | Tested in CI | Primary dev/CI platform |
+| Debian 12 (Bookworm) | Tested (Docker build) | Docker image base |
+| Fedora / RHEL | TBD | `install-system-deps.sh` has dnf support; not yet CI-tested |
+| macOS (Homebrew) | TBD | `install-system-deps.sh` has brew support; not yet CI-tested |
 
 ## Prerequisites
 
-- CMake 3.25+ ([Kitware repo](https://apt.kitware.com/) if Ubuntu apt gives < 3.25)
+- CMake 3.25+
 - Ninja, C++20 compiler (GCC 11+ / Clang 14+)
 - `gh` CLI (authenticated, for downloading release artifacts)
-- System libraries — `build.sh setup` checks and reports what's missing
+- System libraries -- `build.sh setup` checks and reports what's missing
 
-Install system deps (Ubuntu/Debian):
+### Installing CMake 3.25+ (Ubuntu/Debian)
+
+Ubuntu 22.04 ships cmake 3.22 which is too old. Install from the Kitware APT repo:
+
+```bash
+# Remove distro cmake if installed
+sudo apt-get remove --purge cmake
+
+# Add Kitware signing key and repo
+sudo apt-get install -y gpg wget
+wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null \
+  | gpg --dearmor - | sudo tee /usr/share/keyrings/kitware-archive-keyring.gpg >/dev/null
+echo "deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] https://apt.kitware.com/ubuntu/ $(lsb_release -cs) main" \
+  | sudo tee /etc/apt/sources.list.d/kitware.list
+
+sudo apt-get update
+sudo apt-get install -y cmake
+cmake --version   # should show 3.25+
+```
+
+Ubuntu 24.04+ ships cmake 3.28 -- no extra steps needed.
+
+### Installing System Dependencies
 
 ```bash
 sudo deps/moxygen/standalone/install-system-deps.sh
+```
+
+### Building from a Fresh Ubuntu Docker (Reproducible Build)
+
+This is handy for verifying the build on a clean system or for contributors
+who don't want to install deps on their host:
+
+```bash
+docker run --rm -it -v "$PWD":/src -w /src ubuntu:22.04 bash
+
+# Inside the container:
+apt-get update && apt-get install -y gpg wget lsb-release sudo git gh
+# Install cmake 3.25+ from Kitware (see above)
+# Then:
+git submodule update --init
+sudo deps/moxygen/standalone/install-system-deps.sh
+./scripts/build.sh setup --from-source   # no gh auth = build from source
+./scripts/build.sh
+./scripts/build.sh test
 ```
 
 ## Quick Start
@@ -32,7 +82,7 @@ The `deps/moxygen` submodule pins the exact version. Two ways to get these deps:
 
 | Mode | Command | Time | When to use |
 |------|---------|------|-------------|
-| **from-release** | `build.sh setup` | ~1 min | Default — downloads CI-built artifacts |
+| **from-release** | `build.sh setup` | ~1 min | Default -- downloads CI-built artifacts |
 | **from-source** | `build.sh setup --from-source` | 15-30 min | Full control, or when artifacts unavailable |
 
 Both accept an optional commit SHA to override the submodule pointer:
@@ -81,99 +131,6 @@ CI requires clang-format-19. Check before pushing:
 2. CI runs: format check + build/test (default + ASAN)
 3. All checks must pass before merge
 4. Squash-and-merge preferred for single-feature PRs
-
-## Docker Image
-
-The relay is published as a Docker image on every push to main:
-
-```bash
-docker pull ghcr.io/openmoq/o-rly:latest
-```
-
-### Running the Relay
-
-The Docker compose file handles TLS certs, logging, health checks, and log viewing:
-
-```bash
-cd docker
-cp .env.example .env          # edit with your domain and settings
-docker compose up -d           # starts relay + dozzle log viewer
-```
-
-Key environment variables (set in `.env`):
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DOMAIN` | — | TLS certificate domain |
-| `ORLY_PORT` | `4433` | QUIC/UDP listen port |
-| `ORLY_ADMIN_PORT` | `8000` | Admin HTTP port (localhost only) |
-| `ORLY_BIND_ADDR` | `0.0.0.0` | Listen address (`0.0.0.0` or `::`) |
-| `ORLY_MAX_TRACKS` | `1000` | Max cached tracks |
-| `ORLY_MAX_GROUPS` | `100` | Max groups per track in cache |
-| `ORLY_LOG_LEVEL` | `0` | Min log level: 0=INFO 1=WARNING 2=ERROR 3=FATAL |
-| `ORLY_VERBOSE` | `0` | GLOG verbose level: 0=off, 1-4=increasing detail |
-| `ORLY_INSECURE` | `false` | Use built-in dev cert (local testing only) |
-| `ORLY_ENTRY` | `./entrypoint.sh` | Custom entrypoint override path |
-
-### TLS Certificate Provisioning
-
-For Route53 DNS challenge:
-
-```bash
-# Add AWS creds to .env, then:
-docker compose --profile certbot-route53 run --rm certbot-route53
-```
-
-For Cloudflare DNS challenge:
-
-```bash
-cp docker/cloudflare.ini.example docker/cloudflare.ini  # fill in API token
-docker compose --profile certbot-cloudflare run --rm certbot-cloudflare
-```
-
-### Health Check
-
-The relay exposes an admin HTTP endpoint:
-
-```bash
-curl http://localhost:8000/info
-# {"service":"o-rly","version":"0.1.0"}
-```
-
-Docker compose includes a health check that polls this endpoint. If the relay becomes
-unresponsive, `restart: unless-stopped` triggers automatic recovery.
-
-### Log Viewer (Dozzle)
-
-The compose file includes [Dozzle](https://dozzle.dev/) for browsing relay logs
-in a web UI. It starts automatically with the relay, bound to `127.0.0.1:9999`.
-
-Access on a remote host via SSH tunnel:
-
-```bash
-ssh -L 19999:localhost:9999 user@relay-host
-# Then browse http://localhost:19999
-```
-
-The local port (19999) can be any available port on your machine.
-
-### Diagnosing Relay Issues
-
-Check UDP socket health (drops indicate the relay can't keep up):
-
-```bash
-docker exec moqx cat /proc/net/udp | grep 1151
-```
-
-Fields to watch:
-- `drops` (last column) — packets discarded by the socket
-- `tx_queue` (5th column) — bytes backed up in the send buffer
-
-High drops + backed up tx_queue = relay is overloaded or stuck:
-
-```bash
-docker restart moqx
-```
 
 ## CI and Automation
 
