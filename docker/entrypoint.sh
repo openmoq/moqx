@@ -39,14 +39,19 @@ listeners:
       insecure: ${ORLY_INSECURE:-false}
     endpoint: "/moq-relay"
 
-cache:
-  enabled: true
-  max_tracks: ${ORLY_MAX_TRACKS:-1000}
-  max_groups_per_track: ${ORLY_MAX_GROUPS:-100}
+services:
+  default:
+    match:
+      - authority: {any: true}
+        path: {prefix: "/"}
+    cache:
+      enabled: true
+      max_tracks: ${ORLY_MAX_TRACKS:-1000}
+      max_groups_per_track: ${ORLY_MAX_GROUPS:-100}
 
 admin:
   port: ${ORLY_ADMIN_PORT:-8000}
-  address: "::"
+  address: "${ORLY_BIND_ADDR:-0.0.0.0}"
   plaintext: true
 EOF
 
