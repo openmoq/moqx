@@ -8,6 +8,7 @@
 #include <o_rly/config/config.h>
 #include <o_rly/stats/MoQStatsCollector.h>
 #include <o_rly/stats/StatsRegistry.h>
+#include <o_rly/UpstreamProvider.h>
 
 namespace openmoq::o_rly {
 
@@ -31,6 +32,18 @@ public:
 
   void setStatsRegistry(std::shared_ptr<stats::StatsRegistry> registry);
 
+  // Binds listeners and optionally initialises relay chaining (requires
+  // draft 16+). Equivalent to start(addr) followed by initUpstream(upstream, relayID).
+  void start(
+      const folly::SocketAddress& addr,
+      const std::optional<config::UpstreamConfig>& upstream = std::nullopt,
+      const std::string& relayID = {}) {
+    MoQServer::start(addr);
+    if (upstream) {
+      initUpstream(*upstream, relayID);
+    }
+  }
+
   void onNewSession(std::shared_ptr<moxygen::MoQSession> clientSession) override;
 
   void terminateClientSession(std::shared_ptr<moxygen::MoQSession> session) override;
@@ -49,6 +62,7 @@ protected:
 
 private:
   void initRelays(const folly::F14FastMap<std::string, config::ServiceConfig>& services);
+  void initUpstream(const config::UpstreamConfig& cfg, const std::string& relayID);
 
   folly::F14FastMap<std::string, std::shared_ptr<ORelay>> relays_;
   ServiceMatcher serviceMatcher_;

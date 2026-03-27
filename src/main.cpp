@@ -134,8 +134,8 @@ int main(int argc, char* argv[]) {
   }
 
   // === 8. Start serving ===
-  // Bind listeners, accept connections, enter event loop
-  server->start(config.listener.address);
+  // start() binds listeners and, if configured, initialises relay chaining.
+  server->start(config.listener.address, config.upstream, config.relayID);
   evb.loopForever();
 
   // ============================================
