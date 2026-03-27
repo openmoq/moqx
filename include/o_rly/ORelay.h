@@ -12,6 +12,7 @@
 #include <moxygen/MoQSession.h>
 #include <moxygen/relay/MoQCache.h>
 #include <moxygen/relay/MoQForwarder.h>
+#include <o_rly/UpstreamProvider.h>
 #include <o_rly/relay_auth.h>
 
 #include <folly/container/F14Set.h>
@@ -39,6 +40,13 @@ public:
 
   void setRelayID(std::string relayID) {
     relayID_ = std::move(relayID);
+  }
+
+  // Store the upstream provider. The provider must have been constructed with
+  // publishHandler=this and subscribeHandler=this so that the upstream relay's
+  // reciprocal subNs and namespace announcements route through ORelay.
+  void setUpstreamProvider(std::shared_ptr<UpstreamProvider> upstream) {
+    upstream_ = std::move(upstream);
   }
 
   folly::coro::Task<SubscribeResult> subscribe(
@@ -214,6 +222,7 @@ private:
 
   moxygen::TrackNamespace allowedNamespacePrefix_;
   std::string relayID_;
+  std::shared_ptr<UpstreamProvider> upstream_;
   folly::F14FastMap<moxygen::FullTrackName, RelaySubscription, moxygen::FullTrackName::hash>
       subscriptions_;
 
