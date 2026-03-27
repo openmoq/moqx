@@ -14,8 +14,7 @@ sudo deps/moxygen/standalone/install-system-deps.sh
 ./scripts/build.sh test      # test
 ```
 
-See [BUILD.md](BUILD.md) for full instructions: dependency modes, build profiles,
-Docker deployment, relay operations, and debugging.
+See [BUILD.md](BUILD.md) for full build, test, deploy, and operations instructions.
 
 ## Architecture
 
@@ -26,9 +25,10 @@ libraries (MoQForwarder, MoQCache, MoQSession, MoQServer).
 `ORelayServer` extends `MoQServer` to wire up `ORelay` as the
 publish/subscribe handler.
 
-See [BUILD.md](BUILD.md) for building, testing, deploying, and relay operations.
-
 ## Design Documents
 
 - [design/ci-architecture.md](design/ci-architecture.md) — CI pipelines, upstream sync, auto-deploy
 - [design/configuration.md](design/configuration.md) — relay config file reference
+- [design/gummy-bear.md](design/gummy-bear.md) — cache and forwarding design
+- [design/hot-reloading.md](design/hot-reloading.md) — hot config reload
+- [design/miss-handler.md](design/miss-handler.md) — cache miss handling
