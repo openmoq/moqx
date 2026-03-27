@@ -4,6 +4,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+#include <moqx/MoqxRelay.h>
 #include <moqx/UpstreamProvider.h>
 #include <moxygen/MoQFilters.h>
 #include <moxygen/MoQRelaySession.h>
@@ -61,84 +62,6 @@ class PendingTrackConsumer : public TrackConsumerFilter {
 
 } // namespace
 
-// Bridges NAMESPACE / NAMESPACE_DONE messages (draft 16+) from a peer relay
-// into the local relay's publishNamespace machinery. Used for both the
-// initiating peer subNs (UpstreamProvider) and the reciprocal (ORelay).
-// One instance is created per connect; recreated on reconnect so the handle
-// map is always fresh (peer re-announces all namespaces after reconnect).
-class NamespaceBridgeHandle
-    : public Publisher::NamespacePublishHandle,
-      public std::enable_shared_from_this<NamespaceBridgeHandle> {
- public:
-  NamespaceBridgeHandle(
-      std::weak_ptr<Subscriber> relay,
-      std::shared_ptr<MoQSession> session)
-      : relay_(std::move(relay)), session_(std::move(session)) {}
-
-  void namespaceMsg(const TrackNamespace& suffix) override {
-    auto relay = relay_.lock();
-    if (!relay || !session_) {
-      return;
-    }
-    auto self = shared_from_this();
-    auto exec = session_->getExecutor();
-    co_withExecutor(
-        exec,
-        [relay, suffix, self]() mutable -> folly::coro::Task<void> {
-          PublishNamespace ann;
-          ann.trackNamespace = suffix;
-          auto result = co_await relay->publishNamespace(ann, nullptr);
-          if (result.hasValue()) {
-            self->storeHandle(suffix, std::move(result.value()));
-          } else {
-            XLOG(ERR) << "NamespaceBridgeHandle::namespaceMsg failed: "
-                      << result.error().reasonPhrase;
-          }
-        }())
-        .start();
-  }
-
-  void namespaceDoneMsg(const TrackNamespace& suffix) override {
-    auto handle = removeHandle(suffix);
-    if (handle) {
-      handle->publishNamespaceDone();
-    }
-  }
-
- private:
-  void storeHandle(
-      const TrackNamespace& ns,
-      std::shared_ptr<Subscriber::PublishNamespaceHandle> h) {
-    handles_[ns] = std::move(h);
-  }
-
-  std::shared_ptr<Subscriber::PublishNamespaceHandle> removeHandle(
-      const TrackNamespace& ns) {
-    auto it = handles_.find(ns);
-    if (it == handles_.end()) {
-      return nullptr;
-    }
-    auto h = std::move(it->second);
-    handles_.erase(it);
-    return h;
-  }
-
-  std::weak_ptr<Subscriber> relay_;
-  std::shared_ptr<MoQSession> session_;
-  // Namespace → handle map; all callbacks run on the session's EVB so no lock.
-  std::unordered_map<
-      TrackNamespace,
-      std::shared_ptr<Subscriber::PublishNamespaceHandle>,
-      TrackNamespace::hash>
-      handles_;
-};
-
-std::shared_ptr<Publisher::NamespacePublishHandle> makeNamespaceBridgeHandle(
-    std::weak_ptr<Subscriber> relay,
-    std::shared_ptr<MoQSession> session) {
-  return std::make_shared<NamespaceBridgeHandle>(
-      std::move(relay), std::move(session));
-}
 
 UpstreamProvider::UpstreamProvider(
     std::shared_ptr<MoQExecutor> exec,
@@ -444,7 +367,8 @@ folly::coro::Task<void> UpstreamProvider::doConnect() {
     // Bridge NAMESPACE/NAMESPACE_DONE messages (draft 16+) back into the local
     // relay via subscribeHandler_. If subscribeHandler_ is absent, fall back to
     // a no-op handle (namespace announcements arrive via PUBLISH_NAMESPACE only).
-    auto handle = makeNamespaceBridgeHandle(subscribeHandler_, session_);
+    auto relay = std::dynamic_pointer_cast<MoqxRelay>(subscribeHandler_);
+    auto handle = makeNamespaceBridgeHandle(relay, session_);
     co_await session_->subscribeNamespace(makePeerSubNs(relayID_), handle);
   }
 

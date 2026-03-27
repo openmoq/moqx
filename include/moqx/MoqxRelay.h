@@ -91,6 +91,18 @@ public:
     return {};
   }
 
+  // Sync cores of publishNamespace/publishNamespaceDone. Called by the
+  // Subscriber coroutine interface and directly by ORelayNamespaceHandle
+  // (which provides the session explicitly — no getRequestSession() needed).
+  std::shared_ptr<moxygen::Subscriber::PublishNamespaceHandle> doPublishNamespace(
+      moxygen::PublishNamespace ann,
+      std::shared_ptr<moxygen::MoQSession> session,
+      std::shared_ptr<moxygen::Subscriber::PublishNamespaceCallback> callback);
+
+  void doPublishNamespaceDone(
+      const moxygen::TrackNamespace& trackNamespace,
+      std::shared_ptr<moxygen::MoQSession> session);
+
   // Test accessor: check if a publish exists and return node/publish state
   struct PublishState {
     bool nodeExists{false};                                // true if tree node exists
@@ -232,5 +244,12 @@ private:
   );
   std::unique_ptr<moxygen::MoQCache> cache_;
 };
+
+// Creates a NamespacePublishHandle that bridges NAMESPACE/NAMESPACE_DONE
+// messages from a peer relay into relay->doPublishNamespace() synchronously.
+// Used for both the initiating (UpstreamProvider) and reciprocal (MoqxRelay) paths.
+std::shared_ptr<moxygen::Publisher::NamespacePublishHandle> makeNamespaceBridgeHandle(
+    std::weak_ptr<MoqxRelay> relay,
+    std::shared_ptr<moxygen::MoQSession> session);
 
 } // namespace openmoq::moqx
