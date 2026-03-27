@@ -235,6 +235,14 @@ private:
   moxygen::TrackNamespace allowedNamespacePrefix_;
   std::string relayID_;
   std::shared_ptr<UpstreamProvider> upstream_;
+
+  // Reciprocal peer subNs handles: one per peer relay session that has
+  // connected to us. Kept alive so the subscription is not immediately
+  // cancelled. Keyed by raw session pointer (valid for session lifetime).
+  folly::F14FastMap<
+      moxygen::MoQSession*,
+      std::shared_ptr<moxygen::Publisher::SubscribeNamespaceHandle>>
+      peerSubNsHandles_;
   folly::F14FastMap<moxygen::FullTrackName, RelaySubscription, moxygen::FullTrackName::hash>
       subscriptions_;
 

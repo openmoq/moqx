@@ -114,7 +114,6 @@ void ORelayServer::initUpstream(
         /*subscribeHandler=*/relay,
         verifier,
         relayID);
-    relay->setRelayID(relayID);
     relay->setUpstreamProvider(provider);
 
     // Eagerly connect so the peering handshake fires before any subscribers

@@ -25,6 +25,7 @@ DOWNSTREAM_PORT=19670
 UPSTREAM_RELAY_ID="upstream-test"
 DOWNSTREAM_RELAY_ID="downstream-test"
 NAMESPACE="moq-date"
+NAMESPACE2="moq-date-2"
 TIMEOUT=15   # seconds to wait for data
 
 # ── Prereq checks ──────────────────────────────────────────────────────────────
@@ -40,6 +41,7 @@ TMPDIR_SCRIPT="$(mktemp -d)"
 UPSTREAM_CFG="$TMPDIR_SCRIPT/upstream.yaml"
 DOWNSTREAM_CFG="$TMPDIR_SCRIPT/downstream.yaml"
 CLIENT_OUT="$TMPDIR_SCRIPT/client.out"
+CLIENT_OUT2="$TMPDIR_SCRIPT/client2.out"
 
 # ── Cleanup ────────────────────────────────────────────────────────────────────
 PIDS=()
@@ -115,41 +117,56 @@ PIDS+=($!)
 # Give relays time to start and complete the peering handshake.
 sleep 2
 
-# ── Start date server publishing to upstream ───────────────────────────────────
-echo "Starting moqdateserver → upstream relay..."
+check_received() {
+  local label="$1" out="$2"
+  if grep -q "SubscribeError" "$out" 2>/dev/null; then
+    echo "FAIL [$label]: SubscribeError" >&2
+    cat "$out" >&2
+    return 1
+  elif grep -q "Largest=" "$out" 2>/dev/null; then
+    echo "PASS [$label]: $(grep 'Largest=' "$out" | head -1)"
+    return 0
+  else
+    echo "FAIL [$label]: no data received" >&2
+    cat "$out" >&2
+    return 1
+  fi
+}
+
+# ── Direction 1: publisher → upstream, subscriber via downstream ───────────────
+echo "Direction 1: moqdateserver → upstream, subscribe via downstream"
+
 "$DATESERVER" \
   --relay_url="https://localhost:$UPSTREAM_PORT/moq-relay" \
-  --ns="$NAMESPACE" \
-  --insecure \
+  --ns="$NAMESPACE" --insecure \
   &>/dev/null &
 PIDS+=($!)
 
-# Wait for dateserver to announce its namespace and for the downstream relay
-# to receive it via the peering handshake.
 sleep 3
 
-# ── Subscribe via downstream relay ─────────────────────────────────────────────
-echo "Subscribing via downstream relay (timeout ${TIMEOUT}s)..."
 timeout "$TIMEOUT" "$TEXTCLIENT" \
   --connect_url="https://localhost:$DOWNSTREAM_PORT/moq-relay" \
-  --track_namespace="$NAMESPACE" \
-  --track_name="date" \
-  --insecure \
+  --track_namespace="$NAMESPACE" --track_name="date" --insecure \
   >"$CLIENT_OUT" 2>&1 || true
 
-# ── Verify output ──────────────────────────────────────────────────────────────
-# Success: subscribed and received at least one object (no SubscribeError).
-if grep -q "SubscribeError" "$CLIENT_OUT" 2>/dev/null; then
-  echo "FAIL: downstream relay returned SubscribeError" >&2
-  cat "$CLIENT_OUT" >&2
-  exit 1
-elif grep -q "Largest=" "$CLIENT_OUT" 2>/dev/null; then
-  echo "PASS: data flowed through the relay chain"
-  grep "Largest=" "$CLIENT_OUT" | head -1
-  exit 0
-else
-  echo "FAIL: no data received from downstream relay" >&2
-  echo "Client output:" >&2
-  cat "$CLIENT_OUT" >&2
-  exit 1
-fi
+check_received "upstream→downstream" "$CLIENT_OUT" || exit 1
+
+# ── Direction 2: publisher → downstream, subscriber via upstream ───────────────
+echo "Direction 2: moqdateserver → downstream, subscribe via upstream"
+
+"$DATESERVER" \
+  --relay_url="https://localhost:$DOWNSTREAM_PORT/moq-relay" \
+  --ns="$NAMESPACE2" --insecure \
+  &>/dev/null &
+PIDS+=($!)
+
+sleep 3
+
+timeout "$TIMEOUT" "$TEXTCLIENT" \
+  --connect_url="https://localhost:$UPSTREAM_PORT/moq-relay" \
+  --track_namespace="$NAMESPACE2" --track_name="date" --insecure \
+  >"$CLIENT_OUT2" 2>&1 || true
+
+check_received "downstream→upstream" "$CLIENT_OUT2" || exit 1
+
+echo "All relay chain tests passed."

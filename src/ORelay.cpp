@@ -608,19 +608,17 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> ORelay::subscribeNamespac
   // namespace announcements as publishers connect.
   if (!relayID_.empty() && isPeerSubNs(subNs)) {
     XLOG(INFO) << __func__ << ": peer relay detected, reciprocating peer subNs";
-    auto peerSession = session;
-    co_withExecutor(
-        peerSession->getExecutor(),
-        [peerSession, relay = weak_from_this()]() -> folly::coro::Task<void> {
-          auto handle = makeNamespaceBridgeHandle(relay, peerSession);
-          auto result = co_await peerSession->subscribeNamespace(
-              makePeerSubNs(), handle); // no token: reciprocal, prevents loop
-          if (result.hasError()) {
-            XLOG(ERR) << "Reciprocal peer subNs failed: "
-                      << result.error().reasonPhrase;
-          }
-        }())
-        .start();
+    // Co-await directly: subscribeNamespace is already a coroutine, so we
+    // can issue the outgoing sub on peerSession without spawning a detached task.
+    auto handle = makeNamespaceBridgeHandle(weak_from_this(), session);
+    auto recipResult = co_await session->subscribeNamespace(
+        makePeerSubNs(), handle); // no token: reciprocal, prevents loop
+    if (recipResult.hasError()) {
+      XLOG(ERR) << "Reciprocal peer subNs failed: "
+                << recipResult.error().reasonPhrase;
+    } else {
+      peerSubNsHandles_.emplace(session.get(), std::move(recipResult.value()));
+    }
     // Fall through: register the peer as a normal subNs subscriber so it
     // receives namespace announcements as publishers connect.
   }
@@ -729,6 +727,8 @@ void ORelay::unsubscribeNamespace(
     std::shared_ptr<MoQSession> session
 ) {
   XLOG(DBG1) << __func__ << " nsp=" << trackNamespacePrefix;
+  // Clean up the reciprocal peer subNs handle for this session if present.
+  peerSubNsHandles_.erase(session.get());
   auto nodePtr = findNamespaceNode(trackNamespacePrefix);
   if (!nodePtr) {
     // TODO: maybe error?
