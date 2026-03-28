@@ -18,17 +18,17 @@ permissions:
 jobs:
   check-format:
     runs-on: ubuntu-latest
-    container: debian:trixie
     steps:
-      - name: Install tools
-        run: apt-get update && apt-get install -y --no-install-recommends ca-certificates git clang-format
-
       - uses: actions/checkout@v4
+
+      - name: Install clang-format
+        run: pip install clang-format==19.1.7
 
       - name: Check formatting
         run: bash scripts/format.sh --check
 
   build:
+    needs: [check-format]
     strategy:
       fail-fast: false
       matrix:

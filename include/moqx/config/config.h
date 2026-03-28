@@ -10,7 +10,7 @@
 #include <folly/SocketAddress.h>
 #include <folly/container/F14Map.h>
 
-namespace openmoq::o_rly::config {
+namespace openmoq::moqx::config {
 
 struct TlsConfig {
   std::string certFile;
@@ -72,4 +72,4 @@ struct Config {
   std::optional<AdminConfig> admin;
 };
 
-} // namespace openmoq::o_rly::config
+} // namespace openmoq::moqx::config

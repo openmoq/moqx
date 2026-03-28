@@ -1,8 +1,8 @@
-#include <o_rly/ServiceMatcher.h>
+#include <moqx/ServiceMatcher.h>
 
 #include <gtest/gtest.h>
 
-namespace openmoq::o_rly {
+namespace openmoq::moqx {
 namespace {
 
 using namespace config;
@@ -396,4 +396,4 @@ TEST(ServiceMatcher, AuthorityMatchButPathMismatchFallsToAny) {
 }
 
 } // namespace
-} // namespace openmoq::o_rly
+} // namespace openmoq::moqx

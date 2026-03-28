@@ -19,13 +19,13 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-SCRATCH="${ORLY_SCRATCH_PATH:-${PROJECT_ROOT}/.scratch}"
-MOXYGEN_DIR="${ORLY_MOXYGEN_DIR:-${PROJECT_ROOT}/deps/moxygen}"
+SCRATCH="${MOQX_SCRATCH_PATH:-${PROJECT_ROOT}/.scratch}"
+MOXYGEN_DIR="${MOQX_MOXYGEN_DIR:-${PROJECT_ROOT}/deps/moxygen}"
 STANDALONE_SRC="${MOXYGEN_DIR}/standalone"
 BUILD_DIR="${SCRATCH}/standalone-build"
 INSTALL_DIR="${SCRATCH}/moxygen-install"
 
-if [[ -z "${ORLY_MOXYGEN_DIR:-}" ]] && [[ ! -e "$MOXYGEN_DIR/.git" ]]; then
+if [[ -z "${MOQX_MOXYGEN_DIR:-}" ]] && [[ ! -e "$MOXYGEN_DIR/.git" ]]; then
     echo "Error: deps/moxygen submodule not initialized." >&2
     echo "  Run: git submodule update --init" >&2
     exit 1

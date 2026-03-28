@@ -2,7 +2,7 @@
 
 #include <memory>
 
-namespace openmoq::o_rly {
+namespace openmoq::moqx {
 
 namespace admin {
 class AdminServer;
@@ -24,4 +24,4 @@ void registerMetricsRoute(AdminServer& adminServer, std::shared_ptr<stats::Stats
 
 } // namespace admin
 
-} // namespace openmoq::o_rly
+} // namespace openmoq::moqx

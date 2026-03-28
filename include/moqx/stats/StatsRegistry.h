@@ -13,7 +13,7 @@
 
 #include <moxygen/MoQTypes.h>
 
-namespace openmoq::o_rly::stats {
+namespace openmoq::moqx::stats {
 
 // Latency buckets in microseconds (SLO: < 1000 µs = 1 ms per spec 4.1).
 inline constexpr std::array<uint64_t, 11> kLatencyBucketsUs =
@@ -211,4 +211,4 @@ private:
   std::vector<std::shared_ptr<StatsCollectorBase>> collectors_;
 };
 
-} // namespace openmoq::o_rly::stats
+} // namespace openmoq::moqx::stats

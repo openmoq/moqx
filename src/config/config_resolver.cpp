@@ -1,11 +1,11 @@
-#include "o_rly/config/loader/config_resolver.h"
+#include "moqx/config/loader/config_resolver.h"
 
 #include <unordered_map>
 #include <unordered_set>
 
 #include <folly/String.h>
 
-namespace openmoq::o_rly::config {
+namespace openmoq::moqx::config {
 
 namespace {
 
@@ -439,4 +439,4 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
   };
 }
 
-} // namespace openmoq::o_rly::config
+} // namespace openmoq::moqx::config

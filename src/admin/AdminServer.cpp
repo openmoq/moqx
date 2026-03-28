@@ -1,4 +1,4 @@
-#include <o_rly/admin/AdminServer.h>
+#include <moqx/admin/AdminServer.h>
 
 #include <list>
 
@@ -12,7 +12,7 @@
 #include <proxygen/lib/http/HTTPMessage.h>
 #include <wangle/ssl/SSLContextConfig.h>
 
-namespace openmoq::o_rly::admin {
+namespace openmoq::moqx::admin {
 
 // ---------------------------------------------------------------------------
 // AdminRequestHandler — generic request aggregator
@@ -136,4 +136,4 @@ void AdminServer::stop() {
   httpServer_.reset();
 }
 
-} // namespace openmoq::o_rly::admin
+} // namespace openmoq::moqx::admin

@@ -123,7 +123,7 @@ Regex authority matching is planned but not yet implemented.
 >
 > Moxygen's `isAcceptedEndpoint()` check runs *before* the WebTransport upgrade completes. The listener's `endpoint` field is registered as the only accepted path. If a WT client connects with an HTTP path that doesn't match a registered endpoint, moxygen returns 404 before MOQT ever starts — `ServiceMatcher` never sees the connection.
 >
-> This means multi-service path matchers (e.g. `{exact: "/moq-relay"}` and `{prefix: "/live/"}`) only work for WT connections if every matched path is also registered as a listener endpoint via `MoQServerBase::addEndpoint()`. Currently o-rly passes only a single `endpoint` from the listener config.
+> This means multi-service path matchers (e.g. `{exact: "/moq-relay"}` and `{prefix: "/live/"}`) only work for WT connections if every matched path is also registered as a listener endpoint via `MoQServerBase::addEndpoint()`. Currently moqx passes only a single `endpoint` from the listener config.
 >
 > Additionally, moxygen's conflict detection (`MoQSession::onClientSetup()`): if WT already set authority/path from HTTP and CLIENT_SETUP also includes them, the session gets a PROTOCOL_VIOLATION.
 >
@@ -141,7 +141,7 @@ Includes are supported **only at the service level**: a `services_include` direc
 
 ```yaml
 services_include:
-  - /etc/o-rly/services.d/*.yaml # Each file defines one or more services
+  - /etc/moqx/services.d/*.yaml # Each file defines one or more services
 ```
 
 Each included file must contain complete service definitions. Partial overrides or nested includes are not supported.

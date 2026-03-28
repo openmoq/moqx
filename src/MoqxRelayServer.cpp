@@ -1,12 +1,12 @@
+#include <moqx/MoqxRelayServer.h>
+#include <moqx/stats/MoQStatsCollector.h>
 #include <moxygen/MoQRelaySession.h>
-#include <o_rly/ORelayServer.h>
-#include <o_rly/stats/MoQStatsCollector.h>
 
 #include <folly/logging/xlog.h>
 
 using namespace moxygen;
 
-namespace openmoq::o_rly {
+namespace openmoq::moqx {
 
 namespace {
 
@@ -19,17 +19,18 @@ std::vector<std::string> buildAlpns(const std::string& versions) {
 
 } // namespace
 
-void ORelayServer::initRelays(const folly::F14FastMap<std::string, config::ServiceConfig>& services
+void MoqxRelayServer::initRelays(
+    const folly::F14FastMap<std::string, config::ServiceConfig>& services
 ) {
   for (const auto& [name, svc] : services) {
     relays_.emplace(
         name,
-        std::make_shared<ORelay>(svc.cache.maxCachedTracks, svc.cache.maxCachedGroupsPerTrack)
+        std::make_shared<MoqxRelay>(svc.cache.maxCachedTracks, svc.cache.maxCachedGroupsPerTrack)
     );
   }
 }
 
-ORelayServer::ORelayServer(
+MoqxRelayServer::MoqxRelayServer(
     const std::string& cert,
     const std::string& key,
     const std::string& endpoint,
@@ -49,7 +50,7 @@ ORelayServer::ORelayServer(
   initRelays(services);
 }
 
-ORelayServer::ORelayServer(
+MoqxRelayServer::MoqxRelayServer(
     const std::string& endpoint,
     const std::string& versions,
     folly::F14FastMap<std::string, config::ServiceConfig> services
@@ -67,11 +68,11 @@ ORelayServer::ORelayServer(
   initRelays(services);
 }
 
-void ORelayServer::setStatsRegistry(std::shared_ptr<stats::StatsRegistry> registry) {
+void MoqxRelayServer::setStatsRegistry(std::shared_ptr<stats::StatsRegistry> registry) {
   statsRegistry_ = std::move(registry);
 }
 
-void ORelayServer::onNewSession(std::shared_ptr<MoQSession> clientSession) {
+void MoqxRelayServer::onNewSession(std::shared_ptr<MoQSession> clientSession) {
   // Relay handler routing deferred to validateAuthority() where authority is available
 
   if (statsRegistry_) {
@@ -91,14 +92,14 @@ void ORelayServer::onNewSession(std::shared_ptr<MoQSession> clientSession) {
   }
 }
 
-void ORelayServer::terminateClientSession(std::shared_ptr<MoQSession> session) {
+void MoqxRelayServer::terminateClientSession(std::shared_ptr<MoQSession> session) {
   if (statsCollector_) {
     statsCollector_->onSessionEnd();
   }
   MoQServer::terminateClientSession(std::move(session));
 }
 
-folly::Expected<folly::Unit, SessionCloseErrorCode> ORelayServer::validateAuthority(
+folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayServer::validateAuthority(
     const ClientSetup& clientSetup,
     uint64_t negotiatedVersion,
     std::shared_ptr<MoQSession> session
@@ -126,7 +127,7 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> ORelayServer::validateAuthor
   return folly::unit;
 }
 
-std::shared_ptr<MoQSession> ORelayServer::createSession(
+std::shared_ptr<MoQSession> MoqxRelayServer::createSession(
     folly::MaybeManagedPtr<proxygen::WebTransport> wt,
     std::shared_ptr<MoQExecutor> executor
 ) {
@@ -137,4 +138,4 @@ std::shared_ptr<MoQSession> ORelayServer::createSession(
   );
 }
 
-} // namespace openmoq::o_rly
+} // namespace openmoq::moqx

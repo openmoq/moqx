@@ -6,8 +6,9 @@
  * Copyright (c) OpenMOQ contributors.
  */
 
+#include <moqx/MoqxRelay.h>
+
 #include <moxygen/MoQFilters.h>
-#include <o_rly/ORelay.h>
 
 namespace {
 constexpr uint8_t kDefaultUpstreamPriority = 128;
@@ -15,7 +16,7 @@ constexpr uint8_t kDefaultUpstreamPriority = 128;
 
 using namespace moxygen;
 
-namespace openmoq::o_rly {
+namespace openmoq::moqx {
 
 // Sends SUBSCRIBE_UPDATE to update forwarding state. Called from:
 // - subscribeNamespace: forwarder was empty, new subscriber added
@@ -24,7 +25,7 @@ namespace openmoq::o_rly {
 // - onEmpty: last subscriber left a publish subscription (forward=false)
 // - forwardChanged: forwarding subscriber count changed
 folly::coro::Task<void>
-ORelay::doSubscribeUpdate(std::shared_ptr<Publisher::SubscriptionHandle> handle, bool forward) {
+MoqxRelay::doSubscribeUpdate(std::shared_ptr<Publisher::SubscriptionHandle> handle, bool forward) {
   auto updateRes = co_await handle->requestUpdate(
       {RequestID(0),
        handle->subscribeOk().requestID,
@@ -38,7 +39,7 @@ ORelay::doSubscribeUpdate(std::shared_ptr<Publisher::SubscriptionHandle> handle,
   }
 }
 
-std::shared_ptr<ORelay::NamespaceNode> ORelay::findNamespaceNode(
+std::shared_ptr<MoqxRelay::NamespaceNode> MoqxRelay::findNamespaceNode(
     const TrackNamespace& ns,
     bool createMissingNodes,
     MatchType matchType,
@@ -74,7 +75,7 @@ std::shared_ptr<ORelay::NamespaceNode> ORelay::findNamespaceNode(
   return nodePtr;
 }
 
-folly::coro::Task<Subscriber::PublishNamespaceResult> ORelay::publishNamespace(
+folly::coro::Task<Subscriber::PublishNamespaceResult> MoqxRelay::publishNamespace(
     PublishNamespace ann,
     std::shared_ptr<Subscriber::PublishNamespaceCallback> callback
 ) {
@@ -166,7 +167,7 @@ folly::coro::Task<Subscriber::PublishNamespaceResult> ORelay::publishNamespace(
   co_return nodePtr;
 }
 
-folly::coro::Task<void> ORelay::publishNamespaceToSession(
+folly::coro::Task<void> MoqxRelay::publishNamespaceToSession(
     std::shared_ptr<MoQSession> session,
     PublishNamespace ann,
     std::shared_ptr<NamespaceNode> nodePtr
@@ -181,7 +182,7 @@ folly::coro::Task<void> ORelay::publishNamespaceToSession(
 }
 
 // NamespaceNode ref count management methods for pruning
-void ORelay::NamespaceNode::incrementActiveChildren() {
+void MoqxRelay::NamespaceNode::incrementActiveChildren() {
   activeChildCount_++;
   // Propagate up if this was the first active child
   if (activeChildCount_ == 1 && parent_ && !hasLocalSessions()) {
@@ -189,13 +190,13 @@ void ORelay::NamespaceNode::incrementActiveChildren() {
   }
 }
 
-void ORelay::NamespaceNode::decrementActiveChildren() {
+void MoqxRelay::NamespaceNode::decrementActiveChildren() {
   XCHECK_GT(activeChildCount_, 0);
   activeChildCount_--;
 }
 
 // Walk up the tree to find and prune the highest empty ancestor
-void ORelay::NamespaceNode::tryPruneChild(const std::string& childKey) {
+void MoqxRelay::NamespaceNode::tryPruneChild(const std::string& childKey) {
   auto it = children.find(childKey);
   if (it == children.end()) {
     return;
@@ -246,7 +247,7 @@ void ORelay::NamespaceNode::tryPruneChild(const std::string& childKey) {
   parentOfNodeToRemove->children.erase(keyToRemove);
 }
 
-void ORelay::publishNamespaceDone(const TrackNamespace& trackNamespace, NamespaceNode*) {
+void MoqxRelay::publishNamespaceDone(const TrackNamespace& trackNamespace, NamespaceNode*) {
   XLOG(DBG1) << __func__ << " ns=" << trackNamespace;
   // Node would be useful if there were back links
   auto nodePtr = findNamespaceNode(trackNamespace);
@@ -319,7 +320,7 @@ void ORelay::publishNamespaceDone(const TrackNamespace& trackNamespace, Namespac
   }
 }
 
-void ORelay::onPublishDone(const FullTrackName& ftn) {
+void MoqxRelay::onPublishDone(const FullTrackName& ftn) {
   XLOG(DBG1) << __func__ << " ftn=" << ftn;
 
   auto it = subscriptions_.find(ftn);
@@ -355,7 +356,7 @@ void ORelay::onPublishDone(const FullTrackName& ftn) {
 }
 
 Subscriber::PublishResult
-ORelay::publish(PublishRequest pub, std::shared_ptr<Publisher::SubscriptionHandle> handle) {
+MoqxRelay::publish(PublishRequest pub, std::shared_ptr<Publisher::SubscriptionHandle> handle) {
   XLOG(DBG1) << __func__ << " ftn=" << pub.fullTrackName;
   XCHECK(handle) << "Publish handle cannot be null";
   if (!pub.fullTrackName.trackNamespace.startsWith(allowedNamespacePrefix_)) {
@@ -459,7 +460,7 @@ ORelay::publish(PublishRequest pub, std::shared_ptr<Publisher::SubscriptionHandl
   };
 }
 
-folly::coro::Task<void> ORelay::publishToSession(
+folly::coro::Task<void> MoqxRelay::publishToSession(
     std::shared_ptr<MoQSession> session,
     std::shared_ptr<MoQForwarder> forwarder,
     bool forward
@@ -498,10 +499,10 @@ folly::coro::Task<void> ORelay::publishToSession(
   subscriber->shouldForward = pubOk.forward;
 }
 
-class ORelay::NamespaceSubscription : public Publisher::SubscribeNamespaceHandle {
+class MoqxRelay::NamespaceSubscription : public Publisher::SubscribeNamespaceHandle {
 public:
   NamespaceSubscription(
-      std::shared_ptr<ORelay> relay,
+      std::shared_ptr<MoqxRelay> relay,
       std::shared_ptr<MoQSession> session,
       SubscribeNamespaceOk ok,
       TrackNamespace trackNamespacePrefix
@@ -525,16 +526,16 @@ public:
   }
 
 private:
-  std::shared_ptr<ORelay> relay_;
+  std::shared_ptr<MoqxRelay> relay_;
   std::shared_ptr<MoQSession> session_;
   TrackNamespace trackNamespacePrefix_;
 };
 
 // Filter TrackConsumer that intercepts publishDone to clean up relay state
-class ORelay::TerminationFilter : public TrackConsumerFilter {
+class MoqxRelay::TerminationFilter : public TrackConsumerFilter {
 public:
   TerminationFilter(
-      std::shared_ptr<ORelay> relay,
+      std::shared_ptr<MoqxRelay> relay,
       FullTrackName ftn,
       std::shared_ptr<TrackConsumer> downstream
   )
@@ -553,12 +554,14 @@ public:
   }
 
 private:
-  std::shared_ptr<ORelay> relay_;
+  std::shared_ptr<MoqxRelay> relay_;
   FullTrackName ftn_;
 };
 
-std::shared_ptr<TrackConsumer>
-ORelay::getSubscribeWriteback(const FullTrackName& ftn, std::shared_ptr<TrackConsumer> consumer) {
+std::shared_ptr<TrackConsumer> MoqxRelay::getSubscribeWriteback(
+    const FullTrackName& ftn,
+    std::shared_ptr<TrackConsumer> consumer
+) {
   auto baseConsumer =
       cache_ ? cache_->getSubscribeWriteback(ftn, std::move(consumer)) : std::move(consumer);
   auto filterConsumer =
@@ -566,7 +569,7 @@ ORelay::getSubscribeWriteback(const FullTrackName& ftn, std::shared_ptr<TrackCon
   return std::static_pointer_cast<TrackConsumer>(filterConsumer);
 }
 
-folly::coro::Task<Publisher::SubscribeNamespaceResult> ORelay::subscribeNamespace(
+folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNamespace(
     SubscribeNamespace subNs,
     std::shared_ptr<NamespacePublishHandle> namespacePublishHandle
 ) {
@@ -673,7 +676,7 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> ORelay::subscribeNamespac
   );
 }
 
-void ORelay::unsubscribeNamespace(
+void MoqxRelay::unsubscribeNamespace(
     const TrackNamespace& trackNamespacePrefix,
     std::shared_ptr<MoQSession> session
 ) {
@@ -702,7 +705,7 @@ void ORelay::unsubscribeNamespace(
   XLOG(DBG1) << "Namespace prefix was not subscribed by this session";
 }
 
-std::shared_ptr<MoQSession> ORelay::findPublishNamespaceSession(const TrackNamespace& ns) {
+std::shared_ptr<MoQSession> MoqxRelay::findPublishNamespaceSession(const TrackNamespace& ns) {
   /*
    * This function is called from subscribe() and fetch().
    * We use MatchType::Prefix here because the relay routes SUBSCRIBE and FETCH
@@ -716,7 +719,7 @@ std::shared_ptr<MoQSession> ORelay::findPublishNamespaceSession(const TrackNames
   return nodePtr->sourceSession;
 }
 
-ORelay::PublishState ORelay::findPublishState(const FullTrackName& ftn) {
+MoqxRelay::PublishState MoqxRelay::findPublishState(const FullTrackName& ftn) {
   PublishState state;
   auto nodePtr =
       findNamespaceNode(ftn.trackNamespace, /*createMissingNodes=*/false, MatchType::Exact);
@@ -737,7 +740,7 @@ ORelay::PublishState ORelay::findPublishState(const FullTrackName& ftn) {
 }
 
 folly::coro::Task<Publisher::SubscribeResult>
-ORelay::subscribe(SubscribeRequest subReq, std::shared_ptr<TrackConsumer> consumer) {
+MoqxRelay::subscribe(SubscribeRequest subReq, std::shared_ptr<TrackConsumer> consumer) {
   auto session = MoQSession::getRequestSession();
   auto subscriptionIt = subscriptions_.find(subReq.fullTrackName);
   if (subscriptionIt == subscriptions_.end()) {
@@ -877,7 +880,7 @@ ORelay::subscribe(SubscribeRequest subReq, std::shared_ptr<TrackConsumer> consum
 }
 
 folly::coro::Task<Publisher::FetchResult>
-ORelay::fetch(Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
+MoqxRelay::fetch(Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
   auto session = MoQSession::getRequestSession();
 
   // check auth
@@ -942,7 +945,7 @@ ORelay::fetch(Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
   co_return co_await cache_->fetch(fetch, std::move(consumer), std::move(upstreamSession));
 }
 
-folly::coro::Task<Publisher::TrackStatusResult> ORelay::trackStatus(TrackStatus trackStatus) {
+folly::coro::Task<Publisher::TrackStatusResult> MoqxRelay::trackStatus(TrackStatus trackStatus) {
   XLOG(DBG1) << __func__ << " ftn=" << trackStatus.fullTrackName;
 
   if (trackStatus.fullTrackName.trackNamespace.empty()) {
@@ -1006,7 +1009,7 @@ folly::coro::Task<Publisher::TrackStatusResult> ORelay::trackStatus(TrackStatus 
   }
 }
 
-void ORelay::onEmpty(MoQForwarder* forwarder) {
+void MoqxRelay::onEmpty(MoQForwarder* forwarder) {
   auto subscriptionIt = subscriptions_.find(forwarder->fullTrackName());
   if (subscriptionIt == subscriptions_.end()) {
     return;
@@ -1034,7 +1037,7 @@ void ORelay::onEmpty(MoQForwarder* forwarder) {
   }
 }
 
-void ORelay::forwardChanged(MoQForwarder* forwarder) {
+void MoqxRelay::forwardChanged(MoQForwarder* forwarder) {
   auto subscriptionIt = subscriptions_.find(forwarder->fullTrackName());
   if (subscriptionIt == subscriptions_.end()) {
     return;
@@ -1058,4 +1061,4 @@ void ORelay::forwardChanged(MoQForwarder* forwarder) {
       .start();
 }
 
-} // namespace openmoq::o_rly
+} // namespace openmoq::moqx

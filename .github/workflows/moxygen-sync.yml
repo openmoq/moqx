@@ -83,7 +83,7 @@ jobs:
           PR_REF="${{ steps.blocking.outputs.pr_ref }}"
           PR_URL="${{ github.server_url }}/${{ github.repository }}/pull/${PR_NUM}"
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          SUBJECT="[o-rly] moxygen sync paused — PR #${PR_NUM} pending"
+          SUBJECT="[moqx] moxygen sync paused — PR #${PR_NUM} pending"
           BODY="Moxygen submodule sync blocked by open PR.\n\nPR: ${PR_URL}\nBranch: ${PR_REF}\nRun: ${RUN_URL}\n\nResolve or merge the existing PR, then re-run manually."
           aws ses send-email \
             --from "noreply@ci.openmoq.org" \
@@ -212,7 +212,7 @@ jobs:
         run: |
           TARGET="${{ steps.target.outputs.target_sha || 'unknown' }}"
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          SUBJECT="[o-rly] moxygen sync FAILED"
+          SUBJECT="[moqx] moxygen sync FAILED"
           BODY="Moxygen submodule sync workflow failed.\n\nTarget SHA: ${TARGET}\nRun: ${RUN_URL}"
           aws ses send-email \
             --from "noreply@ci.openmoq.org" \

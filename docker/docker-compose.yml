@@ -1,4 +1,4 @@
-name: o-rly
+name: moqx
 
 # Usage:
 #
@@ -17,33 +17,33 @@ name: o-rly
 #     docker compose -f docker/docker-compose.yml up -d
 #
 #   Custom / self-signed cert (no certbot):
-#     Set ORLY_CERT and ORLY_KEY in docker/.env to point to your mounted cert files.
+#     Set MOQX_CERT and MOQX_KEY in docker/.env to point to your mounted cert files.
 
 services:
-  o-rly:
+  moqx:
     container_name: moqx
-    image: ghcr.io/openmoq/o-rly:latest
+    image: ghcr.io/openmoq/moqx:latest
     restart: unless-stopped
     ports:
-      - "${ORLY_PORT:-4433}:${ORLY_PORT:-4433}/udp"
-      - "${ORLY_ADMIN_PORT:-8000}:${ORLY_ADMIN_PORT:-8000}/tcp"
+      - "${MOQX_PORT:-4433}:${MOQX_PORT:-4433}/udp"
+      - "${MOQX_ADMIN_PORT:-8000}:${MOQX_ADMIN_PORT:-8000}/tcp"
     volumes:
-      - ${ORLY_CERTS_DIR:-/etc/letsencrypt}:/certs:ro
-      - orly-coredumps:/var/coredumps
-      - ${ORLY_ENTRY:-./entrypoint.sh}:/usr/local/bin/entrypoint.sh:ro
+      - ${MOQX_CERTS_DIR:-/etc/letsencrypt}:/certs:ro
+      - moqx-coredumps:/var/coredumps
+      - ${MOQX_ENTRY:-./entrypoint.sh}:/usr/local/bin/entrypoint.sh:ro
     environment:
-      ORLY_CERT: /certs/live/${DOMAIN}/fullchain.pem
-      ORLY_KEY:  /certs/live/${DOMAIN}/privkey.pem
-      ORLY_PORT: ${ORLY_PORT:-4433}
-      ORLY_ADMIN_PORT: ${ORLY_ADMIN_PORT:-8000}
-      ORLY_MAX_TRACKS: ${ORLY_MAX_TRACKS:-1000}
-      ORLY_MAX_GROUPS: ${ORLY_MAX_GROUPS:-100}
-      ORLY_LOG_LEVEL: ${ORLY_LOG_LEVEL:-0}
-      ORLY_VERBOSE: ${ORLY_VERBOSE:-0}
+      MOQX_CERT: /certs/live/${DOMAIN}/fullchain.pem
+      MOQX_KEY:  /certs/live/${DOMAIN}/privkey.pem
+      MOQX_PORT: ${MOQX_PORT:-4433}
+      MOQX_ADMIN_PORT: ${MOQX_ADMIN_PORT:-8000}
+      MOQX_MAX_TRACKS: ${MOQX_MAX_TRACKS:-1000}
+      MOQX_MAX_GROUPS: ${MOQX_MAX_GROUPS:-100}
+      MOQX_LOG_LEVEL: ${MOQX_LOG_LEVEL:-0}
+      MOQX_VERBOSE: ${MOQX_VERBOSE:-0}
     ulimits:
       core: -1
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://127.0.0.1:${ORLY_ADMIN_PORT:-8000}/info"]
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:${MOQX_ADMIN_PORT:-8000}/info"]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -60,7 +60,7 @@ services:
   certbot-cloudflare:
     image: certbot/dns-cloudflare
     volumes:
-      - ${ORLY_CERTS_DIR:-/etc/letsencrypt}:/etc/letsencrypt
+      - ${MOQX_CERTS_DIR:-/etc/letsencrypt}:/etc/letsencrypt
       - ./cloudflare.ini:/run/secrets/cloudflare.ini:ro
     command: >
       certonly
@@ -72,13 +72,13 @@ services:
       -d ${DOMAIN}
     profiles: [certbot-cloudflare]
 
-  # Log viewer — browse relay logs at http://localhost:${ORLY_LOG_PORT:-9999}
+  # Log viewer — browse relay logs at http://localhost:${MOQX_LOG_PORT:-9999}
   dozzle:
     container_name: logmon
     image: amir20/dozzle:latest
     restart: unless-stopped
     ports:
-      - "127.0.0.1:${ORLY_LOG_PORT:-9999}:8080"
+      - "127.0.0.1:${MOQX_LOG_PORT:-9999}:8080"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
@@ -91,7 +91,7 @@ services:
   certbot-route53:
     image: certbot/dns-route53
     volumes:
-      - ${ORLY_CERTS_DIR:-/etc/letsencrypt}:/etc/letsencrypt
+      - ${MOQX_CERTS_DIR:-/etc/letsencrypt}:/etc/letsencrypt
     environment:
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
@@ -106,4 +106,4 @@ services:
     profiles: [certbot-route53]
 
 volumes:
-  orly-coredumps:
+  moqx-coredumps:

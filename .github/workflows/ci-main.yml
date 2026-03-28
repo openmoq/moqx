@@ -28,17 +28,17 @@ jobs:
 
   check-format:
     runs-on: ubuntu-latest
-    container: debian:trixie
     steps:
-      - name: Install tools
-        run: apt-get update && apt-get install -y --no-install-recommends ca-certificates git clang-format
-
       - uses: actions/checkout@v4
+
+      - name: Install clang-format
+        run: pip install clang-format==19.1.7
 
       - name: Check formatting
         run: bash scripts/format.sh --check
 
   build:
+    needs: [check-format]
     strategy:
       fail-fast: false
       matrix:
@@ -91,7 +91,7 @@ jobs:
           fail-on-empty: ${{ job.status == 'success' && 'true' || 'false' }}
 
   # ════════════════════════════════════════════════════════════════════════════
-  # Publish: build o-rly, Docker image + smoke test, push
+  # Publish: build moqx, Docker image + smoke test, push
   # ════════════════════════════════════════════════════════════════════════════
 
   publish:
@@ -113,7 +113,7 @@ jobs:
       - name: Download bookworm moxygen tarball
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          ORLY_PLATFORM: bookworm-amd64
+          MOQX_PLATFORM: bookworm-amd64
         run: bash scripts/build.sh setup --from-release --no-fallback
 
       - name: Stage tarball for Docker build
@@ -137,26 +137,26 @@ jobs:
         run: |
           IMAGE="ghcr.io/${{ github.repository }}:latest"
           echo "==> ldd check"
-          docker run --rm --entrypoint ldd "${IMAGE}" /usr/local/bin/o-rly
-          if docker run --rm --entrypoint ldd "${IMAGE}" /usr/local/bin/o-rly 2>&1 | grep -q "not found"; then
+          docker run --rm --entrypoint ldd "${IMAGE}" /usr/local/bin/moqx
+          if docker run --rm --entrypoint ldd "${IMAGE}" /usr/local/bin/moqx 2>&1 | grep -q "not found"; then
             echo "ERROR: missing shared libraries"; exit 1
           fi
           echo "==> Start container with test config"
-          docker run -d --name orly-smoke --network host \
-            -v "$PWD/tests/test.config.yaml:/etc/o-rly/config.yaml:ro" \
-            "${IMAGE}" --config=/etc/o-rly/config.yaml
+          docker run -d --name moqx-smoke --network host \
+            -v "$PWD/tests/test.config.yaml:/etc/moqx/config.yaml:ro" \
+            "${IMAGE}" --config=/etc/moqx/config.yaml
           echo "==> Wait for admin /info"
           for i in $(seq 1 50); do
             if curl -sf http://[::1]:9669/info >/dev/null 2>&1; then break; fi
             sleep 0.1
             if [ "$i" -eq 50 ]; then
-              echo "ERROR: admin server did not start"; docker logs orly-smoke; exit 1
+              echo "ERROR: admin server did not start"; docker logs moqx-smoke; exit 1
             fi
           done
           RESP=$(curl -sf http://[::1]:9669/info)
           echo "Response: $RESP"
-          echo "$RESP" | grep -q '"service":"o-rly"' || { echo "FAIL: bad /info response"; exit 1; }
-          docker stop orly-smoke && docker rm orly-smoke
+          echo "$RESP" | grep -q '"service":"moqx"' || { echo "FAIL: bad /info response"; exit 1; }
+          docker stop moqx-smoke && docker rm moqx-smoke
           echo "==> Smoke test passed"
 
       - name: Push Docker image
@@ -169,10 +169,10 @@ jobs:
       - name: Package
         id: package
         run: |
-          ARTIFACT="o-rly-bookworm-amd64.tar.gz"
-          docker cp "$(docker create --name extract ghcr.io/${{ github.repository }}:latest):/usr/local/bin/o-rly" .
+          ARTIFACT="moqx-bookworm-amd64.tar.gz"
+          docker cp "$(docker create --name extract ghcr.io/${{ github.repository }}:latest):/usr/local/bin/moqx" .
           docker rm extract
-          mkdir -p install/bin && mv o-rly install/bin/
+          mkdir -p install/bin && mv moqx install/bin/
           tar czf "$ARTIFACT" -C install .
           echo "artifact=$ARTIFACT" >> "$GITHUB_OUTPUT"
 
@@ -243,10 +243,10 @@ jobs:
           cat > .env <<EOF
           DOMAIN=moqx-000.ci.openmoq.org
           CERTBOT_EMAIL=gmarzot@openmoq.org
-          ORLY_PORT=4433
-          ORLY_ADMIN_PORT=8000
-          ORLY_LOG_LEVEL=0
-          ORLY_VERBOSE=0
+          MOQX_PORT=4433
+          MOQX_ADMIN_PORT=8000
+          MOQX_LOG_LEVEL=0
+          MOQX_VERBOSE=0
           EOF
           sed -i 's/^[[:space:]]*//' .env
 
@@ -360,10 +360,10 @@ jobs:
 
           if [ "${{ needs.release.result }}" = "success" ]; then
             REL_URL="${{ github.server_url }}/${{ github.repository }}/releases/tag/snapshot-latest"
-            SUBJECT="[o-rly] published ${{ github.ref_name }} ${SHORT}"
+            SUBJECT="[moqx] published ${{ github.ref_name }} ${SHORT}"
             BODY="Repository: ${{ github.repository }}\nBranch: ${{ github.ref_name }}\nCommit: ${GITHUB_SHA}\nStatus: ${STATUS}\nDocker: ghcr.io/${{ github.repository }}:${SHORT}\nArtifacts: ${REL_URL}\nRun: ${RUN_URL}"
           else
-            SUBJECT="[o-rly] pipeline failed ${{ github.ref_name }} ${SHORT}"
+            SUBJECT="[moqx] pipeline failed ${{ github.ref_name }} ${SHORT}"
             BODY="Repository: ${{ github.repository }}\nBranch: ${{ github.ref_name }}\nCommit: ${GITHUB_SHA}\nStatus: ${STATUS}\nRun: ${RUN_URL}"
           fi
 

@@ -3,7 +3,7 @@
 #include <array>
 #include <cstdint>
 
-namespace openmoq::o_rly::stats {
+namespace openmoq::moqx::stats {
 
 // ---------------------------------------------------------------------------
 // BoundedHistogram
@@ -49,4 +49,4 @@ template <size_t N> struct BoundedHistogram {
   uint64_t count{0};
 };
 
-} // namespace openmoq::o_rly::stats
+} // namespace openmoq::moqx::stats

@@ -3,13 +3,13 @@
 #include <string>
 #include <vector>
 
-#include "o_rly/config/config.h"
+#include "moqx/config/config.h"
 
-namespace openmoq::o_rly::config {
+namespace openmoq::moqx::config {
 
 struct ResolvedConfig {
   Config config;
   std::vector<std::string> warnings;
 };
 
-} // namespace openmoq::o_rly::config
+} // namespace openmoq::moqx::config

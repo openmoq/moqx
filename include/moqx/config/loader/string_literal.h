@@ -9,7 +9,7 @@
 
 #include <rfl/internal/StringLiteral.hpp>
 
-namespace openmoq::o_rly::config {
+namespace openmoq::moqx::config {
 
 // Concatenate any number of StringLiterals into one.
 template <rfl::internal::StringLiteral... Parts> consteval auto str_concat() {
@@ -68,4 +68,4 @@ static_assert(bool_to_str<true>().string_view() == "true");
 static_assert(bool_to_str<false>().string_view() == "false");
 static_assert(str_concat<"hello", " ", "world">().string_view() == "hello world");
 
-} // namespace openmoq::o_rly::config
+} // namespace openmoq::moqx::config

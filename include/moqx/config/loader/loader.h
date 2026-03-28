@@ -2,9 +2,9 @@
 
 #include <string>
 
-#include "o_rly/config/loader/parsed_config.h"
+#include "moqx/config/loader/parsed_config.h"
 
-namespace openmoq::o_rly::config {
+namespace openmoq::moqx::config {
 
 /// Load config from a YAML file path.
 /// When strict=true, rejects unknown fields.
@@ -15,4 +15,4 @@ ParsedConfig loadConfig(const std::string& path, bool strict = false);
 /// Generate JSON schema string from config structs.
 std::string generateSchema();
 
-} // namespace openmoq::o_rly::config
+} // namespace openmoq::moqx::config

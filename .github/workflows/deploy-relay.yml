@@ -52,7 +52,7 @@ jobs:
         working-directory: docker
         run: |
           echo "==> Restarting relay..."
-          docker compose restart o-rly
+          docker compose restart moqx
 
           echo "==> Waiting for admin endpoint..."
           for i in $(seq 1 30); do
@@ -62,7 +62,7 @@ jobs:
             sleep 1
             if [ "$i" -eq 30 ]; then
               echo "::error::Admin endpoint did not respond within 30s"
-              docker compose logs o-rly
+              docker compose logs moqx
               exit 1
             fi
           done
@@ -77,10 +77,10 @@ jobs:
           cat > .env <<EOF
           DOMAIN=${DOMAIN}
           CERTBOT_EMAIL=gmarzot@openmoq.org
-          ORLY_PORT=${RELAY_PORT}
-          ORLY_ADMIN_PORT=${ADMIN_PORT}
-          ORLY_LOG_LEVEL=0
-          ORLY_VERBOSE=${{ inputs.verbose }}
+          MOQX_PORT=${RELAY_PORT}
+          MOQX_ADMIN_PORT=${ADMIN_PORT}
+          MOQX_LOG_LEVEL=0
+          MOQX_VERBOSE=${{ inputs.verbose }}
           EOF
           sed -i 's/^[[:space:]]*//' .env
 
@@ -132,7 +132,7 @@ jobs:
             sleep 1
             if [ "$i" -eq 30 ]; then
               echo "::error::Admin endpoint did not respond within 30s"
-              docker compose logs o-rly
+              docker compose logs moqx
               exit 1
             fi
           done

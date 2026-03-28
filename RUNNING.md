@@ -5,7 +5,7 @@
 The relay is published as a Docker image on every push to main:
 
 ```bash
-docker pull ghcr.io/openmoq/o-rly:latest
+docker pull ghcr.io/openmoq/moqx:latest
 ```
 
 ## Quick Start (Docker Compose)
@@ -23,37 +23,37 @@ The default entrypoint generates a relay config from these env vars:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DOMAIN` | -- | TLS certificate domain |
-| `ORLY_PORT` | `4433` | QUIC/UDP listen port |
-| `ORLY_ADMIN_PORT` | `8000` | Admin HTTP port (localhost only) |
-| `ORLY_BIND_ADDR` | `0.0.0.0` | Listen address (`0.0.0.0` or `::`) |
-| `ORLY_MAX_TRACKS` | `1000` | Max cached tracks |
-| `ORLY_MAX_GROUPS` | `100` | Max groups per track in cache |
-| `ORLY_LOG_LEVEL` | `0` | Min log level: 0=INFO 1=WARNING 2=ERROR 3=FATAL |
-| `ORLY_VERBOSE` | `0` | GLOG verbose level: 0=off, 1-4=increasing detail |
-| `ORLY_INSECURE` | `false` | Use built-in dev cert (local testing only) |
-| `ORLY_ENTRY` | `./entrypoint.sh` | Custom entrypoint override path |
+| `MOQX_PORT` | `4433` | QUIC/UDP listen port |
+| `MOQX_ADMIN_PORT` | `8000` | Admin HTTP port (localhost only) |
+| `MOQX_BIND_ADDR` | `0.0.0.0` | Listen address (`0.0.0.0` or `::`) |
+| `MOQX_MAX_TRACKS` | `1000` | Max cached tracks |
+| `MOQX_MAX_GROUPS` | `100` | Max groups per track in cache |
+| `MOQX_LOG_LEVEL` | `0` | Min log level: 0=INFO 1=WARNING 2=ERROR 3=FATAL |
+| `MOQX_VERBOSE` | `0` | GLOG verbose level: 0=off, 1-4=increasing detail |
+| `MOQX_INSECURE` | `false` | Use built-in dev cert (local testing only) |
+| `MOQX_ENTRY` | `./entrypoint.sh` | Custom entrypoint override path |
 
 ## Using a Custom Config File
 
-The entrypoint auto-detects a config file at `/etc/o-rly/config.yaml`.
+The entrypoint auto-detects a config file at `/etc/moqx/config.yaml`.
 If present, it uses that directly instead of generating one from env vars.
-Log-level env vars (`ORLY_LOG_LEVEL`, `ORLY_VERBOSE`) still apply.
+Log-level env vars (`MOQX_LOG_LEVEL`, `MOQX_VERBOSE`) still apply.
 
 ```bash
 docker run --rm \
-  -v /path/to/your/config.yaml:/etc/o-rly/config.yaml:ro \
+  -v /path/to/your/config.yaml:/etc/moqx/config.yaml:ro \
   -v /etc/letsencrypt:/certs:ro \
   -p 4433:4433/udp \
-  ghcr.io/openmoq/o-rly:latest
+  ghcr.io/openmoq/moqx:latest
 ```
 
 Or with docker compose, add a volume in `docker-compose.override.yml`:
 
 ```yaml
 services:
-  o-rly:
+  moqx:
     volumes:
-      - /path/to/your/config.yaml:/etc/o-rly/config.yaml:ro
+      - /path/to/your/config.yaml:/etc/moqx/config.yaml:ro
 ```
 
 See [config.example.yaml](config.example.yaml) for the full config schema with
@@ -62,7 +62,7 @@ multi-service routing, cache tuning, and TLS options.
 Validate a config without starting the server:
 
 ```bash
-o_rly validate-config --config /path/to/config.yaml
+moqx validate-config --config /path/to/config.yaml
 ```
 
 ## TLS Certificate Provisioning
@@ -83,7 +83,7 @@ docker compose --profile certbot-cloudflare run --rm certbot-cloudflare
 
 ### Self-Signed or Custom Certs
 
-Set `ORLY_CERT` and `ORLY_KEY` in `.env` to point to your mounted cert files,
+Set `MOQX_CERT` and `MOQX_KEY` in `.env` to point to your mounted cert files,
 or use a custom config file (see above).
 
 ## Health Check
@@ -92,7 +92,7 @@ The relay exposes an admin HTTP endpoint:
 
 ```bash
 curl http://localhost:8000/info
-# {"service":"o-rly","version":"0.1.0"}
+# {"service":"moqx","version":"0.1.0"}
 ```
 
 Docker compose includes a health check that polls this endpoint. If the relay becomes

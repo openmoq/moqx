@@ -1,4 +1,4 @@
-#include "o_rly/config/loader/loader.h"
+#include "moqx/config/loader/loader.h"
 
 #include <stdexcept>
 
@@ -6,7 +6,7 @@
 #include <rfl/json.hpp>
 #include <rfl/yaml.hpp>
 
-namespace openmoq::o_rly::config {
+namespace openmoq::moqx::config {
 
 ParsedConfig loadConfig(const std::string& path, bool strict) {
   std::string content;
@@ -26,8 +26,8 @@ ParsedConfig loadConfig(const std::string& path, bool strict) {
 
 std::string generateSchema() {
   return rfl::json::to_schema<
-      rfl::Description<"Configuration schema for the o-rly relay.", ParsedConfig>>(rfl::json::pretty
+      rfl::Description<"Configuration schema for the moqx relay.", ParsedConfig>>(rfl::json::pretty
   );
 }
 
-} // namespace openmoq::o_rly::config
+} // namespace openmoq::moqx::config

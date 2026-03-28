@@ -7,10 +7,10 @@
 #include <folly/executors/SequencedExecutor.h>
 #include <moxygen/stats/MoQStats.h>
 
-#include <o_rly/stats/BoundedHistogram.h>
-#include <o_rly/stats/StatsRegistry.h>
+#include <moqx/stats/BoundedHistogram.h>
+#include <moqx/stats/StatsRegistry.h>
 
-namespace openmoq::o_rly::stats {
+namespace openmoq::moqx::stats {
 
 // MoQStatsCollector owns all metric storage and acts as the StatsCollectorBase
 // registered with the StatsRegistry.  It exposes two inner callback objects:
@@ -111,7 +111,7 @@ public:
   StatsSnapshot snapshot() const override;
   folly::Executor::KeepAlive<> owningExecutor() const override;
 
-  // Session lifecycle events (called directly by ORelayServer).
+  // Session lifecycle events (called directly by MoqxRelayServer).
   void onSessionStart();
   void onSessionEnd();
 
@@ -145,4 +145,4 @@ private:
 #undef DEFINE_ERROR_ARRAY
 };
 
-} // namespace openmoq::o_rly::stats
+} // namespace openmoq::moqx::stats
