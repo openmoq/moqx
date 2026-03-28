@@ -1,28 +1,21 @@
 name: deploy relay
 
-# Deploy o-rly relay Docker container to a self-hosted runner.
-# Uses the repo's docker/docker-compose.yml with secrets-driven .env.
-# Automatically provisions or renews TLS certs via Route53 DNS challenge.
+# Ops controls for the CI relay (moqx-000.ci.openmoq.org).
+# Restart, redeploy with a specific image tag, or change verbose level.
 
 on:
   workflow_dispatch:
     inputs:
-      image_tag:
-        description: "Docker image tag (default: latest)"
-        required: false
-        default: "latest"
-        type: string
-      instance:
-        description: "Instance name (moqx-000 is reserved for CI auto-deploy)"
-        required: true
-        type: choice
-        options:
-          - moqx-001
       restart_only:
         description: "Restart container without redeploying"
         required: false
         type: boolean
         default: false
+      image_tag:
+        description: "Docker image tag (default: latest)"
+        required: false
+        default: "latest"
+        type: string
       verbose:
         description: "GLOG verbose level (0=off, 1-3=increasing detail)"
         required: false
@@ -38,11 +31,15 @@ permissions:
   contents: read
   packages: read
 
+env:
+  DOMAIN: moqx-000.ci.openmoq.org
+  RELAY_PORT: 4433
+  ADMIN_PORT: 8000
+
 jobs:
   deploy:
     runs-on: [self-hosted, linode]
     env:
-      INSTANCE: ${{ inputs.instance }}
       IMAGE_TAG: ${{ inputs.image_tag }}
     steps:
       - uses: actions/checkout@v4
@@ -50,31 +47,16 @@ jobs:
       - name: Log in to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
-      - name: Set instance config
-        id: config
-        run: |
-          case "$INSTANCE" in
-            moqx-001)
-              echo "domain=moqx-001.ci.openmoq.org" >> "$GITHUB_OUTPUT"
-              echo "port=4434" >> "$GITHUB_OUTPUT"
-              echo "admin_port=8001" >> "$GITHUB_OUTPUT"
-              ;;
-            *)
-              echo "::error::Unknown instance: $INSTANCE"
-              exit 1
-              ;;
-          esac
-
       - name: Restart container
         if: inputs.restart_only
         working-directory: docker
         run: |
-          echo "==> Restarting ${INSTANCE}..."
+          echo "==> Restarting relay..."
           docker compose restart o-rly
 
           echo "==> Waiting for admin endpoint..."
           for i in $(seq 1 30); do
-            if curl -sf http://127.0.0.1:${{ steps.config.outputs.admin_port }}/info >/dev/null 2>&1; then
+            if curl -sf http://127.0.0.1:${ADMIN_PORT}/info >/dev/null 2>&1; then
               break
             fi
             sleep 1
@@ -85,7 +67,7 @@ jobs:
             fi
           done
 
-          RESP=$(curl -sf http://127.0.0.1:${{ steps.config.outputs.admin_port }}/info)
+          RESP=$(curl -sf http://127.0.0.1:${ADMIN_PORT}/info)
           echo "==> Relay running: $RESP"
 
       - name: Write .env
@@ -93,32 +75,30 @@ jobs:
         working-directory: docker
         run: |
           cat > .env <<EOF
-          DOMAIN=${{ steps.config.outputs.domain }}
+          DOMAIN=${DOMAIN}
           CERTBOT_EMAIL=gmarzot@openmoq.org
-          ORLY_PORT=${{ steps.config.outputs.port }}
-          ORLY_ADMIN_PORT=${{ steps.config.outputs.admin_port }}
+          ORLY_PORT=${RELAY_PORT}
+          ORLY_ADMIN_PORT=${ADMIN_PORT}
           ORLY_LOG_LEVEL=0
           ORLY_VERBOSE=${{ inputs.verbose }}
           EOF
-          # Strip leading whitespace from heredoc (YAML indentation artifact)
           sed -i 's/^[[:space:]]*//' .env
 
       - name: Ensure TLS cert
         if: "!inputs.restart_only"
         env:
-          DOMAIN: ${{ steps.config.outputs.domain }}
           AWS_ACCESS_KEY_ID: ${{ secrets.OMOQ_CERTBOT_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.OMOQ_CERTBOT_SECRET_ACCESS_KEY }}
         run: |
           CERT="/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
           if [ ! -f "$CERT" ]; then
             echo "::warning::No cert for ${DOMAIN} — provisioning via Route53"
-            sudo certbot certonly --dns-route53 \
+            sudo -E certbot certonly --dns-route53 \
               -d "$DOMAIN" --non-interactive --agree-tos \
               --email gmarzot@openmoq.org
           elif ! sudo openssl x509 -in "$CERT" -noout -checkend 2592000 2>/dev/null; then
             echo "::warning::Cert for ${DOMAIN} expires within 30 days — renewing"
-            sudo certbot renew --cert-name "$DOMAIN"
+            sudo -E certbot renew --cert-name "$DOMAIN"
           else
             echo "Cert for ${DOMAIN} is valid"
           fi
@@ -133,20 +113,20 @@ jobs:
         run: |
           IMAGE="ghcr.io/${{ github.repository }}:${IMAGE_TAG}"
 
-          # Tag as the expected image name if not "latest"
           if [ "$IMAGE_TAG" != "latest" ]; then
             docker tag "$IMAGE" "ghcr.io/${{ github.repository }}:latest"
           fi
 
           echo "==> Stopping existing container (if any)..."
           docker compose down --remove-orphans 2>/dev/null || true
+          docker rm -f moqx logmon 2>/dev/null || true
 
-          echo "==> Starting relay (${INSTANCE} on port ${{ steps.config.outputs.port }})..."
+          echo "==> Starting relay on ${DOMAIN}:${RELAY_PORT}..."
           docker compose up -d
 
           echo "==> Waiting for admin endpoint..."
           for i in $(seq 1 30); do
-            if curl -sf http://127.0.0.1:${{ steps.config.outputs.admin_port }}/info >/dev/null 2>&1; then
+            if curl -sf http://127.0.0.1:${ADMIN_PORT}/info >/dev/null 2>&1; then
               break
             fi
             sleep 1
@@ -157,7 +137,7 @@ jobs:
             fi
           done
 
-          RESP=$(curl -sf http://127.0.0.1:${{ steps.config.outputs.admin_port }}/info)
+          RESP=$(curl -sf http://127.0.0.1:${ADMIN_PORT}/info)
           echo "==> Relay running: $RESP"
 
       - name: Notify Slack
@@ -166,10 +146,8 @@ jobs:
           SLACK_WEBHOOK_URL: ${{ secrets.OMOQ_SLACK_WEBHOOK_URL }}
         run: |
           SHORT="${GITHUB_SHA:0:7}"
-          DOMAIN="${{ steps.config.outputs.domain }}"
-          PORT="${{ steps.config.outputs.port }}"
           ACTION=${{ inputs.restart_only && '"restarted"' || '"deployed"' }}
-          TEXT=":rocket: *${{ github.repository }}* ${ACTION} \`${IMAGE_TAG}\` on \`${DOMAIN}:${PORT}\`"
+          TEXT=":rocket: *${{ github.repository }}* ${ACTION} \`${IMAGE_TAG}\` on \`${DOMAIN}:${RELAY_PORT}\`"
           curl -s -X POST "$SLACK_WEBHOOK_URL" \
             -H "Content-Type: application/json" \
             --data "{\"text\": \"${TEXT}\"}"
