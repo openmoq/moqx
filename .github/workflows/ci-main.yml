@@ -255,6 +255,8 @@ jobs:
         run: |
           docker compose pull
           docker compose down --remove-orphans 2>/dev/null || true
+          # Remove any stale containers with matching names (e.g. from manual docker run)
+          docker rm -f moqx logmon 2>/dev/null || true
           docker compose up -d
 
           echo "==> Waiting for admin endpoint..."

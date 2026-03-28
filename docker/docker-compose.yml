@@ -74,7 +74,7 @@ services:
 
   # Log viewer — browse relay logs at http://localhost:${ORLY_LOG_PORT:-9999}
   dozzle:
-    container_name: moqx-logs
+    container_name: logmon
     image: amir20/dozzle:latest
     restart: unless-stopped
     ports:
