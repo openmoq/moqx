@@ -6,6 +6,8 @@
  * Copyright (c) OpenMOQ contributors.
  */
 
+#include <moqx/MoqxRelay.h>
+
 #include <folly/coro/BlockingWait.h>
 #include <folly/io/async/EventBase.h>
 #include <folly/portability/GMock.h>
@@ -15,7 +17,6 @@
 #include <moxygen/test/MockMoQSession.h>
 #include <moxygen/test/Mocks.h>
 #include <moxygen/test/TestUtils.h>
-#include <moqx/MoqxRelay.h>
 
 using namespace testing;
 using namespace moxygen;

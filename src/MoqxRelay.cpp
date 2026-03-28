@@ -6,8 +6,9 @@
  * Copyright (c) OpenMOQ contributors.
  */
 
-#include <moxygen/MoQFilters.h>
 #include <moqx/MoqxRelay.h>
+
+#include <moxygen/MoQFilters.h>
 
 namespace {
 constexpr uint8_t kDefaultUpstreamPriority = 128;
