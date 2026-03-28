@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# build.sh — Developer build script for o-rly.
+# build.sh — Developer build script for moqx.
 #
 # Mirrors the same build flows used by CI. Supports two dependency modes:
 #   --from-release  — download released moxygen artifacts (~1 min)
@@ -28,7 +28,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-SCRATCH="${ORLY_SCRATCH_PATH:-${PROJECT_ROOT}/.scratch}"
+SCRATCH="${MOQX_SCRATCH_PATH:-${PROJECT_ROOT}/.scratch}"
 MOXYGEN_DIR="${PROJECT_ROOT}/deps/moxygen"
 
 PREFIX_PATH_FILE="${SCRATCH}/cmake_prefix_path.txt"
@@ -47,7 +47,7 @@ Usage:
 
 Commands:
   setup     Install moxygen dependencies (from release or source)
-  (default) Configure and build o-rly
+  (default) Configure and build moqx
   test      Run tests
 
 Setup options:
@@ -226,7 +226,7 @@ cmd_setup() {
   fi
 
   if [[ -n "$moxygen_dir" ]]; then
-    export ORLY_MOXYGEN_DIR="$moxygen_dir"
+    export MOQX_MOXYGEN_DIR="$moxygen_dir"
     echo "Using moxygen from: $moxygen_dir"
   else
     check_submodule

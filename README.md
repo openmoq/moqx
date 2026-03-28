@@ -1,4 +1,4 @@
-# o-rly
+# moqx
 
 The OpenMOQ Relay — a MoQT relay server based on
 [moxygen](https://github.com/openmoq/moxygen)
@@ -10,8 +10,8 @@ For the underlying moxygen library architecture (session model, data plane,
 threading, transport abstraction), see
 [deps/moxygen/ARCHITECTURE.md](deps/moxygen/ARCHITECTURE.md).
 
-`ORelay` is a hard fork of moxygen's `MoQRelay`. We copy the relay core into
-o-rly so we can evolve it independently (threading model, custom cache miss
+`MoqxRelay` is a hard fork of moxygen's `MoQRelay`. We copy the relay core into
+moqx so we can evolve it independently (threading model, custom cache miss
 handling, chained caches, etc.) while still using moxygen's lower-level
 building blocks as libraries:
 
@@ -23,7 +23,7 @@ building blocks as libraries:
 - **MoQSession / MoQServer / MoQRelaySession** — session and server
   infrastructure, used as libraries.
 
-`ORelayServer` extends `MoQServer` to wire up `ORelay` as the publish/subscribe
+`MoqxRelayServer` extends `MoQServer` to wire up `MoqxRelay` as the publish/subscribe
 handler and create `MoQRelaySession` instances for incoming connections.
 
 ## Design Documents
@@ -37,7 +37,7 @@ handler and create `MoQRelaySession` instances for incoming connections.
 ## Quick Start
 
 ```bash
-git clone https://github.com/openmoq/o-rly.git && cd o-rly
+git clone https://github.com/openmoq/moqx.git && cd moqx
 git submodule update --init
 sudo deps/moxygen/standalone/install-system-deps.sh
 

@@ -8,7 +8,7 @@
 #include <folly/CancellationToken.h>
 #include <folly/io/IOBuf.h>
 
-#include <o_rly/config/config.h>
+#include <moqx/config/config.h>
 
 // Forward declarations
 namespace proxygen {
@@ -17,7 +17,7 @@ class HTTPMessage;
 class ResponseHandler;
 } // namespace proxygen
 
-namespace openmoq::o_rly::admin {
+namespace openmoq::moqx::admin {
 
 // Route handler: receives the complete request (headers + body) and owns the
 // response. May respond asynchronously — launch a coroutine and send via
@@ -67,4 +67,4 @@ private:
   std::unique_ptr<proxygen::ScopedHTTPServer> httpServer_;
 };
 
-} // namespace openmoq::o_rly::admin
+} // namespace openmoq::moqx::admin

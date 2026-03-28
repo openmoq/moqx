@@ -1,12 +1,12 @@
-#include <o_rly/admin/BuiltinRoutes.h>
+#include <moqx/admin/BuiltinRoutes.h>
 
 #include <folly/io/IOBuf.h>
 #include <proxygen/httpserver/ResponseBuilder.h>
 #include <proxygen/lib/http/HTTPMessage.h>
 
-#include <o_rly/admin/AdminServer.h>
+#include <moqx/admin/AdminServer.h>
 
-namespace openmoq::o_rly::admin {
+namespace openmoq::moqx::admin {
 
 void registerBuiltinRoutes(AdminServer& server) {
   server.addRoute(
@@ -16,11 +16,11 @@ void registerBuiltinRoutes(AdminServer& server) {
         proxygen::ResponseBuilder(downstream)
             .status(200, proxygen::HTTPMessage::getDefaultReason(200))
             .header("Content-Type", "application/json")
-            .body(folly::IOBuf::copyBuffer("{\"service\":\"o-rly\",\"version\":\"" ORLY_VERSION
+            .body(folly::IOBuf::copyBuffer("{\"service\":\"moqx\",\"version\":\"" MOQX_VERSION
                                            "\"}\n"))
             .sendWithEOM();
       }
   );
 }
 
-} // namespace openmoq::o_rly::admin
+} // namespace openmoq::moqx::admin

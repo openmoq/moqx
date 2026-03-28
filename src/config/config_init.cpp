@@ -1,14 +1,14 @@
-#include "o_rly/config/loader/config_init.h"
+#include "moqx/config/loader/config_init.h"
 
-#include "o_rly/config/loader/config_resolver.h"
-#include "o_rly/config/loader/loader.h"
+#include "moqx/config/loader/config_resolver.h"
+#include "moqx/config/loader/loader.h"
 
 #include <gflags/gflags.h>
 
 #include <iostream>
 #include <string>
 
-namespace openmoq::o_rly::config {
+namespace openmoq::moqx::config {
 
 std::string configSubcommandUsage() {
   return "  validate-config      Load and validate config, then exit\n"
@@ -66,4 +66,4 @@ folly::Expected<ResolvedConfig, int> handleConfigSubcommand(
   return std::move(result.value());
 }
 
-} // namespace openmoq::o_rly::config
+} // namespace openmoq::moqx::config

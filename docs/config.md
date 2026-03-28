@@ -21,12 +21,12 @@ The split between `ParsedConfig` and `Config` exists because the YAML-facing sha
 
 | File | Role |
 |---|---|
-| `include/o_rly/config/loader/parsed_config.h` | YAML-facing config structs with `rfl::Description` annotations |
-| `include/o_rly/config/config.h` | Final config types used by the application |
-| `include/o_rly/config/resolved_config.h` | `ResolvedConfig` — wraps `Config` + warnings |
-| `include/o_rly/config/loader/loader.h` | `loadConfig()`, `generateSchema()` |
-| `include/o_rly/config/loader/config_resolver.h` | `resolveConfig()` |
-| `include/o_rly/config/loader/config_init.h` | CLI subcommand handling (`validate-config`, `dump-config-schema`) |
+| `include/moqx/config/loader/parsed_config.h` | YAML-facing config structs with `rfl::Description` annotations |
+| `include/moqx/config/config.h` | Final config types used by the application |
+| `include/moqx/config/resolved_config.h` | `ResolvedConfig` — wraps `Config` + warnings |
+| `include/moqx/config/loader/loader.h` | `loadConfig()`, `generateSchema()` |
+| `include/moqx/config/loader/config_resolver.h` | `resolveConfig()` |
+| `include/moqx/config/loader/config_init.h` | CLI subcommand handling (`validate-config`, `dump-config-schema`) |
 | `src/config/loader.cpp` | Load & parse implementation |
 | `src/config/config_resolver.cpp` | Validation & resolution logic |
 | `src/config/config_init.cpp` | Subcommand orchestration |
@@ -103,8 +103,8 @@ If you need a new top-level section (not just a field), also:
 
 ## Subcommands
 
-- `o_rly dump-config-schema` — prints the JSON schema (auto-generated from `ParsedConfig` + `rfl::Description` annotations).
-- `o_rly validate-config --config <path>` — loads, parses, and validates without starting the server.
+- `moqx dump-config-schema` — prints the JSON schema (auto-generated from `ParsedConfig` + `rfl::Description` annotations).
+- `moqx validate-config --config <path>` — loads, parses, and validates without starting the server.
 - `--strict_config` flag — rejects unknown YAML fields and promotes warnings to errors.
 
 ## reflect-cpp notes

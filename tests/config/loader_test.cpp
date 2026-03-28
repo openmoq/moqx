@@ -1,4 +1,4 @@
-#include <o_rly/config/loader/loader.h>
+#include <moqx/config/loader/loader.h>
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
@@ -6,7 +6,7 @@
 
 #include "test_utils.h"
 
-namespace openmoq::o_rly::config {
+namespace openmoq::moqx::config {
 namespace {
 
 using test::TempYamlFile;
@@ -417,4 +417,4 @@ TEST(ConfigLoader, ExampleYamlValid) {
 #endif
 
 } // namespace
-} // namespace openmoq::o_rly::config
+} // namespace openmoq::moqx::config

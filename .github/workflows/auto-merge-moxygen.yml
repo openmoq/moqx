@@ -64,7 +64,7 @@ jobs:
           BRANCH="${{ github.event.workflow_run.head_branch }}"
           PR_URL="${{ github.server_url }}/${{ github.repository }}/pull/${PR_NUM}"
           CI_RUN_URL="${{ github.event.workflow_run.html_url }}"
-          SUBJECT="[o-rly] moxygen sync verification failed — ${BRANCH}"
+          SUBJECT="[moqx] moxygen sync verification failed — ${BRANCH}"
           BODY="Moxygen sync branch verification failed.\n\nBranch: ${BRANCH}\nPR: ${PR_URL}\nRun: ${CI_RUN_URL}\n\nManual investigation required."
           aws ses send-email \
             --from "noreply@ci.openmoq.org" \

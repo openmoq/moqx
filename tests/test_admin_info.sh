@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BINARY="${1:-$(dirname "$0")/../build/o_rly}"
+BINARY="${1:-$(dirname "$0")/../build/moqx}"
 TESTDIR="$(cd "$(dirname "$0")" && pwd)"
 ADMIN_PORT=9669
 ADMIN_URL="http://localhost:${ADMIN_PORT}/info"
@@ -11,10 +11,10 @@ if [[ ! -x "$BINARY" ]]; then
   exit 1
 fi
 
-# Start o_rly with test config in the background.
+# Start moqx with test config in the background.
 "$BINARY" --config="$TESTDIR/test.config.yaml" &
-O_RLY_PID=$!
-trap 'kill "$O_RLY_PID" 2>/dev/null; wait "$O_RLY_PID" 2>/dev/null || true' EXIT
+MOQX_PID=$!
+trap 'kill "$MOQX_PID" 2>/dev/null; wait "$MOQX_PID" 2>/dev/null || true' EXIT
 
 # Wait for the admin server to become ready (up to 5 s).
 for i in $(seq 1 50); do
@@ -33,8 +33,8 @@ RESPONSE=$(curl -sf "$ADMIN_URL")
 echo "Response: $RESPONSE"
 
 # Validate expected fields.
-if ! echo "$RESPONSE" | grep -q '"service":"o-rly"'; then
-  echo "FAIL: missing \"service\":\"o-rly\" in response" >&2
+if ! echo "$RESPONSE" | grep -q '"service":"moqx"'; then
+  echo "FAIL: missing \"service\":\"moqx\" in response" >&2
   exit 1
 fi
 

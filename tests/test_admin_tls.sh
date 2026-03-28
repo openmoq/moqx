@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BINARY="${1:-$(dirname "$0")/../build/o_rly}"
+BINARY="${1:-$(dirname "$0")/../build/moqx}"
 TESTDIR="$(cd "$(dirname "$0")" && pwd)"
 ADMIN_PORT=9671
 LISTEN_PORT=9666
@@ -15,9 +15,9 @@ CERT="${TESTDIR}/test_cert.pem"
 KEY="${TESTDIR}/test_key.pem"
 
 TMPDIR=$(mktemp -d)
-O_RLY_PID=""
+MOQX_PID=""
 cleanup() {
-  [[ -n "$O_RLY_PID" ]] && kill "$O_RLY_PID" 2>/dev/null; wait "$O_RLY_PID" 2>/dev/null || true
+  [[ -n "$MOQX_PID" ]] && kill "$MOQX_PID" 2>/dev/null; wait "$MOQX_PID" 2>/dev/null || true
   rm -rf "$TMPDIR"
 }
 trap cleanup EXIT
@@ -53,7 +53,7 @@ EOF
 ADMIN_URL="https://localhost:${ADMIN_PORT}/info"
 
 "$BINARY" --config="$TMPDIR/config.yaml" &
-O_RLY_PID=$!
+MOQX_PID=$!
 
 # Wait up to 5s for the admin server to become ready.
 deadline=$(( $(date +%s) + 5 ))
@@ -68,8 +68,8 @@ done
 check_response() {
   local label="$1"
   local response="$2"
-  if ! echo "$response" | grep -q '"service":"o-rly"'; then
-    echo "FAIL [${label}]: missing \"service\":\"o-rly\" in response" >&2
+  if ! echo "$response" | grep -q '"service":"moqx"'; then
+    echo "FAIL [${label}]: missing \"service\":\"moqx\" in response" >&2
     exit 1
   fi
   echo "PASS [${label}]"

@@ -15,14 +15,14 @@
 
 #include <folly/container/F14Set.h>
 
-namespace openmoq::o_rly {
+namespace openmoq::moqx {
 
-class ORelay : public moxygen::Publisher,
+class MoqxRelay : public moxygen::Publisher,
                public moxygen::Subscriber,
-               public std::enable_shared_from_this<ORelay>,
+               public std::enable_shared_from_this<MoqxRelay>,
                public moxygen::MoQForwarder::Callback {
 public:
-  explicit ORelay(
+  explicit MoqxRelay(
       size_t maxCachedTracks = moxygen::kDefaultMaxCachedTracks,
       size_t maxCachedGroupsPerTrack = moxygen::kDefaultMaxCachedGroupsPerTrack
   ) {
@@ -96,7 +96,7 @@ private:
   void onPublishDone(const moxygen::FullTrackName& ftn);
 
   struct NamespaceNode : public moxygen::Subscriber::PublishNamespaceHandle {
-    explicit NamespaceNode(ORelay& relay, NamespaceNode* parent = nullptr)
+    explicit NamespaceNode(MoqxRelay& relay, NamespaceNode* parent = nullptr)
         : relay_(relay), parent_(parent) {}
 
     void publishNamespaceDone() override { relay_.publishNamespaceDone(trackNamespace_, this); }
@@ -147,13 +147,13 @@ private:
     std::shared_ptr<moxygen::MoQSession> sourceSession;
     std::shared_ptr<PublishNamespaceCallback> publishNamespaceCallback;
 
-    ORelay& relay_;
+    MoqxRelay& relay_;
 
     // Pruning support: parent pointer and active child count
     NamespaceNode* parent_{nullptr}; // back link (raw pointer, parent owns us)
     size_t activeChildCount_{0};     // count of children with content
 
-    friend class ORelay;
+    friend class MoqxRelay;
 
     void incrementActiveChildren();
     void decrementActiveChildren();
@@ -217,4 +217,4 @@ private:
   std::unique_ptr<moxygen::MoQCache> cache_;
 };
 
-} // namespace openmoq::o_rly
+} // namespace openmoq::moqx

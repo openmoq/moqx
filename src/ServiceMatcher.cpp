@@ -1,10 +1,10 @@
-#include <o_rly/ServiceMatcher.h>
+#include <moqx/ServiceMatcher.h>
 
 #include <algorithm>
 
 #include <folly/logging/xlog.h>
 
-namespace openmoq::o_rly {
+namespace openmoq::moqx {
 
 void ServiceMatcher::PathRuleSet::addRule(
     const config::ServiceConfig::MatchEntry::PathMatcher& path,
@@ -116,4 +116,4 @@ ServiceMatcher::match(std::string_view authority, std::string_view path) const {
   return anyAuthorityRules_.match(effectivePath);
 }
 
-} // namespace openmoq::o_rly
+} // namespace openmoq::moqx

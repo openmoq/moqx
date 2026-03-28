@@ -1,4 +1,4 @@
-#include <o_rly/admin/MetricsHandler.h>
+#include <moqx/admin/MetricsHandler.h>
 
 #include <folly/CancellationToken.h>
 #include <folly/coro/Task.h>
@@ -10,10 +10,10 @@
 #include <proxygen/httpserver/ResponseBuilder.h>
 #include <proxygen/lib/http/HTTPMessage.h>
 
-#include <o_rly/admin/AdminServer.h>
-#include <o_rly/stats/StatsRegistry.h>
+#include <moqx/admin/AdminServer.h>
+#include <moqx/stats/StatsRegistry.h>
 
-namespace openmoq::o_rly::admin {
+namespace openmoq::moqx::admin {
 
 void registerMetricsRoute(
     AdminServer& adminServer,
@@ -61,4 +61,4 @@ void registerMetricsRoute(
   );
 }
 
-} // namespace openmoq::o_rly::admin
+} // namespace openmoq::moqx::admin

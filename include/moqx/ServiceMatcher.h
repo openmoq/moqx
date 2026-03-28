@@ -1,6 +1,6 @@
 #pragma once
 
-#include <o_rly/config/config.h>
+#include <moqx/config/config.h>
 
 #include <optional>
 #include <string>
@@ -9,7 +9,7 @@
 
 #include <folly/container/F14Map.h>
 
-namespace openmoq::o_rly {
+namespace openmoq::moqx {
 
 class ServiceMatcher {
 public:
@@ -43,4 +43,4 @@ private:
   PathRuleSet anyAuthorityRules_;
 };
 
-} // namespace openmoq::o_rly
+} // namespace openmoq::moqx

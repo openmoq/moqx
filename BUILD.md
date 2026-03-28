@@ -1,4 +1,4 @@
-# Building o-rly
+# Building moqx
 
 ## Supported Platforms
 
@@ -66,7 +66,7 @@ sudo deps/moxygen/standalone/install-system-deps.sh
 ## Quick Start
 
 ```bash
-git clone https://github.com/openmoq/o-rly.git && cd o-rly
+git clone https://github.com/openmoq/moqx.git && cd moqx
 git submodule update --init
 sudo deps/moxygen/standalone/install-system-deps.sh
 
@@ -77,7 +77,7 @@ sudo deps/moxygen/standalone/install-system-deps.sh
 
 ## Dependency Modes
 
-o-rly depends on moxygen (and its Meta deps: folly, fizz, wangle, mvfst, proxygen).
+moqx depends on moxygen (and its Meta deps: folly, fizz, wangle, mvfst, proxygen).
 The `deps/moxygen` submodule pins the exact version. Two ways to get these deps:
 
 | Mode | Command | Time | When to use |

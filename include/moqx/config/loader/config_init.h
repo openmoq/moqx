@@ -5,9 +5,9 @@
 
 #include <folly/Expected.h>
 
-#include "o_rly/config/resolved_config.h"
+#include "moqx/config/resolved_config.h"
 
-namespace openmoq::o_rly::config {
+namespace openmoq::moqx::config {
 
 constexpr std::string_view kDumpConfigSchemaCommand = "dump-config-schema";
 constexpr std::string_view kValidateConfigCommand = "validate-config";
@@ -24,4 +24,4 @@ folly::Expected<ResolvedConfig, int> handleConfigSubcommand(
     const char* programName
 );
 
-} // namespace openmoq::o_rly::config
+} // namespace openmoq::moqx::config

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BINARY="${1:-$(dirname "$0")/../build/o_rly}"
+BINARY="${1:-$(dirname "$0")/../build/moqx}"
 TESTDIR="$(cd "$(dirname "$0")" && pwd)"
 ADMIN_PORT=9669
 METRICS_URL="http://localhost:${ADMIN_PORT}/metrics"
@@ -12,16 +12,16 @@ if [[ ! -x "$BINARY" ]]; then
   exit 1
 fi
 
-# Start o_rly with test config in the background.
+# Start moqx with test config in the background.
 "$BINARY" --config="$TESTDIR/test.config.yaml" &
-O_RLY_PID=$!
+MOQX_PID=$!
 
 # Cleanup function that ensures the process exits and port is released.
 cleanup() {
-  if [[ -n "${O_RLY_PID:-}" ]]; then
-    kill "$O_RLY_PID" 2>/dev/null || true
+  if [[ -n "${MOQX_PID:-}" ]]; then
+    kill "$MOQX_PID" 2>/dev/null || true
     # Wait for process to exit and ensure port is released
-    wait "$O_RLY_PID" 2>/dev/null || true
+    wait "$MOQX_PID" 2>/dev/null || true
   fi
 }
 trap cleanup EXIT
@@ -78,13 +78,13 @@ fi
 
 # Validate a representative set of expected metric names.
 EXPECTED_METRICS=(
-  "orly_moqActiveSessions"
-  "orly_pubActiveSubscriptions"
-  "orly_pubActivePublishers"
-  "orly_pubSubscribeSuccess_total"
-  "orly_moqPublishSuccess_total"
-  "orly_moqSubscribeLatency_microseconds"
-  "orly_moqFetchLatency_microseconds"
+  "moqx_moqActiveSessions"
+  "moqx_pubActiveSubscriptions"
+  "moqx_pubActivePublishers"
+  "moqx_pubSubscribeSuccess_total"
+  "moqx_moqPublishSuccess_total"
+  "moqx_moqSubscribeLatency_microseconds"
+  "moqx_moqFetchLatency_microseconds"
 )
 
 for metric in "${EXPECTED_METRICS[@]}"; do

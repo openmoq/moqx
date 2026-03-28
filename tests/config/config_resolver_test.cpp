@@ -1,9 +1,9 @@
-#include <o_rly/config/loader/config_resolver.h>
+#include <moqx/config/loader/config_resolver.h>
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
-namespace openmoq::o_rly::config {
+namespace openmoq::moqx::config {
 namespace {
 
 using ::testing::HasSubstr;
@@ -789,4 +789,4 @@ TEST(ResolveConfig, AdminTlsCustomAlpn) {
 }
 
 } // namespace
-} // namespace openmoq::o_rly::config
+} // namespace openmoq::moqx::config

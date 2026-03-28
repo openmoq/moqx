@@ -9,7 +9,7 @@
 #include <rfl.hpp>
 #include <rfl/yaml.hpp>
 
-namespace openmoq::o_rly::config {
+namespace openmoq::moqx::config {
 
 // Note: fields wrapped in rfl::Description<"...", T> expose a .value() accessor
 // that unwraps the Description wrapper — this is NOT std::optional::value().
@@ -123,4 +123,4 @@ struct ParsedConfig {
   rfl::Description<"Admin HTTP server settings", std::optional<ParsedAdminConfig>> admin;
 };
 
-} // namespace openmoq::o_rly::config
+} // namespace openmoq::moqx::config

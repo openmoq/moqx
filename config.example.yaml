@@ -1,5 +1,5 @@
-# o-rly relay configuration
-# See: o_rly dump-config-schema | scripts/gen-config-reference.sh
+# moqx relay configuration
+# See: moqx dump-config-schema | scripts/gen-config-reference.sh
 
 listeners:
   - name: main

@@ -15,11 +15,11 @@
 #include <moxygen/test/MockMoQSession.h>
 #include <moxygen/test/Mocks.h>
 #include <moxygen/test/TestUtils.h>
-#include <o_rly/ORelay.h>
+#include <moqx/MoqxRelay.h>
 
 using namespace testing;
 using namespace moxygen;
-using namespace openmoq::o_rly;
+using namespace openmoq::moqx;
 
 namespace moxygen::test {
 
@@ -48,15 +48,15 @@ private:
   folly::EventBase evb_;
 };
 
-// Test fixture for ORelay tests
-// This provides a skeleton for testing ORelay functionality.
+// Test fixture for MoqxRelay tests
+// This provides a skeleton for testing MoqxRelay functionality.
 // Full integration tests with real sessions will be added when implementing
 // multi-publisher support.
 class MoQRelayTest : public ::testing::Test {
 protected:
   void SetUp() override {
     exec_ = std::make_shared<TestMoQExecutor>();
-    relay_ = std::make_shared<ORelay>(/*enableCache=*/false);
+    relay_ = std::make_shared<MoqxRelay>(/*enableCache=*/false);
     relay_->setAllowedNamespacePrefix(kAllowedPrefix);
   }
 
@@ -311,7 +311,7 @@ protected:
   }
 
   std::shared_ptr<TestMoQExecutor> exec_;
-  std::shared_ptr<ORelay> relay_;
+  std::shared_ptr<MoqxRelay> relay_;
 };
 
 // Test: Basic relay construction
@@ -323,7 +323,7 @@ TEST_F(MoQRelayTest, Construction) {
 TEST_F(MoQRelayTest, AllowedNamespacePrefix) {
   // This just verifies the relay can be constructed with a namespace prefix
   // More detailed testing requires full session setup
-  auto relay2 = std::make_shared<ORelay>(/*enableCache=*/true);
+  auto relay2 = std::make_shared<MoqxRelay>(/*enableCache=*/true);
   relay2->setAllowedNamespacePrefix(kTestNamespace);
   EXPECT_NE(relay2, nullptr);
 }

@@ -1,4 +1,4 @@
-# ── Build stage: compile o-rly inside bookworm against moxygen tarball ───
+# ── Build stage: compile moqx inside bookworm against moxygen tarball ───
 FROM debian:bookworm AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -14,7 +14,7 @@ WORKDIR /src
 # Moxygen tarball (pre-extracted bookworm build)
 COPY .docker-deps/moxygen /opt/moxygen
 
-# O-rly source — only what cmake needs
+# MoQX source — only what cmake needs
 COPY CMakeLists.txt CMakePresets.json ./
 COPY cmake/ cmake/
 COPY src/ src/
@@ -23,7 +23,7 @@ COPY deps/moxygen/build/fbcode_builder/CMake deps/moxygen/build/fbcode_builder/C
 
 RUN cmake -S . -B _build --preset default \
         -DCMAKE_PREFIX_PATH=/opt/moxygen \
-        -DBUILD_TESTING=OFF -DORLY_BUILD_TESTS=OFF \
+        -DBUILD_TESTING=OFF -DMOQX_BUILD_TESTS=OFF \
     && cmake --build _build -j$(nproc) \
     && cmake --install _build --prefix /install
 
@@ -36,7 +36,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /install/bin/o_rly /usr/local/bin/o-rly
+COPY --from=builder /install/bin/moqx /usr/local/bin/moqx
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 

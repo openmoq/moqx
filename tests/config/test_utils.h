@@ -6,14 +6,14 @@
 #include <string>
 #include <string_view>
 
-namespace openmoq::o_rly::config::test {
+namespace openmoq::moqx::config::test {
 
 // RAII helper: writes YAML content to a unique temp file, removes it on destruction.
 class TempYamlFile {
 public:
   explicit TempYamlFile(std::string_view content) {
     static std::atomic<int> counter{0};
-    path_ = std::filesystem::temp_directory_path() / ("o_rly_test_" + std::to_string(::getpid()) +
+    path_ = std::filesystem::temp_directory_path() / ("moqx_test_" + std::to_string(::getpid()) +
                                                       "_" + std::to_string(counter++) + ".yaml");
     std::ofstream ofs(path_);
     ofs << content;
@@ -29,4 +29,4 @@ private:
   std::filesystem::path path_;
 };
 
-} // namespace openmoq::o_rly::config::test
+} // namespace openmoq::moqx::config::test

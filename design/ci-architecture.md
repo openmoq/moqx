@@ -15,15 +15,15 @@ artifact publishing, and relay deployment across the openmoq organization.
                           │  submodule SHA pins which tarball
                           ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  o-rly (application)                                        │
+│  moqx (application)                                        │
 │                                                             │
-│  ci main ──► Docker image (ghcr.io/openmoq/o-rly)          │
+│  ci main ──► Docker image (ghcr.io/openmoq/moqx)          │
 │              + binary tarball                                │
 │              + auto-deploy to moqx-000                       │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-o-rly's `deps/moxygen` submodule pins a moxygen commit. `setup-deps-release.sh`
+moqx's `deps/moxygen` submodule pins a moxygen commit. `setup-deps-release.sh`
 downloads the matching pre-built tarball from moxygen's release.
 
 ## End-to-End Flow
@@ -41,7 +41,7 @@ facebookexperimental/moxygen  (upstream commit lands)
    snapshot-latest updated with new tarballs
         │
         ▼  repository_dispatch (automatic)
-   moxygen sync creates sync-moxygen/<sha> PR on o-rly
+   moxygen sync creates sync-moxygen/<sha> PR on moqx
         │
         ▼  ci pr runs (~5 min)
    moxygen auto-merge merges PR
@@ -78,12 +78,12 @@ Required checks: `linux`, `macos`.
 **Trigger:** push to main | **Time:** ~40 min
 
 ```
-build (5 jobs) ──► publish (4 platforms) ──► release ──► notify + dispatch to o-rly
+build (5 jobs) ──► publish (4 platforms) ──► release ──► notify + dispatch to moqx
 ```
 
 Publish produces per-platform tarballs (ubuntu, bookworm, macos) + debug symbol archives.
 Release creates/updates `snapshot-latest` pre-release.
-Notify dispatches `moxygen-update` to o-rly via `repository_dispatch`.
+Notify dispatches `moxygen-update` to moqx via `repository_dispatch`.
 
 ### 3. `upstream sync` — Daily upstream mirror
 
@@ -109,7 +109,7 @@ Promotes `snapshot-latest` artifacts to a versioned `vX.Y.Z` release (no rebuild
 
 ---
 
-## o-rly Workflows
+## moqx Workflows
 
 ### 1. `ci pr` — Pull request verification
 
@@ -210,8 +210,8 @@ Based on recent runs (March 2026):
 |-------|-----------|----------------------|
 | moxygen PR | ~28 min | ~55 (+ macos 10x multiplier) |
 | moxygen main push | ~40 min | ~75 (3-platform publish) |
-| o-rly PR | ~5 min | ~10 |
-| o-rly main push | ~11 min | ~15 |
+| moqx PR | ~5 min | ~10 |
+| moqx main push | ~11 min | ~15 |
 
 All build jobs use ccache:
 

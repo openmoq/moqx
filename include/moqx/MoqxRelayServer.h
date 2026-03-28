@@ -3,18 +3,18 @@
 #include <memory>
 
 #include <moxygen/MoQServer.h>
-#include <o_rly/ORelay.h>
-#include <o_rly/ServiceMatcher.h>
-#include <o_rly/config/config.h>
-#include <o_rly/stats/MoQStatsCollector.h>
-#include <o_rly/stats/StatsRegistry.h>
+#include <moqx/MoqxRelay.h>
+#include <moqx/ServiceMatcher.h>
+#include <moqx/config/config.h>
+#include <moqx/stats/MoQStatsCollector.h>
+#include <moqx/stats/StatsRegistry.h>
 
-namespace openmoq::o_rly {
+namespace openmoq::moqx {
 
-class ORelayServer : public moxygen::MoQServer {
+class MoqxRelayServer : public moxygen::MoQServer {
 public:
   // Used when the insecure flag is false
-  ORelayServer(
+  MoqxRelayServer(
       const std::string& cert,
       const std::string& key,
       const std::string& endpoint,
@@ -23,7 +23,7 @@ public:
   );
 
   // Used when the insecure flag is true
-  ORelayServer(
+  MoqxRelayServer(
       const std::string& endpoint,
       const std::string& versions,
       folly::F14FastMap<std::string, config::ServiceConfig> services
@@ -50,10 +50,10 @@ protected:
 private:
   void initRelays(const folly::F14FastMap<std::string, config::ServiceConfig>& services);
 
-  folly::F14FastMap<std::string, std::shared_ptr<ORelay>> relays_;
+  folly::F14FastMap<std::string, std::shared_ptr<MoqxRelay>> relays_;
   ServiceMatcher serviceMatcher_;
   std::shared_ptr<stats::StatsRegistry> statsRegistry_;
   std::shared_ptr<stats::MoQStatsCollector> statsCollector_;
 };
 
-} // namespace openmoq::o_rly
+} // namespace openmoq::moqx
