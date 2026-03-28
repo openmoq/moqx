@@ -558,8 +558,10 @@ private:
   FullTrackName ftn_;
 };
 
-std::shared_ptr<TrackConsumer>
-MoqxRelay::getSubscribeWriteback(const FullTrackName& ftn, std::shared_ptr<TrackConsumer> consumer) {
+std::shared_ptr<TrackConsumer> MoqxRelay::getSubscribeWriteback(
+    const FullTrackName& ftn,
+    std::shared_ptr<TrackConsumer> consumer
+) {
   auto baseConsumer =
       cache_ ? cache_->getSubscribeWriteback(ftn, std::move(consumer)) : std::move(consumer);
   auto filterConsumer =

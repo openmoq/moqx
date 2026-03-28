@@ -18,9 +18,9 @@
 namespace openmoq::moqx {
 
 class MoqxRelay : public moxygen::Publisher,
-               public moxygen::Subscriber,
-               public std::enable_shared_from_this<MoqxRelay>,
-               public moxygen::MoQForwarder::Callback {
+                  public moxygen::Subscriber,
+                  public std::enable_shared_from_this<MoqxRelay>,
+                  public moxygen::MoQForwarder::Callback {
 public:
   explicit MoqxRelay(
       size_t maxCachedTracks = moxygen::kDefaultMaxCachedTracks,

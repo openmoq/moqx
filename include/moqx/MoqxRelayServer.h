@@ -2,12 +2,12 @@
 
 #include <memory>
 
-#include <moxygen/MoQServer.h>
 #include <moqx/MoqxRelay.h>
 #include <moqx/ServiceMatcher.h>
 #include <moqx/config/config.h>
 #include <moqx/stats/MoQStatsCollector.h>
 #include <moqx/stats/StatsRegistry.h>
+#include <moxygen/MoQServer.h>
 
 namespace openmoq::moqx {
 

@@ -1,6 +1,6 @@
-#include <moxygen/MoQRelaySession.h>
 #include <moqx/MoqxRelayServer.h>
 #include <moqx/stats/MoQStatsCollector.h>
+#include <moxygen/MoQRelaySession.h>
 
 #include <folly/logging/xlog.h>
 
@@ -19,7 +19,8 @@ std::vector<std::string> buildAlpns(const std::string& versions) {
 
 } // namespace
 
-void MoqxRelayServer::initRelays(const folly::F14FastMap<std::string, config::ServiceConfig>& services
+void MoqxRelayServer::initRelays(
+    const folly::F14FastMap<std::string, config::ServiceConfig>& services
 ) {
   for (const auto& [name, svc] : services) {
     relays_.emplace(
