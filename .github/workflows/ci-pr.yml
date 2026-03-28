@@ -28,6 +28,7 @@ jobs:
         run: bash scripts/format.sh --check
 
   build:
+    needs: [check-format]
     strategy:
       fail-fast: false
       matrix:
