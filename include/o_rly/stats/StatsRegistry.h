@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -59,11 +60,11 @@ inline constexpr std::array<std::string_view, 8> kRequestErrorCodeLabels = {{
     "cancelled",
 }};
 
-// uint64_t monotonically-increasing counters.
+// uint64_t monotonically-increasing counters — MoQ application layer.
 // pub* = relay acting as publisher (serving downstream subscribers).
 // sub* = relay acting as subscriber (consuming from upstream publishers).
 // moq* = unambiguously tied to one role (no pub/sub prefix needed).
-#define STATS_COUNTER_FIELDS(X)                                                                    \
+#define STATS_MOQ_COUNTER_FIELDS(X)                                                                \
   /* Publisher-side: relay accepted/rejected subscription requests */                              \
   X(uint64_t, pubSubscribeSuccess)                                                                 \
   X(uint64_t, pubSubscribeError)                                                                   \
@@ -106,8 +107,20 @@ inline constexpr std::array<std::string_view, 8> kRequestErrorCodeLabels = {{
   X(uint64_t, moqPublishOkSent)                                                                    \
   X(uint64_t, subPublishError)
 
-// int64_t gauges (can go up and down; negative value signals bookkeeping bug).
-// pub*/sub* split mirrors the counter naming above.
+// uint64_t monotonically-increasing counters — QUIC transport layer.
+// Populated exclusively by QuicStatsCollector
+#define STATS_QUIC_COUNTER_FIELDS(X)                                                               \
+  X(uint64_t, quicPacketsReceived)                                                                 \
+  X(uint64_t, quicPacketsSent)                                                                     \
+  X(uint64_t, quicPacketsDropped)                                                                  \
+  X(uint64_t, quicPacketLoss)                                                                      \
+  X(uint64_t, quicConnectionsCreated)                                                              \
+  X(uint64_t, quicConnectionsClosed)
+
+// Combined convenience macro to iterate all counter fields
+#define STATS_COUNTER_FIELDS(X) STATS_MOQ_COUNTER_FIELDS(X) STATS_QUIC_COUNTER_FIELDS(X)
+
+// int64_t gauges
 #define STATS_GAUGE_FIELDS(X)                                                                      \
   X(int64_t, pubActiveSubscriptions)                                                               \
   X(int64_t, pubActivePublishers)                                                                  \
@@ -130,7 +143,7 @@ inline constexpr std::array<std::string_view, 8> kRequestErrorCodeLabels = {{
   X(moqPublishNamespaceLatency, kLatencyBucketsUs)                                                 \
   X(moqPublishLatency, kLatencyBucketsUs)
 
-// Error-code breakdowns: fields in STATS_COUNTER_FIELDS whose callbacks receive
+// Error-code breakdowns: fields in STATS_MOQ_COUNTER_FIELDS whose callbacks receive
 // a RequestErrorCode argument.  Each expands to a
 // std::array<uint64_t, kRequestErrorCodeCount> named  name##ByCodes.
 #define STATS_ERROR_COUNTER_FIELDS(X)                                                              \
@@ -180,7 +193,8 @@ public:
   virtual StatsSnapshot snapshot() const = 0;
 
   // The executor owned by this collector's producing thread.
-  virtual folly::Executor::KeepAlive<> owningExecutor() const = 0;
+  // Raw pointer; lifetime guaranteed by owning thread loop (e.g. EventBase).
+  virtual folly::Executor* owningExecutor() const = 0;
 };
 
 // ---------------------------------------------------------------------------
@@ -194,12 +208,8 @@ public:
   StatsRegistry() = default;
   ~StatsRegistry() = default;
 
-  // Register a collector. Must be called before lock().
+  // Register a collector.
   void registerCollector(std::shared_ptr<StatsCollectorBase> collector);
-
-  // Seal the registry. Any further registerCollector calls will XLOG(FATAL).
-  // Call this explicitly once all collectors have been registered.
-  void lock();
 
   // Called by StatsCollectorBase::dtor — deregisters the collector.
   void deregisterCollector(StatsCollectorBase* collector);
@@ -207,7 +217,7 @@ public:
   folly::coro::Task<StatsSnapshot> aggregateAsync();
 
 private:
-  bool locked_ = false;
+  mutable std::mutex collectors_mutex_;
   std::vector<std::shared_ptr<StatsCollectorBase>> collectors_;
 };
 

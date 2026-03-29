@@ -6,11 +6,10 @@ namespace openmoq::o_rly::stats {
 
 /* static */
 std::shared_ptr<MoQStatsCollector> MoQStatsCollector::create_moq_stats_collector(
-    folly::Executor::KeepAlive<> owningExecutor,
+    folly::Executor* owningExecutor,
     std::shared_ptr<StatsRegistry> registry
 ) {
-  auto collector =
-      std::shared_ptr<MoQStatsCollector>(new MoQStatsCollector(std::move(owningExecutor)));
+  auto collector = std::shared_ptr<MoQStatsCollector>(new MoQStatsCollector(owningExecutor));
   collector->registry_ = registry;
 
   // Build aliased shared_ptrs: they share the parent's refcount but point to
@@ -25,8 +24,8 @@ std::shared_ptr<MoQStatsCollector> MoQStatsCollector::create_moq_stats_collector
   return collector;
 }
 
-MoQStatsCollector::MoQStatsCollector(folly::Executor::KeepAlive<> owningExecutor)
-    : owningExecutor_(std::move(owningExecutor)), pubCallback_(*this), subCallback_(*this) {}
+MoQStatsCollector::MoQStatsCollector(folly::Executor* owningExecutor)
+    : owningExecutor_(owningExecutor), pubCallback_(*this), subCallback_(*this) {}
 
 MoQStatsCollector::~MoQStatsCollector() {
   if (auto registry = registry_.lock()) {
@@ -40,7 +39,7 @@ StatsSnapshot MoQStatsCollector::snapshot() const {
   StatsSnapshot snap;
 
 #define COPY_FIELD(type, name) snap.name = name##_;
-  STATS_COUNTER_FIELDS(COPY_FIELD)
+  STATS_MOQ_COUNTER_FIELDS(COPY_FIELD)
   STATS_GAUGE_FIELDS(COPY_FIELD)
 #undef COPY_FIELD
 
@@ -61,7 +60,7 @@ StatsSnapshot MoQStatsCollector::snapshot() const {
   return snap;
 }
 
-folly::Executor::KeepAlive<> MoQStatsCollector::owningExecutor() const {
+folly::Executor* MoQStatsCollector::owningExecutor() const {
   return owningExecutor_;
 }
 

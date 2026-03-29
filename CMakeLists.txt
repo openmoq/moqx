@@ -77,6 +77,7 @@ add_library(o_rly_core STATIC
   src/admin/MetricsHandler.cpp
   src/stats/StatsRegistry.cpp
   src/stats/MoQStatsCollector.cpp
+  src/stats/QuicStatsCollector.cpp
 )
 
 target_include_directories(o_rly_core

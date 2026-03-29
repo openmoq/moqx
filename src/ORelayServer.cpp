@@ -1,6 +1,7 @@
 #include <moxygen/MoQRelaySession.h>
 #include <o_rly/ORelayServer.h>
 #include <o_rly/stats/MoQStatsCollector.h>
+#include <o_rly/stats/QuicStatsCollector.h>
 
 using namespace moxygen;
 
@@ -54,6 +55,11 @@ ORelayServer::ORelayServer(
 
 void ORelayServer::setStatsRegistry(std::shared_ptr<stats::StatsRegistry> registry) {
   statsRegistry_ = std::move(registry);
+
+  // Wire up QUIC transport stats factory to the registry
+  if (statsRegistry_) {
+    setQuicStatsFactory(std::make_unique<stats::QuicStatsCollector::Factory>(statsRegistry_));
+  }
 }
 
 void ORelayServer::onNewSession(std::shared_ptr<MoQSession> clientSession) {
@@ -63,11 +69,9 @@ void ORelayServer::onNewSession(std::shared_ptr<MoQSession> clientSession) {
   if (statsRegistry_) {
     if (!statsCollector_) {
       statsCollector_ = stats::MoQStatsCollector::create_moq_stats_collector(
-          folly::getKeepAliveToken(*clientSession->getExecutor()),
+          clientSession->getExecutor(),
           statsRegistry_
       );
-      // For now we only want to allow one collector registration as we have only one executor
-      statsRegistry_->lock();
     }
 
     clientSession->setPublisherStatsCallback(statsCollector_->publisherCallback());

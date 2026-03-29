@@ -125,18 +125,12 @@ std::unique_ptr<folly::IOBuf> StatsSnapshot::formatPrometheus(const StatsSnapsho
 }
 
 void StatsRegistry::registerCollector(std::shared_ptr<StatsCollectorBase> collector) {
-  if (locked_) {
-    XLOG(FATAL) << "StatsRegistry: registration attempted after lock()";
-  }
+  std::unique_lock<std::mutex> lock(collectors_mutex_);
   collectors_.push_back(std::move(collector));
   XLOG(DBG1) << "StatsRegistry: registered collector (total=" << collectors_.size() << ")";
 }
-
-void StatsRegistry::lock() {
-  locked_ = true;
-  XLOG(DBG1) << "StatsRegistry: locked registration";
-}
 void StatsRegistry::deregisterCollector(StatsCollectorBase* collector) {
+  std::unique_lock<std::mutex> lock(collectors_mutex_);
   auto it = std::find_if(collectors_.begin(), collectors_.end(), [collector](const auto& ptr) {
     return ptr.get() == collector;
   });
@@ -150,7 +144,11 @@ folly::coro::Task<StatsSnapshot> StatsRegistry::aggregateAsync() {
   static auto snapshotTask = [](std::shared_ptr<StatsCollectorBase> c
                              ) -> folly::coro::Task<StatsSnapshot> { co_return c->snapshot(); };
 
-  std::vector<std::shared_ptr<StatsCollectorBase>> copy = collectors_;
+  std::vector<std::shared_ptr<StatsCollectorBase>> copy;
+  {
+    std::unique_lock<std::mutex> lock(collectors_mutex_);
+    copy = collectors_;
+  }
   std::vector<folly::coro::TaskWithExecutor<StatsSnapshot>> tasks;
   tasks.reserve(copy.size());
   for (const auto& c : copy) {

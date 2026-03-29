@@ -97,7 +97,7 @@ public:
   // Constructs the collector, registers it with the registry, and returns the
   // shared_ptr.  The aliased callback shared_ptrs are set up
   static std::shared_ptr<MoQStatsCollector> create_moq_stats_collector(
-      folly::Executor::KeepAlive<> owningExecutor,
+      folly::Executor* owningExecutor,
       std::shared_ptr<StatsRegistry> registry
   );
 
@@ -109,16 +109,16 @@ public:
   std::shared_ptr<moxygen::MoQSubscriberStatsCallback> subscriberCallback() const;
 
   StatsSnapshot snapshot() const override;
-  folly::Executor::KeepAlive<> owningExecutor() const override;
+  folly::Executor* owningExecutor() const override;
 
   // Session lifecycle events (called directly by ORelayServer).
   void onSessionStart();
   void onSessionEnd();
 
 private:
-  explicit MoQStatsCollector(folly::Executor::KeepAlive<> owningExecutor);
+  explicit MoQStatsCollector(folly::Executor* owningExecutor);
 
-  folly::Executor::KeepAlive<> owningExecutor_;
+  folly::Executor* owningExecutor_;
   std::weak_ptr<StatsRegistry> registry_;
 
   // Value-member inner callbacks.
@@ -131,7 +131,7 @@ private:
 
   // --- Metric storage ---
 #define DEFINE_FIELD(type, name) type name##_{0};
-  STATS_COUNTER_FIELDS(DEFINE_FIELD)
+  STATS_MOQ_COUNTER_FIELDS(DEFINE_FIELD)
   STATS_GAUGE_FIELDS(DEFINE_FIELD)
 #undef DEFINE_FIELD
 
