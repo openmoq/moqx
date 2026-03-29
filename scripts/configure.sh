@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-SCRATCH_PATH="${ORLY_SCRATCH_PATH:-${PROJECT_ROOT}/.scratch}"
+SCRATCH_PATH="${MOQX_SCRATCH_PATH:-${PROJECT_ROOT}/.scratch}"
 PREFIX_PATH_FILE="${SCRATCH_PATH}/cmake_prefix_path.txt"
 
 BUILD_DIR=${1:-build}
