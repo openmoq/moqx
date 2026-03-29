@@ -47,83 +47,60 @@ jobs:
       - name: Log in to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
-      - name: Restart container
-        if: inputs.restart_only
+      - name: Run
         working-directory: docker
-        run: |
-          echo "==> Restarting relay..."
-          docker compose restart moqx
-
-          echo "==> Waiting for admin endpoint..."
-          for i in $(seq 1 30); do
-            if curl -sf http://127.0.0.1:${ADMIN_PORT}/info >/dev/null 2>&1; then
-              break
-            fi
-            sleep 1
-            if [ "$i" -eq 30 ]; then
-              echo "::error::Admin endpoint did not respond within 30s"
-              docker compose logs moqx
-              exit 1
-            fi
-          done
-
-          RESP=$(curl -sf http://127.0.0.1:${ADMIN_PORT}/info)
-          echo "==> Relay running: $RESP"
-
-      - name: Write .env
-        if: "!inputs.restart_only"
-        working-directory: docker
-        run: |
-          cat > .env <<EOF
-          DOMAIN=${DOMAIN}
-          CERTBOT_EMAIL=gmarzot@openmoq.org
-          MOQX_PORT=${RELAY_PORT}
-          MOQX_ADMIN_PORT=${ADMIN_PORT}
-          MOQX_LOG_LEVEL=0
-          MOQX_VERBOSE=${{ inputs.verbose }}
-          EOF
-          sed -i 's/^[[:space:]]*//' .env
-
-      - name: Ensure TLS cert
-        if: "!inputs.restart_only"
         env:
+          RESTART_ONLY: ${{ inputs.restart_only }}
+          VERBOSE: ${{ inputs.verbose }}
           AWS_ACCESS_KEY_ID: ${{ secrets.OMOQ_CERTBOT_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.OMOQ_CERTBOT_SECRET_ACCESS_KEY }}
         run: |
-          CERT="/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
-          if [ ! -f "$CERT" ]; then
-            echo "::warning::No cert for ${DOMAIN} — provisioning via Route53"
-            sudo -E certbot certonly --dns-route53 \
-              -d "$DOMAIN" --non-interactive --agree-tos \
-              --email gmarzot@openmoq.org
-          elif ! sudo openssl x509 -in "$CERT" -noout -checkend 2592000 2>/dev/null; then
-            echo "::warning::Cert for ${DOMAIN} expires within 30 days — renewing"
-            sudo -E certbot renew --cert-name "$DOMAIN"
+          if [ "$RESTART_ONLY" = "true" ]; then
+            echo "==> Restarting relay..."
+            docker compose restart moqx
           else
-            echo "Cert for ${DOMAIN} is valid"
+            # Write .env
+            cat > .env <<EOF
+            DOMAIN=${DOMAIN}
+            CERTBOT_EMAIL=gmarzot@openmoq.org
+            MOQX_PORT=${RELAY_PORT}
+            MOQX_ADMIN_PORT=${ADMIN_PORT}
+            MOQX_LOG_LEVEL=0
+            MOQX_VERBOSE=${VERBOSE}
+          EOF
+            sed -i 's/^[[:space:]]*//' .env
+
+            # Ensure TLS cert
+            CERT="/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
+            if [ ! -f "$CERT" ]; then
+              echo "::warning::No cert for ${DOMAIN} — provisioning via Route53"
+              sudo -E certbot certonly --dns-route53 \
+                -d "$DOMAIN" --non-interactive --agree-tos \
+                --email gmarzot@openmoq.org
+            elif ! sudo openssl x509 -in "$CERT" -noout -checkend 2592000 2>/dev/null; then
+              echo "::warning::Cert for ${DOMAIN} expires within 30 days — renewing"
+              sudo -E certbot renew --cert-name "$DOMAIN"
+            else
+              echo "Cert for ${DOMAIN} is valid"
+            fi
+
+            # Pull and deploy
+            docker pull "ghcr.io/${{ github.repository }}:${IMAGE_TAG}"
+
+            IMAGE="ghcr.io/${{ github.repository }}:${IMAGE_TAG}"
+            if [ "$IMAGE_TAG" != "latest" ]; then
+              docker tag "$IMAGE" "ghcr.io/${{ github.repository }}:latest"
+            fi
+
+            echo "==> Stopping existing container (if any)..."
+            docker compose down --remove-orphans 2>/dev/null || true
+            docker rm -f moqx logmon 2>/dev/null || true
+
+            echo "==> Starting relay on ${DOMAIN}:${RELAY_PORT}..."
+            docker compose up -d
           fi
 
-      - name: Pull image
-        if: "!inputs.restart_only"
-        run: docker pull "ghcr.io/${{ github.repository }}:${IMAGE_TAG}"
-
-      - name: Deploy
-        if: "!inputs.restart_only"
-        working-directory: docker
-        run: |
-          IMAGE="ghcr.io/${{ github.repository }}:${IMAGE_TAG}"
-
-          if [ "$IMAGE_TAG" != "latest" ]; then
-            docker tag "$IMAGE" "ghcr.io/${{ github.repository }}:latest"
-          fi
-
-          echo "==> Stopping existing container (if any)..."
-          docker compose down --remove-orphans 2>/dev/null || true
-          docker rm -f moqx logmon 2>/dev/null || true
-
-          echo "==> Starting relay on ${DOMAIN}:${RELAY_PORT}..."
-          docker compose up -d
-
+          # Health check (both paths)
           echo "==> Waiting for admin endpoint..."
           for i in $(seq 1 30); do
             if curl -sf http://127.0.0.1:${ADMIN_PORT}/info >/dev/null 2>&1; then
@@ -141,13 +118,14 @@ jobs:
           echo "==> Relay running: $RESP"
 
       - name: Notify Slack
-        continue-on-error: true
+        if: always()
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.OMOQ_SLACK_WEBHOOK_URL }}
         run: |
           SHORT="${GITHUB_SHA:0:7}"
           ACTION=${{ inputs.restart_only && '"restarted"' || '"deployed"' }}
-          TEXT=":rocket: *${{ github.repository }}* ${ACTION} \`${IMAGE_TAG}\` on \`${DOMAIN}:${RELAY_PORT}\`"
-          curl -s -X POST "$SLACK_WEBHOOK_URL" \
+          STATUS=${{ job.status == 'success' && '":rocket:"' || '":x:"' }}
+          TEXT="${STATUS} *${{ github.repository }}* ${ACTION} \`${IMAGE_TAG}\` on \`${DOMAIN}:${RELAY_PORT}\`"
+          curl -sf -X POST "$SLACK_WEBHOOK_URL" \
             -H "Content-Type: application/json" \
-            --data "{\"text\": \"${TEXT}\"}"
+            --data "{\"text\": \"${TEXT}\"}" || true
