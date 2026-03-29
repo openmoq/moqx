@@ -97,4 +97,4 @@ services:
       type: local-only
 
 services_include:
-  - /etc/o-rly/services.d/*.yaml
+  - /etc/moqx/services.d/*.yaml

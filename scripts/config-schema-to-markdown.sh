@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Generate markdown config reference from o-rly JSON schema on stdin.
-# Usage: o_rly dump-config-schema | scripts/gen-config-reference.sh
+# Generate markdown config reference from moqx JSON schema on stdin.
+# Usage: moqx dump-config-schema | scripts/gen-config-reference.sh
 set -euo pipefail
 
 if ! command -v jq &>/dev/null; then
@@ -11,7 +11,7 @@ fi
 SCHEMA=$(cat)
 
 cat <<'HEADER'
-# o-rly Configuration Reference
+# moqx Configuration Reference
 
 > Auto-generated from JSON schema. Do not edit manually.
 
