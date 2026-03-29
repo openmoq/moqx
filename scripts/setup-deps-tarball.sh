@@ -15,7 +15,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-SCRATCH="${ORLY_SCRATCH_PATH:-${PROJECT_ROOT}/.scratch}"
+SCRATCH="${MOQX_SCRATCH_PATH:-${PROJECT_ROOT}/.scratch}"
 MOXYGEN_DIR="${PROJECT_ROOT}/deps/moxygen"
 
 if [[ ! -e "$MOXYGEN_DIR/.git" ]]; then
@@ -60,7 +60,7 @@ detect_platform() {
     fi
 }
 
-PLATFORM="${ORLY_PLATFORM:-$(detect_platform)}"
+PLATFORM="${MOQX_PLATFORM:-$(detect_platform)}"
 echo "==> Platform: $PLATFORM"
 
 # ── Find publish run matching submodule SHA ───────────────────────────────────
