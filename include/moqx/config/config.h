@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -35,6 +36,18 @@ struct ListenerConfig {
   std::string moqtVersions; // comma-separated string
 };
 
+struct UpstreamTlsConfig {
+  bool insecure{false};
+  std::optional<std::string> caCertFile; // mutually exclusive with insecure=true
+};
+
+struct UpstreamConfig {
+  std::string url;
+  UpstreamTlsConfig tls;
+  std::chrono::milliseconds connectTimeout{5000};
+  std::chrono::milliseconds idleTimeout{5000};
+};
+
 struct ServiceConfig {
   struct MatchEntry {
     struct ExactAuthority {
@@ -59,6 +72,7 @@ struct ServiceConfig {
 
   std::vector<MatchEntry> match;
   CacheConfig cache;
+  std::optional<UpstreamConfig> upstream; // set if this service chains to an upstream relay
 };
 
 struct AdminConfig {
@@ -70,6 +84,7 @@ struct Config {
   ListenerConfig listener;
   folly::F14FastMap<std::string, ServiceConfig> services;
   std::optional<AdminConfig> admin;
+  std::string relayID; // always set: from config or randomly generated
 };
 
 } // namespace openmoq::moqx::config

@@ -35,6 +35,11 @@ services:
       max_tracks: 500             # Override: 100 → 500
       max_groups_per_track: 10    # Override: 3 → 10
       # enabled: inherited (true) from service_defaults
+    # upstream:                   # Optional: enable relay chaining for this service
+    #   url: "moqt://origin.example.com:4433/moq-relay"
+    #   tls:
+    #     insecure: false         # true = skip cert verification (dev only)
+    #     # ca_cert: /path/to/ca.pem  # Custom CA cert (mutually exclusive with insecure: true)
 
   testing:
     match:
@@ -53,3 +58,5 @@ admin:
   # tls:
   #   cert_file: /path/to/cert.pem
   #   key_file: /path/to/key.pem
+
+# relay_id: "my-relay-1"     # Relay identity (optional; random hex string generated if absent)
