@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 #
-# sync-relay.sh - Sync ORelay from deps/moxygen/moxygen/relay/
+# sync-relay.sh - Sync MoqxRelay from deps/moxygen/moxygen/relay/
 #
 # Usage: scripts/sync-relay.sh [--no-build] [--no-test]
 #
 # Transforms:
-#   MoQRelay.h            -> include/o_rly/ORelay.h
-#   MoQRelay.cpp          -> src/ORelay.cpp
-#   test/MoQRelayTest.cpp -> tests/ORelayTest.cpp
+#   MoQRelay.h            -> include/moqx/MoqxRelay.h
+#   MoQRelay.cpp          -> src/MoqxRelay.cpp
+#   test/MoQRelayTest.cpp -> tests/MoqxRelayTest.cpp
 #
 # Name/namespace mappings applied:
-#   class MoQRelay           -> class ORelay
-#   namespace moxygen        -> namespace openmoq::o_rly
+#   class MoQRelay           -> class MoqxRelay
+#   namespace moxygen        -> namespace openmoq::moqx
 #   unqualified moxygen types in header get moxygen:: prefix
 #   using namespace moxygen; added before namespace in .cpp
 
@@ -66,7 +66,7 @@ PYEOF
 # ─────────────────────────────────────────────────────────────────────────────
 # Helper: add moxygen:: qualifier to unqualified moxygen types
 #
-# Called only on the header, where we're now in namespace openmoq::o_rly and
+# Called only on the header, where we're now in namespace openmoq::moqx and
 # moxygen types are no longer implicitly visible.  Uses negative lookbehind so
 # already-qualified occurrences (e.g. moxygen::Publisher) are left alone.
 # ─────────────────────────────────────────────────────────────────────────────
@@ -101,28 +101,28 @@ qualify_moxygen_types() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 1. MoQRelay.h → include/o_rly/ORelay.h
+# 1. MoQRelay.h → include/moqx/MoqxRelay.h
 # ─────────────────────────────────────────────────────────────────────────────
 process_header() {
   local src="${MOXYGEN_RELAY}/MoQRelay.h"
-  local dst="${REPO_ROOT}/include/o_rly/ORelay.h"
-  local tmp="${TMP_DIR}/ORelay.h"
+  local dst="${REPO_ROOT}/include/moqx/MoqxRelay.h"
+  local tmp="${TMP_DIR}/MoqxRelay.h"
 
-  echo "  MoQRelay.h -> include/o_rly/ORelay.h"
+  echo "  MoQRelay.h -> include/moqx/MoqxRelay.h"
   cp "$src" "$tmp"
 
   replace_copyright "$tmp"
 
-  # Include style: "moxygen/relay/MoQRelay.h" -> <o_rly/ORelay.h>; other "..." -> <...>
-  sed -i 's|#include "moxygen/relay/MoQRelay\.h"|#include <o_rly/ORelay.h>|g' "$tmp"
+  # Include style: "moxygen/relay/MoQRelay.h" -> <moqx/MoqxRelay.h>; other "..." -> <...>
+  sed -i 's|#include "moxygen/relay/MoQRelay\.h"|#include <moqx/MoqxRelay.h>|g' "$tmp"
   sed -i 's|#include "\(moxygen/[^"]*\)"|#include <\1>|g' "$tmp"
 
   # Class rename
-  sed -i 's/\bMoQRelay\b/ORelay/g' "$tmp"
+  sed -i 's/\bMoQRelay\b/MoqxRelay/g' "$tmp"
 
   # Namespace
-  sed -i 's/^namespace moxygen {$/namespace openmoq::o_rly {/' "$tmp"
-  sed -i 's|^} // namespace moxygen$|} // namespace openmoq::o_rly|' "$tmp"
+  sed -i 's/^namespace moxygen {$/namespace openmoq::moqx {/' "$tmp"
+  sed -i 's|^} // namespace moxygen$|} // namespace openmoq::moqx|' "$tmp"
 
   # Qualify unqualified moxygen types (order matters: more specific before less specific)
   qualify_moxygen_types "$tmp"
@@ -131,56 +131,56 @@ process_header() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 2. MoQRelay.cpp → src/ORelay.cpp
+# 2. MoQRelay.cpp → src/MoqxRelay.cpp
 # ─────────────────────────────────────────────────────────────────────────────
 process_source() {
   local src="${MOXYGEN_RELAY}/MoQRelay.cpp"
-  local dst="${REPO_ROOT}/src/ORelay.cpp"
-  local tmp="${TMP_DIR}/ORelay.cpp"
+  local dst="${REPO_ROOT}/src/MoqxRelay.cpp"
+  local tmp="${TMP_DIR}/MoqxRelay.cpp"
 
-  echo "  MoQRelay.cpp -> src/ORelay.cpp"
+  echo "  MoQRelay.cpp -> src/MoqxRelay.cpp"
   cp "$src" "$tmp"
 
   replace_copyright "$tmp"
 
-  # Include style: relay header -> ORelay.h; other "..." -> <...>
-  sed -i 's|#include "moxygen/relay/MoQRelay\.h"|#include <o_rly/ORelay.h>|g' "$tmp"
+  # Include style: relay header -> MoqxRelay.h; other "..." -> <...>
+  sed -i 's|#include "moxygen/relay/MoQRelay\.h"|#include <moqx/MoqxRelay.h>|g' "$tmp"
   sed -i 's|#include "\(moxygen/[^"]*\)"|#include <\1>|g' "$tmp"
 
   # Class/method references
-  sed -i 's/\bMoQRelay\b/ORelay/g' "$tmp"
+  sed -i 's/\bMoQRelay\b/MoqxRelay/g' "$tmp"
 
   # Namespace: insert "using namespace moxygen;" before the namespace block
   # so types in the implementation don't need moxygen:: qualification
-  sed -i 's/^namespace moxygen {$/using namespace moxygen;\n\nnamespace openmoq::o_rly {/' "$tmp"
-  sed -i 's|^} // namespace moxygen$|} // namespace openmoq::o_rly|' "$tmp"
+  sed -i 's/^namespace moxygen {$/using namespace moxygen;\n\nnamespace openmoq::moqx {/' "$tmp"
+  sed -i 's|^} // namespace moxygen$|} // namespace openmoq::moqx|' "$tmp"
 
   cp "$tmp" "$dst"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 3. test/MoQRelayTest.cpp → tests/ORelayTest.cpp
+# 3. test/MoQRelayTest.cpp → tests/MoqxRelayTest.cpp
 # ─────────────────────────────────────────────────────────────────────────────
 process_test() {
   local src="${MOXYGEN_RELAY}/test/MoQRelayTest.cpp"
-  local dst="${REPO_ROOT}/tests/ORelayTest.cpp"
-  local tmp="${TMP_DIR}/ORelayTest.cpp"
+  local dst="${REPO_ROOT}/tests/MoqxRelayTest.cpp"
+  local tmp="${TMP_DIR}/MoqxRelayTest.cpp"
 
-  echo "  test/MoQRelayTest.cpp -> tests/ORelayTest.cpp"
+  echo "  test/MoQRelayTest.cpp -> tests/MoqxRelayTest.cpp"
   cp "$src" "$tmp"
 
   replace_copyright "$tmp"
 
-  # Replace MoQRelay include with ORelay
-  sed -i 's|#include <moxygen/relay/MoQRelay\.h>|#include <o_rly/ORelay.h>|g' "$tmp"
+  # Replace MoQRelay include with MoqxRelay
+  sed -i 's|#include <moxygen/relay/MoQRelay\.h>|#include <moqx/MoqxRelay.h>|g' "$tmp"
 
   # Relay class under test
-  sed -i 's/\bMoQRelay\b/ORelay/g' "$tmp"
+  sed -i 's/\bMoQRelay\b/MoqxRelay/g' "$tmp"
 
-  # Add openmoq::o_rly namespace (and moxygen for types used at file scope).
+  # Add openmoq::moqx namespace (and moxygen for types used at file scope).
   # The test lives in namespace moxygen::test, but globals defined before that
   # namespace block need explicit usings.
-  sed -i 's/^using namespace testing;$/using namespace testing;\nusing namespace moxygen;\nusing namespace openmoq::o_rly;/' "$tmp"
+  sed -i 's/^using namespace testing;$/using namespace testing;\nusing namespace moxygen;\nusing namespace openmoq::moqx;/' "$tmp"
 
   cp "$tmp" "$dst"
 }

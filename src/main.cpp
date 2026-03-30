@@ -1,9 +1,9 @@
-#include <o_rly/ORelayServer.h>
-#include <o_rly/admin/AdminServer.h>
-#include <o_rly/admin/BuiltinRoutes.h>
-#include <o_rly/admin/MetricsHandler.h>
-#include <o_rly/config/loader/config_init.h>
-#include <o_rly/stats/StatsRegistry.h>
+#include <moqx/MoqxRelayServer.h>
+#include <moqx/admin/AdminServer.h>
+#include <moqx/admin/BuiltinRoutes.h>
+#include <moqx/admin/MetricsHandler.h>
+#include <moqx/config/loader/config_init.h>
+#include <moqx/stats/StatsRegistry.h>
 
 #include <csignal>
 
@@ -19,7 +19,7 @@ DEFINE_bool(strict_config, false, "Reject unknown config fields");
 
 namespace {
 
-namespace cfg = openmoq::o_rly::config;
+namespace cfg = openmoq::moqx::config;
 
 constexpr std::string_view kServeCommand = "serve";
 
@@ -36,28 +36,26 @@ public:
   }
 };
 
-std::shared_ptr<openmoq::o_rly::ORelayServer> createServer(const cfg::Config& resolved) {
-  const auto& listener = resolved.listener;
-  const auto& cache = resolved.cache;
+std::shared_ptr<openmoq::moqx::MoqxRelayServer> createServer(const cfg::Config& config) {
+  const auto& listener = config.listener;
+  auto services = config.services; // copy for move into constructor
 
   return std::visit(
-      [&](const auto& tls) -> std::shared_ptr<openmoq::o_rly::ORelayServer> {
+      [&](const auto& tls) -> std::shared_ptr<openmoq::moqx::MoqxRelayServer> {
         using T = std::decay_t<decltype(tls)>;
         if constexpr (std::is_same_v<T, cfg::Insecure>) {
-          return std::make_shared<openmoq::o_rly::ORelayServer>(
+          return std::make_shared<openmoq::moqx::MoqxRelayServer>(
               listener.endpoint,
               listener.moqtVersions,
-              cache.maxCachedTracks,
-              cache.maxCachedGroupsPerTrack
+              std::move(services)
           );
         } else {
-          return std::make_shared<openmoq::o_rly::ORelayServer>(
+          return std::make_shared<openmoq::moqx::MoqxRelayServer>(
               tls.certFile,
               tls.keyFile,
               listener.endpoint,
               listener.moqtVersions,
-              cache.maxCachedTracks,
-              cache.maxCachedGroupsPerTrack
+              std::move(services)
           );
         }
       },
@@ -72,10 +70,10 @@ int main(int argc, char* argv[]) {
   // === 1. Parse command-line flags/config ===
   // CLI args, config files, env vars
   google::SetUsageMessage(
-      "o-rly MoQ relay server\n\n"
+      "moqx MoQ relay server\n\n"
       "Subcommands:\n"
       "  serve                Start the relay (default)\n" +
-      cfg::configSubcommandUsage() + "\nUsage: o_rly [subcommand] --config <path>"
+      cfg::configSubcommandUsage() + "\nUsage: moqx [subcommand] --config <path>"
   );
   folly::Init init(&argc, &argv, true);
 
@@ -116,17 +114,17 @@ int main(int argc, char* argv[]) {
 
   // === 6. Initialize services ===
   // Construct and configure the application's own services
-  // (ORelayServer, ORelay, etc.)
+  // (MoqxRelayServer, MoqxRelay, etc.)
   auto server = createServer(config);
 
   // === 6a. Stats registry ===
-  auto statsRegistry = std::make_shared<openmoq::o_rly::stats::StatsRegistry>();
+  auto statsRegistry = std::make_shared<openmoq::moqx::stats::StatsRegistry>();
   server->setStatsRegistry(statsRegistry);
 
   // === 7. Start health checks / admin endpoints ===
-  openmoq::o_rly::admin::AdminServer adminServer;
-  openmoq::o_rly::admin::registerBuiltinRoutes(adminServer);
-  openmoq::o_rly::admin::registerMetricsRoute(adminServer, statsRegistry);
+  openmoq::moqx::admin::AdminServer adminServer;
+  openmoq::moqx::admin::registerBuiltinRoutes(adminServer);
+  openmoq::moqx::admin::registerMetricsRoute(adminServer, statsRegistry);
   if (config.admin) {
     if (!adminServer.start(*config.admin)) {
       XLOG(FATAL) << "Failed to start admin server on " << config.admin->address.describe();

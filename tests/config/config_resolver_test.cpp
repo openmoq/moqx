@@ -1,19 +1,27 @@
-#include <o_rly/config/loader/config_resolver.h>
+#include <moqx/config/loader/config_resolver.h>
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
-namespace openmoq::o_rly::config {
+namespace openmoq::moqx::config {
 namespace {
 
 using ::testing::HasSubstr;
 using ::testing::IsEmpty;
 
+using AuthMatch = ParsedServiceConfig::MatchRule::AuthorityMatch;
+using PMatch = ParsedServiceConfig::MatchRule::PathMatch;
+
+// Shorthand for the common "match any path" path matcher.
+PMatch anyPath() {
+  return PMatch{ParsedServiceConfig::MatchRule::PrefixPath{"/"}};
+}
+
 ParsedCacheConfig makeDefaultCache() {
   ParsedCacheConfig cache;
-  cache.enabled = true;
-  cache.max_tracks = uint32_t{100};
-  cache.max_groups_per_track = uint32_t{3};
+  cache.enabled = std::optional<bool>{true};
+  cache.max_tracks = std::optional<uint32_t>{100};
+  cache.max_groups_per_track = std::optional<uint32_t>{3};
   return cache;
 }
 
@@ -37,7 +45,17 @@ ParsedAdminConfig makeAdminWithTls(std::string cert = "/cert.pem", std::string k
   return admin;
 }
 
-// Build a minimal valid insecure listener config.
+ParsedServiceConfig makeDefaultService() {
+  ParsedServiceConfig svc;
+  ParsedServiceConfig::MatchRule entry;
+  entry.authority = AuthMatch{ParsedServiceConfig::MatchRule::AnyAuthority{true}};
+  entry.path = anyPath();
+  svc.match.value().push_back(std::move(entry));
+  svc.cache = makeDefaultCache();
+  return svc;
+}
+
+// Build a minimal valid insecure config with one any-authority service and admin.
 ParsedConfig makeMinimalInsecureConfig(std::string name = "test") {
   ParsedConfig cfg;
   ParsedListenerConfig lc;
@@ -53,16 +71,48 @@ ParsedConfig makeMinimalInsecureConfig(std::string name = "test") {
   lc.tls = std::move(tls);
   lc.endpoint = std::string("/moq-relay");
   cfg.listeners.value().push_back(std::move(lc));
-  cfg.cache = makeDefaultCache();
+  cfg.services.value().emplace("default", makeDefaultService());
   cfg.admin = std::optional<ParsedAdminConfig>{makeDefaultAdmin()};
   return cfg;
+}
+
+// Helper to make a service with authority match entries
+ParsedServiceConfig makeAuthorityService(std::vector<ParsedServiceConfig::MatchRule> matchEntries) {
+  ParsedServiceConfig svc;
+  svc.match.value() = std::move(matchEntries);
+  svc.cache = makeDefaultCache();
+  return svc;
+}
+
+ParsedServiceConfig::MatchRule
+makeExactAuthorityMatch(std::string authority, PMatch path = anyPath()) {
+  ParsedServiceConfig::MatchRule entry;
+  entry.authority = AuthMatch{ParsedServiceConfig::MatchRule::ExactAuthority{std::move(authority)}};
+  entry.path = std::move(path);
+  return entry;
+}
+
+ParsedServiceConfig::MatchRule
+makeWildcardAuthorityMatch(std::string pattern, PMatch path = anyPath()) {
+  ParsedServiceConfig::MatchRule entry;
+  entry.authority =
+      AuthMatch{ParsedServiceConfig::MatchRule::WildcardAuthority{std::move(pattern)}};
+  entry.path = std::move(path);
+  return entry;
+}
+
+ParsedServiceConfig::MatchRule makeAnyAuthorityMatch(PMatch path = anyPath()) {
+  ParsedServiceConfig::MatchRule entry;
+  entry.authority = AuthMatch{ParsedServiceConfig::MatchRule::AnyAuthority{true}};
+  entry.path = std::move(path);
+  return entry;
 }
 
 // --- Validation error tests ---
 
 TEST(ResolveConfig, NoListeners) {
   ParsedConfig cfg;
-  cfg.cache = makeDefaultCache();
+  cfg.services.value().emplace("default", makeDefaultService());
   cfg.admin = std::optional<ParsedAdminConfig>{makeDefaultAdmin()};
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasError());
@@ -98,6 +148,227 @@ TEST(ResolveConfig, InsecureWithCertsWarning) {
   EXPECT_THAT(result.value().warnings[0], HasSubstr("ignored"));
 }
 
+// --- Service validation error tests ---
+
+TEST(ResolveConfig, NoServices) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().clear();
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("At least one service"));
+}
+
+TEST(ResolveConfig, DuplicateExactAuthorityAcrossServices) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().clear();
+
+  cfg.services.value().emplace(
+      "svc1",
+      makeAuthorityService({makeExactAuthorityMatch("live.example.com")})
+  );
+  cfg.services.value().emplace(
+      "svc2",
+      makeAuthorityService({makeExactAuthorityMatch("live.example.com")})
+  );
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("Duplicate"));
+}
+
+TEST(ResolveConfig, NoCacheAndNoServiceDefaultsCache) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().clear();
+  ParsedServiceConfig svc;
+  ParsedServiceConfig::MatchRule entry;
+  entry.authority = AuthMatch{ParsedServiceConfig::MatchRule::AnyAuthority{true}};
+  entry.path = anyPath();
+  svc.match.value().push_back(std::move(entry));
+  // No cache set, no service_defaults
+  cfg.services.value().emplace("no-cache", std::move(svc));
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("cache.enabled is required"));
+}
+
+TEST(ResolveConfig, InvalidWildcardMissingStar) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().clear();
+  cfg.services.value().emplace(
+      "svc",
+      makeAuthorityService({makeWildcardAuthorityMatch("example.com")})
+  );
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("wildcard must start with '*.'"));
+}
+
+TEST(ResolveConfig, InvalidWildcardMultipleStars) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().clear();
+  cfg.services.value().emplace(
+      "svc",
+      makeAuthorityService({makeWildcardAuthorityMatch("*.*.example.com")})
+  );
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("exactly one '*'"));
+}
+
+TEST(ResolveConfig, DuplicateWildcardAcrossServices) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().clear();
+
+  cfg.services.value().emplace(
+      "svc1",
+      makeAuthorityService({makeWildcardAuthorityMatch("*.example.com")})
+  );
+  cfg.services.value().emplace(
+      "svc2",
+      makeAuthorityService({makeWildcardAuthorityMatch("*.example.com")})
+  );
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("Duplicate"));
+}
+
+TEST(ResolveConfig, ExactAuthorityEmpty) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().clear();
+  cfg.services.value().emplace("svc", makeAuthorityService({makeExactAuthorityMatch("")}));
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("exact value must be non-empty"));
+}
+
+TEST(ResolveConfig, AnyAuthorityFalseRejected) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().clear();
+  ParsedServiceConfig::MatchRule entry;
+  entry.authority = AuthMatch{ParsedServiceConfig::MatchRule::AnyAuthority{false}};
+  entry.path = anyPath();
+  cfg.services.value().emplace("svc", makeAuthorityService({std::move(entry)}));
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("any must be true"));
+}
+
+TEST(ResolveConfig, DuplicateAnySamePath) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().clear();
+
+  // Two services both with any authority and same path — duplicate
+  cfg.services.value().emplace("svc1", makeAuthorityService({makeAnyAuthorityMatch()}));
+  cfg.services.value().emplace("svc2", makeAuthorityService({makeAnyAuthorityMatch()}));
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("Duplicate"));
+}
+
+TEST(ResolveConfig, MultipleAnyDifferentPaths) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().clear();
+
+  cfg.services.value().emplace(
+      "svc1",
+      makeAuthorityService(
+          {makeAnyAuthorityMatch(PMatch{ParsedServiceConfig::MatchRule::ExactPath{"/relay"}})}
+      )
+  );
+  cfg.services.value().emplace(
+      "svc2",
+      makeAuthorityService(
+          {makeAnyAuthorityMatch(PMatch{ParsedServiceConfig::MatchRule::PrefixPath{"/live/"}})}
+      )
+  );
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+}
+
+// --- Path validation tests ---
+
+TEST(ResolveConfig, PathExactEmpty) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().clear();
+  cfg.services.value().emplace(
+      "svc",
+      makeAuthorityService(
+          {makeExactAuthorityMatch("a.com", PMatch{ParsedServiceConfig::MatchRule::ExactPath{""}})}
+      )
+  );
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("path: value must be non-empty"));
+}
+
+TEST(ResolveConfig, PathNoSlash) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().clear();
+  cfg.services.value().emplace(
+      "svc",
+      makeAuthorityService({makeExactAuthorityMatch(
+          "a.com",
+          PMatch{ParsedServiceConfig::MatchRule::ExactPath{"no-slash"}}
+      )})
+  );
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("must start with '/'"));
+}
+
+TEST(ResolveConfig, DuplicateAuthorityPathTuple) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().clear();
+
+  auto path = PMatch{ParsedServiceConfig::MatchRule::ExactPath{"/relay"}};
+  cfg.services.value().emplace(
+      "svc1",
+      makeAuthorityService({makeExactAuthorityMatch("a.com", path)})
+  );
+  cfg.services.value().emplace(
+      "svc2",
+      makeAuthorityService({makeExactAuthorityMatch("a.com", path)})
+  );
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("Duplicate"));
+}
+
+TEST(ResolveConfig, SameAuthorityDifferentPaths) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().clear();
+
+  cfg.services.value().emplace(
+      "svc1",
+      makeAuthorityService({makeExactAuthorityMatch(
+          "a.com",
+          PMatch{ParsedServiceConfig::MatchRule::ExactPath{"/relay"}}
+      )})
+  );
+  cfg.services.value().emplace(
+      "svc2",
+      makeAuthorityService({makeExactAuthorityMatch(
+          "a.com",
+          PMatch{ParsedServiceConfig::MatchRule::ExactPath{"/other"}}
+      )})
+  );
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+}
+
 // --- Resolution tests ---
 
 TEST(ResolveConfig, MinimalInsecure) {
@@ -113,8 +384,9 @@ TEST(ResolveConfig, MinimalInsecure) {
   EXPECT_EQ(resolved.listener.moqtVersions, "");
   EXPECT_THAT(result.value().warnings, IsEmpty());
 
-  EXPECT_EQ(resolved.cache.maxCachedTracks, 100u);
-  EXPECT_EQ(resolved.cache.maxCachedGroupsPerTrack, 3u);
+  ASSERT_EQ(resolved.services.size(), 1);
+  EXPECT_EQ(resolved.services.at("default").cache.maxCachedTracks, 100u);
+  EXPECT_EQ(resolved.services.at("default").cache.maxCachedGroupsPerTrack, 3u);
 }
 
 TEST(ResolveConfig, FullTls) {
@@ -135,7 +407,7 @@ TEST(ResolveConfig, FullTls) {
   lc.endpoint = std::string("/relay");
   lc.moqt_versions = std::vector<uint32_t>{14, 16};
   cfg.listeners.value().push_back(std::move(lc));
-  cfg.cache = makeDefaultCache();
+  cfg.services.value().emplace("default", makeDefaultService());
   cfg.admin = std::optional<ParsedAdminConfig>{makeDefaultAdmin()};
 
   auto result = resolveConfig(cfg);
@@ -155,26 +427,222 @@ TEST(ResolveConfig, FullTls) {
 
 TEST(ResolveConfig, CacheDisabled) {
   auto cfg = makeMinimalInsecureConfig();
-  cfg.cache.value().enabled = false;
+  cfg.services.value().at("default").cache.value()->enabled = std::optional<bool>{false};
 
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasValue());
   const auto& resolved = result.value().config;
-  EXPECT_EQ(resolved.cache.maxCachedTracks, 0u);
-  EXPECT_EQ(resolved.cache.maxCachedGroupsPerTrack, 3u);
+  EXPECT_EQ(resolved.services.at("default").cache.maxCachedTracks, 0u);
+  EXPECT_EQ(resolved.services.at("default").cache.maxCachedGroupsPerTrack, 3u);
 }
 
 TEST(ResolveConfig, CacheCustomValues) {
   auto cfg = makeMinimalInsecureConfig();
-  cfg.cache.value().enabled = true;
-  cfg.cache.value().max_tracks = uint32_t{200};
-  cfg.cache.value().max_groups_per_track = uint32_t{5};
+  cfg.services.value().at("default").cache.value()->enabled = std::optional<bool>{true};
+  cfg.services.value().at("default").cache.value()->max_tracks = std::optional<uint32_t>{200};
+  cfg.services.value().at("default").cache.value()->max_groups_per_track =
+      std::optional<uint32_t>{5};
 
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasValue());
   const auto& resolved = result.value().config;
-  EXPECT_EQ(resolved.cache.maxCachedTracks, 200u);
-  EXPECT_EQ(resolved.cache.maxCachedGroupsPerTrack, 5u);
+  EXPECT_EQ(resolved.services.at("default").cache.maxCachedTracks, 200u);
+  EXPECT_EQ(resolved.services.at("default").cache.maxCachedGroupsPerTrack, 5u);
+}
+
+TEST(ResolveConfig, CacheInheritanceFromServiceDefaults) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().clear();
+
+  ParsedServiceDefaultsConfig defaults;
+  ParsedCacheConfig defaultCache;
+  defaultCache.enabled = std::optional<bool>{true};
+  defaultCache.max_tracks = std::optional<uint32_t>{50};
+  defaultCache.max_groups_per_track = std::optional<uint32_t>{2};
+  defaults.cache = std::move(defaultCache);
+  cfg.service_defaults = std::move(defaults);
+
+  ParsedServiceConfig svc;
+  svc.match.value().push_back(makeAnyAuthorityMatch());
+  cfg.services.value().emplace("inheritor", std::move(svc));
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  const auto& resolved = result.value().config;
+  ASSERT_EQ(resolved.services.size(), 1);
+  EXPECT_EQ(resolved.services.at("inheritor").cache.maxCachedTracks, 50u);
+  EXPECT_EQ(resolved.services.at("inheritor").cache.maxCachedGroupsPerTrack, 2u);
+}
+
+TEST(ResolveConfig, CachePerServiceOverridesDefaults) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().clear();
+
+  ParsedServiceDefaultsConfig defaults;
+  ParsedCacheConfig defaultCache;
+  defaultCache.enabled = std::optional<bool>{true};
+  defaultCache.max_tracks = std::optional<uint32_t>{50};
+  defaultCache.max_groups_per_track = std::optional<uint32_t>{2};
+  defaults.cache = std::move(defaultCache);
+  cfg.service_defaults = std::move(defaults);
+
+  ParsedServiceConfig svc;
+  svc.match.value().push_back(makeAnyAuthorityMatch());
+  ParsedCacheConfig svcCache;
+  svcCache.enabled = std::optional<bool>{true};
+  svcCache.max_tracks = std::optional<uint32_t>{300};
+  svcCache.max_groups_per_track = std::optional<uint32_t>{8};
+  svc.cache = std::move(svcCache);
+  cfg.services.value().emplace("custom", std::move(svc));
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  const auto& resolved = result.value().config;
+  EXPECT_EQ(resolved.services.at("custom").cache.maxCachedTracks, 300u);
+  EXPECT_EQ(resolved.services.at("custom").cache.maxCachedGroupsPerTrack, 8u);
+}
+
+TEST(ResolveConfig, CachePartialOverrideMergesWithDefaults) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().clear();
+
+  ParsedServiceDefaultsConfig defaults;
+  ParsedCacheConfig defaultCache;
+  defaultCache.enabled = std::optional<bool>{true};
+  defaultCache.max_tracks = std::optional<uint32_t>{50};
+  defaultCache.max_groups_per_track = std::optional<uint32_t>{2};
+  defaults.cache = std::move(defaultCache);
+  cfg.service_defaults = std::move(defaults);
+
+  // Service only overrides max_tracks — enabled and max_groups_per_track come from defaults.
+  ParsedServiceConfig svc;
+  svc.match.value().push_back(makeAnyAuthorityMatch());
+  ParsedCacheConfig svcCache;
+  svcCache.max_tracks = std::optional<uint32_t>{500};
+  svc.cache = std::move(svcCache);
+  cfg.services.value().emplace("partial", std::move(svc));
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  const auto& resolved = result.value().config;
+  ASSERT_EQ(resolved.services.size(), 1);
+  EXPECT_EQ(resolved.services.at("partial").cache.maxCachedTracks, 500u);
+  EXPECT_EQ(resolved.services.at("partial").cache.maxCachedGroupsPerTrack, 2u);
+}
+
+TEST(ResolveConfig, CachePartialOverrideWithoutDefaultsFails) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().clear();
+
+  // No service_defaults; service only sets max_tracks — enabled and max_groups_per_track missing.
+  ParsedServiceConfig svc;
+  svc.match.value().push_back(makeAnyAuthorityMatch());
+  ParsedCacheConfig svcCache;
+  svcCache.max_tracks = std::optional<uint32_t>{500};
+  svc.cache = std::move(svcCache);
+  cfg.services.value().emplace("incomplete", std::move(svc));
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("cache.enabled is required"));
+  EXPECT_THAT(result.error(), HasSubstr("cache.max_groups_per_track is required"));
+}
+
+TEST(ResolveConfig, ResolveExactAuthority) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().clear();
+
+  cfg.services.value().emplace(
+      "exact-svc",
+      makeAuthorityService({makeExactAuthorityMatch("live.example.com")})
+  );
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  const auto& entries = result.value().config.services.at("exact-svc").match;
+  ASSERT_EQ(entries.size(), 1);
+  ASSERT_TRUE(std::holds_alternative<ServiceConfig::MatchEntry::ExactAuthority>(entries[0].authority
+  ));
+  EXPECT_EQ(
+      std::get<ServiceConfig::MatchEntry::ExactAuthority>(entries[0].authority).value,
+      "live.example.com"
+  );
+  ASSERT_TRUE(std::holds_alternative<ServiceConfig::MatchEntry::PrefixPath>(entries[0].path));
+  EXPECT_EQ(std::get<ServiceConfig::MatchEntry::PrefixPath>(entries[0].path).value, "/");
+}
+
+TEST(ResolveConfig, ResolveWildcardAuthority) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().clear();
+
+  cfg.services.value().emplace(
+      "wild-svc",
+      makeAuthorityService({makeWildcardAuthorityMatch("*.example.com")})
+  );
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  const auto& entries = result.value().config.services.at("wild-svc").match;
+  ASSERT_EQ(entries.size(), 1);
+  ASSERT_TRUE(
+      std::holds_alternative<ServiceConfig::MatchEntry::WildcardAuthority>(entries[0].authority)
+  );
+  EXPECT_EQ(
+      std::get<ServiceConfig::MatchEntry::WildcardAuthority>(entries[0].authority).pattern,
+      "*.example.com"
+  );
+}
+
+TEST(ResolveConfig, ResolveAnyAuthority) {
+  auto cfg = makeMinimalInsecureConfig();
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  const auto& match = result.value().config.services.at("default").match;
+  ASSERT_EQ(match.size(), 1);
+  EXPECT_TRUE(std::holds_alternative<ServiceConfig::MatchEntry::AnyAuthority>(match[0].authority));
+  ASSERT_TRUE(std::holds_alternative<ServiceConfig::MatchEntry::PrefixPath>(match[0].path));
+  EXPECT_EQ(std::get<ServiceConfig::MatchEntry::PrefixPath>(match[0].path).value, "/");
+}
+
+TEST(ResolveConfig, ResolveExactPath) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().clear();
+
+  cfg.services.value().emplace(
+      "svc",
+      makeAuthorityService({makeExactAuthorityMatch(
+          "a.com",
+          PMatch{ParsedServiceConfig::MatchRule::ExactPath{"/moq-relay"}}
+      )})
+  );
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  const auto& entries = result.value().config.services.at("svc").match;
+  ASSERT_EQ(entries.size(), 1);
+  ASSERT_TRUE(std::holds_alternative<ServiceConfig::MatchEntry::ExactPath>(entries[0].path));
+  EXPECT_EQ(std::get<ServiceConfig::MatchEntry::ExactPath>(entries[0].path).value, "/moq-relay");
+}
+
+TEST(ResolveConfig, ResolvePrefixPath) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().clear();
+
+  cfg.services.value().emplace(
+      "svc",
+      makeAuthorityService({makeExactAuthorityMatch(
+          "a.com",
+          PMatch{ParsedServiceConfig::MatchRule::PrefixPath{"/live/"}}
+      )})
+  );
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  const auto& entries = result.value().config.services.at("svc").match;
+  ASSERT_EQ(entries.size(), 1);
+  ASSERT_TRUE(std::holds_alternative<ServiceConfig::MatchEntry::PrefixPath>(entries[0].path));
+  EXPECT_EQ(std::get<ServiceConfig::MatchEntry::PrefixPath>(entries[0].path).value, "/live/");
 }
 
 TEST(ResolveConfig, VersionsEmpty) {
@@ -321,4 +789,4 @@ TEST(ResolveConfig, AdminTlsCustomAlpn) {
 }
 
 } // namespace
-} // namespace openmoq::o_rly::config
+} // namespace openmoq::moqx::config

@@ -1,4 +1,4 @@
-#include <o_rly/stats/StatsRegistry.h>
+#include <moqx/stats/StatsRegistry.h>
 
 #include <folly/Conv.h>
 #include <folly/io/Cursor.h>
@@ -10,7 +10,7 @@
 #include <folly/experimental/coro/Task.h>
 #include <folly/logging/xlog.h>
 
-namespace openmoq::o_rly::stats {
+namespace openmoq::moqx::stats {
 
 StatsSnapshot& StatsSnapshot::operator+=(const StatsSnapshot& o) {
 #define ADD_FIELD(type, name) name += o.name;
@@ -58,9 +58,9 @@ std::unique_ptr<folly::IOBuf> StatsSnapshot::formatPrometheus(const StatsSnapsho
 
   // --- Counters ---
 #define EMIT_COUNTER(type, name)                                                                   \
-  app("# HELP orly_" #name "_total\n"                                                              \
-      "# TYPE orly_" #name "_total counter\n"                                                      \
-      "orly_" #name "_total ");                                                                    \
+  app("# HELP moqx_" #name "_total\n"                                                              \
+      "# TYPE moqx_" #name "_total counter\n"                                                      \
+      "moqx_" #name "_total ");                                                                    \
   appNum(snap.name);                                                                               \
   app("\n\n");
   STATS_COUNTER_FIELDS(EMIT_COUNTER)
@@ -68,9 +68,9 @@ std::unique_ptr<folly::IOBuf> StatsSnapshot::formatPrometheus(const StatsSnapsho
 
   // --- Gauges ---
 #define EMIT_GAUGE(type, name)                                                                     \
-  app("# HELP orly_" #name "\n"                                                                    \
-      "# TYPE orly_" #name " gauge\n"                                                              \
-      "orly_" #name " ");                                                                          \
+  app("# HELP moqx_" #name "\n"                                                                    \
+      "# TYPE moqx_" #name " gauge\n"                                                              \
+      "moqx_" #name " ");                                                                          \
   appNum(snap.name);                                                                               \
   app("\n\n");
   STATS_GAUGE_FIELDS(EMIT_GAUGE)
@@ -78,26 +78,26 @@ std::unique_ptr<folly::IOBuf> StatsSnapshot::formatPrometheus(const StatsSnapsho
 
   // --- Histograms ---
 #define EMIT_HISTOGRAM(name, bounds)                                                               \
-  app("# HELP orly_" #name "_microseconds\n"                                                       \
-      "# TYPE orly_" #name "_microseconds histogram\n");                                           \
+  app("# HELP moqx_" #name "_microseconds\n"                                                       \
+      "# TYPE moqx_" #name "_microseconds histogram\n");                                           \
   {                                                                                                \
     const auto& bvals = (bounds);                                                                  \
     const auto& bcounts = snap.name##Buckets;                                                      \
     for (size_t i = 0; i < bvals.size(); ++i) {                                                    \
-      app("orly_" #name "_microseconds_bucket{le=\"");                                             \
+      app("moqx_" #name "_microseconds_bucket{le=\"");                                             \
       appNum(bvals[i]);                                                                            \
       app("\"} ");                                                                                 \
       appNum(bcounts[i]);                                                                          \
       app("\n");                                                                                   \
     }                                                                                              \
-    app("orly_" #name "_microseconds_bucket{le=\"+Inf\"} ");                                       \
+    app("moqx_" #name "_microseconds_bucket{le=\"+Inf\"} ");                                       \
     appNum(bcounts.back());                                                                        \
     app("\n");                                                                                     \
   }                                                                                                \
-  app("orly_" #name "_microseconds_sum ");                                                         \
+  app("moqx_" #name "_microseconds_sum ");                                                         \
   appNum(snap.name##Sum);                                                                          \
   app("\n"                                                                                         \
-      "orly_" #name "_microseconds_count ");                                                       \
+      "moqx_" #name "_microseconds_count ");                                                       \
   appNum(snap.name##Count);                                                                        \
   app("\n\n");
   STATS_HISTOGRAM_FIELDS(EMIT_HISTOGRAM)
@@ -105,13 +105,13 @@ std::unique_ptr<folly::IOBuf> StatsSnapshot::formatPrometheus(const StatsSnapsho
 
   // --- Per-RequestErrorCode breakdowns ---
   // Each field emits one labelled counter series:
-  //   orly_<name>_by_code_total{code="<label>"}
+  //   moqx_<name>_by_code_total{code="<label>"}
 #define EMIT_ERROR_COUNTER(name)                                                                   \
-  app("# HELP orly_" #name "_by_code_total"                                                        \
+  app("# HELP moqx_" #name "_by_code_total"                                                        \
       " Error count broken down by RequestErrorCode\n"                                             \
-      "# TYPE orly_" #name "_by_code_total counter\n");                                            \
+      "# TYPE moqx_" #name "_by_code_total counter\n");                                            \
   for (size_t i = 0; i < kRequestErrorCodeCount; ++i) {                                            \
-    app("orly_" #name "_by_code_total{code=\"");                                                   \
+    app("moqx_" #name "_by_code_total{code=\"");                                                   \
     app(kRequestErrorCodeLabels[i]);                                                               \
     app("\"} ");                                                                                   \
     appNum(snap.name##ByCodes[i]);                                                                 \
@@ -162,4 +162,4 @@ folly::coro::Task<StatsSnapshot> StatsRegistry::aggregateAsync() {
   co_return combined;
 }
 
-} // namespace openmoq::o_rly::stats
+} // namespace openmoq::moqx::stats

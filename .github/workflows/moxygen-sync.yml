@@ -1,0 +1,223 @@
+name: moxygen sync
+
+# Updates deps/moxygen submodule to latest moxygen main, creates a PR.
+# Event-triggered by moxygen ci-main after successful release, or manual.
+# One PR at a time — blocks if one is pending.
+#
+# Branch naming: sync-moxygen/<short-sha>
+# Auto-merged by auto-merge-moxygen.yml after ci-pr passes.
+
+on:
+  repository_dispatch:
+    types: [moxygen-update]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-22.04
+    steps:
+      # ── Generate GitHub App token (bot identity for PRs) ──
+      - name: Generate app token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.OMOQ_APP_ID }}
+          private-key: ${{ secrets.OMOQ_APP_PRIV_KEY }}
+
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          submodules: true
+          token: ${{ steps.app-token.outputs.token }}
+
+      # ══════════════════════════════════════════════════════════
+      # PHASE A: Check for blocking sync PR
+      # ══════════════════════════════════════════════════════════
+
+      - name: Check for open sync-moxygen PR
+        id: blocking
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          PR=$(gh api "repos/${{ github.repository }}/pulls?state=open&base=main" \
+            --jq '[.[] | select(.head.ref | startswith("sync-moxygen/"))] | .[0] // empty')
+
+          if [ -n "$PR" ]; then
+            PR_NUM=$(echo "$PR" | jq -r '.number')
+            PR_REF=$(echo "$PR" | jq -r '.head.ref')
+            echo "::warning::Sync blocked — open PR #$PR_NUM ($PR_REF) pending."
+            echo "blocked=true" >> "$GITHUB_OUTPUT"
+            echo "pr_num=$PR_NUM" >> "$GITHUB_OUTPUT"
+            echo "pr_ref=$PR_REF" >> "$GITHUB_OUTPUT"
+          else
+            echo "No open sync-moxygen PR. Proceeding."
+            echo "blocked=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Notify blocked (Slack)
+        if: steps.blocking.outputs.blocked == 'true'
+        continue-on-error: true
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.OMOQ_SLACK_WEBHOOK_URL }}
+        run: |
+          PR_NUM="${{ steps.blocking.outputs.pr_num }}"
+          PR_URL="${{ github.server_url }}/${{ github.repository }}/pull/${PR_NUM}"
+          TEXT=":pause_button: *${{ github.repository }}* moxygen sync paused: PR <${PR_URL}|#${PR_NUM}> pending"
+          curl -s -X POST "$SLACK_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            --data "{\"text\": \"${TEXT}\"}"
+
+      - name: Notify blocked (email)
+        if: steps.blocking.outputs.blocked == 'true'
+        continue-on-error: true
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.OMOQ_AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.OMOQ_AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-1
+        run: |
+          PR_NUM="${{ steps.blocking.outputs.pr_num }}"
+          PR_REF="${{ steps.blocking.outputs.pr_ref }}"
+          PR_URL="${{ github.server_url }}/${{ github.repository }}/pull/${PR_NUM}"
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          SUBJECT="[moqx] moxygen sync paused — PR #${PR_NUM} pending"
+          BODY="Moxygen submodule sync blocked by open PR.\n\nPR: ${PR_URL}\nBranch: ${PR_REF}\nRun: ${RUN_URL}\n\nResolve or merge the existing PR, then re-run manually."
+          aws ses send-email \
+            --from "noreply@ci.openmoq.org" \
+            --destination '{"ToAddresses":["github-notifications@openmoq.org"]}' \
+            --message "{
+              \"Subject\": {\"Data\": \"${SUBJECT}\"},
+              \"Body\": {\"Text\": {\"Data\": \"${BODY}\"}}
+            }"
+
+      # ══════════════════════════════════════════════════════════
+      # PHASE B: Update submodule and create PR
+      # ══════════════════════════════════════════════════════════
+
+      - name: Determine target SHA
+        if: steps.blocking.outputs.blocked == 'false'
+        id: target
+        run: |
+          CURRENT_SHA=$(git -C deps/moxygen rev-parse HEAD)
+          echo "current_sha=${CURRENT_SHA}" >> "$GITHUB_OUTPUT"
+
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            TARGET_SHA="${{ github.event.client_payload.sha }}"
+          else
+            # Manual trigger: fetch latest moxygen main
+            git -C deps/moxygen fetch origin main
+            TARGET_SHA=$(git -C deps/moxygen rev-parse origin/main)
+          fi
+
+          echo "target_sha=${TARGET_SHA}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${TARGET_SHA:0:7}" >> "$GITHUB_OUTPUT"
+
+          if [ "$CURRENT_SHA" = "$TARGET_SHA" ]; then
+            echo "Submodule already at ${TARGET_SHA:0:7}. Nothing to do."
+            echo "needs_update=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Will update submodule: ${CURRENT_SHA:0:7} → ${TARGET_SHA:0:7}"
+            echo "needs_update=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create sync branch and PR
+        if: steps.blocking.outputs.blocked == 'false' && steps.target.outputs.needs_update == 'true'
+        id: new_pr
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          TARGET_SHA="${{ steps.target.outputs.target_sha }}"
+          SHORT_SHA="${{ steps.target.outputs.short_sha }}"
+          BRANCH="sync-moxygen/${SHORT_SHA}"
+
+          git config user.email "omoq-sync-bot[bot]@users.noreply.github.com"
+          git config user.name "omoq-sync-bot[bot]"
+
+          git checkout -b "$BRANCH"
+
+          # Update submodule to target SHA
+          git -C deps/moxygen fetch origin
+          git -C deps/moxygen checkout "$TARGET_SHA"
+          git add deps/moxygen
+          git commit -m "sync: update moxygen submodule to ${SHORT_SHA}"
+          git push -u origin "$BRANCH"
+
+          echo "Created branch $BRANCH"
+
+          # Determine trigger source for PR body
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            TRIGGER="Triggered by moxygen \`ci main\` run #${{ github.event.client_payload.run_id }}."
+          else
+            TRIGGER="Triggered manually."
+          fi
+
+          PR_NUM=$(gh api repos/${{ github.repository }}/pulls \
+            -f title="sync: moxygen ${SHORT_SHA}" \
+            -f body="$(cat <<EOF
+          Automated moxygen submodule update.
+
+          - **Moxygen commit:** [\`${SHORT_SHA}\`](https://github.com/openmoq/moxygen/commit/${TARGET_SHA})
+          - **Previous:** \`${{ steps.target.outputs.current_sha }}\`
+
+          ${TRIGGER}
+
+          Verification will run automatically. On success, this PR auto-merges.
+          EOF
+          )" \
+            -f head="$BRANCH" \
+            -f base="main" \
+            --jq '.number')
+
+          echo "Created sync PR #$PR_NUM"
+          echo "pr_num=$PR_NUM" >> "$GITHUB_OUTPUT"
+
+      # ── Approve PR (different identity for required review) ──
+      - name: Approve PR
+        if: steps.blocking.outputs.blocked == 'false' && steps.target.outputs.needs_update == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.OMOQ_SYNC_TOKEN }}
+        run: |
+          PR_NUM="${{ steps.new_pr.outputs.pr_num }}"
+          [ -z "$PR_NUM" ] && { echo "::warning::No PR number"; exit 0; }
+
+          echo "Approving PR #$PR_NUM..."
+          gh api repos/${{ github.repository }}/pulls/$PR_NUM/reviews \
+            -f event=APPROVE \
+            -f body="Auto-approved by moxygen sync workflow." \
+            --jq '.state'
+
+      # ── Failure notifications ──
+      - name: Notify Slack (sync failure)
+        if: failure()
+        continue-on-error: true
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.OMOQ_SLACK_WEBHOOK_URL }}
+        run: |
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          TEXT=":warning: *${{ github.repository }}* moxygen sync failed: <${RUN_URL}|run #${{ github.run_number }}>"
+          curl -s -X POST "$SLACK_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            --data "{\"text\": \"${TEXT}\"}"
+
+      - name: Notify email (sync failure)
+        if: failure()
+        continue-on-error: true
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.OMOQ_AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.OMOQ_AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-1
+        run: |
+          TARGET="${{ steps.target.outputs.target_sha || 'unknown' }}"
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          SUBJECT="[moqx] moxygen sync FAILED"
+          BODY="Moxygen submodule sync workflow failed.\n\nTarget SHA: ${TARGET}\nRun: ${RUN_URL}"
+          aws ses send-email \
+            --from "noreply@ci.openmoq.org" \
+            --destination '{"ToAddresses":["github-notifications@openmoq.org"]}' \
+            --message "{
+              \"Subject\": {\"Data\": \"${SUBJECT}\"},
+              \"Body\": {\"Text\": {\"Data\": \"${BODY}\"}}
+            }"

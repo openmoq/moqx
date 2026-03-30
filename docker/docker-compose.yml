@@ -1,4 +1,4 @@
-name: o-rly
+name: moqx
 
 # Usage:
 #
@@ -17,19 +17,42 @@ name: o-rly
 #     docker compose -f docker/docker-compose.yml up -d
 #
 #   Custom / self-signed cert (no certbot):
-#     Set ORLY_CERT and ORLY_KEY in docker/.env to point to your mounted cert files.
+#     Set MOQX_CERT and MOQX_KEY in docker/.env to point to your mounted cert files.
 
 services:
-  o-rly:
-    image: ghcr.io/openmoq/o-rly:latest
+  moqx:
+    container_name: moqx
+    image: ghcr.io/openmoq/moqx:latest
     restart: unless-stopped
     ports:
-      - "${ORLY_PORT:-9668}:9668/udp"
+      - "${MOQX_PORT:-4433}:${MOQX_PORT:-4433}/udp"
+      - "${MOQX_ADMIN_PORT:-8000}:${MOQX_ADMIN_PORT:-8000}/tcp"
     volumes:
-      - certs:/certs:ro
+      - ${MOQX_CERTS_DIR:-/etc/letsencrypt}:/certs:ro
+      - moqx-coredumps:/var/coredumps
+      - ${MOQX_ENTRY:-./entrypoint.sh}:/usr/local/bin/entrypoint.sh:ro
     environment:
-      ORLY_CERT: /certs/live/${DOMAIN}/fullchain.pem
-      ORLY_KEY:  /certs/live/${DOMAIN}/privkey.pem
+      MOQX_CERT: /certs/live/${DOMAIN}/fullchain.pem
+      MOQX_KEY:  /certs/live/${DOMAIN}/privkey.pem
+      MOQX_PORT: ${MOQX_PORT:-4433}
+      MOQX_ADMIN_PORT: ${MOQX_ADMIN_PORT:-8000}
+      MOQX_MAX_TRACKS: ${MOQX_MAX_TRACKS:-1000}
+      MOQX_MAX_GROUPS: ${MOQX_MAX_GROUPS:-100}
+      MOQX_LOG_LEVEL: ${MOQX_LOG_LEVEL:-0}
+      MOQX_VERBOSE: ${MOQX_VERBOSE:-0}
+    ulimits:
+      core: -1
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:${MOQX_ADMIN_PORT:-8000}/info"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
 
   # Cloudflare DNS-01 challenge.
   # Requires: docker/cloudflare.ini (see cloudflare.ini.example)
@@ -37,7 +60,7 @@ services:
   certbot-cloudflare:
     image: certbot/dns-cloudflare
     volumes:
-      - certs:/etc/letsencrypt
+      - ${MOQX_CERTS_DIR:-/etc/letsencrypt}:/etc/letsencrypt
       - ./cloudflare.ini:/run/secrets/cloudflare.ini:ro
     command: >
       certonly
@@ -49,6 +72,18 @@ services:
       -d ${DOMAIN}
     profiles: [certbot-cloudflare]
 
+  # Log viewer — browse relay logs at http://localhost:${MOQX_LOG_PORT:-9999}
+  dozzle:
+    container_name: logmon
+    image: amir20/dozzle:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${MOQX_LOG_PORT:-9999}:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      DOZZLE_FILTER: "name=moqx"
+
   # Route53 DNS-01 challenge.
   # Requires: AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY in docker/.env
   # IAM policy: see route53-iam-policy.json
@@ -56,7 +91,7 @@ services:
   certbot-route53:
     image: certbot/dns-route53
     volumes:
-      - certs:/etc/letsencrypt
+      - ${MOQX_CERTS_DIR:-/etc/letsencrypt}:/etc/letsencrypt
     environment:
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
@@ -71,4 +106,4 @@ services:
     profiles: [certbot-route53]
 
 volumes:
-  certs:
+  moqx-coredumps:

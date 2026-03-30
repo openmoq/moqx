@@ -1,9 +1,9 @@
 #include <array>
 #include <gtest/gtest.h>
 
-#include <o_rly/stats/BoundedHistogram.h>
+#include <moqx/stats/BoundedHistogram.h>
 
-namespace openmoq::o_rly::stats {
+namespace openmoq::moqx::stats {
 
 class BoundedHistogramTest : public ::testing::Test {
 protected:
@@ -118,4 +118,4 @@ TEST_F(BoundedHistogramTest, ZeroValues) {
   EXPECT_EQ(hist.buckets[0], 3); // All go to first bucket
 }
 
-} // namespace openmoq::o_rly::stats
+} // namespace openmoq::moqx::stats

@@ -79,18 +79,55 @@ global              ─── process-wide settings (worker_threads, log_level, 
 
 A client connects to a **listener** (transport), then sends `CLIENT_SETUP` with **authority** and **path**. These are matched against **services**.
 
-**Matching priority** (highest to lowest):
+Each service defines one or more `match` entries. Each entry pairs an **authority** matcher with a **path** matcher:
 
-1. **Exact match**: `authorities: ["live.example.com"]`
-2. **Wildcard**: `authority: { wildcard: "*.moq-relay.example.com" }`
-3. **Regex**: regex components in namespace/track matchers
-4. **Default/catch-all**
+```yaml
+services:
+  example:
+    match:
+      - authority: {exact: "live.example.com"}
+        path: {exact: "/moq-relay"}
+      - authority: {wildcard: "*.live.example.com"}
+        path: {prefix: "/live/"}
+      - authority: {any: true}
+        path: {prefix: "/"}
+```
 
-Same priority order applies to `path` and `namespace` matching.
+**Authority matching priority** (highest to lowest):
+
+1. **Exact**: `{exact: "live.example.com"}` — O(1) hash lookup.
+2. **Wildcard**: `{wildcard: "*.example.com"}` — matches single-label subdomains only (e.g. `foo.example.com`), not the bare domain or multi-label subdomains. O(1) suffix lookup.
+3. **Any**: `{any: true}` — catch-all fallback.
+
+Regex authority matching is planned but not yet implemented.
+
+**Path matching priority** (within matched authority tier):
+
+1. **Exact**: `{exact: "/moq-relay"}` — O(1) hash lookup.
+2. **Prefix**: `{prefix: "/live/"}` — longest prefix wins. Uses simple string prefix matching (not segment-aware).
+
+`{prefix: "/"}` matches any valid MOQT path and serves as the catch-all pattern.
 
 > **Specificity rule**: When multiple prefix rules match within the same priority category, the more specific prefix wins. "More specific" means a longer tuple (more fields) or a domain with more segments (more dots), not longer in terms of bytes.
 
 > **Performance note**: Regex matching is evaluated only when exact and prefix matches fail. Regex is appropriate for service-level matching (per-connection), which happens once at session setup. Track-level regex (in namespace/track matchers) should be used sparingly and is explicitly not evaluated per-object — only at subscription setup time.
+
+> **TODO: WebTransport endpoint gate limitation**
+>
+> How authority and path reach `ServiceMatcher` differs by transport:
+>
+> | Transport | Authority source | Path source | Pre-gate |
+> |-----------|-----------------|-------------|----------|
+> | **WebTransport** | HTTP `Host` header | HTTP URL path | `isAcceptedEndpoint()` exact match — 404 if path not in set |
+> | **Raw QUIC** | `SetupKey::AUTHORITY` in CLIENT_SETUP | `SetupKey::PATH` in CLIENT_SETUP | None |
+>
+> Moxygen's `isAcceptedEndpoint()` check runs *before* the WebTransport upgrade completes. The listener's `endpoint` field is registered as the only accepted path. If a WT client connects with an HTTP path that doesn't match a registered endpoint, moxygen returns 404 before MOQT ever starts — `ServiceMatcher` never sees the connection.
+>
+> This means multi-service path matchers (e.g. `{exact: "/moq-relay"}` and `{prefix: "/live/"}`) only work for WT connections if every matched path is also registered as a listener endpoint via `MoQServerBase::addEndpoint()`. Currently moqx passes only a single `endpoint` from the listener config.
+>
+> Additionally, moxygen's conflict detection (`MoQSession::onClientSetup()`): if WT already set authority/path from HTTP and CLIENT_SETUP also includes them, the session gets a PROTOCOL_VIOLATION.
+>
+> **Fix needed upstream**: make moxygen's endpoint check prefix-aware, or auto-populate endpoints from service path matchers at startup. Until then, multi-service path routing is effectively limited to raw QUIC, or to WT deployments where all services use the same path (the listener endpoint).
 
 ### Inheritance
 
@@ -104,7 +141,7 @@ Includes are supported **only at the service level**: a `services_include` direc
 
 ```yaml
 services_include:
-  - /etc/o-rly/services.d/*.yaml # Each file defines one or more services
+  - /etc/moqx/services.d/*.yaml # Each file defines one or more services
 ```
 
 Each included file must contain complete service definitions. Partial overrides or nested includes are not supported.

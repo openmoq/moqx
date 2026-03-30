@@ -1,8 +1,8 @@
-#include <o_rly/stats/MoQStatsCollector.h>
+#include <moqx/stats/MoQStatsCollector.h>
 
 #include <folly/logging/xlog.h>
 
-namespace openmoq::o_rly::stats {
+namespace openmoq::moqx::stats {
 
 /* static */
 std::shared_ptr<MoQStatsCollector> MoQStatsCollector::create_moq_stats_collector(
@@ -312,4 +312,4 @@ void MoQStatsCollector::SubscriberCallback::onPublishError(moxygen::PublishError
   ++parent_.subPublishErrorByCodes_[requestErrorCodeIndex(errorCode)];
 }
 
-} // namespace openmoq::o_rly::stats
+} // namespace openmoq::moqx::stats

@@ -40,20 +40,21 @@ service_defaults:
   max_sessions: 50000
 
 services:
-  - name: live-streaming
-    authorities:
-      - "live.example.com"
-      - "e79.x.akamaiedge.net"
-      - "1234567890.rsc.cdn77.org"
-    path:
-      prefix: "/"
+  live-streaming:
+    match:
+      - authority: {exact: "live.example.com"}
+        path: {exact: "/moq-relay"}
+      - authority: {exact: "e79.x.akamaiedge.net"}
+        path: {prefix: "/"}
+      - authority: {exact: "1234567890.rsc.cdn77.org"}
+        path: {prefix: "/"}
 
-    # Tune batching e.g. Latency vs performance
+    # Tune batching e.g. Latency vs performance (aspirational)
     batching:
       min_batch_size: 100kib
       max_batch_delay: 250ms
 
-    # By defualt all listners, this can limit them
+    # By default all listeners, this can limit them (aspirational)
     listeners: ["main"]
 
     auth: #....
@@ -85,10 +86,10 @@ services:
         batching:
           max_batch_delay: 50ms
 
-  - name: pure-relay
-    authority:
-      wildcard: "moq-relay.example.com"
-    path: "/"
+  pure-relay:
+    match:
+      - authority: {wildcard: "*.moq-relay.example.com"}
+        path: {prefix: "/"}
     auth_plugins:
       - anonymous
 
@@ -96,4 +97,4 @@ services:
       type: local-only
 
 services_include:
-  - /etc/o-rly/services.d/*.yaml
+  - /etc/moqx/services.d/*.yaml

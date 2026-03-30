@@ -1,9 +1,9 @@
-#include "o_rly/stats/QuicStatsCollector.h"
+#include "moqx/stats/QuicStatsCollector.h"
 
 #include <folly/io/async/EventBaseManager.h>
 #include <glog/logging.h>
 
-namespace openmoq::o_rly::stats {
+namespace openmoq::moqx::stats {
 
 // Private inner class: the quic::QuicTransportStatsCallback adapter owned by mvfst.
 // Captures the QUIC worker's EventBase on first callback, then registers the collector
@@ -74,6 +74,7 @@ public:
   void onRttSample(uint64_t) override {}
   void onBandwidthSample(uint64_t) override {}
   void onCwndHintBytesSample(uint64_t) override {}
+  void onCongestionControllerResumed() override {}
   void onNewCongestionController(quic::CongestionControlType) override {}
   void onPTO() override {}
   void onRead(size_t) override {}
@@ -157,4 +158,4 @@ folly::Executor* QuicStatsCollector::owningExecutor() const {
   return evb;
 }
 
-} // namespace openmoq::o_rly::stats
+} // namespace openmoq::moqx::stats
