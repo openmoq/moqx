@@ -12,7 +12,8 @@
 
 namespace {
 constexpr uint8_t kDefaultUpstreamPriority = 128;
-}
+constexpr std::chrono::seconds kUpstreamConnectWaitTimeout(5);
+} // namespace
 
 using namespace moxygen;
 
@@ -52,6 +53,20 @@ private:
 std::shared_ptr<Publisher::NamespacePublishHandle>
 makeNamespaceBridgeHandle(std::weak_ptr<MoqxRelay> relay, std::shared_ptr<MoQSession> session) {
   return std::make_shared<ORelayNamespaceHandle>(std::move(relay), std::move(session));
+}
+
+folly::coro::Task<void> MoqxRelay::onUpstreamConnect(std::shared_ptr<MoQSession> session) {
+  auto nsHandle = makeNamespaceBridgeHandle(weak_from_this(), session);
+  auto result = co_await session->subscribeNamespace(makePeerSubNs(relayID_), nsHandle);
+  if (result.hasValue()) {
+    upstreamSubNsHandle_ = std::move(result.value());
+  } else {
+    XLOG(ERR) << "MoqxRelay: upstream peer subNs failed: " << result.error().reasonPhrase;
+  }
+}
+
+void MoqxRelay::onUpstreamDisconnect() {
+  upstreamSubNsHandle_.reset();
 }
 
 // Sends SUBSCRIBE_UPDATE to update forwarding state. Called from:
@@ -826,6 +841,10 @@ MoqxRelay::subscribe(SubscribeRequest subReq, std::shared_ptr<TrackConsumer> con
       ));
     }
     auto upstreamSession = findPublishNamespaceSession(subReq.fullTrackName.trackNamespace);
+    if (!upstreamSession && upstream_) {
+      co_await upstream_->waitForConnected(kUpstreamConnectWaitTimeout);
+      upstreamSession = findPublishNamespaceSession(subReq.fullTrackName.trackNamespace);
+    }
     if (!upstreamSession) {
       // no such namespace has been published
       co_return folly::makeUnexpected(SubscribeError(
@@ -985,6 +1004,10 @@ MoqxRelay::fetch(Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
   }
 
   auto upstreamSession = findPublishNamespaceSession(fetch.fullTrackName.trackNamespace);
+  if (!upstreamSession && upstream_) {
+    co_await upstream_->waitForConnected(kUpstreamConnectWaitTimeout);
+    upstreamSession = findPublishNamespaceSession(fetch.fullTrackName.trackNamespace);
+  }
   if (!upstreamSession) {
     // Attempt to find matching upstream subscription (from publish)
     auto subscriptionIt = subscriptions_.find(fetch.fullTrackName);
@@ -1058,7 +1081,10 @@ folly::coro::Task<Publisher::TrackStatusResult> MoqxRelay::trackStatus(TrackStat
   } else {
     // No subscription - forward to upstream
     auto upstreamSession = findPublishNamespaceSession(trackStatus.fullTrackName.trackNamespace);
-
+    if (!upstreamSession && upstream_) {
+      co_await upstream_->waitForConnected(kUpstreamConnectWaitTimeout);
+      upstreamSession = findPublishNamespaceSession(trackStatus.fullTrackName.trackNamespace);
+    }
     if (!upstreamSession) {
       XLOG(DBG1) << "No upstream session for track: " << trackStatus.fullTrackName;
       co_return folly::makeUnexpected(TrackStatusError{

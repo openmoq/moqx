@@ -257,6 +257,15 @@ if(MOQX_BUILD_TESTS)
   gtest_discover_tests(moqx_service_matcher_test)
 
   add_test(
+    NAME relay_chain
+    COMMAND bash ${PROJECT_SOURCE_DIR}/tests/test_relay_chain.sh $<TARGET_FILE:moqx>
+  )
+  set_tests_properties(relay_chain PROPERTIES
+    TIMEOUT 120
+    ENVIRONMENT "MOQBIN=${PROJECT_SOURCE_DIR}/.scratch/moxygen-install/bin"
+  )
+
+  add_test(
     NAME admin_info_endpoint
     COMMAND bash ${PROJECT_SOURCE_DIR}/tests/test_admin_info.sh $<TARGET_FILE:moqx>
   )
