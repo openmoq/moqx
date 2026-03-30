@@ -4,6 +4,7 @@
 
 #include <moqx/MoqxRelay.h>
 #include <moqx/ServiceMatcher.h>
+#include <moqx/UpstreamProvider.h>
 #include <moqx/config/config.h>
 #include <moqx/stats/MoQStatsCollector.h>
 #include <moqx/stats/StatsRegistry.h>
@@ -19,17 +20,28 @@ public:
       const std::string& key,
       const std::string& endpoint,
       const std::string& versions,
-      folly::F14FastMap<std::string, config::ServiceConfig> services
+      folly::F14FastMap<std::string, config::ServiceConfig> services,
+      const std::string& relayID = {}
   );
 
   // Used when the insecure flag is true
   MoqxRelayServer(
       const std::string& endpoint,
       const std::string& versions,
-      folly::F14FastMap<std::string, config::ServiceConfig> services
+      folly::F14FastMap<std::string, config::ServiceConfig> services,
+      const std::string& relayID = {}
   );
 
+  ~MoqxRelayServer() override;
+
   void setStatsRegistry(std::shared_ptr<stats::StatsRegistry> registry);
+
+  // Binds listeners then initialises per-service upstream providers (requires
+  // draft 16+ for relay chaining).
+  void start(const folly::SocketAddress& addr) {
+    MoQServer::start(addr);
+    initUpstreams();
+  }
 
   void onNewSession(std::shared_ptr<moxygen::MoQSession> clientSession) override;
 
@@ -48,10 +60,19 @@ protected:
   ) override;
 
 private:
-  void initRelays(const folly::F14FastMap<std::string, config::ServiceConfig>& services);
+  void initServices(
+      const folly::F14FastMap<std::string, config::ServiceConfig>& services,
+      const std::string& relayID
+  );
+  void initUpstreams();
 
-  folly::F14FastMap<std::string, std::shared_ptr<MoqxRelay>> relays_;
+  struct ServiceEntry {
+    config::ServiceConfig config;
+    std::shared_ptr<MoqxRelay> relay;
+  };
+  folly::F14FastMap<std::string, ServiceEntry> services_;
   ServiceMatcher serviceMatcher_;
+  std::string relayID_;
   std::shared_ptr<stats::StatsRegistry> statsRegistry_;
   std::shared_ptr<stats::MoQStatsCollector> statsCollector_;
 };

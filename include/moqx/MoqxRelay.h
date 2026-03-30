@@ -46,6 +46,27 @@ public:
     upstream_ = std::move(upstream);
   }
 
+  // Stops and releases the upstream provider, breaking the shared_ptr cycle
+  // between MoqxRelay and UpstreamProvider. Safe to call with no upstream.
+  void stop() {
+    if (upstream_) {
+      upstream_->stop();
+      // Do not reset upstream_ here: the provider's session/client live on the
+      // worker EVB thread and must be freed there (via the reconnect coroutine's
+      // shared_from_this dropping after it co_returns). Releasing upstream_ when
+      // relay is destroyed naturally (services_ cleared) is safe because by then
+      // stop() has already cleared the back-refs so relay's refcount == 1.
+    }
+  }
+
+  // Called by UpstreamProvider's onConnect hook after a new upstream session is
+  // established. Issues the peer subNs handshake and saves the handle.
+  folly::coro::Task<void> onUpstreamConnect(std::shared_ptr<moxygen::MoQSession> session);
+
+  // Called by UpstreamProvider's onDisconnect hook when the upstream session
+  // closes. Releases the peer subNs handle.
+  void onUpstreamDisconnect();
+
   folly::coro::Task<SubscribeResult> subscribe(
       moxygen::SubscribeRequest subReq,
       std::shared_ptr<moxygen::TrackConsumer> consumer
@@ -234,6 +255,10 @@ private:
   moxygen::TrackNamespace allowedNamespacePrefix_;
   std::string relayID_;
   std::shared_ptr<UpstreamProvider> upstream_;
+
+  // Holds the peer subNs handle for the upstream (initiating) direction.
+  // Kept alive so the subscription is not cancelled when onUpstreamConnect returns.
+  std::shared_ptr<moxygen::Publisher::SubscribeNamespaceHandle> upstreamSubNsHandle_;
 
   // Reciprocal peer subNs handles: one per peer relay session that has
   // connected to us. Kept alive so the subscription is not immediately

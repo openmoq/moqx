@@ -47,7 +47,8 @@ std::shared_ptr<openmoq::moqx::MoqxRelayServer> createServer(const cfg::Config& 
           return std::make_shared<openmoq::moqx::MoqxRelayServer>(
               listener.endpoint,
               listener.moqtVersions,
-              std::move(services)
+              std::move(services),
+              config.relayID
           );
         } else {
           return std::make_shared<openmoq::moqx::MoqxRelayServer>(
@@ -55,7 +56,8 @@ std::shared_ptr<openmoq::moqx::MoqxRelayServer> createServer(const cfg::Config& 
               tls.keyFile,
               listener.endpoint,
               listener.moqtVersions,
-              std::move(services)
+              std::move(services),
+              config.relayID
           );
         }
       },
@@ -134,7 +136,6 @@ int main(int argc, char* argv[]) {
   }
 
   // === 8. Start serving ===
-  // Bind listeners, accept connections, enter event loop
   server->start(config.listener.address);
   evb.loopForever();
 
