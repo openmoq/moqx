@@ -63,6 +63,23 @@ struct ParsedAdminConfig {
   rfl::Description<"TLS configuration", std::optional<ParsedAdminTlsConfig>> tls;
 };
 
+struct ParsedUpstreamTlsConfig {
+  rfl::Description<"Skip TLS certificate verification (dev only)", bool> insecure;
+  rfl::Description<"Path to CA certificate file for peer verification", std::optional<std::string>>
+      ca_cert;
+};
+
+struct ParsedUpstreamConfig {
+  rfl::Description<"Upstream MoQ server URL (moqt://host:port/path)", std::string> url;
+  rfl::Description<"TLS configuration for upstream connection", ParsedUpstreamTlsConfig> tls;
+  rfl::Description<"QUIC connect timeout in milliseconds (default: 5000)", std::optional<uint32_t>>
+      connect_timeout_ms;
+  rfl::Description<
+      "MoQ session idle timeout in milliseconds (default: 5000)",
+      std::optional<uint32_t>>
+      idle_timeout_ms;
+};
+
 struct ParsedServiceConfig {
   struct MatchRule {
     struct ExactAuthority {
@@ -104,6 +121,10 @@ struct ParsedServiceConfig {
       "Per-service cache settings (overrides service_defaults)",
       std::optional<ParsedCacheConfig>>
       cache;
+  rfl::Description<
+      "Upstream MoQ server for this service (optional; enables relay chaining)",
+      std::optional<ParsedUpstreamConfig>>
+      upstream;
 };
 
 struct ParsedServiceDefaultsConfig {
@@ -121,6 +142,10 @@ struct ParsedConfig {
       service_defaults;
   rfl::Description<"Service definitions", std::map<std::string, ParsedServiceConfig>> services;
   rfl::Description<"Admin HTTP server settings", std::optional<ParsedAdminConfig>> admin;
+  rfl::Description<
+      "Relay identity string (optional; random string generated if absent)",
+      std::optional<std::string>>
+      relay_id;
 };
 
 } // namespace openmoq::moqx::config
