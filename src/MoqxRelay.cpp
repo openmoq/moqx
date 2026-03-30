@@ -18,6 +18,42 @@ using namespace moxygen;
 
 namespace openmoq::moqx {
 
+// Bridges NAMESPACE/NAMESPACE_DONE messages from a peer relay directly into
+// MoqxRelay::doPublishNamespace/doPublishNamespaceDone — no coroutine overhead,
+// no handle map needed.
+class MoqxRelayNamespaceHandle : public Publisher::NamespacePublishHandle {
+public:
+  MoqxRelayNamespaceHandle(std::weak_ptr<MoqxRelay> relay, std::shared_ptr<MoQSession> session)
+      : relay_(std::move(relay)), session_(std::move(session)) {}
+
+  void namespaceMsg(const TrackNamespace& suffix) override {
+    auto relay = relay_.lock();
+    if (!relay || !session_) {
+      return;
+    }
+    PublishNamespace pubNs;
+    pubNs.trackNamespace = suffix;
+    relay->doPublishNamespace(std::move(pubNs), session_, nullptr);
+  }
+
+  void namespaceDoneMsg(const TrackNamespace& suffix) override {
+    auto relay = relay_.lock();
+    if (!relay || !session_) {
+      return;
+    }
+    relay->doPublishNamespaceDone(suffix, session_);
+  }
+
+private:
+  std::weak_ptr<MoqxRelay> relay_;
+  std::shared_ptr<MoQSession> session_;
+};
+
+std::shared_ptr<Publisher::NamespacePublishHandle>
+makeNamespaceBridgeHandle(std::weak_ptr<MoqxRelay> relay, std::shared_ptr<MoQSession> session) {
+  return std::make_shared<MoqxRelayNamespaceHandle>(std::move(relay), std::move(session));
+}
+
 // Sends SUBSCRIBE_UPDATE to update forwarding state. Called from:
 // - subscribeNamespace: forwarder was empty, new subscriber added
 // (forward=true)
@@ -75,23 +111,20 @@ std::shared_ptr<MoqxRelay::NamespaceNode> MoqxRelay::findNamespaceNode(
   return nodePtr;
 }
 
-folly::coro::Task<Subscriber::PublishNamespaceResult> MoqxRelay::publishNamespace(
-    PublishNamespace ann,
+std::shared_ptr<Subscriber::PublishNamespaceHandle> MoqxRelay::doPublishNamespace(
+    PublishNamespace pubNs,
+    std::shared_ptr<MoQSession> session,
     std::shared_ptr<Subscriber::PublishNamespaceCallback> callback
 ) {
-  XLOG(DBG1) << __func__ << " ns=" << ann.trackNamespace;
+  XLOG(DBG1) << __func__ << " ns=" << pubNs.trackNamespace;
   // check auth
-  if (!ann.trackNamespace.startsWith(allowedNamespacePrefix_)) {
-    co_return folly::makeUnexpected(PublishNamespaceError{
-        ann.requestID,
-        PublishNamespaceErrorCode::UNINTERESTED,
-        "bad namespace"
-    });
+  if (!pubNs.trackNamespace.startsWith(allowedNamespacePrefix_)) {
+    return nullptr;
   }
   std::vector<std::pair<std::shared_ptr<MoQSession>, NamespaceNode::NamespaceSubscriberInfo>>
       sessions;
   auto nodePtr = findNamespaceNode(
-      ann.trackNamespace,
+      pubNs.trackNamespace,
       /*createMissingNodes=*/true,
       MatchType::Exact,
       &sessions
@@ -100,7 +133,7 @@ folly::coro::Task<Subscriber::PublishNamespaceResult> MoqxRelay::publishNamespac
   // Log if there is already a session that has publishNamespace-d this track
   if (nodePtr->sourceSession) {
     XLOG(WARNING) << "PublishNamespace: Existing session (" << nodePtr->sourceSession.get()
-                  << ") has already published trackNamespace=" << ann.trackNamespace;
+                  << ") has already published trackNamespace=" << pubNs.trackNamespace;
     // Since we don't fully support multiple publishers -- cancel the old
     // publishNamespace and remove ongoing subscriptions to this publisher
     // in that namespace.  Note: it could have publishNamespace-d a more
@@ -115,7 +148,7 @@ folly::coro::Task<Subscriber::PublishNamespaceResult> MoqxRelay::publishNamespac
     }
     for (auto it = subscriptions_.begin(); it != subscriptions_.end();) {
       // Check if the subscription's FullTrackName is in this namespace
-      if (it->first.trackNamespace.startsWith(ann.trackNamespace) &&
+      if (it->first.trackNamespace.startsWith(pubNs.trackNamespace) &&
           it->second.upstream == nodePtr->sourceSession) {
         XLOG(DBG4) << "Erasing subscription to " << it->first;
         it = subscriptions_.erase(it);
@@ -123,12 +156,8 @@ folly::coro::Task<Subscriber::PublishNamespaceResult> MoqxRelay::publishNamespac
         ++it;
       }
     }
-
     nodePtr->sourceSession.reset();
   }
-
-  // TODO: store auth for forwarding on future SubscribeNamespace?
-  auto session = MoQSession::getRequestSession();
 
   // Include sessions that subscribed exactly this namespace as well.
   // findNamespaceNode(..., &sessions) collects subscribers attached to prefixes
@@ -140,8 +169,8 @@ folly::coro::Task<Subscriber::PublishNamespaceResult> MoqxRelay::publishNamespac
   bool wasEmpty = !nodePtr->hasLocalSessions();
   nodePtr->sourceSession = session;
   nodePtr->publishNamespaceCallback = std::move(callback);
-  nodePtr->trackNamespace_ = ann.trackNamespace;
-  nodePtr->setPublishNamespaceOk({ann.requestID});
+  nodePtr->trackNamespace_ = pubNs.trackNamespace;
+  nodePtr->setPublishNamespaceOk({.requestID = pubNs.requestID, .requestSpecificParams = {}});
 
   // If this is the first content added to this node, notify parent
   if (wasEmpty && nodePtr->parent_) {
@@ -153,26 +182,42 @@ folly::coro::Task<Subscriber::PublishNamespaceResult> MoqxRelay::publishNamespac
       if (info.namespacePublishHandle) {
         // Draft 16+: send NAMESPACE message on the bidi stream
         TrackNamespace suffix(std::vector<std::string>(
-            ann.trackNamespace.trackNamespace.begin() + info.trackNamespacePrefix.size(),
-            ann.trackNamespace.trackNamespace.end()
+            pubNs.trackNamespace.trackNamespace.begin() + info.trackNamespacePrefix.size(),
+            pubNs.trackNamespace.trackNamespace.end()
         ));
         info.namespacePublishHandle->namespaceMsg(suffix);
       } else {
         // Draft <= 15: send PUBLISH_NAMESPACE on a new stream
         auto exec = outSession->getExecutor();
-        co_withExecutor(exec, publishNamespaceToSession(outSession, ann, nodePtr)).start();
+        co_withExecutor(exec, publishNamespaceToSession(outSession, pubNs, nodePtr)).start();
       }
     }
   }
-  co_return nodePtr;
+  return nodePtr;
+}
+
+folly::coro::Task<Subscriber::PublishNamespaceResult> MoqxRelay::publishNamespace(
+    PublishNamespace pubNs,
+    std::shared_ptr<Subscriber::PublishNamespaceCallback> callback
+) {
+  // TODO: store auth for forwarding on future SubscribeNamespace?
+  auto session = MoQSession::getRequestSession();
+  auto requestID = pubNs.requestID;
+  auto result = doPublishNamespace(std::move(pubNs), session, std::move(callback));
+  if (!result) {
+    co_return folly::makeUnexpected(
+        PublishNamespaceError{requestID, PublishNamespaceErrorCode::UNINTERESTED, "bad namespace"}
+    );
+  }
+  co_return result;
 }
 
 folly::coro::Task<void> MoqxRelay::publishNamespaceToSession(
     std::shared_ptr<MoQSession> session,
-    PublishNamespace ann,
+    PublishNamespace pubNs,
     std::shared_ptr<NamespaceNode> nodePtr
 ) {
-  auto publishNamespaceHandle = co_await session->publishNamespace(ann);
+  auto publishNamespaceHandle = co_await session->publishNamespace(pubNs);
   if (publishNamespaceHandle.hasError()) {
     XLOG(ERR) << "PublishNamespace failed err=" << publishNamespaceHandle.error().reasonPhrase;
   } else {
@@ -247,7 +292,10 @@ void MoqxRelay::NamespaceNode::tryPruneChild(const std::string& childKey) {
   parentOfNodeToRemove->children.erase(keyToRemove);
 }
 
-void MoqxRelay::publishNamespaceDone(const TrackNamespace& trackNamespace, NamespaceNode*) {
+void MoqxRelay::doPublishNamespaceDone(
+    const TrackNamespace& trackNamespace,
+    std::shared_ptr<MoQSession> session
+) {
   XLOG(DBG1) << __func__ << " ns=" << trackNamespace;
   // Node would be useful if there were back links
   auto nodePtr = findNamespaceNode(trackNamespace);
@@ -259,8 +307,6 @@ void MoqxRelay::publishNamespaceDone(const TrackNamespace& trackNamespace, Names
 
   // Track if node had local content before modification
   bool hadLocalContent = nodePtr->hasLocalSessions();
-
-  auto session = MoQSession::getRequestSession();
 
   // Only allow publishNamespaceDone if there is an owner and the caller is that
   // owner
@@ -318,6 +364,10 @@ void MoqxRelay::publishNamespaceDone(const TrackNamespace& trackNamespace, Names
       !trackNamespace.trackNamespace.empty()) {
     nodePtr->parent_->tryPruneChild(trackNamespace.trackNamespace.back());
   }
+}
+
+void MoqxRelay::publishNamespaceDone(const TrackNamespace& trackNamespace, NamespaceNode*) {
+  doPublishNamespaceDone(trackNamespace, MoQSession::getRequestSession());
 }
 
 void MoqxRelay::onPublishDone(const FullTrackName& ftn) {
@@ -576,6 +626,25 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
   XLOG(DBG1) << __func__ << " nsp=" << subNs.trackNamespacePrefix;
 
   auto session = MoQSession::getRequestSession();
+
+  // Relay peering: if the incoming subNs carries a relay auth token, the peer
+  // is a relay. Reciprocate with our own peer subNs so the peer gets our
+  // namespace announcements as publishers connect.
+  if (!relayID_.empty() && isPeerSubNs(subNs)) {
+    XLOG(INFO) << __func__ << ": peer relay detected, reciprocating peer subNs";
+    auto handle = makeNamespaceBridgeHandle(weak_from_this(), session);
+    auto recipResult = co_await session->subscribeNamespace(
+        makePeerSubNs(),
+        handle
+    ); // no token: reciprocal, prevents loop
+    if (recipResult.hasError()) {
+      XLOG(ERR) << "Reciprocal peer subNs failed: " << recipResult.error().reasonPhrase;
+    } else {
+      peerSubNsHandles_.emplace(session.get(), std::move(recipResult.value()));
+    }
+    // Fall through: register the peer as a normal subNs subscriber so it
+    // receives namespace announcements as publishers connect.
+  }
   auto maybeNegotiatedVersion = session->getNegotiatedVersion();
   CHECK(maybeNegotiatedVersion.has_value());
 
@@ -671,7 +740,7 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
   co_return std::make_shared<NamespaceSubscription>(
       shared_from_this(),
       std::move(session),
-      SubscribeNamespaceOk{subNs.requestID},
+      SubscribeNamespaceOk{.requestID = subNs.requestID, .requestSpecificParams = {}},
       subNs.trackNamespacePrefix
   );
 }
@@ -681,6 +750,8 @@ void MoqxRelay::unsubscribeNamespace(
     std::shared_ptr<MoQSession> session
 ) {
   XLOG(DBG1) << __func__ << " nsp=" << trackNamespacePrefix;
+  // Clean up the reciprocal peer subNs handle for this session if present.
+  peerSubNsHandles_.erase(session.get());
   auto nodePtr = findNamespaceNode(trackNamespacePrefix);
   if (!nodePtr) {
     // TODO: maybe error?
