@@ -2158,4 +2158,34 @@ TEST_F(MoQRelayTest, TrackStatusViaPrefixMatching) {
   removeSession(requester);
 }
 
+// Test: makeNamespaceBridgeHandle routes namespaceMsg to doPublishNamespace
+TEST_F(MoQRelayTest, NamespaceBridgeHandleForwardsNamespaceMsg) {
+  auto peerSession = createMockSession();
+
+  // Bridge handle routes NAMESPACE messages from peerSession into the relay.
+  // For peering the subscription prefix is empty, so the suffix == full namespace.
+  auto handle = makeNamespaceBridgeHandle(relay_, peerSession);
+  handle->namespaceMsg(kTestNamespace);
+
+  auto sessions = relay_->findPublishNamespaceSessions(kTestNamespace);
+  ASSERT_EQ(sessions.size(), 1u);
+  EXPECT_EQ(sessions[0], peerSession);
+
+  removeSession(peerSession);
+}
+
+// Test: makeNamespaceBridgeHandle routes namespaceDoneMsg to doPublishNamespaceDone
+TEST_F(MoQRelayTest, NamespaceBridgeHandleForwardsDoneMsg) {
+  auto peerSession = createMockSession();
+  auto handle = makeNamespaceBridgeHandle(relay_, peerSession);
+
+  handle->namespaceMsg(kTestNamespace);
+  ASSERT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 1u);
+
+  handle->namespaceDoneMsg(kTestNamespace);
+  EXPECT_TRUE(relay_->findPublishNamespaceSessions(kTestNamespace).empty());
+
+  removeSession(peerSession);
+}
+
 } // namespace moxygen::test

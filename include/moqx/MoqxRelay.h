@@ -9,11 +9,13 @@
 #pragma once
 
 #include <folly/coro/SharedPromise.h>
+#include <moqx/UpstreamProvider.h>
 #include <moxygen/MoQSession.h>
 #include <moxygen/relay/MoQCache.h>
 #include <moxygen/relay/MoQForwarder.h>
 
 #include <folly/container/F14Set.h>
+#include <string>
 
 namespace openmoq::moqx {
 
@@ -24,8 +26,10 @@ class MoqxRelay : public moxygen::Publisher,
 public:
   explicit MoqxRelay(
       size_t maxCachedTracks = moxygen::kDefaultMaxCachedTracks,
-      size_t maxCachedGroupsPerTrack = moxygen::kDefaultMaxCachedGroupsPerTrack
-  ) {
+      size_t maxCachedGroupsPerTrack = moxygen::kDefaultMaxCachedGroupsPerTrack,
+      std::string relayID = {}
+  )
+      : relayID_(std::move(relayID)) {
     if (maxCachedTracks > 0) {
       cache_ = std::make_unique<moxygen::MoQCache>(maxCachedTracks, maxCachedGroupsPerTrack);
     }
@@ -33,6 +37,13 @@ public:
 
   void setAllowedNamespacePrefix(moxygen::TrackNamespace allowed) {
     allowedNamespacePrefix_ = std::move(allowed);
+  }
+
+  // Store the upstream provider. The provider must have been constructed with
+  // publishHandler=this and subscribeHandler=this so that the upstream relay's
+  // reciprocal subNs and namespace announcements route through ORelay.
+  void setUpstreamProvider(std::shared_ptr<UpstreamProvider> upstream) {
+    upstream_ = std::move(upstream);
   }
 
   folly::coro::Task<SubscribeResult> subscribe(
@@ -44,12 +55,12 @@ public:
   fetch(moxygen::Fetch fetch, std::shared_ptr<moxygen::FetchConsumer> consumer) override;
 
   folly::coro::Task<SubscribeNamespaceResult> subscribeNamespace(
-      moxygen::SubscribeNamespace subAnn,
+      moxygen::SubscribeNamespace subNs,
       std::shared_ptr<NamespacePublishHandle> namespacePublishHandle
   ) override;
 
   folly::coro::Task<moxygen::Subscriber::PublishNamespaceResult>
-  publishNamespace(moxygen::PublishNamespace ann, std::shared_ptr<moxygen::Subscriber::PublishNamespaceCallback>)
+  publishNamespace(moxygen::PublishNamespace pubNs, std::shared_ptr<moxygen::Subscriber::PublishNamespaceCallback>)
       override;
 
   PublishResult publish(
@@ -76,6 +87,20 @@ public:
     }
     return {};
   }
+
+  // Sync cores of publishNamespace/publishNamespaceDone. Called by the
+  // Subscriber coroutine interface and directly by ORelayNamespaceHandle
+  // (which provides the session explicitly — no getRequestSession() needed).
+  std::shared_ptr<moxygen::Subscriber::PublishNamespaceHandle> doPublishNamespace(
+      moxygen::PublishNamespace pubNs,
+      std::shared_ptr<moxygen::MoQSession> session,
+      std::shared_ptr<moxygen::Subscriber::PublishNamespaceCallback> callback
+  );
+
+  void doPublishNamespaceDone(
+      const moxygen::TrackNamespace& trackNamespace,
+      std::shared_ptr<moxygen::MoQSession> session
+  );
 
   // Test accessor: check if a publish exists and return node/publish state
   struct PublishState {
@@ -191,7 +216,7 @@ private:
 
   folly::coro::Task<void> publishNamespaceToSession(
       std::shared_ptr<moxygen::MoQSession> session,
-      moxygen::PublishNamespace ann,
+      moxygen::PublishNamespace pubNs,
       std::shared_ptr<NamespaceNode> nodePtr
   );
 
@@ -207,6 +232,16 @@ private:
   void publishNamespaceDone(const moxygen::TrackNamespace& trackNamespace, NamespaceNode* node);
 
   moxygen::TrackNamespace allowedNamespacePrefix_;
+  std::string relayID_;
+  std::shared_ptr<UpstreamProvider> upstream_;
+
+  // Reciprocal peer subNs handles: one per peer relay session that has
+  // connected to us. Kept alive so the subscription is not immediately
+  // cancelled. Keyed by raw session pointer (valid for session lifetime).
+  folly::F14FastMap<
+      moxygen::MoQSession*,
+      std::shared_ptr<moxygen::Publisher::SubscribeNamespaceHandle>>
+      peerSubNsHandles_;
   folly::F14FastMap<moxygen::FullTrackName, RelaySubscription, moxygen::FullTrackName::hash>
       subscriptions_;
 
@@ -216,5 +251,13 @@ private:
   );
   std::unique_ptr<moxygen::MoQCache> cache_;
 };
+
+// Creates a NamespacePublishHandle that bridges NAMESPACE/NAMESPACE_DONE
+// messages from a peer relay into relay->doPublishNamespace() synchronously.
+// Used for both the initiating (UpstreamProvider) and reciprocal (MoqxRelay) paths.
+std::shared_ptr<moxygen::Publisher::NamespacePublishHandle> makeNamespaceBridgeHandle(
+    std::weak_ptr<MoqxRelay> relay,
+    std::shared_ptr<moxygen::MoQSession> session
+);
 
 } // namespace openmoq::moqx
