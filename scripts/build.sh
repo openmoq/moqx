@@ -6,7 +6,7 @@
 #   --from-source   — build moxygen + all Meta deps from source (~15-30 min)
 #
 # Usage:
-#   ./scripts/build.sh setup [--from-release [SHA]|--from-source [SHA]] [--no-fallback] [--clean]
+#   ./scripts/build.sh setup [--from-release [SHA]|--from-source [SHA]] [--profile NAME] [--no-fallback] [--clean]
 #   ./scripts/build.sh [--profile NAME] [--build-dir DIR]
 #   ./scripts/build.sh test [--build-dir DIR] [-- CTEST_ARGS...]
 #
@@ -41,7 +41,7 @@ die() { echo "Error: $*" >&2; exit 1; }
 usage() {
   cat <<'EOF'
 Usage:
-  build.sh setup [--from-release [SHA]|--from-source [SHA]] [--no-fallback] [--clean]
+  build.sh setup [--from-release [SHA]|--from-source [SHA]] [--profile NAME] [--no-fallback] [--clean]
   build.sh [--profile NAME] [--build-dir DIR]
   build.sh test [--build-dir DIR] [-- CTEST_ARGS...]
 
@@ -57,6 +57,7 @@ Setup options:
                         Optional SHA overrides submodule commit
   --moxygen-dir DIR     Use a local moxygen directory instead of the submodule
                         (--from-source only; mutually exclusive with SHA)
+  --profile NAME        Build profile for deps: "default" or "san" (--from-source only)
   --no-fallback         Fail if requested mode unavailable (don't auto-switch)
   --clean               Remove .scratch and start fresh
 
@@ -189,6 +190,7 @@ checkout_submodule() {
 
 cmd_setup() {
   local mode="from-release"
+  local profile="default"
   local no_fallback=false
   local clean=false
   local target_sha=""
@@ -196,6 +198,7 @@ cmd_setup() {
 
   while (( $# > 0 )); do
     case "$1" in
+      --profile)     profile="$2"; shift 2 ;;
       --from-release)
         mode="from-release"; shift
         # Optional SHA argument (next arg that doesn't start with --)
@@ -270,7 +273,7 @@ cmd_setup() {
   if [[ "$mode" == "from-source" ]]; then
     echo ""
     echo "==> Setting up dependencies (from source)..."
-    bash "$SCRIPT_DIR/setup-deps-standalone.sh"
+    bash "$SCRIPT_DIR/setup-deps-standalone.sh" --profile "$profile"
     echo "from-source" > "$DEPS_MODE_FILE"
   fi
 
@@ -303,14 +306,20 @@ cmd_build() {
     esac
   fi
 
-  if [[ ! -f "$PREFIX_PATH_FILE" ]]; then
+  # Use profile-specific prefix path if available, fall back to default
+  local prefix_path_file="$PREFIX_PATH_FILE"
+  if [[ "$profile" != "default" && -f "${SCRATCH}/cmake_prefix_path-${profile}.txt" ]]; then
+    prefix_path_file="${SCRATCH}/cmake_prefix_path-${profile}.txt"
+  fi
+
+  if [[ ! -f "$prefix_path_file" ]]; then
     die "Dependencies not set up. Run: ./scripts/build.sh setup"
   fi
 
   check_submodule
 
   local prefix_path
-  prefix_path=$(cat "$PREFIX_PATH_FILE")
+  prefix_path=$(cat "$prefix_path_file")
 
   local nproc
   nproc=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
