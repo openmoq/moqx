@@ -3,7 +3,6 @@
 #include <array>
 #include <cstdint>
 #include <memory>
-#include <mutex>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -197,28 +196,18 @@ public:
   virtual folly::Executor* owningExecutor() const = 0;
 };
 
-// ---------------------------------------------------------------------------
-// StatsRegistry
-// Singleton-ish shared owner of all active collectors.  Collectors
-// register/deregister themselves; the registry aggregates on demand.
-// ---------------------------------------------------------------------------
-
 class StatsRegistry {
 public:
   StatsRegistry() = default;
   ~StatsRegistry() = default;
 
-  // Register a collector.
   void registerCollector(std::shared_ptr<StatsCollectorBase> collector);
-
-  // Called by StatsCollectorBase::dtor — deregisters the collector.
-  void deregisterCollector(StatsCollectorBase* collector);
 
   folly::coro::Task<StatsSnapshot> aggregateAsync();
 
 private:
-  mutable std::mutex collectors_mutex_;
-  std::vector<std::shared_ptr<StatsCollectorBase>> collectors_;
+  // Ownership stays with callers. aggregateAsync() prunes it lazily.
+  std::vector<std::weak_ptr<StatsCollectorBase>> collectors_;
 };
 
 } // namespace openmoq::moqx::stats

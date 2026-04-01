@@ -15,8 +15,7 @@ namespace openmoq::moqx::stats {
 /**
  * Collects transport-layer QUIC statistics on a per-worker-thread basis.
  *
- * Ownership: Registry's shared_ptr is copied by aggregateAsync(), keeping the collector
- * alive during snapshot tasks even if mvfst destroys its Callback concurrently.
+ * Ownership: The Callback holds a shared_ptr to the collector it creates.
  *
  * Threading: All callback methods fire on the QUIC worker's serialized EventBase thread;
  * counters need no synchronization. Registration occurs after executor capture, so it's always
@@ -34,7 +33,7 @@ public:
     std::weak_ptr<StatsRegistry> registry_;
   };
 
-  ~QuicStatsCollector() override;
+  ~QuicStatsCollector() override = default;
 
   // Implement StatsCollectorBase
   StatsSnapshot snapshot() const override;
@@ -46,10 +45,9 @@ private:
   class Callback;
 
   // Private constructor: instantiated by Callback
-  explicit QuicStatsCollector(std::weak_ptr<StatsRegistry> registry);
+  QuicStatsCollector() = default;
 
   std::atomic<folly::EventBase*> owningEvb_{nullptr};
-  std::weak_ptr<StatsRegistry> registry_;
 
   // Counters (no sync needed; all writes on the QUIC IO EventBase).
 #define DEFINE_FIELD(type, name) type name##_{0};

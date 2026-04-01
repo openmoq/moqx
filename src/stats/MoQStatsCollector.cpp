@@ -5,12 +5,9 @@
 namespace openmoq::moqx::stats {
 
 /* static */
-std::shared_ptr<MoQStatsCollector> MoQStatsCollector::create_moq_stats_collector(
-    folly::Executor* owningExecutor,
-    std::shared_ptr<StatsRegistry> registry
-) {
-  auto collector = std::shared_ptr<MoQStatsCollector>(new MoQStatsCollector(owningExecutor));
-  collector->registry_ = registry;
+std::shared_ptr<MoQStatsCollector>
+MoQStatsCollector::create_moq_stats_collector(std::shared_ptr<StatsRegistry> registry) {
+  auto collector = std::shared_ptr<MoQStatsCollector>(new MoQStatsCollector());
 
   // Build aliased shared_ptrs: they share the parent's refcount but point to
   // the value-member inner objects.  Holding only an inner callback extends the
@@ -24,13 +21,10 @@ std::shared_ptr<MoQStatsCollector> MoQStatsCollector::create_moq_stats_collector
   return collector;
 }
 
-MoQStatsCollector::MoQStatsCollector(folly::Executor* owningExecutor)
-    : owningExecutor_(owningExecutor), pubCallback_(*this), subCallback_(*this) {}
+MoQStatsCollector::MoQStatsCollector() : pubCallback_(*this), subCallback_(*this) {}
 
-MoQStatsCollector::~MoQStatsCollector() {
-  if (auto registry = registry_.lock()) {
-    registry->deregisterCollector(this);
-  }
+void MoQStatsCollector::setExecutor(folly::Executor* executor) {
+  owningExecutor_.store(executor, std::memory_order_relaxed);
 }
 
 // --- StatsCollectorBase ---
@@ -61,7 +55,7 @@ StatsSnapshot MoQStatsCollector::snapshot() const {
 }
 
 folly::Executor* MoQStatsCollector::owningExecutor() const {
-  return owningExecutor_;
+  return owningExecutor_.load(std::memory_order_relaxed);
 }
 
 std::shared_ptr<moxygen::MoQPublisherStatsCallback> MoQStatsCollector::publisherCallback() const {

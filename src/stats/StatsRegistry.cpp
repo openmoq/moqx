@@ -1,5 +1,6 @@
 #include <moqx/stats/StatsRegistry.h>
 
+#include <algorithm>
 #include <folly/Conv.h>
 #include <folly/io/Cursor.h>
 #include <folly/io/IOBuf.h>
@@ -125,34 +126,36 @@ std::unique_ptr<folly::IOBuf> StatsSnapshot::formatPrometheus(const StatsSnapsho
 }
 
 void StatsRegistry::registerCollector(std::shared_ptr<StatsCollectorBase> collector) {
-  std::unique_lock<std::mutex> lock(collectors_mutex_);
-  collectors_.push_back(std::move(collector));
+  collectors_.emplace_back(collector);
   XLOG(DBG1) << "StatsRegistry: registered collector (total=" << collectors_.size() << ")";
-}
-void StatsRegistry::deregisterCollector(StatsCollectorBase* collector) {
-  std::unique_lock<std::mutex> lock(collectors_mutex_);
-  auto it = std::find_if(collectors_.begin(), collectors_.end(), [collector](const auto& ptr) {
-    return ptr.get() == collector;
-  });
-  if (it != collectors_.end()) {
-    collectors_.erase(it);
-  }
-  XLOG(DBG1) << "StatsRegistry: deregistered collector (total=" << collectors_.size() << ")";
 }
 
 folly::coro::Task<StatsSnapshot> StatsRegistry::aggregateAsync() {
   static auto snapshotTask = [](std::shared_ptr<StatsCollectorBase> c
                              ) -> folly::coro::Task<StatsSnapshot> { co_return c->snapshot(); };
 
-  std::vector<std::shared_ptr<StatsCollectorBase>> copy;
-  {
-    std::unique_lock<std::mutex> lock(collectors_mutex_);
-    copy = collectors_;
+  // collectors_ is written only during startup; by the time aggregateAsync()
+  // is called it is effectively read-only.
+  std::vector<std::shared_ptr<StatsCollectorBase>> live;
+  live.reserve(collectors_.size());
+  size_t write = 0;
+  for (size_t i = 0; i < collectors_.size(); ++i) {
+    auto s = collectors_[i].lock();
+    if (s) { // if collector is alive, keep it and move to next write slot
+      live.push_back(std::move(s));
+      collectors_[write++] = collectors_[i];
+    }
   }
+  collectors_.resize(write);
+
   std::vector<folly::coro::TaskWithExecutor<StatsSnapshot>> tasks;
-  tasks.reserve(copy.size());
-  for (const auto& c : copy) {
-    tasks.push_back(folly::coro::co_withExecutor(c->owningExecutor(), snapshotTask(c)));
+  tasks.reserve(live.size());
+  for (const auto& c : live) {
+    auto* exec = c->owningExecutor();
+    if (!exec) {
+      continue; // executor not yet bound; skip until next poll
+    }
+    tasks.push_back(folly::coro::co_withExecutor(exec, snapshotTask(c)));
   }
   auto results = co_await folly::coro::collectAllRange(std::move(tasks));
   StatsSnapshot combined;

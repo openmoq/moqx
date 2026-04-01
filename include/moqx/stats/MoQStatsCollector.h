@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <memory>
 
@@ -94,14 +95,12 @@ public:
   };
 
   // --- Factory ---
-  // Constructs the collector, registers it with the registry, and returns the
-  // shared_ptr.  The aliased callback shared_ptrs are set up
-  static std::shared_ptr<MoQStatsCollector> create_moq_stats_collector(
-      folly::Executor* owningExecutor,
-      std::shared_ptr<StatsRegistry> registry
-  );
+  static std::shared_ptr<MoQStatsCollector>
+  create_moq_stats_collector(std::shared_ptr<StatsRegistry> registry);
 
-  ~MoQStatsCollector() override;
+  ~MoQStatsCollector() override = default;
+
+  void setExecutor(folly::Executor* executor);
 
   // Returns aliased shared_ptrs whose reference count is shared with this
   // MoQStatsCollector.  Holding only an inner callback keeps the parent alive.
@@ -116,10 +115,11 @@ public:
   void onSessionEnd();
 
 private:
-  explicit MoQStatsCollector(folly::Executor* owningExecutor);
+  MoQStatsCollector();
 
-  folly::Executor* owningExecutor_;
-  std::weak_ptr<StatsRegistry> registry_;
+  // Atomic so the admin evb can read it safely while onNewSession sets it
+  // from the MoQ session thread.
+  std::atomic<folly::Executor*> owningExecutor_{nullptr};
 
   // Value-member inner callbacks.
   PublisherCallback pubCallback_;

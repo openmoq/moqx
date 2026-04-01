@@ -72,8 +72,11 @@ MoqxRelayServer::MoqxRelayServer(
 void MoqxRelayServer::setStatsRegistry(std::shared_ptr<stats::StatsRegistry> registry) {
   statsRegistry_ = std::move(registry);
 
-  // Wire up QUIC transport stats factory to the registry
   if (statsRegistry_) {
+    // Register the MoQ collector
+    statsCollector_ = stats::MoQStatsCollector::create_moq_stats_collector(statsRegistry_);
+
+    // Wire up QUIC transport stats factory
     setQuicStatsFactory(std::make_unique<stats::QuicStatsCollector::Factory>(statsRegistry_));
   }
 }
@@ -82,11 +85,9 @@ void MoqxRelayServer::onNewSession(std::shared_ptr<MoQSession> clientSession) {
   // Relay handler routing deferred to validateAuthority() where authority is available
 
   if (statsRegistry_) {
-    if (!statsCollector_) {
-      statsCollector_ = stats::MoQStatsCollector::create_moq_stats_collector(
-          clientSession->getExecutor(),
-          statsRegistry_
-      );
+    if (!statsCollector_->owningExecutor()) {
+      // First session: bind the executor now that we have one.
+      statsCollector_->setExecutor(clientSession->getExecutor());
     }
 
     clientSession->setPublisherStatsCallback(statsCollector_->publisherCallback());

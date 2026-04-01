@@ -6,20 +6,19 @@
 namespace openmoq::moqx::stats {
 
 // Private inner class: the quic::QuicTransportStatsCallback adapter owned by mvfst.
-// Captures the QUIC worker's EventBase on first callback, then registers the collector
-// with the registry. Forwards transport events to the QuicStatsCollector data object.
+// Register eagerly at construction The evb is captured lazily on first packet.
+// Forwards transport events to the QuicStatsCollector data object.
 
 class QuicStatsCollector::Callback : public quic::QuicTransportStatsCallback {
 public:
   explicit Callback(std::weak_ptr<StatsRegistry> registry)
-      : data_(std::shared_ptr<QuicStatsCollector>(new QuicStatsCollector(registry))),
-        registry_(std::move(registry)) {}
-
-  ~Callback() override {
-    if (auto reg = registry_.lock()) {
-      reg->deregisterCollector(data_.get());
+      : data_(std::shared_ptr<QuicStatsCollector>(new QuicStatsCollector())) {
+    if (auto reg = registry.lock()) {
+      reg->registerCollector(data_);
     }
   }
+
+  ~Callback() override = default;
 
   // Based on QuicServerWorker, the first ones to trigger can be onPacketReceived or
   // onPacketDropped, so we capture the EventBase in these callbacks.
@@ -104,8 +103,7 @@ public:
   void onKeyUpdateAttemptSucceeded() override {}
 
 private:
-  // Lazily captures the QUIC worker's EventBase on the first callback and
-  // registers data_ with the StatsRegistry.  Idempotent.
+  // Lazily captures the QUIC worker's EventBase on first packet.
   void captureWorkerEvbIfNeeded() {
     // Fast path: already captured.  All writes are on the worker EventBase so
     // a relaxed load is sufficient — we're on the writer thread.
@@ -115,14 +113,9 @@ private:
     auto* evb = folly::EventBaseManager::get()->getExistingEventBase();
     CHECK(evb) << "QuicStatsCollector::Callback: first callback not on an EventBase thread";
     data_->owningEvb_.store(evb, std::memory_order_relaxed);
-
-    if (auto reg = registry_.lock()) {
-      reg->registerCollector(data_);
-    }
   }
 
   std::shared_ptr<QuicStatsCollector> data_;
-  std::weak_ptr<StatsRegistry> registry_;
 };
 
 QuicStatsCollector::Factory::Factory(std::shared_ptr<StatsRegistry> registry)
@@ -130,15 +123,6 @@ QuicStatsCollector::Factory::Factory(std::shared_ptr<StatsRegistry> registry)
 
 std::unique_ptr<quic::QuicTransportStatsCallback> QuicStatsCollector::Factory::make() {
   return std::make_unique<Callback>(registry_);
-}
-
-QuicStatsCollector::QuicStatsCollector(std::weak_ptr<StatsRegistry> registry)
-    : registry_(std::move(registry)) {}
-
-QuicStatsCollector::~QuicStatsCollector() {
-  if (auto reg = registry_.lock()) {
-    reg->deregisterCollector(this);
-  }
 }
 
 StatsSnapshot QuicStatsCollector::snapshot() const {
@@ -153,9 +137,7 @@ StatsSnapshot QuicStatsCollector::snapshot() const {
 }
 
 folly::Executor* QuicStatsCollector::owningExecutor() const {
-  auto* evb = owningEvb_.load(std::memory_order_relaxed);
-  DCHECK(evb) << "owningExecutor() called before worker EventBase was captured";
-  return evb;
+  return owningEvb_.load(std::memory_order_relaxed);
 }
 
 } // namespace openmoq::moqx::stats
