@@ -20,6 +20,7 @@ public:
 
   ~Callback() override = default;
 
+  // --- Tracked callbacks ---
   // Based on QuicServerWorker, the first ones to trigger can be onPacketReceived or
   // onPacketDropped, so we capture the EventBase in these callbacks.
   void onPacketReceived() override {
@@ -32,17 +33,46 @@ public:
     ++data_->quicPacketsDropped_;
   }
   void onPacketLoss() override { ++data_->quicPacketLoss_; }
-  void onNewConnection() override { ++data_->quicConnectionsCreated_; }
+  void onPacketRetransmission() override { ++data_->quicPacketRetransmissions_; }
+  void onNewConnection() override {
+    ++data_->quicConnectionsCreated_;
+    ++data_->quicActiveConnections_;
+  }
   void onConnectionClose(quic::Optional<quic::QuicErrorCode>) override {
     ++data_->quicConnectionsClosed_;
+    --data_->quicActiveConnections_;
+  }
+  void onNewQuicStream() override {
+    ++data_->quicStreamsCreated_;
+    ++data_->quicActiveStreams_;
+  }
+  void onQuicStreamClosed() override {
+    ++data_->quicStreamsClosed_;
+    --data_->quicActiveStreams_;
+  }
+  void onQuicStreamReset(quic::QuicErrorCode) override {
+    ++data_->quicStreamsReset_;
+    --data_->quicActiveStreams_;
+  }
+  void onConnFlowControlBlocked() override { ++data_->quicConnFlowControlBlocked_; }
+  void onStreamFlowControlBlocked() override { ++data_->quicStreamFlowControlBlocked_; }
+  void onCwndBlocked() override { ++data_->quicCwndBlocked_; }
+  void onRead(size_t bytes) override { data_->quicBytesRead_ += bytes; }
+  void onWrite(size_t bytes) override { data_->quicBytesWritten_ += bytes; }
+  void onDatagramDroppedOnWrite() override { ++data_->quicDatagramsDroppedOnWrite_; }
+  void onDatagramDroppedOnRead() override { ++data_->quicDatagramsDroppedOnRead_; }
+  void onPeerMaxUniStreamsLimitSaturated() override {
+    ++data_->quicPeerMaxUniStreamsLimitSaturated_;
+  }
+  void onPeerMaxBidiStreamsLimitSaturated() override {
+    ++data_->quicPeerMaxBidiStreamsLimitSaturated_;
   }
 
-  // Untracked no-op callbacks
+  // --- Untracked callbacks (no-op) ---
   void onRxDelaySample(uint64_t) override {}
   void onDuplicatedPacketReceived() override {}
   void onOutOfOrderPacketReceived() override {}
   void onPacketProcessed() override {}
-  void onPacketRetransmission() override {}
   void onPacketSpuriousLoss() override {}
   void onPersistentCongestion() override {}
   void onPacketForwarded() override {}
@@ -60,15 +90,9 @@ public:
   void onPathAdded() override {}
   void onPathValidationSuccess() override {}
   void onPathValidationFailure() override {}
-  void onNewQuicStream() override {}
-  void onQuicStreamClosed() override {}
-  void onQuicStreamReset(quic::QuicErrorCode) override {}
   void onConnFlowControlUpdate() override {}
-  void onConnFlowControlBlocked() override {}
   void onStatelessReset() override {}
   void onStreamFlowControlUpdate() override {}
-  void onStreamFlowControlBlocked() override {}
-  void onCwndBlocked() override {}
   void onInflightBytesSample(uint64_t) override {}
   void onRttSample(uint64_t) override {}
   void onBandwidthSample(uint64_t) override {}
@@ -76,8 +100,6 @@ public:
   void onCongestionControllerResumed() override {}
   void onNewCongestionController(quic::CongestionControlType) override {}
   void onPTO() override {}
-  void onRead(size_t) override {}
-  void onWrite(size_t) override {}
   void onUDPSocketWriteError(SocketErrorType) override {}
   void onTransportKnobApplied(quic::TransportKnobParamId) override {}
   void onTransportKnobError(quic::TransportKnobParamId) override {}
@@ -91,12 +113,8 @@ public:
   void onZeroRttPrimingRejected() override {}
   void onDatagramRead(size_t) override {}
   void onDatagramWrite(size_t) override {}
-  void onDatagramDroppedOnWrite() override {}
-  void onDatagramDroppedOnRead() override {}
   void onShortHeaderPadding(size_t) override {}
   void onPacerTimerLagged() override {}
-  void onPeerMaxUniStreamsLimitSaturated() override {}
-  void onPeerMaxBidiStreamsLimitSaturated() override {}
   void onConnectionIdCreated(size_t) override {}
   void onKeyUpdateAttemptInitiated() override {}
   void onKeyUpdateAttemptReceived() override {}
@@ -131,6 +149,7 @@ StatsSnapshot QuicStatsCollector::snapshot() const {
 
 #define COPY_FIELD(type, name) snap.name = name##_;
   STATS_QUIC_COUNTER_FIELDS(COPY_FIELD)
+  STATS_QUIC_GAUGE_FIELDS(COPY_FIELD)
 #undef COPY_FIELD
 
   return snap;

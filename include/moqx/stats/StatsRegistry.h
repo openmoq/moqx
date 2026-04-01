@@ -113,14 +113,32 @@ inline constexpr std::array<std::string_view, 8> kRequestErrorCodeLabels = {{
   X(uint64_t, quicPacketsSent)                                                                     \
   X(uint64_t, quicPacketsDropped)                                                                  \
   X(uint64_t, quicPacketLoss)                                                                      \
+  X(uint64_t, quicPacketRetransmissions)                                                           \
   X(uint64_t, quicConnectionsCreated)                                                              \
-  X(uint64_t, quicConnectionsClosed)
+  X(uint64_t, quicConnectionsClosed)                                                               \
+  X(uint64_t, quicStreamsCreated)                                                                  \
+  X(uint64_t, quicStreamsClosed)                                                                   \
+  X(uint64_t, quicStreamsReset)                                                                    \
+  X(uint64_t, quicConnFlowControlBlocked)                                                          \
+  X(uint64_t, quicStreamFlowControlBlocked)                                                        \
+  X(uint64_t, quicCwndBlocked)                                                                     \
+  X(uint64_t, quicBytesRead)                                                                       \
+  X(uint64_t, quicBytesWritten)                                                                    \
+  X(uint64_t, quicDatagramsDroppedOnWrite)                                                         \
+  X(uint64_t, quicDatagramsDroppedOnRead)                                                          \
+  X(uint64_t, quicPeerMaxUniStreamsLimitSaturated)                                                 \
+  X(uint64_t, quicPeerMaxBidiStreamsLimitSaturated)
 
 // Combined convenience macro to iterate all counter fields
 #define STATS_COUNTER_FIELDS(X) STATS_MOQ_COUNTER_FIELDS(X) STATS_QUIC_COUNTER_FIELDS(X)
 
-// int64_t gauges
-#define STATS_GAUGE_FIELDS(X)                                                                      \
+// int64_t gauges — QUIC transport layer
+#define STATS_QUIC_GAUGE_FIELDS(X)                                                                 \
+  X(int64_t, quicActiveConnections)                                                                \
+  X(int64_t, quicActiveStreams)
+
+// int64_t gauges — MoQ application layer
+#define STATS_MOQ_GAUGE_FIELDS(X)                                                                  \
   X(int64_t, pubActiveSubscriptions)                                                               \
   X(int64_t, pubActivePublishers)                                                                  \
   X(int64_t, pubActivePublishNamespaces)                                                           \
@@ -132,6 +150,9 @@ inline constexpr std::array<std::string_view, 8> kRequestErrorCodeLabels = {{
   X(int64_t, subActiveSubscribeNamespaces)                                                         \
   X(int64_t, subActiveSubscriptionStreams)                                                         \
   X(int64_t, moqActiveSessions)
+
+// Combined convenience macro to iterate all gauge fields
+#define STATS_GAUGE_FIELDS(X) STATS_QUIC_GAUGE_FIELDS(X) STATS_MOQ_GAUGE_FIELDS(X)
 
 // Histograms: (name, constexpr_bounds_ref)
 // Each expands to: name##Buckets[] (len = bounds.size()+1 for +Inf),

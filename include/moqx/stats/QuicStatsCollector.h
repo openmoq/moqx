@@ -27,6 +27,7 @@ public:
   class Factory : public quic::QuicTransportStatsCallbackFactory {
   public:
     explicit Factory(std::shared_ptr<StatsRegistry> registry);
+    // Called once per QUIC worker thread to create a per-worker Callback instance.
     std::unique_ptr<quic::QuicTransportStatsCallback> make() override;
 
   private:
@@ -49,9 +50,10 @@ private:
 
   std::atomic<folly::EventBase*> owningEvb_{nullptr};
 
-  // Counters (no sync needed; all writes on the QUIC IO EventBase).
+  // Counters and gauges (no sync needed; all writes on the QUIC IO EventBase).
 #define DEFINE_FIELD(type, name) type name##_{0};
   STATS_QUIC_COUNTER_FIELDS(DEFINE_FIELD)
+  STATS_QUIC_GAUGE_FIELDS(DEFINE_FIELD)
 #undef DEFINE_FIELD
 };
 
