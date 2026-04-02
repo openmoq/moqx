@@ -47,7 +47,8 @@ MoqxRelayServer::MoqxRelayServer(
     const std::string& endpoint,
     const std::string& versions,
     folly::F14FastMap<std::string, config::ServiceConfig> services,
-    const std::string& relayID
+    const std::string& relayID,
+    std::shared_ptr<folly::IOThreadPoolExecutor> ioExecutor
 )
     : MoQServer(
           quic::samples::createFizzServerContext(
@@ -58,7 +59,7 @@ MoqxRelayServer::MoqxRelayServer(
           ),
           endpoint
       ),
-      serviceMatcher_(services), relayID_(relayID) {
+      serviceMatcher_(services), relayID_(relayID), ioExecutor_(std::move(ioExecutor)) {
   initServices(services, relayID);
 }
 
@@ -66,7 +67,8 @@ MoqxRelayServer::MoqxRelayServer(
     const std::string& endpoint,
     const std::string& versions,
     folly::F14FastMap<std::string, config::ServiceConfig> services,
-    const std::string& relayID
+    const std::string& relayID,
+    std::shared_ptr<folly::IOThreadPoolExecutor> ioExecutor
 )
     : MoQServer(
           quic::samples::createFizzServerContextWithInsecureDefault(
@@ -77,7 +79,7 @@ MoqxRelayServer::MoqxRelayServer(
           ),
           endpoint
       ),
-      serviceMatcher_(services), relayID_(relayID) {
+      serviceMatcher_(services), relayID_(relayID), ioExecutor_(std::move(ioExecutor)) {
   initServices(services, relayID);
 }
 
@@ -90,6 +92,17 @@ MoqxRelayServer::~MoqxRelayServer() {
   // 2. Close incoming connections, drain worker EVBs (terminateClientSession
   //    and ~MoQSession complete here), then destroy EVBs.
   MoQServer::stop();
+}
+
+void MoqxRelayServer::start(const folly::SocketAddress& addr) {
+  auto evbKAs = ioExecutor_->getAllEventBases();
+  std::vector<folly::EventBase*> evbs;
+  evbs.reserve(evbKAs.size());
+  for (auto& ka : evbKAs) {
+    evbs.push_back(ka.get());
+  }
+  MoQServer::start(addr, std::move(evbs));
+  initUpstreams();
 }
 
 void MoqxRelayServer::setStatsRegistry(std::shared_ptr<stats::StatsRegistry> registry) {

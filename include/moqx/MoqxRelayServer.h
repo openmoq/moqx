@@ -2,6 +2,7 @@
 
 #include <memory>
 
+#include <folly/executors/IOThreadPoolExecutor.h>
 #include <moqx/MoqxRelay.h>
 #include <moqx/ServiceMatcher.h>
 #include <moqx/UpstreamProvider.h>
@@ -21,7 +22,8 @@ public:
       const std::string& endpoint,
       const std::string& versions,
       folly::F14FastMap<std::string, config::ServiceConfig> services,
-      const std::string& relayID = {}
+      const std::string& relayID,
+      std::shared_ptr<folly::IOThreadPoolExecutor> ioExecutor
   );
 
   // Used when the insecure flag is true
@@ -29,7 +31,8 @@ public:
       const std::string& endpoint,
       const std::string& versions,
       folly::F14FastMap<std::string, config::ServiceConfig> services,
-      const std::string& relayID = {}
+      const std::string& relayID,
+      std::shared_ptr<folly::IOThreadPoolExecutor> ioExecutor
   );
 
   ~MoqxRelayServer() override;
@@ -38,10 +41,7 @@ public:
 
   // Binds listeners then initialises per-service upstream providers (requires
   // draft 16+ for relay chaining).
-  void start(const folly::SocketAddress& addr) {
-    MoQServer::start(addr);
-    initUpstreams();
-  }
+  void start(const folly::SocketAddress& addr) override;
 
   void onNewSession(std::shared_ptr<moxygen::MoQSession> clientSession) override;
 
@@ -73,6 +73,7 @@ private:
   folly::F14FastMap<std::string, ServiceEntry> services_;
   ServiceMatcher serviceMatcher_;
   std::string relayID_;
+  std::shared_ptr<folly::IOThreadPoolExecutor> ioExecutor_;
   std::shared_ptr<stats::StatsRegistry> statsRegistry_;
   std::shared_ptr<stats::MoQStatsCollector> statsCollector_;
 };
