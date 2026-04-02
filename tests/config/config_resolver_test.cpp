@@ -880,5 +880,38 @@ TEST(ResolveConfig, RelayIDExplicitPreserved) {
   EXPECT_EQ(result.value().config.relayID, "my-relay-1");
 }
 
+// --- threads tests ---
+
+TEST(ResolveConfig, ThreadsAbsentDefaultsToOne) {
+  auto cfg = makeMinimalInsecureConfig();
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  EXPECT_EQ(result.value().config.threads, 1u);
+}
+
+TEST(ResolveConfig, ThreadsExplicitOneAccepted) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.threads = std::optional<uint32_t>{1};
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  EXPECT_EQ(result.value().config.threads, 1u);
+}
+
+TEST(ResolveConfig, ThreadsZeroRejected) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.threads = std::optional<uint32_t>{0};
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("threads must be >= 1"));
+}
+
+TEST(ResolveConfig, ThreadsGreaterThanOneRejected) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.threads = std::optional<uint32_t>{2};
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("threads > 1 is not yet supported"));
+}
+
 } // namespace
 } // namespace openmoq::moqx::config

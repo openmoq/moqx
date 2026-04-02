@@ -450,6 +450,14 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
     validateService(name, svc, config, compositeKeys, mergedCaches, errors);
   }
 
+  // === Validate threads ===
+  const uint32_t threads = config.threads.value().value_or(1);
+  if (threads == 0) {
+    errors.push_back("threads must be >= 1");
+  } else if (threads > 1) {
+    errors.push_back("threads > 1 is not yet supported");
+  }
+
   if (!errors.empty()) {
     return folly::makeUnexpected("Config validation failed:\n  - " + folly::join("\n  - ", errors));
   }
@@ -487,6 +495,7 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
               .services = std::move(resolvedServices),
               .admin = std::move(adminConfig),
               .relayID = std::move(relayID),
+              .threads = threads,
           },
       .warnings = std::move(warnings),
   };
