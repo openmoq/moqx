@@ -132,6 +132,21 @@ void validateListener(
       errors,
       warnings
   );
+
+  // quic_stack validation
+  const auto& stackOpt = listener.quic_stack.value();
+  if (stackOpt.has_value() && *stackOpt != "mvfst" && *stackOpt != "picoquic") {
+    errors.push_back(
+        "Listener '" + listener.name.value() + "': unknown quic_stack '" + *stackOpt +
+        "' (expected \"mvfst\" or \"picoquic\")"
+    );
+  }
+  if (stackOpt.value_or("mvfst") == "picoquic" && listener.tls.value().insecure.value()) {
+    errors.push_back(
+        "Listener '" + listener.name.value() +
+        "': quic_stack \"picoquic\" requires real TLS credentials (insecure: true is not supported)"
+    );
+  }
 }
 
 // --- Admin validation ---
@@ -356,12 +371,16 @@ ListenerConfig resolveListener(const ParsedListenerConfig& listener) {
     tlsMode = resolveTlsConfig(tls);
   }
 
+  const auto& stackStr = listener.quic_stack.value().value_or("mvfst");
+  auto quicStack = (stackStr == "picoquic") ? QuicStack::Picoquic : QuicStack::Mvfst;
+
   return ListenerConfig{
       .name = listener.name.value(),
       .address = folly::SocketAddress(sock.address.value(), sock.port.value()),
       .tlsMode = std::move(tlsMode),
       .endpoint = listener.endpoint.value(),
       .moqtVersions = moqtVersionsToString(listener),
+      .quicStack = quicStack,
   };
 }
 

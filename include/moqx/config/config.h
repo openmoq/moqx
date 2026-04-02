@@ -28,12 +28,15 @@ struct CacheConfig {
   size_t maxCachedGroupsPerTrack;
 };
 
+enum class QuicStack { Mvfst, Picoquic };
+
 struct ListenerConfig {
   std::string name;
   folly::SocketAddress address;
   TlsMode tlsMode;
   std::string endpoint;
   std::string moqtVersions; // comma-separated string
+  QuicStack quicStack{QuicStack::Mvfst};
 };
 
 struct UpstreamTlsConfig {
