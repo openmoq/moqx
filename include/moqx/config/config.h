@@ -81,7 +81,7 @@ struct AdminConfig {
 };
 
 struct Config {
-  ListenerConfig listener;
+  std::vector<ListenerConfig> listeners;
   folly::F14FastMap<std::string, ServiceConfig> services;
   std::optional<AdminConfig> admin;
   std::string relayID; // always set: from config or randomly generated
