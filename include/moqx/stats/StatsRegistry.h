@@ -59,11 +59,11 @@ inline constexpr std::array<std::string_view, 8> kRequestErrorCodeLabels = {{
     "cancelled",
 }};
 
-// uint64_t monotonically-increasing counters.
+// uint64_t monotonically-increasing counters — MoQ application layer.
 // pub* = relay acting as publisher (serving downstream subscribers).
 // sub* = relay acting as subscriber (consuming from upstream publishers).
 // moq* = unambiguously tied to one role (no pub/sub prefix needed).
-#define STATS_COUNTER_FIELDS(X)                                                                    \
+#define STATS_MOQ_COUNTER_FIELDS(X)                                                                \
   /* Publisher-side: relay accepted/rejected subscription requests */                              \
   X(uint64_t, pubSubscribeSuccess)                                                                 \
   X(uint64_t, pubSubscribeError)                                                                   \
@@ -106,9 +106,39 @@ inline constexpr std::array<std::string_view, 8> kRequestErrorCodeLabels = {{
   X(uint64_t, moqPublishOkSent)                                                                    \
   X(uint64_t, subPublishError)
 
-// int64_t gauges (can go up and down; negative value signals bookkeeping bug).
-// pub*/sub* split mirrors the counter naming above.
-#define STATS_GAUGE_FIELDS(X)                                                                      \
+// uint64_t monotonically-increasing counters — QUIC transport layer.
+// Populated exclusively by QuicStatsCollector
+#define STATS_QUIC_COUNTER_FIELDS(X)                                                               \
+  X(uint64_t, quicPacketsReceived)                                                                 \
+  X(uint64_t, quicPacketsSent)                                                                     \
+  X(uint64_t, quicPacketsDropped)                                                                  \
+  X(uint64_t, quicPacketLoss)                                                                      \
+  X(uint64_t, quicPacketRetransmissions)                                                           \
+  X(uint64_t, quicConnectionsCreated)                                                              \
+  X(uint64_t, quicConnectionsClosed)                                                               \
+  X(uint64_t, quicStreamsCreated)                                                                  \
+  X(uint64_t, quicStreamsClosed)                                                                   \
+  X(uint64_t, quicStreamsReset)                                                                    \
+  X(uint64_t, quicConnFlowControlBlocked)                                                          \
+  X(uint64_t, quicStreamFlowControlBlocked)                                                        \
+  X(uint64_t, quicCwndBlocked)                                                                     \
+  X(uint64_t, quicBytesRead)                                                                       \
+  X(uint64_t, quicBytesWritten)                                                                    \
+  X(uint64_t, quicDatagramsDroppedOnWrite)                                                         \
+  X(uint64_t, quicDatagramsDroppedOnRead)                                                          \
+  X(uint64_t, quicPeerMaxUniStreamsLimitSaturated)                                                 \
+  X(uint64_t, quicPeerMaxBidiStreamsLimitSaturated)
+
+// Combined convenience macro to iterate all counter fields
+#define STATS_COUNTER_FIELDS(X) STATS_MOQ_COUNTER_FIELDS(X) STATS_QUIC_COUNTER_FIELDS(X)
+
+// int64_t gauges — QUIC transport layer
+#define STATS_QUIC_GAUGE_FIELDS(X)                                                                 \
+  X(int64_t, quicActiveConnections)                                                                \
+  X(int64_t, quicActiveStreams)
+
+// int64_t gauges — MoQ application layer
+#define STATS_MOQ_GAUGE_FIELDS(X)                                                                  \
   X(int64_t, pubActiveSubscriptions)                                                               \
   X(int64_t, pubActivePublishers)                                                                  \
   X(int64_t, pubActivePublishNamespaces)                                                           \
@@ -121,6 +151,9 @@ inline constexpr std::array<std::string_view, 8> kRequestErrorCodeLabels = {{
   X(int64_t, subActiveSubscriptionStreams)                                                         \
   X(int64_t, moqActiveSessions)
 
+// Combined convenience macro to iterate all gauge fields
+#define STATS_GAUGE_FIELDS(X) STATS_QUIC_GAUGE_FIELDS(X) STATS_MOQ_GAUGE_FIELDS(X)
+
 // Histograms: (name, constexpr_bounds_ref)
 // Each expands to: name##Buckets[] (len = bounds.size()+1 for +Inf),
 //                  name##Sum, name##Count
@@ -130,7 +163,7 @@ inline constexpr std::array<std::string_view, 8> kRequestErrorCodeLabels = {{
   X(moqPublishNamespaceLatency, kLatencyBucketsUs)                                                 \
   X(moqPublishLatency, kLatencyBucketsUs)
 
-// Error-code breakdowns: fields in STATS_COUNTER_FIELDS whose callbacks receive
+// Error-code breakdowns: fields in STATS_MOQ_COUNTER_FIELDS whose callbacks receive
 // a RequestErrorCode argument.  Each expands to a
 // std::array<uint64_t, kRequestErrorCodeCount> named  name##ByCodes.
 #define STATS_ERROR_COUNTER_FIELDS(X)                                                              \
@@ -180,35 +213,22 @@ public:
   virtual StatsSnapshot snapshot() const = 0;
 
   // The executor owned by this collector's producing thread.
-  virtual folly::Executor::KeepAlive<> owningExecutor() const = 0;
+  // Raw pointer; lifetime guaranteed by owning thread loop (e.g. EventBase).
+  virtual folly::Executor* owningExecutor() const = 0;
 };
-
-// ---------------------------------------------------------------------------
-// StatsRegistry
-// Singleton-ish shared owner of all active collectors.  Collectors
-// register/deregister themselves; the registry aggregates on demand.
-// ---------------------------------------------------------------------------
 
 class StatsRegistry {
 public:
   StatsRegistry() = default;
   ~StatsRegistry() = default;
 
-  // Register a collector. Must be called before lock().
   void registerCollector(std::shared_ptr<StatsCollectorBase> collector);
-
-  // Seal the registry. Any further registerCollector calls will XLOG(FATAL).
-  // Call this explicitly once all collectors have been registered.
-  void lock();
-
-  // Called by StatsCollectorBase::dtor — deregisters the collector.
-  void deregisterCollector(StatsCollectorBase* collector);
 
   folly::coro::Task<StatsSnapshot> aggregateAsync();
 
 private:
-  bool locked_ = false;
-  std::vector<std::shared_ptr<StatsCollectorBase>> collectors_;
+  // Ownership stays with callers. aggregateAsync() prunes it lazily.
+  std::vector<std::weak_ptr<StatsCollectorBase>> collectors_;
 };
 
 } // namespace openmoq::moqx::stats

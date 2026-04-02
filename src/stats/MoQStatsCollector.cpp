@@ -5,13 +5,9 @@
 namespace openmoq::moqx::stats {
 
 /* static */
-std::shared_ptr<MoQStatsCollector> MoQStatsCollector::create_moq_stats_collector(
-    folly::Executor::KeepAlive<> owningExecutor,
-    std::shared_ptr<StatsRegistry> registry
-) {
-  auto collector =
-      std::shared_ptr<MoQStatsCollector>(new MoQStatsCollector(std::move(owningExecutor)));
-  collector->registry_ = registry;
+std::shared_ptr<MoQStatsCollector>
+MoQStatsCollector::create_moq_stats_collector(std::shared_ptr<StatsRegistry> registry) {
+  auto collector = std::shared_ptr<MoQStatsCollector>(new MoQStatsCollector());
 
   // Build aliased shared_ptrs: they share the parent's refcount but point to
   // the value-member inner objects.  Holding only an inner callback extends the
@@ -25,13 +21,10 @@ std::shared_ptr<MoQStatsCollector> MoQStatsCollector::create_moq_stats_collector
   return collector;
 }
 
-MoQStatsCollector::MoQStatsCollector(folly::Executor::KeepAlive<> owningExecutor)
-    : owningExecutor_(std::move(owningExecutor)), pubCallback_(*this), subCallback_(*this) {}
+MoQStatsCollector::MoQStatsCollector() : pubCallback_(*this), subCallback_(*this) {}
 
-MoQStatsCollector::~MoQStatsCollector() {
-  if (auto registry = registry_.lock()) {
-    registry->deregisterCollector(this);
-  }
+void MoQStatsCollector::setExecutor(folly::Executor* executor) {
+  owningExecutor_.store(executor, std::memory_order_relaxed);
 }
 
 // --- StatsCollectorBase ---
@@ -40,7 +33,7 @@ StatsSnapshot MoQStatsCollector::snapshot() const {
   StatsSnapshot snap;
 
 #define COPY_FIELD(type, name) snap.name = name##_;
-  STATS_COUNTER_FIELDS(COPY_FIELD)
+  STATS_MOQ_COUNTER_FIELDS(COPY_FIELD)
   STATS_GAUGE_FIELDS(COPY_FIELD)
 #undef COPY_FIELD
 
@@ -61,8 +54,8 @@ StatsSnapshot MoQStatsCollector::snapshot() const {
   return snap;
 }
 
-folly::Executor::KeepAlive<> MoQStatsCollector::owningExecutor() const {
-  return owningExecutor_;
+folly::Executor* MoQStatsCollector::owningExecutor() const {
+  return owningExecutor_.load(std::memory_order_relaxed);
 }
 
 std::shared_ptr<moxygen::MoQPublisherStatsCallback> MoQStatsCollector::publisherCallback() const {

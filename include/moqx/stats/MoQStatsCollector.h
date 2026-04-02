@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <memory>
 
@@ -94,14 +95,12 @@ public:
   };
 
   // --- Factory ---
-  // Constructs the collector, registers it with the registry, and returns the
-  // shared_ptr.  The aliased callback shared_ptrs are set up
-  static std::shared_ptr<MoQStatsCollector> create_moq_stats_collector(
-      folly::Executor::KeepAlive<> owningExecutor,
-      std::shared_ptr<StatsRegistry> registry
-  );
+  static std::shared_ptr<MoQStatsCollector>
+  create_moq_stats_collector(std::shared_ptr<StatsRegistry> registry);
 
-  ~MoQStatsCollector() override;
+  ~MoQStatsCollector() override = default;
+
+  void setExecutor(folly::Executor* executor);
 
   // Returns aliased shared_ptrs whose reference count is shared with this
   // MoQStatsCollector.  Holding only an inner callback keeps the parent alive.
@@ -109,17 +108,18 @@ public:
   std::shared_ptr<moxygen::MoQSubscriberStatsCallback> subscriberCallback() const;
 
   StatsSnapshot snapshot() const override;
-  folly::Executor::KeepAlive<> owningExecutor() const override;
+  folly::Executor* owningExecutor() const override;
 
   // Session lifecycle events (called directly by MoqxRelayServer).
   void onSessionStart();
   void onSessionEnd();
 
 private:
-  explicit MoQStatsCollector(folly::Executor::KeepAlive<> owningExecutor);
+  MoQStatsCollector();
 
-  folly::Executor::KeepAlive<> owningExecutor_;
-  std::weak_ptr<StatsRegistry> registry_;
+  // Atomic so the admin evb can read it safely while onNewSession sets it
+  // from the MoQ session thread.
+  std::atomic<folly::Executor*> owningExecutor_{nullptr};
 
   // Value-member inner callbacks.
   PublisherCallback pubCallback_;
@@ -131,7 +131,7 @@ private:
 
   // --- Metric storage ---
 #define DEFINE_FIELD(type, name) type name##_{0};
-  STATS_COUNTER_FIELDS(DEFINE_FIELD)
+  STATS_MOQ_COUNTER_FIELDS(DEFINE_FIELD)
   STATS_GAUGE_FIELDS(DEFINE_FIELD)
 #undef DEFINE_FIELD
 

@@ -81,6 +81,7 @@ add_library(moqx_core STATIC
   src/admin/MetricsHandler.cpp
   src/stats/StatsRegistry.cpp
   src/stats/MoQStatsCollector.cpp
+  src/stats/QuicStatsCollector.cpp
 )
 
 target_include_directories(moqx_core
