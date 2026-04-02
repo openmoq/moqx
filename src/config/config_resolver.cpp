@@ -422,15 +422,18 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
   if (config.listeners.value().empty()) {
     return folly::makeUnexpected(std::string("At least one listener is required"));
   }
-  if (config.listeners.value().size() > 1) {
-    return folly::makeUnexpected(
-        "Currently only one listener is supported, got " +
-        std::to_string(config.listeners.value().size())
-    );
-  }
 
-  const auto& listener = config.listeners.value()[0];
-  validateListener(listener, errors, warnings);
+  {
+    std::unordered_set<std::string> listenerAddrs;
+    for (const auto& listener : config.listeners.value()) {
+      validateListener(listener, errors, warnings);
+      auto addr = listener.udp.value().socket.value().address.value() + ":" +
+                  std::to_string(listener.udp.value().socket.value().port.value());
+      if (!listenerAddrs.insert(addr).second) {
+        errors.push_back("Duplicate listener address: " + addr);
+      }
+    }
+  }
 
   // === Validate admin ===
   validateAdmin(config, errors);
@@ -491,7 +494,15 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
   return ResolvedConfig{
       .config =
           Config{
-              .listener = resolveListener(listener),
+              .listeners =
+                  [&] {
+                    std::vector<ListenerConfig> v;
+                    v.reserve(config.listeners.value().size());
+                    for (const auto& l : config.listeners.value()) {
+                      v.push_back(resolveListener(l));
+                    }
+                    return v;
+                  }(),
               .services = std::move(resolvedServices),
               .admin = std::move(adminConfig),
               .relayID = std::move(relayID),

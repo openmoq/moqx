@@ -377,11 +377,11 @@ TEST(ResolveConfig, MinimalInsecure) {
   ASSERT_TRUE(result.hasValue());
   const auto& resolved = result.value().config;
 
-  EXPECT_EQ(resolved.listener.name, "main");
-  EXPECT_EQ(resolved.listener.address.getPort(), 9668);
-  EXPECT_TRUE(std::holds_alternative<Insecure>(resolved.listener.tlsMode));
-  EXPECT_EQ(resolved.listener.endpoint, "/moq-relay");
-  EXPECT_EQ(resolved.listener.moqtVersions, "");
+  EXPECT_EQ(resolved.listeners[0].name, "main");
+  EXPECT_EQ(resolved.listeners[0].address.getPort(), 9668);
+  EXPECT_TRUE(std::holds_alternative<Insecure>(resolved.listeners[0].tlsMode));
+  EXPECT_EQ(resolved.listeners[0].endpoint, "/moq-relay");
+  EXPECT_EQ(resolved.listeners[0].moqtVersions, "");
   EXPECT_THAT(result.value().warnings, IsEmpty());
 
   ASSERT_EQ(resolved.services.size(), 1);
@@ -414,13 +414,13 @@ TEST(ResolveConfig, FullTls) {
   ASSERT_TRUE(result.hasValue());
   const auto& resolved = result.value().config;
 
-  EXPECT_EQ(resolved.listener.name, "production");
-  EXPECT_EQ(resolved.listener.address.getPort(), 4443);
-  EXPECT_EQ(resolved.listener.endpoint, "/relay");
-  EXPECT_EQ(resolved.listener.moqtVersions, "14,16");
+  EXPECT_EQ(resolved.listeners[0].name, "production");
+  EXPECT_EQ(resolved.listeners[0].address.getPort(), 4443);
+  EXPECT_EQ(resolved.listeners[0].endpoint, "/relay");
+  EXPECT_EQ(resolved.listeners[0].moqtVersions, "14,16");
 
-  ASSERT_TRUE(std::holds_alternative<TlsConfig>(resolved.listener.tlsMode));
-  const auto& creds = std::get<TlsConfig>(resolved.listener.tlsMode);
+  ASSERT_TRUE(std::holds_alternative<TlsConfig>(resolved.listeners[0].tlsMode));
+  const auto& creds = std::get<TlsConfig>(resolved.listeners[0].tlsMode);
   EXPECT_EQ(creds.certFile, "/etc/ssl/cert.pem");
   EXPECT_EQ(creds.keyFile, "/etc/ssl/key.pem");
 }
@@ -649,7 +649,7 @@ TEST(ResolveConfig, VersionsEmpty) {
   auto cfg = makeMinimalInsecureConfig();
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasValue());
-  EXPECT_EQ(result.value().config.listener.moqtVersions, "");
+  EXPECT_EQ(result.value().config.listeners[0].moqtVersions, "");
 }
 
 TEST(ResolveConfig, VersionsPopulated) {
@@ -657,7 +657,7 @@ TEST(ResolveConfig, VersionsPopulated) {
   cfg.listeners.value()[0].moqt_versions = std::vector<uint32_t>{14};
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasValue());
-  EXPECT_EQ(result.value().config.listener.moqtVersions, "14");
+  EXPECT_EQ(result.value().config.listeners[0].moqtVersions, "14");
 }
 
 TEST(ResolveConfig, AddressResolution) {
@@ -668,8 +668,8 @@ TEST(ResolveConfig, AddressResolution) {
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasValue());
   const auto& resolved = result.value().config;
-  EXPECT_EQ(resolved.listener.address.getPort(), 8080);
-  EXPECT_EQ(resolved.listener.address.getAddressStr(), "127.0.0.1");
+  EXPECT_EQ(resolved.listeners[0].address.getPort(), 8080);
+  EXPECT_EQ(resolved.listeners[0].address.getAddressStr(), "127.0.0.1");
 }
 
 // --- Admin validation tests ---
@@ -911,6 +911,74 @@ TEST(ResolveConfig, ThreadsGreaterThanOneRejected) {
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasError());
   EXPECT_THAT(result.error(), HasSubstr("threads > 1 is not yet supported"));
+}
+
+// --- multiple listeners tests ---
+
+TEST(ResolveConfig, MultipleListeners) {
+  auto cfg = makeMinimalInsecureConfig("first");
+
+  ParsedListenerConfig lc2;
+  lc2.name = std::string("second");
+  ParsedSocketConfig sock2;
+  sock2.address = std::string("::");
+  sock2.port = uint16_t{9669};
+  ParsedUdpConfig udp2;
+  udp2.socket = std::move(sock2);
+  lc2.udp = std::move(udp2);
+  ParsedListenerTlsConfig tls2;
+  tls2.insecure = true;
+  lc2.tls = std::move(tls2);
+  lc2.endpoint = std::string("/moq-relay");
+  cfg.listeners.value().push_back(std::move(lc2));
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  ASSERT_EQ(result.value().config.listeners.size(), 2u);
+  EXPECT_EQ(result.value().config.listeners[0].name, "first");
+  EXPECT_EQ(result.value().config.listeners[0].address.getPort(), 9668);
+  EXPECT_EQ(result.value().config.listeners[1].name, "second");
+  EXPECT_EQ(result.value().config.listeners[1].address.getPort(), 9669);
+}
+
+TEST(ResolveConfig, MultipleListenersDuplicateAddress) {
+  auto cfg = makeMinimalInsecureConfig("first");
+
+  ParsedListenerConfig lc2;
+  lc2.name = std::string("second");
+  lc2.udp = cfg.listeners.value()[0].udp; // same address as first
+  ParsedListenerTlsConfig tls2;
+  tls2.insecure = true;
+  lc2.tls = std::move(tls2);
+  lc2.endpoint = std::string("/moq-relay");
+  cfg.listeners.value().push_back(std::move(lc2));
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("Duplicate listener address"));
+}
+
+TEST(ResolveConfig, MultipleListenersInvalidPort) {
+  auto cfg = makeMinimalInsecureConfig("first");
+
+  ParsedListenerConfig lc2;
+  lc2.name = std::string("bad");
+  ParsedSocketConfig sock2;
+  sock2.address = std::string("::");
+  sock2.port = uint16_t{0};
+  ParsedUdpConfig udp2;
+  udp2.socket = std::move(sock2);
+  lc2.udp = std::move(udp2);
+  ParsedListenerTlsConfig tls2;
+  tls2.insecure = true;
+  lc2.tls = std::move(tls2);
+  lc2.endpoint = std::string("/moq-relay");
+  cfg.listeners.value().push_back(std::move(lc2));
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("bad"));
+  EXPECT_THAT(result.error(), HasSubstr("port"));
 }
 
 } // namespace

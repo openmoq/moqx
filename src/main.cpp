@@ -40,7 +40,7 @@ public:
 
 std::shared_ptr<openmoq::moqx::MoqxRelayServer>
 createServer(const cfg::Config& config, std::shared_ptr<folly::IOThreadPoolExecutor> ioExecutor) {
-  const auto& listener = config.listener;
+  const auto& listener = config.listeners[0];
   auto services = config.services; // copy for move into constructor
 
   return std::visit(
@@ -144,7 +144,7 @@ int main(int argc, char* argv[]) {
   }
 
   // === 8. Start serving ===
-  server->start(config.listener.address);
+  server->start(config.listeners[0].address);
   evb.loopForever();
 
   // ============================================
