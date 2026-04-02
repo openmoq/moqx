@@ -115,7 +115,7 @@ int main(int argc, char* argv[]) {
 
   // === 4. Initialize resources ===
   auto ioExecutor = std::make_shared<folly::IOThreadPoolExecutor>(
-      1,
+      config.threads,
       std::make_shared<folly::NamedThreadFactory>("moqx-io")
   );
 

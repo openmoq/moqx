@@ -146,6 +146,7 @@ struct ParsedConfig {
       "Relay identity string (optional; random string generated if absent)",
       std::optional<std::string>>
       relay_id;
+  rfl::Description<"Number of IO worker threads (default: 1)", std::optional<uint32_t>> threads;
 };
 
 } // namespace openmoq::moqx::config
