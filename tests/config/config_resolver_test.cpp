@@ -128,6 +128,15 @@ TEST(ResolveConfig, InsecureFalseNoCerts) {
   EXPECT_THAT(result.error(), HasSubstr("cert_file"));
 }
 
+TEST(ResolveConfig, PicoquicInsecureRejected) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.listeners.value()[0].quic_stack = std::string("picoquic");
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("insecure: true is not supported"));
+}
+
 TEST(ResolveConfig, PortZero) {
   auto cfg = makeMinimalInsecureConfig();
   cfg.listeners.value()[0].udp.value().socket.value().port = uint16_t{0};
