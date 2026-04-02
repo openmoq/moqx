@@ -10,6 +10,8 @@
 #include <chrono>
 #include <thread>
 
+#include <folly/executors/IOThreadPoolExecutor.h>
+#include <folly/executors/thread_factory/NamedThreadFactory.h>
 #include <folly/init/Init.h>
 #include <folly/io/async/AsyncSignalHandler.h>
 #include <folly/logging/xlog.h>
@@ -39,7 +41,8 @@ public:
   }
 };
 
-std::shared_ptr<openmoq::moqx::MoqxRelayServer> createServer(const cfg::Config& config) {
+std::shared_ptr<openmoq::moqx::MoqxRelayServer>
+createServer(const cfg::Config& config, std::shared_ptr<folly::IOThreadPoolExecutor> ioExecutor) {
   const auto& listener = config.listener;
   auto services = config.services; // copy for move into constructor
 
@@ -51,7 +54,8 @@ std::shared_ptr<openmoq::moqx::MoqxRelayServer> createServer(const cfg::Config& 
               listener.endpoint,
               listener.moqtVersions,
               std::move(services),
-              config.relayID
+              config.relayID,
+              ioExecutor
           );
         } else {
           return std::make_shared<openmoq::moqx::MoqxRelayServer>(
@@ -60,7 +64,8 @@ std::shared_ptr<openmoq::moqx::MoqxRelayServer> createServer(const cfg::Config& 
               listener.endpoint,
               listener.moqtVersions,
               std::move(services),
-              config.relayID
+              config.relayID,
+              ioExecutor
           );
         }
       },
@@ -112,7 +117,10 @@ int main(int argc, char* argv[]) {
   ShutdownSignalHandler signalHandler(&evb);
 
   // === 4. Initialize resources ===
-  // TODO: thread pools, event loops, IO contexts
+  auto ioExecutor = std::make_shared<folly::IOThreadPoolExecutor>(
+      1,
+      std::make_shared<folly::NamedThreadFactory>("moqx-io")
+  );
 
   // === 5. Initialize dependencies ===
   // TODO: TBD
@@ -120,7 +128,7 @@ int main(int argc, char* argv[]) {
   // === 6. Initialize services ===
   // Construct and configure the application's own services
   // (MoqxRelayServer, MoqxRelay, etc.)
-  auto server = createServer(config);
+  auto server = createServer(config, ioExecutor);
 
   // === 6a. Stats registry ===
   auto statsRegistry = std::make_shared<openmoq::moqx::stats::StatsRegistry>();
