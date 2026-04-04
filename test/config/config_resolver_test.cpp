@@ -1289,5 +1289,167 @@ TEST(ResolveConfig, MvfstPrefixPathServiceNoWarning) {
   }
 }
 
+// --- maxCacheDuration tests ---
+
+TEST(ResolveConfig, MaxCacheDurationDefaultIs1Day) {
+  // When max_cache_duration_s is absent, code default of 1 day is used.
+  auto cfg = makeMinimalInsecureConfig();
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  EXPECT_EQ(
+      result.value().config.services.at("default").cache.maxCacheDuration,
+      std::chrono::hours(24)
+  );
+}
+
+TEST(ResolveConfig, CacheDurationExplicitValues) {
+  // Both max_cache_duration_s and default_max_cache_duration_s resolve to correct values.
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().at("default").cache.value()->max_cache_duration_s =
+      std::optional<uint32_t>{3600};
+  cfg.services.value().at("default").cache.value()->default_max_cache_duration_s =
+      std::optional<uint32_t>{60};
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  const auto& cache = result.value().config.services.at("default").cache;
+  EXPECT_EQ(cache.maxCacheDuration, std::chrono::seconds(3600));
+  EXPECT_EQ(*cache.defaultMaxCacheDuration, std::chrono::seconds(60));
+}
+
+TEST(ResolveConfig, MaxCacheDurationZeroIsInvalid) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().at("default").cache.value()->max_cache_duration_s =
+      std::optional<uint32_t>{0};
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("max_cache_duration_s must not be 0"));
+}
+
+// --- defaultMaxCacheDuration tests ---
+
+TEST(ResolveConfig, DefaultCacheDurationAbsentUsesMaxCacheDuration) {
+  // When default_max_cache_duration_s is absent, defaultMaxCacheDuration falls back to
+  // maxCacheDuration (1 day by default).
+  auto cfg = makeMinimalInsecureConfig();
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  EXPECT_EQ(
+      *result.value().config.services.at("default").cache.defaultMaxCacheDuration,
+      std::chrono::hours(24)
+  );
+}
+
+TEST(ResolveConfig, DefaultCacheDurationZeroMeansOptInOnly) {
+  // 0 → 0ms: tracks without a publisher-set cache duration are not cached.
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().at("default").cache.value()->default_max_cache_duration_s =
+      std::optional<uint32_t>{0};
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  EXPECT_EQ(
+      *result.value().config.services.at("default").cache.defaultMaxCacheDuration,
+      std::chrono::milliseconds(0)
+  );
+}
+
+TEST(ResolveConfig, CacheDurationMergesWithDefaults) {
+  // Both max_cache_duration_s and default_max_cache_duration_s inherit and can be overridden.
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().clear();
+
+  ParsedServiceDefaultsConfig defaults;
+  ParsedCacheConfig defaultCache;
+  defaultCache.enabled = std::optional<bool>{true};
+  defaultCache.max_tracks = std::optional<uint32_t>{50};
+  defaultCache.max_groups_per_track = std::optional<uint32_t>{2};
+  defaultCache.max_cache_duration_s = std::optional<uint32_t>{7200};
+  defaultCache.default_max_cache_duration_s = std::optional<uint32_t>{120};
+  defaults.cache = std::move(defaultCache);
+  cfg.service_defaults = std::move(defaults);
+
+  // "inheritor" takes both defaults; "overrider" replaces both.
+  ParsedServiceConfig inheritor;
+  inheritor.match.value().push_back(makeAnyAuthorityMatch());
+  cfg.services.value().emplace("inheritor", std::move(inheritor));
+
+  ParsedServiceConfig overrider;
+  overrider.match.value().push_back(makeExactAuthorityMatch("override.example.com"));
+  ParsedCacheConfig svcCache;
+  svcCache.max_cache_duration_s = std::optional<uint32_t>{1800};
+  svcCache.default_max_cache_duration_s = std::optional<uint32_t>{30};
+  overrider.cache = std::move(svcCache);
+  cfg.services.value().emplace("overrider", std::move(overrider));
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  const auto& resolved = result.value().config;
+  EXPECT_EQ(resolved.services.at("inheritor").cache.maxCacheDuration, std::chrono::seconds(7200));
+  EXPECT_EQ(
+      *resolved.services.at("inheritor").cache.defaultMaxCacheDuration,
+      std::chrono::seconds(120)
+  );
+  EXPECT_EQ(resolved.services.at("overrider").cache.maxCacheDuration, std::chrono::seconds(1800));
+  EXPECT_EQ(
+      *resolved.services.at("overrider").cache.defaultMaxCacheDuration,
+      std::chrono::seconds(30)
+  );
+}
+
+// --- maxCachedMb / minEvictionKb tests ---
+
+TEST(ResolveConfig, CacheByteLimitsDefaults) {
+  // max_cached_mb absent → 16 MB; min_eviction_kb absent → 64 KB.
+  auto cfg = makeMinimalInsecureConfig();
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  const auto& cache = result.value().config.services.at("default").cache;
+  EXPECT_EQ(cache.maxCachedMb, 16u);
+  EXPECT_EQ(cache.minEvictionKb, 64u);
+}
+
+TEST(ResolveConfig, CacheMbZeroIsInvalid) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().at("default").cache.value()->max_cached_mb = std::optional<uint32_t>{0};
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("max_cached_mb must not be 0"));
+}
+
+TEST(ResolveConfig, CacheByteLimitsMergeWithDefaults) {
+  // Both max_cached_mb and min_eviction_kb inherit and can be overridden.
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().clear();
+
+  ParsedServiceDefaultsConfig defaults;
+  ParsedCacheConfig defaultCache;
+  defaultCache.enabled = std::optional<bool>{true};
+  defaultCache.max_tracks = std::optional<uint32_t>{50};
+  defaultCache.max_groups_per_track = std::optional<uint32_t>{2};
+  defaultCache.max_cached_mb = std::optional<uint32_t>{256};
+  defaultCache.min_eviction_kb = std::optional<uint32_t>{200};
+  defaults.cache = std::move(defaultCache);
+  cfg.service_defaults = std::move(defaults);
+
+  ParsedServiceConfig inheritor;
+  inheritor.match.value().push_back(makeAnyAuthorityMatch());
+  cfg.services.value().emplace("inheritor", std::move(inheritor));
+
+  ParsedServiceConfig overrider;
+  overrider.match.value().push_back(makeExactAuthorityMatch("override.example.com"));
+  ParsedCacheConfig svcCache;
+  svcCache.max_cached_mb = std::optional<uint32_t>{64};
+  svcCache.min_eviction_kb = std::optional<uint32_t>{512};
+  overrider.cache = std::move(svcCache);
+  cfg.services.value().emplace("overrider", std::move(overrider));
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  const auto& resolved = result.value().config;
+  EXPECT_EQ(resolved.services.at("inheritor").cache.maxCachedMb, 256u);
+  EXPECT_EQ(resolved.services.at("inheritor").cache.minEvictionKb, 200u);
+  EXPECT_EQ(resolved.services.at("overrider").cache.maxCachedMb, 64u);
+  EXPECT_EQ(resolved.services.at("overrider").cache.minEvictionKb, 512u);
+}
+
 } // namespace
 } // namespace openmoq::moqx::config

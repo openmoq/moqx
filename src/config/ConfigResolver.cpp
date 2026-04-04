@@ -44,6 +44,17 @@ mergeCacheConfigs(const ParsedCacheConfig& base, const ParsedCacheConfig& overla
   merged.max_groups_per_track = overlay.max_groups_per_track.value().has_value()
                                     ? overlay.max_groups_per_track.value()
                                     : base.max_groups_per_track.value();
+  merged.max_cached_mb = overlay.max_cached_mb.value().has_value() ? overlay.max_cached_mb.value()
+                                                                   : base.max_cached_mb.value();
+  merged.min_eviction_kb = overlay.min_eviction_kb.value().has_value()
+                               ? overlay.min_eviction_kb.value()
+                               : base.min_eviction_kb.value();
+  merged.max_cache_duration_s = overlay.max_cache_duration_s.value().has_value()
+                                    ? overlay.max_cache_duration_s.value()
+                                    : base.max_cache_duration_s.value();
+  merged.default_max_cache_duration_s = overlay.default_max_cache_duration_s.value().has_value()
+                                            ? overlay.default_max_cache_duration_s.value()
+                                            : base.default_max_cache_duration_s.value();
   return merged;
 }
 
@@ -97,10 +108,27 @@ TlsConfig resolveAdminTlsConfig(
 
 CacheConfig resolveCacheConfig(const ParsedCacheConfig& cache) {
   // All fields must be present after merging (validated earlier).
+  // max_cache_duration_s: absent → 1 day default.
+  constexpr uint32_t kDefaultMaxCacheDurationS = 86400;
+  const std::chrono::milliseconds maxCacheDuration =
+      std::chrono::seconds(cache.max_cache_duration_s.value().value_or(kDefaultMaxCacheDurationS));
+  // default_max_cache_duration_s: absent → use maxCacheDuration; 0 → 0ms (opt-in only);
+  // N → N seconds for tracks without a publisher-set cache duration.
+  std::optional<std::chrono::milliseconds> defaultMaxCacheDuration;
+  const auto& defaultDurationOpt = cache.default_max_cache_duration_s.value();
+  if (defaultDurationOpt.has_value()) {
+    defaultMaxCacheDuration = std::chrono::seconds(*defaultDurationOpt);
+  } else {
+    defaultMaxCacheDuration = maxCacheDuration;
+  }
   return CacheConfig{
       .maxCachedTracks =
           *cache.enabled.value() ? static_cast<size_t>(*cache.max_tracks.value()) : 0,
       .maxCachedGroupsPerTrack = static_cast<size_t>(*cache.max_groups_per_track.value()),
+      .maxCachedMb = cache.max_cached_mb.value().value_or(16),
+      .minEvictionKb = cache.min_eviction_kb.value().value_or(64),
+      .maxCacheDuration = maxCacheDuration,
+      .defaultMaxCacheDuration = defaultMaxCacheDuration,
   };
 }
 
@@ -349,6 +377,13 @@ void validateService(
     errors.push_back(
         "Service '" + name + "': cache.max_groups_per_track must be >= 1 when cache is enabled"
     );
+  }
+  if (merged.max_cache_duration_s.value().has_value() &&
+      *merged.max_cache_duration_s.value() == 0) {
+    errors.push_back("Service '" + name + "': cache.max_cache_duration_s must not be 0");
+  }
+  if (merged.max_cached_mb.value().has_value() && *merged.max_cached_mb.value() == 0) {
+    errors.push_back("Service '" + name + "': cache.max_cached_mb must not be 0");
   }
 
   mergedCaches.emplace(name, std::move(merged));
