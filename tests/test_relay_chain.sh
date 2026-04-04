@@ -33,13 +33,15 @@ DATESERVER="$MOQBIN/moqdateserver"
 TEXTCLIENT="$MOQBIN/moqtextclient"
 
 UPSTREAM_PORT=19668
+UPSTREAM_ADMIN_PORT=19669
 DOWNSTREAM_PORT=19670
+DOWNSTREAM_ADMIN_PORT=19671
 UPSTREAM_RELAY_ID="upstream-test"
 DOWNSTREAM_RELAY_ID="downstream-test"
 NAMESPACE="moq-date"
 NAMESPACE2="moq-date-2"
 NAMESPACE3="moq-publish"  # for --publish push-mode test
-TIMEOUT=5   # seconds to wait for data
+TIMEOUT=2   # seconds to wait for data
 
 # ── Prereq checks ──────────────────────────────────────────────────────────────
 for f in "$BINARY" "$DATESERVER" "$TEXTCLIENT"; do
@@ -49,7 +51,7 @@ for f in "$BINARY" "$DATESERVER" "$TEXTCLIENT"; do
   fi
 done
 
-for port in "$UPSTREAM_PORT" "$DOWNSTREAM_PORT"; do
+for port in "$UPSTREAM_PORT" "$UPSTREAM_ADMIN_PORT" "$DOWNSTREAM_PORT" "$DOWNSTREAM_ADMIN_PORT"; do
   if ss -ulnp 2>/dev/null | grep -q ":$port "; then
     echo "ERROR: port $port already in use (stale relay process?)" >&2
     ss -ulnp 2>/dev/null | grep ":$port " >&2
@@ -101,6 +103,32 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# ── Readiness helpers ──────────────────────────────────────────────────────────
+# wait_ready <admin_port> <label>: wait for admin /info to return 200.
+wait_ready() {
+  local port="$1" label="$2"
+  local deadline=$(( $(date +%s) + 10 ))
+  until curl -sf "http://localhost:$port/info" >/dev/null 2>&1; do
+    (( $(date +%s) >= deadline )) && { echo "ERROR: $label not ready after 10s" >&2; exit 1; }
+    sleep 0.1
+  done
+}
+
+# wait_sessions <admin_port> <min> <label>: wait for moqActiveSessions >= min.
+wait_sessions() {
+  local port="$1" min="$2" label="$3"
+  local deadline=$(( $(date +%s) + 10 ))
+  local val
+  until val=$(curl -sf "http://localhost:$port/metrics" 2>/dev/null \
+        | grep "^moqx_moqActiveSessions " | awk '{print $2}') \
+        && [[ -n "$val" && "$val" -ge "$min" ]]; do
+    (( $(date +%s) >= deadline )) && {
+      echo "ERROR: $label: moqActiveSessions=${val:-?} < $min after 10s" >&2; exit 1;
+    }
+    sleep 0.1
+  done
+}
+
 # ── Configs ────────────────────────────────────────────────────────────────────
 cat >"$UPSTREAM_CFG" <<EOF
 relay_id: "$UPSTREAM_RELAY_ID"
@@ -122,6 +150,10 @@ services:
       enabled: false
       max_tracks: 100
       max_groups_per_track: 3
+admin:
+  port: $UPSTREAM_ADMIN_PORT
+  address: "::"
+  plaintext: true
 EOF
 
 cat >"$DOWNSTREAM_CFG" <<EOF
@@ -149,6 +181,10 @@ services:
       tls:
         insecure: true
       idle_timeout_ms: 60000
+admin:
+  port: $DOWNSTREAM_ADMIN_PORT
+  address: "::"
+  plaintext: true
 EOF
 
 # ── Start relays ───────────────────────────────────────────────────────────────
@@ -176,8 +212,10 @@ echo "Starting downstream relay on port $DOWNSTREAM_PORT..."
 "$BINARY" --config="$DOWNSTREAM_CFG" $RELAY_LOG_ARGS >"$DOWNSTREAM_LOG" 2>&1 &
 RELAY_PIDS+=($!)
 
-# Give relays time to start and complete the peering handshake.
-sleep 1
+# Wait for relays to start and complete the peering handshake.
+wait_ready "$UPSTREAM_ADMIN_PORT" "upstream"
+wait_ready "$DOWNSTREAM_ADMIN_PORT" "downstream"
+wait_sessions "$UPSTREAM_ADMIN_PORT" 1 "peering"
 
 check_received() {
   local label="$1" out="$2"
@@ -208,7 +246,7 @@ echo "Direction 1: moqdateserver → upstream, subscribe via downstream"
   >"$DATESERVER_LOG" 2>&1 &
 PIDS+=($!)
 
-sleep 1
+wait_sessions "$UPSTREAM_ADMIN_PORT" 2 "dir1 dateserver"
 
 timeout "$TIMEOUT" "$TEXTCLIENT" \
   --connect_url="https://localhost:$DOWNSTREAM_PORT/moq-relay" \
@@ -226,7 +264,7 @@ echo "Direction 2: moqdateserver → downstream, subscribe via upstream"
   >"$DATESERVER_LOG2" 2>&1 &
 PIDS+=($!)
 
-sleep 1
+wait_sessions "$DOWNSTREAM_ADMIN_PORT" 1 "dir2 dateserver"
 
 timeout "$TIMEOUT" "$TEXTCLIENT" \
   --connect_url="https://localhost:$UPSTREAM_PORT/moq-relay" \
@@ -272,7 +310,7 @@ timeout "$TIMEOUT" "$TEXTCLIENT" \
   >"$CLIENT_OUT3" 2>&1 &
 TCPID=$!
 
-sleep 1
+wait_sessions "$DOWNSTREAM_ADMIN_PORT" 2 "dir4 textclient"
 
 # dateserver --publish: connects to upstream and pushes via PUBLISH.
 "$DATESERVER" \
