@@ -47,7 +47,8 @@ MoqxRelayServer::MoqxRelayServer(
     const std::string& endpoint,
     const std::string& versions,
     folly::F14FastMap<std::string, config::ServiceConfig> services,
-    const std::string& relayID
+    const std::string& relayID,
+    std::optional<quic::TransportSettings> transportSettings
 )
     : MoQServer(
           quic::samples::createFizzServerContext(
@@ -56,7 +57,8 @@ MoqxRelayServer::MoqxRelayServer(
               cert,
               key
           ),
-          endpoint
+          endpoint,
+          std::move(transportSettings)
       ),
       serviceMatcher_(services), relayID_(relayID) {
   initServices(services, relayID);
@@ -66,7 +68,8 @@ MoqxRelayServer::MoqxRelayServer(
     const std::string& endpoint,
     const std::string& versions,
     folly::F14FastMap<std::string, config::ServiceConfig> services,
-    const std::string& relayID
+    const std::string& relayID,
+    std::optional<quic::TransportSettings> transportSettings
 )
     : MoQServer(
           quic::samples::createFizzServerContextWithInsecureDefault(
@@ -75,7 +78,8 @@ MoqxRelayServer::MoqxRelayServer(
               "" /* cert */,
               "" /* key */
           ),
-          endpoint
+          endpoint,
+          std::move(transportSettings)
       ),
       serviceMatcher_(services), relayID_(relayID) {
   initServices(services, relayID);

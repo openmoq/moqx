@@ -43,6 +43,10 @@ std::shared_ptr<openmoq::moqx::MoqxRelayServer> createServer(const cfg::Config& 
   const auto& listener = config.listener;
   auto services = config.services; // copy for move into constructor
 
+  // Don't override transport settings — let MoQServer use its defaults
+  // but patch them after construction via issue #67
+  std::optional<quic::TransportSettings> transportSettings = std::nullopt;
+
   return std::visit(
       [&](const auto& tls) -> std::shared_ptr<openmoq::moqx::MoqxRelayServer> {
         using T = std::decay_t<decltype(tls)>;
@@ -51,7 +55,8 @@ std::shared_ptr<openmoq::moqx::MoqxRelayServer> createServer(const cfg::Config& 
               listener.endpoint,
               listener.moqtVersions,
               std::move(services),
-              config.relayID
+              config.relayID,
+              std::move(transportSettings)
           );
         } else {
           return std::make_shared<openmoq::moqx::MoqxRelayServer>(
@@ -60,7 +65,8 @@ std::shared_ptr<openmoq::moqx::MoqxRelayServer> createServer(const cfg::Config& 
               listener.endpoint,
               listener.moqtVersions,
               std::move(services),
-              config.relayID
+              config.relayID,
+              std::move(transportSettings)
           );
         }
       },

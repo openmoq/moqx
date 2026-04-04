@@ -1,7 +1,9 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 
+#include <quic/server/QuicServerTransport.h>
 #include <moqx/MoqxRelay.h>
 #include <moqx/ServiceMatcher.h>
 #include <moqx/UpstreamProvider.h>
@@ -21,7 +23,8 @@ public:
       const std::string& endpoint,
       const std::string& versions,
       folly::F14FastMap<std::string, config::ServiceConfig> services,
-      const std::string& relayID = {}
+      const std::string& relayID = {},
+      std::optional<quic::TransportSettings> transportSettings = std::nullopt
   );
 
   // Used when the insecure flag is true
@@ -29,7 +32,8 @@ public:
       const std::string& endpoint,
       const std::string& versions,
       folly::F14FastMap<std::string, config::ServiceConfig> services,
-      const std::string& relayID = {}
+      const std::string& relayID = {},
+      std::optional<quic::TransportSettings> transportSettings = std::nullopt
   );
 
   ~MoqxRelayServer() override;
