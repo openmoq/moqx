@@ -68,14 +68,35 @@ DATESERVER_LOG="$TMPDIR_SCRIPT/dateserver.log"
 DATESERVER_LOG2="$TMPDIR_SCRIPT/dateserver2.log"
 
 # ── Cleanup ────────────────────────────────────────────────────────────────────
-PIDS=()
+PIDS=()        # non-relay processes (dateserver, etc.) — 2s grace then SIGKILL
+RELAY_PIDS=()  # relay processes — wait indefinitely (relay binary has hard 10s watchdog)
 cleanup() {
-  for pid in "${PIDS[@]:-}"; do
+  # Signal everyone.
+  for pid in "${PIDS[@]:-}" "${RELAY_PIDS[@]:-}"; do
     kill "$pid" 2>/dev/null || true
   done
-  for pid in "${PIDS[@]:-}"; do
-    wait "$pid" 2>/dev/null || true
+  # Give non-relay helpers 2s to exit cleanly, then hard-kill survivors.
+  local deadline=$(( $(date +%s) + 2 ))
+  while true; do
+    local any_alive=false
+    for pid in "${PIDS[@]:-}"; do
+      kill -0 "$pid" 2>/dev/null && { any_alive=true; break; }
+    done
+    [[ "$any_alive" == true ]] || break
+    if (( $(date +%s) >= deadline )); then
+      echo "WARNING: helpers did not exit after 2s, sending SIGKILL" >&2
+      break
+    fi
+    sleep 0.2
   done
+  for pid in "${PIDS[@]:-}"; do
+    if kill -0 "$pid" 2>/dev/null; then
+      echo "WARNING: SIGKILL $pid ($(cat /proc/$pid/cmdline 2>/dev/null | tr '\0' ' ' || echo '?'))" >&2
+      kill -KILL "$pid" 2>/dev/null || true
+    fi
+  done
+  # Relays: wait indefinitely — relay's hard shutdown watchdog handles any hang.
+  wait "${PIDS[@]:-}" "${RELAY_PIDS[@]:-}" 2>/dev/null || true
   rm -rf "$TMPDIR_SCRIPT"
 }
 trap cleanup EXIT
@@ -149,11 +170,11 @@ fi
 
 echo "Starting upstream relay on port $UPSTREAM_PORT..."
 "$BINARY" --config="$UPSTREAM_CFG" $RELAY_LOG_ARGS >"$UPSTREAM_LOG" 2>&1 &
-PIDS+=($!)
+RELAY_PIDS+=($!)
 
 echo "Starting downstream relay on port $DOWNSTREAM_PORT..."
 "$BINARY" --config="$DOWNSTREAM_CFG" $RELAY_LOG_ARGS >"$DOWNSTREAM_LOG" 2>&1 &
-PIDS+=($!)
+RELAY_PIDS+=($!)
 
 # Give relays time to start and complete the peering handshake.
 sleep 1
