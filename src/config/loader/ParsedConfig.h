@@ -105,6 +105,32 @@ struct ParsedCacheConfig {
   rfl::Description<"Max cached tracks, ignored when disabled", std::optional<uint32_t>> max_tracks;
   rfl::Description<"Max cached groups per track, ignored when disabled", std::optional<uint32_t>>
       max_groups_per_track;
+  rfl::Description<
+      "Max total cache size in megabytes across all tracks. Default: 16. 0 is invalid. "
+      "Ignored when cache is disabled.",
+      std::optional<uint32_t>>
+      max_cached_mb;
+  rfl::Description<
+      "Eviction batch floor in kilobytes: when the cache exceeds the byte limit, "
+      "evict LRU tracks until usage falls to max_cached_mb - min_eviction_kb. "
+      "Default: 64. Ignored when cache is disabled.",
+      std::optional<uint32_t>>
+      min_eviction_kb;
+  rfl::Description<
+      "Maximum cache duration (seconds) for any track; clamps publisher-set values. "
+      "Also used as the default for tracks without a publisher-set duration when "
+      "default_max_cache_duration_s is absent. Default: 86400 (1 day). 0 is invalid. "
+      "Ignored when cache is disabled.",
+      std::optional<uint32_t>>
+      max_cache_duration_s;
+  rfl::Description<
+      "Default max cache duration (seconds) for tracks without a publisher-set cache duration. "
+      "Absent: use max_cache_duration_s as the default. "
+      "0: opt-in-only — do not cache tracks unless the publisher sets a cache duration. "
+      "N: use N seconds as the default for tracks without a publisher-set cache duration. "
+      "Ignored when cache is disabled.",
+      std::optional<uint32_t>>
+      default_max_cache_duration_s;
 };
 
 struct ParsedAdminConfig {

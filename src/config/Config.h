@@ -32,6 +32,11 @@ using TlsMode = std::variant<Insecure, TlsConfig>;
 struct CacheConfig {
   size_t maxCachedTracks; // 0 when cache disabled
   size_t maxCachedGroupsPerTrack;
+  uint32_t maxCachedMb{16};   // code default: 16 MB; 0 invalid
+  uint32_t minEvictionKb{64}; // eviction batch floor in KB
+  std::chrono::milliseconds maxCacheDuration{std::chrono::hours(24)}; // cap on any track duration
+  std::optional<std::chrono::milliseconds>
+      defaultMaxCacheDuration; // nullopt = use maxCacheDuration; 0ms = opt-in only
 };
 
 enum class QuicStack { Mvfst, Picoquic };

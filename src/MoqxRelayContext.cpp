@@ -21,17 +21,7 @@ MoqxRelayContext::MoqxRelayContext(
 )
     : serviceMatcher_(services), relayID_(relayID) {
   for (const auto& [name, svc] : services) {
-    services_.emplace(
-        name,
-        ServiceEntry{
-            svc,
-            std::make_shared<MoqxRelay>(
-                svc.cache.maxCachedTracks,
-                svc.cache.maxCachedGroupsPerTrack,
-                relayID
-            )
-        }
-    );
+    services_.emplace(name, ServiceEntry{svc, std::make_shared<MoqxRelay>(svc.cache, relayID)});
   }
 }
 

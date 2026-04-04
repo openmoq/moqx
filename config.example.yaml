@@ -20,9 +20,17 @@ service_defaults:
   # Default cache settings inherited by all services.
   # Per-service cache merges field-by-field: set only the fields you want to override.
   cache:
-    enabled: true               # Enable relay cache
-    max_tracks: 100             # Max number of cached tracks
-    max_groups_per_track: 3     # Max groups per track in cache
+    enabled: true                        # Enable relay cache
+    max_tracks: 100                      # Max number of cached tracks
+    max_groups_per_track: 3              # Max cached groups per track
+    # max_cached_mb: 16                  # Max total cache size in MB. Default: 16. 0 is invalid.
+    # min_eviction_kb: 64                # Eviction batch floor in KB. Default: 64.
+    # max_cache_duration_s: 86400        # Max TTL (seconds) for any track; clamps publisher-set values.
+                                         # Also the default when default_max_cache_duration_s is absent.
+                                         # Default: 86400 (1 day). 0 is invalid.
+    # default_max_cache_duration_s: 300  # Default TTL (seconds) for tracks without a publisher-set duration.
+                                         # Absent: use max_cache_duration_s.
+                                         # 0: opt-in-only (don't cache tracks unless publisher sets a duration).
 
 services:
   live-streaming:
@@ -37,6 +45,11 @@ services:
       max_tracks: 500             # Override: 100 → 500
       max_groups_per_track: 10    # Override: 3 → 10
       # enabled: inherited (true) from service_defaults
+      # max_cached_mb: 100                  # Override: cap this service at 100 MB
+      # min_eviction_kb: 200               # Override: larger eviction batch floor for this service
+      # max_cache_duration_s: 3600         # Override: tighter max TTL for this service
+      # default_max_cache_duration_s: 60   # Override: tighter default TTL for this service
+      # default_max_cache_duration_s: 0    # Override: opt-in-only for this service
     # upstream:                   # Optional: enable relay chaining for this service
     #   url: "moqt://origin.example.com:4433/moq-relay"
     #   tls:

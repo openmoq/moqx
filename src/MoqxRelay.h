@@ -9,6 +9,7 @@
 #pragma once
 
 #include "UpstreamProvider.h"
+#include "config/Config.h"
 #include <folly/coro/SharedPromise.h>
 #include <moxygen/MoQSession.h>
 #include <moxygen/relay/MoQCache.h>
@@ -24,14 +25,16 @@ class MoqxRelay : public moxygen::Publisher,
                   public std::enable_shared_from_this<MoqxRelay>,
                   public moxygen::MoQForwarder::Callback {
 public:
-  explicit MoqxRelay(
-      size_t maxCachedTracks = moxygen::kDefaultMaxCachedTracks,
-      size_t maxCachedGroupsPerTrack = moxygen::kDefaultMaxCachedGroupsPerTrack,
-      std::string relayID = {}
-  )
+  explicit MoqxRelay(config::CacheConfig cache = {}, std::string relayID = {})
       : relayID_(std::move(relayID)) {
-    if (maxCachedTracks > 0) {
-      cache_ = std::make_unique<moxygen::MoQCache>(maxCachedTracks, maxCachedGroupsPerTrack);
+    if (cache.maxCachedTracks > 0) {
+      cache_ =
+          std::make_unique<moxygen::MoQCache>(cache.maxCachedTracks, cache.maxCachedGroupsPerTrack);
+      cache_->setMaxCachedBytes(static_cast<size_t>(cache.maxCachedMb) * 1024 * 1024);
+      cache_->setMinEvictionBytes(static_cast<size_t>(cache.minEvictionKb) * 1024);
+      cache_->setDefaultMaxCacheDuration(cache.defaultMaxCacheDuration);
+      // TODO: wire cache.maxCacheDuration once MoQCache supports clamping
+      // publisher-set track durations.
     }
   }
 
