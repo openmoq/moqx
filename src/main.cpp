@@ -7,6 +7,9 @@
 
 #include <csignal>
 
+#include <chrono>
+#include <thread>
+
 #include <folly/init/Init.h>
 #include <folly/io/async/AsyncSignalHandler.h>
 #include <folly/logging/xlog.h>
@@ -138,6 +141,13 @@ int main(int argc, char* argv[]) {
   // === 8. Start serving ===
   server->start(config.listener.address);
   evb.loopForever();
+
+  // Hard shutdown watchdog: if teardown hangs, force-exit after 10 seconds.
+  std::thread([relayID = config.relayID] {
+    std::this_thread::sleep_for(std::chrono::seconds(10));
+    XLOG(ERR) << "Shutdown timed out after 10s (relay_id=" << relayID << "), forcing exit";
+    std::_Exit(1);
+  }).detach();
 
   // ============================================
   // Teardown (reverse order, on signal/shutdown)
