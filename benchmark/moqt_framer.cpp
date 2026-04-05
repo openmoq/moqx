@@ -25,31 +25,30 @@ static FullTrackName makeFullTrackName() {
 // --- Varint encode/decode (compare to libquicr UIntVar/Encode/Decode) ---
 
 void BM_VarintEncode_Small(benchmark::State& state) {
-  // 1-byte varint (value <= 63)
-  uint64_t val = 42;
+  uint64_t val = 42; // 1-byte varint
   for (auto _ : state) {
-    uint8_t buf[8];
-    folly::io::RWPrivateCursor cursor(folly::IOBuf::wrapBuffer(buf, sizeof(buf)).get());
-    auto res = quic::encodeQuicInteger(val, [&cursor](auto v) { cursor.writeBE(v); });
-    benchmark::DoNotOptimize(res);
+    folly::IOBufQueue q;
+    size_t sz = 0;
+    bool err = false;
+    moxygen::writeVarint(q, val, sz, err);
+    benchmark::DoNotOptimize(sz);
   }
 }
 BENCHMARK(BM_VarintEncode_Small);
 
 void BM_VarintEncode_Large(benchmark::State& state) {
-  // 8-byte varint (large value)
-  uint64_t val = 1000000000;
+  uint64_t val = 1000000000; // 4-byte varint
   for (auto _ : state) {
-    uint8_t buf[8];
-    folly::io::RWPrivateCursor cursor(folly::IOBuf::wrapBuffer(buf, sizeof(buf)).get());
-    auto res = quic::encodeQuicInteger(val, [&cursor](auto v) { cursor.writeBE(v); });
-    benchmark::DoNotOptimize(res);
+    folly::IOBufQueue q;
+    size_t sz = 0;
+    bool err = false;
+    moxygen::writeVarint(q, val, sz, err);
+    benchmark::DoNotOptimize(sz);
   }
 }
 BENCHMARK(BM_VarintEncode_Large);
 
 void BM_VarintDecode_Small(benchmark::State& state) {
-  // Encode a small value then decode in a loop
   uint8_t buf[8] = {42, 0, 0, 0, 0, 0, 0, 0}; // 1-byte encoding of 42
   for (auto _ : state) {
     quic::ContiguousReadCursor cursor(buf, sizeof(buf));
@@ -60,8 +59,7 @@ void BM_VarintDecode_Small(benchmark::State& state) {
 BENCHMARK(BM_VarintDecode_Small);
 
 void BM_VarintDecode_Large(benchmark::State& state) {
-  // Encode a 4-byte value: 0xC0000000 | value for 8-byte encoding
-  // Use writeVarint to produce correct encoding
+  // Pre-encode a large value
   folly::IOBufQueue q;
   size_t sz = 0;
   bool err = false;
