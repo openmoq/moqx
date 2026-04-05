@@ -115,7 +115,7 @@ check_system_deps() {
   # CMake version check (need 3.25+)
   if command -v cmake >/dev/null 2>&1; then
     local ver
-    ver=$(cmake --version | head -1 | grep -oP '\d+\.\d+' | head -1)
+    ver=$(cmake --version | head -1 | sed 's/[^0-9]*\([0-9]*\.[0-9]*\).*/\1/')
     local major minor
     major=$(echo "$ver" | cut -d. -f1)
     minor=$(echo "$ver" | cut -d. -f2)
