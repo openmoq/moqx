@@ -12,6 +12,7 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 option(MOQX_BUILD_TESTS "Build tests" ON)
+option(MOQX_BUILD_BENCHMARKS "Build benchmarks" OFF)
 option(MOQX_ENABLE_SANITIZERS "Enable ASAN/UBSAN (non-Release)" OFF)
 
 if(MOQX_ENABLE_SANITIZERS AND NOT CMAKE_BUILD_TYPE STREQUAL "Release")
@@ -292,6 +293,10 @@ if(MOQX_BUILD_TESTS)
     GTest::gmock
   )
   gtest_discover_tests(moqx_upstream_provider_test)
+endif()
+
+if(MOQX_BUILD_BENCHMARKS)
+  add_subdirectory(benchmark)
 endif()
 
 include(${PROJECT_SOURCE_DIR}/cmake/Lint.cmake)
