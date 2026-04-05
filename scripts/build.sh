@@ -343,6 +343,7 @@ cmd_build() {
 
   if [[ "$benchmark" == "ON" ]]; then
     extra_cmake_args+=("-DMOQX_BUILD_BENCHMARKS=ON")
+    extra_cmake_args+=("-DMOQX_BUILD_TESTS=OFF")
   fi
 
   echo "==> Configuring (profile: $profile, build: $build_dir)..."
