@@ -117,10 +117,6 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: bash scripts/build.sh setup
 
-      - name: Unlink brew gflags (macOS)
-        if: runner.os == 'macOS'
-        run: brew unlink gflags
-
       - name: Build with benchmarks
         run: bash scripts/build.sh --benchmark
 

@@ -341,6 +341,12 @@ cmd_build() {
     extra_cmake_args+=("-DGFLAGS_SHARED=ON")
   fi
 
+  # macOS: prefer shared gflags from brew to avoid conflict with static
+  # gflags symbols bundled in the moxygen tarball (see openmoq/moxygen#114).
+  if [[ "$(uname)" == "Darwin" ]]; then
+    extra_cmake_args+=("-DGFLAGS_SHARED=ON")
+  fi
+
   if [[ "$benchmark" == "ON" ]]; then
     extra_cmake_args+=("-DMOQX_BUILD_BENCHMARKS=ON")
     extra_cmake_args+=("-DMOQX_BUILD_TESTS=OFF")
