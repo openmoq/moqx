@@ -82,8 +82,16 @@ jobs:
 
   benchmark:
     needs: [check-format]
-    name: benchmark
-    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux
+            runner: ubuntu-22.04
+          - name: macos
+            runner: macos-latest
+    name: benchmark (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
     steps:
       - name: Generate app token
         id: app-token
@@ -97,7 +105,12 @@ jobs:
           submodules: true
 
       - name: Install system dependencies
-        run: sudo deps/moxygen/standalone/install-system-deps.sh
+        run: |
+          if [[ "$(uname)" == "Darwin" ]]; then
+            deps/moxygen/standalone/install-system-deps.sh
+          else
+            sudo deps/moxygen/standalone/install-system-deps.sh
+          fi
 
       - name: Setup dependencies
         env:
