@@ -19,6 +19,7 @@ add_executable(moqx_benchmark
   config_loader.cpp
   config_resolver.cpp
   moq_stats_collector.cpp
+  moqt_extensions.cpp
   moqt_framer.cpp
   prometheus_format.cpp
   service_matcher.cpp
