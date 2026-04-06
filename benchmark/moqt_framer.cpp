@@ -24,8 +24,9 @@ static FullTrackName makeFullTrackName() {
 
 // --- Varint encode/decode (compare to libquicr UIntVar/Encode/Decode) ---
 
-void BM_VarintEncode_Small(benchmark::State& state) {
-  uint64_t val = 42; // 1-byte varint
+// Cold: new IOBufQueue per call (measures allocation overhead, not varint logic)
+void BM_VarintEncode_Cold(benchmark::State& state) {
+  uint64_t val = 42;
   for (auto _ : state) {
     folly::IOBufQueue q;
     size_t sz = 0;
@@ -34,19 +35,33 @@ void BM_VarintEncode_Small(benchmark::State& state) {
     benchmark::DoNotOptimize(sz);
   }
 }
-BENCHMARK(BM_VarintEncode_Small);
+BENCHMARK(BM_VarintEncode_Cold);
 
-void BM_VarintEncode_Large(benchmark::State& state) {
-  uint64_t val = 1000000000; // 4-byte varint
+// Warm: reuse IOBufQueue (reflects production — buffer is pre-allocated)
+void BM_VarintEncode_Warm(benchmark::State& state) {
+  uint64_t val = 42;
+  folly::IOBufQueue q;
   for (auto _ : state) {
-    folly::IOBufQueue q;
     size_t sz = 0;
     bool err = false;
     moxygen::writeVarint(q, val, sz, err);
     benchmark::DoNotOptimize(sz);
   }
 }
-BENCHMARK(BM_VarintEncode_Large);
+BENCHMARK(BM_VarintEncode_Warm);
+
+// Warm large value
+void BM_VarintEncode_WarmLarge(benchmark::State& state) {
+  uint64_t val = 1000000000;
+  folly::IOBufQueue q;
+  for (auto _ : state) {
+    size_t sz = 0;
+    bool err = false;
+    moxygen::writeVarint(q, val, sz, err);
+    benchmark::DoNotOptimize(sz);
+  }
+}
+BENCHMARK(BM_VarintEncode_WarmLarge);
 
 void BM_VarintDecode_Small(benchmark::State& state) {
   uint8_t buf[8] = {42, 0, 0, 0, 0, 0, 0, 0}; // 1-byte encoding of 42
