@@ -78,6 +78,7 @@ add_library(moqx_core STATIC
   src/ServiceMatcher.cpp
   src/admin/AdminServer.cpp
   src/admin/BuiltinRoutes.cpp
+  src/admin/CachePurgeHandler.cpp
   src/admin/MetricsHandler.cpp
   src/stats/StatsRegistry.cpp
   src/stats/MoQStatsCollector.cpp

@@ -1,6 +1,7 @@
 #include <moqx/MoqxRelayServer.h>
 #include <moqx/admin/AdminServer.h>
 #include <moqx/admin/BuiltinRoutes.h>
+#include <moqx/admin/CachePurgeHandler.h>
 #include <moqx/admin/MetricsHandler.h>
 #include <moqx/config/loader/config_init.h>
 #include <moqx/stats/StatsRegistry.h>
@@ -130,6 +131,7 @@ int main(int argc, char* argv[]) {
   openmoq::moqx::admin::AdminServer adminServer;
   openmoq::moqx::admin::registerBuiltinRoutes(adminServer);
   openmoq::moqx::admin::registerMetricsRoute(adminServer, statsRegistry);
+  openmoq::moqx::admin::registerCachePurgeRoute(adminServer, server);
   if (config.admin) {
     if (!adminServer.start(*config.admin)) {
       XLOG(FATAL) << "Failed to start admin server on " << config.admin->address.describe();

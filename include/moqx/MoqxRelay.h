@@ -46,6 +46,13 @@ public:
     upstream_ = std::move(upstream);
   }
 
+  // Clears all objects from the relay's cache; Not thread-safe
+  void clearCache() {
+    if (cache_) {
+      cache_->clear();
+    }
+  }
+
   // Stops and releases the upstream provider, breaking the shared_ptr cycle
   // between MoqxRelay and UpstreamProvider. Safe to call with no upstream.
   void stop() {

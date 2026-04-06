@@ -36,6 +36,10 @@ public:
 
   void setStatsRegistry(std::shared_ptr<stats::StatsRegistry> registry);
 
+  // Clears the cache for all services, or for a single named service 
+  // Returns the number of caches cleared (0 means the named service was not found).
+  size_t clearCaches(std::string_view serviceName = {});
+
   // Binds listeners then initialises per-service upstream providers (requires
   // draft 16+ for relay chaining).
   void start(const folly::SocketAddress& addr) {
