@@ -1,5 +1,5 @@
 #include <moqx/MoqxRelayContext.h>
-#include <moqx/MoqxRelayServer.h>
+#include <moqx/MoqxServerFactory.h>
 #include <moqx/admin/AdminServer.h>
 #include <moqx/admin/BuiltinRoutes.h>
 #include <moqx/admin/CachePurgeHandler.h>
@@ -105,20 +105,23 @@ int main(int argc, char* argv[]) {
   // === 6a. Stats registry ===
   auto statsRegistry = std::make_shared<stats::StatsRegistry>();
 
-  std::vector<std::shared_ptr<MoqxRelayServer>> servers;
+  std::vector<std::shared_ptr<moxygen::MoQServerBase>> servers;
   for (const auto& listenerCfg : config.listeners) {
-    auto& server =
-        servers.emplace_back(std::make_shared<MoqxRelayServer>(listenerCfg, context, ioExecutor));
-    server->setStatsRegistry(statsRegistry);
+    auto server = makeRelayServer(listenerCfg, context, ioExecutor);
+    if (auto relayServer = std::dynamic_pointer_cast<MoqxRelayServer>(server)) {
+      relayServer->setStatsRegistry(statsRegistry);
+    }
+    servers.emplace_back(std::move(server));
   }
 
   // === 7. Start serving ===
   for (auto& server : servers) {
-    server->start();
+    // addr ignored — each server binds its own listenerCfg address
+    server->start(folly::SocketAddress{});
   }
 
   if (!servers.empty()) {
-    auto* workerEvb = servers[0]->getWorkerEvbs()[0];
+    auto* workerEvb = ioExecutor->getAllEventBases()[0].get();
     context->setWorkerEvb(workerEvb);
     context->initUpstreams(workerEvb);
   }
@@ -135,6 +138,7 @@ int main(int argc, char* argv[]) {
 
     XLOG(INFO) << "Admin server listening on " << config.admin->address.describe();
   }
+
 
   evb.loopForever();
 

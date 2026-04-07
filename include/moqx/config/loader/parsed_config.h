@@ -47,6 +47,10 @@ struct ParsedListenerConfig {
       "MOQT draft versions (empty = all supported)",
       std::optional<std::vector<uint32_t>>>
       moqt_versions;
+  rfl::Description<
+      "QUIC stack to use: \"mvfst\" (default) or \"picoquic\"",
+      std::optional<std::string>>
+      quic_stack;
 };
 
 struct ParsedCacheConfig {

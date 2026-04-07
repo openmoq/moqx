@@ -76,6 +76,7 @@ add_library(moqx_core STATIC
   src/MoqxRelay.cpp
   src/MoqxRelayContext.cpp
   src/MoqxRelayServer.cpp
+  src/MoqxPicoRelayServer.cpp
   src/ServiceMatcher.cpp
   src/admin/AdminServer.cpp
   src/admin/BuiltinRoutes.cpp
@@ -97,6 +98,7 @@ target_link_libraries(moqx_core PUBLIC
   moxygen::moxygen_relay_moq_cache
   moxygen::moxygen_moq_relay_session
   moxygen::moxygen_moq_server
+  moxygen::openmoq_pico_evb_server_transport
   proxygen::proxygenhttpserver
   # Workaround: wangle::wangle_acceptor_acceptor_core uses AsyncFdSocket from
   # FizzAcceptorHandshakeHelper but omits this dep from its cmake config.
