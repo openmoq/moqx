@@ -139,7 +139,6 @@ int main(int argc, char* argv[]) {
     XLOG(INFO) << "Admin server listening on " << config.admin->address.describe();
   }
 
-
   evb.loopForever();
 
   // Hard shutdown watchdog: if teardown hangs, force-exit after 10 seconds.
