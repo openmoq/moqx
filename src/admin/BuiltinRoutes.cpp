@@ -1,10 +1,10 @@
-#include <moqx/admin/BuiltinRoutes.h>
+#include "admin/BuiltinRoutes.h"
 
 #include <folly/io/IOBuf.h>
 #include <proxygen/httpserver/ResponseBuilder.h>
 #include <proxygen/lib/http/HTTPMessage.h>
 
-#include <moqx/admin/AdminServer.h>
+#include "admin/AdminServer.h"
 
 namespace openmoq::moqx::admin {
 

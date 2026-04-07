@@ -2,12 +2,12 @@
 
 #include <memory>
 
-#include <moqx/MoqxRelay.h>
-#include <moqx/ServiceMatcher.h>
-#include <moqx/UpstreamProvider.h>
-#include <moqx/config/config.h>
-#include <moqx/stats/MoQStatsCollector.h>
-#include <moqx/stats/StatsRegistry.h>
+#include "MoqxRelay.h"
+#include "ServiceMatcher.h"
+#include "UpstreamProvider.h"
+#include "config/config.h"
+#include "stats/MoQStatsCollector.h"
+#include "stats/StatsRegistry.h"
 #include <moxygen/MoQServerBase.h>
 #include <moxygen/MoQSession.h>
 

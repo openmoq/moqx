@@ -1,6 +1,6 @@
 #pragma once
 
-#include <moqx/config/config.h>
+#include "config/config.h"
 
 #include <optional>
 #include <string>

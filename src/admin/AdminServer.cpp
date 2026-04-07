@@ -1,4 +1,4 @@
-#include <moqx/admin/AdminServer.h>
+#include "admin/AdminServer.h"
 
 #include <list>
 

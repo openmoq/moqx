@@ -3,28 +3,24 @@
 #include <memory>
 
 #include <folly/executors/IOThreadPoolExecutor.h>
-#include <moqx/MoqxRelayContext.h>
-#include <moqx/config/config.h>
-#include <moxygen/events/MoQExecutor.h>
-#include <moxygen/openmoq/transport/pico/MoQPicoQuicEventBaseServer.h>
-#include <proxygen/lib/http/webtransport/WebTransport.h>
+#include "MoqxRelayContext.h"
+#include "config/config.h"
+#include "stats/StatsRegistry.h"
+#include <moxygen/MoQServer.h>
 
 namespace openmoq::moqx {
 
-// MoQ relay server backed by the picoquic QUIC stack.
-//
-// Picoquic lacks packet steering across threads, so even though the full
-// IOThreadPoolExecutor is passed in (for API symmetry with MoqxRelayServer),
-// the server always pins itself to evbKAs[0] internally.
-class MoqxPicoRelayServer : public moxygen::MoQPicoQuicEventBaseServer {
+class MoqxRelayServer : public moxygen::MoQServer {
 public:
-  MoqxPicoRelayServer(
+  MoqxRelayServer(
       const config::ListenerConfig& listenerCfg,
       std::shared_ptr<MoqxRelayContext> context,
       std::shared_ptr<folly::IOThreadPoolExecutor> ioExecutor
   );
 
-  ~MoqxPicoRelayServer() override;
+  ~MoqxRelayServer() override;
+
+  void setStatsRegistry(std::shared_ptr<stats::StatsRegistry> registry);
 
   // Preferred entry point: binds the address from the stored ListenerConfig.
   void start();
@@ -51,6 +47,7 @@ protected:
 private:
   config::ListenerConfig listenerCfg_;
   std::shared_ptr<MoqxRelayContext> context_;
+  std::shared_ptr<folly::IOThreadPoolExecutor> ioExecutor_;
 };
 
 } // namespace openmoq::moqx

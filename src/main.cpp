@@ -1,10 +1,10 @@
-#include <moqx/MoqxRelayContext.h>
-#include <moqx/MoqxServerFactory.h>
-#include <moqx/admin/AdminServer.h>
-#include <moqx/admin/BuiltinRoutes.h>
-#include <moqx/admin/MetricsHandler.h>
-#include <moqx/config/loader/config_init.h>
-#include <moqx/stats/StatsRegistry.h>
+#include "MoqxRelayContext.h"
+#include "MoqxServerFactory.h"
+#include "admin/AdminServer.h"
+#include "admin/BuiltinRoutes.h"
+#include "admin/MetricsHandler.h"
+#include "config/loader/config_init.h"
+#include "stats/StatsRegistry.h"
 
 #include <csignal>
 

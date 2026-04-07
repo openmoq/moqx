@@ -3,10 +3,10 @@
 #include <memory>
 
 #include <folly/executors/IOThreadPoolExecutor.h>
-#include <moqx/MoqxPicoRelayServer.h>
-#include <moqx/MoqxRelayContext.h>
-#include <moqx/MoqxRelayServer.h>
-#include <moqx/config/config.h>
+#include "MoqxPicoRelayServer.h"
+#include "MoqxRelayContext.h"
+#include "MoqxRelayServer.h"
+#include "config/config.h"
 #include <moxygen/MoQServerBase.h>
 
 namespace openmoq::moqx {

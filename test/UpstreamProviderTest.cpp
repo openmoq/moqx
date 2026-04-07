@@ -5,7 +5,7 @@
  */
 
 #include "MoQIntegrationTestFixture.h"
-#include <moqx/UpstreamProvider.h>
+#include "UpstreamProvider.h"
 
 #include <folly/coro/BlockingWait.h>
 #include <folly/coro/Collect.h>

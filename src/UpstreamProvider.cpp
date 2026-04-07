@@ -5,7 +5,7 @@
  */
 
 #include <folly/coro/Timeout.h>
-#include <moqx/UpstreamProvider.h>
+#include "UpstreamProvider.h"
 #include <moxygen/MoQFilters.h>
 #include <moxygen/MoQRelaySession.h>
 #include <moxygen/MoQVersions.h>

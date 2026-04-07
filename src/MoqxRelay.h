@@ -9,7 +9,7 @@
 #pragma once
 
 #include <folly/coro/SharedPromise.h>
-#include <moqx/UpstreamProvider.h>
+#include "UpstreamProvider.h"
 #include <moxygen/MoQSession.h>
 #include <moxygen/relay/MoQCache.h>
 #include <moxygen/relay/MoQForwarder.h>

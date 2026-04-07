@@ -6,7 +6,7 @@
  * Copyright (c) OpenMOQ contributors.
  */
 
-#include <moqx/MoqxRelay.h>
+#include "MoqxRelay.h"
 
 #include <moxygen/MoQFilters.h>
 
