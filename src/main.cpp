@@ -112,26 +112,28 @@ int main(int argc, char* argv[]) {
     server->setStatsRegistry(statsRegistry);
   }
 
-  // === 7. Start health checks / admin endpoints ===
+  // === 7. Start serving ===
+  for (auto& server : servers) {
+    server->start();
+  }
+
+  if (!servers.empty()) {
+    auto* workerEvb = servers[0]->getWorkerEvbs()[0];
+    context->setWorkerEvb(workerEvb);
+    context->initUpstreams(workerEvb);
+  }
+
+  // === 8. Start health checks / admin endpoints ===
   admin::AdminServer adminServer;
   admin::registerBuiltinRoutes(adminServer);
   admin::registerMetricsRoute(adminServer, statsRegistry);
-  admin::registerCachePurgeRoute(adminServer, servers);
+  admin::registerCachePurgeRoute(adminServer, context);
   if (config.admin) {
     if (!adminServer.start(*config.admin)) {
       XLOG(FATAL) << "Failed to start admin server on " << config.admin->address.describe();
     }
 
     XLOG(INFO) << "Admin server listening on " << config.admin->address.describe();
-  }
-
-  // === 8. Start serving ===
-  for (auto& server : servers) {
-    server->start();
-  }
-
-  if (!servers.empty()) {
-    context->initUpstreams(servers[0]->getWorkerEvbs()[0]);
   }
 
   evb.loopForever();

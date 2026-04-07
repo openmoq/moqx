@@ -96,6 +96,23 @@ void MoqxRelayContext::stop() {
   }
 }
 
+size_t MoqxRelayContext::clearCaches(std::string_view serviceName) {
+  CHECK(workerEvb_) << "clearCaches called before setWorkerEvb";
+  auto* evb = workerEvb_;
+  if (!serviceName.empty()) {
+    auto it = services_.find(std::string(serviceName));
+    if (it == services_.end()) {
+      return 0;
+    }
+    evb->runInEventBaseThreadAndWait([&] { it->second.relay->clearCache(); });
+    return 1;
+  }
+  for (auto& [name, entry] : services_) {
+    evb->runInEventBaseThreadAndWait([&] { entry.relay->clearCache(); });
+  }
+  return services_.size();
+}
+
 void MoqxRelayContext::onNewSession(std::shared_ptr<MoQSession> clientSession) {
   if (statsRegistry_) {
     if (!statsCollector_) {

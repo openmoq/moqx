@@ -3,7 +3,7 @@
 #include <memory>
 
 namespace openmoq::moqx {
-class MoqxRelayServer;
+class MoqxRelayContext;
 } // namespace openmoq::moqx
 
 namespace openmoq::moqx::admin {
@@ -16,6 +16,6 @@ class AdminServer;
 // ?service=<name> query parameter is provided. Responds with JSON:
 //   {"status":"ok","cleared":<N>}
 // or 404 if the named service is not found.
-void registerCachePurgeRoute(AdminServer& server, std::shared_ptr<MoqxRelayServer> relayServer);
+void registerCachePurgeRoute(AdminServer& adminServer, std::shared_ptr<MoqxRelayContext> context);
 
 } // namespace openmoq::moqx::admin

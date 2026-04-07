@@ -1,22 +1,27 @@
 #include <moqx/admin/CachePurgeHandler.h>
 
+#include <folly/CancellationToken.h>
 #include <folly/io/IOBuf.h>
 #include <proxygen/httpserver/ResponseBuilder.h>
 #include <proxygen/lib/http/HTTPMessage.h>
 
-#include <moqx/MoqxRelayServer.h>
+#include <moqx/MoqxRelayContext.h>
 #include <moqx/admin/AdminServer.h>
 
 namespace openmoq::moqx::admin {
 
-void registerCachePurgeRoute(AdminServer& server, std::shared_ptr<MoqxRelayServer> relayServer) {
-  server.addRoute(
+void registerCachePurgeRoute(AdminServer& adminServer, std::shared_ptr<MoqxRelayContext> context) {
+  adminServer.addRoute(
       "POST",
       "/cache-purge",
-      [weak = std::weak_ptr<MoqxRelayServer>(relayServer
-       )](auto* req, auto /*body*/, auto* downstream, auto /*cancelToken*/) {
-        auto relay = weak.lock();
-        if (!relay) {
+      [weak = std::weak_ptr<MoqxRelayContext>(context)](
+          std::unique_ptr<proxygen::HTTPMessage> req,
+          std::unique_ptr<folly::IOBuf> /*body*/,
+          proxygen::ResponseHandler* downstream,
+          folly::CancellationToken /*cancelToken*/
+      ) {
+        auto ctx = weak.lock();
+        if (!ctx) {
           proxygen::ResponseBuilder(downstream)
               .status(503, proxygen::HTTPMessage::getDefaultReason(503))
               .body(folly::IOBuf::copyBuffer("{\"error\":\"server unavailable\"}\n"))
@@ -29,7 +34,7 @@ void registerCachePurgeRoute(AdminServer& server, std::shared_ptr<MoqxRelayServe
           serviceName = req->getQueryParam("service");
         }
 
-        size_t cleared = relay->clearCaches(serviceName);
+        size_t cleared = ctx->clearCaches(serviceName);
 
         if (!serviceName.empty() && cleared == 0) {
           proxygen::ResponseBuilder(downstream)

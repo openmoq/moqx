@@ -61,27 +61,6 @@ MoqxRelayServer::~MoqxRelayServer() {
   MoQServer::stop();
 }
 
-size_t MoqxRelayServer::clearCaches(std::string_view serviceName) {
-  // Dispatch clear() onto each worker EVB to serialize with subscribe/fetch
-  // callbacks. Safe while serverThreads=1; needs revisiting if raised above 1.
-  auto evbs = getWorkerEvbs();
-  DCHECK_EQ(evbs.size(), 1u) << "clearCaches assumes serverThreads=1";
-  auto* evb = evbs[0];
-
-  if (!serviceName.empty()) {
-    auto it = services_.find(std::string(serviceName));
-    if (it == services_.end()) {
-      return 0;
-    }
-    evb->runInEventBaseThreadAndWait([&] { it->second.relay->clearCache(); });
-    return 1;
-  }
-  for (auto& [name, entry] : services_) {
-    evb->runInEventBaseThreadAndWait([&] { entry.relay->clearCache(); });
-  }
-  return services_.size();
-}
-
 void MoqxRelayServer::setStatsRegistry(std::shared_ptr<stats::StatsRegistry> registry) {
   context_->setStatsRegistry(registry);
   setQuicStatsFactory(std::make_unique<stats::QuicStatsCollector::Factory>(std::move(registry)));

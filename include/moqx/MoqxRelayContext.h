@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <string_view>
 
 #include <moqx/MoqxRelay.h>
 #include <moqx/ServiceMatcher.h>
@@ -39,9 +40,18 @@ public:
   // so that worker EVBs are available. workerEvb is used for upstream connections.
   void initUpstreams(folly::EventBase* workerEvb);
 
+  // Sets the worker EVB used to serialize clearCaches() calls with relay
+  // callbacks.
+  void setWorkerEvb(folly::EventBase* evb) { workerEvb_ = evb; }
+
   // Signals all relay upstreams to stop. Call before destroying servers so
   // reconnect coroutines can exit before worker EVBs are drained.
   void stop();
+
+  // Clears relay caches, serialized onto the worker EVB.
+  // Pass an empty serviceName to clear all services.
+  // Returns the number of caches cleared (0 if a named service was not found).
+  size_t clearCaches(std::string_view serviceName = {});
 
   // --- Delegation targets for MoqxRelayServer virtual overrides ---
 
@@ -58,6 +68,7 @@ private:
   folly::F14FastMap<std::string, ServiceEntry> services_;
   ServiceMatcher serviceMatcher_;
   std::string relayID_;
+  folly::EventBase* workerEvb_{nullptr};
   std::shared_ptr<stats::StatsRegistry> statsRegistry_;
   std::shared_ptr<stats::MoQStatsCollector> statsCollector_;
 };
