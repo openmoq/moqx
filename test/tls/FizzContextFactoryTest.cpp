@@ -14,15 +14,16 @@
 #include <gtest/gtest.h>
 
 #include "TestCertUtils.h"
+#include "util/TempDir.h"
 
 namespace openmoq::moqx::tls {
 namespace {
 
+using openmoq::moqx::test::util::TempDir;
 using test::kTestCert2Pem;
 using test::kTestCertPem;
 using test::kTestKey2Pem;
 using test::kTestKeyPem;
-using test::TempCertDir;
 using ::testing::HasSubstr;
 
 TEST(BuildAlpns, IncludesH3) {
@@ -38,7 +39,7 @@ TEST(BuildAlpns, IncludesMoqtVersions) {
 }
 
 TEST(BuildStandardFizzContext, ValidCertManager) {
-  TempCertDir dir;
+  TempDir dir;
   dir.writeCert("test", kTestCertPem, kTestKeyPem);
 
   FileCertLoader loader(dir.filePath("test.crt"), dir.filePath("test.key"));
@@ -60,7 +61,7 @@ TEST(BuildStandardFizzContext, ValidCertManager) {
 }
 
 TEST(FileCertLoader, CreateContextEndToEnd) {
-  TempCertDir dir;
+  TempDir dir;
   dir.writeCert("test", kTestCertPem, kTestKeyPem);
 
   FileCertLoader loader(dir.filePath("test.crt"), dir.filePath("test.key"));
@@ -71,7 +72,7 @@ TEST(FileCertLoader, CreateContextEndToEnd) {
 }
 
 TEST(DirectoryCertLoader, CreateContextEndToEnd) {
-  TempCertDir dir;
+  TempDir dir;
   dir.writeCert("alpha", kTestCertPem, kTestKeyPem);
   dir.writeCert("beta", kTestCert2Pem, kTestKey2Pem);
 
