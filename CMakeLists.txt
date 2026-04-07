@@ -74,6 +74,7 @@ FetchContent_MakeAvailable(reflectcpp)
 
 add_library(moqx_core STATIC
   src/MoqxRelay.cpp
+  src/MoqxRelayContext.cpp
   src/MoqxRelayServer.cpp
   src/ServiceMatcher.cpp
   src/admin/AdminServer.cpp
@@ -257,6 +258,18 @@ if(MOQX_BUILD_TESTS)
     GTest::gmock
   )
   gtest_discover_tests(moqx_service_matcher_test)
+
+  add_executable(moqx_relay_context_test
+    tests/MoqxRelayContextTest.cpp
+  )
+  target_link_libraries(moqx_relay_context_test PRIVATE
+    moqx_core
+    moqx_test_utils
+    moqx_test_main
+    GTest::gmock
+    moxygen::moxygen_events_moq_folly_executor_impl
+  )
+  gtest_discover_tests(moqx_relay_context_test)
 
   add_test(
     NAME relay_chain

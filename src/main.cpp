@@ -1,3 +1,4 @@
+#include <moqx/MoqxRelayContext.h>
 #include <moqx/MoqxRelayServer.h>
 #include <moqx/admin/AdminServer.h>
 #include <moqx/admin/BuiltinRoutes.h>
@@ -11,6 +12,8 @@
 #include <chrono>
 #include <thread>
 
+#include <folly/executors/IOThreadPoolExecutor.h>
+#include <folly/executors/thread_factory/NamedThreadFactory.h>
 #include <folly/init/Init.h>
 #include <folly/io/async/AsyncSignalHandler.h>
 #include <folly/logging/xlog.h>
@@ -21,9 +24,11 @@
 DEFINE_string(config, "", "Path to config file (required)");
 DEFINE_bool(strict_config, false, "Reject unknown config fields");
 
+using namespace openmoq::moqx;
+
 namespace {
 
-namespace cfg = openmoq::moqx::config;
+namespace cfg = config;
 
 constexpr std::string_view kServeCommand = "serve";
 
@@ -39,35 +44,6 @@ public:
     getEventBase()->terminateLoopSoon();
   }
 };
-
-std::shared_ptr<openmoq::moqx::MoqxRelayServer> createServer(const cfg::Config& config) {
-  const auto& listener = config.listener;
-  auto services = config.services; // copy for move into constructor
-
-  return std::visit(
-      [&](const auto& tls) -> std::shared_ptr<openmoq::moqx::MoqxRelayServer> {
-        using T = std::decay_t<decltype(tls)>;
-        if constexpr (std::is_same_v<T, cfg::Insecure>) {
-          return std::make_shared<openmoq::moqx::MoqxRelayServer>(
-              listener.endpoint,
-              listener.moqtVersions,
-              std::move(services),
-              config.relayID
-          );
-        } else {
-          return std::make_shared<openmoq::moqx::MoqxRelayServer>(
-              tls.certFile,
-              tls.keyFile,
-              listener.endpoint,
-              listener.moqtVersions,
-              std::move(services),
-              config.relayID
-          );
-        }
-      },
-      listener.tlsMode
-  );
-}
 
 } // namespace
 
@@ -113,25 +89,34 @@ int main(int argc, char* argv[]) {
   ShutdownSignalHandler signalHandler(&evb);
 
   // === 4. Initialize resources ===
-  // TODO: thread pools, event loops, IO contexts
+  auto ioExecutor = std::make_shared<folly::IOThreadPoolExecutor>(
+      config.threads,
+      std::make_shared<folly::NamedThreadFactory>("moqx-io")
+  );
 
   // === 5. Initialize dependencies ===
   // TODO: TBD
 
   // === 6. Initialize services ===
   // Construct and configure the application's own services
-  // (MoqxRelayServer, MoqxRelay, etc.)
-  auto server = createServer(config);
+  // (MoqxRelayContext, MoqxRelayServer, etc.)
+  auto context = std::make_shared<MoqxRelayContext>(config.services, config.relayID);
 
   // === 6a. Stats registry ===
-  auto statsRegistry = std::make_shared<openmoq::moqx::stats::StatsRegistry>();
-  server->setStatsRegistry(statsRegistry);
+  auto statsRegistry = std::make_shared<stats::StatsRegistry>();
+
+  std::vector<std::shared_ptr<MoqxRelayServer>> servers;
+  for (const auto& listenerCfg : config.listeners) {
+    auto& server =
+        servers.emplace_back(std::make_shared<MoqxRelayServer>(listenerCfg, context, ioExecutor));
+    server->setStatsRegistry(statsRegistry);
+  }
 
   // === 7. Start health checks / admin endpoints ===
-  openmoq::moqx::admin::AdminServer adminServer;
-  openmoq::moqx::admin::registerBuiltinRoutes(adminServer);
-  openmoq::moqx::admin::registerMetricsRoute(adminServer, statsRegistry);
-  openmoq::moqx::admin::registerCachePurgeRoute(adminServer, server);
+  admin::AdminServer adminServer;
+  admin::registerBuiltinRoutes(adminServer);
+  admin::registerMetricsRoute(adminServer, statsRegistry);
+  admin::registerCachePurgeRoute(adminServer, servers);
   if (config.admin) {
     if (!adminServer.start(*config.admin)) {
       XLOG(FATAL) << "Failed to start admin server on " << config.admin->address.describe();
@@ -141,7 +126,14 @@ int main(int argc, char* argv[]) {
   }
 
   // === 8. Start serving ===
-  server->start(config.listener.address);
+  for (auto& server : servers) {
+    server->start();
+  }
+
+  if (!servers.empty()) {
+    context->initUpstreams(servers[0]->getWorkerEvbs()[0]);
+  }
+
   evb.loopForever();
 
   // Hard shutdown watchdog: if teardown hangs, force-exit after 10 seconds.
@@ -156,6 +148,9 @@ int main(int argc, char* argv[]) {
   // ============================================
 
   // === 9. Stop accepting new connections ===
+  // Signal upstreams to stop — cancels reconnect backoff so worker EVBs can
+  // exit cleanly before servers drain them.
+  context->stop();
   // TODO: close listeners
 
   // === 10. Drain in-flight requests ===

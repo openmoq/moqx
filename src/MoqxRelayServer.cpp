@@ -1,9 +1,9 @@
 #include <moqx/MoqxRelayServer.h>
-#include <moqx/stats/MoQStatsCollector.h>
 #include <moqx/stats/QuicStatsCollector.h>
 #include <moxygen/MoQRelaySession.h>
 #include <moxygen/events/MoQFollyExecutorImpl.h>
 #include <moxygen/util/InsecureVerifierDangerousDoNotUseInProduction.h>
+#include <proxygen/httpserver/samples/hq/FizzContext.h>
 
 #include <folly/logging/xlog.h>
 
@@ -20,75 +20,44 @@ std::vector<std::string> buildAlpns(const std::string& versions) {
   return alpns;
 }
 
+std::shared_ptr<const fizz::server::FizzServerContext>
+buildFizzContext(const config::ListenerConfig& cfg) {
+  auto alpns = buildAlpns(cfg.moqtVersions);
+  return std::visit(
+      [&alpns](const auto& tls) -> std::shared_ptr<const fizz::server::FizzServerContext> {
+        using T = std::decay_t<decltype(tls)>;
+        if constexpr (std::is_same_v<T, config::Insecure>) {
+          return quic::samples::createFizzServerContextWithInsecureDefault(
+              alpns,
+              fizz::server::ClientAuthMode::None,
+              "",
+              ""
+          );
+        } else {
+          return quic::samples::createFizzServerContext(
+              alpns,
+              fizz::server::ClientAuthMode::Optional,
+              tls.certFile,
+              tls.keyFile
+          );
+        }
+      },
+      cfg.tlsMode
+  );
+}
+
 } // namespace
 
-void MoqxRelayServer::initServices(
-    const folly::F14FastMap<std::string, config::ServiceConfig>& services,
-    const std::string& relayID
-) {
-  for (const auto& [name, svc] : services) {
-    services_.emplace(
-        name,
-        ServiceEntry{
-            svc,
-            std::make_shared<MoqxRelay>(
-                svc.cache.maxCachedTracks,
-                svc.cache.maxCachedGroupsPerTrack,
-                relayID
-            )
-        }
-    );
-  }
-}
-
 MoqxRelayServer::MoqxRelayServer(
-    const std::string& cert,
-    const std::string& key,
-    const std::string& endpoint,
-    const std::string& versions,
-    folly::F14FastMap<std::string, config::ServiceConfig> services,
-    const std::string& relayID
+    const config::ListenerConfig& listenerCfg,
+    std::shared_ptr<MoqxRelayContext> context,
+    std::shared_ptr<folly::IOThreadPoolExecutor> ioExecutor
 )
-    : MoQServer(
-          quic::samples::createFizzServerContext(
-              buildAlpns(versions),
-              fizz::server::ClientAuthMode::Optional,
-              cert,
-              key
-          ),
-          endpoint
-      ),
-      serviceMatcher_(services), relayID_(relayID) {
-  initServices(services, relayID);
-}
-
-MoqxRelayServer::MoqxRelayServer(
-    const std::string& endpoint,
-    const std::string& versions,
-    folly::F14FastMap<std::string, config::ServiceConfig> services,
-    const std::string& relayID
-)
-    : MoQServer(
-          quic::samples::createFizzServerContextWithInsecureDefault(
-              buildAlpns(versions),
-              fizz::server::ClientAuthMode::None,
-              "" /* cert */,
-              "" /* key */
-          ),
-          endpoint
-      ),
-      serviceMatcher_(services), relayID_(relayID) {
-  initServices(services, relayID);
-}
+    : MoQServer(buildFizzContext(listenerCfg), listenerCfg.endpoint), listenerCfg_(listenerCfg),
+      context_(std::move(context)), ioExecutor_(std::move(ioExecutor)) {}
 
 MoqxRelayServer::~MoqxRelayServer() {
-  // 1. Signal upstreams to stop — cancels reconnect backoff sleep so the
-  //    reconnect coroutine on the worker EVB can exit cleanly.
-  for (auto& [name, entry] : services_) {
-    entry.relay->stop();
-  }
-  // 2. Close incoming connections, drain worker EVBs (terminateClientSession
-  //    and ~MoQSession complete here), then destroy EVBs.
+  // Close incoming connections, drain worker EVBs, then destroy EVBs.
   MoQServer::stop();
 }
 
@@ -114,96 +83,30 @@ size_t MoqxRelayServer::clearCaches(std::string_view serviceName) {
 }
 
 void MoqxRelayServer::setStatsRegistry(std::shared_ptr<stats::StatsRegistry> registry) {
-  statsRegistry_ = std::move(registry);
-
-  if (statsRegistry_) {
-    // Register the MoQ collector
-    statsCollector_ = stats::MoQStatsCollector::create_moq_stats_collector(statsRegistry_);
-
-    // Wire up QUIC transport stats factory
-    setQuicStatsFactory(std::make_unique<stats::QuicStatsCollector::Factory>(statsRegistry_));
-  }
+  context_->setStatsRegistry(registry);
+  setQuicStatsFactory(std::make_unique<stats::QuicStatsCollector::Factory>(std::move(registry)));
 }
 
-namespace {
-
-// Relay chaining requires draft 16+ for wildcard subscribeNamespace and
-// NAMESPACE messages on the bidi stream. Connections negotiating an earlier
-// draft will not receive namespace announcements from the upstream relay.
-std::shared_ptr<fizz::CertificateVerifier> makeUpstreamVerifier(const config::UpstreamTlsConfig& tls
-) {
-  if (tls.insecure) {
-    return std::make_shared<moxygen::test::InsecureVerifierDangerousDoNotUseInProduction>();
+void MoqxRelayServer::start() {
+  auto evbKAs = ioExecutor_->getAllEventBases();
+  std::vector<folly::EventBase*> evbs;
+  evbs.reserve(evbKAs.size());
+  for (auto& ka : evbKAs) {
+    evbs.push_back(ka.get());
   }
-  if (tls.caCertFile) {
-    // TODO: load custom CA cert via fizz OpenSSLCertUtils / X509 store
-    XLOG(WARN) << "upstream.tls.ca_cert is not yet implemented; "
-                  "using system CAs";
-  }
-  return nullptr; // nullptr = fizz uses system CAs
+  MoQServer::start(listenerCfg_.address, std::move(evbs));
 }
 
-} // namespace
-
-void MoqxRelayServer::initUpstreams() {
-  auto evbs = getWorkerEvbs();
-  CHECK(!evbs.empty()) << "initUpstreams must be called after start()";
-
-  // Use the first worker EVB for all upstream connections.
-  // Per-EVB providers (one per worker thread) are a follow-up.
-  auto exec = std::make_shared<MoQFollyExecutorImpl>(evbs[0]);
-
-  for (auto& [name, entry] : services_) {
-    if (!entry.config.upstream) {
-      continue;
-    }
-    const auto& cfg = *entry.config.upstream;
-    auto verifier = makeUpstreamVerifier(cfg.tls);
-    auto relay = entry.relay;
-    auto onConnect = [relay](std::shared_ptr<MoQSession> session) -> folly::coro::Task<void> {
-      co_await relay->onUpstreamConnect(session);
-    };
-    auto onDisconnect = [relay]() { relay->onUpstreamDisconnect(); };
-    auto provider = std::make_shared<UpstreamProvider>(
-        exec,
-        proxygen::URL(cfg.url),
-        /*publishHandler=*/entry.relay,
-        /*subscribeHandler=*/entry.relay,
-        verifier,
-        std::move(onConnect),
-        std::move(onDisconnect),
-        cfg.connectTimeout,
-        cfg.idleTimeout
-    );
-    entry.relay->setUpstreamProvider(provider);
-
-    // Eagerly connect so the peering handshake fires before any subscribers
-    // arrive. The connection is lazy in UpstreamProvider but we kick it off
-    // now so the upstream namespace tree is ready.
-    co_withExecutor(evbs[0], provider->start()).start();
-  }
+void MoqxRelayServer::start(const folly::SocketAddress& /*addr*/) {
+  start();
 }
 
 void MoqxRelayServer::onNewSession(std::shared_ptr<MoQSession> clientSession) {
-  // Relay handler routing deferred to validateAuthority() where authority is available
-
-  if (statsRegistry_) {
-    if (!statsCollector_->owningExecutor()) {
-      // First session: bind the executor now that we have one.
-      statsCollector_->setExecutor(clientSession->getExecutor());
-    }
-
-    clientSession->setPublisherStatsCallback(statsCollector_->publisherCallback());
-    clientSession->setSubscriberStatsCallback(statsCollector_->subscriberCallback());
-
-    statsCollector_->onSessionStart();
-  }
+  context_->onNewSession(std::move(clientSession));
 }
 
 void MoqxRelayServer::terminateClientSession(std::shared_ptr<MoQSession> session) {
-  if (statsCollector_) {
-    statsCollector_->onSessionEnd();
-  }
+  context_->onSessionEnd();
   MoQServer::terminateClientSession(std::move(session));
 }
 
@@ -217,22 +120,7 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayServer::validateAut
   if (!base.hasValue()) {
     return base;
   }
-
-  // Match service by authority + path
-  const auto& authority = session->getAuthority();
-  const auto& path = session->getPath();
-  auto matchedName = serviceMatcher_.match(authority, path);
-  if (!matchedName) {
-    XLOG(ERR) << "No service matched authority=" << authority << " path=" << path;
-    return folly::makeUnexpected(SessionCloseErrorCode::INVALID_AUTHORITY);
-  }
-
-  // Route: set per-service relay as handler
-  auto it = services_.find(*matchedName);
-  CHECK(it != services_.end()) << "Service '" << *matchedName << "' matched but no entry found";
-  session->setPublishHandler(it->second.relay);
-  session->setSubscribeHandler(it->second.relay);
-  return folly::unit;
+  return context_->validateAuthority(clientSetup, negotiatedVersion, std::move(session));
 }
 
 std::shared_ptr<MoQSession> MoqxRelayServer::createSession(

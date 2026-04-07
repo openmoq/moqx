@@ -81,10 +81,11 @@ struct AdminConfig {
 };
 
 struct Config {
-  ListenerConfig listener;
+  std::vector<ListenerConfig> listeners;
   folly::F14FastMap<std::string, ServiceConfig> services;
   std::optional<AdminConfig> admin;
   std::string relayID; // always set: from config or randomly generated
+  uint32_t threads{1};
 };
 
 } // namespace openmoq::moqx::config
