@@ -4,18 +4,19 @@
 #include <gtest/gtest.h>
 #include <rfl/json.hpp>
 
-#include "test_utils.h"
+#include "util/temp_dir.h"
 
 namespace openmoq::moqx::config {
 namespace {
 
-using test::TempYamlFile;
+using test::util::TempDir;
 using ::testing::HasSubstr;
 
 // --- Parse tests ---
 
 TEST(ConfigLoader, MinimalConfig) {
-  TempYamlFile yaml(R"(
+  TempDir dir;
+  auto yaml = dir.writeYaml(R"(
 listeners:
   - name: main
     udp:
@@ -42,7 +43,7 @@ admin:
   port: 9669
 )");
 
-  auto cfg = loadConfig(yaml.path());
+  auto cfg = loadConfig(yaml);
   EXPECT_EQ(cfg.listeners.value().size(), 1);
   EXPECT_EQ(cfg.listeners.value()[0].name.value(), "main");
 
@@ -60,7 +61,8 @@ admin:
 }
 
 TEST(ConfigLoader, TlsFileConfig) {
-  TempYamlFile yaml(R"(
+  TempDir dir;
+  auto yaml = dir.writeYaml(R"(
 listeners:
   - name: production
     udp:
@@ -90,7 +92,7 @@ admin:
   port: 9669
 )");
 
-  auto cfg = loadConfig(yaml.path());
+  auto cfg = loadConfig(yaml);
   const auto& l = cfg.listeners.value()[0];
 
   EXPECT_EQ(l.name.value(), "production");
@@ -112,7 +114,8 @@ admin:
 }
 
 TEST(ConfigLoader, ServicesWithAuthorityAndPath) {
-  TempYamlFile yaml(R"(
+  TempDir dir;
+  auto yaml = dir.writeYaml(R"(
 listeners:
   - name: main
     udp:
@@ -143,7 +146,7 @@ services:
       max_groups_per_track: 3
 )");
 
-  auto cfg = loadConfig(yaml.path());
+  auto cfg = loadConfig(yaml);
   ASSERT_EQ(cfg.services.value().size(), 2);
 
   const auto& svc0 = cfg.services.value().at("live");
@@ -202,7 +205,8 @@ services:
 }
 
 TEST(ConfigLoader, ServicesWithAnyAuthority) {
-  TempYamlFile yaml(R"(
+  TempDir dir;
+  auto yaml = dir.writeYaml(R"(
 listeners:
   - name: main
     udp:
@@ -223,7 +227,7 @@ services:
       max_groups_per_track: 3
 )");
 
-  auto cfg = loadConfig(yaml.path());
+  auto cfg = loadConfig(yaml);
   ASSERT_EQ(cfg.services.value().size(), 1);
   const auto& svc = cfg.services.value().at("default");
   ASSERT_EQ(svc.match.value().size(), 1);
@@ -250,7 +254,8 @@ services:
 }
 
 TEST(ConfigLoader, ServiceDefaults) {
-  TempYamlFile yaml(R"(
+  TempDir dir;
+  auto yaml = dir.writeYaml(R"(
 listeners:
   - name: main
     udp:
@@ -272,7 +277,7 @@ services:
         path: {prefix: "/"}
 )");
 
-  auto cfg = loadConfig(yaml.path());
+  auto cfg = loadConfig(yaml);
   ASSERT_TRUE(cfg.service_defaults.value().has_value());
   ASSERT_TRUE(cfg.service_defaults.value()->cache.value().has_value());
   EXPECT_EQ(cfg.service_defaults.value()->cache.value()->max_tracks.value(), 50);
@@ -283,7 +288,8 @@ services:
 }
 
 TEST(ConfigLoader, TlsDirectoryConfig) {
-  TempYamlFile yaml(R"(
+  TempDir dir;
+  auto yaml = dir.writeYaml(R"(
 listeners:
   - name: multi
     udp:
@@ -306,12 +312,13 @@ services:
         path: {prefix: "/"}
 )");
 
-  auto cfg = loadConfig(yaml.path());
+  auto cfg = loadConfig(yaml);
   EXPECT_EQ(cfg.listeners.value().size(), 1);
 }
 
 TEST(ConfigLoader, TlsDirectoryConfigNoDefault) {
-  TempYamlFile yaml(R"(
+  TempDir dir;
+  auto yaml = dir.writeYaml(R"(
 listeners:
   - name: multi
     udp:
@@ -333,7 +340,7 @@ services:
         path: {prefix: "/"}
 )");
 
-  auto cfg = loadConfig(yaml.path());
+  auto cfg = loadConfig(yaml);
   EXPECT_EQ(cfg.listeners.value().size(), 1);
 }
 
@@ -363,7 +370,8 @@ TEST(ConfigSchema, GeneratesValidJson) {
 // --- Load from file test ---
 
 TEST(ConfigLoader, LoadFromFile) {
-  TempYamlFile yaml(R"(
+  TempDir dir;
+  auto yaml = dir.writeYaml(R"(
 listeners:
   - name: test
     udp:
@@ -390,7 +398,7 @@ admin:
   port: 9669
 )");
 
-  auto cfg = loadConfig(yaml.path());
+  auto cfg = loadConfig(yaml);
   EXPECT_EQ(cfg.listeners.value()[0].name.value(), "test");
   ASSERT_TRUE(cfg.services.value().at("default").cache.value().has_value());
   EXPECT_EQ(cfg.services.value().at("default").cache.value()->enabled.value(), false);
@@ -401,14 +409,16 @@ TEST(ConfigLoader, LoadFromFileNotFound) {
 }
 
 TEST(ConfigLoader, LoadFromFileInvalidYaml) {
-  TempYamlFile yaml("not: [valid: yaml: config");
-  EXPECT_THROW(loadConfig(yaml.path()), std::runtime_error);
+  TempDir dir;
+  auto yaml = dir.writeYaml("not: [valid: yaml: config");
+  EXPECT_THROW(loadConfig(yaml), std::runtime_error);
 }
 
 // --- Unknown field tests ---
 
 TEST(ConfigLoader, UnknownFieldIgnoredNonStrict) {
-  TempYamlFile yaml(R"(
+  TempDir dir;
+  auto yaml = dir.writeYaml(R"(
 listeners:
   - name: main
     udp:
@@ -436,11 +446,12 @@ admin:
   port: 9669
 )");
 
-  EXPECT_NO_THROW(loadConfig(yaml.path()));
+  EXPECT_NO_THROW(loadConfig(yaml));
 }
 
 TEST(ConfigLoader, UnknownFieldRejectedStrict) {
-  TempYamlFile yaml(R"(
+  TempDir dir;
+  auto yaml = dir.writeYaml(R"(
 listeners:
   - name: main
     udp:
@@ -468,7 +479,7 @@ admin:
   port: 9669
 )");
 
-  EXPECT_THROW(loadConfig(yaml.path(), /*strict=*/true), std::runtime_error);
+  EXPECT_THROW(loadConfig(yaml, /*strict=*/true), std::runtime_error);
 }
 
 #ifdef CONFIG_EXAMPLE_PATH

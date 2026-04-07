@@ -3,6 +3,7 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include "util/temp_dir.h"
 #include "test_cert_utils.h"
 
 namespace openmoq::moqx::tls {
@@ -12,11 +13,11 @@ using test::kTestCert2Pem;
 using test::kTestCertPem;
 using test::kTestKey2Pem;
 using test::kTestKeyPem;
-using test::TempCertDir;
+using openmoq::moqx::test::util::TempDir;
 using ::testing::HasSubstr;
 
 TEST(DirectoryCertLoader, LoadsSingleCert) {
-  TempCertDir dir;
+  TempDir dir;
   dir.writeCert("test", kTestCertPem, kTestKeyPem);
 
   DirectoryCertLoader loader(dir.path(), "");
@@ -28,7 +29,7 @@ TEST(DirectoryCertLoader, LoadsSingleCert) {
 }
 
 TEST(DirectoryCertLoader, LoadsMultipleCerts) {
-  TempCertDir dir;
+  TempDir dir;
   dir.writeCert("alpha", kTestCertPem, kTestKeyPem);
   dir.writeCert("beta", kTestCert2Pem, kTestKey2Pem);
 
@@ -42,7 +43,7 @@ TEST(DirectoryCertLoader, LoadsMultipleCerts) {
 }
 
 TEST(DirectoryCertLoader, EmptyDirectory) {
-  TempCertDir dir;
+  TempDir dir;
 
   DirectoryCertLoader loader(dir.path(), "");
   auto result = loader.load();
@@ -58,7 +59,7 @@ TEST(DirectoryCertLoader, NonexistentDirectory) {
 }
 
 TEST(DirectoryCertLoader, CrtWithoutMatchingKey) {
-  TempCertDir dir;
+  TempDir dir;
   dir.writeCertOnly("orphan", kTestCertPem);
 
   DirectoryCertLoader loader(dir.path(), "");
@@ -68,7 +69,7 @@ TEST(DirectoryCertLoader, CrtWithoutMatchingKey) {
 }
 
 TEST(DirectoryCertLoader, InvalidDefaultCertIdentity) {
-  TempCertDir dir;
+  TempDir dir;
   dir.writeCert("test", kTestCertPem, kTestKeyPem);
 
   DirectoryCertLoader loader(dir.path(), "nonexistent.example.com");
@@ -78,7 +79,7 @@ TEST(DirectoryCertLoader, InvalidDefaultCertIdentity) {
 }
 
 TEST(DirectoryCertLoader, InvalidPem) {
-  TempCertDir dir;
+  TempDir dir;
   dir.writeCert("bad", "not a cert", "not a key");
 
   DirectoryCertLoader loader(dir.path(), "");

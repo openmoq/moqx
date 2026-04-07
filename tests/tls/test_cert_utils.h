@@ -1,11 +1,6 @@
 #pragma once
 
-#include <filesystem>
-#include <fstream>
-#include <string>
 #include <string_view>
-
-#include <folly/testing/TestUtil.h>
 
 namespace openmoq::moqx::tls::test {
 
@@ -114,37 +109,5 @@ Y7d17T/IYJesXUQBKvz6POjn24BHOYRy9rAzqR7AixrS0stD6s8Gd3PaHtWnV6+i
 LLG9cblFRFcOQE1olYuaAkY=
 -----END PRIVATE KEY-----)";
 // NOLINTEND(cert-*)
-
-// RAII helper: writes cert/key files to a temp directory.
-class TempCertDir {
-public:
-  TempCertDir() = default;
-  TempCertDir(const TempCertDir&) = delete;
-  TempCertDir& operator=(const TempCertDir&) = delete;
-
-  void writeCert(const std::string& name, std::string_view certData, std::string_view keyData) {
-    {
-      std::ofstream ofs(dir_.path() / (name + ".crt"));
-      ofs << certData;
-    }
-    {
-      std::ofstream ofs(dir_.path() / (name + ".key"));
-      ofs << keyData;
-    }
-  }
-
-  void writeCertOnly(const std::string& name, std::string_view certData) {
-    std::ofstream ofs(dir_.path() / (name + ".crt"));
-    ofs << certData;
-  }
-
-  std::string path() const { return dir_.path().string(); }
-  std::string filePath(const std::string& filename) const {
-    return (dir_.path() / filename).string();
-  }
-
-private:
-  folly::test::TemporaryDirectory dir_{"moqx_tls_test"};
-};
 
 } // namespace openmoq::moqx::tls::test

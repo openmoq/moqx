@@ -194,6 +194,8 @@ if(MOQX_BUILD_TESTS)
     GTest::gtest_main
     GTest::gmock
   )
+  target_include_directories(moqx_config_test PRIVATE
+    ${PROJECT_SOURCE_DIR}/tests)
   target_compile_definitions(moqx_config_test PRIVATE
     CONFIG_EXAMPLE_PATH="${PROJECT_SOURCE_DIR}/config.example.yaml"
   )
@@ -264,11 +266,12 @@ if(MOQX_BUILD_TESTS)
     moqx_core
     moqx_config
     moqx_config_loader
-    Folly::folly_testing_test_util
     GTest::gtest_main
     GTest::gmock
     "$<LINK_LIBRARY:WHOLE_ARCHIVE,gflags_nothreads_static>"
   )
+  target_include_directories(moqx_tls_test PRIVATE
+    ${PROJECT_SOURCE_DIR}/tests)
   set_property(TARGET moqx_tls_test PROPERTY
     LINK_LIBRARY_OVERRIDE "WHOLE_ARCHIVE,gflags_nothreads_static"
   )

@@ -3,6 +3,7 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include "util/temp_dir.h"
 #include "test_cert_utils.h"
 
 namespace openmoq::moqx::tls {
@@ -10,11 +11,11 @@ namespace {
 
 using test::kTestCertPem;
 using test::kTestKeyPem;
-using test::TempCertDir;
+using openmoq::moqx::test::util::TempDir;
 using ::testing::HasSubstr;
 
 TEST(FileCertLoader, LoadsValidCertKeyPair) {
-  TempCertDir dir;
+  TempDir dir;
   dir.writeCert("test", kTestCertPem, kTestKeyPem);
 
   FileCertLoader loader(dir.filePath("test.crt"), dir.filePath("test.key"));
@@ -35,7 +36,7 @@ TEST(FileCertLoader, MissingCertFile) {
 }
 
 TEST(FileCertLoader, MissingKeyFile) {
-  TempCertDir dir;
+  TempDir dir;
   dir.writeCertOnly("test", kTestCertPem);
 
   FileCertLoader loader(dir.filePath("test.crt"), "/nonexistent/key.pem");
@@ -45,7 +46,7 @@ TEST(FileCertLoader, MissingKeyFile) {
 }
 
 TEST(FileCertLoader, InvalidPem) {
-  TempCertDir dir;
+  TempDir dir;
   dir.writeCert("test", "not a cert", "not a key");
 
   FileCertLoader loader(dir.filePath("test.crt"), dir.filePath("test.key"));
