@@ -1,5 +1,6 @@
 #include "MoqxPicoRelayServer.h"
 
+#include "stats/PicoQuicStatsCollector.h"
 #include <folly/io/async/EventBase.h>
 #include <folly/logging/xlog.h>
 #include <moxygen/MoQRelaySession.h>
@@ -52,11 +53,18 @@ MoqxPicoRelayServer::MoqxPicoRelayServer(
           ioExecutor->getAllEventBases()[0],
           listenerCfg.moqtVersions
       ),
-      listenerCfg_(listenerCfg), context_(std::move(context)) {}
+      listenerCfg_(listenerCfg), context_(std::move(context)),
+      evb_(ioExecutor->getAllEventBases()[0].get()) {}
 
 MoqxPicoRelayServer::~MoqxPicoRelayServer() {
   context_->stop();
   MoQPicoQuicEventBaseServer::stop();
+}
+
+void MoqxPicoRelayServer::setStatsRegistry(std::shared_ptr<stats::StatsRegistry> registry) {
+  context_->setStatsRegistry(registry);
+  auto collector = stats::PicoQuicStatsCollector::create(std::move(registry), evb_);
+  setPicoQuicStatsCallback(std::move(collector));
 }
 
 void MoqxPicoRelayServer::start() {

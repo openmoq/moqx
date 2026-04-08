@@ -106,11 +106,7 @@ int main(int argc, char* argv[]) {
 
   std::vector<std::shared_ptr<moxygen::MoQServerBase>> servers;
   for (const auto& listenerCfg : config.listeners) {
-    auto server = makeRelayServer(listenerCfg, context, ioExecutor);
-    if (auto relayServer = std::dynamic_pointer_cast<MoqxRelayServer>(server)) {
-      relayServer->setStatsRegistry(statsRegistry);
-    }
-    servers.emplace_back(std::move(server));
+    servers.emplace_back(makeRelayServer(listenerCfg, context, ioExecutor, statsRegistry));
   }
 
   // === 7. Start health checks / admin endpoints ===
