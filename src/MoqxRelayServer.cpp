@@ -6,6 +6,7 @@
 #include <proxygen/httpserver/samples/hq/FizzContext.h>
 
 #include <folly/logging/xlog.h>
+#include <quic/QuicConstants.h>
 
 using namespace moxygen;
 
@@ -54,6 +55,18 @@ quic::TransportSettings buildTransportSettings(const config::QuicConfig& quic) {
   ts.advertisedInitialUniStreamFlowControlWindow = quic.maxStreamData;
   ts.advertisedInitialMaxStreamsBidi = quic.maxBidiStreams;
   ts.advertisedInitialMaxStreamsUni = quic.maxUniStreams;
+  ts.idleTimeout = std::chrono::milliseconds(quic.idleTimeoutMs);
+  ts.minAckDelay = std::chrono::microseconds(quic.minAckDelayUs);
+  if (quic.maxAckDelayUs != config::QuicConfig{}.maxAckDelayUs) {
+    XLOG(DBG1) << "quic.max_ack_delay_us is set but mvfst does not support it; ignoring";
+  }
+  auto ccType = quic::congestionControlStrToType(quic.ccAlgo);
+  XDCHECK(ccType) << "cc_algo '" << quic.ccAlgo << "' passed validation but is unknown to mvfst";
+  if (ccType) {
+    ts.defaultCongestionController = *ccType;
+  }
+  // TODO: wire defaultStreamPriority / defaultDatagramPriority for mvfst once
+  // moxygen exposes a function to construct a PriorityQueue::Priority from an integer.
   return ts;
 }
 

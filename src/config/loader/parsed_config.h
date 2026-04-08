@@ -39,6 +39,7 @@ struct ParsedAdminTlsConfig {
 };
 
 struct ParsedQuicConfig {
+  // Flow control
   rfl::Description<
       "Connection flow control window in bytes (default: 64MB)",
       std::optional<uint64_t>>
@@ -51,6 +52,27 @@ struct ParsedQuicConfig {
       max_uni_streams;
   rfl::Description<"Max concurrent bidirectional streams (default: 16)", std::optional<uint64_t>>
       max_bidi_streams;
+
+  // Transport settings
+  rfl::Description<"Idle timeout in milliseconds (default: 30000)", std::optional<uint64_t>>
+      idle_timeout_ms;
+  rfl::Description<
+      "Max ACK delay in microseconds (default: 25000, QUIC spec default); "
+      "mvfst ignores this field (logs DBG1 if set)",
+      std::optional<uint32_t>>
+      max_ack_delay_us;
+  rfl::Description<"Min ACK delay in microseconds (default: 1000)", std::optional<uint32_t>>
+      min_ack_delay_us;
+  rfl::Description<"Default stream priority (default: 2)", std::optional<uint8_t>>
+      default_stream_priority;
+  rfl::Description<"Default datagram priority (default: 1)", std::optional<uint8_t>>
+      default_datagram_priority;
+  rfl::Description<
+      "Congestion control algorithm (default: bbr). "
+      "picoquic: bbr, bbr1, c4, cubic, dcubic, fast, newreno, prague, reno. "
+      "mvfst: bbr, bbr2, bbr2modular, copa, cubic, newreno.",
+      std::optional<std::string>>
+      cc_algo;
 };
 
 struct ParsedListenerConfig {

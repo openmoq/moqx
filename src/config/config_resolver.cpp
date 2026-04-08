@@ -370,6 +370,18 @@ void applyQuicOverride(QuicConfig& base, const ParsedQuicConfig& overlay) {
     base.maxUniStreams = *v;
   if (auto v = overlay.max_bidi_streams.value())
     base.maxBidiStreams = *v;
+  if (auto v = overlay.idle_timeout_ms.value())
+    base.idleTimeoutMs = *v;
+  if (auto v = overlay.max_ack_delay_us.value())
+    base.maxAckDelayUs = *v;
+  if (auto v = overlay.min_ack_delay_us.value())
+    base.minAckDelayUs = *v;
+  if (auto v = overlay.default_stream_priority.value())
+    base.defaultStreamPriority = *v;
+  if (auto v = overlay.default_datagram_priority.value())
+    base.defaultDatagramPriority = *v;
+  if (auto v = overlay.cc_algo.value())
+    base.ccAlgo = *v;
 }
 
 // Merge listener_defaults.quic and per-listener quic override into a resolved QuicConfig.
@@ -387,6 +399,7 @@ QuicConfig mergeQuicConfig(
 
 void validateQuicConfig(
     const QuicConfig& quic,
+    QuicStack stack,
     const std::string& context,
     std::vector<std::string>& errors,
     std::vector<std::string>& warnings
@@ -407,6 +420,35 @@ void validateQuicConfig(
     warnings.push_back(
         context + " quic: max_bidi_streams (" + std::to_string(quic.maxBidiStreams) +
         ") is very low (< 16)"
+    );
+  }
+  if (quic.idleTimeoutMs < 5000) {
+    warnings.push_back(
+        context + " quic: idle_timeout_ms (" + std::to_string(quic.idleTimeoutMs) +
+        ") is very aggressive (< 5000ms)"
+    );
+  }
+  if (quic.maxAckDelayUs < quic.minAckDelayUs) {
+    errors.push_back(
+        context + " quic: max_ack_delay_us (" + std::to_string(quic.maxAckDelayUs) +
+        ") must be >= min_ack_delay_us (" + std::to_string(quic.minAckDelayUs) + ")"
+    );
+  }
+  // (excluded: mvfst "custom"/"staticcwnd" require programmatic setup; "none" disables CC)
+  static const std::unordered_set<std::string> kPicoCcAlgos =
+      {"bbr", "bbr1", "c4", "cubic", "dcubic", "fast", "newreno", "prague", "reno"};
+  static const std::unordered_set<std::string> kMvfstCcAlgos =
+      {"bbr", "bbr2", "bbr2modular", "copa", "cubic", "newreno"};
+  const auto& validAlgos = (stack == QuicStack::Picoquic) ? kPicoCcAlgos : kMvfstCcAlgos;
+  const auto& validList = (stack == QuicStack::Picoquic)
+                              ? "bbr, bbr1, c4, cubic, dcubic, fast, newreno, prague, reno"
+                              : "bbr, bbr2, bbr2modular, copa, cubic, newreno";
+  if (!validAlgos.count(quic.ccAlgo)) {
+    errors.push_back(
+        context + " quic: cc_algo '" + quic.ccAlgo +
+        "' is not valid for this stack"
+        " (valid: " +
+        validList + ")"
     );
   }
 }
@@ -511,7 +553,9 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
         errors.push_back("Duplicate listener address: " + addr);
       }
       auto quic = mergeQuicConfig(quicDefaults, listener.quic.value());
-      validateQuicConfig(quic, "Listener '" + listener.name.value() + "'", errors, warnings);
+      const auto stackStr = listener.quic_stack.value().value_or("mvfst");
+      const auto stack = (stackStr == "picoquic") ? QuicStack::Picoquic : QuicStack::Mvfst;
+      validateQuicConfig(quic, stack, "Listener '" + listener.name.value() + "'", errors, warnings);
       mergedQuicConfigs.push_back(quic);
     }
   }

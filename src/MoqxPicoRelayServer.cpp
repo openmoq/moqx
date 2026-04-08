@@ -4,12 +4,29 @@
 #include <folly/io/async/EventBase.h>
 #include <folly/logging/xlog.h>
 #include <moxygen/MoQRelaySession.h>
+#include <moxygen/openmoq/transport/pico/PicoTransportConfig.h>
 
 using namespace moxygen;
 
 namespace openmoq::moqx {
 
 namespace {
+
+moxygen::PicoTransportConfig picoTransportConfigFromQuicConfig(const config::QuicConfig& quic) {
+  return moxygen::PicoTransportConfig{
+      .maxData = quic.maxData,
+      .maxStreamData = quic.maxStreamData,
+      .maxUniStreams = quic.maxUniStreams,
+      .maxBidiStreams = quic.maxBidiStreams,
+      .maxDatagramFrameSize = 1280, // not user-configurable; MoQ requires datagrams
+      .idleTimeoutMs = quic.idleTimeoutMs,
+      .maxAckDelayUs = quic.maxAckDelayUs,
+      .minAckDelayUs = quic.minAckDelayUs,
+      .defaultStreamPriority = quic.defaultStreamPriority,
+      .defaultDatagramPriority = quic.defaultDatagramPriority,
+      .ccAlgo = quic.ccAlgo,
+  };
+}
 
 std::string resolveCert(const config::ListenerConfig& cfg) {
   return std::visit(
@@ -51,7 +68,8 @@ MoqxPicoRelayServer::MoqxPicoRelayServer(
           resolveKey(listenerCfg),
           listenerCfg.endpoint,
           ioExecutor->getAllEventBases()[0],
-          listenerCfg.moqtVersions
+          listenerCfg.moqtVersions,
+          picoTransportConfigFromQuicConfig(listenerCfg.quic)
       ),
       listenerCfg_(listenerCfg), context_(std::move(context)),
       evb_(ioExecutor->getAllEventBases()[0].get()) {}
