@@ -78,6 +78,14 @@ struct ServiceConfig {
   std::optional<UpstreamConfig> upstream; // set if this service chains to an upstream relay
 };
 
+struct TransportConfig {
+  uint64_t maxData{16777216};       // connection flow control window (bytes)
+  uint64_t maxStreamData{16777216}; // per-stream flow control window (bytes)
+  uint64_t maxUniStreams{8192};     // max concurrent unidirectional streams
+  uint64_t maxBidiStreams{8192};    // max concurrent bidirectional streams
+  uint64_t maxRequestId{10000};     // MoQT MAX_REQUEST_ID
+};
+
 struct AdminConfig {
   folly::SocketAddress address;
   std::optional<TlsConfig> tls;
@@ -87,6 +95,7 @@ struct Config {
   std::vector<ListenerConfig> listeners;
   folly::F14FastMap<std::string, ServiceConfig> services;
   std::optional<AdminConfig> admin;
+  std::optional<TransportConfig> transport;
   std::string relayID; // always set: from config or randomly generated
   uint32_t threads{1};
 };

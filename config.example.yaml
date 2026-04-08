@@ -60,3 +60,10 @@ admin:
   #   key_file: /path/to/key.pem
 
 # relay_id: "my-relay-1"     # Relay identity (optional; random hex string generated if absent)
+
+# transport:                  # QUIC transport settings (optional; uses sensible defaults)
+#   max_data: 16777216        # Connection flow control window (bytes, default: 16MB)
+#   max_stream_data: 16777216 # Per-stream flow control window (bytes, default: 16MB)
+#   max_uni_streams: 8192     # Max concurrent unidirectional streams (default: 8192)
+#   max_bidi_streams: 8192    # Max concurrent bidirectional streams (default: 8192)
+#   max_request_id: 10000     # MoQT MAX_REQUEST_ID (default: 10000)

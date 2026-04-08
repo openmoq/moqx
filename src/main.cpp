@@ -104,9 +104,22 @@ int main(int argc, char* argv[]) {
   // === 6a. Stats registry ===
   auto statsRegistry = std::make_shared<stats::StatsRegistry>();
 
+  // Build QUIC transport settings from config (if specified)
+  std::optional<quic::TransportSettings> transportSettings;
+  if (config.transport) {
+    quic::TransportSettings ts;
+    ts.advertisedInitialConnectionFlowControlWindow = config.transport->maxData;
+    ts.advertisedInitialBidiLocalStreamFlowControlWindow = config.transport->maxStreamData;
+    ts.advertisedInitialBidiRemoteStreamFlowControlWindow = config.transport->maxStreamData;
+    ts.advertisedInitialUniStreamFlowControlWindow = config.transport->maxStreamData;
+    ts.advertisedInitialMaxStreamsBidi = config.transport->maxBidiStreams;
+    ts.advertisedInitialMaxStreamsUni = config.transport->maxUniStreams;
+    transportSettings = std::move(ts);
+  }
+
   std::vector<std::shared_ptr<moxygen::MoQServerBase>> servers;
   for (const auto& listenerCfg : config.listeners) {
-    auto server = makeRelayServer(listenerCfg, context, ioExecutor);
+    auto server = makeRelayServer(listenerCfg, context, ioExecutor, transportSettings);
     if (auto relayServer = std::dynamic_pointer_cast<MoqxRelayServer>(server)) {
       relayServer->setStatsRegistry(statsRegistry);
     }
