@@ -63,6 +63,8 @@ jobs:
         run: |
           if [[ "$(uname)" == "Darwin" ]]; then
             deps/moxygen/standalone/install-system-deps.sh
+            brew install coreutils
+            echo "/opt/homebrew/opt/coreutils/libexec/gnubin" >> "$GITHUB_PATH"
           else
             sudo deps/moxygen/standalone/install-system-deps.sh
           fi
