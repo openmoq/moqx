@@ -8,7 +8,6 @@
 #include "config/config.h"
 #include <folly/executors/IOThreadPoolExecutor.h>
 #include <moxygen/MoQServerBase.h>
-
 namespace openmoq::moqx {
 
 // Creates the appropriate relay server for the given listener config.
@@ -19,10 +18,6 @@ inline std::shared_ptr<moxygen::MoQServerBase> makeRelayServer(
     std::shared_ptr<folly::IOThreadPoolExecutor> ioExecutor
 ) {
   if (listenerCfg.quicStack == config::QuicStack::Picoquic) {
-    // TODO: pass listenerCfg.quic settings to PicoRelayServer.
-    // Requires moxygen to expose a PicoTransportParams struct (parallel to
-    // PicoWebTransportConfig) so createQuicContext() can call
-    // picoquic_set_default_tp_value() for each field.
     return std::make_shared<MoqxPicoRelayServer>(
         listenerCfg,
         std::move(context),

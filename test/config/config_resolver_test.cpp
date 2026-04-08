@@ -1001,6 +1001,12 @@ TEST(ResolveConfig, QuicDefaultsUsedWhenNoneSpecified) {
   EXPECT_EQ(quic.maxStreamData, 16777216u);
   EXPECT_EQ(quic.maxUniStreams, 8192u);
   EXPECT_EQ(quic.maxBidiStreams, 16u);
+  EXPECT_EQ(quic.idleTimeoutMs, 30000u);
+  EXPECT_EQ(quic.maxAckDelayUs, 25000u);
+  EXPECT_EQ(quic.minAckDelayUs, 1000u);
+  EXPECT_EQ(quic.defaultStreamPriority, 2u);
+  EXPECT_EQ(quic.defaultDatagramPriority, 1u);
+  EXPECT_EQ(quic.ccAlgo, "bbr");
 }
 
 TEST(ResolveConfig, ListenerDefaultsQuicApplied) {
@@ -1111,6 +1117,97 @@ TEST(ResolveConfig, QuicValidationUseMergedValues) {
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasError());
   EXPECT_THAT(result.error(), HasSubstr("max_data"));
+}
+
+TEST(ResolveConfig, QuicIdleTimeoutLowWarning) {
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedQuicConfig quicCfg;
+  quicCfg.idle_timeout_ms = std::optional<uint64_t>{1000};
+  cfg.listeners.value()[0].quic = std::optional<ParsedQuicConfig>{std::move(quicCfg)};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  ASSERT_FALSE(result.value().warnings.empty());
+  EXPECT_THAT(result.value().warnings[0], HasSubstr("idle_timeout_ms"));
+}
+
+TEST(ResolveConfig, QuicMaxAckDelayLessThanMinIsError) {
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedQuicConfig quicCfg;
+  quicCfg.max_ack_delay_us = std::optional<uint32_t>{500};
+  quicCfg.min_ack_delay_us = std::optional<uint32_t>{1000};
+  cfg.listeners.value()[0].quic = std::optional<ParsedQuicConfig>{std::move(quicCfg)};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("max_ack_delay_us"));
+  EXPECT_THAT(result.error(), HasSubstr("min_ack_delay_us"));
+}
+
+TEST(ResolveConfig, QuicUnknownCcAlgoIsError) {
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedQuicConfig quicCfg;
+  quicCfg.cc_algo = std::optional<std::string>{"notanalgo"};
+  cfg.listeners.value()[0].quic = std::optional<ParsedQuicConfig>{std::move(quicCfg)};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("cc_algo"));
+  EXPECT_THAT(result.error(), HasSubstr("notanalgo"));
+}
+
+TEST(ResolveConfig, QuicCcAlgoPicoOnlyRejectedByMvfst) {
+  // dcubic is pico-only; rejected on mvfst (default stack), accepted on picoquic
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedQuicConfig quicCfg;
+  quicCfg.cc_algo = std::optional<std::string>{"dcubic"};
+  cfg.listeners.value()[0].quic = std::optional<ParsedQuicConfig>{quicCfg};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("cc_algo"));
+  EXPECT_THAT(result.error(), HasSubstr("dcubic"));
+
+  cfg.listeners.value()[0].quic_stack = std::optional<std::string>{"picoquic"};
+  cfg.listeners.value()[0].tls.value().insecure = false;
+  cfg.listeners.value()[0].tls.value().cert_file = std::optional<std::string>{"cert.pem"};
+  cfg.listeners.value()[0].tls.value().key_file = std::optional<std::string>{"key.pem"};
+  auto result2 = resolveConfig(cfg);
+  ASSERT_TRUE(result2.hasValue());
+  EXPECT_EQ(result2.value().config.listeners[0].quic.ccAlgo, "dcubic");
+}
+
+TEST(ResolveConfig, QuicCcAlgoMvfstOnlyRejectedByPico) {
+  // bbr2 is mvfst-only; rejected on picoquic, accepted on mvfst (default stack)
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedQuicConfig quicCfg;
+  quicCfg.cc_algo = std::optional<std::string>{"bbr2"};
+  cfg.listeners.value()[0].quic = std::optional<ParsedQuicConfig>{quicCfg};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  EXPECT_EQ(result.value().config.listeners[0].quic.ccAlgo, "bbr2");
+
+  cfg.listeners.value()[0].quic_stack = std::optional<std::string>{"picoquic"};
+  cfg.listeners.value()[0].tls.value().insecure = false;
+  cfg.listeners.value()[0].tls.value().cert_file = std::optional<std::string>{"cert.pem"};
+  cfg.listeners.value()[0].tls.value().key_file = std::optional<std::string>{"key.pem"};
+  cfg.listeners.value()[0].quic = std::optional<ParsedQuicConfig>{quicCfg};
+  auto result2 = resolveConfig(cfg);
+  ASSERT_TRUE(result2.hasError());
+  EXPECT_THAT(result2.error(), HasSubstr("cc_algo"));
+  EXPECT_THAT(result2.error(), HasSubstr("bbr2"));
+}
+
+TEST(ResolveConfig, QuicCcAlgoRoundTrips) {
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedQuicConfig quicCfg;
+  quicCfg.cc_algo = std::optional<std::string>{"cubic"};
+  cfg.listeners.value()[0].quic = std::optional<ParsedQuicConfig>{std::move(quicCfg)};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  EXPECT_EQ(result.value().config.listeners[0].quic.ccAlgo, "cubic");
 }
 
 } // namespace
