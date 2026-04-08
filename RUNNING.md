@@ -6,13 +6,26 @@
 moqx --config config.yaml
 ```
 
-### Config Validation
+### Subcommands
 
-```bash
-moqx validate-config --config config.yaml
-```
+| Subcommand | Description |
+|------------|-------------|
+| `serve` | Start the relay (default if omitted) |
+| `validate-config` | Load and validate config, then exit |
+| `dump-config-schema` | Print JSON schema to stdout, then exit |
+
+### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--config <path>` | Path to config file (required) |
+| `--strict_config` | Reject unknown fields in config |
+| `--help` | Show all flags (including glog, folly, mvfst internals) |
 
 See [config.example.yaml](config.example.yaml) for the full config schema.
+
+moqx also inherits flags from glog, folly, and mvfst. The most useful
+are the logging flags documented below. Run `moqx --help` for the full list.
 
 ## Logging
 
