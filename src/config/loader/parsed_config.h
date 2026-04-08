@@ -131,6 +131,22 @@ struct ParsedServiceConfig {
       upstream;
 };
 
+struct ParsedTransportConfig {
+  rfl::Description<
+      "Connection flow control window in bytes (default: 16MB)",
+      std::optional<uint64_t>>
+      max_data;
+  rfl::Description<
+      "Per-stream flow control window in bytes (default: 16MB)",
+      std::optional<uint64_t>>
+      max_stream_data;
+  rfl::Description<"Max concurrent unidirectional streams (default: 8192)", std::optional<uint64_t>>
+      max_uni_streams;
+  rfl::Description<"Max concurrent bidirectional streams (default: 8192)", std::optional<uint64_t>>
+      max_bidi_streams;
+  rfl::Description<"MoQT MAX_REQUEST_ID (default: 10000)", std::optional<uint64_t>> max_request_id;
+};
+
 struct ParsedServiceDefaultsConfig {
   rfl::Description<"Default cache settings for services", std::optional<ParsedCacheConfig>> cache;
 };
@@ -150,6 +166,7 @@ struct ParsedConfig {
       "Relay identity string (optional; random string generated if absent)",
       std::optional<std::string>>
       relay_id;
+  rfl::Description<"QUIC transport settings", std::optional<ParsedTransportConfig>> transport;
   rfl::Description<"Number of IO worker threads (default: 1)", std::optional<uint32_t>> threads;
 };
 
