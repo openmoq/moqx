@@ -4,8 +4,8 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-#include "MoQIntegrationTestFixture.h"
 #include "UpstreamProvider.h"
+#include "MoQIntegrationTestFixture.h"
 
 #include <folly/coro/BlockingWait.h>
 #include <folly/coro/Collect.h>
