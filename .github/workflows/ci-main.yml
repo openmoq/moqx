@@ -143,7 +143,7 @@ jobs:
           fi
           echo "==> Start container with test config"
           docker run -d --name moqx-smoke --network host \
-            -v "$PWD/tests/test.config.yaml:/etc/moqx/config.yaml:ro" \
+            -v "$PWD/test/test.config.yaml:/etc/moqx/config.yaml:ro" \
             "${IMAGE}" --config=/etc/moqx/config.yaml
           echo "==> Wait for admin /info"
           for i in $(seq 1 50); do
