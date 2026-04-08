@@ -360,7 +360,58 @@ std::string generateRelayID() {
 
 // --- Resolution helpers ---
 
-ListenerConfig resolveListener(const ParsedListenerConfig& listener) {
+// Apply parsed quic fields onto a QuicConfig, field by field.
+void applyQuicOverride(QuicConfig& base, const ParsedQuicConfig& overlay) {
+  if (auto v = overlay.max_data.value())
+    base.maxData = *v;
+  if (auto v = overlay.max_stream_data.value())
+    base.maxStreamData = *v;
+  if (auto v = overlay.max_uni_streams.value())
+    base.maxUniStreams = *v;
+  if (auto v = overlay.max_bidi_streams.value())
+    base.maxBidiStreams = *v;
+}
+
+// Merge listener_defaults.quic and per-listener quic override into a resolved QuicConfig.
+QuicConfig mergeQuicConfig(
+    const std::optional<ParsedQuicConfig>& defaults,
+    const std::optional<ParsedQuicConfig>& perListener
+) {
+  QuicConfig result; // starts with C++ struct defaults
+  if (defaults)
+    applyQuicOverride(result, *defaults);
+  if (perListener)
+    applyQuicOverride(result, *perListener);
+  return result;
+}
+
+void validateQuicConfig(
+    const QuicConfig& quic,
+    const std::string& context,
+    std::vector<std::string>& errors,
+    std::vector<std::string>& warnings
+) {
+  if (quic.maxData < quic.maxStreamData) {
+    errors.push_back(
+        context + " quic: max_data (" + std::to_string(quic.maxData) +
+        ") must be >= max_stream_data (" + std::to_string(quic.maxStreamData) + ")"
+    );
+  }
+  if (quic.maxUniStreams < 100) {
+    warnings.push_back(
+        context + " quic: max_uni_streams (" + std::to_string(quic.maxUniStreams) +
+        ") is very low (< 100); this may limit throughput"
+    );
+  }
+  if (quic.maxBidiStreams < 16) {
+    warnings.push_back(
+        context + " quic: max_bidi_streams (" + std::to_string(quic.maxBidiStreams) +
+        ") is very low (< 16)"
+    );
+  }
+}
+
+ListenerConfig resolveListener(const ParsedListenerConfig& listener, const QuicConfig& quic) {
   const auto& sock = listener.udp.value().socket.value();
   const auto& tls = listener.tls.value();
 
@@ -381,6 +432,7 @@ ListenerConfig resolveListener(const ParsedListenerConfig& listener) {
       .endpoint = listener.endpoint.value(),
       .moqtVersions = moqtVersionsToString(listener),
       .quicStack = quicStack,
+      .quic = quic,
   };
 }
 
@@ -442,6 +494,13 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
     return folly::makeUnexpected(std::string("At least one listener is required"));
   }
 
+  // Extract listener_defaults.quic for use in per-listener merge
+  std::optional<ParsedQuicConfig> quicDefaults;
+  if (auto ld = config.listener_defaults.value()) {
+    quicDefaults = ld->quic.value();
+  }
+
+  std::vector<QuicConfig> mergedQuicConfigs;
   {
     std::unordered_set<std::string> listenerAddrs;
     for (const auto& listener : config.listeners.value()) {
@@ -451,6 +510,9 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
       if (!listenerAddrs.insert(addr).second) {
         errors.push_back("Duplicate listener address: " + addr);
       }
+      auto quic = mergeQuicConfig(quicDefaults, listener.quic.value());
+      validateQuicConfig(quic, "Listener '" + listener.name.value() + "'", errors, warnings);
+      mergedQuicConfigs.push_back(quic);
     }
   }
 
@@ -510,23 +572,6 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
   // Resolve relayID: use configured value or generate a random hex string
   std::string relayID = config.relay_id.value().value_or(generateRelayID());
 
-  // Resolve transport settings
-  std::optional<TransportConfig> transportConfig;
-  if (auto t = config.transport.value()) {
-    TransportConfig tc;
-    if (auto v = t->max_data.value())
-      tc.maxData = *v;
-    if (auto v = t->max_stream_data.value())
-      tc.maxStreamData = *v;
-    if (auto v = t->max_uni_streams.value())
-      tc.maxUniStreams = *v;
-    if (auto v = t->max_bidi_streams.value())
-      tc.maxBidiStreams = *v;
-    if (auto v = t->max_request_id.value())
-      tc.maxRequestId = *v;
-    transportConfig = tc;
-  }
-
   return ResolvedConfig{
       .config =
           Config{
@@ -534,14 +579,14 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
                   [&] {
                     std::vector<ListenerConfig> v;
                     v.reserve(config.listeners.value().size());
-                    for (const auto& l : config.listeners.value()) {
-                      v.push_back(resolveListener(l));
+                    const auto& listeners = config.listeners.value();
+                    for (size_t i = 0; i < listeners.size(); ++i) {
+                      v.push_back(resolveListener(listeners[i], mergedQuicConfigs[i]));
                     }
                     return v;
                   }(),
               .services = std::move(resolvedServices),
               .admin = std::move(adminConfig),
-              .transport = std::move(transportConfig),
               .relayID = std::move(relayID),
               .threads = threads,
           },

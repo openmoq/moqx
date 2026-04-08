@@ -990,5 +990,128 @@ TEST(ResolveConfig, MultipleListenersInvalidPort) {
   EXPECT_THAT(result.error(), HasSubstr("port"));
 }
 
+// --- QuicConfig resolution tests ---
+
+TEST(ResolveConfig, QuicDefaultsUsedWhenNoneSpecified) {
+  auto cfg = makeMinimalInsecureConfig();
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  const auto& quic = result.value().config.listeners[0].quic;
+  EXPECT_EQ(quic.maxData, 67108864u);
+  EXPECT_EQ(quic.maxStreamData, 16777216u);
+  EXPECT_EQ(quic.maxUniStreams, 8192u);
+  EXPECT_EQ(quic.maxBidiStreams, 16u);
+}
+
+TEST(ResolveConfig, ListenerDefaultsQuicApplied) {
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedQuicConfig quicCfg;
+  quicCfg.max_data = std::optional<uint64_t>{33554432};
+  quicCfg.max_uni_streams = std::optional<uint64_t>{4096};
+  ParsedListenerDefaultsConfig ld;
+  ld.quic = std::optional<ParsedQuicConfig>{std::move(quicCfg)};
+  cfg.listener_defaults = std::optional<ParsedListenerDefaultsConfig>{std::move(ld)};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  const auto& quic = result.value().config.listeners[0].quic;
+  EXPECT_EQ(quic.maxData, 33554432u);
+  EXPECT_EQ(quic.maxStreamData, 16777216u); // unchanged default
+  EXPECT_EQ(quic.maxUniStreams, 4096u);
+  EXPECT_EQ(quic.maxBidiStreams, 16u); // unchanged default
+}
+
+TEST(ResolveConfig, PerListenerQuicOverridesDefaults) {
+  auto cfg = makeMinimalInsecureConfig();
+
+  // Set listener_defaults
+  ParsedQuicConfig defaultQuic;
+  defaultQuic.max_data = std::optional<uint64_t>{33554432};
+  defaultQuic.max_uni_streams = std::optional<uint64_t>{4096};
+  ParsedListenerDefaultsConfig ld;
+  ld.quic = std::optional<ParsedQuicConfig>{std::move(defaultQuic)};
+  cfg.listener_defaults = std::optional<ParsedListenerDefaultsConfig>{std::move(ld)};
+
+  // Set per-listener override for max_data only
+  ParsedQuicConfig perListenerQuic;
+  perListenerQuic.max_data = std::optional<uint64_t>{67108864};
+  cfg.listeners.value()[0].quic = std::optional<ParsedQuicConfig>{std::move(perListenerQuic)};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  const auto& quic = result.value().config.listeners[0].quic;
+  EXPECT_EQ(quic.maxData, 67108864u);   // per-listener wins
+  EXPECT_EQ(quic.maxUniStreams, 4096u); // from listener_defaults
+  EXPECT_EQ(quic.maxBidiStreams, 16u);  // struct default
+}
+
+TEST(ResolveConfig, PerListenerQuicWithNoDefaults) {
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedQuicConfig perListenerQuic;
+  perListenerQuic.max_bidi_streams = std::optional<uint64_t>{512};
+  cfg.listeners.value()[0].quic = std::optional<ParsedQuicConfig>{std::move(perListenerQuic)};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  const auto& quic = result.value().config.listeners[0].quic;
+  EXPECT_EQ(quic.maxBidiStreams, 512u);
+  EXPECT_EQ(quic.maxData, 67108864u); // struct default
+}
+
+TEST(ResolveConfig, QuicConnFcLessThanStreamFcIsError) {
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedQuicConfig quicCfg;
+  quicCfg.max_data = std::optional<uint64_t>{1000};
+  quicCfg.max_stream_data = std::optional<uint64_t>{2000};
+  cfg.listeners.value()[0].quic = std::optional<ParsedQuicConfig>{std::move(quicCfg)};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("max_data"));
+  EXPECT_THAT(result.error(), HasSubstr("max_stream_data"));
+}
+
+TEST(ResolveConfig, QuicLowUniStreamsWarning) {
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedQuicConfig quicCfg;
+  quicCfg.max_uni_streams = std::optional<uint64_t>{10};
+  cfg.listeners.value()[0].quic = std::optional<ParsedQuicConfig>{std::move(quicCfg)};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  ASSERT_FALSE(result.value().warnings.empty());
+  EXPECT_THAT(result.value().warnings[0], HasSubstr("max_uni_streams"));
+}
+
+TEST(ResolveConfig, QuicLowBidiStreamsWarning) {
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedQuicConfig quicCfg;
+  quicCfg.max_bidi_streams = std::optional<uint64_t>{5};
+  cfg.listeners.value()[0].quic = std::optional<ParsedQuicConfig>{std::move(quicCfg)};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  ASSERT_FALSE(result.value().warnings.empty());
+  EXPECT_THAT(result.value().warnings[0], HasSubstr("max_bidi_streams"));
+}
+
+TEST(ResolveConfig, QuicValidationUseMergedValues) {
+  // max_data set in listener_defaults, max_stream_data overridden per-listener to exceed it
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedQuicConfig defaults;
+  defaults.max_data = std::optional<uint64_t>{4096};
+  ParsedListenerDefaultsConfig ld;
+  ld.quic = std::optional<ParsedQuicConfig>{std::move(defaults)};
+  cfg.listener_defaults = std::optional<ParsedListenerDefaultsConfig>{std::move(ld)};
+
+  ParsedQuicConfig perListener;
+  perListener.max_stream_data = std::optional<uint64_t>{8192}; // exceeds max_data from defaults
+  cfg.listeners.value()[0].quic = std::optional<ParsedQuicConfig>{std::move(perListener)};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("max_data"));
+}
+
 } // namespace
 } // namespace openmoq::moqx::config

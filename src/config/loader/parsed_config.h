@@ -38,6 +38,21 @@ struct ParsedAdminTlsConfig {
   rfl::Description<"ALPN protocol list", std::optional<std::vector<std::string>>> alpn;
 };
 
+struct ParsedQuicConfig {
+  rfl::Description<
+      "Connection flow control window in bytes (default: 64MB)",
+      std::optional<uint64_t>>
+      max_data;
+  rfl::Description<
+      "Per-stream flow control window in bytes (default: 16MB)",
+      std::optional<uint64_t>>
+      max_stream_data;
+  rfl::Description<"Max concurrent unidirectional streams (default: 8192)", std::optional<uint64_t>>
+      max_uni_streams;
+  rfl::Description<"Max concurrent bidirectional streams (default: 16)", std::optional<uint64_t>>
+      max_bidi_streams;
+};
+
 struct ParsedListenerConfig {
   rfl::Description<"Listener name", std::string> name;
   rfl::Description<"UDP/QUIC transport config", ParsedUdpConfig> udp;
@@ -51,6 +66,10 @@ struct ParsedListenerConfig {
       "QUIC stack to use: \"mvfst\" (default) or \"picoquic\"",
       std::optional<std::string>>
       quic_stack;
+  rfl::Description<
+      "QUIC transport settings (overrides listener_defaults.quic)",
+      std::optional<ParsedQuicConfig>>
+      quic;
 };
 
 struct ParsedCacheConfig {
@@ -131,20 +150,11 @@ struct ParsedServiceConfig {
       upstream;
 };
 
-struct ParsedTransportConfig {
+struct ParsedListenerDefaultsConfig {
   rfl::Description<
-      "Connection flow control window in bytes (default: 16MB)",
-      std::optional<uint64_t>>
-      max_data;
-  rfl::Description<
-      "Per-stream flow control window in bytes (default: 16MB)",
-      std::optional<uint64_t>>
-      max_stream_data;
-  rfl::Description<"Max concurrent unidirectional streams (default: 8192)", std::optional<uint64_t>>
-      max_uni_streams;
-  rfl::Description<"Max concurrent bidirectional streams (default: 8192)", std::optional<uint64_t>>
-      max_bidi_streams;
-  rfl::Description<"MoQT MAX_REQUEST_ID (default: 10000)", std::optional<uint64_t>> max_request_id;
+      "Default QUIC transport settings for all listeners",
+      std::optional<ParsedQuicConfig>>
+      quic;
 };
 
 struct ParsedServiceDefaultsConfig {
@@ -166,7 +176,10 @@ struct ParsedConfig {
       "Relay identity string (optional; random string generated if absent)",
       std::optional<std::string>>
       relay_id;
-  rfl::Description<"QUIC transport settings", std::optional<ParsedTransportConfig>> transport;
+  rfl::Description<
+      "Default settings inherited by all listeners",
+      std::optional<ParsedListenerDefaultsConfig>>
+      listener_defaults;
   rfl::Description<"Number of IO worker threads (default: 1)", std::optional<uint32_t>> threads;
 };
 
