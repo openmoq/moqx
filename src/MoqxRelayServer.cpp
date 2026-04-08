@@ -1,5 +1,5 @@
-#include <moqx/MoqxRelayServer.h>
-#include <moqx/stats/QuicStatsCollector.h>
+#include "MoqxRelayServer.h"
+#include "stats/QuicStatsCollector.h"
 #include <moxygen/MoQRelaySession.h>
 #include <moxygen/events/MoQFollyExecutorImpl.h>
 #include <moxygen/util/InsecureVerifierDangerousDoNotUseInProduction.h>

@@ -2,9 +2,9 @@
 
 #include <memory>
 
+#include "MoqxRelayContext.h"
+#include "config/config.h"
 #include <folly/executors/IOThreadPoolExecutor.h>
-#include <moqx/MoqxRelayContext.h>
-#include <moqx/config/config.h>
 #include <moxygen/events/MoQExecutor.h>
 #include <moxygen/openmoq/transport/pico/MoQPicoQuicEventBaseServer.h>
 #include <proxygen/lib/http/webtransport/WebTransport.h>

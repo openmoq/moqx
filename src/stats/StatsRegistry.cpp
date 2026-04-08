@@ -1,4 +1,4 @@
-#include <moqx/stats/StatsRegistry.h>
+#include "stats/StatsRegistry.h"
 
 #include <algorithm>
 #include <folly/Conv.h>

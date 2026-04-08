@@ -1,4 +1,4 @@
-#include "moqx/config/loader/config_resolver.h"
+#include "config/loader/config_resolver.h"
 
 #include <iomanip>
 #include <random>

@@ -1,4 +1,4 @@
-#include <moqx/admin/MetricsHandler.h>
+#include "admin/MetricsHandler.h"
 
 #include <folly/CancellationToken.h>
 #include <folly/coro/Task.h>
@@ -10,8 +10,8 @@
 #include <proxygen/httpserver/ResponseBuilder.h>
 #include <proxygen/lib/http/HTTPMessage.h>
 
-#include <moqx/admin/AdminServer.h>
-#include <moqx/stats/StatsRegistry.h>
+#include "admin/AdminServer.h"
+#include "stats/StatsRegistry.h"
 
 namespace openmoq::moqx::admin {
 

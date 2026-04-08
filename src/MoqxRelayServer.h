@@ -2,10 +2,10 @@
 
 #include <memory>
 
+#include "MoqxRelayContext.h"
+#include "config/config.h"
+#include "stats/StatsRegistry.h"
 #include <folly/executors/IOThreadPoolExecutor.h>
-#include <moqx/MoqxRelayContext.h>
-#include <moqx/config/config.h>
-#include <moqx/stats/StatsRegistry.h>
 #include <moxygen/MoQServer.h>
 
 namespace openmoq::moqx {
