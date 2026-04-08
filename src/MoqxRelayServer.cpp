@@ -51,10 +51,11 @@ buildFizzContext(const config::ListenerConfig& cfg) {
 MoqxRelayServer::MoqxRelayServer(
     const config::ListenerConfig& listenerCfg,
     std::shared_ptr<MoqxRelayContext> context,
-    std::shared_ptr<folly::IOThreadPoolExecutor> ioExecutor
+    std::shared_ptr<folly::IOThreadPoolExecutor> ioExecutor,
+    std::optional<quic::TransportSettings> transportSettings
 )
-    : MoQServer(buildFizzContext(listenerCfg), listenerCfg.endpoint), listenerCfg_(listenerCfg),
-      context_(std::move(context)), ioExecutor_(std::move(ioExecutor)) {}
+    : MoQServer(buildFizzContext(listenerCfg), listenerCfg.endpoint, std::move(transportSettings)),
+      listenerCfg_(listenerCfg), context_(std::move(context)), ioExecutor_(std::move(ioExecutor)) {}
 
 MoqxRelayServer::~MoqxRelayServer() {
   // Close incoming connections, drain worker EVBs, then destroy EVBs.

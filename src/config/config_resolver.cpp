@@ -510,6 +510,23 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
   // Resolve relayID: use configured value or generate a random hex string
   std::string relayID = config.relay_id.value().value_or(generateRelayID());
 
+  // Resolve transport settings
+  std::optional<TransportConfig> transportConfig;
+  if (auto t = config.transport.value()) {
+    TransportConfig tc;
+    if (auto v = t->max_data.value())
+      tc.maxData = *v;
+    if (auto v = t->max_stream_data.value())
+      tc.maxStreamData = *v;
+    if (auto v = t->max_uni_streams.value())
+      tc.maxUniStreams = *v;
+    if (auto v = t->max_bidi_streams.value())
+      tc.maxBidiStreams = *v;
+    if (auto v = t->max_request_id.value())
+      tc.maxRequestId = *v;
+    transportConfig = tc;
+  }
+
   return ResolvedConfig{
       .config =
           Config{
@@ -524,6 +541,7 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
                   }(),
               .services = std::move(resolvedServices),
               .admin = std::move(adminConfig),
+              .transport = std::move(transportConfig),
               .relayID = std::move(relayID),
               .threads = threads,
           },

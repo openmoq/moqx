@@ -1,12 +1,14 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 
 #include <folly/executors/IOThreadPoolExecutor.h>
 #include <moqx/MoqxRelayContext.h>
 #include <moqx/config/config.h>
 #include <moqx/stats/StatsRegistry.h>
 #include <moxygen/MoQServer.h>
+#include <quic/server/QuicServerTransport.h>
 
 namespace openmoq::moqx {
 
@@ -15,7 +17,8 @@ public:
   MoqxRelayServer(
       const config::ListenerConfig& listenerCfg,
       std::shared_ptr<MoqxRelayContext> context,
-      std::shared_ptr<folly::IOThreadPoolExecutor> ioExecutor
+      std::shared_ptr<folly::IOThreadPoolExecutor> ioExecutor,
+      std::optional<quic::TransportSettings> transportSettings = std::nullopt
   );
 
   ~MoqxRelayServer() override;
