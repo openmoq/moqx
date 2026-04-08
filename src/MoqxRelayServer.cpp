@@ -46,15 +46,29 @@ buildFizzContext(const config::ListenerConfig& cfg) {
   );
 }
 
+quic::TransportSettings buildTransportSettings(const config::QuicConfig& quic) {
+  quic::TransportSettings ts;
+  ts.advertisedInitialConnectionFlowControlWindow = quic.maxData;
+  ts.advertisedInitialBidiLocalStreamFlowControlWindow = quic.maxStreamData;
+  ts.advertisedInitialBidiRemoteStreamFlowControlWindow = quic.maxStreamData;
+  ts.advertisedInitialUniStreamFlowControlWindow = quic.maxStreamData;
+  ts.advertisedInitialMaxStreamsBidi = quic.maxBidiStreams;
+  ts.advertisedInitialMaxStreamsUni = quic.maxUniStreams;
+  return ts;
+}
+
 } // namespace
 
 MoqxRelayServer::MoqxRelayServer(
     const config::ListenerConfig& listenerCfg,
     std::shared_ptr<MoqxRelayContext> context,
-    std::shared_ptr<folly::IOThreadPoolExecutor> ioExecutor,
-    std::optional<quic::TransportSettings> transportSettings
+    std::shared_ptr<folly::IOThreadPoolExecutor> ioExecutor
 )
-    : MoQServer(buildFizzContext(listenerCfg), listenerCfg.endpoint, std::move(transportSettings)),
+    : MoQServer(
+          buildFizzContext(listenerCfg),
+          listenerCfg.endpoint,
+          buildTransportSettings(listenerCfg.quic)
+      ),
       listenerCfg_(listenerCfg), context_(std::move(context)), ioExecutor_(std::move(ioExecutor)) {}
 
 MoqxRelayServer::~MoqxRelayServer() {
