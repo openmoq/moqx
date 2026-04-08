@@ -18,7 +18,7 @@ if [[ "${CF_VERSION}" -ne "${REQUIRED_CF_VERSION}" ]]; then
   exit 1
 fi
 
-FILES=$(find include src tests tools -name '*.h' -o -name '*.hpp' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx')
+FILES=$(find src test tools -name '*.h' -o -name '*.hpp' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx')
 
 if [[ -z "${FILES}" ]]; then
   echo "No source files found."
