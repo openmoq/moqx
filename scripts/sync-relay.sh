@@ -7,7 +7,7 @@
 # Transforms:
 #   MoQRelay.h            -> include/moqx/MoqxRelay.h
 #   MoQRelay.cpp          -> src/MoqxRelay.cpp
-#   test/MoQRelayTest.cpp -> tests/MoqxRelayTest.cpp
+#   test/MoQRelayTest.cpp -> test/MoqxRelayTest.cpp
 #
 # Name/namespace mappings applied:
 #   class MoQRelay           -> class MoqxRelay
@@ -163,10 +163,10 @@ process_source() {
 # ─────────────────────────────────────────────────────────────────────────────
 process_test() {
   local src="${MOXYGEN_RELAY}/test/MoQRelayTest.cpp"
-  local dst="${REPO_ROOT}/tests/MoqxRelayTest.cpp"
+  local dst="${REPO_ROOT}/test/MoqxRelayTest.cpp"
   local tmp="${TMP_DIR}/MoqxRelayTest.cpp"
 
-  echo "  test/MoQRelayTest.cpp -> tests/MoqxRelayTest.cpp"
+  echo "  test/MoQRelayTest.cpp -> test/MoqxRelayTest.cpp"
   cp "$src" "$tmp"
 
   replace_copyright "$tmp"
