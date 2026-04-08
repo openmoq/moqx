@@ -152,6 +152,8 @@ docker compose up -d
 | `MOQX_MAX_GROUPS` | `100` | Max groups per track |
 | `MOQX_LOG_LEVEL` | `0` | Min log level (0-3) |
 | `MOQX_VERBOSE` | `0` | VLOG level (0-4) |
+| `MOQX_LOG_PORT` | `9999` | Dozzle log viewer port (localhost only) |
+| `GLOG_vmodule` | -- | Per-module verbose level (passed through) |
 | `MOQX_INSECURE` | `false` | Use built-in dev cert |
 
 The entrypoint maps `MOQX_LOG_LEVEL` and `MOQX_VERBOSE` to their `GLOG_*`
