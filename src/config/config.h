@@ -31,10 +31,19 @@ struct CacheConfig {
 enum class QuicStack { Mvfst, Picoquic };
 
 struct QuicConfig {
+  // Flow control
   uint64_t maxData{67108864};       // connection flow control window (bytes)
   uint64_t maxStreamData{16777216}; // per-stream flow control window (bytes)
   uint64_t maxUniStreams{8192};     // max concurrent unidirectional streams
   uint64_t maxBidiStreams{16};      // max concurrent bidirectional streams
+
+  // Transport settings
+  uint64_t idleTimeoutMs{30000};      // idle timeout (ms)
+  uint32_t maxAckDelayUs{25000};      // max ACK delay (us); mvfst ignores (logs DBG1)
+  uint32_t minAckDelayUs{1000};       // min ACK delay (microseconds)
+  uint8_t defaultStreamPriority{2};   // default stream priority
+  uint8_t defaultDatagramPriority{1}; // default datagram priority
+  std::string ccAlgo{"bbr"};          // congestion control algorithm name
 };
 
 struct ListenerConfig {
