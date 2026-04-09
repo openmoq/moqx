@@ -11,6 +11,7 @@
 #include "stats/StatsRegistry.h"
 #include <moxygen/MoQServerBase.h>
 #include <moxygen/MoQSession.h>
+#include <moxygen/relay/MoQCache.h>
 
 #include <folly/Expected.h>
 #include <folly/container/F14Map.h>
@@ -52,6 +53,20 @@ public:
   // Pass an empty serviceName to clear all services.
   // Returns the number of caches cleared (0 if a named service was not found).
   size_t clearCaches(std::string_view serviceName = {});
+
+  // Safely purges relay caches, evicting only non-pinned tracks.
+  // Optionally scoped to a single service by name and/or a specific track.
+  // Aggregates evicted/skipped counts across all targeted services.
+  moxygen::MoQCache::PurgeResult safePurge(
+      std::string_view serviceName = {},
+      const std::optional<moxygen::FullTrackName>& ftn = std::nullopt
+  );
+
+  // Safely purges all tracks in the given namespace, optionally scoped to one
+  // service. Aggregates evicted/skipped counts across all targeted services.
+  moxygen::MoQCache::PurgeResult
+  safePurgeNamespace(std::string_view serviceName, const moxygen::TrackNamespace& ns);
+
   // Returns the unique set of exact paths registered across all services.
   // Used by pico listeners to populate the h3zero WebTransport path table.
   std::vector<std::string> getExactServicePaths() const;

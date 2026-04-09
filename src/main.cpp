@@ -2,8 +2,8 @@
 #include "MoqxServerFactory.h"
 #include "admin/AdminServer.h"
 #include "admin/BuiltinRoutes.h"
-#include "admin/MetricsHandler.h"
 #include "admin/CachePurgeHandler.h"
+#include "admin/MetricsHandler.h"
 #include "config/loader/config_init.h"
 #include "stats/StatsRegistry.h"
 

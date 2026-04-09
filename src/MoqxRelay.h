@@ -53,6 +53,24 @@ public:
     }
   }
 
+  // Safely purges the relay's cache, evicting only non-pinned tracks.
+  // Returns evicted/skipped counts. Not thread-safe.
+  moxygen::MoQCache::PurgeResult
+  safePurge(const std::optional<moxygen::FullTrackName>& ftn = std::nullopt) {
+    if (!cache_) {
+      return {};
+    }
+    return cache_->safe_purge(ftn);
+  }
+
+  // Safely purges all tracks belonging to the given namespace.
+  moxygen::MoQCache::PurgeResult safePurgeNamespace(const moxygen::TrackNamespace& ns) {
+    if (!cache_) {
+      return {};
+    }
+    return cache_->safe_purge_namespace(ns);
+  }
+
   // Stops and releases the upstream provider, breaking the shared_ptr cycle
   // between MoqxRelay and UpstreamProvider. Safe to call with no upstream.
   void stop() {

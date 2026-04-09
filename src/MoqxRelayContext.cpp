@@ -113,6 +113,60 @@ size_t MoqxRelayContext::clearCaches(std::string_view serviceName) {
   return services_.size();
 }
 
+moxygen::MoQCache::PurgeResult MoqxRelayContext::safePurge(
+    std::string_view serviceName,
+    const std::optional<moxygen::FullTrackName>& ftn
+) {
+  CHECK(workerEvb_) << "safePurge called before setWorkerEvb";
+  auto* evb = workerEvb_;
+  moxygen::MoQCache::PurgeResult total;
+  auto merge = [&](moxygen::MoQCache::PurgeResult r) {
+    total.evicted += r.evicted;
+    total.skipped += r.skipped;
+  };
+  if (!serviceName.empty()) {
+    auto it = services_.find(std::string(serviceName));
+    if (it == services_.end()) {
+      return total;
+    }
+    auto& relay = it->second.relay;
+    evb->runInEventBaseThreadAndWait([&] { merge(relay->safePurge(ftn)); });
+    return total;
+  }
+  for (auto& [name, entry] : services_) {
+    auto& relay = entry.relay;
+    evb->runInEventBaseThreadAndWait([&] { merge(relay->safePurge(ftn)); });
+  }
+  return total;
+}
+
+moxygen::MoQCache::PurgeResult MoqxRelayContext::safePurgeNamespace(
+    std::string_view serviceName,
+    const moxygen::TrackNamespace& ns
+) {
+  CHECK(workerEvb_) << "safePurgeNamespace called before setWorkerEvb";
+  auto* evb = workerEvb_;
+  moxygen::MoQCache::PurgeResult total;
+  auto merge = [&](moxygen::MoQCache::PurgeResult r) {
+    total.evicted += r.evicted;
+    total.skipped += r.skipped;
+  };
+  if (!serviceName.empty()) {
+    auto it = services_.find(std::string(serviceName));
+    if (it == services_.end()) {
+      return total;
+    }
+    auto& relay = it->second.relay;
+    evb->runInEventBaseThreadAndWait([&] { merge(relay->safePurgeNamespace(ns)); });
+    return total;
+  }
+  for (auto& [name, entry] : services_) {
+    auto& relay = entry.relay;
+    evb->runInEventBaseThreadAndWait([&] { merge(relay->safePurgeNamespace(ns)); });
+  }
+  return total;
+}
+
 void MoqxRelayContext::onNewSession(std::shared_ptr<MoQSession> clientSession) {
   if (statsRegistry_) {
     if (!statsCollector_) {
