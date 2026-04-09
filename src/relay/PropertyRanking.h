@@ -57,9 +57,11 @@ struct RankedEntry {
 
 /**
  * Fast lookup from track name to rank position.
+ * Includes cached rank to avoid O(n) std::distance() calls.
  */
 struct TrackEntry {
   std::map<RankKey, RankedEntry>::iterator rankIter;
+  uint64_t cachedRank{UINT64_MAX};  // Cached rank position, invalidated on changes
 };
 
 /**
@@ -420,6 +422,25 @@ class PropertyRanking : public folly::HHWheelTimer::Callback {
    */
   void sweepIdle();
 
+  /**
+   * Rebuild rank cache after structural changes (insert/delete).
+   * O(T) but amortized by lazy rebuilding.
+   */
+  void rebuildRankCacheIfNeeded() const;
+
+  /**
+   * Get rank from cache, rebuilding if invalidated.
+   * O(1) amortized.
+   */
+  uint64_t getCachedRank(const moxygen::FullTrackName& ftn) const;
+
+  /**
+   * Invalidate the rank cache. Called on insert/delete.
+   */
+  void invalidateRankCache() {
+    rankCacheValid_ = false;
+  }
+
   uint64_t propertyType_;
   uint64_t maxDeselected_;
   SelectCallback onSelected_;
@@ -441,6 +462,9 @@ class PropertyRanking : public folly::HHWheelTimer::Callback {
   // Cached pool boundary (max N + maxDeselected_)
   uint64_t poolBoundary_{0};
 
+  // Sorted threshold values for O(log G) crossesThreshold check
+  std::vector<uint64_t> sortedThresholds_;
+
   // Idle detection fields (optional - only set if timer constructor used)
   Tick idleThreshold_{0};
   std::chrono::milliseconds sweepInterval_{0};
@@ -450,6 +474,9 @@ class PropertyRanking : public folly::HHWheelTimer::Callback {
 
   // Performance metrics
   mutable PropertyRankingMetrics metrics_;
+
+  // Rank cache invalidation flag - mutable because cache rebuild is const-safe
+  mutable bool rankCacheValid_{false};
 };
 
 } // namespace openmoq::moqx
