@@ -19,9 +19,70 @@
 
 #include <folly/container/F14Map.h>
 #include <folly/container/F14Set.h>
+#include <optional>
 #include <string>
+#include <string_view>
+#include <vector>
 
 namespace openmoq::moqx {
+
+// Visitor interface for relay state inspection.
+// MoqxRelay::dumpState() calls these methods while walking internal state.
+// Implement this to serialize state into any format without adding format
+// dependencies to MoqxRelay itself.
+//
+// Section callbacks bracket each group of items so visitors never need to
+// track whether a section was empty or infer ordering from call patterns.
+class RelayStateVisitor {
+public:
+  virtual ~RelayStateVisitor() = default;
+
+  // --- Downstream peer section ---
+  virtual void onPeersBegin() = 0;
+  // Called for each connected downstream peer relay.
+  virtual void onPeer(
+      std::string_view address,
+      std::string_view authority,
+      std::string_view relayID // empty if peer didn't include one
+  ) = 0;
+  virtual void onPeersEnd() = 0;
+
+  // --- Subscription section ---
+  virtual void onSubscriptionsBegin() = 0;
+  // Called for each track with an active subscription or publish.
+  struct SubscriptionInfo {
+    const moxygen::FullTrackName& ftn;
+    bool isPublish;
+    size_t subscribers;
+    uint64_t forwardingSubscribers;
+    std::optional<moxygen::AbsoluteLocation> largest;
+    uint64_t totalGroupsReceived;
+    uint64_t totalObjectsReceived;
+    std::string_view sourceAddress;
+  };
+  virtual void onSubscription(const SubscriptionInfo& info) = 0;
+  virtual void onSubscriptionsEnd() = 0;
+
+  // --- Namespace tree section ---
+  virtual void onNamespaceTreeBegin() = 0;
+  // Depth-first traversal. childKey is the map key in the parent's children
+  // map; empty string for the root node.
+  virtual void beginNamespaceNode(
+      std::string_view childKey,
+      const moxygen::TrackNamespace& ns,
+      size_t sessionCount
+  ) = 0;
+  virtual void endNamespaceNode() = 0;
+  virtual void onNamespaceTreeEnd() = 0;
+
+  // --- Cache section ---
+  // Called once with cache state; not called if cache is disabled.
+  virtual void onCacheStats(
+      size_t totalBytes,
+      const std::vector<moxygen::MoQCache::TrackStats>& tracks,
+      moxygen::MoQCache::TimePoint now
+  ) = 0;
+};
 
 class MoqxRelay : public moxygen::Publisher,
                   public moxygen::Subscriber,
@@ -140,6 +201,13 @@ public:
       const moxygen::TrackNamespace& trackNamespace,
       std::shared_ptr<moxygen::MoQSession> session
   );
+
+  // Returns the upstream provider, or null if none is configured.
+  std::shared_ptr<UpstreamProvider> upstreamProvider() const { return upstream_; }
+
+  // Walks relay state by calling visitor methods.
+  // MUST be called on the relay's worker EVB.
+  void dumpState(RelayStateVisitor& visitor) const;
 
   // Test accessor: check if a publish exists and return node/publish state
   struct PublishState {
@@ -333,13 +401,14 @@ private:
   // Kept alive so the subscription is not cancelled when onUpstreamConnect returns.
   std::shared_ptr<moxygen::Publisher::SubscribeNamespaceHandle> upstreamSubNsHandle_;
 
+  struct PeerInfo {
+    std::shared_ptr<moxygen::Publisher::SubscribeNamespaceHandle> handle;
+    std::string relayID; // from peer auth token; empty if not provided
+  };
   // Reciprocal peer subNs handles: one per peer relay session that has
   // connected to us. Kept alive so the subscription is not immediately
   // cancelled. Keyed by raw session pointer (valid for session lifetime).
-  folly::F14FastMap<
-      moxygen::MoQSession*,
-      std::shared_ptr<moxygen::Publisher::SubscribeNamespaceHandle>>
-      peerSubNsHandles_;
+  folly::F14FastMap<moxygen::MoQSession*, PeerInfo> peerSubNsHandles_;
   folly::F14NodeMap<moxygen::FullTrackName, RelaySubscription, moxygen::FullTrackName::hash>
       subscriptions_;
 

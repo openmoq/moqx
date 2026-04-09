@@ -90,25 +90,27 @@ struct NoopObjectCallback : public ObjectReceiverCallback {
 
 } // namespace
 
-// --- Pure function tests: isPeerSubNs / makePeerSubNs ---
+// --- Pure function tests: getPeerRelayID / makePeerSubNs ---
 // These don't need a fixture or event loop.
 
 TEST(PeerSubNsHelpers, PeerSubNsRoundTrip) {
-  // A subNs built with a relayID is detected as a peer subNs; without it is not.
+  // A subNs built with a relayID returns that ID; without one returns nullopt.
   auto withID = makePeerSubNs("my-relay-id");
-  EXPECT_TRUE(isPeerSubNs(withID));
+  auto id = getPeerRelayID(withID);
+  EXPECT_TRUE(id.has_value());
+  EXPECT_EQ(*id, "my-relay-id");
   EXPECT_EQ(withID.trackNamespacePrefix, TrackNamespace{});
   EXPECT_EQ(withID.options, SubscribeNamespaceOptions::BOTH);
 
   auto withoutID = makePeerSubNs();
-  EXPECT_FALSE(isPeerSubNs(withoutID));
+  EXPECT_FALSE(getPeerRelayID(withoutID).has_value());
 }
 
 TEST(PeerSubNsHelpers, NormalSubNsIsNotPeer) {
   SubscribeNamespace subNs;
   subNs.trackNamespacePrefix = TrackNamespace{{"test"}};
   subNs.options = SubscribeNamespaceOptions::BOTH;
-  EXPECT_FALSE(isPeerSubNs(subNs));
+  EXPECT_FALSE(getPeerRelayID(subNs).has_value());
 }
 
 // --- Integration fixture tests ---
@@ -323,7 +325,7 @@ TEST_F(UpstreamProviderTest, PeerSubNsHandshakeOnConnect) {
       .WillOnce(
           [](SubscribeNamespace subNs, std::shared_ptr<Publisher::NamespacePublishHandle>)
               -> folly::coro::Task<Publisher::SubscribeNamespaceResult> {
-            EXPECT_TRUE(isPeerSubNs(subNs));
+            EXPECT_TRUE(getPeerRelayID(subNs).has_value());
             EXPECT_EQ(subNs.trackNamespacePrefix, TrackNamespace{});
             co_return makeSubscribeNamespaceOk(subNs);
           }
