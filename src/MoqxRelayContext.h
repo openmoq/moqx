@@ -5,7 +5,7 @@
 #include "MoqxRelay.h"
 #include "ServiceMatcher.h"
 #include "UpstreamProvider.h"
-#include "config/config.h"
+#include "config/Config.h"
 #include "stats/MoQStatsCollector.h"
 #include "stats/StatsRegistry.h"
 #include <moxygen/MoQServerBase.h>

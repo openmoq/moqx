@@ -1,7 +1,7 @@
-#include "config/loader/config_init.h"
+#include "config/loader/ConfigInit.h"
 
-#include "config/loader/config_resolver.h"
-#include "config/loader/loader.h"
+#include "config/loader/ConfigResolver.h"
+#include "config/loader/Loader.h"
 
 #include <gflags/gflags.h>
 

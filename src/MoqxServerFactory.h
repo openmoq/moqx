@@ -5,7 +5,7 @@
 #include "MoqxPicoRelayServer.h"
 #include "MoqxRelayContext.h"
 #include "MoqxRelayServer.h"
-#include "config/config.h"
+#include "config/Config.h"
 #include "stats/StatsRegistry.h"
 #include <folly/executors/IOThreadPoolExecutor.h>
 #include <moxygen/MoQServerBase.h>

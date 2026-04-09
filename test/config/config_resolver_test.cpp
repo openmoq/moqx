@@ -1,4 +1,4 @@
-#include "config/loader/config_resolver.h"
+#include "config/loader/ConfigResolver.h"
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>

@@ -3,7 +3,7 @@
 #include "admin/AdminServer.h"
 #include "admin/BuiltinRoutes.h"
 #include "admin/MetricsHandler.h"
-#include "config/loader/config_init.h"
+#include "config/loader/ConfigInit.h"
 #include "stats/StatsRegistry.h"
 
 #include <csignal>

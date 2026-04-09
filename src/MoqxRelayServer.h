@@ -3,7 +3,7 @@
 #include <memory>
 
 #include "MoqxRelayContext.h"
-#include "config/config.h"
+#include "config/Config.h"
 #include "stats/StatsRegistry.h"
 #include <folly/executors/IOThreadPoolExecutor.h>
 #include <moxygen/MoQServer.h>
