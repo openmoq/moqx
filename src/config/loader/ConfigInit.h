@@ -5,7 +5,7 @@
 
 #include <folly/Expected.h>
 
-#include "config/resolved_config.h"
+#include "config/ResolvedConfig.h"
 
 namespace openmoq::moqx::config {
 

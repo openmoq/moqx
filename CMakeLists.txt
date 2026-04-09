@@ -130,9 +130,9 @@ target_link_libraries(moqx_config INTERFACE
 # resolved Config types can depend on moqx_config alone.
 
 add_library(moqx_config_loader STATIC
-  src/config/loader.cpp
-  src/config/config_resolver.cpp
-  src/config/config_init.cpp
+  src/config/Loader.cpp
+  src/config/ConfigResolver.cpp
+  src/config/ConfigInit.cpp
 )
 
 target_include_directories(moqx_config_loader

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "config/config.h"
+#include "config/Config.h"
 
 #include <optional>
 #include <string>

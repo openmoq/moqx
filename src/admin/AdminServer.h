@@ -8,7 +8,7 @@
 #include <folly/CancellationToken.h>
 #include <folly/io/IOBuf.h>
 
-#include "config/config.h"
+#include "config/Config.h"
 
 // Forward declarations
 namespace proxygen {
