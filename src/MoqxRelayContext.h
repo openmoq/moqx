@@ -43,6 +43,10 @@ public:
   // reconnect coroutines can exit before worker EVBs are drained.
   void stop();
 
+  // Returns the unique set of exact paths registered across all services.
+  // Used by pico listeners to populate the h3zero WebTransport path table.
+  std::vector<std::string> getExactServicePaths() const;
+
   // --- Delegation targets for MoqxRelayServer virtual overrides ---
 
   void onNewSession(std::shared_ptr<moxygen::MoQSession> session);

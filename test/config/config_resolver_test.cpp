@@ -1210,5 +1210,78 @@ TEST(ResolveConfig, QuicCcAlgoRoundTrips) {
   EXPECT_EQ(result.value().config.listeners[0].quic.ccAlgo, "cubic");
 }
 
+// --- Pico WebTransport path validation tests ---
+
+// Helper: make a minimal pico listener config (TLS required for picoquic).
+ParsedConfig makeMinimalPicoConfig() {
+  auto cfg = makeMinimalInsecureConfig();
+  auto& lc = cfg.listeners.value()[0];
+  lc.quic_stack = std::optional<std::string>{"picoquic"};
+  lc.tls.value().insecure = false;
+  lc.tls.value().cert_file = std::optional<std::string>{"cert.pem"};
+  lc.tls.value().key_file = std::optional<std::string>{"key.pem"};
+  return cfg;
+}
+
+TEST(ResolveConfig, PicoPrefixPathServiceWarning) {
+  // The default service uses only a prefix path — pico warns about the prefix
+  // rule AND about having no exact-path endpoints registered.
+  auto cfg = makeMinimalPicoConfig();
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  const auto& warnings = result.value().warnings;
+  EXPECT_THAT(warnings, ::testing::Contains(HasSubstr("prefix path")));
+  EXPECT_THAT(warnings, ::testing::Contains(HasSubstr("no WebTransport endpoints")));
+}
+
+TEST(ResolveConfig, PicoNoExactPathsWarning) {
+  // A pico listener with no services at all that have exact paths should warn
+  // that no WT endpoints will be registered.
+  auto cfg = makeMinimalPicoConfig();
+  // Replace default service with one that has only a prefix path.
+  cfg.services.value().clear();
+  ParsedServiceConfig svc;
+  ParsedServiceConfig::MatchRule entry;
+  entry.authority = AuthMatch{ParsedServiceConfig::MatchRule::AnyAuthority{true}};
+  entry.path = PMatch{ParsedServiceConfig::MatchRule::PrefixPath{"/"}};
+  svc.match.value().push_back(std::move(entry));
+  svc.cache = makeDefaultCache();
+  cfg.services.value().emplace("prefix-only-svc", std::move(svc));
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  EXPECT_THAT(result.value().warnings, ::testing::Contains(HasSubstr("no WebTransport endpoints")));
+}
+
+TEST(ResolveConfig, PicoExactPathServiceNoWarning) {
+  auto cfg = makeMinimalPicoConfig();
+  // Replace the default prefix-path service with an exact-path one.
+  cfg.services.value().clear();
+  ParsedServiceConfig svc;
+  ParsedServiceConfig::MatchRule entry;
+  entry.authority = AuthMatch{ParsedServiceConfig::MatchRule::AnyAuthority{true}};
+  entry.path = PMatch{ParsedServiceConfig::MatchRule::ExactPath{"/moq-relay"}};
+  svc.match.value().push_back(std::move(entry));
+  svc.cache = makeDefaultCache();
+  cfg.services.value().emplace("exact-svc", std::move(svc));
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  // No pico path warnings
+  for (const auto& w : result.value().warnings) {
+    EXPECT_THAT(w, ::testing::Not(HasSubstr("Picoquic listener")));
+  }
+}
+
+TEST(ResolveConfig, MvfstPrefixPathServiceNoWarning) {
+  // Prefix paths on mvfst listeners are fine — no pico warning.
+  auto cfg = makeMinimalInsecureConfig(); // default stack = mvfst
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  for (const auto& w : result.value().warnings) {
+    EXPECT_THAT(w, ::testing::Not(HasSubstr("Picoquic listener")));
+  }
+}
+
 } // namespace
 } // namespace openmoq::moqx::config
