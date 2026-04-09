@@ -37,6 +37,10 @@ jobs:
             preset: default
             build_dir: build
             runner: ubuntu-22.04
+          - name: macos
+            preset: default
+            build_dir: build
+            runner: macos-latest
           - name: asan debug
             preset: san
             build_dir: build-san
@@ -56,7 +60,14 @@ jobs:
           submodules: true
 
       - name: Install system dependencies
-        run: sudo deps/moxygen/standalone/install-system-deps.sh
+        run: |
+          if [[ "$(uname)" == "Darwin" ]]; then
+            deps/moxygen/standalone/install-system-deps.sh
+            brew install coreutils
+            echo "/opt/homebrew/opt/coreutils/libexec/gnubin" >> "$GITHUB_PATH"
+          else
+            sudo deps/moxygen/standalone/install-system-deps.sh
+          fi
 
       - name: Setup dependencies
         env:

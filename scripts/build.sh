@@ -114,7 +114,7 @@ check_system_deps() {
   # CMake version check (need 3.25+)
   if command -v cmake >/dev/null 2>&1; then
     local ver
-    ver=$(cmake --version | head -1 | grep -oP '\d+\.\d+' | head -1)
+    ver=$(cmake --version | head -1 | sed 's/[^0-9]*\([0-9]*\.[0-9]*\).*/\1/')
     local major minor
     major=$(echo "$ver" | cut -d. -f1)
     minor=$(echo "$ver" | cut -d. -f2)
@@ -334,6 +334,12 @@ cmd_build() {
   [[ -f "$DEPS_MODE_FILE" ]] && deps_mode=$(cat "$DEPS_MODE_FILE")
   if [[ "$deps_mode" == "from-source" ]]; then
     extra_cmake_args+=("-DCMAKE_FIND_LIBRARY_SUFFIXES=.so;.a")
+    extra_cmake_args+=("-DGFLAGS_SHARED=ON")
+  fi
+
+  # macOS: prefer shared gflags from brew to avoid conflict with static
+  # gflags symbols bundled in the moxygen tarball (see openmoq/moxygen#114).
+  if [[ "$(uname)" == "Darwin" ]]; then
     extra_cmake_args+=("-DGFLAGS_SHARED=ON")
   fi
 
