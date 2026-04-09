@@ -140,4 +140,8 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayContext::validateAu
   return folly::unit;
 }
 
+std::vector<std::string> MoqxRelayContext::getExactServicePaths() const {
+  return serviceMatcher_.allExactPaths();
+}
+
 } // namespace openmoq::moqx

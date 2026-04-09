@@ -68,7 +68,14 @@ MoqxPicoRelayServer::MoqxPicoRelayServer(
           listenerCfg.endpoint,
           ioExecutor->getAllEventBases()[0],
           listenerCfg.moqtVersions,
-          picoTransportConfigFromQuicConfig(listenerCfg.quic)
+          picoTransportConfigFromQuicConfig(listenerCfg.quic),
+          moxygen::PicoWebTransportConfig{
+              .enableWebTransport = true,
+              .enableQuicTransport = true,
+              .wtEndpoints = context->getExactServicePaths(),
+              // pico doesn't support session flow control, so limit to one per connection
+              .wtMaxSessions = 1,
+          }
       ),
       listenerCfg_(listenerCfg), context_(std::move(context)) {}
 

@@ -395,5 +395,100 @@ TEST(ServiceMatcher, AuthorityMatchButPathMismatchFallsToAny) {
   EXPECT_EQ(matcher.match("foo.com", "/other"), "any-svc");
 }
 
+// --- allExactPaths() tests ---
+
+TEST(ServiceMatcher, AllExactPathsEmpty) {
+  // Only prefix paths — allExactPaths should return nothing.
+  folly::F14FastMap<std::string, ServiceConfig> services = {
+      makeAnyAuthorityService("svc", ME::PrefixPath{"/"})
+  };
+  ServiceMatcher matcher(services);
+  EXPECT_TRUE(matcher.allExactPaths().empty());
+}
+
+TEST(ServiceMatcher, AllExactPathsCollectsAcrossAuthorityTiers) {
+  folly::F14FastMap<std::string, ServiceConfig> services;
+
+  // exact authority, exact path
+  services.insert(
+      {"svc-exact",
+       ServiceConfig{
+           .match =
+               {ME{.authority = ME::ExactAuthority{"live.example.com"},
+                   .path = ME::ExactPath{"/moq-relay"}}},
+           .cache = {100, 3}
+       }}
+  );
+
+  // wildcard authority, exact path
+  services.insert(
+      {"svc-wild",
+       ServiceConfig{
+           .match =
+               {ME{.authority = ME::WildcardAuthority{"*.cdn.com"}, .path = ME::ExactPath{"/cdn"}}},
+           .cache = {100, 3}
+       }}
+  );
+
+  // any authority, exact path
+  services.insert(
+      {"svc-any",
+       ServiceConfig{
+           .match = {ME{.authority = ME::AnyAuthority{}, .path = ME::ExactPath{"/fallback"}}},
+           .cache = {100, 3}
+       }}
+  );
+
+  ServiceMatcher matcher(services);
+  auto paths = matcher.allExactPaths();
+  std::sort(paths.begin(), paths.end());
+  EXPECT_EQ(paths, (std::vector<std::string>{"/cdn", "/fallback", "/moq-relay"}));
+}
+
+TEST(ServiceMatcher, AllExactPathsDeduplicates) {
+  // Same exact path registered under two different authority tiers.
+  folly::F14FastMap<std::string, ServiceConfig> services;
+  services.insert(
+      {"svc1",
+       ServiceConfig{
+           .match =
+               {ME{.authority = ME::ExactAuthority{"a.example.com"}, .path = ME::ExactPath{"/moq"}}
+               },
+           .cache = {100, 3}
+       }}
+  );
+  services.insert(
+      {"svc2",
+       ServiceConfig{
+           .match = {ME{.authority = ME::AnyAuthority{}, .path = ME::ExactPath{"/moq"}}},
+           .cache = {100, 3}
+       }}
+  );
+
+  ServiceMatcher matcher(services);
+  auto paths = matcher.allExactPaths();
+  EXPECT_EQ(paths.size(), 1u);
+  EXPECT_EQ(paths[0], "/moq");
+}
+
+TEST(ServiceMatcher, AllExactPathsIgnoresPrefixPaths) {
+  folly::F14FastMap<std::string, ServiceConfig> services;
+  services.insert(
+      {"svc",
+       ServiceConfig{
+           .match =
+               {
+                   ME{.authority = ME::AnyAuthority{}, .path = ME::ExactPath{"/exact"}},
+                   ME{.authority = ME::AnyAuthority{}, .path = ME::PrefixPath{"/prefix/"}},
+               },
+           .cache = {100, 3}
+       }}
+  );
+
+  ServiceMatcher matcher(services);
+  auto paths = matcher.allExactPaths();
+  EXPECT_EQ(paths, (std::vector<std::string>{"/exact"}));
+}
+
 } // namespace
 } // namespace openmoq::moqx
