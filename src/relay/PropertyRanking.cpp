@@ -67,7 +67,10 @@ void PropertyRanking::registerTrack(
       key, RankedEntry{.ftn = ftn, .publisher = std::move(publisher)});
 
   // Store iterator for O(1) lookup
-  tracks_[ftn] = TrackEntry{.rankIter = iter};
+  tracks_[ftn] = TrackEntry{.rankIter = iter, .cachedRank = UINT64_MAX};
+
+  // Invalidate rank cache since structure changed
+  invalidateRankCache();
 
   XLOG(DBG4) << "Registered track " << ftn << " with value " << value
              << " at rank " << getRank(key);
@@ -80,17 +83,22 @@ void PropertyRanking::registerTrack(
       group.trackStates[ftn] = TrackState::Selected;
 
       // Notify sessions in this group (respecting self-exclusion)
-      // Copy sessions to avoid iterator invalidation if callback modifies map
-      std::vector<std::pair<std::shared_ptr<moxygen::MoQSession>, bool>> sessionsToNotify;
+      // Separate viewers (can batch) from publishers (need individual waterline checks)
+      std::vector<std::pair<std::shared_ptr<moxygen::MoQSession>, bool>> viewerBatch;
+      std::vector<std::pair<std::shared_ptr<moxygen::MoQSession>, bool>> publisherNotifications;
       for (const auto& [session, info] : group.sessions) {
-        if (!info.isSelfTrack(ftn)) {
-          sessionsToNotify.emplace_back(session, info.forward);
-        } else {
+        if (info.isSelfTrack(ftn)) {
           XLOG(DBG4) << "[registerTrack] Skipping self-track " << ftn
                      << " for session " << session.get();
           if (metrics_.enabled) {
             metrics_.selfExclusionSkips++;
           }
+          continue;
+        }
+        if (info.isPublisher()) {
+          publisherNotifications.emplace_back(session, info.forward);
+        } else {
+          viewerBatch.emplace_back(session, info.forward);
         }
       }
 
@@ -98,7 +106,26 @@ void PropertyRanking::registerTrack(
       if (metrics_.timingEnabled) {
         notifyStart = std::chrono::steady_clock::now();
       }
-      for (const auto& [session, forward] : sessionsToNotify) {
+
+      // Batch notify viewers if callback available
+      if (onBatchSelected_ && !viewerBatch.empty()) {
+        if (metrics_.enabled) {
+          metrics_.selectionsTriggered += viewerBatch.size();
+        }
+        onBatchSelected_(ftn, viewerBatch);
+      } else {
+        for (const auto& [session, forward] : viewerBatch) {
+          if (session && onSelected_) {
+            if (metrics_.enabled) {
+              metrics_.selectionsTriggered++;
+            }
+            onSelected_(ftn, session, forward);
+          }
+        }
+      }
+
+      // Notify publishers individually
+      for (const auto& [session, forward] : publisherNotifications) {
         if (session && onSelected_) {
           if (metrics_.enabled) {
             metrics_.selectionsTriggered++;
@@ -106,6 +133,7 @@ void PropertyRanking::registerTrack(
           onSelected_(ftn, session, forward);
         }
       }
+
       if (metrics_.timingEnabled) {
         metrics_.notifyTimeNs += std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now() - notifyStart).count();
@@ -143,6 +171,8 @@ void PropertyRanking::updateSortValue(const moxygen::FullTrackName& ftn, uint64_
     ranked_.erase(entry.rankIter);
     auto [newIter, _] = ranked_.emplace(newKey, std::move(rankedEntry));
     entry.rankIter = newIter;
+    // Invalidate cache - positions shifted
+    invalidateRankCache();
     return;
   }
 
@@ -151,6 +181,9 @@ void PropertyRanking::updateSortValue(const moxygen::FullTrackName& ftn, uint64_
   ranked_.erase(entry.rankIter);
   auto [newIter, _] = ranked_.emplace(newKey, std::move(rankedEntry));
   entry.rankIter = newIter;
+
+  // Invalidate cache - positions shifted
+  invalidateRankCache();
 
   recomputeGroups(ftn, oldKey, newKey);
 }
@@ -168,6 +201,9 @@ void PropertyRanking::removeTrack(const moxygen::FullTrackName& ftn) {
   // Remove from ranked map
   ranked_.erase(entry.rankIter);
   tracks_.erase(it);
+
+  // Invalidate rank cache since structure changed
+  invalidateRankCache();
 
   XLOG(DBG4) << "Removed track " << ftn << " from rank " << oldRank;
 
@@ -339,12 +375,42 @@ void PropertyRanking::removeGroup(uint64_t maxSelected) {
 }
 
 uint64_t PropertyRanking::getRank(const RankKey& key) const {
-  // Count how many entries come before this key
   auto it = ranked_.find(key);
   if (it == ranked_.end()) {
     return UINT64_MAX;
   }
+  // Rebuild cache if invalidated, then return O(1) lookup
+  rebuildRankCacheIfNeeded();
+  auto trackIt = tracks_.find(it->second.ftn);
+  if (trackIt != tracks_.end()) {
+    return trackIt->second.cachedRank;
+  }
+  // Fallback (shouldn't happen if data structures are consistent)
   return std::distance(ranked_.begin(), it);
+}
+
+void PropertyRanking::rebuildRankCacheIfNeeded() const {
+  if (rankCacheValid_) {
+    return;
+  }
+  uint64_t rank = 0;
+  for (const auto& [key, entry] : ranked_) {
+    auto it = tracks_.find(entry.ftn);
+    if (it != tracks_.end()) {
+      const_cast<TrackEntry&>(it->second).cachedRank = rank;
+    }
+    rank++;
+  }
+  rankCacheValid_ = true;
+}
+
+uint64_t PropertyRanking::getCachedRank(const moxygen::FullTrackName& ftn) const {
+  rebuildRankCacheIfNeeded();
+  auto it = tracks_.find(ftn);
+  if (it == tracks_.end()) {
+    return UINT64_MAX;
+  }
+  return it->second.cachedRank;
 }
 
 bool PropertyRanking::crossesThreshold(
@@ -367,8 +433,6 @@ bool PropertyRanking::crossesThreshold(
     return false;
   }
 
-  // OPTIMIZATION: Quick check - if ranks are on the same side of all thresholds
-  // and both within the pool, we can often avoid the full loop
   uint64_t minRank = std::min(oldRank, newRank);
   uint64_t maxRank = std::max(oldRank, newRank);
 
@@ -379,14 +443,11 @@ bool PropertyRanking::crossesThreshold(
     return true;
   }
 
-  // Check if crossed any group's N boundary
-  for (const auto& [n, group] : groups_) {
-    // OPTIMIZATION: Skip groups where both ranks are clearly on one side
-    if (maxRank < n || minRank >= n) {
-      continue;  // Both on same side of this threshold
-    }
-    // Ranks straddle the threshold
-    return true;
+  // OPTIMIZATION: O(log G) check using sorted thresholds
+  // Find first threshold > minRank, check if it's <= maxRank
+  auto it = std::upper_bound(sortedThresholds_.begin(), sortedThresholds_.end(), minRank);
+  if (it != sortedThresholds_.end() && *it <= maxRank) {
+    return true;  // At least one threshold is crossed
   }
 
   return false;
@@ -429,28 +490,32 @@ void PropertyRanking::recomputeGroups(
     // Handle per-session notifications (with self-exclusion)
     for (auto& [session, info] : group.sessions) {
       if (info.isPublisher()) {
-        // OPTIMIZATION: Only recompute waterline if invalidated or self-track moved
-        bool needWaterlineRecompute = !info.waterlineValid || info.isSelfTrack(ftn);
-
-        if (needWaterlineRecompute) {
-          auto oldWaterline = info.waterlineKey;
-          info.waterlineKey = computeWaterlineKey(info, n);
-          info.waterlineValid = true;
-
-          if (oldWaterline != info.waterlineKey) {
-            XLOG(DBG4) << "[PropertyRanking] Waterline changed for session "
-                       << session.get() << ": "
-                       << (oldWaterline ? std::to_string(-oldWaterline->negValue) : "none")
-                       << " -> "
-                       << (info.waterlineKey ? std::to_string(-info.waterlineKey->negValue) : "none");
-          }
-        }
-
-        // Skip self tracks entirely
+        // Skip self tracks entirely (no notification needed)
         if (info.isSelfTrack(ftn)) {
           XLOG(DBG5) << "[PropertyRanking] Skipping self-track " << ftn
                      << " for session " << session.get();
+          // OPTIMIZATION: Only recompute waterline if self-track crossed N boundary
+          // Self-track moving within top-N or outside top-N doesn't change waterline
+          bool selfTrackCrossedN = (oldRank < n) != (newRank < n);
+          if (!info.waterlineValid || selfTrackCrossedN) {
+            auto oldWaterline = info.waterlineKey;
+            info.waterlineKey = computeWaterlineKey(info, n);
+            info.waterlineValid = true;
+            if (oldWaterline != info.waterlineKey) {
+              XLOG(DBG4) << "[PropertyRanking] Waterline changed for session "
+                         << session.get() << " (self-track crossed N): "
+                         << (oldWaterline ? std::to_string(-oldWaterline->negValue) : "none")
+                         << " -> "
+                         << (info.waterlineKey ? std::to_string(-info.waterlineKey->negValue) : "none");
+            }
+          }
           continue;
+        }
+
+        // Non-self track moved - waterline stays valid unless already invalidated
+        if (!info.waterlineValid) {
+          info.waterlineKey = computeWaterlineKey(info, n);
+          info.waterlineValid = true;
         }
 
         // Check if this track's selection status changed for this session
@@ -553,9 +618,13 @@ void PropertyRanking::recomputeGroups(
 
 void PropertyRanking::updatePoolBoundary() {
   uint64_t maxN = 0;
+  sortedThresholds_.clear();
+  sortedThresholds_.reserve(groups_.size());
   for (const auto& [n, group] : groups_) {
     maxN = std::max(maxN, n);
+    sortedThresholds_.push_back(n);
   }
+  std::sort(sortedThresholds_.begin(), sortedThresholds_.end());
   poolBoundary_ = maxN + maxDeselected_;
 }
 

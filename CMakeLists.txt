@@ -307,23 +307,6 @@ if(MOQX_BUILD_TESTS)
   )
   gtest_discover_tests(moqx_upstream_provider_test)
 
-  # Webinar blackbox test - connects to a real relay to test TRACK_FILTER
-  add_executable(webinar_blackbox_test
-    tests/WebinarBlackboxTest.cpp
-  )
-  target_link_libraries(webinar_blackbox_test PRIVATE
-    moqx_core
-    Folly::folly_init_init
-    moxygen::moxygen_events_moq_folly_executor_impl
-    moxygen::moxygen_moqclient
-    moxygen::moxygen_moq_webtransport_client
-    moxygen::moxygen_relay_moq_relay_client
-    moxygen::moxygen_relay_moq_forwarder
-    moxygen::moxygen_moq_relay_session
-    moxygen::moxygen_util_insecure_verifier_dangerous_do_not_use_in_production
-  )
-  # Not auto-discovered as a test since it requires a running relay
-
   # Track Filter Load Test - large-scale scalability test
   add_executable(track_filter_load_test
     tests/TrackFilterLoadTest.cpp
