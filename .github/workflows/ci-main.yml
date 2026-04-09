@@ -7,6 +7,7 @@ name: ci main
 #
 #   check-format ──────────────────────────────────────────────────────────────────┐
 #   build (linux, asan debug) ── publish (docker+smoke) ── release ────────────────┼── notify
+#   benchmark (linux, macos) ─────────────────────────────────────────────────────-┘
 
 on:
   push:
@@ -89,6 +90,53 @@ jobs:
           path: ${{ matrix.build_dir }}/test-results.xml
           reporter: java-junit
           fail-on-empty: ${{ job.status == 'success' && 'true' || 'false' }}
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # Benchmark: run micro-benchmarks (independent of build/publish pipeline)
+  # ════════════════════════════════════════════════════════════════════════════
+
+  benchmark:
+    needs: [check-format]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux
+            runner: ubuntu-22.04
+          - name: macos
+            runner: macos-latest
+    name: benchmark (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Generate app token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.OMOQ_APP_ID }}
+          private-key: ${{ secrets.OMOQ_APP_PRIV_KEY }}
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install system dependencies
+        run: |
+          if [[ "$(uname)" == "Darwin" ]]; then
+            deps/moxygen/standalone/install-system-deps.sh
+          else
+            sudo deps/moxygen/standalone/install-system-deps.sh
+          fi
+
+      - name: Setup dependencies
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: bash scripts/build.sh setup
+
+      - name: Build with benchmarks
+        run: bash scripts/build.sh --benchmark
+
+      - name: Run benchmarks
+        run: ./build/benchmark/moqx_benchmark
 
   # ════════════════════════════════════════════════════════════════════════════
   # Publish: build moqx, Docker image + smoke test, push

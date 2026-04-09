@@ -64,6 +64,7 @@ Setup options:
 Build options:
   --profile NAME  Build profile: "default" (RelWithDebInfo) or "san" (ASAN/UBSAN)
   --build-dir DIR Build directory (default: per profile)
+  --benchmark     Enable benchmark targets (fetches google/benchmark)
 
 Test options:
   --build-dir DIR Build directory to test (default: "build")
@@ -114,7 +115,7 @@ check_system_deps() {
   # CMake version check (need 3.25+)
   if command -v cmake >/dev/null 2>&1; then
     local ver
-    ver=$(cmake --version | head -1 | grep -oP '\d+\.\d+' | head -1)
+    ver=$(cmake --version | head -1 | sed 's/[^0-9]*\([0-9]*\.[0-9]*\).*/\1/')
     local major minor
     major=$(echo "$ver" | cut -d. -f1)
     minor=$(echo "$ver" | cut -d. -f2)
@@ -288,12 +289,15 @@ cmd_build() {
   local profile="default"
   local build_dir=""
 
+  local benchmark=OFF
+
   while (( $# > 0 )); do
     case "$1" in
-      --profile)   profile="$2"; shift 2 ;;
-      --build-dir) build_dir="$2"; shift 2 ;;
-      -h|--help)   usage ;;
-      *)           die "Unknown build option: $1" ;;
+      --profile)    profile="$2"; shift 2 ;;
+      --build-dir)  build_dir="$2"; shift 2 ;;
+      --benchmark)  benchmark=ON; shift ;;
+      -h|--help)    usage ;;
+      *)            die "Unknown build option: $1" ;;
     esac
   done
 
@@ -335,6 +339,17 @@ cmd_build() {
   if [[ "$deps_mode" == "from-source" ]]; then
     extra_cmake_args+=("-DCMAKE_FIND_LIBRARY_SUFFIXES=.so;.a")
     extra_cmake_args+=("-DGFLAGS_SHARED=ON")
+  fi
+
+  # macOS: prefer shared gflags from brew to avoid conflict with static
+  # gflags symbols bundled in the moxygen tarball (see openmoq/moxygen#114).
+  if [[ "$(uname)" == "Darwin" ]]; then
+    extra_cmake_args+=("-DGFLAGS_SHARED=ON")
+  fi
+
+  if [[ "$benchmark" == "ON" ]]; then
+    extra_cmake_args+=("-DMOQX_BUILD_BENCHMARKS=ON")
+    extra_cmake_args+=("-DMOQX_BUILD_TESTS=OFF")
   fi
 
   echo "==> Configuring (profile: $profile, build: $build_dir)..."
