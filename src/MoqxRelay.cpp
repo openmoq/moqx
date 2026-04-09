@@ -735,8 +735,9 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
   // Relay peering: if the incoming subNs carries a relay auth token, the peer
   // is a relay. Reciprocate with our own peer subNs so the peer gets our
   // namespace announcements as publishers connect.
-  if (!relayID_.empty() && isPeerSubNs(subNs)) {
-    XLOG(INFO) << __func__ << ": peer relay detected, reciprocating peer subNs";
+  if (auto peerID = !relayID_.empty() ? getPeerRelayID(subNs) : std::nullopt) {
+    XLOG(INFO) << __func__ << ": peer relay detected peer_id=" << *peerID
+               << ", reciprocating peer subNs";
     auto handle = makeNamespaceBridgeHandle(weak_from_this(), session);
     auto recipResult = co_await session->subscribeNamespace(
         makePeerSubNs(),
@@ -745,7 +746,10 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
     if (recipResult.hasError()) {
       XLOG(ERR) << "Reciprocal peer subNs failed: " << recipResult.error().reasonPhrase;
     } else {
-      peerSubNsHandles_.emplace(session.get(), std::move(recipResult.value()));
+      peerSubNsHandles_.emplace(
+          session.get(),
+          PeerInfo{std::move(recipResult.value()), std::move(*peerID)}
+      );
     }
     // Fall through: register the peer as a normal subNs subscriber so it
     // receives namespace announcements as publishers connect.
@@ -1467,6 +1471,54 @@ void MoqxRelay::onTrackEvicted(const FullTrackName& ftn, std::shared_ptr<MoQSess
       PublishDone{RequestID(0), PublishDoneStatusCode::SUBSCRIPTION_ENDED, 0, "evicted"},
       "onTrackEvicted"
   );
+}
+
+void MoqxRelay::dumpState(RelayStateVisitor& visitor) const {
+  visitor.onPeersBegin();
+  for (const auto& [sess, peer] : peerSubNsHandles_) {
+    visitor.onPeer(sess->getPeerAddress().describe(), sess->getAuthority(), peer.relayID);
+  }
+  visitor.onPeersEnd();
+
+  visitor.onSubscriptionsBegin();
+  for (const auto& [ftn, sub] : subscriptions_) {
+    std::string sourceAddr;
+    if (sub.upstream) {
+      sourceAddr = sub.upstream->getPeerAddress().describe();
+    }
+    RelayStateVisitor::SubscriptionInfo info{
+        .ftn = ftn,
+        .isPublish = sub.isPublish,
+        .subscribers = sub.forwarder->subscriberCount(),
+        .forwardingSubscribers = sub.forwarder->numForwardingSubscribers(),
+        .largest = sub.forwarder->largest(),
+        .totalGroupsReceived = sub.forwarder->totalGroupsReceived(),
+        .totalObjectsReceived = sub.forwarder->totalObjectsReceived(),
+        .sourceAddress = sourceAddr,
+    };
+    visitor.onSubscription(info);
+  }
+  visitor.onSubscriptionsEnd();
+
+  visitor.onNamespaceTreeBegin();
+  std::function<void(std::string_view, const NamespaceNode&)> walkNode;
+  walkNode = [&](std::string_view childKey, const NamespaceNode& node) {
+    visitor.beginNamespaceNode(childKey, node.trackNamespace_, node.sessions.size());
+    for (const auto& [key, child] : node.children) {
+      walkNode(key, *child);
+    }
+    visitor.endNamespaceNode();
+  };
+  walkNode("", publishNamespaceRoot_);
+  visitor.onNamespaceTreeEnd();
+
+  if (cache_) {
+    visitor.onCacheStats(
+        cache_->totalCachedBytes(),
+        cache_->getTrackStats(),
+        moxygen::MoQCache::SteadyClock::now()
+    );
+  }
 }
 
 } // namespace openmoq::moqx

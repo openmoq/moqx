@@ -23,6 +23,20 @@
 
 namespace openmoq::moqx {
 
+// Visitor interface for the top-level relay context state dump.
+// onServiceBegin returns the RelayStateVisitor to use for that service's relay.
+class RelayContextVisitor {
+public:
+  virtual ~RelayContextVisitor() = default;
+  virtual void onRelayBegin(std::string_view relayID, int64_t activeSessions) = 0;
+  // Called before relay->dumpState(). Returns the visitor to pass into dumpState.
+  virtual RelayStateVisitor& onServiceBegin(std::string_view name) = 0;
+  // Called after relay->dumpState() if an upstream is configured for this service.
+  virtual void onServiceUpstream(std::string_view url, std::string_view state) = 0;
+  virtual void onServiceEnd() = 0;
+  virtual void onRelayEnd() = 0;
+};
+
 // Holds relay state shared across all listener instances.
 // A single MoqxRelayContext is shared by every MoqxRelayServer so that
 // publishers and subscribers connecting on different listeners can exchange
@@ -44,6 +58,14 @@ public:
   // Must be called once, after all MoqxRelayServer instances have been started,
   // so that worker EVBs are available. workerEvb is used for upstream connections.
   void initUpstreams(folly::EventBase* workerEvb);
+
+  // Returns the worker EVB used for upstream connections.
+  // Null until initUpstreams() is called.
+  folly::EventBase* workerEvb() const { return workerEvb_; }
+
+  // Dumps a snapshot of relay state by calling visitor methods.
+  // MUST be called on workerEvb() to avoid data races.
+  void dumpState(RelayContextVisitor& visitor) const;
 
   // Signals all relay upstreams to stop. Call before destroying servers so
   // reconnect coroutines can exit before worker EVBs are drained.
@@ -70,6 +92,7 @@ private:
   std::string relayID_;
   std::shared_ptr<stats::StatsRegistry> statsRegistry_;
   std::shared_ptr<stats::MoQStatsCollector> statsCollector_;
+  folly::EventBase* workerEvb_{nullptr};
 };
 
 } // namespace openmoq::moqx

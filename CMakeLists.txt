@@ -81,6 +81,7 @@ add_library(moqx_core STATIC
   src/admin/AdminServer.cpp
   src/admin/BuiltinRoutes.cpp
   src/admin/MetricsHandler.cpp
+  src/admin/StateHandler.cpp
   src/stats/StatsRegistry.cpp
   src/stats/MoQStatsCollector.cpp
   src/stats/PicoQuicStatsCollector.cpp

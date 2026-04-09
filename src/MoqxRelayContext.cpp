@@ -50,6 +50,7 @@ std::shared_ptr<fizz::CertificateVerifier> makeUpstreamVerifier(const config::Up
 
 void MoqxRelayContext::initUpstreams(folly::EventBase* workerEvb) {
   CHECK(workerEvb) << "initUpstreams: workerEvb must not be null";
+  workerEvb_ = workerEvb;
 
   // Use the provided worker EVB for all upstream connections.
   // Per-EVB providers (one per worker thread) are a follow-up.
@@ -138,6 +139,28 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayContext::validateAu
 
 std::vector<std::string> MoqxRelayContext::getExactServicePaths() const {
   return serviceMatcher_.allExactPaths();
+}
+
+void MoqxRelayContext::dumpState(RelayContextVisitor& visitor) const {
+  int64_t activeSessions = 0;
+  if (statsCollector_) {
+    activeSessions = statsCollector_->snapshot().moqActiveSessions;
+  }
+
+  visitor.onRelayBegin(relayID_, activeSessions);
+  for (const auto& [name, entry] : services_) {
+    RelayStateVisitor& rv = visitor.onServiceBegin(name);
+    entry.relay->dumpState(rv);
+    if (entry.config.upstream) {
+      auto up = entry.relay->upstreamProvider();
+      visitor.onServiceUpstream(
+          entry.config.upstream->url,
+          up ? up->stateString() : "disconnected"
+      );
+    }
+    visitor.onServiceEnd();
+  }
+  visitor.onRelayEnd();
 }
 
 } // namespace openmoq::moqx
