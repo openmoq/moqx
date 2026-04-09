@@ -2188,4 +2188,70 @@ TEST_F(MoQRelayTest, NamespaceBridgeHandleForwardsDoneMsg) {
   removeSession(peerSession);
 }
 
+// Regression test: publisher reconnect after disconnect with active subscriber
+// crashes with SIGSEGV at MoqxRelay.cpp:463.
+//
+// Scenario (relay chain with downstream subscriber that has an open subgroup):
+//   1. Publisher session A publishes a track and opens a subgroup.
+//   2. Subscriber session B subscribes; the open subgroup is forwarded to B,
+//      so B has a live subgroup entry in the forwarder.
+//   3. Session A's connection breaks: publishDone fires, onPublishDone() resets
+//      handle to null.  The forwarder does NOT remove B because B still has an
+//      open subgroup (drainSubscriber marks B as receivedPublishDone_ instead).
+//      The subscriptions_ entry therefore survives with handle == nullptr.
+//   4. Session A reconnects and re-publishes the same track.  The multipublisher
+//      check finds the surviving entry and calls it->second.handle->unsubscribe()
+//      — null-pointer dereference, SIGSEGV.
+TEST_F(MoQRelayTest, PublisherReconnectWithOpenSubgroupNoSegfault) {
+  auto publisherSession = createMockSession();
+  auto subscriberSession = createMockSession();
+
+  doPublishNamespace(publisherSession, kTestNamespace);
+
+  // Step 1: publisher session A publishes the track.
+  // Don't add consumer to state — we control cleanup manually.
+  auto consumer = doPublish(publisherSession, kTestTrackName, /*addToState=*/false);
+  ASSERT_NE(consumer, nullptr);
+
+  // Step 2: subscriber session B subscribes.  Wire its mock consumer to return
+  // a live SubgroupConsumer so the forwarder stores an open subgroup for B.
+  auto mockSubgroupConsumer = createMockSubgroupConsumer();
+  auto mockConsumer = createMockConsumer();
+  ON_CALL(*mockConsumer, beginSubgroup(_, _, _, _))
+      .WillByDefault(Return(folly::makeExpected<MoQPublishError>(
+          std::static_pointer_cast<SubgroupConsumer>(mockSubgroupConsumer)
+      )));
+  auto subHandle = subscribeToTrack(subscriberSession, kTestTrackName, mockConsumer);
+  ASSERT_NE(subHandle, nullptr);
+
+  // Open a subgroup through the publisher consumer so that B gets a live entry
+  // in its subgroups map inside the forwarder.
+  withSessionContext(publisherSession, [&]() {
+    auto sgRes = consumer->beginSubgroup(/*groupID=*/0, /*subgroupID=*/0, /*priority=*/0, false);
+    ASSERT_TRUE(sgRes.hasValue()) << "beginSubgroup should succeed";
+  });
+
+  // Step 3: session A's connection drops WITHOUT closing the subgroup.
+  // publishDone → onPublishDone (handle = null) + forwarder drainSubscriber.
+  // Because B has an open subgroup, B stays in the forwarder
+  // (receivedPublishDone_ = true) — subscriptions_ entry survives with
+  // handle == nullptr.
+  withSessionContext(publisherSession, [&]() {
+    consumer->publishDone(
+        {RequestID(0), PublishDoneStatusCode::SESSION_CLOSED, 0, "upstream disconnect"}
+    );
+  });
+
+  // Step 4: session A reconnects and re-publishes the same track.
+  // Before the fix this crashes (null handle->unsubscribe()).
+  auto reconnectedSession = createMockSession();
+  doPublishNamespace(reconnectedSession, kTestNamespace);
+  auto consumer2 = doPublish(reconnectedSession, kTestTrackName);
+  EXPECT_NE(consumer2, nullptr) << "re-publish after reconnect should succeed";
+
+  removeSession(publisherSession);
+  removeSession(subscriberSession);
+  removeSession(reconnectedSession);
+}
+
 } // namespace moxygen::test

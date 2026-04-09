@@ -460,13 +460,20 @@ MoqxRelay::publish(PublishRequest pub, std::shared_ptr<Publisher::SubscriptionHa
     // multipublisher
     XLOG(DBG1) << "New publisher for existing subscription";
     nodePtr->publishes.erase(pub.fullTrackName.trackName);
-    it->second.handle->unsubscribe();
-    it->second.forwarder->publishDone(
-        {RequestID(0),
-         PublishDoneStatusCode::SUBSCRIPTION_ENDED,
-         0, // filled in by session
-         "upstream disconnect"}
-    );
+    // handle is null when the previous publisher already terminated (e.g.
+    // reconnect after a dropped connection with subscribers still draining open
+    // subgroups).  onPublishDone() already reset handle and drained the
+    // forwarder, so skip both calls to avoid a null deref and a double
+    // publishDone.
+    if (it->second.handle) {
+      it->second.handle->unsubscribe();
+      it->second.forwarder->publishDone(
+          {RequestID(0),
+           PublishDoneStatusCode::SUBSCRIPTION_ENDED,
+           0, // filled in by session
+           "upstream disconnect"}
+      );
+    }
     XLOG(DBG4) << "Erasing subscription to " << it->first;
     subscriptions_.erase(it);
   }
