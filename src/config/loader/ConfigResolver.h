@@ -4,8 +4,8 @@
 
 #include <folly/Expected.h>
 
-#include "config/loader/ParsedConfig.h"
 #include "config/ResolvedConfig.h"
+#include "config/loader/ParsedConfig.h"
 
 namespace openmoq::moqx::config {
 
