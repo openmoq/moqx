@@ -154,3 +154,32 @@ target_link_libraries(moqx_upstream_provider_test PRIVATE
   GTest::gmock
 )
 gtest_discover_tests(moqx_upstream_provider_test)
+
+# TRACK_FILTER unit tests
+add_executable(moqx_track_filter_test
+  MoqxTrackFilterTest.cpp
+)
+target_link_libraries(moqx_track_filter_test PRIVATE
+  moqx_core
+  moqx_test_utils
+  moqx_test_main
+  GTest::gmock
+  moxygen::moxygen_events_moq_folly_executor_impl
+)
+gtest_discover_tests(moqx_track_filter_test)
+
+# TRACK_FILTER load test (not auto-discovered, requires manual run)
+add_executable(track_filter_load_test
+  TrackFilterLoadTest.cpp
+)
+target_link_libraries(track_filter_load_test PRIVATE
+  moqx_core
+  Folly::folly_init_init
+  moxygen::moxygen_events_moq_folly_executor_impl
+  moxygen::moxygen_moqclient
+  moxygen::moxygen_moq_webtransport_client
+  moxygen::moxygen_relay_moq_relay_client
+  moxygen::moxygen_relay_moq_forwarder
+  moxygen::moxygen_moq_relay_session
+  moxygen::moxygen_util_insecure_verifier_dangerous_do_not_use_in_production
+)

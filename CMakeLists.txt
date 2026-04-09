@@ -86,6 +86,8 @@ add_library(moqx_core STATIC
   src/stats/PicoQuicStatsCollector.cpp
   src/stats/QuicStatsCollector.cpp
   src/UpstreamProvider.cpp
+  src/relay/PropertyRanking.cpp
+  src/relay/TopNFilter.cpp
 )
 
 target_include_directories(moqx_core
