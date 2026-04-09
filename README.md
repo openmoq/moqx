@@ -26,6 +26,10 @@ building blocks as libraries:
 `MoqxRelayServer` extends `MoQServer` to wire up `MoqxRelay` as the publish/subscribe
 handler and create `MoQRelaySession` instances for incoming connections.
 
+## Documentation
+
+- [docs/metrics.md](docs/metrics.md) — Prometheus metrics reference
+
 ## Design Documents
 
 - [design/ci-architecture.md](design/ci-architecture.md) — CI pipelines, upstream sync, auto-deploy
