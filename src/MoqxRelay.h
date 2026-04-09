@@ -26,7 +26,7 @@ class MoqxRelay : public moxygen::Publisher,
                   public std::enable_shared_from_this<MoqxRelay>,
                   public moxygen::MoQForwarder::Callback {
 public:
-  static constexpr uint64_t kDefaultMaxDeselected = 5;
+  static constexpr uint64_t kDefaultMaxDeselected = 250;
 
   explicit MoqxRelay(
       size_t maxCachedTracks = moxygen::kDefaultMaxCachedTracks,

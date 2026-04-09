@@ -75,7 +75,7 @@ enum class TrackState { Selected, Deselected };
 struct SessionInfo {
   bool forward{true};
 
-  // Waterline for self-exclusion (Phase 4 - publisher-subscribers only).
+  // Waterline for self-exclusion (publisher-subscribers only).
   // nullopt = use shared threshold (viewers, or PS with no self-tracks)
   std::optional<RankKey> waterlineKey;
 
@@ -382,7 +382,6 @@ class PropertyRanking : public folly::HHWheelTimer::Callback {
 
   /**
    * Recompute all groups after a rank change.
-   * Phase 2: shared path only (no self-exclusion).
    */
   void recomputeGroups(
       const moxygen::FullTrackName& ftn,
