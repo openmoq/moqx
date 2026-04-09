@@ -10,6 +10,8 @@
 
 #include <folly/coro/SharedPromise.h>
 #include <moqx/UpstreamProvider.h>
+#include <moqx/relay/PropertyRanking.h>
+#include <moqx/relay/TopNFilter.h>
 #include <moxygen/MoQSession.h>
 #include <moxygen/relay/MoQCache.h>
 #include <moxygen/relay/MoQForwarder.h>
@@ -24,12 +26,15 @@ class MoqxRelay : public moxygen::Publisher,
                   public std::enable_shared_from_this<MoqxRelay>,
                   public moxygen::MoQForwarder::Callback {
 public:
+  static constexpr uint64_t kDefaultMaxDeselected = 5;
+
   explicit MoqxRelay(
       size_t maxCachedTracks = moxygen::kDefaultMaxCachedTracks,
       size_t maxCachedGroupsPerTrack = moxygen::kDefaultMaxCachedGroupsPerTrack,
-      std::string relayID = {}
+      std::string relayID = {},
+      uint64_t maxDeselected = kDefaultMaxDeselected
   )
-      : relayID_(std::move(relayID)) {
+      : relayID_(std::move(relayID)), maxDeselected_(maxDeselected) {
     if (maxCachedTracks > 0) {
       cache_ = std::make_unique<moxygen::MoQCache>(maxCachedTracks, maxCachedGroupsPerTrack);
     }
@@ -182,6 +187,8 @@ private:
       std::shared_ptr<moxygen::Publisher::NamespacePublishHandle> namespacePublishHandle;
       // The namespace prefix this subscriber used for SUBSCRIBE_NAMESPACE
       moxygen::TrackNamespace trackNamespacePrefix;
+      // TRACK_FILTER parameters (for top-N selection)
+      std::optional<moxygen::TrackFilter> trackFilter;
     };
 
     // Sessions with a SUBSCRIBE_NAMESPACE here, with their preferences
@@ -192,6 +199,9 @@ private:
     // The session that PUBLISH_NAMESPACEd this node
     std::shared_ptr<moxygen::MoQSession> sourceSession;
     std::shared_ptr<PublishNamespaceCallback> publishNamespaceCallback;
+
+    // PropertyRanking instances per property type (TRACK_FILTER)
+    folly::F14FastMap<uint64_t, std::shared_ptr<PropertyRanking>> rankings;
 
     MoqxRelay& relay_;
 
@@ -230,10 +240,16 @@ private:
     std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle;
     folly::coro::SharedPromise<folly::Unit> promise;
     bool isPublish{false};
+
+    // TopNFilter for property observation (TRACK_FILTER)
+    std::shared_ptr<TopNFilter> topNFilter;
+    // Last activity tick for idle detection
+    Tick lastActivityTick{0};
   };
 
   void onEmpty(moxygen::MoQForwarder* forwarder) override;
   void forwardChanged(moxygen::MoQForwarder* forwarder) override;
+  void newGroupRequested(moxygen::MoQForwarder* forwarder, uint64_t group) override;
 
   folly::coro::Task<void> publishNamespaceToSession(
       std::shared_ptr<moxygen::MoQSession> session,
@@ -244,13 +260,43 @@ private:
   folly::coro::Task<void> publishToSession(
       std::shared_ptr<moxygen::MoQSession> session,
       std::shared_ptr<moxygen::MoQForwarder> forwarder,
-      bool forward
+      bool forward,
+      bool trackFilterSubscriber = false
   );
 
   folly::coro::Task<void>
   doSubscribeUpdate(std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle, bool forward);
 
+  folly::coro::Task<void> doNewGroupRequestUpdate(
+      std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle,
+      uint64_t newGroupRequestValue
+  );
+
   void publishNamespaceDone(const moxygen::TrackNamespace& trackNamespace, NamespaceNode* node);
+
+  // TRACK_FILTER support
+
+  // Helper to create or get PropertyRanking for a namespace node
+  std::shared_ptr<PropertyRanking> getOrCreateRanking(
+      std::shared_ptr<NamespaceNode> node,
+      uint64_t propertyType
+  );
+
+  // Callback when PropertyRanking selects a track for a session
+  void onTrackSelected(
+      const moxygen::FullTrackName& ftn,
+      std::shared_ptr<moxygen::MoQSession> session,
+      bool forward
+  );
+
+  // Callback when PropertyRanking evicts a track from a session
+  void onTrackEvicted(
+      const moxygen::FullTrackName& ftn,
+      std::shared_ptr<moxygen::MoQSession> session
+  );
+
+  // Get last activity tick for a track (for idle detection)
+  Tick getLastActivityTick(const moxygen::FullTrackName& ftn);
 
   moxygen::TrackNamespace allowedNamespacePrefix_;
   std::string relayID_;
@@ -270,11 +316,32 @@ private:
   folly::F14FastMap<moxygen::FullTrackName, RelaySubscription, moxygen::FullTrackName::hash>
       subscriptions_;
 
+  // Tracks subscribers added via TRACK_FILTER (can be evicted).
+  // Key is (trackNamespace hash, trackName, session pointer).
+  struct TrackSessionKey {
+    moxygen::FullTrackName ftn;
+    moxygen::MoQSession* session;
+    bool operator==(const TrackSessionKey& other) const {
+      return ftn == other.ftn && session == other.session;
+    }
+    struct hash {
+      size_t operator()(const TrackSessionKey& key) const {
+        return folly::hash::hash_combine(
+            moxygen::FullTrackName::hash{}(key.ftn),
+            std::hash<moxygen::MoQSession*>{}(key.session));
+      }
+    };
+  };
+  folly::F14FastSet<TrackSessionKey, TrackSessionKey::hash> trackFilterSubscribers_;
+
   std::shared_ptr<moxygen::TrackConsumer> getSubscribeWriteback(
       const moxygen::FullTrackName& ftn,
       std::shared_ptr<moxygen::TrackConsumer> consumer
   );
   std::unique_ptr<moxygen::MoQCache> cache_;
+
+  // TRACK_FILTER support
+  uint64_t maxDeselected_{kDefaultMaxDeselected};
 };
 
 // Creates a NamespacePublishHandle that bridges NAMESPACE/NAMESPACE_DONE
