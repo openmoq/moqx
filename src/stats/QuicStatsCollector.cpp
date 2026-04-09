@@ -1,4 +1,4 @@
-#include "moqx/stats/QuicStatsCollector.h"
+#include "stats/QuicStatsCollector.h"
 
 #include <folly/io/async/EventBaseManager.h>
 #include <glog/logging.h>

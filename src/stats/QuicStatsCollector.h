@@ -8,7 +8,7 @@
 #include <folly/io/async/EventBase.h>
 #include <quic/state/QuicTransportStatsCallback.h>
 
-#include "moqx/stats/StatsRegistry.h"
+#include "stats/StatsRegistry.h"
 
 namespace openmoq::moqx::stats {
 

@@ -1,7 +1,7 @@
 #include <array>
 #include <gtest/gtest.h>
 
-#include <moqx/stats/BoundedHistogram.h>
+#include "stats/BoundedHistogram.h"
 
 namespace openmoq::moqx::stats {
 

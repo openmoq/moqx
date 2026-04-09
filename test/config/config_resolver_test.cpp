@@ -1,4 +1,4 @@
-#include <moqx/config/loader/config_resolver.h>
+#include "config/loader/config_resolver.h"
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
@@ -988,6 +988,299 @@ TEST(ResolveConfig, MultipleListenersInvalidPort) {
   ASSERT_TRUE(result.hasError());
   EXPECT_THAT(result.error(), HasSubstr("bad"));
   EXPECT_THAT(result.error(), HasSubstr("port"));
+}
+
+// --- QuicConfig resolution tests ---
+
+TEST(ResolveConfig, QuicDefaultsUsedWhenNoneSpecified) {
+  auto cfg = makeMinimalInsecureConfig();
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  const auto& quic = result.value().config.listeners[0].quic;
+  EXPECT_EQ(quic.maxData, 67108864u);
+  EXPECT_EQ(quic.maxStreamData, 16777216u);
+  EXPECT_EQ(quic.maxUniStreams, 8192u);
+  EXPECT_EQ(quic.maxBidiStreams, 16u);
+  EXPECT_EQ(quic.idleTimeoutMs, 30000u);
+  EXPECT_EQ(quic.maxAckDelayUs, 25000u);
+  EXPECT_EQ(quic.minAckDelayUs, 1000u);
+  EXPECT_EQ(quic.defaultStreamPriority, 2u);
+  EXPECT_EQ(quic.defaultDatagramPriority, 1u);
+  EXPECT_EQ(quic.ccAlgo, "bbr");
+}
+
+TEST(ResolveConfig, ListenerDefaultsQuicApplied) {
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedQuicConfig quicCfg;
+  quicCfg.max_data = std::optional<uint64_t>{33554432};
+  quicCfg.max_uni_streams = std::optional<uint64_t>{4096};
+  ParsedListenerDefaultsConfig ld;
+  ld.quic = std::optional<ParsedQuicConfig>{std::move(quicCfg)};
+  cfg.listener_defaults = std::optional<ParsedListenerDefaultsConfig>{std::move(ld)};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  const auto& quic = result.value().config.listeners[0].quic;
+  EXPECT_EQ(quic.maxData, 33554432u);
+  EXPECT_EQ(quic.maxStreamData, 16777216u); // unchanged default
+  EXPECT_EQ(quic.maxUniStreams, 4096u);
+  EXPECT_EQ(quic.maxBidiStreams, 16u); // unchanged default
+}
+
+TEST(ResolveConfig, PerListenerQuicOverridesDefaults) {
+  auto cfg = makeMinimalInsecureConfig();
+
+  // Set listener_defaults
+  ParsedQuicConfig defaultQuic;
+  defaultQuic.max_data = std::optional<uint64_t>{33554432};
+  defaultQuic.max_uni_streams = std::optional<uint64_t>{4096};
+  ParsedListenerDefaultsConfig ld;
+  ld.quic = std::optional<ParsedQuicConfig>{std::move(defaultQuic)};
+  cfg.listener_defaults = std::optional<ParsedListenerDefaultsConfig>{std::move(ld)};
+
+  // Set per-listener override for max_data only
+  ParsedQuicConfig perListenerQuic;
+  perListenerQuic.max_data = std::optional<uint64_t>{67108864};
+  cfg.listeners.value()[0].quic = std::optional<ParsedQuicConfig>{std::move(perListenerQuic)};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  const auto& quic = result.value().config.listeners[0].quic;
+  EXPECT_EQ(quic.maxData, 67108864u);   // per-listener wins
+  EXPECT_EQ(quic.maxUniStreams, 4096u); // from listener_defaults
+  EXPECT_EQ(quic.maxBidiStreams, 16u);  // struct default
+}
+
+TEST(ResolveConfig, PerListenerQuicWithNoDefaults) {
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedQuicConfig perListenerQuic;
+  perListenerQuic.max_bidi_streams = std::optional<uint64_t>{512};
+  cfg.listeners.value()[0].quic = std::optional<ParsedQuicConfig>{std::move(perListenerQuic)};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  const auto& quic = result.value().config.listeners[0].quic;
+  EXPECT_EQ(quic.maxBidiStreams, 512u);
+  EXPECT_EQ(quic.maxData, 67108864u); // struct default
+}
+
+TEST(ResolveConfig, QuicConnFcLessThanStreamFcIsError) {
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedQuicConfig quicCfg;
+  quicCfg.max_data = std::optional<uint64_t>{1000};
+  quicCfg.max_stream_data = std::optional<uint64_t>{2000};
+  cfg.listeners.value()[0].quic = std::optional<ParsedQuicConfig>{std::move(quicCfg)};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("max_data"));
+  EXPECT_THAT(result.error(), HasSubstr("max_stream_data"));
+}
+
+TEST(ResolveConfig, QuicLowUniStreamsWarning) {
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedQuicConfig quicCfg;
+  quicCfg.max_uni_streams = std::optional<uint64_t>{10};
+  cfg.listeners.value()[0].quic = std::optional<ParsedQuicConfig>{std::move(quicCfg)};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  ASSERT_FALSE(result.value().warnings.empty());
+  EXPECT_THAT(result.value().warnings[0], HasSubstr("max_uni_streams"));
+}
+
+TEST(ResolveConfig, QuicLowBidiStreamsWarning) {
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedQuicConfig quicCfg;
+  quicCfg.max_bidi_streams = std::optional<uint64_t>{5};
+  cfg.listeners.value()[0].quic = std::optional<ParsedQuicConfig>{std::move(quicCfg)};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  ASSERT_FALSE(result.value().warnings.empty());
+  EXPECT_THAT(result.value().warnings[0], HasSubstr("max_bidi_streams"));
+}
+
+TEST(ResolveConfig, QuicValidationUseMergedValues) {
+  // max_data set in listener_defaults, max_stream_data overridden per-listener to exceed it
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedQuicConfig defaults;
+  defaults.max_data = std::optional<uint64_t>{4096};
+  ParsedListenerDefaultsConfig ld;
+  ld.quic = std::optional<ParsedQuicConfig>{std::move(defaults)};
+  cfg.listener_defaults = std::optional<ParsedListenerDefaultsConfig>{std::move(ld)};
+
+  ParsedQuicConfig perListener;
+  perListener.max_stream_data = std::optional<uint64_t>{8192}; // exceeds max_data from defaults
+  cfg.listeners.value()[0].quic = std::optional<ParsedQuicConfig>{std::move(perListener)};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("max_data"));
+}
+
+TEST(ResolveConfig, QuicIdleTimeoutLowWarning) {
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedQuicConfig quicCfg;
+  quicCfg.idle_timeout_ms = std::optional<uint64_t>{1000};
+  cfg.listeners.value()[0].quic = std::optional<ParsedQuicConfig>{std::move(quicCfg)};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  ASSERT_FALSE(result.value().warnings.empty());
+  EXPECT_THAT(result.value().warnings[0], HasSubstr("idle_timeout_ms"));
+}
+
+TEST(ResolveConfig, QuicMaxAckDelayLessThanMinIsError) {
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedQuicConfig quicCfg;
+  quicCfg.max_ack_delay_us = std::optional<uint32_t>{500};
+  quicCfg.min_ack_delay_us = std::optional<uint32_t>{1000};
+  cfg.listeners.value()[0].quic = std::optional<ParsedQuicConfig>{std::move(quicCfg)};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("max_ack_delay_us"));
+  EXPECT_THAT(result.error(), HasSubstr("min_ack_delay_us"));
+}
+
+TEST(ResolveConfig, QuicUnknownCcAlgoIsError) {
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedQuicConfig quicCfg;
+  quicCfg.cc_algo = std::optional<std::string>{"notanalgo"};
+  cfg.listeners.value()[0].quic = std::optional<ParsedQuicConfig>{std::move(quicCfg)};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("cc_algo"));
+  EXPECT_THAT(result.error(), HasSubstr("notanalgo"));
+}
+
+TEST(ResolveConfig, QuicCcAlgoPicoOnlyRejectedByMvfst) {
+  // dcubic is pico-only; rejected on mvfst (default stack), accepted on picoquic
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedQuicConfig quicCfg;
+  quicCfg.cc_algo = std::optional<std::string>{"dcubic"};
+  cfg.listeners.value()[0].quic = std::optional<ParsedQuicConfig>{quicCfg};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("cc_algo"));
+  EXPECT_THAT(result.error(), HasSubstr("dcubic"));
+
+  cfg.listeners.value()[0].quic_stack = std::optional<std::string>{"picoquic"};
+  cfg.listeners.value()[0].tls.value().insecure = false;
+  cfg.listeners.value()[0].tls.value().cert_file = std::optional<std::string>{"cert.pem"};
+  cfg.listeners.value()[0].tls.value().key_file = std::optional<std::string>{"key.pem"};
+  auto result2 = resolveConfig(cfg);
+  ASSERT_TRUE(result2.hasValue());
+  EXPECT_EQ(result2.value().config.listeners[0].quic.ccAlgo, "dcubic");
+}
+
+TEST(ResolveConfig, QuicCcAlgoMvfstOnlyRejectedByPico) {
+  // bbr2 is mvfst-only; rejected on picoquic, accepted on mvfst (default stack)
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedQuicConfig quicCfg;
+  quicCfg.cc_algo = std::optional<std::string>{"bbr2"};
+  cfg.listeners.value()[0].quic = std::optional<ParsedQuicConfig>{quicCfg};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  EXPECT_EQ(result.value().config.listeners[0].quic.ccAlgo, "bbr2");
+
+  cfg.listeners.value()[0].quic_stack = std::optional<std::string>{"picoquic"};
+  cfg.listeners.value()[0].tls.value().insecure = false;
+  cfg.listeners.value()[0].tls.value().cert_file = std::optional<std::string>{"cert.pem"};
+  cfg.listeners.value()[0].tls.value().key_file = std::optional<std::string>{"key.pem"};
+  cfg.listeners.value()[0].quic = std::optional<ParsedQuicConfig>{quicCfg};
+  auto result2 = resolveConfig(cfg);
+  ASSERT_TRUE(result2.hasError());
+  EXPECT_THAT(result2.error(), HasSubstr("cc_algo"));
+  EXPECT_THAT(result2.error(), HasSubstr("bbr2"));
+}
+
+TEST(ResolveConfig, QuicCcAlgoRoundTrips) {
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedQuicConfig quicCfg;
+  quicCfg.cc_algo = std::optional<std::string>{"cubic"};
+  cfg.listeners.value()[0].quic = std::optional<ParsedQuicConfig>{std::move(quicCfg)};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  EXPECT_EQ(result.value().config.listeners[0].quic.ccAlgo, "cubic");
+}
+
+// --- Pico WebTransport path validation tests ---
+
+// Helper: make a minimal pico listener config (TLS required for picoquic).
+ParsedConfig makeMinimalPicoConfig() {
+  auto cfg = makeMinimalInsecureConfig();
+  auto& lc = cfg.listeners.value()[0];
+  lc.quic_stack = std::optional<std::string>{"picoquic"};
+  lc.tls.value().insecure = false;
+  lc.tls.value().cert_file = std::optional<std::string>{"cert.pem"};
+  lc.tls.value().key_file = std::optional<std::string>{"key.pem"};
+  return cfg;
+}
+
+TEST(ResolveConfig, PicoPrefixPathServiceWarning) {
+  // The default service uses only a prefix path — pico warns about the prefix
+  // rule AND about having no exact-path endpoints registered.
+  auto cfg = makeMinimalPicoConfig();
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  const auto& warnings = result.value().warnings;
+  EXPECT_THAT(warnings, ::testing::Contains(HasSubstr("prefix path")));
+  EXPECT_THAT(warnings, ::testing::Contains(HasSubstr("no WebTransport endpoints")));
+}
+
+TEST(ResolveConfig, PicoNoExactPathsWarning) {
+  // A pico listener with no services at all that have exact paths should warn
+  // that no WT endpoints will be registered.
+  auto cfg = makeMinimalPicoConfig();
+  // Replace default service with one that has only a prefix path.
+  cfg.services.value().clear();
+  ParsedServiceConfig svc;
+  ParsedServiceConfig::MatchRule entry;
+  entry.authority = AuthMatch{ParsedServiceConfig::MatchRule::AnyAuthority{true}};
+  entry.path = PMatch{ParsedServiceConfig::MatchRule::PrefixPath{"/"}};
+  svc.match.value().push_back(std::move(entry));
+  svc.cache = makeDefaultCache();
+  cfg.services.value().emplace("prefix-only-svc", std::move(svc));
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  EXPECT_THAT(result.value().warnings, ::testing::Contains(HasSubstr("no WebTransport endpoints")));
+}
+
+TEST(ResolveConfig, PicoExactPathServiceNoWarning) {
+  auto cfg = makeMinimalPicoConfig();
+  // Replace the default prefix-path service with an exact-path one.
+  cfg.services.value().clear();
+  ParsedServiceConfig svc;
+  ParsedServiceConfig::MatchRule entry;
+  entry.authority = AuthMatch{ParsedServiceConfig::MatchRule::AnyAuthority{true}};
+  entry.path = PMatch{ParsedServiceConfig::MatchRule::ExactPath{"/moq-relay"}};
+  svc.match.value().push_back(std::move(entry));
+  svc.cache = makeDefaultCache();
+  cfg.services.value().emplace("exact-svc", std::move(svc));
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  // No pico path warnings
+  for (const auto& w : result.value().warnings) {
+    EXPECT_THAT(w, ::testing::Not(HasSubstr("Picoquic listener")));
+  }
+}
+
+TEST(ResolveConfig, MvfstPrefixPathServiceNoWarning) {
+  // Prefix paths on mvfst listeners are fine — no pico warning.
+  auto cfg = makeMinimalInsecureConfig(); // default stack = mvfst
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  for (const auto& w : result.value().warnings) {
+    EXPECT_THAT(w, ::testing::Not(HasSubstr("Picoquic listener")));
+  }
 }
 
 } // namespace

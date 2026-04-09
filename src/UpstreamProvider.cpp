@@ -4,8 +4,8 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+#include "UpstreamProvider.h"
 #include <folly/coro/Timeout.h>
-#include <moqx/UpstreamProvider.h>
 #include <moxygen/MoQFilters.h>
 #include <moxygen/MoQRelaySession.h>
 #include <moxygen/MoQVersions.h>

@@ -8,8 +8,8 @@
 
 #pragma once
 
+#include "UpstreamProvider.h"
 #include <folly/coro/SharedPromise.h>
-#include <moqx/UpstreamProvider.h>
 #include <moxygen/MoQSession.h>
 #include <moxygen/relay/MoQCache.h>
 #include <moxygen/relay/MoQForwarder.h>

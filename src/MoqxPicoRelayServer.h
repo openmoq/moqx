@@ -2,9 +2,10 @@
 
 #include <memory>
 
+#include "MoqxRelayContext.h"
+#include "config/config.h"
+#include "stats/StatsRegistry.h"
 #include <folly/executors/IOThreadPoolExecutor.h>
-#include <moqx/MoqxRelayContext.h>
-#include <moqx/config/config.h>
 #include <moxygen/events/MoQExecutor.h>
 #include <moxygen/openmoq/transport/pico/MoQPicoQuicEventBaseServer.h>
 #include <proxygen/lib/http/webtransport/WebTransport.h>
@@ -25,6 +26,8 @@ public:
   );
 
   ~MoqxPicoRelayServer() override;
+
+  void setStatsRegistry(std::shared_ptr<stats::StatsRegistry> registry);
 
   // Preferred entry point: binds the address from the stored ListenerConfig.
   void start();
@@ -51,6 +54,7 @@ protected:
 private:
   config::ListenerConfig listenerCfg_;
   std::shared_ptr<MoqxRelayContext> context_;
+  folly::EventBase* evb_;
 };
 
 } // namespace openmoq::moqx

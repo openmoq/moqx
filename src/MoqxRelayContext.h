@@ -3,12 +3,12 @@
 #include <memory>
 #include <string_view>
 
-#include <moqx/MoqxRelay.h>
-#include <moqx/ServiceMatcher.h>
-#include <moqx/UpstreamProvider.h>
-#include <moqx/config/config.h>
-#include <moqx/stats/MoQStatsCollector.h>
-#include <moqx/stats/StatsRegistry.h>
+#include "MoqxRelay.h"
+#include "ServiceMatcher.h"
+#include "UpstreamProvider.h"
+#include "config/config.h"
+#include "stats/MoQStatsCollector.h"
+#include "stats/StatsRegistry.h"
 #include <moxygen/MoQServerBase.h>
 #include <moxygen/MoQSession.h>
 
@@ -52,6 +52,9 @@ public:
   // Pass an empty serviceName to clear all services.
   // Returns the number of caches cleared (0 if a named service was not found).
   size_t clearCaches(std::string_view serviceName = {});
+  // Returns the unique set of exact paths registered across all services.
+  // Used by pico listeners to populate the h3zero WebTransport path table.
+  std::vector<std::string> getExactServicePaths() const;
 
   // --- Delegation targets for MoqxRelayServer virtual overrides ---
 

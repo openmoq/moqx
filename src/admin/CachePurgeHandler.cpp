@@ -1,12 +1,12 @@
-#include <moqx/admin/CachePurgeHandler.h>
+#include "admin/CachePurgeHandler.h"
 
 #include <folly/CancellationToken.h>
 #include <folly/io/IOBuf.h>
 #include <proxygen/httpserver/ResponseBuilder.h>
 #include <proxygen/lib/http/HTTPMessage.h>
 
-#include <moqx/MoqxRelayContext.h>
-#include <moqx/admin/AdminServer.h>
+#include "MoqxRelayContext.h"
+#include "admin/AdminServer.h"
 
 namespace openmoq::moqx::admin {
 

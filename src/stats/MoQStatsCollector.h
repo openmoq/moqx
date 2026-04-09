@@ -8,8 +8,8 @@
 #include <folly/executors/SequencedExecutor.h>
 #include <moxygen/stats/MoQStats.h>
 
-#include <moqx/stats/BoundedHistogram.h>
-#include <moqx/stats/StatsRegistry.h>
+#include "stats/BoundedHistogram.h"
+#include "stats/StatsRegistry.h"
 
 namespace openmoq::moqx::stats {
 

@@ -1,5 +1,5 @@
-#include <moqx/MoqxRelayContext.h>
-#include <moqx/stats/MoQStatsCollector.h>
+#include "MoqxRelayContext.h"
+#include "stats/MoQStatsCollector.h"
 #include <moxygen/events/MoQFollyExecutorImpl.h>
 #include <moxygen/util/InsecureVerifierDangerousDoNotUseInProduction.h>
 
@@ -155,6 +155,10 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayContext::validateAu
   session->setPublishHandler(it->second.relay);
   session->setSubscribeHandler(it->second.relay);
   return folly::unit;
+}
+
+std::vector<std::string> MoqxRelayContext::getExactServicePaths() const {
+  return serviceMatcher_.allExactPaths();
 }
 
 } // namespace openmoq::moqx

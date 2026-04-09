@@ -1,7 +1,7 @@
-#include "moqx/config/loader/config_init.h"
+#include "config/loader/config_init.h"
 
-#include "moqx/config/loader/config_resolver.h"
-#include "moqx/config/loader/loader.h"
+#include "config/loader/config_resolver.h"
+#include "config/loader/loader.h"
 
 #include <gflags/gflags.h>
 

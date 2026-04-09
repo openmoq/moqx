@@ -1,6 +1,6 @@
 #pragma once
 
-#include <moqx/config/config.h>
+#include "config/config.h"
 
 #include <optional>
 #include <string>
@@ -19,6 +19,10 @@ public:
   // Priority: exact authority > wildcard authority > any authority.
   // Within each authority tier: exact path > longest prefix > any path.
   std::optional<std::string_view> match(std::string_view authority, std::string_view path) const;
+
+  // Returns the unique set of exact paths registered across all services and
+  // authority tiers. Used by pico listeners to populate h3zero's WT path table.
+  std::vector<std::string> allExactPaths() const;
 
 private:
   struct PathRuleSet {

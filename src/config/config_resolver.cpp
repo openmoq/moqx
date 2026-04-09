@@ -1,4 +1,4 @@
-#include "moqx/config/loader/config_resolver.h"
+#include "config/loader/config_resolver.h"
 
 #include <iomanip>
 #include <random>
@@ -11,6 +11,9 @@
 namespace openmoq::moqx::config {
 
 namespace {
+
+constexpr const char* kStackMvfst = "mvfst";
+constexpr const char* kStackPicoquic = "picoquic";
 
 // Format a label for error messages: "Service 'name' match[j]"
 std::string matchRuleErrorLabel(const std::string& name, size_t j) {
@@ -135,13 +138,13 @@ void validateListener(
 
   // quic_stack validation
   const auto& stackOpt = listener.quic_stack.value();
-  if (stackOpt.has_value() && *stackOpt != "mvfst" && *stackOpt != "picoquic") {
+  if (stackOpt.has_value() && *stackOpt != kStackMvfst && *stackOpt != kStackPicoquic) {
     errors.push_back(
         "Listener '" + listener.name.value() + "': unknown quic_stack '" + *stackOpt +
         "' (expected \"mvfst\" or \"picoquic\")"
     );
   }
-  if (stackOpt.value_or("mvfst") == "picoquic" && listener.tls.value().insecure.value()) {
+  if (stackOpt.value_or(kStackMvfst) == kStackPicoquic && listener.tls.value().insecure.value()) {
     errors.push_back(
         "Listener '" + listener.name.value() +
         "': quic_stack \"picoquic\" requires real TLS credentials (insecure: true is not supported)"
@@ -360,7 +363,141 @@ std::string generateRelayID() {
 
 // --- Resolution helpers ---
 
-ListenerConfig resolveListener(const ParsedListenerConfig& listener) {
+// Apply parsed quic fields onto a QuicConfig, field by field.
+void applyQuicOverride(QuicConfig& base, const ParsedQuicConfig& overlay) {
+  if (auto v = overlay.max_data.value())
+    base.maxData = *v;
+  if (auto v = overlay.max_stream_data.value())
+    base.maxStreamData = *v;
+  if (auto v = overlay.max_uni_streams.value())
+    base.maxUniStreams = *v;
+  if (auto v = overlay.max_bidi_streams.value())
+    base.maxBidiStreams = *v;
+  if (auto v = overlay.idle_timeout_ms.value())
+    base.idleTimeoutMs = *v;
+  if (auto v = overlay.max_ack_delay_us.value())
+    base.maxAckDelayUs = *v;
+  if (auto v = overlay.min_ack_delay_us.value())
+    base.minAckDelayUs = *v;
+  if (auto v = overlay.default_stream_priority.value())
+    base.defaultStreamPriority = *v;
+  if (auto v = overlay.default_datagram_priority.value())
+    base.defaultDatagramPriority = *v;
+  if (auto v = overlay.cc_algo.value())
+    base.ccAlgo = *v;
+}
+
+// Merge listener_defaults.quic and per-listener quic override into a resolved QuicConfig.
+QuicConfig mergeQuicConfig(
+    const std::optional<ParsedQuicConfig>& defaults,
+    const std::optional<ParsedQuicConfig>& perListener
+) {
+  QuicConfig result; // starts with C++ struct defaults
+  if (defaults)
+    applyQuicOverride(result, *defaults);
+  if (perListener)
+    applyQuicOverride(result, *perListener);
+  return result;
+}
+
+void validateQuicConfig(
+    const QuicConfig& quic,
+    QuicStack stack,
+    const std::string& context,
+    std::vector<std::string>& errors,
+    std::vector<std::string>& warnings
+) {
+  if (quic.maxData < quic.maxStreamData) {
+    errors.push_back(
+        context + " quic: max_data (" + std::to_string(quic.maxData) +
+        ") must be >= max_stream_data (" + std::to_string(quic.maxStreamData) + ")"
+    );
+  }
+  if (quic.maxUniStreams < 100) {
+    warnings.push_back(
+        context + " quic: max_uni_streams (" + std::to_string(quic.maxUniStreams) +
+        ") is very low (< 100); this may limit throughput"
+    );
+  }
+  if (quic.maxBidiStreams < 16) {
+    warnings.push_back(
+        context + " quic: max_bidi_streams (" + std::to_string(quic.maxBidiStreams) +
+        ") is very low (< 16)"
+    );
+  }
+  if (quic.idleTimeoutMs < 5000) {
+    warnings.push_back(
+        context + " quic: idle_timeout_ms (" + std::to_string(quic.idleTimeoutMs) +
+        ") is very aggressive (< 5000ms)"
+    );
+  }
+  if (quic.maxAckDelayUs < quic.minAckDelayUs) {
+    errors.push_back(
+        context + " quic: max_ack_delay_us (" + std::to_string(quic.maxAckDelayUs) +
+        ") must be >= min_ack_delay_us (" + std::to_string(quic.minAckDelayUs) + ")"
+    );
+  }
+  // (excluded: mvfst "custom"/"staticcwnd" require programmatic setup; "none" disables CC)
+  static const std::unordered_set<std::string> kPicoCcAlgos =
+      {"bbr", "bbr1", "c4", "cubic", "dcubic", "fast", "newreno", "prague", "reno"};
+  static const std::unordered_set<std::string> kMvfstCcAlgos =
+      {"bbr", "bbr2", "bbr2modular", "copa", "cubic", "newreno"};
+  const auto& validAlgos = (stack == QuicStack::Picoquic) ? kPicoCcAlgos : kMvfstCcAlgos;
+  const auto& validList = (stack == QuicStack::Picoquic)
+                              ? "bbr, bbr1, c4, cubic, dcubic, fast, newreno, prague, reno"
+                              : "bbr, bbr2, bbr2modular, copa, cubic, newreno";
+  if (!validAlgos.count(quic.ccAlgo)) {
+    errors.push_back(
+        context + " quic: cc_algo '" + quic.ccAlgo +
+        "' is not valid for this stack"
+        " (valid: " +
+        validList + ")"
+    );
+  }
+}
+
+// For pico listeners, h3zero routes WebTransport CONNECT by prefix-up-to-'?'
+// path matching. Only exact service paths can be registered as WT endpoints;
+// prefix-path service rules will not route any pico connections.
+// Warnings are emitted once, naming all affected pico listeners, since services
+// are shared across all listeners.
+void validatePicoServicePaths(
+    const std::map<std::string, ParsedServiceConfig>& services,
+    const std::vector<std::string>& picoListenerNames,
+    std::vector<std::string>& warnings
+) {
+  auto listenerLabel = "Picoquic listener" + std::string(picoListenerNames.size() > 1 ? "s" : "") +
+                       " '" + folly::join("', '", picoListenerNames) + "'";
+
+  size_t exactPathCount = 0;
+  for (const auto& [svcName, svc] : services) {
+    const auto& matchRules = svc.match.value();
+    for (size_t j = 0; j < matchRules.size(); ++j) {
+      matchRules[j].path.value().visit([&](const auto& alt) {
+        using P = std::decay_t<decltype(alt)>;
+        if constexpr (std::is_same_v<P, ParsedServiceConfig::MatchRule::PrefixPath>) {
+          warnings.push_back(
+              listenerLabel + ": service '" + svcName + "' match[" + std::to_string(j) +
+              "] has prefix path '" + alt.prefix.value() +
+              "' — pico listeners only support exact path routing; "
+              "clients using this prefix may fail to connect."
+          );
+        } else {
+          ++exactPathCount;
+        }
+      });
+    }
+  }
+  if (exactPathCount == 0) {
+    warnings.push_back(
+        listenerLabel +
+        ": no exact-path service match rules found — "
+        "no WebTransport endpoints will be registered and all client connections will be rejected."
+    );
+  }
+}
+
+ListenerConfig resolveListener(const ParsedListenerConfig& listener, const QuicConfig& quic) {
   const auto& sock = listener.udp.value().socket.value();
   const auto& tls = listener.tls.value();
 
@@ -371,8 +508,8 @@ ListenerConfig resolveListener(const ParsedListenerConfig& listener) {
     tlsMode = resolveTlsConfig(tls);
   }
 
-  const auto& stackStr = listener.quic_stack.value().value_or("mvfst");
-  auto quicStack = (stackStr == "picoquic") ? QuicStack::Picoquic : QuicStack::Mvfst;
+  const auto& stackStr = listener.quic_stack.value().value_or(kStackMvfst);
+  auto quicStack = (stackStr == kStackPicoquic) ? QuicStack::Picoquic : QuicStack::Mvfst;
 
   return ListenerConfig{
       .name = listener.name.value(),
@@ -381,6 +518,7 @@ ListenerConfig resolveListener(const ParsedListenerConfig& listener) {
       .endpoint = listener.endpoint.value(),
       .moqtVersions = moqtVersionsToString(listener),
       .quicStack = quicStack,
+      .quic = quic,
   };
 }
 
@@ -442,6 +580,13 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
     return folly::makeUnexpected(std::string("At least one listener is required"));
   }
 
+  // Extract listener_defaults.quic for use in per-listener merge
+  std::optional<ParsedQuicConfig> quicDefaults;
+  if (auto ld = config.listener_defaults.value()) {
+    quicDefaults = ld->quic.value();
+  }
+
+  std::vector<QuicConfig> mergedQuicConfigs;
   {
     std::unordered_set<std::string> listenerAddrs;
     for (const auto& listener : config.listeners.value()) {
@@ -451,6 +596,25 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
       if (!listenerAddrs.insert(addr).second) {
         errors.push_back("Duplicate listener address: " + addr);
       }
+      auto quic = mergeQuicConfig(quicDefaults, listener.quic.value());
+      const auto stackStr = listener.quic_stack.value().value_or(kStackMvfst);
+      const auto stack = (stackStr == kStackPicoquic) ? QuicStack::Picoquic : QuicStack::Mvfst;
+      validateQuicConfig(quic, stack, "Listener '" + listener.name.value() + "'", errors, warnings);
+      mergedQuicConfigs.push_back(quic);
+    }
+  }
+
+  // === Validate pico listeners against service paths ===
+  // Services are shared, so warnings are emitted once naming all pico listeners.
+  {
+    std::vector<std::string> picoListenerNames;
+    for (const auto& listener : config.listeners.value()) {
+      if (listener.quic_stack.value().value_or(kStackMvfst) == kStackPicoquic) {
+        picoListenerNames.push_back(listener.name.value());
+      }
+    }
+    if (!picoListenerNames.empty()) {
+      validatePicoServicePaths(config.services.value(), picoListenerNames, warnings);
     }
   }
 
@@ -517,8 +681,9 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
                   [&] {
                     std::vector<ListenerConfig> v;
                     v.reserve(config.listeners.value().size());
-                    for (const auto& l : config.listeners.value()) {
-                      v.push_back(resolveListener(l));
+                    const auto& listeners = config.listeners.value();
+                    for (size_t i = 0; i < listeners.size(); ++i) {
+                      v.push_back(resolveListener(listeners[i], mergedQuicConfigs[i]));
                     }
                     return v;
                   }(),

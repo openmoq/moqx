@@ -3,7 +3,7 @@
 #include <string>
 #include <vector>
 
-#include "moqx/config/config.h"
+#include "config/config.h"
 
 namespace openmoq::moqx::config {
 

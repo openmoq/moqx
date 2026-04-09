@@ -2,7 +2,7 @@
 
 #include <string>
 
-#include "moqx/config/loader/parsed_config.h"
+#include "config/loader/parsed_config.h"
 
 namespace openmoq::moqx::config {
 

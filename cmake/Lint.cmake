@@ -4,14 +4,14 @@ find_program(CLANG_TIDY clang-tidy)
 
 file(GLOB_RECURSE MOQX_LINT_SOURCES
   CONFIGURE_DEPENDS
-  ${PROJECT_SOURCE_DIR}/include/*.h
-  ${PROJECT_SOURCE_DIR}/include/*.hpp
+  ${PROJECT_SOURCE_DIR}/src/*.h
+  ${PROJECT_SOURCE_DIR}/src/*.hpp
   ${PROJECT_SOURCE_DIR}/src/*.cc
   ${PROJECT_SOURCE_DIR}/src/*.cpp
   ${PROJECT_SOURCE_DIR}/src/*.cxx
-  ${PROJECT_SOURCE_DIR}/tests/*.cc
-  ${PROJECT_SOURCE_DIR}/tests/*.cpp
-  ${PROJECT_SOURCE_DIR}/tests/*.cxx
+  ${PROJECT_SOURCE_DIR}/test/*.cc
+  ${PROJECT_SOURCE_DIR}/test/*.cpp
+  ${PROJECT_SOURCE_DIR}/test/*.cxx
   ${PROJECT_SOURCE_DIR}/tools/*.cc
   ${PROJECT_SOURCE_DIR}/tools/*.cpp
   ${PROJECT_SOURCE_DIR}/tools/*.cxx
