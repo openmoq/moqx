@@ -314,8 +314,8 @@ class TrackFilterLoadTest : public std::enable_shared_from_this<TrackFilterLoadT
     std::cout << "Duration: " << FLAGS_duration << "s\n\n";
 
     try {
-      // Phase 1: Connect panelists
-      std::cout << "Phase 1: Connecting " << FLAGS_panelists << " panelists...\n";
+      // Connect panelists
+      std::cout << "[1/4] Connecting " << FLAGS_panelists << " panelists...\n";
       for (int i = 0; i < FLAGS_panelists; ++i) {
         if (co_await connectPanelist(i)) {
           metrics_.panelistsConnected++;
@@ -327,8 +327,8 @@ class TrackFilterLoadTest : public std::enable_shared_from_this<TrackFilterLoadT
         }
       }
 
-      // Phase 2: Connect subscribers in batches
-      std::cout << "\nPhase 2: Connecting " << FLAGS_subscribers << " subscribers...\n";
+      // Connect subscribers in batches
+      std::cout << "\n[2/4] Connecting " << FLAGS_subscribers << " subscribers...\n";
       for (int batch = 0; batch < FLAGS_subscribers; batch += FLAGS_batch_size) {
         int batchEnd = std::min(batch + FLAGS_batch_size, FLAGS_subscribers);
         std::vector<folly::coro::Task<bool>> tasks;
@@ -357,14 +357,14 @@ class TrackFilterLoadTest : public std::enable_shared_from_this<TrackFilterLoadT
         co_return;
       }
 
-      // Phase 3: Run publishing loop
-      std::cout << "\nPhase 3: Running test for " << FLAGS_duration << " seconds...\n";
+      // Run publishing loop
+      std::cout << "\n[3/4] Running test for " << FLAGS_duration << " seconds...\n";
       co_await runPublisherLoop(seconds(FLAGS_duration));
 
       metrics_.testEnd = steady_clock::now();
 
-      // Phase 4: Cleanup
-      std::cout << "\nPhase 4: Cleaning up...\n";
+      // Cleanup
+      std::cout << "\n[4/4] Cleaning up...\n";
       cleanup();
 
     } catch (const std::exception& ex) {

@@ -471,7 +471,7 @@ TEST_F(MoqxTrackFilterTest, DynamicPropertyValueChanges) {
   ASSERT_NE(subHandle, nullptr);
 
   // Initial state: Alice loud, Bob medium, Charlie quiet
-  XLOG(INFO) << "--- Phase 1: Initial publish (Alice=90, Bob=50, Charlie=30) ---";
+  XLOG(INFO) << "--- Initial publish (Alice=90, Bob=50, Charlie=30) ---";
   publishTrackWithConsumer(alice, "alice-audio", 90);
   publishTrackWithConsumer(bob, "bob-audio", 50);
   publishTrackWithConsumer(charlie, "charlie-audio", 30);
@@ -480,16 +480,16 @@ TEST_F(MoqxTrackFilterTest, DynamicPropertyValueChanges) {
   // Expected top-2: alice, bob
   XLOG(INFO) << "Expected selection: alice-audio, bob-audio";
 
-  // Phase 2: Charlie starts speaking louder than Alice!
-  XLOG(INFO) << "--- Phase 2: Charlie speaks up (Charlie=100) ---";
+  // Charlie starts speaking louder than Alice!
+  XLOG(INFO) << "--- Charlie speaks up (Charlie=100) ---";
   sendObjectWithProperty("charlie-audio", 1, 0, 100);
   exec_->driveFor(20);
 
   // Expected top-2: charlie, alice (bob demoted)
   XLOG(INFO) << "Expected selection: charlie-audio, alice-audio";
 
-  // Phase 3: Alice goes quiet, Bob speaks up
-  XLOG(INFO) << "--- Phase 3: Alice quiet (10), Bob loud (95) ---";
+  // Alice goes quiet, Bob speaks up
+  XLOG(INFO) << "--- Alice quiet (10), Bob loud (95) ---";
   sendObjectWithProperty("alice-audio", 1, 1, 10);
   sendObjectWithProperty("bob-audio", 1, 0, 95);
   exec_->driveFor(20);
@@ -518,7 +518,7 @@ TEST_F(MoqxTrackFilterTest, PublisherLeavesRankingAdjusts) {
   ASSERT_NE(subHandle, nullptr);
 
   // Initial: track1=100, track2=80, track3=60, track4=40
-  XLOG(INFO) << "--- Phase 1: Initial (track1=100, track2=80, track3=60, track4=40) ---";
+  XLOG(INFO) << "--- Initial (track1=100, track2=80, track3=60, track4=40) ---";
   publishTrackWithConsumer(pub1, "track1", 100);
   publishTrackWithConsumer(pub2, "track2", 80);
   publishTrackWithConsumer(pub3, "track3", 60);
@@ -528,16 +528,16 @@ TEST_F(MoqxTrackFilterTest, PublisherLeavesRankingAdjusts) {
   // Expected top-2: track1, track2
   XLOG(INFO) << "Expected selection: track1, track2";
 
-  // Phase 2: track1 publisher leaves
-  XLOG(INFO) << "--- Phase 2: track1 publisher leaves ---";
+  // track1 publisher leaves
+  XLOG(INFO) << "--- track1 publisher leaves ---";
   publisherLeaves("track1");
   exec_->driveFor(20);
 
   // Expected top-2: track2, track3 (track3 promoted)
   XLOG(INFO) << "Expected selection: track2, track3 (track3 promoted)";
 
-  // Phase 3: track2 publisher also leaves
-  XLOG(INFO) << "--- Phase 3: track2 publisher also leaves ---";
+  // track2 publisher also leaves
+  XLOG(INFO) << "--- track2 publisher also leaves ---";
   publisherLeaves("track2");
   exec_->driveFor(20);
 
@@ -563,7 +563,7 @@ TEST_F(MoqxTrackFilterTest, NewPublisherJoinsMidSession) {
   ASSERT_NE(subHandle, nullptr);
 
   // Initial: only 2 tracks
-  XLOG(INFO) << "--- Phase 1: Initial (track1=80, track2=60) ---";
+  XLOG(INFO) << "--- Initial (track1=80, track2=60) ---";
   publishTrackWithConsumer(pub1, "track1", 80);
   publishTrackWithConsumer(pub2, "track2", 60);
   exec_->driveFor(20);
@@ -571,8 +571,8 @@ TEST_F(MoqxTrackFilterTest, NewPublisherJoinsMidSession) {
   // Expected top-2: track1, track2 (both selected, only 2 exist)
   XLOG(INFO) << "Expected selection: track1, track2";
 
-  // Phase 2: New loud publisher joins
-  XLOG(INFO) << "--- Phase 2: New publisher joins (track3=100) ---";
+  // New loud publisher joins
+  XLOG(INFO) << "--- New publisher joins (track3=100) ---";
   auto pub3 = createMockSession("pub3");
   publishTrackWithConsumer(pub3, "track3", 100);
   exec_->driveFor(20);
@@ -580,8 +580,8 @@ TEST_F(MoqxTrackFilterTest, NewPublisherJoinsMidSession) {
   // Expected top-2: track3, track1 (track2 demoted)
   XLOG(INFO) << "Expected selection: track3, track1 (track2 demoted)";
 
-  // Phase 3: Another new publisher joins but quiet
-  XLOG(INFO) << "--- Phase 3: Quiet publisher joins (track4=20) ---";
+  // Another new publisher joins but quiet
+  XLOG(INFO) << "--- Quiet publisher joins (track4=20) ---";
   auto pub4 = createMockSession("pub4");
   publishTrackWithConsumer(pub4, "track4", 20);
   exec_->driveFor(20);
@@ -589,8 +589,8 @@ TEST_F(MoqxTrackFilterTest, NewPublisherJoinsMidSession) {
   // Expected top-2: still track3, track1 (track4 too quiet)
   XLOG(INFO) << "Expected selection: track3, track1 (no change)";
 
-  // Phase 4: Another loud publisher joins
-  XLOG(INFO) << "--- Phase 4: Another loud publisher joins (track5=95) ---";
+  // Another loud publisher joins
+  XLOG(INFO) << "--- Another loud publisher joins (track5=95) ---";
   auto pub5 = createMockSession("pub5");
   publishTrackWithConsumer(pub5, "track5", 95);
   exec_->driveFor(20);
