@@ -18,14 +18,14 @@ namespace openmoq::moqx {
 // Must fit in a QUIC variable-length integer (top 2 bits must be 00, i.e. < 2^62).
 static constexpr uint64_t kRelayAuthTokenType = 0x1B2C'3D4E'5F6A'7B8CULL;
 
-bool isPeerSubNs(const SubscribeNamespace& subNs) {
+std::optional<std::string> getPeerRelayID(const SubscribeNamespace& subNs) {
   const uint64_t authKey = static_cast<uint64_t>(TrackRequestParamKey::AUTHORIZATION_TOKEN);
   for (const auto& param : subNs.params) {
     if (param.key == authKey && param.asAuthToken.tokenType == kRelayAuthTokenType) {
-      return true;
+      return param.asAuthToken.tokenValue;
     }
   }
-  return false;
+  return std::nullopt;
 }
 
 SubscribeNamespace makePeerSubNs(std::optional<std::string> relayID) {

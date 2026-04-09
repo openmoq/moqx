@@ -114,6 +114,46 @@ wait_ready() {
   done
 }
 
+# check_state <admin_port> <expected_relay_id> <label>: fetch /state, validate JSON
+# structure, and echo a summary line.  Exits 1 on failure.
+check_state() {
+  local port="$1" expected_id="$2" label="$3"
+  local url="http://localhost:$port/state"
+  local http_code response
+  response=$(curl -sf --write-out '\n%{http_code}' "$url" 2>/dev/null) || {
+    echo "FAIL [$label /state]: curl failed" >&2; return 1;
+  }
+  http_code=$(printf '%s' "$response" | tail -1)
+  response=$(printf '%s' "$response" | head -n -1)
+  if [[ "$http_code" != "200" ]]; then
+    echo "FAIL [$label /state]: HTTP $http_code" >&2; return 1;
+  fi
+  if ! printf '%s' "$response" | jq . >/dev/null 2>&1; then
+    echo "FAIL [$label /state]: not valid JSON" >&2
+    printf '%s\n' "$response" >&2; return 1;
+  fi
+  local relay_id
+  relay_id=$(printf '%s' "$response" | jq -r '.relay_id')
+  if [[ "$relay_id" != "$expected_id" ]]; then
+    echo "FAIL [$label /state]: relay_id=$relay_id, want $expected_id" >&2; return 1;
+  fi
+  for field in downstream_peers subscriptions; do
+    local t
+    t=$(printf '%s' "$response" | jq -r ".services.default.${field} | type")
+    if [[ "$t" != "array" ]]; then
+      echo "FAIL [$label /state]: services.default.$field is $t, want array" >&2; return 1;
+    fi
+  done
+  local tree_type
+  tree_type=$(printf '%s' "$response" | jq -r '.services.default.namespace_tree | type')
+  if [[ "$tree_type" != "object" ]]; then
+    echo "FAIL [$label /state]: namespace_tree is $tree_type, want object" >&2; return 1;
+  fi
+  local sessions
+  sessions=$(printf '%s' "$response" | jq '.active_sessions')
+  echo "PASS [$label /state]: relay_id=$relay_id active_sessions=$sessions"
+}
+
 # wait_sessions <admin_port> <min> <label>: wait for moqActiveSessions >= min.
 wait_sessions() {
   local port="$1" min="$2" label="$3"
@@ -225,8 +265,8 @@ check_received() {
     echo "--- dateserver log ---" >&2
     cat "$DATESERVER_LOG" 2>/dev/null >&2 || true
     return 1
-  elif grep -q "Largest=" "$out" 2>/dev/null; then
-    echo "PASS [$label]: $(grep 'Largest=' "$out" | head -1)"
+  elif grep -qE "^[0-9]" "$out" 2>/dev/null; then
+    echo "PASS [$label]: $(grep -E "^[0-9]" "$out" | head -1)"
     return 0
   else
     echo "FAIL [$label]: no data received" >&2
@@ -254,6 +294,38 @@ timeout "$TIMEOUT" "$TEXTCLIENT" \
   >"$CLIENT_OUT" 2>&1 || true
 
 check_received "upstream→downstream" "$CLIENT_OUT" || exit 1
+
+# ── /state snapshot: publisher connected, peering active ──────────────────────
+# dateserver is still publishing to upstream; downstream is still peered.
+# Upstream should show: the publish subscription, "moq-date" in namespace_tree,
+# and the downstream relay in downstream_peers.
+# Downstream should show: upstream.state=connected.
+echo "Checking /state on both relays while publisher is active..."
+check_state "$UPSTREAM_ADMIN_PORT" "$UPSTREAM_RELAY_ID" "upstream"
+check_state "$DOWNSTREAM_ADMIN_PORT" "$DOWNSTREAM_RELAY_ID" "downstream"
+
+# Upstream-specific: downstream relay must appear as a peer.
+UP_STATE=$(curl -sf "http://localhost:$UPSTREAM_ADMIN_PORT/state")
+PEER_COUNT=$(printf '%s' "$UP_STATE" | jq '.services.default.downstream_peers | length')
+if [[ "$PEER_COUNT" -lt 1 ]]; then
+  echo "FAIL [upstream /state]: expected >=1 downstream_peers, got $PEER_COUNT" >&2; exit 1;
+fi
+echo "PASS [upstream /state]: downstream_peers=$PEER_COUNT"
+
+# Upstream-specific: "moq-date" namespace must appear in the tree.
+NS_PRESENT=$(printf '%s' "$UP_STATE" | jq '.services.default.namespace_tree.children | has("moq-date")')
+if [[ "$NS_PRESENT" != "true" ]]; then
+  echo "FAIL [upstream /state]: namespace_tree missing moq-date child" >&2; exit 1;
+fi
+echo "PASS [upstream /state]: namespace_tree contains moq-date"
+
+# Downstream-specific: upstream must be reported connected.
+DOWN_STATE=$(curl -sf "http://localhost:$DOWNSTREAM_ADMIN_PORT/state")
+UP_CONN=$(printf '%s' "$DOWN_STATE" | jq -r '.services.default.upstream.state')
+if [[ "$UP_CONN" != "connected" ]]; then
+  echo "FAIL [downstream /state]: upstream.state=$UP_CONN, want connected" >&2; exit 1;
+fi
+echo "PASS [downstream /state]: upstream.state=connected"
 
 # ── Direction 2: publisher → downstream, subscriber via upstream ───────────────
 echo "Direction 2: moqdateserver → downstream, subscribe via upstream"
@@ -289,8 +361,8 @@ if grep -qE "SubscribeError|Fetch.*failed" "$CLIENT_OUT" 2>/dev/null; then
   echo "FAIL [joining fetch via downstream]: error" >&2
   cat "$CLIENT_OUT" >&2
   exit 1
-elif grep -q "Largest=" "$CLIENT_OUT" 2>/dev/null; then
-  echo "PASS [joining fetch via downstream]: $(grep 'Largest=' "$CLIENT_OUT" | head -1)"
+elif grep -qE "^[0-9]" "$CLIENT_OUT" 2>/dev/null; then
+  echo "PASS [joining fetch via downstream]: $(grep -E "^[0-9]" "$CLIENT_OUT" | head -1)"
 else
   echo "FAIL [joining fetch via downstream]: no data" >&2
   cat "$CLIENT_OUT" >&2
@@ -322,8 +394,8 @@ PIDS+=($!)
 wait $TCPID || true
 
 # Success: textclient received date objects printed to stdout by onObject().
-if grep -qE "^[0-9]|PublishDone" "$CLIENT_OUT3" 2>/dev/null; then
-  echo "PASS [--publish mode]: data received via PUBLISH push"
+if grep -qE "^[0-9]" "$CLIENT_OUT3" 2>/dev/null; then
+  echo "PASS [--publish mode]: $(grep -E "^[0-9]" "$CLIENT_OUT3" | head -1)"
 else
   echo "FAIL [--publish mode]: no data" >&2
   cat "$CLIENT_OUT3" >&2

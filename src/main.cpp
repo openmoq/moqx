@@ -9,6 +9,7 @@
 #include "admin/AdminServer.h"
 #include "admin/BuiltinRoutes.h"
 #include "admin/MetricsHandler.h"
+#include "admin/StateHandler.h"
 #include "config/loader/ConfigInit.h"
 #include "stats/StatsRegistry.h"
 
@@ -119,6 +120,7 @@ int main(int argc, char* argv[]) {
   admin::AdminServer adminServer;
   admin::registerBuiltinRoutes(adminServer);
   admin::registerMetricsRoute(adminServer, statsRegistry);
+  admin::registerStateRoute(adminServer, context);
   if (config.admin) {
     if (!adminServer.start(*config.admin)) {
       XLOG(FATAL) << "Failed to start admin server on " << config.admin->address.describe();

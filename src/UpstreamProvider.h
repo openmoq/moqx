@@ -27,8 +27,10 @@ namespace openmoq::moqx {
 // --- Relay peering auth helpers ---
 // Used by UpstreamProvider (initiating peer subNs) and MoqxRelay (reciprocation).
 
-// Returns true if subNs carries a relay peer auth token.
-bool isPeerSubNs(const moxygen::SubscribeNamespace& subNs);
+// If subNs carries a relay peer auth token, returns the relay ID encoded in
+// the token (may be empty string if the peer didn't include one).
+// Returns std::nullopt if subNs is not a peer subNs at all.
+std::optional<std::string> getPeerRelayID(const moxygen::SubscribeNamespace& subNs);
 
 // Builds a wildcard SubscribeNamespace(prefix={}, BOTH).
 // With relayID: includes the relay auth token (initiating peer).
@@ -115,6 +117,18 @@ public:
 
   // Access the current session (may be null)
   std::shared_ptr<moxygen::MoQSession> currentSession() const { return session_; }
+
+  std::string stateString() const {
+    switch (state_) {
+    case State::Disconnected:
+      return "disconnected";
+    case State::Connecting:
+      return "connecting";
+    case State::Connected:
+      return "connected";
+    }
+    return "unknown";
+  }
 
 private:
   enum class State { Disconnected, Connecting, Connected };
