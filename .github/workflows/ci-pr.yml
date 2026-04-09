@@ -107,3 +107,43 @@ jobs:
         if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
         run: |
           echo "::notice::Publish test results skipped — fork-PR GITHUB_TOKEN lacks checks:write. Test-log output above is authoritative."
+
+  conformance:
+    needs: [check-format]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: mvfst d14
+            versions: "14"
+            transport: ""
+          - name: mvfst d16
+            versions: "16"
+            transport: ""
+    name: conformance (${{ matrix.name }})
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Generate app token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.OMOQ_APP_ID }}
+          private-key: ${{ secrets.OMOQ_APP_PRIV_KEY }}
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install system dependencies
+        run: sudo deps/moxygen/standalone/install-system-deps.sh
+
+      - name: Setup dependencies
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: bash scripts/build.sh setup
+
+      - name: Build
+        run: bash scripts/build.sh
+
+      - name: Run conformance tests
+        run: bash test/test_conformance.sh ./build/moqx ${{ matrix.versions }} ${{ matrix.transport }}
