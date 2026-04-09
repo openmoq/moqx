@@ -25,10 +25,40 @@ if [[ -z "${FILES}" ]]; then
   exit 0
 fi
 
+APACHE_HEADER='/*
+ * Copyright (c) OpenMOQ contributors.
+ * This source code is licensed under the Apache 2.0 license found in the
+ * LICENSE file in the root directory of this source tree.
+ */'
+
 if [[ "${1:-}" == "--check" ]]; then
+  echo "Checking copyright headers..."
+  header_errors=0
+  for f in ${FILES}; do
+    if ! head -1 "$f" | grep -q '^/\*'; then
+      echo "  missing copyright header: $f"
+      header_errors=1
+    fi
+  done
+
   echo "Checking formatting..."
-  ${CF_BIN} --dry-run -Werror ${FILES}
+  cf_exit=0
+  ${CF_BIN} --dry-run -Werror ${FILES} || cf_exit=$?
+
+  if [[ $header_errors -ne 0 ]]; then
+    echo "error: files missing copyright headers (run scripts/format.sh to fix)" >&2
+  fi
+  if [[ $header_errors -ne 0 || $cf_exit -ne 0 ]]; then
+    exit 1
+  fi
 else
+  echo "Adding missing copyright headers..."
+  for f in ${FILES}; do
+    if ! head -1 "$f" | grep -q '^/\*'; then
+      printf '%s\n\n' "${APACHE_HEADER}" | cat - "$f" > /tmp/hdr_tmp && mv /tmp/hdr_tmp "$f"
+    fi
+  done
+
   echo "Formatting files..."
   ${CF_BIN} -i ${FILES}
 fi
