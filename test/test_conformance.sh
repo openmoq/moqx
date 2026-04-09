@@ -113,8 +113,19 @@ ln -s "$MOQBIN/moqtest_client" "$MOXYGEN_SHIM/moxygen/moqtest/moqtest_client"
 export MOXYGEN_DIR="$MOXYGEN_SHIM"
 trap 'rm -rf "$MOXYGEN_SHIM" "$TMPCONFIG"; kill "$RELAY_PID" "$SERVER_PID" 2>/dev/null; wait "$RELAY_PID" "$SERVER_PID" 2>/dev/null' EXIT
 
+set +e
 bash "$CONFORMANCE_SCRIPT" "$RELAY_URL" "${EXTRA_ARGS[@]}"
 EXIT_CODE=$?
+set -e
 
 echo "==> Conformance tests finished (exit code: $EXIT_CODE)"
+
+# Clean up before exiting so background process kills don't affect exit code
+kill "$RELAY_PID" "$SERVER_PID" 2>/dev/null
+wait "$RELAY_PID" "$SERVER_PID" 2>/dev/null || true
+rm -rf "$MOXYGEN_SHIM" "$TMPCONFIG"
+
+# Disable the trap — we already cleaned up
+trap - EXIT
+
 exit $EXIT_CODE
