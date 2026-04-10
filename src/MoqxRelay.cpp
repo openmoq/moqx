@@ -7,8 +7,8 @@
  */
 
 #include "MoqxRelay.h"
-
 #include <moxygen/MoQFilters.h>
+#include <moxygen/MoQTrackProperties.h>
 
 namespace {
 constexpr uint8_t kDefaultUpstreamPriority = 128;
@@ -87,6 +87,24 @@ MoqxRelay::doSubscribeUpdate(std::shared_ptr<Publisher::SubscriptionHandle> hand
   );
   if (updateRes.hasError()) {
     XLOG(ERR) << "requestUpdate failed: " << updateRes.error().reasonPhrase;
+  }
+}
+
+// Sends a REQUEST_UPDATE that carries only the NEW_GROUP_REQUEST parameter.
+folly::coro::Task<void> MoqxRelay::doNewGroupRequestUpdate(
+    std::shared_ptr<Publisher::SubscriptionHandle> handle,
+    uint64_t newGroupRequestValue
+) {
+  XLOG(DBG4) << "Sending NEW_GROUP_REQUEST update: " << newGroupRequestValue;
+  RequestUpdate update;
+  update.requestID = RequestID(0);
+  update.existingRequestID = handle->subscribeOk().requestID;
+  update.params.insertParam(
+      Parameter(folly::to_underlying(TrackRequestParamKey::NEW_GROUP_REQUEST), newGroupRequestValue)
+  );
+  auto updateRes = co_await handle->requestUpdate(std::move(update));
+  if (updateRes.hasError()) {
+    XLOG(ERR) << "NEW_GROUP_REQUEST update failed: " << updateRes.error().reasonPhrase;
   }
 }
 
@@ -563,12 +581,10 @@ folly::coro::Task<void> MoqxRelay::publishToSession(
   guard.dismiss();
   XLOG(DBG1) << "Publish OK sess=" << session.get();
   auto& pubOk = pubResult.value().value();
-  std::optional<AbsoluteLocation> end;
-  if (pubOk.endGroup) {
-    end = AbsoluteLocation{*pubOk.endGroup, 0};
-  }
-  subscriber->range = toSubscribeRange(pubOk.start, end, pubOk.locType, forwarder->largest());
-  subscriber->shouldForward = pubOk.forward;
+
+  // Process the PUBLISH_OK response - updates range, forward flag, and
+  // handles NEW_GROUP_REQUEST forwarding via callback
+  subscriber->onPublishOk(pubOk);
 }
 
 class MoqxRelay::NamespaceSubscription : public Publisher::SubscribeNamespaceHandle {
@@ -936,6 +952,8 @@ MoqxRelay::subscribe(SubscribeRequest subReq, std::shared_ptr<TrackConsumer> con
     auto& rsub = it->second;
     rsub.requestID = subRes.value()->subscribeOk().requestID;
     rsub.handle = std::move(subRes.value());
+    // Record NGR as outstanding (no fire — it rides the outgoing SUBSCRIBE).
+    forwarder->tryProcessNewGroupRequest(subReq.params, /*fire=*/false);
     rsub.promise.setValue(folly::unit);
     co_return subscriber;
   } else {
@@ -972,6 +990,8 @@ MoqxRelay::subscribe(SubscribeRequest subReq, std::shared_ptr<TrackConsumer> con
       co_withExecutor(exec, doSubscribeUpdate(subscriptionIt->second.handle, /*forward=*/true))
           .start();
     }
+
+    forwarder->tryProcessNewGroupRequest(subReq.params);
     co_return subscriber;
   }
 }
@@ -1163,6 +1183,25 @@ void MoqxRelay::forwardChanged(MoQForwarder* forwarder) {
       )
   )
       .start();
+}
+
+void MoqxRelay::newGroupRequested(MoQForwarder* forwarder, uint64_t group) {
+  auto subscriptionIt = subscriptions_.find(forwarder->fullTrackName());
+  if (subscriptionIt == subscriptions_.end()) {
+    return;
+  }
+  auto& subscription = subscriptionIt->second;
+  // Check if handle is still valid (publisher may have terminated)
+  if (!subscription.handle) {
+    XLOG(DBG4) << "Ignoring NEW_GROUP_REQUEST for " << subscriptionIt->first
+               << " - publisher terminated";
+    return;
+  }
+  XLOG(INFO) << "New group request detected for " << subscriptionIt->first;
+
+  auto exec = subscription.upstream->getExecutor();
+  auto handle = subscription.handle;
+  co_withExecutor(exec, doNewGroupRequestUpdate(std::move(handle), group)).start();
 }
 
 } // namespace openmoq::moqx
