@@ -371,8 +371,18 @@ bool PropertyRanking::crossesThreshold(
     return true;
   }
 
-  // OPTIMIZATION: O(log G) check using sorted thresholds
-  // Find first threshold > minRank, check if it's <= maxRank
+  // OPTIMIZATION: O(log G) check using sorted thresholds instead of O(G) linear scan.
+  //
+  // sortedThresholds_ contains all N values from TopNGroups in ascending order.
+  // A threshold is "crossed" if the track moved from one side of it to the other.
+  //
+  // Example: thresholds = [1, 3, 5], track moved from rank 2 to rank 4
+  //   minRank=2, maxRank=4
+  //   upper_bound(2) returns iterator to 3 (first threshold > 2)
+  //   3 <= 4, so threshold 3 was crossed (track went from top-3 to not-top-3)
+  //
+  // If no threshold exists in (minRank, maxRank], the track stayed in the same
+  // selection bucket for all groups and we can skip recomputation (fast path).
   auto it = std::upper_bound(sortedThresholds_.begin(), sortedThresholds_.end(), minRank);
   if (it != sortedThresholds_.end() && *it <= maxRank) {
     return true;  // At least one threshold is crossed
