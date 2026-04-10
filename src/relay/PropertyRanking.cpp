@@ -418,14 +418,19 @@ void PropertyRanking::recomputeTopNGroups(
       }
     }
 
-    // OPTIMIZATION: Batch viewer notifications
+    // Notification logic differs for viewers vs publishers:
+    // - Viewers: batch notification when track enters shared top-N
+    // - Publishers: individual notification based on per-session waterline
+    //
+    // We collect notifications first, then send after iteration to avoid
+    // issues if callbacks modify state. IterationGuard prevents add/remove.
+    IterationGuard guard(*this);
+
     std::vector<std::pair<std::shared_ptr<moxygen::MoQSession>, bool>> viewerBatch;
     bool needViewerNotification = !wasInTopN && nowInTopN;
 
-    // Collect publisher notifications (need to copy since we may modify waterlines)
     std::vector<std::pair<std::shared_ptr<moxygen::MoQSession>, bool>> publisherNotifications;
 
-    // Handle per-session notifications (with self-exclusion)
     for (auto& [session, info] : topNGroup.sessions) {
       if (info.isPublisher()) {
         // Skip self tracks entirely (no notification needed)
@@ -519,18 +524,7 @@ void PropertyRanking::recomputeTopNGroups(
             auto& dq = topNGroup.deselectedQueue;
             dq.erase(std::remove(dq.begin(), dq.end(), rankedEntry.ftn), dq.end());
 
-            // Batch notify viewers, individual for publishers
-            std::vector<std::pair<std::shared_ptr<moxygen::MoQSession>, bool>> newViewerBatch;
-            for (const auto& [session, sessionInfo] : topNGroup.sessions) {
-              if (!sessionInfo.isPublisher()) {
-                newViewerBatch.emplace_back(session, sessionInfo.forward);
-              } else if (session && onSelected_) {
-                onSelected_(rankedEntry.ftn, session, sessionInfo.forward);
-              }
-            }
-            if (!newViewerBatch.empty()) {
-              onBatchSelected_(rankedEntry.ftn, newViewerBatch);
-            }
+            notifyTrackSelected(rankedEntry.ftn, topNGroup);
           }
           break;
         }
