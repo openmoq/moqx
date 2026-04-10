@@ -10,7 +10,7 @@
 #include <gtest/gtest.h>
 #include <rfl/json.hpp>
 
-#include "test_utils.h"
+#include "TestUtils.h"
 
 namespace openmoq::moqx::config {
 namespace {

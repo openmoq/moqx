@@ -33,7 +33,7 @@ target_link_libraries(moqx_relay_test PRIVATE
 gtest_discover_tests(moqx_relay_test)
 
 add_executable(moqx_config_test
-  config/loader_test.cpp
+  config/LoaderTest.cpp
 )
 target_link_libraries(moqx_config_test PRIVATE
   moqx_config_loader
@@ -54,7 +54,7 @@ endif()
 gtest_discover_tests(moqx_config_test)
 
 add_executable(moqx_config_resolver_test
-  config/config_resolver_test.cpp
+  config/ConfigResolverTest.cpp
 )
 target_link_libraries(moqx_config_resolver_test PRIVATE
   moqx_config_loader
