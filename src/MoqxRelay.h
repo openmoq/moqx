@@ -243,8 +243,6 @@ private:
 
     // TopNFilter for property observation (TRACK_FILTER)
     std::shared_ptr<TopNFilter> topNFilter;
-    // Last activity tick for idle detection
-    Tick lastActivityTick{0};
   };
 
   void onEmpty(moxygen::MoQForwarder* forwarder) override;
@@ -294,9 +292,6 @@ private:
       const moxygen::FullTrackName& ftn,
       std::shared_ptr<moxygen::MoQSession> session
   );
-
-  // Get last activity tick for a track (for idle detection)
-  Tick getLastActivityTick(const moxygen::FullTrackName& ftn);
 
   moxygen::TrackNamespace allowedNamespacePrefix_;
   std::string relayID_;

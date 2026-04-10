@@ -9,10 +9,8 @@
 #pragma once
 
 #include <folly/container/F14Map.h>
-#include <folly/io/async/HHWheelTimer.h>
 #include <moxygen/MoQSession.h>
 #include <moxygen/MoQTypes.h>
-#include "TopNFilter.h"
 
 #include <chrono>
 #include <deque>
@@ -25,25 +23,41 @@ namespace openmoq::moqx {
 
 /**
  * Ranking key for deterministic ordering in std::map.
- * Stored with negated value for descending order (highest value first).
+ * Uses std::greater<> comparator for descending order (highest value first).
  */
 struct RankKey {
-  int64_t negValue;    // Negated for descending order
+  uint64_t value;      // Property value (higher = better rank)
   uint64_t arrivalSeq; // Tie-breaker (lower = earlier = wins)
 
+  // For use with std::greater<RankKey> - returns true if this should come AFTER other
   bool operator<(const RankKey& other) const {
-    if (negValue != other.negValue) {
-      return negValue < other.negValue;
+    if (value != other.value) {
+      return value < other.value;
     }
-    return arrivalSeq < other.arrivalSeq;
+    return arrivalSeq > other.arrivalSeq;  // Lower arrivalSeq wins ties (comes first)
+  }
+
+  bool operator>(const RankKey& other) const {
+    if (value != other.value) {
+      return value > other.value;
+    }
+    return arrivalSeq < other.arrivalSeq;  // Lower arrivalSeq wins ties
   }
 
   bool operator==(const RankKey& other) const {
-    return negValue == other.negValue && arrivalSeq == other.arrivalSeq;
+    return value == other.value && arrivalSeq == other.arrivalSeq;
   }
 
   bool operator!=(const RankKey& other) const {
     return !(*this == other);
+  }
+
+  bool operator<=(const RankKey& other) const {
+    return *this < other || *this == other;
+  }
+
+  bool operator>=(const RankKey& other) const {
+    return *this > other || *this == other;
   }
 };
 
@@ -59,13 +73,13 @@ struct RankedEntry {
  * Fast lookup from track name to rank position.
  * Includes cached rank to avoid O(n) std::distance() calls.
  */
-struct TrackEntry {
-  std::map<RankKey, RankedEntry>::iterator rankIter;
+struct RankIndex {
+  std::map<RankKey, RankedEntry, std::greater<RankKey>>::iterator rankIter;
   uint64_t cachedRank{UINT64_MAX};  // Cached rank position, invalidated on changes
 };
 
 /**
- * Track state within a group.
+ * Track state within a TopNGroup.
  */
 enum class TrackState { Selected, Deselected };
 
@@ -97,7 +111,7 @@ struct SessionInfo {
 };
 
 /**
- * Group of subscribers with same N value.
+ * TopNGroup - Group of subscribers with same N value.
  */
 struct TopNGroup {
   uint64_t maxSelected{0}; // N
@@ -113,38 +127,28 @@ struct TopNGroup {
 };
 
 /**
- * Performance metrics for PropertyRanking operations.
- * Only collected when metricsEnabled() is true (disabled by default).
+ * Performance stats for PropertyRanking operations.
+ * Only collected when statsEnabled() is true (disabled by default).
  */
-struct PropertyRankingMetrics {
+struct PropertyRankingStats {
   // Track operations
-  std::atomic<uint64_t> tracksRegistered{0};
-  std::atomic<uint64_t> tracksRemoved{0};
-  std::atomic<uint64_t> valueUpdates{0};
-  std::atomic<uint64_t> fastPathHits{0};    // Updates that didn't cross threshold
-  std::atomic<uint64_t> slowPathHits{0};    // Updates that required recomputation
+  uint64_t tracksRegistered{0};
+  uint64_t tracksRemoved{0};
+  uint64_t valueUpdates{0};
+  uint64_t fastPathHits{0};    // Updates that didn't cross threshold
+  uint64_t slowPathHits{0};    // Updates that required recomputation
 
   // Selection operations
-  std::atomic<uint64_t> selectionsTriggered{0};
-  std::atomic<uint64_t> evictionsTriggered{0};
-  std::atomic<uint64_t> selfExclusionSkips{0};  // Tracks skipped due to self-exclusion
+  uint64_t selectionsTriggered{0};
+  uint64_t evictionsTriggered{0};
+  uint64_t selfExclusionSkips{0};  // Tracks skipped due to self-exclusion
 
   // Session operations
-  std::atomic<uint64_t> sessionsAdded{0};
-  std::atomic<uint64_t> sessionsRemoved{0};
+  uint64_t sessionsAdded{0};
+  uint64_t sessionsRemoved{0};
 
-  // Timing (nanoseconds, accumulated) - only when timing enabled
-  std::atomic<uint64_t> updateSortValueTimeNs{0};
-  std::atomic<uint64_t> recomputeGroupsTimeNs{0};
-  std::atomic<uint64_t> notifyTimeNs{0};
-
-  // Idle sweep
-  std::atomic<uint64_t> idleSweeps{0};
-  std::atomic<uint64_t> idleDemotions{0};
-
-  // Control flags
-  bool enabled{false};      // Set to true to collect counters
-  bool timingEnabled{false}; // Set to true to collect timing (more overhead)
+  // Control flag
+  bool enabled{false};
 };
 
 /**
@@ -154,13 +158,12 @@ struct PropertyRankingMetrics {
  * subscribers when tracks enter or leave their top-N selection.
  *
  * Key design decisions:
- * - std::map for O(log T) sorted iteration
+ * - std::map with std::greater<> for O(log T) sorted iteration (descending)
  * - F14FastMap for O(1) track lookups
  * - Fast path when value change doesn't cross any threshold
  * - Deselected queue for cheap reselection without PUBLISH_DONE
- * - HHWheelTimer for idle sweep (demotes inactive selected tracks)
  */
-class PropertyRanking : public folly::HHWheelTimer::Callback {
+class PropertyRanking {
  public:
   using SelectCallback = std::function<void(
       const moxygen::FullTrackName& ftn,
@@ -171,41 +174,28 @@ class PropertyRanking : public folly::HHWheelTimer::Callback {
       const moxygen::FullTrackName& ftn,
       std::shared_ptr<moxygen::MoQSession> session)>;
 
-  // Batch notification callback for viewers (optimization).
+  // Batch notification callback for viewers.
   // Called once per track state change with all affected viewer sessions.
   using BatchSelectCallback = std::function<void(
       const moxygen::FullTrackName& ftn,
       const std::vector<std::pair<std::shared_ptr<moxygen::MoQSession>, bool>>& sessions)>;
 
-  using GetLastActivityFn = std::function<Tick(const moxygen::FullTrackName& ftn)>;
-
   /**
-   * Constructor without idle detection (for testing or non-timer use cases).
+   * Constructor.
+   * @param propertyType The property type ID to rank by
+   * @param maxDeselected Maximum tracks in deselected queue before eviction
+   * @param onBatchSelected Batch callback for viewer notifications (required)
+   * @param onSelected Individual callback for publisher notifications
+   * @param onEvicted Callback when track is evicted from deselected queue
    */
   PropertyRanking(
       uint64_t propertyType,
       uint64_t maxDeselected,
+      BatchSelectCallback onBatchSelected,
       SelectCallback onSelected,
       EvictCallback onEvicted);
 
-  /**
-   * Constructor with idle detection.
-   * @param idleThreshold Number of ticks before a track is considered idle
-   * @param sweepInterval How often to run the idle sweep
-   * @param timer The HHWheelTimer to schedule sweep callbacks on
-   * @param getLastActivity Callback to get last activity tick for a track
-   */
-  PropertyRanking(
-      uint64_t propertyType,
-      uint64_t maxDeselected,
-      SelectCallback onSelected,
-      EvictCallback onEvicted,
-      Tick idleThreshold,
-      std::chrono::milliseconds sweepInterval,
-      folly::HHWheelTimer& timer,
-      GetLastActivityFn getLastActivity);
-
-  ~PropertyRanking() override;
+  ~PropertyRanking() = default;
 
   // Non-copyable, non-movable
   PropertyRanking(const PropertyRanking&) = delete;
@@ -218,21 +208,16 @@ class PropertyRanking : public folly::HHWheelTimer::Callback {
   }
 
   /**
-   * Set optional batch callback for viewer notifications.
-   * When set, viewer notifications are batched into a single call per track.
-   */
-  void setBatchSelectCallback(BatchSelectCallback callback) {
-    onBatchSelected_ = std::move(callback);
-  }
-
-  /**
    * Register a track with optional initial value.
    * Called at publish() time.
+   * @param ftn The full track name
+   * @param initialValue Optional initial property value (defaults to 0)
+   * @param publisher The session publishing this track (required)
    */
   void registerTrack(
       const moxygen::FullTrackName& ftn,
       std::optional<uint64_t> initialValue,
-      std::weak_ptr<moxygen::MoQSession> publisher = {});
+      std::weak_ptr<moxygen::MoQSession> publisher);
 
   /**
    * Update track's sort value. Main hot-path entry point.
@@ -246,24 +231,24 @@ class PropertyRanking : public folly::HHWheelTimer::Callback {
   void removeTrack(const moxygen::FullTrackName& ftn);
 
   /**
-   * Get or create group for given N.
+   * Get or create TopNGroup for given N.
    */
-  TopNGroup& getOrCreateGroup(uint64_t maxSelected);
+  TopNGroup& getOrCreateTopNGroup(uint64_t maxSelected);
 
   /**
-   * Add a session to a group.
+   * Add a session to a TopNGroup.
    * If publishedTracks is provided, enables self-exclusion for this session.
    */
-  void addSessionToGroup(
+  void addSessionToTopNGroup(
       uint64_t maxSelected,
       std::shared_ptr<moxygen::MoQSession> session,
       bool forward,
       std::vector<moxygen::FullTrackName> publishedTracks = {});
 
   /**
-   * Remove a session from a group.
+   * Remove a session from a TopNGroup.
    */
-  void removeSessionFromGroup(
+  void removeSessionFromTopNGroup(
       uint64_t maxSelected,
       const std::shared_ptr<moxygen::MoQSession>& session);
 
@@ -286,15 +271,15 @@ class PropertyRanking : public folly::HHWheelTimer::Callback {
       const moxygen::FullTrackName& ftn);
 
   /**
-   * Remove group (last subscriber with this N left).
+   * Remove TopNGroup (last subscriber with this N left).
    */
-  void removeGroup(uint64_t maxSelected);
+  void removeTopNGroup(uint64_t maxSelected);
 
   /**
-   * Check if any groups remain.
+   * Check if any TopNGroups remain.
    */
   bool empty() const {
-    return groups_.empty();
+    return topNGroups_.empty();
   }
 
   /**
@@ -305,67 +290,44 @@ class PropertyRanking : public folly::HHWheelTimer::Callback {
   }
 
   /**
-   * Get number of groups.
+   * Get number of TopNGroups.
    */
-  size_t numGroups() const {
-    return groups_.size();
+  size_t numTopNGroups() const {
+    return topNGroups_.size();
   }
 
   // Test accessors
-  const std::map<RankKey, RankedEntry>& ranked() const {
-    return ranked_;
+  const std::map<RankKey, RankedEntry, std::greater<RankKey>>& rankedTracks() const {
+    return rankedTracks_;
   }
 
-  const TopNGroup* getGroup(uint64_t maxSelected) const {
-    auto it = groups_.find(maxSelected);
-    return it != groups_.end() ? &it->second : nullptr;
-  }
-
-  /**
-   * Get performance metrics snapshot.
-   * Metrics are only collected when enabled via enableMetrics().
-   */
-  const PropertyRankingMetrics& metrics() const {
-    return metrics_;
+  const TopNGroup* getTopNGroup(uint64_t maxSelected) const {
+    auto it = topNGroups_.find(maxSelected);
+    return it != topNGroups_.end() ? &it->second : nullptr;
   }
 
   /**
-   * Enable/disable metrics collection (disabled by default for performance).
-   * @param timing Also enable timing measurements (higher overhead)
+   * Get performance stats snapshot.
+   * Stats are only collected when enabled via enableStats().
    */
-  void enableMetrics(bool timing = false) {
-    metrics_.enabled = true;
-    metrics_.timingEnabled = timing;
-  }
-
-  void disableMetrics() {
-    metrics_.enabled = false;
-    metrics_.timingEnabled = false;
-  }
-
-  bool metricsEnabled() const {
-    return metrics_.enabled;
+  const PropertyRankingStats& stats() const {
+    return stats_;
   }
 
   /**
-   * Start the idle sweep timer. Called when first group is created.
+   * Enable/disable stats collection (disabled by default for performance).
    */
-  void startIdleSweep();
+  void enableStats() {
+    stats_.enabled = true;
+  }
 
-  /**
-   * Stop the idle sweep timer. Called when last group is removed.
-   */
-  void stopIdleSweep();
+  void disableStats() {
+    stats_.enabled = false;
+  }
 
-  /**
-   * HHWheelTimer callback - runs idle sweep.
-   */
-  void timeoutExpired() noexcept override;
-
-  /**
-   * Cancel the timer callback (called from destructor).
-   */
-  void callbackCanceled() noexcept override {}
+  bool statsEnabled() const {
+    return stats_.enabled;
+  }
 
  private:
   /**
@@ -381,23 +343,23 @@ class PropertyRanking : public folly::HHWheelTimer::Callback {
       const RankKey& newKey) const;
 
   /**
-   * Recompute all groups after a rank change.
+   * Recompute all TopNGroups after a rank change.
    */
-  void recomputeGroups(
+  void recomputeTopNGroups(
       const moxygen::FullTrackName& ftn,
       std::optional<RankKey> oldKey,
       const RankKey& newKey);
 
   /**
-   * Update pool boundary when groups change.
-   * Pool boundary = max(N) + maxDeselected_
+   * Update selection threshold when TopNGroups change.
+   * selectionThreshold_ = max(N) + maxDeselected_
    */
-  void updatePoolBoundary();
+  void updateSelectionThreshold();
 
   /**
    * Evict oldest track from deselected queue if over limit.
    */
-  void trimDeselectedQueue(TopNGroup& group);
+  void trimDeselectedQueue(TopNGroup& topNGroup);
 
   /**
    * Compute waterline key for self-exclusion.
@@ -415,11 +377,6 @@ class PropertyRanking : public folly::HHWheelTimer::Callback {
       const RankKey& key,
       const SessionInfo& info,
       uint64_t maxSelected) const;
-
-  /**
-   * Sweep for idle selected tracks and demote them.
-   */
-  void sweepIdle();
 
   /**
    * Rebuild rank cache after structural changes (insert/delete).
@@ -442,37 +399,30 @@ class PropertyRanking : public folly::HHWheelTimer::Callback {
 
   uint64_t propertyType_;
   uint64_t maxDeselected_;
+  BatchSelectCallback onBatchSelected_;
   SelectCallback onSelected_;
   EvictCallback onEvicted_;
-  BatchSelectCallback onBatchSelected_;  // Optional batch callback for viewers
 
-  // Sorted container: (negValue, seq) -> RankedEntry
-  std::map<RankKey, RankedEntry> ranked_;
+  // Sorted container: key -> RankedEntry (descending order via std::greater)
+  std::map<RankKey, RankedEntry, std::greater<RankKey>> rankedTracks_;
 
-  // O(1) lookup: trackName -> iterator into ranked_
-  folly::F14FastMap<moxygen::FullTrackName, TrackEntry, moxygen::FullTrackName::hash> tracks_;
+  // O(1) lookup: trackName -> iterator into rankedTracks_
+  folly::F14FastMap<moxygen::FullTrackName, RankIndex, moxygen::FullTrackName::hash> tracks_;
 
-  // Groups by maxSelected value (N)
-  folly::F14FastMap<uint64_t, TopNGroup> groups_;
+  // TopNGroups by maxSelected value (N)
+  folly::F14FastMap<uint64_t, TopNGroup> topNGroups_;
 
   // Monotonic sequence for tie-breaking
   uint64_t nextSeq_{0};
 
-  // Cached pool boundary (max N + maxDeselected_)
-  uint64_t poolBoundary_{0};
+  // Cached selection threshold (max N + maxDeselected_)
+  uint64_t selectionThreshold_{0};
 
   // Sorted threshold values for O(log G) crossesThreshold check
   std::vector<uint64_t> sortedThresholds_;
 
-  // Idle detection fields (optional - only set if timer constructor used)
-  Tick idleThreshold_{0};
-  std::chrono::milliseconds sweepInterval_{0};
-  folly::HHWheelTimer* timer_{nullptr};
-  GetLastActivityFn getLastActivity_;
-  bool sweepRunning_{false};
-
-  // Performance metrics
-  mutable PropertyRankingMetrics metrics_;
+  // Performance stats
+  mutable PropertyRankingStats stats_;
 
   // Rank cache invalidation flag - mutable because cache rebuild is const-safe
   mutable bool rankCacheValid_{false};

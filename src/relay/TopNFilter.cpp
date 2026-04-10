@@ -10,22 +10,7 @@
 
 #include <folly/logging/xlog.h>
 
-#include <atomic>
-
 namespace openmoq::moqx {
-
-namespace {
-// Global tick counter for activity tracking
-std::atomic<Tick> gCurrentTick{0};
-} // namespace
-
-Tick getCurrentTick() {
-  return gCurrentTick.load(std::memory_order_relaxed);
-}
-
-void advanceTick() {
-  gCurrentTick.fetch_add(1, std::memory_order_relaxed);
-}
 
 TopNFilter::TopNFilter(
     moxygen::FullTrackName ftn,
@@ -47,84 +32,28 @@ void TopNFilter::removeObserver(uint64_t propertyType) {
   observers_.erase(propertyType);
 }
 
-void TopNFilter::checkProperties(const moxygen::Extensions& extensions, Tick currentTick) {
-  // FAST PATH: No observers and no activity tracking
-  if (observers_.empty() && !activityTarget_) {
-    return;
-  }
-
-  // Update activity timestamp (just a pointer write - very fast)
-  if (activityTarget_) {
-    *activityTarget_ = currentTick;
-  }
-
+void TopNFilter::checkProperties(const moxygen::Extensions& extensions) {
   // FAST PATH: No observers to notify
   if (observers_.empty()) {
     return;
   }
 
-  // Check extensions for property values
-  // Optimization: iterate the smaller of observers vs extensions
-  if (observers_.size() <= extensions.size()) {
-    // Iterate observers, look up in extensions
-    for (auto& [propertyType, entry] : observers_) {
-      auto valueOpt = extensions.getIntExtension(propertyType);
-      if (!valueOpt) {
-        continue;
-      }
-
-      uint64_t value = *valueOpt;
-      if (!entry.lastSeenValue || *entry.lastSeenValue != value) {
-        XLOG(DBG4) << "[TopNFilter] Property changed on " << ftn_
-                   << ": propertyType=0x" << std::hex << propertyType << std::dec
-                   << " oldValue=" << entry.lastSeenValue.value_or(0)
-                   << " newValue=" << value;
-        entry.lastSeenValue = value;
-        if (entry.observer.onValueChanged) {
-          entry.observer.onValueChanged(value);
-        }
-      }
-    }
-  } else {
-    // Iterate extensions, look up in observers
-    // Check mutable extensions
-    for (const auto& ext : extensions.getMutableExtensions()) {
-      // Only check even-typed extensions (integer values)
-      if (ext.type & 0x1) {
-        continue;
-      }
-      auto it = observers_.find(ext.type);
-      if (it == observers_.end()) {
-        continue;
-      }
-
-      auto& entry = it->second;
-      uint64_t value = ext.intValue;
-      if (!entry.lastSeenValue || *entry.lastSeenValue != value) {
-        entry.lastSeenValue = value;
-        if (entry.observer.onValueChanged) {
-          entry.observer.onValueChanged(value);
-        }
-      }
+  // Check extensions for property values we're observing
+  for (auto& [propertyType, entry] : observers_) {
+    auto valueOpt = extensions.getIntExtension(propertyType);
+    if (!valueOpt) {
+      continue;
     }
 
-    // Check immutable extensions
-    for (const auto& ext : extensions.getImmutableExtensions()) {
-      if (ext.type & 0x1) {
-        continue;
-      }
-      auto it = observers_.find(ext.type);
-      if (it == observers_.end()) {
-        continue;
-      }
-
-      auto& entry = it->second;
-      uint64_t value = ext.intValue;
-      if (!entry.lastSeenValue || *entry.lastSeenValue != value) {
-        entry.lastSeenValue = value;
-        if (entry.observer.onValueChanged) {
-          entry.observer.onValueChanged(value);
-        }
+    uint64_t value = *valueOpt;
+    if (!entry.lastSeenValue || *entry.lastSeenValue != value) {
+      XLOG(DBG4) << "[TopNFilter] Property changed on " << ftn_
+                 << ": propertyType=0x" << std::hex << propertyType << std::dec
+                 << " oldValue=" << entry.lastSeenValue.value_or(0)
+                 << " newValue=" << value;
+      entry.lastSeenValue = value;
+      if (entry.observer.onValueChanged) {
+        entry.observer.onValueChanged(value);
       }
     }
   }
@@ -145,6 +74,12 @@ TopNFilter::beginSubgroup(
     uint64_t subgroupID,
     moxygen::Priority priority,
     bool containsLastInGroup) {
+  // Handle objects arriving after publishDone - this can happen due to
+  // out-of-order delivery. We still forward them but log a warning.
+  if (ended_) {
+    XLOG(WARN) << "[TopNFilter] beginSubgroup received after publishDone on " << ftn_;
+  }
+
   auto result =
       downstream_->beginSubgroup(groupID, subgroupID, priority, containsLastInGroup);
   if (!result) {
@@ -160,8 +95,11 @@ folly::Expected<folly::Unit, moxygen::MoQPublishError> TopNFilter::objectStream(
     const moxygen::ObjectHeader& header,
     moxygen::Payload payload,
     bool lastInGroup) {
+  if (ended_) {
+    XLOG(WARN) << "[TopNFilter] objectStream received after publishDone on " << ftn_;
+  }
   // Check properties before forwarding
-  checkProperties(header.extensions, getCurrentTick());
+  checkProperties(header.extensions);
   return TrackConsumerFilter::objectStream(header, std::move(payload), lastInGroup);
 }
 
@@ -169,13 +107,18 @@ folly::Expected<folly::Unit, moxygen::MoQPublishError> TopNFilter::datagram(
     const moxygen::ObjectHeader& header,
     moxygen::Payload payload,
     bool lastInGroup) {
+  if (ended_) {
+    XLOG(WARN) << "[TopNFilter] datagram received after publishDone on " << ftn_;
+  }
   // Check properties before forwarding
-  checkProperties(header.extensions, getCurrentTick());
+  checkProperties(header.extensions);
   return TrackConsumerFilter::datagram(header, std::move(payload), lastInGroup);
 }
 
 folly::Expected<folly::Unit, moxygen::MoQPublishError> TopNFilter::publishDone(
     moxygen::PublishDone pubDone) {
+  // Mark as ended before notifying observers
+  ended_ = true;
   // Notify observers that the track has ended
   notifyTrackEnded();
   return TrackConsumerFilter::publishDone(std::move(pubDone));
@@ -195,7 +138,7 @@ folly::Expected<folly::Unit, moxygen::MoQPublishError> TopNSubgroupConsumer::obj
     moxygen::Extensions extensions,
     bool finSubgroup) {
   // Check properties before forwarding
-  filter_->checkProperties(extensions, getCurrentTick());
+  filter_->checkProperties(extensions);
   return SubgroupConsumerFilter::object(
       objectID, std::move(payload), std::move(extensions), finSubgroup);
 }
@@ -206,7 +149,7 @@ folly::Expected<folly::Unit, moxygen::MoQPublishError> TopNSubgroupConsumer::beg
     moxygen::Payload initialPayload,
     moxygen::Extensions extensions) {
   // Check properties before forwarding
-  filter_->checkProperties(extensions, getCurrentTick());
+  filter_->checkProperties(extensions);
   return SubgroupConsumerFilter::beginObject(
       objectID, length, std::move(initialPayload), std::move(extensions));
 }

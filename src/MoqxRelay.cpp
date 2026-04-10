@@ -546,9 +546,8 @@ MoqxRelay::publish(PublishRequest pub, std::shared_ptr<Publisher::SubscriptionHa
       pub.fullTrackName,
       std::static_pointer_cast<TrackConsumer>(terminationFilter));
 
-  // Store TopNFilter and set up activity tracking
+  // Store TopNFilter
   rsub.topNFilter = topNFilter;
-  topNFilter->setActivityTarget(&rsub.lastActivityTick);
 
   // Update self-exclusion FIRST: if the publishing session is also a TRACK_FILTER
   // subscriber, add this track to their publishedTracks BEFORE registerTrack
@@ -820,7 +819,7 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
   std::shared_ptr<PropertyRanking> ranking;
   if (trackFilter) {
     ranking = getOrCreateRanking(nodePtr, trackFilter->propertyType);
-    ranking->addSessionToGroup(trackFilter->maxSelected, session, subNs.forward);
+    ranking->addSessionToTopNGroup(trackFilter->maxSelected, session, subNs.forward);
   }
 
   // If this is the first content added to this node, notify parent
@@ -880,7 +879,7 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
       // via onTrackSelected callback - don't directly publish here
       if (trackFilter) {
         // Track was already registered with PropertyRanking at publish() time
-        // The addSessionToGroup call above will trigger onTrackSelected for
+        // The addSessionToTopNGroup call above will trigger onTrackSelected for
         // tracks that are in the top N
         continue;
       }
@@ -929,7 +928,7 @@ void MoqxRelay::unsubscribeNamespace(
     if (it->second.trackFilter) {
       auto rankingIt = nodePtr->rankings.find(it->second.trackFilter->propertyType);
       if (rankingIt != nodePtr->rankings.end()) {
-        rankingIt->second->removeSessionFromGroup(
+        rankingIt->second->removeSessionFromTopNGroup(
             it->second.trackFilter->maxSelected, session);
       }
     }
@@ -1347,10 +1346,20 @@ std::shared_ptr<PropertyRanking> MoqxRelay::getOrCreateRanking(
     ranking = std::make_shared<PropertyRanking>(
         propertyType,
         maxDeselected_,
+        // Batch callback for viewers
+        [this](
+            const FullTrackName& ftn,
+            const std::vector<std::pair<std::shared_ptr<MoQSession>, bool>>& sessions) {
+          for (const auto& [session, forward] : sessions) {
+            onTrackSelected(ftn, session, forward);
+          }
+        },
+        // Individual callback for publishers
         [this](
             const FullTrackName& ftn,
             std::shared_ptr<MoQSession> session,
             bool forward) { onTrackSelected(ftn, session, forward); },
+        // Eviction callback
         [this](const FullTrackName& ftn, std::shared_ptr<MoQSession> session) {
           onTrackEvicted(ftn, session);
         });
@@ -1464,14 +1473,6 @@ void MoqxRelay::onTrackEvicted(
   if (forwarder) {
     forwarder->removeSubscriber(session, std::nullopt, "onTrackEvicted");
   }
-}
-
-Tick MoqxRelay::getLastActivityTick(const FullTrackName& ftn) {
-  auto it = subscriptions_.find(ftn);
-  if (it == subscriptions_.end()) {
-    return 0;
-  }
-  return it->second.lastActivityTick;
 }
 
 } // namespace openmoq::moqx

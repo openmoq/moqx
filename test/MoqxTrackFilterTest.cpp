@@ -15,7 +15,7 @@
 #include <folly/io/async/Request.h>
 #include <folly/portability/GMock.h>
 #include <folly/portability/GTest.h>
-#include <moqx/MoqxRelay.h>
+#include "MoqxRelay.h"
 #include <moxygen/MoQTrackProperties.h>
 #include <moxygen/events/MoQFollyExecutorImpl.h>
 #include <moxygen/relay/MoQForwarder.h>

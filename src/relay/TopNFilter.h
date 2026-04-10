@@ -18,10 +18,6 @@
 
 namespace openmoq::moqx {
 
-// Monotonic tick counter for activity tracking.
-// Using ticks is faster than std::chrono::steady_clock::now().
-using Tick = uint64_t;
-
 // Observer interface for property value changes on a track.
 // Used by PropertyRanking to receive notifications when track values change.
 struct PropertyObserver {
@@ -40,9 +36,9 @@ struct ObserverEntry {
 
 /**
  * TopNFilter - A TrackConsumer filter that:
- * 1. Updates activity timestamps on each object
- * 2. Observes property value changes in object extensions
- * 3. Notifies registered observers of value changes
+ * 1. Observes property value changes in object extensions
+ * 2. Notifies registered observers of value changes
+ * 3. Handles PUBLISH_DONE to notify observers that the track ended
  *
  * This is part of the TRACK_FILTER implementation for selecting top N tracks
  * based on property values (e.g., audio level).
@@ -63,12 +59,6 @@ class TopNFilter : public moxygen::TrackConsumerFilter,
     return ftn_;
   }
 
-  // Set the pointer to write activity ticks to.
-  // This allows RelaySubscription to own the tick storage.
-  void setActivityTarget(Tick* target) {
-    activityTarget_ = target;
-  }
-
   // Register an observer for a specific property type.
   // The observer will be called when the property value changes.
   void registerObserver(uint64_t propertyType, PropertyObserver observer);
@@ -82,12 +72,16 @@ class TopNFilter : public moxygen::TrackConsumerFilter,
   }
 
   // Check extensions for property values and notify observers.
-  // Also updates activity timestamp if activityTarget_ is set.
-  // This is called by TopNSubgroupConsumer for each object.
-  void checkProperties(const moxygen::Extensions& extensions, Tick currentTick);
+  // This is called for each object received.
+  void checkProperties(const moxygen::Extensions& extensions);
 
   // Notify observers that the track has ended.
   void notifyTrackEnded();
+
+  // Check if publishDone has been received
+  bool isEnded() const {
+    return ended_;
+  }
 
   // Override beginSubgroup to wrap the returned SubgroupConsumer
   folly::Expected<std::shared_ptr<moxygen::SubgroupConsumer>, moxygen::MoQPublishError>
@@ -119,12 +113,12 @@ class TopNFilter : public moxygen::TrackConsumerFilter,
   // Map of property type -> observer entry
   folly::F14FastMap<uint64_t, ObserverEntry> observers_;
 
-  // Pointer to external tick storage (owned by RelaySubscription)
-  Tick* activityTarget_{nullptr};
-
   // Reference to downstream (stored in base class, but we need it for
   // creating TopNSubgroupConsumer)
   std::shared_ptr<moxygen::TrackConsumer> downstream_;
+
+  // Track whether publishDone has been received
+  bool ended_{false};
 };
 
 /**
@@ -154,14 +148,5 @@ class TopNSubgroupConsumer : public moxygen::SubgroupConsumerFilter {
  private:
   std::shared_ptr<TopNFilter> filter_;
 };
-
-// Get current tick value. This is a simple monotonic counter.
-// In production, this would typically be derived from a high-resolution
-// timer or rdtsc. For now, we use a simple atomic counter that can be
-// advanced by the caller (e.g., HHWheelTimer callback).
-Tick getCurrentTick();
-
-// Advance the global tick counter. Called by timer callbacks.
-void advanceTick();
 
 } // namespace openmoq::moqx
