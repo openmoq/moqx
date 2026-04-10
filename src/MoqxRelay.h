@@ -234,6 +234,7 @@ private:
 
   void onEmpty(moxygen::MoQForwarder* forwarder) override;
   void forwardChanged(moxygen::MoQForwarder* forwarder) override;
+  void newGroupRequested(moxygen::MoQForwarder* forwarder, uint64_t group) override;
 
   folly::coro::Task<void> publishNamespaceToSession(
       std::shared_ptr<moxygen::MoQSession> session,
@@ -249,6 +250,11 @@ private:
 
   folly::coro::Task<void>
   doSubscribeUpdate(std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle, bool forward);
+
+  folly::coro::Task<void> doNewGroupRequestUpdate(
+      std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle,
+      uint64_t newGroupRequestValue
+  );
 
   void publishNamespaceDone(const moxygen::TrackNamespace& trackNamespace, NamespaceNode* node);
 
