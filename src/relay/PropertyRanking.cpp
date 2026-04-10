@@ -62,43 +62,9 @@ void PropertyRanking::registerTrack(
       // Track is in top N, mark as selected
       topNGroup.trackStates[ftn] = TrackState::Selected;
 
-      // Notify sessions in this TopNGroup (respecting self-exclusion)
-      // Separate viewers (batch) from publishers (individual waterline checks)
-      std::vector<std::pair<std::shared_ptr<moxygen::MoQSession>, bool>> viewerBatch;
-      std::vector<std::pair<std::shared_ptr<moxygen::MoQSession>, bool>> publisherNotifications;
-      for (const auto& [session, info] : topNGroup.sessions) {
-        if (info.isSelfTrack(ftn)) {
-          XLOG(DBG4) << "[registerTrack] Skipping self-track " << ftn
-                     << " for session " << session.get();
-          if (stats_.enabled) {
-            stats_.selfExclusionSkips++;
-          }
-          continue;
-        }
-        if (info.isPublisher()) {
-          publisherNotifications.emplace_back(session, info.forward);
-        } else {
-          viewerBatch.emplace_back(session, info.forward);
-        }
-      }
-
-      // Batch notify viewers
-      if (!viewerBatch.empty()) {
-        if (stats_.enabled) {
-          stats_.selectionsTriggered += viewerBatch.size();
-        }
-        onBatchSelected_(ftn, viewerBatch);
-      }
-
-      // Notify publishers individually
-      for (const auto& [session, forward] : publisherNotifications) {
-        if (session && onSelected_) {
-          if (stats_.enabled) {
-            stats_.selectionsTriggered++;
-          }
-          onSelected_(ftn, session, forward);
-        }
-      }
+      // Use iteration guard and notify sessions
+      IterationGuard guard(*this);
+      notifyTrackSelected(ftn, topNGroup);
     }
     // Note: Tracks outside top N are NOT added to deselected queue on register.
     // They only enter the queue when they fall out of top N after being selected.
@@ -195,11 +161,8 @@ void PropertyRanking::removeTrack(const moxygen::FullTrackName& ftn) {
     dq.erase(std::remove(dq.begin(), dq.end(), ftn), dq.end());
 
     if (wasSelected) {
-      // Copy sessions to avoid iterator invalidation during callback
-      std::vector<std::pair<std::shared_ptr<moxygen::MoQSession>, bool>> sessionsToNotify;
-      for (const auto& [session, info] : topNGroup.sessions) {
-        sessionsToNotify.emplace_back(session, info.forward);
-      }
+      // Use iteration guard - callbacks must not add/remove sessions
+      IterationGuard guard(*this);
 
       // Need to promote next track from deselected queue or ranked list
       // First try deselected queue
@@ -207,22 +170,11 @@ void PropertyRanking::removeTrack(const moxygen::FullTrackName& ftn) {
         auto promoted = topNGroup.deselectedQueue.front();
         topNGroup.deselectedQueue.pop_front();
         topNGroup.trackStates[promoted] = TrackState::Selected;
-
-        // Batch notify viewers, individual for publishers
-        std::vector<std::pair<std::shared_ptr<moxygen::MoQSession>, bool>> viewerBatch;
-        for (const auto& [session, forward] : sessionsToNotify) {
-          auto sessionIt = topNGroup.sessions.find(session);
-          if (sessionIt != topNGroup.sessions.end() && !sessionIt->second.isPublisher()) {
-            viewerBatch.emplace_back(session, forward);
-          } else if (session && onSelected_) {
-            onSelected_(promoted, session, forward);
-          }
-        }
-        if (!viewerBatch.empty()) {
-          onBatchSelected_(promoted, viewerBatch);
-        }
+        notifyTrackSelected(promoted, topNGroup);
       } else {
         // Find next track from ranked list that isn't already selected
+        // TODO: This nested loop could be optimized by processing TopNGroups
+        // in descending order of N, or by maintaining a "first unselected" pointer.
         uint64_t count = 0;
         for (auto& [key, rankedEntry] : rankedTracks_) {
           auto stIt = topNGroup.trackStates.find(rankedEntry.ftn);
@@ -234,19 +186,7 @@ void PropertyRanking::removeTrack(const moxygen::FullTrackName& ftn) {
           // This track is not selected, promote it if we have room
           if (count < n) {
             topNGroup.trackStates[rankedEntry.ftn] = TrackState::Selected;
-            // Batch notify viewers, individual for publishers
-            std::vector<std::pair<std::shared_ptr<moxygen::MoQSession>, bool>> viewerBatch;
-            for (const auto& [session, forward] : sessionsToNotify) {
-              auto sessionIt = topNGroup.sessions.find(session);
-              if (sessionIt != topNGroup.sessions.end() && !sessionIt->second.isPublisher()) {
-                viewerBatch.emplace_back(session, forward);
-              } else if (session && onSelected_) {
-                onSelected_(rankedEntry.ftn, session, forward);
-              }
-            }
-            if (!viewerBatch.empty()) {
-              onBatchSelected_(rankedEntry.ftn, viewerBatch);
-            }
+            notifyTrackSelected(rankedEntry.ftn, topNGroup);
             break;
           }
           count++;
@@ -281,6 +221,9 @@ void PropertyRanking::addSessionToTopNGroup(
     std::shared_ptr<moxygen::MoQSession> session,
     bool forward,
     std::vector<moxygen::FullTrackName> publishedTracks) {
+  // Ensure we're not modifying sessions while iterating
+  XCHECK(!iteratingSessions_) << "Cannot add session while iterating";
+
   XLOG(DBG4) << "[PropertyRanking] Adding session " << session.get()
              << " to TopNGroup maxSelected=" << maxSelected
              << " forward=" << forward
@@ -334,6 +277,9 @@ void PropertyRanking::addSessionToTopNGroup(
 void PropertyRanking::removeSessionFromTopNGroup(
     uint64_t maxSelected,
     const std::shared_ptr<moxygen::MoQSession>& session) {
+  // Ensure we're not modifying sessions while iterating
+  XCHECK(!iteratingSessions_) << "Cannot remove session while iterating";
+
   auto it = topNGroups_.find(maxSelected);
   if (it == topNGroups_.end()) {
     return;
@@ -610,18 +556,39 @@ void PropertyRanking::trimDeselectedQueue(TopNGroup& topNGroup) {
                << " from TopNGroup maxSelected=" << topNGroup.maxSelected
                << " (deselectedQueue exceeded maxDeselected=" << maxDeselected_ << ")";
 
-    // Copy sessions before notifying to avoid iterator issues
-    std::vector<std::shared_ptr<moxygen::MoQSession>> sessionsToNotify;
+    // Use iteration guard - callbacks must not add/remove sessions
+    IterationGuard guard(*this);
     for (const auto& [session, info] : topNGroup.sessions) {
-      sessionsToNotify.push_back(session);
-    }
-    for (const auto& session : sessionsToNotify) {
       if (session && onEvicted_) {
         XLOG(DBG4) << "[PropertyRanking] Notifying session " << session.get()
                    << " of eviction: " << evicted;
         onEvicted_(evicted, session);
       }
     }
+  }
+}
+
+void PropertyRanking::notifyTrackSelected(
+    const moxygen::FullTrackName& ftn,
+    TopNGroup& topNGroup) {
+  // Batch notify viewers, individual for publishers (with self-exclusion)
+  std::vector<std::pair<std::shared_ptr<moxygen::MoQSession>, bool>> viewerBatch;
+  for (const auto& [session, info] : topNGroup.sessions) {
+    // Skip self-tracks for publishers
+    if (info.isSelfTrack(ftn)) {
+      if (stats_.enabled) {
+        stats_.selfExclusionSkips++;
+      }
+      continue;
+    }
+    if (!info.isPublisher()) {
+      viewerBatch.emplace_back(session, info.forward);
+    } else if (session && onSelected_) {
+      onSelected_(ftn, session, info.forward);
+    }
+  }
+  if (!viewerBatch.empty()) {
+    onBatchSelected_(ftn, viewerBatch);
   }
 }
 

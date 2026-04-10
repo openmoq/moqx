@@ -424,8 +424,15 @@ void MoqxRelay::onPublishDone(const FullTrackName& ftn) {
         bool hadLocalContent = nodePtr->hasLocalSessions();
         nodePtr->publishes.erase(ftn.trackName);
 
-        // Remove track from all PropertyRankings
+        // Remove track from all PropertyRankings and update self-exclusion lists
         for (auto& [propertyType, ranking] : nodePtr->rankings) {
+          // Remove from self-exclusion lists for sessions that published this track
+          for (const auto& [session, info] : nodePtr->sessions) {
+            if (info.trackFilter) {
+              ranking->removePublishedTrackFromSession(
+                  info.trackFilter->maxSelected, session, ftn);
+            }
+          }
           ranking->removeTrack(ftn);
         }
 

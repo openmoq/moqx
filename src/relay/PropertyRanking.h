@@ -379,6 +379,15 @@ class PropertyRanking {
       uint64_t maxSelected) const;
 
   /**
+   * Notify all sessions in a TopNGroup about a newly selected track.
+   * Handles batching for viewers and self-exclusion for publishers.
+   * Must be called with IterationGuard held.
+   */
+  void notifyTrackSelected(
+      const moxygen::FullTrackName& ftn,
+      TopNGroup& topNGroup);
+
+  /**
    * Rebuild rank cache after structural changes (insert/delete).
    * O(T) but amortized by lazy rebuilding.
    */
@@ -426,6 +435,24 @@ class PropertyRanking {
 
   // Rank cache invalidation flag - mutable because cache rebuild is const-safe
   mutable bool rankCacheValid_{false};
+
+  // Iteration guard - prevents session add/remove during callback iteration
+  bool iteratingSessions_{false};
+
+  // RAII guard for iteratingSessions_
+  class IterationGuard {
+   public:
+    explicit IterationGuard(PropertyRanking& pr) : pr_(pr) {
+      pr_.iteratingSessions_ = true;
+    }
+    ~IterationGuard() {
+      pr_.iteratingSessions_ = false;
+    }
+    IterationGuard(const IterationGuard&) = delete;
+    IterationGuard& operator=(const IterationGuard&) = delete;
+   private:
+    PropertyRanking& pr_;
+  };
 };
 
 } // namespace openmoq::moqx
