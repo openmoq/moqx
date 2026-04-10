@@ -54,7 +54,17 @@ buildFizzContext(const config::ListenerConfig& cfg) {
 }
 
 quic::TransportSettings buildTransportSettings(const config::QuicConfig& quic) {
+  // Start with MoQServer's optimized defaults, then apply config overrides.
   quic::TransportSettings ts;
+  ts.defaultCongestionController = quic::CongestionControlType::Copa;
+  ts.copaDeltaParam = 0.05;
+  ts.pacingEnabled = true;
+  ts.maxCwndInMss = quic::kLargeMaxCwndInMss;
+  ts.batchingMode = quic::QuicBatchingMode::BATCHING_MODE_GSO;
+  ts.maxBatchSize = 48;
+  ts.dataPathType = quic::DataPathType::ContinuousMemory;
+  ts.maxServerRecvPacketsPerLoop = 10;
+  ts.writeConnectionDataPacketsLimit = 48;
   ts.advertisedInitialConnectionFlowControlWindow = quic.maxData;
   ts.advertisedInitialBidiLocalStreamFlowControlWindow = quic.maxStreamData;
   ts.advertisedInitialBidiRemoteStreamFlowControlWindow = quic.maxStreamData;
