@@ -82,13 +82,25 @@ struct TrackFilterMetrics {
   std::vector<uint64_t> objectLatencies;
   std::vector<uint64_t> selectionLatencies;
 
+  // Top-N correctness verification
+  std::mutex topNMutex;
+  // Track name -> audio level (deterministic, set at test start)
+  std::map<std::string, uint64_t> trackAudioLevels;
+  // Client ID -> set of track names received via PUBLISH
+  std::map<int, std::set<std::string>> receivedTracks;
+  // Panelist ID -> their own track name (for self-exclusion verification)
+  std::map<int, std::string> panelistOwnTrack;
+  // Top-N correctness result
+  std::atomic<bool> topNCorrect{true};
+  std::atomic<uint64_t> topNMismatches{0};
+
   // Timing
   steady_clock::time_point testStart;
   steady_clock::time_point testEnd;
 
   void recordObjectLatency(uint64_t latencyUs) {
     std::lock_guard<std::mutex> lock(latencyMutex);
-    if (objectLatencies.size() < 1000000) {  // Cap at 1M samples
+    if (objectLatencies.size() < 1000000) { // Cap at 1M samples
       objectLatencies.push_back(latencyUs);
     }
   }
@@ -99,67 +111,124 @@ struct TrackFilterMetrics {
       selectionLatencies.push_back(latencyUs);
     }
   }
+
+  void recordTrackReceived(int clientId, const std::string& trackName) {
+    std::lock_guard<std::mutex> lock(topNMutex);
+    receivedTracks[clientId].insert(trackName);
+  }
+
+  void setTrackLevel(const std::string& trackName, uint64_t level) {
+    std::lock_guard<std::mutex> lock(topNMutex);
+    trackAudioLevels[trackName] = level;
+  }
+
+  void setPanelistOwnTrack(int panelistId, const std::string& trackName) {
+    std::lock_guard<std::mutex> lock(topNMutex);
+    panelistOwnTrack[panelistId] = trackName;
+  }
+
+  // Compute expected top-N tracks for a given client
+  // For pure subscribers: top N by audio level
+  // For panelists: top N excluding their own track
+  std::set<std::string> computeExpectedTopN(int clientId, int topN, int numPanelists) const {
+    std::set<std::string> expected;
+
+    // Build list of (level, trackName) pairs, excluding self-track for panelists
+    std::vector<std::pair<uint64_t, std::string>> candidates;
+    std::string selfTrack;
+
+    // Check if this client is a panelist (id < numPanelists)
+    bool isPanelist = clientId < numPanelists;
+    if (isPanelist) {
+      auto it = panelistOwnTrack.find(clientId);
+      if (it != panelistOwnTrack.end()) {
+        selfTrack = it->second;
+      }
+    }
+
+    for (const auto& [trackName, level] : trackAudioLevels) {
+      if (isPanelist && trackName == selfTrack) {
+        continue; // Self-exclusion
+      }
+      candidates.emplace_back(level, trackName);
+    }
+
+    // Sort descending by level
+    std::sort(candidates.begin(), candidates.end(), [](const auto& a, const auto& b) {
+      return a.first > b.first; // Higher level first
+    });
+
+    // Take top N
+    for (int i = 0; i < topN && i < static_cast<int>(candidates.size()); ++i) {
+      expected.insert(candidates[i].second);
+    }
+
+    return expected;
+  }
 };
 
 // Lightweight subscription handle
 class LoadTestSubscriptionHandle : public SubscriptionHandle {
- public:
+public:
   void unsubscribe() override {}
   folly::coro::Task<RequestUpdateResult> requestUpdate(RequestUpdate) override {
     co_return folly::makeUnexpected(
-        RequestError{RequestID(0), RequestErrorCode::INTERNAL_ERROR, "N/A"});
+        RequestError{RequestID(0), RequestErrorCode::INTERNAL_ERROR, "N/A"}
+    );
   }
 };
 
 // Handle for PUBLISH_NAMESPACE
 class LoadTestPublishNamespaceHandle : public Subscriber::PublishNamespaceHandle {
- public:
+public:
   using Subscriber::PublishNamespaceHandle::setPublishNamespaceOk;
   void publishNamespaceDone() override {}
   folly::coro::Task<RequestUpdateResult> requestUpdate(RequestUpdate req) override {
-    co_return folly::makeUnexpected(RequestError{
-        req.requestID, RequestErrorCode::NOT_SUPPORTED, "Not supported"});
+    co_return folly::makeUnexpected(
+        RequestError{req.requestID, RequestErrorCode::NOT_SUPPORTED, "Not supported"}
+    );
   }
 };
 
 // Handle for NAMESPACE messages
 class LoadTestNamespacePublishHandle : public Publisher::NamespacePublishHandle {
- public:
+public:
   void namespaceMsg(const TrackNamespace&) override {}
   void namespaceDoneMsg(const TrackNamespace&) override {}
 };
 
 // Track consumer for receiving objects
 class LoadTestTrackConsumer : public TrackConsumer {
- public:
+public:
   LoadTestTrackConsumer(
       int clientId,
       const std::string& trackName,
       bool isPanelist,
-      TrackFilterMetrics& metrics)
-      : clientId_(clientId),
-        trackName_(trackName),
-        isPanelist_(isPanelist),
-        metrics_(metrics) {
+      TrackFilterMetrics& metrics
+  )
+      : clientId_(clientId), trackName_(trackName), isPanelist_(isPanelist), metrics_(metrics) {
     if (isPanelist_) {
       selfTrackName_ = folly::to<std::string>("panelist-", clientId);
       isSelfTrack_ = (trackName == selfTrackName_);
     }
   }
 
-  folly::Expected<folly::Unit, MoQPublishError>
-  setTrackAlias(TrackAlias) override {
+  folly::Expected<folly::Unit, MoQPublishError> setTrackAlias(TrackAlias) override {
     return folly::unit;
   }
 
   folly::Expected<std::shared_ptr<SubgroupConsumer>, MoQPublishError>
   beginSubgroup(uint64_t, uint64_t, Priority, bool) override {
     return std::make_shared<LoadTestSubgroupConsumer>(
-        clientId_, trackName_, isPanelist_, isSelfTrack_, metrics_);
+        clientId_,
+        trackName_,
+        isPanelist_,
+        isSelfTrack_,
+        metrics_
+    );
   }
 
-  folly::Expected<folly::SemiFuture<folly::Unit>, MoQPublishError>
-  awaitStreamCredit() override {
+  folly::Expected<folly::SemiFuture<folly::Unit>, MoQPublishError> awaitStreamCredit() override {
     return folly::makeSemiFuture(folly::unit);
   }
 
@@ -174,12 +243,11 @@ class LoadTestTrackConsumer : public TrackConsumer {
     return folly::unit;
   }
 
-  folly::Expected<folly::Unit, MoQPublishError>
-  publishDone(PublishDone) override {
+  folly::Expected<folly::Unit, MoQPublishError> publishDone(PublishDone) override {
     return folly::unit;
   }
 
- private:
+private:
   void recordObject() {
     if (isSelfTrack_) {
       metrics_.selfReceivedObjects++;
@@ -189,18 +257,16 @@ class LoadTestTrackConsumer : public TrackConsumer {
   }
 
   class LoadTestSubgroupConsumer : public SubgroupConsumer {
-   public:
+  public:
     LoadTestSubgroupConsumer(
         int clientId,
         const std::string& trackName,
         bool isPanelist,
         bool isSelfTrack,
-        TrackFilterMetrics& metrics)
-        : clientId_(clientId),
-          trackName_(trackName),
-          isPanelist_(isPanelist),
-          isSelfTrack_(isSelfTrack),
-          metrics_(metrics) {}
+        TrackFilterMetrics& metrics
+    )
+        : clientId_(clientId), trackName_(trackName), isPanelist_(isPanelist),
+          isSelfTrack_(isSelfTrack), metrics_(metrics) {}
 
     folly::Expected<folly::Unit, MoQPublishError>
     object(uint64_t, Payload, Extensions, bool) override {
@@ -217,8 +283,7 @@ class LoadTestTrackConsumer : public TrackConsumer {
       return folly::unit;
     }
 
-    folly::Expected<ObjectPublishStatus, MoQPublishError>
-    objectPayload(Payload, bool) override {
+    folly::Expected<ObjectPublishStatus, MoQPublishError> objectPayload(Payload, bool) override {
       return ObjectPublishStatus::DONE;
     }
 
@@ -226,18 +291,15 @@ class LoadTestTrackConsumer : public TrackConsumer {
       return folly::unit;
     }
 
-    folly::Expected<folly::Unit, MoQPublishError>
-    endOfTrackAndGroup(uint64_t) override {
+    folly::Expected<folly::Unit, MoQPublishError> endOfTrackAndGroup(uint64_t) override {
       return folly::unit;
     }
 
-    folly::Expected<folly::Unit, MoQPublishError> endOfSubgroup() override {
-      return folly::unit;
-    }
+    folly::Expected<folly::Unit, MoQPublishError> endOfSubgroup() override { return folly::unit; }
 
     void reset(ResetStreamErrorCode) override {}
 
-   private:
+  private:
     int clientId_;
     std::string trackName_;
     bool isPanelist_;
@@ -255,41 +317,39 @@ class LoadTestTrackConsumer : public TrackConsumer {
 
 // Subscriber handler - receives forwarded PUBLISH from relay
 class LoadTestSubscriber : public Subscriber {
- public:
+public:
   LoadTestSubscriber(int id, bool isPanelist, TrackFilterMetrics& metrics)
       : id_(id), isPanelist_(isPanelist), metrics_(metrics) {}
 
-  PublishResult publish(
-      PublishRequest pubReq,
-      std::shared_ptr<SubscriptionHandle>) override {
+  PublishResult publish(PublishRequest pubReq, std::shared_ptr<SubscriptionHandle>) override {
     std::string trackName = pubReq.fullTrackName.trackName;
     metrics_.tracksSelected++;
 
-    auto consumer = std::make_shared<LoadTestTrackConsumer>(
-        id_, trackName, isPanelist_, metrics_);
+    // Record which track this client received for top-N verification
+    metrics_.recordTrackReceived(id_, trackName);
 
-    auto replyTask = [](RequestID reqID) -> folly::coro::Task<
-        folly::Expected<PublishOk, PublishError>> {
+    auto consumer = std::make_shared<LoadTestTrackConsumer>(id_, trackName, isPanelist_, metrics_);
+
+    auto replyTask = [](RequestID reqID
+                     ) -> folly::coro::Task<folly::Expected<PublishOk, PublishError>> {
       co_return PublishOk{.requestID = reqID, .forward = true};
     }(pubReq.requestID);
 
-    return PublishConsumerAndReplyTask{
-        .consumer = consumer,
-        .reply = std::move(replyTask)};
+    return PublishConsumerAndReplyTask{.consumer = consumer, .reply = std::move(replyTask)};
   }
 
-  folly::coro::Task<PublishNamespaceResult> publishNamespace(
-      PublishNamespace ann,
-      std::shared_ptr<PublishNamespaceCallback>) override {
+  folly::coro::Task<PublishNamespaceResult>
+  publishNamespace(PublishNamespace ann, std::shared_ptr<PublishNamespaceCallback>) override {
     auto handle = std::make_shared<LoadTestPublishNamespaceHandle>();
-    handle->setPublishNamespaceOk(PublishNamespaceOk{
-        .requestID = ann.requestID, .requestSpecificParams = {}});
+    handle->setPublishNamespaceOk(
+        PublishNamespaceOk{.requestID = ann.requestID, .requestSpecificParams = {}}
+    );
     co_return handle;
   }
 
   void goaway(Goaway) override {}
 
- private:
+private:
   int id_;
   bool isPanelist_;
   TrackFilterMetrics& metrics_;
@@ -297,11 +357,9 @@ class LoadTestSubscriber : public Subscriber {
 
 // Main load test class
 class TrackFilterLoadTest : public std::enable_shared_from_this<TrackFilterLoadTest> {
- public:
+public:
   TrackFilterLoadTest(folly::EventBase* evb, TrackFilterMetrics& metrics)
-      : evb_(evb),
-        moqEvb_(std::make_shared<MoQFollyExecutorImpl>(evb)),
-        metrics_(metrics) {}
+      : evb_(evb), moqEvb_(std::make_shared<MoQFollyExecutorImpl>(evb)), metrics_(metrics) {}
 
   folly::coro::Task<void> run() {
     metrics_.testStart = steady_clock::now();
@@ -314,8 +372,8 @@ class TrackFilterLoadTest : public std::enable_shared_from_this<TrackFilterLoadT
     std::cout << "Duration: " << FLAGS_duration << "s\n\n";
 
     try {
-      // Connect panelists
-      std::cout << "[1/4] Connecting " << FLAGS_panelists << " panelists...\n";
+      // Phase 1: Connect panelists
+      std::cout << "Phase 1: Connecting " << FLAGS_panelists << " panelists...\n";
       for (int i = 0; i < FLAGS_panelists; ++i) {
         if (co_await connectPanelist(i)) {
           metrics_.panelistsConnected++;
@@ -327,8 +385,8 @@ class TrackFilterLoadTest : public std::enable_shared_from_this<TrackFilterLoadT
         }
       }
 
-      // Connect subscribers in batches
-      std::cout << "\n[2/4] Connecting " << FLAGS_subscribers << " subscribers...\n";
+      // Phase 2: Connect subscribers in batches
+      std::cout << "\nPhase 2: Connecting " << FLAGS_subscribers << " subscribers...\n";
       for (int batch = 0; batch < FLAGS_subscribers; batch += FLAGS_batch_size) {
         int batchEnd = std::min(batch + FLAGS_batch_size, FLAGS_subscribers);
         std::vector<folly::coro::Task<bool>> tasks;
@@ -343,28 +401,29 @@ class TrackFilterLoadTest : public std::enable_shared_from_this<TrackFilterLoadT
             metrics_.connectionErrors++;
           }
         }
-        std::cout << "  Connected " << metrics_.subscribersConnected
-                  << "/" << FLAGS_subscribers << " subscribers\n";
+        std::cout << "  Connected " << metrics_.subscribersConnected << "/" << FLAGS_subscribers
+                  << " subscribers\n";
         co_await folly::coro::sleep(milliseconds(FLAGS_batch_delay_ms));
       }
 
       std::cout << "\nConnections complete:\n";
       std::cout << "  Panelists: " << metrics_.panelistsConnected << "/" << FLAGS_panelists << "\n";
-      std::cout << "  Subscribers: " << metrics_.subscribersConnected << "/" << FLAGS_subscribers << "\n";
+      std::cout << "  Subscribers: " << metrics_.subscribersConnected << "/" << FLAGS_subscribers
+                << "\n";
 
       if (panelistConsumers_.empty()) {
         std::cerr << "Error: No panelists connected\n";
         co_return;
       }
 
-      // Run publishing loop
-      std::cout << "\n[3/4] Running test for " << FLAGS_duration << " seconds...\n";
+      // Phase 3: Run publishing loop
+      std::cout << "\nPhase 3: Running test for " << FLAGS_duration << " seconds...\n";
       co_await runPublisherLoop(seconds(FLAGS_duration));
 
       metrics_.testEnd = steady_clock::now();
 
-      // Cleanup
-      std::cout << "\n[4/4] Cleaning up...\n";
+      // Phase 4: Cleanup
+      std::cout << "\nPhase 4: Cleaning up...\n";
       cleanup();
 
     } catch (const std::exception& ex) {
@@ -381,7 +440,8 @@ class TrackFilterLoadTest : public std::enable_shared_from_this<TrackFilterLoadT
     report << "\n";
     report << "================================================================================\n";
     report << "                    TRACK FILTER LOAD TEST REPORT\n";
-    report << "================================================================================\n\n";
+    report
+        << "================================================================================\n\n";
 
     // Test Configuration
     report << "TEST CONFIGURATION\n";
@@ -396,13 +456,15 @@ class TrackFilterLoadTest : public std::enable_shared_from_this<TrackFilterLoadT
     // Connection Results
     report << "CONNECTION RESULTS\n";
     report << "------------------\n";
-    report << "  Panelists Connected:     " << metrics_.panelistsConnected << "/" << FLAGS_panelists << "\n";
-    report << "  Subscribers Connected:   " << metrics_.subscribersConnected << "/" << FLAGS_subscribers << "\n";
+    report << "  Panelists Connected:     " << metrics_.panelistsConnected << "/" << FLAGS_panelists
+           << "\n";
+    report << "  Subscribers Connected:   " << metrics_.subscribersConnected << "/"
+           << FLAGS_subscribers << "\n";
     report << "  Connection Errors:       " << metrics_.connectionErrors << "\n";
-    report << "  Connection Success Rate: "
-           << std::fixed << std::setprecision(1)
+    report << "  Connection Success Rate: " << std::fixed << std::setprecision(1)
            << (100.0 * (metrics_.panelistsConnected + metrics_.subscribersConnected) /
-               (FLAGS_panelists + FLAGS_subscribers)) << "%\n\n";
+               (FLAGS_panelists + FLAGS_subscribers))
+           << "%\n\n";
 
     // Throughput Metrics
     report << "THROUGHPUT METRICS\n";
@@ -434,17 +496,91 @@ class TrackFilterLoadTest : public std::enable_shared_from_this<TrackFilterLoadT
       report << "  " << metrics_.selfReceivedObjects << " self-received objects detected!\n\n";
     }
 
+    // Top-N Correctness Verification
+    report << "TOP-N CORRECTNESS VERIFICATION\n";
+    report << "------------------------------\n";
+    {
+      std::lock_guard<std::mutex> lock(metrics_.topNMutex);
+      uint64_t clientsVerified = 0;
+      uint64_t clientsPassed = 0;
+      uint64_t clientsFailed = 0;
+      std::vector<std::string> failureDetails;
+
+      // Verify each client received the expected top-N tracks
+      for (const auto& [clientId, receivedSet] : metrics_.receivedTracks) {
+        clientsVerified++;
+        auto expectedSet =
+            metrics_.computeExpectedTopN(clientId, FLAGS_top_n, FLAGS_panelists);
+
+        if (receivedSet == expectedSet) {
+          clientsPassed++;
+        } else {
+          clientsFailed++;
+          if (failureDetails.size() < 10) { // Limit detailed failures
+            std::stringstream ss;
+            ss << "    Client " << clientId << ": expected {";
+            bool first = true;
+            for (const auto& t : expectedSet) {
+              if (!first) ss << ", ";
+              ss << t;
+              first = false;
+            }
+            ss << "}, got {";
+            first = true;
+            for (const auto& t : receivedSet) {
+              if (!first) ss << ", ";
+              ss << t;
+              first = false;
+            }
+            ss << "}";
+            failureDetails.push_back(ss.str());
+          }
+        }
+      }
+
+      report << "  Clients Verified:        " << clientsVerified << "\n";
+      report << "  Clients Passed:          " << clientsPassed << "\n";
+      report << "  Clients Failed:          " << clientsFailed << "\n";
+
+      if (clientsFailed == 0 && clientsVerified > 0) {
+        report << "  Status: PASSED\n";
+        report << "  All clients received exactly the expected top-" << FLAGS_top_n << " tracks\n";
+      } else if (clientsVerified == 0) {
+        report << "  Status: SKIPPED\n";
+        report << "  No track selections recorded (test may have failed early)\n";
+      } else {
+        report << "  Status: FAILED\n";
+        report << "  " << clientsFailed << " clients received incorrect tracks\n";
+        if (!failureDetails.empty()) {
+          report << "  First failures:\n";
+          for (const auto& detail : failureDetails) {
+            report << detail << "\n";
+          }
+          if (clientsFailed > 10) {
+            report << "    ... and " << (clientsFailed - 10) << " more\n";
+          }
+        }
+      }
+      report << "\n";
+
+      // Update metrics for exit code
+      if (clientsFailed > 0) {
+        metrics_.topNCorrect.store(false);
+        metrics_.topNMismatches.store(clientsFailed);
+      }
+    }
+
     // Expected vs Actual Analysis
     report << "EXPECTED VS ACTUAL\n";
     report << "------------------\n";
     uint64_t expectedPublished = FLAGS_panelists * FLAGS_duration * FLAGS_update_hz;
-    double publishRate = (expectedPublished > 0)
-        ? (100.0 * metrics_.publishedObjects / expectedPublished) : 0;
+    double publishRate =
+        (expectedPublished > 0) ? (100.0 * metrics_.publishedObjects / expectedPublished) : 0;
 
     report << "  Target Published:        " << expectedPublished << "\n";
     report << "  Actual Published:        " << metrics_.publishedObjects << "\n";
-    report << "  Publish Rate:            " << std::fixed << std::setprecision(1)
-           << publishRate << "% of target\n\n";
+    report << "  Publish Rate:            " << std::fixed << std::setprecision(1) << publishRate
+           << "% of target\n\n";
 
     // Forwarding efficiency: based on ACTUAL published objects from top-N tracks
     // Only top-N tracks are selected, so only (top_n/panelists) fraction should be forwarded
@@ -459,12 +595,13 @@ class TrackFilterLoadTest : public std::enable_shared_from_this<TrackFilterLoadT
 
     report << "  Top-N Tracks:            " << effectiveTopN << "/" << FLAGS_panelists << "\n";
     report << "  Objects from Top-N:      ~" << estimatedTopNObjects << "\n";
-    report << "  Recipients per Object:   " << recipientsPerObject
-           << " (" << FLAGS_subscribers << " subs + " << (FLAGS_panelists - 1) << " panelists)\n";
+    report << "  Recipients per Object:   " << recipientsPerObject << " (" << FLAGS_subscribers
+           << " subs + " << (FLAGS_panelists - 1) << " panelists)\n";
     report << "  Expected Forwarded:      ~" << expectedForwarded << "\n";
     report << "  Actual Received:         " << metrics_.receivedObjects << "\n";
     double forwardEfficiency = (metrics_.receivedObjects > 0 && expectedForwarded > 0)
-        ? (100.0 * metrics_.receivedObjects / expectedForwarded) : 0;
+                                   ? (100.0 * metrics_.receivedObjects / expectedForwarded)
+                                   : 0;
     report << "  Forwarding Efficiency:   " << std::fixed << std::setprecision(1)
            << forwardEfficiency << "%\n\n";
 
@@ -488,13 +625,15 @@ class TrackFilterLoadTest : public std::enable_shared_from_this<TrackFilterLoadT
     // Summary
     report << "SUMMARY\n";
     report << "-------\n";
-    report << "  Test Duration:           " << std::fixed << std::setprecision(2)
-           << durationSec << "s\n";
-    report << "  Total Messages Handled:  " << (metrics_.publishedObjects + metrics_.receivedObjects) << "\n";
+    report << "  Test Duration:           " << std::fixed << std::setprecision(2) << durationSec
+           << "s\n";
+    report << "  Total Messages Handled:  "
+           << (metrics_.publishedObjects + metrics_.receivedObjects) << "\n";
     report << "  Message Rate:            " << std::fixed << std::setprecision(1)
            << ((metrics_.publishedObjects + metrics_.receivedObjects) / durationSec) << " msg/s\n";
 
-    report << "\n================================================================================\n";
+    report
+        << "\n================================================================================\n";
 
     std::cout << report.str();
 
@@ -507,15 +646,20 @@ class TrackFilterLoadTest : public std::enable_shared_from_this<TrackFilterLoadT
     }
   }
 
- private:
+private:
   folly::coro::Task<bool> connectPanelist(int id) {
     proxygen::URL url(FLAGS_relay_url);
-    auto verifier = FLAGS_insecure
-        ? std::make_shared<moxygen::test::InsecureVerifierDangerousDoNotUseInProduction>()
-        : nullptr;
+    auto verifier =
+        FLAGS_insecure
+            ? std::make_shared<moxygen::test::InsecureVerifierDangerousDoNotUseInProduction>()
+            : nullptr;
 
     auto client = std::make_unique<MoQWebTransportClient>(
-        moqEvb_, url, MoQRelaySession::createRelaySessionFactory(), verifier);
+        moqEvb_,
+        url,
+        MoQRelaySession::createRelaySessionFactory(),
+        verifier
+    );
     auto handler = std::make_shared<LoadTestSubscriber>(id, true, metrics_);
 
     try {
@@ -523,8 +667,11 @@ class TrackFilterLoadTest : public std::enable_shared_from_this<TrackFilterLoadT
       co_await client->setupMoQSession(
           milliseconds(FLAGS_connect_timeout),
           seconds(FLAGS_transaction_timeout),
-          nullptr, handler,
-          quic::TransportSettings(), alpns);
+          nullptr,
+          handler,
+          quic::TransportSettings(),
+          alpns
+      );
 
       auto session = client->moqSession_;
       if (!session) {
@@ -534,13 +681,12 @@ class TrackFilterLoadTest : public std::enable_shared_from_this<TrackFilterLoadT
       // Subscribe with TRACK_FILTER
       SubscribeNamespace subNs;
       subNs.requestID = RequestID{static_cast<uint64_t>(id * 2)};
-      subNs.trackNamespacePrefix = TrackNamespace(
-          std::vector<std::string>{FLAGS_namespace_prefix, "audio"});
+      subNs.trackNamespacePrefix =
+          TrackNamespace(std::vector<std::string>{FLAGS_namespace_prefix, "audio"});
       subNs.forward = true;
 
       TrackFilter filter(kAudioLevelPropertyType, FLAGS_top_n);
-      Parameter trackFilterParam(
-          folly::to_underlying(TrackRequestParamKey::TRACK_FILTER), filter);
+      Parameter trackFilterParam(folly::to_underlying(TrackRequestParamKey::TRACK_FILTER), filter);
       subNs.params.insertParam(std::move(trackFilterParam));
 
       auto nsHandle = std::make_shared<LoadTestNamespacePublishHandle>();
@@ -549,20 +695,12 @@ class TrackFilterLoadTest : public std::enable_shared_from_this<TrackFilterLoadT
         co_return false;
       }
 
-      // Publish namespace
-      PublishNamespace ann;
-      ann.trackNamespace = TrackNamespace(
-          std::vector<std::string>{FLAGS_namespace_prefix, "audio"});
-      auto annResult = co_await session->publishNamespace(std::move(ann));
-      if (!annResult) {
-        co_return false;
-      }
-
       // Publish track
       PublishRequest pubReq;
       pubReq.fullTrackName = FullTrackName{
           TrackNamespace(std::vector<std::string>{FLAGS_namespace_prefix, "audio"}),
-          folly::to<std::string>("panelist-", id)};
+          folly::to<std::string>("panelist-", id)
+      };
       pubReq.groupOrder = GroupOrder::OldestFirst;
       pubReq.forward = true;
 
@@ -582,7 +720,6 @@ class TrackFilterLoadTest : public std::enable_shared_from_this<TrackFilterLoadT
       panelistSessions_.push_back(session);
       panelistConsumers_.push_back(pubResponse.consumer);
       subscribeNamespaceHandles_.push_back(std::move(subResult.value()));
-      publishNamespaceHandles_.push_back(std::move(annResult.value()));
 
       co_return true;
 
@@ -593,22 +730,29 @@ class TrackFilterLoadTest : public std::enable_shared_from_this<TrackFilterLoadT
 
   folly::coro::Task<bool> connectSubscriber(int id) {
     proxygen::URL url(FLAGS_relay_url);
-    auto verifier = FLAGS_insecure
-        ? std::make_shared<moxygen::test::InsecureVerifierDangerousDoNotUseInProduction>()
-        : nullptr;
+    auto verifier =
+        FLAGS_insecure
+            ? std::make_shared<moxygen::test::InsecureVerifierDangerousDoNotUseInProduction>()
+            : nullptr;
 
     auto client = std::make_unique<MoQWebTransportClient>(
-        moqEvb_, url, MoQRelaySession::createRelaySessionFactory(), verifier);
-    auto handler = std::make_shared<LoadTestSubscriber>(
-        FLAGS_panelists + id, false, metrics_);
+        moqEvb_,
+        url,
+        MoQRelaySession::createRelaySessionFactory(),
+        verifier
+    );
+    auto handler = std::make_shared<LoadTestSubscriber>(FLAGS_panelists + id, false, metrics_);
 
     try {
       std::vector<std::string> alpns = {"moqt-16", "moqt-15", "moq-00"};
       co_await client->setupMoQSession(
           milliseconds(FLAGS_connect_timeout),
           seconds(FLAGS_transaction_timeout),
-          nullptr, handler,
-          quic::TransportSettings(), alpns);
+          nullptr,
+          handler,
+          quic::TransportSettings(),
+          alpns
+      );
 
       auto session = client->moqSession_;
       if (!session) {
@@ -618,13 +762,12 @@ class TrackFilterLoadTest : public std::enable_shared_from_this<TrackFilterLoadT
       // Subscribe with TRACK_FILTER only (no publishing)
       SubscribeNamespace subNs;
       subNs.requestID = RequestID{static_cast<uint64_t>((FLAGS_panelists + id) * 2)};
-      subNs.trackNamespacePrefix = TrackNamespace(
-          std::vector<std::string>{FLAGS_namespace_prefix, "audio"});
+      subNs.trackNamespacePrefix =
+          TrackNamespace(std::vector<std::string>{FLAGS_namespace_prefix, "audio"});
       subNs.forward = true;
 
       TrackFilter filter(kAudioLevelPropertyType, FLAGS_top_n);
-      Parameter trackFilterParam(
-          folly::to_underlying(TrackRequestParamKey::TRACK_FILTER), filter);
+      Parameter trackFilterParam(folly::to_underlying(TrackRequestParamKey::TRACK_FILTER), filter);
       subNs.params.insertParam(std::move(trackFilterParam));
 
       auto nsHandle = std::make_shared<LoadTestNamespacePublishHandle>();
@@ -645,8 +788,17 @@ class TrackFilterLoadTest : public std::enable_shared_from_this<TrackFilterLoadT
   }
 
   folly::coro::Task<void> runPublisherLoop(seconds duration) {
-    std::mt19937 rng(std::random_device{}());
-    std::uniform_int_distribution<uint64_t> noiseDist(0, 30);
+    // Set up deterministic audio levels for top-N correctness verification
+    // Panelist 0 has level 100, panelist 1 has level 99, etc.
+    // This creates a deterministic ranking where we know exactly which
+    // tracks should be in the top-N.
+    std::vector<uint64_t> audioLevels(panelistConsumers_.size());
+    for (size_t i = 0; i < panelistConsumers_.size(); ++i) {
+      audioLevels[i] = 100 - i; // Deterministic: higher index = lower level
+      std::string trackName = folly::to<std::string>("panelist-", i);
+      metrics_.setTrackLevel(trackName, audioLevels[i]);
+      metrics_.setPanelistOwnTrack(static_cast<int>(i), trackName);
+    }
 
     auto endTime = steady_clock::now() + duration;
     uint64_t group = 0;
@@ -659,24 +811,19 @@ class TrackFilterLoadTest : public std::enable_shared_from_this<TrackFilterLoadT
 
       for (size_t i = 0; i < panelistConsumers_.size(); ++i) {
         auto& consumer = panelistConsumers_[i];
-        if (!consumer) continue;
+        if (!consumer)
+          continue;
 
-        // First 20% are "active speakers" with higher audio levels
-        uint64_t baseLevel = (i < panelistConsumers_.size() / 5) ? 70 : 30;
-        uint64_t audioLevel = std::min(uint64_t{100}, baseLevel + noiseDist(rng));
+        // Use deterministic audio level for this panelist
+        uint64_t audioLevel = audioLevels[i];
 
         Extensions extensions;
-        extensions.getMutableExtensions().push_back(
-            Extension(kAudioLevelPropertyType, audioLevel));
+        extensions.getMutableExtensions().push_back(Extension(kAudioLevelPropertyType, audioLevel));
 
-        ObjectHeader header{
-            group, 0, 0, 0,
-            ObjectStatus::NORMAL,
-            std::move(extensions),
-            std::nullopt};
+        ObjectHeader
+            header{group, 0, 0, 0, ObjectStatus::NORMAL, std::move(extensions), std::nullopt};
 
-        auto payload = folly::IOBuf::copyBuffer(
-            folly::to<std::string>("audio:", audioLevel));
+        auto payload = folly::IOBuf::copyBuffer(folly::to<std::string>("audio:", audioLevel));
 
         auto res = consumer->objectStream(header, std::move(payload));
         if (res.hasError()) {
@@ -699,8 +846,7 @@ class TrackFilterLoadTest : public std::enable_shared_from_this<TrackFilterLoadT
 
       auto elapsed = steady_clock::now() - iterStart;
       if (elapsed < updateInterval) {
-        co_await folly::coro::sleep(
-            duration_cast<microseconds>(updateInterval - elapsed));
+        co_await folly::coro::sleep(duration_cast<microseconds>(updateInterval - elapsed));
       }
     }
   }
@@ -720,7 +866,6 @@ class TrackFilterLoadTest : public std::enable_shared_from_this<TrackFilterLoadT
   std::vector<std::unique_ptr<MoQWebTransportClient>> panelistClients_;
   std::vector<std::shared_ptr<MoQSession>> panelistSessions_;
   std::vector<std::shared_ptr<TrackConsumer>> panelistConsumers_;
-  std::vector<std::shared_ptr<Subscriber::PublishNamespaceHandle>> publishNamespaceHandles_;
   std::vector<std::shared_ptr<Publisher::SubscribeNamespaceHandle>> subscribeNamespaceHandles_;
 
   std::vector<std::unique_ptr<MoQWebTransportClient>> subscriberClients_;
@@ -728,14 +873,15 @@ class TrackFilterLoadTest : public std::enable_shared_from_this<TrackFilterLoadT
   std::vector<std::shared_ptr<Publisher::SubscribeNamespaceHandle>> subscriberHandles_;
 };
 
-}  // namespace
+} // namespace
 
 int main(int argc, char** argv) {
   folly::Init init(&argc, &argv, true);
 
   if (FLAGS_relay_url.empty()) {
     std::cerr << "Error: --relay_url required\n";
-    std::cerr << "Example: ./track_filter_load_test --relay_url=https://localhost:9668/moq-relay --insecure\n";
+    std::cerr << "Example: ./track_filter_load_test --relay_url=https://localhost:9668/moq-relay "
+                 "--insecure\n";
     return 1;
   }
 
@@ -747,11 +893,12 @@ int main(int argc, char** argv) {
   co_withExecutor(&evb, test->run()).start().via(&evb).thenTry([test, &evb](const auto&) {
     test->generateReport();
     // Schedule termination after a short delay to allow graceful cleanup
-    evb.runAfterDelay([&evb]() {
-      evb.terminateLoopSoon();
-    }, 500);  // 500ms for cleanup
+    evb.runAfterDelay([&evb]() { evb.terminateLoopSoon(); }, 500); // 500ms for cleanup
   });
   evb.loop();
 
-  return metrics.selfReceivedObjects.load() > 0 ? 1 : 0;
+  // Exit code: fail if self-exclusion violated OR top-N incorrect
+  bool selfExclusionFailed = metrics.selfReceivedObjects.load() > 0;
+  bool topNFailed = !metrics.topNCorrect.load();
+  return (selfExclusionFailed || topNFailed) ? 1 : 0;
 }
