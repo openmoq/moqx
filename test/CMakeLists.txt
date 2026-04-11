@@ -165,3 +165,14 @@ target_link_libraries(moqx_topn_filter_test PRIVATE
   GTest::gmock
 )
 gtest_discover_tests(moqx_topn_filter_test)
+
+# PropertyRanking base unit tests (no self-exclusion)
+add_executable(moqx_property_ranking_base_test
+  PropertyRankingBaseTest.cpp
+)
+target_link_libraries(moqx_property_ranking_base_test PRIVATE
+  moqx_core
+  GTest::gtest_main
+  GTest::gmock
+)
+gtest_discover_tests(moqx_property_ranking_base_test)
