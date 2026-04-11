@@ -29,11 +29,27 @@ void TopNFilter::removeObserver(uint64_t propertyType) {
   observers_.erase(propertyType);
 }
 
+void TopNFilter::setActivityTarget(std::chrono::steady_clock::time_point* target) {
+  activityTarget_ = target;
+}
+
+void TopNFilter::setActivityThreshold(std::chrono::milliseconds threshold) {
+  activityThreshold_ = threshold;
+}
+
 void TopNFilter::checkProperties(const moxygen::Extensions& extensions) {
-  // FAST PATH: No observers to notify
+  // FAST PATH: No observers — nothing to do
   if (observers_.empty()) {
     return;
   }
+
+  auto now = std::chrono::steady_clock::now();
+
+  // Throttle check for onActivity
+  bool activityThrottleAllows =
+      activityThreshold_.count() > 0 &&
+      (!lastActivityNotify_ || now - *lastActivityNotify_ >= activityThreshold_);
+  bool firedAnyActivity = false;
 
   // Check extensions for property values we're observing
   for (auto& [propertyType, entry] : observers_) {
@@ -42,8 +58,14 @@ void TopNFilter::checkProperties(const moxygen::Extensions& extensions) {
       continue;
     }
 
+    // Property matched — update activity timestamp
+    if (activityTarget_) {
+      *activityTarget_ = now;
+    }
+
     uint64_t value = *valueOpt;
     if (!entry.lastSeenValue || *entry.lastSeenValue != value) {
+      // Value changed: fire onValueChanged (not onActivity)
       XLOG(DBG4) << "[TopNFilter] Property changed on " << ftn_ << ": propertyType=0x" << std::hex
                  << propertyType << std::dec << " oldValue=" << entry.lastSeenValue.value_or(0)
                  << " newValue=" << value;
@@ -51,7 +73,15 @@ void TopNFilter::checkProperties(const moxygen::Extensions& extensions) {
       if (entry.observer.onValueChanged) {
         entry.observer.onValueChanged(value);
       }
+    } else if (activityThrottleAllows && entry.observer.onActivity) {
+      // Property seen but value unchanged: fire onActivity (throttled)
+      entry.observer.onActivity();
+      firedAnyActivity = true;
     }
+  }
+
+  if (firedAnyActivity) {
+    lastActivityNotify_ = now;
   }
 }
 
