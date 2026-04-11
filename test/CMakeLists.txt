@@ -176,3 +176,15 @@ target_link_libraries(moqx_property_ranking_base_test PRIVATE
   GTest::gmock
 )
 gtest_discover_tests(moqx_property_ranking_base_test)
+
+# TRACK_FILTER integration tests (in-process relay, no live server)
+add_executable(moqx_track_filter_test
+  MoqxTrackFilterTest.cpp
+)
+target_link_libraries(moqx_track_filter_test PRIVATE
+  moqx_core
+  moqx_test_main
+  GTest::gmock
+  moxygen::moxygen_events_moq_folly_executor_impl
+)
+gtest_discover_tests(moqx_track_filter_test)
