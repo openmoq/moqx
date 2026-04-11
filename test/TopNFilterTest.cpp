@@ -273,4 +273,134 @@ TEST_F(TopNFilterTest, DatagramTriggersCheckProperties) {
   EXPECT_EQ(called, 1);
 }
 
+// ---------------------------------------------------------------------------
+// activityTarget_: written on every object
+// ---------------------------------------------------------------------------
+
+TEST_F(TopNFilterTest, ActivityTargetWrittenOnEveryObject) {
+  std::chrono::steady_clock::time_point ts{};
+  filter_->setActivityTarget(&ts);
+  filter_->registerObserver(kPropA, PropertyObserver{});
+
+  auto before = std::chrono::steady_clock::now();
+  filter_->checkProperties(makeExt(kPropA, 1));
+  auto after = std::chrono::steady_clock::now();
+
+  EXPECT_GE(ts, before);
+  EXPECT_LE(ts, after);
+}
+
+TEST_F(TopNFilterTest, ActivityTargetWrittenEvenWithNoPropertyMatch) {
+  std::chrono::steady_clock::time_point ts{};
+  filter_->setActivityTarget(&ts);
+  filter_->registerObserver(kPropA, PropertyObserver{});
+
+  // Extensions have kPropB, not kPropA — activityTarget should still be written
+  auto before = std::chrono::steady_clock::now();
+  filter_->checkProperties(makeExt(kPropB, 99));
+  auto after = std::chrono::steady_clock::now();
+
+  EXPECT_GE(ts, before);
+  EXPECT_LE(ts, after);
+}
+
+TEST_F(TopNFilterTest, ActivityTargetWrittenWithNoObservers) {
+  // activityTarget_ alone (no observers) keeps the fast path alive but still writes.
+  std::chrono::steady_clock::time_point ts{};
+  filter_->setActivityTarget(&ts);
+
+  auto before = std::chrono::steady_clock::now();
+  filter_->checkProperties(makeExt(kPropA, 1));
+  auto after = std::chrono::steady_clock::now();
+
+  EXPECT_GE(ts, before);
+  EXPECT_LE(ts, after);
+}
+
+// ---------------------------------------------------------------------------
+// onActivity: fires only when property seen but value unchanged (throttled)
+// ---------------------------------------------------------------------------
+
+TEST_F(TopNFilterTest, OnActivityNotFiredWhenThresholdIsZero) {
+  int activityCount = 0;
+  filter_->registerObserver(kPropA, PropertyObserver{.onActivity = [&]() { activityCount++; }});
+  // activityThreshold_ is zero (default) — onActivity must never fire
+  filter_->checkProperties(makeExt(kPropA, 1));
+  filter_->checkProperties(makeExt(kPropA, 1)); // same value, but threshold=0
+  EXPECT_EQ(activityCount, 0);
+}
+
+TEST_F(TopNFilterTest, OnActivityNotFiredWhenValueChanges) {
+  int activityCount = 0;
+  int valueChangedCount = 0;
+  filter_->registerObserver(
+      kPropA,
+      PropertyObserver{
+          .onValueChanged = [&](uint64_t) { valueChangedCount++; },
+          .onActivity = [&]() { activityCount++; },
+      }
+  );
+  filter_->setActivityThreshold(std::chrono::hours(1));
+
+  // First call: value changes (null -> 42), onValueChanged fires, NOT onActivity
+  filter_->checkProperties(makeExt(kPropA, 42));
+  EXPECT_EQ(valueChangedCount, 1);
+  EXPECT_EQ(activityCount, 0);
+
+  // Second call: value changes again, onValueChanged fires, NOT onActivity
+  filter_->checkProperties(makeExt(kPropA, 43));
+  EXPECT_EQ(valueChangedCount, 2);
+  EXPECT_EQ(activityCount, 0);
+}
+
+TEST_F(TopNFilterTest, OnActivityFiredWhenValueUnchanged) {
+  int activityCount = 0;
+  int valueChangedCount = 0;
+  filter_->registerObserver(
+      kPropA,
+      PropertyObserver{
+          .onValueChanged = [&](uint64_t) { valueChangedCount++; },
+          .onActivity = [&]() { activityCount++; },
+      }
+  );
+  filter_->setActivityThreshold(std::chrono::hours(1));
+
+  // First call: value changes, onValueChanged fires, NOT onActivity
+  filter_->checkProperties(makeExt(kPropA, 42));
+  EXPECT_EQ(valueChangedCount, 1);
+  EXPECT_EQ(activityCount, 0);
+
+  // Second call: same value, onActivity fires (throttle allows since epoch)
+  filter_->checkProperties(makeExt(kPropA, 42));
+  EXPECT_EQ(valueChangedCount, 1);
+  EXPECT_EQ(activityCount, 1);
+}
+
+TEST_F(TopNFilterTest, OnActivityThrottled) {
+  int activityCount = 0;
+  filter_->registerObserver(kPropA, PropertyObserver{.onActivity = [&]() { activityCount++; }});
+  filter_->setActivityThreshold(std::chrono::hours(1));
+
+  // Prime with initial value
+  filter_->checkProperties(makeExt(kPropA, 42));
+
+  // First unchanged: fires (time since epoch > 1h)
+  filter_->checkProperties(makeExt(kPropA, 42));
+  EXPECT_EQ(activityCount, 1);
+
+  // Second unchanged immediately after: throttled
+  filter_->checkProperties(makeExt(kPropA, 42));
+  EXPECT_EQ(activityCount, 1);
+}
+
+TEST_F(TopNFilterTest, OnActivityNotFiredWhenPropertyNotMatched) {
+  int activityCount = 0;
+  filter_->registerObserver(kPropA, PropertyObserver{.onActivity = [&]() { activityCount++; }});
+  filter_->setActivityThreshold(std::chrono::hours(1));
+
+  // Extensions have kPropB, not kPropA — onActivity should NOT fire
+  filter_->checkProperties(makeExt(kPropB, 99));
+  EXPECT_EQ(activityCount, 0);
+}
+
 } // namespace
