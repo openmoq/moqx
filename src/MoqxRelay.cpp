@@ -1318,6 +1318,8 @@ std::shared_ptr<PropertyRanking> MoqxRelay::getOrCreateRanking(
     ranking = std::make_shared<PropertyRanking>(
         propertyType,
         maxDeselected_,
+        std::chrono::milliseconds(0), // idle eviction wired in subsequent commit
+        nullptr,                      // getLastActivity wired in subsequent commit
         // Batch callback: called once per track-selected event with all sessions
         [this](
             const FullTrackName& ftn,
