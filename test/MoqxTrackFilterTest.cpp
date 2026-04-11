@@ -733,7 +733,8 @@ TEST_F(MoqxTrackFilterTest, IdleEviction_SilentTrackReplacedByActiveOutsider) {
       /*relayID=*/"",
       /*maxDeselected=*/5,
       /*idleTimeout=*/std::chrono::milliseconds(10),
-      /*activityThreshold=*/std::chrono::milliseconds(1));
+      /*activityThreshold=*/std::chrono::milliseconds(1)
+  );
   relay_->setAllowedNamespacePrefix(kPrefix);
 
   auto pubSess = makeSession();
