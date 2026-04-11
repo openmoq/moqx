@@ -154,3 +154,14 @@ target_link_libraries(moqx_upstream_provider_test PRIVATE
   GTest::gmock
 )
 gtest_discover_tests(moqx_upstream_provider_test)
+
+# TopNFilter unit tests
+add_executable(moqx_topn_filter_test
+  TopNFilterTest.cpp
+)
+target_link_libraries(moqx_topn_filter_test PRIVATE
+  moqx_core
+  GTest::gtest_main
+  GTest::gmock
+)
+gtest_discover_tests(moqx_topn_filter_test)
