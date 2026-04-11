@@ -177,6 +177,17 @@ target_link_libraries(moqx_property_ranking_base_test PRIVATE
 )
 gtest_discover_tests(moqx_property_ranking_base_test)
 
+# PropertyRanking self-exclusion / waterline unit tests
+add_executable(moqx_property_ranking_self_exclusion_test
+  PropertyRankingSelfExclusionTest.cpp
+)
+target_link_libraries(moqx_property_ranking_self_exclusion_test PRIVATE
+  moqx_core
+  GTest::gtest_main
+  GTest::gmock
+)
+gtest_discover_tests(moqx_property_ranking_self_exclusion_test)
+
 # TRACK_FILTER integration tests (in-process relay, no live server)
 add_executable(moqx_track_filter_test
   MoqxTrackFilterTest.cpp
