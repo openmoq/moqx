@@ -7,6 +7,7 @@
 #include "MoqxPicoRelayServer.h"
 
 #include "stats/PicoQuicStatsCollector.h"
+#include "tls/TlsCertLoader.h"
 #include <folly/io/async/EventBase.h>
 #include <folly/logging/xlog.h>
 #include <moxygen/MoQRelaySession.h>
@@ -35,31 +36,21 @@ moxygen::PicoTransportConfig picoTransportConfigFromQuicConfig(const config::Qui
 }
 
 std::string resolveCert(const config::ListenerConfig& cfg) {
-  return std::visit(
-      [](const auto& tls) -> std::string {
-        using T = std::decay_t<decltype(tls)>;
-        if constexpr (std::is_same_v<T, config::Insecure>) {
-          return "";
-        } else {
-          return tls.certFile;
-        }
-      },
-      cfg.tlsMode
-  );
+  auto result = cfg.tlsProvider->getCertPath();
+  if (result.hasError()) {
+    XLOG(FATAL) << "Unable to get certificate path for picoquic: " << result.error();
+  }
+
+  return result.value();
 }
 
 std::string resolveKey(const config::ListenerConfig& cfg) {
-  return std::visit(
-      [](const auto& tls) -> std::string {
-        using T = std::decay_t<decltype(tls)>;
-        if constexpr (std::is_same_v<T, config::Insecure>) {
-          return "";
-        } else {
-          return tls.keyFile;
-        }
-      },
-      cfg.tlsMode
-  );
+  auto result = cfg.tlsProvider->getKeyPath();
+  if (result.hasError()) {
+    XLOG(FATAL) << "Unable to get key path for picoquic: " << result.error();
+  }
+
+  return result.value();
 }
 
 } // namespace

@@ -10,18 +10,19 @@
 #include <gtest/gtest.h>
 #include <rfl/json.hpp>
 
-#include "test_utils.h"
+#include "util/TempDir.h"
 
 namespace openmoq::moqx::config {
 namespace {
 
-using test::TempYamlFile;
+using test::util::TempDir;
 using ::testing::HasSubstr;
 
 // --- Parse tests ---
 
 TEST(ConfigLoader, MinimalConfig) {
-  TempYamlFile yaml(R"(
+  TempDir dir;
+  auto yaml = dir.writeYaml(R"(
 listeners:
   - name: main
     udp:
@@ -29,7 +30,7 @@ listeners:
         address: "::"
         port: 9668
     tls:
-      insecure: true
+      type: insecure
     endpoint: "/moq-relay"
 services:
   default:
@@ -44,12 +45,13 @@ admin:
   port: 9669
   address: "::1"
   plaintext: true
+admin:
+  port: 9669
 )");
 
-  auto cfg = loadConfig(yaml.path());
+  auto cfg = loadConfig(yaml);
   EXPECT_EQ(cfg.listeners.value().size(), 1);
   EXPECT_EQ(cfg.listeners.value()[0].name.value(), "main");
-  EXPECT_TRUE(cfg.listeners.value()[0].tls.value().insecure.value());
 
   const auto& sock = cfg.listeners.value()[0].udp.value().socket.value();
   EXPECT_EQ(sock.port.value(), 9668);
@@ -64,8 +66,9 @@ admin:
   EXPECT_EQ(svc.cache.value()->max_groups_per_track.value(), 3);
 }
 
-TEST(ConfigLoader, FullConfig) {
-  TempYamlFile yaml(R"(
+TEST(ConfigLoader, TlsFileConfig) {
+  TempDir dir;
+  auto yaml = dir.writeYaml(R"(
 listeners:
   - name: production
     udp:
@@ -73,9 +76,9 @@ listeners:
         address: "0.0.0.0"
         port: 4443
     tls:
+      type: file
       cert_file: /etc/ssl/cert.pem
       key_file: /etc/ssl/key.pem
-      insecure: false
     endpoint: "/relay"
     moqt_versions: [14, 16]
 services:
@@ -91,18 +94,17 @@ admin:
   port: 9669
   address: "::1"
   plaintext: true
+admin:
+  port: 9669
 )");
 
-  auto cfg = loadConfig(yaml.path());
+  auto cfg = loadConfig(yaml);
   const auto& l = cfg.listeners.value()[0];
 
   EXPECT_EQ(l.name.value(), "production");
   const auto& sock = l.udp.value().socket.value();
   EXPECT_EQ(sock.address.value(), "0.0.0.0");
   EXPECT_EQ(sock.port.value(), 4443);
-  EXPECT_EQ(l.tls.value().cert_file.value().value(), "/etc/ssl/cert.pem");
-  EXPECT_EQ(l.tls.value().key_file.value().value(), "/etc/ssl/key.pem");
-  EXPECT_FALSE(l.tls.value().insecure.value());
   EXPECT_EQ(l.endpoint.value(), "/relay");
   ASSERT_TRUE(l.moqt_versions.value().has_value());
   EXPECT_EQ(l.moqt_versions.value()->size(), 2);
@@ -118,7 +120,8 @@ admin:
 }
 
 TEST(ConfigLoader, ServicesWithAuthorityAndPath) {
-  TempYamlFile yaml(R"(
+  TempDir dir;
+  auto yaml = dir.writeYaml(R"(
 listeners:
   - name: main
     udp:
@@ -126,7 +129,7 @@ listeners:
         address: "::"
         port: 9668
     tls:
-      insecure: true
+      type: insecure
     endpoint: "/moq-relay"
 services:
   live:
@@ -149,7 +152,7 @@ services:
       max_groups_per_track: 3
 )");
 
-  auto cfg = loadConfig(yaml.path());
+  auto cfg = loadConfig(yaml);
   ASSERT_EQ(cfg.services.value().size(), 2);
 
   const auto& svc0 = cfg.services.value().at("live");
@@ -208,7 +211,8 @@ services:
 }
 
 TEST(ConfigLoader, ServicesWithAnyAuthority) {
-  TempYamlFile yaml(R"(
+  TempDir dir;
+  auto yaml = dir.writeYaml(R"(
 listeners:
   - name: main
     udp:
@@ -216,7 +220,7 @@ listeners:
         address: "::"
         port: 9668
     tls:
-      insecure: true
+      type: insecure
     endpoint: "/moq-relay"
 services:
   default:
@@ -229,7 +233,7 @@ services:
       max_groups_per_track: 3
 )");
 
-  auto cfg = loadConfig(yaml.path());
+  auto cfg = loadConfig(yaml);
   ASSERT_EQ(cfg.services.value().size(), 1);
   const auto& svc = cfg.services.value().at("default");
   ASSERT_EQ(svc.match.value().size(), 1);
@@ -256,7 +260,8 @@ services:
 }
 
 TEST(ConfigLoader, ServiceDefaults) {
-  TempYamlFile yaml(R"(
+  TempDir dir;
+  auto yaml = dir.writeYaml(R"(
 listeners:
   - name: main
     udp:
@@ -264,7 +269,7 @@ listeners:
         address: "::"
         port: 9668
     tls:
-      insecure: true
+      type: insecure
     endpoint: "/moq-relay"
 service_defaults:
   cache:
@@ -278,7 +283,7 @@ services:
         path: {prefix: "/"}
 )");
 
-  auto cfg = loadConfig(yaml.path());
+  auto cfg = loadConfig(yaml);
   ASSERT_TRUE(cfg.service_defaults.value().has_value());
   ASSERT_TRUE(cfg.service_defaults.value()->cache.value().has_value());
   EXPECT_EQ(cfg.service_defaults.value()->cache.value()->max_tracks.value(), 50);
@@ -286,6 +291,63 @@ services:
 
   ASSERT_EQ(cfg.services.value().size(), 1);
   EXPECT_FALSE(cfg.services.value().at("default").cache.value().has_value());
+}
+
+TEST(ConfigLoader, TlsDirectoryConfig) {
+  TempDir dir;
+  auto yaml = dir.writeYaml(R"(
+listeners:
+  - name: multi
+    udp:
+      socket:
+        address: "::"
+        port: 4443
+    tls:
+      type: directory
+      cert_dir: /etc/ssl/certs.d/
+      default_cert: example.com
+    endpoint: "/moq-relay"
+cache:
+  enabled: true
+  max_tracks: 100
+  max_groups_per_track: 3
+services:
+  default:
+    match:
+      - authority: {any: true}
+        path: {prefix: "/"}
+)");
+
+  auto cfg = loadConfig(yaml);
+  EXPECT_EQ(cfg.listeners.value().size(), 1);
+}
+
+TEST(ConfigLoader, TlsDirectoryConfigNoDefault) {
+  TempDir dir;
+  auto yaml = dir.writeYaml(R"(
+listeners:
+  - name: multi
+    udp:
+      socket:
+        address: "::"
+        port: 4443
+    tls:
+      type: directory
+      cert_dir: /etc/ssl/certs.d/
+    endpoint: "/moq-relay"
+cache:
+  enabled: true
+  max_tracks: 100
+  max_groups_per_track: 3
+services:
+  default:
+    match:
+      - authority: {any: true}
+        path: {prefix: "/"}
+)");
+
+  auto cfg = loadConfig(yaml);
+  EXPECT_EQ(cfg.listeners.value().size(), 1);
 }
 
 // --- Schema generation test ---
@@ -314,7 +376,8 @@ TEST(ConfigSchema, GeneratesValidJson) {
 // --- Load from file test ---
 
 TEST(ConfigLoader, LoadFromFile) {
-  TempYamlFile yaml(R"(
+  TempDir dir;
+  auto yaml = dir.writeYaml(R"(
 listeners:
   - name: test
     udp:
@@ -322,7 +385,7 @@ listeners:
         address: "::"
         port: 8080
     tls:
-      insecure: true
+      type: insecure
     endpoint: "/moq-relay"
 services:
   default:
@@ -337,9 +400,11 @@ admin:
   port: 9669
   address: "::1"
   plaintext: true
+admin:
+  port: 9669
 )");
 
-  auto cfg = loadConfig(yaml.path());
+  auto cfg = loadConfig(yaml);
   EXPECT_EQ(cfg.listeners.value()[0].name.value(), "test");
   ASSERT_TRUE(cfg.services.value().at("default").cache.value().has_value());
   EXPECT_EQ(cfg.services.value().at("default").cache.value()->enabled.value(), false);
@@ -350,14 +415,16 @@ TEST(ConfigLoader, LoadFromFileNotFound) {
 }
 
 TEST(ConfigLoader, LoadFromFileInvalidYaml) {
-  TempYamlFile yaml("not: [valid: yaml: config");
-  EXPECT_THROW(loadConfig(yaml.path()), std::runtime_error);
+  TempDir dir;
+  auto yaml = dir.writeYaml("not: [valid: yaml: config");
+  EXPECT_THROW(loadConfig(yaml), std::runtime_error);
 }
 
 // --- Unknown field tests ---
 
 TEST(ConfigLoader, UnknownFieldIgnoredNonStrict) {
-  TempYamlFile yaml(R"(
+  TempDir dir;
+  auto yaml = dir.writeYaml(R"(
 listeners:
   - name: main
     udp:
@@ -365,7 +432,7 @@ listeners:
         address: "::"
         port: 9668
     tls:
-      insecure: true
+      type: insecure
     endpoint: "/moq-relay"
     bogus: 42
 services:
@@ -381,13 +448,16 @@ admin:
   port: 9669
   address: "::1"
   plaintext: true
+admin:
+  port: 9669
 )");
 
-  EXPECT_NO_THROW(loadConfig(yaml.path()));
+  EXPECT_NO_THROW(loadConfig(yaml));
 }
 
 TEST(ConfigLoader, UnknownFieldRejectedStrict) {
-  TempYamlFile yaml(R"(
+  TempDir dir;
+  auto yaml = dir.writeYaml(R"(
 listeners:
   - name: main
     udp:
@@ -395,7 +465,7 @@ listeners:
         address: "::"
         port: 9668
     tls:
-      insecure: true
+      type: insecure
     endpoint: "/moq-relay"
     bogus: 42
 services:
@@ -411,9 +481,11 @@ admin:
   port: 9669
   address: "::1"
   plaintext: true
+admin:
+  port: 9669
 )");
 
-  EXPECT_THROW(loadConfig(yaml.path(), /*strict=*/true), std::runtime_error);
+  EXPECT_THROW(loadConfig(yaml, /*strict=*/true), std::runtime_error);
 }
 
 #ifdef CONFIG_EXAMPLE_PATH

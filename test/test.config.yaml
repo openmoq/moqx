@@ -6,7 +6,7 @@ listeners:
         address: "::"
         port: 9668
     tls:
-      insecure: true
+      type: insecure
     endpoint: "/moq-relay"
 services:
   default:
