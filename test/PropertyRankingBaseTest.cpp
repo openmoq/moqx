@@ -53,10 +53,21 @@ public:
     MoQSession* session;
   };
 
-  explicit RankingHarness(uint64_t maxDeselected = 5)
+  explicit RankingHarness(
+      uint64_t maxDeselected = 5,
+      std::chrono::milliseconds idleTimeout = std::chrono::milliseconds(0)
+  )
       : ranking_(std::make_unique<PropertyRanking>(
             kProp,
             maxDeselected,
+            idleTimeout,
+            [this](const FullTrackName& f) {
+              auto it = activityTimes_.find(f);
+              if (it == activityTimes_.end()) {
+                return std::chrono::steady_clock::time_point{};
+              }
+              return it->second;
+            },
             [this](
                 const FullTrackName& f,
                 const std::vector<std::pair<std::shared_ptr<MoQSession>, bool>>& sessions
@@ -72,6 +83,11 @@ public:
               evicted_.push_back({f, s.get()});
             }
         )) {}
+
+  // Set a mock activity time for a track (used in idle tests)
+  void setActivityTime(const FullTrackName& f, std::chrono::steady_clock::time_point t) {
+    activityTimes_[f] = t;
+  }
 
   PropertyRanking& ranking() { return *ranking_; }
 
@@ -114,6 +130,8 @@ public:
 
   std::vector<SelectEvent> selected_;
   std::vector<EvictEvent> evicted_;
+  folly::F14FastMap<FullTrackName, std::chrono::steady_clock::time_point, FullTrackName::hash>
+      activityTimes_;
 
 private:
   std::unique_ptr<PropertyRanking> ranking_;
@@ -1239,6 +1257,118 @@ TEST_F(PropertyRankingBaseTest, EdgeCase_UpdateToExactlyPreviousValue) {
   // Order: a=100(0), c=81(1), b=80(2)
   // c enters top-2
   EXPECT_EQ(h.selectCount(ftn("c"), sub.get()), 1);
+}
+
+// ---------------------------------------------------------------------------
+// sweepIdle tests
+// ---------------------------------------------------------------------------
+
+TEST(PropertyRankingSweepIdle, IdleTrackEvictedAndReplacementPromoted) {
+  // Setup: 3 tracks, N=2 group, idleTimeout=100ms
+  RankingHarness h(5, std::chrono::milliseconds(100));
+  auto sub = makeSession();
+
+  h.ranking().registerTrack(ftn("a"), 100, {});  // rank 0
+  h.ranking().registerTrack(ftn("b"), 90, {});   // rank 1
+  h.ranking().registerTrack(ftn("c"), 80, {});   // rank 2
+
+  h.ranking().addSessionToTopNGroup(2, sub, true);
+  h.clearEvents();
+
+  // Set activity times: a and c are active (recent), b is idle (old)
+  auto now = std::chrono::steady_clock::now();
+  h.setActivityTime(ftn("a"), now);
+  h.setActivityTime(ftn("b"), now - std::chrono::milliseconds(200));  // idle
+  h.setActivityTime(ftn("c"), now);
+
+  // Sweep should evict b (idle) and promote c (next best)
+  h.ranking().sweepIdle();
+
+  // c should be promoted to replace b
+  EXPECT_EQ(h.selectCount(ftn("c")), 1);
+
+  // Check states: a and c selected, b deselected
+  auto* group = h.ranking().getTopNGroup(2);
+  ASSERT_NE(group, nullptr);
+  EXPECT_EQ(group->trackStates.at(ftn("a")), TrackState::Selected);
+  EXPECT_EQ(group->trackStates.at(ftn("b")), TrackState::Deselected);
+  EXPECT_EQ(group->trackStates.at(ftn("c")), TrackState::Selected);
+}
+
+TEST(PropertyRankingSweepIdle, TrackThatNeverPublishedIsTreatedAsIdle) {
+  // A track with epoch timestamp (never published) should be evicted
+  RankingHarness h(5, std::chrono::milliseconds(100));
+  auto sub = makeSession();
+
+  h.ranking().registerTrack(ftn("a"), 100, {});  // rank 0
+  h.ranking().registerTrack(ftn("b"), 90, {});   // rank 1 - never sets activity time
+  h.ranking().registerTrack(ftn("c"), 80, {});   // rank 2
+
+  h.ranking().addSessionToTopNGroup(2, sub, true);
+  h.clearEvents();
+
+  // Only set activity for a and c; b has epoch (never published)
+  auto now = std::chrono::steady_clock::now();
+  h.setActivityTime(ftn("a"), now);
+  h.setActivityTime(ftn("c"), now);
+  // b has no activity time set -> epoch -> treated as idle
+
+  h.ranking().sweepIdle();
+
+  // b should be evicted, c promoted
+  EXPECT_EQ(h.selectCount(ftn("c")), 1);
+
+  auto* group = h.ranking().getTopNGroup(2);
+  ASSERT_NE(group, nullptr);
+  EXPECT_EQ(group->trackStates.at(ftn("b")), TrackState::Deselected);
+  EXPECT_EQ(group->trackStates.at(ftn("c")), TrackState::Selected);
+}
+
+TEST(PropertyRankingSweepIdle, NoEvictionWhenIdleTimeoutIsZero) {
+  // idleTimeout=0 disables idle eviction
+  RankingHarness h(5, std::chrono::milliseconds(0));
+  auto sub = makeSession();
+
+  h.ranking().registerTrack(ftn("a"), 100, {});
+  h.ranking().registerTrack(ftn("b"), 90, {});
+
+  h.ranking().addSessionToTopNGroup(2, sub, true);
+  h.clearEvents();
+
+  // Even with old activity time, should not evict when timeout is 0
+  auto now = std::chrono::steady_clock::now();
+  h.setActivityTime(ftn("a"), now - std::chrono::hours(1));
+  h.setActivityTime(ftn("b"), now - std::chrono::hours(1));
+
+  h.ranking().sweepIdle();
+
+  // No promotions should occur
+  EXPECT_EQ(h.selectCount(ftn("a")), 0);
+  EXPECT_EQ(h.selectCount(ftn("b")), 0);
+}
+
+TEST(PropertyRankingSweepIdle, ActiveTracksNotEvicted) {
+  RankingHarness h(5, std::chrono::milliseconds(100));
+  auto sub = makeSession();
+
+  h.ranking().registerTrack(ftn("a"), 100, {});
+  h.ranking().registerTrack(ftn("b"), 90, {});
+
+  h.ranking().addSessionToTopNGroup(2, sub, true);
+  h.clearEvents();
+
+  // Both tracks are active (recent activity)
+  auto now = std::chrono::steady_clock::now();
+  h.setActivityTime(ftn("a"), now);
+  h.setActivityTime(ftn("b"), now);
+
+  h.ranking().sweepIdle();
+
+  // No evictions
+  auto* group = h.ranking().getTopNGroup(2);
+  ASSERT_NE(group, nullptr);
+  EXPECT_EQ(group->trackStates.at(ftn("a")), TrackState::Selected);
+  EXPECT_EQ(group->trackStates.at(ftn("b")), TrackState::Selected);
 }
 
 } // namespace
