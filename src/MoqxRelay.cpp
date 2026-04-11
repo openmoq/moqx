@@ -540,7 +540,8 @@ MoqxRelay::publish(PublishRequest pub, std::shared_ptr<Publisher::SubscriptionHa
           PropertyObserver{
               .onValueChanged = [ranking, ftn = pub.fullTrackName](uint64_t value
                                 ) { ranking->updateSortValue(ftn, value); },
-              .onTrackEnded = [ranking, ftn = pub.fullTrackName]() { ranking->removeTrack(ftn); }
+              .onTrackEnded = [ranking, ftn = pub.fullTrackName]() { ranking->removeTrack(ftn); },
+              .onActivity = {}
           }
       );
     }
@@ -1370,7 +1371,8 @@ std::shared_ptr<PropertyRanking> MoqxRelay::getOrCreateRanking(
                 PropertyObserver{
                     .onValueChanged = [rankingPtr, ftn](uint64_t value
                                       ) { rankingPtr->updateSortValue(ftn, value); },
-                    .onTrackEnded = [rankingPtr, ftn]() { rankingPtr->removeTrack(ftn); }
+                    .onTrackEnded = [rankingPtr, ftn]() { rankingPtr->removeTrack(ftn); },
+                    .onActivity = {}
                 }
             );
           }

@@ -10,6 +10,8 @@
 #include <folly/portability/GTest.h>
 #include <moxygen/test/Mocks.h>
 
+#include <thread>
+
 using namespace testing;
 using namespace moxygen;
 using namespace openmoq::moqx;
@@ -271,6 +273,69 @@ TEST_F(TopNFilterTest, DatagramTriggersCheckProperties) {
   hdr.extensions = makeExt(kPropA, 99);
   filter_->datagram(hdr, nullptr, false);
   EXPECT_EQ(called, 1);
+}
+
+// ---------------------------------------------------------------------------
+// Activity tracking: activityTarget_ and onActivity callback
+// ---------------------------------------------------------------------------
+
+TEST_F(TopNFilterTest, ActivityTargetOnlyUpdatedOnPropertyMatch) {
+  std::chrono::steady_clock::time_point ts{};
+  filter_->setActivityTarget(&ts);
+  filter_->registerObserver(kPropA, PropertyObserver{});
+
+  // No match: timestamp not written
+  filter_->checkProperties(makeExt(kPropB, 99));
+  EXPECT_EQ(ts, std::chrono::steady_clock::time_point{});
+
+  // Match: timestamp written
+  filter_->checkProperties(makeExt(kPropA, 1));
+  auto ts1 = ts;
+  EXPECT_NE(ts1, std::chrono::steady_clock::time_point{});
+
+  // Sleep then match again: timestamp updated
+  std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  filter_->checkProperties(makeExt(kPropA, 2));
+  EXPECT_GT(ts, ts1);
+}
+
+TEST_F(TopNFilterTest, OnActivityCallbackBehavior) {
+  int activityCount = 0;
+  int valueChangedCount = 0;
+  filter_->registerObserver(
+      kPropA,
+      PropertyObserver{
+          .onValueChanged = [&](uint64_t) { valueChangedCount++; },
+          .onActivity = [&]() { activityCount++; },
+      }
+  );
+
+  // Threshold=0 (default): onActivity never fires
+  filter_->checkProperties(makeExt(kPropA, 1));
+  filter_->checkProperties(makeExt(kPropA, 1));
+  EXPECT_EQ(activityCount, 0);
+
+  // Enable threshold
+  filter_->setActivityThreshold(std::chrono::hours(1));
+
+  // Value changes: onValueChanged fires, NOT onActivity
+  filter_->checkProperties(makeExt(kPropA, 42));
+  EXPECT_EQ(valueChangedCount, 2); // includes earlier call
+  EXPECT_EQ(activityCount, 0);
+
+  // Same value: onActivity fires
+  filter_->checkProperties(makeExt(kPropA, 42));
+  EXPECT_EQ(valueChangedCount, 2);
+  EXPECT_EQ(activityCount, 1);
+
+  // Same value immediately: throttled
+  filter_->checkProperties(makeExt(kPropA, 42));
+  EXPECT_EQ(activityCount, 1);
+
+  // No property match: neither callback fires
+  filter_->checkProperties(makeExt(kPropB, 99));
+  EXPECT_EQ(valueChangedCount, 2);
+  EXPECT_EQ(activityCount, 1);
 }
 
 } // namespace
