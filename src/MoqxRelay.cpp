@@ -520,8 +520,43 @@ MoqxRelay::publish(PublishRequest pub, std::shared_ptr<Publisher::SubscriptionHa
   rsub.handle = std::move(handle);
   rsub.isPublish = true;
 
+  // Build filter chain: TopNFilter → TerminationFilter → Forwarder.
+  // TopNFilter sits at the front so it sees every object and can update
+  // PropertyRanking with current property values.
+  auto terminationFilter = std::make_shared<TerminationFilter>(
+      shared_from_this(), pub.fullTrackName, forwarder);
+  auto topNFilter = std::make_shared<TopNFilter>(
+      pub.fullTrackName,
+      std::static_pointer_cast<TrackConsumer>(terminationFilter));
+  rsub.topNFilter = topNFilter;
+
+  // Register track with all PropertyRankings already active on this node and
+  // wire up value-change and track-ended observers on the TopNFilter.
+  for (auto& [propertyType, ranking] : nodePtr->rankings) {
+    auto initialValue = pub.extensions.getIntExtension(propertyType);
+    ranking->registerTrack(pub.fullTrackName, initialValue, session);
+    topNFilter->registerObserver(
+        propertyType,
+        PropertyObserver{
+            .onValueChanged =
+                [ranking, ftn = pub.fullTrackName](uint64_t value) {
+                  ranking->updateSortValue(ftn, value);
+                },
+            .onTrackEnded =
+                [ranking, ftn = pub.fullTrackName]() {
+                  ranking->removeTrack(ftn);
+                }});
+  }
+
   uint64_t nSubscribers = 0;
+  bool hasTrackFilterSub = false;
   for (auto& [outSession, info] : sessions) {
+    if (info.trackFilter) {
+      // TRACK_FILTER subscribers: PropertyRanking handles selection via
+      // onTrackSelected; don't publish directly here.
+      hasTrackFilterSub = true;
+      continue;
+    }
     if (outSession != session && (info.options == SubscribeNamespaceOptions::PUBLISH ||
                                   info.options == SubscribeNamespaceOptions::BOTH)) {
       nSubscribers++;
@@ -531,16 +566,15 @@ MoqxRelay::publish(PublishRequest pub, std::shared_ptr<Publisher::SubscriptionHa
   }
   forwarder->setCallback(shared_from_this());
 
-  // Wrap forwarder in filter to intercept publishDone
-  auto filterImpl =
-      std::make_shared<TerminationFilter>(shared_from_this(), pub.fullTrackName, forwarder);
-  std::shared_ptr<TrackConsumer> filter = std::static_pointer_cast<TrackConsumer>(filterImpl);
+  // Forward if there are direct subscribers OR TRACK_FILTER subscribers
+  // (PropertyRanking needs objects to evaluate property values for ranking).
+  bool shouldForward = (nSubscribers > 0) || hasTrackFilterSub;
 
   return PublishConsumerAndReplyTask{
-      filter, // Return filter, not forwarder directly
+      std::static_pointer_cast<TrackConsumer>(topNFilter),
       folly::coro::makeTask<folly::Expected<PublishOk, PublishError>>(PublishOk{
           pub.requestID,
-          /*forward=*/(nSubscribers > 0),
+          /*forward=*/shouldForward,
           kDefaultPriority,
           pub.groupOrder,
           LocationType::AbsoluteRange,
@@ -553,13 +587,21 @@ MoqxRelay::publish(PublishRequest pub, std::shared_ptr<Publisher::SubscriptionHa
 folly::coro::Task<void> MoqxRelay::publishToSession(
     std::shared_ptr<MoQSession> session,
     std::shared_ptr<MoQForwarder> forwarder,
-    bool forward
+    bool forward,
+    bool trackFilterSubscriber
 ) {
+  if (session->isClosed()) {
+    XLOG(DBG4) << "publishToSession: session closed, skipping " << forwarder->fullTrackName();
+    co_return;
+  }
   auto subscriber = forwarder->addSubscriber(session, forward);
   if (!subscriber) {
     XLOG(ERR) << "Subscribe failed: addSubscriber returned null for " << forwarder->fullTrackName();
     co_return;
   }
+  // Direct subscribers are pinned (not evictable by PropertyRanking).
+  // TRACK_FILTER subscribers are unpinned so onTrackEvicted can remove them.
+  subscriber->pinned = !trackFilterSubscriber;
   XLOG(DBG4) << "added subscriber for ftn=" << forwarder->fullTrackName();
   auto guard = folly::makeGuard([subscriber] { subscriber->unsubscribe(); });
 
@@ -619,11 +661,14 @@ private:
   TrackNamespace trackNamespacePrefix_;
 };
 
-// Filter TrackConsumer that intercepts publishDone to clean up relay state
+// Filter TrackConsumer that intercepts publishDone to clean up relay state.
+// Holds a weak_ptr to avoid a reference cycle: relay owns RelaySubscription
+// which owns the filter chain (TopNFilter→TerminationFilter), so a strong
+// relay ref here would prevent the relay from ever being destroyed.
 class MoqxRelay::TerminationFilter : public TrackConsumerFilter {
 public:
   TerminationFilter(
-      std::shared_ptr<MoqxRelay> relay,
+      std::weak_ptr<MoqxRelay> relay,
       FullTrackName ftn,
       std::shared_ptr<TrackConsumer> downstream
   )
@@ -634,15 +679,15 @@ public:
     // Notify relay that publisher is done - this will:
     // 1. Remove from nodePtr->publishes
     // 2. Clear subscription.handle
-    if (relay_) {
-      relay_->onPublishDone(ftn_);
+    if (auto relay = relay_.lock()) {
+      relay->onPublishDone(ftn_);
     }
     // Change the downstream code to something like "upstream ended"?
     return TrackConsumerFilter::publishDone(std::move(pubDone));
   }
 
 private:
-  std::shared_ptr<MoqxRelay> relay_;
+  std::weak_ptr<MoqxRelay> relay_;
   FullTrackName ftn_;
 };
 
@@ -700,6 +745,15 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
   SubscribeNamespaceOptions effectiveOptions;
   effectiveOptions = subNs.options;
 
+  // Parse TRACK_FILTER parameter if present (draft-16+, SUBSCRIBE_NAMESPACE only)
+  std::optional<TrackFilter> trackFilter;
+  for (const auto& param : subNs.params) {
+    if (param.key == folly::to_underlying(TrackRequestParamKey::TRACK_FILTER)) {
+      trackFilter = param.asTrackFilter;
+      break;
+    }
+  }
+
   // Check if this is the first session subscriber for this node
   bool wasEmpty = !nodePtr->hasLocalSessions();
   nodePtr->sessions.emplace(
@@ -708,9 +762,17 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
           subNs.forward,
           effectiveOptions,
           namespacePublishHandle,
-          subNs.trackNamespacePrefix
+          subNs.trackNamespacePrefix,
+          trackFilter
       }
   );
+
+  // If TRACK_FILTER is present, enroll session in PropertyRanking for top-N selection.
+  // onTrackSelected will publish individual tracks as they enter the top-N.
+  if (trackFilter) {
+    auto ranking = getOrCreateRanking(nodePtr, trackFilter->propertyType);
+    ranking->addSessionToTopNGroup(trackFilter->maxSelected, session, subNs.forward);
+  }
 
   // If this is the first content added to this node, notify parent
   if (wasEmpty && nodePtr->hasLocalSessions() && nodePtr->parent_) {
@@ -754,13 +816,20 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
         continue;
       }
       auto& forwarder = subscriptionIt->second.forwarder;
-      if (forwarder->empty()) {
+      auto& rsub = subscriptionIt->second;
+      if (forwarder->empty() && !rsub.isPublish) {
         // Use forward value from this namespace subscription
-        co_withExecutor(exec, doSubscribeUpdate(subscriptionIt->second.handle, subNs.forward))
-            .start();
+        co_withExecutor(exec, doSubscribeUpdate(rsub.handle, subNs.forward)).start();
       }
       auto maybeNegotiatedVersion = session->getNegotiatedVersion();
       CHECK(maybeNegotiatedVersion.has_value());
+
+      // TRACK_FILTER subscribers: PropertyRanking drives selection via
+      // onTrackSelected; skip direct publish here.
+      if (trackFilter) {
+        continue;
+      }
+
       if (getDraftMajorVersion(*maybeNegotiatedVersion) <= 15 ||
           (subNs.options == SubscribeNamespaceOptions::BOTH ||
            subNs.options == SubscribeNamespaceOptions::PUBLISH)) {
@@ -801,6 +870,15 @@ void MoqxRelay::unsubscribeNamespace(
 
   auto it = nodePtr->sessions.find(session);
   if (it != nodePtr->sessions.end()) {
+    // If session used TRACK_FILTER, remove it from the PropertyRanking group.
+    if (it->second.trackFilter) {
+      auto rankingIt = nodePtr->rankings.find(it->second.trackFilter->propertyType);
+      if (rankingIt != nodePtr->rankings.end()) {
+        rankingIt->second->removeSessionFromTopNGroup(
+            it->second.trackFilter->maxSelected, session);
+      }
+    }
+
     nodePtr->sessions.erase(it);
 
     // Prune if node became empty and has a parent
@@ -1202,6 +1280,119 @@ void MoqxRelay::newGroupRequested(MoQForwarder* forwarder, uint64_t group) {
   auto exec = subscription.upstream->getExecutor();
   auto handle = subscription.handle;
   co_withExecutor(exec, doNewGroupRequestUpdate(std::move(handle), group)).start();
+}
+
+// TRACK_FILTER support
+
+std::shared_ptr<PropertyRanking> MoqxRelay::getOrCreateRanking(
+    std::shared_ptr<NamespaceNode> node,
+    uint64_t propertyType) {
+  auto& ranking = node->rankings[propertyType];
+  if (!ranking) {
+    ranking = std::make_shared<PropertyRanking>(
+        propertyType,
+        maxDeselected_,
+        // Batch callback: called once per track-selected event with all sessions
+        [this](
+            const FullTrackName& ftn,
+            const std::vector<std::pair<std::shared_ptr<MoQSession>, bool>>& sessions) {
+          for (const auto& [session, forward] : sessions) {
+            onTrackSelected(ftn, session, forward);
+          }
+        },
+        // Individual callback: called by addSessionToTopNGroup to notify a newly
+        // joined session of tracks already in top-N at the time it subscribes.
+        [this](const FullTrackName& ftn, std::shared_ptr<MoQSession> session, bool forward) {
+          onTrackSelected(ftn, session, forward);
+        },
+        // Eviction callback
+        [this](const FullTrackName& ftn, std::shared_ptr<MoQSession> session) {
+          onTrackEvicted(ftn, session);
+        });
+
+    // Retroactively register tracks already published under this node so that
+    // a subscriber who arrives after publishers can still see existing tracks.
+    // Use the forwarder's stored extensions to seed the initial property value.
+    for (auto& [trackName, publishSession] : node->publishes) {
+      FullTrackName ftn{node->trackNamespace_, trackName};
+      std::optional<uint64_t> initialValue;
+      auto subIt = subscriptions_.find(ftn);
+      if (subIt != subscriptions_.end()) {
+        initialValue = subIt->second.forwarder->extensions().getIntExtension(propertyType);
+        // Wire value-change and track-ended observers on the existing TopNFilter.
+        if (subIt->second.topNFilter) {
+          auto rankingPtr = ranking;
+          subIt->second.topNFilter->registerObserver(
+              propertyType,
+              PropertyObserver{
+                  .onValueChanged =
+                      [rankingPtr, ftn](uint64_t value) {
+                        rankingPtr->updateSortValue(ftn, value);
+                      },
+                  .onTrackEnded = [rankingPtr, ftn]() { rankingPtr->removeTrack(ftn); }});
+        }
+      }
+      ranking->registerTrack(ftn, initialValue, publishSession);
+      XLOG(DBG4) << "[getOrCreateRanking] Retroactively registered track " << ftn;
+    }
+  }
+  return ranking;
+}
+
+void MoqxRelay::onTrackSelected(
+    const FullTrackName& ftn,
+    std::shared_ptr<MoQSession> session,
+    bool forward) {
+  XLOG(DBG4) << "[MoqxRelay] Track selected: " << ftn << " session=" << session.get()
+             << " forward=" << forward;
+
+  if (!session || session->isClosed()) {
+    XLOG(DBG4) << "onTrackSelected: session null or closed, skipping " << ftn;
+    return;
+  }
+
+  auto subIt = subscriptions_.find(ftn);
+  if (subIt == subscriptions_.end() || !subIt->second.forwarder) {
+    XLOG(DBG4) << "onTrackSelected: no subscription/forwarder for " << ftn;
+    return;
+  }
+
+  auto exec = session->getExecutor();
+  if (!exec) {
+    XLOG(ERR) << "onTrackSelected: null executor for session " << session.get();
+    return;
+  }
+
+  co_withExecutor(
+      exec,
+      publishToSession(session, subIt->second.forwarder, forward, /*trackFilterSubscriber=*/true))
+      .start();
+}
+
+void MoqxRelay::onTrackEvicted(
+    const FullTrackName& ftn,
+    std::shared_ptr<MoQSession> session) {
+  XLOG(DBG4) << "[MoqxRelay] Track evicted: " << ftn << " session=" << session.get();
+
+  if (!session || session->isClosed()) {
+    return;
+  }
+
+  auto subIt = subscriptions_.find(ftn);
+  if (subIt == subscriptions_.end()) {
+    return;
+  }
+
+  if (!subIt->second.forwarder) {
+    return;
+  }
+  auto& forwarder = subIt->second.forwarder;
+  auto sub = forwarder->getSubscriber(session.get());
+  if (!sub || sub->isPinned()) {
+    XLOG(DBG4) << "onTrackEvicted: pinned subscriber, skipping";
+    return;
+  }
+  forwarder->removeSubscriber(session, std::nullopt, "onTrackEvicted");
 }
 
 } // namespace openmoq::moqx
