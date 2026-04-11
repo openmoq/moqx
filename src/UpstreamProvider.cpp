@@ -308,8 +308,12 @@ void UpstreamProvider::goaway(Goaway goaway) {
 
 // --- MoQSessionCloseCallback ---
 
-void UpstreamProvider::onMoQSessionClosed() {
-  XLOG(INFO) << "UpstreamProvider::onMoQSessionClosed";
+void UpstreamProvider::onMoQSessionClosed(
+    moxygen::SessionCloseErrorCode error,
+    folly::Optional<uint32_t> wtError
+) {
+  XLOG(INFO) << "UpstreamProvider::onMoQSessionClosed error=" << (uint32_t)error
+             << " wtError=" << (wtError ? *wtError : 0);
   resetSession();
   if (!stopped_) {
     reconnectBackoff_ = std::chrono::milliseconds(0);

@@ -111,7 +111,8 @@ public:
   void goaway(moxygen::Goaway goaway) override;
 
   // --- MoQSessionCloseCallback ---
-  void onMoQSessionClosed() override;
+  void onMoQSessionClosed(moxygen::SessionCloseErrorCode error, folly::Optional<uint32_t> wtError)
+      override;
 
   // Access the current session (may be null)
   std::shared_ptr<moxygen::MoQSession> currentSession() const { return session_; }
