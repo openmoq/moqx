@@ -531,8 +531,13 @@ MoqxRelay::publish(PublishRequest pub, std::shared_ptr<Publisher::SubscriptionHa
   );
   rsub.topNFilter = topNFilter;
 
+  // Wire activity tracking: TopNFilter writes lastObjectTime on every object,
+  // and fires onActivity callbacks (throttled) for idle sweep triggering.
+  topNFilter->setActivityTarget(&rsub.lastObjectTime);
+  topNFilter->setActivityThreshold(activityThreshold_);
+
   // Register track with all PropertyRankings already active on this node and
-  // wire up value-change and track-ended observers on the TopNFilter.
+  // wire up value-change, track-ended, and activity observers on the TopNFilter.
   for (auto& [propertyType, ranking] : nodePtr->rankings) {
     auto initialValue = pub.extensions.getIntExtension(propertyType);
     ranking->registerTrack(pub.fullTrackName, initialValue, session);
@@ -541,7 +546,8 @@ MoqxRelay::publish(PublishRequest pub, std::shared_ptr<Publisher::SubscriptionHa
         PropertyObserver{
             .onValueChanged = [ranking, ftn = pub.fullTrackName](uint64_t value
                               ) { ranking->updateSortValue(ftn, value); },
-            .onTrackEnded = [ranking, ftn = pub.fullTrackName]() { ranking->removeTrack(ftn); }
+            .onTrackEnded = [ranking, ftn = pub.fullTrackName]() { ranking->removeTrack(ftn); },
+            .onActivity = [ranking]() { ranking->sweepIdle(); }
         }
     );
   }
@@ -1288,8 +1294,14 @@ MoqxRelay::getOrCreateRanking(std::shared_ptr<NamespaceNode> node, uint64_t prop
     ranking = std::make_shared<PropertyRanking>(
         propertyType,
         maxDeselected_,
-        std::chrono::milliseconds(0), // idle eviction wired in Commit 3
-        nullptr,                      // getLastActivity wired in Commit 3
+        idleTimeout_,
+        [this](const FullTrackName& ftn) -> std::chrono::steady_clock::time_point {
+          auto it = subscriptions_.find(ftn);
+          if (it == subscriptions_.end()) {
+            return std::chrono::steady_clock::time_point{};
+          }
+          return it->second.lastObjectTime;
+        },
         // Batch callback: called once per track-selected event with all sessions
         [this](
             const FullTrackName& ftn,
@@ -1327,8 +1339,8 @@ MoqxRelay::getOrCreateRanking(std::shared_ptr<NamespaceNode> node, uint64_t prop
               PropertyObserver{
                   .onValueChanged = [rankingPtr, ftn](uint64_t value
                                     ) { rankingPtr->updateSortValue(ftn, value); },
-                  .onTrackEnded = [rankingPtr, ftn]() { rankingPtr->removeTrack(ftn); }
-                  // .onActivity wired in Commit 3
+                  .onTrackEnded = [rankingPtr, ftn]() { rankingPtr->removeTrack(ftn); },
+                  .onActivity = [rankingPtr]() { rankingPtr->sweepIdle(); }
               }
           );
         }
