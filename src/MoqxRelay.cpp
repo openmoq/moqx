@@ -1288,6 +1288,8 @@ MoqxRelay::getOrCreateRanking(std::shared_ptr<NamespaceNode> node, uint64_t prop
     ranking = std::make_shared<PropertyRanking>(
         propertyType,
         maxDeselected_,
+        std::chrono::milliseconds(0), // idle eviction wired in Commit 3
+        nullptr,                      // getLastActivity wired in Commit 3
         // Batch callback: called once per track-selected event with all sessions
         [this](
             const FullTrackName& ftn,
@@ -1326,6 +1328,7 @@ MoqxRelay::getOrCreateRanking(std::shared_ptr<NamespaceNode> node, uint64_t prop
                   .onValueChanged = [rankingPtr, ftn](uint64_t value
                                     ) { rankingPtr->updateSortValue(ftn, value); },
                   .onTrackEnded = [rankingPtr, ftn]() { rankingPtr->removeTrack(ftn); }
+                  // .onActivity wired in Commit 3
               }
           );
         }

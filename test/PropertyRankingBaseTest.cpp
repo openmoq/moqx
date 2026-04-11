@@ -53,10 +53,21 @@ public:
     MoQSession* session;
   };
 
-  explicit RankingHarness(uint64_t maxDeselected = 5)
+  explicit RankingHarness(
+      uint64_t maxDeselected = 5,
+      std::chrono::milliseconds idleTimeout = std::chrono::milliseconds(0)
+  )
       : ranking_(std::make_unique<PropertyRanking>(
             kProp,
             maxDeselected,
+            idleTimeout,
+            [this](const FullTrackName& f) {
+              auto it = activityTimes_.find(f);
+              if (it == activityTimes_.end()) {
+                return std::chrono::steady_clock::time_point{};
+              }
+              return it->second;
+            },
             [this](
                 const FullTrackName& f,
                 const std::vector<std::pair<std::shared_ptr<MoQSession>, bool>>& sessions
@@ -72,6 +83,11 @@ public:
               evicted_.push_back({f, s.get()});
             }
         )) {}
+
+  // Set a mock activity time for a track (used in idle tests)
+  void setActivityTime(const FullTrackName& f, std::chrono::steady_clock::time_point t) {
+    activityTimes_[f] = t;
+  }
 
   PropertyRanking& ranking() { return *ranking_; }
 
@@ -114,6 +130,8 @@ public:
 
   std::vector<SelectEvent> selected_;
   std::vector<EvictEvent> evicted_;
+  folly::F14FastMap<FullTrackName, std::chrono::steady_clock::time_point, FullTrackName::hash>
+      activityTimes_;
 
 private:
   std::unique_ptr<PropertyRanking> ranking_;

@@ -10,6 +10,7 @@
 #include <moxygen/MoQSession.h>
 #include <moxygen/MoQTypes.h>
 
+#include <chrono>
 #include <deque>
 #include <functional>
 #include <map>
@@ -128,16 +129,27 @@ public:
       const std::vector<std::pair<std::shared_ptr<moxygen::MoQSession>, bool>>& sessions
   )>;
 
+  // Returns the last activity time for a track. Called during sweepIdle().
+  // If the track is unknown, return a default-constructed time_point (treated
+  // as always-idle).
+  using GetLastActivityFn =
+      std::function<std::chrono::steady_clock::time_point(const moxygen::FullTrackName&)>;
+
   /**
-   * @param propertyType  The property type ID to rank by
-   * @param maxDeselected Maximum tracks in deselected queue before eviction
+   * @param propertyType    The property type ID to rank by
+   * @param maxDeselected   Maximum tracks in deselected queue before eviction
+   * @param idleTimeout     How long a selected track may be silent before
+   *                        being deselected. Zero disables idle eviction.
+   * @param getLastActivity Relay callback to read per-track activity time
    * @param onBatchSelected Batch callback for viewer notifications (required)
-   * @param onSelected  Individual callback for per-session notifications
-   * @param onEvicted   Callback when track is evicted from deselected queue
+   * @param onSelected      Individual callback for per-session notifications
+   * @param onEvicted       Callback when track is evicted from deselected queue
    */
   PropertyRanking(
       uint64_t propertyType,
       uint64_t maxDeselected,
+      std::chrono::milliseconds idleTimeout,
+      GetLastActivityFn getLastActivity,
       BatchSelectCallback onBatchSelected,
       SelectCallback onSelected,
       EvictCallback onEvicted
@@ -201,8 +213,17 @@ public:
 
   bool empty() const { return topNGroups_.empty(); }
 
-  size_t numTracks() const { return trackIndexByName_.size(); }
+  /**
+   * Sweep all selected tracks for idleness. Any track whose last activity
+   * time is older than idleTimeout_ is deselected into the deselectedQueue
+   * (same path as ranking-based demotion — cheap reselection still works).
+   * No-op when idleTimeout_ is zero.
+   * Called from onActivity observer (already throttled by TopNFilter) and
+   * opportunistically from updateSortValue().
+   */
+  void sweepIdle();
 
+  size_t numTracks() const { return trackIndexByName_.size(); }
   size_t numTopNGroups() const { return topNGroups_.size(); }
 
   // Test accessors
@@ -251,6 +272,8 @@ private:
 
   uint64_t propertyType_;
   uint64_t maxDeselected_;
+  std::chrono::milliseconds idleTimeout_;
+  GetLastActivityFn getLastActivity_;
   BatchSelectCallback onBatchSelected_;
   SelectCallback onSelected_;
   EvictCallback onEvicted_;

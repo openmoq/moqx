@@ -13,13 +13,15 @@ namespace openmoq::moqx {
 PropertyRanking::PropertyRanking(
     uint64_t propertyType,
     uint64_t maxDeselected,
+    std::chrono::milliseconds idleTimeout,
+    GetLastActivityFn getLastActivity,
     BatchSelectCallback onBatchSelected,
     SelectCallback onSelected,
     EvictCallback onEvicted
 )
-    : propertyType_(propertyType), maxDeselected_(maxDeselected),
-      onBatchSelected_(std::move(onBatchSelected)), onSelected_(std::move(onSelected)),
-      onEvicted_(std::move(onEvicted)) {}
+    : propertyType_(propertyType), maxDeselected_(maxDeselected), idleTimeout_(idleTimeout),
+      getLastActivity_(std::move(getLastActivity)), onBatchSelected_(std::move(onBatchSelected)),
+      onSelected_(std::move(onSelected)), onEvicted_(std::move(onEvicted)) {}
 
 void PropertyRanking::registerTrack(
     const moxygen::FullTrackName& ftn,
@@ -92,6 +94,9 @@ void PropertyRanking::updateSortValue(const moxygen::FullTrackName& ftn, uint64_
   if (!crossesThreshold(oldRank, newRank)) {
     return;
   }
+
+  // Opportunistic idle sweep: a value change is worth a quick idle check
+  sweepIdle();
 
   // SLOW PATH: value crossed a threshold, recompute TopNGroups
   recomputeTopNGroups(ftn, oldRank, newRank);
@@ -390,6 +395,63 @@ void PropertyRanking::notifyTrackSelected(const moxygen::FullTrackName& ftn, Top
   }
   if (!batch.empty() && onBatchSelected_) {
     onBatchSelected_(ftn, batch);
+  }
+}
+
+void PropertyRanking::sweepIdle() {
+  if (idleTimeout_.count() == 0 || !getLastActivity_) {
+    return;
+  }
+
+  auto now = std::chrono::steady_clock::now();
+
+  for (auto& [n, topNGroup] : topNGroups_) {
+    // Snapshot selected FTNs: deselecting mutates trackStates
+    std::vector<moxygen::FullTrackName> selected;
+    for (const auto& [ftn, state] : topNGroup.trackStates) {
+      if (state == TrackState::Selected) {
+        selected.push_back(ftn);
+      }
+    }
+
+    for (const auto& ftn : selected) {
+      auto lastActivity = getLastActivity_(ftn);
+      // Skip tracks with no recorded activity (epoch = never seen an object).
+      // These are brand-new tracks or tracks whose activityTarget is not wired,
+      // and must not be treated as idle.
+      if (lastActivity == std::chrono::steady_clock::time_point{}) {
+        continue;
+      }
+      if (now - lastActivity <= idleTimeout_) {
+        continue;
+      }
+
+      XLOG(DBG4) << "[PropertyRanking] Idle eviction: " << ftn << " (group N=" << n << ")";
+
+      // Demote into deselected queue — same path as ranking-based eviction.
+      // Allows cheap reselection if the track resumes publishing.
+      topNGroup.trackStates[ftn] = TrackState::Deselected;
+      topNGroup.deselectedQueue.push_back(ftn);
+      trimDeselectedQueue(topNGroup);
+
+      // Promote the highest-ranked non-selected track into the opened slot.
+      // Scan rankedTracks_ from the top; skip Selected and the idle track itself.
+      IterationGuard guard(*this);
+      for (const auto& [key, rankedEntry] : rankedTracks_) {
+        if (rankedEntry.ftn == ftn) {
+          continue; // skip the track we just marked idle
+        }
+        auto stIt = topNGroup.trackStates.find(rankedEntry.ftn);
+        bool isSelected =
+            stIt != topNGroup.trackStates.end() && stIt->second == TrackState::Selected;
+        if (!isSelected) {
+          topNGroup.trackStates[rankedEntry.ftn] = TrackState::Selected;
+          removeFromDeselectedQueue(topNGroup, rankedEntry.ftn);
+          notifyTrackSelected(rankedEntry.ftn, topNGroup);
+          break;
+        }
+      }
+    }
   }
 }
 
