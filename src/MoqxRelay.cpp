@@ -852,6 +852,18 @@ folly::coro::Task<Publisher::SubscribeResult>
 MoqxRelay::subscribe(SubscribeRequest subReq, std::shared_ptr<TrackConsumer> consumer) {
   auto session = MoQSession::getRequestSession();
   auto subscriptionIt = subscriptions_.find(subReq.fullTrackName);
+  // TOCTOU fix: if we might be the first subscriber, wait for the upstream
+  // connection before branching.  waitForConnected() is a suspension point —
+  // a concurrent coroutine may emplace this subscription while we are
+  // suspended.  Re-checking subscriptionIt afterwards ensures we take the
+  // second-subscriber path if that happened, avoiding a double
+  // promise.setValue() crash (folly::PromiseAlreadySatisfied → std::terminate).
+  if (subscriptionIt == subscriptions_.end() && upstream_) {
+    if (!findPublishNamespaceSession(subReq.fullTrackName.trackNamespace)) {
+      co_await upstream_->waitForConnected(kUpstreamConnectWaitTimeout);
+      subscriptionIt = subscriptions_.find(subReq.fullTrackName);
+    }
+  }
   if (subscriptionIt == subscriptions_.end()) {
     // first subscriber
 
@@ -864,10 +876,6 @@ MoqxRelay::subscribe(SubscribeRequest subReq, std::shared_ptr<TrackConsumer> con
       ));
     }
     auto upstreamSession = findPublishNamespaceSession(subReq.fullTrackName.trackNamespace);
-    if (!upstreamSession && upstream_) {
-      co_await upstream_->waitForConnected(kUpstreamConnectWaitTimeout);
-      upstreamSession = findPublishNamespaceSession(subReq.fullTrackName.trackNamespace);
-    }
     if (!upstreamSession) {
       // no such namespace has been published
       co_return folly::makeUnexpected(SubscribeError(
