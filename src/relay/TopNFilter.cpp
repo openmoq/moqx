@@ -29,27 +29,50 @@ void TopNFilter::removeObserver(uint64_t propertyType) {
   observers_.erase(propertyType);
 }
 
+void TopNFilter::setActivityTarget(std::chrono::steady_clock::time_point* target) {
+  activityTarget_ = target;
+}
+
+void TopNFilter::setActivityThreshold(std::chrono::milliseconds threshold) {
+  activityThreshold_ = threshold;
+}
+
 void TopNFilter::checkProperties(const moxygen::Extensions& extensions) {
-  // FAST PATH: No observers to notify
-  if (observers_.empty()) {
+  // FAST PATH: No observers and no activity target — nothing to do
+  if (observers_.empty() && !activityTarget_) {
     return;
+  }
+
+  auto now = std::chrono::steady_clock::now();
+
+  // Write activity timestamp on every object when target is set
+  if (activityTarget_) {
+    *activityTarget_ = now;
   }
 
   // Check extensions for property values we're observing
   for (auto& [propertyType, entry] : observers_) {
     auto valueOpt = extensions.getIntExtension(propertyType);
-    if (!valueOpt) {
-      continue;
+    if (valueOpt) {
+      uint64_t value = *valueOpt;
+      if (!entry.lastSeenValue || *entry.lastSeenValue != value) {
+        XLOG(DBG4) << "[TopNFilter] Property changed on " << ftn_ << ": propertyType=0x" << std::hex
+                   << propertyType << std::dec << " oldValue=" << entry.lastSeenValue.value_or(0)
+                   << " newValue=" << value;
+        entry.lastSeenValue = value;
+        if (entry.observer.onValueChanged) {
+          entry.observer.onValueChanged(value);
+        }
+      }
     }
+  }
 
-    uint64_t value = *valueOpt;
-    if (!entry.lastSeenValue || *entry.lastSeenValue != value) {
-      XLOG(DBG4) << "[TopNFilter] Property changed on " << ftn_ << ": propertyType=0x" << std::hex
-                 << propertyType << std::dec << " oldValue=" << entry.lastSeenValue.value_or(0)
-                 << " newValue=" << value;
-      entry.lastSeenValue = value;
-      if (entry.observer.onValueChanged) {
-        entry.observer.onValueChanged(value);
+  // Throttled onActivity: fire at most once per activityThreshold_
+  if (activityThreshold_.count() > 0 && now - lastActivityNotify_ >= activityThreshold_) {
+    lastActivityNotify_ = now;
+    for (auto& [propertyType, entry] : observers_) {
+      if (entry.observer.onActivity) {
+        entry.observer.onActivity();
       }
     }
   }

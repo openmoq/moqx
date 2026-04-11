@@ -10,6 +10,7 @@
 #include <moxygen/MoQFilters.h>
 #include <moxygen/MoQTypes.h>
 
+#include <chrono>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -24,6 +25,11 @@ struct PropertyObserver {
 
   // Called when the track ends (PUBLISH_DONE received).
   std::function<void()> onTrackEnded;
+
+  // Called at most once per activityThreshold_ when objects arrive on this track.
+  // Fires even when the property value is unchanged or absent. Used to trigger
+  // idle sweeps in PropertyRanking without per-object overhead.
+  std::function<void()> onActivity;
 };
 
 // Entry for tracking observer state per property type.
@@ -66,6 +72,13 @@ public:
 
   // Check if any observers are registered.
   bool hasObservers() const { return !observers_.empty(); }
+
+  // Set pointer to external timestamp; written on every object when non-null.
+  // Lifetime: caller guarantees the pointed-to time_point outlives this filter.
+  void setActivityTarget(std::chrono::steady_clock::time_point* target);
+
+  // Set minimum interval between onActivity callbacks. Zero = never fire onActivity.
+  void setActivityThreshold(std::chrono::milliseconds threshold);
 
   // Check extensions for property values and notify observers.
   // This is called for each object received.
@@ -114,6 +127,14 @@ private:
 
   // Track whether publishDone has been received
   bool ended_{false};
+
+  // Activity tracking: raw pointer written on every object (cheap); null = disabled.
+  std::chrono::steady_clock::time_point* activityTarget_{nullptr};
+
+  // Throttle for onActivity callbacks: minimum interval between fires.
+  // Zero means onActivity is never fired.
+  std::chrono::milliseconds activityThreshold_{};
+  std::chrono::steady_clock::time_point lastActivityNotify_{};
 };
 
 /**
