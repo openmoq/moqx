@@ -1,0 +1,7 @@
+# CODEOWNERS — gates merging via branch protection.
+#
+# An approving review from at least one code owner is required for any PR
+# that touches this repository. The merge button itself is restricted (via
+# branch protection `restrictions`) to the same set of users.
+
+* @gmarzot @afrind
