@@ -769,4 +769,99 @@ TEST_F(MoqxTrackFilterTest, IdleEviction_SilentTrackReplacedByActiveOutsider) {
   consumerB->publishDone(makePublishDone());
 }
 
+// ---------------------------------------------------------------------------
+// Tests: publisher-subscriber self-exclusion
+// ---------------------------------------------------------------------------
+
+// A session that subscribes with TRACK_FILTER before it starts publishing
+// must not receive its own track in the top-N selection.
+//
+// Setup: pub subscribes N=2, then publishes "self" (100).  Two other
+// sessions publish "a" (80) and "b" (60).  Non-self top-2 for pub are
+// "a" and "b"; pub must not receive its own "self" track.
+// Note: "b" is at shared rank 2 (outside shared top-2 of N=2) because
+// "self" occupies a slot, so this also exercises the out-of-shared-top-N
+// reconcile path for publisher-subscribers.
+TEST_F(MoqxTrackFilterTest, PublisherSubscriber_SubscribeBeforePublish_DoesNotReceiveOwnTrack) {
+  auto pub = makeSession();
+  auto other = makeSession();
+  doPublishNamespace(pub);
+
+  // Subscribe before publishing.
+  doSubscribeFilter(pub, /*maxSelected=*/2);
+
+  auto cSelf = doPublish(pub, "self", 100); // pub's own track
+  auto cA = doPublish(other, "a", 80);      // other participant
+  auto cB = doPublish(other, "b", 60);      // other participant
+  exec_->driveFor(20);
+
+  EXPECT_EQ(publishCount(pub.get(), ftn("self")), 0); // own track excluded
+  EXPECT_EQ(publishCount(pub.get(), ftn("a")), 1);
+  EXPECT_EQ(publishCount(pub.get(), ftn("b")), 1);
+
+  cSelf->publishDone(makePublishDone());
+  cA->publishDone(makePublishDone());
+  cB->publishDone(makePublishDone());
+}
+
+// A session that publishes before subscribing with TRACK_FILTER must still
+// have its already-published track excluded from its personal top-N.
+//
+// Setup: pub publishes "self" (100); another session publishes "a" (80) and
+// "b" (60).  pub subscribes N=2 — must see "a" and "b" but not "self".
+TEST_F(MoqxTrackFilterTest, PublisherSubscriber_PublishBeforeSubscribe_StillExcluded) {
+  auto pub = makeSession();
+  auto other = makeSession();
+  doPublishNamespace(pub);
+
+  // Publish before subscribing.
+  auto cSelf = doPublish(pub, "self", 100);
+  auto cA = doPublish(other, "a", 80);
+  auto cB = doPublish(other, "b", 60);
+  exec_->driveFor(10);
+
+  // Late TRACK_FILTER subscription — self-track must be excluded.
+  doSubscribeFilter(pub, /*maxSelected=*/2);
+  exec_->driveFor(20);
+
+  EXPECT_EQ(publishCount(pub.get(), ftn("self")), 0);
+  EXPECT_EQ(publishCount(pub.get(), ftn("a")), 1);
+  EXPECT_EQ(publishCount(pub.get(), ftn("b")), 1);
+
+  cSelf->publishDone(makePublishDone());
+  cA->publishDone(makePublishDone());
+  cB->publishDone(makePublishDone());
+}
+
+// A viewer receives all top-N tracks including the publisher-subscriber's
+// own track; the publisher-subscriber itself never receives its own stream.
+//
+// Setup: pub publishes "self" (100); another session publishes "a" (60).
+// viewer subscribes N=2 — gets both.  pub subscribes N=2 — gets "a" only.
+TEST_F(MoqxTrackFilterTest, PublisherSubscriber_ViewerReceivesSelfTrack) {
+  auto pub = makeSession();
+  auto other = makeSession();
+  auto viewer = makeSession();
+  doPublishNamespace(pub);
+
+  auto cSelf = doPublish(pub, "self", 100);
+  auto cA = doPublish(other, "a", 60);
+  exec_->driveFor(10);
+
+  doSubscribeFilter(viewer, /*maxSelected=*/2);
+  doSubscribeFilter(pub, /*maxSelected=*/2);
+  exec_->driveFor(20);
+
+  // Viewer sees both tracks (including pub's self-track).
+  EXPECT_EQ(publishCount(viewer.get(), ftn("self")), 1);
+  EXPECT_EQ(publishCount(viewer.get(), ftn("a")), 1);
+
+  // Publisher-subscriber never receives its own track.
+  EXPECT_EQ(publishCount(pub.get(), ftn("self")), 0);
+  EXPECT_EQ(publishCount(pub.get(), ftn("a")), 1);
+
+  cSelf->publishDone(makePublishDone());
+  cA->publishDone(makePublishDone());
+}
+
 } // namespace
