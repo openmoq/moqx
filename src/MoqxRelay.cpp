@@ -412,6 +412,21 @@ void MoqxRelay::onPublishDone(const FullTrackName& ftn) {
       // Remove from publishes map
       auto nodePtr = findNamespaceNode(ftn.trackNamespace);
       if (nodePtr) {
+        // If the publisher also had a TRACK_FILTER subscription, remove the
+        // self-track from their exclusion set before erasing from publishes.
+        auto publishIt = nodePtr->publishes.find(ftn.trackName);
+        if (publishIt != nodePtr->publishes.end()) {
+          auto& publisherSession = publishIt->second;
+          auto sessIt = nodePtr->sessions.find(publisherSession);
+          if (sessIt != nodePtr->sessions.end() && sessIt->second.trackFilter) {
+            auto& tf = *sessIt->second.trackFilter;
+            auto rankingIt = nodePtr->rankings.find(tf.propertyType);
+            if (rankingIt != nodePtr->rankings.end()) {
+              rankingIt->second
+                  ->removePublishedTrackFromSession(tf.maxSelected, publisherSession, ftn);
+            }
+          }
+        }
         bool hadLocalContent = nodePtr->hasLocalSessions();
         nodePtr->publishes.erase(ftn.trackName);
 
@@ -533,6 +548,8 @@ MoqxRelay::publish(PublishRequest pub, std::shared_ptr<Publisher::SubscriptionHa
   // node (inclusive). Rankings exist at nodes where TRACK_FILTER subscribers
   // subscribed. A subscriber at /conf should see tracks published under
   // /conf/room1, so we must walk up the ancestor chain.
+  // Self-exclusion is handled automatically inside registerTrack via
+  // reconcilePublisherInAllGroups when the publishing session is also subscribed.
   for (NamespaceNode* node = nodePtr.get(); node != nullptr; node = node->parent_) {
     for (auto& [propertyType, ranking] : node->rankings) {
       auto initialValue = pub.extensions.getIntExtension(propertyType);
@@ -791,7 +808,20 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
   // tracks already in top-N, triggering publishToSession() before this call returns.
   if (trackFilter) {
     auto ranking = getOrCreateRanking(nodePtr, trackFilter->propertyType);
-    ranking->addSessionToTopNGroup(trackFilter->maxSelected, session, subNs.forward);
+    // Collect tracks already published by this session so the ranking can set
+    // up self-exclusion from the start (publisher-subscriber case).
+    std::vector<FullTrackName> publishedBySession;
+    for (const auto& [trackName, publishSession] : nodePtr->publishes) {
+      if (publishSession == session) {
+        publishedBySession.emplace_back(FullTrackName{nodePtr->trackNamespace_, trackName});
+      }
+    }
+    ranking->addSessionToTopNGroup(
+        trackFilter->maxSelected,
+        session,
+        subNs.forward,
+        std::move(publishedBySession)
+    );
   }
 
   // If this is the first content added to this node, notify parent
