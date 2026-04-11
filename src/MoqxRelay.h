@@ -17,6 +17,7 @@
 #include <moxygen/relay/MoQCache.h>
 #include <moxygen/relay/MoQForwarder.h>
 
+#include <folly/container/F14Map.h>
 #include <folly/container/F14Set.h>
 #include <string>
 
@@ -37,9 +38,12 @@ public:
   explicit MoqxRelay(
       config::CacheConfig cache = {},
       std::string relayID = {},
-      uint64_t maxDeselected = kDefaultMaxDeselected
+      uint64_t maxDeselected = kDefaultMaxDeselected,
+      std::chrono::milliseconds idleTimeout = kDefaultIdleTimeout,
+      std::chrono::milliseconds activityThreshold = kDefaultActivityThreshold
   )
-      : relayID_(std::move(relayID)), maxDeselected_(maxDeselected) {
+      : relayID_(std::move(relayID)), maxDeselected_(maxDeselected), idleTimeout_(idleTimeout),
+        activityThreshold_(activityThreshold) {
     if (cache.maxCachedTracks > 0) {
       cache_ =
           std::make_unique<moxygen::MoQCache>(cache.maxCachedTracks, cache.maxCachedGroupsPerTrack);
@@ -254,6 +258,10 @@ private:
 
     // TopNFilter installed in the publisher's filter chain for property observation
     std::shared_ptr<TopNFilter> topNFilter;
+
+    // Written by TopNFilter on every object arrival; read by PropertyRanking::sweepIdle
+    // via the getLastActivity_ callback. Default-constructed (epoch) = always-idle.
+    std::chrono::steady_clock::time_point lastObjectTime{};
   };
 
   void onEmpty(moxygen::MoQForwarder* forwarder) override;
@@ -330,7 +338,7 @@ private:
       moxygen::MoQSession*,
       std::shared_ptr<moxygen::Publisher::SubscribeNamespaceHandle>>
       peerSubNsHandles_;
-  folly::F14FastMap<moxygen::FullTrackName, RelaySubscription, moxygen::FullTrackName::hash>
+  folly::F14NodeMap<moxygen::FullTrackName, RelaySubscription, moxygen::FullTrackName::hash>
       subscriptions_;
 
   std::shared_ptr<moxygen::TrackConsumer> getSubscribeWriteback(
@@ -339,6 +347,11 @@ private:
   );
   std::unique_ptr<moxygen::MoQCache> cache_;
   uint64_t maxDeselected_{kDefaultMaxDeselected};
+
+  static constexpr std::chrono::milliseconds kDefaultIdleTimeout{10'000};
+  static constexpr std::chrono::milliseconds kDefaultActivityThreshold{2'000};
+  std::chrono::milliseconds idleTimeout_{kDefaultIdleTimeout};
+  std::chrono::milliseconds activityThreshold_{kDefaultActivityThreshold};
 };
 
 // Creates a NamespacePublishHandle that bridges NAMESPACE/NAMESPACE_DONE

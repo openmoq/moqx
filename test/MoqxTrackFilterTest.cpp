@@ -800,4 +800,52 @@ TEST_F(MoqxTrackFilterTest, FilterChainInstalledForBothPaths) {
   consumerC->publishDone(makePublishDone());
 }
 
+// ---------------------------------------------------------------------------
+// Tests: idle eviction
+// ---------------------------------------------------------------------------
+
+// A selected track that stops sending objects is evicted once it has been
+// silent for longer than idleTimeout. An outsider that keeps sending objects
+// triggers the sweep (via the throttled onActivity callback) and is promoted.
+TEST_F(MoqxTrackFilterTest, IdleEviction_SilentTrackReplacedByActiveOutsider) {
+  relay_ = std::make_shared<MoqxRelay>(
+      config::CacheConfig{},
+      /*relayID=*/"",
+      /*maxDeselected=*/5,
+      /*idleTimeout=*/std::chrono::milliseconds(10),
+      /*activityThreshold=*/std::chrono::milliseconds(1)
+  );
+  relay_->setAllowedNamespacePrefix(kPrefix);
+
+  auto pubSess = makeSession();
+
+  auto viewer = makeSession();
+  doSubscribeFilter(viewer, /*maxSelected=*/1);
+
+  // "a" (100) enters top-1; "b" (50) is outside.
+  auto consumerA = doPublish(pubSess, "a", 100);
+  auto consumerB = doPublish(pubSess, "b", 50);
+  exec_->driveFor(20);
+
+  ASSERT_EQ(publishCount(viewer.get(), ftn("a")), 1);
+  ASSERT_EQ(publishCount(viewer.get(), ftn("b")), 0);
+
+  // Stamp "a"'s lastObjectTime so it is not treated as epoch-idle.
+  sendValue(consumerA, 100);
+  exec_->driveFor(5);
+
+  // Schedule an object on "b" after idleTimeout has elapsed. loop() blocks
+  // until the timer fires, the sendValue call triggers sweepIdle (which
+  // schedules the publishToSession coroutine), and all resulting callbacks
+  // drain — then loop() returns naturally with no pending work.
+  auto* evb = exec_->getBackingEventBase();
+  evb->runAfterDelay([&] { sendValue(consumerB, 50); }, 20 /* ms, > idleTimeout=10ms */);
+  evb->loop();
+
+  EXPECT_EQ(publishCount(viewer.get(), ftn("b")), 1);
+
+  consumerA->publishDone(makePublishDone());
+  consumerB->publishDone(makePublishDone());
+}
+
 } // namespace
