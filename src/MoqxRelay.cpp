@@ -764,7 +764,7 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
   SubscribeNamespaceOptions effectiveOptions;
   effectiveOptions = subNs.options;
 
-  // Parse TRACK_FILTER parameter if present (draft-16+, SUBSCRIBE_NAMESPACE only)
+  // Parse TRACK_FILTER parameter if present (SUBSCRIBE_NAMESPACE only)
   std::optional<TrackFilter> trackFilter;
   for (const auto& param : subNs.params) {
     if (param.key == folly::to_underlying(TrackRequestParamKey::TRACK_FILTER)) {
