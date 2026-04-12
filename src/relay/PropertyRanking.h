@@ -256,7 +256,6 @@ private:
   void notifyTrackSelected(const moxygen::FullTrackName& ftn, TopNGroup& topNGroup);
 
   void rebuildRankCacheIfNeeded() const;
-  uint64_t getCachedRank(const moxygen::FullTrackName& ftn) const;
 
   // Remove ftn from the deselected queue (if present). O(queue size).
   void removeFromDeselectedQueue(TopNGroup& group, const moxygen::FullTrackName& ftn);

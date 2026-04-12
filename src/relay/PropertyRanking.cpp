@@ -31,15 +31,39 @@ void PropertyRanking::registerTrack(
     return;
   }
 
+  // Ensure cache is valid before insertion so we can use iterator-- for O(1) rank lookup
+  rebuildRankCacheIfNeeded();
+
   uint64_t value = initialValue.value_or(0);
   RankKey key{value, nextSeq_++};
 
   auto [iter, inserted] =
       rankedTracks_.emplace(key, RankedEntry{.ftn = ftn, .publisher = std::move(publisher)});
-  trackIndexByName_[ftn] = RankIndex{.rankIter = iter, .cachedRank = UINT64_MAX};
-  invalidateRankCache();
 
-  uint64_t rank = getCachedRank(ftn);
+  // Compute rank in O(1) using previous track's cached rank
+  uint64_t rank;
+  if (iter == rankedTracks_.begin()) {
+    rank = 0;
+  } else {
+    auto prevIt = iter;
+    --prevIt;
+    auto prevIndexIt = trackIndexByName_.find(prevIt->second.ftn);
+    rank = (prevIndexIt != trackIndexByName_.end()) ? prevIndexIt->second.cachedRank + 1 : 0;
+  }
+
+  trackIndexByName_[ftn] = RankIndex{.rankIter = iter, .cachedRank = rank};
+
+  // Increment cached ranks for all tracks after insertion point: O(numTracks - rank)
+  auto nextIt = iter;
+  ++nextIt;
+  for (; nextIt != rankedTracks_.end(); ++nextIt) {
+    auto indexIt = trackIndexByName_.find(nextIt->second.ftn);
+    if (indexIt != trackIndexByName_.end()) {
+      indexIt->second.cachedRank++;
+    }
+  }
+  // Cache remains valid - no full rebuild needed
+
   XLOG(DBG4) << "Registered track " << ftn << " with value " << value << " at rank " << rank;
 
   for (auto& [n, topNGroup] : topNGroups_) {
@@ -138,12 +162,27 @@ void PropertyRanking::removeTrack(const moxygen::FullTrackName& ftn) {
     return;
   }
 
+  // Ensure cache is valid before removal
+  rebuildRankCacheIfNeeded();
+
   auto& entry = it->second;
-  uint64_t oldRank = getCachedRank(ftn);
+  uint64_t oldRank = entry.cachedRank;
+
+  // Save iterator to next track before erasing (remains valid after erase per std::map guarantees)
+  auto nextIt = entry.rankIter;
+  ++nextIt;
 
   rankedTracks_.erase(entry.rankIter);
   trackIndexByName_.erase(it);
-  invalidateRankCache();
+
+  // Decrement cached ranks for all tracks after removal point: O(numTracks - oldRank)
+  for (; nextIt != rankedTracks_.end(); ++nextIt) {
+    auto indexIt = trackIndexByName_.find(nextIt->second.ftn);
+    if (indexIt != trackIndexByName_.end()) {
+      indexIt->second.cachedRank--;
+    }
+  }
+  // Cache remains valid - no full rebuild needed
 
   XLOG(DBG4) << "Removed track " << ftn << " from rank " << oldRank;
 
@@ -290,15 +329,15 @@ uint64_t PropertyRanking::getRank(const RankKey& key) const {
   return trackIndexByName_.find(it->second.ftn)->second.cachedRank;
 }
 
-// O(numTracks) full cache rebuild. Called on registerTrack/removeTrack when cache
-// is invalidated. updateSortValue uses incremental updates to avoid this.
+// O(numTracks) full cache rebuild. Only called when cache is invalid (e.g., after
+// direct map manipulation in tests). Normal operations use incremental updates:
+// - registerTrack: O(1) rank lookup via iterator--, O(numTracks - rank) updates
+// - removeTrack: O(numTracks - oldRank) updates
+// - updateSortValue: O(newRank) + O(|movement|) updates
 //
-// Future optimization opportunities (see GitHub issue):
-// 1. Incremental rebuild: only update ranks after the inserted/removed track position,
-//    using iterator-- to learn the starting rank.
-// 2. Lazy partial cache: don't compute ranks for tracks past max(N) + maxDeselected.
-//    Their rank only matters on track removal or increasing N (not yet supported).
-//    Rebuild the bottom portion of the cache lazily on demand.
+// Future optimization opportunity:
+// Lazy partial cache: don't compute ranks for tracks past max(N) + maxDeselected.
+// Their rank only matters on track removal or increasing N (not yet supported).
 void PropertyRanking::rebuildRankCacheIfNeeded() const {
   if (rankCacheValid_) {
     return;
@@ -312,15 +351,6 @@ void PropertyRanking::rebuildRankCacheIfNeeded() const {
     rank++;
   }
   rankCacheValid_ = true;
-}
-
-uint64_t PropertyRanking::getCachedRank(const moxygen::FullTrackName& ftn) const {
-  rebuildRankCacheIfNeeded();
-  auto it = trackIndexByName_.find(ftn);
-  if (it == trackIndexByName_.end()) {
-    return UINT64_MAX;
-  }
-  return it->second.cachedRank;
 }
 
 bool PropertyRanking::crossesThreshold(uint64_t oldRank, uint64_t newRank) const {
