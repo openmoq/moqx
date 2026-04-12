@@ -51,9 +51,16 @@ void PropertyRanking::registerTrack(
   // --- Step 1: Ensure cache validity for O(1) rank computation ---
   rebuildRankCacheIfNeeded();
 
-  // --- Step 2: Insert into sorted map ---
+  // --- Step 2: Insert into sorted map and update publisher track count ---
   uint64_t value = initialValue.value_or(0);
   RankKey key{value, nextSeq_++};
+
+  // Increment publisher track count for O(1) isPublisher() lookup
+  if (auto pubSession = publisher.lock()) {
+    auto& entry = publisherTrackCount_[pubSession.get()];
+    entry.session = pubSession; // Store weak_ptr for ABA validation
+    entry.trackCount++;
+  }
 
   auto [iter, inserted] =
       rankedTracks_.emplace(key, RankedEntry{.ftn = ftn, .publisher = std::move(publisher)});
@@ -283,6 +290,16 @@ void PropertyRanking::removeTrack(const moxygen::FullTrackName& ftn) {
   auto nextIt = entry.rankIter;
   ++nextIt;
 
+  // Decrement publisher track count before erasing
+  if (auto pubSession = entry.rankIter->second.publisher.lock()) {
+    auto countIt = publisherTrackCount_.find(pubSession.get());
+    if (countIt != publisherTrackCount_.end()) {
+      if (--countIt->second.trackCount == 0) {
+        publisherTrackCount_.erase(countIt);
+      }
+    }
+  }
+
   // --- Step 2: Remove from data structures ---
   rankedTracks_.erase(entry.rankIter);
   trackIndexByName_.erase(it);
@@ -392,16 +409,14 @@ void PropertyRanking::addSessionToTopNGroup(
     // it fires onSelected_ for each track in the personal top-N and
     // populates selectedTracks for future delta computation.
     reconcilePublisherSelection(sessionInfo, maxSelected, session);
-  } else {
+  } else if (onSelected_) {
     // Notify viewer of all currently-selected tracks.
     uint64_t rank = 0;
     for (auto& [key, entry] : rankedTracks_) {
       if (rank >= maxSelected) {
         break;
       }
-      if (onSelected_) {
-        onSelected_(entry.ftn, session, sessionInfo.forward);
-      }
+      onSelected_(entry.ftn, session, sessionInfo.forward);
       rank++;
     }
   }
@@ -717,8 +732,8 @@ void PropertyRanking::trimDeselectedQueue(TopNGroup& topNGroup) {
                << " from TopNGroup maxSelected=" << topNGroup.maxSelected
                << " (deselectedQueue exceeded maxDeselected=" << maxDeselected_ << ")";
 
-    for (const auto& [session, info] : topNGroup.sessions) {
-      if (session && onEvicted_) {
+    if (onEvicted_) {
+      for (const auto& [session, info] : topNGroup.sessions) {
         onEvicted_(evicted, session);
       }
     }
@@ -828,17 +843,16 @@ bool PropertyRanking::isSelfTrack(
 }
 
 bool PropertyRanking::isPublisher(const std::shared_ptr<moxygen::MoQSession>& session) const {
-  // Check if this session owns any track in rankedTracks_.
-  for (const auto& [key, entry] : rankedTracks_) {
-    if (entry.publisher.lock() == session) {
-      return true;
-    }
+  // O(1) lookup using cached publisher track count
+  auto it = publisherTrackCount_.find(session.get());
+  if (it == publisherTrackCount_.end()) {
+    return false;
   }
-  return false;
+  // Validate weak_ptr to guard against ABA problem (new session at same address)
+  return it->second.session.lock() == session;
 }
 
-std::optional<RankKey>
-PropertyRanking::computeWaterlineKey(
+std::optional<RankKey> PropertyRanking::computeWaterlineKey(
     const std::shared_ptr<moxygen::MoQSession>& session,
     uint64_t maxSelected
 ) const {
@@ -847,7 +861,8 @@ PropertyRanking::computeWaterlineKey(
   // (RankKey uses std::greater<>, so higher key = lower rank = better.)
   uint64_t nonSelfCount = 0;
   for (const auto& [key, entry] : rankedTracks_) {
-    if (!isSelfTrack(entry.ftn, session)) {
+    // Inline self-track check: compare publisher directly (avoids redundant lookup)
+    if (entry.publisher.lock() != session) {
       nonSelfCount++;
       if (nonSelfCount == maxSelected) {
         return key;
@@ -871,23 +886,27 @@ void PropertyRanking::reconcilePublisherSelection(
   // A track is selected iff it's non-self AND at-or-above the waterline.
   folly::F14FastSet<moxygen::FullTrackName, moxygen::FullTrackName::hash> nowSelected;
   for (const auto& [key, entry] : rankedTracks_) {
-    if (!isSelfTrack(entry.ftn, session) &&
-        (!info.waterlineKey || key >= *info.waterlineKey)) {
+    // Inline self-track check: compare publisher directly (avoids redundant lookup)
+    if (entry.publisher.lock() != session && (!info.waterlineKey || key >= *info.waterlineKey)) {
       nowSelected.insert(entry.ftn);
     }
   }
 
   // Evict tracks that left the publisher's personal top-N.
-  for (const auto& ftn : info.selectedTracks) {
-    if (nowSelected.count(ftn) == 0 && onEvicted_) {
-      onEvicted_(ftn, session);
+  if (onEvicted_) {
+    for (const auto& ftn : info.selectedTracks) {
+      if (nowSelected.count(ftn) == 0) {
+        onEvicted_(ftn, session);
+      }
     }
   }
 
   // Notify tracks that entered the publisher's personal top-N.
-  for (const auto& ftn : nowSelected) {
-    if (info.selectedTracks.count(ftn) == 0 && onSelected_) {
-      onSelected_(ftn, session, info.forward);
+  if (onSelected_) {
+    for (const auto& ftn : nowSelected) {
+      if (info.selectedTracks.count(ftn) == 0) {
+        onSelected_(ftn, session, info.forward);
+      }
     }
   }
 
