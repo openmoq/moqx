@@ -426,6 +426,13 @@ void PropertyRanking::recomputeTopNGroups(
     // When a track falls out of top-N, the track that was at position n (just
     // outside) shifts into position n-1 (now inside). Promote it if not already
     // selected.
+    //
+    // NOTE: This traverses rankedTracks_ to find position n-1, and we do this for
+    // each TopNGroup. With multiple groups (e.g., N=99,100,101), this is O(G*N).
+    // Optimization for many groups: two-phase algorithm:
+    // 1. Collect target positions (n-1 for each group needing promotion) into sorted vector
+    // 2. Single rankedTracks_ traversal, bumping vector index as positions are found
+    // This reduces O(G*N) to O(N + G log G). Deferred since common case is few groups.
     if (wasInTopN && !nowInTopN) {
       uint64_t count = 0;
       for (auto& [key, rankedEntry] : rankedTracks_) {
