@@ -530,22 +530,26 @@ MoqxRelay::publish(PublishRequest pub, std::shared_ptr<Publisher::SubscriptionHa
       std::static_pointer_cast<TrackConsumer>(terminationFilter));
   rsub.topNFilter = topNFilter;
 
-  // Register track with all PropertyRankings already active on this node and
-  // wire up value-change and track-ended observers on the TopNFilter.
-  for (auto& [propertyType, ranking] : nodePtr->rankings) {
-    auto initialValue = pub.extensions.getIntExtension(propertyType);
-    ranking->registerTrack(pub.fullTrackName, initialValue, session);
-    topNFilter->registerObserver(
-        propertyType,
-        PropertyObserver{
-            .onValueChanged =
-                [ranking, ftn = pub.fullTrackName](uint64_t value) {
-                  ranking->updateSortValue(ftn, value);
-                },
-            .onTrackEnded =
-                [ranking, ftn = pub.fullTrackName]() {
-                  ranking->removeTrack(ftn);
-                }});
+  // Register track with all PropertyRankings along the path from root to this
+  // node (inclusive). Rankings exist at nodes where TRACK_FILTER subscribers
+  // subscribed. A subscriber at /conf should see tracks published under
+  // /conf/room1, so we must walk up the ancestor chain.
+  for (NamespaceNode* node = nodePtr.get(); node != nullptr; node = node->parent_) {
+    for (auto& [propertyType, ranking] : node->rankings) {
+      auto initialValue = pub.extensions.getIntExtension(propertyType);
+      ranking->registerTrack(pub.fullTrackName, initialValue, session);
+      topNFilter->registerObserver(
+          propertyType,
+          PropertyObserver{
+              .onValueChanged =
+                  [ranking, ftn = pub.fullTrackName](uint64_t value) {
+                    ranking->updateSortValue(ftn, value);
+                  },
+              .onTrackEnded =
+                  [ranking, ftn = pub.fullTrackName]() {
+                    ranking->removeTrack(ftn);
+                  }});
+    }
   }
 
   uint64_t nSubscribers = 0;
@@ -818,7 +822,11 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
       auto& forwarder = subscriptionIt->second.forwarder;
       auto& rsub = subscriptionIt->second;
       if (forwarder->empty() && !rsub.isPublish) {
-        // Use forward value from this namespace subscription
+        // If forwarder is empty (no downstream subscribers yet), send
+        // SUBSCRIBE_UPDATE to enable/disable forwarding based on this subscriber.
+        // Skip if isPublish: in that case the "upstream" is the publisher directly
+        // connected to this relay, not an upstream relay subscription that needs
+        // a REQUEST_UPDATE.
         co_withExecutor(exec, doSubscribeUpdate(rsub.handle, subNs.forward)).start();
       }
       auto maybeNegotiatedVersion = session->getNegotiatedVersion();
@@ -1310,30 +1318,46 @@ std::shared_ptr<PropertyRanking> MoqxRelay::getOrCreateRanking(
           onTrackEvicted(ftn, session);
         });
 
-    // Retroactively register tracks already published under this node so that
-    // a subscriber who arrives after publishers can still see existing tracks.
-    // Use the forwarder's stored extensions to seed the initial property value.
-    for (auto& [trackName, publishSession] : node->publishes) {
-      FullTrackName ftn{node->trackNamespace_, trackName};
-      std::optional<uint64_t> initialValue;
-      auto subIt = subscriptions_.find(ftn);
-      if (subIt != subscriptions_.end()) {
-        initialValue = subIt->second.forwarder->extensions().getIntExtension(propertyType);
-        // Wire value-change and track-ended observers on the existing TopNFilter.
-        if (subIt->second.topNFilter) {
-          auto rankingPtr = ranking;
-          subIt->second.topNFilter->registerObserver(
-              propertyType,
-              PropertyObserver{
-                  .onValueChanged =
-                      [rankingPtr, ftn](uint64_t value) {
-                        rankingPtr->updateSortValue(ftn, value);
-                      },
-                  .onTrackEnded = [rankingPtr, ftn]() { rankingPtr->removeTrack(ftn); }});
+    // Retroactively register tracks already published under this node and all
+    // descendants. A subscriber at /conf should see tracks at /conf/room1/track1.
+    // Use BFS to traverse the subtree and register all published tracks.
+    std::deque<std::pair<TrackNamespace, NamespaceNode*>> queue;
+    queue.emplace_back(node->trackNamespace_, node.get());
+
+    while (!queue.empty()) {
+      auto [prefix, current] = queue.front();
+      queue.pop_front();
+
+      // Register tracks at this level
+      for (auto& [trackName, publishSession] : current->publishes) {
+        FullTrackName ftn{prefix, trackName};
+        std::optional<uint64_t> initialValue;
+        auto subIt = subscriptions_.find(ftn);
+        if (subIt != subscriptions_.end()) {
+          initialValue = subIt->second.forwarder->extensions().getIntExtension(propertyType);
+          // Wire value-change and track-ended observers on the existing TopNFilter.
+          if (subIt->second.topNFilter) {
+            auto rankingPtr = ranking;
+            subIt->second.topNFilter->registerObserver(
+                propertyType,
+                PropertyObserver{
+                    .onValueChanged =
+                        [rankingPtr, ftn](uint64_t value) {
+                          rankingPtr->updateSortValue(ftn, value);
+                        },
+                    .onTrackEnded = [rankingPtr, ftn]() { rankingPtr->removeTrack(ftn); }});
+          }
         }
+        ranking->registerTrack(ftn, initialValue, publishSession);
+        XLOG(DBG4) << "[getOrCreateRanking] Retroactively registered track " << ftn;
       }
-      ranking->registerTrack(ftn, initialValue, publishSession);
-      XLOG(DBG4) << "[getOrCreateRanking] Retroactively registered track " << ftn;
+
+      // Queue children for traversal
+      for (auto& [childKey, childNode] : current->children) {
+        TrackNamespace childPrefix(prefix);
+        childPrefix.append(childKey);
+        queue.emplace_back(childPrefix, childNode.get());
+      }
     }
   }
   return ranking;

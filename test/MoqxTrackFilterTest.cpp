@@ -75,8 +75,7 @@ class MoqxTrackFilterTest : public ::testing::Test {
   void SetUp() override {
     exec_ = std::make_shared<TestMoQExecutor>();
     relay_ = std::make_shared<MoqxRelay>(
-        /*maxCachedTracks=*/0,
-        /*maxCachedGroupsPerTrack=*/0,
+        config::CacheConfig{0, 0}, // no cache
         /*relayID=*/"",
         /*maxDeselected=*/5);
     relay_->setAllowedNamespacePrefix(kPrefix);
@@ -398,9 +397,11 @@ TEST_F(MoqxTrackFilterTest, TwoSubscribers_DifferentN_IndependentSets) {
 // Tests: forward flag
 // ---------------------------------------------------------------------------
 
-// forward=false propagates through to publishToSession.
-// (Full verification requires forwarder internals; this checks no crash.)
-TEST_F(MoqxTrackFilterTest, ForwardFalse_NoError) {
+// forward=false propagates through to publishToSession without affecting selection.
+// The subscriber should still receive publishes for selected tracks, but with
+// forward=false passed to the forwarder (controls whether the relay requests
+// forwarding from upstream).
+TEST_F(MoqxTrackFilterTest, ForwardFalse_TracksStillSelected) {
   auto pubSess = makeSession();
   doPublishNamespace(pubSess);
 
@@ -423,10 +424,18 @@ TEST_F(MoqxTrackFilterTest, ForwardFalse_NoError) {
   });
 
   auto cA = doPublish(pubSess, "a", 100);
+  auto cB = doPublish(pubSess, "b", 80);
+  auto cC = doPublish(pubSess, "c", 40);
   exec_->driveFor(20);
-  // No assertions on count — just verifying no crash with forward=false
+
+  // forward=false should not affect track selection: top-2 still receive publish
+  EXPECT_EQ(publishCount(viewer.get(), ftn("a")), 1);
+  EXPECT_EQ(publishCount(viewer.get(), ftn("b")), 1);
+  EXPECT_EQ(publishCount(viewer.get(), ftn("c")), 0); // outside top-2
 
   cA->publishDone(makePublishDone());
+  cB->publishDone(makePublishDone());
+  cC->publishDone(makePublishDone());
 }
 
 // ---------------------------------------------------------------------------
@@ -670,8 +679,7 @@ TEST_F(MoqxTrackFilterTest, Unsubscribe_StaleEntriesDoNotAffectResubscribe) {
 TEST_F(MoqxTrackFilterTest, DeselectedQueueEviction_EvictsOldestEntry) {
   // Override relay_ with a tighter maxDeselected so eviction triggers quickly.
   relay_ = std::make_shared<MoqxRelay>(
-      /*maxCachedTracks=*/0,
-      /*maxCachedGroupsPerTrack=*/0,
+      config::CacheConfig{0, 0}, // no cache
       /*relayID=*/"",
       /*maxDeselected=*/2);
   relay_->setAllowedNamespacePrefix(kPrefix);
@@ -695,11 +703,16 @@ TEST_F(MoqxTrackFilterTest, DeselectedQueueEviction_EvictsOldestEntry) {
   auto cT3 = doPublish(pubSess, "t3", 40); // deselected overflows → "base" evicted
   exec_->driveFor(20);
 
-  // All four tracks entered top-1 in sequence.
+  // All four tracks entered top-1 in sequence as higher-value tracks arrived.
+  EXPECT_EQ(publishCount(viewer.get(), ftn("base")), 1);
   EXPECT_EQ(publishCount(viewer.get(), ftn("t1")), 1);
   EXPECT_EQ(publishCount(viewer.get(), ftn("t2")), 1);
   EXPECT_EQ(publishCount(viewer.get(), ftn("t3")), 1);
-  // No crash means eviction ran without error.
+
+  // Verify total number of selections: all 4 tracks should have been selected
+  // exactly once as they successively entered top-1.
+  auto allPublished = published(viewer.get());
+  EXPECT_EQ(allPublished.size(), 4);
 
   cBase->publishDone(makePublishDone());
   cT1->publishDone(makePublishDone());

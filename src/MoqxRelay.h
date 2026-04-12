@@ -28,10 +28,11 @@ class MoqxRelay : public moxygen::Publisher,
                   public moxygen::MoQForwarder::Callback {
 public:
   // Default for maxDeselected (tracks kept in deselected queue before eviction).
+  // A modest value reduces PUBLISH churn when tracks briefly drop out of top-N.
   // NOTE: With maxDeselected>0, tracks enter the queue but PropertyRanking
   // doesn't yet have callbacks for pause/resume forwarding. See PropertyRanking.h
   // for the TODO on onDeselected/onReselected callbacks.
-  static constexpr uint64_t kDefaultMaxDeselected = 0;
+  static constexpr uint64_t kDefaultMaxDeselected = 15;
 
   explicit MoqxRelay(
       config::CacheConfig cache = {},
