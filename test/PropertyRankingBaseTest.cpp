@@ -182,7 +182,7 @@ TEST_F(PropertyRankingBaseTest, SubscribeThenRegister_TopNBoundary) {
   EXPECT_EQ(h.selectCount(ftn("c"), sub.get()), 0);
 }
 
-TEST_F(PropertyRankingBaseTest, ForwardFlagPassedThrough) {
+TEST_F(PropertyRankingBaseTest, ForwardFlagPassedThrough_False) {
   RankingHarness h;
   auto sub = makeSession();
   h.ranking().addSessionToTopNGroup(1, sub, /*forward=*/false);
@@ -190,6 +190,16 @@ TEST_F(PropertyRankingBaseTest, ForwardFlagPassedThrough) {
 
   ASSERT_EQ(h.selected_.size(), 1u);
   EXPECT_FALSE(h.selected_[0].forward);
+}
+
+TEST_F(PropertyRankingBaseTest, ForwardFlagPassedThrough_True) {
+  RankingHarness h;
+  auto sub = makeSession();
+  h.ranking().addSessionToTopNGroup(1, sub, /*forward=*/true);
+  h.ranking().registerTrack(ftn("a"), 10, {});
+
+  ASSERT_EQ(h.selected_.size(), 1u);
+  EXPECT_TRUE(h.selected_[0].forward);
 }
 
 // ---------------------------------------------------------------------------
@@ -258,7 +268,7 @@ TEST_F(PropertyRankingBaseTest, SlowPath_MultipleTopNGroups) {
   h.ranking().registerTrack(ftn("a"), 100, {});
   h.ranking().registerTrack(ftn("b"), 80, {});
   h.ranking().registerTrack(ftn("c"), 60, {});
-  h.ranking().registerTrack(ftn("d"), 40, {}); // rank 3 — in top-3 not top-1
+  h.ranking().registerTrack(ftn("d"), 40, {}); // rank 3 — NOT in top-3, not in top-1
   h.clearEvents();
 
   // "d" surpasses "a" — crosses threshold for both groups
@@ -266,8 +276,9 @@ TEST_F(PropertyRankingBaseTest, SlowPath_MultipleTopNGroups) {
 
   // sub1 (top-1) should now receive "d"
   EXPECT_GE(h.selectCount(ftn("d"), sub1.get()), 1);
-  // sub3 (top-3) should also receive "d" (it was already in top-3, but moved)
-  // "d" was already selected for sub3 so no new notification expected for sub3
+  // sub3 (top-3) should also receive "d" — it was NOT in top-3 before (rank 3),
+  // now it's rank 0 so sub3 should be notified
+  EXPECT_GE(h.selectCount(ftn("d"), sub3.get()), 1);
 }
 
 // ---------------------------------------------------------------------------

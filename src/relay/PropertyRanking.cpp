@@ -50,6 +50,7 @@ void PropertyRanking::registerTrack(
 
       // The new track pushed the previous occupant of rank N-1 to rank N.
       // If that track was Selected, demote it into the deselected queue.
+      // (Only fires when numTracks > N, otherwise there's no track at rank N.)
       demoteTrackAtRank(n, topNGroup);
     }
     // Tracks outside top N are not added to the deselected queue on register;
@@ -90,10 +91,14 @@ void PropertyRanking::updateSortValue(const moxygen::FullTrackName& ftn, uint64_
 
   // FAST PATH: value change doesn't cross any threshold
   if (!crossesThreshold(oldRank, newRank)) {
+    XLOG(DBG5) << "updateSortValue fast path: " << ftn << " value=" << value
+               << " rank " << oldRank << " -> " << newRank << " (no threshold crossed)";
     return;
   }
 
   // SLOW PATH: value crossed a threshold, recompute TopNGroups
+  XLOG(DBG4) << "updateSortValue slow path: " << ftn << " value=" << value
+             << " rank " << oldRank << " -> " << newRank << " (threshold crossed)";
   recomputeTopNGroups(ftn, oldRank, newRank);
 }
 
@@ -131,10 +136,14 @@ void PropertyRanking::removeTrack(const moxygen::FullTrackName& ftn) {
       if (!topNGroup.deselectedQueue.empty()) {
         auto promoted = topNGroup.deselectedQueue.front();
         topNGroup.deselectedQueue.pop_front();
+        XLOG(DBG4) << "removeTrack: promoting " << promoted
+                   << " from deselected queue for TopNGroup maxSelected=" << n;
         topNGroup.trackStates[promoted] = TrackState::Selected;
         notifyTrackSelected(promoted, topNGroup);
       } else {
-        // Fall back to ranked list scan: find the highest-ranked non-selected track
+        // Fallback: deselected queue is empty (e.g., first removal after registration
+        // when no tracks have yet been demoted). Scan ranked list for the first
+        // non-selected track to promote into the vacated slot.
         for (auto& [key, rankedEntry] : rankedTracks_) {
           auto stIt = topNGroup.trackStates.find(rankedEntry.ftn);
           if (stIt != topNGroup.trackStates.end() && stIt->second == TrackState::Selected) {
@@ -155,6 +164,7 @@ void PropertyRanking::removeTrack(const moxygen::FullTrackName& ftn) {
 TopNGroup& PropertyRanking::getOrCreateTopNGroup(uint64_t maxSelected) {
   auto [it, inserted] = topNGroups_.try_emplace(maxSelected);
   if (inserted) {
+    XLOG(DBG4) << "Created new TopNGroup with maxSelected=" << maxSelected;
     it->second.maxSelected = maxSelected;
     updateSelectionThreshold();
 
@@ -175,6 +185,8 @@ void PropertyRanking::addSessionToTopNGroup(
     bool forward
 ) {
   XCHECK(!iteratingSessions_) << "Cannot add session while iterating";
+  XLOG(DBG4) << "addSessionToTopNGroup: maxSelected=" << maxSelected
+             << " forward=" << forward;
 
   auto& topNGroup = getOrCreateTopNGroup(maxSelected);
   topNGroup.sessions[session] = SessionInfo{.forward = forward};
@@ -200,6 +212,7 @@ void PropertyRanking::removeSessionFromTopNGroup(
 
   auto it = topNGroups_.find(maxSelected);
   if (it == topNGroups_.end()) {
+    XLOG(WARN) << "removeSessionFromTopNGroup: TopNGroup not found for maxSelected=" << maxSelected;
     return;
   }
 
@@ -211,6 +224,7 @@ void PropertyRanking::removeSessionFromTopNGroup(
 }
 
 void PropertyRanking::removeTopNGroup(uint64_t maxSelected) {
+  XLOG(DBG4) << "removeTopNGroup: maxSelected=" << maxSelected;
   topNGroups_.erase(maxSelected);
   updateSelectionThreshold();
 }
@@ -260,9 +274,9 @@ bool PropertyRanking::crossesThreshold(uint64_t oldRank, uint64_t newRank) const
   uint64_t minRank = std::min(oldRank, newRank);
   uint64_t maxRank = std::max(oldRank, newRank);
 
-  bool oldInPool = oldRank < selectionThreshold_;
-  bool newInPool = newRank < selectionThreshold_;
-  if (oldInPool != newInPool) {
+  bool oldInAnyTopN = oldRank < selectionThreshold_;
+  bool newInAnyTopN = newRank < selectionThreshold_;
+  if (oldInAnyTopN != newInAnyTopN) {
     return true;
   }
 
@@ -360,6 +374,7 @@ void PropertyRanking::trimDeselectedQueue(TopNGroup& topNGroup) {
   }
 }
 
+// O(maxDeselected_) linear scan to remove ftn from the deselected queue.
 void PropertyRanking::removeFromDeselectedQueue(
     TopNGroup& group,
     const moxygen::FullTrackName& ftn
@@ -374,6 +389,8 @@ void PropertyRanking::demoteTrackAtRank(uint64_t n, TopNGroup& group) {
     if (count == n) {
       auto stIt = group.trackStates.find(rankedEntry.ftn);
       if (stIt != group.trackStates.end() && stIt->second == TrackState::Selected) {
+        XLOG(DBG4) << "demoteTrackAtRank: demoting " << rankedEntry.ftn
+                   << " at rank " << n << " to deselected queue";
         stIt->second = TrackState::Deselected;
         group.deselectedQueue.push_back(rankedEntry.ftn);
         trimDeselectedQueue(group);
@@ -390,6 +407,8 @@ void PropertyRanking::notifyTrackSelected(const moxygen::FullTrackName& ftn, Top
     batch.emplace_back(session, info.forward);
   }
   if (!batch.empty() && onBatchSelected_) {
+    XLOG(DBG4) << "notifyTrackSelected: " << ftn << " to " << batch.size()
+               << " sessions in TopNGroup maxSelected=" << topNGroup.maxSelected;
     onBatchSelected_(ftn, batch);
   }
 }

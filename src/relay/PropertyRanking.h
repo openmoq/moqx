@@ -90,11 +90,13 @@ struct TopNGroup {
   // Session -> state mapping
   folly::F14FastMap<std::shared_ptr<moxygen::MoQSession>, SessionInfo> sessions;
 
-  // Track -> state (Selected or Deselected)
+  // Track -> state (Selected or Deselected).
+  // Only contains tracks that are either in top-N or in the deselected queue
+  // (i.e., at most N + maxDeselected entries).
   folly::F14FastMap<moxygen::FullTrackName, TrackState, moxygen::FullTrackName::hash> trackStates;
 
-  // FIFO queue for cheap reselection.
-  // Bounded by maxDeselected_ (a relay-level property) before eviction.
+  // FIFO queue for cheap reselection. Lives in TopNGroup, not PropertyRanking.
+  // Bounded by maxDeselected_ (a PropertyRanking-level property) before eviction.
   std::deque<moxygen::FullTrackName> deselectedQueue;
 };
 
