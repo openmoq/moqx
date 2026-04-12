@@ -76,22 +76,48 @@ void PropertyRanking::updateSortValue(const moxygen::FullTrackName& ftn, uint64_
   // Construct new key after the early-exit check
   RankKey newKey{value, oldKey.arrivalSeq};
 
-  // Capture old rank before modifying the map (oldKey disappears after erase)
-  uint64_t oldRank = getCachedRank(ftn);
+  // Ensure cache is valid and capture old rank before modifying the map
+  rebuildRankCacheIfNeeded();
+  uint64_t oldRank = entry.cachedRank;
 
-  // Update the sorted map
+  // Update the sorted map: O(log N) erase + insert
   auto rankedEntry = std::move(entry.rankIter->second);
   rankedTracks_.erase(entry.rankIter);
   auto [newIter, _] = rankedTracks_.emplace(newKey, std::move(rankedEntry));
   entry.rankIter = newIter;
-  invalidateRankCache();
 
-  // Compute new rank now that the map reflects the new position.
-  // NOTE: This is O(numTracks) because getCachedRank triggers a full cache rebuild.
-  // The map insert is O(log numTracks) but the rank cache rebuild touches every track.
-  // TODO: Optimize by either (a) using std::distance for single-track lookup, or
-  // (b) incremental cache update: only adjust ranks between oldRank and newRank by ±1.
-  uint64_t newRank = getCachedRank(ftn);
+  // Compute new rank using std::distance: O(newRank) for bidirectional iterator.
+  // For top-ranked tracks (where we care most), this is fast.
+  uint64_t newRank = static_cast<uint64_t>(
+      std::distance(rankedTracks_.begin(), newIter));
+  entry.cachedRank = newRank;
+
+  // Incrementally update cached ranks for affected tracks only: O(|oldRank - newRank|).
+  // Tracks between old and new positions had their ranks shift by ±1.
+  if (newRank < oldRank) {
+    // Track moved up (higher value → lower rank). Tracks in (newRank, oldRank] shift down.
+    auto rankedIt = newIter;
+    ++rankedIt;  // Skip the moved track
+    for (uint64_t r = newRank + 1; r <= oldRank && rankedIt != rankedTracks_.end();
+         ++r, ++rankedIt) {
+      auto indexIt = trackIndexByName_.find(rankedIt->second.ftn);
+      if (indexIt != trackIndexByName_.end()) {
+        indexIt->second.cachedRank = r;
+      }
+    }
+  } else if (newRank > oldRank) {
+    // Track moved down (lower value → higher rank). Tracks in [oldRank, newRank) shift up.
+    auto rankedIt = newIter;
+    for (uint64_t r = newRank; r > oldRank && rankedIt != rankedTracks_.begin();) {
+      --rankedIt;
+      --r;
+      auto indexIt = trackIndexByName_.find(rankedIt->second.ftn);
+      if (indexIt != trackIndexByName_.end()) {
+        indexIt->second.cachedRank = r;
+      }
+    }
+  }
+  // Cache remains valid - no full rebuild needed
 
   // FAST PATH: value change doesn't cross any threshold
   if (!crossesThreshold(oldRank, newRank)) {
