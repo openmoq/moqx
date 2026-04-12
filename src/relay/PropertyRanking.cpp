@@ -393,12 +393,13 @@ void PropertyRanking::recomputeTopNGroups(
   XLOG(DBG4) << "recomputeTopNGroups: " << ftn << " moved from rank " << oldRank << " to "
              << newRank;
 
-  // O(G * N) where G = number of TopNGroups. For each group, we may iterate
-  // rankedTracks_ to find tracks at boundary positions.
-  // TODO: For large numbers of TopNGroups (G > ~5), optimize with single-pass
-  // algorithm: collect all crossed thresholds, sort them, then single iteration
-  // over rankedTracks_ to find all needed boundary positions.
   IterationGuard guard(*this);
+
+  // Two-phase algorithm: O(G log G + N) instead of O(G * N)
+  // Phase 1: Update state and collect boundary positions needing demotion/promotion
+  enum class Action { Demote, Promote };
+  std::vector<std::tuple<uint64_t, TopNGroup*, Action>> boundaryOps;
+
   for (auto& [n, topNGroup] : topNGroups_) {
     bool wasInTopN = oldRank < n;
     bool nowInTopN = newRank < n;
@@ -414,40 +415,63 @@ void PropertyRanking::recomputeTopNGroups(
       }
     }
 
-    // Batch-notify all sessions when track enters shared top-N
+    // Track entered top-N: notify and queue demotion at position n
     if (!wasInTopN && nowInTopN) {
       notifyTrackSelected(ftn, topNGroup);
-
-      // The track that just entered top-N displaced the one at position n;
-      // mark that track as deselected.
-      demoteTrackAtRank(n, topNGroup);
+      boundaryOps.emplace_back(n, &topNGroup, Action::Demote);
     }
 
-    // When a track falls out of top-N, the track that was at position n (just
-    // outside) shifts into position n-1 (now inside). Promote it if not already
-    // selected.
-    //
-    // NOTE: This traverses rankedTracks_ to find position n-1, and we do this for
-    // each TopNGroup. With multiple groups (e.g., N=99,100,101), this is O(G*N).
-    // Optimization for many groups: two-phase algorithm:
-    // 1. Collect target positions (n-1 for each group needing promotion) into sorted vector
-    // 2. Single rankedTracks_ traversal, bumping vector index as positions are found
-    // This reduces O(G*N) to O(N + G log G). Deferred since common case is few groups.
+    // Track fell out of top-N: queue promotion at position n-1
     if (wasInTopN && !nowInTopN) {
-      uint64_t count = 0;
-      for (auto& [key, rankedEntry] : rankedTracks_) {
-        if (count == n - 1) {
-          auto stIt = topNGroup.trackStates.find(rankedEntry.ftn);
-          if (stIt == topNGroup.trackStates.end() || stIt->second != TrackState::Selected) {
-            topNGroup.trackStates[rankedEntry.ftn] = TrackState::Selected;
-            removeFromDeselectedQueue(topNGroup, rankedEntry.ftn);
-            notifyTrackSelected(rankedEntry.ftn, topNGroup);
-          }
-          break;
-        }
-        count++;
-      }
+      boundaryOps.emplace_back(n - 1, &topNGroup, Action::Promote);
     }
+  }
+
+  // Phase 2: Single traversal of rankedTracks_ to handle all boundary operations
+  if (boundaryOps.empty()) {
+    return;
+  }
+
+  // Sort by position so we can process in one pass
+  std::sort(boundaryOps.begin(), boundaryOps.end(),
+            [](const auto& a, const auto& b) { return std::get<0>(a) < std::get<0>(b); });
+
+  size_t opIdx = 0;
+  uint64_t count = 0;
+  for (auto& [key, rankedEntry] : rankedTracks_) {
+    // Process all operations at this position
+    while (opIdx < boundaryOps.size() && count == std::get<0>(boundaryOps[opIdx])) {
+      auto* group = std::get<1>(boundaryOps[opIdx]);
+      Action action = std::get<2>(boundaryOps[opIdx]);
+
+      if (action == Action::Demote) {
+        // Track at position n was pushed out of top-N; demote if selected
+        auto stIt = group->trackStates.find(rankedEntry.ftn);
+        if (stIt != group->trackStates.end() && stIt->second == TrackState::Selected) {
+          XLOG(DBG4) << "recomputeTopNGroups: demoting " << rankedEntry.ftn
+                     << " at rank " << count << " to deselected queue";
+          stIt->second = TrackState::Deselected;
+          group->deselectedQueue.push_back(rankedEntry.ftn);
+          trimDeselectedQueue(*group);
+        }
+      } else {
+        // Track at position n-1 should be promoted into top-N
+        auto stIt = group->trackStates.find(rankedEntry.ftn);
+        if (stIt == group->trackStates.end() || stIt->second != TrackState::Selected) {
+          XLOG(DBG4) << "recomputeTopNGroups: promoting " << rankedEntry.ftn
+                     << " at rank " << count << " into top-N";
+          group->trackStates[rankedEntry.ftn] = TrackState::Selected;
+          removeFromDeselectedQueue(*group, rankedEntry.ftn);
+          notifyTrackSelected(rankedEntry.ftn, *group);
+        }
+      }
+      opIdx++;
+    }
+
+    if (opIdx >= boundaryOps.size()) {
+      break;  // All operations processed
+    }
+    count++;
   }
 }
 
@@ -491,8 +515,10 @@ void PropertyRanking::removeFromDeselectedQueue(
   dq.erase(std::remove(dq.begin(), dq.end(), ftn), dq.end());
 }
 
-// NOTE: Same O(G*N) concern as promotion loop in recomputeTopNGroups - we traverse
-// rankedTracks_ to find position n for each group. Same two-phase optimization applies.
+// Called from registerTrack to demote track at position n when a new track enters top-N.
+// This traverses rankedTracks_ to find position n. registerTrack calls this per-group,
+// so with many groups it's O(G*N). Could apply same two-phase optimization as
+// recomputeTopNGroups if registerTrack becomes a hot path with many groups.
 void PropertyRanking::demoteTrackAtRank(uint64_t n, TopNGroup& group) {
   uint64_t count = 0;
   for (auto& [key, rankedEntry] : rankedTracks_) {
