@@ -317,9 +317,9 @@ TEST_F(PropertyRankingSelfExclusionTest, NonSelfTrackDrops_OutsiderEntersPublish
 }
 
 // Publisher with self-tracks both inside and outside the shared top-N.
-// N=3: shared top-3 = t1, s1 (self), t2. Publisher sees t1, t2 (excludes s1).
-// s2 (self, rank 4) is outside shared top-3, so waterline = t2's key.
-// t3 (rank 5, non-self) is below waterline → not selected for publisher.
+// Order: t1(100) > s1(90) > t2(80) > s2(70) > t3(60). N=3.
+// Non-self tracks: t1 (rank 0), t2 (rank 2), t3 (rank 4).
+// Publisher's top-3 non-self: t1, t2, t3. All three selected.
 TEST_F(PropertyRankingSelfExclusionTest, SelfTracksInsideAndOutsideTopN) {
   auto r = makeRanking();
   auto pub = makeSession();
@@ -514,13 +514,14 @@ TEST_F(PropertyRankingSelfExclusionTest, ViewerBecomesPublisher_ByRegisteringTra
   EXPECT_FALSE(wasSelected(t3, pub.get()));   // t3 stays out
 }
 
-// Viewer subscribes, then registers a track that IS currently being delivered.
-// That track becomes a self-track and must be evicted; a replacement enters.
+// Viewer becomes publisher by registering a track that re-enters at a rank
+// that was previously in their selection. The newly-self track must be evicted.
 //
 // Setup: t1(100), t2(80), t3(60) registered.  Session subscribes N=2 as viewer.
-// Viewer sees t1, t2.  Session then publishes t2 (claiming ownership).
-// Session now is a publisher-subscriber. Non-self top-2: t1, t3.
-// t2 must be evicted and t3 must be selected.
+// Viewer sees t1, t2.  removeTrack(t2), then registerTrack(t2, 80, pub).
+// Because viewers have empty selectedTracks, reconcilePublisherInAllGroups
+// initializes selectedTracks from shared top-2 {t1, t2}, then reconciles:
+// non-self top-2 = {t1, t3}.  t2 must be evicted and t3 must be selected.
 TEST_F(PropertyRankingSelfExclusionTest, ViewerBecomesPublisher_ClaimsDeliveredTrack) {
   auto r = makeRanking();
   auto pub = makeSession();
@@ -540,13 +541,14 @@ TEST_F(PropertyRankingSelfExclusionTest, ViewerBecomesPublisher_ClaimsDeliveredT
   EXPECT_TRUE(wasSelected(t2, pub.get()));
   EXPECT_FALSE(wasSelected(t3, pub.get()));
 
-  // Remove t2 so we can re-register it with the publisher
+  // Remove t2 so we can re-register it with the session as publisher.
+  // This simulates the session "taking over" t2 as a self-track.
   r->removeTrack(t2);
 
   selected_.clear();
   evicted_.clear();
 
-  // Now the session registers t2 as its own track
+  // Re-register t2 with session as publisher; t2 becomes a self-track.
   r->registerTrack(t2, 80, pub);
 
   // t2 is now a self-track → evicted. t3 enters as replacement.
