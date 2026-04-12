@@ -53,6 +53,8 @@ protected:
     return std::make_unique<PropertyRanking>(
         /*propertyType=*/1,
         maxDeselected,
+        /*idleTimeout=*/std::chrono::milliseconds{0},
+        /*getLastActivity=*/nullptr,
         /*onBatchSelected=*/
         [this](
             const FullTrackName& f,
@@ -105,13 +107,14 @@ protected:
 };
 
 // Publisher subscribes with TRACK_FILTER: own track is never notified.
+// Self-exclusion is automatic based on RankedEntry::publisher.
 TEST_F(PropertyRankingSelfExclusionTest, PublisherDoesNotReceiveOwnTrack) {
   auto r = makeRanking();
   auto pub = makeSession();
   auto track = ftn("ns", "self");
 
   r->registerTrack(track, 100, pub);
-  r->addSessionToTopNGroup(3, pub, true, {track});
+  r->addSessionToTopNGroup(3, pub, true);
 
   EXPECT_FALSE(wasSelected(track, pub.get()));
 }
@@ -124,7 +127,7 @@ TEST_F(PropertyRankingSelfExclusionTest, ViewerReceivesPublisherTrack) {
   auto track = ftn("ns", "self");
 
   r->registerTrack(track, 100, pub);
-  r->addSessionToTopNGroup(3, pub, true, {track});
+  r->addSessionToTopNGroup(3, pub, true);
   r->addSessionToTopNGroup(3, viewer, true);
 
   EXPECT_FALSE(wasSelected(track, pub.get()));
@@ -147,7 +150,7 @@ TEST_F(PropertyRankingSelfExclusionTest, MixedGroup_ViewerAndPublisherSubscriber
   r->registerTrack(self, 70, pub);
 
   // N=3: viewer sees all 3; publisher sees only the 2 non-self tracks.
-  r->addSessionToTopNGroup(3, pub, true, {self});
+  r->addSessionToTopNGroup(3, pub, true);
   r->addSessionToTopNGroup(3, viewer, true);
 
   EXPECT_TRUE(wasSelected(other1, viewer.get()));
@@ -176,69 +179,13 @@ TEST_F(PropertyRankingSelfExclusionTest, WaterlineSelectsNonSelfTracks) {
   r->registerTrack(self, 70, pub);
   r->registerTrack(t3, 60, {});
 
-  r->addSessionToTopNGroup(2, pub, true, {self});
+  r->addSessionToTopNGroup(2, pub, true);
 
   // N=2 non-self: t1 (rank 0) and t2 (rank 1). t3 is the 3rd non-self → excluded.
   EXPECT_TRUE(wasSelected(t1, pub.get()));
   EXPECT_TRUE(wasSelected(t2, pub.get()));
   EXPECT_FALSE(wasSelected(self, pub.get()));
   EXPECT_FALSE(wasSelected(t3, pub.get()));
-}
-
-// addPublishedTrackToSession mid-session: new self-track stops being
-// delivered to the publisher when its value changes.
-TEST_F(PropertyRankingSelfExclusionTest, AddPublishedTrack_MidSession) {
-  auto r = makeRanking();
-  auto pub = makeSession();
-
-  auto t1 = ftn("ns", "t1");
-  auto t2 = ftn("ns", "t2");
-
-  r->registerTrack(t1, 100, {});
-  r->registerTrack(t2, 80, {});
-
-  // Subscribe with N=2, no self-tracks yet — should receive both.
-  r->addSessionToTopNGroup(2, pub, true);
-  EXPECT_TRUE(wasSelected(t1, pub.get()));
-  EXPECT_TRUE(wasSelected(t2, pub.get()));
-
-  // Now publisher starts publishing t1 (it becomes a self-track).
-  selected_.clear();
-  evicted_.clear();
-  r->addPublishedTrackToSession(2, pub, t1);
-
-  // t1 is now a self-track — it must be immediately evicted from delivery.
-  EXPECT_TRUE(wasEvicted(t1, pub.get()));
-
-  // Subsequent value changes on t1 must not re-notify the publisher.
-  selected_.clear();
-  r->updateSortValue(t1, 110);
-  EXPECT_FALSE(wasSelected(t1, pub.get()));
-}
-
-// removePublishedTrackFromSession: once removed, track is again eligible.
-TEST_F(PropertyRankingSelfExclusionTest, RemovePublishedTrack_TrackBecomesEligible) {
-  auto r = makeRanking();
-  auto pub = makeSession();
-
-  auto self = ftn("ns", "self");
-  auto t1 = ftn("ns", "t1");
-  auto t2 = ftn("ns", "t2");
-
-  r->registerTrack(t1, 100, {});
-  r->registerTrack(t2, 80, {});
-  r->registerTrack(self, 70, pub);
-
-  // N=2: publisher's own track excluded; they see t1 and t2.
-  r->addSessionToTopNGroup(2, pub, true, {self});
-  EXPECT_FALSE(wasSelected(self, pub.get()));
-
-  // Publisher stops publishing "self" → it should now be selectable.
-  // Raise self's value to push it into top-N waterline.
-  selected_.clear();
-  r->removePublishedTrackFromSession(2, pub, self);
-  r->updateSortValue(self, 150); // self now at rank 0 → enters top-2 for everyone
-  EXPECT_TRUE(wasSelected(self, pub.get()));
 }
 
 // Publisher with >1 self-track: waterline computed over non-self tracks only.
@@ -260,7 +207,7 @@ TEST_F(PropertyRankingSelfExclusionTest, MultipleSelfTracks_WaterlineCorrect) {
   r->registerTrack(t3, 60, {});
 
   // N=2 non-self: publisher should receive t1 and t2 only.
-  r->addSessionToTopNGroup(2, pub, true, {s1, s2});
+  r->addSessionToTopNGroup(2, pub, true);
 
   EXPECT_TRUE(wasSelected(t1, pub.get()));
   EXPECT_TRUE(wasSelected(t2, pub.get()));
@@ -292,7 +239,7 @@ TEST_F(PropertyRankingSelfExclusionTest, SelfTrackValueChange_NoEffectOnViewSet)
   r->registerTrack(s2, 70, pub);
   r->registerTrack(t3, 60, {});
 
-  r->addSessionToTopNGroup(2, pub, true, {s1, s2});
+  r->addSessionToTopNGroup(2, pub, true);
 
   selected_.clear();
   // s1 drops from 90 to 50. Waterline recomputed: non-self top-2 still t1, t2.
@@ -326,7 +273,7 @@ TEST_F(PropertyRankingSelfExclusionTest, SelfTrackRises_OutsiderStaysOut) {
   r->registerTrack(self, 70, pub);
   r->registerTrack(outsider, 10, {});
 
-  r->addSessionToTopNGroup(2, pub, true, {self});
+  r->addSessionToTopNGroup(2, pub, true);
   EXPECT_TRUE(wasSelected(t1, pub.get()));
   EXPECT_TRUE(wasSelected(t2, pub.get()));
   EXPECT_FALSE(wasSelected(outsider, pub.get()));
@@ -357,7 +304,7 @@ TEST_F(PropertyRankingSelfExclusionTest, NonSelfTrackDrops_OutsiderEntersPublish
   r->registerTrack(self, 70, pub);
   r->registerTrack(outsider, 10, {});
 
-  r->addSessionToTopNGroup(2, pub, true, {self});
+  r->addSessionToTopNGroup(2, pub, true);
   EXPECT_FALSE(wasSelected(outsider, pub.get()));
 
   // t2 drops below outsider.
@@ -393,7 +340,7 @@ TEST_F(PropertyRankingSelfExclusionTest, SelfTracksInsideAndOutsideTopN) {
   // N=3: shared top-3 = t1, s1, t2.
   // Non-self top-3: t1 (rank 0), t2 (rank 2), t3 (rank 4).
   // Waterline = key of 3rd non-self = t3's key (value=60).
-  r->addSessionToTopNGroup(3, pub, true, {s1, s2});
+  r->addSessionToTopNGroup(3, pub, true);
 
   EXPECT_TRUE(wasSelected(t1, pub.get()));  // rank 0, non-self → selected
   EXPECT_FALSE(wasSelected(s1, pub.get())); // self → excluded
@@ -421,7 +368,7 @@ TEST_F(PropertyRankingSelfExclusionTest, RegisterTrack_AfterPublisherSubscribed)
   r->registerTrack(t2, 80, {});
   r->registerTrack(self, 70, pub);
 
-  r->addSessionToTopNGroup(2, pub, true, {self});
+  r->addSessionToTopNGroup(2, pub, true);
   EXPECT_TRUE(wasSelected(t1, pub.get()));
   EXPECT_TRUE(wasSelected(t2, pub.get()));
 
@@ -457,7 +404,7 @@ TEST_F(PropertyRankingSelfExclusionTest, RemoveTrack_WithPublisherInGroup) {
   r->registerTrack(self, 70, pub);
   r->registerTrack(t3, 60, {});
 
-  r->addSessionToTopNGroup(2, pub, true, {self});
+  r->addSessionToTopNGroup(2, pub, true);
   EXPECT_TRUE(wasSelected(t1, pub.get()));
   EXPECT_TRUE(wasSelected(t2, pub.get()));
 
@@ -498,8 +445,8 @@ TEST_F(PropertyRankingSelfExclusionTest, TwoPublisherSessions_IndependentSelfExc
   r->registerTrack(t2, 70, {});
   r->registerTrack(t3, 60, {});
 
-  r->addSessionToTopNGroup(3, pub1, true, {s1});
-  r->addSessionToTopNGroup(3, pub2, true, {s2});
+  r->addSessionToTopNGroup(3, pub1, true);
+  r->addSessionToTopNGroup(3, pub2, true);
 
   // pub1 sees s2, t1, t2 (not s1).
   EXPECT_FALSE(wasSelected(s1, pub1.get()));
@@ -527,47 +474,85 @@ TEST_F(PropertyRankingSelfExclusionTest, TwoPublisherSessions_IndependentSelfExc
   EXPECT_FALSE(wasEvicted(s1, pub1.get()));  // pub1 never received s1
 }
 
-// When one of several self-tracks is removed, the session remains a
-// publisher-subscriber and reconcile is used (not the viewer fallback).
-// The removed track re-enters the publisher's personal selection if eligible.
+// Viewer subscribes first, then registers a track (becoming a publisher).
+// The newly-registered track becomes a self-track and must be excluded.
 //
-// t1(100) > s1(90) > t2(80) > s2(70) > t3(60).  Publisher with {s1, s2}, N=2.
-// Publisher sees t1, t2.  removePublishedTrackFromSession(s1):
-// publishedTracks = {s2}, still a publisher.
-// Non-self top-2: t1, s1 (now non-self).  t2 displaced.
-TEST_F(PropertyRankingSelfExclusionTest, RemovePublishedTrack_PartialSelfTrackRemoval) {
+// Setup: t1(100), t2(80), t3(60) registered.  Session subscribes N=2 as viewer.
+// Viewer sees t1, t2.  Session then publishes new track "self" at rank 1 (value=90).
+// Session now is a publisher-subscriber. Non-self top-2: t1, t2.
+// The new track "self" must be excluded and t3 stays out.
+TEST_F(PropertyRankingSelfExclusionTest, ViewerBecomesPublisher_ByRegisteringTrack) {
   auto r = makeRanking();
   auto pub = makeSession();
 
-  auto s1 = ftn("ns", "s1");
-  auto s2 = ftn("ns", "s2");
   auto t1 = ftn("ns", "t1");
   auto t2 = ftn("ns", "t2");
   auto t3 = ftn("ns", "t3");
+  auto self = ftn("ns", "self");
 
   r->registerTrack(t1, 100, {});
-  r->registerTrack(s1, 90, pub);
   r->registerTrack(t2, 80, {});
-  r->registerTrack(s2, 70, pub);
   r->registerTrack(t3, 60, {});
 
-  r->addSessionToTopNGroup(2, pub, true, {s1, s2});
+  // Subscribe as viewer first (no self-tracks yet)
+  r->addSessionToTopNGroup(2, pub, true);
   EXPECT_TRUE(wasSelected(t1, pub.get()));
   EXPECT_TRUE(wasSelected(t2, pub.get()));
-  EXPECT_FALSE(wasSelected(s1, pub.get()));
-  EXPECT_FALSE(wasSelected(s2, pub.get()));
+  EXPECT_FALSE(wasSelected(t3, pub.get()));
 
   selected_.clear();
   evicted_.clear();
 
-  // s1 stops being a self-track (but s2 remains, so session is still a publisher).
-  r->removePublishedTrackFromSession(2, pub, s1);
+  // Now the session registers its own track at rank 1
+  r->registerTrack(self, 90, pub);
 
-  EXPECT_TRUE(wasSelected(s1, pub.get()));  // s1 is now non-self at rank 1 → top-2
-  EXPECT_TRUE(wasEvicted(t2, pub.get()));   // t2 displaced by s1
+  // The session is now a publisher-subscriber. Its new track is self and excluded.
+  // Non-self top-2: still t1, t2. The session should not see "self" selected.
+  EXPECT_FALSE(wasSelected(self, pub.get())); // self is excluded
+  EXPECT_FALSE(wasEvicted(t1, pub.get()));    // t1 stays
+  EXPECT_FALSE(wasEvicted(t2, pub.get()));    // t2 stays
+  EXPECT_FALSE(wasSelected(t3, pub.get()));   // t3 stays out
+}
+
+// Viewer subscribes, then registers a track that IS currently being delivered.
+// That track becomes a self-track and must be evicted; a replacement enters.
+//
+// Setup: t1(100), t2(80), t3(60) registered.  Session subscribes N=2 as viewer.
+// Viewer sees t1, t2.  Session then publishes t2 (claiming ownership).
+// Session now is a publisher-subscriber. Non-self top-2: t1, t3.
+// t2 must be evicted and t3 must be selected.
+TEST_F(PropertyRankingSelfExclusionTest, ViewerBecomesPublisher_ClaimsDeliveredTrack) {
+  auto r = makeRanking();
+  auto pub = makeSession();
+
+  auto t1 = ftn("ns", "t1");
+  auto t2 = ftn("ns", "t2");
+  auto t3 = ftn("ns", "t3");
+
+  // t2 is initially registered with no publisher
+  r->registerTrack(t1, 100, {});
+  r->registerTrack(t2, 80, {});
+  r->registerTrack(t3, 60, {});
+
+  // Subscribe as viewer first
+  r->addSessionToTopNGroup(2, pub, true);
+  EXPECT_TRUE(wasSelected(t1, pub.get()));
+  EXPECT_TRUE(wasSelected(t2, pub.get()));
+  EXPECT_FALSE(wasSelected(t3, pub.get()));
+
+  // Remove t2 so we can re-register it with the publisher
+  r->removeTrack(t2);
+
+  selected_.clear();
+  evicted_.clear();
+
+  // Now the session registers t2 as its own track
+  r->registerTrack(t2, 80, pub);
+
+  // t2 is now a self-track → evicted. t3 enters as replacement.
+  EXPECT_TRUE(wasEvicted(t2, pub.get()));   // t2 now self-track → evicted
+  EXPECT_TRUE(wasSelected(t3, pub.get()));  // t3 enters publisher's top-2
   EXPECT_FALSE(wasEvicted(t1, pub.get()));  // t1 stays
-  EXPECT_FALSE(wasSelected(s2, pub.get())); // s2 still self-track
-  EXPECT_FALSE(wasSelected(t3, pub.get())); // t3 outside top-2 non-self
 }
 
 // Bug: non-self track rises above the publisher's waterline, displacing the
@@ -591,7 +576,7 @@ TEST_F(PropertyRankingSelfExclusionTest, NonSelfTrackRises_DisplacesWaterlineTra
   r->registerTrack(self, 70, pub);
   r->registerTrack(outsider, 30, {});
 
-  r->addSessionToTopNGroup(2, pub, true, {self});
+  r->addSessionToTopNGroup(2, pub, true);
   EXPECT_TRUE(wasSelected(t1, pub.get()));
   EXPECT_TRUE(wasSelected(t2, pub.get()));
   EXPECT_FALSE(wasSelected(outsider, pub.get()));
@@ -604,83 +589,6 @@ TEST_F(PropertyRankingSelfExclusionTest, NonSelfTrackRises_DisplacesWaterlineTra
   EXPECT_TRUE(wasEvicted(t2, pub.get()));        // t2 displaced — must be evicted
   EXPECT_FALSE(wasSelected(self, pub.get()));    // self never selected
   EXPECT_FALSE(wasEvicted(t1, pub.get()));       // t1 stayed in top-2
-}
-
-// Bug: when a track that is already being delivered to a publisher-subscriber
-// becomes a self-track mid-session, it should be immediately evicted.
-//
-// Publisher starts with {s} as self-track.  Sees t1, t2 (non-self top-2).
-// Publisher then also publishes t2 → t2 becomes a second self-track.
-// Non-self top-2 is now t1, t3.  t2 must be evicted; t3 must be selected.
-TEST_F(PropertyRankingSelfExclusionTest, AddPublishedTrack_EvictsAlreadySelectedTrack) {
-  auto r = makeRanking();
-  auto pub = makeSession();
-
-  auto s = ftn("ns", "s");
-  auto t1 = ftn("ns", "t1");
-  auto t2 = ftn("ns", "t2");
-  auto t3 = ftn("ns", "t3");
-
-  // Order: t1(100) > s(90) > t2(80) > t3(60).
-  r->registerTrack(t1, 100, {});
-  r->registerTrack(s, 90, pub);
-  r->registerTrack(t2, 80, {});
-  r->registerTrack(t3, 60, {});
-
-  r->addSessionToTopNGroup(2, pub, true, {s});
-  EXPECT_TRUE(wasSelected(t1, pub.get()));
-  EXPECT_TRUE(wasSelected(t2, pub.get()));
-  EXPECT_FALSE(wasSelected(s, pub.get()));
-
-  selected_.clear();
-  evicted_.clear();
-
-  // Publisher starts publishing t2 — it becomes a second self-track.
-  r->addPublishedTrackToSession(2, pub, t2);
-
-  EXPECT_TRUE(wasEvicted(t2, pub.get()));  // t2 must be evicted immediately
-  EXPECT_TRUE(wasSelected(t3, pub.get())); // t3 fills the vacancy
-  EXPECT_FALSE(wasEvicted(t1, pub.get())); // t1 stays
-}
-
-// Bug: when a self-track that is ranked inside the publisher's personal top-N
-// stops being a self-track, the publisher should be notified immediately
-// (without requiring a subsequent updateSortValue call).
-//
-// self(100) > t1(80) > t2(60) > outsider(40).  N=2.  Publisher with {self}.
-// Publisher sees t1, t2.  removePublishedTrackFromSession(self): self becomes
-// non-self at rank 0.  Non-self top-2 = self, t1.  self must be selected
-// immediately; t2 must be evicted.
-TEST_F(PropertyRankingSelfExclusionTest, RemovePublishedTrack_ImmediatelySelectsEligibleTrack) {
-  auto r = makeRanking();
-  auto pub = makeSession();
-
-  auto self = ftn("ns", "self");
-  auto t1 = ftn("ns", "t1");
-  auto t2 = ftn("ns", "t2");
-  auto outsider = ftn("ns", "outsider");
-
-  r->registerTrack(self, 100, pub);
-  r->registerTrack(t1, 80, {});
-  r->registerTrack(t2, 60, {});
-  r->registerTrack(outsider, 40, {});
-
-  // N=2: publisher sees t1 and t2 (non-self top-2).
-  r->addSessionToTopNGroup(2, pub, true, {self});
-  EXPECT_FALSE(wasSelected(self, pub.get()));
-  EXPECT_TRUE(wasSelected(t1, pub.get()));
-  EXPECT_TRUE(wasSelected(t2, pub.get()));
-
-  selected_.clear();
-  evicted_.clear();
-
-  // self stops being a self-track.  It is already at rank 0 — eligible now.
-  r->removePublishedTrackFromSession(2, pub, self);
-
-  EXPECT_TRUE(wasSelected(self, pub.get()));      // immediate notification
-  EXPECT_TRUE(wasEvicted(t2, pub.get()));         // t2 displaced from publisher's view
-  EXPECT_FALSE(wasEvicted(t1, pub.get()));        // t1 remains in top-2
-  EXPECT_FALSE(wasSelected(outsider, pub.get())); // outsider stays out
 }
 
 } // namespace

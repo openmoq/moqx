@@ -137,6 +137,14 @@ void PropertyRanking::registerTrack(
       count++;
     }
   }
+
+  // --- Step 6: Handle self-exclusion for publisher-subscribers ---
+  // If the track publisher is already subscribed in some TopNGroup, this new
+  // track becomes a self-track for that session. Reconcile to exclude it.
+  auto pubSession = publisher.lock();
+  if (pubSession) {
+    reconcilePublisherInAllGroups(pubSession);
+  }
 }
 
 /**
@@ -363,8 +371,7 @@ TopNGroup& PropertyRanking::getOrCreateTopNGroup(uint64_t maxSelected) {
 void PropertyRanking::addSessionToTopNGroup(
     uint64_t maxSelected,
     std::shared_ptr<moxygen::MoQSession> session,
-    bool forward,
-    std::vector<moxygen::FullTrackName> publishedTracks
+    bool forward
 ) {
   XCHECK(!iteratingSessions_) << "Cannot add session while iterating";
   XLOG(DBG4) << "addSessionToTopNGroup: maxSelected=" << maxSelected << " forward=" << forward;
@@ -372,14 +379,13 @@ void PropertyRanking::addSessionToTopNGroup(
   auto& topNGroup = getOrCreateTopNGroup(maxSelected);
   SessionInfo info;
   info.forward = forward;
-  for (auto& ftn : publishedTracks) {
-    info.publishedTracks.insert(std::move(ftn));
-  }
 
   topNGroup.sessions[session] = std::move(info);
   auto& sessionInfo = topNGroup.sessions[session];
 
-  if (sessionInfo.isPublisher()) {
+  // Check if this session is a publisher (owns any tracks in rankedTracks_).
+  // Self-exclusion is automatic based on RankedEntry::publisher.
+  if (isPublisher(session)) {
     // reconcilePublisherSelection handles initial delivery for publishers:
     // it fires onSelected_ for each track in the personal top-N and
     // populates selectedTracks for future delta computation.
@@ -618,8 +624,8 @@ void PropertyRanking::recomputeTopNGroups(
     // non-self (a non-self move is the only thing that can shift the waterline).
     std::vector<std::pair<std::shared_ptr<moxygen::MoQSession>, bool>> viewerBatch;
     for (auto& [session, info] : topNGroup.sessions) {
-      if (info.isPublisher()) {
-        if (!info.isSelfTrack(ftn)) {
+      if (isPublisher(session)) {
+        if (!isSelfTrack(ftn, session)) {
           reconcilePublisherSelection(info, n, session);
         }
       } else if (!wasInTopN && nowInTopN) {
@@ -786,7 +792,7 @@ void PropertyRanking::promoteNextAvailableTrack(
 void PropertyRanking::notifyTrackSelected(const moxygen::FullTrackName& ftn, TopNGroup& topNGroup) {
   std::vector<std::pair<std::shared_ptr<moxygen::MoQSession>, bool>> viewerBatch;
   for (auto& [session, info] : topNGroup.sessions) {
-    if (info.isPublisher()) {
+    if (isPublisher(session)) {
       reconcilePublisherSelection(info, topNGroup.maxSelected, session);
     } else {
       viewerBatch.emplace_back(session, info.forward);
@@ -797,17 +803,39 @@ void PropertyRanking::notifyTrackSelected(const moxygen::FullTrackName& ftn, Top
   }
 }
 
-std::optional<RankKey>
-PropertyRanking::computeWaterlineKey(const SessionInfo& info, uint64_t maxSelected) const {
-  if (!info.isPublisher()) {
-    return std::nullopt;
+bool PropertyRanking::isSelfTrack(
+    const moxygen::FullTrackName& ftn,
+    const std::shared_ptr<moxygen::MoQSession>& session
+) const {
+  auto it = trackIndexByName_.find(ftn);
+  if (it == trackIndexByName_.end()) {
+    return false;
   }
+  auto publisher = it->second.rankIter->second.publisher.lock();
+  return publisher == session;
+}
 
+bool PropertyRanking::isPublisher(const std::shared_ptr<moxygen::MoQSession>& session) const {
+  // Check if this session owns any track in rankedTracks_.
+  for (const auto& [key, entry] : rankedTracks_) {
+    if (entry.publisher.lock() == session) {
+      return true;
+    }
+  }
+  return false;
+}
+
+std::optional<RankKey>
+PropertyRanking::computeWaterlineKey(
+    const std::shared_ptr<moxygen::MoQSession>& session,
+    uint64_t maxSelected
+) const {
   // Find the Nth non-self track. Its RankKey is the waterline: all non-self
-  // tracks ranked >= waterline should be selected for this session.
+  // tracks with key >= waterline should be selected for this session.
+  // (RankKey uses std::greater<>, so higher key = lower rank = better.)
   uint64_t nonSelfCount = 0;
   for (const auto& [key, entry] : rankedTracks_) {
-    if (!info.isSelfTrack(entry.ftn)) {
+    if (!isSelfTrack(entry.ftn, session)) {
       nonSelfCount++;
       if (nonSelfCount == maxSelected) {
         return key;
@@ -824,13 +852,15 @@ void PropertyRanking::reconcilePublisherSelection(
     uint64_t maxSelected,
     const std::shared_ptr<moxygen::MoQSession>& session
 ) {
-  // Recompute the publisher's personal waterline.
-  info.waterlineKey = computeWaterlineKey(info, maxSelected);
+  // Recompute the publisher's personal waterline using dynamic self-exclusion.
+  info.waterlineKey = computeWaterlineKey(session, maxSelected);
 
   // Determine what should currently be delivered to this publisher session.
+  // A track is selected iff it's non-self AND at-or-above the waterline.
   folly::F14FastSet<moxygen::FullTrackName, moxygen::FullTrackName::hash> nowSelected;
   for (const auto& [key, entry] : rankedTracks_) {
-    if (!info.isSelfTrack(entry.ftn) && (!info.waterlineKey || key >= *info.waterlineKey)) {
+    if (!isSelfTrack(entry.ftn, session) &&
+        (!info.waterlineKey || key >= *info.waterlineKey)) {
       nowSelected.insert(entry.ftn);
     }
   }
@@ -852,91 +882,36 @@ void PropertyRanking::reconcilePublisherSelection(
   info.selectedTracks = std::move(nowSelected);
 }
 
-void PropertyRanking::addPublishedTrackToSession(
-    uint64_t maxSelected,
-    const std::shared_ptr<moxygen::MoQSession>& session,
-    const moxygen::FullTrackName& ftn
+void PropertyRanking::reconcilePublisherInAllGroups(
+    const std::shared_ptr<moxygen::MoQSession>& session
 ) {
-  auto groupIt = topNGroups_.find(maxSelected);
-  if (groupIt == topNGroups_.end()) {
-    return;
-  }
-
-  auto sessionIt = groupIt->second.sessions.find(session);
-  if (sessionIt == groupIt->second.sessions.end()) {
-    return;
-  }
-
-  auto& info = sessionIt->second;
-  bool wasPublisher = info.isPublisher();
-  info.publishedTracks.insert(ftn);
-
-  // If upgrading from viewer to publisher-subscriber, seed selectedTracks from
-  // the shared top-N so reconcile can compute the correct delta (i.e. evict the
-  // newly-self track rather than re-notifying every viewer-delivered track).
-  if (!wasPublisher) {
-    uint64_t rank = 0;
-    for (const auto& [key, entry] : rankedTracks_) {
-      if (rank >= maxSelected) {
-        break;
-      }
-      info.selectedTracks.insert(entry.ftn);
-      rank++;
-    }
-  }
-
-  reconcilePublisherSelection(info, maxSelected, session);
-}
-
-void PropertyRanking::removePublishedTrackFromSession(
-    uint64_t maxSelected,
-    const std::shared_ptr<moxygen::MoQSession>& session,
-    const moxygen::FullTrackName& ftn
-) {
-  auto groupIt = topNGroups_.find(maxSelected);
-  if (groupIt == topNGroups_.end()) {
-    return;
-  }
-
-  auto sessionIt = groupIt->second.sessions.find(session);
-  if (sessionIt == groupIt->second.sessions.end()) {
-    return;
-  }
-
-  auto& info = sessionIt->second;
-  info.publishedTracks.erase(ftn);
-
-  if (info.isPublisher()) {
-    // Still a publisher-subscriber: reconcile against the updated waterline.
-    reconcilePublisherSelection(info, maxSelected, session);
-  } else {
-    // Last self-track removed: session reverts to viewer semantics.
-    // Reconcile against the shared top-N (rank-based) to fire the correct
-    // evictions and selections for the transition.
-    folly::F14FastSet<moxygen::FullTrackName, moxygen::FullTrackName::hash> nowSelected;
-    uint64_t rank = 0;
-    for (const auto& [key, entry] : rankedTracks_) {
-      if (rank >= maxSelected) {
-        break;
-      }
-      nowSelected.insert(entry.ftn);
-      rank++;
+  // When a track is registered by a session that is already subscribed,
+  // that track becomes a self-track for this session. Reconcile all groups
+  // where this session appears to update their selection accordingly.
+  for (auto& [n, topNGroup] : topNGroups_) {
+    auto sessionIt = topNGroup.sessions.find(session);
+    if (sessionIt == topNGroup.sessions.end()) {
+      continue;
     }
 
-    for (const auto& f : info.selectedTracks) {
-      if (nowSelected.count(f) == 0 && onEvicted_) {
-        onEvicted_(f, session);
-      }
-    }
-    for (const auto& f : nowSelected) {
-      if (info.selectedTracks.count(f) == 0 && onSelected_) {
-        onSelected_(f, session, info.forward);
+    auto& info = sessionIt->second;
+    bool wasPublisher = !info.selectedTracks.empty() || info.waterlineKey.has_value();
+
+    // If upgrading from viewer to publisher-subscriber, seed selectedTracks from
+    // the shared top-N so reconcile can compute the correct delta (i.e. evict the
+    // newly-self track rather than re-notifying every viewer-delivered track).
+    if (!wasPublisher) {
+      uint64_t rank = 0;
+      for (const auto& [key, entry] : rankedTracks_) {
+        if (rank >= n) {
+          break;
+        }
+        info.selectedTracks.insert(entry.ftn);
+        rank++;
       }
     }
 
-    // Viewers don't use waterline tracking.
-    info.selectedTracks.clear();
-    info.waterlineKey = std::nullopt;
+    reconcilePublisherSelection(info, n, session);
   }
 }
 

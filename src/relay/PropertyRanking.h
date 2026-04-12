@@ -78,29 +78,23 @@ enum class TrackState { Selected, Deselected };
 
 /**
  * Per-session state within a TopNGroup.
+ *
+ * Self-exclusion is determined dynamically by comparing RankedEntry::publisher
+ * with the session pointer. There's no separate "publishedTracks" set - a track
+ * is a self-track iff its publisher == this session.
  */
 struct SessionInfo {
   bool forward{true};
 
   // Waterline for self-exclusion (publisher-subscribers only).
-  // Always current when isPublisher(); recomputed by reconcilePublisherSelection.
+  // Recomputed by reconcilePublisherSelection when any non-self track's rank changes.
   // nullopt = fewer than N non-self tracks exist — select all non-self tracks.
   std::optional<RankKey> waterlineKey;
 
-  // Tracks published by this session in the subscribed namespace.
-  // Empty = viewer (no self-exclusion needed).
-  folly::F14FastSet<moxygen::FullTrackName, moxygen::FullTrackName::hash> publishedTracks;
-
-  // Tracks currently being delivered to this publisher-subscriber.
-  // Used by reconcilePublisherSelection to compute the select/evict delta.
-  // Seeded from the shared top-N when a viewer transitions to publisher.
+  // Tracks currently being delivered to this session.
+  // For publisher-subscribers: used to compute the select/evict delta.
+  // For viewers: cleared (viewer selection is handled via batch notifications).
   folly::F14FastSet<moxygen::FullTrackName, moxygen::FullTrackName::hash> selectedTracks;
-
-  bool isPublisher() const { return !publishedTracks.empty(); }
-
-  bool isSelfTrack(const moxygen::FullTrackName& ftn) const {
-    return publishedTracks.find(ftn) != publishedTracks.end();
-  }
 };
 
 /**
@@ -218,14 +212,13 @@ public:
 
   /**
    * Add a session to a TopNGroup.
-   * If publishedTracks is non-empty, enables self-exclusion for this session:
-   * the session will not receive notifications for its own published tracks.
+   * Self-exclusion is automatic: if this session is the publisher of any
+   * registered track, those tracks will be excluded from its top-N selection.
    */
   void addSessionToTopNGroup(
       uint64_t maxSelected,
       std::shared_ptr<moxygen::MoQSession> session,
-      bool forward,
-      std::vector<moxygen::FullTrackName> publishedTracks = {}
+      bool forward
   );
 
   /**
@@ -244,27 +237,6 @@ public:
   void removeSessionFromTopNGroup(
       uint64_t maxSelected,
       const std::shared_ptr<moxygen::MoQSession>& session
-  );
-
-  /**
-   * Add a published track to a session's self-exclusion list.
-   * Call this when a publisher-subscriber publishes a new track after
-   * already subscribing with TRACK_FILTER.
-   */
-  void addPublishedTrackToSession(
-      uint64_t maxSelected,
-      const std::shared_ptr<moxygen::MoQSession>& session,
-      const moxygen::FullTrackName& ftn
-  );
-
-  /**
-   * Remove a published track from a session's self-exclusion list.
-   * Call this when a publisher-subscriber's track ends (PUBLISH_DONE).
-   */
-  void removePublishedTrackFromSession(
-      uint64_t maxSelected,
-      const std::shared_ptr<moxygen::MoQSession>& session,
-      const moxygen::FullTrackName& ftn
   );
 
   /**
@@ -334,20 +306,40 @@ private:
   // excludeFtn is skipped (typically the track we just demoted).
   void promoteNextAvailableTrack(TopNGroup& group, const moxygen::FullTrackName& excludeFtn);
 
+  // Check if a track is owned by this session (self-track).
+  // Looks up the track in rankedTracks_ and compares publisher.
+  bool isSelfTrack(
+      const moxygen::FullTrackName& ftn,
+      const std::shared_ptr<moxygen::MoQSession>& session
+  ) const;
+
+  // Check if session owns any tracks in rankedTracks_ (is a publisher).
+  bool isPublisher(const std::shared_ptr<moxygen::MoQSession>& session) const;
+
   // Compute the waterline key for a publisher-subscriber session.
   // Returns the RankKey of the Nth non-self track (the lowest-ranked track
   // that should still be selected for this session). Returns nullopt if
   // fewer than N non-self tracks exist (meaning all non-self tracks are selected).
-  std::optional<RankKey> computeWaterlineKey(const SessionInfo& info, uint64_t maxSelected) const;
+  // Uses isSelfTrack() to determine which tracks belong to the session.
+  std::optional<RankKey> computeWaterlineKey(
+      const std::shared_ptr<moxygen::MoQSession>& session,
+      uint64_t maxSelected
+  ) const;
 
   // Recompute the publisher's personal top-N and fire callbacks for the delta.
   // Evicts tracks that left the selection; selects tracks that entered it.
   // Updates info.waterlineKey and info.selectedTracks to reflect the new state.
+  // Uses isSelfTrack() to determine which tracks to exclude.
   void reconcilePublisherSelection(
       SessionInfo& info,
       uint64_t maxSelected,
       const std::shared_ptr<moxygen::MoQSession>& session
   );
+
+  // Reconcile all publisher-subscribers in all TopNGroups that match this session.
+  // Called by registerTrack when a new track is registered by a session that
+  // is already subscribed - the new track becomes a self-track for that session.
+  void reconcilePublisherInAllGroups(const std::shared_ptr<moxygen::MoQSession>& session);
 
   void invalidateRankCache() { rankCacheValid_ = false; }
 
