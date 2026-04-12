@@ -453,9 +453,9 @@ uint64_t PropertyRanking::getRank(const RankKey& key) const {
  * Rationale: tracks past the threshold don't affect any top-N selection or
  * deselected queue, so their exact rank doesn't matter for correctness.
  *
- * Trade-off: If selectionThreshold_ increases later (e.g., new TopNGroup with
- * larger N), we'd need to extend the cache. Currently N can only decrease
- * (when groups are removed), so this isn't an issue.
+ * When selectionThreshold_ increases (new TopNGroup with larger N), the cache
+ * is invalidated in getOrCreateTopNGroup() to ensure tracks in the expanded
+ * range get accurate ranks on next rebuild.
  */
 void PropertyRanking::rebuildRankCacheIfNeeded() const {
   if (rankCacheValid_) {
