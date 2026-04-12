@@ -358,14 +358,18 @@ bool PropertyRanking::crossesThreshold(uint64_t oldRank, uint64_t newRank) const
     return false;
   }
 
+  // Fast exit: both ranks outside selection region - no threshold can be crossed.
   if (oldRank >= selectionThreshold_ && newRank >= selectionThreshold_) {
     return false;
   }
+  // NOTE: We intentionally do NOT fast-exit when both ranks are below selectionThreshold_.
+  // Even though both are within the selection region, a specific N boundary might still
+  // be crossed (e.g., moving from rank 5 to rank 2 crosses N=3 but not N=7).
 
   uint64_t minRank = std::min(oldRank, newRank);
   uint64_t maxRank = std::max(oldRank, newRank);
 
-  // Both ranks within selection region; check if they cross a specific N boundary.
+  // Check if track crossed into/out of the selection region entirely.
   bool oldInAnyTopN = oldRank < selectionThreshold_;
   bool newInAnyTopN = newRank < selectionThreshold_;
   if (oldInAnyTopN != newInAnyTopN) {
