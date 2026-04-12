@@ -520,14 +520,8 @@ MoqxRelay::publish(PublishRequest pub, std::shared_ptr<Publisher::SubscriptionHa
   rsub.handle = std::move(handle);
   rsub.isPublish = true;
 
-  // Build filter chain: TopNFilter → TerminationFilter → Forwarder.
-  // TopNFilter sits at the front so it sees every object and can update
-  // PropertyRanking with current property values.
-  auto terminationFilter = std::make_shared<TerminationFilter>(
-      shared_from_this(), pub.fullTrackName, forwarder);
-  auto topNFilter = std::make_shared<TopNFilter>(
-      pub.fullTrackName,
-      std::static_pointer_cast<TrackConsumer>(terminationFilter));
+  // Build filter chain using shared helper (TopNFilter → TerminationFilter → Forwarder).
+  auto [filterConsumer, topNFilter] = buildFilterChain(pub.fullTrackName, forwarder);
   rsub.topNFilter = topNFilter;
 
   // Register track with all PropertyRankings along the path from root to this
@@ -572,10 +566,11 @@ MoqxRelay::publish(PublishRequest pub, std::shared_ptr<Publisher::SubscriptionHa
 
   // Forward if there are direct subscribers OR TRACK_FILTER subscribers
   // (PropertyRanking needs objects to evaluate property values for ranking).
+  // When subscribers join later via subscribeNamespace, forwardChanged() sends REQUEST_UPDATE.
   bool shouldForward = (nSubscribers > 0) || hasTrackFilterSub;
 
   return PublishConsumerAndReplyTask{
-      std::static_pointer_cast<TrackConsumer>(topNFilter),
+      filterConsumer,
       folly::coro::makeTask<folly::Expected<PublishOk, PublishError>>(PublishOk{
           pub.requestID,
           /*forward=*/shouldForward,
@@ -704,6 +699,26 @@ std::shared_ptr<TrackConsumer> MoqxRelay::getSubscribeWriteback(
   auto filterConsumer =
       std::make_shared<TerminationFilter>(shared_from_this(), ftn, std::move(baseConsumer));
   return std::static_pointer_cast<TrackConsumer>(filterConsumer);
+}
+
+MoqxRelay::FilterChainResult MoqxRelay::buildFilterChain(
+    const FullTrackName& ftn,
+    std::shared_ptr<MoQForwarder> forwarder
+) {
+  // Build chain: TopNFilter → TerminationFilter → (cache?) → Forwarder
+  // This ensures property values are observed in both PUBLISH and SUBSCRIBE paths.
+  auto baseConsumer = cache_
+      ? cache_->getSubscribeWriteback(ftn, forwarder)
+      : std::static_pointer_cast<TrackConsumer>(forwarder);
+  auto terminationFilter =
+      std::make_shared<TerminationFilter>(shared_from_this(), ftn, std::move(baseConsumer));
+  auto topNFilter = std::make_shared<TopNFilter>(
+      ftn, std::static_pointer_cast<TrackConsumer>(terminationFilter));
+
+  return FilterChainResult{
+      .consumer = std::static_pointer_cast<TrackConsumer>(topNFilter),
+      .topNFilter = topNFilter
+  };
 }
 
 folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNamespace(
@@ -967,11 +982,18 @@ MoqxRelay::subscribe(SubscribeRequest subReq, std::shared_ptr<TrackConsumer> con
     subReq.locType = LocationType::LargestObject;
     auto forwarder = std::make_shared<MoQForwarder>(subReq.fullTrackName, std::nullopt);
     forwarder->setCallback(shared_from_this());
+
+    // Build filter chain using shared helper (TopNFilter → TerminationFilter → Forwarder).
+    // This ensures property values are observed even for SUBSCRIBE-path tracks,
+    // so TRACK_FILTER subscribers who join later see correct rankings.
+    auto [filterConsumer, topNFilter] = buildFilterChain(subReq.fullTrackName, forwarder);
+
     auto emplaceRes = subscriptions_.emplace(
         std::piecewise_construct,
         std::forward_as_tuple(subReq.fullTrackName),
         std::forward_as_tuple(forwarder, upstreamSession)
     );
+    emplaceRes.first->second.topNFilter = topNFilter;
     // The iterator returned from emplace does not survive across coroutine
     // resumption, so both the guard and updating the RelaySubscription below
     // require another lookup in the subscriptions_ map.
@@ -1001,10 +1023,7 @@ MoqxRelay::subscribe(SubscribeRequest subReq, std::shared_ptr<TrackConsumer> con
     subReq.forward = forwarder->numForwardingSubscribers() > 0;
 
     emplaceRes.first->second.requestID = upstreamSession->peekNextRequestID();
-    auto subRes = co_await upstreamSession->subscribe(
-        subReq,
-        getSubscribeWriteback(subReq.fullTrackName, forwarder)
-    );
+    auto subRes = co_await upstreamSession->subscribe(subReq, filterConsumer);
     if (subRes.hasError()) {
       co_return folly::makeUnexpected(SubscribeError(
           {subReq.requestID,

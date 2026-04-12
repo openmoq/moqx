@@ -285,6 +285,20 @@ private:
 
   // TRACK_FILTER support
 
+  // Result of buildFilterChain - contains both the consumer to pass upstream
+  // and the TopNFilter pointer to store for later observer wiring.
+  struct FilterChainResult {
+    std::shared_ptr<moxygen::TrackConsumer> consumer;
+    std::shared_ptr<TopNFilter> topNFilter;
+  };
+
+  // Build the filter chain for a track subscription: TopNFilter → TerminationFilter → (cache) → forwarder.
+  // Used by both publish() and subscribe() paths to ensure consistent filter chain.
+  FilterChainResult buildFilterChain(
+      const moxygen::FullTrackName& ftn,
+      std::shared_ptr<moxygen::MoQForwarder> forwarder
+  );
+
   // Get or create PropertyRanking for the given property type on a namespace node.
   // Retroactively registers any tracks already published under that node.
   std::shared_ptr<PropertyRanking> getOrCreateRanking(

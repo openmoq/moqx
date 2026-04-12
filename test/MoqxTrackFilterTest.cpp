@@ -720,4 +720,92 @@ TEST_F(MoqxTrackFilterTest, DeselectedQueueEviction_EvictsOldestEntry) {
   cT3->publishDone(makePublishDone());
 }
 
+// ---------------------------------------------------------------------------
+// Tests: filter chain installation in both publish and subscribe paths
+// ---------------------------------------------------------------------------
+
+// Verifies that when a TRACK_FILTER subscriber joins after PUBLISH, the relay
+// correctly handles forwarding. The forwardChanged() callback mechanism sends
+// REQUEST_UPDATE when forwarding state changes.
+TEST_F(MoqxTrackFilterTest, ForwardStateUpdatedWhenFilterSubscriberJoins) {
+  auto pubSess = makeSession();
+  doPublishNamespace(pubSess);
+
+  // Publish tracks with no subscribers initially (forward would be false/true
+  // depending on whether TRACK_FILTER subscribers exist at publish time)
+  auto consumerA = doPublish(pubSess, "a", 100);
+  auto consumerB = doPublish(pubSess, "b", 50);
+  exec_->driveFor(10);
+
+  // TRACK_FILTER subscriber joins - should trigger forwardChanged() callback
+  // which sends REQUEST_UPDATE with forward=true to the publisher
+  auto viewer = makeSession();
+  doSubscribeFilter(viewer, /*maxSelected=*/1);
+  exec_->driveFor(20);
+
+  // Verify subscriber receives the top-1 track
+  EXPECT_EQ(publishCount(viewer.get(), ftn("a")), 1);
+  EXPECT_EQ(publishCount(viewer.get(), ftn("b")), 0);
+
+  // Value changes should still work (verifies forwarder is receiving objects)
+  sendValue(consumerB, 200);
+  exec_->driveFor(20);
+
+  EXPECT_EQ(publishCount(viewer.get(), ftn("b")), 1);
+
+  consumerA->publishDone(makePublishDone());
+  consumerB->publishDone(makePublishDone());
+}
+
+// Verifies that TopNFilter is installed in the filter chain for both PUBLISH
+// and SUBSCRIBE paths. A direct subscriber joins first (triggering filter chain
+// creation), then a TRACK_FILTER subscriber joins later. Value changes on
+// existing tracks must be observed and reflected in the TRACK_FILTER ranking.
+TEST_F(MoqxTrackFilterTest, FilterChainInstalledForBothPaths) {
+  auto pubSess = makeSession();
+  doPublishNamespace(pubSess);
+
+  // Direct subscriber joins first — establishes the relay subscription path
+  auto directViewer = makeSession();
+  doSubscribeDirect(directViewer);
+
+  // Publisher publishes tracks (direct subscriber receives all)
+  auto consumerA = doPublish(pubSess, "a", 100);
+  auto consumerB = doPublish(pubSess, "b", 50);
+  auto consumerC = doPublish(pubSess, "c", 20);
+  exec_->driveFor(20);
+
+  ASSERT_EQ(publishCount(directViewer.get(), ftn("a")), 1);
+  ASSERT_EQ(publishCount(directViewer.get(), ftn("b")), 1);
+  ASSERT_EQ(publishCount(directViewer.get(), ftn("c")), 1);
+
+  // TRACK_FILTER subscriber joins later — must see correct top-1 based on
+  // current values at the time of join
+  auto filteredViewer = makeSession();
+  doSubscribeFilter(filteredViewer, /*maxSelected=*/1);
+  exec_->driveFor(20);
+
+  // "a" (100) is top-1
+  EXPECT_EQ(publishCount(filteredViewer.get(), ftn("a")), 1);
+  EXPECT_EQ(publishCount(filteredViewer.get(), ftn("b")), 0);
+  EXPECT_EQ(publishCount(filteredViewer.get(), ftn("c")), 0);
+
+  // Value change: "c" jumps to top — filter chain must observe this change
+  // even though tracks were published before TRACK_FILTER subscriber joined
+  sendValue(consumerC, 200);
+  exec_->driveFor(20);
+
+  // "c" (200) should now be selected for filteredViewer
+  EXPECT_EQ(publishCount(filteredViewer.get(), ftn("c")), 1);
+
+  // Direct viewer is unaffected by ranking changes
+  EXPECT_EQ(publishCount(directViewer.get(), ftn("a")), 1);
+  EXPECT_EQ(publishCount(directViewer.get(), ftn("b")), 1);
+  EXPECT_EQ(publishCount(directViewer.get(), ftn("c")), 1);
+
+  consumerA->publishDone(makePublishDone());
+  consumerB->publishDone(makePublishDone());
+  consumerC->publishDone(makePublishDone());
+}
+
 } // namespace
