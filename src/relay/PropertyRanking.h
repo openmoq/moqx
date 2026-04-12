@@ -358,6 +358,17 @@ private:
       trackIndexByName_;
   folly::F14FastMap<uint64_t, TopNGroup> topNGroups_;
 
+  // Track count per publisher session for O(1) isPublisher() lookup.
+  // Key is raw pointer; value is weak_ptr (for validation) + count.
+  // Updated by registerTrack (increment) and removeTrack (decrement/erase).
+  // The weak_ptr guards against ABA problem: if session is destroyed and a new
+  // session gets the same address, the stale entry's weak_ptr won't match.
+  struct PublisherEntry {
+    std::weak_ptr<moxygen::MoQSession> session;
+    size_t trackCount{0};
+  };
+  folly::F14FastMap<moxygen::MoQSession*, PublisherEntry> publisherTrackCount_;
+
   uint64_t nextSeq_{0};
   uint64_t selectionThreshold_{0};
   std::vector<uint64_t> sortedThresholds_;
