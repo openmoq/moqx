@@ -576,4 +576,110 @@ TEST_F(PropertyRankingBaseTest, MultipleAdjacentGroups_SingleTraversalPromotion)
   EXPECT_GE(h.selectCount(ftn("e"), sub4.get()), 1); // e promoted into top-4
 }
 
+// ---------------------------------------------------------------------------
+// selectionThreshold changes: cache invalidation on increase, stability on decrease
+// ---------------------------------------------------------------------------
+
+TEST_F(PropertyRankingBaseTest, ThresholdIncrease_CacheInvalidatedForNewRange) {
+  // Tests that when a larger N group is added, tracks that previously had
+  // sentinel ranks (UINT64_MAX) get accurate ranks after cache rebuild.
+  //
+  // Scenario: Start with N=2, add tracks, then add N=5 group. A track at
+  // position 3 (which had sentinel rank) should correctly detect threshold
+  // crossing when its value changes.
+  RankingHarness h;
+  auto sub2 = makeSession();
+  h.ranking().addSessionToTopNGroup(2, sub2, true);
+
+  // Register 5 tracks: positions 0-4
+  h.ranking().registerTrack(ftn("a"), 100, {}); // rank 0 - selected for N=2
+  h.ranking().registerTrack(ftn("b"), 80, {});  // rank 1 - selected for N=2
+  h.ranking().registerTrack(ftn("c"), 60, {});  // rank 2 - outside N=2, has sentinel
+  h.ranking().registerTrack(ftn("d"), 40, {});  // rank 3 - outside N=2, has sentinel
+  h.ranking().registerTrack(ftn("e"), 20, {});  // rank 4 - outside N=2, has sentinel
+  h.clearEvents();
+
+  // Add a larger N group - this should invalidate cache
+  auto sub5 = makeSession();
+  h.ranking().addSessionToTopNGroup(5, sub5, true);
+  h.clearEvents();
+
+  // Now update "d" (was at rank 3 with sentinel) to jump into top-2
+  // If cache wasn't invalidated, d's oldRank would be UINT64_MAX and
+  // recomputeTopNGroups would incorrectly think d wasn't in top-5 before.
+  h.ranking().updateSortValue(ftn("d"), 110); // d becomes rank 0
+
+  // d should be selected for sub2 (entered top-2)
+  EXPECT_GE(h.selectCount(ftn("d"), sub2.get()), 1);
+
+  // d should NOT trigger a new selection for sub5 - it was already in top-5
+  // before the update (at rank 3). If cache was stale, this would incorrectly
+  // fire because oldRank=UINT64_MAX would make wasInTopN=false.
+  // After cache invalidation, oldRank=3 correctly makes wasInTopN=true for N=5.
+  EXPECT_EQ(h.selectCount(ftn("d"), sub5.get()), 0);
+}
+
+TEST_F(PropertyRankingBaseTest, ThresholdDecrease_CachedRanksRemainValid) {
+  // Tests that when a group is removed and threshold decreases, existing
+  // cached ranks (which are more than needed) remain valid.
+  RankingHarness h;
+  auto sub2 = makeSession();
+  auto sub5 = makeSession();
+
+  h.ranking().addSessionToTopNGroup(5, sub5, true);
+  h.ranking().addSessionToTopNGroup(2, sub2, true);
+
+  // Register tracks
+  h.ranking().registerTrack(ftn("a"), 100, {}); // rank 0
+  h.ranking().registerTrack(ftn("b"), 80, {});  // rank 1
+  h.ranking().registerTrack(ftn("c"), 60, {});  // rank 2
+  h.ranking().registerTrack(ftn("d"), 40, {});  // rank 3
+  h.ranking().registerTrack(ftn("e"), 20, {});  // rank 4
+  h.clearEvents();
+
+  // Remove the larger group - threshold decreases
+  h.ranking().removeSessionFromTopNGroup(5, sub5);
+  h.clearEvents();
+
+  // Update a track that was in top-5 but outside top-2
+  // With threshold decreased, this track might have more cached rank than
+  // needed, but operations should still work correctly.
+  h.ranking().updateSortValue(ftn("c"), 110); // c becomes rank 0, enters top-2
+
+  EXPECT_GE(h.selectCount(ftn("c"), sub2.get()), 1);
+}
+
+TEST_F(PropertyRankingBaseTest, ThresholdIncrease_MultipleGroupsAddedSequentially) {
+  // Tests adding groups with increasing N values sequentially.
+  RankingHarness h;
+
+  // Start with N=1
+  auto sub1 = makeSession();
+  h.ranking().addSessionToTopNGroup(1, sub1, true);
+
+  h.ranking().registerTrack(ftn("a"), 100, {}); // rank 0
+  h.ranking().registerTrack(ftn("b"), 80, {});  // rank 1
+  h.ranking().registerTrack(ftn("c"), 60, {});  // rank 2
+  h.clearEvents();
+
+  // Add N=2 - threshold increases
+  auto sub2 = makeSession();
+  h.ranking().addSessionToTopNGroup(2, sub2, true);
+  h.clearEvents();
+
+  // Add N=3 - threshold increases again
+  auto sub3 = makeSession();
+  h.ranking().addSessionToTopNGroup(3, sub3, true);
+  h.clearEvents();
+
+  // Move "c" from rank 2 to rank 0
+  h.ranking().updateSortValue(ftn("c"), 110);
+
+  // c enters top-1, top-2 (was at rank 2, outside both)
+  // c was already in top-3 (rank 2 < 3), so sub3 should NOT be notified
+  EXPECT_GE(h.selectCount(ftn("c"), sub1.get()), 1);
+  EXPECT_GE(h.selectCount(ftn("c"), sub2.get()), 1);
+  EXPECT_EQ(h.selectCount(ftn("c"), sub3.get()), 0); // was already in top-3
+}
+
 } // namespace
