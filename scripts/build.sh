@@ -199,6 +199,7 @@ cmd_setup() {
   local clean=false
   local target_sha=""
   local moxygen_dir=""
+  local tarball_ok
 
   while (( $# > 0 )); do
     case "$1" in
@@ -263,9 +264,14 @@ cmd_setup() {
   if [[ "$mode" == "from-release" ]]; then
     echo ""
     echo "==> Setting up dependencies (from release)..."
-    local tarball_args=()
-    if $use_latest; then tarball_args+=(--use-latest); fi
-    if bash "$SCRIPT_DIR/setup-deps-tarball.sh" "${tarball_args[@]}"; then
+    if $use_latest; then
+      tarball_ok=true
+      bash "$SCRIPT_DIR/setup-deps-tarball.sh" --use-latest || tarball_ok=false
+    else
+      tarball_ok=true
+      bash "$SCRIPT_DIR/setup-deps-tarball.sh" || tarball_ok=false
+    fi
+    if $tarball_ok; then
       echo "from-release" > "$DEPS_MODE_FILE"
     else
       if $no_fallback; then
