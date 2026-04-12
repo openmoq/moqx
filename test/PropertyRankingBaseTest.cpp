@@ -440,7 +440,15 @@ TEST_F(PropertyRankingBaseTest, RemoveLastSession_ThresholdUpdated) {
 // recomputeTopNGroups: track crosses one group threshold but not another
 // ---------------------------------------------------------------------------
 
-TEST_F(PropertyRankingBaseTest, SlowPath_CrossesOneThresholdNotAnother) {
+// TODO: Add tests for deselection/reselection notifications once onDeselected
+// and onReselected callbacks are implemented (see PropertyRanking.h TODO).
+// Tests needed:
+// - DeselectionNotification_WhenTrackFallsOutOfTopN
+// - ReselectionNotification_WhenPromotedFromQueue
+
+// This test validates that TopNGroups are evaluated independently: crossing
+// one N boundary doesn't affect groups where the track was already selected.
+TEST_F(PropertyRankingBaseTest, SlowPath_CrossesLowerThreshold_HigherGroupUnchanged) {
   // N=2 group and N=4 group. A track moves from rank 3 (inside N=4, outside
   // N=2) to rank 1 (inside both). Only the N=2 group should fire a selection
   // notification; the N=4 group's state is unchanged (track was already

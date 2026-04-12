@@ -87,7 +87,8 @@ struct SessionInfo {
 struct TopNGroup {
   uint64_t maxSelected{0}; // N
 
-  // Session -> state mapping
+  // Session -> state mapping. Not redundant with MoqxRelay's namespace tree:
+  // this groups sessions by N for O(1) batch notifications.
   folly::F14FastMap<std::shared_ptr<moxygen::MoQSession>, SessionInfo> sessions;
 
   // Track -> state (Selected or Deselected).
@@ -132,7 +133,13 @@ public:
 
   /**
    * @param propertyType  The property type ID to rank by
-   * @param maxDeselected Maximum tracks in deselected queue before eviction
+   * @param maxDeselected Maximum tracks in deselected queue before eviction.
+   *        NOTE: Currently only maxDeselected=0 is fully supported. With maxDeselected>0,
+   *        tracks enter the deselected queue but the relay has no way to pause/resume
+   *        forwarding since onDeselected/onReselected callbacks are not yet implemented.
+   *        TODO: Add onDeselected callback (when track enters deselected queue) and
+   *        onReselected callback (when track is promoted from queue back to selected)
+   *        to enable the relay to manage forwarding state for maxDeselected>0.
    * @param onBatchSelected Batch callback for viewer notifications (required)
    * @param onSelected  Individual callback for per-session notifications
    * @param onEvicted   Callback when track is evicted from deselected queue
@@ -185,6 +192,16 @@ public:
   void addSessionToTopNGroup(
       uint64_t maxSelected,
       std::shared_ptr<moxygen::MoQSession> session,
+      bool forward
+  );
+
+  /**
+   * Update the forward flag for a session in a TopNGroup.
+   * Use case: subscriber initially joins with forward=false, later wants to forward.
+   */
+  void updateSessionForward(
+      uint64_t maxSelected,
+      const std::shared_ptr<moxygen::MoQSession>& session,
       bool forward
   );
 
