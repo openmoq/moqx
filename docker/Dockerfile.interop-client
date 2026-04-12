@@ -1,0 +1,25 @@
+# Interop client image: extracts the moq_interop_client binary from the
+# pre-built moxygen tarball. No compilation required.
+#
+# The binary reads env vars natively (RELAY_URL, TESTCASE, TLS_DISABLE_VERIFY,
+# VERBOSE) matching the moq-interop-runner convention, so no entrypoint
+# wrapper is needed.
+#
+# Build context expects .docker-deps/moxygen/ to contain the extracted
+# moxygen bookworm tarball (same staging step as the relay Dockerfile).
+
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libunwind8 libsodium23 libboost-context1.74.0 \
+        libgoogle-glog0v6 libgflags2.2 libdouble-conversion3 \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY .docker-deps/moxygen/bin/moq_interop_client /usr/local/bin/moq_interop_client
+
+# Run as non-root (interop runner convention: UID 1000)
+RUN useradd -u 1000 -m interop
+USER interop
+
+ENTRYPOINT ["moq_interop_client"]
