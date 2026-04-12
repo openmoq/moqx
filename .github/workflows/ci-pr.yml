@@ -63,6 +63,8 @@ jobs:
           fi
 
       - name: Setup dependencies
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bash scripts/build.sh setup
 
       - name: Build

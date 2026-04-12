@@ -96,10 +96,24 @@ SUBMODULE_SHA=$(git -C "$MOXYGEN_DIR" rev-parse HEAD)
 echo "==> Moxygen submodule SHA: ${SUBMODULE_SHA:0:7}"
 
 echo "==> Fetching ${RELEASE_TAG} release metadata..."
-RELEASE_JSON=$(curl -fsSL "https://api.github.com/repos/${MOXYGEN_REPO}/releases/tags/${RELEASE_TAG}") || {
-    echo "Error: failed to fetch release metadata for ${MOXYGEN_REPO}@${RELEASE_TAG}" >&2
-    exit 1
-}
+# Authenticate when GITHUB_TOKEN/GH_TOKEN is set (in CI). The api.github.com
+# unauthenticated rate limit (60/hour/IP) is exhausted quickly on shared
+# runners, especially macOS. Authenticated requests get 1000+/hour, which
+# applies even to read-only fork-PR GITHUB_TOKENs.
+RELEASE_API_URL="https://api.github.com/repos/${MOXYGEN_REPO}/releases/tags/${RELEASE_TAG}"
+TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
+if [[ -n "$TOKEN" ]]; then
+    RELEASE_JSON=$(curl -fsSL -H "Authorization: Bearer ${TOKEN}" "$RELEASE_API_URL") || {
+        echo "Error: failed to fetch release metadata for ${MOXYGEN_REPO}@${RELEASE_TAG}" >&2
+        exit 1
+    }
+else
+    RELEASE_JSON=$(curl -fsSL "$RELEASE_API_URL") || {
+        echo "Error: failed to fetch release metadata for ${MOXYGEN_REPO}@${RELEASE_TAG}" >&2
+        echo "       (no GITHUB_TOKEN set; api.github.com unauthenticated rate limit may be exhausted)" >&2
+        exit 1
+    }
+fi
 
 # Extract embedded commit SHA from release body. publish-artifacts.sh writes
 # `**Commit:** \`<sha>\`` into the body — match the first 40-hex backtick group.
