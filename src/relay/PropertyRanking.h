@@ -282,7 +282,8 @@ private:
 
   std::map<RankKey, RankedEntry, std::greater<RankKey>> rankedTracks_;
   // Name → iterator/rank index into rankedTracks_. O(1) lookup by track name.
-  folly::F14FastMap<moxygen::FullTrackName, RankIndex, moxygen::FullTrackName::hash>
+  // Mutable because cachedRank is a derived value updated lazily in const methods.
+  mutable folly::F14FastMap<moxygen::FullTrackName, RankIndex, moxygen::FullTrackName::hash>
       trackIndexByName_;
   folly::F14FastMap<uint64_t, TopNGroup> topNGroups_;
 

@@ -21,6 +21,19 @@ PropertyRanking::PropertyRanking(
       onBatchSelected_(std::move(onBatchSelected)), onSelected_(std::move(onSelected)),
       onEvicted_(std::move(onEvicted)) {}
 
+/**
+ * Register a new track with an optional initial property value.
+ *
+ * Algorithm overview:
+ * 1. Insert into sorted map (O(log T))
+ * 2. Compute rank using previous track's cached rank (O(1))
+ * 3. Incrementally update ranks for tracks shifted down (O(T - rank))
+ * 4. Two-phase TopNGroup update:
+ *    - Phase 1: Mark selected in applicable groups, collect demotion positions
+ *    - Phase 2: Single traversal to demote tracks pushed out of top-N
+ *
+ * Total complexity: O(log T + T - rank + G log G + N) where T=tracks, G=groups, N=max(N)
+ */
 void PropertyRanking::registerTrack(
     const moxygen::FullTrackName& ftn,
     std::optional<uint64_t> initialValue,
@@ -31,34 +44,48 @@ void PropertyRanking::registerTrack(
     return;
   }
 
-  // Ensure cache is valid before insertion so we can use iterator-- for O(1) rank lookup
+  // --- Step 1: Ensure cache validity for O(1) rank computation ---
   rebuildRankCacheIfNeeded();
 
+  // --- Step 2: Insert into sorted map ---
   uint64_t value = initialValue.value_or(0);
   RankKey key{value, nextSeq_++};
 
   auto [iter, inserted] =
       rankedTracks_.emplace(key, RankedEntry{.ftn = ftn, .publisher = std::move(publisher)});
 
-  // Compute rank in O(1) using previous track's cached rank
+  // --- Step 3: Compute rank in O(1) using previous track's cached rank ---
+  // Since map is sorted descending, the previous iterator has the next-lower rank.
   uint64_t rank;
   if (iter == rankedTracks_.begin()) {
+    // Highest value track gets rank 0
     rank = 0;
   } else {
     auto prevIt = iter;
     --prevIt;
     auto prevIndexIt = trackIndexByName_.find(prevIt->second.ftn);
-    rank = (prevIndexIt != trackIndexByName_.end()) ? prevIndexIt->second.cachedRank + 1 : 0;
+    XCHECK(prevIndexIt != trackIndexByName_.end())
+        << "Previous track must exist in index";
+
+    // Handle sentinel: if previous track has UINT64_MAX (lazy partial cache),
+    // fall back to O(rank) distance computation for accurate rank.
+    if (prevIndexIt->second.cachedRank == UINT64_MAX) {
+      rank = static_cast<uint64_t>(std::distance(rankedTracks_.begin(), iter));
+    } else {
+      rank = prevIndexIt->second.cachedRank + 1;
+    }
   }
 
   trackIndexByName_[ftn] = RankIndex{.rankIter = iter, .cachedRank = rank};
 
-  // Increment cached ranks for all tracks after insertion point: O(numTracks - rank)
+  // --- Step 4: Increment cached ranks for all tracks shifted down ---
+  // Tracks after insertion point had their rank increase by 1.
+  // Skip tracks with sentinel value (UINT64_MAX from lazy partial cache).
   auto nextIt = iter;
   ++nextIt;
   for (; nextIt != rankedTracks_.end(); ++nextIt) {
     auto indexIt = trackIndexByName_.find(nextIt->second.ftn);
-    if (indexIt != trackIndexByName_.end()) {
+    if (indexIt != trackIndexByName_.end() && indexIt->second.cachedRank != UINT64_MAX) {
       indexIt->second.cachedRank++;
     }
   }
@@ -66,8 +93,10 @@ void PropertyRanking::registerTrack(
 
   XLOG(DBG4) << "Registered track " << ftn << " with value " << value << " at rank " << rank;
 
-  // Two-phase algorithm: O(G log G + N) instead of O(G * N)
-  // Phase 1: Mark track selected in applicable groups, collect demotion positions
+  // --- Step 5: Two-phase TopNGroup update ---
+  // Phase 1: Mark track selected in applicable groups, collect demotion positions.
+  // For each group where rank < N, the new track enters top-N and pushes
+  // the track at rank N-1 down to rank N (out of top-N).
   std::vector<std::pair<uint64_t, TopNGroup*>> demotions;  // (position n, group)
 
   for (auto& [n, topNGroup] : topNGroups_) {
@@ -75,36 +104,53 @@ void PropertyRanking::registerTrack(
       topNGroup.trackStates[ftn] = TrackState::Selected;
       notifyTrackSelected(ftn, topNGroup);
 
-      // The new track pushed the previous occupant of rank N-1 to rank N.
-      // Queue demotion (only fires when numTracks > N).
+      // Queue demotion at position N (the first rank outside top-N).
+      // Only fires when numTracks > N (otherwise no track to demote).
       demotions.emplace_back(n, &topNGroup);
     }
-    // Tracks outside top N are not added to the deselected queue on register;
-    // they only enter the queue when they fall out of an already-selected position.
+    // Tracks outside top-N are not added to deselected queue on registration;
+    // they only enter the queue when falling out of an already-selected position.
   }
 
-  // Phase 2: Single traversal to demote tracks at collected positions
+  // Phase 2: Single traversal to demote tracks at collected positions.
+  // By sorting demotion positions, we process all demotions in one pass.
   if (!demotions.empty()) {
     IterationGuard guard(*this);
 
+    // Sort by position for single-pass processing
     std::sort(demotions.begin(), demotions.end(),
               [](const auto& a, const auto& b) { return a.first < b.first; });
 
     size_t demIdx = 0;
     uint64_t count = 0;
     for (auto& [key, rankedEntry] : rankedTracks_) {
+      // Process all demotions at current position
       while (demIdx < demotions.size() && count == demotions[demIdx].first) {
         demoteTrackInGroup(*demotions[demIdx].second, rankedEntry.ftn, count);
         demIdx++;
       }
       if (demIdx >= demotions.size()) {
-        break;
+        break;  // All demotions processed
       }
       count++;
     }
   }
 }
 
+/**
+ * Update a track's sort value. Main hot-path entry point.
+ *
+ * Algorithm overview:
+ * 1. Early exit if value unchanged
+ * 2. Re-insert into sorted map at new position (O(log T))
+ * 3. Compute new rank via std::distance (O(newRank))
+ * 4. Incrementally update cached ranks for affected range (O(|movement|))
+ * 5. Fast path exit if no threshold crossed
+ * 6. Slow path: recompute TopNGroup states
+ *
+ * The fast path (step 5) avoids expensive group updates when rank changes
+ * don't affect any subscriber's top-N selection.
+ */
 void PropertyRanking::updateSortValue(const moxygen::FullTrackName& ftn, uint64_t value) {
   auto it = trackIndexByName_.find(ftn);
   if (it == trackIndexByName_.end()) {
@@ -115,45 +161,62 @@ void PropertyRanking::updateSortValue(const moxygen::FullTrackName& ftn, uint64_
   auto& entry = it->second;
   RankKey oldKey = entry.rankIter->first;
 
-  // Early exit: no change in value
+  // --- Step 1: Early exit if no change ---
   if (oldKey.value == value) {
     return;
   }
 
-  // Construct new key after the early-exit check
-  RankKey newKey{value, oldKey.arrivalSeq};
+  // --- Step 2: Re-insert at new position in sorted map ---
+  RankKey newKey{value, oldKey.arrivalSeq};  // Preserve arrival sequence for tie-breaking
 
-  // Ensure cache is valid and capture old rank before modifying the map
   rebuildRankCacheIfNeeded();
   uint64_t oldRank = entry.cachedRank;
 
-  // Update the sorted map: O(log N) erase + insert
+  // Erase and re-insert: O(log T) each
   auto rankedEntry = std::move(entry.rankIter->second);
   rankedTracks_.erase(entry.rankIter);
   auto [newIter, _] = rankedTracks_.emplace(newKey, std::move(rankedEntry));
   entry.rankIter = newIter;
 
-  // Compute new rank using std::distance: O(newRank) for bidirectional iterator.
-  // For top-ranked tracks (where we care most), this is fast.
+  // --- Step 3: Compute new rank ---
+  // O(newRank) for bidirectional iterator. Acceptable because top-ranked tracks
+  // (where we care most about performance) have small newRank values.
   uint64_t newRank = static_cast<uint64_t>(
       std::distance(rankedTracks_.begin(), newIter));
   entry.cachedRank = newRank;
 
-  // Incrementally update cached ranks for affected tracks only: O(|oldRank - newRank|).
-  // Tracks between old and new positions had their ranks shift by ±1.
-  if (newRank < oldRank) {
-    // Track moved up (higher value → lower rank). Tracks in (newRank, oldRank] shift down.
+  // --- Step 4: Incrementally update cached ranks for affected tracks ---
+  // Only tracks between old and new positions are affected: O(|oldRank - newRank|).
+  //
+  // Special case: if oldRank == UINT64_MAX (sentinel from lazy partial cache),
+  // the track was outside the selection threshold. We only need to update
+  // tracks up to selectionThreshold_ since tracks beyond don't affect selection.
+  uint64_t effectiveOldRank = (oldRank == UINT64_MAX)
+      ? std::min(static_cast<uint64_t>(rankedTracks_.size()), selectionThreshold_)
+      : oldRank;
+
+  if (newRank < effectiveOldRank) {
+    // Track moved UP (higher value → lower rank number).
+    // Tracks in range (newRank, effectiveOldRank] shift DOWN by 1 (their rank increases).
+    // Example: track moves from rank 5 to rank 2
+    //   Before: [0, 1, 2, 3, 4, T, 6, ...]  (T was at rank 5)
+    //   After:  [0, 1, T, 2, 3, 4, 6, ...]  (tracks 2,3,4 shift to 3,4,5)
     auto rankedIt = newIter;
-    ++rankedIt;  // Skip the moved track
-    for (uint64_t r = newRank + 1; r <= oldRank && rankedIt != rankedTracks_.end();
+    ++rankedIt;  // Start after the moved track
+    for (uint64_t r = newRank + 1; r <= effectiveOldRank && rankedIt != rankedTracks_.end();
          ++r, ++rankedIt) {
       auto indexIt = trackIndexByName_.find(rankedIt->second.ftn);
       if (indexIt != trackIndexByName_.end()) {
         indexIt->second.cachedRank = r;
       }
     }
-  } else if (newRank > oldRank) {
-    // Track moved down (lower value → higher rank). Tracks in [oldRank, newRank) shift up.
+  } else if (newRank > effectiveOldRank && oldRank != UINT64_MAX) {
+    // Track moved DOWN (lower value → higher rank number).
+    // Tracks in range [oldRank, newRank) shift UP by 1 (their rank decreases).
+    // Note: Skip if oldRank was sentinel - no accurate prior position to update from.
+    // Example: track moves from rank 2 to rank 5
+    //   Before: [0, 1, T, 3, 4, 5, 6, ...]  (T was at rank 2)
+    //   After:  [0, 1, 2, 3, 4, T, 6, ...]  (tracks 3,4,5 shift to 2,3,4)
     auto rankedIt = newIter;
     for (uint64_t r = newRank; r > oldRank && rankedIt != rankedTracks_.begin();) {
       --rankedIt;
@@ -166,42 +229,55 @@ void PropertyRanking::updateSortValue(const moxygen::FullTrackName& ftn, uint64_
   }
   // Cache remains valid - no full rebuild needed
 
-  // FAST PATH: value change doesn't cross any threshold
+  // --- Step 5: Fast path - no threshold crossed ---
   if (!crossesThreshold(oldRank, newRank)) {
     XLOG(DBG5) << "updateSortValue fast path: " << ftn << " value=" << value
                << " rank " << oldRank << " -> " << newRank << " (no threshold crossed)";
     return;
   }
 
-  // SLOW PATH: value crossed a threshold, recompute TopNGroups
+  // --- Step 6: Slow path - threshold crossed, update TopNGroups ---
   XLOG(DBG4) << "updateSortValue slow path: " << ftn << " value=" << value
              << " rank " << oldRank << " -> " << newRank << " (threshold crossed)";
   recomputeTopNGroups(ftn, oldRank, newRank);
 }
 
+/**
+ * Remove a track (typically on PUBLISH_DONE).
+ *
+ * Algorithm overview:
+ * 1. Remove from sorted map and index (O(log T))
+ * 2. Decrement cached ranks for tracks shifted up (O(T - oldRank))
+ * 3. For each TopNGroup where track was selected, promote a replacement:
+ *    - Try deselected queue first (O(1))
+ *    - Fallback: scan ranked list for first non-selected track (O(N))
+ */
 void PropertyRanking::removeTrack(const moxygen::FullTrackName& ftn) {
   auto it = trackIndexByName_.find(ftn);
   if (it == trackIndexByName_.end()) {
     return;
   }
 
-  // Ensure cache is valid before removal
+  // --- Step 1: Ensure cache is valid and capture position ---
   rebuildRankCacheIfNeeded();
 
   auto& entry = it->second;
   uint64_t oldRank = entry.cachedRank;
 
-  // Save iterator to next track before erasing (remains valid after erase per std::map guarantees)
+  // Save iterator to next track before erasing (remains valid per std::map guarantees)
   auto nextIt = entry.rankIter;
   ++nextIt;
 
+  // --- Step 2: Remove from data structures ---
   rankedTracks_.erase(entry.rankIter);
   trackIndexByName_.erase(it);
 
-  // Decrement cached ranks for all tracks after removal point: O(numTracks - oldRank)
+  // --- Step 3: Decrement cached ranks for tracks shifted up ---
+  // Tracks after removal point move up by 1 (their rank decreases).
+  // Skip tracks with sentinel value (UINT64_MAX from lazy partial cache).
   for (; nextIt != rankedTracks_.end(); ++nextIt) {
     auto indexIt = trackIndexByName_.find(nextIt->second.ftn);
-    if (indexIt != trackIndexByName_.end()) {
+    if (indexIt != trackIndexByName_.end() && indexIt->second.cachedRank != UINT64_MAX) {
       indexIt->second.cachedRank--;
     }
   }
@@ -209,6 +285,7 @@ void PropertyRanking::removeTrack(const moxygen::FullTrackName& ftn) {
 
   XLOG(DBG4) << "Removed track " << ftn << " from rank " << oldRank;
 
+  // --- Step 4: Update TopNGroups and promote replacements ---
   for (auto& [n, topNGroup] : topNGroups_) {
     auto stateIt = topNGroup.trackStates.find(ftn);
     if (stateIt == topNGroup.trackStates.end()) {
@@ -222,9 +299,10 @@ void PropertyRanking::removeTrack(const moxygen::FullTrackName& ftn) {
     removeFromDeselectedQueue(topNGroup, ftn);
 
     if (wasSelected) {
+      // Need to promote a replacement into top-N
       IterationGuard guard(*this);
 
-      // Try deselected queue first for cheap promotion
+      // Try deselected queue first for O(1) promotion
       if (!topNGroup.deselectedQueue.empty()) {
         auto promoted = topNGroup.deselectedQueue.front();
         topNGroup.deselectedQueue.pop_front();
@@ -233,17 +311,14 @@ void PropertyRanking::removeTrack(const moxygen::FullTrackName& ftn) {
         topNGroup.trackStates[promoted] = TrackState::Selected;
         notifyTrackSelected(promoted, topNGroup);
       } else {
-        // Fallback: deselected queue is empty (e.g., first removal after registration
-        // when no tracks have yet been demoted). Scan ranked list for the first
-        // non-selected track to promote into the vacated slot.
+        // Fallback: deselected queue empty (e.g., first removal after registration
+        // when no tracks have been demoted yet). Scan for first non-selected track.
         for (auto& [key, rankedEntry] : rankedTracks_) {
           auto stIt = topNGroup.trackStates.find(rankedEntry.ftn);
           if (stIt != topNGroup.trackStates.end() && stIt->second == TrackState::Selected) {
-            continue;
+            continue;  // Already selected, skip
           }
-          // Deselected queue is empty — scan ranked list for the first non-selected
-          // track. Since we just removed one selected track, there's guaranteed room
-          // in top-N for exactly one promotion.
+          // Found first non-selected track - promote it
           topNGroup.trackStates[rankedEntry.ftn] = TrackState::Selected;
           notifyTrackSelected(rankedEntry.ftn, topNGroup);
           break;
@@ -352,36 +427,80 @@ uint64_t PropertyRanking::getRank(const RankKey& key) const {
   return trackIndexByName_.find(it->second.ftn)->second.cachedRank;
 }
 
-// O(numTracks) full cache rebuild. Only called when cache is invalid (e.g., after
-// direct map manipulation in tests). Normal operations use incremental updates:
-// - registerTrack: O(1) rank lookup via iterator--, O(numTracks - rank) updates
-// - removeTrack: O(numTracks - oldRank) updates
-// - updateSortValue: O(newRank) + O(|movement|) updates
-//
-// Future optimization opportunity:
-// Lazy partial cache: don't compute ranks for tracks past max(N) + maxDeselected.
-// Their rank only matters on track removal or increasing N (not yet supported).
+/**
+ * Rebuild rank cache if invalid.
+ *
+ * Complexity: O(min(numTracks, selectionThreshold_)) with lazy partial caching.
+ *
+ * Only called when cache is invalid (e.g., after direct map manipulation in tests).
+ * Normal operations use incremental updates:
+ * - registerTrack: O(1) rank lookup via iterator--, O(numTracks - rank) updates
+ * - removeTrack: O(numTracks - oldRank) updates
+ * - updateSortValue: O(newRank) + O(|movement|) updates
+ *
+ * Lazy partial cache optimization:
+ * Only computes ranks up to selectionThreshold_ (max(N) + maxDeselected).
+ * Tracks beyond this threshold get cachedRank = UINT64_MAX (sentinel).
+ * Rationale: tracks past the threshold don't affect any top-N selection or
+ * deselected queue, so their exact rank doesn't matter for correctness.
+ *
+ * Trade-off: If selectionThreshold_ increases later (e.g., new TopNGroup with
+ * larger N), we'd need to extend the cache. Currently N can only decrease
+ * (when groups are removed), so this isn't an issue.
+ */
 void PropertyRanking::rebuildRankCacheIfNeeded() const {
   if (rankCacheValid_) {
     return;
   }
+
+  // Traverse sorted map and assign sequential ranks (0 = highest value).
+  // trackIndexByName_ is mutable to allow this lazy cache update in const context.
   uint64_t rank = 0;
   for (const auto& [key, entry] : rankedTracks_) {
     auto it = trackIndexByName_.find(entry.ftn);
     if (it != trackIndexByName_.end()) {
-      const_cast<RankIndex&>(it->second).cachedRank = rank;
+      // Lazy partial cache: stop computing exact ranks past selectionThreshold_.
+      // These tracks are outside all top-N groups and deselected queues.
+      if (rank < selectionThreshold_ || selectionThreshold_ == 0) {
+        it->second.cachedRank = rank;
+      } else {
+        // Sentinel value indicates "rank >= selectionThreshold_"
+        it->second.cachedRank = UINT64_MAX;
+      }
     }
     rank++;
   }
   rankCacheValid_ = true;
 }
 
+/**
+ * Check if a rank change crosses any TopNGroup threshold.
+ *
+ * A threshold is crossed when the track enters or exits some group's top-N.
+ * For group with N=5, threshold is at rank 5 (ranks 0-4 are in, 5+ are out).
+ *
+ * Algorithm: O(log G) using sorted thresholds
+ * 1. Fast exit if both ranks outside all selection regions
+ * 2. Check if track crossed into/out of selection region entirely
+ * 3. Binary search for any threshold between old and new rank
+ *
+ * Example: groups with N=3 and N=7, track moves from rank 5 to rank 2
+ *   - sortedThresholds_ = [3, 7]
+ *   - minRank=2, maxRank=5
+ *   - upper_bound(2) finds 3, and 3 <= 5, so threshold crossed (N=3)
+ *
+ * Sentinel handling: if oldRank == UINT64_MAX (lazy partial cache sentinel),
+ * it correctly represents "outside all selection regions" since
+ * UINT64_MAX >= selectionThreshold_ is always true.
+ */
 bool PropertyRanking::crossesThreshold(uint64_t oldRank, uint64_t newRank) const {
   if (topNGroups_.empty()) {
     return false;
   }
 
-  // Fast exit: both ranks outside selection region - no threshold can be crossed.
+  // --- Fast exit: both ranks outside all selection regions ---
+  // selectionThreshold_ = max(N) + maxDeselected_, so ranks >= threshold
+  // are outside all groups and their deselected queues.
   if (oldRank >= selectionThreshold_ && newRank >= selectionThreshold_) {
     return false;
   }
@@ -392,14 +511,15 @@ bool PropertyRanking::crossesThreshold(uint64_t oldRank, uint64_t newRank) const
   uint64_t minRank = std::min(oldRank, newRank);
   uint64_t maxRank = std::max(oldRank, newRank);
 
-  // Check if track crossed into/out of the selection region entirely.
+  // --- Check if track crossed into/out of selection region entirely ---
   bool oldInAnyTopN = oldRank < selectionThreshold_;
   bool newInAnyTopN = newRank < selectionThreshold_;
   if (oldInAnyTopN != newInAnyTopN) {
     return true;
   }
 
-  // O(log G) check: any threshold between minRank and maxRank?
+  // --- O(log G) binary search for threshold in (minRank, maxRank] ---
+  // upper_bound gives first threshold > minRank; check if it's <= maxRank.
   auto it = std::upper_bound(sortedThresholds_.begin(), sortedThresholds_.end(), minRank);
   if (it != sortedThresholds_.end() && *it <= maxRank) {
     return true;
@@ -408,6 +528,28 @@ bool PropertyRanking::crossesThreshold(uint64_t oldRank, uint64_t newRank) const
   return false;
 }
 
+/**
+ * Recompute TopNGroup states after a track crosses selection thresholds.
+ *
+ * Two-phase algorithm achieving O(G log G + N) instead of naive O(G * N):
+ *
+ * Phase 1: Iterate groups O(G)
+ *   - Update moved track's state (Selected ↔ Deselected)
+ *   - Collect boundary operations (positions where other tracks need demotion/promotion)
+ *
+ * Phase 2: Single traversal of rankedTracks_ O(N)
+ *   - Sort operations by position O(G log G)
+ *   - Process all demotions/promotions in one pass
+ *
+ * Why two phases? When a track enters top-N, it pushes another track out.
+ * We need to find the track at position N (the boundary). Rather than
+ * traversing rankedTracks_ once per group, we collect all boundary positions
+ * and handle them in a single traversal.
+ *
+ * Example: track moves from rank 8 to rank 2, groups N=3, N=5, N=7
+ *   - Track enters N=3, N=5, N=7 → demote tracks at positions 3, 5, 7
+ *   - Phase 2: traverse once, demote at positions 3, 5, 7
+ */
 void PropertyRanking::recomputeTopNGroups(
     const moxygen::FullTrackName& ftn,
     uint64_t oldRank,
@@ -418,8 +560,7 @@ void PropertyRanking::recomputeTopNGroups(
 
   IterationGuard guard(*this);
 
-  // Two-phase algorithm: O(G log G + N) instead of O(G * N)
-  // Phase 1: Update state and collect boundary positions needing demotion/promotion
+  // --- Phase 1: Update state and collect boundary operations ---
   enum class Action { Demote, Promote };
   std::vector<std::tuple<uint64_t, TopNGroup*, Action>> boundaryOps;
 
@@ -427,42 +568,46 @@ void PropertyRanking::recomputeTopNGroups(
     bool wasInTopN = oldRank < n;
     bool nowInTopN = newRank < n;
 
+    // Update moved track's state if it crossed this group's threshold
     if (wasInTopN != nowInTopN) {
       if (nowInTopN) {
+        // Track entered top-N: mark selected, remove from deselected queue if present
         topNGroup.trackStates[ftn] = TrackState::Selected;
         removeFromDeselectedQueue(topNGroup, ftn);
       } else {
+        // Track fell out of top-N: mark deselected, add to queue
         topNGroup.trackStates[ftn] = TrackState::Deselected;
         topNGroup.deselectedQueue.push_back(ftn);
         trimDeselectedQueue(topNGroup);
       }
     }
 
-    // Track entered top-N: notify and queue demotion at position n
+    // Queue boundary operations for other tracks affected by this move
     if (!wasInTopN && nowInTopN) {
+      // Track entered top-N → demote track at position N (pushed out of top-N)
       notifyTrackSelected(ftn, topNGroup);
       boundaryOps.emplace_back(n, &topNGroup, Action::Demote);
     }
 
-    // Track fell out of top-N: queue promotion at position n-1
     if (wasInTopN && !nowInTopN) {
+      // Track fell out of top-N → promote track at position N-1 (now enters top-N)
       boundaryOps.emplace_back(n - 1, &topNGroup, Action::Promote);
     }
   }
 
-  // Phase 2: Single traversal of rankedTracks_ to handle all boundary operations
+  // --- Phase 2: Single traversal to handle all boundary operations ---
   if (boundaryOps.empty()) {
     return;
   }
 
-  // Sort by position so we can process in one pass
+  // Sort by position for single-pass processing
   std::sort(boundaryOps.begin(), boundaryOps.end(),
             [](const auto& a, const auto& b) { return std::get<0>(a) < std::get<0>(b); });
 
   size_t opIdx = 0;
   uint64_t count = 0;
   for (auto& [key, rankedEntry] : rankedTracks_) {
-    // Process all operations at this position
+    // Process all operations at current position
     while (opIdx < boundaryOps.size() && count == std::get<0>(boundaryOps[opIdx])) {
       auto* group = std::get<1>(boundaryOps[opIdx]);
       Action action = std::get<2>(boundaryOps[opIdx]);
