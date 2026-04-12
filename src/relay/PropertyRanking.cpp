@@ -31,30 +31,77 @@ void PropertyRanking::registerTrack(
     return;
   }
 
+  // Ensure cache is valid before insertion so we can use iterator-- for O(1) rank lookup
+  rebuildRankCacheIfNeeded();
+
   uint64_t value = initialValue.value_or(0);
   RankKey key{value, nextSeq_++};
 
   auto [iter, inserted] =
       rankedTracks_.emplace(key, RankedEntry{.ftn = ftn, .publisher = std::move(publisher)});
-  trackIndexByName_[ftn] = RankIndex{.rankIter = iter, .cachedRank = UINT64_MAX};
-  invalidateRankCache();
 
-  uint64_t rank = getCachedRank(ftn);
+  // Compute rank in O(1) using previous track's cached rank
+  uint64_t rank;
+  if (iter == rankedTracks_.begin()) {
+    rank = 0;
+  } else {
+    auto prevIt = iter;
+    --prevIt;
+    auto prevIndexIt = trackIndexByName_.find(prevIt->second.ftn);
+    rank = (prevIndexIt != trackIndexByName_.end()) ? prevIndexIt->second.cachedRank + 1 : 0;
+  }
+
+  trackIndexByName_[ftn] = RankIndex{.rankIter = iter, .cachedRank = rank};
+
+  // Increment cached ranks for all tracks after insertion point: O(numTracks - rank)
+  auto nextIt = iter;
+  ++nextIt;
+  for (; nextIt != rankedTracks_.end(); ++nextIt) {
+    auto indexIt = trackIndexByName_.find(nextIt->second.ftn);
+    if (indexIt != trackIndexByName_.end()) {
+      indexIt->second.cachedRank++;
+    }
+  }
+  // Cache remains valid - no full rebuild needed
+
   XLOG(DBG4) << "Registered track " << ftn << " with value " << value << " at rank " << rank;
+
+  // Two-phase algorithm: O(G log G + N) instead of O(G * N)
+  // Phase 1: Mark track selected in applicable groups, collect demotion positions
+  std::vector<std::pair<uint64_t, TopNGroup*>> demotions;  // (position n, group)
 
   for (auto& [n, topNGroup] : topNGroups_) {
     if (rank < n) {
       topNGroup.trackStates[ftn] = TrackState::Selected;
-      IterationGuard guard(*this);
       notifyTrackSelected(ftn, topNGroup);
 
       // The new track pushed the previous occupant of rank N-1 to rank N.
-      // If that track was Selected, demote it into the deselected queue.
-      // (Only fires when numTracks > N, otherwise there's no track at rank N.)
-      demoteTrackAtRank(n, topNGroup);
+      // Queue demotion (only fires when numTracks > N).
+      demotions.emplace_back(n, &topNGroup);
     }
     // Tracks outside top N are not added to the deselected queue on register;
     // they only enter the queue when they fall out of an already-selected position.
+  }
+
+  // Phase 2: Single traversal to demote tracks at collected positions
+  if (!demotions.empty()) {
+    IterationGuard guard(*this);
+
+    std::sort(demotions.begin(), demotions.end(),
+              [](const auto& a, const auto& b) { return a.first < b.first; });
+
+    size_t demIdx = 0;
+    uint64_t count = 0;
+    for (auto& [key, rankedEntry] : rankedTracks_) {
+      while (demIdx < demotions.size() && count == demotions[demIdx].first) {
+        demoteTrackInGroup(*demotions[demIdx].second, rankedEntry.ftn, count);
+        demIdx++;
+      }
+      if (demIdx >= demotions.size()) {
+        break;
+      }
+      count++;
+    }
   }
 }
 
@@ -76,18 +123,48 @@ void PropertyRanking::updateSortValue(const moxygen::FullTrackName& ftn, uint64_
   // Construct new key after the early-exit check
   RankKey newKey{value, oldKey.arrivalSeq};
 
-  // Capture old rank before modifying the map (oldKey disappears after erase)
-  uint64_t oldRank = getCachedRank(ftn);
+  // Ensure cache is valid and capture old rank before modifying the map
+  rebuildRankCacheIfNeeded();
+  uint64_t oldRank = entry.cachedRank;
 
-  // Update the sorted map
+  // Update the sorted map: O(log N) erase + insert
   auto rankedEntry = std::move(entry.rankIter->second);
   rankedTracks_.erase(entry.rankIter);
   auto [newIter, _] = rankedTracks_.emplace(newKey, std::move(rankedEntry));
   entry.rankIter = newIter;
-  invalidateRankCache();
 
-  // Compute new rank now that the map reflects the new position
-  uint64_t newRank = getCachedRank(ftn);
+  // Compute new rank using std::distance: O(newRank) for bidirectional iterator.
+  // For top-ranked tracks (where we care most), this is fast.
+  uint64_t newRank = static_cast<uint64_t>(
+      std::distance(rankedTracks_.begin(), newIter));
+  entry.cachedRank = newRank;
+
+  // Incrementally update cached ranks for affected tracks only: O(|oldRank - newRank|).
+  // Tracks between old and new positions had their ranks shift by ±1.
+  if (newRank < oldRank) {
+    // Track moved up (higher value → lower rank). Tracks in (newRank, oldRank] shift down.
+    auto rankedIt = newIter;
+    ++rankedIt;  // Skip the moved track
+    for (uint64_t r = newRank + 1; r <= oldRank && rankedIt != rankedTracks_.end();
+         ++r, ++rankedIt) {
+      auto indexIt = trackIndexByName_.find(rankedIt->second.ftn);
+      if (indexIt != trackIndexByName_.end()) {
+        indexIt->second.cachedRank = r;
+      }
+    }
+  } else if (newRank > oldRank) {
+    // Track moved down (lower value → higher rank). Tracks in [oldRank, newRank) shift up.
+    auto rankedIt = newIter;
+    for (uint64_t r = newRank; r > oldRank && rankedIt != rankedTracks_.begin();) {
+      --rankedIt;
+      --r;
+      auto indexIt = trackIndexByName_.find(rankedIt->second.ftn);
+      if (indexIt != trackIndexByName_.end()) {
+        indexIt->second.cachedRank = r;
+      }
+    }
+  }
+  // Cache remains valid - no full rebuild needed
 
   // FAST PATH: value change doesn't cross any threshold
   if (!crossesThreshold(oldRank, newRank)) {
@@ -108,12 +185,27 @@ void PropertyRanking::removeTrack(const moxygen::FullTrackName& ftn) {
     return;
   }
 
+  // Ensure cache is valid before removal
+  rebuildRankCacheIfNeeded();
+
   auto& entry = it->second;
-  uint64_t oldRank = getCachedRank(ftn);
+  uint64_t oldRank = entry.cachedRank;
+
+  // Save iterator to next track before erasing (remains valid after erase per std::map guarantees)
+  auto nextIt = entry.rankIter;
+  ++nextIt;
 
   rankedTracks_.erase(entry.rankIter);
   trackIndexByName_.erase(it);
-  invalidateRankCache();
+
+  // Decrement cached ranks for all tracks after removal point: O(numTracks - oldRank)
+  for (; nextIt != rankedTracks_.end(); ++nextIt) {
+    auto indexIt = trackIndexByName_.find(nextIt->second.ftn);
+    if (indexIt != trackIndexByName_.end()) {
+      indexIt->second.cachedRank--;
+    }
+  }
+  // Cache remains valid - no full rebuild needed
 
   XLOG(DBG4) << "Removed track " << ftn << " from rank " << oldRank;
 
@@ -260,6 +352,15 @@ uint64_t PropertyRanking::getRank(const RankKey& key) const {
   return trackIndexByName_.find(it->second.ftn)->second.cachedRank;
 }
 
+// O(numTracks) full cache rebuild. Only called when cache is invalid (e.g., after
+// direct map manipulation in tests). Normal operations use incremental updates:
+// - registerTrack: O(1) rank lookup via iterator--, O(numTracks - rank) updates
+// - removeTrack: O(numTracks - oldRank) updates
+// - updateSortValue: O(newRank) + O(|movement|) updates
+//
+// Future optimization opportunity:
+// Lazy partial cache: don't compute ranks for tracks past max(N) + maxDeselected.
+// Their rank only matters on track removal or increasing N (not yet supported).
 void PropertyRanking::rebuildRankCacheIfNeeded() const {
   if (rankCacheValid_) {
     return;
@@ -275,28 +376,23 @@ void PropertyRanking::rebuildRankCacheIfNeeded() const {
   rankCacheValid_ = true;
 }
 
-uint64_t PropertyRanking::getCachedRank(const moxygen::FullTrackName& ftn) const {
-  rebuildRankCacheIfNeeded();
-  auto it = trackIndexByName_.find(ftn);
-  if (it == trackIndexByName_.end()) {
-    return UINT64_MAX;
-  }
-  return it->second.cachedRank;
-}
-
 bool PropertyRanking::crossesThreshold(uint64_t oldRank, uint64_t newRank) const {
   if (topNGroups_.empty()) {
     return false;
   }
 
+  // Fast exit: both ranks outside selection region - no threshold can be crossed.
   if (oldRank >= selectionThreshold_ && newRank >= selectionThreshold_) {
     return false;
   }
+  // NOTE: We intentionally do NOT fast-exit when both ranks are below selectionThreshold_.
+  // Even though both are within the selection region, a specific N boundary might still
+  // be crossed (e.g., moving from rank 5 to rank 2 crosses N=3 but not N=7).
 
   uint64_t minRank = std::min(oldRank, newRank);
   uint64_t maxRank = std::max(oldRank, newRank);
 
-  // Both ranks within selection region; check if they cross a specific N boundary.
+  // Check if track crossed into/out of the selection region entirely.
   bool oldInAnyTopN = oldRank < selectionThreshold_;
   bool newInAnyTopN = newRank < selectionThreshold_;
   if (oldInAnyTopN != newInAnyTopN) {
@@ -320,12 +416,13 @@ void PropertyRanking::recomputeTopNGroups(
   XLOG(DBG4) << "recomputeTopNGroups: " << ftn << " moved from rank " << oldRank << " to "
              << newRank;
 
-  // O(G * N) where G = number of TopNGroups. For each group, we may iterate
-  // rankedTracks_ to find tracks at boundary positions.
-  // TODO: For large numbers of TopNGroups (G > ~5), optimize with single-pass
-  // algorithm: collect all crossed thresholds, sort them, then single iteration
-  // over rankedTracks_ to find all needed boundary positions.
   IterationGuard guard(*this);
+
+  // Two-phase algorithm: O(G log G + N) instead of O(G * N)
+  // Phase 1: Update state and collect boundary positions needing demotion/promotion
+  enum class Action { Demote, Promote };
+  std::vector<std::tuple<uint64_t, TopNGroup*, Action>> boundaryOps;
+
   for (auto& [n, topNGroup] : topNGroups_) {
     bool wasInTopN = oldRank < n;
     bool nowInTopN = newRank < n;
@@ -341,33 +438,47 @@ void PropertyRanking::recomputeTopNGroups(
       }
     }
 
-    // Batch-notify all sessions when track enters shared top-N
+    // Track entered top-N: notify and queue demotion at position n
     if (!wasInTopN && nowInTopN) {
       notifyTrackSelected(ftn, topNGroup);
-
-      // The track that just entered top-N displaced the one at position n;
-      // mark that track as deselected.
-      demoteTrackAtRank(n, topNGroup);
+      boundaryOps.emplace_back(n, &topNGroup, Action::Demote);
     }
 
-    // When a track falls out of top-N, the track that was at position n (just
-    // outside) shifts into position n-1 (now inside). Promote it if not already
-    // selected.
+    // Track fell out of top-N: queue promotion at position n-1
     if (wasInTopN && !nowInTopN) {
-      uint64_t count = 0;
-      for (auto& [key, rankedEntry] : rankedTracks_) {
-        if (count == n - 1) {
-          auto stIt = topNGroup.trackStates.find(rankedEntry.ftn);
-          if (stIt == topNGroup.trackStates.end() || stIt->second != TrackState::Selected) {
-            topNGroup.trackStates[rankedEntry.ftn] = TrackState::Selected;
-            removeFromDeselectedQueue(topNGroup, rankedEntry.ftn);
-            notifyTrackSelected(rankedEntry.ftn, topNGroup);
-          }
-          break;
-        }
-        count++;
-      }
+      boundaryOps.emplace_back(n - 1, &topNGroup, Action::Promote);
     }
+  }
+
+  // Phase 2: Single traversal of rankedTracks_ to handle all boundary operations
+  if (boundaryOps.empty()) {
+    return;
+  }
+
+  // Sort by position so we can process in one pass
+  std::sort(boundaryOps.begin(), boundaryOps.end(),
+            [](const auto& a, const auto& b) { return std::get<0>(a) < std::get<0>(b); });
+
+  size_t opIdx = 0;
+  uint64_t count = 0;
+  for (auto& [key, rankedEntry] : rankedTracks_) {
+    // Process all operations at this position
+    while (opIdx < boundaryOps.size() && count == std::get<0>(boundaryOps[opIdx])) {
+      auto* group = std::get<1>(boundaryOps[opIdx]);
+      Action action = std::get<2>(boundaryOps[opIdx]);
+
+      if (action == Action::Demote) {
+        demoteTrackInGroup(*group, rankedEntry.ftn, count);
+      } else {
+        promoteTrackInGroup(*group, rankedEntry.ftn, count);
+      }
+      opIdx++;
+    }
+
+    if (opIdx >= boundaryOps.size()) {
+      break;  // All operations processed
+    }
+    count++;
   }
 }
 
@@ -411,24 +522,42 @@ void PropertyRanking::removeFromDeselectedQueue(
   dq.erase(std::remove(dq.begin(), dq.end(), ftn), dq.end());
 }
 
-void PropertyRanking::demoteTrackAtRank(uint64_t n, TopNGroup& group) {
-  uint64_t count = 0;
-  for (auto& [key, rankedEntry] : rankedTracks_) {
-    if (count == n) {
-      auto stIt = group.trackStates.find(rankedEntry.ftn);
-      if (stIt != group.trackStates.end() && stIt->second == TrackState::Selected) {
-        XLOG(DBG4) << "demoteTrackAtRank: demoting " << rankedEntry.ftn
-                   << " at rank " << n << " to deselected queue";
-        stIt->second = TrackState::Deselected;
-        group.deselectedQueue.push_back(rankedEntry.ftn);
-        trimDeselectedQueue(group);
-      }
-      break;
-    }
-    count++;
+void PropertyRanking::demoteTrackInGroup(
+    TopNGroup& group,
+    const moxygen::FullTrackName& ftn,
+    uint64_t rank
+) {
+  auto stIt = group.trackStates.find(ftn);
+  if (stIt != group.trackStates.end() && stIt->second == TrackState::Selected) {
+    XLOG(DBG4) << "demoteTrackInGroup: demoting " << ftn
+               << " at rank " << rank << " to deselected queue";
+    stIt->second = TrackState::Deselected;
+    group.deselectedQueue.push_back(ftn);
+    trimDeselectedQueue(group);
   }
 }
 
+void PropertyRanking::promoteTrackInGroup(
+    TopNGroup& group,
+    const moxygen::FullTrackName& ftn,
+    uint64_t rank
+) {
+  auto stIt = group.trackStates.find(ftn);
+  if (stIt == group.trackStates.end() || stIt->second != TrackState::Selected) {
+    XLOG(DBG4) << "promoteTrackInGroup: promoting " << ftn
+               << " at rank " << rank << " into top-N";
+    group.trackStates[ftn] = TrackState::Selected;
+    removeFromDeselectedQueue(group, ftn);
+    notifyTrackSelected(ftn, group);
+  }
+}
+
+// Batch callback rationale: All sessions in a TopNGroup share the same N, so when a
+// track enters their top-N, the relay can handle them together. Benefits:
+// 1. Single upstream subscribe decision covers all sessions wanting this track
+// 2. Relay can batch state updates (e.g., one forwarder lookup, one cache check)
+// 3. Reduces per-session callback overhead when many sessions share the same N
+// An alternative per-session callback exists (onSelected_) for cases needing individual handling.
 void PropertyRanking::notifyTrackSelected(const moxygen::FullTrackName& ftn, TopNGroup& topNGroup) {
   std::vector<std::pair<std::shared_ptr<moxygen::MoQSession>, bool>> batch;
   for (const auto& [session, info] : topNGroup.sessions) {

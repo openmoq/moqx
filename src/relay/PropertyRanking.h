@@ -256,15 +256,21 @@ private:
   void notifyTrackSelected(const moxygen::FullTrackName& ftn, TopNGroup& topNGroup);
 
   void rebuildRankCacheIfNeeded() const;
-  uint64_t getCachedRank(const moxygen::FullTrackName& ftn) const;
 
   // Remove ftn from the deselected queue (if present). O(queue size).
   void removeFromDeselectedQueue(TopNGroup& group, const moxygen::FullTrackName& ftn);
 
-  // If the track at rank n in rankedTracks_ is marked Selected, move it to the
-  // deselected queue and trim. Call this after a track enters top-N and pushes
-  // the previous occupant of rank N-1 down to rank N.
-  void demoteTrackAtRank(uint64_t n, TopNGroup& group);
+  // Helper: demote track at given position in a group (Selected -> Deselected + queue)
+  void demoteTrackInGroup(
+      TopNGroup& group,
+      const moxygen::FullTrackName& ftn,
+      uint64_t rank);
+
+  // Helper: promote track at given position in a group (-> Selected, notify)
+  void promoteTrackInGroup(
+      TopNGroup& group,
+      const moxygen::FullTrackName& ftn,
+      uint64_t rank);
 
   void invalidateRankCache() { rankCacheValid_ = false; }
 

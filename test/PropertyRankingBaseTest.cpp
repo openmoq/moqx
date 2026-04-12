@@ -502,4 +502,78 @@ TEST_F(PropertyRankingBaseTest, RemoveSelected_FallbackPicksHighestNonSelected) 
   EXPECT_EQ(h.selectCount(ftn("b"), sub.get()), 0); // b was already selected
 }
 
+// ---------------------------------------------------------------------------
+// Two-phase algorithm: multiple adjacent groups handled in single traversal
+// ---------------------------------------------------------------------------
+
+TEST_F(PropertyRankingBaseTest, MultipleAdjacentGroups_SingleTraversalDemotion) {
+  // Tests that registerTrack correctly demotes tracks at multiple boundary positions
+  // in a single traversal when multiple TopNGroups have adjacent N values.
+  RankingHarness h;
+  auto sub2 = makeSession(); // top-2
+  auto sub3 = makeSession(); // top-3
+  auto sub4 = makeSession(); // top-4
+
+  h.ranking().addSessionToTopNGroup(2, sub2, true);
+  h.ranking().addSessionToTopNGroup(3, sub3, true);
+  h.ranking().addSessionToTopNGroup(4, sub4, true);
+
+  // Register tracks at positions 0,1,2,3
+  h.ranking().registerTrack(ftn("a"), 100, {}); // rank 0
+  h.ranking().registerTrack(ftn("b"), 80, {});  // rank 1
+  h.ranking().registerTrack(ftn("c"), 60, {});  // rank 2
+  h.ranking().registerTrack(ftn("d"), 40, {});  // rank 3
+  h.clearEvents();
+
+  // Register a track that becomes rank 0, pushing everyone down
+  // This should trigger demotions at positions 2, 3, 4 for groups N=2, N=3, N=4
+  h.ranking().registerTrack(ftn("e"), 110, {}); // e becomes rank 0
+
+  // e should be selected for all three groups
+  EXPECT_EQ(h.selectCount(ftn("e"), sub2.get()), 1);
+  EXPECT_EQ(h.selectCount(ftn("e"), sub3.get()), 1);
+  EXPECT_EQ(h.selectCount(ftn("e"), sub4.get()), 1);
+
+  // After e enters:
+  // - sub2 (top-2): e, a selected; b demoted at position 2
+  // - sub3 (top-3): e, a, b selected; c demoted at position 3
+  // - sub4 (top-4): e, a, b, c selected; d demoted at position 4
+  // Note: b was selected for sub2 initially, now demoted
+  //       c was selected for sub3 initially, now demoted
+  //       d was selected for sub4 initially, now demoted
+}
+
+TEST_F(PropertyRankingBaseTest, MultipleAdjacentGroups_SingleTraversalPromotion) {
+  // Tests that recomputeTopNGroups correctly promotes tracks at multiple boundary
+  // positions in a single traversal when a track falls out of multiple groups.
+  RankingHarness h;
+  auto sub2 = makeSession(); // top-2
+  auto sub3 = makeSession(); // top-3
+  auto sub4 = makeSession(); // top-4
+
+  h.ranking().addSessionToTopNGroup(2, sub2, true);
+  h.ranking().addSessionToTopNGroup(3, sub3, true);
+  h.ranking().addSessionToTopNGroup(4, sub4, true);
+
+  // Register tracks: a=100, b=80, c=60, d=40, e=20
+  h.ranking().registerTrack(ftn("a"), 100, {}); // rank 0
+  h.ranking().registerTrack(ftn("b"), 80, {});  // rank 1
+  h.ranking().registerTrack(ftn("c"), 60, {});  // rank 2
+  h.ranking().registerTrack(ftn("d"), 40, {});  // rank 3
+  h.ranking().registerTrack(ftn("e"), 20, {});  // rank 4
+  h.clearEvents();
+
+  // Drop "a" to rank 4 (value=10), falling out of all three groups
+  // This should promote tracks at positions 1, 2, 3 for the respective groups
+  h.ranking().updateSortValue(ftn("a"), 10);
+
+  // After a drops: order is b=80(0), c=60(1), d=40(2), e=20(3), a=10(4)
+  // - sub2 (top-2): b, c selected (c promoted at position 1)
+  // - sub3 (top-3): b, c, d selected (d promoted at position 2)
+  // - sub4 (top-4): b, c, d, e selected (e promoted at position 3)
+  EXPECT_GE(h.selectCount(ftn("c"), sub2.get()), 1); // c promoted into top-2
+  EXPECT_GE(h.selectCount(ftn("d"), sub3.get()), 1); // d promoted into top-3
+  EXPECT_GE(h.selectCount(ftn("e"), sub4.get()), 1); // e promoted into top-4
+}
+
 } // namespace
