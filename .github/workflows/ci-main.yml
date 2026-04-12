@@ -170,12 +170,36 @@ jobs:
           docker stop moqx-smoke && docker rm moqx-smoke
           echo "==> Smoke test passed"
 
-      - name: Push Docker image
+      - name: Build interop client image
+        run: |
+          SHORT="${GITHUB_SHA:0:7}"
+          CLIENT_IMAGE="ghcr.io/${{ github.repository_owner }}/moqx-interop-client"
+          docker build -f docker/Dockerfile.interop-client \
+            -t "${CLIENT_IMAGE}:${SHORT}" \
+            -t "${CLIENT_IMAGE}:latest" \
+            .
+
+      - name: Smoke test interop client
+        run: |
+          CLIENT_IMAGE="ghcr.io/${{ github.repository_owner }}/moqx-interop-client:latest"
+          echo "==> ldd check"
+          docker run --rm --entrypoint ldd "${CLIENT_IMAGE}" /usr/local/bin/moq_interop_client
+          if docker run --rm --entrypoint ldd "${CLIENT_IMAGE}" /usr/local/bin/moq_interop_client 2>&1 | grep -q "not found"; then
+            echo "ERROR: missing shared libraries"; exit 1
+          fi
+          echo "==> List supported tests"
+          docker run --rm "${CLIENT_IMAGE}" --list
+          echo "==> Interop client smoke test passed"
+
+      - name: Push Docker images
         run: |
           SHORT="${GITHUB_SHA:0:7}"
           IMAGE="ghcr.io/${{ github.repository }}"
           docker push "${IMAGE}:${SHORT}"
           docker push "${IMAGE}:latest"
+          CLIENT_IMAGE="ghcr.io/${{ github.repository_owner }}/moqx-interop-client"
+          docker push "${CLIENT_IMAGE}:${SHORT}"
+          docker push "${CLIENT_IMAGE}:latest"
 
       - name: Package
         id: package
