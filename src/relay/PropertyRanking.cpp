@@ -656,6 +656,11 @@ void PropertyRanking::trimDeselectedQueue(TopNGroup& topNGroup) {
   // Guard once for all evictions rather than per-iteration
   IterationGuard guard(*this);
 
+  // Log warning once when queue overflows - indicates high track churn
+  XLOG(WARN) << "[PropertyRanking] Deselected queue overflow: "
+             << topNGroup.deselectedQueue.size() << " tracks queued, maxDeselected="
+             << maxDeselected_ << ". Consider increasing maxDeselected if this persists.";
+
   while (topNGroup.deselectedQueue.size() > maxDeselected_) {
     auto evicted = topNGroup.deselectedQueue.front();
     topNGroup.deselectedQueue.pop_front();
