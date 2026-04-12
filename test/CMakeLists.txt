@@ -165,3 +165,55 @@ target_link_libraries(moqx_topn_filter_test PRIVATE
   GTest::gmock
 )
 gtest_discover_tests(moqx_topn_filter_test)
+
+# PropertyRanking base unit tests (no self-exclusion)
+add_executable(moqx_property_ranking_base_test
+  PropertyRankingBaseTest.cpp
+)
+target_link_libraries(moqx_property_ranking_base_test PRIVATE
+  moqx_core
+  GTest::gtest_main
+  GTest::gmock
+)
+gtest_discover_tests(moqx_property_ranking_base_test)
+
+# PropertyRanking self-exclusion / waterline unit tests
+add_executable(moqx_property_ranking_self_exclusion_test
+  PropertyRankingSelfExclusionTest.cpp
+)
+target_link_libraries(moqx_property_ranking_self_exclusion_test PRIVATE
+  moqx_core
+  GTest::gtest_main
+  GTest::gmock
+)
+gtest_discover_tests(moqx_property_ranking_self_exclusion_test)
+
+# TRACK_FILTER integration tests (in-process relay, no live server)
+add_executable(moqx_track_filter_test
+  MoqxTrackFilterTest.cpp
+)
+target_link_libraries(moqx_track_filter_test PRIVATE
+  moqx_core
+  moqx_test_main
+  GTest::gmock
+  moxygen::moxygen_events_moq_folly_executor_impl
+)
+gtest_discover_tests(moqx_track_filter_test)
+
+# TrackFilterLoadTest: requires a live relay process.
+# Run manually: ./track_filter_load_test --relay_url=https://localhost:9668/moq-relay
+# Not registered with gtest_discover_tests — excluded from automated ctest.
+add_executable(track_filter_load_test
+  TrackFilterLoadTest.cpp
+)
+target_link_libraries(track_filter_load_test PRIVATE
+  moqx_core
+  Folly::folly_init_init
+  moxygen::moxygen_events_moq_folly_executor_impl
+  moxygen::moxygen_moqclient
+  moxygen::moxygen_moq_webtransport_client
+  moxygen::moxygen_relay_moq_relay_client
+  moxygen::moxygen_relay_moq_forwarder
+  moxygen::moxygen_moq_relay_session
+  moxygen::moxygen_util_insecure_verifier_dangerous_do_not_use_in_production
+)
