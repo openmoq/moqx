@@ -290,6 +290,15 @@ uint64_t PropertyRanking::getRank(const RankKey& key) const {
   return trackIndexByName_.find(it->second.ftn)->second.cachedRank;
 }
 
+// O(numTracks) full cache rebuild. Called on registerTrack/removeTrack when cache
+// is invalidated. updateSortValue uses incremental updates to avoid this.
+//
+// Future optimization opportunities (see GitHub issue):
+// 1. Incremental rebuild: only update ranks after the inserted/removed track position,
+//    using iterator-- to learn the starting rank.
+// 2. Lazy partial cache: don't compute ranks for tracks past max(N) + maxDeselected.
+//    Their rank only matters on track removal or increasing N (not yet supported).
+//    Rebuild the bottom portion of the cache lazily on demand.
 void PropertyRanking::rebuildRankCacheIfNeeded() const {
   if (rankCacheValid_) {
     return;
