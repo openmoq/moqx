@@ -1012,7 +1012,7 @@ TEST(ResolveConfig, QuicDefaultsUsedWhenNoneSpecified) {
   EXPECT_EQ(quic.minAckDelayUs, 1000u);
   EXPECT_EQ(quic.defaultStreamPriority, 2u);
   EXPECT_EQ(quic.defaultDatagramPriority, 1u);
-  EXPECT_EQ(quic.ccAlgo, "bbr");
+  EXPECT_EQ(quic.ccAlgo, "copa");
 }
 
 TEST(ResolveConfig, ListenerDefaultsQuicApplied) {

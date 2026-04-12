@@ -480,12 +480,12 @@ void validateQuicConfig(
   }
   // (excluded: mvfst "custom"/"staticcwnd" require programmatic setup; "none" disables CC)
   static const std::unordered_set<std::string> kPicoCcAlgos =
-      {"bbr", "bbr1", "c4", "cubic", "dcubic", "fast", "newreno", "prague", "reno"};
+      {"bbr1", "c4", "copa", "cubic", "dcubic", "fast", "newreno", "prague", "reno"};
   static const std::unordered_set<std::string> kMvfstCcAlgos =
       {"bbr", "bbr2", "bbr2modular", "copa", "cubic", "newreno"};
   const auto& validAlgos = (stack == QuicStack::Picoquic) ? kPicoCcAlgos : kMvfstCcAlgos;
   const auto& validList = (stack == QuicStack::Picoquic)
-                              ? "bbr, bbr1, c4, cubic, dcubic, fast, newreno, prague, reno"
+                              ? "bbr1, c4, copa, cubic, dcubic, fast, newreno, prague, reno"
                               : "bbr, bbr2, bbr2modular, copa, cubic, newreno";
   if (!validAlgos.count(quic.ccAlgo)) {
     errors.push_back(

@@ -74,8 +74,8 @@ struct ParsedQuicConfig {
   rfl::Description<"Default datagram priority (default: 1)", std::optional<uint8_t>>
       default_datagram_priority;
   rfl::Description<
-      "Congestion control algorithm (default: bbr). "
-      "picoquic: bbr, bbr1, c4, cubic, dcubic, fast, newreno, prague, reno. "
+      "Congestion control algorithm (default: copa). "
+      "picoquic: bbr1, c4, copa, cubic, dcubic, fast, newreno, prague, reno. "
       "mvfst: bbr, bbr2, bbr2modular, copa, cubic, newreno.",
       std::optional<std::string>>
       cc_algo;
