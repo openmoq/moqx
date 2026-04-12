@@ -66,19 +66,42 @@ void PropertyRanking::registerTrack(
 
   XLOG(DBG4) << "Registered track " << ftn << " with value " << value << " at rank " << rank;
 
+  // Two-phase algorithm: O(G log G + N) instead of O(G * N)
+  // Phase 1: Mark track selected in applicable groups, collect demotion positions
+  std::vector<std::pair<uint64_t, TopNGroup*>> demotions;  // (position n, group)
+
   for (auto& [n, topNGroup] : topNGroups_) {
     if (rank < n) {
       topNGroup.trackStates[ftn] = TrackState::Selected;
-      IterationGuard guard(*this);
       notifyTrackSelected(ftn, topNGroup);
 
       // The new track pushed the previous occupant of rank N-1 to rank N.
-      // If that track was Selected, demote it into the deselected queue.
-      // (Only fires when numTracks > N, otherwise there's no track at rank N.)
-      demoteTrackAtRank(n, topNGroup);
+      // Queue demotion (only fires when numTracks > N).
+      demotions.emplace_back(n, &topNGroup);
     }
     // Tracks outside top N are not added to the deselected queue on register;
     // they only enter the queue when they fall out of an already-selected position.
+  }
+
+  // Phase 2: Single traversal to demote tracks at collected positions
+  if (!demotions.empty()) {
+    IterationGuard guard(*this);
+
+    std::sort(demotions.begin(), demotions.end(),
+              [](const auto& a, const auto& b) { return a.first < b.first; });
+
+    size_t demIdx = 0;
+    uint64_t count = 0;
+    for (auto& [key, rankedEntry] : rankedTracks_) {
+      while (demIdx < demotions.size() && count == demotions[demIdx].first) {
+        demoteTrackInGroup(*demotions[demIdx].second, rankedEntry.ftn, count);
+        demIdx++;
+      }
+      if (demIdx >= demotions.size()) {
+        break;
+      }
+      count++;
+    }
   }
 }
 
@@ -445,25 +468,9 @@ void PropertyRanking::recomputeTopNGroups(
       Action action = std::get<2>(boundaryOps[opIdx]);
 
       if (action == Action::Demote) {
-        // Track at position n was pushed out of top-N; demote if selected
-        auto stIt = group->trackStates.find(rankedEntry.ftn);
-        if (stIt != group->trackStates.end() && stIt->second == TrackState::Selected) {
-          XLOG(DBG4) << "recomputeTopNGroups: demoting " << rankedEntry.ftn
-                     << " at rank " << count << " to deselected queue";
-          stIt->second = TrackState::Deselected;
-          group->deselectedQueue.push_back(rankedEntry.ftn);
-          trimDeselectedQueue(*group);
-        }
+        demoteTrackInGroup(*group, rankedEntry.ftn, count);
       } else {
-        // Track at position n-1 should be promoted into top-N
-        auto stIt = group->trackStates.find(rankedEntry.ftn);
-        if (stIt == group->trackStates.end() || stIt->second != TrackState::Selected) {
-          XLOG(DBG4) << "recomputeTopNGroups: promoting " << rankedEntry.ftn
-                     << " at rank " << count << " into top-N";
-          group->trackStates[rankedEntry.ftn] = TrackState::Selected;
-          removeFromDeselectedQueue(*group, rankedEntry.ftn);
-          notifyTrackSelected(rankedEntry.ftn, *group);
-        }
+        promoteTrackInGroup(*group, rankedEntry.ftn, count);
       }
       opIdx++;
     }
@@ -515,25 +522,33 @@ void PropertyRanking::removeFromDeselectedQueue(
   dq.erase(std::remove(dq.begin(), dq.end(), ftn), dq.end());
 }
 
-// Called from registerTrack to demote track at position n when a new track enters top-N.
-// This traverses rankedTracks_ to find position n. registerTrack calls this per-group,
-// so with many groups it's O(G*N). Could apply same two-phase optimization as
-// recomputeTopNGroups if registerTrack becomes a hot path with many groups.
-void PropertyRanking::demoteTrackAtRank(uint64_t n, TopNGroup& group) {
-  uint64_t count = 0;
-  for (auto& [key, rankedEntry] : rankedTracks_) {
-    if (count == n) {
-      auto stIt = group.trackStates.find(rankedEntry.ftn);
-      if (stIt != group.trackStates.end() && stIt->second == TrackState::Selected) {
-        XLOG(DBG4) << "demoteTrackAtRank: demoting " << rankedEntry.ftn
-                   << " at rank " << n << " to deselected queue";
-        stIt->second = TrackState::Deselected;
-        group.deselectedQueue.push_back(rankedEntry.ftn);
-        trimDeselectedQueue(group);
-      }
-      break;
-    }
-    count++;
+void PropertyRanking::demoteTrackInGroup(
+    TopNGroup& group,
+    const moxygen::FullTrackName& ftn,
+    uint64_t rank
+) {
+  auto stIt = group.trackStates.find(ftn);
+  if (stIt != group.trackStates.end() && stIt->second == TrackState::Selected) {
+    XLOG(DBG4) << "demoteTrackInGroup: demoting " << ftn
+               << " at rank " << rank << " to deselected queue";
+    stIt->second = TrackState::Deselected;
+    group.deselectedQueue.push_back(ftn);
+    trimDeselectedQueue(group);
+  }
+}
+
+void PropertyRanking::promoteTrackInGroup(
+    TopNGroup& group,
+    const moxygen::FullTrackName& ftn,
+    uint64_t rank
+) {
+  auto stIt = group.trackStates.find(ftn);
+  if (stIt == group.trackStates.end() || stIt->second != TrackState::Selected) {
+    XLOG(DBG4) << "promoteTrackInGroup: promoting " << ftn
+               << " at rank " << rank << " into top-N";
+    group.trackStates[ftn] = TrackState::Selected;
+    removeFromDeselectedQueue(group, ftn);
+    notifyTrackSelected(ftn, group);
   }
 }
 
