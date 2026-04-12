@@ -734,8 +734,7 @@ void PropertyRanking::promoteNextAvailableTrack(
       continue;
     }
     auto stIt = group.trackStates.find(rankedEntry.ftn);
-    bool isSelected =
-        stIt != group.trackStates.end() && stIt->second == TrackState::Selected;
+    bool isSelected = stIt != group.trackStates.end() && stIt->second == TrackState::Selected;
     if (!isSelected) {
       group.trackStates[rankedEntry.ftn] = TrackState::Selected;
       removeFromDeselectedQueue(group, rankedEntry.ftn);

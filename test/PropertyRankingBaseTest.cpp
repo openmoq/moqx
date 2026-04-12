@@ -709,9 +709,9 @@ TEST(PropertyRankingSweepIdle, IdleTrackEvictedAndReplacementPromoted) {
   RankingHarness h(5, std::chrono::milliseconds(100));
   auto sub = makeSession();
 
-  h.ranking().registerTrack(ftn("a"), 100, {});  // rank 0
-  h.ranking().registerTrack(ftn("b"), 90, {});   // rank 1
-  h.ranking().registerTrack(ftn("c"), 80, {});   // rank 2
+  h.ranking().registerTrack(ftn("a"), 100, {}); // rank 0
+  h.ranking().registerTrack(ftn("b"), 90, {});  // rank 1
+  h.ranking().registerTrack(ftn("c"), 80, {});  // rank 2
 
   h.ranking().addSessionToTopNGroup(2, sub, true);
   h.clearEvents();
@@ -719,7 +719,7 @@ TEST(PropertyRankingSweepIdle, IdleTrackEvictedAndReplacementPromoted) {
   // Set activity times: a and c are active (recent), b is idle (old)
   auto now = std::chrono::steady_clock::now();
   h.setActivityTime(ftn("a"), now);
-  h.setActivityTime(ftn("b"), now - std::chrono::milliseconds(200));  // idle
+  h.setActivityTime(ftn("b"), now - std::chrono::milliseconds(200)); // idle
   h.setActivityTime(ftn("c"), now);
 
   // Sweep should evict b (idle) and promote c (next best)
@@ -741,9 +741,9 @@ TEST(PropertyRankingSweepIdle, TrackThatNeverPublishedIsTreatedAsIdle) {
   RankingHarness h(5, std::chrono::milliseconds(100));
   auto sub = makeSession();
 
-  h.ranking().registerTrack(ftn("a"), 100, {});  // rank 0
-  h.ranking().registerTrack(ftn("b"), 90, {});   // rank 1 - never sets activity time
-  h.ranking().registerTrack(ftn("c"), 80, {});   // rank 2
+  h.ranking().registerTrack(ftn("a"), 100, {}); // rank 0
+  h.ranking().registerTrack(ftn("b"), 90, {});  // rank 1 - never sets activity time
+  h.ranking().registerTrack(ftn("c"), 80, {});  // rank 2
 
   h.ranking().addSessionToTopNGroup(2, sub, true);
   h.clearEvents();

@@ -287,9 +287,7 @@ private:
   // Helper: find and promote the highest-ranked non-selected track in a group.
   // Used by sweepIdle when evicting an idle track and needing a replacement.
   // excludeFtn is skipped (typically the track we just demoted).
-  void promoteNextAvailableTrack(
-      TopNGroup& group,
-      const moxygen::FullTrackName& excludeFtn);
+  void promoteNextAvailableTrack(TopNGroup& group, const moxygen::FullTrackName& excludeFtn);
 
   void invalidateRankCache() { rankCacheValid_ = false; }
 
