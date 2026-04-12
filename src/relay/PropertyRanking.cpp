@@ -491,6 +491,8 @@ void PropertyRanking::removeFromDeselectedQueue(
   dq.erase(std::remove(dq.begin(), dq.end(), ftn), dq.end());
 }
 
+// NOTE: Same O(G*N) concern as promotion loop in recomputeTopNGroups - we traverse
+// rankedTracks_ to find position n for each group. Same two-phase optimization applies.
 void PropertyRanking::demoteTrackAtRank(uint64_t n, TopNGroup& group) {
   uint64_t count = 0;
   for (auto& [key, rankedEntry] : rankedTracks_) {
