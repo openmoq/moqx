@@ -1430,7 +1430,11 @@ void MoqxRelay::onTrackEvicted(
   }
   auto& forwarder = subIt->second.forwarder;
   auto sub = forwarder->getSubscriber(session.get());
-  if (!sub || sub->isPinned()) {
+  if (!sub) {
+    XLOG(DBG4) << "onTrackEvicted: subscriber not found, already removed";
+    return;
+  }
+  if (sub->isPinned()) {
     XLOG(DBG4) << "onTrackEvicted: pinned subscriber, skipping";
     return;
   }
