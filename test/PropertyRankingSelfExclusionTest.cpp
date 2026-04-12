@@ -37,7 +37,13 @@ protected:
     MoQSession* session;
   };
 
+  struct DeselectedRecord {
+    FullTrackName ftn;
+    MoQSession* session;
+  };
+
   std::vector<SelectRecord> selected_;
+  std::vector<DeselectedRecord> deselected_;
   std::vector<EvictRecord> evicted_;
 
   // PropertyRanking only stores shared_ptr<MoQSession> as map keys and passes
@@ -67,6 +73,10 @@ protected:
         /*onSelected=*/
         [this](const FullTrackName& f, std::shared_ptr<MoQSession> s, bool fwd) {
           selected_.push_back({f, s.get(), fwd});
+        },
+        /*onDeselected=*/
+        [this](const FullTrackName& f, std::shared_ptr<MoQSession> s) {
+          deselected_.push_back({f, s.get()});
         },
         /*onEvicted=*/
         [this](const FullTrackName& f, std::shared_ptr<MoQSession> s) {
@@ -309,6 +319,7 @@ TEST_F(PropertyRankingSelfExclusionTest, NonSelfTrackDrops_OutsiderEntersPublish
 
   // t2 drops below outsider.
   selected_.clear();
+  deselected_.clear();
   evicted_.clear();
   r->updateSortValue(t2, 5);
   EXPECT_TRUE(wasSelected(outsider, pub.get()));
@@ -373,6 +384,7 @@ TEST_F(PropertyRankingSelfExclusionTest, RegisterTrack_AfterPublisherSubscribed)
   EXPECT_TRUE(wasSelected(t2, pub.get()));
 
   selected_.clear();
+  deselected_.clear();
   evicted_.clear();
 
   // newcomer enters at rank 1 (above t2, below t1).
@@ -409,6 +421,7 @@ TEST_F(PropertyRankingSelfExclusionTest, RemoveTrack_WithPublisherInGroup) {
   EXPECT_TRUE(wasSelected(t2, pub.get()));
 
   selected_.clear();
+  deselected_.clear();
   evicted_.clear();
 
   r->removeTrack(t2);
@@ -465,6 +478,7 @@ TEST_F(PropertyRankingSelfExclusionTest, TwoPublisherSessions_IndependentSelfExc
   // s1 drops out of non-self top-3 for pub2; t3 enters.
   // pub1 is unaffected (s1 is its self-track — its waterline doesn't change).
   selected_.clear();
+  deselected_.clear();
   evicted_.clear();
   r->updateSortValue(s1, 55); // s1: rank 0 → rank 4 (below t3)
 
@@ -501,6 +515,7 @@ TEST_F(PropertyRankingSelfExclusionTest, ViewerBecomesPublisher_ByRegisteringTra
   EXPECT_FALSE(wasSelected(t3, pub.get()));
 
   selected_.clear();
+  deselected_.clear();
   evicted_.clear();
 
   // Now the session registers its own track at rank 1
@@ -544,15 +559,16 @@ TEST_F(PropertyRankingSelfExclusionTest, ViewerBecomesPublisher_ClaimsDeliveredT
   r->removeTrack(t2);
 
   selected_.clear();
+  deselected_.clear();
   evicted_.clear();
 
   // Now the session registers t2 as its own track
   r->registerTrack(t2, 80, pub);
 
   // t2 is now a self-track → evicted. t3 enters as replacement.
-  EXPECT_TRUE(wasEvicted(t2, pub.get()));   // t2 now self-track → evicted
-  EXPECT_TRUE(wasSelected(t3, pub.get()));  // t3 enters publisher's top-2
-  EXPECT_FALSE(wasEvicted(t1, pub.get()));  // t1 stays
+  EXPECT_TRUE(wasEvicted(t2, pub.get()));  // t2 now self-track → evicted
+  EXPECT_TRUE(wasSelected(t3, pub.get())); // t3 enters publisher's top-2
+  EXPECT_FALSE(wasEvicted(t1, pub.get())); // t1 stays
 }
 
 // Bug: non-self track rises above the publisher's waterline, displacing the
@@ -582,6 +598,7 @@ TEST_F(PropertyRankingSelfExclusionTest, NonSelfTrackRises_DisplacesWaterlineTra
   EXPECT_FALSE(wasSelected(outsider, pub.get()));
 
   selected_.clear();
+  deselected_.clear();
   evicted_.clear();
   r->updateSortValue(outsider, 85); // outsider rises above t2
 
