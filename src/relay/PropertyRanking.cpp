@@ -511,6 +511,12 @@ void PropertyRanking::demoteTrackAtRank(uint64_t n, TopNGroup& group) {
   }
 }
 
+// Batch callback rationale: All sessions in a TopNGroup share the same N, so when a
+// track enters their top-N, the relay can handle them together. Benefits:
+// 1. Single upstream subscribe decision covers all sessions wanting this track
+// 2. Relay can batch state updates (e.g., one forwarder lookup, one cache check)
+// 3. Reduces per-session callback overhead when many sessions share the same N
+// An alternative per-session callback exists (onSelected_) for cases needing individual handling.
 void PropertyRanking::notifyTrackSelected(const moxygen::FullTrackName& ftn, TopNGroup& topNGroup) {
   std::vector<std::pair<std::shared_ptr<moxygen::MoQSession>, bool>> batch;
   for (const auto& [session, info] : topNGroup.sessions) {
