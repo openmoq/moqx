@@ -64,8 +64,7 @@ void PropertyRanking::registerTrack(
     auto prevIt = iter;
     --prevIt;
     auto prevIndexIt = trackIndexByName_.find(prevIt->second.ftn);
-    XCHECK(prevIndexIt != trackIndexByName_.end())
-        << "Previous track must exist in index";
+    XCHECK(prevIndexIt != trackIndexByName_.end()) << "Previous track must exist in index";
 
     // Handle sentinel: if previous track has UINT64_MAX (lazy partial cache),
     // fall back to O(rank) distance computation for accurate rank.
@@ -97,7 +96,7 @@ void PropertyRanking::registerTrack(
   // Phase 1: Mark track selected in applicable groups, collect demotion positions.
   // For each group where rank < N, the new track enters top-N and pushes
   // the track at rank N-1 down to rank N (out of top-N).
-  std::vector<std::pair<uint64_t, TopNGroup*>> demotions;  // (position n, group)
+  std::vector<std::pair<uint64_t, TopNGroup*>> demotions; // (position n, group)
 
   for (auto& [n, topNGroup] : topNGroups_) {
     if (rank < n) {
@@ -118,8 +117,9 @@ void PropertyRanking::registerTrack(
     IterationGuard guard(*this);
 
     // Sort by position for single-pass processing
-    std::sort(demotions.begin(), demotions.end(),
-              [](const auto& a, const auto& b) { return a.first < b.first; });
+    std::sort(demotions.begin(), demotions.end(), [](const auto& a, const auto& b) {
+      return a.first < b.first;
+    });
 
     size_t demIdx = 0;
     uint64_t count = 0;
@@ -130,7 +130,7 @@ void PropertyRanking::registerTrack(
         demIdx++;
       }
       if (demIdx >= demotions.size()) {
-        break;  // All demotions processed
+        break; // All demotions processed
       }
       count++;
     }
@@ -167,7 +167,7 @@ void PropertyRanking::updateSortValue(const moxygen::FullTrackName& ftn, uint64_
   }
 
   // --- Step 2: Re-insert at new position in sorted map ---
-  RankKey newKey{value, oldKey.arrivalSeq};  // Preserve arrival sequence for tie-breaking
+  RankKey newKey{value, oldKey.arrivalSeq}; // Preserve arrival sequence for tie-breaking
 
   rebuildRankCacheIfNeeded();
   uint64_t oldRank = entry.cachedRank;
@@ -181,8 +181,7 @@ void PropertyRanking::updateSortValue(const moxygen::FullTrackName& ftn, uint64_
   // --- Step 3: Compute new rank ---
   // O(newRank) for bidirectional iterator. Acceptable because top-ranked tracks
   // (where we care most about performance) have small newRank values.
-  uint64_t newRank = static_cast<uint64_t>(
-      std::distance(rankedTracks_.begin(), newIter));
+  uint64_t newRank = static_cast<uint64_t>(std::distance(rankedTracks_.begin(), newIter));
   entry.cachedRank = newRank;
 
   // --- Step 4: Incrementally update cached ranks for affected tracks ---
@@ -191,9 +190,10 @@ void PropertyRanking::updateSortValue(const moxygen::FullTrackName& ftn, uint64_
   // Special case: if oldRank == UINT64_MAX (sentinel from lazy partial cache),
   // the track was outside the selection threshold. We only need to update
   // tracks up to selectionThreshold_ since tracks beyond don't affect selection.
-  uint64_t effectiveOldRank = (oldRank == UINT64_MAX)
-      ? std::min(static_cast<uint64_t>(rankedTracks_.size()), selectionThreshold_)
-      : oldRank;
+  uint64_t effectiveOldRank =
+      (oldRank == UINT64_MAX)
+          ? std::min(static_cast<uint64_t>(rankedTracks_.size()), selectionThreshold_)
+          : oldRank;
 
   if (newRank < effectiveOldRank) {
     // Track moved UP (higher value → lower rank number).
@@ -202,7 +202,7 @@ void PropertyRanking::updateSortValue(const moxygen::FullTrackName& ftn, uint64_
     //   Before: [0, 1, 2, 3, 4, T, 6, ...]  (T was at rank 5)
     //   After:  [0, 1, T, 2, 3, 4, 6, ...]  (tracks 2,3,4 shift to 3,4,5)
     auto rankedIt = newIter;
-    ++rankedIt;  // Start after the moved track
+    ++rankedIt; // Start after the moved track
     for (uint64_t r = newRank + 1; r <= effectiveOldRank && rankedIt != rankedTracks_.end();
          ++r, ++rankedIt) {
       auto indexIt = trackIndexByName_.find(rankedIt->second.ftn);
@@ -231,14 +231,14 @@ void PropertyRanking::updateSortValue(const moxygen::FullTrackName& ftn, uint64_
 
   // --- Step 5: Fast path - no threshold crossed ---
   if (!crossesThreshold(oldRank, newRank)) {
-    XLOG(DBG5) << "updateSortValue fast path: " << ftn << " value=" << value
-               << " rank " << oldRank << " -> " << newRank << " (no threshold crossed)";
+    XLOG(DBG5) << "updateSortValue fast path: " << ftn << " value=" << value << " rank " << oldRank
+               << " -> " << newRank << " (no threshold crossed)";
     return;
   }
 
   // --- Step 6: Slow path - threshold crossed, update TopNGroups ---
-  XLOG(DBG4) << "updateSortValue slow path: " << ftn << " value=" << value
-             << " rank " << oldRank << " -> " << newRank << " (threshold crossed)";
+  XLOG(DBG4) << "updateSortValue slow path: " << ftn << " value=" << value << " rank " << oldRank
+             << " -> " << newRank << " (threshold crossed)";
   recomputeTopNGroups(ftn, oldRank, newRank);
 }
 
@@ -316,7 +316,7 @@ void PropertyRanking::removeTrack(const moxygen::FullTrackName& ftn) {
         for (auto& [key, rankedEntry] : rankedTracks_) {
           auto stIt = topNGroup.trackStates.find(rankedEntry.ftn);
           if (stIt != topNGroup.trackStates.end() && stIt->second == TrackState::Selected) {
-            continue;  // Already selected, skip
+            continue; // Already selected, skip
           }
           // Found first non-selected track - promote it
           topNGroup.trackStates[rankedEntry.ftn] = TrackState::Selected;
@@ -361,8 +361,7 @@ void PropertyRanking::addSessionToTopNGroup(
     bool forward
 ) {
   XCHECK(!iteratingSessions_) << "Cannot add session while iterating";
-  XLOG(DBG4) << "addSessionToTopNGroup: maxSelected=" << maxSelected
-             << " forward=" << forward;
+  XLOG(DBG4) << "addSessionToTopNGroup: maxSelected=" << maxSelected << " forward=" << forward;
 
   auto& topNGroup = getOrCreateTopNGroup(maxSelected);
   topNGroup.sessions[session] = SessionInfo{.forward = forward};
@@ -393,7 +392,8 @@ void PropertyRanking::updateSessionForward(
 
   auto sessionIt = it->second.sessions.find(session);
   if (sessionIt == it->second.sessions.end()) {
-    XLOG(WARN) << "updateSessionForward: session not found in TopNGroup maxSelected=" << maxSelected;
+    XLOG(WARN) << "updateSessionForward: session not found in TopNGroup maxSelected="
+               << maxSelected;
     return;
   }
 
@@ -610,8 +610,9 @@ void PropertyRanking::recomputeTopNGroups(
   }
 
   // Sort by position for single-pass processing
-  std::sort(boundaryOps.begin(), boundaryOps.end(),
-            [](const auto& a, const auto& b) { return std::get<0>(a) < std::get<0>(b); });
+  std::sort(boundaryOps.begin(), boundaryOps.end(), [](const auto& a, const auto& b) {
+    return std::get<0>(a) < std::get<0>(b);
+  });
 
   size_t opIdx = 0;
   uint64_t count = 0;
@@ -630,7 +631,7 @@ void PropertyRanking::recomputeTopNGroups(
     }
 
     if (opIdx >= boundaryOps.size()) {
-      break;  // All operations processed
+      break; // All operations processed
     }
     count++;
   }
@@ -689,8 +690,8 @@ void PropertyRanking::demoteTrackInGroup(
 ) {
   auto stIt = group.trackStates.find(ftn);
   if (stIt != group.trackStates.end() && stIt->second == TrackState::Selected) {
-    XLOG(DBG4) << "demoteTrackInGroup: demoting " << ftn
-               << " at rank " << rank << " to deselected queue";
+    XLOG(DBG4) << "demoteTrackInGroup: demoting " << ftn << " at rank " << rank
+               << " to deselected queue";
     stIt->second = TrackState::Deselected;
     group.deselectedQueue.push_back(ftn);
     trimDeselectedQueue(group);
@@ -704,8 +705,7 @@ void PropertyRanking::promoteTrackInGroup(
 ) {
   auto stIt = group.trackStates.find(ftn);
   if (stIt == group.trackStates.end() || stIt->second != TrackState::Selected) {
-    XLOG(DBG4) << "promoteTrackInGroup: promoting " << ftn
-               << " at rank " << rank << " into top-N";
+    XLOG(DBG4) << "promoteTrackInGroup: promoting " << ftn << " at rank " << rank << " into top-N";
     group.trackStates[ftn] = TrackState::Selected;
     removeFromDeselectedQueue(group, ftn);
     notifyTrackSelected(ftn, group);

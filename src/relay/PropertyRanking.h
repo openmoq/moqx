@@ -261,16 +261,10 @@ private:
   void removeFromDeselectedQueue(TopNGroup& group, const moxygen::FullTrackName& ftn);
 
   // Helper: demote track at given position in a group (Selected -> Deselected + queue)
-  void demoteTrackInGroup(
-      TopNGroup& group,
-      const moxygen::FullTrackName& ftn,
-      uint64_t rank);
+  void demoteTrackInGroup(TopNGroup& group, const moxygen::FullTrackName& ftn, uint64_t rank);
 
   // Helper: promote track at given position in a group (-> Selected, notify)
-  void promoteTrackInGroup(
-      TopNGroup& group,
-      const moxygen::FullTrackName& ftn,
-      uint64_t rank);
+  void promoteTrackInGroup(TopNGroup& group, const moxygen::FullTrackName& ftn, uint64_t rank);
 
   void invalidateRankCache() { rankCacheValid_ = false; }
 
