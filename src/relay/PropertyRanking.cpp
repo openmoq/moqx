@@ -86,7 +86,11 @@ void PropertyRanking::updateSortValue(const moxygen::FullTrackName& ftn, uint64_
   entry.rankIter = newIter;
   invalidateRankCache();
 
-  // Compute new rank now that the map reflects the new position
+  // Compute new rank now that the map reflects the new position.
+  // NOTE: This is O(numTracks) because getCachedRank triggers a full cache rebuild.
+  // The map insert is O(log numTracks) but the rank cache rebuild touches every track.
+  // TODO: Optimize by either (a) using std::distance for single-track lookup, or
+  // (b) incremental cache update: only adjust ranks between oldRank and newRank by ±1.
   uint64_t newRank = getCachedRank(ftn);
 
   // FAST PATH: value change doesn't cross any threshold
