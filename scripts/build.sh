@@ -59,6 +59,9 @@ Setup options:
                         (--from-source only; mutually exclusive with SHA)
   --profile NAME        Build profile for deps: "default" or "san" (--from-source only)
   --no-fallback         Fail if requested mode unavailable (don't auto-switch)
+  --use-latest          (--from-release) Use snapshot-latest tarball even if it
+                        does not match the submodule SHA. Useful for tracking
+                        moxygen tip without bumping the submodule pin.
   --clean               Remove .scratch and start fresh
 
 Build options:
@@ -192,9 +195,11 @@ cmd_setup() {
   local mode="from-release"
   local profile="default"
   local no_fallback=false
+  local use_latest=false
   local clean=false
   local target_sha=""
   local moxygen_dir=""
+  local tarball_ok
 
   while (( $# > 0 )); do
     case "$1" in
@@ -218,6 +223,7 @@ cmd_setup() {
         shift 2
         ;;
       --no-fallback) no_fallback=true; shift ;;
+      --use-latest)  use_latest=true; shift ;;
       --clean)       clean=true; shift ;;
       -h|--help)     usage ;;
       *)             die "Unknown setup option: $1" ;;
@@ -258,7 +264,14 @@ cmd_setup() {
   if [[ "$mode" == "from-release" ]]; then
     echo ""
     echo "==> Setting up dependencies (from release)..."
-    if bash "$SCRIPT_DIR/setup-deps-tarball.sh"; then
+    if $use_latest; then
+      tarball_ok=true
+      bash "$SCRIPT_DIR/setup-deps-tarball.sh" --use-latest || tarball_ok=false
+    else
+      tarball_ok=true
+      bash "$SCRIPT_DIR/setup-deps-tarball.sh" || tarball_ok=false
+    fi
+    if $tarball_ok; then
       echo "from-release" > "$DEPS_MODE_FILE"
     else
       if $no_fallback; then

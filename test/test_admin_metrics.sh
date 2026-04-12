@@ -56,22 +56,27 @@ HEADERS=$(cat "$HEADERS_FILE")
 RESPONSE=$(cat /tmp/metrics_response.txt)
 rm -f /tmp/metrics_response.txt
 echo "Response (first 20 lines):"
-echo "$RESPONSE" | head -20
+head -20 <<<"$RESPONSE"
+
+# Note on `grep -q <<<"$VAR"` (here-string) instead of `echo "$VAR" | grep -q`:
+# grep -q exits as soon as it finds a match, closing the pipe; the upstream
+# echo then gets SIGPIPE/EPIPE and the pipeline fails under `set -o pipefail`
+# even though grep clearly succeeded. Here-strings have no pipe, no race.
 
 # Validate Content-Type header (Prometheus text exposition format v0.0.4).
-if ! echo "$HEADERS" | grep -qi 'content-type:.*text/plain.*version=0\.0\.4'; then
+if ! grep -qi 'content-type:.*text/plain.*version=0\.0\.4' <<<"$HEADERS"; then
   echo "FAIL: missing or incorrect Content-Type header, expected 'text/plain; version=0.0.4'" >&2
   echo "Headers: $HEADERS" >&2
   exit 1
 fi
 
 # Validate Prometheus format: every metric family must have a # HELP and # TYPE line.
-if ! echo "$RESPONSE" | grep -q '^# HELP '; then
+if ! grep -q '^# HELP ' <<<"$RESPONSE"; then
   echo "FAIL: no '# HELP' lines found in /metrics response" >&2
   exit 1
 fi
 
-if ! echo "$RESPONSE" | grep -q '^# TYPE '; then
+if ! grep -q '^# TYPE ' <<<"$RESPONSE"; then
   echo "FAIL: no '# TYPE' lines found in /metrics response" >&2
   exit 1
 fi
@@ -88,24 +93,24 @@ EXPECTED_METRICS=(
 )
 
 for metric in "${EXPECTED_METRICS[@]}"; do
-  if ! echo "$RESPONSE" | grep -q "$metric"; then
+  if ! grep -q "$metric" <<<"$RESPONSE"; then
     echo "FAIL: expected metric '$metric' not found in /metrics response" >&2
     exit 1
   fi
 done
 
 # Validate histogram structure: bucket, sum, and count lines must be present.
-if ! echo "$RESPONSE" | grep -q '_bucket{le='; then
+if ! grep -q '_bucket{le=' <<<"$RESPONSE"; then
   echo "FAIL: no histogram bucket lines (e.g. '_bucket{le=...}') found" >&2
   exit 1
 fi
 
-if ! echo "$RESPONSE" | grep -q '_sum '; then
+if ! grep -q '_sum ' <<<"$RESPONSE"; then
   echo "FAIL: no histogram _sum lines found" >&2
   exit 1
 fi
 
-if ! echo "$RESPONSE" | grep -q '_count '; then
+if ! grep -q '_count ' <<<"$RESPONSE"; then
   echo "FAIL: no histogram _count lines found" >&2
   exit 1
 fi

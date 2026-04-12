@@ -32,13 +32,14 @@ done
 RESPONSE=$(curl -sf "$ADMIN_URL")
 echo "Response: $RESPONSE"
 
-# Validate expected fields.
-if ! echo "$RESPONSE" | grep -q '"service":"moqx"'; then
+# Validate expected fields. Use here-strings instead of `echo | grep -q` to
+# avoid SIGPIPE flake when grep -q exits before echo finishes writing.
+if ! grep -q '"service":"moqx"' <<<"$RESPONSE"; then
   echo "FAIL: missing \"service\":\"moqx\" in response" >&2
   exit 1
 fi
 
-if ! echo "$RESPONSE" | grep -q '"version":'; then
+if ! grep -q '"version":' <<<"$RESPONSE"; then
   echo "FAIL: missing \"version\" field in response" >&2
   exit 1
 fi
