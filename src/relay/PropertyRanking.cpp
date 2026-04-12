@@ -333,7 +333,16 @@ TopNGroup& PropertyRanking::getOrCreateTopNGroup(uint64_t maxSelected) {
   if (inserted) {
     XLOG(DBG4) << "Created new TopNGroup with maxSelected=" << maxSelected;
     it->second.maxSelected = maxSelected;
+
+    // Capture old threshold before updating
+    uint64_t oldThreshold = selectionThreshold_;
     updateSelectionThreshold();
+
+    // If threshold increased, tracks that had UINT64_MAX sentinel may now need
+    // accurate ranks. Invalidate cache to force rebuild on next access.
+    if (selectionThreshold_ > oldThreshold) {
+      rankCacheValid_ = false;
+    }
 
     uint64_t rank = 0;
     for (auto& [key, entry] : rankedTracks_) {
@@ -640,6 +649,13 @@ void PropertyRanking::updateSelectionThreshold() {
 }
 
 void PropertyRanking::trimDeselectedQueue(TopNGroup& topNGroup) {
+  if (topNGroup.deselectedQueue.size() <= maxDeselected_) {
+    return;
+  }
+
+  // Guard once for all evictions rather than per-iteration
+  IterationGuard guard(*this);
+
   while (topNGroup.deselectedQueue.size() > maxDeselected_) {
     auto evicted = topNGroup.deselectedQueue.front();
     topNGroup.deselectedQueue.pop_front();
@@ -649,7 +665,6 @@ void PropertyRanking::trimDeselectedQueue(TopNGroup& topNGroup) {
                << " from TopNGroup maxSelected=" << topNGroup.maxSelected
                << " (deselectedQueue exceeded maxDeselected=" << maxDeselected_ << ")";
 
-    IterationGuard guard(*this);
     for (const auto& [session, info] : topNGroup.sessions) {
       if (session && onEvicted_) {
         onEvicted_(evicted, session);
@@ -705,6 +720,7 @@ void PropertyRanking::promoteTrackInGroup(
 // An alternative per-session callback exists (onSelected_) for cases needing individual handling.
 void PropertyRanking::notifyTrackSelected(const moxygen::FullTrackName& ftn, TopNGroup& topNGroup) {
   std::vector<std::pair<std::shared_ptr<moxygen::MoQSession>, bool>> batch;
+  batch.reserve(topNGroup.sessions.size());
   for (const auto& [session, info] : topNGroup.sessions) {
     batch.emplace_back(session, info.forward);
   }
