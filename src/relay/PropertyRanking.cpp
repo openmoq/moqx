@@ -14,14 +14,16 @@ PropertyRanking::PropertyRanking(
     uint64_t propertyType,
     uint64_t maxDeselected,
     std::chrono::milliseconds idleTimeout,
+    std::chrono::milliseconds sweepThrottle,
     GetLastActivityFn getLastActivity,
     BatchSelectCallback onBatchSelected,
     SelectCallback onSelected,
     EvictCallback onEvicted
 )
     : propertyType_(propertyType), maxDeselected_(maxDeselected), idleTimeout_(idleTimeout),
-      getLastActivity_(std::move(getLastActivity)), onBatchSelected_(std::move(onBatchSelected)),
-      onSelected_(std::move(onSelected)), onEvicted_(std::move(onEvicted)) {}
+      sweepThrottle_(sweepThrottle), getLastActivity_(std::move(getLastActivity)),
+      onBatchSelected_(std::move(onBatchSelected)), onSelected_(std::move(onSelected)),
+      onEvicted_(std::move(onEvicted)) {}
 
 void PropertyRanking::registerTrack(
     const moxygen::FullTrackName& ftn,
@@ -98,13 +100,15 @@ void PropertyRanking::updateSortValue(const moxygen::FullTrackName& ftn, uint64_
     return;
   }
 
-  // Opportunistic idle sweep: a value change is worth a quick idle check
-  sweepIdle();
-
   // SLOW PATH: value crossed a threshold, recompute TopNGroups
   XLOG(DBG4) << "updateSortValue slow path: " << ftn << " value=" << value << " rank " << oldRank
              << " -> " << newRank << " (threshold crossed)";
   recomputeTopNGroups(ftn, oldRank, newRank);
+
+  // Opportunistic idle sweep after recompute: evict any selected tracks still
+  // idle after rank-based displacement. Running after (not before) avoids
+  // double-selecting a track that recomputeTopNGroups already promoted.
+  sweepIdle();
 }
 
 void PropertyRanking::removeTrack(const moxygen::FullTrackName& ftn) {
@@ -465,6 +469,12 @@ void PropertyRanking::sweepIdle() {
   }
 
   auto now = std::chrono::steady_clock::now();
+
+  // Global throttle: skip if called too recently.
+  if (sweepThrottle_.count() > 0 && lastSweepTime_ && now - *lastSweepTime_ < sweepThrottle_) {
+    return;
+  }
+  lastSweepTime_ = now;
 
   for (auto& [n, topNGroup] : topNGroups_) {
     // Snapshot selected FTNs: deselecting mutates trackStates

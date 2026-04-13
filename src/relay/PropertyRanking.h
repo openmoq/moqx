@@ -147,17 +147,20 @@ public:
    *        TODO: Add onDeselected callback (when track enters deselected queue) and
    *        onReselected callback (when track is promoted from queue back to selected)
    *        to enable the relay to manage forwarding state for maxDeselected>0.
-   * @param idleTimeout     How long a selected track may be silent before
-   *                        being deselected. Zero disables idle eviction.
-   * @param getLastActivity Relay callback to read per-track activity time
-   * @param onBatchSelected Batch callback for viewer notifications (required)
-   * @param onSelected      Individual callback for per-session notifications
-   * @param onEvicted       Callback when track is evicted from deselected queue
+   * @param idleTimeout        How long a selected track may be silent before
+   *                           being deselected. Zero disables idle eviction.
+   * @param sweepThrottle      Minimum interval between sweepIdle runs. Zero
+   *                           disables the global throttle (useful in tests).
+   * @param getLastActivity    Relay callback to read per-track activity time
+   * @param onBatchSelected    Batch callback for viewer notifications (required)
+   * @param onSelected         Individual callback for per-session notifications
+   * @param onEvicted          Callback when track is evicted from deselected queue
    */
   PropertyRanking(
       uint64_t propertyType,
       uint64_t maxDeselected,
       std::chrono::milliseconds idleTimeout,
+      std::chrono::milliseconds sweepThrottle,
       GetLastActivityFn getLastActivity,
       BatchSelectCallback onBatchSelected,
       SelectCallback onSelected,
@@ -300,6 +303,8 @@ private:
   uint64_t propertyType_;
   uint64_t maxDeselected_;
   std::chrono::milliseconds idleTimeout_;
+  std::chrono::milliseconds sweepThrottle_;
+  std::optional<std::chrono::steady_clock::time_point> lastSweepTime_;
   GetLastActivityFn getLastActivity_;
   BatchSelectCallback onBatchSelected_;
   SelectCallback onSelected_;

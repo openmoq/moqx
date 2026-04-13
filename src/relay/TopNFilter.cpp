@@ -65,7 +65,7 @@ void TopNFilter::checkProperties(const moxygen::Extensions& extensions) {
 
     uint64_t value = *valueOpt;
     if (!entry.lastSeenValue || *entry.lastSeenValue != value) {
-      // Value changed: fire onValueChanged (not onActivity)
+      // Value changed: fire onValueChanged
       XLOG(DBG4) << "[TopNFilter] Property changed on " << ftn_ << ": propertyType=0x" << std::hex
                  << propertyType << std::dec << " oldValue=" << entry.lastSeenValue.value_or(0)
                  << " newValue=" << value;
@@ -73,8 +73,11 @@ void TopNFilter::checkProperties(const moxygen::Extensions& extensions) {
       if (entry.observer.onValueChanged) {
         entry.observer.onValueChanged(value);
       }
-    } else if (activityThrottleAllows && entry.observer.onActivity) {
-      // Property seen but value unchanged: fire onActivity (throttled)
+    }
+    // Fire onActivity regardless of whether value changed (throttled).
+    // Two-stop throttle: TopNFilter throttles per-track; PropertyRanking::sweepIdle
+    // throttles globally so repeated onActivity calls from many tracks are cheap.
+    if (activityThrottleAllows && entry.observer.onActivity) {
       entry.observer.onActivity();
       firedAnyActivity = true;
     }
