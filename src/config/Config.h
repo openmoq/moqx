@@ -54,7 +54,7 @@ struct QuicConfig {
   uint32_t minAckDelayUs{1000};       // min ACK delay (microseconds)
   uint8_t defaultStreamPriority{2};   // default stream priority
   uint8_t defaultDatagramPriority{1}; // default datagram priority
-  std::string ccAlgo{"copa"};          // congestion control algorithm name
+  std::string ccAlgo{"bbr"};          // congestion control algorithm name
 };
 
 struct ListenerConfig {
