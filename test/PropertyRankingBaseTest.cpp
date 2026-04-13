@@ -1263,7 +1263,7 @@ TEST_F(PropertyRankingBaseTest, EdgeCase_UpdateToExactlyPreviousValue) {
 // sweepIdle tests
 // ---------------------------------------------------------------------------
 
-TEST(PropertyRankingSweepIdle, IdleTrackEvictedAndReplacementPromoted) {
+TEST_F(PropertyRankingBaseTest, SweepIdle_IdleTrackEvictedAndReplacementPromoted) {
   // Setup: 3 tracks, N=2 group, idleTimeout=100ms
   RankingHarness h(5, std::chrono::milliseconds(100));
   auto sub = makeSession();
@@ -1295,7 +1295,7 @@ TEST(PropertyRankingSweepIdle, IdleTrackEvictedAndReplacementPromoted) {
   EXPECT_EQ(group->trackStates.at(ftn("c")), TrackState::Selected);
 }
 
-TEST(PropertyRankingSweepIdle, TrackThatNeverPublishedIsTreatedAsIdle) {
+TEST_F(PropertyRankingBaseTest, SweepIdle_TrackThatNeverPublishedIsTreatedAsIdle) {
   // A track with epoch timestamp (never published) should be evicted
   RankingHarness h(5, std::chrono::milliseconds(100));
   auto sub = makeSession();
@@ -1324,7 +1324,7 @@ TEST(PropertyRankingSweepIdle, TrackThatNeverPublishedIsTreatedAsIdle) {
   EXPECT_EQ(group->trackStates.at(ftn("c")), TrackState::Selected);
 }
 
-TEST(PropertyRankingSweepIdle, NoEvictionWhenIdleTimeoutIsZero) {
+TEST_F(PropertyRankingBaseTest, SweepIdle_NoEvictionWhenIdleTimeoutIsZero) {
   // idleTimeout=0 disables idle eviction
   RankingHarness h(5, std::chrono::milliseconds(0));
   auto sub = makeSession();
@@ -1347,7 +1347,7 @@ TEST(PropertyRankingSweepIdle, NoEvictionWhenIdleTimeoutIsZero) {
   EXPECT_EQ(h.selectCount(ftn("b")), 0);
 }
 
-TEST(PropertyRankingSweepIdle, ActiveTracksNotEvicted) {
+TEST_F(PropertyRankingBaseTest, SweepIdle_ActiveTracksNotEvicted) {
   RankingHarness h(5, std::chrono::milliseconds(100));
   auto sub = makeSession();
 
