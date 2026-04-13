@@ -682,4 +682,129 @@ TEST_F(PropertyRankingBaseTest, ThresholdIncrease_MultipleGroupsAddedSequentiall
   EXPECT_EQ(h.selectCount(ftn("c"), sub3.get()), 0); // was already in top-3
 }
 
+// ---------------------------------------------------------------------------
+// Sentinel cachedRank fix: promotion from beyond threshold
+// ---------------------------------------------------------------------------
+// These tests validate that tracks promoted from beyond the selection threshold
+// (with cachedRank = UINT64_MAX sentinel) get their cachedRank fixed correctly.
+// Bug scenario: Track at rank >= selectionThreshold has sentinel cachedRank.
+// If promoted without fixing cachedRank, subsequent updateSortValue uses stale
+// UINT64_MAX causing incorrect wasInTopN computation and spurious notifications.
+
+TEST_F(PropertyRankingBaseTest, RemoveTrackFallback_FixesSentinelCachedRank) {
+  // Scenario from Alan's bug report:
+  // N=3, 4 tracks registered (track at rank 3 has sentinel cachedRank).
+  // Remove track at rank 2 -> fallback scan promotes track from rank 3.
+  // Track must have correct cachedRank=2 (new position) for updateSortValue.
+  RankingHarness h;
+  auto sub = makeSession();
+  h.ranking().addSessionToTopNGroup(3, sub, true);
+
+  // With N=3 and maxDeselected=5 (default), selectionThreshold = 3+5 = 8.
+  // All 4 tracks get accurate cachedRank (0,1,2,3 < 8).
+  // To trigger sentinel, we need tracks at rank >= threshold.
+  // Use maxDeselected=0 to set threshold = N = 3.
+  RankingHarness h2(/*maxDeselected=*/0);
+  auto sub2 = makeSession();
+  h2.ranking().addSessionToTopNGroup(3, sub2, true);
+
+  h2.ranking().registerTrack(ftn("a"), 100, {}); // rank 0
+  h2.ranking().registerTrack(ftn("b"), 80, {});  // rank 1
+  h2.ranking().registerTrack(ftn("c"), 60, {});  // rank 2
+  h2.ranking().registerTrack(ftn("d"), 40, {});  // rank 3 - has sentinel cachedRank
+
+  // Verify d was selected initially (part of top-3... wait, N=3 means ranks 0,1,2)
+  // Actually ranks 0,1,2 are in top-3, so d at rank 3 is NOT selected.
+  h2.clearEvents();
+
+  // Remove c (rank 2, selected) -> fallback scan promotes d (rank 3 -> rank 2)
+  h2.ranking().removeTrack(ftn("c"));
+  EXPECT_EQ(h2.selectCount(ftn("d"), sub2.get()), 1); // d promoted
+
+  // Critical: subsequent updateSortValue on d should NOT cause spurious notification.
+  // If cachedRank wasn't fixed, d would have UINT64_MAX and wasInTopN would be false,
+  // causing duplicate selection notification.
+  h2.clearEvents();
+
+  // Move d within top-3 (from rank 2 to rank 0)
+  h2.ranking().updateSortValue(ftn("d"), 110);
+  // d was already selected (rank 2), now rank 0 - still selected, no new notification
+  EXPECT_EQ(h2.selectCount(ftn("d"), sub2.get()), 0);
+}
+
+TEST_F(PropertyRankingBaseTest, PromoteTrackInGroup_FixesSentinelCachedRank) {
+  // Test that promoteTrackInGroup (via recomputeTopNGroups slow path) also
+  // fixes sentinel cachedRank when promoting a track from beyond threshold.
+  //
+  // Scenario: N=2, 4 tracks. Track at rank 3 has sentinel.
+  // Track at rank 0 falls to rank 3 -> track at rank 2 (position N-1=1 after shift)
+  // gets promoted. But we want to test rank 3 promotion.
+  //
+  // Better scenario: N=3, threshold=3 (maxDeselected=0), 5 tracks.
+  // Track at rank 4 has sentinel. Track at rank 0 falls out -> promotes rank 3.
+  RankingHarness h(/*maxDeselected=*/0);
+  auto sub = makeSession();
+  h.ranking().addSessionToTopNGroup(3, sub, true); // threshold = 3
+
+  h.ranking().registerTrack(ftn("a"), 100, {}); // rank 0 - selected
+  h.ranking().registerTrack(ftn("b"), 80, {});  // rank 1 - selected
+  h.ranking().registerTrack(ftn("c"), 60, {});  // rank 2 - selected
+  h.ranking().registerTrack(ftn("d"), 40, {});  // rank 3 - sentinel cachedRank
+  h.ranking().registerTrack(ftn("e"), 20, {});  // rank 4 - sentinel cachedRank
+  h.clearEvents();
+
+  // Drop "a" from rank 0 to rank 4 (value=10)
+  // New order: b=80(0), c=60(1), d=40(2), e=20(3), a=10(4)
+  // Promotion at position N-1=2: d gets promoted
+  h.ranking().updateSortValue(ftn("a"), 10);
+
+  // d should be selected (promoted into top-3)
+  EXPECT_GE(h.selectCount(ftn("d"), sub.get()), 1);
+  h.clearEvents();
+
+  // Now update d - should NOT cause spurious notification
+  // Move d within top-3 (from rank 2 to rank 0)
+  h.ranking().updateSortValue(ftn("d"), 90);
+  // d was already selected at rank 2, now rank 0 - no new notification
+  EXPECT_EQ(h.selectCount(ftn("d"), sub.get()), 0);
+}
+
+TEST_F(PropertyRankingBaseTest, SentinelFix_SubsequentUpdateSortValueCorrect) {
+  // Comprehensive test: verify that after sentinel fix, the promoted track's
+  // subsequent movements are handled correctly.
+  RankingHarness h(/*maxDeselected=*/0);
+  auto sub2 = makeSession();
+  auto sub4 = makeSession();
+  h.ranking().addSessionToTopNGroup(2, sub2, true); // N=2
+  h.ranking().addSessionToTopNGroup(4, sub4, true); // N=4, threshold=4
+
+  h.ranking().registerTrack(ftn("a"), 100, {}); // rank 0
+  h.ranking().registerTrack(ftn("b"), 80, {});  // rank 1
+  h.ranking().registerTrack(ftn("c"), 60, {});  // rank 2
+  h.ranking().registerTrack(ftn("d"), 40, {});  // rank 3
+  h.ranking().registerTrack(ftn("e"), 20, {});  // rank 4 - sentinel
+
+  // Initial state: sub2 gets a,b; sub4 gets a,b,c,d
+  h.clearEvents();
+
+  // Remove "c" (rank 2, selected for sub4 only)
+  // After removal: a=100(0), b=80(1), d=40(2), e=20(3)
+  // For sub4 (N=4): d shifts to rank 2 (still selected), e shifts to rank 3 (promoted)
+  // e had sentinel cachedRank, now should have cachedRank=3
+  h.ranking().removeTrack(ftn("c"));
+
+  // e should be promoted into sub4's top-4
+  EXPECT_GE(h.selectCount(ftn("e"), sub4.get()), 1);
+  h.clearEvents();
+
+  // Now move e from rank 3 to rank 1 (entering sub2's top-2)
+  h.ranking().updateSortValue(ftn("e"), 90);
+  // Order: a=100(0), e=90(1), b=80(2), d=40(3)
+
+  // e enters sub2 (was rank 3, now rank 1)
+  EXPECT_GE(h.selectCount(ftn("e"), sub2.get()), 1);
+  // e should NOT get duplicate notification for sub4 (was already selected at rank 3)
+  EXPECT_EQ(h.selectCount(ftn("e"), sub4.get()), 0);
+}
+
 } // namespace

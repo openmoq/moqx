@@ -313,13 +313,24 @@ void PropertyRanking::removeTrack(const moxygen::FullTrackName& ftn) {
       } else {
         // Fallback: deselected queue empty (e.g., first removal after registration
         // when no tracks have been demoted yet). Scan for first non-selected track.
+        uint64_t rank = 0;
         for (auto& [key, rankedEntry] : rankedTracks_) {
           auto stIt = topNGroup.trackStates.find(rankedEntry.ftn);
           if (stIt != topNGroup.trackStates.end() && stIt->second == TrackState::Selected) {
+            rank++;
             continue; // Already selected, skip
           }
           // Found first non-selected track - promote it
           topNGroup.trackStates[rankedEntry.ftn] = TrackState::Selected;
+
+          // Fix cachedRank if it was a sentinel (track was beyond threshold before removal).
+          // This is critical: a Selected track must have accurate cachedRank for
+          // subsequent updateSortValue calls to compute correct wasInTopN.
+          auto indexIt = trackIndexByName_.find(rankedEntry.ftn);
+          if (indexIt != trackIndexByName_.end() && indexIt->second.cachedRank == UINT64_MAX) {
+            indexIt->second.cachedRank = rank;
+          }
+
           notifyTrackSelected(rankedEntry.ftn, topNGroup);
           break;
         }
@@ -708,6 +719,14 @@ void PropertyRanking::promoteTrackInGroup(
     XLOG(DBG4) << "promoteTrackInGroup: promoting " << ftn << " at rank " << rank << " into top-N";
     group.trackStates[ftn] = TrackState::Selected;
     removeFromDeselectedQueue(group, ftn);
+
+    // Fix cachedRank if it was a sentinel (track was beyond threshold before promotion).
+    // This ensures a Selected track has accurate cachedRank for subsequent updateSortValue.
+    auto indexIt = trackIndexByName_.find(ftn);
+    if (indexIt != trackIndexByName_.end() && indexIt->second.cachedRank == UINT64_MAX) {
+      indexIt->second.cachedRank = rank;
+    }
+
     notifyTrackSelected(ftn, group);
   }
 }
