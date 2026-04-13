@@ -535,6 +535,9 @@ private:
         co_return false;
       }
 
+      // Increase max request ID to support many concurrent subscriptions
+      session->setMaxConcurrentRequests(10000);
+
       // Subscribe with TRACK_FILTER
       SubscribeNamespace subNs;
       subNs.requestID = RequestID{static_cast<uint64_t>(id * 2)};
@@ -615,6 +618,9 @@ private:
       if (!session) {
         co_return false;
       }
+
+      // Increase max request ID to support many concurrent subscriptions
+      session->setMaxConcurrentRequests(10000);
 
       // Subscribe with TRACK_FILTER only (no publishing)
       SubscribeNamespace subNs;
