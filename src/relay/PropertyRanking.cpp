@@ -66,10 +66,10 @@ void PropertyRanking::registerTrack(
     auto prevIndexIt = trackIndexByName_.find(prevIt->second.ftn);
     XCHECK(prevIndexIt != trackIndexByName_.end()) << "Previous track must exist in index";
 
-    // Handle sentinel: if previous track has UINT64_MAX (lazy partial cache),
-    // fall back to O(rank) distance computation for accurate rank.
+    // If previous track has sentinel (beyond threshold), new track is too.
+    // No need to compute exact rank for tracks outside selection region.
     if (prevIndexIt->second.cachedRank == UINT64_MAX) {
-      rank = static_cast<uint64_t>(std::distance(rankedTracks_.begin(), iter));
+      rank = UINT64_MAX;
     } else {
       rank = prevIndexIt->second.cachedRank + 1;
     }
@@ -179,50 +179,30 @@ void PropertyRanking::updateSortValue(const moxygen::FullTrackName& ftn, uint64_
   entry.rankIter = newIter;
 
   // --- Step 3: Compute new rank ---
-  // O(newRank) for bidirectional iterator. Acceptable because top-ranked tracks
-  // (where we care most about performance) have small newRank values.
+  // Must use distance() for accurate rank since cached ranks of other tracks
+  // may be stale until Step 4 updates them. Could optimize for tracks beyond
+  // threshold by checking if previous element has sentinel, but that's rare.
   uint64_t newRank = static_cast<uint64_t>(std::distance(rankedTracks_.begin(), newIter));
   entry.cachedRank = newRank;
 
   // --- Step 4: Incrementally update cached ranks for affected tracks ---
   // Only tracks between old and new positions are affected: O(|oldRank - newRank|).
-  //
-  // Special case: if oldRank == UINT64_MAX (sentinel from lazy partial cache),
-  // the track was outside the selection threshold. We only need to update
-  // tracks up to selectionThreshold_ since tracks beyond don't affect selection.
-  uint64_t effectiveOldRank =
-      (oldRank == UINT64_MAX)
-          ? std::min(static_cast<uint64_t>(rankedTracks_.size()), selectionThreshold_)
-          : oldRank;
+  // Skip entirely if either rank is sentinel (beyond threshold).
+  if (oldRank != UINT64_MAX && newRank != UINT64_MAX && oldRank != newRank) {
+    uint64_t minRank = std::min(oldRank, newRank);
+    uint64_t maxRank = std::max(oldRank, newRank);
 
-  if (newRank < effectiveOldRank) {
-    // Track moved UP (higher value → lower rank number).
-    // Tracks in range (newRank, effectiveOldRank] shift DOWN by 1 (their rank increases).
-    // Example: track moves from rank 5 to rank 2
-    //   Before: [0, 1, 2, 3, 4, T, 6, ...]  (T was at rank 5)
-    //   After:  [0, 1, T, 2, 3, 4, 6, ...]  (tracks 2,3,4 shift to 3,4,5)
-    auto rankedIt = newIter;
-    ++rankedIt; // Start after the moved track
-    for (uint64_t r = newRank + 1; r <= effectiveOldRank && rankedIt != rankedTracks_.end();
-         ++r, ++rankedIt) {
-      auto indexIt = trackIndexByName_.find(rankedIt->second.ftn);
-      if (indexIt != trackIndexByName_.end()) {
-        indexIt->second.cachedRank = r;
+    // Iterate forward through affected range, assigning sequential ranks.
+    // After the move, the map has correct order - we just update cachedRank values.
+    auto rankedIt = rankedTracks_.begin();
+    std::advance(rankedIt, minRank);
+
+    for (uint64_t r = minRank; r <= maxRank && rankedIt != rankedTracks_.end(); ++rankedIt, ++r) {
+      if (rankedIt == newIter) {
+        continue; // Skip the track we just moved (already has correct cachedRank)
       }
-    }
-  } else if (newRank > effectiveOldRank && oldRank != UINT64_MAX) {
-    // Track moved DOWN (lower value → higher rank number).
-    // Tracks in range [oldRank, newRank) shift UP by 1 (their rank decreases).
-    // Note: Skip if oldRank was sentinel - no accurate prior position to update from.
-    // Example: track moves from rank 2 to rank 5
-    //   Before: [0, 1, T, 3, 4, 5, 6, ...]  (T was at rank 2)
-    //   After:  [0, 1, 2, 3, 4, T, 6, ...]  (tracks 3,4,5 shift to 2,3,4)
-    auto rankedIt = newIter;
-    for (uint64_t r = newRank; r > oldRank && rankedIt != rankedTracks_.begin();) {
-      --rankedIt;
-      --r;
       auto indexIt = trackIndexByName_.find(rankedIt->second.ftn);
-      if (indexIt != trackIndexByName_.end()) {
+      if (indexIt != trackIndexByName_.end() && indexIt->second.cachedRank != UINT64_MAX) {
         indexIt->second.cachedRank = r;
       }
     }

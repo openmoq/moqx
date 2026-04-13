@@ -807,4 +807,438 @@ TEST_F(PropertyRankingBaseTest, SentinelFix_SubsequentUpdateSortValueCorrect) {
   EXPECT_EQ(h.selectCount(ftn("e"), sub4.get()), 0);
 }
 
+// ---------------------------------------------------------------------------
+// Algorithm correctness: Step 4 cachedRank update verification
+// ---------------------------------------------------------------------------
+// These tests verify that cachedRank for OTHER tracks in the affected range
+// are updated correctly after updateSortValue Step 4.
+
+TEST_F(PropertyRankingBaseTest, UpdateSortValue_AffectedRanksCachedCorrectly) {
+  // Scenario: track "a" moves from rank 0 to rank 3.
+  // Tracks b, c, d should all shift up by 1, and their cachedRanks must be correct.
+  // Then update track "b" (which was in the affected range) - should work correctly.
+  RankingHarness h;
+  auto sub = makeSession();
+  h.ranking().addSessionToTopNGroup(2, sub, true);
+
+  // Initial: a=100(0), b=80(1), c=60(2), d=40(3), e=20(4)
+  h.ranking().registerTrack(ftn("a"), 100, {});
+  h.ranking().registerTrack(ftn("b"), 80, {});
+  h.ranking().registerTrack(ftn("c"), 60, {});
+  h.ranking().registerTrack(ftn("d"), 40, {});
+  h.ranking().registerTrack(ftn("e"), 20, {});
+  h.clearEvents();
+
+  // Drop "a" from rank 0 to rank 3 (value=35)
+  // New order: b=80(0), c=60(1), d=40(2), a=35(3), e=20(4)
+  h.ranking().updateSortValue(ftn("a"), 35);
+
+  // b should be selected (it's now rank 0, was rank 1)
+  // c enters top-2 (was rank 2, now rank 1)
+  EXPECT_GE(h.selectCount(ftn("c"), sub.get()), 1);
+  h.clearEvents();
+
+  // Now update "b" (was in affected range 0-3) to verify its cachedRank is correct
+  // Move b from rank 0 to rank 2 (value=45)
+  // New order: c=60(0), d=40(1), b=45(2)... wait, 45 < 60 and 45 > 40, so:
+  // c=60(0), b=45(1), d=40(2), a=35(3), e=20(4)
+  h.ranking().updateSortValue(ftn("b"), 45);
+
+  // b stays in top-2 (rank 0 -> rank 1), no new notification needed
+  // If b's cachedRank was wrong (e.g., still 1 from before), this would cause issues
+  EXPECT_EQ(h.selectCount(ftn("b"), sub.get()), 0);
+
+  // d should NOT be selected (it's at rank 2, outside top-2)
+  EXPECT_EQ(h.selectCount(ftn("d"), sub.get()), 0);
+}
+
+TEST_F(PropertyRankingBaseTest, UpdateSortValue_SequentialMovesOnSameTrack) {
+  // Verify cachedRank stays correct across multiple sequential updateSortValue calls
+  // on the same track.
+  RankingHarness h;
+  auto sub = makeSession();
+  h.ranking().addSessionToTopNGroup(2, sub, true);
+
+  h.ranking().registerTrack(ftn("a"), 100, {});
+  h.ranking().registerTrack(ftn("b"), 80, {});
+  h.ranking().registerTrack(ftn("c"), 60, {});
+  h.ranking().registerTrack(ftn("d"), 40, {});
+  h.clearEvents();
+
+  // Move "d" up: 40 -> 90 (rank 3 -> rank 1, enters top-2)
+  h.ranking().updateSortValue(ftn("d"), 90);
+  EXPECT_EQ(h.selectCount(ftn("d"), sub.get()), 1);
+  h.clearEvents();
+
+  // Move "d" down: 90 -> 50 (rank 1 -> rank 3, exits top-2)
+  // Order: a=100(0), b=80(1), c=60(2), d=50(3)
+  h.ranking().updateSortValue(ftn("d"), 50);
+  // d exits top-2, no selection notification (deselection not tested here)
+  EXPECT_EQ(h.selectCount(ftn("d"), sub.get()), 0);
+  h.clearEvents();
+
+  // Move "d" back up: 50 -> 85 (rank 3 -> rank 1, enters top-2 again)
+  h.ranking().updateSortValue(ftn("d"), 85);
+  EXPECT_EQ(h.selectCount(ftn("d"), sub.get()), 1);
+  h.clearEvents();
+
+  // Move "d" within top-2: 85 -> 110 (rank 1 -> rank 0)
+  // If cachedRank is wrong, this could cause spurious notification
+  h.ranking().updateSortValue(ftn("d"), 110);
+  // d was already selected, stays selected - no new notification
+  EXPECT_EQ(h.selectCount(ftn("d"), sub.get()), 0);
+}
+
+TEST_F(PropertyRankingBaseTest, UpdateSortValue_ExactBoundaryPromotion) {
+  // Track moves from rank N to rank N-1 (exactly crosses into top-N)
+  RankingHarness h;
+  auto sub = makeSession();
+  h.ranking().addSessionToTopNGroup(3, sub, true);
+
+  h.ranking().registerTrack(ftn("a"), 100, {}); // rank 0
+  h.ranking().registerTrack(ftn("b"), 80, {});  // rank 1
+  h.ranking().registerTrack(ftn("c"), 60, {});  // rank 2 - last in top-3
+  h.ranking().registerTrack(ftn("d"), 40, {});  // rank 3 - first outside top-3
+  h.clearEvents();
+
+  // Move "d" from rank 3 to rank 2 (exactly N-1), entering top-3
+  // d=65 > c=60, so order: a=100(0), b=80(1), d=65(2), c=60(3)
+  h.ranking().updateSortValue(ftn("d"), 65);
+
+  // d should be selected (entered top-3)
+  EXPECT_EQ(h.selectCount(ftn("d"), sub.get()), 1);
+  // c should NOT get duplicate notification (it was demoted, not selected)
+  EXPECT_EQ(h.selectCount(ftn("c"), sub.get()), 0);
+}
+
+TEST_F(PropertyRankingBaseTest, UpdateSortValue_ExactBoundaryDemotion) {
+  // Track moves from rank N-1 to rank N (exactly falls out of top-N)
+  RankingHarness h;
+  auto sub = makeSession();
+  h.ranking().addSessionToTopNGroup(3, sub, true);
+
+  h.ranking().registerTrack(ftn("a"), 100, {}); // rank 0
+  h.ranking().registerTrack(ftn("b"), 80, {});  // rank 1
+  h.ranking().registerTrack(ftn("c"), 60, {});  // rank 2 - last in top-3
+  h.ranking().registerTrack(ftn("d"), 40, {});  // rank 3 - first outside top-3
+  h.clearEvents();
+
+  // Move "c" from rank 2 to rank 3 (exactly N), exiting top-3
+  // c=35 < d=40, so order: a=100(0), b=80(1), d=40(2), c=35(3)
+  h.ranking().updateSortValue(ftn("c"), 35);
+
+  // d should be promoted (entered top-3)
+  EXPECT_EQ(h.selectCount(ftn("d"), sub.get()), 1);
+  // c exited, no select notification
+  EXPECT_EQ(h.selectCount(ftn("c"), sub.get()), 0);
+}
+
+TEST_F(PropertyRankingBaseTest, UpdateSortValue_FallOutOfAllGroups) {
+  // Track at rank 0 falls out of ALL groups simultaneously
+  RankingHarness h;
+  auto sub2 = makeSession();
+  auto sub3 = makeSession();
+  h.ranking().addSessionToTopNGroup(2, sub2, true);
+  h.ranking().addSessionToTopNGroup(3, sub3, true);
+
+  h.ranking().registerTrack(ftn("a"), 100, {}); // rank 0 - in both groups
+  h.ranking().registerTrack(ftn("b"), 80, {});  // rank 1 - in both groups
+  h.ranking().registerTrack(ftn("c"), 60, {});  // rank 2 - in sub3 only
+  h.ranking().registerTrack(ftn("d"), 40, {});  // rank 3 - outside both
+  h.ranking().registerTrack(ftn("e"), 20, {});  // rank 4 - outside both
+  h.clearEvents();
+
+  // Drop "a" from rank 0 to rank 4 (value=10)
+  // New order: b=80(0), c=60(1), d=40(2), e=20(3), a=10(4)
+  h.ranking().updateSortValue(ftn("a"), 10);
+
+  // For sub2 (top-2): c promoted (was rank 2, now rank 1)
+  EXPECT_EQ(h.selectCount(ftn("c"), sub2.get()), 1);
+  // For sub3 (top-3): d promoted (was rank 3, now rank 2)
+  EXPECT_EQ(h.selectCount(ftn("d"), sub3.get()), 1);
+  // a should NOT be selected for either group
+  EXPECT_EQ(h.selectCount(ftn("a"), sub2.get()), 0);
+  EXPECT_EQ(h.selectCount(ftn("a"), sub3.get()), 0);
+}
+
+TEST_F(PropertyRankingBaseTest, RegisterTrack_ShiftedTracksHaveCorrectRanks) {
+  // Verify that registerTrack correctly increments cachedRank for shifted tracks,
+  // and subsequent updateSortValue on those tracks works correctly.
+  RankingHarness h;
+  auto sub = makeSession();
+  h.ranking().addSessionToTopNGroup(2, sub, true);
+
+  // Register tracks in order
+  h.ranking().registerTrack(ftn("a"), 100, {}); // rank 0
+  h.ranking().registerTrack(ftn("b"), 80, {});  // rank 1
+  h.ranking().registerTrack(ftn("c"), 60, {});  // rank 2
+  h.clearEvents();
+
+  // Register a track that inserts at rank 1, shifting b and c down
+  h.ranking().registerTrack(ftn("d"), 90, {}); // d=90 goes to rank 1
+  // New order: a=100(0), d=90(1), b=80(2), c=60(3)
+
+  // d should be selected (rank 1, in top-2)
+  EXPECT_EQ(h.selectCount(ftn("d"), sub.get()), 1);
+  h.clearEvents();
+
+  // b was shifted from rank 1 to rank 2. Verify its cachedRank is correct
+  // by doing an updateSortValue that should cross threshold.
+  // Move b from rank 2 to rank 0
+  h.ranking().updateSortValue(ftn("b"), 110);
+  // If b's cachedRank was still 1 (not updated to 2), this would be:
+  // oldRank=1, newRank=0, which doesn't cross threshold -> no notification (BUG)
+  // With correct cachedRank=2: oldRank=2, newRank=0, crosses threshold -> notification (CORRECT)
+  EXPECT_EQ(h.selectCount(ftn("b"), sub.get()), 1);
+}
+
+TEST_F(PropertyRankingBaseTest, RemoveTrack_ShiftedTracksHaveCorrectRanks) {
+  // Verify that removeTrack correctly decrements cachedRank for shifted tracks,
+  // and subsequent updateSortValue on those tracks works correctly.
+  RankingHarness h;
+  auto sub = makeSession();
+  h.ranking().addSessionToTopNGroup(2, sub, true);
+
+  h.ranking().registerTrack(ftn("a"), 100, {}); // rank 0
+  h.ranking().registerTrack(ftn("b"), 80, {});  // rank 1
+  h.ranking().registerTrack(ftn("c"), 60, {});  // rank 2
+  h.ranking().registerTrack(ftn("d"), 40, {});  // rank 3
+  h.clearEvents();
+
+  // Remove "a" at rank 0 - all subsequent tracks shift up
+  // New order: b=80(0), c=60(1), d=40(2)
+  h.ranking().removeTrack(ftn("a"));
+
+  // c should be promoted (rank 2 -> rank 1, enters top-2)
+  EXPECT_EQ(h.selectCount(ftn("c"), sub.get()), 1);
+  h.clearEvents();
+
+  // d was shifted from rank 3 to rank 2. Verify its cachedRank is correct.
+  // Move d from rank 2 to rank 0
+  h.ranking().updateSortValue(ftn("d"), 110);
+  // If d's cachedRank was still 3 (not updated to 2), this would compute
+  // wasInTopN incorrectly -> possibly spurious notification
+  // With correct cachedRank=2: oldRank=2, newRank=0, crosses N=2 threshold
+  EXPECT_EQ(h.selectCount(ftn("d"), sub.get()), 1);
+}
+
+TEST_F(PropertyRankingBaseTest, PromotionFromDeselectedQueue_CorrectCachedRank) {
+  // Verify that when a track is promoted from the deselected queue,
+  // its cachedRank (which may be stale) doesn't cause issues.
+  RankingHarness h;
+  auto sub = makeSession();
+  h.ranking().addSessionToTopNGroup(2, sub, true);
+
+  h.ranking().registerTrack(ftn("a"), 100, {}); // rank 0, selected
+  h.ranking().registerTrack(ftn("b"), 80, {});  // rank 1, selected
+  h.ranking().registerTrack(ftn("c"), 60, {});  // rank 2
+  h.clearEvents();
+
+  // "d" registers at rank 0, pushing a to rank 1, b to rank 2 (enters deselected queue)
+  h.ranking().registerTrack(ftn("d"), 110, {});
+  // Order: d=110(0), a=100(1), b=80(2), c=60(3)
+  h.clearEvents();
+
+  // Remove "d" - b should be promoted from deselected queue
+  h.ranking().removeTrack(ftn("d"));
+  // Order: a=100(0), b=80(1), c=60(2)
+  EXPECT_EQ(h.selectCount(ftn("b"), sub.get()), 1);
+  h.clearEvents();
+
+  // Now update b - should NOT cause spurious notification
+  // Move b within top-2 (rank 1 -> rank 0)
+  h.ranking().updateSortValue(ftn("b"), 105);
+  // b was already selected, stays selected
+  EXPECT_EQ(h.selectCount(ftn("b"), sub.get()), 0);
+}
+
+// ---------------------------------------------------------------------------
+// Edge cases: Empty ranking, single track, tiebreaker scenarios
+// ---------------------------------------------------------------------------
+
+TEST_F(PropertyRankingBaseTest, EdgeCase_EmptyRanking_NoErrors) {
+  // Operations on empty ranking should not crash
+  RankingHarness h;
+  auto sub = makeSession();
+  h.ranking().addSessionToTopNGroup(3, sub, true);
+
+  // No tracks registered - verify no events and no crashes
+  EXPECT_EQ(h.selected_.size(), 0u);
+
+  // Update non-existent track should silently fail
+  h.ranking().updateSortValue(ftn("nonexistent"), 100);
+  EXPECT_EQ(h.selected_.size(), 0u);
+
+  // Remove non-existent track should silently fail
+  h.ranking().removeTrack(ftn("nonexistent"));
+  EXPECT_EQ(h.selected_.size(), 0u);
+}
+
+TEST_F(PropertyRankingBaseTest, EdgeCase_SingleTrack) {
+  // Single track operations
+  RankingHarness h;
+  auto sub = makeSession();
+  h.ranking().addSessionToTopNGroup(1, sub, true);
+
+  h.ranking().registerTrack(ftn("a"), 50, {});
+  EXPECT_EQ(h.selectCount(ftn("a"), sub.get()), 1);
+  h.clearEvents();
+
+  // Update single track - stays in top-1
+  h.ranking().updateSortValue(ftn("a"), 100);
+  EXPECT_EQ(h.selected_.size(), 0u); // no change notification
+
+  // Remove single track
+  h.ranking().removeTrack(ftn("a"));
+  // No promotion possible (no other tracks)
+  EXPECT_EQ(h.selected_.size(), 0u);
+}
+
+TEST_F(PropertyRankingBaseTest, EdgeCase_SameValueTiebreaker) {
+  // Tracks with same value use arrival sequence (tiebreaker)
+  RankingHarness h;
+  auto sub = makeSession();
+  h.ranking().addSessionToTopNGroup(2, sub, true);
+
+  // All tracks have same value - should be ordered by arrival
+  h.ranking().registerTrack(ftn("a"), 50, {}); // arrives first, rank 0
+  h.ranking().registerTrack(ftn("b"), 50, {}); // arrives second, rank 1
+  h.ranking().registerTrack(ftn("c"), 50, {}); // arrives third, rank 2
+
+  // a and b should be selected (ranks 0,1)
+  EXPECT_EQ(h.selectCount(ftn("a"), sub.get()), 1);
+  EXPECT_EQ(h.selectCount(ftn("b"), sub.get()), 1);
+  EXPECT_EQ(h.selectCount(ftn("c"), sub.get()), 0);
+  h.clearEvents();
+
+  // Update "c" to same value - should stay at rank 2 (tiebreaker preserved)
+  h.ranking().updateSortValue(ftn("c"), 50);
+  EXPECT_EQ(h.selected_.size(), 0u); // no change
+}
+
+TEST_F(PropertyRankingBaseTest, EdgeCase_RemoveOnlySelectedTrack) {
+  // Remove the only selected track when there are other tracks to promote
+  RankingHarness h;
+  auto sub = makeSession();
+  h.ranking().addSessionToTopNGroup(1, sub, true);
+
+  h.ranking().registerTrack(ftn("a"), 100, {}); // selected
+  h.ranking().registerTrack(ftn("b"), 80, {});  // rank 1, not selected
+  h.clearEvents();
+
+  h.ranking().removeTrack(ftn("a"));
+  EXPECT_EQ(h.selectCount(ftn("b"), sub.get()), 1); // b promoted
+}
+
+TEST_F(PropertyRankingBaseTest, EdgeCase_MultipleRemoves) {
+  // Sequential removes - verify ranks stay correct throughout
+  RankingHarness h;
+  auto sub = makeSession();
+  h.ranking().addSessionToTopNGroup(2, sub, true);
+
+  h.ranking().registerTrack(ftn("a"), 100, {}); // rank 0
+  h.ranking().registerTrack(ftn("b"), 80, {});  // rank 1
+  h.ranking().registerTrack(ftn("c"), 60, {});  // rank 2
+  h.ranking().registerTrack(ftn("d"), 40, {});  // rank 3
+  h.ranking().registerTrack(ftn("e"), 20, {});  // rank 4
+  h.clearEvents();
+
+  // Remove a: b=80(0), c=60(1), d=40(2), e=20(3)
+  h.ranking().removeTrack(ftn("a"));
+  EXPECT_EQ(h.selectCount(ftn("c"), sub.get()), 1); // c promoted
+  h.clearEvents();
+
+  // Remove b: c=60(0), d=40(1), e=20(2)
+  h.ranking().removeTrack(ftn("b"));
+  EXPECT_EQ(h.selectCount(ftn("d"), sub.get()), 1); // d promoted
+  h.clearEvents();
+
+  // Remove c: d=40(0), e=20(1)
+  h.ranking().removeTrack(ftn("c"));
+  EXPECT_EQ(h.selectCount(ftn("e"), sub.get()), 1); // e promoted
+  h.clearEvents();
+
+  // Verify d is still rank 0 by moving it
+  h.ranking().updateSortValue(ftn("d"), 50);
+  // d stays at rank 0 (50 > 20), no notification
+  EXPECT_EQ(h.selectCount(ftn("d"), sub.get()), 0);
+}
+
+TEST_F(PropertyRankingBaseTest, EdgeCase_RegisterAtAllPositions) {
+  // Register tracks at various positions to verify rank insertion logic
+  RankingHarness h;
+  auto sub = makeSession();
+  h.ranking().addSessionToTopNGroup(3, sub, true);
+
+  // Register in non-sequential order
+  h.ranking().registerTrack(ftn("mid"), 50, {});   // first track, rank 0
+  h.ranking().registerTrack(ftn("high"), 100, {}); // inserts at rank 0, mid shifts to 1
+  h.ranking().registerTrack(ftn("low"), 20, {});   // inserts at rank 2
+  h.ranking().registerTrack(ftn("highest"), 150, {}); // inserts at rank 0, shifts all
+
+  // Order: highest=150(0), high=100(1), mid=50(2), low=20(3)
+  // Top-3: highest, high, mid
+  // Note: "low" was selected when registered at rank 2, then demoted when "highest" arrived
+  EXPECT_EQ(h.selectCount(ftn("highest"), sub.get()), 1);
+  EXPECT_EQ(h.selectCount(ftn("high"), sub.get()), 1);
+  EXPECT_EQ(h.selectCount(ftn("mid"), sub.get()), 1);
+  EXPECT_EQ(h.selectCount(ftn("low"), sub.get()), 1); // was selected at rank 2, then demoted
+  h.clearEvents();
+
+  // Verify ranks by updating "low" to cross threshold (re-enter top-3)
+  h.ranking().updateSortValue(ftn("low"), 75);
+  // Order: highest=150(0), high=100(1), low=75(2), mid=50(3)
+  EXPECT_EQ(h.selectCount(ftn("low"), sub.get()), 1); // low re-promoted
+}
+
+TEST_F(PropertyRankingBaseTest, EdgeCase_LargeRankJump) {
+  // Track jumps many positions at once
+  RankingHarness h(/*maxDeselected=*/0); // threshold = N
+  auto sub = makeSession();
+  h.ranking().addSessionToTopNGroup(3, sub, true); // threshold = 3
+
+  // Register 10 tracks
+  for (int i = 0; i < 10; i++) {
+    h.ranking().registerTrack(ftn(std::to_string(i)), 100 - i * 10, {});
+  }
+  // Order: 0=100(0), 1=90(1), 2=80(2), 3=70(3), 4=60(4), ...
+  h.clearEvents();
+
+  // Move track "9" (rank 9, value 10) to rank 0 (value 200)
+  h.ranking().updateSortValue(ftn("9"), 200);
+  // Order: 9=200(0), 0=100(1), 1=90(2), 2=80(3), ...
+  EXPECT_EQ(h.selectCount(ftn("9"), sub.get()), 1); // 9 enters top-3
+  h.clearEvents();
+
+  // Move track "9" back to rank 9 (value 5)
+  h.ranking().updateSortValue(ftn("9"), 5);
+  // Order: 0=100(0), 1=90(1), 2=80(2), ... 9=5(9)
+  EXPECT_EQ(h.selectCount(ftn("2"), sub.get()), 1); // 2 re-enters top-3
+}
+
+TEST_F(PropertyRankingBaseTest, EdgeCase_UpdateToExactlyPreviousValue) {
+  // Update track to a value that places it exactly where another track was
+  RankingHarness h;
+  auto sub = makeSession();
+  h.ranking().addSessionToTopNGroup(2, sub, true);
+
+  h.ranking().registerTrack(ftn("a"), 100, {}); // rank 0
+  h.ranking().registerTrack(ftn("b"), 80, {});  // rank 1
+  h.ranking().registerTrack(ftn("c"), 60, {});  // rank 2
+  h.clearEvents();
+
+  // Move c to exactly b's value
+  h.ranking().updateSortValue(ftn("c"), 80);
+  // c has same value as b but arrived later, so c stays below b
+  // Order: a=100(0), b=80(1), c=80(2)
+  // c is still at rank 2, no threshold crossing
+  EXPECT_EQ(h.selected_.size(), 0u);
+
+  // Move c to just above b
+  h.ranking().updateSortValue(ftn("c"), 81);
+  // Order: a=100(0), c=81(1), b=80(2)
+  // c enters top-2
+  EXPECT_EQ(h.selectCount(ftn("c"), sub.get()), 1);
+}
+
 } // namespace
