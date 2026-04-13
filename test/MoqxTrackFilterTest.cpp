@@ -855,28 +855,35 @@ TEST_F(MoqxTrackFilterTest, IdleEviction_SilentTrackReplacedByActiveOutsider) {
 // A session that subscribes with TRACK_FILTER before it starts publishing
 // must not receive its own track in the top-N selection.
 //
-// Setup: pub subscribes N=2, then publishes "self" (100).  Two other
-// sessions publish "a" (80) and "b" (60).  Non-self top-2 for pub are
-// "a" and "b"; pub must not receive its own "self" track.
-// Note: "b" is at shared rank 2 (outside shared top-2 of N=2) because
-// "self" occupies a slot, so this also exercises the out-of-shared-top-N
-// reconcile path for publisher-subscribers.
+// Setup: pub and viewer both subscribe N=2.  pub publishes "self" (100),
+// others publish "a" (80) and "b" (60).  Shared top-2 = {self, a}.
+// Viewer receives {self, a} — proving "self" IS in shared top-2.
+// Publisher receives {a, b} — proving self-exclusion works, and "b"
+// (outside shared top-2) enters the publisher's personal top-2.
 TEST_F(MoqxTrackFilterTest, PublisherSubscriber_SubscribeBeforePublish_DoesNotReceiveOwnTrack) {
   auto pub = makeSession();
+  auto viewer = makeSession();
   auto other = makeSession();
   doPublishNamespace(pub);
 
-  // Subscribe before publishing.
+  // Both subscribe before tracks are published.
   doSubscribeFilter(pub, /*maxSelected=*/2);
+  doSubscribeFilter(viewer, /*maxSelected=*/2);
 
-  auto cSelf = doPublish(pub, "self", 100); // pub's own track
-  auto cA = doPublish(other, "a", 80);      // other participant
-  auto cB = doPublish(other, "b", 60);      // other participant
+  auto cSelf = doPublish(pub, "self", 100); // pub's own track — rank 0
+  auto cA = doPublish(other, "a", 80);      // other participant — rank 1
+  auto cB = doPublish(other, "b", 60);      // other participant — rank 2
   exec_->driveFor(20);
 
+  // Viewer sees shared top-2: {self, a}. This proves "self" IS selected globally.
+  EXPECT_EQ(publishCount(viewer.get(), ftn("self")), 1);
+  EXPECT_EQ(publishCount(viewer.get(), ftn("a")), 1);
+  EXPECT_EQ(publishCount(viewer.get(), ftn("b")), 0); // outside shared top-2
+
+  // Publisher sees personal top-2: {a, b}. "self" excluded, "b" promoted.
   EXPECT_EQ(publishCount(pub.get(), ftn("self")), 0); // own track excluded
   EXPECT_EQ(publishCount(pub.get(), ftn("a")), 1);
-  EXPECT_EQ(publishCount(pub.get(), ftn("b")), 1);
+  EXPECT_EQ(publishCount(pub.get(), ftn("b")), 1); // promoted into personal top-2
 
   cSelf->publishDone(makePublishDone());
   cA->publishDone(makePublishDone());
@@ -886,10 +893,12 @@ TEST_F(MoqxTrackFilterTest, PublisherSubscriber_SubscribeBeforePublish_DoesNotRe
 // A session that publishes before subscribing with TRACK_FILTER must still
 // have its already-published track excluded from its personal top-N.
 //
-// Setup: pub publishes "self" (100); another session publishes "a" (80) and
-// "b" (60).  pub subscribes N=2 — must see "a" and "b" but not "self".
+// Setup: pub publishes "self" (100); others publish "a" (80) and "b" (60).
+// Viewer subscribes first — gets {self, a}, proving "self" is top-ranked.
+// Then pub subscribes N=2 — must see {a, b} not {self, a}.
 TEST_F(MoqxTrackFilterTest, PublisherSubscriber_PublishBeforeSubscribe_StillExcluded) {
   auto pub = makeSession();
+  auto viewer = makeSession();
   auto other = makeSession();
   doPublishNamespace(pub);
 
@@ -899,24 +908,33 @@ TEST_F(MoqxTrackFilterTest, PublisherSubscriber_PublishBeforeSubscribe_StillExcl
   auto cB = doPublish(other, "b", 60);
   exec_->driveFor(10);
 
-  // Late TRACK_FILTER subscription — self-track must be excluded.
+  // Viewer subscribes first to establish baseline: "self" IS in shared top-2.
+  doSubscribeFilter(viewer, /*maxSelected=*/2);
+  exec_->driveFor(10);
+
+  EXPECT_EQ(publishCount(viewer.get(), ftn("self")), 1); // "self" is rank 0
+  EXPECT_EQ(publishCount(viewer.get(), ftn("a")), 1);    // "a" is rank 1
+  EXPECT_EQ(publishCount(viewer.get(), ftn("b")), 0);    // "b" outside top-2
+
+  // Now pub subscribes — despite "self" being rank 0, it must be excluded.
   doSubscribeFilter(pub, /*maxSelected=*/2);
   exec_->driveFor(20);
 
-  EXPECT_EQ(publishCount(pub.get(), ftn("self")), 0);
+  EXPECT_EQ(publishCount(pub.get(), ftn("self")), 0); // excluded (own track)
   EXPECT_EQ(publishCount(pub.get(), ftn("a")), 1);
-  EXPECT_EQ(publishCount(pub.get(), ftn("b")), 1);
+  EXPECT_EQ(publishCount(pub.get(), ftn("b")), 1); // promoted into personal top-2
 
   cSelf->publishDone(makePublishDone());
   cA->publishDone(makePublishDone());
   cB->publishDone(makePublishDone());
 }
 
-// A viewer receives all top-N tracks including the publisher-subscriber's
-// own track; the publisher-subscriber itself never receives its own stream.
+// Self-exclusion is per-session: a viewer sees all top-N tracks including
+// another session's self-track; only the publisher itself is excluded.
 //
 // Setup: pub publishes "self" (100); another session publishes "a" (60).
-// viewer subscribes N=2 — gets both.  pub subscribes N=2 — gets "a" only.
+// Both viewer and pub subscribe N=2 simultaneously. Same tracks, same N,
+// but different views: viewer sees {self, a}, pub sees {a} only.
 TEST_F(MoqxTrackFilterTest, PublisherSubscriber_ViewerReceivesSelfTrack) {
   auto pub = makeSession();
   auto other = makeSession();
@@ -927,16 +945,17 @@ TEST_F(MoqxTrackFilterTest, PublisherSubscriber_ViewerReceivesSelfTrack) {
   auto cA = doPublish(other, "a", 60);
   exec_->driveFor(10);
 
+  // Both subscribe with identical parameters.
   doSubscribeFilter(viewer, /*maxSelected=*/2);
   doSubscribeFilter(pub, /*maxSelected=*/2);
   exec_->driveFor(20);
 
-  // Viewer sees both tracks (including pub's self-track).
+  // Viewer sees both tracks — "self" is just another track to them.
   EXPECT_EQ(publishCount(viewer.get(), ftn("self")), 1);
   EXPECT_EQ(publishCount(viewer.get(), ftn("a")), 1);
 
-  // Publisher-subscriber never receives its own track.
-  EXPECT_EQ(publishCount(pub.get(), ftn("self")), 0);
+  // Publisher sees only non-self tracks — same N, different view.
+  EXPECT_EQ(publishCount(pub.get(), ftn("self")), 0); // excluded
   EXPECT_EQ(publishCount(pub.get(), ftn("a")), 1);
 
   cSelf->publishDone(makePublishDone());
