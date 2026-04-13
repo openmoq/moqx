@@ -17,11 +17,13 @@ PropertyRanking::PropertyRanking(
     GetLastActivityFn getLastActivity,
     BatchSelectCallback onBatchSelected,
     SelectCallback onSelected,
+    DeselectedCallback onDeselected,
     EvictCallback onEvicted
 )
     : propertyType_(propertyType), maxDeselected_(maxDeselected), idleTimeout_(idleTimeout),
       getLastActivity_(std::move(getLastActivity)), onBatchSelected_(std::move(onBatchSelected)),
-      onSelected_(std::move(onSelected)), onEvicted_(std::move(onEvicted)) {}
+      onSelected_(std::move(onSelected)), onDeselected_(std::move(onDeselected)),
+      onEvicted_(std::move(onEvicted)) {}
 
 /**
  * Register a new track with an optional initial property value.
@@ -704,6 +706,16 @@ void PropertyRanking::demoteTrackInGroup(
                << " to deselected queue";
     stIt->second = TrackState::Deselected;
     group.deselectedQueue.push_back(ftn);
+
+    // Notify relay to pause forwarding for each session in this group.
+    // The relay will check if the subscriber exists and is not pinned.
+    if (onDeselected_) {
+      IterationGuard guard(*this);
+      for (const auto& [session, info] : group.sessions) {
+        onDeselected_(ftn, session);
+      }
+    }
+
     trimDeselectedQueue(group);
   }
 }
