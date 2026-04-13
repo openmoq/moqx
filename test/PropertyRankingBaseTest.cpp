@@ -1171,9 +1171,9 @@ TEST_F(PropertyRankingBaseTest, EdgeCase_RegisterAtAllPositions) {
   h.ranking().addSessionToTopNGroup(3, sub, true);
 
   // Register in non-sequential order
-  h.ranking().registerTrack(ftn("mid"), 50, {});   // first track, rank 0
-  h.ranking().registerTrack(ftn("high"), 100, {}); // inserts at rank 0, mid shifts to 1
-  h.ranking().registerTrack(ftn("low"), 20, {});   // inserts at rank 2
+  h.ranking().registerTrack(ftn("mid"), 50, {});      // first track, rank 0
+  h.ranking().registerTrack(ftn("high"), 100, {});    // inserts at rank 0, mid shifts to 1
+  h.ranking().registerTrack(ftn("low"), 20, {});      // inserts at rank 2
   h.ranking().registerTrack(ftn("highest"), 150, {}); // inserts at rank 0, shifts all
 
   // Order: highest=150(0), high=100(1), mid=50(2), low=20(3)
