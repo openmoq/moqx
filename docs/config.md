@@ -90,11 +90,15 @@ Set under `listener_defaults.quic` (global defaults) or `listeners[n].quic`
 | `default_stream_priority` | 2 | Default stream priority. |
 | `default_datagram_priority` | 1 | Default datagram priority. |
 | `cc_algo` | `bbr` | Congestion control algorithm (see below). |
+| `qlog_path` | unset | picoquic only. Enables per-connection qlog output in the given directory. mvfst ignores this field. |
 
 **Congestion control algorithms by stack:**
 - `mvfst`: `bbr`, `bbr2`, `bbr2modular`, `copa`, `cubic`, `newreno`
 - `picoquic`: `bbr`, `bbr1`, `c4`, `cubic`, `dcubic`, `fast`, `newreno`,
 `prague`, `reno`
+
+**picoquic qlog workflow:** set `qlog_path` to a writable directory. picoquic
+will emit per-connection qlog files there.
 
 ---
 

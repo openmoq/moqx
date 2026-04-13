@@ -1216,6 +1216,46 @@ TEST(ResolveConfig, QuicCcAlgoRoundTrips) {
   EXPECT_EQ(result.value().config.listeners[0].quic.ccAlgo, "cubic");
 }
 
+TEST(ResolveConfig, QuicQlogPathRoundTripsForPico) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.listeners.value()[0].quic_stack = std::optional<std::string>{"picoquic"};
+  cfg.listeners.value()[0].tls.value().insecure = false;
+  cfg.listeners.value()[0].tls.value().cert_file = std::optional<std::string>{"cert.pem"};
+  cfg.listeners.value()[0].tls.value().key_file = std::optional<std::string>{"key.pem"};
+  ParsedQuicConfig quicCfg;
+  quicCfg.qlog_path = std::optional<std::string>{"/tmp/picoquic-qlog"};
+  cfg.listeners.value()[0].quic = std::optional<ParsedQuicConfig>{std::move(quicCfg)};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  ASSERT_TRUE(result.value().config.listeners[0].quic.qlogPath.has_value());
+  EXPECT_EQ(*result.value().config.listeners[0].quic.qlogPath, "/tmp/picoquic-qlog");
+}
+
+TEST(ResolveConfig, QuicEmptyQlogPathIsError) {
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedQuicConfig quicCfg;
+  quicCfg.qlog_path = std::optional<std::string>{""};
+  cfg.listeners.value()[0].quic = std::optional<ParsedQuicConfig>{std::move(quicCfg)};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("qlog_path"));
+}
+
+TEST(ResolveConfig, QuicQlogPathWarnsOnMvfst) {
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedQuicConfig quicCfg;
+  quicCfg.qlog_path = std::optional<std::string>{"/tmp/mvfst-ignored-qlog"};
+  cfg.listeners.value()[0].quic = std::optional<ParsedQuicConfig>{std::move(quicCfg)};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  EXPECT_THAT(result.value().warnings, ::testing::Contains(HasSubstr("qlog_path")));
+  ASSERT_TRUE(result.value().config.listeners[0].quic.qlogPath.has_value());
+  EXPECT_EQ(*result.value().config.listeners[0].quic.qlogPath, "/tmp/mvfst-ignored-qlog");
+}
+
 // --- Pico WebTransport path validation tests ---
 
 // Helper: make a minimal pico listener config (TLS required for picoquic).

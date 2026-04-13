@@ -426,6 +426,8 @@ void applyQuicOverride(QuicConfig& base, const ParsedQuicConfig& overlay) {
     base.defaultDatagramPriority = *v;
   if (auto v = overlay.cc_algo.value())
     base.ccAlgo = *v;
+  if (auto v = overlay.qlog_path.value())
+    base.qlogPath = *v;
 }
 
 // Merge listener_defaults.quic and per-listener quic override into a resolved QuicConfig.
@@ -476,6 +478,14 @@ void validateQuicConfig(
     errors.push_back(
         context + " quic: max_ack_delay_us (" + std::to_string(quic.maxAckDelayUs) +
         ") must be >= min_ack_delay_us (" + std::to_string(quic.minAckDelayUs) + ")"
+    );
+  }
+  if (quic.qlogPath.has_value() && quic.qlogPath->empty()) {
+    errors.push_back(context + " quic: qlog_path must be non-empty when set");
+  }
+  if (stack != QuicStack::Picoquic && quic.qlogPath.has_value()) {
+    warnings.push_back(
+        context + " quic: qlog_path is only supported by picoquic; mvfst will ignore it"
     );
   }
   // (excluded: mvfst "custom"/"staticcwnd" require programmatic setup; "none" disables CC)

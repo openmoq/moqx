@@ -79,6 +79,11 @@ struct ParsedQuicConfig {
       "mvfst: bbr, bbr2, bbr2modular, copa, cubic, newreno.",
       std::optional<std::string>>
       cc_algo;
+  rfl::Description<
+      "Optional picoquic qlog output directory. Enables per-connection qlog files; "
+      "ignored by mvfst.",
+      std::optional<std::string>>
+      qlog_path;
 };
 
 struct ParsedListenerConfig {

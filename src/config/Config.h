@@ -55,6 +55,7 @@ struct QuicConfig {
   uint8_t defaultStreamPriority{2};   // default stream priority
   uint8_t defaultDatagramPriority{1}; // default datagram priority
   std::string ccAlgo{"bbr"};          // congestion control algorithm name
+  std::optional<std::string> qlogPath; // picoquic qlog output directory
 };
 
 struct ListenerConfig {

@@ -31,6 +31,7 @@ moxygen::PicoTransportConfig picoTransportConfigFromQuicConfig(const config::Qui
       .defaultStreamPriority = quic.defaultStreamPriority,
       .defaultDatagramPriority = quic.defaultDatagramPriority,
       .ccAlgo = quic.ccAlgo,
+      .qlogPath = quic.qlogPath.value_or(""),
   };
 }
 
