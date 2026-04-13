@@ -1346,7 +1346,11 @@ MoqxRelay::getOrCreateRanking(std::shared_ptr<NamespaceNode> node, uint64_t prop
         [this](const FullTrackName& ftn, std::shared_ptr<MoQSession> session, bool forward) {
           onTrackSelected(ftn, session, forward);
         },
-        // Eviction callback
+        // Deselection callback: pause forwarding locally (no control message)
+        [this](const FullTrackName& ftn, std::shared_ptr<MoQSession> session) {
+          onTrackDeselected(ftn, session);
+        },
+        // Eviction callback: send SUBSCRIBE_DONE when track leaves deselected queue
         [this](const FullTrackName& ftn, std::shared_ptr<MoQSession> session) {
           onTrackEvicted(ftn, session);
         }
@@ -1418,6 +1422,24 @@ void MoqxRelay::onTrackSelected(
     return;
   }
 
+  auto& forwarder = subIt->second.forwarder;
+
+  // Check if this is a reselection (subscriber exists but was paused).
+  auto sub = forwarder->getSubscriber(session.get());
+  if (sub && !sub->isPinned()) {
+    if (!sub->shouldForward) {
+      // Reselection: resume forwarding locally — no control message sent.
+      sub->shouldForward = true;
+      forwarder->addForwardingSubscriber();
+      XLOG(DBG4) << "onTrackSelected: resumed forwarding for " << ftn;
+      return;
+    }
+    // Already forwarding — nothing to do.
+    XLOG(DBG4) << "onTrackSelected: already forwarding " << ftn;
+    return;
+  }
+
+  // New selection: publish the track to the session.
   auto exec = session->getExecutor();
   XCHECK(exec) << "onTrackSelected: null executor for session " << session.get();
 
@@ -1425,9 +1447,40 @@ void MoqxRelay::onTrackSelected(
   // when multiple tracks are selected for the same session in a single ranking update.
   co_withExecutor(
       exec,
-      publishToSession(session, subIt->second.forwarder, forward, /*trackFilterSubscriber=*/true)
+      publishToSession(session, forwarder, forward, /*trackFilterSubscriber=*/true)
   )
       .start();
+}
+
+void MoqxRelay::onTrackDeselected(const FullTrackName& ftn, std::shared_ptr<MoQSession> session) {
+  XLOG(DBG4) << "[MoqxRelay] Track deselected: " << ftn << " session=" << session.get();
+
+  if (!session || session->isClosed()) {
+    return;
+  }
+
+  auto subIt = subscriptions_.find(ftn);
+  if (subIt == subscriptions_.end() || !subIt->second.forwarder) {
+    return;
+  }
+
+  auto& forwarder = subIt->second.forwarder;
+  auto sub = forwarder->getSubscriber(session.get());
+  if (!sub || sub->isPinned()) {
+    // Pinned subscribers are not affected by TRACK_FILTER deselection.
+    XLOG(DBG4) << "onTrackDeselected: pinned or no subscriber, skipping";
+    return;
+  }
+
+  if (!sub->shouldForward) {
+    // Already paused (e.g., from a previous deselection).
+    return;
+  }
+
+  // Pause forwarding locally — no control message sent.
+  sub->shouldForward = false;
+  forwarder->removeForwardingSubscriber();
+  XLOG(DBG4) << "onTrackDeselected: paused forwarding for " << ftn;
 }
 
 void MoqxRelay::onTrackEvicted(const FullTrackName& ftn, std::shared_ptr<MoQSession> session) {

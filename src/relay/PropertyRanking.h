@@ -125,6 +125,11 @@ public:
   using EvictCallback = std::function<
       void(const moxygen::FullTrackName& ftn, std::shared_ptr<moxygen::MoQSession> session)>;
 
+  // Callback when a track is deselected (enters deselected queue).
+  // Used by the relay to pause forwarding without sending SUBSCRIBE_DONE.
+  using DeselectedCallback = std::function<
+      void(const moxygen::FullTrackName& ftn, std::shared_ptr<moxygen::MoQSession> session)>;
+
   // Batch notification callback for viewer sessions.
   // Called once per track state change with all affected sessions.
   using BatchSelectCallback = std::function<void(
@@ -141,14 +146,12 @@ public:
   /**
    * @param propertyType    The property type ID to rank by
    * @param maxDeselected   Maximum tracks in deselected queue before eviction.
-   *        NOTE: Currently only maxDeselected=0 is fully supported. With maxDeselected>0,
-   *        tracks enter the deselected queue but the relay has no way to pause/resume
-   *        forwarding since onDeselected/onReselected callbacks are not yet implemented.
    * @param idleTimeout     How long a selected track may be silent before
    *                        being deselected. Zero disables idle eviction.
    * @param getLastActivity Relay callback to read per-track activity time
    * @param onBatchSelected Batch callback for viewer notifications (required)
    * @param onSelected      Individual callback for per-session notifications
+   * @param onDeselected    Callback when track enters deselected queue (pause forwarding)
    * @param onEvicted       Callback when track is evicted from deselected queue
    */
   PropertyRanking(
@@ -158,6 +161,7 @@ public:
       GetLastActivityFn getLastActivity,
       BatchSelectCallback onBatchSelected,
       SelectCallback onSelected,
+      DeselectedCallback onDeselected,
       EvictCallback onEvicted
   );
 
@@ -297,6 +301,7 @@ private:
   GetLastActivityFn getLastActivity_;
   BatchSelectCallback onBatchSelected_;
   SelectCallback onSelected_;
+  DeselectedCallback onDeselected_;
   EvictCallback onEvicted_;
 
   std::map<RankKey, RankedEntry, std::greater<RankKey>> rankedTracks_;

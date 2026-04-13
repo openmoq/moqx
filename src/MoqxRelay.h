@@ -319,6 +319,13 @@ private:
       bool forward
   );
 
+  // Called by PropertyRanking when a track enters a session's deselected queue.
+  // Pauses forwarding locally by setting shouldForward=false (no control message).
+  void onTrackDeselected(
+      const moxygen::FullTrackName& ftn,
+      std::shared_ptr<moxygen::MoQSession> session
+  );
+
   // Called by PropertyRanking when a track is evicted from a session's deselected queue.
   void
   onTrackEvicted(const moxygen::FullTrackName& ftn, std::shared_ptr<moxygen::MoQSession> session);

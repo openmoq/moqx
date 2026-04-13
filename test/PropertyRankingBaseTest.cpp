@@ -52,6 +52,10 @@ public:
     FullTrackName ftn;
     MoQSession* session;
   };
+  struct DeselectedEvent {
+    FullTrackName ftn;
+    MoQSession* session;
+  };
 
   explicit RankingHarness(
       uint64_t maxDeselected = 5,
@@ -78,6 +82,9 @@ public:
             },
             [this](const FullTrackName& f, std::shared_ptr<MoQSession> s, bool fwd) {
               selected_.push_back({f, s.get(), fwd});
+            },
+            [this](const FullTrackName& f, std::shared_ptr<MoQSession> s) {
+              deselected_.push_back({f, s.get()});
             },
             [this](const FullTrackName& f, std::shared_ptr<MoQSession> s) {
               evicted_.push_back({f, s.get()});
@@ -123,12 +130,24 @@ public:
     return n;
   }
 
+  int deselectCount(const FullTrackName& f) const {
+    int n = 0;
+    for (auto& e : deselected_) {
+      if (e.ftn == f) {
+        n++;
+      }
+    }
+    return n;
+  }
+
   void clearEvents() {
     selected_.clear();
+    deselected_.clear();
     evicted_.clear();
   }
 
   std::vector<SelectEvent> selected_;
+  std::vector<DeselectedEvent> deselected_;
   std::vector<EvictEvent> evicted_;
   folly::F14FastMap<FullTrackName, std::chrono::steady_clock::time_point, FullTrackName::hash>
       activityTimes_;
