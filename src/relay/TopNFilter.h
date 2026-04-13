@@ -26,10 +26,10 @@ struct PropertyObserver {
   // Called when the track ends (PUBLISH_DONE received).
   std::function<void()> onTrackEnded;
 
-  // Called when the observed property is present but value is unchanged.
-  // Throttled to at most once per activityThreshold_. Complements onValueChanged:
-  // either onValueChanged fires (value changed) or onActivity fires (value same),
-  // never both on the same object. Used to trigger idle sweeps in PropertyRanking.
+  // Called when the observed property is present and the per-filter activity
+  // throttle allows it (at most once per activityThreshold_). Fires independently
+  // of onValueChanged — both can fire on the same checkProperties() call when the
+  // value changes. Used to trigger idle sweeps in PropertyRanking.
   std::function<void()> onActivity;
 };
 

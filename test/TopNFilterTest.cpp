@@ -318,17 +318,18 @@ TEST_F(TopNFilterTest, OnActivityCallbackBehavior) {
   // Enable threshold
   filter_->setActivityThreshold(std::chrono::hours(1));
 
-  // Value changes: onValueChanged fires, NOT onActivity
+  // Value changes: onValueChanged fires AND onActivity fires (two-stop throttle:
+  // both can fire independently on the same object).
   filter_->checkProperties(makeExt(kPropA, 42));
   EXPECT_EQ(valueChangedCount, 2); // includes earlier call
-  EXPECT_EQ(activityCount, 0);
+  EXPECT_EQ(activityCount, 1);
 
-  // Same value: onActivity fires
+  // Same value immediately: onActivity throttled (hours(1) not elapsed)
   filter_->checkProperties(makeExt(kPropA, 42));
   EXPECT_EQ(valueChangedCount, 2);
   EXPECT_EQ(activityCount, 1);
 
-  // Same value immediately: throttled
+  // Same value again: still throttled
   filter_->checkProperties(makeExt(kPropA, 42));
   EXPECT_EQ(activityCount, 1);
 

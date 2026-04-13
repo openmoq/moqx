@@ -55,12 +55,14 @@ public:
 
   explicit RankingHarness(
       uint64_t maxDeselected = 5,
-      std::chrono::milliseconds idleTimeout = std::chrono::milliseconds(0)
+      std::chrono::milliseconds idleTimeout = std::chrono::milliseconds(0),
+      std::chrono::milliseconds sweepThrottle = std::chrono::milliseconds(0)
   )
       : ranking_(std::make_unique<PropertyRanking>(
             kProp,
             maxDeselected,
             idleTimeout,
+            sweepThrottle,
             [this](const FullTrackName& f) {
               auto it = activityTimes_.find(f);
               if (it == activityTimes_.end()) {
@@ -521,6 +523,61 @@ TEST_F(PropertyRankingBaseTest, RemoveSelected_FallbackPicksHighestNonSelected) 
 }
 
 // ---------------------------------------------------------------------------
+// sweepIdle + updateSortValue interaction tests
+// ---------------------------------------------------------------------------
+
+// When a value change triggers both recomputeTopNGroups() and sweepIdle() inside
+// updateSortValue(), the track that enters top-N must be notified exactly once.
+// recomputeTopNGroups runs first and selects b; sweepIdle runs after and must
+// not re-notify b because it is already Selected.
+TEST_F(PropertyRankingBaseTest, UpdateSortValue_SweepIdleAndRecomputeDoNotDoubleSelect) {
+  // idleTimeout=100ms so sweepIdle is active. maxDeselected=0 (immediate evict).
+  RankingHarness h(0, std::chrono::milliseconds(100));
+  auto sub = makeSession();
+
+  // a (100) is top-1; b (50) is outside. Neither has activity → both "never published".
+  h.ranking().registerTrack(ftn("a"), 100, {});
+  h.ranking().registerTrack(ftn("b"), 50, {});
+  h.ranking().addSessionToTopNGroup(1, sub, true);
+  h.clearEvents();
+
+  // Stamp b's activity so only a is idle.
+  h.setActivityTime(ftn("b"), std::chrono::steady_clock::now());
+
+  // b's value crosses the N=1 threshold (rank 1→0).
+  // recomputeTopNGroups selects b and demotes a; sweepIdle then runs but finds
+  // b active and a already deselected — b must be selected exactly once.
+  h.ranking().updateSortValue(ftn("b"), 200);
+
+  EXPECT_EQ(h.selectCount(ftn("b")), 1);
+}
+
+TEST_F(PropertyRankingBaseTest, SweepThrottle_SkipsRunIfCalledTooSoon) {
+  // sweepThrottle=500ms: a second sweepIdle() call within that window is a no-op.
+  RankingHarness h(0, std::chrono::milliseconds(100), std::chrono::milliseconds(500));
+  auto sub = makeSession();
+
+  h.ranking().registerTrack(ftn("a"), 100, {});
+  h.ranking().registerTrack(ftn("b"), 90, {});
+  h.ranking().addSessionToTopNGroup(1, sub, true);
+  h.clearEvents();
+
+  // a is idle, b is active.
+  h.setActivityTime(ftn("b"), std::chrono::steady_clock::now());
+
+  // First sweep: a is idle → evicted, b promoted.
+  h.ranking().sweepIdle();
+  EXPECT_EQ(h.selectCount(ftn("b")), 1);
+
+  // Re-register a (so it's back as a candidate) and clear events.
+  h.ranking().registerTrack(ftn("a"), 100, {});
+  h.clearEvents();
+
+  // Second sweep immediately after: throttle suppresses it — a is NOT evicted again.
+  h.ranking().sweepIdle();
+  EXPECT_EQ(h.selectCount(ftn("a")), 0);
+}
+
 // sweepIdle tests
 // ---------------------------------------------------------------------------
 
