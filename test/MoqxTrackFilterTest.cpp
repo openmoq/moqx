@@ -864,7 +864,6 @@ TEST_F(MoqxTrackFilterTest, PublisherSubscriber_SubscribeBeforePublish_DoesNotRe
   auto pub = makeSession();
   auto viewer = makeSession();
   auto other = makeSession();
-  doPublishNamespace(pub);
 
   // Both subscribe before tracks are published.
   doSubscribeFilter(pub, /*maxSelected=*/2);
@@ -900,7 +899,6 @@ TEST_F(MoqxTrackFilterTest, PublisherSubscriber_PublishBeforeSubscribe_StillExcl
   auto pub = makeSession();
   auto viewer = makeSession();
   auto other = makeSession();
-  doPublishNamespace(pub);
 
   // Publish before subscribing.
   auto cSelf = doPublish(pub, "self", 100);
@@ -939,7 +937,6 @@ TEST_F(MoqxTrackFilterTest, PublisherSubscriber_ViewerReceivesSelfTrack) {
   auto pub = makeSession();
   auto other = makeSession();
   auto viewer = makeSession();
-  doPublishNamespace(pub);
 
   auto cSelf = doPublish(pub, "self", 100);
   auto cA = doPublish(other, "a", 60);
