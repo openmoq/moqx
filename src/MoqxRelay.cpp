@@ -412,21 +412,9 @@ void MoqxRelay::onPublishDone(const FullTrackName& ftn) {
       // Remove from publishes map
       auto nodePtr = findNamespaceNode(ftn.trackNamespace);
       if (nodePtr) {
-        // If the publisher also had a TRACK_FILTER subscription, remove the
-        // self-track from their exclusion set before erasing from publishes.
-        auto publishIt = nodePtr->publishes.find(ftn.trackName);
-        if (publishIt != nodePtr->publishes.end()) {
-          auto& publisherSession = publishIt->second;
-          auto sessIt = nodePtr->sessions.find(publisherSession);
-          if (sessIt != nodePtr->sessions.end() && sessIt->second.trackFilter) {
-            auto& tf = *sessIt->second.trackFilter;
-            auto rankingIt = nodePtr->rankings.find(tf.propertyType);
-            if (rankingIt != nodePtr->rankings.end()) {
-              rankingIt->second
-                  ->removePublishedTrackFromSession(tf.maxSelected, publisherSession, ftn);
-            }
-          }
-        }
+        // Note: Self-exclusion cleanup happens automatically when removeTrack()
+        // is called (via TopNFilter's onTrackEnded observer). The publisher's
+        // personal selection is reconciled inside PropertyRanking.
         bool hadLocalContent = nodePtr->hasLocalSessions();
         nodePtr->publishes.erase(ftn.trackName);
 
@@ -806,22 +794,11 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
   // If TRACK_FILTER is present, enroll session in PropertyRanking for top-N selection.
   // NOTE: onSelected callbacks fire synchronously within addSessionToTopNGroup() for
   // tracks already in top-N, triggering publishToSession() before this call returns.
+  // Self-exclusion is automatic: if this session already published tracks, they are
+  // excluded from its personal top-N (handled inside addSessionToTopNGroup).
   if (trackFilter) {
     auto ranking = getOrCreateRanking(nodePtr, trackFilter->propertyType);
-    // Collect tracks already published by this session so the ranking can set
-    // up self-exclusion from the start (publisher-subscriber case).
-    std::vector<FullTrackName> publishedBySession;
-    for (const auto& [trackName, publishSession] : nodePtr->publishes) {
-      if (publishSession == session) {
-        publishedBySession.emplace_back(FullTrackName{nodePtr->trackNamespace_, trackName});
-      }
-    }
-    ranking->addSessionToTopNGroup(
-        trackFilter->maxSelected,
-        session,
-        subNs.forward,
-        std::move(publishedBySession)
-    );
+    ranking->addSessionToTopNGroup(trackFilter->maxSelected, session, subNs.forward);
   }
 
   // If this is the first content added to this node, notify parent
