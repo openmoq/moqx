@@ -550,9 +550,9 @@ TEST_F(PropertyRankingSelfExclusionTest, ViewerBecomesPublisher_ClaimsDeliveredT
   r->registerTrack(t2, 80, pub);
 
   // t2 is now a self-track → evicted. t3 enters as replacement.
-  EXPECT_TRUE(wasEvicted(t2, pub.get()));   // t2 now self-track → evicted
-  EXPECT_TRUE(wasSelected(t3, pub.get()));  // t3 enters publisher's top-2
-  EXPECT_FALSE(wasEvicted(t1, pub.get()));  // t1 stays
+  EXPECT_TRUE(wasEvicted(t2, pub.get()));  // t2 now self-track → evicted
+  EXPECT_TRUE(wasSelected(t3, pub.get())); // t3 enters publisher's top-2
+  EXPECT_FALSE(wasEvicted(t1, pub.get())); // t1 stays
 }
 
 // Bug: non-self track rises above the publisher's waterline, displacing the

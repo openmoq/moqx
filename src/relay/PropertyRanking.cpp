@@ -56,7 +56,7 @@ void PropertyRanking::registerTrack(
   // Increment publisher track count for O(1) isPublisher() lookup
   if (auto pubSession = publisher.lock()) {
     auto& entry = publisherTrackCount_[pubSession.get()];
-    entry.session = pubSession;  // Store weak_ptr for ABA validation
+    entry.session = pubSession; // Store weak_ptr for ABA validation
     entry.trackCount++;
   }
 
@@ -840,8 +840,7 @@ bool PropertyRanking::isPublisher(const std::shared_ptr<moxygen::MoQSession>& se
   return it->second.session.lock() == session;
 }
 
-std::optional<RankKey>
-PropertyRanking::computeWaterlineKey(
+std::optional<RankKey> PropertyRanking::computeWaterlineKey(
     const std::shared_ptr<moxygen::MoQSession>& session,
     uint64_t maxSelected
 ) const {
@@ -876,8 +875,7 @@ void PropertyRanking::reconcilePublisherSelection(
   folly::F14FastSet<moxygen::FullTrackName, moxygen::FullTrackName::hash> nowSelected;
   for (const auto& [key, entry] : rankedTracks_) {
     // Inline self-track check: compare publisher directly (avoids redundant lookup)
-    if (entry.publisher.lock() != session &&
-        (!info.waterlineKey || key >= *info.waterlineKey)) {
+    if (entry.publisher.lock() != session && (!info.waterlineKey || key >= *info.waterlineKey)) {
       nowSelected.insert(entry.ftn);
     }
   }
