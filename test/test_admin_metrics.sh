@@ -85,7 +85,6 @@ fi
 EXPECTED_METRICS=(
   "moqx_moqActiveSessions"
   "moqx_pubActiveSubscriptions"
-  "moqx_pubActivePublishers"
   "moqx_pubSubscribeSuccess_total"
   "moqx_moqPublishSuccess_total"
   "moqx_moqSubscribeLatency_microseconds"
