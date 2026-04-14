@@ -49,6 +49,10 @@ mergeCacheConfigs(const ParsedCacheConfig& base, const ParsedCacheConfig& overla
   merged.min_eviction_kb = overlay.min_eviction_kb.value().has_value()
                                ? overlay.min_eviction_kb.value()
                                : base.min_eviction_kb.value();
+  merged.cache_publishes_without_subscribers =
+      overlay.cache_publishes_without_subscribers.value().has_value()
+          ? overlay.cache_publishes_without_subscribers.value()
+          : base.cache_publishes_without_subscribers.value();
   merged.max_cache_duration_s = overlay.max_cache_duration_s.value().has_value()
                                     ? overlay.max_cache_duration_s.value()
                                     : base.max_cache_duration_s.value();
@@ -127,6 +131,8 @@ CacheConfig resolveCacheConfig(const ParsedCacheConfig& cache) {
       .maxCachedGroupsPerTrack = static_cast<size_t>(*cache.max_groups_per_track.value()),
       .maxCachedMb = cache.max_cached_mb.value().value_or(16),
       .minEvictionKb = cache.min_eviction_kb.value().value_or(64),
+      .cachePublishesWithoutSubscribers =
+          cache.cache_publishes_without_subscribers.value().value_or(false),
       .maxCacheDuration = maxCacheDuration,
       .defaultMaxCacheDuration = defaultMaxCacheDuration,
   };

@@ -317,6 +317,31 @@ protected:
   std::shared_ptr<MoqxRelay> relay_;
 };
 
+class CacheStatsVisitor : public RelayStateVisitor {
+public:
+  void onPeersBegin() override {}
+  void onPeer(std::string_view, std::string_view, std::string_view) override {}
+  void onPeersEnd() override {}
+  void onSubscriptionsBegin() override {}
+  void onSubscription(const SubscriptionInfo&) override {}
+  void onSubscriptionsEnd() override {}
+  void onNamespaceTreeBegin() override {}
+  void beginNamespaceNode(std::string_view, const TrackNamespace&, size_t) override {}
+  void endNamespaceNode() override {}
+  void onNamespaceTreeEnd() override {}
+  void onCacheStats(
+      size_t totalBytesIn,
+      const std::vector<MoQCache::TrackStats>& tracksIn,
+      MoQCache::TimePoint /*now*/
+  ) override {
+    totalBytes = totalBytesIn;
+    tracks = tracksIn;
+  }
+
+  size_t totalBytes{0};
+  std::vector<MoQCache::TrackStats> tracks;
+};
+
 // Test: Basic relay construction
 TEST_F(MoQRelayTest, Construction) {
   EXPECT_NE(relay_, nullptr);
@@ -352,6 +377,34 @@ TEST_F(MoQRelayTest, PublishSuccess) {
   doPublish(publisherSession, kTestTrackName);
 
   // Cleanup: remove the session from relay to avoid mock leak warning
+  removeSession(publisherSession);
+}
+
+TEST_F(MoQRelayTest, PublishCanPopulateCacheWithoutSubscribersWhenEnabled) {
+  relay_ = std::make_shared<MoqxRelay>(config::CacheConfig{
+      .maxCachedTracks = 8,
+      .maxCachedGroupsPerTrack = 4,
+      .cachePublishesWithoutSubscribers = true,
+  });
+  relay_->setAllowedNamespacePrefix(kAllowedPrefix);
+
+  auto publisherSession = createMockSession();
+  doPublishNamespace(publisherSession, kTestNamespace);
+
+  auto consumer = doPublish(publisherSession, kTestTrackName);
+  auto subgroup = consumer->beginSubgroup(1, 0, 0);
+  ASSERT_TRUE(subgroup.hasValue());
+  EXPECT_TRUE(subgroup.value()->object(0, makeBuf("hello"), noExtensions(), true).hasValue());
+
+  CacheStatsVisitor visitor;
+  relay_->dumpState(visitor);
+  ASSERT_EQ(visitor.tracks.size(), 1);
+  EXPECT_EQ(visitor.tracks[0].name, kTestTrackName);
+  ASSERT_EQ(visitor.tracks[0].groups.size(), 1);
+  EXPECT_EQ(visitor.tracks[0].groups[0].groupId, 1);
+  EXPECT_EQ(visitor.tracks[0].groups[0].objects, 1);
+  EXPECT_EQ(visitor.totalBytes, 5);
+
   removeSession(publisherSession);
 }
 
