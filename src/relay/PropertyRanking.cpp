@@ -64,9 +64,18 @@ void PropertyRanking::registerTrack(
       // If that track was Selected, demote it into the deselected queue.
       // Only fires when numTracks > N (otherwise no track to demote).
       demoteTrackAtRank(n, topNGroup);
+    } else {
+      // Track is outside the shared top-N, so viewers don't care. But a
+      // publisher-subscriber's effective top-N is smaller than N (their own
+      // self-tracks occupy some slots), so this track may enter their personal
+      // top-N even though it's outside the shared one. Reconcile to pick it up.
+      IterationGuard guard(*this);
+      for (auto& [session, info] : topNGroup.sessions) {
+        if (isPublisher(session)) {
+          reconcilePublisherSelection(info, n, session);
+        }
+      }
     }
-    // Tracks outside top N are not added to the deselected queue on register;
-    // they only enter the queue when they fall out of an already-selected position.
   }
 }
 

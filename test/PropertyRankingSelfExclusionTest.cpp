@@ -55,7 +55,8 @@ protected:
         maxDeselected,
         /*idleTimeout=*/std::chrono::milliseconds{0},
         /*sweepThrottle=*/std::chrono::milliseconds{0},
-        /*getLastActivity=*/nullptr,
+        /*getLastActivity=*/
+        [](const FullTrackName&) { return std::chrono::steady_clock::time_point{}; },
         /*onBatchSelected=*/
         [this](
             const FullTrackName& f,
@@ -591,6 +592,52 @@ TEST_F(PropertyRankingSelfExclusionTest, ViewerBecomesPublisher_ClaimsDeliveredT
   EXPECT_TRUE(wasEvicted(t2, pub.get()));  // t2 now self-track → evicted
   EXPECT_TRUE(wasSelected(t3, pub.get())); // t3 enters publisher's top-2
   EXPECT_FALSE(wasEvicted(t1, pub.get())); // t1 stays
+}
+
+// Track registers outside the shared top-N but within the publisher's
+// personal top-N.  This is the scenario the else-branch in
+// PropertyRanking::registerTrack was added to handle.
+//
+// N=2. Shared top-2: {t1(100), self(80)}.  Publisher subscribes: sees t1 only
+// (self excluded).  newcomer(60) registers at rank 2 (== N) — outside the
+// shared top-N, so viewers are unaffected.  However, self occupies a shared
+// slot, so the publisher's personal top-2 reaches to rank 2.  Without the
+// else-branch reconciliation the publisher would never learn about newcomer.
+TEST_F(
+    PropertyRankingSelfExclusionTest,
+    RegisterTrack_OutsideSharedTopN_InsidePublisherPersonalView
+) {
+  auto r = makeRanking();
+  auto pub = makeSession();
+  auto viewer = makeSession();
+
+  auto self = ftn("ns", "self");
+  auto t1 = ftn("ns", "t1");
+  auto newcomer = ftn("ns", "newcomer");
+
+  r->registerTrack(t1, 100, defaultPublisher_);
+  r->registerTrack(self, 80, pub);
+
+  // Shared top-2: {t1, self}.  Publisher sees t1; viewer sees t1 and self.
+  r->addSessionToTopNGroup(2, pub, true);
+  r->addSessionToTopNGroup(2, viewer, true);
+
+  EXPECT_TRUE(wasSelected(t1, pub.get()));
+  EXPECT_FALSE(wasSelected(self, pub.get()));
+  EXPECT_TRUE(wasSelected(t1, viewer.get()));
+  EXPECT_TRUE(wasSelected(self, viewer.get()));
+
+  selected_.clear();
+  evicted_.clear();
+
+  // newcomer lands at rank 2 (== N) — outside the shared top-N.
+  // Viewer is unaffected. Publisher's personal top-2 now covers {t1, newcomer}.
+  r->registerTrack(newcomer, 60, defaultPublisher_);
+
+  EXPECT_TRUE(wasSelected(newcomer, pub.get()));     // publisher picks up newcomer
+  EXPECT_FALSE(wasSelected(newcomer, viewer.get())); // viewer unaffected (rank >= N)
+  EXPECT_FALSE(wasSelected(self, pub.get()));        // self remains excluded
+  EXPECT_FALSE(wasEvicted(t1, pub.get()));           // t1 stays
 }
 
 // Publisher with an existing self-track registers a second self-track.
