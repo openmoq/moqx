@@ -1,0 +1,83 @@
+# moqx relay — production config template for ci.openmoq.org deployment
+#
+# Two listeners on separate ports:
+#   mvfst    :4433 — BBR with pacing
+#   picoquic :4434 — BBR
+#
+# Each listener serves both WebTransport (via endpoint path) and raw
+# QUIC (moqt:// — no path, direct UDP+ALPN). Clients pick the port
+# matching their QUIC stack preference.
+#
+# Cert paths use /etc/letsencrypt convention — adjust for your deployment.
+
+relay_id: "moqx-000"
+
+listener_defaults:
+  quic:
+    max_data: 67108864            # 64 MB connection flow control
+    max_stream_data: 16777216     # 16 MB per-stream flow control
+    max_uni_streams: 8192
+    max_bidi_streams: 16
+    idle_timeout_ms: 30000
+    min_ack_delay_us: 1000
+    max_ack_delay_us: 25000
+
+listeners:
+  - name: mvfst-relay
+    quic_stack: mvfst
+    udp:
+      socket:
+        address: "::"
+        port: 4433
+    tls:
+      cert_file: "/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
+      key_file: "/etc/letsencrypt/live/${DOMAIN}/privkey.pem"
+      insecure: false
+    endpoint: "/moq-relay"
+    quic:
+      cc_algo: bbr
+
+  - name: pico-relay
+    quic_stack: picoquic
+    udp:
+      socket:
+        address: "::"
+        port: 4434
+    tls:
+      cert_file: "/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
+      key_file: "/etc/letsencrypt/live/${DOMAIN}/privkey.pem"
+      insecure: false
+    endpoint: "/moq-pico-relay"
+    quic:
+      cc_algo: bbr
+
+services:
+  default:
+    match:
+      - authority: {any: true}
+        path: {exact: "/moq-relay"}
+      - authority: {any: true}
+        path: {exact: "/moq-pico-relay"}
+      - authority: {any: true}
+        path: {exact: "/"}
+      - authority: {any: true}
+        path: {prefix: "/"}
+
+  interop:
+    match:
+      - authority: {any: true}
+        path: {exact: "/moq-interop"}
+    cache:
+      max_tracks: 100
+      max_groups_per_track: 10
+
+service_defaults:
+  cache:
+    enabled: true
+    max_tracks: 1000
+    max_groups_per_track: 100
+
+admin:
+  port: 8000
+  address: "::"
+  plaintext: true
