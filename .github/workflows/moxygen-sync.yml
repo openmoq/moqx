@@ -33,6 +33,11 @@ jobs:
           ref: main
           submodules: true
           token: ${{ steps.app-token.outputs.token }}
+          # Full history required so we can check out arbitrary moxygen
+          # SHAs inside the submodule. Shallow (default depth=1) creates
+          # shallow submodule clones, which fail with "unable to read
+          # tree" when checking out a SHA whose tree isn't present.
+          fetch-depth: 0
 
       # ══════════════════════════════════════════════════════════
       # PHASE A: Check for blocking sync PR
