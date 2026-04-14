@@ -1229,16 +1229,6 @@ ParsedConfig makeMinimalPicoConfig() {
   return cfg;
 }
 
-TEST(ResolveConfig, PicoBbrMappedToBbr1) {
-  // "bbr" should be silently mapped to "bbr1" for picoquic listeners,
-  // since picoquic registers its BBR implementation as "bbr1".
-  auto cfg = makeMinimalPicoConfig();
-  // Default cc_algo is "bbr" — no override needed.
-  auto result = resolveConfig(cfg);
-  ASSERT_TRUE(result.hasValue());
-  EXPECT_EQ(result.value().config.listeners[0].quic.ccAlgo, "bbr1");
-}
-
 TEST(ResolveConfig, PicoPrefixPathServiceWarning) {
   // The default service uses only a prefix path — pico warns about the prefix
   // rule AND about having no exact-path endpoints registered.

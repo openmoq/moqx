@@ -479,15 +479,13 @@ void validateQuicConfig(
     );
   }
   // (excluded: mvfst "custom"/"staticcwnd" require programmatic setup; "none" disables CC)
-  // picoquic registers "bbr1" not "bbr"; we accept "bbr" in the config for
-  // both stacks and silently map it to "bbr1" for picoquic.
   static const std::unordered_set<std::string> kPicoCcAlgos =
-      {"bbr", "bbr1", "c4", "copa", "cubic", "dcubic", "fast", "newreno", "prague", "reno"};
+      {"bbr", "bbr1", "c4", "cubic", "dcubic", "fast", "newreno", "prague", "reno"};
   static const std::unordered_set<std::string> kMvfstCcAlgos =
       {"bbr", "bbr2", "bbr2modular", "copa", "cubic", "newreno"};
   const auto& validAlgos = (stack == QuicStack::Picoquic) ? kPicoCcAlgos : kMvfstCcAlgos;
   const auto& validList = (stack == QuicStack::Picoquic)
-                              ? "bbr, bbr1, c4, copa, cubic, dcubic, fast, newreno, prague, reno"
+                              ? "bbr, bbr1, c4, cubic, dcubic, fast, newreno, prague, reno"
                               : "bbr, bbr2, bbr2modular, copa, cubic, newreno";
   if (!validAlgos.count(quic.ccAlgo)) {
     errors.push_back(
@@ -643,11 +641,6 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
       const auto stackStr = listener.quic_stack.value().value_or(kStackMvfst);
       const auto stack = (stackStr == kStackPicoquic) ? QuicStack::Picoquic : QuicStack::Mvfst;
       validateQuicConfig(quic, stack, "Listener '" + listener.name.value() + "'", errors, warnings);
-      // picoquic registers its BBR as "bbr1"; map transparently so users
-      // can write cc_algo: bbr for both stacks.
-      if (stack == QuicStack::Picoquic && quic.ccAlgo == "bbr") {
-        quic.ccAlgo = "bbr1";
-      }
       mergedQuicConfigs.push_back(quic);
     }
   }
