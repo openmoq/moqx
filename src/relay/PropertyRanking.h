@@ -7,6 +7,7 @@
 #pragma once
 
 #include <folly/container/F14Map.h>
+#include <folly/container/F14Set.h>
 #include <moxygen/MoQSession.h>
 #include <moxygen/MoQTypes.h>
 
@@ -58,7 +59,12 @@ struct RankKey {
  */
 struct RankedEntry {
   moxygen::FullTrackName ftn;
-  std::weak_ptr<moxygen::MoQSession> publisher;
+  // Raw pointer for O(1) identity comparisons in hot paths (computeWaterlineKey,
+  // reconcilePublisherSelection). Safe because the caller holds a
+  // live shared_ptr to the session being compared, and removeTrack is called
+  // before session destruction. ABA protection is provided by the weak_ptr in
+  // publisherTrackCount_, not here.
+  moxygen::MoQSession* publisherRaw{nullptr};
 };
 
 /**
@@ -77,9 +83,23 @@ enum class TrackState { Selected, Deselected };
 
 /**
  * Per-session state within a TopNGroup.
+ *
+ * Self-exclusion is determined dynamically by comparing RankedEntry::publisher
+ * with the session pointer. There's no separate "publishedTracks" set — a track
+ * is a self-track iff its publisher == this session.
  */
 struct SessionInfo {
   bool forward{true};
+
+  // Waterline for self-exclusion (publisher-subscribers only).
+  // Recomputed by reconcilePublisherSelection when any non-self track's rank changes.
+  // nullopt = fewer than N non-self tracks exist — select all non-self tracks.
+  std::optional<RankKey> waterlineKey;
+
+  // Tracks currently being delivered to this session.
+  // For publisher-subscribers: used to compute the select/evict delta.
+  // For viewers: cleared (viewer selection is handled via batch notifications).
+  folly::F14FastSet<moxygen::FullTrackName, moxygen::FullTrackName::hash> selectedTracks;
 };
 
 /**
@@ -182,7 +202,7 @@ public:
   void registerTrack(
       const moxygen::FullTrackName& ftn,
       std::optional<uint64_t> initialValue,
-      std::weak_ptr<moxygen::MoQSession> publisher
+      std::shared_ptr<moxygen::MoQSession> publisher
   );
 
   /**
@@ -203,6 +223,8 @@ public:
 
   /**
    * Add a session to a TopNGroup.
+   * Self-exclusion is automatic: if this session is the publisher of any
+   * registered track, those tracks will be excluded from its top-N selection.
    */
   void addSessionToTopNGroup(
       uint64_t maxSelected,
@@ -298,6 +320,31 @@ private:
   // Must be called inside an IterationGuard.
   void promoteNextAvailableTrack(TopNGroup& group, const moxygen::FullTrackName& excludeFtn);
 
+  // Check if session owns any tracks in rankedTracks_ (is a publisher).
+  bool isPublisher(const std::shared_ptr<moxygen::MoQSession>& session) const;
+
+  // Compute the waterline key for a publisher-subscriber session.
+  // Returns the RankKey of the Nth non-self track (the lowest-ranked track
+  // that should still be selected for this session). Returns nullopt if
+  // fewer than N non-self tracks exist (meaning all non-self tracks are selected).
+  std::optional<RankKey> computeWaterlineKey(
+      const std::shared_ptr<moxygen::MoQSession>& session,
+      uint64_t maxSelected
+  ) const;
+
+  // Recompute the publisher's personal top-N and fire callbacks for the delta.
+  // Evicts tracks that left the selection; selects tracks that entered it.
+  // Updates info.waterlineKey and info.selectedTracks to reflect the new state.
+  void reconcilePublisherSelection(
+      SessionInfo& info,
+      uint64_t maxSelected,
+      const std::shared_ptr<moxygen::MoQSession>& session
+  );
+
+  // Reconcile all TopNGroups where session appears, handling the case where
+  // a newly-registered track makes a viewer into a publisher-subscriber.
+  void reconcilePublisherInAllGroups(const std::shared_ptr<moxygen::MoQSession>& session);
+
   void invalidateRankCache() { rankCacheValid_ = false; }
 
   uint64_t propertyType_;
@@ -315,6 +362,13 @@ private:
   folly::F14FastMap<moxygen::FullTrackName, RankIndex, moxygen::FullTrackName::hash>
       trackIndexByName_;
   folly::F14FastMap<uint64_t, TopNGroup> topNGroups_;
+
+  // Track count per publisher session for O(1) isPublisher() lookup.
+  // Maintained by registerTrack (increment) and removeTrack (decrement/erase).
+  // MoQSession::cleanup() reliably fires removeTrack for all tracks on session
+  // close (via subscribeError → processPublishDone → cb->publishDone), so the
+  // map never holds zombie entries.
+  folly::F14FastMap<moxygen::MoQSession*, size_t> publisherTrackCount_;
 
   uint64_t nextSeq_{0};
   uint64_t selectionThreshold_{0};
