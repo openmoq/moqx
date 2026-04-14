@@ -21,13 +21,13 @@
  * - Exact top-N verification for subscribers and pub-sub sessions
  */
 
+#include <folly/container/F14Map.h>
+#include <folly/container/F14Set.h>
 #include <folly/coro/BlockingWait.h>
 #include <folly/coro/Collect.h>
 #include <folly/coro/Sleep.h>
 #include <folly/init/Init.h>
 #include <folly/portability/GFlags.h>
-#include <folly/container/F14Map.h>
-#include <folly/container/F14Set.h>
 #include <folly/synchronization/Synchronized.h>
 #include <moxygen/MoQClient.h>
 #include <moxygen/MoQRelaySession.h>
@@ -483,8 +483,7 @@ public:
     report << "  Panelist Failures:        " << metrics_.panelistVerificationFailures << "\n";
     report << "  Overall Status:           "
            << ((metrics_.subscriberVerificationFailures == 0 &&
-                metrics_.panelistVerificationFailures == 0 &&
-                metrics_.selfReceivedObjects == 0)
+                metrics_.panelistVerificationFailures == 0 && metrics_.selfReceivedObjects == 0)
                    ? "PASSED"
                    : "FAILED")
            << "\n\n";
@@ -619,7 +618,10 @@ private:
 
   std::vector<int> connectedPanelistsInRankOrder() const {
     auto state = metrics_.verificationState.rlock();
-    std::vector<int> panelists(state->connectedPanelistIds.begin(), state->connectedPanelistIds.end());
+    std::vector<int> panelists(
+        state->connectedPanelistIds.begin(),
+        state->connectedPanelistIds.end()
+    );
     std::sort(panelists.begin(), panelists.end());
     return panelists;
   }
@@ -655,7 +657,8 @@ private:
       std::ostream& out,
       const std::string& title,
       const std::vector<TrackFilterMetrics::VerificationFailure>& failures,
-      size_t maxSamples) {
+      size_t maxSamples
+  ) {
     out << title << "\n";
     out << std::string(title.size(), '-') << "\n";
     if (failures.empty()) {
@@ -682,7 +685,9 @@ private:
   void verifyCorrectness() {
     auto state = metrics_.verificationState.wlock();
     std::vector<int> connectedPanelists(
-        state->connectedPanelistIds.begin(), state->connectedPanelistIds.end());
+        state->connectedPanelistIds.begin(),
+        state->connectedPanelistIds.end()
+    );
     std::sort(connectedPanelists.begin(), connectedPanelists.end());
     auto expectedSubs = expectedSubscriberTracksFor(connectedPanelists);
     for (int id : connectedPanelists) {
@@ -696,15 +701,18 @@ private:
       metrics_.panelistsVerified++;
       if (actual != expected) {
         metrics_.panelistVerificationFailures++;
-        state->panelistFailures.push_back(
-            TrackFilterMetrics::VerificationFailure{
-                .clientId = id, .expected = std::move(expected), .actual = std::move(actual)}
-        );
+        state->panelistFailures.push_back(TrackFilterMetrics::VerificationFailure{
+            .clientId = id,
+            .expected = std::move(expected),
+            .actual = std::move(actual)
+        });
       }
     }
 
     std::vector<int> connectedSubscribers(
-        state->connectedSubscriberIds.begin(), state->connectedSubscriberIds.end());
+        state->connectedSubscriberIds.begin(),
+        state->connectedSubscriberIds.end()
+    );
     std::sort(connectedSubscribers.begin(), connectedSubscribers.end());
     for (int id : connectedSubscribers) {
       folly::F14FastSet<std::string> actual;
@@ -716,10 +724,11 @@ private:
       metrics_.subscribersVerified++;
       if (actual != expectedSubs) {
         metrics_.subscriberVerificationFailures++;
-        state->subscriberFailures.push_back(
-            TrackFilterMetrics::VerificationFailure{
-                .clientId = id, .expected = expectedSubs, .actual = std::move(actual)}
-        );
+        state->subscriberFailures.push_back(TrackFilterMetrics::VerificationFailure{
+            .clientId = id,
+            .expected = expectedSubs,
+            .actual = std::move(actual)
+        });
       }
     }
   }
@@ -974,6 +983,6 @@ int main(int argc, char** argv) {
   return (metrics.selfReceivedObjects.load() > 0 ||
           metrics.subscriberVerificationFailures.load() > 0 ||
           metrics.panelistVerificationFailures.load() > 0)
-      ? 1
-      : 0;
+             ? 1
+             : 0;
 }
