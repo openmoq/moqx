@@ -1451,5 +1451,22 @@ TEST(ResolveConfig, CacheByteLimitsMergeWithDefaults) {
   EXPECT_EQ(resolved.services.at("overrider").cache.minEvictionKb, 512u);
 }
 
+TEST(ResolveConfig, CachePublishesWithoutSubscribersDefaultsFalseAndCanBeEnabled) {
+  auto cfg = makeMinimalInsecureConfig();
+
+  auto defaultResult = resolveConfig(cfg);
+  ASSERT_TRUE(defaultResult.hasValue());
+  EXPECT_FALSE(defaultResult.value().config.services.at("default").cache
+                   .cachePublishesWithoutSubscribers);
+
+  cfg.services.value().at("default").cache.value()->cache_publishes_without_subscribers =
+      std::optional<bool>{true};
+  auto enabledResult = resolveConfig(cfg);
+  ASSERT_TRUE(enabledResult.hasValue());
+  EXPECT_TRUE(
+      enabledResult.value().config.services.at("default").cache.cachePublishesWithoutSubscribers
+  );
+}
+
 } // namespace
 } // namespace openmoq::moqx::config

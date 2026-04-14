@@ -117,6 +117,11 @@ struct ParsedCacheConfig {
       std::optional<uint32_t>>
       min_eviction_kb;
   rfl::Description<
+      "When true, cache objects from incoming PUBLISH streams even if there are no active "
+      "downstream subscribers at the time the objects arrive. Default: false.",
+      std::optional<bool>>
+      cache_publishes_without_subscribers;
+  rfl::Description<
       "Maximum cache duration (seconds) for any track; clamps publisher-set values. "
       "Also used as the default for tracks without a publisher-set duration when "
       "default_max_cache_duration_s is absent. Default: 86400 (1 day). 0 is invalid. "

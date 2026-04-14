@@ -696,6 +696,140 @@ private:
   FullTrackName ftn_;
 };
 
+namespace {
+
+class NullSubgroupConsumer : public SubgroupConsumer {
+public:
+  folly::Expected<folly::Unit, MoQPublishError> object(
+      uint64_t /*objectID*/,
+      Payload /*payload*/,
+      Extensions /*extensions*/ = noExtensions(),
+      bool /*finSubgroup*/ = false
+  ) override {
+    return folly::unit;
+  }
+
+  folly::Expected<folly::Unit, MoQPublishError> beginObject(
+      uint64_t /*objectID*/,
+      uint64_t length,
+      Payload initialPayload,
+      Extensions /*extensions*/ = noExtensions()
+  ) override {
+    currentLength_ = length;
+    if (initialPayload) {
+      const auto initialBytes = initialPayload->computeChainDataLength();
+      if (initialBytes > currentLength_) {
+        currentLength_ = 0;
+        return folly::makeUnexpected(
+            MoQPublishError(MoQPublishError::API_ERROR, "initial payload exceeds object length")
+        );
+      }
+      currentLength_ -= initialBytes;
+    }
+    return folly::unit;
+  }
+
+  folly::Expected<ObjectPublishStatus, MoQPublishError> objectPayload(
+      Payload payload,
+      bool /*finSubgroup*/ = false
+  ) override {
+    const auto payloadBytes = payload ? payload->computeChainDataLength() : 0;
+    if (payloadBytes > currentLength_) {
+      currentLength_ = 0;
+      return folly::makeUnexpected(
+          MoQPublishError(MoQPublishError::API_ERROR, "object payload exceeds expected length")
+      );
+    }
+    currentLength_ -= payloadBytes;
+    return currentLength_ == 0 ? ObjectPublishStatus::DONE : ObjectPublishStatus::IN_PROGRESS;
+  }
+
+  folly::Expected<folly::Unit, MoQPublishError> endOfGroup(uint64_t /*endOfGroupObjectID*/
+  ) override {
+    return folly::unit;
+  }
+
+  folly::Expected<folly::Unit, MoQPublishError> endOfTrackAndGroup(uint64_t /*endOfTrackObjectID*/
+  ) override {
+    return folly::unit;
+  }
+
+  folly::Expected<folly::Unit, MoQPublishError> endOfSubgroup() override {
+    return folly::unit;
+  }
+
+  void reset(ResetStreamErrorCode /*error*/) override {}
+
+private:
+  uint64_t currentLength_{0};
+};
+
+class NoSubscriberTolerantConsumer : public TrackConsumer {
+public:
+  explicit NoSubscriberTolerantConsumer(std::shared_ptr<MoQForwarder> downstream)
+      : downstream_(std::move(downstream)) {}
+
+  folly::Expected<folly::Unit, MoQPublishError> setTrackAlias(TrackAlias alias) override {
+    return downstream_->setTrackAlias(alias);
+  }
+
+  folly::Expected<std::shared_ptr<SubgroupConsumer>, MoQPublishError>
+  beginSubgroup(
+      uint64_t groupID,
+      uint64_t subgroupID,
+      Priority priority,
+      bool containsLastInGroup = false
+  ) override {
+    auto res = downstream_->beginSubgroup(groupID, subgroupID, priority, containsLastInGroup);
+    if (res.hasValue() || !shouldSink(res.error())) {
+      return res;
+    }
+    return std::static_pointer_cast<SubgroupConsumer>(std::make_shared<NullSubgroupConsumer>());
+  }
+
+  folly::Expected<folly::SemiFuture<folly::Unit>, MoQPublishError> awaitStreamCredit() override {
+    return downstream_->awaitStreamCredit();
+  }
+
+  folly::Expected<folly::Unit, MoQPublishError> objectStream(
+      const ObjectHeader& header,
+      Payload payload,
+      bool lastInGroup = false
+  ) override {
+    auto res = downstream_->objectStream(header, std::move(payload), lastInGroup);
+    if (res.hasValue() || !shouldSink(res.error())) {
+      return res;
+    }
+    return folly::unit;
+  }
+
+  folly::Expected<folly::Unit, MoQPublishError> datagram(
+      const ObjectHeader& header,
+      Payload payload,
+      bool lastInGroup = false
+  ) override {
+    auto res = downstream_->datagram(header, std::move(payload), lastInGroup);
+    if (res.hasValue() || !shouldSink(res.error())) {
+      return res;
+    }
+    return folly::unit;
+  }
+
+  folly::Expected<folly::Unit, MoQPublishError> publishDone(PublishDone pubDone) override {
+    return downstream_->publishDone(std::move(pubDone));
+  }
+
+private:
+  bool shouldSink(const MoQPublishError& err) const {
+    return err.code == MoQPublishError::CANCELLED &&
+           downstream_->numForwardingSubscribers() == 0;
+  }
+
+  std::shared_ptr<MoQForwarder> downstream_;
+};
+
+} // namespace
+
 std::shared_ptr<TrackConsumer> MoqxRelay::getSubscribeWriteback(
     const FullTrackName& ftn,
     std::shared_ptr<TrackConsumer> consumer
@@ -711,8 +845,12 @@ MoqxRelay::FilterChainResult
 MoqxRelay::buildFilterChain(const FullTrackName& ftn, std::shared_ptr<MoQForwarder> forwarder) {
   // Build chain: TopNFilter → TerminationFilter → (cache?) → Forwarder
   // This ensures property values are observed in both PUBLISH and SUBSCRIBE paths.
-  auto baseConsumer = cache_ ? cache_->getSubscribeWriteback(ftn, forwarder)
-                             : std::static_pointer_cast<TrackConsumer>(forwarder);
+  std::shared_ptr<TrackConsumer> downstreamConsumer = forwarder;
+  if (cache_ && cachePublishesWithoutSubscribers_) {
+    downstreamConsumer = std::make_shared<NoSubscriberTolerantConsumer>(forwarder);
+  }
+  auto baseConsumer =
+      cache_ ? cache_->getSubscribeWriteback(ftn, downstreamConsumer) : downstreamConsumer;
   auto terminationFilter =
       std::make_shared<TerminationFilter>(shared_from_this(), ftn, std::move(baseConsumer));
   auto topNFilter =
