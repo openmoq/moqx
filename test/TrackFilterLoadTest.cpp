@@ -21,6 +21,7 @@
  * - Exact top-N verification for subscribers and pub-sub sessions
  */
 
+#include <folly/Synchronized.h>
 #include <folly/container/F14Map.h>
 #include <folly/container/F14Set.h>
 #include <folly/coro/BlockingWait.h>
@@ -28,7 +29,6 @@
 #include <folly/coro/Sleep.h>
 #include <folly/init/Init.h>
 #include <folly/portability/GFlags.h>
-#include <folly/synchronization/Synchronized.h>
 #include <moxygen/MoQClient.h>
 #include <moxygen/MoQRelaySession.h>
 #include <moxygen/MoQWebTransportClient.h>
