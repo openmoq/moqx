@@ -529,6 +529,10 @@ MoqxRelay::publish(PublishRequest pub, std::shared_ptr<Publisher::SubscriptionHa
   rsub.requestID = pub.requestID;
   rsub.handle = std::move(handle);
   rsub.isPublish = true;
+  // Give newly published tracks an initial grace period for idle eviction.
+  // Without this, the first active track can sweep out other selected tracks
+  // that have not emitted their first object yet.
+  rsub.lastObjectTime = std::chrono::steady_clock::now();
 
   // Build filter chain using shared helper (TopNFilter → TerminationFilter → Forwarder).
   auto [filterConsumer, topNFilter] = buildFilterChain(pub.fullTrackName, forwarder);
@@ -1015,6 +1019,8 @@ MoqxRelay::subscribe(SubscribeRequest subReq, std::shared_ptr<TrackConsumer> con
         std::forward_as_tuple(forwarder, upstreamSession)
     );
     emplaceRes.first->second.topNFilter = topNFilter;
+    // Apply the same idle-eviction grace period to SUBSCRIBE-path tracks.
+    emplaceRes.first->second.lastObjectTime = std::chrono::steady_clock::now();
     // The iterator returned from emplace does not survive across coroutine
     // resumption, so both the guard and updating the RelaySubscription below
     // require another lookup in the subscriptions_ map.

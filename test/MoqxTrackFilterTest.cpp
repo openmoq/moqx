@@ -103,7 +103,10 @@ protected:
           ON_CALL(*consumer, setTrackAlias(_))
               .WillByDefault(Return(folly::makeExpected<MoQPublishError>(folly::unit)));
           ON_CALL(*consumer, objectStream(_, _, _))
-              .WillByDefault(Return(folly::makeExpected<MoQPublishError>(folly::unit)));
+              .WillByDefault(Invoke([this, raw, ftn = pub.fullTrackName](const auto&, auto, bool) {
+                objectsPerTrack_[raw][ftn]++;
+                return folly::makeExpected<MoQPublishError>(folly::unit);
+              }));
           ON_CALL(*consumer, publishDone(_))
               .WillByDefault(Invoke([this, raw, ftn = pub.fullTrackName](PublishDone) mutable {
                 publishDoneCount_[raw][ftn]++;
@@ -139,6 +142,16 @@ protected:
   int publishDoneCount(MockMoQSession* s, const FullTrackName& ftn) const {
     auto it = publishDoneCount_.find(s);
     if (it == publishDoneCount_.end()) {
+      return 0;
+    }
+    auto it2 = it->second.find(ftn);
+    return it2 != it->second.end() ? it2->second : 0;
+  }
+
+  // How many objects were delivered to the session for ftn
+  int objectCount(MockMoQSession* s, const FullTrackName& ftn) const {
+    auto it = objectsPerTrack_.find(s);
+    if (it == objectsPerTrack_.end()) {
       return 0;
     }
     auto it2 = it->second.find(ftn);
@@ -264,6 +277,8 @@ protected:
 
   // per-session record of which FTNs were pushed via publish()
   std::map<MoQSession*, std::vector<FullTrackName>> publishedTracks_;
+  // per-session, per-FTN count of objectStream() calls received
+  std::map<MoQSession*, std::map<FullTrackName, int>> objectsPerTrack_;
   // per-session, per-FTN count of publishDone() calls received
   std::map<MoQSession*, std::map<FullTrackName, int>> publishDoneCount_;
 };
@@ -513,6 +528,49 @@ TEST_F(MoqxTrackFilterTest, PublishFirst_LateSubscriber_ValueChangeUpdatesRankin
 
   consumerLoud->publishDone(makePublishDone());
   consumerQuiet->publishDone(makePublishDone());
+}
+
+// When selected tracks have not emitted their first object yet, the relay must
+// not idle-evict them before that first cycle completes. This guards the
+// boundary case seen in the live load test where rank N was replaced by N+1.
+TEST_F(MoqxTrackFilterTest, FirstObjectCycle_DoesNotEvictSelectedTracksBeforeFirstObject) {
+  relay_ = std::make_shared<MoqxRelay>(
+      config::CacheConfig{0, 0},
+      /*relayID=*/"",
+      /*maxDeselected=*/0,
+      /*idleTimeout=*/std::chrono::seconds(10),
+      /*activityThreshold=*/std::chrono::milliseconds(1)
+  );
+  relay_->setAllowedNamespacePrefix(kPrefix);
+
+  std::vector<std::shared_ptr<MockMoQSession>> publishers;
+  std::vector<std::shared_ptr<TrackConsumer>> consumers;
+  publishers.reserve(7);
+  consumers.reserve(7);
+
+  for (int i = 0; i < 7; ++i) {
+    auto publisher = makeSession();
+    publishers.push_back(publisher);
+    consumers.push_back(doPublish(publisher, folly::to<std::string>("p", i)));
+  }
+  exec_->driveFor(10);
+
+  auto viewer = makeSession();
+  doSubscribeFilter(viewer, /*maxSelected=*/6);
+  exec_->driveFor(20);
+
+  for (int i = 0; i < 7; ++i) {
+    sendValue(consumers[i], static_cast<uint64_t>(70 - i));
+    exec_->driveFor(5);
+  }
+  exec_->driveFor(30);
+
+  EXPECT_GT(objectCount(viewer.get(), ftn("p5")), 0);
+  EXPECT_EQ(objectCount(viewer.get(), ftn("p6")), 0);
+
+  for (auto& consumer : consumers) {
+    consumer->publishDone(makePublishDone());
+  }
 }
 
 // ---------------------------------------------------------------------------
