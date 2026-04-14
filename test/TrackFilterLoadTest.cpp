@@ -8,10 +8,17 @@
  * - 10,000 pure subscribers (TRACK_FILTER only, top-N selection)
  * - All requesting top-3 tracks
  *
- * Generates performance report on:
+ * Correctness model:
+ * - Published ranking is deterministic, so expected top-N membership is known
+ * - Pure subscribers must receive exactly the expected top-N tracks
+ * - Panelists must receive exactly the expected top-N non-self tracks
+ * - No panelist may receive its own track
+ *
+ * Generates performance and correctness report on:
  * - Track filter selection events
  * - Time spent in filtering, ranking, forwarding
  * - Throughput and latency metrics
+ * - Exact top-N verification for subscribers and pub-sub sessions
  */
 
 #include <folly/coro/BlockingWait.h>
@@ -19,6 +26,9 @@
 #include <folly/coro/Sleep.h>
 #include <folly/init/Init.h>
 #include <folly/portability/GFlags.h>
+#include <folly/container/F14Map.h>
+#include <folly/container/F14Set.h>
+#include <folly/synchronization/Synchronized.h>
 #include <moxygen/MoQClient.h>
 #include <moxygen/MoQRelaySession.h>
 #include <moxygen/MoQWebTransportClient.h>
@@ -26,15 +36,13 @@
 #include <moxygen/relay/MoQRelayClient.h>
 #include <moxygen/util/InsecureVerifierDangerousDoNotUseInProduction.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <memory>
-#include <mutex>
-#include <random>
-#include <set>
 #include <sstream>
 #include <vector>
 
@@ -62,6 +70,31 @@ constexpr uint64_t kAudioLevelPropertyType = 0x01;
 
 // Metrics collection
 struct TrackFilterMetrics {
+  struct VerificationFailure {
+    int clientId;
+    folly::F14FastSet<std::string> expected;
+    folly::F14FastSet<std::string> actual;
+  };
+
+  struct ClientDeliveryState {
+    bool isPanelist{false};
+    folly::F14FastSet<std::string> receivedTracks;
+    folly::F14FastMap<std::string, uint64_t> objectsPerTrack;
+  };
+
+  struct VerificationState {
+    folly::F14FastMap<int, ClientDeliveryState> clientDeliveries;
+    folly::F14FastSet<int> connectedPanelistIds;
+    folly::F14FastSet<int> connectedSubscriberIds;
+    std::vector<VerificationFailure> subscriberFailures;
+    std::vector<VerificationFailure> panelistFailures;
+  };
+
+  struct LatencyState {
+    std::vector<uint64_t> objectLatencies;
+    std::vector<uint64_t> selectionLatencies;
+  };
+
   // Connection metrics
   std::atomic<uint64_t> panelistsConnected{0};
   std::atomic<uint64_t> subscribersConnected{0};
@@ -77,26 +110,48 @@ struct TrackFilterMetrics {
   std::atomic<uint64_t> tracksSelected{0};
   std::atomic<uint64_t> tracksEvicted{0};
 
+  // Correctness verification
+  folly::Synchronized<VerificationState> verificationState;
+  std::atomic<uint64_t> subscribersVerified{0};
+  std::atomic<uint64_t> subscriberVerificationFailures{0};
+  std::atomic<uint64_t> panelistsVerified{0};
+  std::atomic<uint64_t> panelistVerificationFailures{0};
+
   // Latency tracking (microseconds)
-  std::mutex latencyMutex;
-  std::vector<uint64_t> objectLatencies;
-  std::vector<uint64_t> selectionLatencies;
+  folly::Synchronized<LatencyState> latencyState;
 
   // Timing
   steady_clock::time_point testStart;
   steady_clock::time_point testEnd;
 
   void recordObjectLatency(uint64_t latencyUs) {
-    std::lock_guard<std::mutex> lock(latencyMutex);
-    if (objectLatencies.size() < 1000000) { // Cap at 1M samples
-      objectLatencies.push_back(latencyUs);
+    auto latency = latencyState.wlock();
+    if (latency->objectLatencies.size() < 1000000) { // Cap at 1M samples
+      latency->objectLatencies.push_back(latencyUs);
     }
   }
 
   void recordSelectionLatency(uint64_t latencyUs) {
-    std::lock_guard<std::mutex> lock(latencyMutex);
-    if (selectionLatencies.size() < 100000) {
-      selectionLatencies.push_back(latencyUs);
+    auto latency = latencyState.wlock();
+    if (latency->selectionLatencies.size() < 100000) {
+      latency->selectionLatencies.push_back(latencyUs);
+    }
+  }
+
+  void recordDeliveredObject(int clientId, bool isPanelist, const std::string& trackName) {
+    auto state = verificationState.wlock();
+    auto& delivery = state->clientDeliveries[clientId];
+    delivery.isPanelist = isPanelist;
+    delivery.receivedTracks.insert(trackName);
+    delivery.objectsPerTrack[trackName]++;
+  }
+
+  void recordConnectedClient(int clientId, bool isPanelist) {
+    auto state = verificationState.wlock();
+    if (isPanelist) {
+      state->connectedPanelistIds.insert(clientId);
+    } else {
+      state->connectedSubscriberIds.insert(clientId);
     }
   }
 };
@@ -187,6 +242,7 @@ private:
       metrics_.selfReceivedObjects++;
     } else {
       metrics_.receivedObjects++;
+      metrics_.recordDeliveredObject(clientId_, isPanelist_, trackName_);
     }
   }
 
@@ -208,6 +264,7 @@ private:
         metrics_.selfReceivedObjects++;
       } else {
         metrics_.receivedObjects++;
+        metrics_.recordDeliveredObject(clientId_, isPanelist_, trackName_);
       }
       return folly::unit;
     }
@@ -350,6 +407,7 @@ public:
       // Phase 3: Run publishing loop
       std::cout << "\nPhase 3: Running test for " << FLAGS_duration << " seconds...\n";
       co_await runPublisherLoop(seconds(FLAGS_duration));
+      verifyCorrectness();
 
       metrics_.testEnd = steady_clock::now();
 
@@ -381,6 +439,7 @@ public:
     report << "  Pure Subscribers:        " << FLAGS_subscribers << "\n";
     report << "  Total Clients:           " << (FLAGS_panelists + FLAGS_subscribers) << "\n";
     report << "  Top-N Filter:            " << FLAGS_top_n << "\n";
+    report << "  Ranking Mode:            deterministic descending by panelist id\n";
     report << "  Update Rate:             " << FLAGS_update_hz << " Hz\n";
     report << "  Duration:                " << FLAGS_duration << "s\n\n";
 
@@ -416,6 +475,20 @@ public:
     report << "  Tracks Selected:         " << metrics_.tracksSelected << "\n";
     report << "  Tracks Evicted:          " << metrics_.tracksEvicted << "\n\n";
 
+    report << "TOP-N CORRECTNESS VERIFICATION\n";
+    report << "------------------------------\n";
+    report << "  Subscribers Verified:     " << metrics_.subscribersVerified << "\n";
+    report << "  Subscriber Failures:      " << metrics_.subscriberVerificationFailures << "\n";
+    report << "  Panelists Verified:       " << metrics_.panelistsVerified << "\n";
+    report << "  Panelist Failures:        " << metrics_.panelistVerificationFailures << "\n";
+    report << "  Overall Status:           "
+           << ((metrics_.subscriberVerificationFailures == 0 &&
+                metrics_.panelistVerificationFailures == 0 &&
+                metrics_.selfReceivedObjects == 0)
+                   ? "PASSED"
+                   : "FAILED")
+           << "\n\n";
+
     // Self-Exclusion Status
     report << "SELF-EXCLUSION VERIFICATION\n";
     report << "---------------------------\n";
@@ -439,43 +512,54 @@ public:
     report << "  Publish Rate:            " << std::fixed << std::setprecision(1) << publishRate
            << "% of target\n\n";
 
-    // Forwarding efficiency: based on ACTUAL published objects from top-N tracks
-    // Only top-N tracks are selected, so only (top_n/panelists) fraction should be forwarded
-    // Each forwarded object goes to: all subscribers + (panelists - 1) other panelists
-    report << "TRACK FILTER FORWARDING\n";
-    report << "-----------------------\n";
-    uint64_t effectiveTopN = std::min(FLAGS_top_n, FLAGS_panelists);
-    double topNFraction = static_cast<double>(effectiveTopN) / FLAGS_panelists;
-    uint64_t estimatedTopNObjects = static_cast<uint64_t>(metrics_.publishedObjects * topNFraction);
-    uint64_t recipientsPerObject = FLAGS_subscribers + (FLAGS_panelists - 1);
-    uint64_t expectedForwarded = estimatedTopNObjects * recipientsPerObject;
+    report << "EXPECTED TOP-N SETS\n";
+    report << "-------------------\n";
+    report << "  Pure subscriber expected tracks: ";
+    appendTrackSet(report, expectedSubscriberTracks());
+    report << "\n";
+    report << "  Sample pub-sub expected tracks:\n";
+    auto connectedPanelists = connectedPanelistsInRankOrder();
+    for (size_t i = 0; i < std::min<size_t>(connectedPanelists.size(), 5); ++i) {
+      int panelistId = connectedPanelists[i];
+      report << "    panelist-" << panelistId << ": ";
+      appendTrackSet(report, expectedPanelistTracks(panelistId));
+      report << "\n";
+    }
+    if (connectedPanelists.size() > 5) {
+      report << "    ... (" << (connectedPanelists.size() - 5) << " more connected panelists)\n";
+    }
+    report << "\n";
 
-    report << "  Top-N Tracks:            " << effectiveTopN << "/" << FLAGS_panelists << "\n";
-    report << "  Objects from Top-N:      ~" << estimatedTopNObjects << "\n";
-    report << "  Recipients per Object:   " << recipientsPerObject << " (" << FLAGS_subscribers
-           << " subs + " << (FLAGS_panelists - 1) << " panelists)\n";
-    report << "  Expected Forwarded:      ~" << expectedForwarded << "\n";
-    report << "  Actual Received:         " << metrics_.receivedObjects << "\n";
-    double forwardEfficiency = (metrics_.receivedObjects > 0 && expectedForwarded > 0)
-                                   ? (100.0 * metrics_.receivedObjects / expectedForwarded)
-                                   : 0;
-    report << "  Forwarding Efficiency:   " << std::fixed << std::setprecision(1)
-           << forwardEfficiency << "%\n\n";
+    {
+      auto verification = metrics_.verificationState.rlock();
+      appendFailureSamples(
+          report,
+          "SUBSCRIBER TOP-N FAILURES",
+          verification->subscriberFailures,
+          std::min<size_t>(verification->subscriberFailures.size(), 5)
+      );
+      appendFailureSamples(
+          report,
+          "PUB-SUB TOP-N + SELF-EXCLUSION FAILURES",
+          verification->panelistFailures,
+          std::min<size_t>(verification->panelistFailures.size(), 5)
+      );
+    }
 
     // Latency Statistics
     {
-      std::lock_guard<std::mutex> lock(metrics_.latencyMutex);
-      if (!metrics_.objectLatencies.empty()) {
+      auto latency = metrics_.latencyState.wlock();
+      if (!latency->objectLatencies.empty()) {
         report << "OBJECT LATENCY (microseconds)\n";
         report << "-----------------------------\n";
-        std::sort(metrics_.objectLatencies.begin(), metrics_.objectLatencies.end());
-        size_t n = metrics_.objectLatencies.size();
+        std::sort(latency->objectLatencies.begin(), latency->objectLatencies.end());
+        size_t n = latency->objectLatencies.size();
         report << "  Samples:    " << n << "\n";
-        report << "  Min:        " << metrics_.objectLatencies.front() << " us\n";
-        report << "  Max:        " << metrics_.objectLatencies.back() << " us\n";
-        report << "  P50:        " << metrics_.objectLatencies[n / 2] << " us\n";
-        report << "  P95:        " << metrics_.objectLatencies[n * 95 / 100] << " us\n";
-        report << "  P99:        " << metrics_.objectLatencies[n * 99 / 100] << " us\n\n";
+        report << "  Min:        " << latency->objectLatencies.front() << " us\n";
+        report << "  Max:        " << latency->objectLatencies.back() << " us\n";
+        report << "  P50:        " << latency->objectLatencies[n / 2] << " us\n";
+        report << "  P95:        " << latency->objectLatencies[n * 95 / 100] << " us\n";
+        report << "  P99:        " << latency->objectLatencies[n * 99 / 100] << " us\n\n";
       }
     }
 
@@ -504,6 +588,142 @@ public:
   }
 
 private:
+  static std::string trackNameForPanelist(int id) {
+    return folly::to<std::string>("panelist-", id);
+  }
+
+  static folly::F14FastSet<std::string>
+  expectedSubscriberTracksFor(const std::vector<int>& connectedPanelists) {
+    folly::F14FastSet<std::string> expected;
+    int effectiveTopN = std::min<int>(FLAGS_top_n, connectedPanelists.size());
+    for (int i = 0; i < effectiveTopN; ++i) {
+      expected.insert(trackNameForPanelist(connectedPanelists[i]));
+    }
+    return expected;
+  }
+
+  static folly::F14FastSet<std::string>
+  expectedPanelistTracksFor(const std::vector<int>& connectedPanelists, int panelistId) {
+    folly::F14FastSet<std::string> expected;
+    for (int id : connectedPanelists) {
+      if (static_cast<int>(expected.size()) >= FLAGS_top_n) {
+        break;
+      }
+      if (id == panelistId) {
+        continue;
+      }
+      expected.insert(trackNameForPanelist(id));
+    }
+    return expected;
+  }
+
+  std::vector<int> connectedPanelistsInRankOrder() const {
+    auto state = metrics_.verificationState.rlock();
+    std::vector<int> panelists(state->connectedPanelistIds.begin(), state->connectedPanelistIds.end());
+    std::sort(panelists.begin(), panelists.end());
+    return panelists;
+  }
+
+  folly::F14FastSet<std::string> expectedSubscriberTracks() const {
+    return expectedSubscriberTracksFor(connectedPanelistsInRankOrder());
+  }
+
+  folly::F14FastSet<std::string> expectedPanelistTracks(int panelistId) const {
+    return expectedPanelistTracksFor(connectedPanelistsInRankOrder(), panelistId);
+  }
+
+  static void appendTrackSet(std::ostream& out, const folly::F14FastSet<std::string>& tracks) {
+    if (tracks.empty()) {
+      out << "(none)";
+      return;
+    }
+
+    std::vector<std::string> sortedTracks(tracks.begin(), tracks.end());
+    std::sort(sortedTracks.begin(), sortedTracks.end());
+
+    bool first = true;
+    for (const auto& track : sortedTracks) {
+      if (!first) {
+        out << ", ";
+      }
+      out << track;
+      first = false;
+    }
+  }
+
+  static void appendFailureSamples(
+      std::ostream& out,
+      const std::string& title,
+      const std::vector<TrackFilterMetrics::VerificationFailure>& failures,
+      size_t maxSamples) {
+    out << title << "\n";
+    out << std::string(title.size(), '-') << "\n";
+    if (failures.empty()) {
+      out << "  None\n\n";
+      return;
+    }
+
+    for (size_t i = 0; i < maxSamples; ++i) {
+      const auto& failure = failures[i];
+      out << "  Client " << failure.clientId << "\n";
+      out << "    Expected: ";
+      appendTrackSet(out, failure.expected);
+      out << "\n";
+      out << "    Actual:   ";
+      appendTrackSet(out, failure.actual);
+      out << "\n";
+    }
+    if (failures.size() > maxSamples) {
+      out << "  ... " << (failures.size() - maxSamples) << " more failures\n";
+    }
+    out << "\n";
+  }
+
+  void verifyCorrectness() {
+    auto state = metrics_.verificationState.wlock();
+    std::vector<int> connectedPanelists(
+        state->connectedPanelistIds.begin(), state->connectedPanelistIds.end());
+    std::sort(connectedPanelists.begin(), connectedPanelists.end());
+    auto expectedSubs = expectedSubscriberTracksFor(connectedPanelists);
+    for (int id : connectedPanelists) {
+      folly::F14FastSet<std::string> actual;
+      auto it = state->clientDeliveries.find(id);
+      if (it != state->clientDeliveries.end()) {
+        actual = it->second.receivedTracks;
+      }
+
+      auto expected = expectedPanelistTracksFor(connectedPanelists, id);
+      metrics_.panelistsVerified++;
+      if (actual != expected) {
+        metrics_.panelistVerificationFailures++;
+        state->panelistFailures.push_back(
+            TrackFilterMetrics::VerificationFailure{
+                .clientId = id, .expected = std::move(expected), .actual = std::move(actual)}
+        );
+      }
+    }
+
+    std::vector<int> connectedSubscribers(
+        state->connectedSubscriberIds.begin(), state->connectedSubscriberIds.end());
+    std::sort(connectedSubscribers.begin(), connectedSubscribers.end());
+    for (int id : connectedSubscribers) {
+      folly::F14FastSet<std::string> actual;
+      auto it = state->clientDeliveries.find(id);
+      if (it != state->clientDeliveries.end()) {
+        actual = it->second.receivedTracks;
+      }
+
+      metrics_.subscribersVerified++;
+      if (actual != expectedSubs) {
+        metrics_.subscriberVerificationFailures++;
+        state->subscriberFailures.push_back(
+            TrackFilterMetrics::VerificationFailure{
+                .clientId = id, .expected = expectedSubs, .actual = std::move(actual)}
+        );
+      }
+    }
+  }
+
   folly::coro::Task<bool> connectPanelist(int id) {
     proxygen::URL url(FLAGS_relay_url);
     auto verifier =
@@ -580,6 +800,7 @@ private:
       panelistSessions_.push_back(session);
       panelistConsumers_.push_back(pubResponse.consumer);
       subscribeNamespaceHandles_.push_back(std::move(subResult.value()));
+      metrics_.recordConnectedClient(id, true);
 
       co_return true;
 
@@ -642,6 +863,7 @@ private:
       subscriberClients_.push_back(std::move(client));
       subscriberSessions_.push_back(session);
       subscriberHandles_.push_back(std::move(subResult.value()));
+      metrics_.recordConnectedClient(FLAGS_panelists + id, false);
 
       co_return true;
 
@@ -651,13 +873,10 @@ private:
   }
 
   folly::coro::Task<void> runPublisherLoop(seconds duration) {
-    std::mt19937 rng(std::random_device{}());
-    std::uniform_int_distribution<uint64_t> noiseDist(0, 30);
-
     auto endTime = steady_clock::now() + duration;
     uint64_t group = 0;
     auto updateInterval = microseconds(1000000 / FLAGS_update_hz);
-    int progressInterval = FLAGS_duration / 10;
+    int progressInterval = std::max(1, FLAGS_duration / 10);
     auto nextProgress = steady_clock::now() + seconds(progressInterval);
 
     while (steady_clock::now() < endTime) {
@@ -668,9 +887,9 @@ private:
         if (!consumer)
           continue;
 
-        // First 20% are "active speakers" with higher audio levels
-        uint64_t baseLevel = (i < panelistConsumers_.size() / 5) ? 70 : 30;
-        uint64_t audioLevel = std::min(uint64_t{100}, baseLevel + noiseDist(rng));
+        // Deterministic strict ranking:
+        // panelist-0 > panelist-1 > panelist-2 > ...
+        uint64_t audioLevel = static_cast<uint64_t>(panelistConsumers_.size() - i);
 
         Extensions extensions;
         extensions.getMutableExtensions().push_back(Extension(kAudioLevelPropertyType, audioLevel));
@@ -752,5 +971,9 @@ int main(int argc, char** argv) {
   });
   evb.loop();
 
-  return metrics.selfReceivedObjects.load() > 0 ? 1 : 0;
+  return (metrics.selfReceivedObjects.load() > 0 ||
+          metrics.subscriberVerificationFailures.load() > 0 ||
+          metrics.panelistVerificationFailures.load() > 0)
+      ? 1
+      : 0;
 }
