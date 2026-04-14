@@ -422,7 +422,9 @@ TEST_F(MoQRelayTest, LateSubscriberGetsLiveObjectsButNoCachedReplay) {
   auto consumer = doPublish(publisherSession, kTestTrackName);
   auto subgroup1 = consumer->beginSubgroup(1, 0, 0);
   ASSERT_TRUE(subgroup1.hasValue());
-  EXPECT_TRUE(subgroup1.value()->object(0, makeBuf("before"), noExtensions(), true).hasValue());
+  EXPECT_TRUE(
+      subgroup1.value()->object(0, makeBuf("before"), noExtensions(), true).hasValue()
+  );
 
   auto subscriberSession = createMockSession();
   auto mockConsumer = createMockConsumer();
@@ -440,7 +442,9 @@ TEST_F(MoQRelayTest, LateSubscriberGetsLiveObjectsButNoCachedReplay) {
 
   auto subgroup2 = consumer->beginSubgroup(2, 0, 0);
   ASSERT_TRUE(subgroup2.hasValue());
-  EXPECT_TRUE(subgroup2.value()->object(0, makeBuf("after"), noExtensions(), true).hasValue());
+  EXPECT_TRUE(
+      subgroup2.value()->object(0, makeBuf("after"), noExtensions(), true).hasValue()
+  );
 
   CacheStatsVisitor visitor;
   relay_->dumpState(visitor);
