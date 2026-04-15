@@ -344,8 +344,7 @@ bool PropertyRanking::crossesThreshold(uint64_t oldRank, uint64_t newRank) const
   // Use the larger of selectionThreshold_ and publisherExtendedThreshold_.
   // Publisher-subscribers with self-exclusion have an extended window: they
   // need to see top-N non-self tracks, which could span N + selfTrackCount
-  // global ranks. Without this, moves in the publisher-extended zone (e.g.,
-  // rank 4→3 when a publisher has 1 self-track at rank 1 with N=3) would
+  // global ranks. Without this, moves in the publisher-extended zone would
   // incorrectly fast-path and miss recomputation.
   uint64_t effectiveThreshold = std::max(selectionThreshold_, publisherExtendedThreshold_);
   if (oldRank >= effectiveThreshold && newRank >= effectiveThreshold) {
@@ -370,6 +369,36 @@ bool PropertyRanking::crossesThreshold(uint64_t oldRank, uint64_t newRank) const
   auto it = std::upper_bound(sortedThresholds_.begin(), sortedThresholds_.end(), minRank);
   if (it != sortedThresholds_.end() && *it <= maxRank) {
     return true;
+  }
+
+  // Publisher-subscriber check: for publishers with self-exclusion, a move
+  // that doesn't cross any N-threshold for the shared selection may still
+  // affect their personal top-N. A publisher with S self-tracks needs to see
+  // up to N+S ranks to find their N non-self tracks. If any publisher exists
+  // and the move is within the first (max N + max self-track count) ranks,
+  // we must recompute. We use publisherExtendedThreshold_ (before maxDeselected
+  // adjustment) to determine this. Since publisherExtendedThreshold_ includes
+  // maxDeselected_, we compare against publisherExtendedThreshold_ directly.
+  if (!publisherTrackCount_.empty()) {
+    // Find max N across all groups
+    uint64_t maxN = 0;
+    for (const auto& [n, _] : topNGroups_) {
+      maxN = std::max(maxN, n);
+    }
+    // Compute max(N + selfTrackCount) across publisher-subscribers
+    uint64_t maxExtended = maxN;
+    for (const auto& [n, topNGroup] : topNGroups_) {
+      for (const auto& [session, info] : topNGroup.sessions) {
+        auto countIt = publisherTrackCount_.find(session.get());
+        if (countIt != publisherTrackCount_.end()) {
+          maxExtended = std::max(maxExtended, n + countIt->second);
+        }
+      }
+    }
+    // If either rank is within the publisher's extended window, recompute.
+    if (minRank < maxExtended || maxRank < maxExtended) {
+      return true;
+    }
   }
 
   return false;
