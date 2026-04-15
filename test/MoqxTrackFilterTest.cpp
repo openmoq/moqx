@@ -239,7 +239,11 @@ protected:
     ok.trackAlias = TrackAlias(0);
     ok.expires = std::chrono::milliseconds(0);
     ok.groupOrder = GroupOrder::Default;
-    return std::make_shared<NiceMock<MockSubscriptionHandle>>(std::move(ok));
+    auto handle = std::make_shared<NiceMock<MockSubscriptionHandle>>(std::move(ok));
+    // Configure the mock to return success for requestUpdate calls
+    ON_CALL(*handle, requestUpdateResult())
+        .WillByDefault(Return(folly::makeExpected<RequestError>(RequestOk{})));
+    return handle;
   }
 
   FullTrackName ftn(const std::string& name) const { return FullTrackName{kNs, name}; }

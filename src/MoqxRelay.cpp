@@ -1393,8 +1393,20 @@ std::shared_ptr<PropertyRanking> MoqxRelay::getOrCreateRanking(
       auto [prefix, current] = queue.front();
       queue.pop_front();
 
-      // Register tracks at this level
-      for (auto& [trackName, publishSession] : current->publishes) {
+      // Register tracks at this level. Sort track names first for deterministic
+      // arrivalSeq assignment (F14FastMap iteration order is non-deterministic).
+      std::vector<std::string> sortedTrackNames;
+      sortedTrackNames.reserve(current->publishes.size());
+      for (const auto& [trackName, _] : current->publishes) {
+        sortedTrackNames.push_back(trackName);
+      }
+      std::sort(sortedTrackNames.begin(), sortedTrackNames.end());
+
+      for (const auto& trackName : sortedTrackNames) {
+        auto pubIt = current->publishes.find(trackName);
+        XCHECK(pubIt != current->publishes.end());
+        const auto& publishSession = pubIt->second;
+
         FullTrackName ftn{prefix, trackName};
         std::optional<uint64_t> initialValue;
         auto subIt = subscriptions_.find(ftn);
