@@ -724,4 +724,62 @@ TEST_F(PropertyRankingSelfExclusionTest, RemoveSelfTrack_BecomesViewer_ReceivedA
   EXPECT_FALSE(wasEvicted(t2, pub.get())); // viewers don't receive eviction callbacks
 }
 
+// Regression test for GitHub issue #188: crossesThreshold() fast-path was using
+// selectionThreshold_ (max N) which ignored publisher-subscribers' extended window.
+//
+// The bug: when both oldRank and newRank are >= selectionThreshold_, the fast-path
+// returns false. But a publisher with self-tracks has an extended window of
+// N + selfTrackCount, so moves within that extended zone must still trigger
+// recomputation.
+//
+// Setup: t1(100), self(90), t2(80), t3(70), t4(60). N=3.
+// Shared top-3: t1, self, t2. selectionThreshold_ = 3.
+// Publisher's top-3 non-self: t1 (rank 0), t2 (rank 2), t3 (rank 3).
+// t4 is at rank 4 — outside the shared threshold but t3 is AT the boundary.
+//
+// t4 rises from 60 to 75: moves from rank 4 to rank 3, pushing t3 to rank 4.
+// crossesThreshold(4, 3) with selectionThreshold_=3: both >= 3 → false (BUG!).
+// With publisherExtendedThreshold_=4: old=4 >= 4, new=3 < 4 → true (FIXED).
+//
+// The publisher should see t4 selected and t3 evicted.
+TEST_F(PropertyRankingSelfExclusionTest, Issue188_CrossesThreshold_ExtendedWindow) {
+  auto r = makeRanking();
+  auto pub = makeSession();
+
+  auto self = ftn("ns", "self");
+  auto t1 = ftn("ns", "t1");
+  auto t2 = ftn("ns", "t2");
+  auto t3 = ftn("ns", "t3");
+  auto t4 = ftn("ns", "t4");
+
+  // Register tracks: t1(100) > self(90) > t2(80) > t3(70) > t4(60)
+  r->registerTrack(t1, 100, defaultPublisher_);
+  r->registerTrack(self, 90, pub);
+  r->registerTrack(t2, 80, defaultPublisher_);
+  r->registerTrack(t3, 70, defaultPublisher_);
+  r->registerTrack(t4, 60, defaultPublisher_);
+
+  // Publisher subscribes N=3. Shared top-3: t1, self, t2.
+  // Publisher's non-self top-3: t1 (rank 0), t2 (rank 2), t3 (rank 3).
+  r->addSessionToTopNGroup(3, pub, true);
+
+  EXPECT_TRUE(wasSelected(t1, pub.get()));
+  EXPECT_FALSE(wasSelected(self, pub.get())); // excluded
+  EXPECT_TRUE(wasSelected(t2, pub.get()));
+  EXPECT_TRUE(wasSelected(t3, pub.get())); // 3rd non-self
+  EXPECT_FALSE(wasSelected(t4, pub.get()));
+
+  selected_.clear();
+  evicted_.clear();
+
+  // t4 rises from 60 to 75. New order: t1(100) > self(90) > t2(80) > t4(75) > t3(70).
+  // t4: rank 4 → rank 3. t3: rank 3 → rank 4.
+  // Publisher's new non-self top-3: t1, t2, t4. t3 is now rank 4 (4th non-self).
+  r->updateSortValue(t4, 75);
+
+  EXPECT_TRUE(wasSelected(t4, pub.get()));  // t4 entered publisher's top-3
+  EXPECT_TRUE(wasEvicted(t3, pub.get()));   // t3 pushed out of publisher's top-3
+  EXPECT_FALSE(wasSelected(self, pub.get())); // self still excluded
+}
+
 } // namespace
