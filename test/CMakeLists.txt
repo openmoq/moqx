@@ -209,7 +209,6 @@ add_executable(track_filter_load_test
 target_link_libraries(track_filter_load_test PRIVATE
   moqx_core
   Folly::folly_init_init
-  Folly::folly_synchronized
   moxygen::moxygen_events_moq_folly_executor_impl
   moxygen::moxygen_moqclient
   moxygen::moxygen_moq_webtransport_client
