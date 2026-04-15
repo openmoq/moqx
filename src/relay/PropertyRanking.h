@@ -280,6 +280,32 @@ public:
     return it != topNGroups_.end() ? &it->second : nullptr;
   }
 
+  // State snapshot for /state admin endpoint.
+  struct TrackRankSnapshot {
+    moxygen::FullTrackName ftn;
+    uint64_t value;
+    uint64_t rank;            // 1-based position in rankedTracks_
+    bool subscriberPublished; // publisher is a subscriber session in any group of this ranking
+  };
+  struct GroupSnapshot {
+    uint64_t maxSelected; // N
+    size_t numSessions;
+    size_t deselectedQueueSize;
+  };
+  struct RankingSnapshot {
+    uint64_t propertyType;
+    size_t numTracks;
+    // Tracks in rankedTracks_ not Selected in any group.
+    size_t numUnselected;
+    // Top tracks up to max(N + max_publisher_self_count) across all groups, rank-ordered.
+    std::vector<TrackRankSnapshot> topTracks;
+    std::vector<GroupSnapshot> groups; // sorted ascending by maxSelected
+  };
+
+  // Snapshot of current ranking state for the /state admin endpoint.
+  // Called on the relay worker EVB; O(T*G) walk is acceptable for a debug endpoint.
+  RankingSnapshot getSnapshot() const;
+
 private:
   uint64_t getRank(const RankKey& key) const;
 
