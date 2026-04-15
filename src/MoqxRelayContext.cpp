@@ -46,6 +46,30 @@ std::shared_ptr<fizz::CertificateVerifier> makeUpstreamVerifier(const config::Up
   return nullptr; // nullptr = fizz uses system CAs
 }
 
+// Dispatches a per-relay purge operation across one or all services.
+// `fn` is called as fn(relay) and must return size_t (evicted track count).
+template <typename PurgeFn>
+size_t purgeDispatch(
+    folly::EventBase* evb,
+    folly::F14FastMap<std::string, MoqxRelayContext::ServiceEntry>& services,
+    std::string_view serviceName,
+    PurgeFn fn
+) {
+  size_t total = 0;
+  if (!serviceName.empty()) {
+    auto it = services.find(std::string(serviceName));
+    if (it != services.end()) {
+      evb->runInEventBaseThreadAndWait([&] { total += fn(*it->second.relay); });
+    }
+    return total;
+  }
+  for (auto& [name, entry] : services) {
+    XLOG(DBG1) << "Purging service: " << name;
+    evb->runInEventBaseThreadAndWait([&] { total += fn(*entry.relay); });
+  }
+  return total;
+}
+
 } // namespace
 
 void MoqxRelayContext::initUpstreams(folly::EventBase* workerEvb) {
@@ -91,6 +115,25 @@ void MoqxRelayContext::stop() {
   for (auto& [name, entry] : services_) {
     entry.relay->stop();
   }
+}
+
+size_t MoqxRelayContext::purge(std::string_view serviceName) {
+  CHECK(cacheEvb_) << "purge called before setCacheEvb";
+  return purgeDispatch(cacheEvb_, services_, serviceName, [](MoqxRelay& r) { return r.purge(); });
+}
+
+size_t MoqxRelayContext::purge(const moxygen::FullTrackName& ftn, std::string_view serviceName) {
+  CHECK(cacheEvb_) << "purge called before setCacheEvb";
+  return purgeDispatch(cacheEvb_, services_, serviceName, [&ftn](MoqxRelay& r) {
+    return r.purge(ftn);
+  });
+}
+
+size_t MoqxRelayContext::purge(const moxygen::TrackNamespace& ns, std::string_view serviceName) {
+  CHECK(cacheEvb_) << "purge called before setCacheEvb";
+  return purgeDispatch(cacheEvb_, services_, serviceName, [&ns](MoqxRelay& r) {
+    return r.purge(ns);
+  });
 }
 
 void MoqxRelayContext::onNewSession(std::shared_ptr<MoQSession> clientSession) {

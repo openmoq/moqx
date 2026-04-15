@@ -125,6 +125,15 @@ public:
     upstream_ = std::move(upstream);
   }
 
+  // Force-evicts a specific track unconditionally. Not thread-safe.
+  size_t purge(const moxygen::FullTrackName& ftn) { return cache_ ? cache_->purge(ftn) : 0; }
+
+  // Force-evicts all tracks in the given namespace unconditionally. Not thread-safe.
+  size_t purge(const moxygen::TrackNamespace& ns) { return cache_ ? cache_->purge(ns) : 0; }
+
+  // Force-evicts all cached tracks unconditionally. Not thread-safe.
+  size_t purge() { return cache_ ? cache_->purge() : 0; }
+
   // Stops and releases the upstream provider, breaking the shared_ptr cycle
   // between MoqxRelay and UpstreamProvider. Safe to call with no upstream.
   void stop() {

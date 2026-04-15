@@ -140,6 +140,14 @@ add_test(
   NAME admin_metrics_endpoint
   COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_admin_metrics.sh $<TARGET_FILE:moqx>
 )
+add_test(
+  NAME admin_cache_purge_endpoint
+  COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_admin_cache_purge.sh $<TARGET_FILE:moqx>
+)
+add_test(
+  NAME admin_cache_purge_concurrency_test
+  COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_admin_cache_purge_race.sh $<TARGET_FILE:moqx>
+)
 
 add_executable(moqx_upstream_provider_test
   UpstreamProviderTest.cpp

@@ -7,6 +7,7 @@
 #pragma once
 
 #include <memory>
+#include <string_view>
 
 #include "MoqxRelay.h"
 #include "ServiceMatcher.h"
@@ -16,6 +17,7 @@
 #include "stats/StatsRegistry.h"
 #include <moxygen/MoQServerBase.h>
 #include <moxygen/MoQSession.h>
+#include <moxygen/relay/MoQCache.h>
 
 #include <folly/Expected.h>
 #include <folly/container/F14Map.h>
@@ -59,6 +61,9 @@ public:
   // so that worker EVBs are available. workerEvb is used for upstream connections.
   void initUpstreams(folly::EventBase* workerEvb);
 
+  // Sets the cache EVB used to serialize purge() calls with relay callbacks.
+  void setCacheEvb(folly::EventBase* evb) { cacheEvb_ = evb; }
+
   // Returns the worker EVB used for upstream connections.
   // Null until initUpstreams() is called.
   folly::EventBase* workerEvb() const { return workerEvb_; }
@@ -70,6 +75,18 @@ public:
   // Signals all relay upstreams to stop. Call before destroying servers so
   // reconnect coroutines can exit before worker EVBs are drained.
   void stop();
+
+  // Force-evicts all cached tracks unconditionally.
+  // Optionally scoped to a single service. Returns number of tracks evicted.
+  size_t purge(std::string_view serviceName = {});
+
+  // Force-evicts a specific track unconditionally.
+  // Optionally scoped to a single service. Returns number of tracks evicted.
+  size_t purge(const moxygen::FullTrackName& ftn, std::string_view serviceName = {});
+
+  // Force-evicts all tracks in the given namespace unconditionally.
+  // Optionally scoped to a single service. Returns number of tracks evicted.
+  size_t purge(const moxygen::TrackNamespace& ns, std::string_view serviceName = {});
 
   // Returns the unique set of exact paths registered across all services.
   // Used by pico listeners to populate the h3zero WebTransport path table.
@@ -90,6 +107,7 @@ private:
   folly::F14FastMap<std::string, ServiceEntry> services_;
   ServiceMatcher serviceMatcher_;
   std::string relayID_;
+  folly::EventBase* cacheEvb_{nullptr};
   std::shared_ptr<stats::StatsRegistry> statsRegistry_;
   std::shared_ptr<stats::MoQStatsCollector> statsCollector_;
   folly::EventBase* workerEvb_{nullptr};

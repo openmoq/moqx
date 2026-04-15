@@ -8,6 +8,7 @@
 #include "MoqxServerFactory.h"
 #include "admin/AdminServer.h"
 #include "admin/BuiltinRoutes.h"
+#include "admin/CachePurgeHandler.h"
 #include "admin/MetricsHandler.h"
 #include "admin/StateHandler.h"
 #include "config/loader/ConfigInit.h"
@@ -116,10 +117,15 @@ int main(int argc, char* argv[]) {
     servers.emplace_back(makeRelayServer(listenerCfg, context, ioExecutor, statsRegistry));
   }
 
+  if (!servers.empty()) {
+    context->setCacheEvb(ioExecutor->getAllEventBases()[0].get());
+  }
+
   // === 7. Start health checks / admin endpoints ===
   admin::AdminServer adminServer;
   admin::registerBuiltinRoutes(adminServer);
   admin::registerMetricsRoute(adminServer, statsRegistry);
+  admin::registerCachePurgeRoute(adminServer, context);
   admin::registerStateRoute(adminServer, context);
   if (config.admin) {
     if (!adminServer.start(*config.admin)) {
