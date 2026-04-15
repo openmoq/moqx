@@ -7,6 +7,7 @@
  */
 
 #include "MoqxRelay.h"
+#include <folly/sorted_vector_types.h>
 #include <moxygen/MoQFilters.h>
 #include <moxygen/MoQTrackProperties.h>
 
@@ -1393,14 +1394,12 @@ std::shared_ptr<PropertyRanking> MoqxRelay::getOrCreateRanking(
       auto [prefix, current] = queue.front();
       queue.pop_front();
 
-      // Register tracks at this level. Sort track names first for deterministic
-      // arrivalSeq assignment (F14FastMap iteration order is non-deterministic).
-      std::vector<std::string> sortedTrackNames;
-      sortedTrackNames.reserve(current->publishes.size());
+      // Register tracks at this level. Use folly::sorted_vector_set for
+      // deterministic iteration order (F14FastMap iteration is non-deterministic).
+      folly::sorted_vector_set<std::string> sortedTrackNames;
       for (const auto& [trackName, _] : current->publishes) {
-        sortedTrackNames.push_back(trackName);
+        sortedTrackNames.insert(trackName);
       }
-      std::sort(sortedTrackNames.begin(), sortedTrackNames.end());
 
       for (const auto& trackName : sortedTrackNames) {
         auto pubIt = current->publishes.find(trackName);
