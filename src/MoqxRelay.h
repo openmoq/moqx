@@ -256,7 +256,7 @@ private:
     moxygen::TrackNamespace trackNamespace_;
     folly::F14FastMap<std::string, std::shared_ptr<NamespaceNode>> children;
 
-    // Maps a track name to a the session performing the PUBLISH
+    // Maps a track name to the session performing the PUBLISH
     folly::F14FastMap<std::string, std::shared_ptr<moxygen::MoQSession>> publishes;
 
     // Info stored per SUBSCRIBE_NAMESPACE subscriber
