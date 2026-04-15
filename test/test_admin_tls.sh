@@ -3,8 +3,10 @@ set -euo pipefail
 
 BINARY="${1:-$(dirname "$0")/../build/moqx}"
 TESTDIR="$(cd "$(dirname "$0")" && pwd)"
-ADMIN_PORT=9671
-LISTEN_PORT=9666
+# shellcheck source=test_ports.sh
+source "$(dirname "$0")/test_ports.sh"
+LISTEN_PORT=$TEST_ADMIN_TLS_LISTEN
+ADMIN_PORT=$TEST_ADMIN_TLS_ADMIN
 
 if [[ ! -x "$BINARY" ]]; then
   echo "ERROR: binary not found or not executable: $BINARY" >&2
@@ -22,33 +24,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-cat > "$TMPDIR/config.yaml" <<EOF
-listeners:
-  - name: main
-    udp:
-      socket:
-        address: "::1"
-        port: ${LISTEN_PORT}
-    tls:
-      insecure: true
-    endpoint: "/moq-relay"
-services:
-  default:
-    match:
-      - authority: {any: true}
-        path: {prefix: "/"}
-    cache:
-      enabled: true
-      max_tracks: 100
-      max_groups_per_track: 3
-admin:
-  port: ${ADMIN_PORT}
-  address: "::1"
-  plaintext: false
-  tls:
-    cert_file: ${CERT}
-    key_file: ${KEY}
-EOF
+"$(dirname "$0")/make_test_config.sh" "$LISTEN_PORT" "$ADMIN_PORT" --cert "$CERT" --key "$KEY" > "$TMPDIR/config.yaml"
 
 ADMIN_URL="https://localhost:${ADMIN_PORT}/info"
 
