@@ -777,8 +777,8 @@ TEST_F(PropertyRankingSelfExclusionTest, Issue188_CrossesThreshold_ExtendedWindo
   // Publisher's new non-self top-3: t1, t2, t4. t3 is now rank 4 (4th non-self).
   r->updateSortValue(t4, 75);
 
-  EXPECT_TRUE(wasSelected(t4, pub.get()));  // t4 entered publisher's top-3
-  EXPECT_TRUE(wasEvicted(t3, pub.get()));   // t3 pushed out of publisher's top-3
+  EXPECT_TRUE(wasSelected(t4, pub.get()));    // t4 entered publisher's top-3
+  EXPECT_TRUE(wasEvicted(t3, pub.get()));     // t3 pushed out of publisher's top-3
   EXPECT_FALSE(wasSelected(self, pub.get())); // self still excluded
 }
 
