@@ -27,7 +27,7 @@ PropertyRanking::PropertyRanking(
 
 void PropertyRanking::registerTrack(
     const moxygen::FullTrackName& ftn,
-    std::optional<uint64_t> initialValue,
+    std::optional<uint64_t> initialPropertyValue,
     std::shared_ptr<moxygen::MoQSession> publisher
 ) {
   XCHECK(publisher) << "registerTrack requires a publisher session";
@@ -36,7 +36,7 @@ void PropertyRanking::registerTrack(
     return;
   }
 
-  uint64_t value = initialValue.value_or(0);
+  uint64_t value = initialPropertyValue.value_or(0);
   RankKey key{value, nextSeq_++};
 
   publisherTrackCount_[publisher.get()]++;

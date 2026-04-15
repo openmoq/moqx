@@ -256,7 +256,7 @@ private:
     moxygen::TrackNamespace trackNamespace_;
     folly::F14FastMap<std::string, std::shared_ptr<NamespaceNode>> children;
 
-    // Maps a track name to a the session performing the PUBLISH
+    // Maps a track name to the session performing the PUBLISH
     folly::F14FastMap<std::string, std::shared_ptr<moxygen::MoQSession>> publishes;
 
     // Info stored per SUBSCRIBE_NAMESPACE subscriber
@@ -313,7 +313,8 @@ private:
         std::shared_ptr<moxygen::MoQForwarder> f,
         std::shared_ptr<moxygen::MoQSession> u
     )
-        : forwarder(std::move(f)), upstream(std::move(u)) {}
+        : forwarder(std::move(f)), upstream(std::move(u)),
+          lastObjectTime(std::chrono::steady_clock::now()) {}
 
     std::shared_ptr<moxygen::MoQForwarder> forwarder;
     std::shared_ptr<moxygen::MoQSession> upstream;
@@ -326,8 +327,9 @@ private:
     std::shared_ptr<TopNFilter> topNFilter;
 
     // Written by TopNFilter on every object arrival; read by PropertyRanking::sweepIdle
-    // via the getLastActivity_ callback. Default-constructed (epoch) = always-idle.
-    std::chrono::steady_clock::time_point lastObjectTime{};
+    // via the getLastActivity_ callback. Initialized to now() so newly registered tracks
+    // are not immediately eligible for idle eviction.
+    std::chrono::steady_clock::time_point lastObjectTime;
   };
 
   void onEmpty(moxygen::MoQForwarder* forwarder) override;

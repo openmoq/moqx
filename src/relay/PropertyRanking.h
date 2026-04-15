@@ -201,7 +201,7 @@ public:
    */
   void registerTrack(
       const moxygen::FullTrackName& ftn,
-      std::optional<uint64_t> initialValue,
+      std::optional<uint64_t> initialPropertyValue,
       std::shared_ptr<moxygen::MoQSession> publisher
   );
 
