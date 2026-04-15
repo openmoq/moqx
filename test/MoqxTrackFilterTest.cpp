@@ -103,7 +103,10 @@ protected:
           ON_CALL(*consumer, setTrackAlias(_))
               .WillByDefault(Return(folly::makeExpected<MoQPublishError>(folly::unit)));
           ON_CALL(*consumer, objectStream(_, _, _))
-              .WillByDefault(Return(folly::makeExpected<MoQPublishError>(folly::unit)));
+              .WillByDefault(Invoke([this, raw, ftn = pub.fullTrackName](const auto&, auto, bool) {
+                objectsPerTrack_[raw][ftn]++;
+                return folly::makeExpected<MoQPublishError>(folly::unit);
+              }));
           ON_CALL(*consumer, publishDone(_))
               .WillByDefault(Invoke([this, raw, ftn = pub.fullTrackName](PublishDone) mutable {
                 publishDoneCount_[raw][ftn]++;
@@ -139,6 +142,16 @@ protected:
   int publishDoneCount(MockMoQSession* s, const FullTrackName& ftn) const {
     auto it = publishDoneCount_.find(s);
     if (it == publishDoneCount_.end()) {
+      return 0;
+    }
+    auto it2 = it->second.find(ftn);
+    return it2 != it->second.end() ? it2->second : 0;
+  }
+
+  // How many objects were delivered to the session for ftn
+  int objectCount(MockMoQSession* s, const FullTrackName& ftn) const {
+    auto it = objectsPerTrack_.find(s);
+    if (it == objectsPerTrack_.end()) {
       return 0;
     }
     auto it2 = it->second.find(ftn);
@@ -226,7 +239,11 @@ protected:
     ok.trackAlias = TrackAlias(0);
     ok.expires = std::chrono::milliseconds(0);
     ok.groupOrder = GroupOrder::Default;
-    return std::make_shared<NiceMock<MockSubscriptionHandle>>(std::move(ok));
+    auto handle = std::make_shared<NiceMock<MockSubscriptionHandle>>(std::move(ok));
+    // Configure the mock to return success for requestUpdate calls
+    ON_CALL(*handle, requestUpdateResult())
+        .WillByDefault(Return(folly::makeExpected<RequestError>(RequestOk{})));
+    return handle;
   }
 
   FullTrackName ftn(const std::string& name) const { return FullTrackName{kNs, name}; }
@@ -264,6 +281,8 @@ protected:
 
   // per-session record of which FTNs were pushed via publish()
   std::map<MoQSession*, std::vector<FullTrackName>> publishedTracks_;
+  // per-session, per-FTN count of objectStream() calls received
+  std::map<MoQSession*, std::map<FullTrackName, int>> objectsPerTrack_;
   // per-session, per-FTN count of publishDone() calls received
   std::map<MoQSession*, std::map<FullTrackName, int>> publishDoneCount_;
 };
@@ -340,6 +359,56 @@ TEST_F(MoqxTrackFilterTest, PublishFirst_LateSubscriber_GetsTopN) {
   cA->publishDone(makePublishDone());
   cB->publishDone(makePublishDone());
   cC->publishDone(makePublishDone());
+}
+
+// Initial track property values must drive ranking regardless of publish order.
+// Publish a(40), b(100), c(80): value order selects b+c, but arrivalSeq order
+// would select a+b — verifying that forwarder extensions are used as initialValue.
+TEST_F(MoqxTrackFilterTest, PublishFirst_LateSubscriber_InitialValuesRankCorrectly) {
+  auto pubSess = makeSession();
+
+  auto cA = doPublish(pubSess, "a", 40);
+  auto cB = doPublish(pubSess, "b", 100);
+  auto cC = doPublish(pubSess, "c", 80);
+  exec_->driveFor(10);
+
+  auto viewer = makeSession();
+  doSubscribeFilter(viewer, /*maxSelected=*/2);
+  exec_->driveFor(10);
+
+  EXPECT_EQ(publishCount(viewer.get(), ftn("b")), 1);
+  EXPECT_EQ(publishCount(viewer.get(), ftn("c")), 1);
+  EXPECT_EQ(publishCount(viewer.get(), ftn("a")), 0);
+
+  cA->publishDone(makePublishDone());
+  cB->publishDone(makePublishDone());
+  cC->publishDone(makePublishDone());
+}
+
+// Retroactive registration must assign arrivalSeq in lastObjectTime (construction
+// time) ascending order, not alphabetically. Publish in order c→a→b with equal
+// values; alphabetical would select a+b, but publish-time order should select c+a.
+TEST_F(MoqxTrackFilterTest, PublishFirst_LateSubscriber_TieBreaksByPublishTime) {
+  auto pubSess = makeSession();
+
+  auto cC = doPublish(pubSess, "c");
+  std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  auto cA = doPublish(pubSess, "a");
+  std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  auto cB = doPublish(pubSess, "b");
+  exec_->driveFor(10);
+
+  auto viewer = makeSession();
+  doSubscribeFilter(viewer, /*maxSelected=*/2);
+  exec_->driveFor(10);
+
+  EXPECT_EQ(publishCount(viewer.get(), ftn("c")), 1);
+  EXPECT_EQ(publishCount(viewer.get(), ftn("a")), 1);
+  EXPECT_EQ(publishCount(viewer.get(), ftn("b")), 0);
+
+  cC->publishDone(makePublishDone());
+  cA->publishDone(makePublishDone());
+  cB->publishDone(makePublishDone());
 }
 
 // ---------------------------------------------------------------------------
@@ -513,6 +582,49 @@ TEST_F(MoqxTrackFilterTest, PublishFirst_LateSubscriber_ValueChangeUpdatesRankin
 
   consumerLoud->publishDone(makePublishDone());
   consumerQuiet->publishDone(makePublishDone());
+}
+
+// When selected tracks have not emitted their first object yet, the relay must
+// not idle-evict them before that first cycle completes. This guards the
+// boundary case seen in the live load test where rank N was replaced by N+1.
+TEST_F(MoqxTrackFilterTest, FirstObjectCycle_DoesNotEvictSelectedTracksBeforeFirstObject) {
+  relay_ = std::make_shared<MoqxRelay>(
+      config::CacheConfig{0, 0},
+      /*relayID=*/"",
+      /*maxDeselected=*/0,
+      /*idleTimeout=*/std::chrono::seconds(10),
+      /*activityThreshold=*/std::chrono::milliseconds(1)
+  );
+  relay_->setAllowedNamespacePrefix(kPrefix);
+
+  std::vector<std::shared_ptr<MockMoQSession>> publishers;
+  std::vector<std::shared_ptr<TrackConsumer>> consumers;
+  publishers.reserve(7);
+  consumers.reserve(7);
+
+  for (int i = 0; i < 7; ++i) {
+    auto publisher = makeSession();
+    publishers.push_back(publisher);
+    consumers.push_back(doPublish(publisher, folly::to<std::string>("p", i)));
+  }
+  exec_->driveFor(10);
+
+  auto viewer = makeSession();
+  doSubscribeFilter(viewer, /*maxSelected=*/6);
+  exec_->driveFor(20);
+
+  for (int i = 0; i < 7; ++i) {
+    sendValue(consumers[i], static_cast<uint64_t>(70 - i));
+    exec_->driveFor(5);
+  }
+  exec_->driveFor(30);
+
+  EXPECT_GT(objectCount(viewer.get(), ftn("p5")), 0);
+  EXPECT_EQ(objectCount(viewer.get(), ftn("p6")), 0);
+
+  for (auto& consumer : consumers) {
+    consumer->publishDone(makePublishDone());
+  }
 }
 
 // ---------------------------------------------------------------------------
