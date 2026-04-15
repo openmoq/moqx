@@ -1387,12 +1387,26 @@ std::shared_ptr<PropertyRanking> MoqxRelay::getOrCreateRanking(
       auto [prefix, current] = queue.front();
       queue.pop_front();
 
-      // Register tracks at this level
+      // Collect tracks at this level with their last-activity time and current
+      // property value, then sort by lastObjectTime ascending so arrivalSeq
+      // assignment matches what would have happened if the subscription arrived
+      // before the publishers.
+      struct RetroTrack {
+        std::string trackName;
+        std::shared_ptr<moxygen::MoQSession> publishSession;
+        std::optional<uint64_t> initialValue;
+        std::chrono::steady_clock::time_point lastObjectTime;
+      };
+      std::vector<RetroTrack> retroTracks;
+      retroTracks.reserve(current->publishes.size());
+
       for (auto& [trackName, publishSession] : current->publishes) {
         FullTrackName ftn{prefix, trackName};
         std::optional<uint64_t> initialValue;
+        std::chrono::steady_clock::time_point lastObjectTime{};
         auto subIt = subscriptions_.find(ftn);
         if (subIt != subscriptions_.end()) {
+          lastObjectTime = subIt->second.lastObjectTime;
           initialValue = subIt->second.forwarder->extensions().getIntExtension(propertyType);
           // Wire value-change, track-ended, and activity observers on the existing TopNFilter.
           if (subIt->second.topNFilter) {
@@ -1408,7 +1422,16 @@ std::shared_ptr<PropertyRanking> MoqxRelay::getOrCreateRanking(
             );
           }
         }
-        ranking->registerTrack(ftn, initialValue, publishSession);
+        retroTracks.push_back({trackName, publishSession, initialValue, lastObjectTime});
+      }
+
+      std::sort(retroTracks.begin(), retroTracks.end(), [](const RetroTrack& a, const RetroTrack& b) {
+        return a.lastObjectTime < b.lastObjectTime;
+      });
+
+      for (const auto& t : retroTracks) {
+        FullTrackName ftn{prefix, t.trackName};
+        ranking->registerTrack(ftn, t.initialValue, t.publishSession);
         XLOG(DBG4) << "[getOrCreateRanking] Retroactively registered track " << ftn;
       }
 
