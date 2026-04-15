@@ -20,6 +20,7 @@
 #include "MoqxRelayContext.h"
 #include "admin/AdminServer.h"
 #include "admin/JsonWriter.h"
+#include "relay/PropertyRanking.h"
 
 namespace openmoq::moqx::admin {
 
@@ -88,7 +89,8 @@ public:
   void beginNamespaceNode(
       std::string_view childKey,
       const moxygen::TrackNamespace& ns,
-      size_t sessionCount
+      size_t sessionCount,
+      const std::vector<PropertyRanking::RankingSnapshot>& rankings
   ) override {
     if (!childKey.empty()) {
       w_.key(childKey);
@@ -102,6 +104,49 @@ public:
     w_.endArray();
     w_.key("namespace_subscribers");
     w_.uintVal(static_cast<uint64_t>(sessionCount));
+    if (!rankings.empty()) {
+      w_.key("property_rankings");
+      w_.beginArray();
+      for (const auto& r : rankings) {
+        w_.beginObject();
+        w_.field("property_type", r.propertyType);
+        w_.key("num_tracks");
+        w_.uintVal(static_cast<uint64_t>(r.numTracks));
+        w_.key("num_unselected");
+        w_.uintVal(static_cast<uint64_t>(r.numUnselected));
+        w_.key("top_tracks");
+        w_.beginArray();
+        for (const auto& t : r.topTracks) {
+          w_.beginObject();
+          w_.key("namespace");
+          w_.beginArray();
+          for (const auto& s : t.ftn.trackNamespace.trackNamespace) {
+            w_.strVal(s);
+          }
+          w_.endArray();
+          w_.field("track_name", t.ftn.trackName);
+          w_.field("rank", t.rank);
+          w_.field("value", t.value);
+          w_.field("subscriber_published", t.subscriberPublished);
+          w_.endObject();
+        }
+        w_.endArray();
+        w_.key("groups");
+        w_.beginArray();
+        for (const auto& g : r.groups) {
+          w_.beginObject();
+          w_.field("n", g.maxSelected);
+          w_.key("num_sessions");
+          w_.uintVal(static_cast<uint64_t>(g.numSessions));
+          w_.key("deselected_queue_size");
+          w_.uintVal(static_cast<uint64_t>(g.deselectedQueueSize));
+          w_.endObject();
+        }
+        w_.endArray();
+        w_.endObject();
+      }
+      w_.endArray();
+    }
     w_.key("children");
     w_.beginObject();
   }

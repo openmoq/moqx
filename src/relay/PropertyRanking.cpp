@@ -725,4 +725,70 @@ void PropertyRanking::sweepIdle() {
   }
 }
 
+PropertyRanking::RankingSnapshot PropertyRanking::getSnapshot() const {
+  RankingSnapshot snapshot;
+  snapshot.propertyType = propertyType_;
+  snapshot.numTracks = trackIndexByName_.size();
+
+  // Compute window size = max over all groups of (N + max publisher track count in group).
+  // Also build the set of publisher raw pointers present as sessions in any group.
+  uint64_t windowSize = 0;
+  folly::F14FastSet<moxygen::MoQSession*> publisherSessions;
+  for (const auto& [n, group] : topNGroups_) {
+    uint64_t maxPubCount = 0;
+    for (const auto& [session, info] : group.sessions) {
+      auto it = publisherTrackCount_.find(session.get());
+      if (it != publisherTrackCount_.end()) {
+        publisherSessions.insert(session.get());
+        maxPubCount = std::max(maxPubCount, static_cast<uint64_t>(it->second));
+      }
+    }
+    windowSize = std::max(windowSize, n + maxPubCount);
+  }
+
+  // Walk rankedTracks_ from the top, emitting up to windowSize entries.
+  // Also compute numUnselected by checking whether each track is Selected in any group.
+  size_t numUnselected = 0;
+  uint64_t rank = 1;
+  for (const auto& [key, entry] : rankedTracks_) {
+    bool selectedInAnyGroup = false;
+    for (const auto& [n, group] : topNGroups_) {
+      auto it = group.trackStates.find(entry.ftn);
+      if (it != group.trackStates.end() && it->second == TrackState::Selected) {
+        selectedInAnyGroup = true;
+        break;
+      }
+    }
+    if (!selectedInAnyGroup) {
+      ++numUnselected;
+    }
+    if (rank <= windowSize) {
+      snapshot.topTracks.push_back(TrackRankSnapshot{
+          .ftn = entry.ftn,
+          .value = key.value,
+          .rank = rank,
+          .subscriberPublished = publisherSessions.count(entry.publisherRaw) > 0,
+      });
+    }
+    ++rank;
+  }
+  snapshot.numUnselected = numUnselected;
+
+  // Populate groups sorted ascending by maxSelected.
+  for (const auto& [n, group] : topNGroups_) {
+    snapshot.groups.push_back(GroupSnapshot{
+        .maxSelected = n,
+        .numSessions = group.sessions.size(),
+        .deselectedQueueSize = group.deselectedQueue.size(),
+    });
+  }
+  std::sort(
+      snapshot.groups.begin(),
+      snapshot.groups.end(),
+      [](const GroupSnapshot& a, const GroupSnapshot& b) { return a.maxSelected < b.maxSelected; }
+  );
+
+  return snapshot;
+}
+
 } // namespace openmoq::moqx
