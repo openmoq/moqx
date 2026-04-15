@@ -89,7 +89,7 @@ MoqxPicoRelayServer::MoqxPicoRelayServer(
 
 MoqxPicoRelayServer::~MoqxPicoRelayServer() {
   context_->stop();
-  MoQPicoQuicEventBaseServer::stop();
+  evb_->runImmediatelyOrRunInEventBaseThreadAndWait([this] { MoQPicoQuicEventBaseServer::stop(); });
 }
 
 void MoqxPicoRelayServer::setStatsRegistry(std::shared_ptr<stats::StatsRegistry> registry) {
@@ -99,7 +99,9 @@ void MoqxPicoRelayServer::setStatsRegistry(std::shared_ptr<stats::StatsRegistry>
 }
 
 void MoqxPicoRelayServer::start() {
-  MoQPicoQuicEventBaseServer::start(listenerCfg_.address);
+  evb_->runImmediatelyOrRunInEventBaseThreadAndWait([this] {
+    MoQPicoQuicEventBaseServer::start(listenerCfg_.address);
+  });
 }
 
 void MoqxPicoRelayServer::start(const folly::SocketAddress& /*addr*/) {

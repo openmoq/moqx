@@ -481,22 +481,29 @@ MoqxRelay::publish(PublishRequest pub, std::shared_ptr<Publisher::SubscriptionHa
     // multipublisher
     XLOG(DBG1) << "New publisher for existing subscription";
     nodePtr->publishes.erase(pub.fullTrackName.trackName);
+    // Move the forwarder out and erase the entry BEFORE calling publishDone.
+    // publishDone iterates subscribers via forEachSubscriber; if a subscriber
+    // has no open subgroups, drainSubscriber → onEmpty fires. If the entry
+    // still existed, onEmpty would erase it (destroying the forwarder) while
+    // forEachSubscriber is still iterating → use-after-free.
     // handle is null when the previous publisher already terminated (e.g.
     // reconnect after a dropped connection with subscribers still draining open
     // subgroups).  onPublishDone() already reset handle and drained the
     // forwarder, so skip both calls to avoid a null deref and a double
     // publishDone.
-    if (it->second.handle) {
-      it->second.handle->unsubscribe();
-      it->second.forwarder->publishDone(
+    auto oldHandle = std::move(it->second.handle);
+    auto oldForwarder = std::move(it->second.forwarder);
+    XLOG(DBG4) << "Erasing subscription to " << it->first;
+    subscriptions_.erase(it);
+    if (oldHandle) {
+      oldHandle->unsubscribe();
+      oldForwarder->publishDone(
           {RequestID(0),
            PublishDoneStatusCode::SUBSCRIPTION_ENDED,
            0, // filled in by session
            "upstream disconnect"}
       );
     }
-    XLOG(DBG4) << "Erasing subscription to " << it->first;
-    subscriptions_.erase(it);
   }
   auto res = nodePtr->publishes.emplace(pub.fullTrackName.trackName, session);
   XCHECK(res.second) << "Duplicate publish";
@@ -1159,10 +1166,10 @@ MoqxRelay::fetch(Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
     auto subscriptionIt = subscriptions_.find(fetch.fullTrackName);
     if (subscriptionIt != subscriptions_.end()) {
       upstreamSession = subscriptionIt->second.upstream;
-    } else {
-      // no such namespace has been published
+    }
+    if (!upstreamSession) {
       co_return folly::makeUnexpected(
-          FetchError({fetch.requestID, FetchErrorCode::TRACK_NOT_EXIST, "no such namespace"})
+          FetchError({fetch.requestID, FetchErrorCode::TRACK_NOT_EXIST, "no upstream for fetch"})
       );
     }
   }
@@ -1290,6 +1297,12 @@ void MoqxRelay::forwardChanged(MoQForwarder* forwarder) {
     // Ignore: it's the first subscriber, forward update not needed
     return;
   }
+  if (!subscription.handle) {
+    // Publisher terminated (onPublishDone cleared handle/upstream)
+    XLOG(DBG4) << "Ignoring forward change for " << subscriptionIt->first
+               << " - publisher terminated";
+    return;
+  }
   XLOG(INFO) << "Updating forward for " << subscriptionIt->first
              << " numForwardingSubs=" << forwarder->numForwardingSubscribers();
 
@@ -1374,12 +1387,26 @@ std::shared_ptr<PropertyRanking> MoqxRelay::getOrCreateRanking(
       auto [prefix, current] = queue.front();
       queue.pop_front();
 
-      // Register tracks at this level
+      // Collect tracks at this level with their last-activity time and current
+      // property value, then sort by lastObjectTime ascending so arrivalSeq
+      // assignment matches what would have happened if the subscription arrived
+      // before the publishers.
+      struct RetroTrack {
+        std::string trackName;
+        std::shared_ptr<moxygen::MoQSession> publishSession;
+        std::optional<uint64_t> initialValue;
+        std::chrono::steady_clock::time_point lastObjectTime;
+      };
+      std::vector<RetroTrack> retroTracks;
+      retroTracks.reserve(current->publishes.size());
+
       for (auto& [trackName, publishSession] : current->publishes) {
         FullTrackName ftn{prefix, trackName};
         std::optional<uint64_t> initialValue;
+        std::chrono::steady_clock::time_point lastObjectTime{};
         auto subIt = subscriptions_.find(ftn);
         if (subIt != subscriptions_.end()) {
+          lastObjectTime = subIt->second.lastObjectTime;
           initialValue = subIt->second.forwarder->extensions().getIntExtension(propertyType);
           // Wire value-change, track-ended, and activity observers on the existing TopNFilter.
           if (subIt->second.topNFilter) {
@@ -1395,7 +1422,16 @@ std::shared_ptr<PropertyRanking> MoqxRelay::getOrCreateRanking(
             );
           }
         }
-        ranking->registerTrack(ftn, initialValue, publishSession);
+        retroTracks.push_back({trackName, publishSession, initialValue, lastObjectTime});
+      }
+
+      std::sort(retroTracks.begin(), retroTracks.end(), [](const RetroTrack& a, const RetroTrack& b) {
+        return a.lastObjectTime < b.lastObjectTime;
+      });
+
+      for (const auto& t : retroTracks) {
+        FullTrackName ftn{prefix, t.trackName};
+        ranking->registerTrack(ftn, t.initialValue, t.publishSession);
         XLOG(DBG4) << "[getOrCreateRanking] Retroactively registered track " << ftn;
       }
 
