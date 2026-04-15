@@ -7,6 +7,7 @@
 #pragma once
 
 #include <memory>
+#include <string_view>
 
 #include "MoqxRelay.h"
 #include "ServiceMatcher.h"
@@ -19,7 +20,10 @@
 
 #include <folly/Expected.h>
 #include <folly/container/F14Map.h>
+#include <folly/coro/Task.h>
 #include <folly/io/async/EventBase.h>
+
+#include <optional>
 
 namespace openmoq::moqx {
 
@@ -59,9 +63,16 @@ public:
   // so that worker EVBs are available. workerEvb is used for upstream connections.
   void initUpstreams(folly::EventBase* workerEvb);
 
+  // Sets the cache EVB used to serialize purge() calls with relay callbacks.
+  void setCacheEvb(folly::EventBase* evb) { cacheEvb_ = evb; }
+
   // Returns the worker EVB used for upstream connections.
   // Null until initUpstreams() is called.
   folly::EventBase* workerEvb() const { return workerEvb_; }
+
+  // Returns the cache EVB used to serialize purge() calls with relay callbacks.
+  // Null until setCacheEvb() is called.
+  folly::EventBase* cacheEvb() const { return cacheEvb_; }
 
   // Dumps a snapshot of relay state by calling visitor methods.
   // MUST be called on workerEvb() to avoid data races.
@@ -70,6 +81,16 @@ public:
   // Signals all relay upstreams to stop. Call before destroying servers so
   // reconnect coroutines can exit before worker EVBs are drained.
   void stop();
+
+  // Force-evicts cached tracks unconditionally. Scoped by optional ftn or ns;
+  // if both are empty all tracks are evicted. Optionally scoped to a single
+  // service. Returns number of tracks evicted.
+  // MUST be awaited on cacheEvb().
+  folly::coro::Task<size_t> purgeCache(
+      std::string_view serviceName = {},
+      std::optional<moxygen::FullTrackName> ftn = {},
+      std::optional<moxygen::TrackNamespace> ns = {}
+  );
 
   // Returns the unique set of exact paths registered across all services.
   // Used by pico listeners to populate the h3zero WebTransport path table.
@@ -90,6 +111,7 @@ private:
   folly::F14FastMap<std::string, ServiceEntry> services_;
   ServiceMatcher serviceMatcher_;
   std::string relayID_;
+  folly::EventBase* cacheEvb_{nullptr};
   std::shared_ptr<stats::StatsRegistry> statsRegistry_;
   std::shared_ptr<stats::MoQStatsCollector> statsCollector_;
   folly::EventBase* workerEvb_{nullptr};

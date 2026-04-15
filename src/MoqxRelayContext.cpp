@@ -9,6 +9,7 @@
 #include <moxygen/events/MoQFollyExecutorImpl.h>
 #include <moxygen/util/InsecureVerifierDangerousDoNotUseInProduction.h>
 
+#include <folly/coro/Task.h>
 #include <folly/logging/xlog.h>
 
 using namespace moxygen;
@@ -91,6 +92,34 @@ void MoqxRelayContext::stop() {
   for (auto& [name, entry] : services_) {
     entry.relay->stop();
   }
+}
+
+folly::coro::Task<size_t> MoqxRelayContext::purgeCache(
+    std::string_view serviceName,
+    std::optional<moxygen::FullTrackName> ftn,
+    std::optional<moxygen::TrackNamespace> ns
+) {
+  auto purgeServiceCache = [&](MoqxRelay& r) -> size_t {
+    if (ftn) {
+      return r.purge(*ftn);
+    }
+    if (ns) {
+      return r.purge(*ns);
+    }
+    return r.purge();
+  };
+  size_t total = 0;
+  if (!serviceName.empty()) {
+    if (auto it = services_.find(std::string(serviceName)); it != services_.end()) {
+      total = purgeServiceCache(*it->second.relay);
+    }
+  } else {
+    for (auto& [name, entry] : services_) {
+      XLOG(DBG1) << "Purging service: " << name;
+      total += purgeServiceCache(*entry.relay);
+    }
+  }
+  co_return total;
 }
 
 void MoqxRelayContext::onNewSession(std::shared_ptr<MoQSession> clientSession) {
