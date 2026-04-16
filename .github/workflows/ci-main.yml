@@ -128,7 +128,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           MOQX_PLATFORM: bookworm-amd64
-        run: bash scripts/build.sh setup --use-latest
+        run: bash scripts/build.sh setup --use-latest --no-fallback
 
       - name: Stage tarball for Docker build
         run: |
