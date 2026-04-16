@@ -85,7 +85,16 @@ jobs:
       - name: Setup dependencies
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: bash scripts/build.sh setup --use-latest
+        run: |
+          # Release branches pin a specific moxygen release tag via
+          # .moxygen-release. Main uses snapshot-latest via --use-latest.
+          if [ -f .moxygen-release ]; then
+            export MOQX_MOXYGEN_RELEASE_TAG=$(cat .moxygen-release | tr -d '[:space:]')
+            echo "Using pinned moxygen release tag: $MOQX_MOXYGEN_RELEASE_TAG"
+            bash scripts/build.sh setup --no-fallback
+          else
+            bash scripts/build.sh setup --use-latest
+          fi
 
       - name: Build
         run: bash scripts/build.sh --profile ${{ matrix.preset }} --build-dir ${{ matrix.build_dir }}
@@ -128,7 +137,16 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           MOQX_PLATFORM: bookworm-amd64
-        run: bash scripts/build.sh setup --use-latest --no-fallback
+        run: |
+          # Release branches pin a specific moxygen release tag via
+          # .moxygen-release. Main uses snapshot-latest via --use-latest.
+          if [ -f .moxygen-release ]; then
+            export MOQX_MOXYGEN_RELEASE_TAG=$(cat .moxygen-release | tr -d '[:space:]')
+            echo "Using pinned moxygen release tag: $MOQX_MOXYGEN_RELEASE_TAG"
+            bash scripts/build.sh setup --no-fallback
+          else
+            bash scripts/build.sh setup --use-latest --no-fallback
+          fi
 
       - name: Stage tarball for Docker build
         run: |
