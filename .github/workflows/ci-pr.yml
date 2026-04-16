@@ -37,10 +37,13 @@ jobs:
             preset: default
             build_dir: build
             runner: ubuntu-22.04
-          - name: macos
-            preset: default
-            build_dir: build
-            runner: macos-latest
+          # macOS disabled: moxygen tarball bakes brew Cellar versioned paths
+          # that break when the runner has different brew package versions.
+          # Re-enable once moxygen upstream fixes cmake to use opt symlinks.
+          # - name: macos
+          #   preset: default
+          #   build_dir: build
+          #   runner: macos-latest
           - name: asan debug
             preset: san
             build_dir: build-san
@@ -65,7 +68,7 @@ jobs:
       - name: Setup dependencies
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: bash scripts/build.sh setup
+        run: bash scripts/build.sh setup --use-latest
 
       - name: Build
         run: bash scripts/build.sh --profile ${{ matrix.preset }} --build-dir ${{ matrix.build_dir }}
