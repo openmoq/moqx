@@ -132,8 +132,14 @@ public:
       w_.endArray();
       w_.field("track_name", t.name.trackName);
       w_.field("end_of_track", t.endOfTrack);
-      auto msAgo = std::chrono::duration_cast<std::chrono::milliseconds>(now - t.lastWrite).count();
-      w_.field("last_write_ms_ago", static_cast<int64_t>(msAgo));
+      w_.key("last_write_ms_ago");
+      if (t.lastWrite == decltype(t.lastWrite)::min()) {
+        w_.nullVal();
+      } else {
+        auto msAgo =
+            std::chrono::duration_cast<std::chrono::milliseconds>(now - t.lastWrite).count();
+        w_.intVal(static_cast<int64_t>(msAgo));
+      }
       w_.key("groups");
       w_.beginArray();
       for (const auto& g : t.groups) {
