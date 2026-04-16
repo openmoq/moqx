@@ -10,7 +10,7 @@ name: ci main
 
 on:
   push:
-    branches: [main]
+    branches: [main, release/**]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -85,7 +85,16 @@ jobs:
       - name: Setup dependencies
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: bash scripts/build.sh setup --use-latest
+        run: |
+          # Release branches pin a specific moxygen release tag via
+          # .moxygen-release. Main uses snapshot-latest via --use-latest.
+          if [ -f .moxygen-release ]; then
+            export MOQX_MOXYGEN_RELEASE_TAG=$(cat .moxygen-release | tr -d '[:space:]')
+            echo "Using pinned moxygen release tag: $MOQX_MOXYGEN_RELEASE_TAG"
+            bash scripts/build.sh setup --no-fallback
+          else
+            bash scripts/build.sh setup --use-latest
+          fi
 
       - name: Build
         run: bash scripts/build.sh --profile ${{ matrix.preset }} --build-dir ${{ matrix.build_dir }}
@@ -128,7 +137,16 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           MOQX_PLATFORM: bookworm-amd64
-        run: bash scripts/build.sh setup --use-latest --no-fallback
+        run: |
+          # Release branches pin a specific moxygen release tag via
+          # .moxygen-release. Main uses snapshot-latest via --use-latest.
+          if [ -f .moxygen-release ]; then
+            export MOQX_MOXYGEN_RELEASE_TAG=$(cat .moxygen-release | tr -d '[:space:]')
+            echo "Using pinned moxygen release tag: $MOQX_MOXYGEN_RELEASE_TAG"
+            bash scripts/build.sh setup --no-fallback
+          else
+            bash scripts/build.sh setup --use-latest --no-fallback
+          fi
 
       - name: Stage tarball for Docker build
         run: |
@@ -138,18 +156,31 @@ jobs:
       - name: Log in to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
-      - name: Build Docker image
+      - name: Compute image tags
+        id: tags
         run: |
           SHORT="${GITHUB_SHA:0:7}"
+          BRANCH="${{ github.ref_name }}"
+          if [[ "$BRANCH" == "main" ]]; then
+            LABEL="latest"
+          else
+            # release/nab-demo → nab-demo
+            LABEL="${BRANCH#release/}"
+          fi
+          echo "short=$SHORT" >> "$GITHUB_OUTPUT"
+          echo "label=$LABEL" >> "$GITHUB_OUTPUT"
+
+      - name: Build Docker image
+        run: |
           IMAGE="ghcr.io/${{ github.repository }}"
           docker build -f docker/Dockerfile \
-            -t "${IMAGE}:${SHORT}" \
-            -t "${IMAGE}:latest" \
+            -t "${IMAGE}:${{ steps.tags.outputs.short }}" \
+            -t "${IMAGE}:${{ steps.tags.outputs.label }}" \
             .
 
       - name: Smoke test Docker image
         run: |
-          IMAGE="ghcr.io/${{ github.repository }}:latest"
+          IMAGE="ghcr.io/${{ github.repository }}:${{ steps.tags.outputs.label }}"
           echo "==> ldd check"
           docker run --rm --entrypoint ldd "${IMAGE}" /usr/local/bin/moqx
           if docker run --rm --entrypoint ldd "${IMAGE}" /usr/local/bin/moqx 2>&1 | grep -q "not found"; then
@@ -178,13 +209,13 @@ jobs:
           SHORT="${GITHUB_SHA:0:7}"
           CLIENT_IMAGE="ghcr.io/${{ github.repository_owner }}/moqx-interop-client"
           docker build -f docker/Dockerfile.interop-client \
-            -t "${CLIENT_IMAGE}:${SHORT}" \
-            -t "${CLIENT_IMAGE}:latest" \
+            -t "${CLIENT_IMAGE}:${{ steps.tags.outputs.short }}" \
+            -t "${CLIENT_IMAGE}:${{ steps.tags.outputs.label }}" \
             .
 
       - name: Smoke test interop client
         run: |
-          CLIENT_IMAGE="ghcr.io/${{ github.repository_owner }}/moqx-interop-client:latest"
+          CLIENT_IMAGE="ghcr.io/${{ github.repository_owner }}/moqx-interop-client:${{ steps.tags.outputs.label }}"
           echo "==> ldd check"
           docker run --rm --entrypoint ldd "${CLIENT_IMAGE}" /usr/local/bin/moq_interop_client
           if docker run --rm --entrypoint ldd "${CLIENT_IMAGE}" /usr/local/bin/moq_interop_client 2>&1 | grep -q "not found"; then
@@ -196,13 +227,12 @@ jobs:
 
       - name: Push Docker images
         run: |
-          SHORT="${GITHUB_SHA:0:7}"
           IMAGE="ghcr.io/${{ github.repository }}"
-          docker push "${IMAGE}:${SHORT}"
-          docker push "${IMAGE}:latest"
+          docker push "${IMAGE}:${{ steps.tags.outputs.short }}"
+          docker push "${IMAGE}:${{ steps.tags.outputs.label }}"
           CLIENT_IMAGE="ghcr.io/${{ github.repository_owner }}/moqx-interop-client"
-          docker push "${CLIENT_IMAGE}:${SHORT}"
-          docker push "${CLIENT_IMAGE}:latest"
+          docker push "${CLIENT_IMAGE}:${{ steps.tags.outputs.short }}"
+          docker push "${CLIENT_IMAGE}:${{ steps.tags.outputs.label }}"
 
       - name: Package
         id: package
@@ -242,17 +272,23 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           SHORT="${GITHUB_SHA:0:7}"
-          TAG="snapshot-latest"
+          BRANCH="${{ github.ref_name }}"
+          if [[ "$BRANCH" == "main" ]]; then
+            TAG="snapshot-latest"
+          else
+            TAG="snapshot-${BRANCH#release/}"
+          fi
 
           gh release delete "$TAG" --yes 2>/dev/null || true
           git tag -d "$TAG" 2>/dev/null || true
           git push origin ":refs/tags/$TAG" 2>/dev/null || true
 
           gh release create "$TAG" artifacts/**/* \
+            --target "$GITHUB_SHA" \
             --title "Latest build ($SHORT)" \
             --prerelease \
             --notes "$(cat <<EOF
-          Rolling snapshot of the latest build from \`main\`.
+          Rolling snapshot of the latest build from \`${{ github.ref_name }}\`.
 
           **Commit:** \`${GITHUB_SHA}\`
           **Built:** $(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -267,6 +303,7 @@ jobs:
   # ════════════════════════════════════════════════════════════════════════════
 
   deploy:
+    if: github.ref_name == 'main'
     needs: [publish, release]
     runs-on: [self-hosted, linode]
     steps:
