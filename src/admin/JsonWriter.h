@@ -73,6 +73,11 @@ public:
     append(std::to_string(v));
     needsComma_ = true;
   }
+  void nullVal() {
+    maybeComma();
+    append("null");
+    needsComma_ = true;
+  }
 
   void field(std::string_view k, std::string_view v) {
     key(k);
