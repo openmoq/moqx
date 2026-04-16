@@ -70,6 +70,55 @@ jobs:
           echo "domain=$DOMAIN" >> "$GITHUB_OUTPUT"
           echo "Deploying ghcr.io/${{ github.repository }}:${IMAGE_TAG} → ${DOMAIN}"
 
+      - name: Ensure DNS A record
+        if: ${{ !inputs.restart_only }}
+        env:
+          DOMAIN: ${{ steps.target.outputs.domain }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.OMOQ_CERTBOT_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.OMOQ_CERTBOT_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-1
+          HOSTED_ZONE_ID: Z0079758316CI99B99FLR
+        run: |
+          # Discover the public IP of this self-hosted runner (the deploy target)
+          IP=$(curl -sf https://checkip.amazonaws.com | tr -d '[:space:]')
+          if [[ -z "$IP" ]]; then
+            echo "::error::Could not determine runner public IP"
+            exit 1
+          fi
+          echo "Runner public IP: $IP"
+          echo "Ensuring A record: $DOMAIN → $IP"
+
+          # Check current record (if any). UPSERT is idempotent — only changes
+          # if the record is missing or pointing elsewhere.
+          CHANGE_FILE=$(mktemp)
+          cat > "$CHANGE_FILE" <<EOF
+          {
+            "Comment": "moqx deploy: $DOMAIN",
+            "Changes": [{
+              "Action": "UPSERT",
+              "ResourceRecordSet": {
+                "Name": "$DOMAIN",
+                "Type": "A",
+                "TTL": 300,
+                "ResourceRecords": [{"Value": "$IP"}]
+              }
+            }]
+          }
+          EOF
+
+          CHANGE_ID=$(aws route53 change-resource-record-sets \
+            --hosted-zone-id "$HOSTED_ZONE_ID" \
+            --change-batch "file://$CHANGE_FILE" \
+            --query 'ChangeInfo.Id' --output text)
+          echo "Route53 change submitted: $CHANGE_ID"
+
+          # Wait for the change to propagate (usually seconds). Bounded wait
+          # so a slow Route53 doesn't hang the deploy forever.
+          echo "Waiting for DNS change to propagate..."
+          aws route53 wait resource-record-sets-changed --id "$CHANGE_ID"
+          echo "DNS change INSYNC"
+          rm -f "$CHANGE_FILE"
+
       - name: Log in to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
