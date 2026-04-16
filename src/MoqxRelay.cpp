@@ -851,13 +851,6 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
         continue;
       }
       auto& forwarder = subscriptionIt->second.forwarder;
-      auto& rsub = subscriptionIt->second;
-      if (forwarder->empty()) {
-        // Forwarder has no downstream subscribers yet. Send REQUEST_UPDATE to
-        // notify the upstream (relay subscription or local publisher) of the
-        // new forwarding state before adding the subscriber.
-        co_withExecutor(exec, doSubscribeUpdate(rsub.handle, subNs.forward)).start();
-      }
       auto maybeNegotiatedVersion = session->getNegotiatedVersion();
       CHECK(maybeNegotiatedVersion.has_value());
 
@@ -1098,7 +1091,6 @@ MoqxRelay::subscribe(SubscribeRequest subReq, std::shared_ptr<TrackConsumer> con
       });
       // start may be in the past, it will get adjusted forward to largest
     }
-    bool forwarding = subscriptionIt->second.forwarder->numForwardingSubscribers() > 0;
     auto subscriber = subscriptionIt->second.forwarder
                           ->addSubscriber(std::move(session), subReq, std::move(consumer));
     if (!subscriber) {
@@ -1111,11 +1103,7 @@ MoqxRelay::subscribe(SubscribeRequest subReq, std::shared_ptr<TrackConsumer> con
       });
     }
     XLOG(DBG4) << "added subscriber for ftn=" << subReq.fullTrackName;
-    if (!forwarding && subscriptionIt->second.forwarder->numForwardingSubscribers() > 0) {
-      auto exec = subscriptionIt->second.upstream->getExecutor();
-      co_withExecutor(exec, doSubscribeUpdate(subscriptionIt->second.handle, /*forward=*/true))
-          .start();
-    }
+    // forward updates handled by forwardChanged() via addForwardingSubscriber()
 
     forwarder->tryProcessNewGroupRequest(subReq.params);
     co_return subscriber;
