@@ -12,9 +12,14 @@ on:
         type: boolean
         default: false
       image_tag:
-        description: "Docker image tag (default: latest)"
+        description: "Docker image tag (default: derived from branch — main→latest, release/X→X)"
         required: false
-        default: "latest"
+        default: ""
+        type: string
+      domain:
+        description: "DNS hostname (default: derived from branch — main→moqx-000, release/X→moqx-X)"
+        required: false
+        default: ""
         type: string
       verbose:
         description: "GLOG verbose level (0=off, 1-3=increasing detail)"
@@ -32,17 +37,38 @@ permissions:
   packages: read
 
 env:
-  DOMAIN: moqx-000.ci.openmoq.org
   RELAY_PORT: 4433
   ADMIN_PORT: 8000
 
 jobs:
   deploy:
     runs-on: [self-hosted, linode]
-    env:
-      IMAGE_TAG: ${{ inputs.image_tag }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Compute deployment target
+        id: target
+        run: |
+          # Branch label: main → "000"; release/<name> → "<name>"
+          BRANCH="${{ github.ref_name }}"
+          if [[ "$BRANCH" == "main" ]]; then
+            LABEL="000"
+            DEFAULT_TAG="latest"
+          else
+            LABEL="${BRANCH#release/}"
+            DEFAULT_TAG="$LABEL"
+          fi
+
+          # Explicit input overrides, otherwise computed defaults
+          IMAGE_TAG="${{ inputs.image_tag }}"
+          IMAGE_TAG="${IMAGE_TAG:-$DEFAULT_TAG}"
+
+          DOMAIN="${{ inputs.domain }}"
+          DOMAIN="${DOMAIN:-moqx-${LABEL}.ci.openmoq.org}"
+
+          echo "image_tag=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+          echo "domain=$DOMAIN" >> "$GITHUB_OUTPUT"
+          echo "Deploying ghcr.io/${{ github.repository }}:${IMAGE_TAG} → ${DOMAIN}"
 
       - name: Log in to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
@@ -52,6 +78,8 @@ jobs:
         env:
           RESTART_ONLY: ${{ inputs.restart_only }}
           VERBOSE: ${{ inputs.verbose }}
+          DOMAIN: ${{ steps.target.outputs.domain }}
+          IMAGE_TAG: ${{ steps.target.outputs.image_tag }}
           AWS_ACCESS_KEY_ID: ${{ secrets.OMOQ_CERTBOT_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.OMOQ_CERTBOT_SECRET_ACCESS_KEY }}
         run: |
@@ -121,6 +149,8 @@ jobs:
         if: always()
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.OMOQ_SLACK_WEBHOOK_URL }}
+          DOMAIN: ${{ steps.target.outputs.domain }}
+          IMAGE_TAG: ${{ steps.target.outputs.image_tag }}
         run: |
           SHORT="${GITHUB_SHA:0:7}"
           ACTION=${{ inputs.restart_only && '"restarted"' || '"deployed"' }}

@@ -258,6 +258,8 @@ jobs:
   release:
     needs: [build, publish]
     runs-on: ubuntu-22.04
+    outputs:
+      tag: ${{ steps.publish.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -268,6 +270,7 @@ jobs:
           path: artifacts/
 
       - name: Publish snapshot
+        id: publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -276,8 +279,10 @@ jobs:
           if [[ "$BRANCH" == "main" ]]; then
             TAG="snapshot-latest"
           else
-            TAG="snapshot-${BRANCH#release/}"
+            # release/nab-demo → snapshot-nab-demo-latest
+            TAG="snapshot-${BRANCH#release/}-latest"
           fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
           gh release delete "$TAG" --yes 2>/dev/null || true
           git tag -d "$TAG" 2>/dev/null || true
@@ -395,7 +400,7 @@ jobs:
           STATUS="verify:${VER} publish:${PUB} release:${REL} deploy:${DEP}"
 
           if [ "${{ needs.release.result }}" = "success" ]; then
-            REL_URL="${{ github.server_url }}/${{ github.repository }}/releases/tag/snapshot-latest"
+            REL_URL="${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ needs.release.outputs.tag || 'snapshot-latest' }}"
             TEXT=":white_check_mark: *${{ github.repository }}* \`${{ github.ref_name }}\` \`${SHORT}\` — ${STATUS}  <${RUN_URL}|#${{ github.run_number }}> artifacts: <${REL_URL}|view>"
           else
             TEXT=":x: *${{ github.repository }}* \`${{ github.ref_name }}\` \`${SHORT}\` — ${STATUS}  <${RUN_URL}|#${{ github.run_number }}>"
@@ -434,7 +439,7 @@ jobs:
           STATUS="verify:${VER} publish:${PUB} release:${REL} deploy:${DEP}"
 
           if [ "${{ needs.release.result }}" = "success" ]; then
-            REL_URL="${{ github.server_url }}/${{ github.repository }}/releases/tag/snapshot-latest"
+            REL_URL="${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ needs.release.outputs.tag || 'snapshot-latest' }}"
             SUBJECT="[moqx] published ${{ github.ref_name }} ${SHORT}"
             BODY="Repository: ${{ github.repository }}\nBranch: ${{ github.ref_name }}\nCommit: ${GITHUB_SHA}\nStatus: ${STATUS}\nDocker: ghcr.io/${{ github.repository }}:${SHORT}\nArtifacts: ${REL_URL}\nRun: ${RUN_URL}"
           else
