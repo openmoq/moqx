@@ -244,15 +244,9 @@ cmd_setup() {
     fi
   fi
 
-  # Skip system dep check for from-release with --no-fallback (e.g. CI publish
-  # job that only downloads the tarball, doesn't build on the host).
-  if [[ "$mode" != "from-release" ]] || ! $no_fallback; then
-    echo "Checking system dependencies..."
-    if ! check_system_deps; then
-      die "Install missing dependencies and re-run."
-    fi
-    echo "  All system dependencies found."
-  fi
+  # System dep check is deferred until we know a source build is actually
+  # needed (see below). from-release mode downloads a prebuilt tarball and
+  # doesn't need system deps unless it falls back to source.
 
   if $clean; then
     echo "Cleaning .scratch..."
@@ -284,6 +278,11 @@ cmd_setup() {
   fi
 
   if [[ "$mode" == "from-source" ]]; then
+    echo "Checking system dependencies..."
+    if ! check_system_deps; then
+      die "Install missing dependencies and re-run."
+    fi
+    echo "  All system dependencies found."
     echo ""
     echo "==> Setting up dependencies (from source)..."
     bash "$SCRIPT_DIR/setup-deps-standalone.sh" --profile "$profile"
