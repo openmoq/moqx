@@ -37,7 +37,7 @@ void PropertyRanking::registerTrack(
   }
 
   uint64_t value = initialPropertyValue.value_or(0);
-  RankKey key{value, nextSeq_++};
+  RankKey key{value, nextSeqUp_++};
 
   publisherTrackCount_[publisher.get()]++;
 
@@ -94,8 +94,13 @@ void PropertyRanking::updateSortValue(const moxygen::FullTrackName& ftn, uint64_
     return;
   }
 
-  // Construct new key after the early-exit check
-  RankKey newKey{value, oldKey.arrivalSeq};
+  // Construct new key after the early-exit check.
+  // Rise: fresh nextSeqUp_++ so whoever reached this level first keeps priority
+  //        (early registration no longer displaces an established talker).
+  // Fall: nextSeqDown_-- (negative) so past-active tracks rank above
+  //        never-active or just-rising tracks (non-negative) at the same value.
+  int64_t newSeq = (value > oldKey.value) ? nextSeqUp_++ : nextSeqDown_--;
+  RankKey newKey{value, newSeq};
 
   // Capture old rank before modifying the map (oldKey disappears after erase)
   uint64_t oldRank = getCachedRank(ftn);

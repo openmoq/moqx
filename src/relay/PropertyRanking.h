@@ -26,8 +26,13 @@ namespace openmoq::moqx {
  * Uses std::greater<> comparator for descending order (highest value first).
  */
 struct RankKey {
-  uint64_t value;      // Property value (higher = better rank)
-  uint64_t arrivalSeq; // Tie-breaker (lower = earlier = wins)
+  uint64_t value;     // Property value (higher = better rank)
+  int64_t arrivalSeq; // Tie-breaker: lower = wins.
+                      // Non-negative (0,1,2…): assigned on registration or value increase.
+                      // Whoever rose to this value first holds the lowest Up seq and wins.
+                      // Negative (-1,-2,-3…): assigned on value decrease.
+                      // Past-active tracks (negative) always outrank never-active or
+                      // just-rising tracks (non-negative) at the same value.
 
   bool operator<(const RankKey& other) const {
     if (value != other.value) {
@@ -370,7 +375,8 @@ private:
   // map never holds zombie entries.
   folly::F14FastMap<moxygen::MoQSession*, size_t> publisherTrackCount_;
 
-  uint64_t nextSeq_{0};
+  int64_t nextSeqUp_{0};
+  int64_t nextSeqDown_{-1};
   uint64_t selectionThreshold_{0};
   std::vector<uint64_t> sortedThresholds_;
 

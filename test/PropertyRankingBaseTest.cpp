@@ -701,4 +701,75 @@ TEST_F(PropertyRankingBaseTest, SweepIdle_ActiveTracksNotEvicted) {
   EXPECT_EQ(group->trackStates.at(ftn("b")), TrackState::Selected);
 }
 
+// ---------------------------------------------------------------------------
+// Bidirectional seq counter: past-active tracks rank above never-active
+// ---------------------------------------------------------------------------
+
+// A joins first and never talks. B joins later, talks, then goes silent.
+// Both end up at value=0. B should rank above A because its seq was stamped
+// with the down counter (negative) when its value decreased.
+TEST_F(PropertyRankingBaseTest, SeqDown_SilentAfterTalking_WinsOverNeverTalked) {
+  RankingHarness h;
+  auto sub = makeSession();
+
+  h.ranking().registerTrack(ftn("a"), 0, defaultPublisher_); // seqUp=0
+  h.ranking().registerTrack(ftn("b"), 0, defaultPublisher_); // seqUp=1
+  h.ranking().updateSortValue(ftn("b"), 100);                // B talks; seqUp=2
+  h.ranking().updateSortValue(ftn("b"), 0);                  // B goes silent; seqDown=-1
+
+  // At value=0: B has seqDown=-1, A has seqUp=0. Lower seq wins → B is rank 0.
+  h.ranking().addSessionToTopNGroup(1, sub, /*forward=*/true);
+  EXPECT_EQ(h.selectCount(ftn("b"), sub.get()), 1);
+  EXPECT_EQ(h.selectCount(ftn("a"), sub.get()), 0);
+}
+
+// A and B both talk then go silent. B stops last (seq=-2). B should rank
+// above A (seq=-1) because B's seq is more negative.
+TEST_F(PropertyRankingBaseTest, SeqDown_MostRecentStopper_WinsAmongStoppers) {
+  RankingHarness h;
+  auto sub = makeSession();
+
+  h.ranking().registerTrack(ftn("a"), 0, defaultPublisher_);
+  h.ranking().registerTrack(ftn("b"), 0, defaultPublisher_);
+  h.ranking().updateSortValue(ftn("a"), 100);
+  h.ranking().updateSortValue(ftn("b"), 100);
+  h.ranking().updateSortValue(ftn("a"), 0); // A stops first  → seqDown=-1
+  h.ranking().updateSortValue(ftn("b"), 0); // B stops second → seqDown=-2
+
+  // B has seqDown=-2 < A's seqDown=-1 → B is rank 0.
+  h.ranking().addSessionToTopNGroup(1, sub, /*forward=*/true);
+  EXPECT_EQ(h.selectCount(ftn("b"), sub.get()), 1);
+  EXPECT_EQ(h.selectCount(ftn("a"), sub.get()), 0);
+}
+
+// A and B both increase to the same value. Seq is preserved on increase,
+// so A's earlier registration seq (0) beats B's (1).
+TEST_F(PropertyRankingBaseTest, SeqUp_EarlierTalker_WinsAmongActiveTalkers) {
+  RankingHarness h;
+  auto sub = makeSession();
+
+  h.ranking().registerTrack(ftn("a"), 0, defaultPublisher_); // seqUp=0
+  h.ranking().registerTrack(ftn("b"), 0, defaultPublisher_); // seqUp=1
+  h.ranking().updateSortValue(ftn("a"), 100);                // seqUp=2
+  h.ranking().updateSortValue(ftn("b"), 100);                // seqUp=3
+
+  // A has seqUp=2 < B's seqUp=3 → A rose to 100 first → A is rank 0.
+  h.ranking().addSessionToTopNGroup(1, sub, /*forward=*/true);
+  EXPECT_EQ(h.selectCount(ftn("a"), sub.get()), 1);
+  EXPECT_EQ(h.selectCount(ftn("b"), sub.get()), 0);
+}
+
+// Sanity check: with no value updates, earlier registration still wins.
+TEST_F(PropertyRankingBaseTest, RegistrationOrder_PreservedNoUpdates) {
+  RankingHarness h;
+  auto sub = makeSession();
+
+  h.ranking().registerTrack(ftn("a"), 0, defaultPublisher_); // seqUp=0
+  h.ranking().registerTrack(ftn("b"), 0, defaultPublisher_); // seqUp=1
+
+  h.ranking().addSessionToTopNGroup(1, sub, /*forward=*/true);
+  EXPECT_EQ(h.selectCount(ftn("a"), sub.get()), 1);
+  EXPECT_EQ(h.selectCount(ftn("b"), sub.get()), 0);
+}
+
 } // namespace
