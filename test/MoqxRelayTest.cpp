@@ -313,6 +313,84 @@ protected:
     return sg;
   }
 
+  // Publish a track with a caller-supplied handle so tests can set expectations
+  // on requestUpdateCalled.
+  std::shared_ptr<TrackConsumer> doPublishWithHandle(
+      std::shared_ptr<MoQSession> session,
+      const FullTrackName& trackName,
+      std::shared_ptr<Publisher::SubscriptionHandle> handle
+  ) {
+    return withSessionContext(session, [&]() -> std::shared_ptr<TrackConsumer> {
+      PublishRequest pub;
+      pub.fullTrackName = trackName;
+      auto res = relay_->publish(std::move(pub), std::move(handle));
+      EXPECT_TRUE(res.hasValue());
+      if (!res.hasValue()) {
+        return nullptr;
+      }
+      auto consumer = res->consumer;
+      getOrCreateMockState(session)->publishConsumers.push_back(consumer);
+      return consumer;
+    });
+  }
+
+  // Subscribe to a namespace with an explicit forward flag.
+  std::shared_ptr<Publisher::SubscribeNamespaceHandle> doSubscribeNamespaceWithForward(
+      std::shared_ptr<MoQSession> session,
+      const TrackNamespace& nsPrefix,
+      bool forward
+  ) {
+    SubscribeNamespace subNs;
+    subNs.trackNamespacePrefix = nsPrefix;
+    subNs.forward = forward;
+    return withSessionContext(session, [&]() {
+      auto task = relay_->subscribeNamespace(std::move(subNs), nullptr);
+      auto res = folly::coro::blockingWait(std::move(task), exec_.get());
+      EXPECT_TRUE(res.hasValue());
+      if (!res.hasValue()) {
+        return std::shared_ptr<Publisher::SubscribeNamespaceHandle>(nullptr);
+      }
+      getOrCreateMockState(session)->subscribeNamespaceHandles.push_back(*res);
+      return *res;
+    });
+  }
+
+  // Set up session->publish() to succeed with a mock consumer and immediate
+  // PublishOk. Call this on any subscriber session before it will receive
+  // publishToSession() calls, otherwise the mock returns an error and the
+  // subscriber is ejected, confusing REQUEST_UPDATE accounting.
+  void setupPublishSucceeds(std::shared_ptr<MockMoQSession> session) {
+    ON_CALL(*session, publish(_, _))
+        .WillByDefault(Invoke([this](PublishRequest pub, auto) -> Subscriber::PublishResult {
+          PublishOk ok{
+              pub.requestID,
+              /*forward=*/pub.forward,
+              /*priority=*/128,
+              GroupOrder::Default,
+              LocationType::LargestObject,
+              /*start=*/std::nullopt,
+              /*endGroup=*/std::make_optional(uint64_t(0))
+          };
+          return Subscriber::PublishConsumerAndReplyTask{
+              createMockConsumer(),
+              folly::coro::makeTask<folly::Expected<PublishOk, PublishError>>(std::move(ok))
+          };
+        }));
+  }
+
+  // Build a NiceMock SubscriptionHandle suitable for publish() calls.
+  std::shared_ptr<NiceMock<MockSubscriptionHandle>> makePublishHandle() {
+    SubscribeOk ok;
+    ok.requestID = RequestID(0);
+    ok.trackAlias = TrackAlias(0);
+    ok.expires = std::chrono::milliseconds(0);
+    ok.groupOrder = GroupOrder::Default;
+    auto handle = std::make_shared<NiceMock<MockSubscriptionHandle>>(std::move(ok));
+    ON_CALL(*handle, requestUpdateResult())
+        .WillByDefault(Return(folly::makeExpected<RequestError>(RequestOk{})));
+    return handle;
+  }
+
   std::shared_ptr<TestMoQExecutor> exec_;
   std::shared_ptr<MoqxRelay> relay_;
 };
@@ -3051,6 +3129,149 @@ TEST_F(MoQRelayTest, FetchAfterPublisherTermination) {
   removeSession(publisherSession);
   removeSession(subSession);
   removeSession(fetchSession);
+}
+
+// Bug: when a subscriber with forward=true joins a namespace whose track
+// forwarder is empty, the relay fires REQUEST_UPDATE twice — once explicitly
+// at the if(forwarder->empty()) site and once via forwardChanged() when
+// addSubscriber() increments numForwardingSubscribers from 0 to 1.
+TEST_F(MoQRelayTest, SubscribeNs_ForwardTrue_EmptyForwarder_SingleRequestUpdate) {
+  auto pubSession = createMockSession();
+  doPublishNamespace(pubSession, kTestNamespace);
+  auto mockHandle = makePublishHandle();
+  doPublishWithHandle(pubSession, kTestTrackName, mockHandle);
+
+  // Expect exactly one REQUEST_UPDATE(forward=true).
+  // Before the fix this fires twice.
+  EXPECT_CALL(*mockHandle, requestUpdateCalled(_)).Times(1).WillOnce([](const RequestUpdate& u) {
+    ASSERT_TRUE(u.forward.has_value());
+    EXPECT_TRUE(*u.forward);
+  });
+
+  auto subSession = createMockSession();
+  setupPublishSucceeds(subSession);
+  doSubscribeNamespaceWithForward(subSession, kTestNamespace, /*forward=*/true);
+
+  for (int i = 0; i < 5; i++) {
+    exec_->drive();
+  }
+
+  // Verify before cleanup — cleanup itself legitimately sends forward=false
+  // when the subscriber leaves and the forwarder drains.
+  ASSERT_TRUE(testing::Mock::VerifyAndClearExpectations(mockHandle.get()));
+
+  removeSession(subSession);
+  removeSession(pubSession);
+  for (int i = 0; i < 3; i++) {
+    exec_->drive();
+  }
+}
+
+// Bug: when a subscriber with forward=false joins a namespace whose track
+// forwarder is empty, the relay fires a spurious REQUEST_UPDATE(forward=false)
+// at the if(forwarder->empty()) site — even though the upstream is already at
+// forward=false (set by publish() which found no subscribers).
+TEST_F(MoQRelayTest, SubscribeNs_ForwardFalse_EmptyForwarder_NoRequestUpdate) {
+  auto pubSession = createMockSession();
+  doPublishNamespace(pubSession, kTestNamespace);
+  auto mockHandle = makePublishHandle();
+  doPublishWithHandle(pubSession, kTestTrackName, mockHandle);
+
+  // Expect no REQUEST_UPDATE at all.
+  // Before the fix this fires once with forward=false.
+  EXPECT_CALL(*mockHandle, requestUpdateCalled(_)).Times(0);
+
+  auto subSession = createMockSession();
+  setupPublishSucceeds(subSession);
+  doSubscribeNamespaceWithForward(subSession, kTestNamespace, /*forward=*/false);
+
+  for (int i = 0; i < 5; i++) {
+    exec_->drive();
+  }
+
+  ASSERT_TRUE(testing::Mock::VerifyAndClearExpectations(mockHandle.get()));
+
+  removeSession(subSession);
+  removeSession(pubSession);
+  for (int i = 0; i < 3; i++) {
+    exec_->drive();
+  }
+}
+
+// Bug: when a second subscriber with forward=true joins an existing PUBLISH-path
+// subscription (causing a 0→1 forwarding transition), the relay fires REQUEST_UPDATE
+// twice — once via forwardChanged() (which fires synchronously inside addSubscriber
+// via addForwardingSubscriber) and once via the explicit block at the end of the
+// subscribe() else-branch. Analogous to the subscribeNamespace bug fixed in this PR.
+TEST_F(MoQRelayTest, Subscribe_SecondForwardingSubscriber_SingleRequestUpdate) {
+  auto pubSession = createMockSession();
+  doPublishNamespace(pubSession, kTestNamespace);
+  auto mockHandle = makePublishHandle();
+  doPublishWithHandle(pubSession, kTestTrackName, mockHandle);
+
+  // S1 joins with forward=false — no REQUEST_UPDATE expected (no forwarding change).
+  auto s1 = createMockSession();
+  setupPublishSucceeds(s1);
+  {
+    SubscribeRequest sub;
+    sub.fullTrackName = kTestTrackName;
+    sub.requestID = RequestID(1);
+    sub.locType = LocationType::LargestObject;
+    sub.forward = false;
+    withSessionContext(s1, [&]() {
+      auto res = folly::coro::blockingWait(
+          relay_->subscribe(std::move(sub), createMockConsumer()),
+          exec_.get()
+      );
+      EXPECT_TRUE(res.hasValue());
+      if (res.hasValue()) {
+        getOrCreateMockState(s1)->subscribeHandles.push_back(*res);
+      }
+    });
+  }
+  for (int i = 0; i < 3; i++) {
+    exec_->drive();
+  }
+
+  // Now expect exactly ONE REQUEST_UPDATE(forward=true) when S2 joins.
+  // Before the fix this fires TWICE (forwardChanged + explicit block).
+  EXPECT_CALL(*mockHandle, requestUpdateCalled(_)).Times(1).WillOnce([](const RequestUpdate& u) {
+    ASSERT_TRUE(u.forward.has_value());
+    EXPECT_TRUE(*u.forward);
+  });
+
+  auto s2 = createMockSession();
+  setupPublishSucceeds(s2);
+  {
+    SubscribeRequest sub;
+    sub.fullTrackName = kTestTrackName;
+    sub.requestID = RequestID(2);
+    sub.locType = LocationType::LargestObject;
+    sub.forward = true;
+    withSessionContext(s2, [&]() {
+      auto res = folly::coro::blockingWait(
+          relay_->subscribe(std::move(sub), createMockConsumer()),
+          exec_.get()
+      );
+      EXPECT_TRUE(res.hasValue());
+      if (res.hasValue()) {
+        getOrCreateMockState(s2)->subscribeHandles.push_back(*res);
+      }
+    });
+  }
+  for (int i = 0; i < 5; i++) {
+    exec_->drive();
+  }
+
+  // Verify before cleanup (cleanup legitimately sends forward=false).
+  ASSERT_TRUE(testing::Mock::VerifyAndClearExpectations(mockHandle.get()));
+
+  removeSession(s2);
+  removeSession(s1);
+  removeSession(pubSession);
+  for (int i = 0; i < 3; i++) {
+    exec_->drive();
+  }
 }
 
 } // namespace moxygen::test
