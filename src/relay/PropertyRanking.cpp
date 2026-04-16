@@ -40,6 +40,9 @@ void PropertyRanking::registerTrack(
   RankKey key{value, nextSeq_++};
 
   publisherTrackCount_[publisher.get()]++;
+  // Update extended threshold since a publisher's track count changed.
+  // This affects crossesThreshold() for publisher-subscribers with self-exclusion.
+  updatePublisherExtendedThreshold();
 
   auto [iter, inserted] =
       rankedTracks_.emplace(key, RankedEntry{.ftn = ftn, .publisherRaw = publisher.get()});
@@ -143,6 +146,8 @@ void PropertyRanking::removeTrack(const moxygen::FullTrackName& ftn) {
       if (--countIt->second == 0) {
         publisherTrackCount_.erase(countIt);
       }
+      // Update extended threshold since a publisher's track count changed.
+      updatePublisherExtendedThreshold();
     }
   }
 
@@ -221,6 +226,8 @@ void PropertyRanking::addSessionToTopNGroup(
   // Check if this session is a publisher (owns any tracks in rankedTracks_).
   // Self-exclusion is automatic based on RankedEntry::publisher.
   if (isPublisher(session)) {
+    // A publisher-subscriber joined — update extended threshold for crossesThreshold().
+    updatePublisherExtendedThreshold();
     // reconcilePublisherSelection handles initial delivery for publishers:
     // it fires onSelected_ for each track in the personal top-N and
     // populates selectedTracks for future delta computation.
@@ -252,10 +259,18 @@ void PropertyRanking::removeSessionFromTopNGroup(
     return;
   }
 
+  // Check if leaving session was a publisher before removing.
+  bool wasPublisher = isPublisher(session);
+
   it->second.sessions.erase(session);
 
   if (it->second.sessions.empty()) {
     removeTopNGroup(maxSelected);
+  }
+
+  // Update extended threshold if a publisher-subscriber left.
+  if (wasPublisher) {
+    updatePublisherExtendedThreshold();
   }
 }
 
@@ -326,7 +341,13 @@ bool PropertyRanking::crossesThreshold(uint64_t oldRank, uint64_t newRank) const
     return false;
   }
 
-  if (oldRank >= selectionThreshold_ && newRank >= selectionThreshold_) {
+  // Use the larger of selectionThreshold_ and publisherExtendedThreshold_.
+  // Publisher-subscribers with self-exclusion have an extended window: they
+  // need to see top-N non-self tracks, which could span N + selfTrackCount
+  // global ranks. Without this, moves in the publisher-extended zone would
+  // incorrectly fast-path and miss recomputation.
+  uint64_t effectiveThreshold = std::max(selectionThreshold_, publisherExtendedThreshold_);
+  if (oldRank >= effectiveThreshold && newRank >= effectiveThreshold) {
     return false;
   }
 
@@ -348,6 +369,36 @@ bool PropertyRanking::crossesThreshold(uint64_t oldRank, uint64_t newRank) const
   auto it = std::upper_bound(sortedThresholds_.begin(), sortedThresholds_.end(), minRank);
   if (it != sortedThresholds_.end() && *it <= maxRank) {
     return true;
+  }
+
+  // Publisher-subscriber check: for publishers with self-exclusion, a move
+  // that doesn't cross any N-threshold for the shared selection may still
+  // affect their personal top-N. A publisher with S self-tracks needs to see
+  // up to N+S ranks to find their N non-self tracks. If any publisher exists
+  // and the move is within the first (max N + max self-track count) ranks,
+  // we must recompute. We use publisherExtendedThreshold_ (before maxDeselected
+  // adjustment) to determine this. Since publisherExtendedThreshold_ includes
+  // maxDeselected_, we compare against publisherExtendedThreshold_ directly.
+  if (!publisherTrackCount_.empty()) {
+    // Find max N across all groups
+    uint64_t maxN = 0;
+    for (const auto& [n, _] : topNGroups_) {
+      maxN = std::max(maxN, n);
+    }
+    // Compute max(N + selfTrackCount) across publisher-subscribers
+    uint64_t maxExtended = maxN;
+    for (const auto& [n, topNGroup] : topNGroups_) {
+      for (const auto& [session, info] : topNGroup.sessions) {
+        auto countIt = publisherTrackCount_.find(session.get());
+        if (countIt != publisherTrackCount_.end()) {
+          maxExtended = std::max(maxExtended, n + countIt->second);
+        }
+      }
+    }
+    // If either rank is within the publisher's extended window, recompute.
+    if (minRank < maxExtended || maxRank < maxExtended) {
+      return true;
+    }
   }
 
   return false;
@@ -435,6 +486,24 @@ void PropertyRanking::updateSelectionThreshold() {
   }
   std::sort(sortedThresholds_.begin(), sortedThresholds_.end());
   selectionThreshold_ = maxN + maxDeselected_;
+}
+
+void PropertyRanking::updatePublisherExtendedThreshold() {
+  // Compute max(N + selfTrackCount) across all publisher-subscribers.
+  // A publisher with S self-tracks subscribing to top-N has an effective
+  // window of N + S: they need to see the top N non-self tracks, which
+  // could be at global ranks 0 through N+S-1.
+  uint64_t maxExtended = 0;
+  for (const auto& [n, topNGroup] : topNGroups_) {
+    for (const auto& [session, info] : topNGroup.sessions) {
+      auto countIt = publisherTrackCount_.find(session.get());
+      if (countIt != publisherTrackCount_.end()) {
+        uint64_t selfCount = countIt->second;
+        maxExtended = std::max(maxExtended, n + selfCount);
+      }
+    }
+  }
+  publisherExtendedThreshold_ = maxExtended + maxDeselected_;
 }
 
 void PropertyRanking::trimDeselectedQueue(TopNGroup& topNGroup) {
