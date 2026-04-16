@@ -49,15 +49,15 @@ jobs:
       - name: Compute deployment target
         id: target
         run: |
-          # Branch label: main → "000"; release/<name> → "<name>"
+          # Branch label: main → "main"; release/<name> → "<name>"
+          # Rolling Docker tag: <label>-latest (symmetric across branches)
           BRANCH="${{ github.ref_name }}"
           if [[ "$BRANCH" == "main" ]]; then
-            LABEL="000"
-            DEFAULT_TAG="latest"
+            LABEL="main"
           else
             LABEL="${BRANCH#release/}"
-            DEFAULT_TAG="$LABEL"
           fi
+          DEFAULT_TAG="${LABEL}-latest"
 
           # Explicit input overrides, otherwise computed defaults
           IMAGE_TAG="${{ inputs.image_tag }}"

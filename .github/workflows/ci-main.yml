@@ -161,26 +161,35 @@ jobs:
         run: |
           SHORT="${GITHUB_SHA:0:7}"
           BRANCH="${{ github.ref_name }}"
+          # Every branch gets a rolling <label>-latest tag. main additionally
+          # keeps the bare 'latest' for back-compat with anyone pulling it.
           if [[ "$BRANCH" == "main" ]]; then
-            LABEL="latest"
+            LABEL="main"
+            ALIAS="latest"   # back-compat: main is also ':latest'
           else
-            # release/nab-demo → nab-demo
             LABEL="${BRANCH#release/}"
+            ALIAS=""
           fi
           echo "short=$SHORT" >> "$GITHUB_OUTPUT"
-          echo "label=$LABEL" >> "$GITHUB_OUTPUT"
+          echo "rolling=${LABEL}-latest" >> "$GITHUB_OUTPUT"
+          echo "alias=$ALIAS" >> "$GITHUB_OUTPUT"
 
       - name: Build Docker image
         run: |
           IMAGE="ghcr.io/${{ github.repository }}"
+          ALIAS_ARG=""
+          if [[ -n "${{ steps.tags.outputs.alias }}" ]]; then
+            ALIAS_ARG="-t ${IMAGE}:${{ steps.tags.outputs.alias }}"
+          fi
           docker build -f docker/Dockerfile \
             -t "${IMAGE}:${{ steps.tags.outputs.short }}" \
-            -t "${IMAGE}:${{ steps.tags.outputs.label }}" \
+            -t "${IMAGE}:${{ steps.tags.outputs.rolling }}" \
+            $ALIAS_ARG \
             .
 
       - name: Smoke test Docker image
         run: |
-          IMAGE="ghcr.io/${{ github.repository }}:${{ steps.tags.outputs.label }}"
+          IMAGE="ghcr.io/${{ github.repository }}:${{ steps.tags.outputs.rolling }}"
           echo "==> ldd check"
           docker run --rm --entrypoint ldd "${IMAGE}" /usr/local/bin/moqx
           if docker run --rm --entrypoint ldd "${IMAGE}" /usr/local/bin/moqx 2>&1 | grep -q "not found"; then
@@ -206,16 +215,20 @@ jobs:
 
       - name: Build interop client image
         run: |
-          SHORT="${GITHUB_SHA:0:7}"
           CLIENT_IMAGE="ghcr.io/${{ github.repository_owner }}/moqx-interop-client"
+          ALIAS_ARG=""
+          if [[ -n "${{ steps.tags.outputs.alias }}" ]]; then
+            ALIAS_ARG="-t ${CLIENT_IMAGE}:${{ steps.tags.outputs.alias }}"
+          fi
           docker build -f docker/Dockerfile.interop-client \
             -t "${CLIENT_IMAGE}:${{ steps.tags.outputs.short }}" \
-            -t "${CLIENT_IMAGE}:${{ steps.tags.outputs.label }}" \
+            -t "${CLIENT_IMAGE}:${{ steps.tags.outputs.rolling }}" \
+            $ALIAS_ARG \
             .
 
       - name: Smoke test interop client
         run: |
-          CLIENT_IMAGE="ghcr.io/${{ github.repository_owner }}/moqx-interop-client:${{ steps.tags.outputs.label }}"
+          CLIENT_IMAGE="ghcr.io/${{ github.repository_owner }}/moqx-interop-client:${{ steps.tags.outputs.rolling }}"
           echo "==> ldd check"
           docker run --rm --entrypoint ldd "${CLIENT_IMAGE}" /usr/local/bin/moq_interop_client
           if docker run --rm --entrypoint ldd "${CLIENT_IMAGE}" /usr/local/bin/moq_interop_client 2>&1 | grep -q "not found"; then
@@ -228,11 +241,16 @@ jobs:
       - name: Push Docker images
         run: |
           IMAGE="ghcr.io/${{ github.repository }}"
-          docker push "${IMAGE}:${{ steps.tags.outputs.short }}"
-          docker push "${IMAGE}:${{ steps.tags.outputs.label }}"
           CLIENT_IMAGE="ghcr.io/${{ github.repository_owner }}/moqx-interop-client"
+          ALIAS="${{ steps.tags.outputs.alias }}"
+          docker push "${IMAGE}:${{ steps.tags.outputs.short }}"
+          docker push "${IMAGE}:${{ steps.tags.outputs.rolling }}"
           docker push "${CLIENT_IMAGE}:${{ steps.tags.outputs.short }}"
-          docker push "${CLIENT_IMAGE}:${{ steps.tags.outputs.label }}"
+          docker push "${CLIENT_IMAGE}:${{ steps.tags.outputs.rolling }}"
+          if [[ -n "$ALIAS" ]]; then
+            docker push "${IMAGE}:${ALIAS}"
+            docker push "${CLIENT_IMAGE}:${ALIAS}"
+          fi
 
       - name: Package
         id: package
@@ -321,7 +339,7 @@ jobs:
         working-directory: docker
         run: |
           cat > .env <<EOF
-          DOMAIN=moqx-000.ci.openmoq.org
+          DOMAIN=moqx-main.ci.openmoq.org
           CERTBOT_EMAIL=gmarzot@openmoq.org
           MOQX_PORT=4433
           MOQX_ADMIN_PORT=8000
