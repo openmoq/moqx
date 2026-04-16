@@ -47,10 +47,13 @@ jobs:
             preset: default
             build_dir: build
             runner: ubuntu-22.04
-          - name: macos
-            preset: default
-            build_dir: build
-            runner: macos-latest
+          # macOS disabled: moxygen tarball bakes brew Cellar versioned paths
+          # that break when the runner has different brew package versions.
+          # Re-enable once moxygen upstream fixes cmake to use opt symlinks.
+          # - name: macos
+          #   preset: default
+          #   build_dir: build
+          #   runner: macos-latest
           - name: asan debug
             preset: san
             build_dir: build-san
@@ -82,7 +85,7 @@ jobs:
       - name: Setup dependencies
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: bash scripts/build.sh setup --from-release --no-fallback
+        run: bash scripts/build.sh setup --use-latest
 
       - name: Build
         run: bash scripts/build.sh --profile ${{ matrix.preset }} --build-dir ${{ matrix.build_dir }}
@@ -125,7 +128,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           MOQX_PLATFORM: bookworm-amd64
-        run: bash scripts/build.sh setup --from-release --no-fallback
+        run: bash scripts/build.sh setup --use-latest
 
       - name: Stage tarball for Docker build
         run: |
