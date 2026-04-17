@@ -101,9 +101,11 @@ TEST(PeerSubNsHelpers, PeerSubNsRoundTrip) {
   EXPECT_EQ(*id, "my-relay-id");
   EXPECT_EQ(withID.trackNamespacePrefix, TrackNamespace{});
   EXPECT_EQ(withID.options, SubscribeNamespaceOptions::BOTH);
+  EXPECT_FALSE(withID.forward);
 
   auto withoutID = makePeerSubNs();
   EXPECT_FALSE(getPeerRelayID(withoutID).has_value());
+  EXPECT_FALSE(withoutID.forward);
 }
 
 TEST(PeerSubNsHelpers, NormalSubNsIsNotPeer) {
