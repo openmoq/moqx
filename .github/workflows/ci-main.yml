@@ -47,6 +47,11 @@ jobs:
             preset: default
             build_dir: build
             runner: ubuntu-22.04
+          - name: linux arm64
+            preset: default
+            build_dir: build
+            runner: ubuntu-22.04-arm
+            platform: bookworm-arm64
           # macOS disabled: moxygen tarball bakes brew Cellar versioned paths
           # that break when the runner has different brew package versions.
           # Re-enable once moxygen upstream fixes cmake to use opt symlinks.
@@ -85,6 +90,7 @@ jobs:
       - name: Setup dependencies
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          MOQX_PLATFORM: ${{ matrix.platform || '' }}
         run: |
           # Release branches pin a specific moxygen release tag via
           # .moxygen-release. Main uses snapshot-latest via --use-latest.
@@ -119,8 +125,18 @@ jobs:
 
   publish:
     needs: [check-format, build]
-    name: publish
-    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-22.04
+            platform: bookworm-amd64
+          - arch: arm64
+            runner: ubuntu-22.04-arm
+            platform: bookworm-arm64
+    name: publish (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
     steps:
       - name: Generate app token
         id: app-token
@@ -136,7 +152,7 @@ jobs:
       - name: Download bookworm moxygen tarball
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          MOQX_PLATFORM: bookworm-amd64
+          MOQX_PLATFORM: ${{ matrix.platform }}
         run: |
           # Release branches pin a specific moxygen release tag via
           # .moxygen-release. Main uses snapshot-latest via --use-latest.
@@ -161,35 +177,26 @@ jobs:
         run: |
           SHORT="${GITHUB_SHA:0:7}"
           BRANCH="${{ github.ref_name }}"
-          # Every branch gets a rolling <label>-latest tag. main additionally
-          # keeps the bare 'latest' for back-compat with anyone pulling it.
           if [[ "$BRANCH" == "main" ]]; then
             LABEL="main"
-            ALIAS="latest"   # back-compat: main is also ':latest'
           else
             LABEL="${BRANCH#release/}"
-            ALIAS=""
           fi
           echo "short=$SHORT" >> "$GITHUB_OUTPUT"
           echo "rolling=${LABEL}-latest" >> "$GITHUB_OUTPUT"
-          echo "alias=$ALIAS" >> "$GITHUB_OUTPUT"
 
       - name: Build Docker image
         run: |
           IMAGE="ghcr.io/${{ github.repository }}"
-          ALIAS_ARG=""
-          if [[ -n "${{ steps.tags.outputs.alias }}" ]]; then
-            ALIAS_ARG="-t ${IMAGE}:${{ steps.tags.outputs.alias }}"
-          fi
+          ARCH="${{ matrix.arch }}"
           docker build -f docker/Dockerfile \
-            -t "${IMAGE}:${{ steps.tags.outputs.short }}" \
-            -t "${IMAGE}:${{ steps.tags.outputs.rolling }}" \
-            $ALIAS_ARG \
+            -t "${IMAGE}:${{ steps.tags.outputs.short }}-${ARCH}" \
+            -t "${IMAGE}:${{ steps.tags.outputs.rolling }}-${ARCH}" \
             .
 
       - name: Smoke test Docker image
         run: |
-          IMAGE="ghcr.io/${{ github.repository }}:${{ steps.tags.outputs.rolling }}"
+          IMAGE="ghcr.io/${{ github.repository }}:${{ steps.tags.outputs.rolling }}-${{ matrix.arch }}"
           echo "==> ldd check"
           docker run --rm --entrypoint ldd "${IMAGE}" /usr/local/bin/moqx
           if docker run --rm --entrypoint ldd "${IMAGE}" /usr/local/bin/moqx 2>&1 | grep -q "not found"; then
@@ -216,19 +223,15 @@ jobs:
       - name: Build interop client image
         run: |
           CLIENT_IMAGE="ghcr.io/${{ github.repository_owner }}/moqx-interop-client"
-          ALIAS_ARG=""
-          if [[ -n "${{ steps.tags.outputs.alias }}" ]]; then
-            ALIAS_ARG="-t ${CLIENT_IMAGE}:${{ steps.tags.outputs.alias }}"
-          fi
+          ARCH="${{ matrix.arch }}"
           docker build -f docker/Dockerfile.interop-client \
-            -t "${CLIENT_IMAGE}:${{ steps.tags.outputs.short }}" \
-            -t "${CLIENT_IMAGE}:${{ steps.tags.outputs.rolling }}" \
-            $ALIAS_ARG \
+            -t "${CLIENT_IMAGE}:${{ steps.tags.outputs.short }}-${ARCH}" \
+            -t "${CLIENT_IMAGE}:${{ steps.tags.outputs.rolling }}-${ARCH}" \
             .
 
       - name: Smoke test interop client
         run: |
-          CLIENT_IMAGE="ghcr.io/${{ github.repository_owner }}/moqx-interop-client:${{ steps.tags.outputs.rolling }}"
+          CLIENT_IMAGE="ghcr.io/${{ github.repository_owner }}/moqx-interop-client:${{ steps.tags.outputs.rolling }}-${{ matrix.arch }}"
           echo "==> ldd check"
           docker run --rm --entrypoint ldd "${CLIENT_IMAGE}" /usr/local/bin/moq_interop_client
           if docker run --rm --entrypoint ldd "${CLIENT_IMAGE}" /usr/local/bin/moq_interop_client 2>&1 | grep -q "not found"; then
@@ -242,21 +245,17 @@ jobs:
         run: |
           IMAGE="ghcr.io/${{ github.repository }}"
           CLIENT_IMAGE="ghcr.io/${{ github.repository_owner }}/moqx-interop-client"
-          ALIAS="${{ steps.tags.outputs.alias }}"
-          docker push "${IMAGE}:${{ steps.tags.outputs.short }}"
-          docker push "${IMAGE}:${{ steps.tags.outputs.rolling }}"
-          docker push "${CLIENT_IMAGE}:${{ steps.tags.outputs.short }}"
-          docker push "${CLIENT_IMAGE}:${{ steps.tags.outputs.rolling }}"
-          if [[ -n "$ALIAS" ]]; then
-            docker push "${IMAGE}:${ALIAS}"
-            docker push "${CLIENT_IMAGE}:${ALIAS}"
-          fi
+          ARCH="${{ matrix.arch }}"
+          docker push "${IMAGE}:${{ steps.tags.outputs.short }}-${ARCH}"
+          docker push "${IMAGE}:${{ steps.tags.outputs.rolling }}-${ARCH}"
+          docker push "${CLIENT_IMAGE}:${{ steps.tags.outputs.short }}-${ARCH}"
+          docker push "${CLIENT_IMAGE}:${{ steps.tags.outputs.rolling }}-${ARCH}"
 
       - name: Package
         id: package
         run: |
-          ARTIFACT="moqx-bookworm-amd64.tar.gz"
-          docker cp "$(docker create --name extract ghcr.io/${{ github.repository }}:latest):/usr/local/bin/moqx" .
+          ARTIFACT="moqx-${{ matrix.platform }}.tar.gz"
+          docker cp "$(docker create --name extract ghcr.io/${{ github.repository }}:${{ steps.tags.outputs.rolling }}-${{ matrix.arch }}):/usr/local/bin/moqx" .
           docker rm extract
           mkdir -p install/bin && mv moqx install/bin/
           tar czf "$ARTIFACT" -C install .
@@ -270,11 +269,74 @@ jobs:
           retention-days: 90
 
   # ════════════════════════════════════════════════════════════════════════════
+  # Manifest: stitch per-arch images into multiplatform tags
+  # ════════════════════════════════════════════════════════════════════════════
+
+  manifest:
+    needs: [publish]
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Compute image tags
+        id: tags
+        run: |
+          SHORT="${GITHUB_SHA:0:7}"
+          BRANCH="${{ github.ref_name }}"
+          # Every branch gets a rolling <label>-latest tag. main additionally
+          # keeps the bare 'latest' for back-compat with anyone pulling it.
+          if [[ "$BRANCH" == "main" ]]; then
+            LABEL="main"
+            ALIAS="latest"   # back-compat: main is also ':latest'
+          else
+            LABEL="${BRANCH#release/}"
+            ALIAS=""
+          fi
+          echo "short=$SHORT" >> "$GITHUB_OUTPUT"
+          echo "rolling=${LABEL}-latest" >> "$GITHUB_OUTPUT"
+          echo "alias=$ALIAS" >> "$GITHUB_OUTPUT"
+
+      - name: Create multiplatform manifests (moqx)
+        run: |
+          IMAGE="ghcr.io/${{ github.repository }}"
+          SHORT="${{ steps.tags.outputs.short }}"
+          ROLLING="${{ steps.tags.outputs.rolling }}"
+          for TAG in "$SHORT" "$ROLLING"; do
+            docker buildx imagetools create -t "${IMAGE}:${TAG}" \
+              "${IMAGE}:${TAG}-amd64" \
+              "${IMAGE}:${TAG}-arm64"
+          done
+          ALIAS="${{ steps.tags.outputs.alias }}"
+          if [[ -n "$ALIAS" ]]; then
+            docker buildx imagetools create -t "${IMAGE}:${ALIAS}" \
+              "${IMAGE}:${SHORT}-amd64" \
+              "${IMAGE}:${SHORT}-arm64"
+          fi
+
+      - name: Create multiplatform manifests (interop-client)
+        run: |
+          CLIENT_IMAGE="ghcr.io/${{ github.repository_owner }}/moqx-interop-client"
+          SHORT="${{ steps.tags.outputs.short }}"
+          ROLLING="${{ steps.tags.outputs.rolling }}"
+          for TAG in "$SHORT" "$ROLLING"; do
+            docker buildx imagetools create -t "${CLIENT_IMAGE}:${TAG}" \
+              "${CLIENT_IMAGE}:${TAG}-amd64" \
+              "${CLIENT_IMAGE}:${TAG}-arm64"
+          done
+          ALIAS="${{ steps.tags.outputs.alias }}"
+          if [[ -n "$ALIAS" ]]; then
+            docker buildx imagetools create -t "${CLIENT_IMAGE}:${ALIAS}" \
+              "${CLIENT_IMAGE}:${SHORT}-amd64" \
+              "${CLIENT_IMAGE}:${SHORT}-arm64"
+          fi
+
+  # ════════════════════════════════════════════════════════════════════════════
   # Release: create/update snapshot-latest pre-release (all green)
   # ════════════════════════════════════════════════════════════════════════════
 
   release:
-    needs: [build, publish]
+    needs: [build, manifest]
     runs-on: ubuntu-22.04
     outputs:
       tag: ${{ steps.publish.outputs.tag }}
@@ -329,7 +391,7 @@ jobs:
 
   deploy:
     if: github.ref_name == 'main'
-    needs: [publish, release]
+    needs: [manifest, release]
     runs-on: [self-hosted, linode]
     env:
       DOMAIN: moqx-main.ci.openmoq.org
@@ -437,7 +499,7 @@ jobs:
   # ════════════════════════════════════════════════════════════════════════════
 
   notify:
-    needs: [check-format, build, publish, release, deploy]
+    needs: [check-format, build, publish, manifest, release, deploy]
     if: always()
     runs-on: ubuntu-22.04
     steps:
