@@ -377,7 +377,7 @@ jobs:
           **Built:** $(date -u +%Y-%m-%dT%H:%M:%SZ)
           **Docker:** \`ghcr.io/${{ github.repository }}:${SHORT}\`
 
-          This pre-release is automatically replaced on every push to \`main\`.
+          This pre-release is automatically replaced on every push to \`${{ github.ref_name }}\`.
           EOF
           )"
 
