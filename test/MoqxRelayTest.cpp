@@ -3516,4 +3516,171 @@ TEST_F(MoQRelayTest, BridgeHandleDestructorDoesNotEvictNewPublisher) {
   removeSession(session2);
 }
 
+// Regression test: publisher reconnects while a subscribe coroutine is
+// suspended at co_await upstreamSession->subscribe().  The reconnect
+// (doPublishNamespace for publisher 2) erases the subscribe-path subscriptions_
+// entry (upstream == publisherSession1 == nodePtr->sourceSession), then
+// publish() for the same FTN creates a new entry whose promise is already
+// satisfied.  The subscribe scope guard then calls setException() on the
+// already-satisfied promise → folly::PromiseAlreadySatisfied →
+// ScopeGuardImplBase::terminate() → std::terminate (exit code 139).
+//
+// Without the fix: crashes.  With the fix: subscribe returns an error cleanly.
+TEST_F(MoQRelayTest, PublishReconnectDuringSubscribeScopeGuardCrash) {
+  auto publisherSession1 = createMockSession();
+  auto publisherSession2 = createMockSession();
+  auto subscriberSession = createMockSession();
+
+  // Publisher 1 announces the namespace so subscribe() will find it as the
+  // upstream session and call publisherSession1->subscribe().
+  PublishNamespace pn;
+  pn.trackNamespace = kTestNamespace;
+  relay_->doPublishNamespace(pn, publisherSession1, nullptr);
+
+  // Configure publisher 1's subscribe() mock to simulate publisher reconnect
+  // inline (the relay calls this during co_await upstreamSession->subscribe()):
+  //   1. Publisher 2 re-announces the namespace — doPublishNamespace erases the
+  //      subscribe-path subscriptions_ entry because its upstream field equals
+  //      publisherSession1 == nodePtr->sourceSession.
+  //   2. Publisher 2 publishes the FTN — publish() emplaces a new subscriptions_
+  //      entry and immediately calls rsub.promise.setValue(folly::unit).
+  //   3. Returns an error, simulating the old session being cancelled.
+  // After the mock returns, the subscribe error path fires the scope guard which
+  // does subscriptions_.find(trackName), finds the new publish-path entry, and
+  // calls it->second.promise.setException() on an already-satisfied promise →
+  // PromiseAlreadySatisfied → terminate().
+  std::shared_ptr<TrackConsumer> pub2Consumer;
+  EXPECT_CALL(*publisherSession1, subscribe(_, _))
+      .WillOnce(
+          [this, publisherSession2, &pub2Consumer](SubscribeRequest, std::shared_ptr<TrackConsumer>)
+              -> folly::coro::Task<Publisher::SubscribeResult> {
+            // Step 1: publisher 2 takes over the namespace.
+            PublishNamespace pn2;
+            pn2.trackNamespace = kTestNamespace;
+            relay_->doPublishNamespace(pn2, publisherSession2, nullptr);
+
+            // Step 2: publisher 2 publishes the FTN, creating a new
+            // subscriptions_ entry with the promise already satisfied.
+            {
+              folly::RequestContextScopeGuard ctx;
+              folly::RequestContext::get()->setContextData(
+                  sessionRequestToken(),
+                  std::make_unique<MoQSession::MoQSessionRequestData>(publisherSession2)
+              );
+              PublishRequest pub;
+              pub.fullTrackName = kTestTrackName;
+              auto res = relay_->publish(std::move(pub), createMockSubscriptionHandle());
+              EXPECT_TRUE(res.hasValue()) << "publish in mock unexpectedly failed";
+              if (res.hasValue()) {
+                pub2Consumer = res->consumer;
+              }
+            }
+
+            // Step 3: return error — simulates the old upstream session being cancelled.
+            co_return folly::makeUnexpected(SubscribeError{
+                RequestID(0),
+                SubscribeErrorCode::INTERNAL_ERROR,
+                "upstream session cancelled"
+            });
+          }
+      );
+
+  withSessionContext(subscriberSession, [&]() {
+    SubscribeRequest sub;
+    sub.fullTrackName = kTestTrackName;
+    sub.requestID = RequestID(1);
+    sub.locType = LocationType::LargestObject;
+    auto result = folly::coro::blockingWait(
+        relay_->subscribe(std::move(sub), createMockConsumer()),
+        exec_.get()
+    );
+    // With the fix: subscribe returns an error without crashing.
+    // Without the fix: std::terminate is called before this assertion runs.
+    EXPECT_FALSE(result.hasValue()) << "subscribe should have failed (upstream cancelled)";
+  });
+
+  if (pub2Consumer) {
+    pub2Consumer->publishDone(
+        {RequestID(0), PublishDoneStatusCode::SESSION_CLOSED, 0, "test cleanup"}
+    );
+  }
+  relay_->doPublishNamespaceDone(kTestNamespace, publisherSession2);
+}
+
+// Same reconnect scenario but the upstream subscribe returns OK instead of an
+// error.  Without the fix, the crash moves from the scope guard to the success
+// path: after g.dismiss(), subscriptions_.find() returns the new publish-path
+// entry (promise already satisfied), and rsub.promise.setValue() throws
+// PromiseAlreadySatisfied, which propagates as an unhandled coroutine exception.
+// With the fix: subscribe returns SUBSCRIBE_ERROR "publisher reconnected".
+TEST_F(MoQRelayTest, PublishReconnectDuringSubscribeSuccessPathCrash) {
+  auto publisherSession1 = createMockSession();
+  auto publisherSession2 = createMockSession();
+  auto subscriberSession = createMockSession();
+
+  PublishNamespace pn;
+  pn.trackNamespace = kTestNamespace;
+  relay_->doPublishNamespace(pn, publisherSession1, nullptr);
+
+  std::shared_ptr<TrackConsumer> pub2Consumer;
+  EXPECT_CALL(*publisherSession1, subscribe(_, _))
+      .WillOnce(
+          [this,
+           publisherSession2,
+           &pub2Consumer](SubscribeRequest subReq, std::shared_ptr<TrackConsumer>)
+              -> folly::coro::Task<Publisher::SubscribeResult> {
+            PublishNamespace pn2;
+            pn2.trackNamespace = kTestNamespace;
+            relay_->doPublishNamespace(pn2, publisherSession2, nullptr);
+
+            {
+              folly::RequestContextScopeGuard ctx;
+              folly::RequestContext::get()->setContextData(
+                  sessionRequestToken(),
+                  std::make_unique<MoQSession::MoQSessionRequestData>(publisherSession2)
+              );
+              PublishRequest pub;
+              pub.fullTrackName = kTestTrackName;
+              auto res = relay_->publish(std::move(pub), createMockSubscriptionHandle());
+              EXPECT_TRUE(res.hasValue()) << "publish in mock unexpectedly failed";
+              if (res.hasValue()) {
+                pub2Consumer = res->consumer;
+              }
+            }
+
+            // Return success — the crash moves to rsub.promise.setValue() in the
+            // success path (after g.dismiss()), which finds the new publish-path
+            // entry whose promise is already satisfied.
+            SubscribeOk ok;
+            ok.requestID = subReq.requestID;
+            ok.trackAlias = TrackAlias(subReq.requestID.value);
+            ok.expires = std::chrono::milliseconds(0);
+            ok.groupOrder = GroupOrder::OldestFirst;
+            co_return std::make_shared<NiceMock<MockSubscriptionHandle>>(std::move(ok));
+          }
+      );
+
+  withSessionContext(subscriberSession, [&]() {
+    SubscribeRequest sub;
+    sub.fullTrackName = kTestTrackName;
+    sub.requestID = RequestID(1);
+    sub.locType = LocationType::LargestObject;
+    auto result = folly::coro::blockingWait(
+        relay_->subscribe(std::move(sub), createMockConsumer()),
+        exec_.get()
+    );
+    EXPECT_FALSE(result.hasValue()) << "subscribe should fail (publisher reconnected)";
+    if (result.hasError()) {
+      EXPECT_EQ(result.error().reasonPhrase, "publisher reconnected during subscribe");
+    }
+  });
+
+  if (pub2Consumer) {
+    pub2Consumer->publishDone(
+        {RequestID(0), PublishDoneStatusCode::SESSION_CLOSED, 0, "test cleanup"}
+    );
+  }
+  relay_->doPublishNamespaceDone(kTestNamespace, publisherSession2);
+}
+
 } // namespace moxygen::test

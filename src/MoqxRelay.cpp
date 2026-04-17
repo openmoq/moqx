@@ -1045,14 +1045,21 @@ MoqxRelay::subscribe(SubscribeRequest subReq, std::shared_ptr<TrackConsumer> con
     // The iterator returned from emplace does not survive across coroutine
     // resumption, so both the guard and updating the RelaySubscription below
     // require another lookup in the subscriptions_ map.
-    auto g = folly::makeGuard([this, trackName = subReq.fullTrackName] {
-      auto it = subscriptions_.find(trackName);
-      if (it != subscriptions_.end()) {
-        it->second.promise.setException(std::runtime_error("failed"));
-        XLOG(DBG4) << "Erasing subscription to " << it->first;
-        subscriptions_.erase(it);
-      }
-    });
+    // Capture forwarder identity: a reconnecting publisher may replace this
+    // entry before we resume, leaving a new entry with a satisfied promise.
+    auto g = folly::makeGuard(
+        [this, trackName = subReq.fullTrackName, weakForwarder = std::weak_ptr(forwarder)] {
+          auto it = subscriptions_.find(trackName);
+          if (it != subscriptions_.end() && it->second.forwarder == weakForwarder.lock()) {
+            it->second.promise.setException(std::runtime_error("failed"));
+            XLOG(DBG4) << "Erasing subscription to " << it->first;
+            subscriptions_.erase(it);
+          } else {
+            // Entry was replaced by a reconnecting publisher; don't touch it.
+            XLOG(DBG4) << "Skipping stale guard for " << trackName;
+          }
+        }
+    );
     // Add subscriber first in case objects come before subscribe OK.
     auto subscriber = forwarder->addSubscriber(std::move(session), subReq, std::move(consumer));
     if (!subscriber) {
@@ -1097,10 +1104,19 @@ MoqxRelay::subscribe(SubscribeRequest subReq, std::shared_ptr<TrackConsumer> con
     auto it = subscriptions_.find(subReq.fullTrackName);
     // There are cases that remove the subscription like failing to
     // publish a datagram that was received before the subscribeOK
-    // and then gets flushed
+    // and then gets flushed.  Also guard against a reconnecting publisher
+    // replacing the entry while we were suspended.
     if (it == subscriptions_.end()) {
       XLOG(ERR) << "Subscription is GONE, returning exception";
       co_yield folly::coro::co_error(std::runtime_error("subscription is gone"));
+    }
+    if (it->second.forwarder != forwarder) {
+      XLOG(ERR) << "Subscription replaced by reconnecting publisher: " << subReq.fullTrackName;
+      co_return folly::makeUnexpected(SubscribeError{
+          subReq.requestID,
+          SubscribeErrorCode::INTERNAL_ERROR,
+          "publisher reconnected during subscribe"
+      });
     }
     auto& rsub = it->second;
     rsub.requestID = subRes.value()->subscribeOk().requestID;
