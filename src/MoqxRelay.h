@@ -203,7 +203,8 @@ public:
   std::shared_ptr<moxygen::Subscriber::PublishNamespaceHandle> doPublishNamespace(
       moxygen::PublishNamespace pubNs,
       std::shared_ptr<moxygen::MoQSession> session,
-      std::shared_ptr<moxygen::Subscriber::PublishNamespaceCallback> callback
+      std::shared_ptr<moxygen::Subscriber::PublishNamespaceCallback> callback,
+      std::string peerID = {}
   );
 
   void doPublishNamespaceDone(
@@ -291,6 +292,8 @@ private:
         namespacesPublished;
     // The session that PUBLISH_NAMESPACEd this node
     std::shared_ptr<moxygen::MoQSession> sourceSession;
+    // Peer relay ID that sourced this namespace (empty for local publishers)
+    std::string sourcePeerID;
     std::shared_ptr<PublishNamespaceCallback> publishNamespaceCallback;
 
     MoqxRelay& relay_;
@@ -441,7 +444,8 @@ private:
 // Used for both the initiating (UpstreamProvider) and reciprocal (MoqxRelay) paths.
 std::shared_ptr<moxygen::Publisher::NamespacePublishHandle> makeNamespaceBridgeHandle(
     std::weak_ptr<MoqxRelay> relay,
-    std::shared_ptr<moxygen::MoQSession> session
+    std::shared_ptr<moxygen::MoQSession> session,
+    std::string peerID = {}
 );
 
 } // namespace openmoq::moqx
