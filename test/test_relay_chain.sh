@@ -18,6 +18,8 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 BINARY="${1:-$REPO/build/moqx}"
 MOQBIN="${MOQBIN:-$REPO/.scratch/moxygen-install/bin}"
+# shellcheck source=test_ports.sh
+source "$REPO/test/test_ports.sh"
 
 # Parse --save-logs option (may appear anywhere in args)
 SAVE_LOGS=false
@@ -32,10 +34,10 @@ done
 DATESERVER="$MOQBIN/moqdateserver"
 TEXTCLIENT="$MOQBIN/moqtextclient"
 
-UPSTREAM_PORT=19668
-UPSTREAM_ADMIN_PORT=19669
-DOWNSTREAM_PORT=19670
-DOWNSTREAM_ADMIN_PORT=19671
+UPSTREAM_PORT=$TEST_RELAY_CHAIN_UPSTREAM
+UPSTREAM_ADMIN_PORT=$TEST_RELAY_CHAIN_UPSTREAM_ADMIN
+DOWNSTREAM_PORT=$TEST_RELAY_CHAIN_DOWNSTREAM
+DOWNSTREAM_ADMIN_PORT=$TEST_RELAY_CHAIN_DOWNSTREAM_ADMIN
 UPSTREAM_RELAY_ID="upstream-test"
 DOWNSTREAM_RELAY_ID="downstream-test"
 NAMESPACE="moq-date"

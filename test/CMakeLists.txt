@@ -207,3 +207,21 @@ target_link_libraries(moqx_track_filter_test PRIVATE
   moxygen::moxygen_events_moq_folly_executor_impl
 )
 gtest_discover_tests(moqx_track_filter_test)
+
+# TrackFilterLoadTest: requires a live relay process.
+# Run manually: ./track_filter_load_test --relay_url=https://localhost:9668/moq-relay
+# Not registered with gtest_discover_tests — excluded from automated ctest.
+add_executable(track_filter_load_test
+  TrackFilterLoadTest.cpp
+)
+target_link_libraries(track_filter_load_test PRIVATE
+  moqx_core
+  Folly::folly_init_init
+  moxygen::moxygen_events_moq_folly_executor_impl
+  moxygen::moxygen_moqclient
+  moxygen::moxygen_moq_webtransport_client
+  moxygen::moxygen_relay_moq_relay_client
+  moxygen::moxygen_relay_moq_forwarder
+  moxygen::moxygen_moq_relay_session
+  moxygen::moxygen_util_insecure_verifier_dangerous_do_not_use_in_production
+)

@@ -8,6 +8,7 @@
 
 #include "MoqxRelay.h"
 #include "TestUtils.h"
+#include "UpstreamProvider.h"
 #include <folly/coro/BlockingWait.h>
 #include <folly/io/async/EventBase.h>
 #include <folly/portability/GMock.h>
@@ -311,6 +312,84 @@ protected:
     ON_CALL(*sg, endOfTrackAndGroup(_))
         .WillByDefault(Return(folly::makeExpected<MoQPublishError>(folly::unit)));
     return sg;
+  }
+
+  // Publish a track with a caller-supplied handle so tests can set expectations
+  // on requestUpdateCalled.
+  std::shared_ptr<TrackConsumer> doPublishWithHandle(
+      std::shared_ptr<MoQSession> session,
+      const FullTrackName& trackName,
+      std::shared_ptr<Publisher::SubscriptionHandle> handle
+  ) {
+    return withSessionContext(session, [&]() -> std::shared_ptr<TrackConsumer> {
+      PublishRequest pub;
+      pub.fullTrackName = trackName;
+      auto res = relay_->publish(std::move(pub), std::move(handle));
+      EXPECT_TRUE(res.hasValue());
+      if (!res.hasValue()) {
+        return nullptr;
+      }
+      auto consumer = res->consumer;
+      getOrCreateMockState(session)->publishConsumers.push_back(consumer);
+      return consumer;
+    });
+  }
+
+  // Subscribe to a namespace with an explicit forward flag.
+  std::shared_ptr<Publisher::SubscribeNamespaceHandle> doSubscribeNamespaceWithForward(
+      std::shared_ptr<MoQSession> session,
+      const TrackNamespace& nsPrefix,
+      bool forward
+  ) {
+    SubscribeNamespace subNs;
+    subNs.trackNamespacePrefix = nsPrefix;
+    subNs.forward = forward;
+    return withSessionContext(session, [&]() {
+      auto task = relay_->subscribeNamespace(std::move(subNs), nullptr);
+      auto res = folly::coro::blockingWait(std::move(task), exec_.get());
+      EXPECT_TRUE(res.hasValue());
+      if (!res.hasValue()) {
+        return std::shared_ptr<Publisher::SubscribeNamespaceHandle>(nullptr);
+      }
+      getOrCreateMockState(session)->subscribeNamespaceHandles.push_back(*res);
+      return *res;
+    });
+  }
+
+  // Set up session->publish() to succeed with a mock consumer and immediate
+  // PublishOk. Call this on any subscriber session before it will receive
+  // publishToSession() calls, otherwise the mock returns an error and the
+  // subscriber is ejected, confusing REQUEST_UPDATE accounting.
+  void setupPublishSucceeds(std::shared_ptr<MockMoQSession> session) {
+    ON_CALL(*session, publish(_, _))
+        .WillByDefault(Invoke([this](PublishRequest pub, auto) -> Subscriber::PublishResult {
+          PublishOk ok{
+              pub.requestID,
+              /*forward=*/pub.forward,
+              /*priority=*/128,
+              GroupOrder::Default,
+              LocationType::LargestObject,
+              /*start=*/std::nullopt,
+              /*endGroup=*/std::make_optional(uint64_t(0))
+          };
+          return Subscriber::PublishConsumerAndReplyTask{
+              createMockConsumer(),
+              folly::coro::makeTask<folly::Expected<PublishOk, PublishError>>(std::move(ok))
+          };
+        }));
+  }
+
+  // Build a NiceMock SubscriptionHandle suitable for publish() calls.
+  std::shared_ptr<NiceMock<MockSubscriptionHandle>> makePublishHandle() {
+    SubscribeOk ok;
+    ok.requestID = RequestID(0);
+    ok.trackAlias = TrackAlias(0);
+    ok.expires = std::chrono::milliseconds(0);
+    ok.groupOrder = GroupOrder::Default;
+    auto handle = std::make_shared<NiceMock<MockSubscriptionHandle>>(std::move(ok));
+    ON_CALL(*handle, requestUpdateResult())
+        .WillByDefault(Return(folly::makeExpected<RequestError>(RequestOk{})));
+    return handle;
   }
 
   std::shared_ptr<TestMoQExecutor> exec_;
@@ -3051,6 +3130,557 @@ TEST_F(MoQRelayTest, FetchAfterPublisherTermination) {
   removeSession(publisherSession);
   removeSession(subSession);
   removeSession(fetchSession);
+}
+
+// Bug: when a subscriber with forward=true joins a namespace whose track
+// forwarder is empty, the relay fires REQUEST_UPDATE twice — once explicitly
+// at the if(forwarder->empty()) site and once via forwardChanged() when
+// addSubscriber() increments numForwardingSubscribers from 0 to 1.
+TEST_F(MoQRelayTest, SubscribeNs_ForwardTrue_EmptyForwarder_SingleRequestUpdate) {
+  auto pubSession = createMockSession();
+  doPublishNamespace(pubSession, kTestNamespace);
+  auto mockHandle = makePublishHandle();
+  doPublishWithHandle(pubSession, kTestTrackName, mockHandle);
+
+  // Expect exactly one REQUEST_UPDATE(forward=true).
+  // Before the fix this fires twice.
+  EXPECT_CALL(*mockHandle, requestUpdateCalled(_)).Times(1).WillOnce([](const RequestUpdate& u) {
+    ASSERT_TRUE(u.forward.has_value());
+    EXPECT_TRUE(*u.forward);
+  });
+
+  auto subSession = createMockSession();
+  setupPublishSucceeds(subSession);
+  doSubscribeNamespaceWithForward(subSession, kTestNamespace, /*forward=*/true);
+
+  for (int i = 0; i < 5; i++) {
+    exec_->drive();
+  }
+
+  // Verify before cleanup — cleanup itself legitimately sends forward=false
+  // when the subscriber leaves and the forwarder drains.
+  ASSERT_TRUE(testing::Mock::VerifyAndClearExpectations(mockHandle.get()));
+
+  removeSession(subSession);
+  removeSession(pubSession);
+  for (int i = 0; i < 3; i++) {
+    exec_->drive();
+  }
+}
+
+// Bug: when a subscriber with forward=false joins a namespace whose track
+// forwarder is empty, the relay fires a spurious REQUEST_UPDATE(forward=false)
+// at the if(forwarder->empty()) site — even though the upstream is already at
+// forward=false (set by publish() which found no subscribers).
+TEST_F(MoQRelayTest, SubscribeNs_ForwardFalse_EmptyForwarder_NoRequestUpdate) {
+  auto pubSession = createMockSession();
+  doPublishNamespace(pubSession, kTestNamespace);
+  auto mockHandle = makePublishHandle();
+  doPublishWithHandle(pubSession, kTestTrackName, mockHandle);
+
+  // Expect no REQUEST_UPDATE at all.
+  // Before the fix this fires once with forward=false.
+  EXPECT_CALL(*mockHandle, requestUpdateCalled(_)).Times(0);
+
+  auto subSession = createMockSession();
+  setupPublishSucceeds(subSession);
+  doSubscribeNamespaceWithForward(subSession, kTestNamespace, /*forward=*/false);
+
+  for (int i = 0; i < 5; i++) {
+    exec_->drive();
+  }
+
+  ASSERT_TRUE(testing::Mock::VerifyAndClearExpectations(mockHandle.get()));
+
+  removeSession(subSession);
+  removeSession(pubSession);
+  for (int i = 0; i < 3; i++) {
+    exec_->drive();
+  }
+}
+
+// Bug: when a second subscriber with forward=true joins an existing PUBLISH-path
+// subscription (causing a 0→1 forwarding transition), the relay fires REQUEST_UPDATE
+// twice — once via forwardChanged() (which fires synchronously inside addSubscriber
+// via addForwardingSubscriber) and once via the explicit block at the end of the
+// subscribe() else-branch. Analogous to the subscribeNamespace bug fixed in this PR.
+TEST_F(MoQRelayTest, Subscribe_SecondForwardingSubscriber_SingleRequestUpdate) {
+  auto pubSession = createMockSession();
+  doPublishNamespace(pubSession, kTestNamespace);
+  auto mockHandle = makePublishHandle();
+  doPublishWithHandle(pubSession, kTestTrackName, mockHandle);
+
+  // S1 joins with forward=false — no REQUEST_UPDATE expected (no forwarding change).
+  auto s1 = createMockSession();
+  setupPublishSucceeds(s1);
+  {
+    SubscribeRequest sub;
+    sub.fullTrackName = kTestTrackName;
+    sub.requestID = RequestID(1);
+    sub.locType = LocationType::LargestObject;
+    sub.forward = false;
+    withSessionContext(s1, [&]() {
+      auto res = folly::coro::blockingWait(
+          relay_->subscribe(std::move(sub), createMockConsumer()),
+          exec_.get()
+      );
+      EXPECT_TRUE(res.hasValue());
+      if (res.hasValue()) {
+        getOrCreateMockState(s1)->subscribeHandles.push_back(*res);
+      }
+    });
+  }
+  for (int i = 0; i < 3; i++) {
+    exec_->drive();
+  }
+
+  // Now expect exactly ONE REQUEST_UPDATE(forward=true) when S2 joins.
+  // Before the fix this fires TWICE (forwardChanged + explicit block).
+  EXPECT_CALL(*mockHandle, requestUpdateCalled(_)).Times(1).WillOnce([](const RequestUpdate& u) {
+    ASSERT_TRUE(u.forward.has_value());
+    EXPECT_TRUE(*u.forward);
+  });
+
+  auto s2 = createMockSession();
+  setupPublishSucceeds(s2);
+  {
+    SubscribeRequest sub;
+    sub.fullTrackName = kTestTrackName;
+    sub.requestID = RequestID(2);
+    sub.locType = LocationType::LargestObject;
+    sub.forward = true;
+    withSessionContext(s2, [&]() {
+      auto res = folly::coro::blockingWait(
+          relay_->subscribe(std::move(sub), createMockConsumer()),
+          exec_.get()
+      );
+      EXPECT_TRUE(res.hasValue());
+      if (res.hasValue()) {
+        getOrCreateMockState(s2)->subscribeHandles.push_back(*res);
+      }
+    });
+  }
+  for (int i = 0; i < 5; i++) {
+    exec_->drive();
+  }
+
+  // Verify before cleanup (cleanup legitimately sends forward=false).
+  ASSERT_TRUE(testing::Mock::VerifyAndClearExpectations(mockHandle.get()));
+
+  removeSession(s2);
+  removeSession(s1);
+  removeSession(pubSession);
+  for (int i = 0; i < 3; i++) {
+    exec_->drive();
+  }
+}
+
+// ============================================================
+// Peer relay namespace loop prevention tests
+// ============================================================
+
+// Regression test: when a peer relay reconnects and subscribes to our
+// namespaces, we must not echo back namespaces that originally came FROM that
+// peer — doing so overwrites the real publisher in the namespace tree and
+// breaks data flow for downstream subscribers.
+//
+// Scenario (relay acts as sg-sin-2-1, upstream is jp-osa-1):
+//   1. jp-osa-1 (session1) announces namespace NS to our relay.
+//   2. session1 drops (old QUIC connection not yet reaped).
+//   3. jp-osa-1 reconnects (session2) and sends a peer SUBSCRIBE_NAMESPACE.
+//   4. Bug: the relay walks its tree, finds NS with sourceSession=session1,
+//      session1 != session2, and delivers NS back to session2 — echo loop.
+//   5. Fix: NS is tagged with sourcePeerID="jp-osa-1" so the peer ID check
+//      suppresses the delivery regardless of session identity.
+//
+// Production relays negotiate draft-16 (empty prefix allowed).  The delivery
+// path for draft-16 is synchronous: namespacePublishHandle->namespaceMsg().
+TEST_F(MoQRelayTest, PeerNamespaceNotEchoedBackOnReconnect) {
+  // Relay must have a relayID for peer detection to activate.
+  relay_ = std::make_shared<MoqxRelay>(config::CacheConfig{.maxCachedTracks = 0}, "sg-sin-2-1");
+  relay_->setAllowedNamespacePrefix(kAllowedPrefix);
+
+  // Step 1: session1 is the peer's old (unreaped) connection.  Inject NS as
+  // if it arrived from peer "jp-osa-1" via the bridge handle.
+  auto session1 = createMockSession();
+  auto bridgeHandle = makeNamespaceBridgeHandle(relay_, session1, "jp-osa-1");
+  bridgeHandle->namespaceMsg(kTestNamespace);
+  ASSERT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 1u);
+
+  // Step 2: jp-osa-1 reconnects as session2 and sends a peer SUBSCRIBE_NAMESPACE.
+  // Peer-to-peer sessions negotiate draft-16 (empty prefix is a 16+ feature).
+  auto session2 = createMockSession();
+  ON_CALL(*session2, getNegotiatedVersion())
+      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
+
+  // The relay delivers existing namespaces via namespacePublishHandle->namespaceMsg
+  // (draft-16 synchronous path).  Use a mock handle to detect any echo.
+  auto nsHandle = std::make_shared<NiceMock<MockNamespacePublishHandle>>();
+  bool echoedBack = false;
+  ON_CALL(*nsHandle, namespaceMsg(_)).WillByDefault([&echoedBack](const TrackNamespace&) {
+    echoedBack = true;
+  });
+
+  withSessionContext(session2, [&]() {
+    // makePeerSubNs("jp-osa-1") carries jp-osa-1's relay ID in the auth token.
+    auto task = relay_->subscribeNamespace(makePeerSubNs("jp-osa-1"), nsHandle);
+    folly::coro::blockingWait(std::move(task), exec_.get());
+  });
+
+  EXPECT_FALSE(echoedBack) << "Relay echoed a peer's own namespace back to it on reconnect";
+
+  removeSession(session1);
+  removeSession(session2);
+}
+
+// Complement: namespaces from LOCAL publishers (not from the peer) must still
+// be delivered when that peer subscribes.
+TEST_F(MoQRelayTest, LocalNamespaceDeliveredToPeerOnReconnect) {
+  relay_ = std::make_shared<MoqxRelay>(config::CacheConfig{.maxCachedTracks = 0}, "sg-sin-2-1");
+  relay_->setAllowedNamespacePrefix(kAllowedPrefix);
+
+  // Local publisher session announces kTestNamespace.
+  auto localPublisher = createMockSession();
+  doPublishNamespace(localPublisher, kTestNamespace);
+
+  // Peer "jp-osa-1" subscribes with a draft-16 session.
+  auto peerSession = createMockSession();
+  ON_CALL(*peerSession, getNegotiatedVersion())
+      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
+
+  auto nsHandle = std::make_shared<NiceMock<MockNamespacePublishHandle>>();
+  bool delivered = false;
+  ON_CALL(*nsHandle, namespaceMsg(_)).WillByDefault([&delivered](const TrackNamespace&) {
+    delivered = true;
+  });
+
+  withSessionContext(peerSession, [&]() {
+    auto task = relay_->subscribeNamespace(makePeerSubNs("jp-osa-1"), nsHandle);
+    folly::coro::blockingWait(std::move(task), exec_.get());
+  });
+  EXPECT_TRUE(delivered) << "Relay failed to deliver a local namespace to a peer subscriber";
+
+  removeSession(localPublisher);
+  removeSession(peerSession);
+}
+
+// A mock session that simulates a peer announcing peerNs when the relay
+// calls subscribeNamespace on it (the reciprocal leg).
+//
+// handleOut receives the bridge handle so the test can control its lifetime
+// independently of the session object — mirroring how SubNsStreamCallback
+// lives in a coroutine frame that is separate from (but tied to) the session.
+class PeerAnnounceSession : public NiceMock<MockMoQSession> {
+public:
+  explicit PeerAnnounceSession(
+      std::shared_ptr<MoQExecutor> exec,
+      TrackNamespace peerNs,
+      std::shared_ptr<Publisher::NamespacePublishHandle>& handleOut
+  )
+      : NiceMock<MockMoQSession>(std::move(exec)), peerNs_(std::move(peerNs)),
+        handleOut_(handleOut) {}
+
+  folly::coro::Task<Publisher::SubscribeNamespaceResult> subscribeNamespace(
+      SubscribeNamespace subNs,
+      std::shared_ptr<Publisher::NamespacePublishHandle> handle
+  ) override {
+    handleOut_ = handle;
+    if (handle) {
+      handle->namespaceMsg(peerNs_);
+    }
+    co_return std::make_shared<NiceMock<MockSubscribeNamespaceHandle>>(
+        SubscribeNamespaceOk{subNs.requestID}
+    );
+  }
+
+private:
+  TrackNamespace peerNs_;
+  std::shared_ptr<Publisher::NamespacePublishHandle>& handleOut_;
+};
+
+// Full production-path regression test: verifies that the peerID stored on
+// namespace nodes via the reciprocal bridge handle is the INCOMING peer's relay
+// ID (not our own relayID_).
+//
+// Bug: makeNamespaceBridgeHandle was passed relayID_ ("sg-sin-2-1") instead of
+// incomingPeerID ("jp-osa-1"), so nodes got sourcePeerID="sg-sin-2-1".  On
+// reconnect the check "sg-sin-2-1" != "jp-osa-1" is true and the namespace
+// was echoed back — the loop survived.
+//
+// Unlike PeerNamespaceNotEchoedBackOnReconnect (which injects the namespace
+// directly via makeNamespaceBridgeHandle), this test goes through the full
+// relay_->subscribeNamespace() production path so the bug in the call-site is
+// exercised.
+TEST_F(MoQRelayTest, PeerNamespaceNotEchoedBack_FullProductionPath) {
+  relay_ = std::make_shared<MoqxRelay>(config::CacheConfig{.maxCachedTracks = 0}, "sg-sin-2-1");
+  relay_->setAllowedNamespacePrefix(kAllowedPrefix);
+
+  // Step 1: jp-osa-1 connects as session1.  It will announce kTestNamespace
+  // to us via the reciprocal bridge handle when we subscribe to it.
+  // bridgeHandle1 is held here (not inside the session) to model the production
+  // lifetime: the handle lives in the coroutine frame, separate from the session.
+  std::shared_ptr<Publisher::NamespacePublishHandle> bridgeHandle1;
+  auto session1 = std::make_shared<PeerAnnounceSession>(exec_, kTestNamespace, bridgeHandle1);
+  ON_CALL(*session1, getNegotiatedVersion())
+      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
+  getOrCreateMockState(session1);
+
+  auto nsHandle1 = std::make_shared<NiceMock<MockNamespacePublishHandle>>();
+  withSessionContext(session1, [&]() {
+    auto task = relay_->subscribeNamespace(makePeerSubNs("jp-osa-1"), nsHandle1);
+    folly::coro::blockingWait(std::move(task), exec_.get());
+  });
+
+  // kTestNamespace should now be in the tree with sourcePeerID="jp-osa-1".
+  ASSERT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 1u);
+
+  // Step 2: jp-osa-1 reconnects as session2 and re-subscribes.
+  // kTestNamespace must NOT be echoed back.
+  auto session2 = createMockSession();
+  ON_CALL(*session2, getNegotiatedVersion())
+      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
+
+  auto nsHandle2 = std::make_shared<NiceMock<MockNamespacePublishHandle>>();
+  bool echoedBack = false;
+  ON_CALL(*nsHandle2, namespaceMsg(_)).WillByDefault([&echoedBack](const TrackNamespace&) {
+    echoedBack = true;
+  });
+
+  withSessionContext(session2, [&]() {
+    auto task = relay_->subscribeNamespace(makePeerSubNs("jp-osa-1"), nsHandle2);
+    folly::coro::blockingWait(std::move(task), exec_.get());
+  });
+
+  EXPECT_FALSE(echoedBack) << "Relay echoed peer namespace back on reconnect (production path)";
+
+  // Simulate session1's coroutine frame being destroyed before session cleanup.
+  bridgeHandle1.reset();
+  removeSession(session1);
+  removeSession(session2);
+}
+
+// ============================================================
+// Bridge handle cleanup tests
+// ============================================================
+
+// Regression test: when a bridge handle is destroyed (ungraceful session close)
+// without graceful namespaceDoneMsg calls, tree entries it created must be
+// cleaned up so stale sourceSession shared_ptrs don't keep dead session objects
+// alive and downstream subscribers receive NAMESPACE_DONE.
+TEST_F(MoQRelayTest, BridgeHandleDestructorCleansUpNamespaces) {
+  auto upstreamSession = createMockSession();
+
+  // Simulate the bridge path: create a handle and announce a namespace through
+  // it, as happens when the relay subscribes to an upstream/peer.
+  auto bridgeHandle = makeNamespaceBridgeHandle(relay_, upstreamSession, /*peerID=*/{});
+  bridgeHandle->namespaceMsg(kTestNamespace);
+  ASSERT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 1u);
+
+  // Drop the bridge handle without graceful namespaceDoneMsg — simulates
+  // ungraceful session close destroying SubNsStreamCallback.
+  bridgeHandle.reset();
+
+  // Tree entry must be gone.
+  EXPECT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 0u)
+      << "Stale namespace tree entry persists after bridge handle destruction";
+
+  removeSession(upstreamSession);
+}
+
+// Verify that when a new publisher takes over a namespace before the old
+// bridge handle is destroyed, the stale handle's destructor does NOT evict
+// the new publisher's entry (doPublishNamespaceDone guards on sourceSession).
+TEST_F(MoQRelayTest, BridgeHandleDestructorDoesNotEvictNewPublisher) {
+  auto session1 = createMockSession();
+  auto session2 = createMockSession();
+
+  // session1 announces NS via bridge handle.
+  auto bridgeHandle1 = makeNamespaceBridgeHandle(relay_, session1, /*peerID=*/{});
+  bridgeHandle1->namespaceMsg(kTestNamespace);
+  ASSERT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 1u);
+
+  // session2 takes over NS (conflict path evicts session1, sets sourceSession=session2).
+  auto bridgeHandle2 = makeNamespaceBridgeHandle(relay_, session2, /*peerID=*/{});
+  bridgeHandle2->namespaceMsg(kTestNamespace);
+  ASSERT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 1u);
+
+  // Now session1's handle is destroyed (ungraceful close detected late).
+  // It must NOT evict session2's entry.
+  bridgeHandle1.reset();
+
+  EXPECT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 1u)
+      << "Stale bridge handle destructor evicted the new publisher's entry";
+
+  bridgeHandle2.reset();
+  removeSession(session1);
+  removeSession(session2);
+}
+
+// Regression test: publisher reconnects while a subscribe coroutine is
+// suspended at co_await upstreamSession->subscribe().  The reconnect
+// (doPublishNamespace for publisher 2) erases the subscribe-path subscriptions_
+// entry (upstream == publisherSession1 == nodePtr->sourceSession), then
+// publish() for the same FTN creates a new entry whose promise is already
+// satisfied.  The subscribe scope guard then calls setException() on the
+// already-satisfied promise → folly::PromiseAlreadySatisfied →
+// ScopeGuardImplBase::terminate() → std::terminate (exit code 139).
+//
+// Without the fix: crashes.  With the fix: subscribe returns an error cleanly.
+TEST_F(MoQRelayTest, PublishReconnectDuringSubscribeScopeGuardCrash) {
+  auto publisherSession1 = createMockSession();
+  auto publisherSession2 = createMockSession();
+  auto subscriberSession = createMockSession();
+
+  // Publisher 1 announces the namespace so subscribe() will find it as the
+  // upstream session and call publisherSession1->subscribe().
+  PublishNamespace pn;
+  pn.trackNamespace = kTestNamespace;
+  relay_->doPublishNamespace(pn, publisherSession1, nullptr);
+
+  // Configure publisher 1's subscribe() mock to simulate publisher reconnect
+  // inline (the relay calls this during co_await upstreamSession->subscribe()):
+  //   1. Publisher 2 re-announces the namespace — doPublishNamespace erases the
+  //      subscribe-path subscriptions_ entry because its upstream field equals
+  //      publisherSession1 == nodePtr->sourceSession.
+  //   2. Publisher 2 publishes the FTN — publish() emplaces a new subscriptions_
+  //      entry and immediately calls rsub.promise.setValue(folly::unit).
+  //   3. Returns an error, simulating the old session being cancelled.
+  // After the mock returns, the subscribe error path fires the scope guard which
+  // does subscriptions_.find(trackName), finds the new publish-path entry, and
+  // calls it->second.promise.setException() on an already-satisfied promise →
+  // PromiseAlreadySatisfied → terminate().
+  std::shared_ptr<TrackConsumer> pub2Consumer;
+  EXPECT_CALL(*publisherSession1, subscribe(_, _))
+      .WillOnce(
+          [this, publisherSession2, &pub2Consumer](SubscribeRequest, std::shared_ptr<TrackConsumer>)
+              -> folly::coro::Task<Publisher::SubscribeResult> {
+            // Step 1: publisher 2 takes over the namespace.
+            PublishNamespace pn2;
+            pn2.trackNamespace = kTestNamespace;
+            relay_->doPublishNamespace(pn2, publisherSession2, nullptr);
+
+            // Step 2: publisher 2 publishes the FTN, creating a new
+            // subscriptions_ entry with the promise already satisfied.
+            {
+              folly::RequestContextScopeGuard ctx;
+              folly::RequestContext::get()->setContextData(
+                  sessionRequestToken(),
+                  std::make_unique<MoQSession::MoQSessionRequestData>(publisherSession2)
+              );
+              PublishRequest pub;
+              pub.fullTrackName = kTestTrackName;
+              auto res = relay_->publish(std::move(pub), createMockSubscriptionHandle());
+              EXPECT_TRUE(res.hasValue()) << "publish in mock unexpectedly failed";
+              if (res.hasValue()) {
+                pub2Consumer = res->consumer;
+              }
+            }
+
+            // Step 3: return error — simulates the old upstream session being cancelled.
+            co_return folly::makeUnexpected(SubscribeError{
+                RequestID(0),
+                SubscribeErrorCode::INTERNAL_ERROR,
+                "upstream session cancelled"
+            });
+          }
+      );
+
+  withSessionContext(subscriberSession, [&]() {
+    SubscribeRequest sub;
+    sub.fullTrackName = kTestTrackName;
+    sub.requestID = RequestID(1);
+    sub.locType = LocationType::LargestObject;
+    auto result = folly::coro::blockingWait(
+        relay_->subscribe(std::move(sub), createMockConsumer()),
+        exec_.get()
+    );
+    // With the fix: subscribe returns an error without crashing.
+    // Without the fix: std::terminate is called before this assertion runs.
+    EXPECT_FALSE(result.hasValue()) << "subscribe should have failed (upstream cancelled)";
+  });
+
+  if (pub2Consumer) {
+    pub2Consumer->publishDone(
+        {RequestID(0), PublishDoneStatusCode::SESSION_CLOSED, 0, "test cleanup"}
+    );
+  }
+  relay_->doPublishNamespaceDone(kTestNamespace, publisherSession2);
+}
+
+// Same reconnect scenario but the upstream subscribe returns OK instead of an
+// error.  Without the fix, the crash moves from the scope guard to the success
+// path: after g.dismiss(), subscriptions_.find() returns the new publish-path
+// entry (promise already satisfied), and rsub.promise.setValue() throws
+// PromiseAlreadySatisfied, which propagates as an unhandled coroutine exception.
+// With the fix: subscribe returns SUBSCRIBE_ERROR "publisher reconnected".
+TEST_F(MoQRelayTest, PublishReconnectDuringSubscribeSuccessPathCrash) {
+  auto publisherSession1 = createMockSession();
+  auto publisherSession2 = createMockSession();
+  auto subscriberSession = createMockSession();
+
+  PublishNamespace pn;
+  pn.trackNamespace = kTestNamespace;
+  relay_->doPublishNamespace(pn, publisherSession1, nullptr);
+
+  std::shared_ptr<TrackConsumer> pub2Consumer;
+  EXPECT_CALL(*publisherSession1, subscribe(_, _))
+      .WillOnce(
+          [this,
+           publisherSession2,
+           &pub2Consumer](SubscribeRequest subReq, std::shared_ptr<TrackConsumer>)
+              -> folly::coro::Task<Publisher::SubscribeResult> {
+            PublishNamespace pn2;
+            pn2.trackNamespace = kTestNamespace;
+            relay_->doPublishNamespace(pn2, publisherSession2, nullptr);
+
+            {
+              folly::RequestContextScopeGuard ctx;
+              folly::RequestContext::get()->setContextData(
+                  sessionRequestToken(),
+                  std::make_unique<MoQSession::MoQSessionRequestData>(publisherSession2)
+              );
+              PublishRequest pub;
+              pub.fullTrackName = kTestTrackName;
+              auto res = relay_->publish(std::move(pub), createMockSubscriptionHandle());
+              EXPECT_TRUE(res.hasValue()) << "publish in mock unexpectedly failed";
+              if (res.hasValue()) {
+                pub2Consumer = res->consumer;
+              }
+            }
+
+            // Return success — the crash moves to rsub.promise.setValue() in the
+            // success path (after g.dismiss()), which finds the new publish-path
+            // entry whose promise is already satisfied.
+            SubscribeOk ok;
+            ok.requestID = subReq.requestID;
+            ok.trackAlias = TrackAlias(subReq.requestID.value);
+            ok.expires = std::chrono::milliseconds(0);
+            ok.groupOrder = GroupOrder::OldestFirst;
+            co_return std::make_shared<NiceMock<MockSubscriptionHandle>>(std::move(ok));
+          }
+      );
+
+  withSessionContext(subscriberSession, [&]() {
+    SubscribeRequest sub;
+    sub.fullTrackName = kTestTrackName;
+    sub.requestID = RequestID(1);
+    sub.locType = LocationType::LargestObject;
+    auto result = folly::coro::blockingWait(
+        relay_->subscribe(std::move(sub), createMockConsumer()),
+        exec_.get()
+    );
+    EXPECT_FALSE(result.hasValue()) << "subscribe should fail (publisher reconnected)";
+    if (result.hasError()) {
+      EXPECT_EQ(result.error().reasonPhrase, "publisher reconnected during subscribe");
+    }
+  });
+
+  if (pub2Consumer) {
+    pub2Consumer->publishDone(
+        {RequestID(0), PublishDoneStatusCode::SESSION_CLOSED, 0, "test cleanup"}
+    );
+  }
+  relay_->doPublishNamespaceDone(kTestNamespace, publisherSession2);
 }
 
 } // namespace moxygen::test

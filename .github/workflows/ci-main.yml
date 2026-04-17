@@ -161,26 +161,35 @@ jobs:
         run: |
           SHORT="${GITHUB_SHA:0:7}"
           BRANCH="${{ github.ref_name }}"
+          # Every branch gets a rolling <label>-latest tag. main additionally
+          # keeps the bare 'latest' for back-compat with anyone pulling it.
           if [[ "$BRANCH" == "main" ]]; then
-            LABEL="latest"
+            LABEL="main"
+            ALIAS="latest"   # back-compat: main is also ':latest'
           else
-            # release/nab-demo → nab-demo
             LABEL="${BRANCH#release/}"
+            ALIAS=""
           fi
           echo "short=$SHORT" >> "$GITHUB_OUTPUT"
-          echo "label=$LABEL" >> "$GITHUB_OUTPUT"
+          echo "rolling=${LABEL}-latest" >> "$GITHUB_OUTPUT"
+          echo "alias=$ALIAS" >> "$GITHUB_OUTPUT"
 
       - name: Build Docker image
         run: |
           IMAGE="ghcr.io/${{ github.repository }}"
+          ALIAS_ARG=""
+          if [[ -n "${{ steps.tags.outputs.alias }}" ]]; then
+            ALIAS_ARG="-t ${IMAGE}:${{ steps.tags.outputs.alias }}"
+          fi
           docker build -f docker/Dockerfile \
             -t "${IMAGE}:${{ steps.tags.outputs.short }}" \
-            -t "${IMAGE}:${{ steps.tags.outputs.label }}" \
+            -t "${IMAGE}:${{ steps.tags.outputs.rolling }}" \
+            $ALIAS_ARG \
             .
 
       - name: Smoke test Docker image
         run: |
-          IMAGE="ghcr.io/${{ github.repository }}:${{ steps.tags.outputs.label }}"
+          IMAGE="ghcr.io/${{ github.repository }}:${{ steps.tags.outputs.rolling }}"
           echo "==> ldd check"
           docker run --rm --entrypoint ldd "${IMAGE}" /usr/local/bin/moqx
           if docker run --rm --entrypoint ldd "${IMAGE}" /usr/local/bin/moqx 2>&1 | grep -q "not found"; then
@@ -206,16 +215,20 @@ jobs:
 
       - name: Build interop client image
         run: |
-          SHORT="${GITHUB_SHA:0:7}"
           CLIENT_IMAGE="ghcr.io/${{ github.repository_owner }}/moqx-interop-client"
+          ALIAS_ARG=""
+          if [[ -n "${{ steps.tags.outputs.alias }}" ]]; then
+            ALIAS_ARG="-t ${CLIENT_IMAGE}:${{ steps.tags.outputs.alias }}"
+          fi
           docker build -f docker/Dockerfile.interop-client \
             -t "${CLIENT_IMAGE}:${{ steps.tags.outputs.short }}" \
-            -t "${CLIENT_IMAGE}:${{ steps.tags.outputs.label }}" \
+            -t "${CLIENT_IMAGE}:${{ steps.tags.outputs.rolling }}" \
+            $ALIAS_ARG \
             .
 
       - name: Smoke test interop client
         run: |
-          CLIENT_IMAGE="ghcr.io/${{ github.repository_owner }}/moqx-interop-client:${{ steps.tags.outputs.label }}"
+          CLIENT_IMAGE="ghcr.io/${{ github.repository_owner }}/moqx-interop-client:${{ steps.tags.outputs.rolling }}"
           echo "==> ldd check"
           docker run --rm --entrypoint ldd "${CLIENT_IMAGE}" /usr/local/bin/moq_interop_client
           if docker run --rm --entrypoint ldd "${CLIENT_IMAGE}" /usr/local/bin/moq_interop_client 2>&1 | grep -q "not found"; then
@@ -228,17 +241,22 @@ jobs:
       - name: Push Docker images
         run: |
           IMAGE="ghcr.io/${{ github.repository }}"
-          docker push "${IMAGE}:${{ steps.tags.outputs.short }}"
-          docker push "${IMAGE}:${{ steps.tags.outputs.label }}"
           CLIENT_IMAGE="ghcr.io/${{ github.repository_owner }}/moqx-interop-client"
+          ALIAS="${{ steps.tags.outputs.alias }}"
+          docker push "${IMAGE}:${{ steps.tags.outputs.short }}"
+          docker push "${IMAGE}:${{ steps.tags.outputs.rolling }}"
           docker push "${CLIENT_IMAGE}:${{ steps.tags.outputs.short }}"
-          docker push "${CLIENT_IMAGE}:${{ steps.tags.outputs.label }}"
+          docker push "${CLIENT_IMAGE}:${{ steps.tags.outputs.rolling }}"
+          if [[ -n "$ALIAS" ]]; then
+            docker push "${IMAGE}:${ALIAS}"
+            docker push "${CLIENT_IMAGE}:${ALIAS}"
+          fi
 
       - name: Package
         id: package
         run: |
           ARTIFACT="moqx-bookworm-amd64.tar.gz"
-          docker cp "$(docker create --name extract ghcr.io/${{ github.repository }}:latest):/usr/local/bin/moqx" .
+          docker cp "$(docker create --name extract ghcr.io/${{ github.repository }}:${{ steps.tags.outputs.rolling }}):/usr/local/bin/moqx" .
           docker rm extract
           mkdir -p install/bin && mv moqx install/bin/
           tar czf "$ARTIFACT" -C install .
@@ -258,6 +276,8 @@ jobs:
   release:
     needs: [build, publish]
     runs-on: ubuntu-22.04
+    outputs:
+      tag: ${{ steps.publish.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -268,6 +288,7 @@ jobs:
           path: artifacts/
 
       - name: Publish snapshot
+        id: publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -276,8 +297,10 @@ jobs:
           if [[ "$BRANCH" == "main" ]]; then
             TAG="snapshot-latest"
           else
-            TAG="snapshot-${BRANCH#release/}"
+            # release/nab-demo → snapshot-nab-demo-latest
+            TAG="snapshot-${BRANCH#release/}-latest"
           fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
           gh release delete "$TAG" --yes 2>/dev/null || true
           git tag -d "$TAG" 2>/dev/null || true
@@ -294,20 +317,79 @@ jobs:
           **Built:** $(date -u +%Y-%m-%dT%H:%M:%SZ)
           **Docker:** \`ghcr.io/${{ github.repository }}:${SHORT}\`
 
-          This pre-release is automatically replaced on every push to \`main\`.
+          This pre-release is automatically replaced on every push to \`${{ github.ref_name }}\`.
           EOF
           )"
 
   # ════════════════════════════════════════════════════════════════════════════
-  # Deploy: auto-deploy to moqx-000 after successful release
+  # Deploy: auto-deploy main to moqx-main.ci.openmoq.org
+  # (release branches are deployed manually via deploy-relay.yml with their
+  # own branch-derived domain)
   # ════════════════════════════════════════════════════════════════════════════
 
   deploy:
     if: github.ref_name == 'main'
     needs: [publish, release]
     runs-on: [self-hosted, linode]
+    env:
+      DOMAIN: moqx-main.ci.openmoq.org
+      RELAY_PORT: 4433
+      ADMIN_PORT: 8000
     steps:
       - uses: actions/checkout@v4
+
+      - name: Ensure DNS A record
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.OMOQ_CERTBOT_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.OMOQ_CERTBOT_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-1
+          HOSTED_ZONE_ID: Z0079758316CI99B99FLR
+        run: |
+          IP=$(curl -sf https://checkip.amazonaws.com | tr -d '[:space:]')
+          if [[ -z "$IP" ]]; then
+            echo "::error::Could not determine runner public IP"
+            exit 1
+          fi
+          echo "Ensuring A record: $DOMAIN → $IP"
+          CHANGE_FILE=$(mktemp)
+          cat > "$CHANGE_FILE" <<EOF
+          {
+            "Comment": "moqx auto-deploy: $DOMAIN",
+            "Changes": [{
+              "Action": "UPSERT",
+              "ResourceRecordSet": {
+                "Name": "$DOMAIN",
+                "Type": "A",
+                "TTL": 300,
+                "ResourceRecords": [{"Value": "$IP"}]
+              }
+            }]
+          }
+          EOF
+          CHANGE_ID=$(aws route53 change-resource-record-sets \
+            --hosted-zone-id "$HOSTED_ZONE_ID" \
+            --change-batch "file://$CHANGE_FILE" \
+            --query 'ChangeInfo.Id' --output text)
+          aws route53 wait resource-record-sets-changed --id "$CHANGE_ID"
+          rm -f "$CHANGE_FILE"
+
+      - name: Ensure TLS cert
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.OMOQ_CERTBOT_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.OMOQ_CERTBOT_SECRET_ACCESS_KEY }}
+        run: |
+          CERT="/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
+          if [ ! -f "$CERT" ]; then
+            echo "::warning::No cert for ${DOMAIN} — provisioning via Route53"
+            sudo -E certbot certonly --dns-route53 \
+              -d "$DOMAIN" --non-interactive --agree-tos \
+              --email gmarzot@openmoq.org
+          elif ! sudo openssl x509 -in "$CERT" -noout -checkend 2592000 2>/dev/null; then
+            echo "::warning::Cert for ${DOMAIN} expires within 30 days — renewing"
+            sudo -E certbot renew --cert-name "$DOMAIN"
+          else
+            echo "Cert for ${DOMAIN} is valid"
+          fi
 
       - name: Log in to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
@@ -316,10 +398,10 @@ jobs:
         working-directory: docker
         run: |
           cat > .env <<EOF
-          DOMAIN=moqx-000.ci.openmoq.org
+          DOMAIN=${DOMAIN}
           CERTBOT_EMAIL=gmarzot@openmoq.org
-          MOQX_PORT=4433
-          MOQX_ADMIN_PORT=8000
+          MOQX_PORT=${RELAY_PORT}
+          MOQX_ADMIN_PORT=${ADMIN_PORT}
           MOQX_LOG_LEVEL=0
           MOQX_VERBOSE=0
           EOF
@@ -336,7 +418,7 @@ jobs:
 
           echo "==> Waiting for admin endpoint..."
           for i in $(seq 1 30); do
-            if curl -sf http://127.0.0.1:8000/info >/dev/null 2>&1; then
+            if curl -sf http://127.0.0.1:${ADMIN_PORT}/info >/dev/null 2>&1; then
               break
             fi
             sleep 1
@@ -395,7 +477,7 @@ jobs:
           STATUS="verify:${VER} publish:${PUB} release:${REL} deploy:${DEP}"
 
           if [ "${{ needs.release.result }}" = "success" ]; then
-            REL_URL="${{ github.server_url }}/${{ github.repository }}/releases/tag/snapshot-latest"
+            REL_URL="${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ needs.release.outputs.tag || 'snapshot-latest' }}"
             TEXT=":white_check_mark: *${{ github.repository }}* \`${{ github.ref_name }}\` \`${SHORT}\` — ${STATUS}  <${RUN_URL}|#${{ github.run_number }}> artifacts: <${REL_URL}|view>"
           else
             TEXT=":x: *${{ github.repository }}* \`${{ github.ref_name }}\` \`${SHORT}\` — ${STATUS}  <${RUN_URL}|#${{ github.run_number }}>"
@@ -434,7 +516,7 @@ jobs:
           STATUS="verify:${VER} publish:${PUB} release:${REL} deploy:${DEP}"
 
           if [ "${{ needs.release.result }}" = "success" ]; then
-            REL_URL="${{ github.server_url }}/${{ github.repository }}/releases/tag/snapshot-latest"
+            REL_URL="${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ needs.release.outputs.tag || 'snapshot-latest' }}"
             SUBJECT="[moqx] published ${{ github.ref_name }} ${SHORT}"
             BODY="Repository: ${{ github.repository }}\nBranch: ${{ github.ref_name }}\nCommit: ${GITHUB_SHA}\nStatus: ${STATUS}\nDocker: ghcr.io/${{ github.repository }}:${SHORT}\nArtifacts: ${REL_URL}\nRun: ${RUN_URL}"
           else

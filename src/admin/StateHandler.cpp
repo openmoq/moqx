@@ -88,7 +88,9 @@ public:
   void beginNamespaceNode(
       std::string_view childKey,
       const moxygen::TrackNamespace& ns,
-      size_t sessionCount
+      size_t sessionCount,
+      std::string_view publisherAddress,
+      std::string_view peerID
   ) override {
     if (!childKey.empty()) {
       w_.key(childKey);
@@ -102,6 +104,12 @@ public:
     w_.endArray();
     w_.key("namespace_subscribers");
     w_.uintVal(static_cast<uint64_t>(sessionCount));
+    if (!publisherAddress.empty()) {
+      w_.field("publisher", publisherAddress);
+    }
+    if (!peerID.empty()) {
+      w_.field("peer_id", peerID);
+    }
     w_.key("children");
     w_.beginObject();
   }
@@ -132,8 +140,14 @@ public:
       w_.endArray();
       w_.field("track_name", t.name.trackName);
       w_.field("end_of_track", t.endOfTrack);
-      auto msAgo = std::chrono::duration_cast<std::chrono::milliseconds>(now - t.lastWrite).count();
-      w_.field("last_write_ms_ago", static_cast<int64_t>(msAgo));
+      w_.key("last_write_ms_ago");
+      if (t.lastWrite == decltype(t.lastWrite)::min()) {
+        w_.nullVal();
+      } else {
+        auto msAgo =
+            std::chrono::duration_cast<std::chrono::milliseconds>(now - t.lastWrite).count();
+        w_.intVal(static_cast<int64_t>(msAgo));
+      }
       w_.key("groups");
       w_.beginArray();
       for (const auto& g : t.groups) {

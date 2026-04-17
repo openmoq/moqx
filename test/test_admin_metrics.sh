@@ -2,8 +2,10 @@
 set -euo pipefail
 
 BINARY="${1:-$(dirname "$0")/../build/moqx}"
-TESTDIR="$(cd "$(dirname "$0")" && pwd)"
-ADMIN_PORT=9669
+# shellcheck source=test_ports.sh
+source "$(dirname "$0")/test_ports.sh"
+LISTEN_PORT=$TEST_ADMIN_METRICS_LISTEN
+ADMIN_PORT=$TEST_ADMIN_METRICS_ADMIN
 METRICS_URL="http://localhost:${ADMIN_PORT}/metrics"
 INFO_URL="http://localhost:${ADMIN_PORT}/info"
 
@@ -12,10 +14,8 @@ if [[ ! -x "$BINARY" ]]; then
   exit 1
 fi
 
-# Start moqx with test config in the background.
-"$BINARY" --config="$TESTDIR/test.config.yaml" &
-MOQX_PID=$!
-
+TMPDIR=$(mktemp -d)
+MOQX_PID=""
 # Cleanup function that ensures the process exits and port is released.
 cleanup() {
   if [[ -n "${MOQX_PID:-}" ]]; then
@@ -23,8 +23,15 @@ cleanup() {
     # Wait for process to exit and ensure port is released
     wait "$MOQX_PID" 2>/dev/null || true
   fi
+  rm -rf "$TMPDIR"
 }
 trap cleanup EXIT
+
+"$(dirname "$0")/make_test_config.sh" "$LISTEN_PORT" "$ADMIN_PORT" > "$TMPDIR/config.yaml"
+
+# Start moqx with the generated config in the background.
+"$BINARY" --config="$TMPDIR/config.yaml" &
+MOQX_PID=$!
 
 # Wait for the admin server to become ready (up to 10 s) using /info.
 # /metrics is significantly more expensive, so avoid using it for readiness.
