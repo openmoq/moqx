@@ -70,7 +70,9 @@ public:
   virtual void beginNamespaceNode(
       std::string_view childKey,
       const moxygen::TrackNamespace& ns,
-      size_t sessionCount
+      size_t sessionCount,
+      std::string_view publisherAddress,
+      std::string_view peerID
   ) = 0;
   virtual void endNamespaceNode() = 0;
   virtual void onNamespaceTreeEnd() = 0;
