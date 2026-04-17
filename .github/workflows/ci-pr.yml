@@ -101,3 +101,68 @@ jobs:
           path: ${{ matrix.build_dir }}/test-results.xml
           reporter: java-junit
           fail-on-empty: ${{ job.status == 'success' && 'true' || 'false' }}
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # Package: build bookworm Docker image, extract binary, upload tarball.
+  # Mirrors ci-main.yml `publish` minus GHCR push, smoke tests, and interop
+  # client — gives PRs deployable artifacts the ansible role can install.
+  # ════════════════════════════════════════════════════════════════════════════
+
+  package:
+    needs: [check-format, build]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-22.04
+            platform: bookworm-amd64
+          - arch: arm64
+            runner: ubuntu-22.04-arm
+            platform: bookworm-arm64
+    name: package (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Download bookworm moxygen tarball
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MOQX_PLATFORM: ${{ matrix.platform }}
+        run: |
+          # Release branches pin a specific moxygen release tag via
+          # .moxygen-release. Main uses snapshot-latest via --use-latest.
+          if [ -f .moxygen-release ]; then
+            export MOQX_MOXYGEN_RELEASE_TAG=$(cat .moxygen-release | tr -d '[:space:]')
+            echo "Using pinned moxygen release tag: $MOQX_MOXYGEN_RELEASE_TAG"
+            bash scripts/build.sh setup --no-fallback
+          else
+            bash scripts/build.sh setup --use-latest --no-fallback
+          fi
+
+      - name: Stage tarball for Docker build
+        run: |
+          mkdir -p .docker-deps
+          cp -a .scratch/moxygen-install .docker-deps/moxygen
+
+      - name: Build Docker image
+        run: docker build -f docker/Dockerfile -t moqx-pr:${{ matrix.arch }} .
+
+      - name: Package
+        id: package
+        run: |
+          ARTIFACT="moqx-${{ matrix.platform }}.tar.gz"
+          docker cp "$(docker create --name extract moqx-pr:${{ matrix.arch }}):/usr/local/bin/moqx" .
+          docker rm extract
+          mkdir -p install/bin && mv moqx install/bin/
+          tar czf "$ARTIFACT" -C install .
+          echo "artifact=$ARTIFACT" >> "$GITHUB_OUTPUT"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.artifact }}
+          path: ${{ steps.package.outputs.artifact }}
+          retention-days: 30
