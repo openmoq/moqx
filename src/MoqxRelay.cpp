@@ -1532,7 +1532,18 @@ void MoqxRelay::dumpState(RelayStateVisitor& visitor) const {
   visitor.onNamespaceTreeBegin();
   std::function<void(std::string_view, const NamespaceNode&)> walkNode;
   walkNode = [&](std::string_view childKey, const NamespaceNode& node) {
-    visitor.beginNamespaceNode(childKey, node.trackNamespace_, node.sessions.size());
+    std::vector<PropertyRanking::RankingSnapshot> snapshots;
+    for (const auto& [propType, ranking] : node.rankings) {
+      snapshots.push_back(ranking->getSnapshot());
+    }
+    std::sort(
+        snapshots.begin(),
+        snapshots.end(),
+        [](const PropertyRanking::RankingSnapshot& a, const PropertyRanking::RankingSnapshot& b) {
+          return a.propertyType < b.propertyType;
+        }
+    );
+    visitor.beginNamespaceNode(childKey, node.trackNamespace_, node.sessions.size(), snapshots);
     for (const auto& [key, child] : node.children) {
       walkNode(key, *child);
     }

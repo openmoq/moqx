@@ -66,11 +66,13 @@ public:
   // --- Namespace tree section ---
   virtual void onNamespaceTreeBegin() = 0;
   // Depth-first traversal. childKey is the map key in the parent's children
-  // map; empty string for the root node.
+  // map; empty string for the root node. rankings is non-empty only for nodes
+  // that have active PropertyRanking instances (TRACK_FILTER subscribers).
   virtual void beginNamespaceNode(
       std::string_view childKey,
       const moxygen::TrackNamespace& ns,
-      size_t sessionCount
+      size_t sessionCount,
+      const std::vector<PropertyRanking::RankingSnapshot>& rankings
   ) = 0;
   virtual void endNamespaceNode() = 0;
   virtual void onNamespaceTreeEnd() = 0;
