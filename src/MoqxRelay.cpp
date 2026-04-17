@@ -1566,7 +1566,17 @@ void MoqxRelay::dumpState(RelayStateVisitor& visitor) const {
   visitor.onNamespaceTreeBegin();
   std::function<void(std::string_view, const NamespaceNode&)> walkNode;
   walkNode = [&](std::string_view childKey, const NamespaceNode& node) {
-    visitor.beginNamespaceNode(childKey, node.trackNamespace_, node.sessions.size());
+    std::string publisherAddr;
+    if (node.sourceSession) {
+      publisherAddr = node.sourceSession->getPeerAddress().describe();
+    }
+    visitor.beginNamespaceNode(
+        childKey,
+        node.trackNamespace_,
+        node.sessions.size(),
+        publisherAddr,
+        node.sourcePeerID
+    );
     for (const auto& [key, child] : node.children) {
       walkNode(key, *child);
     }
