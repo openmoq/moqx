@@ -7,6 +7,7 @@
  */
 
 #include "MoqxRelay.h"
+#include <folly/container/F14Set.h>
 #include <moxygen/MoQFilters.h>
 #include <moxygen/MoQTrackProperties.h>
 
@@ -31,11 +32,22 @@ public:
   )
       : relay_(std::move(relay)), session_(std::move(session)), peerID_(std::move(peerID)) {}
 
+  ~MoqxRelayNamespaceHandle() {
+    auto relay = relay_.lock();
+    if (!relay || activeNamespaces_.empty()) {
+      return;
+    }
+    for (const auto& ns : activeNamespaces_) {
+      relay->doPublishNamespaceDone(ns, session_);
+    }
+  }
+
   void namespaceMsg(const TrackNamespace& suffix) override {
     auto relay = relay_.lock();
     if (!relay || !session_) {
       return;
     }
+    activeNamespaces_.insert(suffix);
     PublishNamespace pubNs;
     pubNs.trackNamespace = suffix;
     relay->doPublishNamespace(std::move(pubNs), session_, nullptr, peerID_);
@@ -46,6 +58,7 @@ public:
     if (!relay || !session_) {
       return;
     }
+    activeNamespaces_.erase(suffix);
     relay->doPublishNamespaceDone(suffix, session_);
   }
 
@@ -53,6 +66,7 @@ private:
   std::weak_ptr<MoqxRelay> relay_;
   std::shared_ptr<MoQSession> session_;
   std::string peerID_;
+  folly::F14FastSet<TrackNamespace, TrackNamespace::hash> activeNamespaces_;
 };
 
 std::shared_ptr<Publisher::NamespacePublishHandle> makeNamespaceBridgeHandle(

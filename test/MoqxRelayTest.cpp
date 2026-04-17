@@ -3145,15 +3145,25 @@ TEST_F(MoQRelayTest, LocalNamespaceDeliveredToPeerOnReconnect) {
 
 // A mock session that simulates a peer announcing peerNs when the relay
 // calls subscribeNamespace on it (the reciprocal leg).
+//
+// handleOut receives the bridge handle so the test can control its lifetime
+// independently of the session object — mirroring how SubNsStreamCallback
+// lives in a coroutine frame that is separate from (but tied to) the session.
 class PeerAnnounceSession : public NiceMock<MockMoQSession> {
 public:
-  explicit PeerAnnounceSession(std::shared_ptr<MoQExecutor> exec, TrackNamespace peerNs)
-      : NiceMock<MockMoQSession>(std::move(exec)), peerNs_(std::move(peerNs)) {}
+  explicit PeerAnnounceSession(
+      std::shared_ptr<MoQExecutor> exec,
+      TrackNamespace peerNs,
+      std::shared_ptr<Publisher::NamespacePublishHandle>& handleOut
+  )
+      : NiceMock<MockMoQSession>(std::move(exec)), peerNs_(std::move(peerNs)),
+        handleOut_(handleOut) {}
 
   folly::coro::Task<Publisher::SubscribeNamespaceResult> subscribeNamespace(
       SubscribeNamespace subNs,
       std::shared_ptr<Publisher::NamespacePublishHandle> handle
   ) override {
+    handleOut_ = handle;
     if (handle) {
       handle->namespaceMsg(peerNs_);
     }
@@ -3164,6 +3174,7 @@ public:
 
 private:
   TrackNamespace peerNs_;
+  std::shared_ptr<Publisher::NamespacePublishHandle>& handleOut_;
 };
 
 // Full production-path regression test: verifies that the peerID stored on
@@ -3185,7 +3196,10 @@ TEST_F(MoQRelayTest, PeerNamespaceNotEchoedBack_FullProductionPath) {
 
   // Step 1: jp-osa-1 connects as session1.  It will announce kTestNamespace
   // to us via the reciprocal bridge handle when we subscribe to it.
-  auto session1 = std::make_shared<PeerAnnounceSession>(exec_, kTestNamespace);
+  // bridgeHandle1 is held here (not inside the session) to model the production
+  // lifetime: the handle lives in the coroutine frame, separate from the session.
+  std::shared_ptr<Publisher::NamespacePublishHandle> bridgeHandle1;
+  auto session1 = std::make_shared<PeerAnnounceSession>(exec_, kTestNamespace, bridgeHandle1);
   ON_CALL(*session1, getNegotiatedVersion())
       .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
   getOrCreateMockState(session1);
@@ -3218,6 +3232,65 @@ TEST_F(MoQRelayTest, PeerNamespaceNotEchoedBack_FullProductionPath) {
 
   EXPECT_FALSE(echoedBack) << "Relay echoed peer namespace back on reconnect (production path)";
 
+  // Simulate session1's coroutine frame being destroyed before session cleanup.
+  bridgeHandle1.reset();
+  removeSession(session1);
+  removeSession(session2);
+}
+
+// ============================================================
+// Bridge handle cleanup tests
+// ============================================================
+
+// Regression test: when a bridge handle is destroyed (ungraceful session close)
+// without graceful namespaceDoneMsg calls, tree entries it created must be
+// cleaned up so stale sourceSession shared_ptrs don't keep dead session objects
+// alive and downstream subscribers receive NAMESPACE_DONE.
+TEST_F(MoQRelayTest, BridgeHandleDestructorCleansUpNamespaces) {
+  auto upstreamSession = createMockSession();
+
+  // Simulate the bridge path: create a handle and announce a namespace through
+  // it, as happens when the relay subscribes to an upstream/peer.
+  auto bridgeHandle = makeNamespaceBridgeHandle(relay_, upstreamSession, /*peerID=*/{});
+  bridgeHandle->namespaceMsg(kTestNamespace);
+  ASSERT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 1u);
+
+  // Drop the bridge handle without graceful namespaceDoneMsg — simulates
+  // ungraceful session close destroying SubNsStreamCallback.
+  bridgeHandle.reset();
+
+  // Tree entry must be gone.
+  EXPECT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 0u)
+      << "Stale namespace tree entry persists after bridge handle destruction";
+
+  removeSession(upstreamSession);
+}
+
+// Verify that when a new publisher takes over a namespace before the old
+// bridge handle is destroyed, the stale handle's destructor does NOT evict
+// the new publisher's entry (doPublishNamespaceDone guards on sourceSession).
+TEST_F(MoQRelayTest, BridgeHandleDestructorDoesNotEvictNewPublisher) {
+  auto session1 = createMockSession();
+  auto session2 = createMockSession();
+
+  // session1 announces NS via bridge handle.
+  auto bridgeHandle1 = makeNamespaceBridgeHandle(relay_, session1, /*peerID=*/{});
+  bridgeHandle1->namespaceMsg(kTestNamespace);
+  ASSERT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 1u);
+
+  // session2 takes over NS (conflict path evicts session1, sets sourceSession=session2).
+  auto bridgeHandle2 = makeNamespaceBridgeHandle(relay_, session2, /*peerID=*/{});
+  bridgeHandle2->namespaceMsg(kTestNamespace);
+  ASSERT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 1u);
+
+  // Now session1's handle is destroyed (ungraceful close detected late).
+  // It must NOT evict session2's entry.
+  bridgeHandle1.reset();
+
+  EXPECT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 1u)
+      << "Stale bridge handle destructor evicted the new publisher's entry";
+
+  bridgeHandle2.reset();
   removeSession(session1);
   removeSession(session2);
 }
