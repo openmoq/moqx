@@ -24,8 +24,12 @@ namespace openmoq::moqx {
 // no handle map needed.
 class MoqxRelayNamespaceHandle : public Publisher::NamespacePublishHandle {
 public:
-  MoqxRelayNamespaceHandle(std::weak_ptr<MoqxRelay> relay, std::shared_ptr<MoQSession> session)
-      : relay_(std::move(relay)), session_(std::move(session)) {}
+  MoqxRelayNamespaceHandle(
+      std::weak_ptr<MoqxRelay> relay,
+      std::shared_ptr<MoQSession> session,
+      std::string peerID = {}
+  )
+      : relay_(std::move(relay)), session_(std::move(session)), peerID_(std::move(peerID)) {}
 
   void namespaceMsg(const TrackNamespace& suffix) override {
     auto relay = relay_.lock();
@@ -34,7 +38,7 @@ public:
     }
     PublishNamespace pubNs;
     pubNs.trackNamespace = suffix;
-    relay->doPublishNamespace(std::move(pubNs), session_, nullptr);
+    relay->doPublishNamespace(std::move(pubNs), session_, nullptr, peerID_);
   }
 
   void namespaceDoneMsg(const TrackNamespace& suffix) override {
@@ -48,11 +52,19 @@ public:
 private:
   std::weak_ptr<MoqxRelay> relay_;
   std::shared_ptr<MoQSession> session_;
+  std::string peerID_;
 };
 
-std::shared_ptr<Publisher::NamespacePublishHandle>
-makeNamespaceBridgeHandle(std::weak_ptr<MoqxRelay> relay, std::shared_ptr<MoQSession> session) {
-  return std::make_shared<MoqxRelayNamespaceHandle>(std::move(relay), std::move(session));
+std::shared_ptr<Publisher::NamespacePublishHandle> makeNamespaceBridgeHandle(
+    std::weak_ptr<MoqxRelay> relay,
+    std::shared_ptr<MoQSession> session,
+    std::string peerID
+) {
+  return std::make_shared<MoqxRelayNamespaceHandle>(
+      std::move(relay),
+      std::move(session),
+      std::move(peerID)
+  );
 }
 
 folly::coro::Task<void> MoqxRelay::onUpstreamConnect(std::shared_ptr<MoQSession> session) {
@@ -150,7 +162,8 @@ std::shared_ptr<MoqxRelay::NamespaceNode> MoqxRelay::findNamespaceNode(
 std::shared_ptr<Subscriber::PublishNamespaceHandle> MoqxRelay::doPublishNamespace(
     PublishNamespace pubNs,
     std::shared_ptr<MoQSession> session,
-    std::shared_ptr<Subscriber::PublishNamespaceCallback> callback
+    std::shared_ptr<Subscriber::PublishNamespaceCallback> callback,
+    std::string peerID
 ) {
   XLOG(DBG1) << __func__ << " ns=" << pubNs.trackNamespace;
   // check auth
@@ -204,6 +217,7 @@ std::shared_ptr<Subscriber::PublishNamespaceHandle> MoqxRelay::doPublishNamespac
 
   bool wasEmpty = !nodePtr->hasLocalSessions();
   nodePtr->sourceSession = session;
+  nodePtr->sourcePeerID = std::move(peerID);
   nodePtr->publishNamespaceCallback = std::move(callback);
   nodePtr->trackNamespace_ = pubNs.trackNamespace;
   nodePtr->setPublishNamespaceOk({.requestID = pubNs.requestID, .requestSpecificParams = {}});
@@ -353,6 +367,7 @@ void MoqxRelay::doPublishNamespaceDone(
   }
 
   nodePtr->sourceSession = nullptr;
+  nodePtr->sourcePeerID.clear();
   nodePtr->publishNamespaceCallback.reset();
 
   // Notify downstream namespace subscribers
@@ -742,10 +757,14 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
   // Relay peering: if the incoming subNs carries a relay auth token, the peer
   // is a relay. Reciprocate with our own peer subNs so the peer gets our
   // namespace announcements as publishers connect.
+  std::string incomingPeerID;
   if (auto peerID = !relayID_.empty() ? getPeerRelayID(subNs) : std::nullopt) {
+    incomingPeerID = *peerID;
     XLOG(INFO) << __func__ << ": peer relay detected peer_id=" << *peerID
                << ", reciprocating peer subNs";
-    auto handle = makeNamespaceBridgeHandle(weak_from_this(), session);
+    // Tag with the peer's relay ID so we suppress echoing these namespaces
+    // back to that peer on reconnect.
+    auto handle = makeNamespaceBridgeHandle(weak_from_this(), session, incomingPeerID);
     auto recipResult = co_await session->subscribeNamespace(
         makePeerSubNs(),
         handle
@@ -822,7 +841,8 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
   while (!nodes.empty()) {
     auto [prefix, nodePtr] = std::move(*nodes.begin());
     nodes.pop_front();
-    if (nodePtr->sourceSession && nodePtr->sourceSession != session) {
+    if (nodePtr->sourceSession && nodePtr->sourceSession != session &&
+        (incomingPeerID.empty() || nodePtr->sourcePeerID != incomingPeerID)) {
       if (getDraftMajorVersion(*maybeNegotiatedVersion) >= 16) {
         if (subNs.options == SubscribeNamespaceOptions::NAMESPACE ||
             subNs.options == SubscribeNamespaceOptions::BOTH) {
