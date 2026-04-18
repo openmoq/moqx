@@ -2,9 +2,8 @@
 
 Thanks for your interest in moqx. This doc covers how we develop,
 review, and merge changes. For build instructions see
-[BUILD.md](BUILD.md); for runtime see [RUNNING.md](RUNNING.md); for the
-CI reference see [docs/ci-architecture.md](docs/ci-architecture.md);
-for the release branch model see [docs/release.md](docs/release.md).
+[BUILD.md](BUILD.md); for runtime see [RUNNING.md](RUNNING.md). For
+architecture and planning material, see [docs/](docs/).
 
 ## Guiding principle
 
