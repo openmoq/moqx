@@ -24,6 +24,31 @@ If you notice an unrelated fix while working, open a second PR.
 Independent PRs land in parallel; bundled PRs stall on the slowest
 reviewer.
 
+## PR state
+
+A PR that looks useful and has all checks green will be merged when a
+maintainer is available. No extra nudge needed. Use PR state to signal
+intent:
+
+- **Draft** — not ready for merge or review. Draft PRs don't
+  auto-request reviewers and don't run CI.
+- **Ready** (non-draft) — ready for merge once review and CI pass.
+- **Prefix title with `WIP:`** — you want review and CI feedback, but
+  are not yet ready for the PR to be merged. Maintainers won't merge
+  `WIP:` PRs regardless of check state.
+
+## How to contribute
+
+This is a public repository and accepts fork-based PRs from anyone.
+
+- **Outside contributors**: fork the repo, push a branch, open a PR
+  against `main`.
+- **Org members**: push a feature branch directly to this repo, open a
+  PR against `main`.
+
+CI runs on every PR with no secrets exposed. Publish, release, and
+deploy only run on `push: main` after merge.
+
 ## Reviews
 
 At least one approving review is required before merge. The reviewer
@@ -78,7 +103,8 @@ Before submitting a PR:
 GitHub Issues track bugs and feature work. Provide enough context —
 version, config, repro steps, logs — for a maintainer to reproduce.
 
-## License
+## Security & License
 
-By contributing to moqx, you agree your contributions are licensed
-under the project's [LICENSE](LICENSE).
+Report security issues via [SECURITY.md](SECURITY.md). Do not file
+public issues for security reports. By contributing to moqx, you agree
+your contributions are licensed under the project's [LICENSE](LICENSE).
