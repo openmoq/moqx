@@ -30,12 +30,14 @@ A PR that looks useful and has all checks green will be merged when a
 maintainer is available. No extra nudge needed. Use PR state to signal
 intent:
 
-- **Draft** — not ready for merge or review. Draft PRs don't
-  auto-request reviewers and don't run CI.
-- **Ready** (non-draft) — ready for merge once review and CI pass.
-- **Prefix title with `WIP:`** — you want review and CI feedback, but
-  are not yet ready for the PR to be merged. Maintainers won't merge
-  `WIP:` PRs regardless of check state.
+- **Draft** — not ready for review. Reviewers aren't auto-requested.
+  CI still runs, so you can iterate on green checks before asking for
+  review.
+- **Ready** (non-draft, no `WIP:` prefix) — ready for review and
+  ready to merge once review and CI pass.
+- **`WIP:` prefix** in the title — ready for review and CI, but not
+  yet ready for merge. Maintainers won't merge `WIP:` PRs regardless
+  of check state.
 
 ## How to contribute
 
