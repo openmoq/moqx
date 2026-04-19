@@ -37,6 +37,11 @@ jobs:
             preset: default
             build_dir: build
             runner: ubuntu-22.04
+          - name: linux arm64
+            preset: default
+            build_dir: build
+            runner: ubuntu-22.04-arm
+            platform: bookworm-arm64
           # macOS disabled: moxygen tarball bakes brew Cellar versioned paths
           # that break when the runner has different brew package versions.
           # Re-enable once moxygen upstream fixes cmake to use opt symlinks.
@@ -68,6 +73,7 @@ jobs:
       - name: Setup dependencies
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MOQX_PLATFORM: ${{ matrix.platform || '' }}
         run: |
           # Release branches pin a specific moxygen release tag via
           # .moxygen-release. Main uses snapshot-latest via --use-latest.
