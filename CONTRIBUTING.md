@@ -76,7 +76,7 @@ See [docs/ci-architecture.md](docs/ci-architecture.md).
 - `main` — rolling head; `snapshot-latest` image builds from here.
 - `release/<name>` — pinned demo / customer release branches. See
   [docs/release.md](docs/release.md).
-- `devops/*`, `feat/*`, `fix/*` — convention only, no enforcement.
+- `devops/*`, `feature/*`, `fix/*`, `hotfix/*` — convention only, no enforcement.
 
 ## Merge
 
