@@ -393,6 +393,9 @@ jobs:
     runs-on: [self-hosted, linode]
     env:
       DOMAIN: moqx-main.ci.openmoq.org
+      # Legacy alias retained for the interop-runner (which still targets
+      # moqx-000) until that upstream config is updated. Drop when unused.
+      DOMAIN_ALIAS: moqx-000.ci.openmoq.org
       RELAY_PORT: 4433
       ADMIN_PORT: 8000
     steps:
@@ -410,20 +413,31 @@ jobs:
             echo "::error::Could not determine runner public IP"
             exit 1
           fi
-          echo "Ensuring A record: $DOMAIN → $IP"
+          echo "Ensuring A records: $DOMAIN → $IP, $DOMAIN_ALIAS → $IP"
           CHANGE_FILE=$(mktemp)
           cat > "$CHANGE_FILE" <<EOF
           {
-            "Comment": "moqx auto-deploy: $DOMAIN",
-            "Changes": [{
-              "Action": "UPSERT",
-              "ResourceRecordSet": {
-                "Name": "$DOMAIN",
-                "Type": "A",
-                "TTL": 300,
-                "ResourceRecords": [{"Value": "$IP"}]
+            "Comment": "moqx auto-deploy: $DOMAIN (+ alias $DOMAIN_ALIAS)",
+            "Changes": [
+              {
+                "Action": "UPSERT",
+                "ResourceRecordSet": {
+                  "Name": "$DOMAIN",
+                  "Type": "A",
+                  "TTL": 300,
+                  "ResourceRecords": [{"Value": "$IP"}]
+                }
+              },
+              {
+                "Action": "UPSERT",
+                "ResourceRecordSet": {
+                  "Name": "$DOMAIN_ALIAS",
+                  "Type": "A",
+                  "TTL": 300,
+                  "ResourceRecords": [{"Value": "$IP"}]
+                }
               }
-            }]
+            ]
           }
           EOF
           CHANGE_ID=$(aws route53 change-resource-record-sets \
@@ -439,16 +453,26 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.OMOQ_CERTBOT_SECRET_ACCESS_KEY }}
         run: |
           CERT="/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
+          need_issue=false
           if [ ! -f "$CERT" ]; then
             echo "::warning::No cert for ${DOMAIN} — provisioning via Route53"
-            sudo -E certbot certonly --dns-route53 \
-              -d "$DOMAIN" --non-interactive --agree-tos \
-              --email gmarzot@openmoq.org
+            need_issue=true
           elif ! sudo openssl x509 -in "$CERT" -noout -checkend 2592000 2>/dev/null; then
             echo "::warning::Cert for ${DOMAIN} expires within 30 days — renewing"
-            sudo -E certbot renew --cert-name "$DOMAIN"
+            need_issue=true
+          elif ! sudo openssl x509 -in "$CERT" -noout -text | grep -qE "DNS:${DOMAIN_ALIAS}( |$|,)"; then
+            echo "::warning::Cert for ${DOMAIN} missing alias SAN ${DOMAIN_ALIAS} — expanding"
+            need_issue=true
           else
-            echo "Cert for ${DOMAIN} is valid"
+            echo "Cert for ${DOMAIN} is valid and includes ${DOMAIN_ALIAS}"
+          fi
+
+          if $need_issue; then
+            sudo -E certbot certonly --dns-route53 --expand \
+              --cert-name "$DOMAIN" \
+              -d "$DOMAIN" -d "$DOMAIN_ALIAS" \
+              --non-interactive --agree-tos \
+              --email gmarzot@openmoq.org
           fi
 
       - name: Log in to GHCR
