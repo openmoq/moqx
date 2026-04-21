@@ -71,7 +71,7 @@ jobs:
         run: |
           PR_NUM="${{ steps.blocking.outputs.pr_num }}"
           PR_URL="${{ github.server_url }}/${{ github.repository }}/pull/${PR_NUM}"
-          TEXT=":pause_button: *${{ github.repository }}* moxygen sync paused: PR <${PR_URL}|#${PR_NUM}> pending"
+          TEXT=":no_entry: *${{ github.repository }}* moxygen sync blocked: PR <${PR_URL}|#${PR_NUM}> needs resolution"
           curl -s -X POST "$SLACK_WEBHOOK_URL" \
             -H "Content-Type: application/json" \
             --data "{\"text\": \"${TEXT}\"}"

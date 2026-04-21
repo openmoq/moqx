@@ -355,10 +355,12 @@ jobs:
           SHORT="${GITHUB_SHA:0:7}"
           BRANCH="${{ github.ref_name }}"
           if [[ "$BRANCH" == "main" ]]; then
+            LABEL="main"
             TAG="snapshot-latest"
           else
-            # release/nab-demo → snapshot-nab-demo-latest
-            TAG="snapshot-${BRANCH#release/}-latest"
+            # release/nab-demo → nab-demo → snapshot-nab-demo-latest
+            LABEL="${BRANCH#release/}"
+            TAG="snapshot-${LABEL}-latest"
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
@@ -368,7 +370,7 @@ jobs:
 
           gh release create "$TAG" artifacts/**/* \
             --target "$GITHUB_SHA" \
-            --title "Latest build ($SHORT)" \
+            --title "Latest build — ${LABEL} (${SHORT})" \
             --prerelease \
             --notes "$(cat <<EOF
           Rolling snapshot of the latest build from \`${{ github.ref_name }}\`.
