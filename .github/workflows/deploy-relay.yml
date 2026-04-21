@@ -1,6 +1,6 @@
 name: deploy relay
 
-# Ops controls for the CI relay (moqx-000.ci.openmoq.org).
+# Ops controls for the CI relay (moqx-main.ci.openmoq.org + moqx-000 alias).
 # Restart, redeploy with a specific image tag, or change verbose level.
 
 on:
@@ -17,7 +17,7 @@ on:
         default: ""
         type: string
       domain:
-        description: "DNS hostname (default: derived from branch — main→moqx-000, release/X→moqx-X)"
+        description: "DNS hostname (default: derived from branch — main→moqx-main, release/X→moqx-X)"
         required: false
         default: ""
         type: string
