@@ -89,8 +89,21 @@ done
 echo "==> Relay ready (PID=${RELAY_PID})"
 
 echo "==> Starting moqtest_server..."
+# moqtest_server's --versions must match the client's --versions, otherwise
+# server-relay ALPN negotiates draft-16 (default) while client-relay
+# negotiates draft-14, and the relay can't bridge across versions →
+# every client invocation hangs to its connect/transaction timeout.
+SERVER_VERSIONS_FLAG=()
+for arg in "${EXTRA_ARGS[@]}"; do
+  if [[ "$arg" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
+    SERVER_VERSIONS_FLAG=(--versions="$arg")
+    break
+  fi
+done
+
 "$MOQBIN/moqtest_server" \
   --relay_url="https://localhost:${RELAY_PORT}/moq-relay" \
+  "${SERVER_VERSIONS_FLAG[@]}" \
   --logtostderr &
 SERVER_PID=$!
 sleep 2
