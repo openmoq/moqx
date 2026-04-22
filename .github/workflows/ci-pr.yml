@@ -114,10 +114,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: mvfst d14
+          # d14 over Q only for now: moxygen moqtest_client/server self-test
+          # rig can't do d14+WT (sends d16-era WT subprotocol header on a d14
+          # session — non-conformant per spec). Pending upstream fix.
+          - name: mvfst d14 Q
             versions: "14"
-            transport: ""
-          - name: mvfst d16
+            transport: "Q"
+          - name: mvfst d16 WT
             versions: "16"
             transport: ""
     name: conformance (${{ matrix.name }})

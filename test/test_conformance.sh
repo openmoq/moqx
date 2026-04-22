@@ -89,21 +89,29 @@ done
 echo "==> Relay ready (PID=${RELAY_PID})"
 
 echo "==> Starting moqtest_server..."
-# moqtest_server's --versions must match the client's --versions, otherwise
-# server-relay ALPN negotiates draft-16 (default) while client-relay
-# negotiates draft-14, and the relay can't bridge across versions →
-# every client invocation hangs to its connect/transaction timeout.
+# moqtest_server's --versions and --quic_transport must match the client's,
+# otherwise the server-relay session and client-relay session land on
+# different MoQ versions / transports and the relay can't bridge them
+# (every client invocation then hangs to its 30s transaction timeout).
+#
+# Notes on draft / transport pairings (moxygen MoQServer.cpp:84-86):
+#   - draft-14 uses the legacy "moq-00" ALPN, which is *excluded* from the
+#     WebTransport subprotocol list, so d14 conformance MUST use raw QUIC.
+#   - draft-16 (and later) ALPNs work in both WT and raw QUIC.
 SERVER_VERSIONS_FLAG=()
+SERVER_TRANSPORT_FLAG=()
 for arg in "${EXTRA_ARGS[@]}"; do
   if [[ "$arg" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
     SERVER_VERSIONS_FLAG=(--versions="$arg")
-    break
+  elif [ "$arg" = "Q" ]; then
+    SERVER_TRANSPORT_FLAG=(--quic_transport=true)
   fi
 done
 
 "$MOQBIN/moqtest_server" \
   --relay_url="https://localhost:${RELAY_PORT}/moq-relay" \
   "${SERVER_VERSIONS_FLAG[@]}" \
+  "${SERVER_TRANSPORT_FLAG[@]}" \
   --logtostderr &
 SERVER_PID=$!
 sleep 2
