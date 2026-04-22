@@ -118,6 +118,53 @@ jobs:
           fail-on-empty: ${{ job.status == 'success' && 'true' || 'false' }}
 
   # ════════════════════════════════════════════════════════════════════════════
+  # Conformance: mvfst × {d14 raw QUIC, d16 WT} (mirrors ci-pr.yml)
+  # ════════════════════════════════════════════════════════════════════════════
+
+  conformance:
+    needs: [check-format]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # d14 over Q only for now: moxygen moqtest_client/server self-test
+          # rig can't do d14+WT (sends d16-era WT subprotocol header on a d14
+          # session — non-conformant per spec). Pending upstream fix.
+          - name: mvfst d14 Q
+            versions: "14"
+            transport: "Q"
+          - name: mvfst d16 WT
+            versions: "16"
+            transport: ""
+    name: conformance (${{ matrix.name }})
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Generate app token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.OMOQ_APP_ID }}
+          private-key: ${{ secrets.OMOQ_APP_PRIV_KEY }}
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install system dependencies
+        run: sudo deps/moxygen/standalone/install-system-deps.sh
+
+      - name: Setup dependencies
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: bash scripts/build.sh setup
+
+      - name: Build
+        run: bash scripts/build.sh
+
+      - name: Run conformance tests
+        run: bash test/test_conformance.sh ./build/moqx ${{ matrix.versions }} ${{ matrix.transport }}
+
+  # ════════════════════════════════════════════════════════════════════════════
   # Publish: build moqx, Docker image + smoke test, push
   # ════════════════════════════════════════════════════════════════════════════
 
@@ -523,7 +570,7 @@ jobs:
   # ════════════════════════════════════════════════════════════════════════════
 
   notify:
-    needs: [check-format, build, publish, manifest, release, deploy]
+    needs: [check-format, build, conformance, publish, manifest, release, deploy]
     if: always()
     runs-on: ubuntu-22.04
     steps:
@@ -556,11 +603,12 @@ jobs:
             VER_RESULT="skipped"
           fi
           VER=$(fmt_status "$VER_RESULT")
+          CONF=$(fmt_status "${{ needs.conformance.result }}")
           PUB=$(fmt_status "${{ needs.publish.result }}")
           REL=$(fmt_status "${{ needs.release.result }}")
           DEP=$(fmt_status "${{ needs.deploy.result }}")
 
-          STATUS="verify:${VER} publish:${PUB} release:${REL} deploy:${DEP}"
+          STATUS="verify:${VER} conformance:${CONF} publish:${PUB} release:${REL} deploy:${DEP}"
 
           if [ "${{ needs.release.result }}" = "success" ]; then
             REL_URL="${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ needs.release.outputs.tag || 'snapshot-latest' }}"
