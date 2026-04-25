@@ -1,36 +1,34 @@
 # Contributing to moqx
 
-For build see [BUILD.md](BUILD.md); for runtime, [RUNNING.md](RUNNING.md);
-for architecture and planning material, [docs/](docs/).
+This document describes current guidelines for contributing to the `moqx` project, and related OpenMOQ repos. Openness and community participation are foundational principles of the OpenMOQ Consortium. All are welcome and encouraged to use the software here freely, and contribute to testing, fixing, and enhancing the code when possible.
 
-## Guiding principle
+The following describes the general philosophy and approach for handling contributions. The process remains flexible and subject to review, and may change in the future. The ultimate goal is to facilitate the production of high-quality, high-performance, professional-grade software.
 
-> Producing code in the era of AI is cheap. Reviewer attention is the
-> scarce resource.
+## Pull request scope and content
 
-## Pull request scope
+**Each PR should address a single and logically cohesive thesis.**
 
-**One PR = one cohesive thesis.** A reviewer should read the title and
-predict the diff.
+This makes reviews more approachable and more likely to occur. Avoid bundling various unrelated changes and ad hoc changes.
 
-- ✅ `fix: guard against publisher reconnect during upstream subscribe`
-- ❌ `various fixes and cleanups`
-- ❌ `feature X + refactor Y + bump Z` (split it)
+The following is a list of ideals for PR content — developer discretion and sound judgement is expected:
 
-Spot an unrelated fix while working? Open a second PR.
+- The title should clearly reflect the functional impact of the PR (in most cases this becomes the commit message on the merge commit).
+- The description should contain additional technical details and solution rationale.
+- If the PR addresses an existing issue, reference it in the description — `Fixes #N` to auto-close on merge, or `Refs #N` for partial or related work.
+- Tests or other evaluation criteria should be included for independent pass/fail evaluation (including unit tests where possible).
+- Relevant logs, developer test output, or other supporting material may be attached to support the review process.
 
 ## PR state
 
-Useful PRs with all checks green are merged when a maintainer is
-available. Signal intent:
+PRs with all checks passing may be merged by maintainers at unpredictable times based on availability and relative priority. The author can signal merge intent in the following ways:
 
 - **Draft** — not ready for review. No auto-reviewer request; CI still runs.
-- **Ready** (non-draft, no `WIP:` prefix) — merge when green.
-- **`WIP:` prefix** — ready for review and CI, not for merge.
+- **`WIP:` prefix** — ready for review and CI, not ready for merge.
+- **Ready** (non-draft, no `WIP:` prefix) — merge when all checks pass (manual for now).
 
 ## How to contribute
 
-moqx is public — fork-based PRs welcome.
+`moqx` is a public repo — fork-based PRs are welcome.
 
 - Outside contributors: fork, branch, PR against `main`.
 - Org members: branch directly on this repo, PR against `main`.
@@ -46,9 +44,7 @@ be patient, reciprocate.
 **Admin override** (`gh pr merge --admin`) is for:
 - CI/infrastructure repairs blocked by branch protection itself.
 - Release-critical merges under urgency.
-- Docs-only changes when waiting costs more than reviewing.
-
-Note the override in the PR description: `Admin override: <reason>`.
+- Docs-only or other low/no-risk changes.
 
 ## CI
 
@@ -59,17 +55,22 @@ See [docs/ci-architecture.md](docs/ci-architecture.md).
 
 ## Branches
 
+The following branch naming conventions are offered as developer guidance:
+
 - `main` — rolling head; `snapshot-latest` builds from here.
-- `release/<name>` — pinned demo / customer release branches. See
-  [docs/release.md](docs/release.md).
+- `release/<name>` — pinned demo / customer release branches. See [docs/release.md](docs/release.md).
 - `devops/*`, `feature/*`, `fix/*`, `hotfix/*` — convention only, no enforcement.
+
+The specific suffix branch name is up to the developer — something informative is often helpful (please clean up stale branches).
 
 ## Merge
 
 PRs are squash-merged; the PR title becomes the commit message on `main`.
 Authors are encouraged to maintain a concise, informative commit
-history on the branch — it aids review. Request a merge commit in the
+history on the branch — it aids review. Authors may request a merge commit in the
 PR description if preserving history on `main` is warranted.
+
+> **Note:** *Delete branch on merge* is the current default setting.
 
 ## Local development
 
