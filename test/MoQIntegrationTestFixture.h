@@ -62,7 +62,7 @@ protected:
       );
 
       // Create and start the server on this thread
-      server_ = std::make_unique<TestServer>(*this, std::move(fizzContext));
+      server_ = std::make_shared<TestServer>(*this, std::move(fizzContext));
       server_->start(folly::SocketAddress("::1", 0));
 
       // Get the assigned port
@@ -170,7 +170,7 @@ private:
     MoQIntegrationTestFixture& fixture_;
   };
 
-  std::unique_ptr<TestServer> server_;
+  std::shared_ptr<TestServer> server_;
   folly::EventBase serverEvb_;
   folly::EventBase clientEvb_;
   std::thread serverThread_;
