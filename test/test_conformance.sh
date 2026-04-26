@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 # Run the moxygen conformance test suite against a moqx relay.
 #
-# Usage: test_conformance.sh <moqx_binary> [versions] [Q]
+# Usage: test_conformance.sh <moqx_binary> [versions] [Q] [stack]
+#
+#   versions — "14", "16", or "14,16" (default: moxygen default)
+#   Q        — literal "Q" to use raw QUIC transport (default: WebTransport)
+#   stack    — "mvfst" (default) or "pico" — selects the relay's QUIC stack
+#
+# Args are positional but order-independent: each is identified by content.
 #
 # Environment:
 #   MOQBIN — path to moxygen install bin/ (for moqtest_client, moqtest_server)
@@ -10,19 +16,19 @@
 # Examples:
 #   test_conformance.sh ./build/moqx
 #   test_conformance.sh ./build/moqx 16
-#   test_conformance.sh ./build/moqx 14 Q    # QUIC transport, draft-14
-#   test_conformance.sh ./build/moqx 16 Q    # QUIC transport, draft-16
+#   test_conformance.sh ./build/moqx 14 Q          # mvfst, draft-14, raw QUIC
+#   test_conformance.sh ./build/moqx 16 Q pico     # picoquic, draft-16, raw QUIC
+#   test_conformance.sh ./build/moqx 14 pico       # picoquic, draft-14, WT
 
 set -euo pipefail
 
-MOQX_BIN="${1:?Usage: $0 <moqx_binary> [versions] [Q]}"
+MOQX_BIN="${1:?Usage: $0 <moqx_binary> [versions] [Q] [stack]}"
 shift
 EXTRA_ARGS=("$@")
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 MOQBIN="${MOQBIN:-${PROJECT_ROOT}/.scratch/moxygen-install/bin}"
-CONFIG="${PROJECT_ROOT}/test/test.config.yaml"
 CONFORMANCE_SCRIPT="${PROJECT_ROOT}/deps/moxygen/moxygen/moqtest/conformance_test.sh"
 
 # Validate binaries exist
@@ -38,40 +44,87 @@ if [[ ! -x "$CONFORMANCE_SCRIPT" ]]; then
   exit 1
 fi
 
+# Parse args. Each one is identified by content so order doesn't matter.
+QUIC_STACK="mvfst"
+DOWNSTREAM_ARGS=()
+SERVER_VERSIONS_FLAG=()
+SERVER_TRANSPORT_FLAG=()
+for arg in "${EXTRA_ARGS[@]}"; do
+  case "$arg" in
+    mvfst|pico)
+      QUIC_STACK="$arg"
+      ;;
+    Q)
+      SERVER_TRANSPORT_FLAG=(--quic_transport=true)
+      DOWNSTREAM_ARGS+=("$arg")
+      ;;
+    *)
+      if [[ "$arg" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
+        SERVER_VERSIONS_FLAG=(--versions="$arg")
+      fi
+      DOWNSTREAM_ARGS+=("$arg")
+      ;;
+  esac
+done
+
 # Pick a random port range to avoid collisions with parallel runs
 RELAY_PORT=$((19700 + RANDOM % 100))
 ADMIN_PORT=$((RELAY_PORT + 1))
 
+# picoquic dual-stack v6 bind doesn't currently receive v4-mapped packets
+# (openmoq/moxygen#170). Bind v4 explicitly when stack=pico; mvfst is fine on "::".
+# picoquic also requires real TLS credentials — insecure mode is unsupported.
+TMPDIR=$(mktemp -d)
+if [[ "$QUIC_STACK" = "pico" ]]; then
+  BIND_ADDRESS="0.0.0.0"
+  STACK_LINE="    quic_stack: picoquic"
+  # Generate ephemeral self-signed cert valid for localhost.
+  openssl req -newkey rsa:2048 -nodes \
+    -keyout "$TMPDIR/cert.key" -x509 -out "$TMPDIR/cert.pem" \
+    -subj '/CN=conformance-test' -addext 'subjectAltName=DNS:localhost' \
+    >/dev/null 2>&1
+  TLS_BLOCK="    tls:
+      insecure: false
+      cert_file: \"$TMPDIR/cert.pem\"
+      key_file: \"$TMPDIR/cert.key\""
+else
+  BIND_ADDRESS="::"
+  STACK_LINE=""
+  TLS_BLOCK="    tls:
+      insecure: true"
+fi
+
 # Generate a temp config with our ports
-TMPCONFIG=$(mktemp)
-trap 'rm -f "$TMPCONFIG"; kill "$RELAY_PID" "$SERVER_PID" 2>/dev/null; wait "$RELAY_PID" "$SERVER_PID" 2>/dev/null' EXIT
+TMPCONFIG="$TMPDIR/config.yaml"
+trap 'rm -rf "$TMPDIR"; kill "$RELAY_PID" "$SERVER_PID" 2>/dev/null; wait "$RELAY_PID" "$SERVER_PID" 2>/dev/null' EXIT
 
 cat > "$TMPCONFIG" <<EOF
 listeners:
   - name: conformance
+${STACK_LINE}
     udp:
       socket:
-        address: "::"
+        address: "${BIND_ADDRESS}"
         port: ${RELAY_PORT}
-    tls:
-      insecure: true
+${TLS_BLOCK}
     endpoint: "/moq-relay"
 services:
   default:
     match:
       - authority: {any: true}
-        path: {prefix: "/"}
-    cache:
-      enabled: true
-      max_tracks: 1000
-      max_groups_per_track: 100
+        path: {exact: "/moq-relay"}
+service_defaults:
+  cache:
+    enabled: true
+    max_tracks: 1000
+    max_groups_per_track: 100
 admin:
   port: ${ADMIN_PORT}
   address: "::1"
   plaintext: true
 EOF
 
-echo "==> Starting moqx relay on port ${RELAY_PORT}..."
+echo "==> Starting moqx relay (stack=${QUIC_STACK}) on port ${RELAY_PORT}..."
 "$MOQX_BIN" --config "$TMPCONFIG" --logtostderr &
 RELAY_PID=$!
 
@@ -93,21 +146,6 @@ echo "==> Starting moqtest_server..."
 # otherwise the server-relay session and client-relay session land on
 # different MoQ versions / transports and the relay can't bridge them
 # (every client invocation then hangs to its 30s transaction timeout).
-#
-# Notes on draft / transport pairings (moxygen MoQServer.cpp:84-86):
-#   - draft-14 uses the legacy "moq-00" ALPN, which is *excluded* from the
-#     WebTransport subprotocol list, so d14 conformance MUST use raw QUIC.
-#   - draft-16 (and later) ALPNs work in both WT and raw QUIC.
-SERVER_VERSIONS_FLAG=()
-SERVER_TRANSPORT_FLAG=()
-for arg in "${EXTRA_ARGS[@]}"; do
-  if [[ "$arg" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
-    SERVER_VERSIONS_FLAG=(--versions="$arg")
-  elif [ "$arg" = "Q" ]; then
-    SERVER_TRANSPORT_FLAG=(--quic_transport=true)
-  fi
-done
-
 "$MOQBIN/moqtest_server" \
   --relay_url="https://localhost:${RELAY_PORT}/moq-relay" \
   "${SERVER_VERSIONS_FLAG[@]}" \
@@ -132,10 +170,10 @@ MOXYGEN_SHIM=$(mktemp -d)
 mkdir -p "$MOXYGEN_SHIM/moxygen/moqtest"
 ln -s "$MOQBIN/moqtest_client" "$MOXYGEN_SHIM/moxygen/moqtest/moqtest_client"
 export MOXYGEN_DIR="$MOXYGEN_SHIM"
-trap 'rm -rf "$MOXYGEN_SHIM" "$TMPCONFIG"; kill "$RELAY_PID" "$SERVER_PID" 2>/dev/null; wait "$RELAY_PID" "$SERVER_PID" 2>/dev/null' EXIT
+trap 'rm -rf "$MOXYGEN_SHIM" "$TMPDIR"; kill "$RELAY_PID" "$SERVER_PID" 2>/dev/null; wait "$RELAY_PID" "$SERVER_PID" 2>/dev/null' EXIT
 
 set +e
-bash "$CONFORMANCE_SCRIPT" "$RELAY_URL" "${EXTRA_ARGS[@]}"
+bash "$CONFORMANCE_SCRIPT" "$RELAY_URL" "${DOWNSTREAM_ARGS[@]}"
 EXIT_CODE=$?
 set -e
 
@@ -144,7 +182,7 @@ echo "==> Conformance tests finished (exit code: $EXIT_CODE)"
 # Clean up before exiting so background process kills don't affect exit code
 kill "$RELAY_PID" "$SERVER_PID" 2>/dev/null
 wait "$RELAY_PID" "$SERVER_PID" 2>/dev/null || true
-rm -rf "$MOXYGEN_SHIM" "$TMPCONFIG"
+rm -rf "$MOXYGEN_SHIM" "$TMPDIR"
 
 # Disable the trap — we already cleaned up
 trap - EXIT

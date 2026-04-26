@@ -118,7 +118,7 @@ jobs:
           fail-on-empty: ${{ job.status == 'success' && 'true' || 'false' }}
 
   # ════════════════════════════════════════════════════════════════════════════
-  # Conformance: mvfst × {d14 raw QUIC, d16 WT} (mirrors ci-pr.yml)
+  # Conformance: mvfst × {d14, d16} × {Q, WT} (mirrors ci-pr.yml)
   # ════════════════════════════════════════════════════════════════════════════
 
   conformance:
@@ -127,15 +127,25 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # d14 over Q only for now: moxygen moqtest_client/server self-test
-          # rig can't do d14+WT (sends d16-era WT subprotocol header on a d14
-          # session — non-conformant per spec). Pending upstream fix.
+          # mvfst — both transports for d14 and d16. d14+WT was unblocked by
+          # facebookexperimental/moxygen#151 (Accept moq-00 in WT-Available-Protocols).
+          # picoquic stack to follow in a separate PR.
           - name: mvfst d14 Q
             versions: "14"
             transport: "Q"
+            stack: "mvfst"
+          - name: mvfst d14 WT
+            versions: "14"
+            transport: ""
+            stack: "mvfst"
+          - name: mvfst d16 Q
+            versions: "16"
+            transport: "Q"
+            stack: "mvfst"
           - name: mvfst d16 WT
             versions: "16"
             transport: ""
+            stack: "mvfst"
     name: conformance (${{ matrix.name }})
     runs-on: ubuntu-22.04
     steps:
@@ -162,7 +172,7 @@ jobs:
         run: bash scripts/build.sh
 
       - name: Run conformance tests
-        run: bash test/test_conformance.sh ./build/moqx ${{ matrix.versions }} ${{ matrix.transport }}
+        run: bash test/test_conformance.sh ./build/moqx ${{ matrix.versions }} ${{ matrix.transport }} ${{ matrix.stack }}
 
   # ════════════════════════════════════════════════════════════════════════════
   # Publish: build moqx, Docker image + smoke test, push
