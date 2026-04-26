@@ -116,7 +116,8 @@ jobs:
         include:
           # mvfst — both transports for d14 and d16. d14+WT was unblocked by
           # facebookexperimental/moxygen#151 (Accept moq-00 in WT-Available-Protocols).
-          # picoquic stack to follow in a separate PR.
+          # pico — raw QUIC for d14 and d16. WT cells deferred until pico
+          # WT CONNECT (openmoq/moxygen#172 / PR #173) syncs in.
           - name: mvfst d14 Q
             versions: "14"
             transport: "Q"
@@ -133,6 +134,14 @@ jobs:
             versions: "16"
             transport: ""
             stack: "mvfst"
+          - name: pico d14 Q
+            versions: "14"
+            transport: "Q"
+            stack: "pico"
+          - name: pico d16 Q
+            versions: "16"
+            transport: "Q"
+            stack: "pico"
     name: conformance (${{ matrix.name }})
     runs-on: ubuntu-22.04
     steps:
