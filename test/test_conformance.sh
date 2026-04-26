@@ -73,10 +73,14 @@ ADMIN_PORT=$((RELAY_PORT + 1))
 
 # picoquic dual-stack v6 bind doesn't currently receive v4-mapped packets
 # (openmoq/moxygen#170). Bind v4 explicitly when stack=pico; mvfst is fine on "::".
-# picoquic also requires real TLS credentials — insecure mode is unsupported.
+# picoquic also requires real TLS credentials — insecure mode is unsupported
+# (openmoq/moxygen#176). URL_HOST is the matching client-side address — must
+# agree with the bind family or 'localhost' may resolve to ::1 and miss the
+# v4-only listener (CI's /etc/hosts lists ::1 first).
 TMPDIR=$(mktemp -d)
 if [[ "$QUIC_STACK" = "pico" ]]; then
   BIND_ADDRESS="0.0.0.0"
+  URL_HOST="127.0.0.1"
   STACK_LINE="    quic_stack: picoquic"
   # Generate ephemeral self-signed cert valid for localhost.
   openssl req -newkey rsa:2048 -nodes \
@@ -89,6 +93,7 @@ if [[ "$QUIC_STACK" = "pico" ]]; then
       key_file: \"$TMPDIR/cert.key\""
 else
   BIND_ADDRESS="::"
+  URL_HOST="localhost"
   STACK_LINE=""
   TLS_BLOCK="    tls:
       insecure: true"
@@ -147,7 +152,7 @@ echo "==> Starting moqtest_server..."
 # different MoQ versions / transports and the relay can't bridge them
 # (every client invocation then hangs to its 30s transaction timeout).
 "$MOQBIN/moqtest_server" \
-  --relay_url="https://localhost:${RELAY_PORT}/moq-relay" \
+  --relay_url="https://${URL_HOST}:${RELAY_PORT}/moq-relay" \
   "${SERVER_VERSIONS_FLAG[@]}" \
   "${SERVER_TRANSPORT_FLAG[@]}" \
   --logtostderr &
@@ -162,7 +167,7 @@ fi
 echo "==> moqtest_server ready (PID=${SERVER_PID})"
 
 echo "==> Running conformance tests..."
-RELAY_URL="https://localhost:${RELAY_PORT}/moq-relay"
+RELAY_URL="https://${URL_HOST}:${RELAY_PORT}/moq-relay"
 
 # conformance_test.sh expects moqtest_client at $MOXYGEN_DIR/moxygen/moqtest/moqtest_client
 # Create a symlink tree matching the expected layout
