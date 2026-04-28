@@ -32,6 +32,17 @@ target_link_libraries(moqx_relay_test PRIVATE
 )
 gtest_discover_tests(moqx_relay_test)
 
+add_executable(moqx_namespace_tree_test
+  NamespaceTreeTest.cpp
+)
+target_link_libraries(moqx_namespace_tree_test PRIVATE
+  moqx_core
+  moqx_test_main
+  GTest::gmock
+  moxygen::moqtest_utils
+)
+gtest_discover_tests(moqx_namespace_tree_test)
+
 add_executable(moqx_config_test
   config/LoaderTest.cpp
 )

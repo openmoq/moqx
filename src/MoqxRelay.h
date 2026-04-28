@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "NamespaceTree.h"
 #include "UpstreamProvider.h"
 #include "config/Config.h"
 #include "relay/PropertyRanking.h"
@@ -89,7 +90,8 @@ public:
 class MoqxRelay : public moxygen::Publisher,
                   public moxygen::Subscriber,
                   public std::enable_shared_from_this<MoqxRelay>,
-                  public moxygen::MoQForwarder::Callback {
+                  public moxygen::MoQForwarder::Callback,
+                  public NamespaceTree::Callback {
 public:
   // Default for maxDeselected (tracks kept in deselected queue before eviction).
   // Set to 0 until pause/resume forwarding callbacks are wired in PropertyRanking;
@@ -187,9 +189,10 @@ public:
   ) override;
 
   std::shared_ptr<moxygen::MoQSession> findPublishNamespaceSession(const moxygen::TrackNamespace& ns
-  );
+  ) {
+    return namespaceTree_.findPublisherSession(ns);
+  }
 
-  // Wrapper for compatibility - returns single session as vector
   std::vector<std::shared_ptr<moxygen::MoQSession>>
   findPublishNamespaceSessions(const moxygen::TrackNamespace& ns) {
     auto session = findPublishNamespaceSession(ns);
@@ -239,88 +242,9 @@ private:
 
   void onPublishDone(const moxygen::FullTrackName& ftn);
 
-  struct NamespaceNode : public moxygen::Subscriber::PublishNamespaceHandle {
-    explicit NamespaceNode(MoqxRelay& relay, NamespaceNode* parent = nullptr)
-        : relay_(relay), parent_(parent) {}
+  void onPublishNamespaceDone(const moxygen::TrackNamespace& ns) override;
 
-    void publishNamespaceDone() override { relay_.publishNamespaceDone(trackNamespace_, this); }
-
-    folly::coro::Task<RequestUpdateResult> requestUpdate(moxygen::RequestUpdate reqUpdate
-    ) override {
-      co_return folly::makeUnexpected(moxygen::RequestError{
-          reqUpdate.requestID,
-          moxygen::RequestErrorCode::NOT_SUPPORTED,
-          "REQUEST_UPDATE not supported for relay PUBLISH_NAMESPACE"
-      });
-    }
-
-    // Helper to check if THIS node (excluding children) has content
-    bool hasLocalSessions() const {
-      return !publishes.empty() || !sessions.empty() || !namespacesPublished.empty() ||
-             sourceSession != nullptr;
-    }
-
-    // Check if node should be kept (has content OR non-empty children)
-    bool shouldKeep() const { return hasLocalSessions() || activeChildCount_ > 0; }
-
-    using moxygen::Subscriber::PublishNamespaceHandle::setPublishNamespaceOk;
-
-    moxygen::TrackNamespace trackNamespace_;
-    folly::F14FastMap<std::string, std::shared_ptr<NamespaceNode>> children;
-
-    // Maps a track name to the session performing the PUBLISH
-    folly::F14FastMap<std::string, std::shared_ptr<moxygen::MoQSession>> publishes;
-
-    // Info stored per SUBSCRIBE_NAMESPACE subscriber
-    struct NamespaceSubscriberInfo {
-      bool forward{true};
-      moxygen::SubscribeNamespaceOptions options{moxygen::SubscribeNamespaceOptions::BOTH};
-      // Handle for sending NAMESPACE / NAMESPACE_DONE on the bidi stream
-      // (draft 16+). Null for draft <= 15.
-      std::shared_ptr<moxygen::Publisher::NamespacePublishHandle> namespacePublishHandle;
-      // The namespace prefix this subscriber used for SUBSCRIBE_NAMESPACE
-      moxygen::TrackNamespace trackNamespacePrefix;
-      // TRACK_FILTER parameters (non-null when subscriber uses top-N filtering)
-      std::optional<moxygen::TrackFilter> trackFilter;
-    };
-
-    // PropertyRanking instances per property type for TRACK_FILTER subscribers
-    folly::F14FastMap<uint64_t, std::shared_ptr<PropertyRanking>> rankings;
-
-    // Sessions with a SUBSCRIBE_NAMESPACE here, with their preferences
-    folly::F14FastMap<std::shared_ptr<moxygen::MoQSession>, NamespaceSubscriberInfo> sessions;
-    // All active PUBLISH_NAMESPACEs for this node (includes prefix sessions)
-    folly::F14FastMap<std::shared_ptr<moxygen::MoQSession>, std::shared_ptr<PublishNamespaceHandle>>
-        namespacesPublished;
-    // The session that PUBLISH_NAMESPACEd this node
-    std::shared_ptr<moxygen::MoQSession> sourceSession;
-    // Peer relay ID that sourced this namespace (empty for local publishers)
-    std::string sourcePeerID;
-    std::shared_ptr<PublishNamespaceCallback> publishNamespaceCallback;
-
-    MoqxRelay& relay_;
-
-    // Pruning support: parent pointer and active child count
-    NamespaceNode* parent_{nullptr}; // back link (raw pointer, parent owns us)
-    size_t activeChildCount_{0};     // count of children with content
-
-    friend class MoqxRelay;
-
-    void incrementActiveChildren();
-    void decrementActiveChildren();
-    void tryPruneChild(const std::string& childKey);
-  };
-
-  NamespaceNode publishNamespaceRoot_{*this};
-  enum class MatchType { Exact, Prefix };
-  std::shared_ptr<NamespaceNode> findNamespaceNode(
-      const moxygen::TrackNamespace& ns,
-      bool createMissingNodes = false,
-      MatchType matchType = MatchType::Exact,
-      std::vector<
-          std::pair<std::shared_ptr<moxygen::MoQSession>, NamespaceNode::NamespaceSubscriberInfo>>*
-          sessions = nullptr
-  );
+  NamespaceTree namespaceTree_{*this};
 
   struct RelaySubscription {
     RelaySubscription(
@@ -353,7 +277,7 @@ private:
   folly::coro::Task<void> publishNamespaceToSession(
       std::shared_ptr<moxygen::MoQSession> session,
       moxygen::PublishNamespace pubNs,
-      std::shared_ptr<NamespaceNode> nodePtr
+      std::shared_ptr<NamespaceTree::NamespaceNode> nodePtr
   );
 
   folly::coro::Task<void> publishToSession(
@@ -370,8 +294,6 @@ private:
       std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle,
       uint64_t newGroupRequestValue
   );
-
-  void publishNamespaceDone(const moxygen::TrackNamespace& trackNamespace, NamespaceNode* node);
 
   // TRACK_FILTER support
 
@@ -393,7 +315,7 @@ private:
   // Retroactively registers any tracks already published under that node.
   // ns must be the full namespace of `node` (used as BFS seed for track registration).
   std::shared_ptr<PropertyRanking> getOrCreateRanking(
-      std::shared_ptr<NamespaceNode> node,
+      std::shared_ptr<NamespaceTree::NamespaceNode> node,
       uint64_t propertyType,
       const moxygen::TrackNamespace& ns
   );
