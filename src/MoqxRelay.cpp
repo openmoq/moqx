@@ -134,45 +134,6 @@ folly::coro::Task<void> MoqxRelay::doNewGroupRequestUpdate(
   }
 }
 
-std::shared_ptr<MoqxRelay::NamespaceNode> MoqxRelay::findNamespaceNode(
-    const TrackNamespace& ns,
-    bool createMissingNodes,
-    MatchType matchType,
-    std::vector<std::pair<std::shared_ptr<MoQSession>, NamespaceNode::NamespaceSubscriberInfo>>*
-        sessions
-) {
-  std::shared_ptr<NamespaceNode> nodePtr(std::shared_ptr<void>(), &publishNamespaceRoot_);
-  TrackNamespace partialNs;
-  for (auto i = 0ul; i < ns.size(); i++) {
-    if (sessions) {
-      // Extract session pointers with their subscriber info from the map
-      for (const auto& [session, info] : nodePtr->sessions) {
-        sessions->emplace_back(session, info);
-      }
-    }
-    auto& name = ns[i];
-    partialNs.append(name);
-    auto it = nodePtr->children.find(name);
-    if (it == nodePtr->children.end()) {
-      if (createMissingNodes) {
-        auto node = std::make_shared<NamespaceNode>(*this, nodePtr.get());
-        node->trackNamespace_ = partialNs;
-        nodePtr->children.emplace(name, node);
-        // Don't increment yet - only when content is actually added
-        nodePtr = std::move(node);
-      } else if (matchType == MatchType::Prefix && nodePtr.get() != &publishNamespaceRoot_) {
-        return nodePtr;
-      } else {
-        XLOG(ERR) << "prefix not found in publishNamespace tree";
-        return nullptr;
-      }
-    } else {
-      nodePtr = it->second;
-    }
-  }
-  return nodePtr;
-}
-
 std::shared_ptr<Subscriber::PublishNamespaceHandle> MoqxRelay::doPublishNamespace(
     PublishNamespace pubNs,
     std::shared_ptr<MoQSession> session,
@@ -184,61 +145,26 @@ std::shared_ptr<Subscriber::PublishNamespaceHandle> MoqxRelay::doPublishNamespac
   if (!pubNs.trackNamespace.startsWith(allowedNamespacePrefix_)) {
     return nullptr;
   }
-  std::vector<std::pair<std::shared_ptr<MoQSession>, NamespaceNode::NamespaceSubscriberInfo>>
-      sessions;
-  auto nodePtr = findNamespaceNode(
+  auto [nodePtr, sessions, replacedSession] = namespaceTree_.setPublisher(
       pubNs.trackNamespace,
-      /*createMissingNodes=*/true,
-      MatchType::Exact,
-      &sessions
+      session,
+      std::move(callback),
+      std::move(peerID),
+      pubNs.requestID
   );
-
-  // Log if there is already a session that has publishNamespace-d this track
-  if (nodePtr->sourceSession) {
-    XLOG(WARNING) << "PublishNamespace: Existing session (" << nodePtr->sourceSession.get()
+  if (replacedSession) {
+    XLOG(WARNING) << "PublishNamespace: Existing session (" << replacedSession.get()
                   << ") has already published trackNamespace=" << pubNs.trackNamespace;
-    // Since we don't fully support multiple publishers -- cancel the old
-    // publishNamespace and remove ongoing subscriptions to this publisher
-    // in that namespace.  Note: it could have publishNamespace-d a more
-    // specific namespace which hasn't been overridden by the new publisher, but
-    // for now we don't support that.
-    if (nodePtr->publishNamespaceCallback) {
-      nodePtr->publishNamespaceCallback->publishNamespaceCancel(
-          PublishNamespaceErrorCode::CANCELLED,
-          "New publisher"
-      );
-      nodePtr->publishNamespaceCallback.reset();
-    }
+    // Remove ongoing subscriptions for the replaced publisher.
     for (auto it = subscriptions_.begin(); it != subscriptions_.end();) {
-      // Check if the subscription's FullTrackName is in this namespace
       if (it->first.trackNamespace.startsWith(pubNs.trackNamespace) &&
-          it->second.upstream == nodePtr->sourceSession) {
+          it->second.upstream == replacedSession) {
         XLOG(DBG4) << "Erasing subscription to " << it->first;
         it = subscriptions_.erase(it);
       } else {
         ++it;
       }
     }
-    nodePtr->sourceSession.reset();
-  }
-
-  // Include sessions that subscribed exactly this namespace as well.
-  // findNamespaceNode(..., &sessions) collects subscribers attached to prefixes
-  // along the path, but does not include this node's own sessions.
-  for (const auto& [outSession, info] : nodePtr->sessions) {
-    sessions.emplace_back(outSession, info);
-  }
-
-  bool wasEmpty = !nodePtr->hasLocalSessions();
-  nodePtr->sourceSession = session;
-  nodePtr->sourcePeerID = std::move(peerID);
-  nodePtr->publishNamespaceCallback = std::move(callback);
-  nodePtr->trackNamespace_ = pubNs.trackNamespace;
-  nodePtr->setPublishNamespaceOk({.requestID = pubNs.requestID, .requestSpecificParams = {}});
-
-  // If this is the first content added to this node, notify parent
-  if (wasEmpty && nodePtr->parent_) {
-    nodePtr->parent_->incrementActiveChildren();
   }
   for (auto& [outSession, info] : sessions) {
     if (outSession != session && (info.options == SubscribeNamespaceOptions::NAMESPACE ||
@@ -279,81 +205,15 @@ folly::coro::Task<Subscriber::PublishNamespaceResult> MoqxRelay::publishNamespac
 folly::coro::Task<void> MoqxRelay::publishNamespaceToSession(
     std::shared_ptr<MoQSession> session,
     PublishNamespace pubNs,
-    std::shared_ptr<NamespaceNode> nodePtr
+    std::shared_ptr<NamespaceTree::NamespaceNode> nodePtr
 ) {
   auto publishNamespaceHandle = co_await session->publishNamespace(pubNs);
   if (publishNamespaceHandle.hasError()) {
     XLOG(ERR) << "PublishNamespace failed err=" << publishNamespaceHandle.error().reasonPhrase;
   } else {
     // This can race with unsubscribeNamespace
-    nodePtr->namespacesPublished[session] = std::move(publishNamespaceHandle.value());
+    nodePtr->addDraft14PublishNamespaceHandle(session, std::move(publishNamespaceHandle.value()));
   }
-}
-
-// NamespaceNode ref count management methods for pruning
-void MoqxRelay::NamespaceNode::incrementActiveChildren() {
-  activeChildCount_++;
-  // Propagate up if this was the first active child
-  if (activeChildCount_ == 1 && parent_ && !hasLocalSessions()) {
-    parent_->incrementActiveChildren();
-  }
-}
-
-void MoqxRelay::NamespaceNode::decrementActiveChildren() {
-  XCHECK_GT(activeChildCount_, 0);
-  activeChildCount_--;
-}
-
-// Walk up the tree to find and prune the highest empty ancestor
-void MoqxRelay::NamespaceNode::tryPruneChild(const std::string& childKey) {
-  auto it = children.find(childKey);
-  if (it == children.end()) {
-    return;
-  }
-
-  auto childNode = it->second.get();
-  if (childNode->shouldKeep()) {
-    return;
-  }
-
-  // Walk up the tree, decrementing counts, to find highest empty ancestor
-  // Track the key to remove and the parent to remove it from
-  std::string keyToRemove = childKey;
-  NamespaceNode* parentOfNodeToRemove = this;
-  NamespaceNode* current = this;
-
-  while (current) {
-    XCHECK_GT(current->activeChildCount_, 0);
-    current->activeChildCount_--;
-
-    // If current still has content or children after decrement, stop walking
-    // Remove keyToRemove from parentOfNodeToRemove
-    if (current->hasLocalSessions() || current->activeChildCount_ > 0) {
-      break;
-    }
-
-    // Current is now empty too - if it has a parent, continue walking up
-    if (!current->parent_) {
-      // We've reached root - can't remove root, so stop
-      break;
-    }
-
-    // Current is empty and not root, so it becomes the new candidate for
-    // removal Find the key for current in its parent's children map
-    for (const auto& [key, node] : current->parent_->children) {
-      if (node.get() == current) {
-        keyToRemove = key;
-        parentOfNodeToRemove = current->parent_;
-        break;
-      }
-    }
-
-    current = current->parent_;
-  }
-
-  // Remove the highest empty node from its parent
-  XLOG(DBG1) << "Pruning empty subtree at: " << keyToRemove;
-  parentOfNodeToRemove->children.erase(keyToRemove);
 }
 
 void MoqxRelay::doPublishNamespaceDone(
@@ -361,48 +221,26 @@ void MoqxRelay::doPublishNamespaceDone(
     std::shared_ptr<MoQSession> session
 ) {
   XLOG(DBG1) << __func__ << " ns=" << trackNamespace;
-  // Node would be useful if there were back links
-  auto nodePtr = findNamespaceNode(trackNamespace);
-  if (!nodePtr) {
-    // Node was already pruned, nothing to do, maybe app called unannouce twice?
-    XLOG(DBG1) << "Node already pruned for ns=" << trackNamespace;
+  auto result = namespaceTree_.unpublishNamespace(trackNamespace, session);
+  if (result.hasError()) {
+    if (result.error() == NamespaceTree::Error::NodeNotFound) {
+      XLOG(DBG1) << "Node already pruned for ns=" << trackNamespace;
+    } else {
+      XLOG(DBG1) << "Ignoring publishNamespaceDone for ns=" << trackNamespace
+                 << " (no owner or non-owner session)";
+    }
     return;
   }
-
-  // Track if node had local content before modification
-  bool hadLocalContent = nodePtr->hasLocalSessions();
-
-  // Only allow publishNamespaceDone if there is an owner and the caller is that
-  // owner
-  if (nodePtr->sourceSession == nullptr || nodePtr->sourceSession != session) {
-    XLOG(DBG1) << "Ignoring publishNamespaceDone for ns=" << trackNamespace
-               << " (no owner or non-owner session)";
-    return;
+  // Draft <= 15: dispatch publishNamespaceDone on each subscriber's executor
+  for (auto& [sess, handle] : result.value().legacyHandles) {
+    sess->getExecutor()->add([h = handle] { h->publishNamespaceDone(); });
   }
-
-  nodePtr->sourceSession = nullptr;
-  nodePtr->sourcePeerID.clear();
-  nodePtr->publishNamespaceCallback.reset();
-
-  // Notify downstream namespace subscribers
-  std::vector<std::pair<std::shared_ptr<MoQSession>, NamespaceNode::NamespaceSubscriberInfo>>
-      sessions;
-  findNamespaceNode(
-      trackNamespace,
-      /*createMissingNodes=*/false,
-      MatchType::Exact,
-      &sessions
-  );
-  // Also include sessions at the target node itself
-  for (const auto& [sessionPtr, info] : nodePtr->sessions) {
-    sessions.emplace_back(sessionPtr, info);
-  }
-  for (auto& [outSession, info] : sessions) {
+  // Draft >= 16: send NAMESPACE_DONE on the bidi stream
+  for (auto& [outSession, info] : result.value().subscribers) {
     if (outSession != session && (info.options == SubscribeNamespaceOptions::NAMESPACE ||
                                   info.options == SubscribeNamespaceOptions::BOTH)) {
       auto maybeVersion = outSession->getNegotiatedVersion();
       if (maybeVersion.has_value() && getDraftMajorVersion(*maybeVersion) >= 16) {
-        // Draft 16+: send NAMESPACE_DONE on the bidi stream
         if (info.namespacePublishHandle) {
           TrackNamespace suffix(std::vector<std::string>(
               trackNamespace.trackNamespace.begin() + info.trackNamespacePrefix.size(),
@@ -410,28 +248,12 @@ void MoqxRelay::doPublishNamespaceDone(
           ));
           info.namespacePublishHandle->namespaceDoneMsg(suffix);
         }
-      } else {
-        // Draft <= 15: send PUBLISH_NAMESPACE_DONE on the existing stream
-        auto it = nodePtr->namespacesPublished.find(outSession);
-        if (it != nodePtr->namespacesPublished.end()) {
-          auto exec = outSession->getExecutor();
-          exec->add([publishNamespaceHandle = it->second] {
-            publishNamespaceHandle->publishNamespaceDone();
-          });
-        }
       }
     }
   }
-  nodePtr->namespacesPublished.clear();
-
-  // Prune if node became empty and has a parent
-  if (hadLocalContent && !nodePtr->shouldKeep() && nodePtr->parent_ &&
-      !trackNamespace.trackNamespace.empty()) {
-    nodePtr->parent_->tryPruneChild(trackNamespace.trackNamespace.back());
-  }
 }
 
-void MoqxRelay::publishNamespaceDone(const TrackNamespace& trackNamespace, NamespaceNode*) {
+void MoqxRelay::onPublishNamespaceDone(const TrackNamespace& trackNamespace) {
   doPublishNamespaceDone(trackNamespace, MoQSession::getRequestSession());
 }
 
@@ -441,18 +263,7 @@ void MoqxRelay::onPublishDone(const FullTrackName& ftn) {
   auto it = subscriptions_.find(ftn);
   if (it != subscriptions_.end()) {
     if (it->second.isPublish) {
-      // Remove from publishes map
-      auto nodePtr = findNamespaceNode(ftn.trackNamespace);
-      if (nodePtr) {
-        bool hadLocalContent = nodePtr->hasLocalSessions();
-        nodePtr->publishes.erase(ftn.trackName);
-
-        // Prune if node became empty and has a parent
-        if (hadLocalContent && !nodePtr->shouldKeep() && nodePtr->parent_ &&
-            !ftn.trackNamespace.trackNamespace.empty()) {
-          nodePtr->parent_->tryPruneChild(ftn.trackNamespace.trackNamespace.back());
-        }
-      }
+      namespaceTree_.unpublishTrack(ftn.trackNamespace, ftn.trackName);
     }
 
     // Clear the handle and upstream - this signals publisher is done
@@ -486,40 +297,22 @@ MoqxRelay::publish(PublishRequest pub, std::shared_ptr<Publisher::SubscriptionHa
     );
   }
 
-  // Find All Nodes that Subscribed to this namespace (including
-  // prefix ns)
-  std::vector<std::pair<std::shared_ptr<MoQSession>, NamespaceNode::NamespaceSubscriberInfo>>
-      sessions = {};
-  auto nodePtr = findNamespaceNode(
-      pub.fullTrackName.trackNamespace,
-      /*createMissingNodes=*/true,
-      MatchType::Exact,
-      &sessions
-  );
-  // Extract session pointers with their subscriber info from the map
-  for (const auto& [sessionPtr, info] : nodePtr->sessions) {
-    sessions.emplace_back(sessionPtr, info);
-  }
-
   auto session = MoQSession::getRequestSession();
-  bool wasEmpty = !nodePtr->hasLocalSessions();
 
+  // Handle duplicate publisher at relay level before registering in the tree.
+  // Move the forwarder out and erase the entry BEFORE calling publishDone.
+  // publishDone iterates subscribers via forEachSubscriber; if a subscriber
+  // has no open subgroups, drainSubscriber → onEmpty fires. If the entry
+  // still existed, onEmpty would erase it (destroying the forwarder) while
+  // forEachSubscriber is still iterating → use-after-free.
+  // handle is null when the previous publisher already terminated (e.g.
+  // reconnect after a dropped connection with subscribers still draining open
+  // subgroups).  onPublishDone() already reset handle and drained the
+  // forwarder, so skip both calls to avoid a null deref and a double
+  // publishDone.
   auto it = subscriptions_.find(pub.fullTrackName);
   if (it != subscriptions_.end()) {
-    // someone already published this FTN, we don't support
-    // multipublisher
     XLOG(DBG1) << "New publisher for existing subscription";
-    nodePtr->publishes.erase(pub.fullTrackName.trackName);
-    // Move the forwarder out and erase the entry BEFORE calling publishDone.
-    // publishDone iterates subscribers via forEachSubscriber; if a subscriber
-    // has no open subgroups, drainSubscriber → onEmpty fires. If the entry
-    // still existed, onEmpty would erase it (destroying the forwarder) while
-    // forEachSubscriber is still iterating → use-after-free.
-    // handle is null when the previous publisher already terminated (e.g.
-    // reconnect after a dropped connection with subscribers still draining open
-    // subgroups).  onPublishDone() already reset handle and drained the
-    // forwarder, so skip both calls to avoid a null deref and a double
-    // publishDone.
     auto oldHandle = std::move(it->second.handle);
     auto oldForwarder = std::move(it->second.forwarder);
     XLOG(DBG4) << "Erasing subscription to " << it->first;
@@ -534,18 +327,9 @@ MoqxRelay::publish(PublishRequest pub, std::shared_ptr<Publisher::SubscriptionHa
       );
     }
   }
-  auto res = nodePtr->publishes.emplace(pub.fullTrackName.trackName, session);
-  XCHECK(res.second) << "Duplicate publish";
-
-  // If this is the first content added to this node, notify parent
-  if (wasEmpty && nodePtr->hasLocalSessions() && nodePtr->parent_) {
-    nodePtr->parent_->incrementActiveChildren();
-  }
 
   // Create Forwarder for this publish
   auto forwarder = std::make_shared<MoQForwarder>(pub.fullTrackName, pub.largest);
-
-  // Set Forwarder Params
   forwarder->setExtensions(pub.extensions);
 
   auto subRes = subscriptions_.emplace(
@@ -568,25 +352,26 @@ MoqxRelay::publish(PublishRequest pub, std::shared_ptr<Publisher::SubscriptionHa
   topNFilter->setActivityTarget(&rsub.lastObjectTime);
   topNFilter->setActivityThreshold(activityThreshold_);
 
-  // Register track with all PropertyRankings along the path from root to this
-  // node (inclusive). Rankings exist at nodes where TRACK_FILTER subscribers
-  // subscribed. A subscriber at /conf should see tracks published under
-  // /conf/room1, so we must walk up the ancestor chain.
-  for (NamespaceNode* node = nodePtr.get(); node != nullptr; node = node->parent_) {
-    for (auto& [propertyType, ranking] : node->rankings) {
-      auto initialPropertyValue = pub.extensions.getIntExtension(propertyType);
-      ranking->registerTrack(pub.fullTrackName, initialPropertyValue, session);
-      topNFilter->registerObserver(
-          propertyType,
-          PropertyObserver{
-              .onValueChanged = [ranking, ftn = pub.fullTrackName](uint64_t value
-                                ) { ranking->updateSortValue(ftn, value); },
-              .onTrackEnded = [ranking, ftn = pub.fullTrackName]() { ranking->removeTrack(ftn); },
-              .onActivity = [ranking]() { ranking->sweepIdle(); }
-          }
-      );
-    }
-  }
+  // Register in the namespace tree. The ranking callback fires once per
+  // PropertyRanking on the path from this node to the root — registering the
+  // track and wiring observers so TRACK_FILTER subscribers see it.
+  auto [nodePtr, sessions] = namespaceTree_.addPublish(
+      pub.fullTrackName,
+      session,
+      [&](uint64_t propertyType, const std::shared_ptr<PropertyRanking>& ranking) {
+        auto initialPropertyValue = pub.extensions.getIntExtension(propertyType);
+        ranking->registerTrack(pub.fullTrackName, initialPropertyValue, session);
+        topNFilter->registerObserver(
+            propertyType,
+            PropertyObserver{
+                .onValueChanged = [ranking, ftn = pub.fullTrackName](uint64_t value
+                                  ) { ranking->updateSortValue(ftn, value); },
+                .onTrackEnded = [ranking, ftn = pub.fullTrackName]() { ranking->removeTrack(ftn); },
+                .onActivity = [ranking]() { ranking->sweepIdle(); }
+            }
+        );
+      }
+  );
 
   uint64_t nSubscribers = 0;
   bool hasTrackFilterSub = false;
@@ -806,8 +591,6 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
         "empty"
     });
   }
-  auto nodePtr = findNamespaceNode(subNs.trackNamespacePrefix, /*createMissingNodes=*/true);
-
   SubscribeNamespaceOptions effectiveOptions;
   effectiveOptions = subNs.options;
 
@@ -820,11 +603,10 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
     }
   }
 
-  // Check if this is the first session subscriber for this node
-  bool wasEmpty = !nodePtr->hasLocalSessions();
-  nodePtr->sessions.emplace(
+  auto nodePtr = namespaceTree_.addNamespaceSubscriber(
+      subNs.trackNamespacePrefix,
       session,
-      NamespaceNode::NamespaceSubscriberInfo{
+      NamespaceTree::NamespaceNode::NamespaceSubscriberInfo{
           subNs.forward,
           effectiveOptions,
           namespacePublishHandle,
@@ -842,72 +624,61 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
     ranking->addSessionToTopNGroup(trackFilter->maxSelected, session, subNs.forward);
   }
 
-  // If this is the first content added to this node, notify parent
-  if (wasEmpty && nodePtr->hasLocalSessions() && nodePtr->parent_) {
-    nodePtr->parent_->incrementActiveChildren();
-  }
-
   // Find all nested PublishNamespaces/Publishes and forward
-  std::deque<std::tuple<TrackNamespace, std::shared_ptr<NamespaceNode>>> nodes{
-      {subNs.trackNamespacePrefix, nodePtr}
-  };
   auto exec = session->getExecutor();
-  while (!nodes.empty()) {
-    auto [prefix, nodePtr] = std::move(*nodes.begin());
-    nodes.pop_front();
-    if (nodePtr->sourceSession && nodePtr->sourceSession != session &&
-        (incomingPeerID.empty() || nodePtr->sourcePeerID != incomingPeerID)) {
-      if (getDraftMajorVersion(*maybeNegotiatedVersion) >= 16) {
-        if (subNs.options == SubscribeNamespaceOptions::NAMESPACE ||
-            subNs.options == SubscribeNamespaceOptions::BOTH) {
-          // Compute the suffix: prefix minus subNs.trackNamespacePrefix
-          TrackNamespace suffix(std::vector<std::string>(
-              prefix.trackNamespace.begin() + subNs.trackNamespacePrefix.size(),
-              prefix.trackNamespace.end()
-          ));
-          namespacePublishHandle->namespaceMsg(suffix);
+  namespaceTree_.forEachNodeInSubtree(
+      subNs.trackNamespacePrefix,
+      nodePtr,
+      [&](const TrackNamespace& prefix, std::shared_ptr<NamespaceTree::NamespaceNode> node) {
+        if (node->publisherSession() && node->publisherSession() != session &&
+            (incomingPeerID.empty() || node->publisherPeerID() != incomingPeerID)) {
+          if (getDraftMajorVersion(*maybeNegotiatedVersion) >= 16) {
+            if (subNs.options == SubscribeNamespaceOptions::NAMESPACE ||
+                subNs.options == SubscribeNamespaceOptions::BOTH) {
+              // Compute the suffix: prefix minus subNs.trackNamespacePrefix
+              TrackNamespace suffix(std::vector<std::string>(
+                  prefix.trackNamespace.begin() + subNs.trackNamespacePrefix.size(),
+                  prefix.trackNamespace.end()
+              ));
+              namespacePublishHandle->namespaceMsg(suffix);
+            }
+          } else {
+            // TODO: Auth/params
+            co_withExecutor(
+                exec,
+                publishNamespaceToSession(session, {subNs.requestID, prefix}, node)
+            )
+                .start();
+          }
         }
-      } else {
-        // TODO: Auth/params
-        co_withExecutor(
-            exec,
-            publishNamespaceToSession(session, {subNs.requestID, prefix}, nodePtr)
-        )
-            .start();
-      }
-    }
-    for (auto& publishEntry : nodePtr->publishes) {
-      auto& publishSession = publishEntry.second;
-      FullTrackName ftn{prefix, publishEntry.first};
-      auto subscriptionIt = subscriptions_.find(ftn);
-      if (subscriptionIt == subscriptions_.end()) {
-        XLOG(ERR) << "Invalid state, no subscription for publish ftn=" << ftn;
-        continue;
-      }
-      auto& forwarder = subscriptionIt->second.forwarder;
-      auto maybeNegotiatedVersion = session->getNegotiatedVersion();
-      CHECK(maybeNegotiatedVersion.has_value());
+        node->forEachPublish([&](const std::string& trackName,
+                                 const std::shared_ptr<MoQSession>& publishSession) {
+          FullTrackName ftn{prefix, trackName};
+          auto subscriptionIt = subscriptions_.find(ftn);
+          if (subscriptionIt == subscriptions_.end()) {
+            XLOG(ERR) << "Invalid state, no subscription for publish ftn=" << ftn;
+            return;
+          }
+          auto& forwarder = subscriptionIt->second.forwarder;
+          auto maybeNegotiatedVersion = session->getNegotiatedVersion();
+          CHECK(maybeNegotiatedVersion.has_value());
 
-      // TRACK_FILTER subscribers: PropertyRanking drives selection via
-      // onTrackSelected; skip direct publish here.
-      if (trackFilter) {
-        continue;
-      }
+          // TRACK_FILTER subscribers: PropertyRanking drives selection via
+          // onTrackSelected; skip direct publish here.
+          if (trackFilter) {
+            return;
+          }
 
-      if (getDraftMajorVersion(*maybeNegotiatedVersion) <= 15 ||
-          (subNs.options == SubscribeNamespaceOptions::BOTH ||
-           subNs.options == SubscribeNamespaceOptions::PUBLISH)) {
-        if (publishSession != session) {
-          co_withExecutor(exec, publishToSession(session, forwarder, subNs.forward)).start();
-        }
+          if (getDraftMajorVersion(*maybeNegotiatedVersion) <= 15 ||
+              (subNs.options == SubscribeNamespaceOptions::BOTH ||
+               subNs.options == SubscribeNamespaceOptions::PUBLISH)) {
+            if (publishSession != session) {
+              co_withExecutor(exec, publishToSession(session, forwarder, subNs.forward)).start();
+            }
+          }
+        });
       }
-    }
-    for (auto& nextNodeIt : nodePtr->children) {
-      TrackNamespace nodePrefix(prefix);
-      nodePrefix.append(nextNodeIt.first);
-      nodes.emplace_back(std::forward_as_tuple(nodePrefix, nextNodeIt.second));
-    }
-  }
+  );
   co_return std::make_shared<NamespaceSubscription>(
       shared_from_this(),
       std::move(session),
@@ -923,56 +694,19 @@ void MoqxRelay::unsubscribeNamespace(
   XLOG(DBG1) << __func__ << " nsp=" << trackNamespacePrefix;
   // Clean up the reciprocal peer subNs handle for this session if present.
   peerSubNsHandles_.erase(session.get());
-  auto nodePtr = findNamespaceNode(trackNamespacePrefix);
-  if (!nodePtr) {
-    // TODO: maybe error?
-    return;
+  auto result = namespaceTree_.removeNamespaceSubscriber(trackNamespacePrefix, session);
+  if (result.hasError() && result.error() == NamespaceTree::Error::NotSubscribed) {
+    XLOG(DBG1) << "Namespace prefix was not subscribed by this session";
   }
-
-  // Track if node had local content before modification
-  bool hadLocalContent = nodePtr->hasLocalSessions();
-
-  auto it = nodePtr->sessions.find(session);
-  if (it != nodePtr->sessions.end()) {
-    // If session used TRACK_FILTER, remove it from the PropertyRanking group.
-    if (it->second.trackFilter) {
-      auto rankingIt = nodePtr->rankings.find(it->second.trackFilter->propertyType);
-      if (rankingIt != nodePtr->rankings.end()) {
-        rankingIt->second->removeSessionFromTopNGroup(it->second.trackFilter->maxSelected, session);
-      }
-    }
-
-    nodePtr->sessions.erase(it);
-
-    // Prune if node became empty and has a parent
-    if (hadLocalContent && !nodePtr->shouldKeep() && nodePtr->parent_ &&
-        !trackNamespacePrefix.trackNamespace.empty()) {
-      nodePtr->parent_->tryPruneChild(trackNamespacePrefix.trackNamespace.back());
-    }
-    return;
-  }
-  // TODO: error?
-  XLOG(DBG1) << "Namespace prefix was not subscribed by this session";
-}
-
-std::shared_ptr<MoQSession> MoqxRelay::findPublishNamespaceSession(const TrackNamespace& ns) {
-  /*
-   * This function is called from subscribe() and fetch().
-   * We use MatchType::Prefix here because the relay routes SUBSCRIBE and FETCH
-   * to the publisher who published the closest matching broader
-   * namespace, not necessarily the exact match.
-   */
-  auto nodePtr = findNamespaceNode(ns, /*createMissingNodes=*/false, MatchType::Prefix);
-  if (!nodePtr) {
-    return nullptr;
-  }
-  return nodePtr->sourceSession;
 }
 
 MoqxRelay::PublishState MoqxRelay::findPublishState(const FullTrackName& ftn) {
   PublishState state;
-  auto nodePtr =
-      findNamespaceNode(ftn.trackNamespace, /*createMissingNodes=*/false, MatchType::Exact);
+  auto nodePtr = namespaceTree_.findNode(
+      ftn.trackNamespace,
+      /*createMissingNodes=*/false,
+      NamespaceTree::MatchType::Exact
+  );
 
   if (!nodePtr) {
     // Node doesn't exist - tree was properly pruned
@@ -981,10 +715,7 @@ MoqxRelay::PublishState MoqxRelay::findPublishState(const FullTrackName& ftn) {
 
   state.nodeExists = true;
 
-  auto it = nodePtr->publishes.find(ftn.trackName);
-  if (it != nodePtr->publishes.end()) {
-    state.session = it->second;
-  }
+  state.session = nodePtr->findPublishSession(ftn.trackName);
 
   return state;
 }
@@ -1000,7 +731,7 @@ MoqxRelay::subscribe(SubscribeRequest subReq, std::shared_ptr<TrackConsumer> con
   // second-subscriber path if that happened, avoiding a double
   // promise.setValue() crash (folly::PromiseAlreadySatisfied → std::terminate).
   if (subscriptionIt == subscriptions_.end() && upstream_) {
-    if (!findPublishNamespaceSession(subReq.fullTrackName.trackNamespace)) {
+    if (!namespaceTree_.findPublisherSession(subReq.fullTrackName.trackNamespace)) {
       co_await upstream_->waitForConnected(kUpstreamConnectWaitTimeout);
       subscriptionIt = subscriptions_.find(subReq.fullTrackName);
     }
@@ -1016,7 +747,7 @@ MoqxRelay::subscribe(SubscribeRequest subReq, std::shared_ptr<TrackConsumer> con
           {subReq.requestID, SubscribeErrorCode::TRACK_NOT_EXIST, "namespace required"}
       ));
     }
-    auto upstreamSession = findPublishNamespaceSession(subReq.fullTrackName.trackNamespace);
+    auto upstreamSession = namespaceTree_.findPublisherSession(subReq.fullTrackName.trackNamespace);
     if (!upstreamSession) {
       // no such namespace has been published
       co_return folly::makeUnexpected(SubscribeError(
@@ -1194,10 +925,10 @@ MoqxRelay::fetch(Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
     }
   }
 
-  auto upstreamSession = findPublishNamespaceSession(fetch.fullTrackName.trackNamespace);
+  auto upstreamSession = namespaceTree_.findPublisherSession(fetch.fullTrackName.trackNamespace);
   if (!upstreamSession && upstream_) {
     co_await upstream_->waitForConnected(kUpstreamConnectWaitTimeout);
-    upstreamSession = findPublishNamespaceSession(fetch.fullTrackName.trackNamespace);
+    upstreamSession = namespaceTree_.findPublisherSession(fetch.fullTrackName.trackNamespace);
   }
   if (!upstreamSession) {
     // Attempt to find matching upstream subscription (from publish)
@@ -1271,10 +1002,12 @@ folly::coro::Task<Publisher::TrackStatusResult> MoqxRelay::trackStatus(TrackStat
     co_return trackStatusOk;
   } else {
     // No subscription - forward to upstream
-    auto upstreamSession = findPublishNamespaceSession(trackStatus.fullTrackName.trackNamespace);
+    auto upstreamSession =
+        namespaceTree_.findPublisherSession(trackStatus.fullTrackName.trackNamespace);
     if (!upstreamSession && upstream_) {
       co_await upstream_->waitForConnected(kUpstreamConnectWaitTimeout);
-      upstreamSession = findPublishNamespaceSession(trackStatus.fullTrackName.trackNamespace);
+      upstreamSession =
+          namespaceTree_.findPublisherSession(trackStatus.fullTrackName.trackNamespace);
     }
     if (!upstreamSession) {
       XLOG(DBG1) << "No upstream session for track: " << trackStatus.fullTrackName;
@@ -1377,11 +1110,11 @@ void MoqxRelay::newGroupRequested(MoQForwarder* forwarder, uint64_t group) {
 // TRACK_FILTER support
 
 std::shared_ptr<PropertyRanking> MoqxRelay::getOrCreateRanking(
-    std::shared_ptr<NamespaceNode> node,
+    std::shared_ptr<NamespaceTree::NamespaceNode> node,
     uint64_t propertyType,
     const TrackNamespace& ns
 ) {
-  auto& ranking = node->rankings[propertyType];
+  auto& ranking = namespaceTree_.getOrInsertRanking(*node, propertyType);
   if (!ranking) {
     ranking = std::make_shared<PropertyRanking>(
         propertyType,
@@ -1417,74 +1150,66 @@ std::shared_ptr<PropertyRanking> MoqxRelay::getOrCreateRanking(
 
     // Retroactively register tracks already published under this node and all
     // descendants. A subscriber at /conf should see tracks at /conf/room1/track1.
-    // Use BFS to traverse the subtree and register all published tracks.
-    std::deque<std::pair<TrackNamespace, NamespaceNode*>> queue;
-    queue.emplace_back(ns, node.get());
+    namespaceTree_.forEachNodeInSubtree(
+        ns,
+        node,
+        [&](const TrackNamespace& prefix, std::shared_ptr<NamespaceTree::NamespaceNode> current) {
+          // Collect tracks at this level with their last-activity time and current
+          // property value, then sort by lastObjectTime ascending so arrivalSeq
+          // assignment matches what would have happened if the subscription arrived
+          // before the publishers.
+          struct RetroTrack {
+            std::string trackName;
+            std::shared_ptr<moxygen::MoQSession> publishSession;
+            std::optional<uint64_t> initialPropertyValue;
+            std::chrono::steady_clock::time_point lastObjectTime;
+          };
+          std::vector<RetroTrack> retroTracks;
+          retroTracks.reserve(current->publishCount());
 
-    while (!queue.empty()) {
-      auto [prefix, current] = queue.front();
-      queue.pop_front();
-
-      // Collect tracks at this level with their last-activity time and current
-      // property value, then sort by lastObjectTime ascending so arrivalSeq
-      // assignment matches what would have happened if the subscription arrived
-      // before the publishers.
-      struct RetroTrack {
-        std::string trackName;
-        std::shared_ptr<moxygen::MoQSession> publishSession;
-        std::optional<uint64_t> initialPropertyValue;
-        std::chrono::steady_clock::time_point lastObjectTime;
-      };
-      std::vector<RetroTrack> retroTracks;
-      retroTracks.reserve(current->publishes.size());
-
-      for (auto& [trackName, publishSession] : current->publishes) {
-        FullTrackName ftn{prefix, trackName};
-        std::optional<uint64_t> initialPropertyValue;
-        std::chrono::steady_clock::time_point lastObjectTime{};
-        auto subIt = subscriptions_.find(ftn);
-        if (subIt != subscriptions_.end()) {
-          lastObjectTime = subIt->second.lastObjectTime;
-          initialPropertyValue =
-              subIt->second.forwarder->extensions().getIntExtension(propertyType);
-          // Wire value-change, track-ended, and activity observers on the existing TopNFilter.
-          if (subIt->second.topNFilter) {
-            auto rankingPtr = ranking;
-            subIt->second.topNFilter->registerObserver(
-                propertyType,
-                PropertyObserver{
-                    .onValueChanged = [rankingPtr, ftn](uint64_t value
-                                      ) { rankingPtr->updateSortValue(ftn, value); },
-                    .onTrackEnded = [rankingPtr, ftn]() { rankingPtr->removeTrack(ftn); },
-                    .onActivity = [rankingPtr]() { rankingPtr->sweepIdle(); }
-                }
+          current->forEachPublish([&](const std::string& trackName,
+                                      const std::shared_ptr<MoQSession>& publishSession) {
+            FullTrackName ftn{prefix, trackName};
+            std::optional<uint64_t> initialPropertyValue;
+            std::chrono::steady_clock::time_point lastObjectTime{};
+            auto subIt = subscriptions_.find(ftn);
+            if (subIt != subscriptions_.end()) {
+              lastObjectTime = subIt->second.lastObjectTime;
+              initialPropertyValue =
+                  subIt->second.forwarder->extensions().getIntExtension(propertyType);
+              // Wire value-change, track-ended, and activity observers on the existing TopNFilter.
+              if (subIt->second.topNFilter) {
+                auto rankingPtr = ranking;
+                subIt->second.topNFilter->registerObserver(
+                    propertyType,
+                    PropertyObserver{
+                        .onValueChanged = [rankingPtr, ftn](uint64_t value
+                                          ) { rankingPtr->updateSortValue(ftn, value); },
+                        .onTrackEnded = [rankingPtr, ftn]() { rankingPtr->removeTrack(ftn); },
+                        .onActivity = [rankingPtr]() { rankingPtr->sweepIdle(); }
+                    }
+                );
+              }
+            }
+            retroTracks.push_back({trackName, publishSession, initialPropertyValue, lastObjectTime}
             );
+          });
+
+          std::sort(
+              retroTracks.begin(),
+              retroTracks.end(),
+              [](const RetroTrack& a, const RetroTrack& b) {
+                return a.lastObjectTime < b.lastObjectTime;
+              }
+          );
+
+          for (const auto& t : retroTracks) {
+            FullTrackName ftn{prefix, t.trackName};
+            ranking->registerTrack(ftn, t.initialPropertyValue, t.publishSession);
+            XLOG(DBG4) << "[getOrCreateRanking] Retroactively registered track " << ftn;
           }
         }
-        retroTracks.push_back({trackName, publishSession, initialPropertyValue, lastObjectTime});
-      }
-
-      std::sort(
-          retroTracks.begin(),
-          retroTracks.end(),
-          [](const RetroTrack& a, const RetroTrack& b) {
-            return a.lastObjectTime < b.lastObjectTime;
-          }
-      );
-
-      for (const auto& t : retroTracks) {
-        FullTrackName ftn{prefix, t.trackName};
-        ranking->registerTrack(ftn, t.initialPropertyValue, t.publishSession);
-        XLOG(DBG4) << "[getOrCreateRanking] Retroactively registered track " << ftn;
-      }
-
-      // Queue children for traversal
-      for (auto& [childKey, childNode] : current->children) {
-        TrackNamespace childPrefix(prefix);
-        childPrefix.append(childKey);
-        queue.emplace_back(childPrefix, childNode.get());
-      }
-    }
+    );
   }
   return ranking;
 }
@@ -1580,25 +1305,22 @@ void MoqxRelay::dumpState(RelayStateVisitor& visitor) const {
   visitor.onSubscriptionsEnd();
 
   visitor.onNamespaceTreeBegin();
-  std::function<void(std::string_view, const NamespaceNode&)> walkNode;
-  walkNode = [&](std::string_view childKey, const NamespaceNode& node) {
-    std::string publisherAddr;
-    if (node.sourceSession) {
-      publisherAddr = node.sourceSession->getPeerAddress().describe();
-    }
-    visitor.beginNamespaceNode(
-        childKey,
-        node.trackNamespace_,
-        node.sessions.size(),
-        publisherAddr,
-        node.sourcePeerID
-    );
-    for (const auto& [key, child] : node.children) {
-      walkNode(key, *child);
-    }
-    visitor.endNamespaceNode();
-  };
-  walkNode("", publishNamespaceRoot_);
+  namespaceTree_.walkTree(
+      [&](std::string_view childKey, const NamespaceTree::NamespaceNode& node) {
+        std::string publisherAddr;
+        if (node.publisherSession()) {
+          publisherAddr = node.publisherSession()->getPeerAddress().describe();
+        }
+        visitor.beginNamespaceNode(
+            childKey,
+            node.trackNamespace,
+            node.subscriberCount(),
+            publisherAddr,
+            node.publisherPeerID()
+        );
+      },
+      [&]() { visitor.endNamespaceNode(); }
+  );
   visitor.onNamespaceTreeEnd();
 
   if (cache_) {
