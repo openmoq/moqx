@@ -434,429 +434,6 @@ TEST_F(MoQRelayTest, PublishSuccess) {
   removeSession(publisherSession);
 }
 
-// Test: Tree pruning when leaf node is removed
-// Scenario: test/A/B/C and test/A/D exist. Remove C should prune B but keep A
-// and D
-TEST_F(MoQRelayTest, PruneLeafKeepSiblings) {
-  auto publisherABC = createMockSession();
-  auto publisherAD = createMockSession();
-
-  // PublishNamespace test/A/B/C (don't add to state because we
-  // publishNamespaceDone manually)
-  TrackNamespace nsABC{{"test", "A", "B", "C"}};
-  auto handleABC = doPublishNamespace(publisherABC, nsABC, /*addToState=*/false);
-
-  // PublishNamespace test/A/D
-  TrackNamespace nsAD{{"test", "A", "D"}};
-  doPublishNamespace(publisherAD, nsAD);
-
-  // PublishNamespaceDone test/A/B/C - should prune B (and C) but keep A and D
-  withSessionContext(publisherABC, [&]() { handleABC->publishNamespaceDone(); });
-
-  // Verify test/A/D still exists using findPublishNamespaceSessions
-  auto sessions = relay_->findPublishNamespaceSessions(nsAD);
-  EXPECT_EQ(sessions.size(), 1);
-  EXPECT_EQ(sessions[0], publisherAD);
-
-  removeSession(publisherABC);
-  removeSession(publisherAD);
-}
-
-// Test: Tree pruning removes highest empty ancestor
-// Scenario: test/A/B/C only. Remove C should prune A (highest empty after test)
-TEST_F(MoQRelayTest, PruneHighestEmptyAncestor) {
-  auto publisher = createMockSession();
-
-  // PublishNamespace test/A/B/C (don't add to state because we
-  // publishNamespaceDone manually)
-  TrackNamespace nsABC{{"test", "A", "B", "C"}};
-  auto handle = doPublishNamespace(publisher, nsABC, /*addToState=*/false);
-
-  // PublishNamespaceDone test/A/B/C - should prune A (highest empty ancestor)
-  withSessionContext(publisher, [&]() { handle->publishNamespaceDone(); });
-
-  // Try to publishNamespace test/A/B/C again with a new session - should create
-  // fresh tree
-  auto publisher2 = createMockSession();
-  doPublishNamespace(publisher2, nsABC);
-
-  removeSession(publisher);
-  removeSession(publisher2);
-}
-
-// Test: Pruning happens automatically on removeSession
-TEST_F(MoQRelayTest, PruneOnRemoveSession) {
-  auto publisher = createMockSession();
-
-  // PublishNamespace deep tree test/A/B/C/D
-  TrackNamespace nsABCD{{"test", "A", "B", "C", "D"}};
-  doPublishNamespace(publisher, nsABCD);
-
-  // Remove session - should prune entire tree test/A/B/C/D
-  removeSession(publisher);
-
-  // Verify we can create test/A/B/C/D again (tree was pruned)
-  auto publisher2 = createMockSession();
-  doPublishNamespace(publisher2, nsABCD);
-
-  removeSession(publisher2);
-}
-
-// Test: No pruning when node still has content (multiple publishers)
-TEST_F(MoQRelayTest, NoPruneWhenNodeHasContent) {
-  auto publisher1 = createMockSession();
-  auto publisher2 = createMockSession();
-
-  // Both publishNamespace test/A/B
-  TrackNamespace nsAB{{"test", "A", "B"}};
-  auto handle1 = doPublishNamespace(publisher1, nsAB, /*addToState=*/false);
-  doPublishNamespace(publisher2, nsAB);
-
-  // PublishNamespaceDone from publisher1 - should NOT prune because publisher2
-  // still there
-  withSessionContext(publisher1, [&]() { handle1->publishNamespaceDone(); });
-
-  // Verify test/A/B still exists by publishing a track through publisher2
-  doPublish(publisher2, FullTrackName{nsAB, "track1"});
-
-  removeSession(publisher1);
-  removeSession(publisher2);
-}
-
-// Test: EXPOSES BUG - onPublishDone should trigger pruning but doesn't
-// This test FAILS because onPublishDone removes the publish from the map
-// but doesn't call tryPruneChild to clean up empty nodes
-TEST_F(MoQRelayTest, PruneOnPublishDoneBug) {
-  auto publisher = createMockSession();
-
-  // Create deep tree test/A/B/C with only a publish (no publishNamespace)
-  TrackNamespace nsABC{{"test", "A", "B", "C"}};
-
-  // First publishNamespace so we can publish
-  doPublishNamespace(publisher, nsABC);
-
-  // Publish a track
-  auto consumer = doPublish(publisher, FullTrackName{nsABC, "track1"});
-
-  // Verify publish exists in the tree
-  auto state = relay_->findPublishState(FullTrackName{nsABC, "track1"});
-  EXPECT_TRUE(state.nodeExists);
-  EXPECT_EQ(state.session, publisher);
-
-  // PublishNamespaceDone - node should stay because publish is still active
-  withSessionContext(publisher, [&]() {
-    getOrCreateMockState(publisher)->publishNamespaceHandles[0]->publishNamespaceDone();
-    getOrCreateMockState(publisher)->publishNamespaceHandles.clear();
-  });
-
-  // Publish should still be there, node still exists
-  state = relay_->findPublishState(FullTrackName{nsABC, "track1"});
-  EXPECT_TRUE(state.nodeExists);
-  EXPECT_EQ(state.session, publisher);
-
-  // End the publish - onPublishDone gets called
-  withSessionContext(publisher, [&]() {
-    consumer->publishDone(
-        {RequestID(0), PublishDoneStatusCode::SUBSCRIPTION_ENDED, 0, "publisher done"}
-    );
-  });
-
-  // BUG EXPOSED: The publish is removed from the map but the node still exists
-  state = relay_->findPublishState(FullTrackName{nsABC, "track1"});
-  EXPECT_EQ(state.session, nullptr); // No session - PASS
-
-  // THIS FAILS: Node should have been pruned but still exists (memory leak)
-  EXPECT_FALSE(state.nodeExists
-  ) << "BUG: Node test/A/B/C still exists after publish ended and was the "
-       "only content. "
-       "onPublishDone should have called tryPruneChild to clean up empty "
-       "nodes.";
-
-  removeSession(publisher);
-}
-
-// Test: Mixed content types - node with publishNamespace + publish
-TEST_F(MoQRelayTest, MixedContentPublishNamespaceAndPublish) {
-  auto publisher = createMockSession();
-
-  // PublishNamespace test/A/B
-  TrackNamespace nsAB{{"test", "A", "B"}};
-  doPublishNamespace(publisher, nsAB);
-
-  // Publish a track in test/A/B
-  doPublish(publisher, FullTrackName{nsAB, "track1"});
-
-  // PublishNamespaceDone - should NOT prune because publish still exists
-  withSessionContext(publisher, [&]() {
-    getOrCreateMockState(publisher)->publishNamespaceHandles[0]->publishNamespaceDone();
-    getOrCreateMockState(publisher)->publishNamespaceHandles.clear();
-  });
-
-  // Verify node still exists by publishing another track
-  doPublish(publisher, FullTrackName{nsAB, "track2"});
-
-  removeSession(publisher);
-}
-
-// Test: Mixed content types - node with publishNamespace + sessions
-// (subscribers)
-TEST_F(MoQRelayTest, MixedContentPublishNamespaceAndSessions) {
-  auto publisher = createMockSession();
-  auto subscriber = createMockSession();
-
-  // PublishNamespace test/A/B
-  TrackNamespace nsAB{{"test", "A", "B"}};
-  doPublishNamespace(publisher, nsAB);
-
-  // Subscribe to namespace from another session
-  doSubscribeNamespace(subscriber, nsAB);
-
-  // PublishNamespaceDone from publisher - should NOT prune because subscriber
-  // still there
-  std::shared_ptr<Subscriber::PublishNamespaceHandle> handle =
-      getOrCreateMockState(publisher)->publishNamespaceHandles[0];
-  getOrCreateMockState(publisher)->publishNamespaceHandles.clear();
-  withSessionContext(publisher, [&]() { handle->publishNamespaceDone(); });
-
-  // PublishNamespace again from a different publisher - should work (node still
-  // exists)
-  auto publisher2 = createMockSession();
-  doPublishNamespace(publisher2, nsAB);
-
-  removeSession(publisher);
-  removeSession(publisher2);
-  removeSession(subscriber);
-}
-
-// Test: UnsubscribeNamespace triggers pruning
-TEST_F(MoQRelayTest, PruneOnUnsubscribeNamespace) {
-  auto subscriber = createMockSession();
-
-  // Subscribe to test/A/B/C namespace (creates tree without publishNamespace)
-  TrackNamespace nsABC{{"test", "A", "B", "C"}};
-  auto handle = doSubscribeNamespace(subscriber, nsABC, /*addToState=*/false);
-
-  // Unsubscribe - should prune the entire test/A/B/C tree
-  withSessionContext(subscriber, [&]() { handle->unsubscribeNamespace(); });
-
-  // Verify tree was pruned by subscribing again - should create fresh tree
-  doSubscribeNamespace(subscriber, nsABC);
-
-  removeSession(subscriber);
-}
-
-// Test: Middle empty nodes in deep tree
-// Scenario: test/A (has publishNamespace), test/A/B (empty), test/A/B/C (has
-// publish) Remove C should prune B but keep A
-TEST_F(MoQRelayTest, PruneMiddleEmptyNode) {
-  auto publisherA = createMockSession();
-  auto publisherC = createMockSession();
-
-  // PublishNamespace test/A
-  TrackNamespace nsA{{"test", "A"}};
-  doPublishNamespace(publisherA, nsA);
-
-  // PublishNamespace test/A/B/C (this creates B as empty intermediate node)
-  TrackNamespace nsABC{{"test", "A", "B", "C"}};
-  auto handleC = doPublishNamespace(publisherC, nsABC, /*addToState=*/false);
-
-  // PublishNamespaceDone test/A/B/C - should prune B and C but keep A
-  withSessionContext(publisherC, [&]() { handleC->publishNamespaceDone(); });
-
-  // Verify test/A still exists
-  auto sessionsA = relay_->findPublishNamespaceSessions(nsA);
-  EXPECT_EQ(sessionsA.size(), 1);
-  EXPECT_EQ(sessionsA[0], publisherA);
-
-  // Verify test/A/B/C was pruned - should be able to publishNamespace it again
-  auto publisherC2 = createMockSession();
-  doPublishNamespace(publisherC2, nsABC);
-
-  removeSession(publisherA);
-  removeSession(publisherC);
-  removeSession(publisherC2);
-}
-
-// Test: Double publishNamespaceDone doesn't crash or corrupt state
-TEST_F(MoQRelayTest, DoublePublishNamespaceDone) {
-  auto publisher = createMockSession();
-
-  // PublishNamespace test/A/B
-  TrackNamespace nsAB{{"test", "A", "B"}};
-  auto handle = doPublishNamespace(publisher, nsAB, /*addToState=*/false);
-
-  // PublishNamespaceDone once
-  withSessionContext(publisher, [&]() { handle->publishNamespaceDone(); });
-
-  // PublishNamespaceDone again - should not crash (code handles this
-  // gracefully)
-  withSessionContext(publisher, [&]() { handle->publishNamespaceDone(); });
-
-  // Verify we can still use the relay
-  auto publisher2 = createMockSession();
-  doPublishNamespace(publisher2, nsAB);
-
-  removeSession(publisher);
-  removeSession(publisher2);
-}
-
-// Test: Ownership check in publishNamespaceDone prevents non-owner from
-// clearing state When a session calls publishNamespaceDone but is not the owner
-// of the namespace, the publishNamespaceDone should be ignored and the real
-// owner should remain.
-TEST_F(MoQRelayTest, StalePublishNamespaceDoneDoesNotAffectNewOwner) {
-  auto publisher1 = createMockSession();
-  auto publisher2 = createMockSession();
-
-  // Publisher1 publishNamespaces test/A/B
-  TrackNamespace nsAB{{"test", "A", "B"}};
-  auto handle1 = doPublishNamespace(publisher1, nsAB, /*addToState=*/false);
-
-  // Publisher2 publishNamespaces a child namespace test/A/B/C
-  TrackNamespace nsABC{{"test", "A", "B", "C"}};
-  doPublishNamespace(publisher2, nsABC);
-
-  // Publisher2 tries to publishNamespaceDone Publisher1's namespace test/A/B
-  // using Publisher1's handle but with Publisher2's session context - should be
-  // ignored because publisher2 is not the owner of test/A/B
-  withSessionContext(publisher2, [&]() { handle1->publishNamespaceDone(); });
-
-  // Verify publisher1 is STILL the owner by checking
-  // findPublishNamespaceSessions returns publisher1 for the namespace. If the
-  // ownership check didn't work, sourceSession would be null and
-  // findPublishNamespaceSessions would return empty.
-  auto sessions = relay_->findPublishNamespaceSessions(nsAB);
-  EXPECT_EQ(sessions.size(), 1)
-      << "Ownership check failed: findPublishNamespaceSessions returned wrong count";
-  if (!sessions.empty()) {
-    EXPECT_EQ(sessions[0], publisher1) << "Ownership check failed: wrong session returned";
-  }
-
-  // Publisher1 should still be able to properly publishNamespaceDone its own
-  // namespace
-  withSessionContext(publisher1, [&]() { handle1->publishNamespaceDone(); });
-
-  // Clean up - should not crash
-  removeSession(publisher1);
-  removeSession(publisher2);
-}
-
-// Test: Pruning with multiple children at same level
-// Scenario: test/A has children B, C, D. Only B has content.
-// Remove B should prune B but keep A, C, D structure intact
-TEST_F(MoQRelayTest, PruneOneOfMultipleChildren) {
-  auto publisherB = createMockSession();
-  auto subscriberC = createMockSession();
-  auto subscriberD = createMockSession();
-
-  // PublishNamespace test/A/B
-  TrackNamespace nsAB{{"test", "A", "B"}};
-  auto handleB = doPublishNamespace(publisherB, nsAB, /*addToState=*/false);
-
-  // Subscribe to test/A/C (creates C as empty node with session)
-  TrackNamespace nsAC{{"test", "A", "C"}};
-  doSubscribeNamespace(subscriberC, nsAC);
-
-  // Subscribe to test/A/D
-  TrackNamespace nsAD{{"test", "A", "D"}};
-  doSubscribeNamespace(subscriberD, nsAD);
-
-  // PublishNamespaceDone test/A/B - should prune only B
-  withSessionContext(publisherB, [&]() { handleB->publishNamespaceDone(); });
-
-  // Verify test/A still exists (has children C and D)
-  // Try to publishNamespace at test/A
-  auto publisherA = createMockSession();
-  TrackNamespace nsA{{"test", "A"}};
-  doPublishNamespace(publisherA, nsA);
-
-  removeSession(publisherB);
-  removeSession(publisherA);
-  removeSession(subscriberC);
-  removeSession(subscriberD);
-}
-
-// Test: Empty namespace edge case
-TEST_F(MoQRelayTest, EmptyNamespacePublishNamespaceDone) {
-  auto publisher = createMockSession();
-
-  // Try to publishNamespace empty namespace (edge case)
-  TrackNamespace emptyNs{{}};
-
-  // This might fail or succeed depending on implementation
-  // Just verify it doesn't crash
-  PublishNamespace ann;
-  ann.trackNamespace = emptyNs;
-  withSessionContext(publisher, [&]() {
-    auto task = relay_->publishNamespace(std::move(ann), nullptr);
-    auto res = folly::coro::blockingWait(std::move(task), exec_.get());
-    // Don't assert on success/failure, just verify no crash
-    if (res.hasValue()) {
-      getOrCreateMockState(publisher)->publishNamespaceHandles.push_back(res.value());
-    }
-  });
-
-  removeSession(publisher);
-}
-
-// Test: Verify activeChildCount consistency after complex operations
-TEST_F(MoQRelayTest, ActiveChildCountConsistency) {
-  auto pub1 = createMockSession();
-  auto pub2 = createMockSession();
-  auto sub1 = createMockSession();
-
-  // Build tree: test/A/B and test/A/C with different content types
-  TrackNamespace nsAB{{"test", "A", "B"}};
-  doPublishNamespace(pub1, nsAB);
-
-  TrackNamespace nsAC{{"test", "A", "C"}};
-  doSubscribeNamespace(sub1, nsAC);
-
-  // At this point, test/A should have activeChildCount_ == 2 (B and C)
-  // We can't directly access private members, but we can verify behavior
-
-  // Remove pub1 (which should remove B and decrement A's count)
-  removeSession(pub1);
-
-  // A should still exist (C is still active)
-  // Verify by announcing at test/A
-  TrackNamespace nsA{{"test", "A"}};
-  doPublishNamespace(pub2, nsA);
-
-  // Remove sub1 (which should remove C)
-  removeSession(sub1);
-
-  // A should still exist because pub2 published at A
-  auto sessions = relay_->findPublishNamespaceSessions(nsA);
-  EXPECT_EQ(sessions.size(), 1);
-  EXPECT_EQ(sessions[0], pub2);
-
-  removeSession(pub2);
-}
-
-// Test: Publish then publishNamespaceDone shouldn't prune while publish active
-TEST_F(MoQRelayTest, PublishKeepsNodeAliveAfterPublishNamespaceDone) {
-  auto publisher = createMockSession();
-
-  // PublishNamespace test/A/B
-  TrackNamespace nsAB{{"test", "A", "B"}};
-  doPublishNamespace(publisher, nsAB);
-
-  // Publish track
-  doPublish(publisher, FullTrackName{nsAB, "track1"});
-
-  // PublishNamespaceDone (but publish is still active)
-  std::shared_ptr<Subscriber::PublishNamespaceHandle> handle =
-      getOrCreateMockState(publisher)->publishNamespaceHandles[0];
-  getOrCreateMockState(publisher)->publishNamespaceHandles.clear();
-  withSessionContext(publisher, [&]() { handle->publishNamespaceDone(); });
-
-  // Try to publish another track - should work (node still exists)
-  doPublish(publisher, FullTrackName{nsAB, "track2"});
-
-  removeSession(publisher);
-}
-
 // Test: Verify that subgroups are only created at appropriate times
 // Sequence: publish, sub1 joins, beginSubgroup (->1), beginObject (->1),
 // sub2 joins, beginObject (->1,2), sub3 joins, objectPayload (->1,2),
@@ -3681,6 +3258,61 @@ TEST_F(MoQRelayTest, PublishReconnectDuringSubscribeSuccessPathCrash) {
     );
   }
   relay_->doPublishNamespaceDone(kTestNamespace, publisherSession2);
+}
+
+// the track was the only remaining content.  (Was a bug before unpublishTrack
+// gained a NodeMutationGuard; kept as a regression guard.)
+TEST_F(MoQRelayTest, PublishDonePrunesNamespaceTreeNode) {
+  auto publisher = createMockSession();
+
+  doPublishNamespace(publisher, kTestNamespace);
+  auto consumer = doPublish(publisher, kTestTrackName);
+
+  // Verify the publish is visible in the tree
+  auto state = relay_->findPublishState(kTestTrackName);
+  EXPECT_TRUE(state.nodeExists);
+  EXPECT_EQ(state.session, publisher);
+
+  // publishNamespaceDone — node stays alive because the track publish is still active
+  withSessionContext(publisher, [&]() {
+    getOrCreateMockState(publisher)->publishNamespaceHandles[0]->publishNamespaceDone();
+    getOrCreateMockState(publisher)->publishNamespaceHandles.clear();
+  });
+
+  state = relay_->findPublishState(kTestTrackName);
+  EXPECT_TRUE(state.nodeExists);
+  EXPECT_EQ(state.session, publisher);
+
+  // End the track publish — node should now be pruned
+  withSessionContext(publisher, [&]() {
+    consumer->publishDone(
+        {RequestID(0), PublishDoneStatusCode::SUBSCRIPTION_ENDED, 0, "publisher done"}
+    );
+  });
+
+  state = relay_->findPublishState(kTestTrackName);
+  EXPECT_EQ(state.session, nullptr);
+  EXPECT_FALSE(state.nodeExists) << "Node persists after publish ended; pruning did not run";
+
+  removeSession(publisher);
+}
+
+// Empty namespace: publishNamespace with an empty TrackNamespace must not crash.
+TEST_F(MoQRelayTest, EmptyNamespacePublishNamespaceDone) {
+  auto publisher = createMockSession();
+
+  TrackNamespace emptyNs{{}};
+  PublishNamespace ann;
+  ann.trackNamespace = emptyNs;
+  withSessionContext(publisher, [&]() {
+    auto task = relay_->publishNamespace(std::move(ann), nullptr);
+    auto res = folly::coro::blockingWait(std::move(task), exec_.get());
+    if (res.hasValue()) {
+      getOrCreateMockState(publisher)->publishNamespaceHandles.push_back(res.value());
+    }
+  });
+
+  removeSession(publisher);
 }
 
 } // namespace moxygen::test
