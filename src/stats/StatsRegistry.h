@@ -146,14 +146,8 @@ inline constexpr std::array<std::string_view, 8> kRequestErrorCodeLabels = {{
 // int64_t gauges — MoQ application layer
 #define STATS_MOQ_GAUGE_FIELDS(X)                                                                  \
   X(int64_t, pubActiveSubscriptions)                                                               \
-  X(int64_t, pubActivePublishers)                                                                  \
-  X(int64_t, pubActivePublishNamespaces)                                                           \
-  X(int64_t, pubActiveSubscribeNamespaces)                                                         \
   X(int64_t, pubActiveSubscriptionStreams)                                                         \
-  X(int64_t, subActiveSubscriptions)                                                               \
   X(int64_t, subActivePublishers)                                                                  \
-  X(int64_t, subActivePublishNamespaces)                                                           \
-  X(int64_t, subActiveSubscribeNamespaces)                                                         \
   X(int64_t, subActiveSubscriptionStreams)                                                         \
   X(int64_t, moqActiveSessions)
 
