@@ -58,7 +58,8 @@ public:
   }
   void onQuicStreamReset(quic::QuicErrorCode) override {
     ++data_->quicStreamsReset_;
-    --data_->quicActiveStreams_;
+    // do NOT decrement quicActiveStreams_ here.
+    // onQuicStreamClosed() takes care of it.
   }
   void onConnFlowControlBlocked() override { ++data_->quicConnFlowControlBlocked_; }
   void onStreamFlowControlBlocked() override { ++data_->quicStreamFlowControlBlocked_; }
