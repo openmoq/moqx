@@ -346,12 +346,19 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # cxx_flags MUST match what moxygen's linux-* publish entries used —
+          # folly's F14 templates select an intrinsics mode based on compile-
+          # time -march macros. Mismatch between consumer (moqx) and provider
+          # (folly in tarball) causes undefined-reference link errors on
+          # F14LinkCheck<N>::check(). Keep these in sync with moxygen.
           - arch: amd64
             runner: ubuntu-22.04
             platform: linux-amd64
+            cxx_flags: "-march=x86-64-v2"
           - arch: arm64
             runner: ubuntu-22.04-arm
             platform: linux-arm64
+            cxx_flags: "-march=armv8-a"
     name: publish portable (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
     steps:
@@ -400,10 +407,14 @@ jobs:
           # CMAKE_MODULE_PATH points at moqx/cmake/ (Findc-ares.cmake shim
           # for jammy where libc-ares-dev doesn't ship a CONFIG file) plus
           # moxygen's fbcode_builder Find*.cmake helpers.
+          # cxx_flags must match what moxygen's tarball was compiled with
+          # so folly's F14 intrinsics-mode templates resolve correctly.
           cmake -S . -B _build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_PREFIX_PATH="$(cat .scratch/cmake_prefix_path.txt)" \
             -DCMAKE_MODULE_PATH="${GITHUB_WORKSPACE}/cmake;${GITHUB_WORKSPACE}/deps/moxygen/build/fbcode_builder/CMake" \
+            -DCMAKE_C_FLAGS="${{ matrix.cxx_flags }}" \
+            -DCMAKE_CXX_FLAGS="${{ matrix.cxx_flags }}" \
             -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/_install"
 
       - name: Build
@@ -423,24 +434,25 @@ jobs:
           echo "==> Tarball size:"
           ls -lh "$ARTIFACT"
 
-      - name: Smoke test (binary loads + --help)
-        run: |
-          tar xzf "moqx-${{ matrix.platform }}.tar.gz" -C /tmp/
-          echo "==> ldd"
-          ldd /tmp/bin/moqx | tee /tmp/ldd.out
-          if grep -q "not found" /tmp/ldd.out; then
-            echo "ERROR: missing shared libraries"
-            exit 1
-          fi
-          echo "==> --help (first 5 lines, exit code allowed nonzero)"
-          /tmp/bin/moqx --help 2>&1 | head -5 || true
-
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: moqx-${{ matrix.platform }}.tar.gz
           path: moqx-${{ matrix.platform }}.tar.gz
           retention-days: 90
+
+      - name: Smoke test (binary loads + --help)
+        run: |
+          mkdir -p /tmp/moqx-smoke
+          tar xzf "moqx-${{ matrix.platform }}.tar.gz" -C /tmp/moqx-smoke
+          echo "==> ldd"
+          ldd /tmp/moqx-smoke/bin/moqx | tee /tmp/ldd.out
+          if grep -q "not found" /tmp/ldd.out; then
+            echo "ERROR: missing shared libraries"
+            exit 1
+          fi
+          echo "==> --help (first 5 lines, exit code allowed nonzero)"
+          /tmp/moqx-smoke/bin/moqx --help 2>&1 | head -5 || true
 
   # ════════════════════════════════════════════════════════════════════════════
   # Manifest: stitch per-arch images into multiplatform tags
