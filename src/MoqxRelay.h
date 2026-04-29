@@ -103,7 +103,10 @@ public:
       std::chrono::milliseconds idleTimeout = kDefaultIdleTimeout,
       std::chrono::milliseconds activityThreshold = kDefaultActivityThreshold
   )
-      : relayID_(std::move(relayID)), maxDeselected_(maxDeselected), idleTimeout_(idleTimeout),
+      : relayID_(std::move(relayID)),
+        cachePublishesWithoutSubscribers_(cache.cachePublishesWithoutSubscribers),
+        maxDeselected_(maxDeselected),
+        idleTimeout_(idleTimeout),
         activityThreshold_(activityThreshold) {
     if (cache.maxCachedTracks > 0) {
       cache_ =
@@ -433,6 +436,7 @@ private:
       std::shared_ptr<moxygen::TrackConsumer> consumer
   );
   std::unique_ptr<moxygen::MoQCache> cache_;
+  bool cachePublishesWithoutSubscribers_{false};
   uint64_t maxDeselected_{kDefaultMaxDeselected};
 
   static constexpr std::chrono::milliseconds kDefaultIdleTimeout{10'000};

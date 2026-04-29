@@ -87,6 +87,7 @@ services:
       enabled: true
       max_tracks: 200
       max_groups_per_track: 5
+      cache_publishes_without_subscribers: true
 admin:
   port: 9669
   address: "::1"
@@ -115,6 +116,7 @@ admin:
   EXPECT_EQ(svc.cache.value()->enabled.value(), true);
   EXPECT_EQ(svc.cache.value()->max_tracks.value(), 200);
   EXPECT_EQ(svc.cache.value()->max_groups_per_track.value(), 5);
+  EXPECT_EQ(svc.cache.value()->cache_publishes_without_subscribers.value(), true);
 }
 
 TEST(ConfigLoader, ServicesWithAuthorityAndPath) {
