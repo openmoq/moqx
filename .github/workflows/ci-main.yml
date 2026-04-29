@@ -367,7 +367,17 @@ jobs:
           submodules: true
 
       - name: Install system dependencies
-        run: bash deps/moxygen/standalone/install-system-deps.sh
+        run: |
+          # Match docker/Dockerfile's build-stage apt list — picks up
+          # libdwarf-dev / libbrotli-dev that moxygen's install-system-deps
+          # doesn't install but proxygen needs.
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ninja-build cmake git ca-certificates pkg-config \
+            libssl-dev libunwind-dev libgoogle-glog-dev libgflags-dev \
+            libdouble-conversion-dev libevent-dev libsodium-dev libzstd-dev \
+            libboost-all-dev libfmt-dev zlib1g-dev libc-ares-dev libdwarf-dev \
+            libbrotli-dev libgtest-dev libgmock-dev libxxhash-dev
 
       - name: Download moxygen portable tarball
         env:
@@ -387,9 +397,13 @@ jobs:
 
       - name: Configure
         run: |
+          # CMAKE_MODULE_PATH points at moqx/cmake/ (Findc-ares.cmake shim
+          # for jammy where libc-ares-dev doesn't ship a CONFIG file) plus
+          # moxygen's fbcode_builder Find*.cmake helpers.
           cmake -S . -B _build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_PREFIX_PATH="$(cat .scratch/cmake_prefix_path.txt)" \
+            -DCMAKE_MODULE_PATH="${GITHUB_WORKSPACE}/cmake;${GITHUB_WORKSPACE}/deps/moxygen/build/fbcode_builder/CMake" \
             -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/_install"
 
       - name: Build
