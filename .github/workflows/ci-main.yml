@@ -334,6 +334,101 @@ jobs:
           retention-days: 90
 
   # ════════════════════════════════════════════════════════════════════════════
+  # Publish portable: bare-metal Linux tarballs (amd64 + arm64)
+  #   Native cmake build on jammy host against moxygen linux-* tarball.
+  #   Produces moqx-linux-{amd64,arm64}.tar.gz — runs on jammy, noble,
+  #   debian 12+, RHEL 9+, AL2023, Rockchip / Pi 4+ (arm64), etc.
+  # ════════════════════════════════════════════════════════════════════════════
+
+  publish-portable:
+    needs: [check-format, build]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-22.04
+            platform: linux-amd64
+          - arch: arm64
+            runner: ubuntu-22.04-arm
+            platform: linux-arm64
+    name: publish portable (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Generate app token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.OMOQ_APP_ID }}
+          private-key: ${{ secrets.OMOQ_APP_PRIV_KEY }}
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install system dependencies
+        run: bash deps/moxygen/standalone/install-system-deps.sh
+
+      - name: Download moxygen portable tarball
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          MOQX_PLATFORM: ${{ matrix.platform }}
+          # TEMPORARY: pin to the test-build-matrix branch's snapshot until the
+          # moxygen PR adding linux-* entries lands on main. Remove this line
+          # before merging the moqx PR — once moxygen is merged, snapshot-latest
+          # will carry the linux-* tarballs and the default path applies.
+          MOQX_MOXYGEN_RELEASE_TAG: snapshot-test-build-matrix-latest
+        run: |
+          if [ -f .moxygen-release ]; then
+            export MOQX_MOXYGEN_RELEASE_TAG=$(cat .moxygen-release | tr -d '[:space:]')
+            echo "Using pinned moxygen release tag: $MOQX_MOXYGEN_RELEASE_TAG"
+          fi
+          bash scripts/build.sh setup --use-latest --no-fallback
+
+      - name: Configure
+        run: |
+          cmake -S . -B _build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$(cat .scratch/cmake_prefix_path.txt)" \
+            -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/_install"
+
+      - name: Build
+        run: cmake --build _build -j "$(nproc)"
+
+      - name: Install
+        run: cmake --install _build
+
+      - name: Package
+        id: package
+        run: |
+          ARTIFACT="moqx-${{ matrix.platform }}.tar.gz"
+          tar czf "$ARTIFACT" -C _install .
+          echo "artifact=$ARTIFACT" >> "$GITHUB_OUTPUT"
+          echo "==> Tarball contents:"
+          tar tzf "$ARTIFACT" | head -20
+          echo "==> Tarball size:"
+          ls -lh "$ARTIFACT"
+
+      - name: Smoke test (binary loads + --help)
+        run: |
+          tar xzf "moqx-${{ matrix.platform }}.tar.gz" -C /tmp/
+          echo "==> ldd"
+          ldd /tmp/bin/moqx | tee /tmp/ldd.out
+          if grep -q "not found" /tmp/ldd.out; then
+            echo "ERROR: missing shared libraries"
+            exit 1
+          fi
+          echo "==> --help (first 5 lines, exit code allowed nonzero)"
+          /tmp/bin/moqx --help 2>&1 | head -5 || true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: moqx-${{ matrix.platform }}.tar.gz
+          path: moqx-${{ matrix.platform }}.tar.gz
+          retention-days: 90
+
+  # ════════════════════════════════════════════════════════════════════════════
   # Manifest: stitch per-arch images into multiplatform tags
   # ════════════════════════════════════════════════════════════════════════════
 
@@ -401,7 +496,7 @@ jobs:
   # ════════════════════════════════════════════════════════════════════════════
 
   release:
-    needs: [build, manifest]
+    needs: [build, manifest, publish-portable]
     runs-on: ubuntu-22.04
     outputs:
       tag: ${{ steps.publish.outputs.tag }}
@@ -590,7 +685,7 @@ jobs:
   # ════════════════════════════════════════════════════════════════════════════
 
   notify:
-    needs: [check-format, build, conformance, publish, manifest, release, deploy]
+    needs: [check-format, build, conformance, publish, publish-portable, manifest, release, deploy]
     if: always()
     runs-on: ubuntu-22.04
     steps:
