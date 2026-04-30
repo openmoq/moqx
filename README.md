@@ -40,18 +40,34 @@ handler and create `MoQRelaySession` instances for incoming connections.
 
 ## Quick Start
 
+> **Prerequisite: CMake 3.25+ is required.** Ubuntu 22.04 (Jammy) ships
+> CMake 3.22, which is too old — the moqx top-level `CMakeLists.txt` will
+> reject it at configure. `build.sh` aborts early with install instructions
+> if it sees a missing or old cmake (override with `MOQX_SKIP_CMAKE_CHECK=1`
+> if you know what you're doing). Ubuntu 24.04+ and recent macOS Homebrew
+> ship a new-enough version out of the box. Verify with `cmake --version`.
+> Per-platform install instructions:
+> [BUILD.md → Installing CMake 3.25+](BUILD.md#installing-cmake-325).
+
 ```bash
 git clone https://github.com/openmoq/moqx.git && cd moqx
 git submodule update --init
-sudo deps/moxygen/standalone/install-system-deps.sh
+sudo deps/moxygen/standalone/install-system-deps.sh   # system libs (both modes)
 
 ./scripts/build.sh setup     # download prebuilt deps (~1 min)
 ./scripts/build.sh           # build
 ./scripts/build.sh test      # test
 ```
 
-See [BUILD.md](BUILD.md) for build and test instructions, and
-[RUNNING.md](RUNNING.md) for Docker deployment and relay operations.
+System libraries are needed in **both** dependency modes — the moxygen
+tarball ships folly/fizz/mvfst/proxygen statically, but its CMake config
+still does `find_dependency(fmt, Glog, ...)` and folly itself transitively
+needs OpenSSL/Boost. `build.sh setup`'s system-dep check only fires when
+falling back to source, but the build step needs the libs regardless.
+
+See [BUILD.md](BUILD.md) for full build and test instructions (dependency
+modes, sanitizer profiles, Docker), and [RUNNING.md](RUNNING.md) for relay
+operations.
 
 ## License
 
