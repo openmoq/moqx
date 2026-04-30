@@ -423,6 +423,7 @@ jobs:
             -DCMAKE_CXX_FLAGS="${{ matrix.cxx_flags }}" \
             -DCMAKE_INSTALL_RPATH='$ORIGIN/../lib' \
             -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+            -DCMAKE_DISABLE_FIND_PACKAGE_LibUnwind=TRUE \
             -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/_install"
 
       - name: Build
@@ -443,11 +444,14 @@ jobs:
           # libboost_context: jammy=1.74, noble=1.83 — different SONAMEs,
           # must bundle. Others below are SONAME-stable across LTS releases
           # but bundling them belt-and-suspenders for true portability.
+          # libunwind intentionally NOT bundled — portable Release tarballs
+          # disable libunwind via CMAKE_DISABLE_FIND_PACKAGE_LibUnwind to
+          # match moxygen's portable-build treatment (symbolization is a
+          # debug-aid, not needed in Release).
           for lib in \
               libboost_context.so.1.74.0 \
               libgflags.so.2.2 \
               libsodium.so.23 \
-              libunwind.so.8 \
               libdouble-conversion.so.3 \
               libevent-2.1.so.7 \
               libzstd.so.1 \
