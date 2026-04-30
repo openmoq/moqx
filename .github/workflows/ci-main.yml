@@ -409,12 +409,19 @@ jobs:
           # moxygen's fbcode_builder Find*.cmake helpers.
           # cxx_flags must match what moxygen's tarball was compiled with
           # so folly's F14 intrinsics-mode templates resolve correctly.
+          # Boost_USE_STATIC_LIBS + .a suffix preference: link Boost::context
+          # (and other Boost components folly pulls in) statically so the
+          # final binary doesn't carry a libboost_context.so.1.74.0 dep —
+          # noble/RHEL/etc. don't have that exact SONAME. Mirrors moxygen's
+          # standalone BUNDLE_DEPS treatment.
           cmake -S . -B _build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_PREFIX_PATH="$(cat .scratch/cmake_prefix_path.txt)" \
             -DCMAKE_MODULE_PATH="${GITHUB_WORKSPACE}/cmake;${GITHUB_WORKSPACE}/deps/moxygen/build/fbcode_builder/CMake" \
             -DCMAKE_C_FLAGS="${{ matrix.cxx_flags }}" \
             -DCMAKE_CXX_FLAGS="${{ matrix.cxx_flags }}" \
+            -DCMAKE_FIND_LIBRARY_SUFFIXES=".a" \
+            -DBoost_USE_STATIC_LIBS=ON \
             -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/_install"
 
       - name: Build
