@@ -409,19 +409,20 @@ jobs:
           # moxygen's fbcode_builder Find*.cmake helpers.
           # cxx_flags must match what moxygen's tarball was compiled with
           # so folly's F14 intrinsics-mode templates resolve correctly.
-          # Boost_USE_STATIC_LIBS + .a suffix preference: link Boost::context
-          # (and other Boost components folly pulls in) statically so the
-          # final binary doesn't carry a libboost_context.so.1.74.0 dep —
-          # noble/RHEL/etc. don't have that exact SONAME. Mirrors moxygen's
-          # standalone BUNDLE_DEPS treatment.
+          # CMAKE_INSTALL_RPATH = $ORIGIN/../lib makes the binary look for
+          # bundled .so files next to itself (in the tarball's lib/) before
+          # the system search path. Combined with the Package step bundling
+          # libboost_context.so.1.74.0, this produces a self-contained
+          # tarball that runs on noble / RHEL 9 / AL2023 without any
+          # system package install.
           cmake -S . -B _build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_PREFIX_PATH="$(cat .scratch/cmake_prefix_path.txt)" \
             -DCMAKE_MODULE_PATH="${GITHUB_WORKSPACE}/cmake;${GITHUB_WORKSPACE}/deps/moxygen/build/fbcode_builder/CMake" \
             -DCMAKE_C_FLAGS="${{ matrix.cxx_flags }}" \
             -DCMAKE_CXX_FLAGS="${{ matrix.cxx_flags }}" \
-            -DCMAKE_FIND_LIBRARY_SUFFIXES=".a" \
-            -DBoost_USE_STATIC_LIBS=ON \
+            -DCMAKE_INSTALL_RPATH='$ORIGIN/../lib' \
+            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
             -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/_install"
 
       - name: Build
@@ -429,6 +430,41 @@ jobs:
 
       - name: Install
         run: cmake --install _build
+
+      - name: Bundle non-toolchain dynamic deps
+        run: |
+          # Bundle SONAME-versioned .so deps that aren't part of the
+          # toolchain/glibc set, so the tarball runs on any modern Linux
+          # without needing distro-specific packages installed. The binary
+          # has RPATH=$ORIGIN/../lib, so the loader finds these first.
+          # Skips libstdc++/libgcc_s/libc/libm/ld-linux/linux-vdso (toolchain).
+          mkdir -p _install/lib
+          LIBARCH="$(uname -m)-linux-gnu"
+          # libboost_context: jammy=1.74, noble=1.83 — different SONAMEs,
+          # must bundle. Others below are SONAME-stable across LTS releases
+          # but bundling them belt-and-suspenders for true portability.
+          for lib in \
+              libboost_context.so.1.74.0 \
+              libgflags.so.2.2 \
+              libsodium.so.23 \
+              libunwind.so.8 \
+              libdouble-conversion.so.3 \
+              libevent-2.1.so.7 \
+              libzstd.so.1 \
+              libcares.so.2 \
+              libbrotlidec.so.1 \
+              libbrotlienc.so.1 \
+              libbrotlicommon.so.1 \
+              ; do
+            src="/usr/lib/${LIBARCH}/${lib}"
+            if [ -f "$src" ]; then
+              cp -L "$src" _install/lib/
+            fi
+          done
+          echo "==> bundled libs:"
+          ls -lh _install/lib/
+          echo "==> binary RUNPATH/RPATH:"
+          readelf -d _install/bin/moqx | grep -E "RUNPATH|RPATH" || echo "(none)"
 
       - name: Package
         id: package
@@ -448,15 +484,20 @@ jobs:
           path: moqx-${{ matrix.platform }}.tar.gz
           retention-days: 90
 
-      - name: Smoke test (binary loads + --help)
+      - name: Smoke test (binary resolves bundled libs + --help)
         run: |
           mkdir -p /tmp/moqx-smoke
           tar xzf "moqx-${{ matrix.platform }}.tar.gz" -C /tmp/moqx-smoke
-          echo "==> ldd"
+          echo "==> ldd (must resolve bundled libs from $ORIGIN/../lib)"
           ldd /tmp/moqx-smoke/bin/moqx | tee /tmp/ldd.out
           if grep -q "not found" /tmp/ldd.out; then
             echo "ERROR: missing shared libraries"
             exit 1
+          fi
+          # Confirm bundled boost_context resolves to OUR lib/, not /usr/lib
+          if ! grep -q "moqx-smoke/lib/libboost_context.so.1.74.0" /tmp/ldd.out; then
+            echo "WARNING: libboost_context.so.1.74.0 didn't resolve to bundled lib/" >&2
+            grep boost_context /tmp/ldd.out >&2 || true
           fi
           echo "==> --help (first 5 lines, exit code allowed nonzero)"
           /tmp/moqx-smoke/bin/moqx --help 2>&1 | head -5 || true
