@@ -21,6 +21,7 @@ _CPack_Packages/
 
 # Dependency scratch dir
 /.scratch/
+/.docker-deps/
 
 # OS
 .DS_Store
