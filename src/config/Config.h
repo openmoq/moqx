@@ -79,6 +79,20 @@ struct UpstreamConfig {
   std::chrono::milliseconds idleTimeout{5000};
 };
 
+struct AuthConfig {
+  struct HmacKey {
+    std::string id;
+    std::string secret;
+  };
+
+  bool enabled{false};
+  uint64_t tokenType{0};
+  std::vector<HmacKey> hmacKeys;
+  bool requireSetupToken{true};
+  bool allowRequestTokenOverride{true};
+  bool strictClaims{false};
+};
+
 struct ServiceConfig {
   struct MatchEntry {
     struct ExactAuthority {
@@ -104,6 +118,7 @@ struct ServiceConfig {
   std::vector<MatchEntry> match;
   CacheConfig cache;
   std::optional<UpstreamConfig> upstream; // set if this service chains to an upstream relay
+  AuthConfig auth;
 };
 
 struct AdminConfig {

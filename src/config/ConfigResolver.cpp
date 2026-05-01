@@ -312,6 +312,60 @@ UpstreamConfig resolveUpstream(const ParsedUpstreamConfig& upstream) {
   };
 }
 
+void validateAuth(
+    const std::string& serviceName,
+    const ParsedAuthConfig& auth,
+    std::vector<std::string>& errors
+) {
+  if (!auth.enabled.value()) {
+    return;
+  }
+  const auto& keys = auth.hmac_keys.value();
+  if (!keys.has_value() || keys->empty()) {
+    errors.push_back(
+        "Service '" + serviceName + "': auth.hmac_keys is required when auth is enabled"
+    );
+    return;
+  }
+  std::unordered_set<std::string> keyIDs;
+  for (size_t i = 0; i < keys->size(); ++i) {
+    const auto& key = (*keys)[i];
+    const auto prefix = "Service '" + serviceName + "': auth.hmac_keys[" + std::to_string(i) + "]";
+    if (key.id.value().empty()) {
+      errors.push_back(prefix + ".id must be non-empty");
+    } else if (!keyIDs.insert(key.id.value()).second) {
+      errors.push_back(prefix + ".id duplicates another auth key");
+    }
+    if (key.secret.value().empty()) {
+      errors.push_back(prefix + ".secret must be non-empty");
+    }
+  }
+  if (auth.token_type.value().value_or(0) >= (uint64_t{1} << 62)) {
+    errors.push_back("Service '" + serviceName + "': auth.token_type must fit in a QUIC varint");
+  }
+}
+
+AuthConfig resolveAuth(const std::optional<ParsedAuthConfig>& parsed) {
+  AuthConfig out;
+  if (!parsed) {
+    return out;
+  }
+  out.enabled = parsed->enabled.value();
+  out.tokenType = parsed->token_type.value().value_or(0);
+  out.requireSetupToken = parsed->require_setup_token.value().value_or(true);
+  out.allowRequestTokenOverride = parsed->allow_request_token_override.value().value_or(true);
+  out.strictClaims = parsed->strict_claims.value().value_or(false);
+  if (parsed->hmac_keys.value()) {
+    for (const auto& key : *parsed->hmac_keys.value()) {
+      out.hmacKeys.push_back(AuthConfig::HmacKey{
+          .id = key.id.value(),
+          .secret = key.secret.value(),
+      });
+    }
+  }
+  return out;
+}
+
 // --- Service validation ---
 
 void validateService(
@@ -391,6 +445,9 @@ void validateService(
   // Validate per-service upstream if present.
   if (svc.upstream.value().has_value()) {
     validateUpstream(*svc.upstream.value(), errors);
+  }
+  if (svc.auth.value().has_value()) {
+    validateAuth(name, *svc.auth.value(), errors);
   }
 }
 
@@ -606,6 +663,7 @@ ServiceConfig resolveService(const ParsedServiceConfig& svc, const ParsedCacheCo
       .match = std::move(entries),
       .cache = resolveCacheConfig(cache),
       .upstream = std::move(upstream),
+      .auth = resolveAuth(svc.auth.value()),
   };
 }
 
