@@ -362,9 +362,10 @@ folly::Expected<Grants, AuthError> AuthTokenVerifier::verify(const AuthToken& to
     return folly::makeUnexpected(AuthError::Malformed);
   }
 
-  const auto* key = std::find_if(config_.hmacKeys.begin(), config_.hmacKeys.end(), [&](auto& k) {
-    return k.id == keyID;
-  });
+  const auto key =
+      std::find_if(config_.hmacKeys.begin(), config_.hmacKeys.end(), [&](const auto& k) {
+        return std::string_view(k.id) == keyID;
+      });
   if (key == config_.hmacKeys.end()) {
     return folly::makeUnexpected(AuthError::BadSignature);
   }

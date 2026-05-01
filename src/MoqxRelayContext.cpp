@@ -151,7 +151,7 @@ void MoqxRelayContext::onSessionEnd(std::shared_ptr<MoQSession> session) {
 }
 
 folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayContext::validateAuthority(
-    const ClientSetup& /*clientSetup*/,
+    const ClientSetup& clientSetup,
     uint64_t /*negotiatedVersion*/,
     std::shared_ptr<MoQSession> session
 ) {
