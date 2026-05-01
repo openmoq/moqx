@@ -74,6 +74,7 @@ FetchContent_MakeAvailable(reflectcpp)
 
 add_library(moqx_core STATIC
   src/NamespaceTree.cpp
+  src/SubscriptionRegistry.cpp
   src/MoqxRelay.cpp
   src/MoqxRelayContext.cpp
   src/MoqxRelayServer.cpp

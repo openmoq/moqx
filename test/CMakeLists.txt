@@ -174,6 +174,17 @@ target_link_libraries(moqx_upstream_provider_test PRIVATE
 )
 gtest_discover_tests(moqx_upstream_provider_test)
 
+# SubscriptionRegistry unit tests
+add_executable(moqx_subscription_registry_test
+  SubscriptionRegistryTest.cpp
+)
+target_link_libraries(moqx_subscription_registry_test PRIVATE
+  moqx_core
+  moqx_test_main
+  GTest::gmock
+)
+gtest_discover_tests(moqx_subscription_registry_test)
+
 # TopNFilter unit tests
 add_executable(moqx_topn_filter_test
   TopNFilterTest.cpp

@@ -9,11 +9,10 @@
 #pragma once
 
 #include "NamespaceTree.h"
+#include "SubscriptionRegistry.h"
 #include "UpstreamProvider.h"
 #include "config/Config.h"
 #include "relay/PropertyRanking.h"
-#include "relay/TopNFilter.h"
-#include <folly/coro/SharedPromise.h>
 #include <moxygen/MoQSession.h>
 #include <moxygen/relay/MoQCache.h>
 #include <moxygen/relay/MoQForwarder.h>
@@ -246,30 +245,6 @@ private:
 
   NamespaceTree namespaceTree_{*this};
 
-  struct RelaySubscription {
-    RelaySubscription(
-        std::shared_ptr<moxygen::MoQForwarder> f,
-        std::shared_ptr<moxygen::MoQSession> u
-    )
-        : forwarder(std::move(f)), upstream(std::move(u)),
-          lastObjectTime(std::chrono::steady_clock::now()) {}
-
-    std::shared_ptr<moxygen::MoQForwarder> forwarder;
-    std::shared_ptr<moxygen::MoQSession> upstream;
-    moxygen::RequestID requestID{0};
-    std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle;
-    folly::coro::SharedPromise<folly::Unit> promise;
-    bool isPublish{false};
-
-    // TopNFilter installed in the publisher's filter chain for property observation
-    std::shared_ptr<TopNFilter> topNFilter;
-
-    // Written by TopNFilter on every object arrival; read by PropertyRanking::sweepIdle
-    // via the getLastActivity_ callback. Initialized to now() so newly registered tracks
-    // are not immediately eligible for idle eviction.
-    std::chrono::steady_clock::time_point lastObjectTime;
-  };
-
   void onEmpty(moxygen::MoQForwarder* forwarder) override;
   void forwardChanged(moxygen::MoQForwarder* forwarder) override;
   void newGroupRequested(moxygen::MoQForwarder* forwarder, uint64_t group) override;
@@ -297,16 +272,9 @@ private:
 
   // TRACK_FILTER support
 
-  // Result of buildFilterChain - contains both the consumer to pass upstream
-  // and the TopNFilter pointer to store for later observer wiring.
-  struct FilterChainResult {
-    std::shared_ptr<moxygen::TrackConsumer> consumer;
-    std::shared_ptr<TopNFilter> topNFilter;
-  };
-
   // Build the filter chain for a track subscription: TopNFilter → TerminationFilter → (cache) →
   // forwarder. Used by both publish() and subscribe() paths to ensure consistent filter chain.
-  FilterChainResult buildFilterChain(
+  SubscriptionRegistry::FilterChainResult buildFilterChain(
       const moxygen::FullTrackName& ftn,
       std::shared_ptr<moxygen::MoQForwarder> forwarder
   );
@@ -347,8 +315,7 @@ private:
   // connected to us. Kept alive so the subscription is not immediately
   // cancelled. Keyed by raw session pointer (valid for session lifetime).
   folly::F14FastMap<moxygen::MoQSession*, PeerInfo> peerSubNsHandles_;
-  folly::F14NodeMap<moxygen::FullTrackName, RelaySubscription, moxygen::FullTrackName::hash>
-      subscriptions_;
+  SubscriptionRegistry registry_;
 
   std::shared_ptr<moxygen::TrackConsumer> getSubscribeWriteback(
       const moxygen::FullTrackName& ftn,
