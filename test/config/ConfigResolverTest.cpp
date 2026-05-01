@@ -61,6 +61,17 @@ ParsedServiceConfig makeDefaultService() {
   return svc;
 }
 
+ParsedAuthConfig makeDefaultAuth() {
+  ParsedAuthConfig auth;
+  auth.enabled = true;
+  auth.audience = "moqx-test";
+  ParsedAuthIssuerKey key;
+  key.id = "issuer-1";
+  key.public_key_pem = "-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----\n";
+  auth.issuer_keys.value().push_back(std::move(key));
+  return auth;
+}
+
 // Build a minimal valid insecure config with one any-authority service and admin.
 ParsedConfig makeMinimalInsecureConfig(std::string name = "test") {
   ParsedConfig cfg;
@@ -658,6 +669,44 @@ TEST(ResolveConfig, ResolvePrefixPath) {
   ASSERT_EQ(entries.size(), 1);
   ASSERT_TRUE(std::holds_alternative<ServiceConfig::MatchEntry::PrefixPath>(entries[0].path));
   EXPECT_EQ(std::get<ServiceConfig::MatchEntry::PrefixPath>(entries[0].path).value, "/live/");
+}
+
+TEST(ResolveConfig, ResolveAuth) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().clear();
+
+  ParsedServiceConfig svc;
+  svc.match.value().push_back(makeAnyAuthorityMatch());
+  svc.cache = makeDefaultCache();
+  svc.auth = makeDefaultAuth();
+  cfg.services.value().emplace("authed", std::move(svc));
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  const auto& auth = result.value().config.services.at("authed").auth;
+  ASSERT_TRUE(auth.has_value());
+  EXPECT_TRUE(auth->enabled);
+  EXPECT_EQ(auth->audience, "moqx-test");
+  ASSERT_EQ(auth->issuerKeys.size(), 1u);
+  EXPECT_EQ(auth->issuerKeys[0].id, "issuer-1");
+}
+
+TEST(ResolveConfig, AuthEnabledRequiresIssuerKeys) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().clear();
+
+  ParsedServiceConfig svc;
+  svc.match.value().push_back(makeAnyAuthorityMatch());
+  svc.cache = makeDefaultCache();
+  ParsedAuthConfig auth;
+  auth.enabled = true;
+  auth.audience = "moqx-test";
+  svc.auth = auth;
+  cfg.services.value().emplace("authed", std::move(svc));
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("auth.issuer_keys must not be empty"));
 }
 
 TEST(ResolveConfig, VersionsEmpty) {

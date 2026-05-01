@@ -36,6 +36,7 @@ services:                  # required; at least one
     match: [ ... ]
     cache: { ... }
     upstream: { ... }
+    auth: { ... }
 
 admin:                     # optional; omit to disable the admin server
   { ... }
@@ -102,7 +103,7 @@ Set under `listener_defaults.quic` (global defaults) or `listeners[n].quic`
 
 Services define how incoming connections are routed and can match MOQT
 sessions arriving on any listener. Each service has one or more match rules,
-optional cache settings, and an optional upstream.
+optional cache settings, an optional upstream, and optional Privacy Pass auth.
 
 ```yaml
 services:
@@ -136,6 +137,26 @@ authority and path rules both match.
 any path
 
 Duplicate (authority, path) combinations across all services are rejected.
+
+### Privacy Pass Auth
+
+Set `services.<name>.auth` to enable Privacy Pass authorization for a service.
+The relay verifies redemption tokens against the listed issuer public keys and
+checks that the token audience matches the configured value.
+
+```yaml
+auth:
+  enabled: true
+  audience: "moqx-relay"
+  issuer_keys:
+    - id: "issuer-1"
+      public_key_pem: |
+        -----BEGIN PUBLIC KEY-----
+        ...
+        -----END PUBLIC KEY-----
+```
+
+When `auth.enabled` is false or omitted, the service behaves as it does today.
 
 **picoquic limitation:** Only exact path matches work reliably with
 picoquic. Prefix path rules will generate a warning and connections may fail to

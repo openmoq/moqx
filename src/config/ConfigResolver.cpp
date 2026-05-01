@@ -312,6 +312,22 @@ UpstreamConfig resolveUpstream(const ParsedUpstreamConfig& upstream) {
   };
 }
 
+AuthConfig resolveAuth(const ParsedAuthConfig& auth) {
+  std::vector<AuthIssuerKey> issuerKeys;
+  issuerKeys.reserve(auth.issuer_keys.value().size());
+  for (const auto& key : auth.issuer_keys.value()) {
+    issuerKeys.push_back(AuthIssuerKey{
+        .id = key.id.value(),
+        .publicKeyPem = key.public_key_pem.value(),
+    });
+  }
+  return AuthConfig{
+      .enabled = auth.enabled.value(),
+      .audience = auth.audience.value(),
+      .issuerKeys = std::move(issuerKeys),
+  };
+}
+
 // --- Service validation ---
 
 void validateService(
@@ -387,6 +403,34 @@ void validateService(
   }
 
   mergedCaches.emplace(name, std::move(merged));
+
+  if (svc.auth.value().has_value()) {
+    if (svc.auth.value()->enabled.value()) {
+      if (svc.auth.value()->audience.value().empty()) {
+        errors.push_back("Service '" + name + "': auth.audience must be non-empty when enabled");
+      }
+      if (svc.auth.value()->issuer_keys.value().empty()) {
+        errors.push_back("Service '" + name + "': auth.issuer_keys must not be empty when enabled");
+      }
+      std::unordered_set<std::string> ids;
+      for (const auto& key : svc.auth.value()->issuer_keys.value()) {
+        if (key.id.value().empty()) {
+          errors.push_back("Service '" + name + "': auth.issuer_keys[].id must be non-empty");
+          continue;
+        }
+        if (!ids.insert(key.id.value()).second) {
+          errors.push_back(
+              "Service '" + name + "': duplicate auth.issuer_keys[].id '" + key.id.value() + "'"
+          );
+        }
+        if (key.public_key_pem.value().empty()) {
+          errors.push_back(
+              "Service '" + name + "': auth.issuer_keys[].public_key_pem must be non-empty"
+          );
+        }
+      }
+    }
+  }
 
   // Validate per-service upstream if present.
   if (svc.upstream.value().has_value()) {
@@ -602,9 +646,14 @@ ServiceConfig resolveService(const ParsedServiceConfig& svc, const ParsedCacheCo
   if (svc.upstream.value().has_value()) {
     upstream = resolveUpstream(*svc.upstream.value());
   }
+  std::optional<AuthConfig> auth;
+  if (svc.auth.value().has_value()) {
+    auth = resolveAuth(*svc.auth.value());
+  }
   return ServiceConfig{
       .match = std::move(entries),
       .cache = resolveCacheConfig(cache),
+      .auth = std::move(auth),
       .upstream = std::move(upstream),
   };
 }

@@ -16,13 +16,45 @@ using namespace moxygen;
 
 namespace openmoq::moqx {
 
+namespace {
+
+SessionCloseErrorCode toSessionCloseError(auth::AuthError error) {
+  switch (error) {
+  case auth::AuthError::Malformed:
+  case auth::AuthError::BadSignature:
+  case auth::AuthError::WrongTokenType:
+    return SessionCloseErrorCode::MALFORMED_AUTH_TOKEN;
+  case auth::AuthError::Expired:
+    return SessionCloseErrorCode::EXPIRED_AUTH_TOKEN;
+  case auth::AuthError::Missing:
+  case auth::AuthError::Forbidden:
+    return SessionCloseErrorCode::UNAUTHORIZED;
+  }
+  return SessionCloseErrorCode::INTERNAL_ERROR;
+}
+
+} // namespace
+
 MoqxRelayContext::MoqxRelayContext(
     const folly::F14FastMap<std::string, config::ServiceConfig>& services,
     const std::string& relayID
 )
     : serviceMatcher_(services), relayID_(relayID) {
   for (const auto& [name, svc] : services) {
-    services_.emplace(name, ServiceEntry{svc, std::make_shared<MoqxRelay>(svc.cache, relayID)});
+    services_.emplace(
+        name,
+        ServiceEntry{
+            svc,
+            std::make_shared<MoqxRelay>(
+                svc.cache,
+                relayID,
+                MoqxRelay::kDefaultMaxDeselected,
+                std::chrono::milliseconds{},
+                std::chrono::milliseconds{},
+                svc.auth
+            )
+        }
+    );
   }
 }
 
@@ -138,14 +170,20 @@ void MoqxRelayContext::onNewSession(std::shared_ptr<MoQSession> clientSession) {
   }
 }
 
-void MoqxRelayContext::onSessionEnd() {
+void MoqxRelayContext::onSessionEnd(std::shared_ptr<MoQSession> session) {
   if (statsCollector_) {
     statsCollector_->onSessionEnd();
+  }
+  if (!session) {
+    return;
+  }
+  for (auto& [name, entry] : services_) {
+    entry.relay->clearSessionAuth(session.get());
   }
 }
 
 folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayContext::validateAuthority(
-    const ClientSetup& /*clientSetup*/,
+    const ClientSetup& clientSetup,
     uint64_t /*negotiatedVersion*/,
     std::shared_ptr<MoQSession> session
 ) {
@@ -163,6 +201,12 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayContext::validateAu
   CHECK(it != services_.end()) << "Service '" << *matchedName << "' matched but no entry found";
   session->setPublishHandler(it->second.relay);
   session->setSubscribeHandler(it->second.relay);
+  auto authRes = it->second.relay->authenticateSession(clientSetup.params, session);
+  if (!authRes.hasValue()) {
+    XLOG(ERR) << "Privacy Pass setup auth failed for service '" << *matchedName
+              << "' err=" << auth::toString(authRes.error());
+    return folly::makeUnexpected(toSessionCloseError(authRes.error()));
+  }
   return folly::unit;
 }
 
