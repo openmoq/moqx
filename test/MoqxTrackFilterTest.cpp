@@ -11,22 +11,9 @@
  * Verification is done by counting session->publish() calls per FullTrackName.
  */
 
-#include "MoqxRelay.h"
-#include <folly/coro/BlockingWait.h>
-#include <folly/io/async/EventBase.h>
-#include <folly/io/async/Request.h>
-#include <folly/portability/GMock.h>
-#include <folly/portability/GTest.h>
-#include <moxygen/MoQTrackProperties.h>
-#include <moxygen/events/MoQFollyExecutorImpl.h>
-#include <moxygen/relay/MoQForwarder.h>
-#include <moxygen/test/MockMoQSession.h>
-#include <moxygen/test/Mocks.h>
+#include "MoqxRelayTestFixture.h"
 
-using namespace testing;
-using namespace moxygen;
 using namespace moxygen::test;
-using namespace openmoq::moqx;
 
 namespace {
 
@@ -39,42 +26,13 @@ const TrackNamespace kPrefix{{"conf"}};
 constexpr uint64_t kPropType = 0x100; // audio level property type
 
 // ---------------------------------------------------------------------------
-// Test executor (same pattern as MoqxRelayTest)
-// TODO: Move TestMoQExecutor to a shared test helper (e.g., test/TestUtils.h)
-// ---------------------------------------------------------------------------
-
-class TestMoQExecutor : public MoQFollyExecutorImpl, public folly::DrivableExecutor {
-public:
-  explicit TestMoQExecutor() : MoQFollyExecutorImpl(&evb_) {}
-
-  void add(folly::Func func) override { MoQFollyExecutorImpl::add(std::move(func)); }
-
-  void drive() override {
-    if (auto* evb = getBackingEventBase()) {
-      evb->loopOnce();
-    }
-  }
-
-  // TODO: Audit driveFor() call sites to use minimum iterations needed rather
-  // than arbitrary values like 10/20. Consider adding a driveUntilIdle() helper.
-  void driveFor(int n) {
-    for (int i = 0; i < n; i++) {
-      drive();
-    }
-  }
-
-private:
-  folly::EventBase evb_;
-};
-
-// ---------------------------------------------------------------------------
 // Test fixture
 // ---------------------------------------------------------------------------
 
-class MoqxTrackFilterTest : public ::testing::Test {
+class MoqxTrackFilterTest : public moxygen::test::MoQRelayTest {
 protected:
   void SetUp() override {
-    exec_ = std::make_shared<TestMoQExecutor>();
+    MoQRelayTest::SetUp();
     relay_ = std::make_shared<MoqxRelay>(
         config::CacheConfig{0, 0}, // no cache
         /*relayID=*/"",
@@ -166,15 +124,6 @@ protected:
 
   // ---- Relay helpers -------------------------------------------------------
 
-  template <typename F> auto withSession(std::shared_ptr<MoQSession> session, F&& f) {
-    folly::RequestContextScopeGuard guard;
-    folly::RequestContext::get()->setContextData(
-        sessionToken_,
-        std::make_unique<MoQSession::MoQSessionRequestData>(std::move(session))
-    );
-    return f();
-  }
-
   // Publish a track; returns the TrackConsumer so caller can send objects.
   std::shared_ptr<TrackConsumer> doPublish(
       std::shared_ptr<MoQSession> session,
@@ -188,9 +137,9 @@ protected:
     if (initialLevel > 0) {
       pub.extensions.insertMutableExtension(Extension{kPropType, initialLevel});
     }
-    auto handle = makeHandle();
+    auto handle = makePublishHandle();
     std::shared_ptr<TrackConsumer> consumer;
-    withSession(session, [&] {
+    withSessionContext(session, [&] {
       auto result = relay_->publish(std::move(pub), handle);
       ASSERT_TRUE(result.hasValue());
       consumer = result->consumer;
@@ -213,7 +162,7 @@ protected:
     subNs.params.insertParam(p);
 
     std::shared_ptr<Publisher::SubscribeNamespaceHandle> handle;
-    withSession(session, [&] {
+    withSessionContext(session, [&] {
       auto result = folly::coro::blockingWait(
           relay_->subscribeNamespace(std::move(subNs), nullptr),
           exec_.get()
@@ -233,19 +182,6 @@ protected:
     consumer->objectStream(hdr, nullptr, false); // errors OK (no subscribers yet)
   }
 
-  std::shared_ptr<Publisher::SubscriptionHandle> makeHandle() {
-    SubscribeOk ok;
-    ok.requestID = RequestID(0);
-    ok.trackAlias = TrackAlias(0);
-    ok.expires = std::chrono::milliseconds(0);
-    ok.groupOrder = GroupOrder::Default;
-    auto handle = std::make_shared<NiceMock<MockSubscriptionHandle>>(std::move(ok));
-    // Configure the mock to return success for requestUpdate calls
-    ON_CALL(*handle, requestUpdateResult())
-        .WillByDefault(Return(folly::makeExpected<RequestError>(RequestOk{})));
-    return handle;
-  }
-
   FullTrackName ftn(const std::string& name) const { return FullTrackName{kNs, name}; }
 
   // Subscribe without TRACK_FILTER (plain namespace subscription)
@@ -255,7 +191,7 @@ protected:
     subNs.requestID = RequestID(nextId_++);
     subNs.options = SubscribeNamespaceOptions::PUBLISH;
     subNs.forward = true;
-    withSession(session, [&] {
+    withSessionContext(session, [&] {
       auto result = folly::coro::blockingWait(
           relay_->subscribeNamespace(std::move(subNs), nullptr),
           exec_.get()
@@ -273,11 +209,8 @@ protected:
 
   // ---- Members -------------------------------------------------------------
 
-  std::shared_ptr<TestMoQExecutor> exec_;
-  std::shared_ptr<MoqxRelay> relay_;
   uint64_t nextId_{1};
   uint64_t nextObjId_{0};
-  folly::RequestToken sessionToken_{"moq_session"};
 
   // per-session record of which FTNs were pushed via publish()
   std::map<MoQSession*, std::vector<FullTrackName>> publishedTracks_;
@@ -497,7 +430,7 @@ TEST_F(MoqxTrackFilterTest, ForwardFalse_TracksStillSelected) {
   subNs.params.insertParam(p);
 
   auto viewer = makeSession();
-  withSession(viewer, [&] {
+  withSessionContext(viewer, [&] {
     auto result = folly::coro::blockingWait(
         relay_->subscribeNamespace(std::move(subNs), nullptr),
         exec_.get()
