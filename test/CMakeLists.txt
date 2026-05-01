@@ -20,15 +20,22 @@ target_link_libraries(moqx_test_main PUBLIC
   GTest::gtest
 )
 
+add_library(moqx_test_fixture STATIC
+  MoqxRelayTestFixture.cpp
+)
+target_link_libraries(moqx_test_fixture PUBLIC
+  moqx_core
+  moqx_test_utils
+  GTest::gmock
+  moxygen::moxygen_events_moq_folly_executor_impl
+)
+
 add_executable(moqx_relay_test
   MoqxRelayTest.cpp
 )
 target_link_libraries(moqx_relay_test PRIVATE
-  moqx_core
-  moqx_test_utils
+  moqx_test_fixture
   moqx_test_main
-  GTest::gmock
-  moxygen::moxygen_events_moq_folly_executor_impl
 )
 gtest_discover_tests(moqx_relay_test)
 
@@ -212,10 +219,8 @@ add_executable(moqx_track_filter_test
   MoqxTrackFilterTest.cpp
 )
 target_link_libraries(moqx_track_filter_test PRIVATE
-  moqx_core
+  moqx_test_fixture
   moqx_test_main
-  GTest::gmock
-  moxygen::moxygen_events_moq_folly_executor_impl
 )
 gtest_discover_tests(moqx_track_filter_test)
 
