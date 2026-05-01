@@ -99,7 +99,7 @@ public:
   // --- Delegation targets for MoqxRelayServer virtual overrides ---
 
   void onNewSession(std::shared_ptr<moxygen::MoQSession> session);
-  void onSessionEnd();
+  void onSessionEnd(std::shared_ptr<moxygen::MoQSession> session);
 
   folly::Expected<folly::Unit, moxygen::SessionCloseErrorCode> validateAuthority(
       const moxygen::ClientSetup& clientSetup,

@@ -118,6 +118,15 @@ target_link_libraries(moqx_service_matcher_test PRIVATE
 )
 gtest_discover_tests(moqx_service_matcher_test)
 
+add_executable(moqx_auth_test
+  AuthTest.cpp
+)
+target_link_libraries(moqx_auth_test PRIVATE
+  moqx_core
+  GTest::gtest_main
+)
+gtest_discover_tests(moqx_auth_test)
+
 add_executable(moqx_relay_context_test
   MoqxRelayContextTest.cpp
 )

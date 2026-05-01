@@ -35,6 +35,7 @@ if(POLICY CMP0167)
 endif()
 
 find_package(moxygen REQUIRED)
+find_package(OpenSSL REQUIRED)
 
 # --- yaml-cpp (FetchContent) ---
 
@@ -73,6 +74,7 @@ FetchContent_MakeAvailable(reflectcpp)
 # --- Core library ---
 
 add_library(moqx_core STATIC
+  src/auth/Auth.cpp
   src/NamespaceTree.cpp
   src/MoqxRelay.cpp
   src/MoqxRelayContext.cpp
@@ -109,6 +111,7 @@ target_link_libraries(moqx_core PUBLIC
   # FizzAcceptorHandshakeHelper but omits this dep from its cmake config.
   Folly::folly_io_async_fdsock_async_fd_socket
   moxygen::moxygen_moqclient
+  OpenSSL::Crypto
 )
 
 target_compile_options(moqx_core PRIVATE -Wall -Wextra -Wpedantic)

@@ -55,6 +55,14 @@ services:
     #   tls:
     #     insecure: false         # true = skip cert verification (dev only)
     #     # ca_cert: /path/to/ca.pem  # Custom CA cert (mutually exclusive with insecure: true)
+    # auth:                       # Optional: enable CAT-style authorization for this service
+    #   enabled: true
+    #   token_type: 0             # MOQT AUTHORIZATION_TOKEN token type
+    #   hmac_keys:
+    #     - id: "key-1"
+    #       secret: "replace-with-secret"
+    #   require_setup_token: true
+    #   allow_request_token_override: true
 
   testing:
     match:

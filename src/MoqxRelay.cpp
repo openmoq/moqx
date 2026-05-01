@@ -95,6 +95,66 @@ void MoqxRelay::onUpstreamDisconnect() {
   upstreamSubNsHandle_.reset();
 }
 
+folly::Expected<folly::Unit, auth::AuthError> MoqxRelay::authenticateSession(
+    const ClientSetup& clientSetup,
+    std::shared_ptr<MoQSession> session
+) {
+  if (!authVerifier_.enabled()) {
+    return folly::unit;
+  }
+  auto token = auth::findAuthToken(clientSetup.params, authVerifier_.tokenType());
+  if (!token) {
+    if (!authVerifier_.requireSetupToken()) {
+      return folly::unit;
+    }
+    return folly::makeUnexpected(auth::AuthError::Missing);
+  }
+  auto grants = authVerifier_.verify(*token);
+  if (grants.hasError()) {
+    return folly::makeUnexpected(grants.error());
+  }
+  if (!auth::allows(grants.value(), auth::Action::ClientSetup, TrackNamespace{})) {
+    return folly::makeUnexpected(auth::AuthError::Forbidden);
+  }
+  sessionAuth_.insert_or_assign(session.get(), std::move(grants.value()));
+  return folly::unit;
+}
+
+folly::Expected<folly::Unit, auth::AuthError> MoqxRelay::authorize(
+    auth::Action action,
+    const Parameters& params,
+    const TrackNamespace& ns,
+    std::optional<std::string_view> trackName
+) {
+  if (!authVerifier_.enabled()) {
+    return folly::unit;
+  }
+
+  auto session = MoQSession::getRequestSession();
+  auto token = authVerifier_.allowRequestTokenOverride()
+                   ? auth::findAuthToken(params, authVerifier_.tokenType())
+                   : std::nullopt;
+  if (token) {
+    auto grants = authVerifier_.verify(*token);
+    if (grants.hasError()) {
+      return folly::makeUnexpected(grants.error());
+    }
+    if (auth::allows(grants.value(), action, ns, trackName)) {
+      return folly::unit;
+    }
+    return folly::makeUnexpected(auth::AuthError::Forbidden);
+  }
+
+  auto it = sessionAuth_.find(session.get());
+  if (it == sessionAuth_.end()) {
+    return folly::makeUnexpected(auth::AuthError::Missing);
+  }
+  if (!auth::allows(it->second, action, ns, trackName)) {
+    return folly::makeUnexpected(auth::AuthError::Forbidden);
+  }
+  return folly::unit;
+}
+
 // Sends SUBSCRIBE_UPDATE to update forwarding state. Called from:
 // - subscribeNamespace: forwarder was empty, new subscriber added
 // (forward=true)
@@ -141,7 +201,6 @@ std::shared_ptr<Subscriber::PublishNamespaceHandle> MoqxRelay::doPublishNamespac
     std::string peerID
 ) {
   XLOG(DBG1) << __func__ << " ns=" << pubNs.trackNamespace;
-  // check auth
   if (!pubNs.trackNamespace.startsWith(allowedNamespacePrefix_)) {
     return nullptr;
   }
@@ -193,6 +252,14 @@ folly::coro::Task<Subscriber::PublishNamespaceResult> MoqxRelay::publishNamespac
   // TODO: store auth for forwarding on future SubscribeNamespace?
   auto session = MoQSession::getRequestSession();
   auto requestID = pubNs.requestID;
+  auto authRes = authorize(auth::Action::PublishNamespace, pubNs.params, pubNs.trackNamespace);
+  if (authRes.hasError()) {
+    co_return folly::makeUnexpected(PublishNamespaceError{
+        requestID,
+        PublishNamespaceErrorCode::UNAUTHORIZED,
+        auth::toString(authRes.error())
+    });
+  }
   auto result = doPublishNamespace(std::move(pubNs), session, std::move(callback));
   if (!result) {
     co_return folly::makeUnexpected(
@@ -285,6 +352,17 @@ Subscriber::PublishResult
 MoqxRelay::publish(PublishRequest pub, std::shared_ptr<Publisher::SubscriptionHandle> handle) {
   XLOG(DBG1) << __func__ << " ftn=" << pub.fullTrackName;
   XCHECK(handle) << "Publish handle cannot be null";
+  auto authRes = authorize(
+      auth::Action::Publish,
+      pub.params,
+      pub.fullTrackName.trackNamespace,
+      pub.fullTrackName.trackName
+  );
+  if (authRes.hasError()) {
+    return folly::makeUnexpected(
+        PublishError{pub.requestID, PublishErrorCode::UNAUTHORIZED, auth::toString(authRes.error())}
+    );
+  }
   if (!pub.fullTrackName.trackNamespace.startsWith(allowedNamespacePrefix_)) {
     return folly::makeUnexpected(
         PublishError{pub.requestID, PublishErrorCode::UNINTERESTED, "bad namespace"}
@@ -579,6 +657,21 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
     // Fall through: register the peer as a normal subNs subscriber so it
     // receives namespace announcements as publishers connect.
   }
+  if (incomingPeerID.empty()) {
+    auto authRes = authorize(
+        auth::Action::SubscribeNamespace,
+        subNs.params,
+        subNs.trackNamespacePrefix,
+        std::nullopt
+    );
+    if (authRes.hasError()) {
+      co_return folly::makeUnexpected(SubscribeNamespaceError{
+          subNs.requestID,
+          SubscribeNamespaceErrorCode::UNAUTHORIZED,
+          auth::toString(authRes.error())
+      });
+    }
+  }
   auto maybeNegotiatedVersion = session->getNegotiatedVersion();
   CHECK(maybeNegotiatedVersion.has_value());
 
@@ -723,6 +816,19 @@ MoqxRelay::PublishState MoqxRelay::findPublishState(const FullTrackName& ftn) {
 folly::coro::Task<Publisher::SubscribeResult>
 MoqxRelay::subscribe(SubscribeRequest subReq, std::shared_ptr<TrackConsumer> consumer) {
   auto session = MoQSession::getRequestSession();
+  auto authRes = authorize(
+      auth::Action::Subscribe,
+      subReq.params,
+      subReq.fullTrackName.trackNamespace,
+      subReq.fullTrackName.trackName
+  );
+  if (authRes.hasError()) {
+    co_return folly::makeUnexpected(SubscribeError{
+        subReq.requestID,
+        SubscribeErrorCode::UNAUTHORIZED,
+        auth::toString(authRes.error())
+    });
+  }
   auto subscriptionIt = subscriptions_.find(subReq.fullTrackName);
   // TOCTOU fix: if we might be the first subscriber, wait for the upstream
   // connection before branching.  waitForConnected() is a suspension point —
@@ -895,8 +1001,17 @@ folly::coro::Task<Publisher::FetchResult>
 MoqxRelay::fetch(Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
   auto session = MoQSession::getRequestSession();
 
-  // check auth
-  // get trackNamespace
+  auto authRes = authorize(
+      auth::Action::Fetch,
+      fetch.params,
+      fetch.fullTrackName.trackNamespace,
+      fetch.fullTrackName.trackName
+  );
+  if (authRes.hasError()) {
+    co_return folly::makeUnexpected(
+        FetchError({fetch.requestID, FetchErrorCode::UNAUTHORIZED, auth::toString(authRes.error())})
+    );
+  }
   if (fetch.fullTrackName.trackNamespace.empty()) {
     co_return folly::makeUnexpected(
         FetchError({fetch.requestID, FetchErrorCode::TRACK_NOT_EXIST, "namespace required"})
@@ -963,6 +1078,20 @@ MoqxRelay::fetch(Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
 
 folly::coro::Task<Publisher::TrackStatusResult> MoqxRelay::trackStatus(TrackStatus trackStatus) {
   XLOG(DBG1) << __func__ << " ftn=" << trackStatus.fullTrackName;
+
+  auto authRes = authorize(
+      auth::Action::TrackStatus,
+      trackStatus.params,
+      trackStatus.fullTrackName.trackNamespace,
+      trackStatus.fullTrackName.trackName
+  );
+  if (authRes.hasError()) {
+    co_return folly::makeUnexpected(TrackStatusError{
+        trackStatus.requestID,
+        TrackStatusErrorCode::UNAUTHORIZED,
+        auth::toString(authRes.error())
+    });
+  }
 
   if (trackStatus.fullTrackName.trackNamespace.empty()) {
     co_return folly::makeUnexpected(TrackStatusError(
