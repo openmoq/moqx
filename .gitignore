@@ -28,6 +28,8 @@ _CPack_Packages/
 # IDE / tools
 .vscode/
 .claude/
+.agents/
+AGENTS.md
 
 # Docker secrets (never commit)
 docker/.env
