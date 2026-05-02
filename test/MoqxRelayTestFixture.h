@@ -12,14 +12,12 @@
 #pragma once
 
 #include "MoqxRelay.h"
-#include "TestUtils.h"
 #include <folly/coro/BlockingWait.h>
 #include <folly/io/async/EventBase.h>
 #include <folly/portability/GMock.h>
 #include <folly/portability/GTest.h>
 #include <moxygen/MoQTrackProperties.h>
 #include <moxygen/events/MoQFollyExecutorImpl.h>
-#include <moxygen/relay/MoQForwarder.h>
 #include <moxygen/test/MockMoQSession.h>
 #include <moxygen/test/Mocks.h>
 
@@ -30,8 +28,6 @@ using namespace openmoq::moqx;
 // NOLINTEND(google-build-using-namespace)
 
 namespace moxygen::test {
-
-using openmoq::moqx::test::makeBuf;
 
 inline const TrackNamespace kTestNamespace{{"test", "namespace"}};
 inline const TrackNamespace kAllowedPrefix{{"test"}};

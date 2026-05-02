@@ -31,7 +31,14 @@ target_link_libraries(moqx_test_fixture PUBLIC
 )
 
 add_executable(moqx_relay_test
-  MoqxRelayTest.cpp
+  MoqxRelayPublishTests.cpp
+  MoqxRelaySubscribeTests.cpp
+  MoqxRelaySubNsTests.cpp
+  MoqxRelayDataPlaneTests.cpp
+  MoqxRelayFetchTests.cpp
+  MoqxRelayTrackStatusTests.cpp
+  MoqxRelayNGRTests.cpp
+  MoqxRelayPeerTests.cpp
 )
 target_link_libraries(moqx_relay_test PRIVATE
   moqx_test_fixture
