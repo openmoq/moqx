@@ -214,11 +214,12 @@ check_system_deps() {
 }
 
 # ── System-dep precheck wrapper ──────────────────────────────────────────────
-# System libraries are needed in BOTH dependency modes — the from-release
-# tarball ships folly/fizz/wangle/mvfst/proxygen statically, but moxygen's
-# CMake config does find_dependency(fmt, Glog, ...) and folly transitively
-# wants OpenSSL/Boost. So fail fast at setup AND build time, before users
-# hit an opaque cmake error several seconds in. Override with
+# System libraries are needed when actually compiling — that's the from-source
+# setup path (which builds moxygen on the host) and every cmd_build invocation
+# (moxygen's CMake config does find_dependency(fmt, Glog, ...) and folly
+# transitively wants OpenSSL/Boost). The from-release setup path only fetches
+# a tarball and does NOT need them, so callers must gate this themselves and
+# not invoke it unconditionally during setup. Override with
 # MOQX_SKIP_DEPS_CHECK=1 if you have these on a non-default path.
 require_system_deps() {
   [[ "${MOQX_SKIP_DEPS_CHECK:-}" == "1" ]] && return 0
@@ -250,7 +251,6 @@ checkout_submodule() {
 
 cmd_setup() {
   require_cmake_version
-  require_system_deps
   local mode="from-release"
   local profile="default"
   local no_fallback=false
@@ -304,8 +304,8 @@ cmd_setup() {
   fi
 
   # System dep check is deferred until we know a source build is actually
-  # needed (see below). from-release mode downloads a prebuilt tarball and
-  # doesn't need system deps unless it falls back to source.
+  # needed (see the from-source branch below). from-release mode downloads a
+  # prebuilt tarball and doesn't need host system libs at setup time.
 
   if $clean; then
     echo "Cleaning .scratch..."
@@ -337,6 +337,7 @@ cmd_setup() {
   fi
 
   if [[ "$mode" == "from-source" ]]; then
+    require_system_deps
     echo ""
     echo "==> Setting up dependencies (from source)..."
     bash "$SCRIPT_DIR/setup-deps-standalone.sh" --profile "$profile"
