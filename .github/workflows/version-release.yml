@@ -149,7 +149,7 @@ jobs:
           # F14LinkCheck<N>::check() undefined-reference link errors.
           # Frame-pointer flags preserved at -O3 so signal-handler stack
           # unwinding (folly::symbolizer) and post-mortem debugging via
-          # the moxygen .symbols sidecar work against optimized binaries.
+          # the moxygen .dbg sidecar work against optimized binaries.
           - arch: amd64
             runner: ubuntu-22.04
             platform: linux-amd64
