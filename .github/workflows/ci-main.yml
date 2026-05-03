@@ -403,16 +403,18 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           MOQX_PLATFORM: ${{ matrix.platform }}
         run: |
-          # Release branches must pin a moxygen tag via .moxygen-release.
-          # The portable matrix only fires on release/**, so absence of the
-          # file means the release-cutting flow is broken — fail loud.
-          if [ ! -f .moxygen-release ]; then
-            echo "Error: .moxygen-release missing on release branch — cannot determine moxygen release to consume." >&2
-            exit 1
+          # .moxygen-release is an opt-in pin to a specific moxygen release
+          # tag. When absent, fall back to snapshot-latest. Same behavior on
+          # main and release/** — release branches optionally pin, never
+          # required.
+          if [ -f .moxygen-release ]; then
+            export MOQX_MOXYGEN_RELEASE_TAG=$(cat .moxygen-release | tr -d '[:space:]')
+            echo "Using pinned moxygen release tag: $MOQX_MOXYGEN_RELEASE_TAG"
+            bash scripts/build.sh setup --no-fallback
+          else
+            echo "No .moxygen-release pin — using snapshot-latest"
+            bash scripts/build.sh setup --use-latest --no-fallback
           fi
-          export MOQX_MOXYGEN_RELEASE_TAG=$(cat .moxygen-release | tr -d '[:space:]')
-          echo "Using pinned moxygen release tag: $MOQX_MOXYGEN_RELEASE_TAG"
-          bash scripts/build.sh setup --no-fallback
 
       - name: Configure
         run: |
