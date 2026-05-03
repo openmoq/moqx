@@ -7,6 +7,21 @@ name: version release
 # also builds portable linux-{amd64,arm64} tarballs against an explicit
 # moxygen release tag.
 #
+# Job graph (parallel):
+#
+#   validate
+#     │
+#     ▼
+#   create-release (--draft)
+#     │
+#     ├──► portable-build (matrix amd64/arm64, conditional)
+#     │       └─► uploads directly to release
+#     ├──► promote-snapshot
+#     │       └─► xargs -P parallel uploads to release
+#     │
+#     ▼
+#   finalize (--draft=false)
+#
 # Inputs:
 #   version          required. semver, e.g. 1.2.3
 #   moxygen_release  optional. moxygen tag to consume (e.g. v1.2.3).
@@ -47,8 +62,8 @@ permissions:
 
 jobs:
   # ════════════════════════════════════════════════════════════════════════════
-  # Validate: semver gate, tag-doesn't-exist, resolve snapshot tag from
-  # dispatched ref, probe moxygen reference for portable assets.
+  # Validate: semver gate, tag-doesn't-exist, resolve snapshot tag/sha,
+  # probe moxygen reference for portable assets.
   # ════════════════════════════════════════════════════════════════════════════
 
   validate:
@@ -57,6 +72,7 @@ jobs:
       version: ${{ steps.v.outputs.version }}
       tag: ${{ steps.v.outputs.tag }}
       snapshot_tag: ${{ steps.v.outputs.snapshot_tag }}
+      snapshot_sha: ${{ steps.v.outputs.snapshot_sha }}
       moxygen_ref: ${{ steps.v.outputs.moxygen_ref }}
       has_portable: ${{ steps.v.outputs.has_portable }}
     steps:
@@ -70,7 +86,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION="${{ inputs.version }}"
-          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$ ]]; then
             echo "Error: version must be semver (e.g. 1.2.3 or 1.2.3-rc1)" >&2
             exit 1
           fi
@@ -89,6 +105,14 @@ jobs:
             SNAPSHOT_TAG="snapshot-${LABEL}-latest"
           fi
           echo "==> Dispatched from $BRANCH → consuming $SNAPSHOT_TAG"
+
+          # Resolve snapshot SHA.
+          SNAPSHOT_SHA=$(gh api repos/{owner}/{repo}/releases \
+            --jq ".[] | select(.tag_name == \"$SNAPSHOT_TAG\") | .target_commitish")
+          if [[ -z "$SNAPSHOT_SHA" ]]; then
+            echo "Error: $SNAPSHOT_TAG release not found. Push to the dispatched branch first to produce a snapshot." >&2
+            exit 1
+          fi
 
           # Moxygen reference: explicit input or snapshot-latest fallback.
           MOX_REF="${{ inputs.moxygen_release }}"
@@ -119,25 +143,68 @@ jobs:
             echo "==> moxygen $MOX_REF has portable assets — portable matrix will run"
           else
             echo "==> moxygen $MOX_REF lacks portable assets — portable matrix will be skipped"
-            echo "    Available assets:"
-            echo "$ASSETS" | sed 's/^/      /'
           fi
 
           {
             echo "version=$VERSION"
             echo "tag=$TAG"
             echo "snapshot_tag=$SNAPSHOT_TAG"
+            echo "snapshot_sha=$SNAPSHOT_SHA"
             echo "moxygen_ref=$MOX_REF"
             echo "has_portable=$HAS_PORTABLE"
           } >> "$GITHUB_OUTPUT"
 
   # ════════════════════════════════════════════════════════════════════════════
+  # Create-release: open a draft release that the upload jobs append to.
+  # ════════════════════════════════════════════════════════════════════════════
+
+  create-release:
+    needs: [validate]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.validate.outputs.version }}
+          TAG: ${{ needs.validate.outputs.tag }}
+          MOX_REF: ${{ needs.validate.outputs.moxygen_ref }}
+          HAS_PORTABLE: ${{ needs.validate.outputs.has_portable }}
+          SNAPSHOT_TAG: ${{ needs.validate.outputs.snapshot_tag }}
+          SNAPSHOT_SHA: ${{ needs.validate.outputs.snapshot_sha }}
+        run: |
+          if [ "$HAS_PORTABLE" = "true" ]; then
+            PORTABLE_NOTE="**Portable Linux tarballs** built against moxygen \`${MOX_REF}\`:
+          - \`moqx-linux-amd64.tar.gz\` — \`-march=x86-64-v2\` (≈ all cloud x86 since 2015)
+          - \`moqx-linux-arm64.tar.gz\` — \`-march=armv8-a\` (Graviton, Ampere, Apple M, RPi 3+, Rockchip)"
+          else
+            PORTABLE_NOTE="_Portable Linux tarballs not produced for this release: moxygen \`${MOX_REF}\` does not include the required portable assets._"
+          fi
+
+          gh release create "$TAG" \
+            --target "$SNAPSHOT_SHA" \
+            --title "moqx $VERSION" \
+            --draft \
+            --notes "$(cat <<EOF
+          **Version:** \`${VERSION}\`
+          **Commit:** \`${SNAPSHOT_SHA}\`
+          **moxygen reference:** \`${MOX_REF}\`
+
+          Standard tarballs promoted from [\`${SNAPSHOT_TAG}\`](${{ github.server_url }}/${{ github.repository }}/releases/tag/${SNAPSHOT_TAG}).
+
+          ${PORTABLE_NOTE}
+          EOF
+          )"
+
+  # ════════════════════════════════════════════════════════════════════════════
   # Portable build: -O3, ISA-baselined, statically linked moqx-linux-{amd64,arm64}
   # tarballs. Runs only when the moxygen reference carries portable assets.
+  # Each runner uploads its own tarball directly to the draft release.
   # ════════════════════════════════════════════════════════════════════════════
 
   portable-build:
-    needs: [validate]
+    needs: [validate, create-release]
     if: needs.validate.outputs.has_portable == 'true'
     strategy:
       fail-fast: false
@@ -256,15 +323,7 @@ jobs:
         run: |
           ARTIFACT="moqx-${{ matrix.platform }}.tar.gz"
           tar czf "$ARTIFACT" -C _install .
-          echo "==> Tarball: $ARTIFACT"
           ls -lh "$ARTIFACT"
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: moqx-${{ matrix.platform }}.tar.gz
-          path: moqx-${{ matrix.platform }}.tar.gz
-          retention-days: 90
 
       - name: Smoke test
         run: |
@@ -276,102 +335,66 @@ jobs:
             echo "ERROR: missing shared libraries"
             exit 1
           fi
-          echo "==> --help"
-          /tmp/moqx-smoke/bin/moqx --help 2>&1 | head -5 || true
+
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.validate.outputs.tag }}
+        run: |
+          gh release upload "$TAG" "moqx-${{ matrix.platform }}.tar.gz" --clobber
 
   # ════════════════════════════════════════════════════════════════════════════
-  # Release: combine snapshot tarballs (always) + portable tarballs (when
-  # built) and create the tagged, non-prerelease GitHub release.
+  # Promote-snapshot: copy the existing platform tarballs from the rolling
+  # snapshot to the new release. Runs in parallel with portable-build.
   # ════════════════════════════════════════════════════════════════════════════
 
-  release:
-    needs: [validate, portable-build]
-    # Run when validate succeeded and portable-build either succeeded or
-    # was skipped (moxygen ref had no portable assets). Don't run if
-    # portable-build was attempted and failed.
-    if: |
-      always() &&
-      needs.validate.result == 'success' &&
-      needs.portable-build.result != 'failure' &&
-      needs.portable-build.result != 'cancelled'
+  promote-snapshot:
+    needs: [validate, create-release]
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Download portable artifacts
-        if: needs.validate.outputs.has_portable == 'true'
-        uses: actions/download-artifact@v4
-        with:
-          path: portable-assets/
-          merge-multiple: true
-
-      - name: Download snapshot artifacts
+      - name: Download snapshot tarballs
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SNAPSHOT_TAG: ${{ needs.validate.outputs.snapshot_tag }}
         run: |
           mkdir -p snapshot-assets
-          echo "Downloading platform tarballs from $SNAPSHOT_TAG..."
           gh release download "$SNAPSHOT_TAG" --dir snapshot-assets --pattern '*.tar.gz'
-          # Drop any portable tarballs from snapshot if present — we
-          # built them fresh in this workflow when applicable.
+          # Drop any portable tarballs from snapshot — those are built fresh
+          # in portable-build and uploaded directly there.
           rm -f snapshot-assets/moqx-linux-amd64*.tar.gz \
                 snapshot-assets/moqx-linux-arm64*.tar.gz
-          echo "Snapshot platform tarballs:"
+          echo "Snapshot tarballs to promote:"
           ls -lh snapshot-assets/
 
-      - name: Get snapshot commit
+      - name: Upload to release (parallel)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SNAPSHOT_TAG: ${{ needs.validate.outputs.snapshot_tag }}
-        run: |
-          SNAPSHOT_SHA=$(gh api repos/{owner}/{repo}/releases \
-            --jq ".[] | select(.tag_name == \"$SNAPSHOT_TAG\") | .target_commitish")
-          if [[ -z "$SNAPSHOT_SHA" ]]; then
-            echo "Error: $SNAPSHOT_TAG release not found. Push to the dispatched branch first to produce a snapshot." >&2
-            exit 1
-          fi
-          echo "Snapshot built from commit: $SNAPSHOT_SHA"
-          echo "SNAPSHOT_SHA=$SNAPSHOT_SHA" >> "$GITHUB_ENV"
-
-      - name: Stage release assets
-        run: |
-          mkdir -p release-assets
-          cp snapshot-assets/*.tar.gz release-assets/
-          if [ -d portable-assets ]; then
-            cp portable-assets/*.tar.gz release-assets/ 2>/dev/null || true
-          fi
-          echo "==> Release assets:"
-          ls -lh release-assets/
-
-      - name: Create versioned release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ needs.validate.outputs.version }}
           TAG: ${{ needs.validate.outputs.tag }}
-          MOX_REF: ${{ needs.validate.outputs.moxygen_ref }}
-          HAS_PORTABLE: ${{ needs.validate.outputs.has_portable }}
-          SNAPSHOT_TAG: ${{ needs.validate.outputs.snapshot_tag }}
         run: |
-          if [ "$HAS_PORTABLE" = "true" ]; then
-            PORTABLE_NOTE="**Portable Linux tarballs** built against moxygen \`${MOX_REF}\`:
-          - \`moqx-linux-amd64.tar.gz\` — \`-march=x86-64-v2\` (≈ all cloud x86 since 2015)
-          - \`moqx-linux-arm64.tar.gz\` — \`-march=armv8-a\` (Graviton, Ampere, Apple M, RPi 3+, Rockchip)"
-          else
-            PORTABLE_NOTE="_Portable Linux tarballs not produced for this release: moxygen \`${MOX_REF}\` does not include the required portable assets._"
-          fi
+          # Fan out asset upload to N concurrent gh release upload calls.
+          find snapshot-assets -name '*.tar.gz' -print0 | \
+            xargs -0 -n1 -P 6 -I{} gh release upload "$TAG" {} --clobber
 
-          gh release create "$TAG" release-assets/*.tar.gz \
-            --target "$SNAPSHOT_SHA" \
-            --title "moqx $VERSION" \
-            --notes "$(cat <<EOF
-          **Version:** \`${VERSION}\`
-          **Commit:** \`${SNAPSHOT_SHA}\`
-          **moxygen reference:** \`${MOX_REF}\`
+  # ════════════════════════════════════════════════════════════════════════════
+  # Finalize: flip draft → published once all uploads succeeded.
+  # Tolerates portable-build being skipped (has_portable=false).
+  # ════════════════════════════════════════════════════════════════════════════
 
-          Standard tarballs promoted from [\`${SNAPSHOT_TAG}\`](${{ github.server_url }}/${{ github.repository }}/releases/tag/${SNAPSHOT_TAG}).
-
-          ${PORTABLE_NOTE}
-          EOF
-          )"
+  finalize:
+    needs: [validate, create-release, portable-build, promote-snapshot]
+    if: |
+      always() &&
+      needs.validate.result == 'success' &&
+      needs.create-release.result == 'success' &&
+      needs.promote-snapshot.result == 'success' &&
+      needs.portable-build.result != 'failure' &&
+      needs.portable-build.result != 'cancelled'
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.validate.outputs.tag }}
+        run: |
+          gh release edit "$TAG" --draft=false
           echo "Released: $TAG"
