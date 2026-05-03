@@ -1,0 +1,110 @@
+name: version release
+
+# Manual workflow to cut a moqx release branch pinned to a specific moxygen
+# release. Creates `release/v<version>` from main with a `.moxygen-release`
+# file containing `<moxygen_release>`, which:
+#   1. Pins the moxygen tarballs that ci-main.yml downloads via setup-deps.
+#   2. Triggers ci-main.yml on the new branch — which builds the portable
+#      linux-{amd64,arm64} tarballs (gated to release/** only) and creates
+#      a snapshot-v<version>-latest pre-release with all artifacts.
+#
+# After the release branch CI is green, promote snapshot-v<version>-latest
+# to a tagged v<version> non-prerelease via the (forthcoming) promote-release
+# workflow or `gh release edit --prerelease=false`.
+#
+# Usage: Actions → version release → Run workflow →
+#   version: 1.2.3
+#   moxygen_release: v1.2.3   (must already exist on openmoq/moxygen)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'moqx version (e.g. 1.2.3)'
+        required: true
+        type: string
+      moxygen_release:
+        description: 'moxygen release tag (e.g. v1.2.3)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  cut-release-branch:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Generate app token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.OMOQ_APP_ID }}
+          private-key: ${{ secrets.OMOQ_APP_PRIV_KEY }}
+
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Validate version
+        run: |
+          VERSION="${{ inputs.version }}"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
+            echo "Error: version must be semver (e.g. 1.2.3 or 1.2.3-rc1)" >&2
+            exit 1
+          fi
+          TAG="v${VERSION}"
+          BRANCH="release/${TAG}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Error: tag $TAG already exists" >&2
+            exit 1
+          fi
+          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+            echo "Error: branch $BRANCH already exists" >&2
+            exit 1
+          fi
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "BRANCH=$BRANCH" >> "$GITHUB_ENV"
+
+      - name: Validate moxygen release exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          MOX="${{ inputs.moxygen_release }}"
+          if ! gh release view "$MOX" --repo openmoq/moxygen >/dev/null 2>&1; then
+            echo "Error: moxygen release $MOX does not exist on openmoq/moxygen" >&2
+            exit 1
+          fi
+          # Sanity: the moxygen release should carry the portable linux-*
+          # tarballs that publish-portable expects.
+          ASSETS=$(gh release view "$MOX" --repo openmoq/moxygen --json assets --jq '.assets[].name')
+          for required in moxygen-linux-amd64.tar.gz moxygen-linux-arm64.tar.gz; do
+            if ! echo "$ASSETS" | grep -qx "$required"; then
+              echo "Error: moxygen release $MOX missing required asset: $required" >&2
+              echo "Found assets:" >&2
+              echo "$ASSETS" | sed 's/^/  /' >&2
+              exit 1
+            fi
+          done
+          echo "MOX_TAG=$MOX" >> "$GITHUB_ENV"
+
+      - name: Cut release branch with .moxygen-release
+        run: |
+          git config user.email "omoq-sync-bot[bot]@users.noreply.github.com"
+          git config user.name "omoq-sync-bot[bot]"
+          git checkout -b "$BRANCH"
+          echo "$MOX_TAG" > .moxygen-release
+          git add .moxygen-release
+          git commit -m "release: pin moxygen $MOX_TAG for $TAG"
+          git push origin "$BRANCH"
+          echo
+          echo "==> Release branch created: $BRANCH"
+          echo "    pinned moxygen release: $MOX_TAG"
+          echo "    pushed; ci-main.yml will trigger and build the portable matrix."
+          echo
+          echo "Once CI is green, the snapshot-${TAG}-latest pre-release will carry"
+          echo "all platform tarballs (including portable linux-amd64/arm64). Promote"
+          echo "it to a non-prerelease ${TAG} tag with:"
+          echo "  gh release edit snapshot-${TAG}-latest --tag ${TAG} --prerelease=false --title \"moqx ${{ inputs.version }}\""

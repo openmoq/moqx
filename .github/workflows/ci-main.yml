@@ -344,24 +344,33 @@ jobs:
   # ════════════════════════════════════════════════════════════════════════════
 
   publish-portable:
+    # Release-branch only: portable tarballs are an explicit release
+    # deliverable, not produced on every main push. Cut a release branch
+    # via .github/workflows/version-release.yml to trigger this.
+    if: startsWith(github.ref, 'refs/heads/release/')
     needs: [check-format, build]
     strategy:
       fail-fast: false
       matrix:
         include:
-          # cxx_flags MUST match what moxygen's linux-* publish entries used —
+          # cxx_flags MUST match what moxygen's linux-* portable build used —
           # folly's F14 templates select an intrinsics mode based on compile-
           # time -march macros. Mismatch between consumer (moqx) and provider
           # (folly in tarball) causes undefined-reference link errors on
-          # F14LinkCheck<N>::check(). Keep these in sync with moxygen.
+          # F14LinkCheck<N>::check(). Keep these in sync with moxygen's
+          # omoq-version-release.yml portable-build matrix.
+          #
+          # Frame-pointer flags preserved at -O3 so signal-handler stack
+          # unwinding (folly::symbolizer) and post-mortem debugging via the
+          # moxygen .symbols sidecar work against highly-optimized binaries.
           - arch: amd64
             runner: ubuntu-22.04
             platform: linux-amd64
-            cxx_flags: "-march=x86-64-v2"
+            cxx_flags: "-march=x86-64-v2 -fno-omit-frame-pointer -fasynchronous-unwind-tables"
           - arch: arm64
             runner: ubuntu-22.04-arm
             platform: linux-arm64
-            cxx_flags: "-march=armv8-a"
+            cxx_flags: "-march=armv8-a -fno-omit-frame-pointer -fasynchronous-unwind-tables"
     name: publish portable (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
     steps:
@@ -393,17 +402,17 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           MOQX_PLATFORM: ${{ matrix.platform }}
-          # TEMPORARY: pin to the test-build-matrix branch's snapshot until the
-          # moxygen PR adding linux-* entries lands on main. Remove this line
-          # before merging the moqx PR — once moxygen is merged, snapshot-latest
-          # will carry the linux-* tarballs and the default path applies.
-          MOQX_MOXYGEN_RELEASE_TAG: snapshot-test-build-matrix-latest
         run: |
-          if [ -f .moxygen-release ]; then
-            export MOQX_MOXYGEN_RELEASE_TAG=$(cat .moxygen-release | tr -d '[:space:]')
-            echo "Using pinned moxygen release tag: $MOQX_MOXYGEN_RELEASE_TAG"
+          # Release branches must pin a moxygen tag via .moxygen-release.
+          # The portable matrix only fires on release/**, so absence of the
+          # file means the release-cutting flow is broken — fail loud.
+          if [ ! -f .moxygen-release ]; then
+            echo "Error: .moxygen-release missing on release branch — cannot determine moxygen release to consume." >&2
+            exit 1
           fi
-          bash scripts/build.sh setup --use-latest --no-fallback
+          export MOQX_MOXYGEN_RELEASE_TAG=$(cat .moxygen-release | tr -d '[:space:]')
+          echo "Using pinned moxygen release tag: $MOQX_MOXYGEN_RELEASE_TAG"
+          bash scripts/build.sh setup --no-fallback
 
       - name: Configure
         run: |
@@ -578,6 +587,14 @@ jobs:
 
   release:
     needs: [build, manifest, publish-portable]
+    # publish-portable is skipped on main pushes (release-branch only).
+    # Run when build+manifest succeeded and publish-portable didn't fail.
+    if: |
+      always() &&
+      needs.build.result == 'success' &&
+      needs.manifest.result == 'success' &&
+      needs.publish-portable.result != 'failure' &&
+      needs.publish-portable.result != 'cancelled'
     runs-on: ubuntu-22.04
     outputs:
       tag: ${{ steps.publish.outputs.tag }}
