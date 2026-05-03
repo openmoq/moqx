@@ -1,20 +1,34 @@
 name: version release
 
-# Manual workflow to cut a moqx release branch pinned to a specific moxygen
-# release. Creates `release/v<version>` from main with a `.moxygen-release`
-# file containing `<moxygen_release>`, which:
-#   1. Pins the moxygen tarballs that ci-main.yml downloads via setup-deps.
-#   2. Triggers ci-main.yml on the new branch — which builds the portable
-#      linux-{amd64,arm64} tarballs (gated to release/** only) and creates
-#      a snapshot-v<version>-latest pre-release with all artifacts.
+# Manual workflow_dispatch to cut a moqx tagged release.
 #
-# After the release branch CI is green, promote snapshot-v<version>-latest
-# to a tagged v<version> non-prerelease via the (forthcoming) promote-release
-# workflow or `gh release edit --prerelease=false`.
+# Tags vM.m.p on the dispatched ref (main or release/vM.m). Promotes the
+# corresponding rolling snapshot pre-release tarballs and, when feasible,
+# also builds portable linux-{amd64,arm64} tarballs against an explicit
+# moxygen release tag.
 #
-# Usage: Actions → version release → Run workflow →
-#   version: 1.2.3
-#   moxygen_release: v1.2.3   (must already exist on openmoq/moxygen)
+# Inputs:
+#   version          required. semver, e.g. 1.2.3
+#   moxygen_release  optional. moxygen tag to consume (e.g. v1.2.3).
+#                    When absent, falls back to moxygen `snapshot-latest`.
+#                    The fallback is fine for everyday tagging but won't
+#                    produce portable tarballs (snapshot-latest doesn't
+#                    carry them — portable only ships in tagged moxygen
+#                    releases).
+#
+# Behavior matrix:
+#   moxygen_release present + has portable assets  → portable matrix runs
+#   moxygen_release present + no portable assets   → portable skipped (no failure)
+#   moxygen_release absent                         → portable skipped (no failure)
+#
+# Snapshot source — derived from dispatched ref:
+#   dispatched on main         → consume snapshot-latest
+#   dispatched on release/vM.m → consume snapshot-vM.m-latest
+#
+# Release branch creation is independent of this workflow. To maintain a
+# patch line, devops cuts release/vM.m manually
+# (`git checkout -b release/vM.m main && git push`); this workflow is
+# then dispatched on that branch to tag vM.m.p.
 
 on:
   workflow_dispatch:
@@ -24,16 +38,128 @@ on:
         required: true
         type: string
       moxygen_release:
-        description: 'moxygen release tag (e.g. v1.2.3)'
-        required: true
+        description: 'moxygen release tag (optional, e.g. v1.2.3). Default: moxygen snapshot-latest.'
+        required: false
         type: string
 
 permissions:
   contents: write
 
 jobs:
-  cut-release-branch:
+  # ════════════════════════════════════════════════════════════════════════════
+  # Validate: semver gate, tag-doesn't-exist, resolve snapshot tag from
+  # dispatched ref, probe moxygen reference for portable assets.
+  # ════════════════════════════════════════════════════════════════════════════
+
+  validate:
     runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      tag: ${{ steps.v.outputs.tag }}
+      snapshot_tag: ${{ steps.v.outputs.snapshot_tag }}
+      moxygen_ref: ${{ steps.v.outputs.moxygen_ref }}
+      has_portable: ${{ steps.v.outputs.has_portable }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate inputs and resolve refs
+        id: v
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ inputs.version }}"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
+            echo "Error: version must be semver (e.g. 1.2.3 or 1.2.3-rc1)" >&2
+            exit 1
+          fi
+          TAG="v${VERSION}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Error: tag $TAG already exists" >&2
+            exit 1
+          fi
+
+          # Snapshot source from dispatched ref.
+          BRANCH="${{ github.ref_name }}"
+          if [ "$BRANCH" = "main" ]; then
+            SNAPSHOT_TAG="snapshot-latest"
+          else
+            LABEL="${BRANCH#release/}"
+            SNAPSHOT_TAG="snapshot-${LABEL}-latest"
+          fi
+          echo "==> Dispatched from $BRANCH → consuming $SNAPSHOT_TAG"
+
+          # Moxygen reference: explicit input or snapshot-latest fallback.
+          MOX_REF="${{ inputs.moxygen_release }}"
+          if [ -z "$MOX_REF" ]; then
+            MOX_REF="snapshot-latest"
+            echo "==> No moxygen_release input — defaulting to moxygen snapshot-latest"
+          else
+            echo "==> Pinning to moxygen release: $MOX_REF"
+          fi
+
+          # Verify moxygen reference exists.
+          if ! gh release view "$MOX_REF" --repo openmoq/moxygen >/dev/null 2>&1; then
+            echo "Error: moxygen release $MOX_REF does not exist on openmoq/moxygen" >&2
+            exit 1
+          fi
+
+          # Probe portable assets.
+          ASSETS=$(gh release view "$MOX_REF" --repo openmoq/moxygen --json assets --jq '.assets[].name')
+          HAS_PORTABLE=true
+          for required in moxygen-linux-amd64.tar.gz moxygen-linux-arm64.tar.gz; do
+            if ! echo "$ASSETS" | grep -qx "$required"; then
+              HAS_PORTABLE=false
+              break
+            fi
+          done
+
+          if [ "$HAS_PORTABLE" = "true" ]; then
+            echo "==> moxygen $MOX_REF has portable assets — portable matrix will run"
+          else
+            echo "==> moxygen $MOX_REF lacks portable assets — portable matrix will be skipped"
+            echo "    Available assets:"
+            echo "$ASSETS" | sed 's/^/      /'
+          fi
+
+          {
+            echo "version=$VERSION"
+            echo "tag=$TAG"
+            echo "snapshot_tag=$SNAPSHOT_TAG"
+            echo "moxygen_ref=$MOX_REF"
+            echo "has_portable=$HAS_PORTABLE"
+          } >> "$GITHUB_OUTPUT"
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # Portable build: -O3, ISA-baselined, statically linked moqx-linux-{amd64,arm64}
+  # tarballs. Runs only when the moxygen reference carries portable assets.
+  # ════════════════════════════════════════════════════════════════════════════
+
+  portable-build:
+    needs: [validate]
+    if: needs.validate.outputs.has_portable == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # cxx_flags MUST match what moxygen's portable build used —
+          # folly's F14 templates select an intrinsics mode based on
+          # compile-time -march macros. Mismatch causes
+          # F14LinkCheck<N>::check() undefined-reference link errors.
+          # Frame-pointer flags preserved at -O3 so signal-handler stack
+          # unwinding (folly::symbolizer) and post-mortem debugging via
+          # the moxygen .symbols sidecar work against optimized binaries.
+          - arch: amd64
+            runner: ubuntu-22.04
+            platform: linux-amd64
+            cxx_flags: "-march=x86-64-v2 -fno-omit-frame-pointer -fasynchronous-unwind-tables"
+          - arch: arm64
+            runner: ubuntu-22.04-arm
+            platform: linux-arm64
+            cxx_flags: "-march=armv8-a -fno-omit-frame-pointer -fasynchronous-unwind-tables"
+    name: portable (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
     steps:
       - name: Generate app token
         id: app-token
@@ -44,67 +170,208 @@ jobs:
 
       - uses: actions/checkout@v4
         with:
-          ref: main
-          fetch-depth: 0
-          token: ${{ steps.app-token.outputs.token }}
+          submodules: true
 
-      - name: Validate version
+      - name: Install system dependencies
         run: |
-          VERSION="${{ inputs.version }}"
-          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
-            echo "Error: version must be semver (e.g. 1.2.3 or 1.2.3-rc1)" >&2
-            exit 1
-          fi
-          TAG="v${VERSION}"
-          BRANCH="release/${TAG}"
-          if git rev-parse "$TAG" >/dev/null 2>&1; then
-            echo "Error: tag $TAG already exists" >&2
-            exit 1
-          fi
-          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
-            echo "Error: branch $BRANCH already exists" >&2
-            exit 1
-          fi
-          echo "TAG=$TAG" >> "$GITHUB_ENV"
-          echo "BRANCH=$BRANCH" >> "$GITHUB_ENV"
+          # Match docker/Dockerfile's build-stage apt list — picks up
+          # libdwarf-dev / libbrotli-dev that moxygen's install-system-deps
+          # doesn't install but proxygen needs.
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ninja-build cmake git ca-certificates pkg-config \
+            libssl-dev libunwind-dev libgoogle-glog-dev libgflags-dev \
+            libdouble-conversion-dev libevent-dev libsodium-dev libzstd-dev \
+            libboost-all-dev libfmt-dev zlib1g-dev libc-ares-dev libdwarf-dev \
+            libbrotli-dev libgtest-dev libgmock-dev libxxhash-dev
 
-      - name: Validate moxygen release exists
+      - name: Download moxygen portable tarball
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          MOQX_PLATFORM: ${{ matrix.platform }}
+          MOX_REF: ${{ needs.validate.outputs.moxygen_ref }}
         run: |
-          MOX="${{ inputs.moxygen_release }}"
-          if ! gh release view "$MOX" --repo openmoq/moxygen >/dev/null 2>&1; then
-            echo "Error: moxygen release $MOX does not exist on openmoq/moxygen" >&2
-            exit 1
+          if [ "$MOX_REF" = "snapshot-latest" ]; then
+            bash scripts/build.sh setup --use-latest --no-fallback
+          else
+            export MOQX_MOXYGEN_RELEASE_TAG="$MOX_REF"
+            bash scripts/build.sh setup --no-fallback
           fi
-          # Sanity: the moxygen release should carry the portable linux-*
-          # tarballs that publish-portable expects.
-          ASSETS=$(gh release view "$MOX" --repo openmoq/moxygen --json assets --jq '.assets[].name')
-          for required in moxygen-linux-amd64.tar.gz moxygen-linux-arm64.tar.gz; do
-            if ! echo "$ASSETS" | grep -qx "$required"; then
-              echo "Error: moxygen release $MOX missing required asset: $required" >&2
-              echo "Found assets:" >&2
-              echo "$ASSETS" | sed 's/^/  /' >&2
-              exit 1
+
+      - name: Configure
+        run: |
+          # CMAKE_INSTALL_RPATH = $ORIGIN/../lib makes the binary look
+          # for bundled .so files next to itself before the system search
+          # path. Combined with the bundle step below this produces a
+          # self-contained tarball that runs on noble / RHEL 9 / AL2023
+          # without needing distro-specific packages installed.
+          cmake -S . -B _build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$(cat .scratch/cmake_prefix_path.txt)" \
+            -DCMAKE_MODULE_PATH="${GITHUB_WORKSPACE}/cmake;${GITHUB_WORKSPACE}/deps/moxygen/build/fbcode_builder/CMake" \
+            -DCMAKE_C_FLAGS="${{ matrix.cxx_flags }}" \
+            -DCMAKE_CXX_FLAGS="${{ matrix.cxx_flags }}" \
+            -DCMAKE_INSTALL_RPATH='$ORIGIN/../lib' \
+            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+            -DCMAKE_DISABLE_FIND_PACKAGE_LibUnwind=TRUE \
+            -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/_install"
+
+      - name: Build
+        run: cmake --build _build -j "$(nproc)"
+
+      - name: Install
+        run: cmake --install _build
+
+      - name: Bundle non-toolchain dynamic deps
+        run: |
+          # Bundle SONAME-versioned .so deps so the tarball runs on any
+          # modern Linux without distro-specific packages installed.
+          # Skips libstdc++/libgcc_s/libc/libm/ld-linux/linux-vdso (toolchain).
+          mkdir -p _install/lib
+          LIBARCH="$(uname -m)-linux-gnu"
+          # libboost_context: jammy=1.74, noble=1.83 — must bundle.
+          # libunwind intentionally NOT bundled — disabled via
+          # CMAKE_DISABLE_FIND_PACKAGE_LibUnwind to match moxygen portable.
+          for lib in \
+              libboost_context.so.1.74.0 \
+              libgflags.so.2.2 \
+              libsodium.so.23 \
+              libdouble-conversion.so.3 \
+              libevent-2.1.so.7 \
+              libzstd.so.1 \
+              libcares.so.2 \
+              libbrotlidec.so.1 \
+              libbrotlienc.so.1 \
+              libbrotlicommon.so.1 \
+              ; do
+            src="/usr/lib/${LIBARCH}/${lib}"
+            if [ -f "$src" ]; then
+              cp -L "$src" _install/lib/
             fi
           done
-          echo "MOX_TAG=$MOX" >> "$GITHUB_ENV"
+          echo "==> bundled libs:"
+          ls -lh _install/lib/
 
-      - name: Cut release branch with .moxygen-release
+      - name: Package
         run: |
-          git config user.email "omoq-sync-bot[bot]@users.noreply.github.com"
-          git config user.name "omoq-sync-bot[bot]"
-          git checkout -b "$BRANCH"
-          echo "$MOX_TAG" > .moxygen-release
-          git add .moxygen-release
-          git commit -m "release: pin moxygen $MOX_TAG for $TAG"
-          git push origin "$BRANCH"
-          echo
-          echo "==> Release branch created: $BRANCH"
-          echo "    pinned moxygen release: $MOX_TAG"
-          echo "    pushed; ci-main.yml will trigger and build the portable matrix."
-          echo
-          echo "Once CI is green, the snapshot-${TAG}-latest pre-release will carry"
-          echo "all platform tarballs (including portable linux-amd64/arm64). Promote"
-          echo "it to a non-prerelease ${TAG} tag with:"
-          echo "  gh release edit snapshot-${TAG}-latest --tag ${TAG} --prerelease=false --title \"moqx ${{ inputs.version }}\""
+          ARTIFACT="moqx-${{ matrix.platform }}.tar.gz"
+          tar czf "$ARTIFACT" -C _install .
+          echo "==> Tarball: $ARTIFACT"
+          ls -lh "$ARTIFACT"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: moqx-${{ matrix.platform }}.tar.gz
+          path: moqx-${{ matrix.platform }}.tar.gz
+          retention-days: 90
+
+      - name: Smoke test
+        run: |
+          mkdir -p /tmp/moqx-smoke
+          tar xzf "moqx-${{ matrix.platform }}.tar.gz" -C /tmp/moqx-smoke
+          echo "==> ldd"
+          ldd /tmp/moqx-smoke/bin/moqx | tee /tmp/ldd.out
+          if grep -q "not found" /tmp/ldd.out; then
+            echo "ERROR: missing shared libraries"
+            exit 1
+          fi
+          echo "==> --help"
+          /tmp/moqx-smoke/bin/moqx --help 2>&1 | head -5 || true
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # Release: combine snapshot tarballs (always) + portable tarballs (when
+  # built) and create the tagged, non-prerelease GitHub release.
+  # ════════════════════════════════════════════════════════════════════════════
+
+  release:
+    needs: [validate, portable-build]
+    # Run when validate succeeded and portable-build either succeeded or
+    # was skipped (moxygen ref had no portable assets). Don't run if
+    # portable-build was attempted and failed.
+    if: |
+      always() &&
+      needs.validate.result == 'success' &&
+      needs.portable-build.result != 'failure' &&
+      needs.portable-build.result != 'cancelled'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download portable artifacts
+        if: needs.validate.outputs.has_portable == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          path: portable-assets/
+          merge-multiple: true
+
+      - name: Download snapshot artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SNAPSHOT_TAG: ${{ needs.validate.outputs.snapshot_tag }}
+        run: |
+          mkdir -p snapshot-assets
+          echo "Downloading platform tarballs from $SNAPSHOT_TAG..."
+          gh release download "$SNAPSHOT_TAG" --dir snapshot-assets --pattern '*.tar.gz'
+          # Drop any portable tarballs from snapshot if present — we
+          # built them fresh in this workflow when applicable.
+          rm -f snapshot-assets/moqx-linux-amd64*.tar.gz \
+                snapshot-assets/moqx-linux-arm64*.tar.gz
+          echo "Snapshot platform tarballs:"
+          ls -lh snapshot-assets/
+
+      - name: Get snapshot commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SNAPSHOT_TAG: ${{ needs.validate.outputs.snapshot_tag }}
+        run: |
+          SNAPSHOT_SHA=$(gh api repos/{owner}/{repo}/releases \
+            --jq ".[] | select(.tag_name == \"$SNAPSHOT_TAG\") | .target_commitish")
+          if [[ -z "$SNAPSHOT_SHA" ]]; then
+            echo "Error: $SNAPSHOT_TAG release not found. Push to the dispatched branch first to produce a snapshot." >&2
+            exit 1
+          fi
+          echo "Snapshot built from commit: $SNAPSHOT_SHA"
+          echo "SNAPSHOT_SHA=$SNAPSHOT_SHA" >> "$GITHUB_ENV"
+
+      - name: Stage release assets
+        run: |
+          mkdir -p release-assets
+          cp snapshot-assets/*.tar.gz release-assets/
+          if [ -d portable-assets ]; then
+            cp portable-assets/*.tar.gz release-assets/ 2>/dev/null || true
+          fi
+          echo "==> Release assets:"
+          ls -lh release-assets/
+
+      - name: Create versioned release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.validate.outputs.version }}
+          TAG: ${{ needs.validate.outputs.tag }}
+          MOX_REF: ${{ needs.validate.outputs.moxygen_ref }}
+          HAS_PORTABLE: ${{ needs.validate.outputs.has_portable }}
+          SNAPSHOT_TAG: ${{ needs.validate.outputs.snapshot_tag }}
+        run: |
+          if [ "$HAS_PORTABLE" = "true" ]; then
+            PORTABLE_NOTE="**Portable Linux tarballs** built against moxygen \`${MOX_REF}\`:
+          - \`moqx-linux-amd64.tar.gz\` — \`-march=x86-64-v2\` (≈ all cloud x86 since 2015)
+          - \`moqx-linux-arm64.tar.gz\` — \`-march=armv8-a\` (Graviton, Ampere, Apple M, RPi 3+, Rockchip)"
+          else
+            PORTABLE_NOTE="_Portable Linux tarballs not produced for this release: moxygen \`${MOX_REF}\` does not include the required portable assets._"
+          fi
+
+          gh release create "$TAG" release-assets/*.tar.gz \
+            --target "$SNAPSHOT_SHA" \
+            --title "moqx $VERSION" \
+            --notes "$(cat <<EOF
+          **Version:** \`${VERSION}\`
+          **Commit:** \`${SNAPSHOT_SHA}\`
+          **moxygen reference:** \`${MOX_REF}\`
+
+          Standard tarballs promoted from [\`${SNAPSHOT_TAG}\`](${{ github.server_url }}/${{ github.repository }}/releases/tag/${SNAPSHOT_TAG}).
+
+          ${PORTABLE_NOTE}
+          EOF
+          )"
+          echo "Released: $TAG"
