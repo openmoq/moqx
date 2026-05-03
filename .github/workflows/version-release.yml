@@ -162,11 +162,18 @@ jobs:
     needs: [validate]
     runs-on: ubuntu-22.04
     steps:
+      - name: Generate app token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.OMOQ_APP_ID }}
+          private-key: ${{ secrets.OMOQ_APP_PRIV_KEY }}
+
       - uses: actions/checkout@v4
 
-      - name: Create draft release
+      - name: Create release (no assets yet)
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           VERSION: ${{ needs.validate.outputs.version }}
           TAG: ${{ needs.validate.outputs.tag }}
           MOX_REF: ${{ needs.validate.outputs.moxygen_ref }}
@@ -185,7 +192,6 @@ jobs:
           gh release create "$TAG" \
             --target "$SNAPSHOT_SHA" \
             --title "moqx $VERSION" \
-            --draft \
             --notes "$(cat <<EOF
           **Version:** \`${VERSION}\`
           **Commit:** \`${SNAPSHOT_SHA}\`
@@ -338,7 +344,7 @@ jobs:
 
       - name: Upload to release
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           TAG: ${{ needs.validate.outputs.tag }}
         run: |
           gh release upload "$TAG" "moqx-${{ matrix.platform }}.tar.gz" --clobber
@@ -352,9 +358,16 @@ jobs:
     needs: [validate, create-release]
     runs-on: ubuntu-22.04
     steps:
+      - name: Generate app token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.OMOQ_APP_ID }}
+          private-key: ${{ secrets.OMOQ_APP_PRIV_KEY }}
+
       - name: Download snapshot tarballs
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           SNAPSHOT_TAG: ${{ needs.validate.outputs.snapshot_tag }}
         run: |
           mkdir -p snapshot-assets
@@ -368,7 +381,7 @@ jobs:
 
       - name: Upload to release (parallel)
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           TAG: ${{ needs.validate.outputs.tag }}
         run: |
           # Fan out asset upload to N concurrent gh release upload calls.
@@ -376,7 +389,7 @@ jobs:
             xargs -0 -n1 -P 6 -I{} gh release upload "$TAG" {} --clobber
 
   # ════════════════════════════════════════════════════════════════════════════
-  # Finalize: flip draft → published once all uploads succeeded.
+  # Finalize: mark release as latest once all uploads succeeded.
   # Tolerates portable-build being skipped (has_portable=false).
   # ════════════════════════════════════════════════════════════════════════════
 
@@ -391,10 +404,17 @@ jobs:
       needs.portable-build.result != 'cancelled'
     runs-on: ubuntu-22.04
     steps:
-      - name: Publish release
+      - name: Generate app token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.OMOQ_APP_ID }}
+          private-key: ${{ secrets.OMOQ_APP_PRIV_KEY }}
+
+      - name: Mark release as latest
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           TAG: ${{ needs.validate.outputs.tag }}
         run: |
-          gh release edit "$TAG" --draft=false
+          gh release edit "$TAG" --latest
           echo "Released: $TAG"
