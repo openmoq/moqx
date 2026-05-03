@@ -1,13 +1,25 @@
 name: moxygen sync
 
 # Updates deps/moxygen submodule to latest moxygen main, creates a PR.
-# Event-triggered by moxygen ci-main after successful release, or manual.
+# Schedule-driven (daily cron) plus workflow_dispatch for ad-hoc syncs.
+# repository_dispatch retained for non-sync flows (e.g., manual hand-merged
+# moxygen PRs that need immediate propagation); the routine cron-cascade
+# does not use it.
 # One PR at a time — blocks if one is pending.
 #
 # Branch naming: sync-moxygen/<short-sha>
 # Auto-merged by auto-merge-moxygen.yml after ci-pr passes.
 
 on:
+  schedule:
+    # Fourth (final) stage of the openmoq sync cron cascade (UTC; ET shifts under DST):
+    #   04:35  picoquic upstream-sync     (private-octopus → openmoq/picoquic)
+    #   05:35  moxygen  upstream-sync     (facebookexperimental → openmoq/moxygen)
+    #   05:45  moxygen  picoquic-pin sync (openmoq/picoquic → moxygen picoquic-rev.txt)
+    #   09:05  moqx     moxygen-submodule sync (this workflow — openmoq/moxygen → moqx deps/moxygen)
+    # The 3h20m gap before this stage gives moxygen sync PRs (upstream + picoquic-pin)
+    # time to run CI and auto-merge into openmoq/moxygen main before we pull it.
+    - cron: '5 9 * * *'
   repository_dispatch:
     types: [moxygen-update]
   workflow_dispatch:
