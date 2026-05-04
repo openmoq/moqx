@@ -73,7 +73,9 @@ TEST_F(PicoQuicStatsCollectorTest, PathQualityDeltaAccumulation) {
   EXPECT_EQ(snap.quicPacketLoss, 1);
   EXPECT_EQ(snap.quicBytesWritten, 1500);
   EXPECT_EQ(snap.quicBytesRead, 1200);
-  EXPECT_EQ(snap.quicPacketRetransmissions, 2); // timerLosses + spuriousLosses
+  EXPECT_EQ(snap.quicPacketRetransmissions, 1); // timerLosses only
+  EXPECT_EQ(snap.quicPTO, 1);
+  EXPECT_EQ(snap.quicPacketSpuriousLoss, 1);
   EXPECT_EQ(snap.quicCwndBlocked, 1);
 }
 

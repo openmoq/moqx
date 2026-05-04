@@ -73,21 +73,23 @@ public:
   void onPeerMaxBidiStreamsLimitSaturated() override {
     ++data_->quicPeerMaxBidiStreamsLimitSaturated_;
   }
+  void onPacketProcessed() override { ++data_->quicPacketsProcessed_; }
+  void onPTO() override { ++data_->quicPTO_; }
+  void onPacketSpuriousLoss() override { ++data_->quicPacketSpuriousLoss_; }
+  void onPersistentCongestion() override { ++data_->quicPersistentCongestion_; }
+  void onConnectionWritableBytesLimited() override { ++data_->quicConnectionWritableBytesLimited_; }
+  void onConnectionRateLimited() override { ++data_->quicConnectionRateLimited_; }
+  void onPacerTimerLagged() override { ++data_->quicPacerTimerLagged_; }
 
   // --- Untracked callbacks (no-op) ---
   void onRxDelaySample(uint64_t) override {}
   void onDuplicatedPacketReceived() override {}
   void onOutOfOrderPacketReceived() override {}
-  void onPacketProcessed() override {}
-  void onPacketSpuriousLoss() override {}
-  void onPersistentCongestion() override {}
   void onPacketForwarded() override {}
   void onPacketDroppedByEgressPolicer() override {}
   void onForwardedPacketReceived() override {}
   void onForwardedPacketProcessed() override {}
   void onClientInitialReceived(quic::QuicVersion) override {}
-  void onConnectionRateLimited() override {}
-  void onConnectionWritableBytesLimited() override {}
   void onNewTokenReceived() override {}
   void onNewTokenIssued() override {}
   void onTokenDecryptFailure() override {}
@@ -105,8 +107,13 @@ public:
   void onCwndHintBytesSample(uint64_t) override {}
   void onCongestionControllerResumed() override {}
   void onNewCongestionController(quic::CongestionControlType) override {}
-  void onPTO() override {}
-  void onUDPSocketWriteError(SocketErrorType) override {}
+  void onUDPSocketWriteError(SocketErrorType errorType) override {
+    if (errorType == SocketErrorType::AGAIN) {
+      ++data_->quicSocketWriteAgain_;
+    } else if (errorType == SocketErrorType::NOBUFS) {
+      ++data_->quicSocketWriteNobufs_;
+    }
+  }
   void onTransportKnobApplied(quic::TransportKnobParamId) override {}
   void onTransportKnobError(quic::TransportKnobParamId) override {}
   void onTransportKnobOutOfOrder(quic::TransportKnobParamId) override {}
@@ -120,7 +127,6 @@ public:
   void onDatagramRead(size_t) override {}
   void onDatagramWrite(size_t) override {}
   void onShortHeaderPadding(size_t) override {}
-  void onPacerTimerLagged() override {}
   void onConnectionIdCreated(size_t) override {}
   void onKeyUpdateAttemptInitiated() override {}
   void onKeyUpdateAttemptReceived() override {}

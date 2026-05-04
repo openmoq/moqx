@@ -133,7 +133,16 @@ inline constexpr std::array<std::string_view, 8> kRequestErrorCodeLabels = {{
   X(uint64_t, quicDatagramsDroppedOnWrite)                                                         \
   X(uint64_t, quicDatagramsDroppedOnRead)                                                          \
   X(uint64_t, quicPeerMaxUniStreamsLimitSaturated)                                                 \
-  X(uint64_t, quicPeerMaxBidiStreamsLimitSaturated)
+  X(uint64_t, quicPeerMaxBidiStreamsLimitSaturated)                                                \
+  X(uint64_t, quicSocketWriteAgain)                                                                \
+  X(uint64_t, quicSocketWriteNobufs)                                                               \
+  X(uint64_t, quicPacketsProcessed)                                                                \
+  X(uint64_t, quicPTO)                                                                             \
+  X(uint64_t, quicPacketSpuriousLoss)                                                              \
+  X(uint64_t, quicPersistentCongestion)                                                            \
+  X(uint64_t, quicConnectionWritableBytesLimited)                                                  \
+  X(uint64_t, quicConnectionRateLimited)                                                           \
+  X(uint64_t, quicPacerTimerLagged)
 
 // Combined convenience macro to iterate all counter fields
 #define STATS_COUNTER_FIELDS(X) STATS_MOQ_COUNTER_FIELDS(X) STATS_QUIC_COUNTER_FIELDS(X)
