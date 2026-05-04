@@ -71,6 +71,12 @@ FetchContent_Declare(reflectcpp
 )
 FetchContent_MakeAvailable(reflectcpp)
 
+# --- catapult (CAT/CWT/MOQT auth implementation) ---
+
+set(ENABLE_LOGGING OFF CACHE BOOL "" FORCE)
+set(CATAPULT_ENABLE_JSON OFF CACHE BOOL "" FORCE)
+add_subdirectory(deps/catapult EXCLUDE_FROM_ALL)
+
 # --- Core library ---
 
 add_library(moqx_core STATIC
@@ -112,6 +118,7 @@ target_link_libraries(moqx_core PUBLIC
   Folly::folly_io_async_fdsock_async_fd_socket
   moxygen::moxygen_moqclient
   OpenSSL::Crypto
+  catapult
 )
 
 target_compile_options(moqx_core PRIVATE -Wall -Wextra -Wpedantic)
