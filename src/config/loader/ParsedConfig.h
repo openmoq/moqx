@@ -157,6 +157,17 @@ struct ParsedUpstreamConfig {
       idle_timeout_ms;
 };
 
+struct ParsedAuthIssuerKey {
+  rfl::Description<"Issuer key identifier", std::string> id;
+  rfl::Description<"Issuer public key PEM", std::string> public_key_pem;
+};
+
+struct ParsedAuthConfig {
+  rfl::Description<"Enable Privacy Pass authorization for this service", bool> enabled;
+  rfl::Description<"Expected audience / redemption context", std::string> audience;
+  rfl::Description<"Accepted issuer public keys", std::vector<ParsedAuthIssuerKey>> issuer_keys;
+};
+
 struct ParsedServiceConfig {
   struct MatchRule {
     struct ExactAuthority {
@@ -202,6 +213,10 @@ struct ParsedServiceConfig {
       "Upstream MoQ server for this service (optional; enables relay chaining)",
       std::optional<ParsedUpstreamConfig>>
       upstream;
+  rfl::Description<
+      "Privacy Pass authorization settings for this service",
+      std::optional<ParsedAuthConfig>>
+      auth;
 };
 
 struct ParsedListenerDefaultsConfig {

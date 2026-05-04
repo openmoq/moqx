@@ -55,6 +55,15 @@ services:
     #   tls:
     #     insecure: false         # true = skip cert verification (dev only)
     #     # ca_cert: /path/to/ca.pem  # Custom CA cert (mutually exclusive with insecure: true)
+    # auth:                       # Optional: Privacy Pass authorization
+    #   enabled: true
+    #   audience: "moqx-relay"
+    #   issuer_keys:
+    #     - id: "issuer-1"
+    #       public_key_pem: |-
+    #         -----BEGIN PUBLIC KEY-----
+    #         ...
+    #         -----END PUBLIC KEY-----
 
   testing:
     match:

@@ -79,6 +79,17 @@ struct UpstreamConfig {
   std::chrono::milliseconds idleTimeout{5000};
 };
 
+struct AuthIssuerKey {
+  std::string id;
+  std::string publicKeyPem;
+};
+
+struct AuthConfig {
+  bool enabled{false};
+  std::string audience;
+  std::vector<AuthIssuerKey> issuerKeys;
+};
+
 struct ServiceConfig {
   struct MatchEntry {
     struct ExactAuthority {
@@ -103,6 +114,7 @@ struct ServiceConfig {
 
   std::vector<MatchEntry> match;
   CacheConfig cache;
+  std::optional<AuthConfig> auth;
   std::optional<UpstreamConfig> upstream; // set if this service chains to an upstream relay
 };
 

@@ -10,6 +10,7 @@
 
 #include "NamespaceTree.h"
 #include "UpstreamProvider.h"
+#include "auth/PrivacyPass.h"
 #include "config/Config.h"
 #include "relay/PropertyRanking.h"
 #include "relay/TopNFilter.h"
@@ -103,7 +104,8 @@ public:
       std::string relayID = {},
       uint64_t maxDeselected = kDefaultMaxDeselected,
       std::chrono::milliseconds idleTimeout = kDefaultIdleTimeout,
-      std::chrono::milliseconds activityThreshold = kDefaultActivityThreshold
+      std::chrono::milliseconds activityThreshold = kDefaultActivityThreshold,
+      std::optional<config::AuthConfig> auth = std::nullopt
   )
       : relayID_(std::move(relayID)), maxDeselected_(maxDeselected), idleTimeout_(idleTimeout),
         activityThreshold_(activityThreshold) {
@@ -115,6 +117,9 @@ public:
       cache_->setDefaultMaxCacheDuration(cache.defaultMaxCacheDuration);
       // TODO: wire cache.maxCacheDuration once MoQCache supports clamping
       // publisher-set track durations.
+    }
+    if (auth && auth->enabled) {
+      auth_ = std::make_unique<auth::PrivacyPassVerifier>(*auth);
     }
   }
 
@@ -128,6 +133,17 @@ public:
   void setUpstreamProvider(std::shared_ptr<UpstreamProvider> upstream) {
     upstream_ = std::move(upstream);
   }
+
+  void setSessionAuth(std::shared_ptr<moxygen::MoQSession> session, auth::Claims claims) {
+    sessionAuth_.insert_or_assign(session.get(), SessionAuthState{std::move(claims)});
+  }
+
+  void clearSessionAuth(moxygen::MoQSession* session) { sessionAuth_.erase(session); }
+
+  folly::Expected<folly::Unit, auth::AuthError> authenticateSession(
+      const moxygen::SetupParameters& params,
+      std::shared_ptr<moxygen::MoQSession> session
+  );
 
   // Force-evicts a specific track unconditionally. Not thread-safe.
   size_t purge(const moxygen::FullTrackName& ftn) { return cache_ ? cache_->purge(ftn) : 0; }
@@ -350,6 +366,12 @@ private:
   folly::F14NodeMap<moxygen::FullTrackName, RelaySubscription, moxygen::FullTrackName::hash>
       subscriptions_;
 
+  struct SessionAuthState {
+    auth::Claims claims;
+  };
+  folly::F14FastMap<moxygen::MoQSession*, SessionAuthState> sessionAuth_;
+  std::unique_ptr<auth::PrivacyPassVerifier> auth_;
+
   std::shared_ptr<moxygen::TrackConsumer> getSubscribeWriteback(
       const moxygen::FullTrackName& ftn,
       std::shared_ptr<moxygen::TrackConsumer> consumer
@@ -361,6 +383,17 @@ private:
   static constexpr std::chrono::milliseconds kDefaultActivityThreshold{2'000};
   std::chrono::milliseconds idleTimeout_{kDefaultIdleTimeout};
   std::chrono::milliseconds activityThreshold_{kDefaultActivityThreshold};
+
+  folly::Expected<folly::Unit, auth::AuthError> authorizeRequest(
+      const moxygen::Parameters& params,
+      auth::Action action,
+      const moxygen::TrackNamespace& namespaceValue,
+      std::string_view trackValue = {}
+  ) const;
+
+  std::optional<auth::Claims> getSessionAuth(moxygen::MoQSession* session) const;
+  static bool isSessionAuthValid(const auth::Claims& claims);
+  bool isPeerSession(moxygen::MoQSession* session) const;
 };
 
 // Creates a NamespacePublishHandle that bridges NAMESPACE/NAMESPACE_DONE
