@@ -43,11 +43,11 @@ StatsSnapshot MoQStatsCollector::snapshot() const {
   STATS_GAUGE_FIELDS(COPY_FIELD)
 #undef COPY_FIELD
 
-#define COPY_HISTOGRAM(name, bounds)                                                               \
+#define COPY_HISTOGRAM(name, bounds, unit)                                                         \
   name##_.fillCumulative(snap.name##Buckets);                                                      \
   snap.name##Sum = name##_.sum;                                                                    \
   snap.name##Count = name##_.count;
-  STATS_HISTOGRAM_FIELDS(COPY_HISTOGRAM)
+  STATS_MOQ_HISTOGRAM_FIELDS(COPY_HISTOGRAM)
 #undef COPY_HISTOGRAM
 
 #define COPY_ERROR_ARRAY(name)                                                                     \

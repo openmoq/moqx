@@ -160,14 +160,17 @@ inline constexpr std::array<std::string_view, 8> kRequestErrorCodeLabels = {{
 // Combined convenience macro to iterate all gauge fields
 #define STATS_GAUGE_FIELDS(X) STATS_QUIC_GAUGE_FIELDS(X) STATS_MOQ_GAUGE_FIELDS(X)
 
-// Histograms: (name, constexpr_bounds_ref)
+// Histograms: X(name, constexpr_bounds_ref, unit_suffix)
+// unit_suffix is a string literal appended to the Prometheus metric name.
 // Each expands to: name##Buckets[] (len = bounds.size()+1 for +Inf),
 //                  name##Sum, name##Count
-#define STATS_HISTOGRAM_FIELDS(X)                                                                  \
-  X(moqSubscribeLatency, kLatencyBucketsUs)                                                        \
-  X(moqFetchLatency, kLatencyBucketsUs)                                                            \
-  X(moqPublishNamespaceLatency, kLatencyBucketsUs)                                                 \
-  X(moqPublishLatency, kLatencyBucketsUs)
+#define STATS_MOQ_HISTOGRAM_FIELDS(X)                                                              \
+  X(moqSubscribeLatency, kLatencyBucketsUs, "microseconds")                                        \
+  X(moqFetchLatency, kLatencyBucketsUs, "microseconds")                                            \
+  X(moqPublishNamespaceLatency, kLatencyBucketsUs, "microseconds")                                 \
+  X(moqPublishLatency, kLatencyBucketsUs, "microseconds")
+
+#define STATS_HISTOGRAM_FIELDS(X) STATS_MOQ_HISTOGRAM_FIELDS(X)
 
 // Error-code breakdowns: fields in STATS_MOQ_COUNTER_FIELDS whose callbacks receive
 // a RequestErrorCode argument.  Each expands to a
@@ -192,7 +195,7 @@ struct StatsSnapshot {
 #undef DEFINE_FIELD
 
   // --- Histogram fields ---
-#define DEFINE_HISTOGRAM(name, bounds)                                                             \
+#define DEFINE_HISTOGRAM(name, bounds, unit)                                                       \
   std::array<uint64_t, std::tuple_size_v<decltype(bounds)> + 1> name##Buckets{};                   \
   uint64_t name##Sum{0};                                                                           \
   uint64_t name##Count{0};
