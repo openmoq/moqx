@@ -10,12 +10,19 @@
 #include <folly/Expected.h>
 #include <folly/Range.h>
 #include <folly/lang/Bits.h>
+#include <folly/logging/xlog.h>
+#include <openssl/core_names.h>
 #include <openssl/crypto.h>
+#include <openssl/evp.h>
 #include <openssl/hmac.h>
+#include <openssl/opensslv.h>
+#include <openssl/params.h>
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <limits>
+#include <memory>
 
 using namespace moxygen;
 
@@ -26,6 +33,46 @@ constexpr uint8_t kEnvelopeVersion = 1;
 constexpr size_t kHmacSha256Len = 32;
 
 std::string hmacSha256(std::string_view secret, std::string_view payload) {
+#if OPENSSL_VERSION_MAJOR >= 3
+  auto* mac = EVP_MAC_fetch(nullptr, "HMAC", nullptr);
+  XCHECK(mac) << "EVP_MAC_fetch(HMAC) failed";
+  auto macGuard = std::unique_ptr<EVP_MAC, decltype(&EVP_MAC_free)>(mac, EVP_MAC_free);
+
+  auto* ctx = EVP_MAC_CTX_new(macGuard.get());
+  XCHECK(ctx) << "EVP_MAC_CTX_new failed";
+  auto ctxGuard = std::unique_ptr<EVP_MAC_CTX, decltype(&EVP_MAC_CTX_free)>(ctx, EVP_MAC_CTX_free);
+
+  auto digestName = std::array<char, 7>{'S', 'H', 'A', '2', '5', '6', '\0'};
+  OSSL_PARAM params[] = {
+      OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST, digestName.data(), 0),
+      OSSL_PARAM_construct_end(),
+  };
+  XCHECK_EQ(
+      EVP_MAC_init(
+          ctxGuard.get(),
+          reinterpret_cast<const unsigned char*>(secret.data()),
+          secret.size(),
+          params
+      ),
+      1
+  ) << "EVP_MAC_init failed";
+  XCHECK_EQ(
+      EVP_MAC_update(
+          ctxGuard.get(),
+          reinterpret_cast<const unsigned char*>(payload.data()),
+          payload.size()
+      ),
+      1
+  ) << "EVP_MAC_update failed";
+  size_t len = kHmacSha256Len;
+  std::string out(kHmacSha256Len, '\0');
+  XCHECK_EQ(
+      EVP_MAC_final(ctxGuard.get(), reinterpret_cast<unsigned char*>(out.data()), &len, out.size()),
+      1
+  ) << "EVP_MAC_final failed";
+  out.resize(len);
+  return out;
+#else
   unsigned int len = 0;
   std::string out(kHmacSha256Len, '\0');
   HMAC(
@@ -39,6 +86,7 @@ std::string hmacSha256(std::string_view secret, std::string_view payload) {
   );
   out.resize(len);
   return out;
+#endif
 }
 
 uint32_t readU32BE(std::string_view data, size_t offset) {
@@ -231,6 +279,7 @@ bool parseAction(CborReader& reader, std::vector<Action>& actions) {
 
 bool parseActions(CborReader& reader, std::vector<Action>& actions) {
   uint64_t len = 0;
+  // Copy the small reader as a backtracking checkpoint: actions may be a scalar or array.
   auto copy = reader;
   if (copy.readArrayLen(len)) {
     reader = copy;
@@ -321,11 +370,10 @@ bool parseClaims(std::string_view data, Grants& grants, bool strictClaims) {
         return false;
       }
     } else if (hasTextKey && textKey == "moqt-reval") {
-      int64_t reval = 0;
-      if (!reader.readInt(reval) || reval < 0) {
+      int64_t ignoredReval = 0;
+      if (!reader.readInt(ignoredReval) || ignoredReval < 0) {
         return false;
       }
-      grants.revalidateEvery = std::chrono::seconds(reval);
     } else if (strictClaims) {
       return false;
     } else if (!reader.skip()) {
@@ -389,6 +437,7 @@ std::string AuthTokenVerifier::signForTest(
     std::string_view secret,
     std::string_view cborClaims
 ) {
+  XDCHECK_LE(keyID.size(), 255u);
   std::string out;
   out.push_back(static_cast<char>(kEnvelopeVersion));
   out.push_back(static_cast<char>(keyID.size()));

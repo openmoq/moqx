@@ -182,6 +182,7 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayContext::validateAu
     case auth::AuthError::WrongTokenType:
       return folly::makeUnexpected(SessionCloseErrorCode::UNAUTHORIZED);
     }
+    return folly::makeUnexpected(SessionCloseErrorCode::UNAUTHORIZED);
   }
   session->setPublishHandler(it->second.relay);
   session->setSubscribeHandler(it->second.relay);

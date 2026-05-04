@@ -167,13 +167,17 @@ struct ParsedAuthConfig {
   rfl::Description<"Expected MOQT AUTHORIZATION_TOKEN token type", std::optional<uint64_t>>
       token_type;
   rfl::Description<"Accepted HMAC signing keys", std::optional<std::vector<HmacKey>>> hmac_keys;
-  rfl::Description<"Require a valid setup token during CLIENT_SETUP", std::optional<bool>>
+  rfl::Description<
+      "Require a valid setup token during CLIENT_SETUP (default: true)",
+      std::optional<bool>>
       require_setup_token;
   rfl::Description<
-      "Allow request AUTHORIZATION_TOKEN to override setup credentials",
+      "Allow request AUTHORIZATION_TOKEN to override setup credentials (default: true)",
       std::optional<bool>>
       allow_request_token_override;
-  rfl::Description<"Reject unsupported token claims instead of ignoring them", std::optional<bool>>
+  rfl::Description<
+      "Reject unsupported token claims instead of ignoring them (default: false)",
+      std::optional<bool>>
       strict_claims;
 };
 

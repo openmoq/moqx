@@ -55,7 +55,6 @@ struct Scope {
 
 struct Grants {
   std::chrono::system_clock::time_point expiresAt{std::chrono::system_clock::time_point::max()};
-  std::chrono::seconds revalidateEvery{0};
   std::vector<Scope> scopes;
 };
 

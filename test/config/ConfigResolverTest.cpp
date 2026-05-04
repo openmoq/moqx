@@ -61,6 +61,30 @@ ParsedServiceConfig makeDefaultService() {
   return svc;
 }
 
+ParsedAuthConfig::HmacKey makeAuthKey(std::string id = "key-1", std::string secret = "secret") {
+  ParsedAuthConfig::HmacKey key;
+  key.id = std::move(id);
+  key.secret = std::move(secret);
+  return key;
+}
+
+ParsedAuthConfig makeAuthConfig(std::vector<ParsedAuthConfig::HmacKey> keys = {makeAuthKey()}) {
+  ParsedAuthConfig auth;
+  auth.enabled = true;
+  auth.token_type = std::optional<uint64_t>{77};
+  auth.hmac_keys = std::optional<std::vector<ParsedAuthConfig::HmacKey>>{std::move(keys)};
+  auth.require_setup_token = std::optional<bool>{false};
+  auth.allow_request_token_override = std::optional<bool>{false};
+  auth.strict_claims = std::optional<bool>{true};
+  return auth;
+}
+
+ParsedServiceConfig makeAuthService(ParsedAuthConfig auth = makeAuthConfig()) {
+  auto svc = makeDefaultService();
+  svc.auth = std::move(auth);
+  return svc;
+}
+
 // Build a minimal valid insecure config with one any-authority service and admin.
 ParsedConfig makeMinimalInsecureConfig(std::string name = "test") {
   ParsedConfig cfg;
@@ -382,6 +406,148 @@ TEST(ResolveConfig, SameAuthorityDifferentPaths) {
 
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasValue());
+}
+
+TEST(ResolveConfig, AuthEnabledRequiresHmacKeys) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().clear();
+
+  ParsedAuthConfig auth;
+  auth.enabled = true;
+  cfg.services.value().emplace("svc", makeAuthService(std::move(auth)));
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("auth.hmac_keys is required"));
+}
+
+TEST(ResolveConfig, AuthEnabledRejectsEmptyHmacKeys) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().clear();
+
+  ParsedAuthConfig auth;
+  auth.enabled = true;
+  std::vector<ParsedAuthConfig::HmacKey> keys;
+  auth.hmac_keys = std::move(keys);
+  cfg.services.value().emplace("svc", makeAuthService(std::move(auth)));
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("auth.hmac_keys is required"));
+}
+
+TEST(ResolveConfig, AuthRejectsDuplicateKeyIDs) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().clear();
+  cfg.services.value().emplace(
+      "svc",
+      makeAuthService(makeAuthConfig({makeAuthKey("key-1", "a"), makeAuthKey("key-1", "b")}))
+  );
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("duplicates another auth key"));
+}
+
+TEST(ResolveConfig, AuthRejectsEmptyKeyIDAndSecret) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().clear();
+  cfg.services.value().emplace("svc", makeAuthService(makeAuthConfig({makeAuthKey("", "")})));
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr(".id must be non-empty"));
+  EXPECT_THAT(result.error(), HasSubstr(".secret must be non-empty"));
+}
+
+TEST(ResolveConfig, AuthRejectsTokenTypeOutsideQuicVarint) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().clear();
+  auto auth = makeAuthConfig();
+  auth.token_type = std::optional<uint64_t>{uint64_t{1} << 62};
+  cfg.services.value().emplace("svc", makeAuthService(std::move(auth)));
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("auth.token_type must fit in a QUIC varint"));
+}
+
+TEST(ResolveConfig, AuthAccumulatesMissingKeysAndInvalidTokenType) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().clear();
+  ParsedAuthConfig auth;
+  auth.enabled = true;
+  auth.token_type = std::optional<uint64_t>{uint64_t{1} << 62};
+  cfg.services.value().emplace("svc", makeAuthService(std::move(auth)));
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("auth.hmac_keys is required"));
+  EXPECT_THAT(result.error(), HasSubstr("auth.token_type must fit in a QUIC varint"));
+}
+
+TEST(ResolveConfig, AuthDisabledResolvesCleanly) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().clear();
+  ParsedAuthConfig auth;
+  auth.enabled = false;
+  cfg.services.value().emplace("svc", makeAuthService(std::move(auth)));
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  EXPECT_FALSE(result.value().config.services.at("svc").auth.enabled);
+}
+
+TEST(ResolveConfig, AuthValidConfigRoundTripsAllFields) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().clear();
+  cfg.services.value().emplace(
+      "svc",
+      makeAuthService(
+          makeAuthConfig({makeAuthKey("key-1", "secret-1"), makeAuthKey("key-2", "secret-2")})
+      )
+  );
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  const auto& auth = result.value().config.services.at("svc").auth;
+  EXPECT_TRUE(auth.enabled);
+  EXPECT_EQ(auth.tokenType, 77u);
+  EXPECT_FALSE(auth.requireSetupToken);
+  EXPECT_FALSE(auth.allowRequestTokenOverride);
+  EXPECT_TRUE(auth.strictClaims);
+  ASSERT_EQ(auth.hmacKeys.size(), 2);
+  EXPECT_EQ(auth.hmacKeys[0].id, "key-1");
+  EXPECT_EQ(auth.hmacKeys[0].secret, "secret-1");
+  EXPECT_EQ(auth.hmacKeys[1].id, "key-2");
+  EXPECT_EQ(auth.hmacKeys[1].secret, "secret-2");
+}
+
+TEST(ResolveConfig, AuthOptionalFieldsDefaultCorrectly) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().clear();
+  ParsedAuthConfig auth;
+  auth.enabled = true;
+  std::vector<ParsedAuthConfig::HmacKey> keys{makeAuthKey()};
+  auth.hmac_keys = std::move(keys);
+  cfg.services.value().emplace("svc", makeAuthService(std::move(auth)));
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  const auto& authOut = result.value().config.services.at("svc").auth;
+  EXPECT_TRUE(authOut.enabled);
+  EXPECT_EQ(authOut.tokenType, 0u);
+  EXPECT_TRUE(authOut.requireSetupToken);
+  EXPECT_TRUE(authOut.allowRequestTokenOverride);
+  EXPECT_FALSE(authOut.strictClaims);
+}
+
+TEST(ResolveConfig, AuthAbsentDefaultsDisabled) {
+  auto cfg = makeMinimalInsecureConfig();
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  EXPECT_FALSE(result.value().config.services.at("default").auth.enabled);
 }
 
 // --- Resolution tests ---
