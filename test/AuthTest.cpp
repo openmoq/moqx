@@ -103,6 +103,21 @@ config::AuthConfig makeConfig() {
   };
 }
 
+Grants makeGrants(
+    std::vector<Action> actions,
+    std::vector<MatchRule> namespaceMatches,
+    std::vector<MatchRule> trackMatches
+) {
+  Grants grants;
+  grants.expiresAt = std::chrono::system_clock::now() + std::chrono::hours(1);
+  grants.scopes.push_back(Scope{
+      .actions = std::move(actions),
+      .namespaceMatches = std::move(namespaceMatches),
+      .trackMatches = std::move(trackMatches),
+  });
+  return grants;
+}
+
 std::string claimsFor(Action action, const TrackNamespace& ns, std::string_view track) {
   auto actions = cborArray({cborUInt(static_cast<uint64_t>(action))});
   auto nsMatch = cborMap({{cborUInt(0), cborBytes(namespaceBytes(ns))}});
@@ -111,6 +126,13 @@ std::string claimsFor(Action action, const TrackNamespace& ns, std::string_view 
   auto moqt = cborArray({scope});
   auto exp = cborUInt(4'102'444'800ULL); // 2100-01-01
   return cborMap({{cborUInt(4), exp}, {cborText("moqt"), moqt}});
+}
+
+std::string
+claimsWithScope(std::string_view actions, std::string_view nsMatch, std::string_view trackMatch) {
+  auto scope = cborArray({actions, nsMatch, trackMatch});
+  auto exp = cborUInt(4'102'444'800ULL); // 2100-01-01
+  return cborMap({{cborUInt(4), exp}, {cborText("moqt"), cborArray({scope})}});
 }
 
 } // namespace
@@ -125,6 +147,76 @@ TEST(AuthTest, VerifiesSignedTokenAndAllowsMatchingAction) {
   EXPECT_FALSE(allows(grants.value(), Action::Subscribe, ns, "audio"));
 }
 
+TEST(AuthTest, AllowsPrefixSuffixAndContainsMatchRules) {
+  TrackNamespace ns{{"live", "event"}};
+  const auto canonicalNs = namespaceBytes(ns);
+
+  auto prefixGrants = makeGrants(
+      {Action::Subscribe},
+      {MatchRule{.type = MatchRule::Type::Prefix, .value = canonicalNs.substr(0, 8)}},
+      {MatchRule{.type = MatchRule::Type::Prefix, .value = "vid"}}
+  );
+  EXPECT_TRUE(allows(prefixGrants, Action::Subscribe, ns, "video"));
+  EXPECT_FALSE(allows(prefixGrants, Action::Subscribe, TrackNamespace{{"vod"}}, "video"));
+
+  auto suffixGrants = makeGrants(
+      {Action::Fetch},
+      {MatchRule{
+          .type = MatchRule::Type::Suffix,
+          .value = canonicalNs.substr(canonicalNs.size() - 9)
+      }},
+      {MatchRule{.type = MatchRule::Type::Suffix, .value = ".mp4"}}
+  );
+  EXPECT_TRUE(allows(suffixGrants, Action::Fetch, ns, "clip.mp4"));
+  EXPECT_FALSE(allows(suffixGrants, Action::Fetch, ns, "clip.m4s"));
+
+  auto containsGrants = makeGrants(
+      {Action::Publish},
+      {MatchRule{.type = MatchRule::Type::Contains, .value = "live"}},
+      {MatchRule{.type = MatchRule::Type::Contains, .value = "main"}}
+  );
+  EXPECT_TRUE(allows(containsGrants, Action::Publish, ns, "camera-main"));
+  EXPECT_FALSE(allows(containsGrants, Action::Publish, ns, "camera-side"));
+}
+
+TEST(AuthTest, EmptyNamespaceAndTrackRulesMatchEverything) {
+  auto grants = makeGrants({Action::Subscribe}, {}, {});
+
+  EXPECT_TRUE(allows(grants, Action::Subscribe, TrackNamespace{{"live"}}, "video"));
+  EXPECT_TRUE(allows(grants, Action::Subscribe, TrackNamespace{}, std::nullopt));
+}
+
+TEST(AuthTest, AllowsRejectsEmptyScopesAndExpiredGrants) {
+  Grants emptyScopes;
+  emptyScopes.expiresAt = std::chrono::system_clock::now() + std::chrono::hours(1);
+  EXPECT_FALSE(allows(emptyScopes, Action::Subscribe, TrackNamespace{{"live"}}, "video"));
+
+  auto grants = makeGrants({Action::Subscribe}, {}, {});
+  const auto now = std::chrono::system_clock::now();
+  grants.expiresAt = now - std::chrono::seconds(1);
+  EXPECT_FALSE(allows(grants, Action::Subscribe, TrackNamespace{{"live"}}, "video", now));
+}
+
+TEST(AuthTest, FindAuthTokenSelectsMatchingAuthorizationToken) {
+  Parameters params;
+  params.insertParam(Parameter(
+      static_cast<uint64_t>(TrackRequestParamKey::AUTHORIZATION_TOKEN),
+      AuthToken{.tokenType = 76, .tokenValue = "wrong", .alias = AuthToken::DontRegister}
+  ));
+  params.insertParam(
+      Parameter(static_cast<uint64_t>(TrackRequestParamKey::NEW_GROUP_REQUEST), uint64_t{1})
+  );
+  params.insertParam(Parameter(
+      static_cast<uint64_t>(TrackRequestParamKey::AUTHORIZATION_TOKEN),
+      AuthToken{.tokenType = 77, .tokenValue = "right", .alias = AuthToken::DontRegister}
+  ));
+
+  auto token = findAuthToken(params, 77);
+  ASSERT_TRUE(token.has_value());
+  EXPECT_EQ(token->tokenValue, "right");
+  EXPECT_FALSE(findAuthToken(params, 78).has_value());
+}
+
 TEST(AuthTest, RejectsBadSignature) {
   auto token = makeToken(claimsFor(Action::ClientSetup, TrackNamespace{}, ""));
   token.tokenValue.back() ^= 0x01;
@@ -132,6 +224,71 @@ TEST(AuthTest, RejectsBadSignature) {
   auto grants = verifier.verify(token);
   ASSERT_TRUE(grants.hasError());
   EXPECT_EQ(grants.error(), AuthError::BadSignature);
+}
+
+TEST(AuthTest, SelectsConfiguredKeyByID) {
+  auto config = makeConfig();
+  config.hmacKeys.push_back(config::AuthConfig::HmacKey{.id = "k2", .secret = "secret-2"});
+
+  AuthTokenVerifier verifier(config);
+  auto grants = verifier.verify(
+      makeToken(claimsFor(Action::ClientSetup, TrackNamespace{}, ""), "secret-2", "k2")
+  );
+  ASSERT_TRUE(grants.hasValue());
+
+  auto missingKey = verifier.verify(
+      makeToken(claimsFor(Action::ClientSetup, TrackNamespace{}, ""), "secret-3", "k3")
+  );
+  ASSERT_TRUE(missingKey.hasError());
+  EXPECT_EQ(missingKey.error(), AuthError::BadSignature);
+}
+
+TEST(AuthTest, RejectsWrongTokenType) {
+  auto token = makeToken(claimsFor(Action::ClientSetup, TrackNamespace{}, ""));
+  token.tokenType = 78;
+  AuthTokenVerifier verifier(makeConfig());
+
+  auto grants = verifier.verify(token);
+  ASSERT_TRUE(grants.hasError());
+  EXPECT_EQ(grants.error(), AuthError::WrongTokenType);
+}
+
+TEST(AuthTest, RejectsMalformedTokenEnvelope) {
+  AuthTokenVerifier verifier(makeConfig());
+
+  auto empty = makeToken(claimsFor(Action::ClientSetup, TrackNamespace{}, ""));
+  empty.tokenValue.clear();
+  auto emptyRes = verifier.verify(empty);
+  ASSERT_TRUE(emptyRes.hasError());
+  EXPECT_EQ(emptyRes.error(), AuthError::Malformed);
+
+  auto wrongVersion = makeToken(claimsFor(Action::ClientSetup, TrackNamespace{}, ""));
+  wrongVersion.tokenValue[0] = '\x02';
+  auto wrongVersionRes = verifier.verify(wrongVersion);
+  ASSERT_TRUE(wrongVersionRes.hasError());
+  EXPECT_EQ(wrongVersionRes.error(), AuthError::Malformed);
+
+  auto truncated = makeToken(claimsFor(Action::ClientSetup, TrackNamespace{}, ""));
+  truncated.tokenValue.resize(3);
+  auto truncatedRes = verifier.verify(truncated);
+  ASSERT_TRUE(truncatedRes.hasError());
+  EXPECT_EQ(truncatedRes.error(), AuthError::Malformed);
+
+  auto claimsLenOverflow = makeToken(claimsFor(Action::ClientSetup, TrackNamespace{}, ""));
+  const auto claimsLenOffset = size_t{2} + std::string_view("k1").size();
+  claimsLenOverflow.tokenValue[claimsLenOffset] = '\x7f';
+  auto claimsLenOverflowRes = verifier.verify(claimsLenOverflow);
+  ASSERT_TRUE(claimsLenOverflowRes.hasError());
+  EXPECT_EQ(claimsLenOverflowRes.error(), AuthError::Malformed);
+}
+
+TEST(AuthTest, RejectsMalformedClaims) {
+  AuthTokenVerifier verifier(makeConfig());
+  auto token = makeToken(cborArray({}));
+
+  auto grants = verifier.verify(token);
+  ASSERT_TRUE(grants.hasError());
+  EXPECT_EQ(grants.error(), AuthError::Malformed);
 }
 
 TEST(AuthTest, RejectsExpiredToken) {
@@ -143,4 +300,29 @@ TEST(AuthTest, RejectsExpiredToken) {
   auto grants = verifier.verify(makeToken(claims));
   ASSERT_TRUE(grants.hasError());
   EXPECT_EQ(grants.error(), AuthError::Expired);
+}
+
+TEST(AuthTest, ParsesScalarActionAndMoqtRevalClaim) {
+  auto claims = claimsWithScope(
+      cborUInt(static_cast<uint64_t>(Action::ClientSetup)),
+      cborMap({}),
+      cborMap({})
+  );
+  auto withReval = cborMap({
+      {cborUInt(4), cborUInt(4'102'444'800ULL)},
+      {cborText("moqt"),
+       cborArray({cborArray(
+           {cborUInt(static_cast<uint64_t>(Action::ClientSetup)), cborMap({}), cborMap({})}
+       )})},
+      {cborText("moqt-reval"), cborUInt(60)},
+  });
+
+  AuthTokenVerifier verifier(makeConfig());
+  auto scalarGrants = verifier.verify(makeToken(claims));
+  ASSERT_TRUE(scalarGrants.hasValue());
+  EXPECT_TRUE(allows(scalarGrants.value(), Action::ClientSetup, TrackNamespace{}));
+
+  auto revalGrants = verifier.verify(makeToken(withReval));
+  ASSERT_TRUE(revalGrants.hasValue());
+  EXPECT_TRUE(allows(revalGrants.value(), Action::ClientSetup, TrackNamespace{}));
 }

@@ -63,6 +63,7 @@ services:
     #       secret: "replace-with-secret"
     #   require_setup_token: true
     #   allow_request_token_override: true
+    #   strict_claims: false       # Reject unsupported token claims instead of ignoring them
 
   testing:
     match:

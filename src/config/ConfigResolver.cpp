@@ -325,19 +325,20 @@ void validateAuth(
     errors.push_back(
         "Service '" + serviceName + "': auth.hmac_keys is required when auth is enabled"
     );
-    return;
-  }
-  std::unordered_set<std::string> keyIDs;
-  for (size_t i = 0; i < keys->size(); ++i) {
-    const auto& key = (*keys)[i];
-    const auto prefix = "Service '" + serviceName + "': auth.hmac_keys[" + std::to_string(i) + "]";
-    if (key.id.value().empty()) {
-      errors.push_back(prefix + ".id must be non-empty");
-    } else if (!keyIDs.insert(key.id.value()).second) {
-      errors.push_back(prefix + ".id duplicates another auth key");
-    }
-    if (key.secret.value().empty()) {
-      errors.push_back(prefix + ".secret must be non-empty");
+  } else {
+    std::unordered_set<std::string> keyIDs;
+    for (size_t i = 0; i < keys->size(); ++i) {
+      const auto& key = (*keys)[i];
+      const auto prefix =
+          "Service '" + serviceName + "': auth.hmac_keys[" + std::to_string(i) + "]";
+      if (key.id.value().empty()) {
+        errors.push_back(prefix + ".id must be non-empty");
+      } else if (!keyIDs.insert(key.id.value()).second) {
+        errors.push_back(prefix + ".id duplicates another auth key");
+      }
+      if (key.secret.value().empty()) {
+        errors.push_back(prefix + ".secret must be non-empty");
+      }
     }
   }
   if (auth.token_type.value().value_or(0) >= (uint64_t{1} << 62)) {
