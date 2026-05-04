@@ -76,6 +76,8 @@ add_library(moqx_core STATIC
   src/MoqxRelay.cpp
   src/MoqxRelayContext.cpp
   src/MoqxRelayServer.cpp
+  src/MoqxSession.cpp
+  src/switch/SwitchHandler.cpp
   src/MoqxPicoRelayServer.cpp
   src/ServiceMatcher.cpp
   src/admin/AdminServer.cpp

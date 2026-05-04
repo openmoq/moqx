@@ -7,6 +7,8 @@
  */
 
 #include "MoqxRelay.h"
+#include "MoqxSession.h"
+#include "switch/SwitchHandler.h"
 #include <folly/container/F14Set.h>
 #include <moxygen/MoQFilters.h>
 #include <moxygen/MoQTrackProperties.h>
@@ -1608,6 +1610,58 @@ void MoqxRelay::dumpState(RelayStateVisitor& visitor) const {
         moxygen::MoQCache::SteadyClock::now()
     );
   }
+}
+
+void MoqxRelay::handleSwitch(
+    std::shared_ptr<MoqxSession> session,
+    moxygen::Switch sw) {
+  auto handler = std::make_shared<SwitchHandler>(session, std::move(sw), *this);
+  folly::coro::co_withExecutor(
+      session->getExecutor(),
+      folly::coro::co_invoke([handler]() -> folly::coro::Task<void> {
+        co_await handler->run();
+      }))
+      .start();
+}
+
+std::shared_ptr<moxygen::MoQForwarder> MoqxRelay::getForwarder(
+    moxygen::RequestID requestID,
+    moxygen::MoQSession* session) const {
+  // First try to find by requestID + session pointer (upstream requestID match).
+  for (auto& [ftn, sub] : subscriptions_) {
+    if (sub.requestID == requestID && sub.forwarder &&
+        sub.forwarder->getSubscriber(session)) {
+      return sub.forwarder;
+    }
+  }
+  // Fallback: scan by session pointer alone. Disambiguates by session only.
+  // TODO: store subscriber requestID in RelaySubscription for exact lookup.
+  for (auto& [ftn, sub] : subscriptions_) {
+    if (sub.forwarder && sub.forwarder->getSubscriber(session)) {
+      return sub.forwarder;
+    }
+  }
+  return nullptr;
+}
+
+std::shared_ptr<moxygen::Publisher::SubscriptionHandle>
+MoqxRelay::getSubscriptionHandle(
+    const moxygen::FullTrackName& trackName) const {
+  auto it = subscriptions_.find(trackName);
+  if (it != subscriptions_.end()) {
+    return it->second.handle;
+  }
+  return nullptr;
+}
+
+folly::coro::Task<std::shared_ptr<moxygen::MoQForwarder>>
+MoqxRelay::getOrSubscribeForwarder(const moxygen::FullTrackName& trackName) {
+  auto it = subscriptions_.find(trackName);
+  if (it != subscriptions_.end() && it->second.forwarder) {
+    co_return it->second.forwarder;
+  }
+  // TODO: subscribe upstream and await non-null largest().
+  co_return nullptr;
 }
 
 } // namespace openmoq::moqx

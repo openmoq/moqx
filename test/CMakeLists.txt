@@ -196,6 +196,16 @@ target_link_libraries(moqx_property_ranking_self_exclusion_test PRIVATE
 )
 gtest_discover_tests(moqx_property_ranking_self_exclusion_test)
 
+add_executable(moqx_switch_handler_test
+  SwitchHandlerTest.cpp
+)
+target_link_libraries(moqx_switch_handler_test PRIVATE
+  moqx_core
+  GTest::gtest_main
+  GTest::gmock
+)
+gtest_discover_tests(moqx_switch_handler_test)
+
 # TRACK_FILTER integration tests (in-process relay, no live server)
 add_executable(moqx_track_filter_test
   MoqxTrackFilterTest.cpp

@@ -26,6 +26,8 @@
 
 namespace openmoq::moqx {
 
+class MoqxSession;
+
 // Visitor interface for relay state inspection.
 // MoqxRelay::dumpState() calls these methods while walking internal state.
 // Implement this to serialize state into any format without adding format
@@ -220,6 +222,32 @@ public:
   // Walks relay state by calling visitor methods.
   // MUST be called on the relay's worker EVB.
   void dumpState(RelayStateVisitor& visitor) const;
+
+  // --- SWITCH support ---
+
+  // Dispatch a SWITCH message from a session. Schedules SwitchHandler::run()
+  // on the session's executor and returns immediately.
+  void handleSwitch(
+      std::shared_ptr<MoqxSession> session,
+      moxygen::Switch sw);
+
+  // Returns the forwarder the session is currently subscribed to.
+  // requestID provided for a future exact lookup; POC scans by session pointer.
+  std::shared_ptr<moxygen::MoQForwarder> getForwarder(
+      moxygen::RequestID requestID,
+      moxygen::MoQSession* session) const;
+
+  // Returns existing forwarder for trackName, or subscribes upstream and waits.
+  folly::coro::Task<std::shared_ptr<moxygen::MoQForwarder>>
+  getOrSubscribeForwarder(const moxygen::FullTrackName& trackName);
+
+  // Returns SubscriptionHandle for an existing subscription.
+  std::shared_ptr<moxygen::Publisher::SubscriptionHandle>
+  getSubscriptionHandle(const moxygen::FullTrackName& trackName) const;
+
+  moxygen::MoQCache* cache() const {
+    return cache_.get();
+  }
 
   // Test accessor: check if a publish exists and return node/publish state
   struct PublishState {

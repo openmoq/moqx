@@ -5,6 +5,7 @@
  */
 
 #include "MoqxRelayServer.h"
+#include "MoqxSession.h"
 #include "stats/QuicStatsCollector.h"
 #include <moxygen/MoQRelaySession.h>
 #include <moxygen/events/MoQFollyExecutorImpl.h>
@@ -150,11 +151,12 @@ std::shared_ptr<MoQSession> MoqxRelayServer::createSession(
     folly::MaybeManagedPtr<proxygen::WebTransport> wt,
     std::shared_ptr<MoQExecutor> executor
 ) {
-  return std::make_shared<MoQRelaySession>(
+  auto session = std::make_shared<MoqxSession>(
       folly::MaybeManagedPtr<proxygen::WebTransport>(std::move(wt)),
       *this,
-      std::move(executor)
-  );
+      std::move(executor));
+  session->setRelay(context_->relay);
+  return session;
 }
 
 } // namespace openmoq::moqx
