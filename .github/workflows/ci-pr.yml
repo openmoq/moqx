@@ -162,7 +162,7 @@ jobs:
       - name: Setup dependencies
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: bash scripts/build.sh setup
+        run: bash scripts/build.sh setup --use-latest --no-fallback
 
       - name: Build
         run: bash scripts/build.sh
