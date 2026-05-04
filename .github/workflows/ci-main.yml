@@ -14,7 +14,10 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
+  # Cancel superseded runs on release/** branches (rapid-iteration churn).
+  # Keep main's serialize-don't-cancel behavior so external-state steps
+  # (Docker push, release create, deploy) aren't interrupted mid-flight.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: write
