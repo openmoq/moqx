@@ -117,7 +117,7 @@ export GLOG_logtostderr=1
 export GLOG_colorlogtostderr=1
 export GLOG_minloglevel="${CLI_LOG_LEVEL:-${MOQX_LOG_LEVEL:-0}}"
 export GLOG_v="${CLI_VERBOSE:-${MOQX_VERBOSE:-0}}"
-export GLOG_vmodule="${CLI_VMODULE:-${GLOG_vmodule:-MoqxRelay=3,MoQSession=3,MoQForwarder=3,MoQCache=2}}"
+export GLOG_vmodule="${CLI_VMODULE:-${GLOG_vmodule:-MoqxRelay=3,MoQSession=3,MoQForwarder=3,MoqxCache=2}}"
 
 # ── Run ──────────────────────────────────────────────────────────────────
 SUBCMD="${CLI_SUBCMD:-${MOQX_SUBCMD:-serve}}"

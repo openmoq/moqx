@@ -17,7 +17,7 @@ building blocks as libraries:
 
 - **MoQForwarder** — fan-out engine, used as-is from moxygen for now. May need
   to fork in the future to accommodate threading model differences.
-- **MoQCache** — object cache, used as-is from moxygen. Custom miss handling
+- **MoqxCache** — object cache, hard-forked from moxygen. Customizable for moqx-specific functionality.
   and chained cache support may be upstreamed to openmoq/moxygen or maintained
   in our fork.
 - **MoQSession / MoQServer / MoQRelaySession** — session and server

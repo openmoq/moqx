@@ -70,6 +70,30 @@ FetchContent_Declare(reflectcpp
 )
 FetchContent_MakeAvailable(reflectcpp)
 
+# --- Cache library (forked from moxygen) ---
+
+add_library(moqx_cache STATIC
+  src/MoqxCache.cpp
+)
+
+target_include_directories(moqx_cache
+  PUBLIC
+    ${PROJECT_SOURCE_DIR}/src
+)
+
+target_link_libraries(moqx_cache PUBLIC
+  moxygen::moxygen_moq
+  moxygen::moxygen_moq_consumers
+  moxygen::moxygen_moq_framer
+  moxygen::moxygen_util_location_interval_set
+  Folly::folly_container_f14_hash
+  Folly::folly_coro_baton
+  Folly::folly_coro_task
+  Folly::folly_logging_logging
+)
+
+target_compile_options(moqx_cache PRIVATE -Wall -Wextra -Wpedantic)
+
 # --- Core library ---
 
 add_library(moqx_core STATIC
@@ -99,8 +123,8 @@ target_include_directories(moqx_core
 )
 
 target_link_libraries(moqx_core PUBLIC
+  moqx_cache
   moxygen::moxygen_relay_moq_forwarder
-  moxygen::moxygen_relay_moq_cache
   moxygen::moxygen_moq_relay_session
   moxygen::moxygen_moq_server
   moxygen::openmoq_pico_evb_server_transport

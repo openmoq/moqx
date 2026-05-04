@@ -15,8 +15,8 @@ TEST_F(MoQRelayTest, AllowedNamespacePrefix) {
   // This just verifies the relay can be constructed with a namespace prefix
   // More detailed testing requires full session setup
   auto relay2 = std::make_shared<MoqxRelay>(config::CacheConfig{
-      .maxCachedTracks = moxygen::kDefaultMaxCachedTracks,
-      .maxCachedGroupsPerTrack = moxygen::kDefaultMaxCachedGroupsPerTrack,
+      .maxCachedTracks = openmoq::moqx::kDefaultMaxCachedTracks,
+      .maxCachedGroupsPerTrack = openmoq::moqx::kDefaultMaxCachedGroupsPerTrack,
   });
   relay2->setAllowedNamespacePrefix(kTestNamespace);
   EXPECT_NE(relay2, nullptr);

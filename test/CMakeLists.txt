@@ -248,3 +248,25 @@ target_link_libraries(track_filter_load_test PRIVATE
   moxygen::moxygen_moq_relay_session
   moxygen::moxygen_util_insecure_verifier_dangerous_do_not_use_in_production
 )
+
+# --- MoqxCache tests ---
+
+add_executable(moqx_cache_test
+  MoqxCacheTest.cpp
+)
+
+target_link_libraries(moqx_cache_test PRIVATE
+  moqx_cache
+  moqx_test_utils
+  moqx_test_main
+  moxygen::moqtest_utils
+  GTest::gmock
+  Folly::folly_coro_gtest_helpers
+  Folly::folly_io_async_scoped_event_base_thread
+)
+
+target_compile_options(moqx_cache_test PRIVATE
+  -Wall -Wextra -Wpedantic
+)
+
+gtest_discover_tests(moqx_cache_test)
