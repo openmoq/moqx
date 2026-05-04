@@ -124,15 +124,44 @@ jobs:
           # Moxygen reference: explicit input or snapshot-latest fallback.
           MOX_REF="${{ inputs.moxygen_release }}"
           if [ -z "$MOX_REF" ]; then
-            MOX_REF="snapshot-latest"
-            echo "==> No moxygen_release input — defaulting to moxygen snapshot-latest"
+            # Branch-aware default: from main, use GitHub's "latest" tagged
+            # release (highest non-prerelease semver across all branches).
+            # From release/vM.m, use the latest non-prerelease v M.m.* tag —
+            # so a hotfix dispatch on a release line picks the matching
+            # moxygen patch line, not whatever's newest globally.
+            if [ "$BRANCH" = "main" ]; then
+              MOX_REF=$(gh release view --repo openmoq/moxygen --json tagName --jq .tagName 2>/dev/null || true)
+              if [ -z "$MOX_REF" ]; then
+                echo "Error: no tagged moxygen release found." >&2
+                exit 1
+              fi
+              echo "==> No moxygen_release input — defaulting to GitHub latest: $MOX_REF"
+            else
+              LABEL="${BRANCH#release/v}"
+              MOX_REF=$(gh release list --repo openmoq/moxygen --limit 50 \
+                --json tagName,isPrerelease \
+                --jq ".[] | select(.isPrerelease == false) | select(.tagName | startswith(\"v$LABEL.\")) | .tagName" \
+                | head -1)
+              if [ -z "$MOX_REF" ]; then
+                echo "Error: no v${LABEL}.* non-prerelease moxygen release found for this release branch line." >&2
+                exit 1
+              fi
+              echo "==> No moxygen_release input — defaulting to latest v${LABEL}.* tag: $MOX_REF"
+            fi
           else
+            # Accept bare semver (0.1.4) or v-prefixed (v0.1.4); normalize.
+            if [[ "$MOX_REF" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+              MOX_REF="v$MOX_REF"
+              echo "==> Normalized bare semver to $MOX_REF"
+            fi
             echo "==> Pinning to moxygen release: $MOX_REF"
           fi
 
-          # Verify moxygen reference exists.
+          # Verify moxygen reference exists; on failure, list recent releases.
           if ! gh release view "$MOX_REF" --repo openmoq/moxygen >/dev/null 2>&1; then
             echo "Error: moxygen release $MOX_REF does not exist on openmoq/moxygen" >&2
+            echo "Available recent releases:" >&2
+            gh release list --repo openmoq/moxygen --limit 10 --json tagName --jq '.[].tagName' | sed 's/^/  /' >&2
             exit 1
           fi
 
@@ -196,9 +225,17 @@ jobs:
             PORTABLE_NOTE="_Portable Linux tarballs not produced for this release: moxygen \`${MOX_REF}\` does not include the required portable assets._"
           fi
 
+          # Mark prereleases (1.2.3-rc1) as such so GitHub's "latest"
+          # algorithm correctly excludes them.
+          PRERELEASE_FLAG=()
+          if [[ "$VERSION" == *-* ]]; then
+            PRERELEASE_FLAG=(--prerelease)
+          fi
+
           gh release create "$TAG" \
             --target "$SNAPSHOT_SHA" \
             --title "moqx $VERSION" \
+            "${PRERELEASE_FLAG[@]}" \
             --notes "$(cat <<EOF
           **Version:** \`${VERSION}\`
           **Commit:** \`${SNAPSHOT_SHA}\`
@@ -437,11 +474,15 @@ jobs:
           app-id: ${{ secrets.OMOQ_APP_ID }}
           private-key: ${{ secrets.OMOQ_APP_PRIV_KEY }}
 
-      - name: Mark release as latest
+      - name: Confirm release published
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           REPO: ${{ github.repository }}
           TAG: ${{ needs.validate.outputs.tag }}
         run: |
-          gh release edit "$TAG" --repo "$REPO" --latest
+          # No --latest flag here. Let GitHub's auto-latest algorithm
+          # pick the highest non-prerelease semver tag. Forcing --latest
+          # would mark a hotfix patch from a release/vM.m branch as
+          # latest even when a newer vM.(m+1) line exists.
           echo "Released: $TAG"
+          gh release view "$TAG" --repo "$REPO" --json isLatest,isPrerelease,name --jq '"isLatest=\(.isLatest) isPrerelease=\(.isPrerelease) name=\(.name)"'

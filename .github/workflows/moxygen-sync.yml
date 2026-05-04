@@ -13,13 +13,13 @@ name: moxygen sync
 on:
   schedule:
     # Fourth (final) stage of the openmoq sync cron cascade (UTC; ET shifts under DST):
-    #   04:35  picoquic upstream-sync     (private-octopus → openmoq/picoquic)
-    #   05:35  moxygen  upstream-sync     (facebookexperimental → openmoq/moxygen)
-    #   05:45  moxygen  picoquic-pin sync (openmoq/picoquic → moxygen picoquic-rev.txt)
-    #   09:05  moqx     moxygen-submodule sync (this workflow — openmoq/moxygen → moqx deps/moxygen)
-    # The 3h20m gap before this stage gives moxygen sync PRs (upstream + picoquic-pin)
+    #   03:23  picoquic upstream-sync     (private-octopus → openmoq/picoquic)
+    #   04:23  moxygen  upstream-sync     (facebookexperimental → openmoq/moxygen)
+    #   04:37  moxygen  picoquic-pin sync (openmoq/picoquic → moxygen picoquic-rev.txt)
+    #   08:23  moqx     moxygen-submodule sync (this workflow — openmoq/moxygen → moqx deps/moxygen)
+    # The 3h46m gap before this stage gives moxygen sync PRs (upstream + picoquic-pin)
     # time to run CI and auto-merge into openmoq/moxygen main before we pull it.
-    - cron: '5 9 * * *'
+    - cron: '23 8 * * *'
   repository_dispatch:
     types: [moxygen-update]
   workflow_dispatch:
