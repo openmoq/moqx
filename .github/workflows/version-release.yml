@@ -57,6 +57,13 @@ on:
         required: false
         type: string
 
+# Serialize per-version dispatches: prevents two runs with the same
+# version from both passing validate's tag-doesn't-exist check and
+# then racing on create-release.
+concurrency:
+  group: version-release-${{ inputs.version }}
+  cancel-in-progress: false
+
 permissions:
   contents: write
 
@@ -365,13 +372,31 @@ jobs:
           app-id: ${{ secrets.OMOQ_APP_ID }}
           private-key: ${{ secrets.OMOQ_APP_PRIV_KEY }}
 
+      - name: Verify snapshot hasn't been replaced mid-flight
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ github.repository }}
+          SNAPSHOT_TAG: ${{ needs.validate.outputs.snapshot_tag }}
+          EXPECTED_SHA: ${{ needs.validate.outputs.snapshot_sha }}
+        run: |
+          CURRENT_SHA=$(gh api "repos/$REPO/releases" \
+            --jq ".[] | select(.tag_name == \"$SNAPSHOT_TAG\") | .target_commitish")
+          if [ "$CURRENT_SHA" != "$EXPECTED_SHA" ]; then
+            echo "Error: $SNAPSHOT_TAG was replaced mid-release." >&2
+            echo "  expected: $EXPECTED_SHA" >&2
+            echo "  current:  $CURRENT_SHA" >&2
+            echo "Retry the dispatch — ci-main published a new snapshot during this run." >&2
+            exit 1
+          fi
+
       - name: Download snapshot tarballs
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ github.repository }}
           SNAPSHOT_TAG: ${{ needs.validate.outputs.snapshot_tag }}
         run: |
           mkdir -p snapshot-assets
-          gh release download "$SNAPSHOT_TAG" --dir snapshot-assets --pattern '*.tar.gz'
+          gh release download "$SNAPSHOT_TAG" --repo "$REPO" --dir snapshot-assets --pattern '*.tar.gz'
           # Drop any portable tarballs from snapshot — those are built fresh
           # in portable-build and uploaded directly there.
           rm -f snapshot-assets/moqx-linux-amd64*.tar.gz \
@@ -382,11 +407,12 @@ jobs:
       - name: Upload to release (parallel)
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ github.repository }}
           TAG: ${{ needs.validate.outputs.tag }}
         run: |
           # Fan out asset upload to N concurrent gh release upload calls.
           find snapshot-assets -name '*.tar.gz' -print0 | \
-            xargs -0 -n1 -P 6 -I{} gh release upload "$TAG" {} --clobber
+            xargs -0 -n1 -P 6 -I{} gh release upload "$TAG" --repo "$REPO" {} --clobber
 
   # ════════════════════════════════════════════════════════════════════════════
   # Finalize: mark release as latest once all uploads succeeded.
@@ -414,7 +440,8 @@ jobs:
       - name: Mark release as latest
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ github.repository }}
           TAG: ${{ needs.validate.outputs.tag }}
         run: |
-          gh release edit "$TAG" --latest
+          gh release edit "$TAG" --repo "$REPO" --latest
           echo "Released: $TAG"
