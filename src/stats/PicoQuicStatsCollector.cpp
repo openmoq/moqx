@@ -45,7 +45,9 @@ void PicoQuicStatsCollector::onPathQualityDelta(const PathQualityDelta& d) {
   quicPacketLoss_ += d.packetsLost;
   quicBytesWritten_ += d.bytesSent;
   quicBytesRead_ += d.bytesReceived;
-  quicPacketRetransmissions_ += d.timerLosses + d.spuriousLosses;
+  quicPacketRetransmissions_ += d.timerLosses;
+  quicPTO_ += d.timerLosses;
+  quicPacketSpuriousLoss_ += d.spuriousLosses;
   if (d.cwndBlocked) {
     ++quicCwndBlocked_;
   }
