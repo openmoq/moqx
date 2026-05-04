@@ -1235,7 +1235,7 @@ void MoqxRelay::dumpState(RelayStateVisitor& visitor) const {
     visitor.onCacheStats(
         cache_->totalCachedBytes(),
         cache_->getTrackStats(),
-        moxygen::MoQCache::SteadyClock::now()
+        MoqxCache::SteadyClock::now()
     );
   }
 }

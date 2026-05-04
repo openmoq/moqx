@@ -8,13 +8,13 @@
 
 #pragma once
 
+#include "MoqxCache.h"
 #include "NamespaceTree.h"
 #include "SubscriptionRegistry.h"
 #include "UpstreamProvider.h"
 #include "config/Config.h"
 #include "relay/PropertyRanking.h"
 #include <moxygen/MoQSession.h>
-#include <moxygen/relay/MoQCache.h>
 #include <moxygen/relay/MoQForwarder.h>
 
 #include <folly/container/F14Map.h>
@@ -81,8 +81,8 @@ public:
   // Called once with cache state; not called if cache is disabled.
   virtual void onCacheStats(
       size_t totalBytes,
-      const std::vector<moxygen::MoQCache::TrackStats>& tracks,
-      moxygen::MoQCache::TimePoint now
+      const std::vector<MoqxCache::TrackStats>& tracks,
+      MoqxCache::TimePoint now
   ) = 0;
 };
 
@@ -107,12 +107,11 @@ public:
       : relayID_(std::move(relayID)), maxDeselected_(maxDeselected), idleTimeout_(idleTimeout),
         activityThreshold_(activityThreshold) {
     if (cache.maxCachedTracks > 0) {
-      cache_ =
-          std::make_unique<moxygen::MoQCache>(cache.maxCachedTracks, cache.maxCachedGroupsPerTrack);
+      cache_ = std::make_unique<MoqxCache>(cache.maxCachedTracks, cache.maxCachedGroupsPerTrack);
       cache_->setMaxCachedBytes(static_cast<size_t>(cache.maxCachedMb) * 1024 * 1024);
       cache_->setMinEvictionBytes(static_cast<size_t>(cache.minEvictionKb) * 1024);
       cache_->setDefaultMaxCacheDuration(cache.defaultMaxCacheDuration);
-      // TODO: wire cache.maxCacheDuration once MoQCache supports clamping
+      // TODO: wire cache.maxCacheDuration once MoqxCache supports clamping
       // publisher-set track durations.
     }
   }
@@ -321,7 +320,7 @@ private:
       const moxygen::FullTrackName& ftn,
       std::shared_ptr<moxygen::TrackConsumer> consumer
   );
-  std::unique_ptr<moxygen::MoQCache> cache_;
+  std::unique_ptr<MoqxCache> cache_;
   uint64_t maxDeselected_{kDefaultMaxDeselected};
 
   static constexpr std::chrono::milliseconds kDefaultIdleTimeout{10'000};

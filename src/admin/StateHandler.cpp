@@ -121,8 +121,8 @@ public:
 
   void onCacheStats(
       size_t totalBytes,
-      const std::vector<moxygen::MoQCache::TrackStats>& tracks,
-      moxygen::MoQCache::TimePoint now
+      const std::vector<MoqxCache::TrackStats>& tracks,
+      MoqxCache::TimePoint now
   ) override {
     w_.key("cache");
     w_.beginObject();
