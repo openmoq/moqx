@@ -69,10 +69,9 @@ public:
 
   folly::Expected<Grants, AuthError> verify(const moxygen::AuthToken& token) const;
 
-  // Internal v1 envelope used by tests and by local token issuers:
-  // 0x01 | key-id-len:u8 | key-id | claims-len:u32be | CBOR claims | HMAC-SHA256.
+  // Test/local issuer helper for Catapult CWT tokens signed with the configured HMAC key.
   static std::string
-  signForTest(std::string_view keyID, std::string_view secret, std::string_view cborClaims);
+  signForTest(std::string_view keyID, std::string_view secret, const Grants& grants);
 
 private:
   config::AuthConfig config_;
