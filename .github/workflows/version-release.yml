@@ -369,18 +369,62 @@ jobs:
           echo "==> bundled libs:"
           ls -lh _install/lib/
 
+      - name: Stage release content (config, docker, doc)
+        run: |
+          install -d _install/config _install/docker _install/doc
+
+          # config/
+          cp docker/config.local.yaml      _install/config/
+          cp docker/config.production.yaml _install/config/
+
+          # docker/
+          cp docker/Dockerfile               _install/docker/
+          cp docker/docker-compose.yml       _install/docker/
+          cp docker/entrypoint.sh            _install/docker/
+          cp docker/moqx-run.sh              _install/docker/
+          cp docker/cloudflare.ini.example   _install/docker/
+          cp docker/route53-iam-policy.json  _install/docker/
+
+          # doc/
+          cp README.md      _install/doc/
+          cp RUNNING.md     _install/doc/
+          cp LICENSE        _install/doc/
+          cp docs/config.md _install/doc/CONFIG.md
+
+          # Drop static .a archives that snuck in from cmake install.
+          # Runtime tarball doesn't need them; saves ~5MB.
+          find _install/lib -name '*.a' -delete
+
+          echo "==> Staged tarball content:"
+          find _install -type f | sort
+
       - name: Package
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
         run: |
           ARTIFACT="moqx-${{ matrix.platform }}.tar.gz"
-          tar czf "$ARTIFACT" -C _install .
+          # Top-level dir = moqx-<version>/ for well-behaved extraction.
+          # Filename carries the platform; top-level dir carries the version
+          # so multiple versions extract side-by-side without clobbering,
+          # and the tarball isn't a tarbomb (no loose bin/lib/ at cwd root).
+          mv _install "moqx-${VERSION}"
+          tar czf "$ARTIFACT" "moqx-${VERSION}"
           ls -lh "$ARTIFACT"
+          echo "==> Top-level entry in tarball:"
+          tar tzf "$ARTIFACT" | head -1
 
       - name: Smoke test
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
         run: |
           mkdir -p /tmp/moqx-smoke
           tar xzf "moqx-${{ matrix.platform }}.tar.gz" -C /tmp/moqx-smoke
+          # New layout: tarball extracts to /tmp/moqx-smoke/moqx-<version>/
+          ROOT="/tmp/moqx-smoke/moqx-${VERSION}"
+          echo "==> Top-level layout:"
+          ls -la "$ROOT"
           echo "==> ldd"
-          ldd /tmp/moqx-smoke/bin/moqx | tee /tmp/ldd.out
+          ldd "$ROOT/bin/moqx" | tee /tmp/ldd.out
           if grep -q "not found" /tmp/ldd.out; then
             echo "ERROR: missing shared libraries"
             exit 1
