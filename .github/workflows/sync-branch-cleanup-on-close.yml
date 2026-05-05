@@ -1,0 +1,48 @@
+name: sync branch cleanup on close
+
+# Auto-deletes the head branch when a sync PR is closed without merging.
+# Scoped to branches whose names start with `sync/` or `sync-` so we only
+# touch automation-managed branches — feature/fix/devops branches are not
+# affected by this workflow.
+#
+# Why this exists: the repo setting "Automatically delete head branches"
+# only applies to MERGED PRs. Sync PRs that fail (e.g., CI red, approve
+# step blocked, manual close to retry) leave their branch on remote.
+# When the next sync run targets the same upstream SHA, the branch name
+# collides and `git push` fails with non-fast-forward. This cleans up
+# preemptively so close-and-rerun is reliable even when the SHA hasn't
+# advanced.
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    if: |
+      github.event.pull_request.merged == false
+      && (startsWith(github.event.pull_request.head.ref, 'sync/')
+          || startsWith(github.event.pull_request.head.ref, 'sync-'))
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Delete head branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        run: |
+          # Defense: head branch must live in this repo (not a fork).
+          # We don't have permission to delete branches in someone else's fork.
+          if [ "$HEAD_REPO" != "$REPO" ]; then
+            echo "PR head is in fork ${HEAD_REPO} — skipping (cannot delete branches in forks)"
+            exit 0
+          fi
+
+          echo "Deleting ${REPO}/${BRANCH} (sync PR closed without merge)"
+          gh api -X DELETE "repos/${REPO}/git/refs/heads/${BRANCH}" \
+            && echo "Deleted ${BRANCH}" \
+            || echo "Branch already gone or never existed — no-op"
