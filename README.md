@@ -1,3 +1,20 @@
+<div align="center">
+  <img src="docs/banner.png" alt="moqx — Media Over QUIC Relay" />
+</div>
+
+<div align="center">
+
+[![ci main](https://github.com/openmoq/moqx/actions/workflows/ci-main.yml/badge.svg)](https://github.com/openmoq/moqx/actions/workflows/ci-main.yml)
+[![ci pr](https://github.com/openmoq/moqx/actions/workflows/ci-pr.yml/badge.svg)](https://github.com/openmoq/moqx/actions/workflows/ci-pr.yml)
+[![Latest release](https://img.shields.io/github/v/release/openmoq/moqx?display_name=tag&sort=semver&logo=github)](https://github.com/openmoq/moqx/releases/latest)
+[![License](https://img.shields.io/github/license/openmoq/moqx)](LICENSE)
+[![Last commit](https://img.shields.io/github/last-commit/openmoq/moqx)](https://github.com/openmoq/moqx/commits/main)
+[![Open issues](https://img.shields.io/github/issues/openmoq/moqx)](https://github.com/openmoq/moqx/issues)
+[![Open PRs](https://img.shields.io/github/issues-pr/openmoq/moqx)](https://github.com/openmoq/moqx/pulls)
+[![MOQT](https://img.shields.io/badge/MOQT-draft--16-blue)](https://datatracker.ietf.org/doc/draft-ietf-moq-transport/)
+
+</div>
+
 # moqx
 
 The OpenMOQ Relay — a MoQT relay server based on
