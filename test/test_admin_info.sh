@@ -2,8 +2,10 @@
 set -euo pipefail
 
 BINARY="${1:-$(dirname "$0")/../build/moqx}"
-TESTDIR="$(cd "$(dirname "$0")" && pwd)"
-ADMIN_PORT=9669
+# shellcheck source=test_ports.sh
+source "$(dirname "$0")/test_ports.sh"
+LISTEN_PORT=$TEST_ADMIN_INFO_LISTEN
+ADMIN_PORT=$TEST_ADMIN_INFO_ADMIN
 ADMIN_URL="http://localhost:${ADMIN_PORT}/info"
 
 if [[ ! -x "$BINARY" ]]; then
@@ -11,10 +13,19 @@ if [[ ! -x "$BINARY" ]]; then
   exit 1
 fi
 
-# Start moqx with test config in the background.
-"$BINARY" --config="$TESTDIR/test.config.yaml" &
+TMPDIR=$(mktemp -d)
+MOQX_PID=""
+cleanup() {
+  [[ -n "$MOQX_PID" ]] && kill "$MOQX_PID" 2>/dev/null; wait "$MOQX_PID" 2>/dev/null || true
+  rm -rf "$TMPDIR"
+}
+trap cleanup EXIT
+
+"$(dirname "$0")/make_test_config.sh" "$LISTEN_PORT" "$ADMIN_PORT" > "$TMPDIR/config.yaml"
+
+# Start moqx with the generated config in the background.
+"$BINARY" --config="$TMPDIR/config.yaml" &
 MOQX_PID=$!
-trap 'kill "$MOQX_PID" 2>/dev/null; wait "$MOQX_PID" 2>/dev/null || true' EXIT
 
 # Wait for the admin server to become ready (up to 5 s).
 for i in $(seq 1 50); do

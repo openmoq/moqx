@@ -72,12 +72,15 @@ if [[ "$PROFILE" == "san" ]]; then
 fi
 
 echo "==> Configuring standalone moxygen build (profile: ${PROFILE})..."
+# BUILD_TESTS=ON: gates the GoogleTest FetchContent in moxygen's standalone
+# CMake. Without it, moxygen-install ships no GTest config and moqx's
+# find_package(GTest REQUIRED CONFIG) fails at configure.
 cmake -S "$STANDALONE_SRC" -B "$BUILD_DIR" \
     -G Ninja \
     -DCMAKE_BUILD_TYPE="$CMAKE_BUILD_TYPE" \
     -DCMAKE_INSTALL_PREFIX="$INSTALL_DIR" \
     -DINSTALL_DEPS=ON \
-    -DBUILD_TESTS=OFF \
+    -DBUILD_TESTS=ON \
     -DBUILD_SHARED_LIBS=OFF \
     "${EXTRA_CMAKE_ARGS[@]+"${EXTRA_CMAKE_ARGS[@]}"}"
 

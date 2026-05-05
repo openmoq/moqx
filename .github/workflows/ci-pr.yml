@@ -5,7 +5,7 @@ name: ci pr
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, release/**]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -37,6 +37,9 @@ jobs:
             preset: default
             build_dir: build
             runner: ubuntu-22.04
+          # arm64 is validated by the publish-side docker build (ci-main publish
+          # arm64 entry); skipped here to avoid the ubuntu-runner ↔ bookworm-tarball
+          # glog ABI mismatch. arm64 regressions surface at main-push time.
           # macOS disabled: moxygen tarball bakes brew Cellar versioned paths
           # that break when the runner has different brew package versions.
           # Re-enable once moxygen upstream fixes cmake to use opt symlinks.
@@ -68,7 +71,17 @@ jobs:
       - name: Setup dependencies
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: bash scripts/build.sh setup --use-latest
+          MOQX_PLATFORM: ${{ matrix.platform || '' }}
+        run: |
+          # Release branches pin a specific moxygen release tag via
+          # .moxygen-release. Main uses snapshot-latest via --use-latest.
+          if [ -f .moxygen-release ]; then
+            export MOQX_MOXYGEN_RELEASE_TAG=$(cat .moxygen-release | tr -d '[:space:]')
+            echo "Using pinned moxygen release tag: $MOQX_MOXYGEN_RELEASE_TAG"
+            bash scripts/build.sh setup --no-fallback
+          else
+            bash scripts/build.sh setup --use-latest
+          fi
 
       - name: Build
         run: bash scripts/build.sh --profile ${{ matrix.preset }} --build-dir ${{ matrix.build_dir }}
@@ -78,11 +91,81 @@ jobs:
           ASAN_OPTIONS: ${{ matrix.name == 'asan debug' && 'detect_leaks=1:abort_on_error=1' || '' }}
         run: bash scripts/build.sh test --build-dir ${{ matrix.build_dir }} -- --output-junit test-results.xml
 
+      # dorny/test-reporter writes a Check Run, which needs 'checks: write' on
+      # GITHUB_TOKEN. Fork-PR tokens are read-only regardless of workflow perms,
+      # so skip on cross-repo PRs. test-log output above still shows pass/fail.
       - name: Publish test results
         uses: dorny/test-reporter@v1.9.1
-        if: success() || failure()
+        if: ${{ (success() || failure()) && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
         with:
           name: "test (${{ matrix.name }})"
           path: ${{ matrix.build_dir }}/test-results.xml
           reporter: java-junit
           fail-on-empty: ${{ job.status == 'success' && 'true' || 'false' }}
+
+      - name: Note fork-PR reporter skip
+        if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+        run: |
+          echo "::notice::Publish test results skipped — fork-PR GITHUB_TOKEN lacks checks:write. Test-log output above is authoritative."
+
+  conformance:
+    needs: [check-format]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # mvfst — both transports for d14 and d16. d14+WT was unblocked by
+          # facebookexperimental/moxygen#151 (Accept moq-00 in WT-Available-Protocols).
+          # pico — raw QUIC for d14 and d16. WT cells deferred until pico
+          # WT CONNECT (openmoq/moxygen#172 / PR #173) syncs in.
+          - name: mvfst d14 Q
+            versions: "14"
+            transport: "Q"
+            stack: "mvfst"
+          - name: mvfst d14 WT
+            versions: "14"
+            transport: ""
+            stack: "mvfst"
+          - name: mvfst d16 Q
+            versions: "16"
+            transport: "Q"
+            stack: "mvfst"
+          - name: mvfst d16 WT
+            versions: "16"
+            transport: ""
+            stack: "mvfst"
+          - name: pico d14 Q
+            versions: "14"
+            transport: "Q"
+            stack: "pico"
+          - name: pico d16 Q
+            versions: "16"
+            transport: "Q"
+            stack: "pico"
+    name: conformance (${{ matrix.name }})
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Generate app token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.OMOQ_APP_ID }}
+          private-key: ${{ secrets.OMOQ_APP_PRIV_KEY }}
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install system dependencies
+        run: sudo deps/moxygen/standalone/install-system-deps.sh
+
+      - name: Setup dependencies
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: bash scripts/build.sh setup --use-latest --no-fallback
+
+      - name: Build
+        run: bash scripts/build.sh
+
+      - name: Run conformance tests
+        run: bash test/test_conformance.sh ./build/moqx ${{ matrix.versions }} ${{ matrix.transport }} ${{ matrix.stack }}

@@ -298,6 +298,9 @@ private:
 
   void updateSelectionThreshold();
 
+  // Recompute publisherExtendedThreshold_ by scanning all publisher-subscribers.
+  void updatePublisherExtendedThreshold();
+
   void trimDeselectedQueue(TopNGroup& topNGroup);
 
   /**
@@ -378,6 +381,10 @@ private:
   int64_t nextSeqUp_{0};
   int64_t nextSeqDown_{-1};
   uint64_t selectionThreshold_{0};
+  // Maximum effective window across all publisher-subscribers: max(N + selfTrackCount).
+  // Used in crossesThreshold() to avoid fast-path exits that would miss updates
+  // relevant to publisher-subscribers with self-exclusion.
+  uint64_t publisherExtendedThreshold_{0};
   std::vector<uint64_t> sortedThresholds_;
 
   mutable bool rankCacheValid_{false};

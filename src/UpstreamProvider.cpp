@@ -32,6 +32,7 @@ SubscribeNamespace makePeerSubNs(std::optional<std::string> relayID) {
   SubscribeNamespace subNs;
   subNs.trackNamespacePrefix = {};
   subNs.options = SubscribeNamespaceOptions::BOTH;
+  subNs.forward = false;
   if (relayID) {
     subNs.params.insertParam(Parameter(
         static_cast<uint64_t>(TrackRequestParamKey::AUTHORIZATION_TOKEN),

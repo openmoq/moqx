@@ -20,17 +20,42 @@ target_link_libraries(moqx_test_main PUBLIC
   GTest::gtest
 )
 
-add_executable(moqx_relay_test
-  MoqxRelayTest.cpp
+add_library(moqx_test_fixture STATIC
+  MoqxRelayTestFixture.cpp
 )
-target_link_libraries(moqx_relay_test PRIVATE
+target_link_libraries(moqx_test_fixture PUBLIC
   moqx_core
   moqx_test_utils
-  moqx_test_main
   GTest::gmock
   moxygen::moxygen_events_moq_folly_executor_impl
 )
+
+add_executable(moqx_relay_test
+  MoqxRelayPublishTests.cpp
+  MoqxRelaySubscribeTests.cpp
+  MoqxRelaySubNsTests.cpp
+  MoqxRelayDataPlaneTests.cpp
+  MoqxRelayFetchTests.cpp
+  MoqxRelayTrackStatusTests.cpp
+  MoqxRelayNGRTests.cpp
+  MoqxRelayPeerTests.cpp
+)
+target_link_libraries(moqx_relay_test PRIVATE
+  moqx_test_fixture
+  moqx_test_main
+)
 gtest_discover_tests(moqx_relay_test)
+
+add_executable(moqx_namespace_tree_test
+  NamespaceTreeTest.cpp
+)
+target_link_libraries(moqx_namespace_tree_test PRIVATE
+  moqx_core
+  moqx_test_main
+  GTest::gmock
+  moxygen::moqtest_utils
+)
+gtest_discover_tests(moqx_namespace_tree_test)
 
 add_executable(moqx_config_test
   config/LoaderTest.cpp
@@ -201,9 +226,25 @@ add_executable(moqx_track_filter_test
   MoqxTrackFilterTest.cpp
 )
 target_link_libraries(moqx_track_filter_test PRIVATE
-  moqx_core
+  moqx_test_fixture
   moqx_test_main
-  GTest::gmock
-  moxygen::moxygen_events_moq_folly_executor_impl
 )
 gtest_discover_tests(moqx_track_filter_test)
+
+# TrackFilterLoadTest: requires a live relay process.
+# Run manually: ./track_filter_load_test --relay_url=https://localhost:9668/moq-relay
+# Not registered with gtest_discover_tests — excluded from automated ctest.
+add_executable(track_filter_load_test
+  TrackFilterLoadTest.cpp
+)
+target_link_libraries(track_filter_load_test PRIVATE
+  moqx_core
+  Folly::folly_init_init
+  moxygen::moxygen_events_moq_folly_executor_impl
+  moxygen::moxygen_moqclient
+  moxygen::moxygen_moq_webtransport_client
+  moxygen::moxygen_relay_moq_relay_client
+  moxygen::moxygen_relay_moq_forwarder
+  moxygen::moxygen_moq_relay_session
+  moxygen::moxygen_util_insecure_verifier_dangerous_do_not_use_in_production
+)

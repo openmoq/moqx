@@ -10,12 +10,8 @@
 #   ./scripts/build.sh [--profile NAME] [--build-dir DIR]
 #   ./scripts/build.sh test [--build-dir DIR] [-- CTEST_ARGS...]
 #
-# First time:
-#   git submodule update --init
-#   sudo deps/moxygen/standalone/install-system-deps.sh   # or see check output
-#   ./scripts/build.sh setup
-#   ./scripts/build.sh
-#   ./scripts/build.sh test
+# First-time setup: see README "Quick Start" and BUILD.md "Prerequisites"
+# (CMake 3.25+, system libs).
 #
 # Incremental (after source changes):
 #   ./scripts/build.sh          # rebuilds only what changed
@@ -37,6 +33,60 @@ DEPS_MODE_FILE="${SCRATCH}/deps-mode"
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 die() { echo "Error: $*" >&2; exit 1; }
+
+# ── CMake version precheck ───────────────────────────────────────────────────
+# moqx top-level CMakeLists.txt requires cmake_minimum_required(VERSION 3.25).
+# Ubuntu 22.04 (Jammy) ships 3.22, which fails at configure. Detect early so
+# users see actionable install instructions instead of a buried cmake error
+# 30 seconds into the build. Override with MOQX_SKIP_CMAKE_CHECK=1 if you're
+# building in an environment that satisfies the requirement another way.
+require_cmake_version() {
+  [[ "${MOQX_SKIP_CMAKE_CHECK:-}" == "1" ]] && return 0
+
+  if ! command -v cmake >/dev/null 2>&1; then
+    cat >&2 <<'EOF'
+Error: cmake not found in PATH.
+moqx requires CMake 3.25+. Install:
+  Ubuntu 24.04+ / Debian 12+:  sudo apt-get install cmake
+  Ubuntu 22.04 (Jammy):        cmake 3.22 in apt is too old; install from Kitware:
+                               see BUILD.md "Installing CMake 3.25+"
+  macOS:                       brew install cmake
+
+To bypass this check (advanced): export MOQX_SKIP_CMAKE_CHECK=1
+EOF
+    exit 1
+  fi
+
+  local ver major minor
+  ver=$(cmake --version | head -1 | sed 's/[^0-9]*\([0-9]*\.[0-9]*\).*/\1/')
+  major=$(echo "$ver" | cut -d. -f1)
+  minor=$(echo "$ver" | cut -d. -f2)
+  if (( major < 3 || (major == 3 && minor < 25) )); then
+    cat >&2 <<EOF
+Error: CMake $ver is too old. moqx requires 3.25+ (top-level CMakeLists.txt).
+
+  $(command -v cmake) — $(cmake --version | head -1)
+
+The moqx configure step will fail with this version. To install 3.25+:
+
+  Ubuntu 22.04 (Jammy):
+    sudo apt-get remove --purge cmake
+    sudo apt-get install -y gpg wget
+    wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null \\
+      | gpg --dearmor - | sudo tee /usr/share/keyrings/kitware-archive-keyring.gpg >/dev/null
+    echo "deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] https://apt.kitware.com/ubuntu/ \$(lsb_release -cs) main" \\
+      | sudo tee /etc/apt/sources.list.d/kitware.list
+    sudo apt-get update && sudo apt-get install -y cmake
+
+  Ubuntu 24.04+:  sudo apt-get install cmake
+  macOS:          brew install cmake
+
+To bypass this check (e.g. you have a 3.25+ cmake on a non-default path
+and have set CMAKE in your environment): export MOQX_SKIP_CMAKE_CHECK=1
+EOF
+    exit 1
+  fi
+}
 
 usage() {
   cat <<'EOF'
@@ -114,17 +164,9 @@ check_system_deps() {
     fi
   fi
 
-  # CMake version check (need 3.25+)
-  if command -v cmake >/dev/null 2>&1; then
-    local ver
-    ver=$(cmake --version | head -1 | sed 's/[^0-9]*\([0-9]*\.[0-9]*\).*/\1/')
-    local major minor
-    major=$(echo "$ver" | cut -d. -f1)
-    minor=$(echo "$ver" | cut -d. -f2)
-    if (( major < 3 || (major == 3 && minor < 25) )); then
-      missing+=("cmake 3.25+ (found $ver)")
-    fi
-  fi
+  # NOTE: CMake version is enforced by require_cmake_version() — kept separate
+  # because the install instructions differ from a plain apt-get (Kitware repo
+  # required on Ubuntu 22.04).
 
   for w in "${warnings[@]+"${warnings[@]}"}"; do
     echo "  Warning: $w"
@@ -171,6 +213,22 @@ check_system_deps() {
   return 0
 }
 
+# ── System-dep precheck wrapper ──────────────────────────────────────────────
+# System libraries are needed when actually compiling — that's the from-source
+# setup path (which builds moxygen on the host) and every cmd_build invocation
+# (moxygen's CMake config does find_dependency(fmt, Glog, ...) and folly
+# transitively wants OpenSSL/Boost). The from-release setup path only fetches
+# a tarball and does NOT need them, so callers must gate this themselves and
+# not invoke it unconditionally during setup. Override with
+# MOQX_SKIP_DEPS_CHECK=1 if you have these on a non-default path.
+require_system_deps() {
+  [[ "${MOQX_SKIP_DEPS_CHECK:-}" == "1" ]] && return 0
+  if ! check_system_deps; then
+    die "Install missing dependencies and re-run.
+  Quick fix: sudo deps/moxygen/standalone/install-system-deps.sh"
+  fi
+}
+
 # ── Submodule check ──────────────────────────────────────────────────────────
 
 check_submodule() {
@@ -192,6 +250,7 @@ checkout_submodule() {
 # ── Setup command ────────────────────────────────────────────────────────────
 
 cmd_setup() {
+  require_cmake_version
   local mode="from-release"
   local profile="default"
   local no_fallback=false
@@ -244,15 +303,9 @@ cmd_setup() {
     fi
   fi
 
-  # Skip system dep check for from-release with --no-fallback (e.g. CI publish
-  # job that only downloads the tarball, doesn't build on the host).
-  if [[ "$mode" != "from-release" ]] || ! $no_fallback; then
-    echo "Checking system dependencies..."
-    if ! check_system_deps; then
-      die "Install missing dependencies and re-run."
-    fi
-    echo "  All system dependencies found."
-  fi
+  # System dep check is deferred until we know a source build is actually
+  # needed (see the from-source branch below). from-release mode downloads a
+  # prebuilt tarball and doesn't need host system libs at setup time.
 
   if $clean; then
     echo "Cleaning .scratch..."
@@ -284,6 +337,7 @@ cmd_setup() {
   fi
 
   if [[ "$mode" == "from-source" ]]; then
+    require_system_deps
     echo ""
     echo "==> Setting up dependencies (from source)..."
     bash "$SCRIPT_DIR/setup-deps-standalone.sh" --profile "$profile"
@@ -298,6 +352,8 @@ cmd_setup() {
 # ── Build command (default) ──────────────────────────────────────────────────
 
 cmd_build() {
+  require_cmake_version
+  require_system_deps
   local profile="default"
   local build_dir=""
 

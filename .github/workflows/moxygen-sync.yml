@@ -1,13 +1,25 @@
 name: moxygen sync
 
 # Updates deps/moxygen submodule to latest moxygen main, creates a PR.
-# Event-triggered by moxygen ci-main after successful release, or manual.
+# Schedule-driven (daily cron) plus workflow_dispatch for ad-hoc syncs.
+# repository_dispatch retained for non-sync flows (e.g., manual hand-merged
+# moxygen PRs that need immediate propagation); the routine cron-cascade
+# does not use it.
 # One PR at a time — blocks if one is pending.
 #
 # Branch naming: sync-moxygen/<short-sha>
 # Auto-merged by auto-merge-moxygen.yml after ci-pr passes.
 
 on:
+  schedule:
+    # Fourth (final) stage of the openmoq sync cron cascade (UTC; ET shifts under DST):
+    #   03:23  picoquic upstream-sync     (private-octopus → openmoq/picoquic)
+    #   04:23  moxygen  upstream-sync     (facebookexperimental → openmoq/moxygen)
+    #   04:37  moxygen  picoquic-pin sync (openmoq/picoquic → moxygen picoquic-rev.txt)
+    #   08:23  moqx     moxygen-submodule sync (this workflow — openmoq/moxygen → moqx deps/moxygen)
+    # The 3h46m gap before this stage gives moxygen sync PRs (upstream + picoquic-pin)
+    # time to run CI and auto-merge into openmoq/moxygen main before we pull it.
+    - cron: '23 8 * * *'
   repository_dispatch:
     types: [moxygen-update]
   workflow_dispatch:
@@ -71,7 +83,7 @@ jobs:
         run: |
           PR_NUM="${{ steps.blocking.outputs.pr_num }}"
           PR_URL="${{ github.server_url }}/${{ github.repository }}/pull/${PR_NUM}"
-          TEXT=":pause_button: *${{ github.repository }}* moxygen sync paused: PR <${PR_URL}|#${PR_NUM}> pending"
+          TEXT=":no_entry: *${{ github.repository }}* moxygen sync blocked: PR <${PR_URL}|#${PR_NUM}> needs resolution"
           curl -s -X POST "$SLACK_WEBHOOK_URL" \
             -H "Content-Type: application/json" \
             --data "{\"text\": \"${TEXT}\"}"

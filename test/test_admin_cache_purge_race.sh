@@ -24,12 +24,13 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 BINARY="${1:-$REPO/build/moqx}"
 MOQBIN="${MOQBIN:-$REPO/.scratch/moxygen-install/bin}"
+# shellcheck source=test_ports.sh
+source "$REPO/test/test_ports.sh"
 DATESERVER="$MOQBIN/moqdateserver"
 TEXTCLIENT="$MOQBIN/moqtextclient"
 
-# Use ports that don't collide with the other integration tests (9668/9669).
-RELAY_PORT=19678
-ADMIN_PORT=19679
+RELAY_PORT=$TEST_CACHE_PURGE_RACE_RELAY
+ADMIN_PORT=$TEST_CACHE_PURGE_RACE_ADMIN
 NAMESPACE="moq-date-purge-race"
 PURGE_URL="http://localhost:${ADMIN_PORT}/cache/purge"
 INFO_URL="http://localhost:${ADMIN_PORT}/info"
