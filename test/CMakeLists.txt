@@ -69,12 +69,21 @@ target_compile_definitions(moqx_config_test PRIVATE
   CONFIG_EXAMPLE_PATH="${PROJECT_SOURCE_DIR}/config.example.yaml"
 )
 if(NOT GFLAGS_SHARED)
-  target_link_libraries(moqx_config_test PRIVATE
-    "$<LINK_LIBRARY:WHOLE_ARCHIVE,gflags_nothreads_static>"
-  )
-  set_property(TARGET moqx_config_test PROPERTY
-    LINK_LIBRARY_OVERRIDE "WHOLE_ARCHIVE,gflags_nothreads_static"
-  )
+  # Force gflags's DEFINE_FLAG-registered .o files into the binary, even
+  # though the test code doesn't reference gflags symbols directly. Cross-
+  # platform raw linker flags — works with cmake 3.22, unlike the
+  # $<LINK_LIBRARY:WHOLE_ARCHIVE,...> genex which needs cmake 3.24+.
+  if(APPLE)
+    target_link_libraries(moqx_config_test PRIVATE
+      "-Wl,-force_load,$<TARGET_FILE:gflags_nothreads_static>"
+    )
+  else()
+    target_link_libraries(moqx_config_test PRIVATE
+      "-Wl,--whole-archive"
+      gflags_nothreads_static
+      "-Wl,--no-whole-archive"
+    )
+  endif()
 endif()
 gtest_discover_tests(moqx_config_test)
 
@@ -87,12 +96,17 @@ target_link_libraries(moqx_config_resolver_test PRIVATE
   GTest::gmock
 )
 if(NOT GFLAGS_SHARED)
-  target_link_libraries(moqx_config_resolver_test PRIVATE
-    "$<LINK_LIBRARY:WHOLE_ARCHIVE,gflags_nothreads_static>"
-  )
-  set_property(TARGET moqx_config_resolver_test PROPERTY
-    LINK_LIBRARY_OVERRIDE "WHOLE_ARCHIVE,gflags_nothreads_static"
-  )
+  if(APPLE)
+    target_link_libraries(moqx_config_resolver_test PRIVATE
+      "-Wl,-force_load,$<TARGET_FILE:gflags_nothreads_static>"
+    )
+  else()
+    target_link_libraries(moqx_config_resolver_test PRIVATE
+      "-Wl,--whole-archive"
+      gflags_nothreads_static
+      "-Wl,--no-whole-archive"
+    )
+  endif()
 endif()
 gtest_discover_tests(moqx_config_resolver_test)
 
