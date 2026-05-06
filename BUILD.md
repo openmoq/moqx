@@ -22,9 +22,9 @@ Six steps. Each links to its detail section.
    `git clone … && cd moqx && git submodule update --init` —
    the submodule pins the exact moxygen commit the build will use
    (see [Dependency Modes](#dependency-modes)).
-2. **Ensure CMake 3.25+** is on `PATH`. moqx top-level `CMakeLists.txt`
-   requires it; `build.sh` aborts early otherwise. On Jammy follow
-   [Installing CMake 3.25+](#installing-cmake-325-ubuntudebian).
+2. **Ensure CMake 3.22+** is on `PATH`. All current targets ship a
+   new-enough version: Ubuntu 22.04+, Debian 12+, recent macOS Homebrew.
+   `build.sh` aborts early if cmake is missing or too old.
 3. **Install system libraries.** Required in *both* dependency modes —
    see the system-libraries bullet in [Prerequisites](#prerequisites)
    for why. One-liner:
@@ -42,11 +42,11 @@ If you'd rather build in a clean container, skip to
 
 ## Prerequisites
 
-- **CMake 3.25+** — required by moqx top-level `CMakeLists.txt`. Ubuntu 22.04
-  ships 3.22 (too old); install from Kitware (see below). Ubuntu 24.04+ and
-  recent macOS Homebrew ship a new-enough version. `build.sh` enforces this
-  and aborts early with install instructions if cmake is missing or too old
-  (override with `MOQX_SKIP_CMAKE_CHECK=1`).
+- **CMake 3.22+** — required by moqx top-level `CMakeLists.txt`. All
+  current targets ship a new-enough version out of the box: Ubuntu
+  22.04+, Debian 12+, recent macOS Homebrew. `build.sh` enforces this
+  and aborts early if cmake is missing or too old (override with
+  `MOQX_SKIP_CMAKE_CHECK=1`).
 - Ninja, C++20 compiler (GCC 11+ / Clang 14+).
 - `curl` for downloading the moxygen release tarball
   ([`setup-deps-tarball.sh`](scripts/setup-deps-tarball.sh)). No `gh` CLI is
@@ -65,37 +65,19 @@ If you'd rather build in a clean container, skip to
   source build — it does not preempt the build-step failure if libs are
   missing.)
 
-### Installing CMake 3.25+
+### Installing CMake
 
-moqx requires CMake 3.25+. By platform:
+moqx requires CMake 3.22+. All current targets ship a new-enough version
+out of the box:
 
-**Ubuntu 24.04+ / Debian 12+** — distro packages are new enough:
+**Ubuntu 22.04+ / Debian 12+:**
 
 ```bash
 sudo apt-get install -y cmake
-cmake --version   # should show 3.25+
+cmake --version   # should show 3.22+
 ```
 
-**Ubuntu 22.04 (Jammy)** — distro ships 3.22, too old. Install from the
-Kitware APT repo:
-
-```bash
-# Remove distro cmake if installed
-sudo apt-get remove --purge cmake
-
-# Add Kitware signing key and repo
-sudo apt-get install -y gpg wget
-wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null \
-  | gpg --dearmor - | sudo tee /usr/share/keyrings/kitware-archive-keyring.gpg >/dev/null
-echo "deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] https://apt.kitware.com/ubuntu/ $(lsb_release -cs) main" \
-  | sudo tee /etc/apt/sources.list.d/kitware.list
-
-sudo apt-get update
-sudo apt-get install -y cmake
-cmake --version   # should show 3.25+
-```
-
-**macOS (Homebrew)** — Homebrew currently ships cmake 3.30+:
+**macOS (Homebrew):**
 
 ```bash
 brew install cmake     # or `brew upgrade cmake` if already present
@@ -117,9 +99,7 @@ who don't want to install deps on their host:
 docker run --rm -it -v "$PWD":/src -w /src ubuntu:22.04 bash
 
 # Inside the container:
-apt-get update && apt-get install -y gpg wget lsb-release sudo git curl ca-certificates
-# Install cmake 3.25+ from Kitware (see above)
-# Then:
+apt-get update && apt-get install -y cmake ninja-build sudo git curl ca-certificates
 git submodule update --init
 sudo deps/moxygen/standalone/install-system-deps.sh
 ./scripts/build.sh setup --from-source   # build from source (no release artifacts available offline)

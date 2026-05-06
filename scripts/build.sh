@@ -11,7 +11,7 @@
 #   ./scripts/build.sh test [--build-dir DIR] [-- CTEST_ARGS...]
 #
 # First-time setup: see README "Quick Start" and BUILD.md "Prerequisites"
-# (CMake 3.25+, system libs).
+# (CMake 3.22+, system libs).
 #
 # Incremental (after source changes):
 #   ./scripts/build.sh          # rebuilds only what changed
@@ -35,21 +35,18 @@ DEPS_MODE_FILE="${SCRATCH}/deps-mode"
 die() { echo "Error: $*" >&2; exit 1; }
 
 # ── CMake version precheck ───────────────────────────────────────────────────
-# moqx top-level CMakeLists.txt requires cmake_minimum_required(VERSION 3.25).
-# Ubuntu 22.04 (Jammy) ships 3.22, which fails at configure. Detect early so
-# users see actionable install instructions instead of a buried cmake error
-# 30 seconds into the build. Override with MOQX_SKIP_CMAKE_CHECK=1 if you're
-# building in an environment that satisfies the requirement another way.
+# moqx top-level CMakeLists.txt requires cmake_minimum_required(VERSION 3.22).
+# All current targets (Ubuntu 22.04, 24.04+, Debian 12+, recent Homebrew
+# macOS) ship a new-enough cmake out of the box. Override with
+# MOQX_SKIP_CMAKE_CHECK=1 if your environment uses a non-default path.
 require_cmake_version() {
   [[ "${MOQX_SKIP_CMAKE_CHECK:-}" == "1" ]] && return 0
 
   if ! command -v cmake >/dev/null 2>&1; then
     cat >&2 <<'EOF'
 Error: cmake not found in PATH.
-moqx requires CMake 3.25+. Install:
-  Ubuntu 24.04+ / Debian 12+:  sudo apt-get install cmake
-  Ubuntu 22.04 (Jammy):        cmake 3.22 in apt is too old; install from Kitware:
-                               see BUILD.md "Installing CMake 3.25+"
+moqx requires CMake 3.22+. Install:
+  Ubuntu 22.04+ / Debian 12+:  sudo apt-get install cmake
   macOS:                       brew install cmake
 
 To bypass this check (advanced): export MOQX_SKIP_CMAKE_CHECK=1
@@ -61,28 +58,17 @@ EOF
   ver=$(cmake --version | head -1 | sed 's/[^0-9]*\([0-9]*\.[0-9]*\).*/\1/')
   major=$(echo "$ver" | cut -d. -f1)
   minor=$(echo "$ver" | cut -d. -f2)
-  if (( major < 3 || (major == 3 && minor < 25) )); then
+  if (( major < 3 || (major == 3 && minor < 22) )); then
     cat >&2 <<EOF
-Error: CMake $ver is too old. moqx requires 3.25+ (top-level CMakeLists.txt).
+Error: CMake $ver is too old. moqx requires 3.22+ (top-level CMakeLists.txt).
 
   $(command -v cmake) — $(cmake --version | head -1)
 
-The moqx configure step will fail with this version. To install 3.25+:
+To install a newer cmake:
+  Ubuntu 22.04+ / Debian 12+:  sudo apt-get install cmake
+  macOS:                       brew install cmake
 
-  Ubuntu 22.04 (Jammy):
-    sudo apt-get remove --purge cmake
-    sudo apt-get install -y gpg wget
-    wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null \\
-      | gpg --dearmor - | sudo tee /usr/share/keyrings/kitware-archive-keyring.gpg >/dev/null
-    echo "deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] https://apt.kitware.com/ubuntu/ \$(lsb_release -cs) main" \\
-      | sudo tee /etc/apt/sources.list.d/kitware.list
-    sudo apt-get update && sudo apt-get install -y cmake
-
-  Ubuntu 24.04+:  sudo apt-get install cmake
-  macOS:          brew install cmake
-
-To bypass this check (e.g. you have a 3.25+ cmake on a non-default path
-and have set CMAKE in your environment): export MOQX_SKIP_CMAKE_CHECK=1
+To bypass this check: export MOQX_SKIP_CMAKE_CHECK=1
 EOF
     exit 1
   fi
@@ -164,9 +150,9 @@ check_system_deps() {
     fi
   fi
 
-  # NOTE: CMake version is enforced by require_cmake_version() — kept separate
-  # because the install instructions differ from a plain apt-get (Kitware repo
-  # required on Ubuntu 22.04).
+  # NOTE: CMake version is enforced by require_cmake_version() — kept
+  # separate so we can give a clean, focused error if cmake is missing or
+  # too old before any other dep checks run.
 
   for w in "${warnings[@]+"${warnings[@]}"}"; do
     echo "  Warning: $w"
