@@ -14,6 +14,7 @@
 #include <folly/io/async/EventBase.h>
 #include <quic/state/QuicTransportStatsCallback.h>
 
+#include "stats/BoundedHistogram.h"
 #include "stats/StatsRegistry.h"
 
 namespace openmoq::moqx::stats {
@@ -61,6 +62,10 @@ private:
   STATS_QUIC_COUNTER_FIELDS(DEFINE_FIELD)
   STATS_QUIC_GAUGE_FIELDS(DEFINE_FIELD)
 #undef DEFINE_FIELD
+
+#define DEFINE_HISTOGRAM(name, bounds, unit) BoundedHistogram<bounds.size()> name##_{bounds};
+  STATS_QUIC_HISTOGRAM_FIELDS(DEFINE_HISTOGRAM)
+#undef DEFINE_HISTOGRAM
 };
 
 } // namespace openmoq::moqx::stats

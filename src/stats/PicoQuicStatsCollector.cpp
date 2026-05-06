@@ -51,6 +51,15 @@ void PicoQuicStatsCollector::onPathQualityDelta(const PathQualityDelta& d) {
   if (d.cwndBlocked) {
     ++quicCwndBlocked_;
   }
+  if (d.smoothedRttUs > 0) {
+    quicRttSample_.addValue(d.smoothedRttUs / 1000);
+  }
+  if (d.receiveBytesPerSec > 0) {
+    quicBandwidthSample_.addValue(d.receiveBytesPerSec * 8);
+  }
+  if (d.bytesInTransit > 0) {
+    quicInflightBytesSample_.addValue(d.bytesInTransit);
+  }
 }
 
 StatsSnapshot PicoQuicStatsCollector::snapshot() const {
@@ -60,6 +69,13 @@ StatsSnapshot PicoQuicStatsCollector::snapshot() const {
   STATS_QUIC_COUNTER_FIELDS(COPY_FIELD)
   STATS_QUIC_GAUGE_FIELDS(COPY_FIELD)
 #undef COPY_FIELD
+
+#define COPY_HISTOGRAM(name, bounds, unit)                                                         \
+  name##_.fillCumulative(snap.name##Buckets);                                                      \
+  snap.name##Sum = name##_.sum;                                                                    \
+  snap.name##Count = name##_.count;
+  STATS_QUIC_HISTOGRAM_FIELDS(COPY_HISTOGRAM)
+#undef COPY_HISTOGRAM
 
   return snap;
 }
