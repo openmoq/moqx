@@ -81,6 +81,14 @@ public:
   void onConnectionWritableBytesLimited() override { ++data_->quicConnectionWritableBytesLimited_; }
   void onConnectionRateLimited() override { ++data_->quicConnectionRateLimited_; }
   void onPacerTimerLagged() override { ++data_->quicPacerTimerLagged_; }
+  void onRttSample(uint64_t ms) override { data_->quicRttSample_.addValue(ms); }
+  void onBandwidthSample(uint64_t bps) override { data_->quicBandwidthSample_.addValue(bps); }
+  void onInflightBytesSample(uint64_t bytes) override {
+    data_->quicInflightBytesSample_.addValue(bytes);
+  }
+  void onCwndHintBytesSample(uint64_t bytes) override {
+    data_->quicCwndHintBytesSample_.addValue(bytes);
+  }
 
   // --- Untracked callbacks (no-op) ---
   void onRxDelaySample(uint64_t) override {}
@@ -102,10 +110,6 @@ public:
   void onConnFlowControlUpdate() override {}
   void onStatelessReset() override {}
   void onStreamFlowControlUpdate() override {}
-  void onInflightBytesSample(uint64_t) override {}
-  void onRttSample(uint64_t) override {}
-  void onBandwidthSample(uint64_t) override {}
-  void onCwndHintBytesSample(uint64_t) override {}
   void onCongestionControllerResumed() override {}
   void onNewCongestionController(quic::CongestionControlType) override {}
   void onUDPSocketWriteError(SocketErrorType errorType) override {
@@ -166,6 +170,13 @@ StatsSnapshot QuicStatsCollector::snapshot() const {
   STATS_QUIC_COUNTER_FIELDS(COPY_FIELD)
   STATS_QUIC_GAUGE_FIELDS(COPY_FIELD)
 #undef COPY_FIELD
+
+#define COPY_HISTOGRAM(name, bounds, unit)                                                         \
+  name##_.fillCumulative(snap.name##Buckets);                                                      \
+  snap.name##Sum = name##_.sum;                                                                    \
+  snap.name##Count = name##_.count;
+  STATS_QUIC_HISTOGRAM_FIELDS(COPY_HISTOGRAM)
+#undef COPY_HISTOGRAM
 
   return snap;
 }

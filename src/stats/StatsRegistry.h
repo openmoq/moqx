@@ -25,6 +25,28 @@ namespace openmoq::moqx::stats {
 inline constexpr std::array<uint64_t, 11> kLatencyBucketsUs =
     {10, 50, 100, 250, 500, 1000, 2000, 5000, 10000, 50000, 100000};
 
+// RTT buckets in milliseconds (from onRttSample).
+inline constexpr std::array<uint64_t, 10> kRttBucketsMs =
+    {1, 5, 10, 25, 50, 100, 250, 500, 1000, 5000};
+
+// Bandwidth buckets in bits/second (from onBandwidthSample).
+inline constexpr std::array<uint64_t, 10> kBandwidthBucketsBitsPerSec = {
+    1000000,
+    5000000,
+    10000000,
+    25000000,
+    50000000,
+    100000000,
+    250000000,
+    500000000,
+    1000000000,
+    10000000000ULL
+};
+
+// Bytes-in-flight buckets in bytes (from onInflightBytesSample).
+inline constexpr std::array<uint64_t, 7> kInflightBytesBuckets =
+    {4096, 65536, 262144, 1048576, 4194304, 16777216, 67108864};
+
 // RequestErrorCode compact-index table
 // All *ErrorCode type aliases resolve to moxygen::RequestErrorCode. we maintain a
 // small ordered lookup table and a constexpr mapping function.  Unknown codes
@@ -180,7 +202,14 @@ inline constexpr std::array<std::string_view, 8> kRequestErrorCodeLabels = {{
   X(moqPublishNamespaceLatency, kLatencyBucketsUs, "microseconds")                                 \
   X(moqPublishLatency, kLatencyBucketsUs, "microseconds")
 
-#define STATS_HISTOGRAM_FIELDS(X) STATS_MOQ_HISTOGRAM_FIELDS(X)
+// QUIC transport histograms — populated exclusively by QuicStatsCollector.
+#define STATS_QUIC_HISTOGRAM_FIELDS(X)                                                             \
+  X(quicRttSample, kRttBucketsMs, "milliseconds")                                                  \
+  X(quicBandwidthSample, kBandwidthBucketsBitsPerSec, "bits_per_second")                           \
+  X(quicInflightBytesSample, kInflightBytesBuckets, "bytes")                                       \
+  X(quicCwndHintBytesSample, kInflightBytesBuckets, "bytes")
+
+#define STATS_HISTOGRAM_FIELDS(X) STATS_MOQ_HISTOGRAM_FIELDS(X) STATS_QUIC_HISTOGRAM_FIELDS(X)
 
 // Error-code breakdowns: fields in STATS_MOQ_COUNTER_FIELDS whose callbacks receive
 // a RequestErrorCode argument.  Each expands to a
