@@ -6,13 +6,27 @@
 
 #include "stats/PicoQuicStatsCollector.h"
 
+#include <folly/tracing/StaticTracepoint.h>
+
 namespace openmoq::moqx::stats {
 
 /* static */
-std::shared_ptr<PicoQuicStatsCollector>
-PicoQuicStatsCollector::create(std::shared_ptr<StatsRegistry> registry, folly::EventBase* evb) {
+std::shared_ptr<PicoQuicStatsCollector> PicoQuicStatsCollector::create(
+    std::shared_ptr<StatsRegistry> registry,
+    folly::EventBase* evb,
+    EventBaseStatsCollector* evbCollector
+) {
   auto collector = std::shared_ptr<PicoQuicStatsCollector>(new PicoQuicStatsCollector(evb));
   registry->registerCollector(collector);
+  if (evbCollector) {
+    evbCollector->addLoopObserver([c = collector.get()](int64_t busyUs, int64_t /*idleUs*/) {
+      uint64_t sent = c->quicPacketsSent_;
+      uint64_t dSent = sent - c->prevLoopPktsSent_;
+      c->evbPktsSentPerLoop_.addValue(dSent);
+      c->prevLoopPktsSent_ = sent;
+      FOLLY_SDT(moqx, evb_loop_sample, busyUs, dSent, uint64_t{0});
+    });
+  }
   return collector;
 }
 

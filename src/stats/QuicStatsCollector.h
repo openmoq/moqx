@@ -15,6 +15,7 @@
 #include <quic/state/QuicTransportStatsCallback.h>
 
 #include "stats/BoundedHistogram.h"
+#include "stats/EventBaseStatsCollector.h"
 #include "stats/StatsRegistry.h"
 
 namespace openmoq::moqx::stats {
@@ -56,6 +57,9 @@ private:
   QuicStatsCollector() = default;
 
   std::atomic<folly::EventBase*> owningEvb_{nullptr};
+
+  uint64_t prevLoopPktsSent_{0};
+  uint64_t prevLoopPktsRecv_{0};
 
   // Counters and gauges (no sync needed; all writes on the QUIC IO EventBase).
 #define DEFINE_FIELD(type, name) type name##_{0};
