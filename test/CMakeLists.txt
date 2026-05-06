@@ -53,7 +53,6 @@ target_link_libraries(moqx_namespace_tree_test PRIVATE
   moqx_core
   moqx_test_main
   GTest::gmock
-  moxygen::moqtest_utils
 )
 gtest_discover_tests(moqx_namespace_tree_test)
 
@@ -181,7 +180,6 @@ target_link_libraries(moqx_upstream_provider_test PRIVATE
   moqx_core
   moqx_test_utils
   moqx_test_main
-  moxygen::moqtest_utils
   moxygen::moxygen_events_moq_folly_executor_impl
   moxygen::moxygen_moqclient
   GTest::gmock
