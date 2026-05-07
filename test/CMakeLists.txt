@@ -148,6 +148,14 @@ add_test(
   NAME admin_cache_purge_concurrency_test
   COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_admin_cache_purge_race.sh $<TARGET_FILE:moqx>
 )
+add_test(
+  NAME switch_relay
+  COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_switch.sh $<TARGET_FILE:moqx>
+)
+set_tests_properties(switch_relay PROPERTIES
+  TIMEOUT 120
+  ENVIRONMENT "MOQBIN=${PROJECT_SOURCE_DIR}/.scratch/moxygen-install/bin"
+)
 
 add_executable(moqx_upstream_provider_test
   UpstreamProviderTest.cpp
