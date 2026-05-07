@@ -13,6 +13,7 @@
 #include <moxygen/openmoq/transport/pico/PicoQuicStatsCallback.h>
 
 #include "stats/BoundedHistogram.h"
+#include "stats/EventBaseStatsCollector.h"
 #include "stats/StatsRegistry.h"
 
 namespace openmoq::moqx::stats {
@@ -28,8 +29,13 @@ namespace openmoq::moqx::stats {
  */
 class PicoQuicStatsCollector : public StatsCollectorBase, public moxygen::PicoQuicStatsCallback {
 public:
-  static std::shared_ptr<PicoQuicStatsCollector>
-  create(std::shared_ptr<StatsRegistry> registry, folly::EventBase* evb);
+  // evbCollector is optional; if provided, registers a loop observer to
+  // populate evbPktsSentPerLoop/evbPktsRecvPerLoop from per-loop deltas.
+  static std::shared_ptr<PicoQuicStatsCollector> create(
+      std::shared_ptr<StatsRegistry> registry,
+      folly::EventBase* evb,
+      EventBaseStatsCollector* evbCollector = nullptr
+  );
 
   ~PicoQuicStatsCollector() override = default;
 
@@ -44,11 +50,16 @@ public:
   void onStreamClosed() override;
   void onStreamReset() override;
   void onPathQualityDelta(const PathQualityDelta& d) override;
+  void onPacketsSent(uint64_t n) override;
+  void onPacketsReceived(uint64_t n) override;
 
 private:
   PicoQuicStatsCollector(folly::EventBase* evb);
 
   folly::EventBase* evb_;
+
+  uint64_t prevLoopPktsSent_{0};
+  uint64_t prevLoopPktsRecv_{0};
 
   // Counters and gauges — all writes on evb_, no sync needed.
 #define DEFINE_FIELD(type, name) type name##_{0};

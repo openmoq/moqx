@@ -6,13 +6,31 @@
 
 #include "stats/PicoQuicStatsCollector.h"
 
+#include <folly/tracing/StaticTracepoint.h>
+
 namespace openmoq::moqx::stats {
 
 /* static */
-std::shared_ptr<PicoQuicStatsCollector>
-PicoQuicStatsCollector::create(std::shared_ptr<StatsRegistry> registry, folly::EventBase* evb) {
+std::shared_ptr<PicoQuicStatsCollector> PicoQuicStatsCollector::create(
+    std::shared_ptr<StatsRegistry> registry,
+    folly::EventBase* evb,
+    EventBaseStatsCollector* evbCollector
+) {
   auto collector = std::shared_ptr<PicoQuicStatsCollector>(new PicoQuicStatsCollector(evb));
   registry->registerCollector(collector);
+  if (evbCollector) {
+    evbCollector->addLoopObserver([c = collector.get()](int64_t busyUs, int64_t /*idleUs*/) {
+      uint64_t sent = c->quicPacketsSent_;
+      uint64_t recv = c->quicPacketsReceived_;
+      uint64_t dSent = sent - c->prevLoopPktsSent_;
+      uint64_t dRecv = recv - c->prevLoopPktsRecv_;
+      c->evbPktsSentPerLoop_.addValue(dSent);
+      c->evbPktsRecvPerLoop_.addValue(dRecv);
+      c->prevLoopPktsSent_ = sent;
+      c->prevLoopPktsRecv_ = recv;
+      FOLLY_SDT(moqx, evb_loop_sample, busyUs, dSent, dRecv);
+    });
+  }
   return collector;
 }
 
@@ -40,8 +58,15 @@ void PicoQuicStatsCollector::onStreamReset() {
   ++quicStreamsReset_;
 }
 
+void PicoQuicStatsCollector::onPacketsSent(uint64_t n) {
+  quicPacketsSent_ += n;
+}
+
+void PicoQuicStatsCollector::onPacketsReceived(uint64_t n) {
+  quicPacketsReceived_ += n;
+}
+
 void PicoQuicStatsCollector::onPathQualityDelta(const PathQualityDelta& d) {
-  quicPacketsSent_ += d.packetsSent;
   quicPacketLoss_ += d.packetsLost;
   quicBytesWritten_ += d.bytesSent;
   quicBytesRead_ += d.bytesReceived;

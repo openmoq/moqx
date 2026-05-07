@@ -5,6 +5,7 @@
  */
 
 #include "MoqxRelayServer.h"
+#include "stats/EventBaseStatsCollector.h"
 #include "stats/QuicStatsCollector.h"
 #include <moxygen/MoQRelaySession.h>
 #include <moxygen/events/MoQFollyExecutorImpl.h>
@@ -107,6 +108,9 @@ MoqxRelayServer::~MoqxRelayServer() {
 
 void MoqxRelayServer::setStatsRegistry(std::shared_ptr<stats::StatsRegistry> registry) {
   context_->setStatsRegistry(registry);
+  for (auto& ka : ioExecutor_->getAllEventBases()) {
+    stats::EventBaseStatsCollector::create(registry, ka.get());
+  }
   setQuicStatsFactory(std::make_unique<stats::QuicStatsCollector::Factory>(std::move(registry)));
 }
 

@@ -113,6 +113,7 @@ add_library(moqx_core STATIC
   src/stats/MoQStatsCollector.cpp
   src/stats/PicoQuicStatsCollector.cpp
   src/stats/QuicStatsCollector.cpp
+  src/stats/EventBaseStatsCollector.cpp
   src/UpstreamProvider.cpp
   src/relay/TopNFilter.cpp
   src/relay/PropertyRanking.cpp
