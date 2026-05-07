@@ -1,4 +1,4 @@
-#include <benchmark/benchmark.h>
+#include <folly/Benchmark.h>
 #include <moqx/config/loader/config_resolver.h>
 #include <moqx/config/loader/parsed_config.h>
 
@@ -50,31 +50,34 @@ static ParsedConfig makeManyServicesConfig(int n) {
   return cfg;
 }
 
-void BM_ConfigResolve_Minimal(benchmark::State& state) {
+BENCHMARK(BM_ConfigResolve_Minimal, iters) {
+  folly::BenchmarkSuspender susp;
   auto parsed = makeMinimalConfig();
-  for (auto _ : state) {
+  susp.dismiss();
+  for (unsigned i = 0; i < iters; ++i) {
     auto resolved = resolveConfig(parsed);
-    benchmark::DoNotOptimize(resolved);
+    folly::doNotOptimizeAway(resolved);
   }
 }
-BENCHMARK(BM_ConfigResolve_Minimal);
 
-void BM_ConfigResolve_10Services(benchmark::State& state) {
+BENCHMARK(BM_ConfigResolve_10Services, iters) {
+  folly::BenchmarkSuspender susp;
   auto parsed = makeManyServicesConfig(10);
-  for (auto _ : state) {
+  susp.dismiss();
+  for (unsigned i = 0; i < iters; ++i) {
     auto resolved = resolveConfig(parsed);
-    benchmark::DoNotOptimize(resolved);
+    folly::doNotOptimizeAway(resolved);
   }
 }
-BENCHMARK(BM_ConfigResolve_10Services);
 
-void BM_ConfigResolve_50Services(benchmark::State& state) {
+BENCHMARK(BM_ConfigResolve_50Services, iters) {
+  folly::BenchmarkSuspender susp;
   auto parsed = makeManyServicesConfig(50);
-  for (auto _ : state) {
+  susp.dismiss();
+  for (unsigned i = 0; i < iters; ++i) {
     auto resolved = resolveConfig(parsed);
-    benchmark::DoNotOptimize(resolved);
+    folly::doNotOptimizeAway(resolved);
   }
 }
-BENCHMARK(BM_ConfigResolve_50Services);
 
 } // namespace

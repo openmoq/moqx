@@ -1,4 +1,4 @@
-#include <benchmark/benchmark.h>
+#include <folly/Benchmark.h>
 #include <moxygen/MoQFramer.h>
 #include <moxygen/MoQTypes.h>
 #include <quic/codec/QuicInteger.h>
@@ -25,55 +25,58 @@ static FullTrackName makeFullTrackName() {
 // --- Varint encode/decode (compare to libquicr UIntVar/Encode/Decode) ---
 
 // Cold: new IOBufQueue per call (measures allocation overhead, not varint logic)
-void BM_VarintEncode_Cold(benchmark::State& state) {
+BENCHMARK(BM_VarintEncode_Cold, iters) {
   uint64_t val = 42;
-  for (auto _ : state) {
+  for (unsigned i = 0; i < iters; ++i) {
     folly::IOBufQueue q;
     size_t sz = 0;
     bool err = false;
     moxygen::writeVarint(q, val, sz, err);
-    benchmark::DoNotOptimize(sz);
+    folly::doNotOptimizeAway(sz);
   }
 }
-BENCHMARK(BM_VarintEncode_Cold);
 
 // Warm: reuse IOBufQueue (reflects production — buffer is pre-allocated)
-void BM_VarintEncode_Warm(benchmark::State& state) {
+BENCHMARK(BM_VarintEncode_Warm, iters) {
+  folly::BenchmarkSuspender susp;
   uint64_t val = 42;
   folly::IOBufQueue q;
-  for (auto _ : state) {
+  susp.dismiss();
+  for (unsigned i = 0; i < iters; ++i) {
     size_t sz = 0;
     bool err = false;
     moxygen::writeVarint(q, val, sz, err);
-    benchmark::DoNotOptimize(sz);
+    folly::doNotOptimizeAway(sz);
   }
 }
-BENCHMARK(BM_VarintEncode_Warm);
 
 // Warm large value
-void BM_VarintEncode_WarmLarge(benchmark::State& state) {
+BENCHMARK(BM_VarintEncode_WarmLarge, iters) {
+  folly::BenchmarkSuspender susp;
   uint64_t val = 1000000000;
   folly::IOBufQueue q;
-  for (auto _ : state) {
+  susp.dismiss();
+  for (unsigned i = 0; i < iters; ++i) {
     size_t sz = 0;
     bool err = false;
     moxygen::writeVarint(q, val, sz, err);
-    benchmark::DoNotOptimize(sz);
+    folly::doNotOptimizeAway(sz);
   }
 }
-BENCHMARK(BM_VarintEncode_WarmLarge);
 
-void BM_VarintDecode_Small(benchmark::State& state) {
+BENCHMARK(BM_VarintDecode_Small, iters) {
+  folly::BenchmarkSuspender susp;
   uint8_t buf[8] = {42, 0, 0, 0, 0, 0, 0, 0}; // 1-byte encoding of 42
-  for (auto _ : state) {
+  susp.dismiss();
+  for (unsigned i = 0; i < iters; ++i) {
     quic::ContiguousReadCursor cursor(buf, sizeof(buf));
     auto res = quic::decodeQuicInteger(cursor);
-    benchmark::DoNotOptimize(res);
+    folly::doNotOptimizeAway(res);
   }
 }
-BENCHMARK(BM_VarintDecode_Small);
 
-void BM_VarintDecode_Large(benchmark::State& state) {
+BENCHMARK(BM_VarintDecode_Large, iters) {
+  folly::BenchmarkSuspender susp;
   // Pre-encode a large value
   folly::IOBufQueue q;
   size_t sz = 0;
@@ -83,29 +86,31 @@ void BM_VarintDecode_Large(benchmark::State& state) {
   uint8_t buf[8] = {};
   memcpy(buf, iobuf->data(), iobuf->length());
   size_t len = iobuf->length();
-  for (auto _ : state) {
+  susp.dismiss();
+  for (unsigned i = 0; i < iters; ++i) {
     quic::ContiguousReadCursor cursor(buf, len);
     auto res = quic::decodeQuicInteger(cursor);
-    benchmark::DoNotOptimize(res);
+    folly::doNotOptimizeAway(res);
   }
 }
-BENCHMARK(BM_VarintDecode_Large);
 
 // --- Write benchmarks ---
 
-void BM_WriteSubscribeRequest(benchmark::State& state) {
+BENCHMARK(BM_WriteSubscribeRequest, iters) {
+  folly::BenchmarkSuspender susp;
   MoQFrameWriter writer;
   writer.initializeVersion(kVersion);
   auto req = SubscribeRequest::make(makeFullTrackName());
-  for (auto _ : state) {
+  susp.dismiss();
+  for (unsigned i = 0; i < iters; ++i) {
     folly::IOBufQueue buf;
     auto res = writer.writeSubscribeRequest(buf, req);
-    benchmark::DoNotOptimize(res);
+    folly::doNotOptimizeAway(res);
   }
 }
-BENCHMARK(BM_WriteSubscribeRequest);
 
-void BM_WriteSubgroupHeader(benchmark::State& state) {
+BENCHMARK(BM_WriteSubgroupHeader, iters) {
+  folly::BenchmarkSuspender susp;
   MoQFrameWriter writer;
   writer.initializeVersion(kVersion);
   ObjectHeader header;
@@ -115,15 +120,16 @@ void BM_WriteSubgroupHeader(benchmark::State& state) {
   header.priority = 128;
   header.status = ObjectStatus::NORMAL;
   header.length = 1024;
-  for (auto _ : state) {
+  susp.dismiss();
+  for (unsigned i = 0; i < iters; ++i) {
     folly::IOBufQueue buf;
     auto res = writer.writeSubgroupHeader(buf, TrackAlias(1), header);
-    benchmark::DoNotOptimize(res);
+    folly::doNotOptimizeAway(res);
   }
 }
-BENCHMARK(BM_WriteSubgroupHeader);
 
-void BM_WriteStreamObject(benchmark::State& state) {
+BENCHMARK(BM_WriteStreamObject, iters) {
+  folly::BenchmarkSuspender susp;
   MoQFrameWriter writer;
   writer.initializeVersion(kVersion);
   ObjectHeader header;
@@ -135,33 +141,35 @@ void BM_WriteStreamObject(benchmark::State& state) {
   header.length = 1024;
   auto payload = folly::IOBuf::create(1024);
   payload->append(1024);
-  for (auto _ : state) {
+  susp.dismiss();
+  for (unsigned i = 0; i < iters; ++i) {
     folly::IOBufQueue buf;
     auto res = writer.writeStreamObject(
         buf,
         getSubgroupStreamType(kVersion, SubgroupIDFormat::Present, false, false),
         header,
         payload->clone());
-    benchmark::DoNotOptimize(res);
+    folly::doNotOptimizeAway(res);
   }
 }
-BENCHMARK(BM_WriteStreamObject);
 
-void BM_WritePublishNamespace(benchmark::State& state) {
+BENCHMARK(BM_WritePublishNamespace, iters) {
+  folly::BenchmarkSuspender susp;
   MoQFrameWriter writer;
   writer.initializeVersion(kVersion);
   PublishNamespace pubNs;
   pubNs.requestID = RequestID(1);
   pubNs.trackNamespace = makeTrackNamespace();
-  for (auto _ : state) {
+  susp.dismiss();
+  for (unsigned i = 0; i < iters; ++i) {
     folly::IOBufQueue buf;
     auto res = writer.writePublishNamespace(buf, pubNs);
-    benchmark::DoNotOptimize(res);
+    folly::doNotOptimizeAway(res);
   }
 }
-BENCHMARK(BM_WritePublishNamespace);
 
-void BM_WriteFetch(benchmark::State& state) {
+BENCHMARK(BM_WriteFetch, iters) {
+  folly::BenchmarkSuspender susp;
   MoQFrameWriter writer;
   writer.initializeVersion(kVersion);
   Fetch fetch(
@@ -169,26 +177,27 @@ void BM_WriteFetch(benchmark::State& state) {
       makeFullTrackName(),
       AbsoluteLocation{0, 0},
       AbsoluteLocation{10, 0});
-  for (auto _ : state) {
+  susp.dismiss();
+  for (unsigned i = 0; i < iters; ++i) {
     folly::IOBufQueue buf;
     auto res = writer.writeFetch(buf, fetch);
-    benchmark::DoNotOptimize(res);
+    folly::doNotOptimizeAway(res);
   }
 }
-BENCHMARK(BM_WriteFetch);
 
-void BM_WriteGoaway(benchmark::State& state) {
+BENCHMARK(BM_WriteGoaway, iters) {
+  folly::BenchmarkSuspender susp;
   MoQFrameWriter writer;
   writer.initializeVersion(kVersion);
   Goaway goaway;
   goaway.newSessionUri = "https://relay.example.com/moq-relay";
-  for (auto _ : state) {
+  susp.dismiss();
+  for (unsigned i = 0; i < iters; ++i) {
     folly::IOBufQueue buf;
     auto res = writer.writeGoaway(buf, goaway);
-    benchmark::DoNotOptimize(res);
+    folly::doNotOptimizeAway(res);
   }
 }
-BENCHMARK(BM_WriteGoaway);
 
 // --- Parse benchmarks ---
 
@@ -204,15 +213,17 @@ static uint64_t skipVarint(folly::io::Cursor& cursor) {
   return val;
 }
 
-void BM_ParseSubscribeRequest(benchmark::State& state) {
+BENCHMARK(BM_ParseSubscribeRequest, iters) {
+  folly::BenchmarkSuspender susp;
   MoQFrameWriter writer;
   writer.initializeVersion(kVersion);
   auto req = SubscribeRequest::make(makeFullTrackName());
   folly::IOBufQueue writeBuf;
   writer.writeSubscribeRequest(writeBuf, req);
   auto wireData = writeBuf.move();
+  susp.dismiss();
 
-  for (auto _ : state) {
+  for (unsigned i = 0; i < iters; ++i) {
     MoQFrameParser parser;
     parser.initializeVersion(kVersion);
     auto buf = wireData->clone();
@@ -220,12 +231,12 @@ void BM_ParseSubscribeRequest(benchmark::State& state) {
     skipVarint(cursor); // frame type
     auto frameLen = skipVarint(cursor); // payload length
     auto res = parser.parseSubscribeRequest(cursor, frameLen);
-    benchmark::DoNotOptimize(res);
+    folly::doNotOptimizeAway(res);
   }
 }
-BENCHMARK(BM_ParseSubscribeRequest);
 
-void BM_ParseFetch(benchmark::State& state) {
+BENCHMARK(BM_ParseFetch, iters) {
+  folly::BenchmarkSuspender susp;
   MoQFrameWriter writer;
   writer.initializeVersion(kVersion);
   Fetch fetch(
@@ -236,8 +247,9 @@ void BM_ParseFetch(benchmark::State& state) {
   folly::IOBufQueue writeBuf;
   writer.writeFetch(writeBuf, fetch);
   auto wireData = writeBuf.move();
+  susp.dismiss();
 
-  for (auto _ : state) {
+  for (unsigned i = 0; i < iters; ++i) {
     MoQFrameParser parser;
     parser.initializeVersion(kVersion);
     auto buf = wireData->clone();
@@ -245,12 +257,12 @@ void BM_ParseFetch(benchmark::State& state) {
     skipVarint(cursor);
     auto frameLen = skipVarint(cursor);
     auto res = parser.parseFetch(cursor, frameLen);
-    benchmark::DoNotOptimize(res);
+    folly::doNotOptimizeAway(res);
   }
 }
-BENCHMARK(BM_ParseFetch);
 
-void BM_ParsePublishNamespace(benchmark::State& state) {
+BENCHMARK(BM_ParsePublishNamespace, iters) {
+  folly::BenchmarkSuspender susp;
   MoQFrameWriter writer;
   writer.initializeVersion(kVersion);
   PublishNamespace pubNs;
@@ -259,8 +271,9 @@ void BM_ParsePublishNamespace(benchmark::State& state) {
   folly::IOBufQueue writeBuf;
   writer.writePublishNamespace(writeBuf, pubNs);
   auto wireData = writeBuf.move();
+  susp.dismiss();
 
-  for (auto _ : state) {
+  for (unsigned i = 0; i < iters; ++i) {
     MoQFrameParser parser;
     parser.initializeVersion(kVersion);
     auto buf = wireData->clone();
@@ -268,12 +281,12 @@ void BM_ParsePublishNamespace(benchmark::State& state) {
     skipVarint(cursor);
     auto frameLen = skipVarint(cursor);
     auto res = parser.parsePublishNamespace(cursor, frameLen);
-    benchmark::DoNotOptimize(res);
+    folly::doNotOptimizeAway(res);
   }
 }
-BENCHMARK(BM_ParsePublishNamespace);
 
-void BM_ParseGoaway(benchmark::State& state) {
+BENCHMARK(BM_ParseGoaway, iters) {
+  folly::BenchmarkSuspender susp;
   MoQFrameWriter writer;
   writer.initializeVersion(kVersion);
   Goaway goaway;
@@ -281,8 +294,9 @@ void BM_ParseGoaway(benchmark::State& state) {
   folly::IOBufQueue writeBuf;
   writer.writeGoaway(writeBuf, goaway);
   auto wireData = writeBuf.move();
+  susp.dismiss();
 
-  for (auto _ : state) {
+  for (unsigned i = 0; i < iters; ++i) {
     MoQFrameParser parser;
     parser.initializeVersion(kVersion);
     auto buf = wireData->clone();
@@ -290,18 +304,19 @@ void BM_ParseGoaway(benchmark::State& state) {
     skipVarint(cursor);
     auto frameLen = skipVarint(cursor);
     auto res = parser.parseGoaway(cursor, frameLen);
-    benchmark::DoNotOptimize(res);
+    folly::doNotOptimizeAway(res);
   }
 }
-BENCHMARK(BM_ParseGoaway);
 
 // --- Subscribe write+parse roundtrip ---
 
-void BM_SubscribeRoundTrip(benchmark::State& state) {
+BENCHMARK(BM_SubscribeRoundTrip, iters) {
+  folly::BenchmarkSuspender susp;
   MoQFrameWriter writer;
   writer.initializeVersion(kVersion);
   auto req = SubscribeRequest::make(makeFullTrackName());
-  for (auto _ : state) {
+  susp.dismiss();
+  for (unsigned i = 0; i < iters; ++i) {
     // Write
     folly::IOBufQueue writeBuf;
     writer.writeSubscribeRequest(writeBuf, req);
@@ -314,73 +329,76 @@ void BM_SubscribeRoundTrip(benchmark::State& state) {
     skipVarint(cursor);
     auto frameLen = skipVarint(cursor);
     auto res = parser.parseSubscribeRequest(cursor, frameLen);
-    benchmark::DoNotOptimize(res);
+    folly::doNotOptimizeAway(res);
   }
 }
-BENCHMARK(BM_SubscribeRoundTrip);
 
 // --- TrackNamespace operations ---
 
-void BM_TrackNamespace_Construct(benchmark::State& state) {
-  for (auto _ : state) {
+BENCHMARK(BM_TrackNamespace_Construct, iters) {
+  for (unsigned i = 0; i < iters; ++i) {
     std::vector<std::string> parts = {"conference", "room42", "alice", "video"};
     TrackNamespace ns(std::move(parts));
-    benchmark::DoNotOptimize(ns);
+    folly::doNotOptimizeAway(ns);
   }
 }
-BENCHMARK(BM_TrackNamespace_Construct);
 
-void BM_TrackNamespace_PrefixMatch(benchmark::State& state) {
+BENCHMARK(BM_TrackNamespace_PrefixMatch, iters) {
+  folly::BenchmarkSuspender susp;
   std::vector<std::string> fp = {"conference", "room42", "alice", "video"};
   TrackNamespace full(std::move(fp));
   std::vector<std::string> pp = {"conference", "room42"};
   TrackNamespace prefix(std::move(pp));
-  for (auto _ : state) {
+  susp.dismiss();
+  for (unsigned i = 0; i < iters; ++i) {
     auto result = full.startsWith(prefix);
-    benchmark::DoNotOptimize(result);
+    folly::doNotOptimizeAway(result);
   }
 }
-BENCHMARK(BM_TrackNamespace_PrefixMatch);
 
-void BM_TrackNamespace_Hash(benchmark::State& state) {
+BENCHMARK(BM_TrackNamespace_Hash, iters) {
+  folly::BenchmarkSuspender susp;
   std::vector<std::string> parts = {"conference", "room42", "alice", "video"};
   TrackNamespace ns(std::move(parts));
   TrackNamespace::hash hasher;
-  for (auto _ : state) {
+  susp.dismiss();
+  for (unsigned i = 0; i < iters; ++i) {
     auto h = hasher(ns);
-    benchmark::DoNotOptimize(h);
+    folly::doNotOptimizeAway(h);
   }
 }
-BENCHMARK(BM_TrackNamespace_Hash);
 
-void BM_TrackNamespace_Describe(benchmark::State& state) {
+BENCHMARK(BM_TrackNamespace_Describe, iters) {
+  folly::BenchmarkSuspender susp;
   std::vector<std::string> parts = {"conference", "room42", "alice", "video"};
   TrackNamespace ns(std::move(parts));
-  for (auto _ : state) {
+  susp.dismiss();
+  for (unsigned i = 0; i < iters; ++i) {
     auto s = ns.describe();
-    benchmark::DoNotOptimize(s);
+    folly::doNotOptimizeAway(s);
   }
 }
-BENCHMARK(BM_TrackNamespace_Describe);
 
-void BM_FullTrackName_Compare(benchmark::State& state) {
+BENCHMARK(BM_FullTrackName_Compare, iters) {
+  folly::BenchmarkSuspender susp;
   auto a = makeFullTrackName();
   auto b = makeFullTrackName();
-  for (auto _ : state) {
+  susp.dismiss();
+  for (unsigned i = 0; i < iters; ++i) {
     auto result = (a == b);
-    benchmark::DoNotOptimize(result);
+    folly::doNotOptimizeAway(result);
   }
 }
-BENCHMARK(BM_FullTrackName_Compare);
 
-void BM_FullTrackName_Hash(benchmark::State& state) {
+BENCHMARK(BM_FullTrackName_Hash, iters) {
+  folly::BenchmarkSuspender susp;
   auto ftn = makeFullTrackName();
   FullTrackName::hash hasher;
-  for (auto _ : state) {
+  susp.dismiss();
+  for (unsigned i = 0; i < iters; ++i) {
     auto h = hasher(ftn);
-    benchmark::DoNotOptimize(h);
+    folly::doNotOptimizeAway(h);
   }
 }
-BENCHMARK(BM_FullTrackName_Hash);
 
 } // namespace

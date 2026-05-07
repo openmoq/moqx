@@ -1,4 +1,4 @@
-#include <benchmark/benchmark.h>
+#include <folly/Benchmark.h>
 #include <moqx/ServiceMatcher.h>
 
 namespace {
@@ -46,45 +46,49 @@ folly::F14FastMap<std::string, ServiceConfig> makeTestServices() {
   return services;
 }
 
-void BM_ServiceMatcher_ExactMatch(benchmark::State& state) {
+BENCHMARK(BM_ServiceMatcher_ExactMatch, iters) {
+  folly::BenchmarkSuspender susp;
   auto services = makeTestServices();
   ServiceMatcher matcher(services);
-  for (auto _ : state) {
+  susp.dismiss();
+  for (unsigned i = 0; i < iters; ++i) {
     auto result = matcher.match("relay.example.com", "/moq-relay");
-    benchmark::DoNotOptimize(result);
+    folly::doNotOptimizeAway(result);
   }
 }
-BENCHMARK(BM_ServiceMatcher_ExactMatch);
 
-void BM_ServiceMatcher_WildcardMatch(benchmark::State& state) {
+BENCHMARK(BM_ServiceMatcher_WildcardMatch, iters) {
+  folly::BenchmarkSuspender susp;
   auto services = makeTestServices();
   ServiceMatcher matcher(services);
-  for (auto _ : state) {
+  susp.dismiss();
+  for (unsigned i = 0; i < iters; ++i) {
     auto result = matcher.match("foo.test.example.com", "/test/bar");
-    benchmark::DoNotOptimize(result);
+    folly::doNotOptimizeAway(result);
   }
 }
-BENCHMARK(BM_ServiceMatcher_WildcardMatch);
 
-void BM_ServiceMatcher_FallbackMatch(benchmark::State& state) {
+BENCHMARK(BM_ServiceMatcher_FallbackMatch, iters) {
+  folly::BenchmarkSuspender susp;
   auto services = makeTestServices();
   ServiceMatcher matcher(services);
-  for (auto _ : state) {
+  susp.dismiss();
+  for (unsigned i = 0; i < iters; ++i) {
     auto result = matcher.match("unknown.host", "/something");
-    benchmark::DoNotOptimize(result);
+    folly::doNotOptimizeAway(result);
   }
 }
-BENCHMARK(BM_ServiceMatcher_FallbackMatch);
 
-void BM_ServiceMatcher_NoMatch(benchmark::State& state) {
+BENCHMARK(BM_ServiceMatcher_NoMatch, iters) {
+  folly::BenchmarkSuspender susp;
   // Empty services — nothing matches
   folly::F14FastMap<std::string, ServiceConfig> empty;
   ServiceMatcher matcher(empty);
-  for (auto _ : state) {
+  susp.dismiss();
+  for (unsigned i = 0; i < iters; ++i) {
     auto result = matcher.match("any.host", "/any/path");
-    benchmark::DoNotOptimize(result);
+    folly::doNotOptimizeAway(result);
   }
 }
-BENCHMARK(BM_ServiceMatcher_NoMatch);
 
 } // namespace

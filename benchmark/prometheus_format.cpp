@@ -1,4 +1,4 @@
-#include <benchmark/benchmark.h>
+#include <folly/Benchmark.h>
 #include <moqx/stats/StatsRegistry.h>
 
 namespace {
@@ -26,40 +26,18 @@ static StatsSnapshot makeSnapshot(int sessions) {
   return snap;
 }
 
-void BM_FormatPrometheus_1Session(benchmark::State& state) {
-  auto snap = makeSnapshot(1);
-  for (auto _ : state) {
+void BM_FormatPrometheus(unsigned iters, int sessions) {
+  folly::BenchmarkSuspender susp;
+  auto snap = makeSnapshot(sessions);
+  susp.dismiss();
+  for (unsigned i = 0; i < iters; ++i) {
     auto buf = StatsSnapshot::formatPrometheus(snap);
-    benchmark::DoNotOptimize(buf);
+    folly::doNotOptimizeAway(buf);
   }
 }
-BENCHMARK(BM_FormatPrometheus_1Session);
-
-void BM_FormatPrometheus_10Sessions(benchmark::State& state) {
-  auto snap = makeSnapshot(10);
-  for (auto _ : state) {
-    auto buf = StatsSnapshot::formatPrometheus(snap);
-    benchmark::DoNotOptimize(buf);
-  }
-}
-BENCHMARK(BM_FormatPrometheus_10Sessions);
-
-void BM_FormatPrometheus_100Sessions(benchmark::State& state) {
-  auto snap = makeSnapshot(100);
-  for (auto _ : state) {
-    auto buf = StatsSnapshot::formatPrometheus(snap);
-    benchmark::DoNotOptimize(buf);
-  }
-}
-BENCHMARK(BM_FormatPrometheus_100Sessions);
-
-void BM_FormatPrometheus_1000Sessions(benchmark::State& state) {
-  auto snap = makeSnapshot(1000);
-  for (auto _ : state) {
-    auto buf = StatsSnapshot::formatPrometheus(snap);
-    benchmark::DoNotOptimize(buf);
-  }
-}
-BENCHMARK(BM_FormatPrometheus_1000Sessions);
+BENCHMARK_NAMED_PARAM(BM_FormatPrometheus, _1Session, 1)
+BENCHMARK_NAMED_PARAM(BM_FormatPrometheus, _10Sessions, 10)
+BENCHMARK_NAMED_PARAM(BM_FormatPrometheus, _100Sessions, 100)
+BENCHMARK_NAMED_PARAM(BM_FormatPrometheus, _1000Sessions, 1000)
 
 } // namespace

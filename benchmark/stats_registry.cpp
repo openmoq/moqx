@@ -1,4 +1,4 @@
-#include <benchmark/benchmark.h>
+#include <folly/Benchmark.h>
 #include <moqx/stats/StatsRegistry.h>
 
 namespace {
@@ -7,20 +7,22 @@ using openmoq::moqx::stats::kLatencyBucketsUs;
 using openmoq::moqx::stats::requestErrorCodeIndex;
 using openmoq::moqx::stats::StatsSnapshot;
 
-void BM_StatsSnapshot_Accumulate(benchmark::State& state) {
+BENCHMARK(BM_StatsSnapshot_Accumulate, iters) {
+  folly::BenchmarkSuspender susp;
   StatsSnapshot base{};
   StatsSnapshot delta{};
   delta.pubSubscribeSuccess = 1;
   delta.quicPacketsReceived = 100;
   delta.moqActiveSessions = 5;
-  for (auto _ : state) {
+  susp.dismiss();
+  for (unsigned i = 0; i < iters; ++i) {
     base += delta;
-    benchmark::DoNotOptimize(base);
+    folly::doNotOptimizeAway(base);
   }
 }
-BENCHMARK(BM_StatsSnapshot_Accumulate);
 
-void BM_StatsSnapshot_FormatPrometheus(benchmark::State& state) {
+BENCHMARK(BM_StatsSnapshot_FormatPrometheus, iters) {
+  folly::BenchmarkSuspender susp;
   StatsSnapshot snap{};
   snap.pubSubscribeSuccess = 42;
   snap.quicPacketsReceived = 10000;
@@ -29,20 +31,21 @@ void BM_StatsSnapshot_FormatPrometheus(benchmark::State& state) {
   snap.quicActiveConnections = 12;
   snap.moqSubscribeLatencyCount = 100;
   snap.moqSubscribeLatencySum = 50000;
-  for (auto _ : state) {
+  susp.dismiss();
+  for (unsigned i = 0; i < iters; ++i) {
     auto buf = StatsSnapshot::formatPrometheus(snap);
-    benchmark::DoNotOptimize(buf);
+    folly::doNotOptimizeAway(buf);
   }
 }
-BENCHMARK(BM_StatsSnapshot_FormatPrometheus);
 
-void BM_RequestErrorCodeIndex(benchmark::State& state) {
+BENCHMARK(BM_RequestErrorCodeIndex, iters) {
+  folly::BenchmarkSuspender susp;
   auto code = moxygen::RequestErrorCode::TRACK_NOT_EXIST;
-  for (auto _ : state) {
+  susp.dismiss();
+  for (unsigned i = 0; i < iters; ++i) {
     auto idx = requestErrorCodeIndex(code);
-    benchmark::DoNotOptimize(idx);
+    folly::doNotOptimizeAway(idx);
   }
 }
-BENCHMARK(BM_RequestErrorCodeIndex);
 
 } // namespace

@@ -1,4 +1,4 @@
-#include <benchmark/benchmark.h>
+#include <folly/Benchmark.h>
 #include <moqx/config/loader/loader.h>
 #include <moqx/config/loader/config_resolver.h>
 
@@ -43,40 +43,42 @@ static std::string writeTempConfig(int numServices) {
   return path;
 }
 
-void BM_ConfigLoad_Small(benchmark::State& state) {
+BENCHMARK(BM_ConfigLoad_Small, iters) {
+  folly::BenchmarkSuspender susp;
   auto path = writeTempConfig(3);
-  for (auto _ : state) {
+  susp.dismiss();
+  for (unsigned i = 0; i < iters; ++i) {
     auto config = loadConfig(path);
-    benchmark::DoNotOptimize(config);
+    folly::doNotOptimizeAway(config);
   }
 }
-BENCHMARK(BM_ConfigLoad_Small);
 
-void BM_ConfigLoad_Large(benchmark::State& state) {
+BENCHMARK(BM_ConfigLoad_Large, iters) {
+  folly::BenchmarkSuspender susp;
   auto path = writeTempConfig(50);
-  for (auto _ : state) {
+  susp.dismiss();
+  for (unsigned i = 0; i < iters; ++i) {
     auto config = loadConfig(path);
-    benchmark::DoNotOptimize(config);
+    folly::doNotOptimizeAway(config);
   }
 }
-BENCHMARK(BM_ConfigLoad_Large);
 
-void BM_ConfigResolve(benchmark::State& state) {
+BENCHMARK(BM_ConfigResolve, iters) {
+  folly::BenchmarkSuspender susp;
   auto path = writeTempConfig(10);
   auto parsed = loadConfig(path);
-  for (auto _ : state) {
+  susp.dismiss();
+  for (unsigned i = 0; i < iters; ++i) {
     auto resolved = resolveConfig(parsed);
-    benchmark::DoNotOptimize(resolved);
+    folly::doNotOptimizeAway(resolved);
   }
 }
-BENCHMARK(BM_ConfigResolve);
 
-void BM_ConfigGenerateSchema(benchmark::State& state) {
-  for (auto _ : state) {
+BENCHMARK(BM_ConfigGenerateSchema, iters) {
+  for (unsigned i = 0; i < iters; ++i) {
     auto schema = generateSchema();
-    benchmark::DoNotOptimize(schema);
+    folly::doNotOptimizeAway(schema);
   }
 }
-BENCHMARK(BM_ConfigGenerateSchema);
 
 } // namespace

@@ -1,4 +1,4 @@
-#include <benchmark/benchmark.h>
+#include <folly/Benchmark.h>
 #include <moxygen/MoQFramer.h>
 #include <moxygen/MoQTypes.h>
 
@@ -33,42 +33,52 @@ static Extensions makeArrayExtensions(int count) {
 
 // --- Serialize benchmarks (compare to libquicr ExtensionsSerialize/N) ---
 
-static void BM_ExtensionsSerialize(benchmark::State& state) {
+void BM_ExtensionsSerialize(unsigned iters, int n) {
+  folly::BenchmarkSuspender susp;
   MoQFrameWriter writer;
   writer.initializeVersion(kVersion);
-  auto exts = makeExtensions(state.range(0));
-  for (auto _ : state) {
+  auto exts = makeExtensions(n);
+  susp.dismiss();
+  for (unsigned i = 0; i < iters; ++i) {
     folly::IOBufQueue buf;
     size_t sz = 0;
     bool err = false;
     writer.writeExtensions(buf, exts, sz, err);
-    benchmark::DoNotOptimize(sz);
+    folly::doNotOptimizeAway(sz);
   }
 }
-BENCHMARK(BM_ExtensionsSerialize)->Arg(1)->Arg(10)->Arg(100)->Arg(1000);
+BENCHMARK_NAMED_PARAM(BM_ExtensionsSerialize, _1, 1)
+BENCHMARK_NAMED_PARAM(BM_ExtensionsSerialize, _10, 10)
+BENCHMARK_NAMED_PARAM(BM_ExtensionsSerialize, _100, 100)
+BENCHMARK_NAMED_PARAM(BM_ExtensionsSerialize, _1000, 1000)
 
 // --- Serialize with array values ---
 
-static void BM_ExtensionsSerializeArray(benchmark::State& state) {
+void BM_ExtensionsSerializeArray(unsigned iters, int n) {
+  folly::BenchmarkSuspender susp;
   MoQFrameWriter writer;
   writer.initializeVersion(kVersion);
-  auto exts = makeArrayExtensions(state.range(0));
-  for (auto _ : state) {
+  auto exts = makeArrayExtensions(n);
+  susp.dismiss();
+  for (unsigned i = 0; i < iters; ++i) {
     folly::IOBufQueue buf;
     size_t sz = 0;
     bool err = false;
     writer.writeExtensions(buf, exts, sz, err);
-    benchmark::DoNotOptimize(sz);
+    folly::doNotOptimizeAway(sz);
   }
 }
-BENCHMARK(BM_ExtensionsSerializeArray)->Arg(1)->Arg(10)->Arg(100);
+BENCHMARK_NAMED_PARAM(BM_ExtensionsSerializeArray, _1, 1)
+BENCHMARK_NAMED_PARAM(BM_ExtensionsSerializeArray, _10, 10)
+BENCHMARK_NAMED_PARAM(BM_ExtensionsSerializeArray, _100, 100)
 
 // --- Deserialize only (compare to libquicr ExtensionsDeserialize/N) ---
 
-static void BM_ExtensionsDeserialize(benchmark::State& state) {
+void BM_ExtensionsDeserialize(unsigned iters, int n) {
+  folly::BenchmarkSuspender susp;
   MoQFrameWriter writer;
   writer.initializeVersion(kVersion);
-  auto exts = makeExtensions(state.range(0));
+  auto exts = makeExtensions(n);
 
   // Serialize once to get wire format
   folly::IOBufQueue writeBuf;
@@ -76,8 +86,9 @@ static void BM_ExtensionsDeserialize(benchmark::State& state) {
   bool err = false;
   writer.writeExtensions(writeBuf, exts, sz, err);
   auto wireData = writeBuf.move();
+  susp.dismiss();
 
-  for (auto _ : state) {
+  for (unsigned i = 0; i < iters; ++i) {
     MoQFrameParser parser;
     parser.initializeVersion(kVersion);
     auto buf = wireData->clone();
@@ -86,17 +97,21 @@ static void BM_ExtensionsDeserialize(benchmark::State& state) {
     header.extensions = Extensions();
     size_t length = buf->computeChainDataLength();
     auto res = parser.parseExtensions(cursor, length, header);
-    benchmark::DoNotOptimize(res);
+    folly::doNotOptimizeAway(res);
   }
 }
-BENCHMARK(BM_ExtensionsDeserialize)->Arg(1)->Arg(10)->Arg(100)->Arg(1000);
+BENCHMARK_NAMED_PARAM(BM_ExtensionsDeserialize, _1, 1)
+BENCHMARK_NAMED_PARAM(BM_ExtensionsDeserialize, _10, 10)
+BENCHMARK_NAMED_PARAM(BM_ExtensionsDeserialize, _100, 100)
+BENCHMARK_NAMED_PARAM(BM_ExtensionsDeserialize, _1000, 1000)
 
 // --- Roundtrip: serialize then parse (compare to libquicr ExtensionsRoundTrip/N) ---
 
-static void BM_ExtensionsRoundTrip(benchmark::State& state) {
+void BM_ExtensionsRoundTrip(unsigned iters, int n) {
+  folly::BenchmarkSuspender susp;
   MoQFrameWriter writer;
   writer.initializeVersion(kVersion);
-  auto exts = makeExtensions(state.range(0));
+  auto exts = makeExtensions(n);
 
   // Serialize once to get wire format
   folly::IOBufQueue writeBuf;
@@ -104,8 +119,9 @@ static void BM_ExtensionsRoundTrip(benchmark::State& state) {
   bool err = false;
   writer.writeExtensions(writeBuf, exts, sz, err);
   auto wireData = writeBuf.move();
+  susp.dismiss();
 
-  for (auto _ : state) {
+  for (unsigned i = 0; i < iters; ++i) {
     // Parse
     MoQFrameParser parser;
     parser.initializeVersion(kVersion);
@@ -115,16 +131,19 @@ static void BM_ExtensionsRoundTrip(benchmark::State& state) {
     header.extensions = Extensions();
     size_t length = buf->computeChainDataLength();
     auto res = parser.parseExtensions(cursor, length, header);
-    benchmark::DoNotOptimize(res);
+    folly::doNotOptimizeAway(res);
 
     // Reserialize
     folly::IOBufQueue outBuf;
     size_t outSz = 0;
     bool outErr = false;
     writer.writeExtensions(outBuf, header.extensions, outSz, outErr);
-    benchmark::DoNotOptimize(outSz);
+    folly::doNotOptimizeAway(outSz);
   }
 }
-BENCHMARK(BM_ExtensionsRoundTrip)->Arg(1)->Arg(10)->Arg(100)->Arg(1000);
+BENCHMARK_NAMED_PARAM(BM_ExtensionsRoundTrip, _1, 1)
+BENCHMARK_NAMED_PARAM(BM_ExtensionsRoundTrip, _10, 10)
+BENCHMARK_NAMED_PARAM(BM_ExtensionsRoundTrip, _100, 100)
+BENCHMARK_NAMED_PARAM(BM_ExtensionsRoundTrip, _1000, 1000)
 
 } // namespace
