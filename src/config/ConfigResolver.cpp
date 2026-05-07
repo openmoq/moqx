@@ -441,6 +441,85 @@ QuicConfig mergeQuicConfig(
   return result;
 }
 
+void applyMvfstOverride(MvfstConfig& base, const ParsedMvfstConfig& overlay) {
+  if (auto v = overlay.max_cwnd_in_mss.value())
+    base.maxCwndInMss = *v;
+  if (auto v = overlay.pacing_enabled.value())
+    base.pacingEnabled = *v;
+  if (auto v = overlay.enable_gso.value())
+    base.enableGSO = *v;
+  if (auto v = overlay.max_conn_packets_sent_per_loop.value())
+    base.maxConnPacketsSentPerLoop = *v;
+  if (auto v = overlay.max_server_recv_packets_per_loop.value())
+    base.maxServerRecvPacketsPerLoop = *v;
+  if (auto v = overlay.num_gro_buffers.value())
+    base.numGROBuffers = *v;
+  if (const auto& b = overlay.bbr.value()) {
+    if (auto v = b->conservative_recovery.value())
+      base.bbr.conservativeRecovery = *v;
+    if (auto v = b->large_probe_rtt_cwnd.value())
+      base.bbr.largeProbeRttCwnd = *v;
+    if (auto v = b->enable_ack_aggregation_in_startup.value())
+      base.bbr.enableAckAggregationInStartup = *v;
+    if (auto v = b->probe_rtt_disabled_if_app_limited.value())
+      base.bbr.probeRttDisabledIfAppLimited = *v;
+    if (auto v = b->drain_to_target.value())
+      base.bbr.drainToTarget = *v;
+  }
+  if (const auto& b2 = overlay.bbr2.value()) {
+    if (auto v = b2->ignore_inflight_long_term.value())
+      base.bbr2.ignoreInflightLongTerm = *v;
+    if (auto v = b2->ignore_short_term.value())
+      base.bbr2.ignoreShortTerm = *v;
+    if (auto v = b2->exit_startup_on_loss.value())
+      base.bbr2.exitStartupOnLoss = *v;
+    if (auto v = b2->enable_recovery_in_startup.value())
+      base.bbr2.enableRecoveryInStartup = *v;
+    if (auto v = b2->enable_recovery_in_probe_states.value())
+      base.bbr2.enableRecoveryInProbeStates = *v;
+    if (auto v = b2->enable_reno_coexistence.value())
+      base.bbr2.enableRenoCoexistence = *v;
+    if (auto v = b2->pace_init_cwnd.value())
+      base.bbr2.paceInitCwnd = *v;
+    if (auto v = b2->override_cruise_pacing_gain.value())
+      base.bbr2.overrideCruisePacingGain = *v;
+    if (auto v = b2->override_cruise_cwnd_gain.value())
+      base.bbr2.overrideCruiseCwndGain = *v;
+    if (auto v = b2->override_startup_pacing_gain.value())
+      base.bbr2.overrideStartupPacingGain = *v;
+    if (auto v = b2->override_bw_short_beta.value())
+      base.bbr2.overrideBwShortBeta = *v;
+  }
+  if (const auto& c = overlay.cubic.value()) {
+    if (auto v = c->additive_increase_after_hystart.value())
+      base.cubic.additiveIncreaseAfterHystart = *v;
+    if (auto v = c->only_grow_cwnd_when_limited.value())
+      base.cubic.onlyGrowCwndWhenLimited = *v;
+    if (auto v = c->leave_headroom_for_cwnd_limited.value())
+      base.cubic.leaveHeadroomForCwndLimited = *v;
+  }
+  if (const auto& cp = overlay.copa.value()) {
+    if (auto v = cp->delta_param.value())
+      base.copa.deltaParam = *v;
+  }
+  if (const auto& ls = overlay.l4s.value()) {
+    if (auto v = ls->ce_target.value())
+      base.l4s.ceTarget = *v;
+  }
+}
+
+MvfstConfig mergeMvfstConfig(
+    const std::optional<ParsedMvfstConfig>& defaults,
+    const std::optional<ParsedMvfstConfig>& perListener
+) {
+  MvfstConfig result; // starts with C++ struct defaults
+  if (defaults)
+    applyMvfstOverride(result, *defaults);
+  if (perListener)
+    applyMvfstOverride(result, *perListener);
+  return result;
+}
+
 void validateQuicConfig(
     const QuicConfig& quic,
     QuicStack stack,
@@ -478,21 +557,56 @@ void validateQuicConfig(
         ") must be >= min_ack_delay_us (" + std::to_string(quic.minAckDelayUs) + ")"
     );
   }
-  // (excluded: mvfst "custom"/"staticcwnd" require programmatic setup; "none" disables CC)
+  // (excluded: mvfst "custom"/"staticcwnd" require programmatic setup)
   static const std::unordered_set<std::string> kPicoCcAlgos =
       {"bbr", "bbr1", "c4", "cubic", "dcubic", "fast", "newreno", "prague", "reno"};
   static const std::unordered_set<std::string> kMvfstCcAlgos =
-      {"bbr", "bbr2", "bbr2modular", "copa", "cubic", "newreno"};
+      {"bbr", "bbr2", "bbr2modular", "copa", "cubic", "newreno", "none"};
   const auto& validAlgos = (stack == QuicStack::Picoquic) ? kPicoCcAlgos : kMvfstCcAlgos;
   const auto& validList = (stack == QuicStack::Picoquic)
                               ? "bbr, bbr1, c4, cubic, dcubic, fast, newreno, prague, reno"
-                              : "bbr, bbr2, bbr2modular, copa, cubic, newreno";
+                              : "bbr, bbr2, bbr2modular, copa, cubic, newreno, none";
   if (!validAlgos.count(quic.ccAlgo)) {
     errors.push_back(
         context + " quic: cc_algo '" + quic.ccAlgo +
         "' is not valid for this stack"
         " (valid: " +
         validList + ")"
+    );
+  }
+}
+
+void validateMvfstConfig(
+    const MvfstConfig& mvfst,
+    const std::string& context,
+    std::vector<std::string>& errors,
+    std::vector<std::string>& warnings
+) {
+  if (mvfst.maxCwndInMss == 0) {
+    errors.push_back(context + " mvfst: max_cwnd_in_mss must be >= 1");
+  }
+  if (mvfst.maxConnPacketsSentPerLoop == 0) {
+    errors.push_back(context + " mvfst: max_conn_packets_sent_per_loop must be >= 1");
+  }
+  if (mvfst.numGROBuffers == 0) {
+    errors.push_back(context + " mvfst: num_gro_buffers must be >= 1");
+  }
+  if (mvfst.numGROBuffers > 64) {
+    warnings.push_back(
+        context + " mvfst: num_gro_buffers (" + std::to_string(mvfst.numGROBuffers) +
+        ") exceeds 64; most kernels cap GRO at 64 buffers"
+    );
+  }
+  if (mvfst.copa.deltaParam <= 0.0 || mvfst.copa.deltaParam >= 1.0) {
+    errors.push_back(
+        context + " mvfst: copa.delta_param (" + std::to_string(mvfst.copa.deltaParam) +
+        ") must be in (0, 1)"
+    );
+  }
+  if (mvfst.l4s.ceTarget < 0.0f || mvfst.l4s.ceTarget >= 1.0f) {
+    errors.push_back(
+        context + " mvfst: l4s.ce_target (" + std::to_string(mvfst.l4s.ceTarget) +
+        ") must be 0 (disabled) or in (0, 1)"
     );
   }
 }
@@ -538,7 +652,11 @@ void validatePicoServicePaths(
   }
 }
 
-ListenerConfig resolveListener(const ParsedListenerConfig& listener, const QuicConfig& quic) {
+ListenerConfig resolveListener(
+    const ParsedListenerConfig& listener,
+    const QuicConfig& quic,
+    const MvfstConfig& mvfst
+) {
   const auto& sock = listener.udp.value().socket.value();
   const auto& tls = listener.tls.value();
 
@@ -560,6 +678,7 @@ ListenerConfig resolveListener(const ParsedListenerConfig& listener, const QuicC
       .moqtVersions = moqtVersionsToString(listener),
       .quicStack = quicStack,
       .quic = quic,
+      .mvfst = mvfst,
   };
 }
 
@@ -621,13 +740,16 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
     return folly::makeUnexpected(std::string("At least one listener is required"));
   }
 
-  // Extract listener_defaults.quic for use in per-listener merge
+  // Extract listener_defaults for use in per-listener merge
   std::optional<ParsedQuicConfig> quicDefaults;
+  std::optional<ParsedMvfstConfig> mvfstDefaults;
   if (auto ld = config.listener_defaults.value()) {
     quicDefaults = ld->quic.value();
+    mvfstDefaults = ld->mvfst.value();
   }
 
   std::vector<QuicConfig> mergedQuicConfigs;
+  std::vector<MvfstConfig> mergedMvfstConfigs;
   {
     std::unordered_set<std::string> listenerAddrs;
     for (const auto& listener : config.listeners.value()) {
@@ -642,6 +764,23 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
       const auto stack = (stackStr == kStackPicoquic) ? QuicStack::Picoquic : QuicStack::Mvfst;
       validateQuicConfig(quic, stack, "Listener '" + listener.name.value() + "'", errors, warnings);
       mergedQuicConfigs.push_back(quic);
+      mergedMvfstConfigs.push_back(mergeMvfstConfig(mvfstDefaults, listener.mvfst.value()));
+      validateMvfstConfig(
+          mergedMvfstConfigs.back(),
+          "Listener '" + listener.name.value() + "'",
+          errors,
+          warnings
+      );
+      if (!mergedMvfstConfigs.back().pacingEnabled) {
+        const auto& cc = quic.ccAlgo;
+        if (cc == "bbr" || cc == "bbr2" || cc == "bbr2modular") {
+          errors.push_back(
+              "Listener '" + listener.name.value() +
+              "': mvfst: pacing_enabled: false is incompatible with cc_algo '" + cc +
+              "' (bbr, bbr2, and bbr2modular require pacing)"
+          );
+        }
+      }
     }
   }
 
@@ -724,7 +863,9 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
                     v.reserve(config.listeners.value().size());
                     const auto& listeners = config.listeners.value();
                     for (size_t i = 0; i < listeners.size(); ++i) {
-                      v.push_back(resolveListener(listeners[i], mergedQuicConfigs[i]));
+                      v.push_back(
+                          resolveListener(listeners[i], mergedQuicConfigs[i], mergedMvfstConfigs[i])
+                      );
                     }
                     return v;
                   }(),
