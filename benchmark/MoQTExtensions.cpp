@@ -148,9 +148,13 @@ void BM_ExtensionsDeserialize(folly::UserCounters& counters, unsigned iters, int
   size_t wireSize = wireData->computeChainDataLength();
   susp.dismiss();
 
-  MoQFrameParser parser;
-  parser.initializeVersion(kVersion);
   for (unsigned i = 0; i < iters; ++i) {
+    // Parser is per-iter: it carries state that persists across calls and
+    // would short-circuit subsequent parseExtensions on the same wireData.
+    // Cursor is hoisted off a fresh re-bind to wireData each iter (no clone
+    // needed — Cursor is read-only over the IOBuf chain).
+    MoQFrameParser parser;
+    parser.initializeVersion(kVersion);
     folly::io::Cursor cursor(wireData.get());
     ObjectHeader header;
     header.extensions = Extensions();
@@ -181,19 +185,19 @@ void BM_ExtensionsRoundTrip(folly::UserCounters& counters, unsigned iters, int n
   size_t wireSize = wireData->computeChainDataLength();
   susp.dismiss();
 
-  MoQFrameParser parser;
-  parser.initializeVersion(kVersion);
   folly::IOBufQueue outBuf;
   for (unsigned i = 0; i < iters; ++i) {
-    // Parse
+    // Parser must be fresh per iter (carries state that would short-circuit
+    // subsequent calls). Cursor reads wireData directly — no clone needed.
+    MoQFrameParser parser;
+    parser.initializeVersion(kVersion);
     folly::io::Cursor cursor(wireData.get());
     ObjectHeader header;
     header.extensions = Extensions();
     auto res = parser.parseExtensions(cursor, wireSize, header);
     folly::doNotOptimizeAway(res);
 
-    // Reserialize. Discard prior iter's queue contents via move() — cheaper
-    // than reconstructing IOBufQueue, keeps the per-iter alloc out of the loop.
+    // Discard prior iter's output; cheaper than reconstructing the queue.
     outBuf.move();
     size_t outSz = 0;
     bool outErr = false;
@@ -315,9 +319,13 @@ void BM_ExtensionsDeserialize_LibquicrShape(
   auto wireData = writeBuf.move();
   size_t wireSize = wireData->computeChainDataLength();
   susp.dismiss();
-  MoQFrameParser parser;
-  parser.initializeVersion(kVersion);
   for (unsigned i = 0; i < iters; ++i) {
+    // Parser is per-iter: it carries state that persists across calls and
+    // would short-circuit subsequent parseExtensions on the same wireData.
+    // Cursor is hoisted off a fresh re-bind to wireData each iter (no clone
+    // needed — Cursor is read-only over the IOBuf chain).
+    MoQFrameParser parser;
+    parser.initializeVersion(kVersion);
     folly::io::Cursor cursor(wireData.get());
     ObjectHeader header;
     header.extensions = Extensions();
@@ -345,9 +353,13 @@ void BM_ExtensionsDeserialize_LikeLibquicrAllArray(
   auto wireData = writeBuf.move();
   size_t wireSize = wireData->computeChainDataLength();
   susp.dismiss();
-  MoQFrameParser parser;
-  parser.initializeVersion(kVersion);
   for (unsigned i = 0; i < iters; ++i) {
+    // Parser is per-iter: it carries state that persists across calls and
+    // would short-circuit subsequent parseExtensions on the same wireData.
+    // Cursor is hoisted off a fresh re-bind to wireData each iter (no clone
+    // needed — Cursor is read-only over the IOBuf chain).
+    MoQFrameParser parser;
+    parser.initializeVersion(kVersion);
     folly::io::Cursor cursor(wireData.get());
     ObjectHeader header;
     header.extensions = Extensions();
@@ -377,16 +389,19 @@ void BM_ExtensionsRoundTrip_LibquicrShape(
   auto wireData = writeBuf.move();
   size_t wireSize = wireData->computeChainDataLength();
   susp.dismiss();
-  MoQFrameParser parser;
-  parser.initializeVersion(kVersion);
   folly::IOBufQueue outBuf;
   for (unsigned i = 0; i < iters; ++i) {
+    // Parser must be fresh per iter (carries state that would short-circuit
+    // subsequent calls). Cursor reads wireData directly — no clone needed.
+    MoQFrameParser parser;
+    parser.initializeVersion(kVersion);
     folly::io::Cursor cursor(wireData.get());
     ObjectHeader header;
     header.extensions = Extensions();
     auto res = parser.parseExtensions(cursor, wireSize, header);
     folly::doNotOptimizeAway(res);
 
+    // Discard prior iter's output; cheaper than reconstructing the queue.
     outBuf.move();
     size_t outSz = 0;
     bool outErr = false;
@@ -414,16 +429,19 @@ void BM_ExtensionsRoundTrip_LikeLibquicrAllArray(
   auto wireData = writeBuf.move();
   size_t wireSize = wireData->computeChainDataLength();
   susp.dismiss();
-  MoQFrameParser parser;
-  parser.initializeVersion(kVersion);
   folly::IOBufQueue outBuf;
   for (unsigned i = 0; i < iters; ++i) {
+    // Parser must be fresh per iter (carries state that would short-circuit
+    // subsequent calls). Cursor reads wireData directly — no clone needed.
+    MoQFrameParser parser;
+    parser.initializeVersion(kVersion);
     folly::io::Cursor cursor(wireData.get());
     ObjectHeader header;
     header.extensions = Extensions();
     auto res = parser.parseExtensions(cursor, wireSize, header);
     folly::doNotOptimizeAway(res);
 
+    // Discard prior iter's output; cheaper than reconstructing the queue.
     outBuf.move();
     size_t outSz = 0;
     bool outErr = false;

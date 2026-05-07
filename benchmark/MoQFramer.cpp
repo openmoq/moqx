@@ -211,9 +211,11 @@ BENCHMARK(BM_ParseSubscribeRequest, iters) {
   auto wireData = writeBuf.move();
   susp.dismiss();
 
-  MoQFrameParser parser;
-  parser.initializeVersion(kVersion);
   for (unsigned i = 0; i < iters; ++i) {
+    // Parser must be fresh per iter; reusing it makes parseSubscribeRequest
+    // short-circuit on subsequent calls and the loop body becomes a no-op.
+    MoQFrameParser parser;
+    parser.initializeVersion(kVersion);
     folly::io::Cursor cursor(wireData.get());
     skipVarint(cursor); // frame type
     auto frameLen = skipVarint(cursor); // payload length
@@ -236,9 +238,9 @@ BENCHMARK(BM_ParseFetch, iters) {
   auto wireData = writeBuf.move();
   susp.dismiss();
 
-  MoQFrameParser parser;
-  parser.initializeVersion(kVersion);
   for (unsigned i = 0; i < iters; ++i) {
+    MoQFrameParser parser;
+    parser.initializeVersion(kVersion);
     folly::io::Cursor cursor(wireData.get());
     skipVarint(cursor);
     auto frameLen = skipVarint(cursor);
@@ -259,9 +261,9 @@ BENCHMARK(BM_ParsePublishNamespace, iters) {
   auto wireData = writeBuf.move();
   susp.dismiss();
 
-  MoQFrameParser parser;
-  parser.initializeVersion(kVersion);
   for (unsigned i = 0; i < iters; ++i) {
+    MoQFrameParser parser;
+    parser.initializeVersion(kVersion);
     folly::io::Cursor cursor(wireData.get());
     skipVarint(cursor);
     auto frameLen = skipVarint(cursor);
@@ -277,16 +279,16 @@ BENCHMARK(BM_SubscribeRoundTrip, iters) {
   MoQFrameWriter writer;
   writer.initializeVersion(kVersion);
   auto req = SubscribeRequest::make(makeFullTrackName());
-  MoQFrameParser parser;
-  parser.initializeVersion(kVersion);
   susp.dismiss();
   for (unsigned i = 0; i < iters; ++i) {
-    // Write (per-iter: that's the round-trip workload)
+    // Write (per-iter: that's the round-trip workload).
     folly::IOBufQueue writeBuf;
     writer.writeSubscribeRequest(writeBuf, req);
     auto buf = writeBuf.move();
 
-    // Parse
+    // Parser must be fresh per iter; reusing it short-circuits subsequent calls.
+    MoQFrameParser parser;
+    parser.initializeVersion(kVersion);
     folly::io::Cursor cursor(buf.get());
     skipVarint(cursor);
     auto frameLen = skipVarint(cursor);
