@@ -242,4 +242,27 @@ jobs:
         run: bash scripts/build.sh --benchmark
 
       - name: Run benchmarks
-        run: ./build/benchmark/moqx_benchmark
+        run: |
+          ./build/benchmark/moqx_benchmark \
+            --bm_json_verbose=bench-results.json \
+            | tee bench-output.txt
+
+      - name: Render summary
+        if: always()
+        run: |
+          {
+            echo "## Benchmark results — ${{ matrix.name }}"
+            echo ""
+            echo '```'
+            cat bench-output.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload benchmark artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results-${{ matrix.name }}
+          path: |
+            bench-results.json
+            bench-output.txt
