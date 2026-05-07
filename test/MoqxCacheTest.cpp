@@ -282,7 +282,8 @@ protected:
           upstreamFetchConsumer_ = std::move(consumer);
           promise.setValue(upstreamFetchConsumer_);
           upstreamFetchHandle_ =
-              std::make_shared<moxygen::MockFetchHandle>(FetchOk{0, order, endOfTrack, largest});
+              std::make_shared<moxygen::MockFetchHandle>(FetchOk{0, order, endOfTrack, largest, {}}
+              );
           return folly::coro::makeTask<Publisher::FetchResult>(upstreamFetchHandle_);
         })
         .RetiresOnSaturation();
@@ -1210,7 +1211,7 @@ CO_TEST_F(MoqxCacheTest, TestPartialCacheMissBeginningNoObjectsUpstream) {
   populateCacheRange({0, 6}, {0, 9});
 
   // Expect upstream fetch for the cache miss portion, returns empty stream
-  auto upstreamFetchOk = FetchOk{0, GroupOrder::OldestFirst, false, {0, 6}};
+  auto upstreamFetchOk = FetchOk{0, GroupOrder::OldestFirst, false, {0, 6}, {}};
   expectUpstreamFetch(upstreamFetchOk);
 
   // Expect consumer to receive objects 6, 7, 8 from cache
@@ -1234,7 +1235,7 @@ CO_TEST_F(MoqxCacheTest, TestUpstreamReturnsNoObjectsTail) {
   populateCacheRange({0, 0}, {0, 10});
 
   // Expect upstream fetch for the cache miss portion, returns empty stream
-  auto upstreamFetchOk = FetchOk{0, GroupOrder::OldestFirst, false, {2, 5}};
+  auto upstreamFetchOk = FetchOk{0, GroupOrder::OldestFirst, false, {2, 5}, {}};
   expectUpstreamFetch(upstreamFetchOk);
 
   // Expect consumer to receive objects 0-9 from cache, then endOfFetch
@@ -1257,7 +1258,7 @@ CO_TEST_F(MoqxCacheTest, TestUpstreamReturnsNoObjectsTail) {
 CO_TEST_F(MoqxCacheTest, TestFullCacheMissNoObjectsUpstream) {
   // No objects in cache - full cache miss
   // Upstream returns FetchOk with empty stream (no objects exist)
-  auto upstreamFetchOk = FetchOk{0, GroupOrder::OldestFirst, false, {0, 5}};
+  auto upstreamFetchOk = FetchOk{0, GroupOrder::OldestFirst, false, {0, 5}, {}};
   expectUpstreamFetch(upstreamFetchOk);
 
   // Consumer should receive endOfFetch (empty stream)
@@ -2185,7 +2186,7 @@ CO_TEST_F(MoqxCacheTest, TestSparseCacheSkipUncachedAsc) {
     EXPECT_CALL(*consumer_, object(0, _, kFarObject, _, _, true, _)).WillOnce(Return(folly::unit));
   }
   // Upstream fetch covers the miss range — returns no objects
-  expectUpstreamFetch(FetchOk{0, GroupOrder::OldestFirst, false, {0, kFarObject}});
+  expectUpstreamFetch(FetchOk{0, GroupOrder::OldestFirst, false, {0, kFarObject}, {}});
   auto res = co_await cache_.fetch(getFetch({0, 0}, {0, kFarObject + 1}), consumer_, upstream_);
   EXPECT_TRUE(res.hasValue());
 }
@@ -2205,7 +2206,7 @@ CO_TEST_F(MoqxCacheTest, TestSparseCacheSkipUncachedDesc) {
     EXPECT_CALL(*consumer_, object(0, _, 0, _, _, _, _)).WillOnce(Return(folly::unit));
     EXPECT_CALL(*consumer_, object(0, _, kFarObject, _, _, true, _)).WillOnce(Return(folly::unit));
   }
-  expectUpstreamFetch(FetchOk{0, GroupOrder::NewestFirst, false, {0, kFarObject}});
+  expectUpstreamFetch(FetchOk{0, GroupOrder::NewestFirst, false, {0, kFarObject}, {}});
   auto res = co_await cache_.fetch(
       getFetch({0, 0}, {0, kFarObject + 1}, GroupOrder::NewestFirst),
       consumer_,
@@ -2328,7 +2329,7 @@ CO_TEST_F(MoqxCacheTest, TestSkipUncachedAfterTTLExpiration) {
   *currentTime += std::chrono::milliseconds(1001);
 
   // Single upstream tail covers the entire range — every position is a miss
-  expectUpstreamFetch(FetchOk{0, GroupOrder::OldestFirst, false, {0, kFarObject}});
+  expectUpstreamFetch(FetchOk{0, GroupOrder::OldestFirst, false, {0, kFarObject}, {}});
   EXPECT_CALL(*consumer_, endOfFetch()).WillOnce(Return(folly::unit));
   auto res = co_await cache_.fetch(getFetch({0, 0}, {0, kFarObject + 1}), consumer_, upstream_);
   EXPECT_TRUE(res.hasValue());
@@ -2360,7 +2361,7 @@ CO_TEST_F(MoqxCacheTest, TestSkipUncachedAfterGroupEviction) {
 
   // Fetch only the evicted group's range. skipUncached must terminate
   // (next cached interval starts at {20,0} which is past end_).
-  expectUpstreamFetch(FetchOk{0, GroupOrder::OldestFirst, false, {10, 0}});
+  expectUpstreamFetch(FetchOk{0, GroupOrder::OldestFirst, false, {10, 0}, {}});
   EXPECT_CALL(*consumer_, endOfFetch()).WillOnce(Return(folly::unit));
   auto res = co_await cache_.fetch(getFetch({10, 0}, {10, 1}), consumer_, upstream_);
   EXPECT_TRUE(res.hasValue());
@@ -2398,7 +2399,7 @@ CO_TEST_F(MoqxCacheTest, TestSkipUncachedAfterStreamingCompletion) {
     EXPECT_CALL(*consumer_, object(0, _, 0, _, _, _, _)).WillOnce(Return(folly::unit));
     EXPECT_CALL(*consumer_, object(0, _, kFarObject, _, _, true, _)).WillOnce(Return(folly::unit));
   }
-  expectUpstreamFetch(FetchOk{0, GroupOrder::OldestFirst, false, {0, kFarObject}});
+  expectUpstreamFetch(FetchOk{0, GroupOrder::OldestFirst, false, {0, kFarObject}, {}});
   auto res = co_await cache_.fetch(getFetch({0, 0}, {0, kFarObject + 1}), consumer_, upstream_);
   EXPECT_TRUE(res.hasValue());
 }
@@ -2614,6 +2615,7 @@ CO_TEST_F(MoqxCacheTest, TestDescendingFetchDoesNotMarkTopGroupTailAsGap) {
             GroupOrder::NewestFirst,
             false,
             AbsoluteLocation{3, 3},
+            {},
         });
         return folly::coro::makeTask<Publisher::FetchResult>(upstreamFetchHandle_);
       })
@@ -2642,6 +2644,7 @@ CO_TEST_F(MoqxCacheTest, TestDescendingFetchDoesNotMarkTopGroupTailAsGap) {
             GroupOrder::OldestFirst,
             false,
             AbsoluteLocation{5, 20},
+            {},
         });
         return folly::coro::makeTask<Publisher::FetchResult>(upstreamFetchHandle_);
       })
@@ -2674,6 +2677,7 @@ CO_TEST_F(MoqxCacheTest, TestDescendingFetchDoesNotMarkBottomGroupHeadAsGap) {
             GroupOrder::NewestFirst,
             false,
             AbsoluteLocation{3, 5},
+            {},
         });
         return folly::coro::makeTask<Publisher::FetchResult>(upstreamFetchHandle_);
       })
@@ -2701,6 +2705,7 @@ CO_TEST_F(MoqxCacheTest, TestDescendingFetchDoesNotMarkBottomGroupHeadAsGap) {
             GroupOrder::OldestFirst,
             false,
             AbsoluteLocation{3, 1},
+            {},
         });
         return folly::coro::makeTask<Publisher::FetchResult>(upstreamFetchHandle_);
       })
@@ -2733,6 +2738,7 @@ CO_TEST_F(MoqxCacheTest, TestDescendingFetchDoesNotGapCachedObject) {
             GroupOrder::NewestFirst,
             false,
             AbsoluteLocation{3, 3},
+            {},
         });
         return folly::coro::makeTask<Publisher::FetchResult>(upstreamFetchHandle_);
       })

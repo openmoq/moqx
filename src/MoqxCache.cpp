@@ -1434,7 +1434,6 @@ folly::coro::Task<Publisher::FetchResult> MoqxCache::fetchImpl(
   auto lastObject = false;
   auto cachedNow = now();
   FetchRangeIterator fetchRangeIt(standalone->start, standalone->end, fetch.groupOrder, track);
-  uint64_t missIterCount = 0;
   while (!token.isCancellationRequested() && (*fetchRangeIt) != fetchRangeIt.end()) {
     auto current = *fetchRangeIt;
     auto* blockingWriteback = track->findFetchInProgress(current);
