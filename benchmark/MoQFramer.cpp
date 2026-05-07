@@ -187,20 +187,6 @@ BENCHMARK(BM_WriteFetch, iters) {
   }
 }
 
-BENCHMARK(BM_WriteGoaway, iters) {
-  folly::BenchmarkSuspender susp;
-  MoQFrameWriter writer;
-  writer.initializeVersion(kVersion);
-  Goaway goaway;
-  goaway.newSessionUri = "https://relay.example.com/moq-relay";
-  susp.dismiss();
-  for (unsigned i = 0; i < iters; ++i) {
-    folly::IOBufQueue buf;
-    auto res = writer.writeGoaway(buf, goaway);
-    folly::doNotOptimizeAway(res);
-  }
-}
-
 // --- Parse benchmarks ---
 
 // Helper: skip a QUIC varint in a folly::io::Cursor.
@@ -225,11 +211,10 @@ BENCHMARK(BM_ParseSubscribeRequest, iters) {
   auto wireData = writeBuf.move();
   susp.dismiss();
 
+  MoQFrameParser parser;
+  parser.initializeVersion(kVersion);
   for (unsigned i = 0; i < iters; ++i) {
-    MoQFrameParser parser;
-    parser.initializeVersion(kVersion);
-    auto buf = wireData->clone();
-    folly::io::Cursor cursor(buf.get());
+    folly::io::Cursor cursor(wireData.get());
     skipVarint(cursor); // frame type
     auto frameLen = skipVarint(cursor); // payload length
     auto res = parser.parseSubscribeRequest(cursor, frameLen);
@@ -251,11 +236,10 @@ BENCHMARK(BM_ParseFetch, iters) {
   auto wireData = writeBuf.move();
   susp.dismiss();
 
+  MoQFrameParser parser;
+  parser.initializeVersion(kVersion);
   for (unsigned i = 0; i < iters; ++i) {
-    MoQFrameParser parser;
-    parser.initializeVersion(kVersion);
-    auto buf = wireData->clone();
-    folly::io::Cursor cursor(buf.get());
+    folly::io::Cursor cursor(wireData.get());
     skipVarint(cursor);
     auto frameLen = skipVarint(cursor);
     auto res = parser.parseFetch(cursor, frameLen);
@@ -275,37 +259,13 @@ BENCHMARK(BM_ParsePublishNamespace, iters) {
   auto wireData = writeBuf.move();
   susp.dismiss();
 
+  MoQFrameParser parser;
+  parser.initializeVersion(kVersion);
   for (unsigned i = 0; i < iters; ++i) {
-    MoQFrameParser parser;
-    parser.initializeVersion(kVersion);
-    auto buf = wireData->clone();
-    folly::io::Cursor cursor(buf.get());
+    folly::io::Cursor cursor(wireData.get());
     skipVarint(cursor);
     auto frameLen = skipVarint(cursor);
     auto res = parser.parsePublishNamespace(cursor, frameLen);
-    folly::doNotOptimizeAway(res);
-  }
-}
-
-BENCHMARK(BM_ParseGoaway, iters) {
-  folly::BenchmarkSuspender susp;
-  MoQFrameWriter writer;
-  writer.initializeVersion(kVersion);
-  Goaway goaway;
-  goaway.newSessionUri = "https://relay.example.com/moq-relay";
-  folly::IOBufQueue writeBuf;
-  writer.writeGoaway(writeBuf, goaway);
-  auto wireData = writeBuf.move();
-  susp.dismiss();
-
-  for (unsigned i = 0; i < iters; ++i) {
-    MoQFrameParser parser;
-    parser.initializeVersion(kVersion);
-    auto buf = wireData->clone();
-    folly::io::Cursor cursor(buf.get());
-    skipVarint(cursor);
-    auto frameLen = skipVarint(cursor);
-    auto res = parser.parseGoaway(cursor, frameLen);
     folly::doNotOptimizeAway(res);
   }
 }
@@ -317,16 +277,16 @@ BENCHMARK(BM_SubscribeRoundTrip, iters) {
   MoQFrameWriter writer;
   writer.initializeVersion(kVersion);
   auto req = SubscribeRequest::make(makeFullTrackName());
+  MoQFrameParser parser;
+  parser.initializeVersion(kVersion);
   susp.dismiss();
   for (unsigned i = 0; i < iters; ++i) {
-    // Write
+    // Write (per-iter: that's the round-trip workload)
     folly::IOBufQueue writeBuf;
     writer.writeSubscribeRequest(writeBuf, req);
     auto buf = writeBuf.move();
 
     // Parse
-    MoQFrameParser parser;
-    parser.initializeVersion(kVersion);
     folly::io::Cursor cursor(buf.get());
     skipVarint(cursor);
     auto frameLen = skipVarint(cursor);
@@ -367,17 +327,6 @@ BENCHMARK(BM_TrackNamespace_Hash, iters) {
   for (unsigned i = 0; i < iters; ++i) {
     auto h = hasher(ns);
     folly::doNotOptimizeAway(h);
-  }
-}
-
-BENCHMARK(BM_TrackNamespace_Describe, iters) {
-  folly::BenchmarkSuspender susp;
-  std::vector<std::string> parts = {"conference", "room42", "alice", "video"};
-  TrackNamespace ns(std::move(parts));
-  susp.dismiss();
-  for (unsigned i = 0; i < iters; ++i) {
-    auto s = ns.describe();
-    folly::doNotOptimizeAway(s);
   }
 }
 

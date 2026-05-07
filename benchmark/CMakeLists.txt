@@ -3,8 +3,6 @@
 
 add_executable(moqx_benchmark
   BoundedHistogram.cpp
-  ConfigLoader.cpp
-  ConfigResolver.cpp
   MoQStatsCollector.cpp
   MoQTExtensions.cpp
   MoQFramer.cpp

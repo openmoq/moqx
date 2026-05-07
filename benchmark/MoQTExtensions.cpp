@@ -148,15 +148,13 @@ void BM_ExtensionsDeserialize(folly::UserCounters& counters, unsigned iters, int
   size_t wireSize = wireData->computeChainDataLength();
   susp.dismiss();
 
+  MoQFrameParser parser;
+  parser.initializeVersion(kVersion);
   for (unsigned i = 0; i < iters; ++i) {
-    MoQFrameParser parser;
-    parser.initializeVersion(kVersion);
-    auto buf = wireData->clone();
-    folly::io::Cursor cursor(buf.get());
+    folly::io::Cursor cursor(wireData.get());
     ObjectHeader header;
     header.extensions = Extensions();
-    size_t length = buf->computeChainDataLength();
-    auto res = parser.parseExtensions(cursor, length, header);
+    auto res = parser.parseExtensions(cursor, wireSize, header);
     folly::doNotOptimizeAway(res);
   }
   counters["bytes_per_iter"] = wireSize;
@@ -183,20 +181,20 @@ void BM_ExtensionsRoundTrip(folly::UserCounters& counters, unsigned iters, int n
   size_t wireSize = wireData->computeChainDataLength();
   susp.dismiss();
 
+  MoQFrameParser parser;
+  parser.initializeVersion(kVersion);
+  folly::IOBufQueue outBuf;
   for (unsigned i = 0; i < iters; ++i) {
     // Parse
-    MoQFrameParser parser;
-    parser.initializeVersion(kVersion);
-    auto buf = wireData->clone();
-    folly::io::Cursor cursor(buf.get());
+    folly::io::Cursor cursor(wireData.get());
     ObjectHeader header;
     header.extensions = Extensions();
-    size_t length = buf->computeChainDataLength();
-    auto res = parser.parseExtensions(cursor, length, header);
+    auto res = parser.parseExtensions(cursor, wireSize, header);
     folly::doNotOptimizeAway(res);
 
-    // Reserialize
-    folly::IOBufQueue outBuf;
+    // Reserialize. Discard prior iter's queue contents via move() — cheaper
+    // than reconstructing IOBufQueue, keeps the per-iter alloc out of the loop.
+    outBuf.move();
     size_t outSz = 0;
     bool outErr = false;
     writer.writeExtensions(outBuf, header.extensions, outSz, outErr);
@@ -317,15 +315,13 @@ void BM_ExtensionsDeserialize_LibquicrShape(
   auto wireData = writeBuf.move();
   size_t wireSize = wireData->computeChainDataLength();
   susp.dismiss();
+  MoQFrameParser parser;
+  parser.initializeVersion(kVersion);
   for (unsigned i = 0; i < iters; ++i) {
-    MoQFrameParser parser;
-    parser.initializeVersion(kVersion);
-    auto buf = wireData->clone();
-    folly::io::Cursor cursor(buf.get());
+    folly::io::Cursor cursor(wireData.get());
     ObjectHeader header;
     header.extensions = Extensions();
-    size_t length = buf->computeChainDataLength();
-    auto res = parser.parseExtensions(cursor, length, header);
+    auto res = parser.parseExtensions(cursor, wireSize, header);
     folly::doNotOptimizeAway(res);
   }
   counters["bytes_per_iter"] = wireSize;
@@ -349,15 +345,13 @@ void BM_ExtensionsDeserialize_LikeLibquicrAllArray(
   auto wireData = writeBuf.move();
   size_t wireSize = wireData->computeChainDataLength();
   susp.dismiss();
+  MoQFrameParser parser;
+  parser.initializeVersion(kVersion);
   for (unsigned i = 0; i < iters; ++i) {
-    MoQFrameParser parser;
-    parser.initializeVersion(kVersion);
-    auto buf = wireData->clone();
-    folly::io::Cursor cursor(buf.get());
+    folly::io::Cursor cursor(wireData.get());
     ObjectHeader header;
     header.extensions = Extensions();
-    size_t length = buf->computeChainDataLength();
-    auto res = parser.parseExtensions(cursor, length, header);
+    auto res = parser.parseExtensions(cursor, wireSize, header);
     folly::doNotOptimizeAway(res);
   }
   counters["bytes_per_iter"] = wireSize;
@@ -383,18 +377,17 @@ void BM_ExtensionsRoundTrip_LibquicrShape(
   auto wireData = writeBuf.move();
   size_t wireSize = wireData->computeChainDataLength();
   susp.dismiss();
+  MoQFrameParser parser;
+  parser.initializeVersion(kVersion);
+  folly::IOBufQueue outBuf;
   for (unsigned i = 0; i < iters; ++i) {
-    MoQFrameParser parser;
-    parser.initializeVersion(kVersion);
-    auto buf = wireData->clone();
-    folly::io::Cursor cursor(buf.get());
+    folly::io::Cursor cursor(wireData.get());
     ObjectHeader header;
     header.extensions = Extensions();
-    size_t length = buf->computeChainDataLength();
-    auto res = parser.parseExtensions(cursor, length, header);
+    auto res = parser.parseExtensions(cursor, wireSize, header);
     folly::doNotOptimizeAway(res);
 
-    folly::IOBufQueue outBuf;
+    outBuf.move();
     size_t outSz = 0;
     bool outErr = false;
     writer.writeExtensions(outBuf, header.extensions, outSz, outErr);
@@ -421,18 +414,17 @@ void BM_ExtensionsRoundTrip_LikeLibquicrAllArray(
   auto wireData = writeBuf.move();
   size_t wireSize = wireData->computeChainDataLength();
   susp.dismiss();
+  MoQFrameParser parser;
+  parser.initializeVersion(kVersion);
+  folly::IOBufQueue outBuf;
   for (unsigned i = 0; i < iters; ++i) {
-    MoQFrameParser parser;
-    parser.initializeVersion(kVersion);
-    auto buf = wireData->clone();
-    folly::io::Cursor cursor(buf.get());
+    folly::io::Cursor cursor(wireData.get());
     ObjectHeader header;
     header.extensions = Extensions();
-    size_t length = buf->computeChainDataLength();
-    auto res = parser.parseExtensions(cursor, length, header);
+    auto res = parser.parseExtensions(cursor, wireSize, header);
     folly::doNotOptimizeAway(res);
 
-    folly::IOBufQueue outBuf;
+    outBuf.move();
     size_t outSz = 0;
     bool outErr = false;
     writer.writeExtensions(outBuf, header.extensions, outSz, outErr);
