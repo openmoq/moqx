@@ -1,17 +1,22 @@
-#include <moqx/admin/MetricsHandler.h>
+/*
+ * Copyright (c) OpenMOQ contributors.
+ * This source code is licensed under the Apache 2.0 license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
+#include "admin/MetricsHandler.h"
 
 #include <folly/CancellationToken.h>
 #include <folly/coro/Task.h>
-#include <folly/experimental/coro/Task.h>
-#include <folly/experimental/coro/WithCancellation.h>
+#include <folly/coro/WithCancellation.h>
 #include <folly/io/IOBuf.h>
 #include <folly/io/async/EventBaseManager.h>
 #include <folly/logging/xlog.h>
 #include <proxygen/httpserver/ResponseBuilder.h>
 #include <proxygen/lib/http/HTTPMessage.h>
 
-#include <moqx/admin/AdminServer.h>
-#include <moqx/stats/StatsRegistry.h>
+#include "admin/AdminServer.h"
+#include "stats/StatsRegistry.h"
 
 namespace openmoq::moqx::admin {
 

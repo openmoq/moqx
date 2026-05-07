@@ -18,7 +18,6 @@ COPY .docker-deps/moxygen /opt/moxygen
 COPY CMakeLists.txt CMakePresets.json ./
 COPY cmake/ cmake/
 COPY src/ src/
-COPY include/ include/
 COPY deps/moxygen/build/fbcode_builder/CMake deps/moxygen/build/fbcode_builder/CMake
 
 RUN cmake -S . -B _build --preset default \

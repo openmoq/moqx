@@ -5,7 +5,7 @@ name: ci pr
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, release/**]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -37,12 +37,128 @@ jobs:
             preset: default
             build_dir: build
             runner: ubuntu-22.04
+          # arm64 is validated by the publish-side docker build (ci-main publish
+          # arm64 entry); skipped here to avoid the ubuntu-runner ↔ bookworm-tarball
+          # glog ABI mismatch. arm64 regressions surface at main-push time.
+          # macOS disabled: moxygen tarball bakes brew Cellar versioned paths
+          # that break when the runner has different brew package versions.
+          # Re-enable once moxygen upstream fixes cmake to use opt symlinks.
+          # - name: macos
+          #   preset: default
+          #   build_dir: build
+          #   runner: macos-latest
           - name: asan debug
             preset: san
             build_dir: build-san
             runner: [self-hosted, linode]
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install system dependencies
+        run: |
+          if [[ "$(uname)" == "Darwin" ]]; then
+            deps/moxygen/standalone/install-system-deps.sh
+            brew install coreutils
+            echo "/opt/homebrew/opt/coreutils/libexec/gnubin" >> "$GITHUB_PATH"
+          else
+            sudo deps/moxygen/standalone/install-system-deps.sh
+          fi
+
+      - name: Setup dependencies
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MOQX_PLATFORM: ${{ matrix.platform || '' }}
+        run: |
+          # Three-mode setup resolution:
+          # 1. .moxygen-release file (release branches): use pinned tag.
+          # 2. Submodule SHA reachable from moxygen main: tarball mode via
+          #    snapshot-latest. Robust to drift between moxygen merges and
+          #    moqx's daily moxygen-sync.
+          # 3. Submodule SHA NOT reachable from main (dev iterating against
+          #    an unreleased moxygen feature branch): source build. Slow
+          #    but supports cross-repo iteration without requiring a
+          #    published moxygen tarball.
+          if [ -f .moxygen-release ]; then
+            export MOQX_MOXYGEN_RELEASE_TAG=$(cat .moxygen-release | tr -d '[:space:]')
+            echo "==> Pinned moxygen tag: $MOQX_MOXYGEN_RELEASE_TAG"
+            bash scripts/build.sh setup --no-fallback
+          else
+            SUB_SHA=$(git -C deps/moxygen rev-parse HEAD)
+            AHEAD=$(gh api "repos/openmoq/moxygen/compare/main...$SUB_SHA" --jq .ahead_by 2>/dev/null || echo "1")
+            if [ "$AHEAD" = "0" ]; then
+              echo "==> moxygen submodule $SUB_SHA on main → snapshot tarball"
+              bash scripts/build.sh setup --use-latest --no-fallback
+            else
+              echo "==> moxygen submodule $SUB_SHA $AHEAD commits diverged from main → source build"
+              bash scripts/build.sh setup
+            fi
+          fi
+
+      - name: Build
+        run: bash scripts/build.sh --profile ${{ matrix.preset }} --build-dir ${{ matrix.build_dir }}
+
+      - name: Test
+        env:
+          ASAN_OPTIONS: ${{ matrix.name == 'asan debug' && 'detect_leaks=1:abort_on_error=1' || '' }}
+        run: bash scripts/build.sh test --build-dir ${{ matrix.build_dir }} -- --output-junit test-results.xml
+
+      # dorny/test-reporter writes a Check Run, which needs 'checks: write' on
+      # GITHUB_TOKEN. Fork-PR tokens are read-only regardless of workflow perms,
+      # so skip on cross-repo PRs. test-log output above still shows pass/fail.
+      - name: Publish test results
+        uses: dorny/test-reporter@v1.9.1
+        if: ${{ (success() || failure()) && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        with:
+          name: "test (${{ matrix.name }})"
+          path: ${{ matrix.build_dir }}/test-results.xml
+          reporter: java-junit
+          fail-on-empty: ${{ job.status == 'success' && 'true' || 'false' }}
+
+      - name: Note fork-PR reporter skip
+        if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+        run: |
+          echo "::notice::Publish test results skipped — fork-PR GITHUB_TOKEN lacks checks:write. Test-log output above is authoritative."
+
+  conformance:
+    needs: [check-format]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # mvfst — both transports for d14 and d16. d14+WT was unblocked by
+          # facebookexperimental/moxygen#151 (Accept moq-00 in WT-Available-Protocols).
+          # pico — raw QUIC for d14 and d16. WT cells deferred until pico
+          # WT CONNECT (openmoq/moxygen#172 / PR #173) syncs in.
+          - name: mvfst d14 Q
+            versions: "14"
+            transport: "Q"
+            stack: "mvfst"
+          - name: mvfst d14 WT
+            versions: "14"
+            transport: ""
+            stack: "mvfst"
+          - name: mvfst d16 Q
+            versions: "16"
+            transport: "Q"
+            stack: "mvfst"
+          - name: mvfst d16 WT
+            versions: "16"
+            transport: ""
+            stack: "mvfst"
+          - name: pico d14 Q
+            versions: "14"
+            transport: "Q"
+            stack: "pico"
+          - name: pico d16 Q
+            versions: "16"
+            transport: "Q"
+            stack: "pico"
+    name: conformance (${{ matrix.name }})
+    runs-on: ubuntu-22.04
     steps:
       - name: Generate app token
         id: app-token
@@ -61,24 +177,29 @@ jobs:
       - name: Setup dependencies
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: bash scripts/build.sh setup
+        run: |
+          # Three-mode setup resolution (matches build job).
+          if [ -f .moxygen-release ]; then
+            export MOQX_MOXYGEN_RELEASE_TAG=$(cat .moxygen-release | tr -d '[:space:]')
+            echo "==> Pinned moxygen tag: $MOQX_MOXYGEN_RELEASE_TAG"
+            bash scripts/build.sh setup --no-fallback
+          else
+            SUB_SHA=$(git -C deps/moxygen rev-parse HEAD)
+            AHEAD=$(gh api "repos/openmoq/moxygen/compare/main...$SUB_SHA" --jq .ahead_by 2>/dev/null || echo "1")
+            if [ "$AHEAD" = "0" ]; then
+              echo "==> moxygen submodule $SUB_SHA on main → snapshot tarball"
+              bash scripts/build.sh setup --use-latest --no-fallback
+            else
+              echo "==> moxygen submodule $SUB_SHA $AHEAD commits diverged from main → source build"
+              bash scripts/build.sh setup
+            fi
+          fi
 
       - name: Build
-        run: bash scripts/build.sh --profile ${{ matrix.preset }} --build-dir ${{ matrix.build_dir }}
+        run: bash scripts/build.sh
 
-      - name: Test
-        env:
-          ASAN_OPTIONS: ${{ matrix.name == 'asan debug' && 'detect_leaks=1:abort_on_error=1' || '' }}
-        run: bash scripts/build.sh test --build-dir ${{ matrix.build_dir }} -- --output-junit test-results.xml
-
-      - name: Publish test results
-        uses: dorny/test-reporter@v1.9.1
-        if: success() || failure()
-        with:
-          name: "test (${{ matrix.name }})"
-          path: ${{ matrix.build_dir }}/test-results.xml
-          reporter: java-junit
-          fail-on-empty: ${{ job.status == 'success' && 'true' || 'false' }}
+      - name: Run conformance tests
+        run: bash test/test_conformance.sh ./build/moqx ${{ matrix.versions }} ${{ matrix.transport }} ${{ matrix.stack }}
 
   benchmark:
     needs: [check-format]

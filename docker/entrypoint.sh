@@ -24,9 +24,9 @@ export GLOG_logtostderr=1
 export GLOG_minloglevel="${MOQX_LOG_LEVEL:-0}"
 export GLOG_v="${MOQX_VERBOSE:-0}"
 
-# Enable core dumps (requires ulimits.core=-1 in compose)
-if [ -d /var/coredumps ]; then
-  echo "/var/coredumps/core.%e.%p.%t" > /proc/sys/kernel/core_pattern 2>/dev/null || true
+# Enable core dumps (requires ulimits.core=-1 and --privileged in compose)
+if [ -d /var/coredumps ] && [ -w /proc/sys/kernel/core_pattern ]; then
+  echo "/var/coredumps/core.%e.%p.%t" > /proc/sys/kernel/core_pattern
 fi
 
 # Use custom config if mounted, otherwise generate from env vars

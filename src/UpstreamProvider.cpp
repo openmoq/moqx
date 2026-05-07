@@ -1,11 +1,11 @@
 /*
  * Copyright (c) OpenMOQ contributors.
- * This source code is licensed under the MIT license found in the
+ * This source code is licensed under the Apache 2.0 license found in the
  * LICENSE file in the root directory of this source tree.
  */
 
+#include "UpstreamProvider.h"
 #include <folly/coro/Timeout.h>
-#include <moqx/UpstreamProvider.h>
 #include <moxygen/MoQFilters.h>
 #include <moxygen/MoQRelaySession.h>
 #include <moxygen/MoQVersions.h>
@@ -18,20 +18,21 @@ namespace openmoq::moqx {
 // Must fit in a QUIC variable-length integer (top 2 bits must be 00, i.e. < 2^62).
 static constexpr uint64_t kRelayAuthTokenType = 0x1B2C'3D4E'5F6A'7B8CULL;
 
-bool isPeerSubNs(const SubscribeNamespace& subNs) {
+std::optional<std::string> getPeerRelayID(const SubscribeNamespace& subNs) {
   const uint64_t authKey = static_cast<uint64_t>(TrackRequestParamKey::AUTHORIZATION_TOKEN);
   for (const auto& param : subNs.params) {
     if (param.key == authKey && param.asAuthToken.tokenType == kRelayAuthTokenType) {
-      return true;
+      return param.asAuthToken.tokenValue;
     }
   }
-  return false;
+  return std::nullopt;
 }
 
 SubscribeNamespace makePeerSubNs(std::optional<std::string> relayID) {
   SubscribeNamespace subNs;
   subNs.trackNamespacePrefix = {};
   subNs.options = SubscribeNamespaceOptions::BOTH;
+  subNs.forward = false;
   if (relayID) {
     subNs.params.insertParam(Parameter(
         static_cast<uint64_t>(TrackRequestParamKey::AUTHORIZATION_TOKEN),
@@ -308,8 +309,12 @@ void UpstreamProvider::goaway(Goaway goaway) {
 
 // --- MoQSessionCloseCallback ---
 
-void UpstreamProvider::onMoQSessionClosed() {
-  XLOG(INFO) << "UpstreamProvider::onMoQSessionClosed";
+void UpstreamProvider::onMoQSessionClosed(
+    moxygen::SessionCloseErrorCode error,
+    folly::Optional<uint32_t> wtError
+) {
+  XLOG(INFO) << "UpstreamProvider::onMoQSessionClosed error=" << (uint32_t)error
+             << " wtError=" << (wtError ? *wtError : 0);
   resetSession();
   if (!stopped_) {
     reconnectBackoff_ = std::chrono::milliseconds(0);

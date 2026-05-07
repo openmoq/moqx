@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BINARY="${1:-$(dirname "$0")/../build/moqx}"
+TESTDIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=test_ports.sh
+source "$(dirname "$0")/test_ports.sh"
+LISTEN_PORT=$TEST_ADMIN_TLS_LISTEN
+ADMIN_PORT=$TEST_ADMIN_TLS_ADMIN
+
+if [[ ! -x "$BINARY" ]]; then
+  echo "ERROR: binary not found or not executable: $BINARY" >&2
+  exit 1
+fi
+
+CERT="${TESTDIR}/test_cert.pem"
+KEY="${TESTDIR}/test_key.pem"
+
+TMPDIR=$(mktemp -d)
+MOQX_PID=""
+cleanup() {
+  [[ -n "$MOQX_PID" ]] && kill "$MOQX_PID" 2>/dev/null; wait "$MOQX_PID" 2>/dev/null || true
+  rm -rf "$TMPDIR"
+}
+trap cleanup EXIT
+
+"$(dirname "$0")/make_test_config.sh" "$LISTEN_PORT" "$ADMIN_PORT" --cert "$CERT" --key "$KEY" > "$TMPDIR/config.yaml"
+
+ADMIN_URL="https://localhost:${ADMIN_PORT}/info"
+
+"$BINARY" --config="$TMPDIR/config.yaml" &
+MOQX_PID=$!
+
+# Wait up to 5s for the admin server to become ready.
+deadline=$(( $(date +%s) + 5 ))
+while ! curl --silent --fail --insecure --max-time 1 "$ADMIN_URL" >/dev/null 2>&1; do
+  if (( $(date +%s) >= deadline )); then
+    echo "ERROR: admin server did not become ready in time" >&2
+    exit 1
+  fi
+  sleep 0.1
+done
+
+check_response() {
+  local label="$1"
+  local response="$2"
+  if ! echo "$response" | grep -q '"service":"moqx"'; then
+    echo "FAIL [${label}]: missing \"service\":\"moqx\" in response" >&2
+    exit 1
+  fi
+  echo "PASS [${label}]"
+}
+
+RESPONSE=$(curl --silent --fail --insecure --http2 "$ADMIN_URL")
+check_response "h2" "$RESPONSE"
+
+RESPONSE=$(curl --silent --fail --insecure --http1.1 "$ADMIN_URL")
+check_response "http/1.1" "$RESPONSE"
+
+RESPONSE=$(curl --silent --fail --insecure --no-alpn "$ADMIN_URL")
+check_response "no-alpn" "$RESPONSE"

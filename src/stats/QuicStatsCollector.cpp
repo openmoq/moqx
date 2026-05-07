@@ -1,4 +1,10 @@
-#include "moqx/stats/QuicStatsCollector.h"
+/*
+ * Copyright (c) OpenMOQ contributors.
+ * This source code is licensed under the Apache 2.0 license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
+#include "stats/QuicStatsCollector.h"
 
 #include <folly/io/async/EventBaseManager.h>
 #include <glog/logging.h>
@@ -52,7 +58,8 @@ public:
   }
   void onQuicStreamReset(quic::QuicErrorCode) override {
     ++data_->quicStreamsReset_;
-    --data_->quicActiveStreams_;
+    // do NOT decrement quicActiveStreams_ here.
+    // onQuicStreamClosed() takes care of it.
   }
   void onConnFlowControlBlocked() override { ++data_->quicConnFlowControlBlocked_; }
   void onStreamFlowControlBlocked() override { ++data_->quicStreamFlowControlBlocked_; }
@@ -67,21 +74,31 @@ public:
   void onPeerMaxBidiStreamsLimitSaturated() override {
     ++data_->quicPeerMaxBidiStreamsLimitSaturated_;
   }
+  void onPacketProcessed() override { ++data_->quicPacketsProcessed_; }
+  void onPTO() override { ++data_->quicPTO_; }
+  void onPacketSpuriousLoss() override { ++data_->quicPacketSpuriousLoss_; }
+  void onPersistentCongestion() override { ++data_->quicPersistentCongestion_; }
+  void onConnectionWritableBytesLimited() override { ++data_->quicConnectionWritableBytesLimited_; }
+  void onConnectionRateLimited() override { ++data_->quicConnectionRateLimited_; }
+  void onPacerTimerLagged() override { ++data_->quicPacerTimerLagged_; }
+  void onRttSample(uint64_t ms) override { data_->quicRttSample_.addValue(ms); }
+  void onBandwidthSample(uint64_t bps) override { data_->quicBandwidthSample_.addValue(bps); }
+  void onInflightBytesSample(uint64_t bytes) override {
+    data_->quicInflightBytesSample_.addValue(bytes);
+  }
+  void onCwndHintBytesSample(uint64_t bytes) override {
+    data_->quicCwndHintBytesSample_.addValue(bytes);
+  }
 
   // --- Untracked callbacks (no-op) ---
   void onRxDelaySample(uint64_t) override {}
   void onDuplicatedPacketReceived() override {}
   void onOutOfOrderPacketReceived() override {}
-  void onPacketProcessed() override {}
-  void onPacketSpuriousLoss() override {}
-  void onPersistentCongestion() override {}
   void onPacketForwarded() override {}
   void onPacketDroppedByEgressPolicer() override {}
   void onForwardedPacketReceived() override {}
   void onForwardedPacketProcessed() override {}
   void onClientInitialReceived(quic::QuicVersion) override {}
-  void onConnectionRateLimited() override {}
-  void onConnectionWritableBytesLimited() override {}
   void onNewTokenReceived() override {}
   void onNewTokenIssued() override {}
   void onTokenDecryptFailure() override {}
@@ -93,14 +110,17 @@ public:
   void onConnFlowControlUpdate() override {}
   void onStatelessReset() override {}
   void onStreamFlowControlUpdate() override {}
-  void onInflightBytesSample(uint64_t) override {}
-  void onRttSample(uint64_t) override {}
-  void onBandwidthSample(uint64_t) override {}
-  void onCwndHintBytesSample(uint64_t) override {}
   void onCongestionControllerResumed() override {}
   void onNewCongestionController(quic::CongestionControlType) override {}
-  void onPTO() override {}
-  void onUDPSocketWriteError(SocketErrorType) override {}
+  void onUDPSocketWriteError(SocketErrorType errorType) override {
+    if (errorType == SocketErrorType::AGAIN) {
+      ++data_->quicSocketWriteAgain_;
+    } else if (errorType == SocketErrorType::NOBUFS) {
+      ++data_->quicSocketWriteNobufs_;
+    } else {
+      ++data_->quicSocketWriteOther_;
+    }
+  }
   void onTransportKnobApplied(quic::TransportKnobParamId) override {}
   void onTransportKnobError(quic::TransportKnobParamId) override {}
   void onTransportKnobOutOfOrder(quic::TransportKnobParamId) override {}
@@ -114,7 +134,6 @@ public:
   void onDatagramRead(size_t) override {}
   void onDatagramWrite(size_t) override {}
   void onShortHeaderPadding(size_t) override {}
-  void onPacerTimerLagged() override {}
   void onConnectionIdCreated(size_t) override {}
   void onKeyUpdateAttemptInitiated() override {}
   void onKeyUpdateAttemptReceived() override {}
@@ -151,6 +170,13 @@ StatsSnapshot QuicStatsCollector::snapshot() const {
   STATS_QUIC_COUNTER_FIELDS(COPY_FIELD)
   STATS_QUIC_GAUGE_FIELDS(COPY_FIELD)
 #undef COPY_FIELD
+
+#define COPY_HISTOGRAM(name, bounds, unit)                                                         \
+  name##_.fillCumulative(snap.name##Buckets);                                                      \
+  snap.name##Sum = name##_.sum;                                                                    \
+  snap.name##Count = name##_.count;
+  STATS_QUIC_HISTOGRAM_FIELDS(COPY_HISTOGRAM)
+#undef COPY_HISTOGRAM
 
   return snap;
 }

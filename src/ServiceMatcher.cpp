@@ -1,6 +1,13 @@
-#include <moqx/ServiceMatcher.h>
+/*
+ * Copyright (c) OpenMOQ contributors.
+ * This source code is licensed under the Apache 2.0 license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
+#include "ServiceMatcher.h"
 
 #include <algorithm>
+#include <unordered_set>
 
 #include <folly/logging/xlog.h>
 
@@ -114,6 +121,26 @@ ServiceMatcher::match(std::string_view authority, std::string_view path) const {
 
   // 3. Any-authority fallback (path matching still applies)
   return anyAuthorityRules_.match(effectivePath);
+}
+
+std::vector<std::string> ServiceMatcher::allExactPaths() const {
+  std::unordered_set<std::string> seen;
+  std::vector<std::string> result;
+  auto collect = [&](const PathRuleSet& rs) {
+    for (const auto& [path, _] : rs.exactPaths) {
+      if (seen.insert(path).second) {
+        result.push_back(path);
+      }
+    }
+  };
+  for (const auto& [_, rs] : exactAuthorityRules_) {
+    collect(rs);
+  }
+  for (const auto& [_, rs] : wildcardAuthorityRules_) {
+    collect(rs);
+  }
+  collect(anyAuthorityRules_);
+  return result;
 }
 
 } // namespace openmoq::moqx
