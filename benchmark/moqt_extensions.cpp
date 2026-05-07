@@ -32,49 +32,62 @@ static Extensions makeArrayExtensions(int count) {
 }
 
 // --- Serialize benchmarks (compare to libquicr ExtensionsSerialize/N) ---
+//
+// All four families below report bytes_per_iter so apples-to-apples
+// throughput (bytes/sec = bytes_per_iter / ns_per_iter * 1e9) can be
+// computed regardless of benchmark framework — folly here vs Google
+// Benchmark on the libquicr side. The wire byte count is the natural
+// normalization point and removes per-iteration framework overhead
+// from the comparison.
 
-void BM_ExtensionsSerialize(unsigned iters, int n) {
+void BM_ExtensionsSerialize(folly::UserCounters& counters, unsigned iters, int n) {
   folly::BenchmarkSuspender susp;
   MoQFrameWriter writer;
   writer.initializeVersion(kVersion);
   auto exts = makeExtensions(n);
   susp.dismiss();
+  size_t totalBytes = 0;
   for (unsigned i = 0; i < iters; ++i) {
     folly::IOBufQueue buf;
     size_t sz = 0;
     bool err = false;
     writer.writeExtensions(buf, exts, sz, err);
     folly::doNotOptimizeAway(sz);
+    totalBytes += sz;
   }
+  counters["bytes_per_iter"] = iters > 0 ? totalBytes / iters : 0;
 }
-BENCHMARK_NAMED_PARAM(BM_ExtensionsSerialize, _1, 1)
-BENCHMARK_NAMED_PARAM(BM_ExtensionsSerialize, _10, 10)
-BENCHMARK_NAMED_PARAM(BM_ExtensionsSerialize, _100, 100)
-BENCHMARK_NAMED_PARAM(BM_ExtensionsSerialize, _1000, 1000)
+BENCHMARK_COUNTERS_NAMED_PARAM(BM_ExtensionsSerialize, _1, 1)
+BENCHMARK_COUNTERS_NAMED_PARAM(BM_ExtensionsSerialize, _10, 10)
+BENCHMARK_COUNTERS_NAMED_PARAM(BM_ExtensionsSerialize, _100, 100)
+BENCHMARK_COUNTERS_NAMED_PARAM(BM_ExtensionsSerialize, _1000, 1000)
 
 // --- Serialize with array values ---
 
-void BM_ExtensionsSerializeArray(unsigned iters, int n) {
+void BM_ExtensionsSerializeArray(folly::UserCounters& counters, unsigned iters, int n) {
   folly::BenchmarkSuspender susp;
   MoQFrameWriter writer;
   writer.initializeVersion(kVersion);
   auto exts = makeArrayExtensions(n);
   susp.dismiss();
+  size_t totalBytes = 0;
   for (unsigned i = 0; i < iters; ++i) {
     folly::IOBufQueue buf;
     size_t sz = 0;
     bool err = false;
     writer.writeExtensions(buf, exts, sz, err);
     folly::doNotOptimizeAway(sz);
+    totalBytes += sz;
   }
+  counters["bytes_per_iter"] = iters > 0 ? totalBytes / iters : 0;
 }
-BENCHMARK_NAMED_PARAM(BM_ExtensionsSerializeArray, _1, 1)
-BENCHMARK_NAMED_PARAM(BM_ExtensionsSerializeArray, _10, 10)
-BENCHMARK_NAMED_PARAM(BM_ExtensionsSerializeArray, _100, 100)
+BENCHMARK_COUNTERS_NAMED_PARAM(BM_ExtensionsSerializeArray, _1, 1)
+BENCHMARK_COUNTERS_NAMED_PARAM(BM_ExtensionsSerializeArray, _10, 10)
+BENCHMARK_COUNTERS_NAMED_PARAM(BM_ExtensionsSerializeArray, _100, 100)
 
 // --- Deserialize only (compare to libquicr ExtensionsDeserialize/N) ---
 
-void BM_ExtensionsDeserialize(unsigned iters, int n) {
+void BM_ExtensionsDeserialize(folly::UserCounters& counters, unsigned iters, int n) {
   folly::BenchmarkSuspender susp;
   MoQFrameWriter writer;
   writer.initializeVersion(kVersion);
@@ -86,6 +99,7 @@ void BM_ExtensionsDeserialize(unsigned iters, int n) {
   bool err = false;
   writer.writeExtensions(writeBuf, exts, sz, err);
   auto wireData = writeBuf.move();
+  size_t wireSize = wireData->computeChainDataLength();
   susp.dismiss();
 
   for (unsigned i = 0; i < iters; ++i) {
@@ -99,15 +113,16 @@ void BM_ExtensionsDeserialize(unsigned iters, int n) {
     auto res = parser.parseExtensions(cursor, length, header);
     folly::doNotOptimizeAway(res);
   }
+  counters["bytes_per_iter"] = wireSize;
 }
-BENCHMARK_NAMED_PARAM(BM_ExtensionsDeserialize, _1, 1)
-BENCHMARK_NAMED_PARAM(BM_ExtensionsDeserialize, _10, 10)
-BENCHMARK_NAMED_PARAM(BM_ExtensionsDeserialize, _100, 100)
-BENCHMARK_NAMED_PARAM(BM_ExtensionsDeserialize, _1000, 1000)
+BENCHMARK_COUNTERS_NAMED_PARAM(BM_ExtensionsDeserialize, _1, 1)
+BENCHMARK_COUNTERS_NAMED_PARAM(BM_ExtensionsDeserialize, _10, 10)
+BENCHMARK_COUNTERS_NAMED_PARAM(BM_ExtensionsDeserialize, _100, 100)
+BENCHMARK_COUNTERS_NAMED_PARAM(BM_ExtensionsDeserialize, _1000, 1000)
 
 // --- Roundtrip: serialize then parse (compare to libquicr ExtensionsRoundTrip/N) ---
 
-void BM_ExtensionsRoundTrip(unsigned iters, int n) {
+void BM_ExtensionsRoundTrip(folly::UserCounters& counters, unsigned iters, int n) {
   folly::BenchmarkSuspender susp;
   MoQFrameWriter writer;
   writer.initializeVersion(kVersion);
@@ -119,6 +134,7 @@ void BM_ExtensionsRoundTrip(unsigned iters, int n) {
   bool err = false;
   writer.writeExtensions(writeBuf, exts, sz, err);
   auto wireData = writeBuf.move();
+  size_t wireSize = wireData->computeChainDataLength();
   susp.dismiss();
 
   for (unsigned i = 0; i < iters; ++i) {
@@ -140,10 +156,15 @@ void BM_ExtensionsRoundTrip(unsigned iters, int n) {
     writer.writeExtensions(outBuf, header.extensions, outSz, outErr);
     folly::doNotOptimizeAway(outSz);
   }
+  // Roundtrip processes the wire payload twice per iter (parse + reserialize),
+  // so report the input wire size to keep the metric comparable with the
+  // one-way Serialize/Deserialize benchmarks (consistent definition of
+  // "bytes processed in a unit of wire").
+  counters["bytes_per_iter"] = wireSize;
 }
-BENCHMARK_NAMED_PARAM(BM_ExtensionsRoundTrip, _1, 1)
-BENCHMARK_NAMED_PARAM(BM_ExtensionsRoundTrip, _10, 10)
-BENCHMARK_NAMED_PARAM(BM_ExtensionsRoundTrip, _100, 100)
-BENCHMARK_NAMED_PARAM(BM_ExtensionsRoundTrip, _1000, 1000)
+BENCHMARK_COUNTERS_NAMED_PARAM(BM_ExtensionsRoundTrip, _1, 1)
+BENCHMARK_COUNTERS_NAMED_PARAM(BM_ExtensionsRoundTrip, _10, 10)
+BENCHMARK_COUNTERS_NAMED_PARAM(BM_ExtensionsRoundTrip, _100, 100)
+BENCHMARK_COUNTERS_NAMED_PARAM(BM_ExtensionsRoundTrip, _1000, 1000)
 
 } // namespace

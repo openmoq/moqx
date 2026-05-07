@@ -36,8 +36,10 @@ BENCHMARK(BM_VarintEncode_Cold, iters) {
   }
 }
 
-// Warm: reuse IOBufQueue (reflects production — buffer is pre-allocated)
-BENCHMARK(BM_VarintEncode_Warm, iters) {
+// Warm: reuse IOBufQueue (reflects production — buffer is pre-allocated).
+// _RELATIVE: shown as % relative to BM_VarintEncode_Cold above to make the
+// pre-allocation speedup explicit in the output table.
+BENCHMARK_RELATIVE(BM_VarintEncode_Warm, iters) {
   folly::BenchmarkSuspender susp;
   uint64_t val = 42;
   folly::IOBufQueue q;
@@ -50,8 +52,8 @@ BENCHMARK(BM_VarintEncode_Warm, iters) {
   }
 }
 
-// Warm large value
-BENCHMARK(BM_VarintEncode_WarmLarge, iters) {
+// Warm large value (also relative to Cold — same pre-allocation, larger varint).
+BENCHMARK_RELATIVE(BM_VarintEncode_WarmLarge, iters) {
   folly::BenchmarkSuspender susp;
   uint64_t val = 1000000000;
   folly::IOBufQueue q;
