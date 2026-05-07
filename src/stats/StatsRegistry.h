@@ -16,6 +16,7 @@
 #include <folly/coro/Task.h>
 #include <folly/executors/SequencedExecutor.h>
 #include <folly/io/IOBuf.h>
+#include <folly/io/async/EventBaseLocal.h>
 
 #include <moxygen/MoQTypes.h>
 
@@ -46,6 +47,14 @@ inline constexpr std::array<uint64_t, 10> kBandwidthBucketsBitsPerSec = {
 // Bytes-in-flight buckets in bytes (from onInflightBytesSample).
 inline constexpr std::array<uint64_t, 7> kInflightBytesBuckets =
     {4096, 65536, 262144, 1048576, 4194304, 16777216, 67108864};
+
+// EventBase loop time buckets in microseconds.
+inline constexpr std::array<uint64_t, 11> kEvbLoopBucketsUs =
+    {50, 100, 250, 500, 1000, 2500, 5000, 10000, 25000, 50000, 100000};
+
+// Per-loop QUIC packet count buckets.
+inline constexpr std::array<uint64_t, 12> kEvbPktsPerLoopBuckets =
+    {0, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024};
 
 // RequestErrorCode compact-index table
 // All *ErrorCode type aliases resolve to moxygen::RequestErrorCode. we maintain a
@@ -202,14 +211,23 @@ inline constexpr std::array<std::string_view, 8> kRequestErrorCodeLabels = {{
   X(moqPublishNamespaceLatency, kLatencyBucketsUs, "microseconds")                                 \
   X(moqPublishLatency, kLatencyBucketsUs, "microseconds")
 
-// QUIC transport histograms — populated exclusively by QuicStatsCollector.
+// QUIC transport histograms — populated by QuicStatsCollector and PicoQuicStatsCollector.
+// Per-loop packet fields require an EventBaseStatsCollector loop observer to be wired up.
 #define STATS_QUIC_HISTOGRAM_FIELDS(X)                                                             \
   X(quicRttSample, kRttBucketsMs, "milliseconds")                                                  \
   X(quicBandwidthSample, kBandwidthBucketsBitsPerSec, "bits_per_second")                           \
   X(quicInflightBytesSample, kInflightBytesBuckets, "bytes")                                       \
-  X(quicCwndHintBytesSample, kInflightBytesBuckets, "bytes")
+  X(quicCwndHintBytesSample, kInflightBytesBuckets, "bytes")                                       \
+  X(evbPktsSentPerLoop, kEvbPktsPerLoopBuckets, "packets")                                         \
+  X(evbPktsRecvPerLoop, kEvbPktsPerLoopBuckets, "packets")
 
-#define STATS_HISTOGRAM_FIELDS(X) STATS_MOQ_HISTOGRAM_FIELDS(X) STATS_QUIC_HISTOGRAM_FIELDS(X)
+// EventBase loop time histograms — populated by EventBaseStatsCollector, one per IO thread.
+#define STATS_EVB_HISTOGRAM_FIELDS(X)                                                              \
+  X(evbLoopBusy, kEvbLoopBucketsUs, "microseconds")                                                \
+  X(evbLoopIdle, kEvbLoopBucketsUs, "microseconds")
+
+#define STATS_HISTOGRAM_FIELDS(X)                                                                  \
+  STATS_MOQ_HISTOGRAM_FIELDS(X) STATS_QUIC_HISTOGRAM_FIELDS(X) STATS_EVB_HISTOGRAM_FIELDS(X)
 
 // Error-code breakdowns: fields in STATS_MOQ_COUNTER_FIELDS whose callbacks receive
 // a RequestErrorCode argument.  Each expands to a
@@ -265,6 +283,8 @@ public:
   virtual folly::Executor* owningExecutor() const = 0;
 };
 
+class EventBaseStatsCollector;
+
 class StatsRegistry {
 public:
   StatsRegistry() = default;
@@ -272,11 +292,20 @@ public:
 
   void registerCollector(std::shared_ptr<StatsCollectorBase> collector);
 
+  // Registers the collector for aggregation and associates it with its EVB so
+  // QUIC collectors can subscribe to loop samples.  May be called from any
+  // thread; the EVB association is scheduled onto the EVB thread.
+  void
+  registerEvbCollector(folly::EventBase* evb, std::shared_ptr<EventBaseStatsCollector> collector);
+
+  // Must be called on the EVB thread.
+  std::weak_ptr<EventBaseStatsCollector> findEvbCollector(folly::EventBase* evb) const;
+
   folly::coro::Task<StatsSnapshot> aggregateAsync();
 
 private:
-  // Ownership stays with callers. aggregateAsync() prunes it lazily.
   std::vector<std::weak_ptr<StatsCollectorBase>> collectors_;
+  mutable folly::EventBaseLocal<std::weak_ptr<EventBaseStatsCollector>> evbCollectors_;
 };
 
 } // namespace openmoq::moqx::stats

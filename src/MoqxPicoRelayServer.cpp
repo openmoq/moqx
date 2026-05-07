@@ -6,6 +6,7 @@
 
 #include "MoqxPicoRelayServer.h"
 
+#include "stats/EventBaseStatsCollector.h"
 #include "stats/PicoQuicStatsCollector.h"
 #include <folly/io/async/EventBase.h>
 #include <folly/logging/xlog.h>
@@ -94,7 +95,9 @@ MoqxPicoRelayServer::~MoqxPicoRelayServer() {
 
 void MoqxPicoRelayServer::setStatsRegistry(std::shared_ptr<stats::StatsRegistry> registry) {
   context_->setStatsRegistry(registry);
-  auto collector = stats::PicoQuicStatsCollector::create(std::move(registry), evb_);
+  auto evbCollector = stats::EventBaseStatsCollector::create(registry, evb_);
+  auto collector =
+      stats::PicoQuicStatsCollector::create(std::move(registry), evb_, evbCollector.get());
   setPicoQuicStatsCallback(std::move(collector));
 }
 

@@ -6,6 +6,8 @@
 
 #include "stats/StatsRegistry.h"
 
+#include "stats/EventBaseStatsCollector.h"
+
 #include <algorithm>
 #include <folly/Conv.h>
 #include <folly/io/Cursor.h>
@@ -128,6 +130,26 @@ std::unique_ptr<folly::IOBuf> StatsSnapshot::formatPrometheus(const StatsSnapsho
 #undef EMIT_ERROR_COUNTER
 
   return queue.move();
+}
+
+void StatsRegistry::registerEvbCollector(
+    folly::EventBase* evb,
+    std::shared_ptr<EventBaseStatsCollector> collector
+) {
+  registerCollector(collector);
+  evb->runImmediatelyOrRunInEventBaseThread(
+      [this, evb, weak = std::weak_ptr<EventBaseStatsCollector>(collector)]() mutable {
+        evbCollectors_.emplace(*evb, std::move(weak));
+      }
+  );
+}
+
+std::weak_ptr<EventBaseStatsCollector> StatsRegistry::findEvbCollector(folly::EventBase* evb
+) const {
+  if (auto* ptr = evbCollectors_.get(*evb)) {
+    return *ptr;
+  }
+  return {};
 }
 
 void StatsRegistry::registerCollector(std::shared_ptr<StatsCollectorBase> collector) {

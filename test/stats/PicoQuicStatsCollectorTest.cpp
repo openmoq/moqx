@@ -48,8 +48,12 @@ TEST_F(PicoQuicStatsCollectorTest, ConnectionLifecycle) {
 TEST_F(PicoQuicStatsCollectorTest, PathQualityDeltaAccumulation) {
   using Delta = moxygen::PicoQuicStatsCallback::PathQualityDelta;
 
+  // Packet sent/received counts come via onPacketsSent/onPacketsReceived
+  // (socket-level drain callbacks), not from PathQualityDelta.
+  collector_->onPacketsSent(10);
+  collector_->onPacketsReceived(7);
+
   Delta d1{};
-  d1.packetsSent = 10;
   d1.packetsLost = 1;
   d1.bytesSent = 1000;
   d1.bytesReceived = 800;
@@ -58,8 +62,10 @@ TEST_F(PicoQuicStatsCollectorTest, PathQualityDeltaAccumulation) {
   d1.cwndBlocked = false;
   collector_->onPathQualityDelta(d1);
 
+  collector_->onPacketsSent(5);
+  collector_->onPacketsReceived(3);
+
   Delta d2{};
-  d2.packetsSent = 5;
   d2.packetsLost = 0;
   d2.bytesSent = 500;
   d2.bytesReceived = 400;
@@ -70,6 +76,7 @@ TEST_F(PicoQuicStatsCollectorTest, PathQualityDeltaAccumulation) {
 
   auto snap = collector_->snapshot();
   EXPECT_EQ(snap.quicPacketsSent, 15);
+  EXPECT_EQ(snap.quicPacketsReceived, 10);
   EXPECT_EQ(snap.quicPacketLoss, 1);
   EXPECT_EQ(snap.quicBytesWritten, 1500);
   EXPECT_EQ(snap.quicBytesRead, 1200);
