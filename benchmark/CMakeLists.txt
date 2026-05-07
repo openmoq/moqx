@@ -2,16 +2,16 @@
 # pulled in by moxygen's standalone/CMakeLists.txt — no extra fetch.
 
 add_executable(moqx_benchmark
-  bounded_histogram.cpp
-  config_loader.cpp
-  config_resolver.cpp
-  moq_stats_collector.cpp
-  moqt_extensions.cpp
-  moqt_framer.cpp
-  prometheus_format.cpp
-  service_matcher.cpp
-  stats_registry.cpp
-  benchmark_main.cpp
+  BoundedHistogram.cpp
+  ConfigLoader.cpp
+  ConfigResolver.cpp
+  MoQStatsCollector.cpp
+  MoQTExtensions.cpp
+  MoQFramer.cpp
+  PrometheusFormat.cpp
+  ServiceMatcher.cpp
+  StatsRegistry.cpp
+  BenchmarkMain.cpp
 )
 
 target_link_libraries(moqx_benchmark PRIVATE
