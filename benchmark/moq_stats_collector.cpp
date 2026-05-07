@@ -1,5 +1,5 @@
 #include <folly/Benchmark.h>
-#include <moqx/stats/MoQStatsCollector.h>
+#include "stats/MoQStatsCollector.h"
 
 namespace {
 

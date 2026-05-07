@@ -1,6 +1,6 @@
 #include <folly/Benchmark.h>
-#include <moqx/config/loader/loader.h>
-#include <moqx/config/loader/config_resolver.h>
+#include "config/loader/Loader.h"
+#include "config/loader/ConfigResolver.h"
 
 #include <fstream>
 

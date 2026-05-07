@@ -1,6 +1,6 @@
 #include <folly/Benchmark.h>
-#include <moqx/stats/BoundedHistogram.h>
-#include <moqx/stats/StatsRegistry.h>
+#include "stats/BoundedHistogram.h"
+#include "stats/StatsRegistry.h"
 
 namespace {
 

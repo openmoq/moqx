@@ -1,6 +1,6 @@
 #include <folly/Benchmark.h>
-#include <moqx/config/loader/config_resolver.h>
-#include <moqx/config/loader/parsed_config.h>
+#include "config/loader/ConfigResolver.h"
+#include "config/loader/ParsedConfig.h"
 
 namespace {
 
