@@ -53,18 +53,20 @@ buildFizzContext(const config::ListenerConfig& cfg) {
   );
 }
 
-quic::TransportSettings buildTransportSettings(const config::QuicConfig& quic) {
+quic::TransportSettings
+buildTransportSettings(const config::QuicConfig& quic, const config::MvfstConfig& mvfst) {
   // Start with MoQServer's optimized defaults, then apply config overrides.
   quic::TransportSettings ts;
   ts.defaultCongestionController = quic::CongestionControlType::Copa;
-  ts.copaDeltaParam = 0.05;
-  ts.pacingEnabled = true;
-  ts.maxCwndInMss = quic::kLargeMaxCwndInMss;
-  ts.batchingMode = quic::QuicBatchingMode::BATCHING_MODE_GSO;
-  ts.maxBatchSize = 48;
+  ts.pacingEnabled = mvfst.pacingEnabled;
+  ts.maxCwndInMss = mvfst.maxCwndInMss;
+  ts.batchingMode = mvfst.enableGSO ? quic::QuicBatchingMode::BATCHING_MODE_GSO
+                                    : quic::QuicBatchingMode::BATCHING_MODE_SENDMMSG;
+  ts.maxBatchSize = mvfst.maxConnPacketsSentPerLoop;
+  ts.writeConnectionDataPacketsLimit = mvfst.maxConnPacketsSentPerLoop;
   ts.dataPathType = quic::DataPathType::ContinuousMemory;
-  ts.maxServerRecvPacketsPerLoop = 10;
-  ts.writeConnectionDataPacketsLimit = 48;
+  ts.maxServerRecvPacketsPerLoop = mvfst.maxServerRecvPacketsPerLoop;
+  ts.numGROBuffers_ = mvfst.numGROBuffers;
   ts.advertisedInitialConnectionFlowControlWindow = quic.maxData;
   ts.advertisedInitialBidiLocalStreamFlowControlWindow = quic.maxStreamData;
   ts.advertisedInitialBidiRemoteStreamFlowControlWindow = quic.maxStreamData;
@@ -81,6 +83,38 @@ quic::TransportSettings buildTransportSettings(const config::QuicConfig& quic) {
   if (ccType) {
     ts.defaultCongestionController = *ccType;
   }
+  // Wire CongestionControlConfig fields.
+  auto& cca = ts.ccaConfig;
+  // Copa
+  ts.copaDeltaParam = mvfst.copa.deltaParam;
+
+  // BBR
+  cca.conservativeRecovery = mvfst.bbr.conservativeRecovery;
+  cca.largeProbeRttCwnd = mvfst.bbr.largeProbeRttCwnd;
+  cca.enableAckAggregationInStartup = mvfst.bbr.enableAckAggregationInStartup;
+  cca.probeRttDisabledIfAppLimited = mvfst.bbr.probeRttDisabledIfAppLimited;
+  cca.drainToTarget = mvfst.bbr.drainToTarget;
+
+  // Cubic
+  cca.additiveIncreaseAfterHystart = mvfst.cubic.additiveIncreaseAfterHystart;
+  cca.onlyGrowCwndWhenLimited = mvfst.cubic.onlyGrowCwndWhenLimited;
+  cca.leaveHeadroomForCwndLimited = mvfst.cubic.leaveHeadroomForCwndLimited;
+
+  // BBR2
+  cca.ignoreInflightLongTerm = mvfst.bbr2.ignoreInflightLongTerm;
+  cca.ignoreShortTerm = mvfst.bbr2.ignoreShortTerm;
+  cca.exitStartupOnLoss = mvfst.bbr2.exitStartupOnLoss;
+  cca.enableRecoveryInStartup = mvfst.bbr2.enableRecoveryInStartup;
+  cca.enableRecoveryInProbeStates = mvfst.bbr2.enableRecoveryInProbeStates;
+  cca.enableRenoCoexistence = mvfst.bbr2.enableRenoCoexistence;
+  cca.paceInitCwnd = mvfst.bbr2.paceInitCwnd;
+  cca.overrideCruisePacingGain = mvfst.bbr2.overrideCruisePacingGain;
+  cca.overrideCruiseCwndGain = mvfst.bbr2.overrideCruiseCwndGain;
+  cca.overrideStartupPacingGain = mvfst.bbr2.overrideStartupPacingGain;
+  cca.overrideBwShortBeta = mvfst.bbr2.overrideBwShortBeta;
+
+  // L4S
+  cca.l4sCETarget = mvfst.l4s.ceTarget;
   // TODO: wire defaultStreamPriority / defaultDatagramPriority for mvfst once
   // moxygen exposes a function to construct a PriorityQueue::Priority from an integer.
   return ts;
@@ -96,7 +130,7 @@ MoqxRelayServer::MoqxRelayServer(
     : MoQServer(
           buildFizzContext(listenerCfg),
           listenerCfg.endpoint,
-          buildTransportSettings(listenerCfg.quic)
+          buildTransportSettings(listenerCfg.quic, listenerCfg.mvfst)
       ),
       listenerCfg_(listenerCfg), context_(std::move(context)), ioExecutor_(std::move(ioExecutor)) {}
 
