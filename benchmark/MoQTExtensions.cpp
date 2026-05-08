@@ -91,10 +91,11 @@ void BM_ExtensionsSerialize(folly::UserCounters& counters, unsigned iters, int n
   MoQFrameWriter writer;
   writer.initializeVersion(kVersion);
   auto exts = makeExtensions(n);
+  folly::IOBufQueue buf;
   susp.dismiss();
   size_t totalBytes = 0;
   for (unsigned i = 0; i < iters; ++i) {
-    folly::IOBufQueue buf;
+    buf.reset();
     size_t sz = 0;
     bool err = false;
     writer.writeExtensions(buf, exts, sz, err);
@@ -115,10 +116,11 @@ void BM_ExtensionsSerializeArray(folly::UserCounters& counters, unsigned iters, 
   MoQFrameWriter writer;
   writer.initializeVersion(kVersion);
   auto exts = makeArrayExtensions(n);
+  folly::IOBufQueue buf;
   susp.dismiss();
   size_t totalBytes = 0;
   for (unsigned i = 0; i < iters; ++i) {
-    folly::IOBufQueue buf;
+    buf.reset();
     size_t sz = 0;
     bool err = false;
     writer.writeExtensions(buf, exts, sz, err);
@@ -146,15 +148,14 @@ void BM_ExtensionsDeserialize(folly::UserCounters& counters, unsigned iters, int
   writer.writeExtensions(writeBuf, exts, sz, err);
   auto wireData = writeBuf.move();
   const size_t wireSize = wireData->computeChainDataLength();
+  // Hoist parser: parseExtensionKvPairs self-resets previousExtensionType_=0
+  // at the top of each call (delta decoding for v16+), so per-iter state
+  // doesn't carry. Avoids the per-iter MoQFrameParser construction.
+  MoQFrameParser parser;
+  parser.initializeVersion(kVersion);
   susp.dismiss();
 
   for (unsigned i = 0; i < iters; ++i) {
-    // Mirror libquicr's per-iter setup: fresh parser, fresh cursor, fresh
-    // output containers. (MoQFrameParser self-resets previousExtensionType_
-    // at the top of parseExtensionKvPairs, so hoisting parser would also be
-    // safe — keep per-iter for parity with libquicr's loop body.)
-    MoQFrameParser parser;
-    parser.initializeVersion(kVersion);
     folly::io::Cursor cursor(wireData.get());
     ObjectHeader header;
     header.extensions = Extensions();
@@ -192,14 +193,12 @@ void BM_ExtensionsRoundTrip(folly::UserCounters& counters, unsigned iters, int n
   writer.writeExtensions(writeBuf, exts, sz, err);
   auto wireData = writeBuf.move();
   const size_t wireSize = wireData->computeChainDataLength();
+  MoQFrameParser parser;
+  parser.initializeVersion(kVersion);
+  folly::IOBufQueue outBuf;
   susp.dismiss();
 
-  folly::IOBufQueue outBuf;
   for (unsigned i = 0; i < iters; ++i) {
-    // Parser must be fresh per iter (carries state that would short-circuit
-    // subsequent calls). Cursor reads wireData directly — no clone needed.
-    MoQFrameParser parser;
-    parser.initializeVersion(kVersion);
     folly::io::Cursor cursor(wireData.get());
     ObjectHeader header;
     header.extensions = Extensions();
@@ -208,15 +207,10 @@ void BM_ExtensionsRoundTrip(folly::UserCounters& counters, unsigned iters, int n
     // wireSize is near zero and subsequent iters short-circuit to ~10ns.
     size_t length = wireSize;
     auto res = parser.parseExtensions(cursor, length, header);
-    // Anchor the populated container, not just the parser's status — without
-    // this, the compiler proves header.extensions is unused after the call and
-    // elides the vector pushbacks. Mirrors libquicr's
-    // benchmark::DoNotOptimize(extensions) pattern.
     folly::doNotOptimizeAway(res);
     folly::doNotOptimizeAway(header.extensions);
 
-    // Discard prior iter's output; cheaper than reconstructing the queue.
-    outBuf.move();
+    outBuf.reset();
     size_t outSz = 0;
     bool outErr = false;
     writer.writeExtensions(outBuf, header.extensions, outSz, outErr);
@@ -280,10 +274,11 @@ void BM_ExtensionsSerialize_LibquicrShape(
   MoQFrameWriter writer;
   writer.initializeVersion(kVersion);
   auto exts = buildLibquicrShape(n);
+  folly::IOBufQueue buf;
   susp.dismiss();
   size_t totalBytes = 0;
   for (unsigned i = 0; i < iters; ++i) {
-    folly::IOBufQueue buf;
+    buf.reset();
     size_t sz = 0;
     bool err = false;
     writer.writeExtensions(buf, exts, sz, err);
@@ -304,10 +299,11 @@ void BM_ExtensionsSerialize_LikeLibquicrAllArray(
   MoQFrameWriter writer;
   writer.initializeVersion(kVersion);
   auto exts = buildAllArrayShape(n);
+  folly::IOBufQueue buf;
   susp.dismiss();
   size_t totalBytes = 0;
   for (unsigned i = 0; i < iters; ++i) {
-    folly::IOBufQueue buf;
+    buf.reset();
     size_t sz = 0;
     bool err = false;
     writer.writeExtensions(buf, exts, sz, err);
@@ -336,26 +332,15 @@ void BM_ExtensionsDeserialize_LibquicrShape(
   writer.writeExtensions(writeBuf, exts, sz, err);
   auto wireData = writeBuf.move();
   const size_t wireSize = wireData->computeChainDataLength();
+  MoQFrameParser parser;
+  parser.initializeVersion(kVersion);
   susp.dismiss();
   for (unsigned i = 0; i < iters; ++i) {
-    // Mirror libquicr's per-iter setup: fresh parser, fresh cursor, fresh
-    // output containers. (MoQFrameParser self-resets previousExtensionType_
-    // at the top of parseExtensionKvPairs, so hoisting parser would also be
-    // safe — keep per-iter for parity with libquicr's loop body.)
-    MoQFrameParser parser;
-    parser.initializeVersion(kVersion);
     folly::io::Cursor cursor(wireData.get());
     ObjectHeader header;
     header.extensions = Extensions();
-    // parseExtensions takes length by reference and decrements it as bytes
-    // are consumed. Pass a fresh copy per iter — without this, after iter 1
-    // wireSize is near zero and subsequent iters short-circuit to ~10ns.
     size_t length = wireSize;
     auto res = parser.parseExtensions(cursor, length, header);
-    // Anchor the populated container, not just the parser's status — without
-    // this, the compiler proves header.extensions is unused after the call and
-    // elides the vector pushbacks. Mirrors libquicr's
-    // benchmark::DoNotOptimize(extensions) pattern.
     folly::doNotOptimizeAway(res);
     folly::doNotOptimizeAway(header.extensions);
   }
@@ -379,26 +364,15 @@ void BM_ExtensionsDeserialize_LikeLibquicrAllArray(
   writer.writeExtensions(writeBuf, exts, sz, err);
   auto wireData = writeBuf.move();
   const size_t wireSize = wireData->computeChainDataLength();
+  MoQFrameParser parser;
+  parser.initializeVersion(kVersion);
   susp.dismiss();
   for (unsigned i = 0; i < iters; ++i) {
-    // Mirror libquicr's per-iter setup: fresh parser, fresh cursor, fresh
-    // output containers. (MoQFrameParser self-resets previousExtensionType_
-    // at the top of parseExtensionKvPairs, so hoisting parser would also be
-    // safe — keep per-iter for parity with libquicr's loop body.)
-    MoQFrameParser parser;
-    parser.initializeVersion(kVersion);
     folly::io::Cursor cursor(wireData.get());
     ObjectHeader header;
     header.extensions = Extensions();
-    // parseExtensions takes length by reference and decrements it as bytes
-    // are consumed. Pass a fresh copy per iter — without this, after iter 1
-    // wireSize is near zero and subsequent iters short-circuit to ~10ns.
     size_t length = wireSize;
     auto res = parser.parseExtensions(cursor, length, header);
-    // Anchor the populated container, not just the parser's status — without
-    // this, the compiler proves header.extensions is unused after the call and
-    // elides the vector pushbacks. Mirrors libquicr's
-    // benchmark::DoNotOptimize(extensions) pattern.
     folly::doNotOptimizeAway(res);
     folly::doNotOptimizeAway(header.extensions);
   }
@@ -424,30 +398,20 @@ void BM_ExtensionsRoundTrip_LibquicrShape(
   writer.writeExtensions(writeBuf, exts, sz, err);
   auto wireData = writeBuf.move();
   const size_t wireSize = wireData->computeChainDataLength();
-  susp.dismiss();
+  MoQFrameParser parser;
+  parser.initializeVersion(kVersion);
   folly::IOBufQueue outBuf;
+  susp.dismiss();
   for (unsigned i = 0; i < iters; ++i) {
-    // Parser must be fresh per iter (carries state that would short-circuit
-    // subsequent calls). Cursor reads wireData directly — no clone needed.
-    MoQFrameParser parser;
-    parser.initializeVersion(kVersion);
     folly::io::Cursor cursor(wireData.get());
     ObjectHeader header;
     header.extensions = Extensions();
-    // parseExtensions takes length by reference and decrements it as bytes
-    // are consumed. Pass a fresh copy per iter — without this, after iter 1
-    // wireSize is near zero and subsequent iters short-circuit to ~10ns.
     size_t length = wireSize;
     auto res = parser.parseExtensions(cursor, length, header);
-    // Anchor the populated container, not just the parser's status — without
-    // this, the compiler proves header.extensions is unused after the call and
-    // elides the vector pushbacks. Mirrors libquicr's
-    // benchmark::DoNotOptimize(extensions) pattern.
     folly::doNotOptimizeAway(res);
     folly::doNotOptimizeAway(header.extensions);
 
-    // Discard prior iter's output; cheaper than reconstructing the queue.
-    outBuf.move();
+    outBuf.reset();
     size_t outSz = 0;
     bool outErr = false;
     writer.writeExtensions(outBuf, header.extensions, outSz, outErr);
@@ -473,30 +437,20 @@ void BM_ExtensionsRoundTrip_LikeLibquicrAllArray(
   writer.writeExtensions(writeBuf, exts, sz, err);
   auto wireData = writeBuf.move();
   const size_t wireSize = wireData->computeChainDataLength();
-  susp.dismiss();
+  MoQFrameParser parser;
+  parser.initializeVersion(kVersion);
   folly::IOBufQueue outBuf;
+  susp.dismiss();
   for (unsigned i = 0; i < iters; ++i) {
-    // Parser must be fresh per iter (carries state that would short-circuit
-    // subsequent calls). Cursor reads wireData directly — no clone needed.
-    MoQFrameParser parser;
-    parser.initializeVersion(kVersion);
     folly::io::Cursor cursor(wireData.get());
     ObjectHeader header;
     header.extensions = Extensions();
-    // parseExtensions takes length by reference and decrements it as bytes
-    // are consumed. Pass a fresh copy per iter — without this, after iter 1
-    // wireSize is near zero and subsequent iters short-circuit to ~10ns.
     size_t length = wireSize;
     auto res = parser.parseExtensions(cursor, length, header);
-    // Anchor the populated container, not just the parser's status — without
-    // this, the compiler proves header.extensions is unused after the call and
-    // elides the vector pushbacks. Mirrors libquicr's
-    // benchmark::DoNotOptimize(extensions) pattern.
     folly::doNotOptimizeAway(res);
     folly::doNotOptimizeAway(header.extensions);
 
-    // Discard prior iter's output; cheaper than reconstructing the queue.
-    outBuf.move();
+    outBuf.reset();
     size_t outSz = 0;
     bool outErr = false;
     writer.writeExtensions(outBuf, header.extensions, outSz, outErr);

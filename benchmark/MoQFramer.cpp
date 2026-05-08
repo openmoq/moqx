@@ -103,9 +103,10 @@ BENCHMARK(BM_WriteSubscribeRequest, iters) {
   MoQFrameWriter writer;
   writer.initializeVersion(kVersion);
   auto req = SubscribeRequest::make(makeFullTrackName());
+  folly::IOBufQueue buf;
   susp.dismiss();
   for (unsigned i = 0; i < iters; ++i) {
-    folly::IOBufQueue buf;
+    buf.reset();
     auto res = writer.writeSubscribeRequest(buf, req);
     folly::doNotOptimizeAway(res);
   }
@@ -122,9 +123,10 @@ BENCHMARK(BM_WriteSubgroupHeader, iters) {
   header.priority = 128;
   header.status = ObjectStatus::NORMAL;
   header.length = 1024;
+  folly::IOBufQueue buf;
   susp.dismiss();
   for (unsigned i = 0; i < iters; ++i) {
-    folly::IOBufQueue buf;
+    buf.reset();
     auto res = writer.writeSubgroupHeader(buf, TrackAlias(1), header);
     folly::doNotOptimizeAway(res);
   }
@@ -143,9 +145,10 @@ BENCHMARK(BM_WriteStreamObject, iters) {
   header.length = 1024;
   auto payload = folly::IOBuf::create(1024);
   payload->append(1024);
+  folly::IOBufQueue buf;
   susp.dismiss();
   for (unsigned i = 0; i < iters; ++i) {
-    folly::IOBufQueue buf;
+    buf.reset();
     auto res = writer.writeStreamObject(
         buf,
         getSubgroupStreamType(kVersion, SubgroupIDFormat::Present, false, false),
@@ -162,9 +165,10 @@ BENCHMARK(BM_WritePublishNamespace, iters) {
   PublishNamespace pubNs;
   pubNs.requestID = RequestID(1);
   pubNs.trackNamespace = makeTrackNamespace();
+  folly::IOBufQueue buf;
   susp.dismiss();
   for (unsigned i = 0; i < iters; ++i) {
-    folly::IOBufQueue buf;
+    buf.reset();
     auto res = writer.writePublishNamespace(buf, pubNs);
     folly::doNotOptimizeAway(res);
   }
@@ -179,9 +183,10 @@ BENCHMARK(BM_WriteFetch, iters) {
       makeFullTrackName(),
       AbsoluteLocation{0, 0},
       AbsoluteLocation{10, 0});
+  folly::IOBufQueue buf;
   susp.dismiss();
   for (unsigned i = 0; i < iters; ++i) {
-    folly::IOBufQueue buf;
+    buf.reset();
     auto res = writer.writeFetch(buf, fetch);
     folly::doNotOptimizeAway(res);
   }
@@ -209,13 +214,14 @@ BENCHMARK(BM_ParseSubscribeRequest, iters) {
   folly::IOBufQueue writeBuf;
   writer.writeSubscribeRequest(writeBuf, req);
   auto wireData = writeBuf.move();
+  // Hoist parser: parseSubscribeRequest is a control-frame parse and doesn't
+  // touch the delta-decoding state members on MoQFrameParser, so no carryover
+  // between iters.
+  MoQFrameParser parser;
+  parser.initializeVersion(kVersion);
   susp.dismiss();
 
   for (unsigned i = 0; i < iters; ++i) {
-    // Parser must be fresh per iter; reusing it makes parseSubscribeRequest
-    // short-circuit on subsequent calls and the loop body becomes a no-op.
-    MoQFrameParser parser;
-    parser.initializeVersion(kVersion);
     folly::io::Cursor cursor(wireData.get());
     skipVarint(cursor); // frame type
     auto frameLen = skipVarint(cursor); // payload length
@@ -236,11 +242,11 @@ BENCHMARK(BM_ParseFetch, iters) {
   folly::IOBufQueue writeBuf;
   writer.writeFetch(writeBuf, fetch);
   auto wireData = writeBuf.move();
+  MoQFrameParser parser;
+  parser.initializeVersion(kVersion);
   susp.dismiss();
 
   for (unsigned i = 0; i < iters; ++i) {
-    MoQFrameParser parser;
-    parser.initializeVersion(kVersion);
     folly::io::Cursor cursor(wireData.get());
     skipVarint(cursor);
     auto frameLen = skipVarint(cursor);
@@ -259,11 +265,11 @@ BENCHMARK(BM_ParsePublishNamespace, iters) {
   folly::IOBufQueue writeBuf;
   writer.writePublishNamespace(writeBuf, pubNs);
   auto wireData = writeBuf.move();
+  MoQFrameParser parser;
+  parser.initializeVersion(kVersion);
   susp.dismiss();
 
   for (unsigned i = 0; i < iters; ++i) {
-    MoQFrameParser parser;
-    parser.initializeVersion(kVersion);
     folly::io::Cursor cursor(wireData.get());
     skipVarint(cursor);
     auto frameLen = skipVarint(cursor);
@@ -279,16 +285,15 @@ BENCHMARK(BM_SubscribeRoundTrip, iters) {
   MoQFrameWriter writer;
   writer.initializeVersion(kVersion);
   auto req = SubscribeRequest::make(makeFullTrackName());
+  // Hoist write queue + parser (parseSubscribeRequest doesn't carry state).
+  folly::IOBufQueue writeBuf;
+  MoQFrameParser parser;
+  parser.initializeVersion(kVersion);
   susp.dismiss();
   for (unsigned i = 0; i < iters; ++i) {
-    // Write (per-iter: that's the round-trip workload).
-    folly::IOBufQueue writeBuf;
+    writeBuf.reset();
     writer.writeSubscribeRequest(writeBuf, req);
     auto buf = writeBuf.move();
-
-    // Parser must be fresh per iter; reusing it short-circuits subsequent calls.
-    MoQFrameParser parser;
-    parser.initializeVersion(kVersion);
     folly::io::Cursor cursor(buf.get());
     skipVarint(cursor);
     auto frameLen = skipVarint(cursor);
@@ -300,9 +305,16 @@ BENCHMARK(BM_SubscribeRoundTrip, iters) {
 // --- TrackNamespace operations ---
 
 BENCHMARK(BM_TrackNamespace_Construct, iters) {
+  folly::BenchmarkSuspender susp;
+  // Hoist the parts vector — measure TrackNamespace's constructor cost on a
+  // pre-built vector, not the cost of building the initializer_list +
+  // std::vector each iter (which would dominate). Pass by const ref so the
+  // hoisted vector isn't moved-from after iter 1.
+  const std::vector<std::string> parts = {
+      "conference", "room42", "alice", "video"};
+  susp.dismiss();
   for (unsigned i = 0; i < iters; ++i) {
-    std::vector<std::string> parts = {"conference", "room42", "alice", "video"};
-    TrackNamespace ns(std::move(parts));
+    TrackNamespace ns(parts);
     folly::doNotOptimizeAway(ns);
   }
 }
