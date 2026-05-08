@@ -962,17 +962,31 @@ public:
     inProgress_.post();
     if (fetchRangeIt_.isValid()) {
       auto current = *fetchRangeIt_;
-      fetchInProgressIt_->second.progress = current;
-      // Re-key the map entry when crossing a group boundary so the
-      // old key slot is available for new fetches of evicted groups.
-      if (current.group > fetchInProgressIt_->first.group) {
-        auto entry = fetchInProgressIt_->second;
-        eraseAndMakeGroupEvictable();
-        emplaceAndPinGroup(current, entry);
+      // Guard matches the destructor: after branch 3 erases on a first call
+      // (e.g. finFetch=true), a second call from endOfFetch() must not
+      // dereference end(). Re-key the map entry when crossing a group boundary
+      // so the old key slot is available for new fetches of evicted groups.
+      // Don't re-key at or past maxLocation: findFetchInProgress uses a strict
+      // less-than check against writeback.end, so a concurrent fetch can start
+      // exactly at the exclusive boundary. Re-keying there would collide with
+      // that new writeback's XCHECK(inserted).
+      if (fetchInProgressIt_ != fetchRangeIt_.track->fetchesInProgress.end()) {
+        fetchInProgressIt_->second.progress = current;
+        if (current.group > fetchInProgressIt_->first.group) {
+          if (current < fetchRangeIt_.maxLocation) {
+            auto entry = fetchInProgressIt_->second;
+            eraseAndMakeGroupEvictable();
+            emplaceAndPinGroup(current, entry);
+          } else {
+            eraseAndMakeGroupEvictable();
+          }
+        }
       }
       inProgress_.reset();
     } else {
-      eraseAndMakeGroupEvictable();
+      if (fetchInProgressIt_ != fetchRangeIt_.track->fetchesInProgress.end()) {
+        eraseAndMakeGroupEvictable();
+      }
     }
   }
 
