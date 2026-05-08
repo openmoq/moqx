@@ -111,8 +111,7 @@ public:
       cache_->setMaxCachedBytes(static_cast<size_t>(cache.maxCachedMb) * 1024 * 1024);
       cache_->setMinEvictionBytes(static_cast<size_t>(cache.minEvictionKb) * 1024);
       cache_->setDefaultMaxCacheDuration(cache.defaultMaxCacheDuration);
-      // TODO: wire cache.maxCacheDuration once MoqxCache supports clamping
-      // publisher-set track durations.
+      cache_->setMaxAllowedCacheDuration(cache.maxCacheDuration);
     }
   }
 

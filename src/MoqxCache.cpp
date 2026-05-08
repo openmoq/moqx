@@ -8,6 +8,7 @@
 
 #include "MoqxCache.h"
 #include <folly/logging/xlog.h>
+#include <moxygen/MoQTrackProperties.h>
 
 // Maxmimum cache size / per track? Number of groups
 // Fancy: handle streaming incomplete objects (forwarder?)
@@ -592,7 +593,7 @@ public:
 
   folly::Expected<folly::Unit, MoQPublishError>
   object(uint64_t objID, Payload payload, Extensions ext, bool finSub) override {
-    if (cacheTrack_.evicted) {
+    if (cacheTrack_.shouldSkipCaching()) {
       return consumer_->object(objID, std::move(payload), std::move(ext), finSub);
     }
     auto res = cacheTrack_.updateLargest({group_, objID});
@@ -626,7 +627,7 @@ public:
   folly::Expected<folly::Unit, MoQPublishError>
   beginObject(uint64_t objectID, uint64_t length, Payload initialPayload, Extensions extensions)
       override {
-    if (cacheTrack_.evicted) {
+    if (cacheTrack_.shouldSkipCaching()) {
       return consumer_
           ->beginObject(objectID, length, std::move(initialPayload), std::move(extensions));
     }
@@ -665,7 +666,7 @@ public:
 
   folly::Expected<ObjectPublishStatus, MoQPublishError>
   objectPayload(Payload payload, bool finSubgroup) override {
-    if (cacheTrack_.evicted) {
+    if (cacheTrack_.shouldSkipCaching()) {
       return consumer_->objectPayload(std::move(payload), finSubgroup);
     }
     auto& object = cacheGroup_.objects[currentObject_];
@@ -689,7 +690,7 @@ public:
   }
 
   folly::Expected<folly::Unit, MoQPublishError> endOfGroup(uint64_t endOfGroupObjectID) override {
-    if (cacheTrack_.evicted) {
+    if (cacheTrack_.shouldSkipCaching()) {
       return consumer_->endOfGroup(endOfGroupObjectID);
     }
     auto res = cacheTrack_.updateLargest({group_, endOfGroupObjectID});
@@ -722,7 +723,7 @@ public:
 
   folly::Expected<folly::Unit, MoQPublishError> endOfTrackAndGroup(uint64_t endOfTrackObjectID
   ) override {
-    if (cacheTrack_.evicted) {
+    if (cacheTrack_.shouldSkipCaching()) {
       return consumer_->endOfTrackAndGroup(endOfTrackObjectID);
     }
     auto res = cacheTrack_.updateLargest({group_, endOfTrackObjectID}, true);
@@ -820,7 +821,7 @@ public:
       );
     }
     auto res = consumer_->beginSubgroup(groupID, subgroupID, priority);
-    if (res.hasValue() && !track_.evicted) {
+    if (res.hasValue() && !track_.shouldSkipCaching()) {
       track_.getOrCreateGroupWithEviction(groupID, cache_, ftn_);
       return std::make_shared<SubgroupWriteback>(
           groupID,
@@ -842,7 +843,7 @@ public:
 
   folly::Expected<folly::Unit, MoQPublishError>
   objectStream(const ObjectHeader& header, Payload payload, bool /*lastInGroup*/ = false) override {
-    if (track_.evicted) {
+    if (track_.shouldSkipCaching()) {
       return consumer_->objectStream(header, std::move(payload));
     }
     // TODO: Handle lastInGroup parameter when caching
@@ -871,7 +872,7 @@ public:
 
   folly::Expected<folly::Unit, MoQPublishError>
   datagram(const ObjectHeader& header, Payload payload, bool /*lastInGroup*/ = false) override {
-    if (track_.evicted) {
+    if (track_.shouldSkipCaching()) {
       return consumer_->datagram(header, std::move(payload));
     }
     // TODO: Handle lastInGroup parameter when caching
@@ -1004,7 +1005,7 @@ public:
       bool fin,
       bool forwardingPreferenceIsDatagram = false
   ) override {
-    if (fetchRangeIt_.track->evicted) {
+    if (fetchRangeIt_.track->shouldSkipCaching()) {
       return consumer_->object(
           gID,
           sgID,
@@ -1052,7 +1053,7 @@ public:
       Payload initPayload,
       Extensions ext
   ) override {
-    if (fetchRangeIt_.track->evicted) {
+    if (fetchRangeIt_.track->shouldSkipCaching()) {
       return consumer_->beginObject(gID, sgID, objID, len, std::move(initPayload), std::move(ext));
     }
     constexpr auto kNormal = ObjectStatus::NORMAL;
@@ -1072,7 +1073,7 @@ public:
 
   folly::Expected<ObjectPublishStatus, MoQPublishError>
   objectPayload(Payload payload, bool finFetch) override {
-    if (fetchRangeIt_.track->evicted) {
+    if (fetchRangeIt_.track->shouldSkipCaching()) {
       return consumer_->objectPayload(std::move(payload), finFetch && proxyFin_);
     }
     auto& group =
@@ -1107,7 +1108,7 @@ public:
 
   folly::Expected<folly::Unit, MoQPublishError>
   endOfGroup(uint64_t gID, uint64_t sgID, uint64_t objID, bool fin) override {
-    if (fetchRangeIt_.track->evicted) {
+    if (fetchRangeIt_.track->shouldSkipCaching()) {
       return consumer_->endOfGroup(gID, sgID, objID, fin && proxyFin_);
     }
     // cacheImpl -> cacheObject inserts gap for remaining objects in this group
@@ -1121,7 +1122,7 @@ public:
 
   folly::Expected<folly::Unit, MoQPublishError>
   endOfTrackAndGroup(uint64_t gID, uint64_t sgID, uint64_t objID) override {
-    if (fetchRangeIt_.track->evicted) {
+    if (fetchRangeIt_.track->shouldSkipCaching()) {
       return consumer_->endOfTrackAndGroup(gID, sgID, objID);
     }
     // cacheImpl -> cacheObject inserts gaps for remaining objects and groups
@@ -1768,7 +1769,24 @@ void MoqxCache::clearMaxCacheDuration(const FullTrackName& ftn) {
   }
 }
 
+std::optional<std::chrono::milliseconds>
+MoqxCache::getEffectiveCacheDuration(const Extensions& extensions) const {
+  if (auto ms = moxygen::detail::getIntExtension(extensions, kMaxCacheDurationExtensionType)) {
+    auto dur = std::chrono::milliseconds(*ms);
+    if (maxAllowedCacheDuration_) {
+      dur = std::min(dur, *maxAllowedCacheDuration_);
+    }
+    return dur;
+  }
+  return defaultMaxCacheDuration_;
+}
+
 void MoqxCache::setTrackExtensions(const FullTrackName& ftn, Extensions extensions) {
+  if (auto dur = getEffectiveCacheDuration(extensions)) {
+    setMaxCacheDuration(ftn, *dur);
+  } else {
+    clearMaxCacheDuration(ftn);
+  }
   auto it = cache_.find(ftn);
   if (it == cache_.end()) {
     it = cache_.emplace(ftn, std::make_shared<CacheTrack>()).first;

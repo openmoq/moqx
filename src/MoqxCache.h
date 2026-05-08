@@ -119,9 +119,6 @@ public:
     }
   }
 
-  void setMaxCacheDuration(const moxygen::FullTrackName& ftn, std::chrono::milliseconds duration);
-  void clearMaxCacheDuration(const moxygen::FullTrackName& ftn);
-
   // Sets the default max cache duration applied to all tracks that do not have
   // a per-track duration set via setMaxCacheDuration(). Pass std::nullopt to
   // remove the default (objects never expire by default).
@@ -130,6 +127,16 @@ public:
   }
   std::optional<std::chrono::milliseconds> getDefaultMaxCacheDuration() const {
     return defaultMaxCacheDuration_;
+  }
+
+  // Sets a hard upper bound on per-track cache durations. Any duration
+  // extracted from publisher extensions that exceeds this cap is clamped to it.
+  // Pass std::nullopt to remove the cap.
+  void setMaxAllowedCacheDuration(std::optional<std::chrono::milliseconds> duration) {
+    maxAllowedCacheDuration_ = duration;
+  }
+  std::optional<std::chrono::milliseconds> getMaxAllowedCacheDuration() const {
+    return maxAllowedCacheDuration_;
   }
 
   void setTrackExtensions(const moxygen::FullTrackName& ftn, moxygen::Extensions extensions);
@@ -283,6 +290,12 @@ private:
     // Returns true if track can be evicted (not live, no active fetches)
     bool canEvict() const { return liveWritebackCount == 0 && fetchesInProgress.empty(); }
 
+    // Returns true if objects should be forwarded without caching.
+    // Optimistic: nullopt maxCacheDuration means "unknown, cache it".
+    bool shouldSkipCaching() const {
+      return evicted || (maxCacheDuration && maxCacheDuration->count() == 0);
+    }
+
     // Insert a known-non-existent range into both gaps and cachedContent.
     // The two sets must stay aligned: cachedContent doubles as the union
     // (real objects + known gaps) used by skipUncached().
@@ -359,6 +372,10 @@ private:
   // std::nullopt means objects do not expire by default.
   std::optional<std::chrono::milliseconds> defaultMaxCacheDuration_;
 
+  // Hard cap on per-track durations extracted from publisher extensions.
+  // std::nullopt means no cap is enforced.
+  std::optional<std::chrono::milliseconds> maxAllowedCacheDuration_;
+
   // Injectable clock for testing
   std::function<TimePoint()> clock_;
 
@@ -388,6 +405,14 @@ private:
 
   folly::coro::Task<folly::Expected<folly::Unit, moxygen::FetchError>>
   handleBlocked(std::shared_ptr<moxygen::FetchConsumer> consumer, const moxygen::Fetch& fetch);
+
+  void setMaxCacheDuration(const moxygen::FullTrackName& ftn, std::chrono::milliseconds duration);
+  void clearMaxCacheDuration(const moxygen::FullTrackName& ftn);
+
+  // Returns publisher duration (clamped to maxAllowedCacheDuration_), or
+  // defaultMaxCacheDuration_, or nullopt if neither is set.
+  std::optional<std::chrono::milliseconds>
+  getEffectiveCacheDuration(const moxygen::Extensions& extensions) const;
 
   // Track LRU management helpers
   void addTrackToLRU(const moxygen::FullTrackName& ftn, CacheTrack& track);
