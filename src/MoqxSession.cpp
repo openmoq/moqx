@@ -38,8 +38,8 @@ std::optional<SwitchPublishResult> MoqxSession::publishForSwitch(
   // writeTrackRequestParams() handles delta-encoding for v16+ automatically.
   folly::IOBufQueue valBuf{folly::IOBufQueue::cacheChainLength()};
   folly::io::QueueAppender va(&valBuf, 16);
-  quic::encodeQuicInteger(switchingGroupID, [&](auto b) { va.push(b); });
-  quic::encodeQuicInteger(liveEdgeGroupID, [&](auto b) { va.push(b); });
+  quic::encodeQuicInteger(switchingGroupID, [&](auto b) { va.writeBE(b); });
+  quic::encodeQuicInteger(liveEdgeGroupID, [&](auto b) { va.writeBE(b); });
   auto valStr = valBuf.move()->moveToFbString().toStdString();
   pub.params.insertParam(moxygen::Parameter{kSwitchTransitionParamKey, valStr});
 
@@ -75,7 +75,7 @@ std::optional<SwitchPublishResult> MoqxSession::publishForSwitch(
   if (writeHandle) {
     folly::IOBufQueue fetchHeaderBuf{folly::IOBufQueue::cacheChainLength()};
     moqFrameWriter_.writeFetchHeader(fetchHeaderBuf, currentSubscribeRequestID);
-    writeHandle->writeStreamData(fetchHeaderBuf.move(), /*eof=*/false);
+    writeHandle->writeStreamData(fetchHeaderBuf.move(), /*eof=*/false, /*callback=*/nullptr);
   }
 
   return SwitchPublishResult{writeHandle, consumer};
@@ -106,14 +106,14 @@ void MoqxSession::writeCatchupToHandle(
           entry->payloadSize > 0) {
         objLen = entry->payloadSize;
       }
-      moxygen::ObjectHeader hdr{
-          .group = g,
-          .subgroup = entry->subgroup,
-          .id = objID,
-          .priority = std::nullopt,
-          .status = entry->status,
-          .extensions = entry->extensions,
-          .length = objLen};
+      moxygen::ObjectHeader hdr(
+          g,
+          entry->subgroup,
+          objID,
+          /*priority=*/std::nullopt,
+          entry->status,
+          entry->extensions,
+          objLen);
       folly::IOBufQueue objBuf{folly::IOBufQueue::cacheChainLength()};
       moqFrameWriter_.writeStreamObject(
           objBuf,
@@ -121,7 +121,7 @@ void MoqxSession::writeCatchupToHandle(
           hdr,
           entry->payload ? entry->payload->clone() : nullptr,
           entry->forwardingPreferenceIsDatagram);
-      writeHandle->writeStreamData(objBuf.move(), /*eof=*/false);
+      writeHandle->writeStreamData(objBuf.move(), /*eof=*/false, /*callback=*/nullptr);
     }
   }
   // Bidi write side remains open — FETCH section ends implicitly at liveEdge
