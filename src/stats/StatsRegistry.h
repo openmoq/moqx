@@ -14,7 +14,7 @@
 #include <vector>
 
 #include <folly/executors/SequencedExecutor.h>
-#include <folly/experimental/coro/Task.h>
+#include <folly/coro/Task.h>
 #include <folly/io/IOBuf.h>
 
 #include <moxygen/MoQTypes.h>

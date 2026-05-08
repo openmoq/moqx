@@ -14,7 +14,7 @@
 
 #include <folly/coro/Collect.h>
 #include <folly/coro/Task.h>
-#include <folly/experimental/coro/Task.h>
+#include <folly/coro/Task.h>
 #include <folly/logging/xlog.h>
 
 namespace openmoq::moqx::stats {

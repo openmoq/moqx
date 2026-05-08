@@ -8,8 +8,8 @@
 
 #include <folly/CancellationToken.h>
 #include <folly/coro/Task.h>
-#include <folly/experimental/coro/Task.h>
-#include <folly/experimental/coro/WithCancellation.h>
+#include <folly/coro/Task.h>
+#include <folly/coro/WithCancellation.h>
 #include <folly/io/IOBuf.h>
 #include <folly/io/async/EventBaseManager.h>
 #include <folly/logging/xlog.h>
