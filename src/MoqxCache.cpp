@@ -962,17 +962,26 @@ public:
     inProgress_.post();
     if (fetchRangeIt_.isValid()) {
       auto current = *fetchRangeIt_;
-      fetchInProgressIt_->second.progress = current;
-      // Re-key the map entry when crossing a group boundary so the
-      // old key slot is available for new fetches of evicted groups.
-      if (current.group > fetchInProgressIt_->first.group) {
-        auto entry = fetchInProgressIt_->second;
-        eraseAndMakeGroupEvictable();
-        emplaceAndPinGroup(current, entry);
+      // finFetch=true sets iterator to end(); guard prevents endOfFetch() re-entry dereference.
+      if (fetchInProgressIt_ != fetchRangeIt_.track->fetchesInProgress.end()) {
+        fetchInProgressIt_->second.progress = current;
+        // Re-key the map entry when crossing a group boundary so the
+        // old key slot is available for new fetches of evicted groups.
+        if (current.group > fetchInProgressIt_->first.group) {
+          if (current < fetchRangeIt_.maxLocation) { // concurrent fetch may already hold that slot
+            auto entry = fetchInProgressIt_->second;
+            eraseAndMakeGroupEvictable();
+            emplaceAndPinGroup(current, entry);
+          } else {
+            eraseAndMakeGroupEvictable();
+          }
+        }
       }
       inProgress_.reset();
     } else {
-      eraseAndMakeGroupEvictable();
+      if (fetchInProgressIt_ != fetchRangeIt_.track->fetchesInProgress.end()) {
+        eraseAndMakeGroupEvictable();
+      }
     }
   }
 

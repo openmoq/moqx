@@ -1411,6 +1411,94 @@ CO_TEST_F(MoqxCacheTest, TestFetchWritebackAcrossGroups) {
   EXPECT_TRUE(res.hasValue());
 }
 
+CO_TEST_F(MoqxCacheTest, FetchWritebackUpdateInProgressBoundaryCollision) {
+  // Regression test for XCHECK(inserted) crash in FetchWriteback::updateInProgress.
+  //
+  // Two concurrent ascending fetches share an adjacent boundary:
+  //   A = [0,0; 10,0)  -- new track, takes fast path, FetchWriteback A key={0,0}
+  //   B = [10,0; 20,0) -- fetchImpl sees all-miss; fetchUpstream creates
+  //                        FetchWriteback B with key={10,0}
+  //
+  // findFetchInProgress({10,0}) returns nullptr for A because the in-range
+  // check is strict (loc < writeback.end), so {10,0} < {10,0} is false. B is
+  // therefore allowed to start its own upstream fetch and insert key={10,0}.
+  //
+  // When A's upstream sends endOfFetch(), FetchWriteback A's updateInProgress
+  // advances the iterator to end_={10,0} and tries to re-key fetchesInProgress
+  // to {10,0}, which is already owned by B → XCHECK(inserted) crash.
+  auto consumer2 = std::make_shared<StrictMock<moxygen::MockFetchConsumer>>();
+  auto trackingConsumer2 = std::make_shared<TerminalTrackingFetchConsumer>(consumer2);
+
+  EXPECT_CALL(*consumer_, endOfFetch()).WillOnce(Return(folly::unit));
+  EXPECT_CALL(*consumer2, endOfFetch()).WillOnce(Return(folly::unit));
+
+  {
+    InSequence seq;
+    // First upstream call: fetch A (new-track fast path), mock stores the writeback.
+    expectUpstreamFetch({0, 0}, {10, 0}, 0, AbsoluteLocation{20, 0});
+
+    // Second upstream call: fetch B's fetchUpstream — FetchWriteback B is already
+    // inserted at key {10,0} before this lambda runs. Drive A's endOfFetch here
+    // to hit the crash path, then drive B's endOfFetch to complete the test.
+    EXPECT_CALL(*upstream_, fetch(_, _))
+        .WillOnce([this](Fetch fetch, std::shared_ptr<FetchConsumer> consumerB) {
+          auto [standalone, joining] = fetchType(fetch);
+          EXPECT_EQ(standalone->start, (AbsoluteLocation{10, 0}));
+          EXPECT_EQ(standalone->end, (AbsoluteLocation{20, 0}));
+          // FetchWriteback B is live at {10,0}. A's endOfFetch triggers the
+          // updateInProgress re-key to {10,0} → XCHECK crash before fix.
+          upstreamFetchConsumer_->endOfFetch();
+          // Drive B's endOfFetch so B completes after the fix.
+          consumerB->endOfFetch();
+          return folly::coro::makeTask<Publisher::FetchResult>(
+              std::make_shared<moxygen::MockFetchHandle>(
+                  FetchOk{0, GroupOrder::OldestFirst, false, AbsoluteLocation{20, 0}, {}}
+              )
+          );
+        });
+  }
+
+  auto [resA, resB] = co_await folly::coro::collectAll(
+      cache_.fetch(getFetch({0, 0}, {10, 0}), trackingConsumer_, upstream_),
+      cache_.fetch(getFetch({10, 0}, {20, 0}), trackingConsumer2, upstream_)
+  );
+
+  EXPECT_TRUE(resA.hasValue());
+  EXPECT_TRUE(resB.hasValue());
+}
+
+CO_TEST_F(MoqxCacheTest, FetchWritebackUpdateInProgressDoubleCall) {
+  // Regression test: line 966 in updateInProgress() dereferences
+  // fetchInProgressIt_ before the fetchInProgressIt_ != end() guard at
+  // line 974. When upstream delivers a final object that advances the
+  // iterator to maxLocation, branch 3 erases the fetchesInProgress entry
+  // (setting fetchInProgressIt_=end()). The subsequent endOfFetch() call
+  // then fires updateInProgress() a second time, hitting the unguarded
+  // dereference.
+  //
+  // Scenario: fetch [{0,0},{2,0}), upstream sends endOfGroup(1,0,0,fin=true)
+  // which marks group 1 as complete and steps the iterator to {2,0}=maxLocation.
+  // Branch 3 fires (group 1>0, {2,0} not < {2,0}) and erases the entry.
+  // The subsequent endOfFetch() call triggers a second updateInProgress()
+  // with fetchInProgressIt_=end().
+
+  EXPECT_CALL(*consumer_, endOfGroup(1, 0, 0, true)).WillOnce(Return(folly::unit));
+  EXPECT_CALL(*consumer_, endOfFetch()).WillOnce(Return(folly::unit));
+
+  expectUpstreamFetch({0, 0}, {2, 0}, 0, AbsoluteLocation{1, 0})
+      .via(co_await folly::coro::co_current_executor)
+      .thenTry([this](auto) {
+        // endOfGroup advances iterator to {2,0}=maxLocation; branch 3 erases
+        // the fetchesInProgress entry (fetchInProgressIt_=end()).
+        upstreamFetchConsumer_->endOfGroup(1, 0, 0, true);
+        // Second updateInProgress() call — hits line 966 with end() iterator.
+        upstreamFetchConsumer_->endOfFetch();
+      });
+
+  auto res = co_await cache_.fetch(getFetch({0, 0}, {2, 0}), trackingConsumer_, upstream_);
+  EXPECT_TRUE(res.hasValue());
+}
+
 CO_TEST_F(MoqxCacheTest, TestFetchRangeExactlyAtGroupBoundary) {
   // Test fetch ranges ending exactly at group boundaries like [0,0-1,0)
   populateCacheRange({0, 0}, {2, 0}, 10, 1, 1, true);
