@@ -151,12 +151,10 @@ std::shared_ptr<MoQSession> MoqxRelayServer::createSession(
     folly::MaybeManagedPtr<proxygen::WebTransport> wt,
     std::shared_ptr<MoQExecutor> executor
 ) {
-  auto session = std::make_shared<MoqxSession>(
+  return std::make_shared<MoqxSession>(
       folly::MaybeManagedPtr<proxygen::WebTransport>(std::move(wt)),
       *this,
       std::move(executor));
-  session->setRelay(context_->relay);
-  return session;
 }
 
 } // namespace openmoq::moqx

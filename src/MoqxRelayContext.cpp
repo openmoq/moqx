@@ -5,6 +5,7 @@
  */
 
 #include "MoqxRelayContext.h"
+#include "MoqxSession.h"
 #include "stats/MoQStatsCollector.h"
 #include <moxygen/events/MoQFollyExecutorImpl.h>
 #include <moxygen/util/InsecureVerifierDangerousDoNotUseInProduction.h>
@@ -163,6 +164,9 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayContext::validateAu
   CHECK(it != services_.end()) << "Service '" << *matchedName << "' matched but no entry found";
   session->setPublishHandler(it->second.relay);
   session->setSubscribeHandler(it->second.relay);
+  if (auto moqxSession = std::dynamic_pointer_cast<MoqxSession>(session)) {
+    moqxSession->setRelay(it->second.relay);
+  }
   return folly::unit;
 }
 
