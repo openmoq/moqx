@@ -40,13 +40,10 @@ jobs:
           # arm64 is validated by the publish-side docker build (ci-main publish
           # arm64 entry); skipped here to avoid the ubuntu-runner ↔ bookworm-tarball
           # glog ABI mismatch. arm64 regressions surface at main-push time.
-          # macOS disabled: moxygen tarball bakes brew Cellar versioned paths
-          # that break when the runner has different brew package versions.
-          # Re-enable once moxygen upstream fixes cmake to use opt symlinks.
-          # - name: macos
-          #   preset: default
-          #   build_dir: build
-          #   runner: macos-latest
+          - name: macos
+            preset: default
+            build_dir: build
+            runner: macos-15
           - name: asan debug
             preset: san
             build_dir: build-san
