@@ -103,6 +103,7 @@ Setup options:
 Build options:
   --profile NAME  Build profile: "default" (RelWithDebInfo) or "san" (ASAN/UBSAN)
   --build-dir DIR Build directory (default: per profile)
+  --benchmark     Enable benchmark targets (fetches google/benchmark)
 
 Test options:
   --build-dir DIR Build directory to test (default: "build")
@@ -343,12 +344,15 @@ cmd_build() {
   local profile="default"
   local build_dir=""
 
+  local benchmark=OFF
+
   while (( $# > 0 )); do
     case "$1" in
-      --profile)   profile="$2"; shift 2 ;;
-      --build-dir) build_dir="$2"; shift 2 ;;
-      -h|--help)   usage ;;
-      *)           die "Unknown build option: $1" ;;
+      --profile)    profile="$2"; shift 2 ;;
+      --build-dir)  build_dir="$2"; shift 2 ;;
+      --benchmark)  benchmark=ON; shift ;;
+      -h|--help)    usage ;;
+      *)            die "Unknown build option: $1" ;;
     esac
   done
 
@@ -397,6 +401,12 @@ cmd_build() {
   if [[ "$(uname)" == "Darwin" ]]; then
     extra_cmake_args+=("-DGFLAGS_SHARED=ON")
   fi
+
+  if [[ "$benchmark" == "ON" ]]; then
+    extra_cmake_args+=("-DMOQX_BUILD_BENCHMARKS=ON")
+    extra_cmake_args+=("-DMOQX_BUILD_TESTS=OFF")
+  fi
+
 
   echo "==> Configuring (profile: $profile, build: $build_dir)..."
   cmake -S "$PROJECT_ROOT" -B "$build_dir" \
