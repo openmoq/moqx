@@ -24,10 +24,16 @@
 #include <folly/executors/thread_factory/NamedThreadFactory.h>
 #include <folly/init/Init.h>
 #include <folly/io/async/AsyncSignalHandler.h>
+#include <folly/logging/Init.h>
 #include <folly/logging/xlog.h>
 
 #include <iostream>
 #include <string_view>
+
+// Default folly logging config: root at INFO, async sink with WARN+ flushed
+// synchronously so we don't lose warnings/errors on crash. Overridable at
+// runtime via --logging=... or FOLLY_LOGGING= env var (folly::Init wires both).
+FOLLY_INIT_LOGGING_CONFIG(".=INFO; default:async=true,sync_level=WARN");
 
 DEFINE_string(config, "", "Path to config file (required)");
 DEFINE_bool(strict_config, false, "Reject unknown config fields");
@@ -89,8 +95,9 @@ int main(int argc, char* argv[]) {
   }
 
   // === 2. Set up logging/observability ===
-  // TODO: logging framework, log levels, structured logging
-  // (currently handled implicitly by folly::Init)
+  // folly logging is initialized by folly::Init above using the
+  // FOLLY_INIT_LOGGING_CONFIG default at file scope. Override with
+  // --logging=<config> or the FOLLY_LOGGING env var.
 
   // === 3. Set up signal handling ===
   folly::EventBase evb;
