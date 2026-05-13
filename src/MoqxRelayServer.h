@@ -13,6 +13,7 @@
 #include "stats/StatsRegistry.h"
 #include <folly/executors/IOThreadPoolExecutor.h>
 #include <moxygen/MoQServer.h>
+#include <moxygen/mlog/MLoggerFactory.h>
 
 namespace openmoq::moqx {
 
@@ -27,6 +28,10 @@ public:
   ~MoqxRelayServer() override;
 
   void setStatsRegistry(std::shared_ptr<stats::StatsRegistry> registry);
+
+  void setMLoggerFactory(std::shared_ptr<moxygen::MLoggerFactory> factory) {
+    moxygen::MoQServerBase::setMLoggerFactory(std::move(factory));
+  }
 
   // Preferred entry point: binds the address from the stored ListenerConfig.
   void start();

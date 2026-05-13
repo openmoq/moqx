@@ -6,6 +6,7 @@
 
 #include "config/loader/ConfigResolver.h"
 
+#include <filesystem>
 #include <iomanip>
 #include <random>
 #include <sstream>
@@ -685,6 +686,22 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
     errors.push_back("threads > 1 is not yet supported");
   }
 
+  // === Validate logging ===
+  if (config.logging.value().has_value()) {
+    const auto& logging = *config.logging.value();
+    if (logging.mlog.value().has_value()) {
+      const auto& mlog = *logging.mlog.value();
+      if (mlog.sample_rate.value().has_value()) {
+        float rate = *mlog.sample_rate.value();
+        if (rate < 0.0f || rate > 1.0f) {
+          errors.push_back(
+              "logging.mlog.sample_rate must be in [0.0, 1.0], got " + std::to_string(rate)
+          );
+        }
+      }
+    }
+  }
+
   if (!errors.empty()) {
     return folly::makeUnexpected("Config validation failed:\n  - " + folly::join("\n  - ", errors));
   }
@@ -715,6 +732,30 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
   // Resolve relayID: use configured value or generate a random hex string
   std::string relayID = config.relay_id.value().value_or(generateRelayID());
 
+  // Resolve logging config
+  std::optional<LoggingConfig> loggingConfig;
+  if (config.logging.value().has_value()) {
+    const auto& parsedLogging = *config.logging.value();
+    LoggingConfig resolved;
+    if (parsedLogging.mlog.value().has_value()) {
+      const auto& parsedMlog = *parsedLogging.mlog.value();
+      MLogConfig mlogConfig;
+      mlogConfig.dir = parsedMlog.dir.value();
+      mlogConfig.sampleRate = parsedMlog.sample_rate.value().value_or(1.0f);
+      if (!mlogConfig.dir.empty()) {
+        std::error_code ec;
+        std::filesystem::create_directories(mlogConfig.dir, ec);
+        if (ec) {
+          return folly::makeUnexpected(
+              "Failed to create mlog directory '" + mlogConfig.dir + "': " + ec.message()
+          );
+        }
+      }
+      resolved.mlog = std::move(mlogConfig);
+    }
+    loggingConfig = std::move(resolved);
+  }
+
   return ResolvedConfig{
       .config =
           Config{
@@ -732,6 +773,7 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
               .admin = std::move(adminConfig),
               .relayID = std::move(relayID),
               .threads = threads,
+              .logging = std::move(loggingConfig),
           },
       .warnings = std::move(warnings),
   };
