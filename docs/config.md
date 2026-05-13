@@ -246,6 +246,50 @@ upstream routing.
 
 ---
 
+## Logging
+
+### `logging.mlog`
+
+Enables MoQ-level (mlog) structured logging of control messages and protocol
+events, one file per session.
+
+```yaml
+logging:
+  mlog:
+    dir: "/var/log/moqx/mlog"   # required to enable; empty string disables
+    sample_rate: 0.01            # log 1% of sessions (default: 1.0 = all)
+    max_age_days: 7              # delete files older than 7 days
+    max_dir_mb: 1024             # trim to 1 GB, deleting oldest files first
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `dir` | `string` | — (disabled) | Output directory. Each session writes to `<dir>/<dcid>.mlog`. If empty, mlog is disabled. |
+| `sample_rate` | `float` | `1.0` | Fraction of sessions to log, in `[0.0, 1.0]`. `1.0` logs all sessions; `0.01` logs ~1%. |
+| `max_age_days` | `uint` | — (no limit) | Delete `.mlog` files whose last-write time is older than this many days. Omit to keep all files regardless of age. Must be ≥ 1 if set. |
+| `max_dir_mb` | `uint` | — (no limit) | After age-based deletion, if the combined size of remaining `.mlog` files exceeds this value (in MB), the oldest files are deleted until the directory is under the limit. Omit for no size cap. Must be ≥ 1 if set. |
+
+#### Retention behaviour
+
+The two limits are applied together on each cleanup pass (at startup and then
+periodically at the configured `cleanup_interval_secs`):
+
+1. **Age** — any `.mlog` file older than `max_age_days` is deleted first.
+2. **Size** — if the remaining files still exceed `max_dir_mb`, the oldest
+   files (by last-write time) are deleted until the directory is under the
+   limit.
+
+Either limit can be set independently; both are optional.
+
+#### Lifecycle
+
+| Field | Lifecycle |
+|---|---|
+| `dir`, `sample_rate` | Static — requires restart |
+| `max_age_days`, `max_dir_mb`, `cleanup_interval_secs` | Static — requires restart |
+
+---
+
 ## Admin Server
 
 The admin server exposes an HTTP management API. It is optional; omit the

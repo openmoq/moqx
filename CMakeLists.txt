@@ -92,6 +92,7 @@ add_library(moqx_core STATIC
   src/UpstreamProvider.cpp
   src/relay/TopNFilter.cpp
   src/relay/PropertyRanking.cpp
+  src/logging/MLogCleaner.cpp
 )
 
 target_include_directories(moqx_core
@@ -110,6 +111,9 @@ target_link_libraries(moqx_core PUBLIC
   # FizzAcceptorHandshakeHelper but omits this dep from its cmake config.
   Folly::folly_io_async_fdsock_async_fd_socket
   moxygen::moxygen_moqclient
+  moxygen::moxygen_mlog_file_mlogger
+  moxygen::moxygen_mlog_mlogger_factory
+  moxygen::moxygen_mlog_sampling_mlogger_factory
 )
 
 target_compile_options(moqx_core PRIVATE -Wall -Wextra -Wpedantic)

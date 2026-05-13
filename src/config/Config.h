@@ -111,12 +111,25 @@ struct AdminConfig {
   std::optional<TlsConfig> tls;
 };
 
+struct MLogConfig {
+  std::string dir;        // output directory; empty = disabled
+  float sampleRate{1.0f}; // 1.0 = log all sessions, 0.0 = none
+  std::optional<uint32_t> maxAgeDays; // delete files older than N days; nullopt = no limit
+  std::optional<uint64_t> maxDirMb;   // trim directory to this size in MB; nullopt = no limit
+  uint32_t cleanupIntervalSecs{600};  // how often to run cleanup (default 10 min)
+};
+
+struct LoggingConfig {
+  std::optional<MLogConfig> mlog;
+};
+
 struct Config {
   std::vector<ListenerConfig> listeners;
   folly::F14FastMap<std::string, ServiceConfig> services;
   std::optional<AdminConfig> admin;
   std::string relayID; // always set: from config or randomly generated
   uint32_t threads{1};
+  std::optional<LoggingConfig> logging;
 };
 
 } // namespace openmoq::moqx::config

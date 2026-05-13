@@ -13,6 +13,7 @@
 #include "admin/StateHandler.h"
 #include "config/loader/ConfigInit.h"
 #include "stats/StatsRegistry.h"
+#include "logging/MLogCleaner.h"
 
 #include <csignal>
 
@@ -24,6 +25,8 @@
 #include <folly/init/Init.h>
 #include <folly/io/async/AsyncSignalHandler.h>
 #include <folly/logging/xlog.h>
+#include <moxygen/mlog/FileMLoggerFactory.h>
+#include <moxygen/mlog/SamplingMLoggerFactory.h>
 
 #include <iostream>
 #include <string_view>
@@ -88,8 +91,38 @@ int main(int argc, char* argv[]) {
   }
 
   // === 2. Set up logging/observability ===
-  // TODO: logging framework, log levels, structured logging
-  // (currently handled implicitly by folly::Init)
+  std::shared_ptr<moxygen::MLoggerFactory> mlogFactory;
+  std::shared_ptr<folly::IOThreadPoolExecutor> mlogExecutor;
+  std::shared_ptr<logging::MLogCleaner> mlogCleaner;
+  // Shared_ptr to a recursive schedule function; kept alive until evb exits.
+  std::shared_ptr<std::function<void()>> mlogCleanupSchedule;
+
+  if (config.logging && config.logging->mlog) {
+    const auto& mcfg = *config.logging->mlog;
+    auto baseFactory = std::make_shared<moxygen::FileMLoggerFactory>(moxygen::VantagePoint::SERVER);
+    // Set output directory on the underlying factory
+    if (!mcfg.dir.empty()) {
+      baseFactory->setDir(mcfg.dir);
+    }
+    // Use background executor for mlog writes
+    mlogExecutor = std::make_shared<folly::IOThreadPoolExecutor>(
+        1,
+        std::make_shared<folly::NamedThreadFactory>("moqx-mlog")
+    );
+    baseFactory->setWriteExecutor(mlogExecutor);
+    if (mcfg.sampleRate < 1.0f) {
+      mlogFactory = std::make_shared<moxygen::SamplingMLoggerFactory>(baseFactory, mcfg.sampleRate);
+    } else {
+      mlogFactory = std::move(baseFactory);
+    }
+
+    // Set up directory cleanup if either retention limit is configured.
+    if (!mcfg.dir.empty() && (mcfg.maxAgeDays || mcfg.maxDirMb)) {
+      mlogCleaner = std::make_shared<logging::MLogCleaner>(
+          mcfg.dir, mcfg.maxAgeDays, mcfg.maxDirMb
+      );
+    }
+  }
 
   // === 3. Set up signal handling ===
   folly::EventBase evb;
@@ -114,7 +147,9 @@ int main(int argc, char* argv[]) {
 
   std::vector<std::shared_ptr<moxygen::MoQServerBase>> servers;
   for (const auto& listenerCfg : config.listeners) {
-    servers.emplace_back(makeRelayServer(listenerCfg, context, ioExecutor, statsRegistry));
+    servers.emplace_back(
+        makeRelayServer(listenerCfg, context, ioExecutor, statsRegistry, mlogFactory)
+    );
   }
 
   if (!servers.empty()) {
@@ -145,6 +180,31 @@ int main(int argc, char* argv[]) {
     context->initUpstreams(ioExecutor->getAllEventBases()[0].get());
   }
 
+  // Schedule mlog directory cleanup if configured.
+  // Runs at startup (to clean files from previous runs) and then periodically
+  // so the directory doesn't grow unbounded
+  if (mlogCleaner && mlogExecutor) {
+    const uint32_t intervalMs = config.logging->mlog->cleanupIntervalSecs * 1000;
+    // Startup pass — run immediately on the mlog executor.
+    mlogExecutor->add([c = mlogCleaner] { c->cleanup(); });
+    // Periodic pass — schedule via the main event base, post work to executor.
+    mlogCleanupSchedule = std::make_shared<std::function<void()>>();
+    std::weak_ptr<std::function<void()>> weak = mlogCleanupSchedule;
+    *mlogCleanupSchedule =
+        [&evb, c = mlogCleaner, exec = mlogExecutor, weak, intervalMs]() {
+          evb.runAfterDelay(
+              [c, exec, weak, intervalMs]() {
+                exec->add([c] { c->cleanup(); });
+                //self-reschedule for the next run, if still alive
+                if (auto fn = weak.lock()) {
+                  (*fn)();
+                }
+              },
+              intervalMs);
+        };
+    (*mlogCleanupSchedule)();
+  }
+
   evb.loopForever();
 
   // Hard shutdown watchdog: if teardown hangs, force-exit after 10 seconds.
@@ -172,7 +232,11 @@ int main(int argc, char* argv[]) {
   // TODO: TBD
 
   // === 12. Flush telemetry/logs ===
-  // TODO: ensure observability data is sent
+  // Join mlog write executor after all sessions have closed so that any
+  // pending outputLogs() tasks complete before process exit.
+  if (mlogExecutor) {
+    mlogExecutor->join();
+  }
 
   // === 13. Clean up resources ===
   // Stop admin last — allows a final metrics scrape during drain.
