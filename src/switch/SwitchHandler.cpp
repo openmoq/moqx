@@ -129,8 +129,6 @@ folly::coro::Task<void> SwitchHandler::run() {
   if (!switchResult) {
     co_return; // publishForSwitch failed — current subscription untouched
   }
-  auto* writeHandle = switchResult->writeHandle; // null = draft < 17 fallback
-
   // ── CUT_OLD ───────────────────────────────────────────────────────────────
   // Reset open subgroup streams at group >= gswitch to purge buffered payload
   // from the QUIC send buffer before new-track objects arrive.
@@ -148,9 +146,9 @@ folly::coro::Task<void> SwitchHandler::run() {
       .reasonPhrase = "switch_transition"};
   currentForwarder->drainSubscriber(session_, drainDone, "switch_handler");
 
-  // Phase 1: FETCH catch-up [gswitch, liveEdge) on bidi write side.
-  session_->writeCatchupToHandle(
-      writeHandle, sw_.targetTrackName, gswitch, liveEdge, relay_.cache());
+  // Phase 1: FETCH catch-up [gswitch, liveEdge) on a new unidirectional stream.
+  session_->writeCatchup(
+      sw_.targetTrackName, gswitch, liveEdge, sw_.currentSubscribeRequestID, relay_.cache());
 
   // Phase 2: drain loop [liveEdge, drainPoint) via consumer → subgroup streams.
   uint64_t deliveredUpTo = liveEdge;

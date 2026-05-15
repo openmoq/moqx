@@ -17,9 +17,6 @@ namespace openmoq::moqx {
 class MoqxRelay;
 
 struct SwitchPublishResult {
-  // Bidi write handle for streaming FETCH_HEADER + catch-up objects.
-  // Null if session is running draft < 17 (control stream fallback).
-  proxygen::WebTransport::StreamWriteHandle* writeHandle{nullptr};
   // TrackConsumer for Phase 2 subgroup delivery after catch-up.
   std::shared_ptr<moxygen::TrackConsumer> consumer;
 };
@@ -44,14 +41,15 @@ class MoqxSession : public moxygen::MoQRelaySession {
       moxygen::RequestID currentSubscribeRequestID,
       std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle);
 
-  // Write serialized catch-up objects [gswitch, liveEdge) from cache onto
-  // the bidi write handle. moqFrameWriter_ is protected in MoQSession —
-  // must live here, not in SwitchHandler.
-  void writeCatchupToHandle(
-      proxygen::WebTransport::StreamWriteHandle* writeHandle,
+  // Open a unidirectional FETCH stream and write FETCH_HEADER + catch-up
+  // objects [gswitch, liveEdge) from cache. High priority (urgency=1).
+  // moqFrameWriter_ is protected in MoQSession — must live here, not in
+  // SwitchHandler.
+  void writeCatchup(
       const moxygen::FullTrackName& trackName,
       uint64_t gswitch,
       uint64_t liveEdge,
+      moxygen::RequestID currentSubscribeRequestID,
       moxygen::MoQCache* cache);
 
  private:

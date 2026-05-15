@@ -7,6 +7,7 @@
 #include "MoqxRelay.h"
 #include "switch/SwitchTypes.h"
 #include <moxygen/MoQFramer.h>
+#include <quic/priority/HTTPPriorityQueue.h>
 
 namespace openmoq::moqx {
 
@@ -69,29 +70,39 @@ std::optional<SwitchPublishResult> MoqxSession::publishForSwitch(
   if (sendRes.hasError()) {
     return std::nullopt;
   }
-  auto* writeHandle = sendRes.value(); // nullptr = control stream path (draft < 17)
 
-  // Step 5: write FETCH_HEADER on the bidi write side — catch-up section begins here.
-  if (writeHandle) {
-    folly::IOBufQueue fetchHeaderBuf{folly::IOBufQueue::cacheChainLength()};
-    moqFrameWriter_.writeFetchHeader(fetchHeaderBuf, currentSubscribeRequestID);
-    writeHandle->writeStreamData(fetchHeaderBuf.move(), /*eof=*/false, /*callback=*/nullptr);
-  }
-
-  return SwitchPublishResult{writeHandle, consumer};
+  return SwitchPublishResult{consumer};
 }
 
-void MoqxSession::writeCatchupToHandle(
-    proxygen::WebTransport::StreamWriteHandle* writeHandle,
+void MoqxSession::writeCatchup(
     const moxygen::FullTrackName& trackName,
     uint64_t gswitch,
     uint64_t liveEdge,
+    moxygen::RequestID currentSubscribeRequestID,
     moxygen::MoQCache* cache) {
   // moqFrameWriter_ is protected in MoQSession — accessible here (MoqxSession
   // IS-A MoQSession) but not from SwitchHandler (a separate class).
-  if (!writeHandle || !cache) {
+  if (!cache) {
     return;
   }
+  auto wt = getWebTransport();
+  if (!wt) {
+    return;
+  }
+  auto stream = wt->createUniStream();
+  if (!stream) {
+    XLOG(ERR) << "writeCatchup: failed to create uni stream for SWITCH catch-up";
+    return;
+  }
+  // High priority (urgency=1) so catch-up arrives before live subgroup streams.
+  stream.value()->setPriority(
+      quic::HTTPPriorityQueue::Priority(1, false, 0));
+
+  // Write FETCH_HEADER to the uni stream.
+  folly::IOBufQueue fetchHeaderBuf{folly::IOBufQueue::cacheChainLength()};
+  moqFrameWriter_.writeFetchHeader(fetchHeaderBuf, currentSubscribeRequestID);
+  stream.value()->writeStreamData(fetchHeaderBuf.move(), /*eof=*/false, /*callback=*/nullptr);
+
   for (uint64_t g = gswitch; g < liveEdge; ++g) {
     for (uint64_t objID = 0;; ++objID) {
       auto* entry =
@@ -121,11 +132,12 @@ void MoqxSession::writeCatchupToHandle(
           hdr,
           entry->payload ? entry->payload->clone() : nullptr,
           entry->forwardingPreferenceIsDatagram);
-      writeHandle->writeStreamData(objBuf.move(), /*eof=*/false, /*callback=*/nullptr);
+      stream.value()->writeStreamData(objBuf.move(), /*eof=*/false, /*callback=*/nullptr);
     }
   }
-  // Bidi write side remains open — FETCH section ends implicitly at liveEdge
-  // via SWITCH_TRANSITION. No FIN issued here.
+  // FIN the stream — catch-up delivery is complete.
+  folly::IOBufQueue emptyBuf{folly::IOBufQueue::cacheChainLength()};
+  stream.value()->writeStreamData(emptyBuf.move(), /*eof=*/true, /*callback=*/nullptr);
 }
 
 } // namespace openmoq::moqx
