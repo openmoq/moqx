@@ -22,7 +22,16 @@ The split between `onValueChanged` and `onActivity` matters: value updates drive
 
 ## PropertyRanking — The Ranking Engine
 
-`PropertyRanking` maintains a `std::map<RankKey, RankedEntry, std::greater<>>` — a descending-sorted map of all registered tracks. `RankKey` is `(value, arrivalSeq)` where higher value wins and lower `arrivalSeq` breaks ties (earlier arrivals win).
+`PropertyRanking` maintains a `std::map<RankKey, RankedEntry, std::greater<>>` — a descending-sorted map of all registered tracks. `RankKey` is `(value, arrivalSeq)` where higher value wins. `arrivalSeq` (`int64_t`) breaks ties: lower value wins.
+
+Two counters manage `arrivalSeq`:
+
+- **Up-counter** (`nextSeqUp_`, non-negative, incrementing): assigned on registration and on every value *increase*. Whoever rose to a given value first holds the lowest Up seq and wins ties at that level — early session join does not grant priority over an established contributor.
+- **Down-counter** (`nextSeqDown_`, negative, decrementing): assigned on every value *decrease*. Negative seqs always sort below non-negative ones, so any track that has decreased to a value permanently outranks tracks that registered at or rose to that value.
+
+The intended consequence: a participant who was recently active and has since gone quiet ranks above one that joined and never contributed. Among past-active tracks at the same value, the most recently decreased (most-negative seq) ranks highest. Rising again clears the negative history by stamping a fresh Up seq.
+
+A known side-effect of this two-tier structure: a track that decreased to a value will beat any track that later rose to that same value, even if the riser arrived more recently. This trade-off is acceptable because the property is expected to be a synthetic application metric (not a raw signal), so exact-value ties at active levels are rare in practice.
 
 A parallel `F14FastMap<FullTrackName, RankIndex>` provides O(1) lookup by name and caches each track's integer rank.
 
