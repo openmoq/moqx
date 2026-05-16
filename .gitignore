@@ -8,6 +8,9 @@ cmake_install.cmake
 install_manifest.txt
 compile_commands.json
 
+# Logging
+/mlog/
+
 # Ninja
 .ninja_deps
 .ninja_log

@@ -361,6 +361,16 @@ struct ParsedServiceDefaultsConfig {
   rfl::Description<"Default cache settings for services", std::optional<ParsedCacheConfig>> cache;
 };
 
+struct ParsedMLogConfig {
+  rfl::Description<"Directory for per-session MoQ log files (empty = disabled)", std::string> dir;
+  rfl::Description<"Fraction of sessions to log (0.0-1.0, default 1.0)", std::optional<float>>
+      sample_rate;
+};
+
+struct ParsedLoggingConfig {
+  rfl::Description<"MoQ-level (mlog) per-session logging", std::optional<ParsedMLogConfig>> mlog;
+};
+
 struct ParsedConfig {
   rfl::Description<
       "Listener definitions (currently exactly one supported)",
@@ -381,6 +391,7 @@ struct ParsedConfig {
       std::optional<ParsedListenerDefaultsConfig>>
       listener_defaults;
   rfl::Description<"Number of IO worker threads (default: 1)", std::optional<uint32_t>> threads;
+  rfl::Description<"Logging configuration", std::optional<ParsedLoggingConfig>> logging;
 };
 
 } // namespace openmoq::moqx::config
