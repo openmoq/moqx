@@ -107,7 +107,6 @@ void MoQStatsCollector::PublisherCallback::onFetchError(moxygen::FetchErrorCode 
 
 void MoQStatsCollector::PublisherCallback::onPublishNamespaceSuccess() {
   ++parent_.pubPublishNamespaceSuccess_;
-  ++parent_.pubActivePublishNamespaces_;
 }
 
 void MoQStatsCollector::PublisherCallback::onPublishNamespaceError(
@@ -119,17 +118,14 @@ void MoQStatsCollector::PublisherCallback::onPublishNamespaceError(
 
 void MoQStatsCollector::PublisherCallback::onPublishNamespaceDone() {
   ++parent_.pubPublishNamespaceDone_;
-  --parent_.pubActivePublishNamespaces_;
 }
 
 void MoQStatsCollector::PublisherCallback::onPublishNamespaceCancel() {
   ++parent_.pubPublishNamespaceCancel_;
-  --parent_.pubActivePublishNamespaces_;
 }
 
 void MoQStatsCollector::PublisherCallback::onSubscribeNamespaceSuccess() {
   ++parent_.pubSubscribeNamespaceSuccess_;
-  ++parent_.pubActiveSubscribeNamespaces_;
 }
 
 void MoQStatsCollector::PublisherCallback::onSubscribeNamespaceError(
@@ -141,7 +137,6 @@ void MoQStatsCollector::PublisherCallback::onSubscribeNamespaceError(
 
 void MoQStatsCollector::PublisherCallback::onUnsubscribeNamespace() {
   ++parent_.pubUnsubscribeNamespace_;
-  --parent_.pubActiveSubscribeNamespaces_;
 }
 
 void MoQStatsCollector::PublisherCallback::onTrackStatus() {
@@ -150,12 +145,14 @@ void MoQStatsCollector::PublisherCallback::onTrackStatus() {
 
 void MoQStatsCollector::PublisherCallback::onUnsubscribe() {
   // Downstream subscriber unsubscribed.
-  --parent_.pubActiveSubscriptions_;
+  // moxygen always follows an UNSUBSCRIBE with a PUBLISH_DONE (via terminatePublish),
 }
 
 void MoQStatsCollector::PublisherCallback::
     onPublishDone(moxygen::PublishDoneStatusCode /*statusCode*/) {
   // Relay (as publisher) sent PUBLISH_DONE to a downstream subscriber.
+  // This fires for both client-initiated unsubscribes and server-initiated teardowns,
+  // making it the single authoritative end-of-subscription signal.
   ++parent_.pubPublishDone_;
   --parent_.pubActiveSubscriptions_;
 }
@@ -191,7 +188,6 @@ void MoQStatsCollector::PublisherCallback::onPublishError(moxygen::PublishErrorC
 void MoQStatsCollector::PublisherCallback::onPublishSuccess() {
   // Relay sent PUBLISH; received PUBLISH_OK back.
   ++parent_.moqPublishSuccess_;
-  ++parent_.pubActivePublishers_;
 }
 
 // --- SubscriberCallback implementations ---
@@ -200,13 +196,14 @@ void MoQStatsCollector::PublisherCallback::onPublishSuccess() {
 void MoQStatsCollector::SubscriberCallback::onSubscribeSuccess() {
   // Relay's outgoing SUBSCRIBE was accepted by upstream.
   ++parent_.subSubscribeSuccess_;
-  ++parent_.subActiveSubscriptions_;
+  ++parent_.subActivePublishers_;
 }
 
 void MoQStatsCollector::SubscriberCallback::onSubscribeError(moxygen::SubscribeErrorCode errorCode
 ) {
   ++parent_.subSubscribeError_;
   ++parent_.subSubscribeErrorByCodes_[requestErrorCodeIndex(errorCode)];
+  --parent_.subActivePublishers_;
 }
 
 void MoQStatsCollector::SubscriberCallback::onFetchSuccess() {
@@ -220,7 +217,6 @@ void MoQStatsCollector::SubscriberCallback::onFetchError(moxygen::FetchErrorCode
 
 void MoQStatsCollector::SubscriberCallback::onPublishNamespaceSuccess() {
   ++parent_.subPublishNamespaceSuccess_;
-  ++parent_.subActivePublishNamespaces_;
 }
 
 void MoQStatsCollector::SubscriberCallback::onPublishNamespaceError(
@@ -232,17 +228,14 @@ void MoQStatsCollector::SubscriberCallback::onPublishNamespaceError(
 
 void MoQStatsCollector::SubscriberCallback::onPublishNamespaceDone() {
   ++parent_.subPublishNamespaceDone_;
-  --parent_.subActivePublishNamespaces_;
 }
 
 void MoQStatsCollector::SubscriberCallback::onPublishNamespaceCancel() {
   ++parent_.subPublishNamespaceCancel_;
-  --parent_.subActivePublishNamespaces_;
 }
 
 void MoQStatsCollector::SubscriberCallback::onSubscribeNamespaceSuccess() {
   ++parent_.subSubscribeNamespaceSuccess_;
-  ++parent_.subActiveSubscribeNamespaces_;
 }
 
 void MoQStatsCollector::SubscriberCallback::onSubscribeNamespaceError(
@@ -254,7 +247,6 @@ void MoQStatsCollector::SubscriberCallback::onSubscribeNamespaceError(
 
 void MoQStatsCollector::SubscriberCallback::onUnsubscribeNamespace() {
   ++parent_.subUnsubscribeNamespace_;
-  --parent_.subActiveSubscribeNamespaces_;
 }
 
 void MoQStatsCollector::SubscriberCallback::onTrackStatus() {
@@ -263,14 +255,14 @@ void MoQStatsCollector::SubscriberCallback::onTrackStatus() {
 
 void MoQStatsCollector::SubscriberCallback::onUnsubscribe() {
   // Relay unsubscribed from upstream.
-  --parent_.subActiveSubscriptions_;
+  --parent_.subActivePublishers_;
 }
 
 void MoQStatsCollector::SubscriberCallback::
     onPublishDone(moxygen::PublishDoneStatusCode /*statusCode*/) {
   // Relay (as subscriber) received PUBLISH_DONE from upstream publisher.
   ++parent_.subPublishDone_;
-  --parent_.subActiveSubscriptions_;
+  --parent_.subActivePublishers_;
 }
 
 void MoQStatsCollector::SubscriberCallback::onRequestUpdate() {
