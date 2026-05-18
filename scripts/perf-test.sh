@@ -169,6 +169,7 @@ cat >"$RELAY_CFG" <<EOF
 relay_id: "perf-test-relay"
 threads: $IO_THREADS
 use_relay_thread: $USE_RELAY_THREAD
+bpf_steering: $BPF_STEERING
 listeners:
   - name: perf
     udp:
