@@ -10,6 +10,7 @@
 #include "MoqxRelay.h"
 #include "MoqxSession.h"
 #include <folly/coro/BlockingWait.h>
+#include <folly/coro/Collect.h>
 #include <folly/io/async/EventBase.h>
 #include <folly/io/async/Request.h>
 #include <folly/portability/GMock.h>
@@ -491,4 +492,46 @@ TEST_F(SwitchHandlerRunTest, WriteCatchupCalledWhenBehindLive) {
   EXPECT_EQ(session_->writeCatchupCalls[0].trackName, kTarget);
   EXPECT_EQ(session_->writeCatchupCalls[0].gswitch, 10u);
   EXPECT_EQ(session_->writeCatchupCalls[0].liveEdge, 20u);
+}
+
+// ─── Deferred gswitch: co_await gswitchFound path ────────────────────────────
+//
+// Target forwarder has no groups yet → tryFindGswitch() fails on first call →
+// handler registers GroupStartObserver and suspends on co_await gswitchFound.
+// The inject task then delivers group 5, the observer fires, gswitch is found,
+// and the baton is posted.  collectAll launch order is deterministic: handlerTask
+// runs first (suspends at baton), then injectTask runs to completion.
+
+TEST_F(SwitchHandlerRunTest, GswitchFoundDeferred_PublishForSwitchCalledCorrectly) {
+  auto currentConsumer = makeSafeConsumer();
+
+  publishTrack(kCurrent);
+  auto targetPublisher = publishTrack(kTarget);
+
+  auto currentForwarder = relay_->getForwarderByName(kCurrent);
+  ASSERT_NE(currentForwarder, nullptr);
+  currentForwarder->setLargest({5, 0});
+  // Target forwarder intentionally has no largest — triggers the deferred path.
+
+  subscribeSessionToForwarder(kCurrent, currentConsumer);
+
+  folly::coro::blockingWait(
+      folly::coro::collectAll(
+          [&]() -> folly::coro::Task<void> {
+            SwitchHandler handler(
+                session_, makeSwitch(RequestID(0), /*minimumGroupID=*/5), *relay_);
+            co_await handler.run();
+          }(),
+          [&]() -> folly::coro::Task<void> {
+            // Fires after handlerTask suspends: forwarder updates largest_ to
+            // {5,0} then calls beginSubgroup() on all subscribers including the
+            // GroupStartObserver added by the handler.
+            (void)targetPublisher->beginSubgroup(5, 0, /*priority=*/Priority(0));
+            co_return;
+          }()),
+      exec_.get());
+
+  ASSERT_EQ(session_->publishForSwitchCalls.size(), 1u);
+  EXPECT_EQ(session_->publishForSwitchCalls[0].switchingGroupID, 5u);
+  EXPECT_EQ(session_->publishForSwitchCalls[0].liveEdgeGroupID, 5u);
 }
