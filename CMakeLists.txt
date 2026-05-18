@@ -129,6 +129,7 @@ add_library(moqx_core STATIC
   src/relay/PropertyRanking.cpp
   src/relay/MoQCrossExecFilter.cpp
   src/relay/MoQCrossExecForwarderCallback.cpp
+  src/relay/WeakRelayForwarderCallback.cpp
   src/relay/MoQPublisherCrossExecFilter.cpp
   src/relay/MoQSubscriberCrossExecFilter.cpp
 )

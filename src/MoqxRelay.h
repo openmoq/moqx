@@ -13,11 +13,15 @@
 #include "SubscriptionRegistry.h"
 #include "UpstreamProvider.h"
 #include "config/Config.h"
+#include "relay/LocalForwarderRegistry.h"
+#include "relay/MoQCrossExecFilter.h"
+#include "relay/MoQCrossExecForwarderCallback.h"
 #include "relay/PropertyRanking.h"
 #include <moxygen/MoQSession.h>
 #include <moxygen/relay/MoQForwarder.h>
 
 #include <folly/Executor.h>
+#include <folly/ThreadLocal.h>
 #include <folly/container/F14Map.h>
 #include <folly/container/F14Set.h>
 #include <optional>
@@ -27,7 +31,6 @@
 
 namespace openmoq::moqx {
 class MoQCrossExecFilter;
-class MoQCrossExecForwarderCallback;
 } // namespace openmoq::moqx
 
 namespace openmoq::moqx {
@@ -268,9 +271,8 @@ private:
   void forwardChanged(moxygen::MoQForwarder* forwarder, bool forward) override;
   void newGroupRequested(moxygen::MoQForwarder* forwarder, uint64_t group) override;
 
-  // FTN-keyed impl variants — called by MoQCrossExecForwarderCallback (relay exec)
-  // or directly from the non-cross-exec callbacks above.
-  friend class MoQCrossExecForwarderCallback;
+  // FTN-keyed impl variants — called by the MoQForwarder::Callback overrides
+  // above (single-thread) or by WeakRelayForwarderCallback on relay exec.
   void onEmptyImpl(const moxygen::FullTrackName& ftn);
   void forwardChangedImpl(const moxygen::FullTrackName& ftn, bool forward);
   void newGroupRequestedImpl(const moxygen::FullTrackName& ftn, uint64_t group);
@@ -281,10 +283,12 @@ private:
       std::shared_ptr<NamespaceTree::NamespaceNode> nodePtr
   );
 
-  folly::coro::Task<void> publishToSession(
+  folly::coro::Task<void> publishViaLocalForwarder(
       std::shared_ptr<moxygen::MoQSession> session,
-      std::shared_ptr<moxygen::MoQForwarder> forwarder,
-      std::shared_ptr<moxygen::MoQForwarder::Subscriber> subscriber
+      std::shared_ptr<moxygen::MoQForwarder> primaryFwd,
+      folly::Executor* sessionExec,
+      bool forward,
+      bool pinned
   );
 
   folly::coro::Task<void>
@@ -347,6 +351,43 @@ private:
       std::shared_ptr<moxygen::TrackConsumer> consumer
   );
 
+  // Result of subscribeStatefulWork (Phase 1, runs on relay exec).
+  struct StatefulSubscribeResult {
+    std::shared_ptr<moxygen::MoQForwarder> primaryForwarder;
+    folly::Executor* primaryExec{nullptr}; // owning executor of primaryForwarder
+    std::optional<SubscribeResult> error;  // set on failure
+
+    // Set only for the FirstSubscriber path. Must be moved into
+    // completeFirstSubscriber on relayExec_ after the channel subscriber is
+    // installed on primaryExec. Pending destructor fires on abandoned move.
+    struct FirstSubscriberSetup {
+      std::shared_ptr<moxygen::MoQSession> upstreamSession;
+      moxygen::SubscribeRequest upstreamSubReq;
+      std::shared_ptr<moxygen::TrackConsumer> upstreamConsumer;
+      SubscriptionRegistry::UpstreamSubscribePending pending;
+      moxygen::RequestID clientRequestID;
+    };
+    std::optional<FirstSubscriberSetup> firstSetup;
+  };
+
+  // Phase 1: registry lookup + FirstSubscriber setup. Does NOT subscribe
+  // upstream; returns firstSetup for the caller to complete after installing
+  // the channel subscriber.
+  folly::coro::Task<StatefulSubscribeResult> subscribeStatefulWork(
+      moxygen::SubscribeRequest subReq
+  );
+
+
+  // Multi-iothread subscribe: subscriber-thread orchestrator.
+  // Dispatches subscribeStatefulWork to relayExec_, then on the subscriber thread
+  // creates a local forwarder, wires a channel subscriber, and returns.
+  folly::coro::Task<SubscribeResult> subscribeFromSubscriberThread(
+      moxygen::SubscribeRequest subReq,
+      std::shared_ptr<moxygen::TrackConsumer> consumer,
+      std::shared_ptr<moxygen::MoQSession> session,
+      folly::Executor* subscriberExec
+  );
+
   // Impl methods — run on relayExec_ when set, or inline when relayExec_==nullptr.
   folly::coro::Task<SubscribeResult> subscribeImpl(
       moxygen::SubscribeRequest subReq,
@@ -366,26 +407,42 @@ private:
   trackStatusImpl(moxygen::TrackStatus req);
   folly::coro::Task<void> onUpstreamConnectImpl(std::shared_ptr<moxygen::MoQSession> session);
 
+  // Synchronous result of publishWithSession: the consumer the publisher writes
+  // to and the PublishOk to return to the publisher.  Returned synchronously so
+  // the reply coro (coPublish) can co_return the PublishOk immediately after
+  // setup without waiting for any downstream peer handshake.
+  struct PublishSetup {
+    std::shared_ptr<moxygen::TrackConsumer> consumer;
+    moxygen::PublishOk publishOk;
+  };
+  using PublishSetupResult = folly::Expected<PublishSetup, moxygen::PublishError>;
+
   // Contains all the inline publish() logic, taking session explicitly so it
   // can be called from either the I/O thread (relayExec_==nullptr) or from
   // coPublish on relay exec (where getRequestSession() would return null).
-  PublishResult publishWithSession(
+  // If forwarder is non-null it is used as-is (pre-created by publish()); otherwise
+  // a new forwarder is created from pub (single-threaded or subscribeNamespace path).
+  PublishSetupResult publishWithSession(
       moxygen::PublishRequest pub,
       std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle,
-      std::shared_ptr<moxygen::MoQSession> session
+      std::shared_ptr<moxygen::MoQSession> session,
+      std::shared_ptr<moxygen::MoQForwarder> forwarder = nullptr
   );
 
-  // Drives the relay-side half of publish(): switches to relayExec_, wires
-  // the real consumer chain into filter, and returns the PublishOk/PublishError.
+  // Drives the relay-side half of publish(): switches to relayExec_, registers
+  // the pre-created forwarder, wires relayChainFilter downstream, and returns
+  // the PublishOk/PublishError.
   folly::coro::Task<folly::Expected<moxygen::PublishOk, moxygen::PublishError>> coPublish(
       moxygen::PublishRequest pub,
       std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle,
       std::shared_ptr<moxygen::MoQSession> session,
-      std::shared_ptr<MoQCrossExecFilter> filter
+      std::shared_ptr<moxygen::MoQForwarder> forwarder,
+      std::shared_ptr<MoQCrossExecFilter> relayChainFilter
   );
 
   std::shared_ptr<folly::Executor> ownedRelayExec_;
   folly::Executor* relayExec_{nullptr};
+  folly::ThreadLocalPtr<LocalForwarderRegistry> tlForwarders_;
   std::unique_ptr<MoqxCache> cache_;
   uint64_t maxDeselected_{kDefaultMaxDeselected};
 
