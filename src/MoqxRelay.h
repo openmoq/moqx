@@ -244,7 +244,7 @@ private:
   NamespaceTree namespaceTree_{*this};
 
   void onEmpty(moxygen::MoQForwarder* forwarder) override;
-  void forwardChanged(moxygen::MoQForwarder* forwarder) override;
+  void forwardChanged(moxygen::MoQForwarder* forwarder, bool forward) override;
   void newGroupRequested(moxygen::MoQForwarder* forwarder, uint64_t group) override;
 
   folly::coro::Task<void> publishNamespaceToSession(

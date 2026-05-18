@@ -979,7 +979,7 @@ void MoqxRelay::onEmpty(MoQForwarder* forwarder) {
   }
 }
 
-void MoqxRelay::forwardChanged(MoQForwarder* forwarder) {
+void MoqxRelay::forwardChanged(MoQForwarder* forwarder, bool forward) {
   const auto& ftn = forwarder->fullTrackName();
   auto upstreamView = registry_.getUpstreamView(ftn);
   if (!upstreamView) {
@@ -994,16 +994,12 @@ void MoqxRelay::forwardChanged(MoQForwarder* forwarder) {
     XLOG(DBG4) << "Ignoring forward change for " << ftn << " - publisher terminated";
     return;
   }
-  XLOG(INFO) << "Updating forward for " << ftn
-             << " numForwardingSubs=" << forwarder->numForwardingSubscribers();
+  XLOG(INFO) << "Updating forward for " << ftn << " forward=" << forward;
 
   auto exec = upstreamView->upstream->getExecutor();
   co_withExecutor(
       exec,
-      doSubscribeUpdate(
-          upstreamView->handle,
-          /*forward=*/forwarder->numForwardingSubscribers() > 0
-      )
+      doSubscribeUpdate(upstreamView->handle, forward)
   )
       .start();
 }
