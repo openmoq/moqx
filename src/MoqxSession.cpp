@@ -29,7 +29,6 @@ std::optional<SwitchPublishResult> MoqxSession::publishForSwitch(
     moxygen::PublishRequest pub,
     uint64_t switchingGroupID,
     uint64_t liveEdgeGroupID,
-    moxygen::RequestID currentSubscribeRequestID,
     std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle) {
 
   // Step 1: encode SWITCH_TRANSITION value bytes and insert into pub.params.
@@ -39,8 +38,8 @@ std::optional<SwitchPublishResult> MoqxSession::publishForSwitch(
   // writeTrackRequestParams() handles delta-encoding for v16+ automatically.
   folly::IOBufQueue valBuf{folly::IOBufQueue::cacheChainLength()};
   folly::io::QueueAppender va(&valBuf, 16);
-  quic::encodeQuicInteger(switchingGroupID, [&](auto b) { va.writeBE(b); });
-  quic::encodeQuicInteger(liveEdgeGroupID, [&](auto b) { va.writeBE(b); });
+  (void)quic::encodeQuicInteger(switchingGroupID, [&](auto b) { va.writeBE(b); });
+  (void)quic::encodeQuicInteger(liveEdgeGroupID, [&](auto b) { va.writeBE(b); });
   auto valStr = valBuf.move()->moveToFbString().toStdString();
   pub.params.insertParam(moxygen::Parameter{kSwitchTransitionParamKey, valStr});
 

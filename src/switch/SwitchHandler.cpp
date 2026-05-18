@@ -124,8 +124,7 @@ folly::coro::Task<void> SwitchHandler::run() {
   pubReq.params = sw_.params;
   auto handle = relay_.getSubscriptionHandle(sw_.targetTrackName);
 
-  auto switchResult = session_->publishForSwitch(
-      pubReq, gswitch, liveEdge, sw_.currentSubscribeRequestID, handle);
+  auto switchResult = session_->publishForSwitch(pubReq, gswitch, liveEdge, handle);
   if (!switchResult) {
     co_return; // publishForSwitch failed — current subscription untouched
   }
@@ -203,11 +202,7 @@ folly::coro::Task<void> SwitchHandler::sendErrorPublishDone(
   pubReq.fullTrackName = sw_.targetTrackName;
   auto handle = relay_.getSubscriptionHandle(sw_.targetTrackName);
   auto switchResult = session_->publishForSwitch(
-      pubReq,
-      /*switchingGroupID=*/0,
-      /*liveEdgeGroupID=*/0,
-      sw_.currentSubscribeRequestID,
-      handle);
+      pubReq, /*switchingGroupID=*/0, /*liveEdgeGroupID=*/0, handle);
   if (switchResult && switchResult->consumer) {
     moxygen::PublishDone done{
         .requestID = sw_.currentSubscribeRequestID,

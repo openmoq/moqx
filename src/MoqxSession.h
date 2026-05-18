@@ -38,7 +38,6 @@ class MoqxSession : public moxygen::MoQRelaySession {
       moxygen::PublishRequest pub,
       uint64_t switchingGroupID,
       uint64_t liveEdgeGroupID,
-      moxygen::RequestID currentSubscribeRequestID,
       std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle);
 
   // Open a unidirectional FETCH stream and write FETCH_HEADER + catch-up
