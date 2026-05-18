@@ -34,7 +34,7 @@ class MoqxSession : public moxygen::MoQRelaySession {
   // Open relay-initiated PUBLISH bidi stream for SWITCH response.
   // Writes PUBLISH (with SWITCH_TRANSITION param embedded) + FETCH_HEADER.
   // Returns {writeHandle, consumer} on success, nullopt on failure.
-  std::optional<SwitchPublishResult> publishForSwitch(
+  virtual std::optional<SwitchPublishResult> publishForSwitch(
       moxygen::PublishRequest pub,
       uint64_t switchingGroupID,
       uint64_t liveEdgeGroupID,
@@ -44,7 +44,7 @@ class MoqxSession : public moxygen::MoQRelaySession {
   // objects [gswitch, liveEdge) from cache. High priority (urgency=1).
   // moqFrameWriter_ is protected in MoQSession — must live here, not in
   // SwitchHandler.
-  void writeCatchup(
+  virtual void writeCatchup(
       const moxygen::FullTrackName& trackName,
       uint64_t gswitch,
       uint64_t liveEdge,

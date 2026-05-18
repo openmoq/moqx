@@ -209,8 +209,10 @@ add_executable(moqx_switch_handler_test
 )
 target_link_libraries(moqx_switch_handler_test PRIVATE
   moqx_core
-  GTest::gtest_main
+  moqx_test_utils
+  moqx_test_main
   GTest::gmock
+  moxygen::moxygen_events_moq_folly_executor_impl
 )
 gtest_discover_tests(moqx_switch_handler_test)
 

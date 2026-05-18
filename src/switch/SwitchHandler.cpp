@@ -7,6 +7,7 @@
 #include "../MoqxRelay.h"
 #include "../MoqxSession.h"
 #include "GroupStartObserver.h"
+#include "SwitchAlgorithm.h"
 #include <moxygen/relay/MoQForwarder.h>
 #include <folly/container/F14Set.h>
 #include <folly/coro/Baton.h>
@@ -54,25 +55,13 @@ folly::coro::Task<void> SwitchHandler::run() {
     if (!currentLargeMaybe || !targetLargeMaybe) {
       return;
     }
-
-    uint64_t currentLarge = currentLargeMaybe->group;
-    uint64_t targetLarge = targetLargeMaybe->group;
-
-    for (uint64_t g = sw_.minimumSwitchingGroupID;
-         g <= std::min(currentLarge, targetLarge);
-         ++g) {
-      bool ok = true;
-      for (uint64_t gp = g; gp < targetLarge; ++gp) {
-        if (gp <= currentLarge && !availableTarget.count(gp)) {
-          ok = false;
-          break;
-        }
-      }
-      if (ok) {
-        gswitch = g;
-        gswitchFound.post();
-        return;
-      }
+    if (auto g = findGswitch(
+            availableTarget,
+            currentLargeMaybe->group,
+            targetLargeMaybe->group,
+            sw_.minimumSwitchingGroupID)) {
+      gswitch = *g;
+      gswitchFound.post();
     }
   };
 

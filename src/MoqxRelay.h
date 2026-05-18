@@ -256,6 +256,13 @@ public:
   };
   PublishState findPublishState(const moxygen::FullTrackName& ftn);
 
+  // Test accessor: returns the MoQForwarder for a track, or null if not found.
+  std::shared_ptr<moxygen::MoQForwarder> getForwarderByName(
+      const moxygen::FullTrackName& ftn) const {
+    auto it = subscriptions_.find(ftn);
+    return it != subscriptions_.end() ? it->second.forwarder : nullptr;
+  }
+
 private:
   class NamespaceSubscription;
   class TerminationFilter;
