@@ -15,6 +15,15 @@ option(MOQX_BUILD_TESTS "Build tests" ON)
 option(MOQX_BUILD_BENCHMARKS "Build benchmarks" OFF)
 option(MOQX_ENABLE_SANITIZERS "Enable ASAN/UBSAN (non-Release)" OFF)
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  set(_moqx_bpf_default ON)
+else()
+  set(_moqx_bpf_default OFF)
+endif()
+option(MOQX_ENABLE_BPF_STEERING
+  "Attach a classic BPF reuseport filter to steer QUIC packets to the correct worker (Linux only)"
+  ${_moqx_bpf_default})
+
 if(MOQX_ENABLE_SANITIZERS AND NOT CMAKE_BUILD_TYPE STREQUAL "Release")
   add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
   add_link_options(-fsanitize=address,undefined)
@@ -190,6 +199,13 @@ target_compile_options(moqx_config_loader PRIVATE -Wall -Wextra -Wpedantic)
 add_executable(moqx
   src/main.cpp
 )
+
+if(MOQX_ENABLE_BPF_STEERING)
+  # QuicReuseportSteering.cpp defines mvfst_hook_on_socket_create, overriding
+  # the weak symbol in mvfst. It must live in the executable (not a static lib)
+  # so the linker always includes it without a --whole-archive trick.
+  target_sources(moqx PRIVATE src/bpf/QuicReuseportSteering.cpp)
+endif()
 
 target_link_libraries(moqx PRIVATE moqx_core moqx_config_loader)
 

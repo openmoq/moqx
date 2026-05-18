@@ -195,6 +195,7 @@ struct Config {
   std::string relayID; // always set: from config or randomly generated
   uint32_t threads{1};
   bool useRelayThread{true};
+  bool bpfSteering{true};
 };
 
 } // namespace openmoq::moqx::config

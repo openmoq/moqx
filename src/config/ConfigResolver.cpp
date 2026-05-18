@@ -823,8 +823,21 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
   }
 
   const bool useRelayThread = config.use_relay_thread.value().value_or(true);
+  const bool bpfSteering = config.bpf_steering.value().value_or(true);
   if (threads > 1 && !useRelayThread) {
     errors.push_back("use_relay_thread must be true when threads > 1");
+  }
+  if (bpfSteering) {
+    for (const auto& listener : config.listeners.value()) {
+      const auto& stackOpt = listener.quic_stack.value();
+      if (stackOpt.value_or(kStackMvfst) == kStackPicoquic) {
+        errors.push_back(
+            "bpf_steering is not supported with quic_stack \"picoquic\" "
+            "(listener '" + listener.name.value() + "'). "
+            "Set bpf_steering: false or switch to quic_stack: mvfst."
+        );
+      }
+    }
   }
 
   if (!errors.empty()) {
@@ -877,6 +890,7 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
               .relayID = std::move(relayID),
               .threads = threads,
               .useRelayThread = useRelayThread,
+              .bpfSteering = bpfSteering,
           },
       .warnings = std::move(warnings),
   };

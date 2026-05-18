@@ -7,6 +7,9 @@
 #include "MoqxRelayContext.h"
 #include "MoqxServerFactory.h"
 #include "admin/AdminServer.h"
+#ifdef MOQX_BPF_STEERING
+#include "bpf/QuicReuseportSteering.h"
+#endif
 #include "admin/BuiltinRoutes.h"
 #include "admin/CachePurgeHandler.h"
 #include "admin/MetricsHandler.h"
@@ -96,6 +99,10 @@ int main(int argc, char* argv[]) {
   ShutdownSignalHandler signalHandler(&evb);
 
   // === 4. Initialize resources ===
+#ifdef MOQX_BPF_STEERING
+  quicReuseportSetEnabled(config.bpfSteering);
+#endif
+
   auto ioExecutor = std::make_shared<folly::IOThreadPoolExecutor>(
       config.threads,
       std::make_shared<folly::NamedThreadFactory>("moqx-io")

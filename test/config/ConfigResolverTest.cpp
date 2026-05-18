@@ -1195,6 +1195,7 @@ TEST(ResolveConfig, QuicCcAlgoPicoOnlyRejectedByMvfst) {
   cfg.listeners.value()[0].tls.value().insecure = false;
   cfg.listeners.value()[0].tls.value().cert_file = std::optional<std::string>{"cert.pem"};
   cfg.listeners.value()[0].tls.value().key_file = std::optional<std::string>{"key.pem"};
+  cfg.bpf_steering = std::optional<bool>{false};
   auto result2 = resolveConfig(cfg);
   ASSERT_TRUE(result2.hasValue());
   EXPECT_EQ(result2.value().config.listeners[0].quic.ccAlgo, "dcubic");
@@ -1243,6 +1244,7 @@ ParsedConfig makeMinimalPicoConfig() {
   lc.tls.value().insecure = false;
   lc.tls.value().cert_file = std::optional<std::string>{"cert.pem"};
   lc.tls.value().key_file = std::optional<std::string>{"key.pem"};
+  cfg.bpf_steering = std::optional<bool>{false};
   return cfg;
 }
 
