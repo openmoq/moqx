@@ -118,6 +118,7 @@ add_library(moqx_core STATIC
   src/UpstreamProvider.cpp
   src/relay/TopNFilter.cpp
   src/relay/PropertyRanking.cpp
+  src/relay/MoQCrossExecFilter.cpp
 )
 
 target_include_directories(moqx_core
