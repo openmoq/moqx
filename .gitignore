@@ -29,6 +29,9 @@ _CPack_Packages/
 .vscode/
 .claude/
 
+# Local Claude Code context (project-specific, not for version control)
+CLAUDE.md
+
 # Docker secrets (never commit)
 docker/.env
 docker/cloudflare.ini
