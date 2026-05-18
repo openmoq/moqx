@@ -48,6 +48,13 @@ public:
       std::shared_ptr<moxygen::TrackConsumer> consumer
   );
 
+  // Returns a TrackConsumer suitable for use as a passive forwarder subscriber.
+  // Objects delivered to it are written to the cache; nothing is forwarded
+  // downstream (the inner consumer is a NullTrackConsumer).
+  std::shared_ptr<moxygen::TrackConsumer> makePassiveConsumer(
+      const moxygen::FullTrackName& ftn
+  );
+
   // Serves objects from the cache to the consumer.  If objects in the range are
   // not in cache, issue one-or-more FETCH'es upstream.  Objects fetched from
   // upstream are written back to the cache and passed to the consumer.

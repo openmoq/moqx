@@ -614,12 +614,19 @@ std::shared_ptr<TrackConsumer> MoqxRelay::getSubscribeWriteback(
 
 SubscriptionRegistry::FilterChainResult
 MoqxRelay::buildFilterChain(const FullTrackName& ftn, std::shared_ptr<MoQForwarder> forwarder) {
-  // Build chain: TopNFilter → TerminationFilter → (cache?) → Forwarder
-  // This ensures property values are observed in both PUBLISH and SUBSCRIBE paths.
-  auto baseConsumer = cache_ ? cache_->getSubscribeWriteback(ftn, forwarder)
-                             : std::static_pointer_cast<TrackConsumer>(forwarder);
+  // Build chain: TopNFilter → TerminationFilter → Forwarder
+  // Cache (if present) attaches as a passive subscriber of the forwarder so
+  // that it receives objects without affecting the forwarding-subscriber count
+  // or the upstream subscription lifecycle.
+  if (cache_) {
+    forwarder->addSubscriber(
+        /*session=*/nullptr,
+        /*forward=*/true,
+        cache_->makePassiveConsumer(ftn),
+        /*passive=*/true);
+  }
   auto terminationFilter =
-      std::make_shared<TerminationFilter>(shared_from_this(), ftn, std::move(baseConsumer));
+      std::make_shared<TerminationFilter>(shared_from_this(), ftn, std::static_pointer_cast<TrackConsumer>(forwarder));
   auto topNFilter =
       std::make_shared<TopNFilter>(ftn, std::static_pointer_cast<TrackConsumer>(terminationFilter));
   topNFilter->setActivityThreshold(activityThreshold_);

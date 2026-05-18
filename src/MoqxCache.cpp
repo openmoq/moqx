@@ -9,6 +9,7 @@
 #include "MoqxCache.h"
 #include <folly/logging/xlog.h>
 #include <moxygen/MoQTrackProperties.h>
+#include "relay/NullConsumers.h"
 
 // Maxmimum cache size / per track? Number of groups
 // Fancy: handle streaming incomplete objects (forwarder?)
@@ -1305,6 +1306,12 @@ private:
     return folly::unit;
   }
 };
+
+std::shared_ptr<TrackConsumer> MoqxCache::makePassiveConsumer(
+    const FullTrackName& ftn
+) {
+  return getSubscribeWriteback(ftn, std::make_shared<moxygen::NullTrackConsumer>());
+}
 
 std::shared_ptr<TrackConsumer> MoqxCache::getSubscribeWriteback(
     const FullTrackName& ftn,
