@@ -237,8 +237,15 @@ class FakeMoqxSession : public MoqxSession {
       uint64_t liveEdgeGroupID,
       std::shared_ptr<moxygen::Publisher::SubscriptionHandle> /*handle*/) override {
     publishForSwitchCalls.push_back({switchingGroupID, liveEdgeGroupID, publishForSwitchReturn});
+    if (afterPublishForSwitchHook) {
+      afterPublishForSwitchHook();
+    }
     return publishForSwitchReturn;
   }
+
+  // Optional hook invoked inside publishForSwitch after recording args.
+  // Tests can use this to advance forwarder state before Phase 2 runs.
+  std::function<void()> afterPublishForSwitchHook;
 
   void writeCatchup(
       const moxygen::FullTrackName& trackName,
@@ -534,4 +541,172 @@ TEST_F(SwitchHandlerRunTest, GswitchFoundDeferred_PublishForSwitchCalledCorrectl
   ASSERT_EQ(session_->publishForSwitchCalls.size(), 1u);
   EXPECT_EQ(session_->publishForSwitchCalls[0].switchingGroupID, 5u);
   EXPECT_EQ(session_->publishForSwitchCalls[0].liveEdgeGroupID, 5u);
+}
+
+// ─── CUT_OLD path ─────────────────────────────────────────────────────────────
+//
+// When publishForSwitch succeeds, the handler must:
+//   1. Reset open subgroups for groups >= gswitch via consumer->reset(CANCELLED).
+//   2. Call drainSubscriber → trackConsumer->publishDone(SUBSCRIPTION_ENDED).
+//
+// The subscriber's subgroup map is populated by direct injection to avoid
+// triggering upstream forwarding (shouldForward=false is kept for safety).
+
+TEST_F(SwitchHandlerRunTest, CutOld_ResetsOpenSubgroupsAndDrainsSubscription) {
+  auto mockSubgroupConsumer = std::make_shared<NiceMock<MockSubgroupConsumer>>();
+  testing::Mock::AllowLeak(mockSubgroupConsumer.get());
+
+  auto currentConsumer = makeSafeConsumer();
+  publishTrack(kCurrent);
+  publishTrack(kTarget);
+
+  auto currentForwarder = relay_->getForwarderByName(kCurrent);
+  auto targetForwarder = relay_->getForwarderByName(kTarget);
+  ASSERT_NE(currentForwarder, nullptr);
+  ASSERT_NE(targetForwarder, nullptr);
+  currentForwarder->setLargest({10, 0});
+  targetForwarder->setLargest({10, 0});
+
+  subscribeSessionToForwarder(kCurrent, currentConsumer);
+
+  // Inject a mock subgroup at group 10 into session_'s subscriber state so
+  // the CUT_OLD loop finds it.  Group 10 >= gswitch=5 → reset must be called.
+  auto sub = currentForwarder->getSubscriber(session_.get());
+  ASSERT_NE(sub, nullptr);
+  sub->subgroups[moxygen::MoQForwarder::SubgroupIdentifier{10, 0}] =
+      std::static_pointer_cast<moxygen::SubgroupConsumer>(mockSubgroupConsumer);
+
+  // Provide a non-null SwitchPublishResult so the handler enters CUT_OLD.
+  auto mockTargetConsumer = std::make_shared<NiceMock<MockTrackConsumer>>();
+  testing::Mock::AllowLeak(mockTargetConsumer.get());
+  ON_CALL(*mockTargetConsumer, setTrackAlias(_))
+      .WillByDefault(Return(folly::makeExpected<MoQPublishError>(folly::unit)));
+  ON_CALL(*mockTargetConsumer, publishDone(_))
+      .WillByDefault(Return(folly::makeExpected<MoQPublishError>(folly::unit)));
+  ON_CALL(*mockTargetConsumer, beginSubgroup(_, _, _, _))
+      .WillByDefault(Return(folly::makeUnexpected(
+          MoQPublishError{MoQPublishError::Code::CANCELLED, ""})));
+  session_->publishForSwitchReturn = SwitchPublishResult{mockTargetConsumer};
+
+  // CUT_OLD must reset the open subgroup (group 10 >= gswitch=5).
+  EXPECT_CALL(*mockSubgroupConsumer, reset(moxygen::ResetStreamErrorCode::CANCELLED));
+  // drainSubscriber must deliver SUBSCRIPTION_ENDED to the current consumer.
+  EXPECT_CALL(
+      *currentConsumer,
+      publishDone(Field(
+          &moxygen::PublishDone::statusCode,
+          moxygen::PublishDoneStatusCode::SUBSCRIPTION_ENDED)))
+      .WillOnce(Return(folly::makeExpected<MoQPublishError>(folly::unit)));
+
+  // minimumGroupID=5 → gswitch=5; both forwarders at 10 → liveEdge=10.
+  runHandler(makeSwitch(RequestID(0), /*minimumGroupID=*/5));
+}
+
+// ─── Phase 2 drain loop ───────────────────────────────────────────────────────
+//
+// Phase 2 runs when relay_.cache() is non-null AND targetForwarder->largest()
+// has advanced past liveEdge.  The afterPublishForSwitchHook advances the
+// target forwarder AFTER publishForSwitch captures liveEdge=7 so the Phase 2
+// outer loop sees currentEdge=10 > deliveredUpTo=7 and drains [7,10).
+//
+// Only group 7 has a cached object (groups 8,9 inner loop breaks at objID=0).
+// The test verifies beginSubgroup(7,…) + object(0,…) are called on the new
+// consumer.
+
+TEST_F(SwitchHandlerRunTest, Phase2DrainLoop_DeliversCachedObjectsToNewConsumer) {
+  // Recreate relay with cache so Phase 2 is entered.
+  relay_ = std::make_shared<MoqxRelay>(
+      config::CacheConfig{/*maxCachedTracks=*/10, /*maxCachedGroupsPerTrack=*/100});
+
+  auto currentConsumer = makeSafeConsumer();
+  // targetPublisher is TopNFilter → TerminationFilter → Cache → Forwarder.
+  auto targetPublisher = publishTrack(kTarget);
+  ASSERT_NE(targetPublisher, nullptr);
+  publishTrack(kCurrent);
+
+  // MoQForwarder::forEachSubscriber returns CANCELLED when subscribers_ is
+  // empty.  Add a dummy subscriber (forward=false) so the map is non-empty
+  // while we deliver objects to populate the cache.  The dummy receives no
+  // distribution (checkShouldForward() = false), but its presence prevents
+  // the CANCELLED error from propagating through the CacheSubscribeWriteback.
+  {
+    auto dummySession = std::make_shared<NiceMock<MockMoQSession>>(exec_);
+    testing::Mock::AllowLeak(dummySession.get());
+    ON_CALL(*dummySession, getNegotiatedVersion())
+        .WillByDefault(Return(std::optional<uint64_t>(kVersionDraftCurrent)));
+    auto dummyConsumer = std::make_shared<NiceMock<MockTrackConsumer>>();
+    testing::Mock::AllowLeak(dummyConsumer.get());
+    ON_CALL(*dummyConsumer, setTrackAlias(_))
+        .WillByDefault(Return(folly::makeExpected<MoQPublishError>(folly::unit)));
+
+    auto targetForwarder = relay_->getForwarderByName(kTarget);
+    ASSERT_NE(targetForwarder, nullptr);
+    targetForwarder->setLargest({0, 0});
+
+    SubscribeRequest dummySubReq;
+    dummySubReq.fullTrackName = kTarget;
+    dummySubReq.requestID = RequestID(99);
+    dummySubReq.locType = LocationType::LargestObject;
+    dummySubReq.forward = false;
+    targetForwarder->addSubscriber(dummySession, dummySubReq, dummyConsumer);
+  }
+
+  // Write objects for groups 5..7 to the target track.  They flow through
+  // the filter chain and are stored in the relay cache.
+  for (uint64_t g = 5; g <= 7; ++g) {
+    auto sgRes = targetPublisher->beginSubgroup(g, 0, Priority(0));
+    ASSERT_TRUE(sgRes.hasValue()) << "beginSubgroup failed for group " << g;
+    (void)sgRes.value()->object(
+        0, folly::IOBuf::copyBuffer("payload"), noExtensions(), /*finSubgroup=*/false);
+  }
+  // targetForwarder->largest() is {7,0} after the loop above.
+
+  auto currentForwarder = relay_->getForwarderByName(kCurrent);
+  auto targetForwarder = relay_->getForwarderByName(kTarget);
+  ASSERT_NE(currentForwarder, nullptr);
+  ASSERT_NE(targetForwarder, nullptr);
+  currentForwarder->setLargest({5, 0});
+
+  subscribeSessionToForwarder(kCurrent, currentConsumer);
+
+  // New consumer for Phase 2: beginSubgroup returns a mock subgroup consumer.
+  auto mockSgConsumer = std::make_shared<NiceMock<MockSubgroupConsumer>>();
+  testing::Mock::AllowLeak(mockSgConsumer.get());
+  ON_CALL(*mockSgConsumer, object(_, _, _, _))
+      .WillByDefault(Return(folly::makeExpected<MoQPublishError>(folly::unit)));
+
+  auto mockTargetConsumer = std::make_shared<NiceMock<MockTrackConsumer>>();
+  testing::Mock::AllowLeak(mockTargetConsumer.get());
+  ON_CALL(*mockTargetConsumer, setTrackAlias(_))
+      .WillByDefault(Return(folly::makeExpected<MoQPublishError>(folly::unit)));
+  ON_CALL(*mockTargetConsumer, publishDone(_))
+      .WillByDefault(Return(folly::makeExpected<MoQPublishError>(folly::unit)));
+  ON_CALL(*mockTargetConsumer, beginSubgroup(_, _, _, _))
+      .WillByDefault(Return(folly::makeExpected<MoQPublishError>(
+          std::static_pointer_cast<moxygen::SubgroupConsumer>(mockSgConsumer))));
+
+  session_->publishForSwitchReturn = SwitchPublishResult{mockTargetConsumer};
+
+  // After publishForSwitch captures liveEdge=7, advance target to {8,0}.
+  // Phase 2 loop sees currentEdge=8 > deliveredUpTo=7 → drains exactly [7,8).
+  auto* targetForwarderPtr = targetForwarder.get();
+  session_->afterPublishForSwitchHook = [targetForwarderPtr]() {
+    targetForwarderPtr->setLargest({8, 0});
+  };
+
+  // Phase 2 must call beginSubgroup(7,…) exactly once and deliver the cached
+  // object.  No other groups fall in the drain range.
+  EXPECT_CALL(*mockTargetConsumer, beginSubgroup(7, 0, _, _))
+      .WillOnce(Return(folly::makeExpected<MoQPublishError>(
+          std::static_pointer_cast<moxygen::SubgroupConsumer>(mockSgConsumer))));
+  EXPECT_CALL(*mockSgConsumer, object(0, _, _, false))
+      .WillOnce(Return(folly::makeExpected<MoQPublishError>(folly::unit)));
+
+  // gswitch=5 (currentLarge=5, targetLarge=7, minimumGroupID=5);
+  // liveEdge=7; writeCatchup recorded for [5,7); Phase 2 drains [7,8).
+  runHandler(makeSwitch(RequestID(0), /*minimumGroupID=*/5));
+
+  ASSERT_EQ(session_->writeCatchupCalls.size(), 1u);
+  EXPECT_EQ(session_->writeCatchupCalls[0].gswitch, 5u);
+  EXPECT_EQ(session_->writeCatchupCalls[0].liveEdge, 7u);
 }
