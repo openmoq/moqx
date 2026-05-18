@@ -154,17 +154,23 @@ private:
 
     if (auto reg = registry_.lock()) {
       if (auto evbColl = reg->findEvbCollector(evb).lock()) {
-        evbColl->addLoopObserver([d = data_.get()](int64_t busyUs, int64_t /*idleUs*/) {
-          uint64_t sent = d->quicPacketsSent_;
-          uint64_t recv = d->quicPacketsReceived_;
-          uint64_t dSent = sent - d->prevLoopPktsSent_;
-          uint64_t dRecv = recv - d->prevLoopPktsRecv_;
-          d->evbPktsSentPerLoop_.addValue(dSent);
-          d->evbPktsRecvPerLoop_.addValue(dRecv);
-          d->prevLoopPktsSent_ = sent;
-          d->prevLoopPktsRecv_ = recv;
-          FOLLY_SDT(moqx, evb_loop_sample, busyUs, dSent, dRecv);
-        });
+        evbColl->addLoopObserver(
+            [wd = std::weak_ptr<QuicStatsCollector>(data_)](int64_t busyUs, int64_t /*idleUs*/) {
+              auto d = wd.lock();
+              if (!d) {
+                return;
+              }
+              uint64_t sent = d->quicPacketsSent_;
+              uint64_t recv = d->quicPacketsReceived_;
+              uint64_t dSent = sent - d->prevLoopPktsSent_;
+              uint64_t dRecv = recv - d->prevLoopPktsRecv_;
+              d->evbPktsSentPerLoop_.addValue(dSent);
+              d->evbPktsRecvPerLoop_.addValue(dRecv);
+              d->prevLoopPktsSent_ = sent;
+              d->prevLoopPktsRecv_ = recv;
+              FOLLY_SDT(moqx, evb_loop_sample, busyUs, dSent, dRecv);
+            }
+        );
       }
     }
   }
