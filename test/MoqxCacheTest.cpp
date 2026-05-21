@@ -664,7 +664,7 @@ CO_TEST_F(MoqxCacheTest, TestFetchWriteback) {
 }
 
 CO_TEST_F(MoqxCacheTest, TestFetchPopulatesNotExist) {
-  // Test case for fetch populating OBJECT_NOT_EXIST, GROUP_NOT_EXIST
+  // Test case for fetch populating object/group gap markers
   expectUpstreamFetch({0, 0}, {2, 10}, 0, AbsoluteLocation{1, 0});
   auto res = co_await cache_.fetch(getFetch({0, 0}, {2, 10}), trackingConsumer_, upstream_);
   EXPECT_TRUE(res.hasValue());
@@ -920,8 +920,8 @@ CO_TEST_F(MoqxCacheTest, TestFetchCancel) {
   EXPECT_EQ(res.value()->fetchOk().endLocation, (AbsoluteLocation{1, 0}));
 }
 CO_TEST_F(MoqxCacheTest, TestFetchPopulatesNotExistObjectsAndGroups) {
-  // Test case for fetch populating OBJECT_NOT_EXIST via Prior Object ID Gap
-  // extension, and GROUP_NOT_EXIST via Prior Group ID Gap extension
+  // Test case for fetch populating object gaps via Prior Object ID Gap
+  // extension, and group gaps via Prior Group ID Gap extension
   auto writeback = cache_.getSubscribeWriteback(kTestTrackName, trackConsumer_);
 
   // Send object 1 with Prior Object ID Gap = 1 to indicate object 0 doesn't
@@ -945,9 +945,9 @@ CO_TEST_F(MoqxCacheTest, TestFetchPopulatesNotExistObjectsAndGroups) {
 }
 
 TEST_F(MoqxCacheTest, TestInvalidCacheUpdateFails) {
-  // Populate the cache with OBJECT_NOT_EXIST for groups 0-4 (object 0 in each)
+  // Populate the cache with gap markers for groups 0-4 (object 0 in each)
   // using Prior Group ID Gap extension: send object in group 5 with gap=5.
-  // Group gaps are recorded as OBJECT_NOT_EXIST for object 0 in each group.
+  // Group gaps are recorded as missing-object markers at object 0 of each group.
   auto writeback = cache_.getSubscribeWriteback(kTestTrackName, trackConsumer_);
   ObjectHeader header5(5, 0, 0, 0, 10);
   header5.extensions = makeGroupGapExtensions(5);
@@ -1253,7 +1253,7 @@ CO_TEST_F(MoqxCacheTest, TestUpstreamReturnsNoObjectsTail) {
   EXPECT_TRUE(res.hasValue());
   EXPECT_EQ(res.value()->fetchOk().endLocation, (AbsoluteLocation{2, 5}));
 
-  // Second fetch: fetch only the tail {1,0} to {2,5} - all NOT_EXIST
+  // Second fetch: fetch only the tail {1,0} to {2,5} - all missing
   // No upstream call, no objects served
   EXPECT_CALL(*consumer_, endOfFetch()).WillOnce(Return(folly::unit));
 
@@ -1276,7 +1276,7 @@ CO_TEST_F(MoqxCacheTest, TestFullCacheMissNoObjectsUpstream) {
   EXPECT_TRUE(res.hasValue());
   EXPECT_EQ(res.value()->fetchOk().endLocation, (AbsoluteLocation{0, 5}));
 
-  // Second fetch: same range should be served from cache (all NOT_EXIST)
+  // Second fetch: same range should be served from cache (all missing)
   EXPECT_CALL(*consumer_, endOfFetch()).WillOnce(Return(folly::unit));
 
   auto res2 = co_await cache_.fetch(getFetch({0, 0}, {0, 5}), trackingConsumer_, upstream_);
@@ -2050,7 +2050,7 @@ TEST_F(MoqxCacheTest, TestPriorObjectIdGapOverlappingRanges) {
 
 TEST_F(MoqxCacheTest, TestPriorObjectIdGapOverlappingWithData) {
   // Test that a gap covering an object with data fails, even if some
-  // objects in the gap are already OBJECT_NOT_EXIST
+  // objects in the gap are already marked missing
   auto writeback = cache_.getSubscribeWriteback(kTestTrackName, trackConsumer_);
 
   // Send object 5 with Prior Object ID Gap = 3 (objects 2-4 don't exist)
@@ -2060,8 +2060,8 @@ TEST_F(MoqxCacheTest, TestPriorObjectIdGapOverlappingWithData) {
   EXPECT_TRUE(result1.hasValue());
 
   // Send object 6 with Prior Object ID Gap = 2 (objects 4-5 don't exist)
-  // Object 4 is OBJECT_NOT_EXIST (would skip), but object 5 has data - should
-  // fail
+  // Object 4 is already marked missing (would skip), but object 5 has data -
+  // should fail
   ObjectHeader header2(0, 0, 6, 0, 100);
   header2.extensions = makeObjectGapExtensions(2);
   auto result2 = writeback->datagram(header2, makeBuf(100));
@@ -2070,15 +2070,15 @@ TEST_F(MoqxCacheTest, TestPriorObjectIdGapOverlappingWithData) {
 }
 
 TEST_F(MoqxCacheTest, TestPriorObjectIdGapOverlappingNotExistOnly) {
-  // Test that overlapping gaps only overlap on objects already marked as
-  // OBJECT_NOT_EXIST. When trying to send data for an object that was
-  // previously marked as NOT_EXIST, the current implementation rejects it.
+  // Test that overlapping gaps only overlap on objects already marked
+  // missing. When trying to send data for an object that was previously
+  // marked missing, the current implementation rejects it.
   //
   // NOTE: There's an open issue in the MoQ spec about this behavior.
-  // For datagrams specifically, we may want to allow overwriting NOT_EXIST
-  // with actual data, because datagrams may arrive out-of-order (the object
-  // may have transitioned from not existing to existing). This would require
-  // implementation changes to cacheObject to check the delivery method.
+  // For datagrams specifically, we may want to allow overwriting a missing
+  // marker with actual data, because datagrams may arrive out-of-order (the
+  // object may have transitioned from not existing to existing). This would
+  // require implementation changes to cacheObject to check the delivery method.
   auto writeback = cache_.getSubscribeWriteback(kTestTrackName, trackConsumer_);
 
   // Send object 10 with Prior Object ID Gap = 2 (objects 8-9 don't exist)
@@ -2088,9 +2088,9 @@ TEST_F(MoqxCacheTest, TestPriorObjectIdGapOverlappingNotExistOnly) {
   EXPECT_TRUE(result1.hasValue());
 
   // Send object 9 with Prior Object ID Gap = 2 (objects 7-8 don't exist)
-  // Object 8 is already OBJECT_NOT_EXIST, gap handling should skip it.
-  // Object 9 was marked OBJECT_NOT_EXIST by the first gap. Currently,
-  // cacheObject rejects overwriting NOT_EXIST with data.
+  // Object 8 is already marked missing, gap handling should skip it.
+  // Object 9 was marked missing by the first gap. Currently,
+  // cacheObject rejects overwriting a missing marker with data.
   ObjectHeader header2(0, 0, 9, 0, 100);
   header2.extensions = makeObjectGapExtensions(2);
   auto result2 = writeback->datagram(header2, makeBuf(100));
