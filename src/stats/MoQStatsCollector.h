@@ -54,6 +54,8 @@ public:
     void onRequestUpdate() override;
     void onSubscriptionStreamOpened() override;
     void onSubscriptionStreamClosed() override;
+    void onSubscriptionBegin() override;
+    void onSubscriptionEnd() override;
 
     // Publisher-only methods
     void recordPublishNamespaceLatency(uint64_t latencyMsec) override;
@@ -88,6 +90,8 @@ public:
     void onRequestUpdate() override;
     void onSubscriptionStreamOpened() override;
     void onSubscriptionStreamClosed() override;
+    void onSubscriptionBegin() override;
+    void onSubscriptionEnd() override;
 
     // Subscriber-only methods
     void recordSubscribeLatency(uint64_t latencyMsec) override;
