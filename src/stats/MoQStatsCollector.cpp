@@ -86,9 +86,7 @@ void MoQStatsCollector::onSessionEnd() {
 // Each method corresponds to an event from the relay's publisher role
 
 void MoQStatsCollector::PublisherCallback::onSubscribeSuccess() {
-  // Relay accepted a downstream subscriber's SUBSCRIBE request.
   ++parent_.pubSubscribeSuccess_;
-  ++parent_.pubActiveSubscriptions_;
 }
 
 void MoQStatsCollector::PublisherCallback::onSubscribeError(moxygen::SubscribeErrorCode errorCode) {
@@ -148,16 +146,11 @@ void MoQStatsCollector::PublisherCallback::onTrackStatus() {
   ++parent_.pubTrackStatus_;
 }
 
-void MoQStatsCollector::PublisherCallback::onUnsubscribe() {
-  // Downstream subscriber unsubscribed.
-  --parent_.pubActiveSubscriptions_;
-}
+void MoQStatsCollector::PublisherCallback::onUnsubscribe() {}
 
 void MoQStatsCollector::PublisherCallback::
     onPublishDone(moxygen::PublishDoneStatusCode /*statusCode*/) {
-  // Relay (as publisher) sent PUBLISH_DONE to a downstream subscriber.
   ++parent_.pubPublishDone_;
-  --parent_.pubActiveSubscriptions_;
 }
 
 void MoQStatsCollector::PublisherCallback::onRequestUpdate() {
@@ -172,6 +165,14 @@ void MoQStatsCollector::PublisherCallback::onSubscriptionStreamOpened() {
 void MoQStatsCollector::PublisherCallback::onSubscriptionStreamClosed() {
   ++parent_.pubSubscriptionStreamClosed_;
   --parent_.pubActiveSubscriptionStreams_;
+}
+
+void MoQStatsCollector::PublisherCallback::onSubscriptionBegin() {
+  ++parent_.pubActiveSubscriptions_;
+}
+
+void MoQStatsCollector::PublisherCallback::onSubscriptionEnd() {
+  --parent_.pubActiveSubscriptions_;
 }
 
 void MoQStatsCollector::PublisherCallback::recordPublishNamespaceLatency(uint64_t latencyMsec) {
@@ -198,9 +199,7 @@ void MoQStatsCollector::PublisherCallback::onPublishSuccess() {
 // Each method corresponds to an event from the relay's subscriber role
 
 void MoQStatsCollector::SubscriberCallback::onSubscribeSuccess() {
-  // Relay's outgoing SUBSCRIBE was accepted by upstream.
   ++parent_.subSubscribeSuccess_;
-  ++parent_.subActiveSubscriptions_;
 }
 
 void MoQStatsCollector::SubscriberCallback::onSubscribeError(moxygen::SubscribeErrorCode errorCode
@@ -261,16 +260,11 @@ void MoQStatsCollector::SubscriberCallback::onTrackStatus() {
   ++parent_.subTrackStatus_;
 }
 
-void MoQStatsCollector::SubscriberCallback::onUnsubscribe() {
-  // Relay unsubscribed from upstream.
-  --parent_.subActiveSubscriptions_;
-}
+void MoQStatsCollector::SubscriberCallback::onUnsubscribe() {}
 
 void MoQStatsCollector::SubscriberCallback::
     onPublishDone(moxygen::PublishDoneStatusCode /*statusCode*/) {
-  // Relay (as subscriber) received PUBLISH_DONE from upstream publisher.
   ++parent_.subPublishDone_;
-  --parent_.subActiveSubscriptions_;
 }
 
 void MoQStatsCollector::SubscriberCallback::onRequestUpdate() {
@@ -285,6 +279,14 @@ void MoQStatsCollector::SubscriberCallback::onSubscriptionStreamOpened() {
 void MoQStatsCollector::SubscriberCallback::onSubscriptionStreamClosed() {
   ++parent_.subSubscriptionStreamClosed_;
   --parent_.subActiveSubscriptionStreams_;
+}
+
+void MoQStatsCollector::SubscriberCallback::onSubscriptionBegin() {
+  ++parent_.subActiveSubscriptions_;
+}
+
+void MoQStatsCollector::SubscriberCallback::onSubscriptionEnd() {
+  --parent_.subActiveSubscriptions_;
 }
 
 void MoQStatsCollector::SubscriberCallback::recordSubscribeLatency(uint64_t latencyMsec) {

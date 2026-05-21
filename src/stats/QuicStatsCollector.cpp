@@ -139,6 +139,7 @@ public:
   void onKeyUpdateAttemptInitiated() override {}
   void onKeyUpdateAttemptReceived() override {}
   void onKeyUpdateAttemptSucceeded() override {}
+  void onSconePacketSent() override {}
 
 private:
   // Lazily captures the QUIC worker's EventBase on first packet.

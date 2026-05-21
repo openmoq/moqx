@@ -246,12 +246,6 @@ folly::Expected<folly::Unit, MoQPublishError> publishObject(
         lastObject,
         object.forwardingPreferenceIsDatagram
     );
-  // These are invalid statuses - should not be in the cache
-  case ObjectStatus::OBJECT_NOT_EXIST:
-  case ObjectStatus::GROUP_NOT_EXIST:
-    return folly::makeUnexpected(
-        MoQPublishError{MoQPublishError::API_ERROR, "Invalid NOT_EXIST status"}
-    );
   case ObjectStatus::END_OF_GROUP:
     return consumer->endOfGroup(current.group, object.subgroup, current.object, lastObject);
   case ObjectStatus::END_OF_TRACK:
@@ -278,14 +272,6 @@ folly::Expected<folly::Unit, MoQPublishError> MoqxCache::CacheGroup::cacheObject
 ) {
   XLOG(DBG1) << "caching group=" << groupID << " objID=" << objectID
              << " status=" << (uint32_t)status << " complete=" << uint32_t(complete);
-
-  // NOT_EXIST statuses are invalid - they shouldn't be passed to cacheObject
-  if (status == ObjectStatus::OBJECT_NOT_EXIST || status == ObjectStatus::GROUP_NOT_EXIST) {
-    XLOG(ERR) << "Invalid NOT_EXIST status passed to cacheObject; objID=" << objectID;
-    return folly::makeUnexpected(
-        MoQPublishError(MoQPublishError::API_ERROR, "Invalid NOT_EXIST status")
-    );
-  }
 
   // Reject caching into a known gap
   if (track.gaps.contains({groupID, objectID})) {
