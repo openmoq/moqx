@@ -13,6 +13,7 @@
 #   MOQX_MAX_TRACKS — max cached tracks (default: 1000)
 #   MOQX_MAX_GROUPS — max groups per track in cache (default: 100)
 #   MOQX_BIND_ADDR  — listen address: "0.0.0.0" (IPv4, default) or "::" (IPv6/dual-stack)
+#   MOQX_ENDPOINT   — WebTransport endpoint path (default: /moq-relay)
 #
 # Env vars (always apply):
 #   MOQX_LOG_LEVEL  — min log level: 0=INFO 1=WARNING 2=ERROR 3=FATAL (default: 0)
@@ -49,7 +50,7 @@ listeners:
       cert_file: "${MOQX_CERT:-}"
       key_file: "${MOQX_KEY:-}"
       insecure: ${MOQX_INSECURE:-false}
-    endpoint: "/moq-relay"
+    endpoint: "${MOQX_ENDPOINT:-/moq-relay}"
 
 services:
   default:
