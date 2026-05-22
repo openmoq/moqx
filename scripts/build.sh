@@ -313,6 +313,13 @@ cmd_setup() {
     fi
     if $tarball_ok; then
       echo "from-release" > "$DEPS_MODE_FILE"
+    elif ! $use_latest && bash "$SCRIPT_DIR/setup-deps-dev-artifact.sh"; then
+      # Snapshot SHA didn't match the submodule pin (typical when the
+      # submodule points at a moxygen PR/feature branch). Try a dev-build
+      # actions artifact for that exact SHA before falling to a slow source
+      # build. Skipped when --use-latest is set since the user already
+      # opted out of pin matching.
+      echo "from-dev-artifact" > "$DEPS_MODE_FILE"
     else
       if $no_fallback; then
         die "Release artifacts not available and --no-fallback specified."
