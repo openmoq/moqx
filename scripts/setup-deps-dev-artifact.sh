@@ -114,4 +114,9 @@ if [[ ! -f "$INSTALL_DIR/lib/cmake/moxygen/moxygen-config.cmake" ]] && \
     exit 1
 fi
 
+# Write the sentinel cmake_prefix_path.txt that build.sh checks before
+# building. Mirrors setup-deps-tarball.sh / setup-deps-standalone.sh so the
+# dev-artifact mode produces the same post-setup state as the other modes.
+echo "$INSTALL_DIR" > "${SCRATCH}/cmake_prefix_path.txt"
+
 echo "==> Done: dev-build artifact extracted to ${INSTALL_DIR}"
