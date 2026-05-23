@@ -19,17 +19,20 @@ std::shared_ptr<PicoQuicStatsCollector> PicoQuicStatsCollector::create(
   auto collector = std::shared_ptr<PicoQuicStatsCollector>(new PicoQuicStatsCollector(evb));
   registry->registerCollector(collector);
   if (evbCollector) {
-    evbCollector->addLoopObserver([c = collector.get()](int64_t busyUs, int64_t /*idleUs*/) {
-      uint64_t sent = c->quicPacketsSent_;
-      uint64_t recv = c->quicPacketsReceived_;
-      uint64_t dSent = sent - c->prevLoopPktsSent_;
-      uint64_t dRecv = recv - c->prevLoopPktsRecv_;
-      c->evbPktsSentPerLoop_.addValue(dSent);
-      c->evbPktsRecvPerLoop_.addValue(dRecv);
-      c->prevLoopPktsSent_ = sent;
-      c->prevLoopPktsRecv_ = recv;
-      FOLLY_SDT(moqx, evb_loop_sample, busyUs, dSent, dRecv);
-    });
+    evbCollector->addLoopObserver(
+        collector.get(),
+        [c = collector.get()](int64_t busyUs, int64_t /*idleUs*/) {
+          uint64_t sent = c->quicPacketsSent_;
+          uint64_t recv = c->quicPacketsReceived_;
+          uint64_t dSent = sent - c->prevLoopPktsSent_;
+          uint64_t dRecv = recv - c->prevLoopPktsRecv_;
+          c->evbPktsSentPerLoop_.addValue(dSent);
+          c->evbPktsRecvPerLoop_.addValue(dRecv);
+          c->prevLoopPktsSent_ = sent;
+          c->prevLoopPktsRecv_ = recv;
+          FOLLY_SDT(moqx, evb_loop_sample, busyUs, dSent, dRecv);
+        }
+    );
   }
   return collector;
 }

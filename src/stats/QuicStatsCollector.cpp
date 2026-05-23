@@ -25,7 +25,11 @@ public:
     }
   }
 
-  ~Callback() override = default;
+  ~Callback() override {
+    if (auto coll = evbColl_.lock()) {
+      coll->removeLoopObserver(data_.get());
+    }
+  }
 
   // --- Tracked callbacks ---
   // Based on QuicServerWorker, the first ones to trigger can be onPacketReceived or
@@ -155,23 +159,28 @@ private:
 
     if (auto reg = registry_.lock()) {
       if (auto evbColl = reg->findEvbCollector(evb).lock()) {
-        evbColl->addLoopObserver([d = data_.get()](int64_t busyUs, int64_t /*idleUs*/) {
-          uint64_t sent = d->quicPacketsSent_;
-          uint64_t recv = d->quicPacketsReceived_;
-          uint64_t dSent = sent - d->prevLoopPktsSent_;
-          uint64_t dRecv = recv - d->prevLoopPktsRecv_;
-          d->evbPktsSentPerLoop_.addValue(dSent);
-          d->evbPktsRecvPerLoop_.addValue(dRecv);
-          d->prevLoopPktsSent_ = sent;
-          d->prevLoopPktsRecv_ = recv;
-          FOLLY_SDT(moqx, evb_loop_sample, busyUs, dSent, dRecv);
-        });
+        evbColl_ = evbColl;
+        evbColl->addLoopObserver(
+            data_.get(),
+            [d = data_.get()](int64_t busyUs, int64_t /*idleUs*/) {
+              uint64_t sent = d->quicPacketsSent_;
+              uint64_t recv = d->quicPacketsReceived_;
+              uint64_t dSent = sent - d->prevLoopPktsSent_;
+              uint64_t dRecv = recv - d->prevLoopPktsRecv_;
+              d->evbPktsSentPerLoop_.addValue(dSent);
+              d->evbPktsRecvPerLoop_.addValue(dRecv);
+              d->prevLoopPktsSent_ = sent;
+              d->prevLoopPktsRecv_ = recv;
+              FOLLY_SDT(moqx, evb_loop_sample, busyUs, dSent, dRecv);
+            }
+        );
       }
     }
   }
 
   std::shared_ptr<QuicStatsCollector> data_;
   std::weak_ptr<StatsRegistry> registry_;
+  std::weak_ptr<EventBaseStatsCollector> evbColl_;
 };
 
 QuicStatsCollector::Factory::Factory(std::shared_ptr<StatsRegistry> registry)
