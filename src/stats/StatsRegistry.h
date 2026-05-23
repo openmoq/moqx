@@ -113,6 +113,7 @@ inline constexpr std::array<std::string_view, 8> kRequestErrorCodeLabels = {{
   X(uint64_t, pubSubscribeNamespaceSuccess)                                                        \
   X(uint64_t, pubSubscribeNamespaceError)                                                          \
   X(uint64_t, pubUnsubscribeNamespace)                                                             \
+  X(uint64_t, pubUnsubscribe)                                                                      \
   X(uint64_t, pubPublishDone)                                                                      \
   X(uint64_t, pubSubscriptionStreamOpened)                                                         \
   X(uint64_t, pubSubscriptionStreamClosed)                                                         \
@@ -133,6 +134,7 @@ inline constexpr std::array<std::string_view, 8> kRequestErrorCodeLabels = {{
   X(uint64_t, subSubscribeNamespaceSuccess)                                                        \
   X(uint64_t, subSubscribeNamespaceError)                                                          \
   X(uint64_t, subUnsubscribeNamespace)                                                             \
+  X(uint64_t, subUnsubscribe)                                                                      \
   X(uint64_t, subPublishDone)                                                                      \
   X(uint64_t, subSubscriptionStreamOpened)                                                         \
   X(uint64_t, subSubscriptionStreamClosed)                                                         \
@@ -187,14 +189,8 @@ inline constexpr std::array<std::string_view, 8> kRequestErrorCodeLabels = {{
 // int64_t gauges — MoQ application layer
 #define STATS_MOQ_GAUGE_FIELDS(X)                                                                  \
   X(int64_t, pubActiveSubscriptions)                                                               \
-  X(int64_t, pubActivePublishers)                                                                  \
-  X(int64_t, pubActivePublishNamespaces)                                                           \
-  X(int64_t, pubActiveSubscribeNamespaces)                                                         \
   X(int64_t, pubActiveSubscriptionStreams)                                                         \
-  X(int64_t, subActiveSubscriptions)                                                               \
   X(int64_t, subActivePublishers)                                                                  \
-  X(int64_t, subActivePublishNamespaces)                                                           \
-  X(int64_t, subActiveSubscribeNamespaces)                                                         \
   X(int64_t, subActiveSubscriptionStreams)                                                         \
   X(int64_t, moqActiveSessions)
 
