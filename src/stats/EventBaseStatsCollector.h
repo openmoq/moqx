@@ -46,8 +46,12 @@ public:
 
   // Subscribe to loop samples.  cb is invoked on the EVB thread each iteration.
   // May be called from any thread; the subscription is installed asynchronously.
-  // The caller must ensure the objects captured by cb outlive this collector.
-  void addLoopObserver(std::function<void(int64_t, int64_t)> cb);
+  // key identifies the subscription for removal; typically the owning object's `this`.
+  void addLoopObserver(const void* key, std::function<void(int64_t, int64_t)> cb);
+
+  // Remove the subscription registered under key.  Safe to call from any thread;
+  // the removal is posted to the EVB thread.  No-op if key was never registered.
+  void removeLoopObserver(const void* key);
 
 private:
   explicit EventBaseStatsCollector(folly::EventBase* evb);
@@ -55,7 +59,7 @@ private:
   folly::EventBase* evb_;
 
   // Only accessed on evb_ thread.
-  std::vector<std::function<void(int64_t, int64_t)>> observers_;
+  std::vector<std::pair<const void*, std::function<void(int64_t, int64_t)>>> observers_;
 
 #define DEFINE_HISTOGRAM(name, bounds, unit) BoundedHistogram<bounds.size()> name##_{bounds};
   STATS_EVB_HISTOGRAM_FIELDS(DEFINE_HISTOGRAM)

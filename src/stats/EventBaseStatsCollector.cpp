@@ -19,9 +19,23 @@ EventBaseStatsCollector::create(std::shared_ptr<StatsRegistry> registry, folly::
 
 EventBaseStatsCollector::EventBaseStatsCollector(folly::EventBase* evb) : evb_(evb) {}
 
-void EventBaseStatsCollector::addLoopObserver(std::function<void(int64_t, int64_t)> cb) {
-  evb_->runImmediatelyOrRunInEventBaseThread([this, cb = std::move(cb)]() mutable {
-    observers_.emplace_back(std::move(cb));
+void EventBaseStatsCollector::addLoopObserver(
+    const void* key,
+    std::function<void(int64_t, int64_t)> cb
+) {
+  evb_->runImmediatelyOrRunInEventBaseThread([this, key, cb = std::move(cb)]() mutable {
+    observers_.emplace_back(key, std::move(cb));
+  });
+}
+
+void EventBaseStatsCollector::removeLoopObserver(const void* key) {
+  evb_->runImmediatelyOrRunInEventBaseThread([this, key] {
+    auto it = std::find_if(observers_.begin(), observers_.end(), [key](const auto& p) {
+      return p.first == key;
+    });
+    if (it != observers_.end()) {
+      observers_.erase(it);
+    }
   });
 }
 
@@ -29,7 +43,7 @@ void EventBaseStatsCollector::loopSample(int64_t busyUs, int64_t idleUs) {
   evbLoopBusy_.addValue(static_cast<uint64_t>(busyUs));
   evbLoopIdle_.addValue(static_cast<uint64_t>(idleUs));
 
-  for (auto& cb : observers_) {
+  for (auto& [_, cb] : observers_) {
     cb(busyUs, idleUs);
   }
 }
