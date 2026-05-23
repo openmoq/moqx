@@ -54,10 +54,6 @@ namespace {
 class PendingTrackConsumer : public TrackConsumerFilter {
 public:
   PendingTrackConsumer() : TrackConsumerFilter(nullptr) {}
-
-  void setDownstream(std::shared_ptr<TrackConsumer> downstream) {
-    downstream_ = std::move(downstream);
-  }
 };
 
 } // namespace
