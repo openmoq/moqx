@@ -132,13 +132,17 @@ TEST_F(CrossExecFilterTest, BeginSubgroupReturnsSubgroupImmediately) {
   ASSERT_NE(result.value(), nullptr);
   // The returned consumer is the cross-exec wrapper, not the inner subgroup
   EXPECT_NE(result.value().get(), static_cast<moxygen::SubgroupConsumer*>(innerSubgroup_.get()));
-  exec_.drain(); // drive the pending beginSubgroup on inner
+  auto subFilter = result.value();
+  subFilter->reset(ResetStreamErrorCode::CANCELLED);
+  exec_.drain();
 }
 
 TEST_F(CrossExecFilterTest, BeginSubgroupRunsOnTargetExecutor) {
   EXPECT_CALL(*innerTrack_, beginSubgroup(1, 0, 128, false)).Times(1);
   auto result = filter_->beginSubgroup(1, 0, 128, false);
   EXPECT_TRUE(result.hasValue());
+  auto subFilter = result.value();
+  subFilter->reset(ResetStreamErrorCode::CANCELLED);
   exec_.drain();
 }
 
@@ -149,17 +153,20 @@ TEST_F(CrossExecFilterTest, SubgroupObjectEnqueuedAfterBeginSubgroup) {
 
   auto objResult = subFilter->object(0, nullptr, noExtensions(), false);
   EXPECT_TRUE(objResult.hasValue());
+  subFilter->checkpoint();
 
   // Before drain: inner not called
   EXPECT_CALL(*innerSubgroup_, object(_, _, _, _)).Times(0);
   EXPECT_CALL(*innerTrack_, beginSubgroup(_, _, _, _)).Times(0);
 
-  // After drain: beginSubgroup runs first, then object
+  // After drain: beginSubgroup runs first, then object, then checkpoint
   {
     InSequence seq;
     EXPECT_CALL(*innerTrack_, beginSubgroup(1, 0, 128, false)).Times(1);
     EXPECT_CALL(*innerSubgroup_, object(0, _, _, false)).Times(1);
+    EXPECT_CALL(*innerSubgroup_, checkpoint()).Times(1);
   }
+  subFilter->reset(ResetStreamErrorCode::CANCELLED);
   exec_.drain();
 }
 
@@ -225,6 +232,7 @@ TEST_F(CrossExecFilterTest, SubgroupBeginObjectEnqueued) {
   InSequence seq;
   EXPECT_CALL(*innerTrack_, beginSubgroup(_, _, _, _)).Times(1);
   EXPECT_CALL(*innerSubgroup_, beginObject(3, 100, _, _)).Times(1);
+  subFilter->reset(ResetStreamErrorCode::CANCELLED);
   exec_.drain();
 }
 
@@ -277,7 +285,8 @@ TEST_F(CrossExecFilterTest, ObjectStreamErrorBumpsCounterDoesNotGateTrack) {
   // Track-level gate is NOT set — beginSubgroup still works.
   EXPECT_CALL(*innerTrack_, beginSubgroup(_, _, _, _)).Times(1);
   auto subResult = filter_->beginSubgroup(1, 0, 128, false);
-  EXPECT_TRUE(subResult.hasValue());
+  ASSERT_TRUE(subResult.hasValue());
+  subResult.value()->reset(ResetStreamErrorCode::CANCELLED);
   exec_.drain();
 }
 
@@ -296,7 +305,9 @@ TEST_F(CrossExecFilterTest, DatagramErrorBumpsCounterDoesNotGateTrack) {
   EXPECT_TRUE(filter_->objectStream(makeHeader(3, 0, 2), nullptr, false).hasValue());
 
   EXPECT_CALL(*innerTrack_, beginSubgroup(_, _, _, _)).Times(1);
-  EXPECT_TRUE(filter_->beginSubgroup(1, 0, 128, false).hasValue());
+  auto subResult = filter_->beginSubgroup(1, 0, 128, false);
+  ASSERT_TRUE(subResult.hasValue());
+  subResult.value()->reset(ResetStreamErrorCode::CANCELLED);
 
   exec_.drain();
 }
@@ -320,7 +331,8 @@ TEST_F(CrossExecFilterTest, BeginSubgroupFailureGatesSubgroupNotTrack) {
   // Track-level gate is NOT set — a new beginSubgroup still works.
   EXPECT_CALL(*innerTrack_, beginSubgroup(_, _, _, _)).Times(1);
   auto subResult2 = filter_->beginSubgroup(2, 0, 128, false);
-  EXPECT_TRUE(subResult2.hasValue());
+  ASSERT_TRUE(subResult2.hasValue());
+  subResult2.value()->reset(ResetStreamErrorCode::CANCELLED);
   exec_.drain();
 }
 
@@ -340,7 +352,7 @@ protected:
         .WillByDefault(Return(folly::makeExpected<MoQPublishError>(folly::unit)));
     ON_CALL(*inner_, endOfUnknownRange(_, _, _))
         .WillByDefault(Return(folly::makeExpected<MoQPublishError>(folly::unit)));
-    filter_ = std::make_shared<FetchCrossExecFilter>(&exec_, inner_);
+    filter_ = FetchCrossExecFilter::create(&exec_, inner_);
   }
 
   folly::ManualExecutor exec_;
@@ -371,6 +383,116 @@ TEST_F(FetchCrossExecFilterTest, EndOfUnknownRangeEnqueued) {
   EXPECT_CALL(*inner_, object(1, 0, 0, _, _, false, false)).Times(1);
   EXPECT_CALL(*inner_, endOfUnknownRange(1, 1, false)).Times(1);
   EXPECT_CALL(*inner_, endOfFetch()).Times(1);
+  exec_.drain();
+}
+
+// finSubgroup=true is the terminal signal: the subgroup must clean up without
+// a separate reset() even if the caller drops its ref immediately after.
+// Run under ASan to catch use-after-free in the [this] lambda path.
+TEST_F(CrossExecFilterTest, SubgroupObjectFinSubgroupIsTerminal) {
+  auto subResult = filter_->beginSubgroup(1, 0, 128, false);
+  ASSERT_TRUE(subResult.hasValue());
+  auto subFilter = subResult.value();
+
+  subFilter->object(0, nullptr, noExtensions(), true);
+  subFilter.reset(); // drop external ref; selfGuard_ keeps it alive until drain
+
+  EXPECT_CALL(*innerTrack_, beginSubgroup(_, _, _, _)).Times(1);
+  EXPECT_CALL(*innerSubgroup_, object(0, _, _, true)).Times(1);
+  exec_.drain();
+}
+
+// If the inner's beginSubgroup fails, queued data lambdas see !downstream_
+// and clean up via deactivate(). The error is scoped to the subgroup; the
+// parent CrossExecFilter remains open for new beginSubgroup/objectStream calls.
+TEST_F(CrossExecFilterTest, BeginSubgroupInnerFailureCleansUp) {
+  EXPECT_CALL(*innerTrack_, beginSubgroup(_, _, _, _))
+      .WillOnce(Return(folly::makeUnexpected(MoQPublishError(MoQPublishError::Code::WRITE_ERROR))));
+
+  auto subResult = filter_->beginSubgroup(1, 0, 128, false);
+  ASSERT_TRUE(subResult.hasValue());
+  auto subFilter = subResult.value();
+
+  // Queue a data call before the setup lambda runs; it will see !downstream_.
+  EXPECT_CALL(*innerSubgroup_, object(_, _, _, _)).Times(0);
+  subFilter->object(0, nullptr, noExtensions(), false);
+  subFilter->reset(ResetStreamErrorCode::CANCELLED); // required terminal call
+  subFilter.reset();
+
+  exec_.drain();
+
+  // Failure is scoped to the subgroup; the parent track is still open.
+  EXPECT_CALL(*innerTrack_, objectStream(_, _, _)).Times(1);
+  auto result = filter_->objectStream(makeHeader(), nullptr);
+  EXPECT_TRUE(result.hasValue());
+  exec_.drain(); // drain the objectStream lambda before filter_ is destroyed
+}
+
+// UAF regression test: when beginSubgroup inner fails, closeWithError() on
+// the subFilter drops selfGuard_ immediately while multiple [this]-capturing
+// lambdas are still queued. Without the deferred-release fix, accessing
+// this->downstream_ in the object and checkpoint lambdas is heap-use-after-free.
+// Run under ASan to catch the UAF.
+TEST_F(CrossExecFilterTest, SubgroupSetupFailureUAFOnMultipleQueuedLambdas) {
+  EXPECT_CALL(*innerTrack_, beginSubgroup(_, _, _, _))
+      .WillOnce(Return(folly::makeUnexpected(MoQPublishError(MoQPublishError::Code::WRITE_ERROR))));
+
+  auto r = filter_->beginSubgroup(1, 0, 128, false);
+  ASSERT_TRUE(r.hasValue());
+  auto subFilter = std::move(r.value()); // move out so r holds null — no extra ref
+
+  // Two lambdas queued that capture [this]. Both see !downstream_ after setup
+  // fails; neither should be called on inner.
+  EXPECT_CALL(*innerSubgroup_, object(_, _, _, _)).Times(0);
+  EXPECT_CALL(*innerSubgroup_, checkpoint()).Times(0);
+  subFilter->object(0, nullptr, noExtensions(), false);
+  subFilter->checkpoint();
+  subFilter->reset(ResetStreamErrorCode::CANCELLED); // required terminal call
+  subFilter.reset(); // drop external ref; selfGuard_ keeps object alive until reset lambda runs
+
+  exec_.drain();
+}
+
+// UAF regression test: a non-terminal beginObject error calls closeWithError(),
+// dropping selfGuard_ immediately while the queued objectPayload lambda still
+// captures [this]. Without the fix, objectPayload accesses freed memory.
+// Run under ASan to catch the UAF.
+TEST_F(CrossExecFilterTest, SubgroupBeginObjectErrorUAFOnQueuedObjectPayload) {
+  EXPECT_CALL(*innerTrack_, beginSubgroup(_, _, _, _)).Times(1);
+  EXPECT_CALL(*innerSubgroup_, beginObject(0, 10, _, _))
+      .WillOnce(Return(folly::makeUnexpected(MoQPublishError(MoQPublishError::Code::WRITE_ERROR))));
+  EXPECT_CALL(*innerSubgroup_, objectPayload(_, _)).Times(0);
+
+  auto r = filter_->beginSubgroup(1, 0, 128, false);
+  ASSERT_TRUE(r.hasValue());
+  auto subFilter = std::move(r.value()); // move out so r holds null — no extra ref
+
+  subFilter->beginObject(0, 10, nullptr, noExtensions());
+  subFilter->objectPayload(nullptr, true); // lambda captures [this]; will UAF without fix
+  subFilter.reset(); // drop external ref; only selfGuard_ + setup-lambda-capture keep object alive
+
+  // Buggy: beginObject lambda errors → closeWithError() → deactivate() →
+  // selfGuard_.reset() → freed. The objectPayload lambda then accesses
+  // this->downstream_ on freed memory.
+  exec_.drain();
+}
+
+// UAF regression test: a non-terminal object() error calls closeWithError(),
+// dropping selfGuard_ immediately while the queued terminal object lambda still
+// captures [this]. Without the fix, the second lambda accesses freed memory.
+// Run under ASan to catch the UAF.
+TEST_F(FetchCrossExecFilterTest, NonTerminalObjectErrorUAFOnQueuedTerminalLambda) {
+  EXPECT_CALL(*inner_, object(1, 0, 0, _, _, false, false))
+      .WillOnce(Return(folly::makeUnexpected(MoQPublishError(MoQPublishError::Code::WRITE_ERROR))));
+  EXPECT_CALL(*inner_, object(1, 0, 1, _, _, true, false)).Times(0);
+
+  filter_->object(1, 0, 0, nullptr, noExtensions(), false, false);
+  filter_->object(1, 0, 1, nullptr, noExtensions(), true, false);
+  filter_.reset(); // drop external ref; only selfGuard_ keeps object alive
+
+  // Buggy: first object lambda errors → closeWithError() → deactivate() →
+  // selfGuard_.reset() → freed. The second object lambda then accesses
+  // this->downstream_ on freed memory.
   exec_.drain();
 }
 

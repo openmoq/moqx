@@ -49,16 +49,81 @@ protected:
   std::atomic<uint32_t> deferredError_{0};
 };
 
+// CRTP mixin adding self-lifetime management to CrossExec filter classes.
+//
+// create() constructs the object via a PrivateTag-taking constructor (preventing
+// direct make_shared by callers) then sets selfGuard_ = this so the object keeps
+// itself alive until a terminal lambda on targetExec_ calls deactivate().
+//
+// PrivateTag is protected so only Derived::create() can construct objects this way.
+//
+// Lifetime protocol:
+//   selfGuard_ keeps the object alive until a terminal lambda calls deactivate().
+//   Non-terminal [this] lambdas that encounter an error call closeWithError(),
+//   which stores the error, nulls downstream_ (via consumed), and enqueues a
+//   no-op guard lambda that releases selfGuard_ after all already-queued [this]
+//   lambdas have run (FIFO ordering guarantees the guard is always last among
+//   lambdas enqueued before closeWithError was called).
+//
+//   Terminal [this] lambdas (finSubgroup/finFetch=true) call deactivate()
+//   unconditionally, even when !downstream_, so the object is not leaked when the
+//   source drops its ref after the terminal call without making another method call.
+template <typename Derived> class CrossExecLifetime : public CrossExecBase {
+protected:
+  struct PrivateTag {};
+
+  CrossExecLifetime(folly::Executor* exec, bool deepCopy) : CrossExecBase(exec, deepCopy) {}
+
+public:
+  // Called at the end of each terminal lambda (on targetExec_).
+  // Drops the self-anchor; must be the last *this access in the lambda.
+  void deactivate() { selfGuard_.reset(); }
+
+  // Called by source methods from their loadDeferredError() early-return blocks.
+  // Moves selfGuard_ into a no-op lambda so the release lands after all [this]
+  // lambdas already enqueued by this (sequential) source thread. Idempotent.
+  void enqueueDeactivate() {
+    if (selfGuard_) {
+      targetExec_->add([guard = std::move(selfGuard_)]() {});
+    }
+  }
+
+  // Store error and null downstream_ (via consumed). The source thread schedules
+  // the selfGuard_ release via enqueueDeactivate() in its loadDeferredError() block.
+  // Pass std::move(downstream_) as consumed to null the member before returning.
+  template <typename T = void>
+  void
+  closeWithError(moxygen::MoQPublishError::Code code, std::shared_ptr<T> /*consumed*/ = nullptr) {
+    storeDeferredError(code);
+  }
+  template <typename T = void>
+  void closeWithError(const moxygen::MoQPublishError& err, std::shared_ptr<T> consumed = nullptr) {
+    closeWithError(err.code, std::move(consumed));
+  }
+
+protected:
+  // Set by create(), cleared by deactivate() or moved out by enqueueDeactivate().
+  std::shared_ptr<Derived> selfGuard_;
+};
+
 // Forwards all SubgroupConsumer calls to a target executor (fire-and-forget).
 // downstream_ starts null and is populated by CrossExecFilter::beginSubgroup()
 // on the target executor. FIFO ordering guarantees it is set before any
 // object/endOf* calls enqueued afterward execute.
 class CrossExecSubgroupFilter final : public moxygen::SubgroupConsumerFilter,
                                       public std::enable_shared_from_this<CrossExecSubgroupFilter>,
-                                      public CrossExecBase {
+                                      public CrossExecLifetime<CrossExecSubgroupFilter> {
 public:
-  explicit CrossExecSubgroupFilter(folly::Executor* targetExec, bool deepCopyPayload = true)
-      : moxygen::SubgroupConsumerFilter(nullptr), CrossExecBase(targetExec, deepCopyPayload) {}
+  static std::shared_ptr<CrossExecSubgroupFilter>
+  create(folly::Executor* targetExec, bool deepCopyPayload = true) {
+    auto f = std::make_shared<CrossExecSubgroupFilter>(PrivateTag{}, targetExec, deepCopyPayload);
+    f->selfGuard_ = f;
+    return f;
+  }
+
+  CrossExecSubgroupFilter(PrivateTag, folly::Executor* targetExec, bool deepCopyPayload = true)
+      : moxygen::SubgroupConsumerFilter(nullptr),
+        CrossExecLifetime<CrossExecSubgroupFilter>(targetExec, deepCopyPayload) {}
 
   folly::Expected<folly::Unit, moxygen::MoQPublishError> object(
       uint64_t objectID,
@@ -177,14 +242,31 @@ private:
 // preserved without additional synchronization.
 class FetchCrossExecFilter final : public moxygen::FetchConsumer,
                                    public std::enable_shared_from_this<FetchCrossExecFilter>,
-                                   public CrossExecBase {
+                                   public CrossExecLifetime<FetchCrossExecFilter> {
 public:
+  static std::shared_ptr<FetchCrossExecFilter> create(
+      folly::Executor* targetExec,
+      std::shared_ptr<moxygen::FetchConsumer> downstream,
+      bool deepCopyPayload = false
+  ) {
+    auto f = std::make_shared<FetchCrossExecFilter>(
+        PrivateTag{},
+        targetExec,
+        std::move(downstream),
+        deepCopyPayload
+    );
+    f->selfGuard_ = f;
+    return f;
+  }
+
   FetchCrossExecFilter(
+      PrivateTag,
       folly::Executor* targetExec,
       std::shared_ptr<moxygen::FetchConsumer> downstream,
       bool deepCopyPayload = false
   )
-      : CrossExecBase(targetExec, deepCopyPayload), downstream_(std::move(downstream)) {}
+      : CrossExecLifetime<FetchCrossExecFilter>(targetExec, deepCopyPayload),
+        downstream_(std::move(downstream)) {}
 
   folly::Expected<folly::Unit, moxygen::MoQPublishError> object(
       uint64_t groupID,
@@ -206,7 +288,7 @@ public:
   ) override;
 
   folly::Expected<moxygen::ObjectPublishStatus, moxygen::MoQPublishError>
-  objectPayload(moxygen::Payload payload, bool finSubgroup = false) override;
+  objectPayload(moxygen::Payload payload, bool finFetch = false) override;
 
   folly::Expected<folly::Unit, moxygen::MoQPublishError>
   endOfGroup(uint64_t groupID, uint64_t subgroupID, uint64_t objectID, bool finFetch = false)
