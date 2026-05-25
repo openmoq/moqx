@@ -285,6 +285,34 @@ target_link_libraries(moqx_cross_exec_filter_test PRIVATE
 )
 gtest_discover_tests(moqx_cross_exec_filter_test)
 
+# PublisherCrossExecFilter unit tests
+add_executable(moqx_publisher_cross_exec_filter_test
+  PublisherCrossExecFilterTest.cpp
+)
+target_link_libraries(moqx_publisher_cross_exec_filter_test PRIVATE
+  moqx_core
+  GTest::gtest_main
+  GTest::gmock
+  moxygen::moqtest_utils
+  Folly::folly_executors_manual_executor
+  Folly::folly_executors_cpu_thread_pool_executor
+)
+gtest_discover_tests(moqx_publisher_cross_exec_filter_test)
+
+# SubscriberCrossExecFilter unit tests
+add_executable(moqx_subscriber_cross_exec_filter_test
+  SubscriberCrossExecFilterTest.cpp
+)
+target_link_libraries(moqx_subscriber_cross_exec_filter_test PRIVATE
+  moqx_core
+  GTest::gtest_main
+  GTest::gmock
+  moxygen::moqtest_utils
+  Folly::folly_executors_manual_executor
+  Folly::folly_executors_cpu_thread_pool_executor
+)
+gtest_discover_tests(moqx_subscriber_cross_exec_filter_test)
+
 # --- MoqxCache tests ---
 
 add_executable(moqx_cache_test
