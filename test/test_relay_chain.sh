@@ -126,7 +126,8 @@ check_state() {
     echo "FAIL [$label /state]: curl failed (exit $?)" >&2; return 1;
   }
   http_code=$(printf '%s' "$raw" | tail -1)
-  response=$(printf '%s' "$raw" | head -n -1)
+  # sed '$d' drops the last line, portably (BSD head on macOS rejects -n -N).
+  response=$(printf '%s' "$raw" | sed '$d')
   if [[ "$http_code" != "200" ]]; then
     echo "FAIL [$label /state]: HTTP $http_code" >&2; return 1;
   fi

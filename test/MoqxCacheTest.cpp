@@ -1869,7 +1869,7 @@ CO_TEST_F(MoqxCacheTest, TestFetchPartialMissTwoUpstreamFetchesTailDesc) {
 
         expectUpstreamFetch({1, 3}, {3, 0}, 0, AbsoluteLocation{3, 0}, GroupOrder::NewestFirst)
             .via(exec)
-            .thenTry([this, exec](const auto&) {
+            .thenTry([this](const auto&) {
               expectFetchObjectsDescending({1, 3}, {4, 0}, true, 10, 1, 1, true);
               serveCacheRangeFromUpstreamDescending({1, 3}, {4, 0}, 10, 1, 1, true);
             });
@@ -1895,7 +1895,7 @@ CO_TEST_F(MoqxCacheTest, TestFetchPartialMissTwoUpstreamFetchesTail) {
         expectFetchObjects({0, 5}, {0, 7}, false, 10, 1, 1, false);
         expectUpstreamFetch({0, 7}, {0, 9}, 0, AbsoluteLocation{0, 9})
             .via(exec)
-            .thenTry([this, exec](const auto&) {
+            .thenTry([this](const auto&) {
               expectFetchObjects({0, 7}, {0, 9}, true, 10, 1, 1, true);
               serveCacheRangeFromUpstream({0, 7}, {0, 9}, 10, 1, 1, true);
             });
