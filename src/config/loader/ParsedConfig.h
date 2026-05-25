@@ -381,6 +381,11 @@ struct ParsedConfig {
       std::optional<ParsedListenerDefaultsConfig>>
       listener_defaults;
   rfl::Description<"Number of IO worker threads (default: 1)", std::optional<uint32_t>> threads;
+  rfl::Description<
+      "Dedicate one relay thread per service for relay state isolation (default: true). "
+      "Disable for baseline performance comparison.",
+      std::optional<bool>>
+      use_relay_thread;
 };
 
 } // namespace openmoq::moqx::config
