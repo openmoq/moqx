@@ -28,6 +28,7 @@ _CPack_Packages/
 # IDE / tools
 .vscode/
 .claude/
+.cache/
 
 # Docker secrets (never commit)
 docker/.env
