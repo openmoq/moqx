@@ -36,22 +36,24 @@ folly::Expected<folly::Unit, moxygen::MoQPublishError> CrossExecSubgroupFilter::
     bool finSubgroup
 ) {
   if (auto err = loadDeferredError()) {
+    enqueueDeactivate();
     return folly::makeUnexpected(*err);
   }
   auto capturedPayload = maybeDeepCopy(payload, deepCopyPayload_);
-  targetExec_->add([self = shared_from_this(),
+  targetExec_->add([this,
                     objectID,
                     payload = std::move(capturedPayload),
                     extensions = std::move(extensions),
                     finSubgroup]() mutable {
-    if (!self->downstream_) {
-      self->storeDeferredError(moxygen::MoQPublishError::CANCELLED);
-      return;
+    if (downstream_) {
+      auto result =
+          downstream_->object(objectID, std::move(payload), std::move(extensions), finSubgroup);
+      if (result.hasError()) {
+        closeWithError(result.error(), std::move(downstream_));
+      }
     }
-    auto result =
-        self->downstream_->object(objectID, std::move(payload), std::move(extensions), finSubgroup);
-    if (result.hasError()) {
-      self->storeDeferredError(result.error());
+    if (finSubgroup) {
+      deactivate();
     }
   });
   return folly::unit;
@@ -64,23 +66,23 @@ folly::Expected<folly::Unit, moxygen::MoQPublishError> CrossExecSubgroupFilter::
     moxygen::Extensions extensions
 ) {
   if (auto err = loadDeferredError()) {
+    enqueueDeactivate();
     return folly::makeUnexpected(*err);
   }
   payloadTracker_.beginObject(length, initialPayload);
   auto capturedPayload = maybeDeepCopy(initialPayload, deepCopyPayload_);
-  targetExec_->add([self = shared_from_this(),
+  targetExec_->add([this,
                     objectID,
                     length,
                     payload = std::move(capturedPayload),
                     extensions = std::move(extensions)]() mutable {
-    if (!self->downstream_) {
-      self->storeDeferredError(moxygen::MoQPublishError::CANCELLED);
+    if (!downstream_) {
       return;
     }
     auto result =
-        self->downstream_->beginObject(objectID, length, std::move(payload), std::move(extensions));
+        downstream_->beginObject(objectID, length, std::move(payload), std::move(extensions));
     if (result.hasError()) {
-      self->storeDeferredError(result.error());
+      closeWithError(result.error(), std::move(downstream_));
     }
   });
   return folly::unit;
@@ -89,19 +91,20 @@ folly::Expected<folly::Unit, moxygen::MoQPublishError> CrossExecSubgroupFilter::
 folly::Expected<moxygen::ObjectPublishStatus, moxygen::MoQPublishError>
 CrossExecSubgroupFilter::objectPayload(moxygen::Payload payload, bool finSubgroup) {
   if (auto err = loadDeferredError()) {
+    enqueueDeactivate();
     return folly::makeUnexpected(*err);
   }
   auto status = payloadTracker_.consume(payload);
   auto capturedPayload = maybeDeepCopy(payload, deepCopyPayload_);
-  targetExec_->add([self = shared_from_this(), payload = std::move(capturedPayload), finSubgroup](
-                   ) mutable {
-    if (!self->downstream_) {
-      self->storeDeferredError(moxygen::MoQPublishError::CANCELLED);
-      return;
+  targetExec_->add([this, payload = std::move(capturedPayload), finSubgroup]() mutable {
+    if (downstream_) {
+      auto result = downstream_->objectPayload(std::move(payload), finSubgroup);
+      if (result.hasError()) {
+        closeWithError(result.error(), std::move(downstream_));
+      }
     }
-    auto result = self->downstream_->objectPayload(std::move(payload), finSubgroup);
-    if (result.hasError()) {
-      self->storeDeferredError(result.error());
+    if (finSubgroup) {
+      deactivate();
     }
   });
   return status;
@@ -110,16 +113,18 @@ CrossExecSubgroupFilter::objectPayload(moxygen::Payload payload, bool finSubgrou
 folly::Expected<folly::Unit, moxygen::MoQPublishError>
 CrossExecSubgroupFilter::endOfGroup(uint64_t endOfGroupObjectID) {
   if (auto err = loadDeferredError()) {
+    enqueueDeactivate();
     return folly::makeUnexpected(*err);
   }
-  targetExec_->add([self = shared_from_this(), endOfGroupObjectID]() {
-    if (self->downstream_) {
-      auto result = self->downstream_->endOfGroup(endOfGroupObjectID);
+  targetExec_->add([this, endOfGroupObjectID]() {
+    if (downstream_) {
+      auto result = downstream_->endOfGroup(endOfGroupObjectID);
       if (result.hasError()) {
         // terminal — no storeDeferredError needed
         XLOG(ERR) << "endOfGroup: " << result.error().describe();
       }
     }
+    deactivate();
   });
   return folly::unit;
 }
@@ -127,32 +132,36 @@ CrossExecSubgroupFilter::endOfGroup(uint64_t endOfGroupObjectID) {
 folly::Expected<folly::Unit, moxygen::MoQPublishError>
 CrossExecSubgroupFilter::endOfTrackAndGroup(uint64_t endOfTrackObjectID) {
   if (auto err = loadDeferredError()) {
+    enqueueDeactivate();
     return folly::makeUnexpected(*err);
   }
-  targetExec_->add([self = shared_from_this(), endOfTrackObjectID]() {
-    if (self->downstream_) {
-      auto result = self->downstream_->endOfTrackAndGroup(endOfTrackObjectID);
+  targetExec_->add([this, endOfTrackObjectID]() {
+    if (downstream_) {
+      auto result = downstream_->endOfTrackAndGroup(endOfTrackObjectID);
       if (result.hasError()) {
         // terminal — no storeDeferredError needed
         XLOG(ERR) << "endOfTrackAndGroup: " << result.error().describe();
       }
     }
+    deactivate();
   });
   return folly::unit;
 }
 
 folly::Expected<folly::Unit, moxygen::MoQPublishError> CrossExecSubgroupFilter::endOfSubgroup() {
   if (auto err = loadDeferredError()) {
+    enqueueDeactivate();
     return folly::makeUnexpected(*err);
   }
-  targetExec_->add([self = shared_from_this()]() {
-    if (self->downstream_) {
-      auto result = self->downstream_->endOfSubgroup();
+  targetExec_->add([this]() {
+    if (downstream_) {
+      auto result = downstream_->endOfSubgroup();
       if (result.hasError()) {
         // terminal — no storeDeferredError needed
         XLOG(ERR) << "endOfSubgroup: " << result.error().describe();
       }
     }
+    deactivate();
   });
   return folly::unit;
 }
@@ -165,13 +174,18 @@ void CrossExecSubgroupFilter::reset(moxygen::ResetStreamErrorCode error) {
     if (self->downstream_) {
       self->downstream_->reset(error);
     }
+    self->deactivate();
   });
 }
 
 void CrossExecSubgroupFilter::checkpoint() {
-  targetExec_->add([self = shared_from_this()]() {
-    if (self->downstream_) {
-      self->downstream_->checkpoint();
+  if (loadDeferredError()) {
+    enqueueDeactivate();
+    return;
+  }
+  targetExec_->add([this]() {
+    if (downstream_) {
+      downstream_->checkpoint();
     }
   });
 }
@@ -179,6 +193,7 @@ void CrossExecSubgroupFilter::checkpoint() {
 folly::Expected<folly::SemiFuture<uint64_t>, moxygen::MoQPublishError>
 CrossExecSubgroupFilter::awaitReadyToConsume() {
   if (auto err = loadDeferredError()) {
+    enqueueDeactivate();
     return folly::makeUnexpected(*err);
   }
   // TODO: backpressure not implemented; always reports ready
@@ -192,14 +207,14 @@ CrossExecFilter::setTrackAlias(moxygen::TrackAlias alias) {
   if (auto err = loadDeferredError()) {
     return folly::makeUnexpected(*err);
   }
-  targetExec_->add([self = shared_from_this(), alias]() {
-    if (!self->downstream_) {
-      self->storeDeferredError(moxygen::MoQPublishError::WRITE_ERROR);
+  targetExec_->add([this, alias]() {
+    if (!downstream_) {
+      storeDeferredError(moxygen::MoQPublishError::WRITE_ERROR);
       return;
     }
-    auto result = self->downstream_->setTrackAlias(alias);
+    auto result = downstream_->setTrackAlias(alias);
     if (result.hasError()) {
-      self->storeDeferredError(result.error());
+      storeDeferredError(result.error());
     }
   });
   return folly::unit;
@@ -215,25 +230,21 @@ CrossExecFilter::beginSubgroup(
   if (auto err = loadDeferredError()) {
     return folly::makeUnexpected(*err);
   }
-  auto subFilter = std::make_shared<CrossExecSubgroupFilter>(targetExec_, deepCopyPayload_);
-  targetExec_->add(
-      [self = shared_from_this(), subFilter, groupID, subgroupID, priority, containsLastInGroup](
-      ) mutable {
-        if (!self->downstream_) {
-          subFilter->storeDeferredError(moxygen::MoQPublishError::WRITE_ERROR);
-          return;
-        }
-        auto result =
-            self->downstream_->beginSubgroup(groupID, subgroupID, priority, containsLastInGroup);
-        if (result.hasValue()) {
-          subFilter->setDownstream(std::move(result.value()));
-          subFilter->setKeepAlive(self->downstream_);
-        } else {
-          XLOG(ERR) << "CrossExecFilter beginSubgroup failed: " << result.error().describe();
-          subFilter->storeDeferredError(result.error());
-        }
-      }
-  );
+  auto subFilter = CrossExecSubgroupFilter::create(targetExec_, deepCopyPayload_);
+  targetExec_->add([this, subFilter, groupID, subgroupID, priority, containsLastInGroup]() mutable {
+    if (!downstream_) {
+      subFilter->closeWithError(moxygen::MoQPublishError::WRITE_ERROR);
+      return;
+    }
+    auto result = downstream_->beginSubgroup(groupID, subgroupID, priority, containsLastInGroup);
+    if (result.hasValue()) {
+      subFilter->setDownstream(std::move(result.value()));
+      subFilter->setKeepAlive(downstream_);
+    } else {
+      XLOG(ERR) << "CrossExecFilter beginSubgroup failed: " << result.error().describe();
+      subFilter->closeWithError(result.error());
+    }
+  });
   return subFilter;
 }
 
@@ -255,18 +266,15 @@ folly::Expected<folly::Unit, moxygen::MoQPublishError> CrossExecFilter::objectSt
     return folly::makeUnexpected(*err);
   }
   auto capturedPayload = maybeDeepCopy(payload, deepCopyPayload_);
-  targetExec_->add([self = shared_from_this(),
-                    header,
-                    payload = std::move(capturedPayload),
-                    lastInGroup]() mutable {
-    if (!self->downstream_) {
-      self->objectStreamErrors_.fetch_add(1, std::memory_order_relaxed);
+  targetExec_->add([this, header, payload = std::move(capturedPayload), lastInGroup]() mutable {
+    if (!downstream_) {
+      objectStreamErrors_.fetch_add(1, std::memory_order_relaxed);
       XLOG(ERR) << "objectStream: no downstream";
       return;
     }
-    auto result = self->downstream_->objectStream(header, std::move(payload), lastInGroup);
+    auto result = downstream_->objectStream(header, std::move(payload), lastInGroup);
     if (result.hasError()) {
-      self->objectStreamErrors_.fetch_add(1, std::memory_order_relaxed);
+      objectStreamErrors_.fetch_add(1, std::memory_order_relaxed);
       XLOG(ERR) << "objectStream: " << result.error().describe();
     }
   });
@@ -282,18 +290,15 @@ folly::Expected<folly::Unit, moxygen::MoQPublishError> CrossExecFilter::datagram
     return folly::makeUnexpected(*err);
   }
   auto capturedPayload = maybeDeepCopy(payload, deepCopyPayload_);
-  targetExec_->add([self = shared_from_this(),
-                    header,
-                    payload = std::move(capturedPayload),
-                    lastInGroup]() mutable {
-    if (!self->downstream_) {
-      self->datagramErrors_.fetch_add(1, std::memory_order_relaxed);
+  targetExec_->add([this, header, payload = std::move(capturedPayload), lastInGroup]() mutable {
+    if (!downstream_) {
+      datagramErrors_.fetch_add(1, std::memory_order_relaxed);
       XLOG(ERR) << "datagram: no downstream";
       return;
     }
-    auto result = self->downstream_->datagram(header, std::move(payload), lastInGroup);
+    auto result = downstream_->datagram(header, std::move(payload), lastInGroup);
     if (result.hasError()) {
-      self->datagramErrors_.fetch_add(1, std::memory_order_relaxed);
+      datagramErrors_.fetch_add(1, std::memory_order_relaxed);
       XLOG(ERR) << "datagram: " << result.error().describe();
     }
   });
@@ -302,6 +307,8 @@ folly::Expected<folly::Unit, moxygen::MoQPublishError> CrossExecFilter::datagram
 
 folly::Expected<folly::Unit, moxygen::MoQPublishError>
 CrossExecFilter::publishDone(moxygen::PublishDone pubDone) {
+  // shared_from_this: always terminal; caller may drop its ref before the
+  // lambda executes on targetExec_.
   targetExec_->add([self = shared_from_this(), pubDone = std::move(pubDone)]() mutable {
     if (self->downstream_) {
       self->downstream_->publishDone(std::move(pubDone));
@@ -322,10 +329,11 @@ folly::Expected<folly::Unit, moxygen::MoQPublishError> FetchCrossExecFilter::obj
     bool forwardingPreferenceIsDatagram
 ) {
   if (auto err = loadDeferredError()) {
+    enqueueDeactivate();
     return folly::makeUnexpected(*err);
   }
   auto capturedPayload = maybeDeepCopy(payload, deepCopyPayload_);
-  targetExec_->add([self = shared_from_this(),
+  targetExec_->add([this,
                     groupID,
                     subgroupID,
                     objectID,
@@ -333,21 +341,22 @@ folly::Expected<folly::Unit, moxygen::MoQPublishError> FetchCrossExecFilter::obj
                     extensions = std::move(extensions),
                     finFetch,
                     forwardingPreferenceIsDatagram]() mutable {
-    if (!self->downstream_) {
-      self->storeDeferredError(moxygen::MoQPublishError::WRITE_ERROR);
-      return;
+    if (downstream_) {
+      auto result = downstream_->object(
+          groupID,
+          subgroupID,
+          objectID,
+          std::move(payload),
+          std::move(extensions),
+          finFetch,
+          forwardingPreferenceIsDatagram
+      );
+      if (result.hasError()) {
+        closeWithError(result.error(), std::move(downstream_));
+      }
     }
-    auto result = self->downstream_->object(
-        groupID,
-        subgroupID,
-        objectID,
-        std::move(payload),
-        std::move(extensions),
-        finFetch,
-        forwardingPreferenceIsDatagram
-    );
-    if (result.hasError()) {
-      self->storeDeferredError(result.error());
+    if (finFetch) {
+      deactivate();
     }
   });
   return folly::unit;
@@ -362,22 +371,22 @@ folly::Expected<folly::Unit, moxygen::MoQPublishError> FetchCrossExecFilter::beg
     moxygen::Extensions extensions
 ) {
   if (auto err = loadDeferredError()) {
+    enqueueDeactivate();
     return folly::makeUnexpected(*err);
   }
   payloadTracker_.beginObject(length, initialPayload);
   auto capturedPayload = maybeDeepCopy(initialPayload, deepCopyPayload_);
-  targetExec_->add([self = shared_from_this(),
+  targetExec_->add([this,
                     groupID,
                     subgroupID,
                     objectID,
                     length,
                     payload = std::move(capturedPayload),
                     extensions = std::move(extensions)]() mutable {
-    if (!self->downstream_) {
-      self->storeDeferredError(moxygen::MoQPublishError::WRITE_ERROR);
+    if (!downstream_) {
       return;
     }
-    auto result = self->downstream_->beginObject(
+    auto result = downstream_->beginObject(
         groupID,
         subgroupID,
         objectID,
@@ -386,28 +395,29 @@ folly::Expected<folly::Unit, moxygen::MoQPublishError> FetchCrossExecFilter::beg
         std::move(extensions)
     );
     if (result.hasError()) {
-      self->storeDeferredError(result.error());
+      closeWithError(result.error(), std::move(downstream_));
     }
   });
   return folly::unit;
 }
 
 folly::Expected<moxygen::ObjectPublishStatus, moxygen::MoQPublishError>
-FetchCrossExecFilter::objectPayload(moxygen::Payload payload, bool finSubgroup) {
+FetchCrossExecFilter::objectPayload(moxygen::Payload payload, bool finFetch) {
   if (auto err = loadDeferredError()) {
+    enqueueDeactivate();
     return folly::makeUnexpected(*err);
   }
   auto status = payloadTracker_.consume(payload);
   auto capturedPayload = maybeDeepCopy(payload, deepCopyPayload_);
-  targetExec_->add([self = shared_from_this(), payload = std::move(capturedPayload), finSubgroup](
-                   ) mutable {
-    if (!self->downstream_) {
-      self->storeDeferredError(moxygen::MoQPublishError::WRITE_ERROR);
-      return;
+  targetExec_->add([this, payload = std::move(capturedPayload), finFetch]() mutable {
+    if (downstream_) {
+      auto result = downstream_->objectPayload(std::move(payload), finFetch);
+      if (result.hasError()) {
+        closeWithError(result.error(), std::move(downstream_));
+      }
     }
-    auto result = self->downstream_->objectPayload(std::move(payload), finSubgroup);
-    if (result.hasError()) {
-      self->storeDeferredError(result.error());
+    if (finFetch) {
+      deactivate();
     }
   });
   return status;
@@ -420,15 +430,18 @@ folly::Expected<folly::Unit, moxygen::MoQPublishError> FetchCrossExecFilter::end
     bool finFetch
 ) {
   if (auto err = loadDeferredError()) {
+    enqueueDeactivate();
     return folly::makeUnexpected(*err);
   }
-  targetExec_->add([self = shared_from_this(), groupID, subgroupID, objectID, finFetch]() {
-    if (self->downstream_) {
-      auto result = self->downstream_->endOfGroup(groupID, subgroupID, objectID, finFetch);
+  targetExec_->add([this, groupID, subgroupID, objectID, finFetch]() {
+    if (downstream_) {
+      auto result = downstream_->endOfGroup(groupID, subgroupID, objectID, finFetch);
       if (result.hasError()) {
-        // terminal — no storeDeferredError needed
-        XLOG(ERR) << "endOfGroup: " << result.error().describe();
+        closeWithError(result.error(), std::move(downstream_));
       }
+    }
+    if (finFetch) {
+      deactivate();
     }
   });
   return folly::unit;
@@ -437,40 +450,46 @@ folly::Expected<folly::Unit, moxygen::MoQPublishError> FetchCrossExecFilter::end
 folly::Expected<folly::Unit, moxygen::MoQPublishError>
 FetchCrossExecFilter::endOfTrackAndGroup(uint64_t groupID, uint64_t subgroupID, uint64_t objectID) {
   if (auto err = loadDeferredError()) {
+    enqueueDeactivate();
     return folly::makeUnexpected(*err);
   }
-  targetExec_->add([self = shared_from_this(), groupID, subgroupID, objectID]() {
-    if (self->downstream_) {
-      auto result = self->downstream_->endOfTrackAndGroup(groupID, subgroupID, objectID);
+  targetExec_->add([this, groupID, subgroupID, objectID]() {
+    if (downstream_) {
+      auto result = downstream_->endOfTrackAndGroup(groupID, subgroupID, objectID);
       if (result.hasError()) {
-        // terminal — no storeDeferredError needed
         XLOG(ERR) << "endOfTrackAndGroup: " << result.error().describe();
       }
     }
+    deactivate();
   });
   return folly::unit;
 }
 
 folly::Expected<folly::Unit, moxygen::MoQPublishError> FetchCrossExecFilter::endOfFetch() {
   if (auto err = loadDeferredError()) {
+    enqueueDeactivate();
     return folly::makeUnexpected(*err);
   }
-  targetExec_->add([self = shared_from_this()]() {
-    if (self->downstream_) {
-      auto result = self->downstream_->endOfFetch();
+  targetExec_->add([this]() {
+    if (downstream_) {
+      auto result = downstream_->endOfFetch();
       if (result.hasError()) {
-        // terminal — no storeDeferredError needed
         XLOG(ERR) << "endOfFetch: " << result.error().describe();
       }
     }
+    deactivate();
   });
   return folly::unit;
 }
 
 void FetchCrossExecFilter::checkpoint() {
-  targetExec_->add([self = shared_from_this()]() {
-    if (self->downstream_) {
-      self->downstream_->checkpoint();
+  if (loadDeferredError()) {
+    enqueueDeactivate();
+    return;
+  }
+  targetExec_->add([this]() {
+    if (downstream_) {
+      downstream_->checkpoint();
     }
   });
 }
@@ -478,33 +497,41 @@ void FetchCrossExecFilter::checkpoint() {
 folly::Expected<folly::Unit, moxygen::MoQPublishError>
 FetchCrossExecFilter::endOfUnknownRange(uint64_t groupID, uint64_t objectID, bool finFetch) {
   if (auto err = loadDeferredError()) {
+    enqueueDeactivate();
     return folly::makeUnexpected(*err);
   }
-  targetExec_->add([self = shared_from_this(), groupID, objectID, finFetch]() {
-    if (self->downstream_) {
-      auto result = self->downstream_->endOfUnknownRange(groupID, objectID, finFetch);
+  targetExec_->add([this, groupID, objectID, finFetch]() {
+    if (downstream_) {
+      auto result = downstream_->endOfUnknownRange(groupID, objectID, finFetch);
       if (result.hasError()) {
-        self->storeDeferredError(result.error());
+        closeWithError(result.error(), std::move(downstream_));
       }
+    }
+    if (finFetch) {
+      deactivate();
     }
   });
   return folly::unit;
 }
 
 void FetchCrossExecFilter::reset(moxygen::ResetStreamErrorCode error) {
-  // storeDeferredError on calling thread; lambda needs no storeDeferredError even if downstream_ is
-  // null
+  // storeDeferredError on calling thread so subsequent calls fail fast.
+  // shared_from_this: reset() bypasses loadDeferredError(), so the source may
+  // call it after enqueueDeactivate() has already moved selfGuard_ out; we need an
+  // independent ref to guarantee the object outlives the lambda.
   storeDeferredError(moxygen::MoQPublishError::CANCELLED);
   targetExec_->add([self = shared_from_this(), error]() {
     if (self->downstream_) {
       self->downstream_->reset(error);
     }
+    self->deactivate();
   });
 }
 
 folly::Expected<folly::SemiFuture<uint64_t>, moxygen::MoQPublishError>
 FetchCrossExecFilter::awaitReadyToConsume() {
   if (auto err = loadDeferredError()) {
+    enqueueDeactivate();
     return folly::makeUnexpected(*err);
   }
   // TODO: backpressure not implemented; always reports ready
