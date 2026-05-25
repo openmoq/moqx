@@ -820,8 +820,11 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
   const uint32_t threads = config.threads.value().value_or(1);
   if (threads == 0) {
     errors.push_back("threads must be >= 1");
-  } else if (threads > 1) {
-    errors.push_back("threads > 1 is not yet supported");
+  }
+
+  const bool useRelayThread = config.use_relay_thread.value().value_or(true);
+  if (threads > 1 && !useRelayThread) {
+    errors.push_back("use_relay_thread must be true when threads > 1");
   }
 
   if (!errors.empty()) {
@@ -873,6 +876,7 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
               .admin = std::move(adminConfig),
               .relayID = std::move(relayID),
               .threads = threads,
+              .useRelayThread = useRelayThread,
           },
       .warnings = std::move(warnings),
   };
