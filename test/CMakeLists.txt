@@ -272,6 +272,19 @@ target_link_libraries(track_filter_load_test PRIVATE
   moxygen::moxygen_util_insecure_verifier_dangerous_do_not_use_in_production
 )
 
+# CrossExecFilter unit tests
+add_executable(moqx_cross_exec_filter_test
+  CrossExecFilterTest.cpp
+)
+target_link_libraries(moqx_cross_exec_filter_test PRIVATE
+  moqx_core
+  GTest::gtest_main
+  GTest::gmock
+  moxygen::moqtest_utils
+  Folly::folly_executors_manual_executor
+)
+gtest_discover_tests(moqx_cross_exec_filter_test)
+
 # --- MoqxCache tests ---
 
 add_executable(moqx_cache_test
