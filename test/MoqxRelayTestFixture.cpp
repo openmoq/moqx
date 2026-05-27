@@ -193,6 +193,8 @@ std::shared_ptr<TrackConsumer> MoQRelayTest::doPublish(
       if (addToState) {
         getOrCreateMockState(session)->publishConsumers.push_back(res->consumer);
       }
+      co_withExecutor(static_cast<folly::DrivableExecutor*>(exec_.get()), std::move(res->reply))
+          .start();
       return res->consumer;
     }
     return std::shared_ptr<TrackConsumer>(nullptr);
@@ -251,6 +253,8 @@ std::shared_ptr<TrackConsumer> MoQRelayTest::doPublishWithHandle(
     }
     auto consumer = res->consumer;
     getOrCreateMockState(session)->publishConsumers.push_back(consumer);
+    co_withExecutor(static_cast<folly::DrivableExecutor*>(exec_.get()), std::move(res->reply))
+        .start();
     return consumer;
   });
 }

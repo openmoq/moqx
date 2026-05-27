@@ -33,6 +33,7 @@ TEST_F(MoQRelayTest, PublishSuccess) {
   doPublish(publisherSession, kTestTrackName);
 
   // Cleanup: remove the session from relay to avoid mock leak warning
+  exec_->drive();
   removeSession(publisherSession);
 }
 
@@ -87,6 +88,8 @@ TEST_F(MoQRelayTest, PublishExtensionsForwardedToSubscribers) {
     EXPECT_TRUE(res.hasValue());
     if (res.hasValue()) {
       getOrCreateMockState(publisherSession)->publishConsumers.push_back(res->consumer);
+      co_withExecutor(static_cast<folly::DrivableExecutor*>(exec_.get()), std::move(res->reply))
+          .start();
     }
   });
   exec_->drive();
@@ -142,6 +145,8 @@ TEST_F(MoQRelayTest, PublishExtensionsForwardedToLateJoiners) {
     EXPECT_TRUE(res.hasValue());
     if (res.hasValue()) {
       getOrCreateMockState(publisherSession)->publishConsumers.push_back(res->consumer);
+      co_withExecutor(static_cast<folly::DrivableExecutor*>(exec_.get()), std::move(res->reply))
+          .start();
     }
   });
   exec_->drive();
@@ -241,6 +246,7 @@ TEST_F(MoQRelayTest, PublisherReconnectWithOpenSubgroupNoSegfault) {
   auto consumer2 = doPublish(reconnectedSession, kTestTrackName);
   EXPECT_NE(consumer2, nullptr) << "re-publish after reconnect should succeed";
 
+  exec_->drive();
   removeSession(publisherSession);
   removeSession(subscriberSession);
   removeSession(reconnectedSession);
@@ -376,6 +382,7 @@ TEST_F(MoQRelayTest, PublishReconnectDuringSubscribeScopeGuardCrash) {
               EXPECT_TRUE(res.hasValue()) << "publish in mock unexpectedly failed";
               if (res.hasValue()) {
                 pub2Consumer = res->consumer;
+                co_await std::move(res->reply);
               }
             }
 
@@ -449,6 +456,7 @@ TEST_F(MoQRelayTest, PublishReconnectDuringSubscribeSuccessPathCrash) {
               EXPECT_TRUE(res.hasValue()) << "publish in mock unexpectedly failed";
               if (res.hasValue()) {
                 pub2Consumer = res->consumer;
+                co_await std::move(res->reply);
               }
             }
 
@@ -528,6 +536,7 @@ TEST_F(MoQRelayTest, PublishDonePrunesNamespaceTreeNode) {
     EXPECT_FALSE(state.nodeExists) << "Node persists after publish ended; pruning did not run";
   });
 
+  exec_->drive();
   removeSession(publisher);
 }
 
