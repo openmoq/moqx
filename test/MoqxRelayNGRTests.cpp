@@ -214,4 +214,129 @@ TEST_F(MoQRelayTest, RelayRequestUpdateNGRCascadedUpstream) {
   removeSession(subscriberSession);
 }
 
+// Relay test: downstream subscriber returns PublishOk carrying NEW_GROUP_REQUEST;
+// relay cascades NGR to the publisher handle upstream via REQUEST_UPDATE
+TEST_F(MoQRelayTest, PublishOkNewNGRForwardedUpstream) {
+  auto publisherSession = createMockSession();
+  auto subscriberSession = createMockSession();
+
+  doPublishNamespace(publisherSession, kTestNamespace);
+
+  auto mockConsumer = createMockConsumer();
+  EXPECT_CALL(*subscriberSession, publish(_, _)).WillOnce([&mockConsumer](const auto&, auto) {
+    TrackRequestParameters ngrParams(FrameType::PUBLISH_OK);
+    ngrParams.insertParam(
+        Parameter(folly::to_underlying(TrackRequestParamKey::NEW_GROUP_REQUEST), uint64_t(8))
+    );
+    auto task = folly::coro::makeTask<folly::Expected<PublishOk, PublishError>>(PublishOk{
+        RequestID(1),
+        true,
+        0,
+        GroupOrder::OldestFirst,
+        LocationType::LargestObject,
+        std::nullopt,
+        std::nullopt,
+        std::move(ngrParams)
+    });
+    return Subscriber::PublishResult(
+        Subscriber::PublishConsumerAndReplyTask{mockConsumer, std::move(task)}
+    );
+  });
+
+  doSubscribeNamespace(subscriberSession, kTestNamespace);
+
+  auto publishHandle = makePublishHandle();
+  {
+    testing::InSequence seq;
+    EXPECT_CALL(*publishHandle, requestUpdateCalled(_)).Times(1); // forward=true update
+    EXPECT_CALL(*publishHandle, requestUpdateCalled(_)).WillOnce([](const RequestUpdate& update) {
+      auto ngrValue = getFirstIntParam(update.params, TrackRequestParamKey::NEW_GROUP_REQUEST);
+      ASSERT_TRUE(ngrValue.has_value());
+      EXPECT_EQ(*ngrValue, 8u);
+    });
+  }
+
+  PublishRequest pub;
+  pub.fullTrackName = kTestTrackName;
+  setPublisherDynamicGroups(pub, true);
+  withSessionContext(publisherSession, [&]() {
+    auto res = subscriberInterface()->publish(std::move(pub), publishHandle);
+    EXPECT_TRUE(res.hasValue());
+    if (res.hasValue()) {
+      getOrCreateMockState(publisherSession)->publishConsumers.push_back(res->consumer);
+    }
+  });
+  exec_->drive();
+
+  removeSession(publisherSession);
+  removeSession(subscriberSession);
+}
+
+// Relay test: a second subscriber returning the same NEW_GROUP_REQUEST value in
+// its PublishOk is deduplicated; the upstream handle receives exactly one
+// REQUEST_UPDATE
+TEST_F(MoQRelayTest, PublishOkDuplicateNGRNotForwardedUpstream) {
+  auto publisherSession = createMockSession();
+  auto subscriber1 = createMockSession();
+  auto subscriber2 = createMockSession();
+
+  doPublishNamespace(publisherSession, kTestNamespace);
+
+  auto makeNGRTask = [](RequestID rid, std::shared_ptr<TrackConsumer> consumer, uint64_t ngr) {
+    TrackRequestParameters ngrParams(FrameType::PUBLISH_OK);
+    ngrParams.insertParam(
+        Parameter(folly::to_underlying(TrackRequestParamKey::NEW_GROUP_REQUEST), ngr)
+    );
+    auto task = folly::coro::makeTask<folly::Expected<PublishOk, PublishError>>(PublishOk{
+        rid,
+        true,
+        0,
+        GroupOrder::OldestFirst,
+        LocationType::LargestObject,
+        std::nullopt,
+        std::nullopt,
+        std::move(ngrParams)
+    });
+    return Subscriber::PublishResult(
+        Subscriber::PublishConsumerAndReplyTask{consumer, std::move(task)}
+    );
+  };
+
+  auto mockConsumer1 = createMockConsumer();
+  EXPECT_CALL(*subscriber1, publish(_, _)).WillOnce([&](const auto&, auto) {
+    return makeNGRTask(RequestID(1), mockConsumer1, 8);
+  });
+
+  auto mockConsumer2 = createMockConsumer();
+  EXPECT_CALL(*subscriber2, publish(_, _)).WillOnce([&](const auto&, auto) {
+    return makeNGRTask(RequestID(2), mockConsumer2, 8);
+  });
+
+  doSubscribeNamespace(subscriber1, kTestNamespace);
+  doSubscribeNamespace(subscriber2, kTestNamespace);
+
+  auto publishHandle = makePublishHandle();
+  {
+    testing::InSequence seq;
+    EXPECT_CALL(*publishHandle, requestUpdateCalled(_)).Times(1); // forward=true update
+    EXPECT_CALL(*publishHandle, requestUpdateCalled(_)).Times(1); // NGR update (deduplicated)
+  }
+
+  PublishRequest pub;
+  pub.fullTrackName = kTestTrackName;
+  setPublisherDynamicGroups(pub, true);
+  withSessionContext(publisherSession, [&]() {
+    auto res = subscriberInterface()->publish(std::move(pub), publishHandle);
+    EXPECT_TRUE(res.hasValue());
+    if (res.hasValue()) {
+      getOrCreateMockState(publisherSession)->publishConsumers.push_back(res->consumer);
+    }
+  });
+  exec_->drive();
+
+  removeSession(publisherSession);
+  removeSession(subscriber1);
+  removeSession(subscriber2);
+}
+
 } // namespace moxygen::test
