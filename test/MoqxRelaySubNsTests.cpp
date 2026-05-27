@@ -98,7 +98,7 @@ TEST_F(MoQRelayTest, SubscribeNamespaceEmptyPrefixRejectedPreV16) {
   subNs.trackNamespacePrefix = emptyNs;
 
   withSessionContext(session, [&]() {
-    auto task = relay_->subscribeNamespace(std::move(subNs), nullptr);
+    auto task = publisherInterface()->subscribeNamespace(std::move(subNs), nullptr);
     auto res = folly::coro::blockingWait(std::move(task), exec_.get());
     ASSERT_FALSE(res.hasValue()
     ) << "Empty namespace prefix should be rejected for pre-v16 sessions";

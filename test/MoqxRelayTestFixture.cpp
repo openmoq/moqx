@@ -32,6 +32,10 @@ void MoQRelayTest::SetUp() {
   relay_->setAllowedNamespacePrefix(kAllowedPrefix);
 }
 
+void MoQRelayTest::resetRelay(std::shared_ptr<MoqxRelay> relay) {
+  relay_ = std::move(relay);
+}
+
 void MoQRelayTest::TearDown() {
   relay_.reset();
 }
@@ -81,7 +85,7 @@ std::shared_ptr<SubscriptionHandle> MoQRelayTest::subscribeToTrack(
   sub.locType = LocationType::LargestObject;
   std::shared_ptr<SubscriptionHandle> handle{nullptr};
   withSessionContext(session, [&]() {
-    auto task = relay_->subscribe(std::move(sub), consumer);
+    auto task = publisherInterface()->subscribe(std::move(sub), consumer);
     auto res = folly::coro::blockingWait(std::move(task), exec_.get());
     if (expectedError.has_value()) {
       EXPECT_FALSE(res.hasValue());
@@ -162,7 +166,7 @@ std::shared_ptr<Subscriber::PublishNamespaceHandle> MoQRelayTest::doPublishNames
   PublishNamespace ann;
   ann.trackNamespace = ns;
   return withSessionContext(session, [&]() {
-    auto task = relay_->publishNamespace(std::move(ann), nullptr);
+    auto task = subscriberInterface()->publishNamespace(std::move(ann), nullptr);
     auto res = folly::coro::blockingWait(std::move(task), exec_.get());
     EXPECT_TRUE(res.hasValue());
     if (res.hasValue()) {
@@ -183,7 +187,7 @@ std::shared_ptr<TrackConsumer> MoQRelayTest::doPublish(
   PublishRequest pub;
   pub.fullTrackName = trackName;
   return withSessionContext(session, [&]() {
-    auto res = relay_->publish(std::move(pub), createMockSubscriptionHandle());
+    auto res = subscriberInterface()->publish(std::move(pub), createMockSubscriptionHandle());
     EXPECT_TRUE(res.hasValue());
     if (res.hasValue()) {
       if (addToState) {
@@ -203,7 +207,7 @@ std::shared_ptr<Publisher::SubscribeNamespaceHandle> MoQRelayTest::doSubscribeNa
   SubscribeNamespace subNs;
   subNs.trackNamespacePrefix = nsPrefix;
   return withSessionContext(session, [&]() {
-    auto task = relay_->subscribeNamespace(std::move(subNs), nullptr);
+    auto task = publisherInterface()->subscribeNamespace(std::move(subNs), nullptr);
     auto res = folly::coro::blockingWait(std::move(task), exec_.get());
     EXPECT_TRUE(res.hasValue());
     if (res.hasValue()) {
@@ -240,7 +244,7 @@ std::shared_ptr<TrackConsumer> MoQRelayTest::doPublishWithHandle(
   return withSessionContext(session, [&]() -> std::shared_ptr<TrackConsumer> {
     PublishRequest pub;
     pub.fullTrackName = trackName;
-    auto res = relay_->publish(std::move(pub), std::move(handle));
+    auto res = subscriberInterface()->publish(std::move(pub), std::move(handle));
     EXPECT_TRUE(res.hasValue());
     if (!res.hasValue()) {
       return nullptr;
@@ -260,7 +264,7 @@ std::shared_ptr<Publisher::SubscribeNamespaceHandle> MoQRelayTest::doSubscribeNa
   subNs.trackNamespacePrefix = nsPrefix;
   subNs.forward = forward;
   return withSessionContext(session, [&]() {
-    auto task = relay_->subscribeNamespace(std::move(subNs), nullptr);
+    auto task = publisherInterface()->subscribeNamespace(std::move(subNs), nullptr);
     auto res = folly::coro::blockingWait(std::move(task), exec_.get());
     EXPECT_TRUE(res.hasValue());
     if (!res.hasValue()) {

@@ -59,7 +59,7 @@ TEST_F(MoQRelayTest, NamespaceBridgeHandleForwardsDoneMsg) {
 // path for draft-16 is synchronous: namespacePublishHandle->namespaceMsg().
 TEST_F(MoQRelayTest, PeerNamespaceNotEchoedBackOnReconnect) {
   // Relay must have a relayID for peer detection to activate.
-  relay_ = std::make_shared<MoqxRelay>(config::CacheConfig{.maxCachedTracks = 0}, "sg-sin-2-1");
+  resetRelay(std::make_shared<MoqxRelay>(config::CacheConfig{.maxCachedTracks = 0}, "sg-sin-2-1"));
   relay_->setAllowedNamespacePrefix(kAllowedPrefix);
 
   // Step 1: session1 is the peer's old (unreaped) connection.  Inject NS as
@@ -85,7 +85,7 @@ TEST_F(MoQRelayTest, PeerNamespaceNotEchoedBackOnReconnect) {
 
   withSessionContext(session2, [&]() {
     // makePeerSubNs("jp-osa-1") carries jp-osa-1's relay ID in the auth token.
-    auto task = relay_->subscribeNamespace(makePeerSubNs("jp-osa-1"), nsHandle);
+    auto task = publisherInterface()->subscribeNamespace(makePeerSubNs("jp-osa-1"), nsHandle);
     folly::coro::blockingWait(std::move(task), exec_.get());
   });
 
@@ -98,7 +98,7 @@ TEST_F(MoQRelayTest, PeerNamespaceNotEchoedBackOnReconnect) {
 // Complement: namespaces from LOCAL publishers (not from the peer) must still
 // be delivered when that peer subscribes.
 TEST_F(MoQRelayTest, LocalNamespaceDeliveredToPeerOnReconnect) {
-  relay_ = std::make_shared<MoqxRelay>(config::CacheConfig{.maxCachedTracks = 0}, "sg-sin-2-1");
+  resetRelay(std::make_shared<MoqxRelay>(config::CacheConfig{.maxCachedTracks = 0}, "sg-sin-2-1"));
   relay_->setAllowedNamespacePrefix(kAllowedPrefix);
 
   // Local publisher session announces kTestNamespace.
@@ -117,7 +117,7 @@ TEST_F(MoQRelayTest, LocalNamespaceDeliveredToPeerOnReconnect) {
   });
 
   withSessionContext(peerSession, [&]() {
-    auto task = relay_->subscribeNamespace(makePeerSubNs("jp-osa-1"), nsHandle);
+    auto task = publisherInterface()->subscribeNamespace(makePeerSubNs("jp-osa-1"), nsHandle);
     folly::coro::blockingWait(std::move(task), exec_.get());
   });
   EXPECT_TRUE(delivered) << "Relay failed to deliver a local namespace to a peer subscriber";
@@ -171,10 +171,10 @@ private:
 //
 // Unlike PeerNamespaceNotEchoedBackOnReconnect (which injects the namespace
 // directly via makeNamespaceBridgeHandle), this test goes through the full
-// relay_->subscribeNamespace() production path so the bug in the call-site is
+// publisherInterface()->subscribeNamespace() production path so the bug in the call-site is
 // exercised.
 TEST_F(MoQRelayTest, PeerNamespaceNotEchoedBack_FullProductionPath) {
-  relay_ = std::make_shared<MoqxRelay>(config::CacheConfig{.maxCachedTracks = 0}, "sg-sin-2-1");
+  resetRelay(std::make_shared<MoqxRelay>(config::CacheConfig{.maxCachedTracks = 0}, "sg-sin-2-1"));
   relay_->setAllowedNamespacePrefix(kAllowedPrefix);
 
   // Step 1: jp-osa-1 connects as session1.  It will announce kTestNamespace
@@ -189,7 +189,7 @@ TEST_F(MoQRelayTest, PeerNamespaceNotEchoedBack_FullProductionPath) {
 
   auto nsHandle1 = std::make_shared<NiceMock<MockNamespacePublishHandle>>();
   withSessionContext(session1, [&]() {
-    auto task = relay_->subscribeNamespace(makePeerSubNs("jp-osa-1"), nsHandle1);
+    auto task = publisherInterface()->subscribeNamespace(makePeerSubNs("jp-osa-1"), nsHandle1);
     folly::coro::blockingWait(std::move(task), exec_.get());
   });
 
@@ -209,7 +209,7 @@ TEST_F(MoQRelayTest, PeerNamespaceNotEchoedBack_FullProductionPath) {
   });
 
   withSessionContext(session2, [&]() {
-    auto task = relay_->subscribeNamespace(makePeerSubNs("jp-osa-1"), nsHandle2);
+    auto task = publisherInterface()->subscribeNamespace(makePeerSubNs("jp-osa-1"), nsHandle2);
     folly::coro::blockingWait(std::move(task), exec_.get());
   });
 

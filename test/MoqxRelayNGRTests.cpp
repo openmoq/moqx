@@ -22,7 +22,7 @@ TEST_F(MoQRelayTest, RelayPublishPropagatesDynamicGroupsToSubscribers) {
   setPublisherDynamicGroups(pub, true);
 
   withSessionContext(publisherSession, [&]() {
-    auto res = relay_->publish(std::move(pub), createMockSubscriptionHandle());
+    auto res = subscriberInterface()->publish(std::move(pub), createMockSubscriptionHandle());
     ASSERT_TRUE(res.hasValue());
     getOrCreateMockState(publisherSession)->publishConsumers.push_back(res->consumer);
   });
@@ -142,7 +142,7 @@ TEST_F(MoQRelayTest, RelaySubscribeLateJoinerNGRForwardedUpstream) {
 
   std::shared_ptr<SubscriptionHandle> handle2{nullptr};
   withSessionContext(subscriber2, [&]() {
-    auto task = relay_->subscribe(std::move(sub2), consumer2);
+    auto task = publisherInterface()->subscribe(std::move(sub2), consumer2);
     auto res = folly::coro::blockingWait(std::move(task), exec_.get());
     ASSERT_TRUE(res.hasValue());
     handle2 = *res;
