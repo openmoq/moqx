@@ -193,9 +193,6 @@ TEST_F(MoQRelayTest, RelayRequestUpdateNGRCascadedUpstream) {
   auto handle = subscribeToTrack(subscriberSession, kTestTrackName, consumer, RequestID(1));
   ASSERT_NE(handle, nullptr);
 
-  auto* subscriber = dynamic_cast<MoQForwarder::Subscriber*>(handle.get());
-  ASSERT_NE(subscriber, nullptr);
-
   // The relay must cascade NGR=9 upstream via REQUEST_UPDATE
   EXPECT_CALL(*upstreamHandle, requestUpdateCalled(_)).WillOnce([](const RequestUpdate& update) {
     auto ngrValue = getFirstIntParam(update.params, TrackRequestParamKey::NEW_GROUP_REQUEST);
@@ -210,7 +207,7 @@ TEST_F(MoQRelayTest, RelayRequestUpdateNGRCascadedUpstream) {
   update.params.insertParam(
       Parameter(folly::to_underlying(TrackRequestParamKey::NEW_GROUP_REQUEST), uint64_t(9))
   );
-  folly::coro::blockingWait(subscriber->requestUpdate(std::move(update)));
+  folly::coro::blockingWait(handle->requestUpdate(std::move(update)));
   exec_->drive();
 
   removeSession(publisherSession);
