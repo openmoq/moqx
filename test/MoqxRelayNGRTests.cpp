@@ -22,7 +22,7 @@ TEST_F(MoQRelayTest, RelayPublishPropagatesDynamicGroupsToSubscribers) {
   setPublisherDynamicGroups(pub, true);
 
   withSessionContext(publisherSession, [&]() {
-    auto res = relay_->publish(std::move(pub), createMockSubscriptionHandle());
+    auto res = subscriberInterface()->publish(std::move(pub), createMockSubscriptionHandle());
     ASSERT_TRUE(res.hasValue());
     getOrCreateMockState(publisherSession)->publishConsumers.push_back(res->consumer);
   });
@@ -142,7 +142,7 @@ TEST_F(MoQRelayTest, RelaySubscribeLateJoinerNGRForwardedUpstream) {
 
   std::shared_ptr<SubscriptionHandle> handle2{nullptr};
   withSessionContext(subscriber2, [&]() {
-    auto task = relay_->subscribe(std::move(sub2), consumer2);
+    auto task = publisherInterface()->subscribe(std::move(sub2), consumer2);
     auto res = folly::coro::blockingWait(std::move(task), exec_.get());
     ASSERT_TRUE(res.hasValue());
     handle2 = *res;
@@ -193,9 +193,6 @@ TEST_F(MoQRelayTest, RelayRequestUpdateNGRCascadedUpstream) {
   auto handle = subscribeToTrack(subscriberSession, kTestTrackName, consumer, RequestID(1));
   ASSERT_NE(handle, nullptr);
 
-  auto* subscriber = dynamic_cast<MoQForwarder::Subscriber*>(handle.get());
-  ASSERT_NE(subscriber, nullptr);
-
   // The relay must cascade NGR=9 upstream via REQUEST_UPDATE
   EXPECT_CALL(*upstreamHandle, requestUpdateCalled(_)).WillOnce([](const RequestUpdate& update) {
     auto ngrValue = getFirstIntParam(update.params, TrackRequestParamKey::NEW_GROUP_REQUEST);
@@ -210,7 +207,7 @@ TEST_F(MoQRelayTest, RelayRequestUpdateNGRCascadedUpstream) {
   update.params.insertParam(
       Parameter(folly::to_underlying(TrackRequestParamKey::NEW_GROUP_REQUEST), uint64_t(9))
   );
-  folly::coro::blockingWait(subscriber->requestUpdate(std::move(update)));
+  folly::coro::blockingWait(handle->requestUpdate(std::move(update)));
   exec_->drive();
 
   removeSession(publisherSession);

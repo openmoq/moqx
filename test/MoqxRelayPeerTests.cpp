@@ -20,9 +20,13 @@ TEST_F(MoQRelayTest, NamespaceBridgeHandleForwardsNamespaceMsg) {
   auto handle = makeNamespaceBridgeHandle(relay_, peerSession);
   handle->namespaceMsg(kTestNamespace);
 
-  auto sessions = relay_->findPublishNamespaceSessions(kTestNamespace);
-  ASSERT_EQ(sessions.size(), 1u);
-  EXPECT_EQ(sessions[0], peerSession);
+  verifyOnRelayExec([&] {
+    auto sessions = relay_->findPublishNamespaceSessions(kTestNamespace);
+    EXPECT_EQ(sessions.size(), 1u);
+    if (!sessions.empty()) {
+      EXPECT_EQ(sessions[0], peerSession);
+    }
+  });
 
   removeSession(peerSession);
 }
@@ -33,10 +37,14 @@ TEST_F(MoQRelayTest, NamespaceBridgeHandleForwardsDoneMsg) {
   auto handle = makeNamespaceBridgeHandle(relay_, peerSession);
 
   handle->namespaceMsg(kTestNamespace);
-  ASSERT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 1u);
+  verifyOnRelayExec([&] {
+    EXPECT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 1u);
+  });
 
   handle->namespaceDoneMsg(kTestNamespace);
-  EXPECT_TRUE(relay_->findPublishNamespaceSessions(kTestNamespace).empty());
+  verifyOnRelayExec([&] {
+    EXPECT_TRUE(relay_->findPublishNamespaceSessions(kTestNamespace).empty());
+  });
 
   removeSession(peerSession);
 }
@@ -59,7 +67,7 @@ TEST_F(MoQRelayTest, NamespaceBridgeHandleForwardsDoneMsg) {
 // path for draft-16 is synchronous: namespacePublishHandle->namespaceMsg().
 TEST_F(MoQRelayTest, PeerNamespaceNotEchoedBackOnReconnect) {
   // Relay must have a relayID for peer detection to activate.
-  relay_ = std::make_shared<MoqxRelay>(config::CacheConfig{.maxCachedTracks = 0}, "sg-sin-2-1");
+  resetRelay(std::make_shared<MoqxRelay>(config::CacheConfig{.maxCachedTracks = 0}, "sg-sin-2-1"));
   relay_->setAllowedNamespacePrefix(kAllowedPrefix);
 
   // Step 1: session1 is the peer's old (unreaped) connection.  Inject NS as
@@ -67,7 +75,9 @@ TEST_F(MoQRelayTest, PeerNamespaceNotEchoedBackOnReconnect) {
   auto session1 = createMockSession();
   auto bridgeHandle = makeNamespaceBridgeHandle(relay_, session1, "jp-osa-1");
   bridgeHandle->namespaceMsg(kTestNamespace);
-  ASSERT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 1u);
+  verifyOnRelayExec([&] {
+    EXPECT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 1u);
+  });
 
   // Step 2: jp-osa-1 reconnects as session2 and sends a peer SUBSCRIBE_NAMESPACE.
   // Peer-to-peer sessions negotiate draft-16 (empty prefix is a 16+ feature).
@@ -85,7 +95,7 @@ TEST_F(MoQRelayTest, PeerNamespaceNotEchoedBackOnReconnect) {
 
   withSessionContext(session2, [&]() {
     // makePeerSubNs("jp-osa-1") carries jp-osa-1's relay ID in the auth token.
-    auto task = relay_->subscribeNamespace(makePeerSubNs("jp-osa-1"), nsHandle);
+    auto task = publisherInterface()->subscribeNamespace(makePeerSubNs("jp-osa-1"), nsHandle);
     folly::coro::blockingWait(std::move(task), exec_.get());
   });
 
@@ -98,7 +108,7 @@ TEST_F(MoQRelayTest, PeerNamespaceNotEchoedBackOnReconnect) {
 // Complement: namespaces from LOCAL publishers (not from the peer) must still
 // be delivered when that peer subscribes.
 TEST_F(MoQRelayTest, LocalNamespaceDeliveredToPeerOnReconnect) {
-  relay_ = std::make_shared<MoqxRelay>(config::CacheConfig{.maxCachedTracks = 0}, "sg-sin-2-1");
+  resetRelay(std::make_shared<MoqxRelay>(config::CacheConfig{.maxCachedTracks = 0}, "sg-sin-2-1"));
   relay_->setAllowedNamespacePrefix(kAllowedPrefix);
 
   // Local publisher session announces kTestNamespace.
@@ -117,7 +127,7 @@ TEST_F(MoQRelayTest, LocalNamespaceDeliveredToPeerOnReconnect) {
   });
 
   withSessionContext(peerSession, [&]() {
-    auto task = relay_->subscribeNamespace(makePeerSubNs("jp-osa-1"), nsHandle);
+    auto task = publisherInterface()->subscribeNamespace(makePeerSubNs("jp-osa-1"), nsHandle);
     folly::coro::blockingWait(std::move(task), exec_.get());
   });
   EXPECT_TRUE(delivered) << "Relay failed to deliver a local namespace to a peer subscriber";
@@ -171,10 +181,10 @@ private:
 //
 // Unlike PeerNamespaceNotEchoedBackOnReconnect (which injects the namespace
 // directly via makeNamespaceBridgeHandle), this test goes through the full
-// relay_->subscribeNamespace() production path so the bug in the call-site is
+// publisherInterface()->subscribeNamespace() production path so the bug in the call-site is
 // exercised.
 TEST_F(MoQRelayTest, PeerNamespaceNotEchoedBack_FullProductionPath) {
-  relay_ = std::make_shared<MoqxRelay>(config::CacheConfig{.maxCachedTracks = 0}, "sg-sin-2-1");
+  resetRelay(std::make_shared<MoqxRelay>(config::CacheConfig{.maxCachedTracks = 0}, "sg-sin-2-1"));
   relay_->setAllowedNamespacePrefix(kAllowedPrefix);
 
   // Step 1: jp-osa-1 connects as session1.  It will announce kTestNamespace
@@ -189,12 +199,14 @@ TEST_F(MoQRelayTest, PeerNamespaceNotEchoedBack_FullProductionPath) {
 
   auto nsHandle1 = std::make_shared<NiceMock<MockNamespacePublishHandle>>();
   withSessionContext(session1, [&]() {
-    auto task = relay_->subscribeNamespace(makePeerSubNs("jp-osa-1"), nsHandle1);
+    auto task = publisherInterface()->subscribeNamespace(makePeerSubNs("jp-osa-1"), nsHandle1);
     folly::coro::blockingWait(std::move(task), exec_.get());
   });
 
   // kTestNamespace should now be in the tree with sourcePeerID="jp-osa-1".
-  ASSERT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 1u);
+  verifyOnRelayExec([&] {
+    EXPECT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 1u);
+  });
 
   // Step 2: jp-osa-1 reconnects as session2 and re-subscribes.
   // kTestNamespace must NOT be echoed back.
@@ -209,7 +221,7 @@ TEST_F(MoQRelayTest, PeerNamespaceNotEchoedBack_FullProductionPath) {
   });
 
   withSessionContext(session2, [&]() {
-    auto task = relay_->subscribeNamespace(makePeerSubNs("jp-osa-1"), nsHandle2);
+    auto task = publisherInterface()->subscribeNamespace(makePeerSubNs("jp-osa-1"), nsHandle2);
     folly::coro::blockingWait(std::move(task), exec_.get());
   });
 
@@ -232,15 +244,19 @@ TEST_F(MoQRelayTest, BridgeHandleDestructorCleansUpNamespaces) {
   // it, as happens when the relay subscribes to an upstream/peer.
   auto bridgeHandle = makeNamespaceBridgeHandle(relay_, upstreamSession, /*peerID=*/{});
   bridgeHandle->namespaceMsg(kTestNamespace);
-  ASSERT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 1u);
+  verifyOnRelayExec([&] {
+    EXPECT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 1u);
+  });
 
   // Drop the bridge handle without graceful namespaceDoneMsg — simulates
   // ungraceful session close destroying SubNsStreamCallback.
   bridgeHandle.reset();
 
   // Tree entry must be gone.
-  EXPECT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 0u)
-      << "Stale namespace tree entry persists after bridge handle destruction";
+  verifyOnRelayExec([&] {
+    EXPECT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 0u)
+        << "Stale namespace tree entry persists after bridge handle destruction";
+  });
 
   removeSession(upstreamSession);
 }
@@ -255,19 +271,25 @@ TEST_F(MoQRelayTest, BridgeHandleDestructorDoesNotEvictNewPublisher) {
   // session1 announces NS via bridge handle.
   auto bridgeHandle1 = makeNamespaceBridgeHandle(relay_, session1, /*peerID=*/{});
   bridgeHandle1->namespaceMsg(kTestNamespace);
-  ASSERT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 1u);
+  verifyOnRelayExec([&] {
+    EXPECT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 1u);
+  });
 
   // session2 takes over NS (conflict path evicts session1, sets sourceSession=session2).
   auto bridgeHandle2 = makeNamespaceBridgeHandle(relay_, session2, /*peerID=*/{});
   bridgeHandle2->namespaceMsg(kTestNamespace);
-  ASSERT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 1u);
+  verifyOnRelayExec([&] {
+    EXPECT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 1u);
+  });
 
   // Now session1's handle is destroyed (ungraceful close detected late).
   // It must NOT evict session2's entry.
   bridgeHandle1.reset();
 
-  EXPECT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 1u)
-      << "Stale bridge handle destructor evicted the new publisher's entry";
+  verifyOnRelayExec([&] {
+    EXPECT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 1u)
+        << "Stale bridge handle destructor evicted the new publisher's entry";
+  });
 
   bridgeHandle2.reset();
   removeSession(session1);

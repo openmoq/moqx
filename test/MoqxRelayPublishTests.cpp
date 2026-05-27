@@ -83,7 +83,7 @@ TEST_F(MoQRelayTest, PublishExtensionsForwardedToSubscribers) {
   pub.extensions.insertMutableExtension(Extension{0xBEEF'0000, 42});
 
   withSessionContext(publisherSession, [&]() {
-    auto res = relay_->publish(std::move(pub), createMockSubscriptionHandle());
+    auto res = subscriberInterface()->publish(std::move(pub), createMockSubscriptionHandle());
     EXPECT_TRUE(res.hasValue());
     if (res.hasValue()) {
       getOrCreateMockState(publisherSession)->publishConsumers.push_back(res->consumer);
@@ -138,7 +138,7 @@ TEST_F(MoQRelayTest, PublishExtensionsForwardedToLateJoiners) {
   pub.extensions.insertMutableExtension(Extension{0xCAFE'0000, 99});
 
   withSessionContext(publisherSession, [&]() {
-    auto res = relay_->publish(std::move(pub), createMockSubscriptionHandle());
+    auto res = subscriberInterface()->publish(std::move(pub), createMockSubscriptionHandle());
     EXPECT_TRUE(res.hasValue());
     if (res.hasValue()) {
       getOrCreateMockState(publisherSession)->publishConsumers.push_back(res->consumer);
@@ -371,7 +371,8 @@ TEST_F(MoQRelayTest, PublishReconnectDuringSubscribeScopeGuardCrash) {
               );
               PublishRequest pub;
               pub.fullTrackName = kTestTrackName;
-              auto res = relay_->publish(std::move(pub), createMockSubscriptionHandle());
+              auto res =
+                  subscriberInterface()->publish(std::move(pub), createMockSubscriptionHandle());
               EXPECT_TRUE(res.hasValue()) << "publish in mock unexpectedly failed";
               if (res.hasValue()) {
                 pub2Consumer = res->consumer;
@@ -393,7 +394,7 @@ TEST_F(MoQRelayTest, PublishReconnectDuringSubscribeScopeGuardCrash) {
     sub.requestID = RequestID(1);
     sub.locType = LocationType::LargestObject;
     auto result = folly::coro::blockingWait(
-        relay_->subscribe(std::move(sub), createMockConsumer()),
+        publisherInterface()->subscribe(std::move(sub), createMockConsumer()),
         exec_.get()
     );
     // With the fix: subscribe returns an error without crashing.
@@ -443,7 +444,8 @@ TEST_F(MoQRelayTest, PublishReconnectDuringSubscribeSuccessPathCrash) {
               );
               PublishRequest pub;
               pub.fullTrackName = kTestTrackName;
-              auto res = relay_->publish(std::move(pub), createMockSubscriptionHandle());
+              auto res =
+                  subscriberInterface()->publish(std::move(pub), createMockSubscriptionHandle());
               EXPECT_TRUE(res.hasValue()) << "publish in mock unexpectedly failed";
               if (res.hasValue()) {
                 pub2Consumer = res->consumer;
@@ -468,7 +470,7 @@ TEST_F(MoQRelayTest, PublishReconnectDuringSubscribeSuccessPathCrash) {
     sub.requestID = RequestID(1);
     sub.locType = LocationType::LargestObject;
     auto result = folly::coro::blockingWait(
-        relay_->subscribe(std::move(sub), createMockConsumer()),
+        publisherInterface()->subscribe(std::move(sub), createMockConsumer()),
         exec_.get()
     );
     EXPECT_FALSE(result.hasValue()) << "subscribe should fail (publisher reconnected)";
@@ -495,9 +497,11 @@ TEST_F(MoQRelayTest, PublishDonePrunesNamespaceTreeNode) {
   auto consumer = doPublish(publisher, kTestTrackName);
 
   // Verify the publish is visible in the tree
-  auto state = relay_->findPublishState(kTestTrackName);
-  EXPECT_TRUE(state.nodeExists);
-  EXPECT_EQ(state.session, publisher);
+  verifyOnRelayExec([&] {
+    auto state = relay_->findPublishState(kTestTrackName);
+    EXPECT_TRUE(state.nodeExists);
+    EXPECT_EQ(state.session, publisher);
+  });
 
   // publishNamespaceDone — node stays alive because the track publish is still active
   withSessionContext(publisher, [&]() {
@@ -505,9 +509,11 @@ TEST_F(MoQRelayTest, PublishDonePrunesNamespaceTreeNode) {
     getOrCreateMockState(publisher)->publishNamespaceHandles.clear();
   });
 
-  state = relay_->findPublishState(kTestTrackName);
-  EXPECT_TRUE(state.nodeExists);
-  EXPECT_EQ(state.session, publisher);
+  verifyOnRelayExec([&] {
+    auto state = relay_->findPublishState(kTestTrackName);
+    EXPECT_TRUE(state.nodeExists);
+    EXPECT_EQ(state.session, publisher);
+  });
 
   // End the track publish — node should now be pruned
   withSessionContext(publisher, [&]() {
@@ -516,9 +522,11 @@ TEST_F(MoQRelayTest, PublishDonePrunesNamespaceTreeNode) {
     );
   });
 
-  state = relay_->findPublishState(kTestTrackName);
-  EXPECT_EQ(state.session, nullptr);
-  EXPECT_FALSE(state.nodeExists) << "Node persists after publish ended; pruning did not run";
+  verifyOnRelayExec([&] {
+    auto state = relay_->findPublishState(kTestTrackName);
+    EXPECT_EQ(state.session, nullptr);
+    EXPECT_FALSE(state.nodeExists) << "Node persists after publish ended; pruning did not run";
+  });
 
   removeSession(publisher);
 }
@@ -531,7 +539,7 @@ TEST_F(MoQRelayTest, EmptyNamespacePublishNamespaceDone) {
   PublishNamespace ann;
   ann.trackNamespace = emptyNs;
   withSessionContext(publisher, [&]() {
-    auto task = relay_->publishNamespace(std::move(ann), nullptr);
+    auto task = subscriberInterface()->publishNamespace(std::move(ann), nullptr);
     auto res = folly::coro::blockingWait(std::move(task), exec_.get());
     if (res.hasValue()) {
       getOrCreateMockState(publisher)->publishNamespaceHandles.push_back(res.value());
@@ -620,10 +628,10 @@ TEST_F(MoQRelayTest, SubscriberOnPublishOkPostprocessing) {
   // Test 3: NEW_GROUP_REQUEST forwarding via onPublishOk
   PublishRequest pub;
   setPublisherDynamicGroups(pub, true);
-  subscriber->forwarder.setExtensions(pub.extensions);
+  subscriber->forwarder->setExtensions(pub.extensions);
 
   auto cb = std::make_shared<TestNGRCallback>();
-  subscriber->forwarder.setCallback(cb);
+  subscriber->forwarder->setCallback(cb);
 
   TrackRequestParameters ngrParams(FrameType::PUBLISH_OK);
   ngrParams.insertParam(
@@ -645,9 +653,9 @@ TEST_F(MoQRelayTest, SubscriberOnPublishOkPostprocessing) {
   cb->calls.clear();
 
   // outstanding=20: re-requesting group 20 is a no-op; group 21 fires
-  subscriber->forwarder.tryProcessNewGroupRequest(makeNGRParams(20));
+  subscriber->forwarder->tryProcessNewGroupRequest(makeNGRParams(20));
   EXPECT_TRUE(cb->calls.empty());
-  subscriber->forwarder.tryProcessNewGroupRequest(makeNGRParams(21));
+  subscriber->forwarder->tryProcessNewGroupRequest(makeNGRParams(21));
   ASSERT_EQ(cb->calls.size(), 1u);
   EXPECT_EQ(cb->calls[0], 21u);
 

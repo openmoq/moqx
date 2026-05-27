@@ -69,6 +69,8 @@ protected:
       folly::Optional<SubscribeErrorCode> expectedError = folly::none
   );
 
+  template <typename Func> void verifyOnRelayExec(Func&& func) { func(); }
+
   template <typename Func>
   auto withSessionContext(std::shared_ptr<MoQSession> session, Func&& func) -> decltype(func()) {
     folly::RequestContextScopeGuard guard;
@@ -131,6 +133,22 @@ protected:
   void setupPublishSucceeds(std::shared_ptr<MockMoQSession> session);
 
   std::shared_ptr<NiceMock<MockSubscriptionHandle>> makePublishHandle();
+
+  // Replace relay_ and rebuild cross-exec filters if in MT mode.
+  // Use this instead of assigning relay_ directly in tests that need a custom relay.
+  void resetRelay(std::shared_ptr<MoqxRelay> relay);
+
+  // In MT mode: cross-exec filter wrappers that route test calls through relayExec_.
+  // In ST mode: null — accessors fall back to relay_ directly.
+  std::shared_ptr<moxygen::Publisher> publisherInterface_;
+  std::shared_ptr<moxygen::Subscriber> subscriberInterface_;
+
+  moxygen::Publisher* publisherInterface() {
+    return publisherInterface_ ? publisherInterface_.get() : relay_.get();
+  }
+  moxygen::Subscriber* subscriberInterface() {
+    return subscriberInterface_ ? subscriberInterface_.get() : relay_.get();
+  }
 
   std::shared_ptr<TestMoQExecutor> exec_;
   std::shared_ptr<MoqxRelay> relay_;
