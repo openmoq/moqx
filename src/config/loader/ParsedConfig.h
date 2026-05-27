@@ -111,8 +111,14 @@ struct ParsedMvfstConfig {
       std::optional<uint32_t>>
       max_conn_packets_sent_per_loop;
   rfl::Description<
+      "Use recvmmsg for batch receives in QuicServerWorker (default: true). "
+      "Enables the recvmmsg kernel call to read multiple UDP packets per syscall, "
+      "reducing overhead at high packet rates.",
+      std::optional<bool>>
+      use_recvmmsg;
+  rfl::Description<
       "Max incoming packets processed per event-loop read callback. "
-      "0 = unlimited. Default 10.",
+      "0 = unlimited. Default 64.",
       std::optional<uint16_t>>
       max_server_recv_packets_per_loop;
   rfl::Description<

@@ -76,9 +76,11 @@ struct MvfstConfig {
   uint32_t maxConnPacketsSentPerLoop{48};
 
   // Receive-path tuning.
+  // Use recvmmsg for batch receives in QuicServerWorker.
+  bool useRecvmmsg{true};
   // Max incoming packets processed per event-loop read callback. 0 = unlimited.
   // mvfst default is 1; moqx was hardcoded to 10.
-  uint16_t maxServerRecvPacketsPerLoop{10};
+  uint16_t maxServerRecvPacketsPerLoop{64};
   // Number of UDP GRO buffers. 1 = disabled. > 1 enables kernel GRO coalescing.
   uint32_t numGROBuffers{1};
 
