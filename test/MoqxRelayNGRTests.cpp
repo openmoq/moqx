@@ -25,6 +25,8 @@ TEST_F(MoQRelayTest, RelayPublishPropagatesDynamicGroupsToSubscribers) {
     auto res = subscriberInterface()->publish(std::move(pub), createMockSubscriptionHandle());
     ASSERT_TRUE(res.hasValue());
     getOrCreateMockState(publisherSession)->publishConsumers.push_back(res->consumer);
+    co_withExecutor(static_cast<folly::DrivableExecutor*>(exec_.get()), std::move(res->reply))
+        .start();
   });
 
   auto consumer = createMockConsumer();
