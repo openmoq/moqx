@@ -85,6 +85,9 @@ header_printed=false
 start_ms=$(date +%s%3N)
 prev_tick_ms=$start_ms
 prev_relay_cpu=0
+declare -A io_prev_cpu=()   # keyed by thread name (e.g. moqx-io0)
+declare -A io_tid=()        # thread name → tid
+declare -a io_names=()      # ordered list of discovered io thread names
 
 # Sleep only the remainder of the current 1s tick window.
 tick_sleep() {
@@ -108,6 +111,7 @@ while true; do
   # System stats
   relay_pid=$(pgrep -x moqx 2>/dev/null | head -1 || true)
   cpu_pct="?" rss_mb="?" cur_relay_cpu=0
+  declare -A io_cpu=()
   if [[ -n "$relay_pid" ]] && [[ -r "/proc/$relay_pid/stat" ]]; then
     stat_info=$(awk '{print $14+$15, $24}' "/proc/$relay_pid/stat" 2>/dev/null || true)
     if [[ -n "$stat_info" ]]; then
@@ -119,6 +123,31 @@ while true; do
                     -v ms="$(( now_ms - prev_tick_ms ))" \
                 'BEGIN { if (ms > 0) printf "%.1f", d/hz*1000/ms*100; else printf "0.0" }')
     fi
+
+    # Discover io threads on first sighting (names like moqx-io*)
+    if [[ ${#io_names[@]} -eq 0 ]]; then
+      for tid_dir in /proc/$relay_pid/task/*/; do
+        local_tid="${tid_dir%/}"; local_tid="${local_tid##*/}"
+        tname=$(cat "/proc/$relay_pid/task/$local_tid/comm" 2>/dev/null || true)
+        if [[ "$tname" == moqx-io* ]]; then
+          io_tid["$tname"]="$local_tid"
+          io_names+=("$tname")
+        fi
+      done
+      mapfile -t io_names < <(printf '%s\n' "${io_names[@]}" | sort)
+    fi
+
+    # Per-io-thread CPU%
+    for tname in "${io_names[@]}"; do
+      local_tid="${io_tid[$tname]}"
+      cur_ticks=$(awk '{print $14+$15}' "/proc/$relay_pid/task/$local_tid/stat" 2>/dev/null || echo 0)
+      prev_ticks="${io_prev_cpu[$tname]:-0}"
+      io_cpu[$tname]=$(awk -v d="$(( cur_ticks - prev_ticks ))" \
+                           -v hz="$CLK_TCK" \
+                           -v ms="$(( now_ms - prev_tick_ms ))" \
+                       'BEGIN { if (ms>0) printf "%.1f", d/hz*1000/ms*100; else printf "0.0" }')
+      io_prev_cpu["$tname"]="$cur_ticks"
+    done
   fi
 
   lo_now=$(awk '/^ *lo:/  { print $10+0 }' /proc/net/dev)
@@ -144,7 +173,9 @@ while true; do
     for key in "${col_order[@]}"; do
       header+="${SEP}$(col_name "$key")"
     done
-    header+="${SEP}CPU%${SEP}RSS_MB${SEP}lo_Mbps${SEP}ext_Mbps${SEP}UDPErr/s${SEP}UDPBufDrop/s"
+    header+="${SEP}CPU%"
+    for tname in "${io_names[@]}"; do header+="${SEP}${tname}_CPU%"; done
+    header+="${SEP}RSS_MB${SEP}lo_Mbps${SEP}ext_Mbps${SEP}UDPErr/s${SEP}UDPBufDrop/s"
     printf '%s\n' "$header" | tee "$LOG_FILE"
 
     for key in "${!cur[@]}"; do prev["$key"]="${cur[$key]}"; done
@@ -180,6 +211,8 @@ while true; do
     row+="${SEP}${val}"
   done
 
+  row+="${SEP}${cpu_pct}"
+  for tname in "${io_names[@]}"; do row+="${SEP}${io_cpu[$tname]:-?}"; done
   dlo=$(( ${lo_now:-0}        - ${sys_prev[lo]:-0} ))
   dtx=$(( ${tx_now:-0}        - ${sys_prev[tx]:-0} ))
   dudp_err=$(( ${udp_err:-0}  - ${sys_prev[udp_err]:-0} ))
@@ -189,7 +222,7 @@ while true; do
   derr_s=$(awk   -v d="$dudp_err" -v s="$interval_s" 'BEGIN { if (s>0) printf "%.1f", d/s; else printf "0.0" }')
   dbuf_s=$(awk   -v d="$dudp_buf" -v s="$interval_s" 'BEGIN { if (s>0) printf "%.1f", d/s; else printf "0.0" }')
 
-  row+="${SEP}${cpu_pct}${SEP}${rss_mb}${SEP}${lo_mbps}${SEP}${ext_mbps}${SEP}${derr_s}${SEP}${dbuf_s}"
+  row+="${SEP}${rss_mb}${SEP}${lo_mbps}${SEP}${ext_mbps}${SEP}${derr_s}${SEP}${dbuf_s}"
   printf '%s\n' "$row" | tee -a "$LOG_FILE"
 
   for key in "${!cur[@]}"; do prev["$key"]="${cur[$key]}"; done
