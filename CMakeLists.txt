@@ -14,10 +14,20 @@ endif()
 option(MOQX_BUILD_TESTS "Build tests" ON)
 option(MOQX_BUILD_BENCHMARKS "Build benchmarks" OFF)
 option(MOQX_ENABLE_SANITIZERS "Enable ASAN/UBSAN (non-Release)" OFF)
+option(MOQX_ENABLE_TSAN "Enable TSan (non-Release)" OFF)
+
+if(MOQX_ENABLE_SANITIZERS AND MOQX_ENABLE_TSAN)
+  message(FATAL_ERROR "MOQX_ENABLE_SANITIZERS and MOQX_ENABLE_TSAN are mutually exclusive")
+endif()
 
 if(MOQX_ENABLE_SANITIZERS AND NOT CMAKE_BUILD_TYPE STREQUAL "Release")
   add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
   add_link_options(-fsanitize=address,undefined)
+endif()
+
+if(MOQX_ENABLE_TSAN AND NOT CMAKE_BUILD_TYPE STREQUAL "Release")
+  add_compile_options(-fsanitize=thread -fno-omit-frame-pointer)
+  add_link_options(-fsanitize=thread)
 endif()
 
 # Prefer static libraries for all transitive deps (from-release mode).
