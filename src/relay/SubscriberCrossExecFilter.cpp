@@ -10,15 +10,88 @@
 
 namespace openmoq::moqx {
 
+namespace {
+
+// Wraps a PublishNamespaceCallback so that publishNamespaceCancel() is
+// dispatched back to the caller's executor.  Held by the inner session on
+// targetExec_ and called from there.
+class CrossExecPublishNamespaceCallback : public moxygen::Subscriber::PublishNamespaceCallback {
+public:
+  CrossExecPublishNamespaceCallback(
+      std::shared_ptr<moxygen::Subscriber::PublishNamespaceCallback> inner,
+      folly::Executor::KeepAlive<> exec
+  )
+      : inner_(std::move(inner)), exec_(std::move(exec)) {}
+
+  void publishNamespaceCancel(
+      moxygen::PublishNamespaceErrorCode errorCode,
+      std::string reasonPhrase
+  ) override {
+    exec_->add([inner = inner_, errorCode, reason = std::move(reasonPhrase)]() mutable {
+      inner->publishNamespaceCancel(errorCode, std::move(reason));
+    });
+  }
+
+private:
+  std::shared_ptr<moxygen::Subscriber::PublishNamespaceCallback> inner_;
+  folly::Executor::KeepAlive<> exec_;
+};
+
+// Wraps a PublishNamespaceHandle so that publishNamespaceDone() and
+// requestUpdate() are dispatched to targetExec_ (the inner session's exec).
+// Held by the caller and invoked from the caller's executor.
+class CrossExecPublishNamespaceHandle : public moxygen::Subscriber::PublishNamespaceHandle {
+public:
+  CrossExecPublishNamespaceHandle(
+      std::shared_ptr<moxygen::Subscriber::PublishNamespaceHandle> inner,
+      folly::Executor* exec
+  )
+      : inner_(std::move(inner)), exec_(exec) {}
+
+  const moxygen::PublishNamespaceOk& publishNamespaceOk() const override {
+    return inner_->publishNamespaceOk();
+  }
+
+  void publishNamespaceDone() override {
+    exec_->add([inner = inner_]() mutable { inner->publishNamespaceDone(); });
+  }
+
+  folly::coro::Task<RequestUpdateResult> requestUpdate(moxygen::RequestUpdate update) override {
+    co_return co_await folly::coro::co_withExecutor(
+        folly::getKeepAliveToken(exec_),
+        inner_->requestUpdate(std::move(update))
+    );
+  }
+
+private:
+  std::shared_ptr<moxygen::Subscriber::PublishNamespaceHandle> inner_;
+  folly::Executor* exec_;
+};
+
+} // namespace
+
 folly::coro::Task<moxygen::Subscriber::PublishNamespaceResult>
 SubscriberCrossExecFilter::publishNamespace(
-    moxygen::PublishNamespace ann,
+    moxygen::PublishNamespace pubNs,
     std::shared_ptr<PublishNamespaceCallback> callback
 ) {
-  co_return co_await folly::coro::co_withExecutor(
+  auto callerExec = co_await folly::coro::co_current_executor;
+  auto wrappedCallback = callback ? std::make_shared<CrossExecPublishNamespaceCallback>(
+                                        std::move(callback),
+                                        std::move(callerExec)
+                                    )
+                                  : nullptr;
+  auto result = co_await folly::coro::co_withExecutor(
       folly::getKeepAliveToken(targetExec_),
-      inner_->publishNamespace(std::move(ann), std::move(callback))
+      inner_->publishNamespace(std::move(pubNs), std::move(wrappedCallback))
   );
+  if (result.hasValue()) {
+    co_return std::make_shared<CrossExecPublishNamespaceHandle>(
+        std::move(result.value()),
+        targetExec_
+    );
+  }
+  co_return result;
 }
 
 moxygen::Subscriber::PublishResult SubscriberCrossExecFilter::publish(
