@@ -66,7 +66,9 @@ buildTransportSettings(const config::QuicConfig& quic, const config::MvfstConfig
   ts.maxBatchSize = mvfst.maxConnPacketsSentPerLoop;
   ts.writeConnectionDataPacketsLimit = mvfst.maxConnPacketsSentPerLoop;
   ts.dataPathType = quic::DataPathType::ContinuousMemory;
+  ts.shouldUseWrapperRecvmmsgForBatchRecv = mvfst.useRecvmmsg;
   ts.maxServerRecvPacketsPerLoop = mvfst.maxServerRecvPacketsPerLoop;
+  ts.maxRecvBatchSize = mvfst.maxServerRecvPacketsPerLoop;
   ts.numGROBuffers_ = mvfst.numGROBuffers;
   ts.advertisedInitialConnectionFlowControlWindow = quic.maxData;
   ts.advertisedInitialBidiLocalStreamFlowControlWindow = quic.maxStreamData;

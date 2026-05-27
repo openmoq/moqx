@@ -1466,7 +1466,8 @@ TEST(ResolveConfig, MvfstDefaultsRoundTrip) {
   EXPECT_EQ(mvfst.maxCwndInMss, 860000u);
   EXPECT_TRUE(mvfst.enableGSO);
   EXPECT_EQ(mvfst.maxConnPacketsSentPerLoop, 48u);
-  EXPECT_EQ(mvfst.maxServerRecvPacketsPerLoop, 10u);
+  EXPECT_TRUE(mvfst.useRecvmmsg);
+  EXPECT_EQ(mvfst.maxServerRecvPacketsPerLoop, 64u);
   EXPECT_EQ(mvfst.numGROBuffers, 1u);
   EXPECT_DOUBLE_EQ(mvfst.copa.deltaParam, 0.05);
   EXPECT_FALSE(mvfst.bbr.conservativeRecovery);
