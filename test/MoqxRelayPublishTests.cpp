@@ -83,7 +83,7 @@ TEST_F(MoQRelayTest, PublishExtensionsForwardedToSubscribers) {
   pub.extensions.insertMutableExtension(Extension{0xBEEF'0000, 42});
 
   withSessionContext(publisherSession, [&]() {
-    auto res = relay_->publish(std::move(pub), createMockSubscriptionHandle());
+    auto res = subscriberInterface()->publish(std::move(pub), createMockSubscriptionHandle());
     EXPECT_TRUE(res.hasValue());
     if (res.hasValue()) {
       getOrCreateMockState(publisherSession)->publishConsumers.push_back(res->consumer);
@@ -138,7 +138,7 @@ TEST_F(MoQRelayTest, PublishExtensionsForwardedToLateJoiners) {
   pub.extensions.insertMutableExtension(Extension{0xCAFE'0000, 99});
 
   withSessionContext(publisherSession, [&]() {
-    auto res = relay_->publish(std::move(pub), createMockSubscriptionHandle());
+    auto res = subscriberInterface()->publish(std::move(pub), createMockSubscriptionHandle());
     EXPECT_TRUE(res.hasValue());
     if (res.hasValue()) {
       getOrCreateMockState(publisherSession)->publishConsumers.push_back(res->consumer);
@@ -371,7 +371,8 @@ TEST_F(MoQRelayTest, PublishReconnectDuringSubscribeScopeGuardCrash) {
               );
               PublishRequest pub;
               pub.fullTrackName = kTestTrackName;
-              auto res = relay_->publish(std::move(pub), createMockSubscriptionHandle());
+              auto res =
+                  subscriberInterface()->publish(std::move(pub), createMockSubscriptionHandle());
               EXPECT_TRUE(res.hasValue()) << "publish in mock unexpectedly failed";
               if (res.hasValue()) {
                 pub2Consumer = res->consumer;
@@ -393,7 +394,7 @@ TEST_F(MoQRelayTest, PublishReconnectDuringSubscribeScopeGuardCrash) {
     sub.requestID = RequestID(1);
     sub.locType = LocationType::LargestObject;
     auto result = folly::coro::blockingWait(
-        relay_->subscribe(std::move(sub), createMockConsumer()),
+        publisherInterface()->subscribe(std::move(sub), createMockConsumer()),
         exec_.get()
     );
     // With the fix: subscribe returns an error without crashing.
@@ -443,7 +444,8 @@ TEST_F(MoQRelayTest, PublishReconnectDuringSubscribeSuccessPathCrash) {
               );
               PublishRequest pub;
               pub.fullTrackName = kTestTrackName;
-              auto res = relay_->publish(std::move(pub), createMockSubscriptionHandle());
+              auto res =
+                  subscriberInterface()->publish(std::move(pub), createMockSubscriptionHandle());
               EXPECT_TRUE(res.hasValue()) << "publish in mock unexpectedly failed";
               if (res.hasValue()) {
                 pub2Consumer = res->consumer;
@@ -468,7 +470,7 @@ TEST_F(MoQRelayTest, PublishReconnectDuringSubscribeSuccessPathCrash) {
     sub.requestID = RequestID(1);
     sub.locType = LocationType::LargestObject;
     auto result = folly::coro::blockingWait(
-        relay_->subscribe(std::move(sub), createMockConsumer()),
+        publisherInterface()->subscribe(std::move(sub), createMockConsumer()),
         exec_.get()
     );
     EXPECT_FALSE(result.hasValue()) << "subscribe should fail (publisher reconnected)";
@@ -531,7 +533,7 @@ TEST_F(MoQRelayTest, EmptyNamespacePublishNamespaceDone) {
   PublishNamespace ann;
   ann.trackNamespace = emptyNs;
   withSessionContext(publisher, [&]() {
-    auto task = relay_->publishNamespace(std::move(ann), nullptr);
+    auto task = subscriberInterface()->publishNamespace(std::move(ann), nullptr);
     auto res = folly::coro::blockingWait(std::move(task), exec_.get());
     if (res.hasValue()) {
       getOrCreateMockState(publisher)->publishNamespaceHandles.push_back(res.value());

@@ -85,7 +85,7 @@ TEST_F(MoQRelayTest, Subscribe_SecondForwardingSubscriber_SingleRequestUpdate) {
     sub.forward = false;
     withSessionContext(s1, [&]() {
       auto res = folly::coro::blockingWait(
-          relay_->subscribe(std::move(sub), createMockConsumer()),
+          publisherInterface()->subscribe(std::move(sub), createMockConsumer()),
           exec_.get()
       );
       EXPECT_TRUE(res.hasValue());
@@ -115,7 +115,7 @@ TEST_F(MoQRelayTest, Subscribe_SecondForwardingSubscriber_SingleRequestUpdate) {
     sub.forward = true;
     withSessionContext(s2, [&]() {
       auto res = folly::coro::blockingWait(
-          relay_->subscribe(std::move(sub), createMockConsumer()),
+          publisherInterface()->subscribe(std::move(sub), createMockConsumer()),
           exec_.get()
       );
       EXPECT_TRUE(res.hasValue());

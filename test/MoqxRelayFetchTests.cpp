@@ -49,7 +49,7 @@ TEST_F(MoQRelayTest, FetchAfterPublisherTermination) {
   Fetch fetch(RequestID(0), kTestTrackName, AbsoluteLocation{0, 0}, AbsoluteLocation{1, 0});
   auto fetchConsumer = std::make_shared<NiceMock<MockFetchConsumer>>();
   withSessionContext(fetchSession, [&]() {
-    auto task = relay_->fetch(std::move(fetch), fetchConsumer);
+    auto task = publisherInterface()->fetch(std::move(fetch), fetchConsumer);
     auto res = folly::coro::blockingWait(std::move(task), exec_.get());
     // Should return an error, not crash
     EXPECT_FALSE(res.hasValue());

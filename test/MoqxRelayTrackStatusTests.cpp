@@ -20,7 +20,7 @@ TEST_F(MoQRelayTest, TrackStatusNonExistentTrack) {
   trackStatus.requestID = RequestID(1);
 
   withSessionContext(clientSession, [&]() {
-    auto task = relay_->trackStatus(trackStatus);
+    auto task = publisherInterface()->trackStatus(trackStatus);
     auto res = folly::coro::blockingWait(std::move(task), exec_.get());
 
     // Should return error indicating track not found
@@ -48,7 +48,7 @@ TEST_F(MoQRelayTest, TrackStatusSuccessfulForward) {
   trackStatus.requestID = RequestID(2);
 
   withSessionContext(clientSession, [&]() {
-    auto task = relay_->trackStatus(trackStatus);
+    auto task = publisherInterface()->trackStatus(trackStatus);
     auto res = folly::coro::blockingWait(std::move(task), exec_.get());
 
     // Should return status from local forwarder
@@ -93,7 +93,7 @@ TEST_F(MoQRelayTest, TrackStatusViaPrefixMatching) {
   trackStatus.fullTrackName = kTestTrackName;
 
   withSessionContext(requester, [&]() {
-    auto task = relay_->trackStatus(trackStatus);
+    auto task = publisherInterface()->trackStatus(trackStatus);
     auto result = folly::coro::blockingWait(std::move(task), exec_.get());
 
     // Should successfully forward via prefix matching and return the result
