@@ -497,9 +497,11 @@ TEST_F(MoQRelayTest, PublishDonePrunesNamespaceTreeNode) {
   auto consumer = doPublish(publisher, kTestTrackName);
 
   // Verify the publish is visible in the tree
-  auto state = relay_->findPublishState(kTestTrackName);
-  EXPECT_TRUE(state.nodeExists);
-  EXPECT_EQ(state.session, publisher);
+  verifyOnRelayExec([&] {
+    auto state = relay_->findPublishState(kTestTrackName);
+    EXPECT_TRUE(state.nodeExists);
+    EXPECT_EQ(state.session, publisher);
+  });
 
   // publishNamespaceDone — node stays alive because the track publish is still active
   withSessionContext(publisher, [&]() {
@@ -507,9 +509,11 @@ TEST_F(MoQRelayTest, PublishDonePrunesNamespaceTreeNode) {
     getOrCreateMockState(publisher)->publishNamespaceHandles.clear();
   });
 
-  state = relay_->findPublishState(kTestTrackName);
-  EXPECT_TRUE(state.nodeExists);
-  EXPECT_EQ(state.session, publisher);
+  verifyOnRelayExec([&] {
+    auto state = relay_->findPublishState(kTestTrackName);
+    EXPECT_TRUE(state.nodeExists);
+    EXPECT_EQ(state.session, publisher);
+  });
 
   // End the track publish — node should now be pruned
   withSessionContext(publisher, [&]() {
@@ -518,9 +522,11 @@ TEST_F(MoQRelayTest, PublishDonePrunesNamespaceTreeNode) {
     );
   });
 
-  state = relay_->findPublishState(kTestTrackName);
-  EXPECT_EQ(state.session, nullptr);
-  EXPECT_FALSE(state.nodeExists) << "Node persists after publish ended; pruning did not run";
+  verifyOnRelayExec([&] {
+    auto state = relay_->findPublishState(kTestTrackName);
+    EXPECT_EQ(state.session, nullptr);
+    EXPECT_FALSE(state.nodeExists) << "Node persists after publish ended; pruning did not run";
+  });
 
   removeSession(publisher);
 }

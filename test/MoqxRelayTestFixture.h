@@ -69,6 +69,8 @@ protected:
       folly::Optional<SubscribeErrorCode> expectedError = folly::none
   );
 
+  template <typename Func> void verifyOnRelayExec(Func&& func) { func(); }
+
   template <typename Func>
   auto withSessionContext(std::shared_ptr<MoQSession> session, Func&& func) -> decltype(func()) {
     folly::RequestContextScopeGuard guard;

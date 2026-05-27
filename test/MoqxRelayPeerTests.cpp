@@ -20,9 +20,13 @@ TEST_F(MoQRelayTest, NamespaceBridgeHandleForwardsNamespaceMsg) {
   auto handle = makeNamespaceBridgeHandle(relay_, peerSession);
   handle->namespaceMsg(kTestNamespace);
 
-  auto sessions = relay_->findPublishNamespaceSessions(kTestNamespace);
-  ASSERT_EQ(sessions.size(), 1u);
-  EXPECT_EQ(sessions[0], peerSession);
+  verifyOnRelayExec([&] {
+    auto sessions = relay_->findPublishNamespaceSessions(kTestNamespace);
+    EXPECT_EQ(sessions.size(), 1u);
+    if (!sessions.empty()) {
+      EXPECT_EQ(sessions[0], peerSession);
+    }
+  });
 
   removeSession(peerSession);
 }
@@ -33,10 +37,14 @@ TEST_F(MoQRelayTest, NamespaceBridgeHandleForwardsDoneMsg) {
   auto handle = makeNamespaceBridgeHandle(relay_, peerSession);
 
   handle->namespaceMsg(kTestNamespace);
-  ASSERT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 1u);
+  verifyOnRelayExec([&] {
+    EXPECT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 1u);
+  });
 
   handle->namespaceDoneMsg(kTestNamespace);
-  EXPECT_TRUE(relay_->findPublishNamespaceSessions(kTestNamespace).empty());
+  verifyOnRelayExec([&] {
+    EXPECT_TRUE(relay_->findPublishNamespaceSessions(kTestNamespace).empty());
+  });
 
   removeSession(peerSession);
 }
@@ -67,7 +75,9 @@ TEST_F(MoQRelayTest, PeerNamespaceNotEchoedBackOnReconnect) {
   auto session1 = createMockSession();
   auto bridgeHandle = makeNamespaceBridgeHandle(relay_, session1, "jp-osa-1");
   bridgeHandle->namespaceMsg(kTestNamespace);
-  ASSERT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 1u);
+  verifyOnRelayExec([&] {
+    EXPECT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 1u);
+  });
 
   // Step 2: jp-osa-1 reconnects as session2 and sends a peer SUBSCRIBE_NAMESPACE.
   // Peer-to-peer sessions negotiate draft-16 (empty prefix is a 16+ feature).
@@ -194,7 +204,9 @@ TEST_F(MoQRelayTest, PeerNamespaceNotEchoedBack_FullProductionPath) {
   });
 
   // kTestNamespace should now be in the tree with sourcePeerID="jp-osa-1".
-  ASSERT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 1u);
+  verifyOnRelayExec([&] {
+    EXPECT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 1u);
+  });
 
   // Step 2: jp-osa-1 reconnects as session2 and re-subscribes.
   // kTestNamespace must NOT be echoed back.
@@ -232,15 +244,19 @@ TEST_F(MoQRelayTest, BridgeHandleDestructorCleansUpNamespaces) {
   // it, as happens when the relay subscribes to an upstream/peer.
   auto bridgeHandle = makeNamespaceBridgeHandle(relay_, upstreamSession, /*peerID=*/{});
   bridgeHandle->namespaceMsg(kTestNamespace);
-  ASSERT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 1u);
+  verifyOnRelayExec([&] {
+    EXPECT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 1u);
+  });
 
   // Drop the bridge handle without graceful namespaceDoneMsg — simulates
   // ungraceful session close destroying SubNsStreamCallback.
   bridgeHandle.reset();
 
   // Tree entry must be gone.
-  EXPECT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 0u)
-      << "Stale namespace tree entry persists after bridge handle destruction";
+  verifyOnRelayExec([&] {
+    EXPECT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 0u)
+        << "Stale namespace tree entry persists after bridge handle destruction";
+  });
 
   removeSession(upstreamSession);
 }
@@ -255,19 +271,25 @@ TEST_F(MoQRelayTest, BridgeHandleDestructorDoesNotEvictNewPublisher) {
   // session1 announces NS via bridge handle.
   auto bridgeHandle1 = makeNamespaceBridgeHandle(relay_, session1, /*peerID=*/{});
   bridgeHandle1->namespaceMsg(kTestNamespace);
-  ASSERT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 1u);
+  verifyOnRelayExec([&] {
+    EXPECT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 1u);
+  });
 
   // session2 takes over NS (conflict path evicts session1, sets sourceSession=session2).
   auto bridgeHandle2 = makeNamespaceBridgeHandle(relay_, session2, /*peerID=*/{});
   bridgeHandle2->namespaceMsg(kTestNamespace);
-  ASSERT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 1u);
+  verifyOnRelayExec([&] {
+    EXPECT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 1u);
+  });
 
   // Now session1's handle is destroyed (ungraceful close detected late).
   // It must NOT evict session2's entry.
   bridgeHandle1.reset();
 
-  EXPECT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 1u)
-      << "Stale bridge handle destructor evicted the new publisher's entry";
+  verifyOnRelayExec([&] {
+    EXPECT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 1u)
+        << "Stale bridge handle destructor evicted the new publisher's entry";
+  });
 
   bridgeHandle2.reset();
   removeSession(session1);
