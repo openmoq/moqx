@@ -28,7 +28,7 @@ public:
   MoqxPicoRelayServer(
       const config::ListenerConfig& listenerCfg,
       std::shared_ptr<MoqxRelayContext> context,
-      std::shared_ptr<folly::IOThreadPoolExecutor> ioExecutor
+      folly::IOThreadPoolExecutor* ioExecutor
   );
 
   ~MoqxPicoRelayServer() override;
