@@ -21,7 +21,7 @@ public:
   MoqxRelayServer(
       const config::ListenerConfig& listenerCfg,
       std::shared_ptr<MoqxRelayContext> context,
-      std::shared_ptr<folly::IOThreadPoolExecutor> ioExecutor
+      folly::IOThreadPoolExecutor* ioExecutor
   );
 
   ~MoqxRelayServer() override;
@@ -53,7 +53,7 @@ protected:
 private:
   config::ListenerConfig listenerCfg_;
   std::shared_ptr<MoqxRelayContext> context_;
-  std::shared_ptr<folly::IOThreadPoolExecutor> ioExecutor_;
+  folly::IOThreadPoolExecutor* ioExecutor_;
 };
 
 } // namespace openmoq::moqx

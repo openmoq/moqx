@@ -68,7 +68,7 @@ std::string resolveKey(const config::ListenerConfig& cfg) {
 MoqxPicoRelayServer::MoqxPicoRelayServer(
     const config::ListenerConfig& listenerCfg,
     std::shared_ptr<MoqxRelayContext> context,
-    std::shared_ptr<folly::IOThreadPoolExecutor> ioExecutor
+    folly::IOThreadPoolExecutor* ioExecutor
 )
     : MoQPicoQuicEventBaseServer(
           resolveCert(listenerCfg),

@@ -22,20 +22,16 @@ namespace openmoq::moqx {
 inline std::shared_ptr<moxygen::MoQServerBase> makeRelayServer(
     const config::ListenerConfig& listenerCfg,
     std::shared_ptr<MoqxRelayContext> context,
-    std::shared_ptr<folly::IOThreadPoolExecutor> ioExecutor,
+    folly::IOThreadPoolExecutor* ioExecutor,
     std::shared_ptr<stats::StatsRegistry> statsRegistry
 ) {
   if (listenerCfg.quicStack == config::QuicStack::Picoquic) {
-    auto server = std::make_shared<MoqxPicoRelayServer>(
-        listenerCfg,
-        std::move(context),
-        std::move(ioExecutor)
-    );
+    auto server =
+        std::make_shared<MoqxPicoRelayServer>(listenerCfg, std::move(context), ioExecutor);
     server->setStatsRegistry(std::move(statsRegistry));
     return server;
   }
-  auto server =
-      std::make_shared<MoqxRelayServer>(listenerCfg, std::move(context), std::move(ioExecutor));
+  auto server = std::make_shared<MoqxRelayServer>(listenerCfg, std::move(context), ioExecutor);
   server->setStatsRegistry(std::move(statsRegistry));
   return server;
 }
