@@ -126,14 +126,14 @@ buildTransportSettings(const config::QuicConfig& quic, const config::MvfstConfig
 MoqxRelayServer::MoqxRelayServer(
     const config::ListenerConfig& listenerCfg,
     std::shared_ptr<MoqxRelayContext> context,
-    std::shared_ptr<folly::IOThreadPoolExecutor> ioExecutor
+    folly::IOThreadPoolExecutor* ioExecutor
 )
     : MoQServer(
           buildFizzContext(listenerCfg),
           listenerCfg.endpoint,
           buildTransportSettings(listenerCfg.quic, listenerCfg.mvfst)
       ),
-      listenerCfg_(listenerCfg), context_(std::move(context)), ioExecutor_(std::move(ioExecutor)) {}
+      listenerCfg_(listenerCfg), context_(std::move(context)), ioExecutor_(ioExecutor) {}
 
 MoqxRelayServer::~MoqxRelayServer() {
   // Close incoming connections, drain worker EVBs, then destroy EVBs.
@@ -155,6 +155,7 @@ void MoqxRelayServer::start() {
   for (auto& ka : evbKAs) {
     evbs.push_back(ka.get());
   }
+  ioExecutor_ = nullptr;
   MoQServer::start(listenerCfg_.address, std::move(evbs));
 }
 

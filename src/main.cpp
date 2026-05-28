@@ -96,7 +96,7 @@ int main(int argc, char* argv[]) {
   ShutdownSignalHandler signalHandler(&evb);
 
   // === 4. Initialize resources ===
-  auto ioExecutor = std::make_shared<folly::IOThreadPoolExecutor>(
+  auto ioExecutor = std::make_unique<folly::IOThreadPoolExecutor>(
       config.threads,
       std::make_shared<folly::NamedThreadFactory>("moqx-io")
   );
@@ -114,7 +114,7 @@ int main(int argc, char* argv[]) {
 
   std::vector<std::shared_ptr<moxygen::MoQServerBase>> servers;
   for (const auto& listenerCfg : config.listeners) {
-    servers.emplace_back(makeRelayServer(listenerCfg, context, ioExecutor, statsRegistry));
+    servers.emplace_back(makeRelayServer(listenerCfg, context, ioExecutor.get(), statsRegistry));
   }
 
   if (!servers.empty()) {
