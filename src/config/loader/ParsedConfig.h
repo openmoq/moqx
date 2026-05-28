@@ -381,6 +381,12 @@ struct ParsedConfig {
       std::optional<ParsedListenerDefaultsConfig>>
       listener_defaults;
   rfl::Description<"Number of IO worker threads (default: 1)", std::optional<uint32_t>> threads;
+  rfl::Description<
+      "Attach a classic BPF reuseport filter to steer QUIC packets to the correct mvfst worker "
+      "based on the connection ID's workerId field (Linux only, mvfst stack only, default: true). "
+      "Disable to fall back to kernel RSS distribution.",
+      std::optional<bool>>
+      mvfst_bpf_steering;
 };
 
 } // namespace openmoq::moqx::config

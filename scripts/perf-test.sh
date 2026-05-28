@@ -18,8 +18,8 @@
 #   --io-threads N         Number of relay IO threads (default: 1)
 #   --threads N            Number of perf client threads (default: 2)
 #   --relay-log SPEC       folly XLOG config passed as --logging=SPEC to relay
-#   --bpf-steering         Enable BPF reuseport steering (requires MOQX_BPF_STEERING build)
-#   --no-bpf-steering      Disable BPF reuseport steering (default)
+#   --bpf-steering         Enable mvfst BPF reuseport steering (requires MOQX_ENABLE_BPF_STEERING build)
+#   --no-bpf-steering      Disable mvfst BPF reuseport steering (default)
 #   --jemalloc             LD_PRELOAD jemalloc (auto-detected from /lib64/libjemalloc.so.2)
 #   --metrics              Run perf-metrics.sh alongside the relay; logs to LOG_DIR/metrics.log
 #   --perf-duration N      Run perf record -F 499 -g -e cycles on relay for N seconds; starts after
@@ -206,6 +206,7 @@ cat >"$RELAY_CFG" <<EOF
 relay_id: "perf-test-relay"
 threads: $IO_THREADS
 use_relay_thread: $USE_RELAY_THREAD
+mvfst_bpf_steering: $BPF_STEERING
 listeners:
   - name: perf
     udp:
@@ -259,7 +260,7 @@ cp "$RELAY_CFG" "$LOG_DIR/relay.yaml"
   echo "delivery_timeout: $DELIVERY_TIMEOUT"
   echo "client_threads:   $CLIENT_THREADS"
   echo "jemalloc:         ${JEMALLOC:-none}"
-  echo "bpf_steering:     $BPF_STEERING"
+  echo "mvfst_bpf_steering: $BPF_STEERING"
   [[ "$PERF_DURATION" -gt 0 ]] && echo "perf_duration:    ${PERF_DURATION}s (delay=$(( 3 * SUBSCRIBER_MAX / RAMP ))s)" || true
   [[ -n "$PERF_EVENTS" ]] && echo "perf_events:      $PERF_EVENTS" || true
   [[ -n "$REMOTE_CLIENT_HOST" ]] && echo "remote_client:    $REMOTE_CLIENT_HOST" || true
@@ -268,7 +269,7 @@ echo ""
 
 # ── Start relay ───────────────────────────────────────────────────────────────
 ulimit -n 65536 2>/dev/null || true
-echo "Starting relay (use_relay_thread=$USE_RELAY_THREAD, io_threads=$IO_THREADS, transport=$TRANSPORT, bpf_steering=$BPF_STEERING)..."
+echo "Starting relay (use_relay_thread=$USE_RELAY_THREAD, io_threads=$IO_THREADS, transport=$TRANSPORT, mvfst_bpf_steering=$BPF_STEERING)..."
 RELAY_LOGGING_ARG=()
 [[ -n "$RELAY_LOG_SPEC" ]] && RELAY_LOGGING_ARG=("--logging=$RELAY_LOG_SPEC")
 if [[ -n "$JEMALLOC" ]]; then
