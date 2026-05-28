@@ -188,12 +188,22 @@ struct AdminConfig {
   std::optional<TlsConfig> tls;
 };
 
+struct MLogConfig {
+  std::string dir;        // output directory; empty = disabled
+  float sampleRate{1.0f}; // 1.0 = log all sessions, 0.0 = none
+};
+
+struct LoggingConfig {
+  std::optional<MLogConfig> mlog;
+};
+
 struct Config {
   std::vector<ListenerConfig> listeners;
   folly::F14FastMap<std::string, ServiceConfig> services;
   std::optional<AdminConfig> admin;
   std::string relayID; // always set: from config or randomly generated
   uint32_t threads{1};
+  std::optional<LoggingConfig> logging;
 };
 
 } // namespace openmoq::moqx::config
