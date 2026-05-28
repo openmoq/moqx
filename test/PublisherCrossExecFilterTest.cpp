@@ -7,8 +7,10 @@
 #include "relay/PublisherCrossExecFilter.h"
 
 #include <folly/coro/BlockingWait.h>
+#include <folly/coro/ViaIfAsync.h>
 #include <folly/executors/CPUThreadPoolExecutor.h>
 #include <folly/executors/ManualExecutor.h>
+#include <folly/io/async/EventBase.h>
 #include <folly/portability/GMock.h>
 #include <folly/portability/GTest.h>
 #include <moxygen/test/Mocks.h>
@@ -121,25 +123,64 @@ TEST_F(PublisherCrossExecFilterTest, FetchForwardsToInner) {
   EXPECT_EQ(result.error().errorCode, FetchErrorCode::NOT_SUPPORTED);
 }
 
+TEST_F(PublisherCrossExecFilterTest, FetchErrorDoesNotCallEndOfFetch) {
+  EXPECT_CALL(*inner_, fetch(_, _))
+      .WillOnce(
+          [](Fetch, std::shared_ptr<FetchConsumer>) -> folly::coro::Task<Publisher::FetchResult> {
+            co_return folly::makeUnexpected(
+                FetchError{RequestID(4), FetchErrorCode::NOT_SUPPORTED, "nope"}
+            );
+          }
+      );
+
+  auto fetchCallback = std::make_shared<StrictMock<MockFetchConsumer>>();
+  // deactivate() releases selfGuard_ inline; endOfFetch must not be called.
+  Fetch fetchReq;
+  fetchReq.requestID = RequestID(4);
+  auto result =
+      folly::coro::blockingWait(filter_->fetch(std::move(fetchReq), std::move(fetchCallback)));
+  EXPECT_FALSE(result.hasValue());
+  EXPECT_EQ(result.error().errorCode, FetchErrorCode::NOT_SUPPORTED);
+}
+
 TEST_F(PublisherCrossExecFilterTest, FetchReturnsSuccess) {
   FetchOk ok;
   ok.requestID = RequestID(4);
   auto handle = std::make_shared<NiceMock<MockFetchHandle>>(ok);
+  std::shared_ptr<FetchConsumer> capturedConsumer;
   EXPECT_CALL(*inner_, fetch(_, _))
       .WillOnce(
-          [handle](Fetch, std::shared_ptr<FetchConsumer>)
+          [handle, &capturedConsumer](Fetch, std::shared_ptr<FetchConsumer> consumer)
               -> folly::coro::Task<Publisher::FetchResult> {
-            co_return folly::makeExpected<FetchError>(std::shared_ptr<Publisher::FetchHandle>(handle
-            ));
+            capturedConsumer = std::move(consumer);
+            co_return std::shared_ptr<Publisher::FetchHandle>(handle);
           }
       );
 
+  // Schedule on the EventBase so callerExec captured inside fetch() is the
+  // EventBase (not blockingWait's internal ManualExecutor, which dies on return).
+  // This keeps targetExec_ alive for the post-blockingWait endOfFetch drain.
+  folly::EventBase evb;
+  auto fetchCallback = std::make_shared<NiceMock<MockFetchConsumer>>();
+  EXPECT_CALL(*fetchCallback, endOfFetch()).WillOnce([]() {
+    return folly::Expected<folly::Unit, MoQPublishError>(folly::unit);
+  });
   Fetch fetchReq;
   fetchReq.requestID = RequestID(4);
-  auto result = folly::coro::blockingWait(filter_->fetch(std::move(fetchReq), nullptr));
+  auto result = folly::coro::blockingWait(
+      folly::coro::co_withExecutor(
+          folly::getKeepAliveToken(&evb),
+          filter_->fetch(std::move(fetchReq), std::move(fetchCallback))
+      ),
+      &evb
+  );
   ASSERT_TRUE(result.hasValue());
   ASSERT_NE(result.value(), nullptr);
   EXPECT_EQ(result.value()->fetchOk().requestID, RequestID(4));
+
+  ASSERT_NE(capturedConsumer, nullptr);
+  capturedConsumer->endOfFetch();
+  evb.loopOnce();
 }
 
 // ---- subscribeNamespace ----
