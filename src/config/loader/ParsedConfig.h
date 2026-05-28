@@ -111,8 +111,14 @@ struct ParsedMvfstConfig {
       std::optional<uint32_t>>
       max_conn_packets_sent_per_loop;
   rfl::Description<
+      "Use recvmmsg for batch receives in QuicServerWorker (default: true). "
+      "Enables the recvmmsg kernel call to read multiple UDP packets per syscall, "
+      "reducing overhead at high packet rates.",
+      std::optional<bool>>
+      use_recvmmsg;
+  rfl::Description<
       "Max incoming packets processed per event-loop read callback. "
-      "0 = unlimited. Default 10.",
+      "0 = unlimited. Default 64.",
       std::optional<uint16_t>>
       max_server_recv_packets_per_loop;
   rfl::Description<
@@ -381,6 +387,17 @@ struct ParsedConfig {
       std::optional<ParsedListenerDefaultsConfig>>
       listener_defaults;
   rfl::Description<"Number of IO worker threads (default: 1)", std::optional<uint32_t>> threads;
+  rfl::Description<
+      "Dedicate one relay thread per service for relay state isolation (default: true). "
+      "Disable for baseline performance comparison.",
+      std::optional<bool>>
+      use_relay_thread;
+  rfl::Description<
+      "Attach a classic BPF reuseport filter to steer QUIC packets to the correct mvfst worker "
+      "based on the connection ID's workerId field (Linux only, mvfst stack only, default: true). "
+      "Disable to fall back to kernel RSS distribution.",
+      std::optional<bool>>
+      mvfst_bpf_steering;
 };
 
 } // namespace openmoq::moqx::config

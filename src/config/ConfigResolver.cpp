@@ -450,6 +450,8 @@ void applyMvfstOverride(MvfstConfig& base, const ParsedMvfstConfig& overlay) {
     base.enableGSO = *v;
   if (auto v = overlay.max_conn_packets_sent_per_loop.value())
     base.maxConnPacketsSentPerLoop = *v;
+  if (auto v = overlay.use_recvmmsg.value())
+    base.useRecvmmsg = *v;
   if (auto v = overlay.max_server_recv_packets_per_loop.value())
     base.maxServerRecvPacketsPerLoop = *v;
   if (auto v = overlay.num_gro_buffers.value())
@@ -820,9 +822,14 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
   const uint32_t threads = config.threads.value().value_or(1);
   if (threads == 0) {
     errors.push_back("threads must be >= 1");
-  } else if (threads > 1) {
-    errors.push_back("threads > 1 is not yet supported");
   }
+
+  const bool useRelayThread = config.use_relay_thread.value().value_or(true);
+  if (threads > 1 && !useRelayThread) {
+    errors.push_back("use_relay_thread must be true when threads > 1");
+  }
+
+  const bool mvfstBpfSteering = config.mvfst_bpf_steering.value().value_or(true);
 
   if (!errors.empty()) {
     return folly::makeUnexpected("Config validation failed:\n  - " + folly::join("\n  - ", errors));
@@ -873,6 +880,8 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
               .admin = std::move(adminConfig),
               .relayID = std::move(relayID),
               .threads = threads,
+              .useRelayThread = useRelayThread,
+              .mvfstBpfSteering = mvfstBpfSteering,
           },
       .warnings = std::move(warnings),
   };

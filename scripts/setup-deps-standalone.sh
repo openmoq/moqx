@@ -69,6 +69,18 @@ if [[ "$PROFILE" == "san" ]]; then
     "-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address"
     "-DCMAKE_SHARED_LINKER_FLAGS=-fsanitize=address"
   )
+elif [[ "$PROFILE" == "tsan" ]]; then
+  CMAKE_BUILD_TYPE="Debug"
+  # TSan must instrument the full dep chain: folly/mvfst atomics and EventBase
+  # internals are invisible to TSan without instrumentation, causing false positives
+  # on every lock operation.
+  SAN_FLAGS="-fsanitize=thread -fno-omit-frame-pointer"
+  EXTRA_CMAKE_ARGS+=(
+    "-DCMAKE_C_FLAGS=${SAN_FLAGS}"
+    "-DCMAKE_CXX_FLAGS=${SAN_FLAGS}"
+    "-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=thread"
+    "-DCMAKE_SHARED_LINKER_FLAGS=-fsanitize=thread"
+  )
 fi
 
 echo "==> Configuring standalone moxygen build (profile: ${PROFILE})..."

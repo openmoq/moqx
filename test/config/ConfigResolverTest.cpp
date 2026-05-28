@@ -920,12 +920,29 @@ TEST(ResolveConfig, ThreadsZeroRejected) {
   EXPECT_THAT(result.error(), HasSubstr("threads must be >= 1"));
 }
 
-TEST(ResolveConfig, ThreadsGreaterThanOneRejected) {
+TEST(ResolveConfig, ThreadsGreaterThanOneAccepted) {
   auto cfg = makeMinimalInsecureConfig();
   cfg.threads = std::optional<uint32_t>{2};
   auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  EXPECT_EQ(result.value().config.threads, 2u);
+}
+
+TEST(ResolveConfig, UseRelayThreadFalseWithOneThreadAccepted) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.use_relay_thread = std::optional<bool>{false};
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  EXPECT_FALSE(result.value().config.useRelayThread);
+}
+
+TEST(ResolveConfig, UseRelayThreadFalseWithMultipleThreadsRejected) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.threads = std::optional<uint32_t>{2};
+  cfg.use_relay_thread = std::optional<bool>{false};
+  auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasError());
-  EXPECT_THAT(result.error(), HasSubstr("threads > 1 is not yet supported"));
+  EXPECT_THAT(result.error(), HasSubstr("use_relay_thread must be true when threads > 1"));
 }
 
 // --- multiple listeners tests ---
@@ -1178,6 +1195,7 @@ TEST(ResolveConfig, QuicCcAlgoPicoOnlyRejectedByMvfst) {
   cfg.listeners.value()[0].tls.value().insecure = false;
   cfg.listeners.value()[0].tls.value().cert_file = std::optional<std::string>{"cert.pem"};
   cfg.listeners.value()[0].tls.value().key_file = std::optional<std::string>{"key.pem"};
+  cfg.mvfst_bpf_steering = std::optional<bool>{false};
   auto result2 = resolveConfig(cfg);
   ASSERT_TRUE(result2.hasValue());
   EXPECT_EQ(result2.value().config.listeners[0].quic.ccAlgo, "dcubic");
@@ -1226,6 +1244,7 @@ ParsedConfig makeMinimalPicoConfig() {
   lc.tls.value().insecure = false;
   lc.tls.value().cert_file = std::optional<std::string>{"cert.pem"};
   lc.tls.value().key_file = std::optional<std::string>{"key.pem"};
+  cfg.mvfst_bpf_steering = std::optional<bool>{false};
   return cfg;
 }
 
@@ -1466,7 +1485,8 @@ TEST(ResolveConfig, MvfstDefaultsRoundTrip) {
   EXPECT_EQ(mvfst.maxCwndInMss, 860000u);
   EXPECT_TRUE(mvfst.enableGSO);
   EXPECT_EQ(mvfst.maxConnPacketsSentPerLoop, 48u);
-  EXPECT_EQ(mvfst.maxServerRecvPacketsPerLoop, 10u);
+  EXPECT_TRUE(mvfst.useRecvmmsg);
+  EXPECT_EQ(mvfst.maxServerRecvPacketsPerLoop, 64u);
   EXPECT_EQ(mvfst.numGROBuffers, 1u);
   EXPECT_DOUBLE_EQ(mvfst.copa.deltaParam, 0.05);
   EXPECT_FALSE(mvfst.bbr.conservativeRecovery);

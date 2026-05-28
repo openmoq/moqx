@@ -11,6 +11,7 @@
 #include "admin/CachePurgeHandler.h"
 #include "admin/MetricsHandler.h"
 #include "admin/StateHandler.h"
+#include "bpf/QuicReuseportSteering.h"
 #include "config/loader/ConfigInit.h"
 #include "stats/StatsRegistry.h"
 
@@ -96,6 +97,8 @@ int main(int argc, char* argv[]) {
   ShutdownSignalHandler signalHandler(&evb);
 
   // === 4. Initialize resources ===
+  quicReuseportSetEnabled(config.mvfstBpfSteering);
+
   auto ioExecutor = std::make_shared<folly::IOThreadPoolExecutor>(
       config.threads,
       std::make_shared<folly::NamedThreadFactory>("moqx-io")
