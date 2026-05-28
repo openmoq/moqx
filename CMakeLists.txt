@@ -20,6 +20,15 @@ if(MOQX_ENABLE_SANITIZERS AND MOQX_ENABLE_TSAN)
   message(FATAL_ERROR "MOQX_ENABLE_SANITIZERS and MOQX_ENABLE_TSAN are mutually exclusive")
 endif()
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  set(_moqx_bpf_default ON)
+else()
+  set(_moqx_bpf_default OFF)
+endif()
+option(MOQX_ENABLE_BPF_STEERING
+  "Attach a classic BPF reuseport filter to steer QUIC packets to the correct worker (Linux only)"
+  ${_moqx_bpf_default})
+
 if(MOQX_ENABLE_SANITIZERS AND NOT CMAKE_BUILD_TYPE STREQUAL "Release")
   add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
   add_link_options(-fsanitize=address,undefined)
@@ -200,6 +209,14 @@ target_compile_options(moqx_config_loader PRIVATE -Wall -Wextra -Wpedantic)
 add_executable(moqx
   src/main.cpp
 )
+
+if(MOQX_ENABLE_BPF_STEERING)
+  # QuicReuseportSteering.cpp defines mvfst_hook_on_socket_create, overriding
+  # the weak symbol in mvfst. It must live in the executable (not a static lib)
+  # so the linker always includes it without a --whole-archive trick.
+  target_sources(moqx PRIVATE src/bpf/QuicReuseportSteering.cpp)
+  target_compile_definitions(moqx PRIVATE MOQX_ENABLE_BPF_STEERING)
+endif()
 
 target_link_libraries(moqx PRIVATE moqx_core moqx_config_loader)
 

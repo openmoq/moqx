@@ -826,6 +826,8 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
     errors.push_back("threads > 1 is not yet supported");
   }
 
+  const bool mvfstBpfSteering = config.mvfst_bpf_steering.value().value_or(true);
+
   if (!errors.empty()) {
     return folly::makeUnexpected("Config validation failed:\n  - " + folly::join("\n  - ", errors));
   }
@@ -875,6 +877,7 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
               .admin = std::move(adminConfig),
               .relayID = std::move(relayID),
               .threads = threads,
+              .mvfstBpfSteering = mvfstBpfSteering,
           },
       .warnings = std::move(warnings),
   };
