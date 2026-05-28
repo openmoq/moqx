@@ -5,6 +5,7 @@
  */
 
 #include "relay/PublisherCrossExecFilter.h"
+#include "relay/CrossExecFilter.h"
 
 namespace openmoq::moqx {
 
@@ -131,9 +132,12 @@ folly::coro::Task<moxygen::Publisher::SubscribeResult> PublisherCrossExecFilter:
     moxygen::SubscribeRequest sub,
     std::shared_ptr<moxygen::TrackConsumer> callback
 ) {
+  auto callerExec = co_await folly::coro::co_current_executor;
+  auto wrappedConsumer =
+      std::make_shared<CrossExecFilter>(callerExec, std::move(callback), /*deepCopyPayload=*/false);
   auto result = co_await folly::coro::co_withExecutor(
       folly::getKeepAliveToken(targetExec_),
-      inner_->subscribe(std::move(sub), std::move(callback))
+      inner_->subscribe(std::move(sub), std::move(wrappedConsumer))
   );
   if (result.hasValue()) {
     co_return std::make_shared<CrossExecSubscriptionHandle>(std::move(result.value()), targetExec_);
@@ -145,13 +149,20 @@ folly::coro::Task<moxygen::Publisher::FetchResult> PublisherCrossExecFilter::fet
     moxygen::Fetch fetchReq,
     std::shared_ptr<moxygen::FetchConsumer> fetchCallback
 ) {
+  auto callerExec = co_await folly::coro::co_current_executor;
+  auto wrappedConsumer =
+      FetchCrossExecFilter::create(callerExec, std::move(fetchCallback), /*deepCopyPayload=*/false);
+  auto consumerRef = wrappedConsumer;
   auto result = co_await folly::coro::co_withExecutor(
       folly::getKeepAliveToken(targetExec_),
-      inner_->fetch(std::move(fetchReq), std::move(fetchCallback))
+      inner_->fetch(std::move(fetchReq), std::move(wrappedConsumer))
   );
   if (result.hasValue()) {
     co_return std::make_shared<CrossExecFetchHandle>(std::move(result.value()), targetExec_);
   }
+  // inner never stored or used the consumer, so no lambdas are in-flight;
+  // deactivate() releases selfGuard_ inline without dispatching.
+  consumerRef->deactivate();
   co_return result;
 }
 
