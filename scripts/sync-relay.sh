@@ -78,7 +78,8 @@ qualify_moxygen_types() {
     s/(?<!moxygen::)\bSubscriber\b/moxygen::Subscriber/g;
     s/(?<!moxygen::)\bMoQForwarder\b/moxygen::MoQForwarder/g;
     s/(?<!moxygen::)\bMoQSession\b/moxygen::MoQSession/g;
-    s/(?<!moxygen::)\bMoQCache\b/moxygen::MoQCache/g;
+    # MoQCache sync removed: MoqxCache is hard-forked into moqx (src/MoqxCache.h/cpp).
+    # s/(?<!moxygen::)\bMoQCache\b/moxygen::MoQCache/g;
     s/(?<!moxygen::)\bTrackNamespace\b/moxygen::TrackNamespace/g;
     s/(?<!moxygen::)\bTrackConsumer\b/moxygen::TrackConsumer/g;
     s/(?<!moxygen::)\bFetchConsumer\b/moxygen::FetchConsumer/g;

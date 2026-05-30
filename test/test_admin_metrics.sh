@@ -97,6 +97,11 @@ EXPECTED_METRICS=(
   "moqx_moqPublishSuccess_total"
   "moqx_moqSubscribeLatency_microseconds"
   "moqx_moqFetchLatency_microseconds"
+  "moqx_quicPacketsSent_total"
+  "moqx_quicRttSample_milliseconds"
+  "moqx_evbPktsSentPerLoop_packets"
+  "moqx_evbLoopBusy_microseconds"
+  "moqx_evbLoopIdle_microseconds"
 )
 
 for metric in "${EXPECTED_METRICS[@]}"; do
@@ -119,6 +124,14 @@ fi
 
 if ! grep -q '_count ' <<<"$RESPONSE"; then
   echo "FAIL: no histogram _count lines found" >&2
+  exit 1
+fi
+
+# Validate that EVB loop samples were actually collected (the event loop runs
+# continuously, so count must be non-zero by the time /metrics is fetched).
+EVB_COUNT=$(grep '^moqx_evbLoopBusy_microseconds_count ' <<<"$RESPONSE" | awk '{print $2}' | head -1)
+if [[ -z "$EVB_COUNT" ]] || [[ "$EVB_COUNT" -eq 0 ]]; then
+  echo "FAIL: moqx_evbLoopBusy_microseconds_count is zero or missing (expected > 0)" >&2
   exit 1
 fi
 

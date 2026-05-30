@@ -1,3 +1,20 @@
+<div align="center">
+  <img src="docs/banner.png" alt="moqx — Media Over QUIC Relay" />
+</div>
+
+<div align="center">
+
+[![ci main](https://github.com/openmoq/moqx/actions/workflows/ci-main.yml/badge.svg)](https://github.com/openmoq/moqx/actions/workflows/ci-main.yml)
+[![ci pr](https://github.com/openmoq/moqx/actions/workflows/ci-pr.yml/badge.svg)](https://github.com/openmoq/moqx/actions/workflows/ci-pr.yml)
+[![Latest release](https://img.shields.io/github/v/release/openmoq/moqx?display_name=tag&sort=semver&logo=github)](https://github.com/openmoq/moqx/releases/latest)
+[![License](https://img.shields.io/github/license/openmoq/moqx)](LICENSE)
+[![Last commit](https://img.shields.io/github/last-commit/openmoq/moqx)](https://github.com/openmoq/moqx/commits/main)
+[![Open issues](https://img.shields.io/github/issues/openmoq/moqx)](https://github.com/openmoq/moqx/issues)
+[![Open PRs](https://img.shields.io/github/issues-pr/openmoq/moqx)](https://github.com/openmoq/moqx/pulls)
+[![MOQT](https://img.shields.io/badge/MOQT-draft--16-blue)](https://datatracker.ietf.org/doc/draft-ietf-moq-transport/)
+
+</div>
+
 # moqx
 
 The OpenMOQ Relay — a MoQT relay server based on
@@ -17,7 +34,7 @@ building blocks as libraries:
 
 - **MoQForwarder** — fan-out engine, used as-is from moxygen for now. May need
   to fork in the future to accommodate threading model differences.
-- **MoQCache** — object cache, used as-is from moxygen. Custom miss handling
+- **MoqxCache** — object cache, hard-forked from moxygen. Customizable for moqx-specific functionality.
   and chained cache support may be upstreamed to openmoq/moxygen or maintained
   in our fork.
 - **MoQSession / MoQServer / MoQRelaySession** — session and server
@@ -40,18 +57,31 @@ handler and create `MoQRelaySession` instances for incoming connections.
 
 ## Quick Start
 
+> **Prerequisite: CMake 3.22+ is required.** All current targets ship a
+> new-enough version out of the box: Ubuntu 22.04+, Debian 12+, recent
+> macOS Homebrew. Verify with `cmake --version`. `build.sh` aborts early
+> if cmake is missing or too old (override with `MOQX_SKIP_CMAKE_CHECK=1`
+> if you know what you're doing).
+
 ```bash
 git clone https://github.com/openmoq/moqx.git && cd moqx
 git submodule update --init
-sudo deps/moxygen/standalone/install-system-deps.sh
+sudo deps/moxygen/standalone/install-system-deps.sh   # system libs (both modes)
 
 ./scripts/build.sh setup     # download prebuilt deps (~1 min)
 ./scripts/build.sh           # build
 ./scripts/build.sh test      # test
 ```
 
-See [BUILD.md](BUILD.md) for build and test instructions, and
-[RUNNING.md](RUNNING.md) for Docker deployment and relay operations.
+System libraries are needed in **both** dependency modes — the moxygen
+tarball ships folly/fizz/mvfst/proxygen statically, but its CMake config
+still does `find_dependency(fmt, Glog, ...)` and folly itself transitively
+needs OpenSSL/Boost. `build.sh setup`'s system-dep check only fires when
+falling back to source, but the build step needs the libs regardless.
+
+See [BUILD.md](BUILD.md) for full build and test instructions (dependency
+modes, sanitizer profiles, Docker), and [RUNNING.md](RUNNING.md) for relay
+operations.
 
 ## License
 

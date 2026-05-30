@@ -6,6 +6,8 @@
 
 #include "stats/StatsRegistry.h"
 
+#include "stats/EventBaseStatsCollector.h"
+
 #include <algorithm>
 #include <folly/Conv.h>
 #include <folly/io/Cursor.h>
@@ -14,7 +16,6 @@
 
 #include <folly/coro/Collect.h>
 #include <folly/coro/Task.h>
-#include <folly/experimental/coro/Task.h>
 #include <folly/logging/xlog.h>
 
 namespace openmoq::moqx::stats {
@@ -25,7 +26,7 @@ StatsSnapshot& StatsSnapshot::operator+=(const StatsSnapshot& o) {
   STATS_GAUGE_FIELDS(ADD_FIELD)
 #undef ADD_FIELD
 
-#define ADD_HISTOGRAM(name, bounds)                                                                \
+#define ADD_HISTOGRAM(name, bounds, unit)                                                          \
   for (size_t i = 0; i < name##Buckets.size(); ++i) {                                              \
     name##Buckets[i] += o.name##Buckets[i];                                                        \
   }                                                                                                \
@@ -84,27 +85,27 @@ std::unique_ptr<folly::IOBuf> StatsSnapshot::formatPrometheus(const StatsSnapsho
 #undef EMIT_GAUGE
 
   // --- Histograms ---
-#define EMIT_HISTOGRAM(name, bounds)                                                               \
-  app("# HELP moqx_" #name "_microseconds\n"                                                       \
-      "# TYPE moqx_" #name "_microseconds histogram\n");                                           \
+#define EMIT_HISTOGRAM(name, bounds, unit)                                                         \
+  app("# HELP moqx_" #name "_" unit "\n"                                                           \
+      "# TYPE moqx_" #name "_" unit " histogram\n");                                               \
   {                                                                                                \
     const auto& bvals = (bounds);                                                                  \
     const auto& bcounts = snap.name##Buckets;                                                      \
     for (size_t i = 0; i < bvals.size(); ++i) {                                                    \
-      app("moqx_" #name "_microseconds_bucket{le=\"");                                             \
+      app("moqx_" #name "_" unit "_bucket{le=\"");                                                 \
       appNum(bvals[i]);                                                                            \
       app("\"} ");                                                                                 \
       appNum(bcounts[i]);                                                                          \
       app("\n");                                                                                   \
     }                                                                                              \
-    app("moqx_" #name "_microseconds_bucket{le=\"+Inf\"} ");                                       \
+    app("moqx_" #name "_" unit "_bucket{le=\"+Inf\"} ");                                           \
     appNum(bcounts.back());                                                                        \
     app("\n");                                                                                     \
   }                                                                                                \
-  app("moqx_" #name "_microseconds_sum ");                                                         \
+  app("moqx_" #name "_" unit "_sum ");                                                             \
   appNum(snap.name##Sum);                                                                          \
   app("\n"                                                                                         \
-      "moqx_" #name "_microseconds_count ");                                                       \
+      "moqx_" #name "_" unit "_count ");                                                           \
   appNum(snap.name##Count);                                                                        \
   app("\n\n");
   STATS_HISTOGRAM_FIELDS(EMIT_HISTOGRAM)
@@ -129,6 +130,26 @@ std::unique_ptr<folly::IOBuf> StatsSnapshot::formatPrometheus(const StatsSnapsho
 #undef EMIT_ERROR_COUNTER
 
   return queue.move();
+}
+
+void StatsRegistry::registerEvbCollector(
+    folly::EventBase* evb,
+    std::shared_ptr<EventBaseStatsCollector> collector
+) {
+  registerCollector(collector);
+  evb->runImmediatelyOrRunInEventBaseThread(
+      [this, evb, weak = std::weak_ptr<EventBaseStatsCollector>(collector)]() mutable {
+        evbCollectors_.emplace(*evb, std::move(weak));
+      }
+  );
+}
+
+std::weak_ptr<EventBaseStatsCollector> StatsRegistry::findEvbCollector(folly::EventBase* evb
+) const {
+  if (auto* ptr = evbCollectors_.get(*evb)) {
+    return *ptr;
+  }
+  return {};
 }
 
 void StatsRegistry::registerCollector(std::shared_ptr<StatsCollectorBase> collector) {

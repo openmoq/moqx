@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.25)
+cmake_minimum_required(VERSION 3.22)
 
 project(moqx VERSION 0.1.0 LANGUAGES CXX)
 
@@ -12,11 +12,31 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 option(MOQX_BUILD_TESTS "Build tests" ON)
+option(MOQX_BUILD_BENCHMARKS "Build benchmarks" OFF)
 option(MOQX_ENABLE_SANITIZERS "Enable ASAN/UBSAN (non-Release)" OFF)
+option(MOQX_ENABLE_TSAN "Enable TSan (non-Release)" OFF)
+
+if(MOQX_ENABLE_SANITIZERS AND MOQX_ENABLE_TSAN)
+  message(FATAL_ERROR "MOQX_ENABLE_SANITIZERS and MOQX_ENABLE_TSAN are mutually exclusive")
+endif()
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  set(_moqx_bpf_default ON)
+else()
+  set(_moqx_bpf_default OFF)
+endif()
+option(MOQX_ENABLE_BPF_STEERING
+  "Attach a classic BPF reuseport filter to steer QUIC packets to the correct worker (Linux only)"
+  ${_moqx_bpf_default})
 
 if(MOQX_ENABLE_SANITIZERS AND NOT CMAKE_BUILD_TYPE STREQUAL "Release")
   add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
   add_link_options(-fsanitize=address,undefined)
+endif()
+
+if(MOQX_ENABLE_TSAN AND NOT CMAKE_BUILD_TYPE STREQUAL "Release")
+  add_compile_options(-fsanitize=thread -fno-omit-frame-pointer)
+  add_link_options(-fsanitize=thread)
 endif()
 
 # Prefer static libraries for all transitive deps (from-release mode).
@@ -77,11 +97,36 @@ set(ENABLE_LOGGING OFF CACHE BOOL "" FORCE)
 set(CATAPULT_ENABLE_JSON OFF CACHE BOOL "" FORCE)
 add_subdirectory(deps/catapult EXCLUDE_FROM_ALL)
 
+# --- Cache library (forked from moxygen) ---
+
+add_library(moqx_cache STATIC
+  src/MoqxCache.cpp
+)
+
+target_include_directories(moqx_cache
+  PUBLIC
+    ${PROJECT_SOURCE_DIR}/src
+)
+
+target_link_libraries(moqx_cache PUBLIC
+  moxygen::moxygen_moq
+  moxygen::moxygen_moq_consumers
+  moxygen::moxygen_moq_framer
+  moxygen::moxygen_util_location_interval_set
+  Folly::folly_container_f14_hash
+  Folly::folly_coro_baton
+  Folly::folly_coro_task
+  Folly::folly_logging_logging
+)
+
+target_compile_options(moqx_cache PRIVATE -Wall -Wextra -Wpedantic)
+
 # --- Core library ---
 
 add_library(moqx_core STATIC
   src/auth/Auth.cpp
   src/NamespaceTree.cpp
+  src/SubscriptionRegistry.cpp
   src/MoqxRelay.cpp
   src/MoqxRelayContext.cpp
   src/MoqxRelayServer.cpp
@@ -96,9 +141,14 @@ add_library(moqx_core STATIC
   src/stats/MoQStatsCollector.cpp
   src/stats/PicoQuicStatsCollector.cpp
   src/stats/QuicStatsCollector.cpp
+  src/stats/EventBaseStatsCollector.cpp
   src/UpstreamProvider.cpp
   src/relay/TopNFilter.cpp
   src/relay/PropertyRanking.cpp
+  src/relay/CrossExecFilter.cpp
+  src/relay/CrossExecForwarderCallback.cpp
+  src/relay/PublisherCrossExecFilter.cpp
+  src/relay/SubscriberCrossExecFilter.cpp
 )
 
 target_include_directories(moqx_core
@@ -107,8 +157,8 @@ target_include_directories(moqx_core
 )
 
 target_link_libraries(moqx_core PUBLIC
+  moqx_cache
   moxygen::moxygen_relay_moq_forwarder
-  moxygen::moxygen_relay_moq_cache
   moxygen::moxygen_moq_relay_session
   moxygen::moxygen_moq_server
   moxygen::openmoq_pico_evb_server_transport
@@ -170,6 +220,14 @@ add_executable(moqx
   src/main.cpp
 )
 
+if(MOQX_ENABLE_BPF_STEERING)
+  # QuicReuseportSteering.cpp defines mvfst_hook_on_socket_create, overriding
+  # the weak symbol in mvfst. It must live in the executable (not a static lib)
+  # so the linker always includes it without a --whole-archive trick.
+  target_sources(moqx PRIVATE src/bpf/QuicReuseportSteering.cpp)
+  target_compile_definitions(moqx PRIVATE MOQX_ENABLE_BPF_STEERING)
+endif()
+
 target_link_libraries(moqx PRIVATE moqx_core moqx_config_loader)
 
 # --- Tests ---
@@ -177,6 +235,10 @@ target_link_libraries(moqx PRIVATE moqx_core moqx_config_loader)
 if(MOQX_BUILD_TESTS)
   enable_testing()
   add_subdirectory(test)
+endif()
+
+if(MOQX_BUILD_BENCHMARKS)
+  add_subdirectory(benchmark)
 endif()
 
 include(${PROJECT_SOURCE_DIR}/cmake/Lint.cmake)

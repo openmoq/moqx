@@ -76,9 +76,155 @@ struct ParsedQuicConfig {
   rfl::Description<
       "Congestion control algorithm (default: bbr). "
       "picoquic: bbr, bbr1, c4, cubic, dcubic, fast, newreno, prague, reno. "
-      "mvfst: bbr, bbr2, bbr2modular, copa, cubic, newreno.",
+      "mvfst: bbr, bbr2, bbr2modular, copa, cubic, newreno, none.",
       std::optional<std::string>>
       cc_algo;
+};
+
+// mvfst-specific transport tunables organised by CC algorithm.
+// General fields (max_cwnd_in_mss, GSO/GRO) sit directly at the mvfst: level.
+// CC-specific tunables are nested under mvfst: <algo>: blocks.
+// All fields are optional; absent = use MvfstConfig defaults.
+struct ParsedMvfstConfig {
+  rfl::Description<
+      "Maximum congestion window in MSS (default: 860000 = quic::kLargeMaxCwndInMss). "
+      "Applies to all CC algorithms.",
+      std::optional<uint64_t>>
+      max_cwnd_in_mss;
+  rfl::Description<
+      "Enable pacing (default: true). "
+      "Required for bbr and bbr2; optional for copa and cubic; "
+      "ignored (always off) for newreno and none.",
+      std::optional<bool>>
+      pacing_enabled;
+  rfl::Description<
+      "Enable GSO (Generic Segmentation Offload) for packet segmentation (default: true). "
+      "Requires kernel GSO support. Falls back to sendmmsg automatically if GSO is "
+      "unavailable at runtime. Disable only on kernels or VMs where GSO is advertised "
+      "but broken.",
+      std::optional<bool>>
+      enable_gso;
+  rfl::Description<
+      "Max packets written per connection per event-loop iteration (default: 48). "
+      "Written to both maxBatchSize and writeConnectionDataPacketsLimit so the cap "
+      "applies in all batching modes.",
+      std::optional<uint32_t>>
+      max_conn_packets_sent_per_loop;
+  rfl::Description<
+      "Use recvmmsg for batch receives in QuicServerWorker (default: true). "
+      "Enables the recvmmsg kernel call to read multiple UDP packets per syscall, "
+      "reducing overhead at high packet rates.",
+      std::optional<bool>>
+      use_recvmmsg;
+  rfl::Description<
+      "Max incoming packets processed per event-loop read callback. "
+      "0 = unlimited. Default 64.",
+      std::optional<uint16_t>>
+      max_server_recv_packets_per_loop;
+  rfl::Description<
+      "Number of UDP GRO (Generic Receive Offload) buffers. "
+      "1 = disabled (default). Values > 1 enable kernel-side packet coalescing: "
+      "up to max value packets are merged per recvmsg call, reducing syscall "
+      "overhead at high packet rates. Max 64. Requires kernel GRO support.",
+      std::optional<uint32_t>>
+      num_gro_buffers;
+
+  // BBR (BBR1) congestion control tunables.
+  // conservative_recovery is shared with BBR2 — set it here when using either.
+  struct ParsedBBR {
+    rfl::Description<
+        "Enter conservative recovery on loss (also applies to BBR2).",
+        std::optional<bool>>
+        conservative_recovery;
+    rfl::Description<"Use a large cwnd during PROBE_RTT.", std::optional<bool>>
+        large_probe_rtt_cwnd;
+    rfl::Description<
+        "Estimate ACK aggregation in STARTUP for more aggressive cwnd growth.",
+        std::optional<bool>>
+        enable_ack_aggregation_in_startup;
+    rfl::Description<"Skip PROBE_RTT rounds when the sender is app-limited.", std::optional<bool>>
+        probe_rtt_disabled_if_app_limited;
+    rfl::Description<"Drain cwnd to the estimated BDP after STARTUP.", std::optional<bool>>
+        drain_to_target;
+  };
+
+  // BBR2-specific congestion control tunables.
+  // Also set bbr.conservative_recovery if you want conservative recovery with BBR2.
+  struct ParsedBBR2 {
+    rfl::Description<
+        "Ignore long-term inflight samples when estimating bandwidth.",
+        std::optional<bool>>
+        ignore_inflight_long_term;
+    rfl::Description<"Ignore short-term bandwidth samples.", std::optional<bool>> ignore_short_term;
+    rfl::Description<"Exit STARTUP on packet loss (default: true).", std::optional<bool>>
+        exit_startup_on_loss;
+    rfl::Description<"Allow cwnd recovery inside STARTUP (default: true).", std::optional<bool>>
+        enable_recovery_in_startup;
+    rfl::Description<
+        "Allow cwnd recovery during PROBE_BW and PROBE_RTT states (default: true).",
+        std::optional<bool>>
+        enable_recovery_in_probe_states;
+    rfl::Description<"Coexist with Reno/Cubic flows (halve cwnd on loss).", std::optional<bool>>
+        enable_reno_coexistence;
+    rfl::Description<"Pace the initial cwnd instead of sending it as a burst.", std::optional<bool>>
+        pace_init_cwnd;
+    rfl::Description<
+        "Override the PROBE_BW cruise pacing gain; -1 = use BBR2 default (~1.0).",
+        std::optional<float>>
+        override_cruise_pacing_gain;
+    rfl::Description<
+        "Override the PROBE_BW cruise cwnd gain; -1 = use BBR2 default (~2.0).",
+        std::optional<float>>
+        override_cruise_cwnd_gain;
+    rfl::Description<
+        "Override the STARTUP pacing gain; -1 = use BBR2 default (~2.77).",
+        std::optional<float>>
+        override_startup_pacing_gain;
+    rfl::Description<
+        "Beta used to reduce the short-term bandwidth estimate; 0 = use BBR2 default.",
+        std::optional<float>>
+        override_bw_short_beta;
+  };
+
+  // Cubic congestion control tunables.
+  struct ParsedCubic {
+    rfl::Description<
+        "Use additive cwnd increase instead of multiplicative after HyStart exit.",
+        std::optional<bool>>
+        additive_increase_after_hystart;
+    rfl::Description<"Only grow cwnd when the connection is cwnd-limited.", std::optional<bool>>
+        only_grow_cwnd_when_limited;
+    rfl::Description<
+        "Leave headroom below cwnd for the OS send buffer when cwnd-limited.",
+        std::optional<bool>>
+        leave_headroom_for_cwnd_limited;
+  };
+
+  // Copa congestion control tunables.
+  struct ParsedCopa {
+    rfl::Description<
+        "Delta parameter controlling the target utilisation (moqx default: 0.05).",
+        std::optional<double>>
+        delta_param;
+  };
+
+  // L4S tunables (usable alongside any ECN-aware CC algorithm).
+  struct ParsedL4S {
+    rfl::Description<"ECN CE marking threshold target (0 = disabled).", std::optional<float>>
+        ce_target;
+  };
+
+  rfl::Description<
+      "BBR congestion control tunables. conservative_recovery also applies to BBR2.",
+      std::optional<ParsedBBR>>
+      bbr;
+  rfl::Description<"BBR2-specific congestion control tunables.", std::optional<ParsedBBR2>> bbr2;
+  rfl::Description<"Cubic congestion control tunables.", std::optional<ParsedCubic>> cubic;
+  rfl::Description<"Copa congestion control tunables.", std::optional<ParsedCopa>> copa;
+  rfl::Description<
+      "L4S tunables (ECN CE target). Usable alongside any ECN-aware CC algorithm.",
+      std::optional<ParsedL4S>>
+      l4s;
 };
 
 struct ParsedListenerConfig {
@@ -98,6 +244,10 @@ struct ParsedListenerConfig {
       "QUIC transport settings (overrides listener_defaults.quic)",
       std::optional<ParsedQuicConfig>>
       quic;
+  rfl::Description<
+      "mvfst-specific CC tunables (overrides listener_defaults.mvfst; mvfst stack only)",
+      std::optional<ParsedMvfstConfig>>
+      mvfst;
 };
 
 struct ParsedCacheConfig {
@@ -237,6 +387,8 @@ struct ParsedListenerDefaultsConfig {
       "Default QUIC transport settings for all listeners",
       std::optional<ParsedQuicConfig>>
       quic;
+  rfl::Description<"Default mvfst CC tunables for all listeners", std::optional<ParsedMvfstConfig>>
+      mvfst;
 };
 
 struct ParsedServiceDefaultsConfig {
@@ -263,6 +415,12 @@ struct ParsedConfig {
       std::optional<ParsedListenerDefaultsConfig>>
       listener_defaults;
   rfl::Description<"Number of IO worker threads (default: 1)", std::optional<uint32_t>> threads;
+  rfl::Description<
+      "Attach a classic BPF reuseport filter to steer QUIC packets to the correct mvfst worker "
+      "based on the connection ID's workerId field (Linux only, mvfst stack only, default: true). "
+      "Disable to fall back to kernel RSS distribution.",
+      std::optional<bool>>
+      mvfst_bpf_steering;
 };
 
 } // namespace openmoq::moqx::config

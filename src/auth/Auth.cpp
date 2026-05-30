@@ -5,6 +5,7 @@
  */
 
 #include "auth/Auth.h"
+#include "auth/CborReader.h"
 
 #include <catapult/crypto.hpp>
 #include <catapult/cwt.hpp>
@@ -267,7 +268,11 @@ std::optional<AuthToken> findAuthToken(const Parameters& params, uint64_t tokenT
   return std::nullopt;
 }
 
-bool allows(
+namespace {
+
+// Shared implementation for both allows() overloads. A namespace-level check
+// passes std::nullopt for trackName (the track match rules then see empty bytes).
+bool allowsImpl(
     const Grants& grants,
     Action action,
     const TrackNamespace& ns,
@@ -305,6 +310,26 @@ bool allows(
     }
   }
   return false;
+}
+
+} // namespace
+
+bool allows(
+    const Grants& grants,
+    Action action,
+    const TrackNamespace& ns,
+    std::chrono::system_clock::time_point now
+) {
+  return allowsImpl(grants, action, ns, std::nullopt, now);
+}
+
+bool allows(
+    const Grants& grants,
+    Action action,
+    const FullTrackName& ftn,
+    std::chrono::system_clock::time_point now
+) {
+  return allowsImpl(grants, action, ftn.trackNamespace, std::string_view(ftn.trackName), now);
 }
 
 const char* toString(AuthError error) {

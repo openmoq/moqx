@@ -56,13 +56,13 @@ services:
     #     insecure: false         # true = skip cert verification (dev only)
     #     # ca_cert: /path/to/ca.pem  # Custom CA cert (mutually exclusive with insecure: true)
     # auth:                       # Optional: enable CAT-style authorization for this service
-    #   enabled: true
-    #   token_type: 0             # MOQT AUTHORIZATION_TOKEN token type
-    #   hmac_keys:
-    #     - id: "key-1"
-    #       secret: "replace-with-secret"
-    #   require_setup_token: true
-    #   allow_request_token_override: true
+    #   enabled: true             # Turn auth on for this service (default: false)
+    #   token_type: 0             # MOQT AUTHORIZATION_TOKEN type; 0 = out-of-band/private type (draft-ietf-moq-transport, "Token Type")
+    #   hmac_keys:                # Keys that sign/verify CAT tokens (HMAC-SHA256)
+    #     - id: "key-1"           # Key ID carried in the token envelope; selects which secret verifies it
+    #       secret: "replace-with-secret"   # Shared secret (use a long, random value)
+    #   require_setup_token: true            # Require a token at CLIENT_SETUP, not just on individual requests
+    #   allow_request_token_override: true   # Allow a per-request token to override the session's setup grants
     #   strict_claims: false       # Reject unsupported token claims instead of ignoring them
 
   testing:

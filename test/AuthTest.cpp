@@ -72,9 +72,9 @@ TEST(AuthTest, VerifiesSignedTokenAndAllowsMatchingAction) {
   ));
   auto grants = verifier.verify(token);
   ASSERT_TRUE(grants.hasValue());
-  EXPECT_TRUE(allows(grants.value(), Action::Subscribe, ns, "video"));
-  EXPECT_FALSE(allows(grants.value(), Action::Publish, ns, "video"));
-  EXPECT_FALSE(allows(grants.value(), Action::Subscribe, ns, "audio"));
+  EXPECT_TRUE(allows(grants.value(), Action::Subscribe, FullTrackName{ns, "video"}));
+  EXPECT_FALSE(allows(grants.value(), Action::Publish, FullTrackName{ns, "video"}));
+  EXPECT_FALSE(allows(grants.value(), Action::Subscribe, FullTrackName{ns, "audio"}));
 }
 
 TEST(AuthTest, AllowsPrefixSuffixAndContainsMatchRules) {
@@ -86,8 +86,10 @@ TEST(AuthTest, AllowsPrefixSuffixAndContainsMatchRules) {
       {MatchRule{.type = MatchRule::Type::Prefix, .value = canonicalNs.substr(0, 8)}},
       {MatchRule{.type = MatchRule::Type::Prefix, .value = "vid"}}
   );
-  EXPECT_TRUE(allows(prefixGrants, Action::Subscribe, ns, "video"));
-  EXPECT_FALSE(allows(prefixGrants, Action::Subscribe, TrackNamespace{{"vod"}}, "video"));
+  EXPECT_TRUE(allows(prefixGrants, Action::Subscribe, FullTrackName{ns, "video"}));
+  EXPECT_FALSE(
+      allows(prefixGrants, Action::Subscribe, FullTrackName{TrackNamespace{{"vod"}}, "video"})
+  );
 
   auto suffixGrants = makeGrants(
       {Action::Fetch},
@@ -97,34 +99,38 @@ TEST(AuthTest, AllowsPrefixSuffixAndContainsMatchRules) {
       }},
       {MatchRule{.type = MatchRule::Type::Suffix, .value = ".mp4"}}
   );
-  EXPECT_TRUE(allows(suffixGrants, Action::Fetch, ns, "clip.mp4"));
-  EXPECT_FALSE(allows(suffixGrants, Action::Fetch, ns, "clip.m4s"));
+  EXPECT_TRUE(allows(suffixGrants, Action::Fetch, FullTrackName{ns, "clip.mp4"}));
+  EXPECT_FALSE(allows(suffixGrants, Action::Fetch, FullTrackName{ns, "clip.m4s"}));
 
   auto containsGrants = makeGrants(
       {Action::Publish},
       {MatchRule{.type = MatchRule::Type::Contains, .value = "live"}},
       {MatchRule{.type = MatchRule::Type::Contains, .value = "main"}}
   );
-  EXPECT_TRUE(allows(containsGrants, Action::Publish, ns, "camera-main"));
-  EXPECT_FALSE(allows(containsGrants, Action::Publish, ns, "camera-side"));
+  EXPECT_TRUE(allows(containsGrants, Action::Publish, FullTrackName{ns, "camera-main"}));
+  EXPECT_FALSE(allows(containsGrants, Action::Publish, FullTrackName{ns, "camera-side"}));
 }
 
 TEST(AuthTest, EmptyNamespaceAndTrackRulesMatchEverything) {
   auto grants = makeGrants({Action::Subscribe}, {}, {});
 
-  EXPECT_TRUE(allows(grants, Action::Subscribe, TrackNamespace{{"live"}}, "video"));
-  EXPECT_TRUE(allows(grants, Action::Subscribe, TrackNamespace{}, std::nullopt));
+  EXPECT_TRUE(allows(grants, Action::Subscribe, FullTrackName{TrackNamespace{{"live"}}, "video"}));
+  EXPECT_TRUE(allows(grants, Action::Subscribe, TrackNamespace{}));
 }
 
 TEST(AuthTest, AllowsRejectsEmptyScopesAndExpiredGrants) {
   Grants emptyScopes;
   emptyScopes.expiresAt = std::chrono::system_clock::now() + std::chrono::hours(1);
-  EXPECT_FALSE(allows(emptyScopes, Action::Subscribe, TrackNamespace{{"live"}}, "video"));
+  EXPECT_FALSE(
+      allows(emptyScopes, Action::Subscribe, FullTrackName{TrackNamespace{{"live"}}, "video"})
+  );
 
   auto grants = makeGrants({Action::Subscribe}, {}, {});
   const auto now = std::chrono::system_clock::now();
   grants.expiresAt = now - std::chrono::seconds(1);
-  EXPECT_FALSE(allows(grants, Action::Subscribe, TrackNamespace{{"live"}}, "video", now));
+  EXPECT_FALSE(
+      allows(grants, Action::Subscribe, FullTrackName{TrackNamespace{{"live"}}, "video"}, now)
+  );
 }
 
 TEST(AuthTest, FindAuthTokenSelectsMatchingAuthorizationToken) {

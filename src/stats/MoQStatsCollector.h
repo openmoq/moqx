@@ -54,6 +54,8 @@ public:
     void onRequestUpdate() override;
     void onSubscriptionStreamOpened() override;
     void onSubscriptionStreamClosed() override;
+    void onSubscriptionBegin() override;
+    void onSubscriptionEnd() override;
 
     // Publisher-only methods
     void recordPublishNamespaceLatency(uint64_t latencyMsec) override;
@@ -88,6 +90,8 @@ public:
     void onRequestUpdate() override;
     void onSubscriptionStreamOpened() override;
     void onSubscriptionStreamClosed() override;
+    void onSubscriptionBegin() override;
+    void onSubscriptionEnd() override;
 
     // Subscriber-only methods
     void recordSubscribeLatency(uint64_t latencyMsec) override;
@@ -141,8 +145,8 @@ private:
   STATS_GAUGE_FIELDS(DEFINE_FIELD)
 #undef DEFINE_FIELD
 
-#define DEFINE_HISTOGRAM(name, bounds) BoundedHistogram<bounds.size()> name##_{bounds};
-  STATS_HISTOGRAM_FIELDS(DEFINE_HISTOGRAM)
+#define DEFINE_HISTOGRAM(name, bounds, unit) BoundedHistogram<bounds.size()> name##_{bounds};
+  STATS_MOQ_HISTOGRAM_FIELDS(DEFINE_HISTOGRAM)
 #undef DEFINE_HISTOGRAM
 
   // Per-RequestErrorCode breakdown arrays (parallel to the aggregate counters).

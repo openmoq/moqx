@@ -89,11 +89,19 @@ private:
 std::optional<moxygen::AuthToken>
 findAuthToken(const moxygen::Parameters& params, uint64_t tokenType);
 
+// Namespace-level authorization (e.g. PublishNamespace, SubscribeNamespace, setup).
 bool allows(
     const Grants& grants,
     Action action,
     const moxygen::TrackNamespace& ns,
-    std::optional<std::string_view> trackName = std::nullopt,
+    std::chrono::system_clock::time_point now = std::chrono::system_clock::now()
+);
+
+// Track-level authorization (e.g. Subscribe, Publish, Fetch, TrackStatus).
+bool allows(
+    const Grants& grants,
+    Action action,
+    const moxygen::FullTrackName& ftn,
     std::chrono::system_clock::time_point now = std::chrono::system_clock::now()
 );
 
