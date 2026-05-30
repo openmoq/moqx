@@ -196,6 +196,21 @@ TEST(AuthTest, RejectsEmptyTokenAsMalformed) {
   EXPECT_EQ(emptyRes.error(), AuthError::Malformed);
 }
 
+// Non-empty garbage that isn't a valid COSE/CWT structure must be rejected
+// cleanly (no crash). Either Malformed (CBOR/COSE decode fails) or BadSignature
+// (decodes but no key validates) is acceptable.
+TEST(AuthTest, RejectsGarbageBytesAsMalformedOrBadSig) {
+  AuthTokenVerifier verifier(makeConfig());
+  AuthToken token{
+      .tokenType = 77,
+      .tokenValue = std::string("\xde\xad\xbe\xef", 4),
+      .alias = AuthToken::DontRegister,
+  };
+  auto result = verifier.verify(token);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_TRUE(result.error() == AuthError::Malformed || result.error() == AuthError::BadSignature);
+}
+
 TEST(AuthTest, RejectsExpiredToken) {
   auto expired = makeGrants({Action::ClientSetup}, {}, {});
   expired.expiresAt = std::chrono::system_clock::time_point(std::chrono::seconds(1'735'689'600));

@@ -13,12 +13,16 @@
 #include <folly/Conv.h>
 #include <folly/Expected.h>
 #include <folly/Range.h>
-#include <openssl/sha.h>
+#include <folly/logging/xlog.h>
+#include <openssl/evp.h>
+#include <openssl/kdf.h>
 
 #include <algorithm>
 #include <array>
 #include <limits>
+#include <memory>
 #include <span>
+#include <stdexcept>
 #include <vector>
 
 using namespace moxygen;
@@ -38,9 +42,45 @@ std::string canonicalNamespace(const TrackNamespace& ns) {
   return out;
 }
 
+// Derive a 256-bit HMAC key from the configured secret using HKDF-SHA256
+// (RFC 5869) rather than a bare hash. The fixed, non-secret salt and info
+// strings provide domain separation so the same configured secret can't yield
+// identical key material if reused for another purpose. (HKDF does not add
+// entropy: a low-entropy secret is still weak -- operators should use a long,
+// random secret.)
+constexpr std::string_view kHkdfSalt = "moqx-catapult-v1";
+constexpr std::string_view kHkdfInfo = "moqx-catapult-hmac-token-verify";
+
 std::vector<uint8_t> deriveHmacKey(std::string_view secret) {
-  std::vector<uint8_t> key(SHA256_DIGEST_LENGTH);
-  SHA256(reinterpret_cast<const unsigned char*>(secret.data()), secret.size(), key.data());
+  std::vector<uint8_t> key(32); // 256-bit output for HMAC-SHA256
+
+  auto* ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_HKDF, nullptr);
+  if (!ctx) {
+    throw std::runtime_error("EVP_PKEY_CTX_new_id(HKDF) failed");
+  }
+  auto guard = std::unique_ptr<EVP_PKEY_CTX, decltype(&EVP_PKEY_CTX_free)>(ctx, EVP_PKEY_CTX_free);
+
+  size_t keyLen = key.size();
+  if (EVP_PKEY_derive_init(ctx) <= 0 || EVP_PKEY_CTX_set_hkdf_md(ctx, EVP_sha256()) <= 0 ||
+      EVP_PKEY_CTX_set1_hkdf_salt(
+          ctx,
+          reinterpret_cast<const unsigned char*>(kHkdfSalt.data()),
+          static_cast<int>(kHkdfSalt.size())
+      ) <= 0 ||
+      EVP_PKEY_CTX_set1_hkdf_key(
+          ctx,
+          reinterpret_cast<const unsigned char*>(secret.data()),
+          static_cast<int>(secret.size())
+      ) <= 0 ||
+      EVP_PKEY_CTX_add1_hkdf_info(
+          ctx,
+          reinterpret_cast<const unsigned char*>(kHkdfInfo.data()),
+          static_cast<int>(kHkdfInfo.size())
+      ) <= 0 ||
+      EVP_PKEY_derive(ctx, key.data(), &keyLen) <= 0) {
+    throw std::runtime_error("HKDF key derivation failed");
+  }
+  key.resize(keyLen);
   return key;
 }
 
@@ -58,6 +98,15 @@ std::string toString(const std::vector<uint8_t>& bytes) {
 catapult::MoqtBinaryMatch toCatapultMatch(const std::vector<MatchRule>& rules) {
   if (rules.empty()) {
     return catapult::MoqtBinaryMatch::any();
+  }
+  // A Catapult CWT scope carries a single binary match per dimension, whereas a
+  // MatchRule vector can express several ANDed rules (e.g. Prefix + Suffix). We
+  // can only serialize the first; warn loudly rather than silently dropping the
+  // rest, since that would widen the grant beyond what was configured.
+  if (rules.size() > 1) {
+    XLOG(WARN) << "CWT scope supports a single match rule per dimension; dropping "
+               << (rules.size() - 1) << " extra rule(s) -- the serialized grant will be broader "
+               << "than the configured match rules";
   }
   const auto& rule = rules.front();
   switch (rule.type) {
@@ -152,7 +201,13 @@ Grants grantsFromToken(const catapult::CatToken& token) {
 
 } // namespace
 
-AuthTokenVerifier::AuthTokenVerifier(config::AuthConfig config) : config_(std::move(config)) {}
+AuthTokenVerifier::AuthTokenVerifier(config::AuthConfig config) : config_(std::move(config)) {
+  // Derive each configured key once; verify() reuses these (see DerivedKey).
+  derivedKeys_.reserve(config_.hmacKeys.size());
+  for (const auto& key : config_.hmacKeys) {
+    derivedKeys_.push_back(DerivedKey{.id = key.id, .key = deriveHmacKey(key.secret)});
+  }
+}
 
 folly::Expected<Grants, AuthError> AuthTokenVerifier::verify(const AuthToken& token) const {
   if (!config_.enabled) {
@@ -165,14 +220,18 @@ folly::Expected<Grants, AuthError> AuthTokenVerifier::verify(const AuthToken& to
     return folly::makeUnexpected(AuthError::Malformed);
   }
 
+  // Catapult's CWT API has no way to read the token's key id without first
+  // validating against a key, so we trial-verify against each configured key.
+  // Key derivation already happened at construction; only the HMAC check (one
+  // per key until a match) repeats here. A true key-id short-circuit would need
+  // a "peek the unprotected header" entry point in Catapult that doesn't exist
+  // yet -- see the PR discussion.
   const auto tokenBytes = toBytes(token.tokenValue);
-  for (const auto& key : config_.hmacKeys) {
+  const auto span = std::span<const uint8_t>(tokenBytes.data(), tokenBytes.size());
+  for (const auto& derived : derivedKeys_) {
     try {
-      catapult::HmacSha256Algorithm hmac(deriveHmacKey(key.secret));
-      auto cwt = catapult::Cwt::validateCwt(
-          std::span<const uint8_t>(tokenBytes.data(), tokenBytes.size()),
-          hmac
-      );
+      catapult::HmacSha256Algorithm hmac(derived.key);
+      auto cwt = catapult::Cwt::validateCwt(span, hmac);
       auto grants = grantsFromToken(cwt.payload);
       if (grants.expiresAt <= std::chrono::system_clock::now()) {
         return folly::makeUnexpected(AuthError::Expired);

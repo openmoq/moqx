@@ -74,7 +74,16 @@ public:
   signForTest(std::string_view keyID, std::string_view secret, const Grants& grants);
 
 private:
+  // HMAC key material derived once at construction. The configured keys never
+  // change after that, so the (relatively expensive) key derivation is hoisted
+  // out of verify(), which only re-runs the per-key HMAC check.
+  struct DerivedKey {
+    std::string id;
+    std::vector<uint8_t> key;
+  };
+
   config::AuthConfig config_;
+  std::vector<DerivedKey> derivedKeys_;
 };
 
 std::optional<moxygen::AuthToken>
