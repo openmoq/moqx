@@ -69,7 +69,9 @@ public:
 
   folly::Expected<Grants, AuthError> verify(const moxygen::AuthToken& token) const;
 
-  // Internal v1 envelope used by tests and by local token issuers:
+  // Builds the internal v1 token envelope. Test/tooling helper only -- the relay
+  // verifies tokens but never issues them; this lives alongside verify() so the
+  // two stay in sync on the envelope layout:
   // 0x01 | key-id-len:u8 | key-id | claims-len:u32be | CBOR claims | HMAC-SHA256.
   static std::string
   signForTest(std::string_view keyID, std::string_view secret, std::string_view cborClaims);
@@ -81,11 +83,19 @@ private:
 std::optional<moxygen::AuthToken>
 findAuthToken(const moxygen::Parameters& params, uint64_t tokenType);
 
+// Namespace-level authorization (e.g. PublishNamespace, SubscribeNamespace, setup).
 bool allows(
     const Grants& grants,
     Action action,
     const moxygen::TrackNamespace& ns,
-    std::optional<std::string_view> trackName = std::nullopt,
+    std::chrono::system_clock::time_point now = std::chrono::system_clock::now()
+);
+
+// Track-level authorization (e.g. Subscribe, Publish, Fetch, TrackStatus).
+bool allows(
+    const Grants& grants,
+    Action action,
+    const moxygen::FullTrackName& ftn,
     std::chrono::system_clock::time_point now = std::chrono::system_clock::now()
 );
 

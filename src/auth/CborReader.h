@@ -14,6 +14,27 @@
 
 namespace openmoq::moqx::auth {
 
+// CBOR (RFC 8949 §3) initial-byte encoding. The high 3 bits select the major
+// type; the low 5 bits ("additional information") either hold the argument
+// directly (< 24) or name how many big-endian bytes follow (24..27 => 1/2/4/8).
+namespace cbor {
+constexpr unsigned kMajorShift = 5;
+constexpr uint8_t kAddlInfoMask = 0x1f;
+
+constexpr uint8_t kMajorUnsigned = 0;   // unsigned integer
+constexpr uint8_t kMajorNegative = 1;   // negative integer
+constexpr uint8_t kMajorByteString = 2; // byte string
+constexpr uint8_t kMajorTextString = 3; // text string
+constexpr uint8_t kMajorArray = 4;      // array
+constexpr uint8_t kMajorMap = 5;        // map
+
+constexpr uint8_t kAddlInfoDirectMax = 24; // additional info < this is the value itself
+constexpr uint8_t kAddlInfo1Byte = 24;
+constexpr uint8_t kAddlInfo2Byte = 25;
+constexpr uint8_t kAddlInfo4Byte = 26;
+constexpr uint8_t kAddlInfo8Byte = 27;
+} // namespace cbor
+
 // Minimal CBOR (RFC 8949) decoder used to parse CAT token claims.
 // Internal to the auth subsystem.
 class CborReader {
@@ -25,7 +46,7 @@ public:
   bool readUInt(uint64_t& out) {
     uint8_t major = 0;
     uint64_t value = 0;
-    if (!readType(major, value) || major != 0) {
+    if (!readType(major, value) || major != cbor::kMajorUnsigned) {
       return false;
     }
     out = value;
@@ -38,14 +59,14 @@ public:
     if (!readType(major, value)) {
       return false;
     }
-    if (major == 0) {
+    if (major == cbor::kMajorUnsigned) {
       if (value > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
         return false;
       }
       out = static_cast<int64_t>(value);
       return true;
     }
-    if (major == 1) {
+    if (major == cbor::kMajorNegative) {
       if (value > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
         return false;
       }
@@ -58,7 +79,9 @@ public:
   bool readBytes(std::string& out) {
     uint8_t major = 0;
     uint64_t len = 0;
-    if (!readType(major, len) || (major != 2 && major != 3) || len > data_.size() - pos_) {
+    if (!readType(major, len) ||
+        (major != cbor::kMajorByteString && major != cbor::kMajorTextString) ||
+        len > data_.size() - pos_) {
       return false;
     }
     out.assign(data_.data() + pos_, static_cast<size_t>(len));
@@ -68,12 +91,12 @@ public:
 
   bool readArrayLen(uint64_t& len) {
     uint8_t major = 0;
-    return readType(major, len) && major == 4;
+    return readType(major, len) && major == cbor::kMajorArray;
   }
 
   bool readMapLen(uint64_t& len) {
     uint8_t major = 0;
-    return readType(major, len) && major == 5;
+    return readType(major, len) && major == cbor::kMajorMap;
   }
 
   bool skip() {
@@ -83,24 +106,24 @@ public:
       return false;
     }
     switch (major) {
-    case 0:
-    case 1:
+    case cbor::kMajorUnsigned:
+    case cbor::kMajorNegative:
       return true;
-    case 2:
-    case 3:
+    case cbor::kMajorByteString:
+    case cbor::kMajorTextString:
       if (value > data_.size() - pos_) {
         return false;
       }
       pos_ += static_cast<size_t>(value);
       return true;
-    case 4:
+    case cbor::kMajorArray:
       for (uint64_t i = 0; i < value; ++i) {
         if (!skip()) {
           return false;
         }
       }
       return true;
-    case 5:
+    case cbor::kMajorMap:
       for (uint64_t i = 0; i < value * 2; ++i) {
         if (!skip()) {
           return false;
@@ -118,20 +141,20 @@ private:
       return false;
     }
     const auto first = static_cast<unsigned char>(data_[pos_++]);
-    major = first >> 5;
-    const auto addl = first & 0x1f;
-    if (addl < 24) {
+    major = first >> cbor::kMajorShift;
+    const auto addl = first & cbor::kAddlInfoMask;
+    if (addl < cbor::kAddlInfoDirectMax) {
       value = addl;
       return true;
     }
     size_t bytes = 0;
-    if (addl == 24) {
+    if (addl == cbor::kAddlInfo1Byte) {
       bytes = 1;
-    } else if (addl == 25) {
+    } else if (addl == cbor::kAddlInfo2Byte) {
       bytes = 2;
-    } else if (addl == 26) {
+    } else if (addl == cbor::kAddlInfo4Byte) {
       bytes = 4;
-    } else if (addl == 27) {
+    } else if (addl == cbor::kAddlInfo8Byte) {
       bytes = 8;
     } else {
       return false;

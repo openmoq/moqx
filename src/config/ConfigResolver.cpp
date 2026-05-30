@@ -312,6 +312,16 @@ UpstreamConfig resolveUpstream(const ParsedUpstreamConfig& upstream) {
   };
 }
 
+// Minimum HMAC-SHA256 shared-secret length. Short secrets undermine the MAC, so
+// reject them at config load when auth is enabled.
+constexpr size_t kMinHmacSecretBytes = 16;
+
+// MOQT carries token_type as a QUIC variable-length integer (RFC 9000 Section
+// 16), whose maximum encodable value is 2^62 - 1. This bound is a property of
+// the wire encoding, not a moqx policy, so it is stable across MOQT drafts: a
+// value at or above 2^62 simply cannot be serialized as a varint.
+constexpr uint64_t kQuicVarintExclusiveUpperBound = uint64_t{1} << 62;
+
 void validateAuth(
     const std::string& serviceName,
     const ParsedAuthConfig& auth,
@@ -341,7 +351,10 @@ void validateAuth(
       }
     }
   }
-  if (auth.token_type.value().value_or(0) >= (uint64_t{1} << 62)) {
+  // token_type 0 is a valid MOQT AUTHORIZATION_TOKEN type and is accepted as-is;
+  // it is not treated as "unset". An omitted token_type also resolves to 0 (see
+  // resolveAuth), so omitting it and setting token_type: 0 behave identically.
+  if (auth.token_type.value().value_or(0) >= kQuicVarintExclusiveUpperBound) {
     errors.push_back("Service '" + serviceName + "': auth.token_type must fit in a QUIC varint");
   }
 }

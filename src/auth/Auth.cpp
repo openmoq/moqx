@@ -91,17 +91,14 @@ std::string hmacSha256(std::string_view secret, std::string_view payload) {
 }
 
 uint32_t readU32BE(std::string_view data, size_t offset) {
-  return (static_cast<uint32_t>(static_cast<unsigned char>(data[offset])) << 24) |
-         (static_cast<uint32_t>(static_cast<unsigned char>(data[offset + 1])) << 16) |
-         (static_cast<uint32_t>(static_cast<unsigned char>(data[offset + 2])) << 8) |
-         static_cast<uint32_t>(static_cast<unsigned char>(data[offset + 3]));
+  uint32_t netOrder = 0;
+  std::memcpy(&netOrder, data.data() + offset, sizeof(netOrder));
+  return folly::Endian::big(netOrder);
 }
 
 void appendU32BE(std::string& out, uint32_t value) {
-  out.push_back(static_cast<char>((value >> 24) & 0xff));
-  out.push_back(static_cast<char>((value >> 16) & 0xff));
-  out.push_back(static_cast<char>((value >> 8) & 0xff));
-  out.push_back(static_cast<char>(value & 0xff));
+  const uint32_t netOrder = folly::Endian::big(value);
+  out.append(reinterpret_cast<const char*>(&netOrder), sizeof(netOrder));
 }
 
 std::string canonicalNamespace(const TrackNamespace& ns) {
@@ -179,6 +176,21 @@ bool parseMatchRules(CborReader& reader, std::vector<MatchRule>& rules) {
   return true;
 }
 
+// A scope is the CBOR encoding of one access grant in the CAT "moqt" claim
+// (see draft-law-moq-cat4moqt). It is a fixed 3-element array:
+//
+//   [ actions, namespace-matches, track-matches ]
+//
+//   actions          - either a single action integer or a CBOR array of them
+//                      (auth::Action enum values; parsed by parseActions).
+//   namespace-matches - a CBOR map { match-type => bytes } evaluated against the
+//   track-matches       canonicalized namespace / track name respectively. The
+//                      match-type key is a MatchRule::Type (0=exact, 1=prefix,
+//                      2=suffix, 3=contains); every entry in the map must match
+//                      (logical AND). An empty map matches everything.
+//
+// The scope grants the action when its action set contains the requested action
+// and both match maps are satisfied (see auth::allows / allowsImpl).
 bool parseScope(CborReader& reader, Scope& scope) {
   uint64_t len = 0;
   if (!reader.readArrayLen(len) || len != 3) {
@@ -209,6 +221,11 @@ bool parseClaims(std::string_view data, Grants& grants, bool strictClaims) {
   if (!reader.readMapLen(len)) {
     return false;
   }
+  // Each well-known claim key may appear at most once; a duplicate is rejected
+  // rather than silently last-wins.
+  bool seenExp = false;
+  bool seenMoqt = false;
+  bool seenMoqtReval = false;
   for (uint64_t i = 0; i < len; ++i) {
     auto keyReader = reader;
     int64_t intKey = 0;
@@ -227,16 +244,28 @@ bool parseClaims(std::string_view data, Grants& grants, bool strictClaims) {
     }
 
     if ((hasIntKey && intKey == 4) || (hasTextKey && textKey == "exp")) {
+      if (seenExp) {
+        return false;
+      }
+      seenExp = true;
       int64_t exp = 0;
       if (!reader.readInt(exp) || exp < 0) {
         return false;
       }
       grants.expiresAt = std::chrono::system_clock::time_point(std::chrono::seconds(exp));
     } else if (hasTextKey && textKey == "moqt") {
+      if (seenMoqt) {
+        return false;
+      }
+      seenMoqt = true;
       if (!parseMoqt(reader, grants)) {
         return false;
       }
     } else if (hasTextKey && textKey == "moqt-reval") {
+      if (seenMoqtReval) {
+        return false;
+      }
+      seenMoqtReval = true;
       int64_t ignoredReval = 0;
       if (!reader.readInt(ignoredReval) || ignoredReval < 0) {
         return false;
@@ -325,7 +354,11 @@ std::optional<AuthToken> findAuthToken(const Parameters& params, uint64_t tokenT
   return std::nullopt;
 }
 
-bool allows(
+namespace {
+
+// Shared implementation for both allows() overloads. A namespace-level check
+// passes std::nullopt for trackName (the track match rules then see empty bytes).
+bool allowsImpl(
     const Grants& grants,
     Action action,
     const TrackNamespace& ns,
@@ -347,6 +380,26 @@ bool allows(
     }
   }
   return false;
+}
+
+} // namespace
+
+bool allows(
+    const Grants& grants,
+    Action action,
+    const TrackNamespace& ns,
+    std::chrono::system_clock::time_point now
+) {
+  return allowsImpl(grants, action, ns, std::nullopt, now);
+}
+
+bool allows(
+    const Grants& grants,
+    Action action,
+    const FullTrackName& ftn,
+    std::chrono::system_clock::time_point now
+) {
+  return allowsImpl(grants, action, ftn.trackNamespace, std::string_view(ftn.trackName), now);
 }
 
 const char* toString(AuthError error) {

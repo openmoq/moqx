@@ -309,6 +309,7 @@ private:
       auth::Action action,
       const moxygen::Parameters& params,
       const moxygen::TrackNamespace& ns,
+      const std::shared_ptr<moxygen::MoQSession>& session,
       std::optional<std::string_view> trackName = std::nullopt
   );
 

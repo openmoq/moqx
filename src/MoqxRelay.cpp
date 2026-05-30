@@ -124,32 +124,52 @@ folly::Expected<folly::Unit, auth::AuthError> MoqxRelay::authorize(
     auth::Action action,
     const Parameters& params,
     const TrackNamespace& ns,
+    const std::shared_ptr<MoQSession>& session,
     std::optional<std::string_view> trackName
 ) {
   if (!authVerifier_.enabled()) {
     return folly::unit;
   }
 
-  auto session = MoQSession::getRequestSession();
-  auto token = authVerifier_.allowRequestTokenOverride()
-                   ? auth::findAuthToken(params, authVerifier_.tokenType())
-                   : std::nullopt;
-  if (token) {
-    auto grants = authVerifier_.verify(*token);
-    if (grants.hasError()) {
-      return folly::makeUnexpected(grants.error());
-    }
-    if (auth::allows(grants.value(), action, ns, trackName)) {
-      return folly::unit;
-    }
-    return folly::makeUnexpected(auth::AuthError::Forbidden);
+  auto token = auth::findAuthToken(params, authVerifier_.tokenType());
+  if (token && !authVerifier_.allowRequestTokenOverride()) {
+    // Request carried a per-request token but override is disabled, so the
+    // grants established at session setup govern. This is expected behavior;
+    // log at DBG1 for visibility rather than failing the request.
+    XLOG(DBG1) << "authorize: ignoring request AUTHORIZATION_TOKEN for action="
+               << static_cast<uint64_t>(action) << " (allow_request_token_override is disabled)";
+    token.reset();
   }
 
-  auto it = sessionAuth_.find(session.get());
-  if (it == sessionAuth_.end()) {
-    return folly::makeUnexpected(auth::AuthError::Missing);
+  // Resolve grants from exactly one source (request token or session), then run
+  // a single auth::allows() check below.
+  const auth::Grants* grants = nullptr;
+  auth::Grants verified;
+  if (token) {
+    auto res = authVerifier_.verify(*token);
+    if (res.hasError()) {
+      XLOG(DBG1) << "authorize: request token verification failed for action="
+                 << static_cast<uint64_t>(action) << ": " << auth::toString(res.error());
+      return folly::makeUnexpected(res.error());
+    }
+    verified = std::move(res.value());
+    grants = &verified;
+  } else {
+    auto it = sessionAuth_.find(session.get());
+    if (it == sessionAuth_.end()) {
+      XLOG(DBG1) << "authorize: no session grants for action=" << static_cast<uint64_t>(action)
+                 << " ns=" << ns;
+      return folly::makeUnexpected(auth::AuthError::Missing);
+    }
+    grants = &it->second;
   }
-  if (!auth::allows(it->second, action, ns, trackName)) {
+
+  const bool permitted =
+      trackName ? auth::allows(*grants, action, FullTrackName{ns, std::string(*trackName)})
+                : auth::allows(*grants, action, ns);
+  if (!permitted) {
+    XLOG(DBG1) << "authorize: action=" << static_cast<uint64_t>(action)
+               << " not permitted for ns=" << ns;
     return folly::makeUnexpected(auth::AuthError::Forbidden);
   }
   return folly::unit;
@@ -250,7 +270,8 @@ folly::coro::Task<Subscriber::PublishNamespaceResult> MoqxRelay::publishNamespac
   // TODO: store auth for forwarding on future SubscribeNamespace?
   auto session = MoQSession::getRequestSession();
   auto requestID = pubNs.requestID;
-  auto authRes = authorize(auth::Action::PublishNamespace, pubNs.params, pubNs.trackNamespace);
+  auto authRes =
+      authorize(auth::Action::PublishNamespace, pubNs.params, pubNs.trackNamespace, session);
   if (authRes.hasError()) {
     co_return folly::makeUnexpected(PublishNamespaceError{
         requestID,
@@ -341,10 +362,12 @@ Subscriber::PublishResult
 MoqxRelay::publish(PublishRequest pub, std::shared_ptr<Publisher::SubscriptionHandle> handle) {
   XLOG(DBG1) << __func__ << " ftn=" << pub.fullTrackName;
   XCHECK(handle) << "Publish handle cannot be null";
+  auto session = MoQSession::getRequestSession();
   auto authRes = authorize(
       auth::Action::Publish,
       pub.params,
       pub.fullTrackName.trackNamespace,
+      session,
       pub.fullTrackName.trackName
   );
   if (authRes.hasError()) {
@@ -638,7 +661,7 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
         auth::Action::SubscribeNamespace,
         subNs.params,
         subNs.trackNamespacePrefix,
-        std::nullopt
+        session
     );
     if (authRes.hasError()) {
       co_return folly::makeUnexpected(SubscribeNamespaceError{
@@ -795,6 +818,7 @@ MoqxRelay::subscribe(SubscribeRequest subReq, std::shared_ptr<TrackConsumer> con
       auth::Action::Subscribe,
       subReq.params,
       subReq.fullTrackName.trackNamespace,
+      session,
       subReq.fullTrackName.trackName
   );
   if (authRes.hasError()) {
@@ -930,6 +954,7 @@ MoqxRelay::fetch(Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
       auth::Action::Fetch,
       fetch.params,
       fetch.fullTrackName.trackNamespace,
+      session,
       fetch.fullTrackName.trackName
   );
   if (authRes.hasError()) {
@@ -1002,10 +1027,12 @@ MoqxRelay::fetch(Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
 folly::coro::Task<Publisher::TrackStatusResult> MoqxRelay::trackStatus(TrackStatus trackStatus) {
   XLOG(DBG1) << __func__ << " ftn=" << trackStatus.fullTrackName;
 
+  auto session = MoQSession::getRequestSession();
   auto authRes = authorize(
       auth::Action::TrackStatus,
       trackStatus.params,
       trackStatus.fullTrackName.trackNamespace,
+      session,
       trackStatus.fullTrackName.trackName
   );
   if (authRes.hasError()) {

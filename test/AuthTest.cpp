@@ -142,9 +142,9 @@ TEST(AuthTest, VerifiesSignedTokenAndAllowsMatchingAction) {
   AuthTokenVerifier verifier(makeConfig());
   auto grants = verifier.verify(makeToken(claimsFor(Action::Subscribe, ns, "video")));
   ASSERT_TRUE(grants.hasValue());
-  EXPECT_TRUE(allows(grants.value(), Action::Subscribe, ns, "video"));
-  EXPECT_FALSE(allows(grants.value(), Action::Publish, ns, "video"));
-  EXPECT_FALSE(allows(grants.value(), Action::Subscribe, ns, "audio"));
+  EXPECT_TRUE(allows(grants.value(), Action::Subscribe, FullTrackName{ns, "video"}));
+  EXPECT_FALSE(allows(grants.value(), Action::Publish, FullTrackName{ns, "video"}));
+  EXPECT_FALSE(allows(grants.value(), Action::Subscribe, FullTrackName{ns, "audio"}));
 }
 
 TEST(AuthTest, AllowsPrefixSuffixAndContainsMatchRules) {
@@ -156,8 +156,10 @@ TEST(AuthTest, AllowsPrefixSuffixAndContainsMatchRules) {
       {MatchRule{.type = MatchRule::Type::Prefix, .value = canonicalNs.substr(0, 8)}},
       {MatchRule{.type = MatchRule::Type::Prefix, .value = "vid"}}
   );
-  EXPECT_TRUE(allows(prefixGrants, Action::Subscribe, ns, "video"));
-  EXPECT_FALSE(allows(prefixGrants, Action::Subscribe, TrackNamespace{{"vod"}}, "video"));
+  EXPECT_TRUE(allows(prefixGrants, Action::Subscribe, FullTrackName{ns, "video"}));
+  EXPECT_FALSE(
+      allows(prefixGrants, Action::Subscribe, FullTrackName{TrackNamespace{{"vod"}}, "video"})
+  );
 
   auto suffixGrants = makeGrants(
       {Action::Fetch},
@@ -167,34 +169,38 @@ TEST(AuthTest, AllowsPrefixSuffixAndContainsMatchRules) {
       }},
       {MatchRule{.type = MatchRule::Type::Suffix, .value = ".mp4"}}
   );
-  EXPECT_TRUE(allows(suffixGrants, Action::Fetch, ns, "clip.mp4"));
-  EXPECT_FALSE(allows(suffixGrants, Action::Fetch, ns, "clip.m4s"));
+  EXPECT_TRUE(allows(suffixGrants, Action::Fetch, FullTrackName{ns, "clip.mp4"}));
+  EXPECT_FALSE(allows(suffixGrants, Action::Fetch, FullTrackName{ns, "clip.m4s"}));
 
   auto containsGrants = makeGrants(
       {Action::Publish},
       {MatchRule{.type = MatchRule::Type::Contains, .value = "live"}},
       {MatchRule{.type = MatchRule::Type::Contains, .value = "main"}}
   );
-  EXPECT_TRUE(allows(containsGrants, Action::Publish, ns, "camera-main"));
-  EXPECT_FALSE(allows(containsGrants, Action::Publish, ns, "camera-side"));
+  EXPECT_TRUE(allows(containsGrants, Action::Publish, FullTrackName{ns, "camera-main"}));
+  EXPECT_FALSE(allows(containsGrants, Action::Publish, FullTrackName{ns, "camera-side"}));
 }
 
 TEST(AuthTest, EmptyNamespaceAndTrackRulesMatchEverything) {
   auto grants = makeGrants({Action::Subscribe}, {}, {});
 
-  EXPECT_TRUE(allows(grants, Action::Subscribe, TrackNamespace{{"live"}}, "video"));
-  EXPECT_TRUE(allows(grants, Action::Subscribe, TrackNamespace{}, std::nullopt));
+  EXPECT_TRUE(allows(grants, Action::Subscribe, FullTrackName{TrackNamespace{{"live"}}, "video"}));
+  EXPECT_TRUE(allows(grants, Action::Subscribe, TrackNamespace{}));
 }
 
 TEST(AuthTest, AllowsRejectsEmptyScopesAndExpiredGrants) {
   Grants emptyScopes;
   emptyScopes.expiresAt = std::chrono::system_clock::now() + std::chrono::hours(1);
-  EXPECT_FALSE(allows(emptyScopes, Action::Subscribe, TrackNamespace{{"live"}}, "video"));
+  EXPECT_FALSE(
+      allows(emptyScopes, Action::Subscribe, FullTrackName{TrackNamespace{{"live"}}, "video"})
+  );
 
   auto grants = makeGrants({Action::Subscribe}, {}, {});
   const auto now = std::chrono::system_clock::now();
   grants.expiresAt = now - std::chrono::seconds(1);
-  EXPECT_FALSE(allows(grants, Action::Subscribe, TrackNamespace{{"live"}}, "video", now));
+  EXPECT_FALSE(
+      allows(grants, Action::Subscribe, FullTrackName{TrackNamespace{{"live"}}, "video"}, now)
+  );
 }
 
 TEST(AuthTest, FindAuthTokenSelectsMatchingAuthorizationToken) {
@@ -294,6 +300,32 @@ TEST(AuthTest, RejectsMalformedClaims) {
   auto grants = verifier.verify(token);
   ASSERT_TRUE(grants.hasError());
   EXPECT_EQ(grants.error(), AuthError::Malformed);
+}
+
+TEST(AuthTest, RejectsDuplicateWellKnownClaimKeys) {
+  AuthTokenVerifier verifier(makeConfig());
+
+  // exp present twice must be rejected rather than silently last-wins.
+  auto dupExp = cborMap({
+      {cborUInt(4), cborUInt(4'102'444'800ULL)},
+      {cborUInt(4), cborUInt(4'102'444'800ULL)},
+  });
+  auto dupExpRes = verifier.verify(makeToken(dupExp));
+  ASSERT_TRUE(dupExpRes.hasError());
+  EXPECT_EQ(dupExpRes.error(), AuthError::Malformed);
+
+  // moqt present twice must be rejected too.
+  auto scope = cborArray(
+      {cborArray({cborUInt(static_cast<uint64_t>(Action::ClientSetup))}), cborMap({}), cborMap({})}
+  );
+  auto dupMoqt = cborMap({
+      {cborUInt(4), cborUInt(4'102'444'800ULL)},
+      {cborText("moqt"), cborArray({scope})},
+      {cborText("moqt"), cborArray({scope})},
+  });
+  auto dupMoqtRes = verifier.verify(makeToken(dupMoqt));
+  ASSERT_TRUE(dupMoqtRes.hasError());
+  EXPECT_EQ(dupMoqtRes.error(), AuthError::Malformed);
 }
 
 TEST(AuthTest, RejectsExpiredToken) {
