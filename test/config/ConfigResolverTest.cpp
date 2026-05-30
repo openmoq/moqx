@@ -1344,6 +1344,7 @@ TEST(ResolveConfig, QuicCcAlgoPicoOnlyRejectedByMvfst) {
   cfg.listeners.value()[0].tls.value().insecure = false;
   cfg.listeners.value()[0].tls.value().cert_file = std::optional<std::string>{"cert.pem"};
   cfg.listeners.value()[0].tls.value().key_file = std::optional<std::string>{"key.pem"};
+  cfg.mvfst_bpf_steering = std::optional<bool>{false};
   auto result2 = resolveConfig(cfg);
   ASSERT_TRUE(result2.hasValue());
   EXPECT_EQ(result2.value().config.listeners[0].quic.ccAlgo, "dcubic");
@@ -1392,6 +1393,7 @@ ParsedConfig makeMinimalPicoConfig() {
   lc.tls.value().insecure = false;
   lc.tls.value().cert_file = std::optional<std::string>{"cert.pem"};
   lc.tls.value().key_file = std::optional<std::string>{"key.pem"};
+  cfg.mvfst_bpf_steering = std::optional<bool>{false};
   return cfg;
 }
 
@@ -1615,6 +1617,200 @@ TEST(ResolveConfig, CacheByteLimitsMergeWithDefaults) {
   EXPECT_EQ(resolved.services.at("inheritor").cache.minEvictionKb, 200u);
   EXPECT_EQ(resolved.services.at("overrider").cache.maxCachedMb, 64u);
   EXPECT_EQ(resolved.services.at("overrider").cache.minEvictionKb, 512u);
+}
+
+// --- MvfstConfig resolution and validation tests ---
+
+static void setListenerMvfst(ParsedConfig& cfg, ParsedMvfstConfig mvfst) {
+  cfg.listeners.value()[0].mvfst = std::optional<ParsedMvfstConfig>{std::move(mvfst)};
+}
+
+// All struct defaults are correct after resolving a config with no mvfst: block.
+TEST(ResolveConfig, MvfstDefaultsRoundTrip) {
+  auto cfg = makeMinimalInsecureConfig();
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  const auto& mvfst = result.value().config.listeners[0].mvfst;
+  EXPECT_EQ(mvfst.maxCwndInMss, 860000u);
+  EXPECT_TRUE(mvfst.enableGSO);
+  EXPECT_EQ(mvfst.maxConnPacketsSentPerLoop, 48u);
+  EXPECT_TRUE(mvfst.useRecvmmsg);
+  EXPECT_EQ(mvfst.maxServerRecvPacketsPerLoop, 64u);
+  EXPECT_EQ(mvfst.numGROBuffers, 1u);
+  EXPECT_DOUBLE_EQ(mvfst.copa.deltaParam, 0.05);
+  EXPECT_FALSE(mvfst.bbr.conservativeRecovery);
+  EXPECT_TRUE(mvfst.bbr2.exitStartupOnLoss);
+  EXPECT_TRUE(mvfst.bbr2.enableRecoveryInStartup);
+  EXPECT_TRUE(mvfst.bbr2.enableRecoveryInProbeStates);
+  EXPECT_FLOAT_EQ(mvfst.l4s.ceTarget, 0.0f);
+}
+
+// listener_defaults.mvfst propagates to listeners; per-listener overrides win;
+// validation runs on the merged result (not just the per-listener fragment).
+TEST(ResolveConfig, MvfstInheritanceAndOverride) {
+  // listener_defaults sets max_cwnd=100000, num_gro=4; per-listener bumps max_cwnd to 200000.
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedMvfstConfig defaults;
+  defaults.max_cwnd_in_mss = std::optional<uint64_t>{100000};
+  defaults.num_gro_buffers = std::optional<uint32_t>{4};
+  ParsedListenerDefaultsConfig ld;
+  ld.mvfst = std::optional<ParsedMvfstConfig>{std::move(defaults)};
+  cfg.listener_defaults = std::optional<ParsedListenerDefaultsConfig>{std::move(ld)};
+
+  ParsedMvfstConfig perListener;
+  perListener.max_cwnd_in_mss = std::optional<uint64_t>{200000};
+  setListenerMvfst(cfg, std::move(perListener));
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  const auto& mvfst = result.value().config.listeners[0].mvfst;
+  EXPECT_EQ(mvfst.maxCwndInMss, 200000u); // per-listener wins
+  EXPECT_EQ(mvfst.numGROBuffers, 4u);     // from defaults
+
+  // Validation uses merged values: max_conn_packets_sent_per_loop=0 in defaults
+  // triggers error even when the per-listener fragment doesn't set it.
+  auto cfg2 = makeMinimalInsecureConfig();
+  ParsedMvfstConfig badDefaults;
+  badDefaults.max_conn_packets_sent_per_loop = std::optional<uint32_t>{0};
+  ParsedListenerDefaultsConfig ld2;
+  ld2.mvfst = std::optional<ParsedMvfstConfig>{std::move(badDefaults)};
+  cfg2.listener_defaults = std::optional<ParsedListenerDefaultsConfig>{std::move(ld2)};
+  EXPECT_TRUE(resolveConfig(cfg2).hasError());
+}
+
+// Zero values for fields that must be >= 1 all produce distinct error messages.
+TEST(ResolveConfig, MvfstZeroValuesAreErrors) {
+  struct ZeroCase {
+    std::string field;
+    std::function<void(ParsedMvfstConfig&)> set;
+  };
+  std::vector<ZeroCase> cases = {
+      {"max_cwnd_in_mss",
+       [](ParsedMvfstConfig& m) { m.max_cwnd_in_mss = std::optional<uint64_t>{0}; }},
+      {"max_conn_packets_sent_per_loop",
+       [](ParsedMvfstConfig& m) { m.max_conn_packets_sent_per_loop = std::optional<uint32_t>{0}; }},
+      {"num_gro_buffers",
+       [](ParsedMvfstConfig& m) { m.num_gro_buffers = std::optional<uint32_t>{0}; }},
+  };
+  for (const auto& tc : cases) {
+    auto cfg = makeMinimalInsecureConfig();
+    ParsedMvfstConfig mvfst;
+    tc.set(mvfst);
+    setListenerMvfst(cfg, std::move(mvfst));
+    auto result = resolveConfig(cfg);
+    ASSERT_TRUE(result.hasError()) << "expected error for " << tc.field;
+    EXPECT_THAT(result.error(), HasSubstr(tc.field));
+  }
+}
+
+// copa.delta_param must be in (0, 1); l4s.ce_target must be 0 or in (0, 1).
+TEST(ResolveConfig, MvfstBoundsCheckedParamsErrors) {
+  auto makeCopa = [](double v) {
+    ParsedMvfstConfig m;
+    ParsedMvfstConfig::ParsedCopa copa;
+    copa.delta_param = std::optional<double>{v};
+    m.copa = std::optional<ParsedMvfstConfig::ParsedCopa>{std::move(copa)};
+    return m;
+  };
+  auto makeL4s = [](float v) {
+    ParsedMvfstConfig m;
+    ParsedMvfstConfig::ParsedL4S l4s;
+    l4s.ce_target = std::optional<float>{v};
+    m.l4s = std::optional<ParsedMvfstConfig::ParsedL4S>{std::move(l4s)};
+    return m;
+  };
+
+  for (double bad : {0.0, 1.0}) {
+    auto cfg = makeMinimalInsecureConfig();
+    setListenerMvfst(cfg, makeCopa(bad));
+    auto result = resolveConfig(cfg);
+    ASSERT_TRUE(result.hasError()) << "copa.delta_param=" << bad;
+    EXPECT_THAT(result.error(), HasSubstr("copa.delta_param"));
+  }
+  for (float bad : {-0.1f, 1.0f}) {
+    auto cfg = makeMinimalInsecureConfig();
+    setListenerMvfst(cfg, makeL4s(bad));
+    auto result = resolveConfig(cfg);
+    ASSERT_TRUE(result.hasError()) << "l4s.ce_target=" << bad;
+    EXPECT_THAT(result.error(), HasSubstr("l4s.ce_target"));
+  }
+}
+
+// num_gro_buffers > 64 is allowed but produces a warning.
+TEST(ResolveConfig, MvfstNumGroBuffersAbove64Warning) {
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedMvfstConfig mvfst;
+  mvfst.num_gro_buffers = std::optional<uint32_t>{65};
+  setListenerMvfst(cfg, std::move(mvfst));
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  EXPECT_THAT(result.value().warnings, ::testing::Contains(HasSubstr("num_gro_buffers")));
+}
+
+// enable_gso toggles between GSO (default) and sendmmsg-only mode.
+TEST(ResolveConfig, MvfstBatchingModeRoundTrip) {
+  for (bool gso : {true, false}) {
+    auto cfg = makeMinimalInsecureConfig();
+    ParsedMvfstConfig mvfst;
+    mvfst.enable_gso = std::optional<bool>{gso};
+    setListenerMvfst(cfg, std::move(mvfst));
+    auto result = resolveConfig(cfg);
+    ASSERT_TRUE(result.hasValue()) << "enable_gso=" << gso;
+    EXPECT_EQ(result.value().config.listeners[0].mvfst.enableGSO, gso);
+  }
+}
+
+// Each algo sub-struct round-trips through resolveConfig correctly.
+TEST(ResolveConfig, MvfstAlgoFieldsRoundTrip) {
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedMvfstConfig mvfst;
+
+  ParsedMvfstConfig::ParsedBBR bbr;
+  bbr.conservative_recovery = std::optional<bool>{true};
+  bbr.large_probe_rtt_cwnd = std::optional<bool>{true};
+  bbr.drain_to_target = std::optional<bool>{true};
+  mvfst.bbr = std::optional<ParsedMvfstConfig::ParsedBBR>{std::move(bbr)};
+
+  ParsedMvfstConfig::ParsedBBR2 bbr2;
+  bbr2.exit_startup_on_loss = std::optional<bool>{false};
+  bbr2.enable_reno_coexistence = std::optional<bool>{true};
+  bbr2.override_cruise_pacing_gain = std::optional<float>{1.25f};
+  mvfst.bbr2 = std::optional<ParsedMvfstConfig::ParsedBBR2>{std::move(bbr2)};
+
+  ParsedMvfstConfig::ParsedCubic cubic;
+  cubic.additive_increase_after_hystart = std::optional<bool>{true};
+  cubic.only_grow_cwnd_when_limited = std::optional<bool>{true};
+  mvfst.cubic = std::optional<ParsedMvfstConfig::ParsedCubic>{std::move(cubic)};
+
+  ParsedMvfstConfig::ParsedCopa copa;
+  copa.delta_param = std::optional<double>{0.1};
+  mvfst.copa = std::optional<ParsedMvfstConfig::ParsedCopa>{std::move(copa)};
+
+  ParsedMvfstConfig::ParsedL4S l4s;
+  l4s.ce_target = std::optional<float>{0.05f};
+  mvfst.l4s = std::optional<ParsedMvfstConfig::ParsedL4S>{std::move(l4s)};
+
+  setListenerMvfst(cfg, std::move(mvfst));
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  const auto& out = result.value().config.listeners[0].mvfst;
+
+  EXPECT_TRUE(out.bbr.conservativeRecovery);
+  EXPECT_TRUE(out.bbr.largeProbeRttCwnd);
+  EXPECT_TRUE(out.bbr.drainToTarget);
+  EXPECT_FALSE(out.bbr.probeRttDisabledIfAppLimited); // unchanged default
+
+  EXPECT_FALSE(out.bbr2.exitStartupOnLoss);
+  EXPECT_TRUE(out.bbr2.enableRenoCoexistence);
+  EXPECT_FLOAT_EQ(out.bbr2.overrideCruisePacingGain, 1.25f);
+  EXPECT_TRUE(out.bbr2.enableRecoveryInStartup); // unchanged default
+
+  EXPECT_TRUE(out.cubic.additiveIncreaseAfterHystart);
+  EXPECT_TRUE(out.cubic.onlyGrowCwndWhenLimited);
+  EXPECT_FALSE(out.cubic.leaveHeadroomForCwndLimited); // unchanged default
+
+  EXPECT_DOUBLE_EQ(out.copa.deltaParam, 0.1);
+  EXPECT_FLOAT_EQ(out.l4s.ceTarget, 0.05f);
 }
 
 } // namespace

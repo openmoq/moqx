@@ -9,7 +9,7 @@
 #include <chrono>
 #include <folly/CancellationToken.h>
 #include <folly/coro/Task.h>
-#include <folly/experimental/coro/WithCancellation.h>
+#include <folly/coro/WithCancellation.h>
 #include <folly/io/IOBuf.h>
 #include <folly/io/IOBufQueue.h>
 #include <folly/io/async/EventBaseManager.h>
@@ -121,8 +121,8 @@ public:
 
   void onCacheStats(
       size_t totalBytes,
-      const std::vector<moxygen::MoQCache::TrackStats>& tracks,
-      moxygen::MoQCache::TimePoint now
+      const std::vector<MoqxCache::TrackStats>& tracks,
+      MoqxCache::TimePoint now
   ) override {
     w_.key("cache");
     w_.beginObject();

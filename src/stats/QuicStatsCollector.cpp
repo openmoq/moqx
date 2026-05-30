@@ -7,6 +7,7 @@
 #include "stats/QuicStatsCollector.h"
 
 #include <folly/io/async/EventBaseManager.h>
+#include <folly/tracing/StaticTracepoint.h>
 #include <glog/logging.h>
 
 namespace openmoq::moqx::stats {
@@ -18,13 +19,17 @@ namespace openmoq::moqx::stats {
 class QuicStatsCollector::Callback : public quic::QuicTransportStatsCallback {
 public:
   explicit Callback(std::weak_ptr<StatsRegistry> registry)
-      : data_(std::shared_ptr<QuicStatsCollector>(new QuicStatsCollector())) {
+      : data_(std::shared_ptr<QuicStatsCollector>(new QuicStatsCollector())), registry_(registry) {
     if (auto reg = registry.lock()) {
       reg->registerCollector(data_);
     }
   }
 
-  ~Callback() override = default;
+  ~Callback() override {
+    if (auto coll = evbColl_.lock()) {
+      coll->removeLoopObserver(data_.get());
+    }
+  }
 
   // --- Tracked callbacks ---
   // Based on QuicServerWorker, the first ones to trigger can be onPacketReceived or
@@ -58,7 +63,8 @@ public:
   }
   void onQuicStreamReset(quic::QuicErrorCode) override {
     ++data_->quicStreamsReset_;
-    --data_->quicActiveStreams_;
+    // do NOT decrement quicActiveStreams_ here.
+    // onQuicStreamClosed() takes care of it.
   }
   void onConnFlowControlBlocked() override { ++data_->quicConnFlowControlBlocked_; }
   void onStreamFlowControlBlocked() override { ++data_->quicStreamFlowControlBlocked_; }
@@ -73,21 +79,31 @@ public:
   void onPeerMaxBidiStreamsLimitSaturated() override {
     ++data_->quicPeerMaxBidiStreamsLimitSaturated_;
   }
+  void onPacketProcessed() override { ++data_->quicPacketsProcessed_; }
+  void onPTO() override { ++data_->quicPTO_; }
+  void onPacketSpuriousLoss() override { ++data_->quicPacketSpuriousLoss_; }
+  void onPersistentCongestion() override { ++data_->quicPersistentCongestion_; }
+  void onConnectionWritableBytesLimited() override { ++data_->quicConnectionWritableBytesLimited_; }
+  void onConnectionRateLimited() override { ++data_->quicConnectionRateLimited_; }
+  void onPacerTimerLagged() override { ++data_->quicPacerTimerLagged_; }
+  void onRttSample(uint64_t ms) override { data_->quicRttSample_.addValue(ms); }
+  void onBandwidthSample(uint64_t bps) override { data_->quicBandwidthSample_.addValue(bps); }
+  void onInflightBytesSample(uint64_t bytes) override {
+    data_->quicInflightBytesSample_.addValue(bytes);
+  }
+  void onCwndHintBytesSample(uint64_t bytes) override {
+    data_->quicCwndHintBytesSample_.addValue(bytes);
+  }
 
   // --- Untracked callbacks (no-op) ---
   void onRxDelaySample(uint64_t) override {}
   void onDuplicatedPacketReceived() override {}
   void onOutOfOrderPacketReceived() override {}
-  void onPacketProcessed() override {}
-  void onPacketSpuriousLoss() override {}
-  void onPersistentCongestion() override {}
   void onPacketForwarded() override {}
   void onPacketDroppedByEgressPolicer() override {}
   void onForwardedPacketReceived() override {}
   void onForwardedPacketProcessed() override {}
   void onClientInitialReceived(quic::QuicVersion) override {}
-  void onConnectionRateLimited() override {}
-  void onConnectionWritableBytesLimited() override {}
   void onNewTokenReceived() override {}
   void onNewTokenIssued() override {}
   void onTokenDecryptFailure() override {}
@@ -99,14 +115,17 @@ public:
   void onConnFlowControlUpdate() override {}
   void onStatelessReset() override {}
   void onStreamFlowControlUpdate() override {}
-  void onInflightBytesSample(uint64_t) override {}
-  void onRttSample(uint64_t) override {}
-  void onBandwidthSample(uint64_t) override {}
-  void onCwndHintBytesSample(uint64_t) override {}
   void onCongestionControllerResumed() override {}
   void onNewCongestionController(quic::CongestionControlType) override {}
-  void onPTO() override {}
-  void onUDPSocketWriteError(SocketErrorType) override {}
+  void onUDPSocketWriteError(SocketErrorType errorType) override {
+    if (errorType == SocketErrorType::AGAIN) {
+      ++data_->quicSocketWriteAgain_;
+    } else if (errorType == SocketErrorType::NOBUFS) {
+      ++data_->quicSocketWriteNobufs_;
+    } else {
+      ++data_->quicSocketWriteOther_;
+    }
+  }
   void onTransportKnobApplied(quic::TransportKnobParamId) override {}
   void onTransportKnobError(quic::TransportKnobParamId) override {}
   void onTransportKnobOutOfOrder(quic::TransportKnobParamId) override {}
@@ -120,11 +139,11 @@ public:
   void onDatagramRead(size_t) override {}
   void onDatagramWrite(size_t) override {}
   void onShortHeaderPadding(size_t) override {}
-  void onPacerTimerLagged() override {}
   void onConnectionIdCreated(size_t) override {}
   void onKeyUpdateAttemptInitiated() override {}
   void onKeyUpdateAttemptReceived() override {}
   void onKeyUpdateAttemptSucceeded() override {}
+  void onSconePacketSent() override {}
 
 private:
   // Lazily captures the QUIC worker's EventBase on first packet.
@@ -137,9 +156,31 @@ private:
     auto* evb = folly::EventBaseManager::get()->getExistingEventBase();
     CHECK(evb) << "QuicStatsCollector::Callback: first callback not on an EventBase thread";
     data_->owningEvb_.store(evb, std::memory_order_relaxed);
+
+    if (auto reg = registry_.lock()) {
+      if (auto evbColl = reg->findEvbCollector(evb).lock()) {
+        evbColl_ = evbColl;
+        evbColl->addLoopObserver(
+            data_.get(),
+            [d = data_.get()](int64_t busyUs, int64_t /*idleUs*/) {
+              uint64_t sent = d->quicPacketsSent_;
+              uint64_t recv = d->quicPacketsReceived_;
+              uint64_t dSent = sent - d->prevLoopPktsSent_;
+              uint64_t dRecv = recv - d->prevLoopPktsRecv_;
+              d->evbPktsSentPerLoop_.addValue(dSent);
+              d->evbPktsRecvPerLoop_.addValue(dRecv);
+              d->prevLoopPktsSent_ = sent;
+              d->prevLoopPktsRecv_ = recv;
+              FOLLY_SDT(moqx, evb_loop_sample, busyUs, dSent, dRecv);
+            }
+        );
+      }
+    }
   }
 
   std::shared_ptr<QuicStatsCollector> data_;
+  std::weak_ptr<StatsRegistry> registry_;
+  std::weak_ptr<EventBaseStatsCollector> evbColl_;
 };
 
 QuicStatsCollector::Factory::Factory(std::shared_ptr<StatsRegistry> registry)
@@ -157,6 +198,13 @@ StatsSnapshot QuicStatsCollector::snapshot() const {
   STATS_QUIC_COUNTER_FIELDS(COPY_FIELD)
   STATS_QUIC_GAUGE_FIELDS(COPY_FIELD)
 #undef COPY_FIELD
+
+#define COPY_HISTOGRAM(name, bounds, unit)                                                         \
+  name##_.fillCumulative(snap.name##Buckets);                                                      \
+  snap.name##Sum = name##_.sum;                                                                    \
+  snap.name##Count = name##_.count;
+  STATS_QUIC_HISTOGRAM_FIELDS(COPY_HISTOGRAM)
+#undef COPY_HISTOGRAM
 
   return snap;
 }

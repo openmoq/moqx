@@ -215,15 +215,13 @@ std::shared_ptr<Subscriber::PublishNamespaceHandle> MoqxRelay::doPublishNamespac
     XLOG(WARNING) << "PublishNamespace: Existing session (" << replacedSession.get()
                   << ") has already published trackNamespace=" << pubNs.trackNamespace;
     // Remove ongoing subscriptions for the replaced publisher.
-    for (auto it = subscriptions_.begin(); it != subscriptions_.end();) {
-      if (it->first.trackNamespace.startsWith(pubNs.trackNamespace) &&
-          it->second.upstream == replacedSession) {
-        XLOG(DBG4) << "Erasing subscription to " << it->first;
-        it = subscriptions_.erase(it);
-      } else {
-        ++it;
+    registry_.removeIf([&](const FullTrackName& ftn, const SubscriptionRegistry::EntryView& e) {
+      if (ftn.trackNamespace.startsWith(pubNs.trackNamespace) && e.upstream == replacedSession) {
+        XLOG(DBG4) << "Erasing subscription to " << ftn;
+        return true;
       }
-    }
+      return false;
+    });
   }
   for (auto& [outSession, info] : sessions) {
     if (outSession != session && (info.options == SubscribeNamespaceOptions::NAMESPACE ||
@@ -327,24 +325,15 @@ void MoqxRelay::onPublishNamespaceDone(const TrackNamespace& trackNamespace) {
 void MoqxRelay::onPublishDone(const FullTrackName& ftn) {
   XLOG(DBG1) << __func__ << " ftn=" << ftn;
 
-  auto it = subscriptions_.find(ftn);
-  if (it != subscriptions_.end()) {
-    if (it->second.isPublish) {
-      namespaceTree_.unpublishTrack(ftn.trackNamespace, ftn.trackName);
-    }
+  auto upstreamView = registry_.getUpstreamView(ftn);
+  if (upstreamView && upstreamView->isPublish) {
+    namespaceTree_.unpublishTrack(ftn.trackNamespace, ftn.trackName);
+  }
 
-    // Clear the handle and upstream - this signals publisher is done
-    // Clearing upstream is important to break circular reference:
-    // session holds FilterConsumer, relay holds session in upstream
-    it->second.handle.reset();
-    it->second.upstream.reset();
-
-    // If forwarder has no subscribers, clean up immediately
-    // Otherwise onEmpty will be called when last subscriber leaves
-    if (it->second.forwarder->empty()) {
-      XLOG(DBG1) << "Publisher terminated with no subscribers, cleaning up " << ftn;
-      subscriptions_.erase(it);
-    }
+  // Clears handle + upstream; erases if no subscribers remain.
+  auto forwarder = registry_.onPublisherTerminated(ftn);
+  if (!forwarder) {
+    XLOG(DBG1) << "Publisher terminated with no subscribers, cleaning up " << ftn;
   }
 }
 
@@ -388,16 +377,24 @@ MoqxRelay::publish(PublishRequest pub, std::shared_ptr<Publisher::SubscriptionHa
   // subgroups).  onPublishDone() already reset handle and drained the
   // forwarder, so skip both calls to avoid a null deref and a double
   // publishDone.
-  auto it = subscriptions_.find(pub.fullTrackName);
-  if (it != subscriptions_.end()) {
+  auto forwarder = std::make_shared<MoQForwarder>(pub.fullTrackName, pub.largest);
+  forwarder->setExtensions(pub.extensions);
+
+  auto publishEntry = registry_.createFromPublish(
+      pub.fullTrackName,
+      forwarder,
+      session,
+      pub.requestID,
+      std::move(handle),
+      [&](std::shared_ptr<MoQForwarder> f) { return buildFilterChain(pub.fullTrackName, f); }
+  );
+
+  if (publishEntry.evicted) {
     XLOG(DBG1) << "New publisher for existing subscription";
-    auto oldHandle = std::move(it->second.handle);
-    auto oldForwarder = std::move(it->second.forwarder);
-    XLOG(DBG4) << "Erasing subscription to " << it->first;
-    subscriptions_.erase(it);
-    if (oldHandle) {
-      oldHandle->unsubscribe();
-      oldForwarder->publishDone(
+    auto& evicted = *publishEntry.evicted;
+    if (evicted.handle) {
+      evicted.handle->unsubscribe();
+      evicted.forwarder->publishDone(
           {RequestID(0),
            PublishDoneStatusCode::SUBSCRIPTION_ENDED,
            0, // filled in by session
@@ -406,29 +403,7 @@ MoqxRelay::publish(PublishRequest pub, std::shared_ptr<Publisher::SubscriptionHa
     }
   }
 
-  // Create Forwarder for this publish
-  auto forwarder = std::make_shared<MoQForwarder>(pub.fullTrackName, pub.largest);
-  forwarder->setExtensions(pub.extensions);
-
-  auto subRes = subscriptions_.emplace(
-      std::piecewise_construct,
-      std::forward_as_tuple(pub.fullTrackName),
-      std::forward_as_tuple(forwarder, session)
-  );
-  auto& rsub = subRes.first->second;
-  rsub.promise.setValue(folly::unit);
-  rsub.requestID = pub.requestID;
-  rsub.handle = std::move(handle);
-  rsub.isPublish = true;
-
-  // Build filter chain using shared helper (TopNFilter → TerminationFilter → Forwarder).
-  auto [filterConsumer, topNFilter] = buildFilterChain(pub.fullTrackName, forwarder);
-  rsub.topNFilter = topNFilter;
-
-  // Wire activity tracking: TopNFilter writes lastObjectTime on every object,
-  // and fires onActivity callbacks (throttled) for idle sweep triggering.
-  topNFilter->setActivityTarget(&rsub.lastObjectTime);
-  topNFilter->setActivityThreshold(activityThreshold_);
+  auto topNFilter = registry_.getTopNView(pub.fullTrackName)->topNFilter;
 
   // Register in the namespace tree. The ranking callback fires once per
   // PropertyRanking on the path from this node to the root — registering the
@@ -475,7 +450,7 @@ MoqxRelay::publish(PublishRequest pub, std::shared_ptr<Publisher::SubscriptionHa
   bool shouldForward = (nSubscribers > 0) || hasTrackFilterSub;
 
   return PublishConsumerAndReplyTask{
-      filterConsumer,
+      publishEntry.consumer,
       folly::coro::makeTask<folly::Expected<PublishOk, PublishError>>(PublishOk{
           pub.requestID,
           /*forward=*/shouldForward,
@@ -601,12 +576,12 @@ std::shared_ptr<TrackConsumer> MoqxRelay::getSubscribeWriteback(
 ) {
   auto baseConsumer =
       cache_ ? cache_->getSubscribeWriteback(ftn, std::move(consumer)) : std::move(consumer);
-  auto filterConsumer =
+  auto termFilter =
       std::make_shared<TerminationFilter>(shared_from_this(), ftn, std::move(baseConsumer));
-  return std::static_pointer_cast<TrackConsumer>(filterConsumer);
+  return std::static_pointer_cast<TrackConsumer>(termFilter);
 }
 
-MoqxRelay::FilterChainResult
+SubscriptionRegistry::FilterChainResult
 MoqxRelay::buildFilterChain(const FullTrackName& ftn, std::shared_ptr<MoQForwarder> forwarder) {
   // Build chain: TopNFilter → TerminationFilter → (cache?) → Forwarder
   // This ensures property values are observed in both PUBLISH and SUBSCRIBE paths.
@@ -616,8 +591,9 @@ MoqxRelay::buildFilterChain(const FullTrackName& ftn, std::shared_ptr<MoQForward
       std::make_shared<TerminationFilter>(shared_from_this(), ftn, std::move(baseConsumer));
   auto topNFilter =
       std::make_shared<TopNFilter>(ftn, std::static_pointer_cast<TrackConsumer>(terminationFilter));
+  topNFilter->setActivityThreshold(activityThreshold_);
 
-  return FilterChainResult{
+  return SubscriptionRegistry::FilterChainResult{
       .consumer = std::static_pointer_cast<TrackConsumer>(topNFilter),
       .topNFilter = topNFilter
   };
@@ -747,12 +723,11 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
         node->forEachPublish([&](const std::string& trackName,
                                  const std::shared_ptr<MoQSession>& publishSession) {
           FullTrackName ftn{prefix, trackName};
-          auto subscriptionIt = subscriptions_.find(ftn);
-          if (subscriptionIt == subscriptions_.end()) {
+          auto forwarder = registry_.getForwarder(ftn);
+          if (!forwarder) {
             XLOG(ERR) << "Invalid state, no subscription for publish ftn=" << ftn;
             return;
           }
-          auto& forwarder = subscriptionIt->second.forwarder;
           auto maybeNegotiatedVersion = session->getNegotiatedVersion();
           CHECK(maybeNegotiatedVersion.has_value());
 
@@ -829,78 +804,42 @@ MoqxRelay::subscribe(SubscribeRequest subReq, std::shared_ptr<TrackConsumer> con
         auth::toString(authRes.error())
     });
   }
-  auto subscriptionIt = subscriptions_.find(subReq.fullTrackName);
-  // TOCTOU fix: if we might be the first subscriber, wait for the upstream
-  // connection before branching.  waitForConnected() is a suspension point —
-  // a concurrent coroutine may emplace this subscription while we are
-  // suspended.  Re-checking subscriptionIt afterwards ensures we take the
-  // second-subscriber path if that happened, avoiding a double
-  // promise.setValue() crash (folly::PromiseAlreadySatisfied → std::terminate).
-  if (subscriptionIt == subscriptions_.end() && upstream_) {
-    if (!namespaceTree_.findPublisherSession(subReq.fullTrackName.trackNamespace)) {
-      co_await upstream_->waitForConnected(kUpstreamConnectWaitTimeout);
-      subscriptionIt = subscriptions_.find(subReq.fullTrackName);
-    }
-  }
-  if (subscriptionIt == subscriptions_.end()) {
-    // first subscriber
+  const auto& ftn = subReq.fullTrackName;
 
-    // check auth
-    // get trackNamespace
-    if (subReq.fullTrackName.trackNamespace.empty()) {
-      // message error?
-      co_return folly::makeUnexpected(SubscribeError(
-          {subReq.requestID, SubscribeErrorCode::TRACK_NOT_EXIST, "namespace required"}
-      ));
-    }
-    auto upstreamSession = namespaceTree_.findPublisherSession(subReq.fullTrackName.trackNamespace);
+  if (ftn.trackNamespace.empty()) {
+    co_return folly::makeUnexpected(SubscribeError(
+        {subReq.requestID, SubscribeErrorCode::TRACK_NOT_EXIST, "namespace required"}
+    ));
+  }
+
+  // TOCTOU fix: if we might be the first subscriber, wait for the upstream
+  // connection before branching. A concurrent coroutine may emplace the entry
+  // while we are suspended, so we re-check inside getOrCreateFromSubscribe.
+  if (!registry_.exists(ftn) && upstream_ &&
+      !namespaceTree_.findPublisherSession(ftn.trackNamespace)) {
+    co_await upstream_->waitForConnected(kUpstreamConnectWaitTimeout);
+  }
+
+  auto firstOrSubsequent = registry_.getOrCreateFromSubscribe(
+      ftn,
+      shared_from_this(),
+      [this, &ftn](std::shared_ptr<MoQForwarder> f) { return buildFilterChain(ftn, std::move(f)); }
+  );
+
+  if (auto* first = std::get_if<SubscriptionRegistry::FirstSubscriber>(&firstOrSubsequent)) {
+    auto upstreamSession = namespaceTree_.findPublisherSession(ftn.trackNamespace);
     if (!upstreamSession) {
-      // no such namespace has been published
       co_return folly::makeUnexpected(SubscribeError(
           {subReq.requestID, SubscribeErrorCode::TRACK_NOT_EXIST, "no such namespace or track"}
       ));
-    }
-    subReq.priority = kDefaultUpstreamPriority;
-    subReq.groupOrder = GroupOrder::Default;
-    // We only subscribe upstream with LargestObject. This is to satisfy other
-    // subscribers that join with narrower filters
-    subReq.locType = LocationType::LargestObject;
-    auto forwarder = std::make_shared<MoQForwarder>(subReq.fullTrackName, std::nullopt);
-    forwarder->setCallback(shared_from_this());
+    } // pending destructor fires on early return above
 
-    // Build filter chain using shared helper (TopNFilter → TerminationFilter → Forwarder).
-    // This ensures property values are observed even for SUBSCRIBE-path tracks,
-    // so TRACK_FILTER subscribers who join later see correct rankings.
-    auto [filterConsumer, topNFilter] = buildFilterChain(subReq.fullTrackName, forwarder);
-
-    auto emplaceRes = subscriptions_.emplace(
-        std::piecewise_construct,
-        std::forward_as_tuple(subReq.fullTrackName),
-        std::forward_as_tuple(forwarder, upstreamSession)
-    );
-    emplaceRes.first->second.topNFilter = topNFilter;
-    // The iterator returned from emplace does not survive across coroutine
-    // resumption, so both the guard and updating the RelaySubscription below
-    // require another lookup in the subscriptions_ map.
-    // Capture forwarder identity: a reconnecting publisher may replace this
-    // entry before we resume, leaving a new entry with a satisfied promise.
-    auto g = folly::makeGuard(
-        [this, trackName = subReq.fullTrackName, weakForwarder = std::weak_ptr(forwarder)] {
-          auto it = subscriptions_.find(trackName);
-          if (it != subscriptions_.end() && it->second.forwarder == weakForwarder.lock()) {
-            it->second.promise.setException(std::runtime_error("failed"));
-            XLOG(DBG4) << "Erasing subscription to " << it->first;
-            subscriptions_.erase(it);
-          } else {
-            // Entry was replaced by a reconnecting publisher; don't touch it.
-            XLOG(DBG4) << "Skipping stale guard for " << trackName;
-          }
-        }
-    );
-    // Add subscriber first in case objects come before subscribe OK.
-    auto subscriber = forwarder->addSubscriber(std::move(session), subReq, std::move(consumer));
+    // Add subscriber first (with the client's original request) in case objects
+    // arrive before subscribe OK.
+    auto subscriber =
+        first->forwarder->addSubscriber(std::move(session), subReq, std::move(consumer));
     if (!subscriber) {
-      XLOG(ERR) << "addSubscriber returned null (draining?) for " << subReq.fullTrackName
+      XLOG(ERR) << "addSubscriber returned null (draining?) for " << ftn
                 << " reqID=" << subReq.requestID;
       co_return folly::makeUnexpected(SubscribeError{
           subReq.requestID,
@@ -908,80 +847,68 @@ MoqxRelay::subscribe(SubscribeRequest subReq, std::shared_ptr<TrackConsumer> con
           "failed to add subscriber"
       });
     }
-    XLOG(DBG4) << "added subscriber for ftn=" << subReq.fullTrackName;
-    // As per the spec, we must set forward = true in the subscribe request
-    // to the upstream.
-    // But should we if this is forward=0?
-    subReq.forward = forwarder->numForwardingSubscribers() > 0;
+    XLOG(DBG4) << "added subscriber for ftn=" << ftn;
 
-    emplaceRes.first->second.requestID = upstreamSession->peekNextRequestID();
-    auto subRes = co_await upstreamSession->subscribe(subReq, filterConsumer);
+    // Override fields for the upstream subscribe: always request from latest,
+    // upstream priority, and default group order.
+    const auto clientRequestID = subReq.requestID;
+    subReq.priority = kDefaultUpstreamPriority;
+    subReq.groupOrder = GroupOrder::Default;
+    subReq.locType = LocationType::LargestObject;
+    // Per the spec, we're supposed to always forward=1 upstream
+    subReq.forward = first->forwarder->numForwardingSubscribers() > 0;
+    subReq.requestID = upstreamSession->peekNextRequestID();
+
+    auto subRes = co_await upstreamSession->subscribe(subReq, first->consumer);
     if (subRes.hasError()) {
       co_return folly::makeUnexpected(SubscribeError(
-          {subReq.requestID,
+          {clientRequestID,
            subRes.error().errorCode,
            folly::to<std::string>("upstream subscribe failed: ", subRes.error().reasonPhrase)}
       ));
-    }
-    // is it more correct to co_await folly::coro::co_safe_point here?
-    g.dismiss();
+    } // pending destructor fires on error
+
     auto largest = subRes.value()->subscribeOk().largest;
     if (largest) {
-      forwarder->updateLargest(largest->group, largest->object);
+      first->forwarder->updateLargest(largest->group, largest->object);
       subscriber->updateLargest(*largest);
     }
-    // Save upstream extensions to forwarder (and existing subscribers) and
-    // cache
     auto& upstreamExtensions = subRes.value()->subscribeOk().extensions;
-    forwarder->setExtensions(upstreamExtensions);
+    first->forwarder->setExtensions(upstreamExtensions);
     if (cache_) {
-      cache_->setTrackExtensions(subReq.fullTrackName, upstreamExtensions);
+      cache_->setTrackExtensions(ftn, upstreamExtensions);
     }
 
-    auto it = subscriptions_.find(subReq.fullTrackName);
-    // There are cases that remove the subscription like failing to
-    // publish a datagram that was received before the subscribeOK
-    // and then gets flushed.  Also guard against a reconnecting publisher
-    // replacing the entry while we were suspended.
-    if (it == subscriptions_.end()) {
-      XLOG(ERR) << "Subscription is GONE, returning exception";
-      co_yield folly::coro::co_error(std::runtime_error("subscription is gone"));
-    }
-    if (it->second.forwarder != forwarder) {
-      XLOG(ERR) << "Subscription replaced by reconnecting publisher: " << subReq.fullTrackName;
+    // Record NGR as outstanding (no fire — it rides the outgoing SUBSCRIBE).
+    first->forwarder->tryProcessNewGroupRequest(subReq.params, /*fire=*/false);
+
+    auto requestID = subRes.value()->subscribeOk().requestID;
+    if (!first->pending.complete(std::move(subRes.value()), requestID, upstreamSession)) {
+      XLOG(ERR) << "Subscription replaced by reconnecting publisher: " << ftn;
       co_return folly::makeUnexpected(SubscribeError{
-          subReq.requestID,
+          clientRequestID,
           SubscribeErrorCode::INTERNAL_ERROR,
           "publisher reconnected during subscribe"
       });
     }
-    auto& rsub = it->second;
-    rsub.requestID = subRes.value()->subscribeOk().requestID;
-    rsub.handle = std::move(subRes.value());
-    // Record NGR as outstanding (no fire — it rides the outgoing SUBSCRIBE).
-    forwarder->tryProcessNewGroupRequest(subReq.params, /*fire=*/false);
-    rsub.promise.setValue(folly::unit);
     co_return subscriber;
+
   } else {
-    if (!subscriptionIt->second.promise.isFulfilled()) {
-      // this will throw if the dependent subscribe failed, which is good
-      // because subscriptionIt will be invalid
-      co_await subscriptionIt->second.promise.getFuture();
-    }
-    auto& forwarder = subscriptionIt->second.forwarder;
-    if (forwarder->largest() && subReq.locType == LocationType::AbsoluteRange &&
-        subReq.endGroup < forwarder->largest()->group) {
+    auto sub = co_await std::get<folly::coro::Task<SubscriptionRegistry::SubsequentSubscriber>>(
+        std::move(firstOrSubsequent)
+    );
+    // sub.forwarder is valid: promise was fulfilled by first subscriber
+    if (sub.forwarder->largest() && subReq.locType == LocationType::AbsoluteRange &&
+        subReq.endGroup < sub.forwarder->largest()->group) {
       co_return folly::makeUnexpected(SubscribeError{
           subReq.requestID,
           SubscribeErrorCode::INVALID_RANGE,
           "Range in the past, use FETCH"
       });
-      // start may be in the past, it will get adjusted forward to largest
     }
-    auto subscriber = subscriptionIt->second.forwarder
-                          ->addSubscriber(std::move(session), subReq, std::move(consumer));
+    auto subscriber = sub.forwarder->addSubscriber(std::move(session), subReq, std::move(consumer));
     if (!subscriber) {
-      XLOG(ERR) << "addSubscriber returned null (draining?) for " << subReq.fullTrackName
+      XLOG(ERR) << "addSubscriber returned null (draining?) for " << ftn
                 << " reqID=" << subReq.requestID;
       co_return folly::makeUnexpected(SubscribeError{
           subReq.requestID,
@@ -989,10 +916,8 @@ MoqxRelay::subscribe(SubscribeRequest subReq, std::shared_ptr<TrackConsumer> con
           "failed to add subscriber"
       });
     }
-    XLOG(DBG4) << "added subscriber for ftn=" << subReq.fullTrackName;
-    // forward updates handled by forwardChanged() via addForwardingSubscriber()
-
-    forwarder->tryProcessNewGroupRequest(subReq.params);
+    XLOG(DBG4) << "added subscriber for ftn=" << ftn;
+    sub.forwarder->tryProcessNewGroupRequest(subReq.params);
     co_return subscriber;
   }
 }
@@ -1020,15 +945,14 @@ MoqxRelay::fetch(Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
 
   auto [standalone, joining] = fetchType(fetch);
   if (joining) {
-    auto subscriptionIt = subscriptions_.find(fetch.fullTrackName);
-    if (subscriptionIt == subscriptions_.end()) {
+    auto fetchView = registry_.getFetchView(fetch.fullTrackName);
+    if (!fetchView) {
       XLOG(ERR) << "No subscription for joining fetch";
-      // message error
       co_return folly::makeUnexpected(FetchError(
           {fetch.requestID, FetchErrorCode::TRACK_NOT_EXIST, "No subscription for joining fetch"}
       ));
-    } else if (subscriptionIt->second.promise.isFulfilled()) {
-      auto res = subscriptionIt->second.forwarder->resolveJoiningFetch(session, *joining);
+    } else if (fetchView->isReady) {
+      auto res = fetchView->forwarder->resolveJoiningFetch(session, *joining);
       if (res.hasError()) {
         co_return folly::makeUnexpected(res.error());
       }
@@ -1036,7 +960,7 @@ MoqxRelay::fetch(Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
       joining = nullptr;
     } else {
       // Upstream is resolving the subscribe, forward joining fetch
-      joining->joiningRequestID = subscriptionIt->second.requestID;
+      joining->joiningRequestID = fetchView->requestID;
     }
   }
 
@@ -1047,9 +971,8 @@ MoqxRelay::fetch(Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
   }
   if (!upstreamSession) {
     // Attempt to find matching upstream subscription (from publish)
-    auto subscriptionIt = subscriptions_.find(fetch.fullTrackName);
-    if (subscriptionIt != subscriptions_.end()) {
-      upstreamSession = subscriptionIt->second.upstream;
+    if (auto fetchView = registry_.getFetchView(fetch.fullTrackName)) {
+      upstreamSession = fetchView->upstream;
     }
     if (!upstreamSession) {
       co_return folly::makeUnexpected(
@@ -1099,20 +1022,18 @@ folly::coro::Task<Publisher::TrackStatusResult> MoqxRelay::trackStatus(TrackStat
     ));
   }
 
-  auto subscriptionIt = subscriptions_.find(trackStatus.fullTrackName);
-  if (subscriptionIt != subscriptions_.end() &&
-      subscriptionIt->second.forwarder->numForwardingSubscribers() > 0) {
+  auto upstreamView = registry_.getUpstreamView(trackStatus.fullTrackName);
+  if (upstreamView && upstreamView->forwarder->numForwardingSubscribers() > 0) {
     // We have active subscription - answer directly from local forwarder state
-    auto& subscription = subscriptionIt->second;
-    auto& forwarder = subscription.forwarder;
+    auto& forwarder = upstreamView->forwarder;
 
     TrackStatusCode statusCode = TrackStatusCode::TRACK_NOT_STARTED;
     // forwarder->largest() being set means: we have actually
     // received at least one object for this track.
-    // subscription.handle being non-null means: the relay still has a
+    // upstreamView->handle being non-null means: the relay still has a
     // live upstream Publisher::SubscriptionHandle for this track
     if (forwarder->largest()) {
-      if (subscription.handle) {
+      if (upstreamView->handle) {
         statusCode = TrackStatusCode::IN_PROGRESS;
       } else {
         statusCode = TrackStatusCode::UNKNOWN;
@@ -1160,79 +1081,66 @@ folly::coro::Task<Publisher::TrackStatusResult> MoqxRelay::trackStatus(TrackStat
 }
 
 void MoqxRelay::onEmpty(MoQForwarder* forwarder) {
-  auto subscriptionIt = subscriptions_.find(forwarder->fullTrackName());
-  if (subscriptionIt == subscriptions_.end()) {
+  const auto& ftn = forwarder->fullTrackName();
+  auto upstreamView = registry_.getUpstreamView(ftn);
+  if (!upstreamView) {
     return;
   }
-  auto& subscription = subscriptionIt->second;
 
-  if (!subscription.handle) {
+  if (!upstreamView->handle) {
     // Handle is null - publisher terminated via FilterConsumer
-    XLOG(INFO) << "Publisher terminated for " << subscriptionIt->first;
-    subscriptions_.erase(subscriptionIt);
+    XLOG(INFO) << "Publisher terminated for " << ftn;
+    registry_.remove(ftn);
     return;
   }
 
   // Handle exists - just last subscriber left
-  XLOG(INFO) << "Last subscriber removed for " << subscriptionIt->first;
-  if (subscription.isPublish) {
+  XLOG(INFO) << "Last subscriber removed for " << ftn;
+  if (upstreamView->isPublish) {
     // if it's publish, don't unsubscribe, just subscribeUpdate forward=false
     XLOG(DBG1) << "Updating upstream subscription forward=false";
-    auto exec = subscription.upstream->getExecutor();
-    co_withExecutor(exec, doSubscribeUpdate(subscription.handle, /*forward=*/false)).start();
+    auto exec = upstreamView->upstream->getExecutor();
+    co_withExecutor(exec, doSubscribeUpdate(upstreamView->handle, /*forward=*/false)).start();
   } else {
-    subscription.handle->unsubscribe();
-    XLOG(DBG4) << "Erasing subscription to " << subscriptionIt->first;
-    subscriptions_.erase(subscriptionIt);
+    upstreamView->handle->unsubscribe();
+    XLOG(DBG4) << "Erasing subscription to " << ftn;
+    registry_.remove(ftn);
   }
 }
 
-void MoqxRelay::forwardChanged(MoQForwarder* forwarder) {
-  auto subscriptionIt = subscriptions_.find(forwarder->fullTrackName());
-  if (subscriptionIt == subscriptions_.end()) {
+void MoqxRelay::forwardChanged(MoQForwarder* forwarder, bool forward) {
+  const auto& ftn = forwarder->fullTrackName();
+  auto upstreamView = registry_.getUpstreamView(ftn);
+  if (!upstreamView) {
     return;
   }
-  auto& subscription = subscriptionIt->second;
-  if (!subscription.promise.isFulfilled()) {
+  if (!upstreamView->isReady) {
     // Ignore: it's the first subscriber, forward update not needed
     return;
   }
-  if (!subscription.handle) {
+  if (!upstreamView->handle) {
     // Publisher terminated (onPublishDone cleared handle/upstream)
-    XLOG(DBG4) << "Ignoring forward change for " << subscriptionIt->first
-               << " - publisher terminated";
+    XLOG(DBG4) << "Ignoring forward change for " << ftn << " - publisher terminated";
     return;
   }
-  XLOG(INFO) << "Updating forward for " << subscriptionIt->first
-             << " numForwardingSubs=" << forwarder->numForwardingSubscribers();
+  XLOG(INFO) << "Updating forward for " << ftn << " forward=" << forward;
 
-  auto exec = subscription.upstream->getExecutor();
-  co_withExecutor(
-      exec,
-      doSubscribeUpdate(
-          subscription.handle,
-          /*forward=*/forwarder->numForwardingSubscribers() > 0
-      )
-  )
-      .start();
+  auto exec = upstreamView->upstream->getExecutor();
+  co_withExecutor(exec, doSubscribeUpdate(upstreamView->handle, forward)).start();
 }
 
 void MoqxRelay::newGroupRequested(MoQForwarder* forwarder, uint64_t group) {
-  auto subscriptionIt = subscriptions_.find(forwarder->fullTrackName());
-  if (subscriptionIt == subscriptions_.end()) {
-    return;
-  }
-  auto& subscription = subscriptionIt->second;
+  const auto& ftn = forwarder->fullTrackName();
+  auto upstreamView = registry_.getUpstreamView(ftn);
   // Check if handle is still valid (publisher may have terminated)
-  if (!subscription.handle) {
-    XLOG(DBG4) << "Ignoring NEW_GROUP_REQUEST for " << subscriptionIt->first
-               << " - publisher terminated";
+  if (!upstreamView || !upstreamView->handle) {
+    XLOG(DBG4) << "Ignoring NEW_GROUP_REQUEST for " << ftn << " - publisher terminated";
     return;
   }
-  XLOG(INFO) << "New group request detected for " << subscriptionIt->first;
+  XLOG(INFO) << "New group request detected for " << ftn;
 
-  auto exec = subscription.upstream->getExecutor();
-  auto handle = subscription.handle;
+  auto exec = upstreamView->upstream->getExecutor();
+  auto handle = upstreamView->handle;
   co_withExecutor(exec, doNewGroupRequestUpdate(std::move(handle), group)).start();
 }
 
@@ -1251,11 +1159,8 @@ std::shared_ptr<PropertyRanking> MoqxRelay::getOrCreateRanking(
         idleTimeout_,
         std::chrono::milliseconds(0), // sweepThrottle wired in subsequent commit
         [this](const FullTrackName& ftn) -> std::chrono::steady_clock::time_point {
-          auto it = subscriptions_.find(ftn);
-          if (it == subscriptions_.end()) {
-            return std::chrono::steady_clock::time_point{};
-          }
-          return it->second.lastObjectTime;
+          auto view = registry_.getTopNView(ftn);
+          return view ? view->lastObjectTime : std::chrono::steady_clock::time_point{};
         },
         // Batch callback: called once per track-selected event with all sessions
         [this](
@@ -1301,15 +1206,15 @@ std::shared_ptr<PropertyRanking> MoqxRelay::getOrCreateRanking(
             FullTrackName ftn{prefix, trackName};
             std::optional<uint64_t> initialPropertyValue;
             std::chrono::steady_clock::time_point lastObjectTime{};
-            auto subIt = subscriptions_.find(ftn);
-            if (subIt != subscriptions_.end()) {
-              lastObjectTime = subIt->second.lastObjectTime;
+            auto topNView = registry_.getTopNView(ftn);
+            if (topNView) {
+              lastObjectTime = topNView->lastObjectTime;
               initialPropertyValue =
-                  subIt->second.forwarder->extensions().getIntExtension(propertyType);
+                  topNView->forwarder->extensions().getIntExtension(propertyType);
               // Wire value-change, track-ended, and activity observers on the existing TopNFilter.
-              if (subIt->second.topNFilter) {
+              if (topNView->topNFilter) {
                 auto rankingPtr = ranking;
-                subIt->second.topNFilter->registerObserver(
+                topNView->topNFilter->registerObserver(
                     propertyType,
                     PropertyObserver{
                         .onValueChanged = [rankingPtr, ftn](uint64_t value
@@ -1356,8 +1261,8 @@ void MoqxRelay::onTrackSelected(
     return;
   }
 
-  auto subIt = subscriptions_.find(ftn);
-  if (subIt == subscriptions_.end() || !subIt->second.forwarder) {
+  auto trackForwarder = registry_.getForwarder(ftn);
+  if (!trackForwarder) {
     XLOG(DBG4) << "onTrackSelected: no subscription/forwarder for " << ftn;
     return;
   }
@@ -1369,7 +1274,7 @@ void MoqxRelay::onTrackSelected(
   // when multiple tracks are selected for the same session in a single ranking update.
   co_withExecutor(
       exec,
-      publishToSession(session, subIt->second.forwarder, forward, /*trackFilterSubscriber=*/true)
+      publishToSession(session, trackForwarder, forward, /*trackFilterSubscriber=*/true)
   )
       .start();
 }
@@ -1382,15 +1287,10 @@ void MoqxRelay::onTrackEvicted(const FullTrackName& ftn, std::shared_ptr<MoQSess
     return;
   }
 
-  auto subIt = subscriptions_.find(ftn);
-  if (subIt == subscriptions_.end()) {
+  auto forwarder = registry_.getForwarder(ftn);
+  if (!forwarder) {
     return;
   }
-
-  if (!subIt->second.forwarder) {
-    return;
-  }
-  auto& forwarder = subIt->second.forwarder;
   auto sub = forwarder->getSubscriber(session.get());
   if (!sub || sub->isPinned()) {
     XLOG(DBG4) << "onTrackEvicted: pinned subscriber, skipping";
@@ -1414,23 +1314,23 @@ void MoqxRelay::dumpState(RelayStateVisitor& visitor) const {
   visitor.onPeersEnd();
 
   visitor.onSubscriptionsBegin();
-  for (const auto& [ftn, sub] : subscriptions_) {
+  registry_.forEach([&](const SubscriptionRegistry::EntryView& e) {
     std::string sourceAddr;
-    if (sub.upstream) {
-      sourceAddr = sub.upstream->getPeerAddress().describe();
+    if (e.upstream) {
+      sourceAddr = e.upstream->getPeerAddress().describe();
     }
     RelayStateVisitor::SubscriptionInfo info{
-        .ftn = ftn,
-        .isPublish = sub.isPublish,
-        .subscribers = sub.forwarder->subscriberCount(),
-        .forwardingSubscribers = sub.forwarder->numForwardingSubscribers(),
-        .largest = sub.forwarder->largest(),
-        .totalGroupsReceived = sub.forwarder->totalGroupsReceived(),
-        .totalObjectsReceived = sub.forwarder->totalObjectsReceived(),
+        .ftn = e.ftn,
+        .isPublish = e.isPublish,
+        .subscribers = e.forwarder->subscriberCount(),
+        .forwardingSubscribers = e.forwarder->numForwardingSubscribers(),
+        .largest = e.forwarder->largest(),
+        .totalGroupsReceived = e.forwarder->totalGroupsReceived(),
+        .totalObjectsReceived = e.forwarder->totalObjectsReceived(),
         .sourceAddress = sourceAddr,
     };
     visitor.onSubscription(info);
-  }
+  });
   visitor.onSubscriptionsEnd();
 
   visitor.onNamespaceTreeBegin();
@@ -1456,7 +1356,7 @@ void MoqxRelay::dumpState(RelayStateVisitor& visitor) const {
     visitor.onCacheStats(
         cache_->totalCachedBytes(),
         cache_->getTrackStats(),
-        moxygen::MoQCache::SteadyClock::now()
+        MoqxCache::SteadyClock::now()
     );
   }
 }

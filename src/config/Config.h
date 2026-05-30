@@ -57,6 +57,84 @@ struct QuicConfig {
   std::string ccAlgo{"bbr"};          // congestion control algorithm name
 };
 
+// mvfst-specific transport tunables organised by congestion-control algorithm.
+// Defaults match mvfst's own defaults except where moqx intentionally overrides
+// them (noted inline).  CC-specific fields are in sub-structs that map to
+// mvfst: <algo>: blocks in YAML.  General fields sit directly at the mvfst: level.
+struct MvfstConfig {
+  // Max congestion window in MSS (quic::kLargeMaxCwndInMss = 860000).
+  uint64_t maxCwndInMss{860000};
+
+  // Pacing: enabled by default. BBR and BBR2 require pacing; Copa and Cubic
+  // support optional pacing; NewReno and None are always unpaced.
+  bool pacingEnabled{true};
+
+  // Send-path batching: sendmmsg + gso select the QuicBatchingMode (2×2).
+  bool enableGSO{true}; // GSO segmentation; falls back to sendmmsg if unavailable at runtime
+  // Per-connection write loop limit. Written to both maxBatchSize and
+  // writeConnectionDataPacketsLimit so the cap is honored in all batching modes.
+  uint32_t maxConnPacketsSentPerLoop{48};
+
+  // Receive-path tuning.
+  // Use recvmmsg for batch receives in QuicServerWorker.
+  bool useRecvmmsg{true};
+  // Max incoming packets processed per event-loop read callback. 0 = unlimited.
+  // mvfst default is 1; moqx was hardcoded to 10.
+  uint16_t maxServerRecvPacketsPerLoop{64};
+  // Number of UDP GRO buffers. 1 = disabled. > 1 enables kernel GRO coalescing.
+  uint32_t numGROBuffers{1};
+
+  // BBR (BBR1) congestion control tunables.
+  // conservativeRecovery is shared with BBR2.
+  struct BBR {
+    bool conservativeRecovery{false}; // also applies to BBR2
+    bool largeProbeRttCwnd{false};
+    bool enableAckAggregationInStartup{false};
+    bool probeRttDisabledIfAppLimited{false};
+    bool drainToTarget{false};
+  };
+
+  // BBR2 congestion control tunables (BBR2-specific fields only;
+  // shared fields like conservativeRecovery live in bbr:).
+  struct BBR2 {
+    bool ignoreInflightLongTerm{false};
+    bool ignoreShortTerm{false};
+    bool exitStartupOnLoss{true};
+    bool enableRecoveryInStartup{true};
+    bool enableRecoveryInProbeStates{true};
+    bool enableRenoCoexistence{false};
+    bool paceInitCwnd{false};
+    float overrideCruisePacingGain{-1.0f};  // -1 = use BBR2 default
+    float overrideCruiseCwndGain{-1.0f};    // -1 = use BBR2 default
+    float overrideStartupPacingGain{-1.0f}; // -1 = use BBR2 default
+    float overrideBwShortBeta{0.0f};
+  };
+
+  // Cubic congestion control tunables.
+  struct Cubic {
+    bool additiveIncreaseAfterHystart{false};
+    bool onlyGrowCwndWhenLimited{false};
+    bool leaveHeadroomForCwndLimited{false};
+  };
+
+  // Copa congestion control tunables.
+  struct Copa {
+    // Target utilisation sensitivity (moqx default: 0.05).
+    double deltaParam{0.05};
+  };
+
+  // L4S tunables (usable alongside any ECN-aware CC algorithm).
+  struct L4S {
+    float ceTarget{0.0f}; // 0 = disabled
+  };
+
+  BBR bbr;
+  BBR2 bbr2;
+  Cubic cubic;
+  Copa copa;
+  L4S l4s;
+};
+
 struct ListenerConfig {
   std::string name;
   folly::SocketAddress address;
@@ -64,7 +142,8 @@ struct ListenerConfig {
   std::string endpoint;
   std::string moqtVersions; // comma-separated string
   QuicStack quicStack{QuicStack::Mvfst};
-  QuicConfig quic; // merged from listener_defaults.quic + per-listener quic override
+  QuicConfig quic;   // merged from listener_defaults.quic + per-listener quic override
+  MvfstConfig mvfst; // merged from listener_defaults.mvfst + per-listener mvfst override
 };
 
 struct UpstreamTlsConfig {
@@ -132,6 +211,7 @@ struct Config {
   std::optional<AdminConfig> admin;
   std::string relayID; // always set: from config or randomly generated
   uint32_t threads{1};
+  bool mvfstBpfSteering{true};
 };
 
 } // namespace openmoq::moqx::config

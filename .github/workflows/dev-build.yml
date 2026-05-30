@@ -1,0 +1,80 @@
+name: dev build
+
+# On-demand RelWithDebInfo dev kit. Manually dispatched against any branch
+# (typically a PR head with a moxygen submodule pointing at a feature/PR SHA).
+# Uses the same three-mode dependency resolution as ci-pr.yml's build job, so
+# source-build kicks in automatically when the moxygen submodule diverges from
+# moxygen/main — no cross-repo coordination needed beyond bumping the submodule
+# on the moqx branch.
+#
+# Produces a single ubuntu-22.04 amd64 tarball uploaded via
+# actions/upload-artifact (90-day retention, requires GH login to fetch via
+# `gh run download`). No tests, no Docker, no release, no GHCR push.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install system dependencies
+        run: sudo deps/moxygen/standalone/install-system-deps.sh
+
+      - name: Setup dependencies
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Three-mode setup resolution (mirrors ci-pr.yml build job):
+          # 1. .moxygen-release file (release branches): use pinned tag.
+          # 2. Submodule SHA reachable from moxygen main: tarball mode via
+          #    snapshot-latest.
+          # 3. Submodule SHA NOT reachable from main: source build. This is
+          #    the typical dev/PR case where the moxygen submodule points at
+          #    a feature-branch SHA.
+          if [ -f .moxygen-release ]; then
+            export MOQX_MOXYGEN_RELEASE_TAG=$(cat .moxygen-release | tr -d '[:space:]')
+            echo "==> Pinned moxygen tag: $MOQX_MOXYGEN_RELEASE_TAG"
+            bash scripts/build.sh setup --no-fallback
+          else
+            SUB_SHA=$(git -C deps/moxygen rev-parse HEAD)
+            AHEAD=$(gh api "repos/openmoq/moxygen/compare/main...$SUB_SHA" --jq .ahead_by 2>/dev/null || echo "1")
+            if [ "$AHEAD" = "0" ]; then
+              echo "==> moxygen submodule $SUB_SHA on main → snapshot tarball"
+              bash scripts/build.sh setup --use-latest --no-fallback
+            else
+              echo "==> moxygen submodule $SUB_SHA $AHEAD commits diverged from main → source build"
+              bash scripts/build.sh setup
+            fi
+          fi
+
+      - name: Build
+        run: bash scripts/build.sh --build-dir build
+
+      - name: Package
+        id: package
+        run: |
+          SHORT="${GITHUB_SHA:0:7}"
+          ARTIFACT="moqx-ubuntu-22.04-amd64-${SHORT}.tar.gz"
+          cmake --install build --prefix dist
+          tar czf "$ARTIFACT" -C dist .
+          ls -la "$ARTIFACT"
+          echo "artifact=$ARTIFACT" >> "$GITHUB_OUTPUT"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.artifact }}
+          path: ${{ steps.package.outputs.artifact }}
+          retention-days: 90

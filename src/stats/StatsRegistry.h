@@ -13,9 +13,10 @@
 #include <string_view>
 #include <vector>
 
+#include <folly/coro/Task.h>
 #include <folly/executors/SequencedExecutor.h>
-#include <folly/experimental/coro/Task.h>
 #include <folly/io/IOBuf.h>
+#include <folly/io/async/EventBaseLocal.h>
 
 #include <moxygen/MoQTypes.h>
 
@@ -24,6 +25,36 @@ namespace openmoq::moqx::stats {
 // Latency buckets in microseconds (SLO: < 1000 µs = 1 ms per spec 4.1).
 inline constexpr std::array<uint64_t, 11> kLatencyBucketsUs =
     {10, 50, 100, 250, 500, 1000, 2000, 5000, 10000, 50000, 100000};
+
+// RTT buckets in milliseconds (from onRttSample).
+inline constexpr std::array<uint64_t, 10> kRttBucketsMs =
+    {1, 5, 10, 25, 50, 100, 250, 500, 1000, 5000};
+
+// Bandwidth buckets in bits/second (from onBandwidthSample).
+inline constexpr std::array<uint64_t, 10> kBandwidthBucketsBitsPerSec = {
+    1000000,
+    5000000,
+    10000000,
+    25000000,
+    50000000,
+    100000000,
+    250000000,
+    500000000,
+    1000000000,
+    10000000000ULL
+};
+
+// Bytes-in-flight buckets in bytes (from onInflightBytesSample).
+inline constexpr std::array<uint64_t, 7> kInflightBytesBuckets =
+    {4096, 65536, 262144, 1048576, 4194304, 16777216, 67108864};
+
+// EventBase loop time buckets in microseconds.
+inline constexpr std::array<uint64_t, 11> kEvbLoopBucketsUs =
+    {50, 100, 250, 500, 1000, 2500, 5000, 10000, 25000, 50000, 100000};
+
+// Per-loop QUIC packet count buckets.
+inline constexpr std::array<uint64_t, 12> kEvbPktsPerLoopBuckets =
+    {0, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024};
 
 // RequestErrorCode compact-index table
 // All *ErrorCode type aliases resolve to moxygen::RequestErrorCode. we maintain a
@@ -133,7 +164,17 @@ inline constexpr std::array<std::string_view, 8> kRequestErrorCodeLabels = {{
   X(uint64_t, quicDatagramsDroppedOnWrite)                                                         \
   X(uint64_t, quicDatagramsDroppedOnRead)                                                          \
   X(uint64_t, quicPeerMaxUniStreamsLimitSaturated)                                                 \
-  X(uint64_t, quicPeerMaxBidiStreamsLimitSaturated)
+  X(uint64_t, quicPeerMaxBidiStreamsLimitSaturated)                                                \
+  X(uint64_t, quicSocketWriteAgain)                                                                \
+  X(uint64_t, quicSocketWriteNobufs)                                                               \
+  X(uint64_t, quicSocketWriteOther)                                                                \
+  X(uint64_t, quicPacketsProcessed)                                                                \
+  X(uint64_t, quicPTO)                                                                             \
+  X(uint64_t, quicPacketSpuriousLoss)                                                              \
+  X(uint64_t, quicPersistentCongestion)                                                            \
+  X(uint64_t, quicConnectionWritableBytesLimited)                                                  \
+  X(uint64_t, quicConnectionRateLimited)                                                           \
+  X(uint64_t, quicPacerTimerLagged)
 
 // Combined convenience macro to iterate all counter fields
 #define STATS_COUNTER_FIELDS(X) STATS_MOQ_COUNTER_FIELDS(X) STATS_QUIC_COUNTER_FIELDS(X)
@@ -160,14 +201,33 @@ inline constexpr std::array<std::string_view, 8> kRequestErrorCodeLabels = {{
 // Combined convenience macro to iterate all gauge fields
 #define STATS_GAUGE_FIELDS(X) STATS_QUIC_GAUGE_FIELDS(X) STATS_MOQ_GAUGE_FIELDS(X)
 
-// Histograms: (name, constexpr_bounds_ref)
+// Histograms: X(name, constexpr_bounds_ref, unit_suffix)
+// unit_suffix is a string literal appended to the Prometheus metric name.
 // Each expands to: name##Buckets[] (len = bounds.size()+1 for +Inf),
 //                  name##Sum, name##Count
+#define STATS_MOQ_HISTOGRAM_FIELDS(X)                                                              \
+  X(moqSubscribeLatency, kLatencyBucketsUs, "microseconds")                                        \
+  X(moqFetchLatency, kLatencyBucketsUs, "microseconds")                                            \
+  X(moqPublishNamespaceLatency, kLatencyBucketsUs, "microseconds")                                 \
+  X(moqPublishLatency, kLatencyBucketsUs, "microseconds")
+
+// QUIC transport histograms — populated by QuicStatsCollector and PicoQuicStatsCollector.
+// Per-loop packet fields require an EventBaseStatsCollector loop observer to be wired up.
+#define STATS_QUIC_HISTOGRAM_FIELDS(X)                                                             \
+  X(quicRttSample, kRttBucketsMs, "milliseconds")                                                  \
+  X(quicBandwidthSample, kBandwidthBucketsBitsPerSec, "bits_per_second")                           \
+  X(quicInflightBytesSample, kInflightBytesBuckets, "bytes")                                       \
+  X(quicCwndHintBytesSample, kInflightBytesBuckets, "bytes")                                       \
+  X(evbPktsSentPerLoop, kEvbPktsPerLoopBuckets, "packets")                                         \
+  X(evbPktsRecvPerLoop, kEvbPktsPerLoopBuckets, "packets")
+
+// EventBase loop time histograms — populated by EventBaseStatsCollector, one per IO thread.
+#define STATS_EVB_HISTOGRAM_FIELDS(X)                                                              \
+  X(evbLoopBusy, kEvbLoopBucketsUs, "microseconds")                                                \
+  X(evbLoopIdle, kEvbLoopBucketsUs, "microseconds")
+
 #define STATS_HISTOGRAM_FIELDS(X)                                                                  \
-  X(moqSubscribeLatency, kLatencyBucketsUs)                                                        \
-  X(moqFetchLatency, kLatencyBucketsUs)                                                            \
-  X(moqPublishNamespaceLatency, kLatencyBucketsUs)                                                 \
-  X(moqPublishLatency, kLatencyBucketsUs)
+  STATS_MOQ_HISTOGRAM_FIELDS(X) STATS_QUIC_HISTOGRAM_FIELDS(X) STATS_EVB_HISTOGRAM_FIELDS(X)
 
 // Error-code breakdowns: fields in STATS_MOQ_COUNTER_FIELDS whose callbacks receive
 // a RequestErrorCode argument.  Each expands to a
@@ -192,7 +252,7 @@ struct StatsSnapshot {
 #undef DEFINE_FIELD
 
   // --- Histogram fields ---
-#define DEFINE_HISTOGRAM(name, bounds)                                                             \
+#define DEFINE_HISTOGRAM(name, bounds, unit)                                                       \
   std::array<uint64_t, std::tuple_size_v<decltype(bounds)> + 1> name##Buckets{};                   \
   uint64_t name##Sum{0};                                                                           \
   uint64_t name##Count{0};
@@ -223,6 +283,8 @@ public:
   virtual folly::Executor* owningExecutor() const = 0;
 };
 
+class EventBaseStatsCollector;
+
 class StatsRegistry {
 public:
   StatsRegistry() = default;
@@ -230,11 +292,20 @@ public:
 
   void registerCollector(std::shared_ptr<StatsCollectorBase> collector);
 
+  // Registers the collector for aggregation and associates it with its EVB so
+  // QUIC collectors can subscribe to loop samples.  May be called from any
+  // thread; the EVB association is scheduled onto the EVB thread.
+  void
+  registerEvbCollector(folly::EventBase* evb, std::shared_ptr<EventBaseStatsCollector> collector);
+
+  // Must be called on the EVB thread.
+  std::weak_ptr<EventBaseStatsCollector> findEvbCollector(folly::EventBase* evb) const;
+
   folly::coro::Task<StatsSnapshot> aggregateAsync();
 
 private:
-  // Ownership stays with callers. aggregateAsync() prunes it lazily.
   std::vector<std::weak_ptr<StatsCollectorBase>> collectors_;
+  mutable folly::EventBaseLocal<std::weak_ptr<EventBaseStatsCollector>> evbCollectors_;
 };
 
 } // namespace openmoq::moqx::stats

@@ -29,6 +29,18 @@
         "CMAKE_MODULE_PATH": "${sourceDir}/cmake",
         "CMAKE_POLICY_VERSION_MINIMUM": "3.5"
       }
+    },
+    {
+      "name": "tsan",
+      "displayName": "ThreadSanitizer (TSan)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-tsan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "MOQX_ENABLE_TSAN": "ON",
+        "CMAKE_MODULE_PATH": "${sourceDir}/cmake",
+        "CMAKE_POLICY_VERSION_MINIMUM": "3.5"
+      }
     }
   ],
   "buildPresets": [
@@ -39,6 +51,10 @@
     {
       "name": "san",
       "configurePreset": "san"
+    },
+    {
+      "name": "tsan",
+      "configurePreset": "tsan"
     }
   ],
   "testPresets": [

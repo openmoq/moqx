@@ -20,15 +20,29 @@ target_link_libraries(moqx_test_main PUBLIC
   GTest::gtest
 )
 
-add_executable(moqx_relay_test
-  MoqxRelayTest.cpp
+add_library(moqx_test_fixture STATIC
+  MoqxRelayTestFixture.cpp
 )
-target_link_libraries(moqx_relay_test PRIVATE
+target_link_libraries(moqx_test_fixture PUBLIC
   moqx_core
   moqx_test_utils
-  moqx_test_main
   GTest::gmock
   moxygen::moxygen_events_moq_folly_executor_impl
+)
+
+add_executable(moqx_relay_test
+  MoqxRelayPublishTests.cpp
+  MoqxRelaySubscribeTests.cpp
+  MoqxRelaySubNsTests.cpp
+  MoqxRelayDataPlaneTests.cpp
+  MoqxRelayFetchTests.cpp
+  MoqxRelayTrackStatusTests.cpp
+  MoqxRelayNGRTests.cpp
+  MoqxRelayPeerTests.cpp
+)
+target_link_libraries(moqx_relay_test PRIVATE
+  moqx_test_fixture
+  moqx_test_main
 )
 gtest_discover_tests(moqx_relay_test)
 
@@ -39,7 +53,6 @@ target_link_libraries(moqx_namespace_tree_test PRIVATE
   moqx_core
   moqx_test_main
   GTest::gmock
-  moxygen::moqtest_utils
 )
 gtest_discover_tests(moqx_namespace_tree_test)
 
@@ -55,12 +68,21 @@ target_compile_definitions(moqx_config_test PRIVATE
   CONFIG_EXAMPLE_PATH="${PROJECT_SOURCE_DIR}/config.example.yaml"
 )
 if(NOT GFLAGS_SHARED)
-  target_link_libraries(moqx_config_test PRIVATE
-    "$<LINK_LIBRARY:WHOLE_ARCHIVE,gflags_nothreads_static>"
-  )
-  set_property(TARGET moqx_config_test PROPERTY
-    LINK_LIBRARY_OVERRIDE "WHOLE_ARCHIVE,gflags_nothreads_static"
-  )
+  # Force gflags's DEFINE_FLAG-registered .o files into the binary, even
+  # though the test code doesn't reference gflags symbols directly. Cross-
+  # platform raw linker flags — works with cmake 3.22, unlike the
+  # $<LINK_LIBRARY:WHOLE_ARCHIVE,...> genex which needs cmake 3.24+.
+  if(APPLE)
+    target_link_libraries(moqx_config_test PRIVATE
+      "-Wl,-force_load,$<TARGET_FILE:gflags_nothreads_static>"
+    )
+  else()
+    target_link_libraries(moqx_config_test PRIVATE
+      "-Wl,--whole-archive"
+      gflags_nothreads_static
+      "-Wl,--no-whole-archive"
+    )
+  endif()
 endif()
 gtest_discover_tests(moqx_config_test)
 
@@ -73,12 +95,17 @@ target_link_libraries(moqx_config_resolver_test PRIVATE
   GTest::gmock
 )
 if(NOT GFLAGS_SHARED)
-  target_link_libraries(moqx_config_resolver_test PRIVATE
-    "$<LINK_LIBRARY:WHOLE_ARCHIVE,gflags_nothreads_static>"
-  )
-  set_property(TARGET moqx_config_resolver_test PROPERTY
-    LINK_LIBRARY_OVERRIDE "WHOLE_ARCHIVE,gflags_nothreads_static"
-  )
+  if(APPLE)
+    target_link_libraries(moqx_config_resolver_test PRIVATE
+      "-Wl,-force_load,$<TARGET_FILE:gflags_nothreads_static>"
+    )
+  else()
+    target_link_libraries(moqx_config_resolver_test PRIVATE
+      "-Wl,--whole-archive"
+      gflags_nothreads_static
+      "-Wl,--no-whole-archive"
+    )
+  endif()
 endif()
 gtest_discover_tests(moqx_config_resolver_test)
 
@@ -176,12 +203,22 @@ target_link_libraries(moqx_upstream_provider_test PRIVATE
   moqx_core
   moqx_test_utils
   moqx_test_main
-  moxygen::moqtest_utils
   moxygen::moxygen_events_moq_folly_executor_impl
   moxygen::moxygen_moqclient
   GTest::gmock
 )
 gtest_discover_tests(moqx_upstream_provider_test)
+
+# SubscriptionRegistry unit tests
+add_executable(moqx_subscription_registry_test
+  SubscriptionRegistryTest.cpp
+)
+target_link_libraries(moqx_subscription_registry_test PRIVATE
+  moqx_core
+  moqx_test_main
+  GTest::gmock
+)
+gtest_discover_tests(moqx_subscription_registry_test)
 
 # TopNFilter unit tests
 add_executable(moqx_topn_filter_test
@@ -221,10 +258,8 @@ add_executable(moqx_track_filter_test
   MoqxTrackFilterTest.cpp
 )
 target_link_libraries(moqx_track_filter_test PRIVATE
-  moqx_core
+  moqx_test_fixture
   moqx_test_main
-  GTest::gmock
-  moxygen::moxygen_events_moq_folly_executor_impl
 )
 gtest_discover_tests(moqx_track_filter_test)
 
@@ -245,3 +280,66 @@ target_link_libraries(track_filter_load_test PRIVATE
   moxygen::moxygen_moq_relay_session
   moxygen::moxygen_util_insecure_verifier_dangerous_do_not_use_in_production
 )
+
+# CrossExecFilter unit tests
+add_executable(moqx_cross_exec_filter_test
+  CrossExecFilterTest.cpp
+)
+target_link_libraries(moqx_cross_exec_filter_test PRIVATE
+  moqx_core
+  GTest::gtest_main
+  GTest::gmock
+  moxygen::moqtest_utils
+  Folly::folly_executors_manual_executor
+)
+gtest_discover_tests(moqx_cross_exec_filter_test)
+
+# PublisherCrossExecFilter unit tests
+add_executable(moqx_publisher_cross_exec_filter_test
+  PublisherCrossExecFilterTest.cpp
+)
+target_link_libraries(moqx_publisher_cross_exec_filter_test PRIVATE
+  moqx_core
+  GTest::gtest_main
+  GTest::gmock
+  moxygen::moqtest_utils
+  Folly::folly_executors_manual_executor
+  Folly::folly_executors_cpu_thread_pool_executor
+)
+gtest_discover_tests(moqx_publisher_cross_exec_filter_test)
+
+# SubscriberCrossExecFilter unit tests
+add_executable(moqx_subscriber_cross_exec_filter_test
+  SubscriberCrossExecFilterTest.cpp
+)
+target_link_libraries(moqx_subscriber_cross_exec_filter_test PRIVATE
+  moqx_core
+  GTest::gtest_main
+  GTest::gmock
+  moxygen::moqtest_utils
+  Folly::folly_executors_manual_executor
+  Folly::folly_executors_cpu_thread_pool_executor
+)
+gtest_discover_tests(moqx_subscriber_cross_exec_filter_test)
+
+# --- MoqxCache tests ---
+
+add_executable(moqx_cache_test
+  MoqxCacheTest.cpp
+)
+
+target_link_libraries(moqx_cache_test PRIVATE
+  moqx_cache
+  moqx_test_utils
+  moqx_test_main
+  moxygen::moqtest_utils
+  GTest::gmock
+  Folly::folly_coro_gtest_helpers
+  Folly::folly_io_async_scoped_event_base_thread
+)
+
+target_compile_options(moqx_cache_test PRIVATE
+  -Wall -Wextra -Wpedantic
+)
+
+gtest_discover_tests(moqx_cache_test)
