@@ -26,6 +26,9 @@ public:
 
   ~MoqxRelayServer() override;
 
+  // Idempotent; safe to call from main and again from ~MoqxRelayServer.
+  void stop() override;
+
   void setStatsRegistry(std::shared_ptr<stats::StatsRegistry> registry);
 
   // Preferred entry point: binds the address from the stored ListenerConfig.

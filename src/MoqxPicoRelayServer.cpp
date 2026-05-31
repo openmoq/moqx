@@ -89,8 +89,16 @@ MoqxPicoRelayServer::MoqxPicoRelayServer(
       evb_(ioExecutor->getAllEventBases()[0].get()) {}
 
 MoqxPicoRelayServer::~MoqxPicoRelayServer() {
+  stop();
+}
+
+void MoqxPicoRelayServer::stop() {
+  if (!context_) {
+    return;
+  }
   context_->stop();
   evb_->runImmediatelyOrRunInEventBaseThreadAndWait([this] { MoQPicoQuicEventBaseServer::stop(); });
+  context_.reset();
 }
 
 void MoqxPicoRelayServer::setStatsRegistry(std::shared_ptr<stats::StatsRegistry> registry) {

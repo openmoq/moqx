@@ -181,6 +181,14 @@ int main(int argc, char* argv[]) {
   // Stop admin last — allows a final metrics scrape during drain.
   adminServer.stop();
 
+  // Stop servers before joining the IO pool — stop() needs worker EVBs alive,
+  // and lingering shared_ptr refs could delay ~MoqxRelayServer past that point.
+  for (auto& server : servers) {
+    server->stop();
+  }
+  servers.clear();
+  ioExecutor.reset();
+
   // === 14. Exit with appropriate code ===
   return 0;
 }
