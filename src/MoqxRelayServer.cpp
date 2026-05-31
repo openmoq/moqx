@@ -139,7 +139,16 @@ MoqxRelayServer::MoqxRelayServer(
 
 MoqxRelayServer::~MoqxRelayServer() {
   // Close incoming connections, drain worker EVBs, then destroy EVBs.
+  stop();
+}
+
+void MoqxRelayServer::stop() {
+  if (!context_) {
+    return;
+  }
+  // QuicServer::shutdown drives terminateClientSession, which uses context_.
   MoQServer::stop();
+  context_.reset();
 }
 
 void MoqxRelayServer::setStatsRegistry(std::shared_ptr<stats::StatsRegistry> registry) {
