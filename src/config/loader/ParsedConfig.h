@@ -225,6 +225,11 @@ struct ParsedMvfstConfig {
       "L4S tunables (ECN CE target). Usable alongside any ECN-aware CC algorithm.",
       std::optional<ParsedL4S>>
       l4s;
+  rfl::Description<
+      "UDP socket send and receive buffer size in bytes. Default: 0 (use MoQServer built-in "
+      "default of 1 MB). Increase to reduce EAGAIN errors under high fan-out burst load.",
+      std::optional<uint64_t>>
+      udp_socket_buffer_bytes;
 };
 
 struct ParsedListenerConfig {
