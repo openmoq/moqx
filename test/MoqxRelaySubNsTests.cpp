@@ -10,7 +10,7 @@
 
 namespace moxygen::test {
 
-TEST_F(MoQRelayTest, SubscribeNamespaceDoesntAddDrainingPublish) {
+TEST_P(MoQRelayTest, SubscribeNamespaceDoesntAddDrainingPublish) {
   auto publisherSession = createMockSession();
   auto subscriber1 = createMockSession();
   auto subscriber2 = createMockSession();
@@ -87,9 +87,10 @@ TEST_F(MoQRelayTest, SubscribeNamespaceDoesntAddDrainingPublish) {
   removeSession(publisherSession);
   removeSession(subscriber1);
   removeSession(subscriber2);
+  driveIfMultiThread(); // flush relay cleanup so it drops session refs before mocks are destroyed
 }
 
-TEST_F(MoQRelayTest, SubscribeNamespaceEmptyPrefixRejectedPreV16) {
+TEST_P(MoQRelayTest, SubscribeNamespaceEmptyPrefixRejectedPreV16) {
   // Default session uses kVersionDraftCurrent (draft-14, which is < 16)
   auto session = createMockSession();
 
@@ -109,7 +110,7 @@ TEST_F(MoQRelayTest, SubscribeNamespaceEmptyPrefixRejectedPreV16) {
   removeSession(session);
 }
 
-TEST_F(MoQRelayTest, SubscribeNamespaceEmptyPrefixAllowedV16) {
+TEST_P(MoQRelayTest, SubscribeNamespaceEmptyPrefixAllowedV16) {
   auto session = createMockSession();
   // Override the negotiated version to draft-16
   ON_CALL(*session, getNegotiatedVersion())
@@ -121,7 +122,7 @@ TEST_F(MoQRelayTest, SubscribeNamespaceEmptyPrefixAllowedV16) {
   removeSession(session);
 }
 
-TEST_F(MoQRelayTest, ExactNamespaceSubscriberReceivesPublishNamespace) {
+TEST_P(MoQRelayTest, ExactNamespaceSubscriberReceivesPublishNamespace) {
   auto subscriber = createMockSession();
   auto publisher = createMockSession();
 
@@ -156,7 +157,7 @@ TEST_F(MoQRelayTest, ExactNamespaceSubscriberReceivesPublishNamespace) {
 // forwarder is empty, the relay fires REQUEST_UPDATE twice — once explicitly
 // at the if(forwarder->empty()) site and once via forwardChanged() when
 // addSubscriber() increments numForwardingSubscribers from 0 to 1.
-TEST_F(MoQRelayTest, SubscribeNs_ForwardTrue_EmptyForwarder_SingleRequestUpdate) {
+TEST_P(MoQRelayTest, SubscribeNs_ForwardTrue_EmptyForwarder_SingleRequestUpdate) {
   auto pubSession = createMockSession();
   doPublishNamespace(pubSession, kTestNamespace);
   auto mockHandle = makePublishHandle();
@@ -192,7 +193,7 @@ TEST_F(MoQRelayTest, SubscribeNs_ForwardTrue_EmptyForwarder_SingleRequestUpdate)
 // forwarder is empty, the relay fires a spurious REQUEST_UPDATE(forward=false)
 // at the if(forwarder->empty()) site — even though the upstream is already at
 // forward=false (set by publish() which found no subscribers).
-TEST_F(MoQRelayTest, SubscribeNs_ForwardFalse_EmptyForwarder_NoRequestUpdate) {
+TEST_P(MoQRelayTest, SubscribeNs_ForwardFalse_EmptyForwarder_NoRequestUpdate) {
   auto pubSession = createMockSession();
   doPublishNamespace(pubSession, kTestNamespace);
   auto mockHandle = makePublishHandle();

@@ -12,7 +12,7 @@
 namespace moxygen::test {
 
 // Test: makeNamespaceBridgeHandle routes namespaceMsg to doPublishNamespace
-TEST_F(MoQRelayTest, NamespaceBridgeHandleForwardsNamespaceMsg) {
+TEST_P(MoQRelayTest, NamespaceBridgeHandleForwardsNamespaceMsg) {
   auto peerSession = createMockSession();
 
   // Bridge handle routes NAMESPACE messages from peerSession into the relay.
@@ -32,7 +32,7 @@ TEST_F(MoQRelayTest, NamespaceBridgeHandleForwardsNamespaceMsg) {
 }
 
 // Test: makeNamespaceBridgeHandle routes namespaceDoneMsg to doPublishNamespaceDone
-TEST_F(MoQRelayTest, NamespaceBridgeHandleForwardsDoneMsg) {
+TEST_P(MoQRelayTest, NamespaceBridgeHandleForwardsDoneMsg) {
   auto peerSession = createMockSession();
   auto handle = makeNamespaceBridgeHandle(relay_, peerSession);
 
@@ -65,7 +65,7 @@ TEST_F(MoQRelayTest, NamespaceBridgeHandleForwardsDoneMsg) {
 //
 // Production relays negotiate draft-16 (empty prefix allowed).  The delivery
 // path for draft-16 is synchronous: namespacePublishHandle->namespaceMsg().
-TEST_F(MoQRelayTest, PeerNamespaceNotEchoedBackOnReconnect) {
+TEST_P(MoQRelayTest, PeerNamespaceNotEchoedBackOnReconnect) {
   // Relay must have a relayID for peer detection to activate.
   resetRelay(std::make_shared<MoqxRelay>(config::CacheConfig{.maxCachedTracks = 0}, "sg-sin-2-1"));
   relay_->setAllowedNamespacePrefix(kAllowedPrefix);
@@ -107,7 +107,7 @@ TEST_F(MoQRelayTest, PeerNamespaceNotEchoedBackOnReconnect) {
 
 // Complement: namespaces from LOCAL publishers (not from the peer) must still
 // be delivered when that peer subscribes.
-TEST_F(MoQRelayTest, LocalNamespaceDeliveredToPeerOnReconnect) {
+TEST_P(MoQRelayTest, LocalNamespaceDeliveredToPeerOnReconnect) {
   resetRelay(std::make_shared<MoqxRelay>(config::CacheConfig{.maxCachedTracks = 0}, "sg-sin-2-1"));
   relay_->setAllowedNamespacePrefix(kAllowedPrefix);
 
@@ -134,6 +134,7 @@ TEST_F(MoQRelayTest, LocalNamespaceDeliveredToPeerOnReconnect) {
 
   removeSession(localPublisher);
   removeSession(peerSession);
+  driveIfMultiThread(); // flush relay cleanup so it drops session refs before mocks are destroyed
 }
 
 // A mock session that simulates a peer announcing peerNs when the relay
@@ -183,7 +184,7 @@ private:
 // directly via makeNamespaceBridgeHandle), this test goes through the full
 // publisherInterface()->subscribeNamespace() production path so the bug in the call-site is
 // exercised.
-TEST_F(MoQRelayTest, PeerNamespaceNotEchoedBack_FullProductionPath) {
+TEST_P(MoQRelayTest, PeerNamespaceNotEchoedBack_FullProductionPath) {
   resetRelay(std::make_shared<MoqxRelay>(config::CacheConfig{.maxCachedTracks = 0}, "sg-sin-2-1"));
   relay_->setAllowedNamespacePrefix(kAllowedPrefix);
 
@@ -237,7 +238,7 @@ TEST_F(MoQRelayTest, PeerNamespaceNotEchoedBack_FullProductionPath) {
 // without graceful namespaceDoneMsg calls, tree entries it created must be
 // cleaned up so stale sourceSession shared_ptrs don't keep dead session objects
 // alive and downstream subscribers receive NAMESPACE_DONE.
-TEST_F(MoQRelayTest, BridgeHandleDestructorCleansUpNamespaces) {
+TEST_P(MoQRelayTest, BridgeHandleDestructorCleansUpNamespaces) {
   auto upstreamSession = createMockSession();
 
   // Simulate the bridge path: create a handle and announce a namespace through
@@ -264,7 +265,7 @@ TEST_F(MoQRelayTest, BridgeHandleDestructorCleansUpNamespaces) {
 // Verify that when a new publisher takes over a namespace before the old
 // bridge handle is destroyed, the stale handle's destructor does NOT evict
 // the new publisher's entry (doPublishNamespaceDone guards on sourceSession).
-TEST_F(MoQRelayTest, BridgeHandleDestructorDoesNotEvictNewPublisher) {
+TEST_P(MoQRelayTest, BridgeHandleDestructorDoesNotEvictNewPublisher) {
   auto session1 = createMockSession();
   auto session2 = createMockSession();
 
