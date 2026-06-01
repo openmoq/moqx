@@ -93,12 +93,14 @@ MoqxPicoRelayServer::~MoqxPicoRelayServer() {
 }
 
 void MoqxPicoRelayServer::stop() {
-  if (!context_) {
+  if (stopped_) {
     return;
   }
+  stopped_ = true;
+  // Keep context_ alive: terminateClientSession can run after stop() returns,
+  // from handleClientSession coroutines still draining on the evb.
   context_->stop();
   evb_->runImmediatelyOrRunInEventBaseThreadAndWait([this] { MoQPicoQuicEventBaseServer::stop(); });
-  context_.reset();
 }
 
 void MoqxPicoRelayServer::setStatsRegistry(std::shared_ptr<stats::StatsRegistry> registry) {
