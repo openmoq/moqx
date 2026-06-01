@@ -229,7 +229,7 @@ listeners:
     mvfst:
       enable_gso: true
       max_conn_packets_sent_per_loop: 16
-      max_server_recv_packets_per_loop: 32
+      max_server_recv_packets_per_loop: 256
       udp_socket_buffer_bytes: $UDP_SOCKET_BUFFER_BYTES
       bbr2:
         exit_startup_on_loss: true
