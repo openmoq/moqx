@@ -31,6 +31,8 @@ constexpr uint64_t kPropType = 0x100; // audio level property type
 
 class MoqxTrackFilterTest : public moxygen::test::MoQRelayTest {
 protected:
+  RelayMode relayMode() const override { return RelayMode::SingleThread; }
+
   void SetUp() override {
     MoQRelayTest::SetUp();
     relay_ = std::make_shared<MoqxRelay>(

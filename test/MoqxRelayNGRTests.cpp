@@ -7,12 +7,13 @@
  */
 
 #include "MoqxRelayTestFixture.h"
+#include <atomic>
 
 namespace moxygen::test {
 
 // Test: relay PUBLISH path – dynamic groups from PublishRequest extensions
 // is stored in the forwarder and forwarded to every downstream subscriber
-TEST_F(MoQRelayTest, RelayPublishPropagatesDynamicGroupsToSubscribers) {
+TEST_P(MoQRelayTest, RelayPublishPropagatesDynamicGroupsToSubscribers) {
   auto publisherSession = createMockSession();
   auto subscriberSession = createMockSession();
 
@@ -40,12 +41,13 @@ TEST_F(MoQRelayTest, RelayPublishPropagatesDynamicGroupsToSubscribers) {
   removeSession(subscriberSession);
   exec_->drive();
   removeSession(publisherSession);
+  driveIfMultiThread();
 }
 
 // Test: relay SUBSCRIBE path – dynamic groups from the upstream SubscribeOk is
 // stored in the forwarder and forwarded to both the first and late-joining
 // downstream subscribers
-TEST_F(MoQRelayTest, RelaySubscribePropagatesDynamicGroupsToAllSubscribers) {
+TEST_P(MoQRelayTest, RelaySubscribePropagatesDynamicGroupsToAllSubscribers) {
   auto publisherSession = createMockSession();
   auto subscriber1 = createMockSession();
   auto subscriber2 = createMockSession();
@@ -88,11 +90,12 @@ TEST_F(MoQRelayTest, RelaySubscribePropagatesDynamicGroupsToAllSubscribers) {
   removeSession(publisherSession);
   removeSession(subscriber1);
   removeSession(subscriber2);
+  driveIfMultiThread();
 }
 
 // Relay test: When a late-joining subscriber sends NEW_GROUP_REQUEST in its
 // SUBSCRIBE, the relay forwards it upstream via REQUEST_UPDATE
-TEST_F(MoQRelayTest, RelaySubscribeLateJoinerNGRForwardedUpstream) {
+TEST_P(MoQRelayTest, RelaySubscribeLateJoinerNGRForwardedUpstream) {
   auto publisherSession = createMockSession();
   auto subscriber1 = createMockSession();
   auto subscriber2 = createMockSession();
@@ -163,7 +166,7 @@ TEST_F(MoQRelayTest, RelaySubscribeLateJoinerNGRForwardedUpstream) {
 
 // Relay test: A downstream subscriber sending REQUEST_UPDATE with
 // NEW_GROUP_REQUEST causes the relay to cascade the NGR upstream
-TEST_F(MoQRelayTest, RelayRequestUpdateNGRCascadedUpstream) {
+TEST_P(MoQRelayTest, RelayRequestUpdateNGRCascadedUpstream) {
   auto publisherSession = createMockSession();
   auto subscriberSession = createMockSession();
 
@@ -214,11 +217,12 @@ TEST_F(MoQRelayTest, RelayRequestUpdateNGRCascadedUpstream) {
 
   removeSession(publisherSession);
   removeSession(subscriberSession);
+  driveIfMultiThread();
 }
 
 // Relay test: downstream subscriber returns PublishOk carrying NEW_GROUP_REQUEST;
 // relay cascades NGR to the publisher handle upstream via REQUEST_UPDATE
-TEST_F(MoQRelayTest, PublishOkNewNGRForwardedUpstream) {
+TEST_P(MoQRelayTest, PublishOkNewNGRForwardedUpstream) {
   auto publisherSession = createMockSession();
   auto subscriberSession = createMockSession();
 
@@ -248,10 +252,13 @@ TEST_F(MoQRelayTest, PublishOkNewNGRForwardedUpstream) {
   doSubscribeNamespace(subscriberSession, kTestNamespace);
 
   auto publishHandle = makePublishHandle();
+  std::atomic<int> updates{0};
   {
     testing::InSequence seq;
-    EXPECT_CALL(*publishHandle, requestUpdateCalled(_)).Times(1); // forward=true update
-    EXPECT_CALL(*publishHandle, requestUpdateCalled(_)).WillOnce([](const RequestUpdate& update) {
+    EXPECT_CALL(*publishHandle, requestUpdateCalled(_)) // forward=true update
+        .WillOnce([&](const RequestUpdate&) { ++updates; });
+    EXPECT_CALL(*publishHandle, requestUpdateCalled(_)).WillOnce([&](const RequestUpdate& update) {
+      ++updates;
       auto ngrValue = getFirstIntParam(update.params, TrackRequestParamKey::NEW_GROUP_REQUEST);
       ASSERT_TRUE(ngrValue.has_value());
       EXPECT_EQ(*ngrValue, 8u);
@@ -272,14 +279,27 @@ TEST_F(MoQRelayTest, PublishOkNewNGRForwardedUpstream) {
   });
   exec_->drive();
 
+  // Wait for the async cascade (forward=true + NGR=8) to actually land rather
+  // than driving a fixed number of times, then lock in the assertion before
+  // teardown so the trailing forwardChanged(false) → requestUpdate at
+  // removeSession can't over-saturate the expectation.
+  EXPECT_TRUE(driveUntil([&] { return updates.load() >= 2; }))
+      << "NGR cascade incomplete: " << updates.load() << "/2 requestUpdates";
+
+  // Lock in the assertion before teardown: in LocalForwarderMT the trailing
+  // forwardChanged(false) → requestUpdate at subscriber removal lands
+  // asynchronously and would otherwise over-saturate the expectation.
+  ASSERT_TRUE(testing::Mock::VerifyAndClearExpectations(publishHandle.get()));
+
   removeSession(publisherSession);
   removeSession(subscriberSession);
+  driveIfMultiThread();
 }
 
 // Relay test: a second subscriber returning the same NEW_GROUP_REQUEST value in
 // its PublishOk is deduplicated; the upstream handle receives exactly one
 // REQUEST_UPDATE
-TEST_F(MoQRelayTest, PublishOkDuplicateNGRNotForwardedUpstream) {
+TEST_P(MoQRelayTest, PublishOkDuplicateNGRNotForwardedUpstream) {
   auto publisherSession = createMockSession();
   auto subscriber1 = createMockSession();
   auto subscriber2 = createMockSession();
@@ -320,10 +340,13 @@ TEST_F(MoQRelayTest, PublishOkDuplicateNGRNotForwardedUpstream) {
   doSubscribeNamespace(subscriber2, kTestNamespace);
 
   auto publishHandle = makePublishHandle();
+  std::atomic<int> updates{0};
   {
     testing::InSequence seq;
-    EXPECT_CALL(*publishHandle, requestUpdateCalled(_)).Times(1); // forward=true update
-    EXPECT_CALL(*publishHandle, requestUpdateCalled(_)).Times(1); // NGR update (deduplicated)
+    EXPECT_CALL(*publishHandle, requestUpdateCalled(_)) // forward=true update
+        .WillOnce([&](const RequestUpdate&) { ++updates; });
+    EXPECT_CALL(*publishHandle, requestUpdateCalled(_)) // NGR update (deduplicated)
+        .WillOnce([&](const RequestUpdate&) { ++updates; });
   }
 
   PublishRequest pub;
@@ -340,9 +363,22 @@ TEST_F(MoQRelayTest, PublishOkDuplicateNGRNotForwardedUpstream) {
   });
   exec_->drive();
 
+  // Wait for the deduplicated cascade (forward=true + one NGR) to land, then
+  // lock in the assertion before teardown; the trailing forwardChanged(false) →
+  // requestUpdate at subscriber teardown is not asserted here and would
+  // otherwise race in and over-saturate the expectation.
+  EXPECT_TRUE(driveUntil([&] { return updates.load() >= 2; }))
+      << "NGR cascade incomplete: " << updates.load() << "/2 requestUpdates";
+
+  // Lock in the assertion before teardown: in LocalForwarderMT the trailing
+  // forwardChanged(false) → requestUpdate at subscriber removal lands
+  // asynchronously and would otherwise over-saturate the expectation.
+  ASSERT_TRUE(testing::Mock::VerifyAndClearExpectations(publishHandle.get()));
+
   removeSession(publisherSession);
   removeSession(subscriber1);
   removeSession(subscriber2);
+  driveIfMultiThread();
 }
 
 } // namespace moxygen::test
