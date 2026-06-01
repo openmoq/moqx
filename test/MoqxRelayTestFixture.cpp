@@ -43,12 +43,22 @@ void MoQRelayTest::SetUp() {
     relayThread_ = std::make_unique<folly::ScopedEventBaseThread>("relay-test");
     relayEvb_ = relayThread_->getEventBase();
     relay_->setRelayExec(relayEvb_);
+    relay_->setUseLocalForwarders(false);
     exec_->setRelayEvb(relayEvb_);
     ASSERT_NE(relay_->getRelayExec(), nullptr);
     publisherInterface_ =
         std::make_shared<PublisherCrossExecFilter>(relay_->getRelayExec(), relay_);
     subscriberInterface_ =
         std::make_shared<SubscriberCrossExecFilter>(relay_->getRelayExec(), relay_);
+  } else if (relayMode() == RelayMode::LocalForwarderMT) {
+    relayThread_ = std::make_unique<folly::ScopedEventBaseThread>("relay-test");
+    relayEvb_ = relayThread_->getEventBase();
+    relay_->setRelayExec(relayEvb_);
+    relay_->setUseLocalForwarders(true);
+    exec_->setRelayEvb(relayEvb_);
+    ASSERT_NE(relay_->getRelayExec(), nullptr);
+    publisherInterface_ = relay_->createPublisherFilter();
+    subscriberInterface_ = relay_->createSubscriberFilter();
   }
 }
 
@@ -56,8 +66,13 @@ void MoQRelayTest::resetRelay(std::shared_ptr<MoqxRelay> relay) {
   relay_ = std::move(relay);
   if (relayEvb_) {
     relay_->setRelayExec(relayEvb_);
-    publisherInterface_ = std::make_shared<PublisherCrossExecFilter>(relayEvb_, relay_);
-    subscriberInterface_ = std::make_shared<SubscriberCrossExecFilter>(relayEvb_, relay_);
+    if (relayMode() == RelayMode::LocalForwarderMT) {
+      publisherInterface_ = relay_->createPublisherFilter();
+      subscriberInterface_ = relay_->createSubscriberFilter();
+    } else {
+      publisherInterface_ = std::make_shared<PublisherCrossExecFilter>(relayEvb_, relay_);
+      subscriberInterface_ = std::make_shared<SubscriberCrossExecFilter>(relayEvb_, relay_);
+    }
   }
 }
 

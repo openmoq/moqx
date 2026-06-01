@@ -23,7 +23,8 @@ namespace openmoq::moqx {
 MoqxRelayContext::MoqxRelayContext(
     const folly::F14FastMap<std::string, config::ServiceConfig>& services,
     const std::string& relayID,
-    bool useRelayThread
+    bool useRelayThread,
+    bool useLocalForwarders
 )
     : serviceMatcher_(services), relayID_(relayID) {
   if (useRelayThread && !services.empty()) {
@@ -37,6 +38,7 @@ MoqxRelayContext::MoqxRelayContext(
     for (const auto& [name, svc] : services) {
       auto relay = std::make_shared<MoqxRelay>(svc.cache, relayID);
       relay->setRelayExec(std::make_shared<moxygen::MoQFollyExecutorImpl>(evbs[i++].get()));
+      relay->setUseLocalForwarders(useLocalForwarders);
       services_.emplace(name, ServiceEntry{svc, std::move(relay)});
     }
   } else {
@@ -194,18 +196,9 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayContext::validateAu
   // Route: set per-service relay as handler, wrapping in cross-exec filters if needed
   auto it = services_.find(*matchedName);
   CHECK(it != services_.end()) << "Service '" << *matchedName << "' matched but no entry found";
-  auto* relayExec = it->second.relay->getRelayExec();
-  if (relayExec) {
-    session->setPublishHandler(
-        std::make_shared<PublisherCrossExecFilter>(relayExec, it->second.relay)
-    );
-    session->setSubscribeHandler(
-        std::make_shared<SubscriberCrossExecFilter>(relayExec, it->second.relay)
-    );
-  } else {
-    session->setPublishHandler(it->second.relay);
-    session->setSubscribeHandler(it->second.relay);
-  }
+  auto& relay = it->second.relay;
+  session->setPublishHandler(relay->createPublisherFilter());
+  session->setSubscribeHandler(relay->createSubscriberFilter());
   return folly::unit;
 }
 

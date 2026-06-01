@@ -393,6 +393,12 @@ struct ParsedConfig {
       std::optional<bool>>
       use_relay_thread;
   rfl::Description<
+      "Use per-subscriber-thread local forwarders to minimize cross-thread hops on the "
+      "data path (requires use_relay_thread; default: false). Disable to run all subscribes "
+      "on the relay thread via subscribeImpl.",
+      std::optional<bool>>
+      use_local_forwarders;
+  rfl::Description<
       "Attach a classic BPF reuseport filter to steer QUIC packets to the correct mvfst worker "
       "based on the connection ID's workerId field (Linux only, mvfst stack only, default: true). "
       "Disable to fall back to kernel RSS distribution.",

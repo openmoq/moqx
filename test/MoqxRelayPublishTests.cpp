@@ -204,6 +204,7 @@ TEST_P(MoQRelayTest, PublishExtensionsForwardedToLateJoiners) {
   removeSession(subscriber1);
   removeSession(subscriber2);
   driveIfMultiThread(); // flush relay cleanup so it drops session refs before mocks are destroyed
+  driveIfMultiThread(); // flush relay cleanup so it drops session refs before mocks are destroyed
 }
 
 // Regression test: publisher reconnect after disconnect with active subscriber

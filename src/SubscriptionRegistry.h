@@ -134,6 +134,7 @@ public:
     std::shared_ptr<moxygen::Publisher> publisher;
     std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle;
     moxygen::RequestID requestID;
+    folly::Executor* publisherExec{nullptr}; // executor the primary forwarder lives on
     bool isPublish;
     bool isReady; // promise fulfilled
   };
