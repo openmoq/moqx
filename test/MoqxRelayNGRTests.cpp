@@ -12,7 +12,7 @@ namespace moxygen::test {
 
 // Test: relay PUBLISH path – dynamic groups from PublishRequest extensions
 // is stored in the forwarder and forwarded to every downstream subscriber
-TEST_F(MoQRelayTest, RelayPublishPropagatesDynamicGroupsToSubscribers) {
+TEST_P(MoQRelayTest, RelayPublishPropagatesDynamicGroupsToSubscribers) {
   auto publisherSession = createMockSession();
   auto subscriberSession = createMockSession();
 
@@ -45,7 +45,7 @@ TEST_F(MoQRelayTest, RelayPublishPropagatesDynamicGroupsToSubscribers) {
 // Test: relay SUBSCRIBE path – dynamic groups from the upstream SubscribeOk is
 // stored in the forwarder and forwarded to both the first and late-joining
 // downstream subscribers
-TEST_F(MoQRelayTest, RelaySubscribePropagatesDynamicGroupsToAllSubscribers) {
+TEST_P(MoQRelayTest, RelaySubscribePropagatesDynamicGroupsToAllSubscribers) {
   auto publisherSession = createMockSession();
   auto subscriber1 = createMockSession();
   auto subscriber2 = createMockSession();
@@ -92,7 +92,7 @@ TEST_F(MoQRelayTest, RelaySubscribePropagatesDynamicGroupsToAllSubscribers) {
 
 // Relay test: When a late-joining subscriber sends NEW_GROUP_REQUEST in its
 // SUBSCRIBE, the relay forwards it upstream via REQUEST_UPDATE
-TEST_F(MoQRelayTest, RelaySubscribeLateJoinerNGRForwardedUpstream) {
+TEST_P(MoQRelayTest, RelaySubscribeLateJoinerNGRForwardedUpstream) {
   auto publisherSession = createMockSession();
   auto subscriber1 = createMockSession();
   auto subscriber2 = createMockSession();
@@ -163,7 +163,7 @@ TEST_F(MoQRelayTest, RelaySubscribeLateJoinerNGRForwardedUpstream) {
 
 // Relay test: A downstream subscriber sending REQUEST_UPDATE with
 // NEW_GROUP_REQUEST causes the relay to cascade the NGR upstream
-TEST_F(MoQRelayTest, RelayRequestUpdateNGRCascadedUpstream) {
+TEST_P(MoQRelayTest, RelayRequestUpdateNGRCascadedUpstream) {
   auto publisherSession = createMockSession();
   auto subscriberSession = createMockSession();
 
@@ -218,7 +218,7 @@ TEST_F(MoQRelayTest, RelayRequestUpdateNGRCascadedUpstream) {
 
 // Relay test: downstream subscriber returns PublishOk carrying NEW_GROUP_REQUEST;
 // relay cascades NGR to the publisher handle upstream via REQUEST_UPDATE
-TEST_F(MoQRelayTest, PublishOkNewNGRForwardedUpstream) {
+TEST_P(MoQRelayTest, PublishOkNewNGRForwardedUpstream) {
   auto publisherSession = createMockSession();
   auto subscriberSession = createMockSession();
 
@@ -279,7 +279,7 @@ TEST_F(MoQRelayTest, PublishOkNewNGRForwardedUpstream) {
 // Relay test: a second subscriber returning the same NEW_GROUP_REQUEST value in
 // its PublishOk is deduplicated; the upstream handle receives exactly one
 // REQUEST_UPDATE
-TEST_F(MoQRelayTest, PublishOkDuplicateNGRNotForwardedUpstream) {
+TEST_P(MoQRelayTest, PublishOkDuplicateNGRNotForwardedUpstream) {
   auto publisherSession = createMockSession();
   auto subscriber1 = createMockSession();
   auto subscriber2 = createMockSession();

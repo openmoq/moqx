@@ -14,7 +14,7 @@ namespace moxygen::test {
 // new ones.
 // Sequence: publish, 2 subscribers, beginSubgroup, beginSubgroup again ->
 // first consumers get reset, both subscribers get new consumers.
-TEST_F(MoQRelayTest, DuplicateSubgroupReplacesActiveConsumers) {
+TEST_P(MoQRelayTest, DuplicateSubgroupReplacesActiveConsumers) {
   auto publisherSession = createMockSession();
   auto sub1 = createMockSession();
   auto sub2 = createMockSession();
@@ -75,7 +75,7 @@ TEST_F(MoQRelayTest, DuplicateSubgroupReplacesActiveConsumers) {
 
 // Test: Duplicate beginSubgroup after all subscribers have stop_sending'd
 // returns CANCELLED to propagate the signal back to the publisher.
-TEST_F(MoQRelayTest, DuplicateSubgroupCancelledWhenNoActiveConsumers) {
+TEST_P(MoQRelayTest, DuplicateSubgroupCancelledWhenNoActiveConsumers) {
   auto publisherSession = createMockSession();
   auto subscriber = createMockSession();
 
@@ -114,7 +114,7 @@ TEST_F(MoQRelayTest, DuplicateSubgroupCancelledWhenNoActiveConsumers) {
 
 // Test: Duplicate beginSubgroup with partial stop_sending - active subscriber
 // gets reset and new consumer; tombstoned subscriber is skipped.
-TEST_F(MoQRelayTest, DuplicateSubgroupSkipsTombstonedSubscriber) {
+TEST_P(MoQRelayTest, DuplicateSubgroupSkipsTombstonedSubscriber) {
   auto publisherSession = createMockSession();
   auto subA = createMockSession();
   auto subB = createMockSession();
