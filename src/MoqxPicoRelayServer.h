@@ -64,6 +64,7 @@ private:
   config::ListenerConfig listenerCfg_;
   std::shared_ptr<MoqxRelayContext> context_;
   folly::EventBase* evb_;
+  bool stopped_{false};
 };
 
 } // namespace openmoq::moqx

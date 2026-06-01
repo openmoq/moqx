@@ -147,12 +147,13 @@ MoqxRelayServer::~MoqxRelayServer() {
 }
 
 void MoqxRelayServer::stop() {
-  if (!context_) {
+  if (stopped_) {
     return;
   }
-  // QuicServer::shutdown drives terminateClientSession, which uses context_.
+  stopped_ = true;
+  // Keep context_ alive: terminateClientSession can run after stop() returns,
+  // from handleClientSession coroutines still draining on IO threads.
   MoQServer::stop();
-  context_.reset();
 }
 
 void MoqxRelayServer::setStatsRegistry(std::shared_ptr<stats::StatsRegistry> registry) {
