@@ -34,6 +34,9 @@
 #                          locally.  The binary is expected at
 #                          /tmp/moqperf_test_client on the remote host.
 #                          HOST may include a user prefix (user@host).
+#   --udp-socket-buffer-bytes N
+#                          UDP socket send/recv buffer size in bytes for the
+#                          relay listener (defaults to net.core.wmem_max).
 #
 # Linux-only options (not supported on macOS):
 #   --metrics, --perf-duration, --perf-events, --perf-stat, --jemalloc,
@@ -62,6 +65,7 @@ PERF_DURATION=0
 PERF_EVENTS=""
 RUN_PERF_STAT=false
 REMOTE_CLIENT_HOST=""
+UDP_SOCKET_BUFFER_BYTES=$(cat /proc/sys/net/core/wmem_max 2>/dev/null || echo 1048576)
 TRACE_SCRIPT=""
 CLIENT_EXTRA_ARGS=()
 
@@ -93,6 +97,7 @@ while [[ $# -gt 0 ]]; do
     --trace-script)     TRACE_SCRIPT="$2";         shift 2 ;;
     --client-args)      read -ra CLIENT_EXTRA_ARGS <<< "$2"; shift 2 ;;
     --remote-client)    REMOTE_CLIENT_HOST="$2";  shift 2 ;;
+    --udp-socket-buffer-bytes) UDP_SOCKET_BUFFER_BYTES="$2"; shift 2 ;;
     *) echo "Unknown option: $1" >&2; exit 1 ;;
   esac
 done
@@ -220,6 +225,7 @@ listeners:
       enable_gso: true
       max_conn_packets_sent_per_loop: 16
       max_server_recv_packets_per_loop: 32
+      udp_socket_buffer_bytes: $UDP_SOCKET_BUFFER_BYTES
       bbr2:
         exit_startup_on_loss: true
         enable_recovery_in_startup: true
@@ -260,6 +266,7 @@ cp "$RELAY_CFG" "$LOG_DIR/relay.yaml"
   echo "delivery_timeout: $DELIVERY_TIMEOUT"
   echo "client_threads:   $CLIENT_THREADS"
   echo "jemalloc:         ${JEMALLOC:-none}"
+  echo "udp_socket_buf:     $UDP_SOCKET_BUFFER_BYTES"
   echo "mvfst_bpf_steering: $BPF_STEERING"
   [[ "$PERF_DURATION" -gt 0 ]] && echo "perf_duration:    ${PERF_DURATION}s (delay=$(( 3 * SUBSCRIBER_MAX / RAMP ))s)" || true
   [[ -n "$PERF_EVENTS" ]] && echo "perf_events:      $PERF_EVENTS" || true
