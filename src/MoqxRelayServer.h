@@ -57,6 +57,7 @@ private:
   config::ListenerConfig listenerCfg_;
   std::shared_ptr<MoqxRelayContext> context_;
   folly::IOThreadPoolExecutor* ioExecutor_;
+  bool stopped_{false};
 };
 
 } // namespace openmoq::moqx
