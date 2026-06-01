@@ -57,20 +57,27 @@ TEST_P(MoQRelayTest, DuplicateSubgroupReplacesActiveConsumers) {
 
   auto sgForwarder1 = publishConsumer->beginSubgroup(0, 0, 0);
   EXPECT_TRUE(sgForwarder1.hasValue());
+  driveIfMultiThread(
+  ); // flush so beginSubgroup wires downstream_ and calls mockConsumer beginSubgroup
 
   // Duplicate beginSubgroup - should reset v1 consumers and return new
-  // forwarder
+  // forwarder. Simulate publisher resetting the old stream.
   auto sgForwarder2 = publishConsumer->beginSubgroup(0, 0, 0);
+  driveIfMultiThread(); // flush duplicate so v1 consumers are reset and v2 consumers are created
+  (*sgForwarder1)->reset(moxygen::ResetStreamErrorCode::CANCELLED);
+  driveIfMultiThread(); // flush publisher reset of old stream
   EXPECT_TRUE(sgForwarder2.hasValue());
   EXPECT_NE(sgForwarder1.value(), sgForwarder2.value());
 
   // Close the new subgroup cleanly before teardown to avoid reset during
   // cleanup
   EXPECT_TRUE(sgForwarder2.value()->endOfSubgroup().hasValue());
+  driveIfMultiThread(); // flush endOfSubgroup
 
   removeSession(publisherSession);
   removeSession(sub1);
   removeSession(sub2);
+  driveIfMultiThread(); // flush relay cleanup so it drops session refs before mocks are destroyed
 }
 
 // Test: Duplicate beginSubgroup after all subscribers have stop_sending'd
@@ -99,17 +106,40 @@ TEST_P(MoQRelayTest, DuplicateSubgroupCancelledWhenNoActiveConsumers) {
   auto sgRes = publishConsumer->beginSubgroup(0, 0, 0);
   ASSERT_TRUE(sgRes.hasValue());
   auto sg = sgRes.value();
+  driveIfMultiThread(); // flush so beginSubgroup wires sg.downstream_ before object() enqueues
 
   // Trigger stop_sending tombstone via CANCELLED error from object()
+  if (relayEvb_) {
+    // MT: enqueue an extra object() after the beginSubgroup lambda
+    sg->object(0, nullptr, {}, false);
+    driveIfMultiThread(); // flush so object() runs and tombstones the subscriber
+  }
   sg->object(0, nullptr, {}, false);
+  driveIfMultiThread(); // flush so object() runs and tombstones the subscriber
 
-  // Duplicate beginSubgroup - all consumers tombstoned, should return CANCELLED
+  // Duplicate beginSubgroup - all consumers tombstoned, should return CANCELLED.
   auto dupRes = publishConsumer->beginSubgroup(0, 0, 0);
-  EXPECT_TRUE(dupRes.hasError());
-  EXPECT_EQ(dupRes.error().code, MoQPublishError::CANCELLED);
+  if (relayMode() == RelayMode::MultiThread) {
+    // MT mode: a CrossExecFilter sits between publisher and relay, so it always
+    // returns a subFilter and the error is deferred until the next operation.
+    ASSERT_TRUE(dupRes.hasValue());
+    driveIfMultiThread(); // flush so object() runs and tombstones the subscriber
+    auto probeRes = dupRes.value()->endOfSubgroup();
+    EXPECT_TRUE(probeRes.hasError());
+    if (probeRes.hasError()) {
+      EXPECT_EQ(probeRes.error().code, MoQPublishError::CANCELLED);
+    }
+  } else {
+    // ST and LocalForwarderMT: the publisher writes directly to the (local)
+    // forwarder with no cross-exec hop, so CANCELLED is returned synchronously.
+    EXPECT_TRUE(dupRes.hasError());
+    EXPECT_EQ(dupRes.error().code, MoQPublishError::CANCELLED);
+  }
 
   removeSession(publisherSession);
   removeSession(subscriber);
+  sg->reset(ResetStreamErrorCode::CANCELLED);
+  driveIfMultiThread(); // flush relay cleanup so it drops session refs before mocks are destroyed
 }
 
 // Test: Duplicate beginSubgroup with partial stop_sending - active subscriber
@@ -143,6 +173,11 @@ TEST_P(MoQRelayTest, DuplicateSubgroupSkipsTombstonedSubscriber) {
   // CANCELLED to simulate stop_sending
   EXPECT_CALL(*sgAv1, object(_, _, _, _))
       .WillOnce(Return(folly::makeExpected<MoQPublishError>(folly::unit)));
+  if (relayEvb_) {
+    EXPECT_CALL(*sgAv1, object(_, _, _, _))
+        .WillOnce(Return(folly::makeExpected<MoQPublishError>(folly::unit)))
+        .RetiresOnSaturation();
+  }
   EXPECT_CALL(*sgBv1, object(_, _, _, _))
       .WillOnce(
           Return(folly::makeUnexpected(MoQPublishError(MoQPublishError::CANCELLED, "stop sending")))
@@ -160,22 +195,34 @@ TEST_P(MoQRelayTest, DuplicateSubgroupSkipsTombstonedSubscriber) {
 
   auto sgForwarder1 = publishConsumer->beginSubgroup(0, 0, 0);
   ASSERT_TRUE(sgForwarder1.hasValue());
+  driveIfMultiThread(); // flush so beginSubgroup wires downstream_ before object() enqueues
 
+  if (relayEvb_) {
+    // MT: enqueue an extra object() after the beginSubgroup lambda
+    sgForwarder1.value()->object(0, nullptr, {}, false);
+    driveIfMultiThread(); // flush so object() runs and tombstones the subscriber
+  }
   // Trigger tombstone for sub B via CANCELLED from object()
   sgForwarder1.value()->object(0, nullptr, {}, false);
+  driveIfMultiThread(); // flush so object() runs and tombstones sub B
 
   // Duplicate beginSubgroup: sub A gets reset+new, sub B is skipped
-  // (tombstoned)
+  // (tombstoned). Simulate publisher resetting the old stream.
   auto sgForwarder2 = publishConsumer->beginSubgroup(0, 0, 0);
+  driveIfMultiThread(); // flush duplicate so sgAv1 is reset and sgAv2 is created
+  (*sgForwarder1)->reset(moxygen::ResetStreamErrorCode::CANCELLED);
+  driveIfMultiThread(); // flush publisher reset of old stream
   EXPECT_TRUE(sgForwarder2.hasValue());
   EXPECT_NE(sgForwarder1.value(), sgForwarder2.value());
 
   // Close the new subgroup cleanly before teardown
   EXPECT_TRUE(sgForwarder2.value()->endOfSubgroup().hasValue());
+  driveIfMultiThread(); // flush endOfSubgroup
 
   removeSession(publisherSession);
   removeSession(subA);
   removeSession(subB);
+  driveIfMultiThread(); // flush relay cleanup so it drops session refs before mocks are destroyed
 }
 
 } // namespace moxygen::test

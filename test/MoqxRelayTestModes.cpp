@@ -9,11 +9,13 @@ namespace moxygen::test {
 INSTANTIATE_TEST_SUITE_P(
     AllModes,
     MoQRelayTest,
-    ::testing::Values(RelayMode::SingleThread),
+    ::testing::Values(RelayMode::SingleThread, RelayMode::MultiThread),
     [](const ::testing::TestParamInfo<RelayMode>& info) -> std::string {
       switch (info.param) {
       case RelayMode::SingleThread:
         return "SingleThread";
+      case RelayMode::MultiThread:
+        return "MultiThread";
       }
       return "Unknown";
     }

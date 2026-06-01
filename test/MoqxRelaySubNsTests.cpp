@@ -87,6 +87,7 @@ TEST_P(MoQRelayTest, SubscribeNamespaceDoesntAddDrainingPublish) {
   removeSession(publisherSession);
   removeSession(subscriber1);
   removeSession(subscriber2);
+  driveIfMultiThread(); // flush relay cleanup so it drops session refs before mocks are destroyed
 }
 
 TEST_P(MoQRelayTest, SubscribeNamespaceEmptyPrefixRejectedPreV16) {

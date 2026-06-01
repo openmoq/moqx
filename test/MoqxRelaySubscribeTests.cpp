@@ -34,6 +34,8 @@ TEST_P(MoQRelayTest, ForwardChangedAfterPublisherTermination) {
       });
   auto subgroupRes = publishConsumer->beginSubgroup(0, 0, 0);
   ASSERT_TRUE(subgroupRes.hasValue());
+  driveIfMultiThread(
+  ); // flush beginSubgroup so relay subgroup forwarder is wired before publishDone
 
   // Publisher terminates — onPublishDone clears handle/upstream.
   // forwarder->publishDone sets draining and calls drainSubscriber, but the
@@ -61,6 +63,7 @@ TEST_P(MoQRelayTest, ForwardChangedAfterPublisherTermination) {
 
   removeSession(publisherSession);
   removeSession(subSession);
+  driveIfMultiThread(); // flush pending lambdas (sg->reset, cleanup) before mocks are destroyed
 }
 
 // Bug: when a second subscriber with forward=true joins an existing PUBLISH-path

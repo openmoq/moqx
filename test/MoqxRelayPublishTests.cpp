@@ -7,6 +7,7 @@
  */
 
 #include "MoqxRelayTestFixture.h"
+#include <atomic>
 
 namespace moxygen::test {
 
@@ -55,10 +56,13 @@ TEST_P(MoQRelayTest, PublishExtensionsForwardedToSubscribers) {
   // Subscribe to namespace first
   auto mockConsumer = createMockConsumer();
   Extensions receivedExtensions;
+  std::atomic<bool> published{false};
   EXPECT_CALL(*subscriber, publish(testing::_, testing::_))
       .WillOnce([&mockConsumer,
-                 &receivedExtensions](const PublishRequest& pubReq, auto /*subHandle*/) {
+                 &receivedExtensions,
+                 &published](const PublishRequest& pubReq, auto /*subHandle*/) {
         receivedExtensions = pubReq.extensions;
+        published.store(true);
         return Subscriber::PublishResult(Subscriber::PublishConsumerAndReplyTask{
             mockConsumer,
             []() -> folly::coro::Task<folly::Expected<PublishOk, PublishError>> {
@@ -94,12 +98,19 @@ TEST_P(MoQRelayTest, PublishExtensionsForwardedToSubscribers) {
   });
   exec_->drive();
 
+  // Wait until the relay has actually forwarded the publish to the subscriber
+  // (the mock sets `published`), rather than reading receivedExtensions after a
+  // fixed drive — under parallel load the forwarding may not have completed yet.
+  ASSERT_TRUE(driveUntil([&] { return published.load(); }))
+      << "publish was not forwarded to the subscriber";
+
   // Verify extensions were forwarded
   EXPECT_EQ(receivedExtensions.getIntExtension(kDeliveryTimeoutExtensionType), 5000);
   EXPECT_EQ(receivedExtensions.getIntExtension(0xBEEF'0000), 42);
 
   removeSession(publisherSession);
   removeSession(subscriber);
+  driveIfMultiThread(); // flush relay cleanup so it drops session refs before mocks are destroyed
 }
 
 // ============================================================
@@ -153,28 +164,37 @@ TEST_P(MoQRelayTest, PublishExtensionsForwardedToLateJoiners) {
 
   // Late-joining subscriber 2 should also get extensions
   Extensions receivedExtensions;
+  std::atomic<bool> published2{false};
   auto mockConsumer2 = createMockConsumer();
   EXPECT_CALL(*subscriber2, publish(testing::_, testing::_))
-      .WillOnce([&mockConsumer2, &receivedExtensions](const PublishRequest& pubReq, auto) {
-        receivedExtensions = pubReq.extensions;
-        return Subscriber::PublishResult(Subscriber::PublishConsumerAndReplyTask{
-            mockConsumer2,
-            []() -> folly::coro::Task<folly::Expected<PublishOk, PublishError>> {
-              co_return PublishOk{
-                  RequestID(2),
-                  true,
-                  0,
-                  GroupOrder::OldestFirst,
-                  LocationType::LargestObject,
-                  std::nullopt,
-                  std::nullopt
-              };
-            }()
-        });
-      });
+      .WillOnce(
+          [&mockConsumer2, &receivedExtensions, &published2](const PublishRequest& pubReq, auto) {
+            receivedExtensions = pubReq.extensions;
+            published2.store(true);
+            return Subscriber::PublishResult(Subscriber::PublishConsumerAndReplyTask{
+                mockConsumer2,
+                []() -> folly::coro::Task<folly::Expected<PublishOk, PublishError>> {
+                  co_return PublishOk{
+                      RequestID(2),
+                      true,
+                      0,
+                      GroupOrder::OldestFirst,
+                      LocationType::LargestObject,
+                      std::nullopt,
+                      std::nullopt
+                  };
+                }()
+            });
+          }
+      );
 
   doSubscribeNamespace(subscriber2, kTestNamespace);
   exec_->drive();
+
+  // Wait until the relay forwards the publish to the late joiner before reading
+  // the extensions (async under parallel load).
+  ASSERT_TRUE(driveUntil([&] { return published2.load(); }))
+      << "publish was not forwarded to the late-joining subscriber";
 
   // Verify late-joiner received extensions
   EXPECT_EQ(receivedExtensions.getIntExtension(kDeliveryTimeoutExtensionType), 3000);
@@ -183,6 +203,7 @@ TEST_P(MoQRelayTest, PublishExtensionsForwardedToLateJoiners) {
   removeSession(publisherSession);
   removeSession(subscriber1);
   removeSession(subscriber2);
+  driveIfMultiThread(); // flush relay cleanup so it drops session refs before mocks are destroyed
 }
 
 // Regression test: publisher reconnect after disconnect with active subscriber
@@ -226,6 +247,8 @@ TEST_P(MoQRelayTest, PublisherReconnectWithOpenSubgroupNoSegfault) {
   withSessionContext(publisherSession, [&]() {
     auto sgRes = consumer->beginSubgroup(/*groupID=*/0, /*subgroupID=*/0, /*priority=*/0, false);
     ASSERT_TRUE(sgRes.hasValue()) << "beginSubgroup should succeed";
+    // Simulate QUIC resetting the open stream on connection drop.
+    (*sgRes)->reset(moxygen::ResetStreamErrorCode::INTERNAL_ERROR);
   });
 
   // Step 3: session A's connection drops WITHOUT closing the subgroup.
@@ -283,9 +306,9 @@ TEST_P(MoQRelayTest, PublishReplacesSubscribeDrainsOldAndServesNew) {
 
   // Subscribe to the track (creates subscribe-path subscription)
   auto oldConsumer = createMockConsumer();
-  bool publishDoneReceived = false;
+  std::atomic<bool> publishDoneReceived{false};
   EXPECT_CALL(*oldConsumer, publishDone(_)).WillOnce([&publishDoneReceived](const PublishDone&) {
-    publishDoneReceived = true;
+    publishDoneReceived.store(true);
     return folly::makeExpected<MoQPublishError>(folly::unit);
   });
   auto handle = subscribeToTrack(
@@ -301,8 +324,11 @@ TEST_P(MoQRelayTest, PublishReplacesSubscribeDrainsOldAndServesNew) {
   auto publishConsumer = doPublish(publisherSession, kTestTrackName);
   ASSERT_NE(publishConsumer, nullptr);
 
-  // Old subscriber must have been drained
-  EXPECT_TRUE(publishDoneReceived) << "Old subscribe-path subscriber should receive publishDone";
+  // Old subscriber must have been drained. publishDone crosses executors to the
+  // old subscribe-path consumer, so wait for it rather than asserting after a
+  // fixed drive.
+  EXPECT_TRUE(driveUntil([&] { return publishDoneReceived.load(); }))
+      << "Old subscribe-path subscriber should receive publishDone";
 
   // New publish-path subscription should be functional: subscribe a new
   // downstream consumer and verify it receives data from the publisher
@@ -319,9 +345,11 @@ TEST_P(MoQRelayTest, PublishReplacesSubscribeDrainsOldAndServesNew) {
   auto sgRes = publishConsumer->beginSubgroup(0, 0, 0);
   ASSERT_TRUE(sgRes.hasValue());
   EXPECT_TRUE(sgRes.value()->endOfSubgroup().hasValue());
+  driveIfMultiThread(); // flush relayExec_ so beginSubgroup/endOfSubgroup reach subscribers
 
   removeSession(publisherSession);
   removeSession(subscriberSession);
+  driveIfMultiThread(); // flush relay cleanup so it drops session refs before mocks are destroyed
 }
 
 // Regression test: publisher reconnects while a subscribe coroutine is
@@ -538,6 +566,7 @@ TEST_P(MoQRelayTest, PublishDonePrunesNamespaceTreeNode) {
 
   exec_->drive();
   removeSession(publisher);
+  driveIfMultiThread(); // flush relay cleanup so it drops session refs before mocks are destroyed
 }
 
 // Empty namespace: publishNamespace with an empty TrackNamespace must not crash.
