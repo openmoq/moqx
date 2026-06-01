@@ -90,6 +90,19 @@ FetchContent_Declare(reflectcpp
 )
 FetchContent_MakeAvailable(reflectcpp)
 
+# --- XLOG category rooting ---
+# Rewrite __FILE__ for moqx sources so folly XLOG categories render as moqx.*
+# (e.g. moqx.MoqxRelay) instead of src.* — sources live under src/, but the
+# user-facing logging API expects "moqx" as the top-level category. The
+# FOLLY_XLOG_STRIP_PREFIXES define handles paths the prefix-map doesn't touch
+# (notably generated headers under the build dir). Placed here so subsequent
+# moqx_* targets pick it up; yaml-cpp / reflectcpp above were declared before
+# this point and are unaffected.
+add_compile_options(-fmacro-prefix-map=${CMAKE_CURRENT_SOURCE_DIR}/src=moqx)
+add_compile_definitions(
+  "FOLLY_XLOG_STRIP_PREFIXES=\"${CMAKE_SOURCE_DIR}:${CMAKE_BINARY_DIR}\""
+)
+
 # --- Cache library (forked from moxygen) ---
 
 add_library(moqx_cache STATIC
