@@ -133,7 +133,11 @@ MoqxRelayServer::MoqxRelayServer(
     : MoQServer(
           buildFizzContext(listenerCfg),
           listenerCfg.endpoint,
-          buildTransportSettings(listenerCfg.quic, listenerCfg.mvfst)
+          MoQServer::Options{
+              .transportSettings = buildTransportSettings(listenerCfg.quic, listenerCfg.mvfst),
+              .udpSendBufferBytes = listenerCfg.mvfst.udpSocketBufferBytes,
+              .udpRecvBufferBytes = listenerCfg.mvfst.udpSocketBufferBytes,
+          }
       ),
       listenerCfg_(listenerCfg), context_(std::move(context)), ioExecutor_(ioExecutor) {}
 
