@@ -29,6 +29,18 @@ using namespace openmoq::moqx;
 
 namespace moxygen::test {
 
+enum class RelayMode {
+  SingleThread,
+};
+
+inline void PrintTo(RelayMode mode, std::ostream* os) {
+  switch (mode) {
+  case RelayMode::SingleThread:
+    *os << "SingleThread";
+    return;
+  }
+}
+
 inline const TrackNamespace kTestNamespace{{"test", "namespace"}};
 inline const TrackNamespace kAllowedPrefix{{"test"}};
 inline const FullTrackName kTestTrackName{kTestNamespace, "track1"};
@@ -48,8 +60,10 @@ private:
 };
 
 // Test fixture for MoqxRelay and NamespaceTree tests.
-class MoQRelayTest : public ::testing::Test {
+class MoQRelayTest : public ::testing::TestWithParam<RelayMode> {
 protected:
+  virtual RelayMode relayMode() const { return GetParam(); }
+
   void SetUp() override;
   void TearDown() override;
 
