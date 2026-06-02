@@ -63,6 +63,17 @@ MoQQmuxClient::MoQQmuxClient(
     std::shared_ptr<fizz::CertificateVerifier> verifier)
     : MoQClientBase(std::move(exec), std::move(url), std::move(verifier)) {}
 
+MoQQmuxClient::MoQQmuxClient(
+    std::shared_ptr<MoQExecutor> exec,
+    proxygen::URL url,
+    SessionFactory sessionFactory,
+    std::shared_ptr<fizz::CertificateVerifier> verifier)
+    : MoQClientBase(
+          std::move(exec),
+          std::move(url),
+          std::move(sessionFactory),
+          std::move(verifier)) {}
+
 MoQQmuxClient::~MoQQmuxClient() {
   if (qmuxSession_) {
     qmuxSession_->setHandler(nullptr);
@@ -144,7 +155,6 @@ folly::coro::Task<void> MoQQmuxClient::setupMoQSession(
       qmuxParamsFromTransportSettings(transportSettings),
       std::move(transport),
       qmuxConnectTimeout);
-  qmuxSession_->setHandler(this);
   qmuxSession_->start(qmuxSession_);
 
   transportConnectTime_ = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -155,6 +165,7 @@ folly::coro::Task<void> MoQQmuxClient::setupMoQSession(
       url_.getPath(),
       std::move(publishHandler),
       std::move(subscribeHandler));
+  qmuxSession_->setHandler(moqSession_.get());
   co_await awaitSetupComplete();
 }
 
