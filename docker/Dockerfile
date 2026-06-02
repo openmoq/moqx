@@ -11,9 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /src
 
 # Moxygen tarball (pre-extracted bookworm build)
-#COPY .docker-deps/moxygen /opt/moxygen
-
-RUN
+COPY .docker-deps/moxygen /opt/moxygen
 
 # MoQX source — only what cmake needs
 COPY CMakeLists.txt CMakePresets.json ./
