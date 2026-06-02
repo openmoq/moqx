@@ -168,3 +168,51 @@ CI requires clang-format-19. Check before pushing:
 
 See [design/ci-architecture.md](design/ci-architecture.md) for the full CI pipeline:
 upstream sync, submodule updates, build/publish/release, and auto-deploy.
+
+## Developer IDEs
+
+### CLion
+
+CLion can build moqx directly via its CMake integration. You still need the
+same prerequisites as the command-line build (CMake 3.22+, system libraries,
+and a staged moxygen install). The steps below wire CLion to the local
+dependency tree under `.scratch/`.
+
+#### 1. Stage dependencies (first time, or after dep changes)
+
+Before CLion can configure the project, moxygen must be present at
+`.scratch/moxygen-install`. Run:
+
+```bash
+./scripts/build.sh setup --from-source
+```
+
+This installs moxygen and its Meta dependencies into `.scratch/moxygen-install`.
+It takes 15–30 minutes on a first run.
+
+You only need to re-run this when **dependencies change** — for example, after
+updating the `deps/moxygen` submodule or when `.scratch/` has been cleaned.
+Day-to-day moqx source edits do not require re-running setup.
+
+#### 2. Configure CMake in CLion
+
+Open the moqx project root in CLion, then go to
+**Settings → Build, Execution, Deployment → CMake** and edit the **Debug**
+profile. Add these CMake options:
+
+```
+-DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_PREFIX_PATH=$CMakeProjectDir$/.scratch/moxygen-install -DGFLAGS_SHARED=ON
+```
+
+`$CMakeProjectDir$` is a CLion macro that expands to the project root, so
+CMake can find the staged moxygen package config.
+
+If you configure before running setup, CMake will fail because
+`.scratch/moxygen-install` does not exist yet — that is expected.
+
+#### 3. Reload and build
+
+After setup completes, reload the CMake project in CLion
+(**Tools → CMake → Reload CMake Project**, or the reload button in the CMake
+tool window). Configuration should succeed and you can build and run targets
+from the IDE as usual.

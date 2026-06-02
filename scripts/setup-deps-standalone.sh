@@ -109,6 +109,7 @@ cmake -S "$STANDALONE_SRC" -B "$BUILD_DIR" \
     -DBUILD_TESTS=ON \
     -DBUILD_SAMPLES=ON \
     -DBUILD_SHARED_LIBS=OFF \
+    -DBoost_USE_STATIC_LIBS=ON \
     "${EXTRA_CMAKE_ARGS[@]+"${EXTRA_CMAKE_ARGS[@]}"}"
 
 echo "==> Building ($NPROC jobs)..."
