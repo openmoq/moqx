@@ -2,11 +2,10 @@
 FROM debian:bookworm AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential ninja-build git ca-certificates python3-pip \
+        build-essential cmake ninja-build git ca-certificates \
         libssl-dev libunwind-dev libgoogle-glog-dev libgflags-dev \
         libdouble-conversion-dev libevent-dev libsodium-dev libzstd-dev \
-        libboost-all-dev libfmt-dev zlib1g-dev libc-ares-dev libdwarf-dev \
-    && pip install --break-system-packages cmake \
+        libboost-all-dev libfmt-dev zlib1g-dev libc-ares-dev libdwarf-dev libaio-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src

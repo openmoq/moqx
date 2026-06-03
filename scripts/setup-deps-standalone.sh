@@ -57,15 +57,15 @@ NPROC=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 # Profile-specific cmake flags
 CMAKE_BUILD_TYPE="RelWithDebInfo"
 EXTRA_CMAKE_ARGS=()
+CXX_FLAGS=""
 if [[ "$PROFILE" == "san" ]]; then
   CMAKE_BUILD_TYPE="Debug"
   # ASAN only (no UBSAN): folly uses static_assert on syscall function addresses
   # (recvmmsg, sendmmsg) which become non-constant under UBSAN's function
   # interposition. ASAN alone is sufficient for memory safety in deps.
-  SAN_FLAGS="-fsanitize=address -fno-omit-frame-pointer"
+  CXX_FLAGS="-fsanitize=address -fno-omit-frame-pointer"
   EXTRA_CMAKE_ARGS+=(
-    "-DCMAKE_C_FLAGS=${SAN_FLAGS}"
-    "-DCMAKE_CXX_FLAGS=${SAN_FLAGS}"
+    "-DCMAKE_C_FLAGS=${CXX_FLAGS}"
     "-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address"
     "-DCMAKE_SHARED_LINKER_FLAGS=-fsanitize=address"
   )
@@ -74,13 +74,27 @@ elif [[ "$PROFILE" == "tsan" ]]; then
   # TSan must instrument the full dep chain: folly/mvfst atomics and EventBase
   # internals are invisible to TSan without instrumentation, causing false positives
   # on every lock operation.
-  SAN_FLAGS="-fsanitize=thread -fno-omit-frame-pointer"
+  CXX_FLAGS="-fsanitize=thread -fno-omit-frame-pointer"
   EXTRA_CMAKE_ARGS+=(
-    "-DCMAKE_C_FLAGS=${SAN_FLAGS}"
-    "-DCMAKE_CXX_FLAGS=${SAN_FLAGS}"
+    "-DCMAKE_C_FLAGS=${CXX_FLAGS}"
     "-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=thread"
     "-DCMAKE_SHARED_LINKER_FLAGS=-fsanitize=thread"
   )
+fi
+
+# moxygen pins fmt 10.2.1; Apple Clang 21+ (Xcode 26 / recent CLT) rejects its
+# C++20 consteval format-string validation (fmtlib/fmt#4740). Define
+# FMT_CONSTEVAL empty so fmt falls back to runtime checking for this dep build.
+if [[ "$(uname -s)" == "Darwin" ]] && command -v c++ >/dev/null 2>&1; then
+  _apple_clang_ver="$(c++ --version 2>/dev/null \
+    | sed -En 's/.*clang version ([0-9]+).*/\1/p' | head -1)"
+  if [[ -n "${_apple_clang_ver:-}" && "${_apple_clang_ver}" -ge 21 ]]; then
+    CXX_FLAGS+=" -DFMT_CONSTEVAL="
+  fi
+fi
+if [[ -n "$CXX_FLAGS" ]]; then
+  # shellcheck disable=SC2086
+  EXTRA_CMAKE_ARGS+=("-DCMAKE_CXX_FLAGS=${CXX_FLAGS}")
 fi
 
 echo "==> Configuring standalone moxygen build (profile: ${PROFILE})..."
@@ -95,6 +109,7 @@ cmake -S "$STANDALONE_SRC" -B "$BUILD_DIR" \
     -DBUILD_TESTS=ON \
     -DBUILD_SAMPLES=ON \
     -DBUILD_SHARED_LIBS=OFF \
+    -DBoost_USE_STATIC_LIBS=ON \
     "${EXTRA_CMAKE_ARGS[@]+"${EXTRA_CMAKE_ARGS[@]}"}"
 
 echo "==> Building ($NPROC jobs)..."

@@ -56,39 +56,28 @@ endif()
 
 find_package(moxygen REQUIRED)
 
-# --- yaml-cpp (FetchContent) ---
+include(cmake/CPM.cmake)
 
-include(FetchContent)
-
-set(YAML_CPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-set(YAML_CPP_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
-set(YAML_CPP_FORMAT_SOURCE OFF CACHE BOOL "" FORCE)
-
-# yaml-cpp 0.8.0 uses cmake_minimum_required(VERSION 3.0.2) which triggers a
-# deprecation warning on CMake ≥ 3.27. Suppress it for this dependency only.
-set(_moqx_save_warn_deprecated "${CMAKE_WARN_DEPRECATED}")
-set(CMAKE_WARN_DEPRECATED OFF CACHE BOOL "" FORCE)
-
-FetchContent_Declare(yaml-cpp
-  GIT_REPOSITORY https://github.com/jbeder/yaml-cpp.git
-  GIT_TAG 0.8.0
-  SYSTEM
+# --- yaml-cpp (CPM) ---
+CPMAddPackage(
+        NAME yaml-cpp
+        GITHUB_REPOSITORY jbeder/yaml-cpp
+        GIT_TAG 0.8.0
+        OPTIONS
+        "YAML_CPP_BUILD_TESTS OFF"
+        "YAML_CPP_BUILD_TOOLS OFF"
+        "YAML_CPP_FORMAT_SOURCE OFF"
+        "CMAKE_WARN_DEPRECATED OFF"
 )
-FetchContent_MakeAvailable(yaml-cpp)
-
-set(CMAKE_WARN_DEPRECATED "${_moqx_save_warn_deprecated}" CACHE BOOL "" FORCE)
 
 # --- reflect-cpp (FetchContent, needs yaml-cpp available) ---
 
-set(REFLECTCPP_YAML ON CACHE BOOL "" FORCE)
-set(REFLECTCPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-
-FetchContent_Declare(reflectcpp
-  GIT_REPOSITORY https://github.com/getml/reflect-cpp.git
-  GIT_TAG v0.18.0
-  SYSTEM
+CPMAddPackage(
+        NAME reflectcpp
+        GITHUB_REPOSITORY getml/reflect-cpp
+        GIT_TAG v0.18.0
+        OPTIONS "REFLECTCPP_YAML ON" "REFLECTCPP_BUILD_TESTS OFF"
 )
-FetchContent_MakeAvailable(reflectcpp)
 
 # --- XLOG category rooting ---
 # Rewrite __FILE__ for moqx sources so folly XLOG categories render as moqx.*
