@@ -136,6 +136,8 @@ add_library(moqx_core STATIC
   src/stats/EventBaseStatsCollector.cpp
   src/UpstreamProvider.cpp
   src/relay/TopNFilter.cpp
+  src/relay/TopNEventLog.cpp
+  src/relay/SimpleTopNTracker.cpp
   src/relay/PropertyRanking.cpp
   src/relay/CrossExecFilter.cpp
   src/relay/CrossExecForwarderCallback.cpp
