@@ -63,7 +63,8 @@ TEST(CborReaderTest, ReadUIntDecodesAllArgumentWidths) {
       0x100000000ULL,
   };
   for (uint64_t v : values) {
-    CborReader reader(uint64Cbor(v));
+    auto cbor = uint64Cbor(v);
+    CborReader reader(cbor);
     uint64_t out = 1;
     ASSERT_TRUE(reader.readUInt(out)) << "value=" << v;
     EXPECT_EQ(out, v);
@@ -81,7 +82,8 @@ TEST(CborReaderTest, ReadUIntRejectsNonUnsignedMajorType) {
 
 TEST(CborReaderTest, ReadIntDecodesPositiveAndNegative) {
   {
-    CborReader reader(uint64Cbor(5));
+    auto cbor = uint64Cbor(5);
+    CborReader reader(cbor);
     int64_t out = 0;
     ASSERT_TRUE(reader.readInt(out));
     EXPECT_EQ(out, 5);
@@ -198,7 +200,8 @@ TEST(CborReaderTest, EofReflectsConsumption) {
   CborReader empty(std::string_view{});
   EXPECT_TRUE(empty.eof());
 
-  CborReader reader(uint64Cbor(42));
+  auto cbor42 = uint64Cbor(42);
+  CborReader reader(cbor42);
   EXPECT_FALSE(reader.eof());
   uint64_t out = 0;
   ASSERT_TRUE(reader.readUInt(out));
