@@ -7,281 +7,214 @@
 #include "auth/Auth.h"
 #include "auth/CborReader.h"
 
+#include <catapult/crypto.hpp>
+#include <catapult/cwt.hpp>
+#include <catapult/error.hpp>
+#include <catapult/moqt_claims.hpp>
 #include <folly/Conv.h>
 #include <folly/Expected.h>
 #include <folly/Range.h>
-#include <folly/lang/Bits.h>
 #include <folly/logging/xlog.h>
-#include <openssl/core_names.h>
-#include <openssl/crypto.h>
 #include <openssl/evp.h>
-#include <openssl/hmac.h>
-#include <openssl/opensslv.h>
-#include <openssl/params.h>
+#include <openssl/kdf.h>
 
 #include <algorithm>
 #include <array>
-#include <cstring>
 #include <limits>
 #include <memory>
+#include <span>
+#include <stdexcept>
+#include <vector>
 
 using namespace moxygen;
 
 namespace openmoq::moqx::auth {
 namespace {
 
-constexpr uint8_t kEnvelopeVersion = 1;
-constexpr size_t kHmacSha256Len = 32;
-
-std::string hmacSha256(std::string_view secret, std::string_view payload) {
-#if OPENSSL_VERSION_MAJOR >= 3
-  auto* mac = EVP_MAC_fetch(nullptr, "HMAC", nullptr);
-  XCHECK(mac) << "EVP_MAC_fetch(HMAC) failed";
-  auto macGuard = std::unique_ptr<EVP_MAC, decltype(&EVP_MAC_free)>(mac, EVP_MAC_free);
-
-  auto* ctx = EVP_MAC_CTX_new(macGuard.get());
-  XCHECK(ctx) << "EVP_MAC_CTX_new failed";
-  auto ctxGuard = std::unique_ptr<EVP_MAC_CTX, decltype(&EVP_MAC_CTX_free)>(ctx, EVP_MAC_CTX_free);
-
-  auto digestName = std::array<char, 7>{'S', 'H', 'A', '2', '5', '6', '\0'};
-  OSSL_PARAM params[] = {
-      OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST, digestName.data(), 0),
-      OSSL_PARAM_construct_end(),
-  };
-  XCHECK_EQ(
-      EVP_MAC_init(
-          ctxGuard.get(),
-          reinterpret_cast<const unsigned char*>(secret.data()),
-          secret.size(),
-          params
-      ),
-      1
-  ) << "EVP_MAC_init failed";
-  XCHECK_EQ(
-      EVP_MAC_update(
-          ctxGuard.get(),
-          reinterpret_cast<const unsigned char*>(payload.data()),
-          payload.size()
-      ),
-      1
-  ) << "EVP_MAC_update failed";
-  size_t len = kHmacSha256Len;
-  std::string out(kHmacSha256Len, '\0');
-  XCHECK_EQ(
-      EVP_MAC_final(ctxGuard.get(), reinterpret_cast<unsigned char*>(out.data()), &len, out.size()),
-      1
-  ) << "EVP_MAC_final failed";
-  out.resize(len);
-  return out;
-#else
-  unsigned int len = 0;
-  std::string out(kHmacSha256Len, '\0');
-  HMAC(
-      EVP_sha256(),
-      secret.data(),
-      static_cast<int>(secret.size()),
-      reinterpret_cast<const unsigned char*>(payload.data()),
-      payload.size(),
-      reinterpret_cast<unsigned char*>(out.data()),
-      &len
-  );
-  out.resize(len);
-  return out;
-#endif
-}
-
-uint32_t readU32BE(std::string_view data, size_t offset) {
-  uint32_t netOrder = 0;
-  std::memcpy(&netOrder, data.data() + offset, sizeof(netOrder));
-  return folly::Endian::big(netOrder);
-}
-
-void appendU32BE(std::string& out, uint32_t value) {
-  const uint32_t netOrder = folly::Endian::big(value);
-  out.append(reinterpret_cast<const char*>(&netOrder), sizeof(netOrder));
-}
-
 std::string canonicalNamespace(const TrackNamespace& ns) {
   std::string out;
   for (const auto& field : ns.trackNamespace) {
-    appendU32BE(out, static_cast<uint32_t>(field.size()));
+    out.push_back(static_cast<char>((field.size() >> 24) & 0xff));
+    out.push_back(static_cast<char>((field.size() >> 16) & 0xff));
+    out.push_back(static_cast<char>((field.size() >> 8) & 0xff));
+    out.push_back(static_cast<char>(field.size() & 0xff));
     out.append(field);
   }
   return out;
 }
 
-bool bytesMatch(std::string_view actual, const MatchRule& rule) {
-  const auto expected = std::string_view(rule.value);
-  switch (rule.type) {
-  case MatchRule::Type::Exact:
-    return actual == expected;
-  case MatchRule::Type::Prefix:
-    return actual.starts_with(expected);
-  case MatchRule::Type::Suffix:
-    return actual.size() >= expected.size() &&
-           actual.substr(actual.size() - expected.size()) == expected;
-  case MatchRule::Type::Contains:
-    return actual.find(expected) != std::string_view::npos;
+// Derive a 256-bit HMAC key from the configured secret using HKDF-SHA256
+// (RFC 5869) rather than a bare hash. The fixed, non-secret salt and info
+// strings provide domain separation so the same configured secret can't yield
+// identical key material if reused for another purpose. (HKDF does not add
+// entropy: a low-entropy secret is still weak -- operators should use a long,
+// random secret.)
+constexpr std::string_view kHkdfSalt = "moqx-catapult-v1";
+constexpr std::string_view kHkdfInfo = "moqx-catapult-hmac-token-verify";
+
+std::vector<uint8_t> deriveHmacKey(std::string_view secret) {
+  std::vector<uint8_t> key(32); // 256-bit output for HMAC-SHA256
+
+  auto* ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_HKDF, nullptr);
+  if (!ctx) {
+    throw std::runtime_error("EVP_PKEY_CTX_new_id(HKDF) failed");
   }
-  return false;
-}
+  auto guard = std::unique_ptr<EVP_PKEY_CTX, decltype(&EVP_PKEY_CTX_free)>(ctx, EVP_PKEY_CTX_free);
 
-bool allRulesMatch(std::string_view actual, const std::vector<MatchRule>& rules) {
-  return std::all_of(rules.begin(), rules.end(), [&](const auto& rule) {
-    return bytesMatch(actual, rule);
-  });
-}
-
-bool parseAction(CborReader& reader, std::vector<Action>& actions) {
-  int64_t action = 0;
-  if (!reader.readInt(action) || action < 0) {
-    return false;
+  size_t keyLen = key.size();
+  if (EVP_PKEY_derive_init(ctx) <= 0 || EVP_PKEY_CTX_set_hkdf_md(ctx, EVP_sha256()) <= 0 ||
+      EVP_PKEY_CTX_set1_hkdf_salt(
+          ctx,
+          reinterpret_cast<const unsigned char*>(kHkdfSalt.data()),
+          static_cast<int>(kHkdfSalt.size())
+      ) <= 0 ||
+      EVP_PKEY_CTX_set1_hkdf_key(
+          ctx,
+          reinterpret_cast<const unsigned char*>(secret.data()),
+          static_cast<int>(secret.size())
+      ) <= 0 ||
+      EVP_PKEY_CTX_add1_hkdf_info(
+          ctx,
+          reinterpret_cast<const unsigned char*>(kHkdfInfo.data()),
+          static_cast<int>(kHkdfInfo.size())
+      ) <= 0 ||
+      EVP_PKEY_derive(ctx, key.data(), &keyLen) <= 0) {
+    throw std::runtime_error("HKDF key derivation failed");
   }
-  actions.push_back(static_cast<Action>(static_cast<uint64_t>(action)));
-  return true;
+  key.resize(keyLen);
+  return key;
 }
 
-bool parseActions(CborReader& reader, std::vector<Action>& actions) {
-  uint64_t len = 0;
-  // Copy the small reader as a backtracking checkpoint: actions may be a scalar or array.
-  auto copy = reader;
-  if (copy.readArrayLen(len)) {
-    reader = copy;
-    for (uint64_t i = 0; i < len; ++i) {
-      if (!parseAction(reader, actions)) {
-        return false;
-      }
+std::vector<uint8_t> toBytes(std::string_view value) {
+  return std::vector<uint8_t>(
+      reinterpret_cast<const uint8_t*>(value.data()),
+      reinterpret_cast<const uint8_t*>(value.data()) + value.size()
+  );
+}
+
+std::string toString(const std::vector<uint8_t>& bytes) {
+  return std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+}
+
+catapult::MoqtCompoundMatch toCatapultMatch(const std::vector<MatchRule>& rules) {
+  if (rules.empty()) {
+    return catapult::MoqtCompoundMatch::any();
+  }
+  std::vector<catapult::MoqtBinaryMatch> conditions;
+  conditions.reserve(rules.size());
+  for (const auto& rule : rules) {
+    switch (rule.type) {
+    case MatchRule::Type::Exact:
+      conditions.push_back(catapult::MoqtBinaryMatch::exact(rule.value));
+      break;
+    case MatchRule::Type::Prefix:
+      conditions.push_back(catapult::MoqtBinaryMatch::prefix(rule.value));
+      break;
+    case MatchRule::Type::Suffix:
+      conditions.push_back(catapult::MoqtBinaryMatch::suffix(rule.value));
+      break;
+    case MatchRule::Type::Contains:
+      conditions.push_back(catapult::MoqtBinaryMatch::contains(rule.value));
+      break;
     }
-    return true;
   }
-  return parseAction(reader, actions);
+  return catapult::MoqtCompoundMatch::all(std::move(conditions));
 }
 
-bool parseMatchRules(CborReader& reader, std::vector<MatchRule>& rules) {
-  uint64_t len = 0;
-  if (!reader.readMapLen(len)) {
-    return false;
+MatchRule::Type fromCatapultMatchType(catapult::BinaryMatchType type) {
+  switch (type) {
+  case catapult::BinaryMatchType::EXACT:
+    return MatchRule::Type::Exact;
+  case catapult::BinaryMatchType::PREFIX:
+    return MatchRule::Type::Prefix;
+  case catapult::BinaryMatchType::SUFFIX:
+    return MatchRule::Type::Suffix;
+  case catapult::BinaryMatchType::CONTAINS:
+    return MatchRule::Type::Contains;
   }
-  for (uint64_t i = 0; i < len; ++i) {
-    int64_t type = 0;
-    std::string value;
-    if (!reader.readInt(type) || type < 0 || type > 3 || !reader.readBytes(value)) {
-      return false;
-    }
+  return MatchRule::Type::Exact;
+}
+
+std::vector<MatchRule> fromCatapultMatch(const catapult::MoqtCompoundMatch& match) {
+  if (match.is_empty()) {
+    return {};
+  }
+  std::vector<MatchRule> rules;
+  rules.reserve(match.conditions().size());
+  for (const auto& cond : match.conditions()) {
     rules.push_back(MatchRule{
-        .type = static_cast<MatchRule::Type>(static_cast<uint64_t>(type)),
-        .value = std::move(value),
+        .type = fromCatapultMatchType(cond.match_type),
+        .value = toString(cond.pattern),
     });
   }
-  return true;
+  return rules;
 }
 
-// A scope is the CBOR encoding of one access grant in the CAT "moqt" claim
-// (see draft-law-moq-cat4moqt). It is a fixed 3-element array:
-//
-//   [ actions, namespace-matches, track-matches ]
-//
-//   actions          - either a single action integer or a CBOR array of them
-//                      (auth::Action enum values; parsed by parseActions).
-//   namespace-matches - a CBOR map { match-type => bytes } evaluated against the
-//   track-matches       canonicalized namespace / track name respectively. The
-//                      match-type key is a MatchRule::Type (0=exact, 1=prefix,
-//                      2=suffix, 3=contains); every entry in the map must match
-//                      (logical AND). An empty map matches everything.
-//
-// The scope grants the action when its action set contains the requested action
-// and both match maps are satisfied (see auth::allows / allowsImpl).
-bool parseScope(CborReader& reader, Scope& scope) {
-  uint64_t len = 0;
-  if (!reader.readArrayLen(len) || len != 3) {
-    return false;
+catapult::CatToken tokenFromGrants(const Grants& grants) {
+  catapult::CatToken token;
+  if (grants.expiresAt != std::chrono::system_clock::time_point::max()) {
+    token.core.exp =
+        std::chrono::duration_cast<std::chrono::seconds>(grants.expiresAt.time_since_epoch())
+            .count();
   }
-  return parseActions(reader, scope.actions) && parseMatchRules(reader, scope.namespaceMatches) &&
-         parseMatchRules(reader, scope.trackMatches);
-}
 
-bool parseMoqt(CborReader& reader, Grants& grants) {
-  uint64_t len = 0;
-  if (!reader.readArrayLen(len)) {
-    return false;
-  }
-  for (uint64_t i = 0; i < len; ++i) {
-    Scope scope;
-    if (!parseScope(reader, scope)) {
-      return false;
+  catapult::MoqtClaims moqt = catapult::MoqtClaims::create(grants.scopes.size());
+  for (const auto& scope : grants.scopes) {
+    std::vector<int> actions;
+    actions.reserve(scope.actions.size());
+    for (auto action : scope.actions) {
+      actions.push_back(static_cast<int>(action));
     }
+    moqt.addScope(
+        actions,
+        toCatapultMatch(scope.namespaceMatches),
+        toCatapultMatch(scope.trackMatches)
+    );
+  }
+  token.extended.setMoqtClaims(std::move(moqt));
+  token.validateTokenStructure();
+  return token;
+}
+
+Grants grantsFromToken(const catapult::CatToken& token) {
+  Grants grants;
+  if (token.core.exp.has_value()) {
+    grants.expiresAt = std::chrono::system_clock::time_point(std::chrono::seconds(*token.core.exp));
+  }
+
+  const auto* moqt = token.extended.getMoqtClaimsReadOnly();
+  if (!moqt) {
+    return grants;
+  }
+
+  for (const auto& catScope : moqt->getScopes()) {
+    Scope scope;
+    scope.actions.reserve(catScope.actions.size());
+    for (auto action : catScope.actions) {
+      if (action < 0) {
+        continue;
+      }
+      scope.actions.push_back(static_cast<Action>(static_cast<uint64_t>(action)));
+    }
+    scope.namespaceMatches = fromCatapultMatch(catScope.namespace_match);
+    scope.trackMatches = fromCatapultMatch(catScope.track_match);
     grants.scopes.push_back(std::move(scope));
   }
-  return true;
-}
-
-bool parseClaims(std::string_view data, Grants& grants, bool strictClaims) {
-  CborReader reader(data);
-  uint64_t len = 0;
-  if (!reader.readMapLen(len)) {
-    return false;
-  }
-  // Each well-known claim key may appear at most once; a duplicate is rejected
-  // rather than silently last-wins.
-  bool seenExp = false;
-  bool seenMoqt = false;
-  bool seenMoqtReval = false;
-  for (uint64_t i = 0; i < len; ++i) {
-    auto keyReader = reader;
-    int64_t intKey = 0;
-    std::string textKey;
-    bool hasIntKey = keyReader.readInt(intKey);
-    bool hasTextKey = false;
-    if (hasIntKey) {
-      reader = keyReader;
-    } else {
-      keyReader = reader;
-      hasTextKey = keyReader.readBytes(textKey);
-      if (!hasTextKey) {
-        return false;
-      }
-      reader = keyReader;
-    }
-
-    if ((hasIntKey && intKey == 4) || (hasTextKey && textKey == "exp")) {
-      if (seenExp) {
-        return false;
-      }
-      seenExp = true;
-      int64_t exp = 0;
-      if (!reader.readInt(exp) || exp < 0) {
-        return false;
-      }
-      grants.expiresAt = std::chrono::system_clock::time_point(std::chrono::seconds(exp));
-    } else if (hasTextKey && textKey == "moqt") {
-      if (seenMoqt) {
-        return false;
-      }
-      seenMoqt = true;
-      if (!parseMoqt(reader, grants)) {
-        return false;
-      }
-    } else if (hasTextKey && textKey == "moqt-reval") {
-      if (seenMoqtReval) {
-        return false;
-      }
-      seenMoqtReval = true;
-      int64_t ignoredReval = 0;
-      if (!reader.readInt(ignoredReval) || ignoredReval < 0) {
-        return false;
-      }
-    } else if (strictClaims) {
-      return false;
-    } else if (!reader.skip()) {
-      return false;
-    }
-  }
-  return reader.eof();
+  return grants;
 }
 
 } // namespace
 
-AuthTokenVerifier::AuthTokenVerifier(config::AuthConfig config) : config_(std::move(config)) {}
+AuthTokenVerifier::AuthTokenVerifier(config::AuthConfig config) : config_(std::move(config)) {
+  derivedKeys_.reserve(config_.hmacKeys.size());
+  for (const auto& key : config_.hmacKeys) {
+    const std::size_t idx = derivedKeys_.size();
+    derivedKeys_.push_back(DerivedKey{.id = key.id, .key = deriveHmacKey(key.secret)});
+    if (!key.id.empty()) {
+      keyIdIndex_.emplace(key.id, idx);
+    }
+  }
+}
 
 folly::Expected<Grants, AuthError> AuthTokenVerifier::verify(const AuthToken& token) const {
   if (!config_.enabled) {
@@ -290,58 +223,65 @@ folly::Expected<Grants, AuthError> AuthTokenVerifier::verify(const AuthToken& to
   if (token.tokenType != config_.tokenType) {
     return folly::makeUnexpected(AuthError::WrongTokenType);
   }
-  const auto raw = std::string_view(token.tokenValue);
-  if (raw.size() < 1 + 1 + 4 + kHmacSha256Len || static_cast<uint8_t>(raw[0]) != kEnvelopeVersion) {
-    return folly::makeUnexpected(AuthError::Malformed);
-  }
-  const auto keyLen = static_cast<size_t>(static_cast<unsigned char>(raw[1]));
-  if (raw.size() < 1 + 1 + keyLen + 4 + kHmacSha256Len) {
-    return folly::makeUnexpected(AuthError::Malformed);
-  }
-  const auto keyID = raw.substr(2, keyLen);
-  const auto claimsLenOffset = 2 + keyLen;
-  const auto claimsLen = readU32BE(raw, claimsLenOffset);
-  const auto signedLen = claimsLenOffset + 4 + claimsLen;
-  if (raw.size() != signedLen + kHmacSha256Len) {
+  if (token.tokenValue.empty()) {
     return folly::makeUnexpected(AuthError::Malformed);
   }
 
-  const auto key =
-      std::find_if(config_.hmacKeys.begin(), config_.hmacKeys.end(), [&](const auto& k) {
-        return std::string_view(k.id) == keyID;
-      });
-  if (key == config_.hmacKeys.end()) {
-    return folly::makeUnexpected(AuthError::BadSignature);
-  }
-  const auto expected = hmacSha256(key->secret, raw.substr(0, signedLen));
-  if (CRYPTO_memcmp(expected.data(), raw.data() + signedLen, kHmacSha256Len) != 0) {
-    return folly::makeUnexpected(AuthError::BadSignature);
-  }
+  const auto tokenBytes = toBytes(token.tokenValue);
+  const auto span = std::span<const uint8_t>(tokenBytes.data(), tokenBytes.size());
 
-  Grants grants;
-  if (!parseClaims(raw.substr(claimsLenOffset + 4, claimsLen), grants, config_.strictClaims)) {
+  // Peek the COSE protected header to extract kid without any crypto.
+  std::optional<std::string> tokenKid;
+  try {
+    auto header = catapult::Cwt::decodeHeader(span);
+    tokenKid = header.kid;
+  } catch (const catapult::CatError&) {
     return folly::makeUnexpected(AuthError::Malformed);
   }
-  if (grants.expiresAt <= std::chrono::system_clock::now()) {
-    return folly::makeUnexpected(AuthError::Expired);
+
+  auto tryVerify = [&](const DerivedKey& derived) -> folly::Expected<Grants, AuthError> {
+    try {
+      catapult::HmacSha256Algorithm hmac(derived.key);
+      auto cwt = catapult::Cwt::validateCwt(span, hmac);
+      auto grants = grantsFromToken(cwt.payload);
+      if (grants.expiresAt <= std::chrono::system_clock::now()) {
+        return folly::makeUnexpected(AuthError::Expired);
+      }
+      return grants;
+    } catch (const catapult::CryptoError&) {
+      return folly::makeUnexpected(AuthError::BadSignature);
+    } catch (const catapult::CatError&) {
+      return folly::makeUnexpected(AuthError::Malformed);
+    }
+  };
+
+  if (tokenKid.has_value()) {
+    auto it = keyIdIndex_.find(*tokenKid);
+    if (it == keyIdIndex_.end()) {
+      return folly::makeUnexpected(AuthError::BadSignature);
+    }
+    return tryVerify(derivedKeys_[it->second]);
   }
-  return grants;
+
+  // No kid — trial-verify against all configured keys.
+  for (const auto& derived : derivedKeys_) {
+    auto result = tryVerify(derived);
+    if (result.hasValue() || result.error() != AuthError::BadSignature) {
+      return result;
+    }
+  }
+  return folly::makeUnexpected(AuthError::BadSignature);
 }
 
 std::string AuthTokenVerifier::signForTest(
     std::string_view keyID,
     std::string_view secret,
-    std::string_view cborClaims
+    const Grants& grants
 ) {
-  XDCHECK_LE(keyID.size(), 255u);
-  std::string out;
-  out.push_back(static_cast<char>(kEnvelopeVersion));
-  out.push_back(static_cast<char>(keyID.size()));
-  out.append(keyID);
-  appendU32BE(out, static_cast<uint32_t>(cborClaims.size()));
-  out.append(cborClaims);
-  out.append(hmacSha256(secret, out));
-  return out;
+  catapult::HmacSha256Algorithm hmac(deriveHmacKey(secret));
+  catapult::Cwt cwt(catapult::ALG_HMAC256_256, tokenFromGrants(grants));
+  cwt.withKeyId(std::string(keyID));
+  return toString(cwt.createCwt(catapult::CwtMode::MACed, hmac));
 }
 
 std::optional<AuthToken> findAuthToken(const Parameters& params, uint64_t tokenType) {
@@ -374,8 +314,24 @@ bool allowsImpl(
     if (std::find(scope.actions.begin(), scope.actions.end(), action) == scope.actions.end()) {
       continue;
     }
-    if (allRulesMatch(nsBytes, scope.namespaceMatches) &&
-        allRulesMatch(trackBytes, scope.trackMatches)) {
+    auto rulesMatch = [](std::string_view actual, const std::vector<MatchRule>& rules) {
+      return std::all_of(rules.begin(), rules.end(), [&](const auto& rule) {
+        const auto expected = std::string_view(rule.value);
+        switch (rule.type) {
+        case MatchRule::Type::Exact:
+          return actual == expected;
+        case MatchRule::Type::Prefix:
+          return actual.starts_with(expected);
+        case MatchRule::Type::Suffix:
+          return actual.size() >= expected.size() &&
+                 actual.substr(actual.size() - expected.size()) == expected;
+        case MatchRule::Type::Contains:
+          return actual.find(expected) != std::string_view::npos;
+        }
+        return false;
+      });
+    };
+    if (rulesMatch(nsBytes, scope.namespaceMatches) && rulesMatch(trackBytes, scope.trackMatches)) {
       return true;
     }
   }
