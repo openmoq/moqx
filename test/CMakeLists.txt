@@ -255,6 +255,50 @@ target_link_libraries(moqx_track_filter_test PRIVATE
 )
 gtest_discover_tests(moqx_track_filter_test)
 
+# SimpleTopNTracker base unit tests
+add_executable(moqx_simple_topn_tracker_base_test
+  SimpleTopNTrackerBaseTest.cpp
+)
+target_link_libraries(moqx_simple_topn_tracker_base_test PRIVATE
+  moqx_core
+  GTest::gtest_main
+  GTest::gmock
+)
+gtest_discover_tests(moqx_simple_topn_tracker_base_test)
+
+# SimpleTopNTracker lock-free correctness tests
+add_executable(moqx_simple_topn_tracker_lockfree_test
+  SimpleTopNTrackerLockFreeTest.cpp
+)
+target_link_libraries(moqx_simple_topn_tracker_lockfree_test PRIVATE
+  moqx_core
+  GTest::gtest_main
+  GTest::gmock
+)
+gtest_discover_tests(moqx_simple_topn_tracker_lockfree_test)
+
+# SimpleTopNTracker fast rejection optimization tests
+add_executable(moqx_simple_topn_tracker_fast_rejection_test
+  SimpleTopNTrackerFastRejectionTest.cpp
+)
+target_link_libraries(moqx_simple_topn_tracker_fast_rejection_test PRIVATE
+  moqx_core
+  GTest::gtest_main
+  GTest::gmock
+)
+gtest_discover_tests(moqx_simple_topn_tracker_fast_rejection_test)
+
+# TopNRanking comparison tests (behavioral parity between Complex and Simple)
+add_executable(moqx_topn_ranking_comparison_test
+  TopNRankingComparisonTest.cpp
+)
+target_link_libraries(moqx_topn_ranking_comparison_test PRIVATE
+  moqx_core
+  GTest::gtest_main
+  GTest::gmock
+)
+gtest_discover_tests(moqx_topn_ranking_comparison_test)
+
 # TrackFilterLoadTest: requires a live relay process.
 # Run manually: ./track_filter_load_test --relay_url=https://localhost:9668/moq-relay
 # Not registered with gtest_discover_tests — excluded from automated ctest.
@@ -335,3 +379,31 @@ target_compile_options(moqx_cache_test PRIVATE
 )
 
 gtest_discover_tests(moqx_cache_test)
+
+# SimpleTopNTracker load test: unit-level load test for Simple N+X algorithm.
+# Tests lock-free read scalability and self-exclusion at scale without network overhead.
+# Run manually: ./simple_topn_tracker_load_test --load_panelists=100 --load_subscribers=10000
+# Not registered with gtest_discover_tests — excluded from automated ctest.
+add_executable(simple_topn_tracker_load_test
+  SimpleTopNTrackerLoadTest.cpp
+)
+target_link_libraries(simple_topn_tracker_load_test PRIVATE
+  moqx_core
+  Folly::folly_init_init
+  GTest::gtest
+  GTest::gmock
+)
+
+# SimpleTopNTracker performance test: multi-round webinar simulation with
+# speech patterns, CPU/memory profiling, and TOPN_EVENT log output for visualization.
+# Run manually: ./simple_topn_tracker_perf_test --perf_panelists=50 --perf_subscribers=500
+# Not registered with gtest_discover_tests — excluded from automated ctest.
+add_executable(simple_topn_tracker_perf_test
+  SimpleTopNTrackerPerfTest.cpp
+)
+target_link_libraries(simple_topn_tracker_perf_test PRIVATE
+  moqx_core
+  Folly::folly_init_init
+  GTest::gtest
+  GTest::gmock
+)
