@@ -6,7 +6,7 @@
 
 #pragma once
 
-#include "relay/PropertyRanking.h"
+#include "relay/TopNRankingFactory.h"
 #include <folly/Expected.h>
 #include <folly/Unit.h>
 #include <folly/container/F14Map.h>
@@ -102,7 +102,7 @@ public:
     folly::F14FastMap<std::shared_ptr<moxygen::MoQSession>, NamespaceSubscriberInfo> subscribers_;
     folly::F14FastMap<std::string, std::shared_ptr<NamespaceNode>> children_;
     std::shared_ptr<moxygen::Subscriber::PublishNamespaceCallback> publishNamespaceCallback_;
-    folly::F14FastMap<uint64_t, std::shared_ptr<PropertyRanking>> rankings_;
+    folly::F14FastMap<uint64_t, std::shared_ptr<ITopNRanking>> rankings_;
     // Per-subscriber handles for draft<=14 (one per publishNamespace() call), keyed by session.
     folly::F14FastMap<
         std::shared_ptr<moxygen::MoQSession>,
@@ -168,10 +168,10 @@ public:
     std::shared_ptr<NamespaceNode> node;
     SessionSubscriberList subscribers;
   };
-  using OnRankingFn = std::function<void(uint64_t, const std::shared_ptr<PropertyRanking>&)>;
+  using OnRankingFn = std::function<void(uint64_t, const std::shared_ptr<ITopNRanking>&)>;
 
   // Records ftn.trackName→session, collects prefix+exact subscribers, and
-  // calls onRanking for every non-null PropertyRanking at the node and ancestors.
+  // calls onRanking for every non-null ITopNRanking at the node and ancestors.
   AddPublishResult addPublish(
       const moxygen::FullTrackName& ftn,
       std::shared_ptr<moxygen::MoQSession> session,
@@ -191,8 +191,8 @@ public:
       const std::shared_ptr<moxygen::MoQSession>& session
   );
 
-  // Returns the PropertyRanking slot for propertyType at node, inserting null if absent.
-  std::shared_ptr<PropertyRanking>& getOrInsertRanking(NamespaceNode& node, uint64_t propertyType);
+  // Returns the ITopNRanking slot for propertyType at node, inserting null if absent.
+  std::shared_ptr<ITopNRanking>& getOrInsertRanking(NamespaceNode& node, uint64_t propertyType);
 
   // DFS walk. begin(childKey, node) is called on entry; end() on exit after
   // all children. childKey is empty for the root.

@@ -14,6 +14,9 @@
 #include "UpstreamProvider.h"
 #include "config/Config.h"
 #include "relay/PropertyRanking.h"
+#include "relay/TopNFilter.h"
+#include "relay/TopNRankingFactory.h"
+#include <folly/coro/SharedPromise.h>
 #include <moxygen/MoQSession.h>
 #include <moxygen/relay/MoQForwarder.h>
 
@@ -97,15 +100,23 @@ public:
   // a non-zero value without those callbacks is just topN+N with no benefit.
   static constexpr uint64_t kDefaultMaxDeselected = 0;
 
+  // Default subscriber count threshold for push-based notifications in Simple mode.
+  // When subscriber count exceeds this, Simple mode uses push-based notifications
+  // for efficiency (Failure Mode 4 remedy from design doc).
+  static constexpr size_t kDefaultPushThresholdSubscriberCount = 1000;
+
   explicit MoqxRelay(
       config::CacheConfig cache = {},
       std::string relayID = {},
       uint64_t maxDeselected = kDefaultMaxDeselected,
       std::chrono::milliseconds idleTimeout = kDefaultIdleTimeout,
-      std::chrono::milliseconds activityThreshold = kDefaultActivityThreshold
+      std::chrono::milliseconds activityThreshold = kDefaultActivityThreshold,
+      TopNRankingMode rankingMode = TopNRankingMode::Simple,
+      size_t pushThresholdSubscriberCount = kDefaultPushThresholdSubscriberCount
   )
       : relayID_(std::move(relayID)), maxDeselected_(maxDeselected), idleTimeout_(idleTimeout),
-        activityThreshold_(activityThreshold) {
+        activityThreshold_(activityThreshold), rankingMode_(rankingMode),
+        pushThresholdSubscriberCount_(pushThresholdSubscriberCount) {
     if (cache.maxCachedTracks > 0) {
       cache_ = std::make_unique<MoqxCache>(cache.maxCachedTracks, cache.maxCachedGroupsPerTrack);
       cache_->setMaxCachedBytes(static_cast<size_t>(cache.maxCachedMb) * 1024 * 1024);
@@ -277,23 +288,24 @@ private:
       std::shared_ptr<moxygen::MoQForwarder> forwarder
   );
 
-  // Get or create PropertyRanking for the given property type on a namespace node.
+  // Get or create ranking for the given property type on a namespace node.
+  // Uses TopNRankingFactory with configured rankingMode_ (Simple N+X or Complex/Waterline).
   // Retroactively registers any tracks already published under that node.
   // ns must be the full namespace of `node` (used as BFS seed for track registration).
-  std::shared_ptr<PropertyRanking> getOrCreateRanking(
+  std::shared_ptr<ITopNRanking> getOrCreateRanking(
       std::shared_ptr<NamespaceTree::NamespaceNode> node,
       uint64_t propertyType,
       const moxygen::TrackNamespace& ns
   );
 
-  // Called by PropertyRanking when a track enters a session's top-N selection.
+  // Called by ranking when a track enters a session's top-N selection.
   void onTrackSelected(
       const moxygen::FullTrackName& ftn,
       std::shared_ptr<moxygen::MoQSession> session,
       bool forward
   );
 
-  // Called by PropertyRanking when a track is evicted from a session's deselected queue.
+  // Called by ranking when a track is evicted from a session's selection.
   void
   onTrackEvicted(const moxygen::FullTrackName& ftn, std::shared_ptr<moxygen::MoQSession> session);
 
@@ -326,6 +338,14 @@ private:
   static constexpr std::chrono::milliseconds kDefaultActivityThreshold{2'000};
   std::chrono::milliseconds idleTimeout_{kDefaultIdleTimeout};
   std::chrono::milliseconds activityThreshold_{kDefaultActivityThreshold};
+
+  // Top-N ranking algorithm selection: Simple (N+X) for lock-free scalability,
+  // Complex (Waterline) for O(1) queries with push-based notifications.
+  TopNRankingMode rankingMode_{TopNRankingMode::Simple};
+
+  // Subscriber count threshold for push-based notifications in Simple mode.
+  // When exceeded, Simple mode uses push notifications for efficiency.
+  size_t pushThresholdSubscriberCount_{kDefaultPushThresholdSubscriberCount};
 };
 
 // Creates a NamespacePublishHandle that bridges NAMESPACE/NAMESPACE_DONE

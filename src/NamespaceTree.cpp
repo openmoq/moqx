@@ -193,7 +193,7 @@ NamespaceTree::AddPublishResult NamespaceTree::addPublish(
   return result;
 }
 
-std::shared_ptr<PropertyRanking>&
+std::shared_ptr<ITopNRanking>&
 NamespaceTree::getOrInsertRanking(NamespaceNode& node, uint64_t propertyType) {
   return node.rankings_[propertyType];
 }

@@ -328,12 +328,12 @@ MoqxRelay::publish(PublishRequest pub, std::shared_ptr<Publisher::SubscriptionHa
   auto topNFilter = registry_.getTopNView(pub.fullTrackName)->topNFilter;
 
   // Register in the namespace tree. The ranking callback fires once per
-  // PropertyRanking on the path from this node to the root — registering the
+  // ITopNRanking on the path from this node to the root — registering the
   // track and wiring observers so TRACK_FILTER subscribers see it.
   auto [nodePtr, sessions] = namespaceTree_.addPublish(
       pub.fullTrackName,
       session,
-      [&](uint64_t propertyType, const std::shared_ptr<PropertyRanking>& ranking) {
+      [&](uint64_t propertyType, const std::shared_ptr<ITopNRanking>& ranking) {
         auto initialPropertyValue = pub.extensions.getIntExtension(propertyType);
         ranking->registerTrack(pub.fullTrackName, initialPropertyValue, session);
         topNFilter->registerObserver(
@@ -342,7 +342,7 @@ MoqxRelay::publish(PublishRequest pub, std::shared_ptr<Publisher::SubscriptionHa
                 .onValueChanged = [ranking, ftn = pub.fullTrackName](uint64_t value
                                   ) { ranking->updateSortValue(ftn, value); },
                 .onTrackEnded = [ranking, ftn = pub.fullTrackName]() { ranking->removeTrack(ftn); },
-                .onActivity = [ranking]() { ranking->sweepIdle(); }
+                .onActivity = [ranking]() { ranking->flush(); ranking->sweepIdle(); }
             }
         );
       }
@@ -352,7 +352,7 @@ MoqxRelay::publish(PublishRequest pub, std::shared_ptr<Publisher::SubscriptionHa
   bool hasTrackFilterSub = false;
   for (auto& [outSession, info] : sessions) {
     if (info.trackFilter) {
-      // TRACK_FILTER subscribers: PropertyRanking handles selection via
+      // TRACK_FILTER subscribers: ranking handles selection via
       // onTrackSelected; don't publish directly here.
       hasTrackFilterSub = true;
       continue;
@@ -367,7 +367,7 @@ MoqxRelay::publish(PublishRequest pub, std::shared_ptr<Publisher::SubscriptionHa
   forwarder->setCallback(shared_from_this());
 
   // Forward if there are direct subscribers OR TRACK_FILTER subscribers
-  // (PropertyRanking needs objects to evaluate property values for ranking).
+  // (ranking needs objects to evaluate property values for ranking).
   // When subscribers join later via subscribeNamespace, forwardChanged() sends REQUEST_UPDATE.
   bool shouldForward = (nSubscribers > 0) || hasTrackFilterSub;
 
@@ -400,7 +400,7 @@ folly::coro::Task<void> MoqxRelay::publishToSession(
     XLOG(ERR) << "Subscribe failed: addSubscriber returned null for " << forwarder->fullTrackName();
     co_return;
   }
-  // Direct subscribers are pinned (not evictable by PropertyRanking).
+  // Direct subscribers are pinned (not evictable by ranking).
   // TRACK_FILTER subscribers are unpinned so onTrackEvicted can remove them.
   subscriber->pinned = !trackFilterSubscriber;
   XLOG(DBG4) << "added subscriber for ftn=" << forwarder->fullTrackName();
@@ -591,7 +591,7 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
       }
   );
 
-  // If TRACK_FILTER is present, enroll session in PropertyRanking for top-N selection.
+  // If TRACK_FILTER is present, enroll session in ranking for top-N selection.
   // NOTE: onSelected callbacks fire synchronously within addSessionToTopNGroup() for
   // tracks already in top-N, triggering publishToSession() before this call returns.
   if (trackFilter) {
@@ -638,9 +638,17 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
           auto maybeNegotiatedVersion = session->getNegotiatedVersion();
           CHECK(maybeNegotiatedVersion.has_value());
 
-          // TRACK_FILTER subscribers: PropertyRanking drives selection via
-          // onTrackSelected; skip direct publish here.
+          // TRACK_FILTER subscribers: ranking drives selection via
+          // onTrackSelected; skip direct publish here. But ensure publishers
+          // are forwarding so the TopNFilter can observe property values.
           if (trackFilter) {
+            if (forwarder->numForwardingSubscribers() == 0) {
+              auto upstreamView = registry_.getUpstreamView(ftn);
+              if (upstreamView && upstreamView->handle && upstreamView->isReady) {
+                auto pubExec = upstreamView->upstream->getExecutor();
+                co_withExecutor(pubExec, doSubscribeUpdate(upstreamView->handle, true)).start();
+              }
+            }
             return;
           }
 
@@ -968,7 +976,13 @@ void MoqxRelay::onEmpty(MoQForwarder* forwarder) {
   // Handle exists - just last subscriber left
   XLOG(INFO) << "Last subscriber removed for " << ftn;
   if (upstreamView->isPublish) {
-    // if it's publish, don't unsubscribe, just subscribeUpdate forward=false
+    // TRACK_FILTER tracks: keep forward=true so the relay can still observe
+    // property values for ranking even when no downstream subscriber wants them.
+    auto topNView = registry_.getTopNView(ftn);
+    if (topNView && topNView->topNFilter) {
+      XLOG(DBG4) << "Keeping forward=true for TRACK_FILTER track " << ftn;
+      return;
+    }
     XLOG(DBG1) << "Updating upstream subscription forward=false";
     auto exec = upstreamView->upstream->getExecutor();
     co_withExecutor(exec, doSubscribeUpdate(upstreamView->handle, /*forward=*/false)).start();
@@ -994,6 +1008,17 @@ void MoqxRelay::forwardChanged(MoQForwarder* forwarder, bool forward) {
     XLOG(DBG4) << "Ignoring forward change for " << ftn << " - publisher terminated";
     return;
   }
+
+  // TRACK_FILTER tracks must always forward so the relay can observe property
+  // values and rank publishers that aren't currently in anyone's top-N.
+  if (!forward) {
+    auto topNView = registry_.getTopNView(ftn);
+    if (topNView && topNView->topNFilter) {
+      XLOG(DBG4) << "Keeping forward=true for TRACK_FILTER track " << ftn;
+      return;
+    }
+  }
+
   XLOG(INFO) << "Updating forward for " << ftn << " forward=" << forward;
 
   auto exec = upstreamView->upstream->getExecutor();
@@ -1017,14 +1042,18 @@ void MoqxRelay::newGroupRequested(MoQForwarder* forwarder, uint64_t group) {
 
 // TRACK_FILTER support
 
-std::shared_ptr<PropertyRanking> MoqxRelay::getOrCreateRanking(
+std::shared_ptr<ITopNRanking> MoqxRelay::getOrCreateRanking(
     std::shared_ptr<NamespaceTree::NamespaceNode> node,
     uint64_t propertyType,
     const TrackNamespace& ns
 ) {
   auto& ranking = namespaceTree_.getOrInsertRanking(*node, propertyType);
   if (!ranking) {
-    ranking = std::make_shared<PropertyRanking>(
+    // Use TopNRankingFactory to create the appropriate ranking implementation
+    // based on the configured rankingMode_. Simple (N+X) provides lock-free
+    // scalability; Complex (Waterline) provides O(1) queries with push notifications.
+    ranking = TopNRankingFactory::create(
+        rankingMode_,
         propertyType,
         maxDeselected_,
         idleTimeout_,
@@ -1052,6 +1081,12 @@ std::shared_ptr<PropertyRanking> MoqxRelay::getOrCreateRanking(
           onTrackEvicted(ftn, session);
         }
     );
+
+    // Enable flush coalescing: batch value updates within a 50ms window into
+    // a single snapshot rebuild. At 10Hz (100ms ticks) with 90 panelists,
+    // this coalesces an entire tick's updates into 1-2 rebuilds.
+    // Latency trade-off: selection updates are delayed by up to 50ms.
+    ranking->setFlushInterval(std::chrono::milliseconds(50));
 
     // Retroactively register tracks already published under this node and all
     // descendants. A subscriber at /conf should see tracks at /conf/room1/track1.
@@ -1091,7 +1126,7 @@ std::shared_ptr<PropertyRanking> MoqxRelay::getOrCreateRanking(
                         .onValueChanged = [rankingPtr, ftn](uint64_t value
                                           ) { rankingPtr->updateSortValue(ftn, value); },
                         .onTrackEnded = [rankingPtr, ftn]() { rankingPtr->removeTrack(ftn); },
-                        .onActivity = [rankingPtr]() { rankingPtr->sweepIdle(); }
+                        .onActivity = [rankingPtr]() { rankingPtr->flush(); rankingPtr->sweepIdle(); }
                     }
                 );
               }

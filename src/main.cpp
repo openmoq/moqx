@@ -13,6 +13,7 @@
 #include "admin/StateHandler.h"
 #include "bpf/QuicReuseportSteering.h"
 #include "config/loader/ConfigInit.h"
+#include "relay/TopNEventLog.h"
 #include "stats/StatsRegistry.h"
 
 #include <csignal>
@@ -31,6 +32,10 @@
 
 DEFINE_string(config, "", "Path to config file (required)");
 DEFINE_bool(strict_config, false, "Reject unknown config fields");
+DEFINE_string(
+    topn_event_log,
+    "",
+    "Path to TOPN_EVENT log file for visualization (empty = disabled)");
 
 using namespace openmoq::moqx;
 
@@ -66,6 +71,8 @@ int main(int argc, char* argv[]) {
       cfg::configSubcommandUsage() + "\nUsage: moqx [subcommand] --config <path>"
   );
   folly::Init init(&argc, &argv, true);
+
+  TopNEventLog::instance().init(FLAGS_topn_event_log);
 
   std::string_view subcommand = kServeCommand;
   if (argc > 1) {
@@ -180,6 +187,8 @@ int main(int argc, char* argv[]) {
   // === 13. Clean up resources ===
   // Stop admin last — allows a final metrics scrape during drain.
   adminServer.stop();
+
+  TopNEventLog::instance().shutdown();
 
   // Stop servers before joining the IO pool — stop() needs worker EVBs alive,
   // and lingering shared_ptr refs could delay ~MoqxRelayServer past that point.

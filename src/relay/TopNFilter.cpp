@@ -17,8 +17,8 @@ TopNFilter::TopNFilter(
     : TrackConsumerFilter(downstream), ftn_(std::move(ftn)), downstream_(std::move(downstream)) {}
 
 void TopNFilter::registerObserver(uint64_t propertyType, PropertyObserver observer) {
-  XLOG(DBG4) << "[TopNFilter] Registering observer for propertyType=0x" << std::hex << propertyType
-             << std::dec << " on track " << ftn_;
+  XLOG(DBG4) << "[TopNFilter] registerObserver propertyType=0x" << std::hex << propertyType
+             << std::dec << " track=" << ftn_;
   observers_[propertyType] = ObserverEntry{
       .lastSeenValue = std::nullopt,
       .observer = std::move(observer),
@@ -38,7 +38,6 @@ void TopNFilter::setActivityThreshold(std::chrono::milliseconds threshold) {
 }
 
 void TopNFilter::checkProperties(const moxygen::Extensions& extensions) {
-  // FAST PATH: No observers — nothing to do
   if (observers_.empty()) {
     return;
   }
@@ -57,7 +56,6 @@ void TopNFilter::checkProperties(const moxygen::Extensions& extensions) {
     if (!valueOpt) {
       continue;
     }
-
     // Property matched — update activity timestamp
     if (activityTarget_) {
       *activityTarget_ = now;
@@ -104,18 +102,18 @@ TopNFilter::beginSubgroup(
     moxygen::Priority priority,
     bool containsLastInGroup
 ) {
-  // Handle objects arriving after publishDone - this can happen due to
-  // out-of-order delivery. We still forward them but log a warning.
   if (ended_) {
     XLOG(WARN) << "[TopNFilter] beginSubgroup received after publishDone on " << ftn_;
   }
 
   auto result = downstream_->beginSubgroup(groupID, subgroupID, priority, containsLastInGroup);
   if (!result) {
+    if (result.error().code == moxygen::MoQPublishError::CANCELLED) {
+      return std::make_shared<TopNSubgroupConsumer>(shared_from_this(), nullptr);
+    }
     return result;
   }
 
-  // Wrap the downstream SubgroupConsumer with our filter
   return std::make_shared<TopNSubgroupConsumer>(shared_from_this(), std::move(result.value()));
 }
 
@@ -160,7 +158,9 @@ TopNSubgroupConsumer::TopNSubgroupConsumer(
     std::shared_ptr<TopNFilter> filter,
     std::shared_ptr<moxygen::SubgroupConsumer> downstream
 )
-    : SubgroupConsumerFilter(std::move(downstream)), filter_(std::move(filter)) {}
+    : SubgroupConsumerFilter(downstream),
+      filter_(std::move(filter)),
+      hasDownstream_(downstream != nullptr) {}
 
 folly::Expected<folly::Unit, moxygen::MoQPublishError> TopNSubgroupConsumer::object(
     uint64_t objectID,
@@ -168,8 +168,10 @@ folly::Expected<folly::Unit, moxygen::MoQPublishError> TopNSubgroupConsumer::obj
     moxygen::Extensions extensions,
     bool finSubgroup
 ) {
-  // Check properties before forwarding
   filter_->checkProperties(extensions);
+  if (!hasDownstream()) {
+    return folly::unit;
+  }
   return SubgroupConsumerFilter::object(
       objectID,
       std::move(payload),
@@ -184,14 +186,44 @@ folly::Expected<folly::Unit, moxygen::MoQPublishError> TopNSubgroupConsumer::beg
     moxygen::Payload initialPayload,
     moxygen::Extensions extensions
 ) {
-  // Check properties before forwarding
   filter_->checkProperties(extensions);
+  if (!hasDownstream()) {
+    return folly::unit;
+  }
   return SubgroupConsumerFilter::beginObject(
       objectID,
       length,
       std::move(initialPayload),
       std::move(extensions)
   );
+}
+
+folly::Expected<folly::Unit, moxygen::MoQPublishError>
+TopNSubgroupConsumer::endOfSubgroup() {
+  if (!hasDownstream()) {
+    return folly::unit;
+  }
+  return SubgroupConsumerFilter::endOfSubgroup();
+}
+
+void TopNSubgroupConsumer::reset(moxygen::ResetStreamErrorCode error) {
+  if (hasDownstream()) {
+    SubgroupConsumerFilter::reset(error);
+  }
+}
+
+void TopNSubgroupConsumer::checkpoint() {
+  if (hasDownstream()) {
+    SubgroupConsumerFilter::checkpoint();
+  }
+}
+
+folly::Expected<moxygen::ObjectPublishStatus, moxygen::MoQPublishError>
+TopNSubgroupConsumer::objectPayload(moxygen::Payload payload, bool finSubgroup) {
+  if (!hasDownstream()) {
+    return moxygen::ObjectPublishStatus::DONE;
+  }
+  return SubgroupConsumerFilter::objectPayload(std::move(payload), finSubgroup);
 }
 
 } // namespace openmoq::moqx

@@ -165,8 +165,17 @@ public:
       moxygen::Extensions extensions = moxygen::noExtensions()
   ) override;
 
+  folly::Expected<folly::Unit, moxygen::MoQPublishError> endOfSubgroup() override;
+  void reset(moxygen::ResetStreamErrorCode error) override;
+  void checkpoint() override;
+  folly::Expected<moxygen::ObjectPublishStatus, moxygen::MoQPublishError>
+  objectPayload(moxygen::Payload payload, bool finSubgroup = false) override;
+
+  bool hasDownstream() const { return hasDownstream_; }
+
 private:
   std::shared_ptr<TopNFilter> filter_;
+  bool hasDownstream_;
 };
 
 } // namespace openmoq::moqx
