@@ -11,7 +11,7 @@
 namespace moxygen::test {
 
 // Test: TrackStatus on non-existent track
-TEST_F(MoQRelayTest, TrackStatusNonExistentTrack) {
+TEST_P(MoQRelayTest, TrackStatusNonExistentTrack) {
   auto clientSession = createMockSession();
 
   // Request trackStatus for a track that doesn't exist
@@ -34,7 +34,7 @@ TEST_F(MoQRelayTest, TrackStatusNonExistentTrack) {
 
 // Test: TrackStatus on existing track - returns forwarder state (no upstream
 // call)
-TEST_F(MoQRelayTest, TrackStatusSuccessfulForward) {
+TEST_P(MoQRelayTest, TrackStatusSuccessfulForward) {
   auto publisherSession = createMockSession();
   auto clientSession = createMockSession();
 
@@ -67,7 +67,7 @@ TEST_F(MoQRelayTest, TrackStatusSuccessfulForward) {
 // Verifies that when there's no exact subscription but a publisher has
 // published a matching namespace prefix, the relay correctly routes
 // TRACK_STATUS upstream using prefix matching
-TEST_F(MoQRelayTest, TrackStatusViaPrefixMatching) {
+TEST_P(MoQRelayTest, TrackStatusViaPrefixMatching) {
   auto publisher = createMockSession();
   auto requester = createMockSession();
 

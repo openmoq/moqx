@@ -14,7 +14,7 @@ namespace moxygen::test {
 // terminated (onPublishDone clears handle/upstream). We trigger forwardChanged
 // via Subscriber::requestUpdate changing forward from true→false (1→0
 // transition). The subscriber survives drain because it has an open subgroup.
-TEST_F(MoQRelayTest, ForwardChangedAfterPublisherTermination) {
+TEST_P(MoQRelayTest, ForwardChangedAfterPublisherTermination) {
   auto publisherSession = createMockSession();
   auto subSession = createMockSession();
 
@@ -68,7 +68,7 @@ TEST_F(MoQRelayTest, ForwardChangedAfterPublisherTermination) {
 // twice — once via forwardChanged() (which fires synchronously inside addSubscriber
 // via addForwardingSubscriber) and once via the explicit block at the end of the
 // subscribe() else-branch. Analogous to the subscribeNamespace bug fixed in this PR.
-TEST_F(MoQRelayTest, Subscribe_SecondForwardingSubscriber_SingleRequestUpdate) {
+TEST_P(MoQRelayTest, Subscribe_SecondForwardingSubscriber_SingleRequestUpdate) {
   auto pubSession = createMockSession();
   doPublishNamespace(pubSession, kTestNamespace);
   auto mockHandle = makePublishHandle();

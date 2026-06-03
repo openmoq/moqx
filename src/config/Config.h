@@ -128,6 +128,10 @@ struct MvfstConfig {
     float ceTarget{0.0f}; // 0 = disabled
   };
 
+  // UDP socket send/receive buffer size in bytes. 0 = use MoQServer default (1 MB).
+  // Increase when high fan-out causes EAGAIN bursts under load.
+  uint64_t udpSocketBufferBytes{0};
+
   BBR bbr;
   BBR2 bbr2;
   Cubic cubic;

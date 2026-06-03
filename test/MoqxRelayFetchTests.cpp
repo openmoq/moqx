@@ -14,7 +14,7 @@ namespace moxygen::test {
 // crash. When findPublishNamespaceSession returns null (no publishNamespace),
 // fetch falls back to subscriptions_. After onPublishDone, upstream is null
 // but the subscription entry remains if the forwarder has subscribers.
-TEST_F(MoQRelayTest, FetchAfterPublisherTermination) {
+TEST_P(MoQRelayTest, FetchAfterPublisherTermination) {
   auto publisherSession = createMockSession();
   auto subSession = createMockSession();
   auto fetchSession = createMockSession();
