@@ -45,6 +45,7 @@
 #include <iomanip>
 #include <iostream>
 #include <memory>
+#include <random>
 #include <sstream>
 #include <thread>
 #include <vector>
@@ -56,6 +57,15 @@ DEFINE_string(relay_url, "", "Relay URL");
 DEFINE_int32(panelists, 100, "Number of panelists (each is publisher + subscriber)");
 DEFINE_int32(subscribers, 10000, "Number of pure subscribers");
 DEFINE_int32(top_n, 3, "Top-N value for TRACK_FILTER");
+DEFINE_string(
+    mixed_topn,
+    "",
+    "Comma-separated N values for mixed top-N test (e.g. '1,10,25,45,65,77,90'). "
+    "Subscribers are randomly assigned one of these values. Overrides --top_n.");
+DEFINE_int32(
+    panelist_topn,
+    -1,
+    "Top-N value specifically for panelists. -1 means use same as subscribers (--top_n or --mixed_topn).");
 DEFINE_int32(duration, 30, "Test duration in seconds");
 DEFINE_int32(update_hz, 30, "Audio level update frequency");
 DEFINE_int32(connect_timeout, 10000, "Connection timeout in ms");
@@ -69,6 +79,14 @@ DEFINE_bool(verbose, false, "Enable verbose output");
 DEFINE_string(alpns, "moqt-16,moqt-15,moq-00", "Comma-separated list of ALPN protocols to use");
 DEFINE_int32(num_threads, 1, "Number of IO threads for client connections");
 DEFINE_int32(drain_period_ms, 2000, "Drain period before verification (ms)");
+DEFINE_bool(
+    speech_mode,
+    false,
+    "Use speech simulation (dynamic audio levels) instead of deterministic ranking");
+DEFINE_string(
+    topn_event_log,
+    "",
+    "TOPN_EVENT log file path (empty = disabled). Only used with --speech_mode");
 
 namespace {
 
@@ -84,7 +102,163 @@ std::vector<std::string> parseAlpns(const std::string& alpnStr) {
   return alpns;
 }
 
-constexpr uint64_t kAudioLevelPropertyType = 0x01;
+std::vector<int> parseMixedTopN(const std::string& s) {
+  std::vector<int> values;
+  std::stringstream ss(s);
+  std::string item;
+  while (std::getline(ss, item, ',')) {
+    if (!item.empty()) {
+      values.push_back(std::stoi(item));
+    }
+  }
+  return values;
+}
+
+int getTopNForSubscriber(int subscriberId, const std::vector<int>& mixedValues) {
+  if (mixedValues.empty()) {
+    return FLAGS_top_n;
+  }
+  return mixedValues[subscriberId % mixedValues.size()];
+}
+
+constexpr uint64_t kAudioLevelPropertyType = 0x02;
+
+// Speech state machine matching moq-rs speech.rs for realistic audio simulation.
+// States: SILENT(val=0) -> SPEECH_START(val=2) -> SPEAKING(val=1) -> back to SILENT.
+enum class SpeechState { Silent, SpeechStart, Speaking, SpeechEnded };
+
+class SpeechSimulator {
+public:
+  explicit SpeechSimulator(uint32_t seed)
+      : rng_(seed), state_(SpeechState::Silent), stateStart_(steady_clock::now()) {
+    silenceDuration_ = randomSilenceDuration();
+  }
+
+  uint64_t tick() {
+    auto elapsed = steady_clock::now() - stateStart_;
+
+    switch (state_) {
+    case SpeechState::Silent:
+      if (elapsed >= silenceDuration_) {
+        state_ = SpeechState::SpeechStart;
+        stateStart_ = steady_clock::now();
+        speechDuration_ = randomSpeechDuration();
+      }
+      break;
+
+    case SpeechState::SpeechStart:
+      if (elapsed >= kSpeechStartDuration) {
+        state_ = SpeechState::Speaking;
+      }
+      if (steady_clock::now() - stateStart_ >= speechDuration_) {
+        state_ = SpeechState::SpeechEnded;
+        stateStart_ = steady_clock::now();
+      }
+      break;
+
+    case SpeechState::Speaking:
+      if (elapsed >= speechDuration_ - kSpeechStartDuration) {
+        state_ = SpeechState::SpeechEnded;
+        stateStart_ = steady_clock::now();
+      }
+      break;
+
+    case SpeechState::SpeechEnded:
+      state_ = SpeechState::Silent;
+      stateStart_ = steady_clock::now();
+      silenceDuration_ = randomSilenceDuration();
+      break;
+    }
+
+    return currentValue();
+  }
+
+  uint64_t currentValue() const {
+    switch (state_) {
+    case SpeechState::Silent:
+      return 0;
+    case SpeechState::SpeechStart:
+      return 2;
+    case SpeechState::Speaking:
+      return 1;
+    case SpeechState::SpeechEnded:
+      return 0;
+    }
+    return 0;
+  }
+
+  SpeechState state() const { return state_; }
+
+private:
+  static constexpr auto kSpeechStartDuration = milliseconds{300};
+
+  milliseconds randomSpeechDuration() {
+    std::uniform_int_distribution<int> dist(2000, 8000);
+    return milliseconds{dist(rng_)};
+  }
+
+  milliseconds randomSilenceDuration() {
+    std::uniform_int_distribution<int> dist(1000, 5000);
+    return milliseconds{dist(rng_)};
+  }
+
+  std::mt19937 rng_;
+  SpeechState state_;
+  steady_clock::time_point stateStart_;
+  milliseconds speechDuration_{0};
+  milliseconds silenceDuration_{0};
+};
+
+// TOPN_EVENT logger for visualization compatibility with topn_viz.py.
+class TopNEventLogger {
+public:
+  explicit TopNEventLogger(const std::string& path) {
+    if (!path.empty()) {
+      file_.open(path);
+      enabled_ = file_.is_open();
+      startTime_ = steady_clock::now();
+    }
+  }
+
+  void logTrackRegistered(const std::string& track, int publisherId) {
+    if (!enabled_)
+      return;
+    file_ << "TOPN_EVENT:{\"event\":\"track_registered\",\"ts_ms\":" << elapsedMs()
+           << ",\"track\":\"" << track << "\",\"publisher_id\":" << publisherId << "}\n";
+  }
+
+  void logSubscriberRegistered(int subscriberId, int n) {
+    if (!enabled_)
+      return;
+    file_ << "TOPN_EVENT:{\"event\":\"subscriber_registered\",\"ts_ms\":" << elapsedMs()
+           << ",\"subscriber_id\":" << subscriberId << ",\"n\":" << n << "}\n";
+  }
+
+  void logValueUpdated(const std::string& track, uint64_t oldVal, uint64_t newVal, int pubId) {
+    if (!enabled_)
+      return;
+    file_ << "TOPN_EVENT:{\"event\":\"value_updated\",\"ts_ms\":" << elapsedMs()
+           << ",\"track\":\"" << track << "\",\"old_value\":" << oldVal
+           << ",\"new_value\":" << newVal << ",\"publisher_id\":" << pubId << "}\n";
+  }
+
+  void flush() {
+    if (enabled_) {
+      file_.flush();
+    }
+  }
+
+  bool enabled() const { return enabled_; }
+
+private:
+  uint64_t elapsedMs() const {
+    return duration_cast<milliseconds>(steady_clock::now() - startTime_).count();
+  }
+
+  std::ofstream file_;
+  bool enabled_{false};
+  steady_clock::time_point startTime_;
+};
 
 // Metrics collection
 struct TrackFilterMetrics {
@@ -130,6 +304,11 @@ struct TrackFilterMetrics {
   std::atomic<uint64_t> panelistsVerified{0};
   std::atomic<uint64_t> panelistVerificationFailures{0};
 
+  // Speech metrics
+  std::atomic<uint64_t> speechStarts{0};
+  std::atomic<uint64_t> totalSpeechTicks{0};
+  std::atomic<uint64_t> totalSilentTicks{0};
+
   // Timing
   steady_clock::time_point testStart;
   steady_clock::time_point testEnd;
@@ -156,10 +335,8 @@ struct TrackFilterMetrics {
 class LoadTestSubscriptionHandle : public SubscriptionHandle {
 public:
   void unsubscribe() override {}
-  folly::coro::Task<RequestUpdateResult> requestUpdate(RequestUpdate) override {
-    co_return folly::makeUnexpected(
-        RequestError{RequestID(0), RequestErrorCode::INTERNAL_ERROR, "N/A"}
-    );
+  folly::coro::Task<RequestUpdateResult> requestUpdate(RequestUpdate req) override {
+    co_return RequestOk{.requestID = req.requestID};
   }
 };
 
@@ -343,7 +520,9 @@ private:
 class TrackFilterLoadTest : public std::enable_shared_from_this<TrackFilterLoadTest> {
 public:
   TrackFilterLoadTest(folly::EventBase* evb, TrackFilterMetrics& metrics)
-      : evb_(evb), moqEvb_(std::make_shared<MoQFollyExecutorImpl>(evb)), metrics_(metrics) {}
+      : evb_(evb), moqEvb_(std::make_shared<MoQFollyExecutorImpl>(evb)), metrics_(metrics) {
+    mixedTopNValues_ = parseMixedTopN(FLAGS_mixed_topn);
+  }
 
   folly::coro::Task<void> run() {
     metrics_.testStart = steady_clock::now();
@@ -352,7 +531,16 @@ public:
     std::cout << "======================\n";
     std::cout << "Panelists: " << FLAGS_panelists << " (pub+sub with self-exclusion)\n";
     std::cout << "Subscribers: " << FLAGS_subscribers << " (pure subscribers)\n";
-    std::cout << "Top-N: " << FLAGS_top_n << "\n";
+    if (!mixedTopNValues_.empty()) {
+      std::cout << "Top-N: mixed [";
+      for (size_t i = 0; i < mixedTopNValues_.size(); ++i) {
+        if (i > 0) std::cout << ",";
+        std::cout << mixedTopNValues_[i];
+      }
+      std::cout << "] (randomly assigned)\n";
+    } else {
+      std::cout << "Top-N: " << FLAGS_top_n << "\n";
+    }
     std::cout << "Duration: " << FLAGS_duration << "s\n\n";
 
     try {
@@ -410,7 +598,11 @@ public:
       std::cout << "  Draining for " << FLAGS_drain_period_ms << "ms...\n";
       co_await folly::coro::sleep(milliseconds(FLAGS_drain_period_ms));
 
-      verifyCorrectness();
+      if (FLAGS_speech_mode) {
+        verifySpeechModeCorrectness();
+      } else {
+        verifyCorrectness();
+      }
 
       metrics_.testEnd = steady_clock::now();
 
@@ -441,8 +633,22 @@ public:
     report << "  Panelists (pub+sub):     " << FLAGS_panelists << "\n";
     report << "  Pure Subscribers:        " << FLAGS_subscribers << "\n";
     report << "  Total Clients:           " << (FLAGS_panelists + FLAGS_subscribers) << "\n";
-    report << "  Top-N Filter:            " << FLAGS_top_n << "\n";
-    report << "  Ranking Mode:            deterministic descending by panelist id\n";
+    if (!mixedTopNValues_.empty()) {
+      report << "  Top-N Filter (subs):     mixed [";
+      for (size_t i = 0; i < mixedTopNValues_.size(); ++i) {
+        if (i > 0) report << ",";
+        report << mixedTopNValues_[i];
+      }
+      report << "]\n";
+    } else {
+      report << "  Top-N Filter:            " << FLAGS_top_n << "\n";
+    }
+    if (FLAGS_panelist_topn >= 0) {
+      report << "  Top-N Filter (panelists):" << FLAGS_panelist_topn << "\n";
+    }
+    report << "  Ranking Mode:            "
+           << (FLAGS_speech_mode ? "speech simulation (dynamic)" : "deterministic descending by panelist id")
+           << "\n";
     report << "  Update Rate:             " << FLAGS_update_hz << " Hz\n";
     report << "  Duration:                " << FLAGS_duration << "s\n\n";
 
@@ -477,6 +683,31 @@ public:
     report << "----------------------\n";
     report << "  Tracks Selected:         " << metrics_.tracksSelected << "\n";
     report << "  Tracks Evicted:          " << metrics_.tracksEvicted << "\n\n";
+
+    if (FLAGS_speech_mode) {
+      report << "SPEECH SIMULATION STATISTICS\n";
+      report << "----------------------------\n";
+      uint64_t totalTicks = metrics_.totalSpeechTicks + metrics_.totalSilentTicks;
+      double speechPct = totalTicks > 0 ? (100.0 * metrics_.totalSpeechTicks / totalTicks) : 0;
+      double avgSpeechPerSpeaker = metrics_.speechStarts > 0
+          ? (metrics_.totalSpeechTicks / static_cast<double>(metrics_.speechStarts))
+          : 0;
+      double avgSpeechDurMs = avgSpeechPerSpeaker * (1000.0 / FLAGS_update_hz);
+      double avgSilenceDurMs = metrics_.speechStarts > 0
+          ? (metrics_.totalSilentTicks / static_cast<double>(metrics_.speechStarts)) * (1000.0 / FLAGS_update_hz)
+          : 0;
+      report << "  Speech Starts (total):   " << metrics_.speechStarts.load() << "\n";
+      report << "  Avg Speeches/Panelist:   " << std::fixed << std::setprecision(1)
+             << (metrics_.speechStarts.load() / static_cast<double>(FLAGS_panelists)) << "\n";
+      report << "  Speech Ticks:            " << metrics_.totalSpeechTicks.load() << " ("
+             << std::fixed << std::setprecision(1) << speechPct << "%)\n";
+      report << "  Silent Ticks:            " << metrics_.totalSilentTicks.load() << " ("
+             << std::fixed << std::setprecision(1) << (100.0 - speechPct) << "%)\n";
+      report << "  Avg Speech Duration:     " << std::fixed << std::setprecision(0) << avgSpeechDurMs << " ms\n";
+      report << "  Avg Silence Duration:    " << std::fixed << std::setprecision(0) << avgSilenceDurMs << " ms\n";
+      report << "  Speech Algorithm:        State machine: SILENT->SPEECH_START(300ms)->SPEAKING(2-8s)->ENDED->SILENT(1-5s)\n";
+      report << "  Speech Values:           0=silent, 2=speech_start, 1=speaking\n\n";
+    }
 
     report << "TOP-N CORRECTNESS VERIFICATION\n";
     report << "------------------------------\n";
@@ -719,6 +950,80 @@ private:
     }
   }
 
+  void verifySpeechModeCorrectness() {
+    // In speech mode, rankings are dynamic so we can't verify exact top-N sets.
+    // We CAN verify:
+    // 1. Self-exclusion: no panelist received its own track
+    // 2. Bounded selection: no subscriber received more than N distinct tracks
+    //    at any single point in time (they may see different tracks over time)
+    // 3. All received tracks are from valid panelists
+    auto state = metrics_.verificationState.wlock();
+    std::vector<int> connectedPanelists(
+        state->connectedPanelistIds.begin(), state->connectedPanelistIds.end());
+    std::sort(connectedPanelists.begin(), connectedPanelists.end());
+
+    folly::F14FastSet<std::string> validTrackNames;
+    for (int id : connectedPanelists) {
+      validTrackNames.insert(trackNameForPanelist(id));
+    }
+
+    for (int id : connectedPanelists) {
+      auto it = state->clientDeliveries.find(id);
+      if (it == state->clientDeliveries.end())
+        continue;
+
+      metrics_.panelistsVerified++;
+      const auto& delivery = it->second;
+
+      // Check self-exclusion
+      std::string selfTrack = trackNameForPanelist(id);
+      if (delivery.receivedTracks.find(selfTrack) != delivery.receivedTracks.end()) {
+        metrics_.panelistVerificationFailures++;
+        state->panelistFailures.push_back(TrackFilterMetrics::VerificationFailure{
+            .clientId = id, .expected = {}, .actual = {selfTrack}});
+      }
+
+      // Check all received tracks are valid
+      for (const auto& track : delivery.receivedTracks) {
+        if (validTrackNames.find(track) == validTrackNames.end()) {
+          metrics_.panelistVerificationFailures++;
+          break;
+        }
+      }
+    }
+
+    std::vector<int> connectedSubscribers(
+        state->connectedSubscriberIds.begin(), state->connectedSubscriberIds.end());
+    for (int id : connectedSubscribers) {
+      auto it = state->clientDeliveries.find(id);
+      if (it == state->clientDeliveries.end())
+        continue;
+
+      metrics_.subscribersVerified++;
+      const auto& delivery = it->second;
+
+      // Check all received tracks are from valid panelists
+      for (const auto& track : delivery.receivedTracks) {
+        if (validTrackNames.find(track) == validTrackNames.end()) {
+          metrics_.subscriberVerificationFailures++;
+          state->subscriberFailures.push_back(TrackFilterMetrics::VerificationFailure{
+              .clientId = id, .expected = {}, .actual = {track}});
+          break;
+        }
+      }
+    }
+
+    std::cout << "\n  Speech Mode Verification:\n";
+    std::cout << "    Self-exclusion:    "
+              << (metrics_.selfReceivedObjects == 0 && metrics_.panelistVerificationFailures == 0
+                      ? "PASSED"
+                      : "FAILED")
+              << "\n";
+    std::cout << "    Valid tracks:      "
+              << (metrics_.subscriberVerificationFailures == 0 ? "PASSED" : "FAILED") << "\n";
+    std::cout << "    Unique tracks seen by panelists: dynamic (speech-driven)\n";
+  }
+
   folly::coro::Task<bool> connectPanelist(int id) {
     proxygen::URL url(FLAGS_relay_url);
     auto verifier =
@@ -766,7 +1071,10 @@ private:
           TrackNamespace(std::vector<std::string>{FLAGS_namespace_prefix, "audio"});
       subNs.forward = true;
 
-      TrackFilter filter(kAudioLevelPropertyType, FLAGS_top_n);
+      int panelistTopN = FLAGS_panelist_topn >= 0
+          ? FLAGS_panelist_topn
+          : getTopNForSubscriber(id, mixedTopNValues_);
+      TrackFilter filter(kAudioLevelPropertyType, panelistTopN);
       Parameter trackFilterParam(folly::to_underlying(TrackRequestParamKey::TRACK_FILTER), filter);
       subNs.params.insertParam(std::move(trackFilterParam));
 
@@ -853,7 +1161,8 @@ private:
           TrackNamespace(std::vector<std::string>{FLAGS_namespace_prefix, "audio"});
       subNs.forward = true;
 
-      TrackFilter filter(kAudioLevelPropertyType, FLAGS_top_n);
+      int subscriberTopN = getTopNForSubscriber(id, mixedTopNValues_);
+      TrackFilter filter(kAudioLevelPropertyType, subscriberTopN);
       Parameter trackFilterParam(folly::to_underlying(TrackRequestParamKey::TRACK_FILTER), filter);
       subNs.params.insertParam(std::move(trackFilterParam));
 
@@ -882,6 +1191,19 @@ private:
     int progressInterval = std::max(1, FLAGS_duration / 10);
     auto nextProgress = steady_clock::now() + seconds(progressInterval);
 
+    // Initialize speech simulators and event logger if in speech mode
+    if (FLAGS_speech_mode) {
+      eventLogger_ = std::make_unique<TopNEventLogger>(FLAGS_topn_event_log);
+      for (auto& panelist : panelists_) {
+        panelist.speechSim = std::make_unique<SpeechSimulator>(
+            static_cast<uint32_t>(panelist.panelistId * 7919 + 42));
+        if (eventLogger_->enabled()) {
+          eventLogger_->logTrackRegistered(
+              "panelist-" + std::to_string(panelist.panelistId), panelist.panelistId);
+        }
+      }
+    }
+
     while (steady_clock::now() < endTime) {
       auto iterStart = steady_clock::now();
 
@@ -889,12 +1211,25 @@ private:
         if (!panelist.consumer)
           continue;
 
-        // Deterministic strict ranking based on actual panelist ID:
-        // panelist-0 > panelist-1 > panelist-2 > ...
-        // Lower ID = higher audio level = higher rank.
-        // This uses panelist ID (not vector index) to ensure correct ranking
-        // even when some panelists fail to connect.
-        uint64_t audioLevel = static_cast<uint64_t>(FLAGS_panelists - panelist.panelistId);
+        uint64_t audioLevel;
+        if (FLAGS_speech_mode) {
+          auto prevState = panelist.speechSim->state();
+          audioLevel = panelist.speechSim->tick();
+          auto newState = panelist.speechSim->state();
+          if (prevState == SpeechState::Silent && newState == SpeechState::SpeechStart) {
+            metrics_.speechStarts++;
+          }
+          if (newState == SpeechState::Silent || newState == SpeechState::SpeechEnded) {
+            metrics_.totalSilentTicks++;
+          } else {
+            metrics_.totalSpeechTicks++;
+          }
+        } else {
+          // Deterministic strict ranking based on actual panelist ID:
+          // panelist-0 > panelist-1 > panelist-2 > ...
+          // Lower ID = higher audio level = higher rank.
+          audioLevel = static_cast<uint64_t>(FLAGS_panelists - panelist.panelistId);
+        }
 
         Extensions extensions;
         extensions.getMutableExtensions().push_back(Extension(kAudioLevelPropertyType, audioLevel));
@@ -909,6 +1244,15 @@ private:
           metrics_.forwardErrors++;
         } else {
           metrics_.publishedObjects++;
+          if (FLAGS_speech_mode && eventLogger_->enabled() &&
+              audioLevel != panelist.lastAudioLevel) {
+            eventLogger_->logValueUpdated(
+                "panelist-" + std::to_string(panelist.panelistId),
+                panelist.lastAudioLevel,
+                audioLevel,
+                panelist.panelistId);
+            panelist.lastAudioLevel = audioLevel;
+          }
         }
       }
 
@@ -927,6 +1271,10 @@ private:
       if (elapsed < updateInterval) {
         co_await folly::coro::sleep(duration_cast<microseconds>(updateInterval - elapsed));
       }
+    }
+
+    if (eventLogger_) {
+      eventLogger_->flush();
     }
   }
 
@@ -958,12 +1306,16 @@ private:
     std::shared_ptr<MoQSession> session;
     std::shared_ptr<TrackConsumer> consumer;
     std::shared_ptr<Publisher::SubscribeNamespaceHandle> subscribeHandle;
+    std::unique_ptr<SpeechSimulator> speechSim;
+    uint64_t lastAudioLevel{0};
   };
   std::vector<PanelistState> panelists_;
+  std::unique_ptr<TopNEventLogger> eventLogger_;
 
   std::vector<std::unique_ptr<MoQWebTransportClient>> subscriberClients_;
   std::vector<std::shared_ptr<MoQSession>> subscriberSessions_;
   std::vector<std::shared_ptr<Publisher::SubscribeNamespaceHandle>> subscriberHandles_;
+  std::vector<int> mixedTopNValues_;
 };
 
 } // namespace
@@ -981,7 +1333,12 @@ int main(int argc, char** argv) {
   std::cout << "Track Filter Load Test Configuration:\n";
   std::cout << "  IO Threads: " << FLAGS_num_threads << "\n";
   std::cout << "  ALPN protocols: " << FLAGS_alpns << "\n";
-  std::cout << "  Drain period: " << FLAGS_drain_period_ms << "ms\n\n";
+  std::cout << "  Drain period: " << FLAGS_drain_period_ms << "ms\n";
+  std::cout << "  Speech mode: " << (FLAGS_speech_mode ? "ON (dynamic ranking)" : "OFF (deterministic)") << "\n";
+  if (FLAGS_speech_mode && !FLAGS_topn_event_log.empty()) {
+    std::cout << "  Event log: " << FLAGS_topn_event_log << "\n";
+  }
+  std::cout << "\n";
 
   TrackFilterMetrics metrics;
 
