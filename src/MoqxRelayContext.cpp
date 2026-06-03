@@ -22,7 +22,10 @@ MoqxRelayContext::MoqxRelayContext(
 )
     : serviceMatcher_(services), relayID_(relayID) {
   for (const auto& [name, svc] : services) {
-    services_.emplace(name, ServiceEntry{svc, std::make_shared<MoqxRelay>(svc.cache, relayID)});
+    services_.emplace(
+        name,
+        ServiceEntry{svc, std::make_shared<MoqxRelay>(svc.cache, relayID, svc.auth)}
+    );
   }
 }
 
@@ -138,14 +141,17 @@ void MoqxRelayContext::onNewSession(std::shared_ptr<MoQSession> clientSession) {
   }
 }
 
-void MoqxRelayContext::onSessionEnd() {
+void MoqxRelayContext::onSessionEnd(std::shared_ptr<MoQSession> session) {
   if (statsCollector_) {
     statsCollector_->onSessionEnd();
+  }
+  for (auto& [name, entry] : services_) {
+    entry.relay->removeSessionAuth(session.get());
   }
 }
 
 folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayContext::validateAuthority(
-    const ClientSetup& /*clientSetup*/,
+    const ClientSetup& clientSetup,
     uint64_t /*negotiatedVersion*/,
     std::shared_ptr<MoQSession> session
 ) {
@@ -161,6 +167,23 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayContext::validateAu
   // Route: set per-service relay as handler
   auto it = services_.find(*matchedName);
   CHECK(it != services_.end()) << "Service '" << *matchedName << "' matched but no entry found";
+  auto authRes = it->second.relay->authenticateSession(clientSetup, session);
+  if (authRes.hasError()) {
+    XLOG(ERR) << "Authorization failed for authority=" << authority << " path=" << path
+              << " reason=" << auth::toString(authRes.error());
+    switch (authRes.error()) {
+    case auth::AuthError::Expired:
+      return folly::makeUnexpected(SessionCloseErrorCode::EXPIRED_AUTH_TOKEN);
+    case auth::AuthError::Malformed:
+      return folly::makeUnexpected(SessionCloseErrorCode::MALFORMED_AUTH_TOKEN);
+    case auth::AuthError::BadSignature:
+    case auth::AuthError::Forbidden:
+    case auth::AuthError::Missing:
+    case auth::AuthError::WrongTokenType:
+      return folly::makeUnexpected(SessionCloseErrorCode::UNAUTHORIZED);
+    }
+    return folly::makeUnexpected(SessionCloseErrorCode::UNAUTHORIZED);
+  }
   session->setPublishHandler(it->second.relay);
   session->setSubscribeHandler(it->second.relay);
   return folly::unit;

@@ -184,7 +184,7 @@ void MoqxRelayServer::onNewSession(std::shared_ptr<MoQSession> clientSession) {
 }
 
 void MoqxRelayServer::terminateClientSession(std::shared_ptr<MoQSession> session) {
-  context_->onSessionEnd();
+  context_->onSessionEnd(session);
   MoQServer::terminateClientSession(std::move(session));
 }
 

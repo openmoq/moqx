@@ -21,6 +21,7 @@ _CPack_Packages/
 
 # Dependency scratch dir
 /.scratch/
+/.docker-deps/
 
 # OS
 .DS_Store
@@ -28,6 +29,8 @@ _CPack_Packages/
 # IDE / tools
 .vscode/
 .claude/
+.agents/
+AGENTS.md
 .cache/
 .idea/
 
