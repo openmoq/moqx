@@ -387,8 +387,6 @@ MoqxRelay::publish(PublishRequest pub, std::shared_ptr<Publisher::SubscriptionHa
     );
   }
 
-  auto session = MoQSession::getRequestSession();
-
   // Handle duplicate publisher at relay level before registering in the tree.
   // Move the forwarder out and erase the entry BEFORE calling publishDone.
   // publishDone iterates subscribers via forEachSubscriber; if a subscriber

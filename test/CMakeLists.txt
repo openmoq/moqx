@@ -39,6 +39,7 @@ add_executable(moqx_relay_test
   MoqxRelayTrackStatusTests.cpp
   MoqxRelayNGRTests.cpp
   MoqxRelayPeerTests.cpp
+  MoqxRelayTestModes.cpp
 )
 target_link_libraries(moqx_relay_test PRIVATE
   moqx_test_fixture

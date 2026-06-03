@@ -11,7 +11,7 @@
 namespace moxygen::test {
 
 // Test: Verify allowed namespace prefix is set correctly
-TEST_F(MoQRelayTest, AllowedNamespacePrefix) {
+TEST_P(MoQRelayTest, AllowedNamespacePrefix) {
   // This just verifies the relay can be constructed with a namespace prefix
   // More detailed testing requires full session setup
   auto relay2 = std::make_shared<MoqxRelay>(config::CacheConfig{
@@ -23,7 +23,7 @@ TEST_F(MoQRelayTest, AllowedNamespacePrefix) {
 }
 
 // Test: Publish a track through the relay
-TEST_F(MoQRelayTest, PublishSuccess) {
+TEST_P(MoQRelayTest, PublishSuccess) {
   auto publisherSession = createMockSession();
 
   // Publish the namespace
@@ -48,7 +48,7 @@ TEST_F(MoQRelayTest, PublishSuccess) {
 
 // Test: Extensions from publish are forwarded to subscribers via
 // subscribeNamespace
-TEST_F(MoQRelayTest, PublishExtensionsForwardedToSubscribers) {
+TEST_P(MoQRelayTest, PublishExtensionsForwardedToSubscribers) {
   auto publisherSession = createMockSession();
   auto subscriber = createMockSession();
 
@@ -107,7 +107,7 @@ TEST_F(MoQRelayTest, PublishExtensionsForwardedToSubscribers) {
 // ============================================================
 
 // Test: Extensions from publish are forwarded to late-joining subscribers
-TEST_F(MoQRelayTest, PublishExtensionsForwardedToLateJoiners) {
+TEST_P(MoQRelayTest, PublishExtensionsForwardedToLateJoiners) {
   auto publisherSession = createMockSession();
   auto subscriber1 = createMockSession();
   auto subscriber2 = createMockSession();
@@ -199,7 +199,7 @@ TEST_F(MoQRelayTest, PublishExtensionsForwardedToLateJoiners) {
 //   4. Session A reconnects and re-publishes the same track.  The multipublisher
 //      check finds the surviving entry and calls it->second.handle->unsubscribe()
 //      — null-pointer dereference, SIGSEGV.
-TEST_F(MoQRelayTest, PublisherReconnectWithOpenSubgroupNoSegfault) {
+TEST_P(MoQRelayTest, PublisherReconnectWithOpenSubgroupNoSegfault) {
   auto publisherSession = createMockSession();
   auto subscriberSession = createMockSession();
 
@@ -260,7 +260,7 @@ TEST_F(MoQRelayTest, PublisherReconnectWithOpenSubgroupNoSegfault) {
 // old forwarder's subscribers must receive publishDone, and the new
 // publish-path subscription must be fully functional (accepting data from the
 // new publisher).
-TEST_F(MoQRelayTest, PublishReplacesSubscribeDrainsOldAndServesNew) {
+TEST_P(MoQRelayTest, PublishReplacesSubscribeDrainsOldAndServesNew) {
   auto publisherSession = createMockSession();
   auto subscriberSession = createMockSession();
 
@@ -334,7 +334,7 @@ TEST_F(MoQRelayTest, PublishReplacesSubscribeDrainsOldAndServesNew) {
 // ScopeGuardImplBase::terminate() → std::terminate (exit code 139).
 //
 // Without the fix: crashes.  With the fix: subscribe returns an error cleanly.
-TEST_F(MoQRelayTest, PublishReconnectDuringSubscribeScopeGuardCrash) {
+TEST_P(MoQRelayTest, PublishReconnectDuringSubscribeScopeGuardCrash) {
   auto publisherSession1 = createMockSession();
   auto publisherSession2 = createMockSession();
   auto subscriberSession = createMockSession();
@@ -423,7 +423,7 @@ TEST_F(MoQRelayTest, PublishReconnectDuringSubscribeScopeGuardCrash) {
 // entry (promise already satisfied), and rsub.promise.setValue() throws
 // PromiseAlreadySatisfied, which propagates as an unhandled coroutine exception.
 // With the fix: subscribe returns SUBSCRIBE_ERROR "publisher reconnected".
-TEST_F(MoQRelayTest, PublishReconnectDuringSubscribeSuccessPathCrash) {
+TEST_P(MoQRelayTest, PublishReconnectDuringSubscribeSuccessPathCrash) {
   auto publisherSession1 = createMockSession();
   auto publisherSession2 = createMockSession();
   auto subscriberSession = createMockSession();
@@ -498,7 +498,7 @@ TEST_F(MoQRelayTest, PublishReconnectDuringSubscribeSuccessPathCrash) {
 // Regression: after publishDone the namespace-tree node must be pruned when
 // the track was the only remaining content.  (Was a bug before unpublishTrack
 // gained a NodeMutationGuard; kept as a regression guard.)
-TEST_F(MoQRelayTest, PublishDonePrunesNamespaceTreeNode) {
+TEST_P(MoQRelayTest, PublishDonePrunesNamespaceTreeNode) {
   auto publisher = createMockSession();
 
   doPublishNamespace(publisher, kTestNamespace);
@@ -541,7 +541,7 @@ TEST_F(MoQRelayTest, PublishDonePrunesNamespaceTreeNode) {
 }
 
 // Empty namespace: publishNamespace with an empty TrackNamespace must not crash.
-TEST_F(MoQRelayTest, EmptyNamespacePublishNamespaceDone) {
+TEST_P(MoQRelayTest, EmptyNamespacePublishNamespaceDone) {
   auto publisher = createMockSession();
 
   TrackNamespace emptyNs{{}};

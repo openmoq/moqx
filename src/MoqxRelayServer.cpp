@@ -133,12 +133,26 @@ MoqxRelayServer::MoqxRelayServer(
     : MoQServer(
           buildFizzContext(listenerCfg),
           listenerCfg.endpoint,
-          buildTransportSettings(listenerCfg.quic, listenerCfg.mvfst)
+          MoQServer::Options{
+              .transportSettings = buildTransportSettings(listenerCfg.quic, listenerCfg.mvfst),
+              .udpSendBufferBytes = listenerCfg.mvfst.udpSocketBufferBytes,
+              .udpRecvBufferBytes = listenerCfg.mvfst.udpSocketBufferBytes,
+          }
       ),
       listenerCfg_(listenerCfg), context_(std::move(context)), ioExecutor_(ioExecutor) {}
 
 MoqxRelayServer::~MoqxRelayServer() {
   // Close incoming connections, drain worker EVBs, then destroy EVBs.
+  stop();
+}
+
+void MoqxRelayServer::stop() {
+  if (stopped_) {
+    return;
+  }
+  stopped_ = true;
+  // Keep context_ alive: terminateClientSession can run after stop() returns,
+  // from handleClientSession coroutines still draining on IO threads.
   MoQServer::stop();
 }
 

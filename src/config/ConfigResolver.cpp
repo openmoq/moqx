@@ -579,6 +579,8 @@ void applyMvfstOverride(MvfstConfig& base, const ParsedMvfstConfig& overlay) {
     if (auto v = ls->ce_target.value())
       base.l4s.ceTarget = *v;
   }
+  if (auto v = overlay.udp_socket_buffer_bytes.value())
+    base.udpSocketBufferBytes = *v;
 }
 
 MvfstConfig mergeMvfstConfig(

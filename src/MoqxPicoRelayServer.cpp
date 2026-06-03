@@ -89,6 +89,16 @@ MoqxPicoRelayServer::MoqxPicoRelayServer(
       evb_(ioExecutor->getAllEventBases()[0].get()) {}
 
 MoqxPicoRelayServer::~MoqxPicoRelayServer() {
+  stop();
+}
+
+void MoqxPicoRelayServer::stop() {
+  if (stopped_) {
+    return;
+  }
+  stopped_ = true;
+  // Keep context_ alive: terminateClientSession can run after stop() returns,
+  // from handleClientSession coroutines still draining on the evb.
   context_->stop();
   evb_->runImmediatelyOrRunInEventBaseThreadAndWait([this] { MoQPicoQuicEventBaseServer::stop(); });
 }
