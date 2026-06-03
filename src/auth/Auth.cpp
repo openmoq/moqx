@@ -96,31 +96,29 @@ std::string toString(const std::vector<uint8_t>& bytes) {
   return std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size());
 }
 
-catapult::MoqtBinaryMatch toCatapultMatch(const std::vector<MatchRule>& rules) {
+catapult::MoqtCompoundMatch toCatapultMatch(const std::vector<MatchRule>& rules) {
   if (rules.empty()) {
-    return catapult::MoqtBinaryMatch::any();
+    return catapult::MoqtCompoundMatch::any();
   }
-  // A Catapult CWT scope carries a single binary match per dimension, whereas a
-  // MatchRule vector can express several ANDed rules (e.g. Prefix + Suffix). We
-  // can only serialize the first; warn loudly rather than silently dropping the
-  // rest, since that would widen the grant beyond what was configured.
-  if (rules.size() > 1) {
-    XLOG(WARN) << "CWT scope supports a single match rule per dimension; dropping "
-               << (rules.size() - 1) << " extra rule(s) -- the serialized grant will be broader "
-               << "than the configured match rules";
+  std::vector<catapult::MoqtBinaryMatch> conditions;
+  conditions.reserve(rules.size());
+  for (const auto& rule : rules) {
+    switch (rule.type) {
+    case MatchRule::Type::Exact:
+      conditions.push_back(catapult::MoqtBinaryMatch::exact(rule.value));
+      break;
+    case MatchRule::Type::Prefix:
+      conditions.push_back(catapult::MoqtBinaryMatch::prefix(rule.value));
+      break;
+    case MatchRule::Type::Suffix:
+      conditions.push_back(catapult::MoqtBinaryMatch::suffix(rule.value));
+      break;
+    case MatchRule::Type::Contains:
+      conditions.push_back(catapult::MoqtBinaryMatch::contains(rule.value));
+      break;
+    }
   }
-  const auto& rule = rules.front();
-  switch (rule.type) {
-  case MatchRule::Type::Exact:
-    return catapult::MoqtBinaryMatch::exact(rule.value);
-  case MatchRule::Type::Prefix:
-    return catapult::MoqtBinaryMatch::prefix(rule.value);
-  case MatchRule::Type::Suffix:
-    return catapult::MoqtBinaryMatch::suffix(rule.value);
-  case MatchRule::Type::Contains:
-    return catapult::MoqtBinaryMatch::contains(rule.value);
-  }
-  return catapult::MoqtBinaryMatch::any();
+  return catapult::MoqtCompoundMatch::all(std::move(conditions));
 }
 
 MatchRule::Type fromCatapultMatchType(catapult::BinaryMatchType type) {
@@ -137,14 +135,19 @@ MatchRule::Type fromCatapultMatchType(catapult::BinaryMatchType type) {
   return MatchRule::Type::Exact;
 }
 
-std::vector<MatchRule> fromCatapultMatch(const catapult::MoqtBinaryMatch& match) {
+std::vector<MatchRule> fromCatapultMatch(const catapult::MoqtCompoundMatch& match) {
   if (match.is_empty()) {
     return {};
   }
-  return {MatchRule{
-      .type = fromCatapultMatchType(match.match_type),
-      .value = toString(match.pattern),
-  }};
+  std::vector<MatchRule> rules;
+  rules.reserve(match.conditions().size());
+  for (const auto& cond : match.conditions()) {
+    rules.push_back(MatchRule{
+        .type = fromCatapultMatchType(cond.match_type),
+        .value = toString(cond.pattern),
+    });
+  }
+  return rules;
 }
 
 catapult::CatToken tokenFromGrants(const Grants& grants) {
@@ -203,10 +206,13 @@ Grants grantsFromToken(const catapult::CatToken& token) {
 } // namespace
 
 AuthTokenVerifier::AuthTokenVerifier(config::AuthConfig config) : config_(std::move(config)) {
-  // Derive each configured key once; verify() reuses these (see DerivedKey).
   derivedKeys_.reserve(config_.hmacKeys.size());
   for (const auto& key : config_.hmacKeys) {
+    const std::size_t idx = derivedKeys_.size();
     derivedKeys_.push_back(DerivedKey{.id = key.id, .key = deriveHmacKey(key.secret)});
+    if (!key.id.empty()) {
+      keyIdIndex_.emplace(key.id, idx);
+    }
   }
 }
 
@@ -221,15 +227,19 @@ folly::Expected<Grants, AuthError> AuthTokenVerifier::verify(const AuthToken& to
     return folly::makeUnexpected(AuthError::Malformed);
   }
 
-  // Catapult's CWT API has no way to read the token's key id without first
-  // validating against a key, so we trial-verify against each configured key.
-  // Key derivation already happened at construction; only the HMAC check (one
-  // per key until a match) repeats here. A true key-id short-circuit would need
-  // a "peek the unprotected header" entry point in Catapult that doesn't exist
-  // yet -- see the PR discussion.
   const auto tokenBytes = toBytes(token.tokenValue);
   const auto span = std::span<const uint8_t>(tokenBytes.data(), tokenBytes.size());
-  for (const auto& derived : derivedKeys_) {
+
+  // Peek the COSE protected header to extract kid without any crypto.
+  std::optional<std::string> tokenKid;
+  try {
+    auto header = catapult::Cwt::decodeHeader(span);
+    tokenKid = header.kid;
+  } catch (const catapult::CatError&) {
+    return folly::makeUnexpected(AuthError::Malformed);
+  }
+
+  auto tryVerify = [&](const DerivedKey& derived) -> folly::Expected<Grants, AuthError> {
     try {
       catapult::HmacSha256Algorithm hmac(derived.key);
       auto cwt = catapult::Cwt::validateCwt(span, hmac);
@@ -239,9 +249,25 @@ folly::Expected<Grants, AuthError> AuthTokenVerifier::verify(const AuthToken& to
       }
       return grants;
     } catch (const catapult::CryptoError&) {
-      continue;
+      return folly::makeUnexpected(AuthError::BadSignature);
     } catch (const catapult::CatError&) {
       return folly::makeUnexpected(AuthError::Malformed);
+    }
+  };
+
+  if (tokenKid.has_value()) {
+    auto it = keyIdIndex_.find(*tokenKid);
+    if (it == keyIdIndex_.end()) {
+      return folly::makeUnexpected(AuthError::BadSignature);
+    }
+    return tryVerify(derivedKeys_[it->second]);
+  }
+
+  // No kid — trial-verify against all configured keys.
+  for (const auto& derived : derivedKeys_) {
+    auto result = tryVerify(derived);
+    if (result.hasValue() || result.error() != AuthError::BadSignature) {
+      return result;
     }
   }
   return folly::makeUnexpected(AuthError::BadSignature);

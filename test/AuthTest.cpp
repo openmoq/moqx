@@ -233,3 +233,21 @@ TEST(AuthTest, VerifiesCatapultCwtWithOpenScope) {
   ASSERT_TRUE(grants.hasValue());
   EXPECT_TRUE(allows(grants.value(), Action::ClientSetup, TrackNamespace{}));
 }
+
+TEST(AuthTest, MultiRuleCompoundMatchRoundtripsViaCwt) {
+  // Two track-match rules (prefix AND suffix) must survive CWT serialization and
+  // be enforced on verification. Both conditions must hold for allows() to pass.
+  auto grants = makeGrants(
+      {Action::Subscribe},
+      {},
+      {MatchRule{.type = MatchRule::Type::Prefix, .value = "live-"},
+       MatchRule{.type = MatchRule::Type::Suffix, .value = ".mp4"}}
+  );
+  AuthTokenVerifier verifier(makeConfig());
+  auto result = verifier.verify(makeToken(grants));
+  ASSERT_TRUE(result.hasValue());
+  TrackNamespace ns{};
+  EXPECT_TRUE(allows(result.value(), Action::Subscribe, FullTrackName{ns, "live-stream.mp4"}));
+  EXPECT_FALSE(allows(result.value(), Action::Subscribe, FullTrackName{ns, "live-stream.ts"}));
+  EXPECT_FALSE(allows(result.value(), Action::Subscribe, FullTrackName{ns, "vod-stream.mp4"}));
+}

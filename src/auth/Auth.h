@@ -16,6 +16,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace openmoq::moqx::auth {
@@ -74,9 +75,10 @@ public:
   signForTest(std::string_view keyID, std::string_view secret, const Grants& grants);
 
 private:
-  // HMAC key material derived once at construction. The configured keys never
-  // change after that, so the (relatively expensive) key derivation is hoisted
-  // out of verify(), which only re-runs the per-key HMAC check.
+  // HMAC key material derived once at construction. keyIdIndex_ maps each
+  // configured key's id to its index in derivedKeys_, enabling O(1) key
+  // selection when a token carries a kid header. Tokens without a kid fall
+  // back to trial-verification over the full derivedKeys_ list.
   struct DerivedKey {
     std::string id;
     std::vector<uint8_t> key;
@@ -84,6 +86,7 @@ private:
 
   config::AuthConfig config_;
   std::vector<DerivedKey> derivedKeys_;
+  std::unordered_map<std::string, std::size_t> keyIdIndex_;
 };
 
 std::optional<moxygen::AuthToken>
