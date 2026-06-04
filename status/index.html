@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>moqx Performance Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0d1117; color: #e6edf3; padding: 24px; }
+  h1 { font-size: 1.5rem; margin-bottom: 8px; }
+  .subtitle { color: #8b949e; margin-bottom: 24px; font-size: 0.9rem; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(500px, 1fr)); gap: 24px; margin-bottom: 24px; }
+  .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; }
+  .card h3 { font-size: 0.85rem; color: #8b949e; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.05em; }
+  canvas { width: 100% !important; height: 200px !important; }
+  .summary { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 24px; }
+  .stat { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 12px 16px; min-width: 140px; }
+  .stat .value { font-size: 1.5rem; font-weight: 600; color: #58a6ff; }
+  .stat .label { font-size: 0.75rem; color: #8b949e; margin-top: 2px; }
+  .stat.regression .value { color: #f85149; }
+  .filters { margin-bottom: 16px; display: flex; gap: 12px; align-items: center; }
+  .filters select, .filters input { background: #21262d; border: 1px solid #30363d; color: #e6edf3; padding: 6px 10px; border-radius: 6px; font-size: 0.85rem; }
+  a { color: #58a6ff; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .loading { text-align: center; padding: 40px; color: #8b949e; }
+  .commit-link { font-family: monospace; font-size: 0.8rem; }
+</style>
+</head>
+<body>
+
+<h1>moqx Performance Dashboard</h1>
+<p class="subtitle">Relay throughput and resource tracking across commits</p>
+
+<div class="filters">
+  <label>Branch:
+    <select id="branch-filter">
+      <option value="main">main</option>
+    </select>
+  </label>
+  <label>Window:
+    <select id="window-filter">
+      <option value="30">Last 30 runs</option>
+      <option value="60">Last 60 runs</option>
+      <option value="90" selected>Last 90 runs</option>
+      <option value="180">All (180)</option>
+    </select>
+  </label>
+</div>
+
+<div id="summary" class="summary"></div>
+
+<div class="grid">
+  <div class="card">
+    <h3>Throughput (Mbps)</h3>
+    <canvas id="chart-throughput"></canvas>
+  </div>
+  <div class="card">
+    <h3>Throughput per Core (Mbps)</h3>
+    <canvas id="chart-throughput-core"></canvas>
+  </div>
+  <div class="card">
+    <h3>Peak Subscribers</h3>
+    <canvas id="chart-subscribers"></canvas>
+  </div>
+  <div class="card">
+    <h3>Delivery Success (%)</h3>
+    <canvas id="chart-delivery"></canvas>
+  </div>
+  <div class="card">
+    <h3>Relay CPU (%)</h3>
+    <canvas id="chart-cpu"></canvas>
+  </div>
+  <div class="card">
+    <h3>Relay RSS (MB)</h3>
+    <canvas id="chart-rss"></canvas>
+  </div>
+  <div class="card">
+    <h3>RSS per Session (KB)</h3>
+    <canvas id="chart-rss-session"></canvas>
+  </div>
+  <div class="card">
+    <h3>Total Resets</h3>
+    <canvas id="chart-resets"></canvas>
+  </div>
+</div>
+
+<div id="loading" class="loading">Loading performance data...</div>
+
+<script>
+const REPO_URL = 'https://github.com/openmoq/moqx';
+const DATA_BASE_URL = './perf';
+const CHART_COLORS = {
+  primary: '#58a6ff',
+  secondary: '#3fb950',
+  warning: '#d29922',
+  danger: '#f85149',
+};
+
+let allData = [];
+let charts = {};
+
+async function loadData() {
+  try {
+    const resp = await fetch(`${DATA_BASE_URL}/index.json`, { cache: 'no-store' });
+    if (!resp.ok) throw new Error('No data yet');
+    const index = await resp.json();
+
+    const runs = index.runs || [];
+    const results = await Promise.all(
+      runs.map(async (entry) => {
+        try {
+          const r = await fetch(`${DATA_BASE_URL}/${entry.file}`);
+          return r.ok ? await r.json() : null;
+        } catch { return null; }
+      })
+    );
+
+    allData = results.filter(Boolean).reverse(); // chronological order
+    document.getElementById('loading').style.display = 'none';
+    renderDashboard();
+  } catch (e) {
+    document.getElementById('loading').textContent = 'No performance data available yet. Data will appear after the first CI run.';
+  }
+}
+
+function getFilteredData() {
+  const branch = document.getElementById('branch-filter').value;
+  const window = parseInt(document.getElementById('window-filter').value);
+  let filtered = allData.filter(d => d.branch === branch);
+  return filtered.slice(-window);
+}
+
+function renderDashboard() {
+  const data = getFilteredData();
+  if (data.length === 0) {
+    document.getElementById('loading').textContent = 'No data for selected filters.';
+    document.getElementById('loading').style.display = 'block';
+    return;
+  }
+  document.getElementById('loading').style.display = 'none';
+
+  renderSummary(data);
+  renderChart('chart-throughput', data, 'throughput_mbps', CHART_COLORS.primary);
+  renderChart('chart-throughput-core', data, 'throughput_per_core_mbps', CHART_COLORS.primary);
+  renderChart('chart-subscribers', data, 'peak_subscribers', CHART_COLORS.secondary);
+  renderChart('chart-delivery', data, 'delivery_success_pct', CHART_COLORS.secondary);
+  renderChart('chart-cpu', data, 'relay_cpu_pct', CHART_COLORS.warning);
+  renderChart('chart-rss', data, 'relay_rss_mb', CHART_COLORS.warning);
+  renderChart('chart-rss-session', data, 'rss_per_session_kb', CHART_COLORS.warning);
+  renderChart('chart-resets', data, 'total_resets', CHART_COLORS.danger);
+}
+
+function renderSummary(data) {
+  const latest = data[data.length - 1];
+  const r = latest.results;
+  const container = document.getElementById('summary');
+  container.innerHTML = `
+    <div class="stat"><div class="value">${r.throughput_mbps || '—'}</div><div class="label">Throughput (Mbps)</div></div>
+    <div class="stat"><div class="value">${r.throughput_per_core_mbps || '—'}</div><div class="label">Mbps/Core</div></div>
+    <div class="stat"><div class="value">${r.peak_subscribers || '—'}</div><div class="label">Peak Subscribers</div></div>
+    <div class="stat"><div class="value">${r.relay_cpu_pct || '—'}%</div><div class="label">CPU Usage</div></div>
+    <div class="stat"><div class="value">${r.relay_rss_mb || '—'}</div><div class="label">RSS (MB)</div></div>
+    <div class="stat"><div class="value">${r.rss_per_session_kb || '—'}</div><div class="label">KB/Session</div></div>
+    <div class="stat"><div class="value"><a href="${REPO_URL}/commit/${latest.commit}" class="commit-link">${latest.commit_short || latest.commit?.slice(0,7)}</a></div><div class="label">Latest Commit</div></div>
+  `;
+}
+
+function renderChart(canvasId, data, metric, color) {
+  const ctx = document.getElementById(canvasId).getContext('2d');
+
+  if (charts[canvasId]) {
+    charts[canvasId].destroy();
+  }
+
+  const labels = data.map(d => d.commit_short || d.commit?.slice(0, 7) || '?');
+  const values = data.map(d => d.results?.[metric] ?? null);
+
+  charts[canvasId] = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        data: values,
+        borderColor: color,
+        backgroundColor: color + '20',
+        borderWidth: 2,
+        pointRadius: 3,
+        pointHoverRadius: 5,
+        fill: true,
+        tension: 0.2,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            title: (items) => {
+              const idx = items[0].dataIndex;
+              const d = data[idx];
+              return `${d.commit_short || d.commit?.slice(0,7)} (${d.timestamp?.split('T')[0] || ''})`;
+            }
+          }
+        }
+      },
+      scales: {
+        x: {
+          ticks: { color: '#8b949e', maxRotation: 45, font: { size: 10, family: 'monospace' } },
+          grid: { color: '#21262d' }
+        },
+        y: {
+          ticks: { color: '#8b949e' },
+          grid: { color: '#21262d' },
+          beginAtZero: false,
+        }
+      },
+      onClick: (evt, elements) => {
+        if (elements.length > 0) {
+          const idx = elements[0].index;
+          const commit = data[idx].commit;
+          if (commit) window.open(`${REPO_URL}/commit/${commit}`, '_blank');
+        }
+      }
+    }
+  });
+}
+
+// Event listeners
+document.getElementById('branch-filter').addEventListener('change', renderDashboard);
+document.getElementById('window-filter').addEventListener('change', renderDashboard);
+
+// Load on page ready
+loadData();
+</script>
+
+</body>
+</html>

@@ -21,7 +21,6 @@ _CPack_Packages/
 
 # Dependency scratch dir
 /.scratch/
-/.docker-deps/
 
 # OS
 .DS_Store
@@ -29,11 +28,11 @@ _CPack_Packages/
 # IDE / tools
 .vscode/
 .claude/
-.agents/
-AGENTS.md
 .cache/
-.idea/
 
 # Docker secrets (never commit)
 docker/.env
 docker/cloudflare.ini
+
+# gh-pages dashboard (lives on gh-pages branch, not main)
+/gh-pages/
