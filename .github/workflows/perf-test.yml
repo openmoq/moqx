@@ -45,7 +45,7 @@ on:
       subscribers:
         description: 'peak subscribers'
         type: number
-        default: 1000
+        default: 100
 
   workflow_call:
     inputs:
