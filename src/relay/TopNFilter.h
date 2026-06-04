@@ -97,7 +97,7 @@ public:
       uint64_t groupID,
       uint64_t subgroupID,
       moxygen::Priority priority,
-      bool containsLastInGroup = false
+      moxygen::BeginSubgroupOptions options = {}
   ) override;
 
   // Override objectStream to check properties

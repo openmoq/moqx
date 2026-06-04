@@ -205,7 +205,7 @@ public:
       uint64_t groupID,
       uint64_t subgroupID,
       moxygen::Priority priority,
-      bool containsLastInGroup = false
+      moxygen::BeginSubgroupOptions options = {}
   ) override;
 
   folly::Expected<folly::SemiFuture<folly::Unit>, moxygen::MoQPublishError>

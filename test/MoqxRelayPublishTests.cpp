@@ -224,7 +224,12 @@ TEST_P(MoQRelayTest, PublisherReconnectWithOpenSubgroupNoSegfault) {
   // Open a subgroup through the publisher consumer so that B gets a live entry
   // in its subgroups map inside the forwarder.
   withSessionContext(publisherSession, [&]() {
-    auto sgRes = consumer->beginSubgroup(/*groupID=*/0, /*subgroupID=*/0, /*priority=*/0, false);
+    auto sgRes = consumer->beginSubgroup(
+        /*groupID=*/0,
+        /*subgroupID=*/0,
+        /*priority=*/0,
+        moxygen::BeginSubgroupOptions{}
+    );
     ASSERT_TRUE(sgRes.hasValue()) << "beginSubgroup should succeed";
   });
 
@@ -309,7 +314,7 @@ TEST_P(MoQRelayTest, PublishReplacesSubscribeDrainsOldAndServesNew) {
   auto newConsumer = createMockConsumer();
   auto sg = createMockSubgroupConsumer();
   EXPECT_CALL(*newConsumer, beginSubgroup(0, 0, _, _))
-      .WillOnce([&sg](uint64_t, uint64_t, uint8_t, bool) {
+      .WillOnce([&sg](uint64_t, uint64_t, uint8_t, moxygen::BeginSubgroupOptions) {
         return folly::makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(sg);
       });
   EXPECT_CALL(*sg, endOfSubgroup()).WillOnce(Return(folly::unit));

@@ -225,18 +225,18 @@ CrossExecFilter::beginSubgroup(
     uint64_t groupID,
     uint64_t subgroupID,
     moxygen::Priority priority,
-    bool containsLastInGroup
+    moxygen::BeginSubgroupOptions options
 ) {
   if (auto err = loadDeferredError()) {
     return folly::makeUnexpected(*err);
   }
   auto subFilter = CrossExecSubgroupFilter::create(targetExec_, deepCopyPayload_);
-  targetExec_->add([this, subFilter, groupID, subgroupID, priority, containsLastInGroup]() mutable {
+  targetExec_->add([this, subFilter, groupID, subgroupID, priority, options]() mutable {
     if (!downstream_) {
       subFilter->closeWithError(moxygen::MoQPublishError::WRITE_ERROR);
       return;
     }
-    auto result = downstream_->beginSubgroup(groupID, subgroupID, priority, containsLastInGroup);
+    auto result = downstream_->beginSubgroup(groupID, subgroupID, priority, options);
     if (result.hasValue()) {
       subFilter->setDownstream(std::move(result.value()));
       subFilter->setKeepAlive(downstream_);

@@ -27,7 +27,7 @@ TEST_P(MoQRelayTest, FetchAfterPublisherTermination) {
   auto consumer = createMockConsumer();
   auto sg = createMockSubgroupConsumer();
   EXPECT_CALL(*consumer, beginSubgroup(0, 0, _, _))
-      .WillOnce([&sg](uint64_t, uint64_t, uint8_t, bool) {
+      .WillOnce([&sg](uint64_t, uint64_t, uint8_t, moxygen::BeginSubgroupOptions) {
         return folly::makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(sg);
       });
   auto handle = subscribeToTrack(subSession, kTestTrackName, consumer, RequestID(0));

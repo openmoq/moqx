@@ -137,6 +137,16 @@ void MoQStatsCollector::PublisherCallback::onUnsubscribeNamespace() {
   ++parent_.pubUnsubscribeNamespace_;
 }
 
+void MoQStatsCollector::PublisherCallback::onSubscribeTracksSuccess() {
+  // TODO: track subscribe-tracks success (new moxygen API)
+}
+
+void MoQStatsCollector::PublisherCallback::onSubscribeTracksError(
+    moxygen::SubscribeTracksErrorCode /*errorCode*/
+) {
+  // TODO: track subscribe-tracks error (new moxygen API)
+}
+
 void MoQStatsCollector::PublisherCallback::onTrackStatus() {
   ++parent_.pubTrackStatus_;
 }
@@ -250,6 +260,16 @@ void MoQStatsCollector::SubscriberCallback::onSubscribeNamespaceError(
 
 void MoQStatsCollector::SubscriberCallback::onUnsubscribeNamespace() {
   ++parent_.subUnsubscribeNamespace_;
+}
+
+void MoQStatsCollector::SubscriberCallback::onSubscribeTracksSuccess() {
+  // TODO: track subscribe-tracks success (new moxygen API)
+}
+
+void MoQStatsCollector::SubscriberCallback::onSubscribeTracksError(
+    moxygen::SubscribeTracksErrorCode /*errorCode*/
+) {
+  // TODO: track subscribe-tracks error (new moxygen API)
 }
 
 void MoQStatsCollector::SubscriberCallback::onTrackStatus() {
