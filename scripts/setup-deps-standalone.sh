@@ -97,6 +97,35 @@ if [[ -n "$CXX_FLAGS" ]]; then
   EXTRA_CMAKE_ARGS+=("-DCMAKE_CXX_FLAGS=${CXX_FLAGS}")
 fi
 
+# Boost linking: prefer static when available (more portable artifacts);
+# fall back to shared on distros that don't ship libboost_*.a (CentOS/RHEL).
+# Override via env: BOOST_USE_STATIC_LIBS={auto,on,off}
+#   auto (default) — ask cmake's own find_package whether static is findable
+#   on             — force static (cmake configure fails loudly if missing)
+#   off            — force shared (omit the flag entirely)
+BOOST_STATIC_ARG=()
+case "${BOOST_USE_STATIC_LIBS:-auto}" in
+    on|ON|1|true)
+        BOOST_STATIC_ARG=(-DBoost_USE_STATIC_LIBS=ON)
+        ;;
+    off|OFF|0|false)
+        ;; # explicitly shared
+    auto|Auto|AUTO|"")
+        # Use CMake's own find_package logic — same code path as the real
+        # configure step below, so the answer is definitive.
+        if cmake --find-package \
+                 -DNAME=Boost -DCOMPILER_ID=GNU -DLANGUAGE=CXX -DMODE=EXIST \
+                 -DBoost_USE_STATIC_LIBS=ON >/dev/null 2>&1; then
+            BOOST_STATIC_ARG=(-DBoost_USE_STATIC_LIBS=ON)
+        fi
+        ;;
+    *)
+        echo "ERROR: BOOST_USE_STATIC_LIBS must be auto|on|off (got '${BOOST_USE_STATIC_LIBS}')" >&2
+        exit 1
+        ;;
+esac
+echo "==> Boost linking: ${BOOST_STATIC_ARG[*]:-shared (default)}"
+
 echo "==> Configuring standalone moxygen build (profile: ${PROFILE})..."
 # BUILD_TESTS=ON: gates the GoogleTest FetchContent in moxygen's standalone
 # CMake. Without it, moxygen-install ships no GTest config and moqx's
@@ -109,7 +138,7 @@ cmake -S "$STANDALONE_SRC" -B "$BUILD_DIR" \
     -DBUILD_TESTS=ON \
     -DBUILD_SAMPLES=ON \
     -DBUILD_SHARED_LIBS=OFF \
-    -DBoost_USE_STATIC_LIBS=ON \
+    "${BOOST_STATIC_ARG[@]}" \
     "${EXTRA_CMAKE_ARGS[@]+"${EXTRA_CMAKE_ARGS[@]}"}"
 
 echo "==> Building ($NPROC jobs)..."
