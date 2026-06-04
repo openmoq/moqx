@@ -9,10 +9,12 @@
 #include "config/Config.h"
 
 #include <folly/Expected.h>
+#include <folly/Unit.h>
 #include <moxygen/MoQTypes.h>
 
 #include <chrono>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -100,5 +102,21 @@ bool allows(
 );
 
 const char* toString(AuthError error);
+
+// Verifies the setup AUTHORIZATION_TOKEN. Returns null grants when auth is
+// disabled; shared grants (possibly empty) to gate the session otherwise.
+folly::Expected<std::shared_ptr<const Grants>, AuthError>
+authenticateSetup(const AuthTokenVerifier& verifier, const moxygen::Parameters& setupParams);
+
+// Authorizes a request against session grants, or a per-request token when
+// allow_request_token_override is set. Returns Unit when permitted.
+folly::Expected<folly::Unit, AuthError> authorize(
+    const AuthTokenVerifier& verifier,
+    Action action,
+    const moxygen::Parameters& params,
+    const moxygen::TrackNamespace& ns,
+    const Grants& sessionGrants,
+    std::optional<std::string_view> trackName = std::nullopt
+);
 
 } // namespace openmoq::moqx::auth

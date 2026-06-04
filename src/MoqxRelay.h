@@ -12,7 +12,6 @@
 #include "NamespaceTree.h"
 #include "SubscriptionRegistry.h"
 #include "UpstreamProvider.h"
-#include "auth/Auth.h"
 #include "config/Config.h"
 #include "relay/PropertyRanking.h"
 #include <moxygen/MoQSession.h>
@@ -101,13 +100,12 @@ public:
   explicit MoqxRelay(
       config::CacheConfig cache = {},
       std::string relayID = {},
-      config::AuthConfig auth = {},
       uint64_t maxDeselected = kDefaultMaxDeselected,
       std::chrono::milliseconds idleTimeout = kDefaultIdleTimeout,
       std::chrono::milliseconds activityThreshold = kDefaultActivityThreshold
   )
-      : relayID_(std::move(relayID)), authVerifier_(std::move(auth)), maxDeselected_(maxDeselected),
-        idleTimeout_(idleTimeout), activityThreshold_(activityThreshold) {
+      : relayID_(std::move(relayID)), maxDeselected_(maxDeselected), idleTimeout_(idleTimeout),
+        activityThreshold_(activityThreshold) {
     if (cache.maxCachedTracks > 0) {
       cache_ = std::make_unique<MoqxCache>(cache.maxCachedTracks, cache.maxCachedGroupsPerTrack);
       cache_->setMaxCachedBytes(static_cast<size_t>(cache.maxCachedMb) * 1024 * 1024);
@@ -121,11 +119,10 @@ public:
     allowedNamespacePrefix_ = std::move(allowed);
   }
 
-  folly::Expected<folly::Unit, auth::AuthError> authenticateSession(
-      const moxygen::ClientSetup& clientSetup,
-      std::shared_ptr<moxygen::MoQSession> session
-  );
-  void removeSessionAuth(moxygen::MoQSession* session) { sessionAuth_.erase(session); }
+  // Per-session publish/subscribe handlers. Returns the relay itself today; the
+  // hook exists so cross-exec/data-plane wrapping can slot in here later.
+  std::shared_ptr<moxygen::Publisher> createPublisherFilter();
+  std::shared_ptr<moxygen::Subscriber> createSubscriberFilter();
 
   // Store the upstream provider. The provider must have been constructed with
   // publishHandler=this and subscribeHandler=this so that the upstream relay's
@@ -305,18 +302,8 @@ private:
   void
   onTrackEvicted(const moxygen::FullTrackName& ftn, std::shared_ptr<moxygen::MoQSession> session);
 
-  folly::Expected<folly::Unit, auth::AuthError> authorize(
-      auth::Action action,
-      const moxygen::Parameters& params,
-      const moxygen::TrackNamespace& ns,
-      const std::shared_ptr<moxygen::MoQSession>& session,
-      std::optional<std::string_view> trackName = std::nullopt
-  );
-
   moxygen::TrackNamespace allowedNamespacePrefix_;
   std::string relayID_;
-  auth::AuthTokenVerifier authVerifier_;
-  folly::F14FastMap<moxygen::MoQSession*, auth::Grants> sessionAuth_;
   std::shared_ptr<UpstreamProvider> upstream_;
 
   // Holds the peer subNs handle for the upstream (initiating) direction.
