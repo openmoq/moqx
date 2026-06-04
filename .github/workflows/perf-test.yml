@@ -114,13 +114,13 @@ jobs:
           install -d -m 700 ~/.ssh
           printf '%s\n' "$PERF_SSH_KEY" > ~/.ssh/perf-key
           chmod 600 ~/.ssh/perf-key
+          echo "PERF_SSH_KEY_FILE=$HOME/.ssh/perf-key" >> "$GITHUB_ENV"
 
       - name: Run perf test on dedicated VMs
         id: collect
         env:
           PERF_RELAY_HOST:    ${{ secrets.PERF_RELAY_HOST }}
           PERF_CLIENT_HOST:   ${{ secrets.PERF_CLIENT_HOST }}
-          PERF_SSH_KEY_FILE:  /home/runner/.ssh/perf-key
         run: |
           FILE="run-${{ steps.sha.outputs.short }}.json"
           bash scripts/perf-test-ci.sh \
