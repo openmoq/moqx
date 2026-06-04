@@ -1,0 +1,333 @@
+#!/usr/bin/env bash
+# perf-test-ci.sh — CI orchestration wrapper for cross-machine perf testing.
+#
+# Deploys binaries to dedicated VMs, runs perf-test.sh remotely on the relay
+# VM with the client running on a separate client VM, collects metrics, and
+# produces a JSON results file for trend tracking.
+#
+# Environment variables (typically set from GitHub Actions secrets):
+#   PERF_RELAY_HOST       — SSH host for the relay VM (user@ip)
+#   PERF_CLIENT_HOST      — SSH host for the client VM (user@ip)
+#   PERF_SSH_KEY_FILE     — Path to SSH private key file
+#   PERF_RELAY_PORT       — Relay QUIC port (default: 4433)
+#   PERF_ADMIN_PORT       — Relay admin port (default: 19701)
+#
+# Usage: scripts/perf-test-ci.sh [options]
+#   --binary PATH         Path to moqx binary (default: build/moqx)
+#   --moqbin PATH         Path to moxygen bin dir (default: .scratch/moxygen-install/bin)
+#   --output PATH         Output JSON file (default: perf-results.json)
+#   --subscriber-max N    Max subscribers (default: 1000)
+#   --ramp N              Subscribers/sec (default: 100)
+#   --duration N          Test duration seconds (default: 120)
+#   --io-threads N        Relay IO threads (default: 4)
+#   --client-threads N    Client threads (default: 4)
+
+set -euo pipefail
+
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+
+# ── Defaults ───────────────────────────────────────────────────────────────────
+BINARY="${BINARY:-$REPO/build/moqx}"
+MOQBIN="${MOQBIN:-$REPO/.scratch/moxygen-install/bin}"
+OUTPUT="perf-results.json"
+SUBSCRIBER_MAX=1000
+RAMP=100
+DURATION=120
+IO_THREADS=4
+CLIENT_THREADS=4
+DELIVERY_TIMEOUT=500
+TRANSPORT="quic"
+
+RELAY_HOST="${PERF_RELAY_HOST:-}"
+CLIENT_HOST="${PERF_CLIENT_HOST:-}"
+SSH_KEY_FILE="${PERF_SSH_KEY_FILE:-}"
+RELAY_PORT="${PERF_RELAY_PORT:-4433}"
+ADMIN_PORT="${PERF_ADMIN_PORT:-19701}"
+
+# ── Arg parsing ────────────────────────────────────────────────────────────────
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --binary)          BINARY="$2";          shift 2 ;;
+    --moqbin)          MOQBIN="$2";          shift 2 ;;
+    --output)          OUTPUT="$2";          shift 2 ;;
+    --subscriber-max)  SUBSCRIBER_MAX="$2";  shift 2 ;;
+    --ramp)            RAMP="$2";            shift 2 ;;
+    --duration)        DURATION="$2";        shift 2 ;;
+    --io-threads)      IO_THREADS="$2";      shift 2 ;;
+    --client-threads)  CLIENT_THREADS="$2";  shift 2 ;;
+    --delivery-timeout) DELIVERY_TIMEOUT="$2"; shift 2 ;;
+    --transport)       TRANSPORT="$2";       shift 2 ;;
+    *) echo "Unknown option: $1" >&2; exit 1 ;;
+  esac
+done
+
+# ── Validation ─────────────────────────────────────────────────────────────────
+if [[ -z "$RELAY_HOST" ]]; then
+  echo "ERROR: PERF_RELAY_HOST not set" >&2; exit 1
+fi
+if [[ -z "$CLIENT_HOST" ]]; then
+  echo "ERROR: PERF_CLIENT_HOST not set" >&2; exit 1
+fi
+
+SSH_OPTS=(-o StrictHostKeyChecking=no -o ConnectTimeout=10 -o BatchMode=yes)
+[[ -n "$SSH_KEY_FILE" ]] && SSH_OPTS+=(-i "$SSH_KEY_FILE")
+
+MOQTEST_SERVER="$MOQBIN/moqtest_server"
+MOQPERF_CLIENT="$MOQBIN/moqperf_test_client"
+
+for f in "$BINARY" "$MOQTEST_SERVER" "$MOQPERF_CLIENT"; do
+  if [[ ! -f "$f" ]]; then
+    echo "ERROR: not found: $f" >&2; exit 1
+  fi
+done
+
+# ── Collect shared libraries ────────────────────────────────────────────────────
+echo "Collecting shared library dependencies..."
+LOCAL_LIBDIR="/tmp/moqx-perf-libs-$$"
+mkdir -p "$LOCAL_LIBDIR"
+bash "$REPO/scripts/collect-libs.sh" "$BINARY" "$LOCAL_LIBDIR" > /dev/null
+bash "$REPO/scripts/collect-libs.sh" "$MOQTEST_SERVER" "$LOCAL_LIBDIR" > /dev/null
+bash "$REPO/scripts/collect-libs.sh" "$MOQPERF_CLIENT" "$LOCAL_LIBDIR" > /dev/null
+echo "Libraries collected: $(ls $LOCAL_LIBDIR/*.so* 2>/dev/null | wc -l) files"
+
+# ── Git metadata ───────────────────────────────────────────────────────────────
+COMMIT_SHA="${GITHUB_SHA:-$(git -C "$REPO" rev-parse HEAD 2>/dev/null || echo unknown)}"
+COMMIT_SHORT="${COMMIT_SHA:0:7}"
+BRANCH="${GITHUB_REF_NAME:-$(git -C "$REPO" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)}"
+TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+echo "═══════════════════════════════════════════════════════════"
+echo " moqx Performance Test (CI)"
+echo "═══════════════════════════════════════════════════════════"
+echo "  Commit:       $COMMIT_SHORT ($BRANCH)"
+echo "  Relay VM:     $RELAY_HOST"
+echo "  Client VM:    $CLIENT_HOST"
+echo "  Subscribers:  $SUBSCRIBER_MAX (ramp $RAMP/s)"
+echo "  Duration:     ${DURATION}s"
+echo "  IO threads:   $IO_THREADS"
+echo "  Transport:    $TRANSPORT"
+echo "═══════════════════════════════════════════════════════════"
+
+# ── Remote directory setup ─────────────────────────────────────────────────────
+REMOTE_DIR="/tmp/moqx-perf-ci"
+
+timeout 5 ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "mkdir -p $REMOTE_DIR" || true
+timeout 5 ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "pkill -f 'moqx.*perf-ci' 2>/dev/null || true; pkill -f moqtest_server 2>/dev/null || true" || true
+timeout 5 ssh "${SSH_OPTS[@]}" "$CLIENT_HOST" "mkdir -p $REMOTE_DIR" || true
+timeout 5 ssh "${SSH_OPTS[@]}" "$CLIENT_HOST" "pkill -f moqperf_test_client 2>/dev/null || true" || true
+
+# ── Deploy binaries ────────────────────────────────────────────────────────────
+echo "Deploying binaries..."
+rsync -az -e "ssh ${SSH_OPTS[*]}" "$BINARY" "${RELAY_HOST}:${REMOTE_DIR}/moqx"
+rsync -az -e "ssh ${SSH_OPTS[*]}" "$MOQTEST_SERVER" "${RELAY_HOST}:${REMOTE_DIR}/moqtest_server"
+rsync -az -e "ssh ${SSH_OPTS[*]}" "$MOQPERF_CLIENT" "${CLIENT_HOST}:${REMOTE_DIR}/moqperf_test_client"
+rsync -az -e "ssh ${SSH_OPTS[*]}" "$REPO/scripts/perf-metrics.sh" "${RELAY_HOST}:${REMOTE_DIR}/perf-metrics.sh"
+rsync -az -e "ssh ${SSH_OPTS[*]}" "$LOCAL_LIBDIR/" "${RELAY_HOST}:${REMOTE_DIR}/lib/"
+rsync -az -e "ssh ${SSH_OPTS[*]}" "$LOCAL_LIBDIR/" "${CLIENT_HOST}:${REMOTE_DIR}/lib/"
+echo "Deploy complete"
+
+# ── Cleanup trap ───────────────────────────────────────────────────────────────
+cleanup() {
+  echo "Cleaning up remote processes..."
+  timeout 5 ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "pkill -f '${REMOTE_DIR}/moqx' 2>/dev/null || true; pkill -f '${REMOTE_DIR}/moqtest_server' 2>/dev/null || true" 2>/dev/null || true
+  timeout 5 ssh "${SSH_OPTS[@]}" "$CLIENT_HOST" "pkill -f '${REMOTE_DIR}/moqperf_test_client' 2>/dev/null || true" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+# ── Generate relay config ──────────────────────────────────────────────────────
+RELAY_CFG=$(cat <<EOF
+relay_id: "perf-ci-relay"
+threads: 1
+use_relay_thread: true
+listeners:
+  - name: perf
+    udp:
+      socket:
+        address: "::"
+        port: $RELAY_PORT
+    tls:
+      insecure: true
+    endpoint: "/moq-relay"
+    mvfst:
+      enable_gso: true
+      max_conn_packets_sent_per_loop: 16
+      max_server_recv_packets_per_loop: 32
+      bbr2:
+        exit_startup_on_loss: true
+        enable_recovery_in_startup: true
+        enable_recovery_in_probe_states: true
+    quic:
+      cc_algo: bbr2
+services:
+  default:
+    match:
+      - authority: {any: true}
+        path: {prefix: "/"}
+    cache:
+      enabled: false
+      max_tracks: 0
+      max_groups_per_track: 0
+admin:
+  port: $ADMIN_PORT
+  address: "::"
+  plaintext: true
+EOF
+)
+
+ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "cat > ${REMOTE_DIR}/relay.yaml << 'EOCFG'
+${RELAY_CFG}
+EOCFG"
+
+# ── Start relay ───────────────────────────────────────────────────────────────
+echo "Starting relay on $RELAY_HOST..."
+ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "
+  ulimit -n 65536 2>/dev/null || true
+  nohup env LD_LIBRARY_PATH=${REMOTE_DIR}/lib ${REMOTE_DIR}/moqx --config=${REMOTE_DIR}/relay.yaml > ${REMOTE_DIR}/relay.log 2>&1 &
+  echo \$!
+" > /tmp/relay_pid.txt
+RELAY_PID=$(cat /tmp/relay_pid.txt | tr -d '[:space:]')
+echo "Relay PID: $RELAY_PID"
+
+# Wait for relay to be ready
+echo "Waiting for relay admin endpoint..."
+DEADLINE=$((SECONDS + 15))
+until ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "curl -sf http://localhost:${ADMIN_PORT}/info >/dev/null 2>&1"; do
+  if ((SECONDS >= DEADLINE)); then
+    echo "ERROR: relay not ready after 15s" >&2
+    ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "tail -20 ${REMOTE_DIR}/relay.log" >&2
+    exit 1
+  fi
+  sleep 0.5
+done
+echo "Relay ready"
+
+# ── Start metrics poller ──────────────────────────────────────────────────────
+echo "Starting metrics poller..."
+ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "
+  nohup bash ${REMOTE_DIR}/perf-metrics.sh $ADMIN_PORT ${REMOTE_DIR}/metrics.log > ${REMOTE_DIR}/metrics_stderr.log 2>&1 &
+"
+
+# ── Start publisher ───────────────────────────────────────────────────────────
+RELAY_URL="https://127.0.0.1:${RELAY_PORT}/moq-relay"
+QUIC_FLAG="--quic_transport=true"
+[[ "$TRANSPORT" == "webtransport" ]] && QUIC_FLAG="--quic_transport=false"
+
+echo "Starting moqtest_server on $RELAY_HOST..."
+ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "
+  nohup env LD_LIBRARY_PATH=${REMOTE_DIR}/lib ${REMOTE_DIR}/moqtest_server --relay_url='${RELAY_URL}' ${QUIC_FLAG} > ${REMOTE_DIR}/server.log 2>&1 &
+"
+
+# Wait for publisher to connect
+echo "Waiting for publisher connection..."
+DEADLINE=$((SECONDS + 15))
+until ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "
+  curl -sf http://localhost:${ADMIN_PORT}/metrics 2>/dev/null \
+    | grep '^moqx_moqActiveSessions ' | awk '\$2 >= 1 {found=1} END {exit !found}'
+" 2>/dev/null; do
+  if ((SECONDS >= DEADLINE)); then
+    echo "ERROR: publisher did not connect after 15s" >&2
+    ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "tail -20 ${REMOTE_DIR}/server.log" >&2
+    exit 1
+  fi
+  sleep 0.5
+done
+echo "Publisher connected"
+
+# ── Capture pre-test system state ─────────────────────────────────────────────
+PRE_RSS=$(ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "
+  cat /proc/${RELAY_PID}/status 2>/dev/null | grep VmRSS | awk '{print \$2}' || echo 0
+")
+
+# ── Run performance test client ───────────────────────────────────────────────
+RELAY_IP=$(ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "hostname -I | awk '{print \$1}'")
+CLIENT_RELAY_URL="https://${RELAY_IP}:${RELAY_PORT}/moq-relay"
+
+echo "Running moqperf_test_client on $CLIENT_HOST..."
+echo "  relay_url=$CLIENT_RELAY_URL"
+echo "  subscribers=$SUBSCRIBER_MAX, ramp=$RAMP/s, duration=${DURATION}s"
+echo "---"
+
+CLIENT_OUTPUT=$(ssh "${SSH_OPTS[@]}" "$CLIENT_HOST" "
+  ulimit -n 65536 2>/dev/null || true
+  env LD_LIBRARY_PATH=${REMOTE_DIR}/lib ${REMOTE_DIR}/moqperf_test_client \
+    --relay_url='${CLIENT_RELAY_URL}' \
+    ${QUIC_FLAG} \
+    --subscriber_max=${SUBSCRIBER_MAX} \
+    --subscriber_ramp=${RAMP} \
+    --duration=${DURATION} \
+    --delivery_timeout=${DELIVERY_TIMEOUT} \
+    --num_threads=${CLIENT_THREADS} \
+    2>&1
+" | tee /tmp/perf-client-output.txt)
+
+echo "---"
+echo "Client finished"
+
+# ── Capture post-test system state ────────────────────────────────────────────
+POST_RSS=$(ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "
+  cat /proc/${RELAY_PID}/status 2>/dev/null | grep VmRSS | awk '{print \$2}' || echo 0
+")
+
+# Get CPU usage from metrics log (average CPU% during test)
+CPU_AVG=$(ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "
+  if [[ -f ${REMOTE_DIR}/metrics.log ]]; then
+    # Get CPU% column (should be labeled CPU%)
+    head -1 ${REMOTE_DIR}/metrics.log | tr '\t' '\n' | grep -n 'CPU' | head -1 | cut -d: -f1 | {
+      read col
+      if [[ -n \"\$col\" ]]; then
+        tail -n +2 ${REMOTE_DIR}/metrics.log | awk -F'\t' -v c=\"\$col\" '{sum+=\$c; n++} END {if(n>0) printf \"%.1f\", sum/n; else print \"0\"}'
+      else
+        echo 0
+      fi
+    }
+  else
+    echo 0
+  fi
+")
+
+# Get network throughput from metrics
+NET_THROUGHPUT=$(ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "
+  if [[ -f ${REMOTE_DIR}/metrics.log ]]; then
+    head -1 ${REMOTE_DIR}/metrics.log | tr '\t' '\n' | grep -n 'ext_Mbps' | head -1 | cut -d: -f1 | {
+      read col
+      if [[ -n \"\$col\" ]]; then
+        tail -n +2 ${REMOTE_DIR}/metrics.log | awk -F'\t' -v c=\"\$col\" '{sum+=\$c; n++} END {if(n>0) printf \"%.1f\", sum/n; else print \"0\"}'
+      else
+        echo 0
+      fi
+    }
+  else
+    echo 0
+  fi
+")
+
+# Collect metrics log for archival
+ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "cat ${REMOTE_DIR}/metrics.log 2>/dev/null" > /tmp/perf-metrics.log || true
+
+# ── Parse results and generate JSON ──────────────────────────────────────────
+echo "Generating results JSON..."
+bash "$REPO/scripts/perf-results-to-json.sh" \
+  --client-output /tmp/perf-client-output.txt \
+  --metrics-log /tmp/perf-metrics.log \
+  --commit "$COMMIT_SHA" \
+  --branch "$BRANCH" \
+  --timestamp "$TIMESTAMP" \
+  --subscriber-max "$SUBSCRIBER_MAX" \
+  --ramp "$RAMP" \
+  --duration "$DURATION" \
+  --io-threads "$IO_THREADS" \
+  --client-threads "$CLIENT_THREADS" \
+  --relay-cpu "$CPU_AVG" \
+  --relay-rss-kb "$POST_RSS" \
+  --net-throughput-mbps "$NET_THROUGHPUT" \
+  --delivery-timeout "$DELIVERY_TIMEOUT" \
+  --transport "$TRANSPORT" \
+  --output "$OUTPUT"
+
+echo "═══════════════════════════════════════════════════════════"
+echo " Results written to: $OUTPUT"
+echo "═══════════════════════════════════════════════════════════"
+cat "$OUTPUT"
+
+# Cleanup local lib directory
+rm -rf "$LOCAL_LIBDIR"
