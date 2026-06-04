@@ -188,7 +188,7 @@ TEST_F(OpenMOQForwarderTest, ChannelSubscriberReceivesSubgroupObjects) {
 
   std::shared_ptr<MockSubgroupConsumer> sg;
   EXPECT_CALL(*consumer, beginSubgroup(0, 0, _, _))
-      .WillOnce([this, &sg](uint64_t, uint64_t, uint8_t, bool) {
+      .WillOnce([this, &sg](uint64_t, uint64_t, uint8_t, BeginSubgroupOptions) {
         sg = createMockSubgroupConsumer();
         EXPECT_CALL(*sg, object(0, _, _, false)).WillOnce(Return(folly::unit));
         EXPECT_CALL(*sg, endOfSubgroup()).WillOnce(Return(folly::unit));
@@ -291,7 +291,7 @@ TEST_F(OpenMOQForwarderTest, ChannelSubscriberDrainsWhenSubgroupsOpen) {
 
   std::shared_ptr<MockSubgroupConsumer> sg;
   EXPECT_CALL(*consumer, beginSubgroup(0, 0, _, _))
-      .WillOnce([this, &sg](uint64_t, uint64_t, uint8_t, bool) {
+      .WillOnce([this, &sg](uint64_t, uint64_t, uint8_t, BeginSubgroupOptions) {
         sg = createMockSubgroupConsumer();
         return folly::
             makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(
