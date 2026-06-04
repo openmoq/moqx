@@ -328,6 +328,77 @@ folly::Expected<Grants, AuthError> AuthTokenVerifier::verify(const AuthToken& to
   return grants;
 }
 
+folly::Expected<std::shared_ptr<const Grants>, AuthError>
+authenticateSetup(const AuthTokenVerifier& verifier, const Parameters& setupParams) {
+  if (!verifier.enabled()) {
+    return std::shared_ptr<const Grants>{};
+  }
+  if (auto token = findAuthToken(setupParams, verifier.tokenType())) {
+    auto verified = verifier.verify(*token);
+    if (verified.hasError()) {
+      return folly::makeUnexpected(verified.error());
+    }
+    if (!allows(verified.value(), Action::ClientSetup, TrackNamespace{})) {
+      return folly::makeUnexpected(AuthError::Forbidden);
+    }
+    return std::make_shared<const Grants>(std::move(verified.value()));
+  }
+  if (verifier.requireSetupToken()) {
+    return folly::makeUnexpected(AuthError::Missing);
+  }
+  // No setup token but not required: connect with empty grants; requests must
+  // then carry their own tokens to be authorized.
+  return std::make_shared<const Grants>();
+}
+
+folly::Expected<folly::Unit, AuthError> authorize(
+    const AuthTokenVerifier& verifier,
+    Action action,
+    const Parameters& params,
+    const TrackNamespace& ns,
+    const Grants& sessionGrants,
+    std::optional<std::string_view> trackName
+) {
+  if (!verifier.enabled()) {
+    return folly::unit;
+  }
+
+  auto token = findAuthToken(params, verifier.tokenType());
+  if (token && !verifier.allowRequestTokenOverride()) {
+    // Request carried a per-request token but override is disabled, so the
+    // session-setup grants govern; log rather than fail.
+    XLOG(DBG1) << "authorize: ignoring request AUTHORIZATION_TOKEN for action="
+               << static_cast<uint64_t>(action) << " (allow_request_token_override is disabled)";
+    token.reset();
+  }
+
+  // Resolve grants from exactly one source (request token or session).
+  const Grants* grants = nullptr;
+  Grants verified;
+  if (token) {
+    auto res = verifier.verify(*token);
+    if (res.hasError()) {
+      XLOG(DBG1) << "authorize: request token verification failed for action="
+                 << static_cast<uint64_t>(action) << ": " << toString(res.error());
+      return folly::makeUnexpected(res.error());
+    }
+    verified = std::move(res.value());
+    grants = &verified;
+  } else {
+    grants = &sessionGrants;
+  }
+
+  const bool permitted = trackName
+                             ? allows(*grants, action, FullTrackName{ns, std::string(*trackName)})
+                             : allows(*grants, action, ns);
+  if (!permitted) {
+    XLOG(DBG1) << "authorize: action=" << static_cast<uint64_t>(action)
+               << " not permitted for ns=" << ns;
+    return folly::makeUnexpected(AuthError::Forbidden);
+  }
+  return folly::unit;
+}
+
 std::string AuthTokenVerifier::signForTest(
     std::string_view keyID,
     std::string_view secret,

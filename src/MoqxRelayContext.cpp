@@ -5,6 +5,7 @@
  */
 
 #include "MoqxRelayContext.h"
+#include "relay/AuthFilters.h"
 #include "stats/MoQStatsCollector.h"
 #include <moxygen/events/MoQFollyExecutorImpl.h>
 #include <moxygen/util/InsecureVerifierDangerousDoNotUseInProduction.h>
@@ -24,7 +25,11 @@ MoqxRelayContext::MoqxRelayContext(
   for (const auto& [name, svc] : services) {
     services_.emplace(
         name,
-        ServiceEntry{svc, std::make_shared<MoqxRelay>(svc.cache, relayID, svc.auth)}
+        ServiceEntry{
+            svc,
+            std::make_shared<MoqxRelay>(svc.cache, relayID),
+            std::make_shared<const auth::AuthTokenVerifier>(svc.auth)
+        }
     );
   }
 }
@@ -141,13 +146,12 @@ void MoqxRelayContext::onNewSession(std::shared_ptr<MoQSession> clientSession) {
   }
 }
 
-void MoqxRelayContext::onSessionEnd(std::shared_ptr<MoQSession> session) {
+void MoqxRelayContext::onSessionEnd(std::shared_ptr<MoQSession> /*session*/) {
   if (statsCollector_) {
     statsCollector_->onSessionEnd();
   }
-  for (auto& [name, entry] : services_) {
-    entry.relay->removeSessionAuth(session.get());
-  }
+  // Per-session auth state lives on the session's AuthFilter and is released
+  // when the session drops it; no relay-side cleanup needed.
 }
 
 folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayContext::validateAuthority(
@@ -164,14 +168,15 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayContext::validateAu
     return folly::makeUnexpected(SessionCloseErrorCode::INVALID_AUTHORITY);
   }
 
-  // Route: set per-service relay as handler
+  // Route: verify the setup token, then install the session's filter handlers.
   auto it = services_.find(*matchedName);
   CHECK(it != services_.end()) << "Service '" << *matchedName << "' matched but no entry found";
-  auto authRes = it->second.relay->authenticateSession(clientSetup, session);
-  if (authRes.hasError()) {
+  auto& entry = it->second;
+  auto grants = auth::authenticateSetup(*entry.verifier, clientSetup.params);
+  if (grants.hasError()) {
     XLOG(ERR) << "Authorization failed for authority=" << authority << " path=" << path
-              << " reason=" << auth::toString(authRes.error());
-    switch (authRes.error()) {
+              << " reason=" << auth::toString(grants.error());
+    switch (grants.error()) {
     case auth::AuthError::Expired:
       return folly::makeUnexpected(SessionCloseErrorCode::EXPIRED_AUTH_TOKEN);
     case auth::AuthError::Malformed:
@@ -184,8 +189,21 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayContext::validateAu
     }
     return folly::makeUnexpected(SessionCloseErrorCode::UNAUTHORIZED);
   }
-  session->setPublishHandler(it->second.relay);
-  session->setSubscribeHandler(it->second.relay);
+  // Wrap the relay's handlers in auth filters when grants are present (auth on);
+  // a null grants pointer means auth is disabled, so install the relay directly.
+  std::shared_ptr<Publisher> pub = entry.relay->createPublisherFilter();
+  std::shared_ptr<Subscriber> sub = entry.relay->createSubscriberFilter();
+  if (grants.value()) {
+    pub = std::make_shared<AuthPublisherFilter>(
+        std::move(pub),
+        entry.verifier,
+        grants.value(),
+        !relayID_.empty()
+    );
+    sub = std::make_shared<AuthSubscriberFilter>(std::move(sub), entry.verifier, grants.value());
+  }
+  session->setPublishHandler(std::move(pub));
+  session->setSubscribeHandler(std::move(sub));
   return folly::unit;
 }
 
