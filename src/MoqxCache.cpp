@@ -794,9 +794,10 @@ public:
       uint64_t groupID,
       uint64_t subgroupID,
       Priority priority,
-      bool /*containsLastInGroup*/ = false
+      BeginSubgroupOptions options = {}
   ) override {
-    // TODO: Handle containsLastInGroup parameter when caching
+    // TODO: Handle BeginSubgroupOptions (containsLastInGroup, beginsWithFirstObject)
+    // when caching
     // Check if the group is known to not exist
     if (isGroupNonExistent(track_.gaps, groupID)) {
       XLOG(ERR) << "Attempting to begin subgroup in group already marked as "
@@ -806,7 +807,7 @@ public:
           MoQPublishError(MoQPublishError::MALFORMED_TRACK, "Invalid status change")
       );
     }
-    auto res = consumer_->beginSubgroup(groupID, subgroupID, priority);
+    auto res = consumer_->beginSubgroup(groupID, subgroupID, priority, options);
     if (res.hasValue() && !track_.shouldSkipCaching()) {
       track_.getOrCreateGroupWithEviction(groupID, cache_, ftn_);
       return std::make_shared<SubgroupWriteback>(

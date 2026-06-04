@@ -127,7 +127,7 @@ TEST_F(CrossExecFilterTest, AwaitStreamCreditReturnsReady) {
 TEST_F(CrossExecFilterTest, BeginSubgroupReturnsSubgroupImmediately) {
   // beginSubgroup returns a cross-exec wrapper immediately; the inner's
   // beginSubgroup runs only when the target executor is drained.
-  auto result = filter_->beginSubgroup(1, 0, 128, false);
+  auto result = filter_->beginSubgroup(1, 0, 128, {});
   EXPECT_TRUE(result.hasValue());
   ASSERT_NE(result.value(), nullptr);
   // The returned consumer is the cross-exec wrapper, not the inner subgroup
@@ -138,8 +138,8 @@ TEST_F(CrossExecFilterTest, BeginSubgroupReturnsSubgroupImmediately) {
 }
 
 TEST_F(CrossExecFilterTest, BeginSubgroupRunsOnTargetExecutor) {
-  EXPECT_CALL(*innerTrack_, beginSubgroup(1, 0, 128, false)).Times(1);
-  auto result = filter_->beginSubgroup(1, 0, 128, false);
+  EXPECT_CALL(*innerTrack_, beginSubgroup(1, 0, 128, _)).Times(1);
+  auto result = filter_->beginSubgroup(1, 0, 128, {});
   EXPECT_TRUE(result.hasValue());
   auto subFilter = result.value();
   subFilter->reset(ResetStreamErrorCode::CANCELLED);
@@ -147,7 +147,7 @@ TEST_F(CrossExecFilterTest, BeginSubgroupRunsOnTargetExecutor) {
 }
 
 TEST_F(CrossExecFilterTest, SubgroupObjectEnqueuedAfterBeginSubgroup) {
-  auto subResult = filter_->beginSubgroup(1, 0, 128, false);
+  auto subResult = filter_->beginSubgroup(1, 0, 128, {});
   ASSERT_TRUE(subResult.hasValue());
   auto subFilter = subResult.value();
 
@@ -162,7 +162,7 @@ TEST_F(CrossExecFilterTest, SubgroupObjectEnqueuedAfterBeginSubgroup) {
   // After drain: beginSubgroup runs first, then object, then checkpoint
   {
     InSequence seq;
-    EXPECT_CALL(*innerTrack_, beginSubgroup(1, 0, 128, false)).Times(1);
+    EXPECT_CALL(*innerTrack_, beginSubgroup(1, 0, 128, _)).Times(1);
     EXPECT_CALL(*innerSubgroup_, object(0, _, _, false)).Times(1);
     EXPECT_CALL(*innerSubgroup_, checkpoint()).Times(1);
   }
@@ -171,20 +171,20 @@ TEST_F(CrossExecFilterTest, SubgroupObjectEnqueuedAfterBeginSubgroup) {
 }
 
 TEST_F(CrossExecFilterTest, SubgroupEndOfSubgroupEnqueued) {
-  auto subResult = filter_->beginSubgroup(2, 1, 64, true);
+  auto subResult = filter_->beginSubgroup(2, 1, 64, {true});
   ASSERT_TRUE(subResult.hasValue());
   auto subFilter = subResult.value();
 
   subFilter->endOfSubgroup();
 
   InSequence seq;
-  EXPECT_CALL(*innerTrack_, beginSubgroup(2, 1, 64, true)).Times(1);
+  EXPECT_CALL(*innerTrack_, beginSubgroup(2, 1, 64, _)).Times(1);
   EXPECT_CALL(*innerSubgroup_, endOfSubgroup()).Times(1);
   exec_.drain();
 }
 
 TEST_F(CrossExecFilterTest, SubgroupEndOfGroupEnqueued) {
-  auto subResult = filter_->beginSubgroup(1, 0, 128, false);
+  auto subResult = filter_->beginSubgroup(1, 0, 128, {});
   ASSERT_TRUE(subResult.hasValue());
   auto subFilter = subResult.value();
 
@@ -197,7 +197,7 @@ TEST_F(CrossExecFilterTest, SubgroupEndOfGroupEnqueued) {
 }
 
 TEST_F(CrossExecFilterTest, SubgroupEndOfTrackAndGroupEnqueued) {
-  auto subResult = filter_->beginSubgroup(1, 0, 128, false);
+  auto subResult = filter_->beginSubgroup(1, 0, 128, {});
   ASSERT_TRUE(subResult.hasValue());
   auto subFilter = subResult.value();
 
@@ -210,7 +210,7 @@ TEST_F(CrossExecFilterTest, SubgroupEndOfTrackAndGroupEnqueued) {
 }
 
 TEST_F(CrossExecFilterTest, SubgroupResetEnqueued) {
-  auto subResult = filter_->beginSubgroup(1, 0, 128, false);
+  auto subResult = filter_->beginSubgroup(1, 0, 128, {});
   ASSERT_TRUE(subResult.hasValue());
   auto subFilter = subResult.value();
 
@@ -223,7 +223,7 @@ TEST_F(CrossExecFilterTest, SubgroupResetEnqueued) {
 }
 
 TEST_F(CrossExecFilterTest, SubgroupBeginObjectEnqueued) {
-  auto subResult = filter_->beginSubgroup(1, 0, 128, false);
+  auto subResult = filter_->beginSubgroup(1, 0, 128, {});
   ASSERT_TRUE(subResult.hasValue());
   auto subFilter = subResult.value();
 
@@ -237,7 +237,7 @@ TEST_F(CrossExecFilterTest, SubgroupBeginObjectEnqueued) {
 }
 
 TEST_F(CrossExecFilterTest, SubgroupObjectPayloadEnqueued) {
-  auto subResult = filter_->beginSubgroup(1, 0, 128, false);
+  auto subResult = filter_->beginSubgroup(1, 0, 128, {});
   ASSERT_TRUE(subResult.hasValue());
   auto subFilter = subResult.value();
 
@@ -284,7 +284,7 @@ TEST_F(CrossExecFilterTest, ObjectStreamErrorBumpsCounterDoesNotGateTrack) {
 
   // Track-level gate is NOT set — beginSubgroup still works.
   EXPECT_CALL(*innerTrack_, beginSubgroup(_, _, _, _)).Times(1);
-  auto subResult = filter_->beginSubgroup(1, 0, 128, false);
+  auto subResult = filter_->beginSubgroup(1, 0, 128, {});
   ASSERT_TRUE(subResult.hasValue());
   subResult.value()->reset(ResetStreamErrorCode::CANCELLED);
   exec_.drain();
@@ -305,7 +305,7 @@ TEST_F(CrossExecFilterTest, DatagramErrorBumpsCounterDoesNotGateTrack) {
   EXPECT_TRUE(filter_->objectStream(makeHeader(3, 0, 2), nullptr, false).hasValue());
 
   EXPECT_CALL(*innerTrack_, beginSubgroup(_, _, _, _)).Times(1);
-  auto subResult = filter_->beginSubgroup(1, 0, 128, false);
+  auto subResult = filter_->beginSubgroup(1, 0, 128, {});
   ASSERT_TRUE(subResult.hasValue());
   subResult.value()->reset(ResetStreamErrorCode::CANCELLED);
 
@@ -318,7 +318,7 @@ TEST_F(CrossExecFilterTest, BeginSubgroupFailureGatesSubgroupNotTrack) {
   EXPECT_CALL(*innerTrack_, beginSubgroup(_, _, _, _))
       .WillOnce(Return(folly::makeUnexpected(MoQPublishError(MoQPublishError::Code::WRITE_ERROR))));
 
-  auto subResult = filter_->beginSubgroup(1, 0, 128, false);
+  auto subResult = filter_->beginSubgroup(1, 0, 128, {});
   ASSERT_TRUE(subResult.hasValue());
   auto subFilter = subResult.value();
 
@@ -330,7 +330,7 @@ TEST_F(CrossExecFilterTest, BeginSubgroupFailureGatesSubgroupNotTrack) {
 
   // Track-level gate is NOT set — a new beginSubgroup still works.
   EXPECT_CALL(*innerTrack_, beginSubgroup(_, _, _, _)).Times(1);
-  auto subResult2 = filter_->beginSubgroup(2, 0, 128, false);
+  auto subResult2 = filter_->beginSubgroup(2, 0, 128, {});
   ASSERT_TRUE(subResult2.hasValue());
   subResult2.value()->reset(ResetStreamErrorCode::CANCELLED);
   exec_.drain();
@@ -390,7 +390,7 @@ TEST_F(FetchCrossExecFilterTest, EndOfUnknownRangeEnqueued) {
 // a separate reset() even if the caller drops its ref immediately after.
 // Run under ASan to catch use-after-free in the [this] lambda path.
 TEST_F(CrossExecFilterTest, SubgroupObjectFinSubgroupIsTerminal) {
-  auto subResult = filter_->beginSubgroup(1, 0, 128, false);
+  auto subResult = filter_->beginSubgroup(1, 0, 128, {});
   ASSERT_TRUE(subResult.hasValue());
   auto subFilter = subResult.value();
 
@@ -409,7 +409,7 @@ TEST_F(CrossExecFilterTest, BeginSubgroupInnerFailureCleansUp) {
   EXPECT_CALL(*innerTrack_, beginSubgroup(_, _, _, _))
       .WillOnce(Return(folly::makeUnexpected(MoQPublishError(MoQPublishError::Code::WRITE_ERROR))));
 
-  auto subResult = filter_->beginSubgroup(1, 0, 128, false);
+  auto subResult = filter_->beginSubgroup(1, 0, 128, {});
   ASSERT_TRUE(subResult.hasValue());
   auto subFilter = subResult.value();
 
@@ -437,7 +437,7 @@ TEST_F(CrossExecFilterTest, SubgroupSetupFailureUAFOnMultipleQueuedLambdas) {
   EXPECT_CALL(*innerTrack_, beginSubgroup(_, _, _, _))
       .WillOnce(Return(folly::makeUnexpected(MoQPublishError(MoQPublishError::Code::WRITE_ERROR))));
 
-  auto r = filter_->beginSubgroup(1, 0, 128, false);
+  auto r = filter_->beginSubgroup(1, 0, 128, {});
   ASSERT_TRUE(r.hasValue());
   auto subFilter = std::move(r.value()); // move out so r holds null — no extra ref
 
@@ -463,7 +463,7 @@ TEST_F(CrossExecFilterTest, SubgroupBeginObjectErrorUAFOnQueuedObjectPayload) {
       .WillOnce(Return(folly::makeUnexpected(MoQPublishError(MoQPublishError::Code::WRITE_ERROR))));
   EXPECT_CALL(*innerSubgroup_, objectPayload(_, _)).Times(0);
 
-  auto r = filter_->beginSubgroup(1, 0, 128, false);
+  auto r = filter_->beginSubgroup(1, 0, 128, {});
   ASSERT_TRUE(r.hasValue());
   auto subFilter = std::move(r.value()); // move out so r holds null — no extra ref
 

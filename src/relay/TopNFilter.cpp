@@ -102,7 +102,7 @@ TopNFilter::beginSubgroup(
     uint64_t groupID,
     uint64_t subgroupID,
     moxygen::Priority priority,
-    bool containsLastInGroup
+    moxygen::BeginSubgroupOptions options
 ) {
   // Handle objects arriving after publishDone - this can happen due to
   // out-of-order delivery. We still forward them but log a warning.
@@ -110,7 +110,7 @@ TopNFilter::beginSubgroup(
     XLOG(WARN) << "[TopNFilter] beginSubgroup received after publishDone on " << ftn_;
   }
 
-  auto result = downstream_->beginSubgroup(groupID, subgroupID, priority, containsLastInGroup);
+  auto result = downstream_->beginSubgroup(groupID, subgroupID, priority, options);
   if (!result) {
     return result;
   }
