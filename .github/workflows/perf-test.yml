@@ -142,7 +142,14 @@ jobs:
             if [ -f "$FILE" ]; then
               echo '| metric | value |'
               echo '|---|---|'
-              jq -r '.metrics | to_entries[] | "| \(.key) | \(.value) |"' "$FILE"
+              jq -r '
+                (if (.metrics | type) == "object" then .metrics
+                 elif (.results | type) == "object" then .results
+                 else {}
+                 end)
+                | to_entries[]
+                | "| \(.key) | \(.value) |"
+              ' "$FILE"
             else
               echo "_no results JSON produced_"
             fi
