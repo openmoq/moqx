@@ -53,7 +53,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: true
+          submodules: recursive
 
       - name: Install system dependencies
         run: |
@@ -166,7 +166,7 @@ jobs:
 
       - uses: actions/checkout@v4
         with:
-          submodules: true
+          submodules: recursive
 
       - name: Install system dependencies
         run: sudo deps/moxygen/standalone/install-system-deps.sh
@@ -220,7 +220,7 @@ jobs:
 
       - uses: actions/checkout@v4
         with:
-          submodules: true
+          submodules: recursive
 
       - name: Install system dependencies
         run: |
