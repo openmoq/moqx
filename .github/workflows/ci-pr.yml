@@ -14,6 +14,10 @@ permissions:
   contents: read
   checks: write
   pull-requests: write   # perf job posts a comparison comment on the PR
+  # Required by perf-test.yml's deploy job at parse time even though that job
+  # is gated to push-to-main and will never actually execute in a PR context.
+  pages: write
+  id-token: write
 
 jobs:
   check-format:
