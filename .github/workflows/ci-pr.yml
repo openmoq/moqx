@@ -13,6 +13,7 @@ concurrency:
 permissions:
   contents: read
   checks: write
+  pull-requests: write   # perf job posts a comparison comment on the PR
 
 jobs:
   check-format:
@@ -262,3 +263,14 @@ jobs:
           path: |
             bench-results.json
             bench-output.txt
+
+  perf:
+    needs: [build]
+    if: needs.build.result == 'success'
+    continue-on-error: true   # regression never blocks merge
+    uses: ./.github/workflows/perf-test.yml
+    with:
+      ref: ${{ github.event.pull_request.head.sha }}
+      duration: 120
+      subscribers: 100
+    secrets: inherit
