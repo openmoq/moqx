@@ -1,0 +1,234 @@
+name: perf test
+
+# Standalone perf-regression workflow.
+#
+# Triggers
+# --------
+#   workflow_dispatch — manual runs from the Actions tab or `gh workflow run`.
+#                       Use during stabilization; this is the primary trigger
+#                       today.
+#   workflow_call    — reusable. Once perf is stable, wire it into ci-main.yml
+#                       with:
+#                          jobs:
+#                            perf:
+#                              uses: ./.github/workflows/perf-test.yml
+#                              with:
+#                                ref: ${{ github.sha }}
+#
+# This workflow does NOT run automatically on push or pull_request — it is
+# dormant after merge and only fires when explicitly invoked.
+#
+# Concurrency
+# -----------
+# A single fixed group (`perf-test`) so manual, scheduled, and called runs all
+# queue against the same physical Linode VMs. `cancel-in-progress: false`
+# because a partial test leaves VM state behind; queueing is safer.
+#
+# Publishing
+# ----------
+# Results stage as a Pages artifact (180-run rolling window + dashboard) and
+# only deploy on push-to-main. Manual / called-from-PR runs upload the
+# artifact for inspection but do not publish — keeps experiments from
+# clobbering the main trend line at openmoq.org/moqx/.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'commit / branch / tag to test (blank = HEAD of triggered ref)'
+        type: string
+        default: ''
+      duration:
+        description: 'test duration seconds'
+        type: number
+        default: 120
+      subscribers:
+        description: 'peak subscribers'
+        type: number
+        default: 1000
+
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        required: false
+        default: ''
+      duration:
+        type: number
+        required: false
+        default: 120
+      subscribers:
+        type: number
+        required: false
+        default: 1000
+
+concurrency:
+  group: perf-test
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pull-requests: write   # used only when invoked from a PR context
+
+jobs:
+  perf:
+    name: perf-test
+    runs-on: [self-hosted, linode]
+    outputs:
+      run-file: ${{ steps.collect.outputs.run-file }}
+    steps:
+      - name: Generate app token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.OMOQ_APP_ID }}
+          private-key: ${{ secrets.OMOQ_APP_PRIV_KEY }}
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          submodules: true
+
+      - name: Determine SHA
+        id: sha
+        run: |
+          SHA=$(git rev-parse HEAD)
+          echo "sha=$SHA"          >> "$GITHUB_OUTPUT"
+          echo "short=${SHA:0:7}"  >> "$GITHUB_OUTPUT"
+
+      - name: Install system dependencies
+        run: sudo deps/moxygen/standalone/install-system-deps.sh
+
+      - name: Setup dependencies
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: bash scripts/build.sh setup
+
+      - name: Build moqx
+        run: bash scripts/build.sh
+
+      - name: Configure SSH for perf VMs
+        env:
+          PERF_SSH_KEY: ${{ secrets.PERF_SSH_KEY }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$PERF_SSH_KEY" > ~/.ssh/perf-key
+          chmod 600 ~/.ssh/perf-key
+
+      - name: Run perf test on dedicated VMs
+        id: collect
+        env:
+          PERF_RELAY_HOST:    ${{ secrets.PERF_RELAY_HOST }}
+          PERF_CLIENT_HOST:   ${{ secrets.PERF_CLIENT_HOST }}
+          PERF_SSH_KEY_FILE:  /home/runner/.ssh/perf-key
+        run: |
+          FILE="run-${{ steps.sha.outputs.short }}.json"
+          bash scripts/perf-test-ci.sh \
+            --duration       "${{ inputs.duration }}" \
+            --subscriber-max "${{ inputs.subscribers }}" \
+            --output         "$FILE"
+          echo "run-file=$FILE" >> "$GITHUB_OUTPUT"
+
+      - name: Render step summary
+        if: always()
+        env:
+          FILE: ${{ steps.collect.outputs.run-file }}
+        run: |
+          {
+            echo "## perf-test — $(date -u +'%Y-%m-%d %H:%M UTC')"
+            echo
+            echo "ref: \`${{ steps.sha.outputs.short }}\` · branch: \`${{ github.ref_name }}\` · subs: ${{ inputs.subscribers }} · duration: ${{ inputs.duration }}s"
+            echo
+            if [ -f "$FILE" ]; then
+              echo '| metric | value |'
+              echo '|---|---|'
+              jq -r '.metrics | to_entries[] | "| \(.key) | \(.value) |"' "$FILE"
+            else
+              echo "_no results JSON produced_"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Pull rolling baseline from currently-published Pages
+        # Downloads index.json + the latest N run JSONs into data/ so
+        # perf-compare.py can score the new run against history.
+        # No-op on the very first deploy (index.json 404).
+        env:
+          BASE: https://openmoq.org/moqx/perf
+          KEEP: 180
+        run: |
+          mkdir -p data
+          if curl -fsSL "$BASE/index.json" -o data/index.json; then
+            jq -r '.runs[].file' data/index.json | head -n $((KEEP - 1)) | \
+              while read -r f; do
+                curl -fsSL "$BASE/$f" -o "data/$f" 2>/dev/null || true
+              done
+          fi
+
+      - name: Stage Pages payload (dashboard + rolling window + new run)
+        env:
+          KEEP: 180
+          FILE: ${{ steps.collect.outputs.run-file }}
+        run: |
+          OUT=perf-out
+          mkdir -p "$OUT/perf"
+          # Dashboard (status/index.html) is in-repo and uses ./perf at runtime
+          cp status/index.html "$OUT/index.html"
+          # Copy historical runs, then the new run (overrides any stale copy
+          # of the same SHA name)
+          cp data/run-*.json "$OUT/perf/" 2>/dev/null || true
+          cp "$FILE" "$OUT/perf/$FILE"
+          # Rebuild manifest (newest-first, capped at KEEP)
+          ls -1 "$OUT/perf/"run-*.json | sort -r | head -n "$KEEP" | \
+            jq -Rs '{runs: (split("\n") | map(select(length>0) | {file: (split("/") | last)}))}' \
+            > "$OUT/perf/index.json"
+
+      - name: Upload Pages artifact
+        # Picked up by actions/deploy-pages in the deploy job (gated to push-to-main).
+        # PR / dispatch runs still upload it so reviewers can download + inspect.
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: perf-out
+
+      - name: Upload workflow artifacts (always retained)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-results
+          path: |
+            ${{ steps.collect.outputs.run-file }}
+            perf-out/
+          retention-days: 30
+
+      - name: Compare vs rolling baseline + post PR comment
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          GH_TOKEN:  ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          FILE:      ${{ steps.collect.outputs.run-file }}
+        run: |
+          python3 scripts/perf-compare.py \
+            --current "$FILE" \
+            --data-dir data \
+            --window 10 \
+            --threshold 5 \
+            --output comment.md
+          gh pr comment "$PR_NUMBER" \
+            --repo "$GITHUB_REPOSITORY" \
+            --body-file comment.md
+
+  deploy:
+    needs: perf
+    # Only publish from main pushes — manual dispatch of feature branches,
+    # PR-context invocations, and schedules against non-main refs all skip
+    # the publish and leave the artifact attached to the run instead.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

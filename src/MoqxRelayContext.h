@@ -12,6 +12,7 @@
 #include "MoqxRelay.h"
 #include "ServiceMatcher.h"
 #include "UpstreamProvider.h"
+#include "auth/Auth.h"
 #include "config/Config.h"
 #include "stats/MoQStatsCollector.h"
 #include "stats/StatsRegistry.h"
@@ -50,6 +51,7 @@ public:
   struct ServiceEntry {
     config::ServiceConfig config;
     std::shared_ptr<MoqxRelay> relay;
+    std::shared_ptr<const auth::AuthTokenVerifier> verifier;
   };
 
   MoqxRelayContext(

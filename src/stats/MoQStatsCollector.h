@@ -48,6 +48,8 @@ public:
     void onSubscribeNamespaceSuccess() override;
     void onSubscribeNamespaceError(moxygen::SubscribeNamespaceErrorCode errorCode) override;
     void onUnsubscribeNamespace() override;
+    void onSubscribeTracksSuccess() override;
+    void onSubscribeTracksError(moxygen::SubscribeTracksErrorCode errorCode) override;
     void onTrackStatus() override;
     void onUnsubscribe() override;
     void onPublishDone(moxygen::PublishDoneStatusCode statusCode) override;
@@ -84,6 +86,8 @@ public:
     void onSubscribeNamespaceSuccess() override;
     void onSubscribeNamespaceError(moxygen::SubscribeNamespaceErrorCode errorCode) override;
     void onUnsubscribeNamespace() override;
+    void onSubscribeTracksSuccess() override;
+    void onSubscribeTracksError(moxygen::SubscribeTracksErrorCode errorCode) override;
     void onTrackStatus() override;
     void onUnsubscribe() override;
     void onPublishDone(moxygen::PublishDoneStatusCode statusCode) override;

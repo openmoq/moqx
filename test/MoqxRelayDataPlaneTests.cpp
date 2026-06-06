@@ -29,17 +29,17 @@ TEST_P(MoQRelayTest, DuplicateSubgroupReplacesActiveConsumers) {
 
   // First beginSubgroup gives v1 consumers; second call gives v2 consumers
   EXPECT_CALL(*mockConsumer1, beginSubgroup(0, 0, _, _))
-      .WillOnce([&](uint64_t, uint64_t, uint8_t, bool) {
+      .WillOnce([&](uint64_t, uint64_t, uint8_t, moxygen::BeginSubgroupOptions) {
         return folly::makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(sg1v1);
       })
-      .WillOnce([&](uint64_t, uint64_t, uint8_t, bool) {
+      .WillOnce([&](uint64_t, uint64_t, uint8_t, moxygen::BeginSubgroupOptions) {
         return folly::makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(sg1v2);
       });
   EXPECT_CALL(*mockConsumer2, beginSubgroup(0, 0, _, _))
-      .WillOnce([&](uint64_t, uint64_t, uint8_t, bool) {
+      .WillOnce([&](uint64_t, uint64_t, uint8_t, moxygen::BeginSubgroupOptions) {
         return folly::makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(sg2v1);
       })
-      .WillOnce([&](uint64_t, uint64_t, uint8_t, bool) {
+      .WillOnce([&](uint64_t, uint64_t, uint8_t, moxygen::BeginSubgroupOptions) {
         return folly::makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(sg2v2);
       });
 
@@ -83,7 +83,7 @@ TEST_P(MoQRelayTest, DuplicateSubgroupCancelledWhenNoActiveConsumers) {
   auto mockSg = std::make_shared<NiceMock<MockSubgroupConsumer>>();
 
   EXPECT_CALL(*mockConsumer, beginSubgroup(0, 0, _, _))
-      .WillOnce([&](uint64_t, uint64_t, uint8_t, bool) {
+      .WillOnce([&](uint64_t, uint64_t, uint8_t, moxygen::BeginSubgroupOptions) {
         return folly::makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(mockSg);
       });
 
@@ -128,14 +128,14 @@ TEST_P(MoQRelayTest, DuplicateSubgroupSkipsTombstonedSubscriber) {
 
   // First beginSubgroup: both A and B get consumers
   EXPECT_CALL(*consumerA, beginSubgroup(0, 0, _, _))
-      .WillOnce([&](uint64_t, uint64_t, uint8_t, bool) {
+      .WillOnce([&](uint64_t, uint64_t, uint8_t, moxygen::BeginSubgroupOptions) {
         return folly::makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(sgAv1);
       })
-      .WillOnce([&](uint64_t, uint64_t, uint8_t, bool) {
+      .WillOnce([&](uint64_t, uint64_t, uint8_t, moxygen::BeginSubgroupOptions) {
         return folly::makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(sgAv2);
       });
   EXPECT_CALL(*consumerB, beginSubgroup(0, 0, _, _))
-      .WillOnce([&](uint64_t, uint64_t, uint8_t, bool) {
+      .WillOnce([&](uint64_t, uint64_t, uint8_t, moxygen::BeginSubgroupOptions) {
         return folly::makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(sgBv1);
       });
 

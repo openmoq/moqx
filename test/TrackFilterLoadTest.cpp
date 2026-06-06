@@ -203,7 +203,7 @@ public:
   }
 
   folly::Expected<std::shared_ptr<SubgroupConsumer>, MoQPublishError>
-  beginSubgroup(uint64_t, uint64_t, Priority, bool) override {
+  beginSubgroup(uint64_t, uint64_t, Priority, BeginSubgroupOptions) override {
     return std::make_shared<LoadTestSubgroupConsumer>(
         clientId_,
         trackName_,

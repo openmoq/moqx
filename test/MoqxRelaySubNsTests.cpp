@@ -39,7 +39,7 @@ TEST_P(MoQRelayTest, SubscribeNamespaceDoesntAddDrainingPublish) {
       });
 
   EXPECT_CALL(*mockConsumer1, beginSubgroup(_, _, _, _))
-      .WillOnce([&](uint64_t, uint64_t, uint8_t, bool) {
+      .WillOnce([&](uint64_t, uint64_t, uint8_t, moxygen::BeginSubgroupOptions) {
         auto sg = std::make_shared<NiceMock<MockSubgroupConsumer>>();
         EXPECT_CALL(*sg, endOfSubgroup()).WillOnce(testing::Return(folly::unit));
         return folly::makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(sg);
