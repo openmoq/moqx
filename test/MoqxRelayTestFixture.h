@@ -12,8 +12,11 @@
 #pragma once
 
 #include "MoqxRelay.h"
+#include "relay/PublisherCrossExecFilter.h"
+#include "relay/SubscriberCrossExecFilter.h"
 #include <folly/coro/BlockingWait.h>
 #include <folly/io/async/EventBase.h>
+#include <folly/io/async/ScopedEventBaseThread.h>
 #include <folly/portability/GMock.h>
 #include <folly/portability/GTest.h>
 #include <moxygen/MoQTrackProperties.h>
@@ -31,12 +34,17 @@ namespace moxygen::test {
 
 enum class RelayMode {
   SingleThread,
+  MultiThread,
+  // Future: Mode3 — add here, then add a branch in SetUp() and INSTANTIATE entry
 };
 
 inline void PrintTo(RelayMode mode, std::ostream* os) {
   switch (mode) {
   case RelayMode::SingleThread:
     *os << "SingleThread";
+    return;
+  case RelayMode::MultiThread:
+    *os << "MultiThread";
     return;
   }
 }
@@ -55,8 +63,11 @@ public:
   void drive() override;
   void driveFor(int n);
 
+  void setRelayEvb(folly::EventBase* evb) { relayEvb_ = evb; }
+
 private:
   folly::EventBase evb_;
+  folly::EventBase* relayEvb_{nullptr};
 };
 
 // Test fixture for MoqxRelay and NamespaceTree tests.
@@ -83,7 +94,36 @@ protected:
       folly::Optional<SubscribeErrorCode> expectedError = folly::none
   );
 
-  template <typename Func> void verifyOnRelayExec(Func&& func) { func(); }
+  template <typename Func> void verifyOnRelayExec(Func&& func) {
+    if (relayEvb_) {
+      relayEvb_->runInEventBaseThreadAndWait(std::forward<Func>(func));
+    } else {
+      func();
+    }
+  }
+
+  void driveIfMultiThread() {
+    if (relayEvb_) {
+      exec_->drive();
+    }
+  }
+
+  // Drive both executors until `done()` is true or maxIters is reached. Each
+  // exec_->drive() flushes exec_ and (in MT/LocalForwarderMT modes) synchronizes
+  // with relayEvb_ via runInEventBaseThreadAndWait, so this deterministically
+  // advances the relay's async cascades (e.g. forwardChanged/NGR requestUpdate)
+  // instead of guessing a fixed drive count. Returns done() — false means it
+  // timed out. In SingleThread mode drive() degrades to a single loopOnce.
+  template <typename Pred> bool driveUntil(Pred&& done, int maxIters = 500) {
+    // SingleThread mode is fully synchronous: there is no relay thread to await,
+    // so at most one loopOnce can make new progress. Cap iterations at 1 to
+    // avoid spinning loopOnce maxIters times when a predicate stays false.
+    int iters = relayEvb_ ? maxIters : 1;
+    for (int i = 0; i < iters && !done(); ++i) {
+      exec_->drive();
+    }
+    return done();
+  }
 
   template <typename Func>
   auto withSessionContext(std::shared_ptr<MoQSession> session, Func&& func) -> decltype(func()) {
@@ -166,6 +206,8 @@ protected:
 
   std::shared_ptr<TestMoQExecutor> exec_;
   std::shared_ptr<MoqxRelay> relay_;
+  std::unique_ptr<folly::ScopedEventBaseThread> relayThread_;
+  folly::EventBase* relayEvb_{nullptr};
 };
 
 } // namespace moxygen::test

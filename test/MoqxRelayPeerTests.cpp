@@ -134,6 +134,7 @@ TEST_P(MoQRelayTest, LocalNamespaceDeliveredToPeerOnReconnect) {
 
   removeSession(localPublisher);
   removeSession(peerSession);
+  driveIfMultiThread(); // flush relay cleanup so it drops session refs before mocks are destroyed
 }
 
 // A mock session that simulates a peer announcing peerNs when the relay
