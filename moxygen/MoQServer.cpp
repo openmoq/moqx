@@ -7,6 +7,7 @@
 #include "moxygen/MoQServer.h"
 #include <folly/Portability.h>
 #include <folly/String.h>
+#include <folly/logging/xlog.h>
 #include <folly/net/NetOps.h>
 #include <proxygen/httpserver/samples/hq/FizzContext.h>
 #include <proxygen/lib/http/session/HQSession.h>
@@ -121,12 +122,12 @@ MoQServer::MoQServer(
 
 void MoQServer::registerAlpnHandler(const std::vector<std::string>& alpns) {
   if (!factory_) {
-    XLOG(INFO) << "Cannot register ALPN handler: factory not initialized";
+    XLOG(DBG1) << "Cannot register ALPN handler: factory not initialized";
     return;
   }
 
   if (hqServer_) {
-    XLOG(INFO) << "Cannot register ALPN handler: server already started";
+    XLOG(DBG1) << "Cannot register ALPN handler: server already started";
     return;
   }
 
@@ -326,7 +327,7 @@ void MoQServer::Handler::onHeadersComplete(
         negotiatedProtocol = wtProtocol.value();
         XLOG(DBG1) << "WebTransport: Negotiated protocol: " << *wtProtocol;
       } else {
-        VLOG(4) << "Failed to negotiate WebTransport protocol";
+        XLOG(DBG4) << "Failed to negotiate WebTransport protocol";
         resp.setStatusCode(400);
       }
     }

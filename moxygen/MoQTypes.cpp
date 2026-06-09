@@ -46,7 +46,7 @@ const char* getFrameTypeString(moxygen::FrameType type) {
 #if defined(__APPLE__)
   __builtin_unreachable();
 #else
-  LOG(FATAL) << "Unreachable";
+  XLOG(FATAL) << "Unreachable";
 #endif
 }
 
@@ -68,7 +68,7 @@ const char* getStreamTypeString(moxygen::StreamType type) {
 #if defined(__APPLE__)
   __builtin_unreachable();
 #else
-  LOG(FATAL) << "Unreachable";
+  XLOG(FATAL) << "Unreachable";
 #endif
 }
 
@@ -87,7 +87,7 @@ const char* getObjectStatusString(moxygen::ObjectStatus objectStatus) {
 #if defined(__APPLE__)
   __builtin_unreachable();
 #else
-  LOG(FATAL) << "Unreachable";
+  XLOG(FATAL) << "Unreachable";
 #endif
 }
 
@@ -236,6 +236,21 @@ const folly::F14FastSet<FrameType> kAllowedFramesForNewGroupRequest = {
     FrameType::REQUEST_UPDATE,
     FrameType::PUBLISH_OK};
 
+// v18+ SUBGROUP_DELIVERY_TIMEOUT (0x06): MAY appear in PUBLISH_OK,
+// SUBSCRIBE, or REQUEST_UPDATE.
+const folly::F14FastSet<FrameType> kAllowedFramesForSubgroupDeliveryTimeout = {
+    FrameType::PUBLISH_OK,
+    FrameType::SUBSCRIBE,
+    FrameType::REQUEST_UPDATE};
+
+// v18+ FILL_TIMEOUT (0x0A): MAY appear in FETCH only.
+const folly::F14FastSet<FrameType> kAllowedFramesForFillTimeout = {
+    FrameType::FETCH};
+
+// v18+ TRACK_NAMESPACE_PREFIX (0x34): MAY appear in REQUEST_UPDATE only.
+const folly::F14FastSet<FrameType> kAllowedFramesForTrackNamespacePrefix = {
+    FrameType::REQUEST_UPDATE};
+
 const folly::F14FastSet<FrameType> kAllowedFramesForTrackFilter = {
     FrameType::SUBSCRIBE_NAMESPACE};
 
@@ -258,6 +273,11 @@ const folly::F14FastMap<TrackRequestParamKey, folly::F14FastSet<FrameType>>
         {TrackRequestParamKey::FORWARD, kAllowedFramesForForward},
         {TrackRequestParamKey::NEW_GROUP_REQUEST,
          kAllowedFramesForNewGroupRequest},
+        {TrackRequestParamKey::SUBGROUP_DELIVERY_TIMEOUT,
+         kAllowedFramesForSubgroupDeliveryTimeout},
+        {TrackRequestParamKey::FILL_TIMEOUT, kAllowedFramesForFillTimeout},
+        {TrackRequestParamKey::TRACK_NAMESPACE_PREFIX,
+         kAllowedFramesForTrackNamespacePrefix},
         {TrackRequestParamKey::TRACK_FILTER, kAllowedFramesForTrackFilter},
 };
 
@@ -304,6 +324,15 @@ bool Parameters::isParamAllowed(TrackRequestParamKey key) const {
       key == TrackRequestParamKey::FORWARD &&
       frameType_ == FrameType::SUBSCRIBE_NAMESPACE) {
     return false;
+  }
+
+  // v18-only parameter keys.
+  if (key == TrackRequestParamKey::SUBGROUP_DELIVERY_TIMEOUT ||
+      key == TrackRequestParamKey::FILL_TIMEOUT ||
+      key == TrackRequestParamKey::TRACK_NAMESPACE_PREFIX) {
+    if (!majorVersion_.has_value() || *majorVersion_ < 18) {
+      return false;
+    }
   }
 
   auto it = kParamAllowlist.find(key);
@@ -401,7 +430,7 @@ Fetch::Fetch(
       priority(p),
       groupOrder(g),
       args(JoiningFetch(jsid, joiningStart, fetchType)) {
-  CHECK(
+  XCHECK(
       fetchType == FetchType::RELATIVE_JOINING ||
       fetchType == FetchType::ABSOLUTE_JOINING);
   for (const auto& param : pa) {

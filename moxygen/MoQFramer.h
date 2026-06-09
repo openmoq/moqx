@@ -8,6 +8,7 @@
 
 #include <folly/io/Cursor.h>
 #include <folly/io/IOBufQueue.h>
+#include <folly/logging/xlog.h>
 #include <moxygen/MoQTokenCache.h>
 #include <moxygen/MoQTypes.h>
 #include <moxygen/MoQVarint.h>
@@ -297,7 +298,7 @@ class MoQFrameParser {
       ObjectHeader& objectHeader) const noexcept;
 
   void initializeVersion(uint64_t versionIn) {
-    CHECK(!version_) << "Version already initialized";
+    XCHECK(!version_) << "Version already initialized";
     version_ = versionIn;
     useMoQVarint_ = getDraftMajorVersion(versionIn) >= 17;
   }
@@ -489,6 +490,13 @@ class MoQFrameParser {
       size_t& length,
       uint64_t version,
       uint64_t key) const noexcept;
+
+  folly::Expected<std::optional<Parameter>, ErrorCode> parseV18ParamValue(
+      folly::io::Cursor& cursor,
+      size_t& length,
+      uint64_t version,
+      uint64_t key,
+      ParamsType paramsType) const noexcept;
 
   folly::Expected<folly::Unit, ErrorCode> parseParams(
       folly::io::Cursor& cursor,
@@ -711,7 +719,7 @@ class MoQFrameWriter {
       const std::optional<uint64_t>& forceVersion = std::nullopt) const;
 
   void initializeVersion(uint64_t versionIn) {
-    CHECK(!version_) << "Version already initialized";
+    XCHECK(!version_) << "Version already initialized";
     version_ = versionIn;
     useMoQVarint_ = getDraftMajorVersion(versionIn) >= 17;
   }
@@ -825,6 +833,12 @@ class MoQFrameWriter {
       bool& error) const noexcept;
 
   void writeParamValue(
+      folly::IOBufQueue& writeBuf,
+      const Parameter& param,
+      size_t& size,
+      bool& error) const noexcept;
+
+  void writeV18ParamValue(
       folly::IOBufQueue& writeBuf,
       const Parameter& param,
       size_t& size,

@@ -9,6 +9,7 @@
 #include <folly/Expected.h>
 #include <folly/hash/Hash.h>
 #include <folly/io/IOBuf.h>
+#include <folly/logging/xlog.h>
 #include <algorithm>
 #include <optional>
 #include <vector>
@@ -575,12 +576,17 @@ using TrackRequestParameter = Parameter;
 
 enum class TrackRequestParamKey : uint64_t {
   AUTHORIZATION_TOKEN = 3,
+  // Key 0x02: DELIVERY_TIMEOUT for drafts < 18
+  // OBJECT_DELIVERY_TIMEOUT for drafts >= 18.
   DELIVERY_TIMEOUT = 2,
+  OBJECT_DELIVERY_TIMEOUT = 2,
   // Key 0x04: MAX_CACHE_DURATION for drafts < 18
   // RENDEZVOUS_TIMEOUT for drafts >= 18.
   MAX_CACHE_DURATION = 4,
   RENDEZVOUS_TIMEOUT = 4,
+  SUBGROUP_DELIVERY_TIMEOUT = 0x06,
   PUBLISHER_PRIORITY = 0x0E,
+  FILL_TIMEOUT = 0x0A,
   SUBSCRIBER_PRIORITY = 0x20,
   SUBSCRIPTION_FILTER = 0x21,
   EXPIRES = 8,
@@ -589,6 +595,7 @@ enum class TrackRequestParamKey : uint64_t {
   FORWARD = 0x10,
   TRACK_FILTER = 0x29,
   NEW_GROUP_REQUEST = 0x32,
+  TRACK_NAMESPACE_PREFIX = 0x34,
 };
 
 inline bool isRendezvousTimeoutParam(uint64_t key, uint64_t majorVersion) {
@@ -650,13 +657,13 @@ class Parameters {
     if (!isParamAllowed(key)) {
       return folly::makeUnexpected(ErrorCode::INVALID_REQUEST_ID);
     }
-    CHECK_LE(position, params_.size());
+    XCHECK_LE(position, params_.size());
     params_.insert(params_.begin() + position, std::move(param));
     return folly::unit;
   }
 
   void eraseParam(size_t position) {
-    CHECK_LT(position, params_.size());
+    XCHECK_LT(position, params_.size());
     params_.erase(params_.begin() + position);
   }
 
@@ -1076,7 +1083,7 @@ struct TrackNamespace {
     return true;
   }
   void trimEnd() {
-    CHECK_GT(size(), 0);
+    XCHECK_GT(size(), 0u);
     trackNamespace.pop_back();
   }
 };
@@ -1271,7 +1278,7 @@ struct JoiningFetch {
       : joiningRequestID(jsid),
         joiningStart(joiningStartIn),
         fetchType(fetchTypeIn) {
-    CHECK(
+    XCHECK(
         fetchType == FetchType::RELATIVE_JOINING ||
         fetchType == FetchType::ABSOLUTE_JOINING);
   }
