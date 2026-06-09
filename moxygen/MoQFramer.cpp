@@ -70,6 +70,9 @@ ParamValueEncoding paramEncodingV18(uint64_t key) {
     case K::AUTHORIZATION_TOKEN:
     case K::SUBSCRIPTION_FILTER:
     case K::TRACK_NAMESPACE_PREFIX:
+    // TRACK_FILTER (0x29) is a fork-local active proposal; length-prefixed
+    // value decoded via parseVariableParam (see parseTrackFilter).
+    case K::TRACK_FILTER:
       return ParamValueEncoding::LengthPrefixed;
   }
   XLOG(DFATAL) << "paramEncodingV18: unknown key " << key;
