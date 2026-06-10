@@ -22,7 +22,7 @@ The following is a list of ideals for PR content — developer discretion and so
 
 PRs with all checks passing may be merged by maintainers at unpredictable times based on availability and relative priority. The author can signal merge intent in the following ways:
 
-- **Draft** — not ready for review. No auto-reviewer request; CI still runs.
+- **Draft** — not ready for review; CI still runs.
 - **`WIP:` prefix** — ready for review and CI, not ready for merge.
 - **Ready** (non-draft, no `WIP:` prefix) — merge when all checks pass (manual for now).
 
