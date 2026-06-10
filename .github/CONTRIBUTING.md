@@ -50,9 +50,8 @@ maintainer unblocks them; subsequent runs are automatic.
 
 ## Reviews
 
-At least one approving review from a collaborator is required.
-[CODEOWNERS](CODEOWNERS) auto-requests reviewers. Review on GitHub or
-[Reviewable](https://reviewable.io/reviews/openmoq/moxygen).
+At least one approving review from a collaborator is required. Review
+on GitHub or [Reviewable](https://reviewable.io/reviews/openmoq/moxygen).
 
 **Admin override** (`gh pr merge --admin`) is for:
 
