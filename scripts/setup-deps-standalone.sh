@@ -100,31 +100,46 @@ fi
 # Boost linking: prefer static when available (more portable artifacts);
 # fall back to shared on distros that don't ship libboost_*.a (CentOS/RHEL).
 # Override via env: BOOST_USE_STATIC_LIBS={auto,on,off}
-#   auto (default) — ask cmake's own find_package whether static is findable
+#   auto (default) — probe the compiler for the static archives moxygen needs
 #   on             — force static (cmake configure fails loudly if missing)
-#   off            — force shared (omit the flag entirely)
-BOOST_STATIC_ARG=()
+#   off            — force shared
+#
+# The auto probe asks the compiler driver to resolve each required Boost
+# component's static archive via its own library search paths (no hardcoded
+# paths, no distro sniffing). -print-file-name echoes back an absolute path
+# when the archive exists and the bare name otherwise. We require *every*
+# component moxygen links (standalone/CMakeLists.txt) to be present, since a
+# single missing .a breaks the static link at ninja time -- which is what
+# `cmake --find-package -DMODE=EXIST` failed to catch (it only checks that
+# Boost is locatable at all and ignores Boost_USE_STATIC_LIBS).
+#
+# We always pass the flag explicitly (ON or OFF), never omit it: a re-run of
+# `setup` reuses the existing build dir, and omitting would leave a stale
+# Boost_USE_STATIC_LIBS=ON in CMakeCache.txt in force.
 case "${BOOST_USE_STATIC_LIBS:-auto}" in
     on|ON|1|true)
-        BOOST_STATIC_ARG=(-DBoost_USE_STATIC_LIBS=ON)
+        boost_static=ON
         ;;
     off|OFF|0|false)
-        ;; # explicitly shared
+        boost_static=OFF
+        ;;
     auto|Auto|AUTO|"")
-        # Use CMake's own find_package logic — same code path as the real
-        # configure step below, so the answer is definitive.
-        if cmake --find-package \
-                 -DNAME=Boost -DCOMPILER_ID=GNU -DLANGUAGE=CXX -DMODE=EXIST \
-                 -DBoost_USE_STATIC_LIBS=ON >/dev/null 2>&1; then
-            BOOST_STATIC_ARG=(-DBoost_USE_STATIC_LIBS=ON)
-        fi
+        boost_static=ON
+        for comp in context filesystem program_options regex; do
+            loc=$("${CXX:-c++}" -print-file-name="libboost_${comp}.a" 2>/dev/null)
+            if [[ "$loc" != /* ]]; then
+                boost_static=OFF
+                break
+            fi
+        done
         ;;
     *)
         echo "ERROR: BOOST_USE_STATIC_LIBS must be auto|on|off (got '${BOOST_USE_STATIC_LIBS}')" >&2
         exit 1
         ;;
 esac
-echo "==> Boost linking: ${BOOST_STATIC_ARG[*]:-shared (default)}"
+BOOST_STATIC_ARG=(-DBoost_USE_STATIC_LIBS="${boost_static}")
+echo "==> Boost linking: ${boost_static} (static libs)"
 
 echo "==> Configuring standalone moxygen build (profile: ${PROFILE})..."
 # BUILD_TESTS=ON: gates the GoogleTest FetchContent in moxygen's standalone
