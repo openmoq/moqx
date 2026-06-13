@@ -4584,6 +4584,21 @@ void MoQFrameWriter::writeV18ParamValue(
           writeBuf.append(tmpBuf.move());
           size += tmpSize;
         }
+      } else if (
+          param.key ==
+          folly::to_underlying(TrackRequestParamKey::TRACK_FILTER)) {
+        // TRACK_FILTER (0x29) is a fork-local length-prefixed param; its value
+        // lives in asTrackFilter, not asString. Mirror the draft-16 path in
+        // writeParamValue so the v18 wire form round-trips (see parseTrackFilter
+        // via parseV18ParamValue -> parseVariableParam).
+        folly::IOBufQueue tmpBuf{folly::IOBufQueue::cacheChainLength()};
+        size_t tmpSize = 0;
+        writeTrackFilter(tmpBuf, param.asTrackFilter, tmpSize, error);
+        if (!error) {
+          writeVarint(writeBuf, tmpSize, size, error);
+          writeBuf.append(tmpBuf.move());
+          size += tmpSize;
+        }
       } else {
         writeFixedString(writeBuf, param.asString, size, error);
       }
