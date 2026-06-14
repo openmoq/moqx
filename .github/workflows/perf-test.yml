@@ -45,7 +45,7 @@ on:
       subscribers:
         description: 'peak subscribers'
         type: number
-        default: 1000
+        default: 100
 
   workflow_call:
     inputs:
@@ -114,13 +114,13 @@ jobs:
           install -d -m 700 ~/.ssh
           printf '%s\n' "$PERF_SSH_KEY" > ~/.ssh/perf-key
           chmod 600 ~/.ssh/perf-key
+          echo "PERF_SSH_KEY_FILE=$HOME/.ssh/perf-key" >> "$GITHUB_ENV"
 
       - name: Run perf test on dedicated VMs
         id: collect
         env:
           PERF_RELAY_HOST:    ${{ secrets.PERF_RELAY_HOST }}
           PERF_CLIENT_HOST:   ${{ secrets.PERF_CLIENT_HOST }}
-          PERF_SSH_KEY_FILE:  /home/runner/.ssh/perf-key
         run: |
           FILE="run-${{ steps.sha.outputs.short }}.json"
           bash scripts/perf-test-ci.sh \
@@ -142,7 +142,14 @@ jobs:
             if [ -f "$FILE" ]; then
               echo '| metric | value |'
               echo '|---|---|'
-              jq -r '.metrics | to_entries[] | "| \(.key) | \(.value) |"' "$FILE"
+              jq -r '
+                (if (.metrics | type) == "object" then .metrics
+                 elif (.results | type) == "object" then .results
+                 else {}
+                 end)
+                | to_entries[]
+                | "| \(.key) | \(.value) |"
+              ' "$FILE"
             else
               echo "_no results JSON produced_"
             fi

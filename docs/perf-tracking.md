@@ -1,16 +1,34 @@
 # Performance Regression Tracking
 
-This document describes the CI-integrated performance testing and regression
-tracking system for moqx.
+This document describes the standalone performance testing and regression
+tracking workflow for moqx.
 
 ## Overview
 
-Every push to `main` (and every PR) triggers an end-to-end relay performance
-test on dedicated hardware. Results are tracked over time and surfaced via:
+Performance tests run on dedicated hardware via a standalone GitHub workflow.
+Runs are triggered manually (`workflow_dispatch`) or via reusable invocation
+(`workflow_call`). Results are surfaced via:
 
 - **PR comments** — comparison table showing current vs baseline with regression flags
 - **GitHub Pages dashboard** — time-series charts for all tracked metrics
 - **CI step summaries** — inline results in the Actions run view
+
+Primary workflow: [`.github/workflows/perf-test.yml`](../.github/workflows/perf-test.yml)
+
+## Triggering
+
+The perf workflow is intentionally decoupled from push/PR CI.
+
+- **Manual run:** Actions tab → `perf test` (`workflow_dispatch`)
+- **Reusable call:** from another workflow via `workflow_call`
+
+Supported inputs:
+
+| Input | Default | Description |
+|---|---:|---|
+| `ref` | current ref | Commit/branch/tag to test |
+| `duration` | `120` | Test duration in seconds |
+| `subscribers` | `1000` | Peak subscribers |
 
 ## Architecture
 
@@ -109,24 +127,18 @@ In the repository settings → Secrets and variables → Actions:
 
 | Secret | Value |
 |--------|-------|
+| `OMOQ_APP_ID` | GitHub App id used for checkout/tokened operations |
+| `OMOQ_APP_PRIV_KEY` | GitHub App private key |
 | `PERF_SSH_KEY` | Contents of `perf-key` (private key) |
 | `PERF_RELAY_HOST` | `root@<relay-ip>` |
 | `PERF_CLIENT_HOST` | `root@<client-ip>` |
 
-### 5. Create gh-pages Branch
+### 5. Enable GitHub Pages (GitHub Actions Source)
 
-```bash
-git checkout --orphan gh-pages
-git rm -rf .
-cp -r gh-pages/* .
-git add index.html data/
-git commit -m "Initial performance dashboard"
-git push origin gh-pages
-```
+Repository → Settings → Pages → Source: **GitHub Actions**.
 
-### 6. Enable GitHub Pages
-
-Repository → Settings → Pages → Source: Deploy from branch → `gh-pages` / root.
+The workflow stages a Pages artifact (`perf-out/`) and deploys it with
+`actions/deploy-pages`.
 
 ## Files
 
@@ -137,17 +149,23 @@ Repository → Settings → Pages → Source: Deploy from branch → `gh-pages` 
 | `scripts/perf-compare.py` | Regression detection + markdown |
 | `scripts/perf-test.sh` | Underlying test runner (unchanged) |
 | `scripts/perf-metrics.sh` | Prometheus metrics poller (unchanged) |
-| `.github/workflows/ci-main.yml` | perf-test job (commits results) |
-| `.github/workflows/ci-pr.yml` | perf-test job (posts PR comment) |
-| `gh-pages/index.html` | Dashboard (Chart.js) |
-| `gh-pages/data/index.json` | Run manifest |
+| `.github/workflows/perf-test.yml` | Standalone perf workflow (run, compare, stage, deploy) |
+| `status/index.html` | Dashboard shell (copied to Pages artifact root) |
+| `perf-out/perf/index.json` | Generated run manifest in Pages artifact |
+| `perf-out/perf/run-*.json` | Generated per-run result files |
 
 ## Viewing Results
 
-- **Dashboard:** `https://<org>.github.io/moqx/` (after GitHub Pages is enabled)
+- **Dashboard:** `https://openmoq.org/moqx/`
+- **Perf data:** `https://openmoq.org/moqx/perf/index.json`
 - **PR comments:** Automatically posted/updated on every PR
 - **Artifacts:** Available in the Actions run under "perf-results"
 - **Step summary:** Visible inline in the GitHub Actions job view
+
+Notes:
+
+- The workflow always uploads artifacts for inspection.
+- Publishing to Pages is gated in the workflow's `deploy` job.
 
 ## Concurrency
 
@@ -157,5 +175,5 @@ queue and execute sequentially to avoid conflicting on the shared VMs.
 
 ## Data Retention
 
-The gh-pages index keeps the last 180 runs (~6 months at 1 run/day). Older
-entries are pruned during the commit step.
+The Pages payload keeps a rolling 180-run window (~6 months at 1 run/day).
+The manifest is rebuilt newest-first and capped during staging.

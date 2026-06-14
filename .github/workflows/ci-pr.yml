@@ -13,6 +13,11 @@ concurrency:
 permissions:
   contents: read
   checks: write
+  pull-requests: write   # perf job posts a comparison comment on the PR
+  # Required by perf-test.yml's deploy job at parse time even though that job
+  # is gated to push-to-main and will never actually execute in a PR context.
+  pages: write
+  id-token: write
 
 jobs:
   check-format:
@@ -262,3 +267,16 @@ jobs:
           path: |
             bench-results.json
             bench-output.txt
+
+  perf:
+    needs: [build]
+    if: needs.build.result == 'success'
+    # Non-blocking: do NOT add 'perf' to required status checks in branch
+    # protection — a regression fails the job but never prevents merging.
+    # (continue-on-error is not a valid keyword for reusable-workflow-call jobs)
+    uses: ./.github/workflows/perf-test.yml
+    with:
+      ref: ${{ github.event.pull_request.head.sha }}
+      duration: 120
+      subscribers: 100
+    secrets: inherit
