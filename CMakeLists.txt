@@ -93,6 +93,12 @@ add_compile_definitions(
   "FOLLY_XLOG_STRIP_PREFIXES=\"${CMAKE_SOURCE_DIR}:${CMAKE_BINARY_DIR}\""
 )
 
+# --- catapult (CAT/CWT/MOQT auth implementation) ---
+
+set(ENABLE_LOGGING OFF CACHE BOOL "" FORCE)
+set(CATAPULT_ENABLE_JSON OFF CACHE BOOL "" FORCE)
+add_subdirectory(deps/catapult EXCLUDE_FROM_ALL)
+
 # --- Cache library (forked from moxygen) ---
 
 add_library(moqx_cache STATIC
@@ -165,6 +171,7 @@ target_link_libraries(moqx_core PUBLIC
   Folly::folly_io_async_fdsock_async_fd_socket
   moxygen::moxygen_moqclient
   OpenSSL::Crypto
+  catapult
 )
 
 target_compile_options(moqx_core PRIVATE -Wall -Wextra -Wpedantic)
