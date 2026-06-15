@@ -204,12 +204,16 @@ std::shared_ptr<TrackConsumer> MoQRelayTest::doPublish(
 std::shared_ptr<Publisher::SubscribeNamespaceHandle> MoQRelayTest::doSubscribeNamespace(
     std::shared_ptr<MoQSession> session,
     const TrackNamespace& nsPrefix,
-    bool addToState
+    bool addToState,
+    std::shared_ptr<Publisher::NamespacePublishHandle> namespacePublishHandle
 ) {
   SubscribeNamespace subNs;
   subNs.trackNamespacePrefix = nsPrefix;
   return withSessionContext(session, [&]() {
-    auto task = publisherInterface()->subscribeNamespace(std::move(subNs), nullptr);
+    auto task = publisherInterface()->subscribeNamespace(
+        std::move(subNs),
+        std::move(namespacePublishHandle)
+    );
     auto res = folly::coro::blockingWait(std::move(task), exec_.get());
     EXPECT_TRUE(res.hasValue());
     if (res.hasValue()) {

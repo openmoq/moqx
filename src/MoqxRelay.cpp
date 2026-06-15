@@ -174,8 +174,11 @@ std::shared_ptr<Subscriber::PublishNamespaceHandle> MoqxRelay::doPublishNamespac
   for (auto& [outSession, info] : sessions) {
     if (outSession != session && (info.options == SubscribeNamespaceOptions::NAMESPACE ||
                                   info.options == SubscribeNamespaceOptions::BOTH)) {
-      if (info.namespacePublishHandle) {
-        // Draft 16+: send NAMESPACE message on the bidi stream
+      // Bidi NAMESPACE is draft 16+ only; the handle is populated regardless of
+      // version, so gate on it (matching doPublishNamespaceDone).
+      auto maybeVersion = outSession->getNegotiatedVersion();
+      if (maybeVersion.has_value() && getDraftMajorVersion(*maybeVersion) >= 16 &&
+          info.namespacePublishHandle) {
         TrackNamespace suffix(std::vector<std::string>(
             pubNs.trackNamespace.trackNamespace.begin() + info.trackNamespacePrefix.size(),
             pubNs.trackNamespace.trackNamespace.end()

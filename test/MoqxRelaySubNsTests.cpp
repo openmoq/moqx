@@ -114,19 +114,34 @@ TEST_P(MoQRelayTest, SubscribeNamespaceEmptyPrefixAllowedV16) {
   // Override the negotiated version to draft-16
   ON_CALL(*session, getNegotiatedVersion())
       .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
+  auto publisher = createMockSession();
+
+  // A draft-16 subscriber receives announcements via the bidi NAMESPACE message
+  // (on the publish handle), not the separate-stream PUBLISH_NAMESPACE path.
+  auto handle = std::make_shared<NiceMock<MockNamespacePublishHandle>>();
+  EXPECT_CALL(*handle, namespaceMsg(_)).Times(1);
+  EXPECT_CALL(*session, publishNamespace(_, _)).Times(0);
 
   TrackNamespace emptyNs{{}};
-  doSubscribeNamespace(session, emptyNs);
+  doSubscribeNamespace(session, emptyNs, /*addToState=*/true, handle);
+  doPublishNamespace(publisher, kTestNamespace);
+  exec_->drive();
 
+  removeSession(publisher);
   removeSession(session);
 }
 
 TEST_P(MoQRelayTest, ExactNamespaceSubscriberReceivesPublishNamespace) {
-  auto subscriber = createMockSession();
+  auto subscriber = createMockSession(); // default kVersionDraftCurrent (< 16)
   auto publisher = createMockSession();
 
-  // Subscriber subscribes to exact namespace {"test", "namespace"}
-  doSubscribeNamespace(subscriber, kTestNamespace);
+  // Subscribe with a non-null publish handle, as MoQRelaySession always does.
+  // A draft <= 15 subscriber must forward via the separate-stream
+  // PUBLISH_NAMESPACE path, never the bidi handle (whose namespaceMsg is an
+  // unimplemented moxygen stub that aborts the relay).
+  auto handle = std::make_shared<NiceMock<MockNamespacePublishHandle>>();
+  EXPECT_CALL(*handle, namespaceMsg(_)).Times(0);
+  doSubscribeNamespace(subscriber, kTestNamespace, /*addToState=*/true, handle);
 
   // Expect the subscriber to receive a publishNamespace forwarding when
   // the publisher announces the same exact namespace

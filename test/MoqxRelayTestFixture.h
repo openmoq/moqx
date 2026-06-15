@@ -127,7 +127,8 @@ protected:
   std::shared_ptr<Publisher::SubscribeNamespaceHandle> doSubscribeNamespace(
       std::shared_ptr<MoQSession> session,
       const TrackNamespace& nsPrefix,
-      bool addToState = true
+      bool addToState = true,
+      std::shared_ptr<Publisher::NamespacePublishHandle> namespacePublishHandle = nullptr
   );
 
   std::shared_ptr<MockSubgroupConsumer> createMockSubgroupConsumer();
