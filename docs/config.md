@@ -62,7 +62,7 @@ listeners:
       key_file:  /etc/moqx/key.pem
     endpoint: /moq-relay
     quic_stack: mvfst         # optional; default mvfst
-    moqt_versions: []         # optional; empty = all supported versions
+    moqt_versions: []         # optional; empty = default [14, 16]
     quic: { ... }             # optional; overrides listener_defaults.quic
 ```
 

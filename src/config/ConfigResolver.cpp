@@ -26,9 +26,13 @@ std::string matchRuleErrorLabel(const std::string& name, size_t j) {
   return "Service '" + name + "' match[" + std::to_string(j) + "]";
 }
 
+// Default versions when moqt_versions is unset. Excludes draft-18 (in moxygen's
+// kSupportedVersions but not yet interoperable); configure moqt_versions to opt in.
+constexpr const char* kDefaultMoqtVersions = "14,16";
+
 std::string moqtVersionsToString(const ParsedListenerConfig& listener) {
   if (!listener.moqt_versions.value().has_value() || listener.moqt_versions.value()->empty()) {
-    return "";
+    return kDefaultMoqtVersions;
   }
   return folly::join(',', *listener.moqt_versions.value());
 }
