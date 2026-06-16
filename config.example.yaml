@@ -12,7 +12,7 @@ listeners:
       # key_file: /path/to/key.pem     # Required when insecure: false
       insecure: true          # Skip TLS for local development
     endpoint: "/moq-relay"    # WebTransport endpoint path
-    # moqt_versions: [14, 16] # MOQT draft versions (empty = all supported)
+    # moqt_versions: [14, 16] # MOQT draft versions (empty = default 14,16)
     # quic:                   # Per-listener QUIC overrides (optional; inherits listener_defaults.quic)
     #   max_data: 33554432    # Override connection flow control window for this listener
 

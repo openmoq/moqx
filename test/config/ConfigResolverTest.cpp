@@ -562,7 +562,7 @@ TEST(ResolveConfig, MinimalInsecure) {
   EXPECT_EQ(resolved.listeners[0].address.getPort(), 9668);
   EXPECT_TRUE(std::holds_alternative<Insecure>(resolved.listeners[0].tlsMode));
   EXPECT_EQ(resolved.listeners[0].endpoint, "/moq-relay");
-  EXPECT_EQ(resolved.listeners[0].moqtVersions, "");
+  EXPECT_EQ(resolved.listeners[0].moqtVersions, "14,16");
   EXPECT_THAT(result.value().warnings, IsEmpty());
 
   ASSERT_EQ(resolved.services.size(), 1);
@@ -830,7 +830,7 @@ TEST(ResolveConfig, VersionsEmpty) {
   auto cfg = makeMinimalInsecureConfig();
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasValue());
-  EXPECT_EQ(result.value().config.listeners[0].moqtVersions, "");
+  EXPECT_EQ(result.value().config.listeners[0].moqtVersions, "14,16");
 }
 
 TEST(ResolveConfig, VersionsPopulated) {
