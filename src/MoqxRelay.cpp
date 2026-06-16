@@ -399,6 +399,9 @@ Subscriber::PublishResult MoqxRelay::publishWithSession(
       }
   );
 
+  // The publisher data path already runs on relayExec_, but the subscriber
+  // control path (unsubscribe/requestUpdate) reaches the forwarder from a
+  // session I/O thread, so its callbacks must hop back before touching state.
   if (relayExec_) {
     forwarder->setCallback(
         std::make_shared<CrossExecForwarderCallback>(relayExec_, forwarder, shared_from_this())
@@ -510,21 +513,15 @@ bool MoqxRelay::addSubscriberAndPublish(
     bool forward,
     bool pinned
 ) {
-  auto p = startPublish(
-      session,
-      forwarder,
-      forward,
-      pinned,
-      relayExec_ ? session->getExecutor() : nullptr
-  );
+  folly::Executor* subscriberExec = relayExec_ ? session->getExecutor() : nullptr;
+  auto p = startPublish(session, forwarder, forward, pinned, subscriberExec);
   if (!p) {
     return false;
   }
-  // Run awaitPublishReply on relayExec_ so onPublishOk and detach() (from
-  // publishDone) are always on the same thread and cannot race. For
-  // single-thread (relayExec_ == nullptr) this is the subscriber's exec.
+  // On relayExec() so onPublishOk and detach() (from publishDone) cannot race.
+  auto exec = relayExec();
   co_withExecutor(
-      relayExec_ ? static_cast<folly::Executor*>(relayExec_) : session->getExecutor(),
+      folly::getKeepAliveToken(exec),
       awaitPublishReply(forwarder, std::move(p->subscriber), std::move(p->reply))
   )
       .start();

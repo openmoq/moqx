@@ -115,7 +115,7 @@ private:
   // When use_relay_thread=true: one dedicated thread per service, each with its
   // own executor, isolating relay state from I/O threads.  Null when disabled.
   // Each relay owns its MoQFollyExecutorImpl; the pool just keeps threads alive.
-  std::shared_ptr<folly::IOThreadPoolExecutor> relayThreadPool_;
+  std::unique_ptr<folly::IOThreadPoolExecutor> relayThreadPool_;
 
   folly::F14FastMap<std::string, ServiceEntry> services_;
   ServiceMatcher serviceMatcher_;

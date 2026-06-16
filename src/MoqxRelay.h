@@ -103,14 +103,18 @@ public:
   // a non-zero value without those callbacks is just topN+N with no benefit.
   static constexpr uint64_t kDefaultMaxDeselected = 0;
 
+  // relayExec, when set, is owned by the relay and isolates all state on it;
+  // null runs everything on the calling thread.
   explicit MoqxRelay(
       config::CacheConfig cache = {},
       std::string relayID = {},
+      std::shared_ptr<folly::Executor> relayExec = nullptr,
       uint64_t maxDeselected = kDefaultMaxDeselected,
       std::chrono::milliseconds idleTimeout = kDefaultIdleTimeout,
       std::chrono::milliseconds activityThreshold = kDefaultActivityThreshold
   )
-      : relayID_(std::move(relayID)), maxDeselected_(maxDeselected), idleTimeout_(idleTimeout),
+      : relayID_(std::move(relayID)), ownedRelayExec_(std::move(relayExec)),
+        relayExec_(ownedRelayExec_.get()), maxDeselected_(maxDeselected), idleTimeout_(idleTimeout),
         activityThreshold_(activityThreshold) {
     if (cache.maxCachedTracks > 0) {
       cache_ = std::make_unique<MoqxCache>(cache.maxCachedTracks, cache.maxCachedGroupsPerTrack);
@@ -119,19 +123,6 @@ public:
       cache_->setDefaultMaxCacheDuration(cache.defaultMaxCacheDuration);
       cache_->setMaxAllowedCacheDuration(cache.maxCacheDuration);
     }
-  }
-
-  // Optionally isolate relay state on a dedicated executor thread.
-  // When set, all public entry points switch to relayExec before touching
-  // relay state, and consumer callbacks to/from sessions are wrapped with
-  // cross-executor filters. relayExec must outlive this relay.
-  // If not set (default), all operations run on the calling thread.
-  void setRelayExec(folly::Executor* relayExec) { relayExec_ = relayExec; }
-
-  // Takes ownership of exec and uses it as the relay executor.
-  void setRelayExec(std::shared_ptr<folly::Executor> exec) {
-    ownedRelayExec_ = std::move(exec);
-    relayExec_ = ownedRelayExec_.get();
   }
 
   folly::Executor* getRelayExec() const { return relayExec_; }

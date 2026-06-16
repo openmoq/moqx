@@ -28,7 +28,7 @@ MoqxRelayContext::MoqxRelayContext(
 )
     : serviceMatcher_(services), relayID_(relayID) {
   if (useRelayThread && !services.empty()) {
-    relayThreadPool_ = std::make_shared<folly::IOThreadPoolExecutor>(
+    relayThreadPool_ = std::make_unique<folly::IOThreadPoolExecutor>(
         services.size(),
         std::make_shared<folly::NamedThreadFactory>("moqx-relay")
     );
@@ -36,8 +36,11 @@ MoqxRelayContext::MoqxRelayContext(
     XCHECK_EQ(evbs.size(), services.size());
     size_t i = 0;
     for (const auto& [name, svc] : services) {
-      auto relay = std::make_shared<MoqxRelay>(svc.cache, relayID);
-      relay->setRelayExec(std::make_shared<moxygen::MoQFollyExecutorImpl>(evbs[i++].get()));
+      auto relay = std::make_shared<MoqxRelay>(
+          svc.cache,
+          relayID,
+          std::make_shared<moxygen::MoQFollyExecutorImpl>(evbs[i++].get())
+      );
       services_.emplace(
           name,
           ServiceEntry{
