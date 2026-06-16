@@ -117,7 +117,8 @@ int main(int argc, char* argv[]) {
   // === 6. Initialize services ===
   // Construct and configure the application's own services
   // (MoqxRelayContext, MoqxRelayServer, etc.)
-  auto context = std::make_shared<MoqxRelayContext>(config.services, config.relayID);
+  auto context =
+      std::make_shared<MoqxRelayContext>(config.services, config.relayID, config.useRelayThread);
 
   // === 6a. Stats registry ===
   auto statsRegistry = std::make_shared<stats::StatsRegistry>();
