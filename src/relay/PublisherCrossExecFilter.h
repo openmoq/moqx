@@ -37,6 +37,11 @@ public:
       std::shared_ptr<NamespacePublishHandle> namespacePublishHandle
   ) override;
 
+  folly::coro::Task<SubscribeTracksResult> subscribeTracks(
+      moxygen::SubscribeTracks subTracks,
+      std::shared_ptr<PublishBlockedHandle> publishBlockedHandle = nullptr
+  ) override;
+
   void goaway(moxygen::Goaway goaway) override;
 
 private:

@@ -664,6 +664,41 @@ MoqxRelay::PublishSetupResult MoqxRelay::publishWithSession(
     }
   }
 
+  // Draft 18+: also fan out to SUBSCRIBE_TRACKS subscribers from the parallel
+  // tracks tree. They live in an independent overlap space and only want
+  // PUBLISH messages (no NAMESPACE / NAMESPACE_DONE).
+  NamespaceTree::SessionSubscriberList tracksSessions;
+  auto tracksNode = tracksTree_.findNode(
+      pub.fullTrackName.trackNamespace,
+      /*createMissingNodes=*/false,
+      NamespaceTree::MatchType::Exact,
+      &tracksSessions
+  );
+  if (tracksNode) {
+    tracksNode->forEachSubscriber(
+        [&](const std::shared_ptr<MoQSession>& outSession,
+            const NamespaceTree::NamespaceNode::NamespaceSubscriberInfo& info) {
+          tracksSessions.emplace_back(outSession, info);
+        }
+    );
+  }
+  for (auto& [outSession, info] : tracksSessions) {
+    if (outSession != session) {
+      nSubscribers++;
+      auto* publisherExec = relayExec_ ? session->getExecutor() : nullptr;
+      if (!addSubscriberAndPublish(
+              outSession,
+              forwarder,
+              info.forward,
+              /*pinned=*/true,
+              publisherExec
+          )) {
+        XLOG(ERR) << "addSubscriberAndPublish failed for " << forwarder->fullTrackName();
+        continue;
+      }
+    }
+  }
+
   // Forward if there are direct subscribers OR TRACK_FILTER subscribers
   // (PropertyRanking needs objects to evaluate property values for ranking).
   // When subscribers join later via subscribeNamespace, forwardChanged() sends REQUEST_UPDATE.
@@ -1169,6 +1204,45 @@ private:
   TrackNamespace trackNamespacePrefix_;
 };
 
+// Draft 18+: handle returned from subscribeTracks(). Calls unsubscribeTracks()
+// on destruction / explicit cancel, mirroring NamespaceSubscription above.
+class MoqxRelay::TracksSubscription : public Publisher::SubscribeTracksHandle {
+public:
+  TracksSubscription(
+      std::shared_ptr<MoqxRelay> relay,
+      std::shared_ptr<MoQSession> session,
+      RequestOk ok,
+      TrackNamespace trackNamespacePrefix
+  )
+      : Publisher::SubscribeTracksHandle(std::move(ok)), relay_(std::move(relay)),
+        session_(std::move(session)), trackNamespacePrefix_(std::move(trackNamespacePrefix)) {}
+
+  void unsubscribeTracks() override {
+    if (relay_) {
+      relay_->unsubscribeTracks(trackNamespacePrefix_, std::move(session_));
+      relay_.reset();
+    }
+  }
+
+  folly::coro::Task<RequestUpdateResult> requestUpdate(RequestUpdate reqUpdate) override {
+    // Draft-18 Section 10.9.2 allows REQUEST_UPDATE for SUBSCRIBE_TRACKS to update
+    // the TRACK_NAMESPACE_PREFIX parameter. However, moxygen's MoQSession::onRequestUpdate()
+    // only routes REQUEST_UPDATE to SUBSCRIBE and FETCH handles, not SUBSCRIBE_TRACKS.
+    // This is a moxygen limitation; when fixed upstream, we can implement prefix updates here
+    // by removing and re-adding the subscription with the new prefix, checking for overlaps.
+    co_return folly::makeUnexpected(RequestError{
+        reqUpdate.requestID,
+        RequestErrorCode::NOT_SUPPORTED,
+        "REQUEST_UPDATE not supported for relay SUBSCRIBE_TRACKS (moxygen limitation)"
+    });
+  }
+
+private:
+  std::shared_ptr<MoqxRelay> relay_;
+  std::shared_ptr<MoQSession> session_;
+  TrackNamespace trackNamespacePrefix_;
+};
+
 // Filter TrackConsumer that intercepts publishDone to clean up relay state.
 // Holds a weak_ptr to avoid a reference cycle: relay owns RelaySubscription
 // which owns the filter chain (TopNFilter→TerminationFilter), so a strong
@@ -1420,6 +1494,106 @@ void MoqxRelay::unsubscribeNamespace(
   auto result = namespaceTree_.removeNamespaceSubscriber(trackNamespacePrefix, session);
   if (result.hasError() && result.error() == NamespaceTree::Error::NotSubscribed) {
     XLOG(DBG1) << "Namespace prefix was not subscribed by this session";
+  }
+}
+
+// Draft 18+
+folly::coro::Task<Publisher::SubscribeTracksResult> MoqxRelay::subscribeTracks(
+    SubscribeTracks subTracks,
+    std::shared_ptr<PublishBlockedHandle> /*publishBlockedHandle*/
+) {
+  XLOG(DBG1) << __func__ << " nsp=" << subTracks.trackNamespacePrefix;
+
+  auto session = MoQSession::getRequestSession();
+  auto maybeNegotiatedVersion = session->getNegotiatedVersion();
+  XCHECK(maybeNegotiatedVersion.has_value());
+  if (getDraftMajorVersion(*maybeNegotiatedVersion) < 18) {
+    co_return folly::makeUnexpected(SubscribeTracksError{
+        subTracks.requestID,
+        SubscribeTracksErrorCode::NOT_SUPPORTED,
+        "SUBSCRIBE_TRACKS requires draft 18+"
+    });
+  }
+
+  if (tracksTree_.hasOverlappingTracksSubscription(subTracks.trackNamespacePrefix, session)) {
+    co_return folly::makeUnexpected(SubscribeTracksError{
+        subTracks.requestID,
+        SubscribeTracksErrorCode::PREFIX_OVERLAP,
+        "Overlapping SUBSCRIBE_TRACKS exists in this session"
+    });
+  }
+
+  // Register in the parallel tracks tree (independent overlap space).
+  // Tracks-tree entries always behave like PUBLISH-style subscribers;
+  // options is unused for this tree.
+  tracksTree_.addNamespaceSubscriber(
+      subTracks.trackNamespacePrefix,
+      session,
+      NamespaceTree::NamespaceNode::NamespaceSubscriberInfo{
+          subTracks.forward,
+          SubscribeNamespaceOptions::PUBLISH,
+          /*namespacePublishHandle=*/nullptr,
+          subTracks.trackNamespacePrefix,
+          /*trackFilter=*/std::nullopt
+      }
+  );
+
+  // Walk the existing publish tree and emit PUBLISH for each matching
+  // already-published track (backfill for new subscriber).
+  auto pubNode = namespaceTree_.findNode(
+      subTracks.trackNamespacePrefix,
+      /*createMissingNodes=*/false,
+      NamespaceTree::MatchType::Exact
+  );
+  if (pubNode) {
+    namespaceTree_.forEachNodeInSubtree(
+        subTracks.trackNamespacePrefix,
+        pubNode,
+        [&](const TrackNamespace& prefix, std::shared_ptr<NamespaceTree::NamespaceNode> node) {
+          node->forEachPublish([&](const std::string& trackName,
+                                   const std::shared_ptr<MoQSession>& publishSession) {
+            if (publishSession == session) {
+              // Don't echo the subscriber's own published tracks.
+              return;
+            }
+            FullTrackName ftn{prefix, trackName};
+            auto forwarder = registry_.getForwarder(ftn);
+            if (!forwarder) {
+              return;
+            }
+            auto* publisherExec = relayExec_ ? publishSession->getExecutor() : nullptr;
+            if (!addSubscriberAndPublish(
+                    session,
+                    forwarder,
+                    subTracks.forward,
+                    /*pinned=*/true,
+                    publisherExec
+                )) {
+              XLOG(ERR) << "addSubscriberAndPublish failed for " << ftn;
+              return;
+            }
+          });
+        }
+    );
+  }
+
+  RequestOk subTracksOk{.requestID = subTracks.requestID};
+  co_return std::make_shared<TracksSubscription>(
+      shared_from_this(),
+      std::move(session),
+      std::move(subTracksOk),
+      subTracks.trackNamespacePrefix
+  );
+}
+
+void MoqxRelay::unsubscribeTracks(
+    const TrackNamespace& trackNamespacePrefix,
+    std::shared_ptr<MoQSession> session
+) {
+  XLOG(DBG1) << __func__ << " nsp=" << trackNamespacePrefix;
+  auto result = tracksTree_.removeNamespaceSubscriber(trackNamespacePrefix, session);
+  if (result.hasError() && result.error() == NamespaceTree::Error::NotSubscribed) {
+    XLOG(DBG1) << "Tracks prefix was not subscribed by this session";
   }
 }
 
