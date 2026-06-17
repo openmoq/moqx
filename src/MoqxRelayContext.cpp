@@ -24,7 +24,8 @@ namespace openmoq::moqx {
 MoqxRelayContext::MoqxRelayContext(
     const folly::F14FastMap<std::string, config::ServiceConfig>& services,
     const std::string& relayID,
-    bool useRelayThread
+    bool useRelayThread,
+    bool useLocalForwarders
 )
     : serviceMatcher_(services), relayID_(relayID) {
   if (useRelayThread && !services.empty()) {
@@ -39,7 +40,8 @@ MoqxRelayContext::MoqxRelayContext(
       auto relay = std::make_shared<MoqxRelay>(
           svc.cache,
           relayID,
-          std::make_shared<moxygen::MoQFollyExecutorImpl>(evbs[i++].get())
+          std::make_shared<moxygen::MoQFollyExecutorImpl>(evbs[i++].get()),
+          useLocalForwarders
       );
       services_.emplace(
           name,

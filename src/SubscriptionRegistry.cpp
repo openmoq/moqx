@@ -183,6 +183,7 @@ SubscriptionRegistry::getUpstreamView(const moxygen::FullTrackName& ftn) const {
       rsub.publisher,
       rsub.handle,
       rsub.requestID,
+      rsub.upstream ? rsub.upstream->getExecutor() : nullptr,
       rsub.isPublish,
       rsub.promise.isFulfilled()
   };
