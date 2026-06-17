@@ -7,9 +7,13 @@
  */
 
 #include "MoqxRelay.h"
+#include "relay/CrossExecFilter.h"
 #include "relay/CrossExecForwarderCallback.h"
-#include "relay/RelayExecUtil.h"
+#include "relay/LocalForwarderCallback.h"
+#include "relay/NullConsumers.h"
+#include "relay/PublisherCrossExecFilter.h"
 #include "relay/SubscriberCrossExecFilter.h"
+#include "relay/WeakRelayForwarderCallback.h"
 #include <folly/container/F14Set.h>
 #include <moxygen/MoQFilters.h>
 #include <moxygen/MoQTrackProperties.h>
@@ -114,20 +118,6 @@ folly::coro::Task<void> MoqxRelay::onUpstreamConnectImpl(std::shared_ptr<MoQSess
 
 void MoqxRelay::onUpstreamDisconnect() {
   upstreamSubNsHandle_.reset();
-}
-
-std::shared_ptr<Publisher> MoqxRelay::createPublisherFilter() {
-  if (relayExec_) {
-    return std::make_shared<PublisherCrossExecFilter>(relayExec_, shared_from_this());
-  }
-  return shared_from_this();
-}
-
-std::shared_ptr<Subscriber> MoqxRelay::createSubscriberFilter() {
-  if (relayExec_) {
-    return std::make_shared<SubscriberCrossExecFilter>(relayExec_, shared_from_this());
-  }
-  return shared_from_this();
 }
 
 // Sends SUBSCRIBE_UPDATE to update forwarding state. Called from:
@@ -331,14 +321,51 @@ MoqxRelay::publish(PublishRequest pub, std::shared_ptr<Publisher::SubscriptionHa
         PublishError({pub.requestID, PublishErrorCode::INTERNAL_ERROR, "namespace required"})
     );
   }
+  if (relayExec_ && useLocalForwarders_) {
+    // Forwarder lives on publisherExec; relay chain attached as a channel sub
+    // (null downstream until wired to topNFilter below). All work is inline
+    // since SubscriberCrossExecFilter already dispatched to relayExec_.
+    auto ftn = pub.fullTrackName; // save before pub is moved
+    auto forwarder = std::make_shared<MoQForwarder>(ftn, pub.largest);
+    forwarder->setExtensions(pub.extensions);
+    auto relayChainFilter = std::make_shared<CrossExecFilter>(relayExec_, nullptr);
+    // TODO: update forward=true when observers register with top-N (and think about cache)
+    forwarder->addChannelSubscriber(relayExec_, /*forward=*/false, relayChainFilter);
+    auto setup =
+        publishWithSession(std::move(pub), std::move(handle), std::move(session), forwarder);
+    if (setup.hasError()) {
+      return folly::makeUnexpected(setup.error());
+    }
+    auto topNView = registry_.getTopNView(ftn);
+    if (topNView && topNView->topNFilter) {
+      relayChainFilter->setDownstream(topNView->topNFilter);
+    }
+    return PublishConsumerAndReplyTask{
+        forwarder,
+        folly::coro::makeTask<folly::Expected<PublishOk, PublishError>>(
+            folly::Expected<PublishOk, PublishError>(std::move(setup.value().publishOk))
+        )
+    };
+  }
+
   maybeSetSessionExec(*session);
-  return publishWithSession(std::move(pub), std::move(handle), std::move(session));
+  auto setup = publishWithSession(std::move(pub), std::move(handle), std::move(session));
+  if (setup.hasError()) {
+    return folly::makeUnexpected(setup.error());
+  }
+  return PublishConsumerAndReplyTask{
+      std::move(setup.value().consumer),
+      folly::coro::makeTask<folly::Expected<PublishOk, PublishError>>(
+          folly::Expected<PublishOk, PublishError>(std::move(setup.value().publishOk))
+      )
+  };
 }
 
-Subscriber::PublishResult MoqxRelay::publishWithSession(
+MoqxRelay::PublishSetupResult MoqxRelay::publishWithSession(
     PublishRequest pub,
     std::shared_ptr<Publisher::SubscriptionHandle> handle,
-    std::shared_ptr<MoQSession> session
+    std::shared_ptr<MoQSession> session,
+    std::shared_ptr<MoQForwarder> forwarder
 ) {
   // Handle duplicate publisher at relay level before registering in the tree.
   // Move the forwarder out and erase the entry BEFORE calling publishDone.
@@ -351,8 +378,10 @@ Subscriber::PublishResult MoqxRelay::publishWithSession(
   // subgroups).  onPublishDone() already reset handle and drained the
   // forwarder, so skip both calls to avoid a null deref and a double
   // publishDone.
-  auto forwarder = std::make_shared<MoQForwarder>(pub.fullTrackName, pub.largest);
-  forwarder->setExtensions(pub.extensions);
+  if (!forwarder) {
+    forwarder = std::make_shared<MoQForwarder>(pub.fullTrackName, pub.largest);
+    forwarder->setExtensions(pub.extensions);
+  }
 
   auto publisherWrapped = maybeWrapPublisher(relayExec_, session);
   auto publishEntry = registry_.createFromPublish(
@@ -402,16 +431,17 @@ Subscriber::PublishResult MoqxRelay::publishWithSession(
       }
   );
 
-  // The publisher data path already runs on relayExec_, but the subscriber
-  // control path (unsubscribe/requestUpdate) reaches the forwarder from a
-  // session I/O thread, so its callbacks must hop back before touching state.
-  if (relayExec_) {
-    forwarder->setCallback(
-        std::make_shared<CrossExecForwarderCallback>(relayExec_, forwarder, shared_from_this())
-    );
-  } else {
+  if (relayExec_ && !useLocalForwarders_) {
+    // Non-local: forwarder lives on relayExec_; callbacks fire directly — no
+    // CrossExec dispatch needed. Weak ref breaks the registry → forwarder →
+    // callback → relay cycle.
+    forwarder->setCallback(std::make_shared<WeakRelayForwarderCallback>(weak_from_this()));
+  } else if (!relayExec_) {
     forwarder->setCallback(shared_from_this());
   }
+  // useLocalForwarders_ case: the local forwarder lives on publisherExec and
+  // already had its CrossExecForwarderCallback installed by setupPublisherLocal,
+  // which dispatches onEmpty to relayExec_. Must not overwrite it here.
 
   uint64_t nSubscribers = 0;
   bool hasTrackFilterSub = false;
@@ -425,7 +455,14 @@ Subscriber::PublishResult MoqxRelay::publishWithSession(
     if (outSession != session && (info.options == SubscribeNamespaceOptions::PUBLISH ||
                                   info.options == SubscribeNamespaceOptions::BOTH)) {
       nSubscribers++;
-      if (!addSubscriberAndPublish(outSession, forwarder, info.forward, /*pinned=*/true)) {
+      auto* publisherExec = relayExec_ ? session->getExecutor() : nullptr;
+      if (!addSubscriberAndPublish(
+              outSession,
+              forwarder,
+              info.forward,
+              /*pinned=*/true,
+              publisherExec
+          )) {
         XLOG(ERR) << "addSubscriberAndPublish failed for " << forwarder->fullTrackName();
         continue;
       }
@@ -437,9 +474,9 @@ Subscriber::PublishResult MoqxRelay::publishWithSession(
   // When subscribers join later via subscribeNamespace, forwardChanged() sends REQUEST_UPDATE.
   bool shouldForward = (nSubscribers > 0) || hasTrackFilterSub;
 
-  return PublishConsumerAndReplyTask{
+  return PublishSetup{
       publishEntry.consumer,
-      folly::coro::makeTask<folly::Expected<PublishOk, PublishError>>(PublishOk{
+      PublishOk{
           pub.requestID,
           /*forward=*/shouldForward,
           kDefaultPriority,
@@ -447,16 +484,14 @@ Subscriber::PublishResult MoqxRelay::publishWithSession(
           LocationType::AbsoluteRange,
           kLocationMin,
           kLocationMax.group
-      })
+      }
   };
 }
 
 namespace {
 
-// Free-function coroutine: awaits the publish reply and calls onPublishOk.
-// Holds forwarder alive because subscriber keeps a raw ref into it.
 folly::coro::Task<void> awaitPublishReply(
-    std::shared_ptr<MoQForwarder> forwarder,
+    std::shared_ptr<MoQForwarder> forwarder, // keeps subscriber's raw ref alive
     std::shared_ptr<MoQForwarder::Subscriber> subscriber,
     folly::coro::Task<folly::Expected<PublishOk, PublishError>> reply
 ) {
@@ -493,7 +528,6 @@ std::optional<MoqxRelay::PreparedPublish> MoqxRelay::startPublish(
     return std::nullopt;
   }
   subscriber->pinned = pinned;
-  XLOG(DBG4) << "added subscriber for ftn=" << forwarder->fullTrackName();
   Subscriber::PublishResult pub;
   if (subscriberExec) {
     SubscriberCrossExecFilter wrapped(subscriberExec, session);
@@ -511,13 +545,24 @@ std::optional<MoqxRelay::PreparedPublish> MoqxRelay::startPublish(
 }
 
 bool MoqxRelay::addSubscriberAndPublish(
-    std::shared_ptr<MoQSession> session,
+    std::shared_ptr<MoQSession> subscriberSession,
     std::shared_ptr<MoQForwarder> forwarder,
     bool forward,
-    bool pinned
+    bool pinned,
+    folly::Executor* publisherExec
 ) {
-  folly::Executor* subscriberExec = relayExec_ ? session->getExecutor() : nullptr;
-  auto p = startPublish(session, forwarder, forward, pinned, subscriberExec);
+  if (relayExec_ && useLocalForwarders_) {
+    XCHECK(publisherExec
+    ) << "addSubscriberAndPublish: publisherExec required in local-forwarder mode";
+    co_withExecutor(
+        subscriberSession->getExecutor(),
+        publishViaLocalForwarder(subscriberSession, forwarder, publisherExec, forward, pinned)
+    )
+        .start();
+    return true;
+  }
+  folly::Executor* subscriberExec = relayExec_ ? subscriberSession->getExecutor() : nullptr;
+  auto p = startPublish(subscriberSession, forwarder, forward, pinned, subscriberExec);
   if (!p) {
     return false;
   }
@@ -606,10 +651,26 @@ std::shared_ptr<TrackConsumer> MoqxRelay::getSubscribeWriteback(
 
 SubscriptionRegistry::FilterChainResult
 MoqxRelay::buildFilterChain(const FullTrackName& ftn, std::shared_ptr<MoQForwarder> forwarder) {
-  // Build chain: TopNFilter → TerminationFilter → Forwarder
-  // Cache (if present) attaches as a passive subscriber of the forwarder so
-  // that it receives objects without affecting the forwarding-subscriber count
-  // or the upstream subscription lifecycle.
+  if (relayExec_ && useLocalForwarders_) {
+    // Multi-iothread with local forwarders: publisher writes directly to forwarder on primaryExec.
+    // relayChainFilter (added by publish()) fans off to topNFilter/termination/cache.
+    std::shared_ptr<TrackConsumer> chainEnd =
+        cache_ ? cache_->makePassiveConsumer(ftn) : std::make_shared<moxygen::NullTrackConsumer>();
+    auto terminationFilter =
+        std::make_shared<TerminationFilter>(shared_from_this(), ftn, std::move(chainEnd));
+    auto topNFilter = std::make_shared<TopNFilter>(
+        ftn,
+        std::static_pointer_cast<TrackConsumer>(terminationFilter)
+    );
+    topNFilter->setActivityThreshold(activityThreshold_);
+    return SubscriptionRegistry::FilterChainResult{
+        .consumer = std::static_pointer_cast<TrackConsumer>(forwarder),
+        .topNFilter = topNFilter
+    };
+  }
+
+  // Single-threaded: chain wraps forwarder directly (no cross-exec needed).
+  // Cache attaches as a passive subscriber of the forwarder.
   if (cache_) {
     forwarder->addSubscriber(
         /*session=*/nullptr,
@@ -626,7 +687,6 @@ MoqxRelay::buildFilterChain(const FullTrackName& ftn, std::shared_ptr<MoQForward
   auto topNFilter =
       std::make_shared<TopNFilter>(ftn, std::static_pointer_cast<TrackConsumer>(terminationFilter));
   topNFilter->setActivityThreshold(activityThreshold_);
-
   return SubscriptionRegistry::FilterChainResult{
       .consumer = std::static_pointer_cast<TrackConsumer>(topNFilter),
       .topNFilter = topNFilter
@@ -768,7 +828,14 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
               (subNs.options == SubscribeNamespaceOptions::BOTH ||
                subNs.options == SubscribeNamespaceOptions::PUBLISH)) {
             if (publishSession != session) {
-              if (!addSubscriberAndPublish(session, forwarder, subNs.forward, /*pinned=*/true)) {
+              auto* publisherExec = relayExec_ ? publishSession->getExecutor() : nullptr;
+              if (!addSubscriberAndPublish(
+                      session,
+                      forwarder,
+                      subNs.forward,
+                      /*pinned=*/true,
+                      publisherExec
+                  )) {
                 XLOG(ERR) << "addSubscriberAndPublish failed for " << ftn;
                 return;
               }
@@ -817,6 +884,883 @@ MoqxRelay::PublishState MoqxRelay::findPublishState(const FullTrackName& ftn) {
 
   return state;
 }
+
+// === LocalSubscribeFilter, createPublisherFilter, and createSubscriberFilter ===
+
+// Installed as the publish handler for client sessions when useLocalForwarders_
+// is true. Overrides subscribe() to call subscribeFromSubscriberThread() directly
+// on the subscriber's executor instead of hopping to relayExec_ first.
+// All other Publisher methods fall through to PublisherCrossExecFilter which
+// still dispatches to relayExec_.
+class MoqxRelay::LocalSubscribeFilter final : public PublisherCrossExecFilter {
+public:
+  LocalSubscribeFilter(folly::Executor* relayExec, std::shared_ptr<MoqxRelay> relay)
+      : PublisherCrossExecFilter(relayExec, relay), relay_(std::move(relay)) {}
+
+  folly::coro::Task<SubscribeResult> subscribe(
+      moxygen::SubscribeRequest subReq,
+      std::shared_ptr<moxygen::TrackConsumer> consumer
+  ) override {
+    if (subReq.fullTrackName.trackNamespace.empty()) {
+      co_return folly::makeUnexpected(moxygen::SubscribeError{
+          subReq.requestID,
+          moxygen::SubscribeErrorCode::TRACK_NOT_EXIST,
+          "namespace required"
+      });
+    }
+    auto session = moxygen::MoQSession::getRequestSession();
+    auto* subscriberExec = session->getExecutor();
+    // No executor hop: subscribeFromSubscriberThread starts on subscriberExec.
+    co_return co_await relay_->subscribeFromSubscriberThread(
+        std::move(subReq),
+        std::move(consumer),
+        std::move(session),
+        subscriberExec
+    );
+  }
+
+private:
+  std::shared_ptr<MoqxRelay> relay_;
+};
+
+std::shared_ptr<moxygen::Publisher> MoqxRelay::createPublisherFilter() {
+  if (relayExec_ && useLocalForwarders_) {
+    return std::make_shared<LocalSubscribeFilter>(relayExec_, shared_from_this());
+  }
+  if (relayExec_) {
+    return std::make_shared<PublisherCrossExecFilter>(relayExec_, shared_from_this());
+  }
+  return shared_from_this();
+}
+
+// Installed as the subscribe handler for client sessions when useLocalForwarders_
+// is true. Overrides publish() to create a local publisher forwarder on the
+// publisher's executor, avoiding the cross-exec hop to relayExec_ for data.
+// All other Subscriber methods (publishNamespace, goaway) fall through to
+// SubscriberCrossExecFilter which still dispatches to relayExec_.
+class MoqxRelay::LocalPublishFilter final : public SubscriberCrossExecFilter {
+public:
+  LocalPublishFilter(folly::Executor* relayExec, std::shared_ptr<MoqxRelay> relay)
+      : SubscriberCrossExecFilter(relayExec, relay), relay_(std::move(relay)) {}
+
+  PublishResult publish(
+      moxygen::PublishRequest pub,
+      std::shared_ptr<moxygen::SubscriptionHandle> handle
+  ) override {
+    auto session = moxygen::MoQSession::getRequestSession();
+    return relay_
+        ->publishFromPublisherThread(std::move(pub), std::move(handle), std::move(session));
+  }
+
+private:
+  std::shared_ptr<MoqxRelay> relay_;
+};
+
+std::shared_ptr<moxygen::Subscriber> MoqxRelay::createSubscriberFilter() {
+  if (relayExec_ && useLocalForwarders_) {
+    return std::make_shared<LocalPublishFilter>(relayExec_, shared_from_this());
+  }
+  if (relayExec_) {
+    return std::make_shared<SubscriberCrossExecFilter>(relayExec_, shared_from_this());
+  }
+  return shared_from_this();
+}
+
+Subscriber::PublishResult MoqxRelay::publishFromPublisherThread(
+    PublishRequest pub,
+    std::shared_ptr<Publisher::SubscriptionHandle> handle,
+    std::shared_ptr<MoQSession> session
+) {
+  if (!pub.fullTrackName.trackNamespace.startsWith(allowedNamespacePrefix_)) {
+    return folly::makeUnexpected(
+        PublishError{pub.requestID, PublishErrorCode::UNINTERESTED, "bad namespace"}
+    );
+  }
+  if (pub.fullTrackName.trackNamespace.empty()) {
+    return folly::makeUnexpected(
+        PublishError{pub.requestID, PublishErrorCode::INTERNAL_ERROR, "namespace required"}
+    );
+  }
+
+  auto ftn = pub.fullTrackName;
+  // The publisher's local forwarder IS the primary forwarder — it lives on
+  // publisherExec and is registered in the registry by setupPublisherPrimary.
+  auto localPubFwd = std::make_shared<MoQForwarder>(ftn, pub.largest);
+  localPubFwd->setExtensions(pub.extensions);
+
+  // Cache the publisher's local forwarder in this thread's registry so a
+  // subscriber on the same iothread reuses it instead of building a second
+  // forwarder. The registry holds a strong ref; the forwarder's onPublishDone
+  // callback removes the entry to release it (identity-checked).
+  if (!tlForwarders_.get()) {
+    tlForwarders_.reset(new LocalForwarderRegistry());
+  }
+
+  // Set the forwarder callback here on publisherExec (where localPubFwd lives),
+  // before the reply task hops to relayExec_. publishWithSession is called from
+  // relayExec_ via setupPublisherPrimary and must not touch the callback there.
+  //
+  // The LocalForwarderCallback wrapper removes localPubFwd from tlForwarders_ on
+  // its own thread when the publisher terminates (onPublishDone). removeOnEmpty
+  // is false: the publisher's forwarder must survive subscriber churn — it is
+  // removed only when the source ends, not when its last subscriber leaves.
+  {
+    auto relayAdapter = std::make_shared<WeakRelayForwarderCallback>(
+        std::weak_ptr<moxygen::MoQForwarder::Callback>(shared_from_this())
+    );
+    auto crossExec = std::make_shared<CrossExecForwarderCallback>(
+        relayExec_,
+        localPubFwd,
+        std::move(relayAdapter)
+    );
+    localPubFwd->setCallback(std::make_shared<LocalForwarderCallback>(
+        tlForwarders_.get(),
+        ftn,
+        std::move(crossExec),
+        /*removeOnEmpty=*/false
+    ));
+  }
+
+  // The publisher's forwarder is authoritative — claim the slot, displacing any
+  // stale subscribe-path local forwarder so same-thread subscribers reuse THIS
+  // forwarder via the fast path.
+  tlForwarders_->set(ftn, localPubFwd);
+
+  // Channel sub for the relay chain (topNFilter → terminationFilter → cache).
+  // FIFO on relayExec_ guarantees setupPublisherPrimary wires the downstream
+  // before any object dispatches from localPubFwd arrive on relayExec_.
+  auto relayChainFilter = std::make_shared<CrossExecFilter>(relayExec_, nullptr);
+  // forward=true + passive=true: internal relay chain observes all objects but
+  // does not count as a real forwarding subscriber (see completeFirstSubscriber).
+  localPubFwd
+      ->addChannelSubscriber(relayExec_, /*forward=*/true, relayChainFilter, /*passive=*/true);
+
+  auto reply = folly::coro::co_invoke(
+      [exec = relayExec_,
+       relay = shared_from_this(),
+       pub = std::move(pub),
+       handle = std::move(handle),
+       session = std::move(session),
+       localPubFwd,
+       relayChainFilter]() mutable -> folly::coro::Task<folly::Expected<PublishOk, PublishError>> {
+        co_return co_await folly::coro::co_withExecutor(
+            folly::getKeepAliveToken(exec),
+            relay->setupPublisherPrimary(
+                std::move(pub),
+                std::move(handle),
+                std::move(session),
+                std::move(localPubFwd),
+                std::move(relayChainFilter)
+            )
+        );
+      }
+  );
+
+  // The publisher writes directly to its local forwarder. When the publisher
+  // terminates, localPubFwd->publishDone fires onPublishDone on its callback
+  // (LocalForwarderCallback), which removes the tlForwarders_ entry on this
+  // thread — no separate termination filter needed.
+  auto consumer = std::static_pointer_cast<TrackConsumer>(std::move(localPubFwd));
+  return PublishConsumerAndReplyTask{std::move(consumer), std::move(reply)};
+}
+
+folly::coro::Task<folly::Expected<PublishOk, PublishError>> MoqxRelay::setupPublisherPrimary(
+    PublishRequest pub,
+    std::shared_ptr<Publisher::SubscriptionHandle> handle,
+    std::shared_ptr<MoQSession> session,
+    std::shared_ptr<MoQForwarder> primaryFwd,
+    std::shared_ptr<CrossExecFilter> relayChainFilter
+) {
+  // Register the publisher's local forwarder as the primary — no second
+  // forwarder here; it lives on publisherExec.
+  auto ftn = pub.fullTrackName;
+  auto setup =
+      publishWithSession(std::move(pub), std::move(handle), std::move(session), primaryFwd);
+  if (setup.hasError()) {
+    co_return folly::makeUnexpected(setup.error());
+  }
+
+  auto topNView = registry_.getTopNView(ftn);
+  XCHECK(topNView && topNView->topNFilter)
+      << "setupPublisherPrimary: topNFilter always present in MT mode";
+  relayChainFilter->setDownstream(topNView->topNFilter);
+
+  co_return setup.value().publishOk;
+}
+
+// === Multi-iothread subscribe helpers ===
+
+folly::coro::Task<MoqxRelay::StatefulSubscribeResult>
+MoqxRelay::subscribeStatefulWork(SubscribeRequest subReq) {
+  const auto& ftn = subReq.fullTrackName;
+
+  if (!registry_.exists(ftn) && upstream_ &&
+      !namespaceTree_.findPublisherSession(ftn.trackNamespace)) {
+    co_await upstream_->waitForConnected(kUpstreamConnectWaitTimeout);
+  }
+
+  auto firstOrSubsequent = registry_.getOrCreateFromSubscribe(
+      ftn,
+      shared_from_this(),
+      [this, &ftn](std::shared_ptr<MoQForwarder> f) { return buildFilterChain(ftn, std::move(f)); }
+  );
+
+  if (auto* first = std::get_if<SubscriptionRegistry::FirstSubscriber>(&firstOrSubsequent)) {
+    auto upstreamSession = namespaceTree_.findPublisherSession(ftn.trackNamespace);
+    if (!upstreamSession) {
+      co_return StatefulSubscribeResult{
+          nullptr,
+          nullptr,
+          folly::makeUnexpected(SubscribeError{
+              subReq.requestID,
+              SubscribeErrorCode::TRACK_NOT_EXIST,
+              "no such namespace or track"
+          }),
+          std::nullopt
+      };
+    }
+
+    const auto clientRequestID = subReq.requestID;
+    SubscribeRequest upstreamSubReq = subReq;
+    upstreamSubReq.priority = kDefaultUpstreamPriority;
+    upstreamSubReq.groupOrder = GroupOrder::Default;
+    upstreamSubReq.locType = LocationType::LargestObject;
+    upstreamSubReq.forward = false; // updated to real value in completeFirstSubscriber
+    upstreamSubReq.requestID = kAutoRequestID;
+
+    // first->consumer is the primary forwarder (lives on primaryExec == upstreamSession's
+    // executor). No cross-exec wrapping — upstream delivers on that executor directly.
+    auto upstreamConsumer = first->consumer;
+    StatefulSubscribeResult
+        result{first->forwarder, upstreamSession->getExecutor(), std::nullopt, std::nullopt};
+    result.firstSetup.emplace(StatefulSubscribeResult::FirstSubscriberSetup{
+        upstreamSession,
+        std::move(upstreamSubReq),
+        std::move(upstreamConsumer),
+        std::move(first->pending),
+        clientRequestID
+    });
+    co_return result;
+
+  } else {
+    auto sub = co_await std::get<folly::coro::Task<SubscriptionRegistry::SubsequentSubscriber>>(
+        std::move(firstOrSubsequent)
+    );
+    auto upstreamView = registry_.getUpstreamView(ftn);
+    auto* primaryExec = upstreamView ? upstreamView->publisherExec : nullptr;
+    co_return StatefulSubscribeResult{sub.forwarder, primaryExec, std::nullopt, std::nullopt};
+  }
+}
+
+namespace {
+
+// Free coroutine helpers for ChannelForwarderCallback — avoids lambda-coroutine
+// capture lifetime issues (lambda lives on caller stack; coroutine frame outlives it).
+folly::coro::Task<void> channelSubscribeUpdate(
+    std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle,
+    bool forward
+) {
+  auto res = co_await handle->requestUpdate(RequestUpdate{
+      RequestID(0),
+      handle->subscribeOk().requestID,
+      kLocationMin,
+      kLocationMax.group,
+      kDefaultPriority,
+      forward
+  });
+  if (res.hasError()) {
+    XLOG(ERR) << "requestUpdate failed: " << res.error().reasonPhrase;
+  }
+}
+
+folly::coro::Task<void> channelNewGroupRequestUpdate(
+    std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle,
+    uint64_t group
+) {
+  RequestUpdate update;
+  update.requestID = RequestID(0);
+  update.existingRequestID = handle->subscribeOk().requestID;
+  update.params.insertParam(
+      Parameter(folly::to_underlying(TrackRequestParamKey::NEW_GROUP_REQUEST), group)
+  );
+  auto res = co_await handle->requestUpdate(std::move(update));
+  if (res.hasError()) {
+    XLOG(ERR) << "NEW_GROUP_REQUEST update failed: " << res.error().reasonPhrase;
+  }
+}
+
+// === MoQForwarder::Callback chain overview ===
+//
+// MoQForwarder fires three callbacks: onEmpty (last subscriber left),
+// forwardChanged (forwarding subscriber count crossed zero), and
+// newGroupRequested (subscriber issued a NEW_GROUP_REQUEST).
+//
+// Single-threaded mode:
+//   forwarder.callback = MoqxRelay (direct, no hop)
+//
+// Multi-threaded — primary forwarder (lives on primaryExec):
+//   primaryFwd.callback =
+//     CrossExecForwarderCallback(relayExec_, primaryFwd,
+//       WeakRelayForwarderCallback(relay))
+//
+//   [primaryExec] CrossExecForwarderCallback: captures ftn by value,
+//                 dispatches to relayExec_ fire-and-forget
+//       ↓
+//   [relayExec_]  WeakRelayForwarderCallback: recovers relay via weak_ptr,
+//                 calls onEmptyImpl / forwardChangedImpl / newGroupRequestedImpl
+//
+// Multi-threaded — local forwarder (lives on subscriberExec, subscribe path):
+//   During setup window:
+//     localFwd.callback = PendingForwarderCallback
+//       captures events; replayed onto finalCallback after setup
+//
+//   After setup:
+//     localFwd.callback =
+//       LocalForwarderCallback(localReg, ftn,
+//         CrossExecForwarderCallback(primaryExec, localFwd,
+//           ChannelForwarderCallback(primaryFwd, subscriberExec, primaryExec)))
+//
+//   [subscriberExec] LocalForwarderCallback: removes from localReg on onEmpty,
+//                    passes through forwardChanged / newGroupRequested
+//       ↓ (CrossExecForwarderCallback dispatches to primaryExec)
+//   [primaryExec]    ChannelForwarderCallback:
+//                      onEmpty → primaryFwd->removeChannelSubscriberByExec(subscriberExec)
+//                                (may cascade into primaryFwd's own callback chain above)
+//                      forwardChanged / newGroupRequested → launch background coro
+//                                                           → requestUpdate(handle_)
+//
+// Weak-ptr discipline:
+//   WeakRelayForwarderCallback holds weak_ptr<relay> to break the cycle
+//   registry → forwarder → callback → relay → registry.
+//   CrossExecForwarderCallback holds weak_ptr<forwarder> to avoid a permanent
+//   ownership cycle; it locks eagerly on the calling thread (where the forwarder
+//   is alive) and moves the shared_ptr into the lambda to keep it alive across
+//   the executor hop.
+
+// Captures forwardChanged/newGroupRequested/onEmpty during setup (getOrCreate→setCallback window)
+// so they can be replayed once the real callback is installed.
+class PendingForwarderCallback : public moxygen::MoQForwarder::Callback {
+public:
+  PendingForwarderCallback(
+      openmoq::moqx::LocalForwarderRegistry* localReg,
+      moxygen::FullTrackName ftn
+  )
+      : localReg_(localReg), ftn_(std::move(ftn)) {}
+
+  void forwardChanged(moxygen::MoQForwarder*, bool f) override { lastForward_ = f; }
+  void newGroupRequested(moxygen::MoQForwarder*, uint64_t g) override {
+    maxGroup_ = std::max(maxGroup_.value_or(0), g);
+  }
+  void onEmpty(moxygen::MoQForwarder* forwarder) override {
+    localReg_->remove(ftn_, forwarder);
+    sawOnEmpty_ = true;
+  }
+
+  openmoq::moqx::LocalForwarderRegistry* localReg_;
+  moxygen::FullTrackName ftn_;
+  std::optional<bool> lastForward_;
+  std::optional<uint64_t> maxGroup_;
+  bool sawOnEmpty_{false};
+};
+
+// Runs on the primary forwarder's executor (publisher's iothread). Propagates
+// channel-subscriber lifecycle events to the primary and upstream handle.
+class ChannelForwarderCallback : public moxygen::MoQForwarder::Callback {
+public:
+  ChannelForwarderCallback(
+      std::weak_ptr<moxygen::MoQForwarder> weakPrimary,
+      folly::Executor* subscriberExec,
+      folly::Executor* primaryExec
+  )
+      : weakPrimary_(std::move(weakPrimary)), subscriberExec_(subscriberExec),
+        primaryExec_(primaryExec) {}
+
+  // Called on primaryExec immediately after addChannelSubscriber returns.
+  void setHandle(std::shared_ptr<moxygen::Publisher::SubscriptionHandle> h) {
+    handle_ = std::move(h);
+  }
+
+  // Called on primaryExec after addChannelSubscriber. Holds the last shared_ptr
+  // so that onEmpty can defer destruction to subscriberExec_, ensuring all
+  // in-flight this-capturing lambdas on subscriberExec_ run before the filter
+  // is destroyed.
+  void setFilter(std::shared_ptr<CrossExecFilter> filter) { crossExecFilter_ = std::move(filter); }
+
+  void onEmpty(moxygen::MoQForwarder* /*localFwd*/) override {
+    auto primary = weakPrimary_.lock();
+    if (primary) {
+      primary->removeChannelSubscriberByExec(subscriberExec_);
+    }
+    // Break the reference cycle that keeps the local-forwarding chain alive:
+    //   localFwd → callback (LocalForwarderCallback → CrossExecForwarderCallback
+    //   → this ChannelForwarderCallback) → handle_ (channel Subscriber)
+    //   → trackConsumer (CrossExecFilter) → localFwd.
+    // removeChannelSubscriberByExec drops the primary's strong ref to the channel
+    // Subscriber, but handle_ still pins it (and thus the whole chain). When the
+    // primary was already destroyed (replace scenario), removeChannelSubscriberByExec
+    // never ran, so handle_ is the only remaining root. Reset it unconditionally.
+    handle_.reset();
+    // Post filter destruction to subscriberExec_ so FIFO ordering guarantees
+    // all previously-enqueued this-capturing lambdas run before the destructor.
+    if (crossExecFilter_) {
+      subscriberExec_->add([f = std::move(crossExecFilter_)]() {});
+    }
+  }
+
+  void forwardChanged(moxygen::MoQForwarder*, bool forward) override {
+    if (!handle_) {
+      return;
+    }
+    folly::coro::co_withExecutor(
+        folly::getKeepAliveToken(primaryExec_),
+        channelSubscribeUpdate(handle_, forward)
+    )
+        .start();
+  }
+
+  void newGroupRequested(moxygen::MoQForwarder*, uint64_t group) override {
+    if (!handle_) {
+      return;
+    }
+    folly::coro::co_withExecutor(
+        folly::getKeepAliveToken(primaryExec_),
+        channelNewGroupRequestUpdate(handle_, group)
+    )
+        .start();
+  }
+
+private:
+  std::weak_ptr<moxygen::MoQForwarder> weakPrimary_;
+  folly::Executor* subscriberExec_;
+  folly::Executor* primaryExec_;
+  std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle_;
+  std::shared_ptr<CrossExecFilter> crossExecFilter_;
+};
+
+// Builds the local→primary callback chain, hops to primaryExec to install the
+// channel subscriber, then returns. The caller resumes on its own pinned executor
+// via co_withExecutor's natural unwind (relayExec_ or subscriberExec depending on
+// which path is calling).
+folly::coro::Task<std::shared_ptr<moxygen::MoQForwarder::Callback>> wireLocalToPrimary(
+    openmoq::moqx::LocalForwarderRegistry* localReg,
+    moxygen::FullTrackName ftn,
+    std::shared_ptr<moxygen::MoQForwarder> localFwd,
+    std::shared_ptr<moxygen::MoQForwarder> primaryFwd,
+    folly::Executor* primaryExec,
+    folly::Executor* subscriberExec,
+    std::shared_ptr<CrossExecFilter> crossExecFilter,
+    bool forward
+) {
+  auto channelCb =
+      std::make_shared<ChannelForwarderCallback>(primaryFwd, subscriberExec, primaryExec);
+  auto crossExecCb = std::make_shared<CrossExecForwarderCallback>(primaryExec, localFwd, channelCb);
+  auto finalCallback =
+      std::make_shared<LocalForwarderCallback>(localReg, std::move(ftn), std::move(crossExecCb));
+  co_await folly::coro::co_withExecutor(
+      folly::getKeepAliveToken(primaryExec),
+      [&]() -> folly::coro::Task<void> {
+        auto chanHandle =
+            primaryFwd->addChannelSubscriber(subscriberExec, forward, crossExecFilter);
+        if (chanHandle) {
+          channelCb->setHandle(chanHandle);
+        }
+        channelCb->setFilter(crossExecFilter);
+        co_return;
+      }()
+  );
+  co_return finalCallback;
+}
+
+// Installs finalCallback on localFwd and replays any forwardChanged/newGroupRequested
+// events captured during setup. Must run on subscriberExec.
+void replayPendingEvents(
+    moxygen::MoQForwarder* localFwd,
+    const std::shared_ptr<moxygen::MoQForwarder::Callback>& finalCallback,
+    const PendingForwarderCallback& pendingCb,
+    bool forward
+) {
+  localFwd->setCallback(finalCallback);
+  if (pendingCb.lastForward_ && *pendingCb.lastForward_ != forward) {
+    finalCallback->forwardChanged(localFwd, *pendingCb.lastForward_);
+  }
+  if (pendingCb.maxGroup_) {
+    finalCallback->newGroupRequested(localFwd, *pendingCb.maxGroup_);
+  }
+}
+} // namespace
+
+folly::coro::Task<void> MoqxRelay::publishViaLocalForwarder(
+    std::shared_ptr<MoQSession> subscriberSession,
+    std::shared_ptr<MoQForwarder> primaryFwd,
+    folly::Executor* primaryExec,
+    bool forward,
+    bool pinned
+) {
+  auto* subscriberExec = subscriberSession->getExecutor();
+  const auto& ftn = primaryFwd->fullTrackName();
+
+  // Fast path: local forwarder already exists on this thread.
+  if (auto* localReg = tlForwarders_.get()) {
+    if (auto localFwd = localReg->get(ftn)) {
+      auto p = startPublish(subscriberSession, localFwd, forward, pinned, nullptr);
+      if (p) {
+        co_await awaitPublishReply(localFwd, std::move(p->subscriber), std::move(p->reply));
+      }
+      co_return;
+    }
+  }
+
+  if (!tlForwarders_.get()) {
+    tlForwarders_.reset(new LocalForwarderRegistry());
+  }
+  auto* localReg = tlForwarders_.get();
+  auto [localFwd, isNew] = localReg->getOrCreate(ftn, [&] {
+    auto fwd = std::make_shared<MoQForwarder>(ftn, primaryFwd->largest());
+    fwd->setExtensions(primaryFwd->extensions());
+    return fwd;
+  });
+
+  auto p = startPublish(subscriberSession, localFwd, forward, pinned, nullptr);
+  if (!p) {
+    if (isNew) {
+      localReg->remove(ftn, localFwd.get());
+    }
+    co_return;
+  }
+
+  if (!isNew) {
+    co_await awaitPublishReply(localFwd, std::move(p->subscriber), std::move(p->reply));
+    co_return;
+  }
+
+  // isNew=true: wire localFwd into primaryFwd as a channel subscriber.
+  auto pendingCb = std::make_shared<PendingForwarderCallback>(localReg, ftn);
+  localFwd->setCallback(pendingCb);
+  // deepCopyPayload=true (default): each subscriber thread owns its IOBuf chain,
+  // avoiding cross-thread contention on the shared atomic refcount.
+  auto crossExecFilter = std::make_shared<CrossExecFilter>(subscriberExec, localFwd);
+  bool fwd = (localFwd->numForwardingSubscribers() > 0);
+
+  auto finalCallback = co_await wireLocalToPrimary(
+      localReg,
+      ftn,
+      localFwd,
+      primaryFwd,
+      primaryExec,
+      subscriberExec,
+      crossExecFilter,
+      fwd
+  );
+
+  // Natural unwind: back on subscriberExec.
+
+  if (pendingCb->sawOnEmpty_) {
+    folly::via(primaryExec, [pf = primaryFwd, ex = subscriberExec]() noexcept {
+      pf->removeChannelSubscriberByExec(ex);
+    });
+    localFwd->publishDone(PublishDone{
+        RequestID(0),
+        PublishDoneStatusCode::INTERNAL_ERROR,
+        0,
+        "all subscribers cancelled during setup"
+    });
+    co_return;
+  }
+
+  replayPendingEvents(localFwd.get(), finalCallback, *pendingCb, fwd);
+  co_await awaitPublishReply(localFwd, std::move(p->subscriber), std::move(p->reply));
+}
+
+folly::coro::Task<MoqxRelay::FirstSubscriberResult> MoqxRelay::completeFirstSubscriber(
+    StatefulSubscribeResult::FirstSubscriberSetup& setup,
+    std::shared_ptr<MoQForwarder> primaryFwd,
+    bool forward
+) {
+  // Add relay-exec channel sub (topNFilter/terminationFilter/cache path).
+  // setDownstream wired on relayExec_ before pending.complete().
+  auto relayChainFilter = std::make_shared<CrossExecFilter>(relayExec_, nullptr);
+  // forward=true + passive=true: the relay's own chain (top-N/termination/cache)
+  // must observe every object (forward=true) so top-N and cache see the full
+  // stream, but it must not count as a real forwarding subscriber — passive=true
+  // keeps it out of forwardingSubscribers_ (so it never toggles upstream
+  // forwardChanged) and out of the onEmpty quorum (so the primary's onEmpty
+  // still fires once the last real cross-exec subscriber leaves, letting the
+  // primary and its upstream subscription be pruned).
+  primaryFwd
+      ->addChannelSubscriber(relayExec_, /*forward=*/true, relayChainFilter, /*passive=*/true);
+  setup.upstreamSubReq.forward = forward;
+  auto subRes = co_await setup.upstreamSession->subscribe(
+      setup.upstreamSubReq,
+      std::move(setup.upstreamConsumer)
+  );
+  if (subRes.hasError()) {
+    co_return FirstSubscriberResult{
+        std::move(relayChainFilter),
+        folly::makeUnexpected(SubscribeError{
+            setup.clientRequestID,
+            subRes.error().errorCode,
+            folly::to<std::string>("upstream subscribe failed: ", subRes.error().reasonPhrase)
+        })
+    };
+  }
+  // Process subscribeOk on primaryExec (forwarder's executor).
+  const auto& ok = subRes.value()->subscribeOk();
+  auto reqID = ok.requestID;
+  auto exts = ok.extensions; // copy before move of subRes
+  auto largest = ok.largest; // copy before move of subRes
+  if (largest) {
+    primaryFwd->updateLargest(largest->group, largest->object);
+  }
+  primaryFwd->setExtensions(exts);
+  primaryFwd->tryProcessNewGroupRequest(setup.upstreamSubReq.params, /*fire=*/false);
+  co_return FirstSubscriberResult{
+      std::move(relayChainFilter),
+      UpstreamOk{std::move(subRes.value()), reqID, std::move(exts), std::move(largest)}
+  };
+}
+
+folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriberThread(
+    SubscribeRequest subReq,
+    std::shared_ptr<TrackConsumer> consumer,
+    std::shared_ptr<MoQSession> session,
+    folly::Executor* subscriberExec
+) {
+  const auto& ftn = subReq.fullTrackName;
+
+  // Fast path: local forwarder already exists on this thread.
+  if (auto* localReg = tlForwarders_.get()) {
+    if (auto localFwd = localReg->get(ftn)) {
+      if (localFwd->largest() && subReq.locType == LocationType::AbsoluteRange &&
+          subReq.endGroup < localFwd->largest()->group) {
+        co_return folly::makeUnexpected(SubscribeError{
+            subReq.requestID,
+            SubscribeErrorCode::INVALID_RANGE,
+            "Range in the past, use FETCH"
+        });
+      }
+      auto sub = localFwd->addSubscriber(session, subReq, std::move(consumer));
+      if (!sub) {
+        co_return folly::makeUnexpected(SubscribeError{
+            subReq.requestID,
+            SubscribeErrorCode::INTERNAL_ERROR,
+            "failed to add subscriber"
+        });
+      }
+      localFwd->tryProcessNewGroupRequest(subReq.params);
+      co_return sub;
+    }
+  }
+
+  // Ensure thread-local registry.
+  if (!tlForwarders_.get()) {
+    tlForwarders_.reset(new LocalForwarderRegistry());
+  }
+  auto* localReg = tlForwarders_.get();
+
+  // getOrCreate before the relay hop: serializes same-iothread races.
+  // isNew=true means this thread owns setup; isNew=false means another setup is in
+  // progress (or complete) on this thread and we can just attach.
+  auto [localFwd, isNew] =
+      localReg->getOrCreate(ftn, [&] { return std::make_shared<MoQForwarder>(ftn); });
+
+  if (!isNew) {
+    if (localFwd->largest() && subReq.locType == LocationType::AbsoluteRange &&
+        subReq.endGroup < localFwd->largest()->group) {
+      co_return folly::makeUnexpected(SubscribeError{
+          subReq.requestID,
+          SubscribeErrorCode::INVALID_RANGE,
+          "Range in the past, use FETCH"
+      });
+    }
+    auto sub = localFwd->addSubscriber(session, subReq, std::move(consumer));
+    if (!sub) {
+      co_return folly::makeUnexpected(SubscribeError{
+          subReq.requestID,
+          SubscribeErrorCode::INTERNAL_ERROR,
+          "failed to add subscriber"
+      });
+    }
+    localFwd->tryProcessNewGroupRequest(subReq.params);
+    co_return sub;
+  }
+
+  // isNew=true: this thread owns setup. Install PendingForwarderCallback first so
+  // forwardChanged/newGroupRequested/onEmpty events during setup are captured for replay.
+  auto pendingCb = std::make_shared<PendingForwarderCallback>(localReg, ftn);
+  localFwd->setCallback(pendingCb);
+
+  // deepCopyPayload=true (default): each subscriber thread owns its IOBuf chain,
+  // avoiding cross-thread contention on the shared atomic refcount.
+  auto crossExecFilter = std::make_shared<CrossExecFilter>(subscriberExec, localFwd);
+
+  // addSubscriber before the relay hop: numForwardingSubscribers() must be correct
+  // when addChannelSubscriber runs on primaryExec, so forward flag is right from the start.
+  auto sub = localFwd->addSubscriber(session, subReq, std::move(consumer));
+  if (!sub) {
+    localReg->remove(ftn, localFwd.get());
+    co_return folly::makeUnexpected(SubscribeError{
+        subReq.requestID,
+        SubscribeErrorCode::INTERNAL_ERROR,
+        "failed to add subscriber"
+    });
+  }
+  bool forward = (localFwd->numForwardingSubscribers() > 0);
+
+  // Out-vars set by the relay/primary chain, read after unwind on subscriberExec.
+  std::optional<Publisher::SubscribeResult> upstreamError;
+  std::optional<UpstreamOk> upstreamOk;
+  std::shared_ptr<MoQForwarder::Callback> finalCallback;
+  std::shared_ptr<MoQForwarder> primaryFwd;
+  folly::Executor* primaryExec{nullptr};
+  // Set on firstSetup path; wired to topNFilter on relayExec_ before pending.complete().
+  std::shared_ptr<CrossExecFilter> relayChainFilter;
+
+  // Single hop to relayExec_, with a nested hop to primaryExec so that the relay-exec
+  // cleanup (cache + pending.complete) runs on the natural unwind rather than as a
+  // separate explicit hop.
+  co_await folly::coro::co_withExecutor(
+      folly::getKeepAliveToken(relayExec_),
+      [&]() -> folly::coro::Task<void> {
+        auto sr = co_await subscribeStatefulWork(subReq);
+        if (sr.error) {
+          upstreamError = std::move(*sr.error); // SubscribeResult (Expected with error)
+          co_return;
+        }
+
+        primaryFwd = sr.primaryForwarder;
+        primaryExec = sr.primaryExec;
+
+        if (primaryFwd && primaryExec) {
+          finalCallback = co_await wireLocalToPrimary(
+              localReg,
+              ftn,
+              localFwd,
+              primaryFwd,
+              primaryExec,
+              subscriberExec,
+              crossExecFilter,
+              forward
+          );
+          // Natural unwind: back on relayExec_.
+
+          if (sr.firstSetup) {
+            auto r = co_await folly::coro::co_withExecutor(
+                folly::getKeepAliveToken(primaryExec),
+                completeFirstSubscriber(*sr.firstSetup, primaryFwd, forward)
+            );
+            relayChainFilter = std::move(r.relayChainFilter);
+            if (r.result.hasError()) {
+              upstreamError = folly::makeUnexpected(std::move(r.result.error()));
+            } else {
+              upstreamOk = std::move(r.result.value());
+            }
+          }
+        }
+
+        // Natural unwind: back on relayExec_.
+        if (upstreamError) {
+          // Channel subscriber(s) installed before subscribe failed; clean up.
+          if (primaryFwd && primaryExec) {
+            auto re = relayExec_;
+            auto rcf = relayChainFilter;
+            folly::via(
+                primaryExec,
+                [pf = primaryFwd, ex = subscriberExec, re, rcf = std::move(rcf)]() noexcept {
+                  pf->removeChannelSubscriberByExec(ex);
+                  if (rcf) {
+                    pf->removeChannelSubscriberByExec(re);
+                  }
+                }
+            );
+          }
+          // pending destructor fires when sr is destroyed, cleaning registry entry.
+          co_return;
+        }
+        if (!sr.firstSetup) {
+          co_return;
+        }
+        // Wire relay chain before pending.complete() so buffered objects see topNFilter.
+        if (relayChainFilter) {
+          auto topNView = registry_.getTopNView(ftn);
+          if (topNView && topNView->topNFilter) {
+            relayChainFilter->setDownstream(topNView->topNFilter);
+          }
+        }
+        if (upstreamOk) {
+          if (cache_) {
+            cache_->setTrackExtensions(ftn, upstreamOk->extensions);
+          }
+          auto& setup = *sr.firstSetup;
+          if (!setup.pending.complete(
+                  std::move(upstreamOk->handle),
+                  upstreamOk->requestID,
+                  setup.upstreamSession,
+                  maybeWrapPublisher(relayExec_, setup.upstreamSession)
+              )) {
+            upstreamError = folly::makeUnexpected(SubscribeError{
+                setup.clientRequestID,
+                SubscribeErrorCode::INTERNAL_ERROR,
+                "publisher reconnected during subscribe"
+            });
+          }
+        }
+      }()
+  );
+
+  // Natural unwind: back on subscriberExec.
+
+  if (pendingCb->sawOnEmpty_) {
+    // All subscribers left during setup; localReg entry already removed in
+    // PendingForwarderCallback::onEmpty.
+    // TODO: "everyone left during setup" and "everyone left + new subscriber joined"
+    // are edge cases that need further scrutiny and tests. For now do a best-effort
+    // cleanup of the channel subscriber if it was installed, and return an error.
+    // The relay registry entry (and upstream subscription if pending.complete ran)
+    // remains, so a subsequent subscribe on any thread will hit the SubsequentSubscriber
+    // path and work correctly.
+    if (primaryFwd && primaryExec) {
+      auto re = relayExec_;
+      auto rcf = relayChainFilter;
+      folly::via(
+          primaryExec,
+          [pf = primaryFwd, ex = subscriberExec, re, rcf = std::move(rcf)]() noexcept {
+            pf->removeChannelSubscriberByExec(ex);
+            if (rcf) {
+              pf->removeChannelSubscriberByExec(re);
+            }
+          }
+      );
+    }
+    co_return folly::makeUnexpected(SubscribeError{
+        subReq.requestID,
+        SubscribeErrorCode::INTERNAL_ERROR,
+        "all subscribers cancelled during setup"
+    });
+  }
+
+  if (upstreamError) {
+    localFwd->publishDone(PublishDone{
+        RequestID(0),
+        PublishDoneStatusCode::INTERNAL_ERROR,
+        0,
+        upstreamError->error().reasonPhrase
+    });
+    localReg->remove(ftn, localFwd.get());
+    co_return std::move(*upstreamError);
+  }
+
+  if (upstreamOk) {
+    localFwd->setExtensions(upstreamOk->extensions);
+    if (upstreamOk->largest) {
+      localFwd->updateLargest(upstreamOk->largest->group, upstreamOk->largest->object);
+    }
+  }
+  replayPendingEvents(localFwd.get(), finalCallback, *pendingCb, forward);
+  localFwd->tryProcessNewGroupRequest(subReq.params);
+  co_return sub;
+}
+
+// === End multi-iothread subscribe helpers ===
 
 folly::coro::Task<Publisher::SubscribeResult>
 MoqxRelay::subscribe(SubscribeRequest subReq, std::shared_ptr<TrackConsumer> consumer) {
@@ -1291,14 +2235,12 @@ void MoqxRelay::onTrackSelected(
     return;
   }
 
-  auto exec = session->getExecutor();
-  XCHECK(exec) << "onTrackSelected: null executor for session " << session.get();
-
-  // TODO: Consider batching multiple addSubscriberAndPublish calls on the same
-  // executor when multiple tracks are selected for the same session in a single
-  // ranking update.
+  auto upstreamView = registry_.getUpstreamView(ftn);
+  XCHECK(!relayExec_ || (upstreamView && upstreamView->publisherExec))
+      << "onTrackSelected: relayExec set but no publisherExec for " << ftn;
+  auto* publisherExec = relayExec_ ? upstreamView->publisherExec : nullptr;
   // TRACK_FILTER subscribers are unpinned so onTrackEvicted can remove them.
-  addSubscriberAndPublish(session, trackForwarder, forward, /*pinned=*/false);
+  addSubscriberAndPublish(session, trackForwarder, forward, /*pinned=*/false, publisherExec);
 }
 
 void MoqxRelay::onTrackEvicted(const FullTrackName& ftn, std::shared_ptr<MoQSession> session) {

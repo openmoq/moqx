@@ -18,6 +18,16 @@ void CrossExecForwarderCallback::onEmpty(moxygen::MoQForwarder* /*forwarder*/) {
   });
 }
 
+void CrossExecForwarderCallback::onPublishDone(moxygen::MoQForwarder* /*forwarder*/) {
+  auto f = forwarder_.lock();
+  if (!f) {
+    return;
+  }
+  targetExec_->add([f = std::move(f), downstream = downstream_]() mutable {
+    downstream->onPublishDone(f.get());
+  });
+}
+
 void CrossExecForwarderCallback::forwardChanged(
     moxygen::MoQForwarder* /*forwarder*/,
     bool forward
