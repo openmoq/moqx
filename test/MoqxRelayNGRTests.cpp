@@ -286,6 +286,11 @@ TEST_P(MoQRelayTest, PublishOkNewNGRForwardedUpstream) {
   EXPECT_TRUE(driveUntil([&] { return updates.load() >= 2; }))
       << "NGR cascade incomplete: " << updates.load() << "/2 requestUpdates";
 
+  // Lock in the assertion before teardown: in LocalForwarderMT the trailing
+  // forwardChanged(false) → requestUpdate at subscriber removal lands
+  // asynchronously and would otherwise over-saturate the expectation.
+  ASSERT_TRUE(testing::Mock::VerifyAndClearExpectations(publishHandle.get()));
+
   removeSession(publisherSession);
   removeSession(subscriberSession);
   driveIfMultiThread();
@@ -364,6 +369,11 @@ TEST_P(MoQRelayTest, PublishOkDuplicateNGRNotForwardedUpstream) {
   // otherwise race in and over-saturate the expectation.
   EXPECT_TRUE(driveUntil([&] { return updates.load() >= 2; }))
       << "NGR cascade incomplete: " << updates.load() << "/2 requestUpdates";
+
+  // Lock in the assertion before teardown: in LocalForwarderMT the trailing
+  // forwardChanged(false) → requestUpdate at subscriber removal lands
+  // asynchronously and would otherwise over-saturate the expectation.
+  ASSERT_TRUE(testing::Mock::VerifyAndClearExpectations(publishHandle.get()));
 
   removeSession(publisherSession);
   removeSession(subscriber1);
