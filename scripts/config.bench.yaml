@@ -12,6 +12,10 @@
 
 relay_id: "moqx-000"
 
+threads: 6                    # was 1 — the master switch; set to your core count
+use_local_forwarders: true    # was false — the pr365 data-path optimization
+mvfst_bpf_steering: false     # was true — the pr365 data-path optimization; requires Linux + BPF support
+
 listener_defaults:
   quic:
     max_data: 67108864            # 64 MB connection flow control
@@ -21,6 +25,14 @@ listener_defaults:
     idle_timeout_ms: 30000
     min_ack_delay_us: 1000
     max_ack_delay_us: 25000
+  mvfst:                                   # match Alan's perf-test.sh tuning
+    enable_gso: true
+    max_conn_packets_sent_per_loop: 16     # perf-test value (code default: 48)
+    max_server_recv_packets_per_loop: 32   # perf-test value (code default: 64)
+    bbr2:
+      exit_startup_on_loss: true
+      enable_recovery_in_startup: true
+      enable_recovery_in_probe_states: true
 
 listeners:
   - name: mvfst-relay
@@ -35,7 +47,7 @@ listeners:
       insecure: false
     endpoint: "/moq-relay"
     quic:
-      cc_algo: bbr
+      cc_algo: bbr2                        # match perf-test.sh (was bbr)
 
   - name: pico-relay
     quic_stack: picoquic
@@ -73,7 +85,9 @@ services:
 
 service_defaults:
   cache:
-    enabled: true
+    enabled: true                 # cache ON — serves late joiners and rides
+                                  # publisher blips from memory (Alan keeps it
+                                  # enabled too). Mirrors production serving.
     max_tracks: 1000
     max_groups_per_track: 100
 
