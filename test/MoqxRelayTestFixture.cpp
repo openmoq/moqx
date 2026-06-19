@@ -37,14 +37,14 @@ void TestMoQExecutor::driveFor(int n) {
 
 void MoQRelayTest::SetUp() {
   exec_ = std::make_shared<TestMoQExecutor>();
-  if (relayMode() == RelayMode::MultiThread) {
+  if (relayMode() == RelayMode::MultiThread || relayMode() == RelayMode::LocalForwarderMT) {
     relayThread_ = std::make_unique<folly::ScopedEventBaseThread>("relay-test");
     relayEvb_ = relayThread_->getEventBase();
     exec_->setRelayEvb(relayEvb_);
   }
   resetRelay(config::CacheConfig{.maxCachedTracks = 0});
   relay_->setAllowedNamespacePrefix(kAllowedPrefix);
-  if (relayMode() == RelayMode::MultiThread) {
+  if (relayMode() == RelayMode::MultiThread || relayMode() == RelayMode::LocalForwarderMT) {
     ASSERT_NE(relay_->getRelayExec(), nullptr);
   }
 }
@@ -54,10 +54,21 @@ void MoQRelayTest::resetRelay(config::CacheConfig cache, const std::string& rela
   if (relayEvb_) {
     relayExec = std::make_shared<moxygen::MoQFollyExecutorImpl>(relayEvb_);
   }
-  relay_ = std::make_shared<MoqxRelay>(std::move(cache), relayID, std::move(relayExec));
+  bool useLocalForwarders = relayEvb_ && relayMode() == RelayMode::LocalForwarderMT;
+  relay_ = std::make_shared<MoqxRelay>(
+      std::move(cache),
+      relayID,
+      std::move(relayExec),
+      useLocalForwarders
+  );
   if (relayEvb_) {
-    publisherInterface_ = std::make_shared<PublisherCrossExecFilter>(relayEvb_, relay_);
-    subscriberInterface_ = std::make_shared<SubscriberCrossExecFilter>(relayEvb_, relay_);
+    if (relayMode() == RelayMode::LocalForwarderMT) {
+      publisherInterface_ = relay_->createPublisherFilter();
+      subscriberInterface_ = relay_->createSubscriberFilter();
+    } else {
+      publisherInterface_ = std::make_shared<PublisherCrossExecFilter>(relayEvb_, relay_);
+      subscriberInterface_ = std::make_shared<SubscriberCrossExecFilter>(relayEvb_, relay_);
+    }
   }
 }
 
