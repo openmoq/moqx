@@ -39,7 +39,8 @@ struct CacheConfig {
       defaultMaxCacheDuration; // nullopt = use maxCacheDuration; 0ms = opt-in only
 };
 
-enum class QuicStack { Mvfst, Picoquic };
+// ProxygenQmux carries MoQ over QMUX-on-TCP + Fizz TLS, not QUIC/UDP.
+enum class QuicStack { Mvfst, Picoquic, ProxygenQmux };
 
 struct QuicConfig {
   // Flow control
