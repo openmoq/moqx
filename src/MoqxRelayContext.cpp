@@ -24,7 +24,8 @@ namespace openmoq::moqx {
 MoqxRelayContext::MoqxRelayContext(
     const folly::F14FastMap<std::string, config::ServiceConfig>& services,
     const std::string& relayID,
-    bool useRelayThread
+    bool useRelayThread,
+    bool useLocalForwarders
 )
     : serviceMatcher_(services), relayID_(relayID) {
   if (useRelayThread && !services.empty()) {
@@ -39,7 +40,8 @@ MoqxRelayContext::MoqxRelayContext(
       auto relay = std::make_shared<MoqxRelay>(
           svc.cache,
           relayID,
-          std::make_shared<moxygen::MoQFollyExecutorImpl>(evbs[i++].get())
+          std::make_shared<moxygen::MoQFollyExecutorImpl>(evbs[i++].get()),
+          useLocalForwarders
       );
       services_.emplace(
           name,
@@ -113,12 +115,9 @@ void MoqxRelayContext::initUpstreams(folly::EventBase* workerEvb) {
     auto onDisconnect = [relay, relayExec]() {
       runOnExec(relayExec, [relay]() { relay->onUpstreamDisconnect(); });
     };
-    std::shared_ptr<moxygen::Publisher> pubHandler = relay;
-    std::shared_ptr<moxygen::Subscriber> subHandler = relay;
-    if (relayExec) {
-      pubHandler = std::make_shared<PublisherCrossExecFilter>(relayExec, relay);
-      subHandler = std::make_shared<SubscriberCrossExecFilter>(relayExec, relay);
-    }
+    // Mode-aware filters (as inbound sessions): LF mode needs LocalPublishFilter for upstream PUBLISH.
+    std::shared_ptr<moxygen::Publisher> pubHandler = relay->createPublisherFilter();
+    std::shared_ptr<moxygen::Subscriber> subHandler = relay->createSubscriberFilter();
     auto provider = std::make_shared<UpstreamProvider>(
         workerExec,
         proxygen::URL(cfg.url),

@@ -15,6 +15,8 @@
 #   --delivery-timeout N   Delivery timeout in ms (default: 500)
 #   --transport TYPE       quic or webtransport (default: quic)
 #   --no-relay-thread      Disable relay exec thread (use_relay_thread: false)
+#   --local-forwarders     Enable per-subscriber-thread local forwarders
+#                          (use_local_forwarders: true; requires relay thread)
 #   --io-threads N         Number of relay IO threads (default: 1)
 #   --threads N            Number of perf client threads (default: 2)
 #   --relay-log SPEC       folly XLOG config passed as --logging=SPEC to relay
@@ -55,6 +57,7 @@ DURATION=30
 DELIVERY_TIMEOUT=500
 TRANSPORT="quic"
 USE_RELAY_THREAD="true"
+USE_LOCAL_FORWARDERS="false"
 IO_THREADS=1
 CLIENT_THREADS=2
 RELAY_LOG_SPEC=""
@@ -84,6 +87,7 @@ while [[ $# -gt 0 ]]; do
     --delivery-timeout) DELIVERY_TIMEOUT="$2";  shift 2 ;;
     --transport)        TRANSPORT="$2";         shift 2 ;;
     --no-relay-thread)  USE_RELAY_THREAD="false"; shift ;;
+    --local-forwarders) USE_LOCAL_FORWARDERS="true"; shift ;;
     --io-threads)       IO_THREADS="$2";          shift 2 ;;
     --threads)          CLIENT_THREADS="$2";      shift 2 ;;
     --relay-log)        RELAY_LOG_SPEC="$2";      shift 2 ;;
@@ -211,6 +215,7 @@ cat >"$RELAY_CFG" <<EOF
 relay_id: "perf-test-relay"
 threads: $IO_THREADS
 use_relay_thread: $USE_RELAY_THREAD
+use_local_forwarders: $USE_LOCAL_FORWARDERS
 mvfst_bpf_steering: $BPF_STEERING
 listeners:
   - name: perf
@@ -260,6 +265,7 @@ cp "$RELAY_CFG" "$LOG_DIR/relay.yaml"
   echo "transport:        $TRANSPORT"
   echo "io_threads:       $IO_THREADS"
   echo "use_relay_thread: $USE_RELAY_THREAD"
+  echo "local_forwarders: $USE_LOCAL_FORWARDERS"
   echo "subscriber_max:   $SUBSCRIBER_MAX"
   echo "ramp:             $RAMP"
   echo "duration:         $DURATION"
@@ -276,7 +282,7 @@ echo ""
 
 # ── Start relay ───────────────────────────────────────────────────────────────
 ulimit -n 65536 2>/dev/null || true
-echo "Starting relay (use_relay_thread=$USE_RELAY_THREAD, io_threads=$IO_THREADS, transport=$TRANSPORT, mvfst_bpf_steering=$BPF_STEERING)..."
+echo "Starting relay (use_relay_thread=$USE_RELAY_THREAD, local_forwarders=$USE_LOCAL_FORWARDERS, io_threads=$IO_THREADS, transport=$TRANSPORT, mvfst_bpf_steering=$BPF_STEERING)..."
 RELAY_LOGGING_ARG=()
 [[ -n "$RELAY_LOG_SPEC" ]] && RELAY_LOGGING_ARG=("--logging=$RELAY_LOG_SPEC")
 if [[ -n "$JEMALLOC" ]]; then

@@ -24,7 +24,7 @@ class CrossExecFilter;
 // goaway() is fire-and-forget.
 //
 // Requires targetExec_ to be a FIFO executor if call ordering matters.
-class SubscriberCrossExecFilter final : public moxygen::Subscriber {
+class SubscriberCrossExecFilter : public moxygen::Subscriber {
 public:
   SubscriberCrossExecFilter(folly::Executor* targetExec, std::shared_ptr<moxygen::Subscriber> inner)
       : targetExec_(targetExec), inner_(std::move(inner)) {}
