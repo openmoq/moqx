@@ -58,7 +58,8 @@ public:
   MoqxRelayContext(
       const folly::F14FastMap<std::string, config::ServiceConfig>& services,
       const std::string& relayID,
-      bool useRelayThread = true
+      bool useRelayThread = true,
+      bool useLocalForwarders = false
   );
 
   void setStatsRegistry(std::shared_ptr<stats::StatsRegistry> registry);

@@ -35,7 +35,8 @@ namespace moxygen::test {
 enum class RelayMode {
   SingleThread,
   MultiThread,
-  // Future: Mode3 — add here, then add a branch in SetUp() and INSTANTIATE entry
+  LocalForwarderMT,
+  // Future: LocalForwarderMTCrossThread — separate publisherThread_ for pub/sub split
 };
 
 inline void PrintTo(RelayMode mode, std::ostream* os) {
@@ -45,6 +46,9 @@ inline void PrintTo(RelayMode mode, std::ostream* os) {
     return;
   case RelayMode::MultiThread:
     *os << "MultiThread";
+    return;
+  case RelayMode::LocalForwarderMT:
+    *os << "LocalForwarderMT";
     return;
   }
 }
