@@ -232,7 +232,28 @@ jobs:
       - name: Setup dependencies
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: bash scripts/build.sh setup
+        run: |
+          # Three-mode setup resolution (mirrors the build/conformance jobs):
+          # 1. .moxygen-release file (release branches): use pinned tag.
+          # 2. Submodule SHA reachable from moxygen main: snapshot tarball
+          #    (avoids a slow from-source dep build when moxygen has advanced
+          #    past the local pin — the common case under the daily sync).
+          # 3. Submodule SHA diverged from main: source build.
+          if [ -f .moxygen-release ]; then
+            export MOQX_MOXYGEN_RELEASE_TAG=$(cat .moxygen-release | tr -d '[:space:]')
+            echo "==> Pinned moxygen tag: $MOQX_MOXYGEN_RELEASE_TAG"
+            bash scripts/build.sh setup --no-fallback
+          else
+            SUB_SHA=$(git -C deps/moxygen rev-parse HEAD)
+            AHEAD=$(gh api "repos/openmoq/moxygen/compare/main...$SUB_SHA" --jq .ahead_by 2>/dev/null || echo "1")
+            if [ "$AHEAD" = "0" ]; then
+              echo "==> moxygen submodule $SUB_SHA on main → snapshot tarball"
+              bash scripts/build.sh setup --use-latest --no-fallback
+            else
+              echo "==> moxygen submodule $SUB_SHA $AHEAD commits diverged from main → source build"
+              bash scripts/build.sh setup
+            fi
+          fi
 
       - name: Build with benchmarks
         run: bash scripts/build.sh --benchmark
