@@ -53,12 +53,13 @@ public:
 
     // Identity-checked success path. Re-finds by ftn; checks forwarder identity
     // to detect a reconnecting publisher that replaced the entry during the
-    // caller's co_await suspension. Sets handle, requestID, upstreamSession;
-    // fulfills promise. Returns false if entry is gone or replaced.
+    // caller's co_await suspension. Sets handle, requestID, upstreamSession,
+    // publisher; fulfills promise. Returns false if entry is gone or replaced.
     bool complete(
         std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle,
         moxygen::RequestID requestID,
-        std::shared_ptr<moxygen::MoQSession> upstreamSession
+        std::shared_ptr<moxygen::MoQSession> upstreamSession,
+        std::shared_ptr<moxygen::Publisher> publisher
     );
 
     ~UpstreamSubscribePending();
@@ -109,6 +110,7 @@ public:
       const moxygen::FullTrackName& ftn,
       std::shared_ptr<moxygen::MoQForwarder> forwarder,
       std::shared_ptr<moxygen::MoQSession> session,
+      std::shared_ptr<moxygen::Publisher> publisher,
       moxygen::RequestID requestID,
       std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle,
       folly::FunctionRef<FilterChainResult(std::shared_ptr<moxygen::MoQForwarder>)> chainBuilder
@@ -126,10 +128,10 @@ public:
   };
   std::optional<TopNView> getTopNView(const moxygen::FullTrackName& ftn) const;
 
-  // For onEmpty / forwardChanged / newGroupRequested
+  // For onEmpty / forwardChanged / newGroupRequested / trackStatus
   struct UpstreamView {
     std::shared_ptr<moxygen::MoQForwarder> forwarder;
-    std::shared_ptr<moxygen::MoQSession> upstream;
+    std::shared_ptr<moxygen::Publisher> publisher;
     std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle;
     moxygen::RequestID requestID;
     bool isPublish;
@@ -140,7 +142,7 @@ public:
   // For fetch()
   struct FetchView {
     std::shared_ptr<moxygen::MoQForwarder> forwarder;
-    std::shared_ptr<moxygen::MoQSession> upstream;
+    std::shared_ptr<moxygen::Publisher> publisher;
     moxygen::RequestID requestID;
     bool isReady;
   };
@@ -182,6 +184,7 @@ private:
 
     std::shared_ptr<moxygen::MoQForwarder> forwarder;
     std::shared_ptr<moxygen::MoQSession> upstream;
+    std::shared_ptr<moxygen::Publisher> publisher;
     moxygen::RequestID requestID{0};
     std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle;
     folly::coro::SharedPromise<folly::Unit> promise;
@@ -196,7 +199,8 @@ private:
       std::weak_ptr<moxygen::MoQForwarder> weakForwarder,
       std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle,
       moxygen::RequestID requestID,
-      std::shared_ptr<moxygen::MoQSession> upstreamSession
+      std::shared_ptr<moxygen::MoQSession> upstreamSession,
+      std::shared_ptr<moxygen::Publisher> publisher
   );
 
   // Called by UpstreamSubscribePending destructor on failure.

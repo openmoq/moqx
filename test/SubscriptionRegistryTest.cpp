@@ -44,7 +44,7 @@ TEST(SubscriptionRegistryTest, AwaitSubsequentSucceeds) {
       registry.getOrCreateFromSubscribe(kFtn, nullptr, subscribeChain)
   );
 
-  EXPECT_TRUE(first.pending.complete(nullptr, RequestID(0), nullptr));
+  EXPECT_TRUE(first.pending.complete(nullptr, RequestID(0), nullptr, nullptr));
 
   folly::EventBase evb;
   auto sub = folly::coro::blockingWait(std::move(task), &evb);
@@ -89,7 +89,7 @@ TEST(SubscriptionRegistryTest, PendingCompleteReturnsFalseWhenEntryGone) {
 
   registry.remove(kFtn); // simulate publisher replacing the entry mid-subscribe
 
-  EXPECT_FALSE(first.pending.complete(nullptr, RequestID(0), nullptr));
+  EXPECT_FALSE(first.pending.complete(nullptr, RequestID(0), nullptr, nullptr));
 }
 
 // Regression: awaitSubsequent must re-find after suspension; erased entry throws.
@@ -114,7 +114,7 @@ TEST(SubscriptionRegistryTest, AwaitSubsequentHandlesErasedEntry) {
       std::move(std::get<folly::coro::Task<SubscriptionRegistry::SubsequentSubscriber>>(token2));
 
   // Upstream subscribe succeeds — fulfills the promise.
-  EXPECT_TRUE(first.pending.complete(nullptr, RequestID(0), nullptr));
+  EXPECT_TRUE(first.pending.complete(nullptr, RequestID(0), nullptr, nullptr));
 
   // Entry is erased before the subsequent coroutine resumes.
   registry.remove(kFtn);
@@ -131,11 +131,18 @@ TEST(SubscriptionRegistryTest, CreateFromPublishEvictsSubscribeEntry) {
       registry.getOrCreateFromSubscribe(kFtn, nullptr, subscribeChain)
   );
   auto originalForwarder = first.forwarder;
-  first.pending.complete(nullptr, RequestID(0), nullptr);
+  first.pending.complete(nullptr, RequestID(0), nullptr, nullptr);
 
   auto newForwarder = std::make_shared<MoQForwarder>(kFtn, std::nullopt);
-  auto entry =
-      registry.createFromPublish(kFtn, newForwarder, nullptr, RequestID(1), nullptr, publishChain);
+  auto entry = registry.createFromPublish(
+      kFtn,
+      newForwarder,
+      nullptr,
+      nullptr,
+      RequestID(1),
+      nullptr,
+      publishChain
+  );
 
   ASSERT_TRUE(entry.evicted.has_value());
   EXPECT_EQ(entry.evicted->forwarder, originalForwarder);
@@ -147,7 +154,8 @@ TEST(SubscriptionRegistryTest, CreateFromPublishEvictsSubscribeEntry) {
 TEST(SubscriptionRegistryTest, OnPublisherTerminatedErasesEmptyEntry) {
   SubscriptionRegistry registry;
   auto forwarder = std::make_shared<MoQForwarder>(kFtn, std::nullopt);
-  registry.createFromPublish(kFtn, forwarder, nullptr, RequestID(0), nullptr, publishChain);
+  registry
+      .createFromPublish(kFtn, forwarder, nullptr, nullptr, RequestID(0), nullptr, publishChain);
 
   auto result = registry.onPublisherTerminated(kFtn);
   EXPECT_EQ(result, nullptr);
