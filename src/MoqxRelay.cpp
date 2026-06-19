@@ -710,9 +710,9 @@ MoqxRelay::subscribe(SubscribeRequest subReq, std::shared_ptr<TrackConsumer> con
   const auto& ftn = subReq.fullTrackName;
 
   if (ftn.trackNamespace.empty()) {
-    co_return folly::makeUnexpected(SubscribeError(
-        {subReq.requestID, SubscribeErrorCode::DOES_NOT_EXIST, "namespace required"}
-    ));
+    co_return folly::makeUnexpected(
+        SubscribeError({subReq.requestID, SubscribeErrorCode::DOES_NOT_EXIST, "namespace required"})
+    );
   }
 
   // TOCTOU fix: if we might be the first subscriber, wait for the upstream
