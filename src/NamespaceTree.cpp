@@ -232,6 +232,44 @@ folly::Expected<folly::Unit, NamespaceTree::Error> NamespaceTree::removeNamespac
   return folly::unit;
 }
 
+bool NamespaceTree::hasTracksSubscriptionInSubtree(
+    const NamespaceNode& root,
+    const std::shared_ptr<moxygen::MoQSession>& session
+) const {
+  std::vector<const NamespaceNode*> nodesToVisit{&root};
+  while (!nodesToVisit.empty()) {
+    const auto* node = nodesToVisit.back();
+    nodesToVisit.pop_back();
+    if (node->subscribers_.find(session) != node->subscribers_.end()) {
+      return true;
+    }
+    for (const auto& [_, child] : node->children_) {
+      nodesToVisit.push_back(child.get());
+    }
+  }
+  return false;
+}
+
+bool NamespaceTree::hasOverlappingTracksSubscription(
+    const moxygen::TrackNamespace& trackNamespacePrefix,
+    const std::shared_ptr<moxygen::MoQSession>& session
+) const {
+  const NamespaceNode* node = &root_;
+  for (size_t i = 0; i < trackNamespacePrefix.size(); i++) {
+    // Nodes visited before the target prefix are strict ancestors.
+    if (node->subscribers_.find(session) != node->subscribers_.end()) {
+      return true;
+    }
+    auto it = node->children_.find(trackNamespacePrefix[i]);
+    if (it == node->children_.end()) {
+      return false;
+    }
+    node = it->second.get();
+  }
+  // The target subtree covers exact-prefix and descendant registrations.
+  return hasTracksSubscriptionInSubtree(*node, session);
+}
+
 std::shared_ptr<NamespaceTree::NamespaceNode> NamespaceTree::findNode(
     const TrackNamespace& ns,
     bool createMissingNodes,

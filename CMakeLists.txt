@@ -133,6 +133,7 @@ add_library(moqx_core STATIC
   src/MoqxRelayContext.cpp
   src/MoqxRelayServer.cpp
   src/MoqxPicoRelayServer.cpp
+  src/MoqxQmuxRelayServer.cpp
   src/ServiceMatcher.cpp
   src/admin/AdminServer.cpp
   src/admin/BuiltinRoutes.cpp
@@ -165,6 +166,8 @@ target_link_libraries(moqx_core PUBLIC
   moxygen::moxygen_relay_moq_forwarder
   moxygen::moxygen_moq_relay_session
   moxygen::moxygen_moq_server
+  moxygen::moxygen_moq_qmux_server
+  moxygen::moxygen_qmux_utils
   moxygen::openmoq_pico_evb_server_transport
   proxygen::proxygenhttpserver
   # Workaround: wangle::wangle_acceptor_acceptor_core uses AsyncFdSocket from
