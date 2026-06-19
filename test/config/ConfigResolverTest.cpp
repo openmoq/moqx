@@ -1086,12 +1086,29 @@ TEST(ResolveConfig, ThreadsZeroRejected) {
   EXPECT_THAT(result.error(), HasSubstr("threads must be >= 1"));
 }
 
-TEST(ResolveConfig, ThreadsGreaterThanOneRejected) {
+TEST(ResolveConfig, ThreadsGreaterThanOneAccepted) {
   auto cfg = makeMinimalInsecureConfig();
   cfg.threads = std::optional<uint32_t>{2};
   auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  EXPECT_EQ(result.value().config.threads, 2u);
+}
+
+TEST(ResolveConfig, UseRelayThreadFalseWithOneThreadAccepted) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.use_relay_thread = std::optional<bool>{false};
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  EXPECT_FALSE(result.value().config.useRelayThread);
+}
+
+TEST(ResolveConfig, UseRelayThreadFalseWithMultipleThreadsRejected) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.threads = std::optional<uint32_t>{2};
+  cfg.use_relay_thread = std::optional<bool>{false};
+  auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasError());
-  EXPECT_THAT(result.error(), HasSubstr("threads > 1 is not yet supported"));
+  EXPECT_THAT(result.error(), HasSubstr("use_relay_thread must be true when threads > 1"));
 }
 
 // --- multiple listeners tests ---
