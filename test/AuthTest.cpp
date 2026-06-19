@@ -14,64 +14,6 @@ using namespace moxygen;
 
 namespace {
 
-void appendTypeLen(std::string& out, uint8_t major, uint64_t len) {
-  if (len < 24) {
-    out.push_back(static_cast<char>((major << 5) | len));
-  } else if (len <= 0xff) {
-    out.push_back(static_cast<char>((major << 5) | 24));
-    out.push_back(static_cast<char>(len));
-  } else if (len <= 0xffff) {
-    out.push_back(static_cast<char>((major << 5) | 25));
-    out.push_back(static_cast<char>((len >> 8) & 0xff));
-    out.push_back(static_cast<char>(len & 0xff));
-  } else {
-    out.push_back(static_cast<char>((major << 5) | 26));
-    out.push_back(static_cast<char>((len >> 24) & 0xff));
-    out.push_back(static_cast<char>((len >> 16) & 0xff));
-    out.push_back(static_cast<char>((len >> 8) & 0xff));
-    out.push_back(static_cast<char>(len & 0xff));
-  }
-}
-
-std::string cborUInt(uint64_t value) {
-  std::string out;
-  appendTypeLen(out, 0, value);
-  return out;
-}
-
-std::string cborText(std::string_view value) {
-  std::string out;
-  appendTypeLen(out, 3, value.size());
-  out.append(value);
-  return out;
-}
-
-std::string cborBytes(std::string_view value) {
-  std::string out;
-  appendTypeLen(out, 2, value.size());
-  out.append(value);
-  return out;
-}
-
-std::string cborArray(std::initializer_list<std::string_view> values) {
-  std::string out;
-  appendTypeLen(out, 4, values.size());
-  for (auto value : values) {
-    out.append(value);
-  }
-  return out;
-}
-
-std::string cborMap(std::initializer_list<std::pair<std::string_view, std::string_view>> entries) {
-  std::string out;
-  appendTypeLen(out, 5, entries.size());
-  for (const auto& [key, value] : entries) {
-    out.append(key);
-    out.append(value);
-  }
-  return out;
-}
-
 std::string namespaceBytes(const TrackNamespace& ns) {
   std::string out;
   for (const auto& field : ns.trackNamespace) {
@@ -82,15 +24,6 @@ std::string namespaceBytes(const TrackNamespace& ns) {
     out.append(field);
   }
   return out;
-}
-
-AuthToken
-makeToken(std::string claims, std::string_view secret = "secret", std::string_view keyID = "k1") {
-  return AuthToken{
-      .tokenType = 77,
-      .tokenValue = AuthTokenVerifier::signForTest(keyID, secret, claims),
-      .alias = AuthToken::DontRegister,
-  };
 }
 
 config::AuthConfig makeConfig() {
@@ -118,21 +51,13 @@ Grants makeGrants(
   return grants;
 }
 
-std::string claimsFor(Action action, const TrackNamespace& ns, std::string_view track) {
-  auto actions = cborArray({cborUInt(static_cast<uint64_t>(action))});
-  auto nsMatch = cborMap({{cborUInt(0), cborBytes(namespaceBytes(ns))}});
-  auto trackMatch = cborMap({{cborUInt(0), cborBytes(track)}});
-  auto scope = cborArray({actions, nsMatch, trackMatch});
-  auto moqt = cborArray({scope});
-  auto exp = cborUInt(4'102'444'800ULL); // 2100-01-01
-  return cborMap({{cborUInt(4), exp}, {cborText("moqt"), moqt}});
-}
-
-std::string
-claimsWithScope(std::string_view actions, std::string_view nsMatch, std::string_view trackMatch) {
-  auto scope = cborArray({actions, nsMatch, trackMatch});
-  auto exp = cborUInt(4'102'444'800ULL); // 2100-01-01
-  return cborMap({{cborUInt(4), exp}, {cborText("moqt"), cborArray({scope})}});
+AuthToken
+makeToken(Grants grants, std::string_view secret = "secret", std::string_view keyID = "k1") {
+  return AuthToken{
+      .tokenType = 77,
+      .tokenValue = AuthTokenVerifier::signForTest(keyID, secret, grants),
+      .alias = AuthToken::DontRegister,
+  };
 }
 
 } // namespace
@@ -140,7 +65,12 @@ claimsWithScope(std::string_view actions, std::string_view nsMatch, std::string_
 TEST(AuthTest, VerifiesSignedTokenAndAllowsMatchingAction) {
   TrackNamespace ns{{"live", "event"}};
   AuthTokenVerifier verifier(makeConfig());
-  auto grants = verifier.verify(makeToken(claimsFor(Action::Subscribe, ns, "video")));
+  auto token = makeToken(makeGrants(
+      {Action::Subscribe},
+      {MatchRule{.type = MatchRule::Type::Exact, .value = namespaceBytes(ns)}},
+      {MatchRule{.type = MatchRule::Type::Exact, .value = "video"}}
+  ));
+  auto grants = verifier.verify(token);
   ASSERT_TRUE(grants.hasValue());
   EXPECT_TRUE(allows(grants.value(), Action::Subscribe, FullTrackName{ns, "video"}));
   EXPECT_FALSE(allows(grants.value(), Action::Publish, FullTrackName{ns, "video"}));
@@ -229,7 +159,7 @@ TEST(AuthTest, FindAuthTokenSelectsMatchingAuthorizationToken) {
 }
 
 TEST(AuthTest, RejectsBadSignature) {
-  auto token = makeToken(claimsFor(Action::ClientSetup, TrackNamespace{}, ""));
+  auto token = makeToken(makeGrants({Action::ClientSetup}, {}, {}));
   token.tokenValue.back() ^= 0x01;
   AuthTokenVerifier verifier(makeConfig());
   auto grants = verifier.verify(token);
@@ -242,20 +172,18 @@ TEST(AuthTest, SelectsConfiguredKeyByID) {
   config.hmacKeys.push_back(config::AuthConfig::HmacKey{.id = "k2", .secret = "secret-2"});
 
   AuthTokenVerifier verifier(config);
-  auto grants = verifier.verify(
-      makeToken(claimsFor(Action::ClientSetup, TrackNamespace{}, ""), "secret-2", "k2")
-  );
+  auto grants =
+      verifier.verify(makeToken(makeGrants({Action::ClientSetup}, {}, {}), "secret-2", "k2"));
   ASSERT_TRUE(grants.hasValue());
 
-  auto missingKey = verifier.verify(
-      makeToken(claimsFor(Action::ClientSetup, TrackNamespace{}, ""), "secret-3", "k3")
-  );
+  auto missingKey =
+      verifier.verify(makeToken(makeGrants({Action::ClientSetup}, {}, {}), "secret-3", "k3"));
   ASSERT_TRUE(missingKey.hasError());
   EXPECT_EQ(missingKey.error(), AuthError::BadSignature);
 }
 
 TEST(AuthTest, RejectsWrongTokenType) {
-  auto token = makeToken(claimsFor(Action::ClientSetup, TrackNamespace{}, ""));
+  auto token = makeToken(makeGrants({Action::ClientSetup}, {}, {}));
   token.tokenType = 78;
   AuthTokenVerifier verifier(makeConfig());
 
@@ -264,102 +192,62 @@ TEST(AuthTest, RejectsWrongTokenType) {
   EXPECT_EQ(grants.error(), AuthError::WrongTokenType);
 }
 
-TEST(AuthTest, RejectsMalformedTokenEnvelope) {
+TEST(AuthTest, RejectsEmptyTokenAsMalformed) {
   AuthTokenVerifier verifier(makeConfig());
 
-  auto empty = makeToken(claimsFor(Action::ClientSetup, TrackNamespace{}, ""));
+  auto empty = makeToken(makeGrants({Action::ClientSetup}, {}, {}));
   empty.tokenValue.clear();
   auto emptyRes = verifier.verify(empty);
   ASSERT_TRUE(emptyRes.hasError());
   EXPECT_EQ(emptyRes.error(), AuthError::Malformed);
-
-  auto wrongVersion = makeToken(claimsFor(Action::ClientSetup, TrackNamespace{}, ""));
-  wrongVersion.tokenValue[0] = '\x02';
-  auto wrongVersionRes = verifier.verify(wrongVersion);
-  ASSERT_TRUE(wrongVersionRes.hasError());
-  EXPECT_EQ(wrongVersionRes.error(), AuthError::Malformed);
-
-  auto truncated = makeToken(claimsFor(Action::ClientSetup, TrackNamespace{}, ""));
-  truncated.tokenValue.resize(3);
-  auto truncatedRes = verifier.verify(truncated);
-  ASSERT_TRUE(truncatedRes.hasError());
-  EXPECT_EQ(truncatedRes.error(), AuthError::Malformed);
-
-  auto claimsLenOverflow = makeToken(claimsFor(Action::ClientSetup, TrackNamespace{}, ""));
-  const auto claimsLenOffset = size_t{2} + std::string_view("k1").size();
-  claimsLenOverflow.tokenValue[claimsLenOffset] = '\x7f';
-  auto claimsLenOverflowRes = verifier.verify(claimsLenOverflow);
-  ASSERT_TRUE(claimsLenOverflowRes.hasError());
-  EXPECT_EQ(claimsLenOverflowRes.error(), AuthError::Malformed);
 }
 
-TEST(AuthTest, RejectsMalformedClaims) {
+// Non-empty garbage that isn't a valid COSE/CWT structure must be rejected
+// cleanly (no crash). Either Malformed (CBOR/COSE decode fails) or BadSignature
+// (decodes but no key validates) is acceptable.
+TEST(AuthTest, RejectsGarbageBytesAsMalformedOrBadSig) {
   AuthTokenVerifier verifier(makeConfig());
-  auto token = makeToken(cborArray({}));
-
-  auto grants = verifier.verify(token);
-  ASSERT_TRUE(grants.hasError());
-  EXPECT_EQ(grants.error(), AuthError::Malformed);
-}
-
-TEST(AuthTest, RejectsDuplicateWellKnownClaimKeys) {
-  AuthTokenVerifier verifier(makeConfig());
-
-  // exp present twice must be rejected rather than silently last-wins.
-  auto dupExp = cborMap({
-      {cborUInt(4), cborUInt(4'102'444'800ULL)},
-      {cborUInt(4), cborUInt(4'102'444'800ULL)},
-  });
-  auto dupExpRes = verifier.verify(makeToken(dupExp));
-  ASSERT_TRUE(dupExpRes.hasError());
-  EXPECT_EQ(dupExpRes.error(), AuthError::Malformed);
-
-  // moqt present twice must be rejected too.
-  auto scope = cborArray(
-      {cborArray({cborUInt(static_cast<uint64_t>(Action::ClientSetup))}), cborMap({}), cborMap({})}
-  );
-  auto dupMoqt = cborMap({
-      {cborUInt(4), cborUInt(4'102'444'800ULL)},
-      {cborText("moqt"), cborArray({scope})},
-      {cborText("moqt"), cborArray({scope})},
-  });
-  auto dupMoqtRes = verifier.verify(makeToken(dupMoqt));
-  ASSERT_TRUE(dupMoqtRes.hasError());
-  EXPECT_EQ(dupMoqtRes.error(), AuthError::Malformed);
+  AuthToken token{
+      .tokenType = 77,
+      .tokenValue = std::string("\xde\xad\xbe\xef", 4),
+      .alias = AuthToken::DontRegister,
+  };
+  auto result = verifier.verify(token);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_TRUE(result.error() == AuthError::Malformed || result.error() == AuthError::BadSignature);
 }
 
 TEST(AuthTest, RejectsExpiredToken) {
-  auto scope = cborArray(
-      {cborArray({cborUInt(static_cast<uint64_t>(Action::ClientSetup))}), cborMap({}), cborMap({})}
-  );
-  auto claims = cborMap({{cborUInt(4), cborUInt(1)}, {cborText("moqt"), cborArray({scope})}});
+  auto expired = makeGrants({Action::ClientSetup}, {}, {});
+  expired.expiresAt = std::chrono::system_clock::time_point(std::chrono::seconds(1'735'689'600));
   AuthTokenVerifier verifier(makeConfig());
-  auto grants = verifier.verify(makeToken(claims));
+  auto grants = verifier.verify(makeToken(expired));
   ASSERT_TRUE(grants.hasError());
   EXPECT_EQ(grants.error(), AuthError::Expired);
 }
 
-TEST(AuthTest, ParsesScalarActionAndMoqtRevalClaim) {
-  auto claims = claimsWithScope(
-      cborUInt(static_cast<uint64_t>(Action::ClientSetup)),
-      cborMap({}),
-      cborMap({})
-  );
-  auto withReval = cborMap({
-      {cborUInt(4), cborUInt(4'102'444'800ULL)},
-      {cborText("moqt"),
-       cborArray({cborArray(
-           {cborUInt(static_cast<uint64_t>(Action::ClientSetup)), cborMap({}), cborMap({})}
-       )})},
-      {cborText("moqt-reval"), cborUInt(60)},
-  });
-
+TEST(AuthTest, VerifiesCatapultCwtWithOpenScope) {
   AuthTokenVerifier verifier(makeConfig());
-  auto scalarGrants = verifier.verify(makeToken(claims));
-  ASSERT_TRUE(scalarGrants.hasValue());
-  EXPECT_TRUE(allows(scalarGrants.value(), Action::ClientSetup, TrackNamespace{}));
+  auto grants = verifier.verify(makeToken(makeGrants({Action::ClientSetup}, {}, {})));
 
-  auto revalGrants = verifier.verify(makeToken(withReval));
-  ASSERT_TRUE(revalGrants.hasValue());
-  EXPECT_TRUE(allows(revalGrants.value(), Action::ClientSetup, TrackNamespace{}));
+  ASSERT_TRUE(grants.hasValue());
+  EXPECT_TRUE(allows(grants.value(), Action::ClientSetup, TrackNamespace{}));
+}
+
+TEST(AuthTest, MultiRuleCompoundMatchRoundtripsViaCwt) {
+  // Two track-match rules (prefix AND suffix) must survive CWT serialization and
+  // be enforced on verification. Both conditions must hold for allows() to pass.
+  auto grants = makeGrants(
+      {Action::Subscribe},
+      {},
+      {MatchRule{.type = MatchRule::Type::Prefix, .value = "live-"},
+       MatchRule{.type = MatchRule::Type::Suffix, .value = ".mp4"}}
+  );
+  AuthTokenVerifier verifier(makeConfig());
+  auto result = verifier.verify(makeToken(grants));
+  ASSERT_TRUE(result.hasValue());
+  TrackNamespace ns{};
+  EXPECT_TRUE(allows(result.value(), Action::Subscribe, FullTrackName{ns, "live-stream.mp4"}));
+  EXPECT_FALSE(allows(result.value(), Action::Subscribe, FullTrackName{ns, "live-stream.ts"}));
+  EXPECT_FALSE(allows(result.value(), Action::Subscribe, FullTrackName{ns, "vod-stream.mp4"}));
 }

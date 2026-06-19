@@ -3,3 +3,6 @@
 	url = git@github.com:openmoq/moxygen.git
 	branch = main
 	ignore = untracked
+[submodule "deps/catapult"]
+	path = deps/catapult
+	url = https://github.com/Quicr/catapult.git
