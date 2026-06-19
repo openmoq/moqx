@@ -9,6 +9,7 @@
 #include <memory>
 
 #include "MoqxPicoRelayServer.h"
+#include "MoqxQmuxRelayServer.h"
 #include "MoqxRelayContext.h"
 #include "MoqxRelayServer.h"
 #include "config/Config.h"
@@ -28,6 +29,12 @@ inline std::shared_ptr<moxygen::MoQServerBase> makeRelayServer(
   if (listenerCfg.quicStack == config::QuicStack::Picoquic) {
     auto server =
         std::make_shared<MoqxPicoRelayServer>(listenerCfg, std::move(context), ioExecutor);
+    server->setStatsRegistry(std::move(statsRegistry));
+    return server;
+  }
+  if (listenerCfg.quicStack == config::QuicStack::ProxygenQmux) {
+    auto server =
+        std::make_shared<MoqxQmuxRelayServer>(listenerCfg, std::move(context), ioExecutor);
     server->setStatsRegistry(std::move(statsRegistry));
     return server;
   }

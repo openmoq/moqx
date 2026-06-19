@@ -191,6 +191,16 @@ set_tests_properties(relay_chain PROPERTIES
 )
 
 add_test(
+  NAME qmux_relay
+  COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_qmux_relay.sh $<TARGET_FILE:moqx>
+)
+set_tests_properties(qmux_relay PROPERTIES
+  TIMEOUT 60
+  SKIP_RETURN_CODE 77
+  ENVIRONMENT "MOQBIN=${PROJECT_SOURCE_DIR}/.scratch/moxygen-install/bin"
+)
+
+add_test(
   NAME admin_info_endpoint
   COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_admin_info.sh $<TARGET_FILE:moqx>
 )

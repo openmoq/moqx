@@ -39,3 +39,8 @@ TEST_RELAY_CHAIN_DOWNSTREAM_ADMIN=19671
 # test_admin_cache_purge_race.sh
 TEST_CACHE_PURGE_RACE_RELAY=19678
 TEST_CACHE_PURGE_RACE_ADMIN=19679
+
+# test_qmux_relay.sh  (relay listener + admin, plus a throwaway dateserver listener)
+TEST_QMUX_RELAY_LISTEN=19680
+TEST_QMUX_RELAY_ADMIN=19681
+TEST_QMUX_DATESERVER_LISTEN=19682
