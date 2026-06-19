@@ -53,7 +53,7 @@ TEST_P(MoQRelayTest, FetchAfterPublisherTermination) {
     auto res = folly::coro::blockingWait(std::move(task), exec_.get());
     // Should return an error, not crash
     EXPECT_FALSE(res.hasValue());
-    EXPECT_EQ(res.error().errorCode, FetchErrorCode::TRACK_NOT_EXIST);
+    EXPECT_EQ(res.error().errorCode, FetchErrorCode::DOES_NOT_EXIST);
   });
 
   // Clean up

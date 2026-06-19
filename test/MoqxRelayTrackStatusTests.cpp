@@ -25,7 +25,7 @@ TEST_P(MoQRelayTest, TrackStatusNonExistentTrack) {
 
     // Should return error indicating track not found
     EXPECT_FALSE(res.hasValue());
-    EXPECT_EQ(res.error().errorCode, TrackStatusErrorCode::TRACK_NOT_EXIST);
+    EXPECT_EQ(res.error().errorCode, TrackStatusErrorCode::DOES_NOT_EXIST);
     EXPECT_FALSE(res.error().reasonPhrase.empty());
   });
 
