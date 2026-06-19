@@ -1,16 +1,26 @@
-# moqx relay — production config template for ci.openmoq.org deployment
+# moqx relay — parameterized bench / scaling config template.
 #
-# Two listeners on separate ports:
-#   mvfst    :4433 — BBR with pacing
-#   picoquic :4434 — BBR
+# Filled by scripts/moqx-run.sh, which resolves the ${MOQX_*} / ${DOMAIN}
+# placeholders below from CLI flags > .env > built-in defaults, then serves
+# the resolved config. Two listeners: mvfst :4433 and picoquic :4434 (each
+# serves WebTransport via the endpoint path and raw QUIC moqt://).
 #
-# Each listener serves both WebTransport (via endpoint path) and raw
-# QUIC (moqt:// — no path, direct UDP+ALPN). Clients pick the port
-# matching their QUIC stack preference.
-#
-# Cert paths use /etc/letsencrypt convention — adjust for your deployment.
+# Tunable via env / CLI (defaults live in moqx-run.sh):
+#   MOQX_THREADS       IO worker threads; 0 = moqx autodetects one per CPU
+#   MOQX_LOCAL_FWD     per-subscriber-thread local forwarders (true|false)
+#   MOQX_BPF_STEERING  mvfst CID reuseport steering, Linux+mvfst (true|false)
+#   MOQX_SEND_PKTS     mvfst max_conn_packets_sent_per_loop
+#   MOQX_RECV_PKTS     mvfst max_server_recv_packets_per_loop
+#   MOQX_UDP_BUFFER    relay UDP socket buffer bytes; 0 = moxygen 1 MB default
+#   MOQX_CC            mvfst congestion control (bbr2|bbr|copa|cubic|...)
+#   MOQX_CACHE         relay object cache enabled (true|false)
+#   DOMAIN             TLS cert hostname under /etc/letsencrypt/live/
 
 relay_id: "moqx-000"
+
+threads: ${MOQX_THREADS}
+use_local_forwarders: ${MOQX_LOCAL_FWD}
+mvfst_bpf_steering: ${MOQX_BPF_STEERING}
 
 listener_defaults:
   quic:
@@ -21,6 +31,15 @@ listener_defaults:
     idle_timeout_ms: 30000
     min_ack_delay_us: 1000
     max_ack_delay_us: 25000
+  mvfst:
+    enable_gso: true
+    max_conn_packets_sent_per_loop: ${MOQX_SEND_PKTS}
+    max_server_recv_packets_per_loop: ${MOQX_RECV_PKTS}
+    udp_socket_buffer_bytes: ${MOQX_UDP_BUFFER}
+    bbr2:
+      exit_startup_on_loss: true
+      enable_recovery_in_startup: true
+      enable_recovery_in_probe_states: true
 
 listeners:
   - name: mvfst-relay
@@ -35,7 +54,7 @@ listeners:
       insecure: false
     endpoint: "/moq-relay"
     quic:
-      cc_algo: bbr
+      cc_algo: ${MOQX_CC}
 
   - name: pico-relay
     quic_stack: picoquic
@@ -73,7 +92,7 @@ services:
 
 service_defaults:
   cache:
-    enabled: true
+    enabled: ${MOQX_CACHE}
     max_tracks: 1000
     max_groups_per_track: 100
 
