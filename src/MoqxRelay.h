@@ -189,6 +189,11 @@ public:
       std::shared_ptr<NamespacePublishHandle> namespacePublishHandle
   ) override;
 
+  folly::coro::Task<SubscribeTracksResult> subscribeTracks(
+      moxygen::SubscribeTracks subTracks,
+      std::shared_ptr<PublishBlockedHandle> publishBlockedHandle = nullptr
+  ) override;
+
   folly::coro::Task<moxygen::Subscriber::PublishNamespaceResult>
   publishNamespace(moxygen::PublishNamespace pubNs, std::shared_ptr<moxygen::Subscriber::PublishNamespaceCallback>)
       override;
@@ -250,11 +255,24 @@ public:
 
 private:
   class NamespaceSubscription;
+  class TracksSubscription;
   class TerminationFilter;
   class LocalSubscribeFilter;
   class LocalPublishFilter;
 
+  // No-op NamespaceTree::Callback for the tracks-subscriber tree.
+  // The tracks tree never has publishers, so onPublishNamespaceDone never fires.
+  struct NullCallback : public NamespaceTree::Callback {
+    void onPublishNamespaceDone(const moxygen::TrackNamespace&) override {}
+  };
+
   void unsubscribeNamespace(
+      const moxygen::TrackNamespace& prefix,
+      std::shared_ptr<moxygen::MoQSession> session
+  );
+
+  // Draft 18+
+  void unsubscribeTracks(
       const moxygen::TrackNamespace& prefix,
       std::shared_ptr<moxygen::MoQSession> session
   );
@@ -264,6 +282,11 @@ private:
   void onPublishNamespaceDone(const moxygen::TrackNamespace& ns) override;
 
   NamespaceTree namespaceTree_{*this};
+
+  // Draft 18+: parallel tree for SUBSCRIBE_TRACKS. Independent overlap space;
+  // only `children` and `sessions` are populated (no publishers, no callbacks).
+  NullCallback tracksTreeCb_;
+  NamespaceTree tracksTree_{tracksTreeCb_};
 
   void onEmpty(moxygen::MoQForwarder* forwarder) override;
   void forwardChanged(moxygen::MoQForwarder* forwarder, bool forward) override;

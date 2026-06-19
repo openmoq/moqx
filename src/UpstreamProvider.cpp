@@ -56,6 +56,23 @@ public:
   PendingTrackConsumer() : TrackConsumerFilter(nullptr) {}
 };
 
+// Presents an upstream SUBSCRIBE_NAMESPACE(options=PUBLISH) handle as a
+// SubscribeTracksHandle, since subscribeTracks() maps onto subscribeNamespace().
+class UpstreamSubscribeTracksHandle : public Publisher::SubscribeTracksHandle {
+public:
+  explicit UpstreamSubscribeTracksHandle(std::shared_ptr<Publisher::SubscribeNamespaceHandle> inner)
+      : Publisher::SubscribeTracksHandle(inner->subscribeNamespaceOk()), inner_(std::move(inner)) {}
+
+  void unsubscribeTracks() override { inner_->unsubscribeNamespace(); }
+
+  folly::coro::Task<RequestUpdateResult> requestUpdate(RequestUpdate update) override {
+    return inner_->requestUpdate(std::move(update));
+  }
+
+private:
+  std::shared_ptr<Publisher::SubscribeNamespaceHandle> inner_;
+};
+
 } // namespace
 
 UpstreamProvider::UpstreamProvider(
@@ -221,6 +238,27 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> UpstreamProvider::coSubsc
 ) {
   auto sess = co_await getOrConnectSession();
   co_return co_await sess->subscribeNamespace(std::move(subNs), std::move(handle));
+}
+
+folly::coro::Task<Publisher::SubscribeTracksResult> UpstreamProvider::subscribeTracks(
+    SubscribeTracks subTracks,
+    std::shared_ptr<PublishBlockedHandle> /*publishBlockedHandle*/
+) {
+  XLOG(DBG1) << "UpstreamProvider::subscribeTracks nsp=" << subTracks.trackNamespacePrefix;
+  // SUBSCRIBE_TRACKS == SUBSCRIBE_NAMESPACE with options=PUBLISH: both request
+  // PUBLISH for matching tracks under a prefix and want no NAMESPACE messages,
+  // so there is no namespace handle to forward.
+  SubscribeNamespace subNs;
+  subNs.requestID = subTracks.requestID;
+  subNs.trackNamespacePrefix = subTracks.trackNamespacePrefix;
+  subNs.forward = subTracks.forward;
+  subNs.params = std::move(subTracks.params);
+  subNs.options = SubscribeNamespaceOptions::PUBLISH;
+  auto result = co_await subscribeNamespace(std::move(subNs), /*handle=*/nullptr);
+  if (result.hasError()) {
+    co_return folly::makeUnexpected(std::move(result.error()));
+  }
+  co_return std::make_shared<UpstreamSubscribeTracksHandle>(std::move(result.value()));
 }
 
 // --- Subscriber interface ---

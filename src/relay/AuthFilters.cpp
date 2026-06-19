@@ -76,6 +76,32 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> AuthPublisherFilter::subs
   return downstream_->subscribeNamespace(std::move(subNs), std::move(handle));
 }
 
+folly::coro::Task<Publisher::SubscribeTracksResult> AuthPublisherFilter::subscribeTracks(
+    SubscribeTracks subTracks,
+    std::shared_ptr<PublishBlockedHandle> publishBlockedHandle
+) {
+  // SUBSCRIBE_TRACKS is namespace-level, like SUBSCRIBE_NAMESPACE; gate on the
+  // prefix. Unlike peering, which uses SUBSCRIBE_NAMESPACE, there is no peer
+  // bypass for SUBSCRIBE_TRACKS.
+  auto ok = auth::authorize(
+      *verifier_,
+      auth::Action::SubscribeNamespace,
+      subTracks.params,
+      subTracks.trackNamespacePrefix,
+      *grants_
+  );
+  if (ok.hasError()) {
+    return folly::coro::makeTask<Publisher::SubscribeTracksResult>(
+        folly::makeUnexpected(SubscribeTracksError{
+            subTracks.requestID,
+            SubscribeTracksErrorCode::UNAUTHORIZED,
+            auth::toString(ok.error())
+        })
+    );
+  }
+  return downstream_->subscribeTracks(std::move(subTracks), std::move(publishBlockedHandle));
+}
+
 folly::coro::Task<Publisher::TrackStatusResult>
 AuthPublisherFilter::trackStatus(const TrackStatus req) {
   auto ok = auth::authorize(

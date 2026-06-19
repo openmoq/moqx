@@ -42,6 +42,11 @@ public:
       std::shared_ptr<NamespacePublishHandle> handle
   ) override;
 
+  folly::coro::Task<SubscribeTracksResult> subscribeTracks(
+      moxygen::SubscribeTracks subTracks,
+      std::shared_ptr<PublishBlockedHandle> publishBlockedHandle = nullptr
+  ) override;
+
   folly::coro::Task<TrackStatusResult> trackStatus(const moxygen::TrackStatus req) override;
 
   void goaway(moxygen::Goaway g) override;

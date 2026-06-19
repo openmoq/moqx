@@ -118,6 +118,58 @@ private:
   folly::Executor* exec_;
 };
 
+// Wraps a PublishBlockedHandle so publishBlocked() dispatches back to the
+// caller's executor. Held by the inner session on targetExec_.
+class CrossExecPublishBlockedHandle : public moxygen::Publisher::PublishBlockedHandle {
+public:
+  CrossExecPublishBlockedHandle(
+      std::shared_ptr<moxygen::Publisher::PublishBlockedHandle> inner,
+      folly::Executor::KeepAlive<> exec
+  )
+      : inner_(std::move(inner)), exec_(std::move(exec)) {}
+
+  void publishBlocked(
+      const moxygen::TrackNamespace& trackNamespaceSuffix,
+      const std::string& trackName
+  ) override {
+    exec_->add([inner = inner_, trackNamespaceSuffix, trackName]() mutable {
+      inner->publishBlocked(trackNamespaceSuffix, trackName);
+    });
+  }
+
+private:
+  std::shared_ptr<moxygen::Publisher::PublishBlockedHandle> inner_;
+  folly::Executor::KeepAlive<> exec_;
+};
+
+class CrossExecSubscribeTracksHandle : public moxygen::Publisher::SubscribeTracksHandle {
+public:
+  CrossExecSubscribeTracksHandle(
+      std::shared_ptr<moxygen::Publisher::SubscribeTracksHandle> inner,
+      folly::Executor* exec
+  )
+      : inner_(std::move(inner)), exec_(exec) {}
+
+  const moxygen::SubscribeTracksOk& subscribeTracksOk() const override {
+    return inner_->subscribeTracksOk();
+  }
+
+  void unsubscribeTracks() override {
+    exec_->add([inner = inner_]() mutable { inner->unsubscribeTracks(); });
+  }
+
+  folly::coro::Task<RequestUpdateResult> requestUpdate(moxygen::RequestUpdate update) override {
+    co_return co_await folly::coro::co_withExecutor(
+        folly::getKeepAliveToken(exec_),
+        inner_->requestUpdate(std::move(update))
+    );
+  }
+
+private:
+  std::shared_ptr<moxygen::Publisher::SubscribeTracksHandle> inner_;
+  folly::Executor* exec_;
+};
+
 } // namespace
 
 folly::coro::Task<moxygen::Publisher::TrackStatusResult>
@@ -183,6 +235,30 @@ PublisherCrossExecFilter::subscribeNamespace(
   );
   if (result.hasValue()) {
     co_return std::make_shared<CrossExecSubscribeNamespaceHandle>(
+        std::move(result.value()),
+        targetExec_
+    );
+  }
+  co_return result;
+}
+
+folly::coro::Task<moxygen::Publisher::SubscribeTracksResult>
+PublisherCrossExecFilter::subscribeTracks(
+    moxygen::SubscribeTracks subTracks,
+    std::shared_ptr<PublishBlockedHandle> publishBlockedHandle
+) {
+  auto callerExec = co_await folly::coro::co_current_executor;
+  auto wrappedHandle = publishBlockedHandle ? std::make_shared<CrossExecPublishBlockedHandle>(
+                                                  std::move(publishBlockedHandle),
+                                                  std::move(callerExec)
+                                              )
+                                            : nullptr;
+  auto result = co_await folly::coro::co_withExecutor(
+      folly::getKeepAliveToken(targetExec_),
+      inner_->subscribeTracks(std::move(subTracks), std::move(wrappedHandle))
+  );
+  if (result.hasValue()) {
+    co_return std::make_shared<CrossExecSubscribeTracksHandle>(
         std::move(result.value()),
         targetExec_
     );

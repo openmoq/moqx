@@ -97,6 +97,12 @@ public:
       std::shared_ptr<NamespacePublishHandle> handle
   ) override;
 
+  // Mapped onto a draft-16 SUBSCRIBE_NAMESPACE with options=PUBLISH upstream.
+  folly::coro::Task<SubscribeTracksResult> subscribeTracks(
+      moxygen::SubscribeTracks subTracks,
+      std::shared_ptr<PublishBlockedHandle> publishBlockedHandle = nullptr
+  ) override;
+
   // --- Subscriber interface (forwarded to upstream session) ---
 
   folly::coro::Task<PublishNamespaceResult> publishNamespace(
