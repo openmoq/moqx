@@ -7,6 +7,7 @@
  */
 
 #include "MoqxCache.h"
+#include "relay/NullConsumers.h"
 #include <folly/logging/xlog.h>
 #include <moxygen/MoQTrackProperties.h>
 
@@ -1292,6 +1293,10 @@ private:
     return folly::unit;
   }
 };
+
+std::shared_ptr<TrackConsumer> MoqxCache::makePassiveConsumer(const FullTrackName& ftn) {
+  return getSubscribeWriteback(ftn, std::make_shared<moxygen::NullTrackConsumer>());
+}
 
 std::shared_ptr<TrackConsumer> MoqxCache::getSubscribeWriteback(
     const FullTrackName& ftn,

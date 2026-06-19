@@ -238,7 +238,7 @@ struct ParsedListenerConfig {
   rfl::Description<"TLS configuration", ParsedListenerTlsConfig> tls;
   rfl::Description<"WebTransport endpoint path", std::string> endpoint;
   rfl::Description<
-      "MOQT draft versions (empty = all supported)",
+      "MOQT draft versions (empty = default 14,16)",
       std::optional<std::vector<uint32_t>>>
       moqt_versions;
   rfl::Description<
@@ -420,6 +420,17 @@ struct ParsedConfig {
       std::optional<ParsedListenerDefaultsConfig>>
       listener_defaults;
   rfl::Description<"Number of IO worker threads (default: 1)", std::optional<uint32_t>> threads;
+  rfl::Description<
+      "Dedicate one relay thread per service for relay state isolation (default: true). "
+      "Disable for baseline performance comparison.",
+      std::optional<bool>>
+      use_relay_thread;
+  rfl::Description<
+      "Use per-subscriber-thread local forwarders to minimize cross-thread hops on the "
+      "data path (requires use_relay_thread; default: false). Disable to run all subscribes "
+      "on the relay thread via subscribeImpl.",
+      std::optional<bool>>
+      use_local_forwarders;
   rfl::Description<
       "Attach a classic BPF reuseport filter to steer QUIC packets to the correct mvfst worker "
       "based on the connection ID's workerId field (Linux only, mvfst stack only, default: true). "

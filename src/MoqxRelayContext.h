@@ -22,6 +22,7 @@
 #include <folly/Expected.h>
 #include <folly/container/F14Map.h>
 #include <folly/coro/Task.h>
+#include <folly/executors/IOThreadPoolExecutor.h>
 #include <folly/io/async/EventBase.h>
 
 #include <optional>
@@ -56,7 +57,9 @@ public:
 
   MoqxRelayContext(
       const folly::F14FastMap<std::string, config::ServiceConfig>& services,
-      const std::string& relayID
+      const std::string& relayID,
+      bool useRelayThread = true,
+      bool useLocalForwarders = false
   );
 
   void setStatsRegistry(std::shared_ptr<stats::StatsRegistry> registry);
@@ -110,6 +113,11 @@ public:
   );
 
 private:
+  // When use_relay_thread=true: one dedicated thread per service, each with its
+  // own executor, isolating relay state from I/O threads.  Null when disabled.
+  // Each relay owns its MoQFollyExecutorImpl; the pool just keeps threads alive.
+  std::unique_ptr<folly::IOThreadPoolExecutor> relayThreadPool_;
+
   folly::F14FastMap<std::string, ServiceEntry> services_;
   ServiceMatcher serviceMatcher_;
   std::string relayID_;

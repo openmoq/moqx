@@ -215,6 +215,8 @@ struct Config {
   std::optional<AdminConfig> admin;
   std::string relayID; // always set: from config or randomly generated
   uint32_t threads{1};
+  bool useRelayThread{true};
+  bool useLocalForwarders{false};
   bool mvfstBpfSteering{true};
 };
 

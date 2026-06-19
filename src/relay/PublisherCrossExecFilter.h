@@ -17,7 +17,7 @@ namespace openmoq::moqx {
 // the result to the caller. goaway() is fire-and-forget.
 //
 // Requires targetExec_ to be a FIFO executor if call ordering matters.
-class PublisherCrossExecFilter final : public moxygen::Publisher {
+class PublisherCrossExecFilter : public moxygen::Publisher {
 public:
   PublisherCrossExecFilter(folly::Executor* targetExec, std::shared_ptr<moxygen::Publisher> inner)
       : targetExec_(targetExec), inner_(std::move(inner)) {}

@@ -26,9 +26,13 @@ std::string matchRuleErrorLabel(const std::string& name, size_t j) {
   return "Service '" + name + "' match[" + std::to_string(j) + "]";
 }
 
+// Default versions when moqt_versions is unset. Excludes draft-18 (in moxygen's
+// kSupportedVersions but not yet interoperable); configure moqt_versions to opt in.
+constexpr const char* kDefaultMoqtVersions = "14,16";
+
 std::string moqtVersionsToString(const ParsedListenerConfig& listener) {
   if (!listener.moqt_versions.value().has_value() || listener.moqt_versions.value()->empty()) {
-    return "";
+    return kDefaultMoqtVersions;
   }
   return folly::join(',', *listener.moqt_versions.value());
 }
@@ -896,8 +900,16 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
   const uint32_t threads = config.threads.value().value_or(1);
   if (threads == 0) {
     errors.push_back("threads must be >= 1");
-  } else if (threads > 1) {
-    errors.push_back("threads > 1 is not yet supported");
+  }
+
+  const bool useRelayThread = config.use_relay_thread.value().value_or(true);
+  if (threads > 1 && !useRelayThread) {
+    errors.push_back("use_relay_thread must be true when threads > 1");
+  }
+
+  const bool useLocalForwarders = config.use_local_forwarders.value().value_or(false);
+  if (useLocalForwarders && !useRelayThread) {
+    errors.push_back("use_local_forwarders requires use_relay_thread to be true");
   }
 
   const bool mvfstBpfSteering = config.mvfst_bpf_steering.value().value_or(true);
@@ -951,6 +963,8 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
               .admin = std::move(adminConfig),
               .relayID = std::move(relayID),
               .threads = threads,
+              .useRelayThread = useRelayThread,
+              .useLocalForwarders = useLocalForwarders,
               .mvfstBpfSteering = mvfstBpfSteering,
           },
       .warnings = std::move(warnings),

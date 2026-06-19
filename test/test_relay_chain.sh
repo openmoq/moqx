@@ -180,6 +180,9 @@ wait_sessions() {
 # ── Configs ────────────────────────────────────────────────────────────────────
 cat >"$UPSTREAM_CFG" <<EOF
 relay_id: "$UPSTREAM_RELAY_ID"
+threads: 2
+use_relay_thread: true
+use_local_forwarders: true
 listeners:
   - name: upstream
     udp:
@@ -206,6 +209,9 @@ EOF
 
 cat >"$DOWNSTREAM_CFG" <<EOF
 relay_id: "$DOWNSTREAM_RELAY_ID"
+threads: 2
+use_relay_thread: true
+use_local_forwarders: true
 listeners:
   - name: downstream
     udp:
