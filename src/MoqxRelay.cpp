@@ -711,7 +711,7 @@ MoqxRelay::subscribe(SubscribeRequest subReq, std::shared_ptr<TrackConsumer> con
 
   if (ftn.trackNamespace.empty()) {
     co_return folly::makeUnexpected(SubscribeError(
-        {subReq.requestID, SubscribeErrorCode::TRACK_NOT_EXIST, "namespace required"}
+        {subReq.requestID, SubscribeErrorCode::DOES_NOT_EXIST, "namespace required"}
     ));
   }
 
@@ -733,7 +733,7 @@ MoqxRelay::subscribe(SubscribeRequest subReq, std::shared_ptr<TrackConsumer> con
     auto upstreamSession = namespaceTree_.findPublisherSession(ftn.trackNamespace);
     if (!upstreamSession) {
       co_return folly::makeUnexpected(SubscribeError(
-          {subReq.requestID, SubscribeErrorCode::TRACK_NOT_EXIST, "no such namespace or track"}
+          {subReq.requestID, SubscribeErrorCode::DOES_NOT_EXIST, "no such namespace or track"}
       ));
     } // pending destructor fires on early return above
 
@@ -831,7 +831,7 @@ MoqxRelay::fetch(Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
 
   if (fetch.fullTrackName.trackNamespace.empty()) {
     co_return folly::makeUnexpected(
-        FetchError({fetch.requestID, FetchErrorCode::TRACK_NOT_EXIST, "namespace required"})
+        FetchError({fetch.requestID, FetchErrorCode::DOES_NOT_EXIST, "namespace required"})
     );
   }
 
@@ -841,7 +841,7 @@ MoqxRelay::fetch(Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
     if (!fetchView) {
       XLOG(ERR) << "No subscription for joining fetch";
       co_return folly::makeUnexpected(FetchError(
-          {fetch.requestID, FetchErrorCode::TRACK_NOT_EXIST, "No subscription for joining fetch"}
+          {fetch.requestID, FetchErrorCode::DOES_NOT_EXIST, "No subscription for joining fetch"}
       ));
     } else if (fetchView->isReady) {
       auto res = fetchView->forwarder->resolveJoiningFetch(session, *joining);
@@ -868,7 +868,7 @@ MoqxRelay::fetch(Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
     }
     if (!upstreamSession) {
       co_return folly::makeUnexpected(
-          FetchError({fetch.requestID, FetchErrorCode::TRACK_NOT_EXIST, "no upstream for fetch"})
+          FetchError({fetch.requestID, FetchErrorCode::DOES_NOT_EXIST, "no upstream for fetch"})
       );
     }
   }
@@ -898,7 +898,7 @@ folly::coro::Task<Publisher::TrackStatusResult> MoqxRelay::trackStatus(TrackStat
 
   if (trackStatus.fullTrackName.trackNamespace.empty()) {
     co_return folly::makeUnexpected(TrackStatusError(
-        {trackStatus.requestID, TrackStatusErrorCode::TRACK_NOT_EXIST, "namespace required"}
+        {trackStatus.requestID, TrackStatusErrorCode::DOES_NOT_EXIST, "namespace required"}
     ));
   }
 
@@ -943,7 +943,7 @@ folly::coro::Task<Publisher::TrackStatusResult> MoqxRelay::trackStatus(TrackStat
       XLOG(DBG1) << "No upstream session for track: " << trackStatus.fullTrackName;
       co_return folly::makeUnexpected(TrackStatusError{
           trackStatus.requestID,
-          TrackStatusErrorCode::TRACK_NOT_EXIST,
+          TrackStatusErrorCode::DOES_NOT_EXIST,
           "no such namespace or track"
       });
     }
