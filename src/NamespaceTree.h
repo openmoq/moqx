@@ -83,6 +83,12 @@ public:
       }
     }
 
+    template <typename Fn> void forEachSubscriber(Fn&& fn) const {
+      for (const auto& [session, info] : subscribers_) {
+        fn(session, info);
+      }
+    }
+
     void addDraft14PublishNamespaceHandle(
         std::shared_ptr<moxygen::MoQSession> session,
         std::shared_ptr<moxygen::Subscriber::PublishNamespaceHandle> handle
@@ -194,6 +200,14 @@ public:
   // Returns the PropertyRanking slot for propertyType at node, inserting null if absent.
   std::shared_ptr<PropertyRanking>& getOrInsertRanking(NamespaceNode& node, uint64_t propertyType);
 
+  // Draft 18+ helpers for the SUBSCRIBE_TRACKS parallel tree.
+  // Checks whether any existing subscriber entry in this tree for `session`
+  // overlaps the given prefix (exact, ancestor, or descendant match).
+  bool hasOverlappingTracksSubscription(
+      const moxygen::TrackNamespace& trackNamespacePrefix,
+      const std::shared_ptr<moxygen::MoQSession>& session
+  ) const;
+
   // DFS walk. begin(childKey, node) is called on entry; end() on exit after
   // all children. childKey is empty for the root.
   template <typename BeginFn, typename EndFn> void walkTree(BeginFn&& begin, EndFn&& end) const {
@@ -263,6 +277,11 @@ private:
 
   // Called after content is removed: prunes node from its parent if now empty.
   void tryPruneSelf(NamespaceNode& node, bool hadContent, const moxygen::TrackNamespace& ns);
+
+  bool hasTracksSubscriptionInSubtree(
+      const NamespaceNode& node,
+      const std::shared_ptr<moxygen::MoQSession>& session
+  ) const;
 
   void incrementActiveChildren(NamespaceNode& node);
   void tryPruneChild(NamespaceNode& parentNode, const std::string& childKey);
