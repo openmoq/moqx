@@ -544,6 +544,8 @@ void applyMvfstOverride(MvfstConfig& base, const ParsedMvfstConfig& overlay) {
     base.maxServerRecvPacketsPerLoop = *v;
   if (auto v = overlay.num_gro_buffers.value())
     base.numGROBuffers = *v;
+  if (auto v = overlay.ignore_path_mtu.value())
+    base.canIgnorePathMTU = *v;
   if (const auto& b = overlay.bbr.value()) {
     if (auto v = b->conservative_recovery.value())
       base.bbr.conservativeRecovery = *v;

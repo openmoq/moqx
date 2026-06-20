@@ -228,6 +228,7 @@ listeners:
     endpoint: "$ENDPOINT"
     mvfst:
       enable_gso: true
+      ignore_path_mtu: true
       max_conn_packets_sent_per_loop: 16
       max_server_recv_packets_per_loop: 256
       udp_socket_buffer_bytes: $UDP_SOCKET_BUFFER_BYTES

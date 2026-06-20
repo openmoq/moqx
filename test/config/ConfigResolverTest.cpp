@@ -1654,6 +1654,7 @@ TEST(ResolveConfig, MvfstDefaultsRoundTrip) {
   EXPECT_TRUE(mvfst.useRecvmmsg);
   EXPECT_EQ(mvfst.maxServerRecvPacketsPerLoop, 64u);
   EXPECT_EQ(mvfst.numGROBuffers, 1u);
+  EXPECT_FALSE(mvfst.canIgnorePathMTU);
   EXPECT_DOUBLE_EQ(mvfst.copa.deltaParam, 0.05);
   EXPECT_FALSE(mvfst.bbr.conservativeRecovery);
   EXPECT_TRUE(mvfst.bbr2.exitStartupOnLoss);
@@ -1774,6 +1775,19 @@ TEST(ResolveConfig, MvfstBatchingModeRoundTrip) {
     auto result = resolveConfig(cfg);
     ASSERT_TRUE(result.hasValue()) << "enable_gso=" << gso;
     EXPECT_EQ(result.value().config.listeners[0].mvfst.enableGSO, gso);
+  }
+}
+
+// ignore_path_mtu toggles canIgnorePathMTU (default false).
+TEST(ResolveConfig, MvfstIgnorePathMtuRoundTrip) {
+  for (bool ignore : {true, false}) {
+    auto cfg = makeMinimalInsecureConfig();
+    ParsedMvfstConfig mvfst;
+    mvfst.ignore_path_mtu = std::optional<bool>{ignore};
+    setListenerMvfst(cfg, std::move(mvfst));
+    auto result = resolveConfig(cfg);
+    ASSERT_TRUE(result.hasValue()) << "ignore_path_mtu=" << ignore;
+    EXPECT_EQ(result.value().config.listeners[0].mvfst.canIgnorePathMTU, ignore);
   }
 }
 
