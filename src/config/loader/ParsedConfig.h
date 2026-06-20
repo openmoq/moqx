@@ -128,6 +128,12 @@ struct ParsedMvfstConfig {
       "overhead at high packet rates. Max 64. Requires kernel GRO support.",
       std::optional<uint32_t>>
       num_gro_buffers;
+  rfl::Description<
+      "Ignore the peer's path MTU and send full-size (max UDP payload) packets "
+      "(default: false). Useful for testing or controlled networks where the "
+      "path MTU is known; leave off to respect PMTU discovery.",
+      std::optional<bool>>
+      ignore_path_mtu;
 
   // BBR (BBR1) congestion control tunables.
   // conservative_recovery is shared with BBR2 — set it here when using either.

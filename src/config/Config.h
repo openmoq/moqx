@@ -83,6 +83,9 @@ struct MvfstConfig {
   uint16_t maxServerRecvPacketsPerLoop{64};
   // Number of UDP GRO buffers. 1 = disabled. > 1 enables kernel GRO coalescing.
   uint32_t numGROBuffers{1};
+  // Ignore the peer's path MTU and send full-size (max UDP payload) packets.
+  // Useful for testing / controlled networks; off by default to respect PMTU.
+  bool canIgnorePathMTU{false};
 
   // BBR (BBR1) congestion control tunables.
   // conservativeRecovery is shared with BBR2.
