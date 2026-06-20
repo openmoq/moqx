@@ -28,6 +28,8 @@ fi
 MOQBIN="${MOQBIN:-$REPO/.scratch/moxygen-install/bin}"
 # shellcheck source=test_ports.sh
 source "$REPO/test/test_ports.sh"
+# shellcheck source=test_versions.sh
+source "$REPO/test/test_versions.sh"
 
 # Resolve a qmux-capable sample binary. Prefer MOQBIN's flat layout (the install
 # at .scratch/moxygen-install/bin); if that's a pre-qmux release, fall back to a
@@ -145,6 +147,7 @@ listeners:
     tls:
       insecure: true
     endpoint: "/moq-relay"
+    moqt_versions: ${MOQT_TEST_VERSIONS}
 services:
   default:
     match:

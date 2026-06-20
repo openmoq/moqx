@@ -129,7 +129,9 @@ SubscriptionRegistry::PublishEntry SubscriptionRegistry::createFromPublish(
   // publishDone → onEmpty may fire during the erase.
   auto it = subscriptions_.find(ftn);
   if (it != subscriptions_.end()) {
-    evicted = Evicted{std::move(it->second.forwarder), std::move(it->second.handle)};
+    auto* oldPublisherExec = it->second.upstream ? it->second.upstream->getExecutor() : nullptr;
+    evicted =
+        Evicted{std::move(it->second.forwarder), std::move(it->second.handle), oldPublisherExec};
     subscriptions_.erase(it);
   }
 

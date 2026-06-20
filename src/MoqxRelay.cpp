@@ -593,7 +593,10 @@ MoqxRelay::PublishSetupResult MoqxRelay::publishWithSession(
     auto& evicted = *publishEntry.evicted;
     // Null handle => previous publisher already terminated and onPublishDone() tore it down; skip.
     if (evicted.handle) {
-      evicted.handle->unsubscribe();
+      // unsubscribe mutates the old publisher's session inline, so hop to its exec.
+      runOnSessionExec(relayExec_, evicted.publisherExec, [h = evicted.handle] {
+        h->unsubscribe();
+      });
       evicted.forwarder->publishDone(
           {RequestID(0),
            PublishDoneStatusCode::SUBSCRIPTION_ENDED,
@@ -2256,14 +2259,21 @@ void MoqxRelay::onEmptyImpl(const FullTrackName& ftn) {
     return;
   }
 
-  // Handle exists - just last subscriber left
+  // Handle exists - just last subscriber left. requestUpdate/unsubscribe mutate
+  // the upstream session inline (no self-hop), so they must run on publisherExec.
   XLOG(INFO) << "Last subscriber removed for " << ftn;
+  XCHECK(upstreamView->publisherExec);
   if (upstreamView->isPublish) {
     // if it's publish, don't unsubscribe, just subscribeUpdate forward=false
     XLOG(DBG1) << "Updating upstream subscription forward=false";
-    launchUpdate(relayExec(), doSubscribeUpdate(upstreamView->handle, /*forward=*/false));
+    launchUpdate(
+        upstreamView->publisherExec,
+        doSubscribeUpdate(upstreamView->handle, /*forward=*/false)
+    );
   } else {
-    upstreamView->handle->unsubscribe();
+    runOnSessionExec(relayExec_, upstreamView->publisherExec, [h = upstreamView->handle] {
+      h->unsubscribe();
+    });
     XLOG(DBG4) << "Erasing subscription to " << ftn;
     registry_.remove(ftn);
   }
@@ -2289,7 +2299,9 @@ void MoqxRelay::forwardChangedImpl(const FullTrackName& ftn, bool forward) {
   }
   XLOG(INFO) << "Updating forward for " << ftn << " forward=" << forward;
 
-  launchUpdate(relayExec(), doSubscribeUpdate(upstreamView->handle, forward));
+  // handle non-null (checked above) implies upstream is live, so publisherExec is set.
+  XCHECK(upstreamView->publisherExec);
+  launchUpdate(upstreamView->publisherExec, doSubscribeUpdate(upstreamView->handle, forward));
 }
 
 void MoqxRelay::newGroupRequested(MoQForwarder* forwarder, uint64_t group) {
@@ -2305,7 +2317,9 @@ void MoqxRelay::newGroupRequestedImpl(const FullTrackName& ftn, uint64_t group) 
   }
   XLOG(INFO) << "New group request detected for " << ftn;
 
-  launchUpdate(relayExec(), doNewGroupRequestUpdate(upstreamView->handle, group));
+  // handle non-null (checked above) implies upstream is live, so publisherExec is set.
+  XCHECK(upstreamView->publisherExec);
+  launchUpdate(upstreamView->publisherExec, doNewGroupRequestUpdate(upstreamView->handle, group));
 }
 
 // TRACK_FILTER support
