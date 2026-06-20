@@ -103,8 +103,21 @@ cleanup() {
   for pid in "${PIDS[@]:-}"; do
     kill -KILL "$pid" 2>/dev/null || true
   done
-  wait "${PIDS[@]:-}" "${RELAY_PIDS[@]:-}" 2>/dev/null || true
+  # Reap helpers — their status isn't meaningful (timed out or killed above).
+  wait "${PIDS[@]:-}" 2>/dev/null || true
+  # Relays must shut down cleanly. A non-zero exit means a crash, a hung
+  # teardown (watchdog _Exit(1)), or a sanitizer-detected leak (ASan flips the
+  # exit code to 1). Any of these fails the test.
+  local relay_failed=0
+  for pid in "${RELAY_PIDS[@]:-}"; do
+    [[ -n "$pid" ]] || continue
+    if ! wait "$pid"; then
+      echo "FAIL: relay (pid $pid) exited non-zero — crash, hang, or sanitizer leak" >&2
+      relay_failed=1
+    fi
+  done
   rm -rf "$TMPDIR_SCRIPT"
+  (( relay_failed == 0 )) || exit 1
 }
 trap cleanup EXIT
 
