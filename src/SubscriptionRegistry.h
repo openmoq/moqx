@@ -96,6 +96,7 @@ public:
   struct Evicted {
     std::shared_ptr<moxygen::MoQForwarder> forwarder;
     std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle; // may be null
+    folly::Executor* publisherExec{nullptr}; // old publisher's session exec, for handle teardown
   };
 
   struct PublishEntry {
