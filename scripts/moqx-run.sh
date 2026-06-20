@@ -29,8 +29,6 @@ Relay tuning (templated into the config; CLI > .env > default):
       --cc ALGO             mvfst congestion control (default bbr2)
       --local-forwarders / --no-local-forwarders   (default: on)
       --cache / --no-cache  relay object cache (default: on)
-  -b, --bpf-steering / --no-bpf-steering   mvfst CID reuseport steering
-                            (Linux + mvfst only; default: off)
 
 Targeting:
       --subcmd CMD          moqx subcommand (default: serve)
@@ -51,7 +49,7 @@ Environment overrides (via .env or shell):
   MOQX_BIN, MOQX_CONFIG, MOQX_ENV_FILE, MOQX_SUBCMD, MOQX_USE_SUDO, DOMAIN
   MOQX_VERBOSE, MOQX_LOG_LEVEL, GLOG_vmodule, MOQX_JEMALLOC
   MOQX_THREADS, MOQX_UDP_BUFFER, MOQX_RECV_PKTS, MOQX_SEND_PKTS, MOQX_CC,
-  MOQX_LOCAL_FWD, MOQX_CACHE, MOQX_BPF_STEERING
+  MOQX_LOCAL_FWD, MOQX_CACHE
 
 Examples:
   $0                                       # serve with .env + defaults
@@ -106,7 +104,7 @@ CLI_SUBCMD="" CLI_CONFIG="" CLI_ENV_FILE="" CLI_BIN=""
 CLI_USE_SUDO=""   # "" = unset; "0"/"1" set
 CLI_JEMALLOC=""   # "" = unset; "auto" or explicit path
 CLI_THREADS="" CLI_UDP_BUFFER="" CLI_RECV_PKTS="" CLI_SEND_PKTS="" CLI_CC=""
-CLI_LOCAL_FWD="" CLI_CACHE="" CLI_BPF=""   # tri-state booleans
+CLI_LOCAL_FWD="" CLI_CACHE=""   # tri-state booleans
 CHECK_SYSCTL=0 DRY_RUN=0
 PASSTHRU=()
 
@@ -125,8 +123,6 @@ while (($#)); do
     --no-local-forwarders) CLI_LOCAL_FWD=false; shift ;;
     --cache)         CLI_CACHE=true;  shift ;;
     --no-cache)      CLI_CACHE=false; shift ;;
-    -b|--bpf-steering)   CLI_BPF=true;  shift ;;
-    --no-bpf-steering)   CLI_BPF=false; shift ;;
     --subcmd)        CLI_SUBCMD="$2"; shift 2 ;;
     --config)        CLI_CONFIG="$2"; shift 2 ;;
     --env)           CLI_ENV_FILE="$2"; shift 2 ;;
@@ -176,11 +172,10 @@ export MOQX_UDP_BUFFER="${CLI_UDP_BUFFER:-${MOQX_UDP_BUFFER:-$WMEM_MAX}}"
 export MOQX_CC="${CLI_CC:-${MOQX_CC:-bbr2}}"
 MOQX_LOCAL_FWD="$(norm_bool "${CLI_LOCAL_FWD:-${MOQX_LOCAL_FWD:-true}}")"
 MOQX_CACHE="$(norm_bool "${CLI_CACHE:-${MOQX_CACHE:-true}}")"
-MOQX_BPF_STEERING="$(norm_bool "${CLI_BPF:-${MOQX_BPF_STEERING:-false}}")"
-for b in MOQX_LOCAL_FWD MOQX_CACHE MOQX_BPF_STEERING; do
+for b in MOQX_LOCAL_FWD MOQX_CACHE; do
   [[ "${!b}" == INVALID ]] && { echo "invalid boolean for $b (want true/false)" >&2; exit 2; }
 done
-export MOQX_LOCAL_FWD MOQX_CACHE MOQX_BPF_STEERING
+export MOQX_LOCAL_FWD MOQX_CACHE
 
 # ── Resolve placeholders into a temp config ───────────────────────────────
 RESOLVED_CONFIG=/tmp/moqx-resolved.yaml
@@ -224,7 +219,7 @@ CMD=("$MOQX_BIN" "$SUBCMD" --config "$RESOLVED_CONFIG" "${PASSTHRU[@]}")
 
 if (( DRY_RUN )); then
   echo "# relay knobs (templated into config)"
-  echo "threads=$MOQX_THREADS local_fwd=$MOQX_LOCAL_FWD bpf_steering=$MOQX_BPF_STEERING cache=$MOQX_CACHE"
+  echo "threads=$MOQX_THREADS local_fwd=$MOQX_LOCAL_FWD cache=$MOQX_CACHE"
   echo "cc=$MOQX_CC send_pkts=$MOQX_SEND_PKTS recv_pkts=$MOQX_RECV_PKTS udp_buffer=$MOQX_UDP_BUFFER"
   echo "# resolved env"
   echo "GLOG_minloglevel=$GLOG_minloglevel GLOG_v=$GLOG_v"

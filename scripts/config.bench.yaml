@@ -8,7 +8,6 @@
 # Tunable via env / CLI (defaults live in moqx-run.sh):
 #   MOQX_THREADS       IO worker threads; 0 = moqx autodetects one per CPU
 #   MOQX_LOCAL_FWD     per-subscriber-thread local forwarders (true|false)
-#   MOQX_BPF_STEERING  mvfst CID reuseport steering, Linux+mvfst (true|false)
 #   MOQX_SEND_PKTS     mvfst max_conn_packets_sent_per_loop
 #   MOQX_RECV_PKTS     mvfst max_server_recv_packets_per_loop
 #   MOQX_UDP_BUFFER    relay UDP socket buffer bytes; 0 = moxygen 1 MB default
@@ -20,7 +19,7 @@ relay_id: "moqx-000"
 
 threads: ${MOQX_THREADS}
 use_local_forwarders: ${MOQX_LOCAL_FWD}
-mvfst_bpf_steering: ${MOQX_BPF_STEERING}
+mvfst_bpf_steering: false
 
 listener_defaults:
   quic:
