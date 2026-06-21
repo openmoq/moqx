@@ -1,0 +1,48 @@
+# moqx relay — docker runtime config template.
+#
+# entrypoint.sh resolves the ${MOQX_*} placeholders from environment
+# variables (each with a default) via envsubst, then serves the result —
+# unless a full config is mounted at /etc/moqx/config.yaml.
+#
+# The performance defaults below are inherited by the CI deploy (which sets
+# no perf vars) and by the interop relay adapter. Override any value via its
+# MOQX_* env var; the default for each lives in docker/entrypoint.sh.
+
+threads: ${MOQX_THREADS}
+use_local_forwarders: ${MOQX_LOCAL_FWD}
+mvfst_bpf_steering: false
+
+listener_defaults:
+  mvfst:
+    enable_gso: true
+    max_conn_packets_sent_per_loop: ${MOQX_SEND_PKTS}
+    max_server_recv_packets_per_loop: ${MOQX_RECV_PKTS}
+    udp_socket_buffer_bytes: ${MOQX_UDP_BUFFER}
+    ignore_path_mtu: ${MOQX_IGNORE_PATH_MTU}
+
+listeners:
+  - name: relay
+    udp:
+      socket:
+        address: "${MOQX_BIND_ADDR}"
+        port: ${MOQX_PORT}
+    tls:
+      cert_file: "${MOQX_CERT}"
+      key_file: "${MOQX_KEY}"
+      insecure: ${MOQX_INSECURE}
+    endpoint: "${MOQX_ENDPOINT}"
+
+services:
+  default:
+    match:
+      - authority: {any: true}
+        path: {prefix: "/"}
+    cache:
+      enabled: ${MOQX_CACHE}
+      max_tracks: ${MOQX_MAX_TRACKS}
+      max_groups_per_track: ${MOQX_MAX_GROUPS}
+
+admin:
+  port: ${MOQX_ADMIN_PORT}
+  address: "${MOQX_BIND_ADDR}"
+  plaintext: true

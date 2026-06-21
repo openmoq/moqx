@@ -6,7 +6,7 @@
 # serves WebTransport via the endpoint path and raw QUIC moqt://).
 #
 # Tunable via env / CLI (defaults live in moqx-run.sh):
-#   MOQX_THREADS       IO worker threads; 0 = moqx autodetects one per CPU
+#   MOQX_THREADS       IO worker threads, must be >= 1
 #   MOQX_LOCAL_FWD     per-subscriber-thread local forwarders (true|false)
 #   MOQX_BPF_STEERING  mvfst CID reuseport steering, Linux+mvfst (true|false)
 #   MOQX_SEND_PKTS     mvfst max_conn_packets_sent_per_loop
@@ -14,6 +14,7 @@
 #   MOQX_UDP_BUFFER    relay UDP socket buffer bytes; 0 = moxygen 1 MB default
 #   MOQX_CC            mvfst congestion control (bbr2|bbr|copa|cubic|...)
 #   MOQX_CACHE         relay object cache enabled (true|false)
+#   MOQX_IGNORE_PATH_MTU  skip PMTU discovery, send full-size packets (true|false)
 #   DOMAIN             TLS cert hostname under /etc/letsencrypt/live/
 
 relay_id: "moqx-000"
@@ -36,6 +37,7 @@ listener_defaults:
     max_conn_packets_sent_per_loop: ${MOQX_SEND_PKTS}
     max_server_recv_packets_per_loop: ${MOQX_RECV_PKTS}
     udp_socket_buffer_bytes: ${MOQX_UDP_BUFFER}
+    ignore_path_mtu: ${MOQX_IGNORE_PATH_MTU}
     bbr2:
       exit_startup_on_loss: true
       enable_recovery_in_startup: true

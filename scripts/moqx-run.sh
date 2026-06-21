@@ -21,7 +21,7 @@ Logging (override .env/defaults):
   -x, --xlog SPEC           folly XLOG config (passed as --logging=SPEC)
 
 Relay tuning (templated into the config; CLI > .env > default):
-      --threads N           IO worker threads; 0 = moqx autodetects 1/CPU (default 0)
+      --threads N           IO worker threads, must be >= 1 (default 4)
       --udp-buffer BYTES    relay UDP socket buffer; 0 = moxygen 1 MB default
                             (default: net.core.wmem_max)
       --recv-pkts N         mvfst max_server_recv_packets_per_loop (default 256)
@@ -29,8 +29,6 @@ Relay tuning (templated into the config; CLI > .env > default):
       --cc ALGO             mvfst congestion control (default bbr2)
       --local-forwarders / --no-local-forwarders   (default: on)
       --cache / --no-cache  relay object cache (default: on)
-  -b, --bpf-steering / --no-bpf-steering   mvfst CID reuseport steering
-                            (Linux + mvfst only; default: off)
 
 Targeting:
       --subcmd CMD          moqx subcommand (default: serve)
@@ -51,7 +49,7 @@ Environment overrides (via .env or shell):
   MOQX_BIN, MOQX_CONFIG, MOQX_ENV_FILE, MOQX_SUBCMD, MOQX_USE_SUDO, DOMAIN
   MOQX_VERBOSE, MOQX_LOG_LEVEL, GLOG_vmodule, MOQX_JEMALLOC
   MOQX_THREADS, MOQX_UDP_BUFFER, MOQX_RECV_PKTS, MOQX_SEND_PKTS, MOQX_CC,
-  MOQX_LOCAL_FWD, MOQX_CACHE, MOQX_BPF_STEERING
+  MOQX_LOCAL_FWD, MOQX_CACHE, MOQX_BPF_STEERING, MOQX_IGNORE_PATH_MTU
 
 Examples:
   $0                                       # serve with .env + defaults
@@ -106,7 +104,7 @@ CLI_SUBCMD="" CLI_CONFIG="" CLI_ENV_FILE="" CLI_BIN=""
 CLI_USE_SUDO=""   # "" = unset; "0"/"1" set
 CLI_JEMALLOC=""   # "" = unset; "auto" or explicit path
 CLI_THREADS="" CLI_UDP_BUFFER="" CLI_RECV_PKTS="" CLI_SEND_PKTS="" CLI_CC=""
-CLI_LOCAL_FWD="" CLI_CACHE="" CLI_BPF=""   # tri-state booleans
+CLI_LOCAL_FWD="" CLI_CACHE=""   # tri-state booleans
 CHECK_SYSCTL=0 DRY_RUN=0
 PASSTHRU=()
 
@@ -125,8 +123,6 @@ while (($#)); do
     --no-local-forwarders) CLI_LOCAL_FWD=false; shift ;;
     --cache)         CLI_CACHE=true;  shift ;;
     --no-cache)      CLI_CACHE=false; shift ;;
-    -b|--bpf-steering)   CLI_BPF=true;  shift ;;
-    --no-bpf-steering)   CLI_BPF=false; shift ;;
     --subcmd)        CLI_SUBCMD="$2"; shift 2 ;;
     --config)        CLI_CONFIG="$2"; shift 2 ;;
     --env)           CLI_ENV_FILE="$2"; shift 2 ;;
@@ -169,18 +165,20 @@ command -v envsubst >/dev/null || { echo "envsubst missing (apt install gettext-
 
 # ── Relay tuning knobs (CLI > .env/env > default), exported for envsubst ──
 WMEM_MAX="$(cat /proc/sys/net/core/wmem_max 2>/dev/null || echo 1048576)"
-export MOQX_THREADS="${CLI_THREADS:-${MOQX_THREADS:-0}}"
+export MOQX_THREADS="${CLI_THREADS:-${MOQX_THREADS:-4}}"
 export MOQX_SEND_PKTS="${CLI_SEND_PKTS:-${MOQX_SEND_PKTS:-16}}"
 export MOQX_RECV_PKTS="${CLI_RECV_PKTS:-${MOQX_RECV_PKTS:-256}}"
 export MOQX_UDP_BUFFER="${CLI_UDP_BUFFER:-${MOQX_UDP_BUFFER:-$WMEM_MAX}}"
 export MOQX_CC="${CLI_CC:-${MOQX_CC:-bbr2}}"
 MOQX_LOCAL_FWD="$(norm_bool "${CLI_LOCAL_FWD:-${MOQX_LOCAL_FWD:-true}}")"
 MOQX_CACHE="$(norm_bool "${CLI_CACHE:-${MOQX_CACHE:-true}}")"
-MOQX_BPF_STEERING="$(norm_bool "${CLI_BPF:-${MOQX_BPF_STEERING:-false}}")"
-for b in MOQX_LOCAL_FWD MOQX_CACHE MOQX_BPF_STEERING; do
+# bpf steering and ignore_path_mtu are experimental — env override only, no flag.
+MOQX_BPF_STEERING="$(norm_bool "${MOQX_BPF_STEERING:-false}")"
+MOQX_IGNORE_PATH_MTU="$(norm_bool "${MOQX_IGNORE_PATH_MTU:-false}")"
+for b in MOQX_LOCAL_FWD MOQX_CACHE MOQX_BPF_STEERING MOQX_IGNORE_PATH_MTU; do
   [[ "${!b}" == INVALID ]] && { echo "invalid boolean for $b (want true/false)" >&2; exit 2; }
 done
-export MOQX_LOCAL_FWD MOQX_CACHE MOQX_BPF_STEERING
+export MOQX_LOCAL_FWD MOQX_CACHE MOQX_BPF_STEERING MOQX_IGNORE_PATH_MTU
 
 # ── Resolve placeholders into a temp config ───────────────────────────────
 RESOLVED_CONFIG=/tmp/moqx-resolved.yaml
@@ -225,7 +223,7 @@ CMD=("$MOQX_BIN" "$SUBCMD" --config "$RESOLVED_CONFIG" "${PASSTHRU[@]}")
 if (( DRY_RUN )); then
   echo "# relay knobs (templated into config)"
   echo "threads=$MOQX_THREADS local_fwd=$MOQX_LOCAL_FWD bpf_steering=$MOQX_BPF_STEERING cache=$MOQX_CACHE"
-  echo "cc=$MOQX_CC send_pkts=$MOQX_SEND_PKTS recv_pkts=$MOQX_RECV_PKTS udp_buffer=$MOQX_UDP_BUFFER"
+  echo "cc=$MOQX_CC send_pkts=$MOQX_SEND_PKTS recv_pkts=$MOQX_RECV_PKTS udp_buffer=$MOQX_UDP_BUFFER ignore_path_mtu=$MOQX_IGNORE_PATH_MTU"
   echo "# resolved env"
   echo "GLOG_minloglevel=$GLOG_minloglevel GLOG_v=$GLOG_v"
   echo "GLOG_vmodule=$GLOG_vmodule"
