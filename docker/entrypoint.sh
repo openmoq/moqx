@@ -1,21 +1,31 @@
 #!/bin/sh
 # Generate relay config from env vars and exec moqx.
 #
-# To use a custom config, mount it at /etc/moqx/config.yaml:
+# Resolves docker/config.docker.yaml (a ${MOQX_*} template) with envsubst,
+# unless a full config is mounted at /etc/moqx/config.yaml:
 #   docker run -v /path/to/config.yaml:/etc/moqx/config.yaml:ro ...
 #
-# Env vars (used only when no custom config is mounted):
-#   MOQX_CERT       — path to TLS certificate PEM (required unless MOQX_INSECURE=true)
-#   MOQX_KEY        — path to TLS private key PEM  (required unless MOQX_INSECURE=true)
+# Connection / TLS:
+#   MOQX_CERT       — TLS certificate PEM (required unless MOQX_INSECURE=true)
+#   MOQX_KEY        — TLS private key PEM  (required unless MOQX_INSECURE=true)
 #   MOQX_PORT       — UDP listen port (default: 4433)
 #   MOQX_ADMIN_PORT — admin HTTP port (default: 8000)
 #   MOQX_INSECURE   — use built-in dev cert (default: false)
+#   MOQX_BIND_ADDR  — listen address: 0.0.0.0 (default) or :: (dual-stack)
+#   MOQX_ENDPOINT   — WebTransport endpoint path (default: /moq-relay)
 #   MOQX_MAX_TRACKS — max cached tracks (default: 1000)
 #   MOQX_MAX_GROUPS — max groups per track in cache (default: 100)
-#   MOQX_BIND_ADDR  — listen address: "0.0.0.0" (IPv4, default) or "::" (IPv6/dual-stack)
-#   MOQX_ENDPOINT   — WebTransport endpoint path (default: /moq-relay)
+#   MOQX_CACHE      — relay object cache enabled (default: true)
 #
-# Env vars (always apply):
+# Performance (inherited by the CI deploy / interop adapter; override to tune):
+#   MOQX_THREADS          — IO worker threads (default: 4; must be >= 1)
+#   MOQX_LOCAL_FWD        — per-subscriber-thread local forwarders (default: true)
+#   MOQX_SEND_PKTS        — mvfst max_conn_packets_sent_per_loop (default: 16)
+#   MOQX_RECV_PKTS        — mvfst max_server_recv_packets_per_loop (default: 256)
+#   MOQX_UDP_BUFFER       — relay UDP socket buffer bytes (default: net.core.wmem_max)
+#   MOQX_IGNORE_PATH_MTU  — send full-size packets, skip PMTU (default: false)
+#
+# Logging (always apply):
 #   MOQX_LOG_LEVEL  — min log level: 0=INFO 1=WARNING 2=ERROR 3=FATAL (default: 0)
 #   MOQX_VERBOSE    — verbose/debug level: 0=off, 1-4=increasing detail (default: 0)
 set -e
@@ -30,42 +40,33 @@ if [ -d /var/coredumps ] && [ -w /proc/sys/kernel/core_pattern ]; then
   echo "/var/coredumps/core.%e.%p.%t" > /proc/sys/kernel/core_pattern
 fi
 
-# Use custom config if mounted, otherwise generate from env vars
+# Use custom config if mounted, otherwise render the template from env vars.
 CONFIG=/etc/moqx/config.yaml
 if [ -f "$CONFIG" ]; then
   echo "Using custom config: $CONFIG"
   exec /usr/local/bin/moqx --config "$CONFIG" "$@"
 fi
 
+# Defaults for every placeholder in config.docker.yaml (override via env).
+export MOQX_BIND_ADDR="${MOQX_BIND_ADDR:-0.0.0.0}"
+export MOQX_PORT="${MOQX_PORT:-4433}"
+export MOQX_ADMIN_PORT="${MOQX_ADMIN_PORT:-8000}"
+export MOQX_CERT="${MOQX_CERT:-}"
+export MOQX_KEY="${MOQX_KEY:-}"
+export MOQX_INSECURE="${MOQX_INSECURE:-false}"
+export MOQX_ENDPOINT="${MOQX_ENDPOINT:-/moq-relay}"
+export MOQX_MAX_TRACKS="${MOQX_MAX_TRACKS:-1000}"
+export MOQX_MAX_GROUPS="${MOQX_MAX_GROUPS:-100}"
+export MOQX_CACHE="${MOQX_CACHE:-true}"
+# Performance defaults (see header). MOQX_THREADS must be >= 1 (no autodetect).
+export MOQX_THREADS="${MOQX_THREADS:-4}"
+export MOQX_LOCAL_FWD="${MOQX_LOCAL_FWD:-true}"
+export MOQX_SEND_PKTS="${MOQX_SEND_PKTS:-16}"
+export MOQX_RECV_PKTS="${MOQX_RECV_PKTS:-256}"
+export MOQX_UDP_BUFFER="${MOQX_UDP_BUFFER:-$(cat /proc/sys/net/core/wmem_max 2>/dev/null || echo 1048576)}"
+export MOQX_IGNORE_PATH_MTU="${MOQX_IGNORE_PATH_MTU:-false}"
+
 CONFIG=/tmp/relay.yaml
-
-cat > "$CONFIG" <<EOF
-listeners:
-  - name: relay
-    udp:
-      socket:
-        address: "${MOQX_BIND_ADDR:-0.0.0.0}"
-        port: ${MOQX_PORT:-4433}
-    tls:
-      cert_file: "${MOQX_CERT:-}"
-      key_file: "${MOQX_KEY:-}"
-      insecure: ${MOQX_INSECURE:-false}
-    endpoint: "${MOQX_ENDPOINT:-/moq-relay}"
-
-services:
-  default:
-    match:
-      - authority: {any: true}
-        path: {prefix: "/"}
-    cache:
-      enabled: true
-      max_tracks: ${MOQX_MAX_TRACKS:-1000}
-      max_groups_per_track: ${MOQX_MAX_GROUPS:-100}
-
-admin:
-  port: ${MOQX_ADMIN_PORT:-8000}
-  address: "${MOQX_BIND_ADDR:-0.0.0.0}"
-  plaintext: true
-EOF
+envsubst < /usr/local/share/moqx/config.docker.yaml > "$CONFIG"
 
 exec /usr/local/bin/moqx --config "$CONFIG" "$@"
