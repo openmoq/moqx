@@ -39,6 +39,14 @@
 #   --udp-socket-buffer-bytes N
 #                          UDP socket send/recv buffer size in bytes for the
 #                          relay listener (defaults to net.core.wmem_max).
+#   --relay-url URL        Connect to an existing remote relay instead of
+#                          starting one locally.  Publisher (moqtest_server)
+#                          runs locally; subscriber runs via --remote-client.
+#                          Example: --relay-url https://relay.example.com:4433/moq-relay
+#   --relay-admin-url URL  Admin endpoint of the remote relay for metrics
+#                          collection and publisher-connected checks.
+#                          Required when --relay-url is set.
+#                          Example: --relay-admin-url http://relay.example.com:8000
 #
 # Linux-only options (not supported on macOS):
 #   --metrics, --perf-duration, --perf-events, --perf-stat, --jemalloc,
@@ -68,6 +76,8 @@ PERF_DURATION=0
 PERF_EVENTS=""
 RUN_PERF_STAT=false
 REMOTE_CLIENT_HOST=""
+REMOTE_RELAY_URL=""
+REMOTE_RELAY_ADMIN_URL=""
 UDP_SOCKET_BUFFER_BYTES=$(cat /proc/sys/net/core/wmem_max 2>/dev/null || echo 1048576)
 TRACE_SCRIPT=""
 CLIENT_EXTRA_ARGS=()
@@ -101,6 +111,8 @@ while [[ $# -gt 0 ]]; do
     --trace-script)     TRACE_SCRIPT="$2";         shift 2 ;;
     --client-args)      read -ra CLIENT_EXTRA_ARGS <<< "$2"; shift 2 ;;
     --remote-client)    REMOTE_CLIENT_HOST="$2";  shift 2 ;;
+    --relay-url)        REMOTE_RELAY_URL="$2";    shift 2 ;;
+    --relay-admin-url)  REMOTE_RELAY_ADMIN_URL="$2"; shift 2 ;;
     --udp-socket-buffer-bytes) UDP_SOCKET_BUFFER_BYTES="$2"; shift 2 ;;
     *) echo "Unknown option: $1" >&2; exit 1 ;;
   esac
@@ -110,8 +122,23 @@ MOQTEST_SERVER="$MOQBIN/moqtest_server"
 MOQPERF_CLIENT="$MOQBIN/moqperf_test_client"
 METRICS_SCRIPT="$REPO/scripts/perf-metrics.sh"
 
+# ── Remote relay mode ─────────────────────────────────────────────────────────
+REMOTE_RELAY=false
+if [[ -n "$REMOTE_RELAY_URL" ]]; then
+  REMOTE_RELAY=true
+  if [[ -z "$REMOTE_RELAY_ADMIN_URL" ]]; then
+    echo "ERROR: --relay-admin-url is required when --relay-url is set" >&2; exit 1
+  fi
+  RELAY_URL="$REMOTE_RELAY_URL"
+  RELAY_ADMIN_URL="${REMOTE_RELAY_ADMIN_URL%/}"
+  echo "Remote relay mode: relay=$RELAY_URL admin=$RELAY_ADMIN_URL"
+fi
+
 # ── jemalloc resolution ───────────────────────────────────────────────────────
-if [[ "$JEMALLOC" == "auto" ]]; then
+if [[ "$REMOTE_RELAY" == true && "$JEMALLOC" == "auto" ]]; then
+  echo "WARNING: --jemalloc ignored in remote relay mode" >&2
+  JEMALLOC=""
+elif [[ "$JEMALLOC" == "auto" ]]; then
   if [[ -f /lib64/libjemalloc.so.2 ]]; then
     JEMALLOC=/lib64/libjemalloc.so.2
   else
@@ -129,10 +156,14 @@ CLIENT_LOG="$LOG_DIR/client.log"
 echo "Logs: $LOG_DIR"
 
 # ── Prereq checks ──────────────────────────────────────────────────────────────
-CHECK_BINS=("$BINARY" "$MOQTEST_SERVER")
+if [[ "$REMOTE_RELAY" == true ]]; then
+  CHECK_BINS=("$MOQTEST_SERVER")
+else
+  CHECK_BINS=("$BINARY" "$MOQTEST_SERVER")
+fi
 [[ -z "$REMOTE_CLIENT_HOST" ]] && CHECK_BINS+=("$MOQPERF_CLIENT")
 [[ "$RUN_METRICS" == true ]] && CHECK_BINS+=("$METRICS_SCRIPT")
-if [[ "$PERF_DURATION" -gt 0 ]] && ! command -v perf >/dev/null 2>&1; then
+if [[ "$PERF_DURATION" -gt 0 && "$REMOTE_RELAY" == false ]] && ! command -v perf >/dev/null 2>&1; then
   echo "ERROR: --perf-duration requires 'perf' in PATH" >&2; exit 1
 fi
 for f in "${CHECK_BINS[@]}"; do
@@ -148,25 +179,30 @@ if [[ "$RAMP" -le 0 ]]; then
   echo "ERROR: --ramp must be > 0" >&2; exit 1
 fi
 
-is_port_in_use() {
-  if command -v ss >/dev/null 2>&1; then
-    ss -tunlp 2>/dev/null | grep -q ":$1 "
-  else
-    lsof -iTCP:"$1" -sTCP:LISTEN -P -n 2>/dev/null | grep -q .
-  fi
-}
-for port in "$RELAY_PORT" "$RELAY_ADMIN_PORT"; do
-  if is_port_in_use "$port"; then
-    echo "ERROR: port $port already in use" >&2; exit 1
-  fi
-done
+if [[ "$REMOTE_RELAY" == false ]]; then
+  is_port_in_use() {
+    if command -v ss >/dev/null 2>&1; then
+      ss -tunlp 2>/dev/null | grep -q ":$1 "
+    else
+      lsof -iTCP:"$1" -sTCP:LISTEN -P -n 2>/dev/null | grep -q .
+    fi
+  }
+  for port in "$RELAY_PORT" "$RELAY_ADMIN_PORT"; do
+    if is_port_in_use "$port"; then
+      echo "ERROR: port $port already in use" >&2; exit 1
+    fi
+  done
+fi
 
 # ── URL scheme ────────────────────────────────────────────────────────────────
-if [[ -n "$REMOTE_CLIENT_HOST" ]]; then
-  LOCAL_IP="$(hostname -I | awk '{print $1}')"
-  RELAY_URL="https://${LOCAL_IP}:${RELAY_PORT}${ENDPOINT}"
-else
-  RELAY_URL="https://127.0.0.1:${RELAY_PORT}${ENDPOINT}"
+if [[ "$REMOTE_RELAY" == false ]]; then
+  if [[ -n "$REMOTE_CLIENT_HOST" ]]; then
+    LOCAL_IP="$(hostname -I | awk '{print $1}')"
+    RELAY_URL="https://${LOCAL_IP}:${RELAY_PORT}${ENDPOINT}"
+  else
+    RELAY_URL="https://127.0.0.1:${RELAY_PORT}${ENDPOINT}"
+  fi
+  RELAY_ADMIN_URL="http://localhost:${RELAY_ADMIN_PORT}"
 fi
 if [[ "$TRANSPORT" == "quic" ]]; then
   QUIC_FLAG="--quic_transport=true"
@@ -211,6 +247,7 @@ cleanup() {
 trap cleanup EXIT
 
 # ── Relay config ──────────────────────────────────────────────────────────────
+if [[ "$REMOTE_RELAY" == false ]]; then
 cat >"$RELAY_CFG" <<EOF
 relay_id: "perf-test-relay"
 threads: $IO_THREADS
@@ -254,15 +291,18 @@ admin:
 EOF
 
 cp "$RELAY_CFG" "$LOG_DIR/relay.yaml"
+fi
 
 # ── Run params ────────────────────────────────────────────────────────────────
 {
   echo "date:             $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "moqx_git:         $(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo unknown)"
   echo "moxygen_git:      $(git -C "$REPO/deps/moxygen" rev-parse --short HEAD 2>/dev/null || echo unknown)"
-  echo "relay_binary:     $BINARY"
+  echo "mode:             $(if [[ "$REMOTE_RELAY" == true ]]; then echo "remote-relay"; else echo "local"; fi)"
+  [[ "$REMOTE_RELAY" == false ]] && echo "relay_binary:     $BINARY"
   echo "moqbin:           $MOQBIN"
   echo "relay_url:        $RELAY_URL"
+  [[ "$REMOTE_RELAY" == true ]] && echo "relay_admin_url:  $RELAY_ADMIN_URL"
   echo "transport:        $TRANSPORT"
   echo "io_threads:       $IO_THREADS"
   echo "use_relay_thread: $USE_RELAY_THREAD"
@@ -283,45 +323,63 @@ echo ""
 
 # ── Start relay ───────────────────────────────────────────────────────────────
 ulimit -n 65536 2>/dev/null || true
-echo "Starting relay (use_relay_thread=$USE_RELAY_THREAD, local_forwarders=$USE_LOCAL_FORWARDERS, io_threads=$IO_THREADS, transport=$TRANSPORT, mvfst_bpf_steering=$BPF_STEERING)..."
-RELAY_LOGGING_ARG=()
-[[ -n "$RELAY_LOG_SPEC" ]] && RELAY_LOGGING_ARG=("--logging=$RELAY_LOG_SPEC")
-if [[ -n "$JEMALLOC" ]]; then
-  echo "Using jemalloc: $JEMALLOC"
-  LD_PRELOAD="$JEMALLOC" "$BINARY" --config="$RELAY_CFG" ${RELAY_LOGGING_ARG[@]+"${RELAY_LOGGING_ARG[@]}"} >"$RELAY_LOG" 2>&1 &
-else
-  "$BINARY" --config="$RELAY_CFG" ${RELAY_LOGGING_ARG[@]+"${RELAY_LOGGING_ARG[@]}"} >"$RELAY_LOG" 2>&1 &
-fi
-RELAY_PID=$!
+if [[ "$REMOTE_RELAY" == false ]]; then
+  echo "Starting relay (use_relay_thread=$USE_RELAY_THREAD, local_forwarders=$USE_LOCAL_FORWARDERS, io_threads=$IO_THREADS, transport=$TRANSPORT, mvfst_bpf_steering=$BPF_STEERING)..."
+  RELAY_LOGGING_ARG=()
+  [[ -n "$RELAY_LOG_SPEC" ]] && RELAY_LOGGING_ARG=("--logging=$RELAY_LOG_SPEC")
+  if [[ -n "$JEMALLOC" ]]; then
+    echo "Using jemalloc: $JEMALLOC"
+    LD_PRELOAD="$JEMALLOC" "$BINARY" --config="$RELAY_CFG" ${RELAY_LOGGING_ARG[@]+"${RELAY_LOGGING_ARG[@]}"} >"$RELAY_LOG" 2>&1 &
+  else
+    "$BINARY" --config="$RELAY_CFG" ${RELAY_LOGGING_ARG[@]+"${RELAY_LOGGING_ARG[@]}"} >"$RELAY_LOG" 2>&1 &
+  fi
+  RELAY_PID=$!
 
-deadline=$(( $(date +%s) + 10 ))
-until curl -sf "http://localhost:$RELAY_ADMIN_PORT/info" >/dev/null 2>&1; do
-  (( $(date +%s) >= deadline )) && { echo "ERROR: relay not ready after 10s" >&2; exit 1; }
-  sleep 0.1
-done
-echo "Relay ready on port $RELAY_PORT"
+  deadline=$(( $(date +%s) + 10 ))
+  until curl -sf "http://localhost:$RELAY_ADMIN_PORT/info" >/dev/null 2>&1; do
+    (( $(date +%s) >= deadline )) && { echo "ERROR: relay not ready after 10s" >&2; exit 1; }
+    sleep 0.1
+  done
+  echo "Relay ready on port $RELAY_PORT"
+else
+  echo "Checking remote relay at $RELAY_ADMIN_URL ..."
+  deadline=$(( $(date +%s) + 10 ))
+  until curl -sf "$RELAY_ADMIN_URL/info" >/dev/null 2>&1; do
+    (( $(date +%s) >= deadline )) && { echo "ERROR: remote relay not reachable at $RELAY_ADMIN_URL/info after 10s" >&2; exit 1; }
+    sleep 0.1
+  done
+  echo "Remote relay reachable"
+fi
 
 # ── Trace script (optional) ───────────────────────────────────────────────────
 if [[ -n "$TRACE_SCRIPT" ]]; then
-  echo "Starting trace script $TRACE_SCRIPT (pid=$RELAY_PID) → $LOG_DIR/trace.log"
-  bash "$TRACE_SCRIPT" "$RELAY_PID" >"$LOG_DIR/trace.log" 2>&1 &
-  PIDS+=($!)
+  if [[ "$REMOTE_RELAY" == true ]]; then
+    echo "WARNING: --trace-script ignored in remote relay mode (no local relay PID)" >&2
+  else
+    echo "Starting trace script $TRACE_SCRIPT (pid=$RELAY_PID) → $LOG_DIR/trace.log"
+    bash "$TRACE_SCRIPT" "$RELAY_PID" >"$LOG_DIR/trace.log" 2>&1 &
+    PIDS+=($!)
+  fi
 fi
 
 # ── perf stat (optional) ──────────────────────────────────────────────────────
 if [[ "$RUN_PERF_STAT" == true ]]; then
-  perf_stat_out="$LOG_DIR/perf-stat.txt"
-  echo "Starting perf stat → $perf_stat_out"
-  perf stat -e cycles,instructions,cache-misses,cache-references,context-switches,cpu-migrations,dTLB-load-misses,L1-dcache-load-misses \
-    -p "$RELAY_PID" >"$perf_stat_out" 2>&1 &
-  PERF_STAT_PID=$!
+  if [[ "$REMOTE_RELAY" == true ]]; then
+    echo "WARNING: --perf-stat ignored in remote relay mode (no local relay PID)" >&2
+  else
+    perf_stat_out="$LOG_DIR/perf-stat.txt"
+    echo "Starting perf stat → $perf_stat_out"
+    perf stat -e cycles,instructions,cache-misses,cache-references,context-switches,cpu-migrations,dTLB-load-misses,L1-dcache-load-misses \
+      -p "$RELAY_PID" >"$perf_stat_out" 2>&1 &
+    PERF_STAT_PID=$!
+  fi
 fi
 
 # ── Start metrics poller (optional) ──────────────────────────────────────────
 if [[ "$RUN_METRICS" == true ]]; then
   METRICS_LOG="$LOG_DIR/metrics.log"
   echo "Starting metrics poller → $METRICS_LOG"
-  bash "$METRICS_SCRIPT" "$RELAY_ADMIN_PORT" "$METRICS_LOG" >"$LOG_DIR/metrics_stderr.log" 2>&1 &
+  bash "$METRICS_SCRIPT" "$RELAY_ADMIN_URL" "$METRICS_LOG" >"$LOG_DIR/metrics_stderr.log" 2>&1 &
   PIDS+=($!)
 fi
 
@@ -335,7 +393,7 @@ echo "Starting moqtest_server -> $RELAY_URL ..."
 PIDS+=($!)
 
 deadline=$(( $(date +%s) + 10 ))
-until [[ "$(curl -sf "http://localhost:$RELAY_ADMIN_PORT/metrics" 2>/dev/null \
+until [[ "$(curl -sf "$RELAY_ADMIN_URL/metrics" 2>/dev/null \
            | grep "^moqx_moqActiveSessions " | awk '{print $2}')" -ge 1 ]] 2>/dev/null; do
   (( $(date +%s) >= deadline )) && { echo "ERROR: moqtest_server did not connect after 10s" >&2; exit 1; }
   sleep 0.1
@@ -344,16 +402,20 @@ echo "Publisher connected"
 
 # ── Start perf record (optional) ─────────────────────────────────────────────
 if [[ "$PERF_DURATION" -gt 0 ]]; then
-  perf_delay=$(( 3 * SUBSCRIBER_MAX / RAMP ))
-  perf_data="$LOG_DIR/perf.data"
-  echo "perf record: starts in ${perf_delay}s, runs ${PERF_DURATION}s → $perf_data"
-  ( sleep "$perf_delay" && \
-    perf record -F 499 -g -e cycles -p "$RELAY_PID" -o "$perf_data" -- sleep "$PERF_DURATION" \
-    && echo "perf record complete → $perf_data" ) &
-  PIDS+=($!)
+  if [[ "$REMOTE_RELAY" == true ]]; then
+    echo "WARNING: --perf-duration ignored in remote relay mode (no local relay PID)" >&2
+  else
+    perf_delay=$(( 3 * SUBSCRIBER_MAX / RAMP ))
+    perf_data="$LOG_DIR/perf.data"
+    echo "perf record: starts in ${perf_delay}s, runs ${PERF_DURATION}s → $perf_data"
+    ( sleep "$perf_delay" && \
+      perf record -F 499 -g -e cycles -p "$RELAY_PID" -o "$perf_data" -- sleep "$PERF_DURATION" \
+      && echo "perf record complete → $perf_data" ) &
+    PIDS+=($!)
+  fi
 fi
 
-if [[ -n "$PERF_EVENTS" && "$PERF_DURATION" -gt 0 ]]; then
+if [[ -n "$PERF_EVENTS" && "$PERF_DURATION" -gt 0 && "$REMOTE_RELAY" == false ]]; then
   perf_delay=$(( 3 * SUBSCRIBER_MAX / RAMP ))
   perf_events_data="$LOG_DIR/perf-events.data"
   echo "perf record ($PERF_EVENTS): starts in ${perf_delay}s, runs ${PERF_DURATION}s → $perf_events_data"

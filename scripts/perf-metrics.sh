@@ -8,16 +8,23 @@
 # Bucket lines are skipped; histogram _sum/_count pairs are collapsed into a
 # single avg_ column.
 #
-# Usage: scripts/perf-metrics.sh [admin_port] [log_file]
-#   admin_port  default 19701
-#   log_file    default /tmp/moqx_metrics_<timestamp>.log
+# Usage: scripts/perf-metrics.sh [admin_port_or_url] [log_file]
+#   admin_port_or_url  port number (localhost) or full admin URL; default 19701
+#   log_file           default /tmp/moqx_metrics_<timestamp>.log
 #
 # Terminal tip: column -t -s $'\t'   or   awk -F'\t' '{print $N}' to slice
 
 set -uo pipefail
 
-ADMIN_PORT="${1:-19701}"
+ADMIN_TARGET="${1:-19701}"
 LOG_FILE="${2:-/tmp/moqx_metrics_$(date +%Y%m%d_%H%M%S).log}"
+
+# Support both a port number (localhost) and a full admin URL
+if [[ "$ADMIN_TARGET" == *://* ]]; then
+  ADMIN_BASE_URL="${ADMIN_TARGET%/}"
+else
+  ADMIN_BASE_URL="http://localhost:${ADMIN_TARGET}"
+fi
 
 SEP=$'\t'
 CLK_TCK=$(getconf CLK_TCK 2>/dev/null || echo 100)
@@ -97,7 +104,7 @@ tick_sleep() {
 
 while true; do
   tick_start_ms=$(date +%s%3N)
-  raw=$(curl -sf "http://localhost:${ADMIN_PORT}/metrics" 2>/dev/null) || { tick_sleep; continue; }
+  raw=$(curl -sf "${ADMIN_BASE_URL}/metrics" 2>/dev/null) || { tick_sleep; continue; }
 
   cur=()
   while read -r key val; do
