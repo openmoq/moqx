@@ -410,6 +410,12 @@ def p_params(cursor, annot, draft, count, param_keys):
             blob_start = cursor.pos
             raw = cursor.read_bytes(vlen)
             p_subscription_filter_blob(raw, blob_start, annot, i, draft)
+        elif draft >= 18 and abs_key in (0x10, 0x20, 0x22):
+            # d18 §10.2.7/8/12: FORWARD (0x10), SUBSCRIBER_PRIORITY (0x20) and
+            # GROUP_ORDER (0x22) values are a fixed uint8, overriding the
+            # generic even-key varint (§1.4.3). Diverges at value >= 64.
+            val, vs = cursor.read_uint8()
+            annot.add(vs, cursor.pos, f"param[{i}].value", str(val))
         elif abs_key % 2 == 0:
             # Even-keyed params are plain varints
             val, vs = cursor.read_varint()
