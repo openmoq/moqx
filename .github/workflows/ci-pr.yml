@@ -206,7 +206,12 @@ jobs:
           - name: linux
             runner: ubuntu-22.04
           - name: macos
-            runner: macos-latest
+            # Pinned to match the moxygen publish runner: snapshot-latest ships
+            # moxygen-macos-15-arm64.tar.gz, and this job downloads it with
+            # --no-fallback. macos-latest now resolves to macOS 26 (gradual
+            # rollout), which requests a macos-26 tarball that 404s. Keep in
+            # lockstep with the build job above (also macos-15).
+            runner: macos-15
     name: benchmark (${{ matrix.name }})
     runs-on: ${{ matrix.runner }}
     steps:

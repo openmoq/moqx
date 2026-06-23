@@ -229,7 +229,10 @@ jobs:
           - name: linux
             runner: ubuntu-22.04
           - name: macos
-            runner: macos-latest
+            # Pinned to macos-15 to match the moxygen publish runner / tarball
+            # name (moxygen-macos-15-arm64.tar.gz), downloaded here with
+            # --no-fallback. See ci-pr.yml benchmark job for the full rationale.
+            runner: macos-15
     name: benchmark (${{ matrix.name }})
     runs-on: ${{ matrix.runner }}
     steps:
