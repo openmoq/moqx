@@ -112,11 +112,23 @@ METRICS_SCRIPT="$REPO/scripts/perf-metrics.sh"
 
 # ── jemalloc resolution ───────────────────────────────────────────────────────
 if [[ "$JEMALLOC" == "auto" ]]; then
-  if [[ -f /lib64/libjemalloc.so.2 ]]; then
-    JEMALLOC=/lib64/libjemalloc.so.2
-  else
-    echo "WARNING: --jemalloc requested but /lib64/libjemalloc.so.2 not found; ignoring" >&2
-    JEMALLOC=""
+  JEMALLOC=""
+  # Common locations: RHEL/Fedora (/lib64), Debian/Ubuntu multiarch, /usr/local.
+  for cand in \
+    /lib64/libjemalloc.so.2 \
+    /usr/lib/x86_64-linux-gnu/libjemalloc.so.2 \
+    /usr/lib/aarch64-linux-gnu/libjemalloc.so.2 \
+    /usr/lib64/libjemalloc.so.2 \
+    /usr/lib/libjemalloc.so.2 \
+    /usr/local/lib/libjemalloc.so.2; do
+    if [[ -f "$cand" ]]; then JEMALLOC="$cand"; break; fi
+  done
+  # Fall back to the dynamic linker cache (handles other distros/arches).
+  if [[ -z "$JEMALLOC" ]] && command -v ldconfig >/dev/null 2>&1; then
+    JEMALLOC=$(ldconfig -p 2>/dev/null | awk '/libjemalloc\.so\.2/ {print $NF; exit}')
+  fi
+  if [[ -z "$JEMALLOC" ]]; then
+    echo "WARNING: --jemalloc requested but libjemalloc.so.2 not found; ignoring" >&2
   fi
 fi
 
