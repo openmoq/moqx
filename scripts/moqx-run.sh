@@ -321,6 +321,22 @@ fi
 # ── Pre-flight: warn (don't block) if UDP sysctls are below recommended ───
 [[ "$SUBCMD" == serve ]] && { check_sysctl warn || true; }
 
+# ── Pre-flight: real-TLS cert/key must be readable by whoever runs the relay ─
+# moxygen SIGABRTs ("no certificates read") on a missing/unreadable cert (#173),
+# so probe with the same privilege the relay will use and fail cleanly instead.
+if [[ "$SUBCMD" == serve && "$MOQX_INSECURE" == false ]]; then
+  if (( USE_SUDO )); then probe=(sudo test -r); else probe=(test -r); fi
+  for f in "$MOQX_CERT" "$MOQX_KEY"; do
+    "${probe[@]}" "$f" 2>/dev/null || {
+      echo "error: TLS cert/key not readable: $f" >&2
+      echo "  - check DOMAIN spelling — it names the /etc/letsencrypt/live/<dir>, not the served host" >&2
+      echo "    (a wildcard *.example.com cert lives under the 'example.com' dir)" >&2
+      echo "  - or pass --cert/--key explicitly, or --insecure for the built-in dev cert" >&2
+      exit 1
+    }
+  done
+fi
+
 if (( USE_SUDO )); then
   # Pass GLOG_*/LD_PRELOAD explicitly: sudoers env_reset strips vars not in
   # env_keep, and exporting LD_PRELOAD would be dropped across the boundary.
