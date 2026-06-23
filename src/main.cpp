@@ -27,15 +27,13 @@
 #include <folly/logging/Init.h>
 #include <folly/logging/xlog.h>
 
-#include "LoggingShortcut.h"
-
 #include <iostream>
 #include <string_view>
 
 // Default folly logging config: root at INFO, async sink with WARN+ flushed
 // synchronously so we don't lose warnings/errors on crash. Overridable at
 // runtime via --logging=... or FOLLY_LOGGING= env var (folly::Init wires both).
-FOLLY_INIT_LOGGING_CONFIG(".=INFO; default:async=true,sync_level=WARN");
+FOLLY_INIT_LOGGING_CONFIG(".=INFO;default:async=true,sync_level=WARN");
 
 DEFINE_string(config, "", "Path to config file (required)");
 DEFINE_bool(strict_config, false, "Reject unknown config fields");
@@ -73,10 +71,6 @@ int main(int argc, char* argv[]) {
       "  serve                Start the relay (default)\n" +
       cfg::configSubcommandUsage() + "\nUsage: moqx [subcommand] --config <path>"
   );
-  // Rewrite `--logging=DBG2` to `--logging=.=DBG2` (and similar bare-level
-  // shortcuts) before folly's gflag parser sees the value. folly requires
-  // <category>=<level>; this layer is moqx-only operator ergonomics.
-  normalizeLoggingArgv(argc, argv);
   folly::Init init(&argc, &argv, true);
 
   std::string_view subcommand = kServeCommand;
