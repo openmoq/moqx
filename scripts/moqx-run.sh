@@ -33,6 +33,8 @@ Relay tuning (templated into the config; CLI > .env > default):
 
 Listener (templated into the config; CLI > .env > default):
       --quic-stack STACK    listener quic stack: mvfst|picoquic (default mvfst)
+      --moqt-versions LIST  advertised MoQT drafts, e.g. 16,14,18 (default 16,14;
+                            draft-18 is opt-in — not yet interoperable)
       --port N              UDP listen port (default 4433)
       --admin-port N        admin HTTP port (default 8000)
       --endpoint PATH       WebTransport endpoint path (default /moq-relay)
@@ -60,7 +62,7 @@ Environment overrides (via .env or shell):
   MOQX_VERBOSE, MOQX_LOG_LEVEL, GLOG_vmodule, MOQX_JEMALLOC
   MOQX_THREADS, MOQX_UDP_BUFFER, MOQX_RECV_PKTS, MOQX_SEND_PKTS, MOQX_CC,
   MOQX_LOCAL_FWD, MOQX_CACHE, MOQX_BPF_STEERING, MOQX_IGNORE_PATH_MTU,
-  MOQX_RELAY_THREAD, MOQX_STACK, MOQX_PORT, MOQX_ADMIN_PORT, MOQX_ENDPOINT,
+  MOQX_RELAY_THREAD, MOQX_STACK, MOQX_MOQT_VERSIONS, MOQX_PORT, MOQX_ADMIN_PORT, MOQX_ENDPOINT,
   MOQX_INSECURE, MOQX_CERT, MOQX_KEY, MOQX_MAX_TRACKS, MOQX_MAX_GROUPS
 
 Examples:
@@ -111,13 +113,17 @@ check_sysctl() {
 # normalize a boolean-ish value to true/false (or "INVALID")
 norm_bool() { case "${1,,}" in 1|true|yes|on) echo true ;; 0|false|no|off) echo false ;; *) echo INVALID ;; esac; }
 
+# normalize a MoQT versions value to a YAML inline list. Pass through an already
+# bracketed list (e.g. "[16, 14]"); wrap a comma list ("16,14" -> "[16, 14]").
+norm_versions() { local v="${1//[[:space:]]/}"; [[ "$v" == \[*\] ]] && echo "$v" || echo "[${v//,/, }]"; }
+
 CLI_VERBOSE="" CLI_LOG_LEVEL="" CLI_VMODULE="" CLI_XLOG=""
 CLI_SUBCMD="" CLI_CONFIG="" CLI_ENV_FILE="" CLI_BIN=""
 CLI_USE_SUDO=""   # "" = unset; "0"/"1" set
 CLI_JEMALLOC=""   # "" = unset; "auto" or explicit path
 CLI_THREADS="" CLI_UDP_BUFFER="" CLI_RECV_PKTS="" CLI_SEND_PKTS="" CLI_CC=""
 CLI_LOCAL_FWD="" CLI_CACHE="" CLI_RELAY_THREAD="" CLI_INSECURE=""   # tri-state booleans
-CLI_STACK="" CLI_PORT="" CLI_ADMIN_PORT="" CLI_ENDPOINT="" CLI_CERT="" CLI_KEY=""
+CLI_STACK="" CLI_MOQT_VERSIONS="" CLI_PORT="" CLI_ADMIN_PORT="" CLI_ENDPOINT="" CLI_CERT="" CLI_KEY=""
 CHECK_SYSCTL=0 DRY_RUN=0
 PASSTHRU=()
 
@@ -139,6 +145,7 @@ while (($#)); do
     --relay-thread)    CLI_RELAY_THREAD=true;  shift ;;
     --no-relay-thread) CLI_RELAY_THREAD=false; shift ;;
     --quic-stack)    CLI_STACK="$2"; shift 2 ;;
+    --moqt-versions) CLI_MOQT_VERSIONS="$2"; shift 2 ;;
     --port)          CLI_PORT="$2"; shift 2 ;;
     --admin-port)    CLI_ADMIN_PORT="$2"; shift 2 ;;
     --endpoint)      CLI_ENDPOINT="$2"; shift 2 ;;
@@ -195,27 +202,55 @@ export MOQX_CC="${CLI_CC:-${MOQX_CC:-bbr}}"
 MOQX_LOCAL_FWD="$(norm_bool "${CLI_LOCAL_FWD:-${MOQX_LOCAL_FWD:-true}}")"
 MOQX_CACHE="$(norm_bool "${CLI_CACHE:-${MOQX_CACHE:-true}}")"
 MOQX_RELAY_THREAD="$(norm_bool "${CLI_RELAY_THREAD:-${MOQX_RELAY_THREAD:-true}}")"
-MOQX_INSECURE="$(norm_bool "${CLI_INSECURE:-${MOQX_INSECURE:-false}}")"
 # bpf steering and ignore_path_mtu are experimental — env override only, no flag.
 MOQX_BPF_STEERING="$(norm_bool "${MOQX_BPF_STEERING:-false}")"
 MOQX_IGNORE_PATH_MTU="$(norm_bool "${MOQX_IGNORE_PATH_MTU:-false}")"
-for b in MOQX_LOCAL_FWD MOQX_CACHE MOQX_RELAY_THREAD MOQX_INSECURE MOQX_BPF_STEERING MOQX_IGNORE_PATH_MTU; do
+for b in MOQX_LOCAL_FWD MOQX_CACHE MOQX_RELAY_THREAD MOQX_BPF_STEERING MOQX_IGNORE_PATH_MTU; do
   [[ "${!b}" == INVALID ]] && { echo "invalid boolean for $b (want true/false)" >&2; exit 2; }
 done
-export MOQX_LOCAL_FWD MOQX_CACHE MOQX_RELAY_THREAD MOQX_INSECURE
+export MOQX_LOCAL_FWD MOQX_CACHE MOQX_RELAY_THREAD
 export MOQX_BPF_STEERING MOQX_IGNORE_PATH_MTU
 
 # ── Listener knobs (CLI > .env/env > default), exported for envsubst ──────
 export MOQX_STACK="${CLI_STACK:-${MOQX_STACK:-mvfst}}"
 case "$MOQX_STACK" in mvfst|picoquic) ;; *) echo "invalid --quic-stack: $MOQX_STACK (want mvfst|picoquic)" >&2; exit 2 ;; esac
+# MoQT drafts advertised by the listener (ALPN derives from these). Default
+# matches the relay's interoperable set; draft-18 is opt-in (--moqt-versions).
+export MOQX_MOQT_VERSIONS="$(norm_versions "${CLI_MOQT_VERSIONS:-${MOQX_MOQT_VERSIONS:-16,14}}")"
 export MOQX_PORT="${CLI_PORT:-${MOQX_PORT:-4433}}"
 export MOQX_ADMIN_PORT="${CLI_ADMIN_PORT:-${MOQX_ADMIN_PORT:-8000}}"
 export MOQX_ENDPOINT="${CLI_ENDPOINT:-${MOQX_ENDPOINT:-/moq-relay}}"
 export MOQX_MAX_TRACKS="${MOQX_MAX_TRACKS:-1000}"
 export MOQX_MAX_GROUPS="${MOQX_MAX_GROUPS:-100}"
+# Did the user explicitly ask for real TLS (a specific cert/key, or a DOMAIN to
+# locate one)? Capture before the defaults below overwrite MOQX_CERT/MOQX_KEY.
+CERT_EXPLICIT=0
+[[ -n "${CLI_CERT}${CLI_KEY}${MOQX_CERT:-}${MOQX_KEY:-}${DOMAIN:-}" ]] && CERT_EXPLICIT=1
+
 # TLS: cert/key default to letsencrypt under DOMAIN; --insecure ignores them.
 export MOQX_CERT="${CLI_CERT:-${MOQX_CERT:-/etc/letsencrypt/live/${DOMAIN:-}/fullchain.pem}}"
 export MOQX_KEY="${CLI_KEY:-${MOQX_KEY:-/etc/letsencrypt/live/${DOMAIN:-}/privkey.pem}}"
+
+# Insecure (built-in dev cert) resolution, in priority order:
+#   1. An explicit --insecure / MOQX_INSECURE always wins, whatever else is set.
+#   2. An explicit cert/key/DOMAIN means "use real TLS" — trust it even when the
+#      cert lives under a root-only path (e.g. /etc/letsencrypt) this user can't
+#      stat; the relay runs via sudo and reads it. moxygen errors if truly absent.
+#   3. Otherwise auto: serve real TLS if the default cert is readable here, else
+#      fall back to the dev cert so a bare local bench run needs no TLS setup.
+INSECURE_REQ="${CLI_INSECURE:-${MOQX_INSECURE:-}}"
+if [[ -n "$INSECURE_REQ" ]]; then
+  MOQX_INSECURE="$(norm_bool "$INSECURE_REQ")"
+  [[ "$MOQX_INSECURE" == INVALID ]] && { echo "invalid boolean for MOQX_INSECURE (want true/false)" >&2; exit 2; }
+elif (( CERT_EXPLICIT )); then
+  MOQX_INSECURE=false
+elif [[ -f "$MOQX_CERT" ]]; then
+  MOQX_INSECURE=false
+else
+  MOQX_INSECURE=true
+  echo "note: TLS cert not found ($MOQX_CERT); using built-in dev cert. Set DOMAIN or --cert/--key for real TLS, or pass --insecure to silence." >&2
+fi
+export MOQX_INSECURE
 
 # ── Resolve placeholders into a temp config ───────────────────────────────
 RESOLVED_CONFIG=/tmp/moqx-resolved.yaml
@@ -239,6 +274,7 @@ if [[ -n "$JEMALLOC_REQ" ]]; then
         /usr/lib/aarch64-linux-gnu/libjemalloc.so.2 \
         /lib64/libjemalloc.so.2 \
         /usr/lib64/libjemalloc.so.2 \
+        /usr/lib/libjemalloc.so.2 \
         /usr/local/lib/libjemalloc.so.2; do
         [[ -f "$cand" ]] && { JEMALLOC="$cand"; break; }
       done
@@ -259,7 +295,7 @@ CMD=("$MOQX_BIN" "$SUBCMD" --config "$RESOLVED_CONFIG" "${PASSTHRU[@]}")
 
 if (( DRY_RUN )); then
   echo "# relay knobs (templated into config)"
-  echo "stack=$MOQX_STACK port=$MOQX_PORT admin_port=$MOQX_ADMIN_PORT endpoint=$MOQX_ENDPOINT insecure=$MOQX_INSECURE"
+  echo "stack=$MOQX_STACK moqt_versions=$MOQX_MOQT_VERSIONS port=$MOQX_PORT admin_port=$MOQX_ADMIN_PORT endpoint=$MOQX_ENDPOINT insecure=$MOQX_INSECURE"
   echo "threads=$MOQX_THREADS relay_thread=$MOQX_RELAY_THREAD local_fwd=$MOQX_LOCAL_FWD bpf_steering=$MOQX_BPF_STEERING cache=$MOQX_CACHE"
   echo "cc=$MOQX_CC send_pkts=$MOQX_SEND_PKTS recv_pkts=$MOQX_RECV_PKTS udp_buffer=$MOQX_UDP_BUFFER ignore_path_mtu=$MOQX_IGNORE_PATH_MTU"
   echo "# resolved env"

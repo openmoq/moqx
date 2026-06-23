@@ -9,6 +9,7 @@
 #
 # Tunable via env / CLI (defaults live in moqx-run.sh):
 #   MOQX_STACK         quic stack for the listener: mvfst | picoquic (--quic-stack)
+#   MOQX_MOQT_VERSIONS advertised MoQT drafts, YAML inline list (default [16, 14])
 #   MOQX_PORT          UDP listen port
 #   MOQX_ADMIN_PORT    admin HTTP port
 #   MOQX_ENDPOINT      WebTransport endpoint path
@@ -61,6 +62,7 @@ listener_defaults:
 listeners:
   - name: relay
     quic_stack: ${MOQX_STACK}
+    moqt_versions: ${MOQX_MOQT_VERSIONS}
     udp:
       socket:
         address: "::"
