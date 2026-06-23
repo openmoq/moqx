@@ -18,9 +18,11 @@ This document covers the config-string grammar, the category hierarchy, the seve
 | Just QUIC, all stacks | `moqx … --logging=quic=DBG1` |
 | Just picoquic, internal events | `moqx … --logging=quic.picoquic=DBG3` |
 | Just mvfst | `moqx … --logging=quic.mvfst=DBG2` |
-| Crank everything (firehose) | `moqx … --logging=.=DBG4` |
-| Production: log to file, WARN baseline | `moqx … --logging=.=WARN; default:async=true,sync_level=WARN` |
+| Crank everything (firehose) | `moqx … --logging=DBG4` |
+| Production: log to file, WARN baseline | `moqx … --logging=WARN; default:async=true,sync_level=WARN` |
 | Hot-path tracing without losing throughput | `moqx … --logging=moqx=DBG4; default:async=true,sync_level=WARN` (async on by default already) |
+
+A bare level (`DBG4`, `WARN`, `INFO`, …) sets the root category — `--logging=DBG4` is shorthand for the long form `--logging=.=DBG4`. Both work. See [Bare-level shorthand](#bare-level-shorthand) below.
 
 Everything else in this doc is "how the grammar generalizes."
 
@@ -36,29 +38,57 @@ The CLI flag is what operators use day-to-day. The env var is handy in scripts a
 
 ## Config string grammar
 
-A config string is a semicolon-separated list of clauses. Whitespace is optional. Three kinds of clause:
+A config string has up to two blocks separated by a single semicolon:
 
 ```
-CATEGORY=LEVEL
-CATEGORY:option=value,option=value
-HANDLER_NAME=type:option=value
+<categories-block> ; <handler-block>
+```
+
+The handler block is optional. **Within** each block, items are separated by **commas**:
+
+```
+CATEGORY=LEVEL,CATEGORY=LEVEL,...           # categories block
+default:option=value,option=value           # handler block
 ```
 
 - **`CATEGORY=LEVEL`** sets the threshold for that category and all its children. The special category `.` (single dot) is the root.
-- **`CATEGORY:options`** attaches per-category handler options (e.g. `async=true`).
-- **`HANDLER_NAME=type:options`** declares or reconfigures a log handler (sinks).
+- **`default:option=value`** tunes the default log handler (async, sync_level, etc.).
+- **`HANDLER_NAME=type:option=value`** in the handler block redefines a handler (e.g. send output to a file).
 
-The shortest useful config string is just a level on the root:
+### Bare-level shorthand
+
+A clause in the categories block that's just a level token (no `=`) is treated as a root-level set:
+
+```bash
+--logging=DBG2                              # equivalent to --logging=.=DBG2
+--logging=WARN                              # equivalent to --logging=.=WARN
+--logging=DBG2,moxygen=DBG4                 # bare-level root plus a per-category bump
+--logging=WARN; default:async=false         # bare-level root plus handler tweak
+```
+
+The long form (`.=LEVEL`) still works everywhere. The shorthand is moqx-side ergonomics; standalone moxygen binaries don't have it.
+
+### Delimiter rules — `;` vs `,`
+
+This catches everyone the first time:
+
+| Where | Separator | Example |
+|---|---|---|
+| Between category specs (within categories block) | **`,`** | `moqx=DBG4,moxygen=DBG3,quic=INFO` |
+| Between categories block and handler block | **`;`** (exactly one) | `.=INFO; default:async=false` |
+| Between handler options (within handler block) | **`,`** | `default:async=true,sync_level=WARN` |
+
+Folly's parser treats the **first** `;` as the categories-vs-handler boundary; everything after is handler config. So a value like `.=INFO; moqx=DBG4; quic=DBG1` is parsed as `.=INFO` (categories) followed by `moqx=DBG4; quic=DBG1` (handler), which fails. Use commas:
 
 ```
---logging=.=DBG2          # everything at DBG2
---logging=.=WARN          # everything at WARN (much quieter)
+--logging=.=INFO,moqx=DBG4,quic=DBG1                   # ✓
+--logging=.=INFO; moqx=DBG4; quic=DBG1                 # ✗ (only .=INFO takes effect; rest is parsed as handler config and errors)
 ```
 
 A typical multi-category config:
 
 ```
---logging=.=INFO; moqx=DBG4; moxygen.MoQSession=DBG3; quic.picoquic=DBG1
+--logging=.=INFO,moqx=DBG4,moxygen.MoQSession=DBG3,quic.picoquic=DBG1
 ```
 
 Reads as: *root level is `INFO`, but the `moqx` tree gets `DBG4`, the specific file `MoQSession` under moxygen gets `DBG3`, and the picoquic QUIC stack gets `DBG1`.*
@@ -100,8 +130,8 @@ folly.*                         Async I/O, EventBase, AsyncSocket      (in progr
 **Note A — multi-QUIC-stack disambiguation:** moqx supports two QUIC stacks; the `quic.{mvfst,picoquic}` hierarchy lets you target either or both:
 
 - `--logging=quic=DBG1` — both stacks at `DBG1`
-- `--logging=quic.mvfst=DBG2; quic.picoquic=DBG2` — same, more explicit
-- `--logging=quic.picoquic=DBG3; quic.mvfst=WARN` — picoquic verbose, mvfst quiet
+- `--logging=quic.mvfst=DBG2,quic.picoquic=DBG2` — same, more explicit
+- `--logging=quic.picoquic=DBG3,quic.mvfst=WARN` — picoquic verbose, mvfst quiet
 
 **Discovering categories at runtime:** if you're not sure which category a log line came from, run with `--logging=.=DBG0` for a few seconds; folly prepends the category to every line.
 
@@ -202,7 +232,7 @@ moqx --config c.yaml --logging=quic=DBG1
 
 ```bash
 moqx --config c.yaml \
-  --logging='.=INFO; moqx.MoqxRelay=DBG3; moxygen.MoQSession=DBG3; quic=DBG1'
+  --logging='.=INFO,moqx.MoqxRelay=DBG3,moxygen.MoQSession=DBG3,quic=DBG1'
 ```
 
 Keeps overall noise at `INFO` but lights up the three layers that handle a session: routing decision, MoQ session state, QUIC packet events. A single connection life-cycle becomes traceable line by line without drowning in protocol-internal chatter.
@@ -218,7 +248,7 @@ Even if `DBG4` produces 10k+ msgs/sec under load, the relay's request throughput
 ### Quiet down a noisy layer
 
 ```bash
-moqx --config c.yaml --logging=.=INFO; quic=WARN
+moqx --config c.yaml --logging=.=INFO,quic=WARN
 ```
 
 Useful when you don't care about QUIC chatter but want to keep app-level events. The most-specific category wins, so `quic.mvfst` and `quic.picoquic` inherit `WARN` even though they descend from `.` (which is set to `INFO`).
@@ -247,7 +277,7 @@ docker run --log-driver json-file --log-opt max-size=10m --log-opt max-file=5 \
 Useful for systemd / Docker / Kubernetes where editing the CLI line is awkward:
 
 ```bash
-export FOLLY_LOGGING='.=INFO; moqx=DBG2'
+export FOLLY_LOGGING='.=INFO,moqx=DBG2'
 moqx --config c.yaml
 ```
 

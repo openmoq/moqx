@@ -127,6 +127,7 @@ target_compile_options(moqx_cache PRIVATE -Wall -Wextra -Wpedantic)
 
 add_library(moqx_core STATIC
   src/auth/Auth.cpp
+  src/LoggingShortcut.cpp
   src/NamespaceTree.cpp
   src/SubscriptionRegistry.cpp
   src/MoqxRelay.cpp
