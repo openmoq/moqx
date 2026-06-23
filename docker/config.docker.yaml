@@ -22,6 +22,7 @@ listener_defaults:
 
 listeners:
   - name: relay
+    moqt_versions: ${MOQX_MOQT_VERSIONS}
     udp:
       socket:
         address: "${MOQX_BIND_ADDR}"
