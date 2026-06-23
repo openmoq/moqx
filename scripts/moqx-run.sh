@@ -26,9 +26,19 @@ Relay tuning (templated into the config; CLI > .env > default):
                             (default: net.core.wmem_max)
       --recv-pkts N         mvfst max_server_recv_packets_per_loop (default 256)
       --send-pkts N         mvfst max_conn_packets_sent_per_loop (default 16)
-      --cc ALGO             mvfst congestion control (default bbr2)
+      --cc ALGO             congestion control; bbr works on both stacks (default bbr)
       --local-forwarders / --no-local-forwarders   (default: on)
       --cache / --no-cache  relay object cache (default: on)
+      --relay-thread / --no-relay-thread   dedicated relay exec thread (default: on)
+
+Listener (templated into the config; CLI > .env > default):
+      --quic-stack STACK    listener quic stack: mvfst|picoquic (default mvfst)
+      --port N              UDP listen port (default 4433)
+      --admin-port N        admin HTTP port (default 8000)
+      --endpoint PATH       WebTransport endpoint path (default /moq-relay)
+      --insecure            use a self-signed dev cert; ignore --cert/--key
+      --cert PATH           TLS cert PEM (default: letsencrypt under DOMAIN)
+      --key PATH            TLS key PEM  (default: letsencrypt under DOMAIN)
 
 Targeting:
       --subcmd CMD          moqx subcommand (default: serve)
@@ -49,7 +59,9 @@ Environment overrides (via .env or shell):
   MOQX_BIN, MOQX_CONFIG, MOQX_ENV_FILE, MOQX_SUBCMD, MOQX_USE_SUDO, DOMAIN
   MOQX_VERBOSE, MOQX_LOG_LEVEL, GLOG_vmodule, MOQX_JEMALLOC
   MOQX_THREADS, MOQX_UDP_BUFFER, MOQX_RECV_PKTS, MOQX_SEND_PKTS, MOQX_CC,
-  MOQX_LOCAL_FWD, MOQX_CACHE, MOQX_BPF_STEERING, MOQX_IGNORE_PATH_MTU
+  MOQX_LOCAL_FWD, MOQX_CACHE, MOQX_BPF_STEERING, MOQX_IGNORE_PATH_MTU,
+  MOQX_RELAY_THREAD, MOQX_STACK, MOQX_PORT, MOQX_ADMIN_PORT, MOQX_ENDPOINT,
+  MOQX_INSECURE, MOQX_CERT, MOQX_KEY, MOQX_MAX_TRACKS, MOQX_MAX_GROUPS
 
 Examples:
   $0                                       # serve with .env + defaults
@@ -104,7 +116,8 @@ CLI_SUBCMD="" CLI_CONFIG="" CLI_ENV_FILE="" CLI_BIN=""
 CLI_USE_SUDO=""   # "" = unset; "0"/"1" set
 CLI_JEMALLOC=""   # "" = unset; "auto" or explicit path
 CLI_THREADS="" CLI_UDP_BUFFER="" CLI_RECV_PKTS="" CLI_SEND_PKTS="" CLI_CC=""
-CLI_LOCAL_FWD="" CLI_CACHE=""   # tri-state booleans
+CLI_LOCAL_FWD="" CLI_CACHE="" CLI_RELAY_THREAD="" CLI_INSECURE=""   # tri-state booleans
+CLI_STACK="" CLI_PORT="" CLI_ADMIN_PORT="" CLI_ENDPOINT="" CLI_CERT="" CLI_KEY=""
 CHECK_SYSCTL=0 DRY_RUN=0
 PASSTHRU=()
 
@@ -123,6 +136,15 @@ while (($#)); do
     --no-local-forwarders) CLI_LOCAL_FWD=false; shift ;;
     --cache)         CLI_CACHE=true;  shift ;;
     --no-cache)      CLI_CACHE=false; shift ;;
+    --relay-thread)    CLI_RELAY_THREAD=true;  shift ;;
+    --no-relay-thread) CLI_RELAY_THREAD=false; shift ;;
+    --quic-stack)    CLI_STACK="$2"; shift 2 ;;
+    --port)          CLI_PORT="$2"; shift 2 ;;
+    --admin-port)    CLI_ADMIN_PORT="$2"; shift 2 ;;
+    --endpoint)      CLI_ENDPOINT="$2"; shift 2 ;;
+    --insecure)      CLI_INSECURE=true; shift ;;
+    --cert)          CLI_CERT="$2"; shift 2 ;;
+    --key)           CLI_KEY="$2"; shift 2 ;;
     --subcmd)        CLI_SUBCMD="$2"; shift 2 ;;
     --config)        CLI_CONFIG="$2"; shift 2 ;;
     --env)           CLI_ENV_FILE="$2"; shift 2 ;;
@@ -169,16 +191,31 @@ export MOQX_THREADS="${CLI_THREADS:-${MOQX_THREADS:-4}}"
 export MOQX_SEND_PKTS="${CLI_SEND_PKTS:-${MOQX_SEND_PKTS:-16}}"
 export MOQX_RECV_PKTS="${CLI_RECV_PKTS:-${MOQX_RECV_PKTS:-256}}"
 export MOQX_UDP_BUFFER="${CLI_UDP_BUFFER:-${MOQX_UDP_BUFFER:-$WMEM_MAX}}"
-export MOQX_CC="${CLI_CC:-${MOQX_CC:-bbr2}}"
+export MOQX_CC="${CLI_CC:-${MOQX_CC:-bbr}}"
 MOQX_LOCAL_FWD="$(norm_bool "${CLI_LOCAL_FWD:-${MOQX_LOCAL_FWD:-true}}")"
 MOQX_CACHE="$(norm_bool "${CLI_CACHE:-${MOQX_CACHE:-true}}")"
+MOQX_RELAY_THREAD="$(norm_bool "${CLI_RELAY_THREAD:-${MOQX_RELAY_THREAD:-true}}")"
+MOQX_INSECURE="$(norm_bool "${CLI_INSECURE:-${MOQX_INSECURE:-false}}")"
 # bpf steering and ignore_path_mtu are experimental — env override only, no flag.
 MOQX_BPF_STEERING="$(norm_bool "${MOQX_BPF_STEERING:-false}")"
 MOQX_IGNORE_PATH_MTU="$(norm_bool "${MOQX_IGNORE_PATH_MTU:-false}")"
-for b in MOQX_LOCAL_FWD MOQX_CACHE MOQX_BPF_STEERING MOQX_IGNORE_PATH_MTU; do
+for b in MOQX_LOCAL_FWD MOQX_CACHE MOQX_RELAY_THREAD MOQX_INSECURE MOQX_BPF_STEERING MOQX_IGNORE_PATH_MTU; do
   [[ "${!b}" == INVALID ]] && { echo "invalid boolean for $b (want true/false)" >&2; exit 2; }
 done
-export MOQX_LOCAL_FWD MOQX_CACHE MOQX_BPF_STEERING MOQX_IGNORE_PATH_MTU
+export MOQX_LOCAL_FWD MOQX_CACHE MOQX_RELAY_THREAD MOQX_INSECURE
+export MOQX_BPF_STEERING MOQX_IGNORE_PATH_MTU
+
+# ── Listener knobs (CLI > .env/env > default), exported for envsubst ──────
+export MOQX_STACK="${CLI_STACK:-${MOQX_STACK:-mvfst}}"
+case "$MOQX_STACK" in mvfst|picoquic) ;; *) echo "invalid --quic-stack: $MOQX_STACK (want mvfst|picoquic)" >&2; exit 2 ;; esac
+export MOQX_PORT="${CLI_PORT:-${MOQX_PORT:-4433}}"
+export MOQX_ADMIN_PORT="${CLI_ADMIN_PORT:-${MOQX_ADMIN_PORT:-8000}}"
+export MOQX_ENDPOINT="${CLI_ENDPOINT:-${MOQX_ENDPOINT:-/moq-relay}}"
+export MOQX_MAX_TRACKS="${MOQX_MAX_TRACKS:-1000}"
+export MOQX_MAX_GROUPS="${MOQX_MAX_GROUPS:-100}"
+# TLS: cert/key default to letsencrypt under DOMAIN; --insecure ignores them.
+export MOQX_CERT="${CLI_CERT:-${MOQX_CERT:-/etc/letsencrypt/live/${DOMAIN:-}/fullchain.pem}}"
+export MOQX_KEY="${CLI_KEY:-${MOQX_KEY:-/etc/letsencrypt/live/${DOMAIN:-}/privkey.pem}}"
 
 # ── Resolve placeholders into a temp config ───────────────────────────────
 RESOLVED_CONFIG=/tmp/moqx-resolved.yaml
@@ -222,7 +259,8 @@ CMD=("$MOQX_BIN" "$SUBCMD" --config "$RESOLVED_CONFIG" "${PASSTHRU[@]}")
 
 if (( DRY_RUN )); then
   echo "# relay knobs (templated into config)"
-  echo "threads=$MOQX_THREADS local_fwd=$MOQX_LOCAL_FWD bpf_steering=$MOQX_BPF_STEERING cache=$MOQX_CACHE"
+  echo "stack=$MOQX_STACK port=$MOQX_PORT admin_port=$MOQX_ADMIN_PORT endpoint=$MOQX_ENDPOINT insecure=$MOQX_INSECURE"
+  echo "threads=$MOQX_THREADS relay_thread=$MOQX_RELAY_THREAD local_fwd=$MOQX_LOCAL_FWD bpf_steering=$MOQX_BPF_STEERING cache=$MOQX_CACHE"
   echo "cc=$MOQX_CC send_pkts=$MOQX_SEND_PKTS recv_pkts=$MOQX_RECV_PKTS udp_buffer=$MOQX_UDP_BUFFER ignore_path_mtu=$MOQX_IGNORE_PATH_MTU"
   echo "# resolved env"
   echo "GLOG_minloglevel=$GLOG_minloglevel GLOG_v=$GLOG_v"
