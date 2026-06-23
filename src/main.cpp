@@ -27,6 +27,8 @@
 #include <folly/logging/Init.h>
 #include <folly/logging/xlog.h>
 
+#include "LoggingShortcut.h"
+
 #include <iostream>
 #include <string_view>
 
@@ -71,6 +73,10 @@ int main(int argc, char* argv[]) {
       "  serve                Start the relay (default)\n" +
       cfg::configSubcommandUsage() + "\nUsage: moqx [subcommand] --config <path>"
   );
+  // Rewrite `--logging=DBG2` to `--logging=.=DBG2` (and similar bare-level
+  // shortcuts) before folly's gflag parser sees the value. folly requires
+  // <category>=<level>; this layer is moqx-only operator ergonomics.
+  normalizeLoggingArgv(argc, argv);
   folly::Init init(&argc, &argv, true);
 
   std::string_view subcommand = kServeCommand;
