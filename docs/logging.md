@@ -19,10 +19,12 @@ This document covers the config-string grammar, the category hierarchy, the seve
 | Just picoquic, internal events | `moqx … --logging=quic.picoquic=DBG3` |
 | Just mvfst | `moqx … --logging=quic.mvfst=DBG2` |
 | Crank everything (firehose) | `moqx … --logging=DBG4` |
-| Production: log to file, WARN baseline | `moqx … --logging=WARN;default:async=true,sync_level=WARN` |
-| Hot-path tracing without losing throughput | `moqx … --logging=moqx=DBG4;default:async=true,sync_level=WARN` (async on by default already) |
+| Production: log to file, WARN baseline | `moqx … --logging=WARN --log-handler=default:async=true,sync_level=WARN` |
+| Hot-path tracing without losing throughput | `moqx … --logging=moqx=DBG4 --log-handler=default:async=true,sync_level=WARN` (async on by default already) |
 
-A bare level (`DBG4`, `WARN`, `INFO`, …) sets the root category — `--logging=DBG4` is shorthand for the long form `--logging=.=DBG4`. Both work. See [Bare-level shorthand](#bare-level-shorthand) below.
+**Preferred form for setting the root category is the bare level:** `--logging=INFO`, `--logging=DBG4`, `--logging=WARN`. The longer `--logging=.=DBG4` is equivalent and also works.
+
+Use **`--log-handler=…`** for handler-level settings (async/sync_level/file output/etc.). Both `--logging` and `--log-handler` can be passed multiple times — moqx combines them. This is how you avoid having to shell-quote the `;` that folly uses internally between category and handler blocks.
 
 Everything else in this doc is "how the grammar generalizes."
 
@@ -60,13 +62,42 @@ default:option=value,option=value           # handler block
 A clause in the categories block that's just a level token (no `=`) is treated by folly as a root-category set:
 
 ```bash
---logging=DBG2                              # equivalent to --logging=.=DBG2
---logging=WARN                              # equivalent to --logging=.=WARN
---logging=DBG2,moxygen=DBG4                 # bare-level root plus a per-category bump
---logging=WARN;default:async=false          # bare-level root plus handler tweak
+--logging=DBG2                                          # equivalent to --logging=.=DBG2
+--logging=WARN                                          # equivalent to --logging=.=WARN
+--logging=DBG2,moxygen=DBG4                             # bare-level root plus a per-category bump
+--logging=WARN --log-handler=default:async=false        # bare-level root plus handler tweak (see next section)
 ```
 
-This is folly's own behavior — both forms produce identical `LogConfig`. The long form (`.=LEVEL`) is more explicit; the short form reads cleaner for the global-level case. Pick whichever you prefer.
+This is folly's own behavior — both forms produce identical `LogConfig`. The bare-level form is preferred for the common "set the global level" case; the explicit `.=LEVEL` form also works.
+
+### `--logging` and `--log-handler` — two flags, no shell-quoting
+
+folly's config string has a `;` between the categories block and the handler block. `;` is a shell command separator, so passing it in a single `--logging` value would require quoting:
+
+```bash
+moqx --logging='.=INFO;default:async=false'    # need quotes (or backslash) for ;
+```
+
+To avoid that — and to give each kind of setting its own flag — moqx splits these into two:
+
+| Flag | What it accepts | How multiples combine |
+|---|---|---|
+| `--logging` | Category specs: `<category>=<level>` or a bare level (root) | Joined with `,` |
+| `--log-handler` | Handler configs: `default:async=true,sync_level=WARN`, `default=file:...`, etc. | Joined with `;` |
+
+Both can be repeated. moqx combines them into a single composite before folly sees it. No shell-quoting required for either:
+
+```bash
+moqx --logging=INFO                                   # global root level
+moqx --logging=INFO --logging=moxygen=DBG4            # root + per-category
+moqx --logging=INFO --log-handler=default:async=false # root + handler tweak
+moqx --logging=INFO --logging=moxygen=DBG4 \
+     --log-handler=default:async=true,sync_level=WARN # all three
+```
+
+The composite handed to folly for the last line is `INFO,moxygen=DBG4;default:async=true,sync_level=WARN`. You could also write that single form (with quoting), but the multi-flag style reads cleaner.
+
+`--logging` is folly's own flag (handled natively); `--log-handler` is moqx-specific (argv preprocessor before `folly::Init`). Standalone moxygen binaries don't have `--log-handler` and require single-flag-with-quoting for the handler block.
 
 ### Delimiter rules — `;` vs `,`
 
@@ -81,7 +112,7 @@ This is folly's own behavior — both forms produce identical `LogConfig`. The l
 A typical multi-category config:
 
 ```
---logging=.=INFO,moqx=DBG4,moxygen.MoQSession=DBG3,quic.picoquic=DBG1
+--logging=INFO,moqx=DBG4,moxygen.MoQSession=DBG3,quic.picoquic=DBG1
 ```
 
 Reads as: *root level is `INFO`, but the `moqx` tree gets `DBG4`, the specific file `MoQSession` under moxygen gets `DBG3`, and the picoquic QUIC stack gets `DBG1`.*
@@ -126,7 +157,7 @@ folly.*                         Async I/O, EventBase, AsyncSocket      (in progr
 - `--logging=quic.mvfst=DBG2,quic.picoquic=DBG2` — same, more explicit
 - `--logging=quic.picoquic=DBG3,quic.mvfst=WARN` — picoquic verbose, mvfst quiet
 
-**Discovering categories at runtime:** if you're not sure which category a log line came from, run with `--logging=.=DBG0` for a few seconds; folly prepends the category to every line.
+**Discovering categories at runtime:** if you're not sure which category a log line came from, run with `--logging=DBG0` for a few seconds; folly prepends the category to every line.
 
 ## Severity ladder
 
@@ -160,9 +191,9 @@ But on a crash or unclean shutdown, the queue may not flush. To avoid losing cri
 If you want a different tradeoff:
 
 ```
---logging=…;default:sync_level=ERR          # only ERR+ sync, WARN goes async (faster, riskier)
---logging=…;default:sync_level=DBG0         # everything sync (slow, but every line is durable)
---logging=…;default:async=false             # turn async off entirely
+--log-handler=default:sync_level=ERR        # only ERR+ sync, WARN goes async (faster, riskier)
+--log-handler=default:sync_level=DBG0       # everything sync (slow, but every line is durable)
+--log-handler=default:async=false           # turn async off entirely
 ```
 
 ## Practical examples
@@ -196,7 +227,7 @@ Just `MoQSession.cpp` lines. Useful when you're staring at one specific class.
 ### Trace a connection across the whole stack
 
 ```bash
-moqx --config c.yaml --logging=.=DBG2
+moqx --config c.yaml --logging=DBG2
 ```
 
 A single `INFO`-level handshake will now generate a multi-layer trace: fizz handshake → mvfst/picoquic packets → moxygen MoQ frames → moqx routing decision. Every line carries its category, so reading top-to-bottom shows the request flowing down the stack.
@@ -241,7 +272,7 @@ Even if `DBG4` produces 10k+ msgs/sec under load, the relay's request throughput
 ### Quiet down a noisy layer
 
 ```bash
-moqx --config c.yaml --logging=.=INFO,quic=WARN
+moqx --config c.yaml --logging=INFO,quic=WARN
 ```
 
 Useful when you don't care about QUIC chatter but want to keep app-level events. The most-specific category wins, so `quic.mvfst` and `quic.picoquic` inherit `WARN` even though they descend from `.` (which is set to `INFO`).
@@ -251,7 +282,8 @@ Useful when you don't care about QUIC chatter but want to keep app-level events.
 folly logging supports a `file:` handler for output. To redirect all output to a single file:
 
 ```bash
-moqx --config c.yaml --logging='.=INFO;default=file:path=/var/log/moqx.log,async=true,sync_level=WARN'
+moqx --config c.yaml --logging=INFO \
+    --log-handler=default=file:path=/var/log/moqx.log,async=true,sync_level=WARN
 ```
 
 For Docker, prefer logging to stderr and letting the container runtime handle rotation:
@@ -308,7 +340,7 @@ If you have scripts that pass old flags, here's the mapping:
 | `--vmodule "QuicTransportBase=2"` | `--logging=quic.mvfst.QuicTransportBase=DBG2` |
 | `--logtostderr` | (default — folly writes to stderr unless a handler is configured otherwise) |
 | `--log_dir DIR` | use a `file:` handler — see the production example above |
-| `--stderrthreshold 1` | `--logging='.=INFO;default:async=false'` (or per-category sync_level) |
+| `--stderrthreshold 1` | `--logging=INFO --log-handler=default:async=false` (or per-category sync_level) |
 | `--log_backtrace_at FILE:N` | not currently equivalent (file an issue if needed) |
 
 For during-migration scripts, glog flags from layers that haven't migrated yet (proxygen, folly itself) still work — but those layers' output is the only thing affected by them.
@@ -319,7 +351,7 @@ For during-migration scripts, glog flags from layers that haven't migrated yet (
 Check the category exists. Run `--logging=.=DBG0` briefly to see the actual categories being emitted; the name might be `moxygen.foo` or `moqx.foo` rather than just `foo`.
 
 **Output is showing up but is garbled / missing newlines.**
-Async logger lines can interleave with raw `printf` from native libraries that don't go through XLOG (some C deps, currently picoquic-internal until #339 finishes). Adding `--logging='.=INFO;default:async=false'` confirms whether this is the cause.
+Async logger lines can interleave with raw `printf` from native libraries that don't go through XLOG (some C deps, currently picoquic-internal until #339 finishes). Adding `--logging=INFO --log-handler=default:async=false` confirms whether this is the cause.
 
 **I see `INFO`-level connection chatter at very high rates.**
 The convention is that per-request events should be `DBG1`–`DBG2`, not `INFO`. If you spot a layer that's chattering at `INFO`, file a bug — it's a misleveled call site, not intended behavior.

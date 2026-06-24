@@ -27,6 +27,8 @@
 #include <folly/logging/Init.h>
 #include <folly/logging/xlog.h>
 
+#include "LoggingMultiFlag.h"
+
 #include <iostream>
 #include <string_view>
 
@@ -71,6 +73,11 @@ int main(int argc, char* argv[]) {
       "  serve                Start the relay (default)\n" +
       cfg::configSubcommandUsage() + "\nUsage: moqx [subcommand] --config <path>"
   );
+  // gflags treats --logging as a single-value flag (last wins). Combine
+  // any multiple instances into a single composite before folly::Init
+  // sees them — lets operators write `--logging=A --logging=B` instead
+  // of having to shell-quote `--logging='A;B'`.
+  combineLoggingArgs(argc, argv);
   folly::Init init(&argc, &argv, true);
 
   std::string_view subcommand = kServeCommand;
