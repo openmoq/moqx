@@ -161,19 +161,14 @@ folly::coro::Task<StatsSnapshot> StatsRegistry::aggregateAsync() {
   static auto snapshotTask = [](std::shared_ptr<StatsCollectorBase> c
                              ) -> folly::coro::Task<StatsSnapshot> { co_return c->snapshot(); };
 
-  // collectors_ is written only during startup; by the time aggregateAsync()
-  // is called it is effectively read-only.
+  // Lock-free read: collectors_ is fully registered before admin serves, and never compacted.
   std::vector<std::shared_ptr<StatsCollectorBase>> live;
   live.reserve(collectors_.size());
-  size_t write = 0;
-  for (size_t i = 0; i < collectors_.size(); ++i) {
-    auto s = collectors_[i].lock();
-    if (s) { // if collector is alive, keep it and move to next write slot
+  for (const auto& weak : collectors_) {
+    if (auto s = weak.lock()) {
       live.push_back(std::move(s));
-      collectors_[write++] = collectors_[i];
     }
   }
-  collectors_.resize(write);
 
   std::vector<folly::coro::TaskWithExecutor<StatsSnapshot>> tasks;
   tasks.reserve(live.size());
