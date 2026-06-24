@@ -143,18 +143,20 @@ int main(int argc, char* argv[]) {
   admin::registerMetricsRoute(adminServer, statsRegistry);
   admin::registerCachePurgeRoute(adminServer, context);
   admin::registerStateRoute(adminServer, context);
+
+  // === 8. Start serving ===
+  for (auto& server : servers) {
+    // addr ignored — each server binds its own listenerCfg address
+    server->start(folly::SocketAddress{});
+  }
+
+  // Start admin after servers so every stats collector is registered before /metrics can read them.
   if (config.admin) {
     if (!adminServer.start(*config.admin)) {
       XLOG(FATAL) << "Failed to start admin server on " << config.admin->address.describe();
     }
 
     XLOG(INFO) << "Admin server listening on " << config.admin->address.describe();
-  }
-
-  // === 8. Start serving ===
-  for (auto& server : servers) {
-    // addr ignored — each server binds its own listenerCfg address
-    server->start(folly::SocketAddress{});
   }
 
   if (!servers.empty()) {
