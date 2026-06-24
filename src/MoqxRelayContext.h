@@ -20,10 +20,13 @@
 #include <moxygen/MoQSession.h>
 
 #include <folly/Expected.h>
+#include <folly/ThreadLocal.h>
 #include <folly/container/F14Map.h>
 #include <folly/coro/Task.h>
 #include <folly/executors/IOThreadPoolExecutor.h>
 #include <folly/io/async/EventBase.h>
+
+#include <vector>
 
 #include <optional>
 
@@ -106,6 +109,9 @@ public:
   void onNewSession(std::shared_ptr<moxygen::MoQSession> session);
   void onSessionEnd(std::shared_ptr<moxygen::MoQSession> session);
 
+  // Must run after setStatsRegistry and before any listener accepts sessions.
+  void initThreadStatsCollectors(folly::IOThreadPoolExecutor& ioExecutor);
+
   folly::Expected<folly::Unit, moxygen::SessionCloseErrorCode> validateAuthority(
       const moxygen::ClientSetup& clientSetup,
       uint64_t negotiatedVersion,
@@ -123,7 +129,9 @@ private:
   std::string relayID_;
   folly::EventBase* cacheEvb_{nullptr};
   std::shared_ptr<stats::StatsRegistry> statsRegistry_;
-  std::shared_ptr<stats::MoQStatsCollector> statsCollector_;
+  // One collector per io thread; tlStatsCollector_ binds each to its own thread.
+  std::vector<std::shared_ptr<stats::MoQStatsCollector>> statsCollectors_;
+  folly::ThreadLocal<std::shared_ptr<stats::MoQStatsCollector>> tlStatsCollector_;
   folly::EventBase* workerEvb_{nullptr};
 };
 
