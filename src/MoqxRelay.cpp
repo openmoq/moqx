@@ -408,10 +408,16 @@ void MoqxRelay::onPublishDone(const FullTrackName& ftn) {
     namespaceTree_.unpublishTrack(ftn.trackNamespace, ftn.trackName);
   }
 
-  // Clears handle + upstream; erases if no subscribers remain.
-  auto forwarder = registry_.onPublisherTerminated(ftn);
-  if (!forwarder) {
-    XLOG(DBG1) << "Publisher terminated with no subscribers, cleaning up " << ftn;
+  if (mode() == Mode::LocalForwarder) {
+    // The publisher forwarder is [Pub]-owned — never inspect it from relayExec_.
+    // The entry only indexes a live publisher, so drop it outright.
+    registry_.remove(ftn);
+  } else {
+    // Clears handle + upstream; erases if no subscribers remain.
+    auto forwarder = registry_.onPublisherTerminated(ftn);
+    if (!forwarder) {
+      XLOG(DBG1) << "Publisher terminated with no subscribers, cleaning up " << ftn;
+    }
   }
 }
 
