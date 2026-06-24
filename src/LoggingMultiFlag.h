@@ -36,7 +36,8 @@ namespace openmoq::moqx {
  */
 std::string combineLoggingValues(
     const std::vector<folly::StringPiece>& categoryValues,
-    const std::vector<folly::StringPiece>& handlerValues);
+    const std::vector<folly::StringPiece>& handlerValues
+);
 
 /**
  * Walk argv collecting every `--logging` value (categories) and every

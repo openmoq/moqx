@@ -16,8 +16,7 @@ using openmoq::moqx::combineLoggingArgs;
 using openmoq::moqx::combineLoggingValues;
 
 namespace {
-std::vector<folly::StringPiece> pieces(
-    std::initializer_list<folly::StringPiece> ps) {
+std::vector<folly::StringPiece> pieces(std::initializer_list<folly::StringPiece> ps) {
   return {ps.begin(), ps.end()};
 }
 } // namespace
@@ -30,49 +29,53 @@ TEST(CombineLoggingValues, BothEmpty) {
 
 TEST(CombineLoggingValues, OnlyCategories) {
   EXPECT_EQ(".=INFO", combineLoggingValues(pieces({".=INFO"}), {}));
-  EXPECT_EQ(".=INFO,moxygen=DBG4",
-            combineLoggingValues(pieces({".=INFO", "moxygen=DBG4"}), {}));
-  EXPECT_EQ(".=INFO,moxygen=DBG4,quic=WARN",
-            combineLoggingValues(
-                pieces({".=INFO", "moxygen=DBG4", "quic=WARN"}), {}));
+  EXPECT_EQ(".=INFO,moxygen=DBG4", combineLoggingValues(pieces({".=INFO", "moxygen=DBG4"}), {}));
+  EXPECT_EQ(
+      ".=INFO,moxygen=DBG4,quic=WARN",
+      combineLoggingValues(pieces({".=INFO", "moxygen=DBG4", "quic=WARN"}), {})
+  );
 }
 
 TEST(CombineLoggingValues, OnlyHandlers) {
   // Handlers-only produces a leading `;` per folly's grammar
   // (empty categories block, then the handler block).
-  EXPECT_EQ(";default:async=false",
-            combineLoggingValues({}, pieces({"default:async=false"})));
-  EXPECT_EQ(";default:async=true,sync_level=WARN;extra=stuff",
-            combineLoggingValues(
-                {}, pieces({"default:async=true,sync_level=WARN",
-                            "extra=stuff"})));
+  EXPECT_EQ(";default:async=false", combineLoggingValues({}, pieces({"default:async=false"})));
+  EXPECT_EQ(
+      ";default:async=true,sync_level=WARN;extra=stuff",
+      combineLoggingValues({}, pieces({"default:async=true,sync_level=WARN", "extra=stuff"}))
+  );
 }
 
 TEST(CombineLoggingValues, BothPresent) {
-  EXPECT_EQ(".=INFO;default:async=false",
-            combineLoggingValues(
-                pieces({".=INFO"}), pieces({"default:async=false"})));
-  EXPECT_EQ(".=INFO,moxygen=DBG4;default:async=true,sync_level=WARN",
-            combineLoggingValues(
-                pieces({".=INFO", "moxygen=DBG4"}),
-                pieces({"default:async=true,sync_level=WARN"})));
+  EXPECT_EQ(
+      ".=INFO;default:async=false",
+      combineLoggingValues(pieces({".=INFO"}), pieces({"default:async=false"}))
+  );
+  EXPECT_EQ(
+      ".=INFO,moxygen=DBG4;default:async=true,sync_level=WARN",
+      combineLoggingValues(
+          pieces({".=INFO", "moxygen=DBG4"}),
+          pieces({"default:async=true,sync_level=WARN"})
+      )
+  );
 }
 
 TEST(CombineLoggingValues, MultipleHandlersJoinWithSemicolon) {
-  EXPECT_EQ(".=INFO;default:async=false;extra=stuff",
-            combineLoggingValues(
-                pieces({".=INFO"}),
-                pieces({"default:async=false", "extra=stuff"})));
+  EXPECT_EQ(
+      ".=INFO;default:async=false;extra=stuff",
+      combineLoggingValues(pieces({".=INFO"}), pieces({"default:async=false", "extra=stuff"}))
+  );
 }
 
 TEST(CombineLoggingValues, EmptyInputsAreDropped) {
-  EXPECT_EQ(".=INFO,moxygen=DBG4",
-            combineLoggingValues(
-                pieces({".=INFO", "", "moxygen=DBG4"}), {}));
-  EXPECT_EQ(".=INFO;default:async=false",
-            combineLoggingValues(
-                pieces({".=INFO", ""}),
-                pieces({"", "default:async=false"})));
+  EXPECT_EQ(
+      ".=INFO,moxygen=DBG4",
+      combineLoggingValues(pieces({".=INFO", "", "moxygen=DBG4"}), {})
+  );
+  EXPECT_EQ(
+      ".=INFO;default:async=false",
+      combineLoggingValues(pieces({".=INFO", ""}), pieces({"", "default:async=false"}))
+  );
 }
 
 TEST(CombineLoggingValues, OutputIsFollyParseable) {
@@ -85,19 +88,17 @@ TEST(CombineLoggingValues, OutputIsFollyParseable) {
   const std::vector<Case> kCases = {
       {{}, {}},
       {pieces({".=INFO"}), {}},
-      {pieces({"INFO"}), {}},  // bare-level — folly accepts natively
+      {pieces({"INFO"}), {}}, // bare-level — folly accepts natively
       {pieces({".=INFO", "moxygen=DBG4"}), {}},
       {{}, pieces({"default:async=false"})},
       {pieces({".=INFO"}), pieces({"default:async=false"})},
-      {pieces({"WARN"}),
-       pieces({"default:async=true,sync_level=WARN"})},
+      {pieces({"WARN"}), pieces({"default:async=true,sync_level=WARN"})},
       {pieces({".=INFO", "moxygen=DBG4", "quic=WARN"}),
        pieces({"default:async=false", "extra=stuff"})},
   };
   for (const auto& c : kCases) {
     auto combined = combineLoggingValues(c.cats, c.handlers);
-    EXPECT_NO_THROW(folly::parseLogConfig(combined))
-        << "combined='" << combined << "'";
+    EXPECT_NO_THROW(folly::parseLogConfig(combined)) << "combined='" << combined << "'";
   }
 }
 
@@ -165,9 +166,8 @@ TEST(CombineLoggingArgs, MultipleEverythingCombined) {
   char arg4[] = "--log-handler=extra=stuff";
   char* argv[] = {arg0, arg1, arg2, arg3, arg4};
   combineLoggingArgs(5, argv);
-  const char* kExpected =
-      "--logging=.=INFO,moxygen=DBG4;"
-      "default:async=true,sync_level=WARN;extra=stuff";
+  const char* kExpected = "--logging=.=INFO,moxygen=DBG4;"
+                          "default:async=true,sync_level=WARN;extra=stuff";
   EXPECT_STREQ(kExpected, argv[1]);
   EXPECT_STREQ(kExpected, argv[2]);
   EXPECT_STREQ(kExpected, argv[3]);
