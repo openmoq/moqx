@@ -489,7 +489,9 @@ def parse_request_update(cursor, annot, draft, payload_end):
     val, s = cursor.read_varint()
     annot.add(s, cursor.pos, "request_id", str(val))
 
-    if draft >= 14:
+    # d18 §10.9 (Figure 12) removed Existing Request ID from REQUEST_UPDATE;
+    # d14-16 still carry it.
+    if 14 <= draft < 18:
         val, s = cursor.read_varint()
         annot.add(s, cursor.pos, "existing_request_id", str(val))
 
