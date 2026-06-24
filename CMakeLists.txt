@@ -93,6 +93,12 @@ add_compile_definitions(
   "FOLLY_XLOG_STRIP_PREFIXES=\"${CMAKE_SOURCE_DIR}:${CMAKE_BINARY_DIR}\""
 )
 
+# --- catapult (CAT/CWT/MOQT auth implementation) ---
+
+set(ENABLE_LOGGING OFF CACHE BOOL "" FORCE)
+set(CATAPULT_ENABLE_JSON OFF CACHE BOOL "" FORCE)
+add_subdirectory(deps/catapult EXCLUDE_FROM_ALL)
+
 # --- Cache library (forked from moxygen) ---
 
 add_library(moqx_cache STATIC
@@ -127,6 +133,7 @@ add_library(moqx_core STATIC
   src/MoqxRelayContext.cpp
   src/MoqxRelayServer.cpp
   src/MoqxPicoRelayServer.cpp
+  src/MoqxQmuxRelayServer.cpp
   src/ServiceMatcher.cpp
   src/admin/AdminServer.cpp
   src/admin/BuiltinRoutes.cpp
@@ -139,10 +146,12 @@ add_library(moqx_core STATIC
   src/stats/QuicStatsCollector.cpp
   src/stats/EventBaseStatsCollector.cpp
   src/UpstreamProvider.cpp
+  src/relay/AuthFilters.cpp
   src/relay/TopNFilter.cpp
   src/relay/PropertyRanking.cpp
   src/relay/CrossExecFilter.cpp
   src/relay/CrossExecForwarderCallback.cpp
+  src/relay/WeakRelayForwarderCallback.cpp
   src/relay/PublisherCrossExecFilter.cpp
   src/relay/SubscriberCrossExecFilter.cpp
 )
@@ -157,6 +166,8 @@ target_link_libraries(moqx_core PUBLIC
   moxygen::moxygen_relay_moq_forwarder
   moxygen::moxygen_moq_relay_session
   moxygen::moxygen_moq_server
+  moxygen::moxygen_moq_qmux_server
+  moxygen::moxygen_qmux_utils
   moxygen::openmoq_pico_evb_server_transport
   proxygen::proxygenhttpserver
   # Workaround: wangle::wangle_acceptor_acceptor_core uses AsyncFdSocket from
@@ -164,6 +175,7 @@ target_link_libraries(moqx_core PUBLIC
   Folly::folly_io_async_fdsock_async_fd_socket
   moxygen::moxygen_moqclient
   OpenSSL::Crypto
+  catapult
 )
 
 target_compile_options(moqx_core PRIVATE -Wall -Wextra -Wpedantic)

@@ -65,7 +65,7 @@ inline constexpr std::array<moxygen::RequestErrorCode, 8> kRequestErrorCodeValue
     moxygen::RequestErrorCode::UNAUTHORIZED,
     moxygen::RequestErrorCode::TIMEOUT,
     moxygen::RequestErrorCode::NOT_SUPPORTED,
-    moxygen::RequestErrorCode::TRACK_NOT_EXIST,
+    moxygen::RequestErrorCode::DOES_NOT_EXIST,
     moxygen::RequestErrorCode::INVALID_RANGE,
     moxygen::RequestErrorCode::GOING_AWAY,
     moxygen::RequestErrorCode::CANCELLED,

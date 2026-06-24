@@ -34,6 +34,8 @@ TEST_P(MoQRelayTest, ForwardChangedAfterPublisherTermination) {
       });
   auto subgroupRes = publishConsumer->beginSubgroup(0, 0, 0);
   ASSERT_TRUE(subgroupRes.hasValue());
+  driveIfMultiThread(
+  ); // flush beginSubgroup so relay subgroup forwarder is wired before publishDone
 
   // Publisher terminates — onPublishDone clears handle/upstream.
   // forwarder->publishDone sets draining and calls drainSubscriber, but the
@@ -61,6 +63,7 @@ TEST_P(MoQRelayTest, ForwardChangedAfterPublisherTermination) {
 
   removeSession(publisherSession);
   removeSession(subSession);
+  driveIfMultiThread(); // flush pending lambdas (sg->reset, cleanup) before mocks are destroyed
 }
 
 // Bug: when a second subscriber with forward=true joins an existing PUBLISH-path
@@ -137,6 +140,68 @@ TEST_P(MoQRelayTest, Subscribe_SecondForwardingSubscriber_SingleRequestUpdate) {
   for (int i = 0; i < 3; i++) {
     exec_->drive();
   }
+}
+
+// Safety net for the planned attachLocalForwarderToPrimary reshape (and the merge
+// of the two primaryExec sorties): the first-subscriber path that issues an
+// upstream SUBSCRIBE, installs the relay chain, and wires the local/primary
+// forwarder must still deliver objects to the downstream subscriber in all three
+// modes. Data-plane tests only cover the published-track path (doPublish); this
+// covers announce-then-pull, where the relay subscribes upstream and the upstream
+// is the data source.
+TEST_P(MoQRelayTest, FirstSubscriberViaUpstreamSubscribeReceivesData) {
+  auto publisherSession = createMockSession();
+  auto subSession = createMockSession();
+
+  // Publisher announces the namespace but does NOT publish, so the first
+  // subscriber forces the relay to SUBSCRIBE upstream to pull the track.
+  doPublishNamespace(publisherSession, kTestNamespace);
+
+  // Capture the upstream consumer (the relay's writeback into the primary
+  // forwarder) so the test can act as the upstream source and push data.
+  std::shared_ptr<TrackConsumer> upstreamConsumer;
+  SubscribeOk upstreamOk;
+  upstreamOk.requestID = RequestID(1);
+  upstreamOk.trackAlias = TrackAlias(1);
+  upstreamOk.expires = std::chrono::milliseconds(0);
+  upstreamOk.groupOrder = GroupOrder::OldestFirst;
+  EXPECT_CALL(*publisherSession, subscribe(_, _))
+      .WillOnce([&upstreamConsumer,
+                 upstreamOk](const SubscribeRequest&, std::shared_ptr<TrackConsumer> consumer) {
+        upstreamConsumer = std::move(consumer);
+        auto handle = std::make_shared<NiceMock<MockSubscriptionHandle>>(upstreamOk);
+        return folly::coro::makeTask<Publisher::SubscribeResult>(
+            folly::Expected<std::shared_ptr<SubscriptionHandle>, SubscribeError>(handle)
+        );
+      });
+
+  // First subscriber: drives the upstream subscribe + relay-chain wiring.
+  auto consumer = createMockConsumer();
+  auto sg = createMockSubgroupConsumer();
+  std::atomic<bool> gotSubgroup{false};
+  EXPECT_CALL(*consumer, beginSubgroup(0, 0, _, _))
+      .WillOnce([&sg, &gotSubgroup](uint64_t, uint64_t, uint8_t, moxygen::BeginSubgroupOptions) {
+        gotSubgroup.store(true);
+        return folly::makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(sg);
+      });
+
+  auto handle = subscribeToTrack(subSession, kTestTrackName, consumer, RequestID(0));
+  ASSERT_NE(handle, nullptr);
+  ASSERT_NE(upstreamConsumer, nullptr) << "relay should have issued an upstream subscribe";
+
+  // Act as the upstream source: push a subgroup. It must traverse the relay chain
+  // (and, in LocalForwarderMT, the primary->localFwd channel sub) to the downstream.
+  auto sgRes = upstreamConsumer->beginSubgroup(0, 0, 0);
+  ASSERT_TRUE(sgRes.hasValue());
+  EXPECT_TRUE(sgRes.value()->endOfSubgroup().hasValue());
+
+  EXPECT_TRUE(driveUntil([&] { return gotSubgroup.load(); }))
+      << "downstream subscriber should receive the upstream subgroup in mode "
+      << static_cast<int>(relayMode());
+
+  removeSession(publisherSession);
+  removeSession(subSession);
+  driveIfMultiThread();
 }
 
 } // namespace moxygen::test

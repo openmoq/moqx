@@ -562,7 +562,7 @@ TEST(ResolveConfig, MinimalInsecure) {
   EXPECT_EQ(resolved.listeners[0].address.getPort(), 9668);
   EXPECT_TRUE(std::holds_alternative<Insecure>(resolved.listeners[0].tlsMode));
   EXPECT_EQ(resolved.listeners[0].endpoint, "/moq-relay");
-  EXPECT_EQ(resolved.listeners[0].moqtVersions, "");
+  EXPECT_EQ(resolved.listeners[0].moqtVersions, "14,16");
   EXPECT_THAT(result.value().warnings, IsEmpty());
 
   ASSERT_EQ(resolved.services.size(), 1);
@@ -830,7 +830,7 @@ TEST(ResolveConfig, VersionsEmpty) {
   auto cfg = makeMinimalInsecureConfig();
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasValue());
-  EXPECT_EQ(result.value().config.listeners[0].moqtVersions, "");
+  EXPECT_EQ(result.value().config.listeners[0].moqtVersions, "14,16");
 }
 
 TEST(ResolveConfig, VersionsPopulated) {
@@ -1086,12 +1086,29 @@ TEST(ResolveConfig, ThreadsZeroRejected) {
   EXPECT_THAT(result.error(), HasSubstr("threads must be >= 1"));
 }
 
-TEST(ResolveConfig, ThreadsGreaterThanOneRejected) {
+TEST(ResolveConfig, ThreadsGreaterThanOneAccepted) {
   auto cfg = makeMinimalInsecureConfig();
   cfg.threads = std::optional<uint32_t>{2};
   auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  EXPECT_EQ(result.value().config.threads, 2u);
+}
+
+TEST(ResolveConfig, UseRelayThreadFalseWithOneThreadAccepted) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.use_relay_thread = std::optional<bool>{false};
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  EXPECT_FALSE(result.value().config.useRelayThread);
+}
+
+TEST(ResolveConfig, UseRelayThreadFalseWithMultipleThreadsRejected) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.threads = std::optional<uint32_t>{2};
+  cfg.use_relay_thread = std::optional<bool>{false};
+  auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasError());
-  EXPECT_THAT(result.error(), HasSubstr("threads > 1 is not yet supported"));
+  EXPECT_THAT(result.error(), HasSubstr("use_relay_thread must be true when threads > 1"));
 }
 
 // --- multiple listeners tests ---
@@ -1637,6 +1654,7 @@ TEST(ResolveConfig, MvfstDefaultsRoundTrip) {
   EXPECT_TRUE(mvfst.useRecvmmsg);
   EXPECT_EQ(mvfst.maxServerRecvPacketsPerLoop, 64u);
   EXPECT_EQ(mvfst.numGROBuffers, 1u);
+  EXPECT_FALSE(mvfst.canIgnorePathMTU);
   EXPECT_DOUBLE_EQ(mvfst.copa.deltaParam, 0.05);
   EXPECT_FALSE(mvfst.bbr.conservativeRecovery);
   EXPECT_TRUE(mvfst.bbr2.exitStartupOnLoss);
@@ -1757,6 +1775,19 @@ TEST(ResolveConfig, MvfstBatchingModeRoundTrip) {
     auto result = resolveConfig(cfg);
     ASSERT_TRUE(result.hasValue()) << "enable_gso=" << gso;
     EXPECT_EQ(result.value().config.listeners[0].mvfst.enableGSO, gso);
+  }
+}
+
+// ignore_path_mtu toggles canIgnorePathMTU (default false).
+TEST(ResolveConfig, MvfstIgnorePathMtuRoundTrip) {
+  for (bool ignore : {true, false}) {
+    auto cfg = makeMinimalInsecureConfig();
+    ParsedMvfstConfig mvfst;
+    mvfst.ignore_path_mtu = std::optional<bool>{ignore};
+    setListenerMvfst(cfg, std::move(mvfst));
+    auto result = resolveConfig(cfg);
+    ASSERT_TRUE(result.hasValue()) << "ignore_path_mtu=" << ignore;
+    EXPECT_EQ(result.value().config.listeners[0].mvfst.canIgnorePathMTU, ignore);
   }
 }
 

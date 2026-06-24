@@ -20,6 +20,8 @@ BINARY="${1:-$REPO/build/moqx}"
 MOQBIN="${MOQBIN:-$REPO/.scratch/moxygen-install/bin}"
 # shellcheck source=test_ports.sh
 source "$REPO/test/test_ports.sh"
+# shellcheck source=test_versions.sh
+source "$REPO/test/test_versions.sh"
 
 # Parse --save-logs option (may appear anywhere in args)
 SAVE_LOGS=false
@@ -180,6 +182,9 @@ wait_sessions() {
 # ── Configs ────────────────────────────────────────────────────────────────────
 cat >"$UPSTREAM_CFG" <<EOF
 relay_id: "$UPSTREAM_RELAY_ID"
+threads: 2
+use_relay_thread: true
+use_local_forwarders: true
 listeners:
   - name: upstream
     udp:
@@ -189,6 +194,7 @@ listeners:
     tls:
       insecure: true
     endpoint: "/moq-relay"
+    moqt_versions: ${MOQT_TEST_VERSIONS}
 services:
   default:
     match:
@@ -206,6 +212,9 @@ EOF
 
 cat >"$DOWNSTREAM_CFG" <<EOF
 relay_id: "$DOWNSTREAM_RELAY_ID"
+threads: 2
+use_relay_thread: true
+use_local_forwarders: true
 listeners:
   - name: downstream
     udp:
@@ -215,6 +224,7 @@ listeners:
     tls:
       insecure: true
     endpoint: "/moq-relay"
+    moqt_versions: ${MOQT_TEST_VERSIONS}
 services:
   default:
     match:

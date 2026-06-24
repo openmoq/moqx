@@ -16,7 +16,16 @@ void TestMoQExecutor::add(folly::Func func) {
   MoQFollyExecutorImpl::add(std::move(func));
 }
 void TestMoQExecutor::drive() {
-  if (auto* evb = getBackingEventBase()) {
+  auto* evb = getBackingEventBase();
+  if (!evb) {
+    return;
+  }
+  evb->loopOnce();
+  if (relayEvb_) {
+    // flush our pending task to relay
+    relayEvb_->runInEventBaseThreadAndWait([]() {});
+    // now flush any tasks created by our task
+    relayEvb_->runInEventBaseThreadAndWait([]() {});
     evb->loopOnce();
   }
 }
@@ -28,16 +37,53 @@ void TestMoQExecutor::driveFor(int n) {
 
 void MoQRelayTest::SetUp() {
   exec_ = std::make_shared<TestMoQExecutor>();
-  relay_ = std::make_shared<MoqxRelay>(config::CacheConfig{.maxCachedTracks = 0});
+  if (relayMode() == RelayMode::MultiThread || relayMode() == RelayMode::LocalForwarderMT) {
+    relayThread_ = std::make_unique<folly::ScopedEventBaseThread>("relay-test");
+    relayEvb_ = relayThread_->getEventBase();
+    exec_->setRelayEvb(relayEvb_);
+  }
+  resetRelay(config::CacheConfig{.maxCachedTracks = 0});
   relay_->setAllowedNamespacePrefix(kAllowedPrefix);
+  if (relayMode() == RelayMode::MultiThread || relayMode() == RelayMode::LocalForwarderMT) {
+    ASSERT_NE(relay_->getRelayExec(), nullptr);
+  }
 }
 
-void MoQRelayTest::resetRelay(std::shared_ptr<MoqxRelay> relay) {
-  relay_ = std::move(relay);
+void MoQRelayTest::resetRelay(config::CacheConfig cache, const std::string& relayID) {
+  std::shared_ptr<folly::Executor> relayExec;
+  if (relayEvb_) {
+    relayExec = std::make_shared<moxygen::MoQFollyExecutorImpl>(relayEvb_);
+  }
+  bool useLocalForwarders = relayEvb_ && relayMode() == RelayMode::LocalForwarderMT;
+  relay_ = std::make_shared<MoqxRelay>(
+      std::move(cache),
+      relayID,
+      std::move(relayExec),
+      useLocalForwarders
+  );
+  if (relayEvb_) {
+    if (relayMode() == RelayMode::LocalForwarderMT) {
+      publisherInterface_ = relay_->createPublisherFilter();
+      subscriberInterface_ = relay_->createSubscriberFilter();
+    } else {
+      publisherInterface_ = std::make_shared<PublisherCrossExecFilter>(relayEvb_, relay_);
+      subscriberInterface_ = std::make_shared<SubscriberCrossExecFilter>(relayEvb_, relay_);
+    }
+  }
 }
 
 void MoQRelayTest::TearDown() {
+  // Drain any pending relay exec tasks (e.g., async publishNamespaceDone dispatches
+  // from cleanup) before destroying relay state to avoid use-after-free on NamespaceTree.
+  if (relayEvb_) {
+    relayEvb_->runInEventBaseThreadAndWait([]() {});
+    relayEvb_->runInEventBaseThreadAndWait([]() {});
+  }
+  exec_->setRelayEvb(nullptr);
+  publisherInterface_.reset();
+  subscriberInterface_.reset();
   relay_.reset();
+  relayThread_.reset();
 }
 
 std::shared_ptr<MockMoQSession> MoQRelayTest::createMockSession() {
@@ -195,6 +241,7 @@ std::shared_ptr<TrackConsumer> MoQRelayTest::doPublish(
       }
       co_withExecutor(static_cast<folly::DrivableExecutor*>(exec_.get()), std::move(res->reply))
           .start();
+      driveIfMultiThread(); // flush reply to relay exec so publish state is ready
       return res->consumer;
     }
     return std::shared_ptr<TrackConsumer>(nullptr);
@@ -204,12 +251,16 @@ std::shared_ptr<TrackConsumer> MoQRelayTest::doPublish(
 std::shared_ptr<Publisher::SubscribeNamespaceHandle> MoQRelayTest::doSubscribeNamespace(
     std::shared_ptr<MoQSession> session,
     const TrackNamespace& nsPrefix,
-    bool addToState
+    bool addToState,
+    std::shared_ptr<Publisher::NamespacePublishHandle> namespacePublishHandle
 ) {
   SubscribeNamespace subNs;
   subNs.trackNamespacePrefix = nsPrefix;
   return withSessionContext(session, [&]() {
-    auto task = publisherInterface()->subscribeNamespace(std::move(subNs), nullptr);
+    auto task = publisherInterface()->subscribeNamespace(
+        std::move(subNs),
+        std::move(namespacePublishHandle)
+    );
     auto res = folly::coro::blockingWait(std::move(task), exec_.get());
     EXPECT_TRUE(res.hasValue());
     if (res.hasValue()) {
@@ -255,6 +306,7 @@ std::shared_ptr<TrackConsumer> MoQRelayTest::doPublishWithHandle(
     getOrCreateMockState(session)->publishConsumers.push_back(consumer);
     co_withExecutor(static_cast<folly::DrivableExecutor*>(exec_.get()), std::move(res->reply))
         .start();
+    driveIfMultiThread(); // flush reply to relay exec so publish state is ready
     return consumer;
   });
 }

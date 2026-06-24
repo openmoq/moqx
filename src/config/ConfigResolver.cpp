@@ -20,15 +20,31 @@ namespace {
 
 constexpr const char* kStackMvfst = "mvfst";
 constexpr const char* kStackPicoquic = "picoquic";
+// Named proxygen_qmux (not bare "qmux") so a second qmux impl can be added later.
+constexpr const char* kStackProxygenQmux = "proxygen_qmux";
+
+QuicStack parseQuicStack(const std::string& stackStr) {
+  if (stackStr == kStackPicoquic) {
+    return QuicStack::Picoquic;
+  }
+  if (stackStr == kStackProxygenQmux) {
+    return QuicStack::ProxygenQmux;
+  }
+  return QuicStack::Mvfst;
+}
 
 // Format a label for error messages: "Service 'name' match[j]"
 std::string matchRuleErrorLabel(const std::string& name, size_t j) {
   return "Service '" + name + "' match[" + std::to_string(j) + "]";
 }
 
+// Default versions when moqt_versions is unset. Excludes draft-18 (in moxygen's
+// kSupportedVersions but not yet interoperable); configure moqt_versions to opt in.
+constexpr const char* kDefaultMoqtVersions = "14,16";
+
 std::string moqtVersionsToString(const ParsedListenerConfig& listener) {
   if (!listener.moqt_versions.value().has_value() || listener.moqt_versions.value()->empty()) {
-    return "";
+    return kDefaultMoqtVersions;
   }
   return folly::join(',', *listener.moqt_versions.value());
 }
@@ -172,10 +188,11 @@ void validateListener(
 
   // quic_stack validation
   const auto& stackOpt = listener.quic_stack.value();
-  if (stackOpt.has_value() && *stackOpt != kStackMvfst && *stackOpt != kStackPicoquic) {
+  if (stackOpt.has_value() && *stackOpt != kStackMvfst && *stackOpt != kStackPicoquic &&
+      *stackOpt != kStackProxygenQmux) {
     errors.push_back(
         "Listener '" + listener.name.value() + "': unknown quic_stack '" + *stackOpt +
-        "' (expected \"mvfst\" or \"picoquic\")"
+        "' (expected \"mvfst\", \"picoquic\", or \"proxygen_qmux\")"
     );
   }
   if (stackOpt.value_or(kStackMvfst) == kStackPicoquic && listener.tls.value().insecure.value()) {
@@ -527,6 +544,8 @@ void applyMvfstOverride(MvfstConfig& base, const ParsedMvfstConfig& overlay) {
     base.maxServerRecvPacketsPerLoop = *v;
   if (auto v = overlay.num_gro_buffers.value())
     base.numGROBuffers = *v;
+  if (auto v = overlay.ignore_path_mtu.value())
+    base.canIgnorePathMTU = *v;
   if (const auto& b = overlay.bbr.value()) {
     if (auto v = b->conservative_recovery.value())
       base.bbr.conservativeRecovery = *v;
@@ -631,6 +650,10 @@ void validateQuicConfig(
         context + " quic: max_ack_delay_us (" + std::to_string(quic.maxAckDelayUs) +
         ") must be >= min_ack_delay_us (" + std::to_string(quic.minAckDelayUs) + ")"
     );
+  }
+  // qmux runs over TCP, so QUIC congestion-control selection does not apply.
+  if (stack == QuicStack::ProxygenQmux) {
+    return;
   }
   // (excluded: mvfst "custom"/"staticcwnd" require programmatic setup)
   static const std::unordered_set<std::string> kPicoCcAlgos =
@@ -743,7 +766,7 @@ ListenerConfig resolveListener(
   }
 
   const auto& stackStr = listener.quic_stack.value().value_or(kStackMvfst);
-  auto quicStack = (stackStr == kStackPicoquic) ? QuicStack::Picoquic : QuicStack::Mvfst;
+  auto quicStack = parseQuicStack(stackStr);
 
   return ListenerConfig{
       .name = listener.name.value(),
@@ -837,24 +860,28 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
       }
       auto quic = mergeQuicConfig(quicDefaults, listener.quic.value());
       const auto stackStr = listener.quic_stack.value().value_or(kStackMvfst);
-      const auto stack = (stackStr == kStackPicoquic) ? QuicStack::Picoquic : QuicStack::Mvfst;
+      const auto stack = parseQuicStack(stackStr);
       validateQuicConfig(quic, stack, "Listener '" + listener.name.value() + "'", errors, warnings);
       mergedQuicConfigs.push_back(quic);
       mergedMvfstConfigs.push_back(mergeMvfstConfig(mvfstDefaults, listener.mvfst.value()));
-      validateMvfstConfig(
-          mergedMvfstConfigs.back(),
-          "Listener '" + listener.name.value() + "'",
-          errors,
-          warnings
-      );
-      if (!mergedMvfstConfigs.back().pacingEnabled) {
-        const auto& cc = quic.ccAlgo;
-        if (cc == "bbr" || cc == "bbr2" || cc == "bbr2modular") {
-          errors.push_back(
-              "Listener '" + listener.name.value() +
-              "': mvfst: pacing_enabled: false is incompatible with cc_algo '" + cc +
-              "' (bbr, bbr2, and bbr2modular require pacing)"
-          );
+      // mvfst tunables don't apply to picoquic (PicoTransportConfig) or qmux
+      // (TCP); validating them on those stacks only yields spurious errors.
+      if (stack == QuicStack::Mvfst) {
+        validateMvfstConfig(
+            mergedMvfstConfigs.back(),
+            "Listener '" + listener.name.value() + "'",
+            errors,
+            warnings
+        );
+        if (!mergedMvfstConfigs.back().pacingEnabled) {
+          const auto& cc = quic.ccAlgo;
+          if (cc == "bbr" || cc == "bbr2" || cc == "bbr2modular") {
+            errors.push_back(
+                "Listener '" + listener.name.value() +
+                "': mvfst: pacing_enabled: false is incompatible with cc_algo '" + cc +
+                "' (bbr, bbr2, and bbr2modular require pacing)"
+            );
+          }
         }
       }
     }
@@ -896,8 +923,16 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
   const uint32_t threads = config.threads.value().value_or(1);
   if (threads == 0) {
     errors.push_back("threads must be >= 1");
-  } else if (threads > 1) {
-    errors.push_back("threads > 1 is not yet supported");
+  }
+
+  const bool useRelayThread = config.use_relay_thread.value().value_or(true);
+  if (threads > 1 && !useRelayThread) {
+    errors.push_back("use_relay_thread must be true when threads > 1");
+  }
+
+  const bool useLocalForwarders = config.use_local_forwarders.value().value_or(false);
+  if (useLocalForwarders && !useRelayThread) {
+    errors.push_back("use_local_forwarders requires use_relay_thread to be true");
   }
 
   const bool mvfstBpfSteering = config.mvfst_bpf_steering.value().value_or(true);
@@ -951,6 +986,8 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
               .admin = std::move(adminConfig),
               .relayID = std::move(relayID),
               .threads = threads,
+              .useRelayThread = useRelayThread,
+              .useLocalForwarders = useLocalForwarders,
               .mvfstBpfSteering = mvfstBpfSteering,
           },
       .warnings = std::move(warnings),

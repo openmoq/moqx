@@ -8,6 +8,8 @@
 
 set -euo pipefail
 
+source "$(dirname "$0")/test_versions.sh"
+
 if [[ $# -lt 2 ]]; then
   echo "Usage: $0 <listen_port> <admin_port> [--cert <file> --key <file>]" >&2
   exit 1
@@ -37,6 +39,7 @@ listeners:
     tls:
       insecure: true
     endpoint: "/moq-relay"
+    moqt_versions: ${MOQT_TEST_VERSIONS}
 services:
   default:
     match:

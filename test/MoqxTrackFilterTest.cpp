@@ -38,7 +38,8 @@ protected:
     relay_ = std::make_shared<MoqxRelay>(
         config::CacheConfig{0, 0}, // no cache
         /*relayID=*/"",
-        config::AuthConfig{},
+        /*relayExec=*/nullptr,
+        /*useLocalForwarders=*/false,
         /*maxDeselected=*/0
     );
     relay_->setAllowedNamespacePrefix(kPrefix);
@@ -527,7 +528,8 @@ TEST_F(MoqxTrackFilterTest, FirstObjectCycle_DoesNotEvictSelectedTracksBeforeFir
   relay_ = std::make_shared<MoqxRelay>(
       config::CacheConfig{0, 0},
       /*relayID=*/"",
-      config::AuthConfig{},
+      /*relayExec=*/nullptr,
+      /*useLocalForwarders=*/false,
       /*maxDeselected=*/0,
       /*idleTimeout=*/std::chrono::seconds(10),
       /*activityThreshold=*/std::chrono::milliseconds(1)
@@ -742,7 +744,8 @@ TEST_F(MoqxTrackFilterTest, DeselectedQueueEviction_EvictsOldestEntry) {
   relay_ = std::make_shared<MoqxRelay>(
       config::CacheConfig{0, 0}, // no cache
       /*relayID=*/"",
-      config::AuthConfig{},
+      /*relayExec=*/nullptr,
+      /*useLocalForwarders=*/false,
       /*maxDeselected=*/2
   );
   relay_->setAllowedNamespacePrefix(kPrefix);
@@ -832,7 +835,8 @@ TEST_F(MoqxTrackFilterTest, IdleEviction_SilentTrackReplacedByActiveOutsider) {
   relay_ = std::make_shared<MoqxRelay>(
       config::CacheConfig{0, 0}, // no cache
       /*relayID=*/"",
-      config::AuthConfig{},
+      /*relayExec=*/nullptr,
+      /*useLocalForwarders=*/false,
       /*maxDeselected=*/5,
       /*idleTimeout=*/std::chrono::milliseconds(10),
       /*activityThreshold=*/std::chrono::milliseconds(1)

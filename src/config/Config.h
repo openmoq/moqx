@@ -39,7 +39,8 @@ struct CacheConfig {
       defaultMaxCacheDuration; // nullopt = use maxCacheDuration; 0ms = opt-in only
 };
 
-enum class QuicStack { Mvfst, Picoquic };
+// ProxygenQmux carries MoQ over QMUX-on-TCP + Fizz TLS, not QUIC/UDP.
+enum class QuicStack { Mvfst, Picoquic, ProxygenQmux };
 
 struct QuicConfig {
   // Flow control
@@ -83,6 +84,9 @@ struct MvfstConfig {
   uint16_t maxServerRecvPacketsPerLoop{64};
   // Number of UDP GRO buffers. 1 = disabled. > 1 enables kernel GRO coalescing.
   uint32_t numGROBuffers{1};
+  // Ignore the peer's path MTU and send full-size (max UDP payload) packets.
+  // Useful for testing / controlled networks; off by default to respect PMTU.
+  bool canIgnorePathMTU{false};
 
   // BBR (BBR1) congestion control tunables.
   // conservativeRecovery is shared with BBR2.
@@ -215,6 +219,8 @@ struct Config {
   std::optional<AdminConfig> admin;
   std::string relayID; // always set: from config or randomly generated
   uint32_t threads{1};
+  bool useRelayThread{true};
+  bool useLocalForwarders{false};
   bool mvfstBpfSteering{true};
 };
 

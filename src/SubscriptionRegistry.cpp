@@ -13,7 +13,8 @@ namespace openmoq::moqx {
 bool SubscriptionRegistry::UpstreamSubscribePending::complete(
     std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle,
     moxygen::RequestID requestID,
-    std::shared_ptr<moxygen::MoQSession> upstreamSession
+    std::shared_ptr<moxygen::MoQSession> upstreamSession,
+    std::shared_ptr<moxygen::Publisher> publisher
 ) {
   active_ = false;
   return registry_->completeSubscription(
@@ -21,7 +22,8 @@ bool SubscriptionRegistry::UpstreamSubscribePending::complete(
       weakForwarder_,
       std::move(handle),
       requestID,
-      std::move(upstreamSession)
+      std::move(upstreamSession),
+      std::move(publisher)
   );
 }
 
@@ -85,7 +87,8 @@ bool SubscriptionRegistry::completeSubscription(
     std::weak_ptr<moxygen::MoQForwarder> weakForwarder,
     std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle,
     moxygen::RequestID requestID,
-    std::shared_ptr<moxygen::MoQSession> upstreamSession
+    std::shared_ptr<moxygen::MoQSession> upstreamSession,
+    std::shared_ptr<moxygen::Publisher> publisher
 ) {
   auto it = subscriptions_.find(ftn);
   if (it == subscriptions_.end() || it->second.forwarder != weakForwarder.lock()) {
@@ -95,6 +98,7 @@ bool SubscriptionRegistry::completeSubscription(
   rsub.handle = std::move(handle);
   rsub.requestID = requestID;
   rsub.upstream = std::move(upstreamSession);
+  rsub.publisher = std::move(publisher);
   rsub.promise.setValue(folly::unit);
   return true;
 }
@@ -114,6 +118,7 @@ SubscriptionRegistry::PublishEntry SubscriptionRegistry::createFromPublish(
     const moxygen::FullTrackName& ftn,
     std::shared_ptr<moxygen::MoQForwarder> forwarder,
     std::shared_ptr<moxygen::MoQSession> session,
+    std::shared_ptr<moxygen::Publisher> publisher,
     moxygen::RequestID requestID,
     std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle,
     folly::FunctionRef<FilterChainResult(std::shared_ptr<moxygen::MoQForwarder>)> chainBuilder
@@ -124,7 +129,9 @@ SubscriptionRegistry::PublishEntry SubscriptionRegistry::createFromPublish(
   // publishDone → onEmpty may fire during the erase.
   auto it = subscriptions_.find(ftn);
   if (it != subscriptions_.end()) {
-    evicted = Evicted{std::move(it->second.forwarder), std::move(it->second.handle)};
+    auto* oldPublisherExec = it->second.upstream ? it->second.upstream->getExecutor() : nullptr;
+    evicted =
+        Evicted{std::move(it->second.forwarder), std::move(it->second.handle), oldPublisherExec};
     subscriptions_.erase(it);
   }
 
@@ -137,6 +144,7 @@ SubscriptionRegistry::PublishEntry SubscriptionRegistry::createFromPublish(
   rsub.promise.setValue(folly::unit);
   rsub.requestID = requestID;
   rsub.handle = std::move(handle);
+  rsub.publisher = std::move(publisher);
   rsub.isPublish = true;
 
   auto [consumer, topNFilter] = chainBuilder(forwarder);
@@ -174,9 +182,10 @@ SubscriptionRegistry::getUpstreamView(const moxygen::FullTrackName& ftn) const {
   const auto& rsub = it->second;
   return UpstreamView{
       rsub.forwarder,
-      rsub.upstream,
+      rsub.publisher,
       rsub.handle,
       rsub.requestID,
+      rsub.upstream ? rsub.upstream->getExecutor() : nullptr,
       rsub.isPublish,
       rsub.promise.isFulfilled()
   };
@@ -189,7 +198,7 @@ SubscriptionRegistry::getFetchView(const moxygen::FullTrackName& ftn) const {
     return std::nullopt;
   }
   const auto& rsub = it->second;
-  return FetchView{rsub.forwarder, rsub.upstream, rsub.requestID, rsub.promise.isFulfilled()};
+  return FetchView{rsub.forwarder, rsub.publisher, rsub.requestID, rsub.promise.isFulfilled()};
 }
 
 std::shared_ptr<moxygen::MoQForwarder>
@@ -201,6 +210,7 @@ SubscriptionRegistry::onPublisherTerminated(const moxygen::FullTrackName& ftn) {
   auto& rsub = it->second;
   rsub.handle.reset();
   rsub.upstream.reset();
+  rsub.publisher.reset();
   if (rsub.forwarder->empty()) {
     subscriptions_.erase(it);
     return nullptr;

@@ -26,6 +26,8 @@ BINARY="${1:-$REPO/build/moqx}"
 MOQBIN="${MOQBIN:-$REPO/.scratch/moxygen-install/bin}"
 # shellcheck source=test_ports.sh
 source "$REPO/test/test_ports.sh"
+# shellcheck source=test_versions.sh
+source "$REPO/test/test_versions.sh"
 DATESERVER="$MOQBIN/moqdateserver"
 TEXTCLIENT="$MOQBIN/moqtextclient"
 
@@ -129,6 +131,7 @@ listeners:
     tls:
       insecure: true
     endpoint: "/moq-relay"
+    moqt_versions: ${MOQT_TEST_VERSIONS}
 services:
   default:
     match:

@@ -5,11 +5,16 @@
  */
 
 #include "MoqxRelayContext.h"
+#include "relay/AuthFilters.h"
+#include "relay/PublisherCrossExecFilter.h"
+#include "relay/RelayExecUtil.h"
+#include "relay/SubscriberCrossExecFilter.h"
 #include "stats/MoQStatsCollector.h"
 #include <moxygen/events/MoQFollyExecutorImpl.h>
 #include <moxygen/util/InsecureVerifierDangerousDoNotUseInProduction.h>
 
 #include <folly/coro/Task.h>
+#include <folly/executors/thread_factory/NamedThreadFactory.h>
 #include <folly/logging/xlog.h>
 
 using namespace moxygen;
@@ -18,14 +23,46 @@ namespace openmoq::moqx {
 
 MoqxRelayContext::MoqxRelayContext(
     const folly::F14FastMap<std::string, config::ServiceConfig>& services,
-    const std::string& relayID
+    const std::string& relayID,
+    bool useRelayThread,
+    bool useLocalForwarders
 )
     : serviceMatcher_(services), relayID_(relayID) {
-  for (const auto& [name, svc] : services) {
-    services_.emplace(
-        name,
-        ServiceEntry{svc, std::make_shared<MoqxRelay>(svc.cache, relayID, svc.auth)}
+  if (useRelayThread && !services.empty()) {
+    relayThreadPool_ = std::make_unique<folly::IOThreadPoolExecutor>(
+        services.size(),
+        std::make_shared<folly::NamedThreadFactory>("moqx-relay")
     );
+    auto evbs = relayThreadPool_->getAllEventBases();
+    XCHECK_EQ(evbs.size(), services.size());
+    size_t i = 0;
+    for (const auto& [name, svc] : services) {
+      auto relay = std::make_shared<MoqxRelay>(
+          svc.cache,
+          relayID,
+          std::make_shared<moxygen::MoQFollyExecutorImpl>(evbs[i++].get()),
+          useLocalForwarders
+      );
+      services_.emplace(
+          name,
+          ServiceEntry{
+              svc,
+              std::move(relay),
+              std::make_shared<const auth::AuthTokenVerifier>(svc.auth)
+          }
+      );
+    }
+  } else {
+    for (const auto& [name, svc] : services) {
+      services_.emplace(
+          name,
+          ServiceEntry{
+              svc,
+              std::make_shared<MoqxRelay>(svc.cache, relayID),
+              std::make_shared<const auth::AuthTokenVerifier>(svc.auth)
+          }
+      );
+    }
   }
 }
 
@@ -56,10 +93,7 @@ void MoqxRelayContext::initUpstreams(folly::EventBase* workerEvb) {
   CHECK(workerEvb) << "initUpstreams: workerEvb must not be null";
   workerEvb_ = workerEvb;
 
-  // Use the provided worker EVB for all upstream connections.
-  // Per-EVB providers (one per worker thread) are a follow-up.
-  auto exec = std::make_shared<MoQFollyExecutorImpl>(workerEvb);
-
+  auto workerExec = std::make_shared<moxygen::MoQFollyExecutorImpl>(workerEvb);
   for (auto& [name, entry] : services_) {
     if (!entry.config.upstream) {
       continue;
@@ -67,15 +101,29 @@ void MoqxRelayContext::initUpstreams(folly::EventBase* workerEvb) {
     const auto& cfg = *entry.config.upstream;
     auto verifier = makeUpstreamVerifier(cfg.tls);
     auto relay = entry.relay;
-    auto onConnect = [relay](std::shared_ptr<MoQSession> session) -> folly::coro::Task<void> {
-      co_await relay->onUpstreamConnect(session);
+    auto* relayExec = relay->getRelayExec();
+    auto onConnect = [relay,
+                      relayExec](std::shared_ptr<MoQSession> session) -> folly::coro::Task<void> {
+      if (relayExec) {
+        co_return co_await folly::coro::co_withExecutor(
+            folly::getKeepAliveToken(relayExec),
+            relay->onUpstreamConnect(session)
+        );
+      }
+      co_return co_await relay->onUpstreamConnect(session);
     };
-    auto onDisconnect = [relay]() { relay->onUpstreamDisconnect(); };
+    auto onDisconnect = [relay, relayExec]() {
+      runOnExec(relayExec, [relay]() { relay->onUpstreamDisconnect(); });
+    };
+    // Mode-aware filters (as inbound sessions): LF mode needs LocalPublishFilter for upstream
+    // PUBLISH.
+    std::shared_ptr<moxygen::Publisher> pubHandler = relay->createPublisherFilter();
+    std::shared_ptr<moxygen::Subscriber> subHandler = relay->createSubscriberFilter();
     auto provider = std::make_shared<UpstreamProvider>(
-        exec,
+        workerExec,
         proxygen::URL(cfg.url),
-        /*publishHandler=*/entry.relay,
-        /*subscribeHandler=*/entry.relay,
+        /*publishHandler=*/pubHandler,
+        /*subscribeHandler=*/subHandler,
         verifier,
         std::move(onConnect),
         std::move(onDisconnect),
@@ -87,7 +135,7 @@ void MoqxRelayContext::initUpstreams(folly::EventBase* workerEvb) {
     // Eagerly connect so the peering handshake fires before any subscribers
     // arrive. The connection is lazy in UpstreamProvider but we kick it off
     // now so the upstream namespace tree is ready.
-    co_withExecutor(workerEvb, provider->start()).start();
+    co_withExecutor(workerExec.get(), provider->start()).start();
   }
 }
 
@@ -141,13 +189,12 @@ void MoqxRelayContext::onNewSession(std::shared_ptr<MoQSession> clientSession) {
   }
 }
 
-void MoqxRelayContext::onSessionEnd(std::shared_ptr<MoQSession> session) {
+void MoqxRelayContext::onSessionEnd(std::shared_ptr<MoQSession> /*session*/) {
   if (statsCollector_) {
     statsCollector_->onSessionEnd();
   }
-  for (auto& [name, entry] : services_) {
-    entry.relay->removeSessionAuth(session.get());
-  }
+  // Per-session auth state lives on the session's AuthFilter and is released
+  // when the session drops it; no relay-side cleanup needed.
 }
 
 folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayContext::validateAuthority(
@@ -164,14 +211,17 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayContext::validateAu
     return folly::makeUnexpected(SessionCloseErrorCode::INVALID_AUTHORITY);
   }
 
-  // Route: set per-service relay as handler
+  // Route: verify the setup token, then install the session's filter handlers.
+  // createPublisher/SubscriberFilter wraps the relay in cross-exec filters when
+  // the service runs on a dedicated relay thread.
   auto it = services_.find(*matchedName);
   CHECK(it != services_.end()) << "Service '" << *matchedName << "' matched but no entry found";
-  auto authRes = it->second.relay->authenticateSession(clientSetup, session);
-  if (authRes.hasError()) {
+  auto& entry = it->second;
+  auto grants = auth::authenticateSetup(*entry.verifier, clientSetup.params);
+  if (grants.hasError()) {
     XLOG(ERR) << "Authorization failed for authority=" << authority << " path=" << path
-              << " reason=" << auth::toString(authRes.error());
-    switch (authRes.error()) {
+              << " reason=" << auth::toString(grants.error());
+    switch (grants.error()) {
     case auth::AuthError::Expired:
       return folly::makeUnexpected(SessionCloseErrorCode::EXPIRED_AUTH_TOKEN);
     case auth::AuthError::Malformed:
@@ -184,8 +234,21 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayContext::validateAu
     }
     return folly::makeUnexpected(SessionCloseErrorCode::UNAUTHORIZED);
   }
-  session->setPublishHandler(it->second.relay);
-  session->setSubscribeHandler(it->second.relay);
+  // Wrap the relay's handlers in auth filters when grants are present (auth on);
+  // a null grants pointer means auth is disabled, so install the relay directly.
+  std::shared_ptr<Publisher> pub = entry.relay->createPublisherFilter();
+  std::shared_ptr<Subscriber> sub = entry.relay->createSubscriberFilter();
+  if (grants.value()) {
+    pub = std::make_shared<AuthPublisherFilter>(
+        std::move(pub),
+        entry.verifier,
+        grants.value(),
+        !relayID_.empty()
+    );
+    sub = std::make_shared<AuthSubscriberFilter>(std::move(sub), entry.verifier, grants.value());
+  }
+  session->setPublishHandler(std::move(pub));
+  session->setSubscribeHandler(std::move(sub));
   return folly::unit;
 }
 

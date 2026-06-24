@@ -9,13 +9,16 @@
 #include "config/Config.h"
 
 #include <folly/Expected.h>
+#include <folly/Unit.h>
 #include <moxygen/MoQTypes.h>
 
 #include <chrono>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace openmoq::moqx::auth {
@@ -69,15 +72,23 @@ public:
 
   folly::Expected<Grants, AuthError> verify(const moxygen::AuthToken& token) const;
 
-  // Builds the internal v1 token envelope. Test/tooling helper only -- the relay
-  // verifies tokens but never issues them; this lives alongside verify() so the
-  // two stay in sync on the envelope layout:
-  // 0x01 | key-id-len:u8 | key-id | claims-len:u32be | CBOR claims | HMAC-SHA256.
+  // Test/local issuer helper for Catapult CWT tokens signed with the configured HMAC key.
   static std::string
-  signForTest(std::string_view keyID, std::string_view secret, std::string_view cborClaims);
+  signForTest(std::string_view keyID, std::string_view secret, const Grants& grants);
 
 private:
+  // HMAC key material derived once at construction. keyIdIndex_ maps each
+  // configured key's id to its index in derivedKeys_, enabling O(1) key
+  // selection when a token carries a kid header. Tokens without a kid fall
+  // back to trial-verification over the full derivedKeys_ list.
+  struct DerivedKey {
+    std::string id;
+    std::vector<uint8_t> key;
+  };
+
   config::AuthConfig config_;
+  std::vector<DerivedKey> derivedKeys_;
+  std::unordered_map<std::string, std::size_t> keyIdIndex_;
 };
 
 std::optional<moxygen::AuthToken>
@@ -100,5 +111,21 @@ bool allows(
 );
 
 const char* toString(AuthError error);
+
+// Verifies the setup AUTHORIZATION_TOKEN. Returns null grants when auth is
+// disabled; shared grants (possibly empty) to gate the session otherwise.
+folly::Expected<std::shared_ptr<const Grants>, AuthError>
+authenticateSetup(const AuthTokenVerifier& verifier, const moxygen::Parameters& setupParams);
+
+// Authorizes a request against session grants, or a per-request token when
+// allow_request_token_override is set. Returns Unit when permitted.
+folly::Expected<folly::Unit, AuthError> authorize(
+    const AuthTokenVerifier& verifier,
+    Action action,
+    const moxygen::Parameters& params,
+    const moxygen::TrackNamespace& ns,
+    const Grants& sessionGrants,
+    std::optional<std::string_view> trackName = std::nullopt
+);
 
 } // namespace openmoq::moqx::auth

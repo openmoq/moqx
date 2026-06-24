@@ -67,7 +67,7 @@ TEST_P(MoQRelayTest, NamespaceBridgeHandleForwardsDoneMsg) {
 // path for draft-16 is synchronous: namespacePublishHandle->namespaceMsg().
 TEST_P(MoQRelayTest, PeerNamespaceNotEchoedBackOnReconnect) {
   // Relay must have a relayID for peer detection to activate.
-  resetRelay(std::make_shared<MoqxRelay>(config::CacheConfig{.maxCachedTracks = 0}, "sg-sin-2-1"));
+  resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "sg-sin-2-1");
   relay_->setAllowedNamespacePrefix(kAllowedPrefix);
 
   // Step 1: session1 is the peer's old (unreaped) connection.  Inject NS as
@@ -108,7 +108,7 @@ TEST_P(MoQRelayTest, PeerNamespaceNotEchoedBackOnReconnect) {
 // Complement: namespaces from LOCAL publishers (not from the peer) must still
 // be delivered when that peer subscribes.
 TEST_P(MoQRelayTest, LocalNamespaceDeliveredToPeerOnReconnect) {
-  resetRelay(std::make_shared<MoqxRelay>(config::CacheConfig{.maxCachedTracks = 0}, "sg-sin-2-1"));
+  resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "sg-sin-2-1");
   relay_->setAllowedNamespacePrefix(kAllowedPrefix);
 
   // Local publisher session announces kTestNamespace.
@@ -134,6 +134,7 @@ TEST_P(MoQRelayTest, LocalNamespaceDeliveredToPeerOnReconnect) {
 
   removeSession(localPublisher);
   removeSession(peerSession);
+  driveIfMultiThread(); // flush relay cleanup so it drops session refs before mocks are destroyed
 }
 
 // A mock session that simulates a peer announcing peerNs when the relay
@@ -184,7 +185,7 @@ private:
 // publisherInterface()->subscribeNamespace() production path so the bug in the call-site is
 // exercised.
 TEST_P(MoQRelayTest, PeerNamespaceNotEchoedBack_FullProductionPath) {
-  resetRelay(std::make_shared<MoqxRelay>(config::CacheConfig{.maxCachedTracks = 0}, "sg-sin-2-1"));
+  resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "sg-sin-2-1");
   relay_->setAllowedNamespacePrefix(kAllowedPrefix);
 
   // Step 1: jp-osa-1 connects as session1.  It will announce kTestNamespace
