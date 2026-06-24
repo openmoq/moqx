@@ -13,10 +13,7 @@ namespace openmoq::moqx {
 
 namespace {
 
-void joinNonEmpty(
-    std::string& out,
-    char sep,
-    const std::vector<folly::StringPiece>& values) {
+void joinNonEmpty(std::string& out, char sep, const std::vector<folly::StringPiece>& values) {
   for (auto v : values) {
     if (v.empty()) {
       continue;
@@ -32,7 +29,8 @@ void joinNonEmpty(
 
 std::string combineLoggingValues(
     const std::vector<folly::StringPiece>& categoryValues,
-    const std::vector<folly::StringPiece>& handlerValues) {
+    const std::vector<folly::StringPiece>& handlerValues
+) {
   std::string cats;
   joinNonEmpty(cats, ',', categoryValues);
 
