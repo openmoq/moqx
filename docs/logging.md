@@ -38,6 +38,32 @@ There are three layers, applied in order:
 
 The CLI flag is what operators use day-to-day. The env var is handy in scripts and Docker. The compile-time baseline is what the binary does with no overrides at all.
 
+### The compile-time baseline in detail
+
+The baseline is set in [`src/main.cpp`](../src/main.cpp) via folly's `FOLLY_INIT_LOGGING_CONFIG(...)` macro. It's a string literal evaluated at static-initialization time, so changing it requires recompiling the binary:
+
+```cpp
+FOLLY_INIT_LOGGING_CONFIG(".=INFO;default:async=true,sync_level=WARN");
+```
+
+The string follows the same grammar as `--logging` and `--log-handler` (the long single-string form, since this is a literal in source — no shell-quoting concerns here):
+
+- `.=INFO` — root category at INFO; nothing below INFO emits.
+- `default:async=true` — the default log handler runs asynchronously: log writes go onto a queue, a background thread drains them. Per-packet `DBG3` doesn't degrade relay throughput because the calling thread only formats and enqueues.
+- `sync_level=WARN` — any line at WARN or above bypasses the queue and writes synchronously before the call returns. WARN/ERR lines from immediately before a crash are always visible; high-rate DBG lines are best-effort and may be lost if the process dies before the drain thread runs.
+
+**When you'd change it:** different binaries can ship different defaults. Examples:
+
+- A debug build for local dev could bake in `.=DBG2;default:async=false` so trace output appears immediately and you don't lose anything on Ctrl-C.
+- A locked-down production image could bake in `.=WARN` so an operator who forgets to set `--logging` doesn't get a verbose firehose.
+- A test binary could bake in `;default:async=false` (handler-only) so test assertions on log output don't race the async drain.
+
+To change it for a build, edit the `FOLLY_INIT_LOGGING_CONFIG` line in `src/main.cpp` or, if you want it driven from CMake, define `FOLLY_INIT_LOGGING_CONFIG` at compile time via `target_compile_definitions(moqx PRIVATE FOLLY_INIT_LOGGING_CONFIG=\"...\")`.
+
+**What it is NOT:** it doesn't strip out log call sites. Every `XLOG(DBG9) << ...` in the codebase is compiled into the binary regardless of the baseline; the baseline only sets the default *runtime* filter level. To actually eliminate call sites at compile time you'd need `XLOG_IS_ON(level)` guards or a compile-time level floor, which moqx doesn't use today.
+
+Separately, the **category-name derivation** *is* compile-time: `FOLLY_XLOG_STRIP_PREFIXES` in [`CMakeLists.txt`](../CMakeLists.txt) rewrites `__FILE__` so that `src/MoqxRelay.cpp` becomes the XLOG category `moqx.MoqxRelay`. That's a true compile-time string operation; the baseline string is just a runtime config default.
+
 ## Config string grammar
 
 A config string has up to two blocks separated by a single semicolon:
