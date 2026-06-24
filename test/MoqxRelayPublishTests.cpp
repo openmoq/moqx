@@ -448,7 +448,9 @@ TEST_P(MoQRelayTest, PublishReconnectDuringSubscribeScopeGuardCrash) {
         {RequestID(0), PublishDoneStatusCode::SESSION_CLOSED, 0, "test cleanup"}
     );
   }
-  relay_->doPublishNamespaceDone(kTestNamespace, publisherSession2);
+  // Relay state mutations must run on the relay executor; doPublishNamespaceDone
+  // touches the namespace tree, which publishDone also cleans up via relayEvb_.
+  verifyOnRelayExec([&] { relay_->doPublishNamespaceDone(kTestNamespace, publisherSession2); });
 }
 
 // Same reconnect scenario but the upstream subscribe returns OK instead of an
@@ -526,7 +528,9 @@ TEST_P(MoQRelayTest, PublishReconnectDuringSubscribeSuccessPathCrash) {
         {RequestID(0), PublishDoneStatusCode::SESSION_CLOSED, 0, "test cleanup"}
     );
   }
-  relay_->doPublishNamespaceDone(kTestNamespace, publisherSession2);
+  // Relay state mutations must run on the relay executor; doPublishNamespaceDone
+  // touches the namespace tree, which publishDone also cleans up via relayEvb_.
+  verifyOnRelayExec([&] { relay_->doPublishNamespaceDone(kTestNamespace, publisherSession2); });
 }
 
 // Regression: after publishDone the namespace-tree node must be pruned when
