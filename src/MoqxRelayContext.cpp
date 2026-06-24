@@ -173,25 +173,32 @@ folly::coro::Task<size_t> MoqxRelayContext::purgeCache(
   co_return total;
 }
 
+void MoqxRelayContext::initThreadStatsCollectors(folly::IOThreadPoolExecutor& ioExecutor) {
+  if (!statsRegistry_) {
+    return;
+  }
+  for (auto& ka : ioExecutor.getAllEventBases()) {
+    auto* evb = ka.get();
+    auto collector = stats::MoQStatsCollector::create_moq_stats_collector(statsRegistry_);
+    collector->setExecutor(evb);
+    statsCollectors_.push_back(collector);
+    // Bind on the owning thread; blocks so every thread is bound before serving.
+    evb->runInEventBaseThreadAndWait([this, collector] { *tlStatsCollector_ = collector; });
+  }
+}
+
 void MoqxRelayContext::onNewSession(std::shared_ptr<MoQSession> clientSession) {
-  if (statsRegistry_) {
-    if (!statsCollector_) {
-      statsCollector_ = stats::MoQStatsCollector::create_moq_stats_collector(statsRegistry_);
-    }
-    if (!statsCollector_->owningExecutor()) {
-      statsCollector_->setExecutor(clientSession->getExecutor());
-    }
-
-    clientSession->setPublisherStatsCallback(statsCollector_->publisherCallback());
-    clientSession->setSubscriberStatsCallback(statsCollector_->subscriberCallback());
-
-    statsCollector_->onSessionStart();
+  auto& collector = *tlStatsCollector_;
+  if (collector) {
+    clientSession->setPublisherStatsCallback(collector->publisherCallback());
+    clientSession->setSubscriberStatsCallback(collector->subscriberCallback());
+    collector->onSessionStart();
   }
 }
 
 void MoqxRelayContext::onSessionEnd(std::shared_ptr<MoQSession> /*session*/) {
-  if (statsCollector_) {
-    statsCollector_->onSessionEnd();
+  if (auto& collector = *tlStatsCollector_) {
+    collector->onSessionEnd();
   }
   // Per-session auth state lives on the session's AuthFilter and is released
   // when the session drops it; no relay-side cleanup needed.
@@ -257,10 +264,8 @@ std::vector<std::string> MoqxRelayContext::getExactServicePaths() const {
 }
 
 void MoqxRelayContext::dumpState(RelayContextVisitor& visitor) const {
+  // TODO: source active session count for /state (deferred to the /state rework).
   int64_t activeSessions = 0;
-  if (statsCollector_) {
-    activeSessions = statsCollector_->snapshot().moqActiveSessions;
-  }
 
   visitor.onRelayBegin(relayID_, activeSessions);
   for (const auto& [name, entry] : services_) {
