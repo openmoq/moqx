@@ -8,7 +8,10 @@
 # Connection / TLS:
 #   MOQX_CERT       — TLS certificate PEM (required unless MOQX_INSECURE=true)
 #   MOQX_KEY        — TLS private key PEM  (required unless MOQX_INSECURE=true)
-#   MOQX_PORT       — UDP listen port (default: 4433)
+#   MOQX_PORT       — mvfst UDP listen port (default: 4433)
+#   MOQX_PICO_ENABLE— also run a picoquic listener (default: true; auto-off when
+#                     MOQX_INSECURE=true, since picoquic requires real TLS)
+#   MOQX_PICO_PORT  — picoquic UDP listen port (default: 4434)
 #   MOQX_ADMIN_PORT — admin HTTP port (default: 8000)
 #   MOQX_INSECURE   — use built-in dev cert (default: false)
 #   MOQX_BIND_ADDR  — listen address: 0.0.0.0 (default) or :: (dual-stack)
@@ -72,6 +75,38 @@ export MOQX_SEND_PKTS="${MOQX_SEND_PKTS:-16}"
 export MOQX_RECV_PKTS="${MOQX_RECV_PKTS:-256}"
 export MOQX_UDP_BUFFER="${MOQX_UDP_BUFFER:-$(cat /proc/sys/net/core/wmem_max 2>/dev/null || echo 1048576)}"
 export MOQX_IGNORE_PATH_MTU="${MOQX_IGNORE_PATH_MTU:-false}"
+
+# Second (picoquic) listener for dual-stack serving. Opt out with
+# MOQX_PICO_ENABLE=false. picoquic needs real TLS, so it is auto-disabled under
+# MOQX_INSECURE=true. The block is injected into config.docker.yaml's
+# ${MOQX_PICO_LISTENER} placeholder (empty when disabled). Values are expanded
+# here by the shell, so envsubst substitutes the block verbatim.
+export MOQX_PICO_ENABLE="${MOQX_PICO_ENABLE:-true}"
+export MOQX_PICO_PORT="${MOQX_PICO_PORT:-4434}"
+if [ "$MOQX_PICO_ENABLE" = "true" ] && [ "$MOQX_INSECURE" = "true" ]; then
+  echo "note: picoquic listener disabled — it requires real TLS (MOQX_INSECURE=true)" >&2
+  MOQX_PICO_ENABLE=false
+fi
+if [ "$MOQX_PICO_ENABLE" = "true" ]; then
+  MOQX_PICO_LISTENER=$(cat <<PICO
+  - name: relay-pico
+    quic_stack: picoquic
+    moqt_versions: ${MOQX_MOQT_VERSIONS}
+    udp:
+      socket:
+        address: "${MOQX_BIND_ADDR}"
+        port: ${MOQX_PICO_PORT}
+    tls:
+      cert_file: "${MOQX_CERT}"
+      key_file: "${MOQX_KEY}"
+      insecure: ${MOQX_INSECURE}
+    endpoint: "${MOQX_ENDPOINT}"
+PICO
+)
+else
+  MOQX_PICO_LISTENER=""
+fi
+export MOQX_PICO_LISTENER
 
 CONFIG=/tmp/relay.yaml
 envsubst < /usr/local/share/moqx/config.docker.yaml > "$CONFIG"

@@ -20,8 +20,14 @@ listener_defaults:
     udp_socket_buffer_bytes: ${MOQX_UDP_BUFFER}
     ignore_path_mtu: ${MOQX_IGNORE_PATH_MTU}
 
+# Two listeners: mvfst on MOQX_PORT and (when enabled) picoquic on
+# MOQX_PICO_PORT — same cert/versions/endpoint, different stack + port.
+# entrypoint.sh fills the MOQX_PICO_LISTENER placeholder below with the pico
+# block, or leaves it empty when MOQX_PICO_ENABLE=false or MOQX_INSECURE=true
+# (picoquic needs real TLS).
 listeners:
-  - name: relay
+  - name: relay-mvfst
+    quic_stack: mvfst
     moqt_versions: ${MOQX_MOQT_VERSIONS}
     udp:
       socket:
@@ -32,6 +38,7 @@ listeners:
       key_file: "${MOQX_KEY}"
       insecure: ${MOQX_INSECURE}
     endpoint: "${MOQX_ENDPOINT}"
+${MOQX_PICO_LISTENER}
 
 services:
   default:
