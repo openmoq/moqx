@@ -132,6 +132,10 @@ jobs:
           path: ${{ matrix.build_dir }}/test-results.xml
           reporter: java-junit
           fail-on-empty: ${{ job.status == 'success' && 'true' || 'false' }}
+          # Only list failing tests in the Check Run summary. Listing all
+          # passing tests too blows GitHub's 64 KiB output-body cap on large
+          # suites; the per-suite pass/fail counts at the top still render.
+          list-tests: failed
 
   # ════════════════════════════════════════════════════════════════════════════
   # Conformance: mvfst × {d14, d16} × {Q, WT} + pico × {d14, d16} × Q
