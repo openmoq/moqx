@@ -492,6 +492,11 @@ private:
       folly::Executor* subscriberExec
   );
 
+  // Resolves a joining fetch against this thread's local forwarder (race-free). Rewrites to a
+  // standalone Fetch when largest is known, else clears joiningRequestID to defer to upstream.
+  moxygen::Fetch
+  fetchOnSubscriberExec(moxygen::Fetch fetch, const std::shared_ptr<moxygen::MoQSession>& session);
+
   // Impl methods — run on relayExec_ when set, or inline when relayExec_==nullptr.
   folly::coro::Task<SubscribeResult>
   subscribeImpl(moxygen::SubscribeRequest subReq, std::shared_ptr<moxygen::TrackConsumer> consumer);

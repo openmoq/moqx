@@ -135,6 +135,14 @@ public:
     );
   }
 
+  folly::coro::Task<FetchResult>
+  fetch(moxygen::Fetch fetch, std::shared_ptr<moxygen::FetchConsumer> consumer) override {
+    auto session = moxygen::MoQSession::getRequestSession();
+    auto resolved = relay_->fetchOnSubscriberExec(std::move(fetch), session);
+    // Joining resolved/deferred on subscriberExec; base filter wraps + hops to relayExec_.
+    return PublisherCrossExecFilter::fetch(std::move(resolved), std::move(consumer));
+  }
+
 private:
   std::shared_ptr<MoqxRelay> relay_;
 };
@@ -1993,6 +2001,8 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriber
           attach.upstreamOk->largest->group,
           attach.upstreamOk->largest->object
       );
+      // Seed the subscriber snapshot so a post-SUBSCRIBE_OK joining fetch resolves.
+      sub->updateLargest(*attach.upstreamOk->largest);
     }
   }
   replayPendingFowarderEvents(localFwd.get(), attach.finalCallback, *pendingCb, forward);
@@ -2103,6 +2113,26 @@ MoqxRelay::fetch(Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
   return fetchImpl(std::move(fetch), std::move(consumer));
 }
 
+Fetch MoqxRelay::fetchOnSubscriberExec(Fetch fetch, const std::shared_ptr<MoQSession>& session) {
+  auto [standalone, joining] = fetchType(fetch);
+  if (!joining) {
+    return fetch;
+  }
+  auto* localReg = tlForwarders_.get();
+  auto localFwd = localReg ? localReg->get(fetch.fullTrackName) : nullptr;
+  if (localFwd) {
+    auto res = localFwd->resolveJoiningFetch(session, *joining);
+    if (res.hasValue()) {
+      fetch.args = StandaloneFetch(res.value().start, res.value().end);
+      return fetch;
+    }
+  }
+  // Not resolvable yet (no largest, or pre-PUBLISH_OK on draft-18's separate
+  // stream): defer upstream by track name. Rare; fails if there's no upstream.
+  joining->joiningRequestID = std::nullopt;
+  return fetch;
+}
+
 folly::coro::Task<Publisher::FetchResult>
 MoqxRelay::fetchImpl(Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
   auto session = MoQSession::getRequestSession();
@@ -2114,7 +2144,8 @@ MoqxRelay::fetchImpl(Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
   }
 
   auto [standalone, joining] = fetchType(fetch);
-  if (joining) {
+  // LF mode resolves/defers joining in fetchOnSubscriberExec on the subscriber exec.
+  if (joining && mode() != Mode::LocalForwarder) {
     auto fetchView = registry_.getFetchView(fetch.fullTrackName);
     if (!fetchView) {
       XLOG(ERR) << "No subscription for joining fetch";
