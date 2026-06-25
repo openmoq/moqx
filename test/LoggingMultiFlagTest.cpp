@@ -6,17 +6,17 @@
 
 #include "LoggingMultiFlag.h"
 
-#include <folly/Range.h>
 #include <folly/logging/LogConfigParser.h>
 #include <gtest/gtest.h>
 
+#include <string_view>
 #include <vector>
 
 using openmoq::moqx::combineLoggingArgs;
 using openmoq::moqx::combineLoggingValues;
 
 namespace {
-std::vector<folly::StringPiece> pieces(std::initializer_list<folly::StringPiece> ps) {
+std::vector<std::string_view> pieces(std::initializer_list<std::string_view> ps) {
   return {ps.begin(), ps.end()};
 }
 } // namespace
@@ -82,8 +82,8 @@ TEST(CombineLoggingValues, OutputIsFollyParseable) {
   // Property: combined output is accepted by folly's actual parser
   // in every shape the multi-flag combiner can produce.
   struct Case {
-    std::vector<folly::StringPiece> cats;
-    std::vector<folly::StringPiece> handlers;
+    std::vector<std::string_view> cats;
+    std::vector<std::string_view> handlers;
   };
   const std::vector<Case> kCases = {
       {{}, {}},

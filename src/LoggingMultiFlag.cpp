@@ -8,12 +8,13 @@
 
 #include <list>
 #include <string>
+#include <string_view>
 
 namespace openmoq::moqx {
 
 namespace {
 
-void joinNonEmpty(std::string& out, char sep, const std::vector<folly::StringPiece>& values) {
+void joinNonEmpty(std::string& out, char sep, const std::vector<std::string_view>& values) {
   for (auto v : values) {
     if (v.empty()) {
       continue;
@@ -21,15 +22,15 @@ void joinNonEmpty(std::string& out, char sep, const std::vector<folly::StringPie
     if (!out.empty()) {
       out.push_back(sep);
     }
-    out.append(v.begin(), v.end());
+    out.append(v);
   }
 }
 
 } // namespace
 
 std::string combineLoggingValues(
-    const std::vector<folly::StringPiece>& categoryValues,
-    const std::vector<folly::StringPiece>& handlerValues
+    const std::vector<std::string_view>& categoryValues,
+    const std::vector<std::string_view>& handlerValues
 ) {
   std::string cats;
   joinNonEmpty(cats, ',', categoryValues);
@@ -58,36 +59,36 @@ std::list<std::string>& argStash() {
 
 struct Slot {
   int idx;        // argv slot to overwrite
-  bool hasPrefix; // true when the slot is "--logging=X" / "--log_handler=X"
+  bool hasPrefix; // true when the slot is "--logging=X" / "--log-handler=X"
 };
 
 } // namespace
 
 void combineLoggingArgs(int argc, char** argv) {
-  constexpr folly::StringPiece kLogEq{"--logging="};
-  constexpr folly::StringPiece kLog{"--logging"};
-  constexpr folly::StringPiece kHandlerEq{"--log-handler="};
-  constexpr folly::StringPiece kHandler{"--log-handler"};
+  constexpr std::string_view kLogEq{"--logging="};
+  constexpr std::string_view kLog{"--logging"};
+  constexpr std::string_view kHandlerEq{"--log-handler="};
+  constexpr std::string_view kHandler{"--log-handler"};
 
   std::vector<Slot> slots;
-  std::vector<folly::StringPiece> categoryValues;
-  std::vector<folly::StringPiece> handlerValues;
+  std::vector<std::string_view> categoryValues;
+  std::vector<std::string_view> handlerValues;
 
   for (int i = 1; i < argc; ++i) {
-    folly::StringPiece arg{argv[i]};
-    if (arg.startsWith(kLogEq)) {
+    std::string_view arg{argv[i]};
+    if (arg.starts_with(kLogEq)) {
       slots.push_back({i, true});
-      categoryValues.push_back(arg.subpiece(kLogEq.size()));
+      categoryValues.push_back(arg.substr(kLogEq.size()));
     } else if (arg == kLog && i + 1 < argc) {
       slots.push_back({i + 1, false});
-      categoryValues.push_back(folly::StringPiece{argv[i + 1]});
+      categoryValues.push_back(std::string_view{argv[i + 1]});
       ++i;
-    } else if (arg.startsWith(kHandlerEq)) {
+    } else if (arg.starts_with(kHandlerEq)) {
       slots.push_back({i, true});
-      handlerValues.push_back(arg.subpiece(kHandlerEq.size()));
+      handlerValues.push_back(arg.substr(kHandlerEq.size()));
     } else if (arg == kHandler && i + 1 < argc) {
       slots.push_back({i + 1, false});
-      handlerValues.push_back(folly::StringPiece{argv[i + 1]});
+      handlerValues.push_back(std::string_view{argv[i + 1]});
       ++i;
     }
   }
@@ -95,23 +96,21 @@ void combineLoggingArgs(int argc, char** argv) {
   if (slots.empty()) {
     return;
   }
-  // No combination work needed if we saw exactly one `--logging` and no
-  // `--log_handler`: gflags already does the right thing.
+  // gflags already does the right thing if we saw exactly one --logging
+  // and no --log-handler.
   if (slots.size() == 1 && handlerValues.empty()) {
     return;
   }
 
   auto composite = combineLoggingValues(categoryValues, handlerValues);
 
-  // Replace EVERY slot (including --log_handler slots) with the same
-  // --logging=<composite>. gflags last-wins then picks the composite,
-  // and folly never sees the unknown --log_handler flag because we've
-  // rewritten its name slot too.
+  // Overwrite every collected slot with --logging=<composite>; gflags
+  // last-wins picks the composite, and folly never sees --log-handler.
   for (const auto& slot : slots) {
     auto& stored = argStash().emplace_back();
     if (slot.hasPrefix) {
       stored.reserve(kLogEq.size() + composite.size());
-      stored.append(kLogEq.data(), kLogEq.size());
+      stored.append(kLogEq);
     } else {
       stored.reserve(composite.size());
     }
@@ -119,18 +118,13 @@ void combineLoggingArgs(int argc, char** argv) {
     argv[slot.idx] = stored.data();
   }
 
-  // For the separated form, we also need to fix the flag-name slots
-  // (the one right before the value slot). The original argv had
-  // `--log_handler X`; we need to turn that into `--logging <composite>`
-  // so gflags sees a recognized flag name. For `--logging X`, the name
-  // slot is already `--logging` and needs no change.
+  // Separated form: rename `--log-handler` flag-name slots to `--logging`
+  // so gflags recognizes them. (--logging X already has the right name.)
   for (int i = 1; i < argc; ++i) {
-    folly::StringPiece arg{argv[i]};
+    std::string_view arg{argv[i]};
     if (arg == kHandler && i + 1 < argc) {
-      // The value slot at i+1 has already been overwritten above;
-      // rename the flag slot itself.
       auto& stored = argStash().emplace_back();
-      stored.append(kLog.data(), kLog.size());
+      stored.append(kLog);
       argv[i] = stored.data();
     }
   }

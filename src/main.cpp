@@ -73,10 +73,8 @@ int main(int argc, char* argv[]) {
       "  serve                Start the relay (default)\n" +
       cfg::configSubcommandUsage() + "\nUsage: moqx [subcommand] --config <path>"
   );
-  // gflags treats --logging as a single-value flag (last wins). Combine
-  // any multiple instances into a single composite before folly::Init
-  // sees them — lets operators write `--logging=A --logging=B` instead
-  // of having to shell-quote `--logging='A;B'`.
+  // Combine repeated --logging / --log-handler into one composite before
+  // folly::Init — see docs/logging.md.
   combineLoggingArgs(argc, argv);
   folly::Init init(&argc, &argv, true);
 
