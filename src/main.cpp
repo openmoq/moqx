@@ -128,8 +128,15 @@ int main(int argc, char* argv[]) {
   auto statsRegistry = std::make_shared<stats::StatsRegistry>();
 
   std::vector<std::shared_ptr<moxygen::MoQServerBase>> servers;
-  for (const auto& listenerCfg : config.listeners) {
-    servers.emplace_back(makeRelayServer(listenerCfg, context, ioExecutor.get(), statsRegistry));
+  try {
+    for (const auto& listenerCfg : config.listeners) {
+      servers.emplace_back(makeRelayServer(listenerCfg, context, ioExecutor.get(), statsRegistry));
+    }
+  } catch (const std::exception& e) {
+    // Listener setup (e.g. TLS cert loading) can throw. Report cleanly and exit
+    // non-zero rather than letting it reach std::terminate / SIGABRT (#173).
+    std::cerr << "Error: failed to initialize listener: " << e.what() << "\n";
+    return 1;
   }
 
   if (!servers.empty()) {

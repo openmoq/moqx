@@ -42,12 +42,24 @@ buildFizzContext(const config::ListenerConfig& cfg) {
               ""
           );
         } else {
-          return quic::samples::createFizzServerContext(
-              alpns,
-              fizz::server::ClientAuthMode::Optional,
-              tls.certFile,
-              tls.keyFile
-          );
+          // createFizzServerContext throws (deep in fizz) when the cert/key
+          // can't be read or contain no certificate. Enrich the message with
+          // the offending paths so the caller can report it cleanly instead of
+          // letting an opaque "no certificates read" escape to std::terminate.
+          try {
+            return quic::samples::createFizzServerContext(
+                alpns,
+                fizz::server::ClientAuthMode::Optional,
+                tls.certFile,
+                tls.keyFile
+            );
+          } catch (const std::exception& e) {
+            throw std::runtime_error(
+                "failed to load TLS certificate/key (cert='" + tls.certFile + "', key='" +
+                tls.keyFile + "'): " + e.what() +
+                " - check the paths exist and are readable by this process"
+            );
+          }
         }
       },
       cfg.tlsMode
