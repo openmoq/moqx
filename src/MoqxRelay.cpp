@@ -1364,11 +1364,10 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
     // Tag with the peer's relay ID so we suppress echoing these namespaces
     // back to that peer on reconnect.
     auto handle = makeNamespaceBridgeHandle(weak_from_this(), session, incomingPeerID, relayExec_);
-    // subscribeNamespace must run on the peer session's executor.
-    auto recipResult = co_await folly::coro::co_withExecutor(
-        folly::getKeepAliveToken(session->getExecutor()),
-        session->subscribeNamespace(makePeerSubNs(), handle)
-    ); // no token: reciprocal, prevents loop
+    // maybeWrapPublisher runs the call on the peer session's executor and wraps
+    // the returned handle so its teardown hops there too (no token: reciprocal).
+    auto recipResult = co_await maybeWrapPublisher(relayExec_, session)
+                           ->subscribeNamespace(makePeerSubNs(), handle);
     if (recipResult.hasError()) {
       XLOG(ERR) << "Reciprocal peer subNs failed: " << recipResult.error().reasonPhrase;
     } else {

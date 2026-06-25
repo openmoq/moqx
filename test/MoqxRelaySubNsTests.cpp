@@ -167,6 +167,7 @@ TEST_P(MoQRelayTest, ExactNamespaceSubscriberReceivesPublishNamespace) {
 
   removeSession(publisher);
   removeSession(subscriber);
+  driveIfMultiThread(); // flush exec-hopped handle destruction before mocks are destroyed
 }
 
 // Bug: when a subscriber with forward=true joins a namespace whose track

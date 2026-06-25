@@ -22,6 +22,13 @@ public:
   )
       : inner_(std::move(inner)), exec_(exec) {}
 
+  ~CrossExecSubscriptionHandle() override {
+    // Inner dtor may touch session state; destroy it on exec_, not the dropping thread.
+    if (inner_) {
+      exec_->add([inner = std::move(inner_)]() mutable {});
+    }
+  }
+
   const moxygen::SubscribeOk& subscribeOk() const override { return inner_->subscribeOk(); }
 
   void unsubscribe() override {
@@ -47,6 +54,13 @@ public:
       folly::Executor* exec
   )
       : inner_(std::move(inner)), exec_(exec) {}
+
+  ~CrossExecFetchHandle() override {
+    // Inner dtor may touch session state; destroy it on exec_, not the dropping thread.
+    if (inner_) {
+      exec_->add([inner = std::move(inner_)]() mutable {});
+    }
+  }
 
   const moxygen::FetchOk& fetchOk() const override { return inner_->fetchOk(); }
 
@@ -77,6 +91,13 @@ public:
   )
       : inner_(std::move(inner)), exec_(std::move(exec)) {}
 
+  ~CrossExecNamespacePublishHandle() override {
+    // Inner dtor may touch session state; destroy it on exec_, not the dropping thread.
+    if (inner_) {
+      exec_->add([inner = std::move(inner_)]() mutable {});
+    }
+  }
+
   void namespaceMsg(const moxygen::TrackNamespace& ns) override {
     exec_->add([inner = inner_, ns]() mutable { inner->namespaceMsg(ns); });
   }
@@ -97,6 +118,13 @@ public:
       folly::Executor* exec
   )
       : inner_(std::move(inner)), exec_(exec) {}
+
+  ~CrossExecSubscribeNamespaceHandle() override {
+    // Inner dtor may touch session state; destroy it on exec_, not the dropping thread.
+    if (inner_) {
+      exec_->add([inner = std::move(inner_)]() mutable {});
+    }
+  }
 
   const moxygen::SubscribeNamespaceOk& subscribeNamespaceOk() const override {
     return inner_->subscribeNamespaceOk();
@@ -128,6 +156,13 @@ public:
   )
       : inner_(std::move(inner)), exec_(std::move(exec)) {}
 
+  ~CrossExecPublishBlockedHandle() override {
+    // Inner dtor may touch session state; destroy it on exec_, not the dropping thread.
+    if (inner_) {
+      exec_->add([inner = std::move(inner_)]() mutable {});
+    }
+  }
+
   void publishBlocked(
       const moxygen::TrackNamespace& trackNamespaceSuffix,
       const std::string& trackName
@@ -149,6 +184,13 @@ public:
       folly::Executor* exec
   )
       : inner_(std::move(inner)), exec_(exec) {}
+
+  ~CrossExecSubscribeTracksHandle() override {
+    // Inner dtor may touch session state; destroy it on exec_, not the dropping thread.
+    if (inner_) {
+      exec_->add([inner = std::move(inner_)]() mutable {});
+    }
+  }
 
   const moxygen::SubscribeTracksOk& subscribeTracksOk() const override {
     return inner_->subscribeTracksOk();
