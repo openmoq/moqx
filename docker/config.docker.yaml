@@ -43,6 +43,13 @@ ${MOQX_PICO_LISTENER}
 services:
   default:
     match:
+      # Two rules so both listeners + both transports work:
+      #   exact endpoint  → WebTransport on ${MOQX_ENDPOINT} (mvfst AND picoquic;
+      #                     pico only registers WT endpoints for exact-path rules)
+      #   prefix "/"      → raw QUIC (moqt://) on the base URL (mvfst). pico logs
+      #                     an "unsupported prefix" warning and ignores this rule.
+      - authority: {any: true}
+        path: {exact: "${MOQX_ENDPOINT}"}
       - authority: {any: true}
         path: {prefix: "/"}
     cache:
