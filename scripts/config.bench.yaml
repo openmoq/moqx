@@ -8,8 +8,10 @@
 # template instead (docker/config.docker.yaml).
 #
 # Tunable via env / CLI (defaults live in moqx-run.sh):
+#   MOQX_RELAY_ID      relay identity string in logs/metrics (default moqx-000)
 #   MOQX_STACK         quic stack for the listener: mvfst | picoquic (--quic-stack)
-#   MOQX_MOQT_VERSIONS advertised MoQT drafts, YAML inline list (default [16, 14])
+#   MOQX_MOQT_VERSIONS advertised MoQT drafts, YAML inline list, server-preference
+#                      order (default [16, 14, 18]; first listed wins)
 #   MOQX_PORT          UDP listen port
 #   MOQX_ADMIN_PORT    admin HTTP port
 #   MOQX_ENDPOINT      WebTransport endpoint path
@@ -30,7 +32,7 @@
 #   MOQX_IGNORE_PATH_MTU  skip PMTU discovery, send full-size packets (true|false)
 #   DOMAIN             TLS cert hostname under /etc/letsencrypt/live/
 
-relay_id: "moqx-000"
+relay_id: "${MOQX_RELAY_ID}"
 
 threads: ${MOQX_THREADS}
 use_relay_thread: ${MOQX_RELAY_THREAD}

@@ -30,11 +30,14 @@ Relay tuning (templated into the config; CLI > .env > default):
       --local-forwarders / --no-local-forwarders   (default: on)
       --cache / --no-cache  relay object cache (default: on)
       --relay-thread / --no-relay-thread   dedicated relay exec thread (default: on)
+      --ignore-path-mtu     send full-size pkts, skip PMTU discovery (default: off)
+      --bpf-steering        mvfst CID reuseport steering, Linux+mvfst (default: off)
 
 Listener (templated into the config; CLI > .env > default):
       --quic-stack STACK    listener quic stack: mvfst|picoquic (default mvfst)
-      --moqt-versions LIST  advertised MoQT drafts, e.g. 16,14,18 (default 16,14;
-                            draft-18 is opt-in — not yet interoperable)
+      --moqt-versions LIST  advertised MoQT drafts in server-preference order,
+                            e.g. 16,14,18 (default 16,14,18; first listed wins).
+                            Pass a single value (e.g. 18) to pin one draft.
       --port N              UDP listen port (default 4433)
       --admin-port N        admin HTTP port (default 8000)
       --endpoint PATH       WebTransport endpoint path (default /moq-relay)
@@ -63,7 +66,8 @@ Environment overrides (via .env or shell):
   MOQX_THREADS, MOQX_UDP_BUFFER, MOQX_RECV_PKTS, MOQX_SEND_PKTS, MOQX_CC,
   MOQX_LOCAL_FWD, MOQX_CACHE, MOQX_BPF_STEERING, MOQX_IGNORE_PATH_MTU,
   MOQX_RELAY_THREAD, MOQX_STACK, MOQX_MOQT_VERSIONS, MOQX_PORT, MOQX_ADMIN_PORT, MOQX_ENDPOINT,
-  MOQX_INSECURE, MOQX_CERT, MOQX_KEY, MOQX_MAX_TRACKS, MOQX_MAX_GROUPS
+  MOQX_INSECURE, MOQX_CERT, MOQX_KEY, MOQX_MAX_TRACKS, MOQX_MAX_GROUPS,
+  MOQX_RELAY_ID, MOQX_RESOLVED_CONFIG  (env-only; no CLI flag)
 
 Examples:
   $0                                       # serve with .env + defaults
@@ -123,6 +127,7 @@ CLI_USE_SUDO=""   # "" = unset; "0"/"1" set
 CLI_JEMALLOC=""   # "" = unset; "auto" or explicit path
 CLI_THREADS="" CLI_UDP_BUFFER="" CLI_RECV_PKTS="" CLI_SEND_PKTS="" CLI_CC=""
 CLI_LOCAL_FWD="" CLI_CACHE="" CLI_RELAY_THREAD="" CLI_INSECURE=""   # tri-state booleans
+CLI_IGNORE_PMTU="" CLI_BPF=""   # tri-state booleans
 CLI_STACK="" CLI_MOQT_VERSIONS="" CLI_PORT="" CLI_ADMIN_PORT="" CLI_ENDPOINT="" CLI_CERT="" CLI_KEY=""
 CHECK_SYSCTL=0 DRY_RUN=0
 PASSTHRU=()
@@ -144,6 +149,8 @@ while (($#)); do
     --no-cache)      CLI_CACHE=false; shift ;;
     --relay-thread)    CLI_RELAY_THREAD=true;  shift ;;
     --no-relay-thread) CLI_RELAY_THREAD=false; shift ;;
+    --ignore-path-mtu) CLI_IGNORE_PMTU=true; shift ;;
+    --bpf-steering)    CLI_BPF=true;         shift ;;
     --quic-stack)    CLI_STACK="$2"; shift 2 ;;
     --moqt-versions) CLI_MOQT_VERSIONS="$2"; shift 2 ;;
     --port)          CLI_PORT="$2"; shift 2 ;;
@@ -194,6 +201,7 @@ command -v envsubst >/dev/null || { echo "envsubst missing (apt install gettext-
 
 # ── Relay tuning knobs (CLI > .env/env > default), exported for envsubst ──
 WMEM_MAX="$(cat /proc/sys/net/core/wmem_max 2>/dev/null || echo 1048576)"
+export MOQX_RELAY_ID="${MOQX_RELAY_ID:-moqx-000}"
 export MOQX_THREADS="${CLI_THREADS:-${MOQX_THREADS:-4}}"
 export MOQX_SEND_PKTS="${CLI_SEND_PKTS:-${MOQX_SEND_PKTS:-16}}"
 export MOQX_RECV_PKTS="${CLI_RECV_PKTS:-${MOQX_RECV_PKTS:-256}}"
@@ -202,9 +210,9 @@ export MOQX_CC="${CLI_CC:-${MOQX_CC:-bbr}}"
 MOQX_LOCAL_FWD="$(norm_bool "${CLI_LOCAL_FWD:-${MOQX_LOCAL_FWD:-true}}")"
 MOQX_CACHE="$(norm_bool "${CLI_CACHE:-${MOQX_CACHE:-true}}")"
 MOQX_RELAY_THREAD="$(norm_bool "${CLI_RELAY_THREAD:-${MOQX_RELAY_THREAD:-true}}")"
-# bpf steering and ignore_path_mtu are experimental — env override only, no flag.
-MOQX_BPF_STEERING="$(norm_bool "${MOQX_BPF_STEERING:-false}")"
-MOQX_IGNORE_PATH_MTU="$(norm_bool "${MOQX_IGNORE_PATH_MTU:-false}")"
+# bpf steering and ignore_path_mtu are experimental (Linux+mvfst); default off.
+MOQX_BPF_STEERING="$(norm_bool "${CLI_BPF:-${MOQX_BPF_STEERING:-false}}")"
+MOQX_IGNORE_PATH_MTU="$(norm_bool "${CLI_IGNORE_PMTU:-${MOQX_IGNORE_PATH_MTU:-false}}")"
 for b in MOQX_LOCAL_FWD MOQX_CACHE MOQX_RELAY_THREAD MOQX_BPF_STEERING MOQX_IGNORE_PATH_MTU; do
   [[ "${!b}" == INVALID ]] && { echo "invalid boolean for $b (want true/false)" >&2; exit 2; }
 done
@@ -214,9 +222,10 @@ export MOQX_BPF_STEERING MOQX_IGNORE_PATH_MTU
 # ── Listener knobs (CLI > .env/env > default), exported for envsubst ──────
 export MOQX_STACK="${CLI_STACK:-${MOQX_STACK:-mvfst}}"
 case "$MOQX_STACK" in mvfst|picoquic) ;; *) echo "invalid --quic-stack: $MOQX_STACK (want mvfst|picoquic)" >&2; exit 2 ;; esac
-# MoQT drafts advertised by the listener (ALPN derives from these). Default
-# matches the relay's interoperable set; draft-18 is opt-in (--moqt-versions).
-export MOQX_MOQT_VERSIONS="$(norm_versions "${CLI_MOQT_VERSIONS:-${MOQX_MOQT_VERSIONS:-16,14}}")"
+# MoQT drafts advertised by the listener (ALPN derives from these), in
+# server-preference order — the relay picks the first listed version the client
+# also supports. Default offers d16, d14, then d18 as a fallback.
+export MOQX_MOQT_VERSIONS="$(norm_versions "${CLI_MOQT_VERSIONS:-${MOQX_MOQT_VERSIONS:-16,14,18}}")"
 export MOQX_PORT="${CLI_PORT:-${MOQX_PORT:-4433}}"
 export MOQX_ADMIN_PORT="${CLI_ADMIN_PORT:-${MOQX_ADMIN_PORT:-8000}}"
 export MOQX_ENDPOINT="${CLI_ENDPOINT:-${MOQX_ENDPOINT:-/moq-relay}}"
@@ -253,7 +262,9 @@ fi
 export MOQX_INSECURE
 
 # ── Resolve placeholders into a temp config ───────────────────────────────
-RESOLVED_CONFIG=/tmp/moqx-resolved.yaml
+# Fixed path by default; override (e.g. per perf run, to avoid concurrent
+# clobber) with MOQX_RESOLVED_CONFIG.
+RESOLVED_CONFIG="${MOQX_RESOLVED_CONFIG:-/tmp/moqx-resolved.yaml}"
 envsubst < "$CONFIG_TEMPLATE" > "$RESOLVED_CONFIG"
 
 # ── GLOG — map MOQX_* → GLOG_* (matches docker/entrypoint.sh convention) ─
@@ -295,7 +306,8 @@ CMD=("$MOQX_BIN" "$SUBCMD" --config "$RESOLVED_CONFIG" "${PASSTHRU[@]}")
 
 if (( DRY_RUN )); then
   echo "# relay knobs (templated into config)"
-  echo "stack=$MOQX_STACK moqt_versions=$MOQX_MOQT_VERSIONS port=$MOQX_PORT admin_port=$MOQX_ADMIN_PORT endpoint=$MOQX_ENDPOINT insecure=$MOQX_INSECURE"
+  echo "relay_id=$MOQX_RELAY_ID stack=$MOQX_STACK moqt_versions=$MOQX_MOQT_VERSIONS port=$MOQX_PORT admin_port=$MOQX_ADMIN_PORT endpoint=$MOQX_ENDPOINT insecure=$MOQX_INSECURE"
+  echo "resolved_config=$RESOLVED_CONFIG"
   echo "threads=$MOQX_THREADS relay_thread=$MOQX_RELAY_THREAD local_fwd=$MOQX_LOCAL_FWD bpf_steering=$MOQX_BPF_STEERING cache=$MOQX_CACHE"
   echo "cc=$MOQX_CC send_pkts=$MOQX_SEND_PKTS recv_pkts=$MOQX_RECV_PKTS udp_buffer=$MOQX_UDP_BUFFER ignore_path_mtu=$MOQX_IGNORE_PATH_MTU"
   echo "# resolved env"
