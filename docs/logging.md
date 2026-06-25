@@ -17,7 +17,7 @@ moqx and every layer of its stack (moxygen, fizz, wangle, mvfst, picoquic transp
 | picoquic internal events | `moqx … --logging=quic.picoquic=DBG3` |
 | mvfst | `moqx … --logging=quic.mvfst=DBG2` |
 | Crank everything (firehose) | `moqx … --logging=DBG4` |
-| Log to file instead of stderr | `moqx … --logging=INFO --log-handler=default=file:path=/var/log/moqx.log` |
+| Log to file instead of stderr | redirect stderr at the shell / systemd / container layer (see "File output" below) |
 
 The bare-level form (`--logging=INFO`, `--logging=DBG4`) is shorthand for `--logging=.=INFO`. Both work. Use `--log-handler=…` for output/async settings; both flags can be repeated and moqx combines them, so you never have to shell-quote `;`.
 
@@ -40,7 +40,7 @@ Inside each block, items are comma-separated:
 - `CATEGORY=LEVEL` — sets the threshold for that category and all its children. `.` (single dot) is the root.
 - A bare level (no `=`) in the categories block — shorthand for `.=LEVEL`. `--logging=DBG4` ≡ `--logging=.=DBG4`.
 - `default:option=value` — handler options (async, sync_level, etc.).
-- `default=type:option=value` — replace the default handler (e.g. `default=file:path=/var/log/moqx.log`).
+- `default=type:option=value` — replace the default handler. Note: only the `stream` type is auto-registered today; folly's `file` type exists but is intentionally NOT registered (security: a config string could otherwise write to arbitrary paths). Use shell/systemd/container redirection for file output instead.
 
 ### `--logging` and `--log-handler` — two flags
 
@@ -59,45 +59,27 @@ becomes the composite `INFO,moxygen=DBG4;default:async=false` before folly sees 
 
 ## The category hierarchy
 
-Each XLOG call derives its category from the source file path at compile time. The categories moqx produces:
+Each XLOG call derives its category from the source file path at compile time, with build-system prefix stripping. `--logging=<category>=<level>` then targets a category and its children.
 
-```
-moqx.*                          Application layer
-  moqx.MoqxRelay                  Routing/cache decisions, namespace tree
-  moqx.MoqxCache                  Cache hits/misses, eviction
-  moqx.UpstreamProvider           Upstream session reconnect/disconnect
-  moqx.admin.*                    Admin HTTP server (metrics, state, cache-purge)
-  moqx.stats.*                    Stats collectors (moq, quic, picoquic, eventbase)
-  moqx.config.*                   YAML config parsing/validation
-  moqx.relay.*                    TopN/CrossExec filters, ranking
+**Setting the root works today** (`--logging=DBG2`, `--logging=WARN`, etc.) — that's how you crank or quiet the entire stack.
 
-moxygen.*                       Protocol layer
-  moxygen.MoQSession              MoQ control + data streams, peer state
-  moxygen.MoQFramer               Wire format encode/decode
-  moxygen.MoQCodec                Per-stream framing
-  moxygen.MoQRelaySession         Relay-side session helpers
-  moxygen.MoQServer               Server lifecycle, ALPN registration
-  moxygen.relay.MoQForwarder      Track-level multiplex to subscribers
-  moxygen.openmoq.transport.pico  picoquic transport (C++ wrapper)
+**Per-category targeting is currently inconsistent across the stack.** Each layer (moqx, moxygen, fizz, wangle, mvfst) has its own `FOLLY_XLOG_STRIP_PREFIXES` set when it was compiled, and those prefixes don't always reduce the source paths to short names. Empirically:
 
-quic.*                          QUIC stacks
-  quic.mvfst.*                    mvfst (Meta)
-  quic.picoquic.*                 picoquic (alternate)
+- moqx's own sources land under the `moqx.*` prefix in build configurations where `-fmacro-prefix-map=src=moqx` is applied (see `CMakeLists.txt`).
+- moxygen sources currently land under the full absolute build path (e.g. `home.…moqx.deps.moxygen.moxygen.MoQServer`) because moxygen's strip-prefix references moqx's source root rather than moxygen's.
+- The QUIC stacks (mvfst, picoquic) similarly carry compile-time-specific prefixes.
 
-fizz.*                          TLS 1.3
-wangle.*                        Acceptor / pipeline / SSL handlers
-proxygen.*                      HTTP/3, WebTransport adapters         (in progress)
-folly.*                         Async I/O, EventBase, AsyncSocket      (in progress)
-```
-
-Both QUIC stacks live under `quic.*`. Target either or both:
+Until the cross-project category derivation is normalized (tracked as a follow-up to [#339](https://github.com/openmoq/moqx/issues/339)), the reliable operational pattern is:
 
 ```bash
---logging=quic=DBG1                                 # both
---logging=quic.picoquic=DBG3,quic.mvfst=WARN        # picoquic verbose, mvfst quiet
+--logging=DBG2          # everything at DBG2 (works regardless of category prefixes)
+--logging=WARN          # mute everything to WARN
+--logging=INFO,quic=WARN   # bare-level root + a coarse subtree mute
 ```
 
-**Discovering categories at runtime:** if you're not sure which category a log line came from, run `--logging=DBG0` for a few seconds; folly prepends the category to every line.
+Coarse subtree mutes like `quic=WARN` work whenever the actual category starts with that prefix — they're the safest per-layer knob today.
+
+**Discovering the actual category for a log line:** moqx's default handler uses folly's `GlogStyleFormatter`, which shows `file:line` but not the category name. A follow-up issue tracks adding a category-aware formatter option so operators can see categories at runtime.
 
 ## Severity ladder
 
@@ -146,11 +128,36 @@ Different binaries can ship different defaults — edit `FOLLY_INIT_LOGGING_CONF
 | Trace a connection across the stack | `moqx … --logging=DBG2` |
 | Mute QUIC, keep app | `moqx … --logging=INFO,quic=WARN` |
 | Multi-layer session investigation | `moqx … --logging=INFO,moqx.MoqxRelay=DBG3,moxygen.MoQSession=DBG3,quic=DBG1` |
-| Log to file | `moqx … --logging=INFO --log-handler=default=file:path=/var/log/moqx.log` |
+| Log to file (stderr redirect) | `moqx … 2>> /var/log/moqx.log` (folly's `file:` handler isn't auto-registered) |
 | Disable async (durable, slower) | `moqx … --log-handler=default:async=false` |
 | Via env var (systemd / Docker / k8s) | `FOLLY_LOGGING=.=INFO,moqx=DBG2 moqx --config c.yaml` |
 
 CLI flags win over the env var if both are set.
+
+## File output
+
+folly ships a `file:` handler type but **does not register it by default** — a config string with `file:path=…` could otherwise write to arbitrary paths. moqx doesn't register it either. To write logs to a file today, redirect at the launcher layer:
+
+```bash
+# shell
+moqx --config c.yaml 2>> /var/log/moqx.log
+
+# systemd unit
+StandardError=append:/var/log/moqx.log
+
+# docker (let the runtime handle rotation)
+docker run --log-driver json-file --log-opt max-size=10m --log-opt max-file=5 \
+  ghcr.io/openmoq/moqx:latest
+```
+
+If a project genuinely needs in-process file output via the folly config string, register `FileHandlerFactory` in `main.cpp` before `folly::Init`:
+
+```cpp
+folly::LoggerDB::get().registerHandlerFactory(
+    std::make_unique<folly::FileHandlerFactory>());
+```
+
+That re-enables `--log-handler=default=file:path=…` at the cost of accepting whatever path the config string says. Don't do this in builds that run with elevated privileges.
 
 ## qlog (separately, for structured QUIC analysis)
 
@@ -179,7 +186,7 @@ Independent channels — enabling one doesn't suppress the other.
 | `--vmodule "MoQ*=4"` | no glob — list categories or use a higher root (`moxygen=DBG4`) |
 | `--vmodule "QuicTransportBase=2"` | `--logging=quic.mvfst.QuicTransportBase=DBG2` |
 | `--logtostderr` | default (folly writes to stderr unless a handler redirects) |
-| `--log_dir DIR` | `--log-handler=default=file:path=DIR/moqx.log` |
+| `--log_dir DIR` | shell/systemd redirect: `moqx … 2>> DIR/moqx.log` |
 | `--stderrthreshold 1` | `--log-handler=default:async=false` (or per-category sync_level) |
 | `--log_backtrace_at FILE:N` | not yet equivalent |
 
