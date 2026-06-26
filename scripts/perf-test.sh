@@ -9,11 +9,11 @@
 #   --relay PATH           Path to moqx binary (default: build/moqx)
 #   --moqbin PATH          Path to moxygen bin dir
 #                          (default: .scratch/moxygen-install/bin)
-#   --subscriber-max N     Max total subscribers (default: 500)
+#   -s, --subscriber-max N Max total subscribers (default: 500)
 #   --ramp N               Subscribers added per second (default: 100)
-#   --duration N           Test duration in seconds (default: 30)
+#   -d, --duration N       Test duration in seconds (default: 30)
 #   --delivery-timeout N   Delivery timeout in ms (default: 500)
-#   --transport TYPE       quic or webtransport (default: quic)
+#   -t, --transport TYPE   quic or webtransport (default: quic)
 #   --draft N              pin a single MoQ draft, e.g. 16, 14, 18 (default: relay
 #                          offers 16,14,18 and all three parties negotiate 16).
 #                          Sets the relay's offered versions AND the publisher/
@@ -23,7 +23,7 @@
 #                          (use_local_forwarders: true; requires relay thread)
 #   --io-threads N         Number of relay IO threads (default: 1)
 #   --threads N            Number of perf client threads (default: 2)
-#   --relay-log SPEC       folly XLOG config passed as --logging=SPEC to relay
+#   -l, --relay-log SPEC   folly XLOG config passed as --logging=SPEC to relay
 #   --bpf-steering         Enable mvfst BPF reuseport steering (requires MOQX_ENABLE_BPF_STEERING build)
 #   --no-bpf-steering      Disable mvfst BPF reuseport steering (default)
 #   -j, --jemalloc         LD_PRELOAD jemalloc for the relay (moqx-run auto-detects the lib)
@@ -86,17 +86,17 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --relay)            BINARY="$2";            shift 2 ;;
     --moqbin)           MOQBIN="$2";            shift 2 ;;
-    --subscriber-max)   SUBSCRIBER_MAX="$2";    shift 2 ;;
+    -s|--subscriber-max) SUBSCRIBER_MAX="$2";   shift 2 ;;
     --ramp)             RAMP="$2";              shift 2 ;;
-    --duration)         DURATION="$2";          shift 2 ;;
+    -d|--duration)      DURATION="$2";          shift 2 ;;
     --delivery-timeout) DELIVERY_TIMEOUT="$2";  shift 2 ;;
-    --transport)        TRANSPORT="$2";         shift 2 ;;
+    -t|--transport)     TRANSPORT="$2";         shift 2 ;;
     --draft)            DRAFT="$2";             shift 2 ;;
     --no-relay-thread)  USE_RELAY_THREAD="false"; shift ;;
     --local-forwarders) USE_LOCAL_FORWARDERS="true"; shift ;;
     --io-threads)       IO_THREADS="$2";          shift 2 ;;
     --threads)          CLIENT_THREADS="$2";      shift 2 ;;
-    --relay-log)        RELAY_LOG_SPEC="$2";      shift 2 ;;
+    -l|--relay-log)     RELAY_LOG_SPEC="$2";      shift 2 ;;
     --bpf-steering)     BPF_STEERING="true";      shift ;;
     --no-bpf-steering)  BPF_STEERING="false";     shift ;;
     -j|--jemalloc)      JEMALLOC="auto";           shift ;;
