@@ -26,7 +26,7 @@
 #   --relay-log SPEC       folly XLOG config passed as --logging=SPEC to relay
 #   --bpf-steering         Enable mvfst BPF reuseport steering (requires MOQX_ENABLE_BPF_STEERING build)
 #   --no-bpf-steering      Disable mvfst BPF reuseport steering (default)
-#   --jemalloc             LD_PRELOAD jemalloc (auto-detected from /lib64/libjemalloc.so.2)
+#   -j, --jemalloc         LD_PRELOAD jemalloc for the relay (moqx-run auto-detects the lib)
 #   --metrics              Run perf-metrics.sh alongside the relay; logs to LOG_DIR/metrics.log
 #   --perf-duration N      Run perf record -F 499 -g -e cycles on relay for N seconds; starts after
 #                          subscribers finish ramping (delay = 3*max/ramp s); saves to LOG_DIR/
@@ -99,7 +99,7 @@ while [[ $# -gt 0 ]]; do
     --relay-log)        RELAY_LOG_SPEC="$2";      shift 2 ;;
     --bpf-steering)     BPF_STEERING="true";      shift ;;
     --no-bpf-steering)  BPF_STEERING="false";     shift ;;
-    --jemalloc)         JEMALLOC="auto";           shift ;;
+    -j|--jemalloc)      JEMALLOC="auto";           shift ;;
     --metrics)          RUN_METRICS=true;          shift ;;
     --perf-duration)    PERF_DURATION="$2";        shift 2 ;;
     --perf-events)      PERF_EVENTS="$2";          shift 2 ;;
@@ -116,15 +116,9 @@ MOQTEST_SERVER="$MOQBIN/moqtest_server"
 MOQPERF_CLIENT="$MOQBIN/moqperf_test_client"
 METRICS_SCRIPT="$REPO/scripts/perf-metrics.sh"
 
-# ── jemalloc resolution ───────────────────────────────────────────────────────
-if [[ "$JEMALLOC" == "auto" ]]; then
-  if [[ -f /lib64/libjemalloc.so.2 ]]; then
-    JEMALLOC=/lib64/libjemalloc.so.2
-  else
-    echo "WARNING: --jemalloc requested but /lib64/libjemalloc.so.2 not found; ignoring" >&2
-    JEMALLOC=""
-  fi
-fi
+# jemalloc detection is delegated to moqx-run.sh (-j auto): it probes the common
+# multiarch + /lib64 paths and LD_PRELOADs the lib for the relay, warning (in the
+# relay log) if none is found. JEMALLOC is just the request flag here.
 
 # ── Log directory (always on) ─────────────────────────────────────────────────
 LOG_DIR="/tmp/moqx-perf-$(date +%Y%m%d-%H%M%S)"
@@ -267,7 +261,7 @@ RELAY_RUN_ARGS=(
 [[ "$BPF_STEERING" == true ]] && RELAY_RUN_ARGS+=(--bpf-steering)
 [[ -n "$DRAFT" ]]             && RELAY_RUN_ARGS+=(--moqt-versions "$DRAFT")
 [[ -n "$RELAY_LOG_SPEC" ]]    && RELAY_RUN_ARGS+=(-x "$RELAY_LOG_SPEC")
-[[ -n "$JEMALLOC" ]]          && { echo "Using jemalloc: $JEMALLOC"; RELAY_RUN_ARGS+=(-j "$JEMALLOC"); }
+[[ -n "$JEMALLOC" ]]          && RELAY_RUN_ARGS+=(-j auto)   # moqx-run resolves + LD_PRELOADs
 
 # Relay identity + render the resolved config straight into the run's log dir.
 export MOQX_RELAY_ID="perf-test-relay"
