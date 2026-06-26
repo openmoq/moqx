@@ -26,6 +26,7 @@ services:
     restart: unless-stopped
     ports:
       - "${MOQX_PORT:-4433}:${MOQX_PORT:-4433}/udp"
+      - "${MOQX_PICO_PORT:-4434}:${MOQX_PICO_PORT:-4434}/udp"
       - "${MOQX_ADMIN_PORT:-8000}:${MOQX_ADMIN_PORT:-8000}/tcp"
     volumes:
       - ${MOQX_CERTS_DIR:-/etc/letsencrypt}:/certs:ro
@@ -35,6 +36,8 @@ services:
       MOQX_CERT: /certs/live/${DOMAIN}/fullchain.pem
       MOQX_KEY:  /certs/live/${DOMAIN}/privkey.pem
       MOQX_PORT: ${MOQX_PORT:-4433}
+      MOQX_PICO_PORT: ${MOQX_PICO_PORT:-4434}
+      MOQX_PICO_ENABLE: ${MOQX_PICO_ENABLE:-true}
       MOQX_ADMIN_PORT: ${MOQX_ADMIN_PORT:-8000}
       MOQX_MAX_TRACKS: ${MOQX_MAX_TRACKS:-1000}
       MOQX_MAX_GROUPS: ${MOQX_MAX_GROUPS:-100}

@@ -9,20 +9,24 @@
 #   --relay PATH           Path to moqx binary (default: build/moqx)
 #   --moqbin PATH          Path to moxygen bin dir
 #                          (default: .scratch/moxygen-install/bin)
-#   --subscriber-max N     Max total subscribers (default: 500)
+#   -s, --subscriber-max N Max total subscribers (default: 500)
 #   --ramp N               Subscribers added per second (default: 100)
-#   --duration N           Test duration in seconds (default: 30)
+#   -d, --duration N       Test duration in seconds (default: 30)
 #   --delivery-timeout N   Delivery timeout in ms (default: 500)
-#   --transport TYPE       quic or webtransport (default: quic)
+#   -t, --transport TYPE   quic or webtransport (default: quic)
+#   --draft N              pin a single MoQ draft, e.g. 16, 14, 18 (default: relay
+#                          offers 16,14,18 and all three parties negotiate 16).
+#                          Sets the relay's offered versions AND the publisher/
+#                          subscriber --versions so all three agree.
 #   --no-relay-thread      Disable relay exec thread (use_relay_thread: false)
 #   --local-forwarders     Enable per-subscriber-thread local forwarders
 #                          (use_local_forwarders: true; requires relay thread)
 #   --io-threads N         Number of relay IO threads (default: 1)
 #   --threads N            Number of perf client threads (default: 2)
-#   --relay-log SPEC       folly XLOG config passed as --logging=SPEC to relay
+#   -l, --relay-log SPEC   folly XLOG config passed as --logging=SPEC to relay
 #   --bpf-steering         Enable mvfst BPF reuseport steering (requires MOQX_ENABLE_BPF_STEERING build)
 #   --no-bpf-steering      Disable mvfst BPF reuseport steering (default)
-#   --jemalloc             LD_PRELOAD jemalloc (auto-detected from /lib64/libjemalloc.so.2)
+#   -j, --jemalloc         LD_PRELOAD jemalloc for the relay (moqx-run auto-detects the lib)
 #   --metrics              Run perf-metrics.sh alongside the relay; logs to LOG_DIR/metrics.log
 #   --perf-duration N      Run perf record -F 499 -g -e cycles on relay for N seconds; starts after
 #                          subscribers finish ramping (delay = 3*max/ramp s); saves to LOG_DIR/
@@ -56,6 +60,7 @@ RAMP=100
 DURATION=30
 DELIVERY_TIMEOUT=500
 TRANSPORT="quic"
+DRAFT=""
 USE_RELAY_THREAD="true"
 USE_LOCAL_FORWARDERS="false"
 IO_THREADS=1
@@ -81,19 +86,20 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --relay)            BINARY="$2";            shift 2 ;;
     --moqbin)           MOQBIN="$2";            shift 2 ;;
-    --subscriber-max)   SUBSCRIBER_MAX="$2";    shift 2 ;;
+    -s|--subscriber-max) SUBSCRIBER_MAX="$2";   shift 2 ;;
     --ramp)             RAMP="$2";              shift 2 ;;
-    --duration)         DURATION="$2";          shift 2 ;;
+    -d|--duration)      DURATION="$2";          shift 2 ;;
     --delivery-timeout) DELIVERY_TIMEOUT="$2";  shift 2 ;;
-    --transport)        TRANSPORT="$2";         shift 2 ;;
+    -t|--transport)     TRANSPORT="$2";         shift 2 ;;
+    --draft)            DRAFT="$2";             shift 2 ;;
     --no-relay-thread)  USE_RELAY_THREAD="false"; shift ;;
     --local-forwarders) USE_LOCAL_FORWARDERS="true"; shift ;;
     --io-threads)       IO_THREADS="$2";          shift 2 ;;
     --threads)          CLIENT_THREADS="$2";      shift 2 ;;
-    --relay-log)        RELAY_LOG_SPEC="$2";      shift 2 ;;
+    -l|--relay-log)     RELAY_LOG_SPEC="$2";      shift 2 ;;
     --bpf-steering)     BPF_STEERING="true";      shift ;;
     --no-bpf-steering)  BPF_STEERING="false";     shift ;;
-    --jemalloc)         JEMALLOC="auto";           shift ;;
+    -j|--jemalloc)      JEMALLOC="auto";           shift ;;
     --metrics)          RUN_METRICS=true;          shift ;;
     --perf-duration)    PERF_DURATION="$2";        shift 2 ;;
     --perf-events)      PERF_EVENTS="$2";          shift 2 ;;
@@ -110,15 +116,9 @@ MOQTEST_SERVER="$MOQBIN/moqtest_server"
 MOQPERF_CLIENT="$MOQBIN/moqperf_test_client"
 METRICS_SCRIPT="$REPO/scripts/perf-metrics.sh"
 
-# ── jemalloc resolution ───────────────────────────────────────────────────────
-if [[ "$JEMALLOC" == "auto" ]]; then
-  if [[ -f /lib64/libjemalloc.so.2 ]]; then
-    JEMALLOC=/lib64/libjemalloc.so.2
-  else
-    echo "WARNING: --jemalloc requested but /lib64/libjemalloc.so.2 not found; ignoring" >&2
-    JEMALLOC=""
-  fi
-fi
+# jemalloc detection is delegated to moqx-run.sh (-j auto): it probes the common
+# multiarch + /lib64 paths and LD_PRELOADs the lib for the relay, warning (in the
+# relay log) if none is found. JEMALLOC is just the request flag here.
 
 # ── Log directory (always on) ─────────────────────────────────────────────────
 LOG_DIR="/tmp/moqx-perf-$(date +%Y%m%d-%H%M%S)"
@@ -174,9 +174,10 @@ else
   QUIC_FLAG="--quic_transport=false"
 fi
 
-# ── Temp dir for relay config ─────────────────────────────────────────────────
-TMPDIR_SCRIPT="$(mktemp -d)"
-RELAY_CFG="$TMPDIR_SCRIPT/relay.yaml"
+# Pin the MoQ draft on publisher + subscriber so all three parties negotiate the
+# same version the relay offers (--draft). Empty = parties use their defaults.
+VERSIONS_FLAG=()
+[[ -n "$DRAFT" ]] && VERSIONS_FLAG=(--versions="$DRAFT")
 
 # ── Cleanup ───────────────────────────────────────────────────────────────────
 PIDS=()
@@ -205,55 +206,12 @@ cleanup() {
   done
   [[ ${#PIDS[@]} -gt 0 ]] && wait ${PIDS[@]+"${PIDS[@]}"} 2>/dev/null || true
   [[ -n "$RELAY_PID" ]] && wait "$RELAY_PID" 2>/dev/null || true
-  rm -rf "$TMPDIR_SCRIPT"
   echo "Logs saved to $LOG_DIR"
 }
 trap cleanup EXIT
 
-# ── Relay config ──────────────────────────────────────────────────────────────
-cat >"$RELAY_CFG" <<EOF
-relay_id: "perf-test-relay"
-threads: $IO_THREADS
-use_relay_thread: $USE_RELAY_THREAD
-use_local_forwarders: $USE_LOCAL_FORWARDERS
-mvfst_bpf_steering: $BPF_STEERING
-listeners:
-  - name: perf
-    udp:
-      socket:
-        address: "::"
-        port: $RELAY_PORT
-    tls:
-      insecure: true
-    endpoint: "$ENDPOINT"
-    mvfst:
-      enable_gso: true
-      ignore_path_mtu: true
-      max_conn_packets_sent_per_loop: 16
-      max_server_recv_packets_per_loop: 256
-      udp_socket_buffer_bytes: $UDP_SOCKET_BUFFER_BYTES
-      bbr2:
-        exit_startup_on_loss: true
-        enable_recovery_in_startup: true
-        enable_recovery_in_probe_states: true
-    quic:
-      cc_algo: bbr2
-services:
-  default:
-    match:
-      - authority: {any: true}
-        path: {prefix: "/"}
-    cache:
-      enabled: false
-      max_tracks: 0
-      max_groups_per_track: 0
-admin:
-  port: $RELAY_ADMIN_PORT
-  address: "::"
-  plaintext: true
-EOF
-
-cp "$RELAY_CFG" "$LOG_DIR/relay.yaml"
+# The relay config is rendered by scripts/moqx-run.sh from config.bench.yaml at
+# launch (below) and written straight to $LOG_DIR/relay.yaml (MOQX_RESOLVED_CONFIG).
 
 # ── Run params ────────────────────────────────────────────────────────────────
 {
@@ -264,6 +222,7 @@ cp "$RELAY_CFG" "$LOG_DIR/relay.yaml"
   echo "moqbin:           $MOQBIN"
   echo "relay_url:        $RELAY_URL"
   echo "transport:        $TRANSPORT"
+  echo "draft:            ${DRAFT:-default (offers 16,14,18)}"
   echo "io_threads:       $IO_THREADS"
   echo "use_relay_thread: $USE_RELAY_THREAD"
   echo "local_forwarders: $USE_LOCAL_FORWARDERS"
@@ -281,18 +240,35 @@ cp "$RELAY_CFG" "$LOG_DIR/relay.yaml"
 } | tee "$LOG_DIR/run_params.txt"
 echo ""
 
-# ── Start relay ───────────────────────────────────────────────────────────────
+# ── Start relay (via scripts/moqx-run.sh + config.bench.yaml) ──────────────────
 ulimit -n 65536 2>/dev/null || true
 echo "Starting relay (use_relay_thread=$USE_RELAY_THREAD, local_forwarders=$USE_LOCAL_FORWARDERS, io_threads=$IO_THREADS, transport=$TRANSPORT, mvfst_bpf_steering=$BPF_STEERING)..."
-RELAY_LOGGING_ARG=()
-[[ -n "$RELAY_LOG_SPEC" ]] && RELAY_LOGGING_ARG=("--logging=$RELAY_LOG_SPEC")
-if [[ -n "$JEMALLOC" ]]; then
-  echo "Using jemalloc: $JEMALLOC"
-  LD_PRELOAD="$JEMALLOC" "$BINARY" --config="$RELAY_CFG" ${RELAY_LOGGING_ARG[@]+"${RELAY_LOGGING_ARG[@]}"} >"$RELAY_LOG" 2>&1 &
-else
-  "$BINARY" --config="$RELAY_CFG" ${RELAY_LOGGING_ARG[@]+"${RELAY_LOGGING_ARG[@]}"} >"$RELAY_LOG" 2>&1 &
-fi
-RELAY_PID=$!
+
+# Map perf knobs -> moqx-run.sh. --no-sudo is REQUIRED: moqx-run execs the relay,
+# so under sudo $! would be the sudo PID and perf -p would profile sudo, not moqx.
+RELAY_RUN_ARGS=(
+  --no-sudo --insecure --no-cache --ignore-path-mtu
+  --bin        "$BINARY"
+  --port       "$RELAY_PORT"
+  --admin-port "$RELAY_ADMIN_PORT"
+  --endpoint   "$ENDPOINT"
+  --threads    "$IO_THREADS"
+  --cc         bbr2
+  --udp-buffer "$UDP_SOCKET_BUFFER_BYTES"
+)
+[[ "$USE_RELAY_THREAD" == true ]]     && RELAY_RUN_ARGS+=(--relay-thread)     || RELAY_RUN_ARGS+=(--no-relay-thread)
+[[ "$USE_LOCAL_FORWARDERS" == true ]] && RELAY_RUN_ARGS+=(--local-forwarders) || RELAY_RUN_ARGS+=(--no-local-forwarders)
+[[ "$BPF_STEERING" == true ]] && RELAY_RUN_ARGS+=(--bpf-steering)
+[[ -n "$DRAFT" ]]             && RELAY_RUN_ARGS+=(--moqt-versions "$DRAFT")
+[[ -n "$RELAY_LOG_SPEC" ]]    && RELAY_RUN_ARGS+=(-x "$RELAY_LOG_SPEC")
+[[ -n "$JEMALLOC" ]]          && RELAY_RUN_ARGS+=(-j auto)   # moqx-run resolves + LD_PRELOADs
+
+# Relay identity + render the resolved config straight into the run's log dir.
+export MOQX_RELAY_ID="perf-test-relay"
+export MOQX_RESOLVED_CONFIG="$LOG_DIR/relay.yaml"
+
+"$REPO/scripts/moqx-run.sh" "${RELAY_RUN_ARGS[@]}" >"$RELAY_LOG" 2>&1 &
+RELAY_PID=$!     # moqx-run execs moqx, so $! is the relay process itself
 
 deadline=$(( $(date +%s) + 10 ))
 until curl -sf "http://localhost:$RELAY_ADMIN_PORT/info" >/dev/null 2>&1; do
@@ -330,6 +306,7 @@ echo "Starting moqtest_server -> $RELAY_URL ..."
 "$MOQTEST_SERVER" \
   --relay_url="$RELAY_URL" \
   $QUIC_FLAG \
+  "${VERSIONS_FLAG[@]+"${VERSIONS_FLAG[@]}"}" \
   --include_timestamp_extension=true \
   >"$SERVER_LOG" 2>&1 &
 PIDS+=($!)
@@ -369,6 +346,7 @@ fi
 CLIENT_ARGS=(
   --relay_url="$RELAY_URL"
   $QUIC_FLAG
+  "${VERSIONS_FLAG[@]+"${VERSIONS_FLAG[@]}"}"
   --subscriber_max="$SUBSCRIBER_MAX"
   --subscriber_ramp="$RAMP"
   --duration="$DURATION"

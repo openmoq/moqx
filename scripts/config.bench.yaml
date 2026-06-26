@@ -2,23 +2,40 @@
 #
 # Filled by scripts/moqx-run.sh, which resolves the ${MOQX_*} / ${DOMAIN}
 # placeholders below from CLI flags > .env > built-in defaults, then serves
-# the resolved config. Two listeners: mvfst :4433 and picoquic :4434 (each
-# serves WebTransport via the endpoint path and raw QUIC moqt://).
+# the resolved config. One listener at a time (mvfst or picoquic), selected
+# by MOQX_STACK (--quic-stack); it serves WebTransport via the endpoint path
+# and raw QUIC moqt://. To serve both stacks at once, use the docker config
+# template instead (docker/config.docker.yaml).
 #
 # Tunable via env / CLI (defaults live in moqx-run.sh):
-#   MOQX_THREADS       IO worker threads; 0 = moqx autodetects one per CPU
+#   MOQX_RELAY_ID      relay identity string in logs/metrics (default moqx-000)
+#   MOQX_STACK         quic stack for the listener: mvfst | picoquic (--quic-stack)
+#   MOQX_MOQT_VERSIONS advertised MoQT drafts, YAML inline list, server-preference
+#                      order (default [16, 14, 18]; first listed wins)
+#   MOQX_PORT          UDP listen port
+#   MOQX_ADMIN_PORT    admin HTTP port
+#   MOQX_ENDPOINT      WebTransport endpoint path
+#   MOQX_INSECURE      use built-in dev cert, ignore cert/key (true|false)
+#   MOQX_CERT          TLS certificate PEM (default: letsencrypt under DOMAIN)
+#   MOQX_KEY           TLS private key PEM  (default: letsencrypt under DOMAIN)
+#   MOQX_RELAY_THREAD  dedicated relay exec thread (true|false)
+#   MOQX_THREADS       IO worker threads, must be >= 1
 #   MOQX_LOCAL_FWD     per-subscriber-thread local forwarders (true|false)
 #   MOQX_BPF_STEERING  mvfst CID reuseport steering, Linux+mvfst (true|false)
 #   MOQX_SEND_PKTS     mvfst max_conn_packets_sent_per_loop
 #   MOQX_RECV_PKTS     mvfst max_server_recv_packets_per_loop
 #   MOQX_UDP_BUFFER    relay UDP socket buffer bytes; 0 = moxygen 1 MB default
-#   MOQX_CC            mvfst congestion control (bbr2|bbr|copa|cubic|...)
+#   MOQX_CC            congestion control; bbr works on both stacks (bbr|bbr2|cubic|...)
 #   MOQX_CACHE         relay object cache enabled (true|false)
+#   MOQX_MAX_TRACKS    cache max tracks (when cache enabled)
+#   MOQX_MAX_GROUPS    cache max groups per track (when cache enabled)
+#   MOQX_IGNORE_PATH_MTU  skip PMTU discovery, send full-size packets (true|false)
 #   DOMAIN             TLS cert hostname under /etc/letsencrypt/live/
 
-relay_id: "moqx-000"
+relay_id: "${MOQX_RELAY_ID}"
 
 threads: ${MOQX_THREADS}
+use_relay_thread: ${MOQX_RELAY_THREAD}
 use_local_forwarders: ${MOQX_LOCAL_FWD}
 mvfst_bpf_steering: ${MOQX_BPF_STEERING}
 
@@ -36,49 +53,40 @@ listener_defaults:
     max_conn_packets_sent_per_loop: ${MOQX_SEND_PKTS}
     max_server_recv_packets_per_loop: ${MOQX_RECV_PKTS}
     udp_socket_buffer_bytes: ${MOQX_UDP_BUFFER}
+    ignore_path_mtu: ${MOQX_IGNORE_PATH_MTU}
     bbr2:
       exit_startup_on_loss: true
       enable_recovery_in_startup: true
       enable_recovery_in_probe_states: true
 
+# Single listener; switch stacks with MOQX_STACK / --quic-stack. The mvfst
+# tuning under listener_defaults is a no-op when the picoquic stack is selected.
 listeners:
-  - name: mvfst-relay
-    quic_stack: mvfst
+  - name: relay
+    quic_stack: ${MOQX_STACK}
+    moqt_versions: ${MOQX_MOQT_VERSIONS}
     udp:
       socket:
         address: "::"
-        port: 4433
+        port: ${MOQX_PORT}
     tls:
-      cert_file: "/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
-      key_file: "/etc/letsencrypt/live/${DOMAIN}/privkey.pem"
-      insecure: false
-    endpoint: "/moq-relay"
+      cert_file: "${MOQX_CERT}"
+      key_file: "${MOQX_KEY}"
+      insecure: ${MOQX_INSECURE}
+    endpoint: "${MOQX_ENDPOINT}"
     quic:
       cc_algo: ${MOQX_CC}
-
-  - name: pico-relay
-    quic_stack: picoquic
-    udp:
-      socket:
-        address: "::"
-        port: 4434
-    tls:
-      cert_file: "/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
-      key_file: "/etc/letsencrypt/live/${DOMAIN}/privkey.pem"
-      insecure: false
-    endpoint: "/moq-pico-relay"
-    quic:
-      cc_algo: bbr
 
 services:
   default:
     match:
+      # Two rules so both transports work under either stack:
+      #   exact endpoint → WebTransport on ${MOQX_ENDPOINT} (mvfst AND picoquic;
+      #                    pico only registers WT endpoints for exact-path rules)
+      #   prefix "/"     → raw QUIC (moqt://) on the base URL (mvfst). A picoquic
+      #                    listener logs an "unsupported prefix" warning + ignores it.
       - authority: {any: true}
-        path: {exact: "/moq-relay"}
-      - authority: {any: true}
-        path: {exact: "/moq-pico-relay"}
-      - authority: {any: true}
-        path: {exact: "/"}
+        path: {exact: "${MOQX_ENDPOINT}"}
       - authority: {any: true}
         path: {prefix: "/"}
 
@@ -93,10 +101,10 @@ services:
 service_defaults:
   cache:
     enabled: ${MOQX_CACHE}
-    max_tracks: 1000
-    max_groups_per_track: 100
+    max_tracks: ${MOQX_MAX_TRACKS}
+    max_groups_per_track: ${MOQX_MAX_GROUPS}
 
 admin:
-  port: 8000
+  port: ${MOQX_ADMIN_PORT}
   address: "::"
   plaintext: true

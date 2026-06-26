@@ -1,6 +1,7 @@
 # Minimal config for integration tests (insecure, no TLS).
 listeners:
   - name: main
+    moqt_versions: [16, 14, 18]   # d18 last = forward-looking fallback
     udp:
       socket:
         address: "::"

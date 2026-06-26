@@ -221,7 +221,16 @@ require_system_deps() {
 check_submodule() {
   if [[ ! -e "$MOXYGEN_DIR/.git" ]]; then
     die "deps/moxygen submodule not initialized.
-  Run: git submodule update --init"
+  Run: git submodule update --init --recursive"
+  fi
+  # catapult and its own nested submodules (libcbor, nlohmann_json, spdlog,
+  # doctest) are required by the top-level build. A plain 'submodule update
+  # --init' without --recursive (or one scoped to deps/moxygen) leaves them
+  # empty, which fails configure with a missing-CMakeLists error. Auto-init
+  # recursively so a fresh or partial clone just works.
+  if [[ ! -f "$PROJECT_ROOT/deps/catapult/CMakeLists.txt" ]]; then
+    echo "==> Initializing catapult submodule (recursive)..."
+    git -C "$PROJECT_ROOT" submodule update --init --recursive deps/catapult
   fi
 }
 
