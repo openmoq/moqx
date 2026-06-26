@@ -89,6 +89,10 @@ buildTransportSettings(const config::QuicConfig& quic, const config::MvfstConfig
   ts.advertisedInitialUniStreamFlowControlWindow = quic.maxStreamData;
   ts.advertisedInitialMaxStreamsBidi = quic.maxBidiStreams;
   ts.advertisedInitialMaxStreamsUni = quic.maxUniStreams;
+  // Deep datagram queue dropping oldest-first: a write stall sheds stale frames
+  // rather than rejecting new ones.
+  ts.datagramConfig.writeBufSize = 500;
+  ts.datagramConfig.sendDropOldDataFirst = true;
   ts.idleTimeout = std::chrono::milliseconds(quic.idleTimeoutMs);
   ts.minAckDelay = std::chrono::microseconds(quic.minAckDelayUs);
   if (quic.maxAckDelayUs != config::QuicConfig{}.maxAckDelayUs) {

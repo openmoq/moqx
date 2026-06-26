@@ -412,6 +412,10 @@ folly::coro::Task<void> UpstreamProvider::doConnect() {
 
   quic::TransportSettings ts;
   ts.orderedReadCallbacks = true;
+  // Deep datagram queue dropping oldest-first: a write stall sheds stale frames
+  // rather than rejecting new ones.
+  ts.datagramConfig.writeBufSize = 1000;
+  ts.datagramConfig.sendDropOldDataFirst = true;
 
   // Relay chaining requires draft 16+. Only offer standard draft-16 ALPN
   // ("moqt-16") so we fail fast if the upstream doesn't support it.
