@@ -135,6 +135,14 @@ public:
     );
   }
 
+  folly::coro::Task<TrackStatusResult> trackStatus(moxygen::TrackStatus req) override {
+    // Answer from the local forwarder on this exec; else hop to relayExec_ + upstream.
+    if (auto local = relay_->trackStatusOnSubscriberExec(req)) {
+      return folly::coro::makeTask<TrackStatusResult>(std::move(*local));
+    }
+    return PublisherCrossExecFilter::trackStatus(std::move(req));
+  }
+
 private:
   std::shared_ptr<MoqxRelay> relay_;
 };
@@ -2108,6 +2116,37 @@ MoqxRelay::fetch(Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
   return fetchImpl(std::move(fetch), std::move(consumer));
 }
 
+namespace {
+TrackStatusOk buildTrackStatusOk(MoQForwarder& fwd, bool hasHandle, const TrackStatus& req) {
+  TrackStatusCode statusCode = TrackStatusCode::TRACK_NOT_STARTED;
+  // largest() set means an object arrived; hasHandle means the upstream sub is still live.
+  if (fwd.largest()) {
+    statusCode = hasHandle ? TrackStatusCode::IN_PROGRESS : TrackStatusCode::UNKNOWN;
+  }
+  TrackStatusOk ok;
+  ok.requestID = req.requestID;
+  ok.groupOrder = fwd.groupOrder();
+  ok.largest = fwd.largest();
+  ok.fullTrackName = req.fullTrackName;
+  ok.statusCode = statusCode;
+  return ok;
+}
+} // namespace
+
+std::optional<Publisher::TrackStatusResult>
+MoqxRelay::trackStatusOnSubscriberExec(const TrackStatus& req) {
+  if (req.fullTrackName.trackNamespace.empty()) {
+    return std::nullopt;
+  }
+  auto* localReg = tlForwarders_.get();
+  auto localFwd = localReg ? localReg->get(req.fullTrackName) : nullptr;
+  if (!localFwd || localFwd->numForwardingSubscribers() == 0) {
+    return std::nullopt;
+  }
+  // A forwarding local subscriber implies the upstream sub is live.
+  return Publisher::TrackStatusResult(buildTrackStatusOk(*localFwd, /*hasHandle=*/true, req));
+}
+
 folly::coro::Task<Publisher::FetchResult>
 MoqxRelay::fetchImpl(Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
   auto session = MoQSession::getRequestSession();
@@ -2172,6 +2211,16 @@ MoqxRelay::fetchImpl(Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
       ->fetch(std::move(fetch), std::move(consumer), std::move(upstreamPublisher));
 }
 
+folly::coro::Task<std::optional<TrackStatusOk>>
+MoqxRelay::readPublisherForwarderStatus(bool hasHandle, TrackStatus req) {
+  auto* localReg = tlForwarders_.get();
+  auto forwarder = localReg ? localReg->get(req.fullTrackName) : nullptr;
+  if (!forwarder || forwarder->numForwardingSubscribers() == 0) {
+    co_return std::nullopt;
+  }
+  co_return buildTrackStatusOk(*forwarder, hasHandle, req);
+}
+
 folly::coro::Task<Publisher::TrackStatusResult> MoqxRelay::trackStatus(TrackStatus trackStatus) {
   return trackStatusImpl(std::move(trackStatus));
 }
@@ -2189,34 +2238,29 @@ folly::coro::Task<Publisher::TrackStatusResult> MoqxRelay::trackStatusImpl(Track
   }
 
   auto upstreamView = registry_.getUpstreamView(trackStatus.fullTrackName);
-  if (upstreamView && upstreamView->forwarder->numForwardingSubscribers() > 0) {
-    // We have active subscription - answer directly from local forwarder state
-    auto& forwarder = upstreamView->forwarder;
-
-    TrackStatusCode statusCode = TrackStatusCode::TRACK_NOT_STARTED;
-    // forwarder->largest() being set means: we have actually
-    // received at least one object for this track.
-    // upstreamView->handle being non-null means: the relay still has a
-    // live upstream Publisher::SubscriptionHandle for this track
-    if (forwarder->largest()) {
-      if (upstreamView->handle) {
-        statusCode = TrackStatusCode::IN_PROGRESS;
-      } else {
-        statusCode = TrackStatusCode::UNKNOWN;
-      }
+  // Active subscription: answer from the publisher forwarder's state instead of going upstream.
+  std::optional<TrackStatusOk> trackStatusOk;
+  if (mode() == Mode::LocalForwarder) {
+    // LF mode never touches registry->forwarder; read it via tlForwarders_ on the publisher exec.
+    if (upstreamView && upstreamView->publisherExec) {
+      trackStatusOk = co_await folly::coro::co_withExecutor(
+          folly::getKeepAliveToken(upstreamView->publisherExec),
+          readPublisherForwarderStatus((bool)upstreamView->handle, trackStatus)
+      );
     }
-
-    TrackStatusOk trackStatusOk;
-    trackStatusOk.requestID = trackStatus.requestID;
-    trackStatusOk.groupOrder = forwarder->groupOrder();
-    trackStatusOk.largest = forwarder->largest();
-    trackStatusOk.fullTrackName = trackStatus.fullTrackName;
-    trackStatusOk.statusCode = statusCode;
-
+  } else if (upstreamView && upstreamView->forwarder &&
+             upstreamView->forwarder->numForwardingSubscribers() > 0) {
+    // Non-LF: relayExec_ (or the single thread) owns the sole forwarder; read it inline.
+    trackStatusOk =
+        buildTrackStatusOk(*upstreamView->forwarder, (bool)upstreamView->handle, trackStatus);
+  }
+  if (trackStatusOk) {
     XLOG(DBG1) << "Returning local track status for " << trackStatus.fullTrackName
-               << " statusCode=" << (uint32_t)statusCode;
-    co_return trackStatusOk;
-  } else {
+               << " statusCode=" << (uint32_t)trackStatusOk->statusCode;
+    co_return std::move(*trackStatusOk);
+  }
+  // No active subscription — fall through to the upstream path.
+  {
     // No active subscription — try registry publisher first, then namespace tree
     std::shared_ptr<Publisher> upstreamPublisher;
     if (upstreamView) {

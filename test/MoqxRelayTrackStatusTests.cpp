@@ -108,4 +108,56 @@ TEST_P(MoQRelayTest, TrackStatusViaPrefixMatching) {
   removeSession(requester);
 }
 
+// An unsubscribed requester is answered from the relay's forwarder state (kept alive by
+// another subscriber), never an upstream round-trip.
+TEST_P(MoQRelayTest, TrackStatusUnsubscribedRequesterReadsForwarder) {
+  auto publisherSession = createMockSession();
+  auto subscriber = createMockSession();
+  auto requester = createMockSession();
+
+  doPublishNamespace(publisherSession, kTestNamespace);
+
+  // Publish with an initial largest so the forwarder reports IN_PROGRESS.
+  PublishRequest pub;
+  pub.fullTrackName = kTestTrackName;
+  pub.largest = AbsoluteLocation{4, 2};
+  withSessionContext(publisherSession, [&]() {
+    auto res = subscriberInterface()->publish(std::move(pub), createMockSubscriptionHandle());
+    ASSERT_TRUE(res.hasValue());
+    getOrCreateMockState(publisherSession)->publishConsumers.push_back(res->consumer);
+    co_withExecutor(static_cast<folly::DrivableExecutor*>(exec_.get()), std::move(res->reply))
+        .start();
+  });
+  exec_->drive();
+
+  // A real forwarding subscriber keeps numForwardingSubscribers() > 0.
+  auto consumer = createMockConsumer();
+  auto handle = subscribeToTrack(subscriber, kTestTrackName, consumer, RequestID(1));
+  ASSERT_NE(handle, nullptr);
+  driveIfMultiThread();
+
+  // The requester never subscribed; trackStatus must never go upstream.
+  EXPECT_CALL(*publisherSession, trackStatus(_)).Times(0);
+
+  TrackStatus trackStatus;
+  trackStatus.fullTrackName = kTestTrackName;
+  trackStatus.requestID = RequestID(2);
+  withSessionContext(requester, [&]() {
+    auto task = publisherInterface()->trackStatus(trackStatus);
+    auto res = folly::coro::blockingWait(std::move(task), exec_.get());
+    ASSERT_TRUE(res.hasValue());
+    EXPECT_EQ(res.value().statusCode, TrackStatusCode::IN_PROGRESS);
+    EXPECT_EQ(res.value().fullTrackName, kTestTrackName);
+    ASSERT_TRUE(res.value().largest.has_value());
+    EXPECT_EQ(res.value().largest->group, 4);
+    EXPECT_EQ(res.value().largest->object, 2);
+  });
+
+  removeSession(subscriber);
+  exec_->drive();
+  removeSession(requester);
+  removeSession(publisherSession);
+  driveIfMultiThread();
+}
+
 } // namespace moxygen::test

@@ -492,6 +492,10 @@ private:
       folly::Executor* subscriberExec
   );
 
+  // Answers from this thread's local forwarder (race-free); nullopt defers to trackStatusImpl.
+  std::optional<moxygen::Publisher::TrackStatusResult>
+  trackStatusOnSubscriberExec(const moxygen::TrackStatus& req);
+
   // Impl methods — run on relayExec_ when set, or inline when relayExec_==nullptr.
   folly::coro::Task<SubscribeResult>
   subscribeImpl(moxygen::SubscribeRequest subReq, std::shared_ptr<moxygen::TrackConsumer> consumer);
@@ -507,6 +511,10 @@ private:
   );
   folly::coro::Task<moxygen::Publisher::TrackStatusResult> trackStatusImpl(moxygen::TrackStatus req
   );
+  // Must be scheduled on the publisher exec; looks the forwarder up in tlForwarders_ by FTN.
+  // nullopt means no active sub, defer upstream.
+  folly::coro::Task<std::optional<moxygen::TrackStatusOk>>
+  readPublisherForwarderStatus(bool hasHandle, moxygen::TrackStatus req);
   folly::coro::Task<void> onUpstreamConnectImpl(std::shared_ptr<moxygen::MoQSession> session);
 
   // Synchronous result of publishWithSession: the consumer the publisher writes
