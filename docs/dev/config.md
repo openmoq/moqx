@@ -91,16 +91,37 @@ CacheConfig cacheConfig{
 };
 ```
 
-### 4. Update `config.example.yaml`
+### 4. Serialize it (`src/config/ConfigSerializer.h`)
+
+Add the field to the matching `serialize*()` helper. This walk is the single
+source of truth the `/config` admin endpoint dumps (and any future YAML/log
+dump) — it's format-agnostic and calls back into a `ConfigSink`, so you only
+add the field once regardless of output format.
+
+```cpp
+inline void serializeCache(ConfigSink& s, const CacheConfig& c) {
+  s.beginObject("cache");
+  s.uintField("max_cached_groups_per_track", c.maxCachedGroupsPerTrack); // new field
+  ...
+```
+
+If you forget, `test/config/ConfigSerializerTest.cpp` fails to compile: a
+`rfl::num_fields` static_assert pins each struct's field count, so adding a
+field breaks the build until you bump the count and update the serializer.
+Redact secrets (e.g. HMAC keys) here — the serializer emits `"<redacted>"` so
+no sink can leak them.
+
+### 5. Update `config.example.yaml`
 
 Add the new field with a comment explaining it.
 
-### 5. Adding a new config section
+### 6. Adding a new config section
 
 If you need a new top-level section (not just a field), also:
 - Create a new `Parsed*Config` struct in `ParsedConfig.h` and add it to `ParsedConfig`.
 - Create a new final struct in `Config.h` and add it to `Config`.
 - Handle it in `resolveConfig()`.
+- Add a `serialize*()` helper in `ConfigSerializer.h` and a field-count assert in `ConfigSerializerTest.cpp`.
 
 ## reflect-cpp notes
 
