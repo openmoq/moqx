@@ -65,4 +65,95 @@ TEST_P(MoQRelayTest, FetchAfterPublisherTermination) {
   removeSession(fetchSession);
 }
 
+// Joining fetch referencing a PUBLISH: onPublishOk must store the PUBLISH_OK
+// request id so the fetch matches the fanned-out subscription and resolves.
+TEST_P(MoQRelayTest, JoiningFetchAgainstPublish) {
+  auto publisherSession = createMockSession();
+  auto subscriber = createMockSession();
+
+  doPublishNamespace(publisherSession, kTestNamespace);
+
+  std::atomic<bool> published{false};
+  auto mockConsumer = createMockConsumer();
+  EXPECT_CALL(*subscriber, publish(_, _))
+      .WillOnce([&mockConsumer, &published](const PublishRequest&, auto) {
+        published.store(true);
+        return Subscriber::PublishResult(Subscriber::PublishConsumerAndReplyTask{
+            mockConsumer,
+            []() -> folly::coro::Task<folly::Expected<PublishOk, PublishError>> {
+              co_return PublishOk{
+                  RequestID(7),
+                  /*forward=*/true,
+                  0,
+                  GroupOrder::OldestFirst,
+                  LocationType::LargestObject,
+                  std::nullopt,
+                  std::nullopt
+              };
+            }()
+        });
+      });
+
+  doSubscribeNamespace(subscriber, kTestNamespace);
+
+  // Publish the track with an initial largest so the fanned-out subscriber
+  // snapshots a join point.
+  PublishRequest pub;
+  pub.fullTrackName = kTestTrackName;
+  pub.largest = AbsoluteLocation{0, 0};
+  withSessionContext(publisherSession, [&]() {
+    auto res = subscriberInterface()->publish(std::move(pub), createMockSubscriptionHandle());
+    ASSERT_TRUE(res.hasValue());
+    getOrCreateMockState(publisherSession)->publishConsumers.push_back(res->consumer);
+    co_withExecutor(static_cast<folly::DrivableExecutor*>(exec_.get()), std::move(res->reply))
+        .start();
+  });
+  exec_->drive();
+  ASSERT_TRUE(driveUntil([&] { return published.load(); }))
+      << "publish was not forwarded to the subscriber";
+  // Flush the PUBLISH_OK reply so onPublishOk stores the request id before the fetch.
+  for (int i = 0; i < 5; ++i) {
+    exec_->drive();
+  }
+
+  std::atomic<bool> upstreamFetched{false};
+  auto capturedFetch = std::make_shared<Fetch>();
+  EXPECT_CALL(*publisherSession, fetch(_, _))
+      .WillOnce([capturedFetch,
+                 &upstreamFetched](Fetch f, std::shared_ptr<FetchConsumer> consumer) {
+        *capturedFetch = std::move(f);
+        upstreamFetched.store(true);
+        // Terminate the fetch so the cross-exec consumer drops its self-anchor;
+        // a real upstream always ends the fetch (here the resolved range is empty).
+        consumer->endOfFetch();
+        return folly::coro::makeTask<Publisher::FetchResult>(std::make_shared<MockFetchHandle>(
+            FetchOk{RequestID(0), GroupOrder::OldestFirst, 0, AbsoluteLocation{0, 0}, {}}
+        ));
+      });
+
+  Fetch joiningFetch(RequestID(0), RequestID(7), /*joiningStart=*/0, FetchType::RELATIVE_JOINING);
+  joiningFetch.fullTrackName = kTestTrackName;
+  auto fetchConsumer = std::make_shared<NiceMock<MockFetchConsumer>>();
+  EXPECT_CALL(*fetchConsumer, endOfFetch()).WillOnce([]() {
+    return folly::Expected<folly::Unit, MoQPublishError>(folly::unit);
+  });
+  withSessionContext(subscriber, [&]() {
+    auto task = publisherInterface()->fetch(std::move(joiningFetch), fetchConsumer);
+    auto res = folly::coro::blockingWait(std::move(task), exec_.get());
+    EXPECT_TRUE(res.hasValue());
+  });
+  ASSERT_TRUE(driveUntil([&] { return upstreamFetched.load(); }))
+      << "joining fetch was not resolved/forwarded upstream";
+
+  auto [standalone, joining] = fetchType(*capturedFetch);
+  EXPECT_EQ(joining, nullptr) << "joining fetch was not resolved to standalone";
+  ASSERT_NE(standalone, nullptr);
+  EXPECT_EQ(standalone->start, (AbsoluteLocation{0, 0}));
+  EXPECT_EQ(standalone->end, (AbsoluteLocation{0, 1}));
+
+  removeSession(publisherSession);
+  removeSession(subscriber);
+  driveIfMultiThread();
+}
+
 } // namespace moxygen::test
