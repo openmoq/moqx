@@ -85,7 +85,7 @@ admin:
 
 logging:                    # Logging configuration (optional)
   mlog:                     # MoQ-level structured logging
-    dir: "./mlog"                  # Output directory for per-session mlog files
+    dir: "/tmp/moqx-mlog"          # Output directory for per-session mlog files
     sample_rate: 1              # Fraction of sessions to log (0.0–1.0, default: 1.0)
     # max_age_days: 7          # Delete .mlog files older than N days (omit = no age limit)
     # max_dir_mb: 1024         # Trim directory to N MB by deleting oldest files first (omit = no size limit)

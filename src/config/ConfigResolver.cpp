@@ -1006,10 +1006,20 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
           parsedMlog.cleanup_interval_secs.value().value_or(600u);
       if (!mlogConfig.dir.empty()) {
         std::error_code ec;
-        std::filesystem::create_directories(mlogConfig.dir, ec);
+        const bool exists = std::filesystem::exists(mlogConfig.dir, ec);
         if (ec) {
           return folly::makeUnexpected(
-              "Failed to create mlog directory '" + mlogConfig.dir + "': " + ec.message()
+              "Failed to access mlog directory '" + mlogConfig.dir + "': " + ec.message()
+          );
+        }
+        if (exists && !std::filesystem::is_directory(mlogConfig.dir, ec)) {
+          return folly::makeUnexpected(
+              "logging.mlog.dir must be a directory path: '" + mlogConfig.dir + "'"
+          );
+        }
+        if (ec) {
+          return folly::makeUnexpected(
+              "Failed to inspect mlog directory '" + mlogConfig.dir + "': " + ec.message()
           );
         }
       }

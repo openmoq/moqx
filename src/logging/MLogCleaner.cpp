@@ -50,7 +50,7 @@ void MLogCleaner::cleanup() {
     return;
   }
 
-  const auto now = system_clock::now();
+  const auto now = fs::file_time_type::clock::now();
 
   struct FileEntry {
     fs::path path;
@@ -90,7 +90,7 @@ void MLogCleaner::cleanup() {
 
     // Age-based deletion: remove immediately if beyond max age.
     if (maxAge_) {
-      if (now - clock_cast<system_clock>(mtime) > *maxAge_) {
+      if (now - mtime > *maxAge_) {
         fs::remove(entry.path(), ec);
         if (ec) {
           XLOG(WARN) << "mlog cleanup: failed to remove aged file "

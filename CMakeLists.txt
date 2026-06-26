@@ -155,6 +155,7 @@ add_library(moqx_core STATIC
   src/relay/PublisherCrossExecFilter.cpp
   src/relay/SubscriberCrossExecFilter.cpp
   src/logging/MLogCleaner.cpp
+  src/logging/MLogSetup.cpp
 )
 
 target_include_directories(moqx_core
