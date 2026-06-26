@@ -9,6 +9,7 @@
 #include "admin/AdminServer.h"
 #include "admin/BuiltinRoutes.h"
 #include "admin/CachePurgeHandler.h"
+#include "admin/ConfigHandler.h"
 #include "admin/MetricsHandler.h"
 #include "admin/StateHandler.h"
 #include "bpf/QuicReuseportSteering.h"
@@ -150,6 +151,7 @@ int main(int argc, char* argv[]) {
   admin::registerMetricsRoute(adminServer, statsRegistry);
   admin::registerCachePurgeRoute(adminServer, context);
   admin::registerStateRoute(adminServer, context);
+  admin::registerConfigRoute(adminServer, std::make_shared<const cfg::Config>(config));
 
   // === 8. Start serving ===
   for (auto& server : servers) {

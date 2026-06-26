@@ -111,6 +111,16 @@ if(NOT GFLAGS_SHARED)
 endif()
 gtest_discover_tests(moqx_config_resolver_test)
 
+add_executable(moqx_config_serializer_test
+  config/ConfigSerializerTest.cpp
+)
+target_link_libraries(moqx_config_serializer_test PRIVATE
+  moqx_config_loader
+  GTest::gtest_main
+  GTest::gmock
+)
+gtest_discover_tests(moqx_config_serializer_test)
+
 add_executable(moqx_bounded_histogram_test
   stats/BoundedHistogramTest.cpp
 )
@@ -215,6 +225,10 @@ add_test(
 add_test(
   NAME admin_cache_purge_endpoint
   COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_admin_cache_purge.sh $<TARGET_FILE:moqx>
+)
+add_test(
+  NAME admin_config_endpoint
+  COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_admin_config.sh $<TARGET_FILE:moqx>
 )
 add_test(
   NAME admin_cache_purge_concurrency_test
