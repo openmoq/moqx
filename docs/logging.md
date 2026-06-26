@@ -174,24 +174,6 @@ moqx --config c.yaml --qlog-dir /tmp/qlogs --logging=quic.picoquic=INFO
 
 Independent channels — enabling one doesn't suppress the other.
 
-## Migration from the old (glog) flags
-
-| Old (glog) | New (folly XLOG) |
-|---|---|
-| `--minloglevel 0` (INFO+) | `--logging=INFO` (or omit) |
-| `--minloglevel 1` (WARNING+) | `--logging=WARN` |
-| `--minloglevel 2` (ERROR+) | `--logging=ERR` |
-| `-v 1` … `-v 4` | `--logging=DBG1` … `--logging=DBG4` |
-| `--vmodule "MoQSession=4"` | `--logging=moxygen.MoQSession=DBG4` |
-| `--vmodule "MoQ*=4"` | no glob — list categories or use a higher root (`moxygen=DBG4`) |
-| `--vmodule "QuicTransportBase=2"` | `--logging=quic.mvfst.QuicTransportBase=DBG2` |
-| `--logtostderr` | default (folly writes to stderr unless a handler redirects) |
-| `--log_dir DIR` | shell/systemd redirect: `moqx … 2>> DIR/moqx.log` |
-| `--stderrthreshold 1` | `--log-handler=default:async=false` (or per-category sync_level) |
-| `--log_backtrace_at FILE:N` | not yet equivalent |
-
-Layers that haven't migrated yet (proxygen, folly itself) still respect the legacy glog flags for their own output.
-
 ## Troubleshooting
 
 **Set `--logging=foo=DBG4`, see no extra output.** Category doesn't exist by that exact name. Run `--logging=DBG0` briefly to see what folly emits; you probably want `moxygen.foo` or `moqx.foo`.
