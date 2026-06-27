@@ -6,6 +6,7 @@
 
 #include "config/loader/ConfigResolver.h"
 
+#include <filesystem>
 #include <iomanip>
 #include <random>
 #include <sstream>
@@ -937,6 +938,22 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
 
   const bool mvfstBpfSteering = config.mvfst_bpf_steering.value().value_or(true);
 
+  // === Validate logging ===
+  if (config.logging.value().has_value()) {
+    const auto& logging = *config.logging.value();
+    if (logging.mlog.value().has_value()) {
+      const auto& mlog = *logging.mlog.value();
+      if (mlog.sample_rate.value().has_value()) {
+        float rate = *mlog.sample_rate.value();
+        if (rate < 0.0f || rate > 1.0f) {
+          errors.push_back(
+              "logging.mlog.sample_rate must be in [0.0, 1.0], got " + std::to_string(rate)
+          );
+        }
+      }
+    }
+  }
+
   if (!errors.empty()) {
     return folly::makeUnexpected("Config validation failed:\n  - " + folly::join("\n  - ", errors));
   }
@@ -967,6 +984,35 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
   // Resolve relayID: use configured value or generate a random hex string
   std::string relayID = config.relay_id.value().value_or(generateRelayID());
 
+  // Resolve logging config
+  std::optional<LoggingConfig> loggingConfig;
+  if (config.logging.value().has_value()) {
+    const auto& parsedLogging = *config.logging.value();
+    LoggingConfig resolved;
+    if (parsedLogging.mlog.value().has_value()) {
+      const auto& parsedMlog = *parsedLogging.mlog.value();
+      MLogConfig mlogConfig;
+      mlogConfig.dir = parsedMlog.dir.value();
+      mlogConfig.sampleRate = parsedMlog.sample_rate.value().value_or(1.0f);
+      if (!mlogConfig.dir.empty()) {
+        std::error_code ec;
+        const auto st = std::filesystem::status(mlogConfig.dir, ec);
+        if (ec) {
+          return folly::makeUnexpected(
+              "Failed to access mlog directory '" + mlogConfig.dir + "': " + ec.message()
+          );
+        }
+        if (std::filesystem::exists(st) && !std::filesystem::is_directory(st)) {
+          return folly::makeUnexpected(
+              "logging.mlog.dir must be a directory path: '" + mlogConfig.dir + "'"
+          );
+        }
+      }
+      resolved.mlog = std::move(mlogConfig);
+    }
+    loggingConfig = std::move(resolved);
+  }
+
   return ResolvedConfig{
       .config =
           Config{
@@ -989,6 +1035,7 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
               .useRelayThread = useRelayThread,
               .useLocalForwarders = useLocalForwarders,
               .mvfstBpfSteering = mvfstBpfSteering,
+              .logging = std::move(loggingConfig),
           },
       .warnings = std::move(warnings),
   };
