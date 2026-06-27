@@ -244,10 +244,11 @@ echo ""
 ulimit -n 65536 2>/dev/null || true
 echo "Starting relay (use_relay_thread=$USE_RELAY_THREAD, local_forwarders=$USE_LOCAL_FORWARDERS, io_threads=$IO_THREADS, transport=$TRANSPORT, mvfst_bpf_steering=$BPF_STEERING)..."
 
-# Map perf knobs -> moqx-run.sh. --no-sudo is REQUIRED: moqx-run execs the relay,
-# so under sudo $! would be the sudo PID and perf -p would profile sudo, not moqx.
+# Map perf knobs -> moqx-run.sh. moqx-run runs without sudo by default (do NOT
+# set MOQX_USE_SUDO=1 / pass --sudo here): it execs the relay, so under sudo $!
+# would be the sudo PID and perf -p would profile sudo, not moqx.
 RELAY_RUN_ARGS=(
-  --no-sudo --insecure --no-cache --ignore-path-mtu
+  --insecure --no-cache --ignore-path-mtu
   --bin        "$BINARY"
   --port       "$RELAY_PORT"
   --admin-port "$RELAY_ADMIN_PORT"

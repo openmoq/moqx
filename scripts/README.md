@@ -13,7 +13,7 @@ and serves it. Override anything with a flag or env var — you rarely need to.
 
 ```bash
 # local dev relay — built-in self-signed cert, no root needed
-./scripts/moqx-run.sh --insecure --no-sudo
+./scripts/moqx-run.sh --insecure
 ```
 
 Listens on **udp/4433** (MoQT), admin HTTP on **8000**, WebTransport endpoint
@@ -23,20 +23,20 @@ clients; draft-18-only clients get 18).
 ### The handful of commands you'll actually use
 
 ```bash
-# 1. Local dev (insecure, no sudo)
-./scripts/moqx-run.sh --insecure --no-sudo
+# 1. Local dev (insecure dev cert, no root needed)
+./scripts/moqx-run.sh --insecure
 
-# 2. Real TLS — Let's Encrypt cert under DOMAIN (sudo, to read the 0600 key)
-DOMAIN=relay.example.com ./scripts/moqx-run.sh
+# 2. Real TLS — Let's Encrypt cert under DOMAIN (add --sudo if the key is root-owned 0600)
+DOMAIN=relay.example.com ./scripts/moqx-run.sh --sudo
 
 # 3. Pin a single draft (e.g. force draft-18)
-./scripts/moqx-run.sh --insecure --no-sudo --moqt-versions 18
+./scripts/moqx-run.sh --insecure --moqt-versions 18
 
 # 4. Different port / endpoint
-./scripts/moqx-run.sh --insecure --no-sudo --port 5433 --endpoint /relay
+./scripts/moqx-run.sh --insecure --port 5433 --endpoint /relay
 
 # 5. Validate the config without serving
-./scripts/moqx-run.sh --subcmd validate-config --no-sudo
+./scripts/moqx-run.sh --subcmd validate-config
 
 # 6. Show the resolved config + exact command, run nothing
 ./scripts/moqx-run.sh -n
@@ -55,6 +55,7 @@ DOMAIN=relay.example.com ./scripts/moqx-run.sh
 | congestion control | bbr | `--cc` |
 | object cache | on | `--cache` / `--no-cache` |
 | TLS | real cert under `DOMAIN`, else dev cert | `--insecure` / `--cert` / `--key` |
+| sudo | off (runs as you) | `--sudo` (only for a root-owned key) |
 
 Full option list: `./scripts/moqx-run.sh --help`.
 
@@ -62,8 +63,8 @@ Full option list: `./scripts/moqx-run.sh --help`.
 
 - **picoquic needs a *real* cert** (no insecure dev cert): `--quic-stack picoquic`
   with `DOMAIN=...` (or `--cert/--key`).
-- `--no-sudo` is fine for insecure local runs; real TLS under `/etc/letsencrypt`
-  needs sudo to read the private key.
+- Runs without sudo by default. If your TLS key is root-owned (e.g. a
+  letsencrypt `0600 privkey.pem`), add `--sudo` so the relay can read it.
 - Check the relay is up: `curl http://localhost:8000/info`.
 
 ### Logging (if you need it)

@@ -56,7 +56,9 @@ Execution:
                             Bare flag auto-detects libjemalloc.so.2.
       --check-sysctl        report current vs recommended UDP/network sysctls
                             (with the commands to raise them) and exit
-      --no-sudo             run without sudo (cert files must be user-readable)
+      --sudo                run the relay under sudo (only needed to read a
+                            root-owned key, e.g. letsencrypt's 0600 privkey;
+                            default is no sudo)
   -n, --dry-run             print resolved env + command, don't exec
   -h, --help                this help
 
@@ -74,7 +76,8 @@ Examples:
   $0 --threads 8 --udp-buffer 16777216     # 8 IO threads, 16 MB socket buffer
   $0 --recv-pkts 256 -j                    # Alan's recv loop + jemalloc
   $0 --check-sysctl                        # audit kernel UDP buffers, then exit
-  $0 --subcmd validate-config --no-sudo    # just validate the config
+  $0 --subcmd validate-config              # just validate the config
+  DOMAIN=relay.example.com $0 --sudo       # real TLS, root-owned letsencrypt key
   $0 -n                                    # show what would run
 EOF
 }
@@ -168,7 +171,7 @@ while (($#)); do
       if [[ -n "${2:-}" && "$2" != -* ]]; then CLI_JEMALLOC="$2"; shift 2
       else CLI_JEMALLOC="auto"; shift; fi ;;
     --check-sysctl)  CHECK_SYSCTL=1; shift ;;
-    --no-sudo)       CLI_USE_SUDO=0; shift ;;
+    --sudo)          CLI_USE_SUDO=1; shift ;;
     -n|--dry-run)    DRY_RUN=1; shift ;;
     -h|--help)       usage; exit 0 ;;
     --)              shift; PASSTHRU+=("$@"); break ;;
@@ -301,7 +304,7 @@ fi
 
 # ── Run ──────────────────────────────────────────────────────────────────
 SUBCMD="${CLI_SUBCMD:-${MOQX_SUBCMD:-serve}}"
-USE_SUDO="${CLI_USE_SUDO:-${MOQX_USE_SUDO:-1}}"
+USE_SUDO="${CLI_USE_SUDO:-${MOQX_USE_SUDO:-0}}"
 CMD=("$MOQX_BIN" "$SUBCMD" --config "$RESOLVED_CONFIG" "${PASSTHRU[@]}")
 
 if (( DRY_RUN )); then
@@ -341,6 +344,10 @@ if [[ "$SUBCMD" == serve && "$MOQX_INSECURE" == false ]]; then
   for f in "$MOQX_CERT" "$MOQX_KEY"; do
     "${probe[@]}" "$f" 2>/dev/null || {
       echo "error: TLS cert/key not readable: $f" >&2
+      if [[ -e "$f" ]]; then
+        echo "  - file exists but isn't readable as $(id -un); if it's root-owned (e.g." >&2
+        echo "    letsencrypt's 0600 privkey), re-run with --sudo" >&2
+      fi
       echo "  - check DOMAIN spelling — it names the /etc/letsencrypt/live/<dir>, not the served host" >&2
       echo "    (a wildcard *.example.com cert lives under the 'example.com' dir)" >&2
       echo "  - or pass --cert/--key explicitly, or --insecure for the built-in dev cert" >&2
