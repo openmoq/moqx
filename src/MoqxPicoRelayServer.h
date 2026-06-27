@@ -13,6 +13,7 @@
 #include "stats/StatsRegistry.h"
 #include <folly/executors/IOThreadPoolExecutor.h>
 #include <moxygen/events/MoQExecutor.h>
+#include <moxygen/mlog/MLoggerFactory.h>
 #include <moxygen/openmoq/transport/pico/MoQPicoQuicEventBaseServer.h>
 #include <proxygen/lib/http/webtransport/WebTransport.h>
 
@@ -37,6 +38,10 @@ public:
   void stop() override;
 
   void setStatsRegistry(std::shared_ptr<stats::StatsRegistry> registry);
+
+  void setMLoggerFactory(std::shared_ptr<moxygen::MLoggerFactory> factory) {
+    moxygen::MoQServerBase::setMLoggerFactory(std::move(factory));
+  }
 
   // Preferred entry point: binds the address from the stored ListenerConfig.
   void start();

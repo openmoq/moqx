@@ -14,6 +14,7 @@
 #include "bpf/QuicReuseportSteering.h"
 #include "config/loader/ConfigInit.h"
 #include "stats/StatsRegistry.h"
+#include "logging/MLogSetup.h"
 
 #include <csignal>
 
@@ -43,6 +44,8 @@ using namespace openmoq::moqx;
 namespace {
 
 namespace cfg = config;
+using logging::MLogSetup;
+using logging::setupMLog;
 
 constexpr std::string_view kServeCommand = "serve";
 
@@ -98,6 +101,11 @@ int main(int argc, char* argv[]) {
   // folly logging is initialized by folly::Init above using the
   // FOLLY_INIT_LOGGING_CONFIG default at file scope. Override with
   // --logging=<config> or the FOLLY_LOGGING env var.
+  auto mlogResult = setupMLog(config);
+  if (!mlogResult) {
+    return mlogResult.error();
+  }
+  auto mlog = std::move(*mlogResult);
 
   // === 3. Set up signal handling ===
   folly::EventBase evb;
@@ -130,7 +138,7 @@ int main(int argc, char* argv[]) {
   std::vector<std::shared_ptr<moxygen::MoQServerBase>> servers;
   try {
     for (const auto& listenerCfg : config.listeners) {
-      servers.emplace_back(makeRelayServer(listenerCfg, context, ioExecutor.get(), statsRegistry));
+      servers.emplace_back(makeRelayServer(listenerCfg, context, ioExecutor.get(), statsRegistry, mlog.factory));
     }
   } catch (const std::exception& e) {
     // Listener setup (e.g. TLS cert loading) can throw. Report cleanly and exit
@@ -170,6 +178,8 @@ int main(int argc, char* argv[]) {
     context->initUpstreams(ioExecutor->getAllEventBases()[0].get());
   }
 
+  mlog.scheduleCleanup(evb);
+
   evb.loopForever();
 
   // Hard shutdown watchdog: if teardown hangs, force-exit after 10 seconds.
@@ -197,7 +207,8 @@ int main(int argc, char* argv[]) {
   // TODO: TBD
 
   // === 12. Flush telemetry/logs ===
-  // TODO: ensure observability data is sent
+  // Joined below, after ioExecutor.reset(), so that sessions destroyed during
+  // server teardown can still schedule writes on the mlog executor.
 
   // === 13. Clean up resources ===
   // Stop admin last — allows a final metrics scrape during drain.
@@ -210,6 +221,13 @@ int main(int argc, char* argv[]) {
   }
   servers.clear();
   ioExecutor.reset();
+
+  // Join mlog write executor last: sessions are destroyed by the teardown above
+  // (their outputLogs() calls schedule writes here), so we must not join until
+  // after the IO pool drains.
+  if (mlog.executor) {
+    mlog.executor->join();
+  }
 
   // === 14. Exit with appropriate code ===
   return 0;
