@@ -246,6 +246,34 @@ upstream routing.
 
 ---
 
+## Logging
+
+### `logging.mlog`
+
+Enables MoQ-level (mlog) structured logging of control messages and protocol
+events, one file per session.
+
+```yaml
+logging:
+  mlog:
+    dir: "/var/log/moqx/mlog"   # required to enable; empty string disables
+    sample_rate: 0.01            # log 1% of sessions (default: 1.0 = all)
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `dir` | `string` | — (disabled) | Output directory. Each session writes to `<dir>/<dcid>.mlog`. If empty, mlog is disabled. |
+| `sample_rate` | `float` | `1.0` | Fraction of sessions to log, in `[0.0, 1.0]`. `1.0` logs all sessions; `0.01` logs ~1%. |
+
+
+#### Lifecycle
+
+| Field | Lifecycle |
+|---|---|
+| `dir`, `sample_rate` | Static — requires restart |
+
+---
+
 ## Admin Server
 
 The admin server exposes an HTTP management API. It is optional; omit the
