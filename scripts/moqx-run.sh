@@ -21,7 +21,9 @@ Logging (override .env/defaults):
   fizz), which still logs via glog — kept until that stack moves to folly XLOG:
   -v, --verbose N           GLOG_v (0=off, 1-4 increasing detail)
   -L, --log-level N         GLOG_minloglevel (0=INFO 1=WARN 2=ERR 3=FATAL)
-  -m, --vmodule SPEC        GLOG_vmodule (e.g. MoQSession=4,MoQForwarder=3)
+  -m, --vmodule SPEC        GLOG_vmodule — per-source-file glog VLOG for the stack
+                            (e.g. Acceptor=4,SSLContextManager=2). moqx/moxygen
+                            components log via XLOG: use -x for those, not -m.
 
 Relay tuning (templated into the config; CLI > .env > default):
       --threads N           IO worker threads, must be >= 1 (default 4)
@@ -287,7 +289,10 @@ export GLOG_logtostderr=1
 export GLOG_colorlogtostderr=1
 export GLOG_minloglevel="${CLI_LOG_LEVEL:-${MOQX_LOG_LEVEL:-0}}"
 export GLOG_v="${CLI_VERBOSE:-${MOQX_VERBOSE:-0}}"
-export GLOG_vmodule="${CLI_VMODULE:-${GLOG_vmodule:-MoqxRelay=3,MoQSession=3,MoQForwarder=3,MoqxCache=2}}"
+# Default empty: GLOG_v already sets global stack VLOG; vmodule only targets
+# specific stack source files (glog VLOG). The old default named moqx/moxygen
+# components, which log via folly XLOG (-x), so it filtered nothing.
+export GLOG_vmodule="${CLI_VMODULE:-${GLOG_vmodule:-}}"
 
 # ── jemalloc resolution (CLI > env) ──────────────────────────────────────
 JEMALLOC_REQ="${CLI_JEMALLOC:-${MOQX_JEMALLOC:-}}"
