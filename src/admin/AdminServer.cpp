@@ -122,7 +122,13 @@ bool AdminServer::start(const config::AdminConfig& adminConfig) {
     const auto& tls = *adminConfig.tls;
     wangle::SSLContextConfig sslCtx;
     sslCtx.isDefault = true;
-    sslCtx.setCertificate(tls.certFile, tls.keyFile, "");
+    // PKCS#12 source: load cert chain + key from in-memory PEM buffers so the
+    // decrypted key never touches disk; otherwise load from the configured paths.
+    if (tls.material.has_value()) {
+      sslCtx.setCertificateBuf(tls.material->certChainPem, tls.material->keyPem);
+    } else {
+      sslCtx.setCertificate(tls.certFile, tls.keyFile, "");
+    }
     sslCtx.clientVerification = folly::SSLContext::VerifyClientCertificate::DO_NOT_REQUEST;
     sslCtx.setNextProtocols(std::list<std::string>(tls.alpn.begin(), tls.alpn.end()));
     cfg.sslConfigs.push_back(std::move(sslCtx));

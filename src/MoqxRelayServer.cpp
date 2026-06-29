@@ -12,10 +12,18 @@
 #include <moxygen/util/InsecureVerifierDangerousDoNotUseInProduction.h>
 #include <proxygen/httpserver/samples/hq/FizzContext.h>
 
+#include <fizz/backend/openssl/certificate/CertUtils.h>
+#include <fizz/server/AeadTicketCipher.h>
+#include <fizz/server/DefaultCertManager.h>
+#include <fizz/server/ReplayCache.h>
+#include <fizz/server/TicketCodec.h>
+#include <fizz/util/Status.h>
 #include <folly/Random.h>
 #include <folly/logging/xlog.h>
 #include <quic/QuicConstants.h>
 #include <quic/logging/FileQLogger.h>
+
+#include <array>
 
 using namespace moxygen;
 
@@ -28,6 +36,52 @@ std::vector<std::string> buildAlpns(const std::string& versions) {
   auto moqt = getMoqtProtocols(versions, true);
   alpns.insert(alpns.end(), moqt.begin(), moqt.end());
   return alpns;
+}
+
+// Build a FizzServerContext from in-memory PEM buffers (cert chain + key)
+// instead of file paths, so a PKCS#12-derived private key never touches disk.
+// This mirrors quic::samples::createFizzServerContextImpl (proxygen hq sample,
+// minus the insecure-default branch) so a pkcs12-sourced context behaves
+// identically to the PEM-file one (session tickets, resumption, ALPN mode).
+// Keep in sync with that helper if it changes upstream. TODO: replace with a
+// buffer-based helper in the moxygen fork to avoid duplicating this logic.
+std::shared_ptr<const fizz::server::FizzServerContext> buildFizzContextFromMaterial(
+    const std::vector<std::string>& alpns,
+    fizz::server::ClientAuthMode clientAuth,
+    const std::string& certChainPem,
+    const std::string& keyPem
+) {
+  std::unique_ptr<fizz::SelfCert> cert;
+  fizz::Error err;
+  FIZZ_THROW_ON_ERROR(fizz::openssl::CertUtils::makeSelfCert(cert, err, certChainPem, keyPem), err);
+  auto certManager = std::make_shared<fizz::server::DefaultCertManager>();
+  certManager->addCertAndSetDefault(std::move(cert));
+
+  auto ctx = std::make_shared<fizz::server::FizzServerContext>();
+  ctx->setCertManager(certManager);
+  auto ticketCipher = std::make_shared<fizz::server::Aead128GCMTicketCipher<
+      fizz::server::TicketCodec<fizz::server::CertificateStorage::X509>>>(
+      ctx->getFactoryPtr(),
+      std::move(certManager)
+  );
+  std::array<uint8_t, 32> ticketSeed;
+  folly::Random::secureRandom(ticketSeed.data(), ticketSeed.size());
+  ticketCipher->setTicketSecrets({{folly::range(ticketSeed)}});
+  ctx->setTicketCipher(ticketCipher);
+  ctx->setClientAuthMode(clientAuth);
+  ctx->setSupportedAlpns(alpns);
+  ctx->setAlpnMode(fizz::server::AlpnMode::Required);
+  ctx->setSendNewSessionTicket(true);
+  ctx->setEarlyDataFbOnly(false);
+  ctx->setVersionFallbackEnabled(false);
+
+  fizz::server::ClockSkewTolerance tolerance;
+  tolerance.before = std::chrono::minutes(-5);
+  tolerance.after = std::chrono::minutes(5);
+  std::shared_ptr<fizz::server::ReplayCache> replayCache =
+      std::make_shared<fizz::server::AllowAllReplayReplayCache>();
+  ctx->setEarlyDataSettings(true, tolerance, std::move(replayCache));
+  return ctx;
 }
 
 std::shared_ptr<const fizz::server::FizzServerContext>
@@ -44,6 +98,16 @@ buildFizzContext(const config::ListenerConfig& cfg) {
               ""
           );
         } else {
+          // PKCS#12 source: build the context from the in-memory PEM material
+          // (cert/key never written to disk).
+          if (tls.material.has_value()) {
+            return buildFizzContextFromMaterial(
+                alpns,
+                fizz::server::ClientAuthMode::Optional,
+                tls.material->certChainPem,
+                tls.material->keyPem
+            );
+          }
           // createFizzServerContext throws (deep in fizz) when the cert/key
           // can't be read or contain no certificate. Enrich the message with
           // the offending paths so the caller can report it cleanly instead of

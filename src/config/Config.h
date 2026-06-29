@@ -23,10 +23,22 @@
 // build until you do. See docs/dev/config.md ("How to add a new config field").
 namespace openmoq::moqx::config {
 
+// Resolved, in-memory TLS material produced by transcoding a PKCS#12 bundle
+// (cert chain + private key) without touching disk. The keyPem is unencrypted
+// and lives only in process memory; never log it or write it out.
+struct TlsMaterial {
+  std::string certChainPem; // leaf + intermediates, concatenated PEM
+  std::string keyPem;       // unencrypted private key PEM
+};
+
 struct TlsConfig {
   std::string certFile;
   std::string keyFile;
   std::vector<std::string> alpn; // must be empty for QUIC listener: ALPN derived from moqt_versions
+  // When set (PKCS#12 source), consumers build their TLS context from these
+  // in-memory PEM buffers instead of reading certFile/keyFile from disk.
+  // certFile/keyFile are empty in that case.
+  std::optional<TlsMaterial> material;
 };
 
 struct Insecure {};

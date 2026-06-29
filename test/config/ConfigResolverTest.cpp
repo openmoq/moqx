@@ -6,8 +6,12 @@
 
 #include "config/loader/ConfigResolver.h"
 
+#include "Pkcs12TestUtils.h"
+
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+
+#include <variant>
 
 namespace openmoq::moqx::config {
 namespace {
@@ -217,6 +221,158 @@ TEST(ResolveConfig, AdminEmptyAddressRejected) {
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasError());
   EXPECT_THAT(result.error(), HasSubstr("address must be non-empty"));
+}
+
+// --- PKCS#12 TLS tests ---
+
+TEST(ResolveConfig, Pkcs12HappyPathPopulatesMaterial) {
+  auto der = test::makeSelfSignedPkcs12Der("s3cret");
+  test::TempFile p12(der, ".p12");
+  test::TempFile pwFile("s3cret", ".txt");
+
+  auto cfg = makeMinimalInsecureConfig();
+  auto& tls = cfg.listeners.value()[0].tls.value();
+  tls.insecure = false;
+  tls.pkcs12_file = p12.path();
+  tls.pkcs12_password_file = pwFile.path();
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue()) << result.error();
+  const auto& mode = result.value().config.listeners[0].tlsMode;
+  ASSERT_TRUE(std::holds_alternative<TlsConfig>(mode));
+  const auto& resolved = std::get<TlsConfig>(mode);
+  ASSERT_TRUE(resolved.material.has_value());
+  EXPECT_THAT(resolved.material->certChainPem, HasSubstr("BEGIN CERTIFICATE"));
+  EXPECT_THAT(resolved.material->keyPem, HasSubstr("PRIVATE KEY"));
+  // Paths are left empty when material is sourced from a bundle.
+  EXPECT_THAT(resolved.certFile, IsEmpty());
+  EXPECT_THAT(resolved.keyFile, IsEmpty());
+}
+
+TEST(ResolveConfig, Pkcs12InlinePasswordWarns) {
+  auto der = test::makeSelfSignedPkcs12Der("s3cret");
+  test::TempFile p12(der, ".p12");
+
+  auto cfg = makeMinimalInsecureConfig();
+  auto& tls = cfg.listeners.value()[0].tls.value();
+  tls.insecure = false;
+  tls.pkcs12_file = p12.path();
+  tls.pkcs12_password = std::string("s3cret");
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue()) << result.error();
+  ASSERT_FALSE(result.value().warnings.empty());
+  EXPECT_THAT(result.value().warnings[0], HasSubstr("discouraged"));
+}
+
+TEST(ResolveConfig, Pkcs12WrongPasswordError) {
+  auto der = test::makeSelfSignedPkcs12Der("s3cret");
+  test::TempFile p12(der, ".p12");
+
+  auto cfg = makeMinimalInsecureConfig();
+  auto& tls = cfg.listeners.value()[0].tls.value();
+  tls.insecure = false;
+  tls.pkcs12_file = p12.path();
+  tls.pkcs12_password = std::string("wrong");
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("wrong password"));
+}
+
+TEST(ResolveConfig, Pkcs12MutualExclusionWithCertKey) {
+  auto cfg = makeMinimalInsecureConfig();
+  auto& tls = cfg.listeners.value()[0].tls.value();
+  tls.insecure = false;
+  tls.pkcs12_file = std::string("/some/bundle.p12");
+  tls.cert_file = std::string("/some/cert.pem");
+  tls.key_file = std::string("/some/key.pem");
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("mutually exclusive"));
+}
+
+TEST(ResolveConfig, Pkcs12PasswordSourcesExclusive) {
+  auto der = test::makeSelfSignedPkcs12Der("s3cret");
+  test::TempFile p12(der, ".p12");
+  test::TempFile pwFile("s3cret", ".txt");
+
+  auto cfg = makeMinimalInsecureConfig();
+  auto& tls = cfg.listeners.value()[0].tls.value();
+  tls.insecure = false;
+  tls.pkcs12_file = p12.path();
+  tls.pkcs12_password = std::string("s3cret");
+  tls.pkcs12_password_file = pwFile.path();
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("set only one"));
+}
+
+TEST(ResolveConfig, Pkcs12PicoquicRejected) {
+  auto der = test::makeSelfSignedPkcs12Der("s3cret");
+  test::TempFile p12(der, ".p12");
+  test::TempFile pwFile("s3cret", ".txt");
+
+  auto cfg = makeMinimalInsecureConfig();
+  auto& tls = cfg.listeners.value()[0].tls.value();
+  tls.insecure = false;
+  tls.pkcs12_file = p12.path();
+  tls.pkcs12_password_file = pwFile.path();
+  cfg.listeners.value()[0].quic_stack = std::string("picoquic");
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("does not support pkcs12_file"));
+}
+
+TEST(ResolveConfig, InsecureIgnoresPkcs12Warning) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.listeners.value()[0].tls.value().pkcs12_file = std::string("/some/bundle.p12");
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  ASSERT_FALSE(result.value().warnings.empty());
+  EXPECT_THAT(result.value().warnings[0], HasSubstr("ignored"));
+}
+
+TEST(ResolveConfig, AdminTlsRequiresCertOrPkcs12) {
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedAdminConfig admin;
+  admin.port = uint16_t{9669};
+  admin.address = std::string{"::"};
+  admin.plaintext = false;
+  admin.tls = std::optional<ParsedAdminTlsConfig>{ParsedAdminTlsConfig{}};
+  cfg.admin = std::optional<ParsedAdminConfig>{std::move(admin)};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("or pkcs12_file"));
+}
+
+TEST(ResolveConfig, AdminPkcs12HappyPath) {
+  auto der = test::makeSelfSignedPkcs12Der("s3cret");
+  test::TempFile p12(der, ".p12");
+  test::TempFile pwFile("s3cret", ".txt");
+
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedAdminConfig admin;
+  admin.port = uint16_t{9669};
+  admin.address = std::string{"::"};
+  admin.plaintext = false;
+  ParsedAdminTlsConfig tls;
+  tls.pkcs12_file = p12.path();
+  tls.pkcs12_password_file = pwFile.path();
+  admin.tls = std::optional<ParsedAdminTlsConfig>{std::move(tls)};
+  cfg.admin = std::optional<ParsedAdminConfig>{std::move(admin)};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue()) << result.error();
+  ASSERT_TRUE(result.value().config.admin.has_value());
+  ASSERT_TRUE(result.value().config.admin->tls.has_value());
+  ASSERT_TRUE(result.value().config.admin->tls->material.has_value());
+  EXPECT_THAT(result.value().config.admin->tls->material->keyPem, HasSubstr("PRIVATE KEY"));
 }
 
 // --- Service validation error tests ---
@@ -905,7 +1061,7 @@ TEST(ResolveConfig, AdminTlsPartialCreds) {
     cfg.admin = std::optional<ParsedAdminConfig>{makeAdminWithTls(cert, key)};
     auto result = resolveConfig(cfg);
     ASSERT_TRUE(result.hasError());
-    EXPECT_THAT(result.error(), HasSubstr("cert_file and key_file are required"));
+    EXPECT_THAT(result.error(), HasSubstr("cert_file and key_file"));
   }
 }
 
