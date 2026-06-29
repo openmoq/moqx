@@ -65,7 +65,7 @@ handler and create `MoQRelaySession` instances for incoming connections.
 
 ```bash
 git clone https://github.com/openmoq/moqx.git && cd moqx
-git submodule update --init
+git submodule update --init --recursive
 sudo deps/moxygen/standalone/install-system-deps.sh   # system libs (both modes)
 
 ./scripts/build.sh setup     # download prebuilt deps (~1 min)

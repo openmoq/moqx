@@ -19,7 +19,7 @@ formatting, and CI.
 Six steps. Each links to its detail section.
 
 1. **Clone and init the moxygen submodule.**
-   `git clone … && cd moqx && git submodule update --init` —
+   `git clone … && cd moqx && git submodule update --init --recursive` —
    the submodule pins the exact moxygen commit the build will use
    (see [Dependency Modes](#dependency-modes)).
 2. **Ensure CMake 3.22+** is on `PATH`. All current targets ship a
@@ -100,7 +100,7 @@ docker run --rm -it -v "$PWD":/src -w /src ubuntu:22.04 bash
 
 # Inside the container:
 apt-get update && apt-get install -y cmake ninja-build sudo git curl ca-certificates
-git submodule update --init
+git submodule update --init --recursive
 sudo deps/moxygen/standalone/install-system-deps.sh
 ./scripts/build.sh setup --from-source   # build from source (no release artifacts available offline)
 ./scripts/build.sh
