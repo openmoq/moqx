@@ -393,15 +393,7 @@ if [[ "$RUN_METRICS" == true ]]; then
   PIDS+=($!)
 fi
 
-# ── Start moqtest_server (publisher) ─────────────────────────────────────────
-echo "Starting moqtest_server -> $RELAY_URL ..."
-"$MOQTEST_SERVER" \
-  --relay_url="$RELAY_URL" \
-  $QUIC_FLAG \
-  --include_timestamp_extension=true \
-  >"$SERVER_LOG" 2>&1 &
-PIDS+=($!)
-
+# ── Snapshot metrics before publisher starts (baseline for publisher-connected check) ──
 baseline_sessions="$(get_metric_value "moqx_moqActiveSessions")" || true
 baseline_sessions="${baseline_sessions:-0}"
 baseline_publishers="$(get_metric_value "moqx_pubActivePublishers")" || true
@@ -411,6 +403,15 @@ if [[ -n "$baseline_publishers" ]]; then
 else
   baseline_publishers=0
 fi
+
+# ── Start moqtest_server (publisher) ─────────────────────────────────────────
+echo "Starting moqtest_server -> $RELAY_URL ..."
+"$MOQTEST_SERVER" \
+  --relay_url="$RELAY_URL" \
+  $QUIC_FLAG \
+  --include_timestamp_extension=true \
+  >"$SERVER_LOG" 2>&1 &
+PIDS+=($!)
 
 deadline=$(( $(date +%s) + 30 ))
 until false; do
