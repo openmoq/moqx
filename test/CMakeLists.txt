@@ -93,6 +93,7 @@ add_executable(moqx_config_resolver_test
 )
 target_link_libraries(moqx_config_resolver_test PRIVATE
   moqx_config_loader
+  OpenSSL::Crypto
   GTest::gtest_main
   GTest::gmock
 )
@@ -120,6 +121,30 @@ target_link_libraries(moqx_config_serializer_test PRIVATE
   GTest::gmock
 )
 gtest_discover_tests(moqx_config_serializer_test)
+
+add_executable(moqx_pkcs12_test
+  config/Pkcs12Test.cpp
+)
+target_link_libraries(moqx_pkcs12_test PRIVATE
+  moqx_config_loader
+  OpenSSL::Crypto
+  GTest::gtest_main
+  GTest::gmock
+)
+if(NOT GFLAGS_SHARED)
+  if(APPLE)
+    target_link_libraries(moqx_pkcs12_test PRIVATE
+      "-Wl,-force_load,$<TARGET_FILE:gflags_nothreads_static>"
+    )
+  else()
+    target_link_libraries(moqx_pkcs12_test PRIVATE
+      "-Wl,--whole-archive"
+      gflags_nothreads_static
+      "-Wl,--no-whole-archive"
+    )
+  endif()
+endif()
+gtest_discover_tests(moqx_pkcs12_test)
 
 add_executable(moqx_bounded_histogram_test
   stats/BoundedHistogramTest.cpp

@@ -29,7 +29,7 @@ static_assert(
     "ListenerConfig changed — update serializeConfig()"
 );
 static_assert(
-    rfl::internal::num_fields<TlsConfig> == 3,
+    rfl::internal::num_fields<TlsConfig> == 4,
     "TlsConfig changed — update serializeTls()"
 );
 static_assert(
