@@ -15,10 +15,13 @@ usage() {
 Usage: $(basename "$0") [options] [-- <extra args to moqx>]
 
 Logging (override .env/defaults):
+  -x, --xlog SPEC           folly XLOG config for moqx's own components, passed as
+                            --logging=SPEC. Primary logging (moqx standardizes on XLOG).
+  The -v/-L/-m flags below tune the underlying QUIC/HTTP stack (mvfst/proxygen/
+  fizz), which still logs via glog — kept until that stack moves to folly XLOG:
   -v, --verbose N           GLOG_v (0=off, 1-4 increasing detail)
   -L, --log-level N         GLOG_minloglevel (0=INFO 1=WARN 2=ERR 3=FATAL)
   -m, --vmodule SPEC        GLOG_vmodule (e.g. MoQSession=4,MoQForwarder=3)
-  -x, --xlog SPEC           folly XLOG config (passed as --logging=SPEC)
 
 Relay tuning (templated into the config; CLI > .env > default):
       --threads N           IO worker threads, must be >= 1 (default 4)
@@ -38,6 +41,8 @@ Listener (templated into the config; CLI > .env > default):
       --moqt-versions LIST  advertised MoQT drafts in server-preference order,
                             e.g. 16,14,18 (default 16,14,18; first listed wins).
                             Pass a single value (e.g. 18) to pin one draft.
+      --bind ADDR           bind address for the listener + admin (default 127.0.0.1;
+                            use :: or 0.0.0.0 to accept remote clients, e.g. cross-box bench)
       --port N              UDP listen port (default 4433)
       --admin-port N        admin HTTP port (default 8000)
       --endpoint PATH       WebTransport endpoint path (default /moq-relay)
@@ -67,7 +72,7 @@ Environment overrides (via .env or shell):
   MOQX_VERBOSE, MOQX_LOG_LEVEL, GLOG_vmodule, MOQX_JEMALLOC
   MOQX_THREADS, MOQX_UDP_BUFFER, MOQX_RECV_PKTS, MOQX_SEND_PKTS, MOQX_CC,
   MOQX_LOCAL_FWD, MOQX_CACHE, MOQX_BPF_STEERING, MOQX_IGNORE_PATH_MTU,
-  MOQX_RELAY_THREAD, MOQX_STACK, MOQX_MOQT_VERSIONS, MOQX_PORT, MOQX_ADMIN_PORT, MOQX_ENDPOINT,
+  MOQX_RELAY_THREAD, MOQX_STACK, MOQX_MOQT_VERSIONS, MOQX_BIND_ADDR, MOQX_PORT, MOQX_ADMIN_PORT, MOQX_ENDPOINT,
   MOQX_INSECURE, MOQX_CERT, MOQX_KEY, MOQX_MAX_TRACKS, MOQX_MAX_GROUPS,
   MOQX_RELAY_ID, MOQX_RESOLVED_CONFIG  (env-only; no CLI flag)
 
@@ -131,7 +136,7 @@ CLI_JEMALLOC=""   # "" = unset; "auto" or explicit path
 CLI_THREADS="" CLI_UDP_BUFFER="" CLI_RECV_PKTS="" CLI_SEND_PKTS="" CLI_CC=""
 CLI_LOCAL_FWD="" CLI_CACHE="" CLI_RELAY_THREAD="" CLI_INSECURE=""   # tri-state booleans
 CLI_IGNORE_PMTU="" CLI_BPF=""   # tri-state booleans
-CLI_STACK="" CLI_MOQT_VERSIONS="" CLI_PORT="" CLI_ADMIN_PORT="" CLI_ENDPOINT="" CLI_CERT="" CLI_KEY=""
+CLI_STACK="" CLI_MOQT_VERSIONS="" CLI_BIND="" CLI_PORT="" CLI_ADMIN_PORT="" CLI_ENDPOINT="" CLI_CERT="" CLI_KEY=""
 CHECK_SYSCTL=0 DRY_RUN=0
 PASSTHRU=()
 
@@ -156,6 +161,7 @@ while (($#)); do
     --bpf-steering)    CLI_BPF=true;         shift ;;
     --quic-stack)    CLI_STACK="$2"; shift 2 ;;
     --moqt-versions) CLI_MOQT_VERSIONS="$2"; shift 2 ;;
+    --bind)          CLI_BIND="$2"; shift 2 ;;
     --port)          CLI_PORT="$2"; shift 2 ;;
     --admin-port)    CLI_ADMIN_PORT="$2"; shift 2 ;;
     --endpoint)      CLI_ENDPOINT="$2"; shift 2 ;;
@@ -229,6 +235,9 @@ case "$MOQX_STACK" in mvfst|picoquic) ;; *) echo "invalid --quic-stack: $MOQX_ST
 # server-preference order — the relay picks the first listed version the client
 # also supports. Default offers d16, d14, then d18 as a fallback.
 export MOQX_MOQT_VERSIONS="$(norm_versions "${CLI_MOQT_VERSIONS:-${MOQX_MOQT_VERSIONS:-16,14,18}}")"
+# Bind address for the listener + admin. Local-safe default (127.0.0.1); set
+# :: / 0.0.0.0 (e.g. via perf-test.sh or --bind) to accept remote clients.
+export MOQX_BIND_ADDR="${CLI_BIND:-${MOQX_BIND_ADDR:-127.0.0.1}}"
 export MOQX_PORT="${CLI_PORT:-${MOQX_PORT:-4433}}"
 export MOQX_ADMIN_PORT="${CLI_ADMIN_PORT:-${MOQX_ADMIN_PORT:-8000}}"
 export MOQX_ENDPOINT="${CLI_ENDPOINT:-${MOQX_ENDPOINT:-/moq-relay}}"
@@ -271,6 +280,9 @@ RESOLVED_CONFIG="${MOQX_RESOLVED_CONFIG:-/tmp/moqx-resolved.yaml}"
 envsubst < "$CONFIG_TEMPLATE" > "$RESOLVED_CONFIG"
 
 # ── GLOG — map MOQX_* → GLOG_* (matches docker/entrypoint.sh convention) ─
+# TODO(folly-xlog): drop this block once the QUIC/HTTP stack (mvfst/proxygen/
+# fizz) logging moves to folly XLOG and glog leaves the link. Load-bearing
+# until then — it's the only knob for stack-level diagnostics.
 export GLOG_logtostderr=1
 export GLOG_colorlogtostderr=1
 export GLOG_minloglevel="${CLI_LOG_LEVEL:-${MOQX_LOG_LEVEL:-0}}"
@@ -309,7 +321,7 @@ CMD=("$MOQX_BIN" "$SUBCMD" --config "$RESOLVED_CONFIG" "${PASSTHRU[@]}")
 
 if (( DRY_RUN )); then
   echo "# relay knobs (templated into config)"
-  echo "relay_id=$MOQX_RELAY_ID stack=$MOQX_STACK moqt_versions=$MOQX_MOQT_VERSIONS port=$MOQX_PORT admin_port=$MOQX_ADMIN_PORT endpoint=$MOQX_ENDPOINT insecure=$MOQX_INSECURE"
+  echo "relay_id=$MOQX_RELAY_ID stack=$MOQX_STACK moqt_versions=$MOQX_MOQT_VERSIONS bind=$MOQX_BIND_ADDR port=$MOQX_PORT admin_port=$MOQX_ADMIN_PORT endpoint=$MOQX_ENDPOINT insecure=$MOQX_INSECURE"
   echo "resolved_config=$RESOLVED_CONFIG"
   echo "threads=$MOQX_THREADS relay_thread=$MOQX_RELAY_THREAD local_fwd=$MOQX_LOCAL_FWD bpf_steering=$MOQX_BPF_STEERING cache=$MOQX_CACHE"
   echo "cc=$MOQX_CC send_pkts=$MOQX_SEND_PKTS recv_pkts=$MOQX_RECV_PKTS udp_buffer=$MOQX_UDP_BUFFER ignore_path_mtu=$MOQX_IGNORE_PATH_MTU"

@@ -67,7 +67,7 @@ listeners:
     moqt_versions: ${MOQX_MOQT_VERSIONS}
     udp:
       socket:
-        address: "::"
+        address: "${MOQX_BIND_ADDR}"
         port: ${MOQX_PORT}
     tls:
       cert_file: "${MOQX_CERT}"
@@ -106,5 +106,5 @@ service_defaults:
 
 admin:
   port: ${MOQX_ADMIN_PORT}
-  address: "::"
+  address: "${MOQX_BIND_ADDR}"
   plaintext: true

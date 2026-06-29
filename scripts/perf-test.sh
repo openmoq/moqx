@@ -250,6 +250,7 @@ echo "Starting relay (use_relay_thread=$USE_RELAY_THREAD, local_forwarders=$USE_
 RELAY_RUN_ARGS=(
   --insecure --no-cache --ignore-path-mtu
   --bin        "$BINARY"
+  --bind       "::"        # all interfaces: the perf client may run on another box
   --port       "$RELAY_PORT"
   --admin-port "$RELAY_ADMIN_PORT"
   --endpoint   "$ENDPOINT"
