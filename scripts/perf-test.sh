@@ -402,9 +402,9 @@ echo "Starting moqtest_server -> $RELAY_URL ..."
   >"$SERVER_LOG" 2>&1 &
 PIDS+=($!)
 
-baseline_sessions="$(get_metric_value "moqx_moqActiveSessions")"
+baseline_sessions="$(get_metric_value "moqx_moqActiveSessions")" || true
 baseline_sessions="${baseline_sessions:-0}"
-baseline_publishers="$(get_metric_value "moqx_pubActivePublishers")"
+baseline_publishers="$(get_metric_value "moqx_pubActivePublishers")" || true
 have_publisher_metric=false
 if [[ -n "$baseline_publishers" ]]; then
   have_publisher_metric=true
@@ -414,11 +414,11 @@ fi
 
 deadline=$(( $(date +%s) + 30 ))
 until false; do
-  current_sessions="$(get_metric_value "moqx_moqActiveSessions")"
+  current_sessions="$(get_metric_value "moqx_moqActiveSessions")" || true
   current_sessions="${current_sessions:-0}"
 
   if [[ "$have_publisher_metric" == true ]]; then
-    current_publishers="$(get_metric_value "moqx_pubActivePublishers")"
+    current_publishers="$(get_metric_value "moqx_pubActivePublishers")" || true
     current_publishers="${current_publishers:-0}"
     if [[ "$current_publishers" -ge $(( baseline_publishers + 1 )) ]]; then
       break
