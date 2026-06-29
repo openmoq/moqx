@@ -88,6 +88,9 @@ logging:                    # Logging configuration (optional)
     dir: "/tmp/moqx-mlog"          # Output directory for per-session mlog files
     sample_rate: 1              # Fraction of sessions to log (0.0–1.0, default: 1.0)
 
+  qlog:                     # QUIC-level per-connection packet tracing (optional)
+    dir: "/tmp/moqx-qlog"          # Output directory; files named <cid_hex>.qlog (mvfst)
+    sample_rate: 1.0       # Fraction of connections to log (0.0–1.0, default: 1.0; mvfst only)
 
 # relay_id: "my-relay-1"     # Relay identity (optional; random hex string generated if absent)
 

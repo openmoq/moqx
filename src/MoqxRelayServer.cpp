@@ -12,8 +12,10 @@
 #include <moxygen/util/InsecureVerifierDangerousDoNotUseInProduction.h>
 #include <proxygen/httpserver/samples/hq/FizzContext.h>
 
+#include <folly/Random.h>
 #include <folly/logging/xlog.h>
 #include <quic/QuicConstants.h>
+#include <quic/logging/FileQLogger.h>
 
 using namespace moxygen;
 
@@ -226,6 +228,33 @@ std::shared_ptr<MoQSession> MoqxRelayServer::createSession(
       folly::MaybeManagedPtr<proxygen::WebTransport>(std::move(wt)),
       *this,
       std::move(executor)
+  );
+}
+
+std::shared_ptr<quic::QLogger> MoqxRelayServer::makeQLogger(quic::VantagePoint vantagePoint) {
+  if (qlogDir_.empty()) {
+    return nullptr;
+  }
+  if (qlogSampleRate_ <= 0.0f) {
+    return nullptr;
+  }
+  // Per-connection sampling: skip with probability (1 - sampleRate).
+  // folly::Random::oneIn is thread-safe (ThreadLocalPRNG).
+  if (qlogSampleRate_ < 1.0f) {
+    const auto bucket = static_cast<uint32_t>(1.0f / qlogSampleRate_);
+    if (!folly::Random::oneIn(bucket)) {
+      return nullptr;
+    }
+  }
+  // streaming=true → AsyncFileWriter runs in its own background thread;
+  // the event-loop thread only pays for JSON serialisation + queue push.
+  return std::make_shared<quic::FileQLogger>(
+      vantagePoint,
+      quic::kHTTP3ProtocolType,
+      qlogDir_,
+      /*prettyJson=*/false,
+      /*streaming=*/true,
+      /*compress=*/false
   );
 }
 

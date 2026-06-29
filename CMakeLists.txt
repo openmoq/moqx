@@ -155,7 +155,7 @@ add_library(moqx_core STATIC
   src/relay/WeakRelayForwarderCallback.cpp
   src/relay/PublisherCrossExecFilter.cpp
   src/relay/SubscriberCrossExecFilter.cpp
-  src/logging/MLogSetup.cpp
+  src/logging/LogSetup.cpp
 )
 
 target_include_directories(moqx_core
@@ -181,6 +181,7 @@ target_link_libraries(moqx_core PUBLIC
   moxygen::moxygen_mlog_file_mlogger
   moxygen::moxygen_mlog_mlogger_factory
   moxygen::moxygen_mlog_sampling_mlogger_factory
+  mvfst::mvfst_logging_file_qlogger
 )
 
 target_compile_options(moqx_core PRIVATE -Wall -Wextra -Wpedantic)

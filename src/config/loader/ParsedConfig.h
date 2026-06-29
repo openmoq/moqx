@@ -412,8 +412,19 @@ struct ParsedMLogConfig {
       sample_rate;
 };
 
+struct ParsedQLogConfig {
+  rfl::Description<"Directory for per-connection QUIC qlog files (empty = disabled)", std::string>
+      dir;
+  rfl::Description<
+      "Fraction of connections to log (0.0-1.0, default 1.0; mvfst only)",
+      std::optional<float>>
+      sample_rate;
+};
+
 struct ParsedLoggingConfig {
   rfl::Description<"MoQ-level (mlog) per-session logging", std::optional<ParsedMLogConfig>> mlog;
+  rfl::Description<"QUIC-level (qlog) per-connection logging", std::optional<ParsedQLogConfig>>
+      qlog;
 };
 
 struct ParsedConfig {
