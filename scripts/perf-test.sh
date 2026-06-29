@@ -36,6 +36,10 @@
 #                          locally.  The binary is expected at
 #                          /tmp/moqperf_test_client on the remote host.
 #                          HOST may include a user prefix (user@host).
+#                          Repeat the flag to use multiple client machines;
+#                          subscriber load (--subscriber-max, --ramp) is
+#                          divided evenly among them.  Each machine writes
+#                          its own client-<host>.log in LOG_DIR.
 #   --udp-socket-buffer-bytes N
 #                          UDP socket send/recv buffer size in bytes for the
 #                          relay listener (defaults to net.core.wmem_max).
@@ -75,7 +79,7 @@ RUN_METRICS=false
 PERF_DURATION=0
 PERF_EVENTS=""
 RUN_PERF_STAT=false
-REMOTE_CLIENT_HOST=""
+REMOTE_CLIENT_HOSTS=()
 REMOTE_RELAY_URL=""
 REMOTE_RELAY_ADMIN_URL=""
 UDP_SOCKET_BUFFER_BYTES=$(cat /proc/sys/net/core/wmem_max 2>/dev/null || echo 1048576)
@@ -110,7 +114,7 @@ while [[ $# -gt 0 ]]; do
     --perf-stat)        RUN_PERF_STAT=true;        shift ;;
     --trace-script)     TRACE_SCRIPT="$2";         shift 2 ;;
     --client-args)      read -ra CLIENT_EXTRA_ARGS <<< "$2"; shift 2 ;;
-    --remote-client)    REMOTE_CLIENT_HOST="$2";  shift 2 ;;
+    --remote-client)    REMOTE_CLIENT_HOSTS+=("$2"); shift 2 ;;
     --relay-url)        REMOTE_RELAY_URL="$2";    shift 2 ;;
     --relay-admin-url)  REMOTE_RELAY_ADMIN_URL="$2"; shift 2 ;;
     --udp-socket-buffer-bytes) UDP_SOCKET_BUFFER_BYTES="$2"; shift 2 ;;
@@ -161,7 +165,7 @@ if [[ "$REMOTE_RELAY" == true ]]; then
 else
   CHECK_BINS=("$BINARY" "$MOQTEST_SERVER")
 fi
-[[ -z "$REMOTE_CLIENT_HOST" ]] && CHECK_BINS+=("$MOQPERF_CLIENT")
+[[ ${#REMOTE_CLIENT_HOSTS[@]} -eq 0 ]] && CHECK_BINS+=("$MOQPERF_CLIENT")
 [[ "$RUN_METRICS" == true ]] && CHECK_BINS+=("$METRICS_SCRIPT")
 if [[ "$PERF_DURATION" -gt 0 && "$REMOTE_RELAY" == false ]] && ! command -v perf >/dev/null 2>&1; then
   echo "ERROR: --perf-duration requires 'perf' in PATH" >&2; exit 1
@@ -178,6 +182,12 @@ fi
 if [[ "$RAMP" -le 0 ]]; then
   echo "ERROR: --ramp must be > 0" >&2; exit 1
 fi
+
+get_metric_value() {
+  local metric_name="$1"
+  curl -sf "$RELAY_ADMIN_URL/metrics" 2>/dev/null \
+    | awk -v m="$metric_name" '$1 == m { print $2; found=1; exit } END { if (!found) print "" }'
+}
 
 if [[ "$REMOTE_RELAY" == false ]]; then
   is_port_in_use() {
@@ -196,7 +206,7 @@ fi
 
 # ── URL scheme ────────────────────────────────────────────────────────────────
 if [[ "$REMOTE_RELAY" == false ]]; then
-  if [[ -n "$REMOTE_CLIENT_HOST" ]]; then
+  if [[ ${#REMOTE_CLIENT_HOSTS[@]} -gt 0 ]]; then
     LOCAL_IP="$(hostname -I | awk '{print $1}')"
     RELAY_URL="https://${LOCAL_IP}:${RELAY_PORT}${ENDPOINT}"
   else
@@ -317,7 +327,7 @@ fi
   echo "mvfst_bpf_steering: $BPF_STEERING"
   [[ "$PERF_DURATION" -gt 0 ]] && echo "perf_duration:    ${PERF_DURATION}s (delay=$(( 3 * SUBSCRIBER_MAX / RAMP ))s)" || true
   [[ -n "$PERF_EVENTS" ]] && echo "perf_events:      $PERF_EVENTS" || true
-  [[ -n "$REMOTE_CLIENT_HOST" ]] && echo "remote_client:    $REMOTE_CLIENT_HOST" || true
+  [[ ${#REMOTE_CLIENT_HOSTS[@]} -gt 0 ]] && echo "remote_clients:   ${REMOTE_CLIENT_HOSTS[*]}" || true
 } | tee "$LOG_DIR/run_params.txt"
 echo ""
 
@@ -392,11 +402,44 @@ echo "Starting moqtest_server -> $RELAY_URL ..."
   >"$SERVER_LOG" 2>&1 &
 PIDS+=($!)
 
-deadline=$(( $(date +%s) + 10 ))
-until [[ "$(curl -sf "$RELAY_ADMIN_URL/metrics" 2>/dev/null \
-           | grep "^moqx_moqActiveSessions " | awk '{print $2}')" -ge 1 ]] 2>/dev/null; do
-  (( $(date +%s) >= deadline )) && { echo "ERROR: moqtest_server did not connect after 10s" >&2; exit 1; }
-  sleep 0.1
+baseline_sessions="$(get_metric_value "moqx_moqActiveSessions")"
+baseline_sessions="${baseline_sessions:-0}"
+baseline_publishers="$(get_metric_value "moqx_pubActivePublishers")"
+have_publisher_metric=false
+if [[ -n "$baseline_publishers" ]]; then
+  have_publisher_metric=true
+else
+  baseline_publishers=0
+fi
+
+deadline=$(( $(date +%s) + 30 ))
+until false; do
+  current_sessions="$(get_metric_value "moqx_moqActiveSessions")"
+  current_sessions="${current_sessions:-0}"
+
+  if [[ "$have_publisher_metric" == true ]]; then
+    current_publishers="$(get_metric_value "moqx_pubActivePublishers")"
+    current_publishers="${current_publishers:-0}"
+    if [[ "$current_publishers" -ge $(( baseline_publishers + 1 )) ]]; then
+      break
+    fi
+  elif [[ "$current_sessions" -ge $(( baseline_sessions + 1 )) ]]; then
+    break
+  fi
+
+  if (( $(date +%s) >= deadline )); then
+    echo "ERROR: moqtest_server did not connect after 30s" >&2
+    echo "DEBUG: baseline_sessions=$baseline_sessions current_sessions=$current_sessions" >&2
+    if [[ "$have_publisher_metric" == true ]]; then
+      echo "DEBUG: baseline_publishers=$baseline_publishers current_publishers=${current_publishers:-0}" >&2
+    fi
+    curl -sf "$RELAY_ADMIN_URL/metrics" 2>/dev/null \
+      | grep -E '^moqx_(moqActiveSessions|pubActivePublishers|pubPublishError_total|subSubscribeError_total) ' >&2 || true
+    tail -40 "$SERVER_LOG" >&2 || true
+    exit 1
+  fi
+
+  sleep 0.25
 done
 echo "Publisher connected"
 
@@ -439,14 +482,63 @@ CLIENT_ARGS=(
   "${CLIENT_EXTRA_ARGS[@]+"${CLIENT_EXTRA_ARGS[@]}"}"
 )
 
-if [[ -n "$REMOTE_CLIENT_HOST" ]]; then
-  echo "Syncing moqperf_test_client to $REMOTE_CLIENT_HOST..."
-  rsync -az -e ssh "$MOQPERF_CLIENT" "${REMOTE_CLIENT_HOST}:/tmp/moqperf_test_client"
-  echo "Running perf client on $REMOTE_CLIENT_HOST: subscriber_max=$SUBSCRIBER_MAX ramp=$RAMP duration=${DURATION}s delivery_timeout=${DELIVERY_TIMEOUT}ms threads=$CLIENT_THREADS"
+if [[ ${#REMOTE_CLIENT_HOSTS[@]} -gt 0 ]]; then
+  NUM_CLIENTS=${#REMOTE_CLIENT_HOSTS[@]}
+  # Divide load evenly; last client absorbs any remainder from integer division
+  PER_CLIENT_MAX=$(( SUBSCRIBER_MAX / NUM_CLIENTS ))
+  PER_CLIENT_RAMP=$(( RAMP / NUM_CLIENTS ))
+  [[ $PER_CLIENT_RAMP -lt 1 ]] && PER_CLIENT_RAMP=1
+
+  REMOTE_PIDS=()
+  REMOTE_LOGS=()
+
+  for i in "${!REMOTE_CLIENT_HOSTS[@]}"; do
+    host="${REMOTE_CLIENT_HOSTS[$i]}"
+    # Strip user@ prefix, then sanitize for use as a filename component
+    host_label="${host##*@}"
+    host_label="${host_label//[^a-zA-Z0-9._-]/_}"
+    client_log="$LOG_DIR/client-${host_label}.log"
+    REMOTE_LOGS+=("$client_log")
+
+    # Last client absorbs remainder so totals match the requested values
+    if [[ $i -eq $(( NUM_CLIENTS - 1 )) ]]; then
+      this_max=$(( SUBSCRIBER_MAX - PER_CLIENT_MAX * (NUM_CLIENTS - 1) ))
+      this_ramp=$(( RAMP - PER_CLIENT_RAMP * (NUM_CLIENTS - 1) ))
+      [[ $this_ramp -lt 1 ]] && this_ramp=1
+    else
+      this_max=$PER_CLIENT_MAX
+      this_ramp=$PER_CLIENT_RAMP
+    fi
+
+    THIS_CLIENT_ARGS=(
+      --relay_url="$RELAY_URL"
+      $QUIC_FLAG
+      --subscriber_max="$this_max"
+      --subscriber_ramp="$this_ramp"
+      --duration="$DURATION"
+      --delivery_timeout="$DELIVERY_TIMEOUT"
+      --num_threads="$CLIENT_THREADS"
+      "${CLIENT_EXTRA_ARGS[@]+"${CLIENT_EXTRA_ARGS[@]}"}"
+    )
+
+    echo "Syncing moqperf_test_client to $host..."
+    rsync -az -e ssh "$MOQPERF_CLIENT" "${host}:/tmp/moqperf_test_client"
+    echo "Starting perf client on $host: subscriber_max=$this_max ramp=$this_ramp duration=${DURATION}s delivery_timeout=${DELIVERY_TIMEOUT}ms threads=$CLIENT_THREADS → $client_log"
+    ssh "$host" \
+      "ulimit -n 65536 2>/dev/null || true; /tmp/moqperf_test_client ${THIS_CLIENT_ARGS[*]@Q}" \
+      >"$client_log" 2>&1 &
+    REMOTE_PIDS+=($!)
+  done
+
   echo "---"
-  ssh "$REMOTE_CLIENT_HOST" \
-    "ulimit -n 65536 2>/dev/null || true; /tmp/moqperf_test_client ${CLIENT_ARGS[*]@Q}" \
-    2>&1 | tee "$CLIENT_LOG"
+  echo "Waiting for $NUM_CLIENTS remote client(s) (total subscriber_max=$SUBSCRIBER_MAX ramp=$RAMP)..."
+  all_ok=true
+  for i in "${!REMOTE_PIDS[@]}"; do
+    wait "${REMOTE_PIDS[$i]}" || { echo "WARNING: client ${REMOTE_CLIENT_HOSTS[$i]} exited non-zero" >&2; all_ok=false; }
+    echo ""
+    echo "=== ${REMOTE_CLIENT_HOSTS[$i]} → ${REMOTE_LOGS[$i]} ==="
+    cat "${REMOTE_LOGS[$i]}"
+  done
 else
   ulimit -n 65536 2>/dev/null || true
   echo "Running perf client: subscriber_max=$SUBSCRIBER_MAX ramp=$RAMP duration=${DURATION}s delivery_timeout=${DELIVERY_TIMEOUT}ms threads=$CLIENT_THREADS"
