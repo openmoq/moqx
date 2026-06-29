@@ -503,6 +503,27 @@ if [[ ${#REMOTE_CLIENT_HOSTS[@]} -gt 0 ]]; then
   REMOTE_CLIENT_LIB_COUNT=$(find "$REMOTE_CLIENT_LIBDIR_LOCAL" -maxdepth 1 -type f -name '*.so*' | wc -l | tr -d '[:space:]')
   echo "Collected $REMOTE_CLIENT_LIB_COUNT shared library file(s); syncing to each remote client"
 
+  # Helper function: rsync with retry logic (up to 3 attempts with exponential backoff)
+  rsync_with_retry() {
+    local src="$1"
+    local dest="$2"
+    local max_attempts=3
+    local attempt=1
+    while (( attempt <= max_attempts )); do
+      if rsync -az -e ssh "$src" "$dest"; then
+        return 0
+      fi
+      if (( attempt < max_attempts )); then
+        local delay=$(( 2 ** (attempt - 1) ))
+        echo "WARNING: rsync failed (attempt $attempt/$max_attempts); retrying in ${delay}s..."
+        sleep "$delay"
+      fi
+      (( attempt++ ))
+    done
+    echo "ERROR: rsync failed after $max_attempts attempts: src=$src dest=$dest" >&2
+    return 1
+  }
+
   # Divide load evenly; last client absorbs any remainder from integer division
   PER_CLIENT_MAX=$(( SUBSCRIBER_MAX / NUM_CLIENTS ))
   PER_CLIENT_RAMP=$(( RAMP / NUM_CLIENTS ))
@@ -510,12 +531,35 @@ if [[ ${#REMOTE_CLIENT_HOSTS[@]} -gt 0 ]]; then
 
   REMOTE_PIDS=()
   REMOTE_LOGS=()
+  REMOTE_HOST_LABELS=()
+  REMOTE_CLIENT_ARGS_ARRAY=()
 
+  # ── Phase 1: Transfer files to all remote clients (sequentially, with retries) ──
+  echo "Syncing binaries and libraries to all remote clients..."
   for i in "${!REMOTE_CLIENT_HOSTS[@]}"; do
     host="${REMOTE_CLIENT_HOSTS[$i]}"
-    # Strip user@ prefix, then sanitize for use as a filename component
     host_label="${host##*@}"
     host_label="${host_label//[^a-zA-Z0-9._-]/_}"
+    REMOTE_HOST_LABELS+=("$host_label")
+
+    echo "  [$((i + 1))/$NUM_CLIENTS] $host: creating directories..."
+    ssh "$host" "mkdir -p '$REMOTE_CLIENT_LIBDIR_REMOTE'" || {
+      echo "ERROR: failed to create remote directory on $host" >&2
+      exit 1
+    }
+
+    echo "  [$((i + 1))/$NUM_CLIENTS] $host: syncing moqperf_test_client..."
+    rsync_with_retry "$MOQPERF_CLIENT" "${host}:/tmp/moqperf_test_client" || exit 1
+
+    echo "  [$((i + 1))/$NUM_CLIENTS] $host: syncing libraries..."
+    rsync_with_retry "$REMOTE_CLIENT_LIBDIR_LOCAL/" "${host}:${REMOTE_CLIENT_LIBDIR_REMOTE}/" || exit 1
+  done
+  echo "All files transferred successfully"
+
+  # ── Phase 2: Launch all remote clients (roughly simultaneously) ──
+  for i in "${!REMOTE_CLIENT_HOSTS[@]}"; do
+    host="${REMOTE_CLIENT_HOSTS[$i]}"
+    host_label="${REMOTE_HOST_LABELS[$i]}"
     client_log="$LOG_DIR/client-${host_label}.log"
     REMOTE_LOGS+=("$client_log")
 
@@ -539,11 +583,8 @@ if [[ ${#REMOTE_CLIENT_HOSTS[@]} -gt 0 ]]; then
       --num_threads="$CLIENT_THREADS"
       "${CLIENT_EXTRA_ARGS[@]+"${CLIENT_EXTRA_ARGS[@]}"}"
     )
+    REMOTE_CLIENT_ARGS_ARRAY+=("${THIS_CLIENT_ARGS[@]}")
 
-    echo "Syncing moqperf_test_client to $host..."
-    ssh "$host" "mkdir -p '$REMOTE_CLIENT_LIBDIR_REMOTE'"
-    rsync -az -e ssh "$MOQPERF_CLIENT" "${host}:/tmp/moqperf_test_client"
-    rsync -az -e ssh "$REMOTE_CLIENT_LIBDIR_LOCAL/" "${host}:${REMOTE_CLIENT_LIBDIR_REMOTE}/"
     echo "Starting perf client on $host: subscriber_max=$this_max ramp=$this_ramp duration=${DURATION}s delivery_timeout=${DELIVERY_TIMEOUT}ms threads=$CLIENT_THREADS → $client_log"
     if [[ $NUM_CLIENTS -eq 1 ]]; then
       # Single remote client: stream output directly (no prefix needed)
