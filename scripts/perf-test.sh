@@ -125,6 +125,7 @@ done
 MOQTEST_SERVER="$MOQBIN/moqtest_server"
 MOQPERF_CLIENT="$MOQBIN/moqperf_test_client"
 METRICS_SCRIPT="$REPO/scripts/perf-metrics.sh"
+COLLECT_LIBS_SCRIPT="$REPO/scripts/collect-libs.sh"
 
 # ── Remote relay mode ─────────────────────────────────────────────────────────
 REMOTE_RELAY=false
@@ -169,6 +170,14 @@ fi
 [[ "$RUN_METRICS" == true ]] && CHECK_BINS+=("$METRICS_SCRIPT")
 if [[ "$PERF_DURATION" -gt 0 && "$REMOTE_RELAY" == false ]] && ! command -v perf >/dev/null 2>&1; then
   echo "ERROR: --perf-duration requires 'perf' in PATH" >&2; exit 1
+fi
+if [[ ${#REMOTE_CLIENT_HOSTS[@]} -gt 0 ]]; then
+  if [[ ! -f "$COLLECT_LIBS_SCRIPT" ]]; then
+    echo "ERROR: required helper script not found: $COLLECT_LIBS_SCRIPT" >&2; exit 1
+  fi
+  if ! command -v ldd >/dev/null 2>&1; then
+    echo "ERROR: --remote-client requires 'ldd' for auto library collection" >&2; exit 1
+  fi
 fi
 for f in "${CHECK_BINS[@]}"; do
   if [[ ! -x "$f" ]]; then
@@ -485,6 +494,15 @@ CLIENT_ARGS=(
 
 if [[ ${#REMOTE_CLIENT_HOSTS[@]} -gt 0 ]]; then
   NUM_CLIENTS=${#REMOTE_CLIENT_HOSTS[@]}
+  REMOTE_CLIENT_LIBDIR_LOCAL="$TMPDIR_SCRIPT/remote-client-lib"
+  REMOTE_CLIENT_LIBDIR_REMOTE="/tmp/moqx-perf-lib-${LOG_DIR##*/}"
+
+  echo "Collecting shared libraries for remote client binary..."
+  mkdir -p "$REMOTE_CLIENT_LIBDIR_LOCAL"
+  bash "$COLLECT_LIBS_SCRIPT" "$MOQPERF_CLIENT" "$REMOTE_CLIENT_LIBDIR_LOCAL" > /dev/null
+  REMOTE_CLIENT_LIB_COUNT=$(find "$REMOTE_CLIENT_LIBDIR_LOCAL" -maxdepth 1 -type f -name '*.so*' | wc -l | tr -d '[:space:]')
+  echo "Collected $REMOTE_CLIENT_LIB_COUNT shared library file(s); syncing to each remote client"
+
   # Divide load evenly; last client absorbs any remainder from integer division
   PER_CLIENT_MAX=$(( SUBSCRIBER_MAX / NUM_CLIENTS ))
   PER_CLIENT_RAMP=$(( RAMP / NUM_CLIENTS ))
@@ -523,17 +541,19 @@ if [[ ${#REMOTE_CLIENT_HOSTS[@]} -gt 0 ]]; then
     )
 
     echo "Syncing moqperf_test_client to $host..."
+    ssh "$host" "mkdir -p '$REMOTE_CLIENT_LIBDIR_REMOTE'"
     rsync -az -e ssh "$MOQPERF_CLIENT" "${host}:/tmp/moqperf_test_client"
+    rsync -az -e ssh "$REMOTE_CLIENT_LIBDIR_LOCAL/" "${host}:${REMOTE_CLIENT_LIBDIR_REMOTE}/"
     echo "Starting perf client on $host: subscriber_max=$this_max ramp=$this_ramp duration=${DURATION}s delivery_timeout=${DELIVERY_TIMEOUT}ms threads=$CLIENT_THREADS → $client_log"
     if [[ $NUM_CLIENTS -eq 1 ]]; then
       # Single remote client: stream output directly (no prefix needed)
       ( ssh "$host" \
-          "ulimit -n 65536 2>/dev/null || true; /tmp/moqperf_test_client ${THIS_CLIENT_ARGS[*]@Q}" \
+      "ulimit -n 65536 2>/dev/null || true; env LD_LIBRARY_PATH='${REMOTE_CLIENT_LIBDIR_REMOTE}':\${LD_LIBRARY_PATH:-} /tmp/moqperf_test_client ${THIS_CLIENT_ARGS[*]@Q}" \
           2>&1 | tee "$client_log" ) &
     else
       # Multiple clients: prefix each output line with [host] so streams are distinguishable
       ( ssh "$host" \
-          "ulimit -n 65536 2>/dev/null || true; /tmp/moqperf_test_client ${THIS_CLIENT_ARGS[*]@Q}" \
+      "ulimit -n 65536 2>/dev/null || true; env LD_LIBRARY_PATH='${REMOTE_CLIENT_LIBDIR_REMOTE}':\${LD_LIBRARY_PATH:-} /tmp/moqperf_test_client ${THIS_CLIENT_ARGS[*]@Q}" \
           2>&1 | tee "$client_log" | sed "s/^/[$host_label] /" ) &
     fi
     REMOTE_PIDS+=($!)
