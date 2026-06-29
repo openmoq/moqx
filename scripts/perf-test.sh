@@ -525,9 +525,17 @@ if [[ ${#REMOTE_CLIENT_HOSTS[@]} -gt 0 ]]; then
     echo "Syncing moqperf_test_client to $host..."
     rsync -az -e ssh "$MOQPERF_CLIENT" "${host}:/tmp/moqperf_test_client"
     echo "Starting perf client on $host: subscriber_max=$this_max ramp=$this_ramp duration=${DURATION}s delivery_timeout=${DELIVERY_TIMEOUT}ms threads=$CLIENT_THREADS → $client_log"
-    ssh "$host" \
-      "ulimit -n 65536 2>/dev/null || true; /tmp/moqperf_test_client ${THIS_CLIENT_ARGS[*]@Q}" \
-      >"$client_log" 2>&1 &
+    if [[ $NUM_CLIENTS -eq 1 ]]; then
+      # Single remote client: stream output directly (no prefix needed)
+      ( ssh "$host" \
+          "ulimit -n 65536 2>/dev/null || true; /tmp/moqperf_test_client ${THIS_CLIENT_ARGS[*]@Q}" \
+          2>&1 | tee "$client_log" ) &
+    else
+      # Multiple clients: prefix each output line with [host] so streams are distinguishable
+      ( ssh "$host" \
+          "ulimit -n 65536 2>/dev/null || true; /tmp/moqperf_test_client ${THIS_CLIENT_ARGS[*]@Q}" \
+          2>&1 | tee "$client_log" | sed "s/^/[$host_label] /" ) &
+    fi
     REMOTE_PIDS+=($!)
   done
 
@@ -536,10 +544,9 @@ if [[ ${#REMOTE_CLIENT_HOSTS[@]} -gt 0 ]]; then
   all_ok=true
   for i in "${!REMOTE_PIDS[@]}"; do
     wait "${REMOTE_PIDS[$i]}" || { echo "WARNING: client ${REMOTE_CLIENT_HOSTS[$i]} exited non-zero" >&2; all_ok=false; }
-    echo ""
-    echo "=== ${REMOTE_CLIENT_HOSTS[$i]} → ${REMOTE_LOGS[$i]} ==="
-    cat "${REMOTE_LOGS[$i]}"
   done
+  echo ""
+  echo "Per-client logs: ${REMOTE_LOGS[*]}"
 else
   ulimit -n 65536 2>/dev/null || true
   echo "Running perf client: subscriber_max=$SUBSCRIBER_MAX ramp=$RAMP duration=${DURATION}s delivery_timeout=${DELIVERY_TIMEOUT}ms threads=$CLIENT_THREADS"
