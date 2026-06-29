@@ -6,6 +6,7 @@
 
 #include "config/loader/ConfigResolver.h"
 
+#include <cstdlib>
 #include <filesystem>
 #include <iomanip>
 #include <random>
@@ -89,12 +90,20 @@ void validatePkcs12PasswordExclusivity(
     std::string_view context,
     std::vector<std::string>& errors
 ) {
-  bool hasPwInline = tls.pkcs12_password.value().has_value();
-  bool hasPwFile =
-      tls.pkcs12_password_file.value().has_value() && !tls.pkcs12_password_file.value()->empty();
-  if (hasPwInline && hasPwFile) {
+  int sources = 0;
+  if (tls.pkcs12_password.value().has_value()) {
+    ++sources;
+  }
+  if (tls.pkcs12_password_file.value().has_value() && !tls.pkcs12_password_file.value()->empty()) {
+    ++sources;
+  }
+  if (tls.pkcs12_password_env.value().has_value() && !tls.pkcs12_password_env.value()->empty()) {
+    ++sources;
+  }
+  if (sources > 1) {
     errors.push_back(
-        std::string(context) + ": set only one of pkcs12_password or pkcs12_password_file"
+        std::string(context) +
+        ": set only one of pkcs12_password, pkcs12_password_file, or pkcs12_password_env"
     );
   }
 }
@@ -172,12 +181,14 @@ TlsConfig resolveAdminTlsConfig(
   };
 }
 
-// Resolve the PKCS#12 password from a file or inline value. Exactly one (or
-// neither, for a password-less bundle) is expected; structural validation
-// enforces not-both. Returns the password, possibly empty.
+// Resolve the PKCS#12 password from a file, environment variable, or inline
+// value. Exactly one (or none, for a password-less bundle) is expected;
+// structural validation enforces not-more-than-one. Returns the password,
+// possibly empty.
 folly::Expected<std::string, std::string> resolvePkcs12Password(
     const std::optional<std::string>& inlinePw,
-    const std::optional<std::string>& pwFile
+    const std::optional<std::string>& pwFile,
+    const std::optional<std::string>& pwEnv
 ) {
   if (pwFile.has_value() && !pwFile->empty()) {
     std::string pw;
@@ -194,6 +205,15 @@ folly::Expected<std::string, std::string> resolvePkcs12Password(
     // Value and error types are both std::string, so construct explicitly to
     // disambiguate the success path from makeUnexpected.
     return folly::makeExpected<std::string>(std::move(pw));
+  }
+  if (pwEnv.has_value() && !pwEnv->empty()) {
+    const char* val = std::getenv(pwEnv->c_str());
+    if (val == nullptr) {
+      return folly::makeUnexpected(
+          "environment variable '" + *pwEnv + "' (pkcs12_password_env) is not set"
+      );
+    }
+    return folly::makeExpected<std::string>(std::string(val));
   }
   if (inlinePw.has_value()) {
     return folly::makeExpected<std::string>(*inlinePw);
@@ -231,7 +251,11 @@ std::optional<TlsMaterial> resolvePkcs12Material(
         "prefer pkcs12_password_file"
     );
   }
-  auto pw = resolvePkcs12Password(tls.pkcs12_password.value(), tls.pkcs12_password_file.value());
+  auto pw = resolvePkcs12Password(
+      tls.pkcs12_password.value(),
+      tls.pkcs12_password_file.value(),
+      tls.pkcs12_password_env.value()
+  );
   if (pw.hasError()) {
     errors.push_back(context + ": " + pw.error());
     return std::nullopt;

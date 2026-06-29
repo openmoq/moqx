@@ -49,6 +49,11 @@ struct ParsedListenerTlsConfig {
       "Path to a file containing the PKCS#12 password (preferred over inline).",
       std::optional<std::string>>
       pkcs12_password_file;
+  rfl::Description<
+      "Name of an environment variable holding the PKCS#12 password (cloud-vault "
+      "friendly: the secret stays out of the config file). Errors if the variable is unset.",
+      std::optional<std::string>>
+      pkcs12_password_env;
   rfl::Description<"Insecure mode, use default compiled-in cert", bool> insecure;
 };
 
@@ -69,6 +74,11 @@ struct ParsedAdminTlsConfig {
       "Path to a file containing the PKCS#12 password (preferred over inline).",
       std::optional<std::string>>
       pkcs12_password_file;
+  rfl::Description<
+      "Name of an environment variable holding the PKCS#12 password (cloud-vault "
+      "friendly: the secret stays out of the config file). Errors if the variable is unset.",
+      std::optional<std::string>>
+      pkcs12_password_env;
   rfl::Description<"ALPN protocol list", std::optional<std::vector<std::string>>> alpn;
 };
 

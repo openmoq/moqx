@@ -375,6 +375,41 @@ TEST(ResolveConfig, AdminPkcs12HappyPath) {
   EXPECT_THAT(result.value().config.admin->tls->material->keyPem, HasSubstr("PRIVATE KEY"));
 }
 
+TEST(ResolveConfig, Pkcs12PasswordFromEnv) {
+  auto der = test::makeSelfSignedPkcs12Der("env-secret");
+  test::TempFile p12(der, ".p12");
+  ::setenv("MOQX_TEST_P12_PW", "env-secret", 1);
+
+  auto cfg = makeMinimalInsecureConfig();
+  auto& tls = cfg.listeners.value()[0].tls.value();
+  tls.insecure = false;
+  tls.pkcs12_file = p12.path();
+  tls.pkcs12_password_env = std::string("MOQX_TEST_P12_PW");
+
+  auto result = resolveConfig(cfg);
+  ::unsetenv("MOQX_TEST_P12_PW");
+  ASSERT_TRUE(result.hasValue()) << result.error();
+  const auto& resolved = std::get<TlsConfig>(result.value().config.listeners[0].tlsMode);
+  ASSERT_TRUE(resolved.material.has_value());
+  EXPECT_THAT(resolved.material->keyPem, HasSubstr("PRIVATE KEY"));
+}
+
+TEST(ResolveConfig, Pkcs12PasswordEnvUnset) {
+  auto der = test::makeSelfSignedPkcs12Der("whatever");
+  test::TempFile p12(der, ".p12");
+  ::unsetenv("MOQX_TEST_P12_MISSING");
+
+  auto cfg = makeMinimalInsecureConfig();
+  auto& tls = cfg.listeners.value()[0].tls.value();
+  tls.insecure = false;
+  tls.pkcs12_file = p12.path();
+  tls.pkcs12_password_env = std::string("MOQX_TEST_P12_MISSING");
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("is not set"));
+}
+
 // --- Service validation error tests ---
 
 TEST(ResolveConfig, NoServices) {

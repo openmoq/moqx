@@ -16,6 +16,7 @@ listeners:
       # cert_file/key_file. Not yet supported on quic_stack: picoquic.
       # pkcs12_file: /path/to/bundle.p12
       # pkcs12_password_file: /path/to/password.txt  # Preferred: keep the secret off the YAML
+      # pkcs12_password_env: MOQX_PKCS12_PASSWORD    # Cloud-vault friendly: read the password from this env var
       # pkcs12_password: "inline-secret"             # Discouraged: persists in the config at rest
       insecure: true          # Skip TLS for local development
     endpoint: "/moq-relay"    # WebTransport endpoint path

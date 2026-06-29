@@ -77,6 +77,10 @@ Environment overrides (via .env or shell):
   MOQX_RELAY_THREAD, MOQX_STACK, MOQX_MOQT_VERSIONS, MOQX_BIND_ADDR, MOQX_PORT, MOQX_ADMIN_PORT, MOQX_ENDPOINT,
   MOQX_INSECURE, MOQX_CERT, MOQX_KEY, MOQX_MAX_TRACKS, MOQX_MAX_GROUPS,
   MOQX_RELAY_ID, MOQX_RESOLVED_CONFIG  (env-only; no CLI flag)
+  MOQX_PKCS12_PASSWORD  (env-only; PKCS#12 bundle password. Forwarded to the relay
+                         process and across sudo, but NEVER written into the resolved
+                         config. Reference it in your config as:
+                         pkcs12_password_env: MOQX_PKCS12_PASSWORD)
 
 Examples:
   $0                                       # serve with .env + defaults
@@ -334,6 +338,11 @@ if (( DRY_RUN )); then
   echo "GLOG_minloglevel=$GLOG_minloglevel GLOG_v=$GLOG_v"
   echo "GLOG_vmodule=$GLOG_vmodule"
   echo "LD_PRELOAD=${JEMALLOC:-<none>}"
+  if [[ -n "${MOQX_PKCS12_PASSWORD:-}" ]]; then
+    echo "MOQX_PKCS12_PASSWORD=<set> (forwarded to relay; value hidden)"
+  else
+    echo "MOQX_PKCS12_PASSWORD=<unset>"
+  fi
   echo "# resolved config: $RESOLVED_CONFIG (from $CONFIG_TEMPLATE)"
   echo "# command"
   if (( USE_SUDO )); then
@@ -384,8 +393,13 @@ if (( USE_SUDO )); then
     GLOG_colorlogtostderr="$GLOG_colorlogtostderr"
   )
   [[ -n "$JEMALLOC" ]] && SUDO_ENV+=("LD_PRELOAD=$JEMALLOC")
+  # Forward the PKCS#12 password across the sudo boundary (env_reset strips any
+  # var not listed here). It is never written into the resolved config.
+  [[ -n "${MOQX_PKCS12_PASSWORD:-}" ]] && SUDO_ENV+=("MOQX_PKCS12_PASSWORD=$MOQX_PKCS12_PASSWORD")
   exec sudo "${SUDO_ENV[@]}" "${CMD[@]}"
 else
   [[ -n "$JEMALLOC" ]] && export LD_PRELOAD="$JEMALLOC"
+  # Ensure the relay child inherits the PKCS#12 password if one is set.
+  [[ -n "${MOQX_PKCS12_PASSWORD:-}" ]] && export MOQX_PKCS12_PASSWORD
   exec "${CMD[@]}"
 fi
