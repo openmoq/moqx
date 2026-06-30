@@ -13,6 +13,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include <folly/SocketAddress.h>
 #include <folly/String.h>
 
 namespace openmoq::moqx::config {
@@ -169,6 +170,28 @@ std::string makeCompositeKey(
 
 // --- Listener validation ---
 
+// Validate a bind address so an empty or unresolvable value fails as a clean
+// config error rather than letting folly::SocketAddress throw uncaught at
+// resolution time, which aborts the process (#459). Literal IPs cost nothing;
+// a hostname is resolved once here.
+void validateBindAddress(
+    const std::string& address,
+    uint16_t port,
+    const std::string& context,
+    std::vector<std::string>& errors
+) {
+  if (address.empty()) {
+    errors.push_back(context + ": address must be non-empty");
+    return;
+  }
+  try {
+    folly::SocketAddress probe(address, port);
+    (void)probe;
+  } catch (const std::exception& e) {
+    errors.push_back(context + ": invalid bind address '" + address + "': " + e.what());
+  }
+}
+
 void validateListener(
     const ParsedListenerConfig& listener,
     std::vector<std::string>& errors,
@@ -178,6 +201,12 @@ void validateListener(
   if (sock.port.value() == 0) {
     errors.push_back("Listener '" + listener.name.value() + "' port must be 1-65535, got 0");
   }
+  validateBindAddress(
+      sock.address.value(),
+      sock.port.value(),
+      "Listener '" + listener.name.value() + "'",
+      errors
+  );
 
   // TLS validation
   validateListenerTlsConfig(
@@ -212,6 +241,12 @@ void validateAdmin(const ParsedConfig& config, std::vector<std::string>& errors)
     if (adminOptional->port.value() == 0) {
       errors.push_back("admin.port must be 1-65535, got 0");
     }
+    validateBindAddress(
+        adminOptional->address.value(),
+        adminOptional->port.value(),
+        "admin",
+        errors
+    );
     bool hasTls = adminOptional->tls.value().has_value();
     bool hasPlaintext = adminOptional->plaintext.value();
     if (hasTls && hasPlaintext) {
