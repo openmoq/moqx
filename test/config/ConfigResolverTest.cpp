@@ -187,6 +187,38 @@ TEST(ResolveConfig, InsecureWithCertsWarning) {
   EXPECT_THAT(result.value().warnings[0], HasSubstr("ignored"));
 }
 
+// #459: an empty/unresolvable bind address must fail as a clean config error,
+// not let folly::SocketAddress throw uncaught and abort the process.
+TEST(ResolveConfig, ListenerEmptyAddressRejected) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.listeners.value()[0].udp.value().socket.value().address = std::string("");
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("address must be non-empty"));
+}
+
+TEST(ResolveConfig, ListenerUnresolvableAddressRejected) {
+  auto cfg = makeMinimalInsecureConfig();
+  // .invalid is a reserved TLD (RFC 2606): guaranteed to fail resolution fast.
+  cfg.listeners.value()[0].udp.value().socket.value().address = std::string("no.such.host.invalid");
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("invalid bind address"));
+}
+
+TEST(ResolveConfig, AdminEmptyAddressRejected) {
+  auto cfg = makeMinimalInsecureConfig();
+  auto admin = makeDefaultAdmin();
+  admin.address = std::string("");
+  cfg.admin = std::optional<ParsedAdminConfig>{std::move(admin)};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("address must be non-empty"));
+}
+
 // --- Service validation error tests ---
 
 TEST(ResolveConfig, NoServices) {
