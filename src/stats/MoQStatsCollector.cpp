@@ -14,15 +14,6 @@ namespace openmoq::moqx::stats {
 std::shared_ptr<MoQStatsCollector>
 MoQStatsCollector::create_moq_stats_collector(std::shared_ptr<StatsRegistry> registry) {
   auto collector = std::shared_ptr<MoQStatsCollector>(new MoQStatsCollector());
-
-  // Build aliased shared_ptrs: they share the parent's refcount but point to
-  // the value-member inner objects.  Holding only an inner callback extends the
-  // parent's lifetime.
-  collector->pubCallbackPtr_ =
-      std::shared_ptr<moxygen::MoQPublisherStatsCallback>(collector, &collector->pubCallback_);
-  collector->subCallbackPtr_ =
-      std::shared_ptr<moxygen::MoQSubscriberStatsCallback>(collector, &collector->subCallback_);
-
   registry->registerCollector(collector);
   return collector;
 }
@@ -65,11 +56,17 @@ folly::Executor* MoQStatsCollector::owningExecutor() const {
 }
 
 std::shared_ptr<moxygen::MoQPublisherStatsCallback> MoQStatsCollector::publisherCallback() const {
-  return pubCallbackPtr_;
+  // Aliasing shared_ptr: shares this collector's refcount, points at the
+  // inner callback.
+  auto self = std::const_pointer_cast<MoQStatsCollector>(shared_from_this());
+  auto* cb = &self->pubCallback_;
+  return std::shared_ptr<moxygen::MoQPublisherStatsCallback>(std::move(self), cb);
 }
 
 std::shared_ptr<moxygen::MoQSubscriberStatsCallback> MoQStatsCollector::subscriberCallback() const {
-  return subCallbackPtr_;
+  auto self = std::const_pointer_cast<MoQStatsCollector>(shared_from_this());
+  auto* cb = &self->subCallback_;
+  return std::shared_ptr<moxygen::MoQSubscriberStatsCallback>(std::move(self), cb);
 }
 
 // --- Session lifecycle ---

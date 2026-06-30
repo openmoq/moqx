@@ -29,7 +29,8 @@ namespace openmoq::moqx::stats {
 //   SubscriberCallback – implements MoQSubscriberStatsCallback
 //                        Relay uses this when it is the *subscriber*
 //                        (consuming from upstream publishers).
-class MoQStatsCollector : public StatsCollectorBase {
+class MoQStatsCollector : public StatsCollectorBase,
+                          public std::enable_shared_from_this<MoQStatsCollector> {
 public:
   // --- Inner callback: publisher role ---
   class PublisherCallback : public moxygen::MoQPublisherStatsCallback {
@@ -116,8 +117,8 @@ public:
 
   void setExecutor(folly::Executor* executor);
 
-  // Returns aliased shared_ptrs whose reference count is shared with this
-  // MoQStatsCollector.  Holding only an inner callback keeps the parent alive.
+  // Aliased shared_ptrs sharing this collector's refcount; holding one keeps the
+  // collector alive.
   std::shared_ptr<moxygen::MoQPublisherStatsCallback> publisherCallback() const;
   std::shared_ptr<moxygen::MoQSubscriberStatsCallback> subscriberCallback() const;
 
@@ -138,10 +139,6 @@ private:
   // Value-member inner callbacks.
   PublisherCallback pubCallback_;
   SubscriberCallback subCallback_;
-
-  // Aliased shared_ptrs set up in create_moq_stats_collector().
-  std::shared_ptr<moxygen::MoQPublisherStatsCallback> pubCallbackPtr_;
-  std::shared_ptr<moxygen::MoQSubscriberStatsCallback> subCallbackPtr_;
 
   // --- Metric storage ---
 #define DEFINE_FIELD(type, name) type name##_{0};
