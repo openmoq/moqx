@@ -44,6 +44,10 @@ export GLOG_logtostderr=1
 export GLOG_minloglevel="${MOQX_LOG_LEVEL:-0}"
 export GLOG_v="${MOQX_VERBOSE:-0}"
 
+if [ "${1:-}" = "issue-cat-token" ]; then
+  exec /usr/local/bin/moqx "$@"
+fi
+
 # Enable core dumps (requires ulimits.core=-1 and --privileged in compose)
 if [ -d /var/coredumps ] && [ -w /proc/sys/kernel/core_pattern ]; then
   echo "/var/coredumps/core.%e.%p.%t" > /proc/sys/kernel/core_pattern
