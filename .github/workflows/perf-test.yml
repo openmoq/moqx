@@ -4,34 +4,36 @@ name: perf test
 #
 # Triggers
 # --------
-#   workflow_dispatch — manual runs from the Actions tab or `gh workflow run`.
-#                       Use during stabilization; this is the primary trigger
-#                       today.
-#   workflow_call    — reusable. Once perf is stable, wire it into ci-main.yml
-#                       with:
-#                          jobs:
-#                            perf:
-#                              uses: ./.github/workflows/perf-test.yml
-#                              with:
-#                                ref: ${{ github.sha }}
+#   schedule         — nightly run against main HEAD. This is the canonical
+#                      trend source; only scheduled runs publish to Pages.
+#   workflow_dispatch — manual runs from the Actions tab or `gh workflow run`,
+#                      available to members/maintainers. The `ref` input lets
+#                      a maintainer point a run at any PR branch on demand.
+#   workflow_call    — reusable, for invocation from another workflow.
 #
-# This workflow does NOT run automatically on push or pull_request — it is
-# dormant after merge and only fires when explicitly invoked.
+# This workflow does NOT run automatically on push or pull_request — it never
+# competes with per-PR CI on the shared self-hosted VMs, and untrusted PR code
+# never executes here automatically.
 #
 # Concurrency
 # -----------
-# A single fixed group (`perf-test`) so manual, scheduled, and called runs all
+# A single fixed group (`perf-test`) so scheduled, manual, and called runs all
 # queue against the same physical Linode VMs. `cancel-in-progress: false`
 # because a partial test leaves VM state behind; queueing is safer.
 #
 # Publishing
 # ----------
 # Results stage as a Pages artifact (180-run rolling window + dashboard) and
-# only deploy on push-to-main. Manual / called-from-PR runs upload the
+# only deploy on the nightly schedule. Manual / called runs upload the
 # artifact for inspection but do not publish — keeps experiments from
 # clobbering the main trend line at openmoq.org/moqx/.
 
 on:
+  schedule:
+    # Nightly perf run against main HEAD (05:00 UTC). Scheduled runs always
+    # execute on the default branch (main) and are the only runs that publish.
+    - cron: '0 5 * * *'
+
   workflow_dispatch:
     inputs:
       ref:
@@ -123,9 +125,11 @@ jobs:
           PERF_CLIENT_HOST:   ${{ secrets.PERF_CLIENT_HOST }}
         run: |
           FILE="run-${{ steps.sha.outputs.short }}.json"
+          # Fallbacks: schedule events carry no `inputs`, so apply the canonical
+          # nightly load (120s / 1000 subs) when invoked by cron.
           bash scripts/perf-test-ci.sh \
-            --duration       "${{ inputs.duration }}" \
-            --subscriber-max "${{ inputs.subscribers }}" \
+            --duration       "${{ inputs.duration || '120' }}" \
+            --subscriber-max "${{ inputs.subscribers || '1000' }}" \
             --output         "$FILE"
           echo "run-file=$FILE" >> "$GITHUB_OUTPUT"
 
@@ -137,7 +141,7 @@ jobs:
           {
             echo "## perf-test — $(date -u +'%Y-%m-%d %H:%M UTC')"
             echo
-            echo "ref: \`${{ steps.sha.outputs.short }}\` · branch: \`${{ github.ref_name }}\` · subs: ${{ inputs.subscribers }} · duration: ${{ inputs.duration }}s"
+            echo "ref: \`${{ steps.sha.outputs.short }}\` · branch: \`${{ github.ref_name }}\` · subs: ${{ inputs.subscribers || '1000' }} · duration: ${{ inputs.duration || '120' }}s"
             echo
             if [ -f "$FILE" ]; then
               echo '| metric | value |'
@@ -184,14 +188,22 @@ jobs:
           # of the same SHA name)
           cp data/run-*.json "$OUT/perf/" 2>/dev/null || true
           cp "$FILE" "$OUT/perf/$FILE"
-          # Rebuild manifest (newest-first, capped at KEEP)
-          ls -1 "$OUT/perf/"run-*.json | sort -r | head -n "$KEEP" | \
-            jq -Rs '{runs: (split("\n") | map(select(length>0) | {file: (split("/") | last)}))}' \
+          # Rebuild manifest with per-run metadata (branch + timestamp). The
+          # run filenames are SHA-based, so they cannot be ordered by name —
+          # sort newest-first by timestamp. perf-compare.py filters entries by
+          # branch and the dashboard relies on chronological ordering. Cap KEEP.
+          for f in "$OUT/perf/"run-*.json; do
+            [ -e "$f" ] || continue
+            jq -c --arg file "$(basename "$f")" \
+              '{file: $file, branch: (.branch // "unknown"), timestamp: (.timestamp // ""), commit: (.commit // "")}' "$f"
+          done \
+            | jq -s "sort_by(.timestamp) | reverse | .[0:${KEEP}] | {runs: .}" \
             > "$OUT/perf/index.json"
 
       - name: Upload Pages artifact
-        # Picked up by actions/deploy-pages in the deploy job (gated to push-to-main).
-        # PR / dispatch runs still upload it so reviewers can download + inspect.
+        # Picked up by actions/deploy-pages in the deploy job (gated to the
+        # nightly schedule). Dispatch / called runs still upload it so reviewers
+        # can download + inspect without publishing.
         uses: actions/upload-pages-artifact@v3
         with:
           path: perf-out
@@ -225,10 +237,10 @@ jobs:
 
   deploy:
     needs: perf
-    # Only publish from main pushes — manual dispatch of feature branches,
-    # PR-context invocations, and schedules against non-main refs all skip
-    # the publish and leave the artifact attached to the run instead.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Only the nightly schedule publishes — manual dispatch (of any branch) and
+    # reusable calls upload the artifact for inspection but leave the published
+    # trend line untouched. Scheduled runs always execute on main HEAD.
+    if: github.event_name == 'schedule'
     runs-on: ubuntu-latest
     permissions:
       pages: write

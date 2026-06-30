@@ -6,29 +6,40 @@ tracking workflow for moqx.
 ## Overview
 
 Performance tests run on dedicated hardware via a standalone GitHub workflow.
-Runs are triggered manually (`workflow_dispatch`) or via reusable invocation
-(`workflow_call`). Results are surfaced via:
+The canonical trend comes from a nightly run against `main` HEAD; members and
+maintainers can also trigger ad-hoc runs against any branch. Results are
+surfaced via:
 
-- **PR comments** — comparison table showing current vs baseline with regression flags
-- **GitHub Pages dashboard** — time-series charts for all tracked metrics
+- **GitHub Pages dashboard** — time-series charts for all tracked metrics (nightly trend)
 - **CI step summaries** — inline results in the Actions run view
+- **PR comments** — comparison table (dormant; only emitted when the workflow
+  is invoked from a `pull_request` context)
 
 Primary workflow: [`.github/workflows/perf-test.yml`](../.github/workflows/perf-test.yml)
 
 ## Triggering
 
-The perf workflow is intentionally decoupled from push/PR CI.
+The perf workflow is intentionally decoupled from per-push/per-PR CI so it never
+competes with PR builds on the shared self-hosted VMs and never auto-runs
+untrusted PR code.
 
-- **Manual run:** Actions tab → `perf test` (`workflow_dispatch`)
-- **Reusable call:** from another workflow via `workflow_call`
+- **Nightly schedule:** `cron: '0 5 * * *'` (05:00 UTC) against `main` HEAD.
+  This is the only trigger that publishes to GitHub Pages.
+- **Manual run:** Actions tab → `perf test` (`workflow_dispatch`). Set `ref` to
+  point a run at any PR branch. Manual runs upload artifacts but do not publish.
+- **Reusable call:** from another workflow via `workflow_call`.
 
-Supported inputs:
+Supported inputs (schedule runs use the defaults below):
 
 | Input | Default | Description |
 |---|---:|---|
 | `ref` | current ref | Commit/branch/tag to test |
 | `duration` | `120` | Test duration in seconds |
 | `subscribers` | `1000` | Peak subscribers |
+
+> Note: the `workflow_dispatch` form defaults `subscribers` to `100` for quick
+> smoke runs. For a comparison meaningful against the nightly baseline, dispatch
+> with `subscribers: 1000` to match the published trend.
 
 ## Architecture
 
@@ -156,16 +167,17 @@ The workflow stages a Pages artifact (`perf-out/`) and deploys it with
 
 ## Viewing Results
 
-- **Dashboard:** `https://openmoq.org/moqx/`
+- **Dashboard:** `https://openmoq.org/moqx/` (nightly trend)
 - **Perf data:** `https://openmoq.org/moqx/perf/index.json`
-- **PR comments:** Automatically posted/updated on every PR
-- **Artifacts:** Available in the Actions run under "perf-results"
+- **Artifacts:** Available in the Actions run under "perf-results" (every run)
 - **Step summary:** Visible inline in the GitHub Actions job view
+- **PR comments:** Only when the workflow is invoked from a `pull_request`
+  context (not wired into PR CI today)
 
 Notes:
 
-- The workflow always uploads artifacts for inspection.
-- Publishing to Pages is gated in the workflow's `deploy` job.
+- Every run uploads artifacts for inspection.
+- Publishing to Pages is gated to the nightly schedule in the `deploy` job.
 
 ## Concurrency
 

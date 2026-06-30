@@ -7,7 +7,7 @@ name: ci main
 #
 #   check-format ──────────────────────────────────────────────────────────────────┐
 #   build (linux, asan debug) ── publish (docker+smoke) ── release ────────────────┼── notify
-#   benchmark (linux, macos) ─────────────────────────────────────────────────────-┘
+#   microbenchmark (linux, macos) ────────────────────────────────────────────────-┘
 
 on:
   push:
@@ -24,10 +24,6 @@ permissions:
   contents: write
   checks: write
   packages: write
-  pull-requests: write   # passed through to perf-test.yml (PR comment step is a no-op on push)
-  # Required by perf-test.yml's deploy job at parse time.
-  pages: write
-  id-token: write
 
 jobs:
   # ════════════════════════════════════════════════════════════════════════════
@@ -224,7 +220,7 @@ jobs:
   # Benchmark: run micro-benchmarks (independent of build/publish pipeline)
   # ════════════════════════════════════════════════════════════════════════════
 
-  benchmark:
+  microbenchmark:
     needs: [check-format]
     strategy:
       fail-fast: false
@@ -235,9 +231,9 @@ jobs:
           - name: macos
             # Pinned to macos-15 to match the moxygen publish runner / tarball
             # name (moxygen-macos-15-arm64.tar.gz), downloaded here with
-            # --no-fallback. See ci-pr.yml benchmark job for the full rationale.
+            # --no-fallback. See ci-pr.yml microbenchmark job for the full rationale.
             runner: macos-15
-    name: benchmark (${{ matrix.name }})
+    name: microbenchmark (${{ matrix.name }})
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Generate app token
@@ -815,18 +811,3 @@ jobs:
               \"Subject\": {\"Data\": \"${SUBJECT}\"},
               \"Body\": {\"Text\": {\"Data\": \"${BODY}\"}}
             }"
-
-  # ════════════════════════════════════════════════════════════════════════════
-  # Perf: regression test + publish dashboard to GitHub Pages
-  # Only runs on main; deploy job inside perf-test.yml publishes to Pages.
-  # ════════════════════════════════════════════════════════════════════════════
-
-  perf:
-    needs: [build]
-    if: needs.build.result == 'success' && github.ref == 'refs/heads/main'
-    uses: ./.github/workflows/perf-test.yml
-    with:
-      ref: ${{ github.sha }}
-      duration: 120
-      subscribers: 1000
-    secrets: inherit
