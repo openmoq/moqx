@@ -35,11 +35,10 @@ on:
     - cron: '0 5 * * *'
 
   workflow_dispatch:
+    # No `ref` input: the branch/tag under test is the one selected in the
+    # native "Use workflow from" picker (github.ref). That keeps a single
+    # branch control and makes the recorded branch label match what was tested.
     inputs:
-      ref:
-        description: 'commit / branch / tag to test (blank = HEAD of triggered ref)'
-        type: string
-        default: ''
       duration:
         description: 'test duration seconds'
         type: number
@@ -104,6 +103,9 @@ jobs:
 
       - uses: actions/checkout@v4
         with:
+          # workflow_call passes an explicit ref; dispatch/schedule leave it
+          # empty, so checkout falls back to github.ref (the selected branch on
+          # dispatch, main HEAD on schedule).
           ref: ${{ inputs.ref }}
           submodules: true
 

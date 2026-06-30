@@ -25,21 +25,26 @@ untrusted PR code.
 
 - **Nightly schedule:** `cron: '0 5 * * *'` (05:00 UTC) against `main` HEAD.
   This is the only trigger that publishes to GitHub Pages.
-- **Manual run:** Actions tab → `perf test` (`workflow_dispatch`). Set `ref` to
-  point a run at any PR branch; tune `subscribers`/`duration`; toggle `compare`
-  to render a regression report; set `pr` to also post that report as a PR
-  comment. Manual runs upload artifacts but do not publish to the trend.
-- **Reusable call:** from another workflow via `workflow_call`.
+- **Manual run:** Actions tab → `perf test` (`workflow_dispatch`). Pick the
+  branch/tag under test in the native **"Use workflow from"** selector, then
+  tune `subscribers`/`duration`, toggle `compare` to render a regression report,
+  and set `pr` to also post that report as a PR comment. Manual runs upload
+  artifacts but do not publish to the trend.
+- **Reusable call:** from another workflow via `workflow_call` (this form takes
+  an explicit `ref` input for the commit/branch/tag to test).
 
-Supported inputs (schedule runs use the defaults below):
+Supported `workflow_dispatch` inputs (schedule runs use the defaults below):
 
-| Input | Default (dispatch) | Description |
+| Input | Default | Description |
 |---|---:|---|
-| `ref` | current ref | Commit/branch/tag to test |
 | `duration` | `120` | Test duration in seconds |
 | `subscribers` | `100` | Peak subscribers |
 | `compare` | `true` | Compare against the published baseline and render a report into the step summary |
 | `pr` | _(blank)_ | PR number to also post the report to; blank = report stays in the step summary only |
+
+> **Branch under test:** there is no `ref` dispatch input — the run tests
+> whatever branch/tag is chosen in "Use workflow from". The `ref` input exists
+> only on the `workflow_call` form for programmatic callers.
 
 > **Subscriber note:** `workflow_dispatch` defaults `subscribers` to `100` for
 > quick smoke runs, while the nightly trend is captured at `1000`. The
