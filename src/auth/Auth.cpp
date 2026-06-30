@@ -344,15 +344,20 @@ folly::Expected<folly::Unit, AuthError> authorize(
   return folly::unit;
 }
 
+std::string
+AuthTokenVerifier::sign(std::string_view keyID, std::string_view secret, const Grants& grants) {
+  catapult::HmacSha256Algorithm hmac(deriveHmacKey(secret));
+  catapult::Cwt cwt(catapult::ALG_HMAC256_256, tokenFromGrants(grants));
+  cwt.withKeyId(std::string(keyID));
+  return toString(cwt.createCwt(catapult::CwtMode::MACed, hmac));
+}
+
 std::string AuthTokenVerifier::signForTest(
     std::string_view keyID,
     std::string_view secret,
     const Grants& grants
 ) {
-  catapult::HmacSha256Algorithm hmac(deriveHmacKey(secret));
-  catapult::Cwt cwt(catapult::ALG_HMAC256_256, tokenFromGrants(grants));
-  cwt.withKeyId(std::string(keyID));
-  return toString(cwt.createCwt(catapult::CwtMode::MACed, hmac));
+  return sign(keyID, secret, grants);
 }
 
 std::optional<AuthToken> findAuthToken(const Parameters& params, uint64_t tokenType) {
