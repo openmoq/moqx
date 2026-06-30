@@ -12,8 +12,8 @@ surfaced via:
 
 - **GitHub Pages dashboard** — time-series charts for all tracked metrics (nightly trend)
 - **CI step summaries** — inline results in the Actions run view
-- **PR comments** — comparison table (dormant; only emitted when the workflow
-  is invoked from a `pull_request` context)
+- **PR comments** — comparison table, optionally posted to a PR when a run sets
+  the `pr` input (otherwise the same report lives in the step summary)
 
 Primary workflow: [`.github/workflows/perf-test.yml`](../.github/workflows/perf-test.yml)
 
@@ -26,20 +26,29 @@ untrusted PR code.
 - **Nightly schedule:** `cron: '0 5 * * *'` (05:00 UTC) against `main` HEAD.
   This is the only trigger that publishes to GitHub Pages.
 - **Manual run:** Actions tab → `perf test` (`workflow_dispatch`). Set `ref` to
-  point a run at any PR branch. Manual runs upload artifacts but do not publish.
+  point a run at any PR branch; tune `subscribers`/`duration`; toggle `compare`
+  to render a regression report; set `pr` to also post that report as a PR
+  comment. Manual runs upload artifacts but do not publish to the trend.
 - **Reusable call:** from another workflow via `workflow_call`.
 
 Supported inputs (schedule runs use the defaults below):
 
-| Input | Default | Description |
+| Input | Default (dispatch) | Description |
 |---|---:|---|
 | `ref` | current ref | Commit/branch/tag to test |
 | `duration` | `120` | Test duration in seconds |
-| `subscribers` | `1000` | Peak subscribers |
+| `subscribers` | `100` | Peak subscribers |
+| `compare` | `true` | Compare against the published baseline and render a report into the step summary |
+| `pr` | _(blank)_ | PR number to also post the report to; blank = report stays in the step summary only |
 
-> Note: the `workflow_dispatch` form defaults `subscribers` to `100` for quick
-> smoke runs. For a comparison meaningful against the nightly baseline, dispatch
-> with `subscribers: 1000` to match the published trend.
+> **Subscriber note:** `workflow_dispatch` defaults `subscribers` to `100` for
+> quick smoke runs, while the nightly trend is captured at `1000`. The
+> comparison always scores against the published `main` trend, so for a
+> meaningful report dispatch with `subscribers: 1000`.
+
+> **Referencing a run on a PR without posting:** leave `pr` blank. The
+> comparison report is always written to the run's **step summary**, whose URL
+> can be pasted into a PR review by hand — zero automated PR footprint.
 
 ## Architecture
 
@@ -171,8 +180,8 @@ The workflow stages a Pages artifact (`perf-out/`) and deploys it with
 - **Perf data:** `https://openmoq.org/moqx/perf/index.json`
 - **Artifacts:** Available in the Actions run under "perf-results" (every run)
 - **Step summary:** Visible inline in the GitHub Actions job view
-- **PR comments:** Only when the workflow is invoked from a `pull_request`
-  context (not wired into PR CI today)
+- **PR comments:** Only when a manual/called run sets the `pr` input; otherwise
+  the report stays in the step summary
 
 Notes:
 

@@ -48,6 +48,14 @@ on:
         description: 'peak subscribers'
         type: number
         default: 100
+      compare:
+        description: 'compare against the published nightly baseline and render a report'
+        type: boolean
+        default: true
+      pr:
+        description: 'PR number to post the report to (blank = report only in the step summary)'
+        type: string
+        default: ''
 
   workflow_call:
     inputs:
@@ -63,6 +71,14 @@ on:
         type: number
         required: false
         default: 1000
+      compare:
+        type: boolean
+        required: false
+        default: false
+      pr:
+        type: string
+        required: false
+        default: ''
 
 concurrency:
   group: perf-test
@@ -70,7 +86,7 @@ concurrency:
 
 permissions:
   contents: read
-  pull-requests: write   # used only when invoked from a PR context
+  pull-requests: write   # used only by the optional "post report to PR" step (pr input)
 
 jobs:
   perf:
@@ -218,12 +234,14 @@ jobs:
             perf-out/
           retention-days: 30
 
-      - name: Compare vs rolling baseline + post PR comment
-        if: ${{ github.event_name == 'pull_request' }}
+      - name: Compare vs rolling baseline (report)
+        # Opt-in via the `compare` input. perf-compare.py is non-blocking
+        # (always exits 0) and renders a "no baseline yet" note on first run.
+        # Always compares against the published main trend, so the report is
+        # only meaningful when run at matching load (subs=1000).
+        if: ${{ inputs.compare }}
         env:
-          GH_TOKEN:  ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          FILE:      ${{ steps.collect.outputs.run-file }}
+          FILE: ${{ steps.collect.outputs.run-file }}
         run: |
           python3 scripts/perf-compare.py \
             --current "$FILE" \
@@ -231,6 +249,22 @@ jobs:
             --window 10 \
             --threshold 5 \
             --output comment.md
+          {
+            echo
+            echo "## perf comparison vs published baseline (subs=${{ inputs.subscribers || '1000' }})"
+            echo
+            cat comment.md
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Post comparison report to PR
+        # Only when a PR number is supplied. Blank `pr` = zero PR footprint;
+        # the report still lives in this run's step summary, whose URL can be
+        # referenced from a PR by hand.
+        if: ${{ inputs.compare && inputs.pr != '' }}
+        env:
+          GH_TOKEN:  ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr }}
+        run: |
           gh pr comment "$PR_NUMBER" \
             --repo "$GITHUB_REPOSITORY" \
             --body-file comment.md
