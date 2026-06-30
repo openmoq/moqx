@@ -100,6 +100,28 @@ const CHART_COLORS = {
 let allData = [];
 let charts = {};
 
+function populateBranchFilter() {
+  const select = document.getElementById('branch-filter');
+  const branches = Array.from(new Set(
+    allData
+      .map(d => (d && typeof d.branch === 'string') ? d.branch.trim() : '')
+      .filter(Boolean)
+  )).sort((a, b) => a.localeCompare(b));
+
+  if (branches.length === 0) {
+    select.innerHTML = '<option value="main">main</option>';
+    select.value = 'main';
+    return;
+  }
+
+  select.innerHTML = branches
+    .map(branch => `<option value="${branch}">${branch}</option>`)
+    .join('');
+
+  // Prefer main as default for continuity with the previous static behavior.
+  select.value = branches.includes('main') ? 'main' : branches[0];
+}
+
 async function loadData() {
   try {
     const resp = await fetch(`${DATA_BASE_URL}/index.json`, { cache: 'no-store' });
@@ -117,6 +139,7 @@ async function loadData() {
     );
 
     allData = results.filter(Boolean).reverse(); // chronological order
+    populateBranchFilter();
     document.getElementById('loading').style.display = 'none';
     renderDashboard();
   } catch (e) {

@@ -4,40 +4,41 @@ name: perf test
 #
 # Triggers
 # --------
-#   workflow_dispatch — manual runs from the Actions tab or `gh workflow run`.
-#                       Use during stabilization; this is the primary trigger
-#                       today.
-#   workflow_call    — reusable. Once perf is stable, wire it into ci-main.yml
-#                       with:
-#                          jobs:
-#                            perf:
-#                              uses: ./.github/workflows/perf-test.yml
-#                              with:
-#                                ref: ${{ github.sha }}
+#   schedule         — nightly run against main HEAD. This is the canonical
+#                      trend source; only scheduled runs publish to Pages.
+#   workflow_dispatch — manual runs from the Actions tab or `gh workflow run`,
+#                      available to members/maintainers. The `ref` input lets
+#                      a maintainer point a run at any PR branch on demand.
+#   workflow_call    — reusable, for invocation from another workflow.
 #
-# This workflow does NOT run automatically on push or pull_request — it is
-# dormant after merge and only fires when explicitly invoked.
+# This workflow does NOT run automatically on push or pull_request — it never
+# competes with per-PR CI on the shared self-hosted VMs, and untrusted PR code
+# never executes here automatically.
 #
 # Concurrency
 # -----------
-# A single fixed group (`perf-test`) so manual, scheduled, and called runs all
+# A single fixed group (`perf-test`) so scheduled, manual, and called runs all
 # queue against the same physical Linode VMs. `cancel-in-progress: false`
 # because a partial test leaves VM state behind; queueing is safer.
 #
 # Publishing
 # ----------
 # Results stage as a Pages artifact (180-run rolling window + dashboard) and
-# only deploy on push-to-main. Manual / called-from-PR runs upload the
+# only deploy on the nightly schedule. Manual / called runs upload the
 # artifact for inspection but do not publish — keeps experiments from
 # clobbering the main trend line at openmoq.org/moqx/.
 
 on:
+  schedule:
+    # Nightly perf run against main HEAD (05:00 UTC). Scheduled runs always
+    # execute on the default branch (main) and are the only runs that publish.
+    - cron: '0 5 * * *'
+
   workflow_dispatch:
+    # No `ref` input: the branch/tag under test is the one selected in the
+    # native "Use workflow from" picker (github.ref). That keeps a single
+    # branch control and makes the recorded branch label match what was tested.
     inputs:
-      ref:
-        description: 'commit / branch / tag to test (blank = HEAD of triggered ref)'
-        type: string
-        default: ''
       duration:
         description: 'test duration seconds'
         type: number
@@ -45,7 +46,15 @@ on:
       subscribers:
         description: 'peak subscribers'
         type: number
-        default: 1000
+        default: 100
+      compare:
+        description: 'compare against the published nightly baseline and render a report'
+        type: boolean
+        default: true
+      pr:
+        description: 'PR number to post the report to (blank = report only in the step summary)'
+        type: string
+        default: ''
 
   workflow_call:
     inputs:
@@ -61,6 +70,14 @@ on:
         type: number
         required: false
         default: 1000
+      compare:
+        type: boolean
+        required: false
+        default: false
+      pr:
+        type: string
+        required: false
+        default: ''
 
 concurrency:
   group: perf-test
@@ -68,7 +85,7 @@ concurrency:
 
 permissions:
   contents: read
-  pull-requests: write   # used only when invoked from a PR context
+  pull-requests: write   # used only by the optional "post report to PR" step (pr input)
 
 jobs:
   perf:
@@ -86,6 +103,9 @@ jobs:
 
       - uses: actions/checkout@v4
         with:
+          # workflow_call passes an explicit ref; dispatch/schedule leave it
+          # empty, so checkout falls back to github.ref (the selected branch on
+          # dispatch, main HEAD on schedule).
           ref: ${{ inputs.ref }}
           submodules: true
 
@@ -114,18 +134,20 @@ jobs:
           install -d -m 700 ~/.ssh
           printf '%s\n' "$PERF_SSH_KEY" > ~/.ssh/perf-key
           chmod 600 ~/.ssh/perf-key
+          echo "PERF_SSH_KEY_FILE=$HOME/.ssh/perf-key" >> "$GITHUB_ENV"
 
       - name: Run perf test on dedicated VMs
         id: collect
         env:
           PERF_RELAY_HOST:    ${{ secrets.PERF_RELAY_HOST }}
           PERF_CLIENT_HOST:   ${{ secrets.PERF_CLIENT_HOST }}
-          PERF_SSH_KEY_FILE:  /home/runner/.ssh/perf-key
         run: |
           FILE="run-${{ steps.sha.outputs.short }}.json"
+          # Fallbacks: schedule events carry no `inputs`, so apply the canonical
+          # nightly load (120s / 1000 subs) when invoked by cron.
           bash scripts/perf-test-ci.sh \
-            --duration       "${{ inputs.duration }}" \
-            --subscriber-max "${{ inputs.subscribers }}" \
+            --duration       "${{ inputs.duration || '120' }}" \
+            --subscriber-max "${{ inputs.subscribers || '1000' }}" \
             --output         "$FILE"
           echo "run-file=$FILE" >> "$GITHUB_OUTPUT"
 
@@ -137,12 +159,19 @@ jobs:
           {
             echo "## perf-test — $(date -u +'%Y-%m-%d %H:%M UTC')"
             echo
-            echo "ref: \`${{ steps.sha.outputs.short }}\` · branch: \`${{ github.ref_name }}\` · subs: ${{ inputs.subscribers }} · duration: ${{ inputs.duration }}s"
+            echo "ref: \`${{ steps.sha.outputs.short }}\` · branch: \`${{ github.ref_name }}\` · subs: ${{ inputs.subscribers || '1000' }} · duration: ${{ inputs.duration || '120' }}s"
             echo
             if [ -f "$FILE" ]; then
               echo '| metric | value |'
               echo '|---|---|'
-              jq -r '.metrics | to_entries[] | "| \(.key) | \(.value) |"' "$FILE"
+              jq -r '
+                (if (.metrics | type) == "object" then .metrics
+                 elif (.results | type) == "object" then .results
+                 else {}
+                 end)
+                | to_entries[]
+                | "| \(.key) | \(.value) |"
+              ' "$FILE"
             else
               echo "_no results JSON produced_"
             fi
@@ -177,14 +206,22 @@ jobs:
           # of the same SHA name)
           cp data/run-*.json "$OUT/perf/" 2>/dev/null || true
           cp "$FILE" "$OUT/perf/$FILE"
-          # Rebuild manifest (newest-first, capped at KEEP)
-          ls -1 "$OUT/perf/"run-*.json | sort -r | head -n "$KEEP" | \
-            jq -Rs '{runs: (split("\n") | map(select(length>0) | {file: (split("/") | last)}))}' \
+          # Rebuild manifest with per-run metadata (branch + timestamp). The
+          # run filenames are SHA-based, so they cannot be ordered by name —
+          # sort newest-first by timestamp. perf-compare.py filters entries by
+          # branch and the dashboard relies on chronological ordering. Cap KEEP.
+          for f in "$OUT/perf/"run-*.json; do
+            [ -e "$f" ] || continue
+            jq -c --arg file "$(basename "$f")" \
+              '{file: $file, branch: (.branch // "unknown"), timestamp: (.timestamp // ""), commit: (.commit // "")}' "$f"
+          done \
+            | jq -s "sort_by(.timestamp) | reverse | .[0:${KEEP}] | {runs: .}" \
             > "$OUT/perf/index.json"
 
       - name: Upload Pages artifact
-        # Picked up by actions/deploy-pages in the deploy job (gated to push-to-main).
-        # PR / dispatch runs still upload it so reviewers can download + inspect.
+        # Picked up by actions/deploy-pages in the deploy job (gated to the
+        # nightly schedule). Dispatch / called runs still upload it so reviewers
+        # can download + inspect without publishing.
         uses: actions/upload-pages-artifact@v3
         with:
           path: perf-out
@@ -199,12 +236,14 @@ jobs:
             perf-out/
           retention-days: 30
 
-      - name: Compare vs rolling baseline + post PR comment
-        if: ${{ github.event_name == 'pull_request' }}
+      - name: Compare vs rolling baseline (report)
+        # Opt-in via the `compare` input. perf-compare.py is non-blocking
+        # (always exits 0) and renders a "no baseline yet" note on first run.
+        # Always compares against the published main trend, so the report is
+        # only meaningful when run at matching load (subs=1000).
+        if: ${{ inputs.compare }}
         env:
-          GH_TOKEN:  ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          FILE:      ${{ steps.collect.outputs.run-file }}
+          FILE: ${{ steps.collect.outputs.run-file }}
         run: |
           python3 scripts/perf-compare.py \
             --current "$FILE" \
@@ -212,16 +251,32 @@ jobs:
             --window 10 \
             --threshold 5 \
             --output comment.md
+          {
+            echo
+            echo "## perf comparison vs published baseline (subs=${{ inputs.subscribers || '1000' }})"
+            echo
+            cat comment.md
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Post comparison report to PR
+        # Only when a PR number is supplied. Blank `pr` = zero PR footprint;
+        # the report still lives in this run's step summary, whose URL can be
+        # referenced from a PR by hand.
+        if: ${{ inputs.compare && inputs.pr != '' }}
+        env:
+          GH_TOKEN:  ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr }}
+        run: |
           gh pr comment "$PR_NUMBER" \
             --repo "$GITHUB_REPOSITORY" \
             --body-file comment.md
 
   deploy:
     needs: perf
-    # Only publish from main pushes — manual dispatch of feature branches,
-    # PR-context invocations, and schedules against non-main refs all skip
-    # the publish and leave the artifact attached to the run instead.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Only the nightly schedule publishes — manual dispatch (of any branch) and
+    # reusable calls upload the artifact for inspection but leave the published
+    # trend line untouched. Scheduled runs always execute on main HEAD.
+    if: github.event_name == 'schedule'
     runs-on: ubuntu-latest
     permissions:
       pages: write

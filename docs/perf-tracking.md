@@ -1,16 +1,59 @@
 # Performance Regression Tracking
 
-This document describes the CI-integrated performance testing and regression
-tracking system for moqx.
+This document describes the standalone performance testing and regression
+tracking workflow for moqx.
 
 ## Overview
 
-Every push to `main` (and every PR) triggers an end-to-end relay performance
-test on dedicated hardware. Results are tracked over time and surfaced via:
+Performance tests run on dedicated hardware via a standalone GitHub workflow.
+The canonical trend comes from a nightly run against `main` HEAD; members and
+maintainers can also trigger ad-hoc runs against any branch. Results are
+surfaced via:
 
-- **PR comments** — comparison table showing current vs baseline with regression flags
-- **GitHub Pages dashboard** — time-series charts for all tracked metrics
+- **GitHub Pages dashboard** — time-series charts for all tracked metrics (nightly trend)
 - **CI step summaries** — inline results in the Actions run view
+- **PR comments** — comparison table, optionally posted to a PR when a run sets
+  the `pr` input (otherwise the same report lives in the step summary)
+
+Primary workflow: [`.github/workflows/perf-test.yml`](../.github/workflows/perf-test.yml)
+
+## Triggering
+
+The perf workflow is intentionally decoupled from per-push/per-PR CI so it never
+competes with PR builds on the shared self-hosted VMs and never auto-runs
+untrusted PR code.
+
+- **Nightly schedule:** `cron: '0 5 * * *'` (05:00 UTC) against `main` HEAD.
+  This is the only trigger that publishes to GitHub Pages.
+- **Manual run:** Actions tab → `perf test` (`workflow_dispatch`). Pick the
+  branch/tag under test in the native **"Use workflow from"** selector, then
+  tune `subscribers`/`duration`, toggle `compare` to render a regression report,
+  and set `pr` to also post that report as a PR comment. Manual runs upload
+  artifacts but do not publish to the trend.
+- **Reusable call:** from another workflow via `workflow_call` (this form takes
+  an explicit `ref` input for the commit/branch/tag to test).
+
+Supported `workflow_dispatch` inputs (schedule runs use the defaults below):
+
+| Input | Default | Description |
+|---|---:|---|
+| `duration` | `120` | Test duration in seconds |
+| `subscribers` | `100` | Peak subscribers |
+| `compare` | `true` | Compare against the published baseline and render a report into the step summary |
+| `pr` | _(blank)_ | PR number to also post the report to; blank = report stays in the step summary only |
+
+> **Branch under test:** there is no `ref` dispatch input — the run tests
+> whatever branch/tag is chosen in "Use workflow from". The `ref` input exists
+> only on the `workflow_call` form for programmatic callers.
+
+> **Subscriber note:** `workflow_dispatch` defaults `subscribers` to `100` for
+> quick smoke runs, while the nightly trend is captured at `1000`. The
+> comparison always scores against the published `main` trend, so for a
+> meaningful report dispatch with `subscribers: 1000`.
+
+> **Referencing a run on a PR without posting:** leave `pr` blank. The
+> comparison report is always written to the run's **step summary**, whose URL
+> can be pasted into a PR review by hand — zero automated PR footprint.
 
 ## Architecture
 
@@ -109,24 +152,18 @@ In the repository settings → Secrets and variables → Actions:
 
 | Secret | Value |
 |--------|-------|
+| `OMOQ_APP_ID` | GitHub App id used for checkout/tokened operations |
+| `OMOQ_APP_PRIV_KEY` | GitHub App private key |
 | `PERF_SSH_KEY` | Contents of `perf-key` (private key) |
 | `PERF_RELAY_HOST` | `root@<relay-ip>` |
 | `PERF_CLIENT_HOST` | `root@<client-ip>` |
 
-### 5. Create gh-pages Branch
+### 5. Enable GitHub Pages (GitHub Actions Source)
 
-```bash
-git checkout --orphan gh-pages
-git rm -rf .
-cp -r gh-pages/* .
-git add index.html data/
-git commit -m "Initial performance dashboard"
-git push origin gh-pages
-```
+Repository → Settings → Pages → Source: **GitHub Actions**.
 
-### 6. Enable GitHub Pages
-
-Repository → Settings → Pages → Source: Deploy from branch → `gh-pages` / root.
+The workflow stages a Pages artifact (`perf-out/`) and deploys it with
+`actions/deploy-pages`.
 
 ## Files
 
@@ -137,17 +174,24 @@ Repository → Settings → Pages → Source: Deploy from branch → `gh-pages` 
 | `scripts/perf-compare.py` | Regression detection + markdown |
 | `scripts/perf-test.sh` | Underlying test runner (unchanged) |
 | `scripts/perf-metrics.sh` | Prometheus metrics poller (unchanged) |
-| `.github/workflows/ci-main.yml` | perf-test job (commits results) |
-| `.github/workflows/ci-pr.yml` | perf-test job (posts PR comment) |
-| `gh-pages/index.html` | Dashboard (Chart.js) |
-| `gh-pages/data/index.json` | Run manifest |
+| `.github/workflows/perf-test.yml` | Standalone perf workflow (run, compare, stage, deploy) |
+| `status/index.html` | Dashboard shell (copied to Pages artifact root) |
+| `perf-out/perf/index.json` | Generated run manifest in Pages artifact |
+| `perf-out/perf/run-*.json` | Generated per-run result files |
 
 ## Viewing Results
 
-- **Dashboard:** `https://<org>.github.io/moqx/` (after GitHub Pages is enabled)
-- **PR comments:** Automatically posted/updated on every PR
-- **Artifacts:** Available in the Actions run under "perf-results"
+- **Dashboard:** `https://openmoq.org/moqx/` (nightly trend)
+- **Perf data:** `https://openmoq.org/moqx/perf/index.json`
+- **Artifacts:** Available in the Actions run under "perf-results" (every run)
 - **Step summary:** Visible inline in the GitHub Actions job view
+- **PR comments:** Only when a manual/called run sets the `pr` input; otherwise
+  the report stays in the step summary
+
+Notes:
+
+- Every run uploads artifacts for inspection.
+- Publishing to Pages is gated to the nightly schedule in the `deploy` job.
 
 ## Concurrency
 
@@ -157,5 +201,5 @@ queue and execute sequentially to avoid conflicting on the shared VMs.
 
 ## Data Retention
 
-The gh-pages index keeps the last 180 runs (~6 months at 1 run/day). Older
-entries are pruned during the commit step.
+The Pages payload keeps a rolling 180-run window (~6 months at 1 run/day).
+The manifest is rebuilt newest-first and capped during staging.

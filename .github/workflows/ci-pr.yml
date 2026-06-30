@@ -201,7 +201,7 @@ jobs:
       - name: Run conformance tests
         run: bash test/test_conformance.sh ./build/moqx ${{ matrix.versions }} ${{ matrix.transport }} ${{ matrix.stack }}
 
-  benchmark:
+  microbenchmark:
     needs: [check-format]
     strategy:
       fail-fast: false
@@ -216,7 +216,7 @@ jobs:
             # rollout), which requests a macos-26 tarball that 404s. Keep in
             # lockstep with the build job above (also macos-15).
             runner: macos-15
-    name: benchmark (${{ matrix.name }})
+    name: microbenchmark (${{ matrix.name }})
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Generate app token
@@ -264,31 +264,31 @@ jobs:
             fi
           fi
 
-      - name: Build with benchmarks
+      - name: Build microbenchmarks
         run: bash scripts/build.sh --benchmark
 
-      - name: Run benchmarks
+      - name: Run microbenchmarks
         run: |
           ./build/benchmark/moqx_benchmark \
-            --bm_json_verbose=bench-results.json \
-            | tee bench-output.txt
+            --bm_json_verbose=microbench-results.json \
+            | tee microbench-output.txt
 
       - name: Render summary
         if: always()
         run: |
           {
-            echo "## Benchmark results — ${{ matrix.name }}"
+            echo "## Microbenchmark results — ${{ matrix.name }}"
             echo ""
             echo '```'
-            cat bench-output.txt
+            cat microbench-output.txt
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload benchmark artifacts
+      - name: Upload microbenchmark artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: bench-results-${{ matrix.name }}
+          name: microbench-results-${{ matrix.name }}
           path: |
-            bench-results.json
-            bench-output.txt
+            microbench-results.json
+            microbench-output.txt
