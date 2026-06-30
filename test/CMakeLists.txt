@@ -149,6 +149,19 @@ target_link_libraries(moqx_pico_quic_stats_test PRIVATE
 )
 gtest_discover_tests(moqx_pico_quic_stats_test)
 
+add_executable(moqx_moq_stats_collector_test
+  stats/MoQStatsCollectorTest.cpp
+)
+target_include_directories(moqx_moq_stats_collector_test PRIVATE
+  ${PROJECT_SOURCE_DIR}/src
+)
+target_link_libraries(moqx_moq_stats_collector_test PRIVATE
+  moqx_core
+  GTest::gtest_main
+  GTest::gmock
+)
+gtest_discover_tests(moqx_moq_stats_collector_test)
+
 add_executable(moqx_service_matcher_test
   ServiceMatcherTest.cpp
 )

@@ -59,12 +59,14 @@ public:
     void onSubscriptionStreamClosed() override;
     void onSubscriptionBegin() override;
     void onSubscriptionEnd() override;
+    void onSubgroupReset(moxygen::ResetStreamErrorCode errorCode) override;
 
     // Publisher-only methods
     void recordPublishNamespaceLatency(uint64_t latencyMsec) override;
     void recordPublishLatency(uint64_t latencyMsec) override;
     void onPublishError(moxygen::PublishErrorCode errorCode) override;
     void onPublishSuccess() override;
+    void recordObjectAckLatency(uint64_t latencyUsec) override;
 
   private:
     MoQStatsCollector& parent_;
@@ -97,6 +99,7 @@ public:
     void onSubscriptionStreamClosed() override;
     void onSubscriptionBegin() override;
     void onSubscriptionEnd() override;
+    void onSubgroupReset(moxygen::ResetStreamErrorCode errorCode) override;
 
     // Subscriber-only methods
     void recordSubscribeLatency(uint64_t latencyMsec) override;
@@ -154,6 +157,12 @@ private:
 #define DEFINE_ERROR_ARRAY(name) std::array<uint64_t, kRequestErrorCodeCount> name##ByCodes_{};
   STATS_ERROR_COUNTER_FIELDS(DEFINE_ERROR_ARRAY)
 #undef DEFINE_ERROR_ARRAY
+
+  // Per-ResetStreamErrorCode breakdown arrays; the total is sum() over labels.
+#define DEFINE_RESET_ARRAY(name)                                                                   \
+  std::array<uint64_t, kResetStreamErrorCodeCount> name##ByResetCodes_{};
+  STATS_RESET_COUNTER_FIELDS(DEFINE_RESET_ARRAY)
+#undef DEFINE_RESET_ARRAY
 };
 
 } // namespace openmoq::moqx::stats
