@@ -19,8 +19,9 @@ DartConfiguration.tcl
 # CPack
 _CPack_Packages/
 
-# Dependency scratch dir
+# Dependency scratch dirs
 /.scratch/
+/.docker-deps/
 
 # OS
 .DS_Store
@@ -29,6 +30,7 @@ _CPack_Packages/
 .vscode/
 .claude/
 .cache/
+AGENTS.md
 
 # Docker secrets (never commit)
 docker/.env

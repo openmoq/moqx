@@ -180,7 +180,7 @@ check_system_deps() {
           echo "  sudo apt-get install -y build-essential cmake ninja-build \\"
           echo "    libssl-dev libunwind-dev libgoogle-glog-dev libgflags-dev \\"
           echo "    libdouble-conversion-dev libevent-dev libsodium-dev libzstd-dev \\"
-          echo "    libboost-all-dev libfmt-dev zlib1g-dev libc-ares-dev gperf"
+          echo "    libboost-all-dev libfmt-dev zlib1g-dev libc-ares-dev gperf libbrotli-dev"
           ;;
         fedora|centos|rhel)
           echo "Install with:"
