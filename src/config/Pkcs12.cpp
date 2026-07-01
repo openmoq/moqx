@@ -7,12 +7,12 @@
 #include "config/Pkcs12.h"
 
 #include <memory>
-#include <optional>
 
 #include <folly/FileUtil.h>
+#include <folly/ssl/OpenSSLCertUtils.h>
+#include <folly/ssl/OpenSSLPtrTypes.h>
 
 #include <openssl/bio.h>
-#include <openssl/err.h>
 #include <openssl/pem.h>
 #include <openssl/pkcs12.h>
 #include <openssl/x509.h>
@@ -21,14 +21,8 @@ namespace openmoq::moqx::config {
 
 namespace {
 
-// OpenSSL RAII deleters.
-struct BioDeleter {
-  void operator()(BIO* b) const noexcept {
-    if (b) {
-      BIO_free(b);
-    }
-  }
-};
+// folly/ssl provides RAII wrappers for BIO, EVP_PKEY, X509, and STACK_OF(X509);
+// only PKCS12 lacks one, so define that single deleter here.
 struct Pkcs12Deleter {
   void operator()(PKCS12* p) const noexcept {
     if (p) {
@@ -36,60 +30,10 @@ struct Pkcs12Deleter {
     }
   }
 };
-struct EvpPkeyDeleter {
-  void operator()(EVP_PKEY* k) const noexcept {
-    if (k) {
-      EVP_PKEY_free(k);
-    }
-  }
-};
-struct X509Deleter {
-  void operator()(X509* c) const noexcept {
-    if (c) {
-      X509_free(c);
-    }
-  }
-};
-struct X509StackDeleter {
-  void operator()(STACK_OF(X509) * s) const noexcept {
-    if (s) {
-      sk_X509_pop_free(s, X509_free);
-    }
-  }
-};
-
-using BioPtr = std::unique_ptr<BIO, BioDeleter>;
 using Pkcs12Ptr = std::unique_ptr<PKCS12, Pkcs12Deleter>;
-using EvpPkeyPtr = std::unique_ptr<EVP_PKEY, EvpPkeyDeleter>;
-using X509Ptr = std::unique_ptr<X509, X509Deleter>;
-using X509StackPtr = std::unique_ptr<STACK_OF(X509), X509StackDeleter>;
 
 folly::Unexpected<std::string> err(const std::string& msg) {
   return folly::makeUnexpected(msg);
-}
-
-// Copy the contents of a memory BIO into a std::string.
-std::string bioToString(BIO* bio) {
-  char* data = nullptr;
-  long len = BIO_get_mem_data(bio, &data);
-  if (len <= 0 || data == nullptr) {
-    return {};
-  }
-  return std::string(data, static_cast<size_t>(len));
-}
-
-// Append a single certificate as PEM to `out`. Returns an error string on
-// serialization failure, std::nullopt on success.
-std::optional<std::string> appendCertPem(std::string& out, X509* cert) {
-  BioPtr bio(BIO_new(BIO_s_mem()));
-  if (!bio) {
-    return std::string("failed to allocate BIO for certificate PEM");
-  }
-  if (PEM_write_bio_X509(bio.get(), cert) != 1) {
-    return std::string("failed to serialize certificate to PEM");
-  }
-  out += bioToString(bio.get());
-  return std::nullopt;
 }
 
 } // namespace
@@ -100,7 +44,7 @@ transcodePkcs12(folly::StringPiece der, folly::StringPiece password) {
     return err("PKCS#12 data is empty");
   }
 
-  BioPtr bio(BIO_new_mem_buf(der.data(), static_cast<int>(der.size())));
+  folly::ssl::BioUniquePtr bio(BIO_new_mem_buf(der.data(), static_cast<int>(der.size())));
   if (!bio) {
     return err("failed to allocate BIO for PKCS#12 data");
   }
@@ -121,9 +65,9 @@ transcodePkcs12(folly::StringPiece der, folly::StringPiece password) {
     OPENSSL_cleanse(pass.data(), pass.size());
   }
 
-  EvpPkeyPtr pkey(pkeyRaw);
-  X509Ptr leaf(leafRaw);
-  X509StackPtr chain(chainRaw);
+  folly::ssl::EvpPkeyUniquePtr pkey(pkeyRaw);
+  folly::ssl::X509UniquePtr leaf(leafRaw);
+  folly::ssl::OwningStackOfX509UniquePtr chain(chainRaw);
 
   if (rc != 1) {
     return err("failed to decrypt/parse PKCS#12 bundle (wrong password or corrupt data)");
@@ -135,31 +79,35 @@ transcodePkcs12(folly::StringPiece der, folly::StringPiece password) {
     return err("PKCS#12 bundle contains no certificate");
   }
 
-  // Certificate chain PEM: leaf first, then any intermediates.
+  // Certificate chain PEM: leaf first, then any intermediates. pemEncode throws
+  // on failure; convert to our error-string contract so config load stays clean.
   std::string certChainPem;
-  if (auto e = appendCertPem(certChainPem, leaf.get())) {
-    return folly::makeUnexpected(*e);
-  }
-  const int n = chain ? sk_X509_num(chain.get()) : 0;
-  for (int i = 0; i < n; ++i) {
-    if (auto e = appendCertPem(certChainPem, sk_X509_value(chain.get(), i))) {
-      return folly::makeUnexpected(*e);
+  try {
+    certChainPem = folly::ssl::OpenSSLCertUtils::pemEncode(*leaf);
+    const int n = chain ? sk_X509_num(chain.get()) : 0;
+    for (int i = 0; i < n; ++i) {
+      certChainPem += folly::ssl::OpenSSLCertUtils::pemEncode(*sk_X509_value(chain.get(), i));
     }
+  } catch (const std::exception& e) {
+    return err(std::string("failed to serialize certificate to PEM: ") + e.what());
   }
 
-  // Private key PEM, unencrypted (no cipher).
-  std::string keyPem;
-  {
-    BioPtr kbio(BIO_new(BIO_s_mem()));
-    if (!kbio) {
-      return err("failed to allocate BIO for private key PEM");
-    }
-    if (PEM_write_bio_PrivateKey(kbio.get(), pkey.get(), nullptr, nullptr, 0, nullptr, nullptr) !=
-        1) {
-      return err("failed to serialize private key to PEM");
-    }
-    keyPem = bioToString(kbio.get());
+  // Private key PEM, unencrypted (no cipher). folly's cert utils are
+  // certificate-only, so serialize the key directly.
+  folly::ssl::BioUniquePtr kbio(BIO_new(BIO_s_mem()));
+  if (!kbio) {
+    return err("failed to allocate BIO for private key PEM");
   }
+  if (PEM_write_bio_PrivateKey(kbio.get(), pkey.get(), nullptr, nullptr, 0, nullptr, nullptr) !=
+      1) {
+    return err("failed to serialize private key to PEM");
+  }
+  char* keyData = nullptr;
+  long keyLen = BIO_get_mem_data(kbio.get(), &keyData);
+  if (keyLen <= 0 || keyData == nullptr) {
+    return err("failed to serialize private key to PEM");
+  }
+  std::string keyPem(keyData, static_cast<size_t>(keyLen));
 
   return TlsMaterial{.certChainPem = std::move(certChainPem), .keyPem = std::move(keyPem)};
 }
