@@ -218,8 +218,14 @@ struct MLogConfig {
   float sampleRate{1.0f}; // 1.0 = log all sessions, 0.0 = none
 };
 
+struct QLogConfig {
+  std::string dir;        // output directory; empty = disabled
+  float sampleRate{1.0f}; // fraction of connections to log (0.0–1.0); mvfst only
+};
+
 struct LoggingConfig {
   std::optional<MLogConfig> mlog;
+  std::optional<QLogConfig> qlog;
 };
 
 struct Config {

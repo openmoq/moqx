@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# mlog-cleanup.sh — Manual retention cleanup for moqx .mlog files.
+# log-cleanup.sh — Manual retention cleanup for moqx log files (.mlog, .qlog, etc.).
 #
 # Usage:
-#   mlog-cleanup.sh --dir <path> [--max-age-days <N>] [--max-dir-mb <N>] [--dry-run]
+#   log-cleanup.sh --dir <path> [--ext <.EXT>] [--max-age-days <N>] [--max-dir-mb <N>] [--dry-run]
 #
 # Options:
-#   --dir <path>          Directory containing .mlog files (required).
-#   --max-age-days <N>    Delete .mlog files last modified more than N days ago.
+#   --dir <path>          Directory containing log files (required).
+#   --ext <.EXT>          File extension to match (default: .mlog). Use .qlog for qlog cleanup.
+#   --max-age-days <N>    Delete files last modified more than N days ago.
 #                         N must be >= 1.
 #   --max-dir-mb <N>      After age-based deletion, trim the directory to N MB
 #                         by deleting the oldest files first.
@@ -16,8 +17,9 @@
 #
 # At least one of --max-age-days or --max-dir-mb must be provided.
 #
-# Example — delete files older than 7 days and cap the directory at 1 GB:
-#   mlog-cleanup.sh --dir /var/log/moqx/mlog --max-age-days 7 --max-dir-mb 1024
+# Examples:
+#   log-cleanup.sh --dir /var/log/moqx/mlog --max-age-days 7 --max-dir-mb 1024
+#   log-cleanup.sh --dir /var/log/moqx/qlog --ext .qlog --max-age-days 3 --max-dir-mb 2048
 
 set -euo pipefail
 
@@ -26,6 +28,7 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 
 DIR=""
+EXT=".mlog"
 MAX_AGE_DAYS=""
 MAX_DIR_MB=""
 DRY_RUN=0
@@ -39,6 +42,10 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --dir)
       DIR="${2:?'--dir requires a path argument'}"
+      shift 2
+      ;;
+    --ext)
+      EXT="${2:?'--ext requires an extension argument (e.g. .mlog or .qlog)'}"
       shift 2
       ;;
     --max-age-days)
@@ -100,8 +107,8 @@ fi
 # Helpers
 # ---------------------------------------------------------------------------
 
-log() { echo "[mlog-cleanup] $*"; }
-warn() { echo "[mlog-cleanup] WARNING: $*" >&2; }
+log() { echo "[log-cleanup] $*"; }
+warn() { echo "[log-cleanup] WARNING: $*" >&2; }
 
 remove_file() {
   local path="$1"
@@ -118,10 +125,10 @@ remove_file() {
 # ---------------------------------------------------------------------------
 
 if [[ -n "$MAX_AGE_DAYS" ]]; then
-  log "Phase 1: removing .mlog files older than ${MAX_AGE_DAYS} day(s) in '$DIR'..."
+  log "Phase 1: removing *${EXT} files older than ${MAX_AGE_DAYS} day(s) in '$DIR'..."
   while IFS= read -r -d '' file; do
     remove_file "$file"
-  done < <(find "$DIR" -maxdepth 1 -name '*.mlog' -type f \
+  done < <(find "$DIR" -maxdepth 1 -name "*${EXT}" -type f \
     -mtime +"$((MAX_AGE_DAYS - 1))" -print0)
 fi
 
@@ -143,10 +150,10 @@ if [[ -n "$MAX_DIR_MB" ]]; then
   fi
 
   # Collect current .mlog files with mtime and size.
-  mapfile -d '' files < <(find "$DIR" -maxdepth 1 -name '*.mlog' -type f -print0)
+  mapfile -d '' files < <(find "$DIR" -maxdepth 1 -name "*${EXT}" -type f -print0)
 
   if [[ ${#files[@]} -eq 0 ]]; then
-    log "Phase 2: no .mlog files found, skipping size check."
+    log "Phase 2: no *${EXT} files found, skipping size check."
   else
     # Build sortable lines: "<epoch> <size> <path>"
     tmp_list=()

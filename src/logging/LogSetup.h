@@ -26,10 +26,17 @@ struct MLogSetup {
 };
 
 /**
- * Constructs an MLogSetup from the resolved config.
+ * Constructs an MLogSetup (factory + executor) from the resolved config.
  * Creates the mlog directory if it does not already exist.
  * Returns makeUnexpected(1) (exit code) on failure.
  */
 folly::Expected<MLogSetup, int> setupMLog(const config::Config& config);
+
+/**
+ * Ensures the configured qlog directory exists and returns a pointer to the
+ * resolved qlog config (or nullptr when qlog is disabled).
+ * Returns makeUnexpected(1) (exit code) on failure.
+ */
+folly::Expected<const config::QLogConfig*, int> setupQLog(const config::Config& config);
 
 } // namespace openmoq::moqx::logging

@@ -13,7 +13,7 @@
 #include "admin/StateHandler.h"
 #include "bpf/QuicReuseportSteering.h"
 #include "config/loader/ConfigInit.h"
-#include "logging/MLogSetup.h"
+#include "logging/LogSetup.h"
 #include "stats/StatsRegistry.h"
 
 #include <csignal>
@@ -110,6 +110,12 @@ int main(int argc, char* argv[]) {
   }
   auto mlog = std::move(*mlogResult);
 
+  auto qlogResult = logging::setupQLog(config);
+  if (!qlogResult) {
+    return qlogResult.error();
+  }
+  const cfg::QLogConfig* qlogConfig = *qlogResult;
+
   // === 3. Set up signal handling ===
   folly::EventBase evb;
   ShutdownSignalHandler signalHandler(&evb);
@@ -141,9 +147,14 @@ int main(int argc, char* argv[]) {
   std::vector<std::shared_ptr<moxygen::MoQServerBase>> servers;
   try {
     for (const auto& listenerCfg : config.listeners) {
-      servers.emplace_back(
-          makeRelayServer(listenerCfg, context, ioExecutor.get(), statsRegistry, mlog.factory)
-      );
+      servers.emplace_back(makeRelayServer(
+          listenerCfg,
+          context,
+          ioExecutor.get(),
+          statsRegistry,
+          mlog.factory,
+          qlogConfig
+      ));
     }
   } catch (const std::exception& e) {
     // Listener setup (e.g. TLS cert loading) can throw. Report cleanly and exit

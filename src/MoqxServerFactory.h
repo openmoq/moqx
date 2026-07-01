@@ -29,7 +29,8 @@ inline std::shared_ptr<moxygen::MoQServerBase> makeRelayServer(
     std::shared_ptr<MoqxRelayContext> context,
     folly::IOThreadPoolExecutor* ioExecutor,
     std::shared_ptr<stats::StatsRegistry> statsRegistry,
-    std::shared_ptr<moxygen::MLoggerFactory> mlogFactory = nullptr
+    std::shared_ptr<moxygen::MLoggerFactory> mlogFactory = nullptr,
+    const config::QLogConfig* qlogConfig = nullptr
 ) {
   if (listenerCfg.quicStack == config::QuicStack::Picoquic) {
     auto server =
@@ -50,6 +51,9 @@ inline std::shared_ptr<moxygen::MoQServerBase> makeRelayServer(
   server->setStatsRegistry(std::move(statsRegistry));
   if (mlogFactory) {
     server->setMLoggerFactory(std::move(mlogFactory));
+  }
+  if (qlogConfig && !qlogConfig->dir.empty()) {
+    server->setQLogConfig(*qlogConfig);
   }
   return server;
 }

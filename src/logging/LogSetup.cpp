@@ -4,7 +4,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-#include "logging/MLogSetup.h"
+#include "logging/LogSetup.h"
 
 #include <filesystem>
 
@@ -20,6 +20,7 @@ folly::Expected<MLogSetup, int> setupMLog(const config::Config& config) {
   if (!config.logging || !config.logging->mlog) {
     return result;
   }
+
   const auto& mcfg = *config.logging->mlog;
   if (mcfg.dir.empty()) {
     return result;
@@ -47,6 +48,26 @@ folly::Expected<MLogSetup, int> setupMLog(const config::Config& config) {
   }
 
   return result;
+}
+
+folly::Expected<const config::QLogConfig*, int> setupQLog(const config::Config& config) {
+  if (!config.logging || !config.logging->qlog) {
+    return nullptr;
+  }
+
+  const auto& qcfg = *config.logging->qlog;
+  if (qcfg.dir.empty()) {
+    return nullptr;
+  }
+
+  std::error_code ec;
+  std::filesystem::create_directories(qcfg.dir, ec);
+  if (ec) {
+    XLOG(ERR) << "Failed to create qlog directory '" << qcfg.dir << "': " << ec.message();
+    return folly::makeUnexpected(1);
+  }
+
+  return &qcfg;
 }
 
 } // namespace openmoq::moqx::logging
