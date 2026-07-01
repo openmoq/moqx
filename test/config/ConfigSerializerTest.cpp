@@ -23,7 +23,7 @@
 namespace {
 using namespace openmoq::moqx::config;
 
-static_assert(rfl::internal::num_fields<Config> == 8, "Config changed — update serializeConfig()");
+static_assert(rfl::internal::num_fields<Config> == 9, "Config changed — update serializeConfig()");
 static_assert(
     rfl::internal::num_fields<ListenerConfig> == 8,
     "ListenerConfig changed — update serializeConfig()"
@@ -91,6 +91,18 @@ static_assert(
 static_assert(
     rfl::internal::num_fields<AdminConfig> == 2,
     "AdminConfig changed — update serializeConfig()"
+);
+static_assert(
+    rfl::internal::num_fields<LoggingConfig> == 2,
+    "LoggingConfig changed — update serializeLogging()"
+);
+static_assert(
+    rfl::internal::num_fields<MLogConfig> == 2,
+    "MLogConfig changed — update serializeLogging()"
+);
+static_assert(
+    rfl::internal::num_fields<QLogConfig> == 2,
+    "QLogConfig changed — update serializeLogging()"
 );
 
 // Sink that records every emitted scalar leaf as a flat path -> value map, so
@@ -180,6 +192,10 @@ Config makeFullConfig() {
   svc.upstream->tls.caCertFile = "/etc/ca.pem";
   cfg.services.emplace("default", std::move(svc));
 
+  cfg.logging = LoggingConfig{};
+  cfg.logging->mlog = MLogConfig{"/var/log/mlog", 0.5f};
+  cfg.logging->qlog = QLogConfig{"/var/log/qlog", 1.0f};
+
   return cfg;
 }
 
@@ -204,6 +220,10 @@ TEST(ConfigSerializerTest, VisitsAllSections) {
   EXPECT_EQ(sink.scalars["services.default.match.*.path.prefix"], "/");
   EXPECT_EQ(sink.scalars["services.default.upstream.url"], "https://upstream.example/relay");
   EXPECT_EQ(sink.scalars["services.default.upstream.tls.ca_cert_file"], "/etc/ca.pem");
+
+  EXPECT_EQ(sink.scalars["logging.mlog.dir"], "/var/log/mlog");
+  EXPECT_EQ(sink.scalars["logging.mlog.sample_rate"], "0.500000");
+  EXPECT_EQ(sink.scalars["logging.qlog.dir"], "/var/log/qlog");
 }
 
 TEST(ConfigSerializerTest, RedactsHmacSecret) {
