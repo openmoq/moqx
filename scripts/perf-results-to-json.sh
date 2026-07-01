@@ -143,7 +143,7 @@ fi
 
 # Throughput per CPU% (Mbps per 1% relay CPU)
 if awk "BEGIN {exit !($RELAY_CPU > 0)}"; then
-  THROUGHPUT_PER_CORE=$(awk "BEGIN {printf \"%.2f\", $THROUGHPUT_MBPS / $RELAY_CPU}")
+  THROUGHPUT_PER_CORE=$(awk "BEGIN {printf \"%.2f\", $THROUGHPUT_MBPS / ($RELAY_CPU / 100)}")
 else
   THROUGHPUT_PER_CORE="0"
 fi
