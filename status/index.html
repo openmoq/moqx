@@ -51,6 +51,10 @@
 <div id="summary" class="summary"></div>
 
 <div class="grid">
+   <div class="card">
+    <h3>Peak Subscribers</h3>
+    <canvas id="chart-subscribers"></canvas>
+  </div>
   <div class="card">
     <h3>Throughput (Mbps)</h3>
     <canvas id="chart-throughput"></canvas>
@@ -60,17 +64,21 @@
     <canvas id="chart-throughput-core"></canvas>
   </div>
   <div class="card">
-    <h3>Peak Subscribers</h3>
-    <canvas id="chart-subscribers"></canvas>
+    <h3>Avg Latency (ms)</h3>
+    <canvas id="chart-latency"></canvas>
   </div>
   <div class="card">
     <h3>Delivery Success (%)</h3>
     <canvas id="chart-delivery"></canvas>
   </div>
   <div class="card">
+    <h3>Total Resets</h3>
+    <canvas id="chart-resets"></canvas>
+  </div>
+  <div class="card">
     <h3>Relay CPU (%)</h3>
     <canvas id="chart-cpu"></canvas>
-  </div>
+  </div> 
   <div class="card">
     <h3>Relay RSS (MB)</h3>
     <canvas id="chart-rss"></canvas>
@@ -78,10 +86,6 @@
   <div class="card">
     <h3>RSS per Session (KB)</h3>
     <canvas id="chart-rss-session"></canvas>
-  </div>
-  <div class="card">
-    <h3>Total Resets</h3>
-    <canvas id="chart-resets"></canvas>
   </div>
 </div>
 
@@ -172,6 +176,7 @@ function renderDashboard() {
   renderChart('chart-rss', data, 'relay_rss_mb', CHART_COLORS.warning);
   renderChart('chart-rss-session', data, 'rss_per_session_kb', CHART_COLORS.warning);
   renderChart('chart-resets', data, 'total_resets', CHART_COLORS.danger);
+  renderChart('chart-latency', data, 'avg_latency_ms', CHART_COLORS.secondary);
 }
 
 function renderSummary(data) {
@@ -184,6 +189,7 @@ function renderSummary(data) {
     <div class="stat"><div class="value">${r.peak_subscribers || '—'}</div><div class="label">Peak Subscribers</div></div>
     <div class="stat"><div class="value">${r.relay_cpu_pct || '—'}%</div><div class="label">CPU Usage</div></div>
     <div class="stat"><div class="value">${r.relay_rss_mb || '—'}</div><div class="label">RSS (MB)</div></div>
+    <div class="stat"><div class="value">${r.avg_latency_ms || '—'}</div><div class="label">Avg Latency (ms)</div></div>
     <div class="stat"><div class="value">${r.rss_per_session_kb || '—'}</div><div class="label">KB/Session</div></div>
     <div class="stat"><div class="value"><a href="${REPO_URL}/commit/${latest.commit}" class="commit-link">${latest.commit_short || latest.commit?.slice(0,7)}</a></div><div class="label">Latest Commit</div></div>
   `;

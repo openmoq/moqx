@@ -308,11 +308,6 @@ ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "cat ${REMOTE_DIR}/metrics.log 2>/dev/null" >
 WIN_START=$(( (MEASURE_START_EPOCH - POLLER_START_EPOCH) + WARMUP ))
 WIN_END=$(( (MEASURE_END_EPOCH - POLLER_START_EPOCH) - COOLDOWN ))
 
-echo "Windowing metrics log to [$WIN_START,$WIN_END]s (warmup ${WARMUP}s, cooldown ${COOLDOWN}s)"
-echo "Poller start epoch: $POLLER_START_EPOCH"
-echo "Client start epoch: $MEASURE_START_EPOCH"
-echo "Client end epoch:   $MEASURE_END_EPOCH"
-
 if [[ -s /tmp/perf-metrics-full.log ]]; then
   awk -F'\t' -v s="$WIN_START" -v e="$WIN_END" \
     'NR==1 { print; next } ($1+0) >= s && ($1+0) <= e' \

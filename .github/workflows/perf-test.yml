@@ -46,7 +46,7 @@ on:
       subscribers:
         description: 'peak subscribers'
         type: number
-        default: 100
+        default: 600
       compare:
         description: 'compare against the published nightly baseline and render a report'
         type: boolean
@@ -69,7 +69,7 @@ on:
       subscribers:
         type: number
         required: false
-        default: 1000
+        default: 600
       compare:
         type: boolean
         required: false
@@ -144,10 +144,15 @@ jobs:
         run: |
           FILE="run-${{ steps.sha.outputs.short }}.json"
           # Fallbacks: schedule events carry no `inputs`, so apply the canonical
-          # nightly load (120s / 1000 subs) when invoked by cron.
+          # nightly load when invoked by cron.
           bash scripts/perf-test-ci.sh \
             --duration       "${{ inputs.duration || '120' }}" \
-            --subscriber-max "${{ inputs.subscribers || '1000' }}" \
+            --subscriber-max "${{ inputs.subscribers || '600' }}" \
+            --ramp           150 \
+            --io-threads     4 \
+            --client-threads 8 \
+            --client-args    "--first_object_size=26516 --other_object_size=3788 --objects_per_group 60 --delivery_timeout 5000" \
+            --cooldown       10 \
             --output         "$FILE"
           echo "run-file=$FILE" >> "$GITHUB_OUTPUT"
 
@@ -159,7 +164,7 @@ jobs:
           {
             echo "## perf-test — $(date -u +'%Y-%m-%d %H:%M UTC')"
             echo
-            echo "ref: \`${{ steps.sha.outputs.short }}\` · branch: \`${{ github.ref_name }}\` · subs: ${{ inputs.subscribers || '1000' }} · duration: ${{ inputs.duration || '120' }}s"
+            echo "ref: \`${{ steps.sha.outputs.short }}\` · branch: \`${{ github.ref_name }}\` · subs: ${{ inputs.subscribers || '600' }} · duration: ${{ inputs.duration || '120' }}s"
             echo
             if [ -f "$FILE" ]; then
               echo '| metric | value |'
@@ -253,7 +258,7 @@ jobs:
             --output comment.md
           {
             echo
-            echo "## perf comparison vs published baseline (subs=${{ inputs.subscribers || '1000' }})"
+            echo "## perf comparison vs published baseline (subs=${{ inputs.subscribers || '600' }})"
             echo
             cat comment.md
           } >> "$GITHUB_STEP_SUMMARY"
