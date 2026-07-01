@@ -257,13 +257,13 @@ events, one file per session.
 logging:
   mlog:
     dir: "/var/log/moqx/mlog"   # required to enable; empty string disables
-    sample_rate: 0.01            # log 1% of sessions (default: 1.0 = all)
+    sample_rate: 0.01            # log 1% of sessions (default: 0.0 = none)
 ```
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `dir` | `string` | — (disabled) | Output directory. Each session writes to `<dir>/<dcid>.mlog`. If empty, mlog is disabled. |
-| `sample_rate` | `float` | `1.0` | Fraction of sessions to log, in `[0.0, 1.0]`. `1.0` logs all sessions; `0.01` logs ~1%. |
+| `sample_rate` | `float` | `0.0` | Fraction of sessions to log, in `[0.0, 1.0]`. `0.0` logs none; `1.0` logs all sessions; `0.01` logs ~1%. |
 
 
 #### Lifecycle

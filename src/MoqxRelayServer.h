@@ -36,6 +36,11 @@ public:
     moxygen::MoQServerBase::setMLoggerFactory(std::move(factory));
   }
 
+  void setQLogConfig(const config::QLogConfig& cfg) {
+    qlogDir_ = cfg.dir;
+    qlogSampleRate_ = cfg.sampleRate;
+  }
+
   // Preferred entry point: binds the address from the stored ListenerConfig.
   void start();
 
@@ -58,11 +63,15 @@ protected:
       std::shared_ptr<moxygen::MoQExecutor> executor
   ) override;
 
+  std::shared_ptr<quic::QLogger> makeQLogger(quic::VantagePoint vantagePoint) override;
+
 private:
   config::ListenerConfig listenerCfg_;
   std::shared_ptr<MoqxRelayContext> context_;
   folly::IOThreadPoolExecutor* ioExecutor_;
   bool stopped_{false};
+  std::string qlogDir_;
+  float qlogSampleRate_{0.0f};
 };
 
 } // namespace openmoq::moqx
