@@ -22,6 +22,10 @@ LOG_FILE="${2:-/tmp/moqx_metrics_$(date +%Y%m%d_%H%M%S).log}"
 SEP=$'\t'
 CLK_TCK=$(getconf CLK_TCK 2>/dev/null || echo 100)
 
+# Epoch ms. Avoid `date +%s%3N`: some hosts ignore the width and emit full
+# nanoseconds, throwing every ms-based calc off by ~1e6.
+now_ms() { local ns; ns=$(date +%s%N); echo $(( ns / 1000000 )); }
+
 # ---------------------------------------------------------------------------
 # parse_prom: prometheus text → "KEY VALUE" lines, one per metric.
 #   - strips moqx_ prefix
@@ -82,7 +86,7 @@ declare -A sys_prev=()
 declare -A cur=()
 declare -a col_order=()
 header_printed=false
-start_ms=$(date +%s%3N)
+start_ms=$(now_ms)
 prev_tick_ms=$start_ms
 prev_relay_cpu=0
 declare -A io_prev_cpu=()   # keyed by thread name (e.g. moqx-io0)
@@ -91,12 +95,12 @@ declare -a io_names=()      # ordered list of discovered io thread names
 
 # Sleep only the remainder of the current 1s tick window.
 tick_sleep() {
-  local rem=$(( tick_start_ms + 1000 - $(date +%s%3N) ))
+  local rem=$(( tick_start_ms + 1000 - $(now_ms) ))
   [[ $rem -gt 0 ]] && sleep "$(awk -v ms="$rem" 'BEGIN { printf "%.3f", ms/1000 }')"
 }
 
 while true; do
-  tick_start_ms=$(date +%s%3N)
+  tick_start_ms=$(now_ms)
   raw=$(curl -sf "http://localhost:${ADMIN_PORT}/metrics" 2>/dev/null) || { tick_sleep; continue; }
 
   cur=()
@@ -104,7 +108,7 @@ while true; do
     cur["$key"]="$val"
   done < <(printf '%s\n' "$raw" | parse_prom)
 
-  now_ms=$(date +%s%3N)
+  now_ms=$(now_ms)
   elapsed=$(( (now_ms - start_ms) / 1000 ))
   interval_s=$(awk -v d="$(( now_ms - prev_tick_ms ))" 'BEGIN { printf "%.3f", d/1000 }')
 
