@@ -34,6 +34,9 @@ struct IssuedToken {
 
 IssuedToken issueToken(const IssueTokenOptions& options);
 
+// Signs arbitrary grants into a CWT; kept out of moqx_core so the relay only verifies.
+std::string signGrants(std::string_view keyID, std::string_view secret, const Grants& grants);
+
 config::AuthConfig::HmacKey selectHmacKey(const config::AuthConfig& auth, std::string_view keyID);
 std::vector<Action> parseActions(std::string_view value);
 moxygen::TrackNamespace parseTrackNamespace(std::string_view value);

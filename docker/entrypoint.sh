@@ -45,7 +45,8 @@ export GLOG_minloglevel="${MOQX_LOG_LEVEL:-0}"
 export GLOG_v="${MOQX_VERBOSE:-0}"
 
 if [ "${1:-}" = "issue-cat-token" ]; then
-  exec /usr/local/bin/moqx "$@"
+  shift
+  exec /usr/local/bin/moqx-issuer "$@"
 fi
 
 # Enable core dumps (requires ulimits.core=-1 and --privileged in compose)
