@@ -181,12 +181,12 @@ Grant decisions are encoded by the token issuer as CAT4MOQ actions and scopes.
 
 ### Issuing Tokens
 
-Use `moqx issue-cat-token` as the deployment/operator tool. For production-like
-deployments, point it at the same config file used by the relay so the selected
-service key is read from one place:
+Use the standalone `moqx-issuer` binary as the deployment/operator tool. For
+production-like deployments, point it at the same config file used by the relay
+so the selected service key is read from one place:
 
 ```bash
-moqx issue-cat-token \
+moqx-issuer \
   --config /etc/moqx/config.yaml \
   --auth-service live \
   --auth-key-id cat-dev \
@@ -204,7 +204,7 @@ For local development, the command can issue from an explicit secret without
 reading relay config:
 
 ```bash
-moqx issue-cat-token \
+moqx-issuer \
   --auth-key-id cat-dev \
   --auth-secret replace-with-long-random-secret \
   --auth-actions client_setup,publish_namespace,publish \
@@ -238,10 +238,10 @@ segments are slash-separated on the CLI, for example `live/event/main`.
 A publisher app should obtain a token before connecting or before issuing a
 request that needs narrower grants, then pass that token as the MOQT
 `AUTHORIZATION_TOKEN` value with the relay's configured token type. For moqxr's
-auth example, the easiest local setup is to call the moqx issuer command:
+auth example, the easiest local setup is to call the moqx-issuer command:
 
 ```bash
-export CATAPULT_CAT4MOQ_COMMAND='moqx issue-cat-token \
+export CATAPULT_CAT4MOQ_COMMAND='moqx-issuer \
   --config /etc/moqx/config.yaml \
   --auth-service live \
   --auth-key-id cat-dev \
@@ -259,8 +259,9 @@ token and `publish` for the action token.
 
 ### Docker Usage
 
-The container entrypoint passes `issue-cat-token` through to the moqx binary, so
-operators can generate tokens from the same image used to run the relay:
+The container entrypoint routes an `issue-cat-token` argument to the bundled
+`moqx-issuer` binary, so operators can generate tokens from the same image used
+to run the relay:
 
 ```bash
 docker run --rm \

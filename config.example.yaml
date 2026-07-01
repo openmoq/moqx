@@ -60,7 +60,7 @@ services:
     #   token_type: 16            # MOQT AUTHORIZATION_TOKEN type for CAT4MOQ/moqxr; 0 is valid for private deployments
     #   hmac_keys:                # Keys that sign/verify CAT tokens (HMAC-SHA256)
     #     - id: "cat-dev"         # Key ID carried in the token envelope; selects which secret verifies it
-    #       secret: "replace-with-long-random-secret"   # Shared secret used by moqx issue-cat-token
+    #       secret: "replace-with-long-random-secret"   # Shared secret used by moqx-issuer
     #   require_setup_token: true            # Require a client_setup token during CLIENT_SETUP
     #   allow_request_token_override: true   # Allow a per-request token to override the session's setup grants
     #   strict_claims: false       # Keep false for current CAT4MOQ interop unless all issuers send only supported claims
