@@ -26,7 +26,9 @@
 #   -l, --relay-log SPEC   folly XLOG config passed as --logging=SPEC to relay
 #   --bpf-steering         Enable mvfst BPF reuseport steering (requires MOQX_ENABLE_BPF_STEERING build)
 #   --no-bpf-steering      Disable mvfst BPF reuseport steering (default)
-#   -j, --jemalloc         LD_PRELOAD jemalloc for the relay (moqx-run auto-detects the lib)
+#   -j, --jemalloc         LD_PRELOAD jemalloc for the relay AND the perf client
+#                          (moqx-run auto-detects the lib for the relay; the client
+#                          side is resolved here, on the remote host for --remote-client)
 #   --metrics              Run perf-metrics.sh alongside the relay; logs to LOG_DIR/metrics.log
 #   --perf-duration N      Run perf record -F 499 -g -e cycles on relay for N seconds; starts after
 #                          subscribers finish ramping (delay = 3*max/ramp s); saves to LOG_DIR/
@@ -116,9 +118,29 @@ MOQTEST_SERVER="$MOQBIN/moqtest_server"
 MOQPERF_CLIENT="$MOQBIN/moqperf_test_client"
 METRICS_SCRIPT="$REPO/scripts/perf-metrics.sh"
 
-# jemalloc detection is delegated to moqx-run.sh (-j auto): it probes the common
-# multiarch + /lib64 paths and LD_PRELOADs the lib for the relay, warning (in the
-# relay log) if none is found. JEMALLOC is just the request flag here.
+# jemalloc detection for the relay is delegated to moqx-run.sh (-j auto): it probes
+# the common multiarch + /lib64 paths and LD_PRELOADs the lib, warning (in the relay
+# log) if none is found. JEMALLOC is just the request flag here.
+#
+# The perf client is launched directly (not via moqx-run), so when -j is requested we
+# resolve libjemalloc.so.2 ourselves and LD_PRELOAD it for the client too. This mirrors
+# moqx-run's candidate list + ldconfig fallback.
+CLIENT_JEMALLOC=""
+if [[ -n "$JEMALLOC" && -z "$REMOTE_CLIENT_HOST" ]]; then
+  for cand in \
+    /usr/lib/x86_64-linux-gnu/libjemalloc.so.2 \
+    /usr/lib/aarch64-linux-gnu/libjemalloc.so.2 \
+    /lib64/libjemalloc.so.2 \
+    /usr/lib64/libjemalloc.so.2 \
+    /usr/lib/libjemalloc.so.2 \
+    /usr/local/lib/libjemalloc.so.2; do
+    [[ -f "$cand" ]] && { CLIENT_JEMALLOC="$cand"; break; }
+  done
+  if [[ -z "$CLIENT_JEMALLOC" ]] && command -v ldconfig >/dev/null 2>&1; then
+    CLIENT_JEMALLOC="$(ldconfig -p 2>/dev/null | awk '/libjemalloc\.so\.2/ {print $NF; exit}')"
+  fi
+  [[ -n "$CLIENT_JEMALLOC" ]] || echo "WARNING: jemalloc requested but libjemalloc.so.2 not found for client; using system allocator" >&2
+fi
 
 # ── Log directory (always on) ─────────────────────────────────────────────────
 LOG_DIR="/tmp/moqx-perf-$(date +%Y%m%d-%H%M%S)"
@@ -362,12 +384,21 @@ if [[ -n "$REMOTE_CLIENT_HOST" ]]; then
   rsync -az -e ssh "$MOQPERF_CLIENT" "${REMOTE_CLIENT_HOST}:/tmp/moqperf_test_client"
   echo "Running perf client on $REMOTE_CLIENT_HOST: subscriber_max=$SUBSCRIBER_MAX ramp=$RAMP duration=${DURATION}s delivery_timeout=${DELIVERY_TIMEOUT}ms threads=$CLIENT_THREADS"
   echo "---"
+  # When -j is requested, resolve + LD_PRELOAD jemalloc on the remote host (the lib
+  # path is host-specific, so we probe there rather than reuse the local resolution).
+  REMOTE_JEMALLOC_SETUP=""
+  if [[ -n "$JEMALLOC" ]]; then
+    REMOTE_JEMALLOC_SETUP='jl=""; for c in /usr/lib/x86_64-linux-gnu/libjemalloc.so.2 /usr/lib/aarch64-linux-gnu/libjemalloc.so.2 /lib64/libjemalloc.so.2 /usr/lib64/libjemalloc.so.2 /usr/lib/libjemalloc.so.2 /usr/local/lib/libjemalloc.so.2; do [ -f "$c" ] && jl="$c" && break; done; [ -z "$jl" ] && jl=$(ldconfig -p 2>/dev/null | awk "/libjemalloc/{print \$NF; exit}"); if [ -n "$jl" ]; then export LD_PRELOAD="$jl"; echo "client LD_PRELOAD=$jl" >&2; else echo "WARNING: jemalloc requested but not found on remote; using system allocator" >&2; fi; '
+  fi
   ssh "$REMOTE_CLIENT_HOST" \
-    "ulimit -n 65536 2>/dev/null || true; /tmp/moqperf_test_client ${CLIENT_ARGS[*]@Q}" \
+    "ulimit -n 65536 2>/dev/null || true; ${REMOTE_JEMALLOC_SETUP}/tmp/moqperf_test_client ${CLIENT_ARGS[*]@Q}" \
     2>&1 | tee "$CLIENT_LOG"
 else
   ulimit -n 65536 2>/dev/null || true
   echo "Running perf client: subscriber_max=$SUBSCRIBER_MAX ramp=$RAMP duration=${DURATION}s delivery_timeout=${DELIVERY_TIMEOUT}ms threads=$CLIENT_THREADS"
+  [[ -n "$CLIENT_JEMALLOC" ]] && echo "client LD_PRELOAD=$CLIENT_JEMALLOC"
   echo "---"
-  "$MOQPERF_CLIENT" "${CLIENT_ARGS[@]}" 2>&1 | tee "$CLIENT_LOG"
+  CLIENT_PRELOAD=()
+  [[ -n "$CLIENT_JEMALLOC" ]] && CLIENT_PRELOAD=(env "LD_PRELOAD=$CLIENT_JEMALLOC")
+  "${CLIENT_PRELOAD[@]+"${CLIENT_PRELOAD[@]}"}" "$MOQPERF_CLIENT" "${CLIENT_ARGS[@]}" 2>&1 | tee "$CLIENT_LOG"
 fi
