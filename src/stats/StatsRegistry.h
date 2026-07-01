@@ -26,6 +26,9 @@ namespace openmoq::moqx::stats {
 inline constexpr std::array<uint64_t, 11> kLatencyBucketsUs =
     {10, 50, 100, 250, 500, 1000, 2000, 5000, 10000, 50000, 100000};
 
+inline constexpr std::array<uint64_t, 10> kObjectAckLatencyBucketsUs =
+    {500, 1000, 2000, 5000, 10000, 50000, 100000, 250000, 500000, 1000000};
+
 // RTT buckets in milliseconds (from onRttSample).
 inline constexpr std::array<uint64_t, 10> kRttBucketsMs =
     {1, 5, 10, 25, 50, 100, 250, 500, 1000, 5000};
@@ -253,7 +256,7 @@ inline constexpr std::array<std::string_view, kResetStreamErrorCodeCount>
   X(moqFetchLatency, kLatencyBucketsUs, "microseconds")                                            \
   X(moqPublishNamespaceLatency, kLatencyBucketsUs, "microseconds")                                 \
   X(moqPublishLatency, kLatencyBucketsUs, "microseconds")                                          \
-  X(moqObjectAckLatency, kLatencyBucketsUs, "microseconds")
+  X(moqObjectAckLatency, kObjectAckLatencyBucketsUs, "microseconds")
 
 // QUIC transport histograms — populated by QuicStatsCollector and PicoQuicStatsCollector.
 // Per-loop packet fields require an EventBaseStatsCollector loop observer to be wired up.
