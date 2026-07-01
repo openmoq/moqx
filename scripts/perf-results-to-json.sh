@@ -13,6 +13,8 @@
 #   --duration N           Test parameter
 #   --io-threads N         Test parameter
 #   --client-threads N     Test parameter
+#   --client-window-start N  Optional [AGGREGATE] second to start latency averaging
+#   --client-window-end N    Optional [AGGREGATE] second to end latency averaging
 #   --relay-cpu PCT        Average relay CPU%
 #   --relay-rss-kb N       Peak relay RSS in KB
 #   --net-throughput-mbps N  Network throughput in Mbps
@@ -31,6 +33,8 @@ RAMP=0
 DURATION=0
 IO_THREADS=0
 CLIENT_THREADS=0
+CLIENT_WINDOW_START=""
+CLIENT_WINDOW_END=""
 RELAY_CPU="0"
 RELAY_RSS_KB="0"
 NET_THROUGHPUT_MBPS="0"
@@ -51,6 +55,8 @@ while [[ $# -gt 0 ]]; do
     --duration)            DURATION="$2";            shift 2 ;;
     --io-threads)          IO_THREADS="$2";          shift 2 ;;
     --client-threads)      CLIENT_THREADS="$2";      shift 2 ;;
+    --client-window-start) CLIENT_WINDOW_START="$2"; shift 2 ;;
+    --client-window-end)   CLIENT_WINDOW_END="$2";   shift 2 ;;
     --relay-cpu)           RELAY_CPU="$2";           shift 2 ;;
     --relay-rss-kb)        RELAY_RSS_KB="$2";        shift 2 ;;
     --net-throughput-mbps) NET_THROUGHPUT_MBPS="$2"; shift 2 ;;
@@ -73,6 +79,7 @@ fi
 #             "  Total Resets: 0"
 #             "  Duration: 120 seconds"
 #             "  Throughput: 85.5 Mbps"
+#             "  Average Latency: 12.3 ms"
 #             "  Result: SUCCESS - Track ended naturally"
 
 parse_field() {
@@ -88,6 +95,34 @@ TOTAL_RESETS=$(grep "Total Resets:" "$CLIENT_OUTPUT" | tail -1 | awk '{print $NF
 CLIENT_DURATION=$(grep "Duration:" "$CLIENT_OUTPUT" | tail -1 | awk '{print $(NF-1)}' || echo "$DURATION")
 THROUGHPUT_MBPS=$(grep "Throughput:" "$CLIENT_OUTPUT" | tail -1 | awk '{print $(NF-1)}' || echo "0")
 TEST_RESULT=$(grep "Result:" "$CLIENT_OUTPUT" | tail -1 | sed 's/.*Result: //' || echo "UNKNOWN")
+
+# Average latency (ms): prefer Latency(run avg) from [AGGREGATE] lines, and if
+# a client window is supplied, only include aggregate seconds within that window.
+# Example parsed token: "Latency(run avg): 11.2 ms".
+if [[ -n "$CLIENT_WINDOW_START" && -n "$CLIENT_WINDOW_END" ]]; then
+  AVG_LATENCY_MS=$(awk -v s="$CLIENT_WINDOW_START" -v e="$CLIENT_WINDOW_END" '
+    /\[AGGREGATE\]/ {
+      sec=""; lat=""
+      if (match($0, /\[([0-9]+)s\]/, t)) sec=t[1]
+      if (match($0, /Latency\(run avg\):[[:space:]]*([0-9]+(\.[0-9]+)?)[[:space:]]*ms/, m)) lat=m[1]
+      if (sec != "" && lat != "" && sec >= s && sec <= e) { sum += lat; n++ }
+    }
+    END { if (n > 0) printf "%.2f", sum/n }
+  ' "$CLIENT_OUTPUT")
+else
+  AVG_LATENCY_MS=$(awk '
+    /\[AGGREGATE\]/ {
+      if (match($0, /Latency\(run avg\):[[:space:]]*([0-9]+(\.[0-9]+)?)[[:space:]]*ms/, m)) { sum += m[1]; n++ }
+    }
+    END { if (n > 0) printf "%.2f", sum/n }
+  ' "$CLIENT_OUTPUT")
+fi
+
+# Fallback for older/non-aggregate formats.
+if [[ -z "$AVG_LATENCY_MS" ]]; then
+  AVG_LATENCY_MS=$(grep -oP '(Average Latency|Avg Latency):\s*\K[0-9]+(?:\.[0-9]+)?' "$CLIENT_OUTPUT" | tail -1 || true)
+fi
+[[ -z "$AVG_LATENCY_MS" ]] && AVG_LATENCY_MS="0"
 
 # Parse per-second aggregate lines for latency/delivery stats
 # Format: [AGGREGATE] [Ns] Subs: N | Obj/s: N | Mbps: N.NN | ...
@@ -106,11 +141,11 @@ else
   RSS_PER_SESSION="0"
 fi
 
-# Throughput per core (Mbps)
-if [[ "$IO_THREADS" -gt 0 ]]; then
-  THROUGHPUT_PER_CORE=$(awk "BEGIN {printf \"%.2f\", $THROUGHPUT_MBPS / $IO_THREADS}")
+# Throughput per CPU% (Mbps per 1% relay CPU)
+if awk "BEGIN {exit !($RELAY_CPU > 0)}"; then
+  THROUGHPUT_PER_CORE=$(awk "BEGIN {printf \"%.2f\", $THROUGHPUT_MBPS / $RELAY_CPU}")
 else
-  THROUGHPUT_PER_CORE="$THROUGHPUT_MBPS"
+  THROUGHPUT_PER_CORE="0"
 fi
 
 # Subscribers per core
@@ -184,6 +219,7 @@ cat > "$OUTPUT" <<EOF
     "total_failures": $TOTAL_FAILURES,
     "delivery_success_pct": $DELIVERY_SUCCESS,
     "throughput_mbps": $THROUGHPUT_MBPS,
+    "avg_latency_ms": $AVG_LATENCY_MS,
     "peak_throughput_mbps": $PEAK_MBPS,
     "throughput_per_core_mbps": $THROUGHPUT_PER_CORE,
     "subscribers_per_core": $SUBS_PER_CORE,

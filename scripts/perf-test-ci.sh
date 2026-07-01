@@ -21,6 +21,8 @@
 #   --duration N          Test duration seconds (default: 120)
 #   --io-threads N        Relay IO threads (default: 4)
 #   --client-threads N    Client threads (default: 4)
+#   --client-args ARGS    Extra flags appended to moqperf_test_client
+#                         e.g. --client-args "--first_object_size=424242 --other_object_size=60606"
 #   --warmup N            Seconds to skip after the client starts before
 #                         sampling relay CPU/network metrics, so the subscriber
 #                         ramp and congestion control have settled
@@ -47,6 +49,7 @@ IO_THREADS=4
 CLIENT_THREADS=4
 DELIVERY_TIMEOUT=500
 TRANSPORT="quic"
+CLIENT_EXTRA_ARGS=()
 WARMUP=""          # empty = auto (subscriber_max/ramp + 10); see below
 COOLDOWN=5
 
@@ -67,6 +70,7 @@ while [[ $# -gt 0 ]]; do
     --duration)        DURATION="$2";        shift 2 ;;
     --io-threads)      IO_THREADS="$2";      shift 2 ;;
     --client-threads)  CLIENT_THREADS="$2";  shift 2 ;;
+    --client-args)     read -ra CLIENT_EXTRA_ARGS <<< "$2"; shift 2 ;;
     --delivery-timeout) DELIVERY_TIMEOUT="$2"; shift 2 ;;
     --transport)       TRANSPORT="$2";       shift 2 ;;
     --warmup)          WARMUP="$2";          shift 2 ;;
@@ -133,6 +137,7 @@ echo "  Subscribers:  $SUBSCRIBER_MAX (ramp $RAMP/s)"
 echo "  Duration:     ${DURATION}s"
 echo "  IO threads:   $IO_THREADS"
 echo "  Transport:    $TRANSPORT"
+[[ ${#CLIENT_EXTRA_ARGS[@]} -gt 0 ]] && echo "  Client args:  ${CLIENT_EXTRA_ARGS[*]}"
 echo "  Warmup:       ${WARMUP}s (skip after client start)"
 echo "  Cooldown:     ${COOLDOWN}s (skip before client end)"
 echo "═══════════════════════════════════════════════════════════"
@@ -261,6 +266,13 @@ echo "---"
 
 # Relay-VM clock at client start/end anchors the measurement window (see below).
 MEASURE_START_EPOCH=$(ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "date +%s")
+echo "Client start epoch: $MEASURE_START_EPOCH"
+
+# Preserve spaces/special chars when forwarding extra client flags over ssh.
+CLIENT_EXTRA_ARGS_ESCAPED=""
+if [[ ${#CLIENT_EXTRA_ARGS[@]} -gt 0 ]]; then
+  printf -v CLIENT_EXTRA_ARGS_ESCAPED ' %q' "${CLIENT_EXTRA_ARGS[@]}"
+fi
 
 CLIENT_OUTPUT=$(ssh "${SSH_OPTS[@]}" "$CLIENT_HOST" "
   ulimit -n 65536 2>/dev/null || true
@@ -272,6 +284,7 @@ CLIENT_OUTPUT=$(ssh "${SSH_OPTS[@]}" "$CLIENT_HOST" "
     --duration=${DURATION} \
     --delivery_timeout=${DELIVERY_TIMEOUT} \
     --num_threads=${CLIENT_THREADS} \
+    ${CLIENT_EXTRA_ARGS_ESCAPED} \
     2>&1
 " | tee /tmp/perf-client-output.txt)
 
@@ -279,6 +292,7 @@ echo "---"
 echo "Client finished"
 
 MEASURE_END_EPOCH=$(ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "date +%s")
+echo "Client end epoch: $MEASURE_END_EPOCH"
 
 # ── Capture post-test system state ────────────────────────────────────────────
 POST_RSS=$(ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "
@@ -293,8 +307,8 @@ POST_RSS=$(ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "
 # three epochs come from the relay VM clock, so this is skew-free.
 ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "cat ${REMOTE_DIR}/metrics.log 2>/dev/null" > /tmp/perf-metrics-full.log || true
 
-WIN_START=$(( MEASURE_START_EPOCH - POLLER_START_EPOCH + WARMUP ))
-WIN_END=$(( MEASURE_END_EPOCH - POLLER_START_EPOCH - COOLDOWN ))
+WIN_START=$(( (MEASURE_START_EPOCH - POLLER_START_EPOCH) + WARMUP ))
+WIN_END=$(( (MEASURE_END_EPOCH - POLLER_START_EPOCH) - COOLDOWN ))
 
 if [[ -s /tmp/perf-metrics-full.log ]]; then
   awk -F'\t' -v s="$WIN_START" -v e="$WIN_END" \
@@ -339,6 +353,8 @@ bash "$REPO/scripts/perf-results-to-json.sh" \
   --duration "$DURATION" \
   --io-threads "$IO_THREADS" \
   --client-threads "$CLIENT_THREADS" \
+  --client-window-start "$WIN_START" \
+  --client-window-end "$WIN_END" \
   --relay-cpu "$CPU_AVG" \
   --relay-rss-kb "$POST_RSS" \
   --net-throughput-mbps "$NET_THROUGHPUT" \
