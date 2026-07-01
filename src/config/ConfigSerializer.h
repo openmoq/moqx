@@ -200,6 +200,27 @@ inline void serializeAuth(ConfigSink& s, const AuthConfig& a) {
   s.endObject();
 }
 
+inline void serializeLogging(ConfigSink& s, const LoggingConfig& l) {
+  s.beginObject("logging");
+  if (l.mlog) {
+    s.beginObject("mlog");
+    s.stringField("dir", l.mlog->dir);
+    s.doubleField("sample_rate", l.mlog->sampleRate);
+    s.endObject();
+  } else {
+    s.nullField("mlog");
+  }
+  if (l.qlog) {
+    s.beginObject("qlog");
+    s.stringField("dir", l.qlog->dir);
+    s.doubleField("sample_rate", l.qlog->sampleRate);
+    s.endObject();
+  } else {
+    s.nullField("qlog");
+  }
+  s.endObject();
+}
+
 inline void serializeUpstream(ConfigSink& s, const UpstreamConfig& u) {
   s.beginObject("upstream");
   s.stringField("url", u.url);
@@ -274,6 +295,12 @@ inline void serializeConfig(const Config& cfg, ConfigSink& s) {
     s.endObject();
   }
   s.endObject();
+
+  if (cfg.logging) {
+    serializeLogging(s, *cfg.logging);
+  } else {
+    s.nullField("logging");
+  }
 
   s.endObject();
 }
