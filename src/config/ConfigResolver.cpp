@@ -1028,7 +1028,7 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
       const auto& parsedMlog = *parsedLogging.mlog.value();
       MLogConfig mlogConfig;
       mlogConfig.dir = parsedMlog.dir.value();
-      mlogConfig.sampleRate = parsedMlog.sample_rate.value().value_or(1.0f);
+      mlogConfig.sampleRate = parsedMlog.sample_rate.value().value_or(0.0f);
       if (!mlogConfig.dir.empty()) {
         std::error_code ec;
         const auto st = std::filesystem::status(mlogConfig.dir, ec);
@@ -1044,6 +1044,21 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
         }
       }
       resolved.mlog = std::move(mlogConfig);
+    }
+    if (parsedLogging.qlog.value().has_value()) {
+      const auto& parsedQlog = *parsedLogging.qlog.value();
+      QLogConfig qlogConfig;
+      qlogConfig.dir = parsedQlog.dir.value();
+      qlogConfig.sampleRate = parsedQlog.sample_rate.value().value_or(0.0f);
+
+      if (qlogConfig.sampleRate < 0.0f || qlogConfig.sampleRate > 1.0f) {
+        return folly::makeUnexpected(
+            "qlog.sample_rate must be in range [0.0, 1.0], got " +
+            std::to_string(qlogConfig.sampleRate)
+        );
+      }
+
+      resolved.qlog = std::move(qlogConfig);
     }
     loggingConfig = std::move(resolved);
   }
