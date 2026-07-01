@@ -12,23 +12,15 @@
 #include "admin/ConfigHandler.h"
 #include "admin/MetricsHandler.h"
 #include "admin/StateHandler.h"
-#include "auth/AuthTokenIssuer.h"
 #include "bpf/QuicReuseportSteering.h"
 #include "config/loader/ConfigInit.h"
 #include "logging/LogSetup.h"
 #include "stats/StatsRegistry.h"
 
-#include <gflags/gflags.h>
-
 #include <csignal>
 
 #include <chrono>
-#include <cstdint>
-#include <iostream>
-#include <optional>
-#include <stdexcept>
 #include <thread>
-#include <vector>
 
 #include <folly/executors/IOThreadPoolExecutor.h>
 #include <folly/executors/thread_factory/NamedThreadFactory.h>
@@ -49,22 +41,6 @@ FOLLY_INIT_LOGGING_CONFIG(".=INFO;default:async=true,sync_level=WARN");
 
 DEFINE_string(config, "", "Path to config file (required)");
 DEFINE_bool(strict_config, false, "Reject unknown config fields");
-DEFINE_string(auth_service, "", "issue-cat-token: service name to read auth key from --config");
-DEFINE_string(auth_key_id, "", "issue-cat-token: HMAC key id; defaults to first configured key");
-DEFINE_string(auth_secret, "", "issue-cat-token: HMAC secret; bypasses --config key lookup");
-DEFINE_string(
-    auth_actions,
-    "client_setup,publish_namespace,publish",
-    "issue-cat-token: comma-separated CAT4MOQ actions"
-);
-DEFINE_string(auth_namespace, "", "issue-cat-token: slash-separated track namespace");
-DEFINE_string(auth_track, "", "issue-cat-token: optional track name");
-DEFINE_int32(auth_ttl_seconds, 3600, "issue-cat-token: token lifetime in seconds");
-DEFINE_string(
-    auth_output,
-    "base64-prefix",
-    "issue-cat-token: output encoding: base64-prefix, base64, hex, or raw"
-);
 
 using namespace openmoq::moqx;
 
@@ -73,112 +49,6 @@ namespace {
 namespace cfg = config;
 
 constexpr std::string_view kServeCommand = "serve";
-constexpr std::string_view kIssueCatTokenCommand = "issue-cat-token";
-
-std::string base64Encode(std::string_view bytes) {
-  static constexpr char kAlphabet[] =
-      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-  std::string out;
-  out.reserve(((bytes.size() + 2) / 3) * 4);
-  for (std::size_t i = 0; i < bytes.size(); i += 3) {
-    const auto b0 = static_cast<uint8_t>(bytes[i]);
-    const auto b1 = i + 1 < bytes.size() ? static_cast<uint8_t>(bytes[i + 1]) : uint8_t{0};
-    const auto b2 = i + 2 < bytes.size() ? static_cast<uint8_t>(bytes[i + 2]) : uint8_t{0};
-    out.push_back(kAlphabet[b0 >> 2]);
-    out.push_back(kAlphabet[((b0 & 0x03) << 4) | (b1 >> 4)]);
-    out.push_back(i + 1 < bytes.size() ? kAlphabet[((b1 & 0x0f) << 2) | (b2 >> 6)] : '=');
-    out.push_back(i + 2 < bytes.size() ? kAlphabet[b2 & 0x3f] : '=');
-  }
-  return out;
-}
-
-std::string hexEncode(std::string_view bytes) {
-  static constexpr char kHex[] = "0123456789abcdef";
-  std::string out;
-  out.reserve(bytes.size() * 2);
-  for (auto c : bytes) {
-    const auto b = static_cast<uint8_t>(c);
-    out.push_back(kHex[b >> 4]);
-    out.push_back(kHex[b & 0x0f]);
-  }
-  return out;
-}
-
-auth::IssueTokenOptions makeIssueTokenOptions(const cfg::ResolvedConfig* resolvedConfig) {
-  std::string keyID = FLAGS_auth_key_id;
-  std::string secret = FLAGS_auth_secret;
-  if (secret.empty()) {
-    if (resolvedConfig == nullptr) {
-      throw std::invalid_argument(
-          "--auth-secret is required unless --config and --auth-service select a configured key"
-      );
-    }
-    if (FLAGS_auth_service.empty()) {
-      throw std::invalid_argument("--auth-service is required when issuing from --config");
-    }
-    const auto& services = resolvedConfig->config.services;
-    auto it = services.find(FLAGS_auth_service);
-    if (it == services.end()) {
-      throw std::invalid_argument("unknown auth service: " + FLAGS_auth_service);
-    }
-    auto key = auth::selectHmacKey(it->second.auth, FLAGS_auth_key_id);
-    keyID = std::move(key.id);
-    secret = std::move(key.secret);
-  } else if (keyID.empty()) {
-    keyID = "operator";
-  }
-
-  auth::IssueTokenOptions options{
-      .keyID = std::move(keyID),
-      .secret = std::move(secret),
-      .actions = auth::parseActions(FLAGS_auth_actions),
-      .ttl = std::chrono::seconds(FLAGS_auth_ttl_seconds),
-  };
-  if (!FLAGS_auth_namespace.empty()) {
-    options.trackNamespace = auth::parseTrackNamespace(FLAGS_auth_namespace);
-  }
-  if (!FLAGS_auth_track.empty()) {
-    options.trackName = FLAGS_auth_track;
-  }
-  return options;
-}
-
-int runIssueCatTokenCommand(const char* programName) {
-  std::optional<cfg::ResolvedConfig> resolvedConfig;
-  if (!FLAGS_config.empty()) {
-    auto result =
-        cfg::handleConfigSubcommand(kServeCommand, FLAGS_config, FLAGS_strict_config, programName);
-    if (result.hasError()) {
-      return result.error();
-    }
-    resolvedConfig = std::move(result.value());
-  }
-
-  try {
-    const auto token = auth::issueToken(
-        makeIssueTokenOptions(resolvedConfig.has_value() ? &resolvedConfig.value() : nullptr)
-    );
-    if (FLAGS_auth_output == "base64-prefix") {
-      std::cout << "base64:" << base64Encode(token.tokenValue) << '\n';
-    } else if (FLAGS_auth_output == "base64") {
-      std::cout << base64Encode(token.tokenValue) << '\n';
-    } else if (FLAGS_auth_output == "hex") {
-      std::cout << hexEncode(token.tokenValue) << '\n';
-    } else if (FLAGS_auth_output == "raw") {
-      std::cout.write(
-          token.tokenValue.data(),
-          static_cast<std::streamsize>(token.tokenValue.size())
-      );
-    } else {
-      throw std::invalid_argument("--auth-output must be base64-prefix, base64, hex, or raw");
-    }
-  } catch (const std::exception& e) {
-    std::cerr << "Error: " << e.what() << '\n';
-    google::ShowUsageWithFlags(programName);
-    return 1;
-  }
-  return 0;
-}
 
 class ShutdownSignalHandler : public folly::AsyncSignalHandler {
 public:
@@ -203,9 +73,7 @@ int main(int argc, char* argv[]) {
       "moqx MoQ relay server\n\n"
       "Subcommands:\n"
       "  serve                Start the relay (default)\n" +
-      cfg::configSubcommandUsage() +
-      "  issue-cat-token      Issue a Catapult CAT4MOQ CWT for publishers\n"
-      "\nUsage: moqx [subcommand] --config <path>"
+      cfg::configSubcommandUsage() + "\nUsage: moqx [subcommand] --config <path>"
   );
   // Combine repeated --logging / --log-handler into one composite before
   // folly::Init — see docs/logging.md.
@@ -215,10 +83,6 @@ int main(int argc, char* argv[]) {
   std::string_view subcommand = kServeCommand;
   if (argc > 1) {
     subcommand = argv[1];
-  }
-
-  if (subcommand == kIssueCatTokenCommand) {
-    return runIssueCatTokenCommand(argv[0]);
   }
 
   auto result = cfg::handleConfigSubcommand(subcommand, FLAGS_config, FLAGS_strict_config, argv[0]);

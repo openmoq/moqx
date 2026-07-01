@@ -5,6 +5,7 @@
  */
 
 #include "auth/Auth.h"
+#include "auth/AuthTokenIssuer.h"
 
 #include <folly/portability/GTest.h>
 
@@ -55,7 +56,7 @@ AuthToken
 makeToken(Grants grants, std::string_view secret = "secret", std::string_view keyID = "k1") {
   return AuthToken{
       .tokenType = 77,
-      .tokenValue = AuthTokenVerifier::signForTest(keyID, secret, grants),
+      .tokenValue = signGrants(keyID, secret, grants),
       .alias = AuthToken::DontRegister,
   };
 }

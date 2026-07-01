@@ -188,6 +188,7 @@ add_executable(moqx_auth_test
 )
 target_link_libraries(moqx_auth_test PRIVATE
   moqx_core
+  moqx_issuer_lib
   GTest::gtest_main
 )
 gtest_discover_tests(moqx_auth_test)
@@ -197,6 +198,7 @@ add_executable(moqx_auth_token_issuer_test
 )
 target_link_libraries(moqx_auth_token_issuer_test PRIVATE
   moqx_core
+  moqx_issuer_lib
   GTest::gtest_main
 )
 gtest_discover_tests(moqx_auth_token_issuer_test)

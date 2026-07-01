@@ -6,11 +6,19 @@
 
 #include "auth/AuthTokenIssuer.h"
 
+#include "auth/HmacKey.h"
+
+#include <catapult/crypto.hpp>
+#include <catapult/cwt.hpp>
+#include <catapult/moqt_claims.hpp>
+
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace openmoq::moqx::auth {
 namespace {
@@ -25,6 +33,57 @@ std::string canonicalNamespace(const moxygen::TrackNamespace& ns) {
     out.append(field);
   }
   return out;
+}
+
+catapult::MoqtCompoundMatch toCatapultMatch(const std::vector<MatchRule>& rules) {
+  if (rules.empty()) {
+    return catapult::MoqtCompoundMatch::any();
+  }
+  std::vector<catapult::MoqtBinaryMatch> conditions;
+  conditions.reserve(rules.size());
+  for (const auto& rule : rules) {
+    switch (rule.type) {
+    case MatchRule::Type::Exact:
+      conditions.push_back(catapult::MoqtBinaryMatch::exact(rule.value));
+      break;
+    case MatchRule::Type::Prefix:
+      conditions.push_back(catapult::MoqtBinaryMatch::prefix(rule.value));
+      break;
+    case MatchRule::Type::Suffix:
+      conditions.push_back(catapult::MoqtBinaryMatch::suffix(rule.value));
+      break;
+    case MatchRule::Type::Contains:
+      conditions.push_back(catapult::MoqtBinaryMatch::contains(rule.value));
+      break;
+    }
+  }
+  return catapult::MoqtCompoundMatch::all(std::move(conditions));
+}
+
+catapult::CatToken tokenFromGrants(const Grants& grants) {
+  catapult::CatToken token;
+  if (grants.expiresAt != std::chrono::system_clock::time_point::max()) {
+    token.core.exp =
+        std::chrono::duration_cast<std::chrono::seconds>(grants.expiresAt.time_since_epoch())
+            .count();
+  }
+
+  catapult::MoqtClaims moqt = catapult::MoqtClaims::create(grants.scopes.size());
+  for (const auto& scope : grants.scopes) {
+    std::vector<int> actions;
+    actions.reserve(scope.actions.size());
+    for (auto action : scope.actions) {
+      actions.push_back(static_cast<int>(action));
+    }
+    moqt.addScope(
+        actions,
+        toCatapultMatch(scope.namespaceMatches),
+        toCatapultMatch(scope.trackMatches)
+    );
+  }
+  token.extended.setMoqtClaims(std::move(moqt));
+  token.validateTokenStructure();
+  return token;
 }
 
 std::string trim(std::string_view value) {
@@ -216,7 +275,15 @@ IssuedToken issueToken(const IssueTokenOptions& options) {
     });
   }
 
-  return IssuedToken{.tokenValue = AuthTokenVerifier::sign(options.keyID, options.secret, grants)};
+  return IssuedToken{.tokenValue = signGrants(options.keyID, options.secret, grants)};
+}
+
+std::string signGrants(std::string_view keyID, std::string_view secret, const Grants& grants) {
+  catapult::HmacSha256Algorithm hmac(deriveHmacKey(secret));
+  catapult::Cwt cwt(catapult::ALG_HMAC256_256, tokenFromGrants(grants));
+  cwt.withKeyId(std::string(keyID));
+  auto bytes = cwt.createCwt(catapult::CwtMode::MACed, hmac);
+  return std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size());
 }
 
 config::AuthConfig::HmacKey selectHmacKey(const config::AuthConfig& auth, std::string_view keyID) {
