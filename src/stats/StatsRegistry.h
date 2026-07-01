@@ -96,6 +96,53 @@ inline constexpr std::array<std::string_view, 8> kRequestErrorCodeLabels = {{
     "cancelled",
 }};
 
+// ResetStreamErrorCode compact-index table, for per-reason breakdown of
+// subgroup/stream resets.  Mirrors the RequestErrorCode table above, but adds a
+// trailing "unknown" slot so unrecognized/future codes don't collide with a
+// real reason.
+inline constexpr std::array<moxygen::ResetStreamErrorCode, 10> kResetStreamErrorCodeValues = {{
+    moxygen::ResetStreamErrorCode::INTERNAL_ERROR,
+    moxygen::ResetStreamErrorCode::CANCELLED,
+    moxygen::ResetStreamErrorCode::DELIVERY_TIMEOUT,
+    moxygen::ResetStreamErrorCode::SESSION_CLOSED,
+    moxygen::ResetStreamErrorCode::GOING_AWAY,
+    moxygen::ResetStreamErrorCode::TOO_FAR_BEHIND,
+    moxygen::ResetStreamErrorCode::UNKNOWN_OBJECT_STATUS,
+    moxygen::ResetStreamErrorCode::EXPIRED_AUTH_TOKEN,
+    moxygen::ResetStreamErrorCode::EXCESSIVE_LOAD,
+    moxygen::ResetStreamErrorCode::MALFORMED_TRACK,
+}};
+
+inline constexpr size_t kResetStreamErrorCodeCount = kResetStreamErrorCodeValues.size() + 1;
+
+// Maps any ResetStreamErrorCode to a compact index in
+// [0, kResetStreamErrorCodeCount).  Unknown / future codes fall into the last
+// ("unknown") slot.
+constexpr size_t resetStreamErrorCodeIndex(moxygen::ResetStreamErrorCode code) {
+  for (size_t i = 0; i < kResetStreamErrorCodeValues.size(); ++i) {
+    if (kResetStreamErrorCodeValues[i] == code) {
+      return i;
+    }
+  }
+  return kResetStreamErrorCodeCount - 1;
+}
+
+// Prometheus label values for each ResetStreamErrorCode slot.
+inline constexpr std::array<std::string_view, kResetStreamErrorCodeCount>
+    kResetStreamErrorCodeLabels = {{
+        "internal_error",
+        "cancelled",
+        "delivery_timeout",
+        "session_closed",
+        "going_away",
+        "too_far_behind",
+        "unknown_object_status",
+        "expired_auth_token",
+        "excessive_load",
+        "malformed_track",
+        "unknown",
+    }};
+
 // uint64_t monotonically-increasing counters — MoQ application layer.
 // pub* = relay acting as publisher (serving downstream subscribers).
 // sub* = relay acting as subscriber (consuming from upstream publishers).
@@ -205,7 +252,8 @@ inline constexpr std::array<std::string_view, 8> kRequestErrorCodeLabels = {{
   X(moqSubscribeLatency, kLatencyBucketsUs, "microseconds")                                        \
   X(moqFetchLatency, kLatencyBucketsUs, "microseconds")                                            \
   X(moqPublishNamespaceLatency, kLatencyBucketsUs, "microseconds")                                 \
-  X(moqPublishLatency, kLatencyBucketsUs, "microseconds")
+  X(moqPublishLatency, kLatencyBucketsUs, "microseconds")                                          \
+  X(moqObjectAckLatency, kLatencyBucketsUs, "microseconds")
 
 // QUIC transport histograms — populated by QuicStatsCollector and PicoQuicStatsCollector.
 // Per-loop packet fields require an EventBaseStatsCollector loop observer to be wired up.
@@ -240,6 +288,13 @@ inline constexpr std::array<std::string_view, 8> kRequestErrorCodeLabels = {{
   X(subSubscribeNamespaceError)                                                                    \
   X(subPublishError)
 
+// Reset-reason breakdowns: counters whose callback receives a
+// ResetStreamErrorCode.  Each expands to a
+// std::array<uint64_t, kResetStreamErrorCodeCount> named name##ByResetCodes.
+#define STATS_RESET_COUNTER_FIELDS(X)                                                              \
+  X(pubSubgroupReset)                                                                              \
+  X(subSubgroupReset)
+
 struct StatsSnapshot {
   // --- Scalar fields ---
 #define DEFINE_FIELD(type, name) type name{0};
@@ -259,6 +314,12 @@ struct StatsSnapshot {
 #define DEFINE_ERROR_ARRAY(name) std::array<uint64_t, kRequestErrorCodeCount> name##ByCodes{};
   STATS_ERROR_COUNTER_FIELDS(DEFINE_ERROR_ARRAY)
 #undef DEFINE_ERROR_ARRAY
+
+  // --- Per-ResetStreamErrorCode breakdown arrays ---
+#define DEFINE_RESET_ARRAY(name)                                                                   \
+  std::array<uint64_t, kResetStreamErrorCodeCount> name##ByResetCodes{};
+  STATS_RESET_COUNTER_FIELDS(DEFINE_RESET_ARRAY)
+#undef DEFINE_RESET_ARRAY
 
   StatsSnapshot& operator+=(const StatsSnapshot& o);
 

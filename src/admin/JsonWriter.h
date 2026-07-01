@@ -73,6 +73,13 @@ public:
     append(std::to_string(v));
     needsComma_ = true;
   }
+  void doubleVal(double v) {
+    maybeComma();
+    char buf[32];
+    int n = std::snprintf(buf, sizeof(buf), "%g", v);
+    append(std::string_view(buf, n > 0 ? static_cast<size_t>(n) : 0));
+    needsComma_ = true;
+  }
   void nullVal() {
     maybeComma();
     append("null");
@@ -94,6 +101,10 @@ public:
   void field(std::string_view k, uint64_t v) {
     key(k);
     uintVal(v);
+  }
+  void field(std::string_view k, double v) {
+    key(k);
+    doubleVal(v);
   }
 
 private:

@@ -17,6 +17,10 @@
 #include <folly/SocketAddress.h>
 #include <folly/container/F14Map.h>
 
+// Adding or removing a field in this file? Also update the matching serialize*()
+// helper in ConfigSerializer.h (the single source of truth for the /config dump).
+// A field-count static_assert in test/config/ConfigSerializerTest.cpp breaks the
+// build until you do. See docs/dev/config.md ("How to add a new config field").
 namespace openmoq::moqx::config {
 
 struct TlsConfig {

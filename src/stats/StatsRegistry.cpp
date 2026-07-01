@@ -42,6 +42,13 @@ StatsSnapshot& StatsSnapshot::operator+=(const StatsSnapshot& o) {
   STATS_ERROR_COUNTER_FIELDS(ADD_ERROR_ARRAY)
 #undef ADD_ERROR_ARRAY
 
+#define ADD_RESET_ARRAY(name)                                                                      \
+  for (size_t i = 0; i < kResetStreamErrorCodeCount; ++i) {                                        \
+    name##ByResetCodes[i] += o.name##ByResetCodes[i];                                              \
+  }
+  STATS_RESET_COUNTER_FIELDS(ADD_RESET_ARRAY)
+#undef ADD_RESET_ARRAY
+
   return *this;
 }
 
@@ -128,6 +135,24 @@ std::unique_ptr<folly::IOBuf> StatsSnapshot::formatPrometheus(const StatsSnapsho
   app("\n");
   STATS_ERROR_COUNTER_FIELDS(EMIT_ERROR_COUNTER)
 #undef EMIT_ERROR_COUNTER
+
+  // --- Per-ResetStreamErrorCode breakdowns ---
+  // Each field emits one labelled counter series:
+  //   moqx_<name>_total{code="<label>"}
+#define EMIT_RESET_COUNTER(name)                                                                   \
+  app("# HELP moqx_" #name "_total"                                                                \
+      " Subgroup resets broken down by ResetStreamErrorCode\n"                                     \
+      "# TYPE moqx_" #name "_total counter\n");                                                    \
+  for (size_t i = 0; i < kResetStreamErrorCodeCount; ++i) {                                        \
+    app("moqx_" #name "_total{code=\"");                                                           \
+    app(kResetStreamErrorCodeLabels[i]);                                                           \
+    app("\"} ");                                                                                   \
+    appNum(snap.name##ByResetCodes[i]);                                                            \
+    app("\n");                                                                                     \
+  }                                                                                                \
+  app("\n");
+  STATS_RESET_COUNTER_FIELDS(EMIT_RESET_COUNTER)
+#undef EMIT_RESET_COUNTER
 
   return queue.move();
 }

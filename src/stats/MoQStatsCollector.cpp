@@ -48,6 +48,13 @@ StatsSnapshot MoQStatsCollector::snapshot() const {
   STATS_ERROR_COUNTER_FIELDS(COPY_ERROR_ARRAY)
 #undef COPY_ERROR_ARRAY
 
+#define COPY_RESET_ARRAY(name)                                                                     \
+  for (size_t i = 0; i < kResetStreamErrorCodeCount; ++i) {                                        \
+    snap.name##ByResetCodes[i] = name##ByResetCodes_[i];                                           \
+  }
+  STATS_RESET_COUNTER_FIELDS(COPY_RESET_ARRAY)
+#undef COPY_RESET_ARRAY
+
   return snap;
 }
 
@@ -203,6 +210,17 @@ void MoQStatsCollector::PublisherCallback::onPublishSuccess() {
   ++parent_.moqPublishSuccess_;
 }
 
+void MoQStatsCollector::PublisherCallback::onSubgroupReset(moxygen::ResetStreamErrorCode errorCode
+) {
+  // Relay reset an outbound subgroup; errorCode carries the cause (e.g.
+  // DELIVERY_TIMEOUT).
+  ++parent_.pubSubgroupResetByResetCodes_[resetStreamErrorCodeIndex(errorCode)];
+}
+
+void MoQStatsCollector::PublisherCallback::recordObjectAckLatency(uint64_t latencyUsec) {
+  parent_.moqObjectAckLatency_.addValue(latencyUsec);
+}
+
 // --- SubscriberCallback implementations ---
 // Each method corresponds to an event from the relay's subscriber role
 
@@ -330,6 +348,12 @@ void MoQStatsCollector::SubscriberCallback::onPublishError(moxygen::PublishError
   // Relay rejected an upstream publisher with PUBLISH_ERROR.
   ++parent_.subPublishError_;
   ++parent_.subPublishErrorByCodes_[requestErrorCodeIndex(errorCode)];
+}
+
+void MoQStatsCollector::SubscriberCallback::onSubgroupReset(moxygen::ResetStreamErrorCode errorCode
+) {
+  // A peer reset an inbound stream to us; errorCode carries the peer's cause.
+  ++parent_.subSubgroupResetByResetCodes_[resetStreamErrorCodeIndex(errorCode)];
 }
 
 } // namespace openmoq::moqx::stats
