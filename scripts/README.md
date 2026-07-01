@@ -77,5 +77,11 @@ Full option list: `./scripts/moqx-run.sh --help`.
 - [`perf-test.sh`](perf-test.sh) — relay throughput / subscriber-ramp perf test
   (drives the relay via `moqx-run.sh`). See `./scripts/perf-test.sh` header for
   options; short flags `-s`/`-d`/`-t`/`-l`/`-j` mirror the common ones.
+- [`perf-metrics.sh`](perf-metrics.sh) — generic `/metrics` poller; logs the relay's
+  Prometheus metrics to a file (standalone, or via `perf-test.sh --metrics`). For a
+  live graphical view, open [`../tools/metrics-dashboard.html`](../tools/metrics-dashboard.html)
+  in a browser — a self-contained dashboard that scrapes the relay `/metrics` (plus
+  node_exporter host metrics and moqperf client latency) once per second. See that
+  file's header for endpoint/CORS setup.
 - [`config.bench.yaml`](config.bench.yaml) — the relay config template
   `moqx-run.sh` renders.
