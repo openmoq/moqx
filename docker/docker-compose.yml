@@ -16,6 +16,11 @@ name: moqx
 #   Run the relay:
 #     docker compose -f docker/docker-compose.yml up -d
 #
+#   Run the relay + stats stack (TLS-terminated dashboard/Prometheus/Grafana):
+#     Set STATS_USER / STATS_PASSWORD (basic auth) in docker/.env, then:
+#     docker compose -f docker/docker-compose.yml --profile stats up -d
+#     → https://${DOMAIN}/ (live dashboard) · /grafana/ · /prometheus/ · /admin/
+#
 #   Custom / self-signed cert (no certbot):
 #     Set MOQX_CERT and MOQX_KEY in docker/.env to point to your mounted cert files.
 
@@ -24,6 +29,13 @@ services:
     container_name: moqx
     image: ghcr.io/openmoq/moqx:latest
     restart: unless-stopped
+    # Resource allocation for the relay (env-overridable). Defaults suit the CI
+    # load-test runner: 8 cores + generous memory. On smaller hosts a cpus value
+    # above the core count is a no-op, and the memory limit is far above the
+    # relay's real footprint (~tens of MB), so it only guards against runaway.
+    cpus: ${MOQX_CPUS:-8}
+    mem_limit: ${MOQX_MEM:-8g}
+    mem_reservation: ${MOQX_MEM_RESERVATION:-2g}
     ports:
       - "${MOQX_PORT:-4433}:${MOQX_PORT:-4433}/udp"
       - "${MOQX_PICO_PORT:-4434}:${MOQX_PICO_PORT:-4434}/udp"
@@ -43,6 +55,9 @@ services:
       MOQX_MAX_GROUPS: ${MOQX_MAX_GROUPS:-100}
       MOQX_LOG_LEVEL: ${MOQX_LOG_LEVEL:-0}
       MOQX_VERBOSE: ${MOQX_VERBOSE:-0}
+      # IO worker threads — default matches the entrypoint (4); set to the core
+      # count (e.g. 8) for sub-maximal load testing on the CI runner.
+      MOQX_THREADS: ${MOQX_THREADS:-4}
     ulimits:
       core: -1
     healthcheck:
@@ -108,5 +123,88 @@ services:
       -d ${DOMAIN}
     profiles: [certbot-route53]
 
+  # ── Stats stack (profile: stats) ─────────────────────────────────────────
+  # nginx terminates TLS (reusing the relay's Let's Encrypt cert) and reverse-
+  # proxies the analytics/admin screens behind HTTP basic auth. Prometheus
+  # scrapes the relay's /metrics; Grafana renders dashboards.
+  #
+  #   docker compose --profile stats up -d
+  #
+  # Routes (all basic-auth except /healthz):
+  #   https://${DOMAIN}/             → Grafana dashboards
+  #   https://${DOMAIN}/prometheus/  → Prometheus UI/API
+  #   https://${DOMAIN}/admin/       → relay admin (/metrics, /info, /state, /config)
+
+  nginx:
+    container_name: moqx-stats-proxy
+    image: nginx:stable
+    restart: unless-stopped
+    profiles: [stats]
+    depends_on: [grafana, prometheus, moqx]
+    ports:
+      - "${STATS_HTTPS_PORT:-443}:443/tcp"
+      - "${STATS_HTTP_PORT:-80}:80/tcp"
+    environment:
+      DOMAIN: ${DOMAIN}
+      STATS_USER: ${STATS_USER:-admin}
+      STATS_PASSWORD: ${STATS_PASSWORD:-}
+      STATS_HTPASSWD: ${STATS_HTPASSWD:-}
+    volumes:
+      - ${MOQX_CERTS_DIR:-/etc/letsencrypt}:/certs:ro
+      - ./nginx/templates:/etc/nginx/templates:ro
+      - ./nginx/40-htpasswd.sh:/docker-entrypoint.d/40-htpasswd.sh:ro
+      # Served at / — afrind's self-contained live dashboard (tools/, PR #479).
+      - ../tools/metrics-dashboard.html:/usr/share/nginx/html/metrics-dashboard.html:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  prometheus:
+    container_name: moqx-prometheus
+    image: prom/prometheus:v2.53.0
+    restart: unless-stopped
+    profiles: [stats]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-30d}
+      - --web.external-url=https://${DOMAIN}/prometheus/
+      - --web.route-prefix=/
+    mem_limit: ${PROMETHEUS_MEM:-2g}
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  grafana:
+    container_name: moqx-grafana
+    image: grafana/grafana:11.0.0
+    restart: unless-stopped
+    profiles: [stats]
+    depends_on: [prometheus]
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_SERVER_ROOT_URL: https://${DOMAIN}/grafana/
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+    mem_limit: ${GRAFANA_MEM:-1g}
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 volumes:
   moqx-coredumps:
+  prometheus-data:
+  grafana-data:
