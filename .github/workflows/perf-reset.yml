@@ -21,15 +21,9 @@ permissions:
 jobs:
   reset:
     name: stage empty perf baseline
+    if: ${{ inputs.confirm == 'RESET_PERF_BASELINE' }}
     runs-on: ubuntu-latest
     steps:
-      - name: Guard confirmation token
-        run: |
-          if [ "${{ inputs.confirm }}" != "RESET_PERF_BASELINE" ]; then
-            echo "Refusing reset: confirm input must be RESET_PERF_BASELINE"
-            exit 1
-          fi
-
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref }}
