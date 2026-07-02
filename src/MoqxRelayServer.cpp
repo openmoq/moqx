@@ -38,13 +38,10 @@ std::vector<std::string> buildAlpns(const std::string& versions) {
   return alpns;
 }
 
-// Build a FizzServerContext from in-memory PEM buffers (cert chain + key)
-// instead of file paths, so a PKCS#12-derived private key never touches disk.
-// This mirrors quic::samples::createFizzServerContextImpl (proxygen hq sample,
-// minus the insecure-default branch) so a pkcs12-sourced context behaves
-// identically to the PEM-file one (session tickets, resumption, ALPN mode).
-// Keep in sync with that helper if it changes upstream. TODO: replace with a
-// buffer-based helper in the moxygen fork to avoid duplicating this logic.
+// Build a FizzServerContext from in-memory PEM buffers so a PKCS#12-derived key
+// never touches disk. Mirrors quic::samples::createFizzServerContextImpl (the
+// path-based sample helper) to match the PEM-file path's TLS behavior.
+// TODO(#482): replace with a buffer-based helper in the moxygen fork.
 std::shared_ptr<const fizz::server::FizzServerContext> buildFizzContextFromMaterial(
     const std::vector<std::string>& alpns,
     fizz::server::ClientAuthMode clientAuth,
