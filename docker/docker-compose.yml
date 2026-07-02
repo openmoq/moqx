@@ -130,10 +130,14 @@ services:
   #
   #   docker compose --profile stats up -d
   #
-  # Routes (all basic-auth except /healthz):
-  #   https://${DOMAIN}/             → Grafana dashboards
-  #   https://${DOMAIN}/prometheus/  → Prometheus UI/API
-  #   https://${DOMAIN}/admin/       → relay admin (/metrics, /info, /state, /config)
+  # Bound to 127.0.0.1 by default (reach it via SSH tunnel on a locked-down
+  # host; set STATS_BIND=0.0.0.0 to expose publicly). Routes, basic-auth except
+  # /healthz:
+  #   /             → live metrics dashboard (tools/metrics-dashboard.html)
+  #   /metrics      → relay /metrics (same-origin data source for the dashboard)
+  #   /admin/       → relay admin (/info, /state, /config)
+  #   /grafana/     → Grafana dashboards
+  #   /prometheus/  → Prometheus UI/API
 
   nginx:
     container_name: moqx-stats-proxy
@@ -142,8 +146,8 @@ services:
     profiles: [stats]
     depends_on: [grafana, prometheus, moqx]
     ports:
-      - "${STATS_HTTPS_PORT:-443}:443/tcp"
-      - "${STATS_HTTP_PORT:-80}:80/tcp"
+      - "${STATS_BIND:-127.0.0.1}:${STATS_HTTPS_PORT:-443}:443/tcp"
+      - "${STATS_BIND:-127.0.0.1}:${STATS_HTTP_PORT:-80}:80/tcp"
     environment:
       DOMAIN: ${DOMAIN}
       STATS_USER: ${STATS_USER:-admin}
