@@ -35,12 +35,50 @@ struct ParsedUdpConfig {
 struct ParsedListenerTlsConfig {
   rfl::Description<"Path to TLS certificate file", std::optional<std::string>> cert_file;
   rfl::Description<"Path to TLS private key file", std::optional<std::string>> key_file;
+  rfl::Description<
+      "Path to a PKCS#12 bundle (.p12/.pfx) carrying the cert chain + private key; "
+      "mutually exclusive with cert_file/key_file. Decrypted in memory (key never hits disk).",
+      std::optional<std::string>>
+      pkcs12_file;
+  rfl::Description<
+      "Inline PKCS#12 password (discouraged; prefer pkcs12_password_file). Empty for "
+      "password-less bundles.",
+      std::optional<std::string>>
+      pkcs12_password;
+  rfl::Description<
+      "Path to a file containing the PKCS#12 password (preferred over inline).",
+      std::optional<std::string>>
+      pkcs12_password_file;
+  rfl::Description<
+      "Name of an environment variable holding the PKCS#12 password (cloud-vault "
+      "friendly: the secret stays out of the config file). Errors if the variable is unset.",
+      std::optional<std::string>>
+      pkcs12_password_env;
   rfl::Description<"Insecure mode, use default compiled-in cert", bool> insecure;
 };
 
 struct ParsedAdminTlsConfig {
   rfl::Description<"Path to TLS certificate file", std::optional<std::string>> cert_file;
   rfl::Description<"Path to TLS private key file", std::optional<std::string>> key_file;
+  rfl::Description<
+      "Path to a PKCS#12 bundle (.p12/.pfx) carrying the cert chain + private key; "
+      "mutually exclusive with cert_file/key_file. Decrypted in memory (key never hits disk).",
+      std::optional<std::string>>
+      pkcs12_file;
+  rfl::Description<
+      "Inline PKCS#12 password (discouraged; prefer pkcs12_password_file). Empty for "
+      "password-less bundles.",
+      std::optional<std::string>>
+      pkcs12_password;
+  rfl::Description<
+      "Path to a file containing the PKCS#12 password (preferred over inline).",
+      std::optional<std::string>>
+      pkcs12_password_file;
+  rfl::Description<
+      "Name of an environment variable holding the PKCS#12 password (cloud-vault "
+      "friendly: the secret stays out of the config file). Errors if the variable is unset.",
+      std::optional<std::string>>
+      pkcs12_password_env;
   rfl::Description<"ALPN protocol list", std::optional<std::vector<std::string>>> alpn;
 };
 
