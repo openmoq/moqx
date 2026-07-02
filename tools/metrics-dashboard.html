@@ -1,0 +1,827 @@
+<!DOCTYPE html>
+<!--
+  moqx metrics dashboard — self-contained live Prometheus dashboard.
+
+  A single static file (Chart.js from CDN, no build). Open it in a browser and
+  press Start; it scrapes one or more Prometheus /metrics endpoints once per
+  second and live-updates the graphs. GUI companion to scripts/perf-metrics.sh.
+
+  Endpoints (header fields):
+    - app endpoint : the relay's /metrics (moqx admin HTTP), e.g. http://host:19702/metrics
+    - host port    : node_exporter on the SAME host (CPU / memory / NIC throughput); blank to disable
+    - client       : optional node_exporter on the load-gen client, for moqperf textfile metrics
+                     (end-to-end latency). Scrape it with ?collect[]=textfile so its node_* don't
+                     collide with the relay host's.
+
+  CORS: the browser fetches these cross-origin, so each endpoint must send
+  Access-Control-Allow-Origin (node_exporter has none of its own — front it with
+  a proxy that adds the header). Pick which series to graph via the Metrics menu.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prometheus Live Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #0e1117; --panel: #161b22; --border: #30363d;
+    --text: #c9d1d9; --muted: #8b949e; --accent: #58a6ff;
+    --green: #3fb950; --red: #f85149;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+         background: var(--bg); color: var(--text); }
+  header { position: sticky; top: 0; z-index: 20; background: var(--panel);
+           border-bottom: 1px solid var(--border); padding: 12px 20px;
+           display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  header h1 { font-size: 16px; margin: 0 12px 0 0; font-weight: 600; }
+  input, button, select { background: var(--bg); color: var(--text); border: 1px solid var(--border);
+                          border-radius: 6px; padding: 6px 10px; font-size: 13px; }
+  input#endpoint { width: 300px; }
+  input#hostPort { width: 64px; }
+  input#clientEndpoint { width: 240px; }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: #0e1117; border-color: var(--accent); font-weight: 600; }
+  button.stop { background: var(--red); color: #fff; border-color: var(--red); }
+  label.chk { font-size: 13px; color: var(--text); display: flex; align-items: center; gap: 5px; cursor: pointer; }
+  .status { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .dot.live { background: var(--green); animation: pulse 1s infinite; }
+  .dot.error { background: var(--red); }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+  .meta { font-size: 12px; color: var(--muted); margin-left: auto; }
+
+  /* metric picker */
+  #pickerWrap { position: relative; }
+  #picker { display: none; position: absolute; top: 38px; left: 0; width: 460px; max-height: 70vh;
+            overflow: auto; background: var(--panel); border: 1px solid var(--border);
+            border-radius: 8px; padding: 12px; z-index: 30; box-shadow: 0 8px 24px rgba(0,0,0,.5); }
+  #picker.open { display: block; }
+  #picker .ptools { display: flex; gap: 8px; margin-bottom: 8px; position: sticky; top: 0; background: var(--panel); }
+  #picker input[type=text] { flex: 1; }
+  #picker .grp { font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted);
+                 margin: 10px 0 4px; border-bottom: 1px solid var(--border); padding-bottom: 2px; }
+  #picker label { display: flex; align-items: center; gap: 7px; padding: 3px 4px; border-radius: 4px;
+                  font-family: ui-monospace, Menlo, monospace; font-size: 12px; cursor: pointer; }
+  #picker label:hover { background: var(--bg); }
+  #picker label .tag { margin-left: auto; font-size: 9px; color: var(--muted);
+                       border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; }
+
+  #top { padding: 16px 20px 0; }
+  #topCard h2 .cur { font-size: 13px; }
+  main { display: grid; grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); gap: 16px; padding: 16px 20px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+  .card h2 { font-size: 13px; margin: 0 0 4px; font-family: ui-monospace, Menlo, monospace;
+             color: var(--accent); word-break: break-all; display: flex; align-items: center; gap: 8px; }
+  .card h2 .unit { font-size: 10px; color: var(--muted); border: 1px solid var(--border);
+                   border-radius: 3px; padding: 0 5px; font-family: sans-serif; }
+  .card .help { font-size: 11px; color: var(--muted); margin: 0 0 8px; min-height: 1px; }
+  .card .cur { font-size: 11px; color: var(--text); margin-left: auto; font-family: ui-monospace, Menlo, monospace; }
+  .chart-wrap { position: relative; height: 200px; }
+  .empty { color: var(--muted); padding: 40px 20px; text-align: center; grid-column: 1 / -1; }
+</style>
+</head>
+<body>
+<header>
+  <h1>📊 Prometheus Live</h1>
+  <input id="endpoint" type="text" value="http://18.236.159.20:19702/metrics" spellcheck="false" title="app /metrics endpoint">
+  <label class="chk">host&nbsp;port <input id="hostPort" type="text" value="9101" spellcheck="false" title="node_exporter port on the same host — blank to disable"></label>
+  <input id="clientEndpoint" type="text" value="" placeholder="client node_exporter (optional)" spellcheck="false" title="client node_exporter for moqperf textfile metrics — use ?collect[]=textfile to avoid node_* name clashes with the relay host">
+  <button id="toggle" class="primary">Start</button>
+  <div id="pickerWrap">
+    <button id="pickerBtn">Metrics ▾</button>
+    <div id="picker">
+      <div class="ptools">
+        <input id="pickerSearch" type="text" placeholder="search…" spellcheck="false">
+        <button id="pickAll">all</button>
+        <button id="pickNone">none</button>
+        <button id="pickDefault">default</button>
+      </div>
+      <div id="pickerList"></div>
+    </div>
+  </div>
+  <label class="chk"><input type="checkbox" id="rateMode" checked> Δ rate/s (counters)</label>
+  <label class="status">window
+    <select id="window">
+      <option value="60">1m</option>
+      <option value="300" selected>5m</option>
+      <option value="900">15m</option>
+      <option value="3600">1h</option>
+    </select>
+  </label>
+  <div class="status"><span id="dot" class="dot"></span><span id="statusText">idle</span></div>
+  <div class="meta" id="meta"></div>
+</header>
+<section id="top">
+  <div id="topCard" class="card">
+    <h2>Network throughput <span class="unit">Gbps · system NIC</span><span class="cur" id="tpCur"></span></h2>
+    <div class="chart-wrap" style="height:260px"><canvas id="tpCanvas"></canvas></div>
+  </div>
+</section>
+<main id="main">
+  <div class="empty">Press <b>Start</b>, then click <b>Metrics ▾</b> to choose what to graph.</div>
+</main>
+
+<script>
+"use strict";
+
+const POLL_MS = 1000;
+const FETCH_TIMEOUT = 4000; // ms — abort a stalled scrape so it can't wedge the whole poll loop
+const MIN_DT = 0.25; // s — ignore rate/throughput samples spaced closer than this (avoids divide-by-tiny spikes)
+const WIN_SLACK = 5000; // ms — keep points slightly past the window so the exiting segment still renders
+// node_exporter collectors to request (keeps the host scrape small under a saturated uplink).
+// Add e.g. "diskstats","filesystem" here if you want those in the picker; "" (empty) requests everything.
+const HOST_COLLECTORS = ["cpu", "netdev", "meminfo", "loadavg"];
+const COLORS = ["#58a6ff","#3fb950","#f85149","#d29922","#bc8cff","#39c5cf","#ff7b72","#a5d6ff","#ffa657","#7ee787"];
+const LS_KEY = "promdash_selected_v7";
+
+function safeDiv(a, b) { return (a === null || b === null || b === 0) ? null : a / b; }
+
+// Derived / computed metrics.
+//  - ratio derived: `inputs` + `fn(deltas)`  → single series from per-poll counter deltas
+//  - histogram derived: `hist` + `series[]`  → each series.fn(stats) over the windowed histogram
+const DERIVED = [
+  { name: "calc_lossPerSent", unit: "fraction",
+    help: "QUIC packet loss as a fraction of packets sent (Δloss / Δsent)",
+    inputs: ["moqx_quicPacketLoss_total", "moqx_quicPacketsSent_total"],
+    fn: d => safeDiv(d.moqx_quicPacketLoss_total, d.moqx_quicPacketsSent_total) },
+  { name: "calc_rtxPerSent", unit: "fraction",
+    help: "QUIC retransmissions as a fraction of packets sent (Δrtx / Δsent)",
+    inputs: ["moqx_quicPacketRetransmissions_total", "moqx_quicPacketsSent_total"],
+    fn: d => safeDiv(d.moqx_quicPacketRetransmissions_total, d.moqx_quicPacketsSent_total) },
+  { name: "calc_evbLoopBusy", unit: "ms", hist: "moqx_evbLoopBusy_microseconds", scale: 1 / 1000,
+    help: "Event-loop busy time per iteration over the window — p99 / p50 / mean (ms)",
+    series: [
+      { label: "p99",  fn: s => s.quantile(0.99) },
+      { label: "p50",  fn: s => s.quantile(0.50) },
+      { label: "mean", fn: s => s.mean },
+    ] },
+  // subgroup reset errors by ResetStreamErrorCode (pub + sub combined), rate/s per code
+  { name: "calc_subgroupErrByCode", unit: "/s", agg: true,
+    help: "Subgroup reset errors by code (pub+sub) — rate/s per ResetStreamErrorCode",
+    compute: (parsed, now) => {
+      const out = {}; let any = false;
+      for (const metric of ["moqx_pubSubgroupReset_total", "moqx_subSubgroupReset_total"]) {
+        for (const r of ratesOf(parsed, metric, now)) {
+          if (r.rate == null) continue;
+          any = true;
+          const code = r.labels.code || "unknown";
+          out[code] = (out[code] || 0) + r.rate;
+        }
+      }
+      return any ? out : null;
+    } },
+  // object ACK latency histogram (µs) → p99 / p50 / mean in ms
+  { name: "calc_objectAckLatency", unit: "ms", hist: "moqx_moqObjectAckLatency_microseconds", scale: 1 / 1000,
+    help: "Object ACK latency over the window — p99 / p50 / mean (ms)",
+    series: [
+      { label: "p99",  fn: s => s.quantile(0.99) },
+      { label: "p50",  fn: s => s.quantile(0.50) },
+      { label: "mean", fn: s => s.mean },
+    ] },
+  // client end-to-end object latency from moqperf textfile (SECONDS) → p99 / p50 / mean in ms
+  { name: "calc_clientLatency", unit: "ms", hist: "moqperf_object_latency_seconds", scale: 1000,
+    help: "Client end-to-end object latency over the window — p99 / p95 / p50 / mean (ms)",
+    series: [
+      { label: "p99",  fn: s => s.quantile(0.99) },
+      { label: "p95",  fn: s => s.quantile(0.95) },
+      { label: "p50",  fn: s => s.quantile(0.50) },
+      { label: "mean", fn: s => s.mean },
+    ] },
+  // host CPU from node_exporter (node_cpu_seconds_total counters)
+  { name: "calc_hostCpuPct", unit: "%", agg: true,
+    help: "Host CPU utilization — average % busy across all cores",
+    compute: (parsed, now) => {
+      const rates = ratesOf(parsed, "node_cpu_seconds_total", now);
+      let total = 0, idle = 0, any = false;
+      for (const r of rates) {
+        if (r.rate == null) continue;
+        any = true; total += r.rate;
+        if (r.labels.mode === "idle") idle += r.rate;
+      }
+      return (any && total > 0) ? { avg: 100 * (1 - idle / total) } : null;
+    } },
+  { name: "calc_hostCpuCores", unit: "%", agg: true,
+    help: "Per-core CPU busy % — min / max across cores (avg is on the CPU util graph)",
+    compute: (parsed, now) => {
+      const rates = ratesOf(parsed, "node_cpu_seconds_total", now);
+      const byCpu = new Map(); // cpu -> { total, idle }
+      for (const r of rates) {
+        if (r.rate == null || r.labels.cpu == null) continue;
+        let o = byCpu.get(r.labels.cpu);
+        if (!o) { o = { total: 0, idle: 0 }; byCpu.set(r.labels.cpu, o); }
+        o.total += r.rate;
+        if (r.labels.mode === "idle") o.idle += r.rate;
+      }
+      const busy = [];
+      for (const o of byCpu.values()) if (o.total > 0) busy.push(100 * (1 - o.idle / o.total));
+      if (!busy.length) return null;
+      return { max: Math.max(...busy), min: Math.min(...busy) };
+    } },
+];
+const DERIVED_BY_NAME = new Map(DERIVED.map(d => [d.name, d]));
+
+// Sensible defaults for the MoQ/QUIC server.
+// Order here is also the on-screen layout order (applied via CSS grid `order`).
+const DEFAULT_METRICS = [
+  "moqx_moqActiveSessions",
+  "calc_hostCpuPct",
+  "calc_hostCpuCores",
+  "calc_clientLatency",
+  "moqx_quicBytesRead_total",
+  "moqx_quicBytesWritten_total",
+  "moqx_quicPacketsReceived_total",
+  "moqx_quicPacketsSent_total",
+  "calc_lossPerSent",
+  "calc_rtxPerSent",
+  "calc_subgroupErrByCode",
+  "calc_objectAckLatency",
+  "calc_evbLoopBusy",
+  "moqx_quicConnectionsCreated_total",
+  "moqx_pubSubscriptionStreamOpened_total",
+];
+const orderIndex = name => { const i = DEFAULT_METRICS.indexOf(name); return i === -1 ? 1000 : i; };
+
+const els = {
+  endpoint: document.getElementById("endpoint"),
+  hostPort: document.getElementById("hostPort"),
+  clientEndpoint: document.getElementById("clientEndpoint"),
+  toggle: document.getElementById("toggle"),
+  rateMode: document.getElementById("rateMode"),
+  window: document.getElementById("window"),
+  dot: document.getElementById("dot"),
+  statusText: document.getElementById("statusText"),
+  meta: document.getElementById("meta"),
+  main: document.getElementById("main"),
+  pickerBtn: document.getElementById("pickerBtn"),
+  picker: document.getElementById("picker"),
+  pickerList: document.getElementById("pickerList"),
+  pickerSearch: document.getElementById("pickerSearch"),
+  pickAll: document.getElementById("pickAll"),
+  pickNone: document.getElementById("pickNone"),
+  pickDefault: document.getElementById("pickDefault"),
+};
+
+let running = false, pollCount = 0;
+let lastNow = 0; // monotonic clock so the x-axis never goes backwards (shared across source loops)
+
+// selection (persisted)
+let selected = loadSelection();
+function loadSelection() {
+  try {
+    const s = JSON.parse(localStorage.getItem(LS_KEY));
+    if (Array.isArray(s) && s.length) return new Set(s);
+  } catch (e) {}
+  return new Set(DEFAULT_METRICS);
+}
+function saveSelection() { localStorage.setItem(LS_KEY, JSON.stringify([...selected])); }
+
+// discovered: name -> { type, help }
+const known = new Map();
+for (const d of DERIVED) known.set(d.name, { type: "calc", help: d.help });
+// per-input prev value for derived deltas: inputName -> { t, v }
+const derivedState = new Map();
+// charts: name -> { card, chart, help, cur, type, seriesByLabel: Map(labelKey -> {dataset, prev:{t,v}}) }
+const charts = new Map();
+
+/* ---------- parser ---------- */
+function parseProm(text) {
+  const out = new Map(); // name -> {type, help, samples:[{labelKey, value}]}
+  const lines = text.split("\n");
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) continue;
+    if (line[0] === "#") {
+      let m = line.match(/^#\s+HELP\s+(\S+)\s+(.*)$/);
+      if (m) { ensure(out, m[1]).help = m[2]; continue; }
+      m = line.match(/^#\s+TYPE\s+(\S+)\s+(\S+)$/);
+      if (m) { ensure(out, m[1]).type = m[2]; continue; }
+      continue;
+    }
+    const s = parseSample(line);
+    if (s) ensure(out, s.name).samples.push(s);
+  }
+  return out;
+}
+function ensure(map, name) { if (!map.has(name)) map.set(name, { type: "untyped", help: "", samples: [] }); return map.get(name); }
+function currentValue(parsed, name) {
+  const d = parsed.get(name);
+  if (!d) return null;
+  const s = d.samples.find(x => x.labelKey === "") || d.samples[0];
+  return s ? s.value : null;
+}
+
+/* ---------- per-labeled-series rates (for aggregating e.g. all cpu/mode or all NICs) ---------- */
+const seriesState = new Map(); // "metric|labelKey" -> { t, v }
+let _rateNow = 0; const _rateCache = new Map(); // memoize per poll so multiple consumers agree & don't double-advance prev
+function ratesOf(parsed, metricName, now) {
+  if (now !== _rateNow) { _rateNow = now; _rateCache.clear(); }
+  if (_rateCache.has(metricName)) return _rateCache.get(metricName);
+  const d = parsed.get(metricName);
+  const out = [];
+  if (d) for (const s of d.samples) {
+    const key = metricName + "|" + s.labelKey;
+    const prev = seriesState.get(key);
+    let rate = null;
+    if (prev) {
+      const dt = (now - prev.t) / 1000;
+      if (dt >= MIN_DT) { rate = Math.max(0, s.value - prev.v) / dt; seriesState.set(key, { t: now, v: s.value }); }
+      // dt too small: keep prev, leave rate null this tick
+    } else {
+      seriesState.set(key, { t: now, v: s.value });
+    }
+    out.push({ labels: s.labels, rate });
+  }
+  _rateCache.set(metricName, out);
+  return out;
+}
+
+/* ---------- histogram quantiles (Prometheus-style, over a sliding window) ---------- */
+const histHistory = new Map(); // base -> [{ t, cum[], sum, count }]
+function bucketsOf(parsed, base) {
+  const bd = parsed.get(base + "_bucket");
+  if (!bd || !bd.samples.length) return null;
+  const rows = bd.samples
+    .filter(s => s.labels && s.labels.le !== undefined)
+    .map(s => ({ le: s.labels.le === "+Inf" ? Infinity : parseFloat(s.labels.le), c: s.value }))
+    .sort((a, b) => a.le - b.le);
+  if (!rows.length) return null;
+  const sd = parsed.get(base + "_sum"), cd = parsed.get(base + "_count");
+  return {
+    les: rows.map(r => r.le),
+    cum: rows.map(r => r.c),
+    sum: sd && sd.samples.length ? sd.samples[0].value : null,
+    count: cd && cd.samples.length ? cd.samples[0].value : rows[rows.length - 1].c,
+  };
+}
+function quantileFromBuckets(les, cum, q) {
+  const total = cum[cum.length - 1]; // +Inf bucket holds the total count
+  if (!total || total <= 0) return null;
+  const rank = q * total;
+  let i = 0;
+  while (i < cum.length && cum[i] < rank) i++;
+  if (i >= cum.length) i = cum.length - 1;
+  const leHigh = les[i], leLow = i === 0 ? 0 : les[i - 1];
+  const cHigh = cum[i],  cLow  = i === 0 ? 0 : cum[i - 1];
+  if (!isFinite(leHigh)) return leLow;       // fell in +Inf bucket: report last finite boundary
+  if (cHigh === cLow) return leHigh;
+  return leLow + (leHigh - leLow) * (rank - cLow) / (cHigh - cLow); // linear interpolation within bucket
+}
+function histWindowStats(base, parsed, now, windowMs) {
+  const cur = bucketsOf(parsed, base);
+  if (!cur) return null;
+  let h = histHistory.get(base);
+  if (!h) { h = []; histHistory.set(base, h); }
+  h.push({ t: now, cum: cur.cum, sum: cur.sum, count: cur.count });
+  while (h.length > 1 && h[0].t < now - windowMs) h.shift();
+  const old = h[0];
+  const reset = cur.count < old.count; // histogram counters dropped → use current as baseline
+  const dcum  = cur.cum.map((c, i) => reset ? c : Math.max(0, c - old.cum[i]));
+  const dcount = reset ? cur.count : Math.max(0, cur.count - old.count);
+  const dsum = (cur.sum == null || old.sum == null) ? null : (reset ? cur.sum : Math.max(0, cur.sum - old.sum));
+  return {
+    count: dcount,
+    mean: (dsum != null && dcount > 0) ? dsum / dcount : null,
+    quantile: q => quantileFromBuckets(cur.les, dcum, q),
+  };
+}
+
+function parseSample(line) {
+  let name, labelsStr = "", rest;
+  const brace = line.indexOf("{");
+  if (brace !== -1) {
+    name = line.slice(0, brace);
+    const close = line.lastIndexOf("}");
+    labelsStr = line.slice(brace + 1, close);
+    rest = line.slice(close + 1).trim();
+  } else {
+    const sp = line.indexOf(" ");
+    if (sp === -1) return null;
+    name = line.slice(0, sp);
+    rest = line.slice(sp + 1).trim();
+  }
+  const value = parseFloat(rest.split(/\s+/)[0]);
+  if (!isFinite(value)) return null;
+  const labels = parseLabels(labelsStr);
+  const labelKey = Object.keys(labels).sort().map(k => `${k}="${labels[k]}"`).join(",");
+  return { name, labels, labelKey, value };
+}
+function parseLabels(s) {
+  const labels = {};
+  if (!s) return labels;
+  const re = /(\w+)\s*=\s*"((?:[^"\\]|\\.)*)"/g;
+  let m;
+  while ((m = re.exec(s)) !== null) labels[m[1]] = m[2].replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+  return labels;
+}
+
+/* ---------- helpers ---------- */
+function typeForName(name) {
+  if (known.has(name)) return known.get(name).type;
+  if (/_(bucket|sum|count)$/.test(name)) return "counter";
+  if (/_total$/.test(name)) return "counter";
+  return "gauge";
+}
+function isCounter(name) { return typeForName(name) === "counter"; }
+
+function fmt(v) {
+  if (v === null || v === undefined || !isFinite(v)) return "—";
+  const a = Math.abs(v);
+  if (a >= 1e9) return (v/1e9).toFixed(2)+"G";
+  if (a >= 1e6) return (v/1e6).toFixed(2)+"M";
+  if (a >= 1e3) return (v/1e3).toFixed(2)+"k";
+  if (a === 0) return "0";
+  if (a >= 1) return v.toFixed(a < 10 && a % 1 !== 0 ? 2 : 0);
+  return Number(v.toPrecision(2)).toString(); // small fractions: 0.00012, 0.5, …
+}
+
+// shared tooltip: show x as a real date/time, and format y with fmt()
+const TOOLTIP = {
+  callbacks: {
+    title: items => items.length ? new Date(items[0].parsed.x).toLocaleString() : "",
+    label: ctx => `${ctx.dataset.label}: ${fmt(ctx.parsed.y)}`,
+  },
+};
+
+/* ---------- chart management ---------- */
+function ensureChart(name) {
+  if (charts.has(name)) return charts.get(name);
+  const derived = DERIVED_BY_NAME.get(name);
+  const pct = !!derived && derived.unit === "%";
+  const counter = !derived && isCounter(name);
+  const rate = counter && els.rateMode.checked;
+
+  const card = document.createElement("div");
+  card.className = "card";
+  card.dataset.name = name;
+
+  const h2 = document.createElement("h2");
+  h2.textContent = name.replace(/^moqx_/, "").replace(/^calc_/, "");
+  const unit = document.createElement("span");
+  unit.className = "unit";
+  unit.textContent = derived ? derived.unit : rate ? "rate/s" : counter ? "cumulative" : "gauge";
+  h2.appendChild(unit);
+  const cur = document.createElement("span");
+  cur.className = "cur";
+  h2.appendChild(cur);
+
+  const help = document.createElement("p");
+  help.className = "help";
+  help.textContent = (known.get(name) && known.get(name).help) || "";
+
+  const wrap = document.createElement("div");
+  wrap.className = "chart-wrap";
+  const canvas = document.createElement("canvas");
+  wrap.appendChild(canvas);
+
+  card.append(h2, help, wrap);
+  card.style.order = orderIndex(name); // deterministic layout order, independent of scrape order
+  els.main.appendChild(card);
+
+  const chart = new Chart(canvas, {
+    type: "line",
+    data: { datasets: [] },
+    options: {
+      animation: false, responsive: true, maintainAspectRatio: false, parsing: false,
+      interaction: { mode: "nearest", intersect: false },
+      scales: {
+        x: { type: "linear", ticks: { color: "#8b949e", maxTicksLimit: 6,
+               callback: v => new Date(v).toLocaleTimeString() }, grid: { color: "#21262d" } },
+        y: { beginAtZero: counter || pct, suggestedMax: pct ? 100 : undefined,
+             ticks: { color: "#8b949e", callback: fmt }, grid: { color: "#21262d" } },
+      },
+      plugins: {
+        legend: { display: true, labels: { color: "#c9d1d9", boxWidth: 10, font: { size: 10 } } },
+        tooltip: TOOLTIP,
+      },
+    },
+  });
+
+  const entry = { card, chart, help, cur, unit, type: typeForName(name), counter,
+                  seriesByLabel: new Map() };
+  charts.set(name, entry);
+  return entry;
+}
+
+function ensureSeries(entry, labelKey) {
+  if (entry.seriesByLabel.has(labelKey)) return entry.seriesByLabel.get(labelKey);
+  const idx = entry.seriesByLabel.size;
+  const color = COLORS[idx % COLORS.length];
+  const dataset = { label: labelKey || "value", data: [], borderColor: color,
+                    backgroundColor: color + "22", borderWidth: 1.5, pointRadius: 0, tension: 0.2, fill: false };
+  entry.chart.data.datasets.push(dataset);
+  const series = { dataset, prev: null };
+  entry.seriesByLabel.set(labelKey, series);
+  return series;
+}
+
+function removeChart(name) {
+  const e = charts.get(name);
+  if (!e) return;
+  e.chart.destroy();
+  e.card.remove();
+  charts.delete(name);
+}
+
+function syncCharts() {
+  // remove deselected
+  for (const name of [...charts.keys()]) if (!selected.has(name)) removeChart(name);
+  // update unit label to reflect current rate-mode for existing counter charts
+  for (const [name, e] of charts) {
+    if (e.counter) e.unit.textContent = els.rateMode.checked ? "rate/s" : "cumulative";
+  }
+  const empty = els.main.querySelector(".empty");
+  if (empty && selected.size) empty.remove();
+}
+
+function setWindow(chart, now, windowMs) {
+  // pin the visible x range so the graph scrolls smoothly and the newest point stays at the right edge
+  chart.options.scales.x.min = now - windowMs;
+  chart.options.scales.x.max = now;
+}
+function prune(now, windowMs) {
+  const cutoff = now - windowMs - WIN_SLACK;
+  for (const e of charts.values()) {
+    for (const ds of e.chart.data.datasets)
+      while (ds.data.length && ds.data[0].x < cutoff) ds.data.shift();
+    setWindow(e.chart, now, windowMs);
+  }
+}
+
+/* ---------- polling ---------- */
+function sourceUrls() {
+  const primary = els.endpoint.value.trim();
+  const urls = primary ? [primary] : [];
+  const port = els.hostPort.value.trim();
+  if (primary && port) {
+    // host metrics live on the same host as the app endpoint, different port
+    try {
+      const u = new URL(primary);
+      u.port = port; u.pathname = "/metrics"; u.search = "";
+      for (const c of HOST_COLLECTORS) if (c) u.searchParams.append("collect[]", c);
+      if (u.toString() !== primary) urls.push(u.toString());
+    } catch (e) {}
+  }
+  const client = els.clientEndpoint.value.trim(); // client node_exporter (moqperf textfile), separate machine
+  if (client) urls.push(client);
+  return urls;
+}
+function fetchText(u) {
+  const ctrl = new AbortController();
+  const to = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT);
+  return fetch(u, { cache: "no-store", signal: ctrl.signal })
+    .then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.text(); })
+    .catch(e => { throw new Error(e.name === "AbortError" ? `timeout >${FETCH_TIMEOUT / 1000}s` : (e.message || String(e))); })
+    .finally(() => clearTimeout(to));
+}
+function hostOf(u) { try { return new URL(u).host; } catch (e) { return u; } }
+
+// Each endpoint runs its own independent loop, so a slow host scrape never stalls the fast app scrape.
+let sources = []; // [{ url, host, timer, lastWall, gap, err }]
+
+// Apply one source's freshly-parsed metrics to the charts. Fully synchronous (no awaits) so concurrent
+// source loops never interleave mid-update. Metrics not present in `parsed` simply aren't touched.
+function applyMetrics(parsed, now, windowMs) {
+  let isNew = false;
+  for (const [name, d] of parsed) {
+    if (!d.samples.length) continue; // skip TYPE/HELP-only histogram base names
+    if (!known.has(name)) isNew = true;
+    known.set(name, { type: d.type, help: d.help });
+  }
+  if (isNew) renderPicker();
+
+  syncCharts();
+
+  for (const [name, d] of parsed) {
+    if (!selected.has(name)) continue;
+    const entry = ensureChart(name);
+    const rate = entry.counter && els.rateMode.checked;
+    let curVal = null;
+    for (const sample of d.samples) {
+      const series = ensureSeries(entry, sample.labelKey);
+      let y;
+      if (rate) {
+        if (series.prev) {
+          const dt = (now - series.prev.t) / 1000;
+          if (dt < MIN_DT) { y = null; } // too soon; keep prev, skip this point
+          else {
+            const dv = sample.value - series.prev.v;
+            y = dv < 0 ? 0 : dv / dt;     // dv<0 => counter reset
+            series.prev = { t: now, v: sample.value };
+          }
+        } else { y = null; series.prev = { t: now, v: sample.value }; } // no rate on first sample
+      } else {
+        y = sample.value;
+      }
+      if (y !== null) series.dataset.data.push({ x: now, y });
+      if (curVal === null && y !== null) curVal = y;
+    }
+    entry.cur.textContent = curVal !== null ? fmt(curVal) + (rate ? "/s" : "") : "";
+  }
+
+  // derived / computed metrics (each only produces points when its inputs are in this source's scrape)
+  const needed = new Set();
+  for (const der of DERIVED) if (selected.has(der.name) && der.inputs) der.inputs.forEach(i => needed.add(i));
+  const deltas = {};
+  for (const inp of needed) {
+    const cur = currentValue(parsed, inp);
+    if (cur === null) continue; // input not in this scrape — leave prev untouched
+    const prev = derivedState.get(inp);
+    deltas[inp] = prev ? (cur >= prev.v ? cur - prev.v : 0) : null;
+    derivedState.set(inp, { t: now, v: cur });
+  }
+  for (const der of DERIVED) {
+    if (!selected.has(der.name)) continue;
+    const entry = ensureChart(der.name);
+    if (der.agg) {
+      const obj = der.compute(parsed, now);
+      const curTxt = [];
+      if (obj) for (const [label, val] of Object.entries(obj)) {
+        if (val === null || !isFinite(val)) continue;
+        ensureSeries(entry, label).dataset.data.push({ x: now, y: val });
+        curTxt.push(`${label} ${fmt(val)}${der.unit === "%" ? "%" : ""}`);
+      }
+      if (curTxt.length) entry.cur.textContent = curTxt.join("  ");
+    } else if (der.hist) {
+      const stats = histWindowStats(der.hist, parsed, now, windowMs);
+      const curTxt = [];
+      for (const sdef of der.series) {
+        const series = ensureSeries(entry, sdef.label);
+        let y = stats ? sdef.fn(stats) : null;
+        if (y !== null && isFinite(y)) {
+          y *= (der.scale || 1);
+          series.dataset.data.push({ x: now, y });
+          curTxt.push(`${sdef.label} ${fmt(y)}`);
+        }
+      }
+      if (curTxt.length) entry.cur.textContent = curTxt.join("  ") + (der.unit === "ms" ? " ms" : "");
+    } else if (der.inputs && der.inputs.every(i => i in deltas)) { // only run ratio when its inputs were in this scrape
+      const series = ensureSeries(entry, "");
+      const y = der.fn(deltas);
+      const ok = y !== null && isFinite(y);
+      if (ok) series.dataset.data.push({ x: now, y });
+      entry.cur.textContent = ok ? fmt(y) + (der.unit === "ms" ? " ms" : "") : "";
+    }
+  }
+
+  updateThroughput(parsed, now, windowMs);
+  prune(now, windowMs);
+  for (const e of charts.values()) e.chart.update("none");
+}
+
+async function pollSource(s) {
+  const startedAt = Date.now();
+  try {
+    const text = await fetchText(s.url);
+    let now = Date.now();
+    if (now <= lastNow) now = lastNow + 1; // strictly increasing x, shared across sources
+    lastNow = now;
+    const windowMs = parseInt(els.window.value, 10) * 1000;
+    s.gap = s.lastWall ? (now - s.lastWall) / 1000 : 0;
+    s.lastWall = now;
+    s.err = null;
+    const parsed = parseProm(text);
+    // client node_exporter also emits node_* for the CLIENT box — drop them so they can't collide
+    // with the relay host's node_* (which would corrupt egress / CPU%). Keep its moqperf_* only.
+    if (s.role === "client") for (const k of [...parsed.keys()]) if (k.startsWith("node_")) parsed.delete(k);
+    applyMetrics(parsed, now, windowMs);
+    pollCount++;
+  } catch (err) {
+    s.err = err.message || String(err);
+  } finally {
+    renderStatus();
+    if (running) s.timer = setTimeout(() => pollSource(s), Math.max(0, POLL_MS - (Date.now() - startedAt)));
+  }
+}
+
+function renderStatus() {
+  let series = 0;
+  for (const e of charts.values()) series += e.chart.data.datasets.length;
+  const parts = sources.map(s => s.err ? `${s.host} ⚠${s.err}` : `${s.host} ~${s.gap.toFixed(1)}s`);
+  const allErr = sources.length > 0 && sources.every(s => s.err);
+  setStatus(allErr ? "error" : "live", `${selected.size}/${known.size} metrics · ${series} series · ${parts.join(" · ")}`);
+}
+
+/* ---------- picker ---------- */
+function renderPicker() {
+  const q = els.pickerSearch.value.trim().toLowerCase();
+  const names = [...known.keys()].sort();
+  const groups = new Map();
+  for (const name of names) {
+    if (q && !name.toLowerCase().includes(q)) continue;
+    const short = name.replace(/^moqx_/, "");
+    // group by leading lowercase token (quic / pub / sub / moq / evb …)
+    const g = (short.match(/^[a-z]+/) || ["other"])[0];
+    if (!groups.has(g)) groups.set(g, []);
+    groups.get(g).push(name);
+  }
+  let html = "";
+  for (const [g, list] of groups) {
+    html += `<div class="grp">${g}</div>`;
+    for (const name of list) {
+      const t = (known.get(name).type || "").slice(0, 5);
+      const checked = selected.has(name) ? "checked" : "";
+      html += `<label><input type="checkbox" data-name="${name}" ${checked}>`
+            + `<span>${name.replace(/^moqx_/, "")}</span><span class="tag">${t}</span></label>`;
+    }
+  }
+  els.pickerList.innerHTML = html || `<div class="grp">no matches</div>`;
+}
+els.pickerList.addEventListener("change", e => {
+  const cb = e.target.closest("input[type=checkbox]");
+  if (!cb) return;
+  const name = cb.dataset.name;
+  if (cb.checked) selected.add(name); else selected.delete(name);
+  saveSelection();
+  syncCharts();
+});
+els.pickerBtn.addEventListener("click", () => { els.picker.classList.toggle("open"); renderPicker(); });
+els.pickerSearch.addEventListener("input", renderPicker);
+els.pickAll.addEventListener("click", () => { for (const n of known.keys()) selected.add(n); saveSelection(); renderPicker(); syncCharts(); });
+els.pickNone.addEventListener("click", () => { selected.clear(); saveSelection(); renderPicker(); syncCharts(); });
+els.pickDefault.addEventListener("click", () => { selected = new Set(DEFAULT_METRICS); saveSelection(); renderPicker(); syncCharts(); });
+document.addEventListener("click", e => {
+  if (!els.picker.contains(e.target) && e.target !== els.pickerBtn) els.picker.classList.remove("open");
+});
+
+/* ---------- rate-mode toggle: reset history so axes rescale cleanly ---------- */
+els.rateMode.addEventListener("change", () => {
+  for (const e of charts.values()) {
+    for (const s of e.seriesByLabel.values()) { s.dataset.data.length = 0; s.prev = null; }
+    if (e.counter) e.unit.textContent = els.rateMode.checked ? "rate/s" : "cumulative";
+    e.chart.options.scales.y.beginAtZero = true;
+  }
+});
+
+/* ---------- throughput (top) chart — always-on ingress/egress in Gbps ---------- */
+const tpCur = document.getElementById("tpCur");
+const tpChart = new Chart(document.getElementById("tpCanvas"), {
+  type: "line",
+  data: { datasets: [
+    { label: "ingress (recv)", data: [], borderColor: "#3fb950", backgroundColor: "#3fb95022",
+      borderWidth: 2, pointRadius: 0, tension: 0.2, fill: true },
+    { label: "egress (sent)",  data: [], borderColor: "#58a6ff", backgroundColor: "#58a6ff22",
+      borderWidth: 2, pointRadius: 0, tension: 0.2, fill: true },
+  ] },
+  options: {
+    animation: false, responsive: true, maintainAspectRatio: false, parsing: false,
+    interaction: { mode: "index", intersect: false },
+    scales: {
+      x: { type: "linear", ticks: { color: "#8b949e", maxTicksLimit: 8,
+             callback: v => new Date(v).toLocaleTimeString() }, grid: { color: "#21262d" } },
+      y: { beginAtZero: true, ticks: { color: "#8b949e", callback: fmt }, grid: { color: "#21262d" },
+           title: { display: true, text: "Gbps", color: "#8b949e" } },
+    },
+    plugins: { legend: { labels: { color: "#c9d1d9", boxWidth: 12 } }, tooltip: TOOLTIP },
+  },
+});
+// real NICs only — skip loopback and virtual/container interfaces
+const isRealNic = dev => dev && dev !== "lo" && !/^(veth|docker|br-|virbr|tap|tun|cni|flannel|cali)/.test(dev);
+function sumNic(rates) { let s = null; for (const r of rates) if (isRealNic(r.labels.device) && r.rate != null) s = (s || 0) + r.rate; return s; }
+function updateThroughput(parsed, now, windowMs) {
+  const rxB = sumNic(ratesOf(parsed, "node_network_receive_bytes_total", now));  // ingress bytes/s
+  const txB = sumNic(ratesOf(parsed, "node_network_transmit_bytes_total", now)); // egress  bytes/s
+  if (rxB === null && txB === null) return; // node_exporter absent or first sample — nothing to plot yet
+  const inG = (rxB || 0) * 8 / 1e9, outG = (txB || 0) * 8 / 1e9; // bytes → bits → Gbit/s
+  tpChart.data.datasets[0].data.push({ x: now, y: inG });
+  tpChart.data.datasets[1].data.push({ x: now, y: outG });
+  const cutoff = now - windowMs - WIN_SLACK;
+  for (const ds of tpChart.data.datasets)
+    while (ds.data.length && ds.data[0].x < cutoff) ds.data.shift();
+  setWindow(tpChart, now, windowMs);
+  tpChart.update("none");
+  tpCur.textContent = `   ↓ ${fmt(inG)}   ↑ ${fmt(outG)} Gbps`;
+}
+
+/* ---------- status / control ---------- */
+function setStatus(state, text) {
+  els.dot.className = "dot" + (state === "live" ? " live" : state === "error" ? " error" : "");
+  els.statusText.textContent = state === "error" ? "error" : state;
+  if (text) els.meta.textContent = text;
+}
+function start() {
+  if (running) return;
+  const urls = sourceUrls();
+  if (!urls.length) return;
+  running = true;
+  const clientUrl = els.clientEndpoint.value.trim();
+  sources = urls.map(u => ({ url: u, host: hostOf(u), role: u === clientUrl ? "client" : "host",
+                             timer: null, lastWall: 0, gap: 0, err: null }));
+  els.toggle.textContent = "Stop"; els.toggle.classList.replace("primary", "stop");
+  setStatus("connecting", "");
+  for (const s of sources) pollSource(s); // each source runs its own independent loop
+}
+function stop() {
+  running = false;
+  for (const s of sources) clearTimeout(s.timer);
+  els.toggle.textContent = "Start"; els.toggle.classList.replace("stop", "primary");
+  setStatus("idle", "");
+}
+els.toggle.addEventListener("click", () => running ? stop() : start());
+for (const el of [els.endpoint, els.hostPort, els.clientEndpoint])
+  el.addEventListener("keydown", e => { if (e.key === "Enter") { stop(); start(); } });
+</script>
+</body>
+</html>

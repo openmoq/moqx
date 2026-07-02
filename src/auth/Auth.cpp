@@ -6,6 +6,7 @@
 
 #include "auth/Auth.h"
 #include "auth/CborReader.h"
+#include "auth/HmacKey.h"
 
 #include <catapult/crypto.hpp>
 #include <catapult/cwt.hpp>
@@ -15,8 +16,6 @@
 #include <folly/Expected.h>
 #include <folly/Range.h>
 #include <folly/logging/xlog.h>
-#include <openssl/evp.h>
-#include <openssl/kdf.h>
 
 #include <algorithm>
 #include <array>
@@ -43,48 +42,6 @@ std::string canonicalNamespace(const TrackNamespace& ns) {
   return out;
 }
 
-// Derive a 256-bit HMAC key from the configured secret using HKDF-SHA256
-// (RFC 5869) rather than a bare hash. The fixed, non-secret salt and info
-// strings provide domain separation so the same configured secret can't yield
-// identical key material if reused for another purpose. (HKDF does not add
-// entropy: a low-entropy secret is still weak -- operators should use a long,
-// random secret.)
-constexpr std::string_view kHkdfSalt = "moqx-catapult-v1";
-constexpr std::string_view kHkdfInfo = "moqx-catapult-hmac-token-verify";
-
-std::vector<uint8_t> deriveHmacKey(std::string_view secret) {
-  std::vector<uint8_t> key(32); // 256-bit output for HMAC-SHA256
-
-  auto* ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_HKDF, nullptr);
-  if (!ctx) {
-    throw std::runtime_error("EVP_PKEY_CTX_new_id(HKDF) failed");
-  }
-  auto guard = std::unique_ptr<EVP_PKEY_CTX, decltype(&EVP_PKEY_CTX_free)>(ctx, EVP_PKEY_CTX_free);
-
-  size_t keyLen = key.size();
-  if (EVP_PKEY_derive_init(ctx) <= 0 || EVP_PKEY_CTX_set_hkdf_md(ctx, EVP_sha256()) <= 0 ||
-      EVP_PKEY_CTX_set1_hkdf_salt(
-          ctx,
-          reinterpret_cast<const unsigned char*>(kHkdfSalt.data()),
-          static_cast<int>(kHkdfSalt.size())
-      ) <= 0 ||
-      EVP_PKEY_CTX_set1_hkdf_key(
-          ctx,
-          reinterpret_cast<const unsigned char*>(secret.data()),
-          static_cast<int>(secret.size())
-      ) <= 0 ||
-      EVP_PKEY_CTX_add1_hkdf_info(
-          ctx,
-          reinterpret_cast<const unsigned char*>(kHkdfInfo.data()),
-          static_cast<int>(kHkdfInfo.size())
-      ) <= 0 ||
-      EVP_PKEY_derive(ctx, key.data(), &keyLen) <= 0) {
-    throw std::runtime_error("HKDF key derivation failed");
-  }
-  key.resize(keyLen);
-  return key;
-}
-
 std::vector<uint8_t> toBytes(std::string_view value) {
   return std::vector<uint8_t>(
       reinterpret_cast<const uint8_t*>(value.data()),
@@ -94,31 +51,6 @@ std::vector<uint8_t> toBytes(std::string_view value) {
 
 std::string toString(const std::vector<uint8_t>& bytes) {
   return std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size());
-}
-
-catapult::MoqtCompoundMatch toCatapultMatch(const std::vector<MatchRule>& rules) {
-  if (rules.empty()) {
-    return catapult::MoqtCompoundMatch::any();
-  }
-  std::vector<catapult::MoqtBinaryMatch> conditions;
-  conditions.reserve(rules.size());
-  for (const auto& rule : rules) {
-    switch (rule.type) {
-    case MatchRule::Type::Exact:
-      conditions.push_back(catapult::MoqtBinaryMatch::exact(rule.value));
-      break;
-    case MatchRule::Type::Prefix:
-      conditions.push_back(catapult::MoqtBinaryMatch::prefix(rule.value));
-      break;
-    case MatchRule::Type::Suffix:
-      conditions.push_back(catapult::MoqtBinaryMatch::suffix(rule.value));
-      break;
-    case MatchRule::Type::Contains:
-      conditions.push_back(catapult::MoqtBinaryMatch::contains(rule.value));
-      break;
-    }
-  }
-  return catapult::MoqtCompoundMatch::all(std::move(conditions));
 }
 
 MatchRule::Type fromCatapultMatchType(catapult::BinaryMatchType type) {
@@ -148,32 +80,6 @@ std::vector<MatchRule> fromCatapultMatch(const catapult::MoqtCompoundMatch& matc
     });
   }
   return rules;
-}
-
-catapult::CatToken tokenFromGrants(const Grants& grants) {
-  catapult::CatToken token;
-  if (grants.expiresAt != std::chrono::system_clock::time_point::max()) {
-    token.core.exp =
-        std::chrono::duration_cast<std::chrono::seconds>(grants.expiresAt.time_since_epoch())
-            .count();
-  }
-
-  catapult::MoqtClaims moqt = catapult::MoqtClaims::create(grants.scopes.size());
-  for (const auto& scope : grants.scopes) {
-    std::vector<int> actions;
-    actions.reserve(scope.actions.size());
-    for (auto action : scope.actions) {
-      actions.push_back(static_cast<int>(action));
-    }
-    moqt.addScope(
-        actions,
-        toCatapultMatch(scope.namespaceMatches),
-        toCatapultMatch(scope.trackMatches)
-    );
-  }
-  token.extended.setMoqtClaims(std::move(moqt));
-  token.validateTokenStructure();
-  return token;
 }
 
 Grants grantsFromToken(const catapult::CatToken& token) {
@@ -342,17 +248,6 @@ folly::Expected<folly::Unit, AuthError> authorize(
     return folly::makeUnexpected(AuthError::Forbidden);
   }
   return folly::unit;
-}
-
-std::string AuthTokenVerifier::signForTest(
-    std::string_view keyID,
-    std::string_view secret,
-    const Grants& grants
-) {
-  catapult::HmacSha256Algorithm hmac(deriveHmacKey(secret));
-  catapult::Cwt cwt(catapult::ALG_HMAC256_256, tokenFromGrants(grants));
-  cwt.withKeyId(std::string(keyID));
-  return toString(cwt.createCwt(catapult::CwtMode::MACed, hmac));
 }
 
 std::optional<AuthToken> findAuthToken(const Parameters& params, uint64_t tokenType) {

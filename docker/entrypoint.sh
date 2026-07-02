@@ -47,6 +47,13 @@ export GLOG_logtostderr=1
 export GLOG_minloglevel="${MOQX_LOG_LEVEL:-0}"
 export GLOG_v="${MOQX_VERBOSE:-0}"
 
+# Issuer mode: a short-lived utility sub-entrypoint, dispatched before any
+# relay setup (jemalloc/config) so it stays unaffected by it.
+if [ "${1:-}" = "issue-cat-token" ]; then
+  shift
+  exec /usr/local/bin/moqx-issuer "$@"
+fi
+
 # jemalloc: LD_PRELOAD by default (~10% relay speedup). Resolved here so both
 # exec paths (custom config + rendered template) inherit LD_PRELOAD. Opt out
 # with MOQX_JEMALLOC in {off,false,0,no}; an explicit path forces that lib.

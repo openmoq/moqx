@@ -38,6 +38,10 @@
 #   --trace-script PATH    Run PATH <relay_pid> for the duration; output → LOG_DIR/trace.log
 #   --client-args ARGS     Extra flags appended to moqperf_test_client invocation
 #                          e.g. --client-args "--first_object_size=5000 --object_size=1400"
+#   --client-metrics PATH  Write a Prometheus .prom file (incl. latency histogram)
+#                          for a node_exporter textfile collector. Defaults to
+#                          LOG_DIR/metrics.prom for local runs; for --remote-client
+#                          it is off unless set (PATH is on the remote host).
 #   --remote-client HOST   Run moqperf_test_client on HOST via ssh instead of
 #                          locally.  The binary is expected at
 #                          /tmp/moqperf_test_client on the remote host.
@@ -78,6 +82,7 @@ REMOTE_CLIENT_HOST=""
 UDP_SOCKET_BUFFER_BYTES=$(cat /proc/sys/net/core/wmem_max 2>/dev/null || echo 1048576)
 TRACE_SCRIPT=""
 CLIENT_EXTRA_ARGS=()
+METRICS_OUT=""
 
 RELAY_PORT=4433
 RELAY_ADMIN_PORT=19701
@@ -108,6 +113,7 @@ while [[ $# -gt 0 ]]; do
     --perf-stat)        RUN_PERF_STAT=true;        shift ;;
     --trace-script)     TRACE_SCRIPT="$2";         shift 2 ;;
     --client-args)      read -ra CLIENT_EXTRA_ARGS <<< "$2"; shift 2 ;;
+    --client-metrics)   METRICS_OUT="$2";         shift 2 ;;
     --remote-client)    REMOTE_CLIENT_HOST="$2";  shift 2 ;;
     --udp-socket-buffer-bytes) UDP_SOCKET_BUFFER_BYTES="$2"; shift 2 ;;
     *) echo "Unknown option: $1" >&2; exit 1 ;;
@@ -149,6 +155,15 @@ RELAY_LOG="$LOG_DIR/relay.log"
 SERVER_LOG="$LOG_DIR/server.log"
 CLIENT_LOG="$LOG_DIR/client.log"
 echo "Logs: $LOG_DIR"
+
+# Default the Prometheus dump into the run dir for local runs. For a remote
+# client the path would live on the remote host, so leave it off unless set.
+if [[ -z "$METRICS_OUT" && -z "$REMOTE_CLIENT_HOST" ]]; then
+  METRICS_OUT="$LOG_DIR/metrics.prom"
+fi
+METRICS_FLAG=()
+[[ -n "$METRICS_OUT" ]] && METRICS_FLAG=(--metrics_out="$METRICS_OUT")
+[[ -n "$METRICS_OUT" ]] && echo "Metrics (.prom): $METRICS_OUT"
 
 # ── Prereq checks ──────────────────────────────────────────────────────────────
 CHECK_BINS=("$BINARY" "$MOQTEST_SERVER")
@@ -376,6 +391,7 @@ CLIENT_ARGS=(
   --duration="$DURATION"
   --delivery_timeout="$DELIVERY_TIMEOUT"
   --num_threads="$CLIENT_THREADS"
+  "${METRICS_FLAG[@]+"${METRICS_FLAG[@]}"}"
   "${CLIENT_EXTRA_ARGS[@]+"${CLIENT_EXTRA_ARGS[@]}"}"
 )
 

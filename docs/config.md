@@ -143,6 +143,150 @@ route correctly.
 
 ---
 
+## Authentication and Authorization
+
+Authentication is configured per service under `services.<name>.auth`. When
+enabled, moqx expects MOQT `AUTHORIZATION_TOKEN` parameters whose token type
+matches the configured `token_type`. The token value is a CAT/CWT token signed
+with an HMAC key shared by the token issuer and the relay.
+
+```yaml
+services:
+  live:
+    match:
+      - authority: {exact: "live.example.com"}
+        path: {exact: "/moq-relay"}
+    auth:
+      enabled: true
+      token_type: 16
+      hmac_keys:
+        - id: "cat-dev"
+          secret: "replace-with-long-random-secret"
+      require_setup_token: true
+      allow_request_token_override: true
+      strict_claims: false
+```
+
+| Field | Default | Notes |
+|---|---|---|
+| `enabled` | `false` | Enables CAT-style authorization for this service. |
+| `token_type` | `0` | MOQT `AUTHORIZATION_TOKEN` type to accept. Use `16` with CAT4MOQ tokens produced for moqxr's CAT wrapper. Type `0` is valid for private or out-of-band deployments. The value must fit in a QUIC variable integer. |
+| `hmac_keys` | empty | Required when `enabled: true`. Each key needs a non-empty `id` and `secret`; duplicate key IDs are rejected. The token issuer must use the same key ID and secret. |
+| `require_setup_token` | `true` | Requires a valid setup token authorizing `client_setup` during CLIENT_SETUP. If `false`, clients can connect without setup grants, but publish/subscribe requests still need an authorized setup or request token. |
+| `allow_request_token_override` | `true` | Allows a token on a request to replace the session setup grants for that request. If `false`, request tokens are ignored and authorization uses only the setup token grants. |
+| `strict_claims` | `false` | Rejects unsupported claims when `true`. Keep this `false` for current CAT4MOQ interop unless every issuer is known to send only supported claims. |
+
+The relay only verifies tokens; it does not call an external grant handler.
+Grant decisions are encoded by the token issuer as CAT4MOQ actions and scopes.
+
+### Issuing Tokens
+
+Use the standalone `moqx-issuer` binary as the deployment/operator tool. For
+production-like deployments, point it at the same config file used by the relay
+so the selected service key is read from one place:
+
+```bash
+moqx-issuer \
+  --config /etc/moqx/config.yaml \
+  --auth-service live \
+  --auth-key-id cat-dev \
+  --auth-actions client_setup,publish_namespace,publish \
+  --auth-namespace live/event/main \
+  --auth-track video \
+  --auth-ttl-seconds 3600
+```
+
+The default output is `base64:<token>`, which is suitable for tools that accept
+a base64-prefixed CAT token string. Use `--auth-output base64`, `hex`, or `raw`
+when integrating with software that expects a different representation.
+
+For local development, the command can issue from an explicit secret without
+reading relay config:
+
+```bash
+moqx-issuer \
+  --auth-key-id cat-dev \
+  --auth-secret replace-with-long-random-secret \
+  --auth-actions client_setup,publish_namespace,publish \
+  --auth-namespace live/event/main \
+  --auth-track video
+```
+
+Supported action names are:
+
+| Name | Draft action |
+|---|---|
+| `client_setup` or `setup` | `CLIENT_SETUP` |
+| `server_setup` | `SERVER_SETUP` |
+| `publish_namespace` or `announce` | `ANNOUNCE` |
+| `subscribe_namespace` | `SUBSCRIBE_NAMESPACE` |
+| `subscribe` | `SUBSCRIBE` |
+| `request_update` or `subscribe_update` | `SUBSCRIBE_UPDATE` |
+| `publish` | `PUBLISH` |
+| `fetch` | `FETCH` |
+| `track_status` | `TRACK_STATUS` |
+
+The CLI also accepts the numeric draft action values `0` through `8`.
+`--auth-actions` defaults to `client_setup,publish_namespace,publish`, which is
+the common publisher case. The `client_setup` grant is unconstrained. Namespace
+actions are scoped by `--auth-namespace`, and track actions are scoped by
+`--auth-namespace` plus `--auth-track` when a track is provided. Namespace
+segments are slash-separated on the CLI, for example `live/event/main`.
+
+### Using Auth From moqxr
+
+A publisher app should obtain a token before connecting or before issuing a
+request that needs narrower grants, then pass that token as the MOQT
+`AUTHORIZATION_TOKEN` value with the relay's configured token type. For moqxr's
+auth example, the easiest local setup is to call the moqx-issuer command:
+
+```bash
+export CATAPULT_CAT4MOQ_COMMAND='moqx-issuer \
+  --config /etc/moqx/config.yaml \
+  --auth-service live \
+  --auth-key-id cat-dev \
+  --auth-actions client_setup,publish_namespace,publish \
+  --auth-namespace {namespace} \
+  --auth-track {track}'
+```
+
+The placeholders are replaced by the publisher example. If a deployment issues
+one broad publisher token, keep the fixed action list shown above. If it issues
+request-specific tokens, include the `{action}` placeholder and map it to the
+grant set required by that request; for the current moqxr auth example, the
+publisher command is invoked with `{action}` set to `client_setup` for the setup
+token and `publish` for the action token.
+
+### Docker Usage
+
+The container entrypoint routes an `issue-cat-token` argument to the bundled
+`moqx-issuer` binary, so operators can generate tokens from the same image used
+to run the relay:
+
+```bash
+docker run --rm \
+  -v "$PWD/moqx-auth.yaml:/etc/moqx/config.yaml:ro" \
+  moqx:tag issue-cat-token \
+  --config /etc/moqx/config.yaml \
+  --auth-service live \
+  --auth-key-id cat-dev \
+  --auth-actions client_setup,publish_namespace,publish \
+  --auth-namespace live/event/main \
+  --auth-track video
+```
+
+### Operational Notes
+
+- Keep HMAC secrets out of source control and local shell history.
+- Rotate keys by adding a new `hmac_keys` entry, issuing new tokens with that
+key ID, waiting for old tokens to expire, then removing the old key.
+- A token signed with an unknown key ID, wrong secret, expired grant, wrong
+namespace, or wrong track is rejected.
+- Auth is currently service-local. Upstream relay connections still have no
+application-level credential exchange beyond TLS.
+
+---
+
 ## Cache
 
 Cache settings can be specified as global defaults under

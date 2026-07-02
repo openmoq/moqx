@@ -72,10 +72,6 @@ public:
 
   folly::Expected<Grants, AuthError> verify(const moxygen::AuthToken& token) const;
 
-  // Test/local issuer helper for Catapult CWT tokens signed with the configured HMAC key.
-  static std::string
-  signForTest(std::string_view keyID, std::string_view secret, const Grants& grants);
-
 private:
   // HMAC key material derived once at construction. keyIdIndex_ maps each
   // configured key's id to its index in derivedKeys_, enabling O(1) key

@@ -37,6 +37,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /install/bin/moqx /usr/local/bin/moqx
+COPY --from=builder /install/bin/moqx-issuer /usr/local/bin/moqx-issuer
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY docker/config.docker.yaml /usr/local/share/moqx/config.docker.yaml
 RUN chmod +x /usr/local/bin/entrypoint.sh

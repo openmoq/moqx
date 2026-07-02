@@ -123,6 +123,21 @@ target_link_libraries(moqx_cache PUBLIC
 
 target_compile_options(moqx_cache PRIVATE -Wall -Wextra -Wpedantic)
 
+# --- HMAC key derivation (shared by the relay's verifier and the issuer) ---
+
+add_library(moqx_hmac_key STATIC
+  src/auth/HmacKey.cpp
+)
+
+target_include_directories(moqx_hmac_key
+  PUBLIC
+    ${PROJECT_SOURCE_DIR}/src
+)
+
+target_link_libraries(moqx_hmac_key PUBLIC OpenSSL::Crypto)
+
+target_compile_options(moqx_hmac_key PRIVATE -Wall -Wextra -Wpedantic)
+
 # --- Core library ---
 
 add_library(moqx_core STATIC
@@ -166,6 +181,7 @@ target_include_directories(moqx_core
 
 target_link_libraries(moqx_core PUBLIC
   moqx_cache
+  moqx_hmac_key
   moxygen::moxygen_relay_moq_forwarder
   moxygen::moxygen_moq_relay_session
   moxygen::moxygen_moq_server
@@ -244,6 +260,43 @@ endif()
 
 target_link_libraries(moqx PRIVATE moqx_core moqx_config_loader)
 
+# --- CAT4MOQ token issuer (signing) library, shared by the CLI and tests ---
+
+add_library(moqx_issuer_lib STATIC
+  src/auth/AuthTokenIssuer.cpp
+)
+
+target_include_directories(moqx_issuer_lib
+  PUBLIC
+    ${PROJECT_SOURCE_DIR}/src
+)
+
+target_link_libraries(moqx_issuer_lib PUBLIC
+  moqx_hmac_key
+  moqx_config
+  catapult
+  moxygen::moxygen_moq_types
+)
+
+target_compile_options(moqx_issuer_lib PRIVATE -Wall -Wextra -Wpedantic)
+
+# --- Standalone moqx-issuer CLI ---
+
+add_executable(moqx-issuer
+  src/auth/IssuerMain.cpp
+)
+
+target_link_libraries(moqx-issuer PRIVATE
+  moqx_issuer_lib
+  moqx_config_loader
+  Folly::folly_init_init
+  Folly::folly_base64
+  Folly::folly_string
+  gflags
+)
+
+target_compile_options(moqx-issuer PRIVATE -Wall -Wextra -Wpedantic)
+
 # --- Tests ---
 
 if(MOQX_BUILD_TESTS)
@@ -257,4 +310,4 @@ endif()
 
 include(${PROJECT_SOURCE_DIR}/cmake/Lint.cmake)
 
-install(TARGETS moqx moqx_core moqx_config_loader)
+install(TARGETS moqx moqx-issuer moqx_core moqx_config_loader)
