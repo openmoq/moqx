@@ -33,6 +33,9 @@
 #   MOQX_RECV_PKTS        — mvfst max_server_recv_packets_per_loop (default: 256)
 #   MOQX_UDP_BUFFER       — relay UDP socket buffer bytes (default: net.core.wmem_max)
 #   MOQX_IGNORE_PATH_MTU  — send full-size packets, skip PMTU (default: false)
+#   MOQX_JEMALLOC         — LD_PRELOAD jemalloc (~10% speedup). "auto" (default)
+#                           probes the multiarch paths; off/false/0 uses the
+#                           system allocator; an explicit path forces that lib.
 #
 # Logging (always apply):
 #   MOQX_LOG_LEVEL  — min log level: 0=INFO 1=WARNING 2=ERROR 3=FATAL (default: 0)
@@ -44,10 +47,39 @@ export GLOG_logtostderr=1
 export GLOG_minloglevel="${MOQX_LOG_LEVEL:-0}"
 export GLOG_v="${MOQX_VERBOSE:-0}"
 
+# Issuer mode: a short-lived utility sub-entrypoint, dispatched before any
+# relay setup (jemalloc/config) so it stays unaffected by it.
 if [ "${1:-}" = "issue-cat-token" ]; then
   shift
   exec /usr/local/bin/moqx-issuer "$@"
 fi
+
+# jemalloc: LD_PRELOAD by default (~10% relay speedup). Resolved here so both
+# exec paths (custom config + rendered template) inherit LD_PRELOAD. Opt out
+# with MOQX_JEMALLOC in {off,false,0,no}; an explicit path forces that lib.
+case "${MOQX_JEMALLOC:-auto}" in
+  off|false|0|no) ;;   # system allocator
+  auto|on|true|1|yes|"")
+    for _jelib in \
+        /usr/lib/x86_64-linux-gnu/libjemalloc.so.2 \
+        /usr/lib/aarch64-linux-gnu/libjemalloc.so.2 \
+        /usr/lib/libjemalloc.so.2 \
+        /usr/local/lib/libjemalloc.so.2; do
+      [ -f "$_jelib" ] && { export LD_PRELOAD="${_jelib}${LD_PRELOAD:+:$LD_PRELOAD}"; break; }
+    done
+    if [ -n "${LD_PRELOAD:-}" ]; then
+      echo "note: jemalloc enabled (LD_PRELOAD=$LD_PRELOAD)" >&2
+    else
+      echo "warning: jemalloc requested but libjemalloc.so.2 not found; using system allocator" >&2
+    fi ;;
+  *)
+    if [ -f "$MOQX_JEMALLOC" ]; then
+      export LD_PRELOAD="${MOQX_JEMALLOC}${LD_PRELOAD:+:$LD_PRELOAD}"
+      echo "note: jemalloc enabled (LD_PRELOAD=$MOQX_JEMALLOC)" >&2
+    else
+      echo "warning: jemalloc path not found: $MOQX_JEMALLOC; using system allocator" >&2
+    fi ;;
+esac
 
 # Enable core dumps (requires ulimits.core=-1 and --privileged in compose)
 if [ -d /var/coredumps ] && [ -w /proc/sys/kernel/core_pattern ]; then

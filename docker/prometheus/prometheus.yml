@@ -1,0 +1,17 @@
+# Prometheus scrape config for the moqx stats stack.
+# The relay exposes Prometheus-format metrics on its admin port (/metrics).
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: moqx-relay
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['moqx:8000']
+        labels:
+          instance: moqx-relay
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']
