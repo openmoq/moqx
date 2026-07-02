@@ -151,6 +151,28 @@ check_system_deps() {
     fi
   fi
 
+  # Boost component libs — packaged separately on Debian/Ubuntu (headers via
+  # libboost-dev do NOT include them). folly's cmake config find_package()s
+  # each component, so a missing one fails configure with an opaque
+  # "boost_context-config.cmake not found" error. Probe for the dev artifacts
+  # (unversioned .a/.so — runtime-only packages ship just .so.N.NN.N).
+  # Homebrew's boost is monolithic, so this is Linux-only.
+  if [[ "$(uname)" == "Linux" ]]; then
+    local comp
+    for comp in context filesystem program_options regex thread; do
+      if ! find /usr/lib /usr/lib64 /usr/local/lib \
+             \( -name "libboost_${comp}.a" -o -name "libboost_${comp}.so" \) \
+             2>/dev/null | grep -q .; then
+        missing+=("libboost-${comp//_/-}-dev")
+      fi
+    done
+
+    # double-conversion — no pkg-config file on Debian/Ubuntu; probe header
+    if ! find /usr/include /usr/local/include -path "*double-conversion/double-conversion.h" 2>/dev/null | grep -q .; then
+      missing+=("libdouble-conversion-dev")
+    fi
+  fi
+
   # NOTE: CMake version is enforced by require_cmake_version() — kept
   # separate so we can give a clean, focused error if cmake is missing or
   # too old before any other dep checks run.
