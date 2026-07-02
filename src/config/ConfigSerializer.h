@@ -59,6 +59,9 @@ inline void serializeTls(ConfigSink& s, const TlsConfig& tls) {
   s.boolField("insecure", false);
   s.stringField("cert_file", tls.certFile);
   s.stringField("key_file", tls.keyFile);
+  // PKCS#12-sourced material holds the decrypted private key in memory. Never
+  // serialize it into the /config dump — expose only whether it is present.
+  s.boolField("pkcs12_in_memory", tls.material.has_value());
   s.beginArray("alpn");
   for (const auto& a : tls.alpn) {
     s.stringField("", a);

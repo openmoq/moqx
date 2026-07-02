@@ -228,6 +228,7 @@ add_library(moqx_config_loader STATIC
   src/config/Loader.cpp
   src/config/ConfigResolver.cpp
   src/config/ConfigInit.cpp
+  src/config/Pkcs12.cpp
 )
 
 target_include_directories(moqx_config_loader
@@ -240,6 +241,13 @@ target_link_libraries(moqx_config_loader PUBLIC
   reflectcpp
   yaml-cpp
   Folly::folly_file_util
+)
+
+# PKCS#12 transcode (Pkcs12.cpp) + OPENSSL_cleanse in ConfigResolver.cpp;
+# folly cert utils supplies OpenSSLCertUtils::pemEncode.
+target_link_libraries(moqx_config_loader PRIVATE
+  OpenSSL::Crypto
+  Folly::folly_ssl_openssl_cert_utils
 )
 
 target_compile_options(moqx_config_loader PRIVATE -Wall -Wextra -Wpedantic)

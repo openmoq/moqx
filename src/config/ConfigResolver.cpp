@@ -6,6 +6,7 @@
 
 #include "config/loader/ConfigResolver.h"
 
+#include <cstdlib>
 #include <filesystem>
 #include <iomanip>
 #include <random>
@@ -13,8 +14,13 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include <folly/FileUtil.h>
 #include <folly/SocketAddress.h>
 #include <folly/String.h>
+
+#include <openssl/crypto.h>
+
+#include "config/Pkcs12.h"
 
 namespace openmoq::moqx::config {
 
@@ -76,6 +82,32 @@ mergeCacheConfigs(const ParsedCacheConfig& base, const ParsedCacheConfig& overla
   return merged;
 }
 
+// Both ParsedListenerTlsConfig and ParsedAdminTlsConfig expose identically-named
+// pkcs12_* fields; this template validates the password-source fields for either.
+template <typename T>
+void validatePkcs12PasswordExclusivity(
+    const T& tls,
+    std::string_view context,
+    std::vector<std::string>& errors
+) {
+  int sources = 0;
+  if (tls.pkcs12_password.value().has_value()) {
+    ++sources;
+  }
+  if (tls.pkcs12_password_file.value().has_value() && !tls.pkcs12_password_file.value()->empty()) {
+    ++sources;
+  }
+  if (tls.pkcs12_password_env.value().has_value() && !tls.pkcs12_password_env.value()->empty()) {
+    ++sources;
+  }
+  if (sources > 1) {
+    errors.push_back(
+        std::string(context) +
+        ": set only one of pkcs12_password, pkcs12_password_file, or pkcs12_password_env"
+    );
+  }
+}
+
 void validateListenerTlsConfig(
     const ParsedListenerTlsConfig& tls,
     std::string_view context,
@@ -84,15 +116,28 @@ void validateListenerTlsConfig(
 ) {
   bool hasCert = tls.cert_file.value().has_value() && !tls.cert_file.value()->empty();
   bool hasKey = tls.key_file.value().has_value() && !tls.key_file.value()->empty();
-  if (!tls.insecure.value()) {
-    if (!hasCert || !hasKey) {
-      errors.push_back(
-          std::string(context) + ": cert_file and key_file are required when insecure=false"
+  bool hasPkcs12 = tls.pkcs12_file.value().has_value() && !tls.pkcs12_file.value()->empty();
+
+  if (tls.insecure.value()) {
+    if (hasCert || hasKey || hasPkcs12) {
+      warnings.push_back(
+          std::string(context) + ": cert_file/key_file/pkcs12_file are ignored when insecure=true"
       );
     }
-  } else if (hasCert || hasKey) {
-    warnings.push_back(
-        std::string(context) + ": cert_file/key_file are ignored when insecure=true"
+    return;
+  }
+
+  if (hasPkcs12) {
+    if (hasCert || hasKey) {
+      errors.push_back(
+          std::string(context) + ": pkcs12_file is mutually exclusive with cert_file/key_file"
+      );
+    }
+    validatePkcs12PasswordExclusivity(tls, context, errors);
+  } else if (!hasCert || !hasKey) {
+    errors.push_back(
+        std::string(context) +
+        ": cert_file and key_file (or pkcs12_file) are required when insecure=false"
     );
   }
 }
@@ -100,28 +145,130 @@ void validateListenerTlsConfig(
 void validateAdminTlsConfig(const ParsedAdminTlsConfig& tls, std::vector<std::string>& errors) {
   bool hasCert = tls.cert_file.value().has_value() && !tls.cert_file.value()->empty();
   bool hasKey = tls.key_file.value().has_value() && !tls.key_file.value()->empty();
-  if (!hasCert || !hasKey) {
-    errors.push_back("admin.tls: cert_file and key_file are required");
+  bool hasPkcs12 = tls.pkcs12_file.value().has_value() && !tls.pkcs12_file.value()->empty();
+  if (hasPkcs12) {
+    if (hasCert || hasKey) {
+      errors.push_back("admin.tls: pkcs12_file is mutually exclusive with cert_file/key_file");
+    }
+    validatePkcs12PasswordExclusivity(tls, "admin.tls", errors);
+  } else if (!hasCert || !hasKey) {
+    errors.push_back("admin.tls: cert_file and key_file (or pkcs12_file) are required");
   }
 }
 
-TlsConfig resolveTlsConfig(const ParsedListenerTlsConfig& tls) {
+TlsConfig
+resolveTlsConfig(const ParsedListenerTlsConfig& tls, std::optional<TlsMaterial> material) {
+  const bool hasMaterial = material.has_value();
   return TlsConfig{
-      .certFile = tls.cert_file.value().value_or(""),
-      .keyFile = tls.key_file.value().value_or(""),
+      .certFile = hasMaterial ? std::string{} : tls.cert_file.value().value_or(""),
+      .keyFile = hasMaterial ? std::string{} : tls.key_file.value().value_or(""),
       .alpn = {},
+      .material = std::move(material),
   };
 }
 
 TlsConfig resolveAdminTlsConfig(
     const ParsedAdminTlsConfig& tls,
-    const std::vector<std::string>& defaultAlpn
+    const std::vector<std::string>& defaultAlpn,
+    std::optional<TlsMaterial> material
 ) {
+  const bool hasMaterial = material.has_value();
   return TlsConfig{
-      .certFile = tls.cert_file.value().value_or(""),
-      .keyFile = tls.key_file.value().value_or(""),
+      .certFile = hasMaterial ? std::string{} : tls.cert_file.value().value_or(""),
+      .keyFile = hasMaterial ? std::string{} : tls.key_file.value().value_or(""),
       .alpn = tls.alpn.value().value_or(defaultAlpn),
+      .material = std::move(material),
   };
+}
+
+// Resolve the PKCS#12 password from a file, environment variable, or inline
+// value. Exactly one (or none, for a password-less bundle) is expected;
+// structural validation enforces not-more-than-one. Returns the password,
+// possibly empty.
+folly::Expected<std::string, std::string> resolvePkcs12Password(
+    const std::optional<std::string>& inlinePw,
+    const std::optional<std::string>& pwFile,
+    const std::optional<std::string>& pwEnv
+) {
+  if (pwFile.has_value() && !pwFile->empty()) {
+    std::string pw;
+    if (!folly::readFile(pwFile->c_str(), pw)) {
+      return folly::makeUnexpected("failed to read pkcs12_password_file '" + *pwFile + "'");
+    }
+    // Strip a single trailing CR/LF (common when the file ends with a newline).
+    if (!pw.empty() && pw.back() == '\n') {
+      pw.pop_back();
+    }
+    if (!pw.empty() && pw.back() == '\r') {
+      pw.pop_back();
+    }
+    // Value and error types are both std::string, so construct explicitly to
+    // disambiguate the success path from makeUnexpected.
+    return folly::makeExpected<std::string>(std::move(pw));
+  }
+  if (pwEnv.has_value() && !pwEnv->empty()) {
+    const char* val = std::getenv(pwEnv->c_str());
+    if (val == nullptr) {
+      return folly::makeUnexpected(
+          "environment variable '" + *pwEnv + "' (pkcs12_password_env) is not set"
+      );
+    }
+    return folly::makeExpected<std::string>(std::string(val));
+  }
+  if (inlinePw.has_value()) {
+    return folly::makeExpected<std::string>(*inlinePw);
+  }
+  return folly::makeExpected<std::string>(std::string{});
+}
+
+// Transcode the configured PKCS#12 bundle into in-memory PEM material. Returns
+// nullopt when no pkcs12_file is set. On any failure, pushes a descriptive error
+// (prefixed with context) and returns nullopt. The resolved password copy is
+// wiped before returning. T is ParsedListenerTlsConfig or ParsedAdminTlsConfig.
+template <typename T>
+std::optional<TlsMaterial> resolvePkcs12Material(
+    const T& tls,
+    const std::string& context,
+    std::vector<std::string>& errors,
+    std::vector<std::string>& warnings
+) {
+  const auto& pkcs12File = tls.pkcs12_file.value();
+  if (!pkcs12File.has_value() || pkcs12File->empty()) {
+    return std::nullopt;
+  }
+  // If cert_file/key_file are also set, validation already reports the
+  // mutual-exclusion error; skip transcoding to avoid a confusing secondary
+  // decrypt failure.
+  bool hasCert = tls.cert_file.value().has_value() && !tls.cert_file.value()->empty();
+  bool hasKey = tls.key_file.value().has_value() && !tls.key_file.value()->empty();
+  if (hasCert || hasKey) {
+    return std::nullopt;
+  }
+  if (tls.pkcs12_password.value().has_value()) {
+    warnings.push_back(
+        context +
+        ": inline pkcs12_password is discouraged (it persists in the plaintext config at rest); "
+        "prefer pkcs12_password_file"
+    );
+  }
+  auto pw = resolvePkcs12Password(
+      tls.pkcs12_password.value(),
+      tls.pkcs12_password_file.value(),
+      tls.pkcs12_password_env.value()
+  );
+  if (pw.hasError()) {
+    errors.push_back(context + ": " + pw.error());
+    return std::nullopt;
+  }
+  auto material = loadPkcs12File(*pkcs12File, *pw);
+  if (!pw->empty()) {
+    OPENSSL_cleanse(pw->data(), pw->size());
+  }
+  if (material.hasError()) {
+    errors.push_back(context + ": " + material.error());
+    return std::nullopt;
+  }
+  return std::move(*material);
 }
 
 CacheConfig resolveCacheConfig(const ParsedCacheConfig& cache) {
@@ -229,6 +376,14 @@ void validateListener(
     errors.push_back(
         "Listener '" + listener.name.value() +
         "': quic_stack \"picoquic\" requires real TLS credentials (insecure: true is not supported)"
+    );
+  }
+  const auto& pkcs12File = listener.tls.value().pkcs12_file.value();
+  if (stackOpt.value_or(kStackMvfst) == kStackPicoquic && pkcs12File.has_value() &&
+      !pkcs12File->empty()) {
+    errors.push_back(
+        "Listener '" + listener.name.value() +
+        "': quic_stack \"picoquic\" does not support pkcs12_file yet; use cert_file/key_file"
     );
   }
 }
@@ -789,7 +944,8 @@ void validatePicoServicePaths(
 ListenerConfig resolveListener(
     const ParsedListenerConfig& listener,
     const QuicConfig& quic,
-    const MvfstConfig& mvfst
+    const MvfstConfig& mvfst,
+    std::optional<TlsMaterial> material
 ) {
   const auto& sock = listener.udp.value().socket.value();
   const auto& tls = listener.tls.value();
@@ -798,7 +954,7 @@ ListenerConfig resolveListener(
   if (tls.insecure.value()) {
     tlsMode = Insecure{};
   } else {
-    tlsMode = resolveTlsConfig(tls);
+    tlsMode = resolveTlsConfig(tls, std::move(material));
   }
 
   const auto& stackStr = listener.quic_stack.value().value_or(kStackMvfst);
@@ -885,10 +1041,23 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
 
   std::vector<QuicConfig> mergedQuicConfigs;
   std::vector<MvfstConfig> mergedMvfstConfigs;
+  std::vector<std::optional<TlsMaterial>> listenerTlsMaterials;
   {
     std::unordered_set<std::string> listenerAddrs;
     for (const auto& listener : config.listeners.value()) {
       validateListener(listener, errors, warnings);
+      // Transcode any PKCS#12 bundle now (skipped for insecure listeners) so a
+      // bad password/file surfaces as a load-time config error.
+      std::optional<TlsMaterial> material;
+      if (!listener.tls.value().insecure.value()) {
+        material = resolvePkcs12Material(
+            listener.tls.value(),
+            "Listener '" + listener.name.value() + "'",
+            errors,
+            warnings
+        );
+      }
+      listenerTlsMaterials.push_back(std::move(material));
       auto addr = listener.udp.value().socket.value().address.value() + ":" +
                   std::to_string(listener.udp.value().socket.value().port.value());
       if (!listenerAddrs.insert(addr).second) {
@@ -939,6 +1108,16 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
 
   // === Validate admin ===
   validateAdmin(config, errors);
+
+  // Transcode the admin PKCS#12 bundle (if any) during validation so failures
+  // are reported as config errors alongside everything else.
+  std::optional<TlsMaterial> adminMaterial;
+  {
+    const auto& adminOpt = config.admin.value();
+    if (adminOpt.has_value() && adminOpt->tls.value().has_value()) {
+      adminMaterial = resolvePkcs12Material(*adminOpt->tls.value(), "admin.tls", errors, warnings);
+    }
+  }
 
   // === Validate services ===
   // Per-service upstream config is validated inside validateService().
@@ -1007,7 +1186,11 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
     static const std::vector<std::string> kDefaultAdminAlpn = {"h2", "http/1.1"};
     std::optional<TlsConfig> adminTls;
     if (adminOptional->tls.value().has_value()) {
-      adminTls = resolveAdminTlsConfig(*adminOptional->tls.value(), kDefaultAdminAlpn);
+      adminTls = resolveAdminTlsConfig(
+          *adminOptional->tls.value(),
+          kDefaultAdminAlpn,
+          std::move(adminMaterial)
+      );
     }
     adminConfig = AdminConfig{
         .address =
@@ -1072,9 +1255,12 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
                     v.reserve(config.listeners.value().size());
                     const auto& listeners = config.listeners.value();
                     for (size_t i = 0; i < listeners.size(); ++i) {
-                      v.push_back(
-                          resolveListener(listeners[i], mergedQuicConfigs[i], mergedMvfstConfigs[i])
-                      );
+                      v.push_back(resolveListener(
+                          listeners[i],
+                          mergedQuicConfigs[i],
+                          mergedMvfstConfigs[i],
+                          std::move(listenerTlsMaterials[i])
+                      ));
                     }
                     return v;
                   }(),

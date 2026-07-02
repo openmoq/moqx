@@ -10,6 +10,14 @@ listeners:
     tls:
       # cert_file: /path/to/cert.pem   # Required when insecure: false
       # key_file: /path/to/key.pem     # Required when insecure: false
+      # --- PKCS#12 bundle (alternative to cert_file/key_file) ---
+      # A single .p12/.pfx carrying the cert chain + private key. Decrypted in
+      # memory; the key is never written to disk. Mutually exclusive with
+      # cert_file/key_file. Not yet supported on quic_stack: picoquic.
+      # pkcs12_file: /path/to/bundle.p12
+      # pkcs12_password_file: /path/to/password.txt  # Preferred: keep the secret off the YAML
+      # pkcs12_password_env: MOQX_PKCS12_PASSWORD    # Cloud-vault friendly: read the password from this env var
+      # pkcs12_password: "inline-secret"             # Discouraged: persists in the config at rest
       insecure: true          # Skip TLS for local development
     endpoint: "/moq-relay"    # WebTransport endpoint path
     # moqt_versions: [14, 16] # MOQT draft versions (empty = default 14,16)
@@ -82,6 +90,9 @@ admin:
   # tls:
   #   cert_file: /path/to/cert.pem
   #   key_file: /path/to/key.pem
+  #   # Or a PKCS#12 bundle (mutually exclusive with cert_file/key_file; decrypted in memory):
+  #   # pkcs12_file: /path/to/bundle.p12
+  #   # pkcs12_password_file: /path/to/password.txt
 
 logging:                    # Logging configuration (optional)
   mlog:                     # MoQ-level structured logging
