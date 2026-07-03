@@ -215,6 +215,36 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # Host metrics for the dashboard's CPU / NIC-throughput / memory panels
+  # (the relay /metrics has none of these). Reads the host's proc/sys read-only.
+  # Only the collectors the dashboard uses are enabled, to keep series count —
+  # and therefore Prometheus disk — low. Reachable on the compose net as
+  # node-exporter:9100; scraped by the `node` job in prometheus.yml.
+  node-exporter:
+    container_name: moqx-node-exporter
+    image: prom/node-exporter:v1.8.2
+    restart: unless-stopped
+    profiles: [stats]
+    pid: host
+    command:
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --collector.disable-defaults
+      - --collector.cpu
+      - --collector.netdev
+      - --collector.meminfo
+      - --collector.loadavg
+    volumes:
+      # Only /proc + /sys are needed for cpu/netdev/meminfo/loadavg; no rootfs
+      # mount (that's for the filesystem collector, which is disabled).
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 volumes:
   moqx-coredumps:
   prometheus-data:

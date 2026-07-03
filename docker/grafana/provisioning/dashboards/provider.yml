@@ -1,0 +1,15 @@
+# Auto-provisioned dashboards for the moqx stats stack.
+# Loads every *.json in this directory as a dashboard on startup.
+apiVersion: 1
+
+providers:
+  - name: moqx
+    orgId: 1
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      # Dashboard JSONs live alongside this provider file.
+      path: /etc/grafana/provisioning/dashboards
+      foldersFromFilesStructure: false
