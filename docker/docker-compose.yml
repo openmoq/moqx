@@ -182,7 +182,10 @@ services:
     mem_limit: ${PROMETHEUS_MEM:-2g}
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus-data:/prometheus
+      # TSDB backing store. Defaults to the named volume (persists across
+      # redeploys — `compose down` without -v keeps it). Set PROMETHEUS_DATA_DIR
+      # to an absolute host path to pin it on a specific/larger disk instead.
+      - ${PROMETHEUS_DATA_DIR:-prometheus-data}:/prometheus
     logging:
       driver: json-file
       options:
