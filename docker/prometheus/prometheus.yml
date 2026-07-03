@@ -1,7 +1,13 @@
 # Prometheus scrape config for the moqx stats stack.
 # The relay exposes Prometheus-format metrics on its admin port (/metrics).
+#
+# The relay is scraped at 3s for fine-grained perf history; the relay's metrics
+# are fixed-cardinality (~450 series, no per-connection/track labels), so 3s ×
+# 365d stays well under the 10G disk cap. Prometheus's own self-metrics are
+# scraped coarsely (60s) — they don't need fine resolution and this keeps the
+# total sample rate (and disk) down.
 global:
-  scrape_interval: 15s
+  scrape_interval: 3s
   evaluation_interval: 15s
 
 scrape_configs:
@@ -13,5 +19,6 @@ scrape_configs:
           instance: moqx-relay
 
   - job_name: prometheus
+    scrape_interval: 60s
     static_configs:
       - targets: ['localhost:9090']

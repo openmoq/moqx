@@ -32,7 +32,7 @@ on:
           - "2"
           - "3"
       enable_stats:
-        description: "Bring up the stats stack (nginx TLS + live dashboard + Prometheus + Grafana). Requires STATS_* secrets."
+        description: "Bring up the stats stack (nginx TLS + live dashboard + Prometheus). Requires STATS_* secrets."
         required: false
         type: boolean
         default: false
@@ -139,7 +139,6 @@ jobs:
           ENABLE_STATS: ${{ inputs.enable_stats }}
           STATS_USER: ${{ secrets.STATS_USER }}
           STATS_PASSWORD: ${{ secrets.STATS_PASSWORD }}
-          GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
         run: |
           if [ "$RESTART_ONLY" = "true" ]; then
             echo "==> Restarting relay..."
@@ -158,16 +157,14 @@ jobs:
           EOF
             sed -i 's/^[[:space:]]*//' .env
 
-            # Stats stack (opt-in). Requires STATS_USER / STATS_PASSWORD (and
-            # optionally GRAFANA_ADMIN_PASSWORD) as repo secrets — nginx basic
-            # auth refuses to start with empty credentials.
+            # Stats stack (opt-in). Requires STATS_USER / STATS_PASSWORD as repo
+            # secrets — nginx basic auth refuses to start with empty credentials.
             PROFILE_ARGS=""
             if [ "${ENABLE_STATS}" = "true" ]; then
               PROFILE_ARGS="--profile stats"
               {
                 echo "STATS_USER=${STATS_USER}"
                 echo "STATS_PASSWORD=${STATS_PASSWORD}"
-                echo "GRAFANA_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}"
               } >> .env
             fi
 
