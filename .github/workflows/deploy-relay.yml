@@ -173,6 +173,9 @@ jobs:
                 echo "STATS_USER=${STATS_USER}"
                 echo "STATS_PASSWORD=${STATS_PASSWORD}"
                 echo "GRAFANA_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}"
+                # CI runner has the disk; give Prometheus room so the 365d time
+                # limit (not the size cap) is what bounds history at 3s/5s scrape.
+                echo "PROMETHEUS_RETENTION_SIZE=20GB"
               } >> .env
             fi
 

@@ -20,8 +20,8 @@ scrape_configs:
 
   # Host metrics (CPU / NIC / memory) for the dashboard's host panels. 5s so
   # host CPU/NIC saturation lines up with the 3s relay data during load tests.
-  # This adds ~2.5 GB/yr over 15s; with the relay at 3s the total sits near the
-  # 10G cap — raise PROMETHEUS_RETENTION_SIZE (~15G) to guarantee a full year.
+  # Relay 3s + host 5s ≈ 12 GB/yr; the CI deploy sets PROMETHEUS_RETENTION_SIZE
+  # to 20 GB so the 365d time limit (not the size cap) bounds history.
   - job_name: node
     scrape_interval: 5s
     static_configs:
