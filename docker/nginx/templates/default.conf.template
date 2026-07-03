@@ -47,9 +47,15 @@ server {
     auth_basic_user_file /etc/nginx/.htpasswd;
 
     # Live metrics dashboard (tools/metrics-dashboard.html) at the root.
+    # The page ships with a hardcoded default endpoint; rewrite it on the way
+    # out so the served copy defaults to this relay's /metrics (same-origin,
+    # CORS-free, basic-auth reused) — turnkey on first load, without editing
+    # afrind's file (kept pristine for standalone/Pages use).
     location / {
         root  /usr/share/nginx/html;
         index metrics-dashboard.html;
+        sub_filter 'value="http://18.236.159.20:19702/metrics"' 'value="/metrics"';
+        sub_filter_once on;
         try_files $uri $uri/ =404;
     }
 
