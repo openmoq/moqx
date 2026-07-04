@@ -1,0 +1,28 @@
+# json_exporter config for the moqx stats stack.
+#
+# Turns the relay admin /state JSON (which the aggregate /metrics does NOT carry)
+# into per-track Prometheus series so Grafana can graph subscribers per track
+# over time. Prometheus scrapes this exporter with ?module=moqx&target=<state-url>
+# (see the moqx-state job in prometheus.yml).
+#
+# NOTE: per-track series scale with the number of distinct track names, so this
+# is higher-cardinality than the relay's own metrics — scraped at 15s to keep
+# the sample rate down.
+modules:
+  moqx:
+    metrics:
+      # One series per active subscription entry, keyed by track name.
+      - name: moqx_track
+        type: object
+        help: Per-track subscription stats from the relay admin /state
+        path: '{.services.default.subscriptions[*]}'
+        labels:
+          track: '{.track_name}'
+          is_publish: '{.is_publish}'
+        values:
+          subscribers: '{.subscribers}'
+          forwarding_subscribers: '{.forwarding_subscribers}'
+      # Top-level scalars for cross-checking against the aggregate /metrics.
+      - name: moqx_state_active_sessions
+        help: Active sessions reported by the admin /state
+        path: '{.active_sessions}'

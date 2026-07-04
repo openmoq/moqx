@@ -234,11 +234,31 @@ services:
       - --collector.netdev
       - --collector.meminfo
       - --collector.loadavg
+      # uname → node_uname_info (hostname/arch/kernel) for the host-info panel.
+      - --collector.uname
     volumes:
       # Only /proc + /sys are needed for cpu/netdev/meminfo/loadavg; no rootfs
       # mount (that's for the filesystem collector, which is disabled).
       - /proc:/host/proc:ro
       - /sys:/host/sys:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Turns the relay admin /state JSON into per-track Prometheus series (the
+  # aggregate /metrics has no per-track labels). Prometheus scrapes it with a
+  # target= param pointing at the relay /state (see the moqx-state job).
+  json-exporter:
+    container_name: moqx-json-exporter
+    image: quay.io/prometheuscommunity/json-exporter:v0.6.0
+    restart: unless-stopped
+    profiles: [stats]
+    command:
+      - --config.file=/config/json-exporter.yml
+    volumes:
+      - ./json-exporter/json-exporter.yml:/config/json-exporter.yml:ro
     logging:
       driver: json-file
       options:

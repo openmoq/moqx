@@ -29,6 +29,25 @@ scrape_configs:
         labels:
           instance: moqx-host
 
+  # Per-track subscriber series, via json_exporter scraping the relay admin
+  # /state (the aggregate /metrics has no per-track labels). Probe pattern:
+  # Prometheus hits json-exporter:7979/probe with target=<relay /state>. 15s
+  # because per-track cardinality scales with the number of distinct tracks.
+  - job_name: moqx-state
+    metrics_path: /probe
+    scrape_interval: 15s
+    params:
+      module: [moqx]
+    static_configs:
+      - targets: ['http://moqx:8000/state']
+        labels:
+          instance: moqx-relay
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - target_label: __address__
+        replacement: json-exporter:7979
+
   - job_name: prometheus
     scrape_interval: 60s
     static_configs:
