@@ -1,7 +1,7 @@
 name: deploy relay
 
 # Ops controls for the CI relay (moqx-main.ci.openmoq.org + moqx-000 alias).
-# Restart, redeploy with a specific image tag, or change verbose level.
+# Restart, redeploy with a specific image tag, or change the log level.
 
 on:
   workflow_dispatch:
@@ -21,18 +21,20 @@ on:
         required: false
         default: ""
         type: string
-      verbose:
-        description: "GLOG verbose level (0=off, 1-3=increasing detail)"
+      logging:
+        description: "Log level (folly XLOG, whole stack). default = baseline INFO"
         required: false
-        default: "0"
+        default: "default"
         type: choice
         options:
-          - "0"
-          - "1"
-          - "2"
-          - "3"
+          - "default"
+          - "WARN"
+          - "DBG1"
+          - "DBG2"
+          - "DBG3"
+          - "DBG4"
       enable_stats:
-        description: "Enable stats stack (Prometheus, Grafana)."
+        description: "Enable stats (Prometheus + Grafana)"
         required: false
         type: boolean
         default: false
@@ -136,7 +138,7 @@ jobs:
         working-directory: docker
         env:
           RESTART_ONLY: ${{ inputs.restart_only }}
-          VERBOSE: ${{ inputs.verbose }}
+          LOGGING: ${{ inputs.logging }}
           DOMAIN: ${{ steps.target.outputs.domain }}
           IMAGE_TAG: ${{ steps.target.outputs.image_tag }}
           AWS_ACCESS_KEY_ID: ${{ secrets.OMOQ_CERTBOT_ACCESS_KEY_ID }}
@@ -150,14 +152,18 @@ jobs:
             echo "==> Restarting relay..."
             docker compose restart moqx
           else
+            # folly XLOG override for the whole stack (empty = baseline INFO).
+            # "default" from the dialog means "no override". See docs/logging.md.
+            LOGGING_CFG=""
+            [ "${LOGGING}" != "default" ] && LOGGING_CFG="${LOGGING}"
+
             # Write .env
             cat > .env <<EOF
             DOMAIN=${DOMAIN}
             CERTBOT_EMAIL=gmarzot@openmoq.org
             MOQX_PORT=${RELAY_PORT}
             MOQX_ADMIN_PORT=${ADMIN_PORT}
-            MOQX_LOG_LEVEL=0
-            MOQX_VERBOSE=${VERBOSE}
+            FOLLY_LOGGING=${LOGGING_CFG}
             MOQX_CPUS=$(nproc)
             MOQX_THREADS=$(nproc)
           EOF
