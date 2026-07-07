@@ -12,17 +12,17 @@ on:
         type: boolean
         default: false
       image_tag:
-        description: "Docker image tag (default: derived from branch — main→latest, release/X→X)"
+        description: "Image tag (default derived from branch)"
         required: false
         default: ""
         type: string
       domain:
-        description: "DNS hostname (default: derived from branch — main→moqx-main, release/X→moqx-X)"
+        description: "Hostname (default derived from branch)"
         required: false
         default: ""
         type: string
       logging:
-        description: "Log level (folly XLOG, whole stack). default = baseline INFO"
+        description: "Log level (default INFO)"
         required: false
         default: "default"
         type: choice
@@ -34,10 +34,10 @@ on:
           - "DBG3"
           - "DBG4"
       enable_stats:
-        description: "Enable stats (Prometheus + Grafana)"
+        description: "Enable stats (default enabled)"
         required: false
         type: boolean
-        default: false
+        default: true
 
 permissions:
   contents: read
