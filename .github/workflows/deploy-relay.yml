@@ -154,8 +154,8 @@ jobs:
           else
             # folly XLOG override for the whole stack (empty = baseline INFO).
             # "default" from the dialog means "no override". See docs/logging.md.
-            LOGGING_CFG=""
-            [ "${LOGGING}" != "default" ] && LOGGING_CFG="${LOGGING}"
+            XLOG_CFG=""
+            [ "${LOGGING}" != "default" ] && XLOG_CFG="${LOGGING}"
 
             # Write .env
             cat > .env <<EOF
@@ -163,7 +163,7 @@ jobs:
             CERTBOT_EMAIL=gmarzot@openmoq.org
             MOQX_PORT=${RELAY_PORT}
             MOQX_ADMIN_PORT=${ADMIN_PORT}
-            FOLLY_LOGGING=${LOGGING_CFG}
+            MOQX_XLOG=${XLOG_CFG}
             MOQX_CPUS=$(nproc)
             MOQX_THREADS=$(nproc)
           EOF
