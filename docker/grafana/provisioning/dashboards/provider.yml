@@ -1,5 +1,10 @@
 # Auto-provisioned dashboards for the moqx stats stack.
 # Loads every *.json in this directory as a dashboard on startup.
+#
+# allowUiUpdates: false → provisioned dashboards are READ-ONLY in the UI (the
+# default landing page). To edit: run import-dashboards.sh --dev (squelches this
+# provisioner + imports editable copies), tweak in the UI, then export-dashboards.sh
+# writes the JSON back here. A clean redeploy restores read-only provisioning.
 apiVersion: 1
 
 providers:
@@ -8,7 +13,7 @@ providers:
     type: file
     disableDeletion: false
     updateIntervalSeconds: 30
-    allowUiUpdates: true
+    allowUiUpdates: false
     options:
       # Dashboard JSONs live alongside this provider file.
       path: /etc/grafana/provisioning/dashboards

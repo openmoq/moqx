@@ -207,6 +207,8 @@ services:
       GF_SERVER_SERVE_FROM_SUB_PATH: "true"
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_ANALYTICS_REPORTING_ENABLED: "false"
+      # Land on the provisioned relay dashboard (read-only — see provider.yml).
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/provisioning/dashboards/moqx-overview.json
     mem_limit: ${GRAFANA_MEM:-1g}
     volumes:
       - grafana-data:/var/lib/grafana
@@ -231,6 +233,7 @@ services:
     command:
       - --path.procfs=/host/proc
       - --path.sysfs=/host/sys
+      - --path.rootfs=/host
       - --collector.disable-defaults
       - --collector.cpu
       - --collector.netdev
@@ -238,11 +241,15 @@ services:
       - --collector.loadavg
       # uname → node_uname_info (hostname/arch/kernel) for the host-info panel.
       - --collector.uname
+      # filesystem → node_filesystem_* for the disk (HD) gauge.
+      - --collector.filesystem
     volumes:
-      # Only /proc + /sys are needed for cpu/netdev/meminfo/loadavg; no rootfs
-      # mount (that's for the filesystem collector, which is disabled).
+      # /proc + /sys for cpu/netdev/meminfo/loadavg; rootfs (ro) for the
+      # filesystem collector to see the host's disks (reported under /host,
+      # de-prefixed to real mountpoints by --path.rootfs).
       - /proc:/host/proc:ro
       - /sys:/host/sys:ro
+      - /:/host:ro
     logging:
       driver: json-file
       options:
