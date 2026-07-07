@@ -57,6 +57,28 @@ moqx --logging=INFO --logging=moxygen=DBG4 --log-handler=default:async=false
 
 becomes the composite `INFO,moxygen=DBG4;default:async=false` before folly sees it. `--log-handler` is moqx-only; standalone moxygen binaries take the single quoted form.
 
+### Environment variables (no command line)
+
+When you can't pass flags — a container image's fixed `ENTRYPOINT`, a systemd
+unit, a `docker run` — set the level via the environment instead:
+
+| Var | Owner | Notes |
+|---|---|---|
+| `MOQX_LOGGING` | moqx | The knob to reach for. Same grammar as `--logging` (`DBG2`, `INFO,quic=WARN`, even `<cats>;<handlers>`). No shell-quoting worries — it's an env value. |
+| `FOLLY_LOGGING` | folly | folly's own var (`folly::Init` reads it). Works, but it's not moqx-namespaced. |
+
+`MOQX_LOGGING` is a thin alias: on startup moqx copies it into `FOLLY_LOGGING`
+(before `folly::Init`) **only if `FOLLY_LOGGING` isn't already set**. So the full
+precedence, lowest to highest:
+
+```
+compiled-in default  <  MOQX_LOGGING  <  FOLLY_LOGGING  <  --logging flag
+```
+
+i.e. a `--logging=…` flag overrides any env var, and an explicit `FOLLY_LOGGING`
+overrides `MOQX_LOGGING`. In the Docker image, `MOQX_LOGGING` is the documented knob
+(`docker run -e MOQX_LOGGING=DBG2 …`, or `MOQX_LOGGING=` in `docker/.env`).
+
 ## The category hierarchy
 
 Each XLOG call derives its category from the source file path at compile time, with build-system prefix stripping. `--logging=<category>=<level>` then targets a category and its children.

@@ -31,6 +31,7 @@
 
 #include "LoggingMultiFlag.h"
 
+#include <cstdlib>
 #include <iostream>
 #include <string_view>
 
@@ -75,6 +76,14 @@ int main(int argc, char* argv[]) {
       "  serve                Start the relay (default)\n" +
       cfg::configSubcommandUsage() + "\nUsage: moqx [subcommand] --config <path>"
   );
+  // MOQX_LOGGING is the moqx-namespaced alias for folly's own FOLLY_LOGGING env
+  // var (folly::Init reads FOLLY_LOGGING). Promote it here — before folly::Init
+  // — so the knob works for any launch method (docker, systemd, bare metal)
+  // with no wrapper. An explicitly-set FOLLY_LOGGING wins; the --logging flag
+  // still outranks both. See docs/logging.md.
+  if (const char* x = std::getenv("MOQX_LOGGING"); x && *x && !std::getenv("FOLLY_LOGGING")) {
+    ::setenv("FOLLY_LOGGING", x, /*overwrite=*/0);
+  }
   // Combine repeated --logging / --log-handler into one composite before
   // folly::Init — see docs/logging.md.
   combineLoggingArgs(argc, argv);

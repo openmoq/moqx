@@ -38,14 +38,16 @@
 #                           system allocator; an explicit path forces that lib.
 #
 # Logging (always apply):
-#   MOQX_LOG_LEVEL  — min log level: 0=INFO 1=WARNING 2=ERROR 3=FATAL (default: 0)
-#   MOQX_VERBOSE    — verbose/debug level: 0=off, 1-4=increasing detail (default: 0)
+#   MOQX_LOGGING  — folly XLOG config for the whole stack (empty = baseline INFO);
+#                e.g. DBG2 or "INFO,quic=WARN". moqx promotes it to folly's
+#                FOLLY_LOGGING env var internally. See docs/logging.md.
 set -e
 
-# Map MOQX_* logging env vars to GLOG_* (used by folly/glog)
+# The whole stack logs via folly XLOG (configured by MOQX_LOGGING, handled in the
+# binary). glog remains only as a fatal-assert backstop — keep its output on
+# stderr so a CHECK failure shows up in `docker logs`; no level knobs, since
+# it's not the operational log channel.
 export GLOG_logtostderr=1
-export GLOG_minloglevel="${MOQX_LOG_LEVEL:-0}"
-export GLOG_v="${MOQX_VERBOSE:-0}"
 
 # Issuer mode: a short-lived utility sub-entrypoint, dispatched before any
 # relay setup (jemalloc/config) so it stays unaffected by it.

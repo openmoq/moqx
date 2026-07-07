@@ -53,14 +53,10 @@ services:
       MOQX_ADMIN_PORT: ${MOQX_ADMIN_PORT:-8000}
       MOQX_MAX_TRACKS: ${MOQX_MAX_TRACKS:-1000}
       MOQX_MAX_GROUPS: ${MOQX_MAX_GROUPS:-100}
-      # Primary log knob: folly XLOG config for the whole stack (empty = baseline
-      # INFO). e.g. MOQX_XLOG=DBG2 or MOQX_XLOG=INFO,quic=WARN — see
-      # docs/logging.md. FOLLY_LOGGING is folly's own env var (folly::Init reads
-      # it); we drive it from the MOQX_-namespaced MOQX_XLOG. MOQX_LOG_LEVEL/
-      # MOQX_VERBOSE below are legacy glog-stack knobs, kept at quiet defaults.
-      FOLLY_LOGGING: ${MOQX_XLOG:-}
-      MOQX_LOG_LEVEL: ${MOQX_LOG_LEVEL:-0}
-      MOQX_VERBOSE: ${MOQX_VERBOSE:-0}
+      # Log level for the whole stack via folly XLOG (empty = baseline INFO).
+      # e.g. MOQX_LOGGING=DBG2 or MOQX_LOGGING=INFO,quic=WARN. moqx promotes MOQX_LOGGING
+      # to folly's FOLLY_LOGGING internally — see docs/logging.md.
+      MOQX_LOGGING: ${MOQX_LOGGING:-}
       # IO worker threads — default matches the entrypoint (4); set to the core
       # count (e.g. 8) for sub-maximal load testing on the CI runner.
       MOQX_THREADS: ${MOQX_THREADS:-4}
