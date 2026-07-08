@@ -34,7 +34,7 @@ on:
           - "DBG3"
           - "DBG4"
       enable_stats:
-        description: "Enable stats + public read-only dashboard (default enabled)"
+        description: "Enable stats dashboard (default enabled)"
         required: false
         type: boolean
         default: true
