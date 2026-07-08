@@ -349,6 +349,10 @@ add_test(
   COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_admin_config.sh $<TARGET_FILE:moqx>
 )
 add_test(
+  NAME admin_connection_logs_endpoint
+  COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_admin_connection_logs.sh $<TARGET_FILE:moqx>
+)
+add_test(
   NAME admin_cache_purge_concurrency_test
   COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_admin_cache_purge_race.sh $<TARGET_FILE:moqx>
 )
