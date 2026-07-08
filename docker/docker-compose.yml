@@ -202,7 +202,11 @@ services:
     depends_on: [prometheus]
     environment:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      # No shipped password default (was ":-admin" — a weak checked-in default).
+      # Required for the stats profile: the deploy sets it from a repo secret,
+      # local dev sets it in docker/.env. The login is never exposed publicly
+      # (nginx gates it) — but use a strong value regardless.
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-}
       GF_SERVER_ROOT_URL: https://${DOMAIN}/grafana/
       GF_SERVER_SERVE_FROM_SUB_PATH: "true"
       GF_USERS_ALLOW_SIGN_UP: "false"
