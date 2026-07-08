@@ -148,17 +148,23 @@ services:
     profiles: [stats]
     depends_on: [grafana, prometheus, moqx]
     ports:
+      # Private stats surface — localhost only (tunnel). Full dashboard/admin.
       - "${STATS_BIND:-127.0.0.1}:${STATS_HTTPS_PORT:-443}:443/tcp"
       - "${STATS_BIND:-127.0.0.1}:${STATS_HTTP_PORT:-80}:80/tcp"
+      # Public dashboard surface — Grafana public-dashboard routes ONLY.
+      # Default 127.0.0.1 = off; set STATS_PUBLIC_BIND=0.0.0.0 to go public.
+      - "${STATS_PUBLIC_BIND:-127.0.0.1}:${STATS_PUBLIC_PORT:-8443}:${STATS_PUBLIC_PORT:-8443}/tcp"
     environment:
       DOMAIN: ${DOMAIN}
       STATS_USER: ${STATS_USER:-admin}
       STATS_PASSWORD: ${STATS_PASSWORD:-}
       STATS_HTPASSWD: ${STATS_HTPASSWD:-}
+      STATS_PUBLIC_PORT: ${STATS_PUBLIC_PORT:-8443}
     volumes:
       - ${MOQX_CERTS_DIR:-/etc/letsencrypt}:/certs:ro
       - ./nginx/templates:/etc/nginx/templates:ro
       - ./nginx/40-htpasswd.sh:/docker-entrypoint.d/40-htpasswd.sh:ro
+      - ./nginx/denylist.conf:/etc/nginx/denylist.conf:ro
       # Served at / — afrind's self-contained live dashboard (tools/, PR #479).
       - ../tools/metrics-dashboard.html:/usr/share/nginx/html/metrics-dashboard.html:ro
     logging:
@@ -213,6 +219,11 @@ services:
       GF_ANALYTICS_REPORTING_ENABLED: "false"
       # Land on the provisioned relay dashboard (read-only — see provider.yml).
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/provisioning/dashboards/moqx-overview.json
+      # Public dashboards: allow the per-dashboard tokenized public URL (served
+      # only via the nginx public port). Anonymous ORG access stays OFF — that
+      # would expose the whole instance; public dashboards don't need it.
+      GF_PUBLIC_DASHBOARDS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
     mem_limit: ${GRAFANA_MEM:-1g}
     volumes:
       - grafana-data:/var/lib/grafana

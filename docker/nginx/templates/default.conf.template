@@ -15,6 +15,11 @@ map $http_upgrade $connection_upgrade {
     ''      close;
 }
 
+# Per-IP rate + concurrency caps for the public port (see the public server
+# block below). Sized for a public dashboard, not an API.
+limit_req_zone  $binary_remote_addr zone=pubdash:10m rate=5r/s;
+limit_conn_zone $binary_remote_addr zone=pubconn:10m;
+
 # HTTP :80 — redirect to HTTPS. Certs are issued via DNS-01 (certbot profiles),
 # so no HTTP-01 challenge path is served here.
 server {
@@ -95,4 +100,61 @@ server {
         proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
     }
+}
+
+# ── PUBLIC port ${STATS_PUBLIC_PORT} — Grafana public dashboards ONLY ─────────
+# Internet-facing (when published on 0.0.0.0). Unauthenticated, but the ONLY
+# routes served are the tokenized public-dashboard paths + their query API +
+# static assets; everything else returns 403. Per-IP rate/conn limited with a
+# denylist for banning. Publish a dashboard with:
+#   grafana/publish-public-dashboard.sh publish
+# This block still renders when the port isn't exposed publicly (bound to
+# 127.0.0.1 by default) — it just isn't reachable until STATS_PUBLIC_BIND=0.0.0.0.
+server {
+    listen      ${STATS_PUBLIC_PORT} ssl;
+    listen      [::]:${STATS_PUBLIC_PORT} ssl;
+    http2       on;
+    server_name ${DOMAIN};
+
+    ssl_certificate     /certs/live/${DOMAIN}/fullchain.pem;
+    ssl_certificate_key /certs/live/${DOMAIN}/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+
+    # Ban troublesome IPs: add "deny 1.2.3.4;" lines to denylist.conf, then
+    # `docker exec moqx-proxy nginx -s reload`. fail2ban can manage this file.
+    include /etc/nginx/denylist.conf;
+
+    # Per-IP caps → excess gets 429 (cheap to serve, easy for fail2ban to spot).
+    limit_req         zone=pubdash burst=20 nodelay;
+    limit_conn        pubconn 10;
+    limit_req_status  429;
+    limit_conn_status 429;
+
+    location = /healthz { return 200 "ok\n"; }
+
+    # The only public surface: Grafana public dashboards, their query API, and
+    # the frontend assets (static JS/CSS) the page needs. No login, no /api,
+    # no editing, no other dashboards.
+    location /grafana/public-dashboards/ {
+        proxy_pass       http://grafana:3000;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+    location /grafana/api/public/ {
+        proxy_pass       http://grafana:3000;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+    location /grafana/public/ {
+        proxy_pass       http://grafana:3000;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Bare /grafana → send to the (nonexistent to the public) app root; harmless.
+    # Everything else on the public port is refused.
+    location / { return 403; }
 }

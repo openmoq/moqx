@@ -35,3 +35,39 @@ provisioner reloads them (read-only again), so the deployed dashboard == the fil
   container), so no published port or basic-auth juggling.
 - `moqx-overview.json` is the default home dashboard
   (`GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH` in docker-compose.yml).
+
+## Public dashboard (opt-in, read-only, internet-facing)
+
+A **tokenized, unauthenticated, read-only** view can be exposed on a dedicated
+public port (`STATS_PUBLIC_PORT`, default `8443`) — served by a separate nginx
+server block that proxies **only** the Grafana public-dashboard routes; login,
+admin, `/metrics`, `/prometheus`, and every other path return `403`. The private
+`443` (tunnel) surface is unchanged. It's **off until you bind the port public.**
+
+Enable it:
+```bash
+# 1) publish the dashboard as a public one (mints/reuses a token, prints the URL)
+cd docker/grafana && ./publish-public-dashboard.sh publish
+
+# 2) bind the public port to the internet and (re)create nginx
+#    in docker/.env:  STATS_PUBLIC_BIND=0.0.0.0   (optionally STATS_PUBLIC_PORT=<obscure>)
+cd .. && docker compose --profile stats up -d nginx
+```
+Link the printed `https://<domain>:<port>/grafana/public-dashboards/<token>` from
+the repo/wiki. Viewers get read-only panels + time-range browsing, **no** write,
+**no** arbitrary queries, **no** other route.
+
+Controls:
+- **Kill switch**: `./publish-public-dashboard.sh pause` (data stops serving) or
+  `unpublish` (revokes the token). Or set `STATS_PUBLIC_BIND=127.0.0.1` + recreate
+  nginx to pull the port entirely.
+- **Ban an IP**: add `deny 1.2.3.4;` to `docker/nginx/denylist.conf`, then
+  `docker exec moqx-proxy nginx -s reload`.
+- **Rate/conn caps** (per IP) are in the nginx template (`limit_req` 5r/s burst 20,
+  `limit_conn` 10) → excess gets `429`.
+- **Auto-ban (fail2ban)**: point a jail at nginx's access log for a flood of
+  `429`s and have its action append to `denylist.conf` + reload nginx.
+
+Security posture: anonymous **org** auth stays OFF (that would expose the whole
+instance); only the per-dashboard public token is exposed. Nothing in the relay
+metrics is private (open test relay), so the full dashboard is published as-is.
