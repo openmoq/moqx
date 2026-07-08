@@ -38,6 +38,11 @@ on:
         required: false
         type: boolean
         default: true
+      public_dashboard:
+        description: "Public read-only dashboard (uncheck to keep private)"
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -144,6 +149,7 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.OMOQ_CERTBOT_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.OMOQ_CERTBOT_SECRET_ACCESS_KEY }}
           ENABLE_STATS: ${{ inputs.enable_stats }}
+          PUBLIC_DASHBOARD: ${{ inputs.public_dashboard }}
           STATS_USER: ${{ secrets.STATS_USER }}
           STATS_PASSWORD: ${{ secrets.STATS_PASSWORD }}
           GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
@@ -183,6 +189,11 @@ jobs:
                 # limit (not the size cap) is what bounds history at 3s/5s scrape.
                 echo "PROMETHEUS_RETENTION_SIZE=20GB"
               } >> .env
+              # Public read-only dashboard: bind the public port to 0.0.0.0
+              # (default off = localhost). Publish + firewall happen post-up.
+              if [ "${PUBLIC_DASHBOARD}" = "true" ]; then
+                echo "STATS_PUBLIC_BIND=0.0.0.0" >> .env
+              fi
             fi
 
             # Ensure TLS cert
@@ -231,6 +242,24 @@ jobs:
 
           RESP=$(curl -sf http://127.0.0.1:${ADMIN_PORT}/info)
           echo "==> Relay running: $RESP"
+
+          # Public read-only dashboard (opt-out via the public_dashboard input).
+          if [ "$RESTART_ONLY" != "true" ] && [ "$ENABLE_STATS" = "true" ]; then
+            PUB_PORT="${STATS_PUBLIC_PORT:-8443}"
+            if [ "$PUBLIC_DASHBOARD" = "true" ]; then
+              echo "==> Publishing public read-only dashboard on :${PUB_PORT}..."
+              sudo ufw allow "${PUB_PORT}/tcp" >/dev/null 2>&1 || true
+              for i in $(seq 1 30); do
+                docker exec moqx-grafana curl -sf -o /dev/null http://localhost:3000/api/health 2>/dev/null && break
+                sleep 1
+              done
+              ./grafana/publish-public-dashboard.sh publish || echo "::warning::public dashboard publish failed"
+            else
+              echo "==> Public dashboard unchecked — keeping private, closing :${PUB_PORT}"
+              ./grafana/publish-public-dashboard.sh pause >/dev/null 2>&1 || true
+              sudo ufw delete allow "${PUB_PORT}/tcp" >/dev/null 2>&1 || true
+            fi
+          fi
 
       - name: Notify Slack
         if: always()
