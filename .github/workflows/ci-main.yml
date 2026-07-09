@@ -677,43 +677,16 @@ jobs:
       - name: Log in to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
-      - name: Write .env
-        working-directory: docker
-        run: |
-          cat > .env <<EOF
-          DOMAIN=${DOMAIN}
-          CERTBOT_EMAIL=gmarzot@openmoq.org
-          MOQX_PORT=${RELAY_PORT}
-          MOQX_ADMIN_PORT=${ADMIN_PORT}
-          MOQX_LOG_LEVEL=0
-          MOQX_VERBOSE=0
-          EOF
-          sed -i 's/^[[:space:]]*//' .env
-
-      - name: Pull and deploy
-        working-directory: docker
-        run: |
-          docker compose pull
-          docker compose down --remove-orphans 2>/dev/null || true
-          # Remove any stale containers with matching names (e.g. from manual docker run)
-          docker rm -f moqx logmon 2>/dev/null || true
-          docker compose up -d
-
-          echo "==> Waiting for admin endpoint..."
-          for i in $(seq 1 30); do
-            if curl -sf http://127.0.0.1:${ADMIN_PORT}/info >/dev/null 2>&1; then
-              break
-            fi
-            sleep 1
-            if [ "$i" -eq 30 ]; then
-              echo "::error::Admin endpoint did not respond within 30s"
-              docker compose logs moqx
-              exit 1
-            fi
-          done
-
-          RESP=$(curl -sf http://127.0.0.1:8000/info)
-          echo "==> Relay deployed: $RESP"
+      # Auto-deploy uses the shared core (docker/relay-deploy.sh) with stats ON,
+      # so main keeps the stats stack + public read-only dashboard live. Pulls
+      # the compose-pinned :latest (this run's just-published image).
+      - name: Deploy (relay + stats + public dashboard)
+        env:
+          ENABLE_STATS: "true"
+          STATS_USER: ${{ secrets.STATS_USER }}
+          STATS_PASSWORD: ${{ secrets.STATS_PASSWORD }}
+          GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
+        run: bash docker/relay-deploy.sh
 
   # ════════════════════════════════════════════════════════════════════════════
   # Notify: aggregate status (runs after everything)

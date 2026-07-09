@@ -151,101 +151,39 @@ jobs:
           if [ "$RESTART_ONLY" = "true" ]; then
             echo "==> Restarting relay..."
             docker compose restart moqx
-          else
-            # folly XLOG override for the whole stack (empty = baseline INFO).
-            # "default" from the dialog means "no override". See docs/logging.md.
-            LOGGING_CFG=""
-            [ "${LOGGING}" != "default" ] && LOGGING_CFG="${LOGGING}"
-
-            # Write .env
-            cat > .env <<EOF
-            DOMAIN=${DOMAIN}
-            CERTBOT_EMAIL=gmarzot@openmoq.org
-            MOQX_PORT=${RELAY_PORT}
-            MOQX_ADMIN_PORT=${ADMIN_PORT}
-            MOQX_LOGGING=${LOGGING_CFG}
-            MOQX_CPUS=$(nproc)
-            MOQX_THREADS=$(nproc)
-          EOF
-            sed -i 's/^[[:space:]]*//' .env
-
-            # Stats stack (opt-in). Requires STATS_USER / STATS_PASSWORD (and
-            # optionally GRAFANA_ADMIN_PASSWORD) as repo secrets — nginx basic
-            # auth refuses to start with empty credentials.
-            PROFILE_ARGS=""
-            if [ "${ENABLE_STATS}" = "true" ]; then
-              PROFILE_ARGS="--profile stats"
-              {
-                echo "STATS_USER=${STATS_USER}"
-                echo "STATS_PASSWORD=${STATS_PASSWORD}"
-                echo "GRAFANA_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}"
-                # CI runner has the disk; give Prometheus room so the 365d time
-                # limit (not the size cap) is what bounds history at 3s/5s scrape.
-                echo "PROMETHEUS_RETENTION_SIZE=20GB"
-                # Stats implies the public read-only dashboard: bind the public
-                # port to 0.0.0.0. Publish + firewall happen post-up.
-                echo "STATS_PUBLIC_BIND=0.0.0.0"
-              } >> .env
-            fi
-
-            # Ensure TLS cert
-            CERT="/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
-            if [ ! -f "$CERT" ]; then
-              echo "::warning::No cert for ${DOMAIN} — provisioning via Route53"
-              sudo -E certbot certonly --dns-route53 \
-                -d "$DOMAIN" --non-interactive --agree-tos \
-                --email gmarzot@openmoq.org
-            elif ! sudo openssl x509 -in "$CERT" -noout -checkend 2592000 2>/dev/null; then
-              echo "::warning::Cert for ${DOMAIN} expires within 30 days — renewing"
-              sudo -E certbot renew --cert-name "$DOMAIN"
-            else
-              echo "Cert for ${DOMAIN} is valid"
-            fi
-
-            # Pull and deploy
-            docker pull "ghcr.io/${{ github.repository }}:${IMAGE_TAG}"
-
-            IMAGE="ghcr.io/${{ github.repository }}:${IMAGE_TAG}"
-            if [ "$IMAGE_TAG" != "latest" ]; then
-              docker tag "$IMAGE" "ghcr.io/${{ github.repository }}:latest"
-            fi
-
-            echo "==> Stopping existing container (if any)..."
-            docker compose ${PROFILE_ARGS} down --remove-orphans 2>/dev/null || true
-            docker rm -f moqx logmon 2>/dev/null || true
-
-            echo "==> Starting relay on ${DOMAIN}:${RELAY_PORT}...${PROFILE_ARGS:+ (with stats stack)}"
-            docker compose ${PROFILE_ARGS} up -d
-          fi
-
-          # Health check (both paths)
-          echo "==> Waiting for admin endpoint..."
-          for i in $(seq 1 30); do
-            if curl -sf http://127.0.0.1:${ADMIN_PORT}/info >/dev/null 2>&1; then
-              break
-            fi
-            sleep 1
-            if [ "$i" -eq 30 ]; then
-              echo "::error::Admin endpoint did not respond within 30s"
-              docker compose logs moqx
-              exit 1
-            fi
-          done
-
-          RESP=$(curl -sf http://127.0.0.1:${ADMIN_PORT}/info)
-          echo "==> Relay running: $RESP"
-
-          # Stats is on → publish the public read-only dashboard + open its port.
-          if [ "$RESTART_ONLY" != "true" ] && [ "$ENABLE_STATS" = "true" ]; then
-            PUB_PORT="${STATS_PUBLIC_PORT:-4533}"
-            echo "==> Publishing public read-only dashboard on :${PUB_PORT}..."
-            sudo ufw allow "${PUB_PORT}/tcp" >/dev/null 2>&1 || true
             for i in $(seq 1 30); do
-              docker exec moqx-grafana curl -sf -o /dev/null http://localhost:3000/api/health 2>/dev/null && break
+              curl -sf "http://127.0.0.1:${ADMIN_PORT}/info" >/dev/null 2>&1 && break
               sleep 1
+              [ "$i" -eq 30 ] && { echo "::error::relay did not respond after restart"; docker compose logs moqx; exit 1; }
             done
-            ./grafana/publish-public-dashboard.sh publish || echo "::warning::public dashboard publish failed"
+            echo "==> Relay restarted: $(curl -sf http://127.0.0.1:${ADMIN_PORT}/info)"
+            exit 0
           fi
+
+          # folly XLOG override ("default" from the dialog = no override).
+          LOGGING_CFG=""
+          [ "${LOGGING}" != "default" ] && LOGGING_CFG="${LOGGING}"
+
+          # Ensure TLS cert
+          CERT="/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
+          if [ ! -f "$CERT" ]; then
+            echo "::warning::No cert for ${DOMAIN} — provisioning via Route53"
+            sudo -E certbot certonly --dns-route53 \
+              -d "$DOMAIN" --non-interactive --agree-tos \
+              --email gmarzot@openmoq.org
+          elif ! sudo openssl x509 -in "$CERT" -noout -checkend 2592000 2>/dev/null; then
+            echo "::warning::Cert for ${DOMAIN} expires within 30 days — renewing"
+            sudo -E certbot renew --cert-name "$DOMAIN"
+          else
+            echo "Cert for ${DOMAIN} is valid"
+          fi
+
+          # Deploy via the shared core (same script ci-main uses): writes .env,
+          # pulls IMAGE_TAG (retagged :latest for compose), brings up the relay
+          # + stats + public dashboard when ENABLE_STATS, health check, publish.
+          PULL_IMAGE="ghcr.io/${{ github.repository }}:${IMAGE_TAG}" \
+          MOQX_LOGGING="$LOGGING_CFG" \
+          bash relay-deploy.sh
 
       - name: Notify Slack
         if: always()
