@@ -19,6 +19,9 @@ modules:
         labels:
           track: '{.track_name}'
           is_publish: '{.is_publish}'
+          # namespace is a JSON array (e.g. ["com.wowza","moq","moqtest_all"]);
+          # slash-join it into a browsable path label. (Trailing "/" is harmless.)
+          namespace: '{range .namespace[*]}{@}/{end}'
         values:
           subscribers: '{.subscribers}'
           forwarding_subscribers: '{.forwarding_subscribers}'
@@ -26,3 +29,13 @@ modules:
       - name: moqx_state_active_sessions
         help: Active sessions reported by the admin /state
         path: '{.active_sessions}'
+      # Relay identity — carries relay_id as a label so the host-info card can
+      # show it. Value is active_sessions (handy scalar to hang the label on).
+      - name: moqx_relay
+        type: object
+        help: Relay identity from the admin /state
+        path: '{$}'
+        labels:
+          relay_id: '{.relay_id}'
+        values:
+          active_sessions: '{.active_sessions}'

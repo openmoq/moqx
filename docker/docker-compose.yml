@@ -181,6 +181,10 @@ services:
     image: prom/prometheus:v2.53.0
     restart: unless-stopped
     profiles: [stats]
+    # node-exporter runs in the host network namespace (see below), so it is not
+    # reachable by compose-service name. Reach it via the host gateway instead.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-365d}
@@ -227,6 +231,9 @@ services:
       # would expose the whole instance; public dashboards don't need it.
       GF_PUBLIC_DASHBOARDS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ENABLED: "false"
+      # Volkov Labs "Business Text" panel — renders the host-info card as a
+      # formatted HTML template (clean, integrated) instead of chunky stat tiles.
+      GF_INSTALL_PLUGINS: marcusolsson-dynamictext-panel
     mem_limit: ${GRAFANA_MEM:-1g}
     volumes:
       - grafana-data:/var/lib/grafana
@@ -240,15 +247,28 @@ services:
   # Host metrics for the dashboard's CPU / NIC-throughput / memory panels
   # (the relay /metrics has none of these). Reads the host's proc/sys read-only.
   # Only the collectors the dashboard uses are enabled, to keep series count —
-  # and therefore Prometheus disk — low. Reachable on the compose net as
-  # node-exporter:9100; scraped by the `node` job in prometheus.yml.
+  # and therefore Prometheus disk — low.
+  #
+  # network_mode: host is REQUIRED for the netdev collector: /proc/net/dev is
+  # network-namespace-scoped, so a bridged container (even with pid:host and a
+  # /host/proc mount) only sees its own veth, never the host's real NIC (eth0).
+  # In the host netns it sees eth0 — the true platform ingress/egress. Because it
+  # then leaves the compose bridge, Prometheus reaches it via host.docker.internal
+  # (see the prometheus extra_hosts + the `node` job in prometheus.yml). Port 9100
+  # is bound host-wide but ufw default-denies it externally (only 22/443/4433:4533
+  # are open), and node metrics are non-secret on this open test relay regardless.
   node-exporter:
     container_name: moqx-node-exporter
     image: prom/node-exporter:v1.8.2
     restart: unless-stopped
     profiles: [stats]
     pid: host
+    network_mode: host
+    # Share the host UTS namespace too, so --collector.uname reports the host's
+    # nodename (not this container's id) for the host-info card.
+    uts: host
     command:
+      - --web.listen-address=:9100
       - --path.procfs=/host/proc
       - --path.sysfs=/host/sys
       - --path.rootfs=/host

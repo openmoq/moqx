@@ -25,7 +25,10 @@ scrape_configs:
   - job_name: node
     scrape_interval: 5s
     static_configs:
-      - targets: ['node-exporter:9100']
+      # node-exporter runs in the host network namespace (so netdev sees the real
+      # host NIC, not a container veth), hence it's reached via the host gateway
+      # rather than the compose-service name. See docker-compose.yml.
+      - targets: ['host.docker.internal:9100']
         labels:
           instance: moqx-host
 
