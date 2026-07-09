@@ -250,7 +250,7 @@
       "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never", "spanNulls": true, "stacking": { "group": "A", "mode": "none" } }, "mappings": [], "min": 0, "unit": "cps" }, "overrides": [] },
       "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
       "targets": [
-        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum by (code) (rate({__name__=~\"moqx_(pub|sub)SubgroupReset_total\"}[$__rate_interval])) or label_replace(vector(0), \"code\", \"none\", \"\", \"\")", "legendFormat": "code {{code}}", "refId": "A" }
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum by (code) (label_replace(rate(moqx_pubSubgroupReset_total[$__rate_interval]), \"kind\", \"pub\", \"\", \"\") or label_replace(rate(moqx_subSubgroupReset_total[$__rate_interval]), \"kind\", \"sub\", \"\", \"\"))", "legendFormat": "{{code}}", "refId": "A" }
       ]
     }
   ]
