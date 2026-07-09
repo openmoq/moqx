@@ -39,7 +39,10 @@ services:
     ports:
       - "${MOQX_PORT:-4433}:${MOQX_PORT:-4433}/udp"
       - "${MOQX_PICO_PORT:-4434}:${MOQX_PICO_PORT:-4434}/udp"
-      - "${MOQX_ADMIN_PORT:-8000}:${MOQX_ADMIN_PORT:-8000}/tcp"
+      # Admin (/info /state /config /metrics) — localhost only. The deploy
+      # health check hits 127.0.0.1; nginx reaches it over the internal network
+      # (moqx:8000), so it never needs a public bind.
+      - "127.0.0.1:${MOQX_ADMIN_PORT:-8000}:${MOQX_ADMIN_PORT:-8000}/tcp"
     volumes:
       - ${MOQX_CERTS_DIR:-/etc/letsencrypt}:/certs:ro
       - moqx-coredumps:/var/coredumps

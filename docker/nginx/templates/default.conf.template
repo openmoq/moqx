@@ -16,8 +16,10 @@ map $http_upgrade $connection_upgrade {
 }
 
 # Per-IP rate + concurrency caps for the public port (see the public server
-# block below). Sized for a public dashboard, not an API.
-limit_req_zone  $binary_remote_addr zone=pubdash:10m rate=5r/s;
+# block below). A Grafana dashboard fires one query per panel plus assets on
+# load (tens of requests at once), so the burst must absorb a full page load
+# while the sustained rate still caps a flood.
+limit_req_zone  $binary_remote_addr zone=pubdash:10m rate=50r/s;
 limit_conn_zone $binary_remote_addr zone=pubconn:10m;
 
 # HTTP :80 — redirect to HTTPS. Certs are issued via DNS-01 (certbot profiles),
@@ -125,8 +127,9 @@ server {
     include /etc/nginx/denylist.conf;
 
     # Per-IP caps → excess gets 429 (cheap to serve, easy for fail2ban to spot).
-    limit_req         zone=pubdash burst=20 nodelay;
-    limit_conn        pubconn 10;
+    # burst absorbs a full dashboard load; sustained 50 r/s still stops a flood.
+    limit_req         zone=pubdash burst=150 nodelay;
+    limit_conn        pubconn 30;
     limit_req_status  429;
     limit_conn_status 429;
 
