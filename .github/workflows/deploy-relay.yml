@@ -237,7 +237,7 @@ jobs:
 
           # Stats is on → publish the public read-only dashboard + open its port.
           if [ "$RESTART_ONLY" != "true" ] && [ "$ENABLE_STATS" = "true" ]; then
-            PUB_PORT="${STATS_PUBLIC_PORT:-8443}"
+            PUB_PORT="${STATS_PUBLIC_PORT:-4533}"
             echo "==> Publishing public read-only dashboard on :${PUB_PORT}..."
             sudo ufw allow "${PUB_PORT}/tcp" >/dev/null 2>&1 || true
             for i in $(seq 1 30); do

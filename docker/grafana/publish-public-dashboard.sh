@@ -46,7 +46,7 @@ domain = root.split("://", 1)[1].split("/", 1)[0]
 try:
     port = subprocess.check_output(["docker", "exec", P, "printenv", "STATS_PUBLIC_PORT"], text=True).strip()
 except Exception:
-    port = "8443"
+    port = "4533"
 def url(tok): return f"https://{domain}:{port}/grafana/public-dashboards/{tok}"
 
 pd = get_pd()

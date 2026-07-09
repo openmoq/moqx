@@ -39,7 +39,7 @@ provisioner reloads them (read-only again), so the deployed dashboard == the fil
 ## Public dashboard (opt-in, read-only, internet-facing)
 
 A **tokenized, unauthenticated, read-only** view can be exposed on a dedicated
-public port (`STATS_PUBLIC_PORT`, default `8443`) — served by a separate nginx
+public port (`STATS_PUBLIC_PORT`, default `4533`) — served by a separate nginx
 server block that proxies **only** the Grafana public-dashboard routes; login,
 admin, `/metrics`, `/prometheus`, and every other path return `403`. The private
 `443` (tunnel) surface is unchanged. It's **off until you bind the port public.**

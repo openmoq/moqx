@@ -153,13 +153,13 @@ services:
       - "${STATS_BIND:-127.0.0.1}:${STATS_HTTP_PORT:-80}:80/tcp"
       # Public dashboard surface — Grafana public-dashboard routes ONLY.
       # Default 127.0.0.1 = off; set STATS_PUBLIC_BIND=0.0.0.0 to go public.
-      - "${STATS_PUBLIC_BIND:-127.0.0.1}:${STATS_PUBLIC_PORT:-8443}:${STATS_PUBLIC_PORT:-8443}/tcp"
+      - "${STATS_PUBLIC_BIND:-127.0.0.1}:${STATS_PUBLIC_PORT:-4533}:${STATS_PUBLIC_PORT:-4533}/tcp"
     environment:
       DOMAIN: ${DOMAIN}
       STATS_USER: ${STATS_USER:-admin}
       STATS_PASSWORD: ${STATS_PASSWORD:-}
       STATS_HTPASSWD: ${STATS_HTPASSWD:-}
-      STATS_PUBLIC_PORT: ${STATS_PUBLIC_PORT:-8443}
+      STATS_PUBLIC_PORT: ${STATS_PUBLIC_PORT:-4533}
     volumes:
       - ${MOQX_CERTS_DIR:-/etc/letsencrypt}:/certs:ro
       - ./nginx/templates:/etc/nginx/templates:ro
