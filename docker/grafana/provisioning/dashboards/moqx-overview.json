@@ -8,36 +8,8 @@
   "refresh": "10s",
   "schemaVersion": 39,
   "tags": ["moqx", "relay"],
-  "templating": {
-    "list": [
-      {
-        "name": "namespace",
-        "type": "query",
-        "label": "Namespace",
-        "datasource": { "type": "prometheus", "uid": "prometheus" },
-        "query": "label_values(moqx_track_subscribers, namespace)",
-        "refresh": 2,
-        "multi": true,
-        "includeAll": true,
-        "allValue": ".*",
-        "current": { "text": "All", "value": "$__all" },
-        "sort": 1
-      },
-      {
-        "name": "relay_id",
-        "type": "query",
-        "label": "relay id",
-        "hide": 2,
-        "datasource": { "type": "prometheus", "uid": "prometheus" },
-        "query": "label_values(moqx_relay_active_sessions, relay_id)",
-        "refresh": 2,
-        "multi": false,
-        "includeAll": false,
-        "current": {},
-        "sort": 1
-      }
-    ]
-  },
+  "__templating_note": "No template variables: Grafana public dashboards don't interpolate them (they cause panels/undefined/query errors), and the panels are query-driven (topk/sum). The interactive $namespace-scoped view belongs on a separate private/authed dashboard.",
+  "templating": { "list": [] },
   "time": { "from": "now-1h", "to": "now" },
   "timepicker": {},
   "timezone": "",
