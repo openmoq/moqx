@@ -65,6 +65,11 @@ services:
       MOQX_THREADS: ${MOQX_THREADS:-4}
     ulimits:
       core: -1
+      # QUIC multiplexes many connections over few UDP sockets, so fd pressure is
+      # modest — but reuseport-per-thread + streams warrant a high ceiling.
+      nofile:
+        soft: 1048576
+        hard: 1048576
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://127.0.0.1:${MOQX_ADMIN_PORT:-8000}/info"]
       interval: 15s

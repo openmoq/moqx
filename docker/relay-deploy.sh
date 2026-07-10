@@ -49,6 +49,24 @@ if [ "${ENABLE_STATS:-}" = "true" ]; then
   } >> .env
 fi
 
+# ── host network tuning for the QUIC/UDP relay ───────────────────────────────
+# The relay sizes its UDP socket buffer to net.core.wmem_max (entrypoint.sh),
+# and the stock 208 KB default throttles a high-fanout QUIC relay. Raise UDP
+# buffers + device backlog to values suited to a multi-gigabit relay. net.core.*
+# are host-global (not namespaced), so this must be set on the host — the relay
+# container reads the host value. Persisted so a reboot keeps it; the relay picks
+# up the larger buffer on its next (re)start.
+sudo tee /etc/sysctl.d/99-moqx-quic.conf >/dev/null <<'SYSCTL' || true
+# moqx QUIC/UDP relay tuning — see docker/relay-deploy.sh
+net.core.rmem_max = 16777216
+net.core.wmem_max = 16777216
+net.core.rmem_default = 1048576
+net.core.wmem_default = 1048576
+net.core.netdev_max_backlog = 10000
+net.core.optmem_max = 65536
+SYSCTL
+sudo sysctl -q --system >/dev/null 2>&1 || true
+
 # ── pull + (re)create ────────────────────────────────────────────────────────
 if [ -n "${PULL_IMAGE:-}" ]; then
   docker pull "$PULL_IMAGE"
@@ -78,7 +96,9 @@ echo "==> Relay running: $(curl -sf http://127.0.0.1:${ADMIN_PORT}/info)"
 # ── public read-only dashboard (stats only) ──────────────────────────────────
 if [ "${ENABLE_STATS:-}" = "true" ]; then
   echo "==> Publishing public read-only dashboard on :${PUB_PORT}..."
-  sudo ufw allow "${PUB_PORT}/tcp" >/dev/null 2>&1 || true
+  # PUB_PORT (default 4533) sits in the already-open 4433-4533 range (host ufw +
+  # Linode cloud firewall), so no per-port ufw rule is needed — deliberately kept
+  # in-range to avoid a firewall change. If you move it out of range, open it.
   # node-exporter runs in the host netns (to see the real NIC) and Prometheus
   # reaches it via the host gateway, so that hop now traverses the host firewall.
   # Allow only the private docker subnets to host :9100 (external stays denied).
