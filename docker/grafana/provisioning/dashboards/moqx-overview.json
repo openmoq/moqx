@@ -152,7 +152,7 @@
       "targets": [ { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "moqx_moqActiveSessions", "refId": "A" } ]
     },
     {
-      "type": "stat", "id": 8, "title": "Active tracks (subscribed)",
+      "type": "stat", "id": 8, "title": "Active tracks",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 4, "w": 4, "x": 4, "y": 21 },
       "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "mappings": [], "unit": "short", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] } }, "overrides": [] },
@@ -160,9 +160,17 @@
       "targets": [ { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "count(count by (namespace, track) (moqx_track_subscribers)) or vector(0)", "refId": "A" } ]
     },
     {
+      "type": "stat", "id": 22, "title": "Active subscriptions",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 21 },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "mappings": [], "unit": "short", "thresholds": { "mode": "absolute", "steps": [ { "color": "purple", "value": null } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "area", "textMode": "value", "justifyMode": "center" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "moqx_pubActiveSubscriptions", "refId": "A" } ]
+    },
+    {
       "type": "timeseries", "id": 21, "title": "MoQ sessions & subscriptions (aggregate)",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 4, "w": 16, "x": 8, "y": 21 },
+      "gridPos": { "h": 4, "w": 12, "x": 12, "y": 21 },
       "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never", "spanNulls": true, "stacking": { "group": "A", "mode": "none" } }, "mappings": [], "min": 0, "unit": "short" }, "overrides": [] },
       "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
       "targets": [
@@ -171,20 +179,48 @@
         { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "moqx_subActivePublishers", "legendFormat": "sub publishers", "refId": "C" }
       ]
     },
+
     {
-      "type": "timeseries", "id": 12, "title": "Top 10 tracks by subscribers",
+      "type": "bargauge", "id": 23, "title": "Namespaces by subscribers",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 25 },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 25 },
+      "fieldConfig": { "defaults": { "color": { "mode": "continuous-GrYlRd" }, "mappings": [], "min": 0, "unit": "short", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] } }, "overrides": [] },
+      "options": { "displayMode": "gradient", "orientation": "horizontal", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showUnfilled": true, "valueMode": "color" },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sort_desc(sum by (namespace) (max by (namespace, track) (moqx_track_subscribers)))", "legendFormat": "{{namespace}}", "refId": "A" }
+      ]
+    },
+    {
+      "type": "table", "id": 24, "title": "Tracks by subscribers (click a column to sort)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 16, "x": 8, "y": 25 },
+      "fieldConfig": { "defaults": { "custom": { "align": "auto", "filterable": true }, "mappings": [] }, "overrides": [ { "matcher": { "id": "byName", "options": "subscribers" }, "properties": [ { "id": "custom.width", "value": 130 }, { "id": "custom.cellOptions", "value": { "type": "color-background", "mode": "gradient" } }, { "id": "color", "value": { "mode": "continuous-GrYlRd" } } ] } ] },
+      "options": { "showHeader": true, "cellHeight": "sm", "sortBy": [ { "displayName": "subscribers", "desc": true } ] },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "max by (namespace, track) (moqx_track_subscribers)", "format": "table", "instant": true, "refId": "A" }
+      ],
+      "transformations": [
+        { "id": "organize", "options": { "excludeByName": { "Time": true }, "indexByName": { "namespace": 0, "track": 1, "Value": 2 }, "renameByName": { "Value": "subscribers" } } }
+      ]
+    },
+
+    {
+      "type": "timeseries", "id": 12, "title": "Top 10 tracks by subscribers (click a legend to isolate)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 33 },
       "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never", "spanNulls": true, "stacking": { "group": "A", "mode": "none" } }, "mappings": [], "min": 0, "unit": "short" }, "overrides": [] },
       "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "right", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
       "targets": [
         { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "topk(10, max by (namespace, track) (moqx_track_subscribers))", "legendFormat": "{{namespace}}{{track}}", "refId": "A" }
       ]
     },
+
+    { "type": "row", "id": 102, "title": "Details", "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 41 } },
+
     {
       "type": "timeseries", "id": 13, "title": "QUIC active connections & streams",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 25 },
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 42 },
       "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never", "spanNulls": true, "stacking": { "group": "A", "mode": "none" } }, "mappings": [], "min": 0, "unit": "short" }, "overrides": [] },
       "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
       "targets": [
@@ -193,13 +229,10 @@
         { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "moqx_pubActiveSubscriptionStreams", "legendFormat": "pub sub-streams", "refId": "C" }
       ]
     },
-
-    { "type": "row", "id": 102, "title": "Details", "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 33 } },
-
     {
       "type": "timeseries", "id": 14, "title": "QUIC goodput",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 34 },
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 42 },
       "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never", "spanNulls": true, "stacking": { "group": "A", "mode": "none" } }, "mappings": [], "min": 0, "unit": "Bps" }, "overrides": [] },
       "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
       "targets": [
