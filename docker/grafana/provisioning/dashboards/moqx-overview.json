@@ -56,7 +56,8 @@
         { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "node_uname_info", "format": "table", "instant": true, "refId": "A" },
         { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "count by (instance) (count by (instance, cpu) (node_cpu_seconds_total))", "format": "table", "instant": true, "refId": "B" },
         { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "round(node_memory_MemTotal_bytes / 1073741824, 0.1)", "format": "table", "instant": true, "refId": "C" },
-        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "round(node_filesystem_size_bytes{mountpoint=\"/\",fstype!~\"tmpfs|overlay|squashfs|ramfs\"} / 1073741824, 1)", "format": "table", "instant": true, "refId": "D" }
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "round(node_filesystem_size_bytes{mountpoint=\"/\",fstype!~\"tmpfs|overlay|squashfs|ramfs\"} / 1073741824, 1)", "format": "table", "instant": true, "refId": "D" },
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "label_replace(moqx_relay_active_sessions, \"instance\", \"moqx-host\", \"instance\", \".*\")", "format": "table", "instant": true, "refId": "E" }
       ],
       "transformations": [
         { "id": "joinByField", "options": { "byField": "instance", "mode": "outer" } }
@@ -67,7 +68,7 @@
         "editorMode": "html",
         "wrap": true,
         "defaultContent": "Host metrics not yet available (node-exporter warming up).",
-        "content": "<div style=\"display:flex;gap:32px;flex-wrap:wrap;align-items:center;padding:6px 14px;font-family:inherit\">\n  <div style=\"flex:1;min-width:280px\">\n    <div style=\"font-size:20px;font-weight:600;line-height:1.2\">{{nodename}}</div>\n    <div style=\"opacity:.65;font-size:12px;margin-top:3px\">relay <code>${relay_id}</code> &middot; {{sysname}} {{release}} &middot; {{machine}}</div>\n    <div style=\"margin-top:9px;font-size:13px\"><span style=\"opacity:.55\">endpoint&nbsp;</span><code style=\"font-size:13px\">moqx-main.ci.openmoq.org:4433</code></div>\n  </div>\n  <div style=\"display:flex;gap:26px;text-align:center\">\n    <div><div style=\"font-size:23px;font-weight:600\">{{[Value #B]}}</div><div style=\"opacity:.55;font-size:11px;letter-spacing:.5px\">CORES</div></div>\n    <div><div style=\"font-size:23px;font-weight:600\">{{[Value #C]}}</div><div style=\"opacity:.55;font-size:11px;letter-spacing:.5px\">GiB RAM</div></div>\n    <div><div style=\"font-size:23px;font-weight:600\">{{[Value #D]}}</div><div style=\"opacity:.55;font-size:11px;letter-spacing:.5px\">GiB DISK</div></div>\n  </div>\n</div>"
+        "content": "<div style=\"display:flex;gap:32px;flex-wrap:wrap;align-items:center;padding:6px 14px;font-family:inherit\">\n  <div style=\"flex:1;min-width:340px\">\n    <div style=\"font-size:20px;font-weight:600;line-height:1.2\">{{nodename}}</div>\n    <div style=\"opacity:.65;font-size:12px;margin-top:3px\">relay <code>{{relay_id}}</code> &middot; {{sysname}} {{release}} &middot; {{machine}} &middot; {{[Value #B]}} cores</div>\n    <div style=\"margin-top:10px;font-size:13px;line-height:1.75\">\n      <div><span style=\"opacity:.5;display:inline-block;width:52px\">MoQT</span><code>moqt://moqx-main.ci.openmoq.org:4433</code></div>\n      <div><span style=\"opacity:.5;display:inline-block;width:52px\">WebTr</span><code>https://moqx-main.ci.openmoq.org:4433/moq-relay</code></div>\n    </div>\n  </div>\n  <div style=\"display:flex;gap:26px;text-align:center\">\n    <div><div style=\"font-size:23px;font-weight:600\">{{[Value #B]}}</div><div style=\"opacity:.55;font-size:11px;letter-spacing:.5px\">CORES</div></div>\n    <div><div style=\"font-size:23px;font-weight:600\">{{[Value #C]}}</div><div style=\"opacity:.55;font-size:11px;letter-spacing:.5px\">GiB RAM</div></div>\n    <div><div style=\"font-size:23px;font-weight:600\">{{[Value #D]}}</div><div style=\"opacity:.55;font-size:11px;letter-spacing:.5px\">GiB DISK</div></div>\n  </div>\n</div>"
       }
     },
 
@@ -156,7 +157,7 @@
       "gridPos": { "h": 4, "w": 4, "x": 4, "y": 21 },
       "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "mappings": [], "unit": "short", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] } }, "overrides": [] },
       "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "area", "textMode": "value", "justifyMode": "center" },
-      "targets": [ { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "count(count by (namespace, track) (moqx_track_subscribers{is_publish=\"false\", namespace=~\"$namespace\"})) or vector(0)", "refId": "A" } ]
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "count(count by (namespace, track) (moqx_track_subscribers)) or vector(0)", "refId": "A" } ]
     },
     {
       "type": "timeseries", "id": 21, "title": "MoQ sessions & subscriptions (aggregate)",
@@ -171,13 +172,13 @@
       ]
     },
     {
-      "type": "timeseries", "id": 12, "title": "Subscribers per track ($namespace)",
+      "type": "timeseries", "id": 12, "title": "Top 10 tracks by subscribers",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 25 },
       "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never", "spanNulls": true, "stacking": { "group": "A", "mode": "none" } }, "mappings": [], "min": 0, "unit": "short" }, "overrides": [] },
       "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "right", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
       "targets": [
-        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum by (namespace, track) (moqx_track_subscribers{is_publish=\"false\", namespace=~\"$namespace\"}) or label_replace(vector(0), \"track\", \"(none)\", \"\", \"\")", "legendFormat": "{{namespace}}{{track}}", "refId": "A" }
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "topk(10, max by (namespace, track) (moqx_track_subscribers))", "legendFormat": "{{namespace}}{{track}}", "refId": "A" }
       ]
     },
     {
