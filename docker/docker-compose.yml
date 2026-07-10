@@ -36,13 +36,17 @@ services:
     cpus: ${MOQX_CPUS:-8}
     mem_limit: ${MOQX_MEM:-8g}
     mem_reservation: ${MOQX_MEM_RESERVATION:-2g}
-    ports:
-      - "${MOQX_PORT:-4433}:${MOQX_PORT:-4433}/udp"
-      - "${MOQX_PICO_PORT:-4434}:${MOQX_PICO_PORT:-4434}/udp"
-      # Admin (/info /state /config /metrics) — localhost only. The deploy
-      # health check hits 127.0.0.1; nginx reaches it over the internal network
-      # (moqx:8000), so it never needs a public bind.
-      - "127.0.0.1:${MOQX_ADMIN_PORT:-8000}:${MOQX_ADMIN_PORT:-8000}/tcp"
+    # Run the relay directly in the host network namespace: no docker bridge NAT
+    # and no userland UDP docker-proxy on the hot 4433/4434 path — best pps for a
+    # high-fanout QUIC relay, native source addresses, and platform-NIC BW == relay
+    # BW. The relay binds MOQX_BIND_ADDR (default 0.0.0.0) directly on host ports,
+    # so there is no `ports:` mapping. 4433/4434 udp are already open (ufw + cloud
+    # firewall 4433:4533). Admin 8000 is then reachable on eth0 but ufw default-
+    # denies it externally (only 22/443/4433:4533 are open); bridged prometheus/
+    # json-exporter/nginx reach it via host.docker.internal:8000 (see their
+    # extra_hosts + the :8000 ufw allow in relay-deploy.sh). Health check still
+    # hits 127.0.0.1:8000 (host loopback, where the relay now binds).
+    network_mode: host
     volumes:
       - ${MOQX_CERTS_DIR:-/etc/letsencrypt}:/certs:ro
       - moqx-coredumps:/var/coredumps
@@ -155,6 +159,10 @@ services:
     restart: unless-stopped
     profiles: [stats]
     depends_on: [grafana, prometheus, moqx]
+    # The relay runs in the host netns; nginx proxies its admin/metrics via the
+    # host gateway (see the host.docker.internal proxy_pass in the template).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       # Private stats surface — localhost only (tunnel). Full dashboard/admin.
       - "${STATS_BIND:-127.0.0.1}:${STATS_HTTPS_PORT:-443}:443/tcp"
@@ -307,6 +315,10 @@ services:
     image: quay.io/prometheuscommunity/json-exporter:v0.6.0
     restart: unless-stopped
     profiles: [stats]
+    # The relay runs in the host netns, so its /state is fetched via the host
+    # gateway (target host becomes host.docker.internal:8000) rather than by name.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     command:
       - --config.file=/config/json-exporter.yml
     volumes:

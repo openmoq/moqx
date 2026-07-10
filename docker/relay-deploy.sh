@@ -103,6 +103,9 @@ if [ "${ENABLE_STATS:-}" = "true" ]; then
   # reaches it via the host gateway, so that hop now traverses the host firewall.
   # Allow only the private docker subnets to host :9100 (external stays denied).
   sudo ufw allow from 172.16.0.0/12 to any port 9100 proto tcp >/dev/null 2>&1 || true
+  # The relay also runs in the host netns now, so bridged prometheus/json-exporter/
+  # nginx reach its admin :8000 via the host gateway — allow only docker subnets.
+  sudo ufw allow from 172.16.0.0/12 to any port 8000 proto tcp >/dev/null 2>&1 || true
   for i in $(seq 1 30); do
     docker exec moqx-grafana curl -sf -o /dev/null http://localhost:3000/api/health 2>/dev/null && break
     sleep 1
