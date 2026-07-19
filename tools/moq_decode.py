@@ -517,8 +517,8 @@ def parse_subscribe(cursor, annot, draft, payload_end=None):
 
 
 def parse_subscribe_ok(cursor, annot, draft, payload_end):
-    # Draft 18+: request_id is implicit from the bidi request stream context.
-    if draft < 18:
+    # Draft 17+: request_id is implicit from the bidi request stream context.
+    if draft < 17:
         val, s = cursor.read_varint()
         annot.add(s, cursor.pos, "request_id", str(val))
     val, s = cursor.read_varint()
@@ -545,9 +545,9 @@ def parse_subscribe_ok(cursor, annot, draft, payload_end):
 
 
 def parse_request_error(cursor, annot, draft, payload_end):
-    # Draft 18+: request_id is implicit from the bidi request stream context;
+    # Draft 17+: request_id is implicit from the bidi request stream context;
     # the receiver FIFO-correlates errors with outstanding requests.
-    if draft < 18:
+    if draft < 17:
         val, s = cursor.read_varint()
         annot.add(s, cursor.pos, "request_id", str(val))
     val, s = cursor.read_varint()
@@ -569,8 +569,8 @@ def parse_publish_namespace(cursor, annot, draft, payload_end):
 
 
 def parse_request_ok(cursor, annot, draft, payload_end):
-    # Draft 18+: request_id is implicit (per-stream).
-    if draft < 18:
+    # Draft 17+: request_id is implicit (per-stream).
+    if draft < 17:
         val, s = cursor.read_varint()
         annot.add(s, cursor.pos, "request_id", str(val))
     if draft > 14:
@@ -610,8 +610,10 @@ def parse_unsubscribe(cursor, annot, draft, payload_end):
 
 
 def parse_publish_done(cursor, annot, draft, payload_end):
-    val, s = cursor.read_varint()
-    annot.add(s, cursor.pos, "request_id", str(val))
+    # Draft 17+: request_id is implicit from the bidi request stream context.
+    if draft < 17:
+        val, s = cursor.read_varint()
+        annot.add(s, cursor.pos, "request_id", str(val))
     val, s = cursor.read_varint()
     annot.add(s, cursor.pos, "status_code", str(val))
     val, s = cursor.read_varint()
@@ -777,8 +779,10 @@ def parse_fetch_cancel(cursor, annot, draft, payload_end):
 
 
 def parse_fetch_ok(cursor, annot, draft, payload_end):
-    val, s = cursor.read_varint()
-    annot.add(s, cursor.pos, "request_id", str(val))
+    # Draft 17+: request_id is implicit from the bidi request stream context.
+    if draft < 17:
+        val, s = cursor.read_varint()
+        annot.add(s, cursor.pos, "request_id", str(val))
 
     if draft < 15:
         val, s = cursor.read_uint8()
