@@ -1,13 +1,13 @@
 /*
  * Copyright (c) Meta Platforms, Inc. and affiliates.
  * Originally from github.com/facebookexperimental/moxygen.
- * See deps/moxygen/LICENSE for the original license terms.
+ * See the moxygen LICENSE (https://github.com/openmoq/moxygen) for the original license terms.
  *
  * Copyright (c) OpenMOQ contributors.
  */
 
 // Draft 18+: SUBSCRIBE_TRACKS relay tests.
-// Ported from deps/moxygen/moxygen/relay/test/MoQRelayTest.cpp
+// Ported from moxygen moxygen/relay/test/MoQRelayTest.cpp
 
 #include "MoqxRelayTestFixture.h"
 
