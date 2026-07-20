@@ -39,11 +39,10 @@ echo "    kernel tuning applied (rmem_max/wmem_max=16MiB, backlog=10000, optmem=
 # in-range on purpose so the Linode cloud firewall needs no change).
 ufw allow 4433:4533/udp >/dev/null
 ufw allow 4433:4533/tcp >/dev/null
-# The relay and node-exporter run in the host network namespace, so the bridged
-# stats containers reach their admin/metrics ports via the host gateway — that
-# hop traverses the host firewall. Allow only the private docker subnets
-# (external access stays denied by ufw's default policy).
-ufw allow from 172.16.0.0/12 to any port 8000 proto tcp >/dev/null   # relay admin
+# node-exporter runs in the host network namespace (to read the real NIC), so the
+# bridged Prometheus reaches it via the host gateway — that hop traverses the host
+# firewall. Allow only the private docker subnets (external stays denied by ufw's
+# default policy). The relay is bridge-networked, so its admin needs no such rule.
 ufw allow from 172.16.0.0/12 to any port 9100 proto tcp >/dev/null   # node-exporter
 echo "    firewall rules applied (4433:4533 public; docker-subnet -> :8000/:9100)"
 

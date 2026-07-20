@@ -68,15 +68,14 @@ server {
 
     # Relay /metrics — same-origin data source for the dashboard (no CORS).
     location = /metrics {
-        # relay runs in the host netns → reach admin via the host gateway
-        proxy_pass       http://host.docker.internal:8000/metrics;
+        proxy_pass       http://moqx:8000/metrics;
         proxy_set_header Host            $host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     }
 
     # Relay admin endpoints (read-only JSON: /info, /state, /config).
     location /admin/ {
-        proxy_pass       http://host.docker.internal:8000/;
+        proxy_pass       http://moqx:8000/;
         proxy_set_header Host            $host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     }

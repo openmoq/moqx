@@ -14,8 +14,7 @@ scrape_configs:
   - job_name: moqx-relay
     metrics_path: /metrics
     static_configs:
-      # relay runs in the host netns → reach it via the host gateway, not by name
-      - targets: ['host.docker.internal:8000']
+      - targets: ['moqx:8000']
         labels:
           instance: moqx-relay
 
@@ -43,7 +42,7 @@ scrape_configs:
     params:
       module: [moqx]
     static_configs:
-      - targets: ['http://host.docker.internal:8000/state']
+      - targets: ['http://moqx:8000/state']
         labels:
           instance: moqx-relay
     relabel_configs:
