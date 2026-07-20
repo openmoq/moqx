@@ -1,7 +1,8 @@
 /*
  * Copyright (c) Meta Platforms, Inc. and affiliates.
  * Originally from github.com/facebookexperimental/moxygen.
- * See deps/moxygen/LICENSE file in the root directory for license terms.
+ * See the moxygen LICENSE (https://github.com/openmoq/moxygen) file in the root directory for
+ * license terms.
  *
  * Copyright (c) OpenMOQ contributors.
  */
