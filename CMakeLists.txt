@@ -6,6 +6,10 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# clang-tidy (scripts/dev/lint.sh) reads compile_commands.json from the
+# build dir.
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 # Route the compiler through ccache when it is installed, without a toolchain edit.
 if(NOT DEFINED CMAKE_CXX_COMPILER_LAUNCHER)
   find_program(CCACHE_PROGRAM ccache)
