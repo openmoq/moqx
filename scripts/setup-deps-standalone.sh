@@ -141,6 +141,15 @@ esac
 BOOST_STATIC_ARG=(-DBoost_USE_STATIC_LIBS="${boost_static}")
 echo "==> Boost linking: ${boost_static} (static libs)"
 
+# Wipe any previous install BEFORE configuring, not just before installing.
+# CMake implicitly searches CMAKE_INSTALL_PREFIX for packages, so a stale
+# install tree (e.g. from a prior tarball setup) satisfies find_package()
+# probes with files this build then deletes — moxygen's gtest probe "found"
+# the tarball's GTestConfig.cmake here, skipped bundling GoogleTest, and the
+# final install shipped no GTest config, breaking moqx's configure.
+echo "==> Removing previous install at $INSTALL_DIR..."
+rm -rf "$INSTALL_DIR"
+
 echo "==> Configuring standalone moxygen build (profile: ${PROFILE})..."
 # BUILD_TESTS=ON: gates the GoogleTest FetchContent in moxygen's standalone
 # CMake. Without it, moxygen-install ships no GTest config and moqx's
@@ -160,7 +169,6 @@ echo "==> Building ($NPROC jobs)..."
 cmake --build "$BUILD_DIR" -j"$NPROC"
 
 echo "==> Installing to $INSTALL_DIR..."
-rm -rf "$INSTALL_DIR"
 cmake --install "$BUILD_DIR"
 
 # ── Write cmake_prefix_path.txt ───────────────────────────────────────────────

@@ -11,6 +11,7 @@ formatting, and CI.
 |----------|--------|-------|
 | Ubuntu 22.04 (Jammy) | Tested in CI | Primary dev/CI platform |
 | Debian 12 (Bookworm) | Tested (Docker build) | Docker image base |
+| Ubuntu/Debian derivatives (Mint, Pop!_OS, ...) | Supported | Detected via `ID_LIKE`, mapped to the Ubuntu/Debian base artifacts; override with `MOQX_PLATFORM` if detection is wrong |
 | Fedora / RHEL | TBD | `install-system-deps.sh` has dnf support; not yet CI-tested |
 | macOS (Homebrew) | TBD | `install-system-deps.sh` has brew support; not yet CI-tested |
 

@@ -30,29 +30,13 @@ MOXYGEN_DIR="${PROJECT_ROOT}/deps/moxygen"
 INSTALL_DIR="${SCRATCH}/moxygen-install"
 
 # ── Platform detection ────────────────────────────────────────────────────────
-# Match the naming used by the omoq-dev-build workflow's `target` input:
-#   macos-15-arm64, ubuntu-22.04-amd64 (extend here as workflow adds targets)
-detect_platform() {
-    local os arch
-    case "$(uname -s)" in
-        Darwin) os="macos-15" ;;
-        Linux)
-            if [[ -f /etc/debian_version ]] && \
-               grep -q bookworm /etc/debian_version 2>/dev/null; then
-                os="bookworm"
-            else
-                os="ubuntu-22.04"
-            fi
-            ;;
-        *) echo "Error: unsupported OS $(uname -s)" >&2; exit 1 ;;
-    esac
-    case "$(uname -m)" in
-        arm64|aarch64) arch="arm64" ;;
-        x86_64) arch="amd64" ;;
-        *) echo "Error: unsupported arch $(uname -m)" >&2; exit 1 ;;
-    esac
-    echo "${os}-${arch}"
-}
+# Shared with setup-deps-tarball.sh so both resolve identical platform names
+# matching the omoq-dev-build workflow's `target` input (macos-15-arm64,
+# ubuntu-22.04-amd64, bookworm-amd64, ...), including Ubuntu/Debian
+# derivatives via ID_LIKE. See detect-platform.sh.
+
+# shellcheck source=scripts/detect-platform.sh
+source "$SCRIPT_DIR/detect-platform.sh"
 
 PLATFORM="${MOQX_PLATFORM:-$(detect_platform)}"
 

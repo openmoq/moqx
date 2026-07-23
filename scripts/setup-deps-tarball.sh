@@ -52,40 +52,11 @@ if [[ ! -e "$MOXYGEN_DIR/.git" ]]; then
 fi
 
 # ── Platform detection ────────────────────────────────────────────────────────
+# Shared with setup-deps-dev-artifact.sh; handles Ubuntu/Debian derivatives
+# (Linux Mint, Pop!_OS, ...) via ID_LIKE. See detect-platform.sh.
 
-detect_platform() {
-    local os arch
-    os=$(uname -s)
-    arch=$(uname -m)
-
-    if [[ "$os" == "Darwin" ]]; then
-        local ver
-        ver=$(sw_vers -productVersion | cut -d. -f1)
-        echo "macos-${ver}-arm64"
-    elif [[ "$os" == "Linux" ]]; then
-        if [[ ! -f /etc/os-release ]]; then
-            echo "Error: cannot detect Linux distro (no /etc/os-release)" >&2
-            exit 1
-        fi
-        # shellcheck disable=SC1091
-        local ID VERSION_ID
-        ID=$(. /etc/os-release && echo "$ID")
-        VERSION_ID=$(. /etc/os-release && echo "${VERSION_ID:-}")
-        local darch="${arch/x86_64/amd64}"
-        darch="${darch/aarch64/arm64}"
-        case "$ID" in
-            ubuntu) echo "ubuntu-${VERSION_ID}-${darch}" ;;
-            debian) echo "bookworm-${darch}" ;;
-            *)
-                echo "Error: unsupported Linux distro: $ID" >&2
-                exit 1
-                ;;
-        esac
-    else
-        echo "Error: unsupported OS: $os" >&2
-        exit 1
-    fi
-}
+# shellcheck source=scripts/detect-platform.sh
+source "$SCRIPT_DIR/detect-platform.sh"
 
 PLATFORM="${MOQX_PLATFORM:-$(detect_platform)}"
 echo "==> Platform: $PLATFORM"

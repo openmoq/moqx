@@ -67,6 +67,25 @@ SETUP_PARAM_KEYS = {
     0: "ROLE",
     1: "PATH",
     2: "MAX_REQUEST_ID",
+    3: "AUTHORIZATION_TOKEN",
+    4: "MAX_AUTH_TOKEN_CACHE_SIZE",
+    5: "AUTHORITY",
+    7: "MOQT_IMPLEMENTATION",
+}
+
+# Extension / Track-Property types (MoQTypes.h). The same parseExtensions()
+# grammar carries both object-header extensions and the trailing Track
+# Properties on SUBSCRIBE_OK / PUBLISH / FETCH_OK / REQUEST_OK, so one registry
+# covers both. Unknown types are extension points — decoded generically.
+EXTENSION_TYPES = {
+    0x02: "DELIVERY_TIMEOUT",  # OBJECT_DELIVERY_TIMEOUT (draft-18+)
+    0x04: "MAX_CACHE_DURATION",
+    0x0B: "IMMUTABLE_EXTENSIONS",  # container: nested KV block, flattened
+    0x0E: "PUBLISHER_PRIORITY",
+    0x22: "PUBLISHER_GROUP_ORDER",
+    0x30: "DYNAMIC_GROUPS",
+    0x3C: "PRIOR_GROUP_ID_GAP",
+    0x3E: "PRIOR_OBJECT_ID_GAP",
 }
 
 GROUP_ORDER = {0: "Default", 1: "OldestFirst", 2: "NewestFirst"}
@@ -367,7 +386,16 @@ def p_subscription_filter_blob(raw_bytes, outer_base, annot, idx, draft):
         pass
 
 
-def p_params(cursor, annot, draft, count, param_keys):
+def p_params(cursor, annot, draft, count, param_keys, setup=False):
+    # Count-prefixed message parameters: Request/Track params, plus legacy
+    # draft≤16 CLIENT/SERVER_SETUP. Draft-17+ SETUP and extensions have no count
+    # and use p_options() instead.
+    #
+    # setup=True selects ParamsType::Setup semantics: moxygen only applies the
+    # known-key check (MoQFramer.cpp:907) and the Request value shapes
+    # (LARGEST_OBJECT, SUBSCRIPTION_FILTER, uint8 FORWARD/PRIORITY/GROUP_ORDER)
+    # to ParamsType::Request, so for setup unknown keys are extension points and
+    # no value shapes apply.
     prev_key = 0
     for i in range(count):
         raw_key, s = cursor.read_varint()
@@ -386,7 +414,7 @@ def p_params(cursor, annot, draft, count, param_keys):
         # draft 18 Message Parameters are Type+Value (no length envelope),
         # so unknown keys cannot be skipped — section 10.2 says receivers
         # MUST close the session with PROTOCOL_VIOLATION.
-        is_unknown = draft >= 16 and key_name is None
+        is_unknown = draft >= 16 and key_name is None and not setup
         label = key_name if key_name else f"UNKNOWN({abs_key})"
         annot.add(
             s,
@@ -400,17 +428,17 @@ def p_params(cursor, annot, draft, count, param_keys):
                 f"Unknown parameter key {abs_key} in v{draft} (delta={raw_key})", s
             )
 
-        if abs_key == 9:  # LARGEST_OBJECT: length-prefixed AbsoluteLocation
+        if not setup and abs_key == 9:  # LARGEST_OBJECT: length-prefixed AbsoluteLocation
             vlen, vs = cursor.read_varint()
             annot.add(vs, cursor.pos, f"param[{i}].length", str(vlen))
             p_location(cursor, annot, f"param[{i}].largest_object")
-        elif abs_key == 0x21:  # SUBSCRIPTION_FILTER: decode blob inline
+        elif not setup and abs_key == 0x21:  # SUBSCRIPTION_FILTER: decode blob inline
             vlen, vs = cursor.read_varint()
             annot.add(vs, cursor.pos, f"param[{i}].length", str(vlen))
             blob_start = cursor.pos
             raw = cursor.read_bytes(vlen)
             p_subscription_filter_blob(raw, blob_start, annot, i, draft)
-        elif draft >= 18 and abs_key in (0x10, 0x20, 0x22):
+        elif not setup and draft >= 18 and abs_key in (0x10, 0x20, 0x22):
             # d18 §10.2.7/8/12: FORWARD (0x10), SUBSCRIBER_PRIORITY (0x20) and
             # GROUP_ORDER (0x22) values are a fixed uint8, overriding the
             # generic even-key varint (§1.4.3). Diverges at value >= 64.
@@ -433,28 +461,66 @@ def p_params(cursor, annot, draft, count, param_keys):
             )
 
 
-def p_extensions(cursor, annot, payload_end):
-    """Reads delta-encoded extension key-value pairs until payload_end (draft-16+)."""
-    prev_type = 0
+def p_options(cursor, annot, payload_end, names, prefix="ext",
+              key_field="type", immutable=True):
+    """Delta-encoded key/value options that span the message length with NO
+    count field. Draft-17+ SETUP options and object / Track-Property extensions
+    share this exact grammar (MoQFramer.cpp writeSetup / parseExtensionKvPairs):
+    even keys carry a varint value; odd keys are length-prefixed byte arrays.
+
+    `names` is the label registry (SETUP_PARAM_KEYS or EXTENSION_TYPES); unknown
+    keys are extension points, decoded generically. There are NO per-key value
+    shapes here — those are Request-param only (see p_params). When immutable is
+    True, key 0xB is an immutable container whose nested block is flattened, with
+    the delta base reset to 0 inside and 0xB after (parseExtension:3793)."""
+    prev = 0
     i = 0
     while cursor.pos < payload_end:
-        raw_type, s = cursor.read_varint()
-        abs_type = prev_type + raw_type
-        prev_type = abs_type
-        delta_str = f" (Δ={raw_type})" if raw_type else ""
-        if abs_type % 2 == 0:  # even: varint value
-            annot.add(s, cursor.pos, f"ext[{i}].type", f"{abs_type}{delta_str}")
-            val, vs = cursor.read_varint()
-            annot.add(vs, cursor.pos, f"ext[{i}].value", str(val))
-        else:  # odd: length-prefixed bytes
-            annot.add(s, cursor.pos, f"ext[{i}].type", f"{abs_type}{delta_str}")
+        raw_key, s = cursor.read_varint()
+        abs_key = prev + raw_key
+        prev = abs_key
+        delta_str = f" (Δ={raw_key})" if raw_key else ""
+        label = names.get(abs_key) or f"UNKNOWN({abs_key})"
+        key_str = f"{abs_key}{delta_str}  [{label}]"
+
+        if immutable and abs_key == 0x0B:
+            # Immutable container: length-prefixed block of nested KV pairs,
+            # flattened by moxygen. Bracket it so the boundary is visible.
+            annot.add(s, cursor.pos, f"{prefix}[{i}].{key_field}", key_str)
             vlen, vs = cursor.read_varint()
-            annot.add(vs, cursor.pos, f"ext[{i}].length", str(vlen))
+            annot.add(vs, cursor.pos, f"{prefix}[{i}].length", str(vlen))
+            block_start = cursor.pos
+            block_end = block_start + vlen
+            annot.add(
+                block_start,
+                block_start,
+                f"{prefix}[{i}].imm",
+                f"╭─ immutable block start  ({vlen} bytes, [{block_start:04x}..{block_end:04x}))",
+            )
+            p_options(
+                cursor, annot, block_end, names,
+                f"{prefix}[{i}].imm", key_field, immutable=False,
+            )
+            annot.add(
+                block_end, block_end, f"{prefix}[{i}].imm", "╰─ immutable block end"
+            )
+            prev = 0x0B
+            i += 1
+            continue
+
+        if abs_key % 2 == 0:  # even: varint value
+            annot.add(s, cursor.pos, f"{prefix}[{i}].{key_field}", key_str)
+            val, vs = cursor.read_varint()
+            annot.add(vs, cursor.pos, f"{prefix}[{i}].value", str(val))
+        else:  # odd: length-prefixed bytes
+            annot.add(s, cursor.pos, f"{prefix}[{i}].{key_field}", key_str)
+            vlen, vs = cursor.read_varint()
+            annot.add(vs, cursor.pos, f"{prefix}[{i}].length", str(vlen))
             raw = cursor.read_bytes(vlen)
             annot.add(
                 cursor.pos - vlen,
                 cursor.pos,
-                f"ext[{i}].value",
+                f"{prefix}[{i}].value",
                 repr(raw.decode("utf-8", errors="replace")),
             )
         i += 1
@@ -517,8 +583,8 @@ def parse_subscribe(cursor, annot, draft, payload_end=None):
 
 
 def parse_subscribe_ok(cursor, annot, draft, payload_end):
-    # Draft 18+: request_id is implicit from the bidi request stream context.
-    if draft < 18:
+    # Draft 17+: request_id is implicit from the bidi request stream context.
+    if draft < 17:
         val, s = cursor.read_varint()
         annot.add(s, cursor.pos, "request_id", str(val))
     val, s = cursor.read_varint()
@@ -541,13 +607,13 @@ def parse_subscribe_ok(cursor, annot, draft, payload_end):
     p_params(cursor, annot, draft, count, TRACK_PARAM_KEYS)
 
     if draft >= 16 and cursor.pos < payload_end:
-        p_extensions(cursor, annot, payload_end)
+        p_options(cursor, annot, payload_end, EXTENSION_TYPES)
 
 
 def parse_request_error(cursor, annot, draft, payload_end):
-    # Draft 18+: request_id is implicit from the bidi request stream context;
+    # Draft 17+: request_id is implicit from the bidi request stream context;
     # the receiver FIFO-correlates errors with outstanding requests.
-    if draft < 18:
+    if draft < 17:
         val, s = cursor.read_varint()
         annot.add(s, cursor.pos, "request_id", str(val))
     val, s = cursor.read_varint()
@@ -569,8 +635,8 @@ def parse_publish_namespace(cursor, annot, draft, payload_end):
 
 
 def parse_request_ok(cursor, annot, draft, payload_end):
-    # Draft 18+: request_id is implicit (per-stream).
-    if draft < 18:
+    # Draft 17+: request_id is implicit (per-stream).
+    if draft < 17:
         val, s = cursor.read_varint()
         annot.add(s, cursor.pos, "request_id", str(val))
     if draft > 14:
@@ -583,7 +649,7 @@ def parse_request_ok(cursor, annot, draft, payload_end):
     # In practice the writer only emits these for TRACK_STATUS_OK responses,
     # but the parser side just looks for trailing bytes.
     if draft >= 18 and cursor.pos < payload_end:
-        p_extensions(cursor, annot, payload_end)
+        p_options(cursor, annot, payload_end, EXTENSION_TYPES)
 
 
 def parse_namespace_or_publish_ns_error(cursor, annot, draft, payload_end):
@@ -610,8 +676,10 @@ def parse_unsubscribe(cursor, annot, draft, payload_end):
 
 
 def parse_publish_done(cursor, annot, draft, payload_end):
-    val, s = cursor.read_varint()
-    annot.add(s, cursor.pos, "request_id", str(val))
+    # Draft 17+: request_id is implicit from the bidi request stream context.
+    if draft < 17:
+        val, s = cursor.read_varint()
+        annot.add(s, cursor.pos, "request_id", str(val))
     val, s = cursor.read_varint()
     annot.add(s, cursor.pos, "status_code", str(val))
     val, s = cursor.read_varint()
@@ -777,8 +845,10 @@ def parse_fetch_cancel(cursor, annot, draft, payload_end):
 
 
 def parse_fetch_ok(cursor, annot, draft, payload_end):
-    val, s = cursor.read_varint()
-    annot.add(s, cursor.pos, "request_id", str(val))
+    # Draft 17+: request_id is implicit from the bidi request stream context.
+    if draft < 17:
+        val, s = cursor.read_varint()
+        annot.add(s, cursor.pos, "request_id", str(val))
 
     if draft < 15:
         val, s = cursor.read_uint8()
@@ -793,7 +863,7 @@ def parse_fetch_ok(cursor, annot, draft, payload_end):
     p_params(cursor, annot, draft, count, TRACK_PARAM_KEYS)
 
     if draft >= 16 and cursor.pos < payload_end:
-        p_extensions(cursor, annot, payload_end)
+        p_options(cursor, annot, payload_end, EXTENSION_TYPES)
 
 
 def parse_requests_blocked(cursor, annot, draft, payload_end):
@@ -823,7 +893,7 @@ def parse_publish(cursor, annot, draft, payload_end):
     p_params(cursor, annot, draft, count, TRACK_PARAM_KEYS)
 
     if draft >= 16 and cursor.pos < payload_end:
-        p_extensions(cursor, annot, payload_end)
+        p_options(cursor, annot, payload_end, EXTENSION_TYPES)
 
 
 def parse_publish_ok(cursor, annot, draft, payload_end):
@@ -867,7 +937,7 @@ def parse_client_setup(cursor, annot, draft, payload_end=None):
 
     count, s = cursor.read_varint()
     annot.add(s, cursor.pos, "num_params", str(count))
-    p_params(cursor, annot, draft, count, SETUP_PARAM_KEYS)
+    p_params(cursor, annot, draft, count, SETUP_PARAM_KEYS, setup=True)
 
 
 def parse_server_setup(cursor, annot, draft, payload_end=None):
@@ -877,7 +947,24 @@ def parse_server_setup(cursor, annot, draft, payload_end=None):
 
     count, s = cursor.read_varint()
     annot.add(s, cursor.pos, "num_params", str(count))
-    p_params(cursor, annot, draft, count, SETUP_PARAM_KEYS)
+    p_params(cursor, annot, draft, count, SETUP_PARAM_KEYS, setup=True)
+
+
+def parse_setup(cursor, annot, draft, payload_end):
+    # Unified SETUP (0x2f00), draft-17+. Version is negotiated via ALPN (no
+    # version list on the wire) and draft-17 dropped the Number-of-Options field,
+    # so setup options are the same count-less delta-KV grammar as extensions
+    # (MoQFramer.cpp writeSetup). Parsed with the SetupKey registry; no immutable
+    # container applies to setup.
+    p_options(
+        cursor,
+        annot,
+        payload_end,
+        SETUP_PARAM_KEYS,
+        prefix="param",
+        key_field="key",
+        immutable=False,
+    )
 
 
 PARSERS = {
@@ -911,6 +998,7 @@ PARSERS = {
     0x1F: parse_request_error,
     0x20: parse_client_setup,
     0x21: parse_server_setup,
+    0x2F00: parse_setup,
 }
 
 

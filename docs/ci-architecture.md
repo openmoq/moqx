@@ -19,7 +19,7 @@ artifact publishing, and relay deployment across the openmoq organization.
 │                                                             │
 │  ci main ──► Docker image (ghcr.io/openmoq/moqx)          │
 │              + binary tarball                                │
-│              + auto-deploy to moqx-000                       │
+│              + auto-deploy to moqx-main                      │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -50,7 +50,7 @@ facebookexperimental/moxygen  (upstream commit lands)
    Docker image pushed to GHCR, binary tarball released
         │
         ▼  deploy job (automatic)
-   moqx-000.ci.openmoq.org updated with new image
+   moqx-main.ci.openmoq.org updated with new image
 ```
 
 The full chain from upstream commit to deployed relay is fully automated.
@@ -128,12 +128,12 @@ Format check must pass before build runs.
 **Trigger:** push to main | **Time:** ~10 min
 
 ```
-check-format + build ──► publish (Docker) ──► release ──► deploy (moqx-000) ──► notify
+check-format + build ──► publish (Docker) ──► release ──► deploy (moqx-main) ──► notify
 ```
 
 - Publish builds a multi-stage Docker image (bookworm), runs smoke test, pushes to GHCR
 - Release creates/updates `snapshot-latest` with binary tarball
-- Deploy automatically updates moqx-000.ci.openmoq.org with the new image
+- Deploy automatically updates moqx-main.ci.openmoq.org with the new image
 - Notify sends Slack + email with per-job status
 
 ### 3. `moxygen sync` — Automated submodule update
@@ -159,7 +159,7 @@ Deploys a specific image tag to a named instance. Handles TLS cert
 provisioning/renewal via Route53, health check verification, Slack notification.
 
 Reserved instances:
-- `moqx-000` — CI auto-deploy target (updated automatically by `ci main`)
+- `moqx-main` — CI auto-deploy target (updated automatically by `ci main`)
 
 Developer instances (`moqx-001+`) can be added to the instance list for manual
 testing deployments.

@@ -290,5 +290,16 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      # Create the Pages deployment as the omoq-sync-bot App rather than under
+      # the personal actor GitHub attributes scheduled runs to. Keeps the
+      # deployments list owned by the bot, consistent with the rest of the org
+      # automation. Requires the App installation to have Pages: write.
+      - uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ secrets.OMOQ_APP_ID }}
+          private-key: ${{ secrets.OMOQ_APP_PRIV_KEY }}
       - id: deployment
         uses: actions/deploy-pages@v4
+        with:
+          token: ${{ steps.app-token.outputs.token }}

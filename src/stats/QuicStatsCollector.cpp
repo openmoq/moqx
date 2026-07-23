@@ -108,6 +108,7 @@ public:
   void onNewTokenIssued() override {}
   void onTokenDecryptFailure() override {}
   void onConnectionCloseZeroBytesWritten() override {}
+  void onNewConnectionAttemptRejected() override {}
   void onConnectionMigration() override {}
   void onPathAdded() override {}
   void onPathValidationSuccess() override {}
