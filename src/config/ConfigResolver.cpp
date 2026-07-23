@@ -1215,7 +1215,11 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
       if (!mlogConfig.dir.empty()) {
         std::error_code ec;
         const auto st = std::filesystem::status(mlogConfig.dir, ec);
-        if (ec) {
+        // A missing directory is not an error here: LogSetup creates it
+        // (via create_directories) before logging starts. Only reject
+        // genuine access failures (e.g. permission denied on a parent
+        // directory).
+        if (ec && st.type() != std::filesystem::file_type::not_found) {
           return folly::makeUnexpected(
               "Failed to access mlog directory '" + mlogConfig.dir + "': " + ec.message()
           );
