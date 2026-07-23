@@ -21,15 +21,19 @@ else is fetched at configure time by
 
 moqx doesn't compile moxygen in-tree; it `find_package`es an **installed** moxygen
 and builds against it — into `build/<profile>` (`build/default`, `build/san`, …).
-The only choice is where that install comes from — two equal alternatives:
+The only choice is where that install comes from:
 
+- **Prebuilt with fallback** — the prebuilt when one is published, else the source
+  build. The default choice, and what CI uses: moxygen decides what it publishes,
+  so this is the only setting that always yields a build.
 - **Prebuilt** — download the published tarball for the pinned `MOXYGEN_REV` and
-  your platform. Fast; needs a matching published platform.
+  your platform. Fast, and errors rather than compiling when there is none — take
+  it when a slow build is worse for you than a failure.
 - **From source** — compile moxygen into an install prefix, then build moqx
   against it. Works for any revision or platform, and lets you develop moxygen and
   moqx together.
 
-Either way the moqx build is identical; only the prefix differs.
+The moqx build is identical whichever it is; only the prefix differs.
 
 moxygen is itself a superbuild: its `standalone/` tree compiles Meta's
 folly/fizz/wangle/mvfst/proxygen plus the
@@ -44,7 +48,7 @@ ones: moxygen, catapult, reflect-cpp, yaml-cpp.
 The classic trilogy, each taking the profile (`default` | `san` | `tsan`,
 default `default`) as its first argument:
 
-- [`scripts/configure.sh`](scripts/configure.sh) — picks the mode, configures
+- [`scripts/configure.sh`](scripts/configure.sh) — picks where moxygen comes from, configures
   `build/<profile>` from scratch. Run once per profile; that dir's CMake cache is
   the only state.
 - [`scripts/build.sh`](scripts/build.sh) — compiles.
@@ -52,11 +56,32 @@ default `default`) as its first argument:
 
 The raw cmake is shown beside each.
 
+`configure.sh` and `build.sh` take `-j N` for compile parallelism, or `MOQX_BUILD_JOBS`
+in the environment. Either overrides the default in both directions — go well above the
+core count to farm out to distcc, below it on a host short on RAM.
+
+**Prebuilt with fallback** — the default:
+
+```bash
+scripts/configure.sh --moxygen prebuilt-with-fallback
+scripts/build.sh                                      # compile moqx
+scripts/test.sh
+```
+Attempts the prebuilt and builds from source if that fails for any reason,
+including a transient one — a slow build beats a failed one, and re-running is
+cheaper than a guess about which failures are permanent.
+
+No raw-cmake equivalent: the two paths are separate CMake projects, and choosing
+between them is what the wrapper is for.
+
+`MOQX_MOXYGEN_FALLBACK=off` reduces it to `--moxygen prebuilt`, for when a bad pin
+would otherwise have every CI lane compiling folly.
+
 **Prebuilt:**
 
 ```bash
-scripts/configure.sh --mode prebuilt   # download prebuilt moxygen, configure
-scripts/build.sh                       # compile moqx
+scripts/configure.sh --moxygen prebuilt   # download prebuilt moxygen, configure
+scripts/build.sh                          # compile moqx
 scripts/test.sh
 ```
 Raw equivalent — moqx downloads the prebuilt itself at configure time:
@@ -73,8 +98,8 @@ is on [openmoq/moxygen's releases](https://github.com/openmoq/moxygen/releases).
 **From source:**
 
 ```bash
-scripts/configure.sh --mode from-source   # build moxygen -> a prefix, configure moqx against it
-scripts/build.sh                          # compile moqx
+scripts/configure.sh --moxygen from-source   # build moxygen -> a prefix, configure moqx against it
+scripts/build.sh                             # compile moqx
 scripts/test.sh
 ```
 Raw equivalent — the [superbuild](superbuild/) builds the moxygen prefix, then the
@@ -87,13 +112,14 @@ cmake --preset default -DMOQX_MOXYGEN_PREBUILT=OFF \
 cmake --build build/default
 ```
 
+
 ## Developing moxygen + moqx together
 
 Point `configure.sh` at a local moxygen checkout **once**, then iterate with
 two builds:
 
 ```bash
-scripts/configure.sh --mode from-source --moxygen-dir ~/src/moxygen   # once
+scripts/configure.sh --moxygen from-source --moxygen-dir ~/src/moxygen   # once
 # edit ~/src/moxygen/… then:
 cmake --build .scratch/moxygen-build    # recompile + reinstall moxygen (incremental)
 scripts/build.sh                        # relink moqx against the refreshed install
@@ -111,32 +137,45 @@ build — it compiles in-tree, no prefix needed.
 ## Sanitizers
 
 ```bash
-scripts/configure.sh san --mode from-source    # or tsan
+scripts/configure.sh san --moxygen from-source    # or tsan
 scripts/build.sh san
 scripts/test.sh san
 ```
 
-Sanitizers must instrument the dependencies too, so `san --mode from-source`
+Sanitizers must instrument the dependencies too, so `san --moxygen from-source`
 builds an instrumented moxygen as well; moqx lands in `build/san` (or
 `build/tsan`).
+
+`prebuilt` and `prebuilt-with-fallback` are refused for these profiles, since
+neither can produce an instrumented moxygen. `MOQX_ALLOW_UNINSTRUMENTED_DEPS=1`
+overrides that to sanitize moqx's own TUs only — what the per-PR asan lane does.
+Its fallback builds the uninstrumented stack too, so a missing prebuilt cannot
+quietly promote that lane to a full instrumented build.
+
+Instrumented TUs peak over 2 GB each, enough for the core count to OOM the compiler
+on a smaller host, so these profiles derate the default job count by free RAM. `-j` and
+`MOQX_BUILD_JOBS` still win outright.
 
 ## Custom presets
 
 Profiles are just CMake presets — add your own in `CMakeUserPresets.json`
 (gitignored), inherit `default` (that keeps `binaryDir` at `build/<name>`,
 which the scripts rely on), and the trilogy accepts its name:
-`scripts/configure.sh my-preset --mode prebuilt && scripts/build.sh my-preset`.
+`scripts/configure.sh my-preset --moxygen prebuilt-with-fallback && scripts/build.sh my-preset`.
 A preset that enables `MOQX_ENABLE_SANITIZERS` or `MOQX_ENABLE_TSAN` gets a
-matching instrumented moxygen from `--mode from-source` — derived from the
+matching instrumented moxygen from `--moxygen from-source` — derived from the
 preset's own cache variables, overridable with the `MOQX_MOXYGEN_PROFILE` env
 var; other presets build/link the default-flag moxygen.
 
 ## Docker, formatting, IDE, CI
 
-- **Docker** — `docker/Dockerfile` builds via the same `cmake --preset` flow.
+- **Docker** — `docker/Dockerfile` builds via the same `cmake --preset` flow, with
+  targets `relay` (default) and `interop-client`. Its `moxygen` stage resolves the
+  prefix the same way `prebuilt-with-fallback` does, and is keyed on the pin rather
+  than on `src/` so a source change reuses it.
 - **Format / lint** (CI requires clang-format-19) — `scripts/dev/format.sh [--check]`,
   `scripts/dev/lint.sh build/default`.
 - **CLion** — point its CMake profile at `cmake --preset default`; for from-source,
-  run `scripts/configure.sh --mode from-source` first, then add
+  run `scripts/configure.sh --moxygen from-source` first, then add
   `-DMOQX_MOXYGEN_PREBUILT=OFF -DCMAKE_PREFIX_PATH=<prefix>` to the profile.
 - **CI / automation** — [docs/ci-architecture.md](docs/ci-architecture.md).
