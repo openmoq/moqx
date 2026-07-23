@@ -52,6 +52,10 @@ default `default`) as its first argument:
 
 The raw cmake is shown beside each.
 
+`configure.sh` and `build.sh` take `-j N` for compile parallelism, or `MOQX_BUILD_JOBS`
+in the environment. Either overrides the default in both directions — go well above the
+core count to farm out to distcc, below it on a host short on RAM.
+
 **Prebuilt:**
 
 ```bash
@@ -119,6 +123,10 @@ scripts/test.sh san
 Sanitizers must instrument the dependencies too, so `san --mode from-source`
 builds an instrumented moxygen as well; moqx lands in `build/san` (or
 `build/tsan`).
+
+Instrumented TUs peak over 2 GB each, enough for the core count to OOM the compiler
+on a smaller host, so these profiles derate the default job count by free RAM. `-j` and
+`MOQX_BUILD_JOBS` still win outright.
 
 ## Custom presets
 
