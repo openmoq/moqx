@@ -1,0 +1,56 @@
+# json_exporter config for the moqx stats stack.
+#
+# Turns the relay admin /state JSON (which the aggregate /metrics does NOT carry)
+# into per-track Prometheus series so Grafana can graph subscribers per track
+# over time. Prometheus scrapes this exporter with ?module=moqx&target=<state-url>
+# (see the moqx-state job in prometheus.yml).
+#
+# NOTE: per-track series scale with the number of distinct track names, so this
+# is higher-cardinality than the relay's own metrics — scraped at 15s to keep
+# the sample rate down.
+modules:
+  moqx:
+    metrics:
+      # One series per active subscription entry, keyed by track name.
+      - name: moqx_track
+        type: object
+        help: Per-track subscription stats from the relay admin /state
+        path: '{.services.default.subscriptions[*]}'
+        labels:
+          track: '{.track_name}'
+          is_publish: '{.is_publish}'
+          # namespace is a JSON array (e.g. ["com.wowza","moq","moqtest_all"]);
+          # slash-join it into a browsable path label (separator between
+          # elements only — no trailing "/").
+          namespace: '{.namespace[0]}{range .namespace[1:]}/{@}{end}'
+        values:
+          subscribers: '{.subscribers}'
+          forwarding_subscribers: '{.forwarding_subscribers}'
+      # Top-level scalars for cross-checking against the aggregate /metrics.
+      - name: moqx_state_active_sessions
+        help: Active sessions reported by the admin /state
+        path: '{.active_sessions}'
+      # Relay identity — carries relay_id as a label so the host-info card can
+      # show it. Value is active_sessions (handy scalar to hang the label on).
+      - name: moqx_relay
+        type: object
+        help: Relay identity from the admin /state
+        path: '{$}'
+        labels:
+          relay_id: '{.relay_id}'
+        values:
+          active_sessions: '{.active_sessions}'
+  # Relay build info from the admin /info ({"service":"moqx","version":"x.y.z"}).
+  # The value is the jsonpath literal 1 — this is a labels-only info metric
+  # (moqx_build_info{service,version} 1), standard build-info gauge pattern.
+  moqx_info:
+    metrics:
+      - name: moqx_build
+        type: object
+        help: Relay build info from the admin /info
+        path: '{$}'
+        labels:
+          service: '{.service}'
+          version: '{.version}'
+        values:
+          info: '1'

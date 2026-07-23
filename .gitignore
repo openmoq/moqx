@@ -38,3 +38,4 @@ docker/cloudflare.ini
 
 # gh-pages dashboard (lives on gh-pages branch, not main)
 /gh-pages/
+docker/grafana/provisioning/dashboards/archive/

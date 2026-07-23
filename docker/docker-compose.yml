@@ -16,6 +16,11 @@ name: moqx
 #   Run the relay:
 #     docker compose -f docker/docker-compose.yml up -d
 #
+#   Run the relay + stats stack (TLS-terminated dashboard/Prometheus/Grafana):
+#     Set STATS_USER / STATS_PASSWORD (basic auth) in docker/.env, then:
+#     docker compose -f docker/docker-compose.yml --profile stats up -d
+#     → https://${DOMAIN}/ (live dashboard) · /grafana/ · /prometheus/ · /admin/
+#
 #   Custom / self-signed cert (no certbot):
 #     Set MOQX_CERT and MOQX_KEY in docker/.env to point to your mounted cert files.
 
@@ -24,10 +29,20 @@ services:
     container_name: moqx
     image: ghcr.io/openmoq/moqx:latest
     restart: unless-stopped
+    # Resource allocation for the relay (env-overridable). Defaults suit the CI
+    # load-test runner: 8 cores + generous memory. On smaller hosts a cpus value
+    # above the core count is a no-op, and the memory limit is far above the
+    # relay's real footprint (~tens of MB), so it only guards against runaway.
+    cpus: ${MOQX_CPUS:-8}
+    mem_limit: ${MOQX_MEM:-8g}
+    mem_reservation: ${MOQX_MEM_RESERVATION:-2g}
     ports:
       - "${MOQX_PORT:-4433}:${MOQX_PORT:-4433}/udp"
       - "${MOQX_PICO_PORT:-4434}:${MOQX_PICO_PORT:-4434}/udp"
-      - "${MOQX_ADMIN_PORT:-8000}:${MOQX_ADMIN_PORT:-8000}/tcp"
+      # Admin (/info /state /config /metrics) — localhost only. The deploy
+      # health check hits 127.0.0.1; nginx reaches it over the internal network
+      # (moqx:8000), so it never needs a public bind.
+      - "127.0.0.1:${MOQX_ADMIN_PORT:-8000}:${MOQX_ADMIN_PORT:-8000}/tcp"
     volumes:
       - ${MOQX_CERTS_DIR:-/etc/letsencrypt}:/certs:ro
       - moqx-coredumps:/var/coredumps
@@ -41,10 +56,20 @@ services:
       MOQX_ADMIN_PORT: ${MOQX_ADMIN_PORT:-8000}
       MOQX_MAX_TRACKS: ${MOQX_MAX_TRACKS:-1000}
       MOQX_MAX_GROUPS: ${MOQX_MAX_GROUPS:-100}
-      MOQX_LOG_LEVEL: ${MOQX_LOG_LEVEL:-0}
-      MOQX_VERBOSE: ${MOQX_VERBOSE:-0}
+      # Log level for the whole stack via folly XLOG (empty = baseline INFO).
+      # e.g. MOQX_LOGGING=DBG2 or MOQX_LOGGING=INFO,quic=WARN. moqx promotes MOQX_LOGGING
+      # to folly's FOLLY_LOGGING internally — see docs/logging.md.
+      MOQX_LOGGING: ${MOQX_LOGGING:-}
+      # IO worker threads — default matches the entrypoint (4); set to the core
+      # count (e.g. 8) for sub-maximal load testing on the CI runner.
+      MOQX_THREADS: ${MOQX_THREADS:-4}
     ulimits:
       core: -1
+      # QUIC multiplexes many connections over few UDP sockets, so fd pressure is
+      # modest — but reuseport-per-thread + streams warrant a high ceiling.
+      nofile:
+        soft: 1048576
+        hard: 1048576
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://127.0.0.1:${MOQX_ADMIN_PORT:-8000}/info"]
       interval: 15s
@@ -108,5 +133,207 @@ services:
       -d ${DOMAIN}
     profiles: [certbot-route53]
 
+  # ── Stats stack (profile: stats) ─────────────────────────────────────────
+  # nginx terminates TLS (reusing the relay's Let's Encrypt cert) and reverse-
+  # proxies the analytics/admin screens behind HTTP basic auth. Prometheus
+  # scrapes the relay's /metrics; Grafana renders dashboards.
+  #
+  #   docker compose --profile stats up -d
+  #
+  # Bound to 127.0.0.1 by default (reach it via SSH tunnel on a locked-down
+  # host; set STATS_BIND=0.0.0.0 to expose publicly). Routes, basic-auth except
+  # /healthz:
+  #   /             → live metrics dashboard (tools/metrics-dashboard.html)
+  #   /metrics      → relay /metrics (same-origin data source for the dashboard)
+  #   /admin/       → relay admin (/info, /state, /config)
+  #   /grafana/     → Grafana dashboards
+  #   /prometheus/  → Prometheus UI/API
+
+  nginx:
+    container_name: moqx-proxy
+    image: nginx:stable
+    restart: unless-stopped
+    profiles: [stats]
+    depends_on: [grafana, prometheus, moqx]
+    ports:
+      # Private stats surface — localhost only (tunnel). Full dashboard/admin.
+      - "${STATS_BIND:-127.0.0.1}:${STATS_HTTPS_PORT:-443}:443/tcp"
+      - "${STATS_BIND:-127.0.0.1}:${STATS_HTTP_PORT:-80}:80/tcp"
+      # Public dashboard surface — Grafana public-dashboard routes ONLY.
+      # Default 127.0.0.1 = off; set STATS_PUBLIC_BIND=0.0.0.0 to go public.
+      - "${STATS_PUBLIC_BIND:-127.0.0.1}:${STATS_PUBLIC_PORT:-4533}:${STATS_PUBLIC_PORT:-4533}/tcp"
+    environment:
+      DOMAIN: ${DOMAIN}
+      STATS_USER: ${STATS_USER:-admin}
+      STATS_PASSWORD: ${STATS_PASSWORD:-}
+      STATS_HTPASSWD: ${STATS_HTPASSWD:-}
+      STATS_PUBLIC_PORT: ${STATS_PUBLIC_PORT:-4533}
+    volumes:
+      - ${MOQX_CERTS_DIR:-/etc/letsencrypt}:/certs:ro
+      - ./nginx/templates:/etc/nginx/templates:ro
+      - ./nginx/40-htpasswd.sh:/docker-entrypoint.d/40-htpasswd.sh:ro
+      - ./nginx/denylist.conf:/etc/nginx/denylist.conf:ro
+      # Served at / — afrind's self-contained live dashboard (tools/, PR #479).
+      - ../tools/metrics-dashboard.html:/usr/share/nginx/html/metrics-dashboard.html:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  prometheus:
+    container_name: moqx-prometheus
+    image: prom/prometheus:v2.53.0
+    restart: unless-stopped
+    profiles: [stats]
+    # node-exporter runs in the host network namespace (see below), so it is not
+    # reachable by compose-service name. Reach it via the host gateway instead.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-365d}
+      # Hard disk cap (whichever of time/size hits first wins). Relay metrics
+      # are fixed-cardinality (~450 series) so at 3s scrape this stays well under
+      # 10G/yr; the cap is a safety valve against any future high-cardinality metric.
+      - --storage.tsdb.retention.size=${PROMETHEUS_RETENTION_SIZE:-10GB}
+      - --web.external-url=https://${DOMAIN}/prometheus/
+      - --web.route-prefix=/
+    mem_limit: ${PROMETHEUS_MEM:-2g}
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # TSDB backing store. Defaults to the named volume (persists across
+      # redeploys — `compose down` without -v keeps it). Set PROMETHEUS_DATA_DIR
+      # to an absolute host path to pin it on a specific/larger disk instead.
+      - ${PROMETHEUS_DATA_DIR:-prometheus-data}:/prometheus
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  grafana:
+    container_name: moqx-grafana
+    image: grafana/grafana:12.4.6
+    restart: unless-stopped
+    profiles: [stats]
+    depends_on: [prometheus]
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      # No shipped password default (was ":-admin" — a weak checked-in default).
+      # Required for the stats profile: the deploy sets it from a repo secret,
+      # local dev sets it in docker/.env. The login is never exposed publicly
+      # (nginx gates it) — but use a strong value regardless.
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-}
+      GF_SERVER_ROOT_URL: https://${DOMAIN}/grafana/
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      # Land on the provisioned relay dashboard (read-only — see provider.yml).
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/provisioning/dashboards/moqx-overview.json
+      # Public dashboards: allow the per-dashboard tokenized public URL (served
+      # only via the nginx public port). Anonymous ORG access stays OFF — that
+      # would expose the whole instance; public dashboards don't need it.
+      GF_PUBLIC_DASHBOARDS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      # Volkov Labs "Business Text" panel — renders the host-info card as a
+      # formatted HTML template (clean, integrated) instead of chunky stat tiles.
+      # Business Charts (ECharts) drives the CPU/RAM/HD arc gauges on the banner.
+      GF_INSTALL_PLUGINS: marcusolsson-dynamictext-panel,volkovlabs-echarts-panel
+    mem_limit: ${GRAFANA_MEM:-1g}
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Host metrics for the dashboard's CPU / NIC-throughput / memory panels
+  # (the relay /metrics has none of these). Reads the host's proc/sys read-only.
+  # Only the collectors the dashboard uses are enabled, to keep series count —
+  # and therefore Prometheus disk — low.
+  #
+  # network_mode: host is REQUIRED for the netdev collector: /proc/net/dev is
+  # network-namespace-scoped, so a bridged container (even with pid:host and a
+  # /host/proc mount) only sees its own veth, never the host's real NIC (eth0).
+  # In the host netns it sees eth0 — the true platform ingress/egress. Because it
+  # then leaves the compose bridge, Prometheus reaches it via host.docker.internal
+  # (see the prometheus extra_hosts + the `node` job in prometheus.yml). Port 9100
+  # is bound host-wide but ufw default-denies it externally (only 22/443/4433:4533
+  # are open), and node metrics are non-secret on this open test relay regardless.
+  node-exporter:
+    container_name: moqx-node-exporter
+    image: prom/node-exporter:v1.8.2
+    restart: unless-stopped
+    profiles: [stats]
+    pid: host
+    network_mode: host
+    # Share the host UTS namespace too, so --collector.uname reports the host's
+    # nodename (not this container's id) for the host-info card.
+    uts: host
+    command:
+      - --web.listen-address=:9100
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --path.rootfs=/host
+      - --collector.disable-defaults
+      - --collector.cpu
+      - --collector.netdev
+      - --collector.meminfo
+      - --collector.loadavg
+      # uname → node_uname_info (hostname/arch/kernel) for the host-info panel.
+      - --collector.uname
+      # filesystem → node_filesystem_* for the disk (HD) gauge.
+      - --collector.filesystem
+      # cpu.info → node_cpu_info (CPU model string for the host banner).
+      - --collector.cpu.info
+      # os → node_os_info (distro pretty-name for the host banner; reads the
+      # host os-release bind-mounted below).
+      - --collector.os
+      # stat → node_boot_time_seconds (host uptime for the host banner).
+      - --collector.stat
+      # netstat + sockstat → kernel UDP counters (Udp_RcvbufErrors etc.) and
+      # UDP socket memory for the platform "kernel UDP health" panel — kernel-
+      # level datagram drops happen before the relay sees the packet.
+      - --collector.netstat
+      - --collector.sockstat
+    volumes:
+      # /proc + /sys for cpu/netdev/meminfo/loadavg; rootfs (ro) for the
+      # filesystem collector to see the host's disks (reported under /host,
+      # de-prefixed to real mountpoints by --path.rootfs).
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/host:ro
+      # The os collector reads /etc/os-release at its container-local path (it
+      # is not --path.rootfs-prefixed), so hand it the host's copy directly.
+      - /etc/os-release:/etc/os-release:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Turns the relay admin /state JSON into per-track Prometheus series (the
+  # aggregate /metrics has no per-track labels). Prometheus scrapes it with a
+  # target= param pointing at the relay /state (see the moqx-state job).
+  json-exporter:
+    container_name: moqx-json-exporter
+    image: quay.io/prometheuscommunity/json-exporter:v0.6.0
+    restart: unless-stopped
+    profiles: [stats]
+    command:
+      - --config.file=/config/json-exporter.yml
+    volumes:
+      - ./json-exporter/json-exporter.yml:/config/json-exporter.yml:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 volumes:
   moqx-coredumps:
+  prometheus-data:
+  grafana-data:

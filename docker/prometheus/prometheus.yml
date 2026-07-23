@@ -1,0 +1,74 @@
+# Prometheus scrape config for the moqx stats stack.
+# The relay exposes Prometheus-format metrics on its admin port (/metrics).
+#
+# The relay is scraped at 3s for fine-grained perf history; the relay's metrics
+# are fixed-cardinality (~450 series, no per-connection/track labels), so 3s ×
+# 365d stays well under the 10G disk cap. Prometheus's own self-metrics are
+# scraped coarsely (60s) — they don't need fine resolution and this keeps the
+# total sample rate (and disk) down.
+global:
+  scrape_interval: 3s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: moqx-relay
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['moqx:8000']
+        labels:
+          instance: moqx-relay
+
+  # Host metrics (CPU / NIC / memory) for the dashboard's host panels. 5s so
+  # host CPU/NIC saturation lines up with the 3s relay data during load tests.
+  # Relay 3s + host 5s ≈ 12 GB/yr; the CI deploy sets PROMETHEUS_RETENTION_SIZE
+  # to 20 GB so the 365d time limit (not the size cap) bounds history.
+  - job_name: node
+    scrape_interval: 5s
+    static_configs:
+      # node-exporter runs in the host network namespace (so netdev sees the real
+      # host NIC, not a container veth), hence it's reached via the host gateway
+      # rather than the compose-service name. See docker-compose.yml.
+      - targets: ['host.docker.internal:9100']
+        labels:
+          instance: moqx-host
+
+  # Per-track subscriber series, via json_exporter scraping the relay admin
+  # /state (the aggregate /metrics has no per-track labels). Probe pattern:
+  # Prometheus hits json-exporter:7979/probe with target=<relay /state>. 15s
+  # because per-track cardinality scales with the number of distinct tracks.
+  - job_name: moqx-state
+    metrics_path: /probe
+    scrape_interval: 15s
+    params:
+      module: [moqx]
+    static_configs:
+      - targets: ['http://moqx:8000/state']
+        labels:
+          instance: moqx-relay
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - target_label: __address__
+        replacement: json-exporter:7979
+
+  - job_name: prometheus
+    scrape_interval: 60s
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Relay build info (version label for the host banner), via json_exporter
+  # scraping the admin /info. Effectively static — scraped coarsely.
+  - job_name: moqx-info
+    metrics_path: /probe
+    scrape_interval: 60s
+    params:
+      module: [moqx_info]
+    static_configs:
+      - targets: ['http://moqx:8000/info']
+        labels:
+          instance: moqx-relay
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - target_label: __address__
+        replacement: json-exporter:7979

@@ -32,6 +32,7 @@ FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libunwind8 libsodium23 libboost-context1.74.0 \
         libgoogle-glog0v6 libgflags2.2 libdouble-conversion3 \
+        libjemalloc2 \
         curl gettext-base \
     && rm -rf /var/lib/apt/lists/*
 

@@ -1,7 +1,7 @@
 name: deploy relay
 
 # Ops controls for the CI relay (moqx-main.ci.openmoq.org + moqx-000 alias).
-# Restart, redeploy with a specific image tag, or change verbose level.
+# Restart, redeploy with a specific image tag, or change the log level.
 
 on:
   workflow_dispatch:
@@ -12,25 +12,32 @@ on:
         type: boolean
         default: false
       image_tag:
-        description: "Docker image tag (default: derived from branch — main→latest, release/X→X)"
+        description: "Image tag (default derived from branch)"
         required: false
         default: ""
         type: string
       domain:
-        description: "DNS hostname (default: derived from branch — main→moqx-main, release/X→moqx-X)"
+        description: "Hostname (default derived from branch)"
         required: false
         default: ""
         type: string
-      verbose:
-        description: "GLOG verbose level (0=off, 1-3=increasing detail)"
+      logging:
+        description: "Log level (default INFO)"
         required: false
-        default: "0"
+        default: "default"
         type: choice
         options:
-          - "0"
-          - "1"
-          - "2"
-          - "3"
+          - "default"
+          - "WARN"
+          - "DBG1"
+          - "DBG2"
+          - "DBG3"
+          - "DBG4"
+      enable_stats:
+        description: "Enable stats dashboard (default enabled)"
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -65,6 +72,11 @@ jobs:
 
           DOMAIN="${{ inputs.domain }}"
           DOMAIN="${DOMAIN:-moqx-${LABEL}.ci.openmoq.org}"
+          # Qualify a bare label (no dot) into the CI zone, so an explicit
+          # `domain=moqx-main` works the same as the full FQDN.
+          if [[ "$DOMAIN" != *.* ]]; then
+            DOMAIN="${DOMAIN}.ci.openmoq.org"
+          fi
 
           echo "image_tag=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
           echo "domain=$DOMAIN" >> "$GITHUB_OUTPUT"
@@ -126,73 +138,52 @@ jobs:
         working-directory: docker
         env:
           RESTART_ONLY: ${{ inputs.restart_only }}
-          VERBOSE: ${{ inputs.verbose }}
+          LOGGING: ${{ inputs.logging }}
           DOMAIN: ${{ steps.target.outputs.domain }}
           IMAGE_TAG: ${{ steps.target.outputs.image_tag }}
           AWS_ACCESS_KEY_ID: ${{ secrets.OMOQ_CERTBOT_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.OMOQ_CERTBOT_SECRET_ACCESS_KEY }}
+          ENABLE_STATS: ${{ inputs.enable_stats }}
+          STATS_USER: ${{ secrets.STATS_USER }}
+          STATS_PASSWORD: ${{ secrets.STATS_PASSWORD }}
+          GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
         run: |
           if [ "$RESTART_ONLY" = "true" ]; then
             echo "==> Restarting relay..."
             docker compose restart moqx
-          else
-            # Write .env
-            cat > .env <<EOF
-            DOMAIN=${DOMAIN}
-            CERTBOT_EMAIL=gmarzot@openmoq.org
-            MOQX_PORT=${RELAY_PORT}
-            MOQX_ADMIN_PORT=${ADMIN_PORT}
-            MOQX_LOG_LEVEL=0
-            MOQX_VERBOSE=${VERBOSE}
-          EOF
-            sed -i 's/^[[:space:]]*//' .env
-
-            # Ensure TLS cert
-            CERT="/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
-            if [ ! -f "$CERT" ]; then
-              echo "::warning::No cert for ${DOMAIN} — provisioning via Route53"
-              sudo -E certbot certonly --dns-route53 \
-                -d "$DOMAIN" --non-interactive --agree-tos \
-                --email gmarzot@openmoq.org
-            elif ! sudo openssl x509 -in "$CERT" -noout -checkend 2592000 2>/dev/null; then
-              echo "::warning::Cert for ${DOMAIN} expires within 30 days — renewing"
-              sudo -E certbot renew --cert-name "$DOMAIN"
-            else
-              echo "Cert for ${DOMAIN} is valid"
-            fi
-
-            # Pull and deploy
-            docker pull "ghcr.io/${{ github.repository }}:${IMAGE_TAG}"
-
-            IMAGE="ghcr.io/${{ github.repository }}:${IMAGE_TAG}"
-            if [ "$IMAGE_TAG" != "latest" ]; then
-              docker tag "$IMAGE" "ghcr.io/${{ github.repository }}:latest"
-            fi
-
-            echo "==> Stopping existing container (if any)..."
-            docker compose down --remove-orphans 2>/dev/null || true
-            docker rm -f moqx logmon 2>/dev/null || true
-
-            echo "==> Starting relay on ${DOMAIN}:${RELAY_PORT}..."
-            docker compose up -d
+            for i in $(seq 1 30); do
+              curl -sf "http://127.0.0.1:${ADMIN_PORT}/info" >/dev/null 2>&1 && break
+              sleep 1
+              [ "$i" -eq 30 ] && { echo "::error::relay did not respond after restart"; docker compose logs moqx; exit 1; }
+            done
+            echo "==> Relay restarted: $(curl -sf http://127.0.0.1:${ADMIN_PORT}/info)"
+            exit 0
           fi
 
-          # Health check (both paths)
-          echo "==> Waiting for admin endpoint..."
-          for i in $(seq 1 30); do
-            if curl -sf http://127.0.0.1:${ADMIN_PORT}/info >/dev/null 2>&1; then
-              break
-            fi
-            sleep 1
-            if [ "$i" -eq 30 ]; then
-              echo "::error::Admin endpoint did not respond within 30s"
-              docker compose logs moqx
-              exit 1
-            fi
-          done
+          # folly XLOG override ("default" from the dialog = no override).
+          LOGGING_CFG=""
+          [ "${LOGGING}" != "default" ] && LOGGING_CFG="${LOGGING}"
 
-          RESP=$(curl -sf http://127.0.0.1:${ADMIN_PORT}/info)
-          echo "==> Relay running: $RESP"
+          # Ensure TLS cert
+          CERT="/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
+          if [ ! -f "$CERT" ]; then
+            echo "::warning::No cert for ${DOMAIN} — provisioning via Route53"
+            sudo -E certbot certonly --dns-route53 \
+              -d "$DOMAIN" --non-interactive --agree-tos \
+              --email gmarzot@openmoq.org
+          elif ! sudo openssl x509 -in "$CERT" -noout -checkend 2592000 2>/dev/null; then
+            echo "::warning::Cert for ${DOMAIN} expires within 30 days — renewing"
+            sudo -E certbot renew --cert-name "$DOMAIN"
+          else
+            echo "Cert for ${DOMAIN} is valid"
+          fi
+
+          # Deploy via the shared core (same script ci-main uses): writes .env,
+          # pulls IMAGE_TAG (retagged :latest for compose), brings up the relay
+          # + stats + public dashboard when ENABLE_STATS, health check, publish.
+          PULL_IMAGE="ghcr.io/${{ github.repository }}:${IMAGE_TAG}" \
+          MOQX_LOGGING="$LOGGING_CFG" \
+          bash relay-deploy.sh
 
       - name: Notify Slack
         if: always()
