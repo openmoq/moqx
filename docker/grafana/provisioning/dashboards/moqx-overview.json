@@ -1245,25 +1245,7 @@
             ]
           }
         },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "namespace"
-            },
-            "properties": [
-              {
-                "id": "links",
-                "value": [
-                  {
-                    "title": "Scope to this namespace",
-                    "url": "/grafana/d/moqx-overview/moqx-relay-overview?var-namespace=${__data.fields.namespace}&var-track=$__all"
-                  }
-                ]
-              }
-            ]
-          }
-        ]
+        "overrides": []
       },
       "gridPos": {
         "h": 8,
@@ -1367,25 +1349,7 @@
             ]
           }
         },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "track"
-            },
-            "properties": [
-              {
-                "id": "links",
-                "value": [
-                  {
-                    "title": "Scope to this track",
-                    "url": "/grafana/d/moqx-overview/moqx-relay-overview?var-namespace=${__data.fields.namespace}&var-track=${__data.fields.track}"
-                  }
-                ]
-              }
-            ]
-          }
-        ]
+        "overrides": []
       },
       "gridPos": {
         "h": 8,
