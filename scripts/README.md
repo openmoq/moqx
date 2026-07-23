@@ -1,12 +1,21 @@
 # moqx scripts
 
-Helper scripts for running and benchmarking a moqx relay. Run them from the
-repository root.
+Helper scripts for building, running and benchmarking a moqx relay. Run them
+from the repository root.
+
+- Top level — the build lifecycle: [`configure.sh`](configure.sh),
+  [`build.sh`](build.sh), [`test.sh`](test.sh) (see [BUILD.md](../BUILD.md)),
+  plus [`install-system-deps.sh`](install-system-deps.sh) and
+  [`moqx-run.sh`](moqx-run.sh) (below).
+- [`perf/`](perf/) — perf testing: local + CI harnesses, metrics, comparison.
+- [`dev/`](dev/) — maintenance: format/lint, upstream sync, diagnostics.
+- [`lib/`](lib/) — sourced by the above, not run directly.
+- Docker helpers live in [`/docker`](../docker) next to the Dockerfiles.
 
 ## Relay quickstart
 
 Run a relay with [`moqx-run.sh`](moqx-run.sh). It fills
-[`config.bench.yaml`](config.bench.yaml) (a template with sensible defaults)
+[`perf/config.bench.yaml`](perf/config.bench.yaml) (a template with sensible defaults)
 and serves it. Override anything with a flag or env var — you rarely need to.
 
 ### Simplest possible
@@ -74,14 +83,14 @@ Full option list: `./scripts/moqx-run.sh --help`.
 
 ## Other scripts
 
-- [`perf-test.sh`](perf-test.sh) — relay throughput / subscriber-ramp perf test
-  (drives the relay via `moqx-run.sh`). See `./scripts/perf-test.sh` header for
+- [`perf/perf-test.sh`](perf/perf-test.sh) — relay throughput / subscriber-ramp perf test
+  (drives the relay via `moqx-run.sh`). See `./scripts/perf/perf-test.sh` header for
   options; short flags `-s`/`-d`/`-t`/`-l`/`-j` mirror the common ones.
-- [`perf-metrics.sh`](perf-metrics.sh) — generic `/metrics` poller; logs the relay's
+- [`perf/perf-metrics.sh`](perf/perf-metrics.sh) — generic `/metrics` poller; logs the relay's
   Prometheus metrics to a file (standalone, or via `perf-test.sh --metrics`). For a
   live graphical view, open [`../tools/metrics-dashboard.html`](../tools/metrics-dashboard.html)
   in a browser — a self-contained dashboard that scrapes the relay `/metrics` (plus
   node_exporter host metrics and moqperf client latency) once per second. See that
   file's header for endpoint/CORS setup.
-- [`config.bench.yaml`](config.bench.yaml) — the relay config template
+- [`perf/config.bench.yaml`](perf/config.bench.yaml) — the relay config template
   `moqx-run.sh` renders.

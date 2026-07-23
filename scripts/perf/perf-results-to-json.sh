@@ -2,7 +2,7 @@
 # perf-results-to-json.sh — Parse moqperf_test_client output and metrics
 # into a structured JSON results file for trend tracking.
 #
-# Usage: scripts/perf-results-to-json.sh [options]
+# Usage: scripts/perf/perf-results-to-json.sh [options]
 #   --client-output PATH   Path to client stdout capture
 #   --metrics-log PATH     Path to metrics TSV log (optional)
 #   --commit SHA           Git commit SHA
