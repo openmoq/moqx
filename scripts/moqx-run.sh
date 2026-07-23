@@ -2,7 +2,7 @@
 # Local moqx CLI launcher for bench/scaling runs.
 #
 # Resolves the ${MOQX_*}/${DOMAIN} placeholders in a config template
-# (default scripts/config.bench.yaml) from CLI flags > .env > built-in
+# (default scripts/perf/config.bench.yaml) from CLI flags > .env > built-in
 # defaults, then serves the resolved config. Reads a local .env if present.
 set -euo pipefail
 
@@ -54,9 +54,9 @@ Listener (templated into the config; CLI > .env > default):
 
 Targeting:
       --subcmd CMD          moqx subcommand (default: serve)
-      --config FILE         config YAML template (default: scripts/config.bench.yaml)
+      --config FILE         config YAML template (default: scripts/perf/config.bench.yaml)
       --env FILE            alternate .env file (default: scripts/.env if present)
-      --bin FILE            moqx binary path (default: <project>/build/moqx)
+      --bin FILE            moqx binary path (default: <project>/build/default/moqx)
 
 Execution:
   -j, --jemalloc [PATH]     LD_PRELOAD jemalloc for the relay (~10% speedup).
@@ -207,8 +207,8 @@ if [[ -f "$ENV_FILE" ]]; then
 fi
 
 # ── Paths (CLI > env > defaults) ─────────────────────────────────────────
-MOQX_BIN="${CLI_BIN:-${MOQX_BIN:-$PROJECT_ROOT/build/moqx}}"
-CONFIG_TEMPLATE="${CLI_CONFIG:-${MOQX_CONFIG:-$SCRIPT_DIR/config.bench.yaml}}"
+MOQX_BIN="${CLI_BIN:-${MOQX_BIN:-$PROJECT_ROOT/build/default/moqx}}"
+CONFIG_TEMPLATE="${CLI_CONFIG:-${MOQX_CONFIG:-$SCRIPT_DIR/perf/config.bench.yaml}}"
 
 [[ -x "$MOQX_BIN" ]]        || { echo "moqx binary not found: $MOQX_BIN" >&2; exit 1; }
 [[ -f "$CONFIG_TEMPLATE" ]] || { echo "config not found: $CONFIG_TEMPLATE" >&2; exit 1; }
@@ -280,9 +280,29 @@ fi
 export MOQX_INSECURE
 
 # ── Resolve placeholders into a temp config ───────────────────────────────
-# Fixed path by default; override (e.g. per perf run, to avoid concurrent
-# clobber) with MOQX_RESOLVED_CONFIG.
-RESOLVED_CONFIG="${MOQX_RESOLVED_CONFIG:-/tmp/moqx-resolved.yaml}"
+# A private per-run temp file: the relay may be exec'd under sudo, and a fixed
+# /tmp path is clobber- and symlink-prone. MOQX_RESOLVED_CONFIG pins a stable
+# path for a caller that wants to read the result back.
+#
+# This script ends in exec (and --dry-run prints the path for inspection), so it
+# cannot delete its own file on the way out. Instead each run sweeps the ones left
+# by earlier runs: moqx reads the config once at startup and has no reload path,
+# so a file this old is not open by anything. The private 0700 directory is what
+# makes the sweep safe to point at a glob.
+RUN_TMP="${TMPDIR:-/tmp}/moqx-run-$(id -u)"
+if [[ -L "$RUN_TMP" ]]; then
+  echo "error: $RUN_TMP is a symlink; refusing to write resolved configs there" >&2
+  exit 1
+fi
+mkdir -p "$RUN_TMP"
+if [[ ! -O "$RUN_TMP" ]]; then
+  echo "error: $RUN_TMP is not owned by $(id -un)" >&2
+  exit 1
+fi
+chmod 700 "$RUN_TMP"
+find "$RUN_TMP" -maxdepth 1 -type f -name 'moqx-resolved.*' -mtime +0 -delete 2>/dev/null || true
+
+RESOLVED_CONFIG="${MOQX_RESOLVED_CONFIG:-$(mktemp "$RUN_TMP/moqx-resolved.XXXXXX")}"
 envsubst < "$CONFIG_TEMPLATE" > "$RESOLVED_CONFIG"
 
 # ── GLOG — map MOQX_* → GLOG_* (matches docker/entrypoint.sh convention) ─
