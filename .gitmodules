@@ -2,7 +2,10 @@
 	path = deps/moxygen
 	url = git@github.com:openmoq/moxygen.git
 	branch = main
-	ignore = untracked
+	# "all": pointer drift never shows in status/diff, so bulk git add can't
+	# sweep an accidental pin bump into a feature commit. Intentional bumps
+	# (sync PRs) still stage with an explicit `git add deps/moxygen`.
+	ignore = all
 [submodule "deps/catapult"]
 	path = deps/catapult
 	url = https://github.com/Quicr/catapult.git
