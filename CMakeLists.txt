@@ -442,6 +442,4 @@ if(MOQX_BUILD_BENCHMARKS)
   add_subdirectory(benchmark)
 endif()
 
-include(${PROJECT_SOURCE_DIR}/cmake/Lint.cmake)
-
 install(TARGETS moqx moqx-issuer moqx_core moqx_config_loader)
