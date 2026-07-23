@@ -294,6 +294,11 @@ services:
       - --collector.os
       # stat → node_boot_time_seconds (host uptime for the host banner).
       - --collector.stat
+      # netstat + sockstat → kernel UDP counters (Udp_RcvbufErrors etc.) and
+      # UDP socket memory for the platform "kernel UDP health" panel — kernel-
+      # level datagram drops happen before the relay sees the packet.
+      - --collector.netstat
+      - --collector.sockstat
     volumes:
       # /proc + /sys for cpu/netdev/meminfo/loadavg; rootfs (ro) for the
       # filesystem collector to see the host's disks (reported under /host,

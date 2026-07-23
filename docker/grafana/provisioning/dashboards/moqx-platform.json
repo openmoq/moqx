@@ -24,7 +24,7 @@
       "targetBlank": false,
       "title": "\u2190 relay overview",
       "type": "link",
-      "url": "/grafana/d/moqx-overview"
+      "url": "/grafana/public-dashboards/8ecd4c2ec780400183033cb7e600263d"
     }
   ],
   "panels": [
@@ -33,6 +33,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
+      "description": "Per-core busy % (16 vCPU). Data already collected by node-exporter \u2014 no extra scrape load.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -93,12 +94,12 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 9,
-        "w": 24,
+        "h": 10,
+        "w": 12,
         "x": 0,
         "y": 0
       },
-      "id": 33,
+      "id": 72,
       "options": {
         "legend": {
           "calcs": [
@@ -121,8 +122,108 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "100 * (1 - avg(rate(node_cpu_seconds_total{mode=\"idle\"}[$__rate_interval])))",
-          "legendFormat": "CPU",
+          "expr": "100 * (1 - rate(node_cpu_seconds_total{mode=\"idle\"}[$__rate_interval]))",
+          "legendFormat": "core {{cpu}}",
+          "refId": "A"
+        }
+      ],
+      "title": "CPU per core",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Host 1/5/15-minute load average (16 vCPU host).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "id": 70,
+      "options": {
+        "legend": {
+          "calcs": [
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.4.6",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "node_load1",
+          "legendFormat": "1m",
           "refId": "A"
         },
         {
@@ -130,8 +231,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "100 * (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)",
-          "legendFormat": "RAM",
+          "expr": "node_load5",
+          "legendFormat": "5m",
           "refId": "B"
         },
         {
@@ -139,12 +240,12 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "100 * (1 - node_filesystem_avail_bytes{mountpoint=\"/\",fstype!~\"tmpfs|overlay|squashfs|ramfs\"} / node_filesystem_size_bytes{mountpoint=\"/\",fstype!~\"tmpfs|overlay|squashfs|ramfs\"})",
-          "legendFormat": "HD",
+          "expr": "node_load15",
+          "legendFormat": "15m",
           "refId": "C"
         }
       ],
-      "title": "Resource utilization (CPU / RAM / HD)",
+      "title": "Load average",
       "type": "timeseries"
     },
     {
@@ -214,7 +315,7 @@
         "h": 9,
         "w": 24,
         "x": 0,
-        "y": 9
+        "y": 19
       },
       "id": 11,
       "options": {
@@ -275,11 +376,32 @@
       "type": "timeseries"
     },
     {
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 28
+      },
+      "id": 71,
+      "options": {
+        "code": {
+          "language": "plaintext",
+          "showLineNumbers": false,
+          "showMiniMap": false
+        },
+        "content": "**Log browsing is deferred to the ClickHouse / HyperDX analytics stack** (MOQT-native log streaming + OTEL).\n\nUntil then:\n- live relay log: `ssh moqx-ci` \u2192 `docker logs -f moqx`, or the Dozzle `logmon` container (`127.0.0.1:9999` on the box)\n- kernel events: `dmesg -T | tail`\n\nThe Kernel UDP health panel (left) covers the platform signal that matters most for a QUIC relay: kernel-level datagram drops.",
+        "mode": "markdown"
+      },
+      "pluginVersion": "12.4.6",
+      "title": "Logs",
+      "type": "text"
+    },
+    {
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Host 1/5/15-minute load average (16 vCPU host).",
+      "description": "Stacked RAM usage: application-used, page cache, buffers, kernel slab, free \u2014 stack sums to total RAM.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -294,7 +416,7 @@
             "barAlignment": 0,
             "barWidthFactor": 0.6,
             "drawStyle": "line",
-            "fillOpacity": 10,
+            "fillOpacity": 28,
             "gradientMode": "none",
             "hideFrom": {
               "legend": false,
@@ -313,12 +435,13 @@
             "spanNulls": true,
             "stacking": {
               "group": "A",
-              "mode": "none"
+              "mode": "normal"
             },
             "thresholdsStyle": {
               "mode": "off"
             }
           },
+          "decimals": 1,
           "mappings": [],
           "min": 0,
           "thresholds": {
@@ -333,17 +456,38 @@
                 "value": 80
               }
             ]
-          }
+          },
+          "unit": "bytes"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "free"
+            },
+            "properties": [
+              {
+                "id": "custom.fillOpacity",
+                "value": 6
+              },
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#6e7680",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
-        "h": 7,
+        "h": 9,
         "w": 12,
         "x": 0,
-        "y": 18
+        "y": 10
       },
-      "id": 70,
+      "id": 73,
       "options": {
         "legend": {
           "calcs": [
@@ -356,7 +500,7 @@
         "tooltip": {
           "hideZeros": false,
           "mode": "multi",
-          "sort": "desc"
+          "sort": "none"
         }
       },
       "pluginVersion": "12.4.6",
@@ -366,8 +510,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "node_load1",
-          "legendFormat": "1m",
+          "expr": "node_memory_MemTotal_bytes - node_memory_MemFree_bytes - node_memory_Buffers_bytes - node_memory_Cached_bytes - node_memory_Slab_bytes",
+          "legendFormat": "used",
           "refId": "A"
         },
         {
@@ -375,8 +519,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "node_load5",
-          "legendFormat": "5m",
+          "expr": "node_memory_Cached_bytes",
+          "legendFormat": "cached",
           "refId": "B"
         },
         {
@@ -384,38 +528,176 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "node_load15",
-          "legendFormat": "15m",
+          "expr": "node_memory_Buffers_bytes",
+          "legendFormat": "buffers",
           "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "node_memory_Slab_bytes",
+          "legendFormat": "slab",
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "node_memory_MemFree_bytes",
+          "legendFormat": "free",
+          "refId": "E"
         }
       ],
-      "title": "Load average",
+      "title": "Memory breakdown",
       "type": "timeseries"
     },
     {
-      "gridPos": {
-        "h": 5,
-        "w": 24,
-        "x": 0,
-        "y": 25
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
       },
-      "id": 71,
-      "options": {
-        "code": {
-          "language": "plaintext",
-          "showLineNumbers": false,
-          "showMiniMap": false
+      "description": "Used bytes over time against the absolute filesystem size (dashed line).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 18,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "decimals": 1,
+          "mappings": [],
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "bytes"
         },
-        "content": "**Placeholder** \u2014 log browsing lands here.\n\nPlanned: relay + stack logs in-panel (Loki or journald datasource).\n\nUntil then: `ssh moqx-ci`, then `docker logs -f moqx` (relay) or the dozzle `logmon` container for a live web view.",
-        "mode": "markdown"
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "size (total)"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "dash": [
+                    8,
+                    6
+                  ],
+                  "fill": "dash"
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#9aa3ad",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 10
+      },
+      "id": 74,
+      "options": {
+        "legend": {
+          "calcs": [
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "none"
+        }
       },
       "pluginVersion": "12.4.6",
-      "title": "Logs",
-      "type": "text"
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "node_filesystem_size_bytes{mountpoint=\"/\",fstype!~\"tmpfs|overlay|squashfs|ramfs\"} - node_filesystem_avail_bytes{mountpoint=\"/\",fstype!~\"tmpfs|overlay|squashfs|ramfs\"}",
+          "legendFormat": "used",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "node_filesystem_size_bytes{mountpoint=\"/\",fstype!~\"tmpfs|overlay|squashfs|ramfs\"}",
+          "legendFormat": "size (total)",
+          "refId": "B"
+        }
+      ],
+      "title": "Disk usage \u2014 root filesystem",
+      "type": "timeseries"
     }
   ],
   "preload": false,
-  "refresh": "10s",
+  "refresh": "5s",
   "schemaVersion": 42,
   "tags": [
     "moqx",
@@ -425,7 +707,7 @@
     "list": []
   },
   "time": {
-    "from": "now-1h",
+    "from": "now-15m",
     "to": "now"
   },
   "timepicker": {},
