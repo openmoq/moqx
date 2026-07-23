@@ -22,65 +22,55 @@ The OpenMOQ Relay — a MoQT relay server based on
 
 ## Architecture
 
-For the underlying moxygen library architecture (session model, data plane,
-threading, transport abstraction), see
-[deps/moxygen/ARCHITECTURE.md](deps/moxygen/ARCHITECTURE.md).
+`MoqxRelay` is a hard fork of moxygen's
+[`MoQRelay`](https://github.com/openmoq/moxygen/blob/main/moxygen/relay/MoQRelay.h),
+so the relay core can evolve independently while the lower-level moxygen pieces
+stay libraries:
 
-`MoqxRelay` is a hard fork of moxygen's `MoQRelay`. We copy the relay core into
-moqx so we can evolve it independently (threading model, custom cache miss
-handling, chained caches, etc.) while still using moxygen's lower-level
-building blocks as libraries:
+- **MoQForwarder** — fan-out engine
+- **MoqxCache** — object cache
+- **MoQSession / MoQServer / MoQRelaySession** — session/server infrastructure.
 
-- **MoQForwarder** — fan-out engine, used as-is from moxygen for now. May need
-  to fork in the future to accommodate threading model differences.
-- **MoqxCache** — object cache, hard-forked from moxygen. Customizable for moqx-specific functionality.
-  and chained cache support may be upstreamed to openmoq/moxygen or maintained
-  in our fork.
-- **MoQSession / MoQServer / MoQRelaySession** — session and server
-  infrastructure, used as libraries.
-
-`MoqxRelayServer` extends `MoQServer` to wire up `MoqxRelay` as the publish/subscribe
-handler and create `MoQRelaySession` instances for incoming connections.
-
-## Documentation
-
-- [docs/metrics.md](docs/metrics.md) — Prometheus metrics reference
-
-## Design Documents
-
-- [design/ci-architecture.md](design/ci-architecture.md) — CI pipelines, upstream sync, auto-deploy
-- [design/configuration.md](design/configuration.md) — relay config file reference
-- [design/gummy-bear.md](design/gummy-bear.md) — cache and forwarding design
-- [design/hot-reloading.md](design/hot-reloading.md) — hot config reload
-- [design/miss-handler.md](design/miss-handler.md) — cache miss handling
+`MoqxRelayServer` extends `MoQServer` to wire `MoqxRelay` in as the
+publish/subscribe handler. For moxygen's own architecture, see its
+[ARCHITECTURE.md](https://github.com/openmoq/moxygen/blob/main/ARCHITECTURE.md).
 
 ## Quick Start
 
-> **Prerequisite: CMake 3.22+ is required.** All current targets ship a
-> new-enough version out of the box: Ubuntu 22.04+, Debian 12+, recent
-> macOS Homebrew. Verify with `cmake --version`. `build.sh` aborts early
-> if cmake is missing or too old (override with `MOQX_SKIP_CMAKE_CHECK=1`
-> if you know what you're doing).
+Standard CMake preset build (CMake 3.23+, C++20, Ninja).
 
 ```bash
-git clone https://github.com/openmoq/moqx.git && cd moqx
-git submodule update --init --recursive
-sudo deps/moxygen/standalone/install-system-deps.sh   # system libs (both modes)
-
-./scripts/build.sh setup     # download prebuilt deps (~1 min)
-./scripts/build.sh           # build
-./scripts/build.sh test      # test
+scripts/install-system-deps.sh                         # toolchain + system libs
+scripts/configure.sh --moxygen prebuilt-with-fallback  # get a moxygen, configure
+scripts/build.sh                                       # == cmake --build build/default
+scripts/test.sh                                        # == ctest --test-dir build/default --output-on-failure
 ```
 
-System libraries are needed in **both** dependency modes — the moxygen
-tarball ships folly/fizz/mvfst/proxygen statically, but its CMake config
-still does `find_dependency(fmt, Glog, ...)` and folly itself transitively
-needs OpenSSL/Boost. `build.sh setup`'s system-dep check only fires when
-falling back to source, but the build step needs the libs regardless.
+`prebuilt-with-fallback` downloads the published moxygen for the pinned
+`MOXYGEN_REV` when there is one, and compiles it when there isn't. moxygen decides
+what it publishes, so that is the only setting guaranteed to produce a build.
 
-See [BUILD.md](BUILD.md) for full build and test instructions (dependency
-modes, sanitizer profiles, Docker), and [RUNNING.md](RUNNING.md) for relay
-operations.
+Profiles (`default` | `san` | `tsan`) are each script's first argument and map
+to `build/<profile>`; `--moxygen` picks where moxygen comes from:
+
+| Goal | Command |
+|------|---------|
+| Just build it | `scripts/configure.sh --moxygen prebuilt-with-fallback && scripts/build.sh` |
+| Download only, never compile moxygen | `scripts/configure.sh --moxygen prebuilt && scripts/build.sh` |
+| Compile moxygen / any rev or platform | `scripts/configure.sh --moxygen from-source && scripts/build.sh` |
+| Local moxygen checkout | `scripts/configure.sh --moxygen from-source --moxygen-dir /path && scripts/build.sh` |
+
+Take `prebuilt` when you would rather see an error than wait — it fails instead of
+compiling the folly stack, which is the slow surprise the fallback can hand you.
+
+- How it works, and the raw-cmake equivalents: [BUILD.md](BUILD.md)
+- Pins: [cmake/dependencies.cmake](cmake/dependencies.cmake)
+- `ccache` used automatically
+
+## Docs
+
+- Build [BUILD.md](BUILD.md) · Run [RUNNING.md](RUNNING.md) · Metrics [docs/metrics.md](docs/metrics.md)
+- Design: See [`design/`](design/)
 
 ## License
 

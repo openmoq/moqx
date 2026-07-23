@@ -1,10 +1,10 @@
 # Build outputs
 /build/
-/build-*/
 /_build/
 /cmake-build-*/
 /CMakeFiles/
 CMakeCache.txt
+/CMakeUserPresets.json
 cmake_install.cmake
 install_manifest.txt
 compile_commands.json
@@ -20,7 +20,8 @@ DartConfiguration.tcl
 # CPack
 _CPack_Packages/
 
-# Dependency scratch dirs
+# Local dependency staging: /.scratch/ holds the from-source superbuild's
+# moxygen install; /.docker-deps/ holds docker dependency bundles.
 /.scratch/
 /.docker-deps/
 
