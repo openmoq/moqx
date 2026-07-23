@@ -25,7 +25,7 @@ COPY src/ src/
 RUN --mount=type=cache,target=/root/.cache/moqx \
     CPM_SOURCE_CACHE=/root/.cache/moqx/cpm \
     cmake -S . -B _build --preset default \
-        -DBUILD_TESTING=OFF -DMOQX_BUILD_TESTS=OFF \
+        -DMOQX_BUILD_TESTS=OFF \
     && cmake --build _build -j$(nproc) \
     && cmake --install _build --prefix /install
 
