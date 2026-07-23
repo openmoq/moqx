@@ -39,3 +39,17 @@ modules:
           relay_id: '{.relay_id}'
         values:
           active_sessions: '{.active_sessions}'
+  # Relay build info from the admin /info ({"service":"moqx","version":"x.y.z"}).
+  # The value is the jsonpath literal 1 — this is a labels-only info metric
+  # (moqx_build_info{service,version} 1), standard build-info gauge pattern.
+  moqx_info:
+    metrics:
+      - name: moqx_build
+        type: object
+        help: Relay build info from the admin /info
+        path: '{$}'
+        labels:
+          service: '{.service}'
+          version: '{.version}'
+        values:
+          info: '1'

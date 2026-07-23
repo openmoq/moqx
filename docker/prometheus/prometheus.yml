@@ -55,3 +55,20 @@ scrape_configs:
     scrape_interval: 60s
     static_configs:
       - targets: ['localhost:9090']
+
+  # Relay build info (version label for the host banner), via json_exporter
+  # scraping the admin /info. Effectively static — scraped coarsely.
+  - job_name: moqx-info
+    metrics_path: /probe
+    scrape_interval: 60s
+    params:
+      module: [moqx_info]
+    static_configs:
+      - targets: ['http://moqx:8000/info']
+        labels:
+          instance: moqx-relay
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - target_label: __address__
+        replacement: json-exporter:7979

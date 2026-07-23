@@ -214,7 +214,7 @@ services:
 
   grafana:
     container_name: moqx-grafana
-    image: grafana/grafana:11.0.0
+    image: grafana/grafana:12.4.6
     restart: unless-stopped
     profiles: [stats]
     depends_on: [prometheus]
@@ -238,7 +238,8 @@ services:
       GF_AUTH_ANONYMOUS_ENABLED: "false"
       # Volkov Labs "Business Text" panel — renders the host-info card as a
       # formatted HTML template (clean, integrated) instead of chunky stat tiles.
-      GF_INSTALL_PLUGINS: marcusolsson-dynamictext-panel
+      # Business Charts (ECharts) drives the CPU/RAM/HD arc gauges on the banner.
+      GF_INSTALL_PLUGINS: marcusolsson-dynamictext-panel,volkovlabs-echarts-panel
     mem_limit: ${GRAFANA_MEM:-1g}
     volumes:
       - grafana-data:/var/lib/grafana
@@ -286,6 +287,13 @@ services:
       - --collector.uname
       # filesystem → node_filesystem_* for the disk (HD) gauge.
       - --collector.filesystem
+      # cpu.info → node_cpu_info (CPU model string for the host banner).
+      - --collector.cpu.info
+      # os → node_os_info (distro pretty-name for the host banner; reads the
+      # host os-release bind-mounted below).
+      - --collector.os
+      # stat → node_boot_time_seconds (host uptime for the host banner).
+      - --collector.stat
     volumes:
       # /proc + /sys for cpu/netdev/meminfo/loadavg; rootfs (ro) for the
       # filesystem collector to see the host's disks (reported under /host,
@@ -293,6 +301,9 @@ services:
       - /proc:/host/proc:ro
       - /sys:/host/sys:ro
       - /:/host:ro
+      # The os collector reads /etc/os-release at its container-local path (it
+      # is not --path.rootfs-prefixed), so hand it the host's copy directly.
+      - /etc/os-release:/etc/os-release:ro
     logging:
       driver: json-file
       options:
