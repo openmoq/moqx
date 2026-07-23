@@ -6,7 +6,7 @@ name: ci main
 # Job graph:
 #
 #   check-format ──────────────────────────────────────────────────────────────────┐
-#   build (linux, asan debug) ── publish (docker+smoke) ── release ────────────────┼── notify
+#   build (linux, asan) ── publish (docker+smoke) ── release ──────────────────────┼── notify
 #   microbenchmark (linux, macos) ────────────────────────────────────────────────-┘
 
 on:
@@ -39,97 +39,65 @@ jobs:
         run: pip install clang-format==19.1.7
 
       - name: Check formatting
-        run: bash scripts/format.sh --check
+        run: bash scripts/dev/format.sh --check
 
   build:
     needs: [check-format]
     strategy:
       fail-fast: false
       matrix:
+        # `key` is the machine-readable lane id (ccache/cache keys, option
+        # gating); `name` is display-only, safe to rename. The build dir is
+        # always build/<preset> (the presets' binaryDir).
         include:
           - name: linux
+            key: linux
             preset: default
-            build_dir: build
             runner: ubuntu-22.04
           # arm64 is validated by the publish-side docker build (publish arm64
           # entry below); skipped here to avoid the ubuntu-runner ↔ bookworm-tarball
           # glog ABI mismatch. arm64 issues surface at the publish step.
           - name: macos
+            key: macos
             preset: default
-            build_dir: build
             runner: macos-15
-          - name: asan debug
+          # ASan on moqx's own TUs, over the uninstrumented prebuilt folly, for a
+          # fast signal; sanitizers.yml builds the instrumented stack.
+          # RelWithDebInfo: the prebuilt is NDEBUG and folly's kIsDebug is ABI.
+          - name: asan (moqx TUs, prebuilt deps)
+            key: asan
             preset: san
-            build_dir: build-san
+            extra_cmake: -DCMAKE_BUILD_TYPE=RelWithDebInfo
+            leak_check: true
             runner: [self-hosted, linode]
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
     steps:
-      - name: Generate app token
-        id: app-token
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ secrets.OMOQ_APP_ID }}
-          private-key: ${{ secrets.OMOQ_APP_PRIV_KEY }}
-
       - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-build
         with:
-          submodules: recursive
+          ccache-key: ${{ matrix.key }}
 
-      - name: Install system dependencies
-        run: |
-          if [[ "$(uname)" == "Darwin" ]]; then
-            deps/moxygen/standalone/install-system-deps.sh
-            brew install coreutils
-            echo "/opt/homebrew/opt/coreutils/libexec/gnubin" >> "$GITHUB_PATH"
-          else
-            sudo deps/moxygen/standalone/install-system-deps.sh
-          fi
-
-      - name: Setup dependencies
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          MOQX_PLATFORM: ${{ matrix.platform || '' }}
-        run: |
-          # Three-mode setup resolution:
-          # 1. .moxygen-release file (release branches): use pinned tag.
-          # 2. Submodule SHA reachable from moxygen main: tarball mode via
-          #    snapshot-latest. Robust to drift between moxygen merges and
-          #    moqx's daily moxygen-sync.
-          # 3. Submodule SHA NOT reachable from main (dev iterating against
-          #    an unreleased moxygen feature branch): source build. Slow
-          #    but supports cross-repo iteration without requiring a
-          #    published moxygen tarball.
-          if [ -f .moxygen-release ]; then
-            export MOQX_MOXYGEN_RELEASE_TAG=$(cat .moxygen-release | tr -d '[:space:]')
-            echo "==> Pinned moxygen tag: $MOQX_MOXYGEN_RELEASE_TAG"
-            bash scripts/build.sh setup --no-fallback
-          else
-            SUB_SHA=$(git -C deps/moxygen rev-parse HEAD)
-            AHEAD=$(gh api "repos/openmoq/moxygen/compare/main...$SUB_SHA" --jq .ahead_by 2>/dev/null || echo "1")
-            if [ "$AHEAD" = "0" ]; then
-              echo "==> moxygen submodule $SUB_SHA on main → snapshot tarball"
-              bash scripts/build.sh setup --use-latest --no-fallback
-            else
-              echo "==> moxygen submodule $SUB_SHA $AHEAD commits diverged from main → source build"
-              bash scripts/build.sh setup
-            fi
-          fi
-
+      # Deps (prebuilt moxygen + CPM) resolve at configure time; see BUILD.md.
+      # build.sh rather than bare `cmake --build`: it resolves a job count,
+      # where Ninja's own default of nproc + 2 OOMs the sanitizer lane.
       - name: Build
-        run: bash scripts/build.sh --profile ${{ matrix.preset }} --build-dir ${{ matrix.build_dir }}
+        run: |
+          cmake --preset ${{ matrix.preset }} ${{ matrix.extra_cmake }}
+          scripts/build.sh ${{ matrix.preset }}
 
       - name: Test
         env:
-          ASAN_OPTIONS: ${{ matrix.name == 'asan debug' && 'detect_leaks=1:abort_on_error=1' || '' }}
-        run: bash scripts/build.sh test --build-dir ${{ matrix.build_dir }} -- --output-junit test-results.xml
+          ASAN_OPTIONS: ${{ matrix.leak_check && 'detect_leaks=1:abort_on_error=1' || '' }}
+        run: ctest --test-dir build/${{ matrix.preset }} --output-on-failure --output-junit test-results.xml
 
       - name: Publish test results
         uses: dorny/test-reporter@v1.9.1
         if: success() || failure()
         with:
           name: "test (${{ matrix.name }})"
-          path: ${{ matrix.build_dir }}/test-results.xml
+          path: build/${{ matrix.preset }}/test-results.xml
           reporter: java-junit
           fail-on-empty: ${{ job.status == 'success' && 'true' || 'false' }}
           # Only list failing tests in the Check Run summary. Listing all
@@ -179,46 +147,21 @@ jobs:
     name: conformance (${{ matrix.name }})
     runs-on: ubuntu-22.04
     steps:
-      - name: Generate app token
-        id: app-token
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ secrets.OMOQ_APP_ID }}
-          private-key: ${{ secrets.OMOQ_APP_PRIV_KEY }}
-
       - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-build
         with:
-          submodules: recursive
+          ccache-key: conformance
 
-      - name: Install system dependencies
-        run: sudo deps/moxygen/standalone/install-system-deps.sh
-
-      - name: Setup dependencies
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          # Three-mode setup resolution (matches build job).
-          if [ -f .moxygen-release ]; then
-            export MOQX_MOXYGEN_RELEASE_TAG=$(cat .moxygen-release | tr -d '[:space:]')
-            echo "==> Pinned moxygen tag: $MOQX_MOXYGEN_RELEASE_TAG"
-            bash scripts/build.sh setup --no-fallback
-          else
-            SUB_SHA=$(git -C deps/moxygen rev-parse HEAD)
-            AHEAD=$(gh api "repos/openmoq/moxygen/compare/main...$SUB_SHA" --jq .ahead_by 2>/dev/null || echo "1")
-            if [ "$AHEAD" = "0" ]; then
-              echo "==> moxygen submodule $SUB_SHA on main → snapshot tarball"
-              bash scripts/build.sh setup --use-latest --no-fallback
-            else
-              echo "==> moxygen submodule $SUB_SHA $AHEAD commits diverged from main → source build"
-              bash scripts/build.sh setup
-            fi
-          fi
-
+      # Tests off: this job only drives the moqx binary; the ~25 gtest
+      # executables would link the heavy static stack for nothing.
       - name: Build
-        run: bash scripts/build.sh
+        run: |
+          cmake --preset default -DMOQX_BUILD_TESTS=OFF
+          scripts/build.sh default
 
       - name: Run conformance tests
-        run: bash test/test_conformance.sh ./build/moqx ${{ matrix.versions }} ${{ matrix.transport }} ${{ matrix.stack }}
+        run: bash test/test_conformance.sh ./build/default/moqx ${{ matrix.versions }} ${{ matrix.transport }} ${{ matrix.stack }}
 
   # ════════════════════════════════════════════════════════════════════════════
   # Microbenchmark: run in-process micro-benchmarks (independent of build/publish pipeline)
@@ -233,64 +176,27 @@ jobs:
           - name: linux
             runner: ubuntu-22.04
           - name: macos
-            # Pinned to macos-15 to match the moxygen publish runner / tarball
-            # name (moxygen-macos-15-arm64.tar.gz), downloaded here with
-            # --no-fallback. See ci-pr.yml microbenchmark job for the full rationale.
+            # Pinned to the moxygen publish runner: releases ship
+            # moxygen-macos-15-arm64.tar.gz and no macos-26 one, so macos-latest
+            # 404s. Keep in lockstep with the build job above.
             runner: macos-15
     name: microbenchmark (${{ matrix.name }})
     runs-on: ${{ matrix.runner }}
     steps:
-      - name: Generate app token
-        id: app-token
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ secrets.OMOQ_APP_ID }}
-          private-key: ${{ secrets.OMOQ_APP_PRIV_KEY }}
-
       - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-build
         with:
-          submodules: recursive
-
-      - name: Install system dependencies
-        run: |
-          if [[ "$(uname)" == "Darwin" ]]; then
-            deps/moxygen/standalone/install-system-deps.sh
-          else
-            sudo deps/moxygen/standalone/install-system-deps.sh
-          fi
-
-      - name: Setup dependencies
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          # Three-mode setup resolution (mirrors the build/conformance jobs):
-          # 1. .moxygen-release file (release branches): use pinned tag.
-          # 2. Submodule SHA reachable from moxygen main: snapshot tarball
-          #    (avoids a slow from-source dep build when moxygen has advanced
-          #    past the local pin — the common case under the daily sync).
-          # 3. Submodule SHA diverged from main: source build.
-          if [ -f .moxygen-release ]; then
-            export MOQX_MOXYGEN_RELEASE_TAG=$(cat .moxygen-release | tr -d '[:space:]')
-            echo "==> Pinned moxygen tag: $MOQX_MOXYGEN_RELEASE_TAG"
-            bash scripts/build.sh setup --no-fallback
-          else
-            SUB_SHA=$(git -C deps/moxygen rev-parse HEAD)
-            AHEAD=$(gh api "repos/openmoq/moxygen/compare/main...$SUB_SHA" --jq .ahead_by 2>/dev/null || echo "1")
-            if [ "$AHEAD" = "0" ]; then
-              echo "==> moxygen submodule $SUB_SHA on main → snapshot tarball"
-              bash scripts/build.sh setup --use-latest --no-fallback
-            else
-              echo "==> moxygen submodule $SUB_SHA $AHEAD commits diverged from main → source build"
-              bash scripts/build.sh setup
-            fi
-          fi
+          ccache-key: microbench
 
       - name: Build microbenchmarks
-        run: bash scripts/build.sh --benchmark
+        run: |
+          cmake --preset default -DMOQX_BUILD_BENCHMARKS=ON -DMOQX_BUILD_TESTS=OFF
+          scripts/build.sh default
 
       - name: Run microbenchmarks
         run: |
-          ./build/benchmark/moqx_benchmark \
+          ./build/default/benchmark/moqx_benchmark \
             --bm_json_verbose=microbench-results.json \
             | tee microbench-output.txt
 
@@ -341,28 +247,6 @@ jobs:
           private-key: ${{ secrets.OMOQ_APP_PRIV_KEY }}
 
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Download bookworm moxygen tarball
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          MOQX_PLATFORM: ${{ matrix.platform }}
-        run: |
-          # Release branches pin a specific moxygen release tag via
-          # .moxygen-release. Main uses snapshot-latest via --use-latest.
-          if [ -f .moxygen-release ]; then
-            export MOQX_MOXYGEN_RELEASE_TAG=$(cat .moxygen-release | tr -d '[:space:]')
-            echo "Using pinned moxygen release tag: $MOQX_MOXYGEN_RELEASE_TAG"
-            bash scripts/build.sh setup --no-fallback
-          else
-            bash scripts/build.sh setup --use-latest --no-fallback
-          fi
-
-      - name: Stage tarball for Docker build
-        run: |
-          mkdir -p .docker-deps
-          cp -a .scratch/moxygen-install .docker-deps/moxygen
 
       - name: Log in to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
@@ -414,6 +298,20 @@ jobs:
           echo "$RESP" | grep -q '"service":"moqx"' || { echo "FAIL: bad /info response"; exit 1; }
           docker stop moqx-smoke && docker rm moqx-smoke
           echo "==> Smoke test passed"
+
+      # The interop-client image extracts the prebuilt moq_interop_client binary
+      # and runs no cmake build, so the tarball has to be staged for it. Resolved
+      # from the pin, not snapshot-latest, which on release/** would ship main.
+      - name: Stage moxygen tarball for interop-client image
+        run: |
+          TAG="$(cmake -P cmake/print-release-tag.cmake)"
+          echo "==> moxygen pin -> release '$TAG'"
+          mkdir -p .docker-deps/moxygen
+          curl -fL --retry 3 \
+            -o moxygen-prebuilt.tar.gz \
+            "https://github.com/openmoq/moxygen/releases/download/${TAG}/moxygen-${{ matrix.platform }}.tar.gz"
+          tar xzf moxygen-prebuilt.tar.gz -C .docker-deps/moxygen
+          rm -f moxygen-prebuilt.tar.gz
 
       - name: Build interop client image
         run: |

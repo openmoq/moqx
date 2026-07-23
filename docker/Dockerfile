@@ -1,27 +1,30 @@
 # ── Build stage: compile moqx inside bookworm against moxygen tarball ───
 FROM debian:bookworm AS builder
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential cmake ninja-build git ca-certificates \
-        libssl-dev libunwind-dev libgoogle-glog-dev libgflags-dev \
-        libdouble-conversion-dev libevent-dev libsodium-dev libzstd-dev \
-        libboost-all-dev libfmt-dev zlib1g-dev libc-ares-dev libdwarf-dev libaio-dev \
-    && rm -rf /var/lib/apt/lists/*
-
 WORKDIR /src
 
-# Moxygen tarball (pre-extracted bookworm build)
-COPY .docker-deps/moxygen /opt/moxygen
+# System libraries through the shared installer, so a new moqx dependency needs
+# no second package list here. Image-only extras after it: ca-certificates for
+# the configure-time downloads, libdwarf/libaio for the prebuilt proxygen link.
+COPY scripts/install-system-deps.sh scripts/
+RUN scripts/install-system-deps.sh \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates libdwarf-dev libaio-dev \
+    && rm -rf /var/lib/apt/lists/*
 
-# MoQX source — only what cmake needs
+# MoQX source only — the configure fetches its own dependencies, so no dep trees
+# are copied in. The bookworm base auto-detects the bookworm-<arch> platform tag,
+# matching the published moxygen-bookworm-{amd64,arm64}.tar.gz prebuilts.
 COPY CMakeLists.txt CMakePresets.json ./
 COPY cmake/ cmake/
 COPY src/ src/
-COPY deps/catapult/ deps/catapult/
-COPY deps/moxygen/build/fbcode_builder/CMake deps/moxygen/build/fbcode_builder/CMake
 
-RUN cmake -S . -B _build --preset default \
-        -DCMAKE_PREFIX_PATH=/opt/moxygen \
+# The cache mount persists the fetched dependencies across image builds on the
+# same builder (BuildKit), so a source-only change doesn't re-download ~680 MB.
+# Harmless on cold/ephemeral builders.
+RUN --mount=type=cache,target=/root/.cache/moqx \
+    CPM_SOURCE_CACHE=/root/.cache/moqx/cpm \
+    cmake -S . -B _build --preset default \
         -DBUILD_TESTING=OFF -DMOQX_BUILD_TESTS=OFF \
     && cmake --build _build -j$(nproc) \
     && cmake --install _build --prefix /install

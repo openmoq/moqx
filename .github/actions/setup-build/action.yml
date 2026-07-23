@@ -1,0 +1,92 @@
+name: Set up moqx build
+description: >
+  Install system dependencies and restore the ccache + dependency-download
+  caches shared by every moqx build job. Run right after actions/checkout.
+
+inputs:
+  ccache-key:
+    description: >
+      ccache cache-key namespace — a short slug, distinct per build flavor so
+      lanes with different flags don't share a cache (e.g. "linux", "asan",
+      "conformance", "microbench"). Must be a valid actions/cache key fragment:
+      no commas, so never a human-readable display name.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # install-system-deps.sh elevates its own package-manager calls, so the same
+    # invocation serves both runner families.
+    - name: Install system dependencies
+      shell: bash
+      run: |
+        scripts/install-system-deps.sh
+        if [[ "$(uname)" == "Darwin" ]]; then
+          brew install coreutils
+          echo "/opt/homebrew/opt/coreutils/libexec/gnubin" >> "$GITHUB_PATH"
+        fi
+
+    # The moqx CMakeLists routes the compiler through ccache automatically when
+    # it is installed (install-system-deps.sh installs it).
+    - name: Cache ccache
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/ccache
+        key: ccache-${{ runner.os }}-${{ inputs.ccache-key }}-${{ github.sha }}
+        restore-keys: |
+          ccache-${{ runner.os }}-${{ inputs.ccache-key }}-
+
+    # The prebuilt tarball is named for the host's *distro* release, so the key
+    # needs that granularity: on runner.os alone a bookworm self-hosted box and
+    # an ubuntu-22.04 runner collide, and the loser re-downloads every run.
+    - name: Derive the dependency-cache platform key
+      id: depkey
+      shell: bash
+      run: |
+        if [[ "$(uname)" == "Darwin" ]]; then
+          plat="macos-$(sw_vers -productVersion | cut -d. -f1)"
+        else
+          plat="$(. /etc/os-release && echo "${ID}-${VERSION_ID}")"
+        fi
+        echo "plat=${plat}-$(uname -m)" >> "$GITHUB_OUTPUT"
+
+    # One shared fetch cache for CPM sources and the prebuilt moxygen install
+    # (~680 MB of downloads per configure otherwise), content-keyed on the pins.
+    # restore-keys matter more than the exact key: actions/cache saves only at
+    # job end, so on a pin bump a run's ~11 concurrent jobs all miss the exact
+    # key. The prefix lets them start from the previous tree and fetch the delta.
+    - name: Cache dependency downloads
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/moqx
+        key: deps-${{ steps.depkey.outputs.plat }}-${{ hashFiles('cmake/dependencies.cmake') }}
+        restore-keys: |
+          deps-${{ steps.depkey.outputs.plat }}-
+
+    # Restoring by prefix carries every previously pinned rev's install tree
+    # along (~320 MB each), so drop the unusable ones before the save step
+    # re-uploads them. The CPM clones accumulate too, but are far smaller.
+    - name: Prune superseded prebuilt installs
+      shell: bash
+      run: |
+        cache="$HOME/.cache/moqx"
+        [ -d "$cache" ] || exit 0
+        rev="$(cmake -DPIN=MOXYGEN_REV -P cmake/print-pin.cmake)"
+        for d in "$cache"/moxygen-*; do
+          case "${d##*/}" in
+            "moxygen-${rev:0:12}-"*)  ;;                     # this run's install
+            moxygen-????????????-*)   rm -rf "$d" ;;         # a superseded pin's
+          esac
+        done
+        rm -rf "$cache/downloads"
+
+    - name: Route CPM and ccache through the caches
+      shell: bash
+      run: |
+        echo "CPM_SOURCE_CACHE=$HOME/.cache/moqx/cpm" >> "$GITHUB_ENV"
+        # Pin ccache's dir to the cached path; its own default is platform-dependent.
+        echo "CCACHE_DIR=$HOME/.cache/ccache" >> "$GITHUB_ENV"
+        # A cold dependency cache means one GitHub API read per configure, and
+        # anonymous is 60/hour/IP — shared runner egress exhausts that on its
+        # own. See cmake/FetchMoxygenPrebuilt.cmake.
+        echo "GITHUB_TOKEN=${{ github.token }}" >> "$GITHUB_ENV"
