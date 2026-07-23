@@ -28,26 +28,5 @@
         "MOQX_ENABLE_TSAN": "ON"
       }
     }
-  ],
-  "buildPresets": [
-    {
-      "name": "default",
-      "configurePreset": "default"
-    },
-    {
-      "name": "san",
-      "configurePreset": "san"
-    },
-    {
-      "name": "tsan",
-      "configurePreset": "tsan"
-    }
-  ],
-  "testPresets": [
-    {
-      "name": "default",
-      "configurePreset": "default",
-      "output": {"outputOnFailure": true}
-    }
   ]
 }
