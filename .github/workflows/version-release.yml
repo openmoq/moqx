@@ -287,7 +287,9 @@ jobs:
 
       - uses: actions/checkout@v4
         with:
-          submodules: true
+          # recursive: deps/catapult carries nested submodules (libcbor,
+          # doctest, spdlog, nlohmann_json) that the top-level build needs.
+          submodules: recursive
 
       - name: Install system dependencies
         run: |
