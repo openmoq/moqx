@@ -7,33 +7,25 @@
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/${presetName}",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
-        "CMAKE_MODULE_PATH": "${sourceDir}/cmake",
-        "CMAKE_POLICY_VERSION_MINIMUM": "3.5"
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo"
       }
     },
     {
       "name": "san",
+      "inherits": "default",
       "displayName": "Sanitizers (ASAN/UBSAN)",
-      "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build/${presetName}",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "MOQX_ENABLE_SANITIZERS": "ON",
-        "CMAKE_MODULE_PATH": "${sourceDir}/cmake",
-        "CMAKE_POLICY_VERSION_MINIMUM": "3.5"
+        "MOQX_ENABLE_SANITIZERS": "ON"
       }
     },
     {
       "name": "tsan",
+      "inherits": "default",
       "displayName": "ThreadSanitizer (TSan)",
-      "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build/${presetName}",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "MOQX_ENABLE_TSAN": "ON",
-        "CMAKE_MODULE_PATH": "${sourceDir}/cmake",
-        "CMAKE_POLICY_VERSION_MINIMUM": "3.5"
+        "MOQX_ENABLE_TSAN": "ON"
       }
     }
   ],

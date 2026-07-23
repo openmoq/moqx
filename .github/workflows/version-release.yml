@@ -301,7 +301,6 @@ jobs:
           [ "$MOX_REF" != "snapshot-latest" ] && TAG_ARG=(-DMOXYGEN_RELEASE_TAG="$MOX_REF")
           cmake -S . -B _build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_MODULE_PATH="${GITHUB_WORKSPACE}/cmake" \
             -DMOQX_BUILD_TESTS=OFF \
             "${TAG_ARG[@]}" \
             -DCMAKE_C_FLAGS="${{ matrix.cxx_flags }}" \
