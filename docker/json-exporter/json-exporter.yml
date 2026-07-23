@@ -20,8 +20,9 @@ modules:
           track: '{.track_name}'
           is_publish: '{.is_publish}'
           # namespace is a JSON array (e.g. ["com.wowza","moq","moqtest_all"]);
-          # slash-join it into a browsable path label. (Trailing "/" is harmless.)
-          namespace: '{range .namespace[*]}{@}/{end}'
+          # slash-join it into a browsable path label (separator between
+          # elements only — no trailing "/").
+          namespace: '{.namespace[0]}{range .namespace[1:]}/{@}{end}'
         values:
           subscribers: '{.subscribers}'
           forwarding_subscribers: '{.forwarding_subscribers}'
