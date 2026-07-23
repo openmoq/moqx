@@ -288,6 +288,9 @@ jobs:
         env:
           MOQX_PLATFORM: ${{ matrix.platform }}
           MOX_REF: ${{ needs.validate.outputs.moxygen_ref }}
+          # FetchMoxygenPrebuilt reads the releases API. Anonymous is 60/hour/IP,
+          # shared across runner egress, and a 403 here fails the release build.
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           # CMAKE_INSTALL_RPATH = $ORIGIN/../lib makes the binary look
           # for bundled .so files next to itself before the system search
@@ -299,12 +302,16 @@ jobs:
           #
           # MOQX_PLATFORM selects which prebuilt tarball; a non-snapshot
           # moxygen_ref pins the release tag it's pulled from. See BUILD.md.
+          #
+          # No --moxygen prebuilt-with-fallback here, unlike the build/test
+          # lanes: a versioned artifact repackages a published, digest-verified
+          # moxygen, not whatever this runner happened to compile. Missing
+          # assets must fail the release, not silently change what it ships.
           TAG_ARG=()
           [ "$MOX_REF" != "snapshot-latest" ] && TAG_ARG=(-DMOXYGEN_RELEASE_TAG="$MOX_REF")
           cmake -S . -B _build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DMOQX_VERSION_STRING="${{ needs.validate.outputs.tag }}" \
-            -DCMAKE_MODULE_PATH="${GITHUB_WORKSPACE}/cmake" \
             -DMOQX_BUILD_TESTS=OFF \
             "${TAG_ARG[@]}" \
             -DCMAKE_C_FLAGS="${{ matrix.cxx_flags }}" \

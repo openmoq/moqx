@@ -66,6 +66,15 @@ include(cmake/CheckSystemDeps.cmake)
 # duplicate registration.
 set(GFLAGS_SHARED ON CACHE BOOL "")
 
+# cmake/ carries Findc-ares.cmake, the sole resolver for proxygen's
+# find_dependency(c-ares): some distros ship no c-ares CONFIG package, and
+# moxygen's fbcode_builder only answers the different module name "Cares".
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+
+# Some fetched deps declare pre-3.5 minimums that CMake >= 4 refuses to
+# configure (yaml-cpp 0.8.0: 3.4; catapult's bundled libcbor/doctest: 3.5).
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+
 include(cmake/CPM.cmake)
 include(cmake/dependencies.cmake)
 
