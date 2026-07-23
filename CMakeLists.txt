@@ -442,4 +442,4 @@ if(MOQX_BUILD_BENCHMARKS)
   add_subdirectory(benchmark)
 endif()
 
-install(TARGETS moqx moqx-issuer moqx_core moqx_config_loader)
+install(TARGETS moqx moqx-issuer)
