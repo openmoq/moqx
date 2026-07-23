@@ -169,11 +169,11 @@ The workflow stages a Pages artifact (`perf-out/`) and deploys it with
 
 | File | Purpose |
 |------|---------|
-| `scripts/perf-test-ci.sh` | CI orchestration (deploy, run, collect) |
-| `scripts/perf-results-to-json.sh` | Parse client output → JSON |
-| `scripts/perf-compare.py` | Regression detection + markdown |
-| `scripts/perf-test.sh` | Underlying test runner (unchanged) |
-| `scripts/perf-metrics.sh` | Prometheus metrics poller (unchanged) |
+| `scripts/perf/perf-test-ci.sh` | CI orchestration (deploy, run, collect) |
+| `scripts/perf/perf-results-to-json.sh` | Parse client output → JSON |
+| `scripts/perf/perf-compare.py` | Regression detection + markdown |
+| `scripts/perf/perf-test.sh` | Underlying test runner |
+| `scripts/perf/perf-metrics.sh` | Prometheus metrics poller |
 | `.github/workflows/perf-test.yml` | Standalone perf workflow (run, compare, stage, deploy) |
 | `status/index.html` | Dashboard shell (copied to Pages artifact root) |
 | `perf-out/perf/index.json` | Generated run manifest in Pages artifact |
