@@ -351,13 +351,15 @@ transparent across the network.
 
 Upstream relationships are configured per-service, not per-server. Because track
 namespaces and caches cannot be shared across services, each service forms its
-own independent upstream tree. Two services on the same physical server can peer
-with completely different upstream servers.
+own independent upstream graph. Two services on the same physical server can
+peer with completely different upstream servers.
 
-Any tree topology is valid. The only requirement is that within each service's
-upstream graph, exactly one node has no upstream configured — that is the root.
-All other nodes connect to their upstream, which may itself connect further up
-the tree, forming arbitrarily deep tiers.
+Tree topologies remain the simplest deployment model. A service may also contain
+a relay cycle when every relay in that cycle negotiates the `RELAY_HOPS` setup
+option. moqx assigns one random Hop ID to the running relay context, retains the
+origin-to-relay path on namespace advertisements, appends its own ID when
+forwarding, and drops an advertisement if its own ID is already present. Its
+wildcard upstream subscription also excludes its own Hop ID.
 
 ```
           relay-a ─┐
@@ -370,18 +372,25 @@ Publishers and subscribers can connect to any relay. Subscriptions are forwarded
 up toward the root as needed, and data flows back down to wherever subscribers
 are.
 
-The constraint is simply that the upstream graph for each service must be
-acyclic. **No loops are permitted.** A cycle (A → B → C → A) causes subscription
-forwarding to loop indefinitely. moqx does not detect loops at runtime — it is
-the operator's responsibility to ensure the topology is loop-free.
+Relay-hops negotiation is automatic between supporting moqx peers and requires
+no YAML setting. A non-supporting publisher or origin is represented by one
+stable, random stand-in Hop ID for the lifetime of its session; when an
+advertisement next crosses a negotiated relay link, the outgoing path is
+`[stand-in-origin, local-relay]`. Non-negotiated subscribers continue to receive
+the legacy namespace format without hop parameters.
+
+Loop prevention is only end-to-end across links that negotiated `RELAY_HOPS`.
+Keep any graph segment containing a legacy relay acyclic, because a legacy relay
+cannot preserve the path needed to recognize a returning advertisement.
 
 ### Limitations
 
 - **Single upstream per service.** Each service can have at most one
 upstream. Multiple upstreams, failover, or load balancing across upstreams are
 not currently supported.
-- **No loop detection.** Operators must manually ensure the relay topology
-is acyclic.
+- **Legacy relay segments must remain acyclic.** Negotiated moqx peers detect
+returning namespace advertisements, but a non-supporting relay cannot carry the
+hop path through the graph.
 - **No upstream authentication.** Upstreams are connected without any
 application-level credential exchange beyond TLS.
 - **Upstream connection is per-service, not per-track.** A single upstream

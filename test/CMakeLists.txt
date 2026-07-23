@@ -263,6 +263,15 @@ set_tests_properties(relay_chain PROPERTIES
 )
 
 add_test(
+  NAME relay_hops_cycle
+  COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_relay_hops_cycle.sh $<TARGET_FILE:moqx>
+)
+set_tests_properties(relay_hops_cycle PROPERTIES
+  TIMEOUT 90
+  ENVIRONMENT "MOQBIN=${PROJECT_SOURCE_DIR}/.scratch/moxygen-install/bin"
+)
+
+add_test(
   NAME qmux_relay
   COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_qmux_relay.sh $<TARGET_FILE:moqx>
 )
