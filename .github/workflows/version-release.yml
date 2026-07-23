@@ -277,14 +277,12 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          # Base library set via the shared installer — the single source of
-          # truth every other job uses, so a new dependency reaches the release
-          # build automatically. Add only the extras beyond it that the release
-          # link/smoke steps reference: libdwarf (prebuilt proxygen symbolizer),
-          # the GTest/xxhash dev packages, and ca-certificates.
+          # Base library set via the shared installer, so a new moqx dependency
+          # reaches the release build on its own. Only extras below: libdwarf
+          # (prebuilt proxygen symbolizer), xxhash (folly), ca-certificates.
           scripts/install-system-deps.sh
           sudo apt-get install -y --no-install-recommends \
-            ca-certificates libdwarf-dev libgtest-dev libgmock-dev libxxhash-dev
+            ca-certificates libdwarf-dev libxxhash-dev
 
       - name: Configure
         env:
@@ -307,6 +305,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DMOQX_VERSION_STRING="${{ needs.validate.outputs.tag }}" \
             -DCMAKE_MODULE_PATH="${GITHUB_WORKSPACE}/cmake" \
+            -DMOQX_BUILD_TESTS=OFF \
             "${TAG_ARG[@]}" \
             -DCMAKE_C_FLAGS="${{ matrix.cxx_flags }}" \
             -DCMAKE_CXX_FLAGS="${{ matrix.cxx_flags }}" \
