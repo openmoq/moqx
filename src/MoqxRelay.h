@@ -102,6 +102,8 @@ public:
   // Set to 0 until pause/resume forwarding callbacks are wired in PropertyRanking;
   // a non-zero value without those callbacks is just topN+N with no benefit.
   static constexpr uint64_t kDefaultMaxDeselected = 0;
+  static constexpr std::chrono::milliseconds kDefaultIdleTimeout{10'000};
+  static constexpr std::chrono::milliseconds kDefaultActivityThreshold{2'000};
 
   // relayExec, when set, is owned by the relay and isolates all state on it;
   // null runs everything on the calling thread. useLocalForwarders (requires
@@ -113,12 +115,15 @@ public:
       bool useLocalForwarders = false,
       uint64_t maxDeselected = kDefaultMaxDeselected,
       std::chrono::milliseconds idleTimeout = kDefaultIdleTimeout,
-      std::chrono::milliseconds activityThreshold = kDefaultActivityThreshold
+      std::chrono::milliseconds activityThreshold = kDefaultActivityThreshold,
+      uint64_t relayHopID = 0
   )
-      : relayID_(std::move(relayID)), ownedRelayExec_(std::move(relayExec)),
-        relayExec_(ownedRelayExec_.get()), useLocalForwarders_(useLocalForwarders),
-        maxDeselected_(maxDeselected), idleTimeout_(idleTimeout),
-        activityThreshold_(activityThreshold) {
+      : relayID_(std::move(relayID)),
+        relayHopID_(relayHopID == 0 ? moxygen::generateRelayHopID() : relayHopID),
+        ownedRelayExec_(std::move(relayExec)), relayExec_(ownedRelayExec_.get()),
+        useLocalForwarders_(useLocalForwarders), maxDeselected_(maxDeselected),
+        idleTimeout_(idleTimeout), activityThreshold_(activityThreshold) {
+    XCHECK_LE(relayHopID_, moxygen::kMaxRelayHopID);
     if (cache.maxCachedTracks > 0) {
       cache_ = std::make_unique<MoqxCache>(cache.maxCachedTracks, cache.maxCachedGroupsPerTrack);
       cache_->setMaxCachedBytes(static_cast<size_t>(cache.maxCachedMb) * 1024 * 1024);
@@ -129,6 +134,7 @@ public:
   }
 
   folly::Executor* getRelayExec() const { return relayExec_; }
+  uint64_t getRelayHopID() const { return relayHopID_; }
 
   void setAllowedNamespacePrefix(moxygen::TrackNamespace allowed) {
     allowedNamespacePrefix_ = std::move(allowed);
@@ -396,6 +402,7 @@ private:
 
   moxygen::TrackNamespace allowedNamespacePrefix_;
   std::string relayID_;
+  uint64_t relayHopID_;
   std::shared_ptr<UpstreamProvider> upstream_;
 
   // Holds the peer subNs handle for the upstream (initiating) direction.
@@ -416,6 +423,11 @@ private:
       const moxygen::FullTrackName& ftn,
       std::shared_ptr<moxygen::TrackConsumer> consumer
   );
+
+  std::optional<std::vector<uint64_t>> ingestRelayHopPath(
+      const moxygen::PublishNamespace& pubNs,
+      const std::shared_ptr<moxygen::MoQSession>& session
+  ) const;
 
   // Result of joinOrPrepareUpstreamSubscription (runs on relayExec_).
   struct StatefulSubscribeResult {
@@ -585,8 +597,6 @@ private:
   std::unique_ptr<MoqxCache> cache_;
   uint64_t maxDeselected_{kDefaultMaxDeselected};
 
-  static constexpr std::chrono::milliseconds kDefaultIdleTimeout{10'000};
-  static constexpr std::chrono::milliseconds kDefaultActivityThreshold{2'000};
   std::chrono::milliseconds idleTimeout_{kDefaultIdleTimeout};
   std::chrono::milliseconds activityThreshold_{kDefaultActivityThreshold};
 };

@@ -86,7 +86,8 @@ NamespaceTree::SetPublisherResult NamespaceTree::setPublisher(
     std::shared_ptr<MoQSession> session,
     std::shared_ptr<Subscriber::PublishNamespaceCallback> callback,
     std::string peerID,
-    RequestID requestID
+    RequestID requestID,
+    std::vector<uint64_t> relayHopPath
 ) {
   SetPublisherResult result;
   auto node = findNode(ns, /*createMissingNodes=*/true, MatchType::Exact, &result.subscribers);
@@ -111,6 +112,7 @@ NamespaceTree::SetPublisherResult NamespaceTree::setPublisher(
     NodeMutationGuard guard(*this, *node, ns);
     node->publisherSession_ = std::move(session);
     node->publisherPeerID_ = std::move(peerID);
+    node->relayHopPath_ = std::move(relayHopPath);
     node->publishNamespaceCallback_ = std::move(callback);
     node->trackNamespace = ns;
     node->setPublishNamespaceOk({.requestID = requestID, .requestSpecificParams = {}});
@@ -145,6 +147,7 @@ NamespaceTree::unpublishNamespace(
   NodeMutationGuard guard(*this, *node, ns);
   node->publisherSession_ = nullptr;
   node->publisherPeerID_.clear();
+  node->relayHopPath_.clear();
   node->publishNamespaceCallback_.reset();
   node->draft14PubNsHandles_.clear();
 

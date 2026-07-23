@@ -81,7 +81,9 @@ MoqxQmuxRelayServer::MoqxQmuxRelayServer(
           buildFizzContext(listenerCfg),
           buildQmuxConfig(listenerCfg.quic)
       ),
-      listenerCfg_(listenerCfg), context_(std::move(context)), ioExecutor_(ioExecutor) {}
+      listenerCfg_(listenerCfg), context_(std::move(context)), ioExecutor_(ioExecutor) {
+  addSetupParameter(SetupParameter(folly::to_underlying(SetupKey::RELAY_HOPS), std::string{}));
+}
 
 MoqxQmuxRelayServer::~MoqxQmuxRelayServer() {
   // Close incoming connections, drain worker EVBs, then destroy EVBs.

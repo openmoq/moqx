@@ -409,6 +409,9 @@ folly::coro::Task<void> UpstreamProvider::doConnect() {
       MoQRelaySession::createRelaySessionFactory(),
       verifier_
   );
+  client_->addSetupParameter(
+      SetupParameter(folly::to_underlying(SetupKey::RELAY_HOPS), std::string{})
+  );
 
   quic::TransportSettings ts;
   ts.orderedReadCallbacks = true;

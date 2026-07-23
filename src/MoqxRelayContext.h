@@ -62,7 +62,8 @@ public:
       const folly::F14FastMap<std::string, config::ServiceConfig>& services,
       const std::string& relayID,
       bool useRelayThread = true,
-      bool useLocalForwarders = false
+      bool useLocalForwarders = false,
+      uint64_t relayHopID = 0
   );
 
   void setStatsRegistry(std::shared_ptr<stats::StatsRegistry> registry);
@@ -127,6 +128,7 @@ private:
   folly::F14FastMap<std::string, ServiceEntry> services_;
   ServiceMatcher serviceMatcher_;
   std::string relayID_;
+  uint64_t relayHopID_;
   folly::EventBase* cacheEvb_{nullptr};
   std::shared_ptr<stats::StatsRegistry> statsRegistry_;
   // One collector per io thread; tlStatsCollector_ binds each to its own thread.

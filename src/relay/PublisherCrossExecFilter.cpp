@@ -102,6 +102,10 @@ public:
     exec_->add([inner = inner_, ns]() mutable { inner->namespaceMsg(ns); });
   }
 
+  void namespaceMsg(const moxygen::Namespace& ns) override {
+    exec_->add([inner = inner_, ns]() mutable { inner->namespaceMsg(ns); });
+  }
+
   void namespaceDoneMsg(const moxygen::TrackNamespace& ns) override {
     exec_->add([inner = inner_, ns]() mutable { inner->namespaceDoneMsg(ns); });
   }

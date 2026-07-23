@@ -195,7 +195,8 @@ protected:
 
   // Rebuild relay_ (with the MT-mode relay exec) and its cross-exec filters.
   // Use this instead of constructing relay_ directly in tests that need a custom relay.
-  void resetRelay(config::CacheConfig cache, const std::string& relayID = "");
+  void
+  resetRelay(config::CacheConfig cache, const std::string& relayID = "", uint64_t relayHopID = 0);
 
   // In MT mode: cross-exec filter wrappers that route test calls through relayExec_.
   // In ST mode: null — accessors fall back to relay_ directly.

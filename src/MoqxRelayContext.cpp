@@ -25,9 +25,11 @@ MoqxRelayContext::MoqxRelayContext(
     const folly::F14FastMap<std::string, config::ServiceConfig>& services,
     const std::string& relayID,
     bool useRelayThread,
-    bool useLocalForwarders
+    bool useLocalForwarders,
+    uint64_t relayHopID
 )
-    : serviceMatcher_(services), relayID_(relayID) {
+    : serviceMatcher_(services), relayID_(relayID),
+      relayHopID_(relayHopID == 0 ? generateRelayHopID() : relayHopID) {
   if (useRelayThread && !services.empty()) {
     relayThreadPool_ = std::make_unique<folly::IOThreadPoolExecutor>(
         services.size(),
@@ -41,7 +43,11 @@ MoqxRelayContext::MoqxRelayContext(
           svc.cache,
           relayID,
           std::make_shared<moxygen::MoQFollyExecutorImpl>(evbs[i++].get()),
-          useLocalForwarders
+          useLocalForwarders,
+          MoqxRelay::kDefaultMaxDeselected,
+          MoqxRelay::kDefaultIdleTimeout,
+          MoqxRelay::kDefaultActivityThreshold,
+          relayHopID_
       );
       services_.emplace(
           name,
@@ -54,11 +60,21 @@ MoqxRelayContext::MoqxRelayContext(
     }
   } else {
     for (const auto& [name, svc] : services) {
+      auto relay = std::make_shared<MoqxRelay>(
+          svc.cache,
+          relayID,
+          nullptr,
+          false,
+          MoqxRelay::kDefaultMaxDeselected,
+          MoqxRelay::kDefaultIdleTimeout,
+          MoqxRelay::kDefaultActivityThreshold,
+          relayHopID_
+      );
       services_.emplace(
           name,
           ServiceEntry{
               svc,
-              std::make_shared<MoqxRelay>(svc.cache, relayID),
+              std::move(relay),
               std::make_shared<const auth::AuthTokenVerifier>(svc.auth)
           }
       );

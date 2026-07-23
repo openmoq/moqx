@@ -86,7 +86,9 @@ MoqxPicoRelayServer::MoqxPicoRelayServer(
           }
       ),
       listenerCfg_(listenerCfg), context_(std::move(context)),
-      evb_(ioExecutor->getAllEventBases()[0].get()) {}
+      evb_(ioExecutor->getAllEventBases()[0].get()) {
+  addSetupParameter(SetupParameter(folly::to_underlying(SetupKey::RELAY_HOPS), std::string{}));
+}
 
 MoqxPicoRelayServer::~MoqxPicoRelayServer() {
   stop();
