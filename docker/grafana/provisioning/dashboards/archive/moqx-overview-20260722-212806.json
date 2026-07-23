@@ -1,0 +1,272 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["moqx", "relay"],
+  "__templating_note": "No template variables: Grafana public dashboards don't interpolate them (they cause panels/undefined/query errors), and the panels are query-driven (topk/sum). The interactive $namespace-scoped view belongs on a separate private/authed dashboard.",
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "",
+  "title": "moqx relay overview",
+  "uid": "moqx-overview",
+  "version": 4,
+  "weekStart": "",
+  "__comment": "Historical companion to tools/metrics-dashboard.html. Top host card (Business Text) | Platform | MoQ/tracks | Details. Provisioned read-only; edit via import-dashboards.sh --dev then export-dashboards.sh.",
+  "panels": [
+    {
+      "type": "marcusolsson-dynamictext-panel", "id": 40, "title": "",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 0 },
+      "fieldConfig": { "defaults": { "mappings": [] }, "overrides": [] },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "node_uname_info", "format": "table", "instant": true, "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "count by (instance) (count by (instance, cpu) (node_cpu_seconds_total))", "format": "table", "instant": true, "refId": "B" },
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "round(node_memory_MemTotal_bytes / 1073741824, 0.1)", "format": "table", "instant": true, "refId": "C" },
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "round(node_filesystem_size_bytes{mountpoint=\"/\",fstype!~\"tmpfs|overlay|squashfs|ramfs\"} / 1073741824, 1)", "format": "table", "instant": true, "refId": "D" },
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "label_replace(moqx_relay_active_sessions, \"instance\", \"moqx-host\", \"instance\", \".*\")", "format": "table", "instant": true, "refId": "E" }
+      ],
+      "transformations": [
+        { "id": "joinByField", "options": { "byField": "instance", "mode": "outer" } }
+      ],
+      "options": {
+        "renderMode": "everyRow",
+        "everyRow": true,
+        "editorMode": "html",
+        "wrap": true,
+        "defaultContent": "Host metrics not yet available (node-exporter warming up).",
+        "content": "<div style=\"display:flex;gap:32px;flex-wrap:wrap;align-items:center;padding:6px 14px;font-family:inherit\">\n  <div style=\"flex:1;min-width:340px\">\n    <div style=\"font-size:20px;font-weight:600;line-height:1.2\">{{nodename}}</div>\n    <div style=\"opacity:.65;font-size:12px;margin-top:3px\">relay <code>{{relay_id}}</code> &middot; {{sysname}} {{release}} &middot; {{machine}} &middot; {{[Value #B]}} cores</div>\n    <div style=\"margin-top:10px;font-size:13px;line-height:1.75\">\n      <div><span style=\"opacity:.5;display:inline-block;width:52px\">MoQT</span><code>moqt://moqx-main.ci.openmoq.org:4433</code></div>\n      <div><span style=\"opacity:.5;display:inline-block;width:52px\">WebTr</span><code>https://moqx-main.ci.openmoq.org:4433/moq-relay</code></div>\n    </div>\n  </div>\n  <div style=\"display:flex;gap:26px;text-align:center\">\n    <div><div style=\"font-size:23px;font-weight:600\">{{[Value #B]}}</div><div style=\"opacity:.55;font-size:11px;letter-spacing:.5px\">CORES</div></div>\n    <div><div style=\"font-size:23px;font-weight:600\">{{[Value #C]}}</div><div style=\"opacity:.55;font-size:11px;letter-spacing:.5px\">GiB RAM</div></div>\n    <div><div style=\"font-size:23px;font-weight:600\">{{[Value #D]}}</div><div style=\"opacity:.55;font-size:11px;letter-spacing:.5px\">GiB DISK</div></div>\n  </div>\n</div>"
+      }
+    },
+
+    { "type": "row", "id": 100, "title": "Platform", "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 6 } },
+
+    {
+      "type": "bargauge", "id": 5, "title": "System utilization",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 7 },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "mappings": [], "min": 0, "max": 100, "unit": "percent", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 70 }, { "color": "red", "value": 90 } ] } }, "overrides": [] },
+      "options": { "displayMode": "gradient", "orientation": "horizontal", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showUnfilled": true, "valueMode": "color", "namePlacement": "left", "minVizWidth": 0 },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "100 * (1 - avg(rate(node_cpu_seconds_total{mode=\"idle\"}[$__rate_interval])))", "legendFormat": "CPU", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "100 * (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)", "legendFormat": "RAM", "refId": "B" },
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "100 * (1 - node_filesystem_avail_bytes{mountpoint=\"/\",fstype!~\"tmpfs|overlay|squashfs|ramfs\"} / node_filesystem_size_bytes{mountpoint=\"/\",fstype!~\"tmpfs|overlay|squashfs|ramfs\"})", "legendFormat": "Disk", "refId": "C" }
+      ]
+    },
+    {
+      "type": "stat", "id": 30, "title": "Ingress BW (platform NIC)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 7 },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "mappings": [], "min": 0, "unit": "bps", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "area", "textMode": "value", "justifyMode": "center" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(node_network_receive_bytes_total{device=~\"eth[0-9]+|en[a-z0-9]+\"}[$__rate_interval])) * 8", "refId": "A" } ]
+    },
+    {
+      "type": "stat", "id": 31, "title": "Egress BW (platform NIC)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 7 },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "mappings": [], "min": 0, "unit": "bps", "thresholds": { "mode": "absolute", "steps": [ { "color": "blue", "value": null } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "area", "textMode": "value", "justifyMode": "center" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(node_network_transmit_bytes_total{device=~\"eth[0-9]+|en[a-z0-9]+\"}[$__rate_interval])) * 8", "refId": "A" } ]
+    },
+
+    {
+      "type": "timeseries", "id": 33, "title": "Resource utilization (CPU / RAM / HD)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 13 },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never", "spanNulls": true, "stacking": { "group": "A", "mode": "none" } }, "mappings": [], "min": 0, "max": 100, "unit": "percent" }, "overrides": [] },
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "100 * (1 - avg(rate(node_cpu_seconds_total{mode=\"idle\"}[$__rate_interval])))", "legendFormat": "CPU", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "100 * (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)", "legendFormat": "RAM", "refId": "B" },
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "100 * (1 - node_filesystem_avail_bytes{mountpoint=\"/\",fstype!~\"tmpfs|overlay|squashfs|ramfs\"} / node_filesystem_size_bytes{mountpoint=\"/\",fstype!~\"tmpfs|overlay|squashfs|ramfs\"})", "legendFormat": "HD", "refId": "C" }
+      ]
+    },
+    {
+      "type": "timeseries", "id": 11, "title": "Network throughput in / out — platform NIC vs app (QUIC)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 13 },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never", "spanNulls": true, "stacking": { "group": "A", "mode": "none" } }, "mappings": [], "min": 0, "unit": "bps" }, "overrides": [] },
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(node_network_receive_bytes_total{device=~\"eth[0-9]+|en[a-z0-9]+\"}[$__rate_interval])) * 8", "legendFormat": "NIC in", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(node_network_transmit_bytes_total{device=~\"eth[0-9]+|en[a-z0-9]+\"}[$__rate_interval])) * 8", "legendFormat": "NIC out", "refId": "B" },
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "rate(moqx_quicBytesRead_total[$__rate_interval]) * 8", "legendFormat": "app in (QUIC)", "refId": "C" },
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "rate(moqx_quicBytesWritten_total[$__rate_interval]) * 8", "legendFormat": "app out (QUIC)", "refId": "D" }
+      ]
+    },
+
+    { "type": "row", "id": 101, "title": "MoQ / tracks", "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 20 } },
+
+    {
+      "type": "stat", "id": 7, "title": "Active sessions",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 21 },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "mappings": [], "unit": "short", "thresholds": { "mode": "absolute", "steps": [ { "color": "blue", "value": null } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "area", "textMode": "value", "justifyMode": "center" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "moqx_moqActiveSessions", "refId": "A" } ]
+    },
+    {
+      "type": "stat", "id": 8, "title": "Active tracks",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 21 },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "mappings": [], "unit": "short", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "area", "textMode": "value", "justifyMode": "center" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "count(count by (namespace, track) (moqx_track_subscribers)) or vector(0)", "refId": "A" } ]
+    },
+    {
+      "type": "stat", "id": 22, "title": "Active subscriptions",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 21 },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "mappings": [], "unit": "short", "thresholds": { "mode": "absolute", "steps": [ { "color": "purple", "value": null } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "area", "textMode": "value", "justifyMode": "center" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "moqx_pubActiveSubscriptions", "refId": "A" } ]
+    },
+    {
+      "type": "timeseries", "id": 21, "title": "MoQ sessions & subscriptions (aggregate)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 12, "x": 12, "y": 21 },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never", "spanNulls": true, "stacking": { "group": "A", "mode": "none" } }, "mappings": [], "min": 0, "unit": "short" }, "overrides": [] },
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "moqx_moqActiveSessions", "legendFormat": "active sessions", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "moqx_pubActiveSubscriptions", "legendFormat": "pub subscriptions", "refId": "B" },
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "moqx_subActivePublishers", "legendFormat": "sub publishers", "refId": "C" }
+      ]
+    },
+
+    {
+      "type": "bargauge", "id": 23, "title": "Namespaces by subscribers",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 25 },
+      "fieldConfig": { "defaults": { "color": { "mode": "continuous-blues" }, "mappings": [], "min": 0, "unit": "short", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] } }, "overrides": [] },
+      "options": { "displayMode": "gradient", "orientation": "horizontal", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showUnfilled": true, "valueMode": "color" },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sort_desc(sum by (namespace) (max by (namespace, track) (moqx_track_subscribers)))", "legendFormat": "{{namespace}}", "refId": "A" }
+      ]
+    },
+    {
+      "type": "table", "id": 24, "title": "Tracks by subscribers (click a column to sort)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 16, "x": 8, "y": 25 },
+      "fieldConfig": { "defaults": { "custom": { "align": "auto", "filterable": true }, "mappings": [] }, "overrides": [ { "matcher": { "id": "byName", "options": "subscribers" }, "properties": [ { "id": "custom.width", "value": 130 }, { "id": "custom.cellOptions", "value": { "type": "color-background", "mode": "gradient" } }, { "id": "color", "value": { "mode": "continuous-blues" } } ] } ] },
+      "options": { "showHeader": true, "cellHeight": "sm", "sortBy": [ { "displayName": "subscribers", "desc": true } ] },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "max by (namespace, track) (moqx_track_subscribers)", "format": "table", "instant": true, "refId": "A" }
+      ],
+      "transformations": [
+        { "id": "organize", "options": { "excludeByName": { "Time": true }, "indexByName": { "namespace": 0, "track": 1, "Value": 2 }, "renameByName": { "Value": "subscribers" } } }
+      ]
+    },
+
+    {
+      "type": "timeseries", "id": 12, "title": "Top 10 tracks by subscribers (click a legend to isolate)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 33 },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never", "spanNulls": true, "stacking": { "group": "A", "mode": "none" } }, "mappings": [], "min": 0, "unit": "short" }, "overrides": [] },
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "right", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "topk(10, max by (namespace, track) (moqx_track_subscribers))", "legendFormat": "{{namespace}}{{track}}", "refId": "A" }
+      ]
+    },
+
+    { "type": "row", "id": 102, "title": "Details", "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 41 } },
+
+    {
+      "type": "timeseries", "id": 13, "title": "QUIC active connections & streams",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 42 },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never", "spanNulls": true, "stacking": { "group": "A", "mode": "none" } }, "mappings": [], "min": 0, "unit": "short" }, "overrides": [] },
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "moqx_quicActiveConnections", "legendFormat": "connections", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "moqx_quicActiveStreams", "legendFormat": "streams", "refId": "B" },
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "moqx_pubActiveSubscriptionStreams", "legendFormat": "pub sub-streams", "refId": "C" }
+      ]
+    },
+    {
+      "type": "timeseries", "id": 14, "title": "QUIC goodput",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 42 },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never", "spanNulls": true, "stacking": { "group": "A", "mode": "none" } }, "mappings": [], "min": 0, "unit": "Bps" }, "overrides": [] },
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "rate(moqx_quicBytesRead_total[$__rate_interval])", "legendFormat": "read", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "rate(moqx_quicBytesWritten_total[$__rate_interval])", "legendFormat": "written", "refId": "B" }
+      ]
+    },
+    {
+      "type": "timeseries", "id": 15, "title": "QUIC packets/s",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 34 },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never", "spanNulls": true, "stacking": { "group": "A", "mode": "none" } }, "mappings": [], "min": 0, "unit": "pps" }, "overrides": [] },
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "rate(moqx_quicPacketsReceived_total[$__rate_interval])", "legendFormat": "received", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "rate(moqx_quicPacketsSent_total[$__rate_interval])", "legendFormat": "sent", "refId": "B" },
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "rate(moqx_quicPacketsDropped_total[$__rate_interval])", "legendFormat": "dropped", "refId": "C" }
+      ]
+    },
+    {
+      "type": "timeseries", "id": 16, "title": "QUIC loss & retransmit ratio",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 34 },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never", "spanNulls": true, "stacking": { "group": "A", "mode": "none" } }, "mappings": [], "min": 0, "unit": "percentunit" }, "overrides": [] },
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "rate(moqx_quicPacketLoss_total[$__rate_interval]) / clamp_min(rate(moqx_quicPacketsSent_total[$__rate_interval]), 1)", "legendFormat": "loss / sent", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "rate(moqx_quicPacketRetransmissions_total[$__rate_interval]) / clamp_min(rate(moqx_quicPacketsSent_total[$__rate_interval]), 1)", "legendFormat": "rtx / sent", "refId": "B" }
+      ]
+    },
+    {
+      "type": "timeseries", "id": 17, "title": "Object-ACK latency",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 40 },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never", "spanNulls": true, "stacking": { "group": "A", "mode": "none" } }, "mappings": [], "min": 0, "unit": "ms" }, "overrides": [] },
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "histogram_quantile(0.99, sum by (le) (rate(moqx_moqObjectAckLatency_microseconds_bucket[$__rate_interval]))) / 1000", "legendFormat": "p99", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "histogram_quantile(0.50, sum by (le) (rate(moqx_moqObjectAckLatency_microseconds_bucket[$__rate_interval]))) / 1000", "legendFormat": "p50", "refId": "B" },
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "(rate(moqx_moqObjectAckLatency_microseconds_sum[$__rate_interval]) / clamp_min(rate(moqx_moqObjectAckLatency_microseconds_count[$__rate_interval]), 1)) / 1000", "legendFormat": "mean", "refId": "C" }
+      ]
+    },
+    {
+      "type": "timeseries", "id": 18, "title": "Event-loop busy time / iteration",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 40 },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never", "spanNulls": true, "stacking": { "group": "A", "mode": "none" } }, "mappings": [], "min": 0, "unit": "ms" }, "overrides": [] },
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "histogram_quantile(0.99, sum by (le) (rate(moqx_evbLoopBusy_microseconds_bucket[$__rate_interval]))) / 1000", "legendFormat": "p99", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "histogram_quantile(0.50, sum by (le) (rate(moqx_evbLoopBusy_microseconds_bucket[$__rate_interval]))) / 1000", "legendFormat": "p50", "refId": "B" },
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "(rate(moqx_evbLoopBusy_microseconds_sum[$__rate_interval]) / clamp_min(rate(moqx_evbLoopBusy_microseconds_count[$__rate_interval]), 1)) / 1000", "legendFormat": "mean", "refId": "C" }
+      ]
+    },
+    {
+      "type": "timeseries", "id": 19, "title": "QUIC RTT sample",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 40 },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never", "spanNulls": true, "stacking": { "group": "A", "mode": "none" } }, "mappings": [], "min": 0, "unit": "ms" }, "overrides": [] },
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "histogram_quantile(0.99, sum by (le) (rate(moqx_quicRttSample_milliseconds_bucket[$__rate_interval])))", "legendFormat": "p99", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "histogram_quantile(0.50, sum by (le) (rate(moqx_quicRttSample_milliseconds_bucket[$__rate_interval])))", "legendFormat": "p50", "refId": "B" }
+      ]
+    },
+    {
+      "type": "timeseries", "id": 20, "title": "Subgroup reset errors by code (pub+sub)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 46 },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never", "spanNulls": true, "stacking": { "group": "A", "mode": "none" } }, "mappings": [], "min": 0, "unit": "cps" }, "overrides": [] },
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum by (code) (label_replace(rate(moqx_pubSubgroupReset_total[$__rate_interval]), \"kind\", \"pub\", \"\", \"\") or label_replace(rate(moqx_subSubgroupReset_total[$__rate_interval]), \"kind\", \"sub\", \"\", \"\"))", "legendFormat": "{{code}}", "refId": "A" }
+      ]
+    }
+  ]
+}
