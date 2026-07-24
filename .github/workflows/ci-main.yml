@@ -343,6 +343,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+          # Full history + tags so `git describe --tags` can version the image
+          # (bare tag on release commits, tag-distance-sha on snapshots).
+          fetch-depth: 0
 
       - name: Download bookworm moxygen tarball
         env:
@@ -379,12 +382,18 @@ jobs:
           fi
           echo "short=$SHORT" >> "$GITHUB_OUTPUT"
           echo "rolling=${LABEL}-latest" >> "$GITHUB_OUTPUT"
+          # Version baked into the binary's /info (relay dashboard badge):
+          # exact tag on release commits, tag-distance-sha on snapshots.
+          # Leading "v" stripped — /info reports bare semver-style ("0.2.1",
+          # "0.2.1-14-gabc1234"); display layers add their own "v".
+          echo "describe=$(git describe --tags --always | sed 's/^v//')" >> "$GITHUB_OUTPUT"
 
       - name: Build Docker image
         run: |
           IMAGE="ghcr.io/${{ github.repository }}"
           ARCH="${{ matrix.arch }}"
           docker build -f docker/Dockerfile \
+            --build-arg MOQX_VERSION_STRING="${{ steps.tags.outputs.describe }}" \
             -t "${IMAGE}:${{ steps.tags.outputs.short }}-${ARCH}" \
             -t "${IMAGE}:${{ steps.tags.outputs.rolling }}-${ARCH}" \
             .
