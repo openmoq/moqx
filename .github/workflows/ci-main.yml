@@ -384,7 +384,9 @@ jobs:
           echo "rolling=${LABEL}-latest" >> "$GITHUB_OUTPUT"
           # Version baked into the binary's /info (relay dashboard badge):
           # exact tag on release commits, tag-distance-sha on snapshots.
-          echo "describe=$(git describe --tags --always)" >> "$GITHUB_OUTPUT"
+          # Leading "v" stripped — /info reports bare semver-style ("0.2.1",
+          # "0.2.1-14-gabc1234"); display layers add their own "v".
+          echo "describe=$(git describe --tags --always | sed 's/^v//')" >> "$GITHUB_OUTPUT"
 
       - name: Build Docker image
         run: |
