@@ -111,7 +111,7 @@ if [[ "$SNAPSHOT_SHA" != "$SUBMODULE_SHA" ]]; then
         echo "       Options:" >&2
         echo "         scripts/build.sh setup --from-source     # build pinned SHA from source" >&2
         echo "         scripts/build.sh setup --use-latest      # use snapshot anyway" >&2
-        echo "         git submodule update --remote deps/moxygen && git add deps/moxygen" >&2
+        echo "         git submodule update --remote deps/moxygen && git add --force deps/moxygen" >&2
         exit 1
     fi
 fi

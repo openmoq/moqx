@@ -174,7 +174,9 @@ jobs:
           # Update submodule to target SHA
           git -C deps/moxygen fetch origin
           git -C deps/moxygen checkout "$TARGET_SHA"
-          git add deps/moxygen
+          # --force: deps/moxygen has ignore=all in .gitmodules, and git >= 2.54
+          # skips ignored submodules even on explicit add
+          git add --force deps/moxygen
           git commit -m "sync: update moxygen submodule to ${SHORT_SHA}"
           git push -u origin "$BRANCH"
 
