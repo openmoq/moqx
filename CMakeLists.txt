@@ -202,7 +202,14 @@ target_link_libraries(moqx_core PUBLIC
 )
 
 target_compile_options(moqx_core PRIVATE -Wall -Wextra -Wpedantic)
-target_compile_definitions(moqx_core PRIVATE MOQX_VERSION="${PROJECT_VERSION}")
+# Version reported by /info (and the relay dashboard badge). CI passes
+# `git describe --tags` here: the bare tag on release commits (v0.2.1),
+# tag-distance-sha on snapshots (v0.2.1-14-g2ed29c8). Local builds fall
+# back to the static project version.
+if(NOT MOQX_VERSION_STRING)
+  set(MOQX_VERSION_STRING "${PROJECT_VERSION}")
+endif()
+target_compile_definitions(moqx_core PRIVATE MOQX_VERSION="${MOQX_VERSION_STRING}")
 
 # --- Config types (resolved Config structs, header-only, no rfl dependency) ---
 # Library consumers that only need the Config API link this.

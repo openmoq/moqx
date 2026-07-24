@@ -20,8 +20,14 @@ COPY src/ src/
 COPY deps/catapult/ deps/catapult/
 COPY deps/moxygen/build/fbcode_builder/CMake deps/moxygen/build/fbcode_builder/CMake
 
+# Version string baked into /info — CI passes `git describe --tags` (the
+# build context has no .git, so it can't be derived here). Empty means the
+# CMake fallback (static project version) applies.
+ARG MOQX_VERSION_STRING=""
+
 RUN cmake -S . -B _build --preset default \
         -DCMAKE_PREFIX_PATH=/opt/moxygen \
+        -DMOQX_VERSION_STRING="${MOQX_VERSION_STRING}" \
         -DBUILD_TESTING=OFF -DMOQX_BUILD_TESTS=OFF \
     && cmake --build _build -j$(nproc) \
     && cmake --install _build --prefix /install
