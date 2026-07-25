@@ -27,10 +27,11 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 SCRATCH="${MOQX_SCRATCH_PATH:-$ROOT/.scratch}"
-# One CPM source cache for the superbuild and the moqx build, so from-source
-# moqx reuses the very moxygen source the prefix was built from (its
-# find-modules must match) instead of re-fetching into the build dir's _deps.
-export CPM_SOURCE_CACHE="${CPM_SOURCE_CACHE:-${HOME:-$SCRATCH}/.cache/moqx/cpm}"
+# CPM's source clones and the extracted prebuilt installs sit side by side under
+# ~/.cache/moqx. The superbuild and the moqx build share one CPM cache, so
+# from-source moqx reuses the exact source its prefix was built from.
+export MOQX_DEPS_CACHE="${MOQX_DEPS_CACHE:-${HOME:-$SCRATCH}/.cache/moqx}"
+export CPM_SOURCE_CACHE="${CPM_SOURCE_CACHE:-$MOQX_DEPS_CACHE/cpm}"
 
 die() { echo "configure.sh: $*" >&2; exit 1; }
 usage() { awk 'NR>1 && /^#/ {sub(/^# ?/,""); print; next} NR>1 {exit}' "${BASH_SOURCE[0]}"; exit "${1:-0}"; }

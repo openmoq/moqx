@@ -72,6 +72,15 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 # configure (yaml-cpp 0.8.0: 3.4; catapult's bundled libcbor/doctest: 3.5).
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 
+# Shared source cache with the superbuild, which defaults to the same path. This
+# must be the CACHE entry: CPM declares its own, which drops a normal variable of
+# the same name and switches the cache off on the first configure.
+if(NOT DEFINED CACHE{CPM_SOURCE_CACHE} AND "$ENV{CPM_SOURCE_CACHE}" STREQUAL ""
+   AND NOT "$ENV{HOME}" STREQUAL "")
+  set(CPM_SOURCE_CACHE "$ENV{HOME}/.cache/moqx/cpm" CACHE PATH
+      "Directory to download CPM dependencies")
+endif()
+
 include(cmake/CPM.cmake)
 include(cmake/dependencies.cmake)
 
