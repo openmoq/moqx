@@ -1,219 +1,142 @@
 # Building moqx
 
-The Quick Start is in the top-level [README](README.md#quick-start). This
-document is the detailed build reference: the procedure annotated with
-what each step does, plus prereqs, dependency modes, profiles, Docker,
-formatting, and CI.
-
-## Supported Platforms
-
-| Platform | Status | Notes |
-|----------|--------|-------|
-| Ubuntu 22.04 (Jammy) | Tested in CI | Primary dev/CI platform |
-| Debian 12 (Bookworm) | Tested (Docker build) | Docker image base |
-| Ubuntu/Debian derivatives (Mint, Pop!_OS, ...) | Supported | Detected via `ID_LIKE`, mapped to the Ubuntu/Debian base artifacts; override with `MOQX_PLATFORM` if detection is wrong |
-| Fedora / RHEL | TBD | `install-system-deps.sh` has dnf support; not yet CI-tested |
-| macOS (Homebrew) | TBD | `install-system-deps.sh` has brew support; not yet CI-tested |
-
-## Build Procedure
-
-Six steps. Each links to its detail section.
-
-1. **Clone and init the moxygen submodule.**
-   `git clone … && cd moqx && git submodule update --init --recursive` —
-   the submodule pins the exact moxygen commit the build will use
-   (see [Dependency Modes](#dependency-modes)).
-2. **Ensure CMake 3.22+** is on `PATH`. All current targets ship a
-   new-enough version: Ubuntu 22.04+, Debian 12+, recent macOS Homebrew.
-   `build.sh` aborts early if cmake is missing or too old.
-3. **Install system libraries.** Required in *both* dependency modes —
-   see the system-libraries bullet in [Prerequisites](#prerequisites)
-   for why. One-liner:
-   `sudo deps/moxygen/standalone/install-system-deps.sh`.
-4. **Stage moxygen.** `./scripts/build.sh setup` — defaults to
-   `--from-release` (downloads the prebuilt tarball, ~1 min); falls back
-   to source build if unavailable. See [Dependency Modes](#dependency-modes)
-   for `--from-source`, `--moxygen-dir`, SHA pinning, etc.
-5. **Build moqx.** `./scripts/build.sh` — configures and builds.
-   See [Build Profiles](#build-profiles) for `default` vs `san`.
-6. **Run tests.** `./scripts/build.sh test` — 77 tests, sub-second.
-
-If you'd rather build in a clean container, skip to
-[Building from a Fresh Ubuntu Docker](#building-from-a-fresh-ubuntu-docker-reproducible-build).
+A standard CMake preset build. moqx links
+[moxygen](https://github.com/openmoq/moxygen) as an installed package; everything
+else is fetched at configure time by
+[CPM](https://github.com/cpm-cmake/CPM.cmake). Pinned revisions live in
+[cmake/dependencies.cmake](cmake/dependencies.cmake).
 
 ## Prerequisites
 
-- **CMake 3.22+** — required by moqx top-level `CMakeLists.txt`. All
-  current targets ship a new-enough version out of the box: Ubuntu
-  22.04+, Debian 12+, recent macOS Homebrew. `build.sh` enforces this
-  and aborts early if cmake is missing or too old (override with
-  `MOQX_SKIP_CMAKE_CHECK=1`).
-- Ninja, C++20 compiler (GCC 11+ / Clang 14+).
-- `curl` for downloading the moxygen release tarball
-  ([`setup-deps-tarball.sh`](scripts/setup-deps-tarball.sh)). No `gh` CLI is
-  required. Set `GITHUB_TOKEN`/`GH_TOKEN` only if you hit api.github.com's
-  unauthenticated rate limit.
-- **System libraries** — required in **both** dependency modes:
-  libssl, libfmt, libglog, libgflags, libdouble-conversion, libevent,
-  libsodium, libzstd, libboost, c-ares, libunwind, zlib, gperf. The
-  release tarball ships folly/fizz/wangle/mvfst/proxygen statically, but
-  moxygen's CMake config does `find_dependency(fmt, Glog, ...)` and folly
-  itself transitively wants OpenSSL/Boost. Install all with:
-  ```bash
-  sudo deps/moxygen/standalone/install-system-deps.sh
-  ```
-  (`build.sh setup`'s system-dep check only fires when falling back to a
-  source build — it does not preempt the build-step failure if libs are
-  missing.)
+- **CMake 3.23+**, **Ninja**, a **C++20 compiler** (GCC 11+ / Clang 14+).
+  `install-system-deps.sh` fetches a current CMake from PyPI when the distro's is
+  older (e.g. Ubuntu 22.04 ships 3.22, but reflect-cpp needs 3.23).
+- **System libraries** — `scripts/install-system-deps.sh` (apt/dnf/brew), or
+  install by hand: OpenSSL, boost, glog, gflags, double-conversion, libevent,
+  sodium, zstd, fmt, c-ares, libunwind, zlib, brotli, gperf. Needed in both modes —
+  folly & co. resolve them from the system.
+- **ccache** is used automatically when it's on `PATH`.
 
-### Installing CMake
+## How dependencies work
 
-moqx requires CMake 3.22+. All current targets ship a new-enough version
-out of the box:
+moqx doesn't compile moxygen in-tree; it `find_package`es an **installed** moxygen
+and builds against it — into `build/<profile>` (`build/default`, `build/san`, …).
+The only choice is where that install comes from — two equal alternatives:
 
-**Ubuntu 22.04+ / Debian 12+:**
+- **Prebuilt** — download the published tarball for the pinned `MOXYGEN_REV` and
+  your platform. Fast; needs a matching published platform.
+- **From source** — compile moxygen into an install prefix, then build moqx
+  against it. Works for any revision or platform, and lets you develop moxygen and
+  moqx together.
 
-```bash
-sudo apt-get install -y cmake
-cmake --version   # should show 3.22+
-```
+Either way the moqx build is identical; only the prefix differs.
 
-**macOS (Homebrew):**
+moxygen is itself a superbuild: its `standalone/` tree compiles Meta's
+folly/fizz/wangle/mvfst/proxygen plus the
+[openmoq/picoquic](https://github.com/openmoq/picoquic) fork. Those revisions are
+pinned inside moxygen, in its
+[`build/deps/github_hashes/`](https://github.com/openmoq/moxygen/tree/main/build/deps/github_hashes),
+not here. moqx's [cmake/dependencies.cmake](cmake/dependencies.cmake) pins the CPM
+ones: moxygen, catapult, reflect-cpp, yaml-cpp.
 
-```bash
-brew install cmake     # or `brew upgrade cmake` if already present
-cmake --version
-```
+## Build
 
-### Installing System Dependencies
+The classic trilogy, each taking the profile (`default` | `san` | `tsan`,
+default `default`) as its first argument:
 
-```bash
-sudo deps/moxygen/standalone/install-system-deps.sh
-```
+- [`scripts/configure.sh`](scripts/configure.sh) — picks the mode, configures
+  `build/<profile>` from scratch. Run once per profile; that dir's CMake cache is
+  the only state.
+- [`scripts/build.sh`](scripts/build.sh) — compiles.
+- [`scripts/test.sh`](scripts/test.sh) — runs the suite.
 
-### Building from a Fresh Ubuntu Docker (Reproducible Build)
+The raw cmake is shown beside each.
 
-This is handy for verifying the build on a clean system or for contributors
-who don't want to install deps on their host:
+**Prebuilt:**
 
 ```bash
-docker run --rm -it -v "$PWD":/src -w /src ubuntu:22.04 bash
-
-# Inside the container:
-apt-get update && apt-get install -y cmake ninja-build sudo git curl ca-certificates
-git submodule update --init --recursive
-sudo deps/moxygen/standalone/install-system-deps.sh
-./scripts/build.sh setup --from-source   # build from source (no release artifacts available offline)
-./scripts/build.sh
-./scripts/build.sh test
+scripts/configure.sh --mode prebuilt   # download prebuilt moxygen, configure
+scripts/build.sh                       # compile moqx
+scripts/test.sh
 ```
+Raw equivalent — moqx downloads the prebuilt itself at configure time:
+```bash
+cmake --preset default && cmake --build build/default && ctest --test-dir build/default --output-on-failure
+```
+A moxygen install already on `CMAKE_PREFIX_PATH` is used as-is (tried before any
+download). No prebuilt for your platform → configure errors and points here; force
+a published tag with `-DMOQX_PLATFORM=<tag>`. Platform tags are
+`ubuntu-<version_id>-<arch>`, `bookworm-<arch>` (Debian and its derivatives) and
+`macos-<major>-<arch>`, `<arch>` ∈ {`amd64`, `arm64`} — what is actually published
+is on [openmoq/moxygen's releases](https://github.com/openmoq/moxygen/releases).
 
-## Dependency Modes
-
-moqx depends on moxygen (and its Meta deps: folly, fizz, wangle, mvfst, proxygen).
-The `deps/moxygen` submodule pins the exact version. Two ways to get these deps:
-
-| Mode | Command | Time | When to use |
-|------|---------|------|-------------|
-| **from-release** | `build.sh setup` | ~1 min | Default -- downloads CI-built artifacts |
-| **from-source** | `build.sh setup --from-source` | 15-30 min | Full control, or when artifacts unavailable |
-
-Both accept an optional commit SHA to override the submodule pointer:
+**From source:**
 
 ```bash
-build.sh setup --from-release abc1234   # artifacts for specific moxygen commit
-build.sh setup --from-source abc1234    # build specific commit from source
+scripts/configure.sh --mode from-source   # build moxygen -> a prefix, configure moqx against it
+scripts/build.sh                          # compile moqx
+scripts/test.sh
+```
+Raw equivalent — the [superbuild](superbuild/) builds the moxygen prefix, then the
+same moqx build consumes it:
+```bash
+cmake -S superbuild -B .scratch/moxygen-build -G Ninja   # [-DCPM_moxygen_SOURCE=/path]
+cmake --build .scratch/moxygen-build                     # -> .scratch/moxygen-build/moxygen-install
+cmake --preset default -DMOQX_MOXYGEN_PREBUILT=OFF \
+      -DCMAKE_PREFIX_PATH=$PWD/.scratch/moxygen-build/moxygen-install
+cmake --build build/default
 ```
 
-To build against a local moxygen checkout (for iterating on moxygen itself):
+## Developing moxygen + moqx together
+
+Point `configure.sh` at a local moxygen checkout **once**, then iterate with
+two builds:
 
 ```bash
-build.sh setup --from-source --moxygen-dir ~/src/moxygen
+scripts/configure.sh --mode from-source --moxygen-dir ~/src/moxygen   # once
+# edit ~/src/moxygen/… then:
+cmake --build .scratch/moxygen-build    # recompile + reinstall moxygen (incremental)
+scripts/build.sh                        # relink moqx against the refreshed install
 ```
 
-Default (no SHA or dir) uses the current submodule HEAD.
-Falls back from release to source if artifacts aren't available.
-Use `--no-fallback` to fail instead. Use `--clean` to wipe `.scratch/` first.
+Only your changed moxygen files recompile, and moqx relinks against the refreshed
+prefix. `--moxygen-dir` is the only flag you need: `configure.sh` passes both the
+prefix and the matching find-modules to the moqx configure. By hand that is two
+flags — `-DCMAKE_PREFIX_PATH` for the libraries **and**
+`-DCPM_moxygen_SOURCE=/path` for moxygen's MODULE-mode find-modules.
 
-## Build Profiles
+Develop a local catapult instead with `-DCPM_catapult_SOURCE=/path` on the moqx
+build — it compiles in-tree, no prefix needed.
 
-```
-build.sh setup [--from-release [SHA]|--from-source [SHA]] [--moxygen-dir DIR] [--no-fallback] [--clean]
-build.sh [--profile default|san] [--build-dir DIR]
-build.sh test [--build-dir DIR] [-- CTEST_ARGS...]
-```
-
-| Profile | Build dir | Description |
-|---------|-----------|-------------|
-| `default` | `build/` | RelWithDebInfo |
-| `san` | `build-san/` | Debug + ASAN/UBSAN |
-
-## Formatting and Linting
-
-CI requires clang-format-19. Check before pushing:
+## Sanitizers
 
 ```bash
-./scripts/format.sh --check    # verify (dry-run)
-./scripts/format.sh            # fix in-place
-./scripts/lint.sh build        # clang-tidy (requires prior build)
+scripts/configure.sh san --mode from-source    # or tsan
+scripts/build.sh san
+scripts/test.sh san
 ```
 
-## PR Process
+Sanitizers must instrument the dependencies too, so `san --mode from-source`
+builds an instrumented moxygen as well; moqx lands in `build/san` (or
+`build/tsan`).
 
-1. Create a branch, push changes
-2. CI runs: format check + build/test (default + ASAN)
-3. All checks must pass before merge
-4. Squash-and-merge preferred for single-feature PRs
+## Custom presets
 
-## CI and Automation
+Profiles are just CMake presets — add your own in `CMakeUserPresets.json`
+(gitignored), inherit `default` (that keeps `binaryDir` at `build/<name>`,
+which the scripts rely on), and the trilogy accepts its name:
+`scripts/configure.sh my-preset --mode prebuilt && scripts/build.sh my-preset`.
+A preset that enables `MOQX_ENABLE_SANITIZERS` or `MOQX_ENABLE_TSAN` gets a
+matching instrumented moxygen from `--mode from-source` — derived from the
+preset's own cache variables, overridable with the `MOQX_MOXYGEN_PROFILE` env
+var; other presets build/link the default-flag moxygen.
 
-See [design/ci-architecture.md](design/ci-architecture.md) for the full CI pipeline:
-upstream sync, submodule updates, build/publish/release, and auto-deploy.
+## Docker, formatting, IDE, CI
 
-## Developer IDEs
-
-### CLion
-
-CLion can build moqx directly via its CMake integration. You still need the
-same prerequisites as the command-line build (CMake 3.22+, system libraries,
-and a staged moxygen install). The steps below wire CLion to the local
-dependency tree under `.scratch/`.
-
-#### 1. Stage dependencies (first time, or after dep changes)
-
-Before CLion can configure the project, moxygen must be present at
-`.scratch/moxygen-install`. Run:
-
-```bash
-./scripts/build.sh setup --from-source
-```
-
-This installs moxygen and its Meta dependencies into `.scratch/moxygen-install`.
-It takes 15–30 minutes on a first run.
-
-You only need to re-run this when **dependencies change** — for example, after
-updating the `deps/moxygen` submodule or when `.scratch/` has been cleaned.
-Day-to-day moqx source edits do not require re-running setup.
-
-#### 2. Configure CMake in CLion
-
-Open the moqx project root in CLion, then go to
-**Settings → Build, Execution, Deployment → CMake** and edit the **Debug**
-profile. Add these CMake options:
-
-```
--DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_PREFIX_PATH=$CMakeProjectDir$/.scratch/moxygen-install -DGFLAGS_SHARED=ON
-```
-
-`$CMakeProjectDir$` is a CLion macro that expands to the project root, so
-CMake can find the staged moxygen package config.
-
-If you configure before running setup, CMake will fail because
-`.scratch/moxygen-install` does not exist yet — that is expected.
-
-#### 3. Reload and build
-
-After setup completes, reload the CMake project in CLion
-(**Tools → CMake → Reload CMake Project**, or the reload button in the CMake
-tool window). Configuration should succeed and you can build and run targets
-from the IDE as usual.
+- **Docker** — `docker/Dockerfile` builds via the same `cmake --preset` flow.
+- **Format / lint** (CI requires clang-format-19) — `scripts/dev/format.sh [--check]`,
+  `scripts/dev/lint.sh build/default`.
+- **CLion** — point its CMake profile at `cmake --preset default`; for from-source,
+  run `scripts/configure.sh --mode from-source` first, then add
+  `-DMOQX_MOXYGEN_PREBUILT=OFF -DCMAKE_PREFIX_PATH=<prefix>` to the profile.
+- **CI / automation** — [docs/ci-architecture.md](docs/ci-architecture.md).
