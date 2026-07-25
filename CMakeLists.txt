@@ -46,14 +46,16 @@ option(MOQX_ENABLE_BPF_STEERING
   "Attach a classic BPF reuseport filter to steer QUIC packets to the correct worker (Linux only)"
   ${_moqx_bpf_default})
 
+include(cmake/SanitizerFlags.cmake)
+
 if(MOQX_ENABLE_SANITIZERS AND NOT CMAKE_BUILD_TYPE STREQUAL "Release")
-  add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
-  add_link_options(-fsanitize=address,undefined)
+  add_compile_options(${MOQX_ASAN_FLAGS})
+  add_link_options(${MOQX_ASAN_FLAGS})
 endif()
 
 if(MOQX_ENABLE_TSAN AND NOT CMAKE_BUILD_TYPE STREQUAL "Release")
-  add_compile_options(-fsanitize=thread -fno-omit-frame-pointer)
-  add_link_options(-fsanitize=thread)
+  add_compile_options(${MOQX_TSAN_FLAGS})
+  add_link_options(${MOQX_TSAN_FLAGS})
 endif()
 
 include(cmake/CheckSystemDeps.cmake)
@@ -225,6 +227,11 @@ CPMAddPackage(
     "CATAPULT_ENABLE_JSON OFF"
 )
 
+# Strict warnings for first-party code; linked PRIVATE per target so nothing
+# propagates to consumers.
+add_library(moqx_warnings INTERFACE)
+target_compile_options(moqx_warnings INTERFACE -Wall -Wextra -Wpedantic)
+
 # --- Cache library (forked from moxygen) ---
 
 add_library(moqx_cache STATIC
@@ -247,7 +254,7 @@ target_link_libraries(moqx_cache PUBLIC
   Folly::folly_logging_logging
 )
 
-target_compile_options(moqx_cache PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(moqx_cache PRIVATE moqx_warnings)
 
 # --- HMAC key derivation (shared by the relay's verifier and the issuer) ---
 
@@ -262,7 +269,7 @@ target_include_directories(moqx_hmac_key
 
 target_link_libraries(moqx_hmac_key PUBLIC OpenSSL::Crypto)
 
-target_compile_options(moqx_hmac_key PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(moqx_hmac_key PRIVATE moqx_warnings)
 
 # --- Core library ---
 
@@ -327,7 +334,7 @@ target_link_libraries(moqx_core PUBLIC
   mvfst::mvfst_logging_file_qlogger
 )
 
-target_compile_options(moqx_core PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(moqx_core PRIVATE moqx_warnings)
 target_compile_definitions(moqx_core PRIVATE MOQX_VERSION="${PROJECT_VERSION}")
 
 # --- Config types (resolved Config structs, header-only, no rfl dependency) ---
@@ -376,7 +383,7 @@ target_link_libraries(moqx_config_loader PRIVATE
   Folly::folly_ssl_openssl_cert_utils
 )
 
-target_compile_options(moqx_config_loader PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(moqx_config_loader PRIVATE moqx_warnings)
 
 # --- Main executable ---
 
@@ -412,7 +419,7 @@ target_link_libraries(moqx_issuer_lib PUBLIC
   moxygen::moxygen_moq_types
 )
 
-target_compile_options(moqx_issuer_lib PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(moqx_issuer_lib PRIVATE moqx_warnings)
 
 # --- Standalone moqx-issuer CLI ---
 
@@ -429,7 +436,7 @@ target_link_libraries(moqx-issuer PRIVATE
   gflags
 )
 
-target_compile_options(moqx-issuer PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(moqx-issuer PRIVATE moqx_warnings)
 
 # --- Tests ---
 

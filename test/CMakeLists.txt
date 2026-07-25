@@ -286,6 +286,4 @@ moqx_add_gtest(moqx_cache_test
     Folly::folly_coro_gtest_helpers
     Folly::folly_io_async_scoped_event_base_thread
 )
-target_compile_options(moqx_cache_test PRIVATE
-  -Wall -Wextra -Wpedantic
-)
+target_link_libraries(moqx_cache_test PRIVATE moqx_warnings)

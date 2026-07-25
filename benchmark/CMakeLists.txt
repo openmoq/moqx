@@ -19,4 +19,4 @@ target_link_libraries(moqx_benchmark PRIVATE
   Folly::follybenchmark
 )
 
-target_compile_options(moqx_benchmark PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(moqx_benchmark PRIVATE moqx_warnings)
