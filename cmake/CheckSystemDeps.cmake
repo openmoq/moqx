@@ -4,13 +4,18 @@
 # Linux only; macOS/brew and non-standard prefixes are left to find_package.
 # Skip with -DMOQX_SKIP_SYSTEM_DEP_CHECK=ON.
 
+# The Boost components folly's config find_package()s. Set before the early
+# return: superbuild/CMakeLists.txt reads this list even when the check is
+# skipped.
+set(MOQX_BOOST_COMPONENTS context filesystem program_options regex thread)
+
 if(MOQX_SKIP_SYSTEM_DEP_CHECK OR NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
   return()
 endif()
 
 # "<header>|<debian pkg>|<fedora pkg>" — needed in both dependency modes, since
-# folly resolves these from the system even under a prebuilt moxygen. Add a
-# library here and in install-system-deps.sh, which cannot read this list back.
+# folly resolves these from the system even under a prebuilt moxygen. A new
+# library goes here and in scripts/install-system-deps.sh.
 set(_moqx_reqs
   "openssl/ssl.h|libssl-dev|openssl-devel"
   "gflags/gflags.h|libgflags-dev|gflags-devel"
@@ -42,9 +47,7 @@ endforeach()
 # file also runs in the language-less superbuild, where find_library is blind.
 find_program(_moqx_probe_cxx NAMES $ENV{CXX} c++ g++ clang++)
 if(_moqx_probe_cxx)
-  # Must stay the component set superbuild/CMakeLists.txt probes for its
-  # static-vs-shared Boost decision; see the note there.
-  foreach(_comp context filesystem program_options regex thread)
+  foreach(_comp IN LISTS MOQX_BOOST_COMPONENTS)
     set(_found FALSE)
     foreach(_ext so a)
       execute_process(COMMAND "${_moqx_probe_cxx}" -print-file-name=libboost_${_comp}.${_ext}
