@@ -4,7 +4,8 @@
 	branch = main
 	# "all": pointer drift never shows in status/diff, so bulk git add can't
 	# sweep an accidental pin bump into a feature commit. Intentional bumps
-	# (sync PRs) still stage with an explicit `git add deps/moxygen`.
+	# (sync PRs) stage with `git add --force deps/moxygen` (git >= 2.54
+	# skips ignored submodules even on explicit add).
 	ignore = all
 [submodule "deps/catapult"]
 	path = deps/catapult
