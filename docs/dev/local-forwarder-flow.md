@@ -48,9 +48,13 @@ Executor legend used below:
 
 ## Publish
 
-A publisher's local forwarder **is** the publisher forwarder — the same object serves as the
-on-thread data-plane forwarder and as the registry's publisher entry (no second forwarder is
-constructed on `relayExec_`, unlike the `RelayExec`-mode branch in `publishWithSession`).
+A publisher's local forwarder **is** the publisher forwarder — a single forwarder serves the
+whole track, living on the publisher's executor rather than on `relayExec_`. Ownership lives in
+`tlForwarders_` on the publisher's executor, **not** in the registry: once registration
+completes, `registerPublishOnRelayExec` calls `registry_.clearForwarder(ftn)`, so the registry
+entry keeps its subscription/namespace bookkeeping but drops its forwarder ref. Code that needs
+the forwarder resolves it by `FullTrackName` from `tlForwarders_` on the owning executor, rather
+than holding a registry ref.
 
 ### Setup
 
@@ -65,7 +69,8 @@ constructed on `relayExec_`, unlike the `RelayExec`-mode branch in `publishWithS
 [Relay]            └─▶ registerPublishOnRelayExec()
 [Relay]                 ├─▶ publishWithSession()              # registry + namespace tree
 [Relay]                 │     └─▶ addSubscriberAndPublish()   # attach existing SUBSCRIBE_NAMESPACE subs (see Publish fan-out)
-[Relay]                 └─▶ relayChainFilter->setDownstream(topNFilter)
+[Relay]                 ├─▶ relayChainFilter->setDownstream(topNFilter)
+[Relay]                 └─▶ registry_.clearForwarder(ftn)     # drop registry ref; tlForwarders_ owns the fwd
 [Pub]         return {consumer, replyTask}                    # immediate
 ```
 
@@ -133,11 +138,13 @@ upstream work, and nests a single sortie to `[Pub]` to wire the channel sub.
 [Sub]              ├─▶ localFwd->addSubscriber()                 # so `forward` is right pre-hop
 [Sub]              └─▶ ⇢⇢▶ [Relay] attachNewLocalForwarderOnRelayExec()
 [Relay]                 ├─▶ joinOrPrepareUpstreamSubscription()  # registry: first vs subsequent
-[Relay]                 ├─▶ buildLocalToPublisherCallbacks()
 [Relay]                 └─▶ ⇢⇢▶ [Pub]  single sortie:
+[Pub]                        ├─ if SUBSEQUENT: resolve live publisherFwd from tlForwarders_
+[Pub]                        ├─▶ buildLocalToPublisherCallbacks()
 [Pub]                        ├─ if FIRST subscriber:
 [Pub]                        │    └─▶ installPublisherForwarderCallbackChain()  # chain + tlForwarders_ slot
 [Pub]                        ├─▶ installChannelSubscriber(localFwd ↔ publisherFwd)
+[Pub]                        ├─ if SUBSEQUENT: read seed largest/extensions
 [Pub]                        └─ if FIRST subscriber:
 [Pub]                             ├─▶ addChannelSubscriber(relayChain, passive)
 [Pub]                             └─▶ subscribeUpstreamAndApplyOk()
@@ -147,7 +154,7 @@ upstream work, and nests a single sortie to `[Pub]` to wire the channel sub.
 [Sub]              ◀── back on subscriberExec (tail)
 [Sub]              ├─ sawOnEmpty? ─▶ teardownLocalForwarderOnFailure()
 [Sub]              ├─ error?      ─▶ publishDone + remove
-[Sub]              ├─▶ apply upstreamOk extensions / largest
+[Sub]              ├─▶ apply largest/extensions (upstreamOk if FIRST, else seeded)
 [Sub]              ├─▶ replayPendingFowarderEvents()             # drain buffered events
 [Sub]              └─▶ return sub
 ```
@@ -158,12 +165,16 @@ publisher-forwarder control chain and claims the `tlForwarders_` slot via
 `installPublisherForwarderCallbackChain` — the **same** wiring the publish path uses, so a
 subscribe-initiated publisher forwarder is symmetric with a publish-initiated one. Subsequent
 subscribers on the same thread hit the `attachSubscriber` fast path (now also for
-subscribe-initiated tracks); on other threads they take only the `installChannelSubscriber` half
-of the sortie.
+subscribe-initiated tracks); on other threads they take the non-first half of the sortie:
+resolve the live publisher forwarder from `tlForwarders_` on the publisher exec, install the
+channel sub, and seed `largest`/extensions from it.
 
 The forwarder is created on `relayExec_` (in `joinOrPrepareUpstreamSubscription`) with a **null**
 callback, then gets its real callback + tl slot installed on `[Pub]` in the first-subscriber
-sortie — `tlForwarders_.get()` must run on the forwarder's own exec. It uses `removeOnEmpty=true`
+sortie — `tlForwarders_.get()` must run on the forwarder's own exec. Once that sortie claims the
+tl slot, the relay-exec continuation calls `registry_.clearForwarder(ftn)`, transferring ownership
+to `tlForwarders_` and leaving the registry with only bookkeeping — the same as the publish path.
+It uses `removeOnEmpty=true`
 (subscribe-initiated tracks drop on empty, unlike publish): `LocalForwarderCallback` vacates the
 tl slot on `[Pub]` when the last subscriber leaves, while `onEmptyImpl` unsubscribes upstream and
 removes the registry entry on `[Relay]`.

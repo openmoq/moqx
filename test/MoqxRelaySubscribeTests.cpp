@@ -406,4 +406,117 @@ TEST_P(MoQRelayTest, SubsequentSubscriberFailsWhenUpstreamSubscribeFails) {
   driveIfMultiThread();
 }
 
+// Cross-thread sibling of SubsequentSubscriberWaitsForUpstreamLargestSeeding: sub2 on its own
+// OS thread is gated by the registry awaitSubsequent future (not the per-thread readiness gate).
+TEST_P(MoQRelayTest, CrossThreadSubsequentSubscriberSeedingRace) {
+  auto publisherSession = createMockSession(); // upstream/publisher on exec_
+  auto subSession1 = createMockSession();      // first subscriber on exec_
+
+  // Second subscriber on a dedicated OS thread => distinct thread-local tlForwarders_.
+  folly::ScopedEventBaseThread subThread("sub2-thread");
+  auto subExec = std::make_shared<MoQFollyExecutorImpl>(subThread.getEventBase());
+  auto subSession2 = std::make_shared<NiceMock<MockMoQSession>>(subExec);
+  ON_CALL(*subSession2, getNegotiatedVersion())
+      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraftCurrent)));
+  getOrCreateMockState(subSession2);
+
+  doPublishNamespace(publisherSession, kTestNamespace);
+
+  const AbsoluteLocation kLargest{3, 0};
+  SubscribeOk upstreamOk;
+  upstreamOk.requestID = RequestID(1);
+  upstreamOk.trackAlias = TrackAlias(1);
+  upstreamOk.expires = std::chrono::milliseconds(0);
+  upstreamOk.groupOrder = GroupOrder::OldestFirst;
+  upstreamOk.largest = kLargest;
+
+  // Hold the upstream SUBSCRIBE in flight so sub2 races in while sub1's largest is unseeded.
+  folly::coro::Baton upstreamGate;
+  std::atomic<bool> upstreamSubscribeCalled{false};
+  EXPECT_CALL(*publisherSession, subscribe(_, _))
+      .WillOnce(
+          [&](const SubscribeRequest&,
+              std::shared_ptr<TrackConsumer>) -> folly::coro::Task<Publisher::SubscribeResult> {
+            upstreamSubscribeCalled.store(true);
+            co_await upstreamGate;
+            auto handle = std::make_shared<NiceMock<MockSubscriptionHandle>>(upstreamOk);
+            co_return folly::Expected<std::shared_ptr<SubscriptionHandle>, SubscribeError>(handle);
+          }
+      );
+
+  // The cross-exec sortie runs on exec_; drive it and flush the sub2 thread each iteration.
+  auto pumpExec = [&](auto pred) {
+    for (int i = 0; i < 2000 && !pred(); ++i) {
+      exec_->drive();
+      subThread.getEventBase()->runInEventBaseThreadAndWait([] {});
+    }
+    return pred();
+  };
+
+  auto launchSubscribe = [&](std::shared_ptr<MoQSession> session,
+                             folly::Executor* startExec,
+                             RequestID requestID,
+                             std::shared_ptr<std::optional<Publisher::SubscribeResult>> out,
+                             std::atomic<bool>* done) {
+    withSessionContext(session, [&]() {
+      SubscribeRequest sub;
+      sub.fullTrackName = kTestTrackName;
+      sub.requestID = requestID;
+      sub.locType = LocationType::LargestObject;
+      auto task = publisherInterface()->subscribe(std::move(sub), createMockConsumer());
+      co_withExecutor(
+          startExec,
+          folly::coro::co_invoke(
+              [t = std::move(task), out, done]() mutable -> folly::coro::Task<void> {
+                *out = co_await std::move(t);
+                if (done) {
+                  done->store(true);
+                }
+              }
+          )
+      ).start();
+    });
+  };
+
+  // First subscriber on exec_: becomes firstSetup, suspends in the gated upstream SUBSCRIBE.
+  auto firstResult = std::make_shared<std::optional<Publisher::SubscribeResult>>();
+  launchSubscribe(
+      subSession1,
+      static_cast<folly::DrivableExecutor*>(exec_.get()),
+      RequestID(0),
+      firstResult,
+      nullptr
+  );
+  ASSERT_TRUE(pumpExec([&] { return upstreamSubscribeCalled.load(); }))
+      << "relay should issue an upstream subscribe and suspend in it";
+
+  // Second subscriber on its own thread, while the first's seeding is still pending.
+  std::atomic<bool> sub2Done{false};
+  auto secondResult = std::make_shared<std::optional<Publisher::SubscribeResult>>();
+  launchSubscribe(subSession2, subExec.get(), RequestID(2), secondResult, &sub2Done);
+
+  // sub2 must stay blocked on awaitSubsequent until the upstream OK seeds largest; resolving
+  // early would return an empty largest a client reads as a track restart.
+  EXPECT_FALSE(pumpExec([&] { return sub2Done.load(); }))
+      << "cross-thread subsequent subscriber resolved before the upstream OK seeded largest";
+
+  upstreamGate.post();
+  ASSERT_TRUE(pumpExec([&] { return firstResult->has_value() && sub2Done.load(); }));
+
+  ASSERT_TRUE(firstResult->value().hasValue());
+  EXPECT_EQ(firstResult->value().value()->subscribeOk().largest, kLargest);
+  ASSERT_TRUE(secondResult->value().hasValue());
+  // Post-OK the established largest must hold regardless of when sub2 resolved.
+  EXPECT_EQ(secondResult->value().value()->subscribeOk().largest, kLargest);
+
+  getOrCreateMockState(subSession1)->subscribeHandles.push_back(firstResult->value().value());
+  getOrCreateMockState(subSession2)->subscribeHandles.push_back(secondResult->value().value());
+
+  removeSession(publisherSession);
+  removeSession(subSession1);
+  removeSession(subSession2);
+  driveIfMultiThread();
+  subThread.getEventBase()->runInEventBaseThreadAndWait([] {});
+}
+
 } // namespace moxygen::test

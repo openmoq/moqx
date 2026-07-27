@@ -330,6 +330,7 @@ private:
 
   bool addSubscriberAndPublish(
       std::shared_ptr<moxygen::MoQSession> subscriberSession,
+      moxygen::FullTrackName ftn,
       std::shared_ptr<moxygen::MoQForwarder> forwarder,
       bool forward,
       bool pinned,
@@ -338,7 +339,7 @@ private:
 
   folly::coro::Task<void> addSubscriberAndPublishViaLocalForwarder(
       std::shared_ptr<moxygen::MoQSession> subscriberSession,
-      std::shared_ptr<moxygen::MoQForwarder> publisherFwd,
+      moxygen::FullTrackName ftn,
       folly::Executor* publisherExec,
       bool forward,
       bool pinned
@@ -371,7 +372,8 @@ private:
       std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle,
       std::shared_ptr<moxygen::MoQSession> session,
       std::shared_ptr<moxygen::MoQForwarder> publisherFwd,
-      std::shared_ptr<CrossExecFilter> relayChainFilter
+      std::shared_ptr<CrossExecFilter> relayChainFilter,
+      std::shared_ptr<moxygen::MoQForwarder> displacedLocalFwd
   );
 
   // TRACK_FILTER support
@@ -477,11 +479,16 @@ private:
   // chain filter is not exposed (setDownstream/teardown happen inside attach); the tail
   // needs only ownsRelayChain to gate the sawOnEmpty teardown.
   struct PublisherAttachment {
-    std::shared_ptr<moxygen::MoQForwarder> publisherFwd;
+    // weak teardown identity pin; must not keep the forwarder alive off the pub exec.
+    std::weak_ptr<moxygen::MoQForwarder> publisherFwd;
     folly::Executor* publisherExec{nullptr};
     bool ownsRelayChain{false}; // firstSetup path installed the passive relay chain
     std::shared_ptr<moxygen::MoQForwarder::Callback> finalCallback;
     std::optional<UpstreamOk> upstreamOk;
+    // Subsequent-subscriber seed (set only when !ownsRelayChain): the live publisher
+    // forwarder's largest/extensions, read on the publisher exec.
+    std::optional<moxygen::AbsoluteLocation> seedLargest;
+    moxygen::Extensions seedExtensions;
     std::optional<SubscribeResult> error; // set => bail
   };
 
@@ -550,7 +557,8 @@ private:
       moxygen::PublishRequest pub,
       std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle,
       std::shared_ptr<moxygen::MoQSession> session,
-      std::shared_ptr<moxygen::MoQForwarder> forwarder = nullptr
+      std::shared_ptr<moxygen::MoQForwarder> forwarder = nullptr,
+      std::shared_ptr<moxygen::MoQForwarder> displacedLocalFwd = nullptr
   );
 
   std::shared_ptr<folly::Executor> ownedRelayExec_;
