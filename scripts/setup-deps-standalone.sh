@@ -10,7 +10,9 @@
 # Subsequent builds are incremental (cmake only rebuilds what changed).
 #
 # Usage:
-#   ./scripts/setup-deps-standalone.sh
+#   ./scripts/setup-deps-standalone.sh [--profile NAME] [-j N]
+#
+# Job count: -j/--jobs, else MOQX_BUILD_JOBS, else core count.
 #
 # System deps required (Ubuntu):
 #   deps/moxygen/standalone/install-system-deps.sh
@@ -24,9 +26,12 @@ MOXYGEN_DIR="${MOQX_MOXYGEN_DIR:-${PROJECT_ROOT}/deps/moxygen}"
 STANDALONE_SRC="${MOXYGEN_DIR}/standalone"
 
 PROFILE="default"
+JOBS="${MOQX_BUILD_JOBS:-}"
 while (( $# > 0 )); do
   case "$1" in
     --profile) PROFILE="$2"; shift 2 ;;
+    -j|--jobs) JOBS="$2"; shift 2 ;;
+    -j*) JOBS="${1#-j}"; shift ;;
     *) echo "Unknown option: $1" >&2; exit 1 ;;
   esac
 done
@@ -52,7 +57,11 @@ if [[ ! -f "${STANDALONE_SRC}/CMakeLists.txt" ]]; then
     exit 1
 fi
 
-NPROC=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+JOB_COUNT="${JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)}"
+if [[ ! "$JOB_COUNT" =~ ^[1-9][0-9]*$ ]]; then
+    echo "Error: invalid job count '$JOB_COUNT' (expected a positive integer)" >&2
+    exit 1
+fi
 
 # Profile-specific cmake flags
 CMAKE_BUILD_TYPE="RelWithDebInfo"
@@ -165,8 +174,8 @@ cmake -S "$STANDALONE_SRC" -B "$BUILD_DIR" \
     "${BOOST_STATIC_ARG[@]}" \
     "${EXTRA_CMAKE_ARGS[@]+"${EXTRA_CMAKE_ARGS[@]}"}"
 
-echo "==> Building ($NPROC jobs)..."
-cmake --build "$BUILD_DIR" -j"$NPROC"
+echo "==> Building ($JOB_COUNT jobs)..."
+cmake --build "$BUILD_DIR" -j"$JOB_COUNT"
 
 echo "==> Installing to $INSTALL_DIR..."
 cmake --install "$BUILD_DIR"

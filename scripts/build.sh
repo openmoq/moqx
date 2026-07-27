@@ -6,8 +6,8 @@
 #   --from-source   — build moxygen + all Meta deps from source (~15-30 min)
 #
 # Usage:
-#   ./scripts/build.sh setup [--from-release [SHA]|--from-source [SHA]] [--profile NAME] [--no-fallback] [--clean]
-#   ./scripts/build.sh [--profile NAME] [--build-dir DIR]
+#   ./scripts/build.sh setup [--from-release [SHA]|--from-source [SHA]] [--profile NAME] [--no-fallback] [--clean] [-j N]
+#   ./scripts/build.sh [--profile NAME] [--build-dir DIR] [-j N]
 #   ./scripts/build.sh test [--build-dir DIR] [-- CTEST_ARGS...]
 #
 # First-time setup: see README "Quick Start" and BUILD.md "Prerequisites"
@@ -33,6 +33,15 @@ DEPS_MODE_FILE="${SCRATCH}/deps-mode"
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 die() { echo "Error: $*" >&2; exit 1; }
+
+# Precedence: --jobs flag, then MOQX_BUILD_JOBS, then core count. The override
+# exists for distcc, which wants far more jobs than the local core count.
+resolve_jobs() {
+  local jobs="${1:-${MOQX_BUILD_JOBS:-}}"
+  [[ -n "$jobs" ]] || jobs=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+  [[ "$jobs" =~ ^[1-9][0-9]*$ ]] || die "invalid job count '$jobs' (expected a positive integer)"
+  echo "$jobs"
+}
 
 # ── CMake version precheck ───────────────────────────────────────────────────
 # moqx top-level CMakeLists.txt requires cmake_minimum_required(VERSION 3.22).
@@ -77,8 +86,8 @@ EOF
 usage() {
   cat <<'EOF'
 Usage:
-  build.sh setup [--from-release [SHA]|--from-source [SHA]] [--profile NAME] [--no-fallback] [--clean]
-  build.sh [--profile NAME] [--build-dir DIR]
+  build.sh setup [--from-release [SHA]|--from-source [SHA]] [--profile NAME] [--no-fallback] [--clean] [-j N]
+  build.sh [--profile NAME] [--build-dir DIR] [-j N]
   build.sh test [--build-dir DIR] [-- CTEST_ARGS...]
 
 Commands:
@@ -99,11 +108,17 @@ Setup options:
                         does not match the submodule SHA. Useful for tracking
                         moxygen tip without bumping the submodule pin.
   --clean               Remove .scratch and start fresh
+  -j, --jobs N          Parallel build jobs (--from-source only)
 
 Build options:
   --profile NAME  Build profile: "default" (RelWithDebInfo) or "san" (ASAN/UBSAN)
   --build-dir DIR Build directory (default: per profile)
   --benchmark     Enable benchmark targets (fetches google/benchmark)
+  -j, --jobs N    Parallel build jobs
+
+Environment:
+  MOQX_BUILD_JOBS  Default job count when -j is not given (default: core count).
+                   Set well above core count for distcc.
 
 Test options:
   --build-dir DIR Build directory to test (default: "build")
@@ -276,6 +291,7 @@ cmd_setup() {
   local clean=false
   local target_sha=""
   local moxygen_dir=""
+  local jobs=""
   local tarball_ok
 
   while (( $# > 0 )); do
@@ -283,14 +299,14 @@ cmd_setup() {
       --profile)     profile="$2"; shift 2 ;;
       --from-release)
         mode="from-release"; shift
-        # Optional SHA argument (next arg that doesn't start with --)
-        if (( $# > 0 )) && [[ "$1" != --* ]]; then
+        # Optional SHA argument (next arg that isn't a flag)
+        if (( $# > 0 )) && [[ "$1" != -* ]]; then
           target_sha="$1"; shift
         fi
         ;;
       --from-source)
         mode="from-source"; shift
-        if (( $# > 0 )) && [[ "$1" != --* ]]; then
+        if (( $# > 0 )) && [[ "$1" != -* ]]; then
           target_sha="$1"; shift
         fi
         ;;
@@ -302,6 +318,8 @@ cmd_setup() {
       --no-fallback) no_fallback=true; shift ;;
       --use-latest)  use_latest=true; shift ;;
       --clean)       clean=true; shift ;;
+      -j|--jobs)     [[ $# -gt 1 ]] || die "$1 requires a job count"; jobs="$2"; shift 2 ;;
+      -j*)           jobs="${1#-j}"; shift ;;
       -h|--help)     usage ;;
       *)             die "Unknown setup option: $1" ;;
     esac
@@ -310,6 +328,9 @@ cmd_setup() {
   if [[ -n "$moxygen_dir" && -n "$target_sha" ]]; then
     die "--moxygen-dir and a SHA override are mutually exclusive"
   fi
+
+  local job_count
+  job_count=$(resolve_jobs "$jobs")
 
   if [[ -n "$moxygen_dir" ]]; then
     export MOQX_MOXYGEN_DIR="$moxygen_dir"
@@ -365,7 +386,7 @@ cmd_setup() {
     require_system_deps
     echo ""
     echo "==> Setting up dependencies (from source)..."
-    bash "$SCRIPT_DIR/setup-deps-standalone.sh" --profile "$profile"
+    bash "$SCRIPT_DIR/setup-deps-standalone.sh" --profile "$profile" --jobs "$job_count"
     echo "from-source" > "$DEPS_MODE_FILE"
   fi
 
@@ -381,6 +402,7 @@ cmd_build() {
   require_system_deps
   local profile="default"
   local build_dir=""
+  local jobs=""
 
   local benchmark=OFF
 
@@ -389,6 +411,8 @@ cmd_build() {
       --profile)    profile="$2"; shift 2 ;;
       --build-dir)  build_dir="$2"; shift 2 ;;
       --benchmark)  benchmark=ON; shift ;;
+      -j|--jobs)    [[ $# -gt 1 ]] || die "$1 requires a job count"; jobs="$2"; shift 2 ;;
+      -j*)          jobs="${1#-j}"; shift ;;
       -h|--help)    usage ;;
       *)            die "Unknown build option: $1" ;;
     esac
@@ -418,8 +442,8 @@ cmd_build() {
   local prefix_path
   prefix_path=$(cat "$prefix_path_file")
 
-  local nproc
-  nproc=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+  local job_count
+  job_count=$(resolve_jobs "$jobs")
 
   # Map profile to cmake preset
   local preset="$profile"
@@ -452,8 +476,8 @@ cmd_build() {
     "${extra_cmake_args[@]+"${extra_cmake_args[@]}"}" \
     -DCMAKE_PREFIX_PATH="$prefix_path"
 
-  echo "==> Building ($nproc jobs)..."
-  cmake --build "$build_dir" -j"$nproc"
+  echo "==> Building ($job_count jobs)..."
+  cmake --build "$build_dir" -j"$job_count"
 
   echo "==> Build complete."
 }
