@@ -22,10 +22,10 @@ namespace openmoq::moqx {
 // never clobber a newer one that has claimed the same track name.
 //
 // removeOnEmpty distinguishes the two roles:
-//   - subscribe-path local forwarder (removeOnEmpty=true): when its last
+//   - subscribe-path forwarders (removeOnEmpty=true): when the last
 //     subscriber leaves, its channel sub is pulled from the publisher and it is
 //     dead — remove on onEmpty as well as onPublishDone.
-//   - publisher's publisher forwarder (removeOnEmpty=false): it must survive
+//   - publish-initiated publisher forwarder (removeOnEmpty=false): it must survive
 //     subscriber churn (new subscribers may arrive while the publisher is
 //     live), so it is removed ONLY when the source terminates (onPublishDone).
 class LocalForwarderCallback : public moxygen::MoQForwarder::Callback {
