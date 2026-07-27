@@ -11,6 +11,7 @@
 #include <proxygen/lib/http/HTTPMessage.h>
 
 #include "admin/AdminServer.h"
+#include "moqx/Version.h"
 
 namespace openmoq::moqx::admin {
 

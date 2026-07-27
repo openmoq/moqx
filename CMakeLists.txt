@@ -11,6 +11,11 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "" FORCE)
 endif()
 
+# Build identifier (git describe / VERSION file / -DMOQX_VERSION_STRING).
+# Defines the moqx_version interface target carrying the generated
+# moqx/Version.h, and writes ${CMAKE_BINARY_DIR}/VERSION for packaging.
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/MoqxVersion.cmake)
+
 option(MOQX_BUILD_TESTS "Build tests" ON)
 option(MOQX_BUILD_BENCHMARKS "Build benchmarks" OFF)
 option(MOQX_ENABLE_SANITIZERS "Enable ASAN/UBSAN (non-Release)" OFF)
@@ -202,14 +207,10 @@ target_link_libraries(moqx_core PUBLIC
 )
 
 target_compile_options(moqx_core PRIVATE -Wall -Wextra -Wpedantic)
-# Version reported by /info (and the relay dashboard badge). CI passes
-# `git describe --tags` here: the bare tag on release commits (v0.2.1),
-# tag-distance-sha on snapshots (v0.2.1-14-g2ed29c8). Local builds fall
-# back to the static project version.
-if(NOT MOQX_VERSION_STRING)
-  set(MOQX_VERSION_STRING "${PROJECT_VERSION}")
-endif()
-target_compile_definitions(moqx_core PRIVATE MOQX_VERSION="${MOQX_VERSION_STRING}")
+# Build identifier — see cmake/MoqxVersion.cmake. PUBLIC so consumers (the
+# moqx binary, tests, tools) can include moqx/Version.h too: the version is
+# no longer a private compile definition on this one library.
+target_link_libraries(moqx_core PUBLIC moqx_version)
 
 # --- Config types (resolved Config structs, header-only, no rfl dependency) ---
 # Library consumers that only need the Config API link this.
@@ -326,3 +327,8 @@ endif()
 include(${PROJECT_SOURCE_DIR}/cmake/Lint.cmake)
 
 install(TARGETS moqx moqx-issuer moqx_core moqx_config_loader)
+
+# Ship the build identifier alongside the binaries so an unpacked release or
+# snapshot tarball can be identified with `cat VERSION` — no git history, and
+# no need to run the binary (wrong arch, no libs, or a container layer).
+install(FILES ${CMAKE_BINARY_DIR}/VERSION DESTINATION .)
