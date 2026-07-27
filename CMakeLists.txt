@@ -6,8 +6,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# clang-tidy (scripts/dev/lint.sh) reads compile_commands.json from the
-# build dir.
+# scripts/dev/lint.sh reads compile_commands.json from the build dir.
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Route the compiler through ccache when it is installed, without a toolchain edit.
@@ -118,7 +117,7 @@ if(NOT moxygen_FOUND AND MOQX_MOXYGEN_PREBUILT)
       "Sanitizers are enabled but moxygen resolves to the UNINSTRUMENTED "
       "prebuilt — sanitizer coverage is limited to moqx's own TUs. For full "
       "coverage build an instrumented moxygen: "
-      "scripts/configure.sh san|tsan --mode from-source (see BUILD.md).")
+      "scripts/configure.sh san|tsan --moxygen from-source (see BUILD.md).")
   endif()
   include(cmake/FetchMoxygenPrebuilt.cmake)
   find_package(moxygen REQUIRED CONFIG)
@@ -126,21 +125,21 @@ elseif(NOT moxygen_FOUND)
   message(FATAL_ERROR
     "moxygen not found and MOQX_MOXYGEN_PREBUILT=OFF.\n"
     "Build moxygen from source and point moqx at it:\n"
-    "  scripts/configure.sh --mode from-source && scripts/build.sh\n"
+    "  scripts/configure.sh --moxygen from-source && scripts/build.sh\n"
     "(or pass -DCMAKE_PREFIX_PATH=<moxygen install>; see BUILD.md).")
 endif()
 message(STATUS "moxygen: using install at ${moxygen_DIR}")
 
 # find_package caches moxygen_DIR and the folly/fizz/… tree with it, so a build
 # dir binds to the moxygen it first resolved and a pin bump cannot take effect in
-# place. The remedy below names the mode because configure.sh has no default one.
+# place.
 set(_moqx_moxygen_id "${MOXYGEN_REV}:${moxygen_DIR}")
 if(DEFINED MOQX_RESOLVED_MOXYGEN AND NOT "${MOQX_RESOLVED_MOXYGEN}" STREQUAL "${_moqx_moxygen_id}")
   get_filename_component(_moqx_profile "${CMAKE_BINARY_DIR}" NAME)
   if(MOQX_MOXYGEN_PREBUILT)
-    set(_moqx_mode "prebuilt")
+    set(_moqx_moxygen "prebuilt")
   else()
-    set(_moqx_mode "from-source")
+    set(_moqx_moxygen "from-source")
   endif()
   message(FATAL_ERROR
     "MOXYGEN_REV (or the resolved moxygen install) changed since this build "
@@ -148,7 +147,7 @@ if(DEFINED MOQX_RESOLVED_MOXYGEN AND NOT "${MOQX_RESOLVED_MOXYGEN}" STREQUAL "${
     "Reconfigure from scratch — this discards the build dir, so moqx recompiles "
     "in full (a moxygen bump invalidates every moqx TU anyway; ccache and the "
     "dependency cache survive):\n"
-    "  scripts/configure.sh ${_moqx_profile} --mode ${_moqx_mode}\n"
+    "  scripts/configure.sh ${_moqx_profile} --moxygen ${_moqx_moxygen}\n"
     "(raw cmake: delete the build dir first).")
 endif()
 set(MOQX_RESOLVED_MOXYGEN "${_moqx_moxygen_id}" CACHE INTERNAL
@@ -164,7 +163,7 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug" AND NOT MOQX_ALLOW_ABI_SKEW
     "folly's kIsDebug differs across the ABI boundary (ODR/UB). Use a "
     "RelWithDebInfo/Release build type (for sanitizers on the prebuilt, add "
     "-DCMAKE_BUILD_TYPE=RelWithDebInfo), or build an instrumented moxygen with "
-    "scripts/configure.sh <preset> --mode from-source. Pass -DMOQX_ALLOW_ABI_SKEW=ON "
+    "scripts/configure.sh <preset> --moxygen from-source. Pass -DMOQX_ALLOW_ABI_SKEW=ON "
     "to build anyway.")
 endif()
 
@@ -201,25 +200,18 @@ CPMAddPackage(
 )
 
 # --- XLOG category rooting ---
-# Rewrite __FILE__ for moqx sources so folly XLOG categories render as moqx.*
-# (e.g. moqx.MoqxRelay) instead of src.* — sources live under src/, but the
-# user-facing logging API expects "moqx" as the top-level category. The
-# FOLLY_XLOG_STRIP_PREFIXES define handles paths the prefix-map doesn't touch
-# (notably generated headers under the build dir). Placed here so subsequent
-# moqx_* targets pick it up; the third-party CPM targets are unaffected —
-# yaml-cpp/reflectcpp are declared above, and catapult (below) has no sources
-# under src/, so the remap is inert for it.
+# Sources live under src/, but folly XLOG categories should read moqx.MoqxRelay
+# rather than src.MoqxRelay. FOLLY_XLOG_STRIP_PREFIXES covers what the
+# prefix-map misses, notably generated headers. Must precede the moqx_* targets.
 add_compile_options(-fmacro-prefix-map=${CMAKE_CURRENT_SOURCE_DIR}/src=moqx)
 add_compile_definitions(
   "FOLLY_XLOG_STRIP_PREFIXES=\"${CMAKE_SOURCE_DIR}:${CMAKE_BINARY_DIR}\""
 )
 
 # --- catapult (CAT/CWT/MOQT auth implementation) ---
-# Fetched via CPM; its nested deps (external/libcbor, ...) come along through
-# FetchContent's recursive submodule clone, so moqx itself has no submodules.
-# Develop against a local checkout with -DCPM_catapult_SOURCE=/path (that
-# checkout must have its own submodules initialised). Options go through CPM
-# OPTIONS so the generic ENABLE_LOGGING name stays scoped to catapult.
+# Nested deps (external/libcbor, …) arrive through FetchContent's recursive
+# submodule clone. Develop against a local checkout with -DCPM_catapult_SOURCE,
+# which must have its own submodules initialised.
 CPMAddPackage(
   NAME catapult
   GITHUB_REPOSITORY ${CATAPULT_REPOSITORY}
@@ -357,9 +349,8 @@ target_link_libraries(moqx_config INTERFACE
 )
 
 # --- Config loader (YAML parsing + validation + resolution + init) ---
-# Application-level: ParsedConfig rfl structs, loadConfig(), resolveConfig(),
-# handleConfigSubcommand(). Links rfl/yaml-cpp; consumers that only need
-# resolved Config types can depend on moqx_config alone.
+# Pulls in rfl/yaml-cpp. Consumers that only need the resolved Config types can
+# depend on moqx_config alone.
 
 add_library(moqx_config_loader STATIC
   src/config/Loader.cpp
