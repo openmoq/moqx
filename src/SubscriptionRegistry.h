@@ -121,6 +121,8 @@ public:
 
   bool exists(const moxygen::FullTrackName& ftn) const;
   std::shared_ptr<moxygen::MoQForwarder> getForwarder(const moxygen::FullTrackName& ftn) const;
+  std::optional<std::shared_ptr<moxygen::MoQForwarder>>
+  getForwarderIfExists(const moxygen::FullTrackName& ftn) const;
 
   struct TopNView {
     std::shared_ptr<moxygen::MoQForwarder> forwarder;
@@ -159,6 +161,9 @@ public:
   // Called from onEmpty after handle->unsubscribe() (subscribe-mode), or after
   // a publisher-terminated entry's forwarder goes empty.
   void remove(const moxygen::FullTrackName& ftn);
+
+  // LF mode: drop the registry's forwarder ref once tlForwarders_ owns it on the publisher exec.
+  void clearForwarder(const moxygen::FullTrackName& ftn);
 
   // === Iteration ===
 

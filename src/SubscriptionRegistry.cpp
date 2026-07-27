@@ -164,6 +164,15 @@ SubscriptionRegistry::getForwarder(const moxygen::FullTrackName& ftn) const {
   return it != subscriptions_.end() ? it->second.forwarder : nullptr;
 }
 
+std::optional<std::shared_ptr<moxygen::MoQForwarder>>
+SubscriptionRegistry::getForwarderIfExists(const moxygen::FullTrackName& ftn) const {
+  auto it = subscriptions_.find(ftn);
+  if (it == subscriptions_.end()) {
+    return std::nullopt;
+  }
+  return it->second.forwarder;
+}
+
 std::optional<SubscriptionRegistry::TopNView>
 SubscriptionRegistry::getTopNView(const moxygen::FullTrackName& ftn) const {
   auto it = subscriptions_.find(ftn);
@@ -220,6 +229,13 @@ SubscriptionRegistry::onPublisherTerminated(const moxygen::FullTrackName& ftn) {
 
 void SubscriptionRegistry::remove(const moxygen::FullTrackName& ftn) {
   subscriptions_.erase(ftn);
+}
+
+void SubscriptionRegistry::clearForwarder(const moxygen::FullTrackName& ftn) {
+  auto it = subscriptions_.find(ftn);
+  if (it != subscriptions_.end()) {
+    it->second.forwarder.reset();
+  }
 }
 
 void SubscriptionRegistry::removeIf(
