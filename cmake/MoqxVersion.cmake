@@ -16,10 +16,16 @@
 # Resolution order, first hit wins:
 #
 #   1. -DMOQX_VERSION_STRING=...  explicit override (CI, docker --build-arg)
-#   2. <source root>/VERSION      source tarballs and the docker build context
+#   2. git describe               any real clone, including local dev builds
+#   3. <source root>/VERSION      source tarballs and the docker build context
 #                                 carry no .git; CI writes this file for them
-#   3. git describe               any real clone, including local dev builds
 #   4. v${PROJECT_VERSION}        last resort, e.g. v0.1.0
+#
+# git outranks the VERSION file deliberately. The file is gitignored, so a
+# stale stamp left in a working tree (say, from reproducing a CI build
+# locally) is invisible to git status and would otherwise pin every later
+# build to a dead version. The contexts that genuinely need the file have no
+# .git at all, so they are unaffected by the ordering.
 #
 # Only v-prefixed numeric tags are considered. The repo also carries moving
 # tags (snapshot-latest, build-*, archive/*) that are NOT versions; an
@@ -58,14 +64,14 @@ endfunction()
 
 if(MOQX_VERSION_STRING)
   set(_moqx_version_source "explicit -DMOQX_VERSION_STRING")
-elseif(EXISTS "${PROJECT_SOURCE_DIR}/VERSION")
-  file(READ "${PROJECT_SOURCE_DIR}/VERSION" MOQX_VERSION_STRING)
-  string(STRIP "${MOQX_VERSION_STRING}" MOQX_VERSION_STRING)
-  set(_moqx_version_source "VERSION file")
 else()
   _moqx_version_from_git(MOQX_VERSION_STRING)
   if(MOQX_VERSION_STRING)
     set(_moqx_version_source "git describe")
+  elseif(EXISTS "${PROJECT_SOURCE_DIR}/VERSION")
+    file(READ "${PROJECT_SOURCE_DIR}/VERSION" MOQX_VERSION_STRING)
+    string(STRIP "${MOQX_VERSION_STRING}" MOQX_VERSION_STRING)
+    set(_moqx_version_source "VERSION file")
   else()
     set(MOQX_VERSION_STRING "v${PROJECT_VERSION}")
     set(_moqx_version_source "project() fallback")
