@@ -10,6 +10,7 @@
 #include <moxygen/relay/MoQForwarder.h>
 
 #include <folly/container/F14Map.h>
+#include <folly/futures/SharedPromise.h>
 
 namespace openmoq::moqx {
 
@@ -25,6 +26,13 @@ public:
     bool isNew;
   };
 
+  // readiness is non-null only while a subscribe-initiated forwarder's largest is
+  // seeded asynchronously; publish-path forwarders seed at creation and leave it null.
+  struct Entry {
+    std::shared_ptr<moxygen::MoQForwarder> forwarder;
+    std::shared_ptr<folly::SharedPromise<folly::Unit>> readiness;
+  };
+
   // Returns the existing local forwarder for ftn, or calls factory() to create
   // one. factory() is called at most once per ftn per thread lifetime.
   GetOrCreateResult getOrCreate(
@@ -33,10 +41,10 @@ public:
   ) {
     auto it = forwarders_.find(ftn);
     if (it != forwarders_.end()) {
-      return {it->second, /*isNew=*/false};
+      return {it->second.forwarder, /*isNew=*/false};
     }
     auto forwarder = factory();
-    forwarders_.emplace(ftn, forwarder);
+    forwarders_[ftn].forwarder = forwarder;
     return {std::move(forwarder), /*isNew=*/true};
   }
 
@@ -45,16 +53,24 @@ public:
   // a stale subscribe-path local forwarder under the same name is displaced
   // here, and drains itself via the source-termination cascade (its identity-
   // checked removal then no-ops, since this forwarder now owns the slot).
+  // seeded=true releases readiness waiters now (the claiming forwarder's largest is
+  // authoritative); seeded=false leaves them pending until the upstream OK.
   std::shared_ptr<moxygen::MoQForwarder>
-  set(const moxygen::FullTrackName& ftn, std::shared_ptr<moxygen::MoQForwarder> forwarder) {
-    auto prev = std::move(forwarders_[ftn]);
-    forwarders_[ftn] = std::move(forwarder);
+  set(const moxygen::FullTrackName& ftn,
+      std::shared_ptr<moxygen::MoQForwarder> forwarder,
+      bool seeded) {
+    auto& entry = forwarders_[ftn];
+    auto prev = std::move(entry.forwarder);
+    entry.forwarder = std::move(forwarder);
+    if (seeded && entry.readiness && !entry.readiness->isFulfilled()) {
+      entry.readiness->setValue();
+    }
     return prev;
   }
 
   std::shared_ptr<moxygen::MoQForwarder> get(const moxygen::FullTrackName& ftn) const {
     auto it = forwarders_.find(ftn);
-    return it != forwarders_.end() ? it->second : nullptr;
+    return it != forwarders_.end() ? it->second.forwarder : nullptr;
   }
 
   // Identity-checked removal: erase the entry for ftn only if it still points
@@ -64,18 +80,29 @@ public:
   // forwarder that has since claimed the same track name.
   void remove(const moxygen::FullTrackName& ftn, const moxygen::MoQForwarder* expected) {
     auto it = forwarders_.find(ftn);
-    if (it == forwarders_.end() || it->second.get() != expected) {
+    if (it == forwarders_.end() || it->second.forwarder.get() != expected) {
       return;
     }
     forwarders_.erase(it);
   }
 
+  // isNew=false attachers await this before reading largest, so they never observe the
+  // pre-seeding value a client reads as a track restart.
+  std::shared_ptr<folly::SharedPromise<folly::Unit>>
+  beginReadiness(const moxygen::FullTrackName& ftn) {
+    auto promise = std::make_shared<folly::SharedPromise<folly::Unit>>();
+    forwarders_[ftn].readiness = promise;
+    return promise;
+  }
+
+  std::shared_ptr<folly::SharedPromise<folly::Unit>> readiness(const moxygen::FullTrackName& ftn
+  ) const {
+    auto it = forwarders_.find(ftn);
+    return it != forwarders_.end() ? it->second.readiness : nullptr;
+  }
+
 private:
-  folly::F14FastMap<
-      moxygen::FullTrackName,
-      std::shared_ptr<moxygen::MoQForwarder>,
-      moxygen::FullTrackName::hash>
-      forwarders_;
+  folly::F14FastMap<moxygen::FullTrackName, Entry, moxygen::FullTrackName::hash> forwarders_;
 };
 
 } // namespace openmoq::moqx

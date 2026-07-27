@@ -349,8 +349,15 @@ private:
   );
 
   // Constructs the publisher's local forwarder and installs its callback chain on
-  // publisherExec. tlForwarders_ must already be initialized.
+  // publisherExec.
   std::shared_ptr<moxygen::MoQForwarder> createPublisherForwarder(const moxygen::PublishRequest& pub
+  );
+
+  // Must run on the forwarder's exec; removeOnEmpty=false survives churn, true drops on empty.
+  void installPublisherForwarderCallbackChain(
+      const moxygen::FullTrackName& ftn,
+      const std::shared_ptr<moxygen::MoQForwarder>& publisherFwd,
+      bool removeOnEmpty
   );
 
   std::optional<moxygen::PublishError>

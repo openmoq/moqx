@@ -47,7 +47,10 @@ SubscriptionRegistry::getOrCreateFromSubscribe(
   auto it = subscriptions_.find(ftn);
   if (it == subscriptions_.end()) {
     auto forwarder = std::make_shared<moxygen::MoQForwarder>(ftn, largest);
-    forwarder->setCallback(std::move(callback));
+    // Null callback: caller installs the real chain later on the forwarder's exec (LF path).
+    if (callback) {
+      forwarder->setCallback(std::move(callback));
+    }
     auto [consumer, topNFilter] = chainBuilder(forwarder);
     auto [emplaceIt, inserted] = subscriptions_.emplace(
         std::piecewise_construct,

@@ -135,6 +135,8 @@ upstream work, and nests a single sortie to `[Pub]` to wire the channel sub.
 [Relay]                 ├─▶ joinOrPrepareUpstreamSubscription()  # registry: first vs subsequent
 [Relay]                 ├─▶ buildLocalToPublisherCallbacks()
 [Relay]                 └─▶ ⇢⇢▶ [Pub]  single sortie:
+[Pub]                        ├─ if FIRST subscriber:
+[Pub]                        │    └─▶ installPublisherForwarderCallbackChain()  # chain + tlForwarders_ slot
 [Pub]                        ├─▶ installChannelSubscriber(localFwd ↔ publisherFwd)
 [Pub]                        └─ if FIRST subscriber:
 [Pub]                             ├─▶ addChannelSubscriber(relayChain, passive)
@@ -151,9 +153,20 @@ upstream work, and nests a single sortie to `[Pub]` to wire the channel sub.
 ```
 
 The first subscriber does the heavy lifting (upstream subscribe + installing the relay chain,
-the same passive cache/Top-N chain described in [Data flow](#data-flow)). Subsequent
-subscribers on the same thread hit the `attachSubscriber` fast path; on other threads they take
-only the `installChannelSubscriber` half of the sortie.
+the same passive cache/Top-N chain described in [Data flow](#data-flow)). It also installs the
+publisher-forwarder control chain and claims the `tlForwarders_` slot via
+`installPublisherForwarderCallbackChain` — the **same** wiring the publish path uses, so a
+subscribe-initiated publisher forwarder is symmetric with a publish-initiated one. Subsequent
+subscribers on the same thread hit the `attachSubscriber` fast path (now also for
+subscribe-initiated tracks); on other threads they take only the `installChannelSubscriber` half
+of the sortie.
+
+The forwarder is created on `relayExec_` (in `joinOrPrepareUpstreamSubscription`) with a **null**
+callback, then gets its real callback + tl slot installed on `[Pub]` in the first-subscriber
+sortie — `tlForwarders_.get()` must run on the forwarder's own exec. It uses `removeOnEmpty=true`
+(subscribe-initiated tracks drop on empty, unlike publish): `LocalForwarderCallback` vacates the
+tl slot on `[Pub]` when the last subscriber leaves, while `onEmptyImpl` unsubscribes upstream and
+removes the registry entry on `[Relay]`.
 
 ### Why each guard exists
 
@@ -250,8 +263,10 @@ The reusable adapter layers:
 
 ### Publisher forwarder → relay state
 
-Built by `createPublisherForwarder`. Lifecycle events on the publisher's own forwarder must
-reach relay-global state on `relayExec_`:
+Built by `installPublisherForwarderCallbackChain` for both publish-initiated (via
+`createPublisherForwarder`) and subscribe-initiated (via `attachNewLocalForwarderOnRelayExec`'s
+first-subscriber sortie) tracks. Lifecycle events on the publisher's own forwarder must reach
+relay-global state on `relayExec_`:
 
 ```
 [Pub]  publisherFwd fires onEmpty / forwardChanged / newGroupRequested
