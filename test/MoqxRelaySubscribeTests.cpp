@@ -8,8 +8,10 @@
 
 #include "MoqxRelayTestFixture.h"
 
+#include <folly/ScopeGuard.h>
 #include <folly/coro/Baton.h>
 #include <folly/coro/Invoke.h>
+#include <folly/synchronization/Baton.h>
 
 namespace moxygen::test {
 
@@ -404,6 +406,218 @@ TEST_P(MoQRelayTest, SubsequentSubscriberFailsWhenUpstreamSubscribeFails) {
   removeSession(subSession1);
   removeSession(subSession2);
   driveIfMultiThread();
+}
+
+// A PUBLISH on the subscriber's iothread claims the tl slot with ready=true, satisfying the
+// readiness promise an in-flight subscribe still owns. The subscribe must not fulfill it a
+// second time and fault a client addSubscriber has already attached.
+//
+// The publish reply is left un-awaited on purpose: registerPublishOnRelayExec replaces the
+// subscribe-path registry entry, failing completeUpstreamSubscription and short-circuiting
+// subscribe before the second fulfil.
+TEST_P(MoQRelayTest, PublishDuringSubscribeDoesNotDoubleFulfillReadyGate) {
+  if (relayMode() != RelayMode::LocalForwarderMT) {
+    GTEST_SKIP() << "the readiness gate only exists on the LF subscribe path";
+  }
+  auto publisherSession = createMockSession();
+  auto subSession = createMockSession();
+
+  doPublishNamespace(publisherSession, kTestNamespace);
+
+  SubscribeOk upstreamOk;
+  upstreamOk.requestID = RequestID(1);
+  upstreamOk.trackAlias = TrackAlias(1);
+  upstreamOk.expires = std::chrono::milliseconds(0);
+  upstreamOk.groupOrder = GroupOrder::OldestFirst;
+  upstreamOk.largest = AbsoluteLocation{3, 0};
+
+  std::shared_ptr<TrackConsumer> publishedConsumer;
+  EXPECT_CALL(*publisherSession, subscribe(_, _))
+      .WillOnce(
+          [&](const SubscribeRequest&,
+              std::shared_ptr<TrackConsumer>) -> folly::coro::Task<Publisher::SubscribeResult> {
+            // On publisherExec inside the first-subscriber sortie: the tl slot is claimed
+            // and the subscriber still owns the gate.
+            withSessionContext(publisherSession, [&]() {
+              PublishRequest pub;
+              pub.fullTrackName = kTestTrackName;
+              auto res =
+                  subscriberInterface()->publish(std::move(pub), createMockSubscriptionHandle());
+              ASSERT_TRUE(res.hasValue()) << "publish in mock unexpectedly failed";
+              publishedConsumer = res->consumer;
+            });
+            auto handle = std::make_shared<NiceMock<MockSubscriptionHandle>>(upstreamOk);
+            co_return folly::Expected<std::shared_ptr<SubscriptionHandle>, SubscribeError>(handle);
+          }
+      );
+
+  std::optional<Publisher::SubscribeResult> result;
+  std::string thrown;
+  withSessionContext(subSession, [&]() {
+    SubscribeRequest sub;
+    sub.fullTrackName = kTestTrackName;
+    sub.requestID = RequestID(0);
+    sub.locType = LocationType::LargestObject;
+    auto task = publisherInterface()->subscribe(std::move(sub), createMockConsumer());
+    try {
+      result = folly::coro::blockingWait(std::move(task), exec_.get());
+    } catch (const std::exception& e) {
+      thrown = e.what();
+    }
+  });
+
+  EXPECT_TRUE(thrown.empty()) << "subscribe threw instead of completing: " << thrown;
+  ASSERT_TRUE(result.has_value());
+  ASSERT_TRUE(result->hasValue()
+  ) << "a same-thread publish claiming the tl slot must not fault the subscriber that "
+       "owns the gate";
+  getOrCreateMockState(subSession)->subscribeHandles.push_back(result->value());
+
+  if (publishedConsumer) {
+    publishedConsumer->publishDone(
+        {RequestID(0), PublishDoneStatusCode::SESSION_CLOSED, 0, "test cleanup"}
+    );
+  }
+  removeSession(publisherSession);
+  removeSession(subSession);
+  driveIfMultiThread();
+}
+
+// set(ready=false) leaves a fresh tl entry with no gate armed. A subscriber landing on the
+// publisher's iothread during the upstream SUBSCRIBE then takes the isNew=false fast path
+// and attaches to a publisherFwd whose largest is unseeded — a track restart to the client.
+//
+// tlForwarders_ is thread-local and the fixture puts every session on exec_, so the
+// publisher needs its own iothread; otherwise both registries coincide and the gate covers
+// this case.
+TEST_P(MoQRelayTest, SubscriberOnPublisherThreadWaitsForUpstreamLargestSeeding) {
+  if (relayMode() != RelayMode::LocalForwarderMT) {
+    GTEST_SKIP() << "publisher/subscriber iothread split is LF-only";
+  }
+
+  folly::ScopedEventBaseThread pubThread("pub-iothread");
+  auto* pubEvb = pubThread.getEventBase();
+  auto pubExec = std::make_shared<MoQFollyExecutorImpl>(pubEvb);
+
+  auto makeSessionOnPubThread = [&] {
+    auto session = std::make_shared<NiceMock<MockMoQSession>>(pubExec);
+    ON_CALL(*session, getNegotiatedVersion())
+        .WillByDefault(Return(std::optional<uint64_t>(kVersionDraftCurrent)));
+    getOrCreateMockState(session);
+    return session;
+  };
+  auto publisherSession = makeSessionOnPubThread();
+  auto subSessionOnPubThread = makeSessionOnPubThread();
+  auto subSession1 = createMockSession();
+
+  doPublishNamespace(publisherSession, kTestNamespace);
+
+  const AbsoluteLocation kLargest{3, 0};
+  SubscribeOk upstreamOk;
+  upstreamOk.requestID = RequestID(1);
+  upstreamOk.trackAlias = TrackAlias(1);
+  upstreamOk.expires = std::chrono::milliseconds(0);
+  upstreamOk.groupOrder = GroupOrder::OldestFirst;
+  upstreamOk.largest = kLargest;
+
+  // Park the upstream SUBSCRIBE on pubEvb so the second subscriber lands after the tl slot
+  // is claimed but before the OK seeds largest.
+  folly::coro::Baton upstreamGate;
+  std::atomic<bool> upstreamSubscribeCalled{false};
+  std::shared_ptr<TrackConsumer> upstreamConsumer;
+  EXPECT_CALL(*publisherSession, subscribe(_, _))
+      .WillOnce(
+          [&](const SubscribeRequest&, std::shared_ptr<TrackConsumer> consumer
+          ) -> folly::coro::Task<Publisher::SubscribeResult> {
+            upstreamConsumer = std::move(consumer);
+            upstreamSubscribeCalled.store(true);
+            co_await upstreamGate;
+            auto handle = std::make_shared<NiceMock<MockSubscriptionHandle>>(upstreamOk);
+            co_return folly::Expected<std::shared_ptr<SubscriptionHandle>, SubscribeError>(handle);
+          }
+      );
+  // Never leave the mock parked on a destroyed Baton if an assertion below returns early.
+  auto releaseGate = folly::makeGuard([&]() noexcept { upstreamGate.post(); });
+
+  auto pump = [&](auto pred) {
+    for (int i = 0; i < 1000 && !pred(); ++i) {
+      exec_->drive();
+    }
+    return pred();
+  };
+
+  auto firstResult = std::make_shared<std::optional<Publisher::SubscribeResult>>();
+  withSessionContext(subSession1, [&]() {
+    SubscribeRequest sub;
+    sub.fullTrackName = kTestTrackName;
+    sub.requestID = RequestID(0);
+    sub.locType = LocationType::LargestObject;
+    auto task = publisherInterface()->subscribe(std::move(sub), createMockConsumer());
+    co_withExecutor(
+        static_cast<folly::DrivableExecutor*>(exec_.get()),
+        folly::coro::co_invoke(
+            [t = std::move(task), firstResult]() mutable -> folly::coro::Task<void> {
+              *firstResult = co_await std::move(t);
+            }
+        )
+    ).start();
+  });
+  ASSERT_TRUE(pump([&] { return upstreamSubscribeCalled.load(); }))
+      << "relay should issue an upstream subscribe and suspend in it";
+
+  // Build the consumer here: gmock objects must not be created while pubEvb touches mocks.
+  auto secondConsumer = createMockConsumer();
+  auto secondResult = std::make_shared<std::optional<Publisher::SubscribeResult>>();
+  folly::Baton<> secondDone;
+  pubEvb->runInEventBaseThreadAndWait([&]() {
+    withSessionContext(subSessionOnPubThread, [&]() {
+      SubscribeRequest sub;
+      sub.fullTrackName = kTestTrackName;
+      sub.requestID = RequestID(2);
+      sub.locType = LocationType::LargestObject;
+      auto task = publisherInterface()->subscribe(std::move(sub), secondConsumer);
+      co_withExecutor(
+          folly::getKeepAliveToken(pubEvb),
+          folly::coro::co_invoke(
+              [t = std::move(task), secondResult, &secondDone](
+              ) mutable -> folly::coro::Task<void> {
+                *secondResult = co_await std::move(t);
+                secondDone.post();
+              }
+          )
+      ).start();
+    });
+  });
+  // FIFO barrier: the subscribe above has reached its first suspension, so it is past
+  // acquireLocalForwarder before the gate opens.
+  pubEvb->runInEventBaseThreadAndWait([]() {});
+
+  releaseGate.dismiss();
+  upstreamGate.post();
+  ASSERT_TRUE(pump([&] { return firstResult->has_value(); }));
+  ASSERT_TRUE(secondDone.try_wait_for(std::chrono::seconds(5)))
+      << "second subscriber never completed";
+
+  ASSERT_TRUE(firstResult->value().hasValue());
+  EXPECT_EQ(firstResult->value().value()->subscribeOk().largest, kLargest);
+  ASSERT_TRUE(secondResult->value().hasValue());
+  EXPECT_EQ(secondResult->value().value()->subscribeOk().largest, kLargest)
+      << "a subscriber landing on the publisher's iothread while the upstream SUBSCRIBE is "
+         "in flight must wait for the seeded largest, not read the empty one";
+
+  getOrCreateMockState(subSession1)->subscribeHandles.push_back(firstResult->value().value());
+  getOrCreateMockState(subSessionOnPubThread)
+      ->subscribeHandles.push_back(secondResult->value().value());
+
+  removeSession(publisherSession);
+  removeSession(subSession1);
+  removeSession(subSessionOnPubThread);
+  // Teardown bounces between relayExec_ and pubEvb; flushing one leaves session refs alive
+  // and gmock reports leaked mocks. Also quiesces pubEvb before pubThread joins.
+  for (int i = 0; i < 4; ++i) {
+    driveIfMultiThread();
+    pubEvb->runInEventBaseThreadAndWait([]() {});
+  }
 }
 
 } // namespace moxygen::test
