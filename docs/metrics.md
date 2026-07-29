@@ -78,11 +78,10 @@ receive PUBLISH from an upstream publisher.
 
 | Metric | Description |
 |--------|-------------|
-| `moqx_moqPublishSuccess_total` | Relay sent PUBLISH and received PUBLISH_OK back |
-| `moqx_moqPublishError_total` | Relay sent PUBLISH and received PUBLISH_ERROR back |
-| `moqx_moqPublishReceived_total` | PUBLISH received from an upstream publisher |
-| `moqx_moqPublishOkSent_total` | PUBLISH_OK sent to an upstream publisher |
-| `moqx_subPublishError_total` | PUBLISH_ERROR sent to an upstream publisher (rejected) |
+| `moqx_pubPublishSuccess_total` | Relay sent PUBLISH and received PUBLISH_OK back |
+| `moqx_pubPublishError_total` | Relay sent PUBLISH and received PUBLISH_ERROR back |
+| `moqx_subPublishSuccess_total` | Relay received PUBLISH and sent PUBLISH_OK back |
+| `moqx_subPublishError_total` | Relay received PUBLISH and sent PUBLISH_ERROR back (rejected) |
 
 ## MoQ Application Layer — Gauges
 
@@ -146,7 +145,7 @@ Counters with per-code breakdowns:
 - `moqx_pubFetchError_by_code_total`
 - `moqx_pubPublishNamespaceError_by_code_total`
 - `moqx_pubSubscribeNamespaceError_by_code_total`
-- `moqx_moqPublishError_by_code_total`
+- `moqx_pubPublishError_by_code_total`
 - `moqx_subSubscribeError_by_code_total`
 - `moqx_subFetchError_by_code_total`
 - `moqx_subPublishNamespaceError_by_code_total`
