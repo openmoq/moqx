@@ -149,7 +149,6 @@ inline constexpr std::array<std::string_view, kResetStreamErrorCodeCount>
 // uint64_t monotonically-increasing counters — MoQ application layer.
 // pub* = relay acting as publisher (serving downstream subscribers).
 // sub* = relay acting as subscriber (consuming from upstream publishers).
-// moq* = unambiguously tied to one role (no pub/sub prefix needed).
 #define STATS_MOQ_COUNTER_FIELDS(X)                                                                \
   /* Publisher-side: relay accepted/rejected subscription requests */                              \
   X(uint64_t, pubSubscribeSuccess)                                                                 \
@@ -169,9 +168,9 @@ inline constexpr std::array<std::string_view, kResetStreamErrorCodeCount>
   X(uint64_t, pubSubscriptionStreamClosed)                                                         \
   X(uint64_t, pubTrackStatus)                                                                      \
   X(uint64_t, pubRequestUpdate)                                                                    \
-  /* Publisher-only methods: relay sent PUBLISH, received PUBLISH_OK/ERROR back */                 \
-  X(uint64_t, moqPublishSuccess)                                                                   \
-  X(uint64_t, moqPublishError)                                                                     \
+  /* Relay sent PUBLISH upstream, received PUBLISH_OK/ERROR back */                                \
+  X(uint64_t, pubPublishSuccess)                                                                   \
+  X(uint64_t, pubPublishError)                                                                     \
   /* Subscriber-side: relay subscribed to / was rejected by upstream */                            \
   X(uint64_t, subSubscribeSuccess)                                                                 \
   X(uint64_t, subSubscribeError)                                                                   \
@@ -190,9 +189,8 @@ inline constexpr std::array<std::string_view, kResetStreamErrorCodeCount>
   X(uint64_t, subSubscriptionStreamClosed)                                                         \
   X(uint64_t, subTrackStatus)                                                                      \
   X(uint64_t, subRequestUpdate)                                                                    \
-  /* Subscriber-only methods: upstream publisher connected to relay */                             \
-  X(uint64_t, moqPublishReceived)                                                                  \
-  X(uint64_t, moqPublishOkSent)                                                                    \
+  /* Relay received PUBLISH from upstream, sent PUBLISH_OK/ERROR back */                           \
+  X(uint64_t, subPublishSuccess)                                                                   \
   X(uint64_t, subPublishError)
 
 // uint64_t monotonically-increasing counters — QUIC transport layer.
@@ -284,7 +282,7 @@ inline constexpr std::array<std::string_view, kResetStreamErrorCodeCount>
   X(pubFetchError)                                                                                 \
   X(pubPublishNamespaceError)                                                                      \
   X(pubSubscribeNamespaceError)                                                                    \
-  X(moqPublishError)                                                                               \
+  X(pubPublishError)                                                                               \
   X(subSubscribeError)                                                                             \
   X(subFetchError)                                                                                 \
   X(subPublishNamespaceError)                                                                      \
