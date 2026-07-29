@@ -77,9 +77,7 @@ int main(int argc, char* argv[]) {
       "  serve                Start the relay (default)\n" +
       cfg::configSubcommandUsage() + "\nUsage: moqx [subcommand] --config <path>"
   );
-  // Powers `moqx --version` (gflags handles the flag inside folly::Init).
-  // Works with no config file present, so an image or tarball can be
-  // identified without deploying it.
+  // gflags handles --version inside folly::Init, before any config load.
   google::SetVersionString(MOQX_VERSION);
   // MOQX_LOGGING is the moqx-namespaced alias for folly's own FOLLY_LOGGING env
   // var (folly::Init reads FOLLY_LOGGING). Promote it here — before folly::Init
@@ -94,8 +92,7 @@ int main(int argc, char* argv[]) {
   combineLoggingArgs(argc, argv);
   folly::Init init(&argc, &argv, true);
 
-  // First line in every relay's log: attributes the whole log stream to an
-  // exact build (see cmake/MoqxVersion.cmake for the identifier's format).
+  // Attributes the log stream to an exact build.
   XLOG(INFO) << "moqx " << kVersion << " starting";
 
   std::string_view subcommand = kServeCommand;
