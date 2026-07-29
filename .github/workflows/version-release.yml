@@ -324,10 +324,8 @@ jobs:
           # path. Combined with the bundle step below this produces a
           # self-contained tarball that runs on noble / RHEL 9 / AL2023
           # without needing distro-specific packages installed.
-          # Stamp the exact release tag rather than deriving it: this job's
-          # checkout is shallow (no tags) and the tag may not exist yet when
-          # the build runs, so `git describe` would yield a bare sha. See
-          # cmake/MoqxVersion.cmake.
+          # Pass the tag explicitly: the checkout is shallow and the tag may
+          # not exist yet, so git describe would yield a bare sha.
           cmake -S . -B _build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DMOQX_VERSION_STRING="${{ needs.validate.outputs.tag }}" \

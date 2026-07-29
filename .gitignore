@@ -1,8 +1,6 @@
 # Build outputs
 /build/
 /build-*/
-# docker/Dockerfile and version-release.yml build here; only reachable
-# locally when reproducing a CI build by hand.
 /_build/
 /cmake-build-*/
 /CMakeFiles/
@@ -43,5 +41,5 @@ docker/cloudflare.ini
 /gh-pages/
 docker/grafana/provisioning/dashboards/archive/
 
-# Build-version stamp written by CI (cmake/MoqxVersion.cmake reads it).
+# Version stamp for source trees with no .git (cmake/MoqxVersion.cmake).
 /VERSION

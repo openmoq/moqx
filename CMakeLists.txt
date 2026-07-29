@@ -11,9 +11,7 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "" FORCE)
 endif()
 
-# Build identifier (git describe / VERSION file / -DMOQX_VERSION_STRING).
-# Defines the moqx_version interface target carrying the generated
-# moqx/Version.h, and writes ${CMAKE_BINARY_DIR}/VERSION for packaging.
+# Defines MOQX_VERSION_STRING and the moqx_version interface target.
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/MoqxVersion.cmake)
 
 option(MOQX_BUILD_TESTS "Build tests" ON)
@@ -207,9 +205,7 @@ target_link_libraries(moqx_core PUBLIC
 )
 
 target_compile_options(moqx_core PRIVATE -Wall -Wextra -Wpedantic)
-# Build identifier — see cmake/MoqxVersion.cmake. PUBLIC so consumers (the
-# moqx binary, tests, tools) can include moqx/Version.h too: the version is
-# no longer a private compile definition on this one library.
+# PUBLIC so dependents can include moqx/Version.h.
 target_link_libraries(moqx_core PUBLIC moqx_version)
 
 # --- Config types (resolved Config structs, header-only, no rfl dependency) ---
@@ -328,7 +324,5 @@ include(${PROJECT_SOURCE_DIR}/cmake/Lint.cmake)
 
 install(TARGETS moqx moqx-issuer moqx_core moqx_config_loader)
 
-# Ship the build identifier alongside the binaries so an unpacked release or
-# snapshot tarball can be identified with `cat VERSION` — no git history, and
-# no need to run the binary (wrong arch, no libs, or a container layer).
+# Identifies an unpacked tarball without running the binary.
 install(FILES ${CMAKE_BINARY_DIR}/VERSION DESTINATION .)

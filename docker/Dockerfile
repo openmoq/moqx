@@ -13,21 +13,15 @@ WORKDIR /src
 # Moxygen tarball (pre-extracted bookworm build)
 COPY .docker-deps/moxygen /opt/moxygen
 
-# MoQX source — only what cmake needs.
-# VERSIO[N] is an optional-copy glob: CI stamps a VERSION file into the build
-# context (the context excludes .git, so cmake can't run git describe here),
-# but a bare `docker build` has none and must still work. The glob matches
-# nothing in that case, and the COPY still succeeds because CMakeLists.txt
-# does — a plain `COPY VERSION` would hard-fail instead.
-COPY CMakeLists.txt CMakePresets.json VERSIO[N] ./
+# MoQX source — only what cmake needs
+COPY CMakeLists.txt CMakePresets.json ./
 COPY cmake/ cmake/
 COPY src/ src/
 COPY deps/catapult/ deps/catapult/
 COPY deps/moxygen/build/fbcode_builder/CMake deps/moxygen/build/fbcode_builder/CMake
 
-# Explicit override for one-off builds; normally empty, in which case cmake
-# falls through to the VERSION file copied above (then to the static project
-# version if that is absent too). See cmake/MoqxVersion.cmake.
+# The build context excludes .git, so cmake cannot derive the version here;
+# CI passes it in. Empty falls back to the static project version.
 ARG MOQX_VERSION_STRING=""
 
 RUN cmake -S . -B _build --preset default \
@@ -47,12 +41,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         curl gettext-base \
     && rm -rf /var/lib/apt/lists/*
 
+# Same value the binary reports, as image metadata: `docker inspect` and
+# registry UIs can identify an image without pulling or running it.
+# ARGs do not cross stages, so it is redeclared here.
+ARG MOQX_VERSION_STRING=""
+LABEL org.opencontainers.image.title="moqx" \
+      org.opencontainers.image.description="MoQ relay" \
+      org.opencontainers.image.version="${MOQX_VERSION_STRING}" \
+      org.opencontainers.image.source="https://github.com/openmoq/moqx" \
+      org.opencontainers.image.licenses="Apache-2.0"
+
 COPY --from=builder /install/bin/moqx /usr/local/bin/moqx
 COPY --from=builder /install/bin/moqx-issuer /usr/local/bin/moqx-issuer
-# Build identifier as a plain file, so an image can be identified without
-# executing it — inspecting a layer, or a foreign-arch image that cannot run
-# here. `docker run --rm <image> moqx --version` reports the same string.
-COPY --from=builder /install/VERSION /usr/local/VERSION
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY docker/config.docker.yaml /usr/local/share/moqx/config.docker.yaml
 RUN chmod +x /usr/local/bin/entrypoint.sh

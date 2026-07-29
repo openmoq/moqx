@@ -383,25 +383,22 @@ jobs:
           echo "short=$SHORT" >> "$GITHUB_OUTPUT"
           echo "rolling=${LABEL}-latest" >> "$GITHUB_OUTPUT"
 
-      - name: Stamp build version
+      - name: Resolve build version
+        id: version
         run: |
-          # Single source of truth for the version baked into the binary
-          # (/info, --version, log banner) and shipped in artifacts. The
-          # docker build context excludes .git, so cmake reads this file —
-          # see cmake/MoqxVersion.cmake for the full resolution order.
-          #
-          # --match 'v[0-9]*' is load-bearing: the repo also carries moving,
-          # non-version tags (snapshot-latest, build-*, archive/*) and an
-          # unfiltered describe returns e.g. "snapshot-latest" as the version
-          # of every image built from main.
-          git describe --tags --match 'v[0-9]*' --always > VERSION
-          echo "==> build version: $(cat VERSION)"
+          # Baked into the binary and emitted as an OCI label. Matching only
+          # v-prefixed tags is required: the repo carries moving tags that are
+          # not versions, and an unfiltered describe returns one of those.
+          V="$(git describe --tags --match 'v[0-9]*' --always)"
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "==> build version: $V"
 
       - name: Build Docker image
         run: |
           IMAGE="ghcr.io/${{ github.repository }}"
           ARCH="${{ matrix.arch }}"
           docker build -f docker/Dockerfile \
+            --build-arg MOQX_VERSION_STRING="${{ steps.version.outputs.version }}" \
             -t "${IMAGE}:${{ steps.tags.outputs.short }}-${ARCH}" \
             -t "${IMAGE}:${{ steps.tags.outputs.rolling }}-${ARCH}" \
             .

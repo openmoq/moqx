@@ -1,40 +1,23 @@
-# Version derivation for moqx.
+# Build identifier compiled into the binary (/info, --version, log banner) and
+# written to ${CMAKE_BINARY_DIR}/VERSION for packaging.
 #
-# Produces MOQX_VERSION_STRING: one canonical identifier consumed by every
-# binary (admin /info, --version, the startup log banner) and embedded in
-# build artifacts as a VERSION file, so a tarball or container can be
-# identified without its git history.
+# Format is git describe output keeping the tag's "v" prefix, e.g. v0.2.1,
+# v0.2.1-14-gabc1234, v0.2.1-14-gabc1234-dirty, or a bare sha when no v* tag is
+# reachable. Resolution order:
 #
-# Format is git-describe output with the "v" tag prefix retained, so the
-# string round-trips into `git checkout` / `gh release view`:
+#   1. -DMOQX_VERSION_STRING   explicit (CI, docker --build-arg)
+#   2. git describe            any clone, including local dev builds
+#   3. <source root>/VERSION   for trees with no .git (source tarballs)
+#   4. v${PROJECT_VERSION}
 #
-#   v0.2.1                     exact release tag
-#   v0.2.1-14-gabc1234         14 commits past v0.2.1
-#   v0.2.1-14-gabc1234-dirty   ...with uncommitted changes (local builds)
-#   abc1234                    no reachable v* tag (shallow clone, fork)
+# git outranks the VERSION file because that file is gitignored: a stale one
+# left in a working tree would silently pin every later build.
 #
-# Resolution order, first hit wins:
+# Only v-prefixed numeric tags are matched — the repo carries moving tags that
+# are not versions, and an unfiltered describe would return one of those.
 #
-#   1. -DMOQX_VERSION_STRING=...  explicit override (CI, docker --build-arg)
-#   2. git describe               any real clone, including local dev builds
-#   3. <source root>/VERSION      source tarballs and the docker build context
-#                                 carry no .git; CI writes this file for them
-#   4. v${PROJECT_VERSION}        last resort, e.g. v0.1.0
-#
-# git outranks the VERSION file deliberately. The file is gitignored, so a
-# stale stamp left in a working tree (say, from reproducing a CI build
-# locally) is invisible to git status and would otherwise pin every later
-# build to a dead version. The contexts that genuinely need the file have no
-# .git at all, so they are unaffected by the ordering.
-#
-# Only v-prefixed numeric tags are considered. The repo also carries moving
-# tags (snapshot-latest, build-*, archive/*) that are NOT versions; an
-# unfiltered `git describe` happily returns "snapshot-latest" and poisons
-# the version of every artifact built from main.
-#
-# Derivation happens at configure time. A dev who commits without re-running
-# cmake keeps the previous string until the next configure; CI configures
-# fresh every run, so published artifacts are always exact.
+# Resolution runs at configure time, so a dev who commits without re-running
+# cmake keeps the previous string until the next configure.
 
 function(_moqx_version_from_git out_var)
   set(${out_var} "" PARENT_SCOPE)
@@ -44,22 +27,38 @@ function(_moqx_version_from_git out_var)
     return()
   endif()
 
-  # A worktree's .git is a file, not a directory — EXISTS covers both.
+  # A worktree's .git is a file, not a directory.
   if(NOT EXISTS "${PROJECT_SOURCE_DIR}/.git")
     return()
   endif()
 
   execute_process(
-    COMMAND "${GIT_EXECUTABLE}" describe --tags --match "v[0-9]*" --always --dirty
+    COMMAND "${GIT_EXECUTABLE}" describe --tags --match "v[0-9]*" --always
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
     OUTPUT_VARIABLE _described
     OUTPUT_STRIP_TRAILING_WHITESPACE
     ERROR_QUIET
     RESULT_VARIABLE _rc
   )
-  if(_rc EQUAL 0 AND _described)
-    set(${out_var} "${_described}" PARENT_SCOPE)
+  if(NOT _rc EQUAL 0 OR NOT _described)
+    return()
   endif()
+
+  # describe --dirty only inspects tracked files; status also reports untracked
+  # ones, so a tree with new files is not mistaken for a clean commit. Ignored
+  # paths (build dirs, VERSION) are excluded by default.
+  execute_process(
+    COMMAND "${GIT_EXECUTABLE}" status --porcelain
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+    OUTPUT_VARIABLE _status
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+  )
+  if(_status)
+    set(_described "${_described}-dirty")
+  endif()
+
+  set(${out_var} "${_described}" PARENT_SCOPE)
 endfunction()
 
 if(MOQX_VERSION_STRING)
@@ -80,9 +79,6 @@ endif()
 
 message(STATUS "moqx version: ${MOQX_VERSION_STRING} (from ${_moqx_version_source})")
 
-# Generated header — any target may link moqx_version to use it, so the
-# version is not welded to one library the way a target_compile_definitions
-# would be.
 set(MOQX_VERSION_HEADER_DIR "${CMAKE_BINARY_DIR}/generated")
 configure_file(
   "${PROJECT_SOURCE_DIR}/cmake/Version.h.in"
@@ -90,9 +86,10 @@ configure_file(
   @ONLY
 )
 
+# Interface target so any binary can include moqx/Version.h.
 add_library(moqx_version INTERFACE)
 target_include_directories(moqx_version INTERFACE "${MOQX_VERSION_HEADER_DIR}")
 
-# Artifact-side copy: `cat VERSION` identifies an unpacked tarball or an
-# image layer with no binary to run and no git history to consult.
+# Shipped in the install tree: identifies an unpacked tarball without running
+# the binary. Images carry OCI labels instead.
 file(WRITE "${CMAKE_BINARY_DIR}/VERSION" "${MOQX_VERSION_STRING}\n")
