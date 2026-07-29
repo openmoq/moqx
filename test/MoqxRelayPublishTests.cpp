@@ -9,7 +9,7 @@
 #include "MoqxRelayTestFixture.h"
 #include <atomic>
 
-namespace moxygen::test {
+namespace openmoq::moqx::test {
 
 // Test: Verify allowed namespace prefix is set correctly
 TEST_P(MoQRelayTest, AllowedNamespacePrefix) {
@@ -597,4 +597,4 @@ TEST_P(MoQRelayTest, EmptyNamespacePublishNamespaceDone) {
   removeSession(publisher);
 }
 
-} // namespace moxygen::test
+} // namespace openmoq::moqx::test

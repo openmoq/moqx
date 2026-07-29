@@ -11,7 +11,7 @@
 
 #include "MoqxRelayTestFixture.h"
 
-namespace moxygen::test {
+namespace openmoq::moqx::test {
 
 // ============================================================================
 // MoqxRelayTracksTest fixture
@@ -237,4 +237,4 @@ INSTANTIATE_TEST_SUITE_P(
     }
 );
 
-} // namespace moxygen::test
+} // namespace openmoq::moqx::test

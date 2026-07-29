@@ -8,7 +8,7 @@
 
 #include "MoqxRelayTestFixture.h"
 
-namespace moxygen::test {
+namespace openmoq::moqx::test {
 
 // Test: fetch fallback to subscriptions_ after publisher termination must not
 // crash. When findPublishNamespaceSession returns null (no publishNamespace),
@@ -156,4 +156,4 @@ TEST_P(MoQRelayTest, JoiningFetchAgainstPublish) {
   driveIfMultiThread();
 }
 
-} // namespace moxygen::test
+} // namespace openmoq::moqx::test

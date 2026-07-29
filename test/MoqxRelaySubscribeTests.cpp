@@ -8,7 +8,7 @@
 
 #include "MoqxRelayTestFixture.h"
 
-namespace moxygen::test {
+namespace openmoq::moqx::test {
 
 // Test: forwardChanged must not crash when called after the publisher has
 // terminated (onPublishDone clears handle/upstream). We trigger forwardChanged
@@ -204,4 +204,4 @@ TEST_P(MoQRelayTest, FirstSubscriberViaUpstreamSubscribeReceivesData) {
   driveIfMultiThread();
 }
 
-} // namespace moxygen::test
+} // namespace openmoq::moqx::test

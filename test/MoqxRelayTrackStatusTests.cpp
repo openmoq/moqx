@@ -8,7 +8,7 @@
 
 #include "MoqxRelayTestFixture.h"
 
-namespace moxygen::test {
+namespace openmoq::moqx::test {
 
 // Test: TrackStatus on non-existent track
 TEST_P(MoQRelayTest, TrackStatusNonExistentTrack) {
@@ -160,4 +160,4 @@ TEST_P(MoQRelayTest, TrackStatusUnsubscribedRequesterReadsForwarder) {
   driveIfMultiThread();
 }
 
-} // namespace moxygen::test
+} // namespace openmoq::moqx::test
