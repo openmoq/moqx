@@ -8,7 +8,7 @@
 
 #include "MoqxRelayTestFixture.h"
 
-namespace moxygen::test {
+namespace openmoq::moqx::test {
 
 // Test: Duplicate beginSubgroup with active consumers resets them and creates
 // new ones.
@@ -225,4 +225,4 @@ TEST_P(MoQRelayTest, DuplicateSubgroupSkipsTombstonedSubscriber) {
   driveIfMultiThread(); // flush relay cleanup so it drops session refs before mocks are destroyed
 }
 
-} // namespace moxygen::test
+} // namespace openmoq::moqx::test

@@ -8,7 +8,7 @@
 
 #include "MoqxRelayTestFixture.h"
 
-namespace moxygen::test {
+namespace openmoq::moqx::test {
 
 TEST_P(MoQRelayTest, SubscribeNamespaceDoesntAddDrainingPublish) {
   auto publisherSession = createMockSession();
@@ -237,4 +237,4 @@ TEST_P(MoQRelayTest, SubscribeNs_ForwardFalse_EmptyForwarder_NoRequestUpdate) {
   }
 }
 
-} // namespace moxygen::test
+} // namespace openmoq::moqx::test

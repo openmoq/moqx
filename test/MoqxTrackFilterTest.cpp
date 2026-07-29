@@ -13,7 +13,7 @@
 
 #include "MoqxRelayTestFixture.h"
 
-using namespace moxygen::test;
+using namespace openmoq::moqx::test;
 
 namespace {
 
@@ -29,7 +29,7 @@ constexpr uint64_t kPropType = 0x100; // audio level property type
 // Test fixture
 // ---------------------------------------------------------------------------
 
-class MoqxTrackFilterTest : public moxygen::test::MoQRelayTest {
+class MoqxTrackFilterTest : public openmoq::moqx::test::MoQRelayTest {
 protected:
   RelayMode relayMode() const override { return RelayMode::SingleThread; }
 

@@ -4,7 +4,7 @@
 
 #include "MoqxRelayTestFixture.h"
 
-namespace moxygen::test {
+namespace openmoq::moqx::test {
 
 INSTANTIATE_TEST_SUITE_P(
     AllModes,
@@ -23,4 +23,4 @@ INSTANTIATE_TEST_SUITE_P(
     }
 );
 
-} // namespace moxygen::test
+} // namespace openmoq::moqx::test

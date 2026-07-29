@@ -29,8 +29,9 @@ using namespace testing;
 using namespace moxygen;
 using namespace openmoq::moqx;
 // NOLINTEND(google-build-using-namespace)
+using moxygen::test::MockMoQSession;
 
-namespace moxygen::test {
+namespace openmoq::moqx::test {
 
 enum class RelayMode {
   SingleThread,
@@ -215,4 +216,4 @@ protected:
   folly::EventBase* relayEvb_{nullptr};
 };
 
-} // namespace moxygen::test
+} // namespace openmoq::moqx::test

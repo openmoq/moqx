@@ -9,7 +9,7 @@
 #include "MoqxRelayTestFixture.h"
 #include "UpstreamProvider.h"
 
-namespace moxygen::test {
+namespace openmoq::moqx::test {
 
 // Test: makeNamespaceBridgeHandle routes namespaceMsg to doPublishNamespace
 TEST_P(MoQRelayTest, NamespaceBridgeHandleForwardsNamespaceMsg) {
@@ -297,4 +297,4 @@ TEST_P(MoQRelayTest, BridgeHandleDestructorDoesNotEvictNewPublisher) {
   removeSession(session2);
 }
 
-} // namespace moxygen::test
+} // namespace openmoq::moqx::test

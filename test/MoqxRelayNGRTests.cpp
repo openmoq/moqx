@@ -9,7 +9,7 @@
 #include "MoqxRelayTestFixture.h"
 #include <atomic>
 
-namespace moxygen::test {
+namespace openmoq::moqx::test {
 
 // Test: relay PUBLISH path – dynamic groups from PublishRequest extensions
 // is stored in the forwarder and forwarded to every downstream subscriber
@@ -381,4 +381,4 @@ TEST_P(MoQRelayTest, PublishOkDuplicateNGRNotForwardedUpstream) {
   driveIfMultiThread();
 }
 
-} // namespace moxygen::test
+} // namespace openmoq::moqx::test
