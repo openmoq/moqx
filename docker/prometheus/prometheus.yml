@@ -60,7 +60,7 @@ scrape_configs:
   # scraped often enough that a redeploy shows up promptly.
   - job_name: moqx-info
     metrics_path: /probe
-    scrape_interval: 10s
+    scrape_interval: 30s
     params:
       module: [moqx_info]
     static_configs:

@@ -890,6 +890,10 @@
         "uid": "prometheus"
       },
       "description": "QUIC RTT: current p50 readout, with p50 and p99 overlaid behind it.",
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
       "gridPos": {
         "h": 4,
         "w": 3,
@@ -897,6 +901,7 @@
         "y": 6
       },
       "id": 108,
+      "maxDataPoints": 500,
       "options": {
         "baidu": {
           "callback": "bmapReady",
@@ -911,7 +916,7 @@
           "key": "",
           "plugin": "AMap.Scale,AMap.ToolBar"
         },
-        "getOption": "\nconst frames = context.panel.data.series || [];\nconst INK = '#e6edf3', MUTED = 'rgba(230,237,243,.45)';\nconst C = { p50: '#5AA7BE', p99: '#C2562F' };\n\nfunction pairs(f) {\n  const t = f.fields.find((x) => x.type === 'time');\n  const v = f.fields.find((x) => x.type === 'number');\n  if (!t || !v) return [];\n  const tv = t.values.toArray ? t.values.toArray() : t.values;\n  const vv = v.values.toArray ? v.values.toArray() : v.values;\n  const out = [];\n  for (let i = 0; i < tv.length; i++) {\n    if (vv[i] != null && !Number.isNaN(vv[i])) out.push([tv[i], vv[i]]);\n  }\n  return out;\n}\nfunction label(f, i) {\n  const v = f.fields.find((x) => x.type === 'number');\n  const c = (v && v.config) || {};\n  return c.displayNameFromDS || c.displayName || f.name || ('s' + i);\n}\n\nconst got = {};\nframes.forEach((f, i) => { got[label(f, i)] = pairs(f); });\nconst p50 = got['p50'] || [];\nconst p99 = got['p99'] || [];\nconst last = (a) => (a.length ? a[a.length - 1][1] : null);\nconst fmt = (v) => (v == null ? '\u2013' : Number(v).toFixed(1));\n\n\n\nfunction line(data, color, width, fill) {\n  return {\n    type: 'line', data, smooth: 0.25, showSymbol: false, silent: true,\n    lineStyle: { color, width, cap: 'round' },\n    areaStyle: { color, opacity: fill },\n    emphasis: { disabled: true }, animation: false,\n  };\n}\n\nconst LEGEND_FONT = '10px ui-monospace, monospace';\nconst key = (top, color, text) => ({\n  type: 'text', right: 8, top,\n  style: { text: '\\u25CF ' + text, fill: MUTED, font: LEGEND_FONT,\n           rich: { d: { color, font: LEGEND_FONT } } },\n});\nconst keyDot = (top, color) => ({\n  type: 'text', right: 30, top,\n  style: { text: '\\u25CF', fill: color, font: LEGEND_FONT },\n});\nconst keyLabel = (top, text) => ({\n  type: 'text', right: 8, top,\n  style: { text, fill: MUTED, font: LEGEND_FONT },\n});\n\nreturn {\n  animation: false,\n  grid: { left: -2, right: -2, top: '44%', bottom: -2 },\n  xAxis: { type: 'time', show: false },\n  yAxis: { type: 'value', show: false, scale: true },\n  series: [line(p99, C.p99, 1.2, 0.10), line(p50, C.p50, 1.8, 0.22)],\n  graphic: [\n    { type: 'text', left: 'center', top: 18,\n      style: { text: fmt(last(p50)) + ' ms', fill: '#3987e5',\n               font: '600 26px Inter, system-ui, sans-serif' } },\n    keyDot(2, C.p50), keyLabel(2, 'p50'),\n    keyDot(15, C.p99), keyLabel(15, 'p99'),\n  ],\n};\n",
+        "getOption": "\nconst frames = context.panel.data.series || [];\nconst INK = '#e6edf3', MUTED = 'rgba(230,237,243,.45)';\nconst C = { p50: '#5AA7BE', p99: '#C2562F' };\n\nfunction pairs(f) {\n  const t = f.fields.find((x) => x.type === 'time');\n  const v = f.fields.find((x) => x.type === 'number');\n  if (!t || !v) return [];\n  const tv = t.values.toArray ? t.values.toArray() : t.values;\n  const vv = v.values.toArray ? v.values.toArray() : v.values;\n  const out = [];\n  for (let i = 0; i < tv.length; i++) {\n    if (vv[i] != null && !Number.isNaN(vv[i])) out.push([tv[i], vv[i]]);\n  }\n  return out;\n}\nfunction label(f, i) {\n  const v = f.fields.find((x) => x.type === 'number');\n  const c = (v && v.config) || {};\n  return c.displayNameFromDS || c.displayName || f.name || ('s' + i);\n}\n\nconst got = {};\nframes.forEach((f, i) => { got[label(f, i)] = pairs(f); });\nconst p50 = got['p50'] || [];\nconst p99 = got['p99'] || [];\nconst last = (a) => (a.length ? a[a.length - 1][1] : null);\nconst fmt = (v) => (v == null ? '\u2013' : Number(v).toFixed(1));\n\n\n\nfunction line(data, color, width, fill) {\n  return {\n    type: 'line', data, smooth: 0.1, showSymbol: false, silent: true,\n    lineStyle: { color, width, cap: 'round' },\n    areaStyle: { color, opacity: fill },\n    emphasis: { disabled: true }, animation: false,\n  };\n}\n\nconst LEGEND_FONT = '10px ui-monospace, monospace';\nconst key = (top, color, text) => ({\n  type: 'text', right: 8, top,\n  style: { text: '\\u25CF ' + text, fill: MUTED, font: LEGEND_FONT,\n           rich: { d: { color, font: LEGEND_FONT } } },\n});\nconst keyDot = (top, color) => ({\n  type: 'text', right: 30, top,\n  style: { text: '\\u25CF', fill: color, font: LEGEND_FONT },\n});\nconst keyLabel = (top, text) => ({\n  type: 'text', right: 8, top,\n  style: { text, fill: MUTED, font: LEGEND_FONT },\n});\n\nreturn {\n  animation: false,\n  grid: { left: -2, right: -2, top: '44%', bottom: -2 },\n  xAxis: { type: 'time', show: false },\n  yAxis: { type: 'value', show: false, scale: true },\n  series: [line(p99, C.p99, 1.2, 0.10), line(p50, C.p50, 1.8, 0.22)],\n  graphic: [\n    { type: 'text', left: 'center', top: 18,\n      style: { text: fmt(last(p50)) + ' ms', fill: '#3987e5',\n               font: '600 26px Inter, system-ui, sans-serif' } },\n    keyDot(2, C.p50), keyLabel(2, 'p50'),\n    keyDot(15, C.p99), keyLabel(15, 'p99'),\n  ],\n};\n",
         "google": {
           "callback": "gmapReady",
           "key": ""
@@ -926,6 +931,9 @@
           "code": "return {\n  dataset: context.editor.dataset,\n  series: context.editor.series,\n  xAxis: {\n    type: 'time',\n  },\n  yAxis: {\n    type: 'value',\n    min: 'dataMin',\n  },\n}\n",
           "dataset": [],
           "series": []
+        },
+        "visualEditorOptions": {
+          "code": "return {}"
         }
       },
       "pluginVersion": "7.2.5",
@@ -935,7 +943,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.50, sum by (le) (rate(moqx_quicRttSample_milliseconds_bucket[15s]))) >= 0 or vector(0)",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(moqx_quicRttSample_milliseconds_bucket[10s]))) >= 0 or vector(0)",
+          "interval": "3s",
           "legendFormat": "p50",
           "refId": "A"
         },
@@ -944,12 +953,14 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(moqx_quicRttSample_milliseconds_bucket[15s]))) >= 0 or vector(0)",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(moqx_quicRttSample_milliseconds_bucket[10s]))) >= 0 or vector(0)",
+          "interval": "3s",
           "legendFormat": "p99",
           "refId": "B"
         }
       ],
       "title": "Latency",
+      "transparent": false,
       "type": "volkovlabs-echarts-panel"
     },
     {
@@ -973,26 +984,55 @@
         "y": 6
       },
       "id": 116,
+      "maxDataPoints": 500,
       "options": {
+        "baidu": {
+          "callback": "bmapReady",
+          "key": ""
+        },
         "editor": {
           "format": "auto",
           "height": 600
         },
-        "getOption": "\nconst frames = context.panel.data.series || [];\nfunction pairs(fr) {\n  if (!fr) return [];\n  const t = fr.fields.find((x) => x.type === 'time');\n  const v = fr.fields.find((x) => x.type === 'number');\n  if (!t || !v) return [];\n  const tv = t.values.toArray ? t.values.toArray() : t.values;\n  const vv = v.values.toArray ? v.values.toArray() : v.values;\n  const out = [];\n  for (let i = 0; i < tv.length; i++) {\n    if (vv[i] != null && !Number.isNaN(vv[i])) out.push([tv[i], vv[i]]);\n  }\n  return out;\n}\nconst data = pairs(frames[0]);\nconst last = data.length ? data[data.length - 1][1] : 0;\nconst color = last >= 2 ? '#e0453c' : last >= 0.5 ? '#c98500' : '#3987e5';\nreturn {\n  animation: false,\n  grid: { left: -2, right: -2, top: '46%', bottom: -2 },\n  xAxis: { type: 'time', show: false },\n  yAxis: { type: 'value', show: false, scale: true, min: 0 },\n  series: [{\n    type: 'line', data, smooth: 0.25, showSymbol: false, silent: true,\n    lineStyle: { color, width: 1.8, cap: 'round' },\n    areaStyle: { color, opacity: 0.20 },\n    emphasis: { disabled: true }, animation: false,\n  }],\n  graphic: [\n    { type: 'text', left: 'center', top: 16,\n      style: { text: last.toFixed(1) + ' %', fill: color,\n               font: '600 26px Inter, system-ui, sans-serif' } },\n  ],\n};\n",
-        "renderer": "canvas"
+        "gaode": {
+          "key": "",
+          "plugin": "AMap.Scale,AMap.ToolBar"
+        },
+        "getOption": "\nconst frames = context.panel.data.series || [];\nfunction pairs(fr) {\n  if (!fr) return [];\n  const t = fr.fields.find((x) => x.type === 'time');\n  const v = fr.fields.find((x) => x.type === 'number');\n  if (!t || !v) return [];\n  const tv = t.values.toArray ? t.values.toArray() : t.values;\n  const vv = v.values.toArray ? v.values.toArray() : v.values;\n  const out = [];\n  for (let i = 0; i < tv.length; i++) {\n    if (vv[i] != null && !Number.isNaN(vv[i])) out.push([tv[i], vv[i]]);\n  }\n  return out;\n}\nconst data = pairs(frames[0]);\nconst last = data.length ? data[data.length - 1][1] : 0;\nconst color = last >= 2 ? '#e0453c' : last >= 0.5 ? '#c98500' : '#3987e5';\nreturn {\n  animation: false,\n  grid: { left: -2, right: -2, top: '46%', bottom: -2 },\n  xAxis: { type: 'time', show: false },\n  yAxis: { type: 'value', show: false, scale: true, min: 0 },\n  series: [{\n    type: 'line', data, smooth: 0.1, showSymbol: false, silent: true,\n    lineStyle: { color, width: 1.8, cap: 'round' },\n    areaStyle: { color, opacity: 0.20 },\n    emphasis: { disabled: true }, animation: false,\n  }],\n  graphic: [\n    { type: 'text', left: 'center', top: 16,\n      style: { text: last.toFixed(1) + ' %', fill: color,\n               font: '600 26px Inter, system-ui, sans-serif' } },\n  ],\n};\n",
+        "google": {
+          "callback": "gmapReady",
+          "key": ""
+        },
+        "map": "none",
+        "renderer": "canvas",
+        "themeEditor": {
+          "config": "{}",
+          "name": "default"
+        },
+        "visualEditor": {
+          "code": "return {}",
+          "dataset": [],
+          "series": []
+        },
+        "visualEditorOptions": {
+          "code": "return {}"
+        }
       },
+      "pluginVersion": "7.2.5",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "100 * (sum(rate(moqx_quicPacketLoss_total[15s])) + sum(rate(moqx_quicDatagramsDroppedOnRead_total[15s])) + sum(rate(moqx_quicDatagramsDroppedOnWrite_total[15s]))) / clamp_min(sum(rate(moqx_quicPacketsSent_total[15s])) + sum(rate(moqx_quicPacketsReceived_total[15s])), 1)",
+          "expr": "100 * (sum(rate(moqx_quicPacketLoss_total[10s])) + sum(rate(moqx_quicDatagramsDroppedOnRead_total[10s])) + sum(rate(moqx_quicDatagramsDroppedOnWrite_total[10s]))) / clamp_min(sum(rate(moqx_quicPacketsSent_total[10s])) + sum(rate(moqx_quicPacketsReceived_total[10s])), 1)",
+          "interval": "3s",
           "legendFormat": "loss",
           "refId": "A"
         }
       ],
       "title": "Loss",
+      "transparent": false,
       "type": "volkovlabs-echarts-panel"
     },
     {
@@ -1014,25 +1054,54 @@
         "y": 6
       },
       "id": 119,
+      "maxDataPoints": 500,
       "options": {
+        "baidu": {
+          "callback": "bmapReady",
+          "key": ""
+        },
         "editor": {
           "format": "auto",
           "height": 600
         },
-        "getOption": "\nconst frames = context.panel.data.series || [];\nconst f = frames[0];\nfunction pairs(fr) {\n  if (!fr) return [];\n  const t = fr.fields.find((x) => x.type === 'time');\n  const v = fr.fields.find((x) => x.type === 'number');\n  if (!t || !v) return [];\n  const tv = t.values.toArray ? t.values.toArray() : t.values;\n  const vv = v.values.toArray ? v.values.toArray() : v.values;\n  const out = [];\n  for (let i = 0; i < tv.length; i++) {\n    if (vv[i] != null && !Number.isNaN(vv[i])) out.push([tv[i], vv[i]]);\n  }\n  return out;\n}\nconst data = pairs(f);\nconst last = data.length ? data[data.length - 1][1] : 0;\nfunction fmt(bps) {\n  const u = ['b/s', 'kb/s', 'Mb/s', 'Gb/s', 'Tb/s'];\n  let i = 0, v = bps;\n  while (v >= 1000 && i < u.length - 1) { v /= 1000; i++; }\n  return [v.toFixed(1), u[i]];\n}\nconst [num, unit] = fmt(last);\nreturn {\n  animation: false,\n  grid: { left: -2, right: -2, top: '46%', bottom: -2 },\n  xAxis: { type: 'time', show: false },\n  yAxis: { type: 'value', show: false, scale: true, min: 0 },\n  series: [{\n    type: 'line', data, smooth: 0.25, showSymbol: false, silent: true,\n    lineStyle: { color: '#5AA7BE', width: 1.8, cap: 'round' },\n    areaStyle: { color: '#5AA7BE', opacity: 0.20 },\n    emphasis: { disabled: true }, animation: false,\n  }],\n  graphic: [\n    { type: 'text', left: 'center', top: 16,\n      style: { text: num + ' ' + unit, fill: '#3987e5',\n               font: '600 26px Inter, system-ui, sans-serif' } },\n  ],\n};\n",
-        "renderer": "canvas"
+        "gaode": {
+          "key": "",
+          "plugin": "AMap.Scale,AMap.ToolBar"
+        },
+        "getOption": "\nconst frames = context.panel.data.series || [];\nconst f = frames[0];\nfunction pairs(fr) {\n  if (!fr) return [];\n  const t = fr.fields.find((x) => x.type === 'time');\n  const v = fr.fields.find((x) => x.type === 'number');\n  if (!t || !v) return [];\n  const tv = t.values.toArray ? t.values.toArray() : t.values;\n  const vv = v.values.toArray ? v.values.toArray() : v.values;\n  const out = [];\n  for (let i = 0; i < tv.length; i++) {\n    if (vv[i] != null && !Number.isNaN(vv[i])) out.push([tv[i], vv[i]]);\n  }\n  return out;\n}\nconst data = pairs(f);\nconst last = data.length ? data[data.length - 1][1] : 0;\nfunction fmt(bps) {\n  const u = ['b/s', 'kb/s', 'Mb/s', 'Gb/s', 'Tb/s'];\n  let i = 0, v = bps;\n  while (v >= 1000 && i < u.length - 1) { v /= 1000; i++; }\n  return [v.toFixed(1), u[i]];\n}\nconst [num, unit] = fmt(last);\nreturn {\n  animation: false,\n  grid: { left: -2, right: -2, top: '46%', bottom: -2 },\n  xAxis: { type: 'time', show: false },\n  yAxis: { type: 'value', show: false, scale: true, min: 0 },\n  series: [{\n    type: 'line', data, smooth: 0.1, showSymbol: false, silent: true,\n    lineStyle: { color: '#5AA7BE', width: 1.8, cap: 'round' },\n    areaStyle: { color: '#5AA7BE', opacity: 0.20 },\n    emphasis: { disabled: true }, animation: false,\n  }],\n  graphic: [\n    { type: 'text', left: 'center', top: 16,\n      style: { text: num + ' ' + unit, fill: '#3987e5',\n               font: '600 26px Inter, system-ui, sans-serif' } },\n  ],\n};\n",
+        "google": {
+          "callback": "gmapReady",
+          "key": ""
+        },
+        "map": "none",
+        "renderer": "canvas",
+        "themeEditor": {
+          "config": "{}",
+          "name": "default"
+        },
+        "visualEditor": {
+          "code": "return {}",
+          "dataset": [],
+          "series": []
+        },
+        "visualEditorOptions": {
+          "code": "return {}"
+        }
       },
+      "pluginVersion": "7.2.5",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(moqx_quicBytesRead_total[15s]) * 8",
+          "expr": "rate(moqx_quicBytesRead_total[10s]) * 8",
+          "interval": "3s",
           "refId": "A"
         }
       ],
       "title": "Ingress BW",
+      "transparent": false,
       "type": "volkovlabs-echarts-panel"
     },
     {
@@ -1054,25 +1123,54 @@
         "y": 6
       },
       "id": 115,
+      "maxDataPoints": 500,
       "options": {
+        "baidu": {
+          "callback": "bmapReady",
+          "key": ""
+        },
         "editor": {
           "format": "auto",
           "height": 600
         },
-        "getOption": "\nconst frames = context.panel.data.series || [];\nconst f = frames[0];\nfunction pairs(fr) {\n  if (!fr) return [];\n  const t = fr.fields.find((x) => x.type === 'time');\n  const v = fr.fields.find((x) => x.type === 'number');\n  if (!t || !v) return [];\n  const tv = t.values.toArray ? t.values.toArray() : t.values;\n  const vv = v.values.toArray ? v.values.toArray() : v.values;\n  const out = [];\n  for (let i = 0; i < tv.length; i++) {\n    if (vv[i] != null && !Number.isNaN(vv[i])) out.push([tv[i], vv[i]]);\n  }\n  return out;\n}\nconst data = pairs(f);\nconst last = data.length ? data[data.length - 1][1] : 0;\nfunction fmt(bps) {\n  const u = ['b/s', 'kb/s', 'Mb/s', 'Gb/s', 'Tb/s'];\n  let i = 0, v = bps;\n  while (v >= 1000 && i < u.length - 1) { v /= 1000; i++; }\n  return [v.toFixed(1), u[i]];\n}\nconst [num, unit] = fmt(last);\nreturn {\n  animation: false,\n  grid: { left: -2, right: -2, top: '46%', bottom: -2 },\n  xAxis: { type: 'time', show: false },\n  yAxis: { type: 'value', show: false, scale: true, min: 0 },\n  series: [{\n    type: 'line', data, smooth: 0.25, showSymbol: false, silent: true,\n    lineStyle: { color: '#C2562F', width: 1.8, cap: 'round' },\n    areaStyle: { color: '#C2562F', opacity: 0.20 },\n    emphasis: { disabled: true }, animation: false,\n  }],\n  graphic: [\n    { type: 'text', left: 'center', top: 16,\n      style: { text: num + ' ' + unit, fill: '#3987e5',\n               font: '600 26px Inter, system-ui, sans-serif' } },\n  ],\n};\n",
-        "renderer": "canvas"
+        "gaode": {
+          "key": "",
+          "plugin": "AMap.Scale,AMap.ToolBar"
+        },
+        "getOption": "\nconst frames = context.panel.data.series || [];\nconst f = frames[0];\nfunction pairs(fr) {\n  if (!fr) return [];\n  const t = fr.fields.find((x) => x.type === 'time');\n  const v = fr.fields.find((x) => x.type === 'number');\n  if (!t || !v) return [];\n  const tv = t.values.toArray ? t.values.toArray() : t.values;\n  const vv = v.values.toArray ? v.values.toArray() : v.values;\n  const out = [];\n  for (let i = 0; i < tv.length; i++) {\n    if (vv[i] != null && !Number.isNaN(vv[i])) out.push([tv[i], vv[i]]);\n  }\n  return out;\n}\nconst data = pairs(f);\nconst last = data.length ? data[data.length - 1][1] : 0;\nfunction fmt(bps) {\n  const u = ['b/s', 'kb/s', 'Mb/s', 'Gb/s', 'Tb/s'];\n  let i = 0, v = bps;\n  while (v >= 1000 && i < u.length - 1) { v /= 1000; i++; }\n  return [v.toFixed(1), u[i]];\n}\nconst [num, unit] = fmt(last);\nreturn {\n  animation: false,\n  grid: { left: -2, right: -2, top: '46%', bottom: -2 },\n  xAxis: { type: 'time', show: false },\n  yAxis: { type: 'value', show: false, scale: true, min: 0 },\n  series: [{\n    type: 'line', data, smooth: 0.1, showSymbol: false, silent: true,\n    lineStyle: { color: '#C2562F', width: 1.8, cap: 'round' },\n    areaStyle: { color: '#C2562F', opacity: 0.20 },\n    emphasis: { disabled: true }, animation: false,\n  }],\n  graphic: [\n    { type: 'text', left: 'center', top: 16,\n      style: { text: num + ' ' + unit, fill: '#3987e5',\n               font: '600 26px Inter, system-ui, sans-serif' } },\n  ],\n};\n",
+        "google": {
+          "callback": "gmapReady",
+          "key": ""
+        },
+        "map": "none",
+        "renderer": "canvas",
+        "themeEditor": {
+          "config": "{}",
+          "name": "default"
+        },
+        "visualEditor": {
+          "code": "return {}",
+          "dataset": [],
+          "series": []
+        },
+        "visualEditorOptions": {
+          "code": "return {}"
+        }
       },
+      "pluginVersion": "7.2.5",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(moqx_quicBytesWritten_total[15s]) * 8",
+          "expr": "rate(moqx_quicBytesWritten_total[10s]) * 8",
+          "interval": "3s",
           "refId": "A"
         }
       ],
       "title": "Egress BW",
+      "transparent": false,
       "type": "volkovlabs-echarts-panel"
     },
     {
@@ -1313,10 +1411,6 @@
             },
             "properties": [
               {
-                "id": "custom.width",
-                "value": 190
-              },
-              {
                 "id": "custom.align",
                 "value": "left"
               },
@@ -1332,6 +1426,10 @@
                     "url": "/grafana/d/moqx-overview/moqx-relay-overview?var-track=${__data.fields.Name}"
                   }
                 ]
+              },
+              {
+                "id": "custom.width",
+                "value": 150
               }
             ]
           },
@@ -1343,7 +1441,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 70
+                "value": 58
               }
             ]
           },
@@ -1355,7 +1453,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 96
+                "value": 72
               }
             ]
           },
@@ -1367,7 +1465,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 96
+                "value": 88
               }
             ]
           },
@@ -1379,7 +1477,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 62
+                "value": 48
               }
             ]
           },
@@ -1391,7 +1489,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 84
+                "value": 74
               }
             ]
           },
@@ -1403,7 +1501,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 70
+                "value": 54
               }
             ]
           },
@@ -1415,7 +1513,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 70
+                "value": 54
               }
             ]
           },
@@ -1430,10 +1528,6 @@
                 "value": "center"
               },
               {
-                "id": "custom.width",
-                "value": 86
-              },
-              {
                 "id": "custom.cellOptions",
                 "value": {
                   "colorMode": "mapped",
@@ -1461,6 +1555,10 @@
                     "type": "value"
                   }
                 ]
+              },
+              {
+                "id": "custom.width",
+                "value": 64
               }
             ]
           },
@@ -1475,10 +1573,6 @@
                 "value": "center"
               },
               {
-                "id": "custom.width",
-                "value": 86
-              },
-              {
                 "id": "custom.cellOptions",
                 "value": {
                   "colorMode": "mapped",
@@ -1506,6 +1600,10 @@
                     "type": "value"
                   }
                 ]
+              },
+              {
+                "id": "custom.width",
+                "value": 64
               }
             ]
           },
@@ -1518,10 +1616,6 @@
               {
                 "id": "custom.align",
                 "value": "center"
-              },
-              {
-                "id": "custom.width",
-                "value": 84
               },
               {
                 "id": "custom.cellOptions",
@@ -1551,6 +1645,10 @@
                     "type": "value"
                   }
                 ]
+              },
+              {
+                "id": "custom.width",
+                "value": 68
               }
             ]
           }
