@@ -24,6 +24,9 @@ public:
   struct FilterChainResult {
     std::shared_ptr<moxygen::TrackConsumer> consumer;
     std::shared_ptr<TopNFilter> topNFilter;
+    // Differs from consumer in LocalForwarder mode, where the relay chain
+    // hangs off a channel subscriber rather than the publisher's writes.
+    std::shared_ptr<moxygen::TrackConsumer> chainHead;
   };
 
   // === Subscribe path ===
@@ -125,6 +128,7 @@ public:
   struct TopNView {
     std::shared_ptr<moxygen::MoQForwarder> forwarder;
     std::shared_ptr<TopNFilter> topNFilter; // may be null for subscribe-path tracks
+    std::shared_ptr<moxygen::TrackConsumer> chainHead;
     std::chrono::steady_clock::time_point lastObjectTime;
   };
   std::optional<TopNView> getTopNView(const moxygen::FullTrackName& ftn) const;
@@ -175,6 +179,10 @@ public:
 
   void forEach(folly::FunctionRef<void(const EntryView&)> fn) const;
 
+  // Cheaper than forEach for callers that only need names: EntryView copies a
+  // forwarder and session shared_ptr per entry.
+  void forEachName(folly::FunctionRef<void(const moxygen::FullTrackName&)> fn) const;
+
 private:
   struct RelaySubscription {
     RelaySubscription(
@@ -192,6 +200,7 @@ private:
     folly::coro::SharedPromise<folly::Unit> promise;
     bool isPublish{false};
     std::shared_ptr<TopNFilter> topNFilter;
+    std::shared_ptr<moxygen::TrackConsumer> chainHead;
     std::chrono::steady_clock::time_point lastObjectTime;
   };
 

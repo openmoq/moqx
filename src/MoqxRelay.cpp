@@ -13,8 +13,10 @@
 #include "relay/NullConsumers.h"
 #include "relay/PublisherCrossExecFilter.h"
 #include "relay/SubscriberCrossExecFilter.h"
+#include "relay/TrackStatsFilter.h"
 #include "relay/WeakRelayForwarderCallback.h"
 #include <folly/container/F14Set.h>
+#include <folly/coro/Collect.h>
 #include <moxygen/MoQFilters.h>
 #include <moxygen/MoQTrackProperties.h>
 
@@ -550,9 +552,9 @@ folly::coro::Task<folly::Expected<PublishOk, PublishError>> MoqxRelay::registerP
   }
 
   auto topNView = registry_.getTopNView(ftn);
-  XCHECK(topNView && topNView->topNFilter)
-      << "registerPublishOnRelayExec: topNFilter always present in MT mode";
-  relayChainFilter->setDownstream(topNView->topNFilter);
+  XCHECK(topNView && topNView->chainHead)
+      << "registerPublishOnRelayExec: relay chain always present in MT mode";
+  relayChainFilter->setDownstream(topNView->chainHead);
 
   co_return setup.value().publishOk;
 }
@@ -798,7 +800,12 @@ std::optional<MoqxRelay::PreparedPublish> MoqxRelay::startPublish(
     subscriber->unsubscribe();
     return std::nullopt;
   }
-  subscriber->trackConsumer = std::move(pub->consumer);
+  subscriber->trackConsumer = wrapWithTrackStats(
+      trackStats_,
+      forwarder->fullTrackName(),
+      std::move(pub->consumer),
+      stats::TrackDirection::Egress
+  );
   return PreparedPublish{std::move(subscriber), std::move(pub->reply)};
 }
 
@@ -1339,7 +1346,13 @@ MoqxRelay::buildFilterChain(const FullTrackName& ftn, std::shared_ptr<MoQForward
     topNFilter->setActivityThreshold(activityThreshold_);
     return SubscriptionRegistry::FilterChainResult{
         .consumer = std::static_pointer_cast<TrackConsumer>(forwarder),
-        .topNFilter = topNFilter
+        .topNFilter = topNFilter,
+        .chainHead = wrapWithTrackStats(
+            trackStats_,
+            ftn,
+            std::static_pointer_cast<TrackConsumer>(topNFilter),
+            stats::TrackDirection::Ingest
+        )
     };
   }
 
@@ -1361,9 +1374,16 @@ MoqxRelay::buildFilterChain(const FullTrackName& ftn, std::shared_ptr<MoQForward
   auto topNFilter =
       std::make_shared<TopNFilter>(ftn, std::static_pointer_cast<TrackConsumer>(terminationFilter));
   topNFilter->setActivityThreshold(activityThreshold_);
+  auto chainHead = wrapWithTrackStats(
+      trackStats_,
+      ftn,
+      std::static_pointer_cast<TrackConsumer>(topNFilter),
+      stats::TrackDirection::Ingest
+  );
   return SubscriptionRegistry::FilterChainResult{
-      .consumer = std::static_pointer_cast<TrackConsumer>(topNFilter),
-      .topNFilter = topNFilter
+      .consumer = chainHead,
+      .topNFilter = topNFilter,
+      .chainHead = chainHead
   };
 }
 
@@ -1847,12 +1867,11 @@ folly::coro::Task<MoqxRelay::PublisherAttachment> MoqxRelay::attachNewLocalForwa
   }
   auto upstreamOk = std::move(upstreamResult->value());
 
-  // Wire the relay chain to topNFilter before pending.complete() so buffered objects
-  // see the filter.
+  // Wire the relay chain before pending.complete() so buffered objects see the filters.
   if (relayChainFilter) {
     auto topNView = registry_.getTopNView(ftn);
-    if (topNView && topNView->topNFilter) {
-      relayChainFilter->setDownstream(topNView->topNFilter);
+    if (topNView && topNView->chainHead) {
+      relayChainFilter->setDownstream(topNView->chainHead);
     }
   }
 
@@ -1950,6 +1969,9 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriber
   // the forwarder already exists (or a setup is in progress) on this thread — just attach.
   auto [localFwd, isNew, localReg] =
       acquireLocalForwarder(ftn, [&] { return std::make_shared<MoQForwarder>(ftn); });
+
+  consumer =
+      wrapWithTrackStats(trackStats_, ftn, std::move(consumer), stats::TrackDirection::Egress);
 
   if (!isNew) {
     if (auto err = checkRangeNotInPast(*localFwd, subReq)) {
@@ -2061,6 +2083,9 @@ MoqxRelay::subscribeImpl(SubscribeRequest subReq, std::shared_ptr<TrackConsumer>
   if (!registry_.exists(ftn) && upstream_ && !findUpstreamPublisher(ftn.trackNamespace)) {
     co_await upstream_->waitForConnected(kUpstreamConnectWaitTimeout);
   }
+
+  consumer =
+      wrapWithTrackStats(trackStats_, ftn, std::move(consumer), stats::TrackDirection::Egress);
 
   auto firstOrSubsequent = registry_.getOrCreateFromSubscribe(
       ftn,
@@ -2582,6 +2607,27 @@ void MoqxRelay::onTrackEvicted(const FullTrackName& ftn, std::shared_ptr<MoQSess
     return;
   }
   evict(registry_.getForwarder(ftn));
+}
+
+MoqxRelay::TrackMatch
+MoqxRelay::matchTracks(const TrackNamespace& nsPrefix, const std::string* trackName, size_t limit)
+    const {
+  TrackMatch match;
+  // forEachName, not forEach: EntryView copies two shared_ptrs per entry, which
+  // dominates the walk (measured ~72% of it at 100k tracks) and this needs none.
+  registry_.forEachName([&](const FullTrackName& ftn) {
+    if (!ftn.trackNamespace.startsWith(nsPrefix)) {
+      return;
+    }
+    if (trackName && ftn.trackName != *trackName) {
+      return;
+    }
+    ++match.matched;
+    if (match.keys.size() < limit) {
+      match.keys.push_back(ftn);
+    }
+  });
+  return match;
 }
 
 void MoqxRelay::dumpState(RelayStateVisitor& visitor) const {

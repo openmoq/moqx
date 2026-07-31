@@ -61,7 +61,11 @@ void MoQRelayTest::resetRelay(config::CacheConfig cache, const std::string& rela
       std::move(relayExec),
       useLocalForwarders
   );
+  // The test thread drives exec_, so bind it inline; the relay thread is a real
+  // running EVB and takes the dispatching path.
+  relay_->trackStatsRegistry().bindHere(static_cast<moxygen::MoQExecutor*>(exec_.get()));
   if (relayEvb_) {
+    relay_->trackStatsRegistry().bindAll({relay_->getRelayExec()});
     if (relayMode() == RelayMode::LocalForwarderMT) {
       publisherInterface_ = relay_->createPublisherFilter();
       subscriberInterface_ = relay_->createSubscriberFilter();

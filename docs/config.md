@@ -432,9 +432,22 @@ admin:
   #   cert_file: /etc/moqx/admin-cert.pem
   #   key_file:  /etc/moqx/admin-key.pem
   #   alpn: [h2, "http/1.1"]
+  # track_metrics_enabled: true    # per-track counting and /metrics/track
+  # track_metrics_limit: 10        # default tracks per /metrics/track scrape
+  # track_metrics_max_limit: 1000  # ceiling on the ?limit= parameter
 ```
 
 Either `plaintext: true` or a `tls` block must be set, but not both.
+
+`track_metrics_enabled: false` leaves the counting filters out of the data path
+entirely — nothing is installed, so there is no per-object cost — and
+`/metrics/track` answers `503` rather than an empty scrape that would read as
+"no live tracks".
+
+`track_metrics_limit` and `track_metrics_max_limit` bound `/metrics/track`. The
+limit is a guard rail, not a selection rule: a query matching more tracks than
+the limit is rejected rather than truncated, because an arbitrary subset would
+give Prometheus a series set that reshuffles between scrapes.
 
 ### Endpoints
 
@@ -442,6 +455,7 @@ Either `plaintext: true` or a `tls` block must be set, but not both.
 |---|---|---|
 | `GET` | `/info` | Returns `{"service":"moqx","version":"..."}`. |
 | `GET` | `/metrics` | Prometheus-format metrics. See [docs/metrics.md](metrics.md) (pending PR #137). |
+| `GET` | `/metrics/track` | Per-track Prometheus metrics for live tracks. See [docs/metrics.md](metrics.md). |
 | `GET` | `/state` | Relay state: connected peers, active subscriptions, namespace tree, and cache stats. Pending PR #146. |
 
 ---
