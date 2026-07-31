@@ -1192,11 +1192,21 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
           std::move(adminMaterial)
       );
     }
-    adminConfig = AdminConfig{
+    AdminConfig resolved{
         .address =
             folly::SocketAddress(adminOptional->address.value(), adminOptional->port.value()),
         .tls = std::move(adminTls),
     };
+    if (auto enabled = adminOptional->track_metrics_enabled.value()) {
+      resolved.trackMetricsEnabled = *enabled;
+    }
+    if (auto limit = adminOptional->track_metrics_limit.value()) {
+      resolved.trackMetricsLimit = *limit;
+    }
+    if (auto maxLimit = adminOptional->track_metrics_max_limit.value()) {
+      resolved.trackMetricsMaxLimit = *maxLimit;
+    }
+    adminConfig = std::move(resolved);
   }
 
   // Resolve relayID: use configured value or generate a random hex string

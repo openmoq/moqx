@@ -16,6 +16,7 @@
 #include "relay/LocalForwarderRegistry.h"
 #include "relay/PropertyRanking.h"
 #include "relay/RelayExecUtil.h"
+#include "stats/TrackStatsRegistry.h"
 #include <moxygen/MoQSession.h>
 #include <moxygen/relay/MoQForwarder.h>
 
@@ -129,6 +130,25 @@ public:
   }
 
   folly::Executor* getRelayExec() const { return relayExec_; }
+
+  // execs must cover every thread the data plane runs on (io threads plus
+  // relayExec_).
+  stats::TrackStatsRegistry& trackStatsRegistry() { return trackStats_; }
+  const stats::TrackStatsRegistry& trackStatsRegistry() const { return trackStats_; }
+
+  struct TrackMatch {
+    std::vector<moxygen::FullTrackName> keys;
+    // Total matches before the limit was applied.
+    size_t matched{0};
+  };
+
+  // Must run on the relay exec.
+  TrackMatch matchTracks(
+      const moxygen::TrackNamespace& nsPrefix,
+      const std::string* trackName,
+      size_t limit
+  ) const;
+
 
   void setAllowedNamespacePrefix(moxygen::TrackNamespace allowed) {
     allowedNamespacePrefix_ = std::move(allowed);
@@ -582,6 +602,9 @@ private:
 
   bool useLocalForwarders_{false};
   folly::ThreadLocalPtr<LocalForwarderRegistry> tlForwarders_;
+
+  stats::TrackStatsRegistry trackStats_;
+
   std::unique_ptr<MoqxCache> cache_;
   uint64_t maxDeselected_{kDefaultMaxDeselected};
 

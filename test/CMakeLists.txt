@@ -40,6 +40,7 @@ add_executable(moqx_relay_test
   MoqxRelayNGRTests.cpp
   MoqxRelayPeerTests.cpp
   MoqxRelayTracksTests.cpp
+  MoqxRelayTrackStatsTests.cpp
   MoqxRelayTestModes.cpp
 )
 target_link_libraries(moqx_relay_test PRIVATE
@@ -157,6 +158,32 @@ target_link_libraries(moqx_bounded_histogram_test PRIVATE
   GTest::gmock
 )
 gtest_discover_tests(moqx_bounded_histogram_test)
+
+add_executable(moqx_track_stats_test
+  stats/TrackStatsTest.cpp
+)
+target_include_directories(moqx_track_stats_test PRIVATE
+  ${PROJECT_SOURCE_DIR}/src
+)
+target_link_libraries(moqx_track_stats_test PRIVATE
+  moqx_core
+  GTest::gtest_main
+  GTest::gmock
+)
+gtest_discover_tests(moqx_track_stats_test)
+
+add_executable(moqx_track_stats_registry_test
+  stats/TrackStatsRegistryTest.cpp
+)
+target_include_directories(moqx_track_stats_registry_test PRIVATE
+  ${PROJECT_SOURCE_DIR}/src
+)
+target_link_libraries(moqx_track_stats_registry_test PRIVATE
+  moqx_core
+  GTest::gtest_main
+  GTest::gmock
+)
+gtest_discover_tests(moqx_track_stats_registry_test)
 
 add_executable(moqx_logging_multi_flag_test
   LoggingMultiFlagTest.cpp
@@ -295,6 +322,10 @@ add_test(
 add_test(
   NAME admin_metrics_endpoint
   COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_admin_metrics.sh $<TARGET_FILE:moqx>
+)
+add_test(
+  NAME admin_track_metrics_endpoint
+  COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_admin_track_metrics.sh $<TARGET_FILE:moqx>
 )
 add_test(
   NAME admin_cache_purge_endpoint

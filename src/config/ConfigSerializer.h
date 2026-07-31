@@ -262,6 +262,9 @@ inline void serializeConfig(const Config& cfg, ConfigSink& s) {
     } else {
       s.nullField("tls");
     }
+    s.boolField("track_metrics_enabled", cfg.admin->trackMetricsEnabled);
+    s.uintField("track_metrics_limit", cfg.admin->trackMetricsLimit);
+    s.uintField("track_metrics_max_limit", cfg.admin->trackMetricsMaxLimit);
     s.endObject();
   } else {
     s.nullField("admin");

@@ -104,13 +104,37 @@ public:
   // Used by pico listeners to populate the h3zero WebTransport path table.
   std::vector<std::string> getExactServicePaths() const;
 
+  struct TrackMetricsEntry {
+    std::string service;
+    moxygen::FullTrackName ftn;
+    stats::TrackCounters counters;
+  };
+
+  struct TrackMetricsResult {
+    std::vector<TrackMetricsEntry> tracks;
+    // Total matches across services, before the limit; tracks is empty when
+    // this exceeds the limit so the caller can reject rather than truncate.
+    size_t matched{0};
+  };
+
+  // serviceName empty matches every service; trackName null matches the whole
+  // namespace prefix.
+  folly::coro::Task<TrackMetricsResult> aggregateTrackMetrics(
+      std::string serviceName,
+      moxygen::TrackNamespace nsPrefix,
+      std::optional<std::string> trackName,
+      size_t limit
+  ) const;
+
   // --- Delegation targets for MoqxRelayServer virtual overrides ---
 
   void onNewSession(std::shared_ptr<moxygen::MoQSession> session);
   void onSessionEnd(std::shared_ptr<moxygen::MoQSession> session);
 
   // Must run after setStatsRegistry and before any listener accepts sessions.
-  void initThreadStatsCollectors(folly::IOThreadPoolExecutor& ioExecutor);
+  // trackStats=false skips per-track counting entirely, leaving the data-path
+  // filters uninstalled rather than installed-and-ignored.
+  void initThreadStats(folly::IOThreadPoolExecutor& ioExecutor, bool trackStats = true);
 
   folly::Expected<folly::Unit, moxygen::SessionCloseErrorCode> validateAuthority(
       const moxygen::ClientSetup& clientSetup,

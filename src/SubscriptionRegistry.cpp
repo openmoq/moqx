@@ -48,13 +48,14 @@ SubscriptionRegistry::getOrCreateFromSubscribe(
   if (it == subscriptions_.end()) {
     auto forwarder = std::make_shared<moxygen::MoQForwarder>(ftn, largest);
     forwarder->setCallback(std::move(callback));
-    auto [consumer, topNFilter] = chainBuilder(forwarder);
+    auto [consumer, topNFilter, chainHead] = chainBuilder(forwarder);
     auto [emplaceIt, inserted] = subscriptions_.emplace(
         std::piecewise_construct,
         std::forward_as_tuple(ftn),
         std::forward_as_tuple(forwarder, nullptr)
     );
     emplaceIt->second.topNFilter = topNFilter;
+    emplaceIt->second.chainHead = chainHead;
     return FirstSubscriber{
         forwarder,
         std::move(consumer),
@@ -147,8 +148,9 @@ SubscriptionRegistry::PublishEntry SubscriptionRegistry::createFromPublish(
   rsub.publisher = std::move(publisher);
   rsub.isPublish = true;
 
-  auto [consumer, topNFilter] = chainBuilder(forwarder);
+  auto [consumer, topNFilter, chainHead] = chainBuilder(forwarder);
   rsub.topNFilter = topNFilter;
+  rsub.chainHead = chainHead;
   topNFilter->setActivityTarget(&rsub.lastObjectTime);
 
   return PublishEntry{std::move(consumer), std::move(evicted)};
@@ -170,7 +172,12 @@ SubscriptionRegistry::getTopNView(const moxygen::FullTrackName& ftn) const {
   if (it == subscriptions_.end()) {
     return std::nullopt;
   }
-  return TopNView{it->second.forwarder, it->second.topNFilter, it->second.lastObjectTime};
+  return TopNView{
+      it->second.forwarder,
+      it->second.topNFilter,
+      it->second.chainHead,
+      it->second.lastObjectTime
+  };
 }
 
 std::optional<SubscriptionRegistry::UpstreamView>
@@ -238,6 +245,14 @@ void SubscriptionRegistry::removeIf(
     } else {
       ++it;
     }
+  }
+}
+
+void SubscriptionRegistry::forEachName(
+    folly::FunctionRef<void(const moxygen::FullTrackName&)> fn
+) const {
+  for (const auto& [ftn, rsub] : subscriptions_) {
+    fn(ftn);
   }
 }
 
