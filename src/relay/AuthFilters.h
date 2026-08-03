@@ -23,7 +23,7 @@ public:
   AuthPublisherFilter(
       std::shared_ptr<moxygen::Publisher> downstream,
       std::shared_ptr<const auth::AuthTokenVerifier> verifier,
-      std::shared_ptr<const auth::Grants> grants,
+      std::shared_ptr<const std::vector<auth::Grants>> grants,
       bool peeringEnabled
   )
       : downstream_(std::move(downstream)), verifier_(std::move(verifier)),
@@ -54,7 +54,7 @@ public:
 private:
   std::shared_ptr<moxygen::Publisher> downstream_;
   std::shared_ptr<const auth::AuthTokenVerifier> verifier_;
-  std::shared_ptr<const auth::Grants> grants_;
+  std::shared_ptr<const std::vector<auth::Grants>> grants_;
   bool peeringEnabled_;
 };
 
@@ -65,7 +65,7 @@ public:
   AuthSubscriberFilter(
       std::shared_ptr<moxygen::Subscriber> downstream,
       std::shared_ptr<const auth::AuthTokenVerifier> verifier,
-      std::shared_ptr<const auth::Grants> grants
+      std::shared_ptr<const std::vector<auth::Grants>> grants
   )
       : downstream_(std::move(downstream)), verifier_(std::move(verifier)),
         grants_(std::move(grants)) {}
@@ -85,7 +85,7 @@ public:
 private:
   std::shared_ptr<moxygen::Subscriber> downstream_;
   std::shared_ptr<const auth::AuthTokenVerifier> verifier_;
-  std::shared_ptr<const auth::Grants> grants_;
+  std::shared_ptr<const std::vector<auth::Grants>> grants_;
 };
 
 } // namespace openmoq::moqx
