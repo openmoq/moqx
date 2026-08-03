@@ -15,6 +15,7 @@
 #include "bpf/QuicReuseportSteering.h"
 #include "config/loader/ConfigInit.h"
 #include "logging/LogSetup.h"
+#include "moqx/Version.h"
 #include "stats/StatsRegistry.h"
 
 #include <csignal>
@@ -76,6 +77,8 @@ int main(int argc, char* argv[]) {
       "  serve                Start the relay (default)\n" +
       cfg::configSubcommandUsage() + "\nUsage: moqx [subcommand] --config <path>"
   );
+  // gflags handles --version inside folly::Init, before any config load.
+  google::SetVersionString(MOQX_VERSION);
   // MOQX_LOGGING is the moqx-namespaced alias for folly's own FOLLY_LOGGING env
   // var (folly::Init reads FOLLY_LOGGING). Promote it here — before folly::Init
   // — so the knob works for any launch method (docker, systemd, bare metal)
@@ -88,6 +91,9 @@ int main(int argc, char* argv[]) {
   // folly::Init — see docs/logging.md.
   combineLoggingArgs(argc, argv);
   folly::Init init(&argc, &argv, true);
+
+  // Attributes the log stream to an exact build.
+  XLOG(INFO) << "moqx " << kVersion << " starting";
 
   std::string_view subcommand = kServeCommand;
   if (argc > 1) {

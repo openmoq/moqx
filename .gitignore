@@ -1,6 +1,7 @@
 # Build outputs
 /build/
 /build-*/
+/_build/
 /cmake-build-*/
 /CMakeFiles/
 CMakeCache.txt
@@ -39,3 +40,6 @@ docker/cloudflare.ini
 # gh-pages dashboard (lives on gh-pages branch, not main)
 /gh-pages/
 docker/grafana/provisioning/dashboards/archive/
+
+# Version stamp for source trees with no .git (cmake/MoqxVersion.cmake).
+/VERSION

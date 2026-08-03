@@ -324,8 +324,11 @@ jobs:
           # path. Combined with the bundle step below this produces a
           # self-contained tarball that runs on noble / RHEL 9 / AL2023
           # without needing distro-specific packages installed.
+          # Pass the tag explicitly: the checkout is shallow and the tag may
+          # not exist yet, so git describe would yield a bare sha.
           cmake -S . -B _build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DMOQX_VERSION_STRING="${{ needs.validate.outputs.tag }}" \
             -DCMAKE_PREFIX_PATH="$(cat .scratch/cmake_prefix_path.txt)" \
             -DCMAKE_MODULE_PATH="${GITHUB_WORKSPACE}/cmake;${GITHUB_WORKSPACE}/deps/moxygen/build/fbcode_builder/CMake" \
             -DCMAKE_C_FLAGS="${{ matrix.cxx_flags }}" \
