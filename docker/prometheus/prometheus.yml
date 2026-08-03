@@ -72,3 +72,34 @@ scrape_configs:
         target_label: __param_target
       - target_label: __address__
         replacement: json-exporter:7979
+
+  # Per-track counters from the relay (openmoq/moqx#533). The namespace
+  # parameter is required, so each namespace is a target relabelled into the
+  # query. Values use the moq-transport encoded form: tuple elements joined
+  # by "-", other bytes as ".<hex>" (moq-test/interop -> moq.2dtest-interop).
+  #
+  # limit is a guard, not a top-N: a namespace holding more tracks than the
+  # limit is rejected with 400 rather than truncated, so the scrape fails
+  # loudly instead of graphing a set that reshuffles between scrapes.
+  #
+  # The list is static for now. /state.namespace_tree already enumerates live
+  # namespaces, so it should be generated into a file_sd target file and
+  # picked up without a reload — see docker/prometheus/README.md.
+  - job_name: moqx-track
+    metrics_path: /metrics/track
+    scrape_interval: 15s
+    params:
+      limit: ['1000']
+    static_configs:
+      - targets:
+          - moq.2dtest-interop
+          - aiomoqt
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_namespace
+      - source_labels: [__param_namespace]
+        target_label: ns_scrape
+      - target_label: __address__
+        replacement: moqx:8000
+      - target_label: instance
+        replacement: moqx-relay
