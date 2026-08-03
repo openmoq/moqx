@@ -179,27 +179,43 @@ folly::Expected<Grants, AuthError> AuthTokenVerifier::verify(const AuthToken& to
   return folly::makeUnexpected(AuthError::BadSignature);
 }
 
-folly::Expected<std::shared_ptr<const Grants>, AuthError>
+folly::Expected<std::shared_ptr<const std::vector<Grants>>, AuthError>
 authenticateSetup(const AuthTokenVerifier& verifier, const Parameters& setupParams) {
   if (!verifier.enabled()) {
-    return std::shared_ptr<const Grants>{};
+    return std::shared_ptr<const std::vector<Grants>>{};
   }
-  if (auto token = findAuthToken(setupParams, verifier.tokenType())) {
-    auto verified = verifier.verify(*token);
+
+  auto tokens = findAuthTokens(setupParams, verifier.tokenType());
+  std::vector<Grants> verifiedGrants;
+  std::optional<AuthError> firstError;
+  for (const auto& token : tokens) {
+    auto verified = verifier.verify(token);
     if (verified.hasError()) {
-      return folly::makeUnexpected(verified.error());
+      if (!firstError) {
+        firstError = verified.error();
+      }
+      continue;
     }
-    if (!allows(verified.value(), Action::ClientSetup, TrackNamespace{})) {
-      return folly::makeUnexpected(AuthError::Forbidden);
-    }
-    return std::make_shared<const Grants>(std::move(verified.value()));
+    verifiedGrants.push_back(std::move(verified.value()));
   }
+
+  if (!tokens.empty()) {
+    // At least one setup token was presented; the session is authorized iff
+    // any of the verified ones grants ClientSetup. All verified tokens' other
+    // scopes still pool into the session grants below, not just the one that
+    // happened to grant ClientSetup.
+    if (!allowsAny(verifiedGrants, Action::ClientSetup, TrackNamespace{})) {
+      return folly::makeUnexpected(firstError.value_or(AuthError::Forbidden));
+    }
+    return std::make_shared<const std::vector<Grants>>(std::move(verifiedGrants));
+  }
+
   if (verifier.requireSetupToken()) {
     return folly::makeUnexpected(AuthError::Missing);
   }
-  // No setup token but not required: connect with empty grants; requests must
-  // then carry their own tokens to be authorized.
-  return std::make_shared<const Grants>();
+  // No setup token but not required: connect with empty session grants;
+  // requests must then carry their own tokens to be authorized (see authorize()).
+  return std::make_shared<const std::vector<Grants>>();
 }
 
 folly::Expected<folly::Unit, AuthError> authorize(
@@ -207,57 +223,54 @@ folly::Expected<folly::Unit, AuthError> authorize(
     Action action,
     const Parameters& params,
     const TrackNamespace& ns,
-    const Grants& sessionGrants,
+    const std::vector<Grants>& sessionGrants,
     std::optional<std::string_view> trackName
 ) {
   if (!verifier.enabled()) {
     return folly::unit;
   }
 
-  auto token = findAuthToken(params, verifier.tokenType());
-  if (token && !verifier.allowRequestTokenOverride()) {
-    // Request carried a per-request token but override is disabled, so the
-    // session-setup grants govern; log rather than fail.
-    XLOG(DBG1) << "authorize: ignoring request AUTHORIZATION_TOKEN for action="
-               << static_cast<uint64_t>(action) << " (allow_request_token_override is disabled)";
-    token.reset();
-  }
-
-  // Resolve grants from exactly one source (request token or session).
-  const Grants* grants = nullptr;
-  Grants verified;
-  if (token) {
-    auto res = verifier.verify(*token);
-    if (res.hasError()) {
-      XLOG(DBG1) << "authorize: request token verification failed for action="
-                 << static_cast<uint64_t>(action) << ": " << toString(res.error());
-      return folly::makeUnexpected(res.error());
+  std::vector<Grants> requestGrants;
+  std::optional<AuthError> firstError;
+  if (verifier.allowRequestTokenOverride()) {
+    for (const auto& token : findAuthTokens(params, verifier.tokenType())) {
+      auto res = verifier.verify(token);
+      if (res.hasError()) {
+        // Dropped as a non-viable candidate — another request token or a
+        // session grant may still cover the action.
+        if (!firstError) {
+          firstError = res.error();
+        }
+        continue;
+      }
+      requestGrants.push_back(std::move(res.value()));
     }
-    verified = std::move(res.value());
-    grants = &verified;
-  } else {
-    grants = &sessionGrants;
+  } else if (!findAuthTokens(params, verifier.tokenType()).empty()) {
+    XLOG(DBG1) << "authorize: ignoring request AUTHORIZATION_TOKEN(s) for action="
+               << static_cast<uint64_t>(action) << " (allow_request_token_override is disabled)";
   }
 
-  const bool permitted = trackName
-                             ? allows(*grants, action, FullTrackName{ns, std::string(*trackName)})
-                             : allows(*grants, action, ns);
+  const bool permitted =
+      trackName ? (allowsAny(requestGrants, action, FullTrackName{ns, std::string(*trackName)}) ||
+                   allowsAny(sessionGrants, action, FullTrackName{ns, std::string(*trackName)}))
+                : (allowsAny(requestGrants, action, ns) || allowsAny(sessionGrants, action, ns));
   if (!permitted) {
     XLOG(DBG1) << "authorize: action=" << static_cast<uint64_t>(action)
                << " not permitted for ns=" << ns;
-    return folly::makeUnexpected(AuthError::Forbidden);
+    return folly::makeUnexpected(firstError.value_or(AuthError::Forbidden));
   }
   return folly::unit;
 }
 
-std::optional<AuthToken> findAuthToken(const Parameters& params, uint64_t tokenType) {
+std::vector<AuthToken> findAuthTokens(const Parameters& params, uint64_t tokenType) {
   const auto authKey = folly::to_underlying(TrackRequestParamKey::AUTHORIZATION_TOKEN);
+  std::vector<AuthToken> tokens;
   for (const auto& param : params) {
     if (param.key == authKey && param.asAuthToken.tokenType == tokenType) {
-      return param.asAuthToken;
+      tokens.push_back(param.asAuthToken);
     }
   }
-  return std::nullopt;
+  return tokens;
 }
 
 namespace {
@@ -322,6 +335,28 @@ bool allows(
     std::chrono::system_clock::time_point now
 ) {
   return allowsImpl(grants, action, ftn.trackNamespace, std::string_view(ftn.trackName), now);
+}
+
+bool allowsAny(
+    const std::vector<Grants>& grantsList,
+    Action action,
+    const TrackNamespace& ns,
+    std::chrono::system_clock::time_point now
+) {
+  return std::any_of(grantsList.begin(), grantsList.end(), [&](const Grants& grants) {
+    return allows(grants, action, ns, now);
+  });
+}
+
+bool allowsAny(
+    const std::vector<Grants>& grantsList,
+    Action action,
+    const FullTrackName& ftn,
+    std::chrono::system_clock::time_point now
+) {
+  return std::any_of(grantsList.begin(), grantsList.end(), [&](const Grants& grants) {
+    return allows(grants, action, ftn, now);
+  });
 }
 
 const char* toString(AuthError error) {

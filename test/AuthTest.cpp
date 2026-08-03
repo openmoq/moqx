@@ -134,7 +134,32 @@ TEST(AuthTest, AllowsRejectsEmptyScopesAndExpiredGrants) {
   );
 }
 
-TEST(AuthTest, FindAuthTokenSelectsMatchingAuthorizationToken) {
+TEST(AuthTest, AllowsAnyPermitsWhenAnyElementAllows) {
+  TrackNamespace ns{{"live"}};
+  std::vector<Grants> grantsList{
+      makeGrants({Action::Publish}, {}, {}),
+      makeGrants({Action::Subscribe}, {}, {}),
+  };
+  EXPECT_TRUE(allowsAny(grantsList, Action::Subscribe, ns));
+  EXPECT_TRUE(allowsAny(grantsList, Action::Subscribe, FullTrackName{ns, "video"}));
+  EXPECT_FALSE(allowsAny(grantsList, Action::Fetch, ns));
+}
+
+TEST(AuthTest, AllowsAnyDeniesWhenNoElementAllows) {
+  std::vector<Grants> grantsList{makeGrants({Action::Publish}, {}, {})};
+  TrackNamespace ns{{"live"}};
+  EXPECT_FALSE(allowsAny(grantsList, Action::Subscribe, ns));
+  EXPECT_FALSE(allowsAny(grantsList, Action::Subscribe, FullTrackName{ns, "video"}));
+}
+
+TEST(AuthTest, AllowsAnyOnEmptyVectorIsFalse) {
+  std::vector<Grants> empty;
+  TrackNamespace ns{{"live"}};
+  EXPECT_FALSE(allowsAny(empty, Action::Subscribe, ns));
+  EXPECT_FALSE(allowsAny(empty, Action::Subscribe, FullTrackName{ns, "video"}));
+}
+
+TEST(AuthTest, FindAuthTokensSelectsMatchingAuthorizationToken) {
   Parameters params(FrameType::SUBSCRIBE);
   ASSERT_TRUE(
       params
@@ -153,10 +178,45 @@ TEST(AuthTest, FindAuthTokenSelectsMatchingAuthorizationToken) {
           .hasValue()
   );
 
-  auto token = findAuthToken(params, 77);
-  ASSERT_TRUE(token.has_value());
-  EXPECT_EQ(token->tokenValue, "right");
-  EXPECT_FALSE(findAuthToken(params, 78).has_value());
+  auto tokens = findAuthTokens(params, 77);
+  ASSERT_EQ(tokens.size(), 1);
+  EXPECT_EQ(tokens[0].tokenValue, "right");
+  EXPECT_TRUE(findAuthTokens(params, 78).empty());
+}
+
+TEST(AuthTest, FindAuthTokensReturnsAllMatchingTokens) {
+  Parameters params(FrameType::SUBSCRIBE);
+  ASSERT_TRUE(
+      params
+          .insertParam(Parameter(
+              static_cast<uint64_t>(TrackRequestParamKey::AUTHORIZATION_TOKEN),
+              AuthToken{.tokenType = 77, .tokenValue = "first", .alias = AuthToken::DontRegister}
+          ))
+          .hasValue()
+  );
+  ASSERT_TRUE(params
+                  .insertParam(Parameter(
+                      static_cast<uint64_t>(TrackRequestParamKey::AUTHORIZATION_TOKEN),
+                      AuthToken{
+                          .tokenType = 76,
+                          .tokenValue = "other-type",
+                          .alias = AuthToken::DontRegister
+                      }
+                  ))
+                  .hasValue());
+  ASSERT_TRUE(
+      params
+          .insertParam(Parameter(
+              static_cast<uint64_t>(TrackRequestParamKey::AUTHORIZATION_TOKEN),
+              AuthToken{.tokenType = 77, .tokenValue = "second", .alias = AuthToken::DontRegister}
+          ))
+          .hasValue()
+  );
+
+  auto tokens = findAuthTokens(params, 77);
+  ASSERT_EQ(tokens.size(), 2);
+  EXPECT_EQ(tokens[0].tokenValue, "first");
+  EXPECT_EQ(tokens[1].tokenValue, "second");
 }
 
 TEST(AuthTest, RejectsBadSignature) {
@@ -251,4 +311,167 @@ TEST(AuthTest, MultiRuleCompoundMatchRoundtripsViaCwt) {
   EXPECT_TRUE(allows(result.value(), Action::Subscribe, FullTrackName{ns, "live-stream.mp4"}));
   EXPECT_FALSE(allows(result.value(), Action::Subscribe, FullTrackName{ns, "live-stream.ts"}));
   EXPECT_FALSE(allows(result.value(), Action::Subscribe, FullTrackName{ns, "vod-stream.mp4"}));
+}
+
+// --- authorize(): multi-token, any-satisfies pooling ---
+
+namespace {
+
+Parameters withAuthToken(FrameType frameType, AuthToken token) {
+  Parameters params(frameType);
+  auto ok = params.insertParam(
+      Parameter(static_cast<uint64_t>(TrackRequestParamKey::AUTHORIZATION_TOKEN), std::move(token))
+  );
+  EXPECT_TRUE(ok.hasValue());
+  return params;
+}
+
+} // namespace
+
+TEST(AuthTest, AuthorizeRequestTokenGrantsWhenSessionGrantsDoNot) {
+  TrackNamespace ns{{"live"}};
+  AuthTokenVerifier verifier(makeConfig());
+  auto params =
+      withAuthToken(FrameType::SUBSCRIBE, makeToken(makeGrants({Action::Subscribe}, {}, {})));
+
+  std::vector<Grants> sessionGrants; // empty: session alone doesn't cover Subscribe
+  auto result = authorize(verifier, Action::Subscribe, params, ns, sessionGrants, "video");
+  EXPECT_TRUE(result.hasValue());
+}
+
+TEST(AuthTest, AuthorizeSessionGrantsGrantWhenNoRequestToken) {
+  TrackNamespace ns{{"live"}};
+  AuthTokenVerifier verifier(makeConfig());
+  Parameters params(FrameType::SUBSCRIBE); // no request-level token
+  std::vector<Grants> sessionGrants{makeGrants({Action::Subscribe}, {}, {})};
+
+  auto result = authorize(verifier, Action::Subscribe, params, ns, sessionGrants, "video");
+  EXPECT_TRUE(result.hasValue());
+}
+
+TEST(AuthTest, AuthorizeGarbageRequestTokenDoesNotBlockSessionGrants) {
+  TrackNamespace ns{{"live"}};
+  AuthTokenVerifier verifier(makeConfig());
+  auto params = withAuthToken(
+      FrameType::SUBSCRIBE,
+      AuthToken{
+          .tokenType = 77,
+          .tokenValue = std::string("\xde\xad\xbe\xef", 4),
+          .alias = AuthToken::DontRegister
+      }
+  );
+  std::vector<Grants> sessionGrants{makeGrants({Action::Subscribe}, {}, {})};
+
+  auto result = authorize(verifier, Action::Subscribe, params, ns, sessionGrants, "video");
+  EXPECT_TRUE(result.hasValue());
+}
+
+TEST(AuthTest, AuthorizeReturnsMostSpecificErrorWhenNothingPermits) {
+  TrackNamespace ns{{"live"}};
+  AuthTokenVerifier verifier(makeConfig());
+  auto badToken = makeToken(makeGrants({Action::Subscribe}, {}, {}));
+  badToken.tokenValue.back() ^= 0x01; // corrupt signature
+  auto params = withAuthToken(FrameType::SUBSCRIBE, std::move(badToken));
+  std::vector<Grants> sessionGrants; // doesn't cover the action either
+
+  auto result = authorize(verifier, Action::Subscribe, params, ns, sessionGrants, "video");
+  ASSERT_TRUE(result.hasError());
+  EXPECT_EQ(result.error(), AuthError::BadSignature);
+}
+
+TEST(AuthTest, AuthorizeReturnsForbiddenWhenNothingCoversAction) {
+  TrackNamespace ns{{"live"}};
+  AuthTokenVerifier verifier(makeConfig());
+  Parameters params(FrameType::SUBSCRIBE);                                  // no request token
+  std::vector<Grants> sessionGrants{makeGrants({Action::Publish}, {}, {})}; // different action
+
+  auto result = authorize(verifier, Action::Subscribe, params, ns, sessionGrants, "video");
+  ASSERT_TRUE(result.hasError());
+  EXPECT_EQ(result.error(), AuthError::Forbidden);
+}
+
+// --- authenticateSetup(): multi-token, any-satisfies pooling ---
+
+TEST(AuthTest, AuthenticateSetupAcceptsAnyOfMultipleSetupTokens) {
+  AuthTokenVerifier verifier(makeConfig());
+  auto badToken = makeToken(makeGrants({Action::ClientSetup}, {}, {}));
+  badToken.tokenValue.back() ^= 0x01; // corrupt signature
+
+  Parameters params(FrameType::CLIENT_SETUP);
+  ASSERT_TRUE(
+      params
+          .insertParam(
+              Parameter(static_cast<uint64_t>(TrackRequestParamKey::AUTHORIZATION_TOKEN), badToken)
+          )
+          .hasValue()
+  );
+  ASSERT_TRUE(params
+                  .insertParam(Parameter(
+                      static_cast<uint64_t>(TrackRequestParamKey::AUTHORIZATION_TOKEN),
+                      makeToken(makeGrants({Action::ClientSetup}, {}, {}))
+                  ))
+                  .hasValue());
+
+  auto result = authenticateSetup(verifier, params);
+  ASSERT_TRUE(result.hasValue());
+  ASSERT_TRUE(result.value());
+  // Only the token that actually verified pools; the corrupted one is dropped.
+  EXPECT_EQ(result.value()->size(), 1u);
+}
+
+TEST(AuthTest, AuthenticateSetupPoolsAllVerifiedTokensRegardlessOfWhichGrantsClientSetup) {
+  AuthTokenVerifier verifier(makeConfig());
+  Parameters params(FrameType::CLIENT_SETUP);
+  ASSERT_TRUE(params
+                  .insertParam(Parameter(
+                      static_cast<uint64_t>(TrackRequestParamKey::AUTHORIZATION_TOKEN),
+                      makeToken(makeGrants({Action::ClientSetup}, {}, {}))
+                  ))
+                  .hasValue());
+  ASSERT_TRUE(params
+                  .insertParam(Parameter(
+                      static_cast<uint64_t>(TrackRequestParamKey::AUTHORIZATION_TOKEN),
+                      makeToken(makeGrants({Action::Subscribe}, {}, {}))
+                  ))
+                  .hasValue());
+
+  auto result = authenticateSetup(verifier, params);
+  ASSERT_TRUE(result.hasValue());
+  ASSERT_TRUE(result.value());
+  ASSERT_EQ(result.value()->size(), 2u);
+  EXPECT_TRUE(allowsAny(*result.value(), Action::Subscribe, TrackNamespace{}));
+}
+
+TEST(AuthTest, AuthenticateSetupRejectsWhenNoTokenGrantsClientSetup) {
+  AuthTokenVerifier verifier(makeConfig());
+  Parameters params(FrameType::CLIENT_SETUP);
+  ASSERT_TRUE(params
+                  .insertParam(Parameter(
+                      static_cast<uint64_t>(TrackRequestParamKey::AUTHORIZATION_TOKEN),
+                      makeToken(makeGrants({Action::Subscribe}, {}, {}))
+                  ))
+                  .hasValue());
+
+  auto result = authenticateSetup(verifier, params);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_EQ(result.error(), AuthError::Forbidden);
+}
+
+TEST(AuthTest, AuthenticateSetupSurfacesMostSpecificErrorWhenNothingGrantsClientSetup) {
+  AuthTokenVerifier verifier(makeConfig());
+  auto badToken = makeToken(makeGrants({Action::ClientSetup}, {}, {}));
+  badToken.tokenValue.back() ^= 0x01; // corrupt signature
+
+  Parameters params(FrameType::CLIENT_SETUP);
+  ASSERT_TRUE(
+      params
+          .insertParam(
+              Parameter(static_cast<uint64_t>(TrackRequestParamKey::AUTHORIZATION_TOKEN), badToken)
+          )
+          .hasValue()
+  );
+
+  auto result = authenticateSetup(verifier, params);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_EQ(result.error(), AuthError::BadSignature);
 }
