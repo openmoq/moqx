@@ -332,6 +332,17 @@ target_link_libraries(moqx_initial_track_state_test PRIVATE
 )
 gtest_discover_tests(moqx_initial_track_state_test)
 
+# LocalForwarderRegistry unit tests
+add_executable(moqx_local_forwarder_registry_test
+  LocalForwarderRegistryTest.cpp
+)
+target_link_libraries(moqx_local_forwarder_registry_test PRIVATE
+  moqx_core
+  moqx_test_main
+  GTest::gmock
+)
+gtest_discover_tests(moqx_local_forwarder_registry_test)
+
 # TopNFilter unit tests
 add_executable(moqx_topn_filter_test
   TopNFilterTest.cpp
