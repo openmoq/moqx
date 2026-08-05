@@ -56,7 +56,7 @@ Targeting:
       --subcmd CMD          moqx subcommand (default: serve)
       --config FILE         config YAML template (default: scripts/config.bench.yaml)
       --env FILE            alternate .env file (default: scripts/.env if present)
-      --bin FILE            moqx binary path (default: <project>/build/moqx)
+      --bin FILE            moqx binary path (default: <project>/build/default/moqx)
 
 Execution:
   -j, --jemalloc [PATH]     LD_PRELOAD jemalloc for the relay (~10% speedup).
@@ -207,7 +207,7 @@ if [[ -f "$ENV_FILE" ]]; then
 fi
 
 # ── Paths (CLI > env > defaults) ─────────────────────────────────────────
-MOQX_BIN="${CLI_BIN:-${MOQX_BIN:-$PROJECT_ROOT/build/moqx}}"
+MOQX_BIN="${CLI_BIN:-${MOQX_BIN:-$PROJECT_ROOT/build/default/moqx}}"
 CONFIG_TEMPLATE="${CLI_CONFIG:-${MOQX_CONFIG:-$SCRIPT_DIR/config.bench.yaml}}"
 
 [[ -x "$MOQX_BIN" ]]        || { echo "moqx binary not found: $MOQX_BIN" >&2; exit 1; }

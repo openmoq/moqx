@@ -10,6 +10,10 @@ include(ExternalProject)
 
 get_filename_component(_top "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
 
+# Same fail-fast dependency check as the moqx build — this build compiles the
+# folly stack, where a missing -dev package surfaces far more cryptically.
+include(${_top}/cmake/CheckSystemDeps.cmake)
+
 # moqx is a separate CMake build, so the moxygen source needs one stable home
 # both can read. This must be the CACHE entry: CPM declares its own, which drops
 # a normal variable of the same name and switches the cache off.
@@ -109,10 +113,9 @@ if(NOT DEFINED BOOST_USE_STATIC_LIBS)
     find_program(_moqx_cxx NAMES $ENV{CXX} c++ g++ clang++)
     set(BOOST_USE_STATIC_LIBS ON)
     if(_moqx_cxx)
-      # Must stay the component set cmake/CheckSystemDeps.cmake verifies. A
-      # component probed here but unchecked there (or the reverse) lets a host
-      # with only the shared library pick static and fail deep in folly's link.
-      foreach(_comp context filesystem program_options regex thread)
+      # MOQX_BOOST_COMPONENTS comes from cmake/CheckSystemDeps.cmake, included
+      # above — one list, so the probe and the check cannot drift apart.
+      foreach(_comp IN LISTS MOQX_BOOST_COMPONENTS)
         execute_process(COMMAND "${_moqx_cxx}" -print-file-name=libboost_${_comp}.a
           OUTPUT_VARIABLE _loc OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
         if(NOT _loc MATCHES "^/")
