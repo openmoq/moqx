@@ -314,6 +314,9 @@ add_test(
   NAME admin_track_metrics_endpoint
   COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_admin_track_metrics.sh $<TARGET_FILE:moqx>
 )
+set_tests_properties(admin_track_metrics_endpoint PROPERTIES
+  ENVIRONMENT "MOQBIN=${MOXYGEN_BIN_DIR}"
+)
 add_test(
   NAME admin_cache_purge_endpoint
   COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_admin_cache_purge.sh $<TARGET_FILE:moqx>
