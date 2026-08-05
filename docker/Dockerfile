@@ -30,7 +30,7 @@ COPY superbuild/ superbuild/
 RUN --mount=type=cache,target=/root/.cache/moqx \
     --mount=type=secret,id=github_token \
     set -eu; \
-    export MOQX_DEPS_CACHE=/root/.cache/moqx CPM_SOURCE_CACHE=/root/.cache/moqx/cpm; \
+    export MOQX_DEPS_CACHE=/root/.cache/moqx; \
     export GITHUB_TOKEN="$(cat /run/secrets/github_token 2>/dev/null || true)"; \
     if cmake -DOUT=/tmp/prefix -P cmake/fetch-moxygen-prebuilt.cmake; then \
         echo "==> moxygen: published prebuilt for the pin"; \
@@ -54,7 +54,7 @@ ARG MOQX_VERSION_STRING=""
 COPY CMakeLists.txt CMakePresets.json ./
 COPY src/ src/
 RUN --mount=type=cache,target=/root/.cache/moqx \
-    CPM_SOURCE_CACHE=/root/.cache/moqx/cpm \
+    MOQX_DEPS_CACHE=/root/.cache/moqx \
     cmake -S . -B _build --preset default \
         -DMOQX_VERSION_STRING="${MOQX_VERSION_STRING}" \
         -DMOQX_BUILD_TESTS=OFF \
