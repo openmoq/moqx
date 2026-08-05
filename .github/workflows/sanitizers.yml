@@ -1,0 +1,48 @@
+name: sanitizers
+
+# Instrumented from-source sanitizer builds: the folly/mvfst/proxygen stack is
+# compiled WITH the sanitizer, unlike the per-PR "asan" lane. Heavy, so it runs
+# nightly, or on dispatch against a branch to vet a PR before merge.
+
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  sanitizer:
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [san, tsan]
+    name: ${{ matrix.profile }} (from-source)
+    runs-on: [self-hosted, linode]
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-build
+        with:
+          ccache-key: ${{ matrix.profile }}-from-source
+
+      # Builds the instrumented moxygen prefix via the superbuild, then moqx.
+      - name: Build (instrumented, from source)
+        run: |
+          scripts/configure.sh ${{ matrix.profile }} --moxygen from-source
+          scripts/build.sh ${{ matrix.profile }}
+
+      - name: Test
+        env:
+          ASAN_OPTIONS: ${{ matrix.profile == 'san' && 'detect_leaks=1:abort_on_error=1' || '' }}
+          TSAN_OPTIONS: ${{ matrix.profile == 'tsan' && 'halt_on_error=1' || '' }}
+          # Instrumented binaries run 5-15x slower; keep ctest parallelism modest
+          # so timing-sensitive integration tests don't flake under CPU pressure.
+          MOQX_TEST_JOBS: 4
+        run: scripts/test.sh ${{ matrix.profile }}
