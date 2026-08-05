@@ -241,6 +241,18 @@ target_link_libraries(moqx_cbor_reader_test PRIVATE
 )
 gtest_discover_tests(moqx_cbor_reader_test)
 
+add_executable(moqx_safe_track_name_test
+  SafeTrackNameTest.cpp
+)
+target_include_directories(moqx_safe_track_name_test PRIVATE
+  ${PROJECT_SOURCE_DIR}/src
+)
+target_link_libraries(moqx_safe_track_name_test PRIVATE
+  moqx_core
+  GTest::gtest_main
+)
+gtest_discover_tests(moqx_safe_track_name_test)
+
 add_executable(moqx_relay_context_test
   MoqxRelayContextTest.cpp
 )
