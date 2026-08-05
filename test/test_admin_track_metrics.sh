@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BINARY="${1:-$(dirname "$0")/../build/moqx}"
+BINARY="${1:-$(dirname "$0")/../build/default/moqx}"
 # shellcheck source=test_ports.sh
 source "$(dirname "$0")/test_ports.sh"
 LISTEN_PORT=$TEST_ADMIN_TRACK_METRICS_LISTEN
@@ -130,7 +130,9 @@ HTTP_CODE=$(curl -sw "%{http_code}" -o /dev/null "${TRACK_URL}?namespace=test.2f
 
 # A live track, so the counters and the all-namespaces scrape are exercised
 # against real series rather than an empty body.
-MOQBIN="${MOQBIN:-$(dirname "$0")/../.scratch/moxygen-install/bin}"
+# shellcheck source=test_moqbin.sh
+source "$(dirname "$0")/test_moqbin.sh"
+resolve_moqbin "$BINARY"
 DATESERVER="$MOQBIN/moqdateserver"
 TEXTCLIENT="$MOQBIN/moqtextclient"
 # No '-' or '.' in the namespace: both are metacharacters in the safe form, so
