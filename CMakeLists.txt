@@ -166,6 +166,7 @@ add_library(moqx_core STATIC
   src/stats/QuicStatsCollector.cpp
   src/stats/EventBaseStatsCollector.cpp
   src/UpstreamProvider.cpp
+  src/SafeTrackName.cpp
   src/relay/AuthFilters.cpp
   src/relay/TopNFilter.cpp
   src/relay/PropertyRanking.cpp
