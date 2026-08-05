@@ -24,17 +24,14 @@ name: version release
 #
 # Inputs:
 #   version          required. semver, e.g. 1.2.3
-#   moxygen_release  optional. moxygen tag to consume (e.g. v1.2.3).
-#                    When absent, falls back to moxygen `snapshot-latest`.
-#                    The fallback is fine for everyday tagging but won't
-#                    produce portable tarballs (snapshot-latest doesn't
-#                    carry them — portable only ships in tagged moxygen
-#                    releases).
+#   moxygen_release  optional cross-check, not a selector. The moxygen consumed
+#                    is always the one MOXYGEN_REV pins — pass the tag you expect
+#                    that pin to resolve to and the run fails early if it doesn't.
 #
-# Behavior matrix:
-#   moxygen_release present + has portable assets  → portable matrix runs
-#   moxygen_release present + no portable assets   → portable skipped (no failure)
-#   moxygen_release absent                         → portable skipped (no failure)
+# Behavior matrix, on the moxygen release MOXYGEN_REV resolves to:
+#   tagged v* release (carries portable assets)  → portable matrix runs
+#   rolling snapshot-* release (does not)        → portable skipped (no failure)
+#   no tag at the pin                            → validate fails, nothing tagged
 #
 # Snapshot source — derived from dispatched ref:
 #   dispatched on main         → consume snapshot-latest
@@ -53,7 +50,7 @@ on:
         required: true
         type: string
       moxygen_release:
-        description: 'moxygen release tag (optional, e.g. v1.2.3). Default: moxygen snapshot-latest.'
+        description: 'Expected moxygen release tag (optional, e.g. v1.2.3) — checked against what MOXYGEN_REV resolves to.'
         required: false
         type: string
 
@@ -121,40 +118,31 @@ jobs:
             exit 1
           fi
 
-          # Moxygen reference: explicit input or snapshot-latest fallback.
-          MOX_REF="${{ inputs.moxygen_release }}"
-          if [ -z "$MOX_REF" ]; then
-            # Branch-aware default: from main, use GitHub's "latest" tagged
-            # release (highest non-prerelease semver across all branches).
-            # From release/vM.m, use the latest non-prerelease v M.m.* tag —
-            # so a hotfix dispatch on a release line picks the matching
-            # moxygen patch line, not whatever's newest globally.
-            if [ "$BRANCH" = "main" ]; then
-              MOX_REF=$(gh release view --repo openmoq/moxygen --json tagName --jq .tagName 2>/dev/null || true)
-              if [ -z "$MOX_REF" ]; then
-                echo "Error: no tagged moxygen release found." >&2
-                exit 1
-              fi
-              echo "==> No moxygen_release input — defaulting to GitHub latest: $MOX_REF"
-            else
-              LABEL="${BRANCH#release/v}"
-              MOX_REF=$(gh release list --repo openmoq/moxygen --limit 50 \
-                --json tagName,isPrerelease \
-                --jq ".[] | select(.isPrerelease == false) | select(.tagName | startswith(\"v$LABEL.\")) | .tagName" \
-                | head -1)
-              if [ -z "$MOX_REF" ]; then
-                echo "Error: no v${LABEL}.* non-prerelease moxygen release found for this release branch line." >&2
-                exit 1
-              fi
-              echo "==> No moxygen_release input — defaulting to latest v${LABEL}.* tag: $MOX_REF"
-            fi
-          else
+          # Resolve the moxygen tag exactly the way the build will. Anything else
+          # (moxygen's newest release, say) disagrees with MOXYGEN_REV, fails
+          # both matrix legs at configure, and strands the release as a draft.
+          MOX_PIN=$(cmake -DPIN=MOXYGEN_REV -P cmake/print-pin.cmake)
+          if ! MOX_REF=$(cmake -P cmake/print-release-tag.cmake); then
+            echo "Error: no published moxygen release points at the pinned MOXYGEN_REV" >&2
+            echo "  $MOX_PIN" >&2
+            echo "Bump the pin on $BRANCH to a published rev before cutting a release." >&2
+            exit 1
+          fi
+          echo "==> MOXYGEN_REV $MOX_PIN resolves to moxygen release $MOX_REF"
+
+          # Disagreement can only mean the operator meant to bump MOXYGEN_REV
+          # first — the input cannot move the build off the pin.
+          INPUT_REF="${{ inputs.moxygen_release }}"
+          if [ -n "$INPUT_REF" ]; then
             # Accept bare semver (0.1.4) or v-prefixed (v0.1.4); normalize.
-            if [[ "$MOX_REF" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
-              MOX_REF="v$MOX_REF"
-              echo "==> Normalized bare semver to $MOX_REF"
+            if [[ "$INPUT_REF" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+              INPUT_REF="v$INPUT_REF"
             fi
-            echo "==> Pinning to moxygen release: $MOX_REF"
+            if [ "$INPUT_REF" != "$MOX_REF" ]; then
+              echo "Error: moxygen_release '$INPUT_REF' is not the release MOXYGEN_REV resolves to ('$MOX_REF')." >&2
+              echo "Bump MOXYGEN_REV on $BRANCH instead — the build verifies the tag against the pin." >&2
+              exit 1
+            fi
           fi
 
           # Verify moxygen reference exists; on failure, list recent releases.
@@ -286,51 +274,37 @@ jobs:
           private-key: ${{ secrets.OMOQ_APP_PRIV_KEY }}
 
       - uses: actions/checkout@v4
-        with:
-          # recursive: deps/catapult carries nested submodules (libcbor,
-          # doctest, spdlog, nlohmann_json) that the top-level build needs.
-          submodules: recursive
 
       - name: Install system dependencies
         run: |
-          # Match docker/Dockerfile's build-stage apt list — picks up
-          # libdwarf-dev / libbrotli-dev that moxygen's install-system-deps
-          # doesn't install but proxygen needs.
-          sudo apt-get update
+          # Base library set via the shared installer, so a new moqx dependency
+          # reaches the release build on its own. Only extras below: libdwarf
+          # (prebuilt proxygen symbolizer), xxhash (folly), ca-certificates.
+          scripts/install-system-deps.sh
           sudo apt-get install -y --no-install-recommends \
-            build-essential ninja-build cmake git ca-certificates pkg-config \
-            libssl-dev libunwind-dev libgoogle-glog-dev libgflags-dev \
-            libdouble-conversion-dev libevent-dev libsodium-dev libzstd-dev \
-            libboost-all-dev libfmt-dev zlib1g-dev libc-ares-dev libdwarf-dev \
-            libbrotli-dev libgtest-dev libgmock-dev libxxhash-dev
-
-      - name: Download moxygen portable tarball
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          MOQX_PLATFORM: ${{ matrix.platform }}
-          MOX_REF: ${{ needs.validate.outputs.moxygen_ref }}
-        run: |
-          if [ "$MOX_REF" = "snapshot-latest" ]; then
-            bash scripts/build.sh setup --use-latest --no-fallback
-          else
-            export MOQX_MOXYGEN_RELEASE_TAG="$MOX_REF"
-            bash scripts/build.sh setup --no-fallback
-          fi
+            ca-certificates libdwarf-dev libxxhash-dev
 
       - name: Configure
+        env:
+          MOQX_PLATFORM: ${{ matrix.platform }}
+          MOX_REF: ${{ needs.validate.outputs.moxygen_ref }}
+          # FetchMoxygenPrebuilt reads the releases API. Anonymous is 60/hour/IP,
+          # shared across runner egress, and a 403 here fails the release build.
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
-          # CMAKE_INSTALL_RPATH = $ORIGIN/../lib makes the binary look
-          # for bundled .so files next to itself before the system search
-          # path. Combined with the bundle step below this produces a
-          # self-contained tarball that runs on noble / RHEL 9 / AL2023
-          # without needing distro-specific packages installed.
-          # Pass the tag explicitly: the checkout is shallow and the tag may
-          # not exist yet, so git describe would yield a bare sha.
+          # Strict prebuilt, no from-source fallback: a versioned artifact ships a
+          # published, digest-verified moxygen (docs/ci-architecture.md). MOQX_PLATFORM
+          # picks the tarball, a non-snapshot ref its release tag (BUILD.md#build).
+          TAG_ARG=()
+          [ "$MOX_REF" != "snapshot-latest" ] && TAG_ARG=(-DMOXYGEN_RELEASE_TAG="$MOX_REF")
+          # $ORIGIN/../lib plus the bundle step below make the tarball run on
+          # noble / RHEL 9 / AL2023 unaided. The version is passed in because the
+          # checkout is shallow, where git describe would yield a bare sha.
           cmake -S . -B _build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DMOQX_VERSION_STRING="${{ needs.validate.outputs.tag }}" \
-            -DCMAKE_PREFIX_PATH="$(cat .scratch/cmake_prefix_path.txt)" \
-            -DCMAKE_MODULE_PATH="${GITHUB_WORKSPACE}/cmake;${GITHUB_WORKSPACE}/deps/moxygen/build/fbcode_builder/CMake" \
+            -DMOQX_BUILD_TESTS=OFF \
+            "${TAG_ARG[@]}" \
             -DCMAKE_C_FLAGS="${{ matrix.cxx_flags }}" \
             -DCMAKE_CXX_FLAGS="${{ matrix.cxx_flags }}" \
             -DCMAKE_INSTALL_RPATH='$ORIGIN/../lib' \
