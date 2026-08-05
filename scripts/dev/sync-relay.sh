@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 #
-# sync-relay.sh - Sync MoqxRelay from deps/moxygen/moxygen/relay/
+# sync-relay.sh - Sync MoqxRelay from moxygen's relay/ source
 #
-# Usage: scripts/dev/sync-relay.sh [--no-build] [--no-test]
+# Usage: scripts/dev/sync-relay.sh [--moxygen-dir DIR] [--no-build] [--no-test]
+#
+# moxygen source is resolved (first match): --moxygen-dir, $CPM_moxygen_SOURCE,
+# the source build/default already fetched for the pinned MOXYGEN_REV, else a
+# clone of that rev.
 #
 # Transforms:
 #   MoQRelay.h            -> include/moqx/MoqxRelay.h
@@ -19,23 +23,71 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-MOXYGEN_RELAY="${REPO_ROOT}/deps/moxygen/moxygen/relay"
+CACHE_ROOT="${MOQX_DEPS_CACHE:-$HOME/.cache/moqx}"
 
 NO_BUILD=false
 NO_TEST=false
-for arg in "$@"; do
-  case "$arg" in
-    --no-build) NO_BUILD=true ;;
-    --no-test)  NO_TEST=true ;;
-    *) echo "Unknown argument: $arg" >&2; exit 1 ;;
+MOXYGEN_DIR="${MOXYGEN_DIR:-${CPM_moxygen_SOURCE:-}}"
+while (( $# > 0 )); do
+  case "$1" in
+    --moxygen-dir)
+      (( $# >= 2 )) || { echo "--moxygen-dir needs a directory" >&2; exit 1; }
+      MOXYGEN_DIR="$(cd "$2" 2>/dev/null && pwd)" \
+        || { echo "--moxygen-dir: '$2' not found" >&2; exit 1; }
+      shift 2 ;;
+    --no-build) NO_BUILD=true; shift ;;
+    --no-test)  NO_TEST=true; shift ;;
+    *) echo "Unknown argument: $1" >&2; exit 1 ;;
   esac
 done
+
+# Resolve the moxygen source tree.
+if [[ -z "$MOXYGEN_DIR" ]]; then
+  MOXYGEN_REV_PIN="$(cmake -DPIN=MOXYGEN_REV -P "$REPO_ROOT/cmake/print-pin.cmake")"
+  MOXYGEN_REPO="$(cmake -DPIN=MOXYGEN_REPOSITORY -P "$REPO_ROOT/cmake/print-pin.cmake")"
+
+  # A configured build dir records where CPM put the moxygen it fetched. Reuse
+  # that tree rather than keeping a second full copy per pin.
+  CPM_SRC="$(sed -n 's|^CPM_PACKAGE_moxygen_SOURCE_DIR:INTERNAL=||p' \
+    "$REPO_ROOT/build/default/CMakeCache.txt" 2>/dev/null || true)"
+fi
+if [[ -z "$MOXYGEN_DIR" && -d "${CPM_SRC:-/nonexistent}/moxygen/relay" ]]; then
+  # A build dir configured before the last pin bump still names the previous
+  # rev's clone, which is still on disk — syncing from it would rewrite the
+  # relay off the wrong revision. Fall through to the clone when it disagrees.
+  CPM_REV="$(git -C "$CPM_SRC" rev-parse HEAD 2>/dev/null || true)"
+  if [[ "$CPM_REV" == "$MOXYGEN_REV_PIN" ]]; then
+    MOXYGEN_DIR="$CPM_SRC"
+  fi
+fi
+if [[ -z "$MOXYGEN_DIR" ]]; then
+  MOXYGEN_DIR="${CACHE_ROOT}/moxygen-src-${MOXYGEN_REV_PIN:0:12}"
+  if [[ ! -d "$MOXYGEN_DIR/.git" ]]; then
+    echo "==> Cloning ${MOXYGEN_REPO}@${MOXYGEN_REV_PIN:0:12} into ${MOXYGEN_DIR}..."
+    # Clone into a staging dir and only publish it once the pinned rev is
+    # checked out: a half-finished tree left at $MOXYGEN_DIR would be treated as
+    # a cache hit on the next run and silently sync from the wrong revision.
+    stage="${MOXYGEN_DIR}.tmp.$$"
+    rm -rf "$stage"
+    trap 'rm -rf "$stage"' EXIT
+    git clone --filter=blob:none "https://github.com/${MOXYGEN_REPO}.git" "$stage"
+    git -C "$stage" checkout --detach "$MOXYGEN_REV_PIN"
+    mv "$stage" "$MOXYGEN_DIR"
+    trap - EXIT
+  fi
+  # Only the current pin's clone is ever wanted, and nothing else prunes these.
+  # The glob is the exact 12-hex shape this script writes.
+  for stale in "${CACHE_ROOT}"/moxygen-src-????????????; do
+    if [[ -d "$stale" && "$stale" != "$MOXYGEN_DIR" ]]; then rm -rf "$stale"; fi
+  done
+fi
+MOXYGEN_RELAY="${MOXYGEN_DIR}/moxygen/relay"
 
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "${TMP_DIR}"' EXIT
 
-MOXYGEN_REV="$(git -C "${REPO_ROOT}/deps/moxygen" rev-parse --short HEAD 2>/dev/null || echo unknown)"
-echo "==> Syncing relay files from moxygen @ ${MOXYGEN_REV}"
+MOXYGEN_REV="$(git -C "${MOXYGEN_DIR}" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+echo "==> Syncing relay files from moxygen @ ${MOXYGEN_REV} (${MOXYGEN_DIR})"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helper: replace Meta-only Apache 2.0 copyright with combined OpenMOQ header
@@ -51,7 +103,8 @@ new_header = """\
 /*
  * Copyright (c) Meta Platforms, Inc. and affiliates.
  * Originally from github.com/facebookexperimental/moxygen.
- * See deps/moxygen/LICENSE for the original license terms.
+ * See the moxygen LICENSE (https://github.com/openmoq/moxygen) for the
+ * original license terms.
  *
  * Copyright (c) OpenMOQ contributors.
  */"""
