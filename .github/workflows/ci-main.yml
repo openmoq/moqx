@@ -6,7 +6,7 @@ name: ci main
 # Job graph:
 #
 #   check-format ──────────────────────────────────────────────────────────────────┐
-#   build (linux, asan debug) ── publish (docker+smoke) ── release ────────────────┼── notify
+#   build (linux, asan) ── publish (docker+smoke) ── release ──────────────────────┼── notify
 #   microbenchmark (linux, macos) ────────────────────────────────────────────────-┘
 
 on:
@@ -46,90 +46,69 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # `key` is the machine-readable lane id (ccache/cache keys, option
+        # gating); `name` is display-only, safe to rename. The build dir is
+        # always build/<preset> (the presets' binaryDir).
         include:
           - name: linux
+            key: linux
             preset: default
-            build_dir: build
             runner: ubuntu-22.04
           # arm64 is validated by the publish-side docker build (publish arm64
           # entry below); skipped here to avoid the ubuntu-runner ↔ bookworm-tarball
           # glog ABI mismatch. arm64 issues surface at the publish step.
           - name: macos
+            key: macos
             preset: default
-            build_dir: build
             runner: macos-15
-          - name: asan debug
+          # ASan on moqx's own TUs, over the uninstrumented prebuilt folly, for a
+          # fast signal; sanitizers.yml builds the instrumented stack.
+          # RelWithDebInfo: the prebuilt is NDEBUG and folly's kIsDebug is ABI.
+          - name: asan (moqx TUs, prebuilt deps)
+            key: asan
             preset: san
-            build_dir: build-san
+            extra_cmake: -DCMAKE_BUILD_TYPE=RelWithDebInfo
+            # The san preset demands an instrumented moxygen; this lane knowingly
+            # takes the uninstrumented one. Without it configure.sh refuses.
+            uninstrumented_deps: true
+            leak_check: true
             runner: [self-hosted, linode]
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
+    # Ceiling for the from-source fallback, not the normal runtime.
+    # Matched to sanitizers.yml, the only measured from-source budget we have.
+    timeout-minutes: 180
     steps:
-      - name: Generate app token
-        id: app-token
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ secrets.OMOQ_APP_ID }}
-          private-key: ${{ secrets.OMOQ_APP_PRIV_KEY }}
-
       - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-build
         with:
-          submodules: recursive
+          ccache-key: ${{ matrix.key }}
 
-      - name: Install system dependencies
-        run: |
-          if [[ "$(uname)" == "Darwin" ]]; then
-            deps/moxygen/standalone/install-system-deps.sh
-            brew install coreutils
-            echo "/opt/homebrew/opt/coreutils/libexec/gnubin" >> "$GITHUB_PATH"
-          else
-            sudo deps/moxygen/standalone/install-system-deps.sh
-          fi
-
-      - name: Setup dependencies
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          MOQX_PLATFORM: ${{ matrix.platform || '' }}
-        run: |
-          # Three-mode setup resolution:
-          # 1. .moxygen-release file (release branches): use pinned tag.
-          # 2. Submodule SHA reachable from moxygen main: tarball mode via
-          #    snapshot-latest. Robust to drift between moxygen merges and
-          #    moqx's daily moxygen-sync.
-          # 3. Submodule SHA NOT reachable from main (dev iterating against
-          #    an unreleased moxygen feature branch): source build. Slow
-          #    but supports cross-repo iteration without requiring a
-          #    published moxygen tarball.
-          if [ -f .moxygen-release ]; then
-            export MOQX_MOXYGEN_RELEASE_TAG=$(cat .moxygen-release | tr -d '[:space:]')
-            echo "==> Pinned moxygen tag: $MOQX_MOXYGEN_RELEASE_TAG"
-            bash scripts/build.sh setup --no-fallback
-          else
-            SUB_SHA=$(git -C deps/moxygen rev-parse HEAD)
-            AHEAD=$(gh api "repos/openmoq/moxygen/compare/main...$SUB_SHA" --jq .ahead_by 2>/dev/null || echo "1")
-            if [ "$AHEAD" = "0" ]; then
-              echo "==> moxygen submodule $SUB_SHA on main → snapshot tarball"
-              bash scripts/build.sh setup --use-latest --no-fallback
-            else
-              echo "==> moxygen submodule $SUB_SHA $AHEAD commits diverged from main → source build"
-              bash scripts/build.sh setup
-            fi
-          fi
-
+      # The trilogy, not raw cmake: configure.sh picks the moxygen and build.sh
+      # resolves a job count, where Ninja's own nproc + 2 default OOMs the
+      # sanitizer lane. See BUILD.md#build.
       - name: Build
-        run: bash scripts/build.sh --profile ${{ matrix.preset }} --build-dir ${{ matrix.build_dir }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          MOQX_ALLOW_UNINSTRUMENTED_DEPS: ${{ matrix.uninstrumented_deps && '1' || '' }}
+        run: |
+          scripts/configure.sh ${{ matrix.preset }} --moxygen prebuilt-with-fallback ${{ matrix.extra_cmake }}
+          scripts/build.sh ${{ matrix.preset }}
 
+      # test.sh, not raw ctest: it resolves the --parallel the suite needs (the
+      # shell integration tests carry unique ports so they can share a run).
       - name: Test
         env:
-          ASAN_OPTIONS: ${{ matrix.name == 'asan debug' && 'detect_leaks=1:abort_on_error=1' || '' }}
-        run: bash scripts/build.sh test --build-dir ${{ matrix.build_dir }} -- --output-junit test-results.xml
+          ASAN_OPTIONS: ${{ matrix.leak_check && 'detect_leaks=1:abort_on_error=1' || '' }}
+        run: scripts/test.sh ${{ matrix.preset }} --output-junit test-results.xml
 
       - name: Publish test results
         uses: dorny/test-reporter@v1.9.1
         if: success() || failure()
         with:
           name: "test (${{ matrix.name }})"
-          path: ${{ matrix.build_dir }}/test-results.xml
+          path: build/${{ matrix.preset }}/test-results.xml
           reporter: java-junit
           fail-on-empty: ${{ job.status == 'success' && 'true' || 'false' }}
           # Only list failing tests in the Check Run summary. Listing all
@@ -178,47 +157,26 @@ jobs:
             stack: "pico"
     name: conformance (${{ matrix.name }})
     runs-on: ubuntu-22.04
+    # Ceiling for the from-source fallback; see the build job.
+    timeout-minutes: 180
     steps:
-      - name: Generate app token
-        id: app-token
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ secrets.OMOQ_APP_ID }}
-          private-key: ${{ secrets.OMOQ_APP_PRIV_KEY }}
-
       - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-build
         with:
-          submodules: recursive
+          ccache-key: conformance
 
-      - name: Install system dependencies
-        run: sudo deps/moxygen/standalone/install-system-deps.sh
-
-      - name: Setup dependencies
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          # Three-mode setup resolution (matches build job).
-          if [ -f .moxygen-release ]; then
-            export MOQX_MOXYGEN_RELEASE_TAG=$(cat .moxygen-release | tr -d '[:space:]')
-            echo "==> Pinned moxygen tag: $MOQX_MOXYGEN_RELEASE_TAG"
-            bash scripts/build.sh setup --no-fallback
-          else
-            SUB_SHA=$(git -C deps/moxygen rev-parse HEAD)
-            AHEAD=$(gh api "repos/openmoq/moxygen/compare/main...$SUB_SHA" --jq .ahead_by 2>/dev/null || echo "1")
-            if [ "$AHEAD" = "0" ]; then
-              echo "==> moxygen submodule $SUB_SHA on main → snapshot tarball"
-              bash scripts/build.sh setup --use-latest --no-fallback
-            else
-              echo "==> moxygen submodule $SUB_SHA $AHEAD commits diverged from main → source build"
-              bash scripts/build.sh setup
-            fi
-          fi
-
+      # Tests off: this job only drives the moqx binary; the ~25 gtest
+      # executables would link the heavy static stack for nothing.
       - name: Build
-        run: bash scripts/build.sh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          scripts/configure.sh default --moxygen prebuilt-with-fallback -DMOQX_BUILD_TESTS=OFF
+          scripts/build.sh default
 
       - name: Run conformance tests
-        run: bash test/test_conformance.sh ./build/moqx ${{ matrix.versions }} ${{ matrix.transport }} ${{ matrix.stack }}
+        run: bash test/test_conformance.sh ./build/default/moqx ${{ matrix.versions }} ${{ matrix.transport }} ${{ matrix.stack }}
 
   # ════════════════════════════════════════════════════════════════════════════
   # Microbenchmark: run in-process micro-benchmarks (independent of build/publish pipeline)
@@ -233,64 +191,32 @@ jobs:
           - name: linux
             runner: ubuntu-22.04
           - name: macos
-            # Pinned to macos-15 to match the moxygen publish runner / tarball
-            # name (moxygen-macos-15-arm64.tar.gz), downloaded here with
-            # --no-fallback. See ci-pr.yml microbenchmark job for the full rationale.
+            # Pinned to the moxygen publish runner: releases ship
+            # moxygen-macos-15-arm64.tar.gz and no macos-26 one, so macos-latest
+            # 404s. Keep in lockstep with the build job above.
             runner: macos-15
     name: microbenchmark (${{ matrix.name }})
     runs-on: ${{ matrix.runner }}
+    # Ceiling for the from-source fallback; see the build job.
+    timeout-minutes: 180
     steps:
-      - name: Generate app token
-        id: app-token
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ secrets.OMOQ_APP_ID }}
-          private-key: ${{ secrets.OMOQ_APP_PRIV_KEY }}
-
       - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-build
         with:
-          submodules: recursive
-
-      - name: Install system dependencies
-        run: |
-          if [[ "$(uname)" == "Darwin" ]]; then
-            deps/moxygen/standalone/install-system-deps.sh
-          else
-            sudo deps/moxygen/standalone/install-system-deps.sh
-          fi
-
-      - name: Setup dependencies
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          # Three-mode setup resolution (mirrors the build/conformance jobs):
-          # 1. .moxygen-release file (release branches): use pinned tag.
-          # 2. Submodule SHA reachable from moxygen main: snapshot tarball
-          #    (avoids a slow from-source dep build when moxygen has advanced
-          #    past the local pin — the common case under the daily sync).
-          # 3. Submodule SHA diverged from main: source build.
-          if [ -f .moxygen-release ]; then
-            export MOQX_MOXYGEN_RELEASE_TAG=$(cat .moxygen-release | tr -d '[:space:]')
-            echo "==> Pinned moxygen tag: $MOQX_MOXYGEN_RELEASE_TAG"
-            bash scripts/build.sh setup --no-fallback
-          else
-            SUB_SHA=$(git -C deps/moxygen rev-parse HEAD)
-            AHEAD=$(gh api "repos/openmoq/moxygen/compare/main...$SUB_SHA" --jq .ahead_by 2>/dev/null || echo "1")
-            if [ "$AHEAD" = "0" ]; then
-              echo "==> moxygen submodule $SUB_SHA on main → snapshot tarball"
-              bash scripts/build.sh setup --use-latest --no-fallback
-            else
-              echo "==> moxygen submodule $SUB_SHA $AHEAD commits diverged from main → source build"
-              bash scripts/build.sh setup
-            fi
-          fi
+          ccache-key: microbench
 
       - name: Build microbenchmarks
-        run: bash scripts/build.sh --benchmark
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          scripts/configure.sh default --moxygen prebuilt-with-fallback \
+            -DMOQX_BUILD_BENCHMARKS=ON -DMOQX_BUILD_TESTS=OFF
+          scripts/build.sh default
 
       - name: Run microbenchmarks
         run: |
-          ./build/benchmark/moqx_benchmark \
+          ./build/default/benchmark/moqx_benchmark \
             --bm_json_verbose=microbench-results.json \
             | tee microbench-output.txt
 
@@ -332,6 +258,9 @@ jobs:
             platform: bookworm-arm64
     name: publish (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
+    # The image's moxygen stage can fall back to compiling folly; see the
+    # build job. Without this the default is 6 h.
+    timeout-minutes: 180
     steps:
       - name: Generate app token
         id: app-token
@@ -342,30 +271,9 @@ jobs:
 
       - uses: actions/checkout@v4
         with:
-          submodules: recursive
-          # Full history + tags so `git describe --tags` can version the image
-          # (bare tag on release commits, tag-distance-sha on snapshots).
+          # Full history + tags so `git describe --tags` can version the
+          # image (bare tag on release commits, tag-distance-sha otherwise).
           fetch-depth: 0
-
-      - name: Download bookworm moxygen tarball
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          MOQX_PLATFORM: ${{ matrix.platform }}
-        run: |
-          # Release branches pin a specific moxygen release tag via
-          # .moxygen-release. Main uses snapshot-latest via --use-latest.
-          if [ -f .moxygen-release ]; then
-            export MOQX_MOXYGEN_RELEASE_TAG=$(cat .moxygen-release | tr -d '[:space:]')
-            echo "Using pinned moxygen release tag: $MOQX_MOXYGEN_RELEASE_TAG"
-            bash scripts/build.sh setup --no-fallback
-          else
-            bash scripts/build.sh setup --use-latest --no-fallback
-          fi
-
-      - name: Stage tarball for Docker build
-        run: |
-          mkdir -p .docker-deps
-          cp -a .scratch/moxygen-install .docker-deps/moxygen
 
       - name: Log in to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
@@ -393,12 +301,24 @@ jobs:
           echo "version=$V" >> "$GITHUB_OUTPUT"
           echo "==> build version: $V"
 
+      # The docker-container driver is what makes --cache-to work at all; the
+      # default driver has no cache exporter.
+      - uses: docker/setup-buildx-action@v3
+
+      # Caches the pin-keyed moxygen stage (docker/Dockerfile), so a source-only
+      # push reuses the prefix. Registry, not type=gha: that backend shares one
+      # 10 GB budget with the ccache and dependency caches, and mode=max evicts them.
       - name: Build Docker image
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           IMAGE="ghcr.io/${{ github.repository }}"
           ARCH="${{ matrix.arch }}"
-          docker build -f docker/Dockerfile \
+          docker buildx build -f docker/Dockerfile --target relay --load \
+            --secret id=github_token,env=GITHUB_TOKEN \
             --build-arg MOQX_VERSION_STRING="${{ steps.version.outputs.version }}" \
+            --cache-from "type=registry,ref=${IMAGE}/buildcache:${ARCH}" \
+            --cache-to   "type=registry,ref=${IMAGE}/buildcache:${ARCH},mode=max" \
             -t "${IMAGE}:${{ steps.tags.outputs.short }}-${ARCH}" \
             -t "${IMAGE}:${{ steps.tags.outputs.rolling }}-${ARCH}" \
             .
@@ -429,11 +349,19 @@ jobs:
           docker stop moqx-smoke && docker rm moqx-smoke
           echo "==> Smoke test passed"
 
+      # Same Dockerfile, same moxygen stage — so the client binary and the relay
+      # can never come from different moxygen builds. No --cache-to: the relay
+      # build above already exported that stage.
       - name: Build interop client image
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
+          IMAGE="ghcr.io/${{ github.repository }}"
           CLIENT_IMAGE="ghcr.io/${{ github.repository_owner }}/moqx-interop-client"
           ARCH="${{ matrix.arch }}"
-          docker build -f docker/Dockerfile.interop-client \
+          docker buildx build -f docker/Dockerfile --target interop-client --load \
+            --secret id=github_token,env=GITHUB_TOKEN \
+            --cache-from "type=registry,ref=${IMAGE}/buildcache:${ARCH}" \
             -t "${CLIENT_IMAGE}:${{ steps.tags.outputs.short }}-${ARCH}" \
             -t "${CLIENT_IMAGE}:${{ steps.tags.outputs.rolling }}-${ARCH}" \
             .
