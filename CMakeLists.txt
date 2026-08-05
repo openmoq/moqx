@@ -75,6 +75,9 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 # configure (yaml-cpp 0.8.0: 3.4; catapult's bundled libcbor/doctest: 3.5).
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 
+# MOQX_DEPS_CACHE + CPM_SOURCE_CACHE, shared with the superbuild.
+include(cmake/DepsCache.cmake)
+
 include(cmake/CPM.cmake)
 include(cmake/dependencies.cmake)
 

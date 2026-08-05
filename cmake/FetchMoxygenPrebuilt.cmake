@@ -21,9 +21,10 @@
 #                          MoxygenRelease.cmake; default: resolve it from
 #                          MOXYGEN_REV). Either way the release's commit is
 #                          verified against the pin.
-#   MOQX_DEPS_CACHE        cache root, variable or env (default ~/.cache/moqx)
+#   MOQX_DEPS_CACHE        cache root, variable or env — see cmake/DepsCache.cmake
 #   GITHUB_TOKEN/GH_TOKEN  env only — authenticate the release read
 
+include("${CMAKE_CURRENT_LIST_DIR}/DepsCache.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/MoxygenRelease.cmake")
 
 # --- platform tag: the <platform> in moxygen-<platform>.tar.gz ---------------
@@ -112,19 +113,10 @@ endfunction()
 _moqx_detect_platform(_moqx_platform)
 
 # --- cache location (per rev + platform) -------------------------------------
-# Deliberately beside CPM_SOURCE_CACHE rather than inside it: these extracted
-# install prefixes are not CPM sources, and clearing CPM's cache must not take
-# them along.
-if(DEFINED MOQX_DEPS_CACHE AND NOT MOQX_DEPS_CACHE STREQUAL "")
-  set(_cache_root "${MOQX_DEPS_CACHE}")
-elseif(DEFINED ENV{MOQX_DEPS_CACHE} AND NOT "$ENV{MOQX_DEPS_CACHE}" STREQUAL "")
-  set(_cache_root "$ENV{MOQX_DEPS_CACHE}")
-elseif(DEFINED ENV{HOME} AND NOT "$ENV{HOME}" STREQUAL "")
-  set(_cache_root "$ENV{HOME}/.cache/moqx")
-else()
-  # No HOME (bare container): keep the cache inside the build tree.
-  set(_cache_root "${CMAKE_BINARY_DIR}/moxygen-prebuilt")
-endif()
+# Beside CPM_SOURCE_CACHE under the shared root rather than inside it: these
+# extracted install prefixes are not CPM sources, and clearing CPM's cache must
+# not take them along. Root resolution: cmake/DepsCache.cmake.
+set(_cache_root "${MOQX_DEPS_CACHE}")
 string(SUBSTRING "${MOXYGEN_REV}" 0 12 _rev_short)
 set(_install_dir "${_cache_root}/moxygen-${_rev_short}-${_moqx_platform}")
 

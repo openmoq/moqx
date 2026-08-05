@@ -80,10 +80,11 @@ runs:
         done
         rm -rf "$cache/downloads"
 
-    - name: Route CPM and ccache through the caches
+    - name: Route the dependency and ccache dirs through the caches
       shell: bash
       run: |
-        echo "CPM_SOURCE_CACHE=$HOME/.cache/moqx/cpm" >> "$GITHUB_ENV"
+        # The root only; cmake/DepsCache.cmake puts the CPM clones under it.
+        echo "MOQX_DEPS_CACHE=$HOME/.cache/moqx" >> "$GITHUB_ENV"
         # Pin ccache's dir to the cached path; its own default is platform-dependent.
         echo "CCACHE_DIR=$HOME/.cache/ccache" >> "$GITHUB_ENV"
         # GITHUB_TOKEN stays off $GITHUB_ENV, which would hand it to every later
