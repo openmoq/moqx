@@ -451,6 +451,9 @@ TEST_P(MoQRelayTest, PublishReconnectDuringSubscribeScopeGuardCrash) {
   // Relay state mutations must run on the relay executor; doPublishNamespaceDone
   // touches the namespace tree, which publishDone also cleans up via relayEvb_.
   verifyOnRelayExec([&] { relay_->doPublishNamespaceDone(kTestNamespace, publisherSession2); });
+  // The publisher forwarder reaches the relay through relayExec_, so it drops its session
+  // refs a hop after the calls above.
+  driveIfMultiThread();
 }
 
 // Same reconnect scenario but the upstream subscribe returns OK instead of an

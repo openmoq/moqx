@@ -349,10 +349,12 @@ private:
       std::shared_ptr<moxygen::MoQSession> session
   );
 
-  // Runs on fwd's exec; the returned Claim owes a markReady/fail.
+  // Runs on fwd's exec; the returned Claim owes a markReady/fail. removeOnEmpty=false for a
+  // publish-initiated forwarder, which must survive subscriber churn.
   LocalForwarderRegistry::Claim installPublisherForwarder(
       const moxygen::FullTrackName& ftn,
-      const std::shared_ptr<moxygen::MoQForwarder>& fwd
+      const std::shared_ptr<moxygen::MoQForwarder>& fwd,
+      bool removeOnEmpty
   );
 
   std::optional<moxygen::PublishError>
@@ -474,7 +476,8 @@ private:
     folly::Executor* publisherExec{nullptr};
     bool ownsRelayChain{false}; // firstSetup path installed the passive relay chain
     std::shared_ptr<moxygen::MoQForwarder::Callback> finalCallback;
-    std::optional<UpstreamOk> upstreamOk;
+    // Captured off the publisher forwarder on its own exec, the only race-free place.
+    InitialTrackState initial;
     std::optional<SubscribeResult> error; // set => bail
   };
 
