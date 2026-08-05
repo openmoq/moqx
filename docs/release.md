@@ -2,40 +2,49 @@
 
 This document describes the moqx release branch model, how release artifacts are produced, and how to cut a new release branch.
 
-For the underlying CI workflow reference, see [ci-architecture.md](ci-architecture.md). For day-to-day contributor workflow, see [../CONTRIBUTING.md](../CONTRIBUTING.md).
+For the underlying CI workflow reference, see [ci-architecture.md](/docs/ci-architecture.md). For day-to-day contributor workflow, see [../CONTRIBUTING.md](/CONTRIBUTING.md).
 
 ## Branch Model
 
 | Branch | moxygen pin | Build target | Audience |
 |---|---|---|---|
-| `main` | floats — uses moxygen `snapshot-latest` via `--use-latest` | `ghcr.io/openmoq/moqx:main-latest` (also `:latest` alias) + `snapshot-latest` GitHub release | Continuous integration; auto-deployed to `moqx-main.ci.openmoq.org` |
-| `release/<name>` | **pinned** to a specific moxygen tag via [`.moxygen-release`](#moxygen-release-pin) | `ghcr.io/openmoq/moqx:<name>-latest` + `snapshot-<name>-latest` GitHub release | Demo / customer / event branches; manually deployed |
+| `main` | floats — `MOXYGEN_REV` bumped daily by the sync bot | `ghcr.io/openmoq/moqx:main-latest` (also `:latest` alias) + `snapshot-latest` GitHub release | Continuous integration; auto-deployed to `moqx-main.ci.openmoq.org` |
+| `release/<name>` | **pinned** — `MOXYGEN_REV` frozen (bot doesn't touch release branches) | `ghcr.io/openmoq/moqx:<name>-latest` + `snapshot-<name>-latest` GitHub release | Demo / customer / event branches; manually deployed |
 | `devops/*`, `feat/*`, etc. | follows the branch they were cut from | (no `ci main` — only `ci pr` runs on PRs) | Working branches |
 
 `main` floats forward; `release/*` pins for reproducibility.
 
-## moxygen-release pin
+## Pinning moxygen on a release branch
 
-Release branches contain a top-level `.moxygen-release` file with a single line — the moxygen release tag (e.g. `v0.1.2`) the branch builds against.
+The pin lives in [`cmake/dependencies.cmake`](/cmake/dependencies.cmake) — the
+`MOXYGEN_REV` line. It is per-branch by construction: a `release/*` branch simply
+commits the `MOXYGEN_REV` it should build against, and the sync bot (which only
+targets `main`) never advances it.
 
-**This file is load-bearing**; do not remove it from a release branch.
+The prebuilt fetch resolves the pin to a release tag itself and verifies that
+release's commit against it, so a frozen `MOXYGEN_REV` is all a release branch
+needs — provided a tag stays retained at that rev.
 
-The contract is enforced in [`.github/workflows/ci-main.yml`](../.github/workflows/ci-main.yml) and [`ci-pr.yml`](../.github/workflows/ci-pr.yml):
+**Freeze on a `v*`-tagged moxygen rev.** Between moxygen releases `main` carries
+revs whose only tag is the rolling `snapshot-latest`. That tag moves on the next
+publish and takes the release's assets with it, and every `--moxygen prebuilt` build
+of the frozen branch then fails at configure. Check a candidate with
+`git ls-remote --tags https://github.com/openmoq/moxygen | grep <sha>`, or accept
+that the branch is `--moxygen from-source` only.
 
-```bash
-# Release branches pin a specific moxygen release tag via
-# .moxygen-release. Main uses snapshot-latest via --use-latest.
-if [ -f .moxygen-release ]; then
-  export MOQX_MOXYGEN_RELEASE_TAG=$(cat .moxygen-release | tr -d '[:space:]')
-  bash scripts/build.sh setup --no-fallback
-else
-  bash scripts/build.sh setup --no-fallback --use-latest
-fi
+Optionally pin the exact tag to fetch from by setting `MOXYGEN_RELEASE_TAG` in the
+same file — useful when a commit carries several tags and you want a specific one:
+
+```cmake
+set(MOXYGEN_RELEASE_TAG "<tag>")  # a tag on openmoq/moxygen *releases*
 ```
 
-The `deps/moxygen` submodule must point at the same commit the tag resolves to. CI does not cross-check, but a divergence will cause the build to download the wrong tarball.
+The tag must be one of [openmoq/moxygen's releases](https://github.com/openmoq/moxygen/releases)
+— moqx's own `snapshot-<name>-latest` releases are a different repo. Its commit is
+verified against `MOXYGEN_REV`, so an inconsistent pin fails the configure.
 
-When merging `main` into a `release/*` branch, the `.moxygen-release` modify-vs-delete conflict resolves **in favor of keeping the file**, then bump it to match the merged submodule pin.
+When merging `main` into a `release/*` branch, resolve the `cmake/dependencies.cmake`
+conflict in favor of the release branch's pinned `MOXYGEN_REV`.
 
 ## Snapshot Releases
 
@@ -67,11 +76,13 @@ To open a new demo / customer release branch:
    ```bash
    git checkout -b release/<name> main
    ```
-2. **Add the moxygen pin.** Pick the moxygen release tag your demo will run against (typically the latest `vX.Y.Z` whose hash is already on `main`):
+2. **Freeze the moxygen pin.** Set `MOXYGEN_REV` (and optionally `MOXYGEN_RELEASE_TAG`)
+   in [`cmake/dependencies.cmake`](/cmake/dependencies.cmake) to the commit your
+   demo runs against — a `v*`-tagged moxygen rev, per the note above, not
+   necessarily the current `main` value:
    ```bash
-   echo "v0.1.2" > .moxygen-release
-   git add .moxygen-release
-   git commit -m "release/<name>: pin moxygen v0.1.2"
+   # edit cmake/dependencies.cmake: MOXYGEN_REV "<sha>"
+   git commit -am "release/<name>: pin moxygen <sha>"
    git push origin release/<name>
    ```
 3. **Verify CI.** Push triggers `ci main`. Confirm `snapshot-<name>-latest` and `ghcr.io/openmoq/moqx:<name>-latest` were produced successfully.
@@ -81,15 +92,13 @@ To open a new demo / customer release branch:
 
 When a release branch needs to absorb fixes from `main`:
 
-1. Verify the moxygen tag you want to land on is already tagged (`vX.Y.Z`) and `main` builds against it cleanly. Pinning at a tag main has continuously CI-tested derisks the merge.
-2. Open a PR from a `devops/<branch>-vX.Y.Z` working branch into the release branch:
+1. Verify the moxygen commit you want to land on is one `main` has continuously CI-tested; pinning there derisks the merge.
+2. Open a PR from a `devops/<branch>-<sha>` working branch into the release branch:
    ```bash
-   git checkout -b devops/<release>-vX.Y.Z origin/release/<name>
-   git merge origin/main         # resolve .moxygen-release in favor of keeping
-   echo "vX.Y.Z" > .moxygen-release
-   git add .moxygen-release && git commit --amend --no-edit
-   git push origin devops/<release>-vX.Y.Z
-   gh pr create --base release/<name> --head devops/<release>-vX.Y.Z ...
+   git checkout -b devops/<release>-<sha> origin/release/<name>
+   git merge origin/main         # resolve cmake/dependencies.cmake to the intended MOXYGEN_REV
+   git push origin devops/<release>-<sha>
+   gh pr create --base release/<name> --head devops/<release>-<sha> ...
    ```
 3. **Use a merge commit (not squash)** when merging into a release branch — preserves the upstream commits' attribution and history on the release branch.
 4. (Recommended for first-time release branches) **dry-run** by pushing the merged commit as `release/<name>-test` first, watch a full `ci main` cycle end-to-end, then delete the throwaway branch + its `snapshot-<name>-test-latest` release + Docker tags before merging the real PR.
@@ -115,4 +124,4 @@ Inputs to `deploy relay` (all optional, branch-derived defaults):
 - `restart_only` — restart the existing image without redeploying
 - `verbose` — GLOG verbosity level
 
-See [ci-architecture.md](ci-architecture.md) for the underlying workflow details.
+See [ci-architecture.md](/docs/ci-architecture.md) for the underlying workflow details.
