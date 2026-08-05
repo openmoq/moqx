@@ -15,7 +15,7 @@ surfaced via:
 - **PR comments** — comparison table, optionally posted to a PR when a run sets
   the `pr` input (otherwise the same report lives in the step summary)
 
-Primary workflow: [`.github/workflows/perf-test.yml`](../.github/workflows/perf-test.yml)
+Primary workflow: [`.github/workflows/perf-test.yml`](/.github/workflows/perf-test.yml)
 
 ## Triggering
 
@@ -169,13 +169,13 @@ The workflow stages a Pages artifact (`perf-out/`) and deploys it with
 
 | File | Purpose |
 |------|---------|
-| `scripts/perf/perf-test-ci.sh` | CI orchestration (deploy, run, collect) |
-| `scripts/perf/perf-results-to-json.sh` | Parse client output → JSON |
-| `scripts/perf/perf-compare.py` | Regression detection + markdown |
-| `scripts/perf/perf-test.sh` | Underlying test runner (unchanged) |
-| `scripts/perf/perf-metrics.sh` | Prometheus metrics poller (unchanged) |
-| `.github/workflows/perf-test.yml` | Standalone perf workflow (run, compare, stage, deploy) |
-| `status/index.html` | Dashboard shell (copied to Pages artifact root) |
+| [`scripts/perf/perf-test-ci.sh`](/scripts/perf/perf-test-ci.sh) | CI orchestration (deploy, run, collect) |
+| [`scripts/perf/perf-results-to-json.sh`](/scripts/perf/perf-results-to-json.sh) | Parse client output → JSON |
+| [`scripts/perf/perf-compare.py`](/scripts/perf/perf-compare.py) | Regression detection + markdown |
+| [`scripts/perf/perf-test.sh`](/scripts/perf/perf-test.sh) | Underlying test runner |
+| [`scripts/perf/perf-metrics.sh`](/scripts/perf/perf-metrics.sh) | Prometheus metrics poller |
+| [`.github/workflows/perf-test.yml`](/.github/workflows/perf-test.yml) | Standalone perf workflow (run, compare, stage, deploy) |
+| [`status/index.html`](/status/index.html) | Dashboard shell (copied to Pages artifact root) |
 | `perf-out/perf/index.json` | Generated run manifest in Pages artifact |
 | `perf-out/perf/run-*.json` | Generated per-run result files |
 
