@@ -22,8 +22,10 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-BINARY="${1:-$REPO/build/moqx}"
-MOQBIN="${MOQBIN:-$REPO/.scratch/moxygen-install/bin}"
+BINARY="${1:-$REPO/build/default/moqx}"
+# shellcheck source=test_moqbin.sh
+source "$REPO/test/test_moqbin.sh"
+resolve_moqbin "$BINARY"
 # shellcheck source=test_ports.sh
 source "$REPO/test/test_ports.sh"
 # shellcheck source=test_versions.sh

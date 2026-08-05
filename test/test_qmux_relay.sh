@@ -10,8 +10,8 @@
 # QUIC/WebTransport. moqdateserver/moqtextclient have a real client-side
 # --qmux (makeRelayClientTransport TransportType::QMUX), so they're used here.
 #
-# moqdateserver/moqtextclient must be at:
-#   .scratch/moxygen-install/bin/  (relative to repo root)
+# moqdateserver/moqtextclient come from the moxygen install bin, resolved from
+# the build (MOQBIN overrides).
 #
 # Usage: bash test/test_qmux_relay.sh [path/to/moqx]
 
@@ -19,27 +19,27 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 # Explicit arg wins; otherwise pick the most recently built moqx, so a fresh
-# build-san/ is preferred over a stale build/ that may predate proxygen_qmux.
+# build/san is preferred over a stale build/default that may predate
+# proxygen_qmux.
 BINARY="${1:-}"
 if [[ -z "$BINARY" ]]; then
-  BINARY="$(ls -t "$REPO"/build*/moqx 2>/dev/null | head -1 || true)"
-  BINARY="${BINARY:-$REPO/build/moqx}"
+  BINARY="$(ls -t "$REPO"/build/*/moqx 2>/dev/null | head -1 || true)"
+  BINARY="${BINARY:-$REPO/build/default/moqx}"
 fi
-MOQBIN="${MOQBIN:-$REPO/.scratch/moxygen-install/bin}"
+# shellcheck source=test_moqbin.sh
+source "$REPO/test/test_moqbin.sh"
+resolve_moqbin "$BINARY"
 # shellcheck source=test_ports.sh
 source "$REPO/test/test_ports.sh"
 # shellcheck source=test_versions.sh
 source "$REPO/test/test_versions.sh"
 
-# Resolve a qmux-capable sample binary. Prefer MOQBIN's flat layout (the install
-# at .scratch/moxygen-install/bin); if that's a pre-qmux release, fall back to a
-# from-source build under .scratch/standalone-build*/moxygen/samples (e.g. the
-# asan build), where samples live in per-tool subdirs. Empty if none found.
-# $1 = binary name, $2 = samples subdir for the fallback layout.
+# Resolve a qmux-capable sample binary ($1 = name). Prefer MOQBIN; if that is a
+# pre-qmux release, fall back to a from-source install under .scratch. Empty if
+# neither has it.
 resolve_qmux_bin() {
-  local name="$1" sub="$2" cand
-  for cand in "$MOQBIN/$name" \
-              "$REPO"/.scratch/standalone-build*/moxygen/samples/"$sub/$name"; do
+  local name="$1" cand
+  for cand in "$MOQBIN/$name" "$REPO"/.scratch/moxygen-build*/moxygen-install/bin/"$name"; do
     if [[ -x "$cand" ]] && grep -q "qmux" <<<"$("$cand" --help 2>&1 || true)"; then
       echo "$cand"
       return
@@ -47,8 +47,8 @@ resolve_qmux_bin() {
   done
 }
 
-DATESERVER="$(resolve_qmux_bin moqdateserver date)"
-TEXTCLIENT="$(resolve_qmux_bin moqtextclient text-client)"
+DATESERVER="$(resolve_qmux_bin moqdateserver)"
+TEXTCLIENT="$(resolve_qmux_bin moqtextclient)"
 
 RELAY_PORT=$TEST_QMUX_RELAY_LISTEN
 ADMIN_PORT=$TEST_QMUX_RELAY_ADMIN

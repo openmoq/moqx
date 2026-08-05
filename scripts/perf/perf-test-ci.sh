@@ -14,7 +14,7 @@
 #
 # Usage: scripts/perf/perf-test-ci.sh [options]
 #   --binary PATH         Path to moqx binary (default: build/default/moqx)
-#   --moqbin PATH         Path to moxygen bin dir (default: .scratch/moxygen-install/bin)
+#   --moqbin PATH         Path to moxygen bin dir (default: the moxygen install bin (auto-detected from the build))
 #   --output PATH         Output JSON file (default: perf-results.json)
 #   --subscriber-max N    Max subscribers (default: 1000)
 #   --ramp N              Subscribers/sec (default: 100)
@@ -40,7 +40,6 @@ REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 
 # ── Defaults ───────────────────────────────────────────────────────────────────
 BINARY="${BINARY:-$REPO/build/default/moqx}"
-MOQBIN="${MOQBIN:-$REPO/.scratch/moxygen-install/bin}"
 OUTPUT="perf-results.json"
 SUBSCRIBER_MAX=1000
 RAMP=100
@@ -78,6 +77,16 @@ while [[ $# -gt 0 ]]; do
     *) echo "Unknown option: $1" >&2; exit 1 ;;
   esac
 done
+
+# moxygen sample-binary dir: --moqbin/env override, else the tool-paths file that
+# sits beside the relay. After the arg loop, so it follows a --binary pointing at
+# a different build rather than the default one.
+if [[ -z "${MOQBIN:-}" && -f "$(dirname "$BINARY")/moqx-tools.env" ]]; then
+  source "$(dirname "$BINARY")/moqx-tools.env"
+fi
+# Always leave MOQBIN set (possibly empty) so the binary checks below report a
+# clear not-found error instead of aborting under `set -u`.
+MOQBIN="${MOQBIN:-}"
 
 # ── Validation ─────────────────────────────────────────────────────────────────
 if [[ -z "$RELAY_HOST" ]]; then
