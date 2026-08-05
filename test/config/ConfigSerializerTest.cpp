@@ -89,7 +89,7 @@ static_assert(
     "UpstreamTlsConfig changed — update serializeUpstream()"
 );
 static_assert(
-    rfl::internal::num_fields<AdminConfig> == 2,
+    rfl::internal::num_fields<AdminConfig> == 5,
     "AdminConfig changed — update serializeConfig()"
 );
 static_assert(

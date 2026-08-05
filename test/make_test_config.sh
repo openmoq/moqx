@@ -52,6 +52,7 @@ services:
 admin:
   port: ${ADMIN_PORT}
   address: "::1"
+  track_metrics_enabled: true
 EOF
 
 if [[ -n "$CERT" ]]; then
