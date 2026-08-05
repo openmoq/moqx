@@ -15,17 +15,8 @@ get_filename_component(_top "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
 include(${_top}/cmake/CheckSystemDeps.cmake)
 
 # moqx is a separate CMake build, so the moxygen source needs one stable home
-# both can read. This must be the CACHE entry: CPM declares its own, which drops
-# a normal variable of the same name and switches the cache off.
-if(NOT DEFINED CACHE{CPM_SOURCE_CACHE} AND "$ENV{CPM_SOURCE_CACHE}" STREQUAL "")
-  if(NOT "$ENV{HOME}" STREQUAL "")
-    set(_cpm_cache "$ENV{HOME}/.cache/moqx/cpm")
-  else()
-    set(_cpm_cache "${CMAKE_BINARY_DIR}/cpm-cache")
-  endif()
-  set(CPM_SOURCE_CACHE "${_cpm_cache}" CACHE PATH
-      "Directory to download CPM dependencies")
-endif()
+# both can read — the shared root the moqx build resolves the same way.
+include(${_top}/cmake/DepsCache.cmake)
 
 include(${_top}/cmake/CPM.cmake)
 include(${_top}/cmake/dependencies.cmake)
