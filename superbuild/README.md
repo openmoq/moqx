@@ -28,4 +28,6 @@ cmake --build .scratch/moxygen-build   # -> .scratch/moxygen-build/moxygen-insta
 | `-DCPM_moxygen_SOURCE=/path` | build a local moxygen checkout |
 | `-DMOQX_MOXYGEN_BUILD_ALWAYS=ON` | rebuild on every build (local-checkout iteration) |
 | `-DMOQX_MOXYGEN_PROFILE=san\|tsan` | build an instrumented moxygen (matches moqx's sanitizer presets) |
-| `-DBOOST_USE_STATIC_LIBS=ON\|OFF` | override the static/shared Boost probe |
+| `-DBOOST_USE_STATIC_LIBS=auto\|on\|off` | override the static/shared Boost probe (`auto` = probe, the default) |
+
+Each knob also reads the same-named env var.
