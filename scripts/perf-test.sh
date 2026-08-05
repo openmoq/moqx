@@ -6,7 +6,7 @@
 # processes are always saved to /tmp/moqx-perf-<timestamp>/.
 #
 # Usage: scripts/perf-test.sh [options]
-#   --relay PATH           Path to moqx binary (default: build/moqx)
+#   --relay PATH           Path to moqx binary (default: build/default/moqx)
 #   --moqbin PATH          Path to moxygen bin dir
 #                          (default: .scratch/moxygen-install/bin)
 #   -s, --subscriber-max N Max total subscribers (default: 500)
@@ -59,7 +59,7 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 
 # ── Defaults ───────────────────────────────────────────────────────────────────
-BINARY="${RELAY:-$REPO/build/moqx}"
+BINARY="${RELAY:-$REPO/build/default/moqx}"
 MOQBIN="${MOQBIN:-$REPO/.scratch/moxygen-install/bin}"
 SUBSCRIBER_MAX=500
 RAMP=100

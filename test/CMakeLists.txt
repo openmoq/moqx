@@ -75,23 +75,6 @@ target_link_libraries(moqx_config_test PRIVATE
 target_compile_definitions(moqx_config_test PRIVATE
   CONFIG_EXAMPLE_PATH="${PROJECT_SOURCE_DIR}/config.example.yaml"
 )
-if(NOT GFLAGS_SHARED)
-  # Force gflags's DEFINE_FLAG-registered .o files into the binary, even
-  # though the test code doesn't reference gflags symbols directly. Cross-
-  # platform raw linker flags — works with cmake 3.22, unlike the
-  # $<LINK_LIBRARY:WHOLE_ARCHIVE,...> genex which needs cmake 3.24+.
-  if(APPLE)
-    target_link_libraries(moqx_config_test PRIVATE
-      "-Wl,-force_load,$<TARGET_FILE:gflags_nothreads_static>"
-    )
-  else()
-    target_link_libraries(moqx_config_test PRIVATE
-      "-Wl,--whole-archive"
-      gflags_nothreads_static
-      "-Wl,--no-whole-archive"
-    )
-  endif()
-endif()
 gtest_discover_tests(moqx_config_test)
 
 add_executable(moqx_config_resolver_test
@@ -103,19 +86,6 @@ target_link_libraries(moqx_config_resolver_test PRIVATE
   GTest::gtest_main
   GTest::gmock
 )
-if(NOT GFLAGS_SHARED)
-  if(APPLE)
-    target_link_libraries(moqx_config_resolver_test PRIVATE
-      "-Wl,-force_load,$<TARGET_FILE:gflags_nothreads_static>"
-    )
-  else()
-    target_link_libraries(moqx_config_resolver_test PRIVATE
-      "-Wl,--whole-archive"
-      gflags_nothreads_static
-      "-Wl,--no-whole-archive"
-    )
-  endif()
-endif()
 gtest_discover_tests(moqx_config_resolver_test)
 
 add_executable(moqx_config_serializer_test
@@ -137,19 +107,6 @@ target_link_libraries(moqx_pkcs12_test PRIVATE
   GTest::gtest_main
   GTest::gmock
 )
-if(NOT GFLAGS_SHARED)
-  if(APPLE)
-    target_link_libraries(moqx_pkcs12_test PRIVATE
-      "-Wl,-force_load,$<TARGET_FILE:gflags_nothreads_static>"
-    )
-  else()
-    target_link_libraries(moqx_pkcs12_test PRIVATE
-      "-Wl,--whole-archive"
-      gflags_nothreads_static
-      "-Wl,--no-whole-archive"
-    )
-  endif()
-endif()
 gtest_discover_tests(moqx_pkcs12_test)
 
 add_executable(moqx_bounded_histogram_test
@@ -328,7 +285,7 @@ add_test(
 )
 set_tests_properties(relay_chain PROPERTIES
   TIMEOUT 120
-  ENVIRONMENT "MOQBIN=${PROJECT_SOURCE_DIR}/.scratch/moxygen-install/bin"
+  ENVIRONMENT "MOQBIN=${MOXYGEN_BIN_DIR}"
 )
 
 add_test(
@@ -338,7 +295,7 @@ add_test(
 set_tests_properties(qmux_relay PROPERTIES
   TIMEOUT 60
   SKIP_RETURN_CODE 77
-  ENVIRONMENT "MOQBIN=${PROJECT_SOURCE_DIR}/.scratch/moxygen-install/bin"
+  ENVIRONMENT "MOQBIN=${MOXYGEN_BIN_DIR}"
 )
 
 add_test(
@@ -368,6 +325,9 @@ add_test(
 add_test(
   NAME admin_cache_purge_concurrency_test
   COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_admin_cache_purge_race.sh $<TARGET_FILE:moqx>
+)
+set_tests_properties(admin_cache_purge_concurrency_test PROPERTIES
+  ENVIRONMENT "MOQBIN=${MOXYGEN_BIN_DIR}"
 )
 
 add_executable(moqx_upstream_provider_test
