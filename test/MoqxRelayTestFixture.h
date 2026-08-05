@@ -59,7 +59,10 @@ inline const TrackNamespace kTestNamespace{{"test", "namespace"}};
 inline const TrackNamespace kAllowedPrefix{{"test"}};
 inline const FullTrackName kTestTrackName{kTestNamespace, "track1"};
 
-// TestMoQExecutor that can be driven for tests
+// TestMoQExecutor that can be driven for tests.
+// Compiles with a -Winaccessible-base warning: folly::Executor is reached both
+// virtually (DrivableExecutor) and non-virtually (moxygen's MoQExecutor), so it
+// is ambiguous here. Nothing upcasts to Executor; the fix belongs in moxygen.
 class TestMoQExecutor : public MoQFollyExecutorImpl, public folly::DrivableExecutor {
 public:
   explicit TestMoQExecutor();
