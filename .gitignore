@@ -20,9 +20,9 @@ DartConfiguration.tcl
 # CPack
 _CPack_Packages/
 
-# Dependency scratch dirs
+# Local dependency staging: /.scratch/ holds the from-source superbuild's
+# moxygen install.
 /.scratch/
-/.docker-deps/
 
 # OS
 .DS_Store
