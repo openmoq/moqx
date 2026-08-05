@@ -13,7 +13,7 @@
 #   PERF_ADMIN_PORT       — Relay admin port (default: 19701)
 #
 # Usage: scripts/perf-test-ci.sh [options]
-#   --binary PATH         Path to moqx binary (default: build/moqx)
+#   --binary PATH         Path to moqx binary (default: build/default/moqx)
 #   --moqbin PATH         Path to moxygen bin dir (default: .scratch/moxygen-install/bin)
 #   --output PATH         Output JSON file (default: perf-results.json)
 #   --subscriber-max N    Max subscribers (default: 1000)
@@ -39,7 +39,7 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 
 # ── Defaults ───────────────────────────────────────────────────────────────────
-BINARY="${BINARY:-$REPO/build/moqx}"
+BINARY="${BINARY:-$REPO/build/default/moqx}"
 MOQBIN="${MOQBIN:-$REPO/.scratch/moxygen-install/bin}"
 OUTPUT="perf-results.json"
 SUBSCRIBER_MAX=1000
