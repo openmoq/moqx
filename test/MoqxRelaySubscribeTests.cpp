@@ -204,4 +204,202 @@ TEST_P(MoQRelayTest, FirstSubscriberViaUpstreamSubscribeReceivesData) {
   driveIfMultiThread();
 }
 
+// Regression: a second subscriber that arrives while a first subscriber's upstream
+// SUBSCRIBE is still in flight must observe the upstream-seeded largest. In
+// LocalForwarderMT the second takes the acquireLocalForwarder isNew=false fast path
+// and, without a readiness gate, reads the not-yet-seeded localFwd largest (empty).
+// ST/MT wait on the registry promise and were already correct, so this passes in
+// every mode and regresses only LF.
+TEST_P(MoQRelayTest, SubsequentSubscriberWaitsForUpstreamLargestSeeding) {
+  auto publisherSession = createMockSession();
+  auto subSession1 = createMockSession();
+  auto subSession2 = createMockSession();
+
+  doPublishNamespace(publisherSession, kTestNamespace);
+
+  const AbsoluteLocation kLargest{3, 0};
+  SubscribeOk upstreamOk;
+  upstreamOk.requestID = RequestID(1);
+  upstreamOk.trackAlias = TrackAlias(1);
+  upstreamOk.expires = std::chrono::milliseconds(0);
+  upstreamOk.groupOrder = GroupOrder::OldestFirst;
+  upstreamOk.largest = kLargest;
+
+  // Hold the upstream SUBSCRIBE in flight so the second subscriber races in while the
+  // first subscriber's largest is still unseeded.
+  folly::coro::Baton upstreamGate;
+  std::atomic<bool> upstreamSubscribeCalled{false};
+  std::shared_ptr<TrackConsumer> upstreamConsumer;
+  EXPECT_CALL(*publisherSession, subscribe(_, _))
+      .WillOnce(
+          [&](const SubscribeRequest&, std::shared_ptr<TrackConsumer> consumer
+          ) -> folly::coro::Task<Publisher::SubscribeResult> {
+            upstreamConsumer = std::move(consumer);
+            upstreamSubscribeCalled.store(true);
+            co_await upstreamGate;
+            auto handle = std::make_shared<NiceMock<MockSubscriptionHandle>>(upstreamOk);
+            co_return folly::Expected<std::shared_ptr<SubscriptionHandle>, SubscribeError>(handle);
+          }
+      );
+
+  // driveUntil caps SingleThread at one loopOnce; pump explicitly so the synchronous
+  // cascades complete in every mode.
+  auto pump = [&](auto pred) {
+    for (int i = 0; i < 1000 && !pred(); ++i) {
+      exec_->drive();
+    }
+    return pred();
+  };
+  auto launchSubscribe = [&](std::shared_ptr<MoQSession> session,
+                             std::shared_ptr<TrackConsumer> consumer,
+                             RequestID requestID,
+                             std::shared_ptr<std::optional<Publisher::SubscribeResult>> out) {
+    withSessionContext(session, [&]() {
+      SubscribeRequest sub;
+      sub.fullTrackName = kTestTrackName;
+      sub.requestID = requestID;
+      sub.locType = LocationType::LargestObject;
+      auto task = publisherInterface()->subscribe(std::move(sub), std::move(consumer));
+      co_withExecutor(
+          static_cast<folly::DrivableExecutor*>(exec_.get()),
+          folly::coro::co_invoke([t = std::move(task), out]() mutable -> folly::coro::Task<void> {
+            *out = co_await std::move(t);
+          })
+      ).start();
+    });
+  };
+
+  // First subscriber: creates the shared localFwd in acquireLocalForwarder, then
+  // suspends inside the gated upstream SUBSCRIBE.
+  auto firstResult = std::make_shared<std::optional<Publisher::SubscribeResult>>();
+  launchSubscribe(subSession1, createMockConsumer(), RequestID(0), firstResult);
+  ASSERT_TRUE(pump([&] { return upstreamSubscribeCalled.load(); }))
+      << "relay should issue an upstream subscribe and suspend in it";
+
+  // Second subscriber, while the first's seeding is still pending. Drive it to its
+  // steady state (LF without the gate attaches immediately; ST/MT/LF-with-gate wait)
+  // before releasing the upstream OK, so a captured result reflects the race.
+  auto secondResult = std::make_shared<std::optional<Publisher::SubscribeResult>>();
+  launchSubscribe(subSession2, createMockConsumer(), RequestID(2), secondResult);
+  for (int i = 0; i < 200; ++i) {
+    exec_->drive();
+  }
+
+  upstreamGate.post();
+  ASSERT_TRUE(pump([&] { return firstResult->has_value() && secondResult->has_value(); }));
+
+  ASSERT_TRUE(firstResult->value().hasValue());
+  EXPECT_EQ(firstResult->value().value()->subscribeOk().largest, kLargest);
+  ASSERT_TRUE(secondResult->value().hasValue());
+  EXPECT_EQ(secondResult->value().value()->subscribeOk().largest, kLargest)
+      << "subsequent subscriber must observe the upstream-seeded largest, not a "
+         "pre-seeding value";
+
+  // Track the handles so cleanupMockSession tears down the subscriptions (else the
+  // held consumers/sessions leak as unverified mocks at exit).
+  getOrCreateMockState(subSession1)->subscribeHandles.push_back(firstResult->value().value());
+  getOrCreateMockState(subSession2)->subscribeHandles.push_back(secondResult->value().value());
+
+  removeSession(publisherSession);
+  removeSession(subSession1);
+  removeSession(subSession2);
+  driveIfMultiThread();
+}
+
+// Regression: when the first subscriber's upstream SUBSCRIBE *fails*, a second
+// subscriber that raced in behind it must fail too. In LocalForwarderMT the second took
+// the isNew=false path and awaited the ready gate, which the first fulfills with
+// setValue() on every exit — including failure. The second then attached to a localFwd
+// that setup had already removed from the registry and that has no upstream, so it got a
+// SUBSCRIBE_OK for a track that can never deliver an object.
+TEST_P(MoQRelayTest, SubsequentSubscriberFailsWhenUpstreamSubscribeFails) {
+  auto publisherSession = createMockSession();
+  auto subSession1 = createMockSession();
+  auto subSession2 = createMockSession();
+
+  doPublishNamespace(publisherSession, kTestNamespace);
+
+  // Hold the upstream SUBSCRIBE in flight so the second subscriber races in, then reject
+  // it — the first subscriber's setup fails after the second is already waiting.
+  folly::coro::Baton upstreamGate;
+  std::atomic<bool> upstreamSubscribeCalled{false};
+  EXPECT_CALL(*publisherSession, subscribe(_, _))
+      .WillOnce(
+          [&](const SubscribeRequest&,
+              std::shared_ptr<TrackConsumer>) -> folly::coro::Task<Publisher::SubscribeResult> {
+            upstreamSubscribeCalled.store(true);
+            co_await upstreamGate;
+            co_return folly::makeUnexpected(SubscribeError{
+                RequestID(0),
+                SubscribeErrorCode::INTERNAL_ERROR,
+                "upstream rejected"
+            });
+          }
+      );
+
+  auto pump = [&](auto pred) {
+    for (int i = 0; i < 1000 && !pred(); ++i) {
+      exec_->drive();
+    }
+    return pred();
+  };
+  auto launchSubscribe = [&](std::shared_ptr<MoQSession> session,
+                             std::shared_ptr<TrackConsumer> consumer,
+                             RequestID requestID,
+                             std::shared_ptr<std::optional<Publisher::SubscribeResult>> out) {
+    withSessionContext(session, [&]() {
+      SubscribeRequest sub;
+      sub.fullTrackName = kTestTrackName;
+      sub.requestID = requestID;
+      sub.locType = LocationType::LargestObject;
+      auto task = publisherInterface()->subscribe(std::move(sub), std::move(consumer));
+      // ST/MT signal first-subscriber failure by throwing out of the SubsequentSubscriber
+      // task; normalize to an error result so both shapes are comparable.
+      co_withExecutor(
+          static_cast<folly::DrivableExecutor*>(exec_.get()),
+          folly::coro::co_invoke([t = std::move(task), out]() mutable -> folly::coro::Task<void> {
+            try {
+              *out = co_await std::move(t);
+            } catch (const std::exception& e) {
+              *out = folly::makeUnexpected(
+                  SubscribeError{RequestID(0), SubscribeErrorCode::INTERNAL_ERROR, e.what()}
+              );
+            }
+          })
+      ).start();
+    });
+  };
+
+  auto firstResult = std::make_shared<std::optional<Publisher::SubscribeResult>>();
+  launchSubscribe(subSession1, createMockConsumer(), RequestID(0), firstResult);
+  ASSERT_TRUE(pump([&] { return upstreamSubscribeCalled.load(); }))
+      << "relay should issue an upstream subscribe and suspend in it";
+
+  // Second subscriber, parked on the ready gate while the first is still in flight.
+  auto secondResult = std::make_shared<std::optional<Publisher::SubscribeResult>>();
+  launchSubscribe(subSession2, createMockConsumer(), RequestID(2), secondResult);
+  for (int i = 0; i < 200; ++i) {
+    exec_->drive();
+  }
+
+  upstreamGate.post();
+  ASSERT_TRUE(pump([&] { return firstResult->has_value() && secondResult->has_value(); }));
+
+  EXPECT_FALSE(firstResult->value().hasValue()) << "upstream rejected the subscribe";
+  EXPECT_FALSE(secondResult->value().hasValue())
+      << "a subscriber released by a FAILED setup must get an error, not a SUBSCRIBE_OK "
+         "for a forwarder with no upstream";
+
+  if (firstResult->value().hasValue()) {
+    getOrCreateMockState(subSession1)->subscribeHandles.push_back(firstResult->value().value());
+  }
+  if (secondResult->value().hasValue()) {
+    getOrCreateMockState(subSession2)->subscribeHandles.push_back(secondResult->value().value());
+  }
+
+  removeSession(publisherSession);
+  removeSession(subSession1);
+  removeSession(subSession2);
+  driveIfMultiThread();
+}
 } // namespace openmoq::moqx::test
