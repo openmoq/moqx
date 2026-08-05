@@ -48,14 +48,16 @@ option(MOQX_ENABLE_BPF_STEERING
   "Attach a classic BPF reuseport filter to steer QUIC packets to the correct worker (Linux only)"
   ${_moqx_bpf_default})
 
+include(cmake/SanitizerFlags.cmake)
+
 if(MOQX_ENABLE_SANITIZERS AND NOT CMAKE_BUILD_TYPE STREQUAL "Release")
-  add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
-  add_link_options(-fsanitize=address,undefined)
+  add_compile_options(${MOQX_ASAN_FLAGS})
+  add_link_options(${MOQX_ASAN_FLAGS})
 endif()
 
 if(MOQX_ENABLE_TSAN AND NOT CMAKE_BUILD_TYPE STREQUAL "Release")
-  add_compile_options(-fsanitize=thread -fno-omit-frame-pointer)
-  add_link_options(-fsanitize=thread)
+  add_compile_options(${MOQX_TSAN_FLAGS})
+  add_link_options(${MOQX_TSAN_FLAGS})
 endif()
 
 include(cmake/CheckSystemDeps.cmake)
