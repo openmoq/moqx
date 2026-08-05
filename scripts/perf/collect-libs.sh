@@ -2,7 +2,7 @@
 # collect-libs.sh — Extract all shared library dependencies from a binary
 # and optionally copy them to a destination directory.
 #
-# Usage: scripts/collect-libs.sh <binary_path> [dest_dir]
+# Usage: scripts/perf/collect-libs.sh <binary_path> [dest_dir]
 #   binary_path  Path to the binary to analyze
 #   dest_dir     (Optional) Directory to copy libs to
 

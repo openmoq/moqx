@@ -2,7 +2,7 @@
 #
 # sync-relay.sh - Sync MoqxRelay from deps/moxygen/moxygen/relay/
 #
-# Usage: scripts/sync-relay.sh [--no-build] [--no-test]
+# Usage: scripts/dev/sync-relay.sh [--no-build] [--no-test]
 #
 # Transforms:
 #   MoQRelay.h            -> include/moqx/MoqxRelay.h
@@ -18,7 +18,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 MOXYGEN_RELAY="${REPO_ROOT}/deps/moxygen/moxygen/relay"
 
 NO_BUILD=false
@@ -211,7 +211,7 @@ echo "--> Formatting"
 # ─────────────────────────────────────────────────────────────────────────────
 if ! ${NO_BUILD}; then
   echo "--> Building"
-  "${SCRIPT_DIR}/build.sh"
+  "${SCRIPT_DIR}/../build.sh"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -219,7 +219,7 @@ fi
 # ─────────────────────────────────────────────────────────────────────────────
 if ! ${NO_TEST}; then
   echo "--> Testing"
-  "${SCRIPT_DIR}/test.sh"
+  "${SCRIPT_DIR}/../test.sh"
 fi
 
 echo "==> Done"

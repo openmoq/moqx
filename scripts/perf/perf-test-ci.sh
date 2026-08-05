@@ -12,7 +12,7 @@
 #   PERF_RELAY_PORT       — Relay QUIC port (default: 4433)
 #   PERF_ADMIN_PORT       — Relay admin port (default: 19701)
 #
-# Usage: scripts/perf-test-ci.sh [options]
+# Usage: scripts/perf/perf-test-ci.sh [options]
 #   --binary PATH         Path to moqx binary (default: build/default/moqx)
 #   --moqbin PATH         Path to moxygen bin dir (default: .scratch/moxygen-install/bin)
 #   --output PATH         Output JSON file (default: perf-results.json)
@@ -31,12 +31,12 @@
 #                         excluding teardown noise (default: 5)
 #
 # The relay config is rendered on the relay VM by scripts/moqx-run.sh from
-# scripts/config.bench.yaml — the SAME path scripts/perf-test.sh uses — so the
+# scripts/perf/config.bench.yaml — the SAME path scripts/perf/perf-test.sh uses — so the
 # two harnesses stay in lockstep and CI trend data can't silently drift.
 
 set -euo pipefail
 
-REPO="$(cd "$(dirname "$0")/.." && pwd)"
+REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 
 # ── Defaults ───────────────────────────────────────────────────────────────────
 BINARY="${BINARY:-$REPO/build/default/moqx}"
@@ -104,7 +104,7 @@ MOQTEST_SERVER="$MOQBIN/moqtest_server"
 MOQPERF_CLIENT="$MOQBIN/moqperf_test_client"
 
 RELAY_RUN_SCRIPT="$REPO/scripts/moqx-run.sh"
-RELAY_CONFIG_TEMPLATE="$REPO/scripts/config.bench.yaml"
+RELAY_CONFIG_TEMPLATE="$REPO/scripts/perf/config.bench.yaml"
 
 for f in "$BINARY" "$MOQTEST_SERVER" "$MOQPERF_CLIENT" "$RELAY_RUN_SCRIPT" "$RELAY_CONFIG_TEMPLATE"; do
   if [[ ! -f "$f" ]]; then
@@ -116,9 +116,9 @@ done
 echo "Collecting shared library dependencies..."
 LOCAL_LIBDIR="/tmp/moqx-perf-libs-$$"
 mkdir -p "$LOCAL_LIBDIR"
-bash "$REPO/scripts/collect-libs.sh" "$BINARY" "$LOCAL_LIBDIR" > /dev/null
-bash "$REPO/scripts/collect-libs.sh" "$MOQTEST_SERVER" "$LOCAL_LIBDIR" > /dev/null
-bash "$REPO/scripts/collect-libs.sh" "$MOQPERF_CLIENT" "$LOCAL_LIBDIR" > /dev/null
+bash "$REPO/scripts/perf/collect-libs.sh" "$BINARY" "$LOCAL_LIBDIR" > /dev/null
+bash "$REPO/scripts/perf/collect-libs.sh" "$MOQTEST_SERVER" "$LOCAL_LIBDIR" > /dev/null
+bash "$REPO/scripts/perf/collect-libs.sh" "$MOQPERF_CLIENT" "$LOCAL_LIBDIR" > /dev/null
 echo "Libraries collected: $(ls $LOCAL_LIBDIR/*.so* 2>/dev/null | wc -l) files"
 
 # ── Git metadata ───────────────────────────────────────────────────────────────
@@ -155,7 +155,7 @@ echo "Deploying binaries..."
 rsync -az -e "ssh ${SSH_OPTS[*]}" "$BINARY" "${RELAY_HOST}:${REMOTE_DIR}/moqx"
 rsync -az -e "ssh ${SSH_OPTS[*]}" "$MOQTEST_SERVER" "${RELAY_HOST}:${REMOTE_DIR}/moqtest_server"
 rsync -az -e "ssh ${SSH_OPTS[*]}" "$MOQPERF_CLIENT" "${CLIENT_HOST}:${REMOTE_DIR}/moqperf_test_client"
-rsync -az -e "ssh ${SSH_OPTS[*]}" "$REPO/scripts/perf-metrics.sh" "${RELAY_HOST}:${REMOTE_DIR}/perf-metrics.sh"
+rsync -az -e "ssh ${SSH_OPTS[*]}" "$REPO/scripts/perf/perf-metrics.sh" "${RELAY_HOST}:${REMOTE_DIR}/perf-metrics.sh"
 rsync -az -e "ssh ${SSH_OPTS[*]}" "$RELAY_RUN_SCRIPT" "${RELAY_HOST}:${REMOTE_DIR}/moqx-run.sh"
 rsync -az -e "ssh ${SSH_OPTS[*]}" "$RELAY_CONFIG_TEMPLATE" "${RELAY_HOST}:${REMOTE_DIR}/config.bench.yaml"
 rsync -az -e "ssh ${SSH_OPTS[*]}" "$LOCAL_LIBDIR/" "${RELAY_HOST}:${REMOTE_DIR}/lib/"
@@ -176,7 +176,7 @@ cleanup() {
 trap cleanup EXIT
 
 # ── Start relay (via moqx-run.sh + config.bench.yaml on the relay VM) ──────────
-# Mirrors scripts/perf-test.sh's relay launch so both harnesses share identical
+# Mirrors scripts/perf/perf-test.sh's relay launch so both harnesses share identical
 # tuning (thread count, flow control, UDP buffer, bbr2, GSO, recv batch). This
 # is what makes --io-threads actually take effect and stops CI trend drift.
 echo "Starting relay on $RELAY_HOST (io_threads=$IO_THREADS)..."
@@ -340,7 +340,7 @@ NET_THROUGHPUT=$(metrics_col_avg "ext_Mbps" "%.1f")
 
 # ── Parse results and generate JSON ──────────────────────────────────────────
 echo "Generating results JSON..."
-bash "$REPO/scripts/perf-results-to-json.sh" \
+bash "$REPO/scripts/perf/perf-results-to-json.sh" \
   --client-output /tmp/perf-client-output.txt \
   --metrics-log /tmp/perf-metrics.log \
   --commit "$COMMIT_SHA" \
