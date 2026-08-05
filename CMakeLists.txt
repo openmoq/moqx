@@ -217,6 +217,15 @@ CPMAddPackage(
     "CATAPULT_ENABLE_JSON OFF"
 )
 
+# Strict warnings for first-party code; linked PRIVATE per target so nothing
+# propagates to consumers.
+# -Wmissing-field-initializers off: GCC fires it on C++20 designated initializers
+# that omit members carrying default member initializers — the idiom throughout
+# src/ and test/, and correct. Clang does not warn there.
+add_library(moqx_warnings INTERFACE)
+target_compile_options(moqx_warnings INTERFACE
+  -Wall -Wextra -Wpedantic -Wno-missing-field-initializers)
+
 # --- Cache library (forked from moxygen) ---
 
 add_library(moqx_cache STATIC
@@ -239,7 +248,7 @@ target_link_libraries(moqx_cache PUBLIC
   Folly::folly_logging_logging
 )
 
-target_compile_options(moqx_cache PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(moqx_cache PRIVATE moqx_warnings)
 
 # --- HMAC key derivation (shared by the relay's verifier and the issuer) ---
 
@@ -254,7 +263,7 @@ target_include_directories(moqx_hmac_key
 
 target_link_libraries(moqx_hmac_key PUBLIC OpenSSL::Crypto)
 
-target_compile_options(moqx_hmac_key PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(moqx_hmac_key PRIVATE moqx_warnings)
 
 # --- Core library ---
 
@@ -319,7 +328,7 @@ target_link_libraries(moqx_core PUBLIC
   mvfst::mvfst_logging_file_qlogger
 )
 
-target_compile_options(moqx_core PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(moqx_core PRIVATE moqx_warnings)
 # PUBLIC so dependents can include moqx/Version.h.
 target_link_libraries(moqx_core PUBLIC moqx_version)
 
@@ -339,9 +348,8 @@ target_link_libraries(moqx_config INTERFACE
 )
 
 # --- Config loader (YAML parsing + validation + resolution + init) ---
-# Application-level: ParsedConfig rfl structs, loadConfig(), resolveConfig(),
-# handleConfigSubcommand(). Links rfl/yaml-cpp; consumers that only need
-# resolved Config types can depend on moqx_config alone.
+# Pulls in rfl/yaml-cpp. Consumers that only need the resolved Config types can
+# depend on moqx_config alone.
 
 add_library(moqx_config_loader STATIC
   src/config/Loader.cpp
@@ -369,7 +377,7 @@ target_link_libraries(moqx_config_loader PRIVATE
   Folly::folly_ssl_openssl_cert_utils
 )
 
-target_compile_options(moqx_config_loader PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(moqx_config_loader PRIVATE moqx_warnings)
 
 # --- Main executable ---
 
@@ -405,7 +413,7 @@ target_link_libraries(moqx_issuer_lib PUBLIC
   moxygen::moxygen_moq_types
 )
 
-target_compile_options(moqx_issuer_lib PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(moqx_issuer_lib PRIVATE moqx_warnings)
 
 # --- Standalone moqx-issuer CLI ---
 
@@ -422,7 +430,7 @@ target_link_libraries(moqx-issuer PRIVATE
   gflags
 )
 
-target_compile_options(moqx-issuer PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(moqx-issuer PRIVATE moqx_warnings)
 
 # --- Tests ---
 

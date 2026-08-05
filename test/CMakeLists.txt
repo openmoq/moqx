@@ -3,10 +3,11 @@ include(GoogleTest)
 
 # moqx_add_gtest(<name> SRCS <sources...> LIBS <link targets...>)
 # Per-test extras (compile definitions, include dirs) go on <name> after the call.
+# moqx_warnings comes with it: test code is first-party code.
 function(moqx_add_gtest name)
   cmake_parse_arguments(ARG "" "" "SRCS;LIBS" ${ARGN})
   add_executable(${name} ${ARG_SRCS})
-  target_link_libraries(${name} PRIVATE ${ARG_LIBS})
+  target_link_libraries(${name} PRIVATE ${ARG_LIBS} moqx_warnings)
   gtest_discover_tests(${name})
 endfunction()
 
@@ -16,27 +17,36 @@ add_library(moqx_test_utils STATIC
 target_include_directories(moqx_test_utils PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}
 )
-target_link_libraries(moqx_test_utils PUBLIC
-  Folly::folly_io_iobuf
-  Folly::folly_random
+target_link_libraries(moqx_test_utils
+  PUBLIC
+    Folly::folly_io_iobuf
+    Folly::folly_random
+  PRIVATE
+    moqx_warnings
 )
 
 add_library(moqx_test_main STATIC
   TestMain.cpp
 )
-target_link_libraries(moqx_test_main PUBLIC
-  Folly::folly_init_init
-  GTest::gtest
+target_link_libraries(moqx_test_main
+  PUBLIC
+    Folly::folly_init_init
+    GTest::gtest
+  PRIVATE
+    moqx_warnings
 )
 
 add_library(moqx_test_fixture STATIC
   MoqxRelayTestFixture.cpp
 )
-target_link_libraries(moqx_test_fixture PUBLIC
-  moqx_core
-  moqx_test_utils
-  GTest::gmock
-  moxygen::moxygen_events_moq_folly_executor_impl
+target_link_libraries(moqx_test_fixture
+  PUBLIC
+    moqx_core
+    moqx_test_utils
+    GTest::gmock
+    moxygen::moxygen_events_moq_folly_executor_impl
+  PRIVATE
+    moqx_warnings
 )
 
 moqx_add_gtest(moqx_relay_test
@@ -285,7 +295,4 @@ moqx_add_gtest(moqx_cache_test
     GTest::gmock
     Folly::folly_coro_gtest_helpers
     Folly::folly_io_async_scoped_event_base_thread
-)
-target_compile_options(moqx_cache_test PRIVATE
-  -Wall -Wextra -Wpedantic
 )
