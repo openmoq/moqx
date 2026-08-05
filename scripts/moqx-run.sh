@@ -2,7 +2,7 @@
 # Local moqx CLI launcher for bench/scaling runs.
 #
 # Resolves the ${MOQX_*}/${DOMAIN} placeholders in a config template
-# (default scripts/config.bench.yaml) from CLI flags > .env > built-in
+# (default scripts/perf/config.bench.yaml) from CLI flags > .env > built-in
 # defaults, then serves the resolved config. Reads a local .env if present.
 set -euo pipefail
 
@@ -54,7 +54,7 @@ Listener (templated into the config; CLI > .env > default):
 
 Targeting:
       --subcmd CMD          moqx subcommand (default: serve)
-      --config FILE         config YAML template (default: scripts/config.bench.yaml)
+      --config FILE         config YAML template (default: scripts/perf/config.bench.yaml)
       --env FILE            alternate .env file (default: scripts/.env if present)
       --bin FILE            moqx binary path (default: <project>/build/default/moqx)
 
@@ -208,7 +208,7 @@ fi
 
 # ── Paths (CLI > env > defaults) ─────────────────────────────────────────
 MOQX_BIN="${CLI_BIN:-${MOQX_BIN:-$PROJECT_ROOT/build/default/moqx}}"
-CONFIG_TEMPLATE="${CLI_CONFIG:-${MOQX_CONFIG:-$SCRIPT_DIR/config.bench.yaml}}"
+CONFIG_TEMPLATE="${CLI_CONFIG:-${MOQX_CONFIG:-$SCRIPT_DIR/perf/config.bench.yaml}}"
 
 [[ -x "$MOQX_BIN" ]]        || { echo "moqx binary not found: $MOQX_BIN" >&2; exit 1; }
 [[ -f "$CONFIG_TEMPLATE" ]] || { echo "config not found: $CONFIG_TEMPLATE" >&2; exit 1; }

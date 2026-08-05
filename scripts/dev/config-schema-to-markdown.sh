@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Generate markdown config reference from moqx JSON schema on stdin.
-# Usage: moqx dump-config-schema | scripts/gen-config-reference.sh
+# Usage: moqx dump-config-schema | scripts/dev/config-schema-to-markdown.sh
 set -euo pipefail
 
 if ! command -v jq &>/dev/null; then

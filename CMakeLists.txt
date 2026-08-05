@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# scripts/lint.sh reads compile_commands.json from the build dir.
+# scripts/dev/lint.sh reads compile_commands.json from the build dir.
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Route the compiler through ccache when it is installed, without a toolchain edit.

@@ -153,9 +153,9 @@ build.sh test [--build-dir DIR] [-- CTEST_ARGS...]
 CI requires clang-format-19. Check before pushing:
 
 ```bash
-./scripts/format.sh --check    # verify (dry-run)
-./scripts/format.sh            # fix in-place
-./scripts/lint.sh build        # clang-tidy (requires prior build)
+./scripts/dev/format.sh --check    # verify (dry-run)
+./scripts/dev/format.sh        # fix in-place
+./scripts/dev/lint.sh build        # clang-tidy (requires prior build)
 ```
 
 ## PR Process
