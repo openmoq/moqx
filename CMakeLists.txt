@@ -159,8 +159,10 @@ add_library(moqx_core STATIC
   src/admin/CachePurgeHandler.cpp
   src/admin/ConfigHandler.cpp
   src/admin/MetricsHandler.cpp
+  src/admin/TrackMetricsHandler.cpp
   src/admin/StateHandler.cpp
   src/stats/StatsRegistry.cpp
+  src/stats/TrackStatsRegistry.cpp
   src/stats/MoQStatsCollector.cpp
   src/stats/PicoQuicStatsCollector.cpp
   src/stats/QuicStatsCollector.cpp
@@ -169,6 +171,7 @@ add_library(moqx_core STATIC
   src/SafeTrackName.cpp
   src/relay/AuthFilters.cpp
   src/relay/TopNFilter.cpp
+  src/relay/TrackStatsFilter.cpp
   src/relay/PropertyRanking.cpp
   src/relay/CrossExecFilter.cpp
   src/relay/CrossExecForwarderCallback.cpp

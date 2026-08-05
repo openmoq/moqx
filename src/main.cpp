@@ -12,6 +12,7 @@
 #include "admin/ConfigHandler.h"
 #include "admin/MetricsHandler.h"
 #include "admin/StateHandler.h"
+#include "admin/TrackMetricsHandler.h"
 #include "bpf/QuicReuseportSteering.h"
 #include "config/loader/ConfigInit.h"
 #include "logging/LogSetup.h"
@@ -181,7 +182,10 @@ int main(int argc, char* argv[]) {
 
   if (!servers.empty()) {
     context->setCacheEvb(ioExecutor->getAllEventBases()[0].get());
-    context->initThreadStatsCollectors(*ioExecutor);
+    context->initThreadStatsCollectors(
+        *ioExecutor,
+        /*initTrackStats=*/!config.admin || config.admin->trackMetricsEnabled
+    );
   }
 
   // === 7. Start health checks / admin endpoints ===
@@ -190,6 +194,15 @@ int main(int argc, char* argv[]) {
   admin::registerMetricsRoute(adminServer, statsRegistry);
   admin::registerCachePurgeRoute(adminServer, context);
   admin::registerStateRoute(adminServer, context);
+  admin::TrackMetricsLimits trackLimits;
+  if (config.admin) {
+    trackLimits = {
+        config.admin->trackMetricsEnabled,
+        config.admin->trackMetricsLimit,
+        config.admin->trackMetricsMaxLimit
+    };
+  }
+  admin::registerTrackMetricsRoute(adminServer, context, trackLimits);
   admin::registerConfigRoute(adminServer, std::make_shared<const cfg::Config>(config));
 
   // === 8. Start serving ===
