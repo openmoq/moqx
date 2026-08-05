@@ -1,10 +1,12 @@
 # moqx scripts
 
-Helper scripts for running and benchmarking a moqx relay. Run them
+Helper scripts for building, running and benchmarking a moqx relay. Run them
 from the repository root.
 
-- Top level — [`install-system-deps.sh`](/scripts/install-system-deps.sh)
-  and [`moqx-run.sh`](/scripts/moqx-run.sh) (below).
+- Top level — the build lifecycle: [`configure.sh`](/scripts/configure.sh),
+  [`build.sh`](/scripts/build.sh), [`test.sh`](/scripts/test.sh) (see [BUILD.md](/BUILD.md)),
+  plus [`install-system-deps.sh`](/scripts/install-system-deps.sh) and
+  [`moqx-run.sh`](/scripts/moqx-run.sh) (below).
 - [`perf/`](/scripts/perf) — perf testing: local + CI harnesses, metrics, comparison.
 - [`dev/`](/scripts/dev) — maintenance: format/lint, upstream sync, diagnostics.
 - [`lib/`](/scripts/lib) — sourced by the above, not run directly.
