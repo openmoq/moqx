@@ -145,7 +145,7 @@ jobs:
           FILE="run-${{ steps.sha.outputs.short }}.json"
           # Fallbacks: schedule events carry no `inputs`, so apply the canonical
           # nightly load when invoked by cron.
-          bash scripts/perf-test-ci.sh \
+          bash scripts/perf/perf-test-ci.sh \
             --duration       "${{ inputs.duration || '120' }}" \
             --subscriber-max "${{ inputs.subscribers || '600' }}" \
             --ramp           150 \
@@ -250,7 +250,7 @@ jobs:
         env:
           FILE: ${{ steps.collect.outputs.run-file }}
         run: |
-          python3 scripts/perf-compare.py \
+          python3 scripts/perf/perf-compare.py \
             --current "$FILE" \
             --data-dir data \
             --window 10 \

@@ -5,7 +5,7 @@ Loads historical results from a JSON data directory, computes rolling averages,
 compares the current run, and outputs a markdown summary suitable for PR comments.
 
 Usage:
-    scripts/perf-compare.py --current results.json --data-dir data/ [--window 10] [--threshold 5]
+    scripts/perf/perf-compare.py --current results.json --data-dir data/ [--window 10] [--threshold 5]
 
 Exit code is always 0 (non-blocking). Regressions are flagged in the output only.
 """
