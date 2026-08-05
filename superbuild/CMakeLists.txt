@@ -90,32 +90,36 @@ option(MOQX_MOXYGEN_BUILD_ALWAYS
   "Rebuild moxygen on every build (for editing a local moxygen checkout)" OFF)
 
 # Static archives make the more portable install, but Fedora/RHEL package no
-# static Boost, so the compiler driver decides. The env override is validated,
-# not passed through: "auto" would otherwise read as truthy.
-if(NOT DEFINED BOOST_USE_STATIC_LIBS)
-  string(TOLOWER "$ENV{BOOST_USE_STATIC_LIBS}" _boost_env)
-  if(_boost_env MATCHES "^(on|1|true|yes)$")
-    set(BOOST_USE_STATIC_LIBS ON)
-  elseif(_boost_env MATCHES "^(off|0|false|no)$")
-    set(BOOST_USE_STATIC_LIBS OFF)
-  elseif(_boost_env STREQUAL "" OR _boost_env STREQUAL "auto")
-    find_program(_moqx_cxx NAMES $ENV{CXX} c++ g++ clang++)
-    set(BOOST_USE_STATIC_LIBS ON)
-    if(_moqx_cxx)
-      # MOQX_BOOST_COMPONENTS comes from cmake/CheckSystemDeps.cmake, above.
-      foreach(_comp IN LISTS MOQX_BOOST_COMPONENTS)
-        execute_process(COMMAND "${_moqx_cxx}" -print-file-name=libboost_${_comp}.a
-          OUTPUT_VARIABLE _loc OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
-        if(NOT _loc MATCHES "^/")
-          set(BOOST_USE_STATIC_LIBS OFF)
-          break()
-        endif()
-      endforeach()
-    endif()
-  else()
-    message(FATAL_ERROR
-      "BOOST_USE_STATIC_LIBS must be auto|on|off (got '$ENV{BOOST_USE_STATIC_LIBS}')")
+# static Boost, so under "auto" the compiler driver decides. Both spellings, -D
+# and env, are validated rather than passed through: "auto" reaching
+# Boost_USE_STATIC_LIBS below would read as truthy and force static anyway.
+if(DEFINED BOOST_USE_STATIC_LIBS)
+  set(_boost_req "${BOOST_USE_STATIC_LIBS}")
+else()
+  set(_boost_req "$ENV{BOOST_USE_STATIC_LIBS}")
+endif()
+string(TOLOWER "${_boost_req}" _boost_req)
+if(_boost_req MATCHES "^(on|1|true|yes)$")
+  set(BOOST_USE_STATIC_LIBS ON)
+elseif(_boost_req MATCHES "^(off|0|false|no)$")
+  set(BOOST_USE_STATIC_LIBS OFF)
+elseif(_boost_req STREQUAL "" OR _boost_req STREQUAL "auto")
+  find_program(_moqx_cxx NAMES $ENV{CXX} c++ g++ clang++)
+  set(BOOST_USE_STATIC_LIBS ON)
+  if(_moqx_cxx)
+    # MOQX_BOOST_COMPONENTS comes from cmake/CheckSystemDeps.cmake, above.
+    foreach(_comp IN LISTS MOQX_BOOST_COMPONENTS)
+      execute_process(COMMAND "${_moqx_cxx}" -print-file-name=libboost_${_comp}.a
+        OUTPUT_VARIABLE _loc OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+      if(NOT _loc MATCHES "^/")
+        set(BOOST_USE_STATIC_LIBS OFF)
+        break()
+      endif()
+    endforeach()
   endif()
+else()
+  message(FATAL_ERROR
+    "BOOST_USE_STATIC_LIBS must be auto|on|off (got '${_boost_req}')")
 endif()
 message(STATUS "moxygen superbuild: Boost static libs: ${BOOST_USE_STATIC_LIBS}")
 
