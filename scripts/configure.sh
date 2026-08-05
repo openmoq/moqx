@@ -45,10 +45,11 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 SCRATCH="${MOQX_SCRATCH_PATH:-$ROOT/.scratch}"
-# One CPM source cache for the superbuild and the moqx build, so from-source
-# moqx reuses the very moxygen source the prefix was built from (its
-# find-modules must match) instead of re-fetching into the build dir's _deps.
-export CPM_SOURCE_CACHE="${CPM_SOURCE_CACHE:-${HOME:-$SCRATCH}/.cache/moqx/cpm}"
+# The one root under which CPM's source clones and the extracted prebuilt
+# installs both live; cmake/DepsCache.cmake splits it. Exported so the superbuild
+# and the moqx build land on the same clones. Only the no-HOME default differs
+# from CMake's own: a scripted build has $ROOT/.scratch to fall back on.
+export MOQX_DEPS_CACHE="${MOQX_DEPS_CACHE:-${HOME:-$SCRATCH}/.cache/moqx}"
 
 die() { echo "configure.sh: $*" >&2; exit 1; }
 usage() { awk 'NR>1 && /^#/ {sub(/^# ?/,""); print; next} NR>1 {exit}' "${BASH_SOURCE[0]}"; exit "${1:-0}"; }
