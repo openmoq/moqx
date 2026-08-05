@@ -7,17 +7,19 @@
 # the chain within the timeout.
 #
 # Requires draft 16+ for relay peering (wildcard subscribeNamespace).
-# moqdateserver and moqtextclient must be at:
-#   .scratch/moxygen-install/bin/  (relative to repo root)
+# moqdateserver and moqtextclient come from the moxygen install bin, resolved
+# from the build (MOQBIN overrides).
 #
-# Usage: bash scripts/test_relay_chain.sh [path/to/moqx] [--save-logs [dir]]
+# Usage: bash test/test_relay_chain.sh [path/to/moqx] [--save-logs [dir]]
 #   --save-logs [dir]  Save relay DBG4 logs; dir defaults to /tmp/relay_chain_logs
 
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-BINARY="${1:-$REPO/build/moqx}"
-MOQBIN="${MOQBIN:-$REPO/.scratch/moxygen-install/bin}"
+BINARY="${1:-$REPO/build/default/moqx}"
+# shellcheck source=test_moqbin.sh
+source "$REPO/test/test_moqbin.sh"
+resolve_moqbin "$BINARY"
 # shellcheck source=test_ports.sh
 source "$REPO/test/test_ports.sh"
 # shellcheck source=test_versions.sh
