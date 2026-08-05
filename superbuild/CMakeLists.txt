@@ -47,9 +47,9 @@ if(CCACHE_PROGRAM)
     -DCMAKE_CXX_COMPILER_LAUNCHER=${CCACHE_PROGRAM})
 endif()
 
-# Which flag set to build moxygen with; matches moqx's san/tsan presets. moqx
-# carries the sanitizers via its MOQX_ENABLE_* options; moxygen has no such
-# option, so it gets the raw flags.
+# Mirrors moqx's san/tsan presets. moxygen has no sanitizer option, so it takes
+# the raw flags, joined into strings to cross the ExternalProject boundary.
+include(${_top}/cmake/SanitizerFlags.cmake)
 set(MOQX_MOXYGEN_PROFILE "default" CACHE STRING
     "moxygen build profile: default | san | tsan")
 set(_build_type RelWithDebInfo)
@@ -57,12 +57,10 @@ set(_san_flags "")          # -fsanitize=... for moxygen's compile + link
 if(MOQX_MOXYGEN_PROFILE STREQUAL "default")
 elseif(MOQX_MOXYGEN_PROFILE STREQUAL "san")
   set(_build_type Debug)
-  # Same sanitizer set as moqx's `san` preset (MOQX_ENABLE_SANITIZERS) — the
-  # two link together, so the instrumentation must match.
-  set(_san_flags "-fsanitize=address,undefined -fno-omit-frame-pointer")
+  string(JOIN " " _san_flags ${MOQX_ASAN_DEPS_FLAGS})
 elseif(MOQX_MOXYGEN_PROFILE STREQUAL "tsan")
   set(_build_type Debug)
-  set(_san_flags "-fsanitize=thread -fno-omit-frame-pointer")
+  string(JOIN " " _san_flags ${MOQX_TSAN_FLAGS})
 else()
   message(FATAL_ERROR "MOQX_MOXYGEN_PROFILE must be default|san|tsan (got '${MOQX_MOXYGEN_PROFILE}')")
 endif()
@@ -92,8 +90,8 @@ option(MOQX_MOXYGEN_BUILD_ALWAYS
   "Rebuild moxygen on every build (for editing a local moxygen checkout)" OFF)
 
 # Static archives make the more portable install, but Fedora/RHEL package no
-# static Boost, so the compiler driver decides. The env override is validated
-# against auto|on|off, since a pass-through would read "auto" as truthy.
+# static Boost, so the compiler driver decides. The env override is validated,
+# not passed through: "auto" would otherwise read as truthy.
 if(NOT DEFINED BOOST_USE_STATIC_LIBS)
   string(TOLOWER "$ENV{BOOST_USE_STATIC_LIBS}" _boost_env)
   if(_boost_env MATCHES "^(on|1|true|yes)$")
@@ -104,8 +102,7 @@ if(NOT DEFINED BOOST_USE_STATIC_LIBS)
     find_program(_moqx_cxx NAMES $ENV{CXX} c++ g++ clang++)
     set(BOOST_USE_STATIC_LIBS ON)
     if(_moqx_cxx)
-      # MOQX_BOOST_COMPONENTS comes from cmake/CheckSystemDeps.cmake, included
-      # above — one list, so the probe and the check cannot drift apart.
+      # MOQX_BOOST_COMPONENTS comes from cmake/CheckSystemDeps.cmake, above.
       foreach(_comp IN LISTS MOQX_BOOST_COMPONENTS)
         execute_process(COMMAND "${_moqx_cxx}" -print-file-name=libboost_${_comp}.a
           OUTPUT_VARIABLE _loc OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
