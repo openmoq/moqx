@@ -1,7 +1,8 @@
 # CI and Automation
 
-This document describes the CI pipelines, upstream sync, submodule management,
-artifact publishing, and relay deployment across the openmoq organization.
+This document describes the CI pipelines, upstream sync, dependency-revision
+management, artifact publishing, and relay deployment across the openmoq
+organization.
 
 ## Cross-Repo Dependency
 
@@ -12,7 +13,7 @@ artifact publishing, and relay deployment across the openmoq organization.
 │  ci main ──► snapshot-latest release (tarballs, all platforms)
 │                         │                                   │
 └─────────────────────────┼───────────────────────────────────┘
-                          │  submodule SHA pins which tarball
+                          │  MOXYGEN_REV (cmake/dependencies.cmake) pins the rev
                           ▼
 ┌─────────────────────────────────────────────────────────────┐
 │  moqx (application)                                        │
@@ -23,8 +24,25 @@ artifact publishing, and relay deployment across the openmoq organization.
 └─────────────────────────────────────────────────────────────┘
 ```
 
-moqx's `deps/moxygen` submodule pins a moxygen commit. `setup-deps-release.sh`
-downloads the matching pre-built tarball from moxygen's release.
+moqx pins a moxygen commit via `MOXYGEN_REV` in
+[`cmake/dependencies.cmake`](/cmake/dependencies.cmake). At configure time CPM
+fetches that moxygen source and [`cmake/FetchMoxygenPrebuilt.cmake`](/cmake/FetchMoxygenPrebuilt.cmake)
+downloads the matching prebuilt install tarball from moxygen's release.
+
+Build and test lanes run `configure.sh --moxygen prebuilt-with-fallback`, so a pin
+with no published tarball costs a slow from-source lane rather than a red one. The
+modes themselves are in [/BUILD.md](/BUILD.md#how-dependencies-work).
+
+The images do the same, in [`docker/Dockerfile`](/docker/Dockerfile)'s `moxygen`
+stage. That stage copies the pin and the build system but not `src/`, so its layer
+key changes only on a `MOXYGEN_REV` bump, and a registry-backed buildx cache makes
+a source-only push reuse it.
+
+Both image targets, `relay` and `interop-client`, take their moxygen from that one
+stage, so they cannot disagree about which moxygen they carry.
+
+`version release` is the exception and stays strict: a versioned artifact must
+ship a published, digest-verified dependency, not whatever a runner compiled.
 
 ## End-to-End Flow
 
@@ -118,10 +136,13 @@ Promotes `snapshot-latest` artifacts to a versioned `vX.Y.Z` release (no rebuild
 | Job | Runner | Purpose |
 |-----|--------|---------|
 | check-format | ubuntu-latest (trixie) | clang-format-19 check |
-| linux | ubuntu-22.04 | Build + test (from-release tarball) |
-| asan debug | self-hosted (linode) | ASAN/UBSAN build + test |
+| linux | ubuntu-22.04 | Build + test (prebuilt tarball, from-source fallback) |
+| asan debug | self-hosted (linode) | ASan/UBSan on moqx TUs, build + test |
 
-Format check must pass before build runs.
+Format check must pass before build runs. The asan lane sanitizes moqx's own
+TUs over the uninstrumented prebuilt deps; instrumenting the full stack needs
+a prebuilt instrumented moxygen
+([#579](https://github.com/openmoq/moqx/issues/579)).
 
 ### 2. `ci main` — Build, Publish, Release, Deploy, Notify
 
@@ -136,12 +157,12 @@ check-format + build ──► publish (Docker) ──► release ──► depl
 - Deploy automatically updates moqx-main.ci.openmoq.org with the new image
 - Notify sends Slack + email with per-job status
 
-### 3. `moxygen sync` — Automated submodule update
+### 3. `moxygen sync` — Automated dependency-revision update
 
 **Trigger:** `repository_dispatch` from moxygen + manual | **Time:** <1 min
 
 - Checks for blocking `sync-moxygen/*` PR (one at a time)
-- Updates `deps/moxygen` submodule to dispatched SHA
+- Bumps `MOXYGEN_REV` in `cmake/dependencies.cmake` to the dispatched SHA
 - Creates PR with dual identity (bot creates, PAT approves)
 - Notifies on block or failure
 
@@ -218,3 +239,11 @@ All build jobs use ccache:
 - **~35-50%** hit rate after upstream sync (many changed files)
 - **~65-80%** on incremental builds (typical PR or small change)
 - Warm cache cuts moxygen build time roughly in half
+
+Build jobs also cache `~/.cache/moqx` (CPM source clones + the prebuilt moxygen
+install, ~680 MB of downloads per configure otherwise), keyed on the dependency
+pins — a pin bump refetches once, every other run configures offline.
+
+The from-source fallback prefix is not cached: it is multiple GB per lane against a
+10 GB LRU budget, and `actions/cache` saves at job end, so the run that triggers the
+fallback would miss anyway. ccache absorbs the repeat cost instead.
