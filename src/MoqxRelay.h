@@ -346,9 +346,10 @@ private:
       std::shared_ptr<moxygen::MoQSession> session
   );
 
-  // Constructs the publisher's local forwarder and installs its callback chain on
-  // publisherExec. tlForwarders_ must already be initialized.
-  std::shared_ptr<moxygen::MoQForwarder> createPublisherForwarder(const moxygen::PublishRequest& pub
+  // Runs on fwd's exec; the returned Claim owes a markReady/fail.
+  LocalForwarderRegistry::Claim installPublisherForwarder(
+      const moxygen::FullTrackName& ftn,
+      const std::shared_ptr<moxygen::MoQForwarder>& fwd
   );
 
   std::optional<moxygen::PublishError>
