@@ -48,7 +48,7 @@ be patient, reciprocate.
 
 ## CI
 
-- `ci pr` — format, build (linux + asan debug), tests. Must pass before merge.
+- `ci pr` — format, build (linux + asan), tests. Must pass before merge.
 - `ci main` — publish / release / deploy on push to `main` and `release/*`.
 
 See [docs/ci-architecture.md](docs/ci-architecture.md).
