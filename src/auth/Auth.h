@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include "auth/Action.h"
 #include "config/Config.h"
 
 #include <folly/Expected.h>
@@ -23,18 +24,6 @@
 
 namespace openmoq::moqx::auth {
 
-enum class Action : uint64_t {
-  ClientSetup = 0,
-  ServerSetup = 1,
-  PublishNamespace = 2,
-  SubscribeNamespace = 3,
-  Subscribe = 4,
-  RequestUpdate = 5,
-  Publish = 6,
-  Fetch = 7,
-  TrackStatus = 8,
-};
-
 enum class AuthError {
   Missing,
   WrongTokenType,
@@ -42,10 +31,11 @@ enum class AuthError {
   BadSignature,
   Expired,
   Forbidden,
+  TooManyTokens,
 };
 
 struct MatchRule {
-  enum class Type : uint64_t { Exact = 0, Prefix = 1, Suffix = 2, Contains = 3 };
+  using Type = MatchRuleType;
   Type type{Type::Exact};
   std::string value;
 };
@@ -61,6 +51,21 @@ struct Grants {
   std::vector<Scope> scopes;
 };
 
+// Length-prefixed byte-encoding of a namespace's segments, used both as a
+// MatchRule value and as the bytes matched against it. A stable wire format:
+// signer and verifier must produce byte-identical output independently.
+inline std::string canonicalNamespace(const moxygen::TrackNamespace& ns) {
+  std::string out;
+  for (const auto& field : ns.trackNamespace) {
+    out.push_back(static_cast<char>((field.size() >> 24) & 0xff));
+    out.push_back(static_cast<char>((field.size() >> 16) & 0xff));
+    out.push_back(static_cast<char>((field.size() >> 8) & 0xff));
+    out.push_back(static_cast<char>(field.size() & 0xff));
+    out.append(field);
+  }
+  return out;
+}
+
 class AuthTokenVerifier {
 public:
   explicit AuthTokenVerifier(config::AuthConfig config);
@@ -69,6 +74,18 @@ public:
   uint64_t tokenType() const { return config_.tokenType; }
   bool requireSetupToken() const { return config_.requireSetupToken; }
   bool allowRequestTokenOverride() const { return config_.allowRequestTokenOverride; }
+
+  // Caps how many AUTHORIZATION_TOKEN params of the configured tokenType()
+  // one message may carry; a message over the cap is rejected outright, not
+  // truncated. Params of other token types are not counted. 0 would reject
+  // every message carrying a matching token. Config validation requires >=1
+  // when enabled().
+  uint32_t maxTokensPerMessage() const { return config_.maxTokensPerMessage; }
+
+  // Statically-configured anonymous claim, applied as a floor on every
+  // request (see docs/config.md#anonymous-claim). Never covers
+  // Action::ClientSetup — it can't bypass a required setup token.
+  const Grants& anonymousGrants() const { return anonymousGrants_; }
 
   folly::Expected<Grants, AuthError> verify(const moxygen::AuthToken& token) const;
 
@@ -85,6 +102,7 @@ private:
   config::AuthConfig config_;
   std::vector<DerivedKey> derivedKeys_;
   std::unordered_map<std::string, std::size_t> keyIdIndex_;
+  Grants anonymousGrants_;
 };
 
 // Returns every AUTHORIZATION_TOKEN parameter matching tokenType, not just the
@@ -127,10 +145,11 @@ bool allowsAny(
 
 const char* toString(AuthError error);
 
-// Verifies the setup AUTHORIZATION_TOKEN(s). Returns a null pointer when auth
-// is disabled; otherwise a shared vector of every successfully-verified
-// setup token's grants (possibly empty), gating the session on whether any
-// of them permits Action::ClientSetup.
+// Verifies the setup AUTHORIZATION_TOKEN(s): null when auth is disabled,
+// else every successfully-verified token's grants. When requireSetupToken()
+// is set, connecting is additionally gated on whether any one of them
+// permits Action::ClientSetup; without it, verified grants pool into the
+// session with no ClientSetup check.
 folly::Expected<std::shared_ptr<const std::vector<Grants>>, AuthError>
 authenticateSetup(const AuthTokenVerifier& verifier, const moxygen::Parameters& setupParams);
 

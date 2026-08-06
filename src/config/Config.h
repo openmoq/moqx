@@ -6,6 +6,8 @@
 
 #pragma once
 
+#include "auth/Action.h"
+
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -188,12 +190,25 @@ struct AuthConfig {
     std::string secret;
   };
 
+  // A statically-granted scope applied to every request, regardless of
+  // token.
+  struct AnonymousScope {
+    std::vector<auth::Action> actions;
+    // nullopt matches any namespace. An empty vector matches only the zero-segment namespace.
+    std::optional<std::vector<std::string>> namespaceSegments;
+    auth::MatchRuleType namespaceMatchMode{auth::MatchRuleType::Exact};
+    std::optional<std::string> trackName; // nullopt = match any track
+    auth::MatchRuleType trackMatchMode{auth::MatchRuleType::Exact};
+  };
+
   bool enabled{false};
   uint64_t tokenType{0};
   std::vector<HmacKey> hmacKeys;
   bool requireSetupToken{true};
   bool allowRequestTokenOverride{true};
   bool strictClaims{false};
+  std::vector<AnonymousScope> anonymousClaim; // empty = no anonymous access (default)
+  uint32_t maxTokensPerMessage{0};
 };
 
 struct ServiceConfig {

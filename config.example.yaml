@@ -25,7 +25,6 @@ listeners:
     #   max_data: 33554432    # Override connection flow control window for this listener
 
 service_defaults:
-  # Default cache settings inherited by all services.
   # Per-service cache merges field-by-field: set only the fields you want to override.
   cache:
     enabled: true                        # Enable relay cache
@@ -39,6 +38,10 @@ service_defaults:
     # default_max_cache_duration_s: 300  # Default TTL (seconds) for tracks without a publisher-set duration.
                                          # Absent: use max_cache_duration_s.
                                          # 0: opt-in-only (don't cache tracks unless publisher sets a duration).
+  # Required (directly or via this block) whenever a service sets auth.enabled: true.
+  auth:
+    max_tokens_per_message: 4            # Caps AUTHORIZATION_TOKEN params of the service's token_type per
+                                          # message; a message over the cap is rejected outright, not truncated.
 
 services:
   live-streaming:
@@ -70,8 +73,12 @@ services:
     #     - id: "cat-dev"         # Key ID carried in the token envelope; selects which secret verifies it
     #       secret: "replace-with-long-random-secret"   # Shared secret used by moqx-issuer
     #   require_setup_token: true            # Require a client_setup token during CLIENT_SETUP
-    #   allow_request_token_override: true   # Allow a per-request token to override the session's setup grants
+    #   allow_request_token_override: true   # Let a per-request token count as one more candidate grant, alongside setup-token grants and anonymous_claim
     #   strict_claims: false       # Keep false for current CAT4MOQ interop unless all issuers send only supported claims
+    #   max_tokens_per_message: 4  # Required directly or via service_defaults.auth; caps AUTHORIZATION_TOKEN params verified per message
+    #   anonymous_claim:           # Statically-granted scopes applied to every request, with or without a token
+    #     - actions: [subscribe, fetch]        # Anyone can subscribe/fetch under "live/..." without a token
+    #       namespace_match: {prefix: ["live"]}
 
   testing:
     match:
