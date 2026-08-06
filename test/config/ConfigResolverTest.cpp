@@ -7,6 +7,7 @@
 #include "config/loader/ConfigResolver.h"
 
 #include "Pkcs12TestUtils.h"
+#include "auth/Action.h"
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
@@ -16,6 +17,7 @@
 namespace openmoq::moqx::config {
 namespace {
 
+using ::testing::ElementsAre;
 using ::testing::HasSubstr;
 using ::testing::IsEmpty;
 
@@ -80,6 +82,7 @@ ParsedAuthConfig makeAuthConfig(std::vector<ParsedAuthConfig::HmacKey> keys = {m
   auth.require_setup_token = std::optional<bool>{false};
   auth.allow_request_token_override = std::optional<bool>{false};
   auth.strict_claims = std::optional<bool>{true};
+  auth.max_tokens_per_message = std::optional<uint32_t>{4};
   return auth;
 }
 
@@ -87,6 +90,32 @@ ParsedServiceConfig makeAuthService(ParsedAuthConfig auth = makeAuthConfig()) {
   auto svc = makeDefaultService();
   svc.auth = std::move(auth);
   return svc;
+}
+
+using AnonymousScope = ParsedAuthConfig::AnonymousScope;
+
+AnonymousScope::NamespaceMatch prefixNamespaceMatch(std::vector<std::string> segments) {
+  AnonymousScope::PrefixNamespace alt;
+  alt.prefix = std::move(segments);
+  return AnonymousScope::NamespaceMatch{std::move(alt)};
+}
+
+AnonymousScope::TrackMatch exactTrackMatch(std::string name) {
+  AnonymousScope::ExactTrack alt;
+  alt.exact = std::move(name);
+  return AnonymousScope::TrackMatch{std::move(alt)};
+}
+
+AnonymousScope makeAnonymousScope(
+    std::vector<std::string> actions,
+    std::optional<AnonymousScope::NamespaceMatch> nsMatch = std::nullopt,
+    std::optional<AnonymousScope::TrackMatch> trackMatch = std::nullopt
+) {
+  AnonymousScope scope;
+  scope.actions = std::move(actions);
+  scope.namespace_match = std::move(nsMatch);
+  scope.track_match = std::move(trackMatch);
+  return scope;
 }
 
 // Build a minimal valid insecure config with one any-authority service and admin.
@@ -739,6 +768,7 @@ TEST(ResolveConfig, AuthValidConfigRoundTripsAllFields) {
   EXPECT_FALSE(auth.requireSetupToken);
   EXPECT_FALSE(auth.allowRequestTokenOverride);
   EXPECT_TRUE(auth.strictClaims);
+  EXPECT_EQ(auth.maxTokensPerMessage, 4u);
   ASSERT_EQ(auth.hmacKeys.size(), 2);
   EXPECT_EQ(auth.hmacKeys[0].id, "key-1");
   EXPECT_EQ(auth.hmacKeys[0].secret, "secret-1");
@@ -753,6 +783,7 @@ TEST(ResolveConfig, AuthOptionalFieldsDefaultCorrectly) {
   auth.enabled = true;
   std::vector<ParsedAuthConfig::HmacKey> keys{makeAuthKey()};
   auth.hmac_keys = std::move(keys);
+  auth.max_tokens_per_message = std::optional<uint32_t>{4};
   cfg.services.value().emplace("svc", makeAuthService(std::move(auth)));
 
   auto result = resolveConfig(cfg);
@@ -771,6 +802,190 @@ TEST(ResolveConfig, AuthAbsentDefaultsDisabled) {
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasValue());
   EXPECT_FALSE(result.value().config.services.at("default").auth.enabled);
+}
+
+TEST(ResolveConfig, AuthMaxTokensPerMessageRequiredWhenEnabled) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().clear();
+  ParsedAuthConfig auth;
+  auth.enabled = true;
+  auth.hmac_keys = std::optional<std::vector<ParsedAuthConfig::HmacKey>>{{makeAuthKey()}};
+  cfg.services.value().emplace("svc", makeAuthService(std::move(auth)));
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("auth.max_tokens_per_message is required"));
+}
+
+TEST(ResolveConfig, AuthMaxTokensPerMessageRejectsZero) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().clear();
+  auto auth = makeAuthConfig();
+  auth.max_tokens_per_message = std::optional<uint32_t>{0};
+  cfg.services.value().emplace("svc", makeAuthService(std::move(auth)));
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("auth.max_tokens_per_message must be >= 1"));
+}
+
+TEST(ResolveConfig, AuthMaxTokensPerMessageInheritsServiceDefaults) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().clear();
+  auto auth = makeAuthConfig();
+  auth.max_tokens_per_message = std::nullopt; // not set directly; must come from service_defaults
+  cfg.services.value().emplace("svc", makeAuthService(std::move(auth)));
+
+  ParsedServiceDefaultsConfig::AuthDefaults authDefaults;
+  authDefaults.max_tokens_per_message = std::optional<uint32_t>{6};
+  ParsedServiceDefaultsConfig defaults;
+  defaults.auth = std::optional<ParsedServiceDefaultsConfig::AuthDefaults>{authDefaults};
+  cfg.service_defaults.value() = std::optional<ParsedServiceDefaultsConfig>{defaults};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  EXPECT_EQ(result.value().config.services.at("svc").auth.maxTokensPerMessage, 6u);
+}
+
+TEST(ResolveConfig, AuthMaxTokensPerMessageServiceOverridesServiceDefaults) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().clear();
+  auto auth = makeAuthConfig();
+  auth.max_tokens_per_message = std::optional<uint32_t>{10}; // set directly; wins over the default
+  cfg.services.value().emplace("svc", makeAuthService(std::move(auth)));
+
+  ParsedServiceDefaultsConfig::AuthDefaults authDefaults;
+  authDefaults.max_tokens_per_message = std::optional<uint32_t>{6};
+  ParsedServiceDefaultsConfig defaults;
+  defaults.auth = std::optional<ParsedServiceDefaultsConfig::AuthDefaults>{authDefaults};
+  cfg.service_defaults.value() = std::optional<ParsedServiceDefaultsConfig>{defaults};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  EXPECT_EQ(result.value().config.services.at("svc").auth.maxTokensPerMessage, 10u);
+}
+
+TEST(ResolveConfig, AuthAnonymousClaimRoundTripsAllFields) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().clear();
+
+  auto auth = makeAuthConfig();
+  auth.anonymous_claim =
+      std::optional<std::vector<AnonymousScope>>{std::vector<AnonymousScope>{makeAnonymousScope(
+          {"subscribe", "fetch"},
+          prefixNamespaceMatch({"live"}),
+          exactTrackMatch("video")
+      )}};
+  cfg.services.value().emplace("svc", makeAuthService(std::move(auth)));
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  const auto& anon = result.value().config.services.at("svc").auth.anonymousClaim;
+  ASSERT_EQ(anon.size(), 1u);
+  EXPECT_THAT(anon[0].actions, ElementsAre(auth::Action::Subscribe, auth::Action::Fetch));
+  ASSERT_TRUE(anon[0].namespaceSegments.has_value());
+  EXPECT_THAT(*anon[0].namespaceSegments, ElementsAre("live"));
+  EXPECT_EQ(anon[0].namespaceMatchMode, auth::MatchRuleType::Prefix);
+  ASSERT_TRUE(anon[0].trackName.has_value());
+  EXPECT_EQ(*anon[0].trackName, "video");
+  EXPECT_EQ(anon[0].trackMatchMode, auth::MatchRuleType::Exact);
+}
+
+TEST(ResolveConfig, AuthAnonymousClaimAbsentResolvesToEmpty) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().clear();
+  cfg.services.value().emplace("svc", makeAuthService());
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  EXPECT_THAT(result.value().config.services.at("svc").auth.anonymousClaim, IsEmpty());
+}
+
+TEST(ResolveConfig, AuthAnonymousClaimOmittedNamespaceAndTrackMatchAnyNamespace) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().clear();
+
+  auto auth = makeAuthConfig();
+  auth.anonymous_claim = std::optional<std::vector<AnonymousScope>>{
+      std::vector<AnonymousScope>{makeAnonymousScope({"subscribe"})}
+  };
+  cfg.services.value().emplace("svc", makeAuthService(std::move(auth)));
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  const auto& anon = result.value().config.services.at("svc").auth.anonymousClaim;
+  ASSERT_EQ(anon.size(), 1u);
+  EXPECT_FALSE(anon[0].namespaceSegments.has_value());
+  EXPECT_FALSE(anon[0].trackName.has_value());
+}
+
+TEST(ResolveConfig, AuthAnonymousClaimRejectsUnknownAction) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().clear();
+
+  auto auth = makeAuthConfig();
+  auth.anonymous_claim = std::optional<std::vector<AnonymousScope>>{
+      std::vector<AnonymousScope>{makeAnonymousScope({"frobnicate"})}
+  };
+  cfg.services.value().emplace("svc", makeAuthService(std::move(auth)));
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("is not a recognized CAT4MOQ action"));
+}
+
+// Regression: anonymous_claim must be validated even when auth.enabled is
+// false. resolveAuth() resolves it into the config unconditionally.
+TEST(ResolveConfig, AuthAnonymousClaimValidatedEvenWhenAuthDisabled) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().clear();
+
+  auto auth = makeAuthConfig();
+  auth.enabled = false;
+  auth.hmac_keys = std::nullopt;
+  auth.anonymous_claim = std::optional<std::vector<AnonymousScope>>{
+      std::vector<AnonymousScope>{makeAnonymousScope({"frobnicate"})}
+  };
+  cfg.services.value().emplace("svc", makeAuthService(std::move(auth)));
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("is not a recognized CAT4MOQ action"));
+}
+
+TEST(ResolveConfig, AuthAnonymousClaimRejectsClientSetupAndServerSetup) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().clear();
+
+  auto auth = makeAuthConfig();
+  auth.anonymous_claim = std::optional<std::vector<AnonymousScope>>{std::vector<AnonymousScope>{
+      makeAnonymousScope({"client_setup"}),
+      makeAnonymousScope({"server_setup"}),
+      makeAnonymousScope({"setup"}), // alias for client_setup
+  }};
+  cfg.services.value().emplace("svc", makeAuthService(std::move(auth)));
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(
+      result.error(),
+      HasSubstr("the anonymous claim never authorizes CLIENT_SETUP/SERVER_SETUP")
+  );
+}
+
+TEST(ResolveConfig, AuthAnonymousClaimRejectsEmptyActionsList) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().clear();
+
+  auto auth = makeAuthConfig();
+  auth.anonymous_claim =
+      std::optional<std::vector<AnonymousScope>>{std::vector<AnonymousScope>{makeAnonymousScope({})}
+      };
+  cfg.services.value().emplace("svc", makeAuthService(std::move(auth)));
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("auth.anonymous_claim[0].actions must be non-empty"));
 }
 
 // --- Resolution tests ---

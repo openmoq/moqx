@@ -34,6 +34,7 @@ config::AuthConfig makeConfig() {
       .hmacKeys = {config::AuthConfig::HmacKey{.id = "k1", .secret = "secret"}},
       .requireSetupToken = true,
       .allowRequestTokenOverride = true,
+      .maxTokensPerMessage = 4,
   };
 }
 
@@ -58,6 +59,18 @@ makeToken(Grants grants, std::string_view secret = "secret", std::string_view ke
       .tokenType = 77,
       .tokenValue = signGrants(keyID, secret, grants),
       .alias = AuthToken::DontRegister,
+  };
+}
+
+config::AuthConfig::AnonymousScope makeAnonymousConfigScope(
+    std::vector<Action> actions,
+    std::optional<std::vector<std::string>> namespaceSegments = std::nullopt,
+    std::optional<std::string> trackName = std::nullopt
+) {
+  return config::AuthConfig::AnonymousScope{
+      .actions = std::move(actions),
+      .namespaceSegments = std::move(namespaceSegments),
+      .trackName = std::move(trackName),
   };
 }
 
@@ -379,6 +392,38 @@ TEST(AuthTest, AuthorizeReturnsMostSpecificErrorWhenNothingPermits) {
   EXPECT_EQ(result.error(), AuthError::BadSignature);
 }
 
+// Regression: a corrupted request token must not eclipse a sibling token that
+// verified fine but simply lacked scope -- the latter makes Forbidden the
+// correct error, not the former's BadSignature.
+TEST(
+    AuthTest,
+    AuthorizeReturnsForbiddenWhenOneRequestTokenFailsAndAnotherVerifiesWithInsufficientScope
+) {
+  TrackNamespace ns{{"live"}};
+  AuthTokenVerifier verifier(makeConfig());
+  Parameters params(FrameType::SUBSCRIBE);
+  auto badToken = makeToken(makeGrants({Action::Subscribe}, {}, {}));
+  badToken.tokenValue.back() ^= 0x01; // corrupt signature
+  ASSERT_TRUE(
+      params
+          .insertParam(
+              Parameter(static_cast<uint64_t>(TrackRequestParamKey::AUTHORIZATION_TOKEN), badToken)
+          )
+          .hasValue()
+  );
+  ASSERT_TRUE(params
+                  .insertParam(Parameter(
+                      static_cast<uint64_t>(TrackRequestParamKey::AUTHORIZATION_TOKEN),
+                      makeToken(makeGrants({Action::Publish}, {}, {})) // verifies, but wrong action
+                  ))
+                  .hasValue());
+  std::vector<Grants> sessionGrants; // doesn't cover the action either
+
+  auto result = authorize(verifier, Action::Subscribe, params, ns, sessionGrants, "video");
+  ASSERT_TRUE(result.hasError());
+  EXPECT_EQ(result.error(), AuthError::Forbidden);
+}
+
 TEST(AuthTest, AuthorizeReturnsForbiddenWhenNothingCoversAction) {
   TrackNamespace ns{{"live"}};
   AuthTokenVerifier verifier(makeConfig());
@@ -457,6 +502,39 @@ TEST(AuthTest, AuthenticateSetupRejectsWhenNoTokenGrantsClientSetup) {
   EXPECT_EQ(result.error(), AuthError::Forbidden);
 }
 
+// Regression: a corrupted setup token must not eclipse a sibling token that
+// verified fine but simply didn't grant ClientSetup -- the latter makes
+// Forbidden the correct error, not the former's BadSignature.
+TEST(
+    AuthTest,
+    AuthenticateSetupReturnsForbiddenWhenOneTokenFailsAndAnotherVerifiesWithoutClientSetup
+) {
+  AuthTokenVerifier verifier(makeConfig());
+  auto badToken = makeToken(makeGrants({Action::ClientSetup}, {}, {}));
+  badToken.tokenValue.back() ^= 0x01; // corrupt signature
+
+  Parameters params(FrameType::CLIENT_SETUP);
+  ASSERT_TRUE(
+      params
+          .insertParam(
+              Parameter(static_cast<uint64_t>(TrackRequestParamKey::AUTHORIZATION_TOKEN), badToken)
+          )
+          .hasValue()
+  );
+  ASSERT_TRUE(
+      params
+          .insertParam(Parameter(
+              static_cast<uint64_t>(TrackRequestParamKey::AUTHORIZATION_TOKEN),
+              makeToken(makeGrants({Action::Subscribe}, {}, {})) // verifies, but not ClientSetup
+          ))
+          .hasValue()
+  );
+
+  auto result = authenticateSetup(verifier, params);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_EQ(result.error(), AuthError::Forbidden);
+}
+
 TEST(AuthTest, AuthenticateSetupSurfacesMostSpecificErrorWhenNothingGrantsClientSetup) {
   AuthTokenVerifier verifier(makeConfig());
   auto badToken = makeToken(makeGrants({Action::ClientSetup}, {}, {}));
@@ -474,4 +552,212 @@ TEST(AuthTest, AuthenticateSetupSurfacesMostSpecificErrorWhenNothingGrantsClient
   auto result = authenticateSetup(verifier, params);
   ASSERT_TRUE(result.hasError());
   EXPECT_EQ(result.error(), AuthError::BadSignature);
+}
+
+// Regression: require_setup_token=false must never fail the connection over
+// the setup token, even when one is presented and doesn't grant ClientSetup.
+TEST(
+    AuthTest,
+    AuthenticateSetupConnectsWithPooledGrantsWhenPresentedTokenLacksClientSetupAndNotRequired
+) {
+  auto config = makeConfig();
+  config.requireSetupToken = false;
+  AuthTokenVerifier verifier(config);
+
+  Parameters params(FrameType::CLIENT_SETUP);
+  ASSERT_TRUE(
+      params
+          .insertParam(Parameter(
+              static_cast<uint64_t>(TrackRequestParamKey::AUTHORIZATION_TOKEN),
+              makeToken(makeGrants({Action::Subscribe}, {}, {})) // verifies, but not ClientSetup
+          ))
+          .hasValue()
+  );
+
+  auto result = authenticateSetup(verifier, params);
+  ASSERT_TRUE(result.hasValue());
+  ASSERT_TRUE(result.value());
+  ASSERT_EQ(result.value()->size(), 1u);
+  EXPECT_TRUE(allowsAny(*result.value(), Action::Subscribe, TrackNamespace{}));
+}
+
+// Regression: same as above, but the only presented token fails to verify
+// outright -- connecting still must not fail, just with no pooled grants.
+TEST(
+    AuthTest,
+    AuthenticateSetupConnectsWithEmptyGrantsWhenPresentedTokenFailsToVerifyAndNotRequired
+) {
+  auto config = makeConfig();
+  config.requireSetupToken = false;
+  AuthTokenVerifier verifier(config);
+
+  auto badToken = makeToken(makeGrants({Action::ClientSetup}, {}, {}));
+  badToken.tokenValue.back() ^= 0x01; // corrupt signature
+
+  Parameters params(FrameType::CLIENT_SETUP);
+  ASSERT_TRUE(
+      params
+          .insertParam(
+              Parameter(static_cast<uint64_t>(TrackRequestParamKey::AUTHORIZATION_TOKEN), badToken)
+          )
+          .hasValue()
+  );
+
+  auto result = authenticateSetup(verifier, params);
+  ASSERT_TRUE(result.hasValue());
+  ASSERT_TRUE(result.value());
+  EXPECT_TRUE(result.value()->empty());
+}
+
+// --- max_tokens_per_message: caps per-message verification cost ---
+
+// Regression: a message over the cap is rejected outright, not truncated to
+// the first N tokens -- a covering token past the cap must not silently lose
+// to a non-covering one that happened to arrive first.
+TEST(AuthTest, AuthorizeRejectsRequestTokensBeyondMaxTokensPerMessage) {
+  TrackNamespace ns{{"live"}};
+  auto config = makeConfig();
+  config.maxTokensPerMessage = 1;
+  AuthTokenVerifier verifier(config);
+
+  Parameters params(FrameType::SUBSCRIBE);
+  ASSERT_TRUE(params
+                  .insertParam(Parameter(
+                      static_cast<uint64_t>(TrackRequestParamKey::AUTHORIZATION_TOKEN),
+                      makeToken(makeGrants({Action::Publish}, {}, {})) // 1st token: wrong action
+                  ))
+                  .hasValue());
+  ASSERT_TRUE(
+      params
+          .insertParam(Parameter(
+              static_cast<uint64_t>(TrackRequestParamKey::AUTHORIZATION_TOKEN),
+              makeToken(makeGrants({Action::Subscribe}, {}, {})) // 2nd token: would grant it
+          ))
+          .hasValue()
+  );
+  std::vector<Grants> sessionGrants; // doesn't cover the action either
+
+  // 2 tokens > cap of 1: the whole message is rejected, regardless of what
+  // either token would have granted.
+  auto result = authorize(verifier, Action::Subscribe, params, ns, sessionGrants, "video");
+  ASSERT_TRUE(result.hasError());
+  EXPECT_EQ(result.error(), AuthError::TooManyTokens);
+}
+
+TEST(AuthTest, AuthenticateSetupRejectsSetupTokensBeyondMaxTokensPerMessage) {
+  auto config = makeConfig();
+  config.maxTokensPerMessage = 1;
+  AuthTokenVerifier verifier(config);
+
+  Parameters params(FrameType::CLIENT_SETUP);
+  ASSERT_TRUE(
+      params
+          .insertParam(Parameter(
+              static_cast<uint64_t>(TrackRequestParamKey::AUTHORIZATION_TOKEN),
+              makeToken(makeGrants({Action::Subscribe}, {}, {})) // 1st token: not ClientSetup
+          ))
+          .hasValue()
+  );
+  ASSERT_TRUE(
+      params
+          .insertParam(Parameter(
+              static_cast<uint64_t>(TrackRequestParamKey::AUTHORIZATION_TOKEN),
+              makeToken(makeGrants({Action::ClientSetup}, {}, {})) // 2nd token: would grant it
+          ))
+          .hasValue()
+  );
+
+  // 2 tokens > cap of 1: the whole message is rejected, regardless of what
+  // either token would have granted.
+  auto result = authenticateSetup(verifier, params);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_EQ(result.error(), AuthError::TooManyTokens);
+}
+
+// --- Anonymous claim: a static, config-driven floor ---
+
+TEST(AuthTest, AuthorizeAnonymousClaimCoversWhatNeitherSessionNorRequestTokenCover) {
+  TrackNamespace ns{{"live"}};
+  auto config = makeConfig();
+  config.anonymousClaim = {makeAnonymousConfigScope({Action::Fetch})};
+  AuthTokenVerifier verifier(config);
+
+  Parameters params(FrameType::FETCH);                                        // no request token
+  std::vector<Grants> sessionGrants{makeGrants({Action::Subscribe}, {}, {})}; // doesn't cover Fetch
+
+  auto result = authorize(verifier, Action::Fetch, params, ns, sessionGrants, "video");
+  EXPECT_TRUE(result.hasValue());
+}
+
+TEST(AuthTest, AuthorizeAnonymousClaimDoesNotCoverActionsOutsideItsScope) {
+  TrackNamespace ns{{"live"}};
+  auto config = makeConfig();
+  config.anonymousClaim = {makeAnonymousConfigScope({Action::Fetch})};
+  AuthTokenVerifier verifier(config);
+
+  Parameters params(FrameType::PUBLISH); // no request token
+  std::vector<Grants> sessionGrants;     // empty
+
+  auto result = authorize(verifier, Action::Publish, params, ns, sessionGrants, "video");
+  ASSERT_TRUE(result.hasError());
+  EXPECT_EQ(result.error(), AuthError::Forbidden);
+}
+
+// The anonymous claim never satisfies the ClientSetup gate, even if
+// (hypothetically, bypassing config validation) it were configured to grant
+// it -- authenticateSetup() never consults anonymousGrants() at all.
+TEST(AuthTest, AuthenticateSetupAnonymousClaimNeverSatisfiesClientSetupGate) {
+  auto config = makeConfig();
+  config.anonymousClaim = {makeAnonymousConfigScope({Action::ClientSetup})};
+  AuthTokenVerifier verifier(config);
+
+  Parameters params(FrameType::CLIENT_SETUP); // no setup token at all
+  auto result = authenticateSetup(verifier, params);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_EQ(result.error(), AuthError::Missing);
+}
+
+TEST(AuthTest, AuthorizeAnonymousClaimNamespaceMatchRestrictsToConfiguredPrefix) {
+  auto config = makeConfig();
+  config.anonymousClaim = {config::AuthConfig::AnonymousScope{
+      .actions = {Action::Fetch},
+      .namespaceSegments = std::vector<std::string>{"live"},
+      .namespaceMatchMode = MatchRuleType::Prefix,
+  }};
+  AuthTokenVerifier verifier(config);
+
+  Parameters params(FrameType::FETCH); // no request token
+  std::vector<Grants> sessionGrants;   // empty
+
+  auto liveResult = authorize(
+      verifier,
+      Action::Fetch,
+      params,
+      TrackNamespace{{"live", "event1"}},
+      sessionGrants,
+      "video"
+  );
+  EXPECT_TRUE(liveResult.hasValue());
+
+  auto otherResult =
+      authorize(verifier, Action::Fetch, params, TrackNamespace{{"vod"}}, sessionGrants, "video");
+  ASSERT_TRUE(otherResult.hasError());
+  EXPECT_EQ(otherResult.error(), AuthError::Forbidden);
+}
+
+// Regression: an explicitly-configured empty namespace segment list (e.g.
+// `namespace_match: {exact: []}`) must restrict to the zero-segment
+// namespace, not silently behave like "no namespace_match configured".
+TEST(AuthTest, AuthorizeAnonymousClaimExplicitEmptyNamespaceListDoesNotMatchEverything) {
+  auto config = makeConfig();
+  config.anonymousClaim = {makeAnonymousConfigScope({Action::Fetch}, std::vector<std::string>{})};
+  AuthTokenVerifier verifier(config);
+
+  Parameters params(FrameType::FETCH); // no request token
+  std::vector<Grants> sessionGrants;   // empty
+
+  auto result =
+      authorize(verifier, Action::Fetch, params, TrackNamespace{{"live"}}, sessionGrants, "video");
+  ASSERT_TRUE(result.hasError());
+  EXPECT_EQ(result.error(), AuthError::Forbidden);
 }
