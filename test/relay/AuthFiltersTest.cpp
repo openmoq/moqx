@@ -13,8 +13,8 @@
 #include <folly/portability/GTest.h>
 #include <moxygen/test/Mocks.h>
 
-using testing::NiceMock;
 using testing::_;
+using testing::NiceMock;
 using namespace moxygen;
 using namespace openmoq::moqx;
 using namespace openmoq::moqx::auth;
@@ -28,6 +28,7 @@ config::AuthConfig makeVerifierConfig() {
       .hmacKeys = {config::AuthConfig::HmacKey{.id = "k1", .secret = "secret"}},
       .requireSetupToken = true,
       .allowRequestTokenOverride = true,
+      .maxTokensPerMessage = 4,
   };
 }
 
@@ -92,8 +93,8 @@ protected:
 // Two session-grants entries where only the second covers Subscribe: the
 // filter must permit it (any pool element satisfying is enough).
 TEST_F(AuthFiltersTest, SubscribeSucceedsWhenAnySessionGrantCoversIt) {
-  auto filter = makePublisherFilter({makeGrants({Action::Publish}), makeGrants({Action::Subscribe})}
-  );
+  auto filter =
+      makePublisherFilter({makeGrants({Action::Publish}), makeGrants({Action::Subscribe})});
 
   SubscribeOk ok;
   ok.requestID = RequestID(1);
@@ -174,15 +175,17 @@ TEST_F(AuthFiltersTest, PublishSucceedsWithRequestTokenWhenSessionGrantsDoNotCov
   auto filter = makeSubscriberFilter({makeGrants({Action::Subscribe})});
 
   EXPECT_CALL(*subscriberInner_, publish(_, _))
-      .WillOnce([](PublishRequest pub,
-                    std::shared_ptr<SubscriptionHandle>) -> Subscriber::PublishResult {
-        PublishOk ok;
-        ok.requestID = pub.requestID;
-        return Subscriber::PublishConsumerAndReplyTask{
-            .consumer = nullptr,
-            .reply = folly::coro::makeTask<folly::Expected<PublishOk, PublishError>>(std::move(ok)),
-        };
-      });
+      .WillOnce(
+          [](PublishRequest pub, std::shared_ptr<SubscriptionHandle>) -> Subscriber::PublishResult {
+            PublishOk ok;
+            ok.requestID = pub.requestID;
+            return Subscriber::PublishConsumerAndReplyTask{
+                .consumer = nullptr,
+                .reply =
+                    folly::coro::makeTask<folly::Expected<PublishOk, PublishError>>(std::move(ok)),
+            };
+          }
+      );
 
   PublishRequest pub;
   pub.requestID = RequestID(5);
@@ -190,4 +193,90 @@ TEST_F(AuthFiltersTest, PublishSucceedsWithRequestTokenWhenSessionGrantsDoNotCov
   pub.params = withAuthToken(FrameType::PUBLISH, makeSignedToken({Action::Publish}));
   auto result = filter->publish(std::move(pub), nullptr);
   EXPECT_TRUE(result.hasValue());
+}
+
+// --- Anonymous claim: end-to-end through the auth filters ---
+
+// A service-wide floor lets anyone subscribe/fetch without a token, while
+// publish still requires one -- even with sessionGrants empty (as if
+// require_setup_token: false and no setup token was ever presented).
+TEST(
+    AuthFiltersAnonymousClaimTest,
+    SubscribeAndFetchAllowedAnonymouslyWhilePublishStillNeedsToken
+) {
+  auto config = makeVerifierConfig();
+  config.anonymousClaim = {
+      config::AuthConfig::AnonymousScope{.actions = {Action::Subscribe, Action::Fetch}},
+  };
+  auto verifier = std::make_shared<const AuthTokenVerifier>(config);
+  auto publisherInner = std::make_shared<NiceMock<MockPublisher>>();
+  auto subscriberInner = std::make_shared<NiceMock<MockSubscriber>>();
+  auto emptySessionGrants = std::make_shared<const std::vector<Grants>>();
+
+  AuthPublisherFilter
+      pubFilter(publisherInner, verifier, emptySessionGrants, /*peeringEnabled=*/false);
+  AuthSubscriberFilter subFilter(subscriberInner, verifier, emptySessionGrants);
+
+  // Subscribe: anonymous claim covers it.
+  SubscribeOk subOk;
+  subOk.requestID = RequestID(1);
+  auto subHandle = std::make_shared<NiceMock<MockSubscriptionHandle>>(subOk);
+  EXPECT_CALL(*publisherInner, subscribe(_, _))
+      .WillOnce(
+          [subHandle](SubscribeRequest, std::shared_ptr<TrackConsumer>)
+              -> folly::coro::Task<Publisher::SubscribeResult> {
+            co_return folly::makeExpected<SubscribeError>(
+                std::shared_ptr<SubscriptionHandle>(subHandle)
+            );
+          }
+      );
+  SubscribeRequest sub;
+  sub.requestID = RequestID(1);
+  sub.fullTrackName = FullTrackName{TrackNamespace{{"live"}}, "video"};
+  EXPECT_TRUE(folly::coro::blockingWait(pubFilter.subscribe(std::move(sub), nullptr)).hasValue());
+
+  // Fetch: anonymous claim covers it.
+  EXPECT_CALL(*publisherInner, fetch(_, _))
+      .WillOnce(
+          [](Fetch f, std::shared_ptr<FetchConsumer>) -> folly::coro::Task<Publisher::FetchResult> {
+            auto handle =
+                std::make_shared<NiceMock<MockFetchHandle>>(FetchOk{.requestID = f.requestID});
+            co_return folly::makeExpected<FetchError>(std::shared_ptr<Publisher::FetchHandle>(handle
+            ));
+          }
+      );
+  Fetch fetch(
+      RequestID(2),
+      FullTrackName{TrackNamespace{{"live"}}, "video"},
+      AbsoluteLocation{0, 0},
+      AbsoluteLocation{1, 0}
+  );
+  EXPECT_TRUE(folly::coro::blockingWait(pubFilter.fetch(std::move(fetch), nullptr)).hasValue());
+
+  // Publish: the anonymous claim doesn't cover it -- rejected without a token.
+  PublishRequest pubNoToken;
+  pubNoToken.requestID = RequestID(3);
+  pubNoToken.fullTrackName = FullTrackName{TrackNamespace{{"live"}}, "video"};
+  auto noTokenResult = subFilter.publish(std::move(pubNoToken), nullptr);
+  ASSERT_FALSE(noTokenResult.hasValue());
+  EXPECT_EQ(noTokenResult.error().errorCode, PublishErrorCode::UNAUTHORIZED);
+
+  // Publish: a per-request token additively unlocks it.
+  EXPECT_CALL(*subscriberInner, publish(_, _))
+      .WillOnce(
+          [](PublishRequest p, std::shared_ptr<SubscriptionHandle>) -> Subscriber::PublishResult {
+            PublishOk ok;
+            ok.requestID = p.requestID;
+            return Subscriber::PublishConsumerAndReplyTask{
+                .consumer = nullptr,
+                .reply =
+                    folly::coro::makeTask<folly::Expected<PublishOk, PublishError>>(std::move(ok)),
+            };
+          }
+      );
+  PublishRequest pubWithToken;
+  pubWithToken.requestID = RequestID(4);
+  pubWithToken.fullTrackName = FullTrackName{TrackNamespace{{"live"}}, "video"};
+  pubWithToken.params = withAuthToken(FrameType::PUBLISH, makeSignedToken({Action::Publish}));
+  EXPECT_TRUE(subFilter.publish(std::move(pubWithToken), nullptr).hasValue());
 }

@@ -73,12 +73,16 @@ static_assert(
     "CacheConfig changed — update serializeCache()"
 );
 static_assert(
-    rfl::internal::num_fields<AuthConfig> == 6,
+    rfl::internal::num_fields<AuthConfig> == 8,
     "AuthConfig changed — update serializeAuth()"
 );
 static_assert(
     rfl::internal::num_fields<AuthConfig::HmacKey> == 2,
     "HmacKey changed — update serializeAuth()"
+);
+static_assert(
+    rfl::internal::num_fields<AuthConfig::AnonymousScope> == 5,
+    "AnonymousScope changed — update serializeAuth()"
 );
 static_assert(
     rfl::internal::num_fields<UpstreamConfig> == 4,

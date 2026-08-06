@@ -10,6 +10,7 @@
 #include <string_view>
 #include <variant>
 
+#include "auth/Action.h"
 #include "config/Config.h"
 
 // Format-agnostic walk over a resolved Config. The walker lives next to the
@@ -51,6 +52,20 @@ inline std::string_view quicStackName(QuicStack s) {
     return "picoquic";
   case QuicStack::ProxygenQmux:
     return "proxygen_qmux";
+  }
+  return "unknown";
+}
+
+inline std::string_view matchRuleTypeName(auth::MatchRuleType m) {
+  switch (m) {
+  case auth::MatchRuleType::Exact:
+    return "exact";
+  case auth::MatchRuleType::Prefix:
+    return "prefix";
+  case auth::MatchRuleType::Suffix:
+    return "suffix";
+  case auth::MatchRuleType::Contains:
+    return "contains";
   }
   return "unknown";
 }
@@ -190,6 +205,7 @@ inline void serializeAuth(ConfigSink& s, const AuthConfig& a) {
   s.boolField("require_setup_token", a.requireSetupToken);
   s.boolField("allow_request_token_override", a.allowRequestTokenOverride);
   s.boolField("strict_claims", a.strictClaims);
+  s.uintField("max_tokens_per_message", a.maxTokensPerMessage);
   s.beginArray("hmac_keys");
   for (const auto& k : a.hmacKeys) {
     s.beginObject("");
@@ -197,6 +213,31 @@ inline void serializeAuth(ConfigSink& s, const AuthConfig& a) {
     // Signing secrets are never serialized — redacted at the source so no sink
     // can leak them (e.g. over the /config admin endpoint).
     s.stringField("secret", "<redacted>");
+    s.endObject();
+  }
+  s.endArray();
+  s.beginArray("anonymous_claim");
+  for (const auto& scope : a.anonymousClaim) {
+    s.beginObject("");
+    s.beginArray("actions");
+    for (const auto& action : scope.actions) {
+      s.stringField("", auth::actionName(action));
+    }
+    s.endArray();
+    s.beginArray("namespace_segments");
+    if (scope.namespaceSegments) {
+      for (const auto& seg : *scope.namespaceSegments) {
+        s.stringField("", seg);
+      }
+    }
+    s.endArray();
+    s.stringField("namespace_match_mode", matchRuleTypeName(scope.namespaceMatchMode));
+    if (scope.trackName) {
+      s.stringField("track_name", *scope.trackName);
+    } else {
+      s.nullField("track_name");
+    }
+    s.stringField("track_match_mode", matchRuleTypeName(scope.trackMatchMode));
     s.endObject();
   }
   s.endArray();
