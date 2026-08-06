@@ -28,8 +28,9 @@ listener_defaults:         # optional; QUIC defaults inherited by all listeners
 listeners:                 # required; at least one
   - { ... }
 
-service_defaults:          # optional; cache defaults inherited by all services
+service_defaults:          # optional; cache and auth defaults inherited by all services
   cache: { ... }
+  auth: { max_tokens_per_message: 4 }
 
 services:                  # required; at least one
   my-service:
@@ -165,6 +166,10 @@ services:
       require_setup_token: true
       allow_request_token_override: true
       strict_claims: false
+      max_tokens_per_message: 4
+      anonymous_claim:
+        - actions: [subscribe, fetch]
+          namespace_match: {prefix: ["live"]}
 ```
 
 | Field | Default | Notes |
@@ -172,12 +177,59 @@ services:
 | `enabled` | `false` | Enables CAT-style authorization for this service. |
 | `token_type` | `0` | MOQT `AUTHORIZATION_TOKEN` type to accept. Use `16` with CAT4MOQ tokens produced for moqxr's CAT wrapper. Type `0` is valid for private or out-of-band deployments. The value must fit in a QUIC variable integer. |
 | `hmac_keys` | empty | Required when `enabled: true`. Each key needs a non-empty `id` and `secret`; duplicate key IDs are rejected. The token issuer must use the same key ID and secret. |
-| `require_setup_token` | `true` | Requires a valid setup token authorizing `client_setup` during CLIENT_SETUP. If `false`, clients can connect without setup grants, but publish/subscribe requests still need an authorized setup or request token. |
-| `allow_request_token_override` | `true` | Allows a token on a request to replace the session setup grants for that request. If `false`, request tokens are ignored and authorization uses only the setup token grants. |
+| `require_setup_token` | `true` | Requires a valid setup token authorizing `client_setup` during session setup. If `false`, clients can connect without setup grants; per-request actions still need an authorized token or a matching `anonymous_claim` entry. |
+| `allow_request_token_override` | `true` | Lets a token on a request count as one more candidate grant for that request, alongside the session's setup-token grants and `anonymous_claim`. If `false`, request tokens are ignored and authorization uses only the setup token grants and `anonymous_claim`. |
 | `strict_claims` | `false` | Rejects unsupported claims when `true`. Keep this `false` for current CAT4MOQ interop unless every issuer is known to send only supported claims. |
+| `max_tokens_per_message` | none | Required when `enabled: true`, directly or via `service_defaults.auth.max_tokens_per_message`. Caps how many `AUTHORIZATION_TOKEN` params of the configured `token_type` a single SETUP or request message may carry; a message over the cap is rejected outright, not truncated. Params of other token types are not counted. Bounds per-message verification cost against a client attaching many tokens to one message. Must be >= 1. |
+| `anonymous_claim` | empty | Statically-granted scopes applied to every request on this service, regardless of what token (if any) authenticated it. See [Anonymous Claim](#anonymous-claim) below. |
 
 The relay only verifies tokens; it does not call an external grant handler.
 Grant decisions are encoded by the token issuer as CAT4MOQ actions and scopes.
+
+A message (SETUP or any per-request message) may carry more than one
+`AUTHORIZATION_TOKEN` of the configured `token_type`, up to
+`max_tokens_per_message`; a message carrying more than that is rejected
+outright. Within the cap, a request is authorized if
+any one of the tokens present verifies and covers the action; a token that
+fails to verify is simply not counted as a candidate rather than failing the
+request outright, as long as some other token, the session's setup grants, or
+`anonymous_claim` covers it.
+
+### Anonymous Claim
+
+`anonymous_claim` grants a floor of access to every request on the service,
+whether or not the request carries a token at all, whether or not a setup
+token was presented, and regardless of what any presented token grants. It
+never authorizes `client_setup`/`server_setup` — connecting still needs a
+valid setup token whenever `require_setup_token: true`; the claim only ever
+widens what an already-connected session (or an anonymous one, when
+`require_setup_token: false`) can do per request.
+
+```yaml
+auth:
+  enabled: true
+  hmac_keys: [{id: "cat-dev", secret: "replace-with-long-random-secret"}]
+  require_setup_token: true
+  max_tokens_per_message: 4
+  anonymous_claim:
+    - actions: [subscribe, fetch]
+      namespace_match: {prefix: ["live"]}
+      track_match: {exact: "video"}
+```
+
+Each entry:
+- `actions` — one or more action names from the table below (aliases and
+  numeric IDs accepted, same as `moqx-issuer`'s `--auth-actions`).
+  `client_setup`/`server_setup` are rejected.
+- `namespace_match` — optional; a list of namespace segments matched by
+  `exact`, `prefix`, `suffix`, or `contains`. Omit to match any namespace.
+- `track_match` — optional; a single track name matched by `exact`, `prefix`,
+  `suffix`, or `contains`. Omit to match any track.
+
+The four match modes are the same `BinaryMatchType` (exact/prefix/suffix/contains)
+CAT4MOQ tokens use for their own namespace/track claims, so an `anonymous_claim`
+scope matches namespaces and tracks with identical semantics to a token-granted
+scope.
 
 ### Issuing Tokens
 
@@ -284,6 +336,7 @@ key ID, waiting for old tokens to expire, then removing the old key.
 namespace, or wrong track is rejected.
 - Auth is currently service-local. Upstream relay connections still have no
 application-level credential exchange beyond TLS.
+- `max_tokens_per_message` is inheritable from `service_defaults.auth`
 
 ---
 

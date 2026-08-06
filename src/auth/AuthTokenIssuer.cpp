@@ -6,6 +6,7 @@
 
 #include "auth/AuthTokenIssuer.h"
 
+#include "auth/Action.h"
 #include "auth/HmacKey.h"
 
 #include <catapult/crypto.hpp>
@@ -22,18 +23,6 @@
 
 namespace openmoq::moqx::auth {
 namespace {
-
-std::string canonicalNamespace(const moxygen::TrackNamespace& ns) {
-  std::string out;
-  for (const auto& field : ns.trackNamespace) {
-    out.push_back(static_cast<char>((field.size() >> 24) & 0xff));
-    out.push_back(static_cast<char>((field.size() >> 16) & 0xff));
-    out.push_back(static_cast<char>((field.size() >> 8) & 0xff));
-    out.push_back(static_cast<char>(field.size() & 0xff));
-    out.append(field);
-  }
-  return out;
-}
 
 catapult::MoqtCompoundMatch toCatapultMatch(const std::vector<MatchRule>& rules) {
   if (rules.empty()) {
@@ -98,43 +87,9 @@ std::string trim(std::string_view value) {
   return std::string(begin, end);
 }
 
-std::string normalizeActionName(std::string_view value) {
-  auto out = trim(value);
-  std::replace(out.begin(), out.end(), '-', '_');
-  std::transform(out.begin(), out.end(), out.begin(), [](unsigned char c) {
-    return static_cast<char>(std::tolower(c));
-  });
-  return out;
-}
-
 Action parseAction(std::string_view value) {
-  const auto name = normalizeActionName(value);
-  if (name == "client_setup" || name == "setup" || name == "0") {
-    return Action::ClientSetup;
-  }
-  if (name == "server_setup" || name == "1") {
-    return Action::ServerSetup;
-  }
-  if (name == "publish_namespace" || name == "announce" || name == "2") {
-    return Action::PublishNamespace;
-  }
-  if (name == "subscribe_namespace" || name == "3") {
-    return Action::SubscribeNamespace;
-  }
-  if (name == "subscribe" || name == "4") {
-    return Action::Subscribe;
-  }
-  if (name == "request_update" || name == "subscribe_update" || name == "5") {
-    return Action::RequestUpdate;
-  }
-  if (name == "publish" || name == "6") {
-    return Action::Publish;
-  }
-  if (name == "fetch" || name == "7") {
-    return Action::Fetch;
-  }
-  if (name == "track_status" || name == "8") {
-    return Action::TrackStatus;
+  if (auto action = canonicalAction(value)) {
+    return *action;
   }
   throw std::invalid_argument("unknown CAT4MOQ action: " + std::string(value));
 }
