@@ -22,6 +22,7 @@
 #include "stats/TrackStatsRegistry.h"
 #include <moxygen/MoQSession.h>
 #include <moxygen/relay/MoQForwarder.h>
+#include <moxygen/util/TimedBaton.h>
 
 #include <folly/Executor.h>
 #include <folly/ThreadLocal.h>
@@ -114,6 +115,7 @@ public:
   static constexpr uint64_t kDefaultMaxDeselected = 0;
   static constexpr std::chrono::milliseconds kDefaultIdleTimeout{10'000};
   static constexpr std::chrono::milliseconds kDefaultActivityThreshold{2'000};
+  static constexpr std::chrono::milliseconds kMaxRendezvousTimeout{30'000};
 
   // relayExec, when set, is owned by the relay and isolates all state on it;
   // null runs everything on the calling thread. useLocalForwarders (requires
@@ -656,6 +658,56 @@ private:
 
   std::unique_ptr<MoqxCache> cache_;
   uint64_t maxDeselected_{kDefaultMaxDeselected};
+
+  // === Pending rendezvous (draft 18+ SUBSCRIBE with RENDEZVOUS_TIMEOUT) ===
+  // Subscribers waiting on a namespace/track that isn't published yet, indexed
+  // by namespace prefix. Woken by doPublishNamespace()/publishWithSession() when
+  // matching content arrives; otherwise PendingRendezvous::baton times out.
+
+  struct PendingRendezvousNode {
+    using WaiterList = std::vector<std::shared_ptr<moxygen::TimedBaton>>;
+
+    bool empty() const { return children.empty() && waitersByTrack.empty(); }
+
+    folly::F14FastMap<std::string, std::unique_ptr<PendingRendezvousNode>> children;
+    folly::F14FastMap<std::string, WaiterList> waitersByTrack;
+  };
+
+  PendingRendezvousNode pendingRendezvousRoot_;
+
+  PendingRendezvousNode& findOrCreatePendingRendezvousNode(const moxygen::TrackNamespace& ns);
+  void addPendingRendezvous(
+      const moxygen::FullTrackName& ftn,
+      const std::shared_ptr<moxygen::TimedBaton>& waiter
+  );
+  void erasePendingRendezvous(
+      const moxygen::FullTrackName& ftn,
+      const std::shared_ptr<moxygen::TimedBaton>& waiter
+  );
+  void erasePendingRendezvousFromNode(
+      PendingRendezvousNode& node,
+      const moxygen::FullTrackName& ftn,
+      size_t namespaceIndex,
+      const std::shared_ptr<moxygen::TimedBaton>& waiter
+  );
+  static void wakePendingRendezvousSubtree(PendingRendezvousNode& node);
+  void applyFnAtNamespaceNode(
+      const moxygen::TrackNamespace& ns,
+      folly::FunctionRef<void(PendingRendezvousNode&)> onNode
+  );
+  void wakePendingRendezvousForTrack(const moxygen::FullTrackName& ftn);
+  void wakePendingRendezvousUnderNamespace(const moxygen::TrackNamespace& ns);
+
+  std::optional<std::chrono::milliseconds> requestedRendezvousTimeout(
+      const moxygen::SubscribeRequest& subReq,
+      const std::shared_ptr<moxygen::MoQSession>& session
+  ) const;
+
+  // Runs on relayExec_ (or inline in SingleThread mode). Pure existence check + wait;
+  folly::coro::Task<std::optional<moxygen::SubscribeError>> rendezvousWithPublisherOrTimeout(
+      const moxygen::SubscribeRequest& subReq,
+      std::chrono::milliseconds timeout
+  );
 
   std::chrono::milliseconds idleTimeout_{kDefaultIdleTimeout};
   std::chrono::milliseconds activityThreshold_{kDefaultActivityThreshold};

@@ -67,6 +67,7 @@ moqx_add_gtest(moqx_relay_test
     MoqxRelayTracksTests.cpp
     MoqxRelayTrackStatsTests.cpp
     MoqxRelayStateTests.cpp
+    MoqxRelayRendezvousTests.cpp
     MoqxRelayTestModes.cpp
   LIBS moqx_test_fixture moqx_test_main
 )
