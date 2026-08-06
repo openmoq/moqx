@@ -62,12 +62,12 @@ void MoQRelayTest::resetRelay(
   relay_ = std::make_shared<MoqxRelay>(
       std::move(cache),
       relayID,
+      relayHopID,
       std::move(relayExec),
       useLocalForwarders,
       MoqxRelay::kDefaultMaxDeselected,
       MoqxRelay::kDefaultIdleTimeout,
-      MoqxRelay::kDefaultActivityThreshold,
-      relayHopID
+      MoqxRelay::kDefaultActivityThreshold
   );
   if (relayEvb_) {
     if (relayMode() == RelayMode::LocalForwarderMT) {
@@ -98,11 +98,7 @@ std::shared_ptr<MockMoQSession> MoQRelayTest::createMockSession() {
   auto session = std::make_shared<NiceMock<MockMoQSession>>(exec_);
   ON_CALL(*session, getNegotiatedVersion())
       .WillByDefault(Return(std::optional<uint64_t>(kVersionDraftCurrent)));
-  ON_CALL(*session, isRelayHopsNegotiated()).WillByDefault(Return(false));
-  auto* sessionPtr = session.get();
-  ON_CALL(*session, getRelayHopSourceID()).WillByDefault([sessionPtr] {
-    return sessionPtr->MoQSession::getRelayHopSourceID();
-  });
+  ON_CALL(*session, isSetupOptionNegotiated(SetupKey::RELAY_HOPS)).WillByDefault(Return(false));
   auto state = getOrCreateMockState(session);
   return session;
 }

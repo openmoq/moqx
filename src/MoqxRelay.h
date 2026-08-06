@@ -30,6 +30,11 @@
 
 namespace openmoq::moqx {
 
+// Draft 16 encodes Hop IDs as QUIC variable-length integers.
+inline constexpr uint64_t kMaxRelayHopID = (uint64_t{1} << 62) - 1;
+
+uint64_t generateRelayHopID();
+
 class CrossExecFilter;
 
 // Visitor interface for relay state inspection.
@@ -111,19 +116,19 @@ public:
   explicit MoqxRelay(
       config::CacheConfig cache = {},
       std::string relayID = {},
+      uint64_t relayHopID = 0,
       std::shared_ptr<folly::Executor> relayExec = nullptr,
       bool useLocalForwarders = false,
       uint64_t maxDeselected = kDefaultMaxDeselected,
       std::chrono::milliseconds idleTimeout = kDefaultIdleTimeout,
-      std::chrono::milliseconds activityThreshold = kDefaultActivityThreshold,
-      uint64_t relayHopID = 0
+      std::chrono::milliseconds activityThreshold = kDefaultActivityThreshold
   )
       : relayID_(std::move(relayID)),
-        relayHopID_(relayHopID == 0 ? moxygen::generateRelayHopID() : relayHopID),
+        relayHopID_(relayHopID == 0 ? generateRelayHopID() : relayHopID),
         ownedRelayExec_(std::move(relayExec)), relayExec_(ownedRelayExec_.get()),
         useLocalForwarders_(useLocalForwarders), maxDeselected_(maxDeselected),
         idleTimeout_(idleTimeout), activityThreshold_(activityThreshold) {
-    XCHECK_LE(relayHopID_, moxygen::kMaxRelayHopID);
+    XCHECK_LE(relayHopID_, kMaxRelayHopID);
     if (cache.maxCachedTracks > 0) {
       cache_ = std::make_unique<MoqxCache>(cache.maxCachedTracks, cache.maxCachedGroupsPerTrack);
       cache_->setMaxCachedBytes(static_cast<size_t>(cache.maxCachedMb) * 1024 * 1024);
@@ -401,7 +406,9 @@ private:
   onTrackEvicted(const moxygen::FullTrackName& ftn, std::shared_ptr<moxygen::MoQSession> session);
 
   moxygen::TrackNamespace allowedNamespacePrefix_;
+  // Operational identity used by relay authentication and upstream routing.
   std::string relayID_;
+  // Opaque random protocol identity required by draft-lcurley-moq-relay-hops.
   uint64_t relayHopID_;
   std::shared_ptr<UpstreamProvider> upstream_;
 
@@ -417,6 +424,12 @@ private:
   // connected to us. Kept alive so the subscription is not immediately
   // cancelled. Keyed by raw session pointer (valid for session lifetime).
   folly::F14FastMap<moxygen::MoQSession*, PeerInfo> peerSubNsHandles_;
+
+  struct LegacyPublisherHopID {
+    std::weak_ptr<moxygen::MoQSession> session;
+    uint64_t hopID;
+  };
+  folly::F14FastMap<const moxygen::MoQSession*, LegacyPublisherHopID> legacyPublisherHopIDs_;
   SubscriptionRegistry registry_;
 
   std::shared_ptr<moxygen::TrackConsumer> getSubscribeWriteback(
@@ -427,7 +440,9 @@ private:
   std::optional<std::vector<uint64_t>> ingestRelayHopPath(
       const moxygen::PublishNamespace& pubNs,
       const std::shared_ptr<moxygen::MoQSession>& session
-  ) const;
+  );
+
+  uint64_t getOrCreateLegacyPublisherHopID(const std::shared_ptr<moxygen::MoQSession>& session);
 
   // Result of joinOrPrepareUpstreamSubscription (runs on relayExec_).
   struct StatefulSubscribeResult {

@@ -409,6 +409,8 @@ folly::coro::Task<void> UpstreamProvider::doConnect() {
       MoQRelaySession::createRelaySessionFactory(),
       verifier_
   );
+  // Advertise on every upstream session. The extension stays inactive unless
+  // the peer also advertises it.
   client_->addSetupParameter(
       SetupParameter(folly::to_underlying(SetupKey::RELAY_HOPS), std::string{})
   );

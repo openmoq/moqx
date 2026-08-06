@@ -26,16 +26,14 @@ public:
 };
 
 TEST_P(MoQRelayTest, LegacyPublisherSynthesizesStableOriginAndAppendsRelayHop) {
-  constexpr uint64_t kSourceHop = 101;
   constexpr uint64_t kRelayHop = 900;
   resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "", kRelayHop);
 
   auto publisher = createMockSession();
-  ON_CALL(*publisher, getRelayHopSourceID()).WillByDefault(Return(kSourceHop));
   auto subscriber = createMockSession();
   ON_CALL(*subscriber, getNegotiatedVersion())
       .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
-  ON_CALL(*subscriber, isRelayHopsNegotiated()).WillByDefault(Return(true));
+  ON_CALL(*subscriber, isSetupOptionNegotiated(SetupKey::RELAY_HOPS)).WillByDefault(Return(true));
   auto namespaceHandle = std::make_shared<RecordingNamespacePublishHandle>();
   doSubscribeNamespace(subscriber, kTestNamespace, true, namespaceHandle);
 
@@ -49,7 +47,10 @@ TEST_P(MoQRelayTest, LegacyPublisherSynthesizesStableOriginAndAppendsRelayHop) {
       kVersionDraft16
   );
   ASSERT_TRUE(path.hasValue());
-  EXPECT_EQ(path.value(), (std::vector<uint64_t>{kSourceHop, kRelayHop}));
+  ASSERT_EQ(path->size(), 2);
+  EXPECT_GT(path->front(), 0);
+  EXPECT_LE(path->front(), kMaxRelayHopID);
+  EXPECT_EQ(path->back(), kRelayHop);
 
   doPublishNamespace(publisher, TrackNamespace{{"test", "namespace", "child"}});
   driveIfMultiThread();
@@ -64,13 +65,47 @@ TEST_P(MoQRelayTest, LegacyPublisherSynthesizesStableOriginAndAppendsRelayHop) {
   driveIfMultiThread();
 }
 
+TEST_P(MoQRelayTest, LegacyPublishersReceiveDistinctOriginHopIDs) {
+  constexpr uint64_t kRelayHop = 900;
+  resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "", kRelayHop);
+
+  auto subscriber = createMockSession();
+  ON_CALL(*subscriber, getNegotiatedVersion())
+      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
+  ON_CALL(*subscriber, isSetupOptionNegotiated(SetupKey::RELAY_HOPS)).WillByDefault(Return(true));
+  auto namespaceHandle = std::make_shared<RecordingNamespacePublishHandle>();
+  doSubscribeNamespace(subscriber, TrackNamespace{}, true, namespaceHandle);
+
+  auto publisherA = createMockSession();
+  auto publisherB = createMockSession();
+  doPublishNamespace(publisherA, TrackNamespace{{"publisher-a"}});
+  doPublishNamespace(publisherB, TrackNamespace{{"publisher-b"}});
+  driveIfMultiThread();
+
+  ASSERT_EQ(namespaceHandle->namespaces.size(), 2);
+  auto pathA =
+      decodeRelayHopPath(namespaceHandle->namespaces[0].params.at(0).asString, kVersionDraft16);
+  auto pathB =
+      decodeRelayHopPath(namespaceHandle->namespaces[1].params.at(0).asString, kVersionDraft16);
+  ASSERT_TRUE(pathA.hasValue());
+  ASSERT_TRUE(pathB.hasValue());
+  ASSERT_EQ(pathA->size(), 2);
+  ASSERT_EQ(pathB->size(), 2);
+  EXPECT_NE(pathA->front(), pathB->front());
+
+  removeSession(publisherA);
+  removeSession(publisherB);
+  removeSession(subscriber);
+  driveIfMultiThread();
+}
+
 TEST_P(MoQRelayTest, RelayHopLoopIsDroppedBeforeNamespaceRegistration) {
   constexpr uint64_t kRelayHop = 900;
   resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "", kRelayHop);
   auto publisher = createMockSession();
   ON_CALL(*publisher, getNegotiatedVersion())
       .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
-  ON_CALL(*publisher, isRelayHopsNegotiated()).WillByDefault(Return(true));
+  ON_CALL(*publisher, isSetupOptionNegotiated(SetupKey::RELAY_HOPS)).WillByDefault(Return(true));
 
   PublishNamespace pubNs;
   pubNs.trackNamespace = kTestNamespace;
@@ -96,7 +131,7 @@ TEST_P(MoQRelayTest, NegotiatedPublisherWithoutHopPathIsDropped) {
   auto publisher = createMockSession();
   ON_CALL(*publisher, getNegotiatedVersion())
       .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
-  ON_CALL(*publisher, isRelayHopsNegotiated()).WillByDefault(Return(true));
+  ON_CALL(*publisher, isSetupOptionNegotiated(SetupKey::RELAY_HOPS)).WillByDefault(Return(true));
 
   PublishNamespace pubNs;
   pubNs.trackNamespace = kTestNamespace;
@@ -119,7 +154,7 @@ TEST_P(MoQRelayTest, MalformedRelayHopPathClosesSourceSession) {
   auto publisher = createMockSession();
   ON_CALL(*publisher, getNegotiatedVersion())
       .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
-  ON_CALL(*publisher, isRelayHopsNegotiated()).WillByDefault(Return(true));
+  ON_CALL(*publisher, isSetupOptionNegotiated(SetupKey::RELAY_HOPS)).WillByDefault(Return(true));
 
   PublishNamespace pubNs;
   pubNs.trackNamespace = kTestNamespace;
@@ -147,7 +182,7 @@ TEST_P(MoQRelayTest, ExcludeHopSuppressesOriginIntermediateAndLocalMatches) {
   auto publisher = createMockSession();
   ON_CALL(*publisher, getNegotiatedVersion())
       .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
-  ON_CALL(*publisher, isRelayHopsNegotiated()).WillByDefault(Return(true));
+  ON_CALL(*publisher, isSetupOptionNegotiated(SetupKey::RELAY_HOPS)).WillByDefault(Return(true));
 
   std::vector<std::shared_ptr<MockMoQSession>> subscribers;
   std::vector<std::shared_ptr<RecordingNamespacePublishHandle>> namespaceHandles;
@@ -156,7 +191,7 @@ TEST_P(MoQRelayTest, ExcludeHopSuppressesOriginIntermediateAndLocalMatches) {
     auto subscriber = createMockSession();
     ON_CALL(*subscriber, getNegotiatedVersion())
         .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
-    ON_CALL(*subscriber, isRelayHopsNegotiated()).WillByDefault(Return(true));
+    ON_CALL(*subscriber, isSetupOptionNegotiated(SetupKey::RELAY_HOPS)).WillByDefault(Return(true));
     auto namespaceHandle = std::make_shared<RecordingNamespacePublishHandle>();
     SubscribeNamespace subNs;
     subNs.trackNamespacePrefix = kTestNamespace;
@@ -208,7 +243,7 @@ TEST_P(MoQRelayTest, NonNegotiatedSubscriberReceivesLegacyNamespaceMessage) {
   auto publisher = createMockSession();
   ON_CALL(*publisher, getNegotiatedVersion())
       .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
-  ON_CALL(*publisher, isRelayHopsNegotiated()).WillByDefault(Return(true));
+  ON_CALL(*publisher, isSetupOptionNegotiated(SetupKey::RELAY_HOPS)).WillByDefault(Return(true));
   auto subscriber = createMockSession();
   ON_CALL(*subscriber, getNegotiatedVersion())
       .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));

@@ -42,12 +42,12 @@ MoqxRelayContext::MoqxRelayContext(
       auto relay = std::make_shared<MoqxRelay>(
           svc.cache,
           relayID,
+          relayHopID_,
           std::make_shared<moxygen::MoQFollyExecutorImpl>(evbs[i++].get()),
           useLocalForwarders,
           MoqxRelay::kDefaultMaxDeselected,
           MoqxRelay::kDefaultIdleTimeout,
-          MoqxRelay::kDefaultActivityThreshold,
-          relayHopID_
+          MoqxRelay::kDefaultActivityThreshold
       );
       services_.emplace(
           name,
@@ -63,12 +63,12 @@ MoqxRelayContext::MoqxRelayContext(
       auto relay = std::make_shared<MoqxRelay>(
           svc.cache,
           relayID,
+          relayHopID_,
           nullptr,
           false,
           MoqxRelay::kDefaultMaxDeselected,
           MoqxRelay::kDefaultIdleTimeout,
-          MoqxRelay::kDefaultActivityThreshold,
-          relayHopID_
+          MoqxRelay::kDefaultActivityThreshold
       );
       services_.emplace(
           name,

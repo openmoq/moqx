@@ -82,6 +82,8 @@ MoqxQmuxRelayServer::MoqxQmuxRelayServer(
           buildQmuxConfig(listenerCfg.quic)
       ),
       listenerCfg_(listenerCfg), context_(std::move(context)), ioExecutor_(ioExecutor) {
+  // Advertise on every listener: activation is bilateral and loop protection
+  // must not vary by listener configuration.
   addSetupParameter(SetupParameter(folly::to_underlying(SetupKey::RELAY_HOPS), std::string{}));
 }
 
