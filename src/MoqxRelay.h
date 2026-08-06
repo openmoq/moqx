@@ -18,6 +18,7 @@
 #include "relay/RelayExecUtil.h"
 #include <moxygen/MoQSession.h>
 #include <moxygen/relay/MoQForwarder.h>
+#include <moxygen/util/TimedBaton.h>
 
 #include <folly/Executor.h>
 #include <folly/ThreadLocal.h>
@@ -584,6 +585,50 @@ private:
   folly::ThreadLocalPtr<LocalForwarderRegistry> tlForwarders_;
   std::unique_ptr<MoqxCache> cache_;
   uint64_t maxDeselected_{kDefaultMaxDeselected};
+
+  // === Pending rendezvous (draft 18+ SUBSCRIBE with RENDEZVOUS_TIMEOUT) ===
+  // Subscribers waiting on a namespace/track that isn't published yet, indexed
+  // by namespace prefix. Woken by doPublishNamespace()/publishWithSession() when
+  // matching content arrives; otherwise PendingRendezvous::baton times out.
+  struct PendingRendezvous {
+    moxygen::FullTrackName fullTrackName;
+    std::shared_ptr<moxygen::MoQSession> downstreamSession;
+    moxygen::TimedBaton baton;
+  };
+
+  struct PendingRendezvousNode {
+    using WaiterList = std::vector<std::shared_ptr<PendingRendezvous>>;
+
+    bool empty() const { return children.empty() && waitersByTrack.empty(); }
+
+    folly::F14FastMap<std::string, std::unique_ptr<PendingRendezvousNode>> children;
+    folly::F14FastMap<std::string, WaiterList> waitersByTrack;
+  };
+
+  PendingRendezvousNode pendingRendezvousRoot_;
+
+  PendingRendezvousNode& findOrCreatePendingRendezvousNode(const moxygen::TrackNamespace& ns);
+  void addPendingRendezvous(
+      const moxygen::FullTrackName& ftn,
+      const std::shared_ptr<PendingRendezvous>& waiter
+  );
+  void erasePendingRendezvous(
+      const moxygen::FullTrackName& ftn,
+      const std::shared_ptr<PendingRendezvous>& waiter
+  );
+  void erasePendingRendezvousFromNode(
+      PendingRendezvousNode& node,
+      const moxygen::FullTrackName& ftn,
+      size_t namespaceIndex,
+      const std::shared_ptr<PendingRendezvous>& waiter
+  );
+  static void wakePendingRendezvousSubtree(PendingRendezvousNode& node);
+  void applyFnAtNamespaceNode(
+      const moxygen::TrackNamespace& ns,
+      folly::FunctionRef<void(PendingRendezvousNode&)> onNode
+  );
+  void wakePendingRendezvousForTrack(const moxygen::FullTrackName& ftn);
+  void wakePendingRendezvousUnderNamespace(const moxygen::TrackNamespace& ns);
 
   static constexpr std::chrono::milliseconds kDefaultIdleTimeout{10'000};
   static constexpr std::chrono::milliseconds kDefaultActivityThreshold{2'000};
