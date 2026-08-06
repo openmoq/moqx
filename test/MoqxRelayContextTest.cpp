@@ -30,6 +30,12 @@ config::ServiceConfig makeService(std::string authority) {
   };
 }
 
+config::ServiceConfig makeServiceWithAuth(std::string authority, config::AuthConfig auth) {
+  auto svc = makeService(std::move(authority));
+  svc.auth = std::move(auth);
+  return svc;
+}
+
 // Build a MockMoQSession with the given authority and path.
 // Uses a shared executor so the session doesn't spin up its own thread.
 std::shared_ptr<NiceMock<test::MockMoQSession>>
@@ -147,6 +153,60 @@ TEST_F(MoqxRelayContextTest, ValidateAuthority_PathRouting) {
   auto miss = ctx.validateAuthority(emptySetup_, anyVersion_, sessionOther);
   ASSERT_FALSE(miss.hasValue());
   EXPECT_EQ(miss.error(), SessionCloseErrorCode::INVALID_AUTHORITY);
+}
+
+// --- validateAuthority: anonymous claim ---
+
+TEST_F(
+    MoqxRelayContextTest,
+    ValidateAuthority_AnonymousClaimAllowsConnectWithoutSetupTokenWhenNotRequired
+) {
+  folly::F14FastMap<std::string, config::ServiceConfig> services = {
+      {"svc",
+       makeServiceWithAuth(
+           "live.example.com",
+           config::AuthConfig{
+               .enabled = true,
+               .tokenType = 77,
+               .hmacKeys = {config::AuthConfig::HmacKey{.id = "k1", .secret = "supersecretvalue"}},
+               .requireSetupToken = false,
+               .anonymousClaim =
+                   {config::AuthConfig::AnonymousScope{.actions = {auth::Action::Subscribe}}},
+               .maxTokensPerMessage = 4,
+           }
+       )},
+  };
+  MoqxRelayContext ctx(services, "test-relay");
+
+  auto session = makeSession(exec_, "live.example.com");
+  auto result = ctx.validateAuthority(emptySetup_, anyVersion_, session);
+
+  EXPECT_TRUE(result.hasValue());
+}
+
+TEST_F(MoqxRelayContextTest, ValidateAuthority_AnonymousClaimDoesNotBypassRequiredSetupToken) {
+  folly::F14FastMap<std::string, config::ServiceConfig> services = {
+      {"svc",
+       makeServiceWithAuth(
+           "live.example.com",
+           config::AuthConfig{
+               .enabled = true,
+               .tokenType = 77,
+               .hmacKeys = {config::AuthConfig::HmacKey{.id = "k1", .secret = "supersecretvalue"}},
+               .requireSetupToken = true,
+               .anonymousClaim =
+                   {config::AuthConfig::AnonymousScope{.actions = {auth::Action::Subscribe}}},
+               .maxTokensPerMessage = 4,
+           }
+       )},
+  };
+  MoqxRelayContext ctx(services, "test-relay");
+
+  auto session = makeSession(exec_, "live.example.com");
+  auto result = ctx.validateAuthority(emptySetup_, anyVersion_, session);
+
+  ASSERT_FALSE(result.hasValue());
+  EXPECT_EQ(result.error(), SessionCloseErrorCode::UNAUTHORIZED);
 }
 
 } // namespace
