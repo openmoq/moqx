@@ -20,6 +20,7 @@
 
 #include <openssl/crypto.h>
 
+#include "auth/Action.h"
 #include "config/Pkcs12.h"
 
 namespace openmoq::moqx::config {
@@ -535,36 +536,128 @@ void validateAuth(
     const ParsedAuthConfig& auth,
     std::vector<std::string>& errors
 ) {
-  if (!auth.enabled.value()) {
+  if (auth.enabled.value()) {
+    const auto& keys = auth.hmac_keys.value();
+    if (!keys.has_value() || keys->empty()) {
+      errors.push_back(
+          "Service '" + serviceName + "': auth.hmac_keys is required when auth is enabled"
+      );
+    } else {
+      std::unordered_set<std::string> keyIDs;
+      for (size_t i = 0; i < keys->size(); ++i) {
+        const auto& key = (*keys)[i];
+        const auto prefix =
+            "Service '" + serviceName + "': auth.hmac_keys[" + std::to_string(i) + "]";
+        if (key.id.value().empty()) {
+          errors.push_back(prefix + ".id must be non-empty");
+        } else if (!keyIDs.insert(key.id.value()).second) {
+          errors.push_back(prefix + ".id duplicates another auth key");
+        }
+        if (key.secret.value().empty()) {
+          errors.push_back(prefix + ".secret must be non-empty");
+        }
+      }
+    }
+    // token_type 0 is a valid MOQT AUTHORIZATION_TOKEN type, accepted as-is
+    // and not treated as "unset". An omitted token_type also resolves to 0
+    // (see resolveAuth): omitting it and setting token_type: 0 are identical.
+    if (auth.token_type.value().value_or(0) >= kQuicVarintExclusiveUpperBound) {
+      errors.push_back("Service '" + serviceName + "': auth.token_type must fit in a QUIC varint");
+    }
+    const auto& maxTokens = auth.max_tokens_per_message.value();
+    if (!maxTokens.has_value()) {
+      errors.push_back(
+          "Service '" + serviceName +
+          "': auth.max_tokens_per_message is required when auth is enabled (set it directly or "
+          "via service_defaults.auth)"
+      );
+    } else if (*maxTokens == 0) {
+      errors.push_back("Service '" + serviceName + "': auth.max_tokens_per_message must be >= 1");
+    }
+  }
+
+  // Validated regardless of `enabled`: resolveAuth() resolves anonymous_claim
+  // unconditionally. A malformed entry must not sit un-diagnosed in the
+  // resolved config just because auth is off.
+  const auto& anonymousClaim = auth.anonymous_claim.value();
+  if (!anonymousClaim.has_value()) {
     return;
   }
-  const auto& keys = auth.hmac_keys.value();
-  if (!keys.has_value() || keys->empty()) {
-    errors.push_back(
-        "Service '" + serviceName + "': auth.hmac_keys is required when auth is enabled"
-    );
-  } else {
-    std::unordered_set<std::string> keyIDs;
-    for (size_t i = 0; i < keys->size(); ++i) {
-      const auto& key = (*keys)[i];
-      const auto prefix =
-          "Service '" + serviceName + "': auth.hmac_keys[" + std::to_string(i) + "]";
-      if (key.id.value().empty()) {
-        errors.push_back(prefix + ".id must be non-empty");
-      } else if (!keyIDs.insert(key.id.value()).second) {
-        errors.push_back(prefix + ".id duplicates another auth key");
-      }
-      if (key.secret.value().empty()) {
-        errors.push_back(prefix + ".secret must be non-empty");
+  for (size_t i = 0; i < anonymousClaim->size(); ++i) {
+    const auto& scope = (*anonymousClaim)[i];
+    const auto prefix =
+        "Service '" + serviceName + "': auth.anonymous_claim[" + std::to_string(i) + "]";
+    const auto& actions = scope.actions.value();
+    if (actions.empty()) {
+      errors.push_back(prefix + ".actions must be non-empty");
+      continue;
+    }
+    for (const auto& name : actions) {
+      auto action = auth::canonicalAction(name);
+      if (!action) {
+        errors.push_back(prefix + ".actions: '" + name + "' is not a recognized CAT4MOQ action");
+      } else if (*action == auth::Action::ClientSetup || *action == auth::Action::ServerSetup) {
+        errors.push_back(
+            prefix + ".actions: '" + name +
+            "' is not allowed here -- the anonymous claim never authorizes CLIENT_SETUP/"
+            "SERVER_SETUP"
+        );
       }
     }
   }
-  // token_type 0 is a valid MOQT AUTHORIZATION_TOKEN type and is accepted as-is;
-  // it is not treated as "unset". An omitted token_type also resolves to 0 (see
-  // resolveAuth), so omitting it and setting token_type: 0 behave identically.
-  if (auth.token_type.value().value_or(0) >= kQuicVarintExclusiveUpperBound) {
-    errors.push_back("Service '" + serviceName + "': auth.token_type must fit in a QUIC varint");
+}
+
+AuthConfig::AnonymousScope resolveAnonymousScope(const ParsedAuthConfig::AnonymousScope& scope) {
+  using Parsed = ParsedAuthConfig::AnonymousScope;
+  using MatchMode = auth::MatchRuleType;
+
+  AuthConfig::AnonymousScope out;
+  // Resolution runs only on validated input; every name canonicalizes.
+  for (const auto& name : scope.actions.value()) {
+    out.actions.push_back(*auth::canonicalAction(name));
   }
+
+  const auto& nsMatch = scope.namespace_match.value();
+  if (nsMatch.has_value()) {
+    nsMatch->visit([&](const auto& alt) {
+      using N = std::decay_t<decltype(alt)>;
+      if constexpr (std::is_same_v<N, Parsed::ExactNamespace>) {
+        out.namespaceSegments = alt.exact.value();
+        out.namespaceMatchMode = MatchMode::Exact;
+      } else if constexpr (std::is_same_v<N, Parsed::PrefixNamespace>) {
+        out.namespaceSegments = alt.prefix.value();
+        out.namespaceMatchMode = MatchMode::Prefix;
+      } else if constexpr (std::is_same_v<N, Parsed::SuffixNamespace>) {
+        out.namespaceSegments = alt.suffix.value();
+        out.namespaceMatchMode = MatchMode::Suffix;
+      } else { // ContainsNamespace
+        out.namespaceSegments = alt.contains.value();
+        out.namespaceMatchMode = MatchMode::Contains;
+      }
+    });
+  }
+
+  const auto& trackMatch = scope.track_match.value();
+  if (trackMatch.has_value()) {
+    trackMatch->visit([&](const auto& alt) {
+      using T = std::decay_t<decltype(alt)>;
+      if constexpr (std::is_same_v<T, Parsed::ExactTrack>) {
+        out.trackName = alt.exact.value();
+        out.trackMatchMode = MatchMode::Exact;
+      } else if constexpr (std::is_same_v<T, Parsed::PrefixTrack>) {
+        out.trackName = alt.prefix.value();
+        out.trackMatchMode = MatchMode::Prefix;
+      } else if constexpr (std::is_same_v<T, Parsed::SuffixTrack>) {
+        out.trackName = alt.suffix.value();
+        out.trackMatchMode = MatchMode::Suffix;
+      } else { // ContainsTrack
+        out.trackName = alt.contains.value();
+        out.trackMatchMode = MatchMode::Contains;
+      }
+    });
+  }
+
+  return out;
 }
 
 AuthConfig resolveAuth(const std::optional<ParsedAuthConfig>& parsed) {
@@ -577,6 +670,7 @@ AuthConfig resolveAuth(const std::optional<ParsedAuthConfig>& parsed) {
   out.requireSetupToken = parsed->require_setup_token.value().value_or(true);
   out.allowRequestTokenOverride = parsed->allow_request_token_override.value().value_or(true);
   out.strictClaims = parsed->strict_claims.value().value_or(false);
+  out.maxTokensPerMessage = parsed->max_tokens_per_message.value().value_or(0);
   if (parsed->hmac_keys.value()) {
     for (const auto& key : *parsed->hmac_keys.value()) {
       out.hmacKeys.push_back(AuthConfig::HmacKey{
@@ -585,7 +679,35 @@ AuthConfig resolveAuth(const std::optional<ParsedAuthConfig>& parsed) {
       });
     }
   }
+  if (parsed->anonymous_claim.value()) {
+    for (const auto& scope : *parsed->anonymous_claim.value()) {
+      out.anonymousClaim.push_back(resolveAnonymousScope(scope));
+    }
+  }
   return out;
+}
+
+// Merges service_defaults.auth with service.auth into mergedAuths, then
+// validates the result. No-op if the service sets no auth block of its own.
+void validateServiceAuth(
+    const std::string& name,
+    const ParsedServiceConfig& svc,
+    const ParsedConfig& config,
+    std::unordered_map<std::string, ParsedAuthConfig>& mergedAuths,
+    std::vector<std::string>& errors
+) {
+  if (!svc.auth.value().has_value()) {
+    return;
+  }
+  auto mergedAuth = *svc.auth.value();
+  if (!mergedAuth.max_tokens_per_message.value().has_value() &&
+      config.service_defaults.value().has_value() &&
+      config.service_defaults.value()->auth.value().has_value()) {
+    mergedAuth.max_tokens_per_message =
+        config.service_defaults.value()->auth.value()->max_tokens_per_message.value();
+  }
+  validateAuth(name, mergedAuth, errors);
+  mergedAuths.emplace(name, std::move(mergedAuth));
 }
 
 // --- Service validation ---
@@ -596,6 +718,7 @@ void validateService(
     const ParsedConfig& config,
     std::unordered_set<std::string>& compositeKeys,
     std::unordered_map<std::string, ParsedCacheConfig>& mergedCaches,
+    std::unordered_map<std::string, ParsedAuthConfig>& mergedAuths,
     std::vector<std::string>& errors
 ) {
 
@@ -668,9 +791,7 @@ void validateService(
   if (svc.upstream.value().has_value()) {
     validateUpstream(*svc.upstream.value(), errors);
   }
-  if (svc.auth.value().has_value()) {
-    validateAuth(name, *svc.auth.value(), errors);
-  }
+  validateServiceAuth(name, svc, config, mergedAuths, errors);
 }
 
 std::string generateRelayID() {
@@ -1002,7 +1123,11 @@ ServiceConfig::MatchEntry resolveMatchEntry(const ParsedServiceConfig::MatchRule
   };
 }
 
-ServiceConfig resolveService(const ParsedServiceConfig& svc, const ParsedCacheConfig& cache) {
+ServiceConfig resolveService(
+    const ParsedServiceConfig& svc,
+    const ParsedCacheConfig& cache,
+    const std::optional<ParsedAuthConfig>& auth
+) {
   std::vector<ServiceConfig::MatchEntry> entries;
   for (const auto& entry : svc.match.value()) {
     entries.push_back(resolveMatchEntry(entry));
@@ -1015,7 +1140,7 @@ ServiceConfig resolveService(const ParsedServiceConfig& svc, const ParsedCacheCo
       .match = std::move(entries),
       .cache = resolveCacheConfig(cache),
       .upstream = std::move(upstream),
-      .auth = resolveAuth(svc.auth.value()),
+      .auth = resolveAuth(auth),
   };
 }
 
@@ -1129,9 +1254,10 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
 
   std::unordered_set<std::string> compositeKeys;
   std::unordered_map<std::string, ParsedCacheConfig> mergedCaches;
+  std::unordered_map<std::string, ParsedAuthConfig> mergedAuths;
 
   for (const auto& [name, svc] : services) {
-    validateService(name, svc, config, compositeKeys, mergedCaches, errors);
+    validateService(name, svc, config, compositeKeys, mergedCaches, mergedAuths, errors);
   }
 
   // === Validate threads ===
@@ -1176,7 +1302,11 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
 
   folly::F14FastMap<std::string, ServiceConfig> resolvedServices;
   for (const auto& [name, svc] : services) {
-    resolvedServices.emplace(name, resolveService(svc, mergedCaches.at(name)));
+    auto authIt = mergedAuths.find(name);
+    std::optional<ParsedAuthConfig> auth = authIt != mergedAuths.end()
+                                               ? std::optional<ParsedAuthConfig>(authIt->second)
+                                               : std::nullopt;
+    resolvedServices.emplace(name, resolveService(svc, mergedCaches.at(name), auth));
   }
 
   // Resolve admin config
