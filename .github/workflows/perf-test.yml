@@ -98,12 +98,12 @@ jobs:
     steps:
       - name: Generate app token
         id: app-token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.OMOQ_APP_ID }}
           private-key: ${{ secrets.OMOQ_APP_PRIV_KEY }}
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           # workflow_call passes an explicit ref; dispatch/schedule leave it
           # empty, so checkout falls back to github.ref (the selected branch on
@@ -229,13 +229,13 @@ jobs:
         # Picked up by actions/deploy-pages in the deploy job (gated to the
         # nightly schedule). Dispatch / called runs still upload it so reviewers
         # can download + inspect without publishing.
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: perf-out
 
       - name: Upload workflow artifacts (always retained)
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: perf-results
           path: |
@@ -296,12 +296,12 @@ jobs:
       # the personal actor GitHub attributes scheduled runs to. Keeps the
       # deployments list owned by the bot, consistent with the rest of the org
       # automation. Requires the App installation to have Pages: write.
-      - uses: actions/create-github-app-token@v2
+      - uses: actions/create-github-app-token@v3
         id: app-token
         with:
           app-id: ${{ secrets.OMOQ_APP_ID }}
           private-key: ${{ secrets.OMOQ_APP_PRIV_KEY }}
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
         with:
           token: ${{ steps.app-token.outputs.token }}

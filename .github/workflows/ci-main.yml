@@ -33,7 +33,7 @@ jobs:
   check-format:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install clang-format
         run: pip install clang-format==19.1.7
@@ -79,7 +79,7 @@ jobs:
     # Ceiling for the from-source fallback, not the normal runtime.
     timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: ./.github/actions/setup-build
         with:
@@ -104,7 +104,7 @@ jobs:
         run: scripts/test.sh ${{ matrix.preset }} --output-junit test-results.xml
 
       - name: Publish test results
-        uses: dorny/test-reporter@v1.9.1
+        uses: dorny/test-reporter@v3
         if: success() || failure()
         with:
           name: "test (${{ matrix.name }})"
@@ -160,7 +160,7 @@ jobs:
     # Ceiling for the from-source fallback; see the build job.
     timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: ./.github/actions/setup-build
         with:
@@ -200,7 +200,7 @@ jobs:
     # Ceiling for the from-source fallback; see the build job.
     timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: ./.github/actions/setup-build
         with:
@@ -233,7 +233,7 @@ jobs:
 
       - name: Upload microbenchmark artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: microbench-results-${{ matrix.name }}
           path: |
@@ -264,12 +264,12 @@ jobs:
     steps:
       - name: Generate app token
         id: app-token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.OMOQ_APP_ID }}
           private-key: ${{ secrets.OMOQ_APP_PRIV_KEY }}
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           # Full history + tags so `git describe --tags` can version the
           # image (bare tag on release commits, tag-distance-sha otherwise).
@@ -303,7 +303,7 @@ jobs:
 
       # The docker-container driver is what makes --cache-to work at all; the
       # default driver has no cache exporter.
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       # Caches the pin-keyed moxygen stage (docker/Dockerfile), so a source-only
       # push reuses the prefix. Registry, not type=gha: that backend shares one
@@ -399,7 +399,7 @@ jobs:
           echo "artifact=$ARTIFACT" >> "$GITHUB_OUTPUT"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ steps.package.outputs.artifact }}
           path: ${{ steps.package.outputs.artifact }}
@@ -478,10 +478,10 @@ jobs:
     outputs:
       tag: ${{ steps.publish.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           pattern: "*.tar.gz"
           path: artifacts/
@@ -537,7 +537,7 @@ jobs:
       RELAY_PORT: 4433
       ADMIN_PORT: 8000
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Ensure DNS A record
         env:
