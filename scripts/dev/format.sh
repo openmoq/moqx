@@ -46,7 +46,7 @@ if [[ "${1:-}" == "--check" ]]; then
   ${CF_BIN} --dry-run -Werror ${FILES} || cf_exit=$?
 
   if [[ $header_errors -ne 0 ]]; then
-    echo "error: files missing copyright headers (run scripts/format.sh to fix)" >&2
+    echo "error: files missing copyright headers (run scripts/dev/format.sh to fix)" >&2
   fi
   if [[ $header_errors -ne 0 || $cf_exit -ne 0 ]]; then
     exit 1

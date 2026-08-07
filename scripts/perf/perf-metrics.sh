@@ -8,7 +8,7 @@
 # Bucket lines are skipped; histogram _sum/_count pairs are collapsed into a
 # single avg_ column.
 #
-# Usage: scripts/perf-metrics.sh [admin_port] [log_file]
+# Usage: scripts/perf/perf-metrics.sh [admin_port] [log_file]
 #   admin_port  default 19701
 #   log_file    default /tmp/moqx_metrics_<timestamp>.log
 #
