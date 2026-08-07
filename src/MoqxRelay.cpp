@@ -452,30 +452,24 @@ MoqxRelay::validatePublishNamespace(const FullTrackName& ftn, RequestID requestI
   return std::nullopt;
 }
 
-// Constructs the publisher's local forwarder and installs its callback chain (Weak ->
-// CrossExec -> LocalForwarder) on publisherExec, before the reply hops to relayExec_.
-// tlForwarders_ must already be initialized.
-std::shared_ptr<MoQForwarder> MoqxRelay::createPublisherForwarder(const PublishRequest& pub) {
-  const auto& ftn = pub.fullTrackName;
-  // Returned uninitialized; the caller's Claim applies the initial state.
-  auto localPubFwd = std::make_shared<MoQForwarder>(ftn);
-
-  // removeOnEmpty=false: the publisher's forwarder must survive subscriber churn, so
-  // LocalForwarderCallback removes it from tlForwarders_ only when the source ends.
+// Chain and entry claim are one call: LocalForwarderCallback vacates the entry when the
+// source ends, so a chain over a forwarder that does not hold it has nothing to remove.
+LocalForwarderRegistry::Claim MoqxRelay::installPublisherForwarder(
+    const FullTrackName& ftn,
+    const std::shared_ptr<MoQForwarder>& fwd
+) {
+  // removeOnEmpty=false: the publisher's forwarder must survive subscriber churn.
   auto relayAdapter = std::make_shared<WeakRelayForwarderCallback>(weak_from_this());
-  auto crossExec = std::make_shared<CrossExecForwarderCallback>(
-      relayExec_,
-      localPubFwd,
-      std::move(relayAdapter)
-  );
-  localPubFwd->setCallback(std::make_shared<LocalForwarderCallback>(
+  auto crossExec =
+      std::make_shared<CrossExecForwarderCallback>(relayExec_, fwd, std::move(relayAdapter));
+  fwd->setCallback(std::make_shared<LocalForwarderCallback>(
       tlForwarders_.get(),
       ftn,
       std::move(crossExec),
       /*removeOnEmpty=*/false
   ));
 
-  return localPubFwd;
+  return tlForwarders_->replace(ftn, fwd);
 }
 
 // Called from LocalPublishFilter::publish() on publisherExec. Creates the publisher's
@@ -493,12 +487,8 @@ Subscriber::PublishResult MoqxRelay::publishFromPublisherExec(
     tlForwarders_.reset(new LocalForwarderRegistry());
   }
 
-  auto localPubFwd = createPublisherForwarder(pub);
-
-  // The publisher's forwarder is authoritative — claim the entry, displacing any
-  // stale subscribe-path local forwarder so same-thread subscribers reuse THIS
-  // forwarder via the fast path.
-  tlForwarders_->replace(pub.fullTrackName, localPubFwd)
+  auto localPubFwd = std::make_shared<MoQForwarder>(pub.fullTrackName);
+  installPublisherForwarder(pub.fullTrackName, localPubFwd)
       .markReady(InitialTrackState{pub.largest, pub.extensions});
 
   // crossExecFilter is a channel subscriber for the relay exec
