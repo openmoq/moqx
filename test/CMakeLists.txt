@@ -40,6 +40,7 @@ add_executable(moqx_relay_test
   MoqxRelayNGRTests.cpp
   MoqxRelayPeerTests.cpp
   MoqxRelayTracksTests.cpp
+  MoqxRelayRendezvousTests.cpp
   MoqxRelayTestModes.cpp
 )
 target_link_libraries(moqx_relay_test PRIVATE
