@@ -1,6 +1,10 @@
 find_package(GTest REQUIRED CONFIG)
 include(GoogleTest)
 
+# Increase the timeout for gtest_discover_tests to prevent flaky build failures
+# when linking heavy executables under load.
+set(CMAKE_TEST_DISCOVERY_TIMEOUT 60)
+
 add_library(moqx_test_utils STATIC
   TestUtils.cpp
 )
@@ -46,7 +50,7 @@ target_link_libraries(moqx_relay_test PRIVATE
   moqx_test_fixture
   moqx_test_main
 )
-gtest_discover_tests(moqx_relay_test)
+gtest_discover_tests(moqx_relay_test DISCOVERY_TIMEOUT 120)
 
 add_executable(moqx_namespace_tree_test
   NamespaceTreeTest.cpp
@@ -56,7 +60,7 @@ target_link_libraries(moqx_namespace_tree_test PRIVATE
   moqx_test_main
   GTest::gmock
 )
-gtest_discover_tests(moqx_namespace_tree_test)
+gtest_discover_tests(moqx_namespace_tree_test DISCOVERY_TIMEOUT 120)
 
 add_executable(moqx_config_test
   config/LoaderTest.cpp
@@ -86,7 +90,7 @@ if(NOT GFLAGS_SHARED)
     )
   endif()
 endif()
-gtest_discover_tests(moqx_config_test)
+gtest_discover_tests(moqx_config_test DISCOVERY_TIMEOUT 120)
 
 add_executable(moqx_config_resolver_test
   config/ConfigResolverTest.cpp
@@ -110,7 +114,7 @@ if(NOT GFLAGS_SHARED)
     )
   endif()
 endif()
-gtest_discover_tests(moqx_config_resolver_test)
+gtest_discover_tests(moqx_config_resolver_test DISCOVERY_TIMEOUT 120)
 
 add_executable(moqx_config_serializer_test
   config/ConfigSerializerTest.cpp
@@ -120,7 +124,7 @@ target_link_libraries(moqx_config_serializer_test PRIVATE
   GTest::gtest_main
   GTest::gmock
 )
-gtest_discover_tests(moqx_config_serializer_test)
+gtest_discover_tests(moqx_config_serializer_test DISCOVERY_TIMEOUT 120)
 
 add_executable(moqx_pkcs12_test
   config/Pkcs12Test.cpp
@@ -156,7 +160,7 @@ target_link_libraries(moqx_bounded_histogram_test PRIVATE
   GTest::gtest_main
   GTest::gmock
 )
-gtest_discover_tests(moqx_bounded_histogram_test)
+gtest_discover_tests(moqx_bounded_histogram_test DISCOVERY_TIMEOUT 120)
 
 add_executable(moqx_logging_multi_flag_test
   LoggingMultiFlagTest.cpp
@@ -169,7 +173,7 @@ target_link_libraries(moqx_logging_multi_flag_test PRIVATE
   GTest::gtest_main
   GTest::gmock
 )
-gtest_discover_tests(moqx_logging_multi_flag_test)
+gtest_discover_tests(moqx_logging_multi_flag_test DISCOVERY_TIMEOUT 120)
 
 add_executable(moqx_pico_quic_stats_test
   stats/PicoQuicStatsCollectorTest.cpp
@@ -182,7 +186,7 @@ target_link_libraries(moqx_pico_quic_stats_test PRIVATE
   GTest::gtest_main
   GTest::gmock
 )
-gtest_discover_tests(moqx_pico_quic_stats_test)
+gtest_discover_tests(moqx_pico_quic_stats_test DISCOVERY_TIMEOUT 120)
 
 add_executable(moqx_moq_stats_collector_test
   stats/MoQStatsCollectorTest.cpp
@@ -195,7 +199,7 @@ target_link_libraries(moqx_moq_stats_collector_test PRIVATE
   GTest::gtest_main
   GTest::gmock
 )
-gtest_discover_tests(moqx_moq_stats_collector_test)
+gtest_discover_tests(moqx_moq_stats_collector_test DISCOVERY_TIMEOUT 120)
 
 add_executable(moqx_service_matcher_test
   ServiceMatcherTest.cpp
@@ -206,7 +210,7 @@ target_link_libraries(moqx_service_matcher_test PRIVATE
   GTest::gtest_main
   GTest::gmock
 )
-gtest_discover_tests(moqx_service_matcher_test)
+gtest_discover_tests(moqx_service_matcher_test DISCOVERY_TIMEOUT 120)
 
 add_executable(moqx_auth_test
   AuthTest.cpp
@@ -216,7 +220,7 @@ target_link_libraries(moqx_auth_test PRIVATE
   moqx_issuer_lib
   GTest::gtest_main
 )
-gtest_discover_tests(moqx_auth_test)
+gtest_discover_tests(moqx_auth_test DISCOVERY_TIMEOUT 120)
 
 add_executable(moqx_auth_token_issuer_test
   AuthTokenIssuerTest.cpp
@@ -226,7 +230,7 @@ target_link_libraries(moqx_auth_token_issuer_test PRIVATE
   moqx_issuer_lib
   GTest::gtest_main
 )
-gtest_discover_tests(moqx_auth_token_issuer_test)
+gtest_discover_tests(moqx_auth_token_issuer_test DISCOVERY_TIMEOUT 120)
 
 # CborReader unit tests (header-only decoder, tested in isolation)
 add_executable(moqx_cbor_reader_test
@@ -239,7 +243,7 @@ target_link_libraries(moqx_cbor_reader_test PRIVATE
   GTest::gtest_main
   GTest::gmock
 )
-gtest_discover_tests(moqx_cbor_reader_test)
+gtest_discover_tests(moqx_cbor_reader_test DISCOVERY_TIMEOUT 120)
 
 add_executable(moqx_relay_context_test
   MoqxRelayContextTest.cpp
@@ -251,7 +255,7 @@ target_link_libraries(moqx_relay_context_test PRIVATE
   GTest::gmock
   moxygen::moxygen_events_moq_folly_executor_impl
 )
-gtest_discover_tests(moqx_relay_context_test)
+gtest_discover_tests(moqx_relay_context_test DISCOVERY_TIMEOUT 120)
 
 add_test(
   NAME relay_chain
@@ -293,6 +297,10 @@ add_test(
   COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_admin_config.sh $<TARGET_FILE:moqx>
 )
 add_test(
+  NAME admin_connection_logs_endpoint
+  COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_admin_connection_logs.sh $<TARGET_FILE:moqx>
+)
+add_test(
   NAME admin_cache_purge_concurrency_test
   COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_admin_cache_purge_race.sh $<TARGET_FILE:moqx>
 )
@@ -308,7 +316,7 @@ target_link_libraries(moqx_upstream_provider_test PRIVATE
   moxygen::moxygen_moqclient
   GTest::gmock
 )
-gtest_discover_tests(moqx_upstream_provider_test)
+gtest_discover_tests(moqx_upstream_provider_test DISCOVERY_TIMEOUT 120)
 
 # SubscriptionRegistry unit tests
 add_executable(moqx_subscription_registry_test
@@ -319,7 +327,7 @@ target_link_libraries(moqx_subscription_registry_test PRIVATE
   moqx_test_main
   GTest::gmock
 )
-gtest_discover_tests(moqx_subscription_registry_test)
+gtest_discover_tests(moqx_subscription_registry_test DISCOVERY_TIMEOUT 120)
 
 # TopNFilter unit tests
 add_executable(moqx_topn_filter_test
@@ -330,7 +338,7 @@ target_link_libraries(moqx_topn_filter_test PRIVATE
   GTest::gtest_main
   GTest::gmock
 )
-gtest_discover_tests(moqx_topn_filter_test)
+gtest_discover_tests(moqx_topn_filter_test DISCOVERY_TIMEOUT 120)
 
 # PropertyRanking base unit tests (no self-exclusion)
 add_executable(moqx_property_ranking_base_test
@@ -341,7 +349,7 @@ target_link_libraries(moqx_property_ranking_base_test PRIVATE
   GTest::gtest_main
   GTest::gmock
 )
-gtest_discover_tests(moqx_property_ranking_base_test)
+gtest_discover_tests(moqx_property_ranking_base_test DISCOVERY_TIMEOUT 120)
 
 # PropertyRanking self-exclusion / waterline unit tests
 add_executable(moqx_property_ranking_self_exclusion_test
@@ -352,7 +360,7 @@ target_link_libraries(moqx_property_ranking_self_exclusion_test PRIVATE
   GTest::gtest_main
   GTest::gmock
 )
-gtest_discover_tests(moqx_property_ranking_self_exclusion_test)
+gtest_discover_tests(moqx_property_ranking_self_exclusion_test DISCOVERY_TIMEOUT 120)
 
 # TRACK_FILTER integration tests (in-process relay, no live server)
 add_executable(moqx_track_filter_test
@@ -362,7 +370,7 @@ target_link_libraries(moqx_track_filter_test PRIVATE
   moqx_test_fixture
   moqx_test_main
 )
-gtest_discover_tests(moqx_track_filter_test)
+gtest_discover_tests(moqx_track_filter_test DISCOVERY_TIMEOUT 120)
 
 # TrackFilterLoadTest: requires a live relay process.
 # Run manually: ./track_filter_load_test --relay_url=https://localhost:9668/moq-relay
@@ -393,7 +401,7 @@ target_link_libraries(moqx_cross_exec_filter_test PRIVATE
   moxygen::moqtest_utils
   Folly::folly_executors_manual_executor
 )
-gtest_discover_tests(moqx_cross_exec_filter_test)
+gtest_discover_tests(moqx_cross_exec_filter_test DISCOVERY_TIMEOUT 120)
 
 # PublisherCrossExecFilter unit tests
 add_executable(moqx_publisher_cross_exec_filter_test
@@ -407,7 +415,7 @@ target_link_libraries(moqx_publisher_cross_exec_filter_test PRIVATE
   Folly::folly_executors_manual_executor
   Folly::folly_executors_cpu_thread_pool_executor
 )
-gtest_discover_tests(moqx_publisher_cross_exec_filter_test)
+gtest_discover_tests(moqx_publisher_cross_exec_filter_test DISCOVERY_TIMEOUT 120)
 
 # SubscriberCrossExecFilter unit tests
 add_executable(moqx_subscriber_cross_exec_filter_test
@@ -421,7 +429,7 @@ target_link_libraries(moqx_subscriber_cross_exec_filter_test PRIVATE
   Folly::folly_executors_manual_executor
   Folly::folly_executors_cpu_thread_pool_executor
 )
-gtest_discover_tests(moqx_subscriber_cross_exec_filter_test)
+gtest_discover_tests(moqx_subscriber_cross_exec_filter_test DISCOVERY_TIMEOUT 120)
 
 # --- MoqxCache tests ---
 
@@ -443,4 +451,4 @@ target_compile_options(moqx_cache_test PRIVATE
   -Wall -Wextra -Wpedantic
 )
 
-gtest_discover_tests(moqx_cache_test)
+gtest_discover_tests(moqx_cache_test DISCOVERY_TIMEOUT 120)
