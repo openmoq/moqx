@@ -321,10 +321,8 @@ private:
     bool isNew{false};
     LocalForwarderRegistry* localReg{nullptr};
   };
-  LocalForwarderBootstrap acquireLocalForwarder(
-      const moxygen::FullTrackName& ftn,
-      folly::FunctionRef<std::shared_ptr<moxygen::MoQForwarder>()> factory
-  );
+  LocalForwarderBootstrap
+  acquireLocalForwarder(const moxygen::FullTrackName& ftn, const InitialTrackState& initial);
 
   bool addSubscriberAndPublish(
       std::shared_ptr<moxygen::MoQSession> subscriberSession,

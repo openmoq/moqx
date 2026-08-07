@@ -457,8 +457,8 @@ MoqxRelay::validatePublishNamespace(const FullTrackName& ftn, RequestID requestI
 // tlForwarders_ must already be initialized.
 std::shared_ptr<MoQForwarder> MoqxRelay::createPublisherForwarder(const PublishRequest& pub) {
   const auto& ftn = pub.fullTrackName;
-  auto localPubFwd = std::make_shared<MoQForwarder>(ftn, pub.largest);
-  localPubFwd->setExtensions(pub.extensions);
+  // Returned uninitialized; the caller's Claim applies the initial state.
+  auto localPubFwd = std::make_shared<MoQForwarder>(ftn);
 
   // removeOnEmpty=false: the publisher's forwarder must survive subscriber churn, so
   // LocalForwarderCallback removes it from tlForwarders_ only when the source ends.
@@ -495,10 +495,11 @@ Subscriber::PublishResult MoqxRelay::publishFromPublisherExec(
 
   auto localPubFwd = createPublisherForwarder(pub);
 
-  // The publisher's forwarder is authoritative — claim the slot, displacing any
+  // The publisher's forwarder is authoritative — claim the entry, displacing any
   // stale subscribe-path local forwarder so same-thread subscribers reuse THIS
   // forwarder via the fast path.
-  tlForwarders_->set(pub.fullTrackName, localPubFwd);
+  tlForwarders_->replace(pub.fullTrackName, localPubFwd)
+      .markReady(InitialTrackState{pub.largest, pub.extensions});
 
   // crossExecFilter is a channel subscriber for the relay exec
   // regulsterPublishOnRelay exec completes wiring the chain (topNFilter → terminationFilter →
@@ -1118,7 +1119,7 @@ folly::coro::Task<void> MoqxRelay::addSubscriberAndPublishViaLocalForwarder(
 
   // Fast path: local forwarder already exists on this thread.
   if (auto* localReg = tlForwarders_.get()) {
-    if (auto localFwd = localReg->get(ftn)) {
+    if (auto localFwd = localReg->getIfReady(ftn)) {
       auto p = startPublish(subscriberSession, localFwd, forward, pinned, nullptr);
       if (p) {
         co_await awaitPublishReply(localFwd, std::move(p->subscriber), std::move(p->reply));
@@ -1138,11 +1139,7 @@ folly::coro::Task<void> MoqxRelay::addSubscriberAndPublishViaLocalForwarder(
       }()
   );
 
-  auto [localFwd, isNew, localReg] = acquireLocalForwarder(ftn, [&] {
-    auto fwd = std::make_shared<MoQForwarder>(ftn);
-    initial.applyTo(*fwd);
-    return fwd;
-  });
+  auto [localFwd, isNew, localReg] = acquireLocalForwarder(ftn, initial);
 
   auto p = startPublish(subscriberSession, localFwd, forward, pinned, nullptr);
   if (!p) {
@@ -1194,19 +1191,25 @@ folly::coro::Task<void> MoqxRelay::addSubscriberAndPublishViaLocalForwarder(
   co_await awaitPublishReply(localFwd, std::move(p->subscriber), std::move(p->reply));
 }
 
-// Slow-path local-forwarder bootstrap shared by the publish and subscribe LF paths:
-// ensures the thread-local registry, then getOrCreates the forwarder for ftn. Callers
-// handle the fast path and install the PendingForwarderCallback (timing differs).
-MoqxRelay::LocalForwarderBootstrap MoqxRelay::acquireLocalForwarder(
-    const FullTrackName& ftn,
-    folly::FunctionRef<std::shared_ptr<MoQForwarder>()> factory
-) {
+// Slow-path local-forwarder bootstrap shared by the publish and subscribe LF paths.
+// Callers handle the fast path and install the PendingForwarderCallback themselves,
+// because the timing differs.
+MoqxRelay::LocalForwarderBootstrap
+MoqxRelay::acquireLocalForwarder(const FullTrackName& ftn, const InitialTrackState& initial) {
   if (!tlForwarders_.get()) {
     tlForwarders_.reset(new LocalForwarderRegistry());
   }
   auto* localReg = tlForwarders_.get();
-  auto [localFwd, isNew] = localReg->getOrCreate(ftn, factory);
-  return {std::move(localFwd), isNew, localReg};
+  auto joined = localReg->join(ftn, [&] { return std::make_shared<MoQForwarder>(ftn); });
+  if (auto* claim = std::get_if<LocalForwarderRegistry::Claim>(&joined)) {
+    auto localFwd = claim->forwarder();
+    claim->markReady(initial);
+    return {std::move(localFwd), /*isNew=*/true, localReg};
+  }
+  auto* ready = std::get_if<LocalForwarderRegistry::Ready>(&joined);
+  XCHECK(ready) << "local forwarder entry still pending; a caller failed to resolve its claim: "
+                << ftn;
+  return {ready->forwarder, /*isNew=*/false, localReg};
 }
 
 class MoqxRelay::NamespaceSubscription : public Publisher::SubscribeNamespaceHandle {
@@ -1942,10 +1945,9 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriber
 ) {
   const auto& ftn = subReq.fullTrackName;
 
-  // getOrCreate before the relay hop: serializes same-iothread races. isNew=false means
-  // the forwarder already exists (or a setup is in progress) on this thread — just attach.
-  auto [localFwd, isNew, localReg] =
-      acquireLocalForwarder(ftn, [&] { return std::make_shared<MoQForwarder>(ftn); });
+  // Join before the relay hop: serializes same-iothread races. No initial state yet —
+  // the upstream OK has not arrived, so an attacher can read a too-early largest here.
+  auto [localFwd, isNew, localReg] = acquireLocalForwarder(ftn, InitialTrackState{});
 
   if (!isNew) {
     if (auto err = checkRangeNotInPast(*localFwd, subReq)) {
@@ -2151,7 +2153,7 @@ MoqxRelay::trackStatusOnSubscriberExec(const TrackStatus& req) {
     return std::nullopt;
   }
   auto* localReg = tlForwarders_.get();
-  auto localFwd = localReg ? localReg->get(req.fullTrackName) : nullptr;
+  auto localFwd = localReg ? localReg->getIfReady(req.fullTrackName) : nullptr;
   if (!localFwd || localFwd->numForwardingSubscribers() == 0) {
     return std::nullopt;
   }
@@ -2165,7 +2167,7 @@ Fetch MoqxRelay::fetchOnSubscriberExec(Fetch fetch, const std::shared_ptr<MoQSes
     return fetch;
   }
   auto* localReg = tlForwarders_.get();
-  auto localFwd = localReg ? localReg->get(fetch.fullTrackName) : nullptr;
+  auto localFwd = localReg ? localReg->getIfReady(fetch.fullTrackName) : nullptr;
   if (localFwd) {
     auto res = localFwd->resolveJoiningFetch(session, *joining);
     if (res.hasValue()) {
@@ -2247,7 +2249,7 @@ MoqxRelay::fetchImpl(Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
 folly::coro::Task<std::optional<TrackStatusOk>>
 MoqxRelay::readPublisherForwarderStatus(bool hasHandle, TrackStatus req) {
   auto* localReg = tlForwarders_.get();
-  auto forwarder = localReg ? localReg->get(req.fullTrackName) : nullptr;
+  auto forwarder = localReg ? localReg->getIfReady(req.fullTrackName) : nullptr;
   if (!forwarder || forwarder->numForwardingSubscribers() == 0) {
     co_return std::nullopt;
   }
@@ -2566,7 +2568,7 @@ void MoqxRelay::onTrackEvicted(const FullTrackName& ftn, std::shared_ptr<MoQSess
     // publisher forwarder; evict it on its owning exec.
     folly::via(session->getExecutor(), [this, ftn, evict = std::move(evict)]() {
       auto* localReg = tlForwarders_.get();
-      evict(localReg ? localReg->get(ftn) : nullptr);
+      evict(localReg ? localReg->getForEviction(ftn) : nullptr);
     });
     return;
   }
