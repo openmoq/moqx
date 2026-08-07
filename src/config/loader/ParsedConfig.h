@@ -337,6 +337,18 @@ struct ParsedAdminConfig {
   rfl::Description<"Bind address", std::string> address;
   rfl::Description<"Allow plain HTTP (mutually exclusive with tls)", bool> plaintext;
   rfl::Description<"TLS configuration", std::optional<ParsedAdminTlsConfig>> tls;
+  rfl::Description<
+      "Enable per-track counting and the /metrics/track endpoint (default true)",
+      std::optional<bool>>
+      track_metrics_enabled;
+  rfl::Description<
+      "Max tracks /metrics/track reports when the request omits limit (default 10)",
+      std::optional<uint32_t>>
+      track_metrics_endpoint_default_limit;
+  rfl::Description<
+      "Ceiling on the limit parameter accepted by /metrics/track (default 1000)",
+      std::optional<uint32_t>>
+      track_metrics_endpoint_max_limit;
 };
 
 struct ParsedUpstreamTlsConfig {
