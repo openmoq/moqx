@@ -9,6 +9,7 @@
 #include "MoqxRelay.h"
 #include "relay/CrossExecFilter.h"
 #include "relay/CrossExecForwarderCallback.h"
+#include "relay/InitialTrackState.h"
 #include "relay/LocalForwarderCallback.h"
 #include "relay/NullConsumers.h"
 #include "relay/PublisherCrossExecFilter.h"
@@ -1128,20 +1129,18 @@ folly::coro::Task<void> MoqxRelay::addSubscriberAndPublishViaLocalForwarder(
 
   // Capture largest/extensions on publisherExec; reading them on subscriberExec would
   // race the publisher advancing largest_.
-  std::optional<AbsoluteLocation> seedLargest;
-  Extensions seedExtensions;
+  InitialTrackState initial;
   co_await folly::coro::co_withExecutor(
       folly::getKeepAliveToken(publisherExec),
       [&]() -> folly::coro::Task<void> {
-        seedLargest = publisherFwd->largest();
-        seedExtensions = publisherFwd->extensions();
+        initial = InitialTrackState::capture(*publisherFwd);
         co_return;
       }()
   );
 
   auto [localFwd, isNew, localReg] = acquireLocalForwarder(ftn, [&] {
-    auto fwd = std::make_shared<MoQForwarder>(ftn, seedLargest);
-    fwd->setExtensions(seedExtensions);
+    auto fwd = std::make_shared<MoQForwarder>(ftn);
+    initial.applyTo(*fwd);
     return fwd;
   });
 
@@ -1709,10 +1708,7 @@ MoqxRelay::subscribeUpstreamAndApplyOk(
   }
   // Apply the OK to the forwarder; the NGR rides the outgoing SUBSCRIBE (record, don't fire).
   const auto& ok = subRes.value()->subscribeOk();
-  if (ok.largest) {
-    publisherFwd->updateLargest(ok.largest->group, ok.largest->object);
-  }
-  publisherFwd->setExtensions(ok.extensions);
+  InitialTrackState{ok.largest, ok.extensions}.applyTo(*publisherFwd);
   publisherFwd->tryProcessNewGroupRequest(params, /*fire=*/false);
   // Moving the handle shared_ptr keeps the pointee (and `ok`) alive, so reading ok.*
   // in the same initializer is well-defined.
@@ -2021,15 +2017,10 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriber
   }
 
   if (attach.upstreamOk) {
-    localFwd->setExtensions(attach.upstreamOk->extensions);
-    if (attach.upstreamOk->largest) {
-      localFwd->updateLargest(
-          attach.upstreamOk->largest->group,
-          attach.upstreamOk->largest->object
-      );
-      // Seed the subscriber snapshot so a post-SUBSCRIBE_OK joining fetch resolves.
-      sub->updateLargest(*attach.upstreamOk->largest);
-    }
+    InitialTrackState initial{attach.upstreamOk->largest, attach.upstreamOk->extensions};
+    initial.applyTo(*localFwd);
+    // Also on the subscriber, so a post-SUBSCRIBE_OK joining fetch resolves.
+    initial.applyTo(*sub);
   }
   replayPendingFowarderEvents(localFwd.get(), attach.finalCallback, *pendingCb, forward);
   localFwd->tryProcessNewGroupRequest(subReq.params);
@@ -2107,9 +2098,7 @@ MoqxRelay::subscribeImpl(SubscribeRequest subReq, std::shared_ptr<TrackConsumer>
       co_return folly::makeUnexpected(std::move(okOrErr.error()));
     }
     auto& ok = okOrErr.value();
-    if (ok.largest) {
-      subscriber->updateLargest(*ok.largest);
-    }
+    InitialTrackState{ok.largest, ok.extensions}.applyTo(*subscriber);
     if (auto err = completeUpstreamSubscription(
             ftn,
             ok,
