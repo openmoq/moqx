@@ -260,6 +260,13 @@ esac
 # The fresh-slate wipe above only holds when the preset lands where we wiped.
 [[ -f "$build_dir/CMakeCache.txt" ]] || die "preset '$profile' did not configure into $build_dir —
   the wrapper needs binaryDir \${sourceDir}/build/\${presetName}; inherit the 'default' preset."
+
+# clangd searches a source file's ancestors and a literal build/ under each, never a
+# named build/<profile>/, so without this every translation unit gets an empty
+# compilation database. Relative target survives a moved checkout; -n re-points on a
+# profile switch rather than nesting inside the old target.
+ln -sfn "$profile/compile_commands.json" build/compile_commands.json
+
 if [[ "$resolved" == "$moxygen" ]]; then
   echo "configure.sh: $build_dir configured ($resolved) — compile with: scripts/build.sh $profile"
 else
