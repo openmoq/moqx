@@ -18,7 +18,7 @@ jobs:
   check-format:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install clang-format
         run: pip install clang-format==19.1.7
@@ -73,7 +73,7 @@ jobs:
       # Empty falls through to build.sh's own default (scripts/lib/jobs.sh).
       MOQX_BUILD_JOBS: ${{ matrix.build_jobs || '' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: ./.github/actions/setup-build
         with:
@@ -101,7 +101,7 @@ jobs:
       # GITHUB_TOKEN. Fork-PR tokens are read-only regardless of workflow perms,
       # so skip on cross-repo PRs. test-log output above still shows pass/fail.
       - name: Publish test results
-        uses: dorny/test-reporter@v1.9.1
+        uses: dorny/test-reporter@v3
         if: ${{ (success() || failure()) && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
         with:
           name: "test (${{ matrix.name }})"
@@ -157,7 +157,7 @@ jobs:
     # Ceiling for the from-source fallback; see the build job.
     timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: ./.github/actions/setup-build
         with:
@@ -193,7 +193,7 @@ jobs:
     # Ceiling for the from-source fallback; see the build job.
     timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: ./.github/actions/setup-build
         with:
@@ -226,7 +226,7 @@ jobs:
 
       - name: Upload microbenchmark artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: microbench-results-${{ matrix.name }}
           path: |

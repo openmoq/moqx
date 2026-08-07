@@ -29,7 +29,7 @@ runs:
     # The moqx CMakeLists routes the compiler through ccache automatically when
     # it is installed (install-system-deps.sh installs it).
     - name: Cache ccache
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         path: ~/.cache/ccache
         key: ccache-${{ runner.os }}-${{ inputs.ccache-key }}-${{ github.sha }}
@@ -53,7 +53,7 @@ runs:
     # One shared fetch cache for CPM sources and the prebuilt moxygen install,
     # ~680 MB of downloads per configure otherwise, content-keyed on the pins.
     - name: Cache dependency downloads
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         path: ~/.cache/moqx
         key: deps-${{ steps.depkey.outputs.plat }}-${{ hashFiles('cmake/dependencies.cmake') }}
