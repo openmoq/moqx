@@ -2,30 +2,31 @@
 
 ## Per-track metrics (`moqx-track`)
 
-`/metrics/track` requires a `namespace` parameter, so every namespace to be
-graphed is a scrape target that relabelling turns into the query parameter.
-Namespace values use the moq-transport encoded form — tuple elements joined by
-`-`, other bytes as `.<hex>`:
+`/metrics/track` takes optional `service`, `namespace`, `track` and `limit`
+parameters; with none of them it reports every live track, so a single scrape
+covers the relay.
 
-    moq-test/interop   ->  moq.2dtest-interop
-    conf.example.com / room 1  ->  conf.2eexample.2ecom-room.201
+`limit` is a guard rather than a selector: more live tracks than the limit
+returns 400, so an over-wide scrape fails visibly instead of graphing a series
+set that reshuffles between scrapes. Ceiling is
+`admin.track_metrics_endpoint_max_limit` (1000).
 
-`limit` is a guard rather than a selector: a namespace holding more tracks than
-the limit returns 400, so an over-wide scrape fails visibly instead of graphing
-a series set that reshuffles between scrapes. Ceiling is
-`admin.track_metrics_max_limit` (1000).
-
-### Generating the target list
-
-The static list needs maintaining by hand. `/state.namespace_tree` already
-enumerates live namespaces, so the intended replacement is a small generator
-that walks the tree, encodes each namespace, and writes a `file_sd` target
-file; Prometheus reloads target files without a restart.
+Past that ceiling the scrape splits by namespace prefix, one job per prefix,
+with `/state.namespace_tree` generating the target list into a `file_sd` file:
 
     file_sd_configs:
       - files: ['/etc/prometheus/targets/namespaces.json']
         refresh_interval: 30s
 
-Namespaces churn as events start and end, and a relay may hold more than the
-per-scrape ceiling, so this becomes necessary rather than convenient once the
-relay carries production traffic.
+Label values use the moq-transport encoded form — tuple elements joined by
+`-`, other bytes as `.<hex>`:
+
+    moq-test/interop           ->  moq.2dtest-interop
+    conf.example.com / room 1  ->  conf.2eexample.2ecom-room.201
+
+Series exist only for live tracks: they disappear when a track ends and restart
+from zero if it returns, so counters need `increase()`/`rate()` rather than
+raw deltas across a track's lifetime.
+
+Counting is installed only when `admin.track_metrics_enabled` is true (default);
+with it false the endpoint returns 503.
