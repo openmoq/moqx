@@ -73,16 +73,24 @@ scrape_configs:
       - target_label: __address__
         replacement: json-exporter:7979
 
-  # Per-track counters from the relay (openmoq/moqx#533). Every parameter is
-  # optional, so one scrape covers all namespaces. limit is a guard, not a
-  # top-N: more live tracks than the limit returns 400 rather than a series
-  # set that reshuffles between scrapes.
+  # Per-track counters from the relay (openmoq/moqx#533). One namespace per
+  # request: an unscoped scrape covers everything only until the total exceeds
+  # the limit, at which point it 400s and takes every namespace down with it,
+  # while per-namespace scrapes keep working until a single namespace exceeds
+  # it. Targets are namespaces in the safe form, generated from the relay's
+  # namespace tree by ns-targets and relabelled into the query.
   - job_name: moqx-track
     metrics_path: /metrics/track
     scrape_interval: 15s
     params:
       limit: ['1000']
-    static_configs:
-      - targets: ['moqx:8000']
-        labels:
-          instance: moqx-relay
+    file_sd_configs:
+      - files: ['/etc/prometheus/targets/namespaces.json']
+        refresh_interval: 30s
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_namespace
+      - target_label: __address__
+        replacement: moqx:8000
+      - target_label: instance
+        replacement: moqx-relay
