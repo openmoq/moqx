@@ -2,31 +2,40 @@
 
 ## Per-track metrics (`moqx-track`)
 
-`/metrics/track` takes optional `service`, `namespace`, `track` and `limit`
-parameters; with none of them it reports every live track, so a single scrape
-covers the relay.
+`/metrics/track` reports counters per live track. It takes one namespace per
+request, so each namespace is scraped separately.
 
-`limit` is a guard rather than a selector: more live tracks than the limit
-returns 400, so an over-wide scrape fails visibly instead of graphing a series
-set that reshuffles between scrapes. Ceiling is
-`admin.track_metrics_endpoint_max_limit` (1000).
+Scoping per namespace is not just tidiness. `limit` is a guard rather than a
+selector: a request matching more tracks than the limit returns 400 instead of
+truncating, because an arbitrary subset would give Prometheus a series set that
+reshuffles between scrapes. An unscoped scrape therefore fails as soon as the
+relay's *total* track count passes the limit, and takes every namespace with
+it, while per-namespace scrapes keep working until a *single* namespace passes
+it. Ceiling is `admin.track_metrics_endpoint_max_limit` (1000).
 
-Past that ceiling the scrape splits by namespace prefix, one job per prefix,
-with `/state.namespace_tree` generating the target list into a `file_sd` file:
+Counting only happens when `admin.track_metrics_enabled` is true (the default);
+with it false the endpoint returns 503 rather than an empty scrape that would
+read as "no live tracks".
 
-    file_sd_configs:
-      - files: ['/etc/prometheus/targets/namespaces.json']
-        refresh_interval: 30s
+## Target generation (`ns-targets`)
 
-Label values use the moq-transport encoded form — tuple elements joined by
-`-`, other bytes as `.<hex>`:
+Namespaces come and go with events, so the target list cannot be static.
+`namespace-targets.py` walks the relay's `/state` namespace tree every 30s and
+writes one target per namespace to a file Prometheus rereads without a restart.
+It collects every node carrying a namespace rather than only the leaves, since
+tracks can be published at any depth.
+
+Targets are namespace values in the moq-transport safe form — `[A-Za-z0-9_]`
+passes through, every other byte becomes `.<hex>`, tuple elements join with
+`-`:
 
     moq-test/interop           ->  moq.2dtest-interop
     conf.example.com / room 1  ->  conf.2eexample.2ecom-room.201
 
-Series exist only for live tracks: they disappear when a track ends and restart
-from zero if it returns, so counters need `increase()`/`rate()` rather than
-raw deltas across a track's lifetime.
+Relabelling turns each target into the `namespace` query parameter and points
+the scrape at the relay. The unencoded namespace is kept as `moqx_namespace`
+for display, since the encoded form is what lands in the metric labels.
 
-Counting is installed only when `admin.track_metrics_enabled` is true (default);
-with it false the endpoint returns 503.
+Series exist only while a track is live: they disappear when it ends and
+restart from zero if it returns, so counters need `rate()`/`increase()` rather
+than differences taken across a track's lifetime.
