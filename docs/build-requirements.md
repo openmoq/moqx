@@ -4,6 +4,36 @@ Requirements for the dependency/build model, written against the direction
 agreed on #519: the moxygen pin is authoritative, prebuilt when published,
 automatic source fallback otherwise. Supersedes the earlier R1–R19 draft.
 
+## Background
+
+moqx is built on moxygen, which itself wraps the Meta C++ stack (folly, mvfst,
+proxygen). Compiling that stack from scratch takes on the order of half an
+hour, so moxygen's CI publishes ready-made builds ("prebuilts") as GitHub
+release assets, one tarball per platform.
+
+Until #519, moqx tracked moxygen with a git submodule, and CI usually built
+against the newest moxygen rather than the submodule's exact commit. #519
+replaces that: one pinned commit hash in `cmake/dependencies.cmake` names the
+moxygen every build uses. If a prebuilt exists for that commit, the build
+downloads it; if not, the build compiles moxygen from source automatically.
+
+Terms used throughout:
+
+- **the pin** — `MOXYGEN_REV` in `cmake/dependencies.cmake`: the moxygen
+  commit this moqx builds against
+- **prebuilt** — a ready-made moxygen build downloaded from a moxygen GitHub
+  release
+- **source build / superbuild** — the helper project that compiles moxygen and
+  its dependency stack locally when no prebuilt fits; slow but works for any
+  commit on any platform
+- **fallback ladder** — try the prebuilt first, fall back to the source build,
+  announcing the switch
+- **snapshot vs `v*`** — moxygen publishes a rolling `snapshot-latest` release
+  that moves with every merge, and permanent `v1.2.3` releases; only the
+  latter are durable references
+- **sync job** — the daily automation that advances moqx's pin to moxygen's
+  newest commit via a reviewed PR
+
 ## Workflows
 
 | # | Workflow | Shape under the pinned model |
