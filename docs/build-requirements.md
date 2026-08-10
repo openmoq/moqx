@@ -44,7 +44,7 @@ Terms used throughout:
 | W4 | Fresh clone / new platform | same command; unsupported platform lands on the source ladder |
 | W5 | Reproduce / bisect | any commit rebuilds the set CI used; pin is in the tree |
 | W6 | Daily sync | the sync job is the chief mover of the pin |
-| W7 | Sanitizer investigation | nightly instrumented stack; PR lane covers moqx TUs only |
+| W7 | Sanitizer investigation | a nightly job builds the whole stack with sanitizers compiled in; the per-PR check sanitizes moqx's own code only |
 | W8 | Release cut (incl. hotfix branch) | resolves the pin to a published release |
 
 ## Requirements
@@ -52,9 +52,11 @@ Terms used throughout:
 **B1 — Resolution never dead-ends.** For any pin state — tagged, untagged,
 unmerged, backward — every consumer (dev configure, PR CI, main CI, docker,
 release) reaches a usable moxygen without human intervention: the prebuilt when
-one is published for the pin, the source build otherwise. Degradation is loud,
-and a kill-switch can hold a lane on prebuilt-only when a bad pin would
-otherwise compile folly everywhere.
+one is published for the pin, the source build otherwise. When the build takes
+the slower path it says so plainly in the log and in the CI summary. There is
+also an off switch (`MOQX_MOXYGEN_FALLBACK=off`): if a bad pin ever sends
+every CI job into a half-hour source build, an operator can disable the
+fallback so jobs fail fast until the pin is fixed.
 
 **B2 — The pin is authoritative and reproducible.** Every build uses exactly
 the pinned revision or fails saying why. Nothing substitutes a different
@@ -80,10 +82,10 @@ queue); pick one and turn it on.
 actually in use — moxygen, and the transitive stack it pins (picoquic, folly
 and friends) — without digging through caches.
 
-**B7 — CI economics hold.** Warm-cache PR wall-clock stays within budget; a
-cold cache degrades speed, never outcome. The instrumented sanitizer stack
-stays off the PR path, and losing a prebuilt must not silently convert a short
-lane into an instrumented long one.
+**B7 — CI economics hold.** With caches warm, per-PR CI time stays within
+budget; a cold cache makes jobs slower, never red. Sanitizer builds of the
+full dependency stack run nightly, not per-PR — and losing a prebuilt must not
+silently turn a minutes-long PR check into a multi-hour sanitized build.
 
 **B8 — Cross-repo interfaces are declared.** Where moqx depends on artifacts a
 moxygen build flag produces (`BUILD_SAMPLES` binaries, `BUILD_TESTS` GTest
@@ -95,11 +97,11 @@ update or doesn't happen.
 
 | Req | Status | Evidence |
 |---|---|---|
-| B1 | **verified** | `prebuilt-with-fallback` ladder exercised in a trial worktree: stale pin → 3s explanatory error → loud fallback → superbuild at the pinned rev. `MOQX_MOXYGEN_FALLBACK=off` kill-switch present. Docker uses the same ladder. Release lane still strict — see gaps. |
+| B1 | **verified** | fallback exercised in a trial worktree: stale pin → 3s explanatory error → announced fallback → source build at the pinned rev. Fallback off switch present. Docker uses the same ladder. The release path stays deliberately strict — see gaps. |
 | B2 | **verified** | Stale pin cannot resolve to anything else; `-DMOXYGEN_REV=` override is ignored (file wins). Ignored silently — see B3. |
 | B3 | open | No guard on the pin file, no sanctioned experiment path, swallowed override warns nothing. |
 | B4 | **verified** | Same ladder: unmerged sha → no tag → source build at that sha, automatic in CI. |
 | B5 | open | Repo setting, not the PR: `strict_up_to_date` off, no merge queue. |
 | B6 | open | `print-pin.cmake` reports top-level pins only. |
-| B7 | **verified** | Warm lanes 110–160s vs 360–660s on main; 180-min ceiling on the fallback; sanitizer interlock keeps fallback uninstrumented by design. |
+| B7 | **verified** | warm-cache CI jobs 110–160s vs 360–660s on main today; jobs carry a 180-minute ceiling to accommodate the fallback; a guard stops the fallback silently changing what a sanitizer job tests. |
 | B8 | open | Superbuild hardcodes the flags; prebuilt path has only a load probe. Required check `asan debug` renamed without a ruleset update. |
