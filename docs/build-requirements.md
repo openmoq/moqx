@@ -63,15 +63,16 @@ the pinned revision or fails saying why. Nothing substitutes a different
 revision silently — no tip fallback, no cache shadowing. Any checkout rebuilds
 the dependency set its CI run used.
 
-**B3 — The pin moves only deliberately.** The sync job is the normal mover.
-A human bump is an explicit, reviewed act (CODEOWNERS on the pin file, or an
-equivalent guard). Trying a different revision must not require editing the
-tracked file — a developer testing against another moxygen locally should have
-an environment/command-line path that leaves no change to accidentally commit,
-so their PR diff stays exactly their change. (Deliberately pinning a PR to an
-unmerged moxygen is different: there the file edit is the point, and review
-covers it.) And an override that is ignored must say so rather than being
-silently swallowed.
+**B3 — The pin moves only deliberately, and never silently.** Three channels
+move or bypass it, each visible in its own way: the sync job (routine, via
+reviewed PR); a hand edit of the pin file, for PRs deliberately coupled to an
+unmerged moxygen (CODEOWNERS routes it to review); and a build-directory
+override for local experiments (`-DMOQX_MOXYGEN_REV_OVERRIDE` — cached on
+disk in the build directory, never in the source tree, warning on every
+configure, so nothing can leak into a PR). The invariant across all three: no
+build runs off-pin quietly. The natural-but-wrong knob (`-DMOXYGEN_REV`,
+which the pin file deliberately wins over) must say it did nothing; the right
+knobs announce themselves.
 
 **B4 — Coupled changes stay one-step.** A moqx PR pinned at an unmerged
 moxygen sha builds and tests in CI unaided. The follow-up (rebase after the
@@ -103,7 +104,7 @@ update or doesn't happen.
 |---|---|---|
 | B1 | **verified** | fallback exercised in a trial worktree: stale pin → 3s explanatory error → announced fallback → source build at the pinned rev. Fallback off switch present. Docker uses the same ladder. The release path stays deliberately strict — see gaps. |
 | B2 | **verified** | Stale pin cannot resolve to anything else; `-DMOXYGEN_REV=` override is ignored (file wins). Ignored silently — see B3. |
-| B3 | open | No guard on the pin file, no sanctioned experiment path, swallowed override warns nothing. |
+| B3 | open | no guard on the pin file, no sanctioned experiment path, and an ignored `-DMOXYGEN_REV` warns nothing. |
 | B4 | **verified** | Same ladder: unmerged sha → no tag → source build at that sha, automatic in CI. |
 | B5 | open | Repo setting, not the PR: `strict_up_to_date` off, no merge queue. |
 | B6 | open | `print-pin.cmake` reports top-level pins only. |
