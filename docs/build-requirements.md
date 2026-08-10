@@ -66,8 +66,12 @@ the dependency set its CI run used.
 **B3 — The pin moves only deliberately.** The sync job is the normal mover.
 A human bump is an explicit, reviewed act (CODEOWNERS on the pin file, or an
 equivalent guard). Trying a different revision must not require editing the
-tracked file, and an override that is ignored must say so rather than being
-swallowed.
+tracked file — a developer testing against another moxygen locally should have
+an environment/command-line path that leaves no change to accidentally commit,
+so their PR diff stays exactly their change. (Deliberately pinning a PR to an
+unmerged moxygen is different: there the file edit is the point, and review
+covers it.) And an override that is ignored must say so rather than being
+silently swallowed.
 
 **B4 — Coupled changes stay one-step.** A moqx PR pinned at an unmerged
 moxygen sha builds and tests in CI unaided. The follow-up (rebase after the
