@@ -22,8 +22,11 @@ read as "no live tracks".
 Namespaces come and go with events, so the target list cannot be static.
 `namespace-targets.py` walks the relay's `/state` namespace tree every 30s and
 writes one target per namespace to a file Prometheus rereads without a restart.
-It collects every node carrying a namespace rather than only the leaves, since
-tracks can be published at any depth.
+It emits only top-level namespaces. The endpoint matches a prefix, so scraping
+a parent and its child would return the same tracks twice and every aggregate
+would double-count; top-level namespaces do not overlap, and their prefixes
+still cover every track beneath them. If one grows past the limit it has to be
+split by descending a level.
 
 Targets are namespace values in the moq-transport safe form — `[A-Za-z0-9_]`
 passes through, every other byte becomes `.<hex>`, tuple elements join with

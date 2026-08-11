@@ -38,14 +38,20 @@ def safe_namespace(tuple_elements):
     return "-".join(safe_element(e) for e in tuple_elements)
 
 
-def walk(node, found):
-    """Collect every node carrying a namespace, not just the leaves: tracks can
-    be published at any depth."""
-    full = node.get("full_namespace") or []
-    if full:
-        found.append(full)
-    for child in (node.get("children") or {}).values():
-        walk(child, found)
+def top_level(tree):
+    """Only the tree's immediate children.
+
+    The endpoint matches a namespace prefix, so scraping both a parent and its
+    child returns the same tracks twice and every aggregate double-counts.
+    Top-level namespaces do not overlap each other and their prefixes still
+    cover every track beneath them.
+    """
+    out = []
+    for child in (tree.get("children") or {}).values():
+        full = child.get("full_namespace") or []
+        if full:
+            out.append(full)
+    return out
 
 
 def namespaces():
@@ -55,7 +61,7 @@ def namespaces():
     for service in (state.get("services") or {}).values():
         tree = service.get("namespace_tree")
         if tree:
-            walk(tree, found)
+            found.extend(top_level(tree))
     # A namespace can appear under more than one service.
     return sorted({tuple(ns) for ns in found})
 
