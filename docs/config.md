@@ -174,7 +174,7 @@ services:
 
 | Field | Default | Notes |
 |---|---|---|
-| `enabled` | `false` | Enables CAT-style authorization for this service. |
+| `enabled` | `false` | Enables CAT-style authorization for this service. When `false`, nothing is enforced and the other `auth` fields have no effect. |
 | `token_type` | `0` | MOQT `AUTHORIZATION_TOKEN` type to accept. Use `16` with CAT4MOQ tokens produced for moqxr's CAT wrapper. Type `0` is valid for private or out-of-band deployments. The value must fit in a QUIC variable integer. |
 | `hmac_keys` | empty | Required when `enabled: true`. Each key needs a non-empty `id` and `secret`; duplicate key IDs are rejected. The token issuer must use the same key ID and secret. |
 | `require_setup_token` | `true` | Requires a valid setup token authorizing `client_setup` during session setup. If `false`, clients can connect without setup grants; per-request actions still need an authorized token or a matching `anonymous_claim` entry. |
