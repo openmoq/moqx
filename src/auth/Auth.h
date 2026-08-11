@@ -11,6 +11,7 @@
 
 #include <folly/Expected.h>
 #include <folly/Unit.h>
+#include <folly/lang/Bits.h>
 #include <moxygen/MoQTypes.h>
 
 #include <chrono>
@@ -57,10 +58,8 @@ struct Grants {
 inline std::string canonicalNamespace(const moxygen::TrackNamespace& ns) {
   std::string out;
   for (const auto& field : ns.trackNamespace) {
-    out.push_back(static_cast<char>((field.size() >> 24) & 0xff));
-    out.push_back(static_cast<char>((field.size() >> 16) & 0xff));
-    out.push_back(static_cast<char>((field.size() >> 8) & 0xff));
-    out.push_back(static_cast<char>(field.size() & 0xff));
+    const uint32_t lenBigEndian = folly::Endian::big(static_cast<uint32_t>(field.size()));
+    out.append(reinterpret_cast<const char*>(&lenBigEndian), sizeof(lenBigEndian));
     out.append(field);
   }
   return out;
