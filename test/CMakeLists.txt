@@ -382,6 +382,17 @@ target_link_libraries(moqx_subscription_registry_test PRIVATE
 )
 gtest_discover_tests(moqx_subscription_registry_test)
 
+# InitialTrackState unit tests (header-only value type)
+add_executable(moqx_initial_track_state_test
+  InitialTrackStateTest.cpp
+)
+target_link_libraries(moqx_initial_track_state_test PRIVATE
+  moqx_core
+  moqx_test_main
+  GTest::gmock
+)
+gtest_discover_tests(moqx_initial_track_state_test)
+
 # TopNFilter unit tests
 add_executable(moqx_topn_filter_test
   TopNFilterTest.cpp
