@@ -227,7 +227,7 @@ struct ServiceConfig {
 struct AdminConfig {
   folly::SocketAddress address;
   std::optional<TlsConfig> tls;
-  bool trackMetricsEnabled{true};
+  bool trackMetricsEnabled{false};
   uint32_t trackMetricsLimit{10};
   uint32_t trackMetricsMaxLimit{1000};
 };
