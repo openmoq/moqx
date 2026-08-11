@@ -534,7 +534,8 @@ constexpr uint64_t kQuicVarintExclusiveUpperBound = uint64_t{1} << 62;
 void validateAuth(
     const std::string& serviceName,
     const ParsedAuthConfig& auth,
-    std::vector<std::string>& errors
+    std::vector<std::string>& errors,
+    std::vector<std::string>& warnings
 ) {
   if (auth.enabled.value()) {
     const auto& keys = auth.hmac_keys.value();
@@ -582,6 +583,13 @@ void validateAuth(
   const auto& anonymousClaim = auth.anonymous_claim.value();
   if (!anonymousClaim.has_value()) {
     return;
+  }
+  if (!auth.enabled.value() && !anonymousClaim->empty()) {
+    warnings.push_back(
+        "Service '" + serviceName +
+        "': auth.anonymous_claim has no effect while auth.enabled is false -- everything is "
+        "allowed"
+    );
   }
   for (size_t i = 0; i < anonymousClaim->size(); ++i) {
     const auto& scope = (*anonymousClaim)[i];
@@ -693,7 +701,8 @@ void validateServiceAuth(
     const ParsedServiceConfig& svc,
     const ParsedConfig& config,
     std::unordered_map<std::string, ParsedAuthConfig>& mergedAuths,
-    std::vector<std::string>& errors
+    std::vector<std::string>& errors,
+    std::vector<std::string>& warnings
 ) {
   if (!svc.auth.value().has_value()) {
     return;
@@ -705,7 +714,7 @@ void validateServiceAuth(
     mergedAuth.max_tokens_per_message =
         config.service_defaults.value()->auth.value()->max_tokens_per_message.value();
   }
-  validateAuth(name, mergedAuth, errors);
+  validateAuth(name, mergedAuth, errors, warnings);
   mergedAuths.emplace(name, std::move(mergedAuth));
 }
 
@@ -718,7 +727,8 @@ void validateService(
     std::unordered_set<std::string>& compositeKeys,
     std::unordered_map<std::string, ParsedCacheConfig>& mergedCaches,
     std::unordered_map<std::string, ParsedAuthConfig>& mergedAuths,
-    std::vector<std::string>& errors
+    std::vector<std::string>& errors,
+    std::vector<std::string>& warnings
 ) {
 
   // Validate each match entry
@@ -790,7 +800,7 @@ void validateService(
   if (svc.upstream.value().has_value()) {
     validateUpstream(*svc.upstream.value(), errors);
   }
-  validateServiceAuth(name, svc, config, mergedAuths, errors);
+  validateServiceAuth(name, svc, config, mergedAuths, errors, warnings);
 }
 
 std::string generateRelayID() {
@@ -1256,7 +1266,7 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
   std::unordered_map<std::string, ParsedAuthConfig> mergedAuths;
 
   for (const auto& [name, svc] : services) {
-    validateService(name, svc, config, compositeKeys, mergedCaches, mergedAuths, errors);
+    validateService(name, svc, config, compositeKeys, mergedCaches, mergedAuths, errors, warnings);
   }
 
   // === Validate threads ===
