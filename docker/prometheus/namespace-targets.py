@@ -79,6 +79,8 @@ def write(path, entries):
     fd, tmp = tempfile.mkstemp(dir=directory)
     with os.fdopen(fd, "w") as handle:
         handle.write(body)
+    # mkstemp makes it 0600 and this runs as root; Prometheus runs as nobody.
+    os.chmod(tmp, 0o644)
     os.replace(tmp, path)
     return True
 
