@@ -953,6 +953,27 @@ TEST(ResolveConfig, AuthAnonymousClaimValidatedEvenWhenAuthDisabled) {
   EXPECT_THAT(result.error(), HasSubstr("is not a recognized CAT4MOQ action"));
 }
 
+TEST(ResolveConfig, AuthAnonymousClaimWarnsWhenAuthDisabled) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().clear();
+
+  auto auth = makeAuthConfig();
+  auth.enabled = false;
+  auth.hmac_keys = std::nullopt;
+  auth.anonymous_claim = std::optional<std::vector<AnonymousScope>>{
+      std::vector<AnonymousScope>{makeAnonymousScope({"subscribe"})}
+  };
+  cfg.services.value().emplace("svc", makeAuthService(std::move(auth)));
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  ASSERT_FALSE(result.value().warnings.empty());
+  EXPECT_THAT(
+      result.value().warnings[0],
+      HasSubstr("auth.anonymous_claim has no effect while auth.enabled is false")
+  );
+}
+
 TEST(ResolveConfig, AuthAnonymousClaimRejectsClientSetupAndServerSetup) {
   auto cfg = makeMinimalInsecureConfig();
   cfg.services.value().clear();
