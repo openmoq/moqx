@@ -1188,15 +1188,19 @@ folly::coro::Task<void> MoqxRelay::addSubscriberAndPublishViaLocalForwarder(
   co_await awaitPublishReply(localFwd, std::move(p->subscriber), std::move(p->reply));
 }
 
+LocalForwarderRegistry& MoqxRelay::localRegistry() {
+  if (!tlForwarders_.get()) {
+    tlForwarders_.reset(new LocalForwarderRegistry());
+  }
+  return *tlForwarders_;
+}
+
 // Slow-path local-forwarder bootstrap shared by the publish and subscribe LF paths.
 // Callers handle the fast path and install the PendingForwarderCallback themselves,
 // because the timing differs.
 MoqxRelay::LocalForwarderBootstrap
 MoqxRelay::acquireLocalForwarder(const FullTrackName& ftn, const InitialTrackState& initial) {
-  if (!tlForwarders_.get()) {
-    tlForwarders_.reset(new LocalForwarderRegistry());
-  }
-  auto* localReg = tlForwarders_.get();
+  auto* localReg = &localRegistry();
   auto joined = localReg->join(ftn, [&] { return std::make_shared<MoQForwarder>(ftn); });
   if (auto* claim = std::get_if<LocalForwarderRegistry::Claim>(&joined)) {
     auto localFwd = claim->forwarder();
@@ -1954,22 +1958,45 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriber
 ) {
   const auto& ftn = subReq.fullTrackName;
 
-  // Join before the relay hop: serializes same-iothread races. No initial state yet —
-  // the upstream OK has not arrived, so an attacher can read a too-early largest here.
-  auto [localFwd, isNew, localReg] = acquireLocalForwarder(ftn, InitialTrackState{});
+  // Join before the relay hop: serializes same-iothread races.
+  auto* localReg = &localRegistry();
+  auto joined = localReg->join(ftn, [&] { return std::make_shared<MoQForwarder>(ftn); });
 
   consumer =
       wrapWithTrackStats(trackStats_, ftn, std::move(consumer), stats::TrackDirection::Egress);
 
-  if (!isNew) {
-    if (auto err = checkRangeNotInPast(*localFwd, subReq)) {
-      co_return folly::makeUnexpected(std::move(*err));
+  if (auto* pending = std::get_if<LocalForwarderRegistry::Pending>(&joined)) {
+    // Another subscriber owns setup. Wait for it.
+    co_await folly::coro::co_awaitTry(std::move(pending->ready));
+    // Re-resolve: the entry may have been displaced while we were waiting. A failed setup
+    // fails this subscriber too.
+    auto ready = localReg->getIfReady(ftn);
+    if (!ready) {
+      co_return folly::makeUnexpected(SubscribeError{
+          subReq.requestID,
+          SubscribeErrorCode::INTERNAL_ERROR,
+          "local forwarder setup failed"
+      });
     }
-    co_return attachSubscriber(*localFwd, std::move(session), subReq, std::move(consumer));
+    joined = LocalForwarderRegistry::Ready{std::move(ready)};
   }
 
-  // isNew=true: this thread owns setup. Install PendingForwarderCallback first so
-  // forwardChanged/newGroupRequested/onEmpty events during setup are captured for replay.
+  if (auto* ready = std::get_if<LocalForwarderRegistry::Ready>(&joined)) {
+    auto& readyFwd = *ready->forwarder;
+    if (auto err = checkRangeNotInPast(readyFwd, subReq)) {
+      co_return folly::makeUnexpected(std::move(*err));
+    }
+    co_return attachSubscriber(readyFwd, std::move(session), subReq, std::move(consumer));
+  }
+
+  // This thread owns setup. The claim stays open until the tail, so same-thread attachers
+  // wait on it also. The Claim destructor will clear the entry and wake subscribers
+  // waiting for it unless markReady() is called.
+  auto claim = std::move(std::get<LocalForwarderRegistry::Claim>(joined));
+  auto localFwd = claim.forwarder();
+
+  // Install PendingForwarderCallback first so forwardChanged/newGroupRequested/onEmpty
+  // events during setup are captured for replay.
   auto pendingCb = std::make_shared<PendingForwarderCallback>(localReg, ftn);
   localFwd->setCallback(pendingCb);
 
@@ -1981,7 +2008,6 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriber
   // when addChannelSubscriber runs on publisherExec, so forward flag is right from the start.
   auto sub = localFwd->addSubscriber(session, subReq, std::move(consumer));
   if (!sub) {
-    localReg->remove(ftn, localFwd.get());
     co_return folly::makeUnexpected(makeAddSubscriberError(subReq.requestID));
   }
   bool forward = (localFwd->numForwardingSubscribers() > 0);
@@ -2026,18 +2052,21 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriber
         0,
         attach.error->error().reasonPhrase
     });
-    localReg->remove(ftn, localFwd.get());
     co_return std::move(*attach.error);
   }
 
+  // Only the first subscriber has an upstream OK. A subsequent one leaves this empty and
+  // marks the entry ready with no largest (a bug fixed in a subsequent commit)
+  InitialTrackState initial;
   if (attach.upstreamOk) {
-    InitialTrackState initial{attach.upstreamOk->largest, attach.upstreamOk->extensions};
-    initial.applyTo(*localFwd);
+    initial = InitialTrackState{attach.upstreamOk->largest, attach.upstreamOk->extensions};
     // Also on the subscriber, so a post-SUBSCRIBE_OK joining fetch resolves.
     initial.applyTo(*sub);
   }
+  claim.setInitialState(initial);
   replayPendingFowarderEvents(localFwd.get(), attach.finalCallback, *pendingCb, forward);
   localFwd->tryProcessNewGroupRequest(subReq.params);
+  claim.markReady();
   co_return sub;
 }
 
