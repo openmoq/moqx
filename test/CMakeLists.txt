@@ -1,6 +1,11 @@
 find_package(GTest REQUIRED CONFIG)
 include(GoogleTest)
 
+# Discover tests at ctest startup (serial) instead of POST_BUILD (parallel).
+# Parallel POST_BUILD discovery races on a shared JSON file under cmake 4.4.0,
+# intermittently failing macOS builds with "JSON failed parsing".
+set(CMAKE_GTEST_DISCOVER_TESTS_DISCOVERY_MODE PRE_TEST)
+
 add_library(moqx_test_utils STATIC
   TestUtils.cpp
 )
