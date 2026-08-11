@@ -6,6 +6,8 @@
 
 #pragma once
 
+#include "auth/ExhaustiveSwitch.h"
+
 #include <folly/String.h>
 
 #include <algorithm>
@@ -33,8 +35,7 @@ enum class Action : uint64_t {
 
 enum class MatchRuleType : uint64_t { Exact = 0, Prefix = 1, Suffix = 2, Contains = 3 };
 
-#pragma GCC diagnostic push
-#pragma GCC diagnostic error "-Wswitch"
+ENFORCE_EXHAUSTIVE_SWITCH_BEGIN
 inline std::string_view actionName(Action action) {
   switch (action) {
   case Action::ClientSetup:
@@ -58,7 +59,7 @@ inline std::string_view actionName(Action action) {
   }
   return "unknown";
 }
-#pragma GCC diagnostic pop
+ENFORCE_EXHAUSTIVE_SWITCH_END
 
 // Canonicalizes an action name (aliases, numeric IDs, case/dash-insensitive)
 // to its Action, or nullopt if unrecognized.

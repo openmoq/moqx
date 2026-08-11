@@ -6,6 +6,7 @@
 
 #include "auth/Auth.h"
 #include "auth/CborReader.h"
+#include "auth/ExhaustiveSwitch.h"
 #include "auth/HmacKey.h"
 
 #include <catapult/crypto.hpp>
@@ -43,9 +44,8 @@ std::string toString(const std::vector<uint8_t>& bytes) {
 
 // catapult's CBOR decoder (parse_bin_match, cwt.cpp) falls back to EXACT for
 // an unrecognized BinaryMatchType, so the XLOG below is a tripwire against
-// that decoder changing; -Wswitch (a hard error here) covers a missed case.
-#pragma GCC diagnostic push
-#pragma GCC diagnostic error "-Wswitch"
+// that decoder changing; the exhaustive-switch check covers a missed case.
+ENFORCE_EXHAUSTIVE_SWITCH_BEGIN
 MatchRule::Type fromCatapultMatchType(catapult::BinaryMatchType type) {
   switch (type) {
   case catapult::BinaryMatchType::EXACT:
@@ -61,7 +61,7 @@ MatchRule::Type fromCatapultMatchType(catapult::BinaryMatchType type) {
             << " unrecognized; falling back to EXACT";
   return MatchRule::Type::Exact;
 }
-#pragma GCC diagnostic pop
+ENFORCE_EXHAUSTIVE_SWITCH_END
 
 std::vector<MatchRule> fromCatapultMatch(const catapult::MoqtCompoundMatch& match) {
   if (match.is_empty()) {
