@@ -333,6 +333,9 @@ private:
       folly::Executor* subscriberExec
   );
 
+  // This thread's registry, created on first use.
+  LocalForwarderRegistry& localRegistry();
+
   struct LocalForwarderBootstrap {
     std::shared_ptr<moxygen::MoQForwarder> localFwd;
     bool isNew{false};
