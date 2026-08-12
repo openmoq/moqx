@@ -200,7 +200,7 @@ goes away, and start from zero if it comes back.
 | `namespace` | no | Namespace prefix in the safe form below. Matches every track under the prefix unless `track` is given. Default: all namespaces. |
 | `service` | no | Restrict to one service. Default: all services, each labeled. |
 | `track` | no | Exact track name within the namespace. |
-| `limit` | no | Max tracks to report. Default `admin.track_metrics_endpoint_default_limit` (10), clamped to `admin.track_metrics_endpoint_max_limit` (1000). |
+| `limit` | no | Max tracks to report. Default `admin.track_metrics_endpoint_default_limit` (10); a value above `admin.track_metrics_endpoint_max_limit` (1000) is rejected with 400. |
 
 Every parameter is optional, so `GET /metrics/track?limit=20` reports every live
 track when fewer than 20 match.
