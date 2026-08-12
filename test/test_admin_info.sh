@@ -55,4 +55,14 @@ if ! grep -q '"version":' <<<"$RESPONSE"; then
   exit 1
 fi
 
+if ! grep -qE '"start_time":[0-9]{10}' <<<"$RESPONSE"; then
+  echo "FAIL: missing/implausible \"start_time\" field in response" >&2
+  exit 1
+fi
+
+if ! grep -qE '"uptime_seconds":[0-9]+' <<<"$RESPONSE"; then
+  echo "FAIL: missing \"uptime_seconds\" field in response" >&2
+  exit 1
+fi
+
 echo "PASS"

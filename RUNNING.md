@@ -109,7 +109,7 @@ moqx --config c.yaml --log_backtrace_at "MoQForwarder.cpp:819"
 
 ```bash
 curl http://localhost:8000/info
-# {"service":"moqx","version":"0.1.0"}
+# {"service":"moqx","version":"0.1.0","start_time":1754870400,"uptime_seconds":42}
 ```
 
 ## Diagnosing Issues
