@@ -106,6 +106,7 @@ TEST_P(MoQRelayTest, DuplicateSubgroupCancelledWhenNoActiveConsumers) {
 
   auto sgRes = publishConsumer->beginSubgroup(0, 0, 0);
   ASSERT_TRUE(sgRes.hasValue());
+  // NOLINTNEXTLINE(performance-unnecessary-copy-initialization)
   auto sg = sgRes.value();
   driveIfMultiThread(); // flush so beginSubgroup wires sg.downstream_ before object() enqueues
 

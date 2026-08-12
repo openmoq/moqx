@@ -68,6 +68,7 @@ folly::coro::Task<void> doNewGroupRequestUpdate(
 // downstream subscriber (which subscribed with that prefix) should see.
 moxygen::TrackNamespace makeNamespaceSuffix(const moxygen::TrackNamespace& src, size_t prefixLen) {
   return moxygen::TrackNamespace(
+      // NOLINTNEXTLINE(bugprone-narrowing-conversions,cppcoreguidelines-narrowing-conversions)
       std::vector<std::string>(src.trackNamespace.begin() + prefixLen, src.trackNamespace.end())
   );
 }
@@ -78,6 +79,7 @@ moxygen::TrackNamespace makeNamespaceSuffix(const moxygen::TrackNamespace& src, 
 std::optional<moxygen::SubscribeError>
 checkRangeNotInPast(moxygen::MoQForwarder& fwd, const moxygen::SubscribeRequest& subReq) {
   if (fwd.largest() && subReq.locType == moxygen::LocationType::AbsoluteRange &&
+      // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
       subReq.endGroup < fwd.largest()->group) {
     return moxygen::SubscribeError{
         subReq.requestID,
@@ -214,6 +216,7 @@ public:
       : relay_(std::move(relay)), session_(std::move(session)), peerID_(std::move(peerID)),
         relayExec_(relayExec) {}
 
+  // NOLINTNEXTLINE(bugprone-exception-escape)
   ~MoqxRelayNamespaceHandle() {
     auto relay = relay_.lock();
     if (!relay || activeNamespaces_.empty()) {
@@ -295,6 +298,7 @@ void MoqxRelay::onUpstreamDisconnect() {
 
 std::shared_ptr<Subscriber::PublishNamespaceHandle> MoqxRelay::doPublishNamespace(
     PublishNamespace pubNs,
+    // NOLINTNEXTLINE(performance-unnecessary-value-param)
     std::shared_ptr<MoQSession> session,
     std::shared_ptr<Subscriber::PublishNamespaceCallback> callback,
     std::string peerID
@@ -381,6 +385,7 @@ folly::coro::Task<void> MoqxRelay::publishNamespaceToSession(
 
 void MoqxRelay::doPublishNamespaceDone(
     const TrackNamespace& trackNamespace,
+    // NOLINTNEXTLINE(performance-unnecessary-value-param)
     std::shared_ptr<MoQSession> session
 ) {
   XLOG(DBG1) << __func__ << " ns=" << trackNamespace;
@@ -605,6 +610,7 @@ MoqxRelay::PublishSetupResult MoqxRelay::publishWithSession(
       std::move(publisherWrapped),
       pub.requestID,
       std::move(handle),
+      // NOLINTNEXTLINE(performance-unnecessary-value-param)
       [&](std::shared_ptr<MoQForwarder> f) { return buildFilterChain(pub.fullTrackName, f); }
   );
 
@@ -775,7 +781,9 @@ folly::coro::Task<void> awaitPublishReply(
 // SubscriberCrossExecFilter when subscriberExec is non-null) → set trackConsumer.
 // Returns nullopt and cleans up on any synchronous failure.
 std::optional<MoqxRelay::PreparedPublish> MoqxRelay::startPublish(
+    // NOLINTNEXTLINE(performance-unnecessary-value-param)
     std::shared_ptr<MoQSession> session,
+    // NOLINTNEXTLINE(performance-unnecessary-value-param)
     std::shared_ptr<MoQForwarder> forwarder,
     bool forward,
     bool pinned,
@@ -807,7 +815,9 @@ std::optional<MoqxRelay::PreparedPublish> MoqxRelay::startPublish(
 // to subscriberExec. Otherwise: calls startPublish sync and fires reply async.
 // Returns false on synchronous failure.
 bool MoqxRelay::addSubscriberAndPublish(
+    // NOLINTNEXTLINE(performance-unnecessary-value-param)
     std::shared_ptr<MoQSession> subscriberSession,
+    // NOLINTNEXTLINE(performance-unnecessary-value-param)
     std::shared_ptr<MoQForwarder> forwarder,
     bool forward,
     bool pinned,
@@ -852,6 +862,7 @@ namespace {
 void teardownLocalForwarderOnFailure(
     folly::Executor* publisherExec,
     std::shared_ptr<MoQForwarder> publisherFwd,
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
     folly::Executor* subscriberExec,
     folly::Executor* relayExec,
     const std::shared_ptr<MoQForwarder>& localFwd = nullptr,
@@ -958,6 +969,7 @@ class ChannelForwarderCallback : public moxygen::MoQForwarder::Callback {
 public:
   ChannelForwarderCallback(
       std::weak_ptr<moxygen::MoQForwarder> weakPublisher,
+      // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
       folly::Executor* subscriberExec,
       folly::Executor* publisherExec
   )
@@ -1020,6 +1032,7 @@ struct LocalToPublisherCallbacks {
 LocalToPublisherCallbacks buildLocalToPublisherCallbacks(
     openmoq::moqx::LocalForwarderRegistry* localReg,
     moxygen::FullTrackName ftn,
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
     const std::shared_ptr<moxygen::MoQForwarder>& localFwd,
     const std::shared_ptr<moxygen::MoQForwarder>& publisherFwd,
     folly::Executor* publisherExec,
@@ -1324,6 +1337,7 @@ std::shared_ptr<TrackConsumer> MoqxRelay::getSubscribeWriteback(
 }
 
 SubscriptionRegistry::FilterChainResult
+// NOLINTNEXTLINE(performance-unnecessary-value-param)
 MoqxRelay::buildFilterChain(const FullTrackName& ftn, std::shared_ptr<MoQForwarder> forwarder) {
   if (mode() == Mode::LocalForwarder) {
     // Multi-iothread with local forwarders: publisher writes directly to forwarder on
@@ -1458,6 +1472,7 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
   namespaceTree_.forEachNodeInSubtree(
       subNs.trackNamespacePrefix,
       nodePtr,
+      // NOLINTNEXTLINE(performance-unnecessary-value-param)
       [&](const TrackNamespace& prefix, std::shared_ptr<NamespaceTree::NamespaceNode> node) {
         if (node->publisherSession() && node->publisherSession() != session &&
             (incomingPeerID.empty() || node->publisherPeerID() != incomingPeerID)) {
@@ -1524,6 +1539,7 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
 
 void MoqxRelay::unsubscribeNamespace(
     const TrackNamespace& trackNamespacePrefix,
+    // NOLINTNEXTLINE(performance-unnecessary-value-param)
     std::shared_ptr<MoQSession> session
 ) {
   XLOG(DBG1) << __func__ << " nsp=" << trackNamespacePrefix;
@@ -1587,6 +1603,7 @@ folly::coro::Task<Publisher::SubscribeTracksResult> MoqxRelay::subscribeTracks(
     namespaceTree_.forEachNodeInSubtree(
         subTracks.trackNamespacePrefix,
         pubNode,
+        // NOLINTNEXTLINE(performance-unnecessary-value-param)
         [&](const TrackNamespace& prefix, std::shared_ptr<NamespaceTree::NamespaceNode> node) {
           node->forEachPublish([&](const std::string& trackName,
                                    const std::shared_ptr<MoQSession>& publishSession) {
@@ -1626,6 +1643,7 @@ folly::coro::Task<Publisher::SubscribeTracksResult> MoqxRelay::subscribeTracks(
 
 void MoqxRelay::unsubscribeTracks(
     const TrackNamespace& trackNamespacePrefix,
+    // NOLINTNEXTLINE(performance-unnecessary-value-param)
     std::shared_ptr<MoQSession> session
 ) {
   XLOG(DBG1) << __func__ << " nsp=" << trackNamespacePrefix;
@@ -1834,6 +1852,7 @@ folly::coro::Task<MoqxRelay::PublisherAttachment> MoqxRelay::attachNewLocalForwa
     co_return attach; // subsequent subscriber: wired to the live publisher, done
   }
 
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   if (upstreamResult->hasError()) {
     // Upstream subscribe failed: drop the channel sub(s) we installed (the relay-exec
     // sub too, since firstSetup owns the relay chain). localFwd is drained by the tail.
@@ -1843,9 +1862,11 @@ folly::coro::Task<MoqxRelay::PublisherAttachment> MoqxRelay::attachNewLocalForwa
         subscriberExec,
         relayChainFilter ? relayExec_ : nullptr
     );
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     attach.error = folly::makeUnexpected(std::move(upstreamResult->error()));
     co_return attach;
   }
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   auto upstreamOk = std::move(upstreamResult->value());
 
   // Wire the relay chain to topNFilter before pending.complete() so buffered objects
@@ -2419,6 +2440,7 @@ void MoqxRelay::newGroupRequestedImpl(const FullTrackName& ftn, uint64_t group) 
 // TRACK_FILTER support
 
 std::shared_ptr<PropertyRanking> MoqxRelay::getOrCreateRanking(
+    // NOLINTNEXTLINE(performance-unnecessary-value-param)
     std::shared_ptr<NamespaceTree::NamespaceNode> node,
     uint64_t propertyType,
     const TrackNamespace& ns
@@ -2446,10 +2468,12 @@ std::shared_ptr<PropertyRanking> MoqxRelay::getOrCreateRanking(
         // Individual callback: called by addSessionToTopNGroup to notify a newly
         // joined session of tracks already in top-N at the time it subscribes.
         [this](const FullTrackName& ftn, std::shared_ptr<MoQSession> session, bool forward) {
+          // NOLINTNEXTLINE(performance-unnecessary-value-param)
           onTrackSelected(ftn, session, forward);
         },
         // Eviction callback
         [this](const FullTrackName& ftn, std::shared_ptr<MoQSession> session) {
+          // NOLINTNEXTLINE(performance-unnecessary-value-param)
           onTrackEvicted(ftn, session);
         }
     );
@@ -2459,6 +2483,7 @@ std::shared_ptr<PropertyRanking> MoqxRelay::getOrCreateRanking(
     namespaceTree_.forEachNodeInSubtree(
         ns,
         node,
+        // NOLINTNEXTLINE(performance-unnecessary-value-param)
         [&](const TrackNamespace& prefix, std::shared_ptr<NamespaceTree::NamespaceNode> current) {
           // Collect tracks at this level with their last-activity time and current
           // property value, then sort by lastObjectTime ascending so arrivalSeq
@@ -2522,6 +2547,7 @@ std::shared_ptr<PropertyRanking> MoqxRelay::getOrCreateRanking(
 
 void MoqxRelay::onTrackSelected(
     const FullTrackName& ftn,
+    // NOLINTNEXTLINE(performance-unnecessary-value-param)
     std::shared_ptr<MoQSession> session,
     bool forward
 ) {
@@ -2542,11 +2568,13 @@ void MoqxRelay::onTrackSelected(
   auto upstreamView = registry_.getUpstreamView(ftn);
   XCHECK(!relayExec_ || (upstreamView && upstreamView->publisherExec))
       << "onTrackSelected: relayExec set but no publisherExec for " << ftn;
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   auto* publisherExec = relayExec_ ? upstreamView->publisherExec : nullptr;
   // TRACK_FILTER subscribers are unpinned so onTrackEvicted can remove them.
   addSubscriberAndPublish(session, trackForwarder, forward, /*pinned=*/false, publisherExec);
 }
 
+// NOLINTNEXTLINE(performance-unnecessary-value-param)
 void MoqxRelay::onTrackEvicted(const FullTrackName& ftn, std::shared_ptr<MoQSession> session) {
   XLOG(DBG4) << "[MoqxRelay] Track evicted: " << ftn << " session=" << session.get();
 

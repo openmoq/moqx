@@ -98,6 +98,7 @@ TEST(PeerSubNsHelpers, PeerSubNsRoundTrip) {
   auto withID = makePeerSubNs("my-relay-id");
   auto id = getPeerRelayID(withID);
   EXPECT_TRUE(id.has_value());
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_EQ(*id, "my-relay-id");
   EXPECT_EQ(withID.trackNamespacePrefix, TrackNamespace{});
   EXPECT_EQ(withID.options, SubscribeNamespaceOptions::BOTH);
@@ -470,6 +471,7 @@ TEST_F(UpstreamProviderTest, TrackStatusFastPathAfterConnect) {
 TEST_F(UpstreamProviderTest, PublishFastPathAfterConnect) {
   EXPECT_CALL(*serverSubscriber_, publish(_, _))
       .WillOnce(
+          // NOLINTNEXTLINE(performance-unnecessary-value-param)
           [](PublishRequest pub, std::shared_ptr<SubscriptionHandle>) -> Subscriber::PublishResult {
             return makePublishOk(pub);
           }
@@ -504,6 +506,7 @@ TEST_F(UpstreamProviderTest, PublishFastPathAfterConnect) {
 TEST_F(UpstreamProviderTest, PublishPreConnectPath) {
   EXPECT_CALL(*serverSubscriber_, publish(_, _))
       .WillOnce(
+          // NOLINTNEXTLINE(performance-unnecessary-value-param)
           [](PublishRequest pub, std::shared_ptr<SubscriptionHandle>) -> Subscriber::PublishResult {
             return makePublishOk(pub);
           }

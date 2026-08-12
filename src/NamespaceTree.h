@@ -90,7 +90,9 @@ public:
     }
 
     void addDraft14PublishNamespaceHandle(
+        // NOLINTNEXTLINE(performance-unnecessary-value-param)
         std::shared_ptr<moxygen::MoQSession> session,
+        // NOLINTNEXTLINE(performance-unnecessary-value-param)
         std::shared_ptr<moxygen::Subscriber::PublishNamespaceHandle> handle
     ) {
       draft14PubNsHandles_.emplace(std::move(session), std::move(handle));
@@ -130,7 +132,9 @@ public:
 
   explicit NamespaceTree(Callback& cb) : cb_(cb), root_(*this) {}
 
+  // NOLINTNEXTLINE(performance-enum-size)
   enum class MatchType { Exact, Prefix };
+  // NOLINTNEXTLINE(performance-enum-size)
   enum class Error { NodeNotFound, NotOwner, NotSubscribed };
 
   // Longest-prefix match for the publisher of ns; null if none found.

@@ -21,11 +21,13 @@ const TrackNamespace kTestNs{{"test", "namespace"}};
 const FullTrackName kFtn{kTestNs, "track1"};
 
 // Minimal chain for subscribe-path tests (no TopNFilter needed).
+// NOLINTNEXTLINE(performance-unnecessary-value-param)
 SubscriptionRegistry::FilterChainResult subscribeChain(std::shared_ptr<MoQForwarder> f) {
   return {std::static_pointer_cast<TrackConsumer>(f), nullptr};
 }
 
 // Chain for publish-path tests: createFromPublish dereferences topNFilter.
+// NOLINTNEXTLINE(performance-unnecessary-value-param)
 SubscriptionRegistry::FilterChainResult publishChain(std::shared_ptr<MoQForwarder> f) {
   auto filter = std::make_shared<TopNFilter>(kFtn, nullptr);
   return {std::static_pointer_cast<TrackConsumer>(f), filter};
@@ -103,6 +105,7 @@ TEST(SubscriptionRegistryTest, AwaitSubsequentHandlesErasedEntry) {
   auto token2 = registry.getOrCreateFromSubscribe(
       kFtn,
       /*callback=*/nullptr,
+      // NOLINTNEXTLINE(performance-unnecessary-value-param)
       [](std::shared_ptr<MoQForwarder>) -> SubscriptionRegistry::FilterChainResult {
         return {nullptr, nullptr};
       }
@@ -145,6 +148,7 @@ TEST(SubscriptionRegistryTest, CreateFromPublishEvictsSubscribeEntry) {
   );
 
   ASSERT_TRUE(entry.evicted.has_value());
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_EQ(entry.evicted->forwarder, originalForwarder);
   EXPECT_EQ(registry.getForwarder(kFtn), newForwarder);
 }

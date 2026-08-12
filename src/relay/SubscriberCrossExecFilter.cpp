@@ -76,11 +76,13 @@ SubscriberCrossExecFilter::publishNamespace(
     std::shared_ptr<PublishNamespaceCallback> callback
 ) {
   auto callerExec = co_await folly::coro::co_current_executor;
-  auto wrappedCallback = callback ? std::make_shared<CrossExecPublishNamespaceCallback>(
-                                        std::move(callback),
-                                        std::move(callerExec)
-                                    )
-                                  : nullptr;
+  auto wrappedCallback =
+      callback ? std::make_shared<CrossExecPublishNamespaceCallback>(
+                     std::move(callback),
+                     // NOLINTNEXTLINE(hicpp-move-const-arg,performance-move-const-arg)
+                     std::move(callerExec)
+                 )
+               : nullptr;
   auto result = co_await folly::coro::co_withExecutor(
       folly::getKeepAliveToken(targetExec_),
       inner_->publishNamespace(std::move(pubNs), std::move(wrappedCallback))

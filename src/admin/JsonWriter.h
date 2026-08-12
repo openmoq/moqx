@@ -86,6 +86,7 @@ public:
     needsComma_ = true;
   }
 
+  // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
   void field(std::string_view k, std::string_view v) {
     key(k);
     strVal(v);
@@ -135,6 +136,7 @@ private:
         append("\\t");
       } else if (c < 0x20) {
         char buf[7];
+        // NOLINTNEXTLINE(cert-err33-c)
         std::snprintf(buf, sizeof(buf), "\\u%04x", c);
         append(std::string_view(buf, 6));
       } else {

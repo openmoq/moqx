@@ -72,6 +72,7 @@ template <typename Derived> class CrossExecLifetime : public CrossExecBase {
 protected:
   struct PrivateTag {};
 
+  // NOLINTNEXTLINE(bugprone-crtp-constructor-accessibility)
   CrossExecLifetime(folly::Executor* exec, bool deepCopy) : CrossExecBase(exec, deepCopy) {}
 
 public:
@@ -93,6 +94,7 @@ public:
   // Pass std::move(downstream_) as consumed to null the member before returning.
   template <typename T = void>
   void
+  // NOLINTNEXTLINE(performance-unnecessary-value-param)
   closeWithError(moxygen::MoQPublishError::Code code, std::shared_ptr<T> /*consumed*/ = nullptr) {
     storeDeferredError(code);
   }

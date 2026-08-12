@@ -27,6 +27,7 @@ bool SubscriptionRegistry::UpstreamSubscribePending::complete(
   );
 }
 
+// NOLINTNEXTLINE(bugprone-exception-escape)
 SubscriptionRegistry::UpstreamSubscribePending::~UpstreamSubscribePending() {
   if (active_) {
     registry_->failAndRemove(ftn_, weakForwarder_);
@@ -84,6 +85,7 @@ folly::coro::Task<SubscriptionRegistry::SubsequentSubscriber> SubscriptionRegist
 
 bool SubscriptionRegistry::completeSubscription(
     const moxygen::FullTrackName& ftn,
+    // NOLINTNEXTLINE(performance-unnecessary-value-param)
     std::weak_ptr<moxygen::MoQForwarder> weakForwarder,
     std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle,
     moxygen::RequestID requestID,
@@ -105,6 +107,7 @@ bool SubscriptionRegistry::completeSubscription(
 
 void SubscriptionRegistry::failAndRemove(
     const moxygen::FullTrackName& ftn,
+    // NOLINTNEXTLINE(performance-unnecessary-value-param)
     std::weak_ptr<moxygen::MoQForwarder> weakForwarder
 ) {
   auto it = subscriptions_.find(ftn);

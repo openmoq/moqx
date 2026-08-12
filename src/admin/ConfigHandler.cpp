@@ -103,6 +103,7 @@ void registerConfigRoute(AdminServer& adminServer, std::shared_ptr<const config:
       "/config",
       [config = std::move(config
        )](auto /*req*/, auto /*body*/, auto* downstream, auto /*cancelToken*/
+          // NOLINTNEXTLINE(performance-unnecessary-value-param)
       ) {
         proxygen::ResponseBuilder(downstream)
             .status(200, proxygen::HTTPMessage::getDefaultReason(200))

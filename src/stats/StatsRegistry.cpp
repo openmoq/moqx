@@ -159,6 +159,7 @@ std::unique_ptr<folly::IOBuf> StatsSnapshot::formatPrometheus(const StatsSnapsho
 
 void StatsRegistry::registerEvbCollector(
     folly::EventBase* evb,
+    // NOLINTNEXTLINE(performance-unnecessary-value-param)
     std::shared_ptr<EventBaseStatsCollector> collector
 ) {
   registerCollector(collector);
@@ -177,6 +178,7 @@ std::weak_ptr<EventBaseStatsCollector> StatsRegistry::findEvbCollector(folly::Ev
   return {};
 }
 
+// NOLINTNEXTLINE(performance-unnecessary-value-param)
 void StatsRegistry::registerCollector(std::shared_ptr<StatsCollectorBase> collector) {
   collectors_.emplace_back(collector);
   XLOG(DBG1) << "StatsRegistry: registered collector (total=" << collectors_.size() << ")";

@@ -61,6 +61,7 @@ TEST_P(MoQRelayTest, PublishExtensionsForwardedToSubscribers) {
   EXPECT_CALL(*subscriber, publish(testing::_, testing::_))
       .WillOnce([&mockConsumer,
                  &receivedExtensions,
+                 // NOLINTNEXTLINE(performance-unnecessary-value-param)
                  &published](const PublishRequest& pubReq, auto /*subHandle*/) {
         receivedExtensions = pubReq.extensions;
         published.store(true);
@@ -127,6 +128,7 @@ TEST_P(MoQRelayTest, PublishExtensionsForwardedToLateJoiners) {
   // Subscriber 1 subscribes first
   auto mockConsumer1 = createMockConsumer();
   EXPECT_CALL(*subscriber1, publish(testing::_, testing::_))
+      // NOLINTNEXTLINE(performance-unnecessary-value-param)
       .WillOnce([&mockConsumer1](const auto&, auto) {
         return Subscriber::PublishResult(Subscriber::PublishConsumerAndReplyTask{
             mockConsumer1,
@@ -169,6 +171,7 @@ TEST_P(MoQRelayTest, PublishExtensionsForwardedToLateJoiners) {
   auto mockConsumer2 = createMockConsumer();
   EXPECT_CALL(*subscriber2, publish(testing::_, testing::_))
       .WillOnce(
+          // NOLINTNEXTLINE(performance-unnecessary-value-param)
           [&mockConsumer2, &receivedExtensions, &published2](const PublishRequest& pubReq, auto) {
             receivedExtensions = pubReq.extensions;
             published2.store(true);
@@ -304,6 +307,7 @@ TEST_P(MoQRelayTest, PublishReplacesSubscribeDrainsOldAndServesNew) {
   upstreamOk.groupOrder = GroupOrder::OldestFirst;
 
   EXPECT_CALL(*publisherSession, subscribe(_, _))
+      // NOLINTNEXTLINE(performance-unnecessary-value-param)
       .WillOnce([upstreamOk](const auto& /*req*/, auto /*consumer*/) {
         auto handle = std::make_shared<NiceMock<MockSubscriptionHandle>>(upstreamOk);
         return folly::coro::makeTask<Publisher::SubscribeResult>(

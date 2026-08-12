@@ -59,6 +59,7 @@ protected:
 
     auto* raw = session.get();
     ON_CALL(*session, publish(_, _))
+        // NOLINTNEXTLINE(performance-unnecessary-value-param)
         .WillByDefault(Invoke([this, raw](PublishRequest pub, auto) -> Subscriber::PublishResult {
           publishedTracks_[raw].push_back(pub.fullTrackName);
           auto consumer = std::make_shared<NiceMock<MockTrackConsumer>>();
@@ -70,6 +71,7 @@ protected:
                 return folly::makeExpected<MoQPublishError>(folly::unit);
               }));
           ON_CALL(*consumer, publishDone(_))
+              // NOLINTNEXTLINE(performance-unnecessary-value-param)
               .WillByDefault(Invoke([this, raw, ftn = pub.fullTrackName](PublishDone) mutable {
                 publishDoneCount_[raw][ftn]++;
                 return folly::makeExpected<MoQPublishError>(folly::unit);
@@ -97,6 +99,7 @@ protected:
     if (it == publishedTracks_.end()) {
       return 0;
     }
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions,cppcoreguidelines-narrowing-conversions)
     return std::count(it->second.begin(), it->second.end(), ftn);
   }
 
@@ -143,6 +146,7 @@ protected:
     }
     auto handle = makePublishHandle();
     std::shared_ptr<TrackConsumer> consumer;
+    // NOLINTNEXTLINE(performance-unnecessary-value-param)
     withSessionContext(session, [&] {
       auto result = relay_->publish(std::move(pub), handle);
       ASSERT_TRUE(result.hasValue());
@@ -166,6 +170,7 @@ protected:
     subNs.params.insertParam(p);
 
     std::shared_ptr<Publisher::SubscribeNamespaceHandle> handle;
+    // NOLINTNEXTLINE(performance-unnecessary-value-param)
     withSessionContext(session, [&] {
       auto result = folly::coro::blockingWait(
           relay_->subscribeNamespace(std::move(subNs), nullptr),
@@ -178,6 +183,7 @@ protected:
   }
 
   // Send an object carrying a new property value
+  // NOLINTNEXTLINE(performance-unnecessary-value-param)
   void sendValue(std::shared_ptr<TrackConsumer> consumer, uint64_t value) {
     ObjectHeader hdr;
     hdr.group = 0;
@@ -195,6 +201,7 @@ protected:
     subNs.requestID = RequestID(nextId_++);
     subNs.options = SubscribeNamespaceOptions::PUBLISH;
     subNs.forward = true;
+    // NOLINTNEXTLINE(performance-unnecessary-value-param)
     withSessionContext(session, [&] {
       auto result = folly::coro::blockingWait(
           relay_->subscribeNamespace(std::move(subNs), nullptr),

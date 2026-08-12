@@ -53,6 +53,7 @@ Grants makeGrants(
 }
 
 AuthToken
+// NOLINTNEXTLINE(performance-unnecessary-value-param)
 makeToken(Grants grants, std::string_view secret = "secret", std::string_view keyID = "k1") {
   return AuthToken{
       .tokenType = 77,
@@ -155,6 +156,7 @@ TEST(AuthTest, FindAuthTokenSelectsMatchingAuthorizationToken) {
 
   auto token = findAuthToken(params, 77);
   ASSERT_TRUE(token.has_value());
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_EQ(token->tokenValue, "right");
   EXPECT_FALSE(findAuthToken(params, 78).has_value());
 }

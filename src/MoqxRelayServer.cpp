@@ -77,6 +77,7 @@ std::shared_ptr<const fizz::server::FizzServerContext> buildFizzContextFromMater
   tolerance.after = std::chrono::minutes(5);
   std::shared_ptr<fizz::server::ReplayCache> replayCache =
       std::make_shared<fizz::server::AllowAllReplayReplayCache>();
+  // NOLINTNEXTLINE(hicpp-move-const-arg,performance-move-const-arg)
   ctx->setEarlyDataSettings(true, tolerance, std::move(replayCache));
   return ctx;
 }
@@ -223,6 +224,7 @@ MoqxRelayServer::MoqxRelayServer(
 
 MoqxRelayServer::~MoqxRelayServer() {
   // Close incoming connections, drain worker EVBs, then destroy EVBs.
+  // NOLINTNEXTLINE(clang-analyzer-optin.cplusplus.VirtualCall)
   stop();
 }
 

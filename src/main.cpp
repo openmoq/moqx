@@ -67,6 +67,7 @@ public:
 
 } // namespace
 
+// NOLINTNEXTLINE(bugprone-exception-escape)
 int main(int argc, char* argv[]) {
 
   // === 1. Parse command-line flags/config ===
@@ -84,7 +85,9 @@ int main(int argc, char* argv[]) {
   // — so the knob works for any launch method (docker, systemd, bare metal)
   // with no wrapper. An explicitly-set FOLLY_LOGGING wins; the --logging flag
   // still outranks both. See docs/logging.md.
+  // NOLINTNEXTLINE(concurrency-mt-unsafe)
   if (const char* x = std::getenv("MOQX_LOGGING"); x && *x && !std::getenv("FOLLY_LOGGING")) {
+    // NOLINTNEXTLINE(concurrency-mt-unsafe)
     ::setenv("FOLLY_LOGGING", x, /*overwrite=*/0);
   }
   // Combine repeated --logging / --log-handler into one composite before

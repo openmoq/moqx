@@ -19,6 +19,7 @@ void registerBuiltinRoutes(AdminServer& server) {
   server.addRoute(
       "GET",
       "/info",
+      // NOLINTNEXTLINE(performance-unnecessary-value-param)
       [](auto /*req*/, auto /*body*/, auto* downstream, auto /*cancelToken*/) {
         proxygen::ResponseBuilder(downstream)
             .status(200, proxygen::HTTPMessage::getDefaultReason(200))

@@ -1,0 +1,15 @@
+---
+InheritParentConfig: true
+# Test fixtures declare global const TrackNamespace/FullTrackName/TrackAlias
+# built from string literals at namespace scope. Their constructors are
+# non-trivial enough to trip cert-err58-cpp, but a throwing one here fails
+# every run of the binary immediately rather than lurking as a latent bug —
+# see https://github.com/openmoq/moqx/issues/518.
+WarningsAsErrors: >
+  bugprone-*,
+  performance-*,
+  clang-analyzer-*,
+  concurrency-*,
+  cert-*,
+  -cert-err58-cpp
+...

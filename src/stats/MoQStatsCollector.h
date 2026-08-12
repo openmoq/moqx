@@ -149,6 +149,7 @@ private:
   STATS_GAUGE_FIELDS(DEFINE_FIELD)
 #undef DEFINE_FIELD
 
+// NOLINTNEXTLINE(bugprone-macro-parentheses)
 #define DEFINE_HISTOGRAM(name, bounds, unit) BoundedHistogram<bounds.size()> name##_{bounds};
   STATS_MOQ_HISTOGRAM_FIELDS(DEFINE_HISTOGRAM)
 #undef DEFINE_HISTOGRAM

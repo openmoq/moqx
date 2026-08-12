@@ -37,6 +37,7 @@ protected:
     SubscribeTracks subTracks;
     subTracks.trackNamespacePrefix = nsPrefix;
     subTracks.forward = forward;
+    // NOLINTNEXTLINE(performance-unnecessary-value-param)
     return withSessionContext(session, [&]() {
       auto task = publisherInterface()->subscribeTracks(std::move(subTracks));
       return folly::coro::blockingWait(std::move(task), exec_.get());
@@ -48,6 +49,7 @@ protected:
   // the relay is torn down.
   std::shared_ptr<Publisher::SubscribeTracksHandle>
   doSubscribeTracks(std::shared_ptr<MoQSession> session, const TrackNamespace& nsPrefix) {
+    // NOLINTNEXTLINE(performance-unnecessary-value-param)
     auto res = subscribeTracks(session, nsPrefix);
     EXPECT_TRUE(res.hasValue());
     if (!res.hasValue()) {

@@ -454,7 +454,9 @@ public:
     report << "  Subscribers Connected:   " << metrics_.subscribersConnected << "/"
            << FLAGS_subscribers << "\n";
     report << "  Connection Errors:       " << metrics_.connectionErrors << "\n";
-    report << "  Connection Success Rate: " << std::fixed << std::setprecision(1)
+    report << "  Connection Success Rate: " << std::fixed
+           << std::setprecision(1)
+           // NOLINTNEXTLINE(bugprone-narrowing-conversions,cppcoreguidelines-narrowing-conversions)
            << (100.0 * (metrics_.panelistsConnected + metrics_.subscribersConnected) /
                (FLAGS_panelists + FLAGS_subscribers))
            << "%\n\n";
@@ -462,14 +464,19 @@ public:
     // Throughput Metrics
     report << "THROUGHPUT METRICS\n";
     report << "------------------\n";
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions,cppcoreguidelines-narrowing-conversions)
     double durationSec = duration.count() / 1000.0;
     report << "  Objects Published:       " << metrics_.publishedObjects << "\n";
     report << "  Objects Received:        " << metrics_.receivedObjects << "\n";
     report << "  Self-Received (errors):  " << metrics_.selfReceivedObjects << "\n";
     report << "  Forward Errors:          " << metrics_.forwardErrors << "\n";
-    report << "  Publish Rate:            " << std::fixed << std::setprecision(1)
+    report << "  Publish Rate:            " << std::fixed
+           << std::setprecision(1)
+           // NOLINTNEXTLINE(bugprone-narrowing-conversions,cppcoreguidelines-narrowing-conversions)
            << (metrics_.publishedObjects / durationSec) << " obj/s\n";
-    report << "  Receive Rate:            " << std::fixed << std::setprecision(1)
+    report << "  Receive Rate:            " << std::fixed
+           << std::setprecision(1)
+           // NOLINTNEXTLINE(bugprone-narrowing-conversions,cppcoreguidelines-narrowing-conversions)
            << (metrics_.receivedObjects / durationSec) << " obj/s\n\n";
 
     // Track Filter Selection Metrics
@@ -505,8 +512,10 @@ public:
     // Expected vs Actual Analysis
     report << "EXPECTED VS ACTUAL\n";
     report << "------------------\n";
+    // NOLINTNEXTLINE(bugprone-implicit-widening-of-multiplication-result)
     uint64_t expectedPublished = FLAGS_panelists * FLAGS_duration * FLAGS_update_hz;
     double publishRate =
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions,cppcoreguidelines-narrowing-conversions)
         (expectedPublished > 0) ? (100.0 * metrics_.publishedObjects / expectedPublished) : 0;
 
     report << "  Target Published:        " << expectedPublished << "\n";
@@ -555,7 +564,9 @@ public:
            << "s\n";
     report << "  Total Messages Handled:  "
            << (metrics_.publishedObjects + metrics_.receivedObjects) << "\n";
-    report << "  Message Rate:            " << std::fixed << std::setprecision(1)
+    report << "  Message Rate:            " << std::fixed
+           << std::setprecision(1)
+           // NOLINTNEXTLINE(bugprone-narrowing-conversions,cppcoreguidelines-narrowing-conversions)
            << ((metrics_.publishedObjects + metrics_.receivedObjects) / durationSec) << " msg/s\n";
 
     report
@@ -580,6 +591,7 @@ private:
   static folly::F14FastSet<std::string>
   expectedSubscriberTracksFor(const std::vector<int>& connectedPanelists) {
     folly::F14FastSet<std::string> expected;
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions,cppcoreguidelines-narrowing-conversions)
     int effectiveTopN = std::min<int>(FLAGS_top_n, connectedPanelists.size());
     for (int i = 0; i < effectiveTopN; ++i) {
       expected.insert(trackNameForPanelist(connectedPanelists[i]));
@@ -968,6 +980,7 @@ private:
 
 } // namespace
 
+// NOLINTNEXTLINE(bugprone-exception-escape)
 int main(int argc, char** argv) {
   folly::Init init(&argc, &argv, true);
 

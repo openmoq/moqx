@@ -18,6 +18,7 @@ namespace openmoq::moqx::stats {
 
 class QuicStatsCollector::Callback : public quic::QuicTransportStatsCallback {
 public:
+  // NOLINTNEXTLINE(performance-unnecessary-value-param)
   explicit Callback(std::weak_ptr<StatsRegistry> registry)
       : data_(std::shared_ptr<QuicStatsCollector>(new QuicStatsCollector())), registry_(registry) {
     if (auto reg = registry.lock()) {
@@ -184,7 +185,9 @@ private:
   std::weak_ptr<EventBaseStatsCollector> evbColl_;
 };
 
+// NOLINTNEXTLINE(performance-unnecessary-value-param)
 QuicStatsCollector::Factory::Factory(std::shared_ptr<StatsRegistry> registry)
+    // NOLINTNEXTLINE(hicpp-move-const-arg,performance-move-const-arg)
     : registry_(std::move(registry)) {}
 
 std::unique_ptr<quic::QuicTransportStatsCallback> QuicStatsCollector::Factory::make() {

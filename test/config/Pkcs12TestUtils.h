@@ -85,6 +85,7 @@ inline std::string makeSelfSignedPkcs12Der(const std::string& password) {
 // on destruction. Test-only.
 class TempFile {
 public:
+  // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
   TempFile(std::string_view bytes, std::string_view suffix) {
     static std::atomic<int> counter{0};
     path_ =

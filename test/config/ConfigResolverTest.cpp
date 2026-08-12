@@ -43,13 +43,16 @@ ParsedAdminConfig makeDefaultAdmin() {
   return admin;
 }
 
+// NOLINTNEXTLINE(performance-unnecessary-value-param)
 ParsedAdminConfig makeAdminWithTls(std::string cert = "/cert.pem", std::string key = "/key.pem") {
   ParsedAdminConfig admin;
   admin.port = uint16_t{9669};
   admin.address = std::string{"::"};
   admin.plaintext = false;
   ParsedAdminTlsConfig tls;
+  // NOLINTNEXTLINE(hicpp-move-const-arg,performance-move-const-arg)
   tls.cert_file = std::move(cert);
+  // NOLINTNEXTLINE(hicpp-move-const-arg,performance-move-const-arg)
   tls.key_file = std::move(key);
   admin.tls = std::optional<ParsedAdminTlsConfig>{std::move(tls)};
   return admin;
@@ -83,8 +86,10 @@ ParsedAuthConfig makeAuthConfig(std::vector<ParsedAuthConfig::HmacKey> keys = {m
   return auth;
 }
 
+// NOLINTNEXTLINE(performance-unnecessary-value-param)
 ParsedServiceConfig makeAuthService(ParsedAuthConfig auth = makeAuthConfig()) {
   auto svc = makeDefaultService();
+  // NOLINTNEXTLINE(hicpp-move-const-arg,performance-move-const-arg)
   svc.auth = std::move(auth);
   return svc;
 }
@@ -242,7 +247,9 @@ TEST(ResolveConfig, Pkcs12HappyPathPopulatesMaterial) {
   ASSERT_TRUE(std::holds_alternative<TlsConfig>(mode));
   const auto& resolved = std::get<TlsConfig>(mode);
   ASSERT_TRUE(resolved.material.has_value());
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_THAT(resolved.material->certChainPem, HasSubstr("BEGIN CERTIFICATE"));
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_THAT(resolved.material->keyPem, HasSubstr("PRIVATE KEY"));
   // Paths are left empty when material is sourced from a bundle.
   EXPECT_THAT(resolved.certFile, IsEmpty());
@@ -370,14 +377,18 @@ TEST(ResolveConfig, AdminPkcs12HappyPath) {
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasValue()) << result.error();
   ASSERT_TRUE(result.value().config.admin.has_value());
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   ASSERT_TRUE(result.value().config.admin->tls.has_value());
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   ASSERT_TRUE(result.value().config.admin->tls->material.has_value());
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_THAT(result.value().config.admin->tls->material->keyPem, HasSubstr("PRIVATE KEY"));
 }
 
 TEST(ResolveConfig, Pkcs12PasswordFromEnv) {
   auto der = test::makeSelfSignedPkcs12Der("env-secret");
   test::TempFile p12(der, ".p12");
+  // NOLINTNEXTLINE(concurrency-mt-unsafe)
   ::setenv("MOQX_TEST_P12_PW", "env-secret", 1);
 
   auto cfg = makeMinimalInsecureConfig();
@@ -387,16 +398,19 @@ TEST(ResolveConfig, Pkcs12PasswordFromEnv) {
   tls.pkcs12_password_env = std::string("MOQX_TEST_P12_PW");
 
   auto result = resolveConfig(cfg);
+  // NOLINTNEXTLINE(concurrency-mt-unsafe)
   ::unsetenv("MOQX_TEST_P12_PW");
   ASSERT_TRUE(result.hasValue()) << result.error();
   const auto& resolved = std::get<TlsConfig>(result.value().config.listeners[0].tlsMode);
   ASSERT_TRUE(resolved.material.has_value());
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_THAT(resolved.material->keyPem, HasSubstr("PRIVATE KEY"));
 }
 
 TEST(ResolveConfig, Pkcs12PasswordEnvUnset) {
   auto der = test::makeSelfSignedPkcs12Der("whatever");
   test::TempFile p12(der, ".p12");
+  // NOLINTNEXTLINE(concurrency-mt-unsafe)
   ::unsetenv("MOQX_TEST_P12_MISSING");
 
   auto cfg = makeMinimalInsecureConfig();
@@ -651,6 +665,7 @@ TEST(ResolveConfig, AuthEnabledRejectsEmptyHmacKeys) {
   ParsedAuthConfig auth;
   auth.enabled = true;
   std::vector<ParsedAuthConfig::HmacKey> keys;
+  // NOLINTNEXTLINE(hicpp-move-const-arg,performance-move-const-arg)
   auth.hmac_keys = std::move(keys);
   cfg.services.value().emplace("svc", makeAuthService(std::move(auth)));
 
@@ -752,6 +767,7 @@ TEST(ResolveConfig, AuthOptionalFieldsDefaultCorrectly) {
   ParsedAuthConfig auth;
   auth.enabled = true;
   std::vector<ParsedAuthConfig::HmacKey> keys{makeAuthKey()};
+  // NOLINTNEXTLINE(hicpp-move-const-arg,performance-move-const-arg)
   auth.hmac_keys = std::move(keys);
   cfg.services.value().emplace("svc", makeAuthService(std::move(auth)));
 
@@ -831,6 +847,7 @@ TEST(ResolveConfig, FullTls) {
 
 TEST(ResolveConfig, CacheDisabled) {
   auto cfg = makeMinimalInsecureConfig();
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   cfg.services.value().at("default").cache.value()->enabled = std::optional<bool>{false};
 
   auto result = resolveConfig(cfg);
@@ -842,8 +859,11 @@ TEST(ResolveConfig, CacheDisabled) {
 
 TEST(ResolveConfig, CacheCustomValues) {
   auto cfg = makeMinimalInsecureConfig();
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   cfg.services.value().at("default").cache.value()->enabled = std::optional<bool>{true};
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   cfg.services.value().at("default").cache.value()->max_tracks = std::optional<uint32_t>{200};
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   cfg.services.value().at("default").cache.value()->max_groups_per_track =
       std::optional<uint32_t>{5};
 
@@ -863,7 +883,9 @@ TEST(ResolveConfig, CacheInheritanceFromServiceDefaults) {
   defaultCache.enabled = std::optional<bool>{true};
   defaultCache.max_tracks = std::optional<uint32_t>{50};
   defaultCache.max_groups_per_track = std::optional<uint32_t>{2};
+  // NOLINTNEXTLINE(hicpp-move-const-arg,performance-move-const-arg)
   defaults.cache = std::move(defaultCache);
+  // NOLINTNEXTLINE(hicpp-move-const-arg,performance-move-const-arg)
   cfg.service_defaults = std::move(defaults);
 
   ParsedServiceConfig svc;
@@ -887,7 +909,9 @@ TEST(ResolveConfig, CachePerServiceOverridesDefaults) {
   defaultCache.enabled = std::optional<bool>{true};
   defaultCache.max_tracks = std::optional<uint32_t>{50};
   defaultCache.max_groups_per_track = std::optional<uint32_t>{2};
+  // NOLINTNEXTLINE(hicpp-move-const-arg,performance-move-const-arg)
   defaults.cache = std::move(defaultCache);
+  // NOLINTNEXTLINE(hicpp-move-const-arg,performance-move-const-arg)
   cfg.service_defaults = std::move(defaults);
 
   ParsedServiceConfig svc;
@@ -896,6 +920,7 @@ TEST(ResolveConfig, CachePerServiceOverridesDefaults) {
   svcCache.enabled = std::optional<bool>{true};
   svcCache.max_tracks = std::optional<uint32_t>{300};
   svcCache.max_groups_per_track = std::optional<uint32_t>{8};
+  // NOLINTNEXTLINE(hicpp-move-const-arg,performance-move-const-arg)
   svc.cache = std::move(svcCache);
   cfg.services.value().emplace("custom", std::move(svc));
 
@@ -915,7 +940,9 @@ TEST(ResolveConfig, CachePartialOverrideMergesWithDefaults) {
   defaultCache.enabled = std::optional<bool>{true};
   defaultCache.max_tracks = std::optional<uint32_t>{50};
   defaultCache.max_groups_per_track = std::optional<uint32_t>{2};
+  // NOLINTNEXTLINE(hicpp-move-const-arg,performance-move-const-arg)
   defaults.cache = std::move(defaultCache);
+  // NOLINTNEXTLINE(hicpp-move-const-arg,performance-move-const-arg)
   cfg.service_defaults = std::move(defaults);
 
   // Service only overrides max_tracks — enabled and max_groups_per_track come from defaults.
@@ -923,6 +950,7 @@ TEST(ResolveConfig, CachePartialOverrideMergesWithDefaults) {
   svc.match.value().push_back(makeAnyAuthorityMatch());
   ParsedCacheConfig svcCache;
   svcCache.max_tracks = std::optional<uint32_t>{500};
+  // NOLINTNEXTLINE(hicpp-move-const-arg,performance-move-const-arg)
   svc.cache = std::move(svcCache);
   cfg.services.value().emplace("partial", std::move(svc));
 
@@ -943,6 +971,7 @@ TEST(ResolveConfig, CachePartialOverrideWithoutDefaultsFails) {
   svc.match.value().push_back(makeAnyAuthorityMatch());
   ParsedCacheConfig svcCache;
   svcCache.max_tracks = std::optional<uint32_t>{500};
+  // NOLINTNEXTLINE(hicpp-move-const-arg,performance-move-const-arg)
   svc.cache = std::move(svcCache);
   cfg.services.value().emplace("incomplete", std::move(svc));
 
@@ -1080,6 +1109,7 @@ TEST(ResolveConfig, AddressResolution) {
 
 TEST(ResolveConfig, AdminPortZero) {
   auto cfg = makeMinimalInsecureConfig();
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   cfg.admin.value()->port = uint16_t{0};
 
   auto result = resolveConfig(cfg);
@@ -1113,6 +1143,7 @@ TEST(ResolveConfig, AdminPlaintextAndTlsMutuallyExclusive) {
 
 TEST(ResolveConfig, AdminNeitherPlaintextNorTls) {
   auto cfg = makeMinimalInsecureConfig();
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   cfg.admin.value()->plaintext = false;
 
   auto result = resolveConfig(cfg);
@@ -1136,6 +1167,7 @@ TEST(ResolveConfig, AdminNoTls) {
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasValue());
   ASSERT_TRUE(result.value().config.admin.has_value());
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_FALSE(result.value().config.admin->tls.has_value());
 }
 
@@ -1144,16 +1176,20 @@ TEST(ResolveConfig, AdminAddress) {
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasValue());
   ASSERT_TRUE(result.value().config.admin.has_value());
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_EQ(result.value().config.admin->address.getPort(), 9669);
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_EQ(result.value().config.admin->address.getAddressStr(), "::");
 }
 
 TEST(ResolveConfig, AdminCustomAddress) {
   auto cfg = makeMinimalInsecureConfig();
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   cfg.admin.value()->address = std::string("127.0.0.1");
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasValue());
   ASSERT_TRUE(result.value().config.admin.has_value());
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_EQ(result.value().config.admin->address.getAddressStr(), "127.0.0.1");
 }
 
@@ -1164,7 +1200,9 @@ TEST(ResolveConfig, AdminTlsResolution) {
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasValue());
   ASSERT_TRUE(result.value().config.admin.has_value());
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   ASSERT_TRUE(result.value().config.admin->tls.has_value());
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   const auto& tls = *result.value().config.admin->tls;
   EXPECT_EQ(tls.certFile, "/etc/ssl/cert.pem");
   EXPECT_EQ(tls.keyFile, "/etc/ssl/key.pem");
@@ -1176,19 +1214,24 @@ TEST(ResolveConfig, AdminTlsDefaultAlpn) {
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasValue());
   ASSERT_TRUE(result.value().config.admin.has_value());
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   ASSERT_TRUE(result.value().config.admin->tls.has_value());
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_THAT(result.value().config.admin->tls->alpn, ::testing::ElementsAre("h2", "http/1.1"));
 }
 
 TEST(ResolveConfig, AdminTlsCustomAlpn) {
   auto cfg = makeMinimalInsecureConfig();
   auto admin = makeAdminWithTls();
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   admin.tls.value()->alpn = std::vector<std::string>{"h2"};
   cfg.admin = std::optional<ParsedAdminConfig>{std::move(admin)};
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasValue());
   ASSERT_TRUE(result.value().config.admin.has_value());
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   ASSERT_TRUE(result.value().config.admin->tls.has_value());
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_THAT(result.value().config.admin->tls->alpn, ::testing::ElementsAre("h2"));
 }
 
@@ -1227,6 +1270,7 @@ TEST(ResolveConfig, UpstreamInsecureFalseNoCA) {
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasValue());
   ASSERT_TRUE(result.value().config.services.at("default").upstream.has_value());
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   const auto& up = *result.value().config.services.at("default").upstream;
   EXPECT_EQ(up.url, "moqt://origin.example.com:4433/relay");
   EXPECT_FALSE(up.tls.insecure);
@@ -1239,6 +1283,7 @@ TEST(ResolveConfig, UpstreamInsecureTrue) {
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasValue());
   ASSERT_TRUE(result.value().config.services.at("default").upstream.has_value());
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_TRUE(result.value().config.services.at("default").upstream->tls.insecure);
 }
 
@@ -1713,19 +1758,23 @@ TEST(ResolveConfig, MaxCacheDurationDefaultIs1Day) {
 TEST(ResolveConfig, CacheDurationExplicitValues) {
   // Both max_cache_duration_s and default_max_cache_duration_s resolve to correct values.
   auto cfg = makeMinimalInsecureConfig();
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   cfg.services.value().at("default").cache.value()->max_cache_duration_s =
       std::optional<uint32_t>{3600};
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   cfg.services.value().at("default").cache.value()->default_max_cache_duration_s =
       std::optional<uint32_t>{60};
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasValue());
   const auto& cache = result.value().config.services.at("default").cache;
   EXPECT_EQ(cache.maxCacheDuration, std::chrono::seconds(3600));
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_EQ(*cache.defaultMaxCacheDuration, std::chrono::seconds(60));
 }
 
 TEST(ResolveConfig, MaxCacheDurationZeroIsInvalid) {
   auto cfg = makeMinimalInsecureConfig();
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   cfg.services.value().at("default").cache.value()->max_cache_duration_s =
       std::optional<uint32_t>{0};
   auto result = resolveConfig(cfg);
@@ -1742,6 +1791,7 @@ TEST(ResolveConfig, DefaultCacheDurationAbsentUsesMaxCacheDuration) {
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasValue());
   EXPECT_EQ(
+      // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
       *result.value().config.services.at("default").cache.defaultMaxCacheDuration,
       std::chrono::hours(24)
   );
@@ -1750,11 +1800,13 @@ TEST(ResolveConfig, DefaultCacheDurationAbsentUsesMaxCacheDuration) {
 TEST(ResolveConfig, DefaultCacheDurationZeroMeansOptInOnly) {
   // 0 → 0ms: tracks without a publisher-set cache duration are not cached.
   auto cfg = makeMinimalInsecureConfig();
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   cfg.services.value().at("default").cache.value()->default_max_cache_duration_s =
       std::optional<uint32_t>{0};
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasValue());
   EXPECT_EQ(
+      // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
       *result.value().config.services.at("default").cache.defaultMaxCacheDuration,
       std::chrono::milliseconds(0)
   );
@@ -1772,7 +1824,9 @@ TEST(ResolveConfig, CacheDurationMergesWithDefaults) {
   defaultCache.max_groups_per_track = std::optional<uint32_t>{2};
   defaultCache.max_cache_duration_s = std::optional<uint32_t>{7200};
   defaultCache.default_max_cache_duration_s = std::optional<uint32_t>{120};
+  // NOLINTNEXTLINE(hicpp-move-const-arg,performance-move-const-arg)
   defaults.cache = std::move(defaultCache);
+  // NOLINTNEXTLINE(hicpp-move-const-arg,performance-move-const-arg)
   cfg.service_defaults = std::move(defaults);
 
   // "inheritor" takes both defaults; "overrider" replaces both.
@@ -1785,6 +1839,7 @@ TEST(ResolveConfig, CacheDurationMergesWithDefaults) {
   ParsedCacheConfig svcCache;
   svcCache.max_cache_duration_s = std::optional<uint32_t>{1800};
   svcCache.default_max_cache_duration_s = std::optional<uint32_t>{30};
+  // NOLINTNEXTLINE(hicpp-move-const-arg,performance-move-const-arg)
   overrider.cache = std::move(svcCache);
   cfg.services.value().emplace("overrider", std::move(overrider));
 
@@ -1793,11 +1848,13 @@ TEST(ResolveConfig, CacheDurationMergesWithDefaults) {
   const auto& resolved = result.value().config;
   EXPECT_EQ(resolved.services.at("inheritor").cache.maxCacheDuration, std::chrono::seconds(7200));
   EXPECT_EQ(
+      // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
       *resolved.services.at("inheritor").cache.defaultMaxCacheDuration,
       std::chrono::seconds(120)
   );
   EXPECT_EQ(resolved.services.at("overrider").cache.maxCacheDuration, std::chrono::seconds(1800));
   EXPECT_EQ(
+      // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
       *resolved.services.at("overrider").cache.defaultMaxCacheDuration,
       std::chrono::seconds(30)
   );
@@ -1817,6 +1874,7 @@ TEST(ResolveConfig, CacheByteLimitsDefaults) {
 
 TEST(ResolveConfig, CacheMbZeroIsInvalid) {
   auto cfg = makeMinimalInsecureConfig();
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   cfg.services.value().at("default").cache.value()->max_cached_mb = std::optional<uint32_t>{0};
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasError());
@@ -1835,7 +1893,9 @@ TEST(ResolveConfig, CacheByteLimitsMergeWithDefaults) {
   defaultCache.max_groups_per_track = std::optional<uint32_t>{2};
   defaultCache.max_cached_mb = std::optional<uint32_t>{256};
   defaultCache.min_eviction_kb = std::optional<uint32_t>{200};
+  // NOLINTNEXTLINE(hicpp-move-const-arg,performance-move-const-arg)
   defaults.cache = std::move(defaultCache);
+  // NOLINTNEXTLINE(hicpp-move-const-arg,performance-move-const-arg)
   cfg.service_defaults = std::move(defaults);
 
   ParsedServiceConfig inheritor;
@@ -1847,6 +1907,7 @@ TEST(ResolveConfig, CacheByteLimitsMergeWithDefaults) {
   ParsedCacheConfig svcCache;
   svcCache.max_cached_mb = std::optional<uint32_t>{64};
   svcCache.min_eviction_kb = std::optional<uint32_t>{512};
+  // NOLINTNEXTLINE(hicpp-move-const-arg,performance-move-const-arg)
   overrider.cache = std::move(svcCache);
   cfg.services.value().emplace("overrider", std::move(overrider));
 
@@ -1862,6 +1923,7 @@ TEST(ResolveConfig, CacheByteLimitsMergeWithDefaults) {
 // --- MvfstConfig resolution and validation tests ---
 
 static void setListenerMvfst(ParsedConfig& cfg, ParsedMvfstConfig mvfst) {
+  // NOLINTNEXTLINE(hicpp-move-const-arg,performance-move-const-arg)
   cfg.listeners.value()[0].mvfst = std::optional<ParsedMvfstConfig>{std::move(mvfst)};
 }
 
@@ -1895,11 +1957,13 @@ TEST(ResolveConfig, MvfstInheritanceAndOverride) {
   defaults.max_cwnd_in_mss = std::optional<uint64_t>{100000};
   defaults.num_gro_buffers = std::optional<uint32_t>{4};
   ParsedListenerDefaultsConfig ld;
+  // NOLINTNEXTLINE(hicpp-move-const-arg,performance-move-const-arg)
   ld.mvfst = std::optional<ParsedMvfstConfig>{std::move(defaults)};
   cfg.listener_defaults = std::optional<ParsedListenerDefaultsConfig>{std::move(ld)};
 
   ParsedMvfstConfig perListener;
   perListener.max_cwnd_in_mss = std::optional<uint64_t>{200000};
+  // NOLINTNEXTLINE(hicpp-move-const-arg,performance-move-const-arg)
   setListenerMvfst(cfg, std::move(perListener));
 
   auto result = resolveConfig(cfg);
@@ -1914,6 +1978,7 @@ TEST(ResolveConfig, MvfstInheritanceAndOverride) {
   ParsedMvfstConfig badDefaults;
   badDefaults.max_conn_packets_sent_per_loop = std::optional<uint32_t>{0};
   ParsedListenerDefaultsConfig ld2;
+  // NOLINTNEXTLINE(hicpp-move-const-arg,performance-move-const-arg)
   ld2.mvfst = std::optional<ParsedMvfstConfig>{std::move(badDefaults)};
   cfg2.listener_defaults = std::optional<ParsedListenerDefaultsConfig>{std::move(ld2)};
   EXPECT_TRUE(resolveConfig(cfg2).hasError());
@@ -1937,6 +2002,7 @@ TEST(ResolveConfig, MvfstZeroValuesAreErrors) {
     auto cfg = makeMinimalInsecureConfig();
     ParsedMvfstConfig mvfst;
     tc.set(mvfst);
+    // NOLINTNEXTLINE(hicpp-move-const-arg,performance-move-const-arg)
     setListenerMvfst(cfg, std::move(mvfst));
     auto result = resolveConfig(cfg);
     ASSERT_TRUE(result.hasError()) << "expected error for " << tc.field;
@@ -1950,6 +2016,7 @@ TEST(ResolveConfig, MvfstBoundsCheckedParamsErrors) {
     ParsedMvfstConfig m;
     ParsedMvfstConfig::ParsedCopa copa;
     copa.delta_param = std::optional<double>{v};
+    // NOLINTNEXTLINE(hicpp-move-const-arg,performance-move-const-arg)
     m.copa = std::optional<ParsedMvfstConfig::ParsedCopa>{std::move(copa)};
     return m;
   };
@@ -1957,6 +2024,7 @@ TEST(ResolveConfig, MvfstBoundsCheckedParamsErrors) {
     ParsedMvfstConfig m;
     ParsedMvfstConfig::ParsedL4S l4s;
     l4s.ce_target = std::optional<float>{v};
+    // NOLINTNEXTLINE(hicpp-move-const-arg,performance-move-const-arg)
     m.l4s = std::optional<ParsedMvfstConfig::ParsedL4S>{std::move(l4s)};
     return m;
   };
@@ -1982,6 +2050,7 @@ TEST(ResolveConfig, MvfstNumGroBuffersAbove64Warning) {
   auto cfg = makeMinimalInsecureConfig();
   ParsedMvfstConfig mvfst;
   mvfst.num_gro_buffers = std::optional<uint32_t>{65};
+  // NOLINTNEXTLINE(hicpp-move-const-arg,performance-move-const-arg)
   setListenerMvfst(cfg, std::move(mvfst));
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasValue());
@@ -1994,6 +2063,7 @@ TEST(ResolveConfig, MvfstBatchingModeRoundTrip) {
     auto cfg = makeMinimalInsecureConfig();
     ParsedMvfstConfig mvfst;
     mvfst.enable_gso = std::optional<bool>{gso};
+    // NOLINTNEXTLINE(hicpp-move-const-arg,performance-move-const-arg)
     setListenerMvfst(cfg, std::move(mvfst));
     auto result = resolveConfig(cfg);
     ASSERT_TRUE(result.hasValue()) << "enable_gso=" << gso;
@@ -2007,6 +2077,7 @@ TEST(ResolveConfig, MvfstIgnorePathMtuRoundTrip) {
     auto cfg = makeMinimalInsecureConfig();
     ParsedMvfstConfig mvfst;
     mvfst.ignore_path_mtu = std::optional<bool>{ignore};
+    // NOLINTNEXTLINE(hicpp-move-const-arg,performance-move-const-arg)
     setListenerMvfst(cfg, std::move(mvfst));
     auto result = resolveConfig(cfg);
     ASSERT_TRUE(result.hasValue()) << "ignore_path_mtu=" << ignore;
@@ -2023,27 +2094,33 @@ TEST(ResolveConfig, MvfstAlgoFieldsRoundTrip) {
   bbr.conservative_recovery = std::optional<bool>{true};
   bbr.large_probe_rtt_cwnd = std::optional<bool>{true};
   bbr.drain_to_target = std::optional<bool>{true};
+  // NOLINTNEXTLINE(hicpp-move-const-arg,performance-move-const-arg)
   mvfst.bbr = std::optional<ParsedMvfstConfig::ParsedBBR>{std::move(bbr)};
 
   ParsedMvfstConfig::ParsedBBR2 bbr2;
   bbr2.exit_startup_on_loss = std::optional<bool>{false};
   bbr2.enable_reno_coexistence = std::optional<bool>{true};
   bbr2.override_cruise_pacing_gain = std::optional<float>{1.25f};
+  // NOLINTNEXTLINE(hicpp-move-const-arg,performance-move-const-arg)
   mvfst.bbr2 = std::optional<ParsedMvfstConfig::ParsedBBR2>{std::move(bbr2)};
 
   ParsedMvfstConfig::ParsedCubic cubic;
   cubic.additive_increase_after_hystart = std::optional<bool>{true};
   cubic.only_grow_cwnd_when_limited = std::optional<bool>{true};
+  // NOLINTNEXTLINE(hicpp-move-const-arg,performance-move-const-arg)
   mvfst.cubic = std::optional<ParsedMvfstConfig::ParsedCubic>{std::move(cubic)};
 
   ParsedMvfstConfig::ParsedCopa copa;
   copa.delta_param = std::optional<double>{0.1};
+  // NOLINTNEXTLINE(hicpp-move-const-arg,performance-move-const-arg)
   mvfst.copa = std::optional<ParsedMvfstConfig::ParsedCopa>{std::move(copa)};
 
   ParsedMvfstConfig::ParsedL4S l4s;
   l4s.ce_target = std::optional<float>{0.05f};
+  // NOLINTNEXTLINE(hicpp-move-const-arg,performance-move-const-arg)
   mvfst.l4s = std::optional<ParsedMvfstConfig::ParsedL4S>{std::move(l4s)};
 
+  // NOLINTNEXTLINE(hicpp-move-const-arg,performance-move-const-arg)
   setListenerMvfst(cfg, std::move(mvfst));
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasValue());

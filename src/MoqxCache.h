@@ -24,8 +24,10 @@ namespace openmoq::moqx {
 // Default cache size limits
 constexpr size_t kDefaultMaxCachedTracks = 100;
 constexpr size_t kDefaultMaxCachedGroupsPerTrack = 3;
+// NOLINTNEXTLINE(bugprone-implicit-widening-of-multiplication-result)
 constexpr size_t kDefaultMaxCachedBytes = 10 * 1024 * 1024; // 10 MB
-constexpr size_t kDefaultMinEvictionBytes = 100 * 1024;     // 100 KB
+// NOLINTNEXTLINE(bugprone-implicit-widening-of-multiplication-result)
+constexpr size_t kDefaultMinEvictionBytes = 100 * 1024; // 100 KB
 
 class MoqxCache {
 public:
@@ -33,6 +35,7 @@ public:
   using TimePoint = SteadyClock::time_point;
 
   explicit MoqxCache(
+      // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
       size_t maxCachedTracks = kDefaultMaxCachedTracks,
       size_t maxCachedGroupsPerTrack = kDefaultMaxCachedGroupsPerTrack,
       size_t maxCachedBytes = kDefaultMaxCachedBytes,

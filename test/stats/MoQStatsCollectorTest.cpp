@@ -58,6 +58,7 @@ TEST_F(MoQStatsCollectorTest, SubgroupResetBrokenDownByReason) {
 TEST_F(MoQStatsCollectorTest, UnknownResetCodeFallsIntoUnknownSlot) {
   auto pub = collector_->publisherCallback();
   // 0x99 is not a defined ResetStreamErrorCode; it must map to the last slot.
+  // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
   pub->onSubgroupReset(static_cast<moxygen::ResetStreamErrorCode>(0x99));
 
   auto snap = collector_->snapshot();

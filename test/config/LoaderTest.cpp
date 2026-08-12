@@ -59,8 +59,11 @@ admin:
   ASSERT_EQ(cfg.services.value().size(), 1);
   const auto& svc = cfg.services.value().at("default");
   ASSERT_TRUE(svc.cache.value().has_value());
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_EQ(svc.cache.value()->enabled.value(), true);
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_EQ(svc.cache.value()->max_tracks.value(), 100);
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_EQ(svc.cache.value()->max_groups_per_track.value(), 3);
 }
 
@@ -100,20 +103,28 @@ admin:
   const auto& sock = l.udp.value().socket.value();
   EXPECT_EQ(sock.address.value(), "0.0.0.0");
   EXPECT_EQ(sock.port.value(), 4443);
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_EQ(l.tls.value().cert_file.value().value(), "/etc/ssl/cert.pem");
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_EQ(l.tls.value().key_file.value().value(), "/etc/ssl/key.pem");
   EXPECT_FALSE(l.tls.value().insecure.value());
   EXPECT_EQ(l.endpoint.value(), "/relay");
   ASSERT_TRUE(l.moqt_versions.value().has_value());
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_EQ(l.moqt_versions.value()->size(), 2);
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_EQ((*l.moqt_versions.value())[0], 14);
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_EQ((*l.moqt_versions.value())[1], 16);
 
   ASSERT_EQ(cfg.services.value().size(), 1);
   const auto& svc = cfg.services.value().at("live");
   ASSERT_TRUE(svc.cache.value().has_value());
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_EQ(svc.cache.value()->enabled.value(), true);
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_EQ(svc.cache.value()->max_tracks.value(), 200);
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_EQ(svc.cache.value()->max_groups_per_track.value(), 5);
 }
 
@@ -280,8 +291,11 @@ services:
 
   auto cfg = loadConfig(yaml.path());
   ASSERT_TRUE(cfg.service_defaults.value().has_value());
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   ASSERT_TRUE(cfg.service_defaults.value()->cache.value().has_value());
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_EQ(cfg.service_defaults.value()->cache.value()->max_tracks.value(), 50);
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_EQ(cfg.service_defaults.value()->cache.value()->max_groups_per_track.value(), 2);
 
   ASSERT_EQ(cfg.services.value().size(), 1);
@@ -342,6 +356,7 @@ admin:
   auto cfg = loadConfig(yaml.path());
   EXPECT_EQ(cfg.listeners.value()[0].name.value(), "test");
   ASSERT_TRUE(cfg.services.value().at("default").cache.value().has_value());
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_EQ(cfg.services.value().at("default").cache.value()->enabled.value(), false);
 }
 

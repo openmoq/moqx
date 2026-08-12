@@ -136,6 +136,7 @@ public:
   }
 
 private:
+  // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
   bool readType(uint8_t& major, uint64_t& value) {
     if (pos_ >= data_.size()) {
       return false;

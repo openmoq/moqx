@@ -278,6 +278,7 @@ IssuedToken issueToken(const IssueTokenOptions& options) {
   return IssuedToken{.tokenValue = signGrants(options.keyID, options.secret, grants)};
 }
 
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 std::string signGrants(std::string_view keyID, std::string_view secret, const Grants& grants) {
   catapult::HmacSha256Algorithm hmac(deriveHmacKey(secret));
   catapult::Cwt cwt(catapult::ALG_HMAC256_256, tokenFromGrants(grants));

@@ -61,6 +61,7 @@ private:
   // Only accessed on evb_ thread.
   std::vector<std::pair<const void*, std::function<void(int64_t, int64_t)>>> observers_;
 
+// NOLINTNEXTLINE(bugprone-macro-parentheses)
 #define DEFINE_HISTOGRAM(name, bounds, unit) BoundedHistogram<bounds.size()> name##_{bounds};
   STATS_EVB_HISTOGRAM_FIELDS(DEFINE_HISTOGRAM)
 #undef DEFINE_HISTOGRAM

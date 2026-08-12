@@ -21,6 +21,7 @@
 
 namespace openmoq::moqx::admin {
 
+// NOLINTNEXTLINE(performance-unnecessary-value-param)
 void registerCachePurgeRoute(AdminServer& adminServer, std::shared_ptr<MoqxRelayContext> context) {
   adminServer.addRoute(
       "POST",
@@ -29,6 +30,7 @@ void registerCachePurgeRoute(AdminServer& adminServer, std::shared_ptr<MoqxRelay
        )](std::unique_ptr<proxygen::HTTPMessage> /*req*/,
           std::unique_ptr<folly::IOBuf> body,
           proxygen::ResponseHandler* downstream,
+          // NOLINTNEXTLINE(performance-unnecessary-value-param)
           folly::CancellationToken cancelToken) {
         auto ctx = weak.lock();
         if (!ctx) {

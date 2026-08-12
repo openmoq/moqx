@@ -165,6 +165,7 @@ NamespaceTree::unpublishTrack(const TrackNamespace& ns, const std::string& track
 NamespaceTree::AddPublishResult NamespaceTree::addPublish(
     const FullTrackName& ftn,
     std::shared_ptr<MoQSession> session,
+    // NOLINTNEXTLINE(performance-unnecessary-value-param)
     OnRankingFn onRanking
 ) {
   AddPublishResult result;
@@ -200,7 +201,9 @@ NamespaceTree::getOrInsertRanking(NamespaceNode& node, uint64_t propertyType) {
 
 std::shared_ptr<NamespaceTree::NamespaceNode> NamespaceTree::addNamespaceSubscriber(
     const TrackNamespace& ns,
+    // NOLINTNEXTLINE(performance-unnecessary-value-param)
     std::shared_ptr<MoQSession> session,
+    // NOLINTNEXTLINE(performance-unnecessary-value-param)
     NamespaceNode::NamespaceSubscriberInfo info
 ) {
   auto node = findNode(ns, /*createMissingNodes=*/true);
@@ -222,8 +225,10 @@ folly::Expected<folly::Unit, NamespaceTree::Error> NamespaceTree::removeNamespac
     return folly::makeUnexpected(Error::NotSubscribed);
   }
   if (it->second.trackFilter) {
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     auto rankingIt = node->rankings_.find(it->second.trackFilter->propertyType);
     if (rankingIt != node->rankings_.end()) {
+      // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
       rankingIt->second->removeSessionFromTopNGroup(it->second.trackFilter->maxSelected, session);
     }
   }

@@ -85,6 +85,7 @@ MoqxQmuxRelayServer::MoqxQmuxRelayServer(
 
 MoqxQmuxRelayServer::~MoqxQmuxRelayServer() {
   // Close incoming connections, drain worker EVBs, then destroy EVBs.
+  // NOLINTNEXTLINE(clang-analyzer-optin.cplusplus.VirtualCall)
   stop();
 }
 
@@ -98,6 +99,7 @@ void MoqxQmuxRelayServer::stop() {
   MoQQmuxServer::stop();
 }
 
+// NOLINTNEXTLINE(performance-unnecessary-value-param)
 void MoqxQmuxRelayServer::setStatsRegistry(std::shared_ptr<stats::StatsRegistry> registry) {
   context_->setStatsRegistry(registry);
   for (auto& ka : ioExecutor_->getAllEventBases()) {

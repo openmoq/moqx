@@ -32,6 +32,7 @@ protected:
 
   std::shared_ptr<NamespaceTree::NamespaceNode>
   publish(const TrackNamespace& ns, std::shared_ptr<MoQSession> session) {
+    // NOLINTNEXTLINE(performance-unnecessary-value-param)
     return tree_.setPublisher(ns, session, nullptr, {}, RequestID(0)).node;
   }
 

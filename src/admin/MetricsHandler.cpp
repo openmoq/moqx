@@ -28,6 +28,7 @@ void registerMetricsRoute(
       "GET",
       "/metrics",
       [registry = std::move(registry
+                            // NOLINTNEXTLINE(performance-unnecessary-value-param)
        )](auto /*req*/, auto /*body*/, auto* downstream, folly::CancellationToken cancelToken) {
         auto* evb = folly::EventBaseManager::get()->getEventBase();
 

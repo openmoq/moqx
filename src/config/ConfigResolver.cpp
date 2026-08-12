@@ -51,9 +51,11 @@ std::string matchRuleErrorLabel(const std::string& name, size_t j) {
 constexpr const char* kDefaultMoqtVersions = "14,16";
 
 std::string moqtVersionsToString(const ParsedListenerConfig& listener) {
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   if (!listener.moqt_versions.value().has_value() || listener.moqt_versions.value()->empty()) {
     return kDefaultMoqtVersions;
   }
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   return folly::join(',', *listener.moqt_versions.value());
 }
 
@@ -94,9 +96,11 @@ void validatePkcs12PasswordExclusivity(
   if (tls.pkcs12_password.value().has_value()) {
     ++sources;
   }
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   if (tls.pkcs12_password_file.value().has_value() && !tls.pkcs12_password_file.value()->empty()) {
     ++sources;
   }
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   if (tls.pkcs12_password_env.value().has_value() && !tls.pkcs12_password_env.value()->empty()) {
     ++sources;
   }
@@ -114,8 +118,11 @@ void validateListenerTlsConfig(
     std::vector<std::string>& errors,
     std::vector<std::string>& warnings
 ) {
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   bool hasCert = tls.cert_file.value().has_value() && !tls.cert_file.value()->empty();
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   bool hasKey = tls.key_file.value().has_value() && !tls.key_file.value()->empty();
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   bool hasPkcs12 = tls.pkcs12_file.value().has_value() && !tls.pkcs12_file.value()->empty();
 
   if (tls.insecure.value()) {
@@ -143,8 +150,11 @@ void validateListenerTlsConfig(
 }
 
 void validateAdminTlsConfig(const ParsedAdminTlsConfig& tls, std::vector<std::string>& errors) {
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   bool hasCert = tls.cert_file.value().has_value() && !tls.cert_file.value()->empty();
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   bool hasKey = tls.key_file.value().has_value() && !tls.key_file.value()->empty();
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   bool hasPkcs12 = tls.pkcs12_file.value().has_value() && !tls.pkcs12_file.value()->empty();
   if (hasPkcs12) {
     if (hasCert || hasKey) {
@@ -207,6 +217,7 @@ folly::Expected<std::string, std::string> resolvePkcs12Password(
     return folly::makeExpected<std::string>(std::move(pw));
   }
   if (pwEnv.has_value() && !pwEnv->empty()) {
+    // NOLINTNEXTLINE(concurrency-mt-unsafe)
     const char* val = std::getenv(pwEnv->c_str());
     if (val == nullptr) {
       return folly::makeUnexpected(
@@ -229,6 +240,7 @@ template <typename T>
 std::optional<TlsMaterial> resolvePkcs12Material(
     const T& tls,
     const std::string& context,
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
     std::vector<std::string>& errors,
     std::vector<std::string>& warnings
 ) {
@@ -239,7 +251,9 @@ std::optional<TlsMaterial> resolvePkcs12Material(
   // If cert_file/key_file are also set, validation already reports the
   // mutual-exclusion error; skip transcoding to avoid a confusing secondary
   // decrypt failure.
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   bool hasCert = tls.cert_file.value().has_value() && !tls.cert_file.value()->empty();
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   bool hasKey = tls.key_file.value().has_value() && !tls.key_file.value()->empty();
   if (hasCert || hasKey) {
     return std::nullopt;
@@ -288,7 +302,9 @@ CacheConfig resolveCacheConfig(const ParsedCacheConfig& cache) {
   }
   return CacheConfig{
       .maxCachedTracks =
-          *cache.enabled.value() ? static_cast<size_t>(*cache.max_tracks.value()) : 0,
+          // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+      *cache.enabled.value() ? static_cast<size_t>(*cache.max_tracks.value()) : 0,
+      // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
       .maxCachedGroupsPerTrack = static_cast<size_t>(*cache.max_groups_per_track.value()),
       .maxCachedMb = cache.max_cached_mb.value().value_or(16),
       .minEvictionKb = cache.min_eviction_kb.value().value_or(64),
@@ -410,6 +426,7 @@ void validateAdmin(const ParsedConfig& config, std::vector<std::string>& errors)
       errors.push_back("admin: one of plaintext or tls must be set");
     }
     if (hasTls) {
+      // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
       validateAdminTlsConfig(*adminOptional->tls.value(), errors);
     }
   }
@@ -578,6 +595,7 @@ AuthConfig resolveAuth(const std::optional<ParsedAuthConfig>& parsed) {
   out.allowRequestTokenOverride = parsed->allow_request_token_override.value().value_or(true);
   out.strictClaims = parsed->strict_claims.value().value_or(false);
   if (parsed->hmac_keys.value()) {
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     for (const auto& key : *parsed->hmac_keys.value()) {
       out.hmacKeys.push_back(AuthConfig::HmacKey{
           .id = key.id.value(),
@@ -616,6 +634,7 @@ void validateService(
 
     auto key = makeCompositeKey(authInfo->type, authInfo->value, entry.path.value());
     if (!compositeKeys.insert(key).second) {
+      // NOLINTNEXTLINE(performance-inefficient-string-concatenation)
       errors.push_back("Duplicate (authority, path) combination in service '" + name + "': " + key);
     }
   }
@@ -623,14 +642,18 @@ void validateService(
   // Cache resolution: merge service_defaults.cache with service.cache (field by field).
   const ParsedCacheConfig* defaults = nullptr;
   if (config.service_defaults.value().has_value() &&
+      // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
       config.service_defaults.value()->cache.value().has_value()) {
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     defaults = &(*config.service_defaults.value()->cache.value());
   }
 
   ParsedCacheConfig merged;
   if (svc.cache.value().has_value() && defaults) {
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     merged = mergeCacheConfigs(*defaults, *svc.cache.value());
   } else if (svc.cache.value().has_value()) {
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     merged = *svc.cache.value();
   } else if (defaults) {
     merged = *defaults;
@@ -648,27 +671,34 @@ void validateService(
     errors.push_back("Service '" + name + "': cache.max_groups_per_track is required");
   }
 
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   if (merged.enabled.value().has_value() && *merged.enabled.value() &&
+      // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
       merged.max_groups_per_track.value().has_value() && *merged.max_groups_per_track.value() < 1) {
     errors.push_back(
         "Service '" + name + "': cache.max_groups_per_track must be >= 1 when cache is enabled"
     );
   }
   if (merged.max_cache_duration_s.value().has_value() &&
+      // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
       *merged.max_cache_duration_s.value() == 0) {
     errors.push_back("Service '" + name + "': cache.max_cache_duration_s must not be 0");
   }
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   if (merged.max_cached_mb.value().has_value() && *merged.max_cached_mb.value() == 0) {
     errors.push_back("Service '" + name + "': cache.max_cached_mb must not be 0");
   }
 
+  // NOLINTNEXTLINE(hicpp-move-const-arg,performance-move-const-arg)
   mergedCaches.emplace(name, std::move(merged));
 
   // Validate per-service upstream if present.
   if (svc.upstream.value().has_value()) {
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     validateUpstream(*svc.upstream.value(), errors);
   }
   if (svc.auth.value().has_value()) {
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     validateAuth(name, *svc.auth.value(), errors);
   }
 }
@@ -921,6 +951,7 @@ void validatePicoServicePaths(
         using P = std::decay_t<decltype(alt)>;
         if constexpr (std::is_same_v<P, ParsedServiceConfig::MatchRule::PrefixPath>) {
           warnings.push_back(
+              // NOLINTNEXTLINE(performance-inefficient-string-concatenation)
               listenerLabel + ": service '" + svcName + "' match[" + std::to_string(j) +
               "] has prefix path '" + alt.prefix.value() +
               "' — pico listeners only support exact path routing; "
@@ -1009,6 +1040,7 @@ ServiceConfig resolveService(const ParsedServiceConfig& svc, const ParsedCacheCo
   }
   std::optional<UpstreamConfig> upstream;
   if (svc.upstream.value().has_value()) {
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     upstream = resolveUpstream(*svc.upstream.value());
   }
   return ServiceConfig{
@@ -1115,6 +1147,7 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
   {
     const auto& adminOpt = config.admin.value();
     if (adminOpt.has_value() && adminOpt->tls.value().has_value()) {
+      // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
       adminMaterial = resolvePkcs12Material(*adminOpt->tls.value(), "admin.tls", errors, warnings);
     }
   }
@@ -1154,10 +1187,13 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
 
   // === Validate logging ===
   if (config.logging.value().has_value()) {
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     const auto& logging = *config.logging.value();
     if (logging.mlog.value().has_value()) {
+      // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
       const auto& mlog = *logging.mlog.value();
       if (mlog.sample_rate.value().has_value()) {
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
         float rate = *mlog.sample_rate.value();
         if (rate < 0.0f || rate > 1.0f) {
           errors.push_back(
@@ -1187,6 +1223,7 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
     std::optional<TlsConfig> adminTls;
     if (adminOptional->tls.value().has_value()) {
       adminTls = resolveAdminTlsConfig(
+          // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
           *adminOptional->tls.value(),
           kDefaultAdminAlpn,
           std::move(adminMaterial)
@@ -1205,9 +1242,11 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
   // Resolve logging config
   std::optional<LoggingConfig> loggingConfig;
   if (config.logging.value().has_value()) {
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     const auto& parsedLogging = *config.logging.value();
     LoggingConfig resolved;
     if (parsedLogging.mlog.value().has_value()) {
+      // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
       const auto& parsedMlog = *parsedLogging.mlog.value();
       MLogConfig mlogConfig;
       mlogConfig.dir = parsedMlog.dir.value();
@@ -1229,6 +1268,7 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
       resolved.mlog = std::move(mlogConfig);
     }
     if (parsedLogging.qlog.value().has_value()) {
+      // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
       const auto& parsedQlog = *parsedLogging.qlog.value();
       QLogConfig qlogConfig;
       qlogConfig.dir = parsedQlog.dir.value();

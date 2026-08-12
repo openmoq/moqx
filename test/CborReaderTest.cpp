@@ -18,6 +18,7 @@ namespace {
 
 // Encode a CBOR data item head (major type + argument) using the minimal-width
 // integer encoding, mirroring how real encoders lay out the wire bytes.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 void putHead(std::string& out, uint8_t major, uint64_t value) {
   const uint8_t hi = static_cast<uint8_t>(major << 5);
   if (value < 24) {

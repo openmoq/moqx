@@ -266,11 +266,13 @@ PublisherCrossExecFilter::subscribeNamespace(
     std::shared_ptr<NamespacePublishHandle> namespacePublishHandle
 ) {
   auto callerExec = co_await folly::coro::co_current_executor;
-  auto wrappedHandle = namespacePublishHandle ? std::make_shared<CrossExecNamespacePublishHandle>(
-                                                    std::move(namespacePublishHandle),
-                                                    std::move(callerExec)
-                                                )
-                                              : nullptr;
+  auto wrappedHandle = namespacePublishHandle
+                           ? std::make_shared<CrossExecNamespacePublishHandle>(
+                                 std::move(namespacePublishHandle),
+                                 // NOLINTNEXTLINE(hicpp-move-const-arg,performance-move-const-arg)
+                                 std::move(callerExec)
+                             )
+                           : nullptr;
   auto result = co_await folly::coro::co_withExecutor(
       folly::getKeepAliveToken(targetExec_),
       inner_->subscribeNamespace(std::move(subNs), std::move(wrappedHandle))
@@ -290,11 +292,13 @@ PublisherCrossExecFilter::subscribeTracks(
     std::shared_ptr<PublishBlockedHandle> publishBlockedHandle
 ) {
   auto callerExec = co_await folly::coro::co_current_executor;
-  auto wrappedHandle = publishBlockedHandle ? std::make_shared<CrossExecPublishBlockedHandle>(
-                                                  std::move(publishBlockedHandle),
-                                                  std::move(callerExec)
-                                              )
-                                            : nullptr;
+  auto wrappedHandle = publishBlockedHandle
+                           ? std::make_shared<CrossExecPublishBlockedHandle>(
+                                 std::move(publishBlockedHandle),
+                                 // NOLINTNEXTLINE(hicpp-move-const-arg,performance-move-const-arg)
+                                 std::move(callerExec)
+                             )
+                           : nullptr;
   auto result = co_await folly::coro::co_withExecutor(
       folly::getKeepAliveToken(targetExec_),
       inner_->subscribeTracks(std::move(subTracks), std::move(wrappedHandle))

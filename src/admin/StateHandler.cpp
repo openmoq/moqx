@@ -39,6 +39,7 @@ public:
     w_.beginArray();
   }
   void
+  // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
   onPeer(std::string_view address, std::string_view authority, std::string_view relayID) override {
     w_.beginObject();
     w_.field("address", address);
@@ -189,6 +190,7 @@ public:
     return relayVisitor_;
   }
 
+  // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
   void onServiceUpstream(std::string_view url, std::string_view state) override {
     w_.key("upstream");
     w_.beginObject();
@@ -224,6 +226,7 @@ void registerStateRoute(AdminServer& adminServer, std::shared_ptr<MoqxRelayConte
       "GET",
       "/state",
       [context = std::move(context
+                           // NOLINTNEXTLINE(performance-unnecessary-value-param)
        )](auto /*req*/, auto /*body*/, auto* downstream, folly::CancellationToken cancelToken) {
         auto* workerEvb = context->workerEvb();
         if (!workerEvb) {

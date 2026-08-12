@@ -22,6 +22,7 @@ TEST_P(MoQRelayTest, SubscribeNamespaceDoesntAddDrainingPublish) {
   // Publish first track - subscriber 1 should receive it
   auto mockConsumer1 = createMockConsumer();
   EXPECT_CALL(*subscriber1, publish(testing::_, testing::_))
+      // NOLINTNEXTLINE(performance-unnecessary-value-param)
       .WillOnce([mockConsumer1](const auto& /*pubReq*/, auto /*subHandle*/) {
         return Subscriber::PublishResult(Subscriber::PublishConsumerAndReplyTask{
             mockConsumer1,
@@ -56,6 +57,7 @@ TEST_P(MoQRelayTest, SubscribeNamespaceDoesntAddDrainingPublish) {
   exec_->drive();
   auto subgroupRes = pubConsumer->beginSubgroup(0, 0, 0);
   EXPECT_TRUE(subgroupRes.hasValue());
+  // NOLINTNEXTLINE(performance-unnecessary-copy-initialization)
   auto subgroup = *subgroupRes;
 
   // publisher ends subscription
@@ -73,11 +75,13 @@ TEST_P(MoQRelayTest, SubscribeNamespaceDoesntAddDrainingPublish) {
   // second track
   // Expect publish calls on both subscribers, just fail them.
   EXPECT_CALL(*subscriber1, publish(testing::_, testing::_))
+      // NOLINTNEXTLINE(performance-unnecessary-value-param)
       .WillOnce([](const auto& /*pubReq*/, auto /*subHandle*/) {
         return folly::makeUnexpected(PublishError{});
       });
 
   EXPECT_CALL(*subscriber2, publish(testing::_, testing::_))
+      // NOLINTNEXTLINE(performance-unnecessary-value-param)
       .WillOnce([](const auto& /*pubReq*/, auto /*subHandle*/) {
         return folly::makeUnexpected(PublishError{});
       });

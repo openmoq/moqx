@@ -195,6 +195,7 @@ std::vector<std::pair<AbsoluteLocation, AbsoluteLocation>> getGapRanges(
   // fetch's top group. start <= startGroupEnd is guaranteed by the
   // same-group early return above and the invariant start <= fetchEnd-1.
   AbsoluteLocation startGroupEnd = (start.group == fetchEnd.group)
+                                       // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
                                        ? *fetchEnd.prevInGroup()
                                        : AbsoluteLocation{start.group, kLocationMax.object};
   ranges.emplace_back(start, startGroupEnd);
@@ -216,6 +217,7 @@ std::vector<std::pair<AbsoluteLocation, AbsoluteLocation>> getGapRanges(
   AbsoluteLocation endGroupStart =
       (end.group == fetchStart.group) ? fetchStart : AbsoluteLocation{end.group, 0};
   if (endGroupStart < end) {
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     ranges.emplace_back(endGroupStart, *end.prevInGroup());
   }
 
@@ -232,6 +234,7 @@ bool isGroupNonExistent(const LocationIntervalSet& gaps, uint64_t groupID) {
 
 folly::Expected<folly::Unit, MoQPublishError> publishObject(
     ObjectStatus status,
+    // NOLINTNEXTLINE(performance-unnecessary-value-param)
     std::shared_ptr<FetchConsumer> consumer,
     const AbsoluteLocation& current,
     const openmoq::moqx::MoqxCache::CacheEntry& object,
@@ -262,6 +265,7 @@ namespace openmoq::moqx {
 
 folly::Expected<folly::Unit, MoQPublishError> MoqxCache::CacheGroup::cacheObject(
     CacheTrack& track,
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
     uint64_t groupID,
     uint64_t subgroup,
     uint64_t objectID,
@@ -397,6 +401,7 @@ public:
   folly::CancellationToken getToken() { return source_.getToken(); }
 
   void setUpstreamFetchHandle(std::shared_ptr<Publisher::FetchHandle> handle) {
+    // NOLINTNEXTLINE(performance-unnecessary-value-param)
     upstreamFetchHandle_ = handle;
   }
 
@@ -553,6 +558,7 @@ folly::Expected<folly::Unit, MoQPublishError> MoqxCache::CacheTrack::processGapE
 class MoqxCache::SubgroupWriteback : public SubgroupConsumer {
 public:
   SubgroupWriteback(
+      // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
       uint64_t group,
       uint64_t subgroup,
       std::shared_ptr<SubgroupConsumer> consumer,
@@ -789,6 +795,7 @@ public:
   }
 
   folly::Expected<folly::Unit, MoQPublishError> setTrackAlias(TrackAlias alias) override {
+    // NOLINTNEXTLINE(hicpp-move-const-arg,performance-move-const-arg)
     return consumer_->setTrackAlias(std::move(alias));
   }
 
@@ -1368,12 +1375,15 @@ folly::coro::Task<Publisher::FetchResult> MoqxCache::fetch(
     // or END_OF_TRACK
   }
   if (track->largestGroupAndObject &&
+      // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
       (track->liveWritebackCount > 0 || last <= *track->largestGroupAndObject)) {
     // we can immediately return fetch OK
     XLOG(DBG1) << "Live track or known past data, return FetchOK";
     AbsoluteLocation largestInFetch = standalone->end;
     bool isEndOfTrack = false;
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     if (standalone->end > *track->largestGroupAndObject) {
+      // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
       standalone->end = *track->largestGroupAndObject;
       auto next = standalone->end.next();
       XCHECK(next) << "largestGroupAndObject.next() must be valid";
@@ -1572,6 +1582,7 @@ folly::coro::Task<Publisher::FetchResult> MoqxCache::fetchImpl(
       if (fetch.groupOrder != GroupOrder::NewestFirst) {
         co_return std::move(res.value());
       } else {
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
         bool isEndOfTrack = track->endOfTrack && standalone->end >= *track->largestGroupAndObject;
         fetchHandle = std::make_shared<FetchHandle>(
             FetchOk{fetch.requestID, fetch.groupOrder, isEndOfTrack, standalone->end, {}}
@@ -1596,8 +1607,10 @@ folly::coro::Task<Publisher::FetchResult> MoqxCache::fetchImpl(
         standalone->end = *pg;
       }
       bool endOfTrack = false;
+      // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
       if (track->endOfTrack && standalone->end >= *track->largestGroupAndObject) {
         endOfTrack = true;
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
         standalone->end = *track->largestGroupAndObject;
       }
       co_return std::make_shared<FetchHandle>(
@@ -1792,6 +1805,7 @@ MoqxCache::FetchRangeIterator::FetchRangeIterator(
     AbsoluteLocation start,
     AbsoluteLocation end,
     GroupOrder order,
+    // NOLINTNEXTLINE(performance-unnecessary-value-param)
     std::shared_ptr<CacheTrack> track
 )
     : minLocation(start), maxLocation(end), order(order), track(track), current_(start), end_(end) {
@@ -2117,6 +2131,7 @@ std::optional<uint64_t> MoqxCache::FetchRangeIterator::findGroupEndMaybe(
 }
 
 AbsoluteLocation MoqxCache::FetchRangeIterator::end() {
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   if ((track->endOfTrack && current_ > track->largestGroupAndObject.value()) || !isValid_) {
     end_ = current_;
     return end_;

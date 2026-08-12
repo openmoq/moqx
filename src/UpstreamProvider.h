@@ -138,6 +138,7 @@ public:
   }
 
 private:
+  // NOLINTNEXTLINE(performance-enum-size)
   enum class State { Disconnected, Connecting, Connected };
 
   // Returns the current session if already connected, null otherwise.

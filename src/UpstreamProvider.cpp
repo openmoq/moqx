@@ -83,6 +83,7 @@ UpstreamProvider::UpstreamProvider(
     std::shared_ptr<fizz::CertificateVerifier> verifier,
     OnConnectHook onConnect,
     OnDisconnectHook onDisconnect,
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
     std::chrono::milliseconds connectTimeout,
     std::chrono::milliseconds idleTimeout
 )

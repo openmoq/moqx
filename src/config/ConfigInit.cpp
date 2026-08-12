@@ -22,6 +22,7 @@ std::string configSubcommandUsage() {
 }
 
 folly::Expected<ResolvedConfig, int> handleConfigSubcommand(
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
     std::string_view subcommand,
     std::string_view configPath,
     bool strictConfig,
@@ -42,12 +43,14 @@ folly::Expected<ResolvedConfig, int> handleConfigSubcommand(
   try {
     parsed = loadConfig(std::string(configPath), strictConfig);
   } catch (const std::exception& e) {
+    // NOLINTNEXTLINE(performance-avoid-endl)
     std::cerr << "Error: " << e.what() << std::endl;
     return folly::makeUnexpected(1);
   }
 
   auto result = resolveConfig(parsed);
   if (result.hasError()) {
+    // NOLINTNEXTLINE(performance-avoid-endl)
     std::cerr << "Error: " << result.error() << std::endl;
     return folly::makeUnexpected(1);
   }
@@ -57,12 +60,14 @@ folly::Expected<ResolvedConfig, int> handleConfigSubcommand(
     for (const auto& w : result.value().warnings) {
       std::cerr << "\n  - " << w;
     }
+    // NOLINTNEXTLINE(performance-avoid-endl)
     std::cerr << std::endl;
     return folly::makeUnexpected(1);
   }
 
   if (subcommand == kValidateConfigCommand) {
     for (const auto& w : result.value().warnings) {
+      // NOLINTNEXTLINE(performance-avoid-endl)
       std::cerr << "Warning: " << w << std::endl;
     }
     std::cout << "Config is valid." << '\n';

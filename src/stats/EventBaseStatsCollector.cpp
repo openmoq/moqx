@@ -10,6 +10,7 @@ namespace openmoq::moqx::stats {
 
 /* static */
 std::shared_ptr<EventBaseStatsCollector>
+// NOLINTNEXTLINE(performance-unnecessary-value-param)
 EventBaseStatsCollector::create(std::shared_ptr<StatsRegistry> registry, folly::EventBase* evb) {
   auto collector = std::shared_ptr<EventBaseStatsCollector>(new EventBaseStatsCollector(evb));
   registry->registerEvbCollector(evb, collector);

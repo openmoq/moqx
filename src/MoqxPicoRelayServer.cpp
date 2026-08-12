@@ -89,6 +89,7 @@ MoqxPicoRelayServer::MoqxPicoRelayServer(
       evb_(ioExecutor->getAllEventBases()[0].get()) {}
 
 MoqxPicoRelayServer::~MoqxPicoRelayServer() {
+  // NOLINTNEXTLINE(clang-analyzer-optin.cplusplus.VirtualCall)
   stop();
 }
 

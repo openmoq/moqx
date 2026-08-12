@@ -113,6 +113,7 @@ public:
       std::shared_ptr<folly::Executor> relayExec = nullptr,
       bool useLocalForwarders = false,
       uint64_t maxDeselected = kDefaultMaxDeselected,
+      // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
       std::chrono::milliseconds idleTimeout = kDefaultIdleTimeout,
       std::chrono::milliseconds activityThreshold = kDefaultActivityThreshold
   )
@@ -565,6 +566,7 @@ private:
   //                    isolated on relayExec_; sessions hop via cross-exec filters.
   //   LocalForwarder - relayExec_ set, useLocalForwarders_ == true: per-thread
   //                    local forwarders shortcut the data plane.
+  // NOLINTNEXTLINE(performance-enum-size)
   enum class Mode { SingleThread, RelayExec, LocalForwarder };
   Mode mode() const {
     if (!relayExec_) {

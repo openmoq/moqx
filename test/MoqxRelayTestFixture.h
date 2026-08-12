@@ -34,6 +34,7 @@ using moxygen::test::MockMoQSession;
 
 namespace openmoq::moqx::test {
 
+// NOLINTNEXTLINE(performance-enum-size)
 enum class RelayMode {
   SingleThread,
   MultiThread,
