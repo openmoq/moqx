@@ -1,0 +1,10 @@
+---
+InheritParentConfig: true
+
+# Test TUs are the slowest in the tree, and clang-analyzer's symbolic execution
+# more than doubles them — it sets the floor on what a PR touching a test
+# header costs in CI. Tests don't ship, so the analyzer earns least here. It
+# still runs over src/, where a finding reaches production.
+Checks: >
+  -clang-analyzer-*
+...

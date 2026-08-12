@@ -1,0 +1,44 @@
+name: clang-tidy full
+
+# The whole-tree lint. `ci pr` gates every PR on the same checks, but scoped to
+# the TUs its diff affects; this catches what that scoping cannot see — a
+# finding that appears in an untouched TU after a clang-tidy or moxygen bump.
+
+on:
+  schedule:
+    - cron: '0 7 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint-full:
+    runs-on: [self-hosted, build]
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: ./.github/actions/setup-build
+        with:
+          ccache-key: lint-full
+
+      - name: Install clang-tidy 19
+        run: |
+          if ! command -v clang-tidy-19 >/dev/null; then
+            wget -q https://apt.llvm.org/llvm.sh -O /tmp/llvm.sh
+            chmod +x /tmp/llvm.sh
+            sudo /tmp/llvm.sh 19 all
+          fi
+
+      - name: Configure
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: scripts/configure.sh default --moxygen prebuilt-with-fallback
+
+      - name: Lint (full, including clang-analyzer-*)
+        run: bash scripts/dev/lint.sh --mode=full

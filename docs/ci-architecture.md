@@ -142,6 +142,7 @@ Promotes `snapshot-latest` artifacts to a versioned `vX.Y.Z` release (no rebuild
 | Job | Runner | Purpose |
 |-----|--------|---------|
 | check-format | ubuntu-latest (trixie) | clang-format-19 check; ruff lint + format check (via uv) |
+| lint | self-hosted (build) | clang-tidy-19 over the TUs the diff affects; `clang-analyzer-*` on `src/` only |
 | linux | ubuntu-22.04 | Build + test (prebuilt tarball, from-source fallback) |
 | asan debug | self-hosted (build) | ASan/UBSan on moqx TUs, build + test |
 
@@ -190,6 +191,19 @@ Reserved instances:
 
 Developer instances (`moqx-001+`) can be added to the instance list for manual
 testing deployments.
+
+### 6. `clang-tidy full` — Whole-tree lint
+
+**Trigger:** nightly cron + manual `workflow_dispatch` | **Runner:** self-hosted (build)
+
+The `ci pr` lint lane gates on the same checks but only over the TUs a PR's
+diff affects. This sweeps every TU, catching what that scoping cannot see: a
+finding surfacing in an untouched TU after a clang-tidy or moxygen bump.
+
+A whole-tree sweep is minutes of CPU per TU, so it runs here rather than on
+every PR. It gates on the same checks as `ci pr`, `clang-analyzer-*` on `src/`
+only — [`test/.clang-tidy`](/test/.clang-tidy) turns the analyzer off for test
+TUs, which are the slowest in the tree and don't ship.
 
 ---
 

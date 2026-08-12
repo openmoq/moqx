@@ -33,6 +33,45 @@ jobs:
       - name: Check formatting
         run: bash scripts/dev/format.sh --check
 
+  lint:
+    needs: [check-format]
+    # Minutes per TU, and a PR touching a widely-included header drags in many.
+    runs-on: [self-hosted, build]
+    # Ceiling for the from-source fallback
+    timeout-minutes: 180
+    steps:
+      # Full history, allows: lint.sh --changed diffs
+      # against origin/<base>
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: ./.github/actions/setup-build
+        with:
+          ccache-key: lint
+
+      # jammy's own repo stops at clang-tidy 14. Skipped on the self-hosted box
+      # once its first run has installed them.
+      - name: Install clang-tidy 19
+        run: |
+          if ! command -v clang-tidy-19 >/dev/null; then
+            wget -q https://apt.llvm.org/llvm.sh -O /tmp/llvm.sh
+            chmod +x /tmp/llvm.sh
+            sudo /tmp/llvm.sh 19 all
+          fi
+
+      - name: Configure
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: scripts/configure.sh default --moxygen prebuilt-with-fallback
+
+      # --changed scopes to the TUs the PR's diff affects, which is what makes
+      # --mode=full affordable as a merge gate.
+      - name: Lint
+        run: |
+          bash scripts/dev/lint.sh --mode=full \
+            --changed=origin/${{ github.event.pull_request.base.ref }}
+
   build:
     needs: [check-format]
     strategy:
