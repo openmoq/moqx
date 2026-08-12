@@ -16,10 +16,10 @@ fi
 
 TMPDIR=$(mktemp -d)
 MOQX_PID=""
-DATESERVER_PID=""
-TEXTCLIENT_PID=""
+DATESERVER_PIDS=()
+TEXTCLIENT_PIDS=()
 cleanup() {
-  for pid in "${TEXTCLIENT_PID:-}" "${DATESERVER_PID:-}" "${MOQX_PID:-}"; do
+  for pid in "${TEXTCLIENT_PIDS[@]:-}" "${DATESERVER_PIDS[@]:-}" "${MOQX_PID:-}"; do
     if [[ -n "$pid" ]]; then
       kill "$pid" 2>/dev/null || true
       wait "$pid" 2>/dev/null || true
@@ -136,25 +136,31 @@ TEXTCLIENT="$MOQBIN/moqtextclient"
 # No '-' or '.' in the namespace: both are metacharacters in the safe form, so
 # this way the label is the namespace verbatim.
 DATE_NS="moqdatetrackmetrics"
+# A second live track, so a limit below the match count has something to reject.
+DATE_NS2="moqdatetrackmetricstwo"
 
 if [[ -x "$DATESERVER" && -x "$TEXTCLIENT" ]]; then
-  "$DATESERVER" \
-    --relay_url="https://localhost:${LISTEN_PORT}/moq-relay" \
-    --ns="$DATE_NS" --publish --insecure \
-    >"$TMPDIR/dateserver.log" 2>&1 &
-  DATESERVER_PID=$!
+  for ns in "$DATE_NS" "$DATE_NS2"; do
+    "$DATESERVER" \
+      --relay_url="https://localhost:${LISTEN_PORT}/moq-relay" \
+      --ns="$ns" --publish --insecure \
+      >"$TMPDIR/dateserver-${ns}.log" 2>&1 &
+    DATESERVER_PIDS+=("$!")
+  done
 
   # Subscribing before the publisher has connected just fails.
-  wait_sessions 1 "dateserver"
+  wait_sessions 2 "dateservers"
 
   # The relay sets forward=0 with no subscribers, so nothing is ingested to
   # count until someone is actually receiving the track.
-  "$TEXTCLIENT" \
-    --connect_url="https://localhost:${LISTEN_PORT}/moq-relay" \
-    --track_namespace="$DATE_NS" --track_name="date" --insecure \
-    >"$TMPDIR/textclient.log" 2>&1 &
-  TEXTCLIENT_PID=$!
-  wait_sessions 2 "textclient"
+  for ns in "$DATE_NS" "$DATE_NS2"; do
+    "$TEXTCLIENT" \
+      --connect_url="https://localhost:${LISTEN_PORT}/moq-relay" \
+      --track_namespace="$ns" --track_name="date" --insecure \
+      >"$TMPDIR/textclient-${ns}.log" 2>&1 &
+    TEXTCLIENT_PIDS+=("$!")
+  done
+  wait_sessions 4 "textclients"
 
   # The date track emits about one object a second. Scraped without a namespace
   # parameter: this is the all-namespaces form.
@@ -173,9 +179,9 @@ if [[ -x "$DATESERVER" && -x "$TEXTCLIENT" ]]; then
       echo "--- scrape ---" >&2
       cat "$BODY_FILE" >&2
       echo "--- dateserver ---" >&2
-      cat "$TMPDIR/dateserver.log" >&2
+      cat "$TMPDIR/dateserver-${DATE_NS}.log" >&2
       echo "--- textclient ---" >&2
-      cat "$TMPDIR/textclient.log" >&2
+      cat "$TMPDIR/textclient-${DATE_NS}.log" >&2
       fail "live track never reported a counted object in an all-namespaces scrape"
     fi
   done
@@ -189,8 +195,26 @@ if [[ -x "$DATESERVER" && -x "$TEXTCLIENT" ]]; then
   grep -q "namespace=\"${DATE_NS}\"" < "$BODY_FILE" \
     || fail "explicit namespace query did not return the live track"
 
-  kill "$TEXTCLIENT_PID" "$DATESERVER_PID" 2>/dev/null || true
-  wait "$TEXTCLIENT_PID" "$DATESERVER_PID" 2>/dev/null || true
+  # limit bounds the scrape at the value asked for, not at the configured
+  # default: below the match count is a 400, at it a 200.
+  for i in $(seq 1 100); do
+    curl -s -o "$BODY_FILE" "${TRACK_URL}?limit=20" 2>/dev/null || true
+    TRACKS=$(grep -c "^moqx_track_subscribers{" < "$BODY_FILE" || true)
+    [[ "$TRACKS" == "2" ]] && break
+    sleep 0.1
+    [[ $i -eq 100 ]] && fail "both live tracks never appeared in a scrape (saw $TRACKS)"
+  done
+
+  HTTP_CODE=$(curl -sw "%{http_code}" -o "$BODY_FILE" "${TRACK_URL}?limit=1" 2>/dev/null)
+  [[ "$HTTP_CODE" == "400" ]] || fail "expected HTTP 400 for limit=1 with 2 live tracks, got $HTTP_CODE"
+  grep -q "exceeds limit=1;" < "$BODY_FILE" \
+    || fail "400 body should report the requested limit: $(cat "$BODY_FILE")"
+
+  HTTP_CODE=$(curl -sw "%{http_code}" -o /dev/null "${TRACK_URL}?limit=2" 2>/dev/null)
+  [[ "$HTTP_CODE" == "200" ]] || fail "expected HTTP 200 for limit=2 with 2 live tracks, got $HTTP_CODE"
+
+  kill "${TEXTCLIENT_PIDS[@]}" "${DATESERVER_PIDS[@]}" 2>/dev/null || true
+  wait "${TEXTCLIENT_PIDS[@]}" "${DATESERVER_PIDS[@]}" 2>/dev/null || true
 else
   echo "SKIP: moqdateserver/moqtextclient not found in $MOQBIN; live-track checks skipped" >&2
 fi
