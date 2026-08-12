@@ -26,6 +26,37 @@ jobs:
       - name: Check formatting
         run: bash scripts/dev/format.sh --check
 
+  lint:
+    needs: [check-format]
+    runs-on: ubuntu-22.04
+    # Ceiling for the from-source fallback
+    timeout-minutes: 180
+    steps:
+      # Full history, allows: lint.sh --changed diffs
+      # against origin/<base>
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: ./.github/actions/setup-build
+        with:
+          ccache-key: lint
+
+      - name: Install clang-tidy 19
+        run: |
+          wget -q https://apt.llvm.org/llvm.sh -O /tmp/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh 19 all
+
+      - name: Configure
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: scripts/configure.sh default --moxygen prebuilt-with-fallback
+
+      # --changed: scope to TUs the PR's diff actually affects
+      - name: Lint
+        run: bash scripts/dev/lint.sh --changed=origin/${{ github.event.pull_request.base.ref }}
+
   build:
     needs: [check-format]
     strategy:

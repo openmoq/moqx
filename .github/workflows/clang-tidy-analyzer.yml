@@ -1,0 +1,40 @@
+name: clang-tidy full
+
+# The full lint, including clang-analyzer-* (the heaviest lint category)
+
+on:
+  schedule:
+    - cron: '0 7 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint-full:
+    runs-on: [self-hosted, linode]
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: ./.github/actions/setup-build
+        with:
+          ccache-key: lint-full
+
+      - name: Install clang-tidy 19
+        run: |
+          wget -q https://apt.llvm.org/llvm.sh -O /tmp/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh 19 all
+
+      - name: Configure
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: scripts/configure.sh default --moxygen prebuilt-with-fallback
+
+      - name: Lint (full, including clang-analyzer-*)
+        run: bash scripts/dev/lint.sh --mode=full
