@@ -40,9 +40,10 @@ modules:
           relay_id: '{.relay_id}'
         values:
           active_sessions: '{.active_sessions}'
-  # Relay build info from the admin /info ({"service":"moqx","version":"x.y.z"}).
-  # The value is the jsonpath literal 1 — this is a labels-only info metric
-  # (moqx_build_info{service,version} 1), standard build-info gauge pattern.
+  # Relay build info from the admin /info ({"service","version","start_time",
+  # "uptime_seconds"}). The info value is the jsonpath literal 1 — a labels-only
+  # info metric (moqx_build_info{service,version} 1), standard build-info gauge
+  # pattern. uptime/start_time make relay (not host) uptime graphable.
   moqx_info:
     metrics:
       - name: moqx_build
@@ -54,3 +55,5 @@ modules:
           version: '{.version}'
         values:
           info: '1'
+          uptime: '{.uptime_seconds}'
+          start_time: '{.start_time}'
