@@ -73,7 +73,7 @@ scrape_configs:
       - target_label: __address__
         replacement: json-exporter:7979
 
-  # Per-track counters from the relay (openmoq/moqx#533). One namespace per
+  # Per-track counters from the relay. One namespace per
   # request: an unscoped scrape covers everything only until the total exceeds
   # the limit, at which point it 400s and takes every namespace down with it,
   # while per-namespace scrapes keep working until a single namespace exceeds

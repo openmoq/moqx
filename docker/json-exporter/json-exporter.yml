@@ -6,7 +6,7 @@
 #
 # Per-track series come from the relay's own /metrics/track, not from here:
 # both emitted moqx_track_subscribers, and /state's entries are transient and
-# undercount under load (openmoq/moqx#501).
+# undercount under load.
 modules:
   moqx:
     metrics:

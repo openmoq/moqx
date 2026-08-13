@@ -68,8 +68,7 @@ def namespaces():
 
 def write(path, entries):
     payload = [
-        {"targets": [safe_namespace(ns)], "labels": {"moqx_namespace": "/".join(ns)}}
-        for ns in entries
+        {"targets": [safe_namespace(ns)]} for ns in entries
     ]
     body = json.dumps(payload, indent=2) + "\n"
     if os.path.exists(path) and open(path).read() == body:

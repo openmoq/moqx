@@ -36,8 +36,8 @@ passes through, every other byte becomes `.<hex>`, tuple elements join with
     conf.example.com / room 1  ->  conf.2eexample.2ecom-room.201
 
 Relabelling turns each target into the `namespace` query parameter and points
-the scrape at the relay. The unencoded namespace is kept as `moqx_namespace`
-for display, since the encoded form is what lands in the metric labels.
+the scrape at the relay. The series carry the endpoint's own `namespace` and
+`track` labels, in the same safe form.
 
 Series exist only while a track is live: they disappear when it ends and
 restart from zero if it returns, so counters need `rate()`/`increase()` rather
