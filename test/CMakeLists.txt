@@ -416,6 +416,17 @@ target_link_libraries(moqx_local_forwarder_registry_test PRIVATE
 )
 gtest_discover_tests(moqx_local_forwarder_registry_test)
 
+# ForwarderRef unit tests (header-only executor-affine handle)
+add_executable(moqx_forwarder_ref_test
+  ForwarderRefTest.cpp
+)
+target_link_libraries(moqx_forwarder_ref_test PRIVATE
+  moqx_core
+  moqx_test_main
+  GTest::gmock
+)
+gtest_discover_tests(moqx_forwarder_ref_test)
+
 # TopNFilter unit tests
 add_executable(moqx_topn_filter_test
   TopNFilterTest.cpp
