@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include "relay/ForwarderRef.h"
 #include "relay/TopNFilter.h"
 #include <folly/Function.h>
 #include <folly/container/F14Map.h>
@@ -40,13 +41,12 @@ public:
     UpstreamSubscribePending(
         SubscriptionRegistry* registry,
         moxygen::FullTrackName ftn,
-        std::weak_ptr<moxygen::MoQForwarder> weakForwarder
+        ForwarderId id
     )
-        : registry_(registry), ftn_(std::move(ftn)), weakForwarder_(std::move(weakForwarder)) {}
+        : registry_(registry), ftn_(std::move(ftn)), id_(id) {}
 
     UpstreamSubscribePending(UpstreamSubscribePending&& o) noexcept
-        : registry_(o.registry_), ftn_(std::move(o.ftn_)),
-          weakForwarder_(std::move(o.weakForwarder_)), active_(o.active_) {
+        : registry_(o.registry_), ftn_(std::move(o.ftn_)), id_(o.id_), active_(o.active_) {
       o.active_ = false;
     }
 
@@ -70,34 +70,42 @@ public:
   private:
     SubscriptionRegistry* registry_;
     moxygen::FullTrackName ftn_;
-    std::weak_ptr<moxygen::MoQForwarder> weakForwarder_;
+    ForwarderId id_;
     bool active_{true};
   };
 
   struct FirstSubscriber {
+    // The only strong handle the caller gets; the entry itself holds a ForwarderRef.
     std::shared_ptr<moxygen::MoQForwarder> forwarder;
     std::shared_ptr<moxygen::TrackConsumer> consumer;
     UpstreamSubscribePending pending;
   };
 
   struct SubsequentSubscriber {
-    std::shared_ptr<moxygen::MoQForwarder> forwarder;
+    ForwarderRef forwarder;
   };
+
+  // refMaker found no publisher to build a ref against; the map is untouched.
+  struct NoPublisher {};
 
   // Synchronous. First path: creates entry, calls chainBuilder, returns
   // FirstSubscriber immediately. Subsequent path: returns a Task that
   // co_awaits the promise then re-finds (throws on first-subscriber failure).
-  std::variant<FirstSubscriber, folly::coro::Task<SubsequentSubscriber>> getOrCreateFromSubscribe(
+  // refMaker runs only on the first path and owns the decision to proceed.
+  std::variant<FirstSubscriber, folly::coro::Task<SubsequentSubscriber>, NoPublisher>
+  getOrCreateFromSubscribe(
       const moxygen::FullTrackName& ftn,
       std::shared_ptr<moxygen::MoQForwarder::Callback> callback,
       folly::FunctionRef<FilterChainResult(std::shared_ptr<moxygen::MoQForwarder>)> chainBuilder,
+      folly::FunctionRef<std::optional<ForwarderRef>(const std::shared_ptr<moxygen::MoQForwarder>&)>
+          refMaker,
       std::optional<moxygen::AbsoluteLocation> largest = std::nullopt
   );
 
   // === Publish path ===
 
   struct Evicted {
-    std::shared_ptr<moxygen::MoQForwarder> forwarder;
+    ForwarderRef forwarder;
     std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle; // may be null
     folly::Executor* publisherExec{nullptr}; // old publisher's session exec, for handle teardown
   };
@@ -107,26 +115,27 @@ public:
     std::optional<Evicted> evicted;
   };
 
-  // Creates entry, pre-fulfills promise, wires activity tracking.
-  // Evicts any prior entry before emplacing — caller must call
-  // publishDone/unsubscribe on evicted data.
+  // Creates entry, pre-fulfills promise, wires activity tracking. `forwarder` is what the entry
+  // stores (remote in LF mode; owned otherwise). Evicts any prior entry before emplacing — caller
+  // must call publishDone/unsubscribe on evicted data.
   PublishEntry createFromPublish(
       const moxygen::FullTrackName& ftn,
-      std::shared_ptr<moxygen::MoQForwarder> forwarder,
+      ForwarderRef forwarder,
       std::shared_ptr<moxygen::MoQSession> session,
       std::shared_ptr<moxygen::Publisher> publisher,
       moxygen::RequestID requestID,
       std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle,
-      folly::FunctionRef<FilterChainResult(std::shared_ptr<moxygen::MoQForwarder>)> chainBuilder
+      folly::FunctionRef<FilterChainResult()> chainBuilder
   );
 
   // === Lookup ===
 
   bool exists(const moxygen::FullTrackName& ftn) const;
-  std::shared_ptr<moxygen::MoQForwarder> getForwarder(const moxygen::FullTrackName& ftn) const;
+  // Empty ref if there is no entry.
+  ForwarderRef getForwarderRef(const moxygen::FullTrackName& ftn) const;
 
   struct TopNView {
-    std::shared_ptr<moxygen::MoQForwarder> forwarder;
+    ForwarderRef forwarder;
     std::shared_ptr<TopNFilter> topNFilter; // may be null for subscribe-path tracks
     std::shared_ptr<moxygen::TrackConsumer> chainHead;
     std::chrono::steady_clock::time_point lastObjectTime;
@@ -135,7 +144,7 @@ public:
 
   // For onEmpty / forwardChanged / newGroupRequested / trackStatus
   struct UpstreamView {
-    std::shared_ptr<moxygen::MoQForwarder> forwarder;
+    ForwarderRef forwarder;
     std::shared_ptr<moxygen::Publisher> publisher;
     std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle;
     moxygen::RequestID requestID;
@@ -147,7 +156,7 @@ public:
 
   // For fetch()
   struct FetchView {
-    std::shared_ptr<moxygen::MoQForwarder> forwarder;
+    ForwarderRef forwarder;
     std::shared_ptr<moxygen::Publisher> publisher;
     moxygen::RequestID requestID;
     bool isReady;
@@ -156,9 +165,12 @@ public:
 
   // === Lifecycle transitions ===
 
-  // Clears handle + upstream. Erases if no subscribers remain (returns null).
+  // LF mode: replaces the entry's ref once ownership is anchored elsewhere (the
+  // publisher exec's LocalForwarderRegistry), so the relay exec holds no strong ref.
+
+  // Clears handle + upstream. Erases if no subscribers remain (returns empty).
   // If subscribers remain, entry persists; caller must call remove() from onEmpty.
-  std::shared_ptr<moxygen::MoQForwarder> onPublisherTerminated(const moxygen::FullTrackName& ftn);
+  ForwarderRef onPublisherTerminated(const moxygen::FullTrackName& ftn);
 
   // Called from onEmpty after handle->unsubscribe() (subscribe-mode), or after
   // a publisher-terminated entry's forwarder goes empty.
@@ -168,14 +180,13 @@ public:
 
   struct EntryView {
     const moxygen::FullTrackName& ftn;
-    std::shared_ptr<moxygen::MoQForwarder> forwarder;
+    const ForwarderRef& forwarder;
     std::shared_ptr<moxygen::MoQSession> upstream;
     bool isPublish;
     std::chrono::steady_clock::time_point lastObjectTime;
   };
 
-  void removeIf(folly::FunctionRef<bool(const moxygen::FullTrackName&, const EntryView&)> predicate
-  );
+  void removeIf(folly::FunctionRef<bool(const EntryView&)> predicate);
 
   void forEach(folly::FunctionRef<void(const EntryView&)> fn) const;
 
@@ -183,14 +194,11 @@ public:
 
 private:
   struct RelaySubscription {
-    RelaySubscription(
-        std::shared_ptr<moxygen::MoQForwarder> f,
-        std::shared_ptr<moxygen::MoQSession> u
-    )
+    RelaySubscription(ForwarderRef f, std::shared_ptr<moxygen::MoQSession> u)
         : forwarder(std::move(f)), upstream(std::move(u)),
           lastObjectTime(std::chrono::steady_clock::now()) {}
 
-    std::shared_ptr<moxygen::MoQForwarder> forwarder;
+    ForwarderRef forwarder;
     std::shared_ptr<moxygen::MoQSession> upstream;
     std::shared_ptr<moxygen::Publisher> publisher;
     moxygen::RequestID requestID{0};
@@ -205,7 +213,7 @@ private:
   // Called by UpstreamSubscribePending::complete().
   bool completeSubscription(
       const moxygen::FullTrackName& ftn,
-      std::weak_ptr<moxygen::MoQForwarder> weakForwarder,
+      ForwarderId id,
       std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle,
       moxygen::RequestID requestID,
       std::shared_ptr<moxygen::MoQSession> upstreamSession,
@@ -213,10 +221,7 @@ private:
   );
 
   // Called by UpstreamSubscribePending destructor on failure.
-  void failAndRemove(
-      const moxygen::FullTrackName& ftn,
-      std::weak_ptr<moxygen::MoQForwarder> weakForwarder
-  );
+  void failAndRemove(const moxygen::FullTrackName& ftn, ForwarderId id);
 
   // Standalone coroutine for the subsequent-subscriber path. Parameters are
   // passed by value so they live in the heap-allocated coroutine frame rather

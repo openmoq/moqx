@@ -19,7 +19,7 @@ bool SubscriptionRegistry::UpstreamSubscribePending::complete(
   active_ = false;
   return registry_->completeSubscription(
       ftn_,
-      weakForwarder_,
+      id_,
       std::move(handle),
       requestID,
       std::move(upstreamSession),
@@ -29,7 +29,7 @@ bool SubscriptionRegistry::UpstreamSubscribePending::complete(
 
 SubscriptionRegistry::UpstreamSubscribePending::~UpstreamSubscribePending() {
   if (active_) {
-    registry_->failAndRemove(ftn_, weakForwarder_);
+    registry_->failAndRemove(ftn_, id_);
   }
 }
 
@@ -37,30 +37,35 @@ SubscriptionRegistry::UpstreamSubscribePending::~UpstreamSubscribePending() {
 
 std::variant<
     SubscriptionRegistry::FirstSubscriber,
-    folly::coro::Task<SubscriptionRegistry::SubsequentSubscriber>>
+    folly::coro::Task<SubscriptionRegistry::SubsequentSubscriber>,
+    SubscriptionRegistry::NoPublisher>
 SubscriptionRegistry::getOrCreateFromSubscribe(
     const moxygen::FullTrackName& ftn,
     std::shared_ptr<moxygen::MoQForwarder::Callback> callback,
     folly::FunctionRef<FilterChainResult(std::shared_ptr<moxygen::MoQForwarder>)> chainBuilder,
+    folly::FunctionRef<std::optional<ForwarderRef>(const std::shared_ptr<moxygen::MoQForwarder>&)>
+        refMaker,
     std::optional<moxygen::AbsoluteLocation> largest
 ) {
   auto it = subscriptions_.find(ftn);
   if (it == subscriptions_.end()) {
     auto forwarder = std::make_shared<moxygen::MoQForwarder>(ftn, largest);
+    auto ref = refMaker(forwarder);
+    if (!ref) {
+      return NoPublisher{};
+    }
+    // Snapshot before the ref moves into the map; the token outlives the forwarder.
+    const ForwarderId id = ref->identityKey();
     forwarder->setCallback(std::move(callback));
     auto [consumer, topNFilter, chainHead] = chainBuilder(forwarder);
     auto [emplaceIt, inserted] = subscriptions_.emplace(
         std::piecewise_construct,
         std::forward_as_tuple(ftn),
-        std::forward_as_tuple(forwarder, nullptr)
+        std::forward_as_tuple(*std::move(ref), nullptr)
     );
     emplaceIt->second.topNFilter = topNFilter;
     emplaceIt->second.chainHead = chainHead;
-    return FirstSubscriber{
-        forwarder,
-        std::move(consumer),
-        UpstreamSubscribePending{this, ftn, forwarder}
-    };
+    return FirstSubscriber{forwarder, std::move(consumer), UpstreamSubscribePending{this, ftn, id}};
   }
 
   // Subsequent subscriber: await in a proper coroutine function (not a lambda)
@@ -85,14 +90,14 @@ folly::coro::Task<SubscriptionRegistry::SubsequentSubscriber> SubscriptionRegist
 
 bool SubscriptionRegistry::completeSubscription(
     const moxygen::FullTrackName& ftn,
-    std::weak_ptr<moxygen::MoQForwarder> weakForwarder,
+    ForwarderId id,
     std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle,
     moxygen::RequestID requestID,
     std::shared_ptr<moxygen::MoQSession> upstreamSession,
     std::shared_ptr<moxygen::Publisher> publisher
 ) {
   auto it = subscriptions_.find(ftn);
-  if (it == subscriptions_.end() || it->second.forwarder != weakForwarder.lock()) {
+  if (it == subscriptions_.end() || it->second.forwarder.identityKey() != id) {
     return false;
   }
   auto& rsub = it->second;
@@ -104,12 +109,9 @@ bool SubscriptionRegistry::completeSubscription(
   return true;
 }
 
-void SubscriptionRegistry::failAndRemove(
-    const moxygen::FullTrackName& ftn,
-    std::weak_ptr<moxygen::MoQForwarder> weakForwarder
-) {
+void SubscriptionRegistry::failAndRemove(const moxygen::FullTrackName& ftn, ForwarderId id) {
   auto it = subscriptions_.find(ftn);
-  if (it != subscriptions_.end() && it->second.forwarder == weakForwarder.lock()) {
+  if (it != subscriptions_.end() && it->second.forwarder.identityKey() == id) {
     it->second.promise.setException(std::runtime_error("upstream subscribe failed"));
     subscriptions_.erase(it);
   }
@@ -117,12 +119,12 @@ void SubscriptionRegistry::failAndRemove(
 
 SubscriptionRegistry::PublishEntry SubscriptionRegistry::createFromPublish(
     const moxygen::FullTrackName& ftn,
-    std::shared_ptr<moxygen::MoQForwarder> forwarder,
+    ForwarderRef forwarder,
     std::shared_ptr<moxygen::MoQSession> session,
     std::shared_ptr<moxygen::Publisher> publisher,
     moxygen::RequestID requestID,
     std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle,
-    folly::FunctionRef<FilterChainResult(std::shared_ptr<moxygen::MoQForwarder>)> chainBuilder
+    folly::FunctionRef<FilterChainResult()> chainBuilder
 ) {
   std::optional<Evicted> evicted;
 
@@ -139,7 +141,7 @@ SubscriptionRegistry::PublishEntry SubscriptionRegistry::createFromPublish(
   auto [emplaceIt, inserted] = subscriptions_.emplace(
       std::piecewise_construct,
       std::forward_as_tuple(ftn),
-      std::forward_as_tuple(forwarder, session)
+      std::forward_as_tuple(std::move(forwarder), session)
   );
   auto& rsub = emplaceIt->second;
   rsub.promise.setValue(folly::unit);
@@ -148,7 +150,7 @@ SubscriptionRegistry::PublishEntry SubscriptionRegistry::createFromPublish(
   rsub.publisher = std::move(publisher);
   rsub.isPublish = true;
 
-  auto [consumer, topNFilter, chainHead] = chainBuilder(forwarder);
+  auto [consumer, topNFilter, chainHead] = chainBuilder();
   rsub.topNFilter = topNFilter;
   rsub.chainHead = chainHead;
   topNFilter->setActivityTarget(&rsub.lastObjectTime);
@@ -160,10 +162,9 @@ bool SubscriptionRegistry::exists(const moxygen::FullTrackName& ftn) const {
   return subscriptions_.find(ftn) != subscriptions_.end();
 }
 
-std::shared_ptr<moxygen::MoQForwarder>
-SubscriptionRegistry::getForwarder(const moxygen::FullTrackName& ftn) const {
+ForwarderRef SubscriptionRegistry::getForwarderRef(const moxygen::FullTrackName& ftn) const {
   auto it = subscriptions_.find(ftn);
-  return it != subscriptions_.end() ? it->second.forwarder : nullptr;
+  return it != subscriptions_.end() ? it->second.forwarder : ForwarderRef{};
 }
 
 std::optional<SubscriptionRegistry::TopNView>
@@ -208,19 +209,21 @@ SubscriptionRegistry::getFetchView(const moxygen::FullTrackName& ftn) const {
   return FetchView{rsub.forwarder, rsub.publisher, rsub.requestID, rsub.promise.isFulfilled()};
 }
 
-std::shared_ptr<moxygen::MoQForwarder>
-SubscriptionRegistry::onPublisherTerminated(const moxygen::FullTrackName& ftn) {
+ForwarderRef SubscriptionRegistry::onPublisherTerminated(const moxygen::FullTrackName& ftn) {
   auto it = subscriptions_.find(ftn);
   if (it == subscriptions_.end()) {
-    return nullptr;
+    return {};
   }
   auto& rsub = it->second;
   rsub.handle.reset();
   rsub.upstream.reset();
   rsub.publisher.reset();
-  if (rsub.forwarder->empty()) {
+  // Non-LF only: the entry's ref is owned there, so reading inline is legal.
+  auto pin = rsub.forwarder.pinIfOwned();
+  XCHECK(pin) << "onPublisherTerminated on a remote-owned entry: " << ftn;
+  if ((*pin)->empty()) {
     subscriptions_.erase(it);
-    return nullptr;
+    return {};
   }
   return rsub.forwarder;
 }
@@ -229,9 +232,7 @@ void SubscriptionRegistry::remove(const moxygen::FullTrackName& ftn) {
   subscriptions_.erase(ftn);
 }
 
-void SubscriptionRegistry::removeIf(
-    folly::FunctionRef<bool(const moxygen::FullTrackName&, const EntryView&)> predicate
-) {
+void SubscriptionRegistry::removeIf(folly::FunctionRef<bool(const EntryView&)> predicate) {
   for (auto it = subscriptions_.begin(); it != subscriptions_.end();) {
     EntryView view{
         it->first,
@@ -240,7 +241,7 @@ void SubscriptionRegistry::removeIf(
         it->second.isPublish,
         it->second.lastObjectTime
     };
-    if (predicate(it->first, view)) {
+    if (predicate(view)) {
       it = subscriptions_.erase(it);
     } else {
       ++it;
