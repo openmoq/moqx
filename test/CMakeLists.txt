@@ -490,6 +490,18 @@ target_link_libraries(moqx_cross_exec_filter_test PRIVATE
 )
 gtest_discover_tests(moqx_cross_exec_filter_test)
 
+# CrossExecForwarderCallback unit tests
+add_executable(moqx_cross_exec_forwarder_callback_test
+  CrossExecForwarderCallbackTest.cpp
+)
+target_link_libraries(moqx_cross_exec_forwarder_callback_test PRIVATE
+  moqx_core
+  GTest::gtest_main
+  GTest::gmock
+  Folly::folly_executors_manual_executor
+)
+gtest_discover_tests(moqx_cross_exec_forwarder_callback_test)
+
 # PublisherCrossExecFilter unit tests
 add_executable(moqx_publisher_cross_exec_filter_test
   PublisherCrossExecFilterTest.cpp

@@ -14,6 +14,7 @@
 #include "relay/NullConsumers.h"
 #include "relay/PublisherCrossExecFilter.h"
 #include "relay/SubscriberCrossExecFilter.h"
+#include "relay/TrackEventCallback.h"
 #include "relay/TrackStatsFilter.h"
 #include "relay/WeakRelayForwarderCallback.h"
 #include <folly/container/F14Set.h>
@@ -464,7 +465,7 @@ LocalForwarderRegistry::Claim MoqxRelay::installPublisherForwarder(
   auto& localReg = localRegistry();
   auto relayAdapter = std::make_shared<WeakRelayForwarderCallback>(weak_from_this());
   auto crossExec =
-      std::make_shared<CrossExecForwarderCallback>(relayExec_, fwd, std::move(relayAdapter));
+      std::make_shared<CrossExecForwarderCallback>(relayExec_, std::move(relayAdapter));
   fwd->setCallback(
       std::make_shared<LocalForwarderCallback>(&localReg, ftn, std::move(crossExec), removeOnEmpty)
   );
@@ -881,7 +882,7 @@ void teardownLocalForwarderOnFailure(
 //
 // Multi-threaded — publisher forwarder (lives on publisherExec):
 //   publisherFwd.callback =
-//     CrossExecForwarderCallback(relayExec_, publisherFwd,
+//     CrossExecForwarderCallback(relayExec_,
 //       WeakRelayForwarderCallback(relay))
 //
 //   [publisherExec] CrossExecForwarderCallback: captures ftn by value,
@@ -898,7 +899,7 @@ void teardownLocalForwarderOnFailure(
 //   After setup:
 //     localFwd.callback =
 //       LocalForwarderCallback(localReg, ftn,
-//         CrossExecForwarderCallback(publisherExec, localFwd,
+//         CrossExecForwarderCallback(publisherExec,
 //           ChannelForwarderCallback(publisherFwd, subscriberExec, publisherExec)))
 //
 //   [subscriberExec] LocalForwarderCallback: removes from localReg on onEmpty,
@@ -913,10 +914,8 @@ void teardownLocalForwarderOnFailure(
 // Weak-ptr discipline:
 //   WeakRelayForwarderCallback holds weak_ptr<relay> to break the cycle
 //   registry → forwarder → callback → relay → registry.
-//   CrossExecForwarderCallback holds weak_ptr<forwarder> to avoid a permanent
-//   ownership cycle; it locks eagerly on the calling thread (where the forwarder
-//   is alive) and moves the shared_ptr into the lambda to keep it alive across
-//   the executor hop.
+//   CrossExecForwarderCallback reads the track name from the forwarder that invoked it
+//   — on the owner thread, where the forwarder is alive.
 
 // Captures forwardChanged/newGroupRequested/onEmpty during setup (getOrCreate→setCallback window)
 // so they can be replayed once the real callback is installed.
@@ -946,7 +945,7 @@ public:
 
 // Runs on the publisher forwarder's executor (publisher's iothread). Propagates
 // channel-subscriber lifecycle events to the publisher and upstream handle.
-class ChannelForwarderCallback : public moxygen::MoQForwarder::Callback {
+class ChannelForwarderCallback : public openmoq::moqx::TrackEventCallback {
 public:
   ChannelForwarderCallback(
       std::weak_ptr<moxygen::MoQForwarder> weakPublisher,
@@ -965,7 +964,7 @@ public:
   // letting in-flight this-capturing lambdas there run first (FIFO).
   void setFilter(std::shared_ptr<CrossExecFilter> filter) { crossExecFilter_ = std::move(filter); }
 
-  void onEmpty(moxygen::MoQForwarder* /*localFwd*/) override {
+  void onEmpty(const moxygen::FullTrackName& /*ftn*/) override {
     auto publisher = weakPublisher_.lock();
     if (publisher) {
       publisher->removeChannelSubscriberByExec(subscriberExec_);
@@ -981,19 +980,22 @@ public:
     }
   }
 
-  void forwardChanged(moxygen::MoQForwarder*, bool forward) override {
+  void forwardChanged(const moxygen::FullTrackName&, bool forward) override {
     if (!handle_) {
       return;
     }
     launchUpdate(publisherExec_, doSubscribeUpdate(handle_, forward));
   }
 
-  void newGroupRequested(moxygen::MoQForwarder*, uint64_t group) override {
+  void newGroupRequested(const moxygen::FullTrackName&, uint64_t group) override {
     if (!handle_) {
       return;
     }
     launchUpdate(publisherExec_, doNewGroupRequestUpdate(handle_, group));
   }
+
+  // publishDone drains the subscribers, so onEmpty follows and does the teardown.
+  void onPublishDone(const moxygen::FullTrackName& /*ftn*/) override {}
 
 private:
   std::weak_ptr<moxygen::MoQForwarder> weakPublisher_;
@@ -1012,15 +1014,13 @@ struct LocalToPublisherCallbacks {
 LocalToPublisherCallbacks buildLocalToPublisherCallbacks(
     openmoq::moqx::LocalForwarderRegistry* localReg,
     moxygen::FullTrackName ftn,
-    const std::shared_ptr<moxygen::MoQForwarder>& localFwd,
     const std::shared_ptr<moxygen::MoQForwarder>& publisherFwd,
     folly::Executor* publisherExec,
     folly::Executor* subscriberExec
 ) {
   auto channelCb =
       std::make_shared<ChannelForwarderCallback>(publisherFwd, subscriberExec, publisherExec);
-  auto crossExecCb =
-      std::make_shared<CrossExecForwarderCallback>(publisherExec, localFwd, channelCb);
+  auto crossExecCb = std::make_shared<CrossExecForwarderCallback>(publisherExec, channelCb);
   auto finalCallback =
       std::make_shared<LocalForwarderCallback>(localReg, std::move(ftn), std::move(crossExecCb));
   return {std::move(channelCb), std::move(finalCallback)};
@@ -1047,7 +1047,6 @@ void installChannelSubscriber(
 folly::coro::Task<std::shared_ptr<moxygen::MoQForwarder::Callback>> addLocalForwarderToPublisher(
     openmoq::moqx::LocalForwarderRegistry* localReg,
     moxygen::FullTrackName ftn,
-    std::shared_ptr<moxygen::MoQForwarder> localFwd,
     std::shared_ptr<moxygen::MoQForwarder> publisherFwd,
     folly::Executor* publisherExec,
     folly::Executor* subscriberExec,
@@ -1057,7 +1056,6 @@ folly::coro::Task<std::shared_ptr<moxygen::MoQForwarder::Callback>> addLocalForw
   auto cbs = buildLocalToPublisherCallbacks(
       localReg,
       std::move(ftn),
-      localFwd,
       publisherFwd,
       publisherExec,
       subscriberExec
@@ -1160,7 +1158,6 @@ folly::coro::Task<void> MoqxRelay::addSubscriberAndPublishViaLocalForwarder(
   auto finalCallback = co_await addLocalForwarderToPublisher(
       localReg,
       ftn,
-      localFwd,
       publisherFwd,
       publisherExec,
       subscriberExec,
@@ -1771,7 +1768,7 @@ std::optional<SubscribeError> MoqxRelay::completeUpstreamSubscription(
 folly::coro::Task<MoqxRelay::PublisherAttachment> MoqxRelay::attachNewLocalForwarderOnRelayExec(
     const SubscribeRequest& subReq,
     LocalForwarderRegistry* localReg,
-    std::shared_ptr<MoQForwarder> localFwd,
+    std::shared_ptr<MoQForwarder> /*localFwd*/,
     folly::Executor* subscriberExec,
     std::shared_ptr<CrossExecFilter> crossExecFilter,
     bool forward
@@ -1798,7 +1795,6 @@ folly::coro::Task<MoqxRelay::PublisherAttachment> MoqxRelay::attachNewLocalForwa
   auto cbs = buildLocalToPublisherCallbacks(
       localReg,
       ftn,
-      localFwd,
       attach.publisherFwd,
       attach.publisherExec,
       subscriberExec
