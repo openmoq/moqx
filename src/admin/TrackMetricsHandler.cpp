@@ -224,6 +224,7 @@ void registerTrackMetricsRoute(
             );
             return;
           }
+          limit = *parsed;
         }
 
         std::string service = req->getDecodedQueryParam("service");
