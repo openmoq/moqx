@@ -90,6 +90,12 @@ public:
   // reconnect coroutines can exit before worker EVBs are drained.
   void stop();
 
+  // Runs a barrier across ioEvbs and every relay executor, waiting for each
+  // round to finish everywhere before posting the next.
+  // This is an expedient fixup to ensure the threads live long enough without holding
+  // KeepAlive tokens throughout.
+  void drainExecs(const std::vector<folly::Executor::KeepAlive<folly::EventBase>>& ioEvbs);
+
   // Force-evicts cached tracks unconditionally. Scoped by optional ftn or ns;
   // if both are empty all tracks are evicted. Optionally scoped to a single
   // service. Returns number of tracks evicted.

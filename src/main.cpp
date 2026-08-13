@@ -262,6 +262,10 @@ int main(int argc, char* argv[]) {
   for (auto& server : servers) {
     server->stop();
   }
+  // Settle the cross-executor teardown cascade while every loop is still
+  // healthy; ~MoQServer frees the per-thread MoQExecutors and ioExecutor.reset()
+  // will terminate an IO thread when it reaches zero queued work without keepalives.
+  context->drainExecs(ioExecutor->getAllEventBases());
   servers.clear();
   ioExecutor.reset();
 

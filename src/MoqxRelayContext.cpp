@@ -16,6 +16,7 @@
 #include <folly/coro/Collect.h>
 #include <folly/coro/Task.h>
 #include <folly/executors/thread_factory/NamedThreadFactory.h>
+#include <folly/futures/Future.h>
 #include <folly/logging/xlog.h>
 
 using namespace moxygen;
@@ -143,6 +144,37 @@ void MoqxRelayContext::initUpstreams(folly::EventBase* workerEvb) {
 void MoqxRelayContext::stop() {
   for (auto& [name, entry] : services_) {
     entry.relay->stop();
+  }
+}
+
+namespace {
+// This should be sufficient to ensure all cross-exec messages run at teardown,
+// but can be increased if necessary.
+constexpr int kShutdownDrainRounds = 10;
+} // namespace
+
+void MoqxRelayContext::drainExecs(
+    const std::vector<folly::Executor::KeepAlive<folly::EventBase>>& ioEvbs
+) {
+  std::vector<folly::Executor*> execs;
+  execs.reserve(ioEvbs.size() + services_.size());
+  for (const auto& ka : ioEvbs) {
+    execs.push_back(ka.get());
+  }
+  for (auto& [name, entry] : services_) {
+    // Null in single-thread mode, where relay state runs on the io threads.
+    if (auto* relayExec = entry.relay->getRelayExec()) {
+      execs.push_back(relayExec);
+    }
+  }
+
+  for (int round = 0; round < kShutdownDrainRounds; ++round) {
+    std::vector<folly::SemiFuture<folly::Unit>> pending;
+    pending.reserve(execs.size());
+    for (auto* exec : execs) {
+      pending.push_back(folly::via(exec, [] {}).semi());
+    }
+    folly::collectAll(std::move(pending)).get();
   }
 }
 
