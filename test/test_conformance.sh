@@ -30,6 +30,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 MOQBIN="${MOQBIN:-${PROJECT_ROOT}/.scratch/moxygen-install/bin}"
 CONFORMANCE_SCRIPT="${PROJECT_ROOT}/deps/moxygen/moxygen/moqtest/conformance_test.sh"
+# shellcheck source=test_relay_lifecycle.sh
+source "${SCRIPT_DIR}/test_relay_lifecycle.sh"
 
 # Validate binaries exist
 for bin in "$MOQX_BIN" "$MOQBIN/moqtest_client" "$MOQBIN/moqtest_server"; do
@@ -101,7 +103,26 @@ fi
 
 # Generate a temp config with our ports
 TMPCONFIG="$TMPDIR/config.yaml"
-trap 'rm -rf "$TMPDIR"; kill "$RELAY_PID" "$SERVER_PID" 2>/dev/null; wait "$RELAY_PID" "$SERVER_PID" 2>/dev/null' EXIT
+RELAY_PID=""
+SERVER_PID=""
+MOXYGEN_SHIM=""
+cleanup() {
+  local relay_failed=0
+  if [[ -n "$SERVER_PID" ]]; then
+    kill "$SERVER_PID" 2>/dev/null || true
+    reap_helpers "$SERVER_PID"
+  fi
+  if [[ -n "$RELAY_PID" ]]; then
+    kill "$RELAY_PID" 2>/dev/null || true
+    reap_relays "$RELAY_PID" || relay_failed=1
+  fi
+  rm -rf "$TMPDIR"
+  if [[ -n "$MOXYGEN_SHIM" ]]; then
+    rm -rf "$MOXYGEN_SHIM"
+  fi
+  (( relay_failed == 0 )) || exit 1
+}
+trap cleanup EXIT
 
 cat > "$TMPCONFIG" <<EOF
 listeners:
@@ -175,7 +196,6 @@ MOXYGEN_SHIM=$(mktemp -d)
 mkdir -p "$MOXYGEN_SHIM/moxygen/moqtest"
 ln -s "$MOQBIN/moqtest_client" "$MOXYGEN_SHIM/moxygen/moqtest/moqtest_client"
 export MOXYGEN_DIR="$MOXYGEN_SHIM"
-trap 'rm -rf "$MOXYGEN_SHIM" "$TMPDIR"; kill "$RELAY_PID" "$SERVER_PID" 2>/dev/null; wait "$RELAY_PID" "$SERVER_PID" 2>/dev/null' EXIT
 
 set +e
 bash "$CONFORMANCE_SCRIPT" "$RELAY_URL" "${DOWNSTREAM_ARGS[@]}"
@@ -185,8 +205,9 @@ set -e
 echo "==> Conformance tests finished (exit code: $EXIT_CODE)"
 
 # Clean up before exiting so background process kills don't affect exit code
-kill "$RELAY_PID" "$SERVER_PID" 2>/dev/null
-wait "$RELAY_PID" "$SERVER_PID" 2>/dev/null || true
+kill "$RELAY_PID" "$SERVER_PID" 2>/dev/null || true
+reap_helpers "$SERVER_PID"
+reap_relays "$RELAY_PID" || EXIT_CODE=1
 rm -rf "$MOXYGEN_SHIM" "$TMPDIR"
 
 # Disable the trap — we already cleaned up

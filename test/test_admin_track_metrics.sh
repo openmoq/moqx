@@ -4,6 +4,8 @@ set -euo pipefail
 BINARY="${1:-$(dirname "$0")/../build/moqx}"
 # shellcheck source=test_ports.sh
 source "$(dirname "$0")/test_ports.sh"
+# shellcheck source=test_relay_lifecycle.sh
+source "$(dirname "$0")/test_relay_lifecycle.sh"
 LISTEN_PORT=$TEST_ADMIN_TRACK_METRICS_LISTEN
 ADMIN_PORT=$TEST_ADMIN_TRACK_METRICS_ADMIN
 TRACK_URL="http://localhost:${ADMIN_PORT}/metrics/track"
@@ -19,13 +21,19 @@ MOQX_PID=""
 DATESERVER_PIDS=()
 TEXTCLIENT_PIDS=()
 cleanup() {
-  for pid in "${TEXTCLIENT_PIDS[@]:-}" "${DATESERVER_PIDS[@]:-}" "${MOQX_PID:-}"; do
+  local relay_failed=0
+  for pid in "${TEXTCLIENT_PIDS[@]:-}" "${DATESERVER_PIDS[@]:-}"; do
     if [[ -n "$pid" ]]; then
       kill "$pid" 2>/dev/null || true
-      wait "$pid" 2>/dev/null || true
+      reap_helpers "$pid"
     fi
   done
+  if [[ -n "${MOQX_PID:-}" ]]; then
+    kill "$MOQX_PID" 2>/dev/null || true
+    reap_relays "$MOQX_PID" || relay_failed=1
+  fi
   rm -rf "$TMPDIR"
+  (( relay_failed == 0 )) || exit 1
 }
 trap cleanup EXIT
 
@@ -214,7 +222,7 @@ if [[ -x "$DATESERVER" && -x "$TEXTCLIENT" ]]; then
   [[ "$HTTP_CODE" == "200" ]] || fail "expected HTTP 200 for limit=2 with 2 live tracks, got $HTTP_CODE"
 
   kill "${TEXTCLIENT_PIDS[@]}" "${DATESERVER_PIDS[@]}" 2>/dev/null || true
-  wait "${TEXTCLIENT_PIDS[@]}" "${DATESERVER_PIDS[@]}" 2>/dev/null || true
+  reap_helpers "${TEXTCLIENT_PIDS[@]}" "${DATESERVER_PIDS[@]}"
 else
   echo "SKIP: moqdateserver/moqtextclient not found in $MOQBIN; live-track checks skipped" >&2
 fi
@@ -222,7 +230,7 @@ fi
 # Disabled: the endpoint must say so rather than return an empty scrape that
 # reads as "no live tracks".
 kill "$MOQX_PID" 2>/dev/null || true
-wait "$MOQX_PID" 2>/dev/null || true
+reap_relays "$MOQX_PID" || fail "relay with track metrics enabled did not shut down cleanly"
 MOQX_PID=""
 
 python3 - "$TMPDIR/config.yaml" <<'PYEOF'

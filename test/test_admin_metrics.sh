@@ -4,6 +4,8 @@ set -euo pipefail
 BINARY="${1:-$(dirname "$0")/../build/moqx}"
 # shellcheck source=test_ports.sh
 source "$(dirname "$0")/test_ports.sh"
+# shellcheck source=test_relay_lifecycle.sh
+source "$(dirname "$0")/test_relay_lifecycle.sh"
 LISTEN_PORT=$TEST_ADMIN_METRICS_LISTEN
 ADMIN_PORT=$TEST_ADMIN_METRICS_ADMIN
 METRICS_URL="http://localhost:${ADMIN_PORT}/metrics"
@@ -18,12 +20,14 @@ TMPDIR=$(mktemp -d)
 MOQX_PID=""
 # Cleanup function that ensures the process exits and port is released.
 cleanup() {
+  local relay_failed=0
   if [[ -n "${MOQX_PID:-}" ]]; then
     kill "$MOQX_PID" 2>/dev/null || true
     # Wait for process to exit and ensure port is released
-    wait "$MOQX_PID" 2>/dev/null || true
+    reap_relays "$MOQX_PID" || relay_failed=1
   fi
   rm -rf "$TMPDIR"
+  (( relay_failed == 0 )) || exit 1
 }
 trap cleanup EXIT
 
