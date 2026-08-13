@@ -62,8 +62,13 @@ jobs:
             preset: san
             build_dir: build-san
             runner: [self-hosted, linode]
+            # Sized by memory, not cores. See ci-pr.yml for the measurements.
+            build_jobs: 10
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
+    env:
+      # Empty falls through to build.sh's nproc default on the hosted runners.
+      MOQX_BUILD_JOBS: ${{ matrix.build_jobs || '' }}
     steps:
       - name: Generate app token
         id: app-token
