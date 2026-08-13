@@ -47,8 +47,17 @@ jobs:
             preset: san
             build_dir: build-san
             runner: [self-hosted, linode]
+            # Sized by memory, not cores. The linode box is 16c/31GB with no
+            # swap; the heaviest test TUs peak near 2.3 GB of cc1plus RSS each
+            # under Debug+ASan. Worst-case concurrent footprint is 38 GB at
+            # -j16 and 34 GB at -j14, both of which OOM-kill the compiler.
+            # -j10 lands at ~25 GB, leaving headroom for the co-resident relay.
+            build_jobs: 10
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
+    env:
+      # Empty falls through to build.sh's nproc default on the hosted runners.
+      MOQX_BUILD_JOBS: ${{ matrix.build_jobs || '' }}
     steps:
       - uses: actions/checkout@v4
         with:
