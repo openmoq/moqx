@@ -1076,7 +1076,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "One row per namespace \u2014 a leaf namespace typically maps to a single published event. Active counts tracks with at least one subscriber. Origin reports \u2014 until upstream metrics land; origins are per-track, so a namespace may span several. Click a namespace to scope the Tracks table.",
+      "description": "One row per namespace \u2014 a leaf namespace typically maps to a single published event. Active counts tracks with at least one subscriber. Subscriptions sums track subscriptions, not unique subscribers \u2014 one subscriber taking catalog+audio+video counts once per track. Ingress is aggregate BW across the namespace's tracks. Origin reports \u2014 until upstream metrics land. Click a namespace to scope the Tracks table.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1175,7 +1175,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Subscribers"
+              "options": "Subscriptions"
             },
             "properties": [
               {
@@ -1187,7 +1187,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Bitrate"
+              "options": "Ingress"
             },
             "properties": [
               {
@@ -1334,8 +1334,8 @@
               "origin": "Origin",
               "Value #A": "Tracks",
               "Value #B": "Active",
-              "Value #C": "Subscribers",
-              "Value #D": "Bitrate",
+              "Value #C": "Subscriptions",
+              "Value #D": "Ingress",
               "Value #E": "Data Tx"
             }
           }
@@ -1659,7 +1659,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "label_join(label_replace(label_replace(label_replace(label_replace(label_replace(max by (namespace, track) (moqx_track_subscribers{namespace=~\"$namespace\"}), \"fetches\", \"\u2014\", \"\", \"\"), \"latency\", \"\u2014\", \"\", \"\"), \"drops\", \"\u2014\", \"\", \"\"), \"cachehit\", \"\u2014\", \"\", \"\"), \"qos\", \"\u2014\", \"\", \"\") or label_replace(label_replace(label_replace(label_replace(label_replace((max by (namespace, track) (max_over_time(moqx_track_subscribers{namespace=~\"$namespace\"}[$__range])) unless max by (namespace, track) (moqx_track_subscribers{namespace=~\"$namespace\"})) * 0, \"fetches\", \"\u2014\", \"\", \"\"), \"latency\", \"\u2014\", \"\", \"\"), \"drops\", \"\u2014\", \"\", \"\"), \"cachehit\", \"\u2014\", \"\", \"\"), \"qos\", \"\u2014\", \"\", \"\") or label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(vector(0), \"fetches\", \"\u2014\", \"\", \"\"), \"latency\", \"\u2014\", \"\", \"\"), \"drops\", \"\u2014\", \"\", \"\"), \"cachehit\", \"\u2014\", \"\", \"\"), \"qos\", \"\u2014\", \"\", \"\"), \"namespace\", \"\u2014\", \"\", \"\"), \"track\", \"\u2014\", \"\", \"\"), \"name\", \"/\", \"namespace\", \"track\")",
+          "expr": "label_join(label_replace(label_replace(label_replace(label_replace(label_replace(max by (namespace, track) (moqx_track_subscribers{namespace=~\"$namespace\", track=~\"$track\"}), \"fetches\", \"\u2014\", \"\", \"\"), \"latency\", \"\u2014\", \"\", \"\"), \"drops\", \"\u2014\", \"\", \"\"), \"cachehit\", \"\u2014\", \"\", \"\"), \"qos\", \"\u2014\", \"\", \"\") or label_replace(label_replace(label_replace(label_replace(label_replace((max by (namespace, track) (max_over_time(moqx_track_subscribers{namespace=~\"$namespace\", track=~\"$track\"}[$__range])) unless max by (namespace, track) (moqx_track_subscribers{namespace=~\"$namespace\", track=~\"$track\"})) * 0, \"fetches\", \"\u2014\", \"\", \"\"), \"latency\", \"\u2014\", \"\", \"\"), \"drops\", \"\u2014\", \"\", \"\"), \"cachehit\", \"\u2014\", \"\", \"\"), \"qos\", \"\u2014\", \"\", \"\") or label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(vector(0), \"fetches\", \"\u2014\", \"\", \"\"), \"latency\", \"\u2014\", \"\", \"\"), \"drops\", \"\u2014\", \"\", \"\"), \"cachehit\", \"\u2014\", \"\", \"\"), \"qos\", \"\u2014\", \"\", \"\"), \"namespace\", \"\u2014\", \"\", \"\"), \"track\", \"\u2014\", \"\", \"\"), \"name\", \"/\", \"namespace\", \"track\")",
           "format": "table",
           "instant": true,
           "range": false,
@@ -1670,7 +1670,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "label_join(max by (namespace, track) (max_over_time(moqx_track_subscribers{namespace=~\"$namespace\"}[$__range])), \"name\", \"/\", \"namespace\", \"track\")",
+          "expr": "label_join(max by (namespace, track) (max_over_time(moqx_track_subscribers{namespace=~\"$namespace\", track=~\"$track\"}[$__range])), \"name\", \"/\", \"namespace\", \"track\")",
           "format": "table",
           "instant": true,
           "range": false,
@@ -1681,7 +1681,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "label_join(sum by (namespace, track) (rate(moqx_track_bytes_received_total{namespace=~\"$namespace\"}[1m])) * 8, \"name\", \"/\", \"namespace\", \"track\")",
+          "expr": "label_join(sum by (namespace, track) (rate(moqx_track_bytes_received_total{namespace=~\"$namespace\", track=~\"$track\"}[1m])) * 8, \"name\", \"/\", \"namespace\", \"track\")",
           "format": "table",
           "instant": true,
           "range": false,
@@ -1692,7 +1692,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "label_join(sum by (namespace, track) (moqx_track_bytes_sent_total{namespace=~\"$namespace\"}), \"name\", \"/\", \"namespace\", \"track\")",
+          "expr": "label_join(sum by (namespace, track) (moqx_track_bytes_sent_total{namespace=~\"$namespace\", track=~\"$track\"}), \"name\", \"/\", \"namespace\", \"track\")",
           "format": "table",
           "instant": true,
           "range": false,
@@ -1703,7 +1703,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "label_join(clamp_min(time() - max by (namespace, track) (moqx_track_last_object_timestamp_seconds{namespace=~\"$namespace\"}), 0), \"name\", \"/\", \"namespace\", \"track\")",
+          "expr": "label_join(clamp_min(time() - max by (namespace, track) (moqx_track_last_object_timestamp_seconds{namespace=~\"$namespace\", track=~\"$track\"}), 0), \"name\", \"/\", \"namespace\", \"track\")",
           "format": "table",
           "instant": true,
           "range": false,
@@ -1955,8 +1955,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max by (namespace, track) (moqx_track_subscribers{namespace=~\"$namespace\"} > 0)\n  and\ntopk(10, max by (namespace, track) (max_over_time(moqx_track_subscribers{namespace=~\"$namespace\"}[$__range])))",
-          "legendFormat": "{{namespace}}/{{track}}",
+          "expr": "max by (namespace, track) (moqx_track_subscribers{namespace=~\"$namespace\", track=~\"$track\"})",
+          "legendFormat": "{{track}}",
           "refId": "A"
         }
       ],
@@ -2887,6 +2887,33 @@
         "query": {
           "query": "label_values(moqx_track_subscribers, namespace)",
           "refId": "ns"
+        },
+        "refresh": 2,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "allValue": ".*",
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "includeAll": true,
+        "label": "track",
+        "multi": true,
+        "name": "track",
+        "options": [],
+        "query": {
+          "query": "label_values(moqx_track_subscribers{namespace=~\"$namespace\"}, track)",
+          "refId": "trk"
         },
         "refresh": 2,
         "sort": 1,
