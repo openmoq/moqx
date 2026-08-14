@@ -1511,7 +1511,7 @@
                     "type": "range",
                     "options": {
                       "from": 0,
-                      "to": 10,
+                      "to": 15,
                       "result": {
                         "text": "LIVE",
                         "color": "#1baf7a",
@@ -1522,24 +1522,12 @@
                   {
                     "type": "range",
                     "options": {
-                      "from": 10,
-                      "to": 60,
-                      "result": {
-                        "text": "STALE",
-                        "color": "#c98500",
-                        "index": 1
-                      }
-                    }
-                  },
-                  {
-                    "type": "range",
-                    "options": {
-                      "from": 60,
+                      "from": 15,
                       "to": 1000000000000000.0,
                       "result": {
                         "text": "IDLE",
-                        "color": "#6e7680",
-                        "index": 2
+                        "color": "#c98500",
+                        "index": 1
                       }
                     }
                   },
@@ -1550,7 +1538,7 @@
                       "result": {
                         "text": "DONE",
                         "color": "#6e7680",
-                        "index": 3
+                        "index": 2
                       }
                     }
                   }
