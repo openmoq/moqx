@@ -91,23 +91,24 @@ jobs:
   perf:
     name: perf-test
     runs-on: [self-hosted, linode]
+    # Headroom for the from-source moxygen fallback on top of the perf runs.
+    timeout-minutes: 240
     outputs:
       run-file: ${{ steps.collect.outputs.run-file }}
     steps:
       - name: Generate app token
         id: app-token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.OMOQ_APP_ID }}
           private-key: ${{ secrets.OMOQ_APP_PRIV_KEY }}
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           # workflow_call passes an explicit ref; dispatch/schedule leave it
           # empty, so checkout falls back to github.ref (the selected branch on
           # dispatch, main HEAD on schedule).
           ref: ${{ inputs.ref }}
-          submodules: true
 
       - name: Determine SHA
         id: sha
@@ -116,16 +117,17 @@ jobs:
           echo "sha=$SHA"          >> "$GITHUB_OUTPUT"
           echo "short=${SHA:0:7}"  >> "$GITHUB_OUTPUT"
 
-      - name: Install system dependencies
-        run: sudo deps/moxygen/standalone/install-system-deps.sh
+      - uses: ./.github/actions/setup-build
+        with:
+          ccache-key: perf-test
 
-      - name: Setup dependencies
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: bash scripts/build.sh setup
-
+      # Tests off: this job only ships the moqx binary to the perf VMs.
       - name: Build moqx
-        run: bash scripts/build.sh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          scripts/configure.sh default --moxygen prebuilt-with-fallback -DMOQX_BUILD_TESTS=OFF
+          scripts/build.sh default
 
       - name: Configure SSH for perf VMs
         env:
@@ -145,7 +147,7 @@ jobs:
           FILE="run-${{ steps.sha.outputs.short }}.json"
           # Fallbacks: schedule events carry no `inputs`, so apply the canonical
           # nightly load when invoked by cron.
-          bash scripts/perf-test-ci.sh \
+          bash scripts/perf/perf-test-ci.sh \
             --duration       "${{ inputs.duration || '120' }}" \
             --subscriber-max "${{ inputs.subscribers || '600' }}" \
             --ramp           150 \
@@ -227,13 +229,13 @@ jobs:
         # Picked up by actions/deploy-pages in the deploy job (gated to the
         # nightly schedule). Dispatch / called runs still upload it so reviewers
         # can download + inspect without publishing.
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: perf-out
 
       - name: Upload workflow artifacts (always retained)
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: perf-results
           path: |
@@ -250,7 +252,7 @@ jobs:
         env:
           FILE: ${{ steps.collect.outputs.run-file }}
         run: |
-          python3 scripts/perf-compare.py \
+          python3 scripts/perf/perf-compare.py \
             --current "$FILE" \
             --data-dir data \
             --window 10 \
@@ -294,12 +296,12 @@ jobs:
       # the personal actor GitHub attributes scheduled runs to. Keeps the
       # deployments list owned by the bot, consistent with the rest of the org
       # automation. Requires the App installation to have Pages: write.
-      - uses: actions/create-github-app-token@v2
+      - uses: actions/create-github-app-token@v3
         id: app-token
         with:
           app-id: ${{ secrets.OMOQ_APP_ID }}
           private-key: ${{ secrets.OMOQ_APP_PRIV_KEY }}
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
         with:
           token: ${{ steps.app-token.outputs.token }}

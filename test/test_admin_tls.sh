@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BINARY="${1:-$(dirname "$0")/../build/moqx}"
+BINARY="${1:-$(dirname "$0")/../build/default/moqx}"
 TESTDIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=test_ports.sh
 source "$(dirname "$0")/test_ports.sh"

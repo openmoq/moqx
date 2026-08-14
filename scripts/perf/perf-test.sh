@@ -5,10 +5,10 @@
 # (subscriber ramp), then prints the client's output.  Logs for all three
 # processes are always saved to /tmp/moqx-perf-<timestamp>/.
 #
-# Usage: scripts/perf-test.sh [options]
-#   --relay PATH           Path to moqx binary (default: build/moqx)
+# Usage: scripts/perf/perf-test.sh [options]
+#   --relay PATH           Path to moqx binary (default: build/default/moqx)
 #   --moqbin PATH          Path to moxygen bin dir
-#                          (default: .scratch/moxygen-install/bin)
+#                          (default: the moxygen install bin (auto-detected from the build))
 #   -s, --subscriber-max N Max total subscribers (default: 500)
 #   --ramp N               Subscribers added per second (default: 100)
 #   -d, --duration N       Test duration in seconds (default: 30)
@@ -56,11 +56,10 @@
 
 set -euo pipefail
 
-REPO="$(cd "$(dirname "$0")/.." && pwd)"
+REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 
 # ── Defaults ───────────────────────────────────────────────────────────────────
-BINARY="${RELAY:-$REPO/build/moqx}"
-MOQBIN="${MOQBIN:-$REPO/.scratch/moxygen-install/bin}"
+BINARY="${RELAY:-$REPO/build/default/moqx}"
 SUBSCRIBER_MAX=500
 RAMP=100
 DURATION=30
@@ -120,9 +119,19 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# moxygen sample-binary dir: --moqbin/env override, else the tool-paths file that
+# sits beside the relay. After the arg loop, so it follows a --relay pointing at a
+# different build rather than the default one.
+if [[ -z "${MOQBIN:-}" && -f "$(dirname "$BINARY")/moqx-tools.env" ]]; then
+  source "$(dirname "$BINARY")/moqx-tools.env"
+fi
+# Always leave MOQBIN set (possibly empty) so the binary checks below report a
+# clear not-found error instead of aborting under `set -u`.
+MOQBIN="${MOQBIN:-}"
+
 MOQTEST_SERVER="$MOQBIN/moqtest_server"
 MOQPERF_CLIENT="$MOQBIN/moqperf_test_client"
-METRICS_SCRIPT="$REPO/scripts/perf-metrics.sh"
+METRICS_SCRIPT="$REPO/scripts/perf/perf-metrics.sh"
 
 # jemalloc detection for the relay is delegated to moqx-run.sh (-j auto): it probes
 # the common multiarch + /lib64 paths and LD_PRELOADs the lib, warning (in the relay
@@ -254,7 +263,7 @@ trap cleanup EXIT
 {
   echo "date:             $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "moqx_git:         $(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo unknown)"
-  echo "moxygen_git:      $(git -C "$REPO/deps/moxygen" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  echo "moxygen_git:      $(cmake -DPIN=MOXYGEN_REV -P "$REPO/cmake/print-pin.cmake" 2>/dev/null | cut -c1-12 || echo unknown)"
   echo "relay_binary:     $BINARY"
   echo "moqbin:           $MOQBIN"
   echo "relay_url:        $RELAY_URL"

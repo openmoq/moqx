@@ -1,6 +1,7 @@
 name: moxygen sync
 
-# Updates deps/moxygen submodule to latest moxygen main, creates a PR.
+# Updates the pinned MOXYGEN_REV in cmake/dependencies.cmake to latest
+# openmoq/moxygen main, creates a PR.
 # Schedule-driven (daily cron) plus workflow_dispatch for ad-hoc syncs.
 # repository_dispatch retained for non-sync flows (e.g., manual hand-merged
 # moxygen PRs that need immediate propagation); the routine cron-cascade
@@ -16,7 +17,7 @@ on:
     #   03:23  picoquic upstream-sync     (private-octopus → openmoq/picoquic)
     #   04:23  moxygen  upstream-sync     (facebookexperimental → openmoq/moxygen)
     #   04:37  moxygen  picoquic-pin sync (openmoq/picoquic → moxygen picoquic-rev.txt)
-    #   08:23  moqx     moxygen-submodule sync (this workflow — openmoq/moxygen → moqx deps/moxygen)
+    #   08:23  moqx     moxygen-rev sync (this workflow — openmoq/moxygen → moqx cmake/dependencies.cmake MOXYGEN_REV)
     # The 3h46m gap before this stage gives moxygen sync PRs (upstream + picoquic-pin)
     # time to run CI and auto-merge into openmoq/moxygen main before we pull it.
     - cron: '23 8 * * *'
@@ -35,21 +36,15 @@ jobs:
       # ── Generate GitHub App token (bot identity for PRs) ──
       - name: Generate app token
         id: app-token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.OMOQ_APP_ID }}
           private-key: ${{ secrets.OMOQ_APP_PRIV_KEY }}
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: main
-          submodules: true
           token: ${{ steps.app-token.outputs.token }}
-          # Full history required so we can check out arbitrary moxygen
-          # SHAs inside the submodule. Shallow (default depth=1) creates
-          # shallow submodule clones, which fail with "unable to read
-          # tree" when checking out a SHA whose tree isn't present.
-          fetch-depth: 0
 
       # ══════════════════════════════════════════════════════════
       # PHASE A: Check for blocking sync PR
@@ -101,7 +96,7 @@ jobs:
           PR_URL="${{ github.server_url }}/${{ github.repository }}/pull/${PR_NUM}"
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           SUBJECT="[moqx] moxygen sync paused — PR #${PR_NUM} pending"
-          BODY="Moxygen submodule sync blocked by open PR.\n\nPR: ${PR_URL}\nBranch: ${PR_REF}\nRun: ${RUN_URL}\n\nResolve or merge the existing PR, then re-run manually."
+          BODY="Moxygen rev sync blocked by open PR.\n\nPR: ${PR_URL}\nBranch: ${PR_REF}\nRun: ${RUN_URL}\n\nResolve or merge the existing PR, then re-run manually."
           aws ses send-email \
             --from "noreply@ci.openmoq.org" \
             --destination '{"ToAddresses":["github-notifications@openmoq.org"]}' \
@@ -111,32 +106,45 @@ jobs:
             }"
 
       # ══════════════════════════════════════════════════════════
-      # PHASE B: Update submodule and create PR
+      # PHASE B: Bump MOXYGEN_REV and create PR
       # ══════════════════════════════════════════════════════════
 
       - name: Determine target SHA
         if: steps.blocking.outputs.blocked == 'false'
         id: target
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          # Attacker-controllable on a repository_dispatch payload. Bound to an
+          # env var so it reaches the shell as data, never spliced into script
+          # text; the 40-hex check below is a value check, not an injection guard.
+          CLIENT_PAYLOAD_SHA: ${{ github.event.client_payload.sha }}
         run: |
-          CURRENT_SHA=$(git -C deps/moxygen rev-parse HEAD)
+          CURRENT_SHA=$(cmake -DPIN=MOXYGEN_REV -P cmake/print-pin.cmake)
           echo "current_sha=${CURRENT_SHA}" >> "$GITHUB_OUTPUT"
 
           if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
-            TARGET_SHA="${{ github.event.client_payload.sha }}"
+            TARGET_SHA="$CLIENT_PAYLOAD_SHA"
           else
-            # Manual trigger: fetch latest moxygen main
-            git -C deps/moxygen fetch origin main
-            TARGET_SHA=$(git -C deps/moxygen rev-parse origin/main)
+            # Manual/scheduled trigger: latest openmoq/moxygen main
+            TARGET_SHA=$(gh api repos/openmoq/moxygen/commits/main --jq '.sha')
+          fi
+
+          # Guard: TARGET_SHA is spliced into cmake/dependencies.cmake by sed
+          # below; a non-40-hex value would corrupt the pin (empty payload) or
+          # break the sed.
+          if ! printf '%s' "$TARGET_SHA" | grep -qE '^[0-9a-fA-F]{40}$'; then
+            echo "::error::Invalid moxygen target SHA: '${TARGET_SHA}' (expected 40-hex)"
+            exit 1
           fi
 
           echo "target_sha=${TARGET_SHA}" >> "$GITHUB_OUTPUT"
           echo "short_sha=${TARGET_SHA:0:7}" >> "$GITHUB_OUTPUT"
 
           if [ "$CURRENT_SHA" = "$TARGET_SHA" ]; then
-            echo "Submodule already at ${TARGET_SHA:0:7}. Nothing to do."
+            echo "MOXYGEN_REV already at ${TARGET_SHA:0:7}. Nothing to do."
             echo "needs_update=false" >> "$GITHUB_OUTPUT"
           else
-            echo "Will update submodule: ${CURRENT_SHA:0:7} → ${TARGET_SHA:0:7}"
+            echo "Will update MOXYGEN_REV: ${CURRENT_SHA:0:7} → ${TARGET_SHA:0:7}"
             echo "needs_update=true" >> "$GITHUB_OUTPUT"
           fi
 
@@ -145,6 +153,9 @@ jobs:
         id: new_pr
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          # Untrusted on repository_dispatch; kept out of the script text (only
+          # interpolated into the PR body as data below).
+          CLIENT_PAYLOAD_RUN_ID: ${{ github.event.client_payload.run_id }}
         run: |
           TARGET_SHA="${{ steps.target.outputs.target_sha }}"
           SHORT_SHA="${{ steps.target.outputs.short_sha }}"
@@ -171,20 +182,24 @@ jobs:
 
           git checkout -b "$BRANCH"
 
-          # Update submodule to target SHA
-          git -C deps/moxygen fetch origin
-          git -C deps/moxygen checkout "$TARGET_SHA"
-          # --force: deps/moxygen has ignore=all in .gitmodules, and git >= 2.54
-          # skips ignored submodules even on explicit add
-          git add --force deps/moxygen
-          git commit -m "sync: update moxygen submodule to ${SHORT_SHA}"
+          # The regex assumes the one-line `set(MOXYGEN_REV "<40-hex>")` shape.
+          # Verify the write landed, so a reformat of that file fails here rather
+          # than as a puzzling empty commit.
+          sed -i -E "s/(MOXYGEN_REV \")[0-9a-fA-F]{40}(\")/\1${TARGET_SHA}\2/" \
+            cmake/dependencies.cmake
+          if ! grep -q "MOXYGEN_REV \"${TARGET_SHA}\"" cmake/dependencies.cmake; then
+            echo "::error::MOXYGEN_REV bump did not apply — cmake/dependencies.cmake no longer matches 'MOXYGEN_REV \"<40-hex>\"'"
+            exit 1
+          fi
+          git add cmake/dependencies.cmake
+          git commit -m "sync: update moxygen to ${SHORT_SHA}"
           git push -u origin "$BRANCH"
 
           echo "Created branch $BRANCH"
 
           # Determine trigger source for PR body
           if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
-            TRIGGER="Triggered by moxygen \`ci main\` run #${{ github.event.client_payload.run_id }}."
+            TRIGGER="Triggered by moxygen \`ci main\` run #${CLIENT_PAYLOAD_RUN_ID}."
           else
             TRIGGER="Triggered manually."
           fi
@@ -192,7 +207,7 @@ jobs:
           PR_NUM=$(gh api repos/${{ github.repository }}/pulls \
             -f title="sync: moxygen ${SHORT_SHA}" \
             -f body="$(cat <<EOF
-          Automated moxygen submodule update.
+          Automated moxygen revision update (cmake/dependencies.cmake).
 
           - **Moxygen commit:** [\`${SHORT_SHA}\`](https://github.com/openmoq/moxygen/commit/${TARGET_SHA})
           - **Previous:** \`${{ steps.target.outputs.current_sha }}\`
@@ -248,7 +263,7 @@ jobs:
           TARGET="${{ steps.target.outputs.target_sha || 'unknown' }}"
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           SUBJECT="[moqx] moxygen sync FAILED"
-          BODY="Moxygen submodule sync workflow failed.\n\nTarget SHA: ${TARGET}\nRun: ${RUN_URL}"
+          BODY="Moxygen rev sync workflow failed.\n\nTarget SHA: ${TARGET}\nRun: ${RUN_URL}"
           aws ses send-email \
             --from "noreply@ci.openmoq.org" \
             --destination '{"ToAddresses":["github-notifications@openmoq.org"]}' \

@@ -11,14 +11,14 @@
 #
 # Environment:
 #   MOQBIN — path to moxygen install bin/ (for moqtest_client, moqtest_server)
-#            defaults to .scratch/moxygen-install/bin
+#            defaults to the moxygen install bin (auto-detected from the build)
 #
 # Examples:
-#   test_conformance.sh ./build/moqx
-#   test_conformance.sh ./build/moqx 16
-#   test_conformance.sh ./build/moqx 14 Q          # mvfst, draft-14, raw QUIC
-#   test_conformance.sh ./build/moqx 16 Q pico     # picoquic, draft-16, raw QUIC
-#   test_conformance.sh ./build/moqx 14 pico       # picoquic, draft-14, WT
+#   test_conformance.sh ./build/default/moqx
+#   test_conformance.sh ./build/default/moqx 16
+#   test_conformance.sh ./build/default/moqx 14 Q          # mvfst, draft-14, raw QUIC
+#   test_conformance.sh ./build/default/moqx 16 Q pico     # picoquic, draft-16, raw QUIC
+#   test_conformance.sh ./build/default/moqx 14 pico       # picoquic, draft-14, WT
 
 set -euo pipefail
 
@@ -26,10 +26,22 @@ MOQX_BIN="${1:?Usage: $0 <moqx_binary> [versions] [Q] [stack]}"
 shift
 EXTRA_ARGS=("$@")
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-MOQBIN="${MOQBIN:-${PROJECT_ROOT}/.scratch/moxygen-install/bin}"
-CONFORMANCE_SCRIPT="${PROJECT_ROOT}/deps/moxygen/moxygen/moqtest/conformance_test.sh"
+# `|| true`: a bad path must reach the friendly binary-not-found check below,
+# not abort here under errexit.
+BUILD_DIR="$(cd "$(dirname "$MOQX_BIN")" 2>/dev/null && pwd || true)"
+
+# shellcheck source=test_moqbin.sh
+source "$(dirname "${BASH_SOURCE[0]}")/test_moqbin.sh"
+resolve_moqbin "$MOQX_BIN"
+
+# moxygen conformance script: MOXYGEN_SRC override, else the moxygen source this
+# build resolved — the cache records it wherever it lives, including a local
+# checkout.
+CONFORMANCE_SCRIPT="${MOXYGEN_SRC:+${MOXYGEN_SRC}/moxygen/moqtest/conformance_test.sh}"
+if [[ -z "$CONFORMANCE_SCRIPT" || ! -x "$CONFORMANCE_SCRIPT" ]]; then
+  MOXYGEN_SRC_DIR="$(sed -n 's|^CPM_PACKAGE_moxygen_SOURCE_DIR:INTERNAL=||p' "$BUILD_DIR/CMakeCache.txt" 2>/dev/null || true)"
+  CONFORMANCE_SCRIPT="${MOXYGEN_SRC_DIR:-${BUILD_DIR}/_deps/moxygen-src}/moxygen/moqtest/conformance_test.sh"
+fi
 
 # Validate binaries exist
 for bin in "$MOQX_BIN" "$MOQBIN/moqtest_client" "$MOQBIN/moqtest_server"; do
@@ -49,7 +61,7 @@ QUIC_STACK="mvfst"
 DOWNSTREAM_ARGS=()
 SERVER_VERSIONS_FLAG=()
 SERVER_TRANSPORT_FLAG=()
-for arg in "${EXTRA_ARGS[@]}"; do
+for arg in "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"; do
   case "$arg" in
     mvfst|pico)
       QUIC_STACK="$arg"
@@ -153,8 +165,8 @@ echo "==> Starting moqtest_server..."
 # (every client invocation then hangs to its 30s transaction timeout).
 "$MOQBIN/moqtest_server" \
   --relay_url="https://${URL_HOST}:${RELAY_PORT}/moq-relay" \
-  "${SERVER_VERSIONS_FLAG[@]}" \
-  "${SERVER_TRANSPORT_FLAG[@]}" \
+  "${SERVER_VERSIONS_FLAG[@]+"${SERVER_VERSIONS_FLAG[@]}"}" \
+  "${SERVER_TRANSPORT_FLAG[@]+"${SERVER_TRANSPORT_FLAG[@]}"}" \
   --logtostderr &
 SERVER_PID=$!
 sleep 2
@@ -178,7 +190,7 @@ export MOXYGEN_DIR="$MOXYGEN_SHIM"
 trap 'rm -rf "$MOXYGEN_SHIM" "$TMPDIR"; kill "$RELAY_PID" "$SERVER_PID" 2>/dev/null; wait "$RELAY_PID" "$SERVER_PID" 2>/dev/null' EXIT
 
 set +e
-bash "$CONFORMANCE_SCRIPT" "$RELAY_URL" "${DOWNSTREAM_ARGS[@]}"
+bash "$CONFORMANCE_SCRIPT" "$RELAY_URL" "${DOWNSTREAM_ARGS[@]+"${DOWNSTREAM_ARGS[@]}"}"
 EXIT_CODE=$?
 set -e
 

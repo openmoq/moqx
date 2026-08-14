@@ -1,12 +1,12 @@
 #!/bin/bash
 # Test that relay pair shuts down cleanly (no ASAN leaks or crashes).
-# Usage: ./scripts/test-relay-shutdown.sh [up_config] [down_config]
+# Usage: ./scripts/dev/test-relay-shutdown.sh [up_config] [down_config]
 #   up_config   config with no upstream (default: /tmp/up.yaml, port 12345)
 #   down_config config with upstream pointing to up (default: /tmp/down.yaml, port 12346)
 
 set -euo pipefail
 
-BIN="${BIN:-./build-san/moqx}"
+BIN="${BIN:-./build/san/moqx}"
 UP_CFG="${1:-/tmp/up.yaml}"
 DOWN_CFG="${2:-/tmp/down.yaml}"
 SHUTDOWN_TIMEOUT="${SHUTDOWN_TIMEOUT:-10}"  # seconds to wait for clean exit before declaring a hang
