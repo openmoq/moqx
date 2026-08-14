@@ -172,7 +172,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "floor((time() - node_boot_time_seconds) / 86400)",
+          "expr": "floor(max(moqx_build_uptime) / 86400)",
           "format": "table",
           "instant": true,
           "range": false,
@@ -194,7 +194,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "floor(((time() - node_boot_time_seconds) - 86400 * floor((time() - node_boot_time_seconds) / 86400)) / 3600)",
+          "expr": "floor((max(moqx_build_uptime) % 86400) / 3600)",
           "format": "table",
           "instant": true,
           "range": false,
@@ -205,7 +205,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "floor(((time() - node_boot_time_seconds) - 3600 * floor((time() - node_boot_time_seconds) / 3600)) / 60)",
+          "expr": "floor((max(moqx_build_uptime) % 3600) / 60)",
           "format": "table",
           "instant": true,
           "range": false,
