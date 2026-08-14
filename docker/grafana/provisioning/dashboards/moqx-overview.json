@@ -172,7 +172,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "floor(max(moqx_build_uptime) / 86400)",
+          "expr": "label_replace(floor(max(moqx_build_uptime) / 86400), \"instance\", \"moqx-host\", \"\", \"\")",
           "format": "table",
           "instant": true,
           "range": false,
@@ -194,7 +194,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "floor((max(moqx_build_uptime) % 86400) / 3600)",
+          "expr": "label_replace(floor((max(moqx_build_uptime) % 86400) / 3600), \"instance\", \"moqx-host\", \"\", \"\")",
           "format": "table",
           "instant": true,
           "range": false,
@@ -205,7 +205,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "floor((max(moqx_build_uptime) % 3600) / 60)",
+          "expr": "label_replace(floor((max(moqx_build_uptime) % 3600) / 60), \"instance\", \"moqx-host\", \"\", \"\")",
           "format": "table",
           "instant": true,
           "range": false,
