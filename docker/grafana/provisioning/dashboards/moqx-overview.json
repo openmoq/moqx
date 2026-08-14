@@ -1275,7 +1275,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Per-track view. Subs, Peak and Status come from relay metrics. Type/Codec/Resolution/FPS/Bitrate are catalog attributes and QoS/QoE need client-side telemetry; both report \u2014 until those sources exist.",
+      "description": "Per-track view from the relay's /metrics/track. Namespace and track labels are in the MOQT safe form. Type/Codec/Resolution/FPS come from the catalog and QoS/QoE from client telemetry; both report \u2014 until those sources exist.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1376,18 +1376,6 @@
               {
                 "id": "custom.width",
                 "value": 48
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Bitrate"
-            },
-            "properties": [
-              {
-                "id": "custom.width",
-                "value": 74
               }
             ]
           },
@@ -1549,6 +1537,46 @@
                 "value": 68
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Bitrate"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bps"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "custom.width",
+                "value": 92
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Data Tx"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "custom.width",
+                "value": 92
+              }
+            ]
           }
         ]
       },
@@ -1576,7 +1604,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(max by (namespace, track) (moqx_track_subscribers), \"type\", \"\u2014\", \"\", \"\"), \"codec\", \"\u2014\", \"\", \"\"), \"resolution\", \"\u2014\", \"\", \"\"), \"fps\", \"\u2014\", \"\", \"\"), \"bitrate\", \"\u2014\", \"\", \"\"), \"qos\", \"\u2014\", \"\", \"\"), \"qoe\", \"\u2014\", \"\", \"\"), \"status\", \"LIVE\", \"\", \"\") or label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace((max by (namespace, track) (max_over_time(moqx_track_subscribers[$__range])) unless max by (namespace, track) (moqx_track_subscribers)) * 0, \"type\", \"\u2014\", \"\", \"\"), \"codec\", \"\u2014\", \"\", \"\"), \"resolution\", \"\u2014\", \"\", \"\"), \"fps\", \"\u2014\", \"\", \"\"), \"bitrate\", \"\u2014\", \"\", \"\"), \"qos\", \"\u2014\", \"\", \"\"), \"qoe\", \"\u2014\", \"\", \"\"), \"status\", \"DONE\", \"\", \"\") or label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(vector(0), \"type\", \"\u2014\", \"\", \"\"), \"codec\", \"\u2014\", \"\", \"\"), \"resolution\", \"\u2014\", \"\", \"\"), \"fps\", \"\u2014\", \"\", \"\"), \"bitrate\", \"\u2014\", \"\", \"\"), \"qos\", \"\u2014\", \"\", \"\"), \"qoe\", \"\u2014\", \"\", \"\"), \"status\", \"\u2014\", \"\", \"\"), \"namespace\", \"\u2014\", \"\", \"\"), \"track\", \"\u2014\", \"\", \"\")",
+          "expr": "label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(max by (namespace, track) (moqx_track_subscribers), \"type\", \"\u2014\", \"\", \"\"), \"codec\", \"\u2014\", \"\", \"\"), \"resolution\", \"\u2014\", \"\", \"\"), \"fps\", \"\u2014\", \"\", \"\"), \"qos\", \"\u2014\", \"\", \"\"), \"qoe\", \"\u2014\", \"\", \"\"), \"status\", \"LIVE\", \"\", \"\") or label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace((max by (namespace, track) (max_over_time(moqx_track_subscribers[$__range])) unless max by (namespace, track) (moqx_track_subscribers)) * 0, \"type\", \"\u2014\", \"\", \"\"), \"codec\", \"\u2014\", \"\", \"\"), \"resolution\", \"\u2014\", \"\", \"\"), \"fps\", \"\u2014\", \"\", \"\"), \"qos\", \"\u2014\", \"\", \"\"), \"qoe\", \"\u2014\", \"\", \"\"), \"status\", \"DONE\", \"\", \"\") or label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(vector(0), \"type\", \"\u2014\", \"\", \"\"), \"codec\", \"\u2014\", \"\", \"\"), \"resolution\", \"\u2014\", \"\", \"\"), \"fps\", \"\u2014\", \"\", \"\"), \"qos\", \"\u2014\", \"\", \"\"), \"qoe\", \"\u2014\", \"\", \"\"), \"status\", \"\u2014\", \"\", \"\"), \"namespace\", \"\u2014\", \"\", \"\"), \"track\", \"\u2014\", \"\", \"\")",
           "format": "table",
           "instant": true,
           "range": false,
@@ -1592,6 +1620,28 @@
           "instant": true,
           "range": false,
           "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (namespace, track) (rate(moqx_track_bytes_received_total[1m])) * 8",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (namespace, track) (moqx_track_bytes_sent_total)",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "refId": "D"
         }
       ],
       "title": "Tracks",
@@ -1610,31 +1660,38 @@
               "Time": true,
               "Time 1": true,
               "Time 2": true,
+              "Time 3": true,
+              "Time 4": true,
               "__name__": true,
-              "data_tx": true,
               "instance": true,
               "job": true,
+              "moqx_namespace": true,
               "namespace": true,
               "namespace 1": true,
-              "namespace 2": true
+              "namespace 2": true,
+              "namespace 3": true,
+              "namespace 4": true,
+              "service": true
             },
             "indexByName": {
-              "Value #A": 6,
-              "Value #B": 7,
-              "bitrate": 5,
+              "Value #A": 7,
+              "Value #B": 8,
+              "Value #C": 5,
+              "Value #D": 6,
               "codec": 2,
               "fps": 4,
-              "qoe": 9,
-              "qos": 8,
+              "qoe": 10,
+              "qos": 9,
               "resolution": 3,
-              "status": 10,
+              "status": 11,
               "track": 0,
               "type": 1
             },
             "renameByName": {
               "Value #A": "Subs",
               "Value #B": "Peak",
-              "bitrate": "Bitrate",
+              "Value #C": "Bitrate",
+              "Value #D": "Data Tx",
               "codec": "Codec",
               "fps": "FPS",
               "qoe": "QoE",
