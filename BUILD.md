@@ -44,6 +44,10 @@ pinned inside moxygen, in its
 not here. moqx's [/cmake/dependencies.cmake](/cmake/dependencies.cmake) pins the CPM
 ones: moxygen, catapult, reflect-cpp, yaml-cpp.
 
+The resolved dependencies live in a cache outside the repo. After a configure,
+`deps/<name>` links to each dependency's source and `build/<profile>/moxygen` to
+the moxygen install prefix — see [/deps/README.md](/deps/README.md).
+
 ## Build
 
 Three scripts, each taking the profile (`default` | `san` | `tsan`, default

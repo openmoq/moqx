@@ -267,6 +267,30 @@ esac
 # profile switch rather than nesting inside the old target.
 ln -sfn "$profile/compile_commands.json" build/compile_commands.json
 
+# deps/<name> -> each CPM dep's resolved source
+# build/<profile>/moxygen -> the resolved moxygen install prefix
+# For convenience only; nothing reads them (see deps/README.md).
+# Absolute targets: the sources live outside the repo.
+cache="$build_dir/CMakeCache.txt"
+# Sweep stale links first; whatever -e still hits is a real dir (e.g. a
+# submodule leftover), not safe to delete.
+find deps -mindepth 1 -maxdepth 1 -type l -exec rm -f {} +
+IFS=';' read -ra cpm_pkgs <<<"$(sed -n 's/^CPM_PACKAGES:INTERNAL=//p' "$cache")"
+for pkg in ${cpm_pkgs[@]+"${cpm_pkgs[@]}"}; do
+  src="$(sed -n "s/^CPM_PACKAGE_${pkg}_SOURCE_DIR:INTERNAL=//p" "$cache")"
+  [[ -d "$src" ]] || continue
+  if [[ -e "deps/$pkg" ]]; then
+    echo "configure.sh: deps/$pkg exists and is not a symlink — leaving it alone" >&2
+    continue
+  fi
+  ln -sfn "$src" "deps/$pkg"
+done
+# moxygen_DIR is <prefix>/lib/cmake/moxygen in both modes (prebuilt cache
+# install and the superbuild's moxygen-install alike).
+moxygen_cmake_dir="$(sed -n 's/^moxygen_DIR:PATH=//p' "$cache")"
+[[ -n "$moxygen_cmake_dir" ]] \
+  && ln -sfn "$(dirname "$(dirname "$(dirname "$moxygen_cmake_dir")")")" "$build_dir/moxygen"
+
 if [[ "$resolved" == "$moxygen" ]]; then
   echo "configure.sh: $build_dir configured ($resolved) — compile with: scripts/build.sh $profile"
 else

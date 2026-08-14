@@ -24,6 +24,10 @@ _CPack_Packages/
 # moxygen install.
 /.scratch/
 
+# Discoverability symlinks to the resolved dependency sources (deps/README.md).
+/deps/*
+!/deps/README.md
+
 # OS
 .DS_Store
 

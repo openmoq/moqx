@@ -3,6 +3,9 @@
 #   <root>/cpm                    CPM's source clones (CPM_SOURCE_CACHE)
 #   <root>/moxygen-<rev>-<plat>   extracted prebuilt installs (FetchMoxygenPrebuilt.cmake)
 #
+# scripts/configure.sh symlinks the resolved directories into the tree for
+# humans — see deps/README.md.
+#
 # Root precedence: -DMOQX_DEPS_CACHE, $MOQX_DEPS_CACHE, $HOME/.cache/moqx, else a
 # directory in the build tree (a container with no HOME). Relocating the root
 # moves both halves; an explicit CPM_SOURCE_CACHE still wins for the clones alone.
