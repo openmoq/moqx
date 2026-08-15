@@ -1581,26 +1581,22 @@
                 "id": "mappings",
                 "value": [
                   {
-                    "type": "range",
+                    "type": "value",
                     "options": {
-                      "from": 0,
-                      "to": 15,
-                      "result": {
+                      "1": {
                         "text": "LIVE",
                         "color": "#1baf7a",
                         "index": 0
-                      }
-                    }
-                  },
-                  {
-                    "type": "range",
-                    "options": {
-                      "from": 15,
-                      "to": 1000000000000000.0,
-                      "result": {
+                      },
+                      "2": {
                         "text": "IDLE",
                         "color": "#c98500",
                         "index": 1
+                      },
+                      "3": {
+                        "text": "DONE",
+                        "color": "#6e7680",
+                        "index": 2
                       }
                     }
                   },
@@ -1611,7 +1607,7 @@
                       "result": {
                         "text": "DONE",
                         "color": "#6e7680",
-                        "index": 2
+                        "index": 3
                       }
                     }
                   }
@@ -1693,7 +1689,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "clamp_min(time() - max by (namespace, track) (moqx_track_last_object_timestamp_seconds{namespace=~\"$namespace\", track=~\"$track\"}), 0)",
+          "expr": "(2 - (clamp_min(time() - max by (namespace, track) (moqx_track_last_object_timestamp_seconds{namespace=~\"$namespace\", track=~\"$track\"}), 0) < bool 15)) or (max by (namespace, track) (moqx_track_subscribers{namespace=~\"$namespace\", track=~\"$track\"}) * 0 + 2) or ((max by (namespace, track) (max_over_time(moqx_track_subscribers{namespace=~\"$namespace\", track=~\"$track\"}[$__range])) unless max by (namespace, track) (moqx_track_subscribers{namespace=~\"$namespace\", track=~\"$track\"})) * 0 + 3)",
           "format": "table",
           "instant": true,
           "range": false,
@@ -1762,6 +1758,17 @@
               "qos": "QoS",
               "Value #E": "Status"
             }
+          }
+        },
+        {
+          "id": "convertFieldType",
+          "options": {
+            "conversions": [
+              {
+                "targetField": "Status",
+                "destinationType": "string"
+              }
+            ]
           }
         },
         {
