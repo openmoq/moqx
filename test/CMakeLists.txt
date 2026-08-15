@@ -213,7 +213,7 @@ add_test(
 )
 set_tests_properties(relay_hops_cycle PROPERTIES
   TIMEOUT 90
-  ENVIRONMENT "MOQBIN=${PROJECT_SOURCE_DIR}/.scratch/moxygen-install/bin"
+  ENVIRONMENT "MOQBIN=${MOXYGEN_BIN_DIR}"
 )
 
 add_test(
