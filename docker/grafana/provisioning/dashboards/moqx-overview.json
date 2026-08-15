@@ -961,7 +961,7 @@
           "height": 600
         },
         "editorMode": "code",
-        "getOption": "\nconst frames = context.panel.data.series || [];\nfunction pairs(fr) {\n  if (!fr) return [];\n  const t = fr.fields.find((x) => x.type === 'time');\n  const v = fr.fields.find((x) => x.type === 'number');\n  if (!t || !v) return [];\n  const tv = t.values.toArray ? t.values.toArray() : t.values;\n  const vv = v.values.toArray ? v.values.toArray() : v.values;\n  const out = [];\n  for (let i = 0; i < tv.length; i++) {\n    if (vv[i] != null && !Number.isNaN(vv[i])) out.push([tv[i], vv[i]]);\n  }\n  return out;\n}\nconst data = pairs(frames[0]);\nconst last = data.length ? data[data.length - 1][1] : 0;\nconst color = last >= 2 ? '#e0453c' : last >= 0.5 ? '#c98500' : '#3987e5';\nreturn {\n  animation: false,\n  grid: { left: -2, right: -2, top: '46%', bottom: -2 },\n  xAxis: { type: 'time', show: false },\n  yAxis: { type: 'value', show: false, scale: true, min: 0 },\n  series: [{\n    type: 'line', data, smooth: 0.1, showSymbol: false, silent: true,\n    lineStyle: { color, width: 1.8, cap: 'round' },\n    areaStyle: { color, opacity: 0.20 },\n    emphasis: { disabled: true }, animation: false,\n  }],\n  graphic: [\n    { type: 'text', left: 'center', top: 16,\n      style: { text: last.toFixed(1) + ' %', fill: color,\n               font: '600 26px Inter, system-ui, sans-serif' } },\n  ],\n};\n",
+        "getOption": "\nconst frames = context.panel.data.series || [];\nfunction pairs(fr) {\n  if (!fr) return [];\n  const t = fr.fields.find((x) => x.type === 'time');\n  const v = fr.fields.find((x) => x.type === 'number');\n  if (!t || !v) return [];\n  const tv = t.values.toArray ? t.values.toArray() : t.values;\n  const vv = v.values.toArray ? v.values.toArray() : v.values;\n  const out = [];\n  for (let i = 0; i < tv.length; i++) {\n    if (vv[i] != null && !Number.isNaN(vv[i])) out.push([tv[i], vv[i]]);\n  }\n  return out;\n}\nconst data = pairs(frames[0]);\nconst last = data.length ? data[data.length - 1][1] : 0;\n\nreturn {\n  animation: false,\n  grid: { left: -2, right: -2, top: '46%', bottom: -2 },\n  xAxis: { type: 'time', show: false },\n  yAxis: { type: 'value', show: false, scale: true, min: 0 },\n  series: [{\n    type: 'line', data, smooth: 0.1, showSymbol: false, silent: true,\n    lineStyle: { color: '#5AA7BE', width: 1.8, cap: 'round' },\n    areaStyle: { color: '#5AA7BE', opacity: 0.20 },\n    emphasis: { disabled: true }, animation: false,\n  }],\n  graphic: [\n    { type: 'text', left: 'center', top: 16,\n      style: { text: last.toFixed(1) + ' %', fill: '#3987e5',\n               font: '600 26px Inter, system-ui, sans-serif' } },\n  ],\n};\n",
         "renderer": "canvas"
       },
       "pluginVersion": "7.2.5",
@@ -1659,7 +1659,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "label_join(label_replace(label_replace(label_replace(label_replace(label_replace(max by (namespace, track) (moqx_track_subscribers{namespace=~\"$namespace\", track=~\"$track\"}), \"fetches\", \"\u2014\", \"\", \"\"), \"latency\", \"\u2014\", \"\", \"\"), \"drops\", \"\u2014\", \"\", \"\"), \"cachehit\", \"\u2014\", \"\", \"\"), \"qos\", \"\u2014\", \"\", \"\") or label_replace(label_replace(label_replace(label_replace(label_replace((max by (namespace, track) (max_over_time(moqx_track_subscribers{namespace=~\"$namespace\", track=~\"$track\"}[$__range])) unless max by (namespace, track) (moqx_track_subscribers{namespace=~\"$namespace\", track=~\"$track\"})) * 0, \"fetches\", \"\u2014\", \"\", \"\"), \"latency\", \"\u2014\", \"\", \"\"), \"drops\", \"\u2014\", \"\", \"\"), \"cachehit\", \"\u2014\", \"\", \"\"), \"qos\", \"\u2014\", \"\", \"\") or label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(vector(0), \"fetches\", \"\u2014\", \"\", \"\"), \"latency\", \"\u2014\", \"\", \"\"), \"drops\", \"\u2014\", \"\", \"\"), \"cachehit\", \"\u2014\", \"\", \"\"), \"qos\", \"\u2014\", \"\", \"\"), \"namespace\", \"\u2014\", \"\", \"\"), \"track\", \"\u2014\", \"\", \"\"), \"name\", \"/\", \"namespace\", \"track\")",
+          "expr": "label_replace(label_replace(label_replace(label_replace(label_replace(max by (namespace, track) (moqx_track_subscribers{namespace=~\"$namespace\", track=~\"$track\"}), \"fetches\", \"\u2014\", \"\", \"\"), \"latency\", \"\u2014\", \"\", \"\"), \"drops\", \"\u2014\", \"\", \"\"), \"cachehit\", \"\u2014\", \"\", \"\"), \"qos\", \"\u2014\", \"\", \"\") or label_replace(label_replace(label_replace(label_replace(label_replace((max by (namespace, track) (max_over_time(moqx_track_subscribers{namespace=~\"$namespace\", track=~\"$track\"}[$__range])) unless max by (namespace, track) (moqx_track_subscribers{namespace=~\"$namespace\", track=~\"$track\"})) * 0, \"fetches\", \"\u2014\", \"\", \"\"), \"latency\", \"\u2014\", \"\", \"\"), \"drops\", \"\u2014\", \"\", \"\"), \"cachehit\", \"\u2014\", \"\", \"\"), \"qos\", \"\u2014\", \"\", \"\") or label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(vector(0), \"fetches\", \"\u2014\", \"\", \"\"), \"latency\", \"\u2014\", \"\", \"\"), \"drops\", \"\u2014\", \"\", \"\"), \"cachehit\", \"\u2014\", \"\", \"\"), \"qos\", \"\u2014\", \"\", \"\"), \"namespace\", \"\u2014\", \"\", \"\"), \"track\", \"\u2014\", \"\", \"\")",
           "format": "table",
           "instant": true,
           "range": false,
@@ -1670,7 +1670,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "label_join(max by (namespace, track) (max_over_time(moqx_track_subscribers{namespace=~\"$namespace\", track=~\"$track\"}[$__range])), \"name\", \"/\", \"namespace\", \"track\")",
+          "expr": "max by (namespace, track) (max_over_time(moqx_track_subscribers{namespace=~\"$namespace\", track=~\"$track\"}[$__range]))",
           "format": "table",
           "instant": true,
           "range": false,
@@ -1681,7 +1681,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "label_join(sum by (namespace, track) (rate(moqx_track_bytes_received_total{namespace=~\"$namespace\", track=~\"$track\"}[1m])) * 8, \"name\", \"/\", \"namespace\", \"track\")",
+          "expr": "sum by (namespace, track) (rate(moqx_track_bytes_received_total{namespace=~\"$namespace\", track=~\"$track\"}[1m])) * 8",
           "format": "table",
           "instant": true,
           "range": false,
@@ -1692,7 +1692,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "label_join(sum by (namespace, track) (moqx_track_bytes_sent_total{namespace=~\"$namespace\", track=~\"$track\"}), \"name\", \"/\", \"namespace\", \"track\")",
+          "expr": "sum by (namespace, track) (moqx_track_bytes_sent_total{namespace=~\"$namespace\", track=~\"$track\"})",
           "format": "table",
           "instant": true,
           "range": false,
@@ -1703,7 +1703,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "label_join(clamp_min(time() - max by (namespace, track) (moqx_track_last_object_timestamp_seconds{namespace=~\"$namespace\", track=~\"$track\"}), 0), \"name\", \"/\", \"namespace\", \"track\")",
+          "expr": "clamp_min(time() - max by (namespace, track) (moqx_track_last_object_timestamp_seconds{namespace=~\"$namespace\", track=~\"$track\"}), 0)",
           "format": "table",
           "instant": true,
           "range": false,
@@ -1715,7 +1715,7 @@
         {
           "id": "joinByField",
           "options": {
-            "byField": "name",
+            "byField": "track",
             "mode": "outer"
           }
         },
@@ -1729,9 +1729,7 @@
               "job": true,
               "moqx_namespace": true,
               "service": true,
-              "name": true,
               "namespace": true,
-              "track": false,
               "Time 1": true,
               "namespace 1": true,
               "track 1": true,
@@ -1817,7 +1815,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "#1baf7a",
+                "color": "#3987e5",
                 "value": null
               }
             ]
