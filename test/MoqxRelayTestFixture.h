@@ -1,7 +1,8 @@
 /*
  * Copyright (c) Meta Platforms, Inc. and affiliates.
  * Originally from github.com/facebookexperimental/moxygen.
- * See deps/moxygen/LICENSE for the original license terms.
+ * See the moxygen LICENSE for the original license terms:
+ * https://github.com/openmoq/moxygen/blob/main/LICENSE
  *
  * Copyright (c) OpenMOQ contributors.
  */
@@ -29,8 +30,9 @@ using namespace testing;
 using namespace moxygen;
 using namespace openmoq::moqx;
 // NOLINTEND(google-build-using-namespace)
+using moxygen::test::MockMoQSession;
 
-namespace moxygen::test {
+namespace openmoq::moqx::test {
 
 enum class RelayMode {
   SingleThread,
@@ -57,7 +59,10 @@ inline const TrackNamespace kTestNamespace{{"test", "namespace"}};
 inline const TrackNamespace kAllowedPrefix{{"test"}};
 inline const FullTrackName kTestTrackName{kTestNamespace, "track1"};
 
-// TestMoQExecutor that can be driven for tests
+// TestMoQExecutor that can be driven for tests.
+// Compiles with a -Winaccessible-base warning: folly::Executor is reached both
+// virtually (DrivableExecutor) and non-virtually (moxygen's MoQExecutor), so it
+// is ambiguous here. Nothing upcasts to Executor; the fix belongs in moxygen.
 class TestMoQExecutor : public MoQFollyExecutorImpl, public folly::DrivableExecutor {
 public:
   explicit TestMoQExecutor();
@@ -216,4 +221,4 @@ protected:
   folly::EventBase* relayEvb_{nullptr};
 };
 
-} // namespace moxygen::test
+} // namespace openmoq::moqx::test

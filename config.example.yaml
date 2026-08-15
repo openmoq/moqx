@@ -1,5 +1,5 @@
 # moqx relay configuration
-# See: moqx dump-config-schema | scripts/gen-config-reference.sh
+# See: moqx dump-config-schema | scripts/dev/config-schema-to-markdown.sh
 
 listeners:
   - name: main

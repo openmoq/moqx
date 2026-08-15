@@ -78,11 +78,10 @@ receive PUBLISH from an upstream publisher.
 
 | Metric | Description |
 |--------|-------------|
-| `moqx_moqPublishSuccess_total` | Relay sent PUBLISH and received PUBLISH_OK back |
-| `moqx_moqPublishError_total` | Relay sent PUBLISH and received PUBLISH_ERROR back |
-| `moqx_moqPublishReceived_total` | PUBLISH received from an upstream publisher |
-| `moqx_moqPublishOkSent_total` | PUBLISH_OK sent to an upstream publisher |
-| `moqx_subPublishError_total` | PUBLISH_ERROR sent to an upstream publisher (rejected) |
+| `moqx_pubPublishSuccess_total` | Relay sent PUBLISH and received PUBLISH_OK back |
+| `moqx_pubPublishError_total` | Relay sent PUBLISH and received PUBLISH_ERROR back |
+| `moqx_subPublishSuccess_total` | Relay received PUBLISH and sent PUBLISH_OK back |
+| `moqx_subPublishError_total` | Relay received PUBLISH and sent PUBLISH_ERROR back (rejected) |
 
 ## MoQ Application Layer — Gauges
 
@@ -146,7 +145,7 @@ Counters with per-code breakdowns:
 - `moqx_pubFetchError_by_code_total`
 - `moqx_pubPublishNamespaceError_by_code_total`
 - `moqx_pubSubscribeNamespaceError_by_code_total`
-- `moqx_moqPublishError_by_code_total`
+- `moqx_pubPublishError_by_code_total`
 - `moqx_subSubscribeError_by_code_total`
 - `moqx_subFetchError_by_code_total`
 - `moqx_subPublishNamespaceError_by_code_total`
@@ -183,3 +182,82 @@ Counters with per-code breakdowns:
 |--------|-------------|
 | `moqx_quicActiveConnections` | Active QUIC connections |
 | `moqx_quicActiveStreams` | Active QUIC streams across all connections |
+
+## Per-Track Metrics
+
+```
+GET /metrics/track?service=<name>&namespace=<a/b>&track=<name>&limit=<N>
+```
+
+Requires `admin.track_metrics_enabled` (default true); when it is false the
+counting filters are never installed and this endpoint returns `503`.
+
+Reports counters for **live tracks** — a track's series disappear when the track
+goes away, and start from zero if it comes back.
+
+| Parameter | Required | Description |
+|---|---|---|
+| `namespace` | no | Namespace prefix in the safe form below. Matches every track under the prefix unless `track` is given. Default: all namespaces. |
+| `service` | no | Restrict to one service. Default: all services, each labeled. |
+| `track` | no | Exact track name within the namespace. |
+| `limit` | no | Max tracks to report. Default `admin.track_metrics_endpoint_default_limit` (10); a value above `admin.track_metrics_endpoint_max_limit` (1000) is rejected with 400. |
+
+Every parameter is optional, so `GET /metrics/track?limit=20` reports every live
+track when fewer than 20 match.
+
+`limit` is a sanity guard, not a top-N selector. A query matching more tracks
+than the limit returns **400** with the match count rather than truncating —
+an arbitrary subset would give Prometheus a series set that reshuffles between
+scrapes, producing gap-filled graphs that look like data. Narrow the namespace
+or raise the limit. A query that matches nothing returns 200 with no series.
+
+Every series carries `{service, namespace, track}` labels.
+
+### Name encoding
+
+Namespaces and track names are arbitrary bytes, so the `namespace` and `track`
+values — both in labels and in the query parameters — use the form RECOMMENDED
+by moq-transport, [Representing Namespace and Track
+Names](https://datatracker.ietf.org/doc/html/draft-ietf-moq-transport#name-representing-namespace-and-t).
+The namespace `conf.example.com` / `room 1` renders as
+`conf.2eexample.2ecom-room.201`.
+
+Two tracks can never collapse onto one label
+set and produce duplicate series, and a scraped label value can be pasted
+straight back into a query. Values outside the form — an unencoded `/` or space,
+say — are rejected with 400 rather than silently matching something else.
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `moqx_track_groups_received_total` | counter | Groups ingested |
+| `moqx_track_subgroups_received_total` | counter | Subgroups ingested |
+| `moqx_track_objects_received_total` | counter | Objects ingested |
+| `moqx_track_datagrams_received_total` | counter | Objects ingested as datagrams (also counted in objects) |
+| `moqx_track_bytes_received_total` | counter | Object payload bytes ingested |
+| `moqx_track_groups_sent_total` | counter | Groups delivered, summed over subscribers |
+| `moqx_track_subgroups_sent_total` | counter | Subgroups delivered, summed over subscribers |
+| `moqx_track_objects_sent_total` | counter | Objects delivered, summed over subscribers |
+| `moqx_track_datagrams_sent_total` | counter | Objects delivered as datagrams, summed over subscribers |
+| `moqx_track_bytes_sent_total` | counter | Object payload bytes delivered, summed over subscribers |
+| `moqx_track_subscribers` | gauge | Current downstream subscribers |
+| `moqx_track_publish_start_timestamp_seconds` | gauge | Unix time the relay first saw the track |
+| `moqx_track_last_object_timestamp_seconds` | gauge | Unix time of the most recent ingested object |
+
+Group counters track the 3 most recently seen group IDs (LRU), so subgroups of
+concurrently-open groups can arrive interleaved without inflating the count. A
+group revisited after 3 *other* groups have been seen is counted again — the
+window bounds per-filter state, and MOQT group IDs usually advance and high
+concurrency is not expected, so this only shows up in pathological interleaving.
+
+Byte counters measure **object payload bytes**, not wire bytes: no MOQT headers,
+no QUIC or transport framing. For wire-level volume use `moqx_quicBytesRead_total`
+and `moqx_quicBytesWritten_total`.
+
+Sent counters are summed across subscribers, so one ingested object fanned out to
+three subscribers increments `objects_sent` by 3. "Sent" means **passed to the
+transport**, not acknowledged by the peer: objects dropped before the wire — by
+`STOP_SENDING`, a delivery timeout, or session teardown — are still counted.
+
+Timestamps are Unix seconds carrying millisecond precision (`1754236801.234`).
+They are sampled from a coarse monotonic clock whose resolution is one kernel
+tick, so the last digits quantize to 1–4ms depending on `CONFIG_HZ`.

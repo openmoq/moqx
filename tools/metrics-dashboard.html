@@ -4,7 +4,7 @@
 
   A single static file (Chart.js from CDN, no build). Open it in a browser and
   press Start; it scrapes one or more Prometheus /metrics endpoints once per
-  second and live-updates the graphs. GUI companion to scripts/perf-metrics.sh.
+  second and live-updates the graphs. GUI companion to scripts/perf/perf-metrics.sh.
 
   Endpoints (header fields):
     - app endpoint : the relay's /metrics (moqx admin HTTP), e.g. http://host:19702/metrics
@@ -111,6 +111,15 @@
       <option value="3600">1h</option>
     </select>
   </label>
+  <label class="status">avg
+    <select id="avgWindow">
+      <option value="0" selected>per-scrape</option>
+      <option value="10">10s</option>
+      <option value="30">30s</option>
+      <option value="60">1m</option>
+      <option value="300">5m</option>
+    </select>
+  </label>
   <div class="status"><span id="dot" class="dot"></span><span id="statusText">idle</span></div>
   <div class="meta" id="meta"></div>
 </header>
@@ -141,7 +150,7 @@ function safeDiv(a, b) { return (a === null || b === null || b === 0) ? null : a
 
 // Derived / computed metrics.
 //  - ratio derived: `inputs` + `fn(deltas)`  → single series from per-poll counter deltas
-//  - histogram derived: `hist` + `series[]`  → each series.fn(stats) over the windowed histogram
+//  - histogram derived: `hist` + `series[]`  → each series.fn(stats) over the per-scrape histogram delta
 const DERIVED = [
   { name: "calc_lossPerSent", unit: "fraction",
     help: "QUIC packet loss as a fraction of packets sent (Δloss / Δsent)",
@@ -152,7 +161,7 @@ const DERIVED = [
     inputs: ["moqx_quicPacketRetransmissions_total", "moqx_quicPacketsSent_total"],
     fn: d => safeDiv(d.moqx_quicPacketRetransmissions_total, d.moqx_quicPacketsSent_total) },
   { name: "calc_evbLoopBusy", unit: "ms", hist: "moqx_evbLoopBusy_microseconds", scale: 1 / 1000,
-    help: "Event-loop busy time per iteration over the window — p99 / p50 / mean (ms)",
+    help: "Event-loop busy time per iteration since last scrape — p99 / p50 / mean (ms)",
     series: [
       { label: "p99",  fn: s => s.quantile(0.99) },
       { label: "p50",  fn: s => s.quantile(0.50) },
@@ -175,7 +184,7 @@ const DERIVED = [
     } },
   // object ACK latency histogram (µs) → p99 / p50 / mean in ms
   { name: "calc_objectAckLatency", unit: "ms", hist: "moqx_moqObjectAckLatency_microseconds", scale: 1 / 1000,
-    help: "Object ACK latency over the window — p99 / p50 / mean (ms)",
+    help: "Object ACK latency since last scrape — p99 / p50 / mean (ms)",
     series: [
       { label: "p99",  fn: s => s.quantile(0.99) },
       { label: "p50",  fn: s => s.quantile(0.50) },
@@ -183,7 +192,7 @@ const DERIVED = [
     ] },
   // client end-to-end object latency from moqperf textfile (SECONDS) → p99 / p50 / mean in ms
   { name: "calc_clientLatency", unit: "ms", hist: "moqperf_object_latency_seconds", scale: 1000,
-    help: "Client end-to-end object latency over the window — p99 / p95 / p50 / mean (ms)",
+    help: "Client end-to-end object latency since last scrape — p99 / p95 / p50 / mean (ms)",
     series: [
       { label: "p99",  fn: s => s.quantile(0.99) },
       { label: "p95",  fn: s => s.quantile(0.95) },
@@ -251,6 +260,7 @@ const els = {
   toggle: document.getElementById("toggle"),
   rateMode: document.getElementById("rateMode"),
   window: document.getElementById("window"),
+  avgWindow: document.getElementById("avgWindow"),
   dot: document.getElementById("dot"),
   statusText: document.getElementById("statusText"),
   meta: document.getElementById("meta"),
@@ -338,8 +348,8 @@ function ratesOf(parsed, metricName, now) {
   return out;
 }
 
-/* ---------- histogram quantiles (Prometheus-style, over a sliding window) ---------- */
-const histHistory = new Map(); // base -> [{ t, cum[], sum, count }]
+/* ---------- histogram quantiles (Prometheus-style, per-scrape delta) ---------- */
+const histHistory = new Map(); // base -> [{ t, cum[], sum, count }] — last two (per-scrape) or the averaging span
 function bucketsOf(parsed, base) {
   const bd = parsed.get(base + "_bucket");
   if (!bd || !bd.samples.length) return null;
@@ -369,14 +379,21 @@ function quantileFromBuckets(les, cum, q) {
   if (cHigh === cLow) return leHigh;
   return leLow + (leHigh - leLow) * (rank - cLow) / (cHigh - cLow); // linear interpolation within bucket
 }
-function histWindowStats(base, parsed, now, windowMs) {
+function histWindowStats(base, parsed, now, avgWindowMs) {
   const cur = bucketsOf(parsed, base);
   if (!cur) return null;
   let h = histHistory.get(base);
   if (!h) { h = []; histHistory.set(base, h); }
   h.push({ t: now, cum: cur.cum, sum: cur.sum, count: cur.count });
-  while (h.length > 1 && h[0].t < now - windowMs) h.shift();
-  const old = h[0];
+  // avgWindowMs 0 → diff against the previous scrape; else against the oldest
+  // snapshot within the averaging span (keep one point past it as the baseline).
+  if (avgWindowMs > 0) {
+    while (h.length > 2 && h[1].t <= now - avgWindowMs) h.shift();
+  } else {
+    if (h.length > 2) h.shift();
+  }
+  const old = h.length > 1 ? h[0] : null;
+  if (!old) return { count: 0, mean: null, quantile: () => null }; // first scrape: no delta yet
   const reset = cur.count < old.count; // histogram counters dropped → use current as baseline
   const dcum  = cur.cum.map((c, i) => reset ? c : Math.max(0, c - old.cum[i]));
   const dcount = reset ? cur.count : Math.max(0, cur.count - old.count);
@@ -583,7 +600,7 @@ let sources = []; // [{ url, host, timer, lastWall, gap, err }]
 
 // Apply one source's freshly-parsed metrics to the charts. Fully synchronous (no awaits) so concurrent
 // source loops never interleave mid-update. Metrics not present in `parsed` simply aren't touched.
-function applyMetrics(parsed, now, windowMs) {
+function applyMetrics(parsed, now, windowMs, avgWindowMs) {
   let isNew = false;
   for (const [name, d] of parsed) {
     if (!d.samples.length) continue; // skip TYPE/HELP-only histogram base names
@@ -645,7 +662,7 @@ function applyMetrics(parsed, now, windowMs) {
       }
       if (curTxt.length) entry.cur.textContent = curTxt.join("  ");
     } else if (der.hist) {
-      const stats = histWindowStats(der.hist, parsed, now, windowMs);
+      const stats = histWindowStats(der.hist, parsed, now, avgWindowMs);
       const curTxt = [];
       for (const sdef of der.series) {
         const series = ensureSeries(entry, sdef.label);
@@ -679,6 +696,7 @@ async function pollSource(s) {
     if (now <= lastNow) now = lastNow + 1; // strictly increasing x, shared across sources
     lastNow = now;
     const windowMs = parseInt(els.window.value, 10) * 1000;
+    const avgWindowMs = parseInt(els.avgWindow.value, 10) * 1000;
     s.gap = s.lastWall ? (now - s.lastWall) / 1000 : 0;
     s.lastWall = now;
     s.err = null;
@@ -686,7 +704,7 @@ async function pollSource(s) {
     // client node_exporter also emits node_* for the CLIENT box — drop them so they can't collide
     // with the relay host's node_* (which would corrupt egress / CPU%). Keep its moqperf_* only.
     if (s.role === "client") for (const k of [...parsed.keys()]) if (k.startsWith("node_")) parsed.delete(k);
-    applyMetrics(parsed, now, windowMs);
+    applyMetrics(parsed, now, windowMs, avgWindowMs);
     pollCount++;
   } catch (err) {
     s.err = err.message || String(err);

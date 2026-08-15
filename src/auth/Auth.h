@@ -87,8 +87,11 @@ private:
   std::unordered_map<std::string, std::size_t> keyIdIndex_;
 };
 
-std::optional<moxygen::AuthToken>
-findAuthToken(const moxygen::Parameters& params, uint64_t tokenType);
+// Returns every AUTHORIZATION_TOKEN parameter matching tokenType, not just the
+// first — a message may carry more than one, and a request is authorized if
+// any one of them verifies and covers the action (see authorize()).
+std::vector<moxygen::AuthToken>
+findAuthTokens(const moxygen::Parameters& params, uint64_t tokenType);
 
 // Namespace-level authorization (e.g. PublishNamespace, SubscribeNamespace, setup).
 bool allows(
@@ -106,21 +109,40 @@ bool allows(
     std::chrono::system_clock::time_point now = std::chrono::system_clock::now()
 );
 
+// True if any element of grantsList allows the action (namespace-level).
+bool allowsAny(
+    const std::vector<Grants>& grantsList,
+    Action action,
+    const moxygen::TrackNamespace& ns,
+    std::chrono::system_clock::time_point now = std::chrono::system_clock::now()
+);
+
+// True if any element of grantsList allows the action (track-level).
+bool allowsAny(
+    const std::vector<Grants>& grantsList,
+    Action action,
+    const moxygen::FullTrackName& ftn,
+    std::chrono::system_clock::time_point now = std::chrono::system_clock::now()
+);
+
 const char* toString(AuthError error);
 
-// Verifies the setup AUTHORIZATION_TOKEN. Returns null grants when auth is
-// disabled; shared grants (possibly empty) to gate the session otherwise.
-folly::Expected<std::shared_ptr<const Grants>, AuthError>
+// Verifies the setup AUTHORIZATION_TOKEN(s). Returns a null pointer when auth
+// is disabled; otherwise a shared vector of every successfully-verified
+// setup token's grants (possibly empty), gating the session on whether any
+// of them permits Action::ClientSetup.
+folly::Expected<std::shared_ptr<const std::vector<Grants>>, AuthError>
 authenticateSetup(const AuthTokenVerifier& verifier, const moxygen::Parameters& setupParams);
 
-// Authorizes a request against session grants, or a per-request token when
-// allow_request_token_override is set. Returns Unit when permitted.
+// Authorizes a request against session grants, or per-request token(s) when
+// allow_request_token_override is set. Permitted if any verified request
+// token, or any session grant, covers the action. Returns Unit when permitted.
 folly::Expected<folly::Unit, AuthError> authorize(
     const AuthTokenVerifier& verifier,
     Action action,
     const moxygen::Parameters& params,
     const moxygen::TrackNamespace& ns,
-    const Grants& sessionGrants,
+    const std::vector<Grants>& sessionGrants,
     std::optional<std::string_view> trackName = std::nullopt
 );
 

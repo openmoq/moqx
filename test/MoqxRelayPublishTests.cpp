@@ -1,7 +1,8 @@
 /*
  * Copyright (c) Meta Platforms, Inc. and affiliates.
  * Originally from github.com/facebookexperimental/moxygen.
- * See deps/moxygen/LICENSE for the original license terms.
+ * See the moxygen LICENSE for the original license terms:
+ * https://github.com/openmoq/moxygen/blob/main/LICENSE
  *
  * Copyright (c) OpenMOQ contributors.
  */
@@ -9,7 +10,7 @@
 #include "MoqxRelayTestFixture.h"
 #include <atomic>
 
-namespace moxygen::test {
+namespace openmoq::moqx::test {
 
 // Test: Verify allowed namespace prefix is set correctly
 TEST_P(MoQRelayTest, AllowedNamespacePrefix) {
@@ -451,6 +452,9 @@ TEST_P(MoQRelayTest, PublishReconnectDuringSubscribeScopeGuardCrash) {
   // Relay state mutations must run on the relay executor; doPublishNamespaceDone
   // touches the namespace tree, which publishDone also cleans up via relayEvb_.
   verifyOnRelayExec([&] { relay_->doPublishNamespaceDone(kTestNamespace, publisherSession2); });
+  // The publisher forwarder reaches the relay through relayExec_, so it drops its session
+  // refs a hop after the calls above.
+  driveIfMultiThread();
 }
 
 // Same reconnect scenario but the upstream subscribe returns OK instead of an
@@ -597,4 +601,4 @@ TEST_P(MoQRelayTest, EmptyNamespacePublishNamespaceDone) {
   removeSession(publisher);
 }
 
-} // namespace moxygen::test
+} // namespace openmoq::moqx::test

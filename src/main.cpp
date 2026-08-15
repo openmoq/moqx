@@ -12,9 +12,11 @@
 #include "admin/ConfigHandler.h"
 #include "admin/MetricsHandler.h"
 #include "admin/StateHandler.h"
+#include "admin/TrackMetricsHandler.h"
 #include "bpf/QuicReuseportSteering.h"
 #include "config/loader/ConfigInit.h"
 #include "logging/LogSetup.h"
+#include "moqx/Version.h"
 #include "stats/StatsRegistry.h"
 
 #include <csignal>
@@ -31,6 +33,7 @@
 
 #include "LoggingMultiFlag.h"
 
+#include <cstdlib>
 #include <iostream>
 #include <string_view>
 
@@ -75,10 +78,23 @@ int main(int argc, char* argv[]) {
       "  serve                Start the relay (default)\n" +
       cfg::configSubcommandUsage() + "\nUsage: moqx [subcommand] --config <path>"
   );
+  // gflags handles --version inside folly::Init, before any config load.
+  google::SetVersionString(MOQX_VERSION);
+  // MOQX_LOGGING is the moqx-namespaced alias for folly's own FOLLY_LOGGING env
+  // var (folly::Init reads FOLLY_LOGGING). Promote it here — before folly::Init
+  // — so the knob works for any launch method (docker, systemd, bare metal)
+  // with no wrapper. An explicitly-set FOLLY_LOGGING wins; the --logging flag
+  // still outranks both. See docs/logging.md.
+  if (const char* x = std::getenv("MOQX_LOGGING"); x && *x && !std::getenv("FOLLY_LOGGING")) {
+    ::setenv("FOLLY_LOGGING", x, /*overwrite=*/0);
+  }
   // Combine repeated --logging / --log-handler into one composite before
   // folly::Init — see docs/logging.md.
   combineLoggingArgs(argc, argv);
   folly::Init init(&argc, &argv, true);
+
+  // Attributes the log stream to an exact build.
+  XLOG(INFO) << "moqx " << kVersion << " starting";
 
   std::string_view subcommand = kServeCommand;
   if (argc > 1) {
@@ -166,7 +182,10 @@ int main(int argc, char* argv[]) {
 
   if (!servers.empty()) {
     context->setCacheEvb(ioExecutor->getAllEventBases()[0].get());
-    context->initThreadStatsCollectors(*ioExecutor);
+    context->initThreadStatsCollectors(
+        *ioExecutor,
+        /*initTrackStats=*/!config.admin || config.admin->trackMetricsEnabled
+    );
   }
 
   // === 7. Start health checks / admin endpoints ===
@@ -175,6 +194,15 @@ int main(int argc, char* argv[]) {
   admin::registerMetricsRoute(adminServer, statsRegistry);
   admin::registerCachePurgeRoute(adminServer, context);
   admin::registerStateRoute(adminServer, context);
+  admin::TrackMetricsLimits trackLimits;
+  if (config.admin) {
+    trackLimits = {
+        config.admin->trackMetricsEnabled,
+        config.admin->trackMetricsLimit,
+        config.admin->trackMetricsMaxLimit
+    };
+  }
+  admin::registerTrackMetricsRoute(adminServer, context, trackLimits);
   admin::registerConfigRoute(adminServer, std::make_shared<const cfg::Config>(config));
 
   // === 8. Start serving ===

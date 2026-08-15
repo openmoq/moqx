@@ -1,7 +1,8 @@
 /*
  * Copyright (c) Meta Platforms, Inc. and affiliates.
  * Originally from github.com/facebookexperimental/moxygen.
- * See deps/moxygen/LICENSE for the original license terms.
+ * See the moxygen LICENSE for the original license terms:
+ * https://github.com/openmoq/moxygen/blob/main/LICENSE
  *
  * Copyright (c) OpenMOQ contributors.
  */
@@ -9,7 +10,7 @@
 #include "MoqxRelayTestFixture.h"
 #include "UpstreamProvider.h"
 
-namespace moxygen::test {
+namespace openmoq::moqx::test {
 
 // Test: makeNamespaceBridgeHandle routes namespaceMsg to doPublishNamespace
 TEST_P(MoQRelayTest, NamespaceBridgeHandleForwardsNamespaceMsg) {
@@ -297,4 +298,4 @@ TEST_P(MoQRelayTest, BridgeHandleDestructorDoesNotEvictNewPublisher) {
   removeSession(session2);
 }
 
-} // namespace moxygen::test
+} // namespace openmoq::moqx::test

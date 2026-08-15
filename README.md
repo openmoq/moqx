@@ -5,13 +5,12 @@
 <div align="center">
 
 [![ci main](https://github.com/openmoq/moqx/actions/workflows/ci-main.yml/badge.svg)](https://github.com/openmoq/moqx/actions/workflows/ci-main.yml)
-[![ci pr](https://github.com/openmoq/moqx/actions/workflows/ci-pr.yml/badge.svg)](https://github.com/openmoq/moqx/actions/workflows/ci-pr.yml)
 [![Latest release](https://img.shields.io/github/v/release/openmoq/moqx?display_name=tag&sort=semver&logo=github)](https://github.com/openmoq/moqx/releases/latest)
-[![License](https://img.shields.io/github/license/openmoq/moqx)](LICENSE)
+[![License](https://img.shields.io/github/license/openmoq/moqx)](/LICENSE)
 [![Last commit](https://img.shields.io/github/last-commit/openmoq/moqx)](https://github.com/openmoq/moqx/commits/main)
 [![Open issues](https://img.shields.io/github/issues/openmoq/moqx)](https://github.com/openmoq/moqx/issues)
 [![Open PRs](https://img.shields.io/github/issues-pr/openmoq/moqx)](https://github.com/openmoq/moqx/pulls)
-[![MOQT](https://img.shields.io/badge/MOQT-draft--16-blue)](https://datatracker.ietf.org/doc/draft-ietf-moq-transport/)
+[![MOQT](https://img.shields.io/badge/MOQT-draft--18-blue)](https://datatracker.ietf.org/doc/draft-ietf-moq-transport/)
 
 </div>
 
@@ -23,66 +22,55 @@ The OpenMOQ Relay — a MoQT relay server based on
 
 ## Architecture
 
-For the underlying moxygen library architecture (session model, data plane,
-threading, transport abstraction), see
-[deps/moxygen/ARCHITECTURE.md](deps/moxygen/ARCHITECTURE.md).
+`MoqxRelay` is a hard fork of moxygen's
+[`MoQRelay`](https://github.com/openmoq/moxygen/blob/main/moxygen/relay/MoQRelay.h),
+so the relay core can evolve independently while the lower-level moxygen pieces
+stay libraries:
 
-`MoqxRelay` is a hard fork of moxygen's `MoQRelay`. We copy the relay core into
-moqx so we can evolve it independently (threading model, custom cache miss
-handling, chained caches, etc.) while still using moxygen's lower-level
-building blocks as libraries:
+- **MoQForwarder** — fan-out engine
+- **MoqxCache** — object cache
+- **MoQSession / MoQServer / MoQRelaySession** — session/server infrastructure.
 
-- **MoQForwarder** — fan-out engine, used as-is from moxygen for now. May need
-  to fork in the future to accommodate threading model differences.
-- **MoqxCache** — object cache, hard-forked from moxygen. Customizable for moqx-specific functionality.
-  and chained cache support may be upstreamed to openmoq/moxygen or maintained
-  in our fork.
-- **MoQSession / MoQServer / MoQRelaySession** — session and server
-  infrastructure, used as libraries.
-
-`MoqxRelayServer` extends `MoQServer` to wire up `MoqxRelay` as the publish/subscribe
-handler and create `MoQRelaySession` instances for incoming connections.
-
-## Documentation
-
-- [docs/metrics.md](docs/metrics.md) — Prometheus metrics reference
-
-## Design Documents
-
-- [design/ci-architecture.md](design/ci-architecture.md) — CI pipelines, upstream sync, auto-deploy
-- [design/configuration.md](design/configuration.md) — relay config file reference
-- [design/gummy-bear.md](design/gummy-bear.md) — cache and forwarding design
-- [design/hot-reloading.md](design/hot-reloading.md) — hot config reload
-- [design/miss-handler.md](design/miss-handler.md) — cache miss handling
+`MoqxRelayServer` extends `MoQServer` to wire `MoqxRelay` in as the
+publish/subscribe handler. For moxygen's own architecture, see its
+[ARCHITECTURE.md](https://github.com/openmoq/moxygen/blob/main/ARCHITECTURE.md).
 
 ## Quick Start
 
-> **Prerequisite: CMake 3.22+ is required.** All current targets ship a
-> new-enough version out of the box: Ubuntu 22.04+, Debian 12+, recent
-> macOS Homebrew. Verify with `cmake --version`. `build.sh` aborts early
-> if cmake is missing or too old (override with `MOQX_SKIP_CMAKE_CHECK=1`
-> if you know what you're doing).
+Standard CMake preset build (CMake 3.23+, C++20, Ninja).
 
 ```bash
-git clone https://github.com/openmoq/moqx.git && cd moqx
-git submodule update --init --recursive
-sudo deps/moxygen/standalone/install-system-deps.sh   # system libs (both modes)
-
-./scripts/build.sh setup     # download prebuilt deps (~1 min)
-./scripts/build.sh           # build
-./scripts/build.sh test      # test
+scripts/install-system-deps.sh                         # toolchain + system libs
+scripts/configure.sh --moxygen prebuilt-with-fallback  # get a moxygen, configure
+scripts/build.sh                                       # cmake --build build/default
+scripts/test.sh                                        # ctest over build/default
 ```
 
-System libraries are needed in **both** dependency modes — the moxygen
-tarball ships folly/fizz/mvfst/proxygen statically, but its CMake config
-still does `find_dependency(fmt, Glog, ...)` and folly itself transitively
-needs OpenSSL/Boost. `build.sh setup`'s system-dep check only fires when
-falling back to source, but the build step needs the libs regardless.
+`build.sh` and `test.sh` are thin wrappers that add a job count derived from
+cores and free RAM ([/scripts/lib/jobs.sh](/scripts/lib/jobs.sh)).
 
-See [BUILD.md](BUILD.md) for full build and test instructions (dependency
-modes, sanitizer profiles, Docker), and [RUNNING.md](RUNNING.md) for relay
-operations.
+Profiles (`default` | `san` | `tsan`) are each script's first argument and map to
+`build/<profile>`. `--moxygen` picks where moxygen comes from:
+
+| Goal | Command |
+|------|---------|
+| Build it | `scripts/configure.sh --moxygen prebuilt-with-fallback && scripts/build.sh` |
+| Download only, never compile moxygen | `scripts/configure.sh --moxygen prebuilt && scripts/build.sh` |
+| Compile moxygen / any rev or platform | `scripts/configure.sh --moxygen from-source && scripts/build.sh` |
+| Local moxygen checkout | `scripts/configure.sh --moxygen from-source --moxygen-dir /path && scripts/build.sh` |
+
+The three modes, the raw-cmake equivalents, and how to pick:
+[/BUILD.md](/BUILD.md#how-dependencies-work).
+
+Pins live in [/cmake/dependencies.cmake](/cmake/dependencies.cmake).
+
+`ccache` is used automatically when it is on `PATH`.
+
+## Docs
+
+- Build [/BUILD.md](/BUILD.md) · Run [/RUNNING.md](/RUNNING.md) · Metrics [/docs/metrics.md](/docs/metrics.md)
+- Design: [/design/](/design)
 
 ## License
 
-Apache 2.0 — see [LICENSE](LICENSE).
+Apache 2.0 — see [/LICENSE](/LICENSE).

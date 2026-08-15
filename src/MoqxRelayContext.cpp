@@ -13,6 +13,7 @@
 #include <moxygen/events/MoQFollyExecutorImpl.h>
 #include <moxygen/util/InsecureVerifierDangerousDoNotUseInProduction.h>
 
+#include <folly/coro/Collect.h>
 #include <folly/coro/Task.h>
 #include <folly/executors/thread_factory/NamedThreadFactory.h>
 #include <folly/logging/xlog.h>
@@ -189,17 +190,31 @@ folly::coro::Task<size_t> MoqxRelayContext::purgeCache(
   co_return total;
 }
 
-void MoqxRelayContext::initThreadStatsCollectors(folly::IOThreadPoolExecutor& ioExecutor) {
-  if (!statsRegistry_) {
-    return;
-  }
+void MoqxRelayContext::initThreadStatsCollectors(
+    folly::IOThreadPoolExecutor& ioExecutor,
+    bool initTrackStats
+) {
+  XCHECK(statsRegistry_) << "initThreadStatsCollectors: setStatsRegistry must run first";
+  std::vector<folly::Executor*> ioExecs;
   for (auto& ka : ioExecutor.getAllEventBases()) {
     auto* evb = ka.get();
+    ioExecs.push_back(evb);
     auto collector = stats::MoQStatsCollector::create_moq_stats_collector(statsRegistry_);
     collector->setExecutor(evb);
     statsCollectors_.push_back(collector);
     // Bind on the owning thread; blocks so every thread is bound before serving.
     evb->runInEventBaseThreadAndWait([this, collector] { *tlStatsCollector_ = collector; });
+  }
+
+  if (!initTrackStats) {
+    return;
+  }
+  for (auto& [name, entry] : services_) {
+    auto execs = ioExecs;
+    if (auto* relayExec = entry.relay->getRelayExec()) {
+      execs.push_back(relayExec);
+    }
+    entry.relay->trackStatsRegistry().bindAll(execs);
   }
 }
 
@@ -277,6 +292,78 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayContext::validateAu
 
 std::vector<std::string> MoqxRelayContext::getExactServicePaths() const {
   return serviceMatcher_.allExactPaths();
+}
+
+folly::coro::Task<MoqxRelayContext::TrackMetricsResult> MoqxRelayContext::aggregateTrackMetrics(
+    std::string serviceName,
+    TrackNamespace nsPrefix,
+    std::optional<std::string> trackName,
+    size_t limit
+) const {
+  struct Service {
+    std::string name;
+    std::shared_ptr<MoqxRelay> relay;
+    MoqxRelay::TrackMatch match;
+  };
+
+  std::vector<Service> services;
+  for (const auto& [name, entry] : services_) {
+    if (serviceName.empty() || name == serviceName) {
+      services.push_back({name, entry.relay, {}});
+    }
+  }
+
+  auto matchOn = [](std::shared_ptr<MoqxRelay> relay,
+                    const TrackNamespace& ns,
+                    const std::string* track,
+                    size_t limit) -> folly::coro::Task<MoqxRelay::TrackMatch> {
+    co_return relay->matchTracks(ns, track, limit);
+  };
+
+  std::vector<folly::coro::TaskWithExecutor<MoqxRelay::TrackMatch>> matchTasks;
+  matchTasks.reserve(services.size());
+  for (const auto& service : services) {
+    // registry_ lives on the relay exec when there is one. Without one, config
+    // forces threads==1, so the worker EVB is that single io thread.
+    auto* exec = service.relay->getRelayExec();
+    matchTasks.push_back(folly::coro::co_withExecutor(
+        exec ? exec : static_cast<folly::Executor*>(workerEvb_),
+        matchOn(service.relay, nsPrefix, trackName ? &*trackName : nullptr, limit)
+    ));
+  }
+
+  TrackMetricsResult result;
+  auto matches = co_await folly::coro::collectAllRange(std::move(matchTasks));
+  for (size_t i = 0; i < services.size(); ++i) {
+    result.matched += matches[i].matched;
+    services[i].match = std::move(matches[i]);
+  }
+
+  if (result.matched > limit) {
+    co_return result;
+  }
+
+  // A service with no matches would cost one executor hop per thread for an
+  // empty result, so it contributes no task and no name.
+  std::vector<std::string> counted;
+  std::vector<folly::coro::Task<stats::TrackCountersMap>> countTasks;
+  counted.reserve(services.size());
+  countTasks.reserve(services.size());
+  for (const auto& service : services) {
+    if (service.match.keys.empty()) {
+      continue;
+    }
+    counted.push_back(service.name);
+    countTasks.push_back(service.relay->trackStatsRegistry().aggregateAsync(service.match.keys));
+  }
+
+  auto counters = co_await folly::coro::collectAllRange(std::move(countTasks));
+  for (size_t i = 0; i < counted.size(); ++i) {
+    for (auto& [ftn, trackCounters] : counters[i]) {
+      result.tracks.push_back({counted[i], ftn, trackCounters});
+    }
+  }
+  co_return result;
 }
 
 void MoqxRelayContext::dumpState(RelayContextVisitor& visitor) const {

@@ -1,497 +1,60 @@
 #!/usr/bin/env bash
-# build.sh — Developer build script for moqx.
+# build.sh — compile moqx
 #
-# Mirrors the same build flows used by CI. Supports two dependency modes:
-#   --from-release  — download released moxygen artifacts (~1 min)
-#   --from-source   — build moxygen + all Meta deps from source (~15-30 min)
+# Usage: build.sh [PROFILE] [CMAKE_BUILD_ARGS...]
+#   PROFILE:             default | san | tsan, or any preset from
+#                        CMakeUserPresets.json; the literals `setup`/`test`
+#                        are reserved. Default: default.
+#   -j N | --jobs N:     compile parallelism, claimed ahead of the passthrough
+#   CMAKE_BUILD_ARGS:    everything after PROFILE goes to `cmake --build`,
+#                        e.g. build.sh default --target moqx-issuer
 #
-# Usage:
-#   ./scripts/build.sh setup [--from-release [SHA]|--from-source [SHA]] [--profile NAME] [--no-fallback] [--clean]
-#   ./scripts/build.sh [--profile NAME] [--build-dir DIR]
-#   ./scripts/build.sh test [--build-dir DIR] [-- CTEST_ARGS...]
+# Run scripts/configure.sh [PROFILE] once per profile first.
 #
-# First-time setup: see README "Quick Start" and BUILD.md "Prerequisites"
-# (CMake 3.22+, system libs).
-#
-# Incremental (after source changes):
-#   ./scripts/build.sh          # rebuilds only what changed
-#
-# After submodule update:
-#   ./scripts/build.sh setup    # re-downloads or rebuilds deps
-#   ./scripts/build.sh
-
+# Env: MOQX_BUILD_JOBS is the job count when -j is absent. Both override the
+# default (cores, derated by free RAM for sanitizer profiles) — set either well
+# above the core count for distcc. See scripts/lib/jobs.sh.
 set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-SCRATCH="${MOQX_SCRATCH_PATH:-${PROJECT_ROOT}/.scratch}"
-MOXYGEN_DIR="${PROJECT_ROOT}/deps/moxygen"
-
-PREFIX_PATH_FILE="${SCRATCH}/cmake_prefix_path.txt"
-DEPS_MODE_FILE="${SCRATCH}/deps-mode"
-
-# ── Helpers ──────────────────────────────────────────────────────────────────
-
-die() { echo "Error: $*" >&2; exit 1; }
-
-# ── CMake version precheck ───────────────────────────────────────────────────
-# moqx top-level CMakeLists.txt requires cmake_minimum_required(VERSION 3.22).
-# All current targets (Ubuntu 22.04, 24.04+, Debian 12+, recent Homebrew
-# macOS) ship a new-enough cmake out of the box. Override with
-# MOQX_SKIP_CMAKE_CHECK=1 if your environment uses a non-default path.
-require_cmake_version() {
-  [[ "${MOQX_SKIP_CMAKE_CHECK:-}" == "1" ]] && return 0
-
-  if ! command -v cmake >/dev/null 2>&1; then
-    cat >&2 <<'EOF'
-Error: cmake not found in PATH.
-moqx requires CMake 3.22+. Install:
-  Ubuntu 22.04+ / Debian 12+:  sudo apt-get install cmake
-  macOS:                       brew install cmake
-
-To bypass this check (advanced): export MOQX_SKIP_CMAKE_CHECK=1
-EOF
-    exit 1
-  fi
-
-  local ver major minor
-  ver=$(cmake --version | head -1 | sed 's/[^0-9]*\([0-9]*\.[0-9]*\).*/\1/')
-  major=$(echo "$ver" | cut -d. -f1)
-  minor=$(echo "$ver" | cut -d. -f2)
-  if (( major < 3 || (major == 3 && minor < 22) )); then
-    cat >&2 <<EOF
-Error: CMake $ver is too old. moqx requires 3.22+ (top-level CMakeLists.txt).
-
-  $(command -v cmake) — $(cmake --version | head -1)
-
-To install a newer cmake:
-  Ubuntu 22.04+ / Debian 12+:  sudo apt-get install cmake
-  macOS:                       brew install cmake
-
-To bypass this check: export MOQX_SKIP_CMAKE_CHECK=1
-EOF
-    exit 1
-  fi
-}
-
-usage() {
-  cat <<'EOF'
-Usage:
-  build.sh setup [--from-release [SHA]|--from-source [SHA]] [--profile NAME] [--no-fallback] [--clean]
-  build.sh [--profile NAME] [--build-dir DIR]
-  build.sh test [--build-dir DIR] [-- CTEST_ARGS...]
-
-Commands:
-  setup     Install moxygen dependencies (from release or source)
-  (default) Configure and build moqx
-  test      Run tests
-
-Setup options:
-  --from-release [SHA]  Download released artifacts (default, fast)
-                        Optional SHA overrides submodule commit
-  --from-source [SHA]   Build all deps from source (slow, full control)
-                        Optional SHA overrides submodule commit
-  --moxygen-dir DIR     Use a local moxygen directory instead of the submodule
-                        (--from-source only; mutually exclusive with SHA)
-  --profile NAME        Build profile for deps: "default" or "san" (--from-source only)
-  --no-fallback         Fail if requested mode unavailable (don't auto-switch)
-  --use-latest          (--from-release) Use snapshot-latest tarball even if it
-                        does not match the submodule SHA. Useful for tracking
-                        moxygen tip without bumping the submodule pin.
-  --clean               Remove .scratch and start fresh
-
-Build options:
-  --profile NAME  Build profile: "default" (RelWithDebInfo) or "san" (ASAN/UBSAN)
-  --build-dir DIR Build directory (default: per profile)
-  --benchmark     Enable benchmark targets (fetches google/benchmark)
-
-Test options:
-  --build-dir DIR Build directory to test (default: "build")
-  -- ARGS...      Extra arguments passed to ctest
-EOF
-  exit 0
-}
-
-# ── System dependency check ──────────────────────────────────────────────────
-
-check_system_deps() {
-  local missing=()
-  local warnings=()
-
-  # Tools
-  command -v cmake >/dev/null 2>&1 || missing+=("cmake")
-  command -v ninja >/dev/null 2>&1 || missing+=("ninja")
-  command -v git >/dev/null 2>&1   || missing+=("git")
-
-  # Libraries — check via pkg-config where available, fall back to header probes
-  if command -v pkg-config >/dev/null 2>&1; then
-    pkg-config --exists openssl 2>/dev/null    || missing+=("libssl-dev")
-    pkg-config --exists libglog 2>/dev/null    || missing+=("libgoogle-glog-dev")
-    pkg-config --exists gflags 2>/dev/null     || missing+=("libgflags-dev")
-    pkg-config --exists zlib 2>/dev/null       || missing+=("zlib1g-dev")
-    pkg-config --exists fmt 2>/dev/null        || missing+=("libfmt-dev")
-    pkg-config --exists libevent 2>/dev/null   || missing+=("libevent-dev")
-    pkg-config --exists libsodium 2>/dev/null  || missing+=("libsodium-dev")
-    pkg-config --exists libzstd 2>/dev/null    || missing+=("libzstd-dev")
-    pkg-config --exists libcares 2>/dev/null   || missing+=("libc-ares-dev")
-  else
-    warnings+=("pkg-config not found — cannot verify library dependencies")
-    # Fall back to header checks for the most critical ones
-    for hdr in openssl/ssl.h glog/logging.h gflags/gflags.h boost/version.hpp; do
-      if ! find /usr/include /usr/local/include -name "$(basename "$hdr")" -path "*$hdr" 2>/dev/null | grep -q .; then
-        missing+=("$hdr (header not found)")
-      fi
-    done
-  fi
-
-  # Boost — special: pkg-config not always available, check header
-  if ! find /usr/include /usr/local/include -name "version.hpp" -path "*/boost/*" 2>/dev/null | grep -q .; then
-    if ! command -v brew >/dev/null 2>&1 || ! brew --prefix boost >/dev/null 2>&1; then
-      missing+=("libboost-all-dev")
-    fi
-  fi
-
-  # Boost component libs — packaged separately on Debian/Ubuntu (headers via
-  # libboost-dev do NOT include them). folly's cmake config find_package()s
-  # each component, so a missing one fails configure with an opaque
-  # "boost_context-config.cmake not found" error. Probe for the dev artifacts
-  # (unversioned .a/.so — runtime-only packages ship just .so.N.NN.N).
-  # Homebrew's boost is monolithic, so this is Linux-only.
-  if [[ "$(uname)" == "Linux" ]]; then
-    local comp
-    for comp in context filesystem program_options regex thread; do
-      if ! find /usr/lib /usr/lib64 /usr/local/lib \
-             \( -name "libboost_${comp}.a" -o -name "libboost_${comp}.so" \) \
-             2>/dev/null | grep -q .; then
-        missing+=("libboost-${comp//_/-}-dev")
-      fi
-    done
-
-    # double-conversion — no pkg-config file on Debian/Ubuntu; probe header
-    if ! find /usr/include /usr/local/include -path "*double-conversion/double-conversion.h" 2>/dev/null | grep -q .; then
-      missing+=("libdouble-conversion-dev")
-    fi
-  fi
-
-  # NOTE: CMake version is enforced by require_cmake_version() — kept
-  # separate so we can give a clean, focused error if cmake is missing or
-  # too old before any other dep checks run.
-
-  for w in "${warnings[@]+"${warnings[@]}"}"; do
-    echo "  Warning: $w"
-  done
-
-  if (( ${#missing[@]} > 0 )); then
-    echo ""
-    echo "Missing system dependencies:"
-    for dep in "${missing[@]}"; do
-      echo "  - $dep"
-    done
-    echo ""
-
-    # Detect OS and suggest install command
-    if [[ "$(uname)" == "Darwin" ]]; then
-      echo "Install with:"
-      echo "  brew install cmake ninja openssl@3 glog gflags double-conversion \\"
-      echo "    libevent libsodium zstd boost fmt c-ares gperf"
-    elif [[ -f /etc/os-release ]]; then
-      . /etc/os-release
-      case "${ID:-}" in
-        ubuntu|debian)
-          echo "Install with:"
-          echo "  sudo apt-get install -y build-essential cmake ninja-build \\"
-          echo "    libssl-dev libunwind-dev libgoogle-glog-dev libgflags-dev \\"
-          echo "    libdouble-conversion-dev libevent-dev libsodium-dev libzstd-dev \\"
-          echo "    libboost-all-dev libfmt-dev zlib1g-dev libc-ares-dev gperf"
-          ;;
-        fedora|centos|rhel)
-          echo "Install with:"
-          echo "  sudo dnf install -y cmake ninja-build openssl-devel glog-devel \\"
-          echo "    gflags-devel double-conversion-devel libevent-devel libsodium-devel \\"
-          echo "    libzstd-devel boost-devel fmt-devel zlib-devel c-ares-devel gperf"
-          ;;
-        *)
-          echo "See deps/moxygen/standalone/install-system-deps.sh for package list."
-          ;;
-      esac
-    fi
-    echo ""
-    echo "Or run: sudo deps/moxygen/standalone/install-system-deps.sh"
-    return 1
-  fi
-  return 0
-}
-
-# ── System-dep precheck wrapper ──────────────────────────────────────────────
-# System libraries are needed when actually compiling — that's the from-source
-# setup path (which builds moxygen on the host) and every cmd_build invocation
-# (moxygen's CMake config does find_dependency(fmt, Glog, ...) and folly
-# transitively wants OpenSSL/Boost). The from-release setup path only fetches
-# a tarball and does NOT need them, so callers must gate this themselves and
-# not invoke it unconditionally during setup. Override with
-# MOQX_SKIP_DEPS_CHECK=1 if you have these on a non-default path.
-require_system_deps() {
-  [[ "${MOQX_SKIP_DEPS_CHECK:-}" == "1" ]] && return 0
-  if ! check_system_deps; then
-    die "Install missing dependencies and re-run.
-  Quick fix: sudo deps/moxygen/standalone/install-system-deps.sh"
-  fi
-}
-
-# ── Submodule check ──────────────────────────────────────────────────────────
-
-check_submodule() {
-  if [[ ! -e "$MOXYGEN_DIR/.git" ]]; then
-    die "deps/moxygen submodule not initialized.
-  Run: git submodule update --init --recursive"
-  fi
-  # catapult and its own nested submodules (libcbor, nlohmann_json, spdlog,
-  # doctest) are required by the top-level build. A plain 'submodule update
-  # --init' without --recursive (or one scoped to deps/moxygen) leaves them
-  # empty, which fails configure with a missing-CMakeLists error. Auto-init
-  # recursively so a fresh or partial clone just works.
-  if [[ ! -f "$PROJECT_ROOT/deps/catapult/CMakeLists.txt" ]]; then
-    echo "==> Initializing catapult submodule (recursive)..."
-    git -C "$PROJECT_ROOT" submodule update --init --recursive deps/catapult
-  fi
-}
-
-# ── Checkout submodule to specific SHA ───────────────────────────────────────
-
-checkout_submodule() {
-  local sha="$1"
-  echo "==> Checking out moxygen submodule at $sha..."
-  git -C "$MOXYGEN_DIR" fetch origin --quiet
-  git -C "$MOXYGEN_DIR" checkout "$sha" --quiet
-}
-
-# ── Setup command ────────────────────────────────────────────────────────────
-
-cmd_setup() {
-  require_cmake_version
-  local mode="from-release"
-  local profile="default"
-  local no_fallback=false
-  local use_latest=false
-  local clean=false
-  local target_sha=""
-  local moxygen_dir=""
-  local tarball_ok
-
-  while (( $# > 0 )); do
-    case "$1" in
-      --profile)     profile="$2"; shift 2 ;;
-      --from-release)
-        mode="from-release"; shift
-        # Optional SHA argument (next arg that doesn't start with --)
-        if (( $# > 0 )) && [[ "$1" != --* ]]; then
-          target_sha="$1"; shift
-        fi
-        ;;
-      --from-source)
-        mode="from-source"; shift
-        if (( $# > 0 )) && [[ "$1" != --* ]]; then
-          target_sha="$1"; shift
-        fi
-        ;;
-      --moxygen-dir)
-        [[ $# -gt 1 ]] || die "--moxygen-dir requires a path argument"
-        moxygen_dir="$(cd "$2" && pwd)" || die "--moxygen-dir: '$2' not found"
-        shift 2
-        ;;
-      --no-fallback) no_fallback=true; shift ;;
-      --use-latest)  use_latest=true; shift ;;
-      --clean)       clean=true; shift ;;
-      -h|--help)     usage ;;
-      *)             die "Unknown setup option: $1" ;;
-    esac
-  done
-
-  if [[ -n "$moxygen_dir" && -n "$target_sha" ]]; then
-    die "--moxygen-dir and a SHA override are mutually exclusive"
-  fi
-
-  if [[ -n "$moxygen_dir" ]]; then
-    export MOQX_MOXYGEN_DIR="$moxygen_dir"
-    echo "Using moxygen from: $moxygen_dir"
-  else
-    check_submodule
-    if [[ -n "$target_sha" ]]; then
-      checkout_submodule "$target_sha"
-    fi
-  fi
-
-  # System dep check is deferred until we know a source build is actually
-  # needed (see the from-source branch below). from-release mode downloads a
-  # prebuilt tarball and doesn't need host system libs at setup time.
-
-  if $clean; then
-    echo "Cleaning .scratch..."
-    rm -rf "$SCRATCH"
-  fi
-
-  mkdir -p "$SCRATCH"
-
-  if [[ "$mode" == "from-release" ]]; then
-    echo ""
-    echo "==> Setting up dependencies (from release)..."
-    if $use_latest; then
-      tarball_ok=true
-      bash "$SCRIPT_DIR/setup-deps-tarball.sh" --use-latest || tarball_ok=false
-    else
-      tarball_ok=true
-      bash "$SCRIPT_DIR/setup-deps-tarball.sh" || tarball_ok=false
-    fi
-    if $tarball_ok; then
-      echo "from-release" > "$DEPS_MODE_FILE"
-    elif ! $use_latest && bash "$SCRIPT_DIR/setup-deps-dev-artifact.sh"; then
-      # Snapshot SHA didn't match the submodule pin (typical when the
-      # submodule points at a moxygen PR/feature branch). Try a dev-build
-      # actions artifact for that exact SHA before falling to a slow source
-      # build. Skipped when --use-latest is set since the user already
-      # opted out of pin matching.
-      echo "from-dev-artifact" > "$DEPS_MODE_FILE"
-    else
-      if $no_fallback; then
-        die "Release artifacts not available and --no-fallback specified."
-      fi
-      echo ""
-      echo "Release artifacts not available — falling back to source build..."
-      mode="from-source"
-    fi
-  fi
-
-  if [[ "$mode" == "from-source" ]]; then
-    require_system_deps
-    echo ""
-    echo "==> Setting up dependencies (from source)..."
-    bash "$SCRIPT_DIR/setup-deps-standalone.sh" --profile "$profile"
-    echo "from-source" > "$DEPS_MODE_FILE"
-  fi
-
-  echo ""
-  echo "Setup complete (mode: $(cat "$DEPS_MODE_FILE"))."
-  echo "Run: ./scripts/build.sh"
-}
-
-# ── Build command (default) ──────────────────────────────────────────────────
-
-cmd_build() {
-  require_cmake_version
-  require_system_deps
-  local profile="default"
-  local build_dir=""
-
-  local benchmark=OFF
-
-  while (( $# > 0 )); do
-    case "$1" in
-      --profile)    profile="$2"; shift 2 ;;
-      --build-dir)  build_dir="$2"; shift 2 ;;
-      --benchmark)  benchmark=ON; shift ;;
-      -h|--help)    usage ;;
-      *)            die "Unknown build option: $1" ;;
-    esac
-  done
-
-  # Default build dir from profile
-  if [[ -z "$build_dir" ]]; then
-    case "$profile" in
-      default) build_dir="build" ;;
-      san)     build_dir="build-san" ;;
-      *)       build_dir="build-${profile}" ;;
-    esac
-  fi
-
-  # Use profile-specific prefix path if available, fall back to default
-  local prefix_path_file="$PREFIX_PATH_FILE"
-  if [[ "$profile" != "default" && -f "${SCRATCH}/cmake_prefix_path-${profile}.txt" ]]; then
-    prefix_path_file="${SCRATCH}/cmake_prefix_path-${profile}.txt"
-  fi
-
-  if [[ ! -f "$prefix_path_file" ]]; then
-    die "Dependencies not set up. Run: ./scripts/build.sh setup"
-  fi
-
-  check_submodule
-
-  local prefix_path
-  prefix_path=$(cat "$prefix_path_file")
-
-  local nproc
-  nproc=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
-
-  # Map profile to cmake preset
-  local preset="$profile"
-
-  # from-source builds use system libs (e.g. gflags shared-only on CentOS);
-  # override the preset's .a-only suffix to allow shared system libraries.
-  local extra_cmake_args=()
-  local deps_mode=""
-  [[ -f "$DEPS_MODE_FILE" ]] && deps_mode=$(cat "$DEPS_MODE_FILE")
-  if [[ "$deps_mode" == "from-source" ]]; then
-    extra_cmake_args+=("-DCMAKE_FIND_LIBRARY_SUFFIXES=.so;.a")
-    extra_cmake_args+=("-DGFLAGS_SHARED=ON")
-  fi
-
-  # macOS: prefer shared gflags from brew to avoid conflict with static
-  # gflags symbols bundled in the moxygen tarball (see openmoq/moxygen#114).
-  if [[ "$(uname)" == "Darwin" ]]; then
-    extra_cmake_args+=("-DGFLAGS_SHARED=ON")
-  fi
-
-  if [[ "$benchmark" == "ON" ]]; then
-    extra_cmake_args+=("-DMOQX_BUILD_BENCHMARKS=ON")
-    extra_cmake_args+=("-DMOQX_BUILD_TESTS=OFF")
-  fi
-
-
-  echo "==> Configuring (profile: $profile, build: $build_dir)..."
-  cmake -S "$PROJECT_ROOT" -B "$build_dir" \
-    --preset "$preset" \
-    "${extra_cmake_args[@]+"${extra_cmake_args[@]}"}" \
-    -DCMAKE_PREFIX_PATH="$prefix_path"
-
-  echo "==> Building ($nproc jobs)..."
-  cmake --build "$build_dir" -j"$nproc"
-
-  echo "==> Build complete."
-}
-
-# ── Test command ─────────────────────────────────────────────────────────────
-
-cmd_test() {
-  local build_dir="build"
-  local ctest_args=()
-
-  while (( $# > 0 )); do
-    case "$1" in
-      --build-dir) build_dir="$2"; shift 2 ;;
-      --)          shift; ctest_args=("$@"); break ;;
-      -h|--help)   usage ;;
-      *)           die "Unknown test option: $1" ;;
-    esac
-  done
-
-  if [[ ! -d "$build_dir" ]]; then
-    die "Build directory '$build_dir' not found. Run: ./scripts/build.sh"
-  fi
-
-  echo "==> Running tests (build: $build_dir)..."
-  ctest --test-dir "$build_dir" --output-on-failure "${ctest_args[@]+"${ctest_args[@]}"}"
-}
-
-# ── Main ─────────────────────────────────────────────────────────────────────
-
-if (( $# == 0 )); then
-  cmd_build
-  exit 0
-fi
-
-case "$1" in
-  setup)  shift; cmd_setup "$@" ;;
-  test)   shift; cmd_test "$@" ;;
-  -h|--help) usage ;;
-  -*)     cmd_build "$@" ;;
-  *)      die "Unknown command: $1. Use: setup, test, or build options (--profile, --build-dir)" ;;
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+die() { echo "build.sh: $*" >&2; exit 1; }
+. "$ROOT/scripts/lib/jobs.sh"
+
+# `setup` and `test` name the sibling scripts, so they are rejected rather than
+# taken for preset names.
+case "${1:-}" in
+  setup|configure) die "configuring is done by scripts/configure.sh [PROFILE] --moxygen … (see its --help)" ;;
+  test)            die "tests are run by scripts/test.sh [PROFILE] [CTEST_ARGS...]" ;;
+  -h|--help)       awk 'NR>1 && /^#/ {sub(/^# ?/,""); print; next} NR>1 {exit}' "${BASH_SOURCE[0]}"; exit 0 ;;
 esac
+
+profile="default"
+if (($#)) && [[ "$1" != -* ]]; then profile="$1"; shift; fi
+
+# -j is claimed here rather than left to the passthrough, so the resolved count
+# is the only one on the cmake line.
+jobs="" passthrough=()
+while (($#)); do
+  case "$1" in
+    -j|--jobs) (($# >= 2)) || die "$1 needs a job count"; jobs="$2"; shift 2 ;;
+    -j*)       jobs="${1#-j}"; shift ;;
+    --jobs=*)  jobs="${1#--jobs=}"; shift ;;
+    *)         passthrough+=("$1"); shift ;;
+  esac
+done
+
+build_dir="build/$profile"
+[[ -f "$build_dir/CMakeCache.txt" ]] \
+  || die "no configured build dir '$build_dir' — run first: scripts/configure.sh $profile --moxygen … (see its --help)"
+
+# The configured cache is the only thing that knows whether this build is
+# instrumented; the profile name alone does not (custom presets, -D overrides).
+sanitized=""
+if grep -qE '^MOQX_ENABLE_(SANITIZERS|TSAN):BOOL=(ON|TRUE|1)$' "$build_dir/CMakeCache.txt"; then
+  sanitized=1
+fi
+jobs="$(resolve_jobs "$jobs" "$sanitized")"
+
+set -x
+cmake --build "$build_dir" -j"$jobs" ${passthrough[@]+"${passthrough[@]}"}

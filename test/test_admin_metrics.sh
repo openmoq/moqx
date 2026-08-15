@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BINARY="${1:-$(dirname "$0")/../build/moqx}"
+BINARY="${1:-$(dirname "$0")/../build/default/moqx}"
 # shellcheck source=test_ports.sh
 source "$(dirname "$0")/test_ports.sh"
 LISTEN_PORT=$TEST_ADMIN_METRICS_LISTEN
@@ -93,7 +93,7 @@ EXPECTED_METRICS=(
   "moqx_moqActiveSessions"
   "moqx_pubActiveSubscriptions"
   "moqx_pubSubscribeSuccess_total"
-  "moqx_moqPublishSuccess_total"
+  "moqx_pubPublishSuccess_total"
   "moqx_moqSubscribeLatency_microseconds"
   "moqx_moqFetchLatency_microseconds"
   "moqx_quicPacketsSent_total"

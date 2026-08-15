@@ -201,13 +201,13 @@ void MoQStatsCollector::PublisherCallback::recordPublishLatency(uint64_t latency
 
 void MoQStatsCollector::PublisherCallback::onPublishError(moxygen::PublishErrorCode errorCode) {
   // Relay sent PUBLISH; received PUBLISH_ERROR back.
-  ++parent_.moqPublishError_;
-  ++parent_.moqPublishErrorByCodes_[requestErrorCodeIndex(errorCode)];
+  ++parent_.pubPublishError_;
+  ++parent_.pubPublishErrorByCodes_[requestErrorCodeIndex(errorCode)];
 }
 
 void MoQStatsCollector::PublisherCallback::onPublishSuccess() {
   // Relay sent PUBLISH; received PUBLISH_OK back.
-  ++parent_.moqPublishSuccess_;
+  ++parent_.pubPublishSuccess_;
 }
 
 void MoQStatsCollector::PublisherCallback::onSubgroupReset(moxygen::ResetStreamErrorCode errorCode
@@ -334,14 +334,13 @@ void MoQStatsCollector::SubscriberCallback::recordFetchLatency(uint64_t latencyM
 }
 
 void MoQStatsCollector::SubscriberCallback::onPublish() {
-  // Relay received a PUBLISH request from an upstream publisher.
-  ++parent_.moqPublishReceived_;
+  // Arrival is implied by subPublishSuccess + subPublishError; nothing to count here.
 }
 
 void MoQStatsCollector::SubscriberCallback::onPublishOk() {
   // Relay sent PUBLISH_OK to an upstream publisher; it is now active.
   // onSubscriptionBegin fires after this and increments subActivePublishers_.
-  ++parent_.moqPublishOkSent_;
+  ++parent_.subPublishSuccess_;
 }
 
 void MoQStatsCollector::SubscriberCallback::onPublishError(moxygen::PublishErrorCode errorCode) {

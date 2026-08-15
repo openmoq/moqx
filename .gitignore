@@ -1,9 +1,10 @@
 # Build outputs
 /build/
-/build-*/
+/_build/
 /cmake-build-*/
 /CMakeFiles/
 CMakeCache.txt
+/CMakeUserPresets.json
 cmake_install.cmake
 install_manifest.txt
 compile_commands.json
@@ -19,9 +20,13 @@ DartConfiguration.tcl
 # CPack
 _CPack_Packages/
 
-# Dependency scratch dirs
+# Local dependency staging: /.scratch/ holds the from-source superbuild's
+# moxygen install.
 /.scratch/
-/.docker-deps/
+
+# Discoverability symlinks to the resolved dependency sources (deps/README.md).
+/deps/*
+!/deps/README.md
 
 # OS
 .DS_Store
@@ -38,3 +43,7 @@ docker/cloudflare.ini
 
 # gh-pages dashboard (lives on gh-pages branch, not main)
 /gh-pages/
+docker/grafana/provisioning/dashboards/archive/
+
+# Version stamp for source trees with no .git (cmake/MoqxVersion.cmake).
+/VERSION

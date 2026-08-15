@@ -1,0 +1,163 @@
+# moqx proxy — TLS termination + basic auth + reverse proxy.
+#
+# Rendered from this template by the nginx image's envsubst step: only ${DOMAIN}
+# (a defined env var) is substituted; nginx runtime vars like $host are left
+# intact. Basic-auth credentials live in /etc/nginx/.htpasswd, generated at
+# startup by 40-htpasswd.sh from STATS_USER/STATS_PASSWORD.
+#
+# Primary surface is tools/metrics-dashboard.html (served at /): a self-contained
+# live view that fetches the relay /metrics. Serving the page and proxying
+# /metrics from the SAME origin avoids the dashboard's cross-origin/CORS caveat.
+
+# Websocket upgrade support (Grafana Live).
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+# Per-IP rate + concurrency caps for the public port (see the public server
+# block below). A Grafana dashboard fires one query per panel plus assets on
+# load (tens of requests at once), so the burst must absorb a full page load
+# while the sustained rate still caps a flood.
+limit_req_zone  $binary_remote_addr zone=pubdash:10m rate=50r/s;
+limit_conn_zone $binary_remote_addr zone=pubconn:10m;
+
+# HTTP :80 — redirect to HTTPS. Certs are issued via DNS-01 (certbot profiles),
+# so no HTTP-01 challenge path is served here.
+server {
+    listen      80;
+    listen      [::]:80;
+    server_name ${DOMAIN};
+
+    location = /healthz { return 200 "ok\n"; }
+    location /          { return 301 https://$host$request_uri; }
+}
+
+# HTTPS :443 — TLS termination, basic auth, reverse proxy.
+server {
+    listen      443 ssl;
+    listen      [::]:443 ssl;
+    http2       on;
+    server_name ${DOMAIN};
+
+    ssl_certificate     /certs/live/${DOMAIN}/fullchain.pem;
+    ssl_certificate_key /certs/live/${DOMAIN}/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+
+    # Unauthenticated liveness endpoint (external monitoring / compose checks).
+    location = /healthz {
+        auth_basic off;
+        return 200 "ok\n";
+    }
+
+    auth_basic           "moqx stats";
+    auth_basic_user_file /etc/nginx/.htpasswd;
+
+    # Live metrics dashboard (tools/metrics-dashboard.html) at the root.
+    # The page ships with a hardcoded default endpoint; rewrite it on the way
+    # out so the served copy defaults to this relay's /metrics (same-origin,
+    # CORS-free, basic-auth reused) — turnkey on first load, without editing
+    # afrind's file (kept pristine for standalone/Pages use).
+    location / {
+        root  /usr/share/nginx/html;
+        index metrics-dashboard.html;
+        sub_filter 'value="http://18.236.159.20:19702/metrics"' 'value="/metrics"';
+        sub_filter_once on;
+        try_files $uri $uri/ =404;
+    }
+
+    # Relay /metrics — same-origin data source for the dashboard (no CORS).
+    location = /metrics {
+        proxy_pass       http://moqx:8000/metrics;
+        proxy_set_header Host            $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+    # Relay admin endpoints (read-only JSON: /info, /state, /config).
+    location /admin/ {
+        proxy_pass       http://moqx:8000/;
+        proxy_set_header Host            $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+    # Grafana dashboards (served under /grafana/ — GF_SERVER_SERVE_FROM_SUB_PATH).
+    # Redirect the slashless form so /grafana lands on the app, not a 404.
+    location = /grafana { return 301 /grafana/; }
+    location /grafana/ {
+        proxy_pass         http://grafana:3000;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade    $http_upgrade;
+        proxy_set_header   Connection $connection_upgrade;
+    }
+
+    # Prometheus UI/API (external-url is set to /prometheus/ on the server).
+    location = /prometheus { return 301 /prometheus/; }
+    location /prometheus/ {
+        proxy_pass       http://prometheus:9090/;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+
+# ── PUBLIC port ${STATS_PUBLIC_PORT} — Grafana public dashboards ONLY ─────────
+# Internet-facing (when published on 0.0.0.0). Unauthenticated, but the ONLY
+# routes served are the tokenized public-dashboard paths + their query API +
+# static assets; everything else returns 403. Per-IP rate/conn limited with a
+# denylist for banning. Publish a dashboard with:
+#   grafana/publish-public-dashboard.sh publish
+# This block still renders when the port isn't exposed publicly (bound to
+# 127.0.0.1 by default) — it just isn't reachable until STATS_PUBLIC_BIND=0.0.0.0.
+server {
+    listen      ${STATS_PUBLIC_PORT} ssl;
+    listen      [::]:${STATS_PUBLIC_PORT} ssl;
+    http2       on;
+    server_name ${DOMAIN};
+
+    ssl_certificate     /certs/live/${DOMAIN}/fullchain.pem;
+    ssl_certificate_key /certs/live/${DOMAIN}/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+
+    # Ban troublesome IPs: add "deny 1.2.3.4;" lines to denylist.conf, then
+    # `docker exec moqx-proxy nginx -s reload`. fail2ban can manage this file.
+    include /etc/nginx/denylist.conf;
+
+    # Per-IP caps → excess gets 429 (cheap to serve, easy for fail2ban to spot).
+    # burst absorbs a full dashboard load; sustained 50 r/s still stops a flood.
+    limit_req         zone=pubdash burst=150 nodelay;
+    limit_conn        pubconn 30;
+    limit_req_status  429;
+    limit_conn_status 429;
+
+    location = /healthz { return 200 "ok\n"; }
+
+    # The only public surface: Grafana public dashboards, their query API, and
+    # the frontend assets (static JS/CSS) the page needs. No login, no /api,
+    # no editing, no other dashboards.
+    location /grafana/public-dashboards/ {
+        proxy_pass       http://grafana:3000;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+    location /grafana/api/public/ {
+        proxy_pass       http://grafana:3000;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+    location /grafana/public/ {
+        proxy_pass       http://grafana:3000;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Bare /grafana → send to the (nonexistent to the public) app root; harmless.
+    # Everything else on the public port is refused.
+    location / { return 403; }
+}
