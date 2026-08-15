@@ -99,7 +99,8 @@ std::shared_ptr<MockMoQSession> MoQRelayTest::createMockSession() {
   auto session = std::make_shared<NiceMock<MockMoQSession>>(exec_);
   ON_CALL(*session, getNegotiatedVersion())
       .WillByDefault(Return(std::optional<uint64_t>(kVersionDraftCurrent)));
-  ON_CALL(*session, isSetupOptionNegotiated(SetupKey::RELAY_HOPS)).WillByDefault(Return(false));
+  ON_CALL(*session, negotiatedSetupExtension(SetupExtension::RelayHops))
+      .WillByDefault(Return(false));
   auto state = getOrCreateMockState(session);
   return session;
 }

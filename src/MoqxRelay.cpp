@@ -83,7 +83,7 @@ void setOutgoingHopPath(
     uint64_t localHopID
 ) {
   params.eraseAllParamsOfType(moxygen::TrackRequestParamKey::HOP_PATH);
-  if (!session->isSetupOptionNegotiated(moxygen::SetupKey::RELAY_HOPS)) {
+  if (!session->negotiatedSetupExtension(moxygen::SetupExtension::RelayHops)) {
     return;
   }
   auto version = session->getNegotiatedVersion();
@@ -348,7 +348,7 @@ folly::coro::Task<void> MoqxRelay::onUpstreamConnect(std::shared_ptr<MoQSession>
 folly::coro::Task<void> MoqxRelay::onUpstreamConnectImpl(std::shared_ptr<MoQSession> session) {
   auto nsHandle = makeNamespaceBridgeHandle(weak_from_this(), session, {}, relayExec_);
   auto subNs = makePeerSubNs(relayID_);
-  if (session->isSetupOptionNegotiated(SetupKey::RELAY_HOPS)) {
+  if (session->negotiatedSetupExtension(SetupExtension::RelayHops)) {
     subNs.params.insertParam(
         Parameter(folly::to_underlying(TrackRequestParamKey::EXCLUDE_HOP), relayHopID_)
     );
@@ -443,7 +443,7 @@ std::optional<std::vector<uint64_t>> MoqxRelay::ingestRelayHopPath(
     const std::shared_ptr<MoQSession>& session
 ) {
   std::vector<uint64_t> relayHopPath;
-  if (!session->isSetupOptionNegotiated(SetupKey::RELAY_HOPS)) {
+  if (!session->negotiatedSetupExtension(SetupExtension::RelayHops)) {
     relayHopPath.push_back(getOrCreateLegacyPublisherHopID(session));
   } else {
     const auto* hopPathParam = pubNs.params.getFirstParam(TrackRequestParamKey::HOP_PATH);
@@ -1561,7 +1561,7 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
     // back to that peer on reconnect.
     auto handle = makeNamespaceBridgeHandle(weak_from_this(), session, incomingPeerID, relayExec_);
     auto peerSubNs = makePeerSubNs();
-    if (session->isSetupOptionNegotiated(SetupKey::RELAY_HOPS)) {
+    if (session->negotiatedSetupExtension(SetupExtension::RelayHops)) {
       peerSubNs.params.insertParam(
           Parameter(folly::to_underlying(TrackRequestParamKey::EXCLUDE_HOP), relayHopID_)
       );
@@ -1601,7 +1601,7 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
   if (const auto* param = subNs.params.getFirstParam(TrackRequestParamKey::TRACK_FILTER)) {
     trackFilter = param->asTrackFilter;
   }
-  if (session->isSetupOptionNegotiated(SetupKey::RELAY_HOPS)) {
+  if (session->negotiatedSetupExtension(SetupExtension::RelayHops)) {
     if (const auto* param = subNs.params.getFirstParam(TrackRequestParamKey::EXCLUDE_HOP)) {
       excludeHop = param->asUint64;
     }

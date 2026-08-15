@@ -34,7 +34,8 @@ TEST_P(MoQRelayTest, LegacyPublisherSynthesizesStableOriginAndAppendsRelayHop) {
   auto subscriber = createMockSession();
   ON_CALL(*subscriber, getNegotiatedVersion())
       .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
-  ON_CALL(*subscriber, isSetupOptionNegotiated(SetupKey::RELAY_HOPS)).WillByDefault(Return(true));
+  ON_CALL(*subscriber, negotiatedSetupExtension(SetupExtension::RelayHops))
+      .WillByDefault(Return(true));
   auto namespaceHandle = std::make_shared<RecordingNamespacePublishHandle>();
   doSubscribeNamespace(subscriber, kTestNamespace, true, namespaceHandle);
 
@@ -73,7 +74,8 @@ TEST_P(MoQRelayTest, LegacyPublishersReceiveDistinctOriginHopIDs) {
   auto subscriber = createMockSession();
   ON_CALL(*subscriber, getNegotiatedVersion())
       .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
-  ON_CALL(*subscriber, isSetupOptionNegotiated(SetupKey::RELAY_HOPS)).WillByDefault(Return(true));
+  ON_CALL(*subscriber, negotiatedSetupExtension(SetupExtension::RelayHops))
+      .WillByDefault(Return(true));
   auto namespaceHandle = std::make_shared<RecordingNamespacePublishHandle>();
   doSubscribeNamespace(subscriber, TrackNamespace{}, true, namespaceHandle);
 
@@ -106,7 +108,8 @@ TEST_P(MoQRelayTest, RelayHopLoopIsDroppedBeforeNamespaceRegistration) {
   auto publisher = createMockSession();
   ON_CALL(*publisher, getNegotiatedVersion())
       .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
-  ON_CALL(*publisher, isSetupOptionNegotiated(SetupKey::RELAY_HOPS)).WillByDefault(Return(true));
+  ON_CALL(*publisher, negotiatedSetupExtension(SetupExtension::RelayHops))
+      .WillByDefault(Return(true));
 
   PublishNamespace pubNs;
   pubNs.trackNamespace = kTestNamespace;
@@ -132,7 +135,8 @@ TEST_P(MoQRelayTest, NegotiatedPublisherWithoutHopPathIsDropped) {
   auto publisher = createMockSession();
   ON_CALL(*publisher, getNegotiatedVersion())
       .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
-  ON_CALL(*publisher, isSetupOptionNegotiated(SetupKey::RELAY_HOPS)).WillByDefault(Return(true));
+  ON_CALL(*publisher, negotiatedSetupExtension(SetupExtension::RelayHops))
+      .WillByDefault(Return(true));
 
   PublishNamespace pubNs;
   pubNs.trackNamespace = kTestNamespace;
@@ -155,7 +159,8 @@ TEST_P(MoQRelayTest, MalformedRelayHopPathClosesSourceSession) {
   auto publisher = createMockSession();
   ON_CALL(*publisher, getNegotiatedVersion())
       .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
-  ON_CALL(*publisher, isSetupOptionNegotiated(SetupKey::RELAY_HOPS)).WillByDefault(Return(true));
+  ON_CALL(*publisher, negotiatedSetupExtension(SetupExtension::RelayHops))
+      .WillByDefault(Return(true));
 
   PublishNamespace pubNs;
   pubNs.trackNamespace = kTestNamespace;
@@ -183,7 +188,8 @@ TEST_P(MoQRelayTest, ExcludeHopSuppressesOriginIntermediateAndLocalMatches) {
   auto publisher = createMockSession();
   ON_CALL(*publisher, getNegotiatedVersion())
       .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
-  ON_CALL(*publisher, isSetupOptionNegotiated(SetupKey::RELAY_HOPS)).WillByDefault(Return(true));
+  ON_CALL(*publisher, negotiatedSetupExtension(SetupExtension::RelayHops))
+      .WillByDefault(Return(true));
 
   std::vector<std::shared_ptr<MockMoQSession>> subscribers;
   std::vector<std::shared_ptr<RecordingNamespacePublishHandle>> namespaceHandles;
@@ -192,7 +198,8 @@ TEST_P(MoQRelayTest, ExcludeHopSuppressesOriginIntermediateAndLocalMatches) {
     auto subscriber = createMockSession();
     ON_CALL(*subscriber, getNegotiatedVersion())
         .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
-    ON_CALL(*subscriber, isSetupOptionNegotiated(SetupKey::RELAY_HOPS)).WillByDefault(Return(true));
+    ON_CALL(*subscriber, negotiatedSetupExtension(SetupExtension::RelayHops))
+        .WillByDefault(Return(true));
     auto namespaceHandle = std::make_shared<RecordingNamespacePublishHandle>();
     SubscribeNamespace subNs;
     subNs.trackNamespacePrefix = kTestNamespace;
@@ -244,7 +251,8 @@ TEST_P(MoQRelayTest, NonNegotiatedSubscriberReceivesLegacyNamespaceMessage) {
   auto publisher = createMockSession();
   ON_CALL(*publisher, getNegotiatedVersion())
       .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
-  ON_CALL(*publisher, isSetupOptionNegotiated(SetupKey::RELAY_HOPS)).WillByDefault(Return(true));
+  ON_CALL(*publisher, negotiatedSetupExtension(SetupExtension::RelayHops))
+      .WillByDefault(Return(true));
   auto subscriber = createMockSession();
   ON_CALL(*subscriber, getNegotiatedVersion())
       .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
