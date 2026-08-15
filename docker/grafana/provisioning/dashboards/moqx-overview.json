@@ -1091,7 +1091,6 @@
             "footer": {
               "reducers": []
             },
-            "headerAlign": "center",
             "inspect": false
           },
           "mappings": [],
@@ -1118,10 +1117,6 @@
               },
               {
                 "id": "custom.align",
-                "value": "left"
-              },
-              {
-                "id": "custom.headerAlign",
                 "value": "left"
               },
               {
@@ -1378,7 +1373,6 @@
               "type": "auto"
             },
             "filterable": false,
-            "headerAlign": "center",
             "inspect": false
           },
           "mappings": [],
@@ -1401,10 +1395,6 @@
             "properties": [
               {
                 "id": "custom.align",
-                "value": "left"
-              },
-              {
-                "id": "custom.headerAlign",
                 "value": "left"
               },
               {
