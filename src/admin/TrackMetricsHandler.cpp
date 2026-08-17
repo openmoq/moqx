@@ -45,9 +45,9 @@ struct ClockAnchor {
 
 } // namespace
 
-std::unique_ptr<folly::IOBuf> formatTrackMetrics(const MoqxRelayContext::TrackMetricsResult& result
-) {
-  stats::PrometheusWriter out;
+std::unique_ptr<folly::IOBuf>
+formatTrackMetrics(const MoqxRelayContext::TrackMetricsResult& result, bool omitMetadata) {
+  stats::PrometheusWriter out{omitMetadata};
 
   struct Counter {
     std::string_view name;
@@ -227,6 +227,12 @@ void registerTrackMetricsRoute(
           limit = *parsed;
         }
 
+        auto omitMetadata = boolQueryParam(*req, "omit_metadata", false);
+        if (!omitMetadata) {
+          sendError(downstream, 400, "omit_metadata must be one of 1, 0, true, false\n");
+          return;
+        }
+
         std::string service = req->getDecodedQueryParam("service");
         std::optional<std::string> track;
         if (req->hasQueryParam("track")) {
@@ -247,7 +253,8 @@ void registerTrackMetricsRoute(
                    std::string service,
                    moxygen::TrackNamespace ns,
                    std::optional<std::string> track,
-                   size_t limit) -> folly::coro::Task<void> {
+                   size_t limit,
+                   bool omitMetadata) -> folly::coro::Task<void> {
                   if (token.isCancellationRequested()) {
                     co_return;
                   }
@@ -288,15 +295,16 @@ void registerTrackMetricsRoute(
                   proxygen::ResponseBuilder(ds)
                       .status(200, proxygen::HTTPMessage::getDefaultReason(200))
                       .header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-                      .body(formatTrackMetrics(result))
+                      .body(formatTrackMetrics(result, omitMetadata))
                       .sendWithEOM();
                 }(context,
-                                 downstream,
-                                 cancelToken,
-                                 std::move(service),
-                                 std::move(nsPrefix),
-                                 std::move(track),
-                                 limit)
+                                      downstream,
+                                      cancelToken,
+                                      std::move(service),
+                                      std::move(nsPrefix),
+                                      std::move(track),
+                                      limit,
+                                      *omitMetadata)
             )
         )
             .start();

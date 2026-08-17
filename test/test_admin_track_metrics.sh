@@ -105,6 +105,28 @@ for metric in \
   grep -q "^# TYPE ${metric} " < "$BODY_FILE" || fail "missing TYPE line for ${metric}"
 done
 
+# omit_metadata drops the schema lines from both metrics endpoints.
+for url in "${TRACK_URL}?namespace=test-ns&omit_metadata=1" \
+           "http://localhost:${ADMIN_PORT}/metrics?omit_metadata"; do
+  HTTP_CODE=$(curl -sw "%{http_code}" -o "$BODY_FILE" "$url" 2>/dev/null)
+  [[ "$HTTP_CODE" == "200" ]] || fail "expected HTTP 200 for omit_metadata, got $HTTP_CODE"
+  if grep -q '^# ' < "$BODY_FILE"; then
+    fail "omit_metadata should drop HELP/TYPE lines: $url"
+  fi
+done
+grep -q "^moqx_moqActiveSessions " < "$BODY_FILE" \
+  || fail "omit_metadata should keep sample lines"
+
+HTTP_CODE=$(curl -sw "%{http_code}" -o /dev/null \
+  "${TRACK_URL}?namespace=test-ns&omit_metadata=yes" 2>/dev/null)
+[[ "$HTTP_CODE" == "400" ]] || fail "expected HTTP 400 for non-boolean omit_metadata, got $HTTP_CODE"
+
+HTTP_CODE=$(curl -sw "%{http_code}" -o "$BODY_FILE" \
+  "${TRACK_URL}?namespace=test-ns&omit_metadata=false" 2>/dev/null)
+[[ "$HTTP_CODE" == "200" ]] || fail "expected HTTP 200 for omit_metadata=false, got $HTTP_CODE"
+grep -q "^# TYPE moqx_track_subscribers " < "$BODY_FILE" \
+  || fail "omit_metadata=false should keep TYPE lines"
+
 # Filters and limits are accepted.
 HTTP_CODE=$(curl -sw "%{http_code}" -o /dev/null \
   "${TRACK_URL}?namespace=test-ns&track=track1&service=default&limit=5" 2>/dev/null)
