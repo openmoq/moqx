@@ -16,10 +16,10 @@
 #include <folly/CancellationToken.h>
 #include <folly/File.h>
 #include <folly/FileUtil.h>
-#include <folly/coro/Invoke.h>
 #include <folly/coro/Task.h>
 #include <folly/coro/WithCancellation.h>
 #include <folly/executors/GlobalExecutor.h>
+#include <folly/futures/Future.h>
 #include <folly/io/IOBuf.h>
 #include <folly/io/async/EventBaseManager.h>
 #include <folly/logging/xlog.h>
@@ -34,6 +34,7 @@ namespace openmoq::moqx::admin {
 namespace {
 
 constexpr size_t kMaxDownloadBytes = 512ULL * 1024 * 1024; // 512 MB hard cap
+constexpr size_t kChunkSize = 64 * 1024;
 
 // Normalize a raw connection ID string:
 //   - strip 0x/0X prefix
@@ -55,35 +56,105 @@ std::optional<std::string> normalizeConnectionId(std::string_view raw) {
   return result;
 }
 
-// Read an entire file into an IOBuf. Returns nullptr if the file cannot be
-// opened, is empty, or exceeds maxBytes.
-std::unique_ptr<folly::IOBuf> readFileToIOBuf(const std::string& path, size_t maxBytes) {
-  folly::File file;
+// Blocking; must run off the event-loop thread. Returns nullptr if the file
+// cannot be opened, is not a regular file, is empty, or exceeds maxBytes.
+// maxBytes is a policy limit on what a client may pull, not a memory bound:
+// the body is streamed, so it never lands in the process whole.
+std::unique_ptr<folly::File> openLogFile(const std::string& path, size_t maxBytes) {
+  std::unique_ptr<folly::File> file;
   try {
-    file = folly::File(path, O_RDONLY);
+    file = std::make_unique<folly::File>(path, O_RDONLY);
   } catch (const std::exception&) {
     return nullptr;
   }
 
   struct stat st{};
-  if (::fstat(file.fd(), &st) != 0 || !S_ISREG(st.st_mode))
+  if (::fstat(file->fd(), &st) != 0 || !S_ISREG(st.st_mode))
     return nullptr;
   const auto size = static_cast<size_t>(st.st_size);
   if (size == 0 || size > maxBytes)
     return nullptr;
 
-  auto content = std::make_unique<std::string>();
-  if (!folly::readFile(file.fd(), *content, size) || content->size() != size)
-    return nullptr;
+  return file;
+}
 
-  auto* data = content->data();
-  const auto len = content->size();
-  return folly::IOBuf::takeOwnership(
-      data,
-      len,
-      [](void*, void* userData) { delete static_cast<std::string*>(userData); },
-      content.release()
-  );
+// Blocking; must run off the event-loop thread. Returns a zero-length buffer
+// at EOF, nullptr on read error.
+std::unique_ptr<folly::IOBuf> readChunk(int fd) {
+  auto buf = folly::IOBuf::create(kChunkSize);
+  const auto rc = folly::readNoInt(fd, buf->writableTail(), kChunkSize);
+  if (rc < 0)
+    return nullptr;
+  buf->append(static_cast<size_t>(rc));
+  return buf;
+}
+
+// Runs on the admin event base. Every resumption point must re-check
+// cancelToken: downstream is destroyed as soon as cancellation fires.
+folly::coro::Task<void> streamLogFile(
+    std::string filePath,
+    std::string fileName,
+    proxygen::ResponseHandler* downstream,
+    folly::CancellationToken cancelToken
+) {
+  if (cancelToken.isCancellationRequested())
+    co_return;
+
+  // Open on the global CPU pool: open(2)/fstat(2) block.
+  auto openResult =
+      co_await folly::coro::co_awaitTry(folly::via(folly::getGlobalCPUExecutor(), [&filePath] {
+        return openLogFile(filePath, kMaxDownloadBytes);
+      }));
+  if (openResult.hasException()) {
+    XLOG(ERR) << "ConnectionLogsHandler: file open threw: " << openResult.exception().what();
+    if (!cancelToken.isCancellationRequested()) {
+      sendError(downstream, 500, "internal error\n");
+    }
+    co_return;
+  }
+
+  if (cancelToken.isCancellationRequested())
+    co_return;
+
+  std::unique_ptr<folly::File> file = std::move(openResult.value());
+  if (!file) {
+    sendError(downstream, 404, "log file not found or exceeds size limit\n");
+    co_return;
+  }
+
+  // No Content-Length: the log is still being appended to while we read it, so
+  // a length from fstat(2) would be stale by EOF. The body streams chunked.
+  proxygen::ResponseBuilder(downstream)
+      .status(200, proxygen::HTTPMessage::getDefaultReason(200))
+      .header("Content-Type", "application/json")
+      .header("Content-Disposition", "attachment; filename=\"" + fileName + "\"")
+      .send();
+
+  // Read on the CPU pool, send from the event-loop thread: each disk read
+  // overlaps the network write of the chunk before it.
+  for (;;) {
+    auto chunkResult = co_await folly::coro::co_awaitTry(
+        folly::via(folly::getGlobalCPUExecutor(), [fd = file->fd()] { return readChunk(fd); })
+    );
+
+    if (cancelToken.isCancellationRequested())
+      co_return;
+
+    if (chunkResult.hasException() || !chunkResult.value()) {
+      // Headers are already out, so the only way left to signal failure is to
+      // tear the response down.
+      XLOG(ERR) << "ConnectionLogsHandler: read failed for " << filePath;
+      downstream->sendAbort();
+      co_return;
+    }
+
+    auto chunk = std::move(chunkResult.value());
+    if (chunk->empty()) {
+      proxygen::ResponseBuilder(downstream).sendWithEOM();
+      co_return;
+    }
+    proxygen::ResponseBuilder(downstream).body(std::move(chunk)).send();
+  }
 }
 
 } // namespace
@@ -155,47 +226,12 @@ void registerConnectionLogsRoutes(
             cancelToken,
             folly::coro::co_withExecutor(
                 evb,
-                [](std::string filePath,
-                   std::string fileName,
-                   proxygen::ResponseHandler* downstream,
-                   folly::CancellationToken cancelToken) -> folly::coro::Task<void> {
-                  if (cancelToken.isCancellationRequested())
-                    co_return;
-
-                  // Read the file on the global CPU pool to avoid blocking the admin
-                  // event-loop thread.
-                  auto readResult = co_await folly::coro::co_awaitTry(folly::coro::co_withExecutor(
-                      folly::getGlobalCPUExecutor(),
-                      [](const std::string& path
-                      ) -> folly::coro::Task<std::unique_ptr<folly::IOBuf>> {
-                        co_return readFileToIOBuf(path, kMaxDownloadBytes);
-                      }(filePath)
-                  ));
-                  if (readResult.hasException()) {
-                    XLOG(ERR) << "ConnectionLogsHandler: file read threw: "
-                              << readResult.exception().what();
-                    if (!cancelToken.isCancellationRequested()) {
-                      sendError(downstream, 500, "internal error\n");
-                    }
-                    co_return;
-                  }
-
-                  if (cancelToken.isCancellationRequested())
-                    co_return;
-
-                  std::unique_ptr<folly::IOBuf> fileBuf = std::move(readResult.value());
-                  if (!fileBuf) {
-                    sendError(downstream, 404, "log file not found or exceeds size limit\n");
-                    co_return;
-                  }
-
-                  proxygen::ResponseBuilder(downstream)
-                      .status(200, proxygen::HTTPMessage::getDefaultReason(200))
-                      .header("Content-Type", "application/json")
-                      .header("Content-Disposition", "attachment; filename=\"" + fileName + "\"")
-                      .body(std::move(fileBuf))
-                      .sendWithEOM();
-                }(std::move(filePath), std::move(fileName), downstream, cancelToken)
+                streamLogFile(
+                    std::move(filePath),
+                    std::move(fileName),
+                    downstream,
+                    std::move(cancelToken)
+                )
             )
         )
             .start();

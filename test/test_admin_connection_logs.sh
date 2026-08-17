@@ -42,6 +42,12 @@ EOF
 # Create a fake mlog file
 echo '{"fake":"mlog"}' > "$TMPDIR/mlog/abcdef123456.mlog"
 
+# A second one past the 64 KB read chunk, so the streaming loop spans chunks
+BIG_MLOG="$TMPDIR/mlog/beef00000001.mlog"
+for i in $(seq 1 20000); do
+  echo "{\"line\":$i}"
+done > "$BIG_MLOG"
+
 # Start moqx with the generated config in the background.
 "$BINARY" --config="$TMPDIR/config.yaml" &
 MOQX_PID=$!
@@ -102,8 +108,29 @@ if ! grep -qi 'content-type:.*application/json' <<<"$HEADERS"; then
   exit 1
 fi
 
+# The body is streamed, so the length is not known when headers go out.
+if grep -qi '^content-length:' <<<"$HEADERS"; then
+  echo "FAIL: expected a streamed response, got Content-Length" >&2
+  echo "Got headers: $HEADERS" >&2
+  exit 1
+fi
+
 if ! grep -q '{"fake":"mlog"}' <<<"$RESPONSE"; then
   echo "FAIL: response body did not match expected mlog content" >&2
+  exit 1
+fi
+
+# Test 5: A multi-chunk file arrives byte-for-byte
+BIG_RESPONSE="$TMPDIR/big_response.mlog"
+HTTP_CODE=$(curl -sw "%{http_code}" -o "$BIG_RESPONSE" "${LOGS_URL}?type=mlog&connection_id=beef00000001" 2>/dev/null || true)
+
+if [[ "$HTTP_CODE" != "200" ]]; then
+  echo "FAIL: expected HTTP 200 for large mlog, got $HTTP_CODE" >&2
+  exit 1
+fi
+
+if ! cmp -s "$BIG_MLOG" "$BIG_RESPONSE"; then
+  echo "FAIL: large mlog body differs from the file on disk" >&2
   exit 1
 fi
 
