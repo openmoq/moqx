@@ -96,6 +96,8 @@ public:
   }
 
   // --- Untracked callbacks (no-op) ---
+  void onPacketLossByTimeout() override {}
+  void onPacketLossByReorderingThreshold() override {}
   void onRxDelaySample(uint64_t) override {}
   void onDuplicatedPacketReceived() override {}
   void onOutOfOrderPacketReceived() override {}
