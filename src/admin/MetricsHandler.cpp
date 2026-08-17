@@ -15,6 +15,7 @@
 #include <proxygen/httpserver/ResponseBuilder.h>
 #include <proxygen/lib/http/HTTPMessage.h>
 
+#include "admin/AdminResponse.h"
 #include "admin/AdminServer.h"
 #include "stats/StatsRegistry.h"
 
@@ -28,37 +29,40 @@ void registerMetricsRoute(
       "GET",
       "/metrics",
       [registry = std::move(registry
-       )](auto /*req*/, auto /*body*/, auto* downstream, folly::CancellationToken cancelToken) {
+       )](auto req, auto /*body*/, auto* downstream, folly::CancellationToken cancelToken) {
         auto* evb = folly::EventBaseManager::get()->getEventBase();
+
+        auto omitMetadata = boolQueryParam(*req, "omit_metadata", false);
+        if (!omitMetadata) {
+          sendError(downstream, 400, "omit_metadata must be one of 1, 0, true, false\n");
+          return;
+        }
 
         folly::coro::co_withCancellation(
             cancelToken,
             folly::coro::co_withExecutor(
                 evb,
-                [](auto reg, auto* ds, auto token) -> folly::coro::Task<void> {
+                [](auto reg, auto* ds, auto token, bool omitMeta) -> folly::coro::Task<void> {
                   stats::StatsSnapshot snap;
                   try {
                     snap = co_await reg->aggregateAsync();
                   } catch (const std::exception& e) {
                     XLOG(ERR) << "MetricsHandler: aggregateAsync threw: " << e.what();
                     if (!token.isCancellationRequested()) {
-                      proxygen::ResponseBuilder(ds)
-                          .status(500, proxygen::HTTPMessage::getDefaultReason(500))
-                          .body(folly::IOBuf::copyBuffer("internal error\n"))
-                          .sendWithEOM();
+                      sendError(ds, 500, "internal error\n");
                     }
                     co_return;
                   }
                   if (token.isCancellationRequested()) {
                     co_return;
                   }
-                  auto body = stats::StatsSnapshot::formatPrometheus(snap);
+                  auto body = stats::StatsSnapshot::formatPrometheus(snap, omitMeta);
                   proxygen::ResponseBuilder(ds)
                       .status(200, proxygen::HTTPMessage::getDefaultReason(200))
                       .header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
                       .body(std::move(body))
                       .sendWithEOM();
-                }(registry, downstream, cancelToken)
+                }(registry, downstream, cancelToken, *omitMetadata)
             )
         )
             .start();

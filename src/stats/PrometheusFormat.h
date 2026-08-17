@@ -44,6 +44,11 @@ inline std::string escapeLabelValue(std::string_view value) {
 //   https://prometheus.io/docs/instrumenting/exposition_formats/
 class PrometheusWriter {
 public:
+  PrometheusWriter() = default;
+  // omitMetadata drops the # HELP / # TYPE lines, which repeat unchanged on
+  // every scrape and dominate the response for small series counts.
+  explicit PrometheusWriter(bool omitMetadata) : omitMetadata_(omitMetadata) {}
+
   void append(std::string_view s) {
     appender_.push(reinterpret_cast<const uint8_t*>(s.data()), s.size());
   }
@@ -51,6 +56,9 @@ public:
   template <typename T> void num(T value) { append(folly::to<std::string>(value)); }
 
   void header(std::string_view name, std::string_view type, std::string_view help) {
+    if (omitMetadata_) {
+      return;
+    }
     append("# HELP ");
     append(name);
     append(" ");
@@ -65,6 +73,7 @@ public:
   std::unique_ptr<folly::IOBuf> move() { return queue_.move(); }
 
 private:
+  bool omitMetadata_{false};
   folly::IOBufQueue queue_{folly::IOBufQueue::cacheChainLength()};
   folly::io::QueueAppender appender_{&queue_, 8192};
 };
