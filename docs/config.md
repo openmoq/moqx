@@ -454,7 +454,7 @@ Prometheus a series set that reshuffles between scrapes.  See [docs/metrics.md] 
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/info` | Returns `{"service":"moqx","version":"..."}`. |
+| `GET` | `/info` | Returns `{"service":"moqx","version":"...","start_time":<epoch seconds>,"uptime_seconds":<n>}`. |
 | `GET` | `/metrics` | Prometheus-format metrics. See [docs/metrics.md](metrics.md) (pending PR #137). |
 | `GET` | `/metrics/track` | Per-track Prometheus metrics for live tracks. See [docs/metrics.md](metrics.md). |
 | `GET` | `/state` | Relay state: connected peers, active subscriptions, namespace tree, and cache stats. Pending PR #146. |

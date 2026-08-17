@@ -1,7 +1,8 @@
 /*
  * Copyright (c) Meta Platforms, Inc. and affiliates.
  * Originally from github.com/facebookexperimental/moxygen.
- * See deps/moxygen/LICENSE for the original license terms.
+ * See the moxygen LICENSE for the original license terms:
+ * https://github.com/openmoq/moxygen/blob/main/LICENSE
  *
  * Copyright (c) OpenMOQ contributors.
  */
@@ -333,15 +334,16 @@ private:
       folly::Executor* subscriberExec
   );
 
+  // This thread's registry, created on first use.
+  LocalForwarderRegistry& localRegistry();
+
   struct LocalForwarderBootstrap {
     std::shared_ptr<moxygen::MoQForwarder> localFwd;
     bool isNew{false};
     LocalForwarderRegistry* localReg{nullptr};
   };
-  LocalForwarderBootstrap acquireLocalForwarder(
-      const moxygen::FullTrackName& ftn,
-      folly::FunctionRef<std::shared_ptr<moxygen::MoQForwarder>()> factory
-  );
+  LocalForwarderBootstrap
+  acquireLocalForwarder(const moxygen::FullTrackName& ftn, const InitialTrackState& initial);
 
   bool addSubscriberAndPublish(
       std::shared_ptr<moxygen::MoQSession> subscriberSession,
@@ -365,9 +367,12 @@ private:
       std::shared_ptr<moxygen::MoQSession> session
   );
 
-  // Constructs the publisher's local forwarder and installs its callback chain on
-  // publisherExec. tlForwarders_ must already be initialized.
-  std::shared_ptr<moxygen::MoQForwarder> createPublisherForwarder(const moxygen::PublishRequest& pub
+  // Runs on fwd's exec; the returned Claim owes a markReady/fail. removeOnEmpty=false for a
+  // publish-initiated forwarder, which must survive subscriber churn.
+  LocalForwarderRegistry::Claim installPublisherForwarder(
+      const moxygen::FullTrackName& ftn,
+      const std::shared_ptr<moxygen::MoQForwarder>& fwd,
+      bool removeOnEmpty
   );
 
   std::optional<moxygen::PublishError>
@@ -489,7 +494,8 @@ private:
     folly::Executor* publisherExec{nullptr};
     bool ownsRelayChain{false}; // firstSetup path installed the passive relay chain
     std::shared_ptr<moxygen::MoQForwarder::Callback> finalCallback;
-    std::optional<UpstreamOk> upstreamOk;
+    // Captured off the publisher forwarder on its own exec, the only race-free place.
+    InitialTrackState initial;
     std::optional<SubscribeResult> error; // set => bail
   };
 

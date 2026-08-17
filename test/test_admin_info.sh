@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BINARY="${1:-$(dirname "$0")/../build/moqx}"
+BINARY="${1:-$(dirname "$0")/../build/default/moqx}"
 # shellcheck source=test_ports.sh
 source "$(dirname "$0")/test_ports.sh"
 LISTEN_PORT=$TEST_ADMIN_INFO_LISTEN
@@ -52,6 +52,16 @@ fi
 
 if ! grep -q '"version":' <<<"$RESPONSE"; then
   echo "FAIL: missing \"version\" field in response" >&2
+  exit 1
+fi
+
+if ! grep -qE '"start_time":[0-9]{10}' <<<"$RESPONSE"; then
+  echo "FAIL: missing/implausible \"start_time\" field in response" >&2
+  exit 1
+fi
+
+if ! grep -qE '"uptime_seconds":[0-9]+' <<<"$RESPONSE"; then
+  echo "FAIL: missing \"uptime_seconds\" field in response" >&2
   exit 1
 fi
 
