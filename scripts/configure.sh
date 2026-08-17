@@ -3,7 +3,8 @@
 #
 # Usage:
 #   configure.sh [PROFILE] --moxygen (prebuilt-with-fallback|prebuilt|from-source)
-#                [--moxygen-dir DIR] [--clean] [-j N] [-DVAR=VALUE]...
+#                [--moxygen-dir DIR] [--sync-moxygen-dir] [--clean] [-j N]
+#                [-DVAR=VALUE]...
 #   PROFILE:                       default | san | tsan, or any preset from
 #                                  CMakeUserPresets.json; inherit `default` so
 #                                  binaryDir stays build/<name>. Default: default.
@@ -16,6 +17,14 @@
 #   --moxygen-dir DIR:             with from-source, build the local checkout DIR
 #                                  (the cross-repo moxygen+moqx dev loop)
 #                                  Which to pick: BUILD.md#how-dependencies-work
+#   --sync-moxygen-dir:            first move --moxygen-dir's checkout to
+#                                  MOXYGEN_REV, via scripts/dev/sync-moxygen.sh.
+#                                  Refuses (never stashes or forces) when that tree
+#                                  is dirty, mid rebase/merge, or sits on a commit
+#                                  no ref but HEAD names. A branch is fine — it
+#                                  survives the detach. Without this the checkout
+#                                  is built exactly as it stands, which is the
+#                                  point of --moxygen-dir.
 #   --clean:                       also discard this profile's from-source moxygen
 #                                  build (build/<PROFILE> is rebuilt from scratch
 #                                  either way; no effect unless the source build runs)
@@ -58,12 +67,13 @@ usage() { awk 'NR>1 && /^#/ {sub(/^# ?/,""); print; next} NR>1 {exit}' "${BASH_S
 truthy() { case "$1" in [Oo][Nn]|[Tt][Rr][Uu][Ee]|1|[Yy][Ee][Ss]) return 0 ;; *) return 1 ;; esac; }
 . "$ROOT/scripts/lib/jobs.sh"
 
-profile="default" moxygen="" moxygen_dir="" clean=0 jobs="" passthru=()
+profile="default" moxygen="" moxygen_dir="" sync_moxygen_dir=0 clean=0 jobs="" passthru=()
 if (($#)) && [[ "$1" != -* ]]; then profile="$1"; shift; fi
 while (($#)); do
   case "$1" in
     --moxygen)     (($# >= 2)) || die "--moxygen needs a value (prebuilt|prebuilt-with-fallback|from-source)"; moxygen="$2"; shift 2 ;;
     --moxygen-dir) (($# >= 2)) || die "--moxygen-dir needs a directory"; moxygen_dir="$(cd "$2" 2>/dev/null && pwd)" || die "--moxygen-dir: '$2' not found"; shift 2 ;;
+    --sync-moxygen-dir) sync_moxygen_dir=1; shift ;;
     --clean)       clean=1; shift ;;
     -j|--jobs)     (($# >= 2)) || die "$1 needs a job count"; jobs="$2"; shift 2 ;;
     -j*)           jobs="${1#-j}"; shift ;;
@@ -83,6 +93,8 @@ case "$moxygen" in
   *)  die "unknown --moxygen '$moxygen' (prebuilt-with-fallback|prebuilt|from-source)" ;;
 esac
 [[ -n "$moxygen_dir" && "$moxygen" != from-source ]] && die "--moxygen-dir requires --moxygen from-source"
+# Without --moxygen-dir the pin is what CPM fetches, so there is no checkout to move.
+((sync_moxygen_dir)) && [[ -z "$moxygen_dir" ]] && die "--sync-moxygen-dir requires --moxygen-dir"
 
 # Refusing beats last-wins: a stray -DMOQX_MOXYGEN_PREBUILT=ON would defeat the
 # from-source prefix and pull an uninstrumented moxygen under a sanitizer build,
@@ -230,6 +242,13 @@ fetch_prebuilt() {
   rm -f "$out"
   return "$rc"
 }
+
+# After the interlocks above: a configure that is going to die should not have moved
+# the checkout on its way out.
+if ((sync_moxygen_dir)); then
+  scripts/dev/sync-moxygen.sh --dir "$moxygen_dir" \
+    || die "--sync-moxygen-dir: refused to move $moxygen_dir (see above)"
+fi
 
 resolved="$moxygen"
 [[ "$moxygen" == prebuilt-with-fallback && "${MOQX_MOXYGEN_FALLBACK:-}" == off ]] && resolved="prebuilt"
