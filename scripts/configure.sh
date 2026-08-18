@@ -218,6 +218,24 @@ configure_from_source() {
   configure_moqx "${from_source[@]}"
 }
 
+# The fallback builds the pinned rev, but a superbuild dir bound to a local
+# --moxygen-dir checkout would be silently re-keyed to the pin — an implicit
+# code path discarding an explicit binding. Refuse and make the caller choose.
+# A recorded source under the CPM clone root is the pin (or an old pin), which
+# the superbuild re-keys on its own.
+guard_fallback_rekey() {
+  [[ -f "$sb/CMakeCache.txt" ]] || return 0
+  local recorded
+  recorded="$(sed -n 's/^MOQX_MOXYGEN_SOURCE_DIR:INTERNAL=//p' "$sb/CMakeCache.txt")"
+  [[ -n "$recorded" ]] || return 0
+  [[ "$recorded" == "${CPM_SOURCE_CACHE:-$MOQX_DEPS_CACHE/cpm}"/* ]] && return 0
+  die "no prebuilt for the pin, and $sb is bound to the local checkout
+  $recorded
+falling back would rebuild it against the pinned rev, dropping that binding —
+  keep the checkout:  configure.sh $profile --moxygen from-source --moxygen-dir $recorded
+  build the pin:      configure.sh $profile --moxygen from-source   (add --clean to rebuild from scratch)"
+}
+
 # Is a prebuilt published for the pin on this platform? Populates the dependency
 # cache when it is, so the configure that follows needs no network. Forwarding the
 # probe's own knobs keeps it answering for the platform moqx goes on to ask for.
@@ -250,6 +268,7 @@ case "$resolved" in
       configure_moqx -DMOQX_MOXYGEN_PREBUILT=ON
     else
       resolved="from-source"
+      guard_fallback_rekey
       echo "configure.sh: no moxygen prebuilt for the pin (see above) — building it from source, which is slow" >&2
       [[ -n "${GITHUB_ACTIONS:-}" ]] \
         && echo "::warning title=moxygen prebuilt unavailable::configure.sh fell back to the from-source superbuild"
