@@ -130,6 +130,19 @@ else
     needs_src="$tsan_src"
   fi
 fi
+# Sanitizer flags are inert under Release (CMakeLists applies them non-Release
+# only). Refusing the contradiction here beats a superbuild-length detour to
+# the same refusal.
+build_type="$(sed -n 's/.*CMAKE_BUILD_TYPE="\(.*\)"/\1/p' <<<"$preset_info" | tail -1)"
+for arg in ${passthru[@]+"${passthru[@]}"}; do
+  case "$arg" in -DCMAKE_BUILD_TYPE[:=]*) build_type="${arg#*=}" ;; esac
+done
+if [[ "$needs_profile" != default && "$build_type" == Release ]]; then
+  die "$needs_src enables sanitizers ($needs_profile), but CMAKE_BUILD_TYPE=Release makes the
+  sanitizer flags inert, so moqx would carry none and refuse the instrumented moxygen —
+  drop -DCMAKE_BUILD_TYPE=Release, or drop the sanitizer profile"
+fi
+
 # ...versus the moxygen actually built/downloaded. A fallback build has to match
 # the prebuilt it stands in for, or losing the prebuilt would quietly change what
 # the lane tests.
