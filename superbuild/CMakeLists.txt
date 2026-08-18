@@ -67,6 +67,11 @@ endif()
 set(_moxygen_install "${CMAKE_BINARY_DIR}/moxygen-install")
 message(STATUS "moxygen will install to ${_moxygen_install}")
 
+# <prefix>/.moqx-moxygen-profile names the profile this stack was compiled with;
+# moqx's configure interlocks on it (no stamp reads as "default"). Written here,
+# copied into the prefix by the install step below.
+file(WRITE "${CMAKE_BINARY_DIR}/moxygen-profile-stamp" "${MOQX_MOXYGEN_PROFILE}\n")
+
 # moxygen compile/link flags: sanitizers, plus a macOS fmt workaround. Apple
 # Clang 21+ rejects fmt 10.2.1's consteval format-string check (fmtlib/fmt#4740);
 # applied on all macOS since project(NONE) leaves no compiler version to gate on.
@@ -142,6 +147,9 @@ ExternalProject_Add(moxygen
   # find_package and includes to pick up.
   INSTALL_COMMAND ${CMAKE_COMMAND} -E rm -rf <INSTALL_DIR>
           COMMAND ${CMAKE_COMMAND} --install <BINARY_DIR> --config ${_build_type}
+          COMMAND ${CMAKE_COMMAND} -E copy
+                  ${CMAKE_BINARY_DIR}/moxygen-profile-stamp
+                  <INSTALL_DIR>/.moqx-moxygen-profile
   CMAKE_ARGS
     -DCMAKE_BUILD_TYPE=${_build_type}
     # INSTALL_DIR only fills the <INSTALL_DIR> placeholder; the prefix must be

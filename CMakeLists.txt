@@ -107,13 +107,6 @@ endif()
 # MOXYGEN_REV, OFF demands a prefix. See BUILD.md#how-dependencies-work.
 find_package(moxygen QUIET CONFIG)
 if(NOT moxygen_FOUND AND MOQX_MOXYGEN_PREBUILT)
-  if(MOQX_ENABLE_SANITIZERS OR MOQX_ENABLE_TSAN)
-    message(WARNING
-      "Sanitizers are enabled but moxygen resolves to the UNINSTRUMENTED "
-      "prebuilt — sanitizer coverage is limited to moqx's own TUs. For full "
-      "coverage build an instrumented moxygen: "
-      "scripts/configure.sh san|tsan --moxygen from-source (see BUILD.md).")
-  endif()
   include(cmake/FetchMoxygenPrebuilt.cmake)
   find_package(moxygen REQUIRED CONFIG)
 elseif(NOT moxygen_FOUND)
@@ -124,6 +117,55 @@ elseif(NOT moxygen_FOUND)
     "(or pass -DCMAKE_PREFIX_PATH=<moxygen install>; see BUILD.md).")
 endif()
 message(STATUS "moxygen: using install at ${moxygen_DIR}")
+
+# <prefix>/.moqx-moxygen-profile names the sanitizer profile the moxygen stack
+# was compiled with (written by the superbuild; absent — prebuilts, foreign
+# prefixes — reads as "default"). moqx and that stack must agree: uninstrumented
+# deps under a sanitized moqx silently stop coverage at moqx's own TUs, and any
+# other mismatch breaks at link (missing/clashing sanitizer runtimes) or skews
+# folly's kIsDebug across the ABI (the superbuild builds san/tsan as Debug).
+get_filename_component(_moqx_moxygen_prefix "${moxygen_DIR}/../../.." ABSOLUTE)
+set(_moqx_moxygen_stamp "default")
+if(EXISTS "${_moqx_moxygen_prefix}/.moqx-moxygen-profile")
+  file(READ "${_moqx_moxygen_prefix}/.moqx-moxygen-profile" _moqx_moxygen_stamp)
+  string(STRIP "${_moqx_moxygen_stamp}" _moqx_moxygen_stamp)
+endif()
+# Mirrors the flag conditions above: under Release the enable options apply no
+# instrumentation, so moqx needs the uninstrumented stack.
+set(_moqx_own_profile "default")
+if(MOQX_ENABLE_SANITIZERS AND NOT CMAKE_BUILD_TYPE STREQUAL "Release")
+  set(_moqx_own_profile "san")
+elseif(MOQX_ENABLE_TSAN AND NOT CMAKE_BUILD_TYPE STREQUAL "Release")
+  set(_moqx_own_profile "tsan")
+endif()
+if(NOT _moqx_moxygen_stamp STREQUAL _moqx_own_profile)
+  if(NOT _moqx_own_profile STREQUAL "default" AND _moqx_moxygen_stamp STREQUAL "default")
+    # The one opt-in-able degradation: knowingly sanitize moqx's TUs alone.
+    if(MOQX_ALLOW_ABI_SKEW)
+      message(WARNING
+        "Sanitizers are enabled but the moxygen at ${_moqx_moxygen_prefix} is "
+        "UNINSTRUMENTED — sanitizer coverage is limited to moqx's own TUs.")
+    else()
+      message(FATAL_ERROR
+        "moqx builds the '${_moqx_own_profile}' profile but the moxygen at\n"
+        "  ${_moqx_moxygen_prefix}\n"
+        "is uninstrumented; sanitizer coverage would silently stop at moqx's own "
+        "TUs. Build a matching stack:\n"
+        "  scripts/configure.sh ${_moqx_own_profile} --moxygen from-source\n"
+        "(or pass -DMOQX_ALLOW_ABI_SKEW=ON to knowingly link the uninstrumented one).")
+    endif()
+  else()
+    message(FATAL_ERROR
+      "the moxygen at\n"
+      "  ${_moqx_moxygen_prefix}\n"
+      "was built for the '${_moqx_moxygen_stamp}' profile but moqx builds "
+      "'${_moqx_own_profile}'; the link would fail or misbehave (sanitizer "
+      "runtime/interceptor mismatch, Debug-built deps skewing kIsDebug). No "
+      "opt-in covers this — build the matching stack:\n"
+      "  scripts/configure.sh ${_moqx_own_profile} --moxygen from-source\n"
+      "(or configure the '${_moqx_moxygen_stamp}' preset to match this install).")
+  endif()
+endif()
 
 # find_package caches moxygen_DIR and the folly/fizz/… tree with it, so a build
 # dir binds to the moxygen it first resolved and a pin bump cannot take effect in

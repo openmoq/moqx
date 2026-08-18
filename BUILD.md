@@ -151,6 +151,10 @@ Sanitizers must instrument the dependencies too, so `san --moxygen from-source`
 builds an instrumented moxygen as well; moqx lands in `build/san` (or
 `build/tsan`).
 
+The moxygen install prefix records its profile in `.moqx-moxygen-profile`
+(absent means `default`), and the moqx configure refuses a prefix whose profile
+doesn't match its own — that check holds for raw `cmake` invocations too.
+
 `prebuilt` and `prebuilt-with-fallback` are refused for these profiles, since
 neither can produce an instrumented moxygen. `MOQX_ALLOW_UNINSTRUMENTED_DEPS=1`
 overrides that to sanitize moqx's own TUs only — what the per-PR asan lane does.
