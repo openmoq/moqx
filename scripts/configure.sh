@@ -100,7 +100,8 @@ done
 # -N resolves the preset's cache variables without configuring, so an unknown
 # name dies here with cmake's list of presets. Those variables also say which
 # moxygen is needed; MOQX_MOXYGEN_PROFILE overrides the derivation.
-preset_info="$(cmake --preset "$profile" -N)"
+# --log-level=VERBOSE: CMake >= 4.0 prints the variable summary only there.
+preset_info="$(cmake --preset "$profile" -N --log-level=VERBOSE)"
 # What the preset declares it needs...
 # The *_src labels name whatever settled each flag, so the errors below blame the
 # thing the reader has to change.
