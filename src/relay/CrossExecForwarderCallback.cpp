@@ -8,49 +8,30 @@
 
 namespace openmoq::moqx {
 
-void CrossExecForwarderCallback::onEmpty(moxygen::MoQForwarder* /*forwarder*/) {
-  auto f = forwarder_.lock();
-  if (!f) {
-    return;
-  }
-  targetExec_->add([f = std::move(f), downstream = downstream_]() mutable {
-    downstream->onEmpty(f.get());
+void CrossExecForwarderCallback::onEmpty(moxygen::MoQForwarder* forwarder) {
+  targetExec_->add([ftn = forwarder->fullTrackName(), downstream = downstream_]() mutable {
+    downstream->onEmpty(ftn);
   });
 }
 
-void CrossExecForwarderCallback::onPublishDone(moxygen::MoQForwarder* /*forwarder*/) {
-  auto f = forwarder_.lock();
-  if (!f) {
-    return;
-  }
-  targetExec_->add([f = std::move(f), downstream = downstream_]() mutable {
-    downstream->onPublishDone(f.get());
+void CrossExecForwarderCallback::onPublishDone(moxygen::MoQForwarder* forwarder) {
+  targetExec_->add([ftn = forwarder->fullTrackName(), downstream = downstream_]() mutable {
+    downstream->onPublishDone(ftn);
   });
 }
 
-void CrossExecForwarderCallback::forwardChanged(
-    moxygen::MoQForwarder* /*forwarder*/,
-    bool forward
-) {
-  auto f = forwarder_.lock();
-  if (!f) {
-    return;
-  }
-  targetExec_->add([f = std::move(f), downstream = downstream_, forward]() mutable {
-    downstream->forwardChanged(f.get(), forward);
+void CrossExecForwarderCallback::forwardChanged(moxygen::MoQForwarder* forwarder, bool forward) {
+  targetExec_->add([ftn = forwarder->fullTrackName(), downstream = downstream_, forward]() mutable {
+    downstream->forwardChanged(ftn, forward);
   });
 }
 
 void CrossExecForwarderCallback::newGroupRequested(
-    moxygen::MoQForwarder* /*forwarder*/,
+    moxygen::MoQForwarder* forwarder,
     uint64_t group
 ) {
-  auto f = forwarder_.lock();
-  if (!f) {
-    return;
-  }
-  targetExec_->add([f = std::move(f), downstream = downstream_, group]() mutable {
-    downstream->newGroupRequested(f.get(), group);
+  targetExec_->add([ftn = forwarder->fullTrackName(), downstream = downstream_, group]() mutable {
+    downstream->newGroupRequested(ftn, group);
   });
 }
 
