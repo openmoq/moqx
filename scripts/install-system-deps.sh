@@ -25,6 +25,13 @@ if [ "$(id -u)" -ne 0 ]; then
     fi
 fi
 
+# apt has no overall deadline: a stalled mirror connection can hang a fetch
+# indefinitely. Bound each transfer and retry so a bad mirror fails the run in
+# minutes instead of wedging it.
+apt_get() {
+    $SUDO apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 "$@"
+}
+
 # reflect-cpp (a moqx dependency) needs CMake >= 3.23, newer than the 3.22 that
 # e.g. Ubuntu 22.04 ships. Install a current CMake from PyPI when the distro's is
 # too old, rather than requiring users to add a third-party apt repo.
@@ -39,7 +46,7 @@ ensure_recent_cmake() {
     # (folly/proxygen/…) source build still relies on.
     echo "CMake ${have:-not found} is older than $min; installing a current CMake 3.x from PyPI..."
     if ! command -v pip3 >/dev/null 2>&1; then
-        if command -v apt-get >/dev/null 2>&1; then $SUDO apt-get install -y python3-pip
+        if command -v apt-get >/dev/null 2>&1; then apt_get install -y python3-pip
         elif command -v dnf >/dev/null 2>&1; then $SUDO dnf install -y python3-pip; fi
     fi
     # --break-system-packages: PEP-668 distros refuse system-wide pip installs
@@ -52,8 +59,8 @@ ensure_recent_cmake() {
 
 install_ubuntu() {
     echo "Installing dependencies for Ubuntu/Debian..."
-    $SUDO apt-get update
-    $SUDO apt-get install -y \
+    apt_get update
+    apt_get install -y \
         build-essential cmake ninja-build git pkg-config ccache \
         libssl-dev libunwind-dev libgoogle-glog-dev libgflags-dev \
         libdouble-conversion-dev libevent-dev libsodium-dev libzstd-dev \
