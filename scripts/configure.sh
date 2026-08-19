@@ -126,7 +126,7 @@ elif ((tsan)); then
 else
   # Nothing on: whichever -D turned one off is the reason, else the preset.
   needs_profile="default" needs_src="$san_src"
-  if [[ "$needs_src" == preset\'* && "$tsan_src" != preset\'* ]]; then
+  if [[ "$needs_src" == "preset '"* && "$tsan_src" != "preset '"* ]]; then
     needs_src="$tsan_src"
   fi
 fi
