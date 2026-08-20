@@ -1,0 +1,9 @@
+# Pin-bump protection. MOXYGEN_REV (and the other dependency pins in
+# dependencies.cmake) change through moxygen-sync PRs as the primary path
+# (bot-created, auto-approved by a code owner via PAT); any other PR touching
+# them needs explicit code-owner approval. Enforced by "require review from
+# Code Owners" on the main branch protection.
+/cmake/dependencies.cmake @gmarzot @michalhosna
+
+# The guard guards itself.
+/.github/CODEOWNERS @gmarzot @michalhosna
