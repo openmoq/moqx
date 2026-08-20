@@ -341,6 +341,15 @@ moqx_add_gtest(moqx_cross_exec_filter_test
     Folly::folly_executors_manual_executor
 )
 
+moqx_add_gtest(moqx_cross_exec_forwarder_callback_test
+  SRCS CrossExecForwarderCallbackTest.cpp
+  LIBS
+    moqx_core
+    GTest::gtest_main
+    GTest::gmock
+    Folly::folly_executors_manual_executor
+)
+
 moqx_add_gtest(moqx_publisher_cross_exec_filter_test
   SRCS PublisherCrossExecFilterTest.cpp
   LIBS
