@@ -1,10 +1,14 @@
 name: ci pr
 
-# PR verification: format + build/test matrix.
-# Main push uses ci-main.yml which adds publish/release/notify.
+# PR verification: format + build/test matrix + d16 conformance.
+# Main push uses ci-main.yml which runs the full conformance grid and
+# microbenchmarks, and adds publish/release/notify.
 
 on:
   pull_request:
+    # ready_for_review included so promoting a draft triggers the conformance
+    # jobs its draft gate skipped.
+    types: [opened, synchronize, reopened, ready_for_review]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -120,22 +124,16 @@ jobs:
 
   conformance:
     needs: [check-format]
+    # Drafts skip conformance to keep stack pushes cheap; promotion to ready
+    # runs it (ready_for_review trigger above).
+    if: ${{ !github.event.pull_request.draft }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          # mvfst — both transports for d14 and d16. d14+WT was unblocked by
-          # facebookexperimental/moxygen#151 (Accept moq-00 in WT-Available-Protocols).
-          # pico — raw QUIC for d14 and d16. WT cells deferred until pico
-          # WT CONNECT (openmoq/moxygen#172 / PR #173) syncs in.
-          - name: mvfst d14 Q
-            versions: "14"
-            transport: "Q"
-            stack: "mvfst"
-          - name: mvfst d14 WT
-            versions: "14"
-            transport: ""
-            stack: "mvfst"
+          # d16 cells only; ci-main runs the full grid (d14 + d16) on every
+          # main push. pico WT cells deferred until pico WT CONNECT
+          # (openmoq/moxygen#172 / PR #173) syncs in.
           - name: mvfst d16 Q
             versions: "16"
             transport: "Q"
@@ -144,10 +142,6 @@ jobs:
             versions: "16"
             transport: ""
             stack: "mvfst"
-          - name: pico d14 Q
-            versions: "14"
-            transport: "Q"
-            stack: "pico"
           - name: pico d16 Q
             versions: "16"
             transport: "Q"
@@ -174,61 +168,3 @@ jobs:
 
       - name: Run conformance tests
         run: bash test/test_conformance.sh ./build/default/moqx ${{ matrix.versions }} ${{ matrix.transport }} ${{ matrix.stack }}
-
-  microbenchmark:
-    needs: [check-format]
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: linux
-            runner: ubuntu-22.04
-          - name: macos
-            # Pinned to the moxygen publish runner: releases ship
-            # moxygen-macos-15-arm64.tar.gz and no macos-26 one, so macos-latest
-            # 404s. Keep in lockstep with the build job above.
-            runner: macos-15
-    name: microbenchmark (${{ matrix.name }})
-    runs-on: ${{ matrix.runner }}
-    # Ceiling for the from-source fallback; see the build job.
-    timeout-minutes: 180
-    steps:
-      - uses: actions/checkout@v5
-
-      - uses: ./.github/actions/setup-build
-        with:
-          ccache-key: microbench
-
-      - name: Build microbenchmarks
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          scripts/configure.sh default --moxygen prebuilt-with-fallback \
-            -DMOQX_BUILD_BENCHMARKS=ON -DMOQX_BUILD_TESTS=OFF
-          scripts/build.sh default
-
-      - name: Run microbenchmarks
-        run: |
-          ./build/default/benchmark/moqx_benchmark \
-            --bm_json_verbose=microbench-results.json \
-            | tee microbench-output.txt
-
-      - name: Render summary
-        if: always()
-        run: |
-          {
-            echo "## Microbenchmark results — ${{ matrix.name }}"
-            echo ""
-            echo '```'
-            cat microbench-output.txt
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload microbenchmark artifacts
-        if: always()
-        uses: actions/upload-artifact@v6
-        with:
-          name: microbench-results-${{ matrix.name }}
-          path: |
-            microbench-results.json
-            microbench-output.txt
