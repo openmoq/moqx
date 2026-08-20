@@ -50,12 +50,20 @@ option(MOQX_ENABLE_BPF_STEERING
 
 include(cmake/SanitizerFlags.cmake)
 
+# The sanitizer profile this build carries — the enable options are inert
+# under Release. Derived once, so profile-keyed checks cannot drift from the
+# flags actually applied.
+set(_moqx_own_profile "default")
 if(MOQX_ENABLE_SANITIZERS AND NOT CMAKE_BUILD_TYPE STREQUAL "Release")
-  add_compile_options(${MOQX_ASAN_FLAGS})
-  add_link_options(${MOQX_ASAN_FLAGS})
+  set(_moqx_own_profile "san")
+elseif(MOQX_ENABLE_TSAN AND NOT CMAKE_BUILD_TYPE STREQUAL "Release")
+  set(_moqx_own_profile "tsan")
 endif()
 
-if(MOQX_ENABLE_TSAN AND NOT CMAKE_BUILD_TYPE STREQUAL "Release")
+if(_moqx_own_profile STREQUAL "san")
+  add_compile_options(${MOQX_ASAN_FLAGS})
+  add_link_options(${MOQX_ASAN_FLAGS})
+elseif(_moqx_own_profile STREQUAL "tsan")
   add_compile_options(${MOQX_TSAN_FLAGS})
   add_link_options(${MOQX_TSAN_FLAGS})
 endif()
@@ -107,12 +115,14 @@ endif()
 # MOXYGEN_REV, OFF demands a prefix. See BUILD.md#how-dependencies-work.
 find_package(moxygen QUIET CONFIG)
 if(NOT moxygen_FOUND AND MOQX_MOXYGEN_PREBUILT)
-  if(MOQX_ENABLE_SANITIZERS OR MOQX_ENABLE_TSAN)
-    message(WARNING
-      "Sanitizers are enabled but moxygen resolves to the UNINSTRUMENTED "
-      "prebuilt — sanitizer coverage is limited to moqx's own TUs. For full "
-      "coverage build an instrumented moxygen: "
-      "scripts/configure.sh san|tsan --moxygen from-source (see BUILD.md).")
+  # The published prebuilts are uninstrumented; refuse before the
+  # multi-hundred-MB download, not at the probe after it.
+  if(NOT _moqx_own_profile STREQUAL "default" AND NOT MOQX_ALLOW_ABI_SKEW)
+    message(FATAL_ERROR
+      "moqx builds the '${_moqx_own_profile}' profile but MOQX_MOXYGEN_PREBUILT=ON "
+      "resolves to the uninstrumented prebuilt. Build a matching stack:\n"
+      "  scripts/configure.sh ${_moqx_own_profile} --moxygen from-source\n"
+      "(or pass -DMOQX_ALLOW_ABI_SKEW=ON to knowingly link the uninstrumented one).")
   endif()
   include(cmake/FetchMoxygenPrebuilt.cmake)
   find_package(moxygen REQUIRED CONFIG)
@@ -124,6 +134,88 @@ elseif(NOT moxygen_FOUND)
     "(or pass -DCMAKE_PREFIX_PATH=<moxygen install>; see BUILD.md).")
 endif()
 message(STATUS "moxygen: using install at ${moxygen_DIR}")
+
+# The sanitizer profile the moxygen stack carries, measured: every TU compiled
+# with -fsanitize references __asan_init/__tsan_init, so one nm probe of an
+# installed archive answers for any prefix, downloads included.
+get_filename_component(_moqx_moxygen_prefix "${moxygen_DIR}/../../.." ABSOLUTE)
+if(NOT CMAKE_NM)
+  find_program(CMAKE_NM nm)
+endif()
+# Smallest archive wins: the probe reads the whole file, and every moxygen
+# archive carries at least one instrumented TU.
+file(GLOB _moqx_probe_candidates "${_moqx_moxygen_prefix}/lib/libmoxygen*.a"
+     "${_moqx_moxygen_prefix}/lib64/libmoxygen*.a")
+set(_moqx_probe_lib "")
+foreach(_lib IN LISTS _moqx_probe_candidates)
+  file(SIZE "${_lib}" _sz)
+  if(_moqx_probe_lib STREQUAL "" OR _sz LESS _moqx_probe_size)
+    set(_moqx_probe_lib "${_lib}")
+    set(_moqx_probe_size "${_sz}")
+  endif()
+endforeach()
+set(_moqx_moxygen_profile "")
+if(CMAKE_NM AND NOT _moqx_probe_lib STREQUAL "")
+  execute_process(
+    COMMAND "${CMAKE_NM}" -u "${_moqx_probe_lib}"
+    COMMAND grep -m1 -oE "__(a|t)san_init"
+    RESULTS_VARIABLE _moqx_probe_rcs
+    OUTPUT_VARIABLE _moqx_probe_sym
+    OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+  list(GET _moqx_probe_rcs 0 _moqx_nm_rc)
+  list(GET _moqx_probe_rcs 1 _moqx_grep_rc)
+  if(_moqx_nm_rc EQUAL 0)
+    if(_moqx_probe_sym STREQUAL "__asan_init")
+      set(_moqx_moxygen_profile "san")
+    elseif(_moqx_probe_sym STREQUAL "__tsan_init")
+      set(_moqx_moxygen_profile "tsan")
+    elseif(_moqx_grep_rc EQUAL 1)
+      set(_moqx_moxygen_profile "default")
+    endif()
+  endif()
+endif()
+if(_moqx_moxygen_profile STREQUAL "")
+  if(MOQX_ALLOW_ABI_SKEW)
+    message(WARNING
+      "could not verify the sanitizer instrumentation of the moxygen at "
+      "${_moqx_moxygen_prefix} (nm or a libmoxygen*.a archive missing) — "
+      "linking it unverified (MOQX_ALLOW_ABI_SKEW).")
+  else()
+    message(FATAL_ERROR
+      "could not verify the sanitizer instrumentation of the moxygen at\n"
+      "  ${_moqx_moxygen_prefix}\n"
+      "(nm or a libmoxygen*.a archive missing). Pass -DMOQX_ALLOW_ABI_SKEW=ON "
+      "to link it unverified.")
+  endif()
+elseif(NOT _moqx_moxygen_profile STREQUAL _moqx_own_profile)
+  if(NOT _moqx_own_profile STREQUAL "default" AND _moqx_moxygen_profile STREQUAL "default")
+    # The one opt-in-able degradation: knowingly sanitize moqx's TUs alone.
+    if(MOQX_ALLOW_ABI_SKEW)
+      message(WARNING
+        "Sanitizers are enabled but the moxygen at ${_moqx_moxygen_prefix} "
+        "carries no sanitizer instrumentation — coverage is limited to moqx's "
+        "own TUs.")
+    else()
+      message(FATAL_ERROR
+        "moqx builds the '${_moqx_own_profile}' profile but the moxygen at\n"
+        "  ${_moqx_moxygen_prefix}\n"
+        "carries no sanitizer instrumentation; coverage would silently stop at "
+        "moqx's own TUs. Build a matching stack:\n"
+        "  scripts/configure.sh ${_moqx_own_profile} --moxygen from-source\n"
+        "(or pass -DMOQX_ALLOW_ABI_SKEW=ON to knowingly link the uninstrumented one).")
+    endif()
+  else()
+    message(FATAL_ERROR
+      "the moxygen at\n"
+      "  ${_moqx_moxygen_prefix}\n"
+      "is ${_moqx_moxygen_profile}-instrumented but moqx builds "
+      "'${_moqx_own_profile}'; the link would fail or misbehave (sanitizer "
+      "runtime/interceptor mismatch, Debug-built deps skewing kIsDebug). No "
+      "opt-in covers this — build the matching stack:\n"
+      "  scripts/configure.sh ${_moqx_own_profile} --moxygen from-source\n"
+      "(or configure the '${_moqx_moxygen_profile}' preset to match this install).")
+  endif()
+endif()
 
 # find_package caches moxygen_DIR and the folly/fizz/… tree with it, so a build
 # dir binds to the moxygen it first resolved and a pin bump cannot take effect in
@@ -163,8 +255,8 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug" AND NOT MOQX_ALLOW_ABI_SKEW
 endif()
 
 # moxygen's sample binaries (moqclient/…) live in <prefix>/bin, which integration
-# tests reach through MOQBIN. moxygen_DIR is <prefix>/lib/cmake/moxygen.
-get_filename_component(MOXYGEN_BIN_DIR "${moxygen_DIR}/../../../bin" ABSOLUTE)
+# tests reach through MOQBIN.
+set(MOXYGEN_BIN_DIR "${_moqx_moxygen_prefix}/bin")
 
 # Test and perf scripts run outside ctest source this instead of re-deriving
 # MOQBIN from CMakeCache.txt. Regenerated on every configure.

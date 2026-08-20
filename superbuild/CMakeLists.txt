@@ -28,13 +28,14 @@ CPMAddPackage(
 )
 
 # CPM gives every rev its own source directory, and CMake refuses a build dir
-# whose source moved ("does not match the source used to generate cache"). Drop
-# the inner build when the pin changes, so a bump reconfigures instead of dying.
+# whose source moved. That binding lives only in CMakeCache.txt + CMakeFiles/;
+# dropping just those keeps _deps/ (the folly stack) as ninja no-ops.
 set(_moxygen_build "${CMAKE_BINARY_DIR}/moxygen-build")
 if(EXISTS "${_moxygen_build}/CMakeCache.txt"
    AND NOT "${moxygen_SOURCE_DIR}" STREQUAL "${MOQX_MOXYGEN_SOURCE_DIR}")
-  message(STATUS "moxygen: source moved to ${moxygen_SOURCE_DIR} — discarding ${_moxygen_build}")
-  file(REMOVE_RECURSE "${_moxygen_build}")
+  message(STATUS "moxygen: source moved to ${moxygen_SOURCE_DIR} — resetting ${_moxygen_build}'s cache (keeping _deps/)")
+  file(REMOVE "${_moxygen_build}/CMakeCache.txt")
+  file(REMOVE_RECURSE "${_moxygen_build}/CMakeFiles")
 endif()
 set(MOQX_MOXYGEN_SOURCE_DIR "${moxygen_SOURCE_DIR}" CACHE INTERNAL
     "moxygen source the ExternalProject below last configured against")

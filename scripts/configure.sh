@@ -112,7 +112,8 @@ done
 # -N resolves the preset's cache variables without configuring, so an unknown
 # name dies here with cmake's list of presets. Those variables also say which
 # moxygen is needed; MOQX_MOXYGEN_PROFILE overrides the derivation.
-preset_info="$(cmake --preset "$profile" -N)"
+# --log-level=VERBOSE: CMake >= 4.0 prints the variable summary only there.
+preset_info="$(cmake --preset "$profile" -N --log-level=VERBOSE)"
 # What the preset declares it needs...
 # The *_src labels name whatever settled each flag, so the errors below blame the
 # thing the reader has to change.
@@ -137,10 +138,23 @@ elif ((tsan)); then
 else
   # Nothing on: whichever -D turned one off is the reason, else the preset.
   needs_profile="default" needs_src="$san_src"
-  if [[ "$needs_src" == preset\'* && "$tsan_src" != preset\'* ]]; then
+  if [[ "$needs_src" == "preset '"* && "$tsan_src" != "preset '"* ]]; then
     needs_src="$tsan_src"
   fi
 fi
+# Sanitizer flags are inert under Release (CMakeLists applies them non-Release
+# only). Refusing the contradiction here beats a superbuild-length detour to
+# the same refusal.
+build_type="$(sed -n 's/.*CMAKE_BUILD_TYPE="\(.*\)"/\1/p' <<<"$preset_info" | tail -1)"
+for arg in ${passthru[@]+"${passthru[@]}"}; do
+  case "$arg" in -DCMAKE_BUILD_TYPE[:=]*) build_type="${arg#*=}" ;; esac
+done
+if [[ "$needs_profile" != default && "$build_type" == Release ]]; then
+  die "$needs_src enables sanitizers ($needs_profile), but CMAKE_BUILD_TYPE=Release makes the
+  sanitizer flags inert, so moqx would carry none and refuse the instrumented moxygen —
+  drop -DCMAKE_BUILD_TYPE=Release, or drop the sanitizer profile"
+fi
+
 # ...versus the moxygen actually built/downloaded. A fallback build has to match
 # the prebuilt it stands in for, or losing the prebuilt would quietly change what
 # the lane tests.
