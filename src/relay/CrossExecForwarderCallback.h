@@ -6,6 +6,8 @@
 
 #pragma once
 
+#include "relay/TrackEventCallback.h"
+
 #include <folly/Executor.h>
 #include <memory>
 #include <moxygen/relay/MoQForwarder.h>
@@ -13,18 +15,15 @@
 namespace openmoq::moqx {
 
 // Dispatches MoQForwarder::Callback methods to a target executor (fire-and-forget).
-// Locks the weak_ptr on the calling thread (where the forwarder is guaranteed alive)
-// and moves the resulting shared_ptr into the lambda, keeping the forwarder alive
-// across the executor hop without forming a permanent ownership cycle.
+// Reads the track name on the calling thread (the forwarder's owner) and sends that
+// across threads, so no reference to the forwarder can be released off its owner.
 class CrossExecForwarderCallback final : public moxygen::MoQForwarder::Callback {
 public:
   CrossExecForwarderCallback(
       folly::Executor* targetExec,
-      std::weak_ptr<moxygen::MoQForwarder> forwarder,
-      std::shared_ptr<moxygen::MoQForwarder::Callback> downstream
+      std::shared_ptr<TrackEventCallback> downstream
   )
-      : targetExec_(targetExec), forwarder_(std::move(forwarder)),
-        downstream_(std::move(downstream)) {}
+      : targetExec_(targetExec), downstream_(std::move(downstream)) {}
 
   void onEmpty(moxygen::MoQForwarder* forwarder) override;
   void onPublishDone(moxygen::MoQForwarder* forwarder) override;
@@ -33,8 +32,7 @@ public:
 
 private:
   folly::Executor* targetExec_;
-  std::weak_ptr<moxygen::MoQForwarder> forwarder_;
-  std::shared_ptr<moxygen::MoQForwarder::Callback> downstream_;
+  std::shared_ptr<TrackEventCallback> downstream_;
 };
 
 } // namespace openmoq::moqx

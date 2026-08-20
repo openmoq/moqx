@@ -5,27 +5,48 @@
  */
 
 #include "WeakRelayForwarderCallback.h"
+
+#include "MoqxRelay.h"
+
 namespace openmoq::moqx {
 
 void WeakRelayForwarderCallback::onEmpty(moxygen::MoQForwarder* forwarder) {
-  if (auto r = relay_.lock()) {
-    r->onEmpty(forwarder);
-  }
+  onEmpty(forwarder->fullTrackName());
 }
 
 void WeakRelayForwarderCallback::forwardChanged(moxygen::MoQForwarder* forwarder, bool forward) {
-  if (auto r = relay_.lock()) {
-    r->forwardChanged(forwarder, forward);
-  }
+  forwardChanged(forwarder->fullTrackName(), forward);
 }
 
 void WeakRelayForwarderCallback::newGroupRequested(
     moxygen::MoQForwarder* forwarder,
     uint64_t group
 ) {
+  newGroupRequested(forwarder->fullTrackName(), group);
+}
+
+void WeakRelayForwarderCallback::onEmpty(const moxygen::FullTrackName& ftn) {
   if (auto r = relay_.lock()) {
-    r->newGroupRequested(forwarder, group);
+    r->onEmptyImpl(ftn);
   }
 }
+
+void WeakRelayForwarderCallback::forwardChanged(const moxygen::FullTrackName& ftn, bool forward) {
+  if (auto r = relay_.lock()) {
+    r->forwardChangedImpl(ftn, forward);
+  }
+}
+
+void WeakRelayForwarderCallback::newGroupRequested(
+    const moxygen::FullTrackName& ftn,
+    uint64_t group
+) {
+  if (auto r = relay_.lock()) {
+    r->newGroupRequestedImpl(ftn, group);
+  }
+}
+
+// TerminationFilter already drives MoqxRelay::onPublishDone; delegating here would double it.
+void WeakRelayForwarderCallback::onPublishDone(const moxygen::FullTrackName& /*ftn*/) {}
 
 } // namespace openmoq::moqx

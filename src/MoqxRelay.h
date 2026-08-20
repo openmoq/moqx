@@ -324,6 +324,8 @@ private:
   void forwardChanged(moxygen::MoQForwarder* forwarder, bool forward) override;
   void newGroupRequested(moxygen::MoQForwarder* forwarder, uint64_t group) override;
 
+  friend class WeakRelayForwarderCallback;
+
   // FTN-keyed impl variants — called by the MoQForwarder::Callback overrides
   // above (single-thread) or by WeakRelayForwarderCallback on relay exec.
   void onEmptyImpl(const moxygen::FullTrackName& ftn);
