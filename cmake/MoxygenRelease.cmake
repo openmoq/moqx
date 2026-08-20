@@ -59,8 +59,9 @@ function(moqx_moxygen_tags_at_pin OUT_VAR)
 endfunction()
 
 # Return the release tag whose assets belong to MOXYGEN_REV. GitHub keeps no
-# commit->release index, so this asks the remote which tags point at the pin, and
-# prefers an immutable v* release over a mutable snapshot-*.
+# commit->release index, so this asks the remote which tags point at the pin,
+# preferring immutable over mutable: a v* release, then the retained per-rev
+# snapshot-<sha12>, then a rolling snapshot-*latest.
 function(moqx_moxygen_release_tag OUT_VAR)
   # An explicit tag wins and needs no remote read; the fetch verifies the
   # release's commit against the pin either way.
@@ -70,23 +71,31 @@ function(moqx_moxygen_release_tag OUT_VAR)
   endif()
   moqx_moxygen_tags_at_pin(_matched)
   set(_tag "")
+  set(_pinned "")
+  set(_rolling "")
   foreach(_t IN LISTS _matched)
     if(NOT _t MATCHES "^snapshot")
       set(_tag "${_t}")
       break()
+    elseif(_t MATCHES "^snapshot-[0-9a-f]+$" AND _pinned STREQUAL "")
+      set(_pinned "${_t}")
+    elseif(_rolling STREQUAL "")
+      set(_rolling "${_t}")
     endif()
   endforeach()
-  if(_tag STREQUAL "" AND _matched)
-    list(GET _matched 0 _tag)
+  if(_tag STREQUAL "")
+    set(_tag "${_pinned}")
+  endif()
+  if(_tag STREQUAL "")
+    set(_tag "${_rolling}")
   endif()
   if(_tag STREQUAL "")
     message(FATAL_ERROR
       "moxygen: no tag on ${MOXYGEN_REPOSITORY} points at the pinned MOXYGEN_REV\n"
       "  ${MOXYGEN_REV}\n"
       "so no release publishes a prebuilt for it and there is nothing to fetch.\n"
-      "Expected when the rev's only tag was a rolling snapshot-* that has since\n"
-      "moved on. -DMOXYGEN_RELEASE_TAG cannot rescue it: that release's assets\n"
-      "moved with the tag.\n"
+      "Expected when the rev was never published: its build failed, or it\n"
+      "predates the retained per-rev snapshot-<sha> pre-releases.\n"
       "\n"
       "Build moxygen from source instead:\n"
       "  scripts/configure.sh --moxygen from-source && scripts/build.sh\n"
