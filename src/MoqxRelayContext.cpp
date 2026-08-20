@@ -227,12 +227,18 @@ void MoqxRelayContext::onNewSession(std::shared_ptr<MoQSession> clientSession) {
   }
 }
 
-void MoqxRelayContext::onSessionEnd(std::shared_ptr<MoQSession> /*session*/) {
+void MoqxRelayContext::onSessionEnd(std::shared_ptr<MoQSession> session) {
   if (auto& collector = *tlStatsCollector_) {
     collector->onSessionEnd();
   }
+  // The session belongs to whichever service its authority+path matched at setup.
+  if (auto name = serviceMatcher_.match(session->getAuthority(), session->getPath())) {
+    if (auto it = services_.find(*name); it != services_.end()) {
+      it->second.relay->onSessionEnd(std::move(session));
+    }
+  }
   // Per-session auth state lives on the session's AuthFilter and is released
-  // when the session drops it; no relay-side cleanup needed.
+  // when the session drops it.
 }
 
 folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayContext::validateAuthority(

@@ -365,6 +365,14 @@ folly::coro::Task<void> MoqxRelay::onUpstreamConnectImpl(std::shared_ptr<MoQSess
   }
 }
 
+void MoqxRelay::onSessionEnd(std::shared_ptr<MoQSession> session) {
+  runOnExec(relayExec_, [self = weak_from_this(), session = std::move(session)]() mutable {
+    if (auto relay = self.lock()) {
+      relay->legacyPublisherHopIDs_.erase(session.get());
+    }
+  });
+}
+
 void MoqxRelay::onUpstreamDisconnect() {
   upstreamSubNsHandle_.reset();
 }
@@ -477,15 +485,8 @@ uint64_t MoqxRelay::getOrCreateLegacyPublisherHopID(const std::shared_ptr<MoQSes
     if (existing == session) {
       return it->second.hopID;
     }
+    // Stale only if onSessionEnd was missed and the address was recycled.
     legacyPublisherHopIDs_.erase(it);
-  }
-
-  for (auto stale = legacyPublisherHopIDs_.begin(); stale != legacyPublisherHopIDs_.end();) {
-    if (stale->second.session.expired()) {
-      stale = legacyPublisherHopIDs_.erase(stale);
-    } else {
-      ++stale;
-    }
   }
 
   auto hopID = generateRelayHopID();
@@ -551,8 +552,16 @@ void MoqxRelay::doPublishNamespaceDone(
   }
   // Draft >= 16: send NAMESPACE_DONE on the bidi stream
   for (auto& [outSession, info] : result.value().subscribers) {
-    if (outSession != session && (info.options == SubscribeNamespaceOptions::NAMESPACE ||
-                                  info.options == SubscribeNamespaceOptions::BOTH)) {
+    // Same predicate as the advertisement, so a subscriber excluded then is not
+    // told a namespace it never heard about is done.
+    if (shouldForwardNamespace(
+            session,
+            outSession,
+            info.options,
+            info.excludeHop,
+            result.value().relayHopPath,
+            relayHopID_
+        )) {
       auto maybeVersion = outSession->getNegotiatedVersion();
       if (maybeVersion.has_value() && getDraftMajorVersion(*maybeVersion) >= 16) {
         if (info.namespacePublishHandle) {

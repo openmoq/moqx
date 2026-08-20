@@ -129,6 +129,7 @@ public:
   struct UnpublishNamespaceResult {
     SessionSubscriberList subscribers;
     LegacyDoneHandleList legacyHandles;
+    std::vector<uint64_t> relayHopPath;
   };
 
   explicit NamespaceTree(Callback& cb) : cb_(cb), root_(*this) {}

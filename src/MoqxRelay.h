@@ -205,6 +205,9 @@ public:
   // closes. Releases the peer subNs handle.
   void onUpstreamDisconnect();
 
+  // Releases per-session relay state; the servers call this as a session tears down.
+  void onSessionEnd(std::shared_ptr<moxygen::MoQSession> session);
+
   folly::coro::Task<SubscribeResult> subscribe(
       moxygen::SubscribeRequest subReq,
       std::shared_ptr<moxygen::TrackConsumer> consumer

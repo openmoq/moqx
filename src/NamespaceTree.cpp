@@ -147,6 +147,7 @@ NamespaceTree::unpublishNamespace(
   NodeMutationGuard guard(*this, *node, ns);
   node->publisherSession_ = nullptr;
   node->publisherPeerID_.clear();
+  result.relayHopPath = std::move(node->relayHopPath_);
   node->relayHopPath_.clear();
   node->publishNamespaceCallback_.reset();
   node->draft14PubNsHandles_.clear();
