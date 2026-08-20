@@ -14,6 +14,8 @@
 #include "SubscriptionRegistry.h"
 #include "UpstreamProvider.h"
 #include "config/Config.h"
+#include "relay/ChannelSubscriber.h"
+#include "relay/ForwarderRef.h"
 #include "relay/LocalForwarderRegistry.h"
 #include "relay/PropertyRanking.h"
 #include "relay/RelayExecUtil.h"
@@ -66,11 +68,11 @@ public:
   struct SubscriptionInfo {
     const moxygen::FullTrackName& ftn;
     bool isPublish;
-    size_t subscribers;
-    uint64_t forwardingSubscribers;
+    size_t subscribers{0};
+    uint64_t forwardingSubscribers{0};
     std::optional<moxygen::AbsoluteLocation> largest;
-    uint64_t totalGroupsReceived;
-    uint64_t totalObjectsReceived;
+    uint64_t totalGroupsReceived{0};
+    uint64_t totalObjectsReceived{0};
     std::string_view sourceAddress;
   };
   virtual void onSubscription(const SubscriptionInfo& info) = 0;
@@ -353,6 +355,11 @@ private:
   // This thread's registry, created on first use.
   LocalForwarderRegistry& localRegistry();
 
+  ForwarderRef makeForwarderRef(
+      const std::shared_ptr<moxygen::MoQForwarder>& forwarder,
+      folly::Executor* publisherExec
+  ) const;
+
   struct LocalForwarderBootstrap {
     std::shared_ptr<moxygen::MoQForwarder> localFwd;
     bool isNew{false};
@@ -361,18 +368,27 @@ private:
   LocalForwarderBootstrap
   acquireLocalForwarder(const moxygen::FullTrackName& ftn, const InitialTrackState& initial);
 
+  // In LF mode the ref supplies only the track name and owning exec; the forwarder
+  // itself is resolved by name there, so it doesn't attach to a displaced one.
   bool addSubscriberAndPublish(
       std::shared_ptr<moxygen::MoQSession> subscriberSession,
-      std::shared_ptr<moxygen::MoQForwarder> forwarder,
+      const ForwarderRef& publisherRef,
       bool forward,
-      bool pinned,
-      folly::Executor* publisherExec = nullptr
+      bool pinned
   );
+
+  struct ResolvedPublisher {
+    ForwarderRef ref;
+    ChannelSubscriber channelSub;
+    InitialTrackState initial;
+  };
+  // Launch on track.exec: reads the publisher forwarder's state where it is stable to
+  // initialize a new subscriber forwarder during publish fan-out.
+  folly::coro::Task<std::optional<ResolvedPublisher>> resolvePublisherOnItsExec(TrackRef track);
 
   folly::coro::Task<void> addSubscriberAndPublishViaLocalForwarder(
       std::shared_ptr<moxygen::MoQSession> subscriberSession,
-      std::shared_ptr<moxygen::MoQForwarder> publisherFwd,
-      folly::Executor* publisherExec,
+      TrackRef track,
       bool forward,
       bool pinned
   );
@@ -383,12 +399,14 @@ private:
       std::shared_ptr<moxygen::MoQSession> session
   );
 
-  // Runs on fwd's exec; the returned Claim owes a markReady/fail. removeOnEmpty=false for a
-  // publish-initiated forwarder, which must survive subscriber churn.
-  LocalForwarderRegistry::Claim installPublisherForwarder(
+  // Called from publish path or first subscriber path on publisher's exec.
+  // The displaced forwarder (if any) is released on the publisher's exec after the
+  // new forwarder is registered with the relay's registry.
+  enum class InstallKind { FromPublish, FromSubscribe };
+  LocalForwarderRegistry::ParkResult installPublisherForwarder(
       const moxygen::FullTrackName& ftn,
       const std::shared_ptr<moxygen::MoQForwarder>& fwd,
-      bool removeOnEmpty
+      InstallKind kind
   );
 
   std::optional<moxygen::PublishError>
@@ -399,7 +417,7 @@ private:
       moxygen::PublishRequest pub,
       std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle,
       std::shared_ptr<moxygen::MoQSession> session,
-      std::shared_ptr<moxygen::MoQForwarder> publisherFwd,
+      ForwarderRef publisherRef,
       std::shared_ptr<CrossExecFilter> relayChainFilter
   );
 
@@ -473,14 +491,14 @@ private:
 
   // Result of joinOrPrepareUpstreamSubscription (runs on relayExec_).
   struct StatefulSubscribeResult {
-    std::shared_ptr<moxygen::MoQForwarder> publisherForwarder;
-    folly::Executor* publisherExec{nullptr}; // owning executor of publisherForwarder
+    folly::Executor* publisherExec{nullptr}; // owning executor of the publisher forwarder
     std::optional<SubscribeResult> error;    // set on failure
 
     // Set only for the FirstSubscriber path. Consumed by
     // attachNewLocalForwarderOnRelayExec's publisherExec sortie (passive relay chain +
     // upstream subscribe). Pending destructor fires on abandoned move.
     struct FirstSubscriberSetup {
+      std::shared_ptr<moxygen::MoQForwarder> publisherForwarder;
       std::shared_ptr<moxygen::MoQSession> upstreamSession;
       moxygen::SubscribeRequest upstreamSubReq;
       std::shared_ptr<moxygen::TrackConsumer> upstreamConsumer;
@@ -522,8 +540,7 @@ private:
   // chain filter is not exposed (setDownstream/teardown happen inside attach); the tail
   // needs only ownsRelayChain to gate the sawOnEmpty teardown.
   struct PublisherAttachment {
-    std::shared_ptr<moxygen::MoQForwarder> publisherFwd;
-    folly::Executor* publisherExec{nullptr};
+    ForwarderRef publisherRef;
     bool ownsRelayChain{false}; // firstSetup path installed the passive relay chain
     std::shared_ptr<moxygen::MoQForwarder::Callback> finalCallback;
     // Captured off the publisher forwarder on its own exec, the only race-free place.
@@ -582,7 +599,7 @@ private:
   // the reply coro (coPublish) can co_return the PublishOk immediately after
   // setup without waiting for any downstream peer handshake.
   struct PublishSetup {
-    std::shared_ptr<moxygen::TrackConsumer> consumer;
+    std::shared_ptr<moxygen::TrackConsumer> consumer; // Null in LF mode
     moxygen::PublishOk publishOk;
   };
   using PublishSetupResult = folly::Expected<PublishSetup, moxygen::PublishError>;
@@ -590,13 +607,11 @@ private:
   // Contains all the inline publish() logic, taking session explicitly so it
   // can be called from either the I/O thread (relayExec_==nullptr) or from
   // coPublish on relay exec (where getRequestSession() would return null).
-  // If forwarder is non-null it is used as-is (pre-created by publish()); otherwise
-  // a new forwarder is created from pub (single-threaded or subscribeNamespace path).
   PublishSetupResult publishWithSession(
       moxygen::PublishRequest pub,
       std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle,
       std::shared_ptr<moxygen::MoQSession> session,
-      std::shared_ptr<moxygen::MoQForwarder> forwarder = nullptr
+      ForwarderRef publisherRef
   );
 
   std::shared_ptr<folly::Executor> ownedRelayExec_;
