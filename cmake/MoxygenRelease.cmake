@@ -59,9 +59,14 @@ function(moqx_moxygen_tags_at_pin OUT_VAR)
 endfunction()
 
 # Return the release tag whose assets belong to MOXYGEN_REV. GitHub keeps no
-# commit->release index, so this asks the remote which tags point at the pin,
-# preferring immutable over mutable: a v* release, then the retained per-rev
-# snapshot-<sha12>, then a rolling snapshot-*latest.
+# commit->release index, so this asks the remote which tags point at the pin.
+#
+# Every matched tag names the same build, but not for the same length of time:
+# rolling aliases (moxygen's publish contract names them *-latest) are deleted
+# and recreated on every moxygen push, so an alias resolved here can dangle by
+# fetch time, and a recorded one (release branches pin the resolved tag for
+# reproducibility) goes stale on the next push. Prefer a tag whose meaning
+# outlives this resolve: a v* release, else a retained per-rev snapshot.
 function(moqx_moxygen_release_tag OUT_VAR)
   # An explicit tag wins and needs no remote read; the fetch verifies the
   # release's commit against the pin either way.
@@ -71,23 +76,25 @@ function(moqx_moxygen_release_tag OUT_VAR)
   endif()
   moqx_moxygen_tags_at_pin(_matched)
   set(_tag "")
-  set(_pinned "")
-  set(_rolling "")
+  set(_snapshot "")
+  set(_alias "")
   foreach(_t IN LISTS _matched)
-    if(NOT _t MATCHES "^snapshot")
+    if(_t MATCHES "-latest$")
+      if(_alias STREQUAL "")
+        set(_alias "${_t}")
+      endif()
+    elseif(NOT _t MATCHES "^snapshot")
       set(_tag "${_t}")
       break()
-    elseif(_t MATCHES "^snapshot-[0-9a-f]+$" AND _pinned STREQUAL "")
-      set(_pinned "${_t}")
-    elseif(_rolling STREQUAL "")
-      set(_rolling "${_t}")
+    elseif(_snapshot STREQUAL "")
+      set(_snapshot "${_t}")
     endif()
   endforeach()
   if(_tag STREQUAL "")
-    set(_tag "${_pinned}")
+    set(_tag "${_snapshot}")
   endif()
   if(_tag STREQUAL "")
-    set(_tag "${_rolling}")
+    set(_tag "${_alias}")
   endif()
   if(_tag STREQUAL "")
     message(FATAL_ERROR
