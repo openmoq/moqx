@@ -5,6 +5,8 @@ BINARY="${1:-$(dirname "$0")/../build/default/moqx}"
 TESTDIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=test_ports.sh
 source "$(dirname "$0")/test_ports.sh"
+# shellcheck source=test_relay_lifecycle.sh
+source "$(dirname "$0")/test_relay_lifecycle.sh"
 LISTEN_PORT=$TEST_ADMIN_TLS_LISTEN
 ADMIN_PORT=$TEST_ADMIN_TLS_ADMIN
 
@@ -19,8 +21,13 @@ KEY="${TESTDIR}/test_key.pem"
 TMPDIR=$(mktemp -d)
 MOQX_PID=""
 cleanup() {
-  [[ -n "$MOQX_PID" ]] && kill "$MOQX_PID" 2>/dev/null; wait "$MOQX_PID" 2>/dev/null || true
+  local relay_failed=0
+  if [[ -n "$MOQX_PID" ]]; then
+    kill "$MOQX_PID" 2>/dev/null || true
+    reap_relays "$MOQX_PID" || relay_failed=1
+  fi
   rm -rf "$TMPDIR"
+  (( relay_failed == 0 )) || exit 1
 }
 trap cleanup EXIT
 
