@@ -195,8 +195,11 @@ else()
     if(_http_code STREQUAL "404")
       message(FATAL_ERROR
         "moxygen: tag '${_rel_tag}' has no GitHub release, so it publishes no "
-        "prebuilt. Build from source:\n"
-        "  scripts/configure.sh --moxygen from-source && scripts/build.sh")
+        "prebuilt. The pinned rev's build failed, predates retained per-rev "
+        "snapshots, or its snapshot aged out (a v* release carrying the rev "
+        "still works: -DMOXYGEN_RELEASE_TAG=<tag>). Build from source:\n"
+        "  scripts/configure.sh --moxygen from-source && scripts/build.sh\n"
+        "or bump the pin in cmake/dependencies.cmake to a published rev.")
     elseif(_http_code STREQUAL "403" OR _http_code STREQUAL "429")
       message(FATAL_ERROR
         "moxygen: the GitHub API rate limit is exhausted for this IP (anonymous "

@@ -3,8 +3,9 @@
 #
 #   cmake -P cmake/print-release-tag.cmake
 #
-# Hits the network (git ls-remote) unless MOXYGEN_RELEASE_TAG pins the answer;
-# no tag at the pin exits non-zero.
+# Pure derivation, no network: the tag is a function of the pin (or of
+# MOXYGEN_RELEASE_TAG when set). Whether the release exists is the fetch's
+# concern, not this script's.
 # message() writes to stderr in script mode; -E echo is the stdout channel.
 #
 # cmake_minimum_required matters here — a -P script without one runs under

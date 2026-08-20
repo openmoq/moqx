@@ -16,97 +16,26 @@
 # in cmake/dependencies.cmake is.
 if(NOT DEFINED MOXYGEN_RELEASE_TAG)
   set(MOXYGEN_RELEASE_TAG ""
-      CACHE STRING "moxygen release tag to fetch the prebuilt from (empty = auto-resolve from MOXYGEN_REV)")
+      CACHE STRING "moxygen release tag to fetch the prebuilt from (empty = derive from MOXYGEN_REV)")
 endif()
 
-# Run `git ls-remote --tags` and return the tag names pointing at MOXYGEN_REV
-# (annotated tags matched via their peeled ^{} line).
-function(moqx_moxygen_tags_at_pin OUT_VAR)
-  # Script mode has no find_package(Git) behind it, unlike the project build.
-  if(NOT DEFINED GIT_EXECUTABLE OR GIT_EXECUTABLE STREQUAL "")
-    find_package(Git QUIET)
-  endif()
-  if(NOT GIT_EXECUTABLE)
-    message(FATAL_ERROR
-      "moxygen: git is required to resolve the release for MOXYGEN_REV")
-  endif()
-  execute_process(
-    COMMAND "${GIT_EXECUTABLE}" ls-remote --tags "https://github.com/${MOXYGEN_REPOSITORY}"
-    OUTPUT_VARIABLE _ls_out RESULT_VARIABLE _ls_rc ERROR_VARIABLE _ls_err)
-  if(NOT _ls_rc EQUAL 0)
-    message(FATAL_ERROR
-      "moxygen: 'git ls-remote https://github.com/${MOXYGEN_REPOSITORY}' failed: ${_ls_err}")
-  endif()
-  string(REGEX REPLACE "\r?\n" ";" _ls_lines "${_ls_out}")
-  # Both sides lowercased: ls-remote prints lowercase, a hand-edited pin need not
-  # be, and a case mismatch here reports a published rev as having no release.
-  string(TOLOWER "${MOXYGEN_REV}" _pin_lc)
-  set(_matched "")
-  foreach(_line IN LISTS _ls_lines)
-    if(_line STREQUAL "")
-      continue()
-    endif()
-    string(REGEX MATCH "^[0-9a-fA-F]+" _sha "${_line}")
-    string(TOLOWER "${_sha}" _sha)
-    if(_sha STREQUAL "${_pin_lc}" AND _line MATCHES "refs/tags/(.+)$")
-      set(_t "${CMAKE_MATCH_1}")
-      string(REGEX REPLACE "\\^\\{\\}$" "" _t "${_t}")  # peel annotated-tag suffix
-      list(APPEND _matched "${_t}")
-    endif()
-  endforeach()
-  list(REMOVE_DUPLICATES _matched)
-  set(${OUT_VAR} "${_matched}" PARENT_SCOPE)
-endfunction()
-
-# Return the release tag whose assets belong to MOXYGEN_REV. GitHub keeps no
-# commit->release index, so this asks the remote which tags point at the pin.
+# Return the release tag whose assets belong to MOXYGEN_REV.
 #
-# Every matched tag names the same build, but not for the same length of time:
-# rolling aliases (moxygen's publish contract names them *-latest) are deleted
-# and recreated on every moxygen push, so an alias resolved here can dangle by
-# fetch time, and a recorded one (release branches pin the resolved tag for
-# reproducibility) goes stale on the next push. Prefer a tag whose meaning
-# outlives this resolve: a v* release, else a retained per-rev snapshot.
+# The tag is a pure function of the pin: moxygen publishes every build as a
+# retained snapshot-<sha12> pre-release (openmoq/scripts/publish-artifacts.sh
+# in the fork), so no tag search is needed — the fetch verifies the release
+# exists and that its commit matches the pin. For a pin whose per-rev snapshot
+# has aged out but that a v* release still carries, set MOXYGEN_RELEASE_TAG to
+# that release.
 function(moqx_moxygen_release_tag OUT_VAR)
-  # An explicit tag wins and needs no remote read; the fetch verifies the
-  # release's commit against the pin either way.
+  # An explicit tag wins; the fetch verifies the release's commit against the
+  # pin either way.
   if(NOT MOXYGEN_RELEASE_TAG STREQUAL "")
     set(${OUT_VAR} "${MOXYGEN_RELEASE_TAG}" PARENT_SCOPE)
     return()
   endif()
-  moqx_moxygen_tags_at_pin(_matched)
-  set(_tag "")
-  set(_snapshot "")
-  set(_alias "")
-  foreach(_t IN LISTS _matched)
-    if(_t MATCHES "-latest$")
-      if(_alias STREQUAL "")
-        set(_alias "${_t}")
-      endif()
-    elseif(NOT _t MATCHES "^snapshot")
-      set(_tag "${_t}")
-      break()
-    elseif(_snapshot STREQUAL "")
-      set(_snapshot "${_t}")
-    endif()
-  endforeach()
-  if(_tag STREQUAL "")
-    set(_tag "${_snapshot}")
-  endif()
-  if(_tag STREQUAL "")
-    set(_tag "${_alias}")
-  endif()
-  if(_tag STREQUAL "")
-    message(FATAL_ERROR
-      "moxygen: no tag on ${MOXYGEN_REPOSITORY} points at the pinned MOXYGEN_REV\n"
-      "  ${MOXYGEN_REV}\n"
-      "so no release publishes a prebuilt for it and there is nothing to fetch.\n"
-      "Expected when the rev was never published: its build failed, or it\n"
-      "predates the retained per-rev snapshot-<sha> pre-releases.\n"
-      "\n"
-      "Build moxygen from source instead:\n"
-      "  scripts/configure.sh --moxygen from-source && scripts/build.sh\n"
-      "or bump the pin in cmake/dependencies.cmake to a currently published rev.")
-  endif()
-  set(${OUT_VAR} "${_tag}" PARENT_SCOPE)
+  # Publisher tags with lowercase GITHUB_SHA; a hand-edited pin need not be.
+  string(TOLOWER "${MOXYGEN_REV}" _rev_lc)
+  string(SUBSTRING "${_rev_lc}" 0 12 _rev12)
+  set(${OUT_VAR} "snapshot-${_rev12}" PARENT_SCOPE)
 endfunction()
