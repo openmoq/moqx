@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <optional>
 #include <string>
 
 #include <folly/io/IOBuf.h>
@@ -22,6 +23,23 @@ sendError(proxygen::ResponseHandler* downstream, int status, const std::string& 
       .header("Content-Type", "text/plain; charset=utf-8")
       .body(folly::IOBuf::copyBuffer(message))
       .sendWithEOM();
+}
+
+// Returns nullopt if the param is present with a value that isn't a boolean.
+// A bare `?flag` with no value reads as true, as flags conventionally do.
+inline std::optional<bool>
+boolQueryParam(const proxygen::HTTPMessage& req, const std::string& name, bool defaultValue) {
+  if (!req.hasQueryParam(name)) {
+    return defaultValue;
+  }
+  auto value = req.getDecodedQueryParam(name);
+  if (value.empty() || value == "1" || value == "true") {
+    return true;
+  }
+  if (value == "0" || value == "false") {
+    return false;
+  }
+  return std::nullopt;
 }
 
 } // namespace openmoq::moqx::admin

@@ -25,8 +25,8 @@ makeResult(stats::TrackCounters counters, std::string service) {
   return result;
 }
 
-std::string format(const MoqxRelayContext::TrackMetricsResult& result) {
-  auto body = formatTrackMetrics(result);
+std::string format(const MoqxRelayContext::TrackMetricsResult& result, bool omitMetadata = false) {
+  auto body = formatTrackMetrics(result, omitMetadata);
   return body->moveToFbString().toStdString();
 }
 
@@ -96,6 +96,22 @@ TEST(TrackMetricsFormatTest, OmitsUnsetTimestamps) {
   EXPECT_NE(out.find("# TYPE moqx_track_last_object_timestamp_seconds gauge"), std::string::npos);
   EXPECT_EQ(out.find("moqx_track_last_object_timestamp_seconds{"), std::string::npos);
   EXPECT_EQ(out.find("moqx_track_publish_start_timestamp_seconds{"), std::string::npos);
+}
+
+TEST(TrackMetricsFormatTest, OmitMetadataDropsHelpAndTypeButKeepsSamples) {
+  stats::TrackCounters counters;
+  counters.received.objects = 7;
+
+  auto out = format(makeResult(counters, "svc"), /*omitMetadata=*/true);
+
+  EXPECT_EQ(out.find("# HELP"), std::string::npos) << out;
+  EXPECT_EQ(out.find("# TYPE"), std::string::npos) << out;
+  EXPECT_NE(
+      out.find(
+          "moqx_track_objects_received_total{service=\"svc\",namespace=\"ns\",track=\"track\"} 7\n"
+      ),
+      std::string::npos
+  ) << out;
 }
 
 TEST(TrackMetricsFormatTest, EscapesServiceLabel) {

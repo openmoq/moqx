@@ -14,8 +14,8 @@
 namespace openmoq::moqx::stats {
 
 namespace {
-std::string prometheusText(const StatsSnapshot& snap) {
-  auto out = StatsSnapshot::formatPrometheus(snap);
+std::string prometheusText(const StatsSnapshot& snap, bool omitMetadata = false) {
+  auto out = StatsSnapshot::formatPrometheus(snap, omitMetadata);
   out->coalesce();
   return std::string(reinterpret_cast<const char*>(out->data()), out->length());
 }
@@ -89,6 +89,23 @@ TEST_F(MoQStatsCollectorTest, PrometheusExportsResetAndAckLatency) {
   // Total is sum() over labels: an unhit reason still emits a zero series.
   EXPECT_NE(text.find("moqx_pubSubgroupReset_total{code=\"cancelled\"} 0"), std::string::npos);
   EXPECT_NE(text.find("moqx_moqObjectAckLatency_microseconds_count 1"), std::string::npos);
+}
+
+TEST_F(MoQStatsCollectorTest, PrometheusOmitMetadataDropsHelpAndType) {
+  auto pub = collector_->publisherCallback();
+  pub->onSubgroupReset(moxygen::ResetStreamErrorCode::DELIVERY_TIMEOUT);
+  pub->recordObjectAckLatency(300);
+
+  auto text = prometheusText(collector_->snapshot(), /*omitMetadata=*/true);
+
+  EXPECT_EQ(text.find("# HELP"), std::string::npos);
+  EXPECT_EQ(text.find("# TYPE"), std::string::npos);
+  EXPECT_NE(
+      text.find("moqx_pubSubgroupReset_total{code=\"delivery_timeout\"} 1"),
+      std::string::npos
+  );
+  EXPECT_NE(text.find("moqx_moqObjectAckLatency_microseconds_count 1"), std::string::npos);
+  EXPECT_NE(text.find("moqx_moqObjectAckLatency_microseconds_bucket{le="), std::string::npos);
 }
 
 } // namespace openmoq::moqx::stats

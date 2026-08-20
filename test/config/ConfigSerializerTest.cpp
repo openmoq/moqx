@@ -73,12 +73,16 @@ static_assert(
     "CacheConfig changed — update serializeCache()"
 );
 static_assert(
-    rfl::internal::num_fields<AuthConfig> == 6,
+    rfl::internal::num_fields<AuthConfig> == 8,
     "AuthConfig changed — update serializeAuth()"
 );
 static_assert(
     rfl::internal::num_fields<AuthConfig::HmacKey> == 2,
     "HmacKey changed — update serializeAuth()"
+);
+static_assert(
+    rfl::internal::num_fields<AuthConfig::AnonymousScope> == 5,
+    "AnonymousScope changed — update serializeAuth()"
 );
 static_assert(
     rfl::internal::num_fields<UpstreamConfig> == 4,
@@ -224,6 +228,32 @@ TEST(ConfigSerializerTest, VisitsAllSections) {
   EXPECT_EQ(sink.scalars["logging.mlog.dir"], "/var/log/mlog");
   EXPECT_EQ(sink.scalars["logging.mlog.sample_rate"], "0.500000");
   EXPECT_EQ(sink.scalars["logging.qlog.dir"], "/var/log/qlog");
+}
+
+// Regression: a scope without namespace_match (matches ANY namespace) must
+// serialize distinguishably from one with an explicit empty segment list
+// (matches only the zero-segment namespace) -- collapsing both to [] would
+// make a wide-open anonymous claim unauditable over the /config endpoint.
+TEST(ConfigSerializerTest, AnonymousClaimAbsentNamespaceMatchSerializesAsNull) {
+  Config cfg = makeFullConfig();
+  auto& scope = cfg.services.at("default").auth.anonymousClaim.emplace_back();
+  scope.actions.push_back(openmoq::moqx::auth::Action::Subscribe);
+
+  RecordingSink sink;
+  serializeConfig(cfg, sink);
+  EXPECT_EQ(sink.scalars["services.default.auth.anonymous_claim.*.namespace_segments"], "null");
+}
+
+TEST(ConfigSerializerTest, AnonymousClaimEmptyNamespaceMatchSerializesAsEmptyArray) {
+  Config cfg = makeFullConfig();
+  auto& scope = cfg.services.at("default").auth.anonymousClaim.emplace_back();
+  scope.actions.push_back(openmoq::moqx::auth::Action::Subscribe);
+  scope.namespaceSegments = std::vector<std::string>{};
+
+  RecordingSink sink;
+  serializeConfig(cfg, sink);
+  // An empty array emits no scalar leaf; the null sentinel must be absent.
+  EXPECT_EQ(sink.scalars.count("services.default.auth.anonymous_claim.*.namespace_segments"), 0u);
 }
 
 TEST(ConfigSerializerTest, RedactsHmacSecret) {

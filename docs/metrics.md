@@ -5,13 +5,25 @@ moqx exposes a Prometheus metrics endpoint on the admin HTTP server.
 ## Endpoint
 
 ```
-GET /metrics
+GET /metrics?omit_metadata=<bool>
 ```
 
 **Content-Type:** `text/plain; version=0.0.4; charset=utf-8`
 
 The response uses [Prometheus exposition format v0.0.4](https://prometheus.io/docs/instrumenting/exposition_formats/).
 All metric names are prefixed with `moqx_`.
+
+### Omitting metadata
+
+`omit_metadata` drops the `# HELP` and `# TYPE` lines while leaving every sample
+line unchanged; it applies to `/metrics` and `/metrics/track` alike. The metadata
+is static and repeats on every scrape, so a scraper that already knows the
+metric types can cut the response size substantially — most of a `/metrics/track`
+response is metadata when few tracks match.
+
+Accepted values are `1`, `true`, `0`, `false`, and a bare `?omit_metadata` with
+no value (true). Anything else is rejected with 400. Default is false, so
+scrapers that want the metadata need no change.
 
 ## Naming Conventions
 
@@ -186,7 +198,7 @@ Counters with per-code breakdowns:
 ## Per-Track Metrics
 
 ```
-GET /metrics/track?service=<name>&namespace=<a/b>&track=<name>&limit=<N>
+GET /metrics/track?service=<name>&namespace=<a/b>&track=<name>&limit=<N>&omit_metadata=<bool>
 ```
 
 Requires `admin.track_metrics_enabled` (default true); when it is false the
@@ -201,6 +213,7 @@ goes away, and start from zero if it comes back.
 | `service` | no | Restrict to one service. Default: all services, each labeled. |
 | `track` | no | Exact track name within the namespace. |
 | `limit` | no | Max tracks to report. Default `admin.track_metrics_endpoint_default_limit` (10); a value above `admin.track_metrics_endpoint_max_limit` (1000) is rejected with 400. |
+| `omit_metadata` | no | Drop the `# HELP` / `# TYPE` lines. See [Omitting metadata](#omitting-metadata). Default false. |
 
 Every parameter is optional, so `GET /metrics/track?limit=20` reports every live
 track when fewer than 20 match.

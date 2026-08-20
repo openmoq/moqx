@@ -276,7 +276,8 @@ echo "PASS [4]: Phase 2 purge returned valid response: evicted=$EVICTED"
 
 # 5. /metrics still readable (event loop not wedged).
 METRICS=$(curl -sf "$METRICS_URL" 2>/dev/null || echo "")
-if ! echo "$METRICS" | grep -q "moqx_moqActiveSessions"; then
+# herestring, not a pipe: grep -q exiting early would SIGPIPE echo under pipefail
+if ! grep -q "moqx_moqActiveSessions" <<< "$METRICS"; then
   echo "FAIL [5]: /metrics unresponsive after test (event loop wedged?)" >&2; exit 1
 fi
 echo "PASS [5]: /metrics readable after both phases"

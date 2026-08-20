@@ -62,7 +62,8 @@ StatsSnapshot& StatsSnapshot::operator+=(const StatsSnapshot& o) {
 // Histograms → _bucket{le=...}/_sum/_count, TYPE histogram
 
 /* static */
-std::unique_ptr<folly::IOBuf> StatsSnapshot::formatPrometheus(const StatsSnapshot& snap) {
+std::unique_ptr<folly::IOBuf>
+StatsSnapshot::formatPrometheus(const StatsSnapshot& snap, bool omitMetadata) {
   folly::IOBufQueue queue{folly::IOBufQueue::cacheChainLength()};
   folly::io::QueueAppender appender{&queue, 8192};
 
@@ -70,12 +71,17 @@ std::unique_ptr<folly::IOBuf> StatsSnapshot::formatPrometheus(const StatsSnapsho
     appender.push(reinterpret_cast<const uint8_t*>(s.data()), s.size());
   };
   auto appNum = [&app](auto v) { app(folly::to<std::string>(v)); };
+  auto meta = [&app, omitMetadata](std::string_view s) {
+    if (!omitMetadata) {
+      app(s);
+    }
+  };
 
   // --- Counters ---
 #define EMIT_COUNTER(type, name)                                                                   \
-  app("# HELP moqx_" #name "_total\n"                                                              \
-      "# TYPE moqx_" #name "_total counter\n"                                                      \
-      "moqx_" #name "_total ");                                                                    \
+  meta("# HELP moqx_" #name "_total\n"                                                             \
+       "# TYPE moqx_" #name "_total counter\n");                                                   \
+  app("moqx_" #name "_total ");                                                                    \
   appNum(snap.name);                                                                               \
   app("\n\n");
   STATS_COUNTER_FIELDS(EMIT_COUNTER)
@@ -83,9 +89,9 @@ std::unique_ptr<folly::IOBuf> StatsSnapshot::formatPrometheus(const StatsSnapsho
 
   // --- Gauges ---
 #define EMIT_GAUGE(type, name)                                                                     \
-  app("# HELP moqx_" #name "\n"                                                                    \
-      "# TYPE moqx_" #name " gauge\n"                                                              \
-      "moqx_" #name " ");                                                                          \
+  meta("# HELP moqx_" #name "\n"                                                                   \
+       "# TYPE moqx_" #name " gauge\n");                                                           \
+  app("moqx_" #name " ");                                                                          \
   appNum(snap.name);                                                                               \
   app("\n\n");
   STATS_GAUGE_FIELDS(EMIT_GAUGE)
@@ -93,8 +99,8 @@ std::unique_ptr<folly::IOBuf> StatsSnapshot::formatPrometheus(const StatsSnapsho
 
   // --- Histograms ---
 #define EMIT_HISTOGRAM(name, bounds, unit)                                                         \
-  app("# HELP moqx_" #name "_" unit "\n"                                                           \
-      "# TYPE moqx_" #name "_" unit " histogram\n");                                               \
+  meta("# HELP moqx_" #name "_" unit "\n"                                                          \
+       "# TYPE moqx_" #name "_" unit " histogram\n");                                              \
   {                                                                                                \
     const auto& bvals = (bounds);                                                                  \
     const auto& bcounts = snap.name##Buckets;                                                      \
@@ -122,9 +128,9 @@ std::unique_ptr<folly::IOBuf> StatsSnapshot::formatPrometheus(const StatsSnapsho
   // Each field emits one labelled counter series:
   //   moqx_<name>_by_code_total{code="<label>"}
 #define EMIT_ERROR_COUNTER(name)                                                                   \
-  app("# HELP moqx_" #name "_by_code_total"                                                        \
-      " Error count broken down by RequestErrorCode\n"                                             \
-      "# TYPE moqx_" #name "_by_code_total counter\n");                                            \
+  meta("# HELP moqx_" #name "_by_code_total"                                                       \
+       " Error count broken down by RequestErrorCode\n"                                            \
+       "# TYPE moqx_" #name "_by_code_total counter\n");                                           \
   for (size_t i = 0; i < kRequestErrorCodeCount; ++i) {                                            \
     app("moqx_" #name "_by_code_total{code=\"");                                                   \
     app(kRequestErrorCodeLabels[i]);                                                               \
@@ -140,9 +146,9 @@ std::unique_ptr<folly::IOBuf> StatsSnapshot::formatPrometheus(const StatsSnapsho
   // Each field emits one labelled counter series:
   //   moqx_<name>_total{code="<label>"}
 #define EMIT_RESET_COUNTER(name)                                                                   \
-  app("# HELP moqx_" #name "_total"                                                                \
-      " Subgroup resets broken down by ResetStreamErrorCode\n"                                     \
-      "# TYPE moqx_" #name "_total counter\n");                                                    \
+  meta("# HELP moqx_" #name "_total"                                                               \
+       " Subgroup resets broken down by ResetStreamErrorCode\n"                                    \
+       "# TYPE moqx_" #name "_total counter\n");                                                   \
   for (size_t i = 0; i < kResetStreamErrorCodeCount; ++i) {                                        \
     app("moqx_" #name "_total{code=\"");                                                           \
     app(kResetStreamErrorCodeLabels[i]);                                                           \

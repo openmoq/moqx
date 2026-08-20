@@ -325,7 +325,9 @@ struct StatsSnapshot {
   StatsSnapshot& operator+=(const StatsSnapshot& o);
 
   // --- Prometheus text format ---
-  static std::unique_ptr<folly::IOBuf> formatPrometheus(const StatsSnapshot& snap);
+  // omitMetadata drops the # HELP / # TYPE lines from every series.
+  static std::unique_ptr<folly::IOBuf>
+  formatPrometheus(const StatsSnapshot& snap, bool omitMetadata = false);
 };
 
 class StatsCollectorBase {

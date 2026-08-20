@@ -7,6 +7,7 @@
 #include "auth/Auth.h"
 #include "auth/CborReader.h"
 #include "auth/HmacKey.h"
+#include "util/ExhaustiveSwitch.h"
 
 #include <catapult/crypto.hpp>
 #include <catapult/cwt.hpp>
@@ -30,18 +31,6 @@ using namespace moxygen;
 namespace openmoq::moqx::auth {
 namespace {
 
-std::string canonicalNamespace(const TrackNamespace& ns) {
-  std::string out;
-  for (const auto& field : ns.trackNamespace) {
-    out.push_back(static_cast<char>((field.size() >> 24) & 0xff));
-    out.push_back(static_cast<char>((field.size() >> 16) & 0xff));
-    out.push_back(static_cast<char>((field.size() >> 8) & 0xff));
-    out.push_back(static_cast<char>(field.size() & 0xff));
-    out.append(field);
-  }
-  return out;
-}
-
 std::vector<uint8_t> toBytes(std::string_view value) {
   return std::vector<uint8_t>(
       reinterpret_cast<const uint8_t*>(value.data()),
@@ -53,6 +42,10 @@ std::string toString(const std::vector<uint8_t>& bytes) {
   return std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size());
 }
 
+// catapult's CBOR decoder (parse_bin_match, cwt.cpp) falls back to EXACT for
+// an unrecognized BinaryMatchType, so the XLOG below is a tripwire against
+// that decoder changing; the exhaustive-switch check covers a missed case.
+ENFORCE_EXHAUSTIVE_SWITCH_BEGIN
 MatchRule::Type fromCatapultMatchType(catapult::BinaryMatchType type) {
   switch (type) {
   case catapult::BinaryMatchType::EXACT:
@@ -64,8 +57,11 @@ MatchRule::Type fromCatapultMatchType(catapult::BinaryMatchType type) {
   case catapult::BinaryMatchType::CONTAINS:
     return MatchRule::Type::Contains;
   }
+  XLOG(ERR) << "catapult BinaryMatchType " << static_cast<int>(type)
+            << " unrecognized; falling back to EXACT";
   return MatchRule::Type::Exact;
 }
+ENFORCE_EXHAUSTIVE_SWITCH_END
 
 std::vector<MatchRule> fromCatapultMatch(const catapult::MoqtCompoundMatch& match) {
   if (match.is_empty()) {
@@ -109,6 +105,60 @@ Grants grantsFromToken(const catapult::CatToken& token) {
   return grants;
 }
 
+Grants buildAnonymousGrants(const std::vector<config::AuthConfig::AnonymousScope>& configScopes) {
+  Grants grants; // expiresAt stays time_point::max() -- a static claim never expires
+  for (const auto& configScope : configScopes) {
+    Scope scope;
+    scope.actions = configScope.actions;
+    if (configScope.namespaceSegments) {
+      scope.namespaceMatches.push_back(MatchRule{
+          .type = configScope.namespaceMatchMode,
+          .value = canonicalNamespace(TrackNamespace{*configScope.namespaceSegments}),
+      });
+    }
+    if (configScope.trackName) {
+      scope.trackMatches.push_back(MatchRule{
+          .type = configScope.trackMatchMode,
+          .value = *configScope.trackName,
+      });
+    }
+    grants.scopes.push_back(std::move(scope));
+  }
+  return grants;
+}
+
+struct VerifiedTokens {
+  std::vector<Grants> grants;
+  std::optional<AuthError> firstError;
+};
+
+// Picks the error for a denial after token verification: with at least one
+// verified token the problem is scope (Forbidden), not the crypto/format
+// problem `firstError` holds for the *other* tokens that failed to verify.
+AuthError
+denialError(const std::vector<Grants>& verifiedGrants, std::optional<AuthError> firstError) {
+  return verifiedGrants.empty() ? firstError.value_or(AuthError::Forbidden) : AuthError::Forbidden;
+}
+
+// Verifies every token, pooling grants from the ones that succeed. A token
+// that fails to verify is dropped as a non-viable candidate; `firstError`
+// keeps the earliest failure for a caller with nothing else to report.
+VerifiedTokens
+verifyTokens(const AuthTokenVerifier& verifier, const std::vector<AuthToken>& tokens) {
+  VerifiedTokens result;
+  for (const auto& token : tokens) {
+    auto verified = verifier.verify(token);
+    if (verified.hasError()) {
+      if (!result.firstError) {
+        result.firstError = verified.error();
+      }
+      continue;
+    }
+    result.grants.push_back(std::move(verified.value()));
+  }
+  return result;
+}
+
 } // namespace
 
 AuthTokenVerifier::AuthTokenVerifier(config::AuthConfig config) : config_(std::move(config)) {
@@ -120,6 +170,7 @@ AuthTokenVerifier::AuthTokenVerifier(config::AuthConfig config) : config_(std::m
       keyIdIndex_.emplace(key.id, idx);
     }
   }
+  anonymousGrants_ = buildAnonymousGrants(config_.anonymousClaim);
 }
 
 folly::Expected<Grants, AuthError> AuthTokenVerifier::verify(const AuthToken& token) const {
@@ -186,36 +237,25 @@ authenticateSetup(const AuthTokenVerifier& verifier, const Parameters& setupPara
   }
 
   auto tokens = findAuthTokens(setupParams, verifier.tokenType());
-  std::vector<Grants> verifiedGrants;
-  std::optional<AuthError> firstError;
-  for (const auto& token : tokens) {
-    auto verified = verifier.verify(token);
-    if (verified.hasError()) {
-      if (!firstError) {
-        firstError = verified.error();
-      }
-      continue;
-    }
-    verifiedGrants.push_back(std::move(verified.value()));
+  if (tokens.size() > verifier.maxTokensPerMessage()) {
+    XLOG(WARN) << "authenticateSetup: " << tokens.size() << " setup tokens exceeds "
+               << "max_tokens_per_message=" << verifier.maxTokensPerMessage() << "; rejecting";
+    return folly::makeUnexpected(AuthError::TooManyTokens);
   }
-
-  if (!tokens.empty()) {
-    // At least one setup token was presented; the session is authorized iff
-    // any of the verified ones grants ClientSetup. All verified tokens' other
-    // scopes still pool into the session grants below, not just the one that
-    // happened to grant ClientSetup.
-    if (!allowsAny(verifiedGrants, Action::ClientSetup, TrackNamespace{})) {
-      return folly::makeUnexpected(firstError.value_or(AuthError::Forbidden));
-    }
-    return std::make_shared<const std::vector<Grants>>(std::move(verifiedGrants));
-  }
+  auto [verifiedGrants, firstError] = verifyTokens(verifier, tokens);
 
   if (verifier.requireSetupToken()) {
-    return folly::makeUnexpected(AuthError::Missing);
+    if (tokens.empty()) {
+      return folly::makeUnexpected(AuthError::Missing);
+    }
+    // Session is authorized iff any verified setup token grants ClientSetup;
+    // all verified tokens' scopes still pool into the session grants below,
+    // not just the one that granted it.
+    if (!allowsAny(verifiedGrants, Action::ClientSetup, TrackNamespace{})) {
+      return folly::makeUnexpected(denialError(verifiedGrants, firstError));
+    }
   }
-  // No setup token but not required: connect with empty session grants;
-  // requests must then carry their own tokens to be authorized (see authorize()).
-  return std::make_shared<const std::vector<Grants>>();
+  return std::make_shared<const std::vector<Grants>>(std::move(verifiedGrants));
 }
 
 folly::Expected<folly::Unit, AuthError> authorize(
@@ -230,34 +270,43 @@ folly::Expected<folly::Unit, AuthError> authorize(
     return folly::unit;
   }
 
+  auto tokens = findAuthTokens(params, verifier.tokenType());
+  if (tokens.size() > verifier.maxTokensPerMessage()) {
+    XLOG(WARN) << "authorize: " << tokens.size() << " request tokens exceeds "
+               << "max_tokens_per_message=" << verifier.maxTokensPerMessage()
+               << " for action=" << static_cast<uint64_t>(action) << "; rejecting";
+    return folly::makeUnexpected(AuthError::TooManyTokens);
+  }
+
   std::vector<Grants> requestGrants;
   std::optional<AuthError> firstError;
   if (verifier.allowRequestTokenOverride()) {
-    for (const auto& token : findAuthTokens(params, verifier.tokenType())) {
-      auto res = verifier.verify(token);
-      if (res.hasError()) {
-        // Dropped as a non-viable candidate — another request token or a
-        // session grant may still cover the action.
-        if (!firstError) {
-          firstError = res.error();
-        }
-        continue;
-      }
-      requestGrants.push_back(std::move(res.value()));
-    }
-  } else if (!findAuthTokens(params, verifier.tokenType()).empty()) {
+    auto verified = verifyTokens(verifier, tokens);
+    requestGrants = std::move(verified.grants);
+    firstError = verified.firstError;
+  } else if (!tokens.empty()) {
     XLOG(DBG1) << "authorize: ignoring request AUTHORIZATION_TOKEN(s) for action="
                << static_cast<uint64_t>(action) << " (allow_request_token_override is disabled)";
   }
 
-  const bool permitted =
-      trackName ? (allowsAny(requestGrants, action, FullTrackName{ns, std::string(*trackName)}) ||
-                   allowsAny(sessionGrants, action, FullTrackName{ns, std::string(*trackName)}))
-                : (allowsAny(requestGrants, action, ns) || allowsAny(sessionGrants, action, ns));
+  // Any one of three sources is sufficient.
+  const auto& anonymousGrants = verifier.anonymousGrants();
+  const auto now = std::chrono::system_clock::now();
+  bool permitted = false;
+  if (trackName) {
+    const FullTrackName ftn{ns, std::string(*trackName)};
+    permitted = allowsAny(requestGrants, action, ftn, now) ||
+                allowsAny(sessionGrants, action, ftn, now) ||
+                allows(anonymousGrants, action, ftn, now);
+  } else {
+    permitted = allowsAny(requestGrants, action, ns, now) ||
+                allowsAny(sessionGrants, action, ns, now) ||
+                allows(anonymousGrants, action, ns, now);
+  }
   if (!permitted) {
     XLOG(DBG1) << "authorize: action=" << static_cast<uint64_t>(action)
                << " not permitted for ns=" << ns;
-    return folly::makeUnexpected(firstError.value_or(AuthError::Forbidden));
+    return folly::makeUnexpected(denialError(requestGrants, firstError));
   }
   return folly::unit;
 }
@@ -275,8 +324,8 @@ std::vector<AuthToken> findAuthTokens(const Parameters& params, uint64_t tokenTy
 
 namespace {
 
-// Shared implementation for both allows() overloads. A namespace-level check
-// passes std::nullopt for trackName (the track match rules then see empty bytes).
+// A namespace-level check passes std::nullopt for trackName (the track match
+// rules then see empty bytes).
 bool allowsImpl(
     const Grants& grants,
     Action action,
@@ -373,6 +422,8 @@ const char* toString(AuthError error) {
     return "expired authorization token";
   case AuthError::Forbidden:
     return "authorization token does not permit action";
+  case AuthError::TooManyTokens:
+    return "too many authorization tokens in message";
   }
   return "authorization failed";
 }

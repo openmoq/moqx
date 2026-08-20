@@ -24,8 +24,8 @@ struct TrackMetricsLimits {
   size_t maxLimit{1000};
 };
 
-std::unique_ptr<folly::IOBuf> formatTrackMetrics(const MoqxRelayContext::TrackMetricsResult& result
-);
+std::unique_ptr<folly::IOBuf>
+formatTrackMetrics(const MoqxRelayContext::TrackMetricsResult& result, bool omitMetadata = false);
 
 // Registers GET /metrics/track, which reports per-track counters in Prometheus
 // text format for tracks matching ?service=&namespace=&track=.

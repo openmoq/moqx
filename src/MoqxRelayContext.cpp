@@ -268,6 +268,7 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayContext::validateAu
     case auth::AuthError::Forbidden:
     case auth::AuthError::Missing:
     case auth::AuthError::WrongTokenType:
+    case auth::AuthError::TooManyTokens:
       return folly::makeUnexpected(SessionCloseErrorCode::UNAUTHORIZED);
     }
     return folly::makeUnexpected(SessionCloseErrorCode::UNAUTHORIZED);
