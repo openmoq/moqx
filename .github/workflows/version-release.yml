@@ -130,6 +130,15 @@ jobs:
           fi
           echo "==> MOXYGEN_REV $MOX_PIN resolves to moxygen release $MOX_REF"
 
+          # Release branches must reference a permanent moxygen release:
+          # snapshots are pruned after 30 days, taking the release's moxygen
+          # reference and its reproducibility with them.
+          if [ "$BRANCH" != "main" ] && [[ "$MOX_REF" == snapshot-* ]]; then
+            echo "Error: $BRANCH resolves moxygen to the temporary snapshot $MOX_REF." >&2
+            echo "Set MOXYGEN_RELEASE_TAG in cmake/dependencies.cmake on $BRANCH to the moxygen v-tag for this release." >&2
+            exit 1
+          fi
+
           # Disagreement can only mean the operator meant to bump MOXYGEN_REV
           # first — the input cannot move the build off the pin.
           INPUT_REF="${{ inputs.moxygen_release }}"

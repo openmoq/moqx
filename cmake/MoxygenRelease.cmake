@@ -19,14 +19,17 @@ if(NOT DEFINED MOXYGEN_RELEASE_TAG)
       CACHE STRING "moxygen release tag to fetch the prebuilt from (empty = derive from MOXYGEN_REV)")
 endif()
 
-# Return the release tag whose assets belong to MOXYGEN_REV.
+# Return the release tag whose assets belong to MOXYGEN_REV. Two modes:
 #
-# The tag is a pure function of the pin: moxygen publishes every build as a
+# Normal builds derive it from the pin: moxygen publishes every build as a
 # retained snapshot-<sha12> pre-release (openmoq/scripts/publish-artifacts.sh
 # in the fork), so no tag search is needed — the fetch verifies the release
-# exists and that its commit matches the pin. For a pin whose per-rev snapshot
-# has aged out but that a v* release still carries, set MOXYGEN_RELEASE_TAG to
-# that release.
+# exists and that its commit matches the pin.
+#
+# Release builds set MOXYGEN_RELEASE_TAG to the moxygen v* release, the
+# permanent artifact: snapshots are pruned after 30 days, so a release built
+# on one loses reproducibility. version-release enforces this for release
+# branches.
 function(moqx_moxygen_release_tag OUT_VAR)
   # An explicit tag wins; the fetch verifies the release's commit against the
   # pin either way.
