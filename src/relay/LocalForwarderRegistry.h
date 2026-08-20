@@ -16,6 +16,7 @@
 #include <folly/logging/xlog.h>
 
 #include <variant>
+#include <vector>
 
 namespace openmoq::moqx {
 
@@ -138,10 +139,45 @@ public:
     for (const auto& [ftn, entry] : forwarders_) {
       XCHECK(!entry.ready) << "pending entry outlived its registry: " << ftn;
     }
+    for (const auto& [ftn, parked] : displaced_) {
+      XCHECK(parked.empty()) << "displaced forwarder outlived its registry: " << ftn;
+    }
   }
 
   LocalForwarderRegistry(const LocalForwarderRegistry&) = delete;
   LocalForwarderRegistry& operator=(const LocalForwarderRegistry&) = delete;
+
+  // Names the occupant a replaceAndPark() call evicted, and is the only way to
+  // reach it again. Move-only, and the destructor aborts on an unredeemed ticket,
+  // so a dropped obligation. Empty when nothing was displaced.
+  class ParkTicket {
+  public:
+    ParkTicket() = default;
+    ParkTicket(ParkTicket&& other) noexcept : key_(std::exchange(other.key_, nullptr)) {}
+    ParkTicket& operator=(ParkTicket&& other) noexcept {
+      if (this != &other) {
+        XCHECK(!key_) << "park ticket overwritten without takeDisplaced()";
+        key_ = std::exchange(other.key_, nullptr);
+      }
+      return *this;
+    }
+    ParkTicket(const ParkTicket&) = delete;
+    ParkTicket& operator=(const ParkTicket&) = delete;
+    ~ParkTicket() { XCHECK(!key_) << "park ticket dropped without takeDisplaced()"; }
+
+    explicit operator bool() const { return key_ != nullptr; }
+
+  private:
+    friend class LocalForwarderRegistry;
+    explicit ParkTicket(const void* key) : key_(key) {}
+
+    const void* key_{nullptr};
+  };
+
+  struct ParkResult {
+    Claim claim;
+    ParkTicket displaced;
+  };
 
   // factory() runs only when the entry is absent, at most once per entry lifetime.
   JoinResult join(
@@ -156,25 +192,32 @@ public:
     }
     auto forwarder = factory();
     XCHECK(forwarder) << "join() factory returned null for " << ftn;
-    return makePending(ftn, std::move(forwarder));
+    return makePending(ftn, std::move(forwarder), Park::No).claim;
   }
 
   // The publisher's forwarder is authoritative for a track on its thread; the
   // displaced one drains itself via the source-termination cascade, and its
-  // identity-checked removal then no-ops.
+  // identity-checked removal then no-ops. Dropping its last ref here is safe
+  // precisely because this call is already on the thread that owns it.
   //
   // A displaced entry's waiters are failed rather than inherited: releasing them
   // onto a forwarder that no longer owns the entry is the restart this type exists
   // to prevent.
   Claim
   replace(const moxygen::FullTrackName& ftn, std::shared_ptr<moxygen::MoQForwarder> forwarder) {
-    XCHECK(forwarder) << "replace() with a null forwarder for " << ftn;
-    if (auto it = forwarders_.find(ftn); it != forwarders_.end() && it->second.ready) {
-      XCHECK(it->second.forwarder != forwarder)
-          << "replace() re-seats a forwarder that already owns a pending entry: " << ftn;
-      it->second.ready->setException(std::runtime_error("local forwarder displaced"));
-    }
-    return makePending(ftn, std::move(forwarder));
+    return replaceImpl(ftn, std::move(forwarder), Park::No).claim;
+  }
+
+  // replace(), but the displaced occupant is held for takeDisplaced() instead of
+  // dropped. For a caller whose decision about it arrives from another thread:
+  // parking anchors the last ref here while the answer travels. The returned ticket owes exactly
+  // one takeDisplaced(); ~LocalForwarderRegistry is the backstop for one redeemed against the wrong
+  // track.
+  ParkResult replaceAndPark(
+      const moxygen::FullTrackName& ftn,
+      std::shared_ptr<moxygen::MoQForwarder> forwarder
+  ) {
+    return replaceImpl(ftn, std::move(forwarder), Park::Yes);
   }
 
   // A pending entry reads as absent — see the class comment.
@@ -196,6 +239,33 @@ public:
     return it != forwarders_.end() ? it->second.forwarder : nullptr;
   }
 
+  // Redeems a ticket, releasing the parked occupant, or null. Consuming the ticket is what makes
+  // the obligation exactly-once. Never invokes publishDone, that decision is made elsewhere.
+  // subscribers would otherwise wait forever.
+  std::shared_ptr<moxygen::MoQForwarder>
+  takeDisplaced(const moxygen::FullTrackName& ftn, ParkTicket ticket) {
+    const void* expected = std::exchange(ticket.key_, nullptr);
+    if (!expected) {
+      return nullptr;
+    }
+    auto it = displaced_.find(ftn);
+    if (it == displaced_.end()) {
+      return nullptr;
+    }
+    auto& parked = it->second;
+    for (auto pit = parked.begin(); pit != parked.end(); ++pit) {
+      if (pit->get() == expected) {
+        auto forwarder = std::move(*pit);
+        parked.erase(pit);
+        if (parked.empty()) {
+          displaced_.erase(it);
+        }
+        return forwarder;
+      }
+    }
+    return nullptr;
+  }
+
   // Called from a forwarder's onPublishDone, which fires on this thread. The identity
   // check makes teardown order-independent: a terminated forwarder can only vacate its
   // own entry, so it never clobbers a newer forwarder that has since claimed the same
@@ -213,6 +283,8 @@ public:
   }
 
 private:
+  enum class Park { No, Yes };
+
   struct Entry {
     std::shared_ptr<moxygen::MoQForwarder> forwarder;
     // Non-null iff the entry is pending; it is the state discriminator.
@@ -226,14 +298,38 @@ private:
     return Ready{entry.forwarder};
   }
 
-  Claim
-  makePending(const moxygen::FullTrackName& ftn, std::shared_ptr<moxygen::MoQForwarder> forwarder) {
+  ParkResult replaceImpl(
+      const moxygen::FullTrackName& ftn,
+      std::shared_ptr<moxygen::MoQForwarder> forwarder,
+      Park park
+  ) {
+    XCHECK(forwarder) << "replace() with a null forwarder for " << ftn;
+    if (auto it = forwarders_.find(ftn); it != forwarders_.end()) {
+      XCHECK(it->second.forwarder != forwarder)
+          << "replace() re-seats the forwarder that already holds the entry: " << ftn;
+      if (it->second.ready) {
+        it->second.ready->setException(std::runtime_error("local forwarder displaced"));
+      }
+    }
+    return makePending(ftn, std::move(forwarder), park);
+  }
+
+  ParkResult makePending(
+      const moxygen::FullTrackName& ftn,
+      std::shared_ptr<moxygen::MoQForwarder> forwarder,
+      Park park
+  ) {
     auto& entry = forwarders_[ftn];
     // Outlive the entry update: dropping the last ref here would run ~MoQForwarder,
     // which reenters the registry through its callback, against a half-written entry.
     auto displaced = std::exchange(entry.forwarder, forwarder);
+    const void* parked = nullptr;
+    if (displaced && park == Park::Yes) {
+      parked = displaced.get();
+      displaced_[ftn].push_back(std::move(displaced));
+    }
     entry.ready = std::make_shared<folly::SharedPromise<folly::Unit>>();
-    return Claim(this, ftn, std::move(forwarder));
+    return {Claim(this, ftn, std::move(forwarder)), ParkTicket(parked)};
   }
 
   // A pending entry's promise is unfulfilled by construction: markReady and fail both
@@ -275,6 +371,13 @@ private:
   }
 
   Map forwarders_;
+  // Occupants evicted by replaceAndPark(), awaiting takeDisplaced(). One vector per ftn:
+  // a track can be displaced again before the previous displacement is claimed.
+  folly::F14FastMap<
+      moxygen::FullTrackName,
+      std::vector<std::shared_ptr<moxygen::MoQForwarder>>,
+      moxygen::FullTrackName::hash>
+      displaced_;
 };
 
 } // namespace openmoq::moqx

@@ -22,10 +22,17 @@ using Ready = Registry::Ready;
 
 const TrackNamespace kTestNs{{"test", "namespace"}};
 const FullTrackName kFtn{kTestNs, "track1"};
+const FullTrackName kOtherFtn{kTestNs, "track2"};
 
 std::shared_ptr<MoQForwarder> makeForwarder() {
   return std::make_shared<MoQForwarder>(kFtn);
 }
+
+struct DoneWatcher : public MoQForwarder::Callback {
+  void onEmpty(MoQForwarder*) override {}
+  void onPublishDone(MoQForwarder*) override { sawPublishDone = true; }
+  bool sawPublishDone{false};
+};
 
 Registry::JoinResult joinWith(Registry& reg, const std::shared_ptr<MoQForwarder>& fwd) {
   return reg.join(kFtn, [&] { return fwd; });
@@ -306,6 +313,160 @@ TEST(LocalForwarderRegistryTest, RemoveOfPendingEntryWakesWaiters) {
   // The claim now owns nothing; resolving it must not resurrect the entry.
   claim.markReady(InitialTrackState{});
   EXPECT_TRUE(std::holds_alternative<Absent>(reg.lookup(kFtn)));
+}
+
+// === Displacement parking ===
+
+// The entry holds the only long-lived ref, so parking is what keeps the displaced
+// occupant alive on this thread while its owner's decision travels to another one.
+TEST(LocalForwarderRegistryTest, ReplaceAndParkHoldsTheDisplacedForwarder) {
+  Registry reg;
+  auto first = makeForwarder();
+  claimWith(reg, first).markReady(InitialTrackState{});
+  std::weak_ptr<MoQForwarder> parked = first;
+  first.reset();
+
+  auto successor = reg.replaceAndPark(kFtn, makeForwarder());
+  EXPECT_FALSE(parked.expired());
+  EXPECT_TRUE(static_cast<bool>(successor.displaced)) << "the call hands back a live debt";
+
+  auto displaced = reg.takeDisplaced(kFtn, std::move(successor.displaced));
+  ASSERT_NE(displaced, nullptr);
+  EXPECT_EQ(displaced, parked.lock());
+  // Redeeming consumed the ticket, so taking twice is not expressible.
+  EXPECT_FALSE(static_cast<bool>(successor.displaced));
+
+  successor.claim.markReady(InitialTrackState{});
+}
+
+// Parking is opt-in: a caller already on the owning thread can drop the occupant itself,
+// and owes nothing afterwards.
+TEST(LocalForwarderRegistryTest, PlainReplaceParksNothing) {
+  Registry reg;
+  auto first = makeForwarder();
+  claimWith(reg, first).markReady(InitialTrackState{});
+  std::weak_ptr<MoQForwarder> dropped = first;
+  first.reset();
+
+  reg.replace(kFtn, makeForwarder()).markReady(InitialTrackState{});
+
+  EXPECT_TRUE(dropped.expired());
+  EXPECT_EQ(reg.takeDisplaced(kFtn, Registry::ParkTicket{}), nullptr);
+}
+
+// Parking an absent entry displaces nothing, so the ticket comes back empty. Callers
+// branch on that to decide whether they owe anything, and an empty one costs nothing
+// to drop.
+TEST(LocalForwarderRegistryTest, ParkingAnAbsentEntryOwesNothing) {
+  Registry reg;
+  auto result = reg.replaceAndPark(kFtn, makeForwarder());
+
+  EXPECT_FALSE(static_cast<bool>(result.displaced));
+  result.claim.markReady(InitialTrackState{});
+  // result.displaced goes out of scope here unredeemed, which must not abort.
+}
+
+// Displacing a pending entry is the intricate case: its waiters are failed, its
+// forwarder is parked, and the previous Claim is still out there holding a strong ref
+// and owing a resolution. That stale Claim must not disturb the park.
+TEST(LocalForwarderRegistryTest, ReplaceAndParkDisplacesAPendingEntry) {
+  Registry reg;
+  auto first = makeForwarder();
+  auto stale = claimWith(reg, first); // deliberately left pending
+  auto waiter = waiterOn(reg);
+  std::weak_ptr<MoQForwarder> parked = first;
+  first.reset();
+
+  auto successor = reg.replaceAndPark(kFtn, makeForwarder());
+  EXPECT_TRUE(settled(std::move(waiter)).hasException())
+      << "a displaced entry's waiters are failed, not inherited";
+
+  {
+    auto dropped = std::move(stale);
+  } // resolves against an entry it no longer owns
+  EXPECT_FALSE(parked.expired()) << "the park still anchors it";
+
+  auto displaced = reg.takeDisplaced(kFtn, std::move(successor.displaced));
+  ASSERT_NE(displaced, nullptr);
+  EXPECT_EQ(displaced, parked.lock());
+
+  successor.claim.markReady(InitialTrackState{});
+}
+
+// Each caller holds its own ticket, so two publishes racing on one thread reclaim
+// exactly what they parked, in whatever order their answers arrive.
+TEST(LocalForwarderRegistryTest, TicketsAreRedeemedIndependentlyOfOrder) {
+  Registry reg;
+  auto first = makeForwarder();
+  auto second = makeForwarder();
+  claimWith(reg, first).markReady(InitialTrackState{});
+  auto parkedFirst = reg.replaceAndPark(kFtn, second);
+  parkedFirst.claim.markReady(InitialTrackState{});
+  auto parkedSecond = reg.replaceAndPark(kFtn, makeForwarder());
+
+  // Out of park order: the second parker's answer arrives first.
+  EXPECT_EQ(reg.takeDisplaced(kFtn, std::move(parkedSecond.displaced)), second);
+  EXPECT_EQ(reg.takeDisplaced(kFtn, std::move(parkedFirst.displaced)), first);
+
+  parkedSecond.claim.markReady(InitialTrackState{});
+}
+
+// Draining is the caller's call, not the registry's: it cannot tell an old publisher that
+// owes its subscribers a PUBLISH_DONE from a forwarder the termination cascade will reach.
+TEST(LocalForwarderRegistryTest, TakeDisplacedDoesNotTerminateTheForwarder) {
+  Registry reg;
+  auto first = makeForwarder();
+  auto watcher = std::make_shared<DoneWatcher>();
+  first->setCallback(watcher);
+  claimWith(reg, first).markReady(InitialTrackState{});
+  auto successor = reg.replaceAndPark(kFtn, makeForwarder());
+  successor.claim.markReady(InitialTrackState{});
+
+  EXPECT_EQ(reg.takeDisplaced(kFtn, std::move(successor.displaced)), first);
+  EXPECT_FALSE(watcher->sawPublishDone);
+}
+
+// The debt is enforced where it is incurred: dropping the ticket aborts in that scope,
+// instead of surfacing later as a registry-teardown abort with no link to the cause.
+// Re-seating the occupant would park and install one object at once, leaving the ticket
+// pointing at the forwarder still serving the track. Guarded for ready entries as well as
+// pending ones, since only the parking form makes it harmful.
+TEST(LocalForwarderRegistryDeathTest, ReplaceAndParkWithTheSittingForwarderAborts) {
+  EXPECT_DEATH(
+      {
+        Registry reg;
+        auto fwd = makeForwarder();
+        claimWith(reg, fwd).markReady(InitialTrackState{});
+        auto result = reg.replaceAndPark(kFtn, fwd);
+      },
+      "re-seats the forwarder that already holds the entry"
+  );
+}
+
+TEST(LocalForwarderRegistryDeathTest, DroppingAParkTicketAborts) {
+  EXPECT_DEATH(
+      {
+        Registry reg;
+        claimWith(reg, makeForwarder()).markReady(InitialTrackState{});
+        reg.replaceAndPark(kFtn, makeForwarder()).claim.markReady(InitialTrackState{});
+      },
+      "park ticket dropped without takeDisplaced\\(\\)"
+  );
+}
+
+// The registry check is still the backstop: redeeming against the wrong track consumes
+// the ticket but leaves the occupant parked, so nothing else can catch it.
+TEST(LocalForwarderRegistryDeathTest, DisplacedForwarderOutlivingRegistryAborts) {
+  EXPECT_DEATH(
+      {
+        Registry reg;
+        claimWith(reg, makeForwarder()).markReady(InitialTrackState{});
+        auto successor = reg.replaceAndPark(kFtn, makeForwarder());
+        successor.claim.markReady(InitialTrackState{});
+        EXPECT_EQ(reg.takeDisplaced(kOtherFtn, std::move(successor.displaced)), nullptr);
+      },
+      "displaced forwarder outlived its registry"
+  );
 }
 
 // === Escape hatch and handle mechanics ===
