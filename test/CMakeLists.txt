@@ -291,6 +291,12 @@ moqx_add_gtest(moqx_local_forwarder_registry_test
   LIBS moqx_core moqx_test_main GTest::gmock
 )
 
+# Header-only executor-affine handle.
+moqx_add_gtest(moqx_forwarder_ref_test
+  SRCS ForwarderRefTest.cpp
+  LIBS moqx_core moqx_test_main GTest::gmock
+)
+
 moqx_add_gtest(moqx_topn_filter_test
   SRCS TopNFilterTest.cpp
   LIBS moqx_core GTest::gtest_main GTest::gmock
