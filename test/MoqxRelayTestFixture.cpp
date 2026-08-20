@@ -50,7 +50,11 @@ void MoQRelayTest::SetUp() {
   }
 }
 
-void MoQRelayTest::resetRelay(config::CacheConfig cache, const std::string& relayID) {
+void MoQRelayTest::resetRelay(
+    config::CacheConfig cache,
+    const std::string& relayID,
+    uint64_t relayHopID
+) {
   std::shared_ptr<folly::Executor> relayExec;
   if (relayEvb_) {
     relayExec = std::make_shared<moxygen::MoQFollyExecutorImpl>(relayEvb_);
@@ -59,8 +63,12 @@ void MoQRelayTest::resetRelay(config::CacheConfig cache, const std::string& rela
   relay_ = std::make_shared<MoqxRelay>(
       std::move(cache),
       relayID,
+      relayHopID,
       std::move(relayExec),
-      useLocalForwarders
+      useLocalForwarders,
+      MoqxRelay::kDefaultMaxDeselected,
+      MoqxRelay::kDefaultIdleTimeout,
+      MoqxRelay::kDefaultActivityThreshold
   );
   if (relayEvb_) {
     if (relayMode() == RelayMode::LocalForwarderMT) {
@@ -91,6 +99,8 @@ std::shared_ptr<MockMoQSession> MoQRelayTest::createMockSession() {
   auto session = std::make_shared<NiceMock<MockMoQSession>>(exec_);
   ON_CALL(*session, getNegotiatedVersion())
       .WillByDefault(Return(std::optional<uint64_t>(kVersionDraftCurrent)));
+  ON_CALL(*session, negotiatedSetupExtension(SetupExtension::RelayHops))
+      .WillByDefault(Return(false));
   auto state = getOrCreateMockState(session);
   return session;
 }

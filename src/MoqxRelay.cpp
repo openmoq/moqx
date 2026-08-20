@@ -17,6 +17,7 @@
 #include "relay/SubscriberCrossExecFilter.h"
 #include "relay/TrackStatsFilter.h"
 #include "relay/WeakRelayForwarderCallback.h"
+#include <folly/Random.h>
 #include <folly/container/F14Set.h>
 #include <folly/coro/Collect.h>
 #include <moxygen/MoQFilters.h>
@@ -75,6 +76,54 @@ moxygen::TrackNamespace makeNamespaceSuffix(const moxygen::TrackNamespace& src, 
   );
 }
 
+void setOutgoingHopPath(
+    moxygen::TrackRequestParameters& params,
+    const std::shared_ptr<moxygen::MoQSession>& session,
+    const std::vector<uint64_t>& incomingPath,
+    uint64_t localHopID
+) {
+  params.eraseAllParamsOfType(moxygen::TrackRequestParamKey::HOP_PATH);
+  if (!session->negotiatedSetupExtension(moxygen::SetupExtension::RelayHops)) {
+    return;
+  }
+  auto version = session->getNegotiatedVersion();
+  XCHECK(version.has_value());
+  auto outgoingPath = incomingPath;
+  outgoingPath.push_back(localHopID);
+  auto encodedPath = moxygen::encodeRelayHopPath(outgoingPath, *version);
+  XCHECK(encodedPath.hasValue());
+  params.insertParam(moxygen::Parameter(
+      folly::to_underlying(moxygen::TrackRequestParamKey::HOP_PATH),
+      std::move(encodedPath.value())
+  ));
+}
+
+bool excludesHop(
+    const std::optional<uint64_t>& excludedHop,
+    const std::vector<uint64_t>& incomingPath,
+    uint64_t localHopID
+) {
+  if (!excludedHop) {
+    return false;
+  }
+  return *excludedHop == localHopID ||
+         std::find(incomingPath.begin(), incomingPath.end(), *excludedHop) != incomingPath.end();
+}
+
+bool shouldForwardNamespace(
+    const std::shared_ptr<moxygen::MoQSession>& publisherSession,
+    const std::shared_ptr<moxygen::MoQSession>& subscriberSession,
+    moxygen::SubscribeNamespaceOptions options,
+    const std::optional<uint64_t>& excludedHop,
+    const std::vector<uint64_t>& incomingPath,
+    uint64_t localHopID
+) {
+  return subscriberSession != publisherSession &&
+         (options == moxygen::SubscribeNamespaceOptions::NAMESPACE ||
+          options == moxygen::SubscribeNamespaceOptions::BOTH) &&
+         !excludesHop(excludedHop, incomingPath, localHopID);
+}
+
 // Rejects an AbsoluteRange subscription whose endGroup is already behind the
 // forwarder's largest group (the client should FETCH instead). Returns
 // std::nullopt when the range is acceptable.
@@ -106,6 +155,15 @@ moxygen::SubscribeRequest makeUpstreamSubReq(moxygen::SubscribeRequest base, boo
 using namespace moxygen;
 
 namespace openmoq::moqx {
+
+uint64_t generateRelayHopID() {
+  uint64_t hopID = 0;
+  do {
+    folly::Random::secureRandom(&hopID, sizeof(hopID));
+    hopID &= kMaxRelayHopID;
+  } while (hopID == 0);
+  return hopID;
+}
 
 // === LocalSubscribeFilter and LocalPublishFilter ===
 
@@ -229,10 +287,13 @@ public:
     }
   }
 
-  void namespaceMsg(const TrackNamespace& suffix) override {
-    activeNamespaces_.insert(suffix);
+  void namespaceMsg(const Namespace& ns) override {
+    activeNamespaces_.insert(ns.trackNamespaceSuffix);
     PublishNamespace pubNs;
-    pubNs.trackNamespace = suffix;
+    pubNs.trackNamespace = ns.trackNamespaceSuffix;
+    for (const auto& param : ns.params) {
+      pubNs.params.insertParam(param);
+    }
     runOnExec(
         relayExec_,
         [relay = relay_, pubNs = std::move(pubNs), session = session_, peerID = peerID_]() mutable {
@@ -241,6 +302,12 @@ public:
           }
         }
     );
+  }
+
+  void namespaceMsg(const TrackNamespace& suffix) override {
+    Namespace ns;
+    ns.trackNamespaceSuffix = suffix;
+    namespaceMsg(ns);
   }
 
   void namespaceDoneMsg(const TrackNamespace& suffix) override {
@@ -280,16 +347,30 @@ folly::coro::Task<void> MoqxRelay::onUpstreamConnect(std::shared_ptr<MoQSession>
 
 folly::coro::Task<void> MoqxRelay::onUpstreamConnectImpl(std::shared_ptr<MoQSession> session) {
   auto nsHandle = makeNamespaceBridgeHandle(weak_from_this(), session, {}, relayExec_);
+  auto subNs = makePeerSubNs(relayID_);
+  if (session->negotiatedSetupExtension(SetupExtension::RelayHops)) {
+    subNs.params.insertParam(
+        Parameter(folly::to_underlying(TrackRequestParamKey::EXCLUDE_HOP), relayHopID_)
+    );
+  }
   // subscribeNamespace must run on the upstream session's executor
   auto result = co_await folly::coro::co_withExecutor(
       folly::getKeepAliveToken(session->getExecutor()),
-      session->subscribeNamespace(makePeerSubNs(relayID_), nsHandle)
+      session->subscribeNamespace(std::move(subNs), nsHandle)
   );
   if (result.hasValue()) {
     upstreamSubNsHandle_ = std::move(result.value());
   } else {
     XLOG(ERR) << "MoqxRelay: upstream peer subNs failed: " << result.error().reasonPhrase;
   }
+}
+
+void MoqxRelay::onSessionEnd(std::shared_ptr<MoQSession> session) {
+  runOnExec(relayExec_, [self = weak_from_this(), session = std::move(session)]() mutable {
+    if (auto relay = self.lock()) {
+      relay->legacyPublisherHopIDs_.erase(session.get());
+    }
+  });
 }
 
 void MoqxRelay::onUpstreamDisconnect() {
@@ -303,6 +384,10 @@ std::shared_ptr<Subscriber::PublishNamespaceHandle> MoqxRelay::doPublishNamespac
     std::string peerID
 ) {
   XLOG(DBG1) << __func__ << " ns=" << pubNs.trackNamespace;
+  auto relayHopPath = ingestRelayHopPath(pubNs, session);
+  if (!relayHopPath) {
+    return nullptr;
+  }
   if (!pubNs.trackNamespace.startsWith(allowedNamespacePrefix_)) {
     return nullptr;
   }
@@ -311,7 +396,8 @@ std::shared_ptr<Subscriber::PublishNamespaceHandle> MoqxRelay::doPublishNamespac
       session,
       std::move(callback),
       std::move(peerID),
-      pubNs.requestID
+      pubNs.requestID,
+      *relayHopPath
   );
   if (replacedSession) {
     XLOG(WARNING) << "PublishNamespace: Existing session (" << replacedSession.get()
@@ -326,23 +412,86 @@ std::shared_ptr<Subscriber::PublishNamespaceHandle> MoqxRelay::doPublishNamespac
     });
   }
   for (auto& [outSession, info] : sessions) {
-    if (outSession != session && (info.options == SubscribeNamespaceOptions::NAMESPACE ||
-                                  info.options == SubscribeNamespaceOptions::BOTH)) {
+    if (shouldForwardNamespace(
+            session,
+            outSession,
+            info.options,
+            info.excludeHop,
+            *relayHopPath,
+            relayHopID_
+        )) {
       // Bidi NAMESPACE is draft 16+ only; the handle is populated regardless of
       // version, so gate on it (matching doPublishNamespaceDone).
       auto maybeVersion = outSession->getNegotiatedVersion();
       if (maybeVersion.has_value() && getDraftMajorVersion(*maybeVersion) >= 16 &&
           info.namespacePublishHandle) {
         auto suffix = makeNamespaceSuffix(pubNs.trackNamespace, info.trackNamespacePrefix.size());
-        info.namespacePublishHandle->namespaceMsg(suffix);
+        Namespace ns;
+        ns.trackNamespaceSuffix = std::move(suffix);
+        setOutgoingHopPath(ns.params, outSession, *relayHopPath, relayHopID_);
+        info.namespacePublishHandle->namespaceMsg(ns);
       } else {
         // Draft <= 15: send PUBLISH_NAMESPACE on a new stream
+        auto outgoingPubNs = pubNs;
+        setOutgoingHopPath(outgoingPubNs.params, outSession, *relayHopPath, relayHopID_);
         auto exec = outSession->getExecutor();
-        co_withExecutor(exec, publishNamespaceToSession(outSession, pubNs, nodePtr)).start();
+        co_withExecutor(
+            exec,
+            publishNamespaceToSession(outSession, std::move(outgoingPubNs), nodePtr)
+        )
+            .start();
       }
     }
   }
   return nodePtr;
+}
+
+std::optional<std::vector<uint64_t>> MoqxRelay::ingestRelayHopPath(
+    const PublishNamespace& pubNs,
+    const std::shared_ptr<MoQSession>& session
+) {
+  std::vector<uint64_t> relayHopPath;
+  if (!session->negotiatedSetupExtension(SetupExtension::RelayHops)) {
+    relayHopPath.push_back(getOrCreateLegacyPublisherHopID(session));
+  } else {
+    const auto* hopPathParam = pubNs.params.getFirstParam(TrackRequestParamKey::HOP_PATH);
+    if (!hopPathParam) {
+      XLOG(WARN) << "Dropping namespace without required HOP_PATH ns=" << pubNs.trackNamespace;
+      return std::nullopt;
+    }
+    auto version = session->getNegotiatedVersion();
+    XCHECK(version.has_value());
+    auto decoded = decodeRelayHopPath(hopPathParam->asString, *version);
+    if (decoded.hasError()) {
+      XLOG(WARN) << "Closing session for malformed HOP_PATH ns=" << pubNs.trackNamespace;
+      session->close(SessionCloseErrorCode::PROTOCOL_VIOLATION);
+      return std::nullopt;
+    }
+    relayHopPath = std::move(decoded.value());
+  }
+
+  if (std::find(relayHopPath.begin(), relayHopPath.end(), relayHopID_) != relayHopPath.end()) {
+    XLOG(DBG1) << "Dropping looped namespace ns=" << pubNs.trackNamespace;
+    return std::nullopt;
+  }
+  return relayHopPath;
+}
+
+uint64_t MoqxRelay::getOrCreateLegacyPublisherHopID(const std::shared_ptr<MoQSession>& session) {
+  const auto* key = session.get();
+  auto it = legacyPublisherHopIDs_.find(key);
+  if (it != legacyPublisherHopIDs_.end()) {
+    auto existing = it->second.session.lock();
+    if (existing == session) {
+      return it->second.hopID;
+    }
+    // Stale only if onSessionEnd was missed and the address was recycled.
+    legacyPublisherHopIDs_.erase(it);
+  }
+
+  auto hopID = generateRelayHopID();
+  legacyPublisherHopIDs_.emplace(key, LegacyPublisherHopID{session, hopID});
+  return hopID;
 }
 
 folly::coro::Task<Subscriber::PublishNamespaceResult> MoqxRelay::publishNamespace(
@@ -403,8 +552,16 @@ void MoqxRelay::doPublishNamespaceDone(
   }
   // Draft >= 16: send NAMESPACE_DONE on the bidi stream
   for (auto& [outSession, info] : result.value().subscribers) {
-    if (outSession != session && (info.options == SubscribeNamespaceOptions::NAMESPACE ||
-                                  info.options == SubscribeNamespaceOptions::BOTH)) {
+    // Same predicate as the advertisement, so a subscriber excluded then is not
+    // told a namespace it never heard about is done.
+    if (shouldForwardNamespace(
+            session,
+            outSession,
+            info.options,
+            info.excludeHop,
+            result.value().relayHopPath,
+            relayHopID_
+        )) {
       auto maybeVersion = outSession->getNegotiatedVersion();
       if (maybeVersion.has_value() && getDraftMajorVersion(*maybeVersion) >= 16) {
         if (info.namespacePublishHandle) {
@@ -1412,10 +1569,16 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
     // Tag with the peer's relay ID so we suppress echoing these namespaces
     // back to that peer on reconnect.
     auto handle = makeNamespaceBridgeHandle(weak_from_this(), session, incomingPeerID, relayExec_);
+    auto peerSubNs = makePeerSubNs();
+    if (session->negotiatedSetupExtension(SetupExtension::RelayHops)) {
+      peerSubNs.params.insertParam(
+          Parameter(folly::to_underlying(TrackRequestParamKey::EXCLUDE_HOP), relayHopID_)
+      );
+    }
     // maybeWrapPublisher runs the call on the peer session's executor and wraps
     // the returned handle so its teardown hops there too (no token: reciprocal).
     auto recipResult = co_await maybeWrapPublisher(relayExec_, session)
-                           ->subscribeNamespace(makePeerSubNs(), handle);
+                           ->subscribeNamespace(std::move(peerSubNs), handle);
     if (recipResult.hasError()) {
       XLOG(ERR) << "Reciprocal peer subNs failed: " << recipResult.error().reasonPhrase;
     } else {
@@ -1441,12 +1604,15 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
   SubscribeNamespaceOptions effectiveOptions;
   effectiveOptions = subNs.options;
 
-  // Parse TRACK_FILTER parameter if present (SUBSCRIBE_NAMESPACE only)
+  // Parse parameters defined for SUBSCRIBE_NAMESPACE.
   std::optional<TrackFilter> trackFilter;
-  for (const auto& param : subNs.params) {
-    if (param.key == folly::to_underlying(TrackRequestParamKey::TRACK_FILTER)) {
-      trackFilter = param.asTrackFilter;
-      break;
+  std::optional<uint64_t> excludeHop;
+  if (const auto* param = subNs.params.getFirstParam(TrackRequestParamKey::TRACK_FILTER)) {
+    trackFilter = param->asTrackFilter;
+  }
+  if (session->negotiatedSetupExtension(SetupExtension::RelayHops)) {
+    if (const auto* param = subNs.params.getFirstParam(TrackRequestParamKey::EXCLUDE_HOP)) {
+      excludeHop = param->asUint64;
     }
   }
 
@@ -1458,7 +1624,8 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
           effectiveOptions,
           namespacePublishHandle,
           subNs.trackNamespacePrefix,
-          trackFilter
+          trackFilter,
+          excludeHop
       }
   );
 
@@ -1477,21 +1644,31 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
       subNs.trackNamespacePrefix,
       nodePtr,
       [&](const TrackNamespace& prefix, std::shared_ptr<NamespaceTree::NamespaceNode> node) {
-        if (node->publisherSession() && node->publisherSession() != session &&
-            (incomingPeerID.empty() || node->publisherPeerID() != incomingPeerID)) {
+        if (node->publisherSession() &&
+            (incomingPeerID.empty() || node->publisherPeerID() != incomingPeerID) &&
+            shouldForwardNamespace(
+                node->publisherSession(),
+                session,
+                subNs.options,
+                excludeHop,
+                node->relayHopPath(),
+                relayHopID_
+            )) {
           if (getDraftMajorVersion(*maybeNegotiatedVersion) >= 16) {
             if (subNs.options == SubscribeNamespaceOptions::NAMESPACE ||
                 subNs.options == SubscribeNamespaceOptions::BOTH) {
               // Compute the suffix: prefix minus subNs.trackNamespacePrefix
               auto suffix = makeNamespaceSuffix(prefix, subNs.trackNamespacePrefix.size());
-              namespacePublishHandle->namespaceMsg(suffix);
+              Namespace ns;
+              ns.trackNamespaceSuffix = std::move(suffix);
+              setOutgoingHopPath(ns.params, session, node->relayHopPath(), relayHopID_);
+              namespacePublishHandle->namespaceMsg(ns);
             }
           } else {
             // TODO: Auth/params
-            co_withExecutor(
-                exec,
-                publishNamespaceToSession(session, {subNs.requestID, prefix}, node)
-            )
+            PublishNamespace pubNs{subNs.requestID, prefix};
+            setOutgoingHopPath(pubNs.params, session, node->relayHopPath(), relayHopID_);
+            co_withExecutor(exec, publishNamespaceToSession(session, std::move(pubNs), node))
                 .start();
           }
         }
@@ -1590,7 +1767,8 @@ folly::coro::Task<Publisher::SubscribeTracksResult> MoqxRelay::subscribeTracks(
           SubscribeNamespaceOptions::PUBLISH,
           /*namespacePublishHandle=*/nullptr,
           subTracks.trackNamespacePrefix,
-          /*trackFilter=*/std::nullopt
+          /*trackFilter=*/std::nullopt,
+          /*excludeHop=*/std::nullopt
       }
   );
 

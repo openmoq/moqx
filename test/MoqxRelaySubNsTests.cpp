@@ -11,6 +11,350 @@
 
 namespace openmoq::moqx::test {
 
+class RecordingNamespacePublishHandle : public Publisher::NamespacePublishHandle {
+public:
+  void namespaceMsg(const Namespace& ns) override { namespaces.push_back(ns); }
+
+  void namespaceMsg(const TrackNamespace& suffix) override {
+    Namespace ns;
+    ns.trackNamespaceSuffix = suffix;
+    namespaces.push_back(std::move(ns));
+  }
+
+  void namespaceDoneMsg(const TrackNamespace& suffix) override { dones.push_back(suffix); }
+
+  std::vector<Namespace> namespaces;
+  std::vector<TrackNamespace> dones;
+};
+
+TEST_P(MoQRelayTest, LegacyPublisherSynthesizesStableOriginAndAppendsRelayHop) {
+  constexpr uint64_t kRelayHop = 900;
+  resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "", kRelayHop);
+
+  auto publisher = createMockSession();
+  auto subscriber = createMockSession();
+  ON_CALL(*subscriber, getNegotiatedVersion())
+      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
+  ON_CALL(*subscriber, negotiatedSetupExtension(SetupExtension::RelayHops))
+      .WillByDefault(Return(true));
+  auto namespaceHandle = std::make_shared<RecordingNamespacePublishHandle>();
+  doSubscribeNamespace(subscriber, kTestNamespace, true, namespaceHandle);
+
+  doPublishNamespace(publisher, kTestNamespace);
+  driveIfMultiThread();
+
+  ASSERT_EQ(namespaceHandle->namespaces.size(), 1);
+  ASSERT_EQ(namespaceHandle->namespaces.front().params.size(), 1);
+  auto path = decodeRelayHopPath(
+      namespaceHandle->namespaces.front().params.at(0).asString,
+      kVersionDraft16
+  );
+  ASSERT_TRUE(path.hasValue());
+  ASSERT_EQ(path->size(), 2);
+  EXPECT_GT(path->front(), 0);
+  EXPECT_LE(path->front(), kMaxRelayHopID);
+  EXPECT_EQ(path->back(), kRelayHop);
+
+  doPublishNamespace(publisher, TrackNamespace{{"test", "namespace", "child"}});
+  driveIfMultiThread();
+  ASSERT_EQ(namespaceHandle->namespaces.size(), 2);
+  auto secondPath =
+      decodeRelayHopPath(namespaceHandle->namespaces.back().params.at(0).asString, kVersionDraft16);
+  ASSERT_TRUE(secondPath.hasValue());
+  EXPECT_EQ(secondPath.value(), path.value());
+
+  removeSession(publisher);
+  removeSession(subscriber);
+  driveIfMultiThread();
+}
+
+TEST_P(MoQRelayTest, LegacyPublishersReceiveDistinctOriginHopIDs) {
+  constexpr uint64_t kRelayHop = 900;
+  resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "", kRelayHop);
+
+  auto subscriber = createMockSession();
+  ON_CALL(*subscriber, getNegotiatedVersion())
+      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
+  ON_CALL(*subscriber, negotiatedSetupExtension(SetupExtension::RelayHops))
+      .WillByDefault(Return(true));
+  auto namespaceHandle = std::make_shared<RecordingNamespacePublishHandle>();
+  doSubscribeNamespace(subscriber, TrackNamespace{}, true, namespaceHandle);
+
+  auto publisherA = createMockSession();
+  auto publisherB = createMockSession();
+  doPublishNamespace(publisherA, TrackNamespace{{"publisher-a"}});
+  doPublishNamespace(publisherB, TrackNamespace{{"publisher-b"}});
+  driveIfMultiThread();
+
+  ASSERT_EQ(namespaceHandle->namespaces.size(), 2);
+  auto pathA =
+      decodeRelayHopPath(namespaceHandle->namespaces[0].params.at(0).asString, kVersionDraft16);
+  auto pathB =
+      decodeRelayHopPath(namespaceHandle->namespaces[1].params.at(0).asString, kVersionDraft16);
+  ASSERT_TRUE(pathA.hasValue());
+  ASSERT_TRUE(pathB.hasValue());
+  ASSERT_EQ(pathA->size(), 2);
+  ASSERT_EQ(pathB->size(), 2);
+  EXPECT_NE(pathA->front(), pathB->front());
+
+  removeSession(publisherA);
+  removeSession(publisherB);
+  removeSession(subscriber);
+  driveIfMultiThread();
+}
+
+TEST_P(MoQRelayTest, RelayHopLoopIsDroppedBeforeNamespaceRegistration) {
+  constexpr uint64_t kRelayHop = 900;
+  resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "", kRelayHop);
+  auto publisher = createMockSession();
+  ON_CALL(*publisher, getNegotiatedVersion())
+      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
+  ON_CALL(*publisher, negotiatedSetupExtension(SetupExtension::RelayHops))
+      .WillByDefault(Return(true));
+
+  PublishNamespace pubNs;
+  pubNs.trackNamespace = kTestNamespace;
+  pubNs.params.insertParam(Parameter(
+      folly::to_underlying(TrackRequestParamKey::HOP_PATH),
+      encodeRelayHopPath({100, kRelayHop, 200}, kVersionDraft16).value()
+  ));
+  auto result = withSessionContext(publisher, [&] {
+    return folly::coro::blockingWait(
+        subscriberInterface()->publishNamespace(std::move(pubNs), nullptr),
+        exec_.get()
+    );
+  });
+  EXPECT_TRUE(result.hasError());
+
+  verifyOnRelayExec([&] { EXPECT_EQ(relay_->findPublishNamespaceSession(kTestNamespace), nullptr); }
+  );
+  removeSession(publisher);
+}
+
+TEST_P(MoQRelayTest, NegotiatedPublisherWithoutHopPathIsDropped) {
+  resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "", 900);
+  auto publisher = createMockSession();
+  ON_CALL(*publisher, getNegotiatedVersion())
+      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
+  ON_CALL(*publisher, negotiatedSetupExtension(SetupExtension::RelayHops))
+      .WillByDefault(Return(true));
+
+  PublishNamespace pubNs;
+  pubNs.trackNamespace = kTestNamespace;
+  auto result = withSessionContext(publisher, [&] {
+    return folly::coro::blockingWait(
+        subscriberInterface()->publishNamespace(std::move(pubNs), nullptr),
+        exec_.get()
+    );
+  });
+  EXPECT_TRUE(result.hasError());
+  EXPECT_FALSE(publisher->isClosed());
+
+  verifyOnRelayExec([&] { EXPECT_EQ(relay_->findPublishNamespaceSession(kTestNamespace), nullptr); }
+  );
+  removeSession(publisher);
+}
+
+TEST_P(MoQRelayTest, MalformedRelayHopPathClosesSourceSession) {
+  resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "", 900);
+  auto publisher = createMockSession();
+  ON_CALL(*publisher, getNegotiatedVersion())
+      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
+  ON_CALL(*publisher, negotiatedSetupExtension(SetupExtension::RelayHops))
+      .WillByDefault(Return(true));
+
+  PublishNamespace pubNs;
+  pubNs.trackNamespace = kTestNamespace;
+  pubNs.params.insertParam(
+      Parameter(folly::to_underlying(TrackRequestParamKey::HOP_PATH), std::string("\x40", 1))
+  );
+  auto result = withSessionContext(publisher, [&] {
+    return folly::coro::blockingWait(
+        subscriberInterface()->publishNamespace(std::move(pubNs), nullptr),
+        exec_.get()
+    );
+  });
+  EXPECT_TRUE(result.hasError());
+  driveIfMultiThread();
+  EXPECT_TRUE(publisher->isClosed());
+
+  verifyOnRelayExec([&] { EXPECT_EQ(relay_->findPublishNamespaceSession(kTestNamespace), nullptr); }
+  );
+  removeSession(publisher);
+}
+
+TEST_P(MoQRelayTest, ExcludeHopSuppressesOriginIntermediateAndLocalMatches) {
+  constexpr uint64_t kRelayHop = 900;
+  resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "", kRelayHop);
+  auto publisher = createMockSession();
+  ON_CALL(*publisher, getNegotiatedVersion())
+      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
+  ON_CALL(*publisher, negotiatedSetupExtension(SetupExtension::RelayHops))
+      .WillByDefault(Return(true));
+
+  std::vector<std::shared_ptr<MockMoQSession>> subscribers;
+  std::vector<std::shared_ptr<RecordingNamespacePublishHandle>> namespaceHandles;
+  std::vector<std::shared_ptr<Publisher::SubscribeNamespaceHandle>> subscribeHandles;
+  for (uint64_t excludedHop : {uint64_t{100}, uint64_t{200}, kRelayHop}) {
+    auto subscriber = createMockSession();
+    ON_CALL(*subscriber, getNegotiatedVersion())
+        .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
+    ON_CALL(*subscriber, negotiatedSetupExtension(SetupExtension::RelayHops))
+        .WillByDefault(Return(true));
+    auto namespaceHandle = std::make_shared<RecordingNamespacePublishHandle>();
+    SubscribeNamespace subNs;
+    subNs.trackNamespacePrefix = kTestNamespace;
+    subNs.params.insertParam(
+        Parameter(folly::to_underlying(TrackRequestParamKey::EXCLUDE_HOP), excludedHop)
+    );
+    auto result = withSessionContext(subscriber, [&] {
+      return folly::coro::blockingWait(
+          publisherInterface()->subscribeNamespace(std::move(subNs), namespaceHandle),
+          exec_.get()
+      );
+    });
+    ASSERT_TRUE(result.hasValue());
+    subscribeHandles.push_back(result.value());
+    subscribers.push_back(std::move(subscriber));
+    namespaceHandles.push_back(std::move(namespaceHandle));
+  }
+
+  PublishNamespace pubNs;
+  pubNs.trackNamespace = kTestNamespace;
+  pubNs.params.insertParam(Parameter(
+      folly::to_underlying(TrackRequestParamKey::HOP_PATH),
+      encodeRelayHopPath({100, 200}, kVersionDraft16).value()
+  ));
+  auto result = withSessionContext(publisher, [&] {
+    return folly::coro::blockingWait(
+        subscriberInterface()->publishNamespace(std::move(pubNs), nullptr),
+        exec_.get()
+    );
+  });
+  ASSERT_TRUE(result.hasValue());
+  driveIfMultiThread();
+
+  for (const auto& namespaceHandle : namespaceHandles) {
+    EXPECT_TRUE(namespaceHandle->namespaces.empty());
+  }
+
+  removeSession(publisher);
+  for (auto& subscriber : subscribers) {
+    removeSession(subscriber);
+  }
+  subscribeHandles.clear();
+  driveIfMultiThread();
+}
+
+TEST_P(MoQRelayTest, NonNegotiatedSubscriberReceivesLegacyNamespaceMessage) {
+  constexpr uint64_t kRelayHop = 900;
+  resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "", kRelayHop);
+  auto publisher = createMockSession();
+  ON_CALL(*publisher, getNegotiatedVersion())
+      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
+  ON_CALL(*publisher, negotiatedSetupExtension(SetupExtension::RelayHops))
+      .WillByDefault(Return(true));
+  auto subscriber = createMockSession();
+  ON_CALL(*subscriber, getNegotiatedVersion())
+      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
+  auto namespaceHandle = std::make_shared<RecordingNamespacePublishHandle>();
+  doSubscribeNamespace(subscriber, kTestNamespace, true, namespaceHandle);
+
+  PublishNamespace pubNs;
+  pubNs.trackNamespace = kTestNamespace;
+  pubNs.params.insertParam(Parameter(
+      folly::to_underlying(TrackRequestParamKey::HOP_PATH),
+      encodeRelayHopPath({100, 200}, kVersionDraft16).value()
+  ));
+  auto result = withSessionContext(publisher, [&] {
+    return folly::coro::blockingWait(
+        subscriberInterface()->publishNamespace(std::move(pubNs), nullptr),
+        exec_.get()
+    );
+  });
+  ASSERT_TRUE(result.hasValue());
+  driveIfMultiThread();
+
+  ASSERT_EQ(namespaceHandle->namespaces.size(), 1);
+  EXPECT_TRUE(namespaceHandle->namespaces.front().params.empty());
+
+  removeSession(publisher);
+  removeSession(subscriber);
+  driveIfMultiThread();
+}
+
+TEST_P(MoQRelayTest, ExcludedSubscriberGetsNoNamespaceDone) {
+  constexpr uint64_t kRelayHop = 900;
+  constexpr uint64_t kOriginHop = 100;
+  resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "", kRelayHop);
+
+  auto publisher = createMockSession();
+  ON_CALL(*publisher, getNegotiatedVersion())
+      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
+  ON_CALL(*publisher, negotiatedSetupExtension(SetupExtension::RelayHops))
+      .WillByDefault(Return(true));
+
+  std::vector<std::shared_ptr<MockMoQSession>> subscribers;
+  std::vector<std::shared_ptr<RecordingNamespacePublishHandle>> namespaceHandles;
+  std::vector<std::shared_ptr<Publisher::SubscribeNamespaceHandle>> subscribeHandles;
+  for (bool exclude : {true, false}) {
+    auto subscriber = createMockSession();
+    ON_CALL(*subscriber, getNegotiatedVersion())
+        .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
+    ON_CALL(*subscriber, negotiatedSetupExtension(SetupExtension::RelayHops))
+        .WillByDefault(Return(true));
+    auto namespaceHandle = std::make_shared<RecordingNamespacePublishHandle>();
+    SubscribeNamespace subNs;
+    subNs.trackNamespacePrefix = kTestNamespace;
+    if (exclude) {
+      subNs.params.insertParam(
+          Parameter(folly::to_underlying(TrackRequestParamKey::EXCLUDE_HOP), kOriginHop)
+      );
+    }
+    auto result = withSessionContext(subscriber, [&] {
+      return folly::coro::blockingWait(
+          publisherInterface()->subscribeNamespace(std::move(subNs), namespaceHandle),
+          exec_.get()
+      );
+    });
+    ASSERT_TRUE(result.hasValue());
+    subscribeHandles.push_back(result.value());
+    subscribers.push_back(std::move(subscriber));
+    namespaceHandles.push_back(std::move(namespaceHandle));
+  }
+
+  PublishNamespace pubNs;
+  pubNs.trackNamespace = kTestNamespace;
+  pubNs.params.insertParam(Parameter(
+      folly::to_underlying(TrackRequestParamKey::HOP_PATH),
+      encodeRelayHopPath({kOriginHop}, kVersionDraft16).value()
+  ));
+  auto result = withSessionContext(publisher, [&] {
+    return folly::coro::blockingWait(
+        subscriberInterface()->publishNamespace(std::move(pubNs), nullptr),
+        exec_.get()
+    );
+  });
+  ASSERT_TRUE(result.hasValue());
+  driveIfMultiThread();
+
+  EXPECT_TRUE(namespaceHandles[0]->namespaces.empty());
+  EXPECT_EQ(namespaceHandles[1]->namespaces.size(), 1);
+
+  verifyOnRelayExec([&] { relay_->doPublishNamespaceDone(kTestNamespace, publisher); });
+  driveIfMultiThread();
+
+  EXPECT_TRUE(namespaceHandles[0]->dones.empty());
+  EXPECT_EQ(namespaceHandles[1]->dones.size(), 1);
+
+  removeSession(publisher);
+  for (auto& subscriber : subscribers) {
+    removeSession(subscriber);
+  }
+  subscribeHandles.clear();
+  driveIfMultiThread();
+}
+
 TEST_P(MoQRelayTest, SubscribeNamespaceDoesntAddDrainingPublish) {
   auto publisherSession = createMockSession();
   auto subscriber1 = createMockSession();
