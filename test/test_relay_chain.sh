@@ -24,6 +24,8 @@ resolve_moqbin "$BINARY"
 source "$REPO/test/test_ports.sh"
 # shellcheck source=test_versions.sh
 source "$REPO/test/test_versions.sh"
+# shellcheck source=test_relay_lifecycle.sh
+source "$REPO/test/test_relay_lifecycle.sh"
 
 # Parse --save-logs option (may appear anywhere in args)
 SAVE_LOGS=false
@@ -103,9 +105,11 @@ cleanup() {
       kill -KILL "$pid" 2>/dev/null || true
     fi
   done
-  # Relays: wait indefinitely — relay's hard shutdown watchdog handles any hang.
-  wait "${PIDS[@]:-}" "${RELAY_PIDS[@]:-}" 2>/dev/null || true
+  reap_helpers "${PIDS[@]:-}"
+  local relay_failed=0
+  reap_relays "${RELAY_PIDS[@]:-}" || relay_failed=1
   rm -rf "$TMPDIR_SCRIPT"
+  (( relay_failed == 0 )) || exit 1
 }
 trap cleanup EXIT
 
