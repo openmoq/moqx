@@ -120,26 +120,47 @@ private:
     app_.push(reinterpret_cast<const uint8_t*>(s.data()), s.size());
   }
 
+  // Pushes unescaped runs whole. Track names and namespaces almost never need
+  // escaping, and this runs on the relay executor, so per-character appends are
+  // the wrong default.
   void writeString(std::string_view s) {
     append('"');
-    for (unsigned char c : s) {
-      if (c == '"') {
-        append("\\\"");
-      } else if (c == '\\') {
-        append("\\\\");
-      } else if (c == '\n') {
-        append("\\n");
-      } else if (c == '\r') {
-        append("\\r");
-      } else if (c == '\t') {
-        append("\\t");
-      } else if (c < 0x20) {
-        char buf[7];
-        std::snprintf(buf, sizeof(buf), "\\u%04x", c);
-        append(std::string_view(buf, 6));
-      } else {
-        append(static_cast<char>(c));
+    size_t runStart = 0;
+    for (size_t i = 0; i < s.size(); ++i) {
+      const auto c = static_cast<unsigned char>(s[i]);
+      char unicode[7];
+      std::string_view escape;
+      switch (c) {
+      case '"':
+        escape = "\\\"";
+        break;
+      case '\\':
+        escape = "\\\\";
+        break;
+      case '\n':
+        escape = "\\n";
+        break;
+      case '\r':
+        escape = "\\r";
+        break;
+      case '\t':
+        escape = "\\t";
+        break;
+      default:
+        if (c >= 0x20) {
+          continue;
+        }
+        std::snprintf(unicode, sizeof(unicode), "\\u%04x", c);
+        escape = std::string_view(unicode, 6);
       }
+      if (i > runStart) {
+        append(s.substr(runStart, i - runStart));
+      }
+      append(escape);
+      runStart = i + 1;
+    }
+    if (runStart < s.size()) {
+      append(s.substr(runStart));
     }
     append('"');
   }
