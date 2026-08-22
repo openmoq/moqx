@@ -6,8 +6,6 @@
 
 #include "relay/TrackStatsFilter.h"
 
-#include <algorithm>
-
 namespace openmoq::moqx {
 
 using moxygen::MoQPublishError;
@@ -154,19 +152,10 @@ TrackStatsFilter::datagram(const ObjectHeader& header, Payload payload, bool las
   return moxygen::TrackConsumerFilter::datagram(header, std::move(payload), lastInGroup);
 }
 
-// LRU rather than insertion order: a group that keeps receiving subgroups stays
-// in the window however many other groups open alongside it.
 void TrackStatsFilter::countGroupIfNew(uint64_t groupID) {
-  for (size_t i = 0; i < recentCount_; ++i) {
-    if (recentGroups_[i] == groupID) {
-      std::rotate(recentGroups_.begin(), recentGroups_.begin() + i, recentGroups_.begin() + i + 1);
-      return;
-    }
+  if (recentGroups_.admit(groupID)) {
+    ++stats_->counters().forDirection(direction_).groups;
   }
-  recentCount_ = std::min(recentCount_ + 1, kRecentGroups);
-  std::rotate(recentGroups_.begin(), recentGroups_.end() - 1, recentGroups_.end());
-  recentGroups_[0] = groupID;
-  ++stats_->counters().forDirection(direction_).groups;
 }
 
 void TrackStatsFilter::countSubgroup() {

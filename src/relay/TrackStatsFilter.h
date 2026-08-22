@@ -6,12 +6,12 @@
 
 #pragma once
 
-#include <array>
 #include <cstddef>
 #include <memory>
 
 #include <moxygen/MoQFilters.h>
 
+#include "relay/RecentGroupWindow.h"
 #include "stats/TrackStatsRegistry.h"
 
 namespace openmoq::moqx {
@@ -53,16 +53,7 @@ public:
   datagram(const moxygen::ObjectHeader& header, moxygen::Payload payload, bool lastInGroup = false)
       override;
 
-  // Bounds how deep an interleave can be before a group is counted twice:
-  // subgroups of the N most recent groups can arrive in any order.
-  static constexpr size_t kRecentGroups = 3;
-
-  // Lookup and LRU update are both linear scans on the data path, so this stays
-  // an array rather than a map only while the window is tiny.
-  static_assert(
-      kRecentGroups <= 8,
-      "widening past this wants folly::findFixed (or a map), not a longer scan"
-  );
+  static constexpr size_t kRecentGroups = RecentGroupWindow::kSize;
 
 private:
   friend class TrackStatsSubgroupFilter;
@@ -75,9 +66,7 @@ private:
 
   std::shared_ptr<stats::TrackStats> stats_;
   Direction direction_;
-  // Most-recently-seen first.
-  std::array<uint64_t, kRecentGroups> recentGroups_{};
-  size_t recentCount_{0};
+  RecentGroupWindow recentGroups_;
 };
 
 // Returns downstream unwrapped when no collector is bound on this thread, so
