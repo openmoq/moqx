@@ -172,7 +172,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "floor((time() - node_boot_time_seconds) / 86400)",
+          "expr": "label_replace(floor(max(moqx_build_uptime) / 86400), \"instance\", \"moqx-host\", \"\", \"\")",
           "format": "table",
           "instant": true,
           "range": false,
@@ -194,7 +194,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "floor(((time() - node_boot_time_seconds) - 86400 * floor((time() - node_boot_time_seconds) / 86400)) / 3600)",
+          "expr": "label_replace(floor((max(moqx_build_uptime) % 86400) / 3600), \"instance\", \"moqx-host\", \"\", \"\")",
           "format": "table",
           "instant": true,
           "range": false,
@@ -205,7 +205,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "floor(((time() - node_boot_time_seconds) - 3600 * floor((time() - node_boot_time_seconds) / 3600)) / 60)",
+          "expr": "label_replace(floor((max(moqx_build_uptime) % 3600) / 60), \"instance\", \"moqx-host\", \"\", \"\")",
           "format": "table",
           "instant": true,
           "range": false,
@@ -892,7 +892,7 @@
       "gridPos": {
         "h": 4,
         "w": 3,
-        "x": 10,
+        "x": 12,
         "y": 6
       },
       "id": 108,
@@ -949,8 +949,8 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 3,
-        "x": 13,
+        "w": 2,
+        "x": 10,
         "y": 6
       },
       "id": 116,
@@ -961,7 +961,7 @@
           "height": 600
         },
         "editorMode": "code",
-        "getOption": "\nconst frames = context.panel.data.series || [];\nfunction pairs(fr) {\n  if (!fr) return [];\n  const t = fr.fields.find((x) => x.type === 'time');\n  const v = fr.fields.find((x) => x.type === 'number');\n  if (!t || !v) return [];\n  const tv = t.values.toArray ? t.values.toArray() : t.values;\n  const vv = v.values.toArray ? v.values.toArray() : v.values;\n  const out = [];\n  for (let i = 0; i < tv.length; i++) {\n    if (vv[i] != null && !Number.isNaN(vv[i])) out.push([tv[i], vv[i]]);\n  }\n  return out;\n}\nconst data = pairs(frames[0]);\nconst last = data.length ? data[data.length - 1][1] : 0;\nconst color = last >= 2 ? '#e0453c' : last >= 0.5 ? '#c98500' : '#3987e5';\nreturn {\n  animation: false,\n  grid: { left: -2, right: -2, top: '46%', bottom: -2 },\n  xAxis: { type: 'time', show: false },\n  yAxis: { type: 'value', show: false, scale: true, min: 0 },\n  series: [{\n    type: 'line', data, smooth: 0.1, showSymbol: false, silent: true,\n    lineStyle: { color, width: 1.8, cap: 'round' },\n    areaStyle: { color, opacity: 0.20 },\n    emphasis: { disabled: true }, animation: false,\n  }],\n  graphic: [\n    { type: 'text', left: 'center', top: 16,\n      style: { text: last.toFixed(1) + ' %', fill: color,\n               font: '600 26px Inter, system-ui, sans-serif' } },\n  ],\n};\n",
+        "getOption": "\nconst frames = context.panel.data.series || [];\nfunction pairs(fr) {\n  if (!fr) return [];\n  const t = fr.fields.find((x) => x.type === 'time');\n  const v = fr.fields.find((x) => x.type === 'number');\n  if (!t || !v) return [];\n  const tv = t.values.toArray ? t.values.toArray() : t.values;\n  const vv = v.values.toArray ? v.values.toArray() : v.values;\n  const out = [];\n  for (let i = 0; i < tv.length; i++) {\n    if (vv[i] != null && !Number.isNaN(vv[i])) out.push([tv[i], vv[i]]);\n  }\n  return out;\n}\nconst data = pairs(frames[0]);\nconst last = data.length ? data[data.length - 1][1] : 0;\n\nreturn {\n  animation: false,\n  grid: { left: -2, right: -2, top: '46%', bottom: -2 },\n  xAxis: { type: 'time', show: false },\n  yAxis: { type: 'value', show: false, scale: true, min: 0 },\n  series: [{\n    type: 'line', data, smooth: 0.1, showSymbol: false, silent: true,\n    lineStyle: { color: '#5AA7BE', width: 1.8, cap: 'round' },\n    areaStyle: { color: '#5AA7BE', opacity: 0.20 },\n    emphasis: { disabled: true }, animation: false,\n  }],\n  graphic: [\n    { type: 'text', left: 'center', top: 16,\n      style: { text: last.toFixed(1) + ' %', fill: '#3987e5',\n               font: '600 26px Inter, system-ui, sans-serif' } },\n  ],\n};\n",
         "renderer": "canvas"
       },
       "pluginVersion": "7.2.5",
@@ -995,8 +995,8 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 4,
-        "x": 16,
+        "w": 3,
+        "x": 18,
         "y": 6
       },
       "id": 119,
@@ -1040,8 +1040,8 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 4,
-        "x": 20,
+        "w": 3,
+        "x": 21,
         "y": 6
       },
       "id": 115,
@@ -1076,7 +1076,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "One row per namespace \u2014 a leaf namespace typically maps to a single published event. Active counts tracks with at least one subscriber.",
+      "description": "One row per namespace \u2014 a leaf namespace typically maps to a single published event. Active counts tracks with at least one subscriber. Subscriptions sums track subscriptions, not unique subscribers \u2014 one subscriber taking catalog+audio+video counts once per track. Ingress is aggregate BW across the namespace's tracks. Origin reports \u2014 until upstream metrics land. Click a namespace to scope the Tracks table.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1091,7 +1091,6 @@
             "footer": {
               "reducers": []
             },
-            "headerAlign": "center",
             "inspect": false
           },
           "mappings": [],
@@ -1121,8 +1120,26 @@
                 "value": "left"
               },
               {
-                "id": "custom.headerAlign",
-                "value": "left"
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Show this namespace's tracks",
+                    "targetBlank": false,
+                    "url": "/grafana/d/moqx-overview/moqx-relay-overview?var-namespace=${__data.fields.Namespace}"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Origin"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 64
               }
             ]
           },
@@ -1153,12 +1170,52 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Subscribers"
+              "options": "Subscriptions"
             },
             "properties": [
               {
                 "id": "custom.width",
                 "value": 110
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ingress"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bps"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "custom.width",
+                "value": 92
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Data Tx"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "custom.width",
+                "value": 92
               }
             ]
           }
@@ -1188,7 +1245,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "count by (namespace) (max by (namespace, track) (moqx_track_subscribers)) or label_replace(vector(0), \"namespace\", \"\u2014\", \"\", \"\")",
+          "expr": "label_replace(count by (namespace) (max by (namespace, track) (moqx_track_subscribers)), \"origin\", \"\u2014\", \"\", \"\") or label_replace(label_replace(vector(0), \"namespace\", \"\u2014\", \"\", \"\"), \"origin\", \"\u2014\", \"\", \"\")",
           "format": "table",
           "instant": true,
           "range": false,
@@ -1215,6 +1272,28 @@
           "instant": true,
           "range": false,
           "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (namespace) (rate(moqx_track_bytes_received_total[1m])) * 8",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (namespace) (moqx_track_bytes_sent_total)",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "refId": "E"
         }
       ],
       "title": "Namespaces",
@@ -1230,22 +1309,29 @@
           "id": "organize",
           "options": {
             "excludeByName": {
-              "Time": true,
               "Time 1": true,
               "Time 2": true,
-              "Time 3": true
+              "Time 3": true,
+              "Time 4": true,
+              "Time": true
             },
             "indexByName": {
-              "Value #A": 1,
-              "Value #B": 2,
-              "Value #C": 3,
-              "namespace": 0
+              "namespace": 0,
+              "origin": 1,
+              "Value #A": 2,
+              "Value #B": 3,
+              "Value #C": 4,
+              "Value #D": 5,
+              "Value #E": 6
             },
             "renameByName": {
+              "namespace": "Namespace",
+              "origin": "Origin",
               "Value #A": "Tracks",
               "Value #B": "Active",
-              "Value #C": "Subscribers",
-              "namespace": "Namespace"
+              "Value #C": "Subscriptions",
+              "Value #D": "Ingress",
+              "Value #E": "Data Tx"
             }
           }
         },
@@ -1275,7 +1361,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Per-track view. Subs, Peak and Status come from relay metrics. Type/Codec/Resolution/FPS/Bitrate are catalog attributes and QoS/QoE need client-side telemetry; both report \u2014 until those sources exist.",
+      "description": "Tracks in the selected namespace, from the relay's /metrics/track (names in the MOQT safe form). Status derives from last-object age. Fetches, Latency, Drops, Cache Hit and QoS report \u2014 until the per-track QoS counters land.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1287,7 +1373,6 @@
               "type": "auto"
             },
             "filterable": false,
-            "headerAlign": "center",
             "inspect": false
           },
           "mappings": [],
@@ -1313,69 +1398,8 @@
                 "value": "left"
               },
               {
-                "id": "custom.headerAlign",
-                "value": "left"
-              },
-              {
-                "id": "links",
-                "value": [
-                  {
-                    "title": "Scope to this track",
-                    "url": "/grafana/d/moqx-overview/moqx-relay-overview?var-track=${__data.fields.Name}"
-                  }
-                ]
-              },
-              {
                 "id": "custom.width",
-                "value": 150
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Type"
-            },
-            "properties": [
-              {
-                "id": "custom.width",
-                "value": 58
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Codec"
-            },
-            "properties": [
-              {
-                "id": "custom.width",
-                "value": 72
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Resolution"
-            },
-            "properties": [
-              {
-                "id": "custom.width",
-                "value": 88
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "FPS"
-            },
-            "properties": [
-              {
-                "id": "custom.width",
-                "value": 48
+                "value": "150"
               }
             ]
           },
@@ -1386,8 +1410,36 @@
             },
             "properties": [
               {
+                "id": "unit",
+                "value": "bps"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
                 "id": "custom.width",
-                "value": 74
+                "value": 92
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Data Tx"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "custom.width",
+                "value": 92
               }
             ]
           },
@@ -1399,7 +1451,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 54
+                "value": "54"
               }
             ]
           },
@@ -1411,49 +1463,16 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 54
+                "value": "54"
               }
             ]
           },
           {
             "matcher": {
               "id": "byName",
-              "options": "QoS"
+              "options": "Fetches"
             },
             "properties": [
-              {
-                "id": "custom.align",
-                "value": "center"
-              },
-              {
-                "id": "custom.cellOptions",
-                "value": {
-                  "colorMode": "mapped",
-                  "type": "pill"
-                }
-              },
-              {
-                "id": "mappings",
-                "value": [
-                  {
-                    "options": {
-                      "DEGRADED": {
-                        "color": "#c98500",
-                        "index": 1
-                      },
-                      "FAILING": {
-                        "color": "#e0453c",
-                        "index": 2
-                      },
-                      "NORMAL": {
-                        "color": "#1baf7a",
-                        "index": 0
-                      }
-                    },
-                    "type": "value"
-                  }
-                ]
-              },
               {
                 "id": "custom.width",
                 "value": 64
@@ -1463,7 +1482,43 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "QoE"
+              "options": "Latency"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 74
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Drops"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 64
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Cache Hit"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 82
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "QoS"
             },
             "properties": [
               {
@@ -1526,27 +1581,53 @@
                 "id": "mappings",
                 "value": [
                   {
+                    "type": "value",
                     "options": {
-                      "DONE": {
-                        "color": "#6e7680",
-                        "index": 1
-                      },
-                      "LIVE": {
+                      "1": {
+                        "text": "LIVE",
                         "color": "#1baf7a",
                         "index": 0
                       },
-                      "OFFLINE": {
+                      "2": {
+                        "text": "IDLE",
+                        "color": "#6e7680",
+                        "index": 1
+                      },
+                      "3": {
+                        "text": "DONE",
                         "color": "#6e7680",
                         "index": 2
+                      },
+                      "LIVE": {
+                        "color": "#1baf7a",
+                        "index": 3
+                      },
+                      "IDLE": {
+                        "color": "#6e7680",
+                        "index": 4
+                      },
+                      "DONE": {
+                        "color": "#6e7680",
+                        "index": 5
                       }
-                    },
-                    "type": "value"
+                    }
+                  },
+                  {
+                    "type": "special",
+                    "options": {
+                      "match": "null+nan",
+                      "result": {
+                        "text": "DONE",
+                        "color": "#6e7680",
+                        "index": 6
+                      }
+                    }
                   }
                 ]
               },
               {
                 "id": "custom.width",
-                "value": 68
+                "value": "68"
               }
             ]
           }
@@ -1576,7 +1657,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(max by (namespace, track) (moqx_track_subscribers), \"type\", \"\u2014\", \"\", \"\"), \"codec\", \"\u2014\", \"\", \"\"), \"resolution\", \"\u2014\", \"\", \"\"), \"fps\", \"\u2014\", \"\", \"\"), \"bitrate\", \"\u2014\", \"\", \"\"), \"qos\", \"\u2014\", \"\", \"\"), \"qoe\", \"\u2014\", \"\", \"\"), \"status\", \"LIVE\", \"\", \"\") or label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace((max by (namespace, track) (max_over_time(moqx_track_subscribers[$__range])) unless max by (namespace, track) (moqx_track_subscribers)) * 0, \"type\", \"\u2014\", \"\", \"\"), \"codec\", \"\u2014\", \"\", \"\"), \"resolution\", \"\u2014\", \"\", \"\"), \"fps\", \"\u2014\", \"\", \"\"), \"bitrate\", \"\u2014\", \"\", \"\"), \"qos\", \"\u2014\", \"\", \"\"), \"qoe\", \"\u2014\", \"\", \"\"), \"status\", \"DONE\", \"\", \"\") or label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(vector(0), \"type\", \"\u2014\", \"\", \"\"), \"codec\", \"\u2014\", \"\", \"\"), \"resolution\", \"\u2014\", \"\", \"\"), \"fps\", \"\u2014\", \"\", \"\"), \"bitrate\", \"\u2014\", \"\", \"\"), \"qos\", \"\u2014\", \"\", \"\"), \"qoe\", \"\u2014\", \"\", \"\"), \"status\", \"\u2014\", \"\", \"\"), \"namespace\", \"\u2014\", \"\", \"\"), \"track\", \"\u2014\", \"\", \"\")",
+          "expr": "label_replace(label_replace(label_replace(label_replace(label_replace(max by (namespace, track) (moqx_track_subscribers{namespace=~\"$namespace\", track=~\"$track\"}), \"fetches\", \"\u2014\", \"\", \"\"), \"latency\", \"\u2014\", \"\", \"\"), \"drops\", \"\u2014\", \"\", \"\"), \"cachehit\", \"\u2014\", \"\", \"\"), \"qos\", \"NORMAL\", \"\", \"\") or label_replace(label_replace(label_replace(label_replace(label_replace((max by (namespace, track) (max_over_time(moqx_track_subscribers{namespace=~\"$namespace\", track=~\"$track\"}[$__range])) unless max by (namespace, track) (moqx_track_subscribers{namespace=~\"$namespace\", track=~\"$track\"})) * 0, \"fetches\", \"\u2014\", \"\", \"\"), \"latency\", \"\u2014\", \"\", \"\"), \"drops\", \"\u2014\", \"\", \"\"), \"cachehit\", \"\u2014\", \"\", \"\"), \"qos\", \"NORMAL\", \"\", \"\") or label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(vector(0), \"fetches\", \"\u2014\", \"\", \"\"), \"latency\", \"\u2014\", \"\", \"\"), \"drops\", \"\u2014\", \"\", \"\"), \"cachehit\", \"\u2014\", \"\", \"\"), \"qos\", \"NORMAL\", \"\", \"\"), \"namespace\", \"\u2014\", \"\", \"\"), \"track\", \"\u2014\", \"\", \"\")",
           "format": "table",
           "instant": true,
           "range": false,
@@ -1587,11 +1668,44 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max by (namespace, track) (max_over_time(moqx_track_subscribers[$__range]))",
+          "expr": "max by (namespace, track) (max_over_time(moqx_track_subscribers{namespace=~\"$namespace\", track=~\"$track\"}[$__range]))",
           "format": "table",
           "instant": true,
           "range": false,
           "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (namespace, track) (rate(moqx_track_bytes_received_total{namespace=~\"$namespace\", track=~\"$track\"}[1m])) * 8",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (namespace, track) (moqx_track_bytes_sent_total{namespace=~\"$namespace\", track=~\"$track\"})",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "(2 - (clamp_min(time() - max by (namespace, track) (moqx_track_last_object_timestamp_seconds{namespace=~\"$namespace\", track=~\"$track\"}), 0) < bool 15)) or (max by (namespace, track) (moqx_track_subscribers{namespace=~\"$namespace\", track=~\"$track\"}) * 0 + 2) or ((max by (namespace, track) (max_over_time(moqx_track_subscribers{namespace=~\"$namespace\", track=~\"$track\"}[$__range])) unless max by (namespace, track) (moqx_track_subscribers{namespace=~\"$namespace\", track=~\"$track\"})) * 0 + 3)",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "refId": "E"
         }
       ],
       "title": "Tracks",
@@ -1608,42 +1722,65 @@
           "options": {
             "excludeByName": {
               "Time": true,
-              "Time 1": true,
-              "Time 2": true,
               "__name__": true,
-              "data_tx": true,
               "instance": true,
               "job": true,
+              "moqx_namespace": true,
+              "service": true,
               "namespace": true,
+              "Time 1": true,
               "namespace 1": true,
-              "namespace 2": true
+              "track 1": true,
+              "Time 2": true,
+              "namespace 2": true,
+              "track 2": true,
+              "Time 3": true,
+              "namespace 3": true,
+              "track 3": true,
+              "Time 4": true,
+              "namespace 4": true,
+              "track 4": true,
+              "Time 5": true,
+              "namespace 5": true,
+              "track 5": true
             },
             "indexByName": {
-              "Value #A": 6,
-              "Value #B": 7,
-              "bitrate": 5,
-              "codec": 2,
-              "fps": 4,
-              "qoe": 9,
-              "qos": 8,
-              "resolution": 3,
-              "status": 10,
               "track": 0,
-              "type": 1
+              "Value #C": 1,
+              "Value #D": 2,
+              "Value #A": 3,
+              "Value #B": 4,
+              "fetches": 5,
+              "latency": 6,
+              "drops": 7,
+              "cachehit": 8,
+              "qos": 9,
+              "Value #E": 10
             },
             "renameByName": {
+              "track": "Name",
+              "Value #C": "Bitrate",
+              "Value #D": "Data Tx",
               "Value #A": "Subs",
               "Value #B": "Peak",
-              "bitrate": "Bitrate",
-              "codec": "Codec",
-              "fps": "FPS",
-              "qoe": "QoE",
+              "fetches": "Fetches",
+              "latency": "Latency",
+              "drops": "Drops",
+              "cachehit": "Cache Hit",
               "qos": "QoS",
-              "resolution": "Resolution",
-              "status": "Status",
-              "track": "Name",
-              "type": "Type"
+              "Value #E": "Status"
             }
+          }
+        },
+        {
+          "id": "convertFieldType",
+          "options": {
+            "conversions": [
+              {
+                "targetField": "Status",
+                "destinationType": "string"
+              }
+            ]
           }
         },
         {
@@ -1666,6 +1803,70 @@
         }
       ],
       "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Fan-out efficiency of the relay as a cache: share of egress object payload served without matching ingress (1 \u2212 in/out payload rates). 0% when fan-out \u2264 1.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 0,
+          "mappings": [],
+          "max": 1,
+          "min": 0,
+          "noValue": "0",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#3987e5",
+                "value": null
+              }
+            ]
+          },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 15,
+        "y": 6
+      },
+      "id": 25,
+      "options": {
+        "minVizHeight": 75,
+        "minVizWidth": 75,
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": false,
+        "sizing": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "clamp_min(1 - sum(rate(moqx_track_bytes_received_total[1m])) / (sum(rate(moqx_track_bytes_sent_total[1m])) > 0), 0)",
+          "refId": "A"
+        }
+      ],
+      "title": "CDN Efficiency",
+      "type": "gauge"
     },
     {
       "datasource": {
@@ -1761,8 +1962,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max by (namespace, track) (moqx_track_subscribers > 0)\n  and\ntopk(10, max by (namespace, track) (max_over_time(moqx_track_subscribers[$__range])))",
-          "legendFormat": "{{namespace}}/{{track}}",
+          "expr": "max by (namespace, track) (moqx_track_subscribers{namespace=~\"$namespace\", track=~\"$track\"})",
+          "legendFormat": "{{track}}",
           "refId": "A"
         }
       ],
@@ -2678,7 +2879,62 @@
     "relay"
   ],
   "templating": {
-    "list": []
+    "list": [
+      {
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "includeAll": true,
+        "label": "namespace",
+        "multi": false,
+        "name": "namespace",
+        "options": [],
+        "query": {
+          "query": "label_values(moqx_track_subscribers, namespace)",
+          "refId": "ns"
+        },
+        "refresh": 2,
+        "sort": 1,
+        "type": "query",
+        "allValue": ".*"
+      },
+      {
+        "allValue": ".*",
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "includeAll": true,
+        "label": "track",
+        "multi": true,
+        "name": "track",
+        "options": [],
+        "query": {
+          "query": "label_values(moqx_track_subscribers{namespace=~\"$namespace\"}, track)",
+          "refId": "trk"
+        },
+        "refresh": 2,
+        "sort": 1,
+        "type": "query"
+      }
+    ]
   },
   "time": {
     "from": "now-30m",
