@@ -177,7 +177,8 @@ void registerTrackMetricsRoute(
           std::unique_ptr<proxygen::HTTPMessage> req,
           std::unique_ptr<folly::IOBuf> /*body*/,
           proxygen::ResponseHandler* downstream,
-          folly::CancellationToken cancelToken
+          folly::CancellationToken cancelToken,
+          std::shared_ptr<EgressGate> /*egress*/
       ) {
         // Without this the response is an empty scrape, which reads as "no
         // live tracks" rather than "counting is off".

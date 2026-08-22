@@ -25,15 +25,19 @@ class ResponseHandler;
 
 namespace openmoq::moqx::admin {
 
+class EgressGate;
+
 // Route handler: receives the complete request (headers + body) and owns the
 // response. May respond asynchronously — launch a coroutine and send via
 // downstream later. cancelToken is signalled if the client disconnects before
 // the response is produced (onError fired on the underlying RequestHandler).
+// egress is only of interest to handlers that stream a response in chunks.
 using RouteHandler = std::function<void(
     std::unique_ptr<proxygen::HTTPMessage> req,
     std::unique_ptr<folly::IOBuf> body,
     proxygen::ResponseHandler* downstream,
-    folly::CancellationToken cancelToken
+    folly::CancellationToken cancelToken,
+    std::shared_ptr<EgressGate> egress
 )>;
 
 struct Route {

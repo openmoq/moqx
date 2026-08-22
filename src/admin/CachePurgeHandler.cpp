@@ -29,7 +29,8 @@ void registerCachePurgeRoute(AdminServer& adminServer, std::shared_ptr<MoqxRelay
        )](std::unique_ptr<proxygen::HTTPMessage> /*req*/,
           std::unique_ptr<folly::IOBuf> body,
           proxygen::ResponseHandler* downstream,
-          folly::CancellationToken cancelToken) {
+          folly::CancellationToken cancelToken,
+          std::shared_ptr<EgressGate> /*egress*/) {
         auto ctx = weak.lock();
         if (!ctx) {
           proxygen::ResponseBuilder(downstream)

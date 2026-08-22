@@ -183,7 +183,8 @@ void registerConnectionLogsRoutes(
           std::unique_ptr<proxygen::HTTPMessage> req,
           std::unique_ptr<folly::IOBuf> /*body*/,
           proxygen::ResponseHandler* downstream,
-          folly::CancellationToken cancelToken
+          folly::CancellationToken cancelToken,
+          std::shared_ptr<EgressGate> /*egress*/
       ) {
         // Resolve type → directory, file extension, Content-Type.
         const auto& typeStr = req->getQueryParam("type");

@@ -30,8 +30,13 @@ void registerBuiltinRoutes(AdminServer& server) {
   server.addRoute(
       "GET",
       "/info",
-      [startEpoch,
-       startSteady](auto /*req*/, auto /*body*/, auto* downstream, auto /*cancelToken*/) {
+      [startEpoch, startSteady](
+          auto /*req*/,
+          auto /*body*/,
+          auto* downstream,
+          auto /*cancelToken*/,
+          auto /*egress*/
+      ) {
         const auto uptime = std::chrono::duration_cast<std::chrono::seconds>(
                                 std::chrono::steady_clock::now() - startSteady
         )
