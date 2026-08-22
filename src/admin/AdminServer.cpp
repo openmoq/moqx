@@ -10,6 +10,7 @@
 
 #include <folly/CancellationToken.h>
 #include <folly/io/IOBufQueue.h>
+#include <folly/io/async/EventBaseManager.h>
 #include <folly/logging/xlog.h>
 #include <proxygen/httpserver/RequestHandler.h>
 #include <proxygen/httpserver/RequestHandlerFactory.h>
@@ -17,6 +18,8 @@
 #include <proxygen/httpserver/ScopedHTTPServer.h>
 #include <proxygen/lib/http/HTTPMessage.h>
 #include <wangle/ssl/SSLContextConfig.h>
+
+#include "admin/EgressGate.h"
 
 namespace openmoq::moqx::admin {
 
@@ -28,7 +31,9 @@ namespace openmoq::moqx::admin {
 // ---------------------------------------------------------------------------
 class AdminRequestHandler : public proxygen::RequestHandler {
 public:
-  explicit AdminRequestHandler(RouteHandler handler) : handler_(std::move(handler)) {}
+  explicit AdminRequestHandler(RouteHandler handler)
+      : handler_(std::move(handler)),
+        egress_(std::make_shared<EgressGate>(folly::EventBaseManager::get()->getEventBase())) {}
 
   void onRequest(std::unique_ptr<proxygen::HTTPMessage> headers) noexcept override {
     req_ = std::move(headers);
@@ -39,20 +44,30 @@ public:
   }
 
   void onEOM() noexcept override {
-    handler_(std::move(req_), body_.move(), downstream_, cancellationSource_.getToken());
+    handler_(std::move(req_), body_.move(), downstream_, cancellationSource_.getToken(), egress_);
   }
 
   void onUpgrade(proxygen::UpgradeProtocol /*proto*/) noexcept override {}
 
-  void requestComplete() noexcept override { delete this; }
+  void onEgressPaused() noexcept override { egress_->onPaused(); }
 
-  void onError(proxygen::ProxygenError /*err*/) noexcept override {
+  void onEgressResumed() noexcept override { egress_->onResumed(); }
+
+  void requestComplete() noexcept override { finish(); }
+
+  void onError(proxygen::ProxygenError /*err*/) noexcept override { finish(); }
+
+private:
+  // Cancel before waking anything parked on the gate, so a coroutine that
+  // resumes sees the token already set and does not touch downstream_.
+  void finish() {
     cancellationSource_.requestCancellation();
+    egress_->shutdown();
     delete this;
   }
 
-private:
   RouteHandler handler_;
+  std::shared_ptr<EgressGate> egress_;
   std::unique_ptr<proxygen::HTTPMessage> req_;
   folly::IOBufQueue body_{folly::IOBufQueue::cacheChainLength()};
   folly::CancellationSource cancellationSource_;
@@ -80,14 +95,16 @@ public:
     }
 
     // Unknown route → 404
-    return new AdminRequestHandler(
-        [](auto /*req*/, auto /*body*/, auto* downstream, auto /*cancelToken*/) {
-          proxygen::ResponseBuilder(downstream)
-              .status(404, proxygen::HTTPMessage::getDefaultReason(404))
-              .body(folly::IOBuf::copyBuffer("Not Found\n"))
-              .sendWithEOM();
-        }
-    );
+    return new AdminRequestHandler([](auto /*req*/,
+                                      auto /*body*/,
+                                      auto* downstream,
+                                      auto /*cancelToken*/,
+                                      const auto& /*egress*/) {
+      proxygen::ResponseBuilder(downstream)
+          .status(404, proxygen::HTTPMessage::getDefaultReason(404))
+          .body(folly::IOBuf::copyBuffer("Not Found\n"))
+          .sendWithEOM();
+    });
   }
 
 private:
