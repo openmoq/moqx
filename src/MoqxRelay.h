@@ -93,12 +93,11 @@ public:
   virtual void onNamespaceTreeEnd() = 0;
 
   // --- Cache section ---
-  // Called once with cache state; not called if cache is disabled.
-  virtual void onCacheStats(
-      size_t totalBytes,
-      const std::vector<MoqxCache::TrackStats>& tracks,
-      MoqxCache::TimePoint now
-  ) = 0;
+  // Not called at all if the cache is disabled.
+  virtual void onCacheBegin(size_t totalBytes, MoqxCache::TimePoint now) = 0;
+  // Return false to stop the cache walk. The view does not outlive the call.
+  virtual bool onCacheTrack(const MoqxCache::TrackStatsView& track) = 0;
+  virtual void onCacheEnd() = 0;
 };
 
 class MoqxRelay : public moxygen::Publisher,

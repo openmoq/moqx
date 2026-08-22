@@ -8,7 +8,6 @@
 
 #include <chrono>
 #include <string_view>
-#include <vector>
 
 #include "MoqxRelayContext.h"
 #include "admin/ChunkedJsonWriter.h"
@@ -112,48 +111,47 @@ public:
   }
   void onNamespaceTreeEnd() override {}
 
-  void onCacheStats(
-      size_t totalBytes,
-      const std::vector<MoqxCache::TrackStats>& tracks,
-      MoqxCache::TimePoint now
-  ) override {
+  void onCacheBegin(size_t totalBytes, MoqxCache::TimePoint now) override {
+    now_ = now;
     w_.key("cache");
     w_.beginObject();
     w_.key("total_bytes");
     w_.uintVal(static_cast<uint64_t>(totalBytes));
     w_.key("tracks");
     w_.beginArray();
-    for (const auto& t : tracks) {
-      w_.beginObject();
-      w_.key("namespace");
-      w_.beginArray();
-      for (const auto& s : t.name.trackNamespace.trackNamespace) {
-        w_.strVal(s);
-      }
-      w_.endArray();
-      w_.field("track_name", t.name.trackName);
-      w_.field("end_of_track", t.endOfTrack);
-      w_.key("last_write_ms_ago");
-      if (t.lastWrite == decltype(t.lastWrite)::min()) {
-        w_.nullVal();
-      } else {
-        auto msAgo =
-            std::chrono::duration_cast<std::chrono::milliseconds>(now - t.lastWrite).count();
-        w_.intVal(static_cast<int64_t>(msAgo));
-      }
-      w_.key("groups");
-      w_.beginArray();
-      for (const auto& g : t.groups) {
-        w_.beginObject();
-        w_.field("group_id", g.groupId);
-        w_.key("objects");
-        w_.uintVal(static_cast<uint64_t>(g.objects));
-        w_.endObject();
-      }
-      w_.endArray();
-      w_.endObject();
-      c_.maybeFlush();
+  }
+  bool onCacheTrack(const MoqxCache::TrackStatsView& t) override {
+    w_.beginObject();
+    w_.key("namespace");
+    w_.beginArray();
+    for (const auto& s : t.name.trackNamespace.trackNamespace) {
+      w_.strVal(s);
     }
+    w_.endArray();
+    w_.field("track_name", t.name.trackName);
+    w_.field("end_of_track", t.endOfTrack);
+    w_.key("last_write_ms_ago");
+    if (t.lastWrite == MoqxCache::TimePoint::min()) {
+      w_.nullVal();
+    } else {
+      auto msAgo =
+          std::chrono::duration_cast<std::chrono::milliseconds>(now_ - t.lastWrite).count();
+      w_.intVal(static_cast<int64_t>(msAgo));
+    }
+    w_.key("groups");
+    w_.beginArray();
+    for (const auto& g : t.groups) {
+      w_.beginObject();
+      w_.field("group_id", g.groupId);
+      w_.key("objects");
+      w_.uintVal(static_cast<uint64_t>(g.objects));
+      w_.endObject();
+    }
+    w_.endArray();
+    w_.endObject();
+    return c_.maybeFlush();
+  }
+  void onCacheEnd() override {
     w_.endArray();
     w_.endObject();
   }
@@ -161,6 +159,7 @@ public:
 private:
   ChunkedJsonWriter& c_;
   JsonWriter& w_;
+  MoqxCache::TimePoint now_{};
 };
 
 // Builds the top-level envelope around the per-service walks. Shares one
