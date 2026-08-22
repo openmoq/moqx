@@ -125,8 +125,10 @@ endif()
 message(STATUS "moxygen superbuild: Boost static libs: ${BOOST_USE_STATIC_LIBS}")
 
 # INSTALL_DEPS ships folly and friends into the prefix. BUILD_TESTS gates the
-# bundled GTest config that moqx's find_package(GTest) needs. BUILD_SAMPLES gives
-# the integration tests the binaries they reach through MOXYGEN_BIN_DIR.
+# bundled GTest config that moqx's find_package(GTest) needs. BUILD_SAMPLES and
+# BUILD_MOQTEST give the integration tests the binaries they reach through
+# MOXYGEN_BIN_DIR: moqdateserver and moqtextclient from the first, moqtest_client,
+# moqtest_server and moqperf_test_client from the second.
 ExternalProject_Add(moxygen
   SOURCE_DIR    "${moxygen_SOURCE_DIR}"
   SOURCE_SUBDIR standalone
@@ -151,6 +153,7 @@ ExternalProject_Add(moxygen
     -DINSTALL_DEPS=ON
     -DBUILD_TESTS=ON
     -DBUILD_SAMPLES=ON
+    -DBUILD_MOQTEST=ON
     -DBUILD_SHARED_LIBS=OFF
     -DBoost_USE_STATIC_LIBS=${BOOST_USE_STATIC_LIBS}
     # Never let moxygen's find_package probes satisfy themselves from a
