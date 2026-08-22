@@ -202,6 +202,7 @@ services:
     mem_limit: ${PROMETHEUS_MEM:-2g}
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-targets:/etc/prometheus/targets:ro
       # TSDB backing store. Defaults to the named volume (persists across
       # redeploys — `compose down` without -v keeps it). Set PROMETHEUS_DATA_DIR
       # to an absolute host path to pin it on a specific/larger disk instead.
@@ -315,6 +316,29 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # Writes one Prometheus file_sd target per live namespace, read from the
+  # relay's namespace tree. /metrics/track takes a single namespace per
+  # request, and namespaces come and go with events, so the list cannot be
+  # static.
+  ns-targets:
+    container_name: moqx-ns-targets
+    image: python:3.12-alpine
+    restart: unless-stopped
+    profiles: [stats]
+    command: ["python3", "/app/namespace-targets.py"]
+    environment:
+      MOQX_STATE_URL: http://moqx:${MOQX_ADMIN_PORT:-8000}/state
+      MOQX_TARGETS_PATH: /targets/namespaces.json
+      MOQX_TARGETS_INTERVAL: "30"
+    volumes:
+      - ./prometheus/namespace-targets.py:/app/namespace-targets.py:ro
+      - prometheus-targets:/targets
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   # Turns the relay admin /state JSON into per-track Prometheus series (the
   # aggregate /metrics has no per-track labels). Prometheus scrapes it with a
   # target= param pointing at the relay /state (see the moqx-state job).
@@ -334,6 +358,7 @@ services:
         max-file: "3"
 
 volumes:
+  prometheus-targets:
   moqx-coredumps:
   prometheus-data:
   grafana-data:
