@@ -50,7 +50,11 @@ void registerStateRoute(AdminServer& adminServer, std::shared_ptr<MoqxRelayConte
       "GET",
       "/state",
       [context = std::move(context
-       )](auto /*req*/, auto /*body*/, auto* downstream, folly::CancellationToken cancelToken) {
+       )](auto /*req*/,
+          auto /*body*/,
+          auto* downstream,
+          folly::CancellationToken cancelToken,
+          const std::shared_ptr<EgressGate>& /*egress*/) {
         auto* workerEvb = context->workerEvb();
         if (!workerEvb) {
           proxygen::ResponseBuilder(downstream)
