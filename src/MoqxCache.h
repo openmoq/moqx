@@ -168,6 +168,19 @@ public:
     std::vector<GroupStats> groups; // sorted by groupId ascending
   };
 
+  // One track's stats without owning any of them; valid for the call only.
+  struct TrackStatsView {
+    const moxygen::FullTrackName& name;
+    bool endOfTrack;
+    TimePoint lastWrite;
+    const std::vector<GroupStats>& groups; // sorted by groupId ascending
+  };
+
+  // Walks cached tracks in place. Return false to stop. Preferred over
+  // getTrackStats() on the relay executor: no track name is copied and one
+  // group vector is reused for the whole walk.
+  void forEachTrackStats(folly::FunctionRef<bool(const TrackStatsView&)> fn) const;
+
   // Returns a snapshot of all cached tracks and their group/object counts.
   // Groups within each track are returned in ascending groupId order.
   std::vector<TrackStats> getTrackStats() const;
