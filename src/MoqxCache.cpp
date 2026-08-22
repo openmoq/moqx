@@ -2412,23 +2412,30 @@ folly::Expected<folly::Unit, MoQPublishError> MoqxCache::cacheObjectAndUpdateByt
   return res;
 }
 
+void MoqxCache::forEachTrackStats(folly::FunctionRef<bool(const TrackStatsView&)> fn) const {
+  std::vector<GroupStats> groups; // reused across tracks; reserve only grows
+  for (const auto& [ftn, track] : cache_) {
+    groups.clear();
+    groups.reserve(track->groups.size());
+    for (const auto& [groupId, group] : track->groups) {
+      groups.push_back({groupId, group->objects.size()});
+    }
+    std::sort(groups.begin(), groups.end(), [](const GroupStats& a, const GroupStats& b) {
+      return a.groupId < b.groupId;
+    });
+    if (!fn(TrackStatsView{ftn, track->endOfTrack, track->lastWrite, groups})) {
+      return;
+    }
+  }
+}
+
 std::vector<MoqxCache::TrackStats> MoqxCache::getTrackStats() const {
   std::vector<TrackStats> result;
   result.reserve(cache_.size());
-  for (const auto& [ftn, track] : cache_) {
-    TrackStats ts;
-    ts.name = ftn;
-    ts.endOfTrack = track->endOfTrack;
-    ts.lastWrite = track->lastWrite;
-    ts.groups.reserve(track->groups.size());
-    for (const auto& [groupId, group] : track->groups) {
-      ts.groups.push_back({groupId, group->objects.size()});
-    }
-    std::sort(ts.groups.begin(), ts.groups.end(), [](const GroupStats& a, const GroupStats& b) {
-      return a.groupId < b.groupId;
-    });
-    result.push_back(std::move(ts));
-  }
+  forEachTrackStats([&](const TrackStatsView& t) {
+    result.push_back({t.name, t.endOfTrack, t.lastWrite, t.groups});
+    return true;
+  });
   return result;
 }
 

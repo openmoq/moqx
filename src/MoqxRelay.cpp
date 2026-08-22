@@ -2923,11 +2923,11 @@ void MoqxRelay::dumpState(RelayStateVisitor& visitor) const {
   visitor.onNamespaceTreeEnd();
 
   if (cache_) {
-    visitor.onCacheStats(
-        cache_->totalCachedBytes(),
-        cache_->getTrackStats(),
-        MoqxCache::SteadyClock::now()
-    );
+    visitor.onCacheBegin(cache_->totalCachedBytes(), MoqxCache::SteadyClock::now());
+    cache_->forEachTrackStats([&](const MoqxCache::TrackStatsView& track) {
+      return visitor.onCacheTrack(track);
+    });
+    visitor.onCacheEnd();
   }
 }
 
