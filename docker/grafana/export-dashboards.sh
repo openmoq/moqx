@@ -18,7 +18,10 @@ import json, os, subprocess, shutil, tempfile, time
 
 C = os.environ["GRAFANA_CONTAINER"]
 DRY = bool(os.environ.get("DRY_RUN"))
-DEST = "provisioning/dashboards"; ARCH = f"{DEST}/archive"
+DEST = "provisioning/dashboards"
+# Sibling of DEST, never inside it: the provisioner loads *.json recursively and
+# duplicate uids lock it out of the database entirely.
+ARCH = "dashboards-archive"
 os.makedirs(ARCH, exist_ok=True)
 gpass = subprocess.check_output(
     ["docker", "exec", C, "printenv", "GF_SECURITY_ADMIN_PASSWORD"], text=True).strip()
