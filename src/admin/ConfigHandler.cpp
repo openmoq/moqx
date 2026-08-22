@@ -101,8 +101,12 @@ void registerConfigRoute(AdminServer& adminServer, std::shared_ptr<const config:
   adminServer.addRoute(
       "GET",
       "/config",
-      [config = std::move(config
-       )](auto /*req*/, auto /*body*/, auto* downstream, auto /*cancelToken*/
+      [config = std::move(config)](
+          auto /*req*/,
+          auto /*body*/,
+          auto* downstream,
+          auto /*cancelToken*/,
+          const auto& /*egress*/
       ) {
         proxygen::ResponseBuilder(downstream)
             .status(200, proxygen::HTTPMessage::getDefaultReason(200))

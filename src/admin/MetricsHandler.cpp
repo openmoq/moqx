@@ -28,8 +28,13 @@ void registerMetricsRoute(
   adminServer.addRoute(
       "GET",
       "/metrics",
-      [registry = std::move(registry
-       )](auto req, auto /*body*/, auto* downstream, folly::CancellationToken cancelToken) {
+      [registry = std::move(registry)](
+          auto req,
+          auto /*body*/,
+          auto* downstream,
+          folly::CancellationToken cancelToken,
+          const std::shared_ptr<EgressGate>& /*egress*/
+      ) {
         auto* evb = folly::EventBaseManager::get()->getEventBase();
 
         auto omitMetadata = boolQueryParam(*req, "omit_metadata", false);
