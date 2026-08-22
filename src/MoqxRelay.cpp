@@ -1455,18 +1455,114 @@ private:
   TrackNamespace trackNamespacePrefix_;
 };
 
-// Filter TrackConsumer that intercepts publishDone to clean up relay state.
-// Holds a weak_ptr to avoid a reference cycle: relay owns RelaySubscription
-// which owns the filter chain (TopNFilter→TerminationFilter), so a strong
-// relay ref here would prevent the relay from ever being destroyed.
-class MoqxRelay::TerminationFilter : public TrackConsumerFilter {
+namespace {
+
+// Records ingested objects for one subgroup; the group ID is fixed at
+// beginSubgroup, so only the object ID varies per call.
+class RelayIngestSubgroupFilter : public moxygen::SubgroupConsumerFilter {
 public:
-  TerminationFilter(
+  RelayIngestSubgroupFilter(
+      std::shared_ptr<IngestCounters> ingest,
+      uint64_t groupID,
+      std::shared_ptr<SubgroupConsumer> downstream
+  )
+      : moxygen::SubgroupConsumerFilter(std::move(downstream)), ingest_(std::move(ingest)),
+        groupID_(groupID) {}
+
+  folly::Expected<folly::Unit, MoQPublishError> object(
+      uint64_t objectID,
+      Payload payload,
+      moxygen::Extensions extensions = moxygen::noExtensions(),
+      bool finSubgroup = false
+  ) override {
+    ingest_->record(groupID_, objectID);
+    return moxygen::SubgroupConsumerFilter::object(
+        objectID,
+        std::move(payload),
+        std::move(extensions),
+        finSubgroup
+    );
+  }
+
+  folly::Expected<folly::Unit, MoQPublishError> beginObject(
+      uint64_t objectID,
+      uint64_t length,
+      Payload initialPayload,
+      moxygen::Extensions extensions = moxygen::noExtensions()
+  ) override {
+    ingest_->record(groupID_, objectID);
+    return moxygen::SubgroupConsumerFilter::beginObject(
+        objectID,
+        length,
+        std::move(initialPayload),
+        std::move(extensions)
+    );
+  }
+
+  // endOfGroup/endOfTrackAndGroup deliver a real status object, so they count.
+  folly::Expected<folly::Unit, MoQPublishError> endOfGroup(uint64_t endOfGroupObjectID) override {
+    ingest_->record(groupID_, endOfGroupObjectID);
+    return moxygen::SubgroupConsumerFilter::endOfGroup(endOfGroupObjectID);
+  }
+
+  folly::Expected<folly::Unit, MoQPublishError> endOfTrackAndGroup(uint64_t endOfTrackObjectID
+  ) override {
+    ingest_->record(groupID_, endOfTrackObjectID);
+    return moxygen::SubgroupConsumerFilter::endOfTrackAndGroup(endOfTrackObjectID);
+  }
+
+private:
+  std::shared_ptr<IngestCounters> ingest_;
+  uint64_t groupID_;
+};
+
+} // namespace
+
+// The relay executor's per-object observation point on the ingest path: counts
+// what arrives for /state, and intercepts publishDone to clean up relay state.
+// Both buildFilterChain branches install one, so these counters are the only
+// source /state needs -- in LocalForwarder mode the forwarder itself is owned
+// by another executor and cannot be read during the walk.
+//
+// Holds a weak_ptr to avoid a reference cycle: relay owns RelaySubscription
+// which owns the filter chain (TopNFilter→RelayIngestFilter), so a strong
+// relay ref here would prevent the relay from ever being destroyed.
+class MoqxRelay::RelayIngestFilter : public TrackConsumerFilter {
+public:
+  RelayIngestFilter(
       std::weak_ptr<MoqxRelay> relay,
       FullTrackName ftn,
+      std::shared_ptr<IngestCounters> ingest,
       std::shared_ptr<TrackConsumer> downstream
   )
-      : TrackConsumerFilter(std::move(downstream)), relay_(std::move(relay)), ftn_(std::move(ftn)) {
+      : TrackConsumerFilter(std::move(downstream)), relay_(std::move(relay)), ftn_(std::move(ftn)),
+        ingest_(std::move(ingest)) {}
+
+  folly::Expected<std::shared_ptr<SubgroupConsumer>, MoQPublishError> beginSubgroup(
+      uint64_t groupID,
+      uint64_t subgroupID,
+      moxygen::Priority priority,
+      moxygen::BeginSubgroupOptions options = {}
+  ) override {
+    auto res = TrackConsumerFilter::beginSubgroup(groupID, subgroupID, priority, options);
+    if (!res) {
+      return res;
+    }
+    return std::static_pointer_cast<SubgroupConsumer>(
+        std::make_shared<RelayIngestSubgroupFilter>(ingest_, groupID, std::move(res.value()))
+    );
+  }
+
+  folly::Expected<folly::Unit, MoQPublishError>
+  objectStream(const ObjectHeader& header, Payload payload, bool lastInGroup = false) override {
+    ingest_->record(header.group, header.id);
+    return TrackConsumerFilter::objectStream(header, std::move(payload), lastInGroup);
+  }
+
+  folly::Expected<folly::Unit, MoQPublishError>
+  datagram(const ObjectHeader& header, Payload payload, bool lastInGroup = false) override {
+    ingest_->record(header.group, header.id);
+    return TrackConsumerFilter::datagram(header, std::move(payload), lastInGroup);
   }
 
   folly::Expected<folly::Unit, MoQPublishError> publishDone(PublishDone pubDone) override {
@@ -1483,18 +1579,8 @@ public:
 private:
   std::weak_ptr<MoqxRelay> relay_;
   FullTrackName ftn_;
+  std::shared_ptr<IngestCounters> ingest_;
 };
-
-std::shared_ptr<TrackConsumer> MoqxRelay::getSubscribeWriteback(
-    const FullTrackName& ftn,
-    std::shared_ptr<TrackConsumer> consumer
-) {
-  auto baseConsumer =
-      cache_ ? cache_->getSubscribeWriteback(ftn, std::move(consumer)) : std::move(consumer);
-  auto termFilter =
-      std::make_shared<TerminationFilter>(shared_from_this(), ftn, std::move(baseConsumer));
-  return std::static_pointer_cast<TrackConsumer>(termFilter);
-}
 
 SubscriptionRegistry::FilterChainResult
 MoqxRelay::buildFilterChain(const FullTrackName& ftn, std::shared_ptr<MoQForwarder> forwarder) {
@@ -1504,12 +1590,11 @@ MoqxRelay::buildFilterChain(const FullTrackName& ftn, std::shared_ptr<MoQForward
     // topNFilter/termination/cache.
     std::shared_ptr<TrackConsumer> chainEnd =
         cache_ ? cache_->makePassiveConsumer(ftn) : std::make_shared<moxygen::NullTrackConsumer>();
-    auto terminationFilter =
-        std::make_shared<TerminationFilter>(shared_from_this(), ftn, std::move(chainEnd));
-    auto topNFilter = std::make_shared<TopNFilter>(
-        ftn,
-        std::static_pointer_cast<TrackConsumer>(terminationFilter)
-    );
+    auto ingest = std::make_shared<IngestCounters>();
+    auto ingestFilter =
+        std::make_shared<RelayIngestFilter>(shared_from_this(), ftn, ingest, std::move(chainEnd));
+    auto topNFilter =
+        std::make_shared<TopNFilter>(ftn, std::static_pointer_cast<TrackConsumer>(ingestFilter));
     topNFilter->setActivityThreshold(activityThreshold_);
     return SubscriptionRegistry::FilterChainResult{
         .consumer = std::static_pointer_cast<TrackConsumer>(forwarder),
@@ -1519,7 +1604,8 @@ MoqxRelay::buildFilterChain(const FullTrackName& ftn, std::shared_ptr<MoQForward
             ftn,
             std::static_pointer_cast<TrackConsumer>(topNFilter),
             stats::TrackDirection::Ingest
-        )
+        ),
+        .ingest = std::move(ingest)
     };
   }
 
@@ -1533,13 +1619,15 @@ MoqxRelay::buildFilterChain(const FullTrackName& ftn, std::shared_ptr<MoQForward
         /*passive=*/true
     );
   }
-  auto terminationFilter = std::make_shared<TerminationFilter>(
+  auto ingest = std::make_shared<IngestCounters>();
+  auto ingestFilter = std::make_shared<RelayIngestFilter>(
       shared_from_this(),
       ftn,
+      ingest,
       std::static_pointer_cast<TrackConsumer>(forwarder)
   );
   auto topNFilter =
-      std::make_shared<TopNFilter>(ftn, std::static_pointer_cast<TrackConsumer>(terminationFilter));
+      std::make_shared<TopNFilter>(ftn, std::static_pointer_cast<TrackConsumer>(ingestFilter));
   topNFilter->setActivityThreshold(activityThreshold_);
   auto chainHead = wrapWithTrackStats(
       trackStats_,
@@ -1550,7 +1638,8 @@ MoqxRelay::buildFilterChain(const FullTrackName& ftn, std::shared_ptr<MoQForward
   return SubscriptionRegistry::FilterChainResult{
       .consumer = chainHead,
       .topNFilter = topNFilter,
-      .chainHead = chainHead
+      .chainHead = chainHead,
+      .ingest = std::move(ingest)
   };
 }
 
@@ -2885,20 +2974,18 @@ void MoqxRelay::dumpState(RelayStateVisitor& visitor) const {
     if (e.upstream) {
       sourceAddr = e.upstream->getPeerAddress().describe();
     }
+    // Counted by RelayIngestFilter on this executor rather than read off the
+    // forwarder, which in LocalForwarder mode is owned by another one. There
+    // the counts are what the relay chain saw, downstream of the cross-exec
+    // hop, so they can trail the forwarder's own by whatever is in flight.
     RelayStateVisitor::SubscriptionInfo info{
         .ftn = e.ftn,
         .isPublish = e.isPublish,
+        .largest = e.ingest.largest,
+        .totalGroupsReceived = e.ingest.groups,
+        .totalObjectsReceived = e.ingest.objects,
         .sourceAddress = sourceAddr,
     };
-    if (auto forwarder = e.forwarder.getIfOwned()) {
-      info.subscribers = forwarder->subscriberCount();
-      info.forwardingSubscribers = forwarder->numForwardingSubscribers();
-      info.largest = forwarder->largest();
-      info.totalGroupsReceived = forwarder->totalGroupsReceived();
-      info.totalObjectsReceived = forwarder->totalObjectsReceived();
-    }
-    // else LF mode: forwarder is on the publisher exec, not accessible here.
-    // TODO: add LF mode stats to the visitor via a cross-exec callback.
     visitor.onSubscription(info);
   });
   visitor.onSubscriptionsEnd();
