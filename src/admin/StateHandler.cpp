@@ -10,6 +10,7 @@
 #include <folly/coro/Task.h>
 #include <folly/coro/WithCancellation.h>
 #include <folly/io/IOBuf.h>
+#include <folly/io/IOBufQueue.h>
 #include <folly/io/async/EventBaseManager.h>
 #include <folly/logging/xlog.h>
 #include <proxygen/httpserver/ResponseBuilder.h>
@@ -17,6 +18,7 @@
 
 #include "MoqxRelayContext.h"
 #include "admin/AdminServer.h"
+#include "admin/ChunkedJsonWriter.h"
 #include "admin/JsonStateVisitors.h"
 
 namespace openmoq::moqx::admin {
@@ -26,9 +28,19 @@ namespace {
 // Runs on the relay worker EVB. Dumps state and returns the serialized body.
 folly::coro::Task<std::unique_ptr<folly::IOBuf>>
 buildStateBody(std::shared_ptr<MoqxRelayContext> ctx) {
-  JsonRelayContextVisitor visitor;
-  ctx->dumpState(visitor);
-  co_return visitor.move();
+  folly::IOBufQueue body{folly::IOBufQueue::cacheChainLength()};
+  {
+    // Chunks are collected rather than sent: the response still goes out whole
+    // at EOM.
+    ChunkedJsonWriter writer([&body](std::unique_ptr<folly::IOBuf> chunk) {
+      body.append(std::move(chunk));
+      return true;
+    });
+    JsonRelayContextVisitor visitor(writer);
+    ctx->dumpState(visitor);
+    writer.flush();
+  }
+  co_return body.move();
 }
 
 } // namespace

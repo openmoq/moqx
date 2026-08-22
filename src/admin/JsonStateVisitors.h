@@ -7,27 +7,22 @@
 #pragma once
 
 #include <chrono>
-#include <memory>
 #include <string_view>
 #include <vector>
 
-#include <folly/io/Cursor.h>
-#include <folly/io/IOBuf.h>
-#include <folly/io/IOBufQueue.h>
-
 #include "MoqxRelayContext.h"
+#include "admin/ChunkedJsonWriter.h"
 #include "admin/JsonWriter.h"
 
 namespace openmoq::moqx::admin {
 
-// RelayStateVisitor that writes JSON directly via a shared JsonWriter.
-// Section begin/end callbacks map directly to JSON array/object open/close,
-// so no state tracking or deferred finalization is needed here.
+// RelayStateVisitor that writes JSON as the walk proceeds, handing off a chunk
+// whenever the writer crosses its threshold. Section begin/end callbacks map
+// directly to JSON array/object open/close, so no state tracking or deferred
+// finalization is needed here.
 class JsonRelayStateVisitor : public RelayStateVisitor {
-  JsonWriter& w_;
-
 public:
-  explicit JsonRelayStateVisitor(JsonWriter& w) : w_(w) {}
+  explicit JsonRelayStateVisitor(ChunkedJsonWriter& c) : c_(c), w_(c.json()) {}
 
   void onPeersBegin() override {
     w_.key("downstream_peers");
@@ -42,6 +37,7 @@ public:
       w_.field("relay_id", relayID);
     }
     w_.endObject();
+    c_.maybeFlush();
   }
   void onPeersEnd() override { w_.endArray(); }
 
@@ -73,6 +69,7 @@ public:
       w_.endObject();
     }
     w_.endObject();
+    c_.maybeFlush();
   }
   void onSubscriptionsEnd() override { w_.endArray(); }
 
@@ -111,6 +108,7 @@ public:
   void endNamespaceNode() override {
     w_.endObject(); // children
     w_.endObject(); // node
+    c_.maybeFlush();
   }
   void onNamespaceTreeEnd() override {}
 
@@ -154,22 +152,24 @@ public:
       }
       w_.endArray();
       w_.endObject();
+      c_.maybeFlush();
     }
     w_.endArray();
     w_.endObject();
   }
+
+private:
+  ChunkedJsonWriter& c_;
+  JsonWriter& w_;
 };
 
-// RelayContextVisitor that builds the top-level JSON envelope.
-// A single JsonWriter is shared with JsonRelayStateVisitor so comma state
-// remains consistent across the two visitor layers.
+// Builds the top-level envelope around the per-service walks. Shares one
+// ChunkedJsonWriter with the relay visitor so comma state stays consistent
+// across the two layers and a chunk can be cut anywhere.
 class JsonRelayContextVisitor : public RelayContextVisitor {
-  folly::IOBufQueue queue_{folly::IOBufQueue::cacheChainLength()};
-  folly::io::QueueAppender app_{&queue_, 4096};
-  JsonWriter w_{app_};
-  JsonRelayStateVisitor relayVisitor_{w_};
-
 public:
+  explicit JsonRelayContextVisitor(ChunkedJsonWriter& c) : c_(c), w_(c.json()), relayVisitor_(c) {}
+
   void onRelayBegin(std::string_view relayID, int64_t activeSessions) override {
     w_.beginObject();
     w_.field("relay_id", relayID);
@@ -192,16 +192,21 @@ public:
     w_.endObject();
   }
 
-  void onServiceEnd() override { w_.endObject(); }
+  void onServiceEnd() override {
+    w_.endObject();
+    c_.maybeFlush();
+  }
 
   void onRelayEnd() override {
     w_.endObject(); // services
     w_.endObject(); // relay
-    static constexpr uint8_t kNewline = '\n';
-    app_.write(kNewline);
+    c_.raw("\n");
   }
 
-  std::unique_ptr<folly::IOBuf> move() { return queue_.move(); }
+private:
+  ChunkedJsonWriter& c_;
+  JsonWriter& w_;
+  JsonRelayStateVisitor relayVisitor_;
 };
 
 } // namespace openmoq::moqx::admin
