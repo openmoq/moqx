@@ -435,6 +435,96 @@ jobs:
   # succeeded. Tolerates portable-build being skipped (has_portable=false).
   # ════════════════════════════════════════════════════════════════════════════
 
+  # ════════════════════════════════════════════════════════════════════════════
+  # Release image: builds the container with MOQX_VERSION_STRING set to the
+  # release tag, so the binary and the OCI label report the version they ship
+  # under. The arg enters after the moxygen stage, so the dep layers come from
+  # the registry cache and only the moqx TUs recompile.
+  # ════════════════════════════════════════════════════════════════════════════
+
+  release-image:
+    needs: [validate, create-release]
+    permissions:
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-22.04
+          - arch: arm64
+            runner: ubuntu-22.04-arm
+    name: release image (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    # The image's moxygen stage can fall back to compiling folly; see ci-main.
+    timeout-minutes: 180
+    steps:
+      # create-release tags snapshot_sha; the image is that commit.
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.validate.outputs.snapshot_sha }}
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - uses: docker/setup-buildx-action@v4
+
+      # Reads ci-main's buildcache. Writing it back with mode=max evicts the
+      # ccache and dependency caches sharing the repo's 10 GB budget.
+      - name: Build with the release version baked in
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          IMAGE="ghcr.io/${{ github.repository }}"
+          ARCH="${{ matrix.arch }}"
+          TAG="${{ needs.validate.outputs.tag }}"
+          docker buildx build -f docker/Dockerfile --target relay --load \
+            --secret id=github_token,env=GITHUB_TOKEN \
+            --build-arg MOQX_VERSION_STRING="$TAG" \
+            --cache-from "type=registry,ref=${IMAGE}/buildcache:${ARCH}" \
+            -t "${IMAGE}:${TAG}-${ARCH}" \
+            .
+
+      - name: Verify the stamped version and linkage
+        run: |
+          IMAGE="ghcr.io/${{ github.repository }}:${{ needs.validate.outputs.tag }}-${{ matrix.arch }}"
+          TAG="${{ needs.validate.outputs.tag }}"
+          if docker run --rm --entrypoint ldd "$IMAGE" /usr/local/bin/moqx 2>&1 | grep -q "not found"; then
+            echo "ERROR: missing shared libraries" >&2
+            docker run --rm --entrypoint ldd "$IMAGE" /usr/local/bin/moqx >&2
+            exit 1
+          fi
+          # The binary reports the tag it ships under.
+          REPORTED=$(docker run --rm --entrypoint /usr/local/bin/moqx "$IMAGE" --version 2>&1 || true)
+          echo "==> reported version: $REPORTED"
+          case "$REPORTED" in
+            *"$TAG"*) echo "==> version stamp OK" ;;
+            *) echo "ERROR: image does not report $TAG" >&2; exit 1 ;;
+          esac
+
+      - name: Push
+        run: |
+          IMAGE="ghcr.io/${{ github.repository }}"
+          docker push "${IMAGE}:${{ needs.validate.outputs.tag }}-${{ matrix.arch }}"
+
+  release-image-manifest:
+    needs: [validate, release-image]
+    permissions:
+      packages: write
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      # Release tags only; 'latest' and the rolling aliases track main.
+      - name: Create the multiplatform manifest
+        run: |
+          IMAGE="ghcr.io/${{ github.repository }}"
+          TAG="${{ needs.validate.outputs.tag }}"
+          docker buildx imagetools create -t "${IMAGE}:${TAG}" \
+            "${IMAGE}:${TAG}-amd64" "${IMAGE}:${TAG}-arm64"
+          docker buildx imagetools inspect "${IMAGE}:${TAG}"
+
   finalize:
     needs: [validate, create-release, portable-build, promote-snapshot]
     if: |
