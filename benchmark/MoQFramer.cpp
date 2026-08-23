@@ -127,7 +127,8 @@ BENCHMARK(BM_WriteSubgroupHeader, iters) {
   susp.dismiss();
   for (unsigned i = 0; i < iters; ++i) {
     buf.reset();
-    auto res = writer.writeSubgroupHeader(buf, TrackAlias(1), header);
+    auto res =
+        writer.writeSubgroupHeader(buf, TrackAlias(1), header, SubgroupOptions{});
     folly::doNotOptimizeAway(res);
   }
 }

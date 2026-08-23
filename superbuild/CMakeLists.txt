@@ -151,6 +151,10 @@ ExternalProject_Add(moxygen
     -DINSTALL_DEPS=ON
     -DBUILD_TESTS=ON
     -DBUILD_SAMPLES=ON
+    -DBUILD_MOQTEST=ON
+    # Discover tests at ctest startup instead of POST_BUILD: parallel POST_BUILD
+    # discovery races on a shared JSON file under cmake 4.4.0.
+    -DCMAKE_GTEST_DISCOVER_TESTS_DISCOVERY_MODE=PRE_TEST
     -DBUILD_SHARED_LIBS=OFF
     -DBoost_USE_STATIC_LIBS=${BOOST_USE_STATIC_LIBS}
     # Never let moxygen's find_package probes satisfy themselves from a

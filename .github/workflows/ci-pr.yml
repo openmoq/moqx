@@ -42,6 +42,9 @@ jobs:
           - name: linux
             key: linux
             preset: default
+            # Compile coverage for benchmark/: the microbenchmark job is main-only,
+            # so nothing else builds those TUs before merge.
+            extra_cmake: -DMOQX_BUILD_BENCHMARKS=ON
             runner: ubuntu-22.04
           # arm64 is validated by the publish-side docker build (ci-main publish
           # arm64 entry); skipped here to avoid the ubuntu-runner ↔ bookworm-tarball
