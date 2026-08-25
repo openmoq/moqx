@@ -329,7 +329,7 @@ services:
     environment:
       MOQX_STATE_URL: http://moqx:${MOQX_ADMIN_PORT:-8000}/state
       MOQX_TARGETS_PATH: /targets/namespaces.json
-      MOQX_TARGETS_INTERVAL: "30"
+      MOQX_TARGETS_INTERVAL: "5"
     volumes:
       - ./prometheus/namespace-targets.py:/app/namespace-targets.py:ro
       - prometheus-targets:/targets

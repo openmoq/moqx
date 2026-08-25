@@ -687,7 +687,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "clamp_min(1 - sum(rate(moqx_track_bytes_received_total[1m])) / (sum(rate(moqx_track_bytes_sent_total[1m])) > 0), 0)",
+          "expr": "clamp_min(1 - sum(rate(moqx_track_bytes_received_total[30s])) / (sum(rate(moqx_track_bytes_sent_total[30s])) > 0), 0)",
           "refId": "A"
         }
       ],
@@ -1118,7 +1118,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(moqx_pubSubgroupReset_total{code=~\"too_far_behind|delivery_timeout\"}[1m])) + sum(rate(moqx_subSubgroupReset_total{code=~\"too_far_behind|delivery_timeout\"}[1m]))",
+          "expr": "sum(rate(moqx_pubSubgroupReset_total{code=~\"too_far_behind|delivery_timeout\"}[30s])) + sum(rate(moqx_subSubgroupReset_total{code=~\"too_far_behind|delivery_timeout\"}[30s]))",
           "legendFormat": "drops",
           "refId": "A"
         }
@@ -1473,7 +1473,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (namespace) (rate(moqx_track_bytes_received_total[1m])) * 8",
+          "expr": "sum by (namespace) (rate(moqx_track_bytes_received_total[30s])) * 8",
           "format": "table",
           "instant": true,
           "range": false,
@@ -1877,7 +1877,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (namespace, track) (rate(moqx_track_bytes_received_total{namespace=~\"$namespace\", track=~\"$track\"}[1m])) * 8",
+          "expr": "sum by (namespace, track) (rate(moqx_track_bytes_received_total{namespace=~\"$namespace\", track=~\"$track\"}[30s])) * 8",
           "format": "table",
           "instant": true,
           "range": false,
