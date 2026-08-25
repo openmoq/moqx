@@ -829,9 +829,6 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "id": 76,
-      "title": "QUIC receive discards",
-      "type": "timeseries",
       "description": "Packets the QUIC stack rejected on receive (junk, unknown connection, failed decrypt) and datagrams dropped at the socket buffers. Ambient internet noise at low rates; investigate if it spikes.",
       "fieldConfig": {
         "defaults": {
@@ -855,6 +852,7 @@
         "x": 0,
         "y": 36
       },
+      "id": 76,
       "options": {
         "legend": {
           "calcs": [],
@@ -887,7 +885,9 @@
           "legendFormat": "socket drops",
           "refId": "B"
         }
-      ]
+      ],
+      "title": "QUIC receive discards",
+      "type": "timeseries"
     }
   ],
   "preload": false,
