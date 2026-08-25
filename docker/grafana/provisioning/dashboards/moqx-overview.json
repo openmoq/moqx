@@ -634,7 +634,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Fan-out amplification: egress payload served per byte ingested (\u00d7N = 1/(1\u2212efficiency)). Ring and value shade from blue toward green as efficiency approaches 85%; sparkline shows the window.",
+      "description": "Fan-out efficiency: share of egress payload served without matching ingress. Ring shades blue toward green approaching 85%; the faint inner ring is the window's peak.",
       "fieldConfig": {
         "defaults": {},
         "overrides": []
@@ -660,7 +660,7 @@
           "key": "",
           "plugin": "AMap.Scale,AMap.ToolBar"
         },
-        "getOption": "function pairs(f) {\n  const t = f.fields.find((x) => x.type === 'time');\n  const v = f.fields.find((x) => x.type === 'number');\n  if (!t || !v) return [];\n  const tv = t.values.toArray ? t.values.toArray() : t.values;\n  const vv = v.values.toArray ? v.values.toArray() : v.values;\n  const out = [];\n  for (let i = 0; i < tv.length; i++) {\n    if (vv[i] != null && !Number.isNaN(vv[i])) out.push([tv[i], vv[i]]);\n  }\n  return out;\n}\nconst ser = context.panel.data.series || [];\nconst data = ser.length ? pairs(ser[0]) : [];\nconst v = data.length ? data[data.length - 1][1] : 0;\nconst t = Math.min(v / 85, 1);\nconst L = (a, b) => Math.round(a + (b - a) * t);\nconst base = 'rgb(' + L(57,27) + ',' + L(135,175) + ',' + L(229,122) + ')';\nconst hi   = 'rgb(' + L(126,111) + ',' + L(194,224) + ',' + L(255,184) + ')';\nconst amp = v >= 99.9 ? 1000 : 1 / (1 - v / 100);\nconst ampTxt = '\u00d7' + (amp >= 10 ? Math.round(amp) : amp.toFixed(1));\nconst grad = { type: 'linear', x: 0, y: 1, x2: 1, y2: 0,\n               colorStops: [ { offset: 0, color: base }, { offset: 1, color: hi } ] };\nreturn {\n  animation: false,\n  grid: { left: 6, right: 6, bottom: 1, top: '85%' },\n  xAxis: { type: 'time', show: false },\n  yAxis: { type: 'value', show: false, min: 0, max: 100 },\n  series: [\n    { type: 'gauge', startAngle: 220, endAngle: -40, min: 0, max: 100,\n      radius: '92%', center: ['50%', '48%'],\n      progress: { show: true, width: 11, roundCap: true,\n                  itemStyle: { color: grad, shadowBlur: 12, shadowColor: base } },\n      axisLine: { roundCap: true, lineStyle: { width: 11, color: [[1, 'rgba(128,128,128,.13)']] } },\n      axisTick: { show: false }, splitLine: { show: false }, axisLabel: { show: false },\n      pointer: { show: false }, anchor: { show: false }, title: { show: false },\n      detail: { valueAnimation: false, fontSize: 22, fontWeight: 700,\n                offsetCenter: [0, '-12%'], formatter: () => ampTxt, color: base },\n      data: [{ value: v }] },\n    { type: 'line', data, smooth: 0.2, showSymbol: false, silent: true,\n      lineStyle: { color: base, width: 1.4, cap: 'round' },\n      areaStyle: { color: base, opacity: 0.15 },\n      emphasis: { disabled: true }, animation: false },\n  ],\n  graphic: [\n    { type: 'text', left: 'center', top: '56%',\n      style: { text: v.toFixed(1) + ' %', fill: base,\n               font: '600 12px Inter, system-ui, sans-serif' } },\n  ],\n};",
+        "getOption": "function pairs(f) {\n  const t = f.fields.find((x) => x.type === 'time');\n  const v = f.fields.find((x) => x.type === 'number');\n  if (!t || !v) return [];\n  const tv = t.values.toArray ? t.values.toArray() : t.values;\n  const vv = v.values.toArray ? v.values.toArray() : v.values;\n  const out = [];\n  for (let i = 0; i < tv.length; i++) {\n    if (vv[i] != null && !Number.isNaN(vv[i])) out.push([tv[i], vv[i]]);\n  }\n  return out;\n}\nconst ser = context.panel.data.series || [];\nconst data = ser.length ? pairs(ser[0]) : [];\nconst v = data.length ? data[data.length - 1][1] : 0;\nconst ghost = data.length ? Math.max.apply(null, data.map((p) => p[1])) : 0;\nconst t = Math.min(v / 85, 1);\nconst L = (a, b) => Math.round(a + (b - a) * t);\nconst base = 'rgb(' + L(57,27) + ',' + L(135,175) + ',' + L(229,122) + ')';\nconst hi   = 'rgb(' + L(126,111) + ',' + L(194,224) + ',' + L(255,184) + ')';\nconst grad = { type: 'linear', x: 0, y: 1, x2: 1, y2: 0,\n               colorStops: [ { offset: 0, color: base }, { offset: 1, color: hi } ] };\nconst S = [];\nS.push({ type: 'gauge', startAngle: 220, endAngle: -40, min: 0, max: 100,\n  radius: '70%', center: ['50%', '60%'],\n  progress: { show: true, width: 4, roundCap: true,\n              itemStyle: { color: 'rgba(160,180,205,.35)' } },\n  axisLine: { roundCap: true, lineStyle: { width: 4, color: [[1, 'rgba(128,128,128,.07)']] } },\n  axisTick: { show: false }, splitLine: { show: false }, axisLabel: { show: false },\n  pointer: { show: false }, detail: { show: false }, data: [{ value: ghost }] });\nS.push({ type: 'gauge', startAngle: 220, endAngle: -40, min: 0, max: 100,\n  radius: '88%', center: ['50%', '60%'],\n  progress: { show: true, width: 11, roundCap: true,\n              itemStyle: { color: grad, shadowBlur: 12, shadowColor: base } },\n  axisLine: { roundCap: true, lineStyle: { width: 11, color: [[1, 'rgba(128,128,128,.13)']] } },\n  axisTick: { show: false }, splitLine: { show: false }, axisLabel: { show: false },\n  pointer: { show: false }, anchor: { show: false }, title: { show: false },\n  detail: { valueAnimation: true, fontSize: 19, fontWeight: 600, offsetCenter: [0, '-8%'],\n            formatter: (x) => Math.round(x) + '%', color: base },\n  data: [{ value: v }] });\nreturn { series: S };",
         "google": {
           "callback": "gmapReady",
           "key": ""
@@ -1432,17 +1432,16 @@
                 "id": "mappings",
                 "value": [
                   {
-                    "type": "value",
                     "options": {
                       "1": {
-                        "text": "ACTIVE",
                         "color": "#1baf7a",
-                        "index": 0
+                        "index": 0,
+                        "text": "ACTIVE"
                       },
                       "2": {
-                        "text": "DONE",
                         "color": "#6e7680",
-                        "index": 1
+                        "index": 1,
+                        "text": "DONE"
                       },
                       "ACTIVE": {
                         "color": "#1baf7a",
@@ -1452,18 +1451,19 @@
                         "color": "#6e7680",
                         "index": 3
                       }
-                    }
+                    },
+                    "type": "value"
                   },
                   {
-                    "type": "special",
                     "options": {
                       "match": "null+nan",
                       "result": {
-                        "text": "DONE",
                         "color": "#6e7680",
-                        "index": 4
+                        "index": 4,
+                        "text": "DONE"
                       }
-                    }
+                    },
+                    "type": "special"
                   }
                 ]
               },
@@ -1587,9 +1587,9 @@
               "Value #C": 4,
               "Value #D": 5,
               "Value #E": 6,
+              "Value #F": 7,
               "namespace": 0,
-              "origin": 1,
-              "Value #F": 7
+              "origin": 1
             },
             "renameByName": {
               "Value #A": "Tracks",
@@ -1597,9 +1597,9 @@
               "Value #C": "Subscriptions",
               "Value #D": "Ingress",
               "Value #E": "Data Tx",
+              "Value #F": "Status",
               "namespace": "Namespace",
-              "origin": "Origin",
-              "Value #F": "Status"
+              "origin": "Origin"
             }
           }
         },
@@ -1608,8 +1608,8 @@
           "options": {
             "conversions": [
               {
-                "targetField": "Status",
-                "destinationType": "string"
+                "destinationType": "string",
+                "targetField": "Status"
               }
             ]
           }
