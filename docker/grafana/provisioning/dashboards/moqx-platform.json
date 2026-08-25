@@ -823,6 +823,71 @@
       ],
       "title": "Kernel UDP health",
       "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "id": 76,
+      "title": "QUIC receive discards",
+      "type": "timeseries",
+      "description": "Packets the QUIC stack rejected on receive (junk, unknown connection, failed decrypt) and datagrams dropped at the socket buffers. Ambient internet noise at low rates; investigate if it spikes.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "unit": "pps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 36
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(moqx_quicPacketsDropped_total[$__rate_interval]))",
+          "legendFormat": "stack rejects",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(moqx_quicDatagramsDroppedOnRead_total[$__rate_interval])) + sum(rate(moqx_quicDatagramsDroppedOnWrite_total[$__rate_interval]))",
+          "legendFormat": "socket drops",
+          "refId": "B"
+        }
+      ]
     }
   ],
   "preload": false,
