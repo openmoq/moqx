@@ -650,7 +650,75 @@
             "steps": [
               {
                 "color": "#3987e5",
-                "value": 0
+                "value": null
+              },
+              {
+                "color": "#3789df",
+                "value": 0.05
+              },
+              {
+                "color": "#358cd8",
+                "value": 0.1
+              },
+              {
+                "color": "#348ed2",
+                "value": 0.15
+              },
+              {
+                "color": "#3290cc",
+                "value": 0.2
+              },
+              {
+                "color": "#3093c6",
+                "value": 0.25
+              },
+              {
+                "color": "#2e95bf",
+                "value": 0.3
+              },
+              {
+                "color": "#2d97b9",
+                "value": 0.35
+              },
+              {
+                "color": "#2b9ab3",
+                "value": 0.4
+              },
+              {
+                "color": "#299cac",
+                "value": 0.45
+              },
+              {
+                "color": "#279fa6",
+                "value": 0.5
+              },
+              {
+                "color": "#26a1a0",
+                "value": 0.55
+              },
+              {
+                "color": "#24a399",
+                "value": 0.6
+              },
+              {
+                "color": "#22a693",
+                "value": 0.65
+              },
+              {
+                "color": "#20a88d",
+                "value": 0.7
+              },
+              {
+                "color": "#1faa87",
+                "value": 0.75
+              },
+              {
+                "color": "#1dad80",
+                "value": 0.8
+              },
+              {
+                "color": "#1baf7a",
+                "value": 0.85
               }
             ]
           },
@@ -3009,9 +3077,6 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "id": 204,
-      "title": "Data Delivered",
-      "type": "stat",
       "description": "Object payload delivered to subscribers over the selected time window (track egress bytes).",
       "fieldConfig": {
         "defaults": {
@@ -3032,6 +3097,7 @@
         "x": 20,
         "y": 7
       },
+      "id": 204,
       "options": {
         "colorMode": "value",
         "graphMode": "none",
@@ -3046,11 +3112,11 @@
           "values": false
         },
         "showPercentChange": false,
-        "textMode": "value",
-        "wideLayout": true,
         "text": {
           "valueSize": 34
-        }
+        },
+        "textMode": "value",
+        "wideLayout": true
       },
       "targets": [
         {
@@ -3061,7 +3127,9 @@
           "expr": "sum(increase(moqx_track_bytes_sent_total[$__range])) or vector(0)",
           "refId": "A"
         }
-      ]
+      ],
+      "title": "Data Delivered",
+      "type": "stat"
     }
   ],
   "preload": false,
