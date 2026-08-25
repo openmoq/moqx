@@ -2181,7 +2181,7 @@
             "uid": "prometheus"
           },
           "expr": "max by (namespace_display, track_display) (moqx_track_subscribers{namespace_display=~\"$namespace\", track_display=~\"$track\"})\n  and\ntopk(10, max by (namespace_display, track_display) (max_over_time(moqx_track_subscribers{namespace_display=~\"$namespace\", track_display=~\"$track\"}[$__range])))",
-          "legendFormat": "{{track}}",
+          "legendFormat": "{{track_display}}",
           "refId": "A"
         }
       ],
