@@ -1939,7 +1939,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "label_replace(label_replace(label_replace(label_replace(label_replace(max by (namespace_display, track_display) (moqx_track_subscribers{namespace_display=~\"$namespace_display\", track_display=~\"$track_display\"}), \"fetches\", \"\u2014\", \"\", \"\"), \"latency\", \"\u2014\", \"\", \"\"), \"drops\", \"\u2014\", \"\", \"\"), \"cachehit\", \"\u2014\", \"\", \"\"), \"qos\", \"NORMAL\", \"\", \"\") or label_replace(label_replace(label_replace(label_replace(label_replace((max by (namespace_display, track_display) (max_over_time(moqx_track_subscribers{namespace_display=~\"$namespace_display\", track_display=~\"$track_display\"}[$__range])) unless max by (namespace_display, track_display) (moqx_track_subscribers{namespace_display=~\"$namespace_display\", track_display=~\"$track_display\"})) * 0, \"fetches\", \"\u2014\", \"\", \"\"), \"latency\", \"\u2014\", \"\", \"\"), \"drops\", \"\u2014\", \"\", \"\"), \"cachehit\", \"\u2014\", \"\", \"\"), \"qos\", \"NORMAL\", \"\", \"\") or label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(vector(0), \"fetches\", \"\u2014\", \"\", \"\"), \"latency\", \"\u2014\", \"\", \"\"), \"drops\", \"\u2014\", \"\", \"\"), \"cachehit\", \"\u2014\", \"\", \"\"), \"qos\", \"NORMAL\", \"\", \"\"), \"namespace_display\", \"\u2014\", \"\", \"\"), \"track_display\", \"\u2014\", \"\", \"\")",
+          "expr": "label_replace(label_replace(label_replace(label_replace(label_replace(max by (namespace_display, track_display) (moqx_track_subscribers{namespace_display=~\"$namespace\", track_display=~\"$track\"}), \"fetches\", \"\u2014\", \"\", \"\"), \"latency\", \"\u2014\", \"\", \"\"), \"drops\", \"\u2014\", \"\", \"\"), \"cachehit\", \"\u2014\", \"\", \"\"), \"qos\", \"NORMAL\", \"\", \"\") or label_replace(label_replace(label_replace(label_replace(label_replace((max by (namespace_display, track_display) (max_over_time(moqx_track_subscribers{namespace_display=~\"$namespace\", track_display=~\"$track\"}[$__range])) unless max by (namespace_display, track_display) (moqx_track_subscribers{namespace_display=~\"$namespace\", track_display=~\"$track\"})) * 0, \"fetches\", \"\u2014\", \"\", \"\"), \"latency\", \"\u2014\", \"\", \"\"), \"drops\", \"\u2014\", \"\", \"\"), \"cachehit\", \"\u2014\", \"\", \"\"), \"qos\", \"NORMAL\", \"\", \"\") or label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(vector(0), \"fetches\", \"\u2014\", \"\", \"\"), \"latency\", \"\u2014\", \"\", \"\"), \"drops\", \"\u2014\", \"\", \"\"), \"cachehit\", \"\u2014\", \"\", \"\"), \"qos\", \"NORMAL\", \"\", \"\"), \"namespace_display\", \"\u2014\", \"\", \"\"), \"track_display\", \"\u2014\", \"\", \"\")",
           "format": "table",
           "instant": true,
           "range": false,
@@ -1950,7 +1950,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max by (namespace_display, track_display) (max_over_time(moqx_track_subscribers{namespace_display=~\"$namespace_display\", track_display=~\"$track_display\"}[$__range]))",
+          "expr": "max by (namespace_display, track_display) (max_over_time(moqx_track_subscribers{namespace_display=~\"$namespace\", track_display=~\"$track\"}[$__range]))",
           "format": "table",
           "instant": true,
           "range": false,
@@ -1961,7 +1961,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (namespace_display, track_display) (rate(moqx_track_bytes_received_total{namespace_display=~\"$namespace_display\", track_display=~\"$track_display\"}[30s])) * 8",
+          "expr": "sum by (namespace_display, track_display) (rate(moqx_track_bytes_received_total{namespace_display=~\"$namespace\", track_display=~\"$track\"}[30s])) * 8",
           "format": "table",
           "instant": true,
           "range": false,
@@ -1972,7 +1972,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (namespace_display, track_display) (moqx_track_bytes_sent_total{namespace_display=~\"$namespace_display\", track_display=~\"$track_display\"})",
+          "expr": "sum by (namespace_display, track_display) (moqx_track_bytes_sent_total{namespace_display=~\"$namespace\", track_display=~\"$track\"})",
           "format": "table",
           "instant": true,
           "range": false,
@@ -1983,7 +1983,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "(2 - (clamp_min(time() - max by (namespace_display, track_display) (moqx_track_last_object_timestamp_seconds{namespace_display=~\"$namespace_display\", track_display=~\"$track_display\"}), 0) < bool 15)) or (max by (namespace_display, track_display) (moqx_track_subscribers{namespace_display=~\"$namespace_display\", track_display=~\"$track_display\"}) * 0 + 2) or ((max by (namespace_display, track_display) (max_over_time(moqx_track_subscribers{namespace_display=~\"$namespace_display\", track_display=~\"$track_display\"}[$__range])) unless max by (namespace_display, track_display) (moqx_track_subscribers{namespace_display=~\"$namespace_display\", track_display=~\"$track_display\"})) * 0 + 3)",
+          "expr": "(2 - (clamp_min(time() - max by (namespace_display, track_display) (moqx_track_last_object_timestamp_seconds{namespace_display=~\"$namespace\", track_display=~\"$track\"}), 0) < bool 15)) or (max by (namespace_display, track_display) (moqx_track_subscribers{namespace_display=~\"$namespace\", track_display=~\"$track\"}) * 0 + 2) or ((max by (namespace_display, track_display) (max_over_time(moqx_track_subscribers{namespace_display=~\"$namespace\", track_display=~\"$track\"}[$__range])) unless max by (namespace_display, track_display) (moqx_track_subscribers{namespace_display=~\"$namespace\", track_display=~\"$track\"})) * 0 + 3)",
           "format": "table",
           "instant": true,
           "range": false,
@@ -2180,7 +2180,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max by (namespace_display, track_display) (moqx_track_subscribers{namespace_display=~\"$namespace_display\", track_display=~\"$track_display\"})\n  and\ntopk(10, max by (namespace_display, track_display) (max_over_time(moqx_track_subscribers{namespace_display=~\"$namespace_display\", track_display=~\"$track_display\"}[$__range])))",
+          "expr": "max by (namespace_display, track_display) (moqx_track_subscribers{namespace_display=~\"$namespace\", track_display=~\"$track\"})\n  and\ntopk(10, max by (namespace_display, track_display) (max_over_time(moqx_track_subscribers{namespace_display=~\"$namespace\", track_display=~\"$track\"}[$__range])))",
           "legendFormat": "{{track}}",
           "refId": "A"
         }
@@ -3204,7 +3204,7 @@
         "name": "track",
         "options": [],
         "query": {
-          "query": "label_values(moqx_track_subscribers{namespace_display=~\"$namespace_display\"}, track_display)",
+          "query": "label_values(moqx_track_subscribers{namespace_display=~\"$namespace\"}, track_display)",
           "refId": "trk"
         },
         "refresh": 2,
