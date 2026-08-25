@@ -1268,7 +1268,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "One row per namespace \u2014 a leaf namespace typically maps to a single published event. Active counts tracks with at least one subscriber. Subscriptions sums track subscriptions, not unique subscribers \u2014 one subscriber taking catalog+audio+video counts once per track. Ingress is aggregate BW across the namespace's tracks. Origin reports \u2014 until upstream metrics land. Click a namespace to scope the Tracks table.",
+      "description": "One row per namespace seen in the time window \u2014 a leaf namespace typically maps to a single published event. Active counts tracks with at least one subscriber. Subscriptions sums track subscriptions, not unique subscribers \u2014 one subscriber taking catalog+audio+video counts once per track. Ingress is aggregate BW across the namespace's tracks. Origin reports \u2014 until upstream metrics land. DONE marks namespaces whose tracks all left the relay. Click a namespace to scope the Tracks table.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1410,6 +1410,68 @@
                 "value": 92
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Status"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "center"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "colorMode": "mapped",
+                  "type": "pill"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "ACTIVE",
+                        "color": "#1baf7a",
+                        "index": 0
+                      },
+                      "2": {
+                        "text": "DONE",
+                        "color": "#6e7680",
+                        "index": 1
+                      },
+                      "ACTIVE": {
+                        "color": "#1baf7a",
+                        "index": 2
+                      },
+                      "DONE": {
+                        "color": "#6e7680",
+                        "index": 3
+                      }
+                    }
+                  },
+                  {
+                    "type": "special",
+                    "options": {
+                      "match": "null+nan",
+                      "result": {
+                        "text": "DONE",
+                        "color": "#6e7680",
+                        "index": 4
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.width",
+                "value": "78"
+              }
+            ]
           }
         ]
       },
@@ -1437,7 +1499,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "label_replace(count by (namespace) (max by (namespace, track) (moqx_track_subscribers)), \"origin\", \"\u2014\", \"\", \"\") or label_replace(label_replace(vector(0), \"namespace\", \"\u2014\", \"\", \"\"), \"origin\", \"\u2014\", \"\", \"\")",
+          "expr": "label_replace(count by (namespace) (max by (namespace, track) (max_over_time(moqx_track_subscribers[$__range]))), \"origin\", \"\u2014\", \"\", \"\") or label_replace(label_replace(vector(0), \"namespace\", \"\u2014\", \"\", \"\"), \"origin\", \"\u2014\", \"\", \"\")",
           "format": "table",
           "instant": true,
           "range": false,
@@ -1486,6 +1548,17 @@
           "instant": true,
           "range": false,
           "refId": "E"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "(count by (namespace) (moqx_track_subscribers) * 0 + 1) or (count by (namespace) (max_over_time(moqx_track_subscribers[$__range])) * 0 + 2)",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "refId": "F"
         }
       ],
       "title": "Namespaces",
@@ -1505,7 +1578,8 @@
               "Time 1": true,
               "Time 2": true,
               "Time 3": true,
-              "Time 4": true
+              "Time 4": true,
+              "Time 5": true
             },
             "indexByName": {
               "Value #A": 2,
@@ -1514,7 +1588,8 @@
               "Value #D": 5,
               "Value #E": 6,
               "namespace": 0,
-              "origin": 1
+              "origin": 1,
+              "Value #F": 7
             },
             "renameByName": {
               "Value #A": "Tracks",
@@ -1523,8 +1598,20 @@
               "Value #D": "Ingress",
               "Value #E": "Data Tx",
               "namespace": "Namespace",
-              "origin": "Origin"
+              "origin": "Origin",
+              "Value #F": "Status"
             }
+          }
+        },
+        {
+          "id": "convertFieldType",
+          "options": {
+            "conversions": [
+              {
+                "targetField": "Status",
+                "destinationType": "string"
+              }
+            ]
           }
         },
         {
