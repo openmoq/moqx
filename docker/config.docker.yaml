@@ -59,5 +59,6 @@ services:
 
 admin:
   port: ${MOQX_ADMIN_PORT}
+  track_metrics_enabled: true
   address: "${MOQX_BIND_ADDR}"
   plaintext: true

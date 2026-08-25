@@ -47,3 +47,7 @@ docker/grafana/provisioning/dashboards/archive/
 
 # Version stamp for source trees with no .git (cmake/MoqxVersion.cmake).
 /VERSION
+
+# Python bytecode from local tooling.
+__pycache__/
+*.pyc
