@@ -1317,7 +1317,7 @@
                   {
                     "targetBlank": false,
                     "title": "Show this namespace's tracks",
-                    "url": "/grafana/d/moqx-overview/moqx-relay-overview?var-namespace=${__data.fields.Namespace}"
+                    "url": "?var-namespace=${__data.fields.Namespace}&var-track=$__all"
                   }
                 ]
               }
