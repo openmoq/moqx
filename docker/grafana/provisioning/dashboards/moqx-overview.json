@@ -487,7 +487,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 6
+        "y": 7
       },
       "id": 112,
       "options": {
@@ -572,7 +572,7 @@
         "h": 4,
         "w": 4,
         "x": 4,
-        "y": 6
+        "y": 7
       },
       "id": 113,
       "options": {
@@ -634,71 +634,6 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Share of fetched objects served from the relay cache. Reports \u2014 until the fetch cache hit/miss counters land; live-event traffic keeps this low by nature (joining fetches bypass the cache).",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "decimals": 0,
-          "mappings": [],
-          "max": 1,
-          "min": 0,
-          "noValue": "\u2014",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "#3987e5",
-                "value": 0
-              }
-            ]
-          },
-          "unit": "percentunit"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 4,
-        "x": 8,
-        "y": 6
-      },
-      "id": 203,
-      "options": {
-        "minVizHeight": 75,
-        "minVizWidth": 75,
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showThresholdLabels": false,
-        "showThresholdMarkers": false,
-        "sizing": "auto"
-      },
-      "pluginVersion": "12.4.6",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum(rate(moqx_track_fetch_cache_hit_objects_total[5m])) / clamp_min(sum(rate(moqx_track_fetch_cache_hit_objects_total[5m])) + sum(rate(moqx_track_fetch_cache_miss_objects_total[5m])), 1)",
-          "refId": "A"
-        }
-      ],
-      "title": "Cache Efficiency",
-      "type": "gauge"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
       "description": "Fan-out efficiency of the relay as a cache: share of egress object payload served without matching ingress (1 \u2212 in/out payload rates). 0% when fan-out \u2264 1.",
       "fieldConfig": {
         "defaults": {
@@ -726,8 +661,8 @@
       "gridPos": {
         "h": 4,
         "w": 4,
-        "x": 12,
-        "y": 6
+        "x": 16,
+        "y": 7
       },
       "id": 25,
       "options": {
@@ -767,8 +702,8 @@
       "gridPos": {
         "h": 4,
         "w": 4,
-        "x": 16,
-        "y": 6
+        "x": 8,
+        "y": 7
       },
       "id": 119,
       "maxDataPoints": 500,
@@ -826,8 +761,8 @@
       "gridPos": {
         "h": 4,
         "w": 4,
-        "x": 20,
-        "y": 6
+        "x": 12,
+        "y": 7
       },
       "id": 115,
       "maxDataPoints": 500,
@@ -905,7 +840,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 10
+        "y": 11
       },
       "id": 120,
       "options": {
@@ -950,7 +885,7 @@
           "refId": "B"
         }
       ],
-      "title": "Events",
+      "title": "Namespaces",
       "transformations": [
         {
           "id": "joinByField",
@@ -989,8 +924,8 @@
       "gridPos": {
         "h": 4,
         "w": 4,
-        "x": 4,
-        "y": 10
+        "x": 8,
+        "y": 11
       },
       "id": 118,
       "options": {
@@ -1073,8 +1008,8 @@
       "gridPos": {
         "h": 4,
         "w": 4,
-        "x": 8,
-        "y": 10
+        "x": 4,
+        "y": 11
       },
       "id": 61,
       "options": {
@@ -1141,7 +1076,7 @@
         "h": 4,
         "w": 4,
         "x": 12,
-        "y": 10
+        "y": 11
       },
       "id": 200,
       "maxDataPoints": 500,
@@ -1196,12 +1131,12 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Two loss flavors: pkt = QUIC packets lost in flight (retransmitted), buf = datagrams dropped at the socket buffers. Blue below 0.5%, amber to 2%, red above (combined).",
+      "description": "Three loss flavors: pkt = QUIC packets lost in flight (retransmitted), buf = datagrams dropped at the socket buffers, rx = packets the QUIC stack dropped on receive. Blue below 0.5%, amber to 2%, red above (combined).",
       "gridPos": {
         "h": 4,
         "w": 4,
         "x": 16,
-        "y": 10
+        "y": 11
       },
       "id": 116,
       "maxDataPoints": 500,
@@ -1219,7 +1154,7 @@
           "key": "",
           "plugin": "AMap.Scale,AMap.ToolBar"
         },
-        "getOption": "\nconst frames = context.panel.data.series || [];\nconst INK = '#e6edf3', MUTED = 'rgba(230,237,243,.45)';\nconst C = { buf: '#5AA7BE', pkt: '#C2562F' };\n\nfunction pairs(f) {\n  const t = f.fields.find((x) => x.type === 'time');\n  const v = f.fields.find((x) => x.type === 'number');\n  if (!t || !v) return [];\n  const tv = t.values.toArray ? t.values.toArray() : t.values;\n  const vv = v.values.toArray ? v.values.toArray() : v.values;\n  const out = [];\n  for (let i = 0; i < tv.length; i++) {\n    if (vv[i] != null && !Number.isNaN(vv[i])) out.push([tv[i], vv[i]]);\n  }\n  return out;\n}\nfunction label(f, i) {\n  const v = f.fields.find((x) => x.type === 'number');\n  const c = (v && v.config) || {};\n  return c.displayNameFromDS || c.displayName || f.name || ('s' + i);\n}\n\nconst got = {};\nframes.forEach((f, i) => { got[label(f, i)] = pairs(f); });\nconst buf = got['buf'] || [];\nconst pkt = got['pkt'] || [];\nconst tot = (pkt.length ? pkt[pkt.length-1][1] : 0) + (buf.length ? buf[buf.length-1][1] : 0);\nconst vcolor = tot >= 2 ? '#e0453c' : tot >= 0.5 ? '#c98500' : '#3987e5';\nconst last = (a) => (a.length ? a[a.length - 1][1] : null);\nconst fmt = (v) => (v == null ? '\u2013' : Number(v).toFixed(1));\n\n\n\nfunction line(data, color, width, fill) {\n  \n\nreturn {\n    type: 'line', data, smooth: 0.1, showSymbol: false, silent: true,\n    lineStyle: { color, width, cap: 'round' },\n    areaStyle: { color, opacity: fill },\n    emphasis: { disabled: true }, animation: false,\n  };\n}\n\nconst LEGEND_FONT = '700 10px ui-monospace, monospace';\nconst key = (top, color, text) => ({\n  type: 'text', right: 8, top,\n  style: { text: '\\u25CF ' + text, fill: MUTED, font: LEGEND_FONT,\n           rich: { d: { color, font: LEGEND_FONT } } },\n});\nconst keyDot = (top, color) => ({\n  type: 'text', right: 30, top,\n  style: { text: '\\u25CF', fill: color, font: LEGEND_FONT },\n});\nconst keyLabel = (top, text) => ({\n  type: 'text', right: 8, top,\n  style: { text, fill: MUTED, font: LEGEND_FONT },\n});\n\n\nconst key2 = (top, color, text) => [\n  { type: 'text', right: 36, top: top + 1,\n    style: { text: '\\u25CF', fill: color, font: '400 10px Inter, system-ui, sans-serif' } },\n  { type: 'text', right: 8, top,\n    style: { text, fill: color, font: '700 11px Inter, system-ui, sans-serif',\n             width: 28, textAlign: 'left' } },\n];\n\nreturn {\n  animation: false,\n  grid: { left: -2, right: -2, top: '44%', bottom: -2 },\n  xAxis: { type: 'time', show: false },\n  yAxis: { type: 'value', show: false, scale: true },\n  series: [line(pkt, C.pkt, 1.2, 0.10), line(buf, C.buf, 1.8, 0.22)],\n  graphic: [\n    { type: 'text', left: 'center', top: 18,\n      style: { text: tot.toFixed(1) + ' %', fill: vcolor,\n               font: '600 26px Inter, system-ui, sans-serif' } },\n    ...key2(2, C.pkt, 'pkt'),\n    ...key2(15, C.buf, 'buf'),\n  ],\n};\n",
+        "getOption": "\nconst frames = context.panel.data.series || [];\nconst INK = '#e6edf3', MUTED = 'rgba(230,237,243,.45)';\nconst C = { buf: '#5AA7BE', pkt: '#C2562F', rx: '#ECB22E' };\n\nfunction pairs(f) {\n  const t = f.fields.find((x) => x.type === 'time');\n  const v = f.fields.find((x) => x.type === 'number');\n  if (!t || !v) return [];\n  const tv = t.values.toArray ? t.values.toArray() : t.values;\n  const vv = v.values.toArray ? v.values.toArray() : v.values;\n  const out = [];\n  for (let i = 0; i < tv.length; i++) {\n    if (vv[i] != null && !Number.isNaN(vv[i])) out.push([tv[i], vv[i]]);\n  }\n  return out;\n}\nfunction label(f, i) {\n  const v = f.fields.find((x) => x.type === 'number');\n  const c = (v && v.config) || {};\n  return c.displayNameFromDS || c.displayName || f.name || ('s' + i);\n}\n\nconst got = {};\nframes.forEach((f, i) => { got[label(f, i)] = pairs(f); });\nconst buf = got['buf'] || [];\nconst pkt = got['pkt'] || [];\nconst rx = got['rx'] || [];\nconst tot = (pkt.length ? pkt[pkt.length-1][1] : 0) + (buf.length ? buf[buf.length-1][1] : 0) + (rx.length ? rx[rx.length-1][1] : 0);\nconst vcolor = tot >= 2 ? '#e0453c' : tot >= 0.5 ? '#c98500' : '#3987e5';\nconst last = (a) => (a.length ? a[a.length - 1][1] : null);\nconst fmt = (v) => (v == null ? '\u2013' : Number(v).toFixed(1));\n\n\n\nfunction line(data, color, width, fill) {\n  \n\nreturn {\n    type: 'line', data, smooth: 0.1, showSymbol: false, silent: true,\n    lineStyle: { color, width, cap: 'round' },\n    areaStyle: { color, opacity: fill },\n    emphasis: { disabled: true }, animation: false,\n  };\n}\n\nconst LEGEND_FONT = '700 10px ui-monospace, monospace';\nconst key = (top, color, text) => ({\n  type: 'text', right: 8, top,\n  style: { text: '\\u25CF ' + text, fill: MUTED, font: LEGEND_FONT,\n           rich: { d: { color, font: LEGEND_FONT } } },\n});\nconst keyDot = (top, color) => ({\n  type: 'text', right: 30, top,\n  style: { text: '\\u25CF', fill: color, font: LEGEND_FONT },\n});\nconst keyLabel = (top, text) => ({\n  type: 'text', right: 8, top,\n  style: { text, fill: MUTED, font: LEGEND_FONT },\n});\n\n\nconst key2 = (top, color, text) => [\n  { type: 'text', right: 36, top: top + 1,\n    style: { text: '\\u25CF', fill: color, font: '400 10px Inter, system-ui, sans-serif' } },\n  { type: 'text', right: 8, top,\n    style: { text, fill: color, font: '700 11px Inter, system-ui, sans-serif',\n             width: 28, textAlign: 'left' } },\n];\n\nreturn {\n  animation: false,\n  grid: { left: -2, right: -2, top: '44%', bottom: -2 },\n  xAxis: { type: 'time', show: false },\n  yAxis: { type: 'value', show: false, scale: true },\n  series: [line(pkt, C.pkt, 1.2, 0.10), line(rx, C.rx, 1.2, 0.10), line(buf, C.buf, 1.8, 0.22)],\n  graphic: [\n    { type: 'text', left: 'center', top: 18,\n      style: { text: tot.toFixed(1) + ' %', fill: vcolor,\n               font: '600 26px Inter, system-ui, sans-serif' } },\n    ...key2(1, C.pkt, 'pkt'),\n    ...key2(13, C.buf, 'buf'),\n    ...key2(25, C.rx, 'rx'),\n  ],\n};\n",
         "google": {
           "callback": "gmapReady",
           "key": ""
@@ -1255,6 +1190,15 @@
           "expr": "100 * (sum(rate(moqx_quicDatagramsDroppedOnRead_total[$__rate_interval])) + sum(rate(moqx_quicDatagramsDroppedOnWrite_total[$__rate_interval]))) / clamp_min(sum(rate(moqx_quicPacketsReceived_total[$__rate_interval])) + sum(rate(moqx_quicPacketsSent_total[$__rate_interval])), 1)",
           "legendFormat": "buf",
           "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "100 * sum(rate(moqx_quicPacketsDropped_total[$__rate_interval])) / clamp_min(sum(rate(moqx_quicPacketsReceived_total[$__rate_interval])), 1)",
+          "legendFormat": "rx",
+          "refId": "C"
         }
       ],
       "title": "Loss",
@@ -1270,7 +1214,7 @@
         "h": 4,
         "w": 4,
         "x": 20,
-        "y": 10
+        "y": 11
       },
       "id": 108,
       "maxDataPoints": 500,
@@ -3068,6 +3012,62 @@
       ],
       "title": "QUIC loss & retransmit ratio",
       "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "id": 204,
+      "title": "Data Delivered",
+      "type": "stat",
+      "description": "Object payload delivered to subscribers over the selected time window (track egress bytes).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "#3987e5",
+            "mode": "fixed"
+          },
+          "decimals": 1,
+          "mappings": [],
+          "noValue": "0 B",
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 20,
+        "y": 7
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "value",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(increase(moqx_track_bytes_sent_total[$__range])) or vector(0)",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "preload": false,
