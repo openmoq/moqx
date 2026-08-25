@@ -683,7 +683,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "clamp_min(1 - sum(rate(moqx_track_bytes_received_total[30s])) / (sum(rate(moqx_track_bytes_sent_total[30s])) > 0), 0) * 100",
+          "expr": "(clamp_min(1 - sum(rate(moqx_track_bytes_received_total[30s])) / (sum(rate(moqx_track_bytes_sent_total[30s])) > 0), 0) * 100) or vector(0)",
           "legendFormat": "eff",
           "refId": "A"
         }
