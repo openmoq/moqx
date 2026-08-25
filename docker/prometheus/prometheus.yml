@@ -109,6 +109,18 @@ scrape_configs:
         target_label: namespace_display
         replacement: '$1'
       - source_labels: [namespace_display]
+        regex: '(.*[^.])-(.*)'
+        target_label: namespace_display
+        replacement: '${1}/${2}'
+      - source_labels: [namespace_display]
+        regex: '(.*[^.])-(.*)'
+        target_label: namespace_display
+        replacement: '${1}/${2}'
+      - source_labels: [namespace_display]
+        regex: '(.*[^.])-(.*)'
+        target_label: namespace_display
+        replacement: '${1}/${2}'
+      - source_labels: [namespace_display]
         regex: '(.*)\.2d(.*)'
         target_label: namespace_display
         replacement: '${1}-${2}'
