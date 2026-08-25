@@ -1317,7 +1317,7 @@
                   {
                     "targetBlank": false,
                     "title": "Show this namespace's tracks",
-                    "url": "/grafana/d/moqx-overview/moqx-relay-overview?var-namespace=${__data.fields.namespace}"
+                    "url": "/grafana/d/moqx-overview/moqx-relay-overview?var-namespace=${__data.fields.Namespace}"
                   }
                 ]
               }
@@ -1472,18 +1472,6 @@
                 "value": "78"
               }
             ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "namespace"
-            },
-            "properties": [
-              {
-                "id": "custom.hidden",
-                "value": true
-              }
-            ]
           }
         ]
       },
@@ -1511,7 +1499,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "label_replace(count by (namespace, namespace_display) (max by (namespace, track, namespace_display, track_display) (max_over_time(moqx_track_subscribers[$__range]))), \"origin\", \"\u2014\", \"\", \"\") or label_replace(label_replace(label_replace(vector(0), \"namespace\", \"\u2014\", \"\", \"\"), \"namespace_display\", \"\u2014\", \"\", \"\"), \"origin\", \"\u2014\", \"\", \"\")",
+          "expr": "label_replace(count by (namespace) (max by (namespace, track) (max_over_time(moqx_track_subscribers[$__range]))), \"origin\", \"\u2014\", \"\", \"\") or label_replace(label_replace(vector(0), \"namespace\", \"\u2014\", \"\", \"\"), \"origin\", \"\u2014\", \"\", \"\")",
           "format": "table",
           "instant": true,
           "range": false,
@@ -1522,7 +1510,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "count by (namespace, namespace_display) (max by (namespace, track, namespace_display, track_display) (moqx_track_subscribers) > 0)",
+          "expr": "count by (namespace) (max by (namespace, track) (moqx_track_subscribers) > 0)",
           "format": "table",
           "instant": true,
           "range": false,
@@ -1533,7 +1521,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (namespace, namespace_display) (max by (namespace, track, namespace_display, track_display) (moqx_track_subscribers))",
+          "expr": "sum by (namespace) (max by (namespace, track) (moqx_track_subscribers))",
           "format": "table",
           "instant": true,
           "range": false,
@@ -1544,7 +1532,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (namespace, namespace_display) (rate(moqx_track_bytes_received_total[30s])) * 8",
+          "expr": "sum by (namespace) (rate(moqx_track_bytes_received_total[30s])) * 8",
           "format": "table",
           "instant": true,
           "range": false,
@@ -1555,7 +1543,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (namespace, namespace_display) (moqx_track_bytes_sent_total)",
+          "expr": "sum by (namespace) (moqx_track_bytes_sent_total)",
           "format": "table",
           "instant": true,
           "range": false,
@@ -1566,7 +1554,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "(count by (namespace, namespace_display) (moqx_track_subscribers) * 0 + 1) or (count by (namespace, namespace_display) (max_over_time(moqx_track_subscribers[$__range])) * 0 + 2)",
+          "expr": "(count by (namespace) (moqx_track_subscribers) * 0 + 1) or (count by (namespace) (max_over_time(moqx_track_subscribers[$__range])) * 0 + 2)",
           "format": "table",
           "instant": true,
           "range": false,
@@ -1591,23 +1579,17 @@
               "Time 2": true,
               "Time 3": true,
               "Time 4": true,
-              "Time 5": true,
-              "namespace_display 1": true,
-              "namespace_display 2": true,
-              "namespace_display 3": true,
-              "namespace_display 4": true,
-              "namespace_display 5": true
+              "Time 5": true
             },
             "indexByName": {
-              "namespace_display": 0,
-              "namespace": 1,
-              "Value #A": 4,
-              "Value #B": 5,
-              "Value #C": 6,
-              "Value #D": 7,
-              "Value #E": 8,
-              "Value #F": 9,
-              "origin": 3
+              "Value #A": 2,
+              "Value #B": 3,
+              "Value #C": 4,
+              "Value #D": 5,
+              "Value #E": 6,
+              "Value #F": 7,
+              "namespace": 0,
+              "origin": 1
             },
             "renameByName": {
               "Value #A": "Tracks",
@@ -1616,8 +1598,8 @@
               "Value #D": "Ingress",
               "Value #E": "Data Tx",
               "Value #F": "Status",
-              "origin": "Origin",
-              "namespace_display": "Namespace"
+              "namespace": "Namespace",
+              "origin": "Origin"
             }
           }
         },
@@ -1930,18 +1912,6 @@
                 "value": "68"
               }
             ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "track"
-            },
-            "properties": [
-              {
-                "id": "custom.hidden",
-                "value": true
-              }
-            ]
           }
         ]
       },
@@ -1969,7 +1939,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "label_replace(label_replace(label_replace(label_replace(label_replace(max by (namespace, track, namespace_display, track_display) (moqx_track_subscribers{namespace=~\"$namespace\", track=~\"$track\"}), \"fetches\", \"\u2014\", \"\", \"\"), \"latency\", \"\u2014\", \"\", \"\"), \"drops\", \"\u2014\", \"\", \"\"), \"cachehit\", \"\u2014\", \"\", \"\"), \"qos\", \"NORMAL\", \"\", \"\") or label_replace(label_replace(label_replace(label_replace(label_replace((max by (namespace, track, namespace_display, track_display) (max_over_time(moqx_track_subscribers{namespace=~\"$namespace\", track=~\"$track\"}[$__range])) unless max by (namespace, track, namespace_display, track_display) (moqx_track_subscribers{namespace=~\"$namespace\", track=~\"$track\"})) * 0, \"fetches\", \"\u2014\", \"\", \"\"), \"latency\", \"\u2014\", \"\", \"\"), \"drops\", \"\u2014\", \"\", \"\"), \"cachehit\", \"\u2014\", \"\", \"\"), \"qos\", \"NORMAL\", \"\", \"\") or label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(vector(0), \"fetches\", \"\u2014\", \"\", \"\"), \"latency\", \"\u2014\", \"\", \"\"), \"drops\", \"\u2014\", \"\", \"\"), \"cachehit\", \"\u2014\", \"\", \"\"), \"qos\", \"NORMAL\", \"\", \"\"), \"namespace\", \"\u2014\", \"\", \"\"), \"track\", \"\u2014\", \"\", \"\"), \"track_display\", \"\u2014\", \"\", \"\")",
+          "expr": "label_replace(label_replace(label_replace(label_replace(label_replace(max by (namespace, track) (moqx_track_subscribers{namespace=~\"$namespace\", track=~\"$track\"}), \"fetches\", \"\u2014\", \"\", \"\"), \"latency\", \"\u2014\", \"\", \"\"), \"drops\", \"\u2014\", \"\", \"\"), \"cachehit\", \"\u2014\", \"\", \"\"), \"qos\", \"NORMAL\", \"\", \"\") or label_replace(label_replace(label_replace(label_replace(label_replace((max by (namespace, track) (max_over_time(moqx_track_subscribers{namespace=~\"$namespace\", track=~\"$track\"}[$__range])) unless max by (namespace, track) (moqx_track_subscribers{namespace=~\"$namespace\", track=~\"$track\"})) * 0, \"fetches\", \"\u2014\", \"\", \"\"), \"latency\", \"\u2014\", \"\", \"\"), \"drops\", \"\u2014\", \"\", \"\"), \"cachehit\", \"\u2014\", \"\", \"\"), \"qos\", \"NORMAL\", \"\", \"\") or label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(vector(0), \"fetches\", \"\u2014\", \"\", \"\"), \"latency\", \"\u2014\", \"\", \"\"), \"drops\", \"\u2014\", \"\", \"\"), \"cachehit\", \"\u2014\", \"\", \"\"), \"qos\", \"NORMAL\", \"\", \"\"), \"namespace\", \"\u2014\", \"\", \"\"), \"track\", \"\u2014\", \"\", \"\")",
           "format": "table",
           "instant": true,
           "range": false,
@@ -1980,7 +1950,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max by (namespace, track, namespace_display, track_display) (max_over_time(moqx_track_subscribers{namespace=~\"$namespace\", track=~\"$track\"}[$__range]))",
+          "expr": "max by (namespace, track) (max_over_time(moqx_track_subscribers{namespace=~\"$namespace\", track=~\"$track\"}[$__range]))",
           "format": "table",
           "instant": true,
           "range": false,
@@ -1991,7 +1961,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (namespace, track, namespace_display, track_display) (rate(moqx_track_bytes_received_total{namespace=~\"$namespace\", track=~\"$track\"}[30s])) * 8",
+          "expr": "sum by (namespace, track) (rate(moqx_track_bytes_received_total{namespace=~\"$namespace\", track=~\"$track\"}[30s])) * 8",
           "format": "table",
           "instant": true,
           "range": false,
@@ -2002,7 +1972,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (namespace, track, namespace_display, track_display) (moqx_track_bytes_sent_total{namespace=~\"$namespace\", track=~\"$track\"})",
+          "expr": "sum by (namespace, track) (moqx_track_bytes_sent_total{namespace=~\"$namespace\", track=~\"$track\"})",
           "format": "table",
           "instant": true,
           "range": false,
@@ -2013,7 +1983,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "(2 - (clamp_min(time() - max by (namespace, track, namespace_display, track_display) (moqx_track_last_object_timestamp_seconds{namespace=~\"$namespace\", track=~\"$track\"}), 0) < bool 15)) or (max by (namespace, track, namespace_display, track_display) (moqx_track_subscribers{namespace=~\"$namespace\", track=~\"$track\"}) * 0 + 2) or ((max by (namespace, track, namespace_display, track_display) (max_over_time(moqx_track_subscribers{namespace=~\"$namespace\", track=~\"$track\"}[$__range])) unless max by (namespace, track, namespace_display, track_display) (moqx_track_subscribers{namespace=~\"$namespace\", track=~\"$track\"})) * 0 + 3)",
+          "expr": "(2 - (clamp_min(time() - max by (namespace, track) (moqx_track_last_object_timestamp_seconds{namespace=~\"$namespace\", track=~\"$track\"}), 0) < bool 15)) or (max by (namespace, track) (moqx_track_subscribers{namespace=~\"$namespace\", track=~\"$track\"}) * 0 + 2) or ((max by (namespace, track) (max_over_time(moqx_track_subscribers{namespace=~\"$namespace\", track=~\"$track\"}[$__range])) unless max by (namespace, track) (moqx_track_subscribers{namespace=~\"$namespace\", track=~\"$track\"})) * 0 + 3)",
           "format": "table",
           "instant": true,
           "range": false,
@@ -2054,32 +2024,20 @@
               "track 2": true,
               "track 3": true,
               "track 4": true,
-              "track 5": true,
-              "track_display 1": true,
-              "namespace_display 1": true,
-              "track_display 2": true,
-              "namespace_display 2": true,
-              "track_display 3": true,
-              "namespace_display 3": true,
-              "track_display 4": true,
-              "namespace_display 4": true,
-              "track_display 5": true,
-              "namespace_display 5": true,
-              "namespace_display": true
+              "track 5": true
             },
             "indexByName": {
-              "track_display": 0,
-              "track": 1,
-              "Value #A": 5,
-              "Value #B": 6,
-              "Value #C": 3,
-              "Value #D": 4,
-              "Value #E": 12,
-              "cachehit": 10,
-              "drops": 9,
-              "fetches": 7,
-              "latency": 8,
-              "qos": 11
+              "Value #A": 3,
+              "Value #B": 4,
+              "Value #C": 1,
+              "Value #D": 2,
+              "Value #E": 10,
+              "cachehit": 8,
+              "drops": 7,
+              "fetches": 5,
+              "latency": 6,
+              "qos": 9,
+              "track": 0
             },
             "renameByName": {
               "Value #A": "Subs",
@@ -2092,7 +2050,7 @@
               "fetches": "Fetches",
               "latency": "Latency",
               "qos": "QoS",
-              "track_display": "Name"
+              "track": "Name"
             }
           }
         },
@@ -2222,8 +2180,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max by (namespace, track, namespace_display, track_display) (moqx_track_subscribers{namespace=~\"$namespace\", track=~\"$track\"})\n  and\ntopk(10, max by (namespace, track, namespace_display, track_display) (max_over_time(moqx_track_subscribers{namespace=~\"$namespace\", track=~\"$track\"}[$__range])))",
-          "legendFormat": "{{track_display}}",
+          "expr": "max by (namespace, track) (moqx_track_subscribers{namespace=~\"$namespace\", track=~\"$track\"})\n  and\ntopk(10, max by (namespace, track) (max_over_time(moqx_track_subscribers{namespace=~\"$namespace\", track=~\"$track\"}[$__range])))",
+          "legendFormat": "{{track}}",
           "refId": "A"
         }
       ],
