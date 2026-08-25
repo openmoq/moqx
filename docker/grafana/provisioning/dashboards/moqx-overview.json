@@ -492,7 +492,7 @@
       "id": 112,
       "options": {
         "afterRender": "",
-        "content": "<div title=\"Relays this node peers with. Empty until peers are exported from /state.\" style=\"display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;overflow:hidden;font-family:inherit\">\n  <div style=\"font-size:34px;font-weight:500;color:#3987e5;line-height:1.05\">{{[Value #A]}}</div>\n  <div style=\"font-size:10.5px;margin-top:5px;letter-spacing:.06em\"><span style=\"color:#ECB22E;font-weight:600\">MAX:</span> <span style=\"color:rgba(255,255,255,.88)\">{{[Value #B]}}</span></div>\n</div>",
+        "content": "<div title=\"Relays this node peers with. Empty until peers are exported from /state.\" style=\"display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;overflow:hidden;font-family:inherit\">\n  <div style=\"font-size:34px;font-weight:600;color:#3987e5;line-height:1.05\">{{[Value #A]}}</div>\n  <div style=\"font-size:10.5px;margin-top:5px;letter-spacing:.06em\"><span style=\"color:#ECB22E;font-weight:600\">MAX:</span> <span style=\"color:rgba(255,255,255,.88)\">{{[Value #B]}}</span></div>\n</div>",
         "contentPartials": [],
         "defaultContent": "<div style=\"text-align:center;opacity:.4;padding-top:20px\">&mdash;</div>",
         "editor": {
@@ -577,7 +577,7 @@
       "id": 113,
       "options": {
         "afterRender": "",
-        "content": "<div title=\"Aggregate active subscriptions across all tracks.\" style=\"display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;overflow:hidden;font-family:inherit\">\n  <div style=\"font-size:34px;font-weight:500;color:#3987e5;line-height:1.05\">{{[Value #A]}}</div>\n  <div style=\"font-size:10.5px;margin-top:5px;letter-spacing:.06em\"><span style=\"color:#ECB22E;font-weight:600\">MAX:</span> <span style=\"color:rgba(255,255,255,.88)\">{{[Value #B]}}</span></div>\n</div>",
+        "content": "<div title=\"Aggregate active subscriptions across all tracks.\" style=\"display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;overflow:hidden;font-family:inherit\">\n  <div style=\"font-size:34px;font-weight:600;color:#3987e5;line-height:1.05\">{{[Value #A]}}</div>\n  <div style=\"font-size:10.5px;margin-top:5px;letter-spacing:.06em\"><span style=\"color:#ECB22E;font-weight:600\">MAX:</span> <span style=\"color:rgba(255,255,255,.88)\">{{[Value #B]}}</span></div>\n</div>",
         "contentPartials": [],
         "defaultContent": "<div style=\"text-align:center;opacity:.4;padding-top:20px\">&mdash;</div>",
         "editor": {
@@ -845,7 +845,7 @@
       "id": 120,
       "options": {
         "afterRender": "",
-        "content": "<div title=\"Distinct namespaces with tracks visible in the relay state.\" style=\"display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;overflow:hidden;font-family:inherit\">\n  <div style=\"font-size:34px;font-weight:500;color:#3987e5;line-height:1.05\">{{[Value #A]}}</div>\n  <div style=\"font-size:10.5px;margin-top:5px;letter-spacing:.06em\"><span style=\"color:#ECB22E;font-weight:600\">MAX:</span> <span style=\"color:rgba(255,255,255,.88)\">{{[Value #B]}}</span></div>\n</div>",
+        "content": "<div title=\"Distinct namespaces with tracks visible in the relay state.\" style=\"display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;overflow:hidden;font-family:inherit\">\n  <div style=\"font-size:34px;font-weight:600;color:#3987e5;line-height:1.05\">{{[Value #A]}}</div>\n  <div style=\"font-size:10.5px;margin-top:5px;letter-spacing:.06em\"><span style=\"color:#ECB22E;font-weight:600\">MAX:</span> <span style=\"color:rgba(255,255,255,.88)\">{{[Value #B]}}</span></div>\n</div>",
         "contentPartials": [],
         "defaultContent": "<div style=\"text-align:center;opacity:.4;padding-top:20px\">&mdash;</div>",
         "editor": {
@@ -930,7 +930,7 @@
       "id": 118,
       "options": {
         "afterRender": "",
-        "content": "<div title=\"Publishers currently connected to this relay.\" style=\"display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;overflow:hidden;font-family:inherit\">\n  <div style=\"font-size:34px;font-weight:500;color:#3987e5;line-height:1.05\">{{[Value #A]}}</div>\n  <div style=\"font-size:10.5px;margin-top:5px;letter-spacing:.06em\"><span style=\"color:#ECB22E;font-weight:600\">MAX:</span> <span style=\"color:rgba(255,255,255,.88)\">{{[Value #B]}}</span></div>\n</div>",
+        "content": "<div title=\"Publishers currently connected to this relay.\" style=\"display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;overflow:hidden;font-family:inherit\">\n  <div style=\"font-size:34px;font-weight:600;color:#3987e5;line-height:1.05\">{{[Value #A]}}</div>\n  <div style=\"font-size:10.5px;margin-top:5px;letter-spacing:.06em\"><span style=\"color:#ECB22E;font-weight:600\">MAX:</span> <span style=\"color:rgba(255,255,255,.88)\">{{[Value #B]}}</span></div>\n</div>",
         "contentPartials": [],
         "defaultContent": "<div style=\"text-align:center;opacity:.4;padding-top:20px\">&mdash;</div>",
         "editor": {
@@ -1014,7 +1014,7 @@
       "id": 61,
       "options": {
         "afterRender": "",
-        "content": "<div title=\"Distinct namespace/track pairs visible in the relay state.\" style=\"display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;overflow:hidden;font-family:inherit\">\n  <div style=\"font-size:34px;font-weight:500;color:#3987e5;line-height:1.05\">{{[Value #A]}}</div>\n  <div style=\"font-size:10.5px;margin-top:5px;letter-spacing:.06em\"><span style=\"color:#ECB22E;font-weight:600\">MAX:</span> <span style=\"color:rgba(255,255,255,.88)\">{{[Value #B]}}</span></div>\n</div>",
+        "content": "<div title=\"Distinct namespace/track pairs visible in the relay state.\" style=\"display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;overflow:hidden;font-family:inherit\">\n  <div style=\"font-size:34px;font-weight:600;color:#3987e5;line-height:1.05\">{{[Value #A]}}</div>\n  <div style=\"font-size:10.5px;margin-top:5px;letter-spacing:.06em\"><span style=\"color:#ECB22E;font-weight:600\">MAX:</span> <span style=\"color:rgba(255,255,255,.88)\">{{[Value #B]}}</span></div>\n</div>",
         "contentPartials": [],
         "defaultContent": "<div style=\"text-align:center;opacity:.4;padding-top:20px\">&mdash;</div>",
         "editor": {
@@ -1071,7 +1071,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Delivery drops: subgroups reset too-far-behind plus delivery-timeout, across all tracks. Lifecycle resets (unsubscribe, session close) are not drops.",
+      "description": "Deliberate discards per second: moqt = media shed on transmit (subscriber too far behind, delivery timeout) \u2014 final and viewer-visible; quic = packets the stack rejected on receive (junk, unknown connection, failed decrypt). Amber when nonzero, red at 5/s.",
       "gridPos": {
         "h": 4,
         "w": 4,
@@ -1094,7 +1094,7 @@
           "key": "",
           "plugin": "AMap.Scale,AMap.ToolBar"
         },
-        "getOption": "\nconst frames = context.panel.data.series || [];\nfunction pairs(fr) {\n  if (!fr) return [];\n  const t = fr.fields.find((x) => x.type === 'time');\n  const v = fr.fields.find((x) => x.type === 'number');\n  if (!t || !v) return [];\n  const tv = t.values.toArray ? t.values.toArray() : t.values;\n  const vv = v.values.toArray ? v.values.toArray() : v.values;\n  const out = [];\n  for (let i = 0; i < tv.length; i++) {\n    if (vv[i] != null && !Number.isNaN(vv[i])) out.push([tv[i], vv[i]]);\n  }\n  return out;\n}\nconst data = pairs(frames[0]);\nconst last = data.length ? data[data.length - 1][1] : 0;\nconst color = last >= 5 ? '#e0453c' : last > 0 ? '#c98500' : '#3987e5';\n\nreturn {\n  animation: false,\n  grid: { left: -2, right: -2, top: '46%', bottom: -2 },\n  xAxis: { type: 'time', show: false },\n  yAxis: { type: 'value', show: false, scale: true, min: 0 },\n  series: [{\n    type: 'line', data, smooth: 0.1, showSymbol: false, silent: true,\n    lineStyle: { color, width: 1.8, cap: 'round' },\n    areaStyle: { color, opacity: 0.20 },\n    emphasis: { disabled: true }, animation: false,\n  }],\n  graphic: [\n    { type: 'text', left: 'center', top: 16,\n      style: { text: last.toFixed(1) + '/s', fill: color,\n               font: '600 26px Inter, system-ui, sans-serif' } },\n  ],\n};\n",
+        "getOption": "\nconst frames = context.panel.data.series || [];\nconst INK = '#e6edf3', MUTED = 'rgba(230,237,243,.45)';\nconst C = { quic: '#5AA7BE', moqt: '#C2562F' };\n\nfunction pairs(f) {\n  const t = f.fields.find((x) => x.type === 'time');\n  const v = f.fields.find((x) => x.type === 'number');\n  if (!t || !v) return [];\n  const tv = t.values.toArray ? t.values.toArray() : t.values;\n  const vv = v.values.toArray ? v.values.toArray() : v.values;\n  const out = [];\n  for (let i = 0; i < tv.length; i++) {\n    if (vv[i] != null && !Number.isNaN(vv[i])) out.push([tv[i], vv[i]]);\n  }\n  return out;\n}\nfunction label(f, i) {\n  const v = f.fields.find((x) => x.type === 'number');\n  const c = (v && v.config) || {};\n  return c.displayNameFromDS || c.displayName || f.name || ('s' + i);\n}\n\nconst got = {};\nframes.forEach((f, i) => { got[label(f, i)] = pairs(f); });\nconst quic = got['quic'] || [];\nconst moqt = got['moqt'] || [];\nconst tot = (moqt.length ? moqt[moqt.length-1][1] : 0) + (quic.length ? quic[quic.length-1][1] : 0);\nconst vcolor = tot >= 5 ? '#e0453c' : tot > 0 ? '#c98500' : '#3987e5';\nconst last = (a) => (a.length ? a[a.length - 1][1] : null);\nconst fmt = (v) => (v == null ? '\u2013' : Number(v).toFixed(1));\n\n\n\nfunction line(data, color, width, fill) {\n  \n\nreturn {\n    type: 'line', data, smooth: 0.1, showSymbol: false, silent: true,\n    lineStyle: { color, width, cap: 'round' },\n    areaStyle: { color, opacity: fill },\n    emphasis: { disabled: true }, animation: false,\n  };\n}\n\nconst LEGEND_FONT = '700 10px ui-monospace, monospace';\nconst key = (top, color, text) => ({\n  type: 'text', right: 8, top,\n  style: { text: '\\u25CF ' + text, fill: MUTED, font: LEGEND_FONT,\n           rich: { d: { color, font: LEGEND_FONT } } },\n});\nconst keyDot = (top, color) => ({\n  type: 'text', right: 30, top,\n  style: { text: '\\u25CF', fill: color, font: LEGEND_FONT },\n});\nconst keyLabel = (top, text) => ({\n  type: 'text', right: 8, top,\n  style: { text, fill: MUTED, font: LEGEND_FONT },\n});\n\n\nconst key2 = (top, color, text) => [\n  { type: 'text', right: 36, top: top + 1,\n    style: { text: '\\u25CF', fill: color, font: '400 10px Inter, system-ui, sans-serif' } },\n  { type: 'text', right: 8, top,\n    style: { text, fill: color, font: '700 11px Inter, system-ui, sans-serif',\n             width: 28, textAlign: 'left' } },\n];\n\nreturn {\n  animation: false,\n  grid: { left: -2, right: -2, top: '44%', bottom: -2 },\n  xAxis: { type: 'time', show: false },\n  yAxis: { type: 'value', show: false, scale: true },\n  series: [line(moqt, C.moqt, 1.8, 0.22), line(quic, C.quic, 1.2, 0.10)],\n  graphic: [\n    { type: 'text', left: 'center', top: 18,\n      style: { text: tot.toFixed(1) + '/s', fill: vcolor,\n               font: '600 26px Inter, system-ui, sans-serif' } },\n    ...key2(2, C.moqt, 'moqt'),\n    ...key2(15, C.quic, 'quic'),\n  ],\n};\n",
         "google": {
           "callback": "gmapReady",
           "key": ""
@@ -1119,8 +1119,17 @@
             "uid": "prometheus"
           },
           "expr": "sum(rate(moqx_pubSubgroupReset_total{code=~\"too_far_behind|delivery_timeout\"}[1m])) + sum(rate(moqx_subSubgroupReset_total{code=~\"too_far_behind|delivery_timeout\"}[1m]))",
-          "legendFormat": "drops",
+          "legendFormat": "moqt",
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(moqx_quicPacketsDropped_total[$__rate_interval]))",
+          "legendFormat": "quic",
+          "refId": "B"
         }
       ],
       "title": "Drops",
@@ -1131,7 +1140,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Three loss flavors: pkt = QUIC packets lost in flight (retransmitted), buf = datagrams dropped at the socket buffers, rx = packets the QUIC stack dropped on receive. Blue below 0.5%, amber to 2%, red above (combined).",
+      "description": "Transport loss as a share of packets handled: pkt = QUIC packets lost in flight (retransmitted), buf = datagrams dropped at the socket buffers. Blue below 0.5%, amber to 2%, red above (combined).",
       "gridPos": {
         "h": 4,
         "w": 4,
@@ -1154,7 +1163,7 @@
           "key": "",
           "plugin": "AMap.Scale,AMap.ToolBar"
         },
-        "getOption": "\nconst frames = context.panel.data.series || [];\nconst INK = '#e6edf3', MUTED = 'rgba(230,237,243,.45)';\nconst C = { buf: '#5AA7BE', pkt: '#C2562F', rx: '#ECB22E' };\n\nfunction pairs(f) {\n  const t = f.fields.find((x) => x.type === 'time');\n  const v = f.fields.find((x) => x.type === 'number');\n  if (!t || !v) return [];\n  const tv = t.values.toArray ? t.values.toArray() : t.values;\n  const vv = v.values.toArray ? v.values.toArray() : v.values;\n  const out = [];\n  for (let i = 0; i < tv.length; i++) {\n    if (vv[i] != null && !Number.isNaN(vv[i])) out.push([tv[i], vv[i]]);\n  }\n  return out;\n}\nfunction label(f, i) {\n  const v = f.fields.find((x) => x.type === 'number');\n  const c = (v && v.config) || {};\n  return c.displayNameFromDS || c.displayName || f.name || ('s' + i);\n}\n\nconst got = {};\nframes.forEach((f, i) => { got[label(f, i)] = pairs(f); });\nconst buf = got['buf'] || [];\nconst pkt = got['pkt'] || [];\nconst rx = got['rx'] || [];\nconst tot = (pkt.length ? pkt[pkt.length-1][1] : 0) + (buf.length ? buf[buf.length-1][1] : 0) + (rx.length ? rx[rx.length-1][1] : 0);\nconst vcolor = tot >= 2 ? '#e0453c' : tot >= 0.5 ? '#c98500' : '#3987e5';\nconst last = (a) => (a.length ? a[a.length - 1][1] : null);\nconst fmt = (v) => (v == null ? '\u2013' : Number(v).toFixed(1));\n\n\n\nfunction line(data, color, width, fill) {\n  \n\nreturn {\n    type: 'line', data, smooth: 0.1, showSymbol: false, silent: true,\n    lineStyle: { color, width, cap: 'round' },\n    areaStyle: { color, opacity: fill },\n    emphasis: { disabled: true }, animation: false,\n  };\n}\n\nconst LEGEND_FONT = '700 10px ui-monospace, monospace';\nconst key = (top, color, text) => ({\n  type: 'text', right: 8, top,\n  style: { text: '\\u25CF ' + text, fill: MUTED, font: LEGEND_FONT,\n           rich: { d: { color, font: LEGEND_FONT } } },\n});\nconst keyDot = (top, color) => ({\n  type: 'text', right: 30, top,\n  style: { text: '\\u25CF', fill: color, font: LEGEND_FONT },\n});\nconst keyLabel = (top, text) => ({\n  type: 'text', right: 8, top,\n  style: { text, fill: MUTED, font: LEGEND_FONT },\n});\n\n\nconst key2 = (top, color, text) => [\n  { type: 'text', right: 36, top: top + 1,\n    style: { text: '\\u25CF', fill: color, font: '400 10px Inter, system-ui, sans-serif' } },\n  { type: 'text', right: 8, top,\n    style: { text, fill: color, font: '700 11px Inter, system-ui, sans-serif',\n             width: 28, textAlign: 'left' } },\n];\n\nreturn {\n  animation: false,\n  grid: { left: -2, right: -2, top: '44%', bottom: -2 },\n  xAxis: { type: 'time', show: false },\n  yAxis: { type: 'value', show: false, scale: true },\n  series: [line(pkt, C.pkt, 1.2, 0.10), line(rx, C.rx, 1.2, 0.10), line(buf, C.buf, 1.8, 0.22)],\n  graphic: [\n    { type: 'text', left: 'center', top: 18,\n      style: { text: tot.toFixed(1) + ' %', fill: vcolor,\n               font: '600 26px Inter, system-ui, sans-serif' } },\n    ...key2(1, C.pkt, 'pkt'),\n    ...key2(13, C.buf, 'buf'),\n    ...key2(25, C.rx, 'rx'),\n  ],\n};\n",
+        "getOption": "\nconst frames = context.panel.data.series || [];\nconst INK = '#e6edf3', MUTED = 'rgba(230,237,243,.45)';\nconst C = { buf: '#5AA7BE', pkt: '#C2562F' };\n\nfunction pairs(f) {\n  const t = f.fields.find((x) => x.type === 'time');\n  const v = f.fields.find((x) => x.type === 'number');\n  if (!t || !v) return [];\n  const tv = t.values.toArray ? t.values.toArray() : t.values;\n  const vv = v.values.toArray ? v.values.toArray() : v.values;\n  const out = [];\n  for (let i = 0; i < tv.length; i++) {\n    if (vv[i] != null && !Number.isNaN(vv[i])) out.push([tv[i], vv[i]]);\n  }\n  return out;\n}\nfunction label(f, i) {\n  const v = f.fields.find((x) => x.type === 'number');\n  const c = (v && v.config) || {};\n  return c.displayNameFromDS || c.displayName || f.name || ('s' + i);\n}\n\nconst got = {};\nframes.forEach((f, i) => { got[label(f, i)] = pairs(f); });\nconst buf = got['buf'] || [];\nconst pkt = got['pkt'] || [];\nconst tot = (pkt.length ? pkt[pkt.length-1][1] : 0) + (buf.length ? buf[buf.length-1][1] : 0);\nconst vcolor = tot >= 2 ? '#e0453c' : tot >= 0.5 ? '#c98500' : '#3987e5';\nconst last = (a) => (a.length ? a[a.length - 1][1] : null);\nconst fmt = (v) => (v == null ? '\u2013' : Number(v).toFixed(1));\n\n\n\nfunction line(data, color, width, fill) {\n  \n\nreturn {\n    type: 'line', data, smooth: 0.1, showSymbol: false, silent: true,\n    lineStyle: { color, width, cap: 'round' },\n    areaStyle: { color, opacity: fill },\n    emphasis: { disabled: true }, animation: false,\n  };\n}\n\nconst LEGEND_FONT = '700 10px ui-monospace, monospace';\nconst key = (top, color, text) => ({\n  type: 'text', right: 8, top,\n  style: { text: '\\u25CF ' + text, fill: MUTED, font: LEGEND_FONT,\n           rich: { d: { color, font: LEGEND_FONT } } },\n});\nconst keyDot = (top, color) => ({\n  type: 'text', right: 30, top,\n  style: { text: '\\u25CF', fill: color, font: LEGEND_FONT },\n});\nconst keyLabel = (top, text) => ({\n  type: 'text', right: 8, top,\n  style: { text, fill: MUTED, font: LEGEND_FONT },\n});\n\n\nconst key2 = (top, color, text) => [\n  { type: 'text', right: 36, top: top + 1,\n    style: { text: '\\u25CF', fill: color, font: '400 10px Inter, system-ui, sans-serif' } },\n  { type: 'text', right: 8, top,\n    style: { text, fill: color, font: '700 11px Inter, system-ui, sans-serif',\n             width: 28, textAlign: 'left' } },\n];\n\nreturn {\n  animation: false,\n  grid: { left: -2, right: -2, top: '44%', bottom: -2 },\n  xAxis: { type: 'time', show: false },\n  yAxis: { type: 'value', show: false, scale: true },\n  series: [line(pkt, C.pkt, 1.2, 0.10), line(buf, C.buf, 1.8, 0.22)],\n  graphic: [\n    { type: 'text', left: 'center', top: 18,\n      style: { text: tot.toFixed(1) + ' %', fill: vcolor,\n               font: '600 26px Inter, system-ui, sans-serif' } },\n    ...key2(2, C.pkt, 'pkt'),\n    ...key2(15, C.buf, 'buf'),\n  ],\n};\n",
         "google": {
           "callback": "gmapReady",
           "key": ""
@@ -1190,15 +1199,6 @@
           "expr": "100 * (sum(rate(moqx_quicDatagramsDroppedOnRead_total[$__rate_interval])) + sum(rate(moqx_quicDatagramsDroppedOnWrite_total[$__rate_interval]))) / clamp_min(sum(rate(moqx_quicPacketsReceived_total[$__rate_interval])) + sum(rate(moqx_quicPacketsSent_total[$__rate_interval])), 1)",
           "legendFormat": "buf",
           "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "100 * sum(rate(moqx_quicPacketsDropped_total[$__rate_interval])) / clamp_min(sum(rate(moqx_quicPacketsReceived_total[$__rate_interval])), 1)",
-          "legendFormat": "rx",
-          "refId": "C"
         }
       ],
       "title": "Loss",
@@ -3056,7 +3056,10 @@
         },
         "showPercentChange": false,
         "textMode": "value",
-        "wideLayout": true
+        "wideLayout": true,
+        "text": {
+          "valueSize": 34
+        }
       },
       "targets": [
         {
