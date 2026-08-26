@@ -56,7 +56,7 @@ SubscriptionRegistry::getOrCreateFromSubscribe(
     }
     const EntryEpoch epoch = nextEpoch();
     forwarder->setCallback(std::move(callback));
-    auto [consumer, topNFilter, chainHead] = chainBuilder(forwarder);
+    auto [consumer, topNFilter, chainHead, ingest] = chainBuilder(forwarder);
     auto [emplaceIt, inserted] = subscriptions_.emplace(
         std::piecewise_construct,
         std::forward_as_tuple(ftn),
@@ -64,6 +64,7 @@ SubscriptionRegistry::getOrCreateFromSubscribe(
     );
     emplaceIt->second.topNFilter = topNFilter;
     emplaceIt->second.chainHead = chainHead;
+    emplaceIt->second.ingest = ingest;
     return FirstSubscriber{
         forwarder,
         std::move(consumer),
@@ -153,9 +154,10 @@ SubscriptionRegistry::PublishEntry SubscriptionRegistry::createFromPublish(
   rsub.publisher = std::move(publisher);
   rsub.isPublish = true;
 
-  auto [consumer, topNFilter, chainHead] = chainBuilder();
+  auto [consumer, topNFilter, chainHead, ingest] = chainBuilder();
   rsub.topNFilter = topNFilter;
   rsub.chainHead = chainHead;
+  rsub.ingest = ingest;
   topNFilter->setActivityTarget(&rsub.lastObjectTime);
 
   return PublishEntry{std::move(consumer), std::move(evicted)};
@@ -235,6 +237,15 @@ void SubscriptionRegistry::remove(const moxygen::FullTrackName& ftn) {
   subscriptions_.erase(ftn);
 }
 
+namespace {
+// An entry whose chain predates ingest counting reports zeros rather than
+// forcing every caller to null-check.
+const IngestCounters& ingestOr(const std::shared_ptr<IngestCounters>& p) {
+  static const IngestCounters kNone;
+  return p ? *p : kNone;
+}
+} // namespace
+
 void SubscriptionRegistry::removeIf(folly::FunctionRef<bool(const EntryView&)> predicate) {
   for (auto it = subscriptions_.begin(); it != subscriptions_.end();) {
     EntryView view{
@@ -242,7 +253,8 @@ void SubscriptionRegistry::removeIf(folly::FunctionRef<bool(const EntryView&)> p
         it->second.forwarder,
         it->second.upstream,
         it->second.isPublish,
-        it->second.lastObjectTime
+        it->second.lastObjectTime,
+        ingestOr(it->second.ingest)
     };
     if (predicate(view)) {
       it = subscriptions_.erase(it);
@@ -261,7 +273,14 @@ void SubscriptionRegistry::forEachName(folly::FunctionRef<void(const moxygen::Fu
 
 void SubscriptionRegistry::forEach(folly::FunctionRef<void(const EntryView&)> fn) const {
   for (const auto& [ftn, rsub] : subscriptions_) {
-    fn(EntryView{ftn, rsub.forwarder, rsub.upstream, rsub.isPublish, rsub.lastObjectTime});
+    fn(EntryView{
+        ftn,
+        rsub.forwarder,
+        rsub.upstream,
+        rsub.isPublish,
+        rsub.lastObjectTime,
+        ingestOr(rsub.ingest)
+    });
   }
 }
 

@@ -68,8 +68,6 @@ public:
   struct SubscriptionInfo {
     const moxygen::FullTrackName& ftn;
     bool isPublish;
-    size_t subscribers{0};
-    uint64_t forwardingSubscribers{0};
     std::optional<moxygen::AbsoluteLocation> largest;
     uint64_t totalGroupsReceived{0};
     uint64_t totalObjectsReceived{0};
@@ -289,7 +287,7 @@ public:
 private:
   class NamespaceSubscription;
   class TracksSubscription;
-  class TerminationFilter;
+  class RelayIngestFilter;
   class LocalSubscribeFilter;
   class LocalPublishFilter;
 
@@ -422,7 +420,7 @@ private:
 
   // TRACK_FILTER support
 
-  // Build the filter chain for a track subscription: TopNFilter → TerminationFilter → (cache) →
+  // Build the filter chain for a track subscription: TopNFilter → RelayIngestFilter → (cache) →
   // forwarder. Used by both publish() and subscribe() paths to ensure consistent filter chain.
   SubscriptionRegistry::FilterChainResult buildFilterChain(
       const moxygen::FullTrackName& ftn,
@@ -475,11 +473,6 @@ private:
   };
   folly::F14FastMap<const moxygen::MoQSession*, LegacyPublisherHopID> legacyPublisherHopIDs_;
   SubscriptionRegistry registry_;
-
-  std::shared_ptr<moxygen::TrackConsumer> getSubscribeWriteback(
-      const moxygen::FullTrackName& ftn,
-      std::shared_ptr<moxygen::TrackConsumer> consumer
-  );
 
   std::optional<std::vector<uint64_t>> ingestRelayHopPath(
       const moxygen::PublishNamespace& pubNs,

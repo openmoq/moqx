@@ -5,8 +5,8 @@
 # (see the moqx-state and moqx-info jobs in prometheus.yml).
 #
 # Per-track series come from the relay's own /metrics/track, not from here:
-# both emitted moqx_track_subscribers, and /state's entries are transient and
-# undercount under load.
+# /state no longer carries subscriber counts (they were per-thread forwarder
+# counts, meaningless in LocalForwarder mode).
 modules:
   moqx:
     metrics:
