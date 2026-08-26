@@ -286,14 +286,28 @@ CPMAddPackage(
         OPTIONS "REFLECTCPP_YAML ON" "REFLECTCPP_BUILD_TESTS OFF"
 )
 
-# --- XLOG category rooting ---
+# --- XLOG category and debug path rooting ---
 # Sources live under src/, but folly XLOG categories should read moqx.MoqxRelay
-# rather than src.MoqxRelay. FOLLY_XLOG_STRIP_PREFIXES covers what the
-# prefix-map misses, notably generated headers. Must precede the moqx_* targets.
-add_compile_options(-fmacro-prefix-map=${CMAKE_CURRENT_SOURCE_DIR}/src=moqx)
-add_compile_definitions(
-  "FOLLY_XLOG_STRIP_PREFIXES=\"${CMAKE_SOURCE_DIR}:${CMAKE_BINARY_DIR}\""
-)
+# rather than src.MoqxRelay. Must precede the moqx_* targets.
+#
+# - Both spellings of every map: ccache with base_dir rewrites the source path
+#   it forwards to the compiler, but not -f*-prefix-map.
+# - macro- and debug- rather than file-: categories want an opaque root, debug
+#   info wants paths a debugger started at the worktree root can open.
+# - STRIP_PREFIXES takes the build root alone, which leaves generated headers
+#   at generated.Foo. Adding moqx would strip the root this block exists to set.
+file(RELATIVE_PATH _moqx_src_rel ${CMAKE_BINARY_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/src)
+file(RELATIVE_PATH _moqx_root_rel ${CMAKE_BINARY_DIR} ${CMAKE_CURRENT_SOURCE_DIR})
+# RELATIVE_PATH yields "../../" here, and GCC swallows the separator with the
+# prefix, so an unstripped value maps ../../src to .src rather than ./src.
+string(REGEX REPLACE "/$" "" _moqx_root_rel "${_moqx_root_rel}")
+add_compile_options(
+  -fmacro-prefix-map=${CMAKE_BINARY_DIR}=moqx-build
+  -fmacro-prefix-map=${CMAKE_CURRENT_SOURCE_DIR}/src=moqx
+  -fmacro-prefix-map=${_moqx_src_rel}=moqx
+  -fdebug-prefix-map=${CMAKE_CURRENT_SOURCE_DIR}=.
+  -fdebug-prefix-map=${_moqx_root_rel}=.)
+add_compile_definitions("FOLLY_XLOG_STRIP_PREFIXES=\"moqx-build\"")
 
 # --- catapult (CAT/CWT/MOQT auth implementation) ---
 # Nested deps (external/libcbor, …) arrive through FetchContent's recursive
