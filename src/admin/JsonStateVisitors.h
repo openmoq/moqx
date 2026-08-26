@@ -54,9 +54,6 @@ public:
     w_.endArray();
     w_.field("track_name", info.ftn.trackName);
     w_.field("is_publish", info.isPublish);
-    w_.key("subscribers");
-    w_.uintVal(static_cast<uint64_t>(info.subscribers));
-    w_.field("forwarding_subscribers", info.forwardingSubscribers);
     w_.field("total_groups_received", info.totalGroupsReceived);
     w_.field("total_objects_received", info.totalObjectsReceived);
     w_.field("source_address", info.sourceAddress);

@@ -5,6 +5,7 @@
 #pragma once
 
 #include "relay/ForwarderRef.h"
+#include "relay/RecentGroupWindow.h"
 #include "relay/TopNFilter.h"
 #include <folly/Function.h>
 #include <folly/container/F14Map.h>
@@ -20,6 +21,33 @@
 
 namespace openmoq::moqx {
 
+// Ingest counters for one track, maintained on the relay executor by
+// MoqxRelay::RelayIngestFilter. /state reads these instead of the forwarder's
+// own: in LocalForwarder mode the forwarder lives on another executor.
+//
+// shared_ptr, not a pointer into the entry: the filter chain can outlive its
+// registry entry while a publisher drains.
+struct IngestCounters {
+  std::optional<moxygen::AbsoluteLocation> largest;
+  uint64_t groups{0};
+  uint64_t objects{0};
+
+  // Once per incoming object, whatever the delivery mode.
+  void record(uint64_t group, uint64_t object) {
+    ++objects;
+    if (recentGroups_.admit(group)) {
+      ++groups;
+    }
+    moxygen::AbsoluteLocation loc{group, object};
+    if (!largest || *largest < loc) {
+      largest = loc;
+    }
+  }
+
+private:
+  RecentGroupWindow recentGroups_;
+};
+
 class SubscriptionRegistry {
 public:
   // Names one entry for as long as it sits in the map, so a caller that suspends
@@ -32,6 +60,7 @@ public:
     // Differs from consumer in LocalForwarder mode, where the relay chain
     // hangs off a channel subscriber rather than the publisher's writes.
     std::shared_ptr<moxygen::TrackConsumer> chainHead;
+    std::shared_ptr<IngestCounters> ingest;
   };
 
   // === Subscribe path ===
@@ -188,6 +217,7 @@ public:
     std::shared_ptr<moxygen::MoQSession> upstream;
     bool isPublish;
     std::chrono::steady_clock::time_point lastObjectTime;
+    const IngestCounters& ingest;
   };
 
   void removeIf(folly::FunctionRef<bool(const EntryView&)> predicate);
@@ -213,6 +243,7 @@ private:
     std::shared_ptr<TopNFilter> topNFilter;
     std::shared_ptr<moxygen::TrackConsumer> chainHead;
     std::chrono::steady_clock::time_point lastObjectTime;
+    std::shared_ptr<IngestCounters> ingest;
   };
 
   // Called by UpstreamSubscribePending::complete().
