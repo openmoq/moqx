@@ -405,20 +405,66 @@ folly::coro::Task<MoqxRelayContext::TrackMetricsResult> MoqxRelayContext::aggreg
   co_return result;
 }
 
-void MoqxRelayContext::dumpState(RelayContextVisitor& visitor) const {
-  // TODO: source active session count for /state (deferred to the /state rework).
-  int64_t activeSessions = 0;
+namespace {
 
+// No suspension inside, so holding the visitor by pointer across the call is
+// safe: the caller's frame outlives it.
+folly::coro::Task<void> dumpOnOwner(std::shared_ptr<MoqxRelay> relay, RelayStateVisitor* visitor) {
+  relay->dumpState(*visitor);
+  co_return;
+}
+
+// UpstreamProvider lives on the worker EVB and its state_ is a plain enum
+// written there, so read it on that thread rather than the caller's.
+folly::coro::Task<std::string> readUpstreamState(std::shared_ptr<MoqxRelay> relay) {
+  auto up = relay->upstreamProvider();
+  co_return up ? up->stateString() : "disconnected";
+}
+
+} // namespace
+
+folly::coro::Task<void> MoqxRelayContext::dumpState(RelayContextVisitor& visitor) const {
+  XCHECK(workerEvb_) << "dumpState: initUpstreams must run first";
+
+  int64_t activeSessions = 0;
+  if (statsRegistry_) {
+    activeSessions = (co_await statsRegistry_->aggregateAsync()).moqActiveSessions;
+  }
   visitor.onRelayBegin(relayID_, activeSessions);
+
+  // Copied by value: services_ belongs to this executor and must not be read
+  // after the first hop below.
+  struct Service {
+    std::string name;
+    std::shared_ptr<MoqxRelay> relay;
+    std::optional<std::string> upstreamUrl;
+  };
+  std::vector<Service> services;
+  services.reserve(services_.size());
   for (const auto& [name, entry] : services_) {
-    RelayStateVisitor& rv = visitor.onServiceBegin(name);
-    entry.relay->dumpState(rv);
-    if (entry.config.upstream) {
-      auto up = entry.relay->upstreamProvider();
-      visitor.onServiceUpstream(
-          entry.config.upstream->url,
-          up ? up->stateString() : "disconnected"
+    services.push_back(
+        {name,
+         entry.relay,
+         entry.config.upstream ? std::optional<std::string>(entry.config.upstream->url)
+                               : std::nullopt}
+    );
+  }
+
+  for (auto& service : services) {
+    RelayStateVisitor& rv = visitor.onServiceBegin(service.name);
+    // registry_ lives on the relay exec when there is one; without one, config
+    // forces threads==1, so the worker EVB is that single io thread.
+    auto* exec = service.relay->getRelayExec();
+    co_await folly::coro::co_withExecutor(
+        exec ? exec : static_cast<folly::Executor*>(workerEvb_),
+        dumpOnOwner(service.relay, &rv)
+    );
+    if (service.upstreamUrl) {
+      auto upstreamState = co_await folly::coro::co_withExecutor(
+          static_cast<folly::Executor*>(workerEvb_),
+          readUpstreamState(service.relay)
       );
+      visitor.onServiceUpstream(*service.upstreamUrl, upstreamState);
     }
     visitor.onServiceEnd();
   }

@@ -75,17 +75,18 @@ public:
   // Sets the cache EVB used to serialize purge() calls with relay callbacks.
   void setCacheEvb(folly::EventBase* evb) { cacheEvb_ = evb; }
 
-  // Returns the worker EVB used for upstream connections.
-  // Null until initUpstreams() is called.
-  folly::EventBase* workerEvb() const { return workerEvb_; }
+  // False until initUpstreams() runs, before which there is nothing to walk.
+  bool ready() const { return workerEvb_ != nullptr; }
 
   // Returns the cache EVB used to serialize purge() calls with relay callbacks.
   // Null until setCacheEvb() is called.
   folly::EventBase* cacheEvb() const { return cacheEvb_; }
 
-  // Dumps a snapshot of relay state by calling visitor methods.
-  // MUST be called on workerEvb() to avoid data races.
-  void dumpState(RelayContextVisitor& visitor) const;
+  // Walks every service, calling visitor methods as it goes. Each service's
+  // walk is placed on the executor that owns that service's state; the visitor
+  // is called from there for the walk itself and from the caller's executor for
+  // everything around it, one service at a time. Awaitable from any executor.
+  folly::coro::Task<void> dumpState(RelayContextVisitor& visitor) const;
 
   // Signals all relay upstreams to stop. Call before destroying servers so
   // reconnect coroutines can exit before worker EVBs are drained.

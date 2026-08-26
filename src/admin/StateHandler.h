@@ -17,8 +17,7 @@ class AdminServer;
 
 // Registers GET /state on the given admin server.
 //
-// The handler runs dumpState() on the relay worker EVB via co_withExecutor,
-// then serializes the result to JSON and sends it to the client.
+// The handler walks each service on the executor that owns it.
 void registerStateRoute(AdminServer& adminServer, std::shared_ptr<MoqxRelayContext> context);
 
 } // namespace admin
