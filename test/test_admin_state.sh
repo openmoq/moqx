@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Exercises GET /state against a real relay: the route wiring and the walk
-# across service executors, neither of which the unit tests reach.
+# Exercises GET /state against a real relay: the route wiring, the walk across
+# service executors, the producer and consumer coroutines, and the chunked
+# framing, none of which the unit tests reach.
 set -euo pipefail
 
 BINARY="${1:-$(dirname "$0")/../build/default/moqx}"
@@ -50,13 +51,24 @@ curl -sf -D "$TMPDIR/headers.txt" -o "$TMPDIR/body.json" "$ADMIN_URL"
 echo "Headers:"; cat "$TMPDIR/headers.txt"
 echo "Body: $(cat "$TMPDIR/body.json")"
 
+if ! grep -qi '^Transfer-Encoding: chunked' "$TMPDIR/headers.txt"; then
+  echo "FAIL: /state is not chunked" >&2
+  exit 1
+fi
+
+if grep -qi '^Content-Length:' "$TMPDIR/headers.txt"; then
+  echo "FAIL: chunked response must not carry Content-Length" >&2
+  exit 1
+fi
+
 if ! grep -qi '^Content-Type: application/json' "$TMPDIR/headers.txt"; then
   echo "FAIL: missing JSON content type" >&2
   exit 1
 fi
 
-# The body has to parse: every service's fragment is written by a different
-# executor into one shared writer.
+# Reassembled chunks have to parse: every service's fragment is written by a
+# different executor into one shared writer, and a flush that corrupted comma or
+# nesting state would land here too.
 python3 -c "
 import json, sys
 state = json.load(open('$TMPDIR/body.json'))

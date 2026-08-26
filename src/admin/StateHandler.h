@@ -17,7 +17,8 @@ class AdminServer;
 
 // Registers GET /state on the given admin server.
 //
-// The handler walks each service on the executor that owns it.
+// The handler walks each service on the executor that owns it, writing JSON as
+// it goes and sending it chunked as it is produced.
 void registerStateRoute(AdminServer& adminServer, std::shared_ptr<MoqxRelayContext> context);
 
 } // namespace admin

@@ -7,41 +7,58 @@
 #include "admin/StateHandler.h"
 
 #include <folly/CancellationToken.h>
+#include <folly/coro/AsyncPipe.h>
 #include <folly/coro/Task.h>
 #include <folly/coro/WithCancellation.h>
 #include <folly/io/IOBuf.h>
-#include <folly/io/IOBufQueue.h>
 #include <folly/io/async/EventBaseManager.h>
-#include <folly/logging/xlog.h>
 #include <proxygen/httpserver/ResponseBuilder.h>
 #include <proxygen/lib/http/HTTPMessage.h>
 
 #include "MoqxRelayContext.h"
 #include "admin/AdminServer.h"
 #include "admin/ChunkedJsonWriter.h"
+#include "admin/EgressGate.h"
 #include "admin/JsonStateVisitors.h"
+#include "admin/StateResponse.h"
 
 namespace openmoq::moqx::admin {
 
 namespace {
 
-// Awaitable from the admin EVB: dumpState hops to each service's own executor
-// and back for itself.
-folly::coro::Task<std::unique_ptr<folly::IOBuf>>
-buildStateBody(std::shared_ptr<MoqxRelayContext> ctx) {
-  folly::IOBufQueue body{folly::IOBufQueue::cacheChainLength()};
+using ChunkPipe = folly::coro::AsyncPipe<std::unique_ptr<folly::IOBuf>>;
+
+// Runs the walk, hopping to each service's owning executor, and pushes chunks
+// into the pipe as they are produced. Never blocks on the consumer.
+folly::coro::Task<void> produceState(
+    std::shared_ptr<MoqxRelayContext> ctx,
+    ChunkPipe pipe,
+    std::shared_ptr<StreamBudget> budget
+) {
+  folly::exception_wrapper failure;
   {
-    // Chunks are collected rather than sent: the response still goes out whole
-    // at EOM.
-    ChunkedJsonWriter writer([&body](std::unique_ptr<folly::IOBuf> chunk) {
-      body.append(std::move(chunk));
-      return true;
+    ChunkedJsonWriter writer([&](std::unique_ptr<folly::IOBuf> chunk) {
+      if (!budget->tryAdd(chunk->computeChainDataLength())) {
+        failure = folly::make_exception_wrapper<std::runtime_error>(
+            "/state exceeded the buffered-response cap"
+        );
+        return false;
+      }
+      return pipe.write(std::move(chunk));
     });
     JsonRelayContextVisitor visitor(writer);
-    co_await ctx->dumpState(visitor);
-    writer.flush();
+    auto result = co_await folly::coro::co_awaitTry(ctx->dumpState(visitor));
+    if (result.hasException()) {
+      failure = std::move(result).exception();
+    } else {
+      writer.flush();
+    }
   }
-  co_return body.move();
+  if (failure) {
+    std::move(pipe).close(std::move(failure));
+  } else {
+    std::move(pipe).close();
+  }
 }
 
 } // namespace
@@ -55,7 +72,7 @@ void registerStateRoute(AdminServer& adminServer, std::shared_ptr<MoqxRelayConte
           auto /*body*/,
           auto* downstream,
           folly::CancellationToken cancelToken,
-          const std::shared_ptr<EgressGate>& /*egress*/) {
+          std::shared_ptr<EgressGate> egress) {
         if (!context->ready()) {
           proxygen::ResponseBuilder(downstream)
               .status(503, proxygen::HTTPMessage::getDefaultReason(503))
@@ -64,39 +81,23 @@ void registerStateRoute(AdminServer& adminServer, std::shared_ptr<MoqxRelayConte
           return;
         }
 
-        // The coroutine is pinned to the admin EVB so sendWithEOM is
-        // thread-safe; the walk's own executor hops happen inside the co_await
-        // and it resumes here.
+        auto* adminEvb = folly::EventBaseManager::get()->getEventBase();
+        auto budget = std::make_shared<StreamBudget>();
+        auto [gen, pipe] = ChunkPipe::create();
+
+        // Producer and consumer run concurrently: the producer migrates across
+        // relay executors while the consumer stays on the admin EVB, where
+        // sendBody is thread-safe. It re-checks the token before every send,
+        // which is safe because onError sets it before deleting the handler on
+        // this same single-threaded EVB.
+        folly::coro::co_withExecutor(adminEvb, produceState(context, std::move(pipe), budget))
+            .start();
+
         folly::coro::co_withCancellation(
             cancelToken,
             folly::coro::co_withExecutor(
-                folly::EventBaseManager::get()->getEventBase(),
-                [](auto ctx, auto* ds, auto token) -> folly::coro::Task<void> {
-                  if (token.isCancellationRequested()) {
-                    co_return;
-                  }
-                  std::unique_ptr<folly::IOBuf> body;
-                  try {
-                    body = co_await buildStateBody(ctx);
-                  } catch (const std::exception& e) {
-                    XLOG(ERR) << "StateHandler: dumpState threw: " << e.what();
-                    if (!token.isCancellationRequested()) {
-                      proxygen::ResponseBuilder(ds)
-                          .status(500, proxygen::HTTPMessage::getDefaultReason(500))
-                          .body(folly::IOBuf::copyBuffer("internal error\n"))
-                          .sendWithEOM();
-                    }
-                    co_return;
-                  }
-                  if (token.isCancellationRequested()) {
-                    co_return;
-                  }
-                  proxygen::ResponseBuilder(ds)
-                      .status(200, proxygen::HTTPMessage::getDefaultReason(200))
-                      .header("Content-Type", "application/json")
-                      .body(std::move(body))
-                      .sendWithEOM();
-                }(context, downstream, cancelToken)
+                adminEvb,
+                sendState(downstream, cancelToken, std::move(gen), budget, std::move(egress))
             )
         )
             .start();

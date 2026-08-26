@@ -44,6 +44,9 @@ public:
   virtual void onServiceUpstream(std::string_view url, std::string_view state) = 0;
   virtual void onServiceEnd() = 0;
   virtual void onRelayEnd() = 0;
+  // Checked between services so a consumer that has gone away stops the walk
+  // rather than paying for every remaining service.
+  virtual bool alive() const = 0;
 };
 
 // Holds relay state shared across all listener instances.

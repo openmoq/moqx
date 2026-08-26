@@ -2967,6 +2967,9 @@ void MoqxRelay::dumpState(RelayStateVisitor& visitor) const {
     visitor.onPeer(sess->getPeerAddress().describe(), sess->getAuthority(), peer.relayID);
   }
   visitor.onPeersEnd();
+  if (!visitor.alive()) {
+    return;
+  }
 
   visitor.onSubscriptionsBegin();
   registry_.forEach([&](const SubscriptionRegistry::EntryView& e) {
@@ -2989,6 +2992,9 @@ void MoqxRelay::dumpState(RelayStateVisitor& visitor) const {
     visitor.onSubscription(info);
   });
   visitor.onSubscriptionsEnd();
+  if (!visitor.alive()) {
+    return;
+  }
 
   visitor.onNamespaceTreeBegin();
   namespaceTree_.walkTree(
@@ -3008,6 +3014,9 @@ void MoqxRelay::dumpState(RelayStateVisitor& visitor) const {
       [&]() { visitor.endNamespaceNode(); }
   );
   visitor.onNamespaceTreeEnd();
+  if (!visitor.alive()) {
+    return;
+  }
 
   if (cache_) {
     visitor.onCacheBegin(cache_->totalCachedBytes(), MoqxCache::SteadyClock::now());

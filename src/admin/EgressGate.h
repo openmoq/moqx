@@ -54,6 +54,11 @@ public:
     baton_.signal(proxygen::coro::TimedBaton::Status::cancelled);
   }
 
+  // Lets a caller skip awaitDrainable, and its coroutine frame, on the common
+  // unpaused path. shutdown() clears paused_, so a caller that skips on this
+  // must still check its own cancellation before sending.
+  bool paused() const { return paused_; }
+
   // False means the request is going away, so stop rather than send.
   folly::coro::Task<bool> awaitDrainable() {
     XCHECK(baton_.getEventBase()->isInEventBaseThread()) << "EgressGate is admin EVB only";
