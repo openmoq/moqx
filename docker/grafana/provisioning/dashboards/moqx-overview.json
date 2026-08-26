@@ -3243,7 +3243,9 @@
     "from": "now-15m",
     "to": "now"
   },
-  "timepicker": {},
+  "timepicker": {
+    "nowDelay": "3s"
+  },
   "timezone": "browser",
   "title": "moqx relay overview",
   "uid": "moqx-overview",
