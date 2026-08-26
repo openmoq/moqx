@@ -276,6 +276,16 @@ moqx_add_gtest(moqx_upstream_provider_test
     GTest::gmock
 )
 
+# Repro for a moxygen MoQSession state leak; details in the test's header.
+moqx_add_gtest(moqx_pending_subscribe_leak_test
+  SRCS MoQSessionPendingSubscribeLeakTest.cpp
+  LIBS
+    moqx_test_main
+    GTest::gmock
+    moxygen::moxygen_moq_relay_session
+    moxygen::moxygen_events_moq_folly_executor_impl
+)
+
 moqx_add_gtest(moqx_subscription_registry_test
   SRCS SubscriptionRegistryTest.cpp
   LIBS moqx_core moqx_test_main GTest::gmock
