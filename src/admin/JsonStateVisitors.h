@@ -153,6 +153,8 @@ public:
     w_.endObject();
   }
 
+  bool alive() const override { return c_.alive(); }
+
 private:
   ChunkedJsonWriter& c_;
   JsonWriter& w_;
@@ -198,6 +200,8 @@ public:
     w_.endObject(); // relay
     c_.raw("\n");
   }
+
+  bool alive() const override { return c_.alive(); }
 
 private:
   ChunkedJsonWriter& c_;

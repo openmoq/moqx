@@ -124,6 +124,26 @@ target_include_directories(moqx_track_metrics_format_test PRIVATE
   ${PROJECT_SOURCE_DIR}/src
 )
 
+moqx_add_gtest(moqx_state_stream_test
+  SRCS admin/StateStreamTest.cpp
+  LIBS moqx_core GTest::gtest_main GTest::gmock
+)
+target_include_directories(moqx_state_stream_test PRIVATE
+  ${PROJECT_SOURCE_DIR}/src
+)
+
+moqx_add_gtest(moqx_state_response_test
+  SRCS admin/StateResponseTest.cpp
+  LIBS
+    moqx_core
+    GTest::gtest_main
+    GTest::gmock
+    Folly::folly_executors_manual_executor
+)
+target_include_directories(moqx_state_response_test PRIVATE
+  ${PROJECT_SOURCE_DIR}/src
+)
+
 moqx_add_gtest(moqx_track_stats_registry_test
   SRCS stats/TrackStatsRegistryTest.cpp
   LIBS moqx_core GTest::gtest_main GTest::gmock

@@ -519,7 +519,7 @@ Prometheus a series set that reshuffles between scrapes.  See [docs/metrics.md] 
 | `GET` | `/info` | Returns `{"service":"moqx","version":"...","start_time":<epoch seconds>,"uptime_seconds":<n>}`. |
 | `GET` | `/metrics` | Prometheus-format metrics. See [docs/metrics.md](metrics.md) (pending PR #137). |
 | `GET` | `/metrics/track` | Per-track Prometheus metrics for live tracks. See [docs/metrics.md](metrics.md). |
-| `GET` | `/state` | Relay state: connected peers, active subscriptions, namespace tree, and cache stats. Per-subscription counters are ingress-side (`total_groups_received`, `total_objects_received`, `largest`), counted on the relay executor; for subscriber counts use `moqx_track_subscribers` from `/metrics/track`. Pending PR #146. |
+| `GET` | `/state` | Relay state: connected peers, active subscriptions, namespace tree, and cache stats. Always `Transfer-Encoding: chunked`, streamed as the walk produces it. Per-subscription counters are ingress-side (`total_groups_received`, `total_objects_received`, `largest`), counted on the relay executor; for subscriber counts use `moqx_track_subscribers` from `/metrics/track`. |
 
 ---
 

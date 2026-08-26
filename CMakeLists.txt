@@ -378,6 +378,7 @@ add_library(moqx_core STATIC
   src/admin/MetricsHandler.cpp
   src/admin/TrackMetricsHandler.cpp
   src/admin/StateHandler.cpp
+  src/admin/StateResponse.cpp
   src/stats/StatsRegistry.cpp
   src/stats/TrackStatsRegistry.cpp
   src/stats/MoQStatsCollector.cpp

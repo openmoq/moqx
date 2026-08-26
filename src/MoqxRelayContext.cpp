@@ -451,6 +451,9 @@ folly::coro::Task<void> MoqxRelayContext::dumpState(RelayContextVisitor& visitor
   }
 
   for (auto& service : services) {
+    if (!visitor.alive()) {
+      break;
+    }
     RelayStateVisitor& rv = visitor.onServiceBegin(service.name);
     // registry_ lives on the relay exec when there is one; without one, config
     // forces threads==1, so the worker EVB is that single io thread.

@@ -96,6 +96,10 @@ public:
   // Return false to stop the cache walk. The view does not outlive the call.
   virtual bool onCacheTrack(const MoqxCache::TrackStatsView& track) = 0;
   virtual void onCacheEnd() = 0;
+
+  // False once the consumer is gone; the walk stops at the next section
+  // boundary rather than formatting the rest for nobody.
+  virtual bool alive() const = 0;
 };
 
 class MoqxRelay : public moxygen::Publisher,
