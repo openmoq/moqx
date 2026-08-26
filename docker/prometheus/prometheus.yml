@@ -27,7 +27,7 @@ scrape_configs:
   # Relay 3s + host 5s ≈ 12 GB/yr; the CI deploy sets PROMETHEUS_RETENTION_SIZE
   # to 20 GB so the 365d time limit (not the size cap) bounds history.
   - job_name: node
-    scrape_interval: 5s
+    scrape_interval: 3s
     static_configs:
       # node-exporter runs in the host network namespace (so netdev sees the real
       # host NIC, not a container veth), hence it's reached via the host gateway
@@ -42,7 +42,7 @@ scrape_configs:
   # target=<relay /state>. Per-track series come from /metrics/track instead.
   - job_name: moqx-state
     metrics_path: /probe
-    scrape_interval: 5s
+    scrape_interval: 3s
     params:
       module: [moqx]
     static_configs:
@@ -85,7 +85,7 @@ scrape_configs:
   # namespace tree by ns-targets and relabelled into the query.
   - job_name: moqx-track
     metrics_path: /metrics/track
-    scrape_interval: 5s
+    scrape_interval: 3s
     params:
       limit: ['1000']
       # Most of a per-namespace response is metadata when few tracks match.
