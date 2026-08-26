@@ -76,6 +76,19 @@ for marker in rebase-merge rebase-apply MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD 
   fi
 done
 
+# Both checks below read refs, and refs go stale. A checkout sitting on a commit that
+# has since been pushed upstream is contained by origin/* on the server and by nothing
+# here, so without this the containment check refuses a detach that costs nothing —
+# the common shape after moxygen work lands and the pin moves on with it.
+#
+# After the dirty and in-progress checks, not before: those refuse without touching
+# the network. And only on a goto that actually moves the checkout — the HEAD == pin
+# fast path returns above on all the others, so this is not per-goto traffic.
+#
+# Not fatal. Offline, the checks below just run against the refs already here and the
+# worst case is the conservative refusal they would have given anyway.
+git -C "$dir" fetch --quiet origin 2>/dev/null || true
+
 # What detaching can actually destroy is a commit reachable only from HEAD: nothing
 # else names it afterwards and the reflog is the only way back. Any ref containing
 # HEAD — a branch, a tag, a remote — keeps it, and `git checkout` returns to it, so
