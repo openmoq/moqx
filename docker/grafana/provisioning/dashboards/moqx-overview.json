@@ -1632,6 +1632,17 @@
             "match": "any",
             "type": "exclude"
           }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": {},
+            "sort": [
+              {
+                "field": "Namespace"
+              }
+            ]
+          }
         }
       ],
       "type": "table"
@@ -2083,6 +2094,17 @@
             ],
             "match": "any",
             "type": "exclude"
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": {},
+            "sort": [
+              {
+                "field": "Name"
+              }
+            ]
           }
         }
       ],
