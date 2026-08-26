@@ -1564,11 +1564,12 @@
       "title": "Namespaces",
       "transformations": [
         {
-          "id": "joinByField",
-          "options": {
-            "byField": "namespace_display",
-            "mode": "outer"
-          }
+          "id": "labelsToFields",
+          "options": {}
+        },
+        {
+          "id": "merge",
+          "options": {}
         },
         {
           "id": "organize",
@@ -1993,11 +1994,12 @@
       "title": "Tracks",
       "transformations": [
         {
-          "id": "joinByField",
-          "options": {
-            "byField": "track_display",
-            "mode": "outer"
-          }
+          "id": "labelsToFields",
+          "options": {}
+        },
+        {
+          "id": "merge",
+          "options": {}
         },
         {
           "id": "organize",
@@ -2147,7 +2149,8 @@
               }
             ]
           },
-          "unit": "short"
+          "unit": "short",
+          "displayName": "${__field.labels.track_display}"
         },
         "overrides": []
       },
