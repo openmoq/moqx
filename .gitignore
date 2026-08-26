@@ -28,6 +28,9 @@ _CPack_Packages/
 /deps/*
 !/deps/README.md
 
+# Python bytecode from the integration-test harness (test/lib/).
+__pycache__/
+
 # OS
 .DS_Store
 

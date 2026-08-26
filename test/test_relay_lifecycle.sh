@@ -2,6 +2,9 @@
 # Shared process-reaping helpers for the relay integration tests.
 # Source this file; it defines functions only.
 #
+# The Python harness reimplements this policy in Harness.cleanup()
+# (test/lib/moq_harness.py); the two must stay in agreement.
+#
 # Callers pass "${ARRAY[@]:-}", which expands to a single empty string when the
 # array is empty, so both helpers tolerate an empty argument.
 
