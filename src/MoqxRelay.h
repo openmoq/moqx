@@ -273,8 +273,11 @@ public:
   // Returns the upstream provider, or null if none is configured.
   std::shared_ptr<UpstreamProvider> upstreamProvider() const { return upstream_; }
 
-  // Walks relay state by calling visitor methods.
-  // MUST be called on the relay's worker EVB.
+  // Walks relay state by calling visitor methods. Synchronous throughout: it
+  // iterates maps that a suspension would let another task mutate, so a visitor
+  // must not block or suspend either.
+  // Must run on the executor that owns relay state: getRelayExec(), or the
+  // single io thread when there is none.
   void dumpState(RelayStateVisitor& visitor) const;
 
   // Test accessor: check if a publish exists and return node/publish state

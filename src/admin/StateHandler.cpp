@@ -25,7 +25,8 @@ namespace openmoq::moqx::admin {
 
 namespace {
 
-// Runs on the relay worker EVB. Dumps state and returns the serialized body.
+// Awaitable from the admin EVB: dumpState hops to each service's own executor
+// and back for itself.
 folly::coro::Task<std::unique_ptr<folly::IOBuf>>
 buildStateBody(std::shared_ptr<MoqxRelayContext> ctx) {
   folly::IOBufQueue body{folly::IOBufQueue::cacheChainLength()};
@@ -37,7 +38,7 @@ buildStateBody(std::shared_ptr<MoqxRelayContext> ctx) {
       return true;
     });
     JsonRelayContextVisitor visitor(writer);
-    ctx->dumpState(visitor);
+    co_await ctx->dumpState(visitor);
     writer.flush();
   }
   co_return body.move();
@@ -55,8 +56,7 @@ void registerStateRoute(AdminServer& adminServer, std::shared_ptr<MoqxRelayConte
           auto* downstream,
           folly::CancellationToken cancelToken,
           const std::shared_ptr<EgressGate>& /*egress*/) {
-        auto* workerEvb = context->workerEvb();
-        if (!workerEvb) {
+        if (!context->ready()) {
           proxygen::ResponseBuilder(downstream)
               .status(503, proxygen::HTTPMessage::getDefaultReason(503))
               .body(folly::IOBuf::copyBuffer("relay not ready\n"))
@@ -64,20 +64,20 @@ void registerStateRoute(AdminServer& adminServer, std::shared_ptr<MoqxRelayConte
           return;
         }
 
-        // Outer coroutine stays on the admin EVB so sendWithEOM is thread-safe.
-        // buildStateBody switches to workerEvb and returns the IOBuf; after the
-        // co_await completes execution resumes here on the admin EVB.
+        // The coroutine is pinned to the admin EVB so sendWithEOM is
+        // thread-safe; the walk's own executor hops happen inside the co_await
+        // and it resumes here.
         folly::coro::co_withCancellation(
             cancelToken,
             folly::coro::co_withExecutor(
                 folly::EventBaseManager::get()->getEventBase(),
-                [](auto ctx, auto* ds, auto* wEvb, auto token) -> folly::coro::Task<void> {
+                [](auto ctx, auto* ds, auto token) -> folly::coro::Task<void> {
                   if (token.isCancellationRequested()) {
                     co_return;
                   }
                   std::unique_ptr<folly::IOBuf> body;
                   try {
-                    body = co_await folly::coro::co_withExecutor(wEvb, buildStateBody(ctx));
+                    body = co_await buildStateBody(ctx);
                   } catch (const std::exception& e) {
                     XLOG(ERR) << "StateHandler: dumpState threw: " << e.what();
                     if (!token.isCancellationRequested()) {
@@ -96,7 +96,7 @@ void registerStateRoute(AdminServer& adminServer, std::shared_ptr<MoqxRelayConte
                       .header("Content-Type", "application/json")
                       .body(std::move(body))
                       .sendWithEOM();
-                }(context, downstream, workerEvb, cancelToken)
+                }(context, downstream, cancelToken)
             )
         )
             .start();
