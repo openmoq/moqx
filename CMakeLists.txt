@@ -397,6 +397,8 @@ add_library(moqx_core STATIC
   src/relay/PublisherCrossExecFilter.cpp
   src/relay/SubscriberCrossExecFilter.cpp
   src/logging/LogSetup.cpp
+  src/tls/CertDirScanner.cpp
+  src/tls/SniCertManager.cpp
   src/tls/FizzContextBuilder.cpp
 )
 

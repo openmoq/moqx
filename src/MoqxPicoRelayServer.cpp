@@ -42,7 +42,7 @@ std::string resolveCert(const config::ListenerConfig& cfg) {
         if constexpr (std::is_same_v<T, config::Insecure>) {
           return "";
         } else {
-          return tls.certFile;
+          return tls.tls.certFile;
         }
       },
       cfg.tlsMode
@@ -56,7 +56,7 @@ std::string resolveKey(const config::ListenerConfig& cfg) {
         if constexpr (std::is_same_v<T, config::Insecure>) {
           return "";
         } else {
-          return tls.keyFile;
+          return tls.tls.keyFile;
         }
       },
       cfg.tlsMode

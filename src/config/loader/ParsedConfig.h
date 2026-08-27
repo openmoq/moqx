@@ -32,6 +32,23 @@ struct ParsedUdpConfig {
   rfl::Description<"Socket configuration", ParsedSocketConfig> socket;
 };
 
+// Options specific to the fizz TLS stack (quic_stack mvfst/proxygen_qmux).
+struct ParsedFizzTlsConfig {
+  rfl::Description<
+      "Directory of certificate pairs (<base>.pem + <base>.key). Certificates are "
+      "selected by SNI against their DNS SANs (the CN only when a certificate has "
+      "none; wildcards match one label) and loaded up front, at startup and on "
+      "each rescan. cert_file/key_file or pkcs12_file, if also set, become the "
+      "fallback certificate for absent/unmatched SNI.",
+      std::optional<std::string>>
+      cert_dir;
+  rfl::Description<
+      "Seconds between background rescans of cert_dir (picks up new, removed, and "
+      "changed pairs). 0 = scan once at startup, never rescan. Default 60.",
+      std::optional<uint32_t>>
+      cert_reload_interval_s;
+};
+
 struct ParsedListenerTlsConfig {
   rfl::Description<"Path to TLS certificate file", std::optional<std::string>> cert_file;
   rfl::Description<"Path to TLS private key file", std::optional<std::string>> key_file;
@@ -55,9 +72,14 @@ struct ParsedListenerTlsConfig {
       std::optional<std::string>>
       pkcs12_password_env;
   rfl::Description<
+      "Fizz-stack TLS options (quic_stack mvfst/proxygen_qmux only; picoquic "
+      "rejects them)",
+      std::optional<ParsedFizzTlsConfig>>
+      fizz;
+  rfl::Description<
       "Development only: serve the compiled-in certificate and drop client "
-      "verification. Rejected alongside cert_file/key_file/pkcs12_file, and on "
-      "quic_stack picoquic.",
+      "verification. Rejected alongside cert_file/key_file/pkcs12_file/fizz, and "
+      "on quic_stack picoquic.",
       bool>
       insecure;
 };

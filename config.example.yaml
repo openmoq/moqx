@@ -18,8 +18,16 @@ listeners:
       # pkcs12_password_file: /path/to/password.txt  # Preferred: keep the secret off the YAML
       # pkcs12_password_env: MOQX_PKCS12_PASSWORD    # Cloud-vault friendly: read the password from this env var
       # pkcs12_password: "inline-secret"             # Discouraged: persists in the config at rest
+      # --- Multi-cert / SNI (fizz TLS stack: mvfst + proxygen_qmux) ---
+      # Serve per-hostname certs from a directory of <base>.pem + <base>.key pairs,
+      # selected by SNI (identities: DNS SANs, or CN when there are no DNS SANs).
+      # cert_file/key_file or pkcs12_file, if also set, serve connections whose SNI
+      # is absent or matches nothing. See docs/config.md.
+      # fizz:
+      #   cert_dir: /path/to/certs
+      #   cert_reload_interval_s: 60   # background rescan; 0 = scan once at startup
       # --- Development-only mode ---
-      # insecure is rejected alongside cert_file/key_file/pkcs12_file.
+      # insecure is rejected alongside cert_file/key_file/pkcs12_file/fizz.
       insecure: true          # Serve the compiled-in dev cert; no real credentials (development only)
     endpoint: "/moq-relay"    # WebTransport endpoint path
     # moqt_versions: [14, 16] # MOQT draft versions (empty = default 14,16)

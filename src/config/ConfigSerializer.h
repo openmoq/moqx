@@ -86,8 +86,19 @@ inline void serializeTls(ConfigSink& s, const TlsConfig& tls) {
 
 inline void serializeListenerTls(ConfigSink& s, const TlsMode& mode) {
   s.beginObject("tls");
-  if (const auto* tls = std::get_if<TlsConfig>(&mode)) {
-    serializeTls(s, *tls);
+  if (const auto* tls = std::get_if<ListenerTlsConfig>(&mode)) {
+    serializeTls(s, tls->tls);
+    if (tls->certDir.has_value()) {
+      s.beginObject("fizz");
+      s.stringField("cert_dir", tls->certDir->dir);
+      s.uintField(
+          "cert_reload_interval_s",
+          static_cast<uint64_t>(tls->certDir->reloadInterval.count())
+      );
+      s.endObject();
+    } else {
+      s.nullField("fizz");
+    }
   } else {
     s.boolField("insecure", true);
   }

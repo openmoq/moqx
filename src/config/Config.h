@@ -33,6 +33,14 @@ struct TlsMaterial {
   std::string keyPem;       // unencrypted private key PEM
 };
 
+// SNI multi-cert source: a directory of <base>.pem/<base>.key pairs, scanned
+// for identities (DNS SANs; the CN only when a cert has none) and loaded up
+// front on the scanning thread. Fizz stack only.
+struct CertDirConfig {
+  std::string dir;
+  std::chrono::seconds reloadInterval{60}; // 0 = scan once at startup, never rescan
+};
+
 struct TlsConfig {
   std::string certFile;
   std::string keyFile;
@@ -43,9 +51,17 @@ struct TlsConfig {
   std::optional<TlsMaterial> material;
 };
 
+// Listener TLS: the shared TLS source plus fizz-stack-only options.
+struct ListenerTlsConfig {
+  TlsConfig tls;
+  // When set, certs are served by SNI from this directory; tls.certFile/keyFile
+  // or tls.material, if also present, act as the fallback cert.
+  std::optional<CertDirConfig> certDir;
+};
+
 struct Insecure {};
 
-using TlsMode = std::variant<Insecure, TlsConfig>;
+using TlsMode = std::variant<Insecure, ListenerTlsConfig>;
 
 struct CacheConfig {
   size_t maxCachedTracks; // 0 when cache disabled

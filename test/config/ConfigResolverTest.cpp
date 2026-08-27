@@ -219,18 +219,6 @@ TEST(ResolveConfig, InsecureWithCertsRejected) {
   EXPECT_THAT(result.error(), HasSubstr("insecure=true is mutually exclusive"));
 }
 
-TEST(ResolveConfig, InsecureWithPkcs12Rejected) {
-  auto cfg = makeMinimalInsecureConfig();
-  cfg.listeners.value()[0].tls.value().pkcs12_file = std::string("/some/bundle.p12");
-
-  auto result = resolveConfig(cfg);
-  ASSERT_TRUE(result.hasError());
-  EXPECT_THAT(result.error(), HasSubstr("insecure=true is mutually exclusive"));
-  // Only the source actually set is named.
-  EXPECT_THAT(result.error(), HasSubstr("pkcs12_file"));
-  EXPECT_THAT(result.error(), ::testing::Not(HasSubstr("cert_file")));
-}
-
 // #459: an empty/unresolvable bind address must fail as a clean config error,
 // not let folly::SocketAddress throw uncaught and abort the process.
 TEST(ResolveConfig, ListenerEmptyAddressRejected) {
@@ -279,8 +267,8 @@ TEST(ResolveConfig, Pkcs12HappyPathPopulatesMaterial) {
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasValue()) << result.error();
   const auto& mode = result.value().config.listeners[0].tlsMode;
-  ASSERT_TRUE(std::holds_alternative<TlsConfig>(mode));
-  const auto& resolved = std::get<TlsConfig>(mode);
+  ASSERT_TRUE(std::holds_alternative<ListenerTlsConfig>(mode));
+  const auto& resolved = std::get<ListenerTlsConfig>(mode).tls;
   ASSERT_TRUE(resolved.material.has_value());
   EXPECT_THAT(resolved.material->certChainPem, HasSubstr("BEGIN CERTIFICATE"));
   EXPECT_THAT(resolved.material->keyPem, HasSubstr("PRIVATE KEY"));
@@ -367,6 +355,211 @@ TEST(ResolveConfig, Pkcs12PicoquicRejected) {
   EXPECT_THAT(result.error(), HasSubstr("does not support pkcs12_file"));
 }
 
+TEST(ResolveConfig, InsecureWithPkcs12Rejected) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.listeners.value()[0].tls.value().pkcs12_file = std::string("/some/bundle.p12");
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("insecure=true is mutually exclusive"));
+  // Only the source actually set is named.
+  EXPECT_THAT(result.error(), HasSubstr("pkcs12_file"));
+  EXPECT_THAT(result.error(), ::testing::Not(HasSubstr("cert_file")));
+}
+
+// --- fizz.cert_dir (SNI multi-cert) ---
+
+TEST(ResolveConfig, CertDirAloneValid) {
+  auto cfg = makeMinimalInsecureConfig();
+  auto& tls = cfg.listeners.value()[0].tls.value();
+  tls.insecure = false;
+  ParsedFizzTlsConfig fizz;
+  fizz.cert_dir = ::testing::TempDir();
+  tls.fizz = std::optional<ParsedFizzTlsConfig>{std::move(fizz)};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue()) << result.error();
+  const auto& mode = result.value().config.listeners[0].tlsMode;
+  ASSERT_TRUE(std::holds_alternative<ListenerTlsConfig>(mode));
+  const auto& resolved = std::get<ListenerTlsConfig>(mode);
+  ASSERT_TRUE(resolved.certDir.has_value());
+  EXPECT_EQ(resolved.certDir->dir, ::testing::TempDir());
+  EXPECT_EQ(resolved.certDir->reloadInterval, std::chrono::seconds(60));
+  EXPECT_THAT(resolved.tls.certFile, IsEmpty());
+}
+
+TEST(ResolveConfig, CertDirWithFallbackPairValid) {
+  auto cfg = makeMinimalInsecureConfig();
+  auto& tls = cfg.listeners.value()[0].tls.value();
+  tls.insecure = false;
+  tls.cert_file = std::string("/some/cert.pem");
+  tls.key_file = std::string("/some/key.pem");
+  ParsedFizzTlsConfig fizz;
+  fizz.cert_dir = ::testing::TempDir();
+  fizz.cert_reload_interval_s = uint32_t{5};
+  tls.fizz = std::optional<ParsedFizzTlsConfig>{std::move(fizz)};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue()) << result.error();
+  const auto& resolved = std::get<ListenerTlsConfig>(result.value().config.listeners[0].tlsMode);
+  ASSERT_TRUE(resolved.certDir.has_value());
+  EXPECT_EQ(resolved.certDir->reloadInterval, std::chrono::seconds(5));
+  EXPECT_EQ(resolved.tls.certFile, "/some/cert.pem");
+  EXPECT_EQ(resolved.tls.keyFile, "/some/key.pem");
+}
+
+TEST(ResolveConfig, CertDirWithPkcs12FallbackValid) {
+  auto der = test::makeSelfSignedPkcs12Der("s3cret");
+  test::TempFile p12(der, ".p12");
+  test::TempFile pwFile("s3cret", ".txt");
+
+  auto cfg = makeMinimalInsecureConfig();
+  auto& tls = cfg.listeners.value()[0].tls.value();
+  tls.insecure = false;
+  tls.pkcs12_file = p12.path();
+  tls.pkcs12_password_file = pwFile.path();
+  ParsedFizzTlsConfig fizz;
+  fizz.cert_dir = ::testing::TempDir();
+  tls.fizz = std::optional<ParsedFizzTlsConfig>{std::move(fizz)};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue()) << result.error();
+  const auto& resolved = std::get<ListenerTlsConfig>(result.value().config.listeners[0].tlsMode);
+  EXPECT_TRUE(resolved.certDir.has_value());
+  EXPECT_TRUE(resolved.tls.material.has_value());
+}
+
+TEST(ResolveConfig, CertDirReloadIntervalZeroDisables) {
+  auto cfg = makeMinimalInsecureConfig();
+  auto& tls = cfg.listeners.value()[0].tls.value();
+  tls.insecure = false;
+  ParsedFizzTlsConfig fizz;
+  fizz.cert_dir = ::testing::TempDir();
+  fizz.cert_reload_interval_s = uint32_t{0};
+  tls.fizz = std::optional<ParsedFizzTlsConfig>{std::move(fizz)};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue()) << result.error();
+  const auto& resolved = std::get<ListenerTlsConfig>(result.value().config.listeners[0].tlsMode);
+  ASSERT_TRUE(resolved.certDir.has_value());
+  EXPECT_EQ(resolved.certDir->reloadInterval, std::chrono::seconds(0));
+}
+
+TEST(ResolveConfig, PicoquicEmptyFizzBlockAccepted) {
+  auto cfg = makeMinimalInsecureConfig();
+  auto& listener = cfg.listeners.value()[0];
+  listener.quic_stack = std::string("picoquic");
+  auto& tls = listener.tls.value();
+  tls.insecure = false;
+  tls.cert_file = std::string("/some/cert.pem");
+  tls.key_file = std::string("/some/key.pem");
+  // Every fizz sub-field is optional, so `fizz: {}` parses into an engaged
+  // optional; with no option actually set it must not trip the pico guard.
+  tls.fizz = std::optional<ParsedFizzTlsConfig>{ParsedFizzTlsConfig{}};
+
+  auto result = resolveConfig(cfg);
+  EXPECT_TRUE(result.hasValue()) << (result.hasError() ? result.error() : "");
+}
+
+TEST(ResolveConfig, CertDirHalfFallbackPairRejected) {
+  auto cfg = makeMinimalInsecureConfig();
+  auto& tls = cfg.listeners.value()[0].tls.value();
+  tls.insecure = false;
+  tls.cert_file = std::string("/some/cert.pem");
+  ParsedFizzTlsConfig fizz;
+  fizz.cert_dir = ::testing::TempDir();
+  tls.fizz = std::optional<ParsedFizzTlsConfig>{std::move(fizz)};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("must be set together"));
+}
+
+TEST(ResolveConfig, CertDirNonexistentRejected) {
+  auto cfg = makeMinimalInsecureConfig();
+  auto& tls = cfg.listeners.value()[0].tls.value();
+  tls.insecure = false;
+  ParsedFizzTlsConfig fizz;
+  fizz.cert_dir = std::string("/nonexistent/moqx-cert-dir");
+  tls.fizz = std::optional<ParsedFizzTlsConfig>{std::move(fizz)};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("does not exist or is not a directory"));
+}
+
+TEST(ResolveConfig, CertDirPicoquicRejected) {
+  auto cfg = makeMinimalInsecureConfig();
+  auto& tls = cfg.listeners.value()[0].tls.value();
+  tls.insecure = false;
+  tls.cert_file = std::string("/some/cert.pem");
+  tls.key_file = std::string("/some/key.pem");
+  ParsedFizzTlsConfig fizz;
+  fizz.cert_dir = ::testing::TempDir();
+  tls.fizz = std::optional<ParsedFizzTlsConfig>{std::move(fizz)};
+  cfg.listeners.value()[0].quic_stack = std::string("picoquic");
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("does not support tls.fizz"));
+}
+
+TEST(ResolveConfig, ReloadIntervalWithoutCertDirWarns) {
+  auto cfg = makeMinimalInsecureConfig();
+  auto& tls = cfg.listeners.value()[0].tls.value();
+  tls.insecure = false;
+  tls.cert_file = std::string("/some/cert.pem");
+  tls.key_file = std::string("/some/key.pem");
+  ParsedFizzTlsConfig fizz;
+  fizz.cert_reload_interval_s = uint32_t{30};
+  tls.fizz = std::optional<ParsedFizzTlsConfig>{std::move(fizz)};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue()) << result.error();
+  ASSERT_FALSE(result.value().warnings.empty());
+  EXPECT_THAT(result.value().warnings[0], HasSubstr("has no effect without fizz.cert_dir"));
+}
+
+TEST(ResolveConfig, InsecureWithFizzRejected) {
+  auto cfg = makeMinimalInsecureConfig();
+  auto& tls = cfg.listeners.value()[0].tls.value();
+  ParsedFizzTlsConfig fizz;
+  fizz.cert_dir = ::testing::TempDir();
+  tls.fizz = std::optional<ParsedFizzTlsConfig>{std::move(fizz)};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("insecure=true is mutually exclusive"));
+}
+
+TEST(ResolveConfig, InsecureWithCertReloadIntervalWarns) {
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedFizzTlsConfig fizz;
+  fizz.cert_reload_interval_s = uint32_t{30};
+  cfg.listeners.value()[0].tls.value().fizz = std::optional<ParsedFizzTlsConfig>{std::move(fizz)};
+
+  // The interval never reaches the compiled-in cert path, but nothing weaker
+  // gets served for ignoring it, so this is not fatal.
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue()) << result.error();
+  ASSERT_FALSE(result.value().warnings.empty());
+  EXPECT_THAT(
+      result.value().warnings[0],
+      HasSubstr("fizz.cert_reload_interval_s has no effect with insecure=true")
+  );
+}
+
+TEST(ResolveConfig, InsecureWithEmptyFizzBlockAccepted) {
+  auto cfg = makeMinimalInsecureConfig();
+  // `fizz: {}` sets no option, so it stays inert rather than colliding with
+  // insecure.
+  cfg.listeners.value()[0].tls.value().fizz =
+      std::optional<ParsedFizzTlsConfig>{ParsedFizzTlsConfig{}};
+
+  auto result = resolveConfig(cfg);
+  EXPECT_TRUE(result.hasValue()) << (result.hasError() ? result.error() : "");
+}
+
 TEST(ResolveConfig, AdminTlsRequiresCertOrPkcs12) {
   auto cfg = makeMinimalInsecureConfig();
   ParsedAdminConfig admin;
@@ -419,7 +612,8 @@ TEST(ResolveConfig, Pkcs12PasswordFromEnv) {
   auto result = resolveConfig(cfg);
   ::unsetenv("MOQX_TEST_P12_PW");
   ASSERT_TRUE(result.hasValue()) << result.error();
-  const auto& resolved = std::get<TlsConfig>(result.value().config.listeners[0].tlsMode);
+  const auto& resolved =
+      std::get<ListenerTlsConfig>(result.value().config.listeners[0].tlsMode).tls;
   ASSERT_TRUE(resolved.material.has_value());
   EXPECT_THAT(resolved.material->keyPem, HasSubstr("PRIVATE KEY"));
 }
@@ -1057,8 +1251,8 @@ TEST(ResolveConfig, FullTls) {
   EXPECT_EQ(resolved.listeners[0].endpoint, "/relay");
   EXPECT_EQ(resolved.listeners[0].moqtVersions, "14,16");
 
-  ASSERT_TRUE(std::holds_alternative<TlsConfig>(resolved.listeners[0].tlsMode));
-  const auto& creds = std::get<TlsConfig>(resolved.listeners[0].tlsMode);
+  ASSERT_TRUE(std::holds_alternative<ListenerTlsConfig>(resolved.listeners[0].tlsMode));
+  const auto& creds = std::get<ListenerTlsConfig>(resolved.listeners[0].tlsMode).tls;
   EXPECT_EQ(creds.certFile, "/etc/ssl/cert.pem");
   EXPECT_EQ(creds.keyFile, "/etc/ssl/key.pem");
 }

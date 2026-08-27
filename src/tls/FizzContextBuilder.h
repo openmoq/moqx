@@ -21,8 +21,11 @@ struct FizzContextOptions {
   std::vector<std::string> alpns;
 };
 
-// Config-to-CertManager dispatch for a secure listener: a single-cert
-// DefaultCertManager from the configured file pair or in-memory material.
+// Config-to-CertManager dispatch for a secure listener:
+//  - fizz.cert_dir set: SniCertManager, with cert_file/key_file or PKCS#12
+//    material as its fallback.
+//  - fizz.cert_dir unset: a single-cert DefaultCertManager from the file pair
+//    or in-memory material.
 //
 // This dispatch is the seam for alternative cert sources (HSM, KMS, ...):
 // implement fizz::server::CertManager and pass it to the CertManager overload
@@ -31,7 +34,7 @@ struct FizzContextOptions {
 // (fizz::AsyncSelfCert), not the manager.
 //
 // Throws std::runtime_error with the offending paths on any load failure.
-std::shared_ptr<fizz::server::CertManager> makeCertManager(const config::TlsConfig& cfg);
+std::shared_ptr<fizz::server::CertManager> makeCertManager(const config::ListenerTlsConfig& cfg);
 
 // Secure fizz server context around a caller-supplied CertManager: ticket
 // cipher wired to the same manager (resumption resolves certs through it),

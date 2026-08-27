@@ -7,7 +7,12 @@
 #include "tls/FizzContextBuilder.h"
 
 #include <array>
+#include <map>
 #include <variant>
+
+#include <folly/String.h>
+#include <folly/Synchronized.h>
+#include <folly/ssl/OpenSSLHash.h>
 
 #include <fizz/server/AeadTicketCipher.h>
 #include <fizz/server/DefaultCertManager.h>
@@ -17,21 +22,72 @@
 #include <proxygen/httpserver/samples/hq/FizzContext.h>
 
 #include "tls/CertLoader.h"
+#include "tls/SniCertManager.h"
 
 namespace openmoq::moqx::tls {
 
-std::shared_ptr<fizz::server::CertManager> makeCertManager(const config::TlsConfig& cfg) {
+namespace {
+
+// One SniCertManager per distinct option set: listeners sharing a cert_dir
+// share the scan, the rescan thread, and the loaded keys. Safe to share
+// (Synchronized state); dead cache slots are pruned on the next call.
+std::shared_ptr<SniCertManager> sharedSniCertManager(SniCertManager::Options options) {
+  static folly::Synchronized<std::map<std::string, std::weak_ptr<SniCertManager>>> cache;
+
+  std::string key = options.certDir.dir;
+  key += '\0' + std::to_string(options.certDir.reloadInterval.count());
+  key += '\0' + options.fallbackCertFile;
+  key += '\0' + options.fallbackKeyFile;
+  if (options.fallbackMaterial.has_value()) {
+    // Digest, not the PEM itself: this key lives in a process-lifetime static,
+    // which is no place for a plaintext private key.
+    const auto& material = *options.fallbackMaterial;
+    std::array<unsigned char, 32> digest{};
+    folly::ssl::OpenSSLHash::Digest hasher;
+    hasher.hash_init(EVP_sha256());
+    hasher.hash_update(folly::ByteRange(folly::StringPiece(material.certChainPem)));
+    hasher.hash_update(folly::ByteRange(folly::StringPiece(material.keyPem)));
+    hasher.hash_final(folly::MutableByteRange(digest.data(), digest.size()));
+    key += '\0' + folly::hexlify(folly::ByteRange(digest.data(), digest.size()));
+  }
+
+  auto locked = cache.wlock();
+  for (auto it = locked->begin(); it != locked->end();) {
+    it = it->second.expired() ? locked->erase(it) : std::next(it);
+  }
+  if (auto it = locked->find(key); it != locked->end()) {
+    if (auto existing = it->second.lock()) {
+      return existing;
+    }
+  }
+  auto manager = std::make_shared<SniCertManager>(std::move(options));
+  (*locked)[key] = manager;
+  return manager;
+}
+
+} // namespace
+
+std::shared_ptr<fizz::server::CertManager> makeCertManager(const config::ListenerTlsConfig& cfg) {
+  if (cfg.certDir.has_value()) {
+    SniCertManager::Options options;
+    options.certDir = *cfg.certDir;
+    options.fallbackCertFile = cfg.tls.certFile;
+    options.fallbackKeyFile = cfg.tls.keyFile;
+    options.fallbackMaterial = cfg.tls.material;
+    return sharedSniCertManager(std::move(options));
+  }
+
   auto certManager = std::make_shared<fizz::server::DefaultCertManager>();
-  if (cfg.material.has_value()) {
+  if (cfg.tls.material.has_value()) {
     // PKCS#12 source: in-memory PEM buffers, the key never touches disk.
     certManager->addCertAndSetDefault(makeSelfCertFromPems(
-        cfg.material->certChainPem,
-        cfg.material->keyPem,
+        cfg.tls.material->certChainPem,
+        cfg.tls.material->keyPem,
         "(in-memory PKCS#12 material)"
     ));
     return certManager;
   }
-  certManager->addCertAndSetDefault(loadCertPair(cfg.certFile, cfg.keyFile));
+  certManager->addCertAndSetDefault(loadCertPair(cfg.tls.certFile, cfg.tls.keyFile));
   return certManager;
 }
 

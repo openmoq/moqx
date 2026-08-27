@@ -109,15 +109,31 @@ void validatePkcs12PasswordExclusivity(
   }
 }
 
+bool hasCertDir(const ParsedListenerTlsConfig& tls) {
+  const auto& fizz = tls.fizz.value();
+  return fizz.has_value() && fizz->cert_dir.value().has_value() && !fizz->cert_dir.value()->empty();
+}
+
+// At least one fizz option actually set; a bare `fizz: {}` block is inert and
+// must not trip the rejections/warnings that gate fizz-only behavior.
+bool hasFizzOptions(const ParsedListenerTlsConfig& tls) {
+  const auto& fizz = tls.fizz.value();
+  if (!fizz.has_value()) {
+    return false;
+  }
+  return hasCertDir(tls) || fizz->cert_reload_interval_s.value().has_value();
+}
+
 void validateListenerTlsConfig(
     const ParsedListenerTlsConfig& tls,
     std::string_view context,
     std::vector<std::string>& errors,
-    std::vector<std::string>& /* warnings */
+    std::vector<std::string>& warnings
 ) {
   bool hasCert = tls.cert_file.value().has_value() && !tls.cert_file.value()->empty();
   bool hasKey = tls.key_file.value().has_value() && !tls.key_file.value()->empty();
   bool hasPkcs12 = tls.pkcs12_file.value().has_value() && !tls.pkcs12_file.value()->empty();
+  bool hasDir = hasCertDir(tls);
 
   if (tls.insecure.value()) {
     // Rejected rather than ignored: silently dropping real credentials in
@@ -133,13 +149,44 @@ void validateListenerTlsConfig(
     if (hasPkcs12) {
       certSources.emplace_back("pkcs12_file");
     }
+    if (hasDir) {
+      certSources.emplace_back("fizz.cert_dir");
+    }
     if (!certSources.empty()) {
       errors.push_back(
           std::string(context) + ": insecure=true is mutually exclusive with " +
           folly::join("/", certSources)
       );
     }
+    // The rest of the fizz block costs only resumption sharing and reloads,
+    // so it warns instead: insecure serves the compiled-in cert from the
+    // sample context, which no fizz option reaches (see FizzContextBuilder.h).
+    if (tls.fizz.value().has_value() &&
+        tls.fizz.value()->cert_reload_interval_s.value().has_value()) {
+      warnings.push_back(
+          std::string(context) + ": fizz.cert_reload_interval_s has no effect with insecure=true"
+      );
+    }
     return;
+  }
+
+  if (!hasDir && tls.fizz.value().has_value() &&
+      tls.fizz.value()->cert_reload_interval_s.value().has_value()) {
+    warnings.push_back(
+        std::string(context) + ": fizz.cert_reload_interval_s has no effect without fizz.cert_dir"
+    );
+  }
+
+  // Existence check only; the full directory scan runs at server construction.
+  if (hasDir) {
+    const auto& dir = *tls.fizz.value()->cert_dir.value();
+    std::error_code ec;
+    if (!std::filesystem::is_directory(dir, ec)) {
+      errors.push_back(
+          std::string(context) + ": fizz.cert_dir '" + dir +
+          "' does not exist or is not a directory"
+      );
+    }
   }
 
   if (hasPkcs12) {
@@ -149,10 +196,15 @@ void validateListenerTlsConfig(
       );
     }
     validatePkcs12PasswordExclusivity(tls, context, errors);
-  } else if (!hasCert || !hasKey) {
+  } else if (hasCert != hasKey) {
+    // A half-configured fallback pair must error even when cert_dir already
+    // satisfies the required-source check.
+    errors.push_back(std::string(context) + ": cert_file and key_file must be set together");
+  } else if (!hasDir && !hasCert) {
+    // hasCert == hasKey here (the != case errored above).
     errors.push_back(
-        std::string(context) +
-        ": cert_file and key_file (or pkcs12_file) are required when insecure=false"
+        std::string(context) + ": cert_file and key_file (or pkcs12_file, or fizz.cert_dir) are "
+                               "required when insecure=false"
     );
   }
 }
@@ -171,14 +223,25 @@ void validateAdminTlsConfig(const ParsedAdminTlsConfig& tls, std::vector<std::st
   }
 }
 
-TlsConfig
+ListenerTlsConfig
 resolveTlsConfig(const ParsedListenerTlsConfig& tls, std::optional<TlsMaterial> material) {
   const bool hasMaterial = material.has_value();
-  return TlsConfig{
-      .certFile = hasMaterial ? std::string{} : tls.cert_file.value().value_or(""),
-      .keyFile = hasMaterial ? std::string{} : tls.key_file.value().value_or(""),
-      .alpn = {},
-      .material = std::move(material),
+  std::optional<CertDirConfig> certDir;
+  if (hasCertDir(tls)) {
+    certDir = CertDirConfig{.dir = *tls.fizz.value()->cert_dir.value()};
+    if (const auto& interval = tls.fizz.value()->cert_reload_interval_s.value()) {
+      certDir->reloadInterval = std::chrono::seconds(*interval);
+    }
+  }
+  return ListenerTlsConfig{
+      .tls =
+          TlsConfig{
+              .certFile = hasMaterial ? std::string{} : tls.cert_file.value().value_or(""),
+              .keyFile = hasMaterial ? std::string{} : tls.key_file.value().value_or(""),
+              .alpn = {},
+              .material = std::move(material),
+          },
+      .certDir = std::move(certDir),
   };
 }
 
@@ -399,6 +462,12 @@ void validateListener(
     errors.push_back(
         "Listener '" + listener.name.value() +
         "': quic_stack \"picoquic\" does not support pkcs12_file yet; use cert_file/key_file"
+    );
+  }
+  if (stackOpt.value_or(kStackMvfst) == kStackPicoquic && hasFizzOptions(listener.tls.value())) {
+    errors.push_back(
+        "Listener '" + listener.name.value() +
+        "': quic_stack \"picoquic\" does not support tls.fizz options; use cert_file/key_file"
     );
   }
 }
