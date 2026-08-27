@@ -6,56 +6,29 @@
 
 #pragma once
 
-#include <atomic>
-#include <filesystem>
-#include <fstream>
 #include <stdexcept>
 #include <string>
-#include <string_view>
-#include <unistd.h>
 
 #include <openssl/bio.h>
-#include <openssl/evp.h>
 #include <openssl/pkcs12.h>
-#include <openssl/x509.h>
+
+#include "../tls/CertTestUtils.h"
+#include "../util/TempDir.h"
 
 namespace openmoq::moqx::config::test {
 
+using moqx::test::TempFile;
+
 // Build a self-signed RSA cert + key and pack them into a PKCS#12 bundle,
 // returning the DER bytes. `password` may be empty (password-less bundle).
-// Throws std::runtime_error on any OpenSSL failure. Test-only.
+// Throws std::runtime_error on any OpenSSL failure.
 inline std::string makeSelfSignedPkcs12Der(const std::string& password) {
-  EVP_PKEY* pkey = EVP_RSA_gen(2048);
-  if (!pkey) {
-    throw std::runtime_error("EVP_RSA_gen failed");
-  }
-  X509* x509 = X509_new();
-  if (!x509) {
-    EVP_PKEY_free(pkey);
-    throw std::runtime_error("X509_new failed");
-  }
-  ASN1_INTEGER_set(X509_get_serialNumber(x509), 1);
-  X509_gmtime_adj(X509_getm_notBefore(x509), 0);
-  X509_gmtime_adj(X509_getm_notAfter(x509), 3600);
-  X509_set_pubkey(x509, pkey);
-  X509_NAME* name = X509_get_subject_name(x509);
-  X509_NAME_add_entry_by_txt(
-      name,
-      "CN",
-      MBSTRING_ASC,
-      reinterpret_cast<const unsigned char*>("moqx-test"),
-      -1,
-      -1,
-      0
-  );
-  X509_set_issuer_name(x509, name); // self-signed
-  bool ok = X509_sign(x509, pkey, EVP_sha256()) > 0;
+  auto [pkey, x509] =
+      moqx::test::makeSelfSignedCert("moqx-test", {}, moqx::test::TestKeyType::RSA2048);
 
-  PKCS12* p12 = nullptr;
-  if (ok) {
-    // nid_key/nid_cert 0 => OpenSSL defaults; iter/mac_iter 0 => defaults.
-    p12 = PKCS12_create(password.c_str(), "moqx-test", pkey, x509, /*ca=*/nullptr, 0, 0, 0, 0, 0);
-  }
+  // nid_key/nid_cert 0 => OpenSSL defaults; iter/mac_iter 0 => defaults.
+  PKCS12* p12 =
+      PKCS12_create(password.c_str(), "moqx-test", pkey, x509, /*ca=*/nullptr, 0, 0, 0, 0, 0);
 
   std::string der;
   if (p12) {
@@ -80,30 +53,5 @@ inline std::string makeSelfSignedPkcs12Der(const std::string& password) {
   }
   return der;
 }
-
-// RAII temp file: writes the given bytes (binary) to a unique path, removes it
-// on destruction. Test-only.
-class TempFile {
-public:
-  TempFile(std::string_view bytes, std::string_view suffix) {
-    static std::atomic<int> counter{0};
-    path_ =
-        std::filesystem::temp_directory_path() / ("moqx_test_" + std::to_string(::getpid()) + "_" +
-                                                  std::to_string(counter++) + std::string(suffix));
-    std::ofstream ofs(path_, std::ios::binary);
-    ofs.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
-  }
-  ~TempFile() {
-    std::error_code ec;
-    std::filesystem::remove(path_, ec);
-  }
-  TempFile(const TempFile&) = delete;
-  TempFile& operator=(const TempFile&) = delete;
-
-  std::string path() const { return path_.string(); }
-
-private:
-  std::filesystem::path path_;
-};
 
 } // namespace openmoq::moqx::config::test
