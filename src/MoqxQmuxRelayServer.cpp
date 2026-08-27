@@ -7,9 +7,9 @@
 #include "MoqxQmuxRelayServer.h"
 
 #include "stats/EventBaseStatsCollector.h"
+#include "tls/FizzContextBuilder.h"
 #include <moxygen/MoQRelaySession.h>
 #include <moxygen/QmuxUtils.h>
-#include <proxygen/httpserver/samples/hq/FizzContext.h>
 
 #include <folly/logging/xlog.h>
 #include <quic/state/TransportSettings.h>
@@ -24,32 +24,6 @@ namespace {
 // on the QUIC path).
 std::vector<std::string> buildQmuxAlpns(const std::string& versions) {
   return getMoqtProtocols(versions, /*useStandard=*/true);
-}
-
-std::shared_ptr<const fizz::server::FizzServerContext>
-buildFizzContext(const config::ListenerConfig& cfg) {
-  auto alpns = buildQmuxAlpns(cfg.moqtVersions);
-  return std::visit(
-      [&alpns](const auto& tls) -> std::shared_ptr<const fizz::server::FizzServerContext> {
-        using T = std::decay_t<decltype(tls)>;
-        if constexpr (std::is_same_v<T, config::Insecure>) {
-          return quic::samples::createFizzServerContextWithInsecureDefault(
-              alpns,
-              fizz::server::ClientAuthMode::None,
-              "",
-              ""
-          );
-        } else {
-          return quic::samples::createFizzServerContext(
-              alpns,
-              fizz::server::ClientAuthMode::Optional,
-              tls.certFile,
-              tls.keyFile
-          );
-        }
-      },
-      cfg.tlsMode
-  );
 }
 
 // Translate the QUIC flow-control / idle-timeout knobs into the QMUX transport
@@ -78,7 +52,10 @@ MoqxQmuxRelayServer::MoqxQmuxRelayServer(
 )
     : MoQQmuxServer(
           listenerCfg.endpoint,
-          buildFizzContext(listenerCfg),
+          tls::buildFizzServerContext(
+              listenerCfg.tlsMode,
+              {.alpns = buildQmuxAlpns(listenerCfg.moqtVersions)}
+          ),
           buildQmuxConfig(listenerCfg.quic)
       ),
       listenerCfg_(listenerCfg), context_(std::move(context)), ioExecutor_(ioExecutor) {
