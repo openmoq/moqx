@@ -42,7 +42,7 @@ scrape_configs:
   # target=<relay /state>. Per-track series come from /metrics/track instead.
   - job_name: moqx-state
     metrics_path: /probe
-    scrape_interval: 3s
+    scrape_interval: 10s
     params:
       module: [moqx]
     static_configs:
