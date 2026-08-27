@@ -47,6 +47,58 @@ protected:
     );
     return sub;
   }
+
+  // A v18 SUBSCRIBE with no RENDEZVOUS_TIMEOUT: eligible session, ineligible request.
+  static SubscribeRequest makePlainV18SubscribeRequest(const FullTrackName& ftn) {
+    SubscribeRequest sub;
+    sub.fullTrackName = ftn;
+    sub.requestID = RequestID(1);
+    sub.locType = LocationType::LargestObject;
+    sub.params.setMajorVersion(getDraftMajorVersion(kVersionDraft18));
+    return sub;
+  }
+
+  // Answers the relay's upstream SUBSCRIBE with a canned OK, recording whether the
+  // request still carried key 0x04.
+  void expectUpstreamSubscribe(
+      const std::shared_ptr<MockMoQSession>& publisherSession,
+      bool& sawUpstream,
+      bool* sawKey04 = nullptr
+  ) {
+    SubscribeOk upstreamOk;
+    upstreamOk.requestID = RequestID(1);
+    upstreamOk.trackAlias = TrackAlias(1);
+    upstreamOk.expires = std::chrono::milliseconds(0);
+    upstreamOk.groupOrder = GroupOrder::OldestFirst;
+    EXPECT_CALL(*publisherSession, subscribe(_, _))
+        .WillRepeatedly([&sawUpstream,
+                         sawKey04,
+                         upstreamOk](const SubscribeRequest& req, std::shared_ptr<TrackConsumer>) {
+          sawUpstream = true;
+          if (sawKey04) {
+            *sawKey04 =
+                req.params.getFirstParam(TrackRequestParamKey::MAX_CACHE_DURATION) != nullptr;
+          }
+          auto handle = std::make_shared<NiceMock<MockSubscriptionHandle>>(upstreamOk);
+          return folly::coro::makeTask<Publisher::SubscribeResult>(
+              folly::Expected<std::shared_ptr<SubscriptionHandle>, SubscribeError>(handle)
+          );
+        });
+  }
+
+  // Starts a SUBSCRIBE on exec_ without waiting for it, so the test can assert it
+  // is still parked.
+  auto startSubscribe(
+      const std::shared_ptr<MockMoQSession>& session,
+      SubscribeRequest sub,
+      const std::shared_ptr<MockTrackConsumer>& consumer
+  ) {
+    return withSessionContext(session, [&]() {
+      auto task = publisherInterface()->subscribe(std::move(sub), consumer);
+      return co_withExecutor(static_cast<folly::DrivableExecutor*>(exec_.get()), std::move(task))
+          .start();
+    });
+  }
 };
 
 // Pre-draft-18 sessions aren't rendezvous-eligible: a SUBSCRIBE for a track
@@ -222,6 +274,106 @@ TEST_P(MoqxRelayRendezvousTest, IndependentTimeoutsOnSameIothread) {
   removeSession(pubSession);
   removeSession(shortSubSession);
   removeSession(longSubSession);
+  driveIfMultiThread();
+}
+
+// A publisher announcing the empty namespace claims every track, so waking the whole
+// trie is right and each waiter must then route to it. It does not: findNode() refuses
+// to prefix-match at the root (`nodePtr.get() != &root_`), so findPublisherSession()
+// answers null and the woken waiter fails DOES_NOT_EXIST. moxygen's
+// findPublishNamespaceSession() seeds deepestPublisher from the root instead.
+TEST_P(MoqxRelayRendezvousTest, EmptyNamespacePublishNamespaceResolvesWaiters) {
+  relay_->setAllowedNamespacePrefix(TrackNamespace{});
+
+  auto subSession = createV18Session();
+  auto pubSession = createMockSession();
+  auto consumer = createMockConsumer();
+  bool sawUpstream = false;
+  expectUpstreamSubscribe(pubSession, sawUpstream);
+
+  auto future =
+      startSubscribe(subSession, makeRendezvousSubscribeRequest(kTestTrackName, 4000), consumer);
+  exec_->driveFor(10);
+  ASSERT_FALSE(future.isReady());
+
+  doPublishNamespace(pubSession, TrackNamespace{});
+
+  ASSERT_TRUE(driveUntil([&] { return future.isReady(); }))
+      << "a root publisher claims every namespace, so the waiter should wake";
+  auto result = std::move(future).value();
+  EXPECT_TRUE(result.hasValue()
+  ) << "a root publisher can serve this track, so the woken waiter must route to it";
+
+  if (result.hasValue()) {
+    result.value()->unsubscribe();
+  }
+  removeSession(pubSession);
+  removeSession(subSession);
+  driveIfMultiThread();
+}
+
+// Port of moxygen a682b57a ("Route SUBSCRIBE past publisher-less namespace nodes"):
+// PUBLISH and SUBSCRIBE_NAMESPACE also create nodes, and those carry no publisher, so
+// a SUBSCRIBE descending through one must still reach the ancestor that does publish.
+// Two variants, matching the two upstream tests.
+TEST_P(MoqxRelayRendezvousTest, SubscribeRoutesPastPublishCreatedNode) {
+  auto pubSession = createMockSession();
+  auto otherPubSession = createMockSession();
+  auto subSession = createMockSession();
+  bool sawUpstream = false;
+  expectUpstreamSubscribe(pubSession, sawUpstream);
+
+  doPublishNamespace(pubSession, kAllowedPrefix);
+  // A PUBLISH under "test/namespace" materialises that node with no publisher on it.
+  doPublish(otherPubSession, FullTrackName{kTestNamespace, "other"});
+
+  auto consumer = createMockConsumer();
+  auto result = withSessionContext(subSession, [&]() {
+    auto task =
+        publisherInterface()->subscribe(makePlainV18SubscribeRequest(kTestTrackName), consumer);
+    return folly::coro::blockingWait(std::move(task), exec_.get());
+  });
+
+  EXPECT_TRUE(result.hasValue()
+  ) << "a PUBLISH-created node must not hide the publisher at the ancestor";
+
+  if (result.hasValue()) {
+    result.value()->unsubscribe();
+  }
+  removeSession(subSession);
+  removeSession(otherPubSession);
+  removeSession(pubSession);
+  driveIfMultiThread();
+}
+
+TEST_P(MoqxRelayRendezvousTest, SubscribeRoutesPastSubscribeNamespaceCreatedNode) {
+  auto pubSession = createMockSession();
+  auto nsSubSession = createMockSession();
+  auto subSession = createMockSession();
+  bool sawUpstream = false;
+  expectUpstreamSubscribe(pubSession, sawUpstream);
+
+  // Publisher owns the "test" prefix; the track sits a level below it.
+  doPublishNamespace(pubSession, kAllowedPrefix);
+  // A namespace subscriber materialises "test/namespace" carrying no publisher.
+  doSubscribeNamespace(nsSubSession, kTestNamespace);
+
+  auto consumer = createMockConsumer();
+  auto result = withSessionContext(subSession, [&]() {
+    auto task =
+        publisherInterface()->subscribe(makePlainV18SubscribeRequest(kTestTrackName), consumer);
+    return folly::coro::blockingWait(std::move(task), exec_.get());
+  });
+
+  EXPECT_TRUE(result.hasValue()
+  ) << "an empty intermediate node must not hide the publisher at the ancestor";
+
+  if (result.hasValue()) {
+    result.value()->unsubscribe();
+  }
+  removeSession(subSession);
+  removeSession(nsSubSession);
+  removeSession(pubSession);
   driveIfMultiThread();
 }
 
