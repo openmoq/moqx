@@ -11,9 +11,8 @@
 // resolving or timing it out later).
 //
 // Covers all three relay modes: MoqxRelay::subscribeImpl (SingleThread /
-// MultiThread) and MoqxRelay::joinOrPrepareUpstreamSubscription
-// (LocalForwarderMT) both implement the same rendezvous parking/wake/timeout
-// flow.
+// MultiThread) and MoqxRelay::subscribeFromSubscriberExec (LocalForwarderMT)
+// both implement the same rendezvous parking/wake/timeout flow.
 
 #include "MoqxRelayTestFixture.h"
 
@@ -55,6 +54,24 @@ protected:
     sub.requestID = RequestID(1);
     sub.locType = LocationType::LargestObject;
     sub.params.setMajorVersion(getDraftMajorVersion(kVersionDraft18));
+    return sub;
+  }
+
+  // Key 0x04 on a pre-v18 SUBSCRIBE, where it means MAX_CACHE_DURATION rather than
+  // RENDEZVOUS_TIMEOUT.
+  static SubscribeRequest
+  makeMaxCacheDurationSubscribeRequest(const FullTrackName& ftn, uint64_t durationMs) {
+    SubscribeRequest sub;
+    sub.fullTrackName = ftn;
+    sub.requestID = RequestID(1);
+    sub.locType = LocationType::LargestObject;
+    sub.params.setMajorVersion(getDraftMajorVersion(kVersionDraftCurrent));
+    EXPECT_TRUE(sub.params
+                    .insertParam(Parameter(
+                        folly::to_underlying(TrackRequestParamKey::MAX_CACHE_DURATION),
+                        durationMs
+                    ))
+                    .hasValue());
     return sub;
   }
 
@@ -274,6 +291,176 @@ TEST_P(MoqxRelayRendezvousTest, IndependentTimeoutsOnSameIothread) {
   removeSession(pubSession);
   removeSession(shortSubSession);
   removeSession(longSubSession);
+  driveIfMultiThread();
+}
+
+// A PUBLISH_NAMESPACE for the waiter's own namespace resolves it: any track under
+// that namespace becomes reachable via the new publisher.
+TEST_P(MoqxRelayRendezvousTest, PublishNamespaceWakesParkedSubscribe) {
+  auto subSession = createV18Session();
+  auto pubSession = createMockSession();
+  auto consumer = createMockConsumer();
+  bool sawUpstream = false;
+  expectUpstreamSubscribe(pubSession, sawUpstream);
+
+  auto future =
+      startSubscribe(subSession, makeRendezvousSubscribeRequest(kTestTrackName, 5000), consumer);
+  exec_->driveFor(10);
+  ASSERT_FALSE(future.isReady()) << "subscribe should be parked awaiting rendezvous";
+
+  doPublishNamespace(pubSession, kTestNamespace);
+
+  ASSERT_TRUE(driveUntil([&] { return future.isReady(); }))
+      << "PUBLISH_NAMESPACE for the waiter's namespace should wake it";
+  auto result = std::move(future).value();
+  ASSERT_TRUE(result.hasValue()) << "woken subscribe should resolve via the new publisher";
+  EXPECT_TRUE(sawUpstream);
+
+  result.value()->unsubscribe();
+  removeSession(pubSession);
+  removeSession(subSession);
+  driveIfMultiThread();
+}
+
+// findPublisherSession() is a prefix match, so a publisher at an ancestor namespace
+// serves deeper tracks. The subtree wake has to reach them.
+TEST_P(MoqxRelayRendezvousTest, AncestorPublishNamespaceWakesDeeperWaiter) {
+  const TrackNamespace deepNs{{"test", "namespace", "deep"}};
+  const FullTrackName deepTrack{deepNs, "track1"};
+
+  auto subSession = createV18Session();
+  auto pubSession = createMockSession();
+  auto consumer = createMockConsumer();
+  bool sawUpstream = false;
+  expectUpstreamSubscribe(pubSession, sawUpstream);
+
+  auto future =
+      startSubscribe(subSession, makeRendezvousSubscribeRequest(deepTrack, 5000), consumer);
+  exec_->driveFor(10);
+  ASSERT_FALSE(future.isReady()) << "subscribe should be parked awaiting rendezvous";
+
+  // Announce the ancestor, not the waiter's own namespace.
+  doPublishNamespace(pubSession, kTestNamespace);
+
+  ASSERT_TRUE(driveUntil([&] { return future.isReady(); }))
+      << "ancestor PUBLISH_NAMESPACE should wake a waiter parked deeper in the trie";
+  auto result = std::move(future).value();
+  ASSERT_TRUE(result.hasValue());
+  EXPECT_TRUE(sawUpstream);
+
+  result.value()->unsubscribe();
+  removeSession(pubSession);
+  removeSession(subSession);
+  driveIfMultiThread();
+}
+
+// PUBLISH registers only that track, so it must not wake waiters for a sibling
+// track: addPublish() writes publishes_, not publisherSession_, so the namespace
+// is still unresolvable for them.
+TEST_P(MoqxRelayRendezvousTest, PublishOfDifferentTrackDoesNotWake) {
+  auto subSession = createV18Session();
+  auto pubSession = createMockSession();
+  auto consumer = createMockConsumer();
+
+  auto future =
+      startSubscribe(subSession, makeRendezvousSubscribeRequest(kTestTrackName, 4000), consumer);
+  exec_->driveFor(10);
+  ASSERT_FALSE(future.isReady());
+
+  doPublish(pubSession, FullTrackName{kTestNamespace, "track2"});
+  exec_->driveFor(20);
+  EXPECT_FALSE(future.isReady()
+  ) << "a PUBLISH of a sibling track must not resolve a waiter for track1";
+
+  // Now publish the real track so the test doesn't wait out the 4s timeout.
+  doPublish(pubSession, kTestTrackName);
+  ASSERT_TRUE(driveUntil([&] { return future.isReady(); }));
+  auto result = std::move(future).value();
+  ASSERT_TRUE(result.hasValue());
+
+  result.value()->unsubscribe();
+  removeSession(pubSession);
+  removeSession(subSession);
+  driveIfMultiThread();
+}
+
+// The case the parking was moved ahead of localReg->join() for: a SUBSCRIBE with no
+// RENDEZVOUS_TIMEOUT must fail immediately rather than inherit a parked waiter's
+// deadline, and must not disturb that waiter.
+TEST_P(MoqxRelayRendezvousTest, NoTimeoutSubscriberFailsWhileAnotherIsParked) {
+  auto parkedSession = createV18Session();
+  auto plainSession = createV18Session();
+  auto parkedConsumer = createMockConsumer();
+  auto plainConsumer = createMockConsumer();
+
+  auto parkedFuture = startSubscribe(
+      parkedSession,
+      makeRendezvousSubscribeRequest(kTestTrackName, 4000),
+      parkedConsumer
+  );
+  exec_->driveFor(10);
+  ASSERT_FALSE(parkedFuture.isReady()) << "first subscribe should be parked";
+
+  auto start = std::chrono::steady_clock::now();
+  auto plainResult = withSessionContext(plainSession, [&]() {
+    auto task = publisherInterface()->subscribe(
+        makePlainV18SubscribeRequest(kTestTrackName),
+        plainConsumer
+    );
+    return folly::coro::blockingWait(std::move(task), exec_.get());
+  });
+  auto elapsed = std::chrono::steady_clock::now() - start;
+
+  ASSERT_TRUE(plainResult.hasError());
+  EXPECT_EQ(plainResult.error().errorCode, SubscribeErrorCode::DOES_NOT_EXIST);
+  EXPECT_LT(elapsed, std::chrono::milliseconds(1000))
+      << "a no-timeout SUBSCRIBE must not be serialized behind the parked one's 4s wait";
+  EXPECT_FALSE(parkedFuture.isReady())
+      << "the parked waiter must survive the other subscriber's failure";
+
+  auto pubSession = createMockSession();
+  doPublish(pubSession, kTestTrackName);
+  ASSERT_TRUE(driveUntil([&] { return parkedFuture.isReady(); }))
+      << "parked waiter should still wake on PUBLISH after the failed neighbour";
+  auto parked = std::move(parkedFuture).value();
+  ASSERT_TRUE(parked.hasValue());
+
+  parked.value()->unsubscribe();
+  removeSession(pubSession);
+  removeSession(plainSession);
+  removeSession(parkedSession);
+  driveIfMultiThread();
+}
+
+// makeUpstreamSubReq() erases key 0x04 unconditionally. Below draft 18 that key is
+// MAX_CACHE_DURATION, a legal SUBSCRIBE parameter, so a pre-v18 client's value is
+// dropped on the way upstream. moxygen gates the same erase on either side being v18+.
+TEST_P(MoqxRelayRendezvousTest, UpstreamSubReqDropsPreV18MaxCacheDuration) {
+  auto pubSession = createMockSession(); // draft 14
+  auto subSession = createMockSession(); // draft 14
+  doPublishNamespace(pubSession, kTestNamespace);
+
+  bool sawUpstream = false;
+  bool sawKey04 = false;
+  expectUpstreamSubscribe(pubSession, sawUpstream, &sawKey04);
+
+  auto consumer = createMockConsumer();
+  auto result = withSessionContext(subSession, [&]() {
+    auto task = publisherInterface()->subscribe(
+        makeMaxCacheDurationSubscribeRequest(kTestTrackName, /*durationMs=*/30'000),
+        consumer
+    );
+    return folly::coro::blockingWait(std::move(task), exec_.get());
+  });
+
+  ASSERT_TRUE(result.hasValue());
+  ASSERT_TRUE(sawUpstream) << "relay should have issued an upstream subscribe";
+  EXPECT_TRUE(sawKey04) << "MAX_CACHE_DURATION must survive a pre-v18 hop; key 0x04 only means "
+                           "RENDEZVOUS_TIMEOUT at draft 18+";
+
+  result.value()->unsubscribe();
+  removeSession(subSession);
+  removeSession(pubSession);
   driveIfMultiThread();
 }
 
