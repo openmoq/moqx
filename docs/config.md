@@ -76,8 +76,9 @@ listeners:
   client certificate.
 - `insecure: true` alongside `cert_file`, `key_file`, `pkcs12_file`, or
   `fizz.cert_dir` is rejected at config load.
-- `insecure: true` alongside `fizz.cert_reload_interval_s` warns: it does not
-  reach the compiled-in certificate path.
+- `insecure: true` alongside `fizz.ticket_seeds_file` or
+  `fizz.cert_reload_interval_s` warns: neither reaches the compiled-in
+  certificate path.
 - `quic_stack: picoquic` rejects `insecure: true`.
 
 **Multi-certificate / SNI (`tls.fizz`):** options for the fizz TLS stack
@@ -88,6 +89,7 @@ the block; an empty `fizz: {}` is accepted.
 |---|---|---|
 | `cert_dir` | unset | Directory of certificate pairs, `<base>.pem` + `<base>.key` (arbitrary basenames, non-recursive). The certificate served is selected by the client's SNI. |
 | `cert_reload_interval_s` | 60 | Seconds between background rescans of `cert_dir`. `0` = scan once at startup, never rescan. Warns when set without `cert_dir`. |
+| `ticket_seeds_file` | unset | Session-ticket seeds: one hex-encoded seed (≥64 hex chars) per line, `#` starts a comment. Read once at startup. |
 
 - Identities come from each certificate's DNS SANs, or from its CN when the
   certificate carries no DNS SANs. Other SAN types (IP, email) are ignored.
@@ -120,6 +122,19 @@ the block; an empty `fizz: {}` is accepted.
   a warning, and the incumbent keeps that identity until its own files are
   removed. At startup there is no incumbent: sorted filename order decides,
   and the duplicate is fatal.
+
+**`ticket_seeds_file`:** a moqx format, not one shared with nginx or HAProxy.
+
+- The first seed encrypts new session tickets.
+- Every listed seed still decrypts, so rotate by prepending a new seed.
+- Generate a seed with `openssl rand -hex 32`.
+- Point every relay instance at the same file so resumption survives restarts
+  and works across relays.
+- The file is read once at startup, so a rotation takes effect on restart.
+- Without the option each process uses a random seed, and resumption dies with
+  the process.
+- An empty file, a comments-only file, a non-hex line, or a seed under 32
+  bytes is a config-load error.
 
 **moqt_versions:**: Currently supports 14 and 16.
 

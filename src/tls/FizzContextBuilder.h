@@ -19,6 +19,10 @@ namespace openmoq::moqx::tls {
 
 struct FizzContextOptions {
   std::vector<std::string> alpns;
+  // Raw bytes, each at least 32 or fizz rejects the whole set; the first seed
+  // encrypts, all decrypt. Empty = a random per-process seed. See
+  // docs/config.md (ticket_seeds_file).
+  std::vector<std::string> ticketSeeds;
 };
 
 // Config-to-CertManager dispatch for a secure listener:
@@ -39,14 +43,15 @@ std::shared_ptr<fizz::server::CertManager> makeCertManager(const config::Listene
 // Secure fizz server context around a caller-supplied CertManager: ticket
 // cipher wired to the same manager (resumption resolves certs through it),
 // ALPN required, early data on, ClientAuthMode::Optional.
+// Throws std::runtime_error when fizz rejects the configured ticket seeds.
 std::shared_ptr<const fizz::server::FizzServerContext> buildFizzServerContext(
     std::shared_ptr<fizz::server::CertManager> certManager,
     FizzContextOptions options
 );
 
 // Fizz server context for a listener. Insecure: the proxygen sample context
-// with a compiled-in cert (ClientAuthMode::None). Secure: the CertManager
-// overload around makeCertManager(cfg).
+// with a compiled-in cert (ClientAuthMode::None; ticket seeds don't apply).
+// Secure: the CertManager overload around makeCertManager(cfg).
 // Throws std::runtime_error with the offending paths on any load failure.
 std::shared_ptr<const fizz::server::FizzServerContext>
 buildFizzServerContext(const config::TlsMode& mode, FizzContextOptions options);

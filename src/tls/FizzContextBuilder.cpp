@@ -8,6 +8,7 @@
 
 #include <array>
 #include <map>
+#include <stdexcept>
 #include <variant>
 
 #include <folly/String.h>
@@ -105,9 +106,25 @@ std::shared_ptr<const fizz::server::FizzServerContext> buildFizzServerContext(
       ctx->getFactoryPtr(),
       std::move(certManager)
   );
-  std::array<uint8_t, 32> ticketSeed;
-  folly::Random::secureRandom(ticketSeed.data(), ticketSeed.size());
-  ticketCipher->setTicketSecrets({{folly::range(ticketSeed)}});
+  if (!options.ticketSeeds.empty()) {
+    std::vector<folly::ByteRange> secrets;
+    secrets.reserve(options.ticketSeeds.size());
+    for (const auto& seed : options.ticketSeeds) {
+      secrets.emplace_back(reinterpret_cast<const uint8_t*>(seed.data()), seed.size());
+    }
+    // A false return would leave the cipher secretless: tickets silently stop
+    // being issued and resumption dies. Config validation enforces the 32-byte
+    // minimum; this guards programmatic callers of the extension seam.
+    if (!ticketCipher->setTicketSecrets(secrets)) {
+      throw std::runtime_error(
+          "fizz rejected the TLS ticket seeds: each seed must be at least 32 bytes"
+      );
+    }
+  } else {
+    std::array<uint8_t, 32> ticketSeed;
+    folly::Random::secureRandom(ticketSeed.data(), ticketSeed.size());
+    ticketCipher->setTicketSecrets({{folly::range(ticketSeed)}});
+  }
   ctx->setTicketCipher(ticketCipher);
   ctx->setClientAuthMode(fizz::server::ClientAuthMode::Optional);
   ctx->setSupportedAlpns(options.alpns);
@@ -138,6 +155,7 @@ buildFizzServerContext(const config::TlsMode& mode, FizzContextOptions options) 
               ""
           );
         } else {
+          options.ticketSeeds = tls.ticketSeeds;
           return buildFizzServerContext(makeCertManager(tls), std::move(options));
         }
       },

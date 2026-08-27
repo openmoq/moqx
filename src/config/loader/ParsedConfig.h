@@ -47,6 +47,15 @@ struct ParsedFizzTlsConfig {
       "changed pairs). 0 = scan once at startup, never rescan. Default 60.",
       std::optional<uint32_t>>
       cert_reload_interval_s;
+  rfl::Description<
+      "Path to a session-ticket seeds file: one hex-encoded seed (at least 64 hex "
+      "chars) per line, '#' starts a comment; a file yielding no seeds is an error. "
+      "The first seed encrypts new tickets; every listed seed still decrypts, so "
+      "rotate by prepending a line and restarting. Share one file across relay "
+      "instances so TLS resumption survives restarts and works across relays. "
+      "Absent: a random per-process seed.",
+      std::optional<std::string>>
+      ticket_seeds_file;
 };
 
 struct ParsedListenerTlsConfig {

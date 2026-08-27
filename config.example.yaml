@@ -26,6 +26,7 @@ listeners:
       # fizz:
       #   cert_dir: /path/to/certs
       #   cert_reload_interval_s: 60   # background rescan; 0 = scan once at startup
+      #   ticket_seeds_file: /path/to/ticket-seeds  # hex seeds, one per line; share across relays so resumption survives restarts
       # --- Development-only mode ---
       # insecure is rejected alongside cert_file/key_file/pkcs12_file/fizz.
       insecure: true          # Serve the compiled-in dev cert; no real credentials (development only)

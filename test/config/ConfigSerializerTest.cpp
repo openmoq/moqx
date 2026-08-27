@@ -33,7 +33,7 @@ static_assert(
     "TlsConfig changed — update serializeTls()"
 );
 static_assert(
-    rfl::internal::num_fields<ListenerTlsConfig> == 2,
+    rfl::internal::num_fields<ListenerTlsConfig> == 3,
     "ListenerTlsConfig changed — update serializeListenerTls()"
 );
 static_assert(
@@ -187,7 +187,9 @@ Config makeFullConfig() {
   l.address = folly::SocketAddress("::", 4433);
   l.tlsMode = ListenerTlsConfig{
       TlsConfig{"/etc/relay.crt", "/etc/relay.key", {}, std::nullopt},
-      CertDirConfig{"/etc/certs", std::chrono::seconds(30)}
+      CertDirConfig{"/etc/certs", std::chrono::seconds(30)},
+      // Recognizable raw seed bytes: the leak check below scans the dump for them.
+      {std::string(32, 'S'), std::string(32, 'T')}
   };
   l.endpoint = "/moq-relay";
   l.moqtVersions = "16";
@@ -229,6 +231,12 @@ TEST(ConfigSerializerTest, VisitsAllSections) {
   EXPECT_EQ(sink.scalars["listeners.*.tls.key_file"], "/etc/relay.key");
   EXPECT_EQ(sink.scalars["listeners.*.tls.fizz.cert_dir"], "/etc/certs");
   EXPECT_EQ(sink.scalars["listeners.*.tls.fizz.cert_reload_interval_s"], "30");
+  // Seeds are secret material: only the count may appear in the dump.
+  EXPECT_EQ(sink.scalars["listeners.*.tls.fizz.ticket_seed_count"], "2");
+  for (const auto& [key, value] : sink.scalars) {
+    EXPECT_EQ(value.find("SSSS"), std::string::npos) << key;
+    EXPECT_EQ(value.find("TTTT"), std::string::npos) << key;
+  }
   // Fizz options are listener-only; the admin TLS dump must not grow the key.
   EXPECT_EQ(sink.scalars.count("admin.tls.fizz"), 0u);
   EXPECT_EQ(sink.scalars["listeners.*.quic.cc_algo"], "bbr");
@@ -273,11 +281,23 @@ TEST(ConfigSerializerTest, AnonymousClaimEmptyNamespaceMatchSerializesAsEmptyArr
 
 TEST(ConfigSerializerTest, ListenerWithoutFizzOptionsEmitsNullFizz) {
   Config cfg = makeFullConfig();
-  std::get<ListenerTlsConfig>(cfg.listeners[0].tlsMode).certDir.reset();
+  auto& tls = std::get<ListenerTlsConfig>(cfg.listeners[0].tlsMode);
+  tls.certDir.reset();
+  tls.ticketSeeds.clear();
   RecordingSink sink;
   serializeConfig(cfg, sink);
 
   EXPECT_EQ(sink.scalars["listeners.*.tls.fizz"], "null");
+}
+
+TEST(ConfigSerializerTest, TicketSeedsWithoutCertDirEmitFizzObject) {
+  Config cfg = makeFullConfig();
+  std::get<ListenerTlsConfig>(cfg.listeners[0].tlsMode).certDir.reset();
+  RecordingSink sink;
+  serializeConfig(cfg, sink);
+
+  EXPECT_EQ(sink.scalars["listeners.*.tls.fizz.ticket_seed_count"], "2");
+  EXPECT_EQ(sink.scalars.count("listeners.*.tls.fizz.cert_dir"), 0u);
 }
 
 TEST(ConfigSerializerTest, RedactsHmacSecret) {

@@ -121,7 +121,9 @@ bool hasFizzOptions(const ParsedListenerTlsConfig& tls) {
   if (!fizz.has_value()) {
     return false;
   }
-  return hasCertDir(tls) || fizz->cert_reload_interval_s.value().has_value();
+  const auto& seeds = fizz->ticket_seeds_file.value();
+  return hasCertDir(tls) || fizz->cert_reload_interval_s.value().has_value() ||
+         (seeds.has_value() && !seeds->empty());
 }
 
 void validateListenerTlsConfig(
@@ -161,11 +163,19 @@ void validateListenerTlsConfig(
     // The rest of the fizz block costs only resumption sharing and reloads,
     // so it warns instead: insecure serves the compiled-in cert from the
     // sample context, which no fizz option reaches (see FizzContextBuilder.h).
-    if (tls.fizz.value().has_value() &&
-        tls.fizz.value()->cert_reload_interval_s.value().has_value()) {
-      warnings.push_back(
-          std::string(context) + ": fizz.cert_reload_interval_s has no effect with insecure=true"
-      );
+    if (tls.fizz.value().has_value()) {
+      const auto& fizz = *tls.fizz.value();
+      const auto& seeds = fizz.ticket_seeds_file.value();
+      if (seeds.has_value() && !seeds->empty()) {
+        warnings.push_back(
+            std::string(context) + ": fizz.ticket_seeds_file has no effect with insecure=true"
+        );
+      }
+      if (fizz.cert_reload_interval_s.value().has_value()) {
+        warnings.push_back(
+            std::string(context) + ": fizz.cert_reload_interval_s has no effect with insecure=true"
+        );
+      }
     }
     return;
   }
@@ -223,8 +233,11 @@ void validateAdminTlsConfig(const ParsedAdminTlsConfig& tls, std::vector<std::st
   }
 }
 
-ListenerTlsConfig
-resolveTlsConfig(const ParsedListenerTlsConfig& tls, std::optional<TlsMaterial> material) {
+ListenerTlsConfig resolveTlsConfig(
+    const ParsedListenerTlsConfig& tls,
+    std::optional<TlsMaterial> material,
+    std::vector<std::string> ticketSeeds
+) {
   const bool hasMaterial = material.has_value();
   std::optional<CertDirConfig> certDir;
   if (hasCertDir(tls)) {
@@ -242,6 +255,7 @@ resolveTlsConfig(const ParsedListenerTlsConfig& tls, std::optional<TlsMaterial> 
               .material = std::move(material),
           },
       .certDir = std::move(certDir),
+      .ticketSeeds = std::move(ticketSeeds),
   };
 }
 
@@ -297,6 +311,74 @@ folly::Expected<std::string, std::string> resolvePkcs12Password(
     return folly::makeExpected<std::string>(*inlinePw);
   }
   return folly::makeExpected<std::string>(std::string{});
+}
+
+// Read and decode a ticket_seeds_file: one hex seed per line, '#' comments.
+// Fizz rejects the whole set if any seed is under 32 bytes, which is why the
+// length is validated per line here.
+folly::Expected<std::vector<std::string>, std::string> resolveTicketSeeds(const std::string& path) {
+  std::string contents;
+  if (!folly::readFile(path.c_str(), contents)) {
+    return folly::makeUnexpected("failed to read ticket_seeds_file '" + path + "'");
+  }
+
+  auto parse = [&]() -> folly::Expected<std::vector<std::string>, std::string> {
+    std::vector<std::string> seeds;
+    std::vector<folly::StringPiece> lines;
+    folly::split('\n', contents, lines);
+    for (size_t i = 0; i < lines.size(); ++i) {
+      auto line = lines[i];
+      if (auto hash = line.find('#'); hash != folly::StringPiece::npos) {
+        line = line.subpiece(0, hash);
+      }
+      auto trimmed = folly::trimWhitespace(line);
+      if (trimmed.empty()) {
+        continue;
+      }
+      std::string decoded;
+      if (!folly::unhexlify(trimmed, decoded)) {
+        return folly::makeUnexpected(
+            "ticket_seeds_file '" + path + "' line " + std::to_string(i + 1) +
+            ": not a hex-encoded seed"
+        );
+      }
+      if (decoded.size() < 32) {
+        return folly::makeUnexpected(
+            "ticket_seeds_file '" + path + "' line " + std::to_string(i + 1) +
+            ": seed must be at least 32 bytes (64 hex characters)"
+        );
+      }
+      seeds.push_back(std::move(decoded));
+    }
+    if (seeds.empty()) {
+      return folly::makeUnexpected("ticket_seeds_file '" + path + "' contains no seeds");
+    }
+    return folly::makeExpected<std::string>(std::move(seeds));
+  };
+
+  auto result = parse();
+  OPENSSL_cleanse(contents.data(), contents.size());
+  return result;
+}
+
+// Ticket seeds for a listener, from fizz.ticket_seeds_file. Empty when the
+// option is absent; on failure, pushes a context-prefixed error.
+std::vector<std::string> resolveListenerTicketSeeds(
+    const ParsedListenerTlsConfig& tls,
+    const std::string& context,
+    std::vector<std::string>& errors
+) {
+  const auto& fizz = tls.fizz.value();
+  if (!fizz.has_value() || !fizz->ticket_seeds_file.value().has_value() ||
+      fizz->ticket_seeds_file.value()->empty()) {
+    return {};
+  }
+  auto seeds = resolveTicketSeeds(*fizz->ticket_seeds_file.value());
+  if (seeds.hasError()) {
+    errors.push_back(context + ": " + seeds.error());
+    return {};
+  }
+  return std::move(*seeds);
 }
 
 // Transcode the configured PKCS#12 bundle into in-memory PEM material. Returns
@@ -1158,7 +1240,8 @@ ListenerConfig resolveListener(
     const ParsedListenerConfig& listener,
     const QuicConfig& quic,
     const MvfstConfig& mvfst,
-    std::optional<TlsMaterial> material
+    std::optional<TlsMaterial> material,
+    std::vector<std::string> ticketSeeds
 ) {
   const auto& sock = listener.udp.value().socket.value();
   const auto& tls = listener.tls.value();
@@ -1167,7 +1250,7 @@ ListenerConfig resolveListener(
   if (tls.insecure.value()) {
     tlsMode = Insecure{};
   } else {
-    tlsMode = resolveTlsConfig(tls, std::move(material));
+    tlsMode = resolveTlsConfig(tls, std::move(material), std::move(ticketSeeds));
   }
 
   const auto& stackStr = listener.quic_stack.value().value_or(kStackMvfst);
@@ -1259,13 +1342,16 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
   std::vector<QuicConfig> mergedQuicConfigs;
   std::vector<MvfstConfig> mergedMvfstConfigs;
   std::vector<std::optional<TlsMaterial>> listenerTlsMaterials;
+  std::vector<std::vector<std::string>> listenerTicketSeeds;
   {
     std::unordered_set<std::string> listenerAddrs;
     for (const auto& listener : config.listeners.value()) {
       validateListener(listener, errors, warnings);
-      // Transcode any PKCS#12 bundle now (skipped for insecure listeners) so a
-      // bad password/file surfaces as a load-time config error.
+      // Transcode any PKCS#12 bundle and read any ticket-seeds file now
+      // (skipped for insecure listeners) so a bad password/file surfaces as a
+      // load-time config error.
       std::optional<TlsMaterial> material;
+      std::vector<std::string> ticketSeeds;
       if (!listener.tls.value().insecure.value()) {
         material = resolvePkcs12Material(
             listener.tls.value(),
@@ -1273,8 +1359,14 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
             errors,
             warnings
         );
+        ticketSeeds = resolveListenerTicketSeeds(
+            listener.tls.value(),
+            "Listener '" + listener.name.value() + "'",
+            errors
+        );
       }
       listenerTlsMaterials.push_back(std::move(material));
+      listenerTicketSeeds.push_back(std::move(ticketSeeds));
       auto addr = listener.udp.value().socket.value().address.value() + ":" +
                   std::to_string(listener.udp.value().socket.value().port.value());
       if (!listenerAddrs.insert(addr).second) {
@@ -1510,7 +1602,8 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
                           listeners[i],
                           mergedQuicConfigs[i],
                           mergedMvfstConfigs[i],
-                          std::move(listenerTlsMaterials[i])
+                          std::move(listenerTlsMaterials[i]),
+                          std::move(listenerTicketSeeds[i])
                       ));
                     }
                     return v;

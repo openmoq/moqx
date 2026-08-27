@@ -445,6 +445,97 @@ TEST(ResolveConfig, CertDirReloadIntervalZeroDisables) {
   EXPECT_EQ(resolved.certDir->reloadInterval, std::chrono::seconds(0));
 }
 
+TEST(ResolveConfig, TicketSeedsFileValid) {
+  // Two seeds with a comment line, a blank line, and a trailing comment; the
+  // decoded raw bytes must come out in file order (first = encryption seed).
+  std::string contents = "# rotation: prepend a fresh seed\n\n" + std::string(64, 'a') + "\n" +
+                         std::string(64, 'b') + "  # previous, still decrypts\n";
+  test::TempFile seeds(contents, ".seeds");
+
+  auto cfg = makeMinimalInsecureConfig();
+  auto& tls = cfg.listeners.value()[0].tls.value();
+  tls.insecure = false;
+  tls.cert_file = std::string("/some/cert.pem");
+  tls.key_file = std::string("/some/key.pem");
+  ParsedFizzTlsConfig fizz;
+  fizz.ticket_seeds_file = seeds.path();
+  tls.fizz = std::optional<ParsedFizzTlsConfig>{std::move(fizz)};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue()) << result.error();
+  const auto& resolved = std::get<ListenerTlsConfig>(result.value().config.listeners[0].tlsMode);
+  ASSERT_EQ(resolved.ticketSeeds.size(), 2u);
+  EXPECT_EQ(resolved.ticketSeeds[0], std::string(32, '\xaa'));
+  EXPECT_EQ(resolved.ticketSeeds[1], std::string(32, '\xbb'));
+}
+
+TEST(ResolveConfig, TicketSeedsFileInvalidHexRejected) {
+  test::TempFile seeds("not-hex-content\n", ".seeds");
+
+  auto cfg = makeMinimalInsecureConfig();
+  auto& tls = cfg.listeners.value()[0].tls.value();
+  tls.insecure = false;
+  tls.cert_file = std::string("/some/cert.pem");
+  tls.key_file = std::string("/some/key.pem");
+  ParsedFizzTlsConfig fizz;
+  fizz.ticket_seeds_file = seeds.path();
+  tls.fizz = std::optional<ParsedFizzTlsConfig>{std::move(fizz)};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("not a hex-encoded seed"));
+  EXPECT_THAT(result.error(), HasSubstr("line 1"));
+}
+
+TEST(ResolveConfig, TicketSeedsFileShortSeedRejected) {
+  test::TempFile seeds(std::string(32, 'a') + "\n", ".seeds"); // 16 bytes decoded
+
+  auto cfg = makeMinimalInsecureConfig();
+  auto& tls = cfg.listeners.value()[0].tls.value();
+  tls.insecure = false;
+  tls.cert_file = std::string("/some/cert.pem");
+  tls.key_file = std::string("/some/key.pem");
+  ParsedFizzTlsConfig fizz;
+  fizz.ticket_seeds_file = seeds.path();
+  tls.fizz = std::optional<ParsedFizzTlsConfig>{std::move(fizz)};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("at least 32 bytes"));
+}
+
+TEST(ResolveConfig, TicketSeedsFileEmptyRejected) {
+  test::TempFile seeds("# only a comment\n\n", ".seeds");
+
+  auto cfg = makeMinimalInsecureConfig();
+  auto& tls = cfg.listeners.value()[0].tls.value();
+  tls.insecure = false;
+  tls.cert_file = std::string("/some/cert.pem");
+  tls.key_file = std::string("/some/key.pem");
+  ParsedFizzTlsConfig fizz;
+  fizz.ticket_seeds_file = seeds.path();
+  tls.fizz = std::optional<ParsedFizzTlsConfig>{std::move(fizz)};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("contains no seeds"));
+}
+
+TEST(ResolveConfig, TicketSeedsFileUnreadableRejected) {
+  auto cfg = makeMinimalInsecureConfig();
+  auto& tls = cfg.listeners.value()[0].tls.value();
+  tls.insecure = false;
+  tls.cert_file = std::string("/some/cert.pem");
+  tls.key_file = std::string("/some/key.pem");
+  ParsedFizzTlsConfig fizz;
+  fizz.ticket_seeds_file = std::string("/nonexistent/moqx-seeds-test");
+  tls.fizz = std::optional<ParsedFizzTlsConfig>{std::move(fizz)};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("failed to read ticket_seeds_file"));
+}
+
 TEST(ResolveConfig, PicoquicEmptyFizzBlockAccepted) {
   auto cfg = makeMinimalInsecureConfig();
   auto& listener = cfg.listeners.value()[0];
@@ -530,6 +621,23 @@ TEST(ResolveConfig, InsecureWithFizzRejected) {
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasError());
   EXPECT_THAT(result.error(), HasSubstr("insecure=true is mutually exclusive"));
+}
+
+TEST(ResolveConfig, InsecureWithTicketSeedsWarns) {
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedFizzTlsConfig fizz;
+  fizz.ticket_seeds_file = std::string("/some/seeds.txt");
+  cfg.listeners.value()[0].tls.value().fizz = std::optional<ParsedFizzTlsConfig>{std::move(fizz)};
+
+  // Seeds never reach the compiled-in cert path, but nothing weaker gets
+  // served for ignoring them, so this is not fatal.
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue()) << result.error();
+  ASSERT_FALSE(result.value().warnings.empty());
+  EXPECT_THAT(
+      result.value().warnings[0],
+      HasSubstr("fizz.ticket_seeds_file has no effect with insecure=true")
+  );
 }
 
 TEST(ResolveConfig, InsecureWithCertReloadIntervalWarns) {

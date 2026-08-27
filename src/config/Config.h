@@ -57,6 +57,10 @@ struct ListenerTlsConfig {
   // When set, certs are served by SNI from this directory; tls.certFile/keyFile
   // or tls.material, if also present, act as the fallback cert.
   std::optional<CertDirConfig> certDir;
+  // Decoded session-ticket seeds, raw bytes, each at least 32 bytes; the first
+  // encrypts new tickets, all decrypt. Secret material: never log or serialize.
+  // Empty = a random per-process seed (resumption dies with the process).
+  std::vector<std::string> ticketSeeds;
 };
 
 struct Insecure {};

@@ -88,13 +88,17 @@ inline void serializeListenerTls(ConfigSink& s, const TlsMode& mode) {
   s.beginObject("tls");
   if (const auto* tls = std::get_if<ListenerTlsConfig>(&mode)) {
     serializeTls(s, tls->tls);
-    if (tls->certDir.has_value()) {
+    if (tls->certDir.has_value() || !tls->ticketSeeds.empty()) {
       s.beginObject("fizz");
-      s.stringField("cert_dir", tls->certDir->dir);
-      s.uintField(
-          "cert_reload_interval_s",
-          static_cast<uint64_t>(tls->certDir->reloadInterval.count())
-      );
+      if (tls->certDir.has_value()) {
+        s.stringField("cert_dir", tls->certDir->dir);
+        s.uintField(
+            "cert_reload_interval_s",
+            static_cast<uint64_t>(tls->certDir->reloadInterval.count())
+        );
+      }
+      // Seeds are secret material; expose only how many are loaded.
+      s.uintField("ticket_seed_count", tls->ticketSeeds.size());
       s.endObject();
     } else {
       s.nullField("fizz");
