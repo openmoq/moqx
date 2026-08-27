@@ -143,12 +143,23 @@ checkRangeNotInPast(moxygen::MoQForwarder& fwd, const moxygen::SubscribeRequest&
   return std::nullopt;
 }
 
+bool isV18Plus(const std::shared_ptr<moxygen::MoQSession>& session) {
+  auto version = session ? session->getNegotiatedVersion() : std::optional<uint64_t>{};
+  return version.has_value() && moxygen::getDraftMajorVersion(*version) >= 18;
+}
+
 // Derives the upstream SubscribeRequest from a downstream one: fetch from latest at
 // upstream priority/default group order, session-assigned requestID, caller's forward.
-moxygen::SubscribeRequest makeUpstreamSubReq(moxygen::SubscribeRequest base, bool forward) {
-  // RENDEZVOUS_TIMEOUT (key 0x04) is unconditionally stripped here as message params are not
-  // meant to be forwarded (Section 10.2.1)
-  base.params.eraseAllParamsOfType(moxygen::TrackRequestParamKey::RENDEZVOUS_TIMEOUT);
+moxygen::SubscribeRequest makeUpstreamSubReq(
+    moxygen::SubscribeRequest base,
+    bool forward,
+    const std::shared_ptr<moxygen::MoQSession>& upstreamSession
+) {
+  // Below v18 key 0x04 is MAX_CACHE_DURATION and forwardable; a v18 upstream would
+  // misread it as RENDEZVOUS_TIMEOUT.
+  if (isV18Plus(upstreamSession)) {
+    base.params.eraseAllParamsOfType(moxygen::TrackRequestParamKey::RENDEZVOUS_TIMEOUT);
+  }
   base.priority = kDefaultUpstreamPriority;
   base.groupOrder = moxygen::GroupOrder::Default;
   base.locType = moxygen::LocationType::LargestObject;
@@ -2237,7 +2248,8 @@ MoqxRelay::joinOrPrepareUpstreamSubscription(SubscribeRequest subReq) {
   if (auto* first = std::get_if<SubscriptionRegistry::FirstSubscriber>(&firstOrSubsequent)) {
     const auto clientRequestID = subReq.requestID;
     // forward updated to its real value in attachNewLocalForwarderOnRelayExec.
-    SubscribeRequest upstreamSubReq = makeUpstreamSubReq(subReq, /*forward=*/false);
+    SubscribeRequest upstreamSubReq =
+        makeUpstreamSubReq(subReq, /*forward=*/false, upstreamSession);
 
     // first->consumer is the publisher forwarder (lives on publisherExec == upstreamSession's
     // executor). No cross-exec wrapping — upstream delivers on that executor directly.
@@ -2277,10 +2289,10 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriber
   const auto& ftn = subReq.fullTrackName;
   auto* localReg = &localRegistry();
 
-  // Resolve (or wait out our own rendezvous) before touching any per-thread or
-  // relay-global commitment state; Must run on relayExec_: it
-  // reads/mutates registry_/namespaceTree_/pendingRendezvousRoot_ directly.
-  if (auto rendezvousTimeout = requestedRendezvousTimeout(subReq, session);
+  // Park before claiming this thread's forwarder, so a later SUBSCRIBE for the same
+  // ftn is never bound to our timeout. The gate keeps the relayExec_ hop off the
+  // common path: a ready local forwarder means a publisher already resolved.
+  if (auto rendezvousTimeout = takeRendezvousTimeout(subReq, session);
       rendezvousTimeout && !localReg->getIfReady(ftn)) {
     if (auto rendezvousErr = co_await folly::coro::co_withExecutor(
             folly::getKeepAliveToken(relayExec_),
@@ -2417,7 +2429,7 @@ MoqxRelay::subscribeImpl(SubscribeRequest subReq, std::shared_ptr<TrackConsumer>
   // Resolve (or wait out our own rendezvous) before ever committing a
   // FirstSubscriber/SubsequentSubscriber entry, so a concurrent SUBSCRIBE for the
   // same ftn is never bound to our RENDEZVOUS_TIMEOUT.
-  if (auto rendezvousTimeout = requestedRendezvousTimeout(subReq, session)) {
+  if (auto rendezvousTimeout = takeRendezvousTimeout(subReq, session)) {
     if (auto rendezvousErr =
             co_await rendezvousWithPublisherOrTimeout(subReq, *rendezvousTimeout)) {
       co_return folly::makeUnexpected(std::move(*rendezvousErr));
@@ -2473,8 +2485,11 @@ MoqxRelay::subscribeImpl(SubscribeRequest subReq, std::shared_ptr<TrackConsumer>
     // Subscribe upstream with forward set only while we have forwarding
     // subscribers, so an idle relay doesn't pull data it won't deliver.
     const auto clientRequestID = subReq.requestID;
-    subReq =
-        makeUpstreamSubReq(std::move(subReq), first->forwarder->numForwardingSubscribers() > 0);
+    subReq = makeUpstreamSubReq(
+        std::move(subReq),
+        first->forwarder->numForwardingSubscribers() > 0,
+        upstreamSession
+    );
 
     // Upstream subscribe + apply OK to the forwarder (NGR recorded without firing).
     // pending destructor fires on the error path.
@@ -3183,17 +3198,19 @@ void MoqxRelay::wakePendingRendezvousUnderNamespace(const TrackNamespace& ns) {
   });
 }
 
-std::optional<std::chrono::milliseconds> MoqxRelay::requestedRendezvousTimeout(
-    const SubscribeRequest& subReq,
+std::optional<std::chrono::milliseconds> MoqxRelay::takeRendezvousTimeout(
+    SubscribeRequest& subReq,
     const std::shared_ptr<MoQSession>& session
 ) const {
-  auto version = session ? session->getNegotiatedVersion() : std::optional<uint64_t>{};
-  if (!version.has_value() || getDraftMajorVersion(*version) < 18) {
+  // Below v18 key 0x04 is MAX_CACHE_DURATION, which is not ours to read or consume.
+  if (!isV18Plus(session)) {
     return std::nullopt;
   }
   auto ms =
       moxygen::getFirstIntParam(subReq.params, moxygen::TrackRequestParamKey::RENDEZVOUS_TIMEOUT);
-  if (!ms.has_value() || *ms <= 0) {
+  // Per-hop param: consume it so it can never reach the upstream request.
+  subReq.params.eraseAllParamsOfType(moxygen::TrackRequestParamKey::RENDEZVOUS_TIMEOUT);
+  if (!ms.has_value() || *ms == 0) {
     return std::nullopt;
   }
 
@@ -3201,15 +3218,15 @@ std::optional<std::chrono::milliseconds> MoqxRelay::requestedRendezvousTimeout(
   // can park a waiter, regardless of the client-requested RENDEZVOUS_TIMEOUT.
   constexpr auto kMaxMs = static_cast<uint64_t>(kMaxRendezvousTimeout.count());
   if (*ms > kMaxMs) {
-    XLOG(WARN) << "Clamping RENDEZVOUS_TIMEOUT for " << subReq.fullTrackName << " from " << *ms
+    XLOG(DBG1) << "Clamping RENDEZVOUS_TIMEOUT for " << subReq.fullTrackName << " from " << *ms
                << "ms to " << kMaxMs << "ms";
   }
   return std::chrono::milliseconds(std::min(*ms, kMaxMs));
 }
 
-// Parks (at most once) until either a publisher resolves for ftn or the
-// RENDEZVOUS_TIMEOUT elapses. TOCTOU window is gracefully handled in both
-// callers by rechecking the registry_/namespaceTree_
+// Parks (at most once) until a publisher resolves for ftn or `timeout` elapses. A wake
+// is only a hint: if the publisher is gone again by the time we resume, the caller's
+// ordinary no-publisher path reports it.
 folly::coro::Task<std::optional<SubscribeError>> MoqxRelay::rendezvousWithPublisherOrTimeout(
     const SubscribeRequest& subReq,
     std::chrono::milliseconds timeout
@@ -3224,7 +3241,7 @@ folly::coro::Task<std::optional<SubscribeError>> MoqxRelay::rendezvousWithPublis
   addPendingRendezvous(ftn, waiter);
   auto cleanup = folly::makeGuard([this, ftn, waiter] { erasePendingRendezvous(ftn, waiter); });
 
-  auto waitRes = co_await folly::coro::co_awaitTry(waiter->wait(timeout));
+  auto waitRes = co_await folly::coro::co_awaitTry(waiter->wait(timeout, timekeeper_.get()));
 
   if (waitRes.hasException()) {
     if (waitRes.template hasException<folly::FutureTimeout>()) {

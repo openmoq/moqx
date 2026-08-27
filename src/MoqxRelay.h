@@ -21,8 +21,11 @@
 #include "relay/RelayExecUtil.h"
 #include "stats/TrackStatsRegistry.h"
 #include <moxygen/MoQSession.h>
+#include <moxygen/events/MoQFollyExecutorImpl.h>
 #include <moxygen/relay/MoQForwarder.h>
 #include <moxygen/util/TimedBaton.h>
+
+#include <folly/futures/ThreadWheelTimekeeper.h>
 
 #include <folly/Executor.h>
 #include <folly/ThreadLocal.h>
@@ -136,6 +139,12 @@ public:
         useLocalForwarders_(useLocalForwarders), maxDeselected_(maxDeselected),
         idleTimeout_(idleTimeout), activityThreshold_(activityThreshold) {
     XCHECK_LE(relayHopID_, kMaxRelayHopID);
+    // Park timers fire on the relay's own EventBase instead of folly's global
+    // timekeeper thread. Null (SingleThread mode, or a non-folly exec) falls back to it.
+    if (auto* follyExec = dynamic_cast<moxygen::MoQFollyExecutorImpl*>(relayExec_)) {
+      timekeeper_ =
+          std::make_unique<folly::EventBaseThreadTimekeeper>(*follyExec->getBackingEventBase());
+    }
     if (cache.maxCachedTracks > 0) {
       cache_ = std::make_unique<MoqxCache>(cache.maxCachedTracks, cache.maxCachedGroupsPerTrack);
       cache_->setMaxCachedBytes(static_cast<size_t>(cache.maxCachedMb) * 1024 * 1024);
@@ -616,6 +625,7 @@ private:
   );
 
   std::shared_ptr<folly::Executor> ownedRelayExec_;
+  std::unique_ptr<folly::EventBaseThreadTimekeeper> timekeeper_;
   folly::Executor* relayExec_{nullptr};
   // Only set in single-threaded mode (relayExec_ == null); used as the
   // coroutine start executor for fire-and-forget tasks like doSubscribeUpdate.
@@ -662,7 +672,7 @@ private:
   // === Pending rendezvous (draft 18+ SUBSCRIBE with RENDEZVOUS_TIMEOUT) ===
   // Subscribers waiting on a namespace/track that isn't published yet, indexed
   // by namespace prefix. Woken by doPublishNamespace()/publishWithSession() when
-  // matching content arrives; otherwise PendingRendezvous::baton times out.
+  // matching content arrives; otherwise each waiter's baton times out.
 
   struct PendingRendezvousNode {
     using WaiterList = std::vector<std::shared_ptr<moxygen::TimedBaton>>;
@@ -698,12 +708,15 @@ private:
   void wakePendingRendezvousForTrack(const moxygen::FullTrackName& ftn);
   void wakePendingRendezvousUnderNamespace(const moxygen::TrackNamespace& ns);
 
-  std::optional<std::chrono::milliseconds> requestedRendezvousTimeout(
-      const moxygen::SubscribeRequest& subReq,
+  // Clamped timeout if this SUBSCRIBE asks for a rendezvous, else nullopt; consumes the
+  // param. Reads no relay state, so callers may screen on any exec before hopping.
+  std::optional<std::chrono::milliseconds> takeRendezvousTimeout(
+      moxygen::SubscribeRequest& subReq,
       const std::shared_ptr<moxygen::MoQSession>& session
   ) const;
 
-  // Runs on relayExec_ (or inline in SingleThread mode). Pure existence check + wait;
+  // Existence check, then park. Callers screen first. Must run on relayExec_ (inline
+  // in SingleThread mode): touches registry_/namespaceTree_/pendingRendezvousRoot_.
   folly::coro::Task<std::optional<moxygen::SubscribeError>> rendezvousWithPublisherOrTimeout(
       const moxygen::SubscribeRequest& subReq,
       std::chrono::milliseconds timeout
