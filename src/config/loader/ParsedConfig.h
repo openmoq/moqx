@@ -54,7 +54,12 @@ struct ParsedListenerTlsConfig {
       "friendly: the secret stays out of the config file). Errors if the variable is unset.",
       std::optional<std::string>>
       pkcs12_password_env;
-  rfl::Description<"Insecure mode, use default compiled-in cert", bool> insecure;
+  rfl::Description<
+      "Development only: serve the compiled-in certificate and drop client "
+      "verification. Rejected alongside cert_file/key_file/pkcs12_file, and on "
+      "quic_stack picoquic.",
+      bool>
+      insecure;
 };
 
 struct ParsedAdminTlsConfig {

@@ -154,7 +154,7 @@ docker compose up -d
 | `MOQX_VERBOSE` | `0` | VLOG level (0-4) |
 | `MOQX_LOG_PORT` | `9999` | Dozzle log viewer port (localhost only) |
 | `GLOG_vmodule` | -- | Per-module verbose level (passed through) |
-| `MOQX_INSECURE` | `false` | Use built-in dev cert |
+| `MOQX_INSECURE` | `false` | Use built-in dev cert; the entrypoint exits when set with `MOQX_CERT`/`MOQX_KEY` |
 
 The entrypoint maps `MOQX_LOG_LEVEL` and `MOQX_VERBOSE` to their `GLOG_*`
 equivalents and forces `GLOG_logtostderr=1`.

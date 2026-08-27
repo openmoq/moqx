@@ -67,8 +67,13 @@ listeners:
     quic: { ... }             # optional; overrides listener_defaults.quic
 ```
 
-**TLS:** For development only, `tls: {insecure: true}` skips certificate
-verification. This is incompatible with `quic_stack: picoquic`.
+**TLS:** `tls: {insecure: true}` is for development only.
+
+- `insecure: true` serves a compiled-in certificate and does not request a
+  client certificate.
+- `insecure: true` alongside `cert_file`, `key_file`, or `pkcs12_file` is
+  rejected at config load.
+- `quic_stack: picoquic` rejects `insecure: true`.
 
 **moqt_versions:**: Currently supports 14 and 16.
 

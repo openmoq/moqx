@@ -113,16 +113,30 @@ void validateListenerTlsConfig(
     const ParsedListenerTlsConfig& tls,
     std::string_view context,
     std::vector<std::string>& errors,
-    std::vector<std::string>& warnings
+    std::vector<std::string>& /* warnings */
 ) {
   bool hasCert = tls.cert_file.value().has_value() && !tls.cert_file.value()->empty();
   bool hasKey = tls.key_file.value().has_value() && !tls.key_file.value()->empty();
   bool hasPkcs12 = tls.pkcs12_file.value().has_value() && !tls.pkcs12_file.value()->empty();
 
   if (tls.insecure.value()) {
-    if (hasCert || hasKey || hasPkcs12) {
-      warnings.push_back(
-          std::string(context) + ": cert_file/key_file/pkcs12_file are ignored when insecure=true"
+    // Rejected rather than ignored: silently dropping real credentials in
+    // favor of the compiled-in dev cert is the kind of mistake that only
+    // shows up in production traffic.
+    std::vector<std::string> certSources;
+    if (hasCert) {
+      certSources.emplace_back("cert_file");
+    }
+    if (hasKey) {
+      certSources.emplace_back("key_file");
+    }
+    if (hasPkcs12) {
+      certSources.emplace_back("pkcs12_file");
+    }
+    if (!certSources.empty()) {
+      errors.push_back(
+          std::string(context) + ": insecure=true is mutually exclusive with " +
+          folly::join("/", certSources)
       );
     }
     return;

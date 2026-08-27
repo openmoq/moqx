@@ -209,15 +209,26 @@ TEST(ResolveConfig, PortZero) {
   EXPECT_THAT(result.error(), HasSubstr("port"));
 }
 
-TEST(ResolveConfig, InsecureWithCertsWarning) {
+TEST(ResolveConfig, InsecureWithCertsRejected) {
   auto cfg = makeMinimalInsecureConfig();
   cfg.listeners.value()[0].tls.value().cert_file = std::string("/some/cert.pem");
   cfg.listeners.value()[0].tls.value().key_file = std::string("/some/key.pem");
 
   auto result = resolveConfig(cfg);
-  ASSERT_TRUE(result.hasValue());
-  ASSERT_FALSE(result.value().warnings.empty());
-  EXPECT_THAT(result.value().warnings[0], HasSubstr("ignored"));
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("insecure=true is mutually exclusive"));
+}
+
+TEST(ResolveConfig, InsecureWithPkcs12Rejected) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.listeners.value()[0].tls.value().pkcs12_file = std::string("/some/bundle.p12");
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("insecure=true is mutually exclusive"));
+  // Only the source actually set is named.
+  EXPECT_THAT(result.error(), HasSubstr("pkcs12_file"));
+  EXPECT_THAT(result.error(), ::testing::Not(HasSubstr("cert_file")));
 }
 
 // #459: an empty/unresolvable bind address must fail as a clean config error,
@@ -354,16 +365,6 @@ TEST(ResolveConfig, Pkcs12PicoquicRejected) {
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasError());
   EXPECT_THAT(result.error(), HasSubstr("does not support pkcs12_file"));
-}
-
-TEST(ResolveConfig, InsecureIgnoresPkcs12Warning) {
-  auto cfg = makeMinimalInsecureConfig();
-  cfg.listeners.value()[0].tls.value().pkcs12_file = std::string("/some/bundle.p12");
-
-  auto result = resolveConfig(cfg);
-  ASSERT_TRUE(result.hasValue());
-  ASSERT_FALSE(result.value().warnings.empty());
-  EXPECT_THAT(result.value().warnings[0], HasSubstr("ignored"));
 }
 
 TEST(ResolveConfig, AdminTlsRequiresCertOrPkcs12) {

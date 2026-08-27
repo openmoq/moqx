@@ -8,8 +8,8 @@ listeners:
         address: "::"        # Bind address (default: "::" = all interfaces)
         port: 9668            # Listen port (1-65535)
     tls:
-      # cert_file: /path/to/cert.pem   # Required when insecure: false
-      # key_file: /path/to/key.pem     # Required when insecure: false
+      # cert_file: /path/to/cert.pem   # Required when insecure: false (with key_file)
+      # key_file: /path/to/key.pem     # Required when insecure: false (with cert_file)
       # --- PKCS#12 bundle (alternative to cert_file/key_file) ---
       # A single .p12/.pfx carrying the cert chain + private key. Decrypted in
       # memory; the key is never written to disk. Mutually exclusive with
@@ -18,7 +18,9 @@ listeners:
       # pkcs12_password_file: /path/to/password.txt  # Preferred: keep the secret off the YAML
       # pkcs12_password_env: MOQX_PKCS12_PASSWORD    # Cloud-vault friendly: read the password from this env var
       # pkcs12_password: "inline-secret"             # Discouraged: persists in the config at rest
-      insecure: true          # Skip TLS for local development
+      # --- Development-only mode ---
+      # insecure is rejected alongside cert_file/key_file/pkcs12_file.
+      insecure: true          # Serve the compiled-in dev cert; no real credentials (development only)
     endpoint: "/moq-relay"    # WebTransport endpoint path
     # moqt_versions: [14, 16] # MOQT draft versions (empty = default 14,16)
     # quic:                   # Per-listener QUIC overrides (optional; inherits listener_defaults.quic)

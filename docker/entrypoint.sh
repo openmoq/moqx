@@ -101,7 +101,21 @@ export MOQX_PORT="${MOQX_PORT:-4433}"
 export MOQX_ADMIN_PORT="${MOQX_ADMIN_PORT:-8000}"
 export MOQX_CERT="${MOQX_CERT:-}"
 export MOQX_KEY="${MOQX_KEY:-}"
-export MOQX_INSECURE="${MOQX_INSECURE:-false}"
+# Canonicalized before use: YAML accepts yes/on/1 as true, but the shell tests
+# below and in the picoquic block compare against the literal "true".
+case "$(printf %s "${MOQX_INSECURE:-false}" | tr '[:upper:]' '[:lower:]')" in
+  true|yes|on|1)   MOQX_INSECURE=true ;;
+  false|no|off|0)  MOQX_INSECURE=false ;;
+  *) echo "invalid boolean for MOQX_INSECURE (want true/false)" >&2; exit 2 ;;
+esac
+export MOQX_INSECURE
+# Both defaulted to empty above, so a value here is one the operator set.
+# Clearing it would serve the built-in dev cert instead, which is the silent
+# swap the config schema exists to refuse.
+if [ "$MOQX_INSECURE" = "true" ] && { [ -n "$MOQX_CERT" ] || [ -n "$MOQX_KEY" ]; }; then
+  echo "MOQX_INSECURE=true is mutually exclusive with MOQX_CERT/MOQX_KEY" >&2
+  exit 2
+fi
 export MOQX_ENDPOINT="${MOQX_ENDPOINT:-/moq-relay}"
 export MOQX_MOQT_VERSIONS="${MOQX_MOQT_VERSIONS:-[16, 14, 18]}"
 export MOQX_MAX_TRACKS="${MOQX_MAX_TRACKS:-1000}"
