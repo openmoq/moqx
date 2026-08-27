@@ -27,7 +27,7 @@ scrape_configs:
   # Relay 3s + host 5s ≈ 12 GB/yr; the CI deploy sets PROMETHEUS_RETENTION_SIZE
   # to 20 GB so the 365d time limit (not the size cap) bounds history.
   - job_name: node
-    scrape_interval: 5s
+    scrape_interval: 3s
     static_configs:
       # node-exporter runs in the host network namespace (so netdev sees the real
       # host NIC, not a container veth), hence it's reached via the host gateway
@@ -42,7 +42,7 @@ scrape_configs:
   # target=<relay /state>. Per-track series come from /metrics/track instead.
   - job_name: moqx-state
     metrics_path: /probe
-    scrape_interval: 15s
+    scrape_interval: 10s
     params:
       module: [moqx]
     static_configs:
@@ -64,7 +64,7 @@ scrape_configs:
   # scraped often enough that a redeploy shows up promptly.
   - job_name: moqx-info
     metrics_path: /probe
-    scrape_interval: 30s
+    scrape_interval: 15s
     params:
       module: [moqx_info]
     static_configs:
@@ -85,14 +85,14 @@ scrape_configs:
   # namespace tree by ns-targets and relabelled into the query.
   - job_name: moqx-track
     metrics_path: /metrics/track
-    scrape_interval: 15s
+    scrape_interval: 3s
     params:
       limit: ['1000']
       # Most of a per-namespace response is metadata when few tracks match.
       omit_metadata: ['1']
     file_sd_configs:
       - files: ['/etc/prometheus/targets/namespaces.json']
-        refresh_interval: 30s
+        refresh_interval: 10s
     relabel_configs:
       - source_labels: [__address__]
         target_label: __param_namespace
@@ -100,3 +100,75 @@ scrape_configs:
         replacement: moqx:8000
       - target_label: instance
         replacement: moqx-relay
+    # Display-form labels: decode the common safe-form escapes (.2d '-', .2e '.')
+    # for tables and legends; links and query params keep the safe labels.
+    # Interim until the relay emits display labels itself.
+    metric_relabel_configs:
+      - source_labels: [namespace]
+        regex: '(.+)'
+        target_label: namespace_display
+        replacement: '$1'
+      - source_labels: [namespace_display]
+        regex: '(.*[^.])-(.*)'
+        target_label: namespace_display
+        replacement: '${1}/${2}'
+      - source_labels: [namespace_display]
+        regex: '(.*[^.])-(.*)'
+        target_label: namespace_display
+        replacement: '${1}/${2}'
+      - source_labels: [namespace_display]
+        regex: '(.*[^.])-(.*)'
+        target_label: namespace_display
+        replacement: '${1}/${2}'
+      - source_labels: [namespace_display]
+        regex: '(.*)\.2d(.*)'
+        target_label: namespace_display
+        replacement: '${1}-${2}'
+      - source_labels: [namespace_display]
+        regex: '(.*)\.2d(.*)'
+        target_label: namespace_display
+        replacement: '${1}-${2}'
+      - source_labels: [namespace_display]
+        regex: '(.*)\.2d(.*)'
+        target_label: namespace_display
+        replacement: '${1}-${2}'
+      - source_labels: [namespace_display]
+        regex: '(.*)\.2d(.*)'
+        target_label: namespace_display
+        replacement: '${1}-${2}'
+      - source_labels: [namespace_display]
+        regex: '(.*)\.2e(.*)'
+        target_label: namespace_display
+        replacement: '${1}.${2}'
+      - source_labels: [namespace_display]
+        regex: '(.*)\.2e(.*)'
+        target_label: namespace_display
+        replacement: '${1}.${2}'
+      - source_labels: [track]
+        regex: '(.+)'
+        target_label: track_display
+        replacement: '$1'
+      - source_labels: [track_display]
+        regex: '(.*)\.2d(.*)'
+        target_label: track_display
+        replacement: '${1}-${2}'
+      - source_labels: [track_display]
+        regex: '(.*)\.2d(.*)'
+        target_label: track_display
+        replacement: '${1}-${2}'
+      - source_labels: [track_display]
+        regex: '(.*)\.2d(.*)'
+        target_label: track_display
+        replacement: '${1}-${2}'
+      - source_labels: [track_display]
+        regex: '(.*)\.2d(.*)'
+        target_label: track_display
+        replacement: '${1}-${2}'
+      - source_labels: [track_display]
+        regex: '(.*)\.2e(.*)'
+        target_label: track_display
+        replacement: '${1}.${2}'
+      - source_labels: [track_display]
+        regex: '(.*)\.2e(.*)'
+        target_label: track_display
+        replacement: '${1}.${2}'

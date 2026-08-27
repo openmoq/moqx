@@ -46,6 +46,8 @@ if [ "${ENABLE_STATS:-}" = "true" ]; then
     echo "PROMETHEUS_RETENTION_SIZE=20GB"
     # Stats implies the public read-only dashboard: bind its port public.
     echo "STATS_PUBLIC_BIND=0.0.0.0"
+    # Demo/debug box: fresh namespace discovery (compose default is 10s).
+    echo "MOQX_TARGETS_INTERVAL=${MOQX_TARGETS_INTERVAL:-5}"
   } >> .env
 fi
 

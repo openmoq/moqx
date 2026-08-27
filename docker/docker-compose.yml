@@ -190,15 +190,20 @@ services:
     # reachable by compose-service name. Reach it via the host gateway instead.
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # MOQX_SCRAPE_INTERVAL overrides the 3s moqx-family cadence (prometheus has
+    # no native env expansion, so the entrypoint renders the config; a config
+    # change while running therefore needs a recreate, not just a HUP).
+    entrypoint: ["/bin/sh", "-c"]
     command:
-      - --config.file=/etc/prometheus/prometheus.yml
-      - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-365d}
-      # Hard disk cap (whichever of time/size hits first wins). Relay metrics
-      # are fixed-cardinality (~450 series) so at 3s scrape this stays well under
-      # 10G/yr; the cap is a safety valve against any future high-cardinality metric.
-      - --storage.tsdb.retention.size=${PROMETHEUS_RETENTION_SIZE:-10GB}
-      - --web.external-url=https://${DOMAIN}/prometheus/
-      - --web.route-prefix=/
+      - >
+        sed 's/scrape_interval: 3s/scrape_interval: ${MOQX_SCRAPE_INTERVAL:-3s}/g'
+        /etc/prometheus/prometheus.yml > /etc/prometheus/prometheus.rendered.yml &&
+        exec /bin/prometheus
+        --config.file=/etc/prometheus/prometheus.rendered.yml
+        --storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-365d}
+        --storage.tsdb.retention.size=${PROMETHEUS_RETENTION_SIZE:-10GB}
+        --web.external-url=https://${DOMAIN}/prometheus/
+        --web.route-prefix=/
     mem_limit: ${PROMETHEUS_MEM:-2g}
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
@@ -329,7 +334,7 @@ services:
     environment:
       MOQX_STATE_URL: http://moqx:${MOQX_ADMIN_PORT:-8000}/state
       MOQX_TARGETS_PATH: /targets/namespaces.json
-      MOQX_TARGETS_INTERVAL: "30"
+      MOQX_TARGETS_INTERVAL: "${MOQX_TARGETS_INTERVAL:-10}"
     volumes:
       - ./prometheus/namespace-targets.py:/app/namespace-targets.py:ro
       - prometheus-targets:/targets
