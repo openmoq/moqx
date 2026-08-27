@@ -28,7 +28,12 @@ runs:
 
     # The moqx CMakeLists routes the compiler through ccache automatically when
     # it is installed (install-system-deps.sh installs it).
+    #
+    # Hosted runners only: the self-hosted box keeps ~/.cache between jobs, so
+    # the round trip buys nothing and its ccache is large enough to crowd every
+    # other lane out of the repo-wide 10 GB cache budget.
     - name: Cache ccache
+      if: runner.environment == 'github-hosted'
       uses: actions/cache@v5
       with:
         path: ~/.cache/ccache
@@ -52,7 +57,12 @@ runs:
 
     # One shared fetch cache for CPM sources and the prebuilt moxygen install,
     # ~680 MB of downloads per configure otherwise, content-keyed on the pins.
+    # Hosted runners only, for the reason above and one more: actions/cache stores
+    # paths relative to the workspace, and ~/.cache sits 3 levels above a hosted
+    # workspace but 4 above the self-hosted one. A cache saved there replays as
+    # ../../../../.cache on a hosted runner, lands on /home, and fails to extract.
     - name: Cache dependency downloads
+      if: runner.environment == 'github-hosted'
       uses: actions/cache@v5
       with:
         path: ~/.cache/moqx
@@ -87,6 +97,16 @@ runs:
         echo "MOQX_DEPS_CACHE=$HOME/.cache/moqx" >> "$GITHUB_ENV"
         # Pin ccache's dir to the cached path; its own default is platform-dependent.
         echo "CCACHE_DIR=$HOME/.cache/ccache" >> "$GITHUB_ENV"
+        # Hash compiler contents, not mtime: apt and Homebrew replace compilers
+        # under these runners, and a same-mtime swap would serve stale objects.
+        echo "CCACHE_COMPILERCHECK=content" >> "$GITHUB_ENV"
+        # Bound the cache. Hosted lanes share the repo's 10 GB budget; the
+        # self-hosted box keeps its cache on local disk and pays no such tax.
+        if [ "${{ runner.environment }}" = "github-hosted" ]; then
+          echo "CCACHE_MAXSIZE=1500M" >> "$GITHUB_ENV"
+        else
+          echo "CCACHE_MAXSIZE=20G" >> "$GITHUB_ENV"
+        fi
         # GITHUB_TOKEN stays off $GITHUB_ENV, which would hand it to every later
         # step in the job, ctest among them — and ctest runs the relay and the
         # shell integration tests. The configure step sets it for its one API read.
