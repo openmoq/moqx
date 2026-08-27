@@ -76,6 +76,16 @@ for marker in rebase-merge rebase-apply MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD 
   fi
 done
 
+# Both checks below read refs, and refs go stale: a checkout sitting on a commit that
+# has since been pushed upstream is named by origin/* on the server and by nothing
+# here, so the containment check refuses a detach that costs nothing. Placed after the
+# dirty and in-progress checks, which refuse without touching the network at all.
+#
+# Best effort, and with prompting off because the hook caller runs unattended: a fetch
+# that stopped to ask for credentials would hang every checkout.
+GIT_TERMINAL_PROMPT=0 git -C "$dir" fetch --quiet origin 2>/dev/null \
+  || echo "sync-moxygen.sh: could not fetch origin in $dir — falling back to local refs" >&2
+
 # What detaching can actually destroy is a commit reachable only from HEAD: nothing
 # else names it afterwards and the reflog is the only way back. Any ref containing
 # HEAD — a branch, a tag, a remote — keeps it, and `git checkout` returns to it, so
@@ -85,9 +95,10 @@ if [[ -z "$(git -C "$dir" for-each-ref --contains HEAD --count=1)" ]]; then
 fi
 
 # A pin can name a commit that is no branch tip (a merge parent, a force-pushed
-# rev), which a plain fetch will not bring down.
+# rev), which a plain fetch will not bring down. Prompting off here too: this is the
+# other fetch that would hang the hook.
 git -C "$dir" rev-parse -q --verify "${pin}^{commit}" >/dev/null \
-  || git -C "$dir" fetch --quiet origin "$pin" \
+  || GIT_TERMINAL_PROMPT=0 git -C "$dir" fetch --quiet origin "$pin" \
   || refuse "$pin is not fetchable in $dir"
 # Named before the checkout, and reported after: detaching off a branch is silent
 # otherwise, and this is the one line that says how to get back to it.
