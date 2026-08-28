@@ -10,6 +10,7 @@
 #include <folly/portability/GMock.h>
 #include <folly/portability/GTest.h>
 #include <moxygen/test/Mocks.h>
+#include <thread>
 
 using namespace testing;
 using namespace moxygen;
@@ -494,6 +495,41 @@ TEST_F(FetchCrossExecFilterTest, NonTerminalObjectErrorUAFOnQueuedTerminalLambda
   // selfGuard_.reset() → freed. The second object lambda then accesses
   // this->downstream_ on freed memory.
   exec_.drain();
+}
+
+// ~FetchWriteback (MoqxCache.cpp:939) erases from fetchesInProgress, unpins the
+// group and touches the LRU, so it has to be released on the executor that owns
+// the cache. selfGuard_ does not give that: the filter has a second, independent
+// owner in the upstream session's fetch state (MoQSession.cpp:2334), dropped on
+// the session's io thread with no ordering against deactivate(). Whichever drop
+// is last runs ~FetchCrossExecFilter, and downstream_ is released there.
+TEST(FetchCrossExecFilterLifetimeTest, DownstreamReleasedOnTargetExecutor) {
+  folly::ManualExecutor relayExec;
+  std::thread::id releaseThread;
+
+  auto downstream = std::shared_ptr<NiceMock<MockFetchConsumer>>(
+      new NiceMock<MockFetchConsumer>(),
+      [&releaseThread](NiceMock<MockFetchConsumer>* p) {
+        releaseThread = std::this_thread::get_id();
+        delete p;
+      }
+  );
+
+  auto filter = FetchCrossExecFilter::create(&relayExec, downstream);
+  auto sessionRef = filter; // the ref MoQSession keeps in its fetch state
+  filter.reset();
+  downstream.reset(); // filter->downstream_ is now the only owner
+
+  // Terminal call: its lambda runs on relayExec and releases selfGuard_,
+  // leaving the session holding the last ref.
+  sessionRef->reset(ResetStreamErrorCode::CANCELLED);
+  relayExec.drain();
+
+  std::thread sessionThread([&sessionRef] { sessionRef.reset(); });
+  sessionThread.join();
+  relayExec.drain();
+
+  EXPECT_EQ(releaseThread, std::this_thread::get_id());
 }
 
 } // namespace

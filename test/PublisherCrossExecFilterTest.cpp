@@ -144,6 +144,11 @@ TEST_F(PublisherCrossExecFilterTest, FetchErrorDoesNotCallEndOfFetch) {
 }
 
 TEST_F(PublisherCrossExecFilterTest, FetchReturnsSuccess) {
+  // Schedule on the EventBase so callerExec captured inside fetch() is the
+  // EventBase (not blockingWait's internal ManualExecutor, which dies on return).
+  // This keeps targetExec_ alive for the post-blockingWait endOfFetch drain.
+  // Declared first so it outlives capturedConsumer, whose dtor posts to it.
+  folly::EventBase evb;
   FetchOk ok;
   ok.requestID = RequestID(4);
   auto handle = std::make_shared<NiceMock<MockFetchHandle>>(ok);
@@ -157,10 +162,6 @@ TEST_F(PublisherCrossExecFilterTest, FetchReturnsSuccess) {
           }
       );
 
-  // Schedule on the EventBase so callerExec captured inside fetch() is the
-  // EventBase (not blockingWait's internal ManualExecutor, which dies on return).
-  // This keeps targetExec_ alive for the post-blockingWait endOfFetch drain.
-  folly::EventBase evb;
   auto fetchCallback = std::make_shared<NiceMock<MockFetchConsumer>>();
   EXPECT_CALL(*fetchCallback, endOfFetch()).WillOnce([]() {
     return folly::Expected<folly::Unit, MoQPublishError>(folly::unit);

@@ -268,6 +268,15 @@ public:
       : CrossExecLifetime<FetchCrossExecFilter>(targetExec, deepCopyPayload),
         downstream_(std::move(downstream)) {}
 
+  // downstream_ is a cache writeback whose dtor mutates cache state, so release
+  // it on targetExec_, not on whichever owner dropped last. targetExec_ must
+  // outlive the filter.
+  ~FetchCrossExecFilter() override {
+    if (downstream_) {
+      targetExec_->add([d = std::move(downstream_)]() {});
+    }
+  }
+
   folly::Expected<folly::Unit, moxygen::MoQPublishError> object(
       uint64_t groupID,
       uint64_t subgroupID,
