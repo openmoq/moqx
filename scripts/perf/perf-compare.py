@@ -16,7 +16,6 @@ import os
 import sys
 from pathlib import Path
 
-
 # Metrics to track with display configuration.
 # (key, display_name, unit, higher_is_better, threshold_pct)
 TRACKED_METRICS = [
@@ -99,7 +98,9 @@ def compute_baseline(historical: list[dict]) -> dict:
     return baseline
 
 
-def compare_results(current: dict, baseline: dict, threshold_override: float = None) -> list[dict]:
+def compare_results(
+    current: dict, baseline: dict, threshold_override: float = None
+) -> list[dict]:
     """Compare current results against baseline, flagging regressions."""
     comparisons = []
     results = current.get("results", {})
@@ -109,20 +110,24 @@ def compare_results(current: dict, baseline: dict, threshold_override: float = N
         baseline_val = baseline.get(key)
 
         if current_val is None or baseline_val is None or baseline_val == 0:
-            comparisons.append({
-                "key": key,
-                "name": display_name,
-                "unit": unit,
-                "current": current_val,
-                "baseline": baseline_val,
-                "delta_pct": None,
-                "status": "no-data",
-            })
+            comparisons.append(
+                {
+                    "key": key,
+                    "name": display_name,
+                    "unit": unit,
+                    "current": current_val,
+                    "baseline": baseline_val,
+                    "delta_pct": None,
+                    "status": "no-data",
+                }
+            )
             continue
 
         current_val = float(current_val)
         baseline_val = float(baseline_val)
-        threshold = threshold_override if threshold_override is not None else default_threshold
+        threshold = (
+            threshold_override if threshold_override is not None else default_threshold
+        )
 
         delta_pct = ((current_val - baseline_val) / baseline_val) * 100
 
@@ -134,15 +139,17 @@ def compare_results(current: dict, baseline: dict, threshold_override: float = N
 
         status = "regression" if is_regression else "ok"
 
-        comparisons.append({
-            "key": key,
-            "name": display_name,
-            "unit": unit,
-            "current": current_val,
-            "baseline": baseline_val,
-            "delta_pct": delta_pct,
-            "status": status,
-        })
+        comparisons.append(
+            {
+                "key": key,
+                "name": display_name,
+                "unit": unit,
+                "current": current_val,
+                "baseline": baseline_val,
+                "delta_pct": delta_pct,
+                "status": status,
+            }
+        )
 
     return comparisons
 
@@ -169,12 +176,13 @@ def format_delta(delta_pct, status: str) -> str:
     return f"{sign}{delta_pct:.1f}%{indicator}"
 
 
-def generate_markdown(current: dict, comparisons: list[dict], window: int, baseline_count: int) -> str:
+def generate_markdown(
+    current: dict, comparisons: list[dict], window: int, baseline_count: int
+) -> str:
     """Generate markdown summary for PR comment."""
     lines = []
 
     commit_short = current.get("commit_short", current.get("commit", "")[:7])
-    branch = current.get("branch", "unknown")
 
     has_regressions = any(c["status"] == "regression" for c in comparisons)
     has_baseline = baseline_count > 0
@@ -187,7 +195,9 @@ def generate_markdown(current: dict, comparisons: list[dict], window: int, basel
     lines.append("")
 
     if has_baseline:
-        lines.append(f"Comparing `{commit_short}` against rolling {baseline_count}-run average on `main`.")
+        lines.append(
+            f"Comparing `{commit_short}` against rolling {baseline_count}-run average on `main`."
+        )
     else:
         lines.append(f"Results for `{commit_short}` (no baseline data available yet).")
 
@@ -207,7 +217,9 @@ def generate_markdown(current: dict, comparisons: list[dict], window: int, basel
         if comp["baseline"] is not None and comp["unit"]:
             baseline_str += f" {comp['unit']}"
         delta_str = format_delta(comp["delta_pct"], comp["status"])
-        lines.append(f"| {comp['name']} | {current_str} | {baseline_str} | {delta_str} |")
+        lines.append(
+            f"| {comp['name']} | {current_str} | {baseline_str} | {delta_str} |"
+        )
 
     lines.append("")
 
@@ -217,7 +229,9 @@ def generate_markdown(current: dict, comparisons: list[dict], window: int, basel
     lines.append("<details><summary>Test parameters & full results</summary>")
     lines.append("")
     lines.append(f"- **Result:** {test_result}")
-    lines.append(f"- **Subscribers:** {params.get('subscriber_max', '?')} (ramp {params.get('ramp', '?')}/s)")
+    lines.append(
+        f"- **Subscribers:** {params.get('subscriber_max', '?')} (ramp {params.get('ramp', '?')}/s)"
+    )
     lines.append(f"- **Duration:** {params.get('duration', '?')}s")
     lines.append(f"- **IO threads:** {params.get('io_threads', '?')}")
     lines.append(f"- **Client threads:** {params.get('client_threads', '?')}")
@@ -229,20 +243,34 @@ def generate_markdown(current: dict, comparisons: list[dict], window: int, basel
 
     if has_regressions:
         regressed = [c["name"] for c in comparisons if c["status"] == "regression"]
-        lines.append(f":warning: **Potential regressions detected** in: {', '.join(regressed)}")
+        lines.append(
+            f":warning: **Potential regressions detected** in: {', '.join(regressed)}"
+        )
         lines.append("")
 
     return "\n".join(lines)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Compare perf results against baseline")
+    parser = argparse.ArgumentParser(
+        description="Compare perf results against baseline"
+    )
     parser.add_argument("--current", required=True, help="Path to current results JSON")
-    parser.add_argument("--data-dir", required=True, help="Path to historical data directory")
-    parser.add_argument("--window", type=int, default=10, help="Rolling window size (default: 10)")
-    parser.add_argument("--threshold", type=float, default=None,
-                        help="Override regression threshold %% (default: per-metric)")
-    parser.add_argument("--output", default=None, help="Output markdown file (default: stdout)")
+    parser.add_argument(
+        "--data-dir", required=True, help="Path to historical data directory"
+    )
+    parser.add_argument(
+        "--window", type=int, default=10, help="Rolling window size (default: 10)"
+    )
+    parser.add_argument(
+        "--threshold",
+        type=float,
+        default=None,
+        help="Override regression threshold %% (default: per-metric)",
+    )
+    parser.add_argument(
+        "--output", default=None, help="Output markdown file (default: stdout)"
+    )
     parser.add_argument("--output-json", default=None, help="Output comparison as JSON")
     args = parser.parse_args()
 

@@ -76,7 +76,8 @@ PR description if preserving history on `main` is warranted.
 
 Before submitting:
 
-1. `clang-format-19 -i` changed C++ files.
+1. `scripts/dev/format.sh` — formats and lints C++ and Python. Needs
+   clang-format 19 and either `uv` or the pinned ruff on PATH.
 2. Build and run tests locally.
 3. Update [docs/config.md](docs/config.md) or [RUNNING.md](RUNNING.md)
    if you changed admin API or runtime config.

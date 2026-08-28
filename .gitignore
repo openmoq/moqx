@@ -51,3 +51,4 @@ docker/grafana/provisioning/dashboards/archive/
 # Python bytecode from local tooling.
 __pycache__/
 *.pyc
+.ruff_cache/

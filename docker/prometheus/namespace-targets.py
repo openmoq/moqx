@@ -10,6 +10,7 @@ Namespaces are written in the moq-transport safe form the endpoint expects:
 [A-Za-z0-9_] passes through, every other byte becomes .<hex>, and tuple
 elements are joined with '-'.
 """
+
 import json
 import os
 import sys
@@ -21,16 +22,14 @@ STATE_URL = os.environ.get("MOQX_STATE_URL", "http://moqx:8000/state")
 OUT_PATH = os.environ.get("MOQX_TARGETS_PATH", "/targets/namespaces.json")
 INTERVAL = float(os.environ.get("MOQX_TARGETS_INTERVAL", "30"))
 
-_PASS = set(
-    "abcdefghijklmnopqrstuvwxyz" "ABCDEFGHIJKLMNOPQRSTUVWXYZ" "0123456789" "_"
-)
+_PASS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_")
 
 
 def safe_element(element):
     out = []
     for byte in element.encode():
         ch = chr(byte)
-        out.append(ch if ch in _PASS else ".%02x" % byte)
+        out.append(ch if ch in _PASS else f".{byte:02x}")
     return "".join(out)
 
 
@@ -67,9 +66,7 @@ def namespaces():
 
 
 def write(path, entries):
-    payload = [
-        {"targets": [safe_namespace(ns)]} for ns in entries
-    ]
+    payload = [{"targets": [safe_namespace(ns)]} for ns in entries]
     body = json.dumps(payload, indent=2) + "\n"
     if os.path.exists(path) and open(path).read() == body:
         return False
@@ -89,9 +86,11 @@ def main():
         try:
             entries = namespaces()
             if write(OUT_PATH, entries):
-                print("wrote %d namespace target(s)" % len(entries), flush=True)
+                print(f"wrote {len(entries)} namespace target(s)", flush=True)
         except Exception as exc:  # keep polling: the relay restarts
-            print("namespace target refresh failed: %s" % exc, file=sys.stderr, flush=True)
+            print(
+                f"namespace target refresh failed: {exc}", file=sys.stderr, flush=True
+            )
         time.sleep(INTERVAL)
 
 

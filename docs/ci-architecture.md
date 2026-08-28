@@ -135,7 +135,7 @@ Promotes `snapshot-latest` artifacts to a versioned `vX.Y.Z` release (no rebuild
 
 | Job | Runner | Purpose |
 |-----|--------|---------|
-| check-format | ubuntu-latest (trixie) | clang-format-19 check |
+| check-format | ubuntu-latest (trixie) | clang-format-19 check; ruff lint + format check (via uv) |
 | linux | ubuntu-22.04 | Build + test (prebuilt tarball, from-source fallback) |
 | asan debug | self-hosted (linode) | ASan/UBSan on moqx TUs, build + test |
 
