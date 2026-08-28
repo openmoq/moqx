@@ -428,7 +428,9 @@ def p_params(cursor, annot, draft, count, param_keys, setup=False):
                 f"Unknown parameter key {abs_key} in v{draft} (delta={raw_key})", s
             )
 
-        if not setup and abs_key == 9:  # LARGEST_OBJECT: length-prefixed AbsoluteLocation
+        if (
+            not setup and abs_key == 9
+        ):  # LARGEST_OBJECT: length-prefixed AbsoluteLocation
             vlen, vs = cursor.read_varint()
             annot.add(vs, cursor.pos, f"param[{i}].length", str(vlen))
             p_location(cursor, annot, f"param[{i}].largest_object")
@@ -461,8 +463,9 @@ def p_params(cursor, annot, draft, count, param_keys, setup=False):
             )
 
 
-def p_options(cursor, annot, payload_end, names, prefix="ext",
-              key_field="type", immutable=True):
+def p_options(
+    cursor, annot, payload_end, names, prefix="ext", key_field="type", immutable=True
+):
     """Delta-encoded key/value options that span the message length with NO
     count field. Draft-17+ SETUP options and object / Track-Property extensions
     share this exact grammar (MoQFramer.cpp writeSetup / parseExtensionKvPairs):
@@ -498,8 +501,13 @@ def p_options(cursor, annot, payload_end, names, prefix="ext",
                 f"╭─ immutable block start  ({vlen} bytes, [{block_start:04x}..{block_end:04x}))",
             )
             p_options(
-                cursor, annot, block_end, names,
-                f"{prefix}[{i}].imm", key_field, immutable=False,
+                cursor,
+                annot,
+                block_end,
+                names,
+                f"{prefix}[{i}].imm",
+                key_field,
+                immutable=False,
             )
             annot.add(
                 block_end, block_end, f"{prefix}[{i}].imm", "╰─ immutable block end"
@@ -1070,7 +1078,7 @@ def main():
         if parser:
             parser(cursor, annot, draft, payload_end)
         else:
-            raw = cursor.read_bytes(frame_len)
+            cursor.read_bytes(frame_len)
             annot.add(
                 payload_start,
                 cursor.pos,

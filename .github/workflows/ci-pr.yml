@@ -27,6 +27,9 @@ jobs:
       - name: Install clang-format
         run: pip install clang-format==19.1.7
 
+      # format.sh pins the ruff version; uv is what fetches it.
+      - uses: astral-sh/setup-uv@v6
+
       - name: Check formatting
         run: bash scripts/dev/format.sh --check
 

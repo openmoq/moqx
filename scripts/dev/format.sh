@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
+# format.sh — format (or --check) the repository's C++ and Python.
+#
+# Both formatters are version-pinned: releases disagree, and an unpinned one
+# reformats the tree back and forth.
 set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 
 REQUIRED_CF_VERSION=19
+REQUIRED_RUFF_VERSION=0.16.4
 
 CF_BIN=${CF_BIN:-$(command -v clang-format-${REQUIRED_CF_VERSION} || command -v clang-format)}
 CF_VERSION=$(${CF_BIN} --version | sed -n 's/.*version \([0-9]*\)\..*/\1/p' | head -1)
@@ -15,6 +21,24 @@ if [[ "${CF_VERSION}" -ne "${REQUIRED_CF_VERSION}" ]]; then
   echo "  Debian/Ubuntu:  apt install clang-format-${REQUIRED_CF_VERSION}  (or https://apt.llvm.org)" >&2
   echo "  macOS:          brew install llvm@${REQUIRED_CF_VERSION}" >&2
   echo "  CentOS/RHEL:    yum install clang-tools-extra-${REQUIRED_CF_VERSION}.0  (EPEL/AppStream)" >&2
+  exit 1
+fi
+
+# uv fetches the pinned ruff on any platform, with no venv and no system
+# package. An exact-version ruff on PATH is taken as-is.
+if [[ -n "${RUFF_BIN:-}" ]]; then
+  RUFF=("${RUFF_BIN}")
+elif [[ "$(ruff --version 2>/dev/null | awk '{print $2}')" == "${REQUIRED_RUFF_VERSION}" ]]; then
+  RUFF=(ruff)
+elif command -v uv >/dev/null 2>&1; then
+  RUFF=(uv tool run "ruff@${REQUIRED_RUFF_VERSION}")
+else
+  echo "error: ruff ${REQUIRED_RUFF_VERSION} required, and no uv to fetch it" >&2
+  echo "Install uv (it then pins ruff itself):" >&2
+  echo "  any platform:   curl -LsSf https://astral.sh/uv/install.sh | sh" >&2
+  echo "  macOS:          brew install uv" >&2
+  echo "Or install ruff ${REQUIRED_RUFF_VERSION} directly and put it on PATH:" >&2
+  echo "  pipx install ruff==${REQUIRED_RUFF_VERSION}" >&2
   exit 1
 fi
 
@@ -45,10 +69,15 @@ if [[ "${1:-}" == "--check" ]]; then
   cf_exit=0
   ${CF_BIN} --dry-run -Werror ${FILES} || cf_exit=$?
 
+  echo "Checking Python formatting and lint..."
+  ruff_exit=0
+  "${RUFF[@]}" format --check . || ruff_exit=$?
+  "${RUFF[@]}" check . || ruff_exit=$?
+
   if [[ $header_errors -ne 0 ]]; then
     echo "error: files missing copyright headers (run scripts/dev/format.sh to fix)" >&2
   fi
-  if [[ $header_errors -ne 0 || $cf_exit -ne 0 ]]; then
+  if [[ $header_errors -ne 0 || $cf_exit -ne 0 || $ruff_exit -ne 0 ]]; then
     exit 1
   fi
 else
@@ -61,4 +90,9 @@ else
 
   echo "Formatting files..."
   ${CF_BIN} -i ${FILES}
+
+  # --fix is the safe fixes only; whatever is left exits non-zero for a human.
+  echo "Formatting and linting Python..."
+  "${RUFF[@]}" format .
+  "${RUFF[@]}" check --fix .
 fi

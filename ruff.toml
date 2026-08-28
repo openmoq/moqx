@@ -1,0 +1,15 @@
+# Lint and format for the repository's Python. scripts/dev/format.sh runs it
+# and pins the version.
+
+# The floor: the oldest interpreter a contributor already has is the macOS
+# Command Line Tools' 3.9.6.
+target-version = "py39"
+
+# Third-party trees that land in the checkout as symlinks.
+extend-exclude = ["deps", "gh-pages", "build", ".scratch"]
+
+[lint]
+# Spelled out rather than extended from ruff's default, which is large and
+# moves between releases. E4/E7/E9 + F is that default's core; I sorts imports,
+# B is bugbear, UP is pyupgrade held to target-version above.
+select = ["E4", "E7", "E9", "F", "I", "B", "UP"]

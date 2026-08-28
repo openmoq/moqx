@@ -185,9 +185,11 @@ of its own, leaving the interceptors undefined at link.
   `cmake --preset` flow, with targets `relay` (default) and `interop-client`. Its
   `moxygen` stage resolves the prefix the same way `prebuilt-with-fallback` does,
   and is keyed on the pin rather than on `src/` so a source change reuses it.
-- **Format / lint** (CI requires clang-format-19) —
-  [`scripts/dev/format.sh`](/scripts/dev/format.sh) `[--check]`,
-  [`scripts/dev/lint.sh`](/scripts/dev/lint.sh) `build/default`.
+- **Format / lint** — [`scripts/dev/format.sh`](/scripts/dev/format.sh)
+  `[--check]` covers C++ (clang-format-19) and Python (ruff, configured in
+  [`ruff.toml`](/ruff.toml)). Both versions are pinned; `uv` fetches the ruff
+  pin. [`scripts/dev/lint.sh`](/scripts/dev/lint.sh) `build/default` is
+  clang-tidy.
 - **CLion** — point its CMake profile at `cmake --preset default`; for from-source,
   run `scripts/configure.sh --moxygen from-source` first, then add
   `-DMOQX_MOXYGEN_PREBUILT=OFF -DCMAKE_PREFIX_PATH=<prefix>` to the profile.
