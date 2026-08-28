@@ -3131,18 +3131,24 @@ void MoqxRelay::erasePendingRendezvousFromNode(
   }
 }
 
-// Signals every waiter in this subtree (namespace-level publish/publishNamespace)
-// and clears it out, since all of it is now resolved.
-void MoqxRelay::wakePendingRendezvousSubtree(PendingRendezvousNode& node) {
+// Removes every waiter in this subtree from the tree (namespace-level
+// publish/publishNamespace) into `out`, since all of it is now resolved.
+// Does NOT signal: see collectPendingRendezvousSubtree's declaration comment.
+void MoqxRelay::collectPendingRendezvousSubtree(
+    PendingRendezvousNode& node,
+    PendingRendezvousNode::WaiterList& out
+) {
   for (auto& [_, trackWaiters] : node.waitersByTrack) {
-    for (auto& waiter : trackWaiters) {
-      waiter->signal();
-    }
-  }
-  for (auto& [_, child] : node.children) {
-    wakePendingRendezvousSubtree(*child);
+    out.insert(
+        out.end(),
+        std::make_move_iterator(trackWaiters.begin()),
+        std::make_move_iterator(trackWaiters.end())
+    );
   }
   node.waitersByTrack.clear();
+  for (auto& [_, child] : node.children) {
+    collectPendingRendezvousSubtree(*child, out);
+  }
   node.children.clear();
 }
 
@@ -3179,23 +3185,34 @@ void MoqxRelay::applyFnAtNamespaceNode(
 // Wakes only waiters for this exact track (a PUBLISH landed). Waiters for
 // other tracks under the same namespace node are left parked.
 void MoqxRelay::wakePendingRendezvousForTrack(const FullTrackName& ftn) {
-  applyFnAtNamespaceNode(ftn.trackNamespace, [&ftn](PendingRendezvousNode& node) {
+  PendingRendezvousNode::WaiterList toWake;
+  applyFnAtNamespaceNode(ftn.trackNamespace, [&](PendingRendezvousNode& node) {
     auto waitersIt = node.waitersByTrack.find(ftn.trackName);
     if (waitersIt != node.waitersByTrack.end()) {
-      for (auto& waiter : waitersIt->second) {
-        waiter->signal();
-      }
+      toWake = std::move(waitersIt->second);
       node.waitersByTrack.erase(waitersIt);
     }
   });
+  // Signal only once the tree walk/prune above is fully done: TimedBaton::signal()
+  // may resume the parked coroutine synchronously, re-entering erasePendingRendezvous()
+  // which must not observe (or corrupt) a container we were still iterating/mutating.
+  for (auto& waiter : toWake) {
+    waiter->signal();
+  }
 }
 
 // Wakes every waiter under this namespace (a PUBLISH_NAMESPACE landed) — any
 // track under it may now be resolvable.
 void MoqxRelay::wakePendingRendezvousUnderNamespace(const TrackNamespace& ns) {
-  applyFnAtNamespaceNode(ns, [](PendingRendezvousNode& node) {
-    wakePendingRendezvousSubtree(node);
+  PendingRendezvousNode::WaiterList toWake;
+  applyFnAtNamespaceNode(ns, [&](PendingRendezvousNode& node) {
+    collectPendingRendezvousSubtree(node, toWake);
   });
+  // See the comment in wakePendingRendezvousForTrack: signal strictly after
+  // all tree mutation completes.
+  for (auto& waiter : toWake) {
+    waiter->signal();
+  }
 }
 
 std::optional<std::chrono::milliseconds> MoqxRelay::takeRendezvousTimeout(

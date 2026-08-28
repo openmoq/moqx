@@ -700,7 +700,15 @@ private:
       size_t namespaceIndex,
       const std::shared_ptr<moxygen::TimedBaton>& waiter
   );
-  static void wakePendingRendezvousSubtree(PendingRendezvousNode& node);
+  // Removes every waiter in this subtree from the tree and appends it to `out`.
+  // Callers must signal the collected waiters only after all tree mutation is
+  // complete: TimedBaton::signal() may resume the parked coroutine
+  // synchronously, which re-enters erasePendingRendezvous() and must not
+  // observe a container we are still iterating/mutating.
+  static void collectPendingRendezvousSubtree(
+      PendingRendezvousNode& node,
+      PendingRendezvousNode::WaiterList& out
+  );
   void applyFnAtNamespaceNode(
       const moxygen::TrackNamespace& ns,
       folly::FunctionRef<void(PendingRendezvousNode&)> onNode
