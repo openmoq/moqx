@@ -97,6 +97,9 @@ runs:
         echo "MOQX_DEPS_CACHE=$HOME/.cache/moqx" >> "$GITHUB_ENV"
         # Pin ccache's dir to the cached path; its own default is platform-dependent.
         echo "CCACHE_DIR=$HOME/.cache/ccache" >> "$GITHUB_ENV"
+        # Zero the counters so the stats printed after each build describe this
+        # run rather than the accumulated history of the restored cache.
+        CCACHE_DIR="$HOME/.cache/ccache" ccache -z >/dev/null 2>&1 || true
         # Bound the cache. Hosted lanes share the repo's 10 GB budget; the
         # self-hosted box keeps its cache on local disk and pays no such tax.
         if [ "${{ runner.environment }}" = "github-hosted" ]; then

@@ -103,6 +103,11 @@ jobs:
 
       # test.sh, not raw ctest: it resolves the --parallel the suite needs (the
       # shell integration tests carry unique ports so they can share a run).
+      # Hit rate is the only way to tell a warm cache from a restored one.
+      - name: ccache stats
+        if: always()
+        run: ccache -s
+
       - name: Test
         env:
           ASAN_OPTIONS: ${{ matrix.leak_check && 'detect_leaks=1:abort_on_error=1' || '' }}
@@ -179,6 +184,11 @@ jobs:
         run: |
           scripts/configure.sh default --moxygen prebuilt-with-fallback -DMOQX_BUILD_TESTS=OFF
           scripts/build.sh default
+
+      # Hit rate is the only way to tell a warm cache from a restored one.
+      - name: ccache stats
+        if: always()
+        run: ccache -s
 
       - name: Run conformance tests
         run: bash test/test_conformance.sh ./build/default/moqx ${{ matrix.versions }} ${{ matrix.transport }} ${{ matrix.stack }}
