@@ -207,14 +207,16 @@ CrossExecFilter::setTrackAlias(moxygen::TrackAlias alias) {
   if (auto err = loadDeferredError()) {
     return folly::makeUnexpected(*err);
   }
-  targetExec_->add([this, alias]() {
-    if (!downstream_) {
-      storeDeferredError(moxygen::MoQPublishError::WRITE_ERROR);
+  // shared_from_this: the owning forwarder may drop its ref (e.g. publisher
+  // termination) before this lambda runs on targetExec_.
+  targetExec_->add([self = shared_from_this(), alias]() {
+    if (!self->downstream_) {
+      self->storeDeferredError(moxygen::MoQPublishError::WRITE_ERROR);
       return;
     }
-    auto result = downstream_->setTrackAlias(alias);
+    auto result = self->downstream_->setTrackAlias(alias);
     if (result.hasError()) {
-      storeDeferredError(result.error());
+      self->storeDeferredError(result.error());
     }
   });
   return folly::unit;
@@ -231,15 +233,20 @@ CrossExecFilter::beginSubgroup(
     return folly::makeUnexpected(*err);
   }
   auto subFilter = CrossExecSubgroupFilter::create(targetExec_, deepCopyPayload_);
-  targetExec_->add([this, subFilter, groupID, subgroupID, priority, options]() mutable {
-    if (!downstream_) {
+  targetExec_->add([self = shared_from_this(),
+                    subFilter,
+                    groupID,
+                    subgroupID,
+                    priority,
+                    options]() mutable {
+    if (!self->downstream_) {
       subFilter->closeWithError(moxygen::MoQPublishError::WRITE_ERROR);
       return;
     }
-    auto result = downstream_->beginSubgroup(groupID, subgroupID, priority, options);
+    auto result = self->downstream_->beginSubgroup(groupID, subgroupID, priority, options);
     if (result.hasValue()) {
       subFilter->setDownstream(std::move(result.value()));
-      subFilter->setKeepAlive(downstream_);
+      subFilter->setKeepAlive(self->downstream_);
     } else {
       XLOG(ERR) << "CrossExecFilter beginSubgroup failed: " << result.error().describe();
       subFilter->closeWithError(result.error());
@@ -266,15 +273,18 @@ folly::Expected<folly::Unit, moxygen::MoQPublishError> CrossExecFilter::objectSt
     return folly::makeUnexpected(*err);
   }
   auto capturedPayload = maybeDeepCopy(payload, deepCopyPayload_);
-  targetExec_->add([this, header, payload = std::move(capturedPayload), lastInGroup]() mutable {
-    if (!downstream_) {
-      objectStreamErrors_.fetch_add(1, std::memory_order_relaxed);
+  targetExec_->add([self = shared_from_this(),
+                    header,
+                    payload = std::move(capturedPayload),
+                    lastInGroup]() mutable {
+    if (!self->downstream_) {
+      self->objectStreamErrors_.fetch_add(1, std::memory_order_relaxed);
       XLOG(ERR) << "objectStream: no downstream";
       return;
     }
-    auto result = downstream_->objectStream(header, std::move(payload), lastInGroup);
+    auto result = self->downstream_->objectStream(header, std::move(payload), lastInGroup);
     if (result.hasError()) {
-      objectStreamErrors_.fetch_add(1, std::memory_order_relaxed);
+      self->objectStreamErrors_.fetch_add(1, std::memory_order_relaxed);
       XLOG(ERR) << "objectStream: " << result.error().describe();
     }
   });
@@ -290,15 +300,18 @@ folly::Expected<folly::Unit, moxygen::MoQPublishError> CrossExecFilter::datagram
     return folly::makeUnexpected(*err);
   }
   auto capturedPayload = maybeDeepCopy(payload, deepCopyPayload_);
-  targetExec_->add([this, header, payload = std::move(capturedPayload), lastInGroup]() mutable {
-    if (!downstream_) {
-      datagramErrors_.fetch_add(1, std::memory_order_relaxed);
+  targetExec_->add([self = shared_from_this(),
+                    header,
+                    payload = std::move(capturedPayload),
+                    lastInGroup]() mutable {
+    if (!self->downstream_) {
+      self->datagramErrors_.fetch_add(1, std::memory_order_relaxed);
       XLOG(ERR) << "datagram: no downstream";
       return;
     }
-    auto result = downstream_->datagram(header, std::move(payload), lastInGroup);
+    auto result = self->downstream_->datagram(header, std::move(payload), lastInGroup);
     if (result.hasError()) {
-      datagramErrors_.fetch_add(1, std::memory_order_relaxed);
+      self->datagramErrors_.fetch_add(1, std::memory_order_relaxed);
       XLOG(ERR) << "datagram: " << result.error().describe();
     }
   });
