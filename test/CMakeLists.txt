@@ -414,3 +414,14 @@ moqx_add_gtest(moqx_cache_test
     Folly::folly_coro_gtest_helpers
     Folly::folly_io_async_scoped_event_base_thread
 )
+
+moqx_add_gtest(moqx_cache_fetch_range_test
+  SRCS MoqxCacheFetchRangeTest.cpp
+  LIBS
+    moqx_cache
+    moqx_test_utils
+    moqx_test_main
+    moxygen::moqtest_utils
+    GTest::gmock
+    Folly::folly_coro_gtest_helpers
+)
