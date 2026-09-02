@@ -18,11 +18,13 @@
 #include <fizz/server/ReplayCache.h>
 #include <fizz/server/TicketCodec.h>
 #include <fizz/util/Status.h>
+#include <folly/Conv.h>
 #include <folly/Random.h>
 #include <folly/logging/xlog.h>
 #include <quic/QuicConstants.h>
 #include <quic/logging/FileQLogger.h>
 
+#include <algorithm>
 #include <array>
 
 using namespace moxygen;
@@ -34,6 +36,15 @@ namespace {
 std::vector<std::string> buildAlpns(const std::string& versions) {
   std::vector<std::string> alpns = {"h3"};
   auto moqt = getMoqtProtocols(versions, true);
+  // Prefer the highest shared draft: fizz negotiates by server order.
+  auto draft = [](const std::string& alpn) {
+    return folly::tryTo<int>(
+               folly::StringPiece(alpn).subpiece(alpn.rfind('-') + 1))
+        .value_or(-1);
+  };
+  std::sort(moqt.begin(), moqt.end(), [&](const auto& a, const auto& b) {
+    return draft(a) > draft(b);
+  });
   alpns.insert(alpns.end(), moqt.begin(), moqt.end());
   return alpns;
 }
