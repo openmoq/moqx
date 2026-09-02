@@ -81,18 +81,42 @@ void MoQRelayTest::resetRelay(
   }
 }
 
-void MoQRelayTest::TearDown() {
-  // Drain any pending relay exec tasks (e.g., async publishNamespaceDone dispatches
-  // from cleanup) before destroying relay state to avoid use-after-free on NamespaceTree.
-  if (relayEvb_) {
-    relayEvb_->runInEventBaseThreadAndWait([]() {});
-    relayEvb_->runInEventBaseThreadAndWait([]() {});
+MoQRelayTest::AuxExec& MoQRelayTest::makeAuxExec(const std::string& threadName) {
+  auto aux = std::make_unique<AuxExec>();
+  aux->thread = std::make_unique<folly::ScopedEventBaseThread>(threadName);
+  aux->evb = aux->thread->getEventBase();
+  aux->exec = std::make_shared<moxygen::MoQFollyExecutorImpl>(aux->evb);
+  auxExecs_.push_back(std::move(aux));
+  return *auxExecs_.back();
+}
+
+void MoQRelayTest::drainExecs(int rounds) {
+  for (int i = 0; i < rounds; ++i) {
+    for (auto& aux : auxExecs_) {
+      aux->evb->runInEventBaseThreadAndWait([]() {});
+    }
+    if (relayEvb_) {
+      relayEvb_->runInEventBaseThreadAndWait([]() {});
+    }
+    if (exec_) {
+      exec_->drive();
+    }
   }
+}
+
+void MoQRelayTest::TearDown() {
+  // CrossExecFilter posts `delete this` to targetExec_, so an exec must outlive
+  // the filters aimed at it. Drain before freeing relay state, and again after
+  // the last release; ~fixture frees auxExecs_ then exec_ after that.
+  drainExecs();
+  mockSessions_.clear(); // declared before exec_, so ~fixture frees it too late
   exec_->setRelayEvb(nullptr);
   publisherInterface_.reset();
   subscriberInterface_.reset();
   relay_.reset();
   relayThread_.reset();
+  relayEvb_ = nullptr;
+  drainExecs();
 }
 
 std::shared_ptr<MockMoQSession> MoQRelayTest::createMockSession() {

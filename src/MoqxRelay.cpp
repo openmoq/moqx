@@ -658,7 +658,7 @@ Subscriber::PublishResult MoqxRelay::publishFromPublisherExec(
   // crossExecFilter is a channel subscriber for the relay exec
   // registerPublishOnRelayExec completes wiring the chain (topNFilter → terminationFilter →
   // cache).
-  auto crossExecFilter = std::make_shared<CrossExecFilter>(relayExec_, nullptr);
+  auto crossExecFilter = CrossExecFilter::create(relayExec_, nullptr);
   // forward=true + passive=true: internal relay chain observes all objects but
   // does not count as a real forwarding subscriber.
   localPubFwd
@@ -1298,7 +1298,7 @@ folly::coro::Task<void> MoqxRelay::addSubscriberAndPublishViaLocalForwarder(
   localFwd->setCallback(pendingCb);
   // deepCopyPayload=true (default): each subscriber thread owns its IOBuf chain,
   // avoiding cross-thread contention on the shared atomic refcount.
-  auto crossExecFilter = std::make_shared<CrossExecFilter>(subscriberExec, localFwd);
+  auto crossExecFilter = CrossExecFilter::create(subscriberExec, localFwd);
   bool hasForwardingSub = (localFwd->numForwardingSubscribers() > 0);
 
   // Wire localFwd in as a channel subscriber on the publisher's exec
@@ -2120,7 +2120,7 @@ folly::coro::Task<MoqxRelay::PublisherAttachment> MoqxRelay::attachNewLocalForwa
           // Passive relay chain (top-N/termination/cache): forward=true so it observes every
           // object, passive=true so it doesn't count as a forwarding subscriber or in the
           // onEmpty quorum (the publisher's onEmpty still fires when the last real sub leaves).
-          relayChainFilter = std::make_shared<CrossExecFilter>(relayExec_, nullptr);
+          relayChainFilter = CrossExecFilter::create(relayExec_, nullptr);
           publisherFwd->addChannelSubscriber(
               relayExec_,
               /*forward=*/true,
@@ -2314,7 +2314,7 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriber
 
   // deepCopyPayload=true (default): each subscriber thread owns its IOBuf chain,
   // avoiding cross-thread contention on the shared atomic refcount.
-  auto crossExecFilter = std::make_shared<CrossExecFilter>(subscriberExec, localFwd);
+  auto crossExecFilter = CrossExecFilter::create(subscriberExec, localFwd);
 
   // addSubscriber before the relay hop: numForwardingSubscribers() must be correct
   // when addChannelSubscriber runs on publisherExec, so forward flag is right from the start.

@@ -202,6 +202,17 @@ CrossExecSubgroupFilter::awaitReadyToConsume() {
 
 // ---- CrossExecFilter ----
 
+std::shared_ptr<CrossExecFilter> CrossExecFilter::create(
+    folly::Executor* targetExec,
+    std::shared_ptr<moxygen::TrackConsumer> inner,
+    bool deepCopyPayload
+) {
+  return std::shared_ptr<CrossExecFilter>(
+      new CrossExecFilter(PrivateTag{}, targetExec, std::move(inner), deepCopyPayload),
+      [](CrossExecFilter* self) { self->targetExec_->add([self]() { delete self; }); }
+  );
+}
+
 folly::Expected<folly::Unit, moxygen::MoQPublishError>
 CrossExecFilter::setTrackAlias(moxygen::TrackAlias alias) {
   if (auto err = loadDeferredError()) {

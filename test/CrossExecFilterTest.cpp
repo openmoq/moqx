@@ -9,6 +9,7 @@
 #include <folly/executors/ManualExecutor.h>
 #include <folly/portability/GMock.h>
 #include <folly/portability/GTest.h>
+#include <moxygen/relay/MoQForwarder.h>
 #include <moxygen/test/Mocks.h>
 
 using namespace testing;
@@ -56,7 +57,7 @@ protected:
     ON_CALL(*innerSubgroup_, endOfSubgroup())
         .WillByDefault(Return(folly::makeExpected<MoQPublishError>(folly::unit)));
 
-    filter_ = std::make_shared<CrossExecFilter>(&exec_, innerTrack_);
+    filter_ = CrossExecFilter::create(&exec_, innerTrack_);
   }
 
   folly::ManualExecutor exec_;
@@ -494,6 +495,67 @@ TEST_F(FetchCrossExecFilterTest, NonTerminalObjectErrorUAFOnQueuedTerminalLambda
   // selfGuard_.reset() → freed. The second object lambda then accesses
   // this->downstream_ on freed memory.
   exec_.drain();
+}
+
+// ---- CrossExecFilter lifetime ----
+
+// UAF regression tests: unlike its siblings, CrossExecFilter has no selfGuard_,
+// so the owner's ref is all that keeps it alive — and the owner may drop it from
+// an executor other than targetExec_, which the FIFO deferred-release protocol
+// does not cover. MoQForwarder::removeSubscriberOnError() does exactly that to
+// the relay-chain filter (MoqxRelay.cpp:2034) while a beginSubgroup lambda is
+// still queued, leaving CrossExecFilter.cpp:239 reading freed memory.
+// Times(1) states the contract a fix must keep: a call accepted before the last
+// ref dropped still reaches the inner consumer. Run under ASan to catch the UAF.
+TEST_F(CrossExecFilterTest, FilterDestroyedWithQueuedBeginSubgroupUAF) {
+  auto r = filter_->beginSubgroup(1, 0, 128, {});
+  ASSERT_TRUE(r.hasValue());
+  auto subFilter = std::move(r.value()); // move out so r holds null — no extra ref
+
+  // The owner drops its ref from another executor; nothing defers the
+  // destruction to exec_, so the queued lambda is left with a dangling `this`.
+  filter_.reset();
+
+  EXPECT_CALL(*innerTrack_, beginSubgroup(1, 0, 128, _)).Times(1);
+  subFilter->reset(ResetStreamErrorCode::CANCELLED); // required terminal call
+  exec_.drain();
+}
+
+TEST_F(CrossExecFilterTest, FilterDestroyedWithQueuedObjectStreamUAF) {
+  auto hdr = makeHeader(2, 0, 5);
+  auto result = filter_->objectStream(hdr, nullptr, false);
+  EXPECT_TRUE(result.hasValue());
+
+  filter_.reset();
+
+  EXPECT_CALL(*innerTrack_, objectStream(hdr, _, false)).Times(1);
+  exec_.drain();
+}
+
+// The same defect driven entirely through the real MoQForwarder API, no manual
+// reset(): removeChannelSubscriberByExec defaults pubDone to std::nullopt, so
+// removeSubscriberIt skips the publishDone that would have anchored the filter
+// via shared_from_this() and erases the subscriber map entry — dropping the
+// forwarder's only ref inline, on the publisher's executor, while the
+// beginSubgroup lambda is still queued on the filter's target executor.
+TEST(CrossExecFilterForwarderTest, ChannelSubscriberRemovedWithQueuedBeginSubgroupUAF) {
+  folly::ManualExecutor exec;
+  auto inner = std::make_shared<NiceMock<MockTrackConsumer>>();
+  auto innerSubgroup = std::make_shared<NiceMock<MockSubgroupConsumer>>();
+  ON_CALL(*inner, beginSubgroup(_, _, _, _))
+      .WillByDefault(Return(
+          folly::makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(innerSubgroup)
+      ));
+
+  auto fwd = std::make_shared<MoQForwarder>(FullTrackName{TrackNamespace{{"ns"}}, "track"});
+  fwd->addChannelSubscriber(&exec, /*forward=*/true, CrossExecFilter::create(&exec, inner));
+
+  auto sub = fwd->beginSubgroup(1, 0, 128, {});
+  ASSERT_TRUE(sub.hasValue());
+
+  fwd->removeChannelSubscriberByExec(&exec);
+
+  exec.drain();
 }
 
 } // namespace

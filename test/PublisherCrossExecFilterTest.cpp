@@ -13,6 +13,7 @@
 #include <folly/io/async/EventBase.h>
 #include <folly/portability/GMock.h>
 #include <folly/portability/GTest.h>
+#include <folly/synchronization/Baton.h>
 #include <moxygen/test/Mocks.h>
 
 using namespace testing;
@@ -27,6 +28,17 @@ protected:
     targetExec_ = std::make_shared<folly::CPUThreadPoolExecutor>(1);
     inner_ = std::make_shared<NiceMock<MockPublisher>>();
     filter_ = std::make_shared<PublisherCrossExecFilter>(targetExec_.get(), inner_);
+  }
+
+  // See SubscriberCrossExecFilterTest.
+  void TearDown() override {
+    filter_.reset();
+    for (int i = 0; i < 2; ++i) {
+      folly::Baton<> flushed;
+      targetExec_->add([&flushed]() { flushed.post(); });
+      flushed.wait();
+    }
+    targetExec_->join();
   }
 
   std::shared_ptr<folly::CPUThreadPoolExecutor> targetExec_;

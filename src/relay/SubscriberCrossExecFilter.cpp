@@ -98,7 +98,7 @@ moxygen::Subscriber::PublishResult SubscriberCrossExecFilter::publish(
     moxygen::PublishRequest pub,
     std::shared_ptr<moxygen::SubscriptionHandle> handle
 ) {
-  auto filter = std::make_shared<CrossExecFilter>(targetExec_, nullptr);
+  auto filter = CrossExecFilter::create(targetExec_, nullptr);
   // co_invoke captures exec and inner by value here (while `this` is live),
   // so the task's coroutine frame owns them and doesn't need `this` to survive.
   auto reply = folly::coro::co_invoke(
