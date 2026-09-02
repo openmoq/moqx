@@ -344,6 +344,12 @@ moqx_add_gtest(moqx_track_filter_test
   LIBS moqx_test_fixture moqx_test_main
 )
 
+# NAMESPACE_TOO_LARGE fan-out guard tests (in-process relay, no live server)
+moqx_add_gtest(moqx_namespace_too_large_test
+  SRCS MoqxNamespaceTooLargeTest.cpp
+  LIBS moqx_test_fixture moqx_test_main
+)
+
 # TrackFilterLoadTest: requires a live relay process.
 # Run manually: ./track_filter_load_test --relay_url=https://localhost:9668/moq-relay
 # Not registered with gtest_discover_tests — excluded from automated ctest.
