@@ -118,6 +118,9 @@ public:
   static constexpr uint64_t kDefaultMaxDeselected = 0;
   static constexpr std::chrono::milliseconds kDefaultIdleTimeout{10'000};
   static constexpr std::chrono::milliseconds kDefaultActivityThreshold{2'000};
+  // Max namespace/track matches a SUBSCRIBE_NAMESPACE or SUBSCRIBE_TRACKS may enumerate before
+  // NAMESPACE_TOO_LARGE (draft 18+).
+  static constexpr uint64_t kMaxNamespaceMatches = 1000;
 
   // relayExec, when set, is owned by the relay and isolates all state on it;
   // null runs everything on the calling thread. useLocalForwarders (requires
