@@ -33,6 +33,14 @@ static_assert(
     "TlsConfig changed — update serializeTls()"
 );
 static_assert(
+    rfl::internal::num_fields<ListenerTlsConfig> == 3,
+    "ListenerTlsConfig changed — update serializeListenerTls()"
+);
+static_assert(
+    rfl::internal::num_fields<CertDirConfig> == 2,
+    "CertDirConfig changed — update serializeListenerTls()"
+);
+static_assert(
     rfl::internal::num_fields<QuicConfig> == 10,
     "QuicConfig changed — update serializeQuic()"
 );
@@ -177,7 +185,12 @@ Config makeFullConfig() {
   ListenerConfig l;
   l.name = "main";
   l.address = folly::SocketAddress("::", 4433);
-  l.tlsMode = TlsConfig{"/etc/relay.crt", "/etc/relay.key", {}};
+  l.tlsMode = ListenerTlsConfig{
+      TlsConfig{"/etc/relay.crt", "/etc/relay.key", {}, std::nullopt},
+      CertDirConfig{"/etc/certs", std::chrono::seconds(30)},
+      // Recognizable raw seed bytes: the leak check below scans the dump for them.
+      {std::string(32, 'S'), std::string(32, 'T')}
+  };
   l.endpoint = "/moq-relay";
   l.moqtVersions = "16";
   l.quicStack = QuicStack::Mvfst;
@@ -216,6 +229,16 @@ TEST(ConfigSerializerTest, VisitsAllSections) {
   EXPECT_EQ(sink.scalars["listeners.*.name"], "main");
   EXPECT_EQ(sink.scalars["listeners.*.quic_stack"], "mvfst");
   EXPECT_EQ(sink.scalars["listeners.*.tls.key_file"], "/etc/relay.key");
+  EXPECT_EQ(sink.scalars["listeners.*.tls.fizz.cert_dir"], "/etc/certs");
+  EXPECT_EQ(sink.scalars["listeners.*.tls.fizz.cert_reload_interval_s"], "30");
+  // Seeds are secret material: only the count may appear in the dump.
+  EXPECT_EQ(sink.scalars["listeners.*.tls.fizz.ticket_seed_count"], "2");
+  for (const auto& [key, value] : sink.scalars) {
+    EXPECT_EQ(value.find("SSSS"), std::string::npos) << key;
+    EXPECT_EQ(value.find("TTTT"), std::string::npos) << key;
+  }
+  // Fizz options are listener-only; the admin TLS dump must not grow the key.
+  EXPECT_EQ(sink.scalars.count("admin.tls.fizz"), 0u);
   EXPECT_EQ(sink.scalars["listeners.*.quic.cc_algo"], "bbr");
   EXPECT_EQ(sink.scalars["listeners.*.mvfst.bbr2.exit_startup_on_loss"], "true");
 
@@ -254,6 +277,27 @@ TEST(ConfigSerializerTest, AnonymousClaimEmptyNamespaceMatchSerializesAsEmptyArr
   serializeConfig(cfg, sink);
   // An empty array emits no scalar leaf; the null sentinel must be absent.
   EXPECT_EQ(sink.scalars.count("services.default.auth.anonymous_claim.*.namespace_segments"), 0u);
+}
+
+TEST(ConfigSerializerTest, ListenerWithoutFizzOptionsEmitsNullFizz) {
+  Config cfg = makeFullConfig();
+  auto& tls = std::get<ListenerTlsConfig>(cfg.listeners[0].tlsMode);
+  tls.certDir.reset();
+  tls.ticketSeeds.clear();
+  RecordingSink sink;
+  serializeConfig(cfg, sink);
+
+  EXPECT_EQ(sink.scalars["listeners.*.tls.fizz"], "null");
+}
+
+TEST(ConfigSerializerTest, TicketSeedsWithoutCertDirEmitFizzObject) {
+  Config cfg = makeFullConfig();
+  std::get<ListenerTlsConfig>(cfg.listeners[0].tlsMode).certDir.reset();
+  RecordingSink sink;
+  serializeConfig(cfg, sink);
+
+  EXPECT_EQ(sink.scalars["listeners.*.tls.fizz.ticket_seed_count"], "2");
+  EXPECT_EQ(sink.scalars.count("listeners.*.tls.fizz.cert_dir"), 0u);
 }
 
 TEST(ConfigSerializerTest, RedactsHmacSecret) {

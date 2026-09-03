@@ -61,14 +61,80 @@ listeners:
     tls:
       cert_file: /etc/moqx/cert.pem
       key_file:  /etc/moqx/key.pem
+      # fizz:                        # optional; mvfst/proxygen_qmux only
+      #   cert_dir: /etc/moqx/certs
+      #   cert_reload_interval_s: 60
     endpoint: /moq-relay
     quic_stack: mvfst         # optional; default mvfst
     moqt_versions: []         # optional; empty = default [14, 16]
     quic: { ... }             # optional; overrides listener_defaults.quic
 ```
 
-**TLS:** For development only, `tls: {insecure: true}` skips certificate
-verification. This is incompatible with `quic_stack: picoquic`.
+**TLS:** `tls: {insecure: true}` is for development only.
+
+- `insecure: true` serves a compiled-in certificate and does not request a
+  client certificate.
+- `insecure: true` alongside `cert_file`, `key_file`, `pkcs12_file`, or
+  `fizz.cert_dir` is rejected at config load.
+- `insecure: true` alongside `fizz.ticket_seeds_file` or
+  `fizz.cert_reload_interval_s` warns: neither reaches the compiled-in
+  certificate path.
+- `quic_stack: picoquic` rejects `insecure: true`.
+
+**Multi-certificate / SNI (`tls.fizz`):** options for the fizz TLS stack
+(`quic_stack: mvfst` and `proxygen_qmux`). `picoquic` rejects any option set in
+the block; an empty `fizz: {}` is accepted.
+
+| Field | Default | Notes |
+|---|---|---|
+| `cert_dir` | unset | Directory of certificate pairs, `<base>.pem` + `<base>.key` (arbitrary basenames, non-recursive). The certificate served is selected by the client's SNI. |
+| `cert_reload_interval_s` | 60 | Seconds between background rescans of `cert_dir`. `0` = scan once at startup, never rescan. Warns when set without `cert_dir`. |
+| `ticket_seeds_file` | unset | Session-ticket seeds: one hex-encoded seed (≥64 hex chars) per line, `#` starts a comment. Read once at startup. |
+
+- Identities come from each certificate's DNS SANs, or from its CN when the
+  certificate carries no DNS SANs. Other SAN types (IP, email) are ignored.
+- Wildcards match one label: `*.example.com` covers `a.example.com`, not
+  `b.a.example.com`.
+- Nested wildcards are rejected.
+- Certificates and keys are read up front: at startup, and on the rescan
+  thread afterwards. No handshake ever waits on disk.
+- Deferring the key read to first use is not an option: fizz's cert-selection
+  hook is synchronous, so the read would land on the connection's IO thread
+  and a slow `cert_dir` mount would stall every handshake sharing that thread.
+- `cert_file`/`key_file` (or `pkcs12_file`), if also set, become the fallback
+  certificate, serving connections with no SNI or no matching identity.
+- With `cert_dir` and no fallback certificate, a connection with no SNI or no
+  matching identity fails the handshake.
+- A PKCS#12 fallback is decrypted once at config load and is never refreshed.
+- Rescans pick up added, removed, and changed pairs, and refresh a changed
+  `cert_file`/`key_file` fallback.
+- Startup is strict: an orphan `.pem`/`.key`, an unparsable certificate, a
+  duplicate identity, or a key that fails to load aborts the relay.
+- A rescan is not strict: its errors are logged, and every certificate already
+  loaded keeps serving.
+- Removing either file of a pair retires it on the next rescan; a lone `.pem`
+  or `.key` left behind is not served.
+- A changed pair that fails to load keeps serving its previous version until a
+  later rescan succeeds.
+- A newly added pair that fails to load is dropped, and its identities fall to
+  the fallback certificate or to a handshake miss.
+- A new pair claiming an identity another pair already serves is dropped with
+  a warning, and the incumbent keeps that identity until its own files are
+  removed. At startup there is no incumbent: sorted filename order decides,
+  and the duplicate is fatal.
+
+**`ticket_seeds_file`:** a moqx format, not one shared with nginx or HAProxy.
+
+- The first seed encrypts new session tickets.
+- Every listed seed still decrypts, so rotate by prepending a new seed.
+- Generate a seed with `openssl rand -hex 32`.
+- Point every relay instance at the same file so resumption survives restarts
+  and works across relays.
+- The file is read once at startup, so a rotation takes effect on restart.
+- Without the option each process uses a random seed, and resumption dies with
+  the process.
+- An empty file, a comments-only file, a non-hex line, or a seed under 32
+  bytes is a config-load error.
 
 **moqt_versions:**: Currently supports 14 and 16.
 
@@ -530,7 +596,8 @@ or a restart.
 
 | Lifecycle | When changes apply | Examples |
 |---|---|---|
-| **Static** | Process restart required | listeners, admin, relay_id, TLS certificates, QUIC stack |
+| **Static** | Process restart required | listeners, admin, relay_id, `cert_file`/`key_file`/PKCS#12 certificates, QUIC stack |
+| **Automatic** | Background rescan, no reload needed | certificates under `tls.fizz.cert_dir` (see `cert_reload_interval_s`) |
 | **Reload:NewConn** | New connections/sessions only | service match rules, upstream URL |
 | **Reload:NewSub** | New subscriptions/tracks only | cache settings |
 | **Reload:Immediate** | All connections immediately | (reserved for future fields) |

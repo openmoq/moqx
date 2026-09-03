@@ -144,6 +144,17 @@ target_include_directories(moqx_state_response_test PRIVATE
   ${PROJECT_SOURCE_DIR}/src
 )
 
+moqx_add_gtest(moqx_tls_test
+  SRCS
+    tls/CertDirScannerTest.cpp
+    tls/FizzContextBuilderTest.cpp
+    tls/SniCertManagerTest.cpp
+  LIBS moqx_core OpenSSL::Crypto GTest::gtest_main GTest::gmock
+)
+target_include_directories(moqx_tls_test PRIVATE
+  ${PROJECT_SOURCE_DIR}/src
+)
+
 moqx_add_gtest(moqx_track_stats_registry_test
   SRCS stats/TrackStatsRegistryTest.cpp
   LIBS moqx_core GTest::gtest_main GTest::gmock
@@ -245,6 +256,14 @@ set_tests_properties(qmux_relay PROPERTIES
   TIMEOUT 60
   SKIP_RETURN_CODE 77
   ENVIRONMENT "MOQBIN=${MOXYGEN_BIN_DIR}"
+)
+
+add_test(
+  NAME sni_multi_cert
+  COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_sni.sh $<TARGET_FILE:moqx>
+)
+set_tests_properties(sni_multi_cert PROPERTIES
+  TIMEOUT 60
 )
 
 add_test(

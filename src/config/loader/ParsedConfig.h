@@ -32,6 +32,32 @@ struct ParsedUdpConfig {
   rfl::Description<"Socket configuration", ParsedSocketConfig> socket;
 };
 
+// Options specific to the fizz TLS stack (quic_stack mvfst/proxygen_qmux).
+struct ParsedFizzTlsConfig {
+  rfl::Description<
+      "Directory of certificate pairs (<base>.pem + <base>.key). Certificates are "
+      "selected by SNI against their DNS SANs (the CN only when a certificate has "
+      "none; wildcards match one label) and loaded up front, at startup and on "
+      "each rescan. cert_file/key_file or pkcs12_file, if also set, become the "
+      "fallback certificate for absent/unmatched SNI.",
+      std::optional<std::string>>
+      cert_dir;
+  rfl::Description<
+      "Seconds between background rescans of cert_dir (picks up new, removed, and "
+      "changed pairs). 0 = scan once at startup, never rescan. Default 60.",
+      std::optional<uint32_t>>
+      cert_reload_interval_s;
+  rfl::Description<
+      "Path to a session-ticket seeds file: one hex-encoded seed (at least 64 hex "
+      "chars) per line, '#' starts a comment; a file yielding no seeds is an error. "
+      "The first seed encrypts new tickets; every listed seed still decrypts, so "
+      "rotate by prepending a line and restarting. Share one file across relay "
+      "instances so TLS resumption survives restarts and works across relays. "
+      "Absent: a random per-process seed.",
+      std::optional<std::string>>
+      ticket_seeds_file;
+};
+
 struct ParsedListenerTlsConfig {
   rfl::Description<"Path to TLS certificate file", std::optional<std::string>> cert_file;
   rfl::Description<"Path to TLS private key file", std::optional<std::string>> key_file;
@@ -54,7 +80,17 @@ struct ParsedListenerTlsConfig {
       "friendly: the secret stays out of the config file). Errors if the variable is unset.",
       std::optional<std::string>>
       pkcs12_password_env;
-  rfl::Description<"Insecure mode, use default compiled-in cert", bool> insecure;
+  rfl::Description<
+      "Fizz-stack TLS options (quic_stack mvfst/proxygen_qmux only; picoquic "
+      "rejects them)",
+      std::optional<ParsedFizzTlsConfig>>
+      fizz;
+  rfl::Description<
+      "Development only: serve the compiled-in certificate and drop client "
+      "verification. Rejected alongside cert_file/key_file/pkcs12_file/fizz, and "
+      "on quic_stack picoquic.",
+      bool>
+      insecure;
 };
 
 struct ParsedAdminTlsConfig {

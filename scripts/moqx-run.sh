@@ -279,6 +279,12 @@ else
 fi
 export MOQX_INSECURE
 
+# The config schema rejects insecure alongside a cert source, so drop the paths
+# here rather than rendering a config the relay refuses to load.
+if [[ "$MOQX_INSECURE" == true ]]; then
+  export MOQX_CERT="" MOQX_KEY=""
+fi
+
 # ── Resolve placeholders into a temp config ───────────────────────────────
 # Fixed path by default; override (e.g. per perf run, to avoid concurrent
 # clobber) with MOQX_RESOLVED_CONFIG.
