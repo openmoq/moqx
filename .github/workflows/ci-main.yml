@@ -184,6 +184,8 @@ jobs:
           scripts/build.sh default
 
       - name: Run conformance tests
+        env:
+          SKIP_FETCH: 1
         run: bash test/test_conformance.sh ./build/default/moqx ${{ matrix.versions }} ${{ matrix.transport }} ${{ matrix.stack }}
 
   # ════════════════════════════════════════════════════════════════════════════
