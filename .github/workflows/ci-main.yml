@@ -7,7 +7,8 @@ name: ci main
 #
 #   check-format ──────────────────────────────────────────────────────────────────┐
 #   build (linux, asan debug) ── publish (docker+smoke) ── release ────────────────┼── notify
-#   microbenchmark (linux, macos) ────────────────────────────────────────────────-┘
+#   microbenchmark (linux, macos) ────────────────────────────────────────────────-┤
+#                                                                                  └── prune-caches
 
 on:
   push:
@@ -632,6 +633,63 @@ jobs:
           STATS_PASSWORD: ${{ secrets.STATS_PASSWORD }}
           GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
         run: bash docker/relay-deploy.sh
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # Prune build caches: keep the newest generation of each cache family.
+  #
+  # Every key carries github.sha, so each run mints an entry rather than
+  # replacing one. Nothing removed the superseded generations, and the repo
+  # reached 27 GB against a 10 GB budget — six live generations per lane, which
+  # GitHub then evicts by age, taking usable caches with them. Port of
+  # openmoq/moxygen#383.
+  # ════════════════════════════════════════════════════════════════════════════
+
+  prune-caches:
+    needs: [build, conformance, publish]
+    if: always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/'))
+    runs-on: ubuntu-22.04
+    permissions:
+      actions: write
+    steps:
+      # Runs after the cache-writing jobs so this run's entries are already
+      # saved and are the generation kept.
+      - name: Delete superseded generations
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          cat > family.jq <<'JQ'
+          # Family = the key without its trailing hex suffix: ccache keys end in
+          # -<sha>, dependency keys in -<content hash>. Anything else (setup-uv
+          # and friends) is left alone.
+          def family:
+            if (.key | test("-[0-9a-f]{32,}$")) then
+              (.key | capture("^(?<p>.*)-[0-9a-f]{32,}$").p)
+            else null end;
+          map(select(family != null))
+          | group_by(family)
+          | map(sort_by(.createdAt) | reverse | .[1:])
+          | flatten
+          | .[] | "\(.id)\t\(.sizeInBytes)\t\(.key)"
+          JQ
+
+          gh cache list --ref "$GITHUB_REF" --limit 100 \
+            --json id,key,sizeInBytes,createdAt > caches.json
+          jq -r -f family.jq caches.json > stale.tsv
+
+          if [ ! -s stale.tsv ]; then
+            echo "==> nothing superseded"
+            exit 0
+          fi
+
+          FREED=0
+          while IFS=$'\t' read -r id size key; do
+            echo "  deleting $key ($((size / 1048576)) MB)"
+            if gh cache delete "$id"; then
+              FREED=$((FREED + size))
+            fi
+          done < stale.tsv
+          echo "==> freed $((FREED / 1048576)) MB"
 
   # ════════════════════════════════════════════════════════════════════════════
   # Notify: aggregate status (runs after everything)
