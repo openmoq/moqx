@@ -20,6 +20,7 @@
 #include "relay/TrackEventCallback.h"
 #include "relay/TrackStatsFilter.h"
 #include "relay/WeakRelayForwarderCallback.h"
+#include <algorithm>
 #include <folly/Random.h>
 #include <folly/container/F14Set.h>
 #include <folly/coro/Collect.h>
@@ -143,9 +144,23 @@ checkRangeNotInPast(moxygen::MoQForwarder& fwd, const moxygen::SubscribeRequest&
   return std::nullopt;
 }
 
+bool isV18Plus(const std::shared_ptr<moxygen::MoQSession>& session) {
+  auto version = session ? session->getNegotiatedVersion() : std::optional<uint64_t>{};
+  return version.has_value() && moxygen::getDraftMajorVersion(*version) >= 18;
+}
+
 // Derives the upstream SubscribeRequest from a downstream one: fetch from latest at
 // upstream priority/default group order, session-assigned requestID, caller's forward.
-moxygen::SubscribeRequest makeUpstreamSubReq(moxygen::SubscribeRequest base, bool forward) {
+moxygen::SubscribeRequest makeUpstreamSubReq(
+    moxygen::SubscribeRequest base,
+    bool forward,
+    const std::shared_ptr<moxygen::MoQSession>& upstreamSession
+) {
+  // Below v18 key 0x04 is MAX_CACHE_DURATION and forwardable; a v18 upstream would
+  // misread it as RENDEZVOUS_TIMEOUT.
+  if (isV18Plus(upstreamSession)) {
+    base.params.eraseAllParamsOfType(moxygen::TrackRequestParamKey::RENDEZVOUS_TIMEOUT);
+  }
   base.priority = kDefaultUpstreamPriority;
   base.groupOrder = moxygen::GroupOrder::Default;
   base.locType = moxygen::LocationType::LargestObject;
@@ -457,6 +472,7 @@ std::shared_ptr<Subscriber::PublishNamespaceHandle> MoqxRelay::doPublishNamespac
       }
     }
   }
+  wakePendingRendezvousUnderNamespace(pubNs.trackNamespace);
   return nodePtr;
 }
 
@@ -881,7 +897,6 @@ MoqxRelay::PublishSetupResult MoqxRelay::publishWithSession(
   auto tracksNode = tracksTree_.findNode(
       pub.fullTrackName.trackNamespace,
       /*createMissingNodes=*/false,
-      NamespaceTree::MatchType::Exact,
       &tracksSessions
   );
   if (tracksNode) {
@@ -906,6 +921,10 @@ MoqxRelay::PublishSetupResult MoqxRelay::publishWithSession(
   // (PropertyRanking needs objects to evaluate property values for ranking).
   // When subscribers join later via subscribeNamespace, forwardChanged() sends REQUEST_UPDATE.
   bool shouldForward = (nSubscribers > 0) || hasTrackFilterSub;
+
+  // Wake any SUBSCRIBE that's parked waiting for this exact track (draft 18+
+  // RENDEZVOUS_TIMEOUT).
+  wakePendingRendezvousForTrack(pub.fullTrackName);
 
   return PublishSetup{
       publishEntry.consumer,
@@ -1887,8 +1906,7 @@ folly::coro::Task<Publisher::SubscribeTracksResult> MoqxRelay::subscribeTracks(
   // already-published track (backfill for new subscriber).
   auto pubNode = namespaceTree_.findNode(
       subTracks.trackNamespacePrefix,
-      /*createMissingNodes=*/false,
-      NamespaceTree::MatchType::Exact
+      /*createMissingNodes=*/false
   );
   if (pubNode) {
     namespaceTree_.forEachNodeInSubtree(
@@ -1939,8 +1957,7 @@ MoqxRelay::PublishState MoqxRelay::findPublishState(const FullTrackName& ftn) {
   PublishState state;
   auto nodePtr = namespaceTree_.findNode(
       ftn.trackNamespace,
-      /*createMissingNodes=*/false,
-      NamespaceTree::MatchType::Exact
+      /*createMissingNodes=*/false
   );
 
   if (!nodePtr) {
@@ -2249,7 +2266,8 @@ MoqxRelay::joinOrPrepareUpstreamSubscription(SubscribeRequest subReq) {
   if (auto* first = std::get_if<SubscriptionRegistry::FirstSubscriber>(&firstOrSubsequent)) {
     const auto clientRequestID = subReq.requestID;
     // forward updated to its real value in attachNewLocalForwarderOnRelayExec.
-    SubscribeRequest upstreamSubReq = makeUpstreamSubReq(subReq, /*forward=*/false);
+    SubscribeRequest upstreamSubReq =
+        makeUpstreamSubReq(subReq, /*forward=*/false, upstreamSession);
 
     // first->consumer is the publisher forwarder (lives on publisherExec == upstreamSession's
     // executor). No cross-exec wrapping — upstream delivers on that executor directly.
@@ -2287,9 +2305,22 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriber
     folly::Executor* subscriberExec
 ) {
   const auto& ftn = subReq.fullTrackName;
+  auto* localReg = &localRegistry();
+
+  // Park before claiming this thread's forwarder, so a later SUBSCRIBE for the same
+  // ftn is never bound to our timeout. The gate keeps the relayExec_ hop off the
+  // common path: a ready local forwarder means a publisher already resolved.
+  if (auto rendezvousTimeout = takeRendezvousTimeout(subReq, session);
+      rendezvousTimeout && !localReg->getIfReady(ftn)) {
+    if (auto rendezvousErr = co_await folly::coro::co_withExecutor(
+            folly::getKeepAliveToken(relayExec_),
+            rendezvousWithPublisherOrTimeout(subReq, *rendezvousTimeout)
+        )) {
+      co_return folly::makeUnexpected(std::move(*rendezvousErr));
+    }
+  }
 
   // Join before the relay hop: serializes same-iothread races.
-  auto* localReg = &localRegistry();
   auto joined = localReg->join(ftn, [&] { return std::make_shared<MoQForwarder>(ftn); });
 
   consumer =
@@ -2413,6 +2444,16 @@ MoqxRelay::subscribeImpl(SubscribeRequest subReq, std::shared_ptr<TrackConsumer>
     );
   }
 
+  // Resolve (or wait out our own rendezvous) before ever committing a
+  // FirstSubscriber/SubsequentSubscriber entry, so a concurrent SUBSCRIBE for the
+  // same ftn is never bound to our RENDEZVOUS_TIMEOUT.
+  if (auto rendezvousTimeout = takeRendezvousTimeout(subReq, session)) {
+    if (auto rendezvousErr =
+            co_await rendezvousWithPublisherOrTimeout(subReq, *rendezvousTimeout)) {
+      co_return folly::makeUnexpected(std::move(*rendezvousErr));
+    }
+  }
+
   // TOCTOU fix: if we might be the first subscriber, wait for the upstream
   // connection before branching. A concurrent coroutine may emplace the entry
   // while we are suspended, so we re-check inside getOrCreateFromSubscribe.
@@ -2462,8 +2503,11 @@ MoqxRelay::subscribeImpl(SubscribeRequest subReq, std::shared_ptr<TrackConsumer>
     // Subscribe upstream with forward set only while we have forwarding
     // subscribers, so an idle relay doesn't pull data it won't deliver.
     const auto clientRequestID = subReq.requestID;
-    subReq =
-        makeUpstreamSubReq(std::move(subReq), first->forwarder->numForwardingSubscribers() > 0);
+    subReq = makeUpstreamSubReq(
+        std::move(subReq),
+        first->forwarder->numForwardingSubscribers() > 0,
+        upstreamSession
+    );
 
     // Upstream subscribe + apply OK to the forwarder (NGR recorded without firing).
     // pending destructor fires on the error path.
@@ -3043,6 +3087,199 @@ void MoqxRelay::dumpState(RelayStateVisitor& visitor) const {
     });
     visitor.onCacheEnd();
   }
+}
+
+// === Pending rendezvous tree ===
+
+MoqxRelay::PendingRendezvousNode&
+MoqxRelay::findOrCreatePendingRendezvousNode(const TrackNamespace& ns) {
+  auto* node = &pendingRendezvousRoot_;
+  for (const auto& part : ns.trackNamespace) {
+    auto& child = node->children[part];
+    if (!child) {
+      child = std::make_unique<PendingRendezvousNode>();
+    }
+    node = child.get();
+  }
+  return *node;
+}
+
+void MoqxRelay::addPendingRendezvous(
+    const FullTrackName& ftn,
+    const std::shared_ptr<moxygen::TimedBaton>& waiter
+) {
+  auto& node = findOrCreatePendingRendezvousNode(ftn.trackNamespace);
+  node.waitersByTrack[ftn.trackName].push_back(waiter);
+}
+
+void MoqxRelay::erasePendingRendezvous(
+    const FullTrackName& ftn,
+    const std::shared_ptr<moxygen::TimedBaton>& waiter
+) {
+  erasePendingRendezvousFromNode(pendingRendezvousRoot_, ftn, /*namespaceIndex=*/0, waiter);
+}
+
+void MoqxRelay::erasePendingRendezvousFromNode(
+    PendingRendezvousNode& node,
+    const FullTrackName& ftn,
+    size_t namespaceIndex,
+    const std::shared_ptr<moxygen::TimedBaton>& waiter
+) {
+  if (namespaceIndex < ftn.trackNamespace.trackNamespace.size()) {
+    const auto& part = ftn.trackNamespace.trackNamespace[namespaceIndex];
+    auto childIt = node.children.find(part);
+    if (childIt == node.children.end()) {
+      return;
+    }
+    erasePendingRendezvousFromNode(*childIt->second, ftn, namespaceIndex + 1, waiter);
+    if (childIt->second->empty()) {
+      node.children.erase(childIt);
+    }
+    return;
+  }
+
+  auto waitersIt = node.waitersByTrack.find(ftn.trackName);
+  if (waitersIt == node.waitersByTrack.end()) {
+    return;
+  }
+  auto& waiters = waitersIt->second;
+  waiters.erase(std::remove(waiters.begin(), waiters.end(), waiter), waiters.end());
+  if (waiters.empty()) {
+    node.waitersByTrack.erase(waitersIt);
+  }
+}
+
+// Signals every waiter in this subtree (namespace-level publish/publishNamespace)
+// and clears it out, since all of it is now resolved.
+void MoqxRelay::wakePendingRendezvousSubtree(PendingRendezvousNode& node) {
+  for (auto& [_, trackWaiters] : node.waitersByTrack) {
+    for (auto& waiter : trackWaiters) {
+      waiter->signal();
+    }
+  }
+  for (auto& [_, child] : node.children) {
+    wakePendingRendezvousSubtree(*child);
+  }
+  node.waitersByTrack.clear();
+  node.children.clear();
+}
+
+// Walks down to the node at `ns`, applies `onNode`, then prunes any now-empty
+// ancestors on the way back up.
+void MoqxRelay::applyFnAtNamespaceNode(
+    const TrackNamespace& ns,
+    folly::FunctionRef<void(PendingRendezvousNode&)> onNode
+) {
+  auto* node = &pendingRendezvousRoot_;
+  std::vector<std::pair<PendingRendezvousNode*, std::string>> path;
+  bool foundNamespace = true;
+  for (const auto& part : ns.trackNamespace) {
+    auto childIt = node->children.find(part);
+    if (childIt == node->children.end()) {
+      foundNamespace = false;
+      break;
+    }
+    path.emplace_back(node, part);
+    node = childIt->second.get();
+  }
+
+  if (foundNamespace) {
+    onNode(*node);
+  }
+  // defensive clean up after waking
+  for (auto it = path.rbegin(); it != path.rend() && node->empty(); ++it) {
+    auto* parent = it->first;
+    parent->children.erase(it->second);
+    node = parent;
+  }
+}
+
+// Wakes only waiters for this exact track (a PUBLISH landed). Waiters for
+// other tracks under the same namespace node are left parked.
+void MoqxRelay::wakePendingRendezvousForTrack(const FullTrackName& ftn) {
+  applyFnAtNamespaceNode(ftn.trackNamespace, [&ftn](PendingRendezvousNode& node) {
+    auto waitersIt = node.waitersByTrack.find(ftn.trackName);
+    if (waitersIt != node.waitersByTrack.end()) {
+      for (auto& waiter : waitersIt->second) {
+        waiter->signal();
+      }
+      node.waitersByTrack.erase(waitersIt);
+    }
+  });
+}
+
+// Wakes every waiter under this namespace (a PUBLISH_NAMESPACE landed) — any
+// track under it may now be resolvable.
+void MoqxRelay::wakePendingRendezvousUnderNamespace(const TrackNamespace& ns) {
+  applyFnAtNamespaceNode(ns, [](PendingRendezvousNode& node) {
+    wakePendingRendezvousSubtree(node);
+  });
+}
+
+std::optional<std::chrono::milliseconds> MoqxRelay::takeRendezvousTimeout(
+    SubscribeRequest& subReq,
+    const std::shared_ptr<MoQSession>& session
+) const {
+  // Below v18 key 0x04 is MAX_CACHE_DURATION, which is not ours to read or consume.
+  if (!isV18Plus(session)) {
+    return std::nullopt;
+  }
+  auto ms =
+      moxygen::getFirstIntParam(subReq.params, moxygen::TrackRequestParamKey::RENDEZVOUS_TIMEOUT);
+  // Per-hop param: consume it so it can never reach the upstream request.
+  subReq.params.eraseAllParamsOfType(moxygen::TrackRequestParamKey::RENDEZVOUS_TIMEOUT);
+  if (!ms.has_value() || *ms == 0) {
+    return std::nullopt;
+  }
+
+  // Hardcoded ceiling: bounds how long a rendezvous SUBSCRIBE
+  // can park a waiter, regardless of the client-requested RENDEZVOUS_TIMEOUT.
+  constexpr auto kMaxMs = static_cast<uint64_t>(kMaxRendezvousTimeout.count());
+  if (*ms > kMaxMs) {
+    XLOG(DBG1) << "Clamping RENDEZVOUS_TIMEOUT for " << subReq.fullTrackName << " from " << *ms
+               << "ms to " << kMaxMs << "ms";
+  }
+  return std::chrono::milliseconds(std::min(*ms, kMaxMs));
+}
+
+// Parks (at most once) until a publisher resolves for ftn or `timeout` elapses. A wake
+// is only a hint: if the publisher is gone again by the time we resume, the caller's
+// ordinary no-publisher path reports it.
+folly::coro::Task<std::optional<SubscribeError>> MoqxRelay::rendezvousWithPublisherOrTimeout(
+    const SubscribeRequest& subReq,
+    std::chrono::milliseconds timeout
+) {
+  const auto& ftn = subReq.fullTrackName;
+
+  if (registry_.exists(ftn) || namespaceTree_.findPublisherSession(ftn.trackNamespace)) {
+    co_return std::nullopt;
+  }
+
+  auto waiter = std::make_shared<moxygen::TimedBaton>();
+  addPendingRendezvous(ftn, waiter);
+  auto cleanup = folly::makeGuard([this, ftn, waiter] { erasePendingRendezvous(ftn, waiter); });
+
+  auto waitRes = co_await folly::coro::co_awaitTry(waiter->wait(timeout, timekeeper_.get()));
+
+  if (waitRes.hasException()) {
+    if (waitRes.template hasException<folly::FutureTimeout>()) {
+      co_return SubscribeError{
+          subReq.requestID,
+          SubscribeErrorCode::TIMEOUT,
+          "rendezvous timeout expired"
+      };
+    }
+    if (waitRes.template hasException<folly::OperationCancelled>()) {
+      co_yield folly::coro::co_stopped_may_throw;
+    }
+    co_return SubscribeError{
+        subReq.requestID,
+        SubscribeErrorCode::INTERNAL_ERROR,
+        folly::to<std::string>("rendezvous wait failed: ", waitRes.exception().what().toStdString())
+    };
+  }
+
+  co_return std::nullopt;
 }
 
 } // namespace openmoq::moqx

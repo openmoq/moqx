@@ -77,8 +77,23 @@ void NamespaceTree::tryPruneSelf(NamespaceNode& node, bool hadContent, const Tra
 }
 
 std::shared_ptr<MoQSession> NamespaceTree::findPublisherSession(const TrackNamespace& ns) {
-  auto nodePtr = findNode(ns, /*createMissingNodes=*/false, MatchType::Prefix);
-  return nodePtr ? nodePtr->publisherSession_ : nullptr;
+  // SUBSCRIBE/FETCH route to the publisher of the closest enclosing namespace, so keep
+  // the deepest publisher passed on the way down rather than reading whichever node the
+  // walk ends on: addPublish() and subscriber registration also create nodes, and those
+  // carry no publisher. The root counts — an empty PUBLISH_NAMESPACE claims everything.
+  auto publisher = root_.publisherSession_;
+  const auto* node = &root_;
+  for (auto i = 0ul; i < ns.size(); i++) {
+    auto it = node->children_.find(ns[i]);
+    if (it == node->children_.end()) {
+      break;
+    }
+    node = it->second.get();
+    if (node->publisherSession_) {
+      publisher = node->publisherSession_;
+    }
+  }
+  return publisher;
 }
 
 NamespaceTree::SetPublisherResult NamespaceTree::setPublisher(
@@ -90,7 +105,7 @@ NamespaceTree::SetPublisherResult NamespaceTree::setPublisher(
     std::vector<uint64_t> relayHopPath
 ) {
   SetPublisherResult result;
-  auto node = findNode(ns, /*createMissingNodes=*/true, MatchType::Exact, &result.subscribers);
+  auto node = findNode(ns, /*createMissingNodes=*/true, &result.subscribers);
 
   if (node->publisherSession_) {
     result.replacedSession = node->publisherSession_;
@@ -136,7 +151,7 @@ NamespaceTree::unpublishNamespace(
   }
 
   UnpublishNamespaceResult result;
-  findNode(ns, /*createMissingNodes=*/false, MatchType::Exact, &result.subscribers);
+  findNode(ns, /*createMissingNodes=*/false, &result.subscribers);
   for (const auto& [sess, info] : node->subscribers_) {
     result.subscribers.emplace_back(sess, info);
   }
@@ -175,7 +190,6 @@ NamespaceTree::AddPublishResult NamespaceTree::addPublish(
   result.node = findNode(
       ftn.trackNamespace,
       /*createMissingNodes=*/true,
-      MatchType::Exact,
       &result.subscribers
   );
   for (const auto& [sess, info] : result.node->subscribers_) {
@@ -277,7 +291,6 @@ bool NamespaceTree::hasOverlappingTracksSubscription(
 std::shared_ptr<NamespaceTree::NamespaceNode> NamespaceTree::findNode(
     const TrackNamespace& ns,
     bool createMissingNodes,
-    MatchType matchType,
     SessionSubscriberList* subscribers
 ) {
   std::shared_ptr<NamespaceNode> nodePtr(std::shared_ptr<void>(), &root_);
@@ -297,8 +310,6 @@ std::shared_ptr<NamespaceTree::NamespaceNode> NamespaceTree::findNode(
         node->trackNamespace = partialNs;
         nodePtr->children_.emplace(name, node);
         nodePtr = std::move(node);
-      } else if (matchType == MatchType::Prefix && nodePtr.get() != &root_) {
-        return nodePtr;
       } else {
         XLOG(DBG1) << "namespace node not found: " << ns;
         return nullptr;
