@@ -21,7 +21,7 @@ maybeCrossExec(folly::Executor* exec, std::shared_ptr<moxygen::TrackConsumer> c)
   if (!exec) {
     return c;
   }
-  return std::make_shared<CrossExecFilter>(exec, std::move(c), /*deepCopyPayload=*/false);
+  return CrossExecFilter::create(exec, std::move(c), /*deepCopyPayload=*/false);
 }
 
 // Wraps c in a FetchCrossExecFilter targeting exec, or returns c if exec is null.

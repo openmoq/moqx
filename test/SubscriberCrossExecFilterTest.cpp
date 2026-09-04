@@ -11,6 +11,7 @@
 #include <folly/executors/ManualExecutor.h>
 #include <folly/portability/GMock.h>
 #include <folly/portability/GTest.h>
+#include <folly/synchronization/Baton.h>
 #include <future>
 #include <moxygen/test/Mocks.h>
 
@@ -31,6 +32,19 @@ protected:
     targetExec_ = std::make_shared<folly::CPUThreadPoolExecutor>(1);
     inner_ = std::make_shared<NiceMock<MockSubscriberWithGoaway>>();
     filter_ = std::make_shared<SubscriberCrossExecFilter>(targetExec_.get(), inner_);
+  }
+
+  // CrossExecFilter posts `delete this` to targetExec_, but ~CPUThreadPoolExecutor
+  // abandons the queue and join() only drains what was queued before it. Barrier
+  // until those deletes are posted (one hop of chain, plus slack), then join.
+  void TearDown() override {
+    filter_.reset();
+    for (int i = 0; i < 2; ++i) {
+      folly::Baton<> flushed;
+      targetExec_->add([&flushed]() { flushed.post(); });
+      flushed.wait();
+    }
+    targetExec_->join();
   }
 
   std::shared_ptr<folly::CPUThreadPoolExecutor> targetExec_;

@@ -203,6 +203,22 @@ protected:
   void
   resetRelay(config::CacheConfig cache, const std::string& relayID = "", uint64_t relayHopID = 0);
 
+  // An extra OS thread plus the MoQExecutor wrapping it, for a session off exec_.
+  struct AuxExec {
+    std::unique_ptr<folly::ScopedEventBaseThread> thread;
+    std::shared_ptr<moxygen::MoQFollyExecutorImpl> exec;
+    folly::EventBase* evb{nullptr};
+  };
+
+  // Fixture-owned, never a test-body local: CrossExecFilter posts `delete this`
+  // to its target exec, and those filters are released by relayThread_'s
+  // teardown in TearDown(), long after a test body's locals are gone.
+  AuxExec& makeAuxExec(const std::string& threadName);
+
+  // Barrier across exec_, relayEvb_ and the aux execs; mirrors
+  // MoqxRelayContext::drainExecs.
+  void drainExecs(int rounds = 2);
+
   // In MT mode: cross-exec filter wrappers that route test calls through relayExec_.
   // In ST mode: null — accessors fall back to relay_ directly.
   std::shared_ptr<moxygen::Publisher> publisherInterface_;
@@ -219,6 +235,7 @@ protected:
   std::shared_ptr<MoqxRelay> relay_;
   std::unique_ptr<folly::ScopedEventBaseThread> relayThread_;
   folly::EventBase* relayEvb_{nullptr};
+  std::vector<std::unique_ptr<AuxExec>> auxExecs_;
 };
 
 } // namespace openmoq::moqx::test
