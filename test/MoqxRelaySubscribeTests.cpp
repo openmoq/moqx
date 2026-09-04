@@ -9,6 +9,9 @@
 
 #include "MoqxRelayTestFixture.h"
 
+#include <atomic>
+#include <folly/synchronization/Baton.h>
+
 namespace openmoq::moqx::test {
 
 // Test: forwardChanged must not crash when called after the publisher has
@@ -756,5 +759,65 @@ TEST_P(MoQRelayTest, PublishFanoutDuringParkedSubscribeSetup) {
     driveIfMultiThread();
     pubEvb->runInEventBaseThreadAndWait([] {});
   }
+}
+
+// A peer UNSUBSCRIBE reaches the forwarder on the session's io thread: MoQSession
+// keeps the handle the relay published with and calls unsubscribe() on it directly,
+// with no relay-exec hop. If onEmpty then runs the relay callback inline, registry_
+// is erased off relayExec_ while the relay thread erases the same track, corrupting
+// the F14 table (folly SafeAssert "clearTag: tags_[index] != 0"). Parking relayEvb_
+// across the trigger keeps the assertion from being a race of its own.
+TEST_P(MoQRelayTest, PeerUnsubscribeDefersOnEmptyToRelayExec) {
+  if (relayMode() != RelayMode::MultiThread) {
+    GTEST_SKIP() << "chain-forwarder callback wiring is RelayExec-only";
+  }
+
+  auto publisherSession = createMockSession();
+  auto subSession = createMockSession();
+  setupPublishSucceeds(subSession);
+
+  doPublishNamespace(publisherSession, kTestNamespace);
+  doSubscribeNamespace(subSession, kTestNamespace);
+  auto publishHandle = makePublishHandle();
+  ASSERT_NE(doPublishWithHandle(publisherSession, kTestTrackName, publishHandle), nullptr);
+  driveIfMultiThread();
+  ASSERT_NE(peerHandle(subSession), nullptr) << "relay should have published to the subscriber";
+  // hasSubscribeOk() is non-virtual, so a wrapper that does not copy it silently
+  // stops MoQSession seeding largest_ from the forwarder.
+  EXPECT_TRUE(peerHandle(subSession)->hasSubscribeOk());
+
+  std::atomic<bool> upstreamTornDown{false};
+  EXPECT_CALL(*publishHandle, unsubscribe()).WillRepeatedly([&upstreamTornDown] {
+    upstreamTornDown = true;
+  });
+  EXPECT_CALL(*publishHandle, requestUpdateCalled(_))
+      .WillRepeatedly([&upstreamTornDown](RequestUpdate update) {
+        if (update.forward && !*update.forward) {
+          upstreamTornDown = true;
+        }
+      });
+
+  // Shared, not stack: on a park timeout the test body returns while the lambda
+  // is still queued, and it would wait on a destroyed baton.
+  auto parked = std::make_shared<folly::Baton<>>();
+  auto release = std::make_shared<folly::Baton<>>();
+  relayEvb_->add([parked, release] {
+    parked->post();
+    release->wait();
+  });
+  ASSERT_TRUE(parked->try_wait_for(std::chrono::seconds(5)));
+
+  peerUnsubscribe(subSession);
+  exec_->driveSessionExecOnly();
+
+  EXPECT_FALSE(upstreamTornDown.load())
+      << "onEmpty reached MoqxRelay on the session executor instead of relayExec_";
+
+  release->post();
+  EXPECT_TRUE(driveUntil([&upstreamTornDown] { return upstreamTornDown.load(); }));
+
+  removeSession(publisherSession);
+  removeSession(subSession);
+  driveIfMultiThread();
 }
 } // namespace openmoq::moqx::test

@@ -11,6 +11,7 @@
 #include "relay/ChannelSubscriber.h"
 #include "relay/CrossExecFilter.h"
 #include "relay/CrossExecForwarderCallback.h"
+#include "relay/CrossExecSubscriptionHandle.h"
 #include "relay/InitialTrackState.h"
 #include "relay/LocalForwarderCallback.h"
 #include "relay/NullConsumers.h"
@@ -963,12 +964,18 @@ std::optional<MoqxRelay::PreparedPublish> MoqxRelay::startPublish(
     return std::nullopt;
   }
   subscriber->pinned = pinned;
+  // relayExec_ owns the forwarder, but the session calls unsubscribe() on its own io
+  // thread, so the handle has to hop before it reaches subscribers_.
+  std::shared_ptr<Publisher::SubscriptionHandle> peerHandle = subscriber;
+  if (mode() == Mode::RelayExec) {
+    peerHandle = std::make_shared<CrossExecSubscriptionHandle>(subscriber, relayExec_);
+  }
   Subscriber::PublishResult pub;
   if (subscriberExec) {
     SubscriberCrossExecFilter wrapped(subscriberExec, session);
-    pub = wrapped.publish(subscriber->getPublishRequest(), subscriber);
+    pub = wrapped.publish(subscriber->getPublishRequest(), std::move(peerHandle));
   } else {
-    pub = session->publish(subscriber->getPublishRequest(), subscriber);
+    pub = session->publish(subscriber->getPublishRequest(), std::move(peerHandle));
   }
   if (pub.hasError()) {
     XLOG(ERR) << "startPublish: publish failed: " << pub.error().reasonPhrase;

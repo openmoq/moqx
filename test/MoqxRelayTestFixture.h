@@ -72,6 +72,10 @@ public:
   void drive() override;
   void driveFor(int n);
 
+  // drive() without the relayEvb_ rendezvous, so a test can flush only what the
+  // session executor already holds.
+  void driveSessionExecOnly();
+
   void setRelayEvb(folly::EventBase* evb) { relayEvb_ = evb; }
 
 private:
@@ -157,6 +161,7 @@ protected:
   };
 
   std::map<MoQSession*, std::shared_ptr<MockSessionState>> mockSessions_;
+  std::map<MoQSession*, std::shared_ptr<moxygen::Publisher::SubscriptionHandle>> peerHandles_;
 
   std::shared_ptr<MockSessionState> getOrCreateMockState(std::shared_ptr<MoQSession> session);
   void cleanupMockSession(std::shared_ptr<MoQSession> session);
@@ -195,6 +200,15 @@ protected:
   );
 
   void setupPublishSucceeds(std::shared_ptr<MockMoQSession> session);
+
+  // The handle the relay publishes with. MoQSession keeps it in TrackPublisherImpl
+  // and calls unsubscribe() on it, on its own io thread, when the peer sends
+  // UNSUBSCRIBE — no relay-exec hop, unlike the handle subscribe() hands back.
+  std::shared_ptr<moxygen::Publisher::SubscriptionHandle>
+  peerHandle(const std::shared_ptr<MockMoQSession>& session);
+
+  // Deliver a peer UNSUBSCRIBE on the calling thread, as MoQSession::onUnsubscribe does.
+  void peerUnsubscribe(const std::shared_ptr<MockMoQSession>& session);
 
   std::shared_ptr<NiceMock<MockSubscriptionHandle>> makePublishHandle();
 
