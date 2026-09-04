@@ -30,6 +30,12 @@ void TestMoQExecutor::drive() {
     evb->loopOnce();
   }
 }
+void TestMoQExecutor::driveSessionExecOnly() {
+  if (auto* evb = getBackingEventBase()) {
+    evb->loopOnce();
+  }
+}
+
 void TestMoQExecutor::driveFor(int n) {
   for (int i = 0; i < n; i++) {
     drive();
@@ -110,6 +116,8 @@ void MoQRelayTest::TearDown() {
   // the last release; ~fixture frees auxExecs_ then exec_ after that.
   drainExecs();
   mockSessions_.clear(); // declared before exec_, so ~fixture frees it too late
+  peerHandles_.clear();  // same, and their release hops to relayExec_
+  drainExecs();
   exec_->setRelayEvb(nullptr);
   publisherInterface_.reset();
   subscriberInterface_.reset();
@@ -368,21 +376,39 @@ std::shared_ptr<Publisher::SubscribeNamespaceHandle> MoQRelayTest::doSubscribeNa
 
 void MoQRelayTest::setupPublishSucceeds(std::shared_ptr<MockMoQSession> session) {
   ON_CALL(*session, publish(_, _))
-      .WillByDefault(Invoke([this](PublishRequest pub, auto) -> Subscriber::PublishResult {
-        PublishOk ok{
-            pub.requestID,
-            /*forward=*/pub.forward,
-            /*priority=*/128,
-            GroupOrder::Default,
-            LocationType::LargestObject,
-            /*start=*/std::nullopt,
-            /*endGroup=*/std::make_optional(uint64_t(0))
-        };
-        return Subscriber::PublishConsumerAndReplyTask{
-            createMockConsumer(),
-            folly::coro::makeTask<folly::Expected<PublishOk, PublishError>>(std::move(ok))
-        };
-      }));
+      .WillByDefault(Invoke(
+          [this, key = session.get()](
+              PublishRequest pub,
+              std::shared_ptr<Publisher::SubscriptionHandle> handle
+          ) -> Subscriber::PublishResult {
+            peerHandles_[key] = std::move(handle);
+            PublishOk ok{
+                pub.requestID,
+                /*forward=*/pub.forward,
+                /*priority=*/128,
+                GroupOrder::Default,
+                LocationType::LargestObject,
+                /*start=*/std::nullopt,
+                /*endGroup=*/std::make_optional(uint64_t(0))
+            };
+            return Subscriber::PublishConsumerAndReplyTask{
+                createMockConsumer(),
+                folly::coro::makeTask<folly::Expected<PublishOk, PublishError>>(std::move(ok))
+            };
+          }
+      ));
+}
+
+std::shared_ptr<Publisher::SubscriptionHandle>
+MoQRelayTest::peerHandle(const std::shared_ptr<MockMoQSession>& session) {
+  auto it = peerHandles_.find(session.get());
+  return it == peerHandles_.end() ? nullptr : it->second;
+}
+
+void MoQRelayTest::peerUnsubscribe(const std::shared_ptr<MockMoQSession>& session) {
+  auto handle = peerHandle(session);
+  ASSERT_NE(handle, nullptr) << "session was never published to";
+  handle->unsubscribe();
 }
 
 std::shared_ptr<NiceMock<MockSubscriptionHandle>> MoQRelayTest::makePublishHandle() {

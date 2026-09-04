@@ -6,46 +6,11 @@
 
 #include "relay/PublisherCrossExecFilter.h"
 #include "relay/CrossExecFilter.h"
+#include "relay/CrossExecSubscriptionHandle.h"
 
 namespace openmoq::moqx {
 
 namespace {
-
-// Dispatches unsubscribe() and requestUpdate() to the subscriber session's
-// executor (targetExec), which owns the session state.  Held by the relay
-// on relay exec and called back from there.
-class CrossExecSubscriptionHandle : public moxygen::SubscriptionHandle {
-public:
-  CrossExecSubscriptionHandle(
-      std::shared_ptr<moxygen::SubscriptionHandle> inner,
-      folly::Executor* exec
-  )
-      : inner_(std::move(inner)), exec_(exec) {}
-
-  ~CrossExecSubscriptionHandle() override {
-    // Inner dtor may touch session state; destroy it on exec_, not the dropping thread.
-    if (inner_) {
-      exec_->add([inner = std::move(inner_)]() mutable {});
-    }
-  }
-
-  const moxygen::SubscribeOk& subscribeOk() const override { return inner_->subscribeOk(); }
-
-  void unsubscribe() override {
-    exec_->add([inner = inner_]() mutable { inner->unsubscribe(); });
-  }
-
-  folly::coro::Task<RequestUpdateResult> requestUpdate(moxygen::RequestUpdate update) override {
-    co_return co_await folly::coro::co_withExecutor(
-        folly::getKeepAliveToken(exec_),
-        inner_->requestUpdate(std::move(update))
-    );
-  }
-
-private:
-  std::shared_ptr<moxygen::SubscriptionHandle> inner_;
-  folly::Executor* exec_;
-};
 
 class CrossExecFetchHandle : public moxygen::Publisher::FetchHandle {
 public:
