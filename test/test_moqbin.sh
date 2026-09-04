@@ -9,6 +9,8 @@
 # it comes from the tool-paths file the configure writes next to the binary.
 # Always leaves MOQBIN set — possibly empty — so callers report a clear
 # not-found error instead of aborting under `set -u`.
+#
+# Mirrored by _resolve_moqbin() in test/lib/moq_harness.py for the Python tests.
 resolve_moqbin() {
   local build_dir
   build_dir="$(dirname "${1:-}")"

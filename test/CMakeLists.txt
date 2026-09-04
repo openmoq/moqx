@@ -1,6 +1,13 @@
 find_package(GTest REQUIRED CONFIG)
 include(GoogleTest)
 
+# The relay topology tests are Python (test/lib/moq_harness.py). 3.9 is the
+# language floor, set by the macOS Command Line Tools' 3.9.6; this only asserts
+# an interpreter at least that new exists. It cannot catch a 3.10-only construct
+# in the harness — a version arg to find_package is a minimum, and no CI runner
+# is old enough to trip over one. That needs a lint pinned to py39.
+find_package(Python3 3.9 COMPONENTS Interpreter REQUIRED)
+
 # Discover tests at ctest startup (serial) instead of POST_BUILD (parallel).
 # Parallel POST_BUILD discovery races on a shared JSON file under cmake 4.4.0,
 # intermittently failing macOS builds with "JSON failed parsing".
@@ -221,7 +228,7 @@ moqx_add_gtest(moqx_relay_context_test
 
 add_test(
   NAME relay_chain
-  COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_relay_chain.sh $<TARGET_FILE:moqx>
+  COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/test_relay_chain.py $<TARGET_FILE:moqx>
 )
 set_tests_properties(relay_chain PROPERTIES
   TIMEOUT 120
@@ -230,10 +237,19 @@ set_tests_properties(relay_chain PROPERTIES
 
 add_test(
   NAME relay_hops_cycle
-  COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_relay_hops_cycle.sh $<TARGET_FILE:moqx>
+  COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/test_relay_hops_cycle.py $<TARGET_FILE:moqx>
 )
 set_tests_properties(relay_hops_cycle PROPERTIES
   TIMEOUT 90
+  ENVIRONMENT "MOQBIN=${MOXYGEN_BIN_DIR}"
+)
+
+add_test(
+  NAME relay_pyramid
+  COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/test_relay_pyramid.py $<TARGET_FILE:moqx>
+)
+set_tests_properties(relay_pyramid PROPERTIES
+  TIMEOUT 120
   ENVIRONMENT "MOQBIN=${MOXYGEN_BIN_DIR}"
 )
 
