@@ -66,6 +66,47 @@ TEST_P(MoQRelayTest, FetchAfterPublisherTermination) {
   removeSession(fetchSession);
 }
 
+// Test: FETCH must prefer an exact-track upstream over a broader
+// namespace-level publisher when both exist for the same track.
+TEST_P(MoQRelayTest, FetchPrefersExactTrackOverNamespace) {
+  auto namespacePublisher = createMockSession();
+  auto trackPublisher = createMockSession();
+  auto fetchSession = createMockSession();
+
+  // Broad, namespace-level publisher for kTestNamespace.
+  doPublishNamespace(namespacePublisher, kTestNamespace);
+
+  // A distinct, more specific publisher for the exact track, landing in the
+  // registry rather than the namespace tree.
+  doPublish(trackPublisher, kTestTrackName, /*addToState=*/true);
+
+  EXPECT_CALL(*namespacePublisher, fetch(_, _)).Times(0);
+  EXPECT_CALL(*trackPublisher, fetch(_, _))
+      .WillOnce([](Fetch, std::shared_ptr<FetchConsumer> consumer) {
+        // Terminate the fetch so the cross-exec consumer drops its
+        // self-anchor; a real upstream always ends the fetch.
+        consumer->endOfFetch();
+        return folly::coro::makeTask<Publisher::FetchResult>(std::make_shared<MockFetchHandle>(
+            FetchOk{RequestID(0), GroupOrder::OldestFirst, 0, AbsoluteLocation{0, 0}, {}}
+        ));
+      });
+
+  Fetch fetch(RequestID(0), kTestTrackName, AbsoluteLocation{0, 0}, AbsoluteLocation{1, 0});
+  auto fetchConsumer = std::make_shared<NiceMock<MockFetchConsumer>>();
+  EXPECT_CALL(*fetchConsumer, endOfFetch()).WillOnce([]() {
+    return folly::Expected<folly::Unit, MoQPublishError>(folly::unit);
+  });
+  withSessionContext(fetchSession, [&]() {
+    auto task = publisherInterface()->fetch(std::move(fetch), fetchConsumer);
+    auto res = folly::coro::blockingWait(std::move(task), exec_.get());
+    EXPECT_TRUE(res.hasValue());
+  });
+
+  removeSession(namespacePublisher);
+  removeSession(trackPublisher);
+  removeSession(fetchSession);
+}
+
 // Joining fetch referencing a PUBLISH: onPublishOk must store the PUBLISH_OK
 // request id so the fetch matches the fanned-out subscription and resolves.
 TEST_P(MoQRelayTest, JoiningFetchAgainstPublish) {

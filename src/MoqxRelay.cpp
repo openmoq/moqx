@@ -2583,21 +2583,23 @@ MoqxRelay::fetchImpl(Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
     }
   }
 
-  auto upstreamPublisher = findUpstreamPublisher(fetch.fullTrackName.trackNamespace);
-  if (!upstreamPublisher && upstream_) {
-    co_await upstream_->waitForConnected(kUpstreamConnectWaitTimeout);
+  // Prefer an exact-track upstream (from publish/subscribe) over a broader
+  // namespace-level publisher, matching subscribeImpl's resolution order.
+  auto fetchView = registry_.getFetchView(fetch.fullTrackName);
+  std::shared_ptr<Publisher> upstreamPublisher;
+  if (fetchView) {
+    upstreamPublisher = fetchView->publisher;
+  } else {
     upstreamPublisher = findUpstreamPublisher(fetch.fullTrackName.trackNamespace);
+    if (!upstreamPublisher && upstream_) {
+      co_await upstream_->waitForConnected(kUpstreamConnectWaitTimeout);
+      upstreamPublisher = findUpstreamPublisher(fetch.fullTrackName.trackNamespace);
+    }
   }
   if (!upstreamPublisher) {
-    // Attempt to find matching upstream subscription (from publish)
-    if (auto fetchView = registry_.getFetchView(fetch.fullTrackName)) {
-      upstreamPublisher = fetchView->publisher;
-    }
-    if (!upstreamPublisher) {
-      co_return folly::makeUnexpected(
-          FetchError({fetch.requestID, FetchErrorCode::DOES_NOT_EXIST, "no upstream for fetch"})
-      );
-    }
+    co_return folly::makeUnexpected(
+        FetchError({fetch.requestID, FetchErrorCode::DOES_NOT_EXIST, "no upstream for fetch"})
+    );
   }
   fetch.priority = kDefaultUpstreamPriority;
 
