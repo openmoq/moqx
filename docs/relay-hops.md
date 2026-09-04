@@ -135,7 +135,7 @@ For a source checkout, run the relay-chain and cycle integration tests:
 ```bash
 ctest --test-dir build \
   --output-on-failure \
-  -R '^(relay_chain|relay_hops_cycle)$'
+  -R '^(relay_chain|relay_hops_cycle|relay_pyramid)$'
 ```
 
 A returning advertisement is dropped before it is registered or forwarded.
