@@ -413,9 +413,9 @@ TEST_P(MoQRelayTest, UpstreamSubscribeThrowDoesNotStrandGate) {
     GTEST_SKIP() << "only LF has a per-thread registry to strand";
   }
 
-  folly::ScopedEventBaseThread pubThread("pub-iothread");
-  auto* pubEvb = pubThread.getEventBase();
-  auto pubExec = std::make_shared<MoQFollyExecutorImpl>(pubEvb);
+  auto& pubAux = makeAuxExec("pub-iothread");
+  auto* pubEvb = pubAux.evb;
+  auto pubExec = pubAux.exec;
 
   auto makeSessionOnPubThread = [&] {
     auto session = std::make_shared<NiceMock<MockMoQSession>>(pubExec);
@@ -513,8 +513,8 @@ TEST_P(MoQRelayTest, CrossThreadSubsequentSubscriberSeedingRace) {
   auto subSession1 = createMockSession();      // first subscriber on exec_
 
   // Second subscriber on a dedicated OS thread => distinct thread-local tlForwarders_.
-  folly::ScopedEventBaseThread subThread("sub2-thread");
-  auto subExec = std::make_shared<MoQFollyExecutorImpl>(subThread.getEventBase());
+  auto& subAux = makeAuxExec("sub2-thread");
+  auto subExec = subAux.exec;
   auto subSession2 = std::make_shared<NiceMock<MockMoQSession>>(subExec);
   ON_CALL(*subSession2, getNegotiatedVersion())
       .WillByDefault(Return(std::optional<uint64_t>(kVersionDraftCurrent)));
@@ -548,7 +548,7 @@ TEST_P(MoQRelayTest, CrossThreadSubsequentSubscriberSeedingRace) {
   auto pumpExec = [&](auto pred) {
     for (int i = 0; i < 2000 && !pred(); ++i) {
       exec_->drive();
-      subThread.getEventBase()->runInEventBaseThreadAndWait([] {});
+      subAux.evb->runInEventBaseThreadAndWait([] {});
     }
     return pred();
   };
@@ -616,7 +616,7 @@ TEST_P(MoQRelayTest, CrossThreadSubsequentSubscriberSeedingRace) {
   removeSession(subSession1);
   removeSession(subSession2);
   driveIfMultiThread();
-  subThread.getEventBase()->runInEventBaseThreadAndWait([] {});
+  subAux.evb->runInEventBaseThreadAndWait([] {});
 }
 
 // Regression: a PUBLISH that fans out to a thread where a SUBSCRIBE for the same track is
@@ -631,9 +631,9 @@ TEST_P(MoQRelayTest, PublishFanoutDuringParkedSubscribeSetup) {
 
   // Publisher on its own iothread, so its installPublisherForwarder lands in that thread's
   // registry and leaves the subscriber thread's entry Pending for the fanout to find.
-  folly::ScopedEventBaseThread pubThread("pub-iothread");
-  auto* pubEvb = pubThread.getEventBase();
-  auto pubExec = std::make_shared<MoQFollyExecutorImpl>(pubEvb);
+  auto& pubAux = makeAuxExec("pub-iothread");
+  auto* pubEvb = pubAux.evb;
+  auto pubExec = pubAux.exec;
   auto publisherSession = std::make_shared<NiceMock<MockMoQSession>>(pubExec);
   ON_CALL(*publisherSession, getNegotiatedVersion())
       .WillByDefault(Return(std::optional<uint64_t>(kVersionDraftCurrent)));

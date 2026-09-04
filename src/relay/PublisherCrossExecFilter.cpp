@@ -232,7 +232,7 @@ folly::coro::Task<moxygen::Publisher::SubscribeResult> PublisherCrossExecFilter:
 ) {
   auto callerExec = co_await folly::coro::co_current_executor;
   auto wrappedConsumer =
-      std::make_shared<CrossExecFilter>(callerExec, std::move(callback), /*deepCopyPayload=*/false);
+      CrossExecFilter::create(callerExec, std::move(callback), /*deepCopyPayload=*/false);
   auto result = co_await folly::coro::co_withExecutor(
       folly::getKeepAliveToken(targetExec_),
       inner_->subscribe(std::move(sub), std::move(wrappedConsumer))

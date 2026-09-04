@@ -185,14 +185,27 @@ private:
 // For deferred use (e.g. publish()): construct with inner=nullptr, then call
 // setDownstream() on targetExec_ before any data methods are enqueued. FIFO
 // ordering guarantees setDownstream() runs before those lambdas execute.
+//
+// Lifetime: the last ref may drop on any executor, so create() installs a
+// deleter that posts the delete to targetExec_, behind the [this] lambdas
+// already queued.
 class CrossExecFilter final : public moxygen::TrackConsumerFilter,
                               public std::enable_shared_from_this<CrossExecFilter>,
                               public CrossExecBase {
+  struct PrivateTag {};
+
 public:
-  CrossExecFilter(
+  static std::shared_ptr<CrossExecFilter> create(
       folly::Executor* targetExec,
       std::shared_ptr<moxygen::TrackConsumer> inner,
       bool deepCopyPayload = true
+  );
+
+  CrossExecFilter(
+      PrivateTag,
+      folly::Executor* targetExec,
+      std::shared_ptr<moxygen::TrackConsumer> inner,
+      bool deepCopyPayload
   )
       : moxygen::TrackConsumerFilter(std::move(inner)), CrossExecBase(targetExec, deepCopyPayload) {
   }
