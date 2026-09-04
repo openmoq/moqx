@@ -895,11 +895,10 @@ public:
   }
 
   folly::Expected<folly::Unit, MoQPublishError>
-  datagram(const ObjectHeader& header, Payload payload, bool /*lastInGroup*/ = false) override {
+  datagram(const ObjectHeader& header, Payload payload, bool lastInGroup = false) override {
     if (track_.shouldSkipCaching()) {
-      return consumer_->datagram(header, std::move(payload));
+      return consumer_->datagram(header, std::move(payload), lastInGroup);
     }
-    // TODO: Handle lastInGroup parameter when caching
     auto res = track_.updateLargest({header.group, header.id}, isEndOfTrack(header.status));
     if (!res) {
       return res;
@@ -920,7 +919,7 @@ public:
     if (cacheRes.hasError()) {
       return cacheRes;
     }
-    return consumer_->datagram(header, std::move(payload));
+    return consumer_->datagram(header, std::move(payload), lastInGroup);
   }
 
   folly::Expected<folly::Unit, MoQPublishError> publishDone(PublishDone pubDone) override {

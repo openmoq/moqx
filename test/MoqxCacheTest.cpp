@@ -2110,6 +2110,27 @@ TEST_F(MoqxCacheTest, TestPriorGroupIdGapWithDatagram) {
   EXPECT_TRUE(result.hasValue());
 }
 
+TEST_F(MoqxCacheTest, TestDatagramForwardsLastInGroup) {
+  // Datagrams carry END_OF_GROUP out-of-band via lastInGroup; the cache
+  // writeback must not drop it on the way to the downstream consumer.
+  auto writeback = cache_.getSubscribeWriteback(kTestTrackName, trackConsumer_);
+
+  EXPECT_CALL(*trackConsumer_, datagram(_, _, true)).WillOnce(Return(folly::unit));
+  auto result = writeback->datagram(ObjectHeader(0, 0, 0, 0, 100), makeBuf(100), true);
+  EXPECT_TRUE(result.hasValue());
+}
+
+TEST_F(MoqxCacheTest, TestDatagramForwardsLastInGroupWhenCachingSkipped) {
+  // Same as above, but on the shouldSkipCaching() passthrough path.
+  cache_.setDefaultMaxCacheDuration(std::chrono::milliseconds(0));
+  cache_.setTrackExtensions(kTestTrackName, Extensions{});
+  auto writeback = cache_.getSubscribeWriteback(kTestTrackName, trackConsumer_);
+
+  EXPECT_CALL(*trackConsumer_, datagram(_, _, true)).WillOnce(Return(folly::unit));
+  auto result = writeback->datagram(ObjectHeader(0, 0, 0, 0, 100), makeBuf(100), true);
+  EXPECT_TRUE(result.hasValue());
+}
+
 TEST_F(MoqxCacheTest, TestPriorGroupIdGapSameValueMultipleObjects) {
   // Test that multiple objects in a group with the same Prior Group ID Gap
   // value succeeds (redundant but valid)
