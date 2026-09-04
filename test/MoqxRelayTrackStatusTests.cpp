@@ -11,6 +11,48 @@
 
 namespace openmoq::moqx::test {
 
+// Test: TRACK_STATUS with an empty namespace is rejected pre-draft-18.
+TEST_P(MoQRelayTest, TrackStatusEmptyNamespaceRejectedPreV18) {
+  auto session = createMockSession();
+  // Default session negotiates kVersionDraftCurrent (draft-14, which is < 18)
+
+  TrackStatus trackStatus;
+  trackStatus.fullTrackName = FullTrackName{TrackNamespace{{}}, "track1"};
+  trackStatus.requestID = RequestID(1);
+
+  withSessionContext(session, [&]() {
+    auto task = publisherInterface()->trackStatus(trackStatus);
+    auto res = folly::coro::blockingWait(std::move(task), exec_.get());
+    ASSERT_FALSE(res.hasValue());
+    EXPECT_EQ(res.error().errorCode, TrackStatusErrorCode::DOES_NOT_EXIST);
+    EXPECT_EQ(res.error().reasonPhrase, "namespace required");
+  });
+
+  removeSession(session);
+}
+
+// Test: TRACK_STATUS with an empty namespace is not rejected for its
+// namespace on draft-18+ — it falls through to the normal not-found path.
+TEST_P(MoQRelayTest, TrackStatusEmptyNamespaceAllowedV18) {
+  auto session = createMockSession();
+  ON_CALL(*session, getNegotiatedVersion())
+      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft18)));
+
+  TrackStatus trackStatus;
+  trackStatus.fullTrackName = FullTrackName{TrackNamespace{{}}, "track1"};
+  trackStatus.requestID = RequestID(1);
+
+  withSessionContext(session, [&]() {
+    auto task = publisherInterface()->trackStatus(trackStatus);
+    auto res = folly::coro::blockingWait(std::move(task), exec_.get());
+    ASSERT_FALSE(res.hasValue());
+    EXPECT_EQ(res.error().errorCode, TrackStatusErrorCode::DOES_NOT_EXIST);
+    EXPECT_EQ(res.error().reasonPhrase, "no such namespace or track");
+  });
+
+  removeSession(session);
+}
+
 // Test: TrackStatus on non-existent track
 TEST_P(MoQRelayTest, TrackStatusNonExistentTrack) {
   auto clientSession = createMockSession();

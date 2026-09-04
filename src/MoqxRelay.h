@@ -413,8 +413,13 @@ private:
       InstallKind kind
   );
 
-  std::optional<moxygen::PublishError>
-  validatePublishNamespace(const moxygen::FullTrackName& ftn, moxygen::RequestID requestID) const;
+  std::optional<moxygen::PublishError> validatePublishNamespace(
+      const moxygen::FullTrackName& ftn,
+      moxygen::RequestID requestID,
+      bool emptyNamespaceAllowed
+  ) const;
+
+  static bool emptyNamespaceAllowed(const std::shared_ptr<moxygen::MoQSession>& session);
 
   folly::coro::Task<folly::Expected<moxygen::PublishOk, moxygen::PublishError>>
   registerPublishOnRelayExec(
