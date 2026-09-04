@@ -262,6 +262,13 @@ private:
   };
   using FetchesInProgressMap = std::map<moxygen::AbsoluteLocation, FetchInProgressEntry>;
 
+  // FETCH_OK's End Location is exclusive: one past the last object in the
+  // response.
+  struct FetchOkEnd {
+    moxygen::AbsoluteLocation endLocation;
+    bool endOfTrack{false};
+  };
+
   struct CacheTrack {
     folly::F14FastMap<uint64_t, std::shared_ptr<CacheGroup>> groups;
     moxygen::LocationIntervalSet gaps;
@@ -286,6 +293,10 @@ private:
 
     folly::Expected<folly::Unit, moxygen::MoQPublishError>
     updateLargest(moxygen::AbsoluteLocation current, bool endOfTrack = false);
+    // The requested end, clamped to one past the largest object in the track
+    // but never below start.
+    FetchOkEnd
+    fetchOkEnd(moxygen::AbsoluteLocation start, moxygen::AbsoluteLocation exclusiveEnd) const;
     CacheGroup& getOrCreateGroup(uint64_t groupID);
     // Same as getOrCreateGroup but, when creating, evicts old groups to honor
     // the per-track group limit and inserts the new group into the LRU.

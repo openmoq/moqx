@@ -443,6 +443,23 @@ MoqxCache::CacheTrack::updateLargest(AbsoluteLocation current, bool eot) {
   return folly::unit;
 }
 
+MoqxCache::FetchOkEnd
+MoqxCache::CacheTrack::fetchOkEnd(AbsoluteLocation start, AbsoluteLocation exclusiveEnd) const {
+  if (!largestGroupAndObject) {
+    return {exclusiveEnd, false};
+  }
+  auto trackEnd = largestGroupAndObject->next().value_or(kLocationMax);
+  if (exclusiveEnd < trackEnd) {
+    return {exclusiveEnd, false};
+  }
+  if (trackEnd <= start) {
+    // The whole range is past the track. An End Location below the fetch
+    // start is a session error at the receiver.
+    return {start, false};
+  }
+  return {trackEnd, endOfTrack};
+}
+
 MoqxCache::CacheGroup& MoqxCache::CacheTrack::getOrCreateGroup(uint64_t groupID) {
   auto it = groups.find(groupID);
   if (it == groups.end()) {
@@ -1421,24 +1438,16 @@ folly::coro::Task<Publisher::FetchResult> MoqxCache::fetch(
       (track->liveWritebackCount > 0 || last <= *track->largestGroupAndObject)) {
     // we can immediately return fetch OK
     XLOG(DBG1) << "Live track or known past data, return FetchOK";
-    AbsoluteLocation largestInFetch = standalone->end;
-    bool isEndOfTrack = false;
-    if (standalone->end > *track->largestGroupAndObject) {
-      standalone->end = *track->largestGroupAndObject;
-      auto next = standalone->end.next();
-      XCHECK(next) << "largestGroupAndObject.next() must be valid";
-      standalone->end = *next;
-      largestInFetch = standalone->end;
-      isEndOfTrack = track->endOfTrack;
-      // fetchImpl range exclusive of end
-    } else if (largestInFetch.object == 0) {
-      auto pg = largestInFetch.prevGroup();
-      XCHECK(pg) << "largestInFetch.group must be > 0 when object == 0";
-      largestInFetch = *pg;
-    }
-    auto fetchHandle = std::make_shared<FetchHandle>(
-        FetchOk{fetch.requestID, fetch.groupOrder, isEndOfTrack, largestInFetch, track->extensions}
-    );
+    auto okEnd = track->fetchOkEnd(standalone->start, standalone->end);
+    // fetchImpl's range end is exclusive too, so it can reuse End Location.
+    standalone->end = okEnd.endLocation;
+    auto fetchHandle = std::make_shared<FetchHandle>(FetchOk{
+        fetch.requestID,
+        fetch.groupOrder,
+        okEnd.endOfTrack,
+        okEnd.endLocation,
+        track->extensions
+    });
     co_withExecutor(
         co_await folly::coro::co_current_executor,
         folly::coro::co_withCancellation(
@@ -1622,9 +1631,9 @@ folly::coro::Task<Publisher::FetchResult> MoqxCache::fetchImpl(
       if (fetch.groupOrder != GroupOrder::NewestFirst) {
         co_return std::move(res.value());
       } else {
-        bool isEndOfTrack = track->endOfTrack && standalone->end >= *track->largestGroupAndObject;
+        auto okEnd = track->fetchOkEnd(standalone->start, standalone->end);
         fetchHandle = std::make_shared<FetchHandle>(
-            FetchOk{fetch.requestID, fetch.groupOrder, isEndOfTrack, standalone->end, {}}
+            FetchOk{fetch.requestID, fetch.groupOrder, okEnd.endOfTrack, okEnd.endLocation, {}}
         );
         fetchHandle->setUpstreamFetchHandle(res.value());
         co_return fetchHandle;
@@ -1639,25 +1648,10 @@ folly::coro::Task<Publisher::FetchResult> MoqxCache::fetchImpl(
   }
   if (!fetchHandle) {
     XLOG(DBG1) << "Fetch completed entirely from cache";
-    if (servedOneObject) {
-      if (standalone->end.object == 0) {
-        auto pg = standalone->end.prevGroup();
-        XCHECK(pg) << "standalone->end.group must be > 0 when object == 0";
-        standalone->end = *pg;
-      }
-      bool endOfTrack = false;
-      if (track->endOfTrack && standalone->end >= *track->largestGroupAndObject) {
-        endOfTrack = true;
-        standalone->end = *track->largestGroupAndObject;
-      }
-      co_return std::make_shared<FetchHandle>(
-          FetchOk{fetch.requestID, fetch.groupOrder, endOfTrack, standalone->end, {}}
-      );
-    } else {
-      co_return std::make_shared<FetchHandle>(
-          FetchOk{fetch.requestID, fetch.groupOrder, false, standalone->end, {}}
-      );
-    }
+    auto okEnd = track->fetchOkEnd(standalone->start, standalone->end);
+    co_return std::make_shared<FetchHandle>(
+        FetchOk{fetch.requestID, fetch.groupOrder, okEnd.endOfTrack, okEnd.endLocation, {}}
+    );
   }
   co_return nullptr;
 }
