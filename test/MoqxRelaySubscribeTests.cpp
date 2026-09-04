@@ -11,6 +11,48 @@
 
 namespace openmoq::moqx::test {
 
+// Test: SUBSCRIBE with an empty namespace is rejected pre-draft-18.
+TEST_P(MoQRelayTest, SubscribeEmptyNamespaceRejectedPreV18) {
+  auto session = createMockSession();
+  // Default session negotiates kVersionDraftCurrent (draft-14, which is < 18)
+
+  auto consumer = createMockConsumer();
+  auto handle = subscribeToTrack(
+      session,
+      FullTrackName{TrackNamespace{{}}, "track1"},
+      consumer,
+      RequestID(0),
+      /*addToState=*/false,
+      SubscribeErrorCode::DOES_NOT_EXIST
+  );
+  EXPECT_EQ(handle, nullptr);
+
+  removeSession(session);
+}
+
+// Test: SUBSCRIBE with an empty namespace is accepted on draft-18+.
+TEST_P(MoQRelayTest, SubscribeEmptyNamespaceAllowedV18) {
+  relay_->setAllowedNamespacePrefix(TrackNamespace{{}});
+  FullTrackName emptyNsTrack{TrackNamespace{{}}, "track1"};
+
+  auto publisherSession = createMockSession();
+  ON_CALL(*publisherSession, getNegotiatedVersion())
+      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft18)));
+  doPublish(publisherSession, emptyNsTrack);
+
+  auto subSession = createMockSession();
+  ON_CALL(*subSession, getNegotiatedVersion())
+      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft18)));
+  auto consumer = createMockConsumer();
+  auto handle = subscribeToTrack(subSession, emptyNsTrack, consumer, RequestID(0));
+  ASSERT_NE(handle, nullptr);
+
+  handle->unsubscribe();
+  exec_->drive();
+  removeSession(publisherSession);
+  removeSession(subSession);
+}
+
 // Test: forwardChanged must not crash when called after the publisher has
 // terminated (onPublishDone clears handle/upstream). We trigger forwardChanged
 // via Subscriber::requestUpdate changing forward from true→false (1→0

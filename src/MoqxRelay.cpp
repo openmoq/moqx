@@ -181,14 +181,14 @@ public:
       moxygen::SubscribeRequest subReq,
       std::shared_ptr<moxygen::TrackConsumer> consumer
   ) override {
-    if (subReq.fullTrackName.trackNamespace.empty()) {
+    auto session = moxygen::MoQSession::getRequestSession();
+    if (subReq.fullTrackName.trackNamespace.empty() && !MoqxRelay::emptyNamespaceAllowed(session)) {
       co_return folly::makeUnexpected(moxygen::SubscribeError{
           subReq.requestID,
           moxygen::SubscribeErrorCode::DOES_NOT_EXIST,
           "namespace required"
       });
     }
-    auto session = moxygen::MoQSession::getRequestSession();
     auto* subscriberExec = session->getExecutor();
     // No executor hop: subscribeFromSubscriberExec starts on subscriberExec.
     co_return co_await relay_->subscribeFromSubscriberExec(
@@ -612,17 +612,28 @@ void MoqxRelay::onPublishDone(const FullTrackName& ftn) {
 }
 
 // Validates a publish namespace against allowedNamespacePrefix_ (UNINTERESTED)
-// and non-emptiness (INTERNAL_ERROR). Returns std::nullopt on success. Safe to
-// call on any thread (reads only immutable config).
-std::optional<PublishError>
-MoqxRelay::validatePublishNamespace(const FullTrackName& ftn, RequestID requestID) const {
+// and non-emptiness (INTERNAL_ERROR, unless the negotiated draft allows it).
+// Returns std::nullopt on success. Safe to call on any thread (reads only
+// immutable config plus the caller-supplied emptyNamespaceAllowed).
+std::optional<PublishError> MoqxRelay::validatePublishNamespace(
+    const FullTrackName& ftn,
+    RequestID requestID,
+    bool emptyNamespaceAllowed
+) const {
   if (!ftn.trackNamespace.startsWith(allowedNamespacePrefix_)) {
     return PublishError{requestID, PublishErrorCode::UNINTERESTED, "bad namespace"};
   }
-  if (ftn.trackNamespace.empty()) {
+  if (ftn.trackNamespace.empty() && !emptyNamespaceAllowed) {
     return PublishError{requestID, PublishErrorCode::INTERNAL_ERROR, "namespace required"};
   }
   return std::nullopt;
+}
+
+// Draft 18+ allows an empty track namespace (PUBLISH/SUBSCRIBE/FETCH/TRACK_STATUS).
+bool MoqxRelay::emptyNamespaceAllowed(const std::shared_ptr<MoQSession>& session) {
+  auto maybeNegotiatedVersion = session->getNegotiatedVersion();
+  XCHECK(maybeNegotiatedVersion.has_value());
+  return getDraftMajorVersion(*maybeNegotiatedVersion) >= 18;
 }
 
 // Chain and entry claim are one call: LocalForwarderCallback vacates the entry when the
@@ -654,7 +665,11 @@ Subscriber::PublishResult MoqxRelay::publishFromPublisherExec(
     std::shared_ptr<Publisher::SubscriptionHandle> handle,
     std::shared_ptr<MoQSession> session
 ) {
-  if (auto err = validatePublishNamespace(pub.fullTrackName, pub.requestID)) {
+  if (auto err = validatePublishNamespace(
+          pub.fullTrackName,
+          pub.requestID,
+          emptyNamespaceAllowed(session)
+      )) {
     return folly::makeUnexpected(std::move(*err));
   }
 
@@ -747,7 +762,11 @@ MoqxRelay::publish(PublishRequest pub, std::shared_ptr<Publisher::SubscriptionHa
   // getRequestSession() stays valid on relayExec_: RequestContext propagates
   // across the filter's executor hop. Validate before touching state.
   auto session = MoQSession::getRequestSession();
-  if (auto err = validatePublishNamespace(pub.fullTrackName, pub.requestID)) {
+  if (auto err = validatePublishNamespace(
+          pub.fullTrackName,
+          pub.requestID,
+          emptyNamespaceAllowed(session)
+      )) {
     return folly::makeUnexpected(std::move(*err));
   }
   XCHECK(mode() != Mode::LocalForwarder) << "publish() bypassed by LocalPublishFilter in LF mode";
@@ -2392,7 +2411,7 @@ MoqxRelay::subscribeImpl(SubscribeRequest subReq, std::shared_ptr<TrackConsumer>
   maybeSetSessionExec(*session);
   const auto& ftn = subReq.fullTrackName;
 
-  if (ftn.trackNamespace.empty()) {
+  if (ftn.trackNamespace.empty() && !emptyNamespaceAllowed(session)) {
     co_return folly::makeUnexpected(
         SubscribeError({subReq.requestID, SubscribeErrorCode::DOES_NOT_EXIST, "namespace required"})
     );
@@ -2551,7 +2570,7 @@ folly::coro::Task<Publisher::FetchResult>
 MoqxRelay::fetchImpl(Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
   auto session = MoQSession::getRequestSession();
 
-  if (fetch.fullTrackName.trackNamespace.empty()) {
+  if (fetch.fullTrackName.trackNamespace.empty() && !emptyNamespaceAllowed(session)) {
     co_return folly::makeUnexpected(
         FetchError({fetch.requestID, FetchErrorCode::DOES_NOT_EXIST, "namespace required"})
     );
@@ -2637,7 +2656,7 @@ folly::coro::Task<Publisher::TrackStatusResult> MoqxRelay::trackStatusImpl(Track
 
   auto session = MoQSession::getRequestSession();
 
-  if (trackStatus.fullTrackName.trackNamespace.empty()) {
+  if (trackStatus.fullTrackName.trackNamespace.empty() && !emptyNamespaceAllowed(session)) {
     co_return folly::makeUnexpected(TrackStatusError(
         {trackStatus.requestID, TrackStatusErrorCode::DOES_NOT_EXIST, "namespace required"}
     ));

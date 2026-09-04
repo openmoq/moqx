@@ -39,6 +39,52 @@ TEST_P(MoQRelayTest, PublishSuccess) {
   removeSession(publisherSession);
 }
 
+// Test: PUBLISH with an empty namespace is rejected pre-draft-18.
+TEST_P(MoQRelayTest, PublishEmptyNamespaceRejectedPreV18) {
+  relay_->setAllowedNamespacePrefix(TrackNamespace{{}});
+  auto session = createMockSession();
+  // Default session negotiates kVersionDraftCurrent (draft-14, which is < 18)
+
+  PublishRequest pub;
+  pub.fullTrackName = FullTrackName{TrackNamespace{{}}, "track1"};
+  withSessionContext(session, [&]() {
+    auto res = subscriberInterface()->publish(std::move(pub), createMockSubscriptionHandle());
+    if (res.hasValue()) {
+      // MT mode: the cross-exec filter acks synchronously; rejection surfaces
+      // in the reply task instead.
+      auto reply = folly::coro::blockingWait(std::move(res->reply), exec_.get());
+      ASSERT_FALSE(reply.hasValue()) << "Empty namespace should be rejected for pre-v18 sessions";
+      EXPECT_EQ(reply.error().errorCode, PublishErrorCode::INTERNAL_ERROR);
+    } else {
+      EXPECT_EQ(res.error().errorCode, PublishErrorCode::INTERNAL_ERROR);
+    }
+  });
+
+  removeSession(session);
+}
+
+// Test: PUBLISH with an empty namespace is accepted on draft-18+.
+TEST_P(MoQRelayTest, PublishEmptyNamespaceAllowedV18) {
+  relay_->setAllowedNamespacePrefix(TrackNamespace{{}});
+  auto session = createMockSession();
+  ON_CALL(*session, getNegotiatedVersion())
+      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft18)));
+
+  PublishRequest pub;
+  pub.fullTrackName = FullTrackName{TrackNamespace{{}}, "track1"};
+  withSessionContext(session, [&]() {
+    auto res = subscriberInterface()->publish(std::move(pub), createMockSubscriptionHandle());
+    ASSERT_TRUE(res.hasValue()) << "Empty namespace should be allowed for v18+ sessions";
+    // MT mode: the cross-exec filter acks synchronously above; the real
+    // result resolves in the reply task.
+    auto reply = folly::coro::blockingWait(std::move(res->reply), exec_.get());
+    EXPECT_TRUE(reply.hasValue()) << "Empty namespace should be allowed for v18+ sessions";
+  });
+
+  exec_->drive();
+  removeSession(session);
+}
+
 // Namespace tree tests (Prune*, MixedContent*, ActiveChildCount, PublishKeepsNode)
 // are in NamespaceTreeTest.cpp.
 // MoQForwarder unit tests (draining, tombstoning, hard errors, etc.)
