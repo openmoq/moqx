@@ -368,11 +368,22 @@ folly::coro::Task<void> MoqxRelay::onUpstreamConnectImpl(std::shared_ptr<MoQSess
 }
 
 void MoqxRelay::onSessionEnd(std::shared_ptr<MoQSession> session) {
-  runOnExec(relayExec_, [self = weak_from_this(), session = std::move(session)]() mutable {
-    if (auto relay = self.lock()) {
-      relay->legacyPublisherHopIDs_.erase(session.get());
-    }
-  });
+  // Raw key plus an owner compare: neither takes a strong ref, so the session is never
+  // released on relayExec_. lock() here would reintroduce that bug.
+  runOnExec(
+      relayExec_,
+      [self = weak_from_this(), key = session.get(), weak = std::weak_ptr<MoQSession>(session)]() {
+        auto relay = self.lock();
+        if (!relay) {
+          return;
+        }
+        auto it = relay->legacyPublisherHopIDs_.find(key);
+        if (it != relay->legacyPublisherHopIDs_.end() && !it->second.session.owner_before(weak) &&
+            !weak.owner_before(it->second.session)) {
+          relay->legacyPublisherHopIDs_.erase(it);
+        }
+      }
+  );
 }
 
 void MoqxRelay::onUpstreamDisconnect() {
