@@ -436,6 +436,13 @@ private:
   folly::coro::Task<folly::Expected<folly::Unit, moxygen::FetchError>>
   handleBlocked(std::shared_ptr<moxygen::FetchConsumer> consumer, const moxygen::Fetch& fetch);
 
+  // A FETCH response has no END_OF_TRACK object, so the FETCH_OK flag is the
+  // only way a fetch learns the track ended inside the range.
+  static void recordUpstreamEndOfTrack(
+      CacheTrack& track,
+      const moxygen::Publisher::FetchResult& upstreamResult
+  );
+
   void setMaxCacheDuration(const moxygen::FullTrackName& ftn, std::chrono::milliseconds duration);
   void clearMaxCacheDuration(const moxygen::FullTrackName& ftn);
 

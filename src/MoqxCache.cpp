@@ -433,12 +433,15 @@ MoqxCache::CacheTrack::updateLargest(AbsoluteLocation current, bool eot) {
       endOfTrack = eot;
     }
     largestGroupAndObject = current;
-  } else if (eot && current != *largestGroupAndObject) {
-    // End of track is not the largest
-    XLOG(ERR) << "Malformed track, eot is not the largest object";
-    return folly::makeUnexpected(
-        MoQPublishError(MoQPublishError::MALFORMED_TRACK, "Malformed track")
-    );
+  } else if (eot) {
+    if (current != *largestGroupAndObject) {
+      // End of track is not the largest
+      XLOG(ERR) << "Malformed track, eot is not the largest object";
+      return folly::makeUnexpected(
+          MoQPublishError(MoQPublishError::MALFORMED_TRACK, "Malformed track")
+      );
+    }
+    endOfTrack = true;
   }
   return folly::unit;
 }
@@ -1420,11 +1423,13 @@ folly::coro::Task<Publisher::FetchResult> MoqxCache::fetch(
     // here: the request forwarded upstream has to keep the wire form.
     FetchRangeIterator
         fetchRangeIt(standalone->start, toExclusiveEnd(standalone->end), fetch.groupOrder, track);
-    co_return co_await upstream->fetch(
+    auto res = co_await upstream->fetch(
         fetch,
         std::make_shared<
             FetchWriteback>(true, std::move(consumer), fetchRangeIt, *this, fetch.fullTrackName)
     );
+    recordUpstreamEndOfTrack(*track, res);
+    co_return res;
   }
   // Nothing is forwarded verbatim from here on, so normalize in place and let
   // fetchUpstream put the wire form back when it talks to upstream.
@@ -1741,6 +1746,7 @@ folly::coro::Task<Publisher::FetchResult> MoqxCache::fetchUpstream(
 
   XLOG(DBG1) << "upstream success";
   track->extensions = res.value()->fetchOk().extensions;
+  recordUpstreamEndOfTrack(*track, res);
   if (lastObject) {
     if (!fetchHandle) {
       XLOG(DBG1) << "no fetchHandle and last object";
@@ -1772,6 +1778,28 @@ folly::coro::Task<Publisher::FetchResult> MoqxCache::fetchUpstream(
   }
   // completed successfully, ready for next object
   co_return nullptr;
+}
+
+void MoqxCache::recordUpstreamEndOfTrack(
+    CacheTrack& track,
+    const Publisher::FetchResult& upstreamResult
+) {
+  if (upstreamResult.hasError() || !upstreamResult.value()) {
+    return;
+  }
+  const auto& fetchOk = upstreamResult.value()->fetchOk();
+  if (!fetchOk.endOfTrack) {
+    return;
+  }
+  auto last = fetchOk.endLocation.prev();
+  if (!last) {
+    return;
+  }
+  auto res = track.updateLargest(*last, /*eot=*/true);
+  if (res.hasError()) {
+    XLOG(ERR) << "Upstream end of track at {" << last->group << "," << last->object
+              << "} conflicts with cached data";
+  }
 }
 
 folly::coro::Task<folly::Expected<folly::Unit, FetchError>>
