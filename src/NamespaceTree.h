@@ -134,7 +134,6 @@ public:
 
   explicit NamespaceTree(Callback& cb) : cb_(cb), root_(*this) {}
 
-  enum class MatchType { Exact, Prefix };
   enum class Error { NodeNotFound, NotOwner, NotSubscribed };
 
   // Longest-prefix match for the publisher of ns; null if none found.
@@ -143,7 +142,6 @@ public:
   std::shared_ptr<NamespaceNode> findNode(
       const moxygen::TrackNamespace& ns,
       bool createMissingNodes = false,
-      MatchType matchType = MatchType::Exact,
       SessionSubscriberList* subscribers = nullptr
   );
 

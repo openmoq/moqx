@@ -74,6 +74,23 @@ TEST_F(NamespaceTreeTest, PruneLeafKeepSiblings) {
   EXPECT_EQ(tree_.findPublisherSession(nsAD), publisherAD);
 }
 
+// Test: SUBSCRIBE routes past a publisher-less node
+// Scenario: test/A has a publisher. A subscriber to test/A/B creates a node
+// there with no publisher of its own. Looking up test/A/B/C must still find
+// test/A's publisher instead of stopping at the publisher-less B.
+TEST_F(NamespaceTreeTest, FindPublisherSessionSkipsPublisherlessNode) {
+  auto publisher = makeSession();
+
+  TrackNamespace nsA{{"test", "A"}};
+  TrackNamespace nsAB{{"test", "A", "B"}};
+  TrackNamespace nsABC{{"test", "A", "B", "C"}};
+
+  publish(nsA, publisher);
+  subscribe(nsAB, makeSession());
+
+  EXPECT_EQ(tree_.findPublisherSession(nsABC), publisher);
+}
+
 // Test: Tree pruning removes highest empty ancestor
 // Scenario: test/A/B/C only. Remove C should prune A (highest empty after test)
 TEST_F(NamespaceTreeTest, PruneHighestEmptyAncestor) {

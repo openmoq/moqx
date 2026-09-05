@@ -881,7 +881,6 @@ MoqxRelay::PublishSetupResult MoqxRelay::publishWithSession(
   auto tracksNode = tracksTree_.findNode(
       pub.fullTrackName.trackNamespace,
       /*createMissingNodes=*/false,
-      NamespaceTree::MatchType::Exact,
       &tracksSessions
   );
   if (tracksNode) {
@@ -1885,11 +1884,8 @@ folly::coro::Task<Publisher::SubscribeTracksResult> MoqxRelay::subscribeTracks(
 
   // Walk the existing publish tree and emit PUBLISH for each matching
   // already-published track (backfill for new subscriber).
-  auto pubNode = namespaceTree_.findNode(
-      subTracks.trackNamespacePrefix,
-      /*createMissingNodes=*/false,
-      NamespaceTree::MatchType::Exact
-  );
+  auto pubNode =
+      namespaceTree_.findNode(subTracks.trackNamespacePrefix, /*createMissingNodes=*/false);
   if (pubNode) {
     namespaceTree_.forEachNodeInSubtree(
         subTracks.trackNamespacePrefix,
@@ -1937,11 +1933,7 @@ void MoqxRelay::unsubscribeTracks(
 
 MoqxRelay::PublishState MoqxRelay::findPublishState(const FullTrackName& ftn) {
   PublishState state;
-  auto nodePtr = namespaceTree_.findNode(
-      ftn.trackNamespace,
-      /*createMissingNodes=*/false,
-      NamespaceTree::MatchType::Exact
-  );
+  auto nodePtr = namespaceTree_.findNode(ftn.trackNamespace, /*createMissingNodes=*/false);
 
   if (!nodePtr) {
     return state;
