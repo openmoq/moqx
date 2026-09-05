@@ -23,15 +23,17 @@ name: version release
 #   finalize (--draft=false)
 #
 # Inputs:
-#   version          required. semver, e.g. 1.2.3
-#   moxygen_release  optional cross-check, not a selector. The moxygen consumed
-#                    is always the one MOXYGEN_REV pins — pass the tag you expect
-#                    that pin to resolve to and the run fails early if it doesn't.
+#   version  required. semver, e.g. 1.2.3
 #
-# Behavior matrix, on the moxygen release MOXYGEN_REV resolves to:
-#   tagged v* release (carries portable assets)  → portable matrix runs
-#   rolling snapshot-* release (does not)        → portable skipped (no failure)
-#   no tag at the pin                            → validate fails, nothing tagged
+# The moxygen consumed is always the one MOXYGEN_REV pins. On the release
+# MOXYGEN_REV resolves to:
+#   tagged v* release            → used as-is; portable matrix runs
+#   snapshot-* only / no v* tag  → this run mints moxygen v<version> at
+#                                  exactly the pinned commit (dispatches
+#                                  moxygen version-release with rev=pin) and
+#                                  waits for it to publish, then proceeds.
+#                                  One dispatch releases both repos, tags
+#                                  agreeing by construction.
 #
 # Snapshot source — derived from dispatched ref:
 #   dispatched on main         → consume snapshot-latest
@@ -48,10 +50,6 @@ on:
       version:
         description: 'moqx version (e.g. 1.2.3)'
         required: true
-        type: string
-      moxygen_release:
-        description: 'Expected moxygen release tag (optional, e.g. v1.2.3) — checked against what MOXYGEN_REV resolves to.'
-        required: false
         type: string
 
 # Serialize per-version dispatches: prevents two runs with the same
@@ -84,10 +82,26 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Only needed when this run must mint the moxygen release itself.
+      # continue-on-error so a token-permission problem cannot break the
+      # common path where the moxygen release already exists.
+      - name: Generate moxygen dispatch token
+        id: mox-token
+        continue-on-error: true
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.OMOQ_APP_ID }}
+          private-key: ${{ secrets.OMOQ_APP_PRIV_KEY }}
+          owner: openmoq
+          repositories: moxygen
+          permission-actions: write
+
       - name: Validate inputs and resolve refs
         id: v
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MOX_REPO: openmoq/moxygen
+          MOX_DISPATCH_TOKEN: ${{ steps.mox-token.outputs.token }}
         run: |
           VERSION="${{ inputs.version }}"
           if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$ ]]; then
@@ -118,31 +132,50 @@ jobs:
             exit 1
           fi
 
-          # Resolve the moxygen tag exactly the way the build will. Anything else
+          # Resolve the moxygen tag exactly the way the build will (git tags
+          # at the pin; immutable v* preferred over snapshot-*). Anything else
           # (moxygen's newest release, say) disagrees with MOXYGEN_REV, fails
           # both matrix legs at configure, and strands the release as a draft.
           MOX_PIN=$(cmake -DPIN=MOXYGEN_REV -P cmake/print-pin.cmake)
-          if ! MOX_REF=$(cmake -P cmake/print-release-tag.cmake); then
-            echo "Error: no published moxygen release points at the pinned MOXYGEN_REV" >&2
-            echo "  $MOX_PIN" >&2
-            echo "Bump the pin on $BRANCH to a published rev before cutting a release." >&2
-            exit 1
-          fi
-          echo "==> MOXYGEN_REV $MOX_PIN resolves to moxygen release $MOX_REF"
-
-          # Disagreement can only mean the operator meant to bump MOXYGEN_REV
-          # first — the input cannot move the build off the pin.
-          INPUT_REF="${{ inputs.moxygen_release }}"
-          if [ -n "$INPUT_REF" ]; then
-            # Accept bare semver (0.1.4) or v-prefixed (v0.1.4); normalize.
-            if [[ "$INPUT_REF" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
-              INPUT_REF="v$INPUT_REF"
-            fi
-            if [ "$INPUT_REF" != "$MOX_REF" ]; then
-              echo "Error: moxygen_release '$INPUT_REF' is not the release MOXYGEN_REV resolves to ('$MOX_REF')." >&2
-              echo "Bump MOXYGEN_REV on $BRANCH instead — the build verifies the tag against the pin." >&2
+          if MOX_REF=$(cmake -P cmake/print-release-tag.cmake 2>/dev/null) \
+              && [[ "$MOX_REF" != snapshot* ]]; then
+            echo "==> MOXYGEN_REV $MOX_PIN resolves to moxygen release $MOX_REF"
+          else
+            # No named moxygen release at the pin: mint one, same version, at
+            # exactly the pinned commit. moxygen publishes atomically (draft
+            # until finalize), and a draft holds no tag ref — so the resolver
+            # poll below can only ever see a complete release.
+            MOX_TAG="v${VERSION}"
+            if gh release view "$MOX_TAG" --repo "$MOX_REPO" >/dev/null 2>&1; then
+              echo "Error: moxygen $MOX_TAG exists but does not point at MOXYGEN_REV ($MOX_PIN)." >&2
+              echo "Pick a different moqx version, or bump the pin to that release's commit." >&2
               exit 1
             fi
+            if [ -z "$MOX_DISPATCH_TOKEN" ]; then
+              echo "Error: no named moxygen release at $MOX_PIN and the dispatch token is unavailable" >&2
+              echo "(omoq-sync-bot needs actions:write on openmoq/moxygen to mint one from here)." >&2
+              exit 1
+            fi
+            echo "==> no named moxygen release at ${MOX_PIN:0:12} — dispatching moxygen version-release $MOX_TAG there"
+            GH_TOKEN="$MOX_DISPATCH_TOKEN" gh workflow run omoq-version-release.yml \
+              --repo "$MOX_REPO" --ref main -f "version=$VERSION" -f "rev=$MOX_PIN"
+
+            # The portable matrix dominates moxygen's release wall clock.
+            MOX_REF=""
+            for i in $(seq 1 60); do
+              sleep 60
+              if T=$(cmake -P cmake/print-release-tag.cmake 2>/dev/null) \
+                  && [[ "$T" != snapshot* ]]; then
+                MOX_REF="$T"
+                break
+              fi
+              echo "  waiting for moxygen $MOX_TAG… (${i}m)"
+            done
+            if [ -z "$MOX_REF" ]; then
+              echo "Error: moxygen $MOX_TAG did not publish within 60 minutes — check the moxygen version-release run, then re-dispatch this workflow (it will find the release already minted)." >&2
+              exit 1
+            fi
+            echo "==> moxygen published $MOX_REF"
           fi
 
           # Verify moxygen reference exists; on failure, list recent releases.
