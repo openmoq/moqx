@@ -122,11 +122,36 @@ jobs:
           CURRENT_SHA=$(cmake -DPIN=MOXYGEN_REV -P cmake/print-pin.cmake)
           echo "current_sha=${CURRENT_SHA}" >> "$GITHUB_OUTPUT"
 
+          # A rev is consumable once ci-main publishes its snapshot. gh prints
+          # its 404 body on stdout, so the exit code is the answer.
+          has_assets() {
+            local n
+            n=$(gh api "repos/openmoq/moxygen/releases/tags/snapshot-${1:0:12}" \
+                  --jq '.assets | length' 2>/dev/null) || return 1
+            [ "${n:-0}" -gt 0 ]
+          }
+
           if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
             TARGET_SHA="$CLIENT_PAYLOAD_SHA"
+            # The publish raises this event, so a miss means it reported a
+            # success it did not deliver.
+            if [ -n "$TARGET_SHA" ] && ! has_assets "$TARGET_SHA"; then
+              echo "::error::moxygen ${TARGET_SHA:0:12} dispatched an update but publishes no snapshot assets"
+              exit 1
+            fi
           else
-            # Manual/scheduled trigger: latest openmoq/moxygen main
-            TARGET_SHA=$(gh api repos/openmoq/moxygen/commits/main --jq '.sha')
+            # Newest openmoq/moxygen main whose snapshot has published.
+            TARGET_SHA=""
+            for sha in $(gh api "repos/openmoq/moxygen/commits?sha=main&per_page=20" --jq '.[].sha'); do
+              has_assets "$sha" && { TARGET_SHA="$sha"; break; }
+              echo "skipping ${sha:0:12} — snapshot not published yet"
+            done
+            # Nothing publishable: hand the current rev to the up-to-date path
+            # below rather than failing, since a publish backlog is transient.
+            if [ -z "$TARGET_SHA" ]; then
+              echo "::warning::No moxygen main commit in the last 20 has published snapshot assets"
+              TARGET_SHA="$CURRENT_SHA"
+            fi
           fi
 
           # Guard: TARGET_SHA is spliced into cmake/dependencies.cmake by sed
