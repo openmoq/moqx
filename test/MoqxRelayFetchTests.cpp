@@ -11,6 +11,54 @@
 
 namespace openmoq::moqx::test {
 
+// Test: FETCH with an empty namespace is rejected pre-draft-18.
+TEST_P(MoQRelayTest, FetchEmptyNamespaceRejectedPreV18) {
+  auto session = createMockSession();
+  // Default session negotiates kVersionDraftCurrent (draft-14, which is < 18)
+
+  Fetch fetch(
+      RequestID(0),
+      FullTrackName{TrackNamespace{{}}, "track1"},
+      AbsoluteLocation{0, 0},
+      AbsoluteLocation{1, 0}
+  );
+  auto fetchConsumer = std::make_shared<NiceMock<MockFetchConsumer>>();
+  withSessionContext(session, [&]() {
+    auto task = publisherInterface()->fetch(std::move(fetch), fetchConsumer);
+    auto res = folly::coro::blockingWait(std::move(task), exec_.get());
+    ASSERT_FALSE(res.hasValue());
+    EXPECT_EQ(res.error().errorCode, FetchErrorCode::DOES_NOT_EXIST);
+    EXPECT_EQ(res.error().reasonPhrase, "namespace required");
+  });
+
+  removeSession(session);
+}
+
+// Test: FETCH with an empty namespace is not rejected for its namespace on
+// draft-18+ — it falls through to the normal "no such upstream" resolution.
+TEST_P(MoQRelayTest, FetchEmptyNamespaceAllowedV18) {
+  auto session = createMockSession();
+  ON_CALL(*session, getNegotiatedVersion())
+      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft18)));
+
+  Fetch fetch(
+      RequestID(0),
+      FullTrackName{TrackNamespace{{}}, "track1"},
+      AbsoluteLocation{0, 0},
+      AbsoluteLocation{1, 0}
+  );
+  auto fetchConsumer = std::make_shared<NiceMock<MockFetchConsumer>>();
+  withSessionContext(session, [&]() {
+    auto task = publisherInterface()->fetch(std::move(fetch), fetchConsumer);
+    auto res = folly::coro::blockingWait(std::move(task), exec_.get());
+    ASSERT_FALSE(res.hasValue());
+    EXPECT_EQ(res.error().errorCode, FetchErrorCode::DOES_NOT_EXIST);
+    EXPECT_EQ(res.error().reasonPhrase, "no upstream for fetch");
+  });
+
+  removeSession(session);
+}
+
 // Test: fetch fallback to subscriptions_ after publisher termination must not
 // crash. When findPublishNamespaceSession returns null (no publishNamespace),
 // fetch falls back to subscriptions_. After onPublishDone, upstream is null
