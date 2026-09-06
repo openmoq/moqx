@@ -213,14 +213,28 @@ jobs:
             PORTABLE_NOTE="_Portable Linux tarballs not produced for this release: moxygen \`${MOX_REF}\` does not include the required portable assets._"
           fi
 
+          # A failed prior run leaves an invisible draft; a second create with
+          # the same tag_name would not collide (drafts hold no tag ref) and
+          # uploads-by-tag would then be ambiguous. Remove it first. Paginate:
+          # snapshot publishes push an old draft past the first page within hours.
+          gh api --paginate "repos/{owner}/{repo}/releases" \
+            --jq ".[] | select(.tag_name == \"$TAG\" and .draft) | .id" | \
+            while read -r id; do
+              echo "Deleting stale draft release id $id for $TAG"
+              gh api -X DELETE "repos/{owner}/{repo}/releases/$id"
+            done
+
           # Mark prereleases (1.2.3-rc1) as such so GitHub's "latest"
           # algorithm correctly excludes them.
           PRERELEASE_FLAG=()
           if [[ "$VERSION" == *-* ]]; then
             PRERELEASE_FLAG=(--prerelease)
           fi
-
+          # --draft: invisible to consumers (and to by-tag lookups) until
+          # finalize flips it, so a release either exists complete or not at
+          # all — never public with assets still uploading.
           gh release create "$TAG" \
+            --draft \
             --target "$SNAPSHOT_SHA" \
             --title "moqx $VERSION" \
             "${PRERELEASE_FLAG[@]}" \
@@ -273,7 +287,12 @@ jobs:
           app-id: ${{ secrets.OMOQ_APP_ID }}
           private-key: ${{ secrets.OMOQ_APP_PRIV_KEY }}
 
+      # Build the resolved commit, not the branch tip — the tip can move
+      # between dispatch and here, and the promoted assets are the resolved
+      # commit's.
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.validate.outputs.snapshot_sha }}
 
       - name: Install system dependencies
         run: |
@@ -431,11 +450,6 @@ jobs:
             xargs -0 -n1 -P 6 -I{} gh release upload "$TAG" --repo "$REPO" {} --clobber
 
   # ════════════════════════════════════════════════════════════════════════════
-  # Finalize: confirm the release is fully published once all uploads
-  # succeeded. Tolerates portable-build being skipped (has_portable=false).
-  # ════════════════════════════════════════════════════════════════════════════
-
-  # ════════════════════════════════════════════════════════════════════════════
   # Release image: builds the container with MOQX_VERSION_STRING set to the
   # release tag, so the binary and the OCI label report the version they ship
   # under. The arg enters after the moxygen stage, so the dep layers come from
@@ -525,6 +539,12 @@ jobs:
             "${IMAGE}:${TAG}-amd64" "${IMAGE}:${TAG}-arm64"
           docker buildx imagetools inspect "${IMAGE}:${TAG}"
 
+  # ════════════════════════════════════════════════════════════════════════════
+  # Finalize: publish the draft once all uploads succeeded, so consumers never
+  # see a partial release. Tolerates portable-build being skipped
+  # (has_portable=false).
+  # ════════════════════════════════════════════════════════════════════════════
+
   finalize:
     needs: [validate, create-release, portable-build, promote-snapshot]
     if: |
@@ -543,16 +563,20 @@ jobs:
           app-id: ${{ secrets.OMOQ_APP_ID }}
           private-key: ${{ secrets.OMOQ_APP_PRIV_KEY }}
 
-      - name: Confirm release published
+      - name: Publish release
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           REPO: ${{ github.repository }}
           TAG: ${{ needs.validate.outputs.tag }}
         run: |
+          # Flip the draft: the release (and its tag) becomes visible only
+          # now, with every asset already attached.
+          #
           # No --latest flag here. Let GitHub's auto-latest algorithm
           # pick the highest non-prerelease semver tag. Forcing --latest
           # would mark a hotfix patch from a release/vM.m branch as
           # latest even when a newer vM.(m+1) line exists.
+          gh release edit "$TAG" --repo "$REPO" --draft=false
           echo "Released: $TAG"
           # isLatest is not a --json field on `gh release view` (only on
           # `gh release list`), so derive it from the releases/latest API.
