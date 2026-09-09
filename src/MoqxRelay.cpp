@@ -17,6 +17,7 @@
 #include "relay/PublisherCrossExecFilter.h"
 #include "relay/SubscriberCrossExecFilter.h"
 #include "relay/TrackEventCallback.h"
+#include "relay/TrackProperties.h"
 #include "relay/TrackStatsFilter.h"
 #include "relay/WeakRelayForwarderCallback.h"
 #include <folly/Random.h>
@@ -649,6 +650,14 @@ Subscriber::PublishResult MoqxRelay::publishFromPublisherExec(
     return folly::makeUnexpected(std::move(*err));
   }
 
+  if (hasUnsupportedMandatoryProperty(pub.extensions)) {
+    return folly::makeUnexpected(PublishError{
+        pub.requestID,
+        RequestErrorCode::UNSUPPORTED_EXTENSION,
+        "unsupported mandatory track property"
+    });
+  }
+
   auto localPubFwd = std::make_shared<MoQForwarder>(pub.fullTrackName);
   // Install the new forwarder and return the identity of the one that was displaced, if any.
   // Either a publisher or a subscriber forwarder could be displaced. Either way, the relay exec
@@ -740,6 +749,13 @@ MoqxRelay::publish(PublishRequest pub, std::shared_ptr<Publisher::SubscriptionHa
   auto session = MoQSession::getRequestSession();
   if (auto err = validatePublishNamespace(pub.fullTrackName, pub.requestID)) {
     return folly::makeUnexpected(std::move(*err));
+  }
+  if (hasUnsupportedMandatoryProperty(pub.extensions)) {
+    return folly::makeUnexpected(PublishError{
+        pub.requestID,
+        RequestErrorCode::UNSUPPORTED_EXTENSION,
+        "unsupported mandatory track property"
+    });
   }
   XCHECK(mode() != Mode::LocalForwarder) << "publish() bypassed by LocalPublishFilter in LF mode";
 
@@ -2045,6 +2061,13 @@ MoqxRelay::subscribeUpstreamAndApplyOk(
   }
   // Apply the OK to the forwarder; the NGR rides the outgoing SUBSCRIBE (record, don't fire).
   const auto& ok = subRes.value()->subscribeOk();
+  if (hasUnsupportedMandatoryProperty(ok.extensions)) {
+    co_return folly::makeUnexpected(SubscribeError{
+        clientRequestID,
+        SubscribeErrorCode::UNSUPPORTED_EXTENSION,
+        "upstream SUBSCRIBE returned unsupported mandatory property"
+    });
+  }
   InitialTrackState{ok.largest, ok.extensions}.applyTo(*publisherFwd);
   publisherFwd->tryProcessNewGroupRequest(params, /*fire=*/false);
   // Moving the handle shared_ptr keeps the pointee (and `ok`) alive, so reading ok.*

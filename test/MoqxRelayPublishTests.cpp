@@ -39,6 +39,31 @@ TEST_P(MoQRelayTest, PublishSuccess) {
   removeSession(publisherSession);
 }
 
+// A PUBLISH carrying a Mandatory Track Property moqx
+// does not understand must be rejected with UNSUPPORTED_EXTENSION.
+TEST_P(MoQRelayTest, PublishRejectsUnsupportedMandatoryProperty) {
+  auto publisherSession = createMockSession();
+
+  PublishRequest pub;
+  pub.fullTrackName = kTestTrackName;
+  pub.extensions.insertMutableExtension(Extension{0x4000, 1});
+
+  withSessionContext(publisherSession, [&]() {
+    auto res = subscriberInterface()->publish(std::move(pub), createMockSubscriptionHandle());
+    if (res.hasError()) {
+      EXPECT_EQ(res.error().errorCode, RequestErrorCode::UNSUPPORTED_EXTENSION);
+      return;
+    }
+    ASSERT_TRUE(res.hasValue());
+    auto replyRes = folly::coro::blockingWait(std::move(res->reply), exec_.get());
+    ASSERT_TRUE(replyRes.hasError());
+    EXPECT_EQ(replyRes.error().errorCode, RequestErrorCode::UNSUPPORTED_EXTENSION);
+  });
+
+  removeSession(publisherSession);
+  driveIfMultiThread();
+}
+
 // Namespace tree tests (Prune*, MixedContent*, ActiveChildCount, PublishKeepsNode)
 // are in NamespaceTreeTest.cpp.
 // MoQForwarder unit tests (draining, tombstoning, hard errors, etc.)

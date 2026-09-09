@@ -581,6 +581,57 @@ CO_TEST_F(MoqxCacheTest, TestFetchMissTailUpstreamError) {
   EXPECT_TRUE(res.hasError());
 }
 
+// An upstream FETCH_OK carrying an unsupported Mandatory
+// Track Property must be rejected with UNSUPPORTED_EXTENSION, and — since no
+// FETCH_OK has reached the downstream fetcher yet on this path — the
+// not-yet-established stream must be reset.
+CO_TEST_F(MoqxCacheTest, TestFetchTailUpstreamMandatoryPropertyRejected) {
+  populateCacheRange({0, 0}, {0, 1});
+  Extensions mandatoryExt;
+  mandatoryExt.insertMutableExtension(Extension{0x4000, 1});
+  EXPECT_CALL(*upstream_, fetch(_, _))
+      .WillOnce([&](Fetch, std::shared_ptr<FetchConsumer> consumer) {
+        upstreamFetchConsumer_ = std::move(consumer);
+        upstreamFetchHandle_ = std::make_shared<moxygen::MockFetchHandle>(
+            FetchOk{0, GroupOrder::OldestFirst, 0, AbsoluteLocation{1, 0}, mandatoryExt}
+        );
+        return folly::coro::makeTask<Publisher::FetchResult>(upstreamFetchHandle_);
+      });
+  expectFetchObjects({0, 0}, {0, 1}, false);
+  EXPECT_CALL(*consumer_, reset(ResetStreamErrorCode::INTERNAL_ERROR));
+  auto res = co_await cache_.fetch(getFetch({0, 0}, {0, 10}), trackingConsumer_, upstream_);
+  EXPECT_TRUE(res.hasError());
+  EXPECT_EQ(res.error().errorCode, FetchErrorCode::UNSUPPORTED_EXTENSION);
+}
+
+// Regression: when track state already lets fetch() take the fast path
+// (FETCH_OK returned synchronously, live track/known past data), fetchImpl
+// keeps running as a *detached* background task. A FetchError returned from
+// fetchUpstream() there would otherwise be silently discarded — the downstream
+// must instead learn about it via an explicit stream reset.
+CO_TEST_F(MoqxCacheTest, TestFetchLiveTrackDetachedUpstreamMandatoryPropertyRejected) {
+  populateCacheRange({0, 5}, {0, 6});
+  auto writeback = cache_.getSubscribeWriteback(kTestTrackName, trackConsumer_);
+
+  Extensions mandatoryExt;
+  mandatoryExt.insertMutableExtension(Extension{0x4000, 1});
+  EXPECT_CALL(*upstream_, fetch(_, _))
+      .WillOnce([&](Fetch, std::shared_ptr<FetchConsumer> consumer) {
+        upstreamFetchConsumer_ = std::move(consumer);
+        upstreamFetchHandle_ = std::make_shared<moxygen::MockFetchHandle>(
+            FetchOk{0, GroupOrder::OldestFirst, 0, AbsoluteLocation{1, 0}, mandatoryExt}
+        );
+        return folly::coro::makeTask<Publisher::FetchResult>(upstreamFetchHandle_);
+      });
+  EXPECT_CALL(*consumer_, reset(ResetStreamErrorCode::INTERNAL_ERROR));
+
+  auto res = co_await cache_.fetch(getFetch({0, 0}, {0, 10}), trackingConsumer_, upstream_);
+  EXPECT_TRUE(res.hasValue()
+  ) << "fast path returns FETCH_OK synchronously before the background task runs";
+
+  co_await folly::coro::co_reschedule_on_current_executor;
+}
+
 CO_TEST_F(MoqxCacheTest, TestFetchMissNoTrackUpstreamCompleteHit) {
   // Test case for fetch when no track is present, full range served by upstream
   expectUpstreamFetch({0, 0}, {0, 10}, 0, AbsoluteLocation{1, 0});

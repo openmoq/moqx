@@ -311,6 +311,11 @@ moqx_add_gtest(moqx_initial_track_state_test
   LIBS moqx_core moqx_test_main GTest::gmock
 )
 
+moqx_add_gtest(moqx_track_properties_test
+  SRCS TrackPropertiesTest.cpp
+  LIBS moqx_core moqx_test_main GTest::gmock
+)
+
 moqx_add_gtest(moqx_local_forwarder_registry_test
   SRCS LocalForwarderRegistryTest.cpp
   LIBS moqx_core moqx_test_main GTest::gmock

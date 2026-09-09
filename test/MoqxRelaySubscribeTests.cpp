@@ -205,6 +205,43 @@ TEST_P(MoQRelayTest, FirstSubscriberViaUpstreamSubscribeReceivesData) {
   driveIfMultiThread();
 }
 
+// UNSUPPORTED_EXTENSION, cancelling the downstream subscription.
+TEST_P(MoQRelayTest, SubscribeRejectsUpstreamUnsupportedMandatoryProperty) {
+  auto publisherSession = createMockSession();
+  auto subSession = createMockSession();
+
+  doPublishNamespace(publisherSession, kTestNamespace);
+
+  SubscribeOk upstreamOk;
+  upstreamOk.requestID = RequestID(1);
+  upstreamOk.trackAlias = TrackAlias(1);
+  upstreamOk.expires = std::chrono::milliseconds(0);
+  upstreamOk.groupOrder = GroupOrder::OldestFirst;
+  upstreamOk.extensions.insertMutableExtension(Extension{0x4000, 1});
+  EXPECT_CALL(*publisherSession, subscribe(_, _))
+      .WillOnce([upstreamOk](const SubscribeRequest&, std::shared_ptr<TrackConsumer>) {
+        auto handle = std::make_shared<NiceMock<MockSubscriptionHandle>>(upstreamOk);
+        return folly::coro::makeTask<Publisher::SubscribeResult>(
+            folly::Expected<std::shared_ptr<SubscriptionHandle>, SubscribeError>(handle)
+        );
+      });
+
+  auto consumer = createMockConsumer();
+  auto handle = subscribeToTrack(
+      subSession,
+      kTestTrackName,
+      consumer,
+      RequestID(0),
+      /*addToState=*/false,
+      SubscribeErrorCode::UNSUPPORTED_EXTENSION
+  );
+  EXPECT_EQ(handle, nullptr);
+
+  removeSession(publisherSession);
+  removeSession(subSession);
+  driveIfMultiThread();
+}
+
 // Regression: a second subscriber that arrives while a first subscriber's upstream
 // SUBSCRIBE is still in flight must observe the upstream-seeded largest. In
 // LocalForwarderMT the second takes the acquireLocalForwarder isNew=false fast path

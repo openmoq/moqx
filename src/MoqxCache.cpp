@@ -9,6 +9,7 @@
 
 #include "MoqxCache.h"
 #include "relay/NullConsumers.h"
+#include "relay/TrackProperties.h"
 #include <folly/logging/xlog.h>
 #include <moxygen/MoQTrackProperties.h>
 
@@ -1697,6 +1698,16 @@ folly::coro::Task<Publisher::FetchResult> MoqxCache::fetchUpstream(
 
   XLOG(DBG1) << "upstream success";
   track->extensions = res.value()->fetchOk().extensions;
+
+  if (hasUnsupportedMandatoryProperty(track->extensions)) {
+    consumer->reset(ResetStreamErrorCode::INTERNAL_ERROR);
+    co_return folly::makeUnexpected(FetchError{
+        fetch.requestID,
+        FetchErrorCode::UNSUPPORTED_EXTENSION,
+        "unsupported mandatory track property"
+    });
+  }
+
   if (lastObject) {
     if (!fetchHandle) {
       XLOG(DBG1) << "no fetchHandle and last object";
