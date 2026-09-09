@@ -85,6 +85,57 @@ TEST_P(MoQRelayTest, PublishEmptyNamespaceAllowedV18) {
   removeSession(session);
 }
 
+// A PUBLISH carrying a Mandatory Track Property moqx
+// does not understand must be rejected with UNSUPPORTED_EXTENSION on draft-18+.
+TEST_P(MoQRelayTest, PublishRejectsUnsupportedMandatoryProperty) {
+  auto publisherSession = createMockSession();
+  ON_CALL(*publisherSession, getNegotiatedVersion())
+      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft18)));
+
+  PublishRequest pub;
+  pub.fullTrackName = kTestTrackName;
+  pub.extensions.insertMutableExtension(Extension{0x4000, 1});
+
+  withSessionContext(publisherSession, [&]() {
+    auto res = subscriberInterface()->publish(std::move(pub), createMockSubscriptionHandle());
+    if (res.hasError()) {
+      EXPECT_EQ(res.error().errorCode, RequestErrorCode::UNSUPPORTED_EXTENSION);
+      return;
+    }
+    ASSERT_TRUE(res.hasValue());
+    auto replyRes = folly::coro::blockingWait(std::move(res->reply), exec_.get());
+    ASSERT_TRUE(replyRes.hasError());
+    EXPECT_EQ(replyRes.error().errorCode, RequestErrorCode::UNSUPPORTED_EXTENSION);
+  });
+
+  removeSession(publisherSession);
+  driveIfMultiThread();
+}
+
+// draft-14/16 have no Mandatory Track Property concept, so a pre-v18 PUBLISH
+// carrying one must not be rejected for it.
+TEST_P(MoQRelayTest, PublishIgnoresMandatoryPropertyPreV18) {
+  auto publisherSession = createMockSession();
+  // Default session negotiates kVersionDraftCurrent (draft-14, which is < 18)
+
+  doPublishNamespace(publisherSession, kTestNamespace);
+
+  PublishRequest pub;
+  pub.fullTrackName = kTestTrackName;
+  pub.extensions.insertMutableExtension(Extension{0x4000, 1});
+
+  withSessionContext(publisherSession, [&]() {
+    auto res = subscriberInterface()->publish(std::move(pub), createMockSubscriptionHandle());
+    ASSERT_TRUE(res.hasValue());
+    auto replyRes = folly::coro::blockingWait(std::move(res->reply), exec_.get());
+    EXPECT_TRUE(replyRes.hasValue());
+  });
+
+  exec_->drive();
+  removeSession(publisherSession);
+  driveIfMultiThread();
+}
+
 // Namespace tree tests (Prune*, MixedContent*, ActiveChildCount, PublishKeepsNode)
 // are in NamespaceTreeTest.cpp.
 // MoQForwarder unit tests (draining, tombstoning, hard errors, etc.)

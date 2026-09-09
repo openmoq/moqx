@@ -193,6 +193,7 @@ public:
     std::shared_ptr<moxygen::Publisher> publisher;
     moxygen::RequestID requestID;
     bool isReady;
+    std::optional<uint64_t> upstreamVersion;
   };
   std::optional<FetchView> getFetchView(const moxygen::FullTrackName& ftn) const;
 
