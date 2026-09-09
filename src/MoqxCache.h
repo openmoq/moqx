@@ -63,7 +63,8 @@ public:
   folly::coro::Task<moxygen::Publisher::FetchResult> fetch(
       moxygen::Fetch fetch,
       std::shared_ptr<moxygen::FetchConsumer> consumer,
-      std::shared_ptr<moxygen::Publisher> upstream
+      std::shared_ptr<moxygen::Publisher> upstream,
+      std::optional<uint64_t> upstreamVersion = std::nullopt
   );
 
   // Tracks and groups held by an in-flight writeback or fetch outlive this, so
@@ -417,7 +418,8 @@ private:
       moxygen::Fetch fetch,
       std::shared_ptr<CacheTrack> track,
       std::shared_ptr<moxygen::FetchConsumer> consumer,
-      std::shared_ptr<moxygen::Publisher> upstream
+      std::shared_ptr<moxygen::Publisher> upstream,
+      std::optional<uint64_t> upstreamVersion = std::nullopt
   );
 
   folly::coro::Task<moxygen::Publisher::FetchResult> fetchUpstream(
@@ -428,7 +430,8 @@ private:
       moxygen::Fetch fetch,
       std::shared_ptr<CacheTrack> track,
       std::shared_ptr<moxygen::FetchConsumer> consumer,
-      std::shared_ptr<moxygen::Publisher> upstream
+      std::shared_ptr<moxygen::Publisher> upstream,
+      std::optional<uint64_t> upstreamVersion
   );
 
   folly::coro::Task<folly::Expected<folly::Unit, moxygen::FetchError>>
