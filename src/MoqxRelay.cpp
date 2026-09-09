@@ -17,6 +17,7 @@
 #include "relay/PublisherCrossExecFilter.h"
 #include "relay/SubscriberCrossExecFilter.h"
 #include "relay/TrackEventCallback.h"
+#include "relay/TrackProperties.h"
 #include "relay/TrackStatsFilter.h"
 #include "relay/WeakRelayForwarderCallback.h"
 #include <algorithm>
@@ -654,6 +655,17 @@ Subscriber::PublishResult MoqxRelay::publishFromPublisherExec(
     return folly::makeUnexpected(std::move(*err));
   }
 
+  if (hasUnsupportedMandatoryProperty(
+          pub.extensions,
+          session ? session->getNegotiatedVersion() : std::nullopt
+      )) {
+    return folly::makeUnexpected(PublishError{
+        pub.requestID,
+        RequestErrorCode::UNSUPPORTED_EXTENSION,
+        "unsupported mandatory track property"
+    });
+  }
+
   auto localPubFwd = std::make_shared<MoQForwarder>(pub.fullTrackName);
   // Install the new forwarder and return the identity of the one that was displaced, if any.
   // Either a publisher or a subscriber forwarder could be displaced. Either way, the relay exec
@@ -748,6 +760,16 @@ MoqxRelay::publish(PublishRequest pub, std::shared_ptr<Publisher::SubscriptionHa
           emptyNamespaceAllowed(session)
       )) {
     return folly::makeUnexpected(std::move(*err));
+  }
+  if (hasUnsupportedMandatoryProperty(
+          pub.extensions,
+          session ? session->getNegotiatedVersion() : std::nullopt
+      )) {
+    return folly::makeUnexpected(PublishError{
+        pub.requestID,
+        RequestErrorCode::UNSUPPORTED_EXTENSION,
+        "unsupported mandatory track property"
+    });
   }
   XCHECK(mode() != Mode::LocalForwarder) << "publish() bypassed by LocalPublishFilter in LF mode";
 
@@ -2036,7 +2058,8 @@ MoqxRelay::subscribeUpstreamAndApplyOk(
     SubscribeRequest upstreamSubReq,
     std::shared_ptr<TrackConsumer> upstreamConsumer,
     std::shared_ptr<MoQForwarder> publisherFwd,
-    RequestID clientRequestID
+    RequestID clientRequestID,
+    std::optional<uint64_t> upstreamVersion
 ) {
   auto params = upstreamSubReq.params; // copy before upstreamSubReq is moved
   auto subRes =
@@ -2050,6 +2073,13 @@ MoqxRelay::subscribeUpstreamAndApplyOk(
   }
   // Apply the OK to the forwarder; the NGR rides the outgoing SUBSCRIBE (record, don't fire).
   const auto& ok = subRes.value()->subscribeOk();
+  if (hasUnsupportedMandatoryProperty(ok.extensions, upstreamVersion)) {
+    co_return folly::makeUnexpected(SubscribeError{
+        clientRequestID,
+        SubscribeErrorCode::UNSUPPORTED_EXTENSION,
+        "upstream SUBSCRIBE returned unsupported mandatory property"
+    });
+  }
   InitialTrackState{ok.largest, ok.extensions}.applyTo(*publisherFwd);
   publisherFwd->tryProcessNewGroupRequest(params, /*fire=*/false);
   // Moving the handle shared_ptr keeps the pointee (and `ok`) alive, so reading ok.*
@@ -2196,7 +2226,8 @@ folly::coro::Task<MoqxRelay::PublisherAttachment> MoqxRelay::attachNewLocalForwa
               std::move(setup.upstreamSubReq),
               std::move(setup.upstreamConsumer),
               publisherFwd,
-              setup.clientRequestID
+              setup.clientRequestID,
+              setup.upstreamSession ? setup.upstreamSession->getNegotiatedVersion() : std::nullopt
           );
           if (upstreamResult->hasValue()) {
             const auto& ok = upstreamResult->value();
@@ -2531,7 +2562,8 @@ MoqxRelay::subscribeImpl(SubscribeRequest subReq, std::shared_ptr<TrackConsumer>
         std::move(subReq),
         first->consumer,
         first->forwarder,
-        clientRequestID
+        clientRequestID,
+        upstreamSession ? upstreamSession->getNegotiatedVersion() : std::nullopt
     );
     if (okOrErr.hasError()) {
       co_return folly::makeUnexpected(std::move(okOrErr.error()));
@@ -2661,13 +2693,21 @@ MoqxRelay::fetchImpl(Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
   // namespace-level publisher, matching subscribeImpl's resolution order.
   auto fetchView = registry_.getFetchView(fetch.fullTrackName);
   std::shared_ptr<Publisher> upstreamPublisher;
+  // Negotiated version of whichever session upstreamPublisher is backed by
+  std::optional<uint64_t> upstreamVersion;
   if (fetchView) {
     upstreamPublisher = fetchView->publisher;
+    upstreamVersion = fetchView->upstreamVersion;
   } else {
     upstreamPublisher = findUpstreamPublisher(fetch.fullTrackName.trackNamespace);
     if (!upstreamPublisher && upstream_) {
       co_await upstream_->waitForConnected(kUpstreamConnectWaitTimeout);
       upstreamPublisher = findUpstreamPublisher(fetch.fullTrackName.trackNamespace);
+    }
+    if (upstreamPublisher) {
+      auto upstreamSession =
+          namespaceTree_.findPublisherSession(fetch.fullTrackName.trackNamespace);
+      upstreamVersion = upstreamSession ? upstreamSession->getNegotiatedVersion() : std::nullopt;
     }
   }
   if (!upstreamPublisher) {
@@ -2688,7 +2728,7 @@ MoqxRelay::fetchImpl(Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
     co_return co_await upstreamPublisher->fetch(std::move(fetch), std::move(consumer));
   }
   co_return co_await cache_
-      ->fetch(std::move(fetch), std::move(consumer), std::move(upstreamPublisher));
+      ->fetch(std::move(fetch), std::move(consumer), std::move(upstreamPublisher), upstreamVersion);
 }
 
 folly::coro::Task<std::optional<TrackStatusOk>>

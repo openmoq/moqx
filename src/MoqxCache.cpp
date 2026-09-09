@@ -8,6 +8,7 @@
 
 #include "MoqxCache.h"
 #include "relay/NullConsumers.h"
+#include "relay/TrackProperties.h"
 #include <folly/logging/xlog.h>
 #include <moxygen/MoQTrackProperties.h>
 
@@ -1441,7 +1442,8 @@ std::shared_ptr<TrackConsumer> MoqxCache::getSubscribeWriteback(
 folly::coro::Task<Publisher::FetchResult> MoqxCache::fetch(
     Fetch fetch,
     std::shared_ptr<FetchConsumer> consumer,
-    std::shared_ptr<Publisher> upstream
+    std::shared_ptr<Publisher> upstream,
+    std::optional<uint64_t> upstreamVersion
 ) {
   auto standalone = std::get_if<StandaloneFetch>(&fetch.args);
   XCHECK(standalone);
@@ -1509,7 +1511,8 @@ folly::coro::Task<Publisher::FetchResult> MoqxCache::fetch(
                 std::move(fetch),
                 track,
                 std::move(consumer),
-                std::move(upstream)
+                std::move(upstream),
+                upstreamVersion
             )
         )
     )
@@ -1522,7 +1525,8 @@ folly::coro::Task<Publisher::FetchResult> MoqxCache::fetch(
         std::move(fetch),
         track,
         std::move(consumer),
-        std::move(upstream)
+        std::move(upstream),
+        upstreamVersion
     );
   }
 }
@@ -1532,7 +1536,8 @@ folly::coro::Task<Publisher::FetchResult> MoqxCache::fetchImpl(
     Fetch fetch,
     std::shared_ptr<CacheTrack> track,
     std::shared_ptr<FetchConsumer> consumer,
-    std::shared_ptr<Publisher> upstream
+    std::shared_ptr<Publisher> upstream,
+    std::optional<uint64_t> upstreamVersion
 ) {
   auto standalone = std::get_if<StandaloneFetch>(&fetch.args);
   XLOG(DBG1) << "fetchImpl for {" << standalone->start.group << "," << standalone->start.object
@@ -1608,7 +1613,8 @@ folly::coro::Task<Publisher::FetchResult> MoqxCache::fetchImpl(
             fetch,
             track,
             consumer,
-            upstream
+            upstream,
+            upstreamVersion
         );
         cachedNow = now();
         if (res.hasError()) {
@@ -1672,7 +1678,8 @@ folly::coro::Task<Publisher::FetchResult> MoqxCache::fetchImpl(
           fetch,
           track,
           consumer,
-          upstream
+          upstream,
+          upstreamVersion
       );
       if (res.hasError()) {
         co_return folly::makeUnexpected(res.error());
@@ -1756,7 +1763,8 @@ folly::coro::Task<Publisher::FetchResult> MoqxCache::fetchUpstream(
     Fetch fetch,
     std::shared_ptr<CacheTrack> track,
     std::shared_ptr<FetchConsumer> consumer,
-    std::shared_ptr<Publisher> upstream
+    std::shared_ptr<Publisher> upstream,
+    std::optional<uint64_t> upstreamVersion
 ) {
   XLOG(DBG1) << "Fetching upstream for {" << fetchStart.group << "," << fetchStart.object << "}, {"
              << fetchEnd.group << "," << fetchEnd.object << "}";
@@ -1794,6 +1802,16 @@ folly::coro::Task<Publisher::FetchResult> MoqxCache::fetchUpstream(
   writeback->setUpstreamEnd(res.value()->fetchOk().endLocation);
   track->extensions = res.value()->fetchOk().extensions;
   recordUpstreamEndOfTrack(*track, res);
+
+  if (hasUnsupportedMandatoryProperty(track->extensions, upstreamVersion)) {
+    consumer->reset(ResetStreamErrorCode::INTERNAL_ERROR);
+    co_return folly::makeUnexpected(FetchError{
+        fetch.requestID,
+        FetchErrorCode::UNSUPPORTED_EXTENSION,
+        "unsupported mandatory track property"
+    });
+  }
+
   if (lastObject) {
     if (!fetchHandle) {
       XLOG(DBG1) << "no fetchHandle and last object";
