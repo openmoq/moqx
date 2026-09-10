@@ -187,8 +187,8 @@ for f in "${CHECK_BINS[@]}"; do
   fi
 done
 
-if [[ "$TRANSPORT" != "quic" && "$TRANSPORT" != "webtransport" ]]; then
-  echo "ERROR: --transport must be 'quic' or 'webtransport'" >&2; exit 1
+if [[ "$TRANSPORT" != "quic" && "$TRANSPORT" != "webtransport" && "$TRANSPORT" != "qmux" ]]; then
+  echo "ERROR: --transport must be 'quic', 'webtransport', or 'qmux'" >&2; exit 1
 fi
 if [[ "$RAMP" -le 0 ]]; then
   echo "ERROR: --ramp must be > 0" >&2; exit 1
@@ -214,11 +214,11 @@ if [[ -n "$REMOTE_CLIENT_HOST" ]]; then
 else
   RELAY_URL="https://127.0.0.1:${RELAY_PORT}${ENDPOINT}"
 fi
-if [[ "$TRANSPORT" == "quic" ]]; then
-  QUIC_FLAG="--quic_transport=true"
-else
-  QUIC_FLAG="--quic_transport=false"
-fi
+case "$TRANSPORT" in
+  qmux)         TRANSPORT_FLAG="--transport=qmux" ;;
+  quic)         TRANSPORT_FLAG="--transport=quic" ;;
+  webtransport) TRANSPORT_FLAG="--transport=h3wt" ;;
+esac
 
 # Pin the MoQ draft on publisher + subscriber so all three parties negotiate the
 # same version the relay offers (--draft). Empty = parties use their defaults.
@@ -307,6 +307,7 @@ RELAY_RUN_ARGS=(
 [[ "$USE_RELAY_THREAD" == true ]]     && RELAY_RUN_ARGS+=(--relay-thread)     || RELAY_RUN_ARGS+=(--no-relay-thread)
 [[ "$USE_LOCAL_FORWARDERS" == true ]] && RELAY_RUN_ARGS+=(--local-forwarders) || RELAY_RUN_ARGS+=(--no-local-forwarders)
 [[ "$BPF_STEERING" == true ]] && RELAY_RUN_ARGS+=(--bpf-steering)
+[[ "$TRANSPORT" == "qmux" ]]  && RELAY_RUN_ARGS+=(--quic-stack proxygen_qmux)
 [[ -n "$DRAFT" ]]             && RELAY_RUN_ARGS+=(--moqt-versions "$DRAFT")
 [[ -n "$RELAY_LOG_SPEC" ]]    && RELAY_RUN_ARGS+=(-x "$RELAY_LOG_SPEC")
 [[ -n "$JEMALLOC" ]]          && RELAY_RUN_ARGS+=(-j auto)   # moqx-run resolves + LD_PRELOADs
@@ -353,7 +354,7 @@ fi
 echo "Starting moqtest_server -> $RELAY_URL ..."
 "$MOQTEST_SERVER" \
   --relay_url="$RELAY_URL" \
-  $QUIC_FLAG \
+  $TRANSPORT_FLAG \
   "${VERSIONS_FLAG[@]+"${VERSIONS_FLAG[@]}"}" \
   --include_timestamp_extension=true \
   >"$SERVER_LOG" 2>&1 &
@@ -393,7 +394,7 @@ fi
 # ── Run moqperf_test_client ───────────────────────────────────────────────────
 CLIENT_ARGS=(
   --relay_url="$RELAY_URL"
-  $QUIC_FLAG
+  $TRANSPORT_FLAG
   "${VERSIONS_FLAG[@]+"${VERSIONS_FLAG[@]}"}"
   --subscriber_max="$SUBSCRIBER_MAX"
   --subscriber_ramp="$RAMP"

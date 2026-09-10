@@ -39,7 +39,7 @@ Relay tuning (templated into the config; CLI > .env > default):
       --bpf-steering        mvfst CID reuseport steering, Linux+mvfst (default: off)
 
 Listener (templated into the config; CLI > .env > default):
-      --quic-stack STACK    listener quic stack: mvfst|picoquic (default mvfst)
+      --quic-stack STACK    listener quic stack: mvfst|picoquic|proxygen_qmux (default mvfst)
       --moqt-versions LIST  advertised MoQT drafts in server-preference order,
                             e.g. 16,14,18 (default 16,14,18; first listed wins).
                             Pass a single value (e.g. 18) to pin one draft.
@@ -236,7 +236,7 @@ export MOQX_BPF_STEERING MOQX_IGNORE_PATH_MTU
 
 # ── Listener knobs (CLI > .env/env > default), exported for envsubst ──────
 export MOQX_STACK="${CLI_STACK:-${MOQX_STACK:-mvfst}}"
-case "$MOQX_STACK" in mvfst|picoquic) ;; *) echo "invalid --quic-stack: $MOQX_STACK (want mvfst|picoquic)" >&2; exit 2 ;; esac
+case "$MOQX_STACK" in mvfst|picoquic|proxygen_qmux) ;; *) echo "invalid --quic-stack: $MOQX_STACK (want mvfst|picoquic|proxygen_qmux)" >&2; exit 2 ;; esac
 # MoQT drafts advertised by the listener (ALPN derives from these), in
 # server-preference order — the relay picks the first listed version the client
 # also supports. Default offers d16, d14, then d18 as a fallback.
