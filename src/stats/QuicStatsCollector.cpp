@@ -102,7 +102,6 @@ public:
   void onDuplicatedPacketReceived() override {}
   void onOutOfOrderPacketReceived() override {}
   void onPacketForwarded() override {}
-  void onPacketDroppedByEgressPolicer() override {}
   void onForwardedPacketReceived() override {}
   void onForwardedPacketProcessed() override {}
   void onClientInitialReceived(quic::QuicVersion) override {}
