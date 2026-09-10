@@ -68,7 +68,10 @@
 #   phase1  `git bisect run` over a moqx good..bad range. Every step parks the
 #           moxygen checkout on THAT rev's MOXYGEN_REV by hand: configure.sh
 #           --sync-moxygen-dir does not exist before moqx 71c223cc, so the
-#           bisected rev's own configure.sh cannot be asked to do it.
+#           bisected rev's own configure.sh cannot be asked to do it. Revs before
+#           cbeaf418 ("build: pin the moxygen and catapult revisions") have no
+#           cmake/dependencies.cmake, hence no pin to park on: they all skip, and
+#           phase1 cannot narrow below that commit.
 #
 #   phase2  when phase1 lands on a `sync: update moxygen` commit — one whose only
 #           real change is MOXYGEN_REV — the bump conflates two things. This
@@ -308,12 +311,21 @@ readonly PINNED_PATHS=(scripts/perf scripts/lib scripts/moqx-run.sh)
 SCRIPTS_PINNED=0
 pinned_scripts_restore() {
   ((SCRIPTS_PINNED)) || return 0
-  git -C "$ROOT" checkout HEAD -- "${PINNED_PATHS[@]}" 2>/dev/null
+  # One path at a time: a rev where one of them does not exist would fail the
+  # whole pathspec and leave the others overlaid, and the next checkout would
+  # then abort on a dirty tree.
+  local p
+  for p in "${PINNED_PATHS[@]}"; do
+    git -C "$ROOT" checkout HEAD -- "$p" 2>/dev/null
+  done
   SCRIPTS_PINNED=0
 }
 pinned_scripts_apply() {
   [[ -n "$PIN_SCRIPTS" ]] || return 0
-  git -C "$ROOT" checkout "$PIN_SCRIPTS" -- "${PINNED_PATHS[@]}" 2>/dev/null || return 1
+  local p
+  for p in "${PINNED_PATHS[@]}"; do
+    git -C "$ROOT" checkout "$PIN_SCRIPTS" -- "$p" 2>/dev/null || { SCRIPTS_PINNED=1; return 1; }
+  done
   SCRIPTS_PINNED=1
 }
 
@@ -597,6 +609,7 @@ reference_threshold() {  # $1 = good moqx rev, $2 = bad moqx rev
     die "reference runs did not both produce a number (good=$REF_GOOD bad=$REF_BAD)"
   THRESHOLD="$(awk -v a="$REF_GOOD" -v b="$REF_BAD" 'BEGIN{printf "%.2f", (a+b)/2}')"
   note "reference: good=$REF_GOOD bad=$REF_BAD -> threshold=$THRESHOLD"
+  STEP_ARGS+=(--threshold "$THRESHOLD")
   awk -v a="$REF_GOOD" -v b="$REF_BAD" -v n="$NEAR" 'BEGIN{exit !((a-b<2*n) && (b-a<2*n))}' &&
     warn "the two ends are less than $((2 * NEAR)) Mbps apart — this signal may be too weak to bisect"
 }
@@ -670,9 +683,10 @@ phase3_apply() {  # $1 = N, $2 = log
   PHASE3_SKIPPED=()
   for ((i = 0; i < n; i++)); do
     sha="${RANGE[i]}"
-    # --empty=keep: a commit already contained in the base becomes empty here,
-    # which would otherwise stop the sequence mid-replay.
-    if git -C "$MOXDIR" cherry-pick --allow-empty --empty=keep "$sha" >>"$log" 2>&1; then
+    # --keep-redundant-commits: a commit already contained in the base becomes
+    # empty here, which would otherwise stop the sequence mid-replay. It is the
+    # portable spelling of --empty=keep, which needs git 2.45.
+    if git -C "$MOXDIR" cherry-pick --allow-empty --keep-redundant-commits "$sha" >>"$log" 2>&1; then
       continue
     fi
     files="$(git -C "$MOXDIR" show --name-only --format= "$sha" | grep -v '^$')"
@@ -804,6 +818,9 @@ STEP_ARGS=(--moxygen-dir "$MOXDIR" --profile "$PROFILE" --build-failure-is "$BUI
 [[ -n "$PIN_SCRIPTS" ]] && STEP_ARGS+=(--pin-scripts "$PIN_SCRIPTS")
 [[ -n "$SKIP_CODE" ]]   && STEP_ARGS+=(--skip-code "$SKIP_CODE")
 [[ -n "$TEST_TIMEOUT" ]] && STEP_ARGS+=(--test-timeout "$TEST_TIMEOUT")
+# A derived threshold is appended later, by reference_threshold — it is still
+# empty here, so the two appends never both fire.
+[[ -n "$THRESHOLD" ]]   && STEP_ARGS+=(--threshold "$THRESHOLD")
 ((REPS_NEAR > 1))       && STEP_ARGS+=(--reps-near "$REPS_NEAR")
 if [[ "$PREDICATE" == perf ]]; then STEP_ARGS+=(--test-perf --perf-args "$PERF_ARGS")
 else STEP_ARGS+=(--test "$TEST_CMD"); fi
