@@ -286,6 +286,12 @@ class Actor:
         port = self.harness.relay_of(f"actor {self.name}", self.relay).listen
         url = f"https://localhost:{port}/moq-relay"
         moqbin = self.harness.moqbin
+        if self.kind == "cluster-publisher":
+            return [
+                str(self.harness.binary.parent / "test" / "moqx_cluster_advertiser"),
+                f"moqt://localhost:{port}/moq-relay",
+                self.ns,
+            ] + self.flags
         if self.kind == "publisher":
             argv = [
                 str(moqbin / "moqdateserver"),
@@ -364,7 +370,9 @@ class Harness:
             raise HarnessError(
                 "MOQT_TEST_VERSIONS is not declared in test/test_versions.sh"
             )
-        self.moqt_versions = versions["MOQT_TEST_VERSIONS"]
+        self.moqt_versions = os.environ.get(
+            "MOQX_TEST_VERSIONS", versions["MOQT_TEST_VERSIONS"]
+        )
         self.relays: dict[str, Relay] = {}
         self.actors: dict[str, Actor] = {}
         self.failures = 0
@@ -416,8 +424,10 @@ class Harness:
     def actor(self, name, kind, relay, ns, track, flags=None, timeout=0):
         if name in self.actors:
             raise HarnessError(f"actor: duplicate actor '{name}'")
-        if kind not in ("publisher", "subscriber"):
-            raise HarnessError(f"actor {name}: kind must be publisher or subscriber")
+        if kind not in ("publisher", "cluster-publisher", "subscriber"):
+            raise HarnessError(
+                f"actor {name}: kind must be publisher, cluster-publisher, or subscriber"
+            )
         self.relay_of(f"actor {name}", relay)
         if not ns:
             raise HarnessError(f"actor {name}: ns required")
@@ -826,7 +836,7 @@ class Harness:
     def expect_settled(self, settle, *names):
         """Snapshot each relay's whole namespace_tree, settle, re-snapshot, compare.
 
-        This is the observable for relay-hops loop suppression: /state exposes
+        This is the observable for cluster loop suppression: /state exposes
         no hop_id or hop_path, so a tree that stops changing is the available
         signal. The comparison spans the entire tree, not one namespace —
         circulation shows up as churn anywhere in it.

@@ -156,7 +156,9 @@ int main(int argc, char* argv[]) {
       config.services,
       config.relayID,
       config.useRelayThread,
-      config.useLocalForwarders
+      config.useLocalForwarders,
+      config.cluster.hopID,
+      config.cluster
   );
 
   // === 6a. Stats registry ===

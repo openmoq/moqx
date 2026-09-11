@@ -56,6 +56,14 @@ public:
     exec_->add([inner = inner_]() mutable { inner->publishNamespaceDone(); });
   }
 
+  folly::Expected<folly::Unit, moxygen::ErrorCode>
+  publishNamespaceUpdate(moxygen::PublishNamespace update) override {
+    exec_->add([inner = inner_, update = std::move(update)]() mutable {
+      inner->publishNamespaceUpdate(std::move(update));
+    });
+    return folly::unit;
+  }
+
   folly::coro::Task<RequestUpdateResult> requestUpdate(moxygen::RequestUpdate update) override {
     co_return co_await folly::coro::co_withExecutor(
         folly::getKeepAliveToken(exec_),

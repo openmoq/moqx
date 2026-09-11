@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include "relay/ClusterRoutes.h"
 #include "relay/PropertyRanking.h"
 #include <folly/Expected.h>
 #include <folly/Unit.h>
@@ -25,6 +26,15 @@ namespace openmoq::moqx {
 // delivered via Callback.
 class NamespaceTree {
 public:
+  struct SelectedPublisher {
+    uint64_t routeID;
+    std::shared_ptr<moxygen::MoQSession> session;
+    std::vector<uint64_t> path;
+    uint64_t cost;
+    uint64_t advertisedCost;
+    uint64_t contentEpoch;
+    uint64_t received;
+  };
   struct Callback {
     virtual ~Callback() = default;
     // Fired when a node's publishNamespaceDone() fires; caller must identify
@@ -56,6 +66,13 @@ public:
 
     using moxygen::Subscriber::PublishNamespaceHandle::setPublishNamespaceOk;
 
+    struct AdvertisedNamespace {
+      std::vector<uint64_t> path;
+      uint64_t cost;
+    };
+    using Advertisements = folly::
+        F14FastMap<moxygen::TrackNamespace, AdvertisedNamespace, moxygen::TrackNamespace::hash>;
+
     struct NamespaceSubscriberInfo {
       bool forward{true};
       moxygen::SubscribeNamespaceOptions options{moxygen::SubscribeNamespaceOptions::BOTH};
@@ -63,12 +80,21 @@ public:
       std::shared_ptr<moxygen::Publisher::NamespacePublishHandle> namespacePublishHandle;
       moxygen::TrackNamespace trackNamespacePrefix;
       std::optional<moxygen::TrackFilter> trackFilter;
-      std::optional<uint64_t> excludeHop;
+      std::shared_ptr<Advertisements> advertised{std::make_shared<Advertisements>()};
     };
 
     std::shared_ptr<moxygen::MoQSession> publisherSession() const { return publisherSession_; }
     const std::string& publisherPeerID() const { return publisherPeerID_; }
     const std::vector<uint64_t>& relayHopPath() const { return relayHopPath_; }
+    std::optional<SelectedPublisher> selectPublisher(
+        uint64_t excludedHop = 0,
+        const std::shared_ptr<moxygen::MoQSession>& excludedSession = nullptr
+    ) const;
+    std::optional<SelectedPublisher>
+    publisherFrom(const std::shared_ptr<moxygen::MoQSession>& session) const;
+    std::vector<SelectedPublisher> publishers() const;
+    size_t routeCount() const { return routes_.size(); }
+    uint64_t contentEpoch() const { return routes_.contentEpoch(); }
 
     size_t subscriberCount() const { return subscribers_.size(); }
 
@@ -107,6 +133,15 @@ public:
     std::shared_ptr<moxygen::MoQSession> publisherSession_;
     std::string publisherPeerID_;
     std::vector<uint64_t> relayHopPath_;
+    struct Source {
+      std::shared_ptr<moxygen::MoQSession> session;
+      std::shared_ptr<moxygen::Subscriber::PublishNamespaceCallback> callback;
+      std::string peerID;
+      moxygen::RequestID requestID;
+    };
+    ClusterRoutes routes_;
+    std::map<uint64_t, Source> sources_;
+    void refreshPublisher();
     folly::F14FastMap<std::string, std::shared_ptr<moxygen::MoQSession>> publishes_;
     folly::F14FastMap<std::shared_ptr<moxygen::MoQSession>, NamespaceSubscriberInfo> subscribers_;
     folly::F14FastMap<std::string, std::shared_ptr<NamespaceNode>> children_;
@@ -130,6 +165,7 @@ public:
     SessionSubscriberList subscribers;
     LegacyDoneHandleList legacyHandles;
     std::vector<uint64_t> relayHopPath;
+    std::shared_ptr<NamespaceNode> node;
   };
 
   explicit NamespaceTree(Callback& cb) : cb_(cb), root_(*this) {}
@@ -137,7 +173,12 @@ public:
   enum class Error { NodeNotFound, NotOwner, NotSubscribed };
 
   // Longest-prefix match for the publisher of ns; null if none found.
-  std::shared_ptr<moxygen::MoQSession> findPublisherSession(const moxygen::TrackNamespace& ns);
+  std::shared_ptr<moxygen::MoQSession> findPublisherSession(
+      const moxygen::TrackNamespace& ns,
+      uint64_t excludedHop = 0,
+      const std::shared_ptr<moxygen::MoQSession>& excludedSession = nullptr
+  );
+  std::shared_ptr<NamespaceNode> findPublisherNode(const moxygen::TrackNamespace& ns);
 
   std::shared_ptr<NamespaceNode> findNode(
       const moxygen::TrackNamespace& ns,
@@ -152,6 +193,8 @@ public:
     std::shared_ptr<NamespaceNode> node;
     SessionSubscriberList subscribers;
     std::shared_ptr<moxygen::MoQSession> replacedSession;
+    uint64_t routeID{0};
+    bool contentChanged{false};
   };
 
   SetPublisherResult setPublisher(
@@ -160,13 +203,17 @@ public:
       std::shared_ptr<moxygen::Subscriber::PublishNamespaceCallback> callback,
       std::string peerID,
       moxygen::RequestID requestID,
-      std::vector<uint64_t> relayHopPath = {}
+      std::vector<uint64_t> relayHopPath = {},
+      uint64_t advertisedCost = 0,
+      uint64_t linkCost = 1,
+      uint64_t routeID = 0
   );
 
   // NodeNotFound: node already pruned (ignorable). NotOwner: session mismatch (log and ignore).
   folly::Expected<UnpublishNamespaceResult, Error> unpublishNamespace(
       const moxygen::TrackNamespace& ns,
-      const std::shared_ptr<moxygen::MoQSession>& session
+      const std::shared_ptr<moxygen::MoQSession>& session,
+      uint64_t routeID = 0
   );
 
   // NodeNotFound means the node was already pruned, which is ignorable.
@@ -290,6 +337,7 @@ private:
   void tryPruneChild(NamespaceNode& parentNode, const std::string& childKey);
 
   Callback& cb_;
+  uint64_t nextRouteID_{0};
   NamespaceNode root_{*this};
 };
 

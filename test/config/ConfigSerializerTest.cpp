@@ -23,7 +23,8 @@
 namespace {
 using namespace openmoq::moqx::config;
 
-static_assert(rfl::internal::num_fields<Config> == 9, "Config changed — update serializeConfig()");
+static_assert(rfl::internal::num_fields<ClusterConfig> == 3, "ClusterConfig changed");
+static_assert(rfl::internal::num_fields<Config> == 10, "Config changed — update serializeConfig()");
 static_assert(
     rfl::internal::num_fields<ListenerConfig> == 8,
     "ListenerConfig changed — update serializeConfig()"
@@ -61,7 +62,7 @@ static_assert(
     "MvfstConfig::L4S changed — update serializeMvfst()"
 );
 static_assert(
-    rfl::internal::num_fields<ServiceConfig> == 4,
+    rfl::internal::num_fields<ServiceConfig> == 5,
     "ServiceConfig changed — update serializeConfig()"
 );
 static_assert(
@@ -85,7 +86,7 @@ static_assert(
     "AnonymousScope changed — update serializeAuth()"
 );
 static_assert(
-    rfl::internal::num_fields<UpstreamConfig> == 4,
+    rfl::internal::num_fields<UpstreamConfig> == 5,
     "UpstreamConfig changed — update serializeUpstream()"
 );
 static_assert(
@@ -266,6 +267,26 @@ TEST(ConfigSerializerTest, RedactsHmacSecret) {
   for (const auto& [_, value] : sink.scalars) {
     EXPECT_NE(value, "super-secret-value") << "secret leaked into serialized config";
   }
+}
+
+TEST(ConfigSerializerTest, SerializesClusterIdentityAndFreePeerCost) {
+  Config cfg = makeFullConfig();
+  cfg.cluster.hopID = 0;
+  cfg.cluster.costGrace = std::chrono::milliseconds(0);
+  auto& service = cfg.services.at("default");
+  service.upstream.reset();
+  UpstreamConfig peer;
+  peer.url = "moqt://[::1]:4443";
+  peer.relayCost = 0;
+  service.upstreams.push_back(peer);
+  RecordingSink sink;
+  serializeConfig(cfg, sink);
+  EXPECT_EQ(sink.scalars["cluster.enabled"], "true");
+  EXPECT_EQ(sink.scalars["cluster.hop_id"], "0");
+  EXPECT_EQ(sink.scalars["cluster.cost_grace_ms"], "0");
+  EXPECT_FALSE(sink.scalars.contains("services.default.upstream"));
+  EXPECT_EQ(sink.scalars["services.default.upstreams.*.url"], peer.url);
+  EXPECT_EQ(sink.scalars["services.default.upstreams.*.relay_cost"], "0");
 }
 
 } // namespace

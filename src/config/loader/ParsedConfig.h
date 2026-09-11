@@ -357,7 +357,20 @@ struct ParsedUpstreamTlsConfig {
       ca_cert;
 };
 
+struct ParsedClusterConfig {
+  rfl::Description<"Enable the cluster extension (draft 18+, default true)", std::optional<bool>>
+      enabled;
+  rfl::Description<"Hop identity; absent generates one, zero is anonymous", std::optional<uint64_t>>
+      hop_id;
+  rfl::Description<
+      "Warm route discount grace in milliseconds (default 2000)",
+      std::optional<uint32_t>>
+      cost_grace_ms;
+};
+
 struct ParsedUpstreamConfig {
+  rfl::Description<"Client link cost; absent means 1, zero is free", std::optional<uint64_t>>
+      relay_cost;
   rfl::Description<"Upstream MoQ server URL (moqt://host:port/path)", std::string> url;
   rfl::Description<"TLS configuration for upstream connection", ParsedUpstreamTlsConfig> tls;
   rfl::Description<"QUIC connect timeout in milliseconds (default: 5000)", std::optional<uint32_t>>
@@ -501,6 +514,10 @@ struct ParsedServiceConfig {
       std::optional<ParsedUpstreamConfig>>
       upstream;
   rfl::Description<
+      "Peer links; mutually exclusive with upstream",
+      std::optional<std::vector<ParsedUpstreamConfig>>>
+      upstreams;
+  rfl::Description<
       "Authentication and authorization settings for this service",
       std::optional<ParsedAuthConfig>>
       auth;
@@ -551,6 +568,7 @@ struct ParsedLoggingConfig {
 };
 
 struct ParsedConfig {
+  rfl::Description<"Cluster routing configuration", std::optional<ParsedClusterConfig>> cluster;
   rfl::Description<
       "Listener definitions (currently exactly one supported)",
       std::vector<ParsedListenerConfig>>

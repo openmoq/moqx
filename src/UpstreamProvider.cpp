@@ -5,6 +5,8 @@
  */
 
 #include "UpstreamProvider.h"
+#include "relay/PublisherCrossExecFilter.h"
+#include "relay/SubscriberCrossExecFilter.h"
 #include <folly/coro/Timeout.h>
 #include <moxygen/MoQFilters.h>
 #include <moxygen/MoQRelaySession.h>
@@ -75,6 +77,59 @@ private:
 
 } // namespace
 
+// These adapters are only invoked by the cross-executor filters on exec_.
+// Keeping session resolution here prevents session objects and provider state
+// from escaping to the caller executor.
+class UpstreamProvider::OwnerPublisher final : public Publisher {
+public:
+  explicit OwnerPublisher(std::shared_ptr<UpstreamProvider> provider)
+      : provider_(std::move(provider)) {}
+
+  folly::coro::Task<TrackStatusResult> trackStatus(TrackStatus req) override {
+    return provider_->coTrackStatus(std::move(req));
+  }
+
+  folly::coro::Task<SubscribeResult>
+  subscribe(SubscribeRequest sub, std::shared_ptr<TrackConsumer> callback) override {
+    return provider_->coSubscribe(std::move(sub), std::move(callback));
+  }
+
+  folly::coro::Task<FetchResult>
+  fetch(Fetch fetchReq, std::shared_ptr<FetchConsumer> callback) override {
+    return provider_->coFetch(std::move(fetchReq), std::move(callback));
+  }
+
+  folly::coro::Task<SubscribeNamespaceResult> subscribeNamespace(
+      SubscribeNamespace subNs,
+      std::shared_ptr<NamespacePublishHandle> handle
+  ) override {
+    return provider_->coSubscribeNamespace(std::move(subNs), std::move(handle));
+  }
+
+private:
+  std::shared_ptr<UpstreamProvider> provider_;
+};
+
+class UpstreamProvider::OwnerSubscriber final : public Subscriber {
+public:
+  explicit OwnerSubscriber(std::shared_ptr<UpstreamProvider> provider)
+      : provider_(std::move(provider)) {}
+
+  folly::coro::Task<PublishNamespaceResult> publishNamespace(
+      PublishNamespace pubNs,
+      std::shared_ptr<PublishNamespaceCallback> callback
+  ) override {
+    return provider_->coPublishNamespace(std::move(pubNs), std::move(callback));
+  }
+
+  PublishResult publish(PublishRequest pub, std::shared_ptr<SubscriptionHandle> handle) override {
+    return provider_->publishOnOwner(std::move(pub), std::move(handle));
+  }
+
+private:
+  std::shared_ptr<UpstreamProvider> provider_;
+};
+
 UpstreamProvider::UpstreamProvider(
     std::shared_ptr<MoQExecutor> exec,
     proxygen::URL url,
@@ -84,9 +139,12 @@ UpstreamProvider::UpstreamProvider(
     OnConnectHook onConnect,
     OnDisconnectHook onDisconnect,
     std::chrono::milliseconds connectTimeout,
-    std::chrono::milliseconds idleTimeout
+    std::chrono::milliseconds idleTimeout,
+    std::optional<uint64_t> clusterHopID,
+    std::optional<uint64_t> relayCost
 )
-    : publishHandler_(std::move(publishHandler)), subscribeHandler_(std::move(subscribeHandler)),
+    : clusterHopID_(clusterHopID), relayCost_(relayCost),
+      publishHandler_(std::move(publishHandler)), subscribeHandler_(std::move(subscribeHandler)),
       url_(std::move(url)), exec_(std::move(exec)), verifier_(std::move(verifier)),
       onConnect_(std::move(onConnect)), onDisconnect_(std::move(onDisconnect)),
       connectTimeout_(connectTimeout), idleTimeout_(idleTimeout) {
@@ -94,8 +152,8 @@ UpstreamProvider::UpstreamProvider(
 }
 
 UpstreamProvider::~UpstreamProvider() {
-  // close() holds shared_from_this() and runs during MoQServer::stop() EVB
-  // drain — both before member dtors fire. These must be null by now.
+  // stop() keeps this object alive through its owner-executor shutdown callback.
+  // These must be null before member destructors run.
   XCHECK(!session_) << "UpstreamProvider dtor with live session; was stop() called?";
   XCHECK(!client_) << "UpstreamProvider dtor with live client; was stop() called?";
   XLOG(DBG1) << "UpstreamProvider destroyed";
@@ -103,7 +161,11 @@ UpstreamProvider::~UpstreamProvider() {
 
 folly::coro::Task<void> UpstreamProvider::start() {
   XLOG(DBG1) << "UpstreamProvider::start";
-  return reconnectLoop();
+  auto self = shared_from_this();
+  co_await folly::coro::co_withExecutor(
+      folly::getKeepAliveToken(exec_.get()),
+      self->reconnectLoop()
+  );
 }
 
 static constexpr auto kInitialReconnectBackoff = std::chrono::seconds(1);
@@ -111,7 +173,7 @@ static constexpr auto kMaxReconnectBackoff = std::chrono::seconds(60);
 
 folly::coro::Task<void> UpstreamProvider::reconnectLoop() {
   auto self = shared_from_this();
-  while (!stopped_) {
+  while (!stopRequested_.load(std::memory_order_acquire) && !stopped_) {
     if (reconnectBackoff_.count() > 0) {
       XLOG(INFO) << "UpstreamProvider: reconnecting in " << reconnectBackoff_.count() << "ms";
       try {
@@ -123,7 +185,7 @@ folly::coro::Task<void> UpstreamProvider::reconnectLoop() {
         co_return;
       }
     }
-    if (stopped_) {
+    if (stopRequested_.load(std::memory_order_acquire) || stopped_) {
       co_return;
     }
 
@@ -135,7 +197,7 @@ folly::coro::Task<void> UpstreamProvider::reconnectLoop() {
     } catch (const folly::OperationCancelled&) {
       co_return;
     } catch (const std::exception& ex) {
-      if (stopped_) {
+      if (stopRequested_.load(std::memory_order_acquire) || stopped_) {
         co_return;
       }
       reconnectBackoff_ =
@@ -148,17 +210,22 @@ folly::coro::Task<void> UpstreamProvider::reconnectLoop() {
   }
 }
 
-folly::coro::Task<void> UpstreamProvider::close() {
-  auto self = shared_from_this();
+void UpstreamProvider::close() {
   XLOG(DBG1) << "UpstreamProvider::close";
   session_.reset();
   client_.reset(); // ~MoQClientBase() calls moqSession_->close() implicitly
   state_ = State::Disconnected;
-  co_return;
 }
 
 void UpstreamProvider::stop() {
   XLOG(DBG1) << "UpstreamProvider::stop";
+  if (stopRequested_.exchange(true, std::memory_order_acq_rel)) {
+    return;
+  }
+  exec_->add([self = shared_from_this()]() { self->stopOnOwner(); });
+}
+
+void UpstreamProvider::stopOnOwner() {
   stopped_ = true;
 
   // Cancel any in-progress backoff sleep or connect in reconnectLoop().
@@ -171,9 +238,7 @@ void UpstreamProvider::stop() {
   onConnect_ = nullptr;
   onDisconnect_ = nullptr;
 
-  // Close the upstream session on the exec EVB thread while EVBs are still
-  // alive.
-  co_withExecutor(exec_.get(), close()).start();
+  close();
 }
 
 // --- Publisher interface ---
@@ -181,10 +246,11 @@ void UpstreamProvider::stop() {
 folly::coro::Task<Publisher::SubscribeResult>
 UpstreamProvider::subscribe(SubscribeRequest sub, std::shared_ptr<TrackConsumer> callback) {
   XLOG(DBG1) << "UpstreamProvider::subscribe ftn=" << sub.fullTrackName;
-  if (auto sess = getSession()) {
-    return sess->subscribe(std::move(sub), std::move(callback));
-  }
-  return coSubscribe(std::move(sub), std::move(callback));
+  auto forwarding = std::make_shared<PublisherCrossExecFilter>(
+      exec_.get(),
+      std::make_shared<OwnerPublisher>(shared_from_this())
+  );
+  co_return co_await forwarding->subscribe(std::move(sub), std::move(callback));
 }
 
 folly::coro::Task<Publisher::SubscribeResult>
@@ -196,10 +262,11 @@ UpstreamProvider::coSubscribe(SubscribeRequest sub, std::shared_ptr<TrackConsume
 folly::coro::Task<Publisher::FetchResult>
 UpstreamProvider::fetch(Fetch fetch, std::shared_ptr<FetchConsumer> fetchCallback) {
   XLOG(DBG1) << "UpstreamProvider::fetch ftn=" << fetch.fullTrackName;
-  if (auto sess = getSession()) {
-    return sess->fetch(std::move(fetch), std::move(fetchCallback));
-  }
-  return coFetch(std::move(fetch), std::move(fetchCallback));
+  auto forwarding = std::make_shared<PublisherCrossExecFilter>(
+      exec_.get(),
+      std::make_shared<OwnerPublisher>(shared_from_this())
+  );
+  co_return co_await forwarding->fetch(std::move(fetch), std::move(fetchCallback));
 }
 
 folly::coro::Task<Publisher::FetchResult>
@@ -210,10 +277,11 @@ UpstreamProvider::coFetch(Fetch fetch, std::shared_ptr<FetchConsumer> fetchCallb
 
 folly::coro::Task<Publisher::TrackStatusResult> UpstreamProvider::trackStatus(TrackStatus req) {
   XLOG(DBG1) << "UpstreamProvider::trackStatus ftn=" << req.fullTrackName;
-  if (auto sess = getSession()) {
-    return sess->trackStatus(req);
-  }
-  return coTrackStatus(req);
+  auto forwarding = std::make_shared<PublisherCrossExecFilter>(
+      exec_.get(),
+      std::make_shared<OwnerPublisher>(shared_from_this())
+  );
+  co_return co_await forwarding->trackStatus(std::move(req));
 }
 
 folly::coro::Task<Publisher::TrackStatusResult> UpstreamProvider::coTrackStatus(TrackStatus req) {
@@ -226,10 +294,11 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> UpstreamProvider::subscri
     std::shared_ptr<NamespacePublishHandle> handle
 ) {
   XLOG(DBG1) << "UpstreamProvider::subscribeNamespace nsp=" << subNs.trackNamespacePrefix;
-  if (auto sess = getSession()) {
-    return sess->subscribeNamespace(std::move(subNs), std::move(handle));
-  }
-  return coSubscribeNamespace(std::move(subNs), std::move(handle));
+  auto forwarding = std::make_shared<PublisherCrossExecFilter>(
+      exec_.get(),
+      std::make_shared<OwnerPublisher>(shared_from_this())
+  );
+  co_return co_await forwarding->subscribeNamespace(std::move(subNs), std::move(handle));
 }
 
 folly::coro::Task<Publisher::SubscribeNamespaceResult> UpstreamProvider::coSubscribeNamespace(
@@ -268,10 +337,11 @@ folly::coro::Task<Subscriber::PublishNamespaceResult> UpstreamProvider::publishN
     std::shared_ptr<PublishNamespaceCallback> cb
 ) {
   XLOG(DBG1) << "UpstreamProvider::publishNamespace ns=" << pubNs.trackNamespace;
-  if (auto sess = getSession()) {
-    return sess->publishNamespace(std::move(pubNs), std::move(cb));
-  }
-  return coPublishNamespace(std::move(pubNs), std::move(cb));
+  auto forwarding = std::make_shared<SubscriberCrossExecFilter>(
+      exec_.get(),
+      std::make_shared<OwnerSubscriber>(shared_from_this())
+  );
+  co_return co_await forwarding->publishNamespace(std::move(pubNs), std::move(cb));
 }
 
 folly::coro::Task<Subscriber::PublishNamespaceResult> UpstreamProvider::coPublishNamespace(
@@ -285,13 +355,29 @@ folly::coro::Task<Subscriber::PublishNamespaceResult> UpstreamProvider::coPublis
 Subscriber::PublishResult
 UpstreamProvider::publish(PublishRequest pub, std::shared_ptr<moxygen::SubscriptionHandle> handle) {
   XLOG(DBG1) << "UpstreamProvider::publish ftn=" << pub.fullTrackName;
-  if (stopped_) {
+  if (stopRequested_.load(std::memory_order_acquire)) {
     return folly::makeUnexpected(
         PublishError{pub.requestID, PublishErrorCode::INTERNAL_ERROR, "UpstreamProvider stopped"}
     );
   }
-  if (state_ == State::Connected && session_) {
-    return session_->publish(std::move(pub), std::move(handle));
+  SubscriberCrossExecFilter forwarding(
+      exec_.get(),
+      std::make_shared<OwnerSubscriber>(shared_from_this())
+  );
+  return forwarding.publish(std::move(pub), std::move(handle));
+}
+
+Subscriber::PublishResult UpstreamProvider::publishOnOwner(
+    PublishRequest pub,
+    std::shared_ptr<moxygen::SubscriptionHandle> handle
+) {
+  if (stopRequested_.load(std::memory_order_acquire) || stopped_) {
+    return folly::makeUnexpected(
+        PublishError{pub.requestID, PublishErrorCode::INTERNAL_ERROR, "UpstreamProvider stopped"}
+    );
+  }
+  if (auto session = getSession()) {
+    return session->publish(std::move(pub), std::move(handle));
   }
   // Not connected — use a PendingTrackConsumer so the reply task can wire up
   // the real upstream consumer after connecting. Per MoQ protocol the
@@ -334,8 +420,9 @@ void UpstreamProvider::goaway(Goaway goaway) {
     url_ = proxygen::URL(goaway.newSessionUri);
   }
 
+  const bool wasConnected = state_ == State::Connected;
   resetSession();
-  if (!stopped_) {
+  if (wasConnected && !stopRequested_.load(std::memory_order_acquire) && !stopped_) {
     reconnectBackoff_ = std::chrono::milliseconds(0);
     co_withExecutor(exec_.get(), reconnectLoop()).start();
   }
@@ -349,8 +436,9 @@ void UpstreamProvider::onMoQSessionClosed(
 ) {
   XLOG(INFO) << "UpstreamProvider::onMoQSessionClosed error=" << (uint32_t)error
              << " wtError=" << (wtError ? *wtError : 0);
+  const bool wasConnected = state_ == State::Connected;
   resetSession();
-  if (!stopped_) {
+  if (wasConnected && !stopRequested_.load(std::memory_order_acquire) && !stopped_) {
     reconnectBackoff_ = std::chrono::milliseconds(0);
     co_withExecutor(exec_.get(), reconnectLoop()).start();
   }
@@ -359,7 +447,7 @@ void UpstreamProvider::onMoQSessionClosed(
 // --- Private methods ---
 
 folly::coro::Task<std::shared_ptr<MoQSession>> UpstreamProvider::getOrConnectSession() {
-  if (stopped_) {
+  if (stopRequested_.load(std::memory_order_acquire) || stopped_) {
     XLOG(DBG1) << "UpstreamProvider::getOrConnectSession - stopped";
     co_yield folly::coro::co_error(std::runtime_error("UpstreamProvider stopped"));
   }
@@ -373,8 +461,8 @@ folly::coro::Task<std::shared_ptr<MoQSession>> UpstreamProvider::getOrConnectSes
                   "in-progress connection";
     CHECK(connectPromise_);
     co_await connectPromise_->getFuture();
-    if (!session_) {
-      co_yield folly::coro::co_error(std::runtime_error("Connection failed"));
+    if (stopRequested_.load(std::memory_order_acquire) || !session_) {
+      co_yield folly::coro::co_error(std::runtime_error("UpstreamProvider stopped"));
     }
     co_return session_;
   }
@@ -385,7 +473,10 @@ folly::coro::Task<std::shared_ptr<MoQSession>> UpstreamProvider::getOrConnectSes
   connectPromise_.emplace();
 
   try {
-    co_await doConnect();
+    co_await folly::coro::co_withCancellation(stopSource_.getToken(), doConnect());
+    if (stopRequested_.load(std::memory_order_acquire)) {
+      throw std::runtime_error("UpstreamProvider stopped");
+    }
     state_ = State::Connected;
     XLOG(DBG1) << "UpstreamProvider: connected to upstream, session=" << session_.get();
     connectPromise_->setValue(folly::unit);
@@ -403,17 +494,27 @@ folly::coro::Task<std::shared_ptr<MoQSession>> UpstreamProvider::getOrConnectSes
 folly::coro::Task<void> UpstreamProvider::doConnect() {
   XLOG(DBG1) << "UpstreamProvider::doConnect url=" << url_.getUrl();
 
-  client_ = std::make_unique<MoQClient>(
+  // Keep the client alive in this coroutine frame. stopOnOwner() may reset the
+  // member while setup is suspended, but must not destroy an object whose
+  // member coroutine is still active.
+  auto client = std::make_shared<MoQClient>(
       exec_,
       url_,
       MoQRelaySession::createRelaySessionFactory(),
       verifier_
   );
-  // Advertise on every upstream session. The extension stays inactive unless
-  // the peer also advertises it.
-  client_->addSetupParameter(
-      SetupParameter(folly::to_underlying(SetupKey::RELAY_HOPS), std::string{})
-  );
+  client_ = client;
+  if (clusterHopID_) {
+    client->addSetupParameter(SetupParameter(
+        folly::to_underlying(SetupKey::RELAY_HOPS),
+        encodeRelayHopID(*clusterHopID_, kVersionDraft18).value()
+    ));
+    if (relayCost_) {
+      client->addSetupParameter(
+          SetupParameter(folly::to_underlying(SetupKey::RELAY_COST), *relayCost_)
+      );
+    }
+  }
 
   quic::TransportSettings ts;
   ts.orderedReadCallbacks = true;
@@ -422,32 +523,53 @@ folly::coro::Task<void> UpstreamProvider::doConnect() {
   ts.datagramConfig.writeBufSize = 1000;
   ts.datagramConfig.sendDropOldDataFirst = true;
 
-  // Relay chaining requires draft 16+. Only offer standard draft-16 ALPN
-  // ("moqt-16") so we fail fast if the upstream doesn't support it.
-  co_await client_->setupMoQSession(
+  // Prefer cluster-capable draft 18, with draft 16 for ordinary relay chaining.
+  co_await client->setupMoQSession(
       connectTimeout_,
       idleTimeout_,
       publishHandler_,
       subscribeHandler_,
       ts,
-      getMoqtProtocols("16", /*useStandard=*/true)
+      getMoqtProtocols(clusterHopID_ ? "18,16" : "16", /*useStandard=*/true)
   );
 
-  session_ = client_->moqSession_;
-  CHECK(session_) << "setupMoQSession succeeded but session is null";
+  if (stopRequested_.load(std::memory_order_acquire) || client_ != client) {
+    throw std::runtime_error("UpstreamProvider stopped");
+  }
+  auto session = client->moqSession_;
+  CHECK(session) << "setupMoQSession succeeded but session is null";
+  session_ = session;
 
   // Register for close notifications
-  session_->setSessionCloseCallback(this);
+  session->setSessionCloseCallback(this);
 
-  if (onConnect_) {
-    co_await onConnect_(session_);
+  // A coroutine lambda keeps its captures in its closure object. Retain a copy
+  // in this coroutine frame so stopOnOwner() cannot destroy the closure while
+  // its returned task is suspended.
+  auto onConnect = onConnect_;
+  if (onConnect) {
+    co_await onConnect(session);
+  }
+
+  if (stopRequested_.load(std::memory_order_acquire) || client_ != client || session_ != session) {
+    throw std::runtime_error("Upstream session closed during setup");
   }
 
   XLOG(DBG1) << "UpstreamProvider::doConnect completed, session=" << session_.get();
 }
 
 folly::coro::Task<void> UpstreamProvider::waitForConnected(std::chrono::milliseconds timeout) {
-  if (stopped_ || (state_ == State::Connected && session_)) {
+  auto self = shared_from_this();
+  co_await folly::coro::co_withExecutor(
+      folly::getKeepAliveToken(exec_.get()),
+      self->waitForConnectedOnOwner(timeout)
+  );
+}
+
+folly::coro::Task<void> UpstreamProvider::waitForConnectedOnOwner(std::chrono::milliseconds timeout
+) {
+  if (stopRequested_.load(std::memory_order_acquire) || stopped_ ||
+      (state_ == State::Connected && session_)) {
     co_return;
   }
   if (!connectPromise_) {
