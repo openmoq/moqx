@@ -287,8 +287,11 @@ class Actor:
         url = f"https://localhost:{port}/moq-relay"
         moqbin = self.harness.moqbin
         if self.kind == "cluster-publisher":
-            return [str(self.harness.binary.parent / "test" / "moqx_cluster_advertiser"),
-                    f"moqt://localhost:{port}/moq-relay", self.ns] + self.flags
+            return [
+                str(self.harness.binary.parent / "test" / "moqx_cluster_advertiser"),
+                f"moqt://localhost:{port}/moq-relay",
+                self.ns,
+            ] + self.flags
         if self.kind == "publisher":
             argv = [
                 str(moqbin / "moqdateserver"),
@@ -367,7 +370,9 @@ class Harness:
             raise HarnessError(
                 "MOQT_TEST_VERSIONS is not declared in test/test_versions.sh"
             )
-        self.moqt_versions = os.environ.get("MOQX_TEST_VERSIONS", versions["MOQT_TEST_VERSIONS"])
+        self.moqt_versions = os.environ.get(
+            "MOQX_TEST_VERSIONS", versions["MOQT_TEST_VERSIONS"]
+        )
         self.relays: dict[str, Relay] = {}
         self.actors: dict[str, Actor] = {}
         self.failures = 0
@@ -420,7 +425,9 @@ class Harness:
         if name in self.actors:
             raise HarnessError(f"actor: duplicate actor '{name}'")
         if kind not in ("publisher", "cluster-publisher", "subscriber"):
-            raise HarnessError(f"actor {name}: kind must be publisher, cluster-publisher, or subscriber")
+            raise HarnessError(
+                f"actor {name}: kind must be publisher, cluster-publisher, or subscriber"
+            )
         self.relay_of(f"actor {name}", relay)
         if not ns:
             raise HarnessError(f"actor {name}: ns required")
