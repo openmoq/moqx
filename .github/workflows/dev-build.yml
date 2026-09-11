@@ -43,11 +43,11 @@ jobs:
           ls -la "$ARTIFACT"
           echo "artifact=$ARTIFACT" >> "$GITHUB_OUTPUT"
 
-      # No release backs this, so it keeps a working window — but a dev build is
-      # reproducible, and 90 days of them dominated the storage bill.
+      # Longer than the ci-main lanes: no release carries this, so the artifact
+      # is the only copy. Dev builds are rare enough that the storage is noise.
       - name: Upload artifact
         uses: actions/upload-artifact@v6
         with:
           name: ${{ steps.package.outputs.artifact }}
           path: ${{ steps.package.outputs.artifact }}
-          retention-days: 7
+          retention-days: 30
