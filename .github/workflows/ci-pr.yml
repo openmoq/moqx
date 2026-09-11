@@ -68,9 +68,9 @@ jobs:
             # takes the uninstrumented one. Without it configure.sh refuses.
             uninstrumented_deps: true
             leak_check: true
-            runner: [self-hosted, linode]
-            # Sized by memory, not cores. The linode box is 16c/31GB with no
-            # swap; the heaviest test TUs peak near 2.3 GB of cc1plus RSS each
+            runner: [self-hosted, build]
+            # Sized by memory, not cores. The self-hosted boxes are 16c/31GB;
+            # the heaviest test TUs peak near 2.3 GB of cc1plus RSS each
             # under Debug+ASan. Worst-case concurrent footprint is 38 GB at
             # -j16 and 34 GB at -j14, both of which OOM-kill the compiler.
             # -j10 lands at ~25 GB, leaving headroom for the co-resident relay.

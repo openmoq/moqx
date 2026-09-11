@@ -49,7 +49,7 @@ env:
 
 jobs:
   deploy:
-    runs-on: [self-hosted, linode]
+    runs-on: [self-hosted, relay]
     steps:
       - uses: actions/checkout@v5
 

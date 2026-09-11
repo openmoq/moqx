@@ -137,7 +137,7 @@ Promotes `snapshot-latest` artifacts to a versioned `vX.Y.Z` release (no rebuild
 |-----|--------|---------|
 | check-format | ubuntu-latest (trixie) | clang-format-19 check; ruff lint + format check (via uv) |
 | linux | ubuntu-22.04 | Build + test (prebuilt tarball, from-source fallback) |
-| asan debug | self-hosted (linode) | ASan/UBSan on moqx TUs, build + test |
+| asan debug | self-hosted (build) | ASan/UBSan on moqx TUs, build + test |
 
 Format check must pass before build runs. The asan lane sanitizes moqx's own
 TUs over the uninstrumented prebuilt deps; instrumenting the full stack needs
@@ -174,7 +174,7 @@ Merges the sync PR if CI passed. Deletes the branch after merge.
 
 ### 5. `deploy relay` — Manual deployment
 
-**Trigger:** manual `workflow_dispatch` | **Runner:** self-hosted (linode)
+**Trigger:** manual `workflow_dispatch` | **Runner:** self-hosted (relay)
 
 Deploys a specific image tag to a named instance. Handles TLS cert
 provisioning/renewal via Route53, health check verification, Slack notification.

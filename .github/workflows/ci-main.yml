@@ -77,7 +77,7 @@ jobs:
             # takes the uninstrumented one. Without it configure.sh refuses.
             uninstrumented_deps: true
             leak_check: true
-            runner: [self-hosted, linode]
+            runner: [self-hosted, build]
             # Sized by memory, not cores. See ci-pr.yml for the measurements.
             build_jobs: 10
     name: ${{ matrix.name }}
@@ -552,7 +552,7 @@ jobs:
   deploy:
     if: github.ref_name == 'main'
     needs: [manifest, release]
-    runs-on: [self-hosted, linode]
+    runs-on: [self-hosted, relay]
     env:
       DOMAIN: moqx-main.ci.openmoq.org
       RELAY_PORT: 4433
