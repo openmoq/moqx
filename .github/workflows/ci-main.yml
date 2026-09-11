@@ -419,12 +419,15 @@ jobs:
           tar czf "$ARTIFACT" -C install .
           echo "artifact=$ARTIFACT" >> "$GITHUB_OUTPUT"
 
+      # Handoff to the release job within this run; the release then holds the
+      # same tarball on free storage. The week is re-run headroom: a failed
+      # release job can be retried without rebuilding, over a weekend included.
       - name: Upload artifact
         uses: actions/upload-artifact@v6
         with:
           name: ${{ steps.package.outputs.artifact }}
           path: ${{ steps.package.outputs.artifact }}
-          retention-days: 90
+          retention-days: 7
 
   # ════════════════════════════════════════════════════════════════════════════
   # Manifest: stitch per-arch images into multiplatform tags
