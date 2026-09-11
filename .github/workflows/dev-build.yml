@@ -43,9 +43,11 @@ jobs:
           ls -la "$ARTIFACT"
           echo "artifact=$ARTIFACT" >> "$GITHUB_OUTPUT"
 
+      # No release backs this, so it keeps a working window — but a dev build is
+      # reproducible, and 90 days of them dominated the storage bill.
       - name: Upload artifact
         uses: actions/upload-artifact@v6
         with:
           name: ${{ steps.package.outputs.artifact }}
           path: ${{ steps.package.outputs.artifact }}
-          retention-days: 90
+          retention-days: 7
