@@ -23,6 +23,7 @@
 #include <moxygen/MoQSession.h>
 #include <moxygen/relay/MoQForwarder.h>
 
+#include <folly/CancellationToken.h>
 #include <folly/Executor.h>
 #include <folly/ThreadLocal.h>
 #include <folly/container/F14Map.h>
@@ -35,7 +36,7 @@
 namespace openmoq::moqx {
 
 // Draft 16 encodes Hop IDs as QUIC variable-length integers.
-inline constexpr uint64_t kMaxRelayHopID = (uint64_t{1} << 62) - 1;
+inline constexpr uint64_t kMaxRelayHopID = UINT64_MAX;
 
 uint64_t generateRelayHopID();
 
@@ -121,19 +122,18 @@ public:
   explicit MoqxRelay(
       config::CacheConfig cache = {},
       std::string relayID = {},
-      uint64_t relayHopID = 0,
+      std::optional<uint64_t> relayHopID = std::nullopt,
       std::shared_ptr<folly::Executor> relayExec = nullptr,
       bool useLocalForwarders = false,
       uint64_t maxDeselected = kDefaultMaxDeselected,
       std::chrono::milliseconds idleTimeout = kDefaultIdleTimeout,
-      std::chrono::milliseconds activityThreshold = kDefaultActivityThreshold
+      std::chrono::milliseconds activityThreshold = kDefaultActivityThreshold,
+      std::chrono::milliseconds costGrace = std::chrono::milliseconds(2000)
   )
-      : relayID_(std::move(relayID)),
-        relayHopID_(relayHopID == 0 ? generateRelayHopID() : relayHopID),
+      : relayID_(std::move(relayID)), relayHopID_(relayHopID.value_or(generateRelayHopID())),
         ownedRelayExec_(std::move(relayExec)), relayExec_(ownedRelayExec_.get()),
         useLocalForwarders_(useLocalForwarders), maxDeselected_(maxDeselected),
-        idleTimeout_(idleTimeout), activityThreshold_(activityThreshold) {
-    XCHECK_LE(relayHopID_, kMaxRelayHopID);
+        idleTimeout_(idleTimeout), activityThreshold_(activityThreshold), costGrace_(costGrace) {
     if (cache.maxCachedTracks > 0) {
       cache_ = std::make_unique<MoqxCache>(cache.maxCachedTracks, cache.maxCachedGroupsPerTrack);
       cache_->setMaxCachedBytes(static_cast<size_t>(cache.maxCachedMb) * 1024 * 1024);
@@ -175,7 +175,10 @@ public:
   // publishHandler=this and subscribeHandler=this so that the upstream relay's
   // reciprocal subNs and namespace announcements route through MoqxRelay.
   void setUpstreamProvider(std::shared_ptr<UpstreamProvider> upstream) {
-    upstream_ = std::move(upstream);
+    if (!upstream_) {
+      upstream_ = upstream;
+    }
+    upstreams_.push_back(std::move(upstream));
   }
 
   // Force-evicts a specific track unconditionally. Not thread-safe.
@@ -190,8 +193,14 @@ public:
   // Stops and releases the upstream provider, breaking the shared_ptr cycle
   // between MoqxRelay and UpstreamProvider. Safe to call with no upstream.
   void stop() {
-    if (upstream_) {
-      upstream_->stop();
+    // Cancellation posts the sleeping tasks' continuations before returning.
+    // The context drains the executors after stop and before destroying them.
+    clusterWarmCancellation_.requestCancellation();
+    // Providers deliberately disable disconnect callbacks while stopping. Release
+    // peer handles explicitly while their session executors are still alive.
+    runOnExec(relayExec(), [relay = shared_from_this()] { relay->onUpstreamDisconnect(nullptr); });
+    for (const auto& upstream : upstreams_) {
+      upstream->stop();
       // Do not reset upstream_ here: the provider's session/client live on the
       // worker EVB thread and must be freed there (via the reconnect coroutine's
       // shared_from_this dropping after it co_returns). Releasing upstream_ when
@@ -206,7 +215,7 @@ public:
 
   // Called by UpstreamProvider's onDisconnect hook when the upstream session
   // closes. Releases the peer subNs handle.
-  void onUpstreamDisconnect();
+  void onUpstreamDisconnect(const std::shared_ptr<moxygen::MoQSession>& session = nullptr);
 
   // Releases per-session relay state; the servers call this as a session tears down.
   void onSessionEnd(std::shared_ptr<moxygen::MoQSession> session);
@@ -266,12 +275,14 @@ public:
       moxygen::PublishNamespace pubNs,
       std::shared_ptr<moxygen::MoQSession> session,
       std::shared_ptr<moxygen::Subscriber::PublishNamespaceCallback> callback,
-      std::string peerID = {}
+      std::string peerID = {},
+      uint64_t routeID = 0
   );
 
   void doPublishNamespaceDone(
       const moxygen::TrackNamespace& trackNamespace,
-      std::shared_ptr<moxygen::MoQSession> session
+      std::shared_ptr<moxygen::MoQSession> session,
+      uint64_t routeID = 0
   );
 
   // Returns the upstream provider, or null if none is configured.
@@ -321,6 +332,103 @@ private:
 
   NamespaceTree namespaceTree_{*this};
 
+  // Cluster tracks coalesce only within one advertisement lifetime and content
+  // generation. Their forwarders live on relayExec, including in LF mode.
+  struct ClusterSubscription {
+    moxygen::FullTrackName ftn;
+    std::shared_ptr<NamespaceTree::NamespaceNode> node;
+    NamespaceTree::SelectedPublisher route;
+    std::shared_ptr<moxygen::MoQForwarder> forwarder;
+    std::shared_ptr<IngestCounters> ingest{std::make_shared<IngestCounters>()};
+    std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle;
+    folly::coro::SharedPromise<folly::Unit> ready;
+    std::vector<std::shared_ptr<moxygen::MoQSession>> subscribers;
+    std::vector<std::pair<std::shared_ptr<moxygen::MoQSession>, moxygen::RequestID>>
+        pendingSubscribers;
+    bool stopped{false};
+    bool warm{false};
+    uint64_t forwardVersion{0};
+    moxygen::RequestID requestID{0};
+  };
+  class ClusterForwarderCallback;
+  class ClusterConsumer;
+  class FencedPublicationCallback;
+  class ClusterFetch;
+  std::vector<std::weak_ptr<ClusterFetch>> clusterFetches_;
+  std::vector<std::shared_ptr<ClusterSubscription>> clusterSubscriptions_;
+  folly::F14FastMap<
+      moxygen::FullTrackName,
+      std::shared_ptr<ClusterSubscription>,
+      moxygen::FullTrackName::hash>
+      publishedWarm_;
+  folly::F14FastMap<
+      moxygen::FullTrackName,
+      std::vector<std::weak_ptr<moxygen::MoQSession>>,
+      moxygen::FullTrackName::hash>
+      publishedReaders_;
+  struct ClusterWarmRoute {
+    moxygen::TrackNamespace ns;
+    uint64_t epoch{0};
+    uint64_t users{0};
+    uint64_t timer{0};
+    bool warm{false};
+  };
+  folly::CancellationSource clusterWarmCancellation_;
+  std::map<uint64_t, ClusterWarmRoute> clusterWarm_;
+  // Batch identity replacement into one advertisement after all ingress stops.
+  std::optional<moxygen::TrackNamespace> suppressedClusterAdvertisement_;
+  std::map<
+      moxygen::MoQSession*,
+      folly::F14FastMap<
+          moxygen::TrackNamespace,
+          std::weak_ptr<NamespaceTree::NamespaceNode::Advertisements>,
+          moxygen::TrackNamespace::hash>>
+      namespaceAdOwners_;
+  folly::coro::Task<moxygen::Publisher::SubscribeResult> subscribeCluster(
+      moxygen::SubscribeRequest subReq,
+      std::shared_ptr<moxygen::TrackConsumer> consumer,
+      std::shared_ptr<moxygen::MoQSession> session,
+      std::shared_ptr<NamespaceTree::NamespaceNode> node
+  );
+  std::shared_ptr<ClusterSubscription> findClusterSubscription(
+      const moxygen::FullTrackName& ftn,
+      const NamespaceTree::SelectedPublisher& route
+  );
+  bool clusterSubscriptionValid(const ClusterSubscription& state);
+  void stopClusterSubscription(const std::shared_ptr<ClusterSubscription>& state);
+  void refreshClusterSubscriptions();
+  void clusterForwardChanged(const std::shared_ptr<ClusterSubscription>& state, bool forward);
+  void setClusterWarm(const std::shared_ptr<ClusterSubscription>& state, bool warm);
+  void setPublishedWarm(const moxygen::FullTrackName& ftn, bool warm);
+  static folly::coro::Task<void> updateClusterForward(
+      std::weak_ptr<MoqxRelay> relay,
+      std::shared_ptr<ClusterSubscription> state,
+      bool forward,
+      uint64_t version
+  );
+  void refreshClusterAdvertisements(const moxygen::TrackNamespace& ns);
+  static folly::coro::Task<void> expireClusterWarm(
+      std::weak_ptr<MoqxRelay> relay,
+      uint64_t routeID,
+      uint64_t epoch,
+      uint64_t timer,
+      std::chrono::milliseconds grace,
+      folly::CancellationToken cancellation
+  );
+  void rememberPublishedReader(
+      const moxygen::FullTrackName& ftn,
+      const std::shared_ptr<moxygen::MoQSession>& session
+  );
+  bool publishedSourceEligible(
+      const moxygen::FullTrackName& ftn,
+      const std::shared_ptr<moxygen::MoQSession>& subscriber
+  );
+  std::optional<NamespaceTree::SelectedPublisher> selectClusterPublisher(
+      const std::shared_ptr<NamespaceTree::NamespaceNode>& node,
+      const std::shared_ptr<moxygen::MoQSession>& subscriber
+  ) const;
+  void invalidateNamespaceContent(const moxygen::TrackNamespace& ns);
+
   // Draft 18+: parallel tree for SUBSCRIBE_TRACKS. Independent overlap space;
   // only `children` and `sessions` are populated (no publishers, no callbacks).
   NullCallback tracksTreeCb_;
@@ -343,6 +451,12 @@ private:
       moxygen::PublishNamespace pubNs,
       std::shared_ptr<NamespaceTree::NamespaceNode> nodePtr
   );
+  void advertiseNamespace(
+      const std::shared_ptr<NamespaceTree::NamespaceNode>& node,
+      const std::shared_ptr<moxygen::MoQSession>& session,
+      const NamespaceTree::NamespaceNode::NamespaceSubscriberInfo& info,
+      bool contentChanged = false
+  );
 
   struct PreparedPublish {
     std::shared_ptr<moxygen::MoQForwarder::Subscriber> subscriber;
@@ -353,7 +467,8 @@ private:
       std::shared_ptr<moxygen::MoQForwarder> forwarder,
       bool forward,
       bool pinned,
-      folly::Executor* subscriberExec
+      folly::Executor* subscriberExec,
+      folly::Executor* forwarderExec = nullptr
   );
 
   // This thread's registry, created on first use.
@@ -462,13 +577,31 @@ private:
   moxygen::TrackNamespace allowedNamespacePrefix_;
   // Operational identity used by relay authentication and upstream routing.
   std::string relayID_;
-  // Opaque random protocol identity required by draft-lcurley-moq-relay-hops.
+  // Shared process identity for cluster loop detection; zero is anonymous.
   uint64_t relayHopID_;
   std::shared_ptr<UpstreamProvider> upstream_;
+  std::vector<std::shared_ptr<UpstreamProvider>> upstreams_;
 
   // Holds the peer subNs handle for the upstream (initiating) direction.
   // Kept alive so the subscription is not cancelled when onUpstreamConnect returns.
-  std::shared_ptr<moxygen::Publisher::SubscribeNamespaceHandle> upstreamSubNsHandle_;
+  folly::F14FastMap<
+      const moxygen::MoQSession*,
+      std::shared_ptr<moxygen::Publisher::SubscribeNamespaceHandle>>
+      upstreamSubNsHandles_;
+  folly::F14FastMap<
+      const moxygen::MoQSession*,
+      std::shared_ptr<moxygen::Publisher::SubscribeTracksHandle>>
+      peerTracksHandles_;
+  struct PeerHandshake {
+    bool active{true};
+    bool tracksPending{false};
+  };
+  folly::F14FastMap<const moxygen::MoQSession*, std::shared_ptr<PeerHandshake>> peerHandshakes_;
+  std::shared_ptr<PeerHandshake> peerHandshake(const std::shared_ptr<moxygen::MoQSession>& session);
+  folly::coro::Task<void> subscribePeerTracks(
+      std::shared_ptr<moxygen::MoQSession> session,
+      std::shared_ptr<PeerHandshake> handshake
+  );
 
   struct PeerInfo {
     std::shared_ptr<moxygen::Publisher::SubscribeNamespaceHandle> handle;
@@ -479,19 +612,12 @@ private:
   // cancelled. Keyed by raw session pointer (valid for session lifetime).
   folly::F14FastMap<moxygen::MoQSession*, PeerInfo> peerSubNsHandles_;
 
-  struct LegacyPublisherHopID {
-    std::weak_ptr<moxygen::MoQSession> session;
-    uint64_t hopID;
-  };
-  folly::F14FastMap<const moxygen::MoQSession*, LegacyPublisherHopID> legacyPublisherHopIDs_;
   SubscriptionRegistry registry_;
 
   std::optional<std::vector<uint64_t>> ingestRelayHopPath(
       const moxygen::PublishNamespace& pubNs,
       const std::shared_ptr<moxygen::MoQSession>& session
   );
-
-  uint64_t getOrCreateLegacyPublisherHopID(const std::shared_ptr<moxygen::MoQSession>& session);
 
   // Result of joinOrPrepareUpstreamSubscription (runs on relayExec_).
   struct StatefulSubscribeResult {
@@ -664,6 +790,7 @@ private:
 
   std::chrono::milliseconds idleTimeout_{kDefaultIdleTimeout};
   std::chrono::milliseconds activityThreshold_{kDefaultActivityThreshold};
+  std::chrono::milliseconds costGrace_;
 };
 
 // Creates a NamespacePublishHandle that bridges NAMESPACE/NAMESPACE_DONE

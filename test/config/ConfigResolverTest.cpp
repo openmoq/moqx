@@ -1447,6 +1447,32 @@ static void setServiceUpstream(ParsedConfig& cfg, ParsedUpstreamConfig upstream)
       std::optional<ParsedUpstreamConfig>{std::move(upstream)};
 }
 
+TEST(ResolveConfig, ClusterPreservesAnonymousIdentityAndFreePeerLinks) {
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedClusterConfig cluster;
+  cluster.enabled = true;
+  cluster.hop_id = uint64_t{0};
+  cluster.cost_grace_ms = uint32_t{0};
+  cfg.cluster = cluster;
+  auto peer = makeUpstreamConfig();
+  peer.relay_cost = uint64_t{0};
+  cfg.services.value().at("default").upstreams = std::vector<ParsedUpstreamConfig>{peer};
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  EXPECT_EQ(result->config.cluster.hopID, 0);
+  EXPECT_EQ(result->config.cluster.costGrace.count(), 0);
+  ASSERT_EQ(result->config.services.at("default").upstreams.size(), 1);
+  EXPECT_EQ(result->config.services.at("default").upstreams.front().relayCost, 0);
+}
+
+TEST(ResolveConfig, RejectsAmbiguousUpstreamForms) {
+  auto cfg = makeMinimalInsecureConfig();
+  setServiceUpstream(cfg, makeUpstreamConfig());
+  cfg.services.value().at("default").upstreams =
+      std::vector<ParsedUpstreamConfig>{makeUpstreamConfig()};
+  EXPECT_TRUE(resolveConfig(cfg).hasError());
+}
+
 TEST(ResolveConfig, UpstreamAbsent) {
   auto cfg = makeMinimalInsecureConfig();
   auto result = resolveConfig(cfg);

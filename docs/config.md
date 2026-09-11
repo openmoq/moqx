@@ -70,7 +70,7 @@ listeners:
 **TLS:** For development only, `tls: {insecure: true}` skips certificate
 verification. This is incompatible with `quic_stack: picoquic`.
 
-**moqt_versions:**: Currently supports 14 and 16.
+**moqt_versions:** Supports 14, 16, 17, and 18. Cluster links require 18.
 
 **Duplicate listeners** (same address+port combination) are rejected.
 
@@ -407,48 +407,64 @@ namespaces and caches cannot be shared across services, each service forms its
 own independent upstream graph. Two services on the same physical server can
 peer with completely different upstream servers.
 
-Tree topologies remain the simplest deployment model. A service may also contain
-a relay cycle when every relay in that cycle negotiates the `RELAY_HOPS` setup
-option. moqx assigns one random Hop ID to the running relay context, retains the
-origin-to-relay path on namespace advertisements, appends its own ID when
-forwarding, and drops an advertisement if its own ID is already present. Its
-wildcard upstream subscription also excludes its own Hop ID.
+### MoQ Cluster
 
+moqx implements [`draft-lcurley-moq-cluster-00`](draft-lcurley-moq-cluster-00.txt).
+Cluster links require listeners configured with `moqt_versions: [18]`.
+The default listener versions remain `[14, 16]`; ordinary chaining can fall
+back to draft 16 without negotiating the cluster extension.
+
+```yaml
+cluster:
+  enabled: true          # default; negotiation is still per session
+  hop_id: 1001           # optional; absent generates a random nonzero uint64
+  cost_grace_ms: 2000    # delay before restoring an idle route's cost
+
+services:
+  live:
+    match:
+      - authority: {any: true}
+        path: {prefix: "/"}
+    upstreams:
+      - url: moqt://relay-a.example.com:4433/moq-relay
+        relay_cost: 0    # free link; absent means 1
+      - url: moqt://relay-b.example.com:4433/moq-relay
+        relay_cost: 5
 ```
-          relay-a ─┐
-          relay-b ──── relay-root (no upstream)
-relay-c ──── relay-d ─┘
-relay-e ─┘
-```
 
-Publishers and subscribers can connect to any relay. Subscriptions are forwarded
-up toward the root as needed, and data flows back down to wherever subscribers
-are.
+Use either `upstream` for one peer or `upstreams` for a list; supplying both
+for the same service is an error. Each configured peer reconnects independently.
+`relay_cost` is a client setup option and prices both directions of that link.
 
-Relay-hops negotiation is automatic between supporting moqx peers and requires
-no YAML setting. A non-supporting publisher or origin is represented by one
-stable, random stand-in Hop ID for the lifetime of its session; when an
-advertisement next crosses a negotiated relay link, the outgoing path is
-`[stand-in-origin, local-relay]`. Non-negotiated subscribers continue to receive
-the legacy namespace format without hop parameters.
+The `RELAY_HOPS` setup value contains the endpoint's Hop ID. Each advertisement
+carries `HOP_PATH` and an optional `ROUTE_COST`. The receiver adds its link cost,
+saturating at the largest uint64 value, then selects by cost, path length, and
+most recent receipt. Paths with the same nonzero first Hop ID represent the
+same content and can coexist as alternatives. A different or anonymous origin
+replaces the previous content identity.
 
-Loop prevention is only end-to-end across links that negotiated `RELAY_HOPS`.
-Keep any graph segment containing a legacy relay acyclic, because a legacy relay
-cannot preserve the path needed to recognize a returning advertisement.
+Selection is per peer: an advertisement or request cannot use a path containing
+that peer's nonzero Hop ID. moqx appends its own ID when forwarding and discards
+paths containing its own nonzero ID. Cost/path updates replace the advertisement
+on its existing stream. A price update with an unchanged nonzero origin preserves
+healthy subscriptions.
+
+`hop_id: 0` explicitly withholds identity. A nonnegotiating publisher is also
+represented by origin 0, so its outgoing path starts `[0, local-hop-id]`.
+Zero neither detects nor filters loops, and two anonymous origins are never
+assumed to produce interchangeable content. `relay_id` remains an operational
+name independent of the protocol Hop ID.
+
+See [the cluster deployment guide](relay-hops.md) for topology and validation.
 
 ### Limitations
 
-- **Single upstream per service.** Each service can have at most one
-upstream. Multiple upstreams, failover, or load balancing across upstreams are
-not currently supported.
-- **Legacy relay segments must remain acyclic.** Negotiated moqx peers detect
-returning namespace advertisements, but a non-supporting relay cannot carry the
-hop path through the graph.
-- **No upstream authentication.** Upstreams are connected without any
-application-level credential exchange beyond TLS.
-- **Upstream connection is per-service, not per-track.** A single upstream
-session is shared for all tracks within a service; there is no per-track
-upstream routing.
+- Every link in a cycle must negotiate the cluster extension, and relay Hop IDs
+  must be unique and nonzero. Keep segments containing nonnegotiating relays acyclic.
+- Existing subscriptions stay on a healthy source when route prices change;
+  seamless migration of an established subscription is not implemented.
+- Upstream authentication has no application credential exchange beyond TLS.
+
 
 ---
 

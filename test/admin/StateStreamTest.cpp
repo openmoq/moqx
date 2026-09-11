@@ -244,4 +244,20 @@ TEST(StateStreamTest, DeadSinkStopsReportingAlive) {
   EXPECT_FALSE(visitor.alive());
 }
 
+TEST(StateStreamTest, ReportsEveryConfiguredPeerState) {
+  Collected out;
+  ChunkedJsonWriter writer(sinkInto(out), 1);
+  JsonRelayContextVisitor visitor(writer);
+  visitor.onRelayBegin("mesh", 0);
+  visitor.onServiceBegin("live");
+  visitor.onServiceUpstreams({{"moqt://a/", "connected"}, {"moqt://b/", "disconnected"}});
+  visitor.onServiceEnd();
+  visitor.onRelayEnd();
+  writer.flush();
+  const auto peers = folly::parseJson(out.body())["services"]["live"]["upstreams"];
+  ASSERT_EQ(peers.size(), 2);
+  EXPECT_EQ(peers[0]["url"].asString(), "moqt://a/");
+  EXPECT_EQ(peers[1]["state"].asString(), "disconnected");
+}
+
 } // namespace openmoq::moqx::admin

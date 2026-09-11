@@ -214,8 +214,12 @@ protected:
 
   // Rebuild relay_ (with the MT-mode relay exec) and its cross-exec filters.
   // Use this instead of constructing relay_ directly in tests that need a custom relay.
-  void
-  resetRelay(config::CacheConfig cache, const std::string& relayID = "", uint64_t relayHopID = 0);
+  void resetRelay(
+      config::CacheConfig cache,
+      const std::string& relayID = "",
+      uint64_t relayHopID = 0,
+      std::chrono::milliseconds costGrace = std::chrono::milliseconds(0)
+  );
 
   // An extra OS thread plus the MoQExecutor wrapping it, for a session off exec_.
   struct AuxExec {
