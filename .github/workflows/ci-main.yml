@@ -14,11 +14,14 @@ on:
   push:
     branches: [main, release/**]
 
+# A group holds one running and one pending run; a newer push cancels the
+# pending one, so a burst of merges skips runs. Runs on main therefore get
+# their own group and run in parallel: everything they write is per-commit
+# except the rolling pointers (snapshot-latest, the rolling image tags, the
+# moqx-main deploy), which the release job only moves forward.
+# release/** branches keep one group with superseded runs cancelled.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  # Cancel superseded runs on release/** branches (rapid-iteration churn).
-  # Keep main's serialize-don't-cancel behavior so external-state steps
-  # (Docker push, release create, deploy) aren't interrupted mid-flight.
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
@@ -437,57 +440,15 @@ jobs:
       - name: Log in to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
-      - name: Compute image tags
-        id: tags
+      # Per-commit tags only; the rolling tags are advanced by the release job.
+      - name: Create multiplatform manifests
         run: |
           SHORT="${GITHUB_SHA:0:7}"
-          BRANCH="${{ github.ref_name }}"
-          # Every branch gets a rolling <label>-latest tag. main additionally
-          # keeps the bare 'latest' for back-compat with anyone pulling it.
-          if [[ "$BRANCH" == "main" ]]; then
-            LABEL="main"
-            ALIAS="latest"   # back-compat: main is also ':latest'
-          else
-            LABEL="${BRANCH#release/}"
-            ALIAS=""
-          fi
-          echo "short=$SHORT" >> "$GITHUB_OUTPUT"
-          echo "rolling=${LABEL}-latest" >> "$GITHUB_OUTPUT"
-          echo "alias=$ALIAS" >> "$GITHUB_OUTPUT"
-
-      - name: Create multiplatform manifests (moqx)
-        run: |
-          IMAGE="ghcr.io/${{ github.repository }}"
-          SHORT="${{ steps.tags.outputs.short }}"
-          ROLLING="${{ steps.tags.outputs.rolling }}"
-          for TAG in "$SHORT" "$ROLLING"; do
-            docker buildx imagetools create -t "${IMAGE}:${TAG}" \
-              "${IMAGE}:${TAG}-amd64" \
-              "${IMAGE}:${TAG}-arm64"
-          done
-          ALIAS="${{ steps.tags.outputs.alias }}"
-          if [[ -n "$ALIAS" ]]; then
-            docker buildx imagetools create -t "${IMAGE}:${ALIAS}" \
+          for IMAGE in "ghcr.io/${{ github.repository }}" "ghcr.io/${{ github.repository_owner }}/moqx-interop-client"; do
+            docker buildx imagetools create -t "${IMAGE}:${SHORT}" \
               "${IMAGE}:${SHORT}-amd64" \
               "${IMAGE}:${SHORT}-arm64"
-          fi
-
-      - name: Create multiplatform manifests (interop-client)
-        run: |
-          CLIENT_IMAGE="ghcr.io/${{ github.repository_owner }}/moqx-interop-client"
-          SHORT="${{ steps.tags.outputs.short }}"
-          ROLLING="${{ steps.tags.outputs.rolling }}"
-          for TAG in "$SHORT" "$ROLLING"; do
-            docker buildx imagetools create -t "${CLIENT_IMAGE}:${TAG}" \
-              "${CLIENT_IMAGE}:${TAG}-amd64" \
-              "${CLIENT_IMAGE}:${TAG}-arm64"
           done
-          ALIAS="${{ steps.tags.outputs.alias }}"
-          if [[ -n "$ALIAS" ]]; then
-            docker buildx imagetools create -t "${CLIENT_IMAGE}:${ALIAS}" \
-              "${CLIENT_IMAGE}:${SHORT}-amd64" \
-              "${CLIENT_IMAGE}:${SHORT}-arm64"
-          fi
 
   # ════════════════════════════════════════════════════════════════════════════
   # Release: create/update snapshot-latest pre-release (all green)
@@ -497,32 +458,66 @@ jobs:
     needs: [build, manifest]
     runs-on: ubuntu-22.04
     outputs:
-      tag: ${{ steps.publish.outputs.tag }}
+      tag: ${{ steps.tags.outputs.tag }}
+      advanced: ${{ steps.order.outputs.advance }}
     steps:
       - uses: actions/checkout@v5
 
+      - name: Compute tags
+        id: tags
+        run: |
+          BRANCH="${{ github.ref_name }}"
+          if [[ "$BRANCH" == "main" ]]; then
+            LABEL="main"
+            TAG="snapshot-latest"
+            ALIAS="latest"   # back-compat: main is also ':latest'
+          else
+            # release/nab-demo → nab-demo → snapshot-nab-demo-latest
+            LABEL="${BRANCH#release/}"
+            TAG="snapshot-${LABEL}-latest"
+            ALIAS=""
+          fi
+          echo "label=$LABEL" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "rolling=${LABEL}-latest" >> "$GITHUB_OUTPUT"
+          echo "alias=$ALIAS" >> "$GITHUB_OUTPUT"
+
+      # Parallel runs finish in any order; the rolling pointers only move to a
+      # descendant of the commit the snapshot points at now.
+      - name: Check ordering
+        id: order
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.tags.outputs.tag }}"
+          CUR=$(gh release view "$TAG" --json targetCommitish --jq .targetCommitish 2>/dev/null || true)
+          STATUS=identical
+          if [ -n "$CUR" ]; then
+            STATUS=$(gh api "repos/${{ github.repository }}/compare/${CUR}...${GITHUB_SHA}" --jq .status)
+          fi
+          case "$STATUS" in
+            ahead|identical)
+              echo "advance=true" >> "$GITHUB_OUTPUT" ;;
+            *)
+              echo "::notice::$TAG points at ${CUR:0:12}, which is $STATUS of this commit; leaving the rolling pointers"
+              echo "advance=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+
       - name: Download all artifacts
+        if: steps.order.outputs.advance == 'true'
         uses: actions/download-artifact@v7
         with:
           pattern: "*.tar.gz"
           path: artifacts/
 
       - name: Publish snapshot
-        id: publish
+        if: steps.order.outputs.advance == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           SHORT="${GITHUB_SHA:0:7}"
-          BRANCH="${{ github.ref_name }}"
-          if [[ "$BRANCH" == "main" ]]; then
-            LABEL="main"
-            TAG="snapshot-latest"
-          else
-            # release/nab-demo → nab-demo → snapshot-nab-demo-latest
-            LABEL="${BRANCH#release/}"
-            TAG="snapshot-${LABEL}-latest"
-          fi
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          LABEL="${{ steps.tags.outputs.label }}"
+          TAG="${{ steps.tags.outputs.tag }}"
 
           gh release delete "$TAG" --yes 2>/dev/null || true
           git tag -d "$TAG" 2>/dev/null || true
@@ -543,14 +538,33 @@ jobs:
           EOF
           )"
 
+      - name: Log in to GHCR
+        if: steps.order.outputs.advance == 'true'
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Advance rolling image tags
+        if: steps.order.outputs.advance == 'true'
+        run: |
+          SHORT="${GITHUB_SHA:0:7}"
+          ROLLING="${{ steps.tags.outputs.rolling }}"
+          ALIAS="${{ steps.tags.outputs.alias }}"
+          for IMAGE in "ghcr.io/${{ github.repository }}" "ghcr.io/${{ github.repository_owner }}/moqx-interop-client"; do
+            for TAG in "$ROLLING" ${ALIAS:+"$ALIAS"}; do
+              docker buildx imagetools create -t "${IMAGE}:${TAG}" \
+                "${IMAGE}:${SHORT}-amd64" \
+                "${IMAGE}:${SHORT}-arm64"
+            done
+          done
+
   # ════════════════════════════════════════════════════════════════════════════
   # Deploy: auto-deploy main to moqx-main.ci.openmoq.org
   # (release branches are deployed manually via deploy-relay.yml with their
-  # own branch-derived domain)
+  # own branch-derived domain). Skipped when a newer commit's run has already
+  # advanced the snapshot.
   # ════════════════════════════════════════════════════════════════════════════
 
   deploy:
-    if: github.ref_name == 'main'
+    if: github.ref_name == 'main' && needs.release.outputs.advanced == 'true'
     needs: [manifest, release]
     runs-on: [self-hosted, linode]
     env:
@@ -627,14 +641,15 @@ jobs:
 
       # Auto-deploy uses the shared core (docker/relay-deploy.sh) with stats ON,
       # so main keeps the stats stack + public read-only dashboard live. Pulls
-      # the compose-pinned :latest (this run's just-published image).
+      # this run's image by commit tag, not the registry's :latest, which a
+      # parallel run may have moved since.
       - name: Deploy (relay + stats + public dashboard)
         env:
           ENABLE_STATS: "true"
           STATS_USER: ${{ secrets.STATS_USER }}
           STATS_PASSWORD: ${{ secrets.STATS_PASSWORD }}
           GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
-        run: bash docker/relay-deploy.sh
+        run: PULL_IMAGE="ghcr.io/${{ github.repository }}:${GITHUB_SHA:0:7}" bash docker/relay-deploy.sh
 
   # ════════════════════════════════════════════════════════════════════════════
   # Prune build caches: keep the newest generation of each cache family.
