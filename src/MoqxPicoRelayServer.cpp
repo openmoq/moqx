@@ -70,11 +70,10 @@ MoqxPicoRelayServer::MoqxPicoRelayServer(
     std::shared_ptr<MoqxRelayContext> context,
     folly::IOThreadPoolExecutor* ioExecutor
 )
-    : MoQPicoQuicEventBaseServer(
+    : MoQPicoQuicShardedServer(
           resolveCert(listenerCfg),
           resolveKey(listenerCfg),
           listenerCfg.endpoint,
-          ioExecutor->getAllEventBases()[0],
           listenerCfg.moqtVersions,
           picoTransportConfigFromQuicConfig(listenerCfg.quic),
           moxygen::PicoWebTransportConfig{
@@ -85,8 +84,7 @@ MoqxPicoRelayServer::MoqxPicoRelayServer(
               .wtMaxSessions = 1,
           }
       ),
-      listenerCfg_(listenerCfg), context_(std::move(context)),
-      evb_(ioExecutor->getAllEventBases()[0].get()) {
+      listenerCfg_(listenerCfg), context_(std::move(context)), ioExecutor_(ioExecutor) {
   // Advertise on every listener: activation is bilateral and loop protection
   // must not vary by listener configuration.
   addSetupParameter(SetupParameter(folly::to_underlying(SetupKey::RELAY_HOPS), std::string{}));
@@ -102,23 +100,30 @@ void MoqxPicoRelayServer::stop() {
   }
   stopped_ = true;
   // Keep context_ alive: terminateClientSession can run after stop() returns,
-  // from handleClientSession coroutines still draining on the evb.
+  // from handleClientSession coroutines still draining on worker evbs.
   context_->stop();
-  evb_->runImmediatelyOrRunInEventBaseThreadAndWait([this] { MoQPicoQuicEventBaseServer::stop(); });
+  MoQPicoQuicShardedServer::stop();
 }
 
 void MoqxPicoRelayServer::setStatsRegistry(std::shared_ptr<stats::StatsRegistry> registry) {
   context_->setStatsRegistry(registry);
-  auto evbCollector = stats::EventBaseStatsCollector::create(registry, evb_);
-  auto collector =
-      stats::PicoQuicStatsCollector::create(std::move(registry), evb_, evbCollector.get());
-  setPicoQuicStatsCallback(std::move(collector));
+  setPicoQuicStatsCallbackFactory(
+      [registry](folly::EventBase* evb) -> std::shared_ptr<stats::PicoQuicStatsCollector> {
+        auto evbCollector = stats::EventBaseStatsCollector::create(registry, evb);
+        return stats::PicoQuicStatsCollector::create(registry, evb, evbCollector);
+      }
+  );
 }
 
 void MoqxPicoRelayServer::start() {
-  evb_->runImmediatelyOrRunInEventBaseThreadAndWait([this] {
-    MoQPicoQuicEventBaseServer::start(listenerCfg_.address);
-  });
+  auto evbKAs = ioExecutor_->getAllEventBases();
+  std::vector<folly::EventBase*> evbs;
+  evbs.reserve(evbKAs.size());
+  for (auto& ka : evbKAs) {
+    evbs.push_back(ka.get());
+  }
+  ioExecutor_ = nullptr;
+  MoQPicoQuicShardedServer::start(listenerCfg_.address, std::move(evbs));
 }
 
 void MoqxPicoRelayServer::start(const folly::SocketAddress& /*addr*/) {
@@ -131,7 +136,7 @@ void MoqxPicoRelayServer::onNewSession(std::shared_ptr<MoQSession> clientSession
 
 void MoqxPicoRelayServer::terminateClientSession(std::shared_ptr<MoQSession> session) {
   context_->onSessionEnd(session);
-  MoQPicoQuicEventBaseServer::terminateClientSession(std::move(session));
+  MoQPicoQuicShardedServer::terminateClientSession(std::move(session));
 }
 
 folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxPicoRelayServer::validateAuthority(
@@ -139,8 +144,7 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxPicoRelayServer::validat
     uint64_t negotiatedVersion,
     std::shared_ptr<MoQSession> session
 ) {
-  auto base =
-      MoQPicoQuicEventBaseServer::validateAuthority(clientSetup, negotiatedVersion, session);
+  auto base = MoQPicoQuicShardedServer::validateAuthority(clientSetup, negotiatedVersion, session);
   if (!base.hasValue()) {
     return base;
   }
