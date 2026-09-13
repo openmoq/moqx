@@ -555,7 +555,6 @@ private:
   folly::coro::Task<PublisherAttachment> attachNewLocalForwarderOnRelayExec(
       const moxygen::SubscribeRequest& subReq,
       LocalForwarderRegistry* localReg,
-      std::shared_ptr<moxygen::MoQForwarder> localFwd,
       folly::Executor* subscriberExec,
       std::shared_ptr<CrossExecFilter> crossExecFilter,
       bool forward
