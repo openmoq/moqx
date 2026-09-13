@@ -245,15 +245,69 @@ TEST(LocalForwarderRegistryTest, ReplaceOverReadyEntryInstallsSuccessor) {
   EXPECT_EQ(reg.getIfReady(kFtn), successor);
 }
 
-TEST(LocalForwarderRegistryTest, ReplaceFailsDisplacedWaiters) {
+// A waiter parked on the track's slot, not on the forwarder that happened to hold it, so
+// displacement leaves it parked and the forwarder that wins releases it — exactly once.
+TEST(LocalForwarderRegistryTest, ReplaceCarriesDisplacedWaitersToTheSuccessor) {
   Registry reg;
-  auto displaced = claimWith(reg, makeForwarder());
+  auto stale = claimWith(reg, makeForwarder());
   auto waiter = waiterOn(reg);
 
-  auto claim = reg.replace(kFtn, makeForwarder());
+  int wakes = 0;
+  std::shared_ptr<MoQForwarder> seenByWaiter;
+  auto observed = std::move(waiter)
+                      .via(&folly::InlineExecutor::instance())
+                      .thenTry([&](folly::Try<folly::Unit> t) {
+                        ++wakes;
+                        EXPECT_TRUE(t.hasValue());
+                        seenByWaiter = reg.getIfReady(kFtn);
+                      });
+
+  auto successorFwd = makeForwarder();
+  auto successor = reg.replace(kFtn, successorFwd);
+  EXPECT_EQ(wakes, 0) << "displacement is not an outcome to wake a waiter with";
+
+  // The successor owes the answer now, so the displaced owner resolving is not one either.
+  stale.markReady(InitialTrackState{});
+  EXPECT_EQ(wakes, 0);
+
+  successor.markReady(InitialTrackState{});
+  EXPECT_TRUE(observed.isReady());
+  EXPECT_EQ(wakes, 1);
+  EXPECT_EQ(seenByWaiter, successorFwd) << "released onto the forwarder that won the slot";
+}
+
+// The carried-over wait is still owed an answer: a successor whose setup fails must fail it
+// rather than leave it parked on an entry that is going away.
+TEST(LocalForwarderRegistryTest, DisplacedWaitersFailWhenTheSuccessorFails) {
+  Registry reg;
+  auto stale = claimWith(reg, makeForwarder());
+  auto waiter = waiterOn(reg);
+  auto successor = reg.replace(kFtn, makeForwarder());
+  EXPECT_FALSE(waiter.isReady());
+
+  successor.fail(std::runtime_error("upstream subscribe failed"));
 
   EXPECT_TRUE(settled(std::move(waiter)).hasException());
+  EXPECT_TRUE(std::holds_alternative<Absent>(reg.lookup(kFtn)));
+}
+
+// A resolved wait is not a promise that the entry is still ready when the waiter gets to
+// look: teardown and a fresh claim can both land in between, and the slot reads pending for
+// a second time. The subscribe path re-resolves in a loop for exactly this.
+TEST(LocalForwarderRegistryTest, AReclaimedSlotReadsPendingAgainAfterItsWaiterIsWoken) {
+  Registry reg;
+  auto first = makeForwarder();
+  auto claim = claimWith(reg, first);
+  auto waiter = waiterOn(reg);
+
   claim.markReady(InitialTrackState{});
+  ASSERT_TRUE(settled(std::move(waiter)).hasValue());
+
+  reg.remove(kFtn, first.get());
+  auto reclaim = claimWith(reg, makeForwarder());
+  EXPECT_TRUE(std::holds_alternative<Pending>(reg.lookup(kFtn)));
+
+  reclaim.markReady(InitialTrackState{});
 }
 
 // The bug identity checks exist for: a displaced owner must not release its
@@ -366,9 +420,9 @@ TEST(LocalForwarderRegistryTest, ParkingAnAbsentEntryOwesNothing) {
   // result.displaced goes out of scope here unredeemed, which must not abort.
 }
 
-// Displacing a pending entry is the intricate case: its waiters are failed, its
+// Displacing a pending entry is the intricate case: its waiters carry over, its
 // forwarder is parked, and the previous Claim is still out there holding a strong ref
-// and owing a resolution. That stale Claim must not disturb the park.
+// and owing a resolution. That stale Claim must not disturb the park or the waiters.
 TEST(LocalForwarderRegistryTest, ReplaceAndParkDisplacesAPendingEntry) {
   Registry reg;
   auto first = makeForwarder();
@@ -378,19 +432,20 @@ TEST(LocalForwarderRegistryTest, ReplaceAndParkDisplacesAPendingEntry) {
   first.reset();
 
   auto successor = reg.replaceAndPark(kFtn, makeForwarder());
-  EXPECT_TRUE(settled(std::move(waiter)).hasException())
-      << "a displaced entry's waiters are failed, not inherited";
+  EXPECT_FALSE(waiter.isReady()) << "a displaced entry's waiters are inherited, not failed";
 
   {
     auto dropped = std::move(stale);
   } // resolves against an entry it no longer owns
   EXPECT_FALSE(parked.expired()) << "the park still anchors it";
+  EXPECT_FALSE(waiter.isReady()) << "and the stale claim does not answer for the successor";
 
   auto displaced = reg.takeDisplaced(kFtn, std::move(successor.displaced));
   ASSERT_NE(displaced, nullptr);
   EXPECT_EQ(displaced, parked.lock());
 
   successor.claim.markReady(InitialTrackState{});
+  EXPECT_TRUE(settled(std::move(waiter)).hasValue());
 }
 
 // Each caller holds its own ticket, so two publishes racing on one thread reclaim

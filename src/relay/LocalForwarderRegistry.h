@@ -40,7 +40,9 @@ class LocalForwarderRegistry {
 public:
   struct Absent {};
   struct Pending {
-    // Fails if the setup fails, the entry is displaced, or the owner drops its Claim.
+    // Resolves once, for whichever forwarder ends up holding the entry: a value when that
+    // setup succeeds, an exception when it fails, is removed, or its owner drops its Claim.
+    // Displacement is not an outcome — the wait carries over to the replacement.
     folly::SemiFuture<folly::Unit> ready;
   };
   struct Ready {
@@ -128,9 +130,10 @@ public:
     bool initialStateSet_{false};
   };
 
-  // Engaged Claim ⇒ this call created the entry and owns setup. After awaiting a
-  // Pending, look up again rather than reusing a handle from before the suspend:
-  // the entry may have been displaced.
+  // Engaged Claim ⇒ this call created the entry and owns setup. A Pending resolves once, so
+  // look the entry up after awaiting it rather than reusing a handle from before the
+  // suspend: the forwarder that resolved it need not be the one that was there at the join,
+  // and a slot vacated and re-claimed since then reads pending a second time.
   using JoinResult = std::variant<Claim, Pending, Ready>;
 
   LocalForwarderRegistry() = default;
@@ -200,9 +203,9 @@ public:
   // identity-checked removal then no-ops. Dropping its last ref here is safe
   // precisely because this call is already on the thread that owns it.
   //
-  // A displaced entry's waiters are failed rather than inherited: releasing them
-  // onto a forwarder that no longer owns the entry is the restart this type exists
-  // to prevent.
+  // A displaced entry's waiters carry over to the replacement: they parked on the track's
+  // slot, not on an individual forwarder, and Pending hands them nothing to act on until
+  // the winner resolves it. Failing them instead only sends them back to look again.
   Claim
   replace(const moxygen::FullTrackName& ftn, std::shared_ptr<moxygen::MoQForwarder> forwarder) {
     return replaceImpl(ftn, std::move(forwarder), Park::No).claim;
@@ -275,20 +278,26 @@ public:
     if (it == forwarders_.end() || it->second.forwarder.get() != expected) {
       return;
     }
-    // Erasing destroys the promise, so anyone parked on it must be woken first.
-    if (it->second.ready) {
-      it->second.ready->setException(std::runtime_error("local forwarder removed"));
-    }
+    // Erasing destroys the promise, so anyone parked on it must be woken, and only once the
+    // entry is gone — a waiter resuming inline would otherwise re-park on it.
+    auto entry = std::move(it->second);
     forwarders_.erase(it);
+    if (entry.ready) {
+      entry.ready->setException(std::runtime_error("local forwarder removed"));
+    }
   }
 
 private:
   enum class Park { No, Yes };
 
+  // Held by shared_ptr so it can outlive the entry it was created for: displacement moves
+  // it to the replacement rather than minting a new one.
+  using Promise = std::shared_ptr<folly::SharedPromise<folly::Unit>>;
+
   struct Entry {
     std::shared_ptr<moxygen::MoQForwarder> forwarder;
     // Non-null iff the entry is pending; it is the state discriminator.
-    std::shared_ptr<folly::SharedPromise<folly::Unit>> ready;
+    Promise ready;
   };
 
   static State stateOf(const Entry& entry) {
@@ -304,20 +313,20 @@ private:
       Park park
   ) {
     XCHECK(forwarder) << "replace() with a null forwarder for " << ftn;
+    Promise inherited;
     if (auto it = forwarders_.find(ftn); it != forwarders_.end()) {
       XCHECK(it->second.forwarder != forwarder)
           << "replace() re-seats the forwarder that already holds the entry: " << ftn;
-      if (it->second.ready) {
-        it->second.ready->setException(std::runtime_error("local forwarder displaced"));
-      }
+      inherited = std::move(it->second.ready);
     }
-    return makePending(ftn, std::move(forwarder), park);
+    return makePending(ftn, std::move(forwarder), park, std::move(inherited));
   }
 
   ParkResult makePending(
       const moxygen::FullTrackName& ftn,
       std::shared_ptr<moxygen::MoQForwarder> forwarder,
-      Park park
+      Park park,
+      Promise inherited = nullptr
   ) {
     auto& entry = forwarders_[ftn];
     // Outlive the entry update: dropping the last ref here would run ~MoQForwarder,
@@ -328,21 +337,26 @@ private:
       parked = displaced.get();
       displaced_[ftn].push_back(std::move(displaced));
     }
-    entry.ready = std::make_shared<folly::SharedPromise<folly::Unit>>();
+    entry.ready =
+        inherited ? std::move(inherited) : std::make_shared<folly::SharedPromise<folly::Unit>>();
     return {Claim(this, ftn, std::move(forwarder)), ParkTicket(parked)};
   }
 
-  // A pending entry's promise is unfulfilled by construction: markReady and fail both
-  // clear the entry, so neither can run twice against the same promise. The
-  // identity check is what makes that hold across displacement — a stale owner
-  // finds an entry that is no longer its own and does nothing.
+  // A pending entry's promise is unfulfilled by construction: markReady and fail both take
+  // it out of the entry, so neither can run twice against the same promise, and a displaced
+  // one moves to the replacement still unfulfilled. The identity check is what makes that
+  // hold across displacement — a stale owner finds an entry that is no longer its own and
+  // does nothing, leaving the resolution owed by whoever holds the entry now.
+  //
+  // Both settle the entry before fulfilling, so a waiter that resumes inline reads the
+  // outcome it was woken for rather than the pending state it parked on.
   void markReady(const moxygen::FullTrackName& ftn, const moxygen::MoQForwarder* owner) {
     auto it = findPendingOwnedBy(ftn, owner);
     if (it == forwarders_.end()) {
       return;
     }
-    it->second.ready->setValue();
-    it->second.ready.reset();
+    auto ready = std::move(it->second.ready);
+    ready->setValue();
   }
 
   void fail(
@@ -354,8 +368,9 @@ private:
     if (it == forwarders_.end()) {
       return;
     }
-    it->second.ready->setException(std::move(ew));
+    auto entry = std::move(it->second);
     forwarders_.erase(it);
+    entry.ready->setException(std::move(ew));
   }
 
   using Map = folly::F14FastMap<moxygen::FullTrackName, Entry, moxygen::FullTrackName::hash>;

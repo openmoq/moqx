@@ -29,9 +29,6 @@
 namespace {
 constexpr uint8_t kDefaultUpstreamPriority = 128;
 constexpr std::chrono::seconds kUpstreamConnectWaitTimeout(5);
-// Each wait is one displacement of the thread's entry, which needs a competing
-// SUBSCRIBE or PUBLISH; the cap only stops a pathological ping-pong.
-constexpr int kMaxLocalForwarderJoinWaits = 8;
 
 // Fire-and-forget an upstream-update coroutine on exec — the
 // co_withExecutor(getKeepAliveToken(exec), ...).start() idiom shared by the
@@ -2318,23 +2315,17 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriber
     });
   };
 
-  // Another subscriber owns setup: wait, then re-resolve rather than demanding the entry be
-  // ready. Waking means the claim resolved, not that it won — the publisher forwarder
-  // displaces a mid-setup claim and leaves its own entry to wait on. Only an absent entry is
-  // a failed setup, and that failure is this subscriber's too.
-  for (int waits = 0; std::get_if<LocalForwarderRegistry::Pending>(&joined); ++waits) {
-    if (waits == kMaxLocalForwarderJoinWaits) {
-      XLOG(ERR) << "local forwarder entry kept being displaced during subscribe setup: " << ftn;
-      co_return setupFailed();
-    }
-    co_await folly::coro::co_awaitTry(
-        std::move(std::get<LocalForwarderRegistry::Pending>(joined).ready)
-    );
+  // Another setup on this thread owns the entry: park on it. The wait follows the slot across
+  // displacement, and the slot can be vacated and claimed again between the wake and the
+  // resume, so re-resolve each lap rather than trusting what was parked on. A lap costs a
+  // teardown and a re-claim, which is what makes the wait safe to leave uncapped.
+  while (auto* pending = std::get_if<LocalForwarderRegistry::Pending>(&joined)) {
+    co_await folly::coro::co_awaitTry(std::move(pending->ready));
     auto state = localReg->lookup(ftn);
     if (auto* ready = std::get_if<LocalForwarderRegistry::Ready>(&state)) {
       joined = std::move(*ready);
-    } else if (auto* displaced = std::get_if<LocalForwarderRegistry::Pending>(&state)) {
-      joined = std::move(*displaced);
+    } else if (auto* reclaimed = std::get_if<LocalForwarderRegistry::Pending>(&state)) {
+      joined = std::move(*reclaimed);
     } else {
       co_return setupFailed();
     }
