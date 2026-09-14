@@ -213,25 +213,71 @@ use_relay_thread: true
 use_local_forwarders: true
 listeners:
   - name: $name
+$quic_stack_line
     udp:
       socket:
         address: "::"
         port: $listen
-    tls:
-      insecure: true
+$tls_block
     endpoint: "/moq-relay"
     moqt_versions: $moqt_versions
 services:
   default:
     match:
       - authority: {any: true}
-        path: {prefix: "/"}
+$service_path_line
     cache:
       enabled: false
       max_tracks: 100
       max_groups_per_track: 3
 """
 )
+
+# Override to exercise the picoquic listener stack instead of the mvfst
+# default: MOQ_HARNESS_QUIC_STACK=picoquic. Picoquic rejects `insecure: true`
+# (openmoq/moxygen#176), so this also switches the listener to a real,
+# harness-generated cert.
+_QUIC_STACK = os.environ.get("MOQ_HARNESS_QUIC_STACK", "mvfst")
+
+
+def _tls_config(tmpdir: Path) -> tuple[str, str, str]:
+    if _QUIC_STACK != "picoquic":
+        return "", "    tls:\n      insecure: true\n", '        path: {prefix: "/"}\n'
+    cert = tmpdir / "harness-cert.pem"
+    key = tmpdir / "harness-key.pem"
+    if not cert.exists():
+        subprocess.run(
+            [
+                "openssl",
+                "req",
+                "-x509",
+                "-newkey",
+                "rsa:2048",
+                "-nodes",
+                "-keyout",
+                str(key),
+                "-out",
+                str(cert),
+                "-days",
+                "1",
+                "-subj",
+                "/CN=localhost",
+                "-addext",
+                "subjectAltName=DNS:localhost",
+            ],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    # picoquic's WebTransport endpoint table only matches exact paths
+    # (moxygen openmoq/moxygen#170-adjacent); a prefix match registers no
+    # endpoints at all and every connection is rejected.
+    return (
+        "    quic_stack: picoquic\n",
+        f'    tls:\n      insecure: false\n      cert_file: "{cert}"\n      key_file: "{key}"\n',
+        '        path: {exact: "/moq-relay"}\n',
+    )
+
 
 _CONFIG_UPSTREAM = Template(
     """\
@@ -443,12 +489,16 @@ class Harness:
 
     # ── Startup ────────────────────────────────────────────────────────────────
     def _write_config(self, relay):
+        quic_stack_line, tls_block, service_path_line = _tls_config(self.tmpdir)
         parts = [
             _CONFIG_HEAD.substitute(
                 relay_id=relay.relay_id,
                 name=relay.name,
                 listen=relay.listen,
                 moqt_versions=self.moqt_versions,
+                quic_stack_line=quic_stack_line,
+                tls_block=tls_block,
+                service_path_line=service_path_line,
             )
         ]
         if relay.upstream:
