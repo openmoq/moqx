@@ -10,6 +10,7 @@
 #include "MoqxRelay.h"
 #include "relay/ChannelSubscriber.h"
 #include "relay/CrossExecFilter.h"
+#include "relay/FetchToTrackConsumer.h"
 #include "relay/CrossExecForwarderCallback.h"
 #include "relay/CrossExecSubscriptionHandle.h"
 #include "relay/InitialTrackState.h"
@@ -2327,7 +2328,12 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriber
     if (auto err = checkRangeNotInPast(readyFwd, subReq)) {
       co_return folly::makeUnexpected(std::move(*err));
     }
-    co_return attachSubscriber(readyFwd, std::move(session), subReq, std::move(consumer));
+    auto replaySink = consumer;
+    auto attached = attachSubscriber(readyFwd, std::move(session), subReq, std::move(consumer));
+    if (attached.hasValue()) {
+      maybeReplayFromCache(subReq, readyFwd.largest(), replaySink);
+    }
+    co_return attached;
   }
 
   // This thread owns setup. The claim stays open until the tail, so same-thread attachers
@@ -2513,7 +2519,14 @@ MoqxRelay::subscribeImpl(SubscribeRequest subReq, std::shared_ptr<TrackConsumer>
     if (auto err = checkRangeNotInPast(*forwarder, subReq)) {
       co_return folly::makeUnexpected(std::move(*err));
     }
-    co_return attachSubscriber(*forwarder, std::move(session), subReq, std::move(consumer));
+    // Keep a handle on the consumer: attachSubscriber consumes it, and the
+    // replay has to write to the same subscriber once it is attached.
+    auto replaySink = consumer;
+    auto attached = attachSubscriber(*forwarder, std::move(session), subReq, std::move(consumer));
+    if (attached.hasValue()) {
+      maybeReplayFromCache(subReq, forwarder->largest(), replaySink);
+    }
+    co_return attached;
   }
 }
 
@@ -2721,6 +2734,38 @@ folly::coro::Task<Publisher::TrackStatusResult> MoqxRelay::trackStatusImpl(Track
       XLOG(DBG1) << "Upstream trackStatus succeeded";
     }
     co_return result;
+  }
+}
+
+void MoqxRelay::maybeReplayFromCache(
+    const SubscribeRequest& subReq,
+    std::optional<AbsoluteLocation> largest,
+    const std::shared_ptr<TrackConsumer>& consumer
+) {
+  if (!cache_ || !largest || !consumer) {
+    return;
+  }
+  // Only a filter that names a past location is asking for retained objects;
+  // LargestObject/NextGroupStart/LargestGroup all mean "from here on".
+  if (subReq.locType != LocationType::AbsoluteStart &&
+      subReq.locType != LocationType::AbsoluteRange) {
+    return;
+  }
+  if (!subReq.start || !(*subReq.start < *largest)) {
+    return;
+  }
+  // The live subscription starts at largest + 1 because moxygen clamps it
+  // there, so replaying up to and including largest covers the gap exactly.
+  AbsoluteLocation end = *largest;
+  if (subReq.locType == LocationType::AbsoluteRange && subReq.endGroup <= end.group) {
+    end = AbsoluteLocation{subReq.endGroup, kLocationMax.object};
+  }
+  auto adapter = std::make_shared<FetchToTrackConsumer>(consumer, subReq.priority);
+  auto written = cache_->replayCachedRange(subReq.fullTrackName, *subReq.start, end, adapter);
+  if (written > 0) {
+    XLOG(DBG1) << "Replayed " << written << " cached object(s) for " << subReq.fullTrackName
+               << " from {" << subReq.start->group << "," << subReq.start->object << "} to {"
+               << end.group << "," << end.object << "}";
   }
 }
 

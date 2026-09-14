@@ -9,6 +9,8 @@
 
 #include "MoqxCache.h"
 #include "relay/NullConsumers.h"
+#include <algorithm>
+#include <vector>
 #include <folly/logging/xlog.h>
 #include <moxygen/MoQTrackProperties.h>
 
@@ -1662,6 +1664,69 @@ folly::coro::Task<Publisher::FetchResult> MoqxCache::fetchImpl(
 
 // Returns valid CacheEntry* on cache hit, nullptr on miss.
 // Gap-skipping is handled by FetchRangeIterator before this is called.
+size_t MoqxCache::replayCachedRange(
+    const FullTrackName& ftn,
+    AbsoluteLocation start,
+    AbsoluteLocation end,
+    const std::shared_ptr<FetchConsumer>& consumer
+) {
+  if (!consumer || end < start) {
+    return 0;
+  }
+  auto trackIt = cache_.find(ftn);
+  if (trackIt == cache_.end()) {
+    return 0;
+  }
+  auto& track = *trackIt->second;
+
+  // The group map is unordered and a subscriber must see groups in ascending
+  // order, so collect the locations in range first and sort them.
+  std::vector<AbsoluteLocation> locations;
+  for (const auto& [groupID, group] : track.groups) {
+    if (groupID < start.group || groupID > end.group || !group) {
+      continue;
+    }
+    for (const auto& [objectID, entry] : group->objects) {
+      if (!entry || !entry->complete) {
+        continue;
+      }
+      AbsoluteLocation loc{groupID, objectID};
+      if (loc < start || end < loc) {
+        continue;
+      }
+      locations.push_back(loc);
+    }
+  }
+  if (locations.empty()) {
+    return 0;
+  }
+  std::sort(locations.begin(), locations.end());
+
+  const auto cachedNow = now();
+  size_t written = 0;
+  for (size_t i = 0; i < locations.size(); ++i) {
+    // Re-read through getCachedObjectMaybe so a TTL-expired object is dropped
+    // here the same way the fetch path drops it, rather than replayed stale.
+    auto* entry = getCachedObjectMaybe(track, locations[i], cachedNow);
+    if (!entry || !entry->payload) {
+      continue;
+    }
+    auto res = publishObject(
+        entry->status, consumer, locations[i], *entry, /*lastObject=*/false
+    );
+    if (res.hasError()) {
+      XLOG(DBG2) << "cache replay stopped for " << ftn << " at g=" << locations[i].group
+                 << " o=" << locations[i].object << " err=" << res.error().what();
+      break;
+    }
+    ++written;
+  }
+  // Always close the replay, including the partial case: an unfinished stream
+  // leaves the subscriber waiting on it.
+  consumer->endOfFetch();
+  return written;
+}
+
 MoqxCache::CacheEntry*
 MoqxCache::getCachedObjectMaybe(CacheTrack& track, AbsoluteLocation current, TimePoint now) {
   auto groupIt = track.groups.find(current.group);

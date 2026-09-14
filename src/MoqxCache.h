@@ -185,6 +185,27 @@ public:
   // Groups within each track are returned in ascending groupId order.
   std::vector<TrackStats> getTrackStats() const;
 
+  // Serves the objects the cache already holds in [start, end] to `consumer`,
+  // in ascending order, and never goes upstream: a location it does not hold is
+  // skipped rather than fetched. Returns how many objects were written.
+  //
+  // This exists because moxygen's forwarder is live-only and clamps a subscribe
+  // whose start is in the past forward to largest + 1 (toSubscribeRange in
+  // moxygen/MoQLocation.h), so a subscriber that asked for retained objects is
+  // silently given future ones instead. Replaying [start, largest] here and
+  // leaving the live subscription clamped to largest + 1 covers the request
+  // exactly once, with no overlap and no gap.
+  //
+  // Unlike fetch(), this takes no upstream publisher on purpose: a replay is
+  // best-effort and must not turn a subscribe into an upstream FETCH against a
+  // publisher that may not serve one.
+  size_t replayCachedRange(
+      const moxygen::FullTrackName& ftn,
+      moxygen::AbsoluteLocation start,
+      moxygen::AbsoluteLocation end,
+      const std::shared_ptr<moxygen::FetchConsumer>& consumer
+  );
+
   // Entry for single cached object
   struct CacheEntry {
     CacheEntry(
