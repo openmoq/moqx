@@ -142,6 +142,66 @@ TEST_P(MoQRelayStateTest, IngestCountersAreReportedInEveryMode) {
   exec_->drive();
 }
 
+// Regression: the upstream can write objects in the same batch as its SUBSCRIBE_OK, while
+// the relay is still setting up the first subscriber. In LocalForwarder mode a relay chain
+// filter that reaches the forwarder before its downstream is wired opens a dead subgroup,
+// and the forwarder drops the chain for the rest of the track.
+TEST_P(MoQRelayStateTest, IngestCountersCoverObjectsSentBeforeSubscribeOk) {
+  auto publisherSession = createMockSession();
+  auto subSession = createMockSession();
+
+  // Announce without publishing, so the first subscriber makes the relay pull the track.
+  doPublishNamespace(publisherSession, kTestNamespace);
+
+  auto mockConsumer = createMockConsumer();
+  auto mockSg = createMockSubgroupConsumer();
+  EXPECT_CALL(*mockConsumer, beginSubgroup(0, 0, _, _))
+      .WillRepeatedly([&](uint64_t, uint64_t, uint8_t, moxygen::BeginSubgroupOptions) {
+        return folly::makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(mockSg);
+      });
+  EXPECT_CALL(*mockSg, object(_, _, _, _))
+      .WillRepeatedly(Return(folly::makeExpected<MoQPublishError>(folly::unit)));
+
+  SubscribeOk upstreamOk;
+  upstreamOk.requestID = RequestID(1);
+  upstreamOk.trackAlias = TrackAlias(1);
+  upstreamOk.expires = std::chrono::milliseconds(0);
+  upstreamOk.groupOrder = GroupOrder::OldestFirst;
+
+  std::shared_ptr<SubgroupConsumer> upstreamSg;
+  EXPECT_CALL(*publisherSession, subscribe(_, _))
+      .WillOnce([&](const SubscribeRequest&, std::shared_ptr<TrackConsumer> consumer) {
+        // Write before answering: this object reaches the forwarder while the relay is
+        // still inside the setup that installs the chain.
+        auto sg = consumer->beginSubgroup(0, 0, 0);
+        EXPECT_TRUE(sg.hasValue());
+        upstreamSg = sg.value();
+        EXPECT_TRUE(upstreamSg->object(0, folly::IOBuf::copyBuffer("abc")).hasValue());
+        auto handle = std::make_shared<NiceMock<MockSubscriptionHandle>>(upstreamOk);
+        return folly::coro::makeTask<Publisher::SubscribeResult>(
+            folly::Expected<std::shared_ptr<SubscriptionHandle>, SubscribeError>(handle)
+        );
+      });
+
+  subscribeToTrack(subSession, kTestTrackName, mockConsumer, RequestID(0));
+  ASSERT_NE(upstreamSg, nullptr) << "relay should have issued an upstream subscribe";
+
+  EXPECT_TRUE(upstreamSg->object(1, folly::IOBuf::copyBuffer("de")).hasValue());
+  EXPECT_TRUE(upstreamSg->endOfSubgroup().hasValue());
+  drainExecs();
+
+  auto state = dumpState();
+
+  const auto* sub = findSubscription(state, "track1");
+  ASSERT_NE(sub, nullptr) << folly::toJson(state);
+  EXPECT_EQ((*sub)["total_objects_received"].asInt(), 2) << folly::toJson(*sub);
+  EXPECT_EQ((*sub)["total_groups_received"].asInt(), 1);
+
+  removeSession(publisherSession);
+  removeSession(subSession);
+  exec_->drive();
+}
+
 // Subgroups of different groups interleave on the wire, so a one-deep "did the
 // group change" check counts every switch as a new group. The MRU window
 // shared with TrackStatsFilter is what keeps this at 2.
