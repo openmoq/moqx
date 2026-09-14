@@ -12,6 +12,7 @@
 #include "relay/CrossExecFilter.h"
 #include "relay/CrossExecForwarderCallback.h"
 #include "relay/CrossExecSubscriptionHandle.h"
+#include "relay/FetchToTrackConsumer.h"
 #include "relay/InitialTrackState.h"
 #include "relay/LocalForwarderCallback.h"
 #include "relay/NullConsumers.h"
@@ -2327,7 +2328,12 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriber
     if (auto err = checkRangeNotInPast(readyFwd, subReq)) {
       co_return folly::makeUnexpected(std::move(*err));
     }
-    co_return attachSubscriber(readyFwd, std::move(session), subReq, std::move(consumer));
+    auto replaySink = consumer;
+    auto attached = attachSubscriber(readyFwd, std::move(session), subReq, std::move(consumer));
+    if (attached.hasValue()) {
+      maybeReplayFromCache(subReq, readyFwd.largest(), replaySink);
+    }
+    co_return attached;
   }
 
   // This thread owns setup. The claim stays open until the tail, so same-thread attachers
@@ -2347,6 +2353,10 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriber
 
   // addSubscriber before the relay hop: numForwardingSubscribers() must be correct
   // when addChannelSubscriber runs on publisherExec, so forward flag is right from the start.
+  // Kept for the cache replay in the tail: addSubscriber consumes the consumer,
+  // and a subscriber that lands on a thread with no local forwarder yet still
+  // needs the retained objects its filter asked for.
+  auto replaySink = consumer;
   auto sub = localFwd->addSubscriber(session, subReq, std::move(consumer));
   if (!sub) {
     co_return folly::makeUnexpected(makeAddSubscriberError(subReq.requestID));
@@ -2400,6 +2410,21 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriber
   // Also on the subscriber, so a post-SUBSCRIBE_OK joining fetch resolves.
   attach.initial.applyTo(*sub);
   replayPendingFowarderEvents(localFwd.get(), attach.finalCallback, *pendingCb, forward);
+  // This path builds a *new* local forwarder while joining an upstream
+  // subscription that already exists, which is what a reload landing on another
+  // io thread does. It needs the same replay as the path that joins a local
+  // forwarder already on this thread -- without it the fix works or not
+  // depending on which thread the viewer happens to land on. The largest comes
+  // from the upstream OK rather than the forwarder, which has seen nothing yet.
+  //
+  // Not when this subscriber is the one that created the upstream subscription:
+  // the publisher answers that SUBSCRIBE itself, and everything it sends lands
+  // in the cache *and* on this subscriber during setup, so a replay here would
+  // deliver every one of those objects a second time. Measured: a first viewer
+  // received the six catalog objects twice.
+  if (!attach.ownsRelayChain) {
+    maybeReplayFromCache(subReq, attach.initial.largest, replaySink);
+  }
   localFwd->tryProcessNewGroupRequest(subReq.params);
   claim.markReady();
   co_return sub;
@@ -2513,7 +2538,14 @@ MoqxRelay::subscribeImpl(SubscribeRequest subReq, std::shared_ptr<TrackConsumer>
     if (auto err = checkRangeNotInPast(*forwarder, subReq)) {
       co_return folly::makeUnexpected(std::move(*err));
     }
-    co_return attachSubscriber(*forwarder, std::move(session), subReq, std::move(consumer));
+    // Keep a handle on the consumer: attachSubscriber consumes it, and the
+    // replay has to write to the same subscriber once it is attached.
+    auto replaySink = consumer;
+    auto attached = attachSubscriber(*forwarder, std::move(session), subReq, std::move(consumer));
+    if (attached.hasValue()) {
+      maybeReplayFromCache(subReq, forwarder->largest(), replaySink);
+    }
+    co_return attached;
   }
 }
 
@@ -2722,6 +2754,67 @@ folly::coro::Task<Publisher::TrackStatusResult> MoqxRelay::trackStatusImpl(Track
     }
     co_return result;
   }
+}
+
+void MoqxRelay::maybeReplayFromCache(
+    const SubscribeRequest& subReq,
+    std::optional<AbsoluteLocation> largest,
+    const std::shared_ptr<TrackConsumer>& consumer
+) {
+  if (!cache_ || !largest || !consumer) {
+    return;
+  }
+  // Only a filter that names a past location is asking for retained objects;
+  // LargestObject/NextGroupStart/LargestGroup all mean "from here on".
+  //
+  // AbsoluteRange is deliberately not handled: moxygen reads its end as
+  // *exclusive* ({endGroup, 0}), so serving it here means duplicating that
+  // convention in a second place, and getting it wrong sends a subscriber a
+  // whole group it did not ask for. AbsoluteStart is what a player asking for
+  // the catalog sends, and it is unambiguous.
+  if (subReq.locType != LocationType::AbsoluteStart) {
+    return;
+  }
+  // Replay whenever the subscriber asked for a location at or before the newest
+  // retained object. `start == largest` matters and was wrong before: moxygen
+  // only clamps when start < largest, so a subscriber asking for exactly the
+  // newest object is left subscribed from that object onward and the forwarder,
+  // having already published it, never sends anything. That is the catalog case.
+  if (!subReq.start || *largest < *subReq.start) {
+    return;
+  }
+  // Never reach back before the start of the largest group. AbsoluteStart {0,0}
+  // is how draft-16 spells an unfiltered subscribe (moxygen decodes an absent
+  // filter to exactly that, and @moq/net sends it as its default join), and a
+  // subscriber asking for "everything" wants to join live, not to download the
+  // cache: the current group is what its decoder can start on and what a
+  // moq-lite relay would have handed it. It also bounds the burst to one group
+  // no matter how much is retained. For a catalog track, one object per group,
+  // it is exactly one object -- the newest catalog.
+  AbsoluteLocation start = *subReq.start;
+  const AbsoluteLocation groupStart{largest->group, 0};
+  if (start < groupStart) {
+    start = groupStart;
+  }
+  // The live subscription starts at largest + 1 because moxygen clamps it
+  // there, so replaying up to and including largest covers the gap exactly.
+  //
+  // This runs synchronously right after the subscriber was attached, on the
+  // executor that owns its consumer, so no live object can reach the
+  // subscriber before the replay does. That ordering is what keeps the relay
+  // from writing an older group after a newer one, which a session may reject
+  // as MALFORMED_TRACK.
+  const AbsoluteLocation end = *largest;
+  auto adapter = std::make_shared<FetchToTrackConsumer>(consumer, subReq.priority);
+  auto written = cache_->replayCachedRange(subReq.fullTrackName, start, end, adapter);
+  // INFO rather than DBG: this fires once per late subscriber, and when it does
+  // not fire the symptom is a viewer that hangs with no error anywhere. Being
+  // able to see both outcomes in an ordinary production log is the difference
+  // between diagnosing that in minutes and in days.
+  XLOG(INFO) << "Cache replay for " << subReq.fullTrackName << " wrote " << written
+             << " object(s) from {" << start.group << "," << start.object << "} to {" << end.group
+             << "," << end.object << "} (asked from {" << subReq.start->group << ","
+             << subReq.start->object << "})";
 }
 
 void MoqxRelay::onEmpty(MoQForwarder* forwarder) {

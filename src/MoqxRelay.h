@@ -335,6 +335,19 @@ private:
   // FTN-keyed impl variants — called by the MoQForwarder::Callback overrides
   // above (single-thread) or by WeakRelayForwarderCallback on relay exec.
   void onEmptyImpl(const moxygen::FullTrackName& ftn);
+
+  // Hands a subscriber the retained objects its filter asked for. moxygen's
+  // forwarder is live-only and clamps a past AbsoluteStart forward to
+  // largest + 1 (toSubscribeRange), so without this a subscriber that asked for
+  // what the relay already holds is answered SUBSCRIBE_OK and then sent
+  // nothing until the publisher happens to produce a new object -- which for a
+  // catalog track, written once per broadcast, is never. Replaying
+  // [start, largest] here pairs exactly with the clamped live subscription.
+  void maybeReplayFromCache(
+      const moxygen::SubscribeRequest& subReq,
+      std::optional<moxygen::AbsoluteLocation> largest,
+      const std::shared_ptr<moxygen::TrackConsumer>& consumer
+  );
   void forwardChangedImpl(const moxygen::FullTrackName& ftn, bool forward);
   void newGroupRequestedImpl(const moxygen::FullTrackName& ftn, uint64_t group);
 

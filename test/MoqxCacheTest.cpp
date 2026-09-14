@@ -9,6 +9,7 @@
 
 #include "MoqxCache.h"
 #include "TestUtils.h"
+#include <algorithm>
 #include <folly/coro/Collect.h>
 #include <folly/coro/GtestHelpers.h>
 #include <folly/io/async/EventBase.h>
@@ -18,6 +19,7 @@
 #include <folly/portability/GTest.h>
 #include <moxygen/MoQTrackProperties.h>
 #include <moxygen/test/Mocks.h>
+#include <vector>
 
 using namespace testing;
 namespace openmoq::moqx::test {
@@ -4644,4 +4646,107 @@ CO_TEST_F(MoqxCacheTest, FetchWritebackObjectPayloadAfterRefusedBeginObject) {
     EXPECT_EQ(payload.error().code, MoQPublishError::MALFORMED_TRACK);
   }
 }
+
+// A subscribe that names a past location is served from the cache in ascending
+// order, closed range, and the fetch is ended exactly once.
+TEST_F(MoqxCacheTest, ReplayCachedRangeServesRetainedObjectsInOrder) {
+  auto writeback = cache_.getSubscribeWriteback(kTestTrackName, trackConsumer_);
+  for (uint64_t g = 0; g <= 5; ++g) {
+    writeback->datagram(ObjectHeader(g, 0, 0, 0, 100), makeBuf(100));
+  }
+
+  std::vector<AbsoluteLocation> seen;
+  auto consumer = std::make_shared<NiceMock<MockFetchConsumer>>();
+  ON_CALL(*consumer, object(_, _, _, _, _, _, _))
+      .WillByDefault(Invoke([&](uint64_t g, uint64_t, uint64_t o, Payload, Extensions, bool, bool) {
+        seen.push_back(AbsoluteLocation{g, o});
+        return folly::unit;
+      }));
+  EXPECT_CALL(*consumer, endOfFetch()).WillOnce(Return(folly::unit));
+
+  EXPECT_EQ(cache_.replayCachedRange(kTestTrackName, {2, 0}, {5, 0}, consumer), 4u);
+  ASSERT_EQ(seen.size(), 4u);
+  EXPECT_EQ(seen.front(), (AbsoluteLocation{2, 0}));
+  EXPECT_EQ(seen.back(), (AbsoluteLocation{5, 0}));
+  EXPECT_TRUE(std::is_sorted(seen.begin(), seen.end()));
+}
+
+// A location the cache does not hold is skipped, never fetched, and a track
+// the cache has never seen replays nothing and does not touch the consumer.
+TEST_F(MoqxCacheTest, ReplayCachedRangeSkipsGapsAndUnknownTracks) {
+  auto writeback = cache_.getSubscribeWriteback(kTestTrackName, trackConsumer_);
+  for (uint64_t g : {0, 1, 4, 5}) {
+    writeback->datagram(ObjectHeader(g, 0, 0, 0, 100), makeBuf(100));
+  }
+
+  auto consumer = std::make_shared<NiceMock<MockFetchConsumer>>();
+  ON_CALL(*consumer, object(_, _, _, _, _, _, _)).WillByDefault(Return(folly::unit));
+  EXPECT_CALL(*consumer, endOfFetch()).WillOnce(Return(folly::unit));
+  EXPECT_EQ(cache_.replayCachedRange(kTestTrackName, {0, 0}, {5, 0}, consumer), 4u);
+
+  auto untouched = std::make_shared<NiceMock<MockFetchConsumer>>();
+  EXPECT_CALL(*untouched, object(_, _, _, _, _, _, _)).Times(0);
+  EXPECT_CALL(*untouched, endOfFetch()).Times(0);
+  FullTrackName unknown{TrackNamespace{{"nobody"}}, "published"};
+  EXPECT_EQ(cache_.replayCachedRange(unknown, {0, 0}, {5, 0}, untouched), 0u);
+}
+
+// A replay runs inline on the subscriber's executor, so it is capped; past the
+// cap the newest objects are kept, because a late joiner wants to reach live.
+TEST_F(MoqxCacheTest, ReplayCachedRangeKeepsTheNewestObjectsPastTheCap) {
+  auto writeback = cache_.getSubscribeWriteback(kTestTrackName, trackConsumer_);
+  for (uint64_t g = 0; g < 300; ++g) {
+    writeback->datagram(ObjectHeader(g, 0, 0, 0, 10), makeBuf(10));
+  }
+
+  std::vector<uint64_t> groups;
+  auto consumer = std::make_shared<NiceMock<MockFetchConsumer>>();
+  ON_CALL(*consumer, object(_, _, _, _, _, _, _))
+      .WillByDefault(Invoke([&](uint64_t g, uint64_t, uint64_t, Payload, Extensions, bool, bool) {
+        groups.push_back(g);
+        return folly::unit;
+      }));
+  EXPECT_CALL(*consumer, endOfFetch()).WillOnce(Return(folly::unit));
+
+  EXPECT_EQ(cache_.replayCachedRange(kTestTrackName, {0, 0}, {299, 0}, consumer), 256u);
+  ASSERT_EQ(groups.size(), 256u);
+  EXPECT_EQ(groups.front(), 44u);
+  EXPECT_EQ(groups.back(), 299u);
+}
+
+// Byte-pressure eviction walks a global LRU. A track written once at the start
+// of a broadcast (a catalog) is always the oldest, so it was the first to go
+// when a media track filled the cache -- after which no late subscriber could
+// be given it at all. The newest group of every live track is now off limits.
+TEST_F(MoqxCacheTest, ByteLimitEvictionSparesEachLiveTracksNewestGroup) {
+  cache_.setMinEvictionBytes(0);
+  cache_.setMaxCachedBytes(700);
+
+  // The "catalog": six groups written up front, then nothing more.
+  FullTrackName catalog{TrackNamespace{{"live"}}, "catalog"};
+  auto catalogWriteback = cache_.getSubscribeWriteback(catalog, trackConsumer_);
+  for (uint64_t g = 0; g <= 5; ++g) {
+    catalogWriteback->datagram(ObjectHeader(g, 0, 0, 0, 100), makeBuf(100));
+  }
+
+  // The "video": keeps writing, and pushes the cache over its byte limit.
+  FullTrackName video{TrackNamespace{{"live"}}, "video"};
+  auto videoWriteback = cache_.getSubscribeWriteback(video, trackConsumer_);
+  for (uint64_t g = 0; g <= 9; ++g) {
+    videoWriteback->datagram(ObjectHeader(g, 0, 0, 0, 100), makeBuf(100));
+  }
+
+  // Older groups of both tracks are evicted; each live track keeps its newest.
+  EXPECT_TRUE(cache_.hasCachedObject(catalog, {5, 0}));
+  EXPECT_FALSE(cache_.hasCachedObject(catalog, {0, 0}));
+  EXPECT_TRUE(cache_.hasCachedObject(video, {9, 0}));
+  EXPECT_FALSE(cache_.hasCachedObject(video, {0, 0}));
+
+  // And that newest catalog object is exactly what a late subscriber is served.
+  auto consumer = std::make_shared<NiceMock<MockFetchConsumer>>();
+  EXPECT_CALL(*consumer, object(5, _, 0, _, _, _, _)).WillOnce(Return(folly::unit));
+  EXPECT_CALL(*consumer, endOfFetch()).WillOnce(Return(folly::unit));
+  EXPECT_EQ(cache_.replayCachedRange(catalog, {5, 0}, {5, 0}, consumer), 1u);
+}
+
 } // namespace openmoq::moqx::test

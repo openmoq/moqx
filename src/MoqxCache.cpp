@@ -9,8 +9,11 @@
 
 #include "MoqxCache.h"
 #include "relay/NullConsumers.h"
+#include <algorithm>
 #include <folly/logging/xlog.h>
+#include <iterator>
 #include <moxygen/MoQTrackProperties.h>
+#include <vector>
 
 // Maxmimum cache size / per track? Number of groups
 // Fancy: handle streaming incomplete objects (forwarder?)
@@ -20,6 +23,10 @@ using namespace moxygen;
 
 // Cap on prior-gap validation scans to avoid O(n) work for huge gaps.
 constexpr uint64_t kMaxGapValidation = 100;
+
+// Cap on how many retained objects one subscribe may replay. Bounds the inline
+// work a single late subscriber can cost the executor it landed on.
+constexpr size_t kMaxReplayObjects = 256;
 
 // On the wire an end object of 0 asks for all of the end group; every other
 // value is already one past the last object.  Everything inside the cache
@@ -1660,6 +1667,85 @@ folly::coro::Task<Publisher::FetchResult> MoqxCache::fetchImpl(
   co_return nullptr;
 }
 
+size_t MoqxCache::replayCachedRange(
+    const FullTrackName& ftn,
+    AbsoluteLocation start,
+    AbsoluteLocation end,
+    const std::shared_ptr<FetchConsumer>& consumer
+) {
+  if (!consumer || end < start) {
+    return 0;
+  }
+  auto trackIt = cache_.find(ftn);
+  if (trackIt == cache_.end()) {
+    return 0;
+  }
+  auto& track = *trackIt->second;
+
+  // The group map is unordered and a subscriber must see groups in ascending
+  // order, so collect the locations in range first and sort them.
+  std::vector<AbsoluteLocation> locations;
+  for (const auto& [groupID, group] : track.groups) {
+    if (groupID < start.group || groupID > end.group || !group) {
+      continue;
+    }
+    for (const auto& [objectID, entry] : group->objects) {
+      if (!entry || !entry->complete) {
+        continue;
+      }
+      AbsoluteLocation loc{groupID, objectID};
+      if (loc < start || end < loc) {
+        continue;
+      }
+      locations.push_back(loc);
+    }
+  }
+  if (locations.empty()) {
+    return 0;
+  }
+  std::sort(locations.begin(), locations.end());
+
+  // A replay writes inline on the executor that owns the subscriber, so it has
+  // to be bounded: a subscriber asking from the start of a busy track could
+  // otherwise pull every retained group at once. When the range is larger than
+  // the cap, keep the newest objects rather than the oldest -- a late joiner
+  // wants to catch up to live, and the tracks this exists for (a catalog is one
+  // object per group) are far below the cap anyway.
+  if (locations.size() > kMaxReplayObjects) {
+    XLOG(DBG1) << "Replay for " << ftn << " truncated from " << locations.size() << " to "
+               << kMaxReplayObjects << " objects";
+    locations.erase(locations.begin(), locations.end() - kMaxReplayObjects);
+  }
+
+  const auto cachedNow = now();
+  size_t written = 0;
+  for (size_t i = 0; i < locations.size(); ++i) {
+    // Re-read through getCachedObjectMaybe so a TTL-expired object is dropped
+    // here the same way the fetch path drops it, rather than replayed stale.
+    auto* entry = getCachedObjectMaybe(track, locations[i], cachedNow);
+    if (!entry) {
+      continue;
+    }
+    // Only a NORMAL object carries a payload; END_OF_GROUP and END_OF_TRACK are
+    // markers and must still be replayed, or the subscriber never learns the
+    // group ended.
+    if (entry->status == ObjectStatus::NORMAL && !entry->payload) {
+      continue;
+    }
+    auto res = publishObject(entry->status, consumer, locations[i], *entry, /*lastObject=*/false);
+    if (res.hasError()) {
+      XLOG(DBG2) << "cache replay stopped for " << ftn << " at g=" << locations[i].group
+                 << " o=" << locations[i].object << " err=" << res.error().msg;
+      break;
+    }
+    ++written;
+  }
+  // Always close the replay, including the partial case: an unfinished stream
+  // leaves the subscriber waiting on it.
+  consumer->endOfFetch();
+  return written;
+}
+
 // Returns valid CacheEntry* on cache hit, nullptr on miss.
 // Gap-skipping is handled by FetchRangeIterator before this is called.
 MoqxCache::CacheEntry*
@@ -2410,34 +2496,66 @@ bool MoqxCache::evictForByteLimitIfNeeded() {
   size_t targetBytes =
       minEvictionBytes_ < maxCachedBytes_ ? maxCachedBytes_ - minEvictionBytes_ : 0;
 
+  // The newest group of a live track is a subscriber's join point: it is what a
+  // subscribe asking for retained objects is answered with, and for a track
+  // written once per broadcast -- a catalog -- it is the only copy the relay
+  // will ever hold. It is never the newest *bytes*, though: a catalog is written
+  // at start and media is written continuously, so a global LRU under byte
+  // pressure walks to the catalog first and evicts it within a minute of one
+  // 2.5 Mbps stream filling a 16 MB cache. Measured: catalog groups=0 beside a
+  // video track holding 27. Keep one group per live track out of this loop's
+  // reach; everything older is fair game.
+  auto isJoinPoint = [](const CacheTrack& track, uint64_t groupID) {
+    return track.liveWritebackCount > 0 && track.largestGroupAndObject.has_value() &&
+           track.largestGroupAndObject->group == groupID;
+  };
+
   // Evict oldest evictable groups globally (covers both live and non-live
   // tracks). After evicting a group from a non-live (fully evictable) track
   // that becomes empty, also evict the empty track shell.
   while (totalCachedBytes_ > targetBytes && !globalGroupLRU_.empty()) {
-    const auto& [ftn, groupID] = globalGroupLRU_.back();
-    auto trackIt = cache_.find(ftn);
-    if (trackIt == cache_.end()) {
-      // Stale entry — should not happen since evictTrack now calls evictGroup
-      // for every group, but guard defensively against future code paths.
-      XLOG(DFATAL) << "globalGroupLRU_ has stale entry for evicted track: " << ftn;
-      globalGroupLRU_.pop_back();
+    // Oldest first, skipping join points. Protected entries are at most one per
+    // live track and sit at the old end, so the walk past them is short.
+    auto victim = globalGroupLRU_.end();
+    bool restart = false;
+    for (auto rit = globalGroupLRU_.rbegin(); rit != globalGroupLRU_.rend(); ++rit) {
+      auto trackIt = cache_.find(rit->first);
+      if (trackIt == cache_.end()) {
+        // Stale entry — should not happen since evictTrack calls evictGroup for
+        // every group, but guard defensively against future code paths.
+        XLOG(DFATAL) << "globalGroupLRU_ has stale entry for evicted track: " << rit->first;
+        globalGroupLRU_.erase(std::prev(rit.base()));
+        restart = true;
+        break;
+      }
+      if (isJoinPoint(*trackIt->second, rit->second)) {
+        continue;
+      }
+      victim = std::prev(rit.base());
+      break;
+    }
+    if (restart) {
       continue;
     }
-    auto& track = *trackIt->second;
+    if (victim == globalGroupLRU_.end()) {
+      // Only join points remain.
+      break;
+    }
+    // Copy: evictGroup() erases this node.
+    const auto [ftn, groupID] = *victim;
+    auto& track = *cache_.find(ftn)->second;
     XLOG(DBG1) << "Evicting group " << groupID << " from track " << ftn
                << " for byte limit (bytes: " << totalCachedBytes_ << " > limit: " << maxCachedBytes_
                << ")";
-    // evictGroup() erases the globalGroupLRU_ node, invalidating ftn/groupID.
-    // Use trackIt->first for any post-eviction access to the track name.
     evictGroup(track, groupID);
     if (track.groups.empty() && track.canEvict()) {
-      evictTrack(trackIt->first);
+      evictTrack(ftn);
     }
   }
 
   if (totalCachedBytes_ > maxCachedBytes_) {
-    XLOG(DBG1) << "Cannot reduce cache below byte limit, all evictable "
-                  "groups are actively being written. Bytes: "
+    XLOG(DBG1) << "Cannot reduce cache below byte limit: every remaining group is "
+                  "being written or is a live track's join point. Bytes: "
                << totalCachedBytes_ << ", limit: " << maxCachedBytes_;
     return false;
   }
