@@ -14,17 +14,19 @@
 #include <folly/executors/IOThreadPoolExecutor.h>
 #include <moxygen/events/MoQExecutor.h>
 #include <moxygen/mlog/MLoggerFactory.h>
-#include <moxygen/openmoq/transport/pico/MoQPicoQuicEventBaseServer.h>
+#include <moxygen/openmoq/transport/pico/MoQPicoQuicShardedServer.h>
 #include <proxygen/lib/http/webtransport/WebTransport.h>
 
 namespace openmoq::moqx {
 
 // MoQ relay server backed by the picoquic QUIC stack.
 //
-// Picoquic lacks packet steering across threads, so even though the full
-// IOThreadPoolExecutor is passed in (for API symmetry with MoqxRelayServer),
-// the server always pins itself to evbKAs[0] internally.
-class MoqxPicoRelayServer : public moxygen::MoQPicoQuicEventBaseServer {
+// Shards across every EventBase in the supplied IOThreadPoolExecutor via
+// SO_REUSEPORT (see MoQPicoQuicShardedServer). QUIC connection migration is
+// disabled automatically whenever more than one shard is in use, since
+// plain SO_REUSEPORT hashing cannot route a migrated connection's packets
+// to the shard holding its state.
+class MoqxPicoRelayServer : public moxygen::MoQPicoQuicShardedServer {
 public:
   MoqxPicoRelayServer(
       const config::ListenerConfig& listenerCfg,
@@ -68,7 +70,7 @@ protected:
 private:
   config::ListenerConfig listenerCfg_;
   std::shared_ptr<MoqxRelayContext> context_;
-  folly::EventBase* evb_;
+  folly::IOThreadPoolExecutor* ioExecutor_;
   bool stopped_{false};
 };
 

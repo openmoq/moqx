@@ -34,10 +34,10 @@ public:
   static std::shared_ptr<PicoQuicStatsCollector> create(
       std::shared_ptr<StatsRegistry> registry,
       folly::EventBase* evb,
-      EventBaseStatsCollector* evbCollector = nullptr
+      std::shared_ptr<EventBaseStatsCollector> evbCollector = nullptr
   );
 
-  ~PicoQuicStatsCollector() override = default;
+  ~PicoQuicStatsCollector() override;
 
   // StatsCollectorBase
   StatsSnapshot snapshot() const override;
@@ -57,6 +57,7 @@ private:
   PicoQuicStatsCollector(folly::EventBase* evb);
 
   folly::EventBase* evb_;
+  std::weak_ptr<EventBaseStatsCollector> evbCollector_;
 
   uint64_t prevLoopPktsSent_{0};
   uint64_t prevLoopPktsRecv_{0};

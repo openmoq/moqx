@@ -14,11 +14,12 @@ namespace openmoq::moqx::stats {
 std::shared_ptr<PicoQuicStatsCollector> PicoQuicStatsCollector::create(
     std::shared_ptr<StatsRegistry> registry,
     folly::EventBase* evb,
-    EventBaseStatsCollector* evbCollector
+    std::shared_ptr<EventBaseStatsCollector> evbCollector
 ) {
   auto collector = std::shared_ptr<PicoQuicStatsCollector>(new PicoQuicStatsCollector(evb));
   registry->registerCollector(collector);
   if (evbCollector) {
+    collector->evbCollector_ = evbCollector;
     evbCollector->addLoopObserver(
         collector.get(),
         [c = collector.get()](int64_t busyUs, int64_t /*idleUs*/) {
@@ -38,6 +39,12 @@ std::shared_ptr<PicoQuicStatsCollector> PicoQuicStatsCollector::create(
 }
 
 PicoQuicStatsCollector::PicoQuicStatsCollector(folly::EventBase* evb) : evb_(evb) {}
+
+PicoQuicStatsCollector::~PicoQuicStatsCollector() {
+  if (auto evbCollector = evbCollector_.lock()) {
+    evbCollector->removeLoopObserver(this);
+  }
+}
 
 void PicoQuicStatsCollector::onConnectionCreated() {
   ++quicConnectionsCreated_;

@@ -426,7 +426,7 @@ target_link_libraries(moqx_core PUBLIC
   moxygen::moxygen_moq_server
   moxygen::moxygen_moq_qmux_server
   moxygen::moxygen_qmux_utils
-  moxygen::openmoq_pico_evb_server_transport
+  moxygen::openmoq_pico_evb_sharded_server_transport
   proxygen::proxygenhttpserver
   # Workaround: wangle::wangle_acceptor_acceptor_core uses AsyncFdSocket from
   # FizzAcceptorHandshakeHelper but omits this dep from its cmake config.
