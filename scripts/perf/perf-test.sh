@@ -13,7 +13,16 @@
 #   --ramp N               Subscribers added per second (default: 100)
 #   -d, --duration N       Test duration in seconds (default: 30)
 #   --delivery-timeout N   Delivery timeout in ms (default: 500)
-#   -t, --transport TYPE   quic or webtransport (default: quic)
+#   -t, --transport TYPE   quic, webtransport, or qmux (default: quic); qmux
+#                          selects the relay's TCP listener, not a QUIC stack
+#   --quic-stack STACK     Relay QUIC listener stack: mvfst or picoquic
+#                          (default: mvfst).
+#                          picoquic rejects the dev cert, so the script serves real
+#                          TLS: --cert/--key if given, else the repo's localhost
+#                          test cert, else a throwaway pair minted in LOG_DIR.
+#                          Congestion control follows the stack (bbr2 / bbr).
+#   --cert PATH            TLS cert PEM (picoquic only; see --quic-stack)
+#   --key PATH             TLS key PEM  (picoquic only; see --quic-stack)
 #   --draft N              pin a single MoQ draft, e.g. 16, 14, 18 (default: relay
 #                          offers 16,14,18 and all three parties negotiate 16).
 #                          Sets the relay's offered versions AND the publisher/
@@ -65,6 +74,9 @@ RAMP=100
 DURATION=30
 DELIVERY_TIMEOUT=500
 TRANSPORT="quic"
+QUIC_STACK=""   # empty distinguishes "not given" from an explicit mvfst
+CERT=""
+KEY=""
 DRAFT=""
 USE_RELAY_THREAD="true"
 USE_LOCAL_FORWARDERS="false"
@@ -97,6 +109,9 @@ while [[ $# -gt 0 ]]; do
     -d|--duration)      DURATION="$2";          shift 2 ;;
     --delivery-timeout) DELIVERY_TIMEOUT="$2";  shift 2 ;;
     -t|--transport)     TRANSPORT="$2";         shift 2 ;;
+    --quic-stack)       QUIC_STACK="$2";        shift 2 ;;
+    --cert)             CERT="$2";              shift 2 ;;
+    --key)              KEY="$2";               shift 2 ;;
     --draft)            DRAFT="$2";             shift 2 ;;
     --no-relay-thread)  USE_RELAY_THREAD="false"; shift ;;
     --local-forwarders) USE_LOCAL_FORWARDERS="true"; shift ;;
@@ -193,6 +208,58 @@ fi
 if [[ "$RAMP" -le 0 ]]; then
   echo "ERROR: --ramp must be > 0" >&2; exit 1
 fi
+case "$QUIC_STACK" in
+  ""|mvfst|picoquic) ;;
+  proxygen_qmux) echo "ERROR: select the qmux listener with --transport qmux, not --quic-stack" >&2; exit 1 ;;
+  *) echo "ERROR: --quic-stack must be 'mvfst' or 'picoquic'" >&2; exit 1 ;;
+esac
+if [[ "$TRANSPORT" == "qmux" ]]; then
+  [[ -z "$QUIC_STACK" ]] || { echo "ERROR: --quic-stack does not apply to --transport qmux" >&2; exit 1; }
+  QUIC_STACK="proxygen_qmux"
+fi
+QUIC_STACK="${QUIC_STACK:-mvfst}"
+if [[ "$QUIC_STACK" != "mvfst" && "$BPF_STEERING" == true ]]; then
+  echo "ERROR: --bpf-steering is an mvfst feature; drop it or use --quic-stack mvfst" >&2; exit 1
+fi
+
+# Each stack spells BBR differently and the relay rejects the other's name.
+case "$QUIC_STACK" in
+  mvfst)         CC="bbr2" ;;
+  picoquic)      CC="bbr" ;;
+  proxygen_qmux) CC="" ;;
+esac
+
+# picoquic refuses `insecure: true`, so it needs a cert/key on disk. Nothing
+# verifies it — both moqtest_server and moqperf_test_client use moxygen's
+# insecure verifier — so a self-signed localhost pair is enough.
+cert_usable() {  # no openssl: assume usable; the mint path below needs it anyway
+  ! command -v openssl >/dev/null 2>&1 || openssl x509 -checkend 0 -noout -in "$1" >/dev/null 2>&1
+}
+if [[ "$QUIC_STACK" == "picoquic" ]]; then
+  if [[ -n "$CERT" || -n "$KEY" ]]; then
+    if [[ -z "$CERT" || -z "$KEY" ]]; then
+      echo "ERROR: --cert and --key must be given together" >&2; exit 1
+    fi
+    for f in "$CERT" "$KEY"; do
+      [[ -r "$f" ]] || { echo "ERROR: TLS file not readable: $f" >&2; exit 1; }
+    done
+  elif [[ -r "$REPO/test/test_cert.pem" && -r "$REPO/test/test_key.pem" ]] \
+       && cert_usable "$REPO/test/test_cert.pem"; then
+    CERT="$REPO/test/test_cert.pem"
+    KEY="$REPO/test/test_key.pem"
+  else
+    command -v openssl >/dev/null 2>&1 || {
+      echo "ERROR: --quic-stack picoquic needs a cert; no usable one found and openssl is missing" >&2
+      echo "       pass --cert/--key explicitly" >&2; exit 1
+    }
+    CERT="$LOG_DIR/cert.pem"
+    KEY="$LOG_DIR/key.pem"
+    openssl req -x509 -newkey rsa:2048 -nodes -keyout "$KEY" -out "$CERT" \
+      -days 1 -subj "/CN=localhost" >/dev/null 2>&1 \
+      || { echo "ERROR: failed to generate a self-signed cert for picoquic" >&2; exit 1; }
+    echo "Generated self-signed cert: $CERT"
+  fi
+fi
 
 is_port_in_use() {
   if command -v ss >/dev/null 2>&1; then
@@ -268,6 +335,9 @@ trap cleanup EXIT
   echo "moqbin:           $MOQBIN"
   echo "relay_url:        $RELAY_URL"
   echo "transport:        $TRANSPORT"
+  echo "quic_stack:       $QUIC_STACK"
+  echo "cc:               ${CC:-n/a (qmux runs over TCP)}"
+  [[ "$QUIC_STACK" == "picoquic" ]] && echo "tls_cert:         $CERT" || true
   echo "draft:            ${DRAFT:-default (offers 16,14,18)}"
   echo "io_threads:       $IO_THREADS"
   echo "use_relay_thread: $USE_RELAY_THREAD"
@@ -288,22 +358,28 @@ echo ""
 
 # ── Start relay (via scripts/moqx-run.sh + config.bench.yaml) ──────────────────
 ulimit -n 65536 2>/dev/null || true
-echo "Starting relay (use_relay_thread=$USE_RELAY_THREAD, local_forwarders=$USE_LOCAL_FORWARDERS, io_threads=$IO_THREADS, transport=$TRANSPORT, mvfst_bpf_steering=$BPF_STEERING)..."
+echo "Starting relay (quic_stack=$QUIC_STACK, use_relay_thread=$USE_RELAY_THREAD, local_forwarders=$USE_LOCAL_FORWARDERS, io_threads=$IO_THREADS, transport=$TRANSPORT, mvfst_bpf_steering=$BPF_STEERING)..."
 
 # Map perf knobs -> moqx-run.sh. moqx-run runs without sudo by default (do NOT
 # set MOQX_USE_SUDO=1 / pass --sudo here): it execs the relay, so under sudo $!
 # would be the sudo PID and perf -p would profile sudo, not moqx.
 RELAY_RUN_ARGS=(
-  --insecure --no-cache --ignore-path-mtu
+  --no-cache --ignore-path-mtu
   --bin        "$BINARY"
   --bind       "::"        # all interfaces: the perf client may run on another box
   --port       "$RELAY_PORT"
   --admin-port "$RELAY_ADMIN_PORT"
   --endpoint   "$ENDPOINT"
   --threads    "$IO_THREADS"
-  --cc         bbr2
   --udp-buffer "$UDP_SOCKET_BUFFER_BYTES"
+  --quic-stack "$QUIC_STACK"
 )
+[[ -n "$CC" ]] && RELAY_RUN_ARGS+=(--cc "$CC")
+if [[ "$QUIC_STACK" == "picoquic" ]]; then
+  RELAY_RUN_ARGS+=(--cert "$CERT" --key "$KEY")
+else
+  RELAY_RUN_ARGS+=(--insecure)
+fi
 [[ "$USE_RELAY_THREAD" == true ]]     && RELAY_RUN_ARGS+=(--relay-thread)     || RELAY_RUN_ARGS+=(--no-relay-thread)
 [[ "$USE_LOCAL_FORWARDERS" == true ]] && RELAY_RUN_ARGS+=(--local-forwarders) || RELAY_RUN_ARGS+=(--no-local-forwarders)
 [[ "$BPF_STEERING" == true ]] && RELAY_RUN_ARGS+=(--bpf-steering)
