@@ -10,10 +10,10 @@
 #include "MoqxCache.h"
 #include "relay/NullConsumers.h"
 #include <algorithm>
-#include <iterator>
-#include <vector>
 #include <folly/logging/xlog.h>
+#include <iterator>
 #include <moxygen/MoQTrackProperties.h>
+#include <vector>
 
 // Maxmimum cache size / per track? Number of groups
 // Fancy: handle streaming incomplete objects (forwarder?)
@@ -1732,9 +1732,7 @@ size_t MoqxCache::replayCachedRange(
     if (entry->status == ObjectStatus::NORMAL && !entry->payload) {
       continue;
     }
-    auto res = publishObject(
-        entry->status, consumer, locations[i], *entry, /*lastObject=*/false
-    );
+    auto res = publishObject(entry->status, consumer, locations[i], *entry, /*lastObject=*/false);
     if (res.hasError()) {
       XLOG(DBG2) << "cache replay stopped for " << ftn << " at g=" << locations[i].group
                  << " o=" << locations[i].object << " err=" << res.error().msg;

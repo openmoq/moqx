@@ -39,7 +39,7 @@ namespace openmoq::moqx {
 // replay is best-effort; the subscriber's live subscription is already in place
 // and must not be failed because a retained object could not be re-sent.
 class FetchToTrackConsumer : public moxygen::FetchConsumer {
- public:
+public:
   explicit FetchToTrackConsumer(std::shared_ptr<moxygen::TrackConsumer> track, uint8_t priority)
       : track_(std::move(track)), priority_(priority) {}
 
@@ -85,7 +85,8 @@ class FetchToTrackConsumer : public moxygen::FetchConsumer {
     }
     // objectPayload() carries no coordinates, so remember where the parts go.
     streaming_ = SubgroupKey{groupID, subgroupID};
-    auto res = subgroup->beginObject(objectID, length, std::move(initialPayload), std::move(extensions));
+    auto res =
+        subgroup->beginObject(objectID, length, std::move(initialPayload), std::move(extensions));
     if (res.hasError()) {
       dropSubgroup(groupID, subgroupID);
       streaming_.reset();
@@ -93,10 +94,8 @@ class FetchToTrackConsumer : public moxygen::FetchConsumer {
     return folly::unit;
   }
 
-  folly::Expected<moxygen::ObjectPublishStatus, moxygen::MoQPublishError> objectPayload(
-      moxygen::Payload payload,
-      bool /*finSubgroup*/ = false
-  ) override {
+  folly::Expected<moxygen::ObjectPublishStatus, moxygen::MoQPublishError>
+  objectPayload(moxygen::Payload payload, bool /*finSubgroup*/ = false) override {
     if (!streaming_) {
       return moxygen::ObjectPublishStatus::DONE;
     }
@@ -116,12 +115,9 @@ class FetchToTrackConsumer : public moxygen::FetchConsumer {
     return *res;
   }
 
-  folly::Expected<folly::Unit, moxygen::MoQPublishError> endOfGroup(
-      uint64_t groupID,
-      uint64_t subgroupID,
-      uint64_t objectID,
-      bool finFetch = false
-  ) override {
+  folly::Expected<folly::Unit, moxygen::MoQPublishError>
+  endOfGroup(uint64_t groupID, uint64_t subgroupID, uint64_t objectID, bool finFetch = false)
+      override {
     auto it = subgroups_.find(SubgroupKey{groupID, subgroupID});
     if (it != subgroups_.end()) {
       it->second->endOfGroup(objectID);
@@ -164,7 +160,7 @@ class FetchToTrackConsumer : public moxygen::FetchConsumer {
     return folly::makeSemiFuture<uint64_t>(0);
   }
 
- private:
+private:
   struct SubgroupKey {
     uint64_t group;
     uint64_t subgroup;

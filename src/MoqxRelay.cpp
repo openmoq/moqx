@@ -10,9 +10,9 @@
 #include "MoqxRelay.h"
 #include "relay/ChannelSubscriber.h"
 #include "relay/CrossExecFilter.h"
-#include "relay/FetchToTrackConsumer.h"
 #include "relay/CrossExecForwarderCallback.h"
 #include "relay/CrossExecSubscriptionHandle.h"
+#include "relay/FetchToTrackConsumer.h"
 #include "relay/InitialTrackState.h"
 #include "relay/LocalForwarderCallback.h"
 #include "relay/NullConsumers.h"
@@ -2812,9 +2812,9 @@ void MoqxRelay::maybeReplayFromCache(
   // able to see both outcomes in an ordinary production log is the difference
   // between diagnosing that in minutes and in days.
   XLOG(INFO) << "Cache replay for " << subReq.fullTrackName << " wrote " << written
-             << " object(s) from {" << start.group << "," << start.object << "} to {"
-             << end.group << "," << end.object << "} (asked from {" << subReq.start->group
-             << "," << subReq.start->object << "})";
+             << " object(s) from {" << start.group << "," << start.object << "} to {" << end.group
+             << "," << end.object << "} (asked from {" << subReq.start->group << ","
+             << subReq.start->object << "})";
 }
 
 void MoqxRelay::onEmpty(MoQForwarder* forwarder) {
