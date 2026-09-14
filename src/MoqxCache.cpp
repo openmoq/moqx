@@ -600,7 +600,7 @@ public:
         cacheTrackPtr_(std::move(cacheTrackPtr)), cacheTrack_(*cacheTrackPtr_),
         cacheGroupPtr_(std::move(cacheGroupPtr)), cacheGroup_(*cacheGroupPtr_), cache_(cache),
         ftn_(std::move(ftn)) {
-    cache_.removeGroupFromLRU(cacheGroup_, cacheTrack_);
+    cache_.pinGroup(cacheGroup_, cacheTrack_);
   }
   SubgroupWriteback() = delete;
   SubgroupWriteback(const SubgroupWriteback&) = delete;
@@ -611,7 +611,7 @@ public:
   ~SubgroupWriteback() override {
     // TODO: If the publisher writes many groups concurrently, all are pinned
     // and none can be evicted, potentially using a lot of memory.
-    cache_.addGroupToLRU(ftn_, group_, cacheGroup_, cacheTrack_);
+    cache_.unpinGroup(ftn_, group_, cacheGroup_, cacheTrack_);
   }
 
   folly::Expected<folly::Unit, MoQPublishError>
@@ -1269,7 +1269,7 @@ private:
       groupIt = groupMap.emplace(loc.group, std::make_shared<CacheGroup>()).first;
     }
     pinnedGroup_ = groupIt->second;
-    cache_.removeGroupFromLRU(*pinnedGroup_, *fetchRangeIt_.track);
+    cache_.pinGroup(*pinnedGroup_, *fetchRangeIt_.track);
   }
 
   void eraseAndMakeGroupEvictable() {
@@ -1282,7 +1282,7 @@ private:
     fetchRangeIt_.track->fetchesInProgress.erase(fetchInProgressIt_);
     fetchInProgressIt_ = fetchRangeIt_.track->fetchesInProgress.end();
     if (pinnedGroup_) {
-      cache_.addGroupToLRU(ftn_, groupID, *pinnedGroup_, *fetchRangeIt_.track);
+      cache_.unpinGroup(ftn_, groupID, *pinnedGroup_, *fetchRangeIt_.track);
       pinnedGroup_.reset();
     }
   }
@@ -2256,6 +2256,12 @@ void MoqxCache::addGroupToLRU(
     // Already in per-track LRU
     return;
   }
+  // A writeback outlives eviction of the group it was writing. An LRU entry for
+  // a group the track no longer holds can never be satisfied.
+  auto it = track.groups.find(groupID);
+  if (track.evicted || it == track.groups.end() || it->second.get() != &group) {
+    return;
+  }
   track.groupLRU.push_front(groupID);
   group.lruIter_ = track.groupLRU.begin();
   globalGroupLRU_.push_front({ftn, groupID});
@@ -2275,6 +2281,24 @@ void MoqxCache::removeGroupFromLRU(CacheGroup& group, CacheTrack& track) {
     group.globalLruIter_.reset();
   }
   XLOG(DBG2) << "Removed group from LRU";
+}
+
+void MoqxCache::pinGroup(CacheGroup& group, CacheTrack& track) {
+  if (group.pinCount_++ == 0) {
+    removeGroupFromLRU(group, track);
+  }
+}
+
+void MoqxCache::unpinGroup(
+    const FullTrackName& ftn,
+    uint64_t groupID,
+    CacheGroup& group,
+    CacheTrack& track
+) {
+  XCHECK_GT(group.pinCount_, 0u);
+  if (--group.pinCount_ == 0) {
+    addGroupToLRU(ftn, groupID, group, track);
+  }
 }
 
 // ============================================================================
@@ -2312,9 +2336,11 @@ size_t MoqxCache::evictTrack(const FullTrackName& ftn) {
   // Stamp evicted before erasing so any in-flight SubscribeWriteback/
   // FetchReadback objects discover the flag and stop caching.
   track.evicted = true;
-  // Remove from LRU if present
+  // Remove from LRU if present. A track held by an in-flight fetch outlives
+  // this erase, so its iterator must not be left dangling.
   if (track.lruIter_.hasValue()) {
     trackLRU_.erase(*track.lruIter_);
+    track.lruIter_.reset();
   }
 
   // Evict each group to clean up per-track and global LRUs and byte accounting.
@@ -2363,6 +2389,11 @@ void MoqxCache::evictOldestGroupsIfNeeded(CacheTrack& track) {
 
   while (track.groups.size() > maxCachedGroupsPerTrack_ && !track.groupLRU.empty()) {
     uint64_t oldestGroupID = track.groupLRU.back();
+    if (!track.groups.contains(oldestGroupID)) {
+      XLOG(DFATAL) << "groupLRU has stale entry for evicted group: " << oldestGroupID;
+      track.groupLRU.pop_back();
+      continue;
+    }
     XLOG(DBG1) << "Evicting oldest group: " << oldestGroupID << " (track has "
                << track.groups.size() << " groups)";
     evictGroup(track, oldestGroupID);
@@ -2382,12 +2413,15 @@ void MoqxCache::evictGroup(CacheTrack& track, uint64_t groupID) {
   }
 
   auto& group = *it->second;
-  // Remove from per-track and global LRUs if present
+  // Remove from per-track and global LRUs if present. A pinned group outlives
+  // this erase, so its iterators must not be left dangling.
   if (group.lruIter_.hasValue()) {
     track.groupLRU.erase(*group.lruIter_);
+    group.lruIter_.reset();
   }
   if (group.globalLruIter_.hasValue()) {
     globalGroupLRU_.erase(*group.globalLruIter_);
+    group.globalLruIter_.reset();
   }
 
   // Remove from cachedContent
@@ -2424,6 +2458,13 @@ bool MoqxCache::evictForByteLimitIfNeeded() {
       continue;
     }
     auto& track = *trackIt->second;
+    if (!track.groups.contains(groupID)) {
+      // Every iteration must shrink the list, or this loop spins at 100% CPU.
+      XLOG(DFATAL) << "globalGroupLRU_ has stale entry for evicted group " << groupID
+                   << " in track " << ftn;
+      globalGroupLRU_.pop_back();
+      continue;
+    }
     XLOG(DBG1) << "Evicting group " << groupID << " from track " << ftn
                << " for byte limit (bytes: " << totalCachedBytes_ << " > limit: " << maxCachedBytes_
                << ")";

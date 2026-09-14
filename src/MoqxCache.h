@@ -66,14 +66,9 @@ public:
       std::shared_ptr<moxygen::Publisher> upstream
   );
 
-  void clear() {
-    for (auto& [ftn, track] : cache_) {
-      track->evicted = true;
-    }
-    cache_.clear();
-    trackLRU_.clear();
-    totalCachedBytes_ = 0;
-  }
+  // Tracks and groups held by an in-flight writeback or fetch outlive this, so
+  // tear each one down rather than dropping the containers out from under them.
+  void clear() { purge(); }
 
   // Force-evicts a specific track unconditionally. Returns 1 if found, 0 if
   // not.
@@ -231,6 +226,9 @@ private:
     std::optional<uint64_t> seenPriorGroupIdGap;
     // Total payload bytes across all objects in this group
     size_t totalBytes{0};
+    // Writebacks and fetches writing this group. Subgroups of one group are
+    // written concurrently, so the group is evictable only at zero.
+    size_t pinCount_{0};
     // Per-track LRU iterator - present if group is evictable (not in active
     // SubgroupWriteback). Used by evictOldestGroupsIfNeeded().
     folly::Optional<std::list<uint64_t>::iterator> lruIter_;
@@ -464,6 +462,16 @@ private:
       CacheTrack& track
   );
   void removeGroupFromLRU(CacheGroup& group, CacheTrack& track);
+
+  // Claim/release a group for writing. Pinned groups are held out of the LRUs
+  // so eviction cannot free one under an open writeback or fetch.
+  void pinGroup(CacheGroup& group, CacheTrack& track);
+  void unpinGroup(
+      const moxygen::FullTrackName& ftn,
+      uint64_t groupID,
+      CacheGroup& group,
+      CacheTrack& track
+  );
 
   // Eviction methods
   bool evictOldestTrackIfNeeded();
