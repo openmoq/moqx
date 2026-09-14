@@ -2756,7 +2756,12 @@ void MoqxRelay::maybeReplayFromCache(
   if (subReq.locType != LocationType::AbsoluteStart) {
     return;
   }
-  if (!subReq.start || !(*subReq.start < *largest)) {
+  // Replay whenever the subscriber asked for a location at or before the newest
+  // retained object. `start == largest` matters and was wrong before: moxygen
+  // only clamps when start < largest, so a subscriber asking for exactly the
+  // newest object is left subscribed from that object onward and the forwarder,
+  // having already published it, never sends anything. That is the catalog case.
+  if (!subReq.start || *largest < *subReq.start) {
     return;
   }
   // The live subscription starts at largest + 1 because moxygen clamps it
@@ -2770,11 +2775,13 @@ void MoqxRelay::maybeReplayFromCache(
   const AbsoluteLocation end = *largest;
   auto adapter = std::make_shared<FetchToTrackConsumer>(consumer, subReq.priority);
   auto written = cache_->replayCachedRange(subReq.fullTrackName, *subReq.start, end, adapter);
-  if (written > 0) {
-    XLOG(DBG1) << "Replayed " << written << " cached object(s) for " << subReq.fullTrackName
-               << " from {" << subReq.start->group << "," << subReq.start->object << "} to {"
-               << end.group << "," << end.object << "}";
-  }
+  // INFO rather than DBG: this fires once per late subscriber, and when it does
+  // not fire the symptom is a viewer that hangs with no error anywhere. Being
+  // able to see both outcomes in an ordinary production log is the difference
+  // between diagnosing that in minutes and in days.
+  XLOG(INFO) << "Cache replay for " << subReq.fullTrackName << " wrote " << written
+             << " object(s) from {" << subReq.start->group << "," << subReq.start->object
+             << "} to {" << end.group << "," << end.object << "}";
 }
 
 void MoqxRelay::onEmpty(MoQForwarder* forwarder) {
