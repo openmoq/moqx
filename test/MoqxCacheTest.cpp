@@ -4252,6 +4252,157 @@ CO_TEST_F(MoqxCacheTest, TestByteLimitLiveTrackWithActiveSubgroupNotEvicted) {
   co_return;
 }
 
+CO_TEST_F(MoqxCacheTest, TestByteLimitGroupWithSecondSubgroupOpenNotEvicted) {
+  // Two subgroups of the same group are open. Closing one must not unpin the
+  // group while the other is still writing into it.
+  auto writeback = cache_.getSubscribeWriteback(kTestTrackName, trackConsumer_);
+  // Group 0: complete, evictable, 100b.
+  writeback->datagram(ObjectHeader(0, 0, 0, 0, 100), makeBuf(100));
+
+  auto subRes0 = writeback->beginSubgroup(1, 0, 0);
+  EXPECT_TRUE(subRes0.hasValue());
+  auto sub0 = std::move(subRes0.value());
+  auto subRes1 = writeback->beginSubgroup(1, 1, 0);
+  EXPECT_TRUE(subRes1.hasValue());
+  auto sub1 = std::move(subRes1.value());
+  EXPECT_TRUE(sub0->object(0, makeBuf(100), {}, false).hasValue());
+  EXPECT_TRUE(sub1->object(1, makeBuf(100), {}, false).hasValue());
+  sub1.reset(); // subgroup 1 done; subgroup 0 still writing group 1
+
+  // 300b cached, limit 150b. Only group 0 is evictable; group 1 still has an
+  // open subgroup and must survive even though that leaves the cache over the
+  // limit.
+  cache_.setMaxCachedBytes(150);
+
+  EXPECT_FALSE(cache_.hasCachedObject(kTestTrackName, {0, 0}));
+  EXPECT_TRUE(cache_.hasCachedObject(kTestTrackName, {1, 0}));
+  EXPECT_TRUE(cache_.hasCachedObject(kTestTrackName, {1, 1}));
+  EXPECT_EQ(cache_.totalCachedBytes(), 200u);
+  co_return;
+}
+
+CO_TEST_F(MoqxCacheTest, TestTrackEvictionWithOpenSubgroupDoesNotSpin) {
+  // Issue #718. A SubgroupWriteback outlives the SubscribeWriteback that made
+  // it, so the track is evictable while one of its groups is still pinned. The
+  // track limit evicts the track, pinned group and all; the writeback's
+  // destructor then puts the dropped group back in the global LRU. Subscribing
+  // the track again recreates it, so the entry names a live track with no such
+  // group: evictForByteLimitIfNeeded() evicts nothing, never pops it, and spins
+  // at 100% CPU.
+  FullTrackName track2{TrackNamespace{{"ns"}}, "track2"};
+  cache_.setMaxCachedTracks(1);
+  cache_.setMaxCachedBytes(150);
+
+  auto writeback = cache_.getSubscribeWriteback(kTestTrackName, trackConsumer_);
+  auto subRes = writeback->beginSubgroup(1, 0, 0);
+  EXPECT_TRUE(subRes.hasValue());
+  auto sub = std::move(subRes.value());
+  EXPECT_TRUE(sub->object(0, makeBuf(100), {}, false).hasValue());
+  writeback.reset(); // subscription ends; the subgroup stream is still open
+
+  // Caching another track hits the track limit and evicts the first one.
+  auto writeback2 = cache_.getSubscribeWriteback(track2, trackConsumer_);
+  writeback2->datagram(ObjectHeader(0, 0, 0, 0, 100), makeBuf(100));
+  EXPECT_FALSE(cache_.hasTrack(kTestTrackName));
+
+  sub.reset();
+
+  // The track is subscribed again and filled past the byte limit. Eviction
+  // must terminate.
+  auto writeback3 = cache_.getSubscribeWriteback(kTestTrackName, trackConsumer_);
+  writeback3->datagram(ObjectHeader(2, 0, 0, 0, 100), makeBuf(100));
+  writeback3->datagram(ObjectHeader(3, 0, 0, 0, 100), makeBuf(100));
+
+  EXPECT_FALSE(cache_.hasCachedObject(kTestTrackName, {2, 0}));
+  EXPECT_TRUE(cache_.hasCachedObject(kTestTrackName, {3, 0}));
+  EXPECT_EQ(cache_.totalCachedBytes(), 100u);
+  co_return;
+}
+
+CO_TEST_F(MoqxCacheTest, TestPurgedTrackWithOpenSubgroupDoesNotSpin) {
+  // Same stale LRU entry as TestTrackEvictionWithOpenSubgroupDoesNotSpin, via
+  // the other caller of evictTrack(): an operator purge, which drops the group
+  // an open subgroup is writing even while the subscription is live.
+  cache_.setMaxCachedBytes(150);
+
+  auto writeback = cache_.getSubscribeWriteback(kTestTrackName, trackConsumer_);
+  auto subRes = writeback->beginSubgroup(1, 0, 0);
+  EXPECT_TRUE(subRes.hasValue());
+  auto sub = std::move(subRes.value());
+  EXPECT_TRUE(sub->object(0, makeBuf(100), {}, false).hasValue());
+
+  EXPECT_EQ(cache_.purge(kTestTrackName), 1u);
+  EXPECT_EQ(cache_.totalCachedBytes(), 0u);
+  sub.reset();
+  writeback.reset();
+
+  auto writeback2 = cache_.getSubscribeWriteback(kTestTrackName, trackConsumer_);
+  writeback2->datagram(ObjectHeader(2, 0, 0, 0, 100), makeBuf(100));
+  writeback2->datagram(ObjectHeader(3, 0, 0, 0, 100), makeBuf(100));
+
+  EXPECT_FALSE(cache_.hasCachedObject(kTestTrackName, {2, 0}));
+  EXPECT_TRUE(cache_.hasCachedObject(kTestTrackName, {3, 0}));
+  EXPECT_EQ(cache_.totalCachedBytes(), 100u);
+  co_return;
+}
+
+CO_TEST_F(MoqxCacheTest, TestClearThenRefillDoesNotSpin) {
+  // clear() has to tear each track down, not drop the containers: leaving the
+  // cleared track's groups in globalGroupLRU_ strands entries that the refilled
+  // track cannot satisfy, and eviction spins on them.
+  cache_.setMaxCachedBytes(150);
+
+  auto writeback = cache_.getSubscribeWriteback(kTestTrackName, trackConsumer_);
+  writeback->datagram(ObjectHeader(0, 0, 0, 0, 100), makeBuf(100));
+  writeback.reset();
+
+  cache_.clear();
+  EXPECT_EQ(cache_.totalCachedBytes(), 0u);
+
+  // Group 0 is written again so the stranded entry names a group the refilled
+  // track holds, and only reaches the back of the LRU on the second eviction.
+  auto writeback2 = cache_.getSubscribeWriteback(kTestTrackName, trackConsumer_);
+  writeback2->datagram(ObjectHeader(0, 0, 0, 0, 100), makeBuf(100));
+  writeback2->datagram(ObjectHeader(1, 0, 0, 0, 100), makeBuf(100));
+  writeback2->datagram(ObjectHeader(2, 0, 0, 0, 100), makeBuf(100));
+
+  EXPECT_FALSE(cache_.hasCachedObject(kTestTrackName, {1, 0}));
+  EXPECT_TRUE(cache_.hasCachedObject(kTestTrackName, {2, 0}));
+  EXPECT_EQ(cache_.totalCachedBytes(), 100u);
+  co_return;
+}
+
+CO_TEST_F(MoqxCacheTest, TestPurgeWhileFetchParkedLeavesNoDanglingTrackLRU) {
+  // The track is evictable, so it is in trackLRU_ when the purge lands. It
+  // survives as a detached track held by the parked fetch, which then builds a
+  // FetchWriteback and removes it from the LRU a second time.
+  populateCacheRange({0, 0}, {0, 2});
+  EXPECT_CALL(*consumer_, object(0, 0, 0, _, _, _, _))
+      .WillOnce([](auto, auto, auto, auto, const auto&, auto, auto) {
+        return folly::makeUnexpected(MoQPublishError(MoQPublishError::BLOCKED));
+      });
+  EXPECT_CALL(*consumer_, awaitReadyToConsume()).WillOnce([this] {
+    EXPECT_EQ(cache_.purge(kTestTrackName), 1u);
+    return folly::makeSemiFuture<uint64_t>(0);
+  });
+  EXPECT_CALL(*upstream_, fetch(_, _))
+      .WillRepeatedly([this](Fetch, std::shared_ptr<FetchConsumer> consumer) {
+        upstreamFetchConsumer_ = std::move(consumer);
+        upstreamFetchConsumer_->endOfFetch();
+        upstreamFetchHandle_ = std::make_shared<moxygen::MockFetchHandle>(
+            FetchOk{0, GroupOrder::OldestFirst, false, AbsoluteLocation{0, 4}, {}}
+        );
+        return folly::coro::makeTask<Publisher::FetchResult>(upstreamFetchHandle_);
+      });
+  EXPECT_CALL(*consumer_, endOfFetch()).WillRepeatedly(Return(folly::unit));
+  EXPECT_CALL(*consumer_, reset(_)).WillRepeatedly(Return());
+
+  co_await cache_.fetch(getFetch({0, 0}, {0, 4}), consumer_, upstream_);
+
+  EXPECT_FALSE(cache_.hasTrack(kTestTrackName));
+  EXPECT_EQ(cache_.totalCachedBytes(), 0u);
+}
+
 CO_TEST_F(MoqxCacheTest, TestByteLimitEvictsAcrossLiveAndNonLiveTracks) {
   // One non-live track (written first, group is older) and one live track.
   // Byte limit forces eviction: the non-live track's group is evicted first
