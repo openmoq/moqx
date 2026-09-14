@@ -2747,8 +2747,13 @@ void MoqxRelay::maybeReplayFromCache(
   }
   // Only a filter that names a past location is asking for retained objects;
   // LargestObject/NextGroupStart/LargestGroup all mean "from here on".
-  if (subReq.locType != LocationType::AbsoluteStart &&
-      subReq.locType != LocationType::AbsoluteRange) {
+  //
+  // AbsoluteRange is deliberately not handled: moxygen reads its end as
+  // *exclusive* ({endGroup, 0}), so serving it here means duplicating that
+  // convention in a second place, and getting it wrong sends a subscriber a
+  // whole group it did not ask for. AbsoluteStart is what a player asking for
+  // the catalog sends, and it is unambiguous.
+  if (subReq.locType != LocationType::AbsoluteStart) {
     return;
   }
   if (!subReq.start || !(*subReq.start < *largest)) {
@@ -2756,10 +2761,13 @@ void MoqxRelay::maybeReplayFromCache(
   }
   // The live subscription starts at largest + 1 because moxygen clamps it
   // there, so replaying up to and including largest covers the gap exactly.
-  AbsoluteLocation end = *largest;
-  if (subReq.locType == LocationType::AbsoluteRange && subReq.endGroup <= end.group) {
-    end = AbsoluteLocation{subReq.endGroup, kLocationMax.object};
-  }
+  //
+  // This runs synchronously right after the subscriber was attached, on the
+  // executor that owns its consumer, so no live object can reach the
+  // subscriber before the replay does. That ordering is what keeps the relay
+  // from writing an older group after a newer one, which a session may reject
+  // as MALFORMED_TRACK.
+  const AbsoluteLocation end = *largest;
   auto adapter = std::make_shared<FetchToTrackConsumer>(consumer, subReq.priority);
   auto written = cache_->replayCachedRange(subReq.fullTrackName, *subReq.start, end, adapter);
   if (written > 0) {

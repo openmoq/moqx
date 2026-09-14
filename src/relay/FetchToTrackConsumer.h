@@ -9,8 +9,11 @@
 #include <moxygen/MoQConsumers.h>
 
 #include <folly/container/F14Map.h>
+#include <folly/hash/Hash.h>
+#include <folly/logging/xlog.h>
 
 #include <memory>
+#include <optional>
 #include <utility>
 
 namespace openmoq::moqx {
@@ -184,7 +187,7 @@ class FetchToTrackConsumer : public moxygen::FetchConsumer {
     auto res = track_->beginSubgroup(groupID, subgroupID, priority_);
     if (res.hasError()) {
       XLOG(DBG2) << "cache replay could not open subgroup g=" << groupID << " sg=" << subgroupID
-                 << " err=" << res.error().what();
+                 << " err=" << res.error().msg;
       return nullptr;
     }
     return subgroups_.emplace(key, std::move(res.value())).first->second;
