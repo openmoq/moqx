@@ -128,13 +128,97 @@ void MoQRelayTest::TearDown() {
 }
 
 std::shared_ptr<MockMoQSession> MoQRelayTest::createMockSession() {
-  auto session = std::make_shared<NiceMock<MockMoQSession>>(exec_);
+  return createMockSessionOn(exec_);
+}
+
+std::shared_ptr<MockMoQSession>
+MoQRelayTest::createMockSessionOn(std::shared_ptr<moxygen::MoQExecutor> exec) {
+  auto session = std::make_shared<NiceMock<MockMoQSession>>(std::move(exec));
   ON_CALL(*session, getNegotiatedVersion())
       .WillByDefault(Return(std::optional<uint64_t>(kVersionDraftCurrent)));
   ON_CALL(*session, negotiatedSetupExtension(SetupExtension::RelayHops))
       .WillByDefault(Return(false));
-  auto state = getOrCreateMockState(session);
+  getOrCreateMockState(session);
   return session;
+}
+
+SubscribeRequest
+MoQRelayTest::makeSubscribeRequest(RequestID requestID, const FullTrackName& trackName) {
+  SubscribeRequest sub;
+  sub.fullTrackName = trackName;
+  sub.requestID = requestID;
+  sub.locType = LocationType::LargestObject;
+  return sub;
+}
+
+std::shared_ptr<SubscriptionHandle> MoQRelayTest::PendingSubscribe::handle() const {
+  if (!ready()) {
+    ADD_FAILURE() << "subscribe never finished";
+    return nullptr;
+  }
+  if (result->hasException()) {
+    ADD_FAILURE() << "subscribe threw: " << result->exception().what();
+    return nullptr;
+  }
+  if (result->value().hasError()) {
+    ADD_FAILURE() << "subscribe failed: " << result->value().error().reasonPhrase;
+    return nullptr;
+  }
+  return result->value().value();
+}
+
+MoQRelayTest::PendingSubscribe MoQRelayTest::startSubscribe(
+    folly::Executor* startExec,
+    const std::shared_ptr<MoQSession>& session,
+    SubscribeRequest sub,
+    std::shared_ptr<TrackConsumer> consumer
+) {
+  PendingSubscribe pending;
+  withSessionContext(session, [&]() {
+    auto task = publisherInterface()->subscribe(std::move(sub), std::move(consumer));
+    co_withExecutor(
+        folly::getKeepAliveToken(startExec),
+        folly::coro::co_invoke(
+            [t = std::move(task), result = pending.result, done = pending.done](
+            ) mutable -> folly::coro::Task<void> {
+              *result = co_await folly::coro::co_awaitTry(std::move(t));
+              done->store(true);
+            }
+        )
+    ).start();
+  });
+  return pending;
+}
+
+MoQRelayTest::PendingSubscribe MoQRelayTest::launchSubscribeOn(
+    folly::EventBase* evb,
+    const std::shared_ptr<MoQSession>& session,
+    SubscribeRequest sub,
+    std::shared_ptr<TrackConsumer> consumer
+) {
+  PendingSubscribe pending;
+  evb->runInEventBaseThreadAndWait([&]() {
+    pending = startSubscribe(evb, session, std::move(sub), consumer);
+  });
+  evb->runInEventBaseThreadAndWait([]() {});
+  return pending;
+}
+
+MoQRelayTest::RelayGate::RelayGate(folly::EventBase* evb)
+    : gate_(std::make_shared<folly::Baton<>>()) {
+  auto parked = std::make_shared<folly::Baton<>>();
+  evb->add([gate = gate_, parked] {
+    parked->post();
+    gate->wait();
+  });
+  XCHECK(parked->try_wait_for(std::chrono::seconds(5))) << "relay exec never parked";
+}
+
+void MoQRelayTest::RelayGate::release() {
+  if (gate_) {
+    gate_->post();
+    gate_.reset();
+  }
 }
 
 std::shared_ptr<Publisher::SubscriptionHandle> MoQRelayTest::createMockSubscriptionHandle() {
