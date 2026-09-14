@@ -419,6 +419,16 @@ moqx_add_gtest(moqx_subscriber_cross_exec_filter_test
     Folly::folly_executors_cpu_thread_pool_executor
 )
 
+moqx_add_gtest(moqx_fetch_to_track_consumer_test
+  SRCS FetchToTrackConsumerTest.cpp
+  LIBS
+    moqx_core
+    moqx_test_utils
+    moqx_test_main
+    moxygen::moqtest_utils
+    GTest::gmock
+)
+
 moqx_add_gtest(moqx_cache_test
   SRCS MoqxCacheTest.cpp
   LIBS
