@@ -2084,6 +2084,13 @@ folly::coro::Task<MoqxRelay::PublisherAttachment> MoqxRelay::attachNewLocalForwa
     co_return attach;
   }
   std::shared_ptr<CrossExecFilter> relayChainFilter;
+  if (sr.firstSetup) {
+    // Built with its downstream: a CrossExecFilter that reaches the forwarder without one
+    // fails the first object, and the forwarder then drops it for the life of the track.
+    auto topNView = registry_.getTopNView(ftn);
+    XCHECK(topNView && topNView->chainHead) << "relay chain missing for " << ftn;
+    relayChainFilter = CrossExecFilter::create(relayExec_, topNView->chainHead);
+  }
   std::optional<folly::Expected<UpstreamOk, SubscribeError>> upstreamResult;
 
   // One publisherExec sortie to setup the publisher forwarder on its exec.
@@ -2149,7 +2156,6 @@ folly::coro::Task<MoqxRelay::PublisherAttachment> MoqxRelay::attachNewLocalForwa
           // Passive relay chain (top-N/termination/cache): forward=true so it observes every
           // object, passive=true so it doesn't count as a forwarding subscriber or in the
           // onEmpty quorum (the publisher's onEmpty still fires when the last real sub leaves).
-          relayChainFilter = CrossExecFilter::create(relayExec_, nullptr);
           publisherFwd->addChannelSubscriber(
               relayExec_,
               /*forward=*/true,
@@ -2189,14 +2195,6 @@ folly::coro::Task<MoqxRelay::PublisherAttachment> MoqxRelay::attachNewLocalForwa
     co_return attach;
   }
   auto upstreamOk = std::move(upstreamResult->value());
-
-  // Wire the relay chain before pending.complete() so buffered objects see the filters.
-  if (relayChainFilter) {
-    auto topNView = registry_.getTopNView(ftn);
-    if (topNView && topNView->chainHead) {
-      relayChainFilter->setDownstream(topNView->chainHead);
-    }
-  }
 
   auto& setup = *sr.firstSetup;
   if (auto err = completeUpstreamSubscription(
