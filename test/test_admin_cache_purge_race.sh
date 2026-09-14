@@ -32,6 +32,8 @@ source "$REPO/test/test_ports.sh"
 source "$REPO/test/test_versions.sh"
 # shellcheck source=test_relay_lifecycle.sh
 source "$REPO/test/test_relay_lifecycle.sh"
+# shellcheck source=test_quic_stack.sh
+source "$REPO/test/test_quic_stack.sh"
 DATESERVER="$MOQBIN/moqdateserver"
 TEXTCLIENT="$MOQBIN/moqtextclient"
 
@@ -135,15 +137,14 @@ listeners:
       socket:
         address: "::"
         port: $RELAY_PORT
-    tls:
-      insecure: true
+$(moq_listener_stack_yaml "$TMPDIR_SCRIPT")
     endpoint: "/moq-relay"
     moqt_versions: ${MOQT_TEST_VERSIONS}
 services:
   default:
     match:
       - authority: {any: true}
-        path: {prefix: "/"}
+$(moq_service_path_yaml)
     cache:
       enabled: true
       max_tracks: 100
