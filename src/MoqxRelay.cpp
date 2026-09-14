@@ -2695,7 +2695,11 @@ public:
       return false;
     }
     setFetchOk(handle->fetchOk());
-    handle_ = std::move(handle);
+    // Data can finish before FETCH_OK. Return the reply without restoring
+    // references that terminal delivery has already released.
+    if (!ended_) {
+      handle_ = std::move(handle);
+    }
     return true;
   }
   void fetchCancel() override {
@@ -2703,10 +2707,12 @@ public:
       return;
     }
     cancelled_ = true;
-    if (handle_) {
-      handle_->fetchCancel();
+    auto handle = std::exchange(handle_, nullptr);
+    auto downstream = std::exchange(downstream_, nullptr);
+    if (handle) {
+      handle->fetchCancel();
     }
-    downstream_->reset(ResetStreamErrorCode::CANCELLED);
+    downstream->reset(ResetStreamErrorCode::CANCELLED);
   }
   folly::coro::Task<RequestUpdateResult> requestUpdate(RequestUpdate update) override {
     if (cancelled_ || !handle_) {
@@ -2714,7 +2720,8 @@ public:
           RequestError{update.requestID, RequestErrorCode::NOT_SUPPORTED, "fetch ended"}
       );
     }
-    co_return co_await handle_->requestUpdate(std::move(update));
+    auto handle = handle_;
+    co_return co_await handle->requestUpdate(std::move(update));
   }
   bool active() const { return !cancelled_ && !ended_; }
   static auto error() {
@@ -2732,7 +2739,8 @@ public:
     if (!active()) {
       return error();
     }
-    auto result = downstream_->object(
+    auto downstream = fin ? finish() : downstream_;
+    return downstream->object(
         group,
         subgroup,
         objectID,
@@ -2741,8 +2749,6 @@ public:
         fin,
         datagram
     );
-    ended_ = fin;
-    return result;
   }
   void checkpoint() override {
     if (active()) {
@@ -2768,40 +2774,38 @@ public:
     if (!active()) {
       return error();
     }
-    auto result = downstream_->objectPayload(std::move(payload), fin);
-    ended_ = fin;
-    return result;
+    auto downstream = fin ? finish() : downstream_;
+    return downstream->objectPayload(std::move(payload), fin);
   }
   folly::Expected<folly::Unit, MoQPublishError>
   endOfGroup(uint64_t group, uint64_t subgroup, uint64_t objectID, bool fin) override {
     if (!active()) {
       return error();
     }
-    auto result = downstream_->endOfGroup(group, subgroup, objectID, fin);
-    ended_ = fin;
-    return result;
+    auto downstream = fin ? finish() : downstream_;
+    return downstream->endOfGroup(group, subgroup, objectID, fin);
   }
   folly::Expected<folly::Unit, MoQPublishError>
   endOfTrackAndGroup(uint64_t group, uint64_t subgroup, uint64_t objectID) override {
     if (!active()) {
       return error();
     }
-    ended_ = true;
-    return downstream_->endOfTrackAndGroup(group, subgroup, objectID);
+    return finish()->endOfTrackAndGroup(group, subgroup, objectID);
   }
   folly::Expected<folly::Unit, MoQPublishError> endOfFetch() override {
     if (!active()) {
       return error();
     }
-    ended_ = true;
-    return downstream_->endOfFetch();
+    return finish()->endOfFetch();
   }
   void reset(ResetStreamErrorCode code) override {
     if (!active()) {
       return;
     }
     cancelled_ = true;
-    downstream_->reset(code);
+    auto downstream = std::exchange(downstream_, nullptr);
+    handle_.reset();
+    downstream->reset(code);
   }
   void goaway(Goaway goaway) override {
     if (active()) {
@@ -2819,12 +2823,20 @@ public:
     if (!active()) {
       return error();
     }
-    auto result = downstream_->endOfUnknownRange(group, objectID, fin);
-    ended_ = fin;
-    return result;
+    auto downstream = fin ? finish() : downstream_;
+    return downstream->endOfUnknownRange(group, objectID, fin);
   }
 
 private:
+  std::shared_ptr<FetchConsumer> finish() {
+    ended_ = true;
+    // The downstream session can retain this FetchHandle. Detach its consumer
+    // before invoking terminal delivery to break that cycle, even on reentry.
+    auto downstream = std::exchange(downstream_, nullptr);
+    handle_.reset();
+    return downstream;
+  }
+
   std::weak_ptr<MoqxRelay> relay_;
   FullTrackName ftn_;
   std::shared_ptr<NamespaceTree::NamespaceNode> node_;
@@ -3388,7 +3400,9 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeCluster(
   if (exact && exact->isPublish && exact->source == selected->session) {
     rememberPublishedReader(subReq.fullTrackName, session);
     auto ref = exact->forwarder;
-    auto attached = co_await ref.co_with(
+    // GCC 11 can miscompile owning lambda captures inside a co_await expression.
+    // Construct the task separately so the callback is moved before suspension.
+    auto attach = ref.co_with(
         [session, subReq, consumer = maybeCrossExec(relayExec_, std::move(consumer))](
             MoQForwarder& fwd
         ) mutable -> Publisher::SubscribeResult {
@@ -3398,6 +3412,7 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeCluster(
           return attachSubscriber(fwd, session, subReq, std::move(consumer));
         }
     );
+    auto attached = co_await std::move(attach);
     if (!attached) {
       co_return unavailable();
     }
@@ -3903,7 +3918,8 @@ MoqxRelay::fetchImpl(Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
     });
   }
   if (mode() == Mode::LocalForwarder) {
-    fetch = co_await folly::coro::co_withExecutor(
+    // Keep the owning capture out of the co_await expression for GCC 11.
+    auto resolve = folly::coro::co_withExecutor(
         folly::getKeepAliveToken(session->getExecutor()),
         folly::coro::co_invoke(
             [this, fetch = std::move(fetch), session]() mutable -> folly::coro::Task<Fetch> {
@@ -3911,6 +3927,7 @@ MoqxRelay::fetchImpl(Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
             }
         )
     );
+    fetch = co_await std::move(resolve);
   }
 
   auto [standalone, joining] = fetchType(fetch);
@@ -4020,7 +4037,7 @@ folly::coro::Task<Publisher::TrackStatusResult> MoqxRelay::trackStatusImpl(Track
     }
     auto exact = registry_.getUpstreamView(trackStatus.fullTrackName);
     if (exact && exact->isPublish && exact->source == route->session) {
-      auto status = co_await exact->forwarder.co_with(
+      auto readStatus = exact->forwarder.co_with(
           [trackStatus,
            live = bool(exact->handle)](MoQForwarder& fwd) -> std::optional<TrackStatusOk> {
             if (fwd.numForwardingSubscribers() == 0) {
@@ -4029,6 +4046,7 @@ folly::coro::Task<Publisher::TrackStatusResult> MoqxRelay::trackStatusImpl(Track
             return buildTrackStatusOk(fwd, live, trackStatus);
           }
       );
+      auto status = co_await std::move(readStatus);
       auto current = selectClusterPublisher(node, session);
       if (!current || current->routeID != route->routeID ||
           current->contentEpoch != route->contentEpoch) {

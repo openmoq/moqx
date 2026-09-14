@@ -513,6 +513,65 @@ TEST_P(MoQRelayTest, ClusterOriginReplacementCancelsSubscriptionAndFetch) {
   removeSession(source);
 }
 
+TEST_P(MoQRelayTest, ClusterFetchCompletionReleasesConsumerBeforeAndAfterFetchOk) {
+  // A session's fetch publisher retains the returned handle. Retaining its
+  // consumer in that handle after completion would keep the entire session alive.
+  struct RetainingConsumer : NiceMock<MockFetchConsumer> {
+    std::shared_ptr<Publisher::FetchHandle> handle;
+  };
+  resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "", 900);
+  for (bool completeBeforeReply : {false, true}) {
+    SCOPED_TRACE(completeBeforeReply);
+    auto source = createMockSession();
+    auto reader = createMockSession();
+    doPublishNamespace(source, kTestNamespace);
+    std::shared_ptr<FetchConsumer> ingress;
+    std::weak_ptr<Publisher::FetchHandle> upstreamLifetime;
+    EXPECT_CALL(*source, fetch(_, _)).WillOnce([&](Fetch, std::shared_ptr<FetchConsumer> consumer) {
+      ingress = std::move(consumer);
+      if (completeBeforeReply) {
+        ingress->endOfFetch();
+      }
+      auto handle = std::make_shared<NiceMock<MockFetchHandle>>(
+          FetchOk{RequestID(5), GroupOrder::OldestFirst, 0, AbsoluteLocation{1, 0}, {}}
+      );
+      upstreamLifetime = handle;
+      return folly::coro::makeTask<Publisher::FetchResult>(std::move(handle));
+    });
+    auto consumer = std::make_shared<RetainingConsumer>();
+    EXPECT_CALL(*consumer, endOfFetch())
+        .WillOnce(Return(folly::makeExpected<MoQPublishError>(folly::unit)));
+    auto result = withSessionContext(reader, [&] {
+      return folly::coro::blockingWait(
+          publisherInterface()->fetch(
+              Fetch(RequestID(5), kTestTrackName, AbsoluteLocation{0, 0}, AbsoluteLocation{1, 0}),
+              consumer
+          ),
+          exec_.get()
+      );
+    });
+    ASSERT_TRUE(result.hasValue());
+    EXPECT_EQ(result.value()->fetchOk().requestID, RequestID(5));
+    consumer->handle = result.value();
+    std::weak_ptr<RetainingConsumer> lifetime = consumer;
+    consumer.reset();
+    if (!completeBeforeReply) {
+      ingress->endOfFetch();
+    }
+    EXPECT_TRUE(driveUntil([&] { return lifetime.expired() && upstreamLifetime.expired(); }));
+    // Break the cycle after a failed assertion so a regression does not leak
+    // the fixture and obscure the lifetime failure with sanitizer noise.
+    if (auto retained = lifetime.lock()) {
+      retained->handle.reset();
+    }
+    ingress.reset();
+    result.value().reset();
+    removeSession(reader);
+    removeSession(source);
+    driveIfMultiThread();
+  }
+}
+
 TEST_P(MoQRelayTest, ClusterParentReplacementPreservesAuthoritativeChild) {
   resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "", 900);
   auto parent = createMockSession();
