@@ -2,7 +2,7 @@
 """test_relay_hops_cycle.py — RELAY_HOPS stabilizes A -> B -> C -> A.
 
 A namespace published at A must reach every relay in the cycle and then stop
-changing: relay-hops drops an advertisement whose HOP_PATH already contains
+changing: the cluster extension drops an advertisement whose HOP_PATH already contains
 the local Hop ID, so the tree converges instead of circulating forever.
 See docs/relay-hops.md.
 
@@ -15,6 +15,7 @@ NAMESPACE = "relay-hop-cycle"
 
 
 def run(h):
+    h.moqt_versions = "[18]"
     h.relay("A", upstream="B", relay_id="cycle-a")
     h.relay("B", upstream="C", relay_id="cycle-b")
     h.relay("C", upstream="A", relay_id="cycle-c")
@@ -22,7 +23,7 @@ def run(h):
 
     h.case("Namespace published at A propagates around the cycle and stabilizes")
 
-    pub = h.actor("pub", "publisher", relay="A", ns=NAMESPACE, track="date")
+    pub = h.actor("pub", "cluster-publisher", relay="A", ns=NAMESPACE, track="date")
     pub.start()
 
     # These are the propagation assertion: each aborts the run if the namespace

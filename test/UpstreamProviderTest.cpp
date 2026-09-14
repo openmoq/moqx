@@ -564,7 +564,7 @@ TEST_F(UpstreamProviderTest, StopIsIdempotent) {
 // onDisconnect hook fires when the upstream session is closed.
 TEST_F(UpstreamProviderTest, OnDisconnectHookFires) {
   // Replace the default (never-started) provider with one that has the hook.
-  bool fired = false;
+  auto fired = std::make_shared<bool>(false);
   provider_ = std::make_shared<UpstreamProvider>(
       clientExec(),
       serverUrl(),
@@ -572,7 +572,7 @@ TEST_F(UpstreamProviderTest, OnDisconnectHookFires) {
       /*subscribeHandler=*/nullptr,
       std::make_shared<moxygen::test::InsecureVerifierDangerousDoNotUseInProduction>(),
       /*onConnect=*/nullptr,
-      /*onDisconnect=*/[&fired]() { fired = true; }
+      /*onDisconnect=*/[fired]() { *fired = true; }
   );
 
   folly::coro::blockingWait(
@@ -584,7 +584,7 @@ TEST_F(UpstreamProviderTest, OnDisconnectHookFires) {
         }
         provider_->currentSession()->close(SessionCloseErrorCode::NO_ERROR);
         co_await folly::coro::sleep(std::chrono::milliseconds(50));
-        EXPECT_TRUE(fired);
+        EXPECT_TRUE(*fired);
       }(),
       &clientEvb()
   );
@@ -759,24 +759,22 @@ TEST_F(RelayUpstreamSubscribeRaceTest, ConcurrentSubscribesSameTrack) {
   SubscribeRequest subReq2 = makeSubscribeRequest();
   subReq2.requestID = RequestID(2);
 
-  folly::coro::blockingWait(
-      [&]() -> folly::coro::Task<void> {
-        // collectAll launch order is deterministic:
-        //   [0] provider_->start(): suspends at QUIC handshake after setting
-        //       state=Connecting and creating connectPromise_.
-        //   [1] subscribeTask(1): enters waitForConnected(), blocks on
-        //       connectPromise_ — connectPromise_ is now set (state=Connecting).
-        //   [2] subscribeTask(2): same.
-        // After the handshake, onUpstreamConnect fires, namespace enters the
-        // relay tree, connectPromise_ is fulfilled, and both tasks resume.
-        co_await folly::coro::collectAll(
-            provider_->start(),
-            subscribeTask(subSession1_, std::move(subReq1)),
-            subscribeTask(subSession2_, std::move(subReq2))
-        );
-      }(),
-      &clientEvb()
-  );
+  auto runConcurrentSubscribes = [&]() -> folly::coro::Task<void> {
+    // collectAll launch order is deterministic:
+    //   [0] provider_->start(): suspends at QUIC handshake after setting
+    //       state=Connecting and creating connectPromise_.
+    //   [1] subscribeTask(1): enters waitForConnected(), blocks on
+    //       connectPromise_ — connectPromise_ is now set (state=Connecting).
+    //   [2] subscribeTask(2): same.
+    // After the handshake, onUpstreamConnect fires, namespace enters the
+    // relay tree, connectPromise_ is fulfilled, and both tasks resume.
+    co_await folly::coro::collectAll(
+        provider_->start(),
+        subscribeTask(subSession1_, std::move(subReq1)),
+        subscribeTask(subSession2_, std::move(subReq2))
+    );
+  };
+  folly::coro::blockingWait(runConcurrentSubscribes(), &clientEvb());
 }
 
 } // namespace openmoq::moqx::test

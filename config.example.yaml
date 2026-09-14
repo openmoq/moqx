@@ -1,6 +1,13 @@
 # moqx relay configuration
 # See: moqx dump-config-schema | scripts/dev/config-schema-to-markdown.sh
 
+# Cluster support is negotiated on draft 18 links. Set moqt_versions: [18]
+# on mesh listeners; default listeners retain draft 14/16 compatibility.
+# cluster:
+#   enabled: true
+#   hop_id: 1001           # Absent: random nonzero uint64; 0: anonymous
+#   cost_grace_ms: 2000
+
 listeners:
   - name: main
     udp:
@@ -66,6 +73,11 @@ services:
     #   tls:
     #     insecure: false         # true = skip cert verification (dev only)
     #     # ca_cert: /path/to/ca.pem  # Custom CA cert (mutually exclusive with insecure: true)
+    # upstreams:                  # Use a list instead of upstream for multiple peers
+    #   - url: "moqt://peer-a.example.com:4433/moq-relay"
+    #     relay_cost: 0            # Free link; absent defaults to 1
+    #   - url: "moqt://peer-b.example.com:4433/moq-relay"
+    #     relay_cost: 5
     # auth:                       # Optional: enable CAT-style authorization for this service
     #   enabled: true             # Turn auth on for this service (default: false)
     #   token_type: 16            # MOQT AUTHORIZATION_TOKEN type for CAT4MOQ/moqxr; 0 is valid for private deployments

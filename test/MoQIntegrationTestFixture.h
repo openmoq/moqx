@@ -107,7 +107,7 @@ protected:
 
   // Create a URL pointing at the test server
   proxygen::URL serverUrl() const {
-    return proxygen::URL(folly::to<std::string>("moqt://localhost:", port_, "/test"));
+    return proxygen::URL(folly::to<std::string>("moqt://[::1]:", port_, "/test"));
   }
 
   // Create a new MoQ client configured for the test server
