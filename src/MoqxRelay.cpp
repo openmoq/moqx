@@ -2353,6 +2353,10 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriber
 
   // addSubscriber before the relay hop: numForwardingSubscribers() must be correct
   // when addChannelSubscriber runs on publisherExec, so forward flag is right from the start.
+  // Kept for the cache replay in the tail: addSubscriber consumes the consumer,
+  // and a subscriber that lands on a thread with no local forwarder yet still
+  // needs the retained objects its filter asked for.
+  auto replaySink = consumer;
   auto sub = localFwd->addSubscriber(session, subReq, std::move(consumer));
   if (!sub) {
     co_return folly::makeUnexpected(makeAddSubscriberError(subReq.requestID));
@@ -2406,6 +2410,13 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriber
   // Also on the subscriber, so a post-SUBSCRIBE_OK joining fetch resolves.
   attach.initial.applyTo(*sub);
   replayPendingFowarderEvents(localFwd.get(), attach.finalCallback, *pendingCb, forward);
+  // This path builds a *new* local forwarder while joining an upstream
+  // subscription that already exists, which is what a reload landing on another
+  // io thread does. It needs the same replay as the path that joins a local
+  // forwarder already on this thread -- without it the fix works or not
+  // depending on which thread the viewer happens to land on. The largest comes
+  // from the upstream OK rather than the forwarder, which has seen nothing yet.
+  maybeReplayFromCache(subReq, attach.initial.largest, replaySink);
   localFwd->tryProcessNewGroupRequest(subReq.params);
   claim.markReady();
   co_return sub;
