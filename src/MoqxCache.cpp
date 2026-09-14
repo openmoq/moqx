@@ -10,6 +10,7 @@
 #include "MoqxCache.h"
 #include "relay/NullConsumers.h"
 #include <algorithm>
+#include <iterator>
 #include <vector>
 #include <folly/logging/xlog.h>
 #include <moxygen/MoQTrackProperties.h>
@@ -2497,34 +2498,66 @@ bool MoqxCache::evictForByteLimitIfNeeded() {
   size_t targetBytes =
       minEvictionBytes_ < maxCachedBytes_ ? maxCachedBytes_ - minEvictionBytes_ : 0;
 
+  // The newest group of a live track is a subscriber's join point: it is what a
+  // subscribe asking for retained objects is answered with, and for a track
+  // written once per broadcast -- a catalog -- it is the only copy the relay
+  // will ever hold. It is never the newest *bytes*, though: a catalog is written
+  // at start and media is written continuously, so a global LRU under byte
+  // pressure walks to the catalog first and evicts it within a minute of one
+  // 2.5 Mbps stream filling a 16 MB cache. Measured: catalog groups=0 beside a
+  // video track holding 27. Keep one group per live track out of this loop's
+  // reach; everything older is fair game.
+  auto isJoinPoint = [](const CacheTrack& track, uint64_t groupID) {
+    return track.liveWritebackCount > 0 && track.largestGroupAndObject.has_value() &&
+           track.largestGroupAndObject->group == groupID;
+  };
+
   // Evict oldest evictable groups globally (covers both live and non-live
   // tracks). After evicting a group from a non-live (fully evictable) track
   // that becomes empty, also evict the empty track shell.
   while (totalCachedBytes_ > targetBytes && !globalGroupLRU_.empty()) {
-    const auto& [ftn, groupID] = globalGroupLRU_.back();
-    auto trackIt = cache_.find(ftn);
-    if (trackIt == cache_.end()) {
-      // Stale entry — should not happen since evictTrack now calls evictGroup
-      // for every group, but guard defensively against future code paths.
-      XLOG(DFATAL) << "globalGroupLRU_ has stale entry for evicted track: " << ftn;
-      globalGroupLRU_.pop_back();
+    // Oldest first, skipping join points. Protected entries are at most one per
+    // live track and sit at the old end, so the walk past them is short.
+    auto victim = globalGroupLRU_.end();
+    bool restart = false;
+    for (auto rit = globalGroupLRU_.rbegin(); rit != globalGroupLRU_.rend(); ++rit) {
+      auto trackIt = cache_.find(rit->first);
+      if (trackIt == cache_.end()) {
+        // Stale entry — should not happen since evictTrack calls evictGroup for
+        // every group, but guard defensively against future code paths.
+        XLOG(DFATAL) << "globalGroupLRU_ has stale entry for evicted track: " << rit->first;
+        globalGroupLRU_.erase(std::prev(rit.base()));
+        restart = true;
+        break;
+      }
+      if (isJoinPoint(*trackIt->second, rit->second)) {
+        continue;
+      }
+      victim = std::prev(rit.base());
+      break;
+    }
+    if (restart) {
       continue;
     }
-    auto& track = *trackIt->second;
+    if (victim == globalGroupLRU_.end()) {
+      // Only join points remain.
+      break;
+    }
+    // Copy: evictGroup() erases this node.
+    const auto [ftn, groupID] = *victim;
+    auto& track = *cache_.find(ftn)->second;
     XLOG(DBG1) << "Evicting group " << groupID << " from track " << ftn
                << " for byte limit (bytes: " << totalCachedBytes_ << " > limit: " << maxCachedBytes_
                << ")";
-    // evictGroup() erases the globalGroupLRU_ node, invalidating ftn/groupID.
-    // Use trackIt->first for any post-eviction access to the track name.
     evictGroup(track, groupID);
     if (track.groups.empty() && track.canEvict()) {
-      evictTrack(trackIt->first);
+      evictTrack(ftn);
     }
   }
 
   if (totalCachedBytes_ > maxCachedBytes_) {
-    XLOG(DBG1) << "Cannot reduce cache below byte limit, all evictable "
-                  "groups are actively being written. Bytes: "
+    XLOG(DBG1) << "Cannot reduce cache below byte limit: every remaining group is "
+                  "being written or is a live track's join point. Bytes: "
                << totalCachedBytes_ << ", limit: " << maxCachedBytes_;
     return false;
   }
