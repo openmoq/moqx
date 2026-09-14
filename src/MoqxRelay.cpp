@@ -2416,7 +2416,15 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriber
   // forwarder already on this thread -- without it the fix works or not
   // depending on which thread the viewer happens to land on. The largest comes
   // from the upstream OK rather than the forwarder, which has seen nothing yet.
-  maybeReplayFromCache(subReq, attach.initial.largest, replaySink);
+  //
+  // Not when this subscriber is the one that created the upstream subscription:
+  // the publisher answers that SUBSCRIBE itself, and everything it sends lands
+  // in the cache *and* on this subscriber during setup, so a replay here would
+  // deliver every one of those objects a second time. Measured: a first viewer
+  // received the six catalog objects twice.
+  if (!attach.ownsRelayChain) {
+    maybeReplayFromCache(subReq, attach.initial.largest, replaySink);
+  }
   localFwd->tryProcessNewGroupRequest(subReq.params);
   claim.markReady();
   co_return sub;
@@ -2775,6 +2783,19 @@ void MoqxRelay::maybeReplayFromCache(
   if (!subReq.start || *largest < *subReq.start) {
     return;
   }
+  // Never reach back before the start of the largest group. AbsoluteStart {0,0}
+  // is how draft-16 spells an unfiltered subscribe (moxygen decodes an absent
+  // filter to exactly that, and @moq/net sends it as its default join), and a
+  // subscriber asking for "everything" wants to join live, not to download the
+  // cache: the current group is what its decoder can start on and what a
+  // moq-lite relay would have handed it. It also bounds the burst to one group
+  // no matter how much is retained. For a catalog track, one object per group,
+  // it is exactly one object -- the newest catalog.
+  AbsoluteLocation start = *subReq.start;
+  const AbsoluteLocation groupStart{largest->group, 0};
+  if (start < groupStart) {
+    start = groupStart;
+  }
   // The live subscription starts at largest + 1 because moxygen clamps it
   // there, so replaying up to and including largest covers the gap exactly.
   //
@@ -2785,14 +2806,15 @@ void MoqxRelay::maybeReplayFromCache(
   // as MALFORMED_TRACK.
   const AbsoluteLocation end = *largest;
   auto adapter = std::make_shared<FetchToTrackConsumer>(consumer, subReq.priority);
-  auto written = cache_->replayCachedRange(subReq.fullTrackName, *subReq.start, end, adapter);
+  auto written = cache_->replayCachedRange(subReq.fullTrackName, start, end, adapter);
   // INFO rather than DBG: this fires once per late subscriber, and when it does
   // not fire the symptom is a viewer that hangs with no error anywhere. Being
   // able to see both outcomes in an ordinary production log is the difference
   // between diagnosing that in minutes and in days.
   XLOG(INFO) << "Cache replay for " << subReq.fullTrackName << " wrote " << written
-             << " object(s) from {" << subReq.start->group << "," << subReq.start->object
-             << "} to {" << end.group << "," << end.object << "}";
+             << " object(s) from {" << start.group << "," << start.object << "} to {"
+             << end.group << "," << end.object << "} (asked from {" << subReq.start->group
+             << "," << subReq.start->object << "})";
 }
 
 void MoqxRelay::onEmpty(MoQForwarder* forwarder) {
