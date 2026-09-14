@@ -90,7 +90,7 @@ permissions:
 jobs:
   perf:
     name: perf-test
-    runs-on: [self-hosted, linode]
+    runs-on: [self-hosted, relay]
     # Headroom for the from-source moxygen fallback on top of the perf runs.
     timeout-minutes: 240
     outputs:
