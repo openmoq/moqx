@@ -536,7 +536,7 @@ void MoqxRelay::advertiseNamespace(
 ) {
   const auto& name = node->trackNamespace;
   auto selected = selectClusterPublisher(node, session);
-  if ((session->getPeerHopID() != 0 && session->getPeerHopID() == relayHopID_) ||
+  if ((session->getPeerHopID() != kMoQClusterAnonHopId && session->getPeerHopID() == relayHopID_) ||
       (info.options != SubscribeNamespaceOptions::NAMESPACE &&
        info.options != SubscribeNamespaceOptions::BOTH)) {
     selected.reset();
@@ -565,7 +565,7 @@ void MoqxRelay::advertiseNamespace(
   // A repeated anonymous advertisement replaces content downstream, even when
   // only its price changes. Keep its advertised price stable across local
   // forwarding transitions; actual upstream replacements still force an update.
-  const bool discount = !selected->path.empty() && selected->path.front() != 0 &&
+  const bool discount = !selected->path.empty() && selected->path.front() != kMoQClusterAnonHopId &&
                         warm != clusterWarm_.end() &&
                         warm->second.epoch == selected->contentEpoch && warm->second.warm;
   const auto cost = discount ? 0 : selected->cost;
@@ -606,7 +606,7 @@ std::optional<std::vector<uint64_t>> MoqxRelay::ingestRelayHopPath(
 ) {
   std::vector<uint64_t> relayHopPath;
   if (!session->negotiatedSetupExtension(SetupExtension::RelayHops)) {
-    relayHopPath.push_back(0);
+    relayHopPath.push_back(kMoQClusterAnonHopId);
   } else {
     const auto* hopPathParam = pubNs.params.getFirstParam(TrackRequestParamKey::HOP_PATH);
     if (!hopPathParam) {

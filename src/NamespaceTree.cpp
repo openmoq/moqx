@@ -202,7 +202,7 @@ NamespaceTree::SetPublisherResult NamespaceTree::setPublisher(
     }
   }
   if (relayHopPath.empty()) {
-    relayHopPath.push_back(0);
+    relayHopPath.push_back(moxygen::kMoQClusterAnonHopId);
   }
   result.contentChanged =
       node->routes_.update(routeID, std::move(relayHopPath), advertisedCost, linkCost);
