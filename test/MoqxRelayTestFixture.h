@@ -15,11 +15,16 @@
 #include "MoqxRelay.h"
 #include "relay/PublisherCrossExecFilter.h"
 #include "relay/SubscriberCrossExecFilter.h"
+#include <atomic>
+#include <folly/Try.h>
 #include <folly/coro/BlockingWait.h>
+#include <folly/coro/Invoke.h>
+#include <folly/coro/Task.h>
 #include <folly/io/async/EventBase.h>
 #include <folly/io/async/ScopedEventBaseThread.h>
 #include <folly/portability/GMock.h>
 #include <folly/portability/GTest.h>
+#include <folly/synchronization/Baton.h>
 #include <moxygen/MoQTrackProperties.h>
 #include <moxygen/events/MoQFollyExecutorImpl.h>
 #include <moxygen/test/MockMoQSession.h>
@@ -92,6 +97,9 @@ protected:
   void TearDown() override;
 
   std::shared_ptr<MockMoQSession> createMockSession();
+  // A session whose executor is some other iothread, for tests that split publisher and
+  // subscriber across threads.
+  std::shared_ptr<MockMoQSession> createMockSessionOn(std::shared_ptr<moxygen::MoQExecutor> exec);
   std::shared_ptr<Publisher::SubscriptionHandle> createMockSubscriptionHandle();
 
   void removeSession(std::shared_ptr<MoQSession> sess);
@@ -107,6 +115,58 @@ protected:
       folly::Optional<SubscribeErrorCode> expectedError = folly::none
   );
 
+  static SubscribeRequest
+  makeSubscribeRequest(RequestID requestID, const FullTrackName& trackName = kTestTrackName);
+
+  // A subscribe that has been started but not waited for. Both members are heap-owned so
+  // the coroutine can outlive the scope that launched it.
+  struct PendingSubscribe {
+    std::shared_ptr<folly::Try<Publisher::SubscribeResult>> result =
+        std::make_shared<folly::Try<Publisher::SubscribeResult>>();
+    std::shared_ptr<std::atomic<bool>> done = std::make_shared<std::atomic<bool>>(false);
+
+    bool ready() const { return done->load(); }
+    // Fails the test unless the subscribe finished and succeeded.
+    std::shared_ptr<SubscriptionHandle> handle() const;
+  };
+
+  // Starts a subscribe on the calling thread and returns without waiting; the coroutine
+  // runs on startExec. Use this when the caller needs it to land in a particular turn.
+  PendingSubscribe startSubscribe(
+      folly::Executor* startExec,
+      const std::shared_ptr<MoQSession>& session,
+      SubscribeRequest sub,
+      std::shared_ptr<TrackConsumer> consumer
+  );
+
+  // exec_ reaches folly::Executor by two paths, so it needs the cast to be named.
+  folly::Executor* sessionExec() { return static_cast<folly::DrivableExecutor*>(exec_.get()); }
+
+  // startSubscribe from another thread, then one more turn there so the subscribe reaches
+  // its first suspension before this returns.
+  PendingSubscribe launchSubscribeOn(
+      folly::EventBase* evb,
+      const std::shared_ptr<MoQSession>& session,
+      SubscribeRequest sub,
+      std::shared_ptr<TrackConsumer> consumer
+  );
+
+  // Blocks relayEvb_ so a test can queue relay-phase work in a known order. The
+  // constructor returns once the block is in effect; the destructor releases it.
+  class RelayGate {
+  public:
+    RelayGate() = default;
+    explicit RelayGate(folly::EventBase* evb);
+    RelayGate(RelayGate&&) = default;
+    RelayGate& operator=(RelayGate&&) = default;
+    ~RelayGate() { release(); }
+    void release();
+
+  private:
+    std::shared_ptr<folly::Baton<>> gate_;
+  };
+  RelayGate parkRelayExec() { return RelayGate(relayEvb_); }
+
   template <typename Func> void verifyOnRelayExec(Func&& func) {
     if (relayEvb_) {
       relayEvb_->runInEventBaseThreadAndWait(std::forward<Func>(func));
@@ -121,7 +181,7 @@ protected:
     }
   }
 
-  // Drive both executors until `done()` is true or maxIters is reached. Each
+  // Drive every executor until `done()` is true or maxIters is reached. Each
   // exec_->drive() flushes exec_ and (in MT/LocalForwarderMT modes) synchronizes
   // with relayEvb_ via runInEventBaseThreadAndWait, so this deterministically
   // advances the relay's async cascades (e.g. forwardChanged/NGR requestUpdate)
@@ -134,6 +194,9 @@ protected:
     int iters = relayEvb_ ? maxIters : 1;
     for (int i = 0; i < iters && !done(); ++i) {
       exec_->drive();
+      for (auto& aux : auxExecs_) {
+        aux->evb->runInEventBaseThreadAndWait([]() {});
+      }
     }
     return done();
   }
