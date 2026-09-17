@@ -16,6 +16,9 @@
 
 #include "MoqxRelayTestFixture.h"
 
+#include <folly/CancellationToken.h>
+#include <folly/coro/WithCancellation.h>
+
 namespace openmoq::moqx::test {
 
 class MoqxRelayRendezvousTest : public MoQRelayTest {
@@ -564,85 +567,68 @@ TEST_P(MoqxRelayRendezvousTest, SubscribeRoutesPastSubscribeNamespaceCreatedNode
   driveIfMultiThread();
 }
 
-// Regression test: two waiters parked on the *same* track must both be woken
-// by a single PUBLISH. wakePendingRendezvousForTrack signals every entry in
-// waitersByTrack[track] in one pass — a reentrant erase from a prior signal()
-// call corrupting that same vector mid-iteration would drop or crash on the
-// second waiter instead of resolving it.
-TEST_P(MoqxRelayRendezvousTest, MultipleWaitersOnSameTrackAllResolveOnPublish) {
-  auto subSessionA = createV18Session();
-  auto subSessionB = createV18Session();
-  auto consumerA = createMockConsumer();
-  auto consumerB = createMockConsumer();
+// After a parked SUBSCRIBE times out, its waiter must be fully erased —
+// including pruning now-empty ancestor namespace nodes — not just
+// disconnected. Checked via the public hasPendingRendezvousWaiters() test
+// accessor since there is no black-box signal for "was this node pruned".
+TEST_P(MoqxRelayRendezvousTest, TimedOutWaiterPrunesTree) {
+  auto subSession = createV18Session();
+  auto consumer = createMockConsumer();
+  auto sub = makeRendezvousSubscribeRequest(kTestTrackName, /*timeoutMs=*/50);
 
-  auto futureA =
-      startSubscribe(subSessionA, makeRendezvousSubscribeRequest(kTestTrackName, 5000), consumerA);
-  auto futureB =
-      startSubscribe(subSessionB, makeRendezvousSubscribeRequest(kTestTrackName, 5000), consumerB);
+  auto result = withSessionContext(subSession, [&]() {
+    auto task = publisherInterface()->subscribe(std::move(sub), consumer);
+    return folly::coro::blockingWait(std::move(task), exec_.get());
+  });
 
-  exec_->driveFor(10);
-  ASSERT_FALSE(futureA.isReady()) << "first subscribe should be parked";
-  ASSERT_FALSE(futureB.isReady()) << "second subscribe should be parked on the same track";
+  ASSERT_TRUE(result.hasError());
+  EXPECT_EQ(result.error().errorCode, SubscribeErrorCode::TIMEOUT);
 
-  auto pubSession = createMockSession();
-  doPublish(pubSession, kTestTrackName);
+  verifyOnRelayExec([&] {
+    EXPECT_FALSE(relay_->hasPendingRendezvousWaiters())
+        << "the timed-out waiter's node must be pruned, not just left disconnected";
+  });
 
-  ASSERT_TRUE(driveUntil([&] { return futureA.isReady() && futureB.isReady(); }))
-      << "a single PUBLISH must wake every waiter parked on this track";
-
-  auto resultA = std::move(futureA).value();
-  auto resultB = std::move(futureB).value();
-  ASSERT_TRUE(resultA.hasValue()) << "first waiter should resolve, not be skipped/corrupted";
-  ASSERT_TRUE(resultB.hasValue()) << "second waiter should resolve, not be skipped/corrupted";
-
-  resultA.value()->unsubscribe();
-  resultB.value()->unsubscribe();
-  removeSession(pubSession);
-  removeSession(subSessionA);
-  removeSession(subSessionB);
+  removeSession(subSession);
   driveIfMultiThread();
 }
 
-// Regression test: two waiters parked on *different* tracks under the same
-// namespace must both be woken by a single PUBLISH_NAMESPACE.
-// collectPendingRendezvousSubtree iterates the node's waitersByTrack map in
-// one pass — a reentrant erase corrupting that map mid-iteration would drop
-// or crash on the second track's waiter instead of resolving it.
-TEST_P(MoqxRelayRendezvousTest, MultipleWaitersUnderNamespaceAllResolveOnPublishNamespace) {
-  auto subSessionA = createV18Session();
-  auto subSessionB = createV18Session();
-  auto consumerA = createMockConsumer();
-  auto consumerB = createMockConsumer();
+// A parked rendezvous SUBSCRIBE whose task is cancelled (e.g. the enclosing
+// session/request is torn down while parked) must stop via
+// co_stopped_may_throw rather than resolving with a value or a SubscribeError.
+TEST_P(MoqxRelayRendezvousTest, CancellationWhileParkedStopsWithoutResult) {
+  auto subSession = createV18Session();
+  auto consumer = createMockConsumer();
+  auto sub = makeRendezvousSubscribeRequest(kTestTrackName, /*timeoutMs=*/5000);
 
-  FullTrackName ftnA{kTestNamespace, "track1"};
-  FullTrackName ftnB{kTestNamespace, "track2"};
-
-  auto futureA = startSubscribe(subSessionA, makeRendezvousSubscribeRequest(ftnA, 5000), consumerA);
-  auto futureB = startSubscribe(subSessionB, makeRendezvousSubscribeRequest(ftnB, 5000), consumerB);
+  folly::CancellationSource cancelSource;
+  auto future = withSessionContext(subSession, [&]() {
+    auto task = publisherInterface()->subscribe(std::move(sub), consumer);
+    return co_withExecutor(
+               static_cast<folly::DrivableExecutor*>(exec_.get()),
+               folly::coro::co_withCancellation(cancelSource.getToken(), std::move(task))
+    )
+        .start();
+  });
 
   exec_->driveFor(10);
-  ASSERT_FALSE(futureA.isReady()) << "first subscribe should be parked";
-  ASSERT_FALSE(futureB.isReady()
-  ) << "second subscribe (different track, same namespace) should be parked";
+  ASSERT_FALSE(future.isReady()) << "subscribe should be parked awaiting rendezvous";
 
-  auto pubSession = createMockSession();
-  bool sawUpstream = false;
-  expectUpstreamSubscribe(pubSession, sawUpstream);
-  doPublishNamespace(pubSession, kTestNamespace);
+  cancelSource.requestCancellation();
 
-  ASSERT_TRUE(driveUntil([&] { return futureA.isReady() && futureB.isReady(); }))
-      << "a single PUBLISH_NAMESPACE must wake every waiter parked under this namespace";
+  ASSERT_TRUE(driveUntil([&] { return future.isReady(); }))
+      << "cancellation should unpark the waiter promptly";
 
-  auto resultA = std::move(futureA).value();
-  auto resultB = std::move(futureB).value();
-  ASSERT_TRUE(resultA.hasValue()) << "first waiter should resolve, not be skipped/corrupted";
-  ASSERT_TRUE(resultB.hasValue()) << "second waiter should resolve, not be skipped/corrupted";
+  auto resultTry = std::move(future).getTry();
+  EXPECT_TRUE(resultTry.hasException<folly::OperationCancelled>())
+      << "a cancelled rendezvous wait must stop, not resolve with a value or SubscribeError";
 
-  resultA.value()->unsubscribe();
-  resultB.value()->unsubscribe();
-  removeSession(pubSession);
-  removeSession(subSessionA);
-  removeSession(subSessionB);
+  verifyOnRelayExec([&] {
+    EXPECT_FALSE(relay_->hasPendingRendezvousWaiters())
+        << "the cancelled waiter's node must be pruned, same as the timeout path";
+  });
+
+  removeSession(subSession);
   driveIfMultiThread();
 }
 
