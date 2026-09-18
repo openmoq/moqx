@@ -1131,6 +1131,40 @@ CO_TEST_F(MoqxCacheTest, TestUpstreamFetchPartialWriteAndReset) {
   serveCacheRangeFromUpstream({0, 0}, {0, 1});
 }
 
+// An object delivered in pieces completes in objectPayload, which only steps
+// the fetch cursor when the piece carries the fetch's fin. When another object
+// follows, the cursor is still parked on the split one, and that object's
+// markNonExistentTo() records it as a gap — so it lands in the cache and in
+// gaps at once, and every later fetch skips it.
+CO_TEST_F(MoqxCacheTest, TestSplitObjectSurvivesInCache) {
+  expectUpstreamFetch({0, 0}, {0, 3}, 0, AbsoluteLocation{0, 3});
+  auto res = co_await cache_.fetch(getFetch({0, 0}, {0, 3}), trackingConsumer_, upstream_);
+  EXPECT_TRUE(res.hasValue());
+
+  {
+    testing::InSequence enforceOrder;
+    EXPECT_CALL(*consumer_, object(0, 0, 0, _, _, _, _)).WillOnce(Return(folly::unit));
+    EXPECT_CALL(*consumer_, beginObject(0, 0, 1, 100, _, _)).WillOnce(Return(folly::unit));
+    EXPECT_CALL(*consumer_, objectPayload(_, _)).WillOnce(Return(ObjectPublishStatus::DONE));
+    EXPECT_CALL(*consumer_, object(0, 0, 2, _, _, _, _)).WillOnce(Return(folly::unit));
+    EXPECT_CALL(*consumer_, endOfFetch()).WillOnce(Return(folly::unit));
+  }
+  upstreamFetchConsumer_->object(0, 0, 0, makeBuf(100));
+  // Object 1 arrives split, and object 2 follows it, so it does not carry fin.
+  upstreamFetchConsumer_->beginObject(0, 0, 1, 100, makeBuf(50));
+  upstreamFetchConsumer_->objectPayload(makeBuf(50), false);
+  upstreamFetchConsumer_->object(0, 0, 2, makeBuf(100));
+  upstreamFetchConsumer_->endOfFetch();
+
+  co_await folly::coro::co_reschedule_on_current_executor;
+  EXPECT_TRUE(cache_.hasCachedObject(kTestTrackName, AbsoluteLocation{0, 1}));
+
+  // Served entirely from cache: all three objects must come back.
+  expectFetchObjects({0, 0}, {0, 3}, false);
+  auto res2 = co_await cache_.fetch(getFetch({0, 0}, {0, 3}), trackingConsumer_, upstream_);
+  EXPECT_TRUE(res2.hasValue());
+}
+
 CO_TEST_F(MoqxCacheTest, TestUpstreamServesObjectWithGap) {
   // Test case for upstream serving an object with a gap before it.
   // When fetching objects 1-3 and upstream serves object 2, the cache
