@@ -6,9 +6,13 @@
 
 #include "relay/SubscriberCrossExecFilter.h"
 
+#include <folly/CancellationToken.h>
 #include <folly/coro/BlockingWait.h>
+#include <folly/coro/ViaIfAsync.h>
+#include <folly/coro/WithCancellation.h>
 #include <folly/executors/CPUThreadPoolExecutor.h>
 #include <folly/executors/ManualExecutor.h>
+#include <folly/io/async/EventBase.h>
 #include <folly/portability/GMock.h>
 #include <folly/portability/GTest.h>
 #include <folly/synchronization/Baton.h>
@@ -90,6 +94,54 @@ TEST_F(SubscriberCrossExecFilterTest, PublishNamespaceReturnsError) {
   auto result = folly::coro::blockingWait(filter_->publishNamespace(std::move(ann), nullptr));
   EXPECT_FALSE(result.hasValue());
   EXPECT_EQ(result.error().errorCode, PublishNamespaceErrorCode::NOT_SUPPORTED);
+}
+
+// A closing session cancels, then drops the filter, while publishNamespace is
+// still awaiting the inner subscriber. The coroutine holds only a raw this, so
+// ASan catches any member read after the await.
+TEST_F(SubscriberCrossExecFilterTest, PublishNamespaceResumesAfterFilterDestroyed) {
+  folly::EventBase evb;
+  folly::Baton<> innerEntered;
+  folly::Baton<> innerRelease;
+  folly::CancellationSource cancelSource;
+  auto nsHandle = std::make_shared<NiceMock<MockPublishNamespaceHandle>>();
+  EXPECT_CALL(*inner_, publishNamespace(_, _))
+      .WillOnce(
+          [nsHandle,
+           &evb,
+           &innerEntered,
+           &innerRelease](PublishNamespace, std::shared_ptr<Subscriber::PublishNamespaceCallback>)
+              -> folly::coro::Task<Subscriber::PublishNamespaceResult> {
+            // Wakes the loop below, so it never blocks on an empty EventBase.
+            evb.runInEventBaseThread([&innerEntered]() { innerEntered.post(); });
+            innerRelease.wait();
+            co_return folly::makeExpected<PublishNamespaceError>(
+                std::shared_ptr<Subscriber::PublishNamespaceHandle>(nsHandle)
+            );
+          }
+      );
+
+  PublishNamespace ann;
+  ann.requestID = RequestID(7);
+  auto fut = folly::coro::co_withExecutor(
+                 folly::getKeepAliveToken(&evb),
+                 folly::coro::co_withCancellation(
+                     cancelSource.getToken(),
+                     filter_->publishNamespace(std::move(ann), nullptr)
+                 )
+  )
+                 .start();
+
+  while (!innerEntered.ready()) {
+    evb.loopOnce();
+  }
+
+  // MoQSession::cleanup's order: request cancellation, then release the filter.
+  cancelSource.requestCancellation();
+  filter_.reset();
+  innerRelease.post();
+
+  EXPECT_THROW(std::move(fut).via(&evb).getVia(&evb), folly::OperationCancelled);
 }
 
 // ---- publish (sync, called directly) ----
