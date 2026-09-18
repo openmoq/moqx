@@ -1139,7 +1139,8 @@ public:
     }
     XCHECK_GE(currentLength_, addedBytes);
     currentLength_ -= addedBytes;
-    if (currentLength_ == 0) {
+    const bool objectComplete = currentLength_ == 0;
+    if (objectComplete) {
       object->complete = true;
       fetchRangeIt_.track->cachedContent.insert(*fetchRangeIt_);
     }
@@ -1147,12 +1148,14 @@ public:
     group.totalBytes += addedBytes;
     cache_.totalCachedBytes_ += addedBytes;
     cache_.evictForByteLimitIfNeeded();
-    if (finFetch) {
-      // Iterator still ON the just-completed object; step past it before
-      // tail-marking so the gap range doesn't overlap it. Use the iterator's
-      // order-aware end (DESC: lowest position; ASC: end_).
+    if (objectComplete || finFetch) {
+      // A cursor left on a completed object makes the next object's
+      // markNonExistentTo() record this one as a gap.
       fetchRangeIt_.next();
-      markNonExistentTo(fetchRangeIt_.end());
+      if (finFetch) {
+        // Order-aware end (DESC: lowest position; ASC: end_).
+        markNonExistentTo(fetchRangeIt_.end());
+      }
       updateInProgress();
     }
     return consumer_->objectPayload(std::move(payload), finFetch && proxyFin_);
