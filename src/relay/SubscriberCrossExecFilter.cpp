@@ -86,6 +86,7 @@ SubscriberCrossExecFilter::publishNamespace(
       inner_->publishNamespace(std::move(pubNs), std::move(wrappedCallback))
   );
   if (result.hasValue()) {
+    co_await folly::coro::co_safe_point;
     co_return std::make_shared<CrossExecPublishNamespaceHandle>(
         std::move(result.value()),
         targetExec_
