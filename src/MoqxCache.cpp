@@ -258,7 +258,7 @@ folly::Expected<folly::Unit, MoQPublishError> publishObject(
         current.group,
         object.subgroup,
         current.object,
-        object.payload->clone(),
+        object.payload ? object.payload->clone() : nullptr,
         object.extensions,
         lastObject,
         object.forwardingPreferenceIsDatagram
@@ -1053,7 +1053,7 @@ public:
         objID,
         kNormal,
         ext,
-        payload->clone(),
+        payload ? payload->clone() : nullptr,
         true,
         fin,
         forwardingPreferenceIsDatagram
