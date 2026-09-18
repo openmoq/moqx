@@ -6,8 +6,10 @@
 
 #include "relay/PublisherCrossExecFilter.h"
 
+#include <folly/CancellationToken.h>
 #include <folly/coro/BlockingWait.h>
 #include <folly/coro/ViaIfAsync.h>
+#include <folly/coro/WithCancellation.h>
 #include <folly/executors/CPUThreadPoolExecutor.h>
 #include <folly/executors/ManualExecutor.h>
 #include <folly/io/async/EventBase.h>
@@ -83,6 +85,52 @@ TEST_F(PublisherCrossExecFilterTest, SubscribeReturnsError) {
   auto result = folly::coro::blockingWait(filter_->subscribe(std::move(sub), nullptr));
   EXPECT_FALSE(result.hasValue());
   EXPECT_EQ(result.error().errorCode, SubscribeErrorCode::NOT_SUPPORTED);
+}
+
+// Same shape as FetchResumesAfterFilterDestroyed, on the subscribe path.
+TEST_F(PublisherCrossExecFilterTest, SubscribeResumesAfterFilterDestroyed) {
+  folly::EventBase evb;
+  folly::Baton<> innerEntered;
+  folly::Baton<> innerRelease;
+  folly::CancellationSource cancelSource;
+  SubscribeOk ok;
+  ok.requestID = RequestID(2);
+  auto handle = std::make_shared<NiceMock<MockSubscriptionHandle>>(ok);
+  EXPECT_CALL(*inner_, subscribe(_, _))
+      .WillOnce(
+          [handle,
+           &evb,
+           &innerEntered,
+           &innerRelease](SubscribeRequest, std::shared_ptr<TrackConsumer>)
+              -> folly::coro::Task<Publisher::SubscribeResult> {
+            evb.runInEventBaseThread([&innerEntered]() { innerEntered.post(); });
+            innerRelease.wait();
+            co_return folly::makeExpected<SubscribeError>(std::shared_ptr<SubscriptionHandle>(handle
+            ));
+          }
+      );
+
+  SubscribeRequest sub;
+  sub.requestID = RequestID(2);
+  auto fut =
+      folly::coro::co_withExecutor(
+          folly::getKeepAliveToken(&evb),
+          folly::coro::co_withCancellation(
+              cancelSource.getToken(),
+              filter_->subscribe(std::move(sub), std::make_shared<NiceMock<MockTrackConsumer>>())
+          )
+      )
+          .start();
+
+  while (!innerEntered.ready()) {
+    evb.loopOnce();
+  }
+
+  cancelSource.requestCancellation();
+  filter_.reset();
+  innerRelease.post();
+
+  EXPECT_THROW(std::move(fut).via(&evb).getVia(&evb), folly::OperationCancelled);
 }
 
 // ---- trackStatus ----
@@ -191,6 +239,70 @@ TEST_F(PublisherCrossExecFilterTest, FetchReturnsSuccess) {
   ASSERT_NE(result.value(), nullptr);
   EXPECT_EQ(result.value()->fetchOk().requestID, RequestID(4));
 
+  ASSERT_NE(capturedConsumer, nullptr);
+  capturedConsumer->endOfFetch();
+  evb.loopOnce();
+}
+
+// A closing session cancels, then drops the filter, while a fetch is still
+// awaiting the inner publisher. The coroutine holds only a raw this, so without
+// the safe point it resumes on a destroyed filter and reads targetExec_ to build
+// the handle. ASan catches it; in a normal build it is a silent read of freed
+// memory.
+TEST_F(PublisherCrossExecFilterTest, FetchResumesAfterFilterDestroyed) {
+  folly::EventBase evb;
+  folly::Baton<> innerEntered;
+  folly::Baton<> innerRelease;
+  folly::CancellationSource cancelSource;
+  FetchOk ok;
+  ok.requestID = RequestID(4);
+  auto handle = std::make_shared<NiceMock<MockFetchHandle>>(ok);
+  std::shared_ptr<FetchConsumer> capturedConsumer;
+  EXPECT_CALL(*inner_, fetch(_, _))
+      .WillOnce(
+          [handle, &evb, &innerEntered, &innerRelease, &capturedConsumer](
+              Fetch,
+              std::shared_ptr<FetchConsumer> consumer
+          ) -> folly::coro::Task<Publisher::FetchResult> {
+            capturedConsumer = std::move(consumer);
+            // Wakes the loop below, so it never blocks on an empty EventBase.
+            evb.runInEventBaseThread([&innerEntered]() { innerEntered.post(); });
+            innerRelease.wait();
+            co_return std::shared_ptr<Publisher::FetchHandle>(handle);
+          }
+      );
+
+  auto fetchCallback = std::make_shared<NiceMock<MockFetchConsumer>>();
+  EXPECT_CALL(*fetchCallback, endOfFetch()).WillOnce([]() {
+    return folly::Expected<folly::Unit, MoQPublishError>(folly::unit);
+  });
+
+  Fetch fetchReq;
+  fetchReq.requestID = RequestID(4);
+  auto fut = folly::coro::co_withExecutor(
+                 folly::getKeepAliveToken(&evb),
+                 folly::coro::co_withCancellation(
+                     cancelSource.getToken(),
+                     filter_->fetch(std::move(fetchReq), fetchCallback)
+                 )
+  )
+                 .start();
+
+  // First pass starts the coroutine, which suspends on the inner fetch; the
+  // next blocks until the inner reports it is running on targetExec_.
+  while (!innerEntered.ready()) {
+    evb.loopOnce();
+  }
+
+  // MoQSession::cleanup's order: request cancellation, then release the filter.
+  cancelSource.requestCancellation();
+  filter_.reset();
+  innerRelease.post();
+
+  EXPECT_THROW(std::move(fut).via(&evb).getVia(&evb), folly::OperationCancelled);
+
+  // The wrapper holds selfGuard_ until the fetch terminates; without this it
+  // outlives the test and LeakSanitizer reports it.
   ASSERT_NE(capturedConsumer, nullptr);
   capturedConsumer->endOfFetch();
   evb.loopOnce();

@@ -203,6 +203,7 @@ folly::coro::Task<moxygen::Publisher::SubscribeResult> PublisherCrossExecFilter:
       inner_->subscribe(std::move(sub), std::move(wrappedConsumer))
   );
   if (result.hasValue()) {
+    co_await folly::coro::co_safe_point;
     co_return std::make_shared<CrossExecSubscriptionHandle>(std::move(result.value()), targetExec_);
   }
   co_return result;
@@ -221,6 +222,7 @@ folly::coro::Task<moxygen::Publisher::FetchResult> PublisherCrossExecFilter::fet
       inner_->fetch(std::move(fetchReq), std::move(wrappedConsumer))
   );
   if (result.hasValue()) {
+    co_await folly::coro::co_safe_point;
     co_return std::make_shared<CrossExecFetchHandle>(std::move(result.value()), targetExec_);
   }
   // inner never stored or used the consumer, so no lambdas are in-flight;
@@ -245,6 +247,7 @@ PublisherCrossExecFilter::subscribeNamespace(
       inner_->subscribeNamespace(std::move(subNs), std::move(wrappedHandle))
   );
   if (result.hasValue()) {
+    co_await folly::coro::co_safe_point;
     co_return std::make_shared<CrossExecSubscribeNamespaceHandle>(
         std::move(result.value()),
         targetExec_
@@ -269,6 +272,7 @@ PublisherCrossExecFilter::subscribeTracks(
       inner_->subscribeTracks(std::move(subTracks), std::move(wrappedHandle))
   );
   if (result.hasValue()) {
+    co_await folly::coro::co_safe_point;
     co_return std::make_shared<CrossExecSubscribeTracksHandle>(
         std::move(result.value()),
         targetExec_
