@@ -318,6 +318,13 @@ private:
     // Returns true if track can be evicted (not live, no active fetches)
     bool canEvict() const { return liveWritebackCount == 0 && fetchesInProgress.empty(); }
 
+    // Returns true if this is the newest group of a live track, where a late
+    // subscriber's Joining FETCH lands. Byte-pressure eviction skips it.
+    bool isJoinPoint(uint64_t groupID) const {
+      return liveWritebackCount > 0 && largestGroupAndObject &&
+             largestGroupAndObject->group == groupID;
+    }
+
     // Returns true if objects should be forwarded without caching.
     // Optimistic: nullopt maxCacheDuration means "unknown, cache it".
     bool shouldSkipCaching() const {

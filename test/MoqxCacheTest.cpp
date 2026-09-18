@@ -4315,7 +4315,9 @@ CO_TEST_F(MoqxCacheTest, TestTrackEvictionWithOpenSubgroupDoesNotSpin) {
 
   EXPECT_FALSE(cache_.hasCachedObject(kTestTrackName, {2, 0}));
   EXPECT_TRUE(cache_.hasCachedObject(kTestTrackName, {3, 0}));
-  EXPECT_EQ(cache_.totalCachedBytes(), 100u);
+  // track2 is live and group 0 is its newest: a join point, kept.
+  EXPECT_TRUE(cache_.hasCachedObject(track2, {0, 0}));
+  EXPECT_EQ(cache_.totalCachedBytes(), 200u);
   co_return;
 }
 
@@ -4842,4 +4844,65 @@ CO_TEST_F(MoqxCacheTest, FetchWritebackObjectPayloadAfterRefusedBeginObject) {
     EXPECT_EQ(payload.error().code, MoQPublishError::MALFORMED_TRACK);
   }
 }
+
+CO_TEST_F(MoqxCacheTest, ByteLimitEvictionSparesEachLiveTracksNewestGroup) {
+  // A once-written track (a catalog) is the oldest in the global LRU, so byte
+  // pressure evicted it first. Each live track's newest group is kept.
+  cache_.setMinEvictionBytes(0);
+  cache_.setMaxCachedBytes(700);
+
+  // The "catalog": six groups written up front, then nothing more.
+  FullTrackName catalog{TrackNamespace{{"live"}}, "catalog"};
+  auto catalogWriteback = cache_.getSubscribeWriteback(catalog, trackConsumer_);
+  for (uint64_t g = 0; g <= 5; ++g) {
+    catalogWriteback->datagram(ObjectHeader(g, 0, 0, 0, 100), makeBuf(100));
+  }
+
+  // The "video": keeps writing, and pushes the cache over its byte limit.
+  FullTrackName video{TrackNamespace{{"live"}}, "video"};
+  auto videoWriteback = cache_.getSubscribeWriteback(video, trackConsumer_);
+  for (uint64_t g = 0; g <= 9; ++g) {
+    videoWriteback->datagram(ObjectHeader(g, 0, 0, 0, 100), makeBuf(100));
+  }
+
+  // Older groups of both tracks are evicted; each live track keeps its newest.
+  EXPECT_TRUE(cache_.hasCachedObject(catalog, {5, 0}));
+  EXPECT_FALSE(cache_.hasCachedObject(catalog, {0, 0}));
+  EXPECT_TRUE(cache_.hasCachedObject(video, {9, 0}));
+  EXPECT_FALSE(cache_.hasCachedObject(video, {0, 0}));
+  EXPECT_EQ(cache_.totalCachedBytes(), 700u);
+
+  // A late subscriber's FETCH for it is served from the cache alone: upstream_
+  // is a StrictMock and must not be asked.
+  auto res = co_await cache_.fetch(getFetch(catalog, {5, 0}, {5, 1}), trackingConsumer_, upstream_);
+  EXPECT_TRUE(res.hasValue());
+  EXPECT_EQ(res.value()->fetchOk().endLocation, (AbsoluteLocation{5, 1}));
+  expectFetchObjects({5, 0}, {5, 1}, false);
+}
+
+TEST_F(MoqxCacheTest, ByteLimitEvictionTakesTheNewestGroupOnceTheTrackIsNotLive) {
+  // The protection lasts exactly as long as the track is being published. Once
+  // its writeback is gone, the newest group is an ordinary LRU entry again.
+  cache_.setMinEvictionBytes(0);
+  cache_.setMaxCachedBytes(700);
+
+  FullTrackName catalog{TrackNamespace{{"live"}}, "catalog"};
+  auto catalogWriteback = cache_.getSubscribeWriteback(catalog, trackConsumer_);
+  for (uint64_t g = 0; g <= 5; ++g) {
+    catalogWriteback->datagram(ObjectHeader(g, 0, 0, 0, 100), makeBuf(100));
+  }
+  catalogWriteback.reset();
+
+  FullTrackName video{TrackNamespace{{"live"}}, "video"};
+  auto videoWriteback = cache_.getSubscribeWriteback(video, trackConsumer_);
+  for (uint64_t g = 0; g <= 9; ++g) {
+    videoWriteback->datagram(ObjectHeader(g, 0, 0, 0, 100), makeBuf(100));
+  }
+
+  EXPECT_FALSE(cache_.hasCachedObject(catalog, {5, 0}));
+  EXPECT_TRUE(cache_.hasCachedObject(video, {9, 0}));
+  EXPECT_FALSE(cache_.hasCachedObject(video, {0, 0}));
+  EXPECT_EQ(cache_.totalCachedBytes(), 700u);
+}
+
 } // namespace openmoq::moqx::test
