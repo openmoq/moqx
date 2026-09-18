@@ -24,6 +24,12 @@ class CrossExecFilter;
 // goaway() is fire-and-forget.
 //
 // Requires targetExec_ to be a FIFO executor if call ordering matters.
+//
+// The owning session can drop this filter while a call is still out.
+// publishNamespace() copies targetExec_ before its await and reads only locals
+// after it. It wraps the result before its co_safe_point, so a cancelled call
+// destroys the inner handle on targetExec_.
+// publish() and goaway() copy what they use out of the filter before returning.
 class SubscriberCrossExecFilter : public moxygen::Subscriber {
 public:
   SubscriberCrossExecFilter(folly::Executor* targetExec, std::shared_ptr<moxygen::Subscriber> inner)

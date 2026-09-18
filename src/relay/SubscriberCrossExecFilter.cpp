@@ -95,15 +95,16 @@ SubscriberCrossExecFilter::publishNamespace(
                                         std::move(callerExec)
                                     )
                                   : nullptr;
+  auto* targetExec = targetExec_;
   auto result = co_await folly::coro::co_withExecutor(
-      folly::getKeepAliveToken(targetExec_),
+      folly::getKeepAliveToken(targetExec),
       inner_->publishNamespace(std::move(pubNs), std::move(wrappedCallback))
   );
   if (result.hasValue()) {
-    co_return std::make_shared<CrossExecPublishNamespaceHandle>(
-        std::move(result.value()),
-        targetExec_
-    );
+    auto handle =
+        std::make_shared<CrossExecPublishNamespaceHandle>(std::move(result.value()), targetExec);
+    co_await folly::coro::co_safe_point;
+    co_return handle;
   }
   co_return result;
 }
