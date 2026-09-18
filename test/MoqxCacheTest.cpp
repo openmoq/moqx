@@ -561,8 +561,9 @@ CO_TEST_F(MoqxCacheTest, TestFetchAllHitEOG) {
   expectFetchObjects({0, 0}, {0, 11}, false, 10, 1, 1, true);
   auto res = co_await cache_.fetch(getFetch({0, 0}, {0, 0}), trackingConsumer_, upstream_);
   EXPECT_TRUE(res.hasValue());
-  // The last object in the response is the end of group marker at {0,10}.
-  EXPECT_EQ(res.value()->fetchOk().endLocation, (AbsoluteLocation{0, 11}));
+  // An end object of 0 asks for all of group 0, which the cache covers as far
+  // as the end of group marker at {0,10}.
+  EXPECT_EQ(res.value()->fetchOk().endLocation, (AbsoluteLocation{1, 0}));
 }
 
 // A zero-length object arrives from the codec with a null payload. Draft 16+
@@ -1493,6 +1494,26 @@ CO_TEST_F(MoqxCacheTest, TestFullCacheMissNoObjectsUpstream) {
   EXPECT_EQ(res2.value()->fetchOk().endLocation, (AbsoluteLocation{0, 5}));
 }
 
+// Repeating a FETCH has to report the End Location the first one did.  The
+// cache knows the largest object it holds, which is not the track's Largest,
+// so it must not clamp the requested end down to it.
+CO_TEST_F(MoqxCacheTest, TestFetchOkEndLocationPastLargestCachedObject) {
+  // Group 2 carries objects 0-9.  Both fetches ask for object 10 as well, and
+  // upstream leaves it out of the response.
+  expectUpstreamFetch({2, 0}, {2, 11}, false, AbsoluteLocation{2, 11});
+  auto res = co_await cache_.fetch(getFetch({2, 0}, {2, 11}), trackingConsumer_, upstream_);
+  EXPECT_TRUE(res.hasValue());
+  EXPECT_EQ(res.value()->fetchOk().endLocation, (AbsoluteLocation{2, 11}));
+  expectFetchObjects({2, 0}, {2, 10}, true);
+  serveCacheRangeFromUpstream({2, 0}, {2, 10});
+
+  // Served from cache, so the last object carries the fin instead.
+  expectFetchObjects({2, 0}, {2, 10}, false);
+  auto res2 = co_await cache_.fetch(getFetch({2, 0}, {2, 11}), trackingConsumer_, upstream_);
+  EXPECT_TRUE(res2.hasValue());
+  EXPECT_EQ(res2.value()->fetchOk().endLocation, (AbsoluteLocation{2, 11}));
+}
+
 // Unit tests for cache hits, cache miss, and partial hits/misses spanning
 // groups
 
@@ -1609,8 +1630,9 @@ CO_TEST_F(MoqxCacheTest, TestFetchAllHitEOGAcrossGroups) {
   expectFetchObjects({0, 0}, {2, 11}, false, 10, 1, 1, true);
   auto res = co_await cache_.fetch(getFetch({0, 0}, {2, 0}), trackingConsumer_, upstream_);
   EXPECT_TRUE(res.hasValue());
-  // The last object in the response is the end of group marker at {2,10}.
-  EXPECT_EQ(res.value()->fetchOk().endLocation, (AbsoluteLocation{2, 11}));
+  // An end object of 0 asks for all of group 2, which the cache covers as far
+  // as the end of group marker at {2,10}.
+  EXPECT_EQ(res.value()->fetchOk().endLocation, (AbsoluteLocation{3, 0}));
 }
 
 CO_TEST_F(MoqxCacheTest, TestFetchWritebackAcrossGroups) {
@@ -1725,8 +1747,9 @@ CO_TEST_F(MoqxCacheTest, TestFetchRangeExactlyAtGroupBoundary) {
   expectFetchObjects({0, 0}, {2, 0}, false, 10, 1, 1, true);
   auto res = co_await cache_.fetch(getFetch({0, 0}, {1, 0}), trackingConsumer_, upstream_);
   EXPECT_TRUE(res.hasValue());
-  // The last object in the response is the end of group marker at {1,10}.
-  EXPECT_EQ(res.value()->fetchOk().endLocation, (AbsoluteLocation{1, 11}));
+  // An end object of 0 asks for all of group 1, which the cache covers as far
+  // as the end of group marker at {1,10}.
+  EXPECT_EQ(res.value()->fetchOk().endLocation, (AbsoluteLocation{2, 0}));
 }
 
 CO_TEST_F(MoqxCacheTest, TestFetchAllMissAcrossGroupsDesc) {
