@@ -226,33 +226,52 @@ moqx_add_gtest(moqx_relay_context_test
     moxygen::moxygen_events_moq_folly_executor_impl
 )
 
-add_test(
-  NAME relay_chain
+# Registers an integration test once per QUIC stack. The mvfst run keeps the
+# plain name; the picoquic run gets a _picoquic suffix and selects the stack
+# through MOQ_HARNESS_QUIC_STACK, which the Python harness and the shell tests
+# both read. Both variants claim the same ports from test/test_ports.sh, so a
+# RESOURCE_LOCK keeps ctest from running them at the same time.
+function(moqx_add_dual_stack_test name)
+  cmake_parse_arguments(ARG "" "TIMEOUT" "COMMAND;ENVIRONMENT" ${ARGN})
+  foreach(stack mvfst picoquic)
+    set(test_name "${name}")
+    if(NOT stack STREQUAL "mvfst")
+      string(APPEND test_name "_${stack}")
+    endif()
+    add_test(NAME ${test_name} COMMAND ${ARG_COMMAND})
+    set(test_env "MOQ_HARNESS_QUIC_STACK=${stack}")
+    if(ARG_ENVIRONMENT)
+      list(APPEND test_env ${ARG_ENVIRONMENT})
+    endif()
+    set_tests_properties(${test_name} PROPERTIES
+      ENVIRONMENT "${test_env}"
+      RESOURCE_LOCK "${name}_ports"
+    )
+    if(ARG_TIMEOUT)
+      set_tests_properties(${test_name} PROPERTIES TIMEOUT ${ARG_TIMEOUT})
+    endif()
+  endforeach()
+endfunction()
+
+moqx_add_dual_stack_test(relay_chain
   COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/test_relay_chain.py $<TARGET_FILE:moqx>
-)
-set_tests_properties(relay_chain PROPERTIES
   TIMEOUT 120
   ENVIRONMENT "MOQBIN=${MOXYGEN_BIN_DIR}"
 )
 
-add_test(
-  NAME relay_hops_cycle
+moqx_add_dual_stack_test(relay_hops_cycle
   COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/test_relay_hops_cycle.py $<TARGET_FILE:moqx>
-)
-set_tests_properties(relay_hops_cycle PROPERTIES
   TIMEOUT 90
   ENVIRONMENT "MOQBIN=${MOXYGEN_BIN_DIR}"
 )
 
-add_test(
-  NAME relay_pyramid
+moqx_add_dual_stack_test(relay_pyramid
   COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/test_relay_pyramid.py $<TARGET_FILE:moqx>
-)
-set_tests_properties(relay_pyramid PROPERTIES
   TIMEOUT 120
   ENVIRONMENT "MOQBIN=${MOXYGEN_BIN_DIR}"
 )
 
+# QMUX is a TCP transport, not a QUIC stack, so this one has nothing to sweep.
 add_test(
   NAME qmux_relay
   COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_qmux_relay.sh $<TARGET_FILE:moqx>
@@ -263,46 +282,33 @@ set_tests_properties(qmux_relay PROPERTIES
   ENVIRONMENT "MOQBIN=${MOXYGEN_BIN_DIR}"
 )
 
-add_test(
-  NAME admin_info_endpoint
+moqx_add_dual_stack_test(admin_info_endpoint
   COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_admin_info.sh $<TARGET_FILE:moqx>
 )
-add_test(
-  NAME admin_tls_endpoint
+moqx_add_dual_stack_test(admin_tls_endpoint
   COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_admin_tls.sh $<TARGET_FILE:moqx>
 )
-add_test(
-  NAME admin_metrics_endpoint
+moqx_add_dual_stack_test(admin_metrics_endpoint
   COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_admin_metrics.sh $<TARGET_FILE:moqx>
 )
-add_test(
-  NAME admin_track_metrics_endpoint
+moqx_add_dual_stack_test(admin_track_metrics_endpoint
   COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_admin_track_metrics.sh $<TARGET_FILE:moqx>
-)
-set_tests_properties(admin_track_metrics_endpoint PROPERTIES
   ENVIRONMENT "MOQBIN=${MOXYGEN_BIN_DIR}"
 )
-add_test(
-  NAME admin_cache_purge_endpoint
+moqx_add_dual_stack_test(admin_cache_purge_endpoint
   COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_admin_cache_purge.sh $<TARGET_FILE:moqx>
 )
-add_test(
-  NAME admin_config_endpoint
+moqx_add_dual_stack_test(admin_config_endpoint
   COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_admin_config.sh $<TARGET_FILE:moqx>
 )
-add_test(
-  NAME admin_state_endpoint
+moqx_add_dual_stack_test(admin_state_endpoint
   COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_admin_state.sh $<TARGET_FILE:moqx>
 )
-add_test(
-  NAME admin_connection_logs_endpoint
+moqx_add_dual_stack_test(admin_connection_logs_endpoint
   COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_admin_connection_logs.sh $<TARGET_FILE:moqx>
 )
-add_test(
-  NAME admin_cache_purge_concurrency_test
+moqx_add_dual_stack_test(admin_cache_purge_concurrency_test
   COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_admin_cache_purge_race.sh $<TARGET_FILE:moqx>
-)
-set_tests_properties(admin_cache_purge_concurrency_test PROPERTIES
   ENVIRONMENT "MOQBIN=${MOXYGEN_BIN_DIR}"
 )
 
