@@ -134,7 +134,7 @@ folly::coro::Task<void> UpstreamProvider::reconnectLoop() {
       co_return; // Connected — exit. onMoQSessionClosed()/goaway() will respawn.
     } catch (const folly::OperationCancelled&) {
       co_return;
-    } catch (const std::exception& ex) {
+    } catch (const std::exception&) {
       if (stopped_) {
         co_return;
       }
@@ -142,8 +142,6 @@ folly::coro::Task<void> UpstreamProvider::reconnectLoop() {
           reconnectBackoff_.count() == 0
               ? kInitialReconnectBackoff
               : std::min(reconnectBackoff_ * 2, std::chrono::milliseconds(kMaxReconnectBackoff));
-      XLOG(ERR) << "UpstreamProvider: connect failed: " << ex.what() << ", retrying in "
-                << reconnectBackoff_.count() << "ms";
     }
   }
 }
