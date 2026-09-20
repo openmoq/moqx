@@ -874,7 +874,7 @@ MoqxRelay::PublishSetupResult MoqxRelay::publishWithSession(
     break;
   }
 
-  uint64_t nSubscribers = 0;
+  uint64_t nForwardingSubscribers = 0;
   bool hasTrackFilterSub = false;
   for (auto& [outSession, info] : sessions) {
     if (info.trackFilter) {
@@ -885,7 +885,7 @@ MoqxRelay::PublishSetupResult MoqxRelay::publishWithSession(
     }
     if (outSession != session && (info.options == SubscribeNamespaceOptions::PUBLISH ||
                                   info.options == SubscribeNamespaceOptions::BOTH)) {
-      nSubscribers++;
+      nForwardingSubscribers += info.forward ? 1 : 0;
       if (!addSubscriberAndPublish(outSession, publisherRef, info.forward, /*pinned=*/true)) {
         XLOG(ERR) << "addSubscriberAndPublish failed for " << pub.fullTrackName;
         continue;
@@ -912,7 +912,7 @@ MoqxRelay::PublishSetupResult MoqxRelay::publishWithSession(
   }
   for (auto& [outSession, info] : tracksSessions) {
     if (outSession != session) {
-      nSubscribers++;
+      nForwardingSubscribers += info.forward ? 1 : 0;
       if (!addSubscriberAndPublish(outSession, publisherRef, info.forward, /*pinned=*/true)) {
         XLOG(ERR) << "addSubscriberAndPublish failed for " << pub.fullTrackName;
         continue;
@@ -920,10 +920,10 @@ MoqxRelay::PublishSetupResult MoqxRelay::publishWithSession(
     }
   }
 
-  // Forward if there are direct subscribers OR TRACK_FILTER subscribers
+  // Forward if a direct subscriber is forwarding, or for any TRACK_FILTER subscriber
   // (PropertyRanking needs objects to evaluate property values for ranking).
   // When subscribers join later via subscribeNamespace, forwardChanged() sends REQUEST_UPDATE.
-  bool shouldForward = (nSubscribers > 0) || hasTrackFilterSub;
+  bool shouldForward = (nForwardingSubscribers > 0) || hasTrackFilterSub;
 
   return PublishSetup{
       publishEntry.consumer,
