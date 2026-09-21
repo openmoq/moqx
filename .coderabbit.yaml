@@ -72,9 +72,9 @@ reviews:
           (text: https://www.ietf.org/archive/id/draft-ietf-moq-transport-18.txt)
         - all revisions: https://datatracker.ietf.org/doc/draft-ietf-moq-transport/
 
-        All three texts are checked in under docs/, as
-        docs/draft-ietf-moq-transport-{14,16,18}.txt. Prefer the local copy —
-        it is the exact revision moqx was written against.
+        All three texts are checked in under docs/ref/, as
+        docs/ref/draft-ietf-moq-transport-{14,16,18}.txt. Prefer the local copy
+        — it is the exact revision moqx was written against.
 
         Relay hops ride on an extension specified by
         draft-lcurley-moq-relay-hops, vendored at
@@ -135,7 +135,7 @@ reviews:
         docs/release.md describes the release branch model. PR CI runs without
         secrets; publish, release and deploy run only on push to main.
 
-    - path: "{docs/**/*.txt,docs/ref/**}"
+    - path: "docs/ref/**"
       instructions: |
         Vendored IETF draft text. This is normative reference material, not
         moqx source — consult it, but do not review it for style or defects.
