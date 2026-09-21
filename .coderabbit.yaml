@@ -72,10 +72,9 @@ reviews:
           (text: https://www.ietf.org/archive/id/draft-ietf-moq-transport-18.txt)
         - all revisions: https://datatracker.ietf.org/doc/draft-ietf-moq-transport/
 
-        Local copies of the draft-14 and draft-16 text are checked in at
-        docs/draft-ietf-moq-transport-14.txt and
-        docs/draft-ietf-moq-transport-16.txt. There is no local copy of
-        draft-18 — read it from the Datatracker link above.
+        All three texts are checked in under docs/, as
+        docs/draft-ietf-moq-transport-{14,16,18}.txt. Prefer the local copy —
+        it is the exact revision moqx was written against.
 
         Relay hops ride on an extension specified by
         draft-lcurley-moq-relay-hops, vendored at
