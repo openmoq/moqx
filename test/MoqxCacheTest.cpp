@@ -4842,4 +4842,23 @@ CO_TEST_F(MoqxCacheTest, FetchWritebackObjectPayloadAfterRefusedBeginObject) {
     EXPECT_EQ(payload.error().code, MoQPublishError::MALFORMED_TRACK);
   }
 }
+
+// Regression test: publishObject() used to call object.payload->clone()
+// unconditionally when serving a cache hit on FETCH, crashing on the null
+// deref for a cached zero-length NORMAL object (payload==nullptr).
+CO_TEST_F(MoqxCacheTest, FetchServesCachedZeroLengthNormalObject) {
+  auto writeback = cache_.getSubscribeWriteback(kTestTrackName, trackConsumer_);
+  writeback->datagram(ObjectHeader(0, 0, 0, 0, 0), nullptr);
+  writeback.reset();
+
+  EXPECT_CALL(*consumer_, object(0, 0, 0, _, _, _, _))
+      .WillOnce([](auto, auto, auto, Payload payload, const auto&, auto, auto) {
+        EXPECT_EQ(payload, nullptr);
+        return folly::unit;
+      });
+  EXPECT_CALL(*consumer_, endOfFetch()).WillOnce(Return(folly::unit));
+
+  auto res = co_await cache_.fetch(getFetch({0, 0}, {0, 1}), consumer_, upstream_);
+  EXPECT_TRUE(res.hasValue());
+}
 } // namespace openmoq::moqx::test
