@@ -142,7 +142,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # d16 cells only; ci-main runs the full grid (d14 + d16) on every
+          # d16 cells only; ci-main runs the full grid (d16 + d18) on every
           # main push. pico WT cells deferred until pico WT CONNECT
           # (openmoq/moxygen#172 / PR #173) syncs in.
           - name: mvfst d16 Q
@@ -155,6 +155,21 @@ jobs:
             stack: "mvfst"
           - name: pico d16 Q
             versions: "16"
+            transport: "Q"
+            stack: "pico"
+          # TEMPORARY — remove before merge. The full d18 row, so this PR's own
+          # runs prove d18 on every cell ci-main will gate on. ci-pr keeps its
+          # slimmed lane set (#609); d18 belongs to ci-main.
+          - name: mvfst d18 Q
+            versions: "18"
+            transport: "Q"
+            stack: "mvfst"
+          - name: mvfst d18 WT
+            versions: "18"
+            transport: ""
+            stack: "mvfst"
+          - name: pico d18 Q
+            versions: "18"
             transport: "Q"
             stack: "pico"
     name: conformance (${{ matrix.name }})

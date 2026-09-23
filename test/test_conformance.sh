@@ -82,6 +82,7 @@ for arg in "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"; do
       ;;
     *)
       if [[ "$arg" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
+        VERSIONS="$arg"
         SERVER_VERSIONS_FLAG=(--versions="$arg")
       fi
       DOWNSTREAM_ARGS+=("$arg")
@@ -100,6 +101,13 @@ URL_HOST="localhost"
 # shared helpers at whatever won.
 MOQ_QUIC_STACK="$QUIC_STACK"
 LISTENER_STACK_BLOCK="$(moq_listener_stack_yaml "$TMPDIR")"
+
+# Unset leaves the relay on its default versions; a versions arg pins it to the
+# same drafts the moqtest endpoints offer, so negotiation can't drift or fail.
+VERSIONS_BLOCK=""
+if [[ -n "$VERSIONS" ]]; then
+  VERSIONS_BLOCK=$'\n'"    moqt_versions: [${VERSIONS}]"
+fi
 
 # Generate a temp config with our ports
 TMPCONFIG="$TMPDIR/config.yaml"
@@ -132,7 +140,7 @@ listeners:
         address: "${BIND_ADDRESS}"
         port: ${RELAY_PORT}
 ${LISTENER_STACK_BLOCK}
-    endpoint: "/moq-relay"
+    endpoint: "/moq-relay"${VERSIONS_BLOCK}
 services:
   default:
     match:
