@@ -564,6 +564,88 @@ TEST_P(MoqxRelayRendezvousTest, SubscribeRoutesPastSubscribeNamespaceCreatedNode
   driveIfMultiThread();
 }
 
+// Regression test: two waiters parked on the *same* track must both be woken
+// by a single PUBLISH. wakePendingRendezvousForTrack signals every entry in
+// waitersByTrack[track] in one pass — a reentrant erase from a prior signal()
+// call corrupting that same vector mid-iteration would drop or crash on the
+// second waiter instead of resolving it.
+TEST_P(MoqxRelayRendezvousTest, MultipleWaitersOnSameTrackAllResolveOnPublish) {
+  auto subSessionA = createV18Session();
+  auto subSessionB = createV18Session();
+  auto consumerA = createMockConsumer();
+  auto consumerB = createMockConsumer();
+
+  auto futureA =
+      startSubscribe(subSessionA, makeRendezvousSubscribeRequest(kTestTrackName, 5000), consumerA);
+  auto futureB =
+      startSubscribe(subSessionB, makeRendezvousSubscribeRequest(kTestTrackName, 5000), consumerB);
+
+  exec_->driveFor(10);
+  ASSERT_FALSE(futureA.isReady()) << "first subscribe should be parked";
+  ASSERT_FALSE(futureB.isReady()) << "second subscribe should be parked on the same track";
+
+  auto pubSession = createMockSession();
+  doPublish(pubSession, kTestTrackName);
+
+  ASSERT_TRUE(driveUntil([&] { return futureA.isReady() && futureB.isReady(); }))
+      << "a single PUBLISH must wake every waiter parked on this track";
+
+  auto resultA = std::move(futureA).value();
+  auto resultB = std::move(futureB).value();
+  ASSERT_TRUE(resultA.hasValue()) << "first waiter should resolve, not be skipped/corrupted";
+  ASSERT_TRUE(resultB.hasValue()) << "second waiter should resolve, not be skipped/corrupted";
+
+  resultA.value()->unsubscribe();
+  resultB.value()->unsubscribe();
+  removeSession(pubSession);
+  removeSession(subSessionA);
+  removeSession(subSessionB);
+  driveIfMultiThread();
+}
+
+// Regression test: two waiters parked on *different* tracks under the same
+// namespace must both be woken by a single PUBLISH_NAMESPACE.
+// collectPendingRendezvousSubtree iterates the node's waitersByTrack map in
+// one pass — a reentrant erase corrupting that map mid-iteration would drop
+// or crash on the second track's waiter instead of resolving it.
+TEST_P(MoqxRelayRendezvousTest, MultipleWaitersUnderNamespaceAllResolveOnPublishNamespace) {
+  auto subSessionA = createV18Session();
+  auto subSessionB = createV18Session();
+  auto consumerA = createMockConsumer();
+  auto consumerB = createMockConsumer();
+
+  FullTrackName ftnA{kTestNamespace, "track1"};
+  FullTrackName ftnB{kTestNamespace, "track2"};
+
+  auto futureA = startSubscribe(subSessionA, makeRendezvousSubscribeRequest(ftnA, 5000), consumerA);
+  auto futureB = startSubscribe(subSessionB, makeRendezvousSubscribeRequest(ftnB, 5000), consumerB);
+
+  exec_->driveFor(10);
+  ASSERT_FALSE(futureA.isReady()) << "first subscribe should be parked";
+  ASSERT_FALSE(futureB.isReady()
+  ) << "second subscribe (different track, same namespace) should be parked";
+
+  auto pubSession = createMockSession();
+  bool sawUpstream = false;
+  expectUpstreamSubscribe(pubSession, sawUpstream);
+  doPublishNamespace(pubSession, kTestNamespace);
+
+  ASSERT_TRUE(driveUntil([&] { return futureA.isReady() && futureB.isReady(); }))
+      << "a single PUBLISH_NAMESPACE must wake every waiter parked under this namespace";
+
+  auto resultA = std::move(futureA).value();
+  auto resultB = std::move(futureB).value();
+  ASSERT_TRUE(resultA.hasValue()) << "first waiter should resolve, not be skipped/corrupted";
+  ASSERT_TRUE(resultB.hasValue()) << "second waiter should resolve, not be skipped/corrupted";
+
+  resultA.value()->unsubscribe();
+  resultB.value()->unsubscribe();
+  removeSession(pubSession);
+  removeSession(subSessionA);
+  removeSession(subSessionB);
+  driveIfMultiThread();
+}
+
 INSTANTIATE_TEST_SUITE_P(
     AllModes,
     MoqxRelayRendezvousTest,
