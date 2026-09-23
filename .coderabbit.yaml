@@ -52,6 +52,14 @@ reviews:
         - docs/dev/track-filter-ranking.md — TopNFilter and PropertyRanking.
         - docs/dev/test-harness.md — writing a relay topology test.
 
+        moxygen (not in this repo):
+        - https://github.com/openmoq/moxygen/blob/main/ARCHITECTURE.md — the
+          Publisher/Subscriber and TrackConsumer APIs, MoQSession, MoQRelay,
+          MoQForwarder, MoQCache, executors and the threading model. moqx
+          subclasses, composes or forks these; MoqxRelay and MoqxCache are
+          forks of MoQRelay and MoQCache. Read it before judging how a change
+          uses or diverges from a moxygen interface.
+
         Per CONTRIBUTING.md, a PR should carry a single cohesive thesis, a title
         that states the functional impact, and tests or other pass/fail
         evaluation criteria.
