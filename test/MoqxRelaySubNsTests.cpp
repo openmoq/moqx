@@ -660,4 +660,37 @@ TEST_P(MoQRelayTest, SubscribeNs_ForwardFalse_EmptyForwarder_NoRequestUpdate) {
   }
 }
 
+// Bug: publishWithSession counts every matching namespace subscriber, ignoring its
+// forward flag, so a track whose only subscriber has forward=false is answered with
+// PUBLISH_OK(forward=true). The publisher then sends objects the forwarder has no
+// forwarding subscriber to deliver to, and no forwardChanged fires to correct it
+// because forwardingSubscribers_ never leaves 0.
+TEST_P(MoQRelayTest, PublishForwardFalseWhenOnlySubscriberIsNotForwarding) {
+  auto subSession = createMockSession();
+  setupPublishSucceeds(subSession);
+  doSubscribeNamespaceWithForward(subSession, kTestNamespace, /*forward=*/false);
+
+  auto pubSession = createMockSession();
+  doPublishNamespace(pubSession, kTestNamespace);
+
+  auto mockHandle = makePublishHandle();
+  withSessionContext(pubSession, [&]() {
+    PublishRequest pub;
+    pub.fullTrackName = kTestTrackName;
+    auto res = subscriberInterface()->publish(std::move(pub), mockHandle);
+    ASSERT_TRUE(res.hasValue());
+    getOrCreateMockState(pubSession)->publishConsumers.push_back(res->consumer);
+    auto reply = folly::coro::blockingWait(std::move(res->reply), exec_.get());
+    ASSERT_TRUE(reply.hasValue());
+    EXPECT_FALSE(reply->forward
+    ) << "no subscriber is forwarding, so the relay must not ask for objects";
+  });
+
+  removeSession(subSession);
+  removeSession(pubSession);
+  for (int i = 0; i < 3; i++) {
+    exec_->drive();
+  }
+}
+
 } // namespace openmoq::moqx::test
