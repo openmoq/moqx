@@ -409,7 +409,7 @@ peer with completely different upstream servers.
 
 ### MoQ Cluster
 
-moqx implements [`draft-lcurley-moq-cluster-00`](draft-lcurley-moq-cluster-00.txt).
+moqx implements [`draft-lcurley-moq-cluster-01`](draft-lcurley-moq-cluster-01.txt).
 Cluster links require listeners configured with `moqt_versions: [18]`.
 The default listener versions remain `[14, 16]`; ordinary chaining can fall
 back to draft 16 without negotiating the cluster extension.
@@ -427,17 +427,20 @@ services:
         path: {prefix: "/"}
     upstreams:
       - url: moqt://relay-a.example.com:4433/moq-relay
-        relay_cost: 0    # free link; absent means 1
+        relay_cost: 0    # this relay's advertised cost to relay-a; absent means 1
       - url: moqt://relay-b.example.com:4433/moq-relay
         relay_cost: 5
 ```
 
 Use either `upstream` for one peer or `upstreams` for a list; supplying both
 for the same service is an error. Each configured peer reconnects independently.
-`relay_cost` is a client setup option and prices both directions of that link.
+`relay_cost` is this relay's cost advertised to the configured upstream. Each
+peer declares its own link cost in setup; the receiver adds the peer's declared
+cost to advertisements received over that link.
 
-The `RELAY_HOPS` setup value contains the endpoint's Hop ID. Each advertisement
-carries `HOP_PATH` and an optional `ROUTE_COST`. The receiver adds its link cost,
+The `HOP_ID` setup value contains the endpoint's Hop ID, and `RELAY_COST` carries
+that endpoint's link cost. Each advertisement carries `HOP_PATH` and an optional
+`ROUTE_COST`. The receiver adds the peer's link cost,
 saturating at the largest uint64 value, then selects by cost, path length, and
 most recent receipt. Paths with the same nonzero first Hop ID represent the
 same content and can coexist as alternatives. A different or anonymous origin
@@ -445,9 +448,11 @@ replaces the previous content identity.
 
 Selection is per peer: an advertisement or request cannot use a path containing
 that peer's nonzero Hop ID. moqx appends its own ID when forwarding and discards
-paths containing its own nonzero ID. Cost/path updates replace the advertisement
-on its existing stream. A price update with an unchanged nonzero origin preserves
-healthy subscriptions.
+paths containing its own nonzero ID. `PUBLISH_NAMESPACE` cost and path changes
+use `REQUEST_UPDATE` on the existing request stream. A `NAMESPACE` update repeats
+the message on the existing response stream. Omitted update parameters keep their
+prior values. A path update with an unchanged publisher preserves healthy
+subscriptions; a changed publisher must withdraw and create a new advertisement.
 
 `hop_id: 0` explicitly withholds identity. A nonnegotiating publisher is also
 represented by origin 0, so its outgoing path starts `[0, local-hop-id]`.

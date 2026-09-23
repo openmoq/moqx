@@ -7,7 +7,7 @@
 #include "MoqxRelayServer.h"
 #include "stats/EventBaseStatsCollector.h"
 #include "stats/QuicStatsCollector.h"
-#include <moxygen/MoQRelaySession.h>
+#include <moxygen/MoQClusterSession.h>
 #include <moxygen/events/MoQFollyExecutorImpl.h>
 #include <moxygen/util/InsecureVerifierDangerousDoNotUseInProduction.h>
 #include <proxygen/httpserver/samples/hq/FizzContext.h>
@@ -221,10 +221,10 @@ MoqxRelayServer::MoqxRelayServer(
       ),
       listenerCfg_(listenerCfg), context_(std::move(context)), ioExecutor_(ioExecutor) {
   if (context_->clusterEnabled()) {
-    addSetupParameter(SetupParameter(
-        folly::to_underlying(SetupKey::RELAY_HOPS),
-        encodeRelayHopID(context_->getRelayHopID(), kVersionDraft18).value()
-    ));
+    addSetupParameter(
+        SetupParameter(folly::to_underlying(SetupKey::HOP_ID), context_->getRelayHopID())
+    );
+    addSetupParameter(SetupParameter(folly::to_underlying(SetupKey::RELAY_COST), uint64_t{0}));
   }
 }
 
@@ -292,7 +292,7 @@ std::shared_ptr<MoQSession> MoqxRelayServer::createSession(
     folly::MaybeManagedPtr<proxygen::WebTransport> wt,
     std::shared_ptr<MoQExecutor> executor
 ) {
-  return std::make_shared<MoQRelaySession>(
+  return std::make_shared<MoQClusterSession>(
       folly::MaybeManagedPtr<proxygen::WebTransport>(std::move(wt)),
       *this,
       std::move(executor)

@@ -1,14 +1,15 @@
 # Deploying MoQ Cluster
 
-moqx implements [`draft-lcurley-moq-cluster-00`](draft-lcurley-moq-cluster-00.txt).
+moqx implements [`draft-lcurley-moq-cluster-01`](draft-lcurley-moq-cluster-01.txt).
 This replaces the earlier relay-hops extension. The existing guide URL is retained
 for links from deployments and test documentation.
 
 The extension carries a publisher-to-relay `HOP_PATH` and accumulated
-`ROUTE_COST` on namespace advertisements. Each endpoint declares its Hop ID in
-`RELAY_HOPS` during setup. A relay filters both advertisements and request
-routing against the receiving peer's identity, preventing a subscription from
-returning content that already passed through that peer.
+`ROUTE_COST` on namespace advertisements. Each endpoint declares its Hop ID with
+`HOP_ID` and its own link price with `RELAY_COST` during setup. A relay filters
+both advertisements and request routing against the receiving peer's identity,
+preventing a subscription from returning content that already passed through
+that peer.
 
 ## Build and protocol requirements
 
@@ -74,9 +75,11 @@ A configured ID survives restarts. `hop_id: 0` explicitly declares anonymity;
 it does not identify an endpoint for loop detection or peer filtering.
 The existing `relay_id` is an operational name and is independent of Hop ID.
 
-The client sets `relay_cost`; the server does not send it. Both endpoints add
-that price when receiving advertisements over the link. An omitted value means
-1, while 0 means a free link. Addition saturates at the largest uint64.
+Each peer declares its own link cost: the client configures this relay's price
+with `relay_cost`, while the server currently advertises cost 0. The receiver
+adds the peer's declared price when receiving advertisements over the link. An
+omitted client value means 1, while 0 means a free link. Addition saturates at
+the largest uint64.
 
 ## Route and advertisement lifetime
 
@@ -97,11 +100,12 @@ anonymous origins because each repeat would replace downstream content.
 Missing or malformed required paths close a
 negotiated session with `PROTOCOL_VIOLATION`.
 
-An update stays on its original `PUBLISH_NAMESPACE` request stream or
-`SUBSCRIBE_NAMESPACE` response stream. A cost update does not retract the
-namespace. Closing an old advertisement cannot withdraw its replacement.
-Healthy existing subscriptions stay attached when same-origin prices change;
-seamless reparenting of an established subscription is not implemented.
+`PUBLISH_NAMESPACE` updates use `REQUEST_UPDATE` on the original request stream;
+`NAMESPACE` updates repeat on the original `SUBSCRIBE_NAMESPACE` response
+stream. An omitted parameter keeps its prior value. If the publisher changes,
+the relay withdraws the old advertisement and creates a new one. Healthy
+existing subscriptions stay attached when same-origin prices change; seamless
+reparenting of an established subscription is not implemented.
 
 Cluster-routed subscriptions share an upstream ingest per selected route. Their
 forwarders run on the relay executor, including in local-forwarder mode. Fetches

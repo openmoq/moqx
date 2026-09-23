@@ -423,6 +423,7 @@ target_link_libraries(moqx_core PUBLIC
   moqx_hmac_key
   moxygen::moxygen_relay_moq_forwarder
   moxygen::moxygen_moq_relay_session
+  moxygen::moxygen_moq_cluster_session
   moxygen::moxygen_moq_server
   moxygen::moxygen_moq_qmux_server
   moxygen::moxygen_qmux_utils

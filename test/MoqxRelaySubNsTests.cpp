@@ -403,7 +403,17 @@ TEST_P(MoQRelayTest, ClusterUpdatesSelectStandbyPerPeerAndPreserveStream) {
   };
   EXPECT_EQ(pathOf(allAds->namespaces.back()), (std::vector<uint64_t>{7, 10, 900}));
   EXPECT_EQ(pathOf(filteredAds->namespaces.back()), (std::vector<uint64_t>{7, 11, 900}));
-  EXPECT_TRUE(first.value()->publishNamespaceUpdate(advertisement({7, 10}, 9)).hasValue());
+  auto changedAdvertisement = advertisement({7, 10}, 9);
+  RequestUpdate update;
+  update.requestID = RequestID(100);
+  update.existingRequestID = first.value()->publishNamespaceOk().requestID;
+  for (const auto& param : changedAdvertisement.params) {
+    update.params.insertParam(param);
+  }
+  EXPECT_TRUE(
+      folly::coro::blockingWait(first.value()->requestUpdate(std::move(update)), exec_.get())
+          .hasValue()
+  );
   driveIfMultiThread();
   ASSERT_EQ(allAds->namespaces.size(), 2);
   EXPECT_EQ(pathOf(allAds->namespaces.back()), (std::vector<uint64_t>{7, 11, 900}));

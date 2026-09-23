@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""test_relay_hops_cycle.py — RELAY_HOPS stabilizes A -> B -> C -> A.
+"""test_relay_hops_cycle.py — HOP_ID stabilizes A -> B -> C -> A.
 
 A namespace published at A must reach every relay in the cycle and then stop
 changing: the cluster extension drops an advertisement whose HOP_PATH already contains

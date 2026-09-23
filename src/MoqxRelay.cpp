@@ -220,20 +220,22 @@ std::shared_ptr<moxygen::Subscriber> MoqxRelay::createSubscriberFilter() {
 
 // An advertisement owns a route token for its entire stream lifetime. Updating
 // that route never creates another handle or lets an older stream retract it.
-class ClusterNamespaceHandle : public Subscriber::PublishNamespaceHandle {
+class ClusterNamespaceHandle : public Subscriber::PublishNamespaceHandle,
+                               public std::enable_shared_from_this<ClusterNamespaceHandle> {
 public:
   ClusterNamespaceHandle(
       std::weak_ptr<MoqxRelay> relay,
       std::shared_ptr<MoQSession> session,
       PublishNamespaceOk ok,
       TrackNamespace ns,
+      TrackRequestParameters params,
       uint64_t routeID,
       folly::Executor* exec,
       std::string peerID
   )
       : PublishNamespaceHandle(std::move(ok)), relay_(std::move(relay)),
-        session_(std::move(session)), ns_(std::move(ns)), routeID_(routeID), exec_(exec),
-        peerID_(std::move(peerID)) {}
+        session_(std::move(session)), ns_(std::move(ns)), params_(std::move(params)),
+        routeID_(routeID), exec_(exec), peerID_(std::move(peerID)) {}
 
   void publishNamespaceDone() override {
     runOnExec(exec_, [relay = relay_, session = session_, ns = ns_, id = routeID_] {
@@ -243,29 +245,133 @@ public:
     });
   }
 
-  folly::Expected<folly::Unit, ErrorCode> publishNamespaceUpdate(PublishNamespace update) override {
-    if (update.trackNamespace != ns_) {
-      return folly::makeUnexpected(ErrorCode::PROTOCOL_VIOLATION);
+  folly::coro::Task<RequestUpdateResult> requestUpdate(RequestUpdate update) override {
+    auto self = shared_from_this();
+    const bool unsupportedRequestFields =
+        update.start || update.endGroup || update.priority || update.forward.has_value();
+    auto requestedParams = std::move(update.params);
+    auto reqId = update.requestID;
+    auto existingRequestID = update.existingRequestID;
+    auto updateTask = folly::coro::co_invoke(
+        [self = std::move(self),
+         relay = relay_,
+         session = session_,
+         ns = ns_,
+         requestedParams = std::move(requestedParams),
+         unsupportedRequestFields,
+         reqId,
+         existingRequestID,
+         id = routeID_,
+         peerID = peerID_]() mutable -> folly::coro::Task<RequestUpdateResult> {
+          auto r = relay.lock();
+          if (!r) {
+            co_return folly::makeUnexpected(
+                RequestError{reqId, RequestErrorCode::INTERNAL_ERROR, "relay is unavailable"}
+            );
+          }
+          auto params = self->params_;
+          auto negotiatedVersion = session->getNegotiatedVersion();
+          if (!negotiatedVersion) {
+            co_return folly::makeUnexpected(
+                RequestError{reqId, RequestErrorCode::INTERNAL_ERROR, "missing negotiated version"}
+            );
+          }
+          if (unsupportedRequestFields) {
+            co_return folly::makeUnexpected(RequestError{
+                reqId,
+                RequestErrorCode::NOT_SUPPORTED,
+                "unsupported cluster advertisement update field"
+            });
+          }
+          for (const auto& param : requestedParams) {
+            if (param.key != folly::to_underlying(TrackRequestParamKey::HOP_PATH) &&
+                param.key != folly::to_underlying(TrackRequestParamKey::ROUTE_COST)) {
+              r->doPublishNamespaceDone(ns, session, id);
+              co_return folly::makeUnexpected(RequestError{
+                  reqId,
+                  RequestErrorCode::NOT_SUPPORTED,
+                  "unsupported cluster advertisement update parameter"
+              });
+            }
+          }
+          for (const auto key :
+               {TrackRequestParamKey::HOP_PATH, TrackRequestParamKey::ROUTE_COST}) {
+            if (const auto* param = requestedParams.getFirstParam(key)) {
+              params.eraseAllParamsOfType(key);
+              params.insertParam(*param);
+            }
+          }
+          if (const auto* oldPath = self->params_.getFirstParam(TrackRequestParamKey::HOP_PATH)) {
+            auto oldHops = decodeRelayHopPath(oldPath->asString, *negotiatedVersion);
+            const auto* newPath = params.getFirstParam(TrackRequestParamKey::HOP_PATH);
+            auto newHops =
+                newPath
+                    ? decodeRelayHopPath(newPath->asString, *negotiatedVersion)
+                    : folly::Expected<std::vector<uint64_t>, ErrorCode>(std::vector<uint64_t>{});
+            if (!oldHops || !newHops || oldHops->empty() || newHops->empty()) {
+              r->doPublishNamespaceDone(ns, session, id);
+              co_return folly::makeUnexpected(
+                  RequestError{reqId, RequestErrorCode::MALFORMED_TRACK, "invalid HOP_PATH update"}
+              );
+            }
+            if (oldHops->front() != newHops->front()) {
+              r->doPublishNamespaceDone(ns, session, id);
+              co_return folly::makeUnexpected(RequestError{
+                  reqId,
+                  RequestErrorCode::DOES_NOT_EXIST,
+                  "publisher changes require a new advertisement"
+              });
+            }
+          }
+          PublishNamespace replacement;
+          replacement.requestID = existingRequestID;
+          replacement.trackNamespace = ns;
+          replacement.params = params;
+          auto handle = r->doPublishNamespace(std::move(replacement), session, nullptr, peerID, id);
+          if (!handle) {
+            co_return folly::makeUnexpected(
+                RequestError{reqId, RequestErrorCode::MALFORMED_TRACK, "invalid cluster update"}
+            );
+          }
+          self->params_ = std::move(params);
+          co_return RequestOk{.requestID = reqId};
+        }
+    );
+    if (exec_) {
+      co_return co_await folly::coro::co_withExecutor(
+          folly::getKeepAliveToken(exec_),
+          std::move(updateTask)
+      );
     }
+    co_return co_await std::move(updateTask);
+  }
+
+  void applyNamespaceUpdate(PublishNamespace update) {
+    if (update.trackNamespace != ns_) {
+      return;
+    }
+    auto self = shared_from_this();
     runOnExec(
         exec_,
-        [relay = relay_,
+        [self = std::move(self),
+         relay = relay_,
          session = session_,
          update = std::move(update),
          id = routeID_,
          peerID = peerID_]() mutable {
+          self->params_ = update.params;
           if (auto r = relay.lock()) {
             r->doPublishNamespace(std::move(update), session, nullptr, peerID, id);
           }
         }
     );
-    return folly::unit;
   }
 
 private:
   std::weak_ptr<MoqxRelay> relay_;
   std::shared_ptr<MoQSession> session_;
   TrackNamespace ns_;
+  TrackRequestParameters params_;
   uint64_t routeID_;
   folly::Executor* exec_;
   std::string peerID_;
@@ -305,7 +411,8 @@ public:
           if (auto r = relay.lock()) {
             auto it = handles->find(pubNs.trackNamespace);
             if (it != handles->end()) {
-              it->second->publishNamespaceUpdate(std::move(pubNs));
+              std::static_pointer_cast<ClusterNamespaceHandle>(it->second)
+                  ->applyNamespaceUpdate(std::move(pubNs));
             } else {
               auto name = pubNs.trackNamespace;
               auto handle = r->doPublishNamespace(std::move(pubNs), session, nullptr, peerID);
@@ -522,6 +629,7 @@ std::shared_ptr<Subscriber::PublishNamespaceHandle> MoqxRelay::doPublishNamespac
       session,
       PublishNamespaceOk{pubNs.requestID},
       pubNs.trackNamespace,
+      pubNs.params,
       result.routeID,
       relayExec_,
       peerID

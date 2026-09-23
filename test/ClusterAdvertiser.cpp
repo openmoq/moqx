@@ -9,8 +9,8 @@
 #include <folly/init/Init.h>
 #include <folly/io/async/EventBase.h>
 #include <moxygen/MoQClient.h>
+#include <moxygen/MoQClusterSession.h>
 #include <moxygen/MoQFramer.h>
-#include <moxygen/MoQRelaySession.h>
 #include <moxygen/MoQVersions.h>
 #include <moxygen/events/MoQFollyExecutorImpl.h>
 #include <moxygen/util/InsecureVerifierDangerousDoNotUseInProduction.h>
@@ -32,13 +32,12 @@ advertise(std::shared_ptr<MoQExecutor> exec, std::string url, std::string name) 
   MoQClient client(
       exec,
       proxygen::URL(url),
-      MoQRelaySession::createRelaySessionFactory(),
+      MoQClusterSession::createClusterSessionFactory(),
       std::make_shared<test::InsecureVerifierDangerousDoNotUseInProduction>()
   );
-  client.addSetupParameter(SetupParameter(
-      static_cast<uint64_t>(SetupKey::RELAY_HOPS),
-      encodeRelayHopID(hopID, kVersionDraft18).value()
-  ));
+  client.addSetupParameter(SetupParameter(static_cast<uint64_t>(SetupKey::HOP_ID), hopID));
+  client.addSetupParameter(SetupParameter(static_cast<uint64_t>(SetupKey::RELAY_COST), uint64_t{0})
+  );
   co_await client.setupMoQSession(
       std::chrono::seconds(5),
       std::chrono::seconds(60),

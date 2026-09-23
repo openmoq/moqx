@@ -21,6 +21,33 @@ PublishNamespace clusterAd(std::vector<uint64_t> path, uint64_t cost) {
   pub.params.insertParam(Parameter(folly::to_underlying(TrackRequestParamKey::ROUTE_COST), cost));
   return pub;
 }
+bool requestClusterUpdate(
+    const std::shared_ptr<Subscriber::PublishNamespaceHandle>& handle,
+    std::vector<uint64_t> path,
+    uint64_t cost,
+    folly::DrivableExecutor* exec
+) {
+  auto pub = clusterAd(std::move(path), cost);
+  RequestUpdate update;
+  update.requestID = RequestID(100);
+  update.existingRequestID = handle->publishNamespaceOk().requestID;
+  for (const auto& param : pub.params) {
+    update.params.insertParam(param);
+  }
+  return folly::coro::blockingWait(handle->requestUpdate(std::move(update)), exec).hasValue();
+}
+bool requestClusterCostUpdate(
+    const std::shared_ptr<Subscriber::PublishNamespaceHandle>& handle,
+    uint64_t cost,
+    folly::DrivableExecutor* exec
+) {
+  RequestUpdate update;
+  update.requestID = RequestID(101);
+  update.existingRequestID = handle->publishNamespaceOk().requestID;
+  update.params.insertParam(Parameter(folly::to_underlying(TrackRequestParamKey::ROUTE_COST), cost)
+  );
+  return folly::coro::blockingWait(handle->requestUpdate(std::move(update)), exec).hasValue();
+}
 class ClusterCostObserver : public Publisher::NamespacePublishHandle {
 public:
   std::atomic<uint64_t> cost{UINT64_MAX};
@@ -391,7 +418,7 @@ TEST_P(MoQRelayTest, ClusterWarmCostFollowsLiveIngressAndPreservesCostUpdates) {
   auto subscription = subscribeToTrack(reader, kTestTrackName, downstream, RequestID(4));
   ASSERT_NE(subscription, nullptr);
   ASSERT_TRUE(driveUntil([&] { return costs->cost == 0; }));
-  EXPECT_TRUE(ad.value()->publishNamespaceUpdate(clusterAd({7, 10}, 12)).hasValue());
+  EXPECT_TRUE(requestClusterCostUpdate(ad.value(), 12, exec_.get()));
   driveIfMultiThread();
   EXPECT_EQ(cancellations.load(), 0);
   EXPECT_EQ(costs->cost.load(), 0);
@@ -499,7 +526,7 @@ TEST_P(MoQRelayTest, ClusterOriginReplacementCancelsSubscriptionAndFetch) {
     );
   });
   ASSERT_TRUE(fetchResult.hasValue());
-  EXPECT_TRUE(ad.value()->publishNamespaceUpdate(clusterAd({8, 10}, 2)).hasValue());
+  EXPECT_FALSE(requestClusterUpdate(ad.value(), {8, 10}, 2, exec_.get()));
   ASSERT_TRUE(driveUntil([&] {
     return subCancelled == 1 && fetchCancelled == 1 && downstreamEnded == 1 && downstreamReset == 1;
   }));
@@ -606,7 +633,7 @@ TEST_P(MoQRelayTest, ClusterParentReplacementPreservesAuthoritativeChild) {
   auto consumer = createMockConsumer();
   EXPECT_CALL(*consumer, publishDone(_)).Times(0);
   ASSERT_NE(subscribeToTrack(reader, childTrack, consumer), nullptr);
-  EXPECT_TRUE(parentAd.value()->publishNamespaceUpdate(clusterAd({9, 10}, 1)).hasValue());
+  EXPECT_FALSE(requestClusterUpdate(parentAd.value(), {9, 10}, 1, exec_.get()));
   driveIfMultiThread();
   verifyOnRelayExec([&] { EXPECT_EQ(relay_->findPublishState(childTrack).session, child); });
   auto subgroup = createMockSubgroupConsumer();
@@ -741,7 +768,7 @@ TEST_P(MoQRelayTest, ClusterPathUpdateDetachesOnlyExcludedReader) {
   EXPECT_CALL(*retainedConsumer, publishDone(_)).Times(0);
   ASSERT_NE(subscribeToTrack(excluded, kTestTrackName, excludedConsumer, RequestID(1)), nullptr);
   ASSERT_NE(subscribeToTrack(retained, kTestTrackName, retainedConsumer, RequestID(2)), nullptr);
-  EXPECT_TRUE(advertisement.value()->publishNamespaceUpdate(clusterAd({7, 20, 10}, 3)).hasValue());
+  EXPECT_TRUE(requestClusterUpdate(advertisement.value(), {7, 20, 10}, 3, exec_.get()));
   ASSERT_TRUE(driveUntil([&] { return ended.load(); }));
   EXPECT_CALL(*excludedConsumer, datagram(_, _, _)).Times(0);
   EXPECT_CALL(*retainedConsumer, datagram(_, _, _))

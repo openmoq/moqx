@@ -8,8 +8,8 @@
 #include "relay/PublisherCrossExecFilter.h"
 #include "relay/SubscriberCrossExecFilter.h"
 #include <folly/coro/Timeout.h>
+#include <moxygen/MoQClusterSession.h>
 #include <moxygen/MoQFilters.h>
-#include <moxygen/MoQRelaySession.h>
 #include <moxygen/MoQVersions.h>
 
 using namespace moxygen;
@@ -498,15 +498,13 @@ folly::coro::Task<void> UpstreamProvider::doConnect() {
   auto client = std::make_shared<MoQClient>(
       exec_,
       url_,
-      MoQRelaySession::createRelaySessionFactory(),
+      MoQClusterSession::createClusterSessionFactory(),
       verifier_
   );
   client_ = client;
   if (clusterHopID_) {
-    client->addSetupParameter(SetupParameter(
-        folly::to_underlying(SetupKey::RELAY_HOPS),
-        encodeRelayHopID(*clusterHopID_, kVersionDraft18).value()
-    ));
+    client->addSetupParameter(SetupParameter(folly::to_underlying(SetupKey::HOP_ID), *clusterHopID_)
+    );
     if (relayCost_) {
       client->addSetupParameter(
           SetupParameter(folly::to_underlying(SetupKey::RELAY_COST), *relayCost_)
