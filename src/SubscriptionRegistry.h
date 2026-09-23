@@ -164,6 +164,9 @@ public:
   // === Lookup ===
 
   bool exists(const moxygen::FullTrackName& ftn) const;
+  bool ownsIngest(const moxygen::FullTrackName& ftn, const IngestCounters* ingest) const;
+  std::shared_ptr<IngestCounters> getIngest(const moxygen::FullTrackName& ftn) const;
+  void setSourcePath(const moxygen::FullTrackName& ftn, std::vector<uint64_t> path);
   // Empty ref if there is no entry.
   ForwarderRef getForwarderRef(const moxygen::FullTrackName& ftn) const;
 
@@ -184,6 +187,8 @@ public:
     folly::Executor* publisherExec{nullptr}; // executor the publisher forwarder lives on
     bool isPublish;
     bool isReady; // promise fulfilled
+    std::shared_ptr<moxygen::MoQSession> source;
+    std::vector<uint64_t> sourcePath;
   };
   std::optional<UpstreamView> getUpstreamView(const moxygen::FullTrackName& ftn) const;
 
@@ -229,12 +234,16 @@ public:
 private:
   struct RelaySubscription {
     RelaySubscription(ForwarderRef f, std::shared_ptr<moxygen::MoQSession> u, EntryEpoch e)
-        : forwarder(std::move(f)), epoch(e), upstream(std::move(u)),
+        : forwarder(std::move(f)), epoch(e), upstream(std::move(u)), source(upstream),
           lastObjectTime(std::chrono::steady_clock::now()) {}
 
     ForwarderRef forwarder;
     EntryEpoch epoch;
     std::shared_ptr<moxygen::MoQSession> upstream;
+    // Retain identity while a terminated source's forwarder drains; status and
+    // cache filtering must not lose provenance when the live upstream ends.
+    std::shared_ptr<moxygen::MoQSession> source;
+    std::vector<uint64_t> sourcePath;
     std::shared_ptr<moxygen::Publisher> publisher;
     moxygen::RequestID requestID{0};
     std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle;

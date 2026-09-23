@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<link rel="icon" href="data:,">
+<title>MoQ Cluster media demo</title>
+<style>
+  body { font: 18px system-ui; background: #f5f7fa; color: #17243a; max-width: 850px; margin: 3rem auto; }
+  video { width: 100%; background: #17243a; }
+  button { background: #173d80; color: white; padding: .7rem 1.5rem; border: 0; cursor: pointer; }
+  pre { white-space: pre-wrap; }
+</style>
+<h1>MoQ Cluster media demo</h1>
+<p>moqxr → relay A → relay B → relay C → Playa</p>
+<video controls muted playsinline></video>
+<p><button>Play</button></p><pre id="status">Ready. Unmute the video to hear the test tone.</pre>
+<script type="module">
+import { MoqtPlayer } from './player.js';
+import { MoqtConnection } from './webtransport.js';
+import { createWebTransport, MseMediaSource, CmafAssembler } from './browser.js';
+const params = new URLSearchParams(location.search);
+const video = document.querySelector('video');
+const status = document.querySelector('#status');
+const hash = Uint8Array.from(params.get('hash').match(/../g), (v) => parseInt(v, 16)).buffer;
+const player = new MoqtPlayer({
+  url: params.get('url'), namespace: [params.get('ns')], draftVersion: 18, catalogBootstrap: 'subscribe',
+  createTransport: createWebTransport({ certHash: hash, draftVersion: 18 }),
+  createConnection: () => new MoqtConnection(18),
+  createMediaSource: () => new MseMediaSource(video),
+  createCmafAssembler: (options) => new CmafAssembler(options),
+});
+player.on('error', (event) => { status.textContent = String(event.error?.message ?? event.error ?? event); });
+video.addEventListener('playing', () => { status.textContent = 'Playing media received through relay C.'; });
+document.querySelector('button').onclick = async () => {
+  document.querySelector('button').disabled = true;
+  try { await player.load(); player.play(); }
+  catch (error) { status.textContent = String(error); }
+};
+window.addEventListener('pagehide', () => player.destroy());
+</script>
+</html>

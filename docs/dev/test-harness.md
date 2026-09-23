@@ -341,3 +341,66 @@ process-reaping policy in `Harness.cleanup()` mirrors
 [`test/test_relay_lifecycle.sh`](/test/test_relay_lifecycle.sh), and
 `_resolve_moqbin` mirrors [`test/test_moqbin.sh`](/test/test_moqbin.sh); those
 pairs must stay in agreement while both the bash and Python tests exist.
+
+## moqxr to Playa media E2E
+
+`test/test_moqxr_playa.py` is an opt-in real-media test using this harness:
+
+```text
+moqxr --raw QUIC--> A --MoQ Cluster--> B --MoQ Cluster--> C --WebTransport--> Playa
+```
+
+All sessions use draft 18. The publisher and subscriber connect to opposite
+ends of the three-relay chain, so delivery must cross both peering links.
+The runner generates an eight-second H.264/AAC test pattern with FFmpeg,
+remuxes it as a continuous live loop into moqxr's stdin, and uses the local Playa `MoqtPlayer` implementation
+to discover and subscribe to the catalog's audio and video tracks.
+The fixture uses `--coalesce-cmaf-chunks` to send complete fragments for MSE;
+it does not exercise per-sample chunk playback.
+Remuxing advances MP4 decode timestamps across loop boundaries; replaying
+the same MP4 bytes would repeat timestamps and stall MSE after one loop.
+
+Prerequisites: a cluster-enabled moqx build, a built `../moqxr` checkout,
+a built `../moq-playa` checkout, Python 3.10+, Node 20+, npm, OpenSSL, and
+FFmpeg with the `libx264` and AAC encoders. Install the pinned Node
+WebTransport transport once:
+
+```sh
+npm ci --prefix test/playa
+python3 test/test_moqxr_playa.py build/default/moqx
+```
+
+The test uses Playa's `catalogBootstrap: 'subscribe'` mode. This is a live
+media-delivery check, not joining-FETCH conformance coverage. A successful
+connection alone cannot pass: both catalog-advertised tracks must deliver
+nonempty `mdat` payloads in at least two distinct groups, with valid MP4 box
+boundaries and `moof` boxes. The headless check observes media bytes; it does
+not decode audio or video.
+
+Use `--moqxr /path/to/openmoq-publisher`, `--playa /path/to/moq-playa`, and
+`--node /path/to/node` to select other local builds. `--timeout 25` bounds
+subscriber delivery. `HARNESS_BASE_PORT` overrides the reserved listener/admin
+ports. No moxygen sample publisher or subscriber binaries are required.
+
+```sh
+python3 test/test_moqxr_playa.py build/default/moqx --demo
+```
+
+After the automated assertions pass, `--demo` prints a localhost URL. Open it
+in Chrome/Chromium and click **Play**; unmute the video to hear the test tone.
+The page uses Playa's browser bundles and MSE adapters. It receives media from
+relay C and displays the topology. Ctrl-C stops the HTTP server, FFmpeg, publisher,
+and relays. This mode requires `packages/{player,browser,webtransport}/dist/browser/index.js`
+in the Playa build.
+
+Each run generates a short-lived ECDSA certificate and pins its SHA-256 hash
+in the subscriber/browser. The demo server binds to loopback and serves only
+the page and browser bundles. The certificate key and generated MP4 stay in
+temporary storage and are removed during cleanup. Relay configs and logs,
+moqxr output, and Playa's JSON media counters are saved under
+`.scratch/moqxr-playa-logs`, or the directory supplied with `--save-logs DIR`.
+Use a different log directory for runs you want to keep separately.
+
+This test is deliberately outside default CTest runs because it requires two
+external project builds and a native Node transport. Run it explicitly when
+validating changes that affect cluster media delivery.

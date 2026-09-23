@@ -346,4 +346,48 @@ TEST_F(NamespaceTreeTest, PublishKeepsNodeAliveAfterNamespaceDone) {
   EXPECT_EQ(tree_.findNode(nsAB), nullptr); // fully pruned
 }
 
+TEST_F(NamespaceTreeTest, SameOriginStandbySurvivesPreferredSourceWithdrawal) {
+  auto first = makeSession();
+  auto second = makeSession();
+  TrackNamespace ns{{"cluster", "live"}};
+  tree_.setPublisher(ns, first, nullptr, {}, RequestID(1), {7, 10});
+  tree_.setPublisher(ns, second, nullptr, {}, RequestID(2), {7, 11});
+  unpublish(ns, second);
+  EXPECT_EQ(tree_.findPublisherSession(ns), first);
+}
+
+TEST_F(NamespaceTreeTest, AdvertisementUpdatesKeepTheirStreamOwnership) {
+  auto source = makeSession();
+  auto stranger = makeSession();
+  TrackNamespace ns{{"cluster", "owned"}};
+  auto first = tree_.setPublisher(ns, source, nullptr, {}, RequestID(1), {7, 10});
+  auto update =
+      tree_.setPublisher(ns, source, nullptr, {}, RequestID(1), {7, 10}, 5, 1, first.routeID);
+  EXPECT_EQ(update.routeID, first.routeID);
+  EXPECT_FALSE(update.contentChanged);
+  auto foreign =
+      tree_.setPublisher(ns, stranger, nullptr, {}, RequestID(1), {8}, 0, 1, first.routeID);
+  EXPECT_EQ(foreign.node, nullptr);
+  auto replacement = tree_.setPublisher(ns, source, nullptr, {}, RequestID(2), {8});
+  EXPECT_NE(replacement.routeID, first.routeID);
+  EXPECT_TRUE(replacement.contentChanged);
+  EXPECT_TRUE(tree_.unpublishNamespace(ns, source, first.routeID).hasError());
+  auto stale = tree_.setPublisher(ns, source, nullptr, {}, RequestID(1), {7}, 0, 1, first.routeID);
+  EXPECT_EQ(stale.node, nullptr);
+  EXPECT_EQ(tree_.findPublisherSession(ns), source);
+  EXPECT_EQ(replacement.node->selectPublisher()->path.front(), 8);
+}
+
+TEST_F(NamespaceTreeTest, ExcludedSpecificNamespaceDoesNotUseDifferentBroaderContent) {
+  auto broad = makeSession();
+  auto specific = makeSession();
+  TrackNamespace parent{{"cluster"}};
+  TrackNamespace child{{"cluster", "child"}};
+  tree_.setPublisher(parent, broad, nullptr, {}, RequestID(1), {7});
+  tree_.setPublisher(child, specific, nullptr, {}, RequestID(2), {8, 10});
+  EXPECT_EQ(tree_.findPublisherSession(child, 10), nullptr);
+  EXPECT_EQ(tree_.findPublisherSession(child, 0), specific);
+  EXPECT_EQ(tree_.findPublisherSession(parent, 10), broad);
+}
+
 } // namespace openmoq::moqx::test

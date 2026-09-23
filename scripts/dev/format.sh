@@ -42,7 +42,10 @@ else
   exit 1
 fi
 
-FILES=$(find src test tools -name '*.h' -o -name '*.hpp' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx')
+# Tracked files only, so local build trees and vendored packages (build-san/,
+# node_modules/) never reach the formatters. Stage a new file to include it.
+FILES=$(git ls-files -- src test tools | grep -E '\.(h|hpp|cc|cpp|cxx)$' || true)
+PY_FILES=$(git ls-files -- '*.py')
 
 if [[ -z "${FILES}" ]]; then
   echo "No source files found."
@@ -69,10 +72,14 @@ if [[ "${1:-}" == "--check" ]]; then
   cf_exit=0
   ${CF_BIN} --dry-run -Werror ${FILES} || cf_exit=$?
 
+  # Explicit paths bypass ruff.toml's excludes unless --force-exclude is given.
+  # With no paths ruff would fall back to the whole tree, so skip instead.
   echo "Checking Python formatting and lint..."
   ruff_exit=0
-  "${RUFF[@]}" format --check . || ruff_exit=$?
-  "${RUFF[@]}" check . || ruff_exit=$?
+  if [[ -n "${PY_FILES}" ]]; then
+    "${RUFF[@]}" format --check --force-exclude ${PY_FILES} || ruff_exit=$?
+    "${RUFF[@]}" check --force-exclude ${PY_FILES} || ruff_exit=$?
+  fi
 
   if [[ $header_errors -ne 0 ]]; then
     echo "error: files missing copyright headers (run scripts/dev/format.sh to fix)" >&2
@@ -93,6 +100,8 @@ else
 
   # --fix is the safe fixes only; whatever is left exits non-zero for a human.
   echo "Formatting and linting Python..."
-  "${RUFF[@]}" format .
-  "${RUFF[@]}" check --fix .
+  if [[ -n "${PY_FILES}" ]]; then
+    "${RUFF[@]}" format --force-exclude ${PY_FILES}
+    "${RUFF[@]}" check --fix --force-exclude ${PY_FILES}
+  fi
 fi

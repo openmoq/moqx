@@ -66,6 +66,7 @@ moqx_add_gtest(moqx_relay_test
     MoqxRelayPublishTests.cpp
     MoqxRelaySubscribeTests.cpp
     MoqxRelaySubNsTests.cpp
+    MoqxRelayClusterDispatchTests.cpp
     MoqxRelayDataPlaneTests.cpp
     MoqxRelayFetchTests.cpp
     MoqxRelayTrackStatusTests.cpp
@@ -82,6 +83,12 @@ moqx_add_gtest(moqx_namespace_tree_test
   SRCS NamespaceTreeTest.cpp
   LIBS moqx_core moqx_test_main GTest::gmock
 )
+
+moqx_add_gtest(moqx_cluster_routes_test
+  SRCS ClusterRoutesTest.cpp
+  LIBS GTest::gtest_main
+)
+target_include_directories(moqx_cluster_routes_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
 
 moqx_add_gtest(moqx_config_test
   SRCS config/LoaderTest.cpp
@@ -258,6 +265,20 @@ moqx_add_dual_stack_test(relay_chain
   TIMEOUT 120
   ENVIRONMENT "MOQBIN=${MOXYGEN_BIN_DIR}"
 )
+
+add_executable(moqx_cluster_advertiser ClusterAdvertiser.cpp)
+target_link_libraries(moqx_cluster_advertiser PRIVATE moqx_core Folly::folly_init_init)
+
+add_test(
+  NAME moq_cluster_chain
+  COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/test_relay_chain.py $<TARGET_FILE:moqx>
+)
+set_tests_properties(moq_cluster_chain PROPERTIES
+  TIMEOUT 120
+  ENVIRONMENT "MOQBIN=${MOXYGEN_BIN_DIR};MOQX_TEST_VERSIONS=[18]"
+  RESOURCE_LOCK relay_chain_ports
+)
+set_tests_properties(relay_chain PROPERTIES RESOURCE_LOCK relay_chain_ports)
 
 moqx_add_dual_stack_test(relay_hops_cycle
   COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/test_relay_hops_cycle.py $<TARGET_FILE:moqx>

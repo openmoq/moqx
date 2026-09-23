@@ -11,7 +11,7 @@
 #include <folly/portability/GTest.h>
 #include <folly/synchronization/Baton.h>
 #include <moxygen/MoQClient.h>
-#include <moxygen/MoQRelaySession.h>
+#include <moxygen/MoQClusterSession.h>
 #include <moxygen/MoQServer.h>
 #include <moxygen/MoQVersions.h>
 #include <moxygen/Publisher.h>
@@ -110,7 +110,7 @@ protected:
 
   // Create a URL pointing at the test server
   proxygen::URL serverUrl() const {
-    return proxygen::URL(folly::to<std::string>("moqt://localhost:", port_, "/test"));
+    return proxygen::URL(folly::to<std::string>("moqt://[::1]:", port_, "/test"));
   }
 
   // Create a new MoQ client configured for the test server
@@ -118,7 +118,7 @@ protected:
     return std::make_unique<moxygen::MoQClient>(
         clientExec_,
         serverUrl(),
-        moxygen::MoQRelaySession::createRelaySessionFactory(),
+        moxygen::MoQClusterSession::createClusterSessionFactory(),
         std::make_shared<moxygen::test::InsecureVerifierDangerousDoNotUseInProduction>()
     );
   }
@@ -172,7 +172,7 @@ private:
         folly::MaybeManagedPtr<proxygen::WebTransport> wt,
         std::shared_ptr<moxygen::MoQExecutor> executor
     ) override {
-      return std::make_shared<moxygen::MoQRelaySession>(
+      return std::make_shared<moxygen::MoQClusterSession>(
           folly::MaybeManagedPtr<proxygen::WebTransport>(std::move(wt)),
           *this,
           std::move(executor)
