@@ -14,6 +14,7 @@
 #include <folly/synchronization/Baton.h>
 #include <future>
 #include <moxygen/test/Mocks.h>
+#include <thread>
 
 using namespace testing;
 using namespace moxygen;
@@ -70,6 +71,88 @@ TEST_F(SubscriberCrossExecFilterTest, PublishNamespaceForwardsToInner) {
   ann.requestID = RequestID(1);
   auto result = folly::coro::blockingWait(filter_->publishNamespace(std::move(ann), nullptr));
   EXPECT_TRUE(result.hasValue());
+}
+
+// The caller drops the returned handle on its own thread. The inner handle
+// belongs to the inner session, so its last reference goes away on targetExec_.
+TEST_F(SubscriberCrossExecFilterTest, PublishNamespaceHandleReleasesInnerOnTargetExec) {
+  std::thread::id targetThread;
+  std::thread::id destroyedOn;
+  EXPECT_CALL(*inner_, publishNamespace(_, _))
+      .WillOnce(
+          [&targetThread,
+           &destroyedOn](PublishNamespace, std::shared_ptr<Subscriber::PublishNamespaceCallback>)
+              -> folly::coro::Task<Subscriber::PublishNamespaceResult> {
+            targetThread = std::this_thread::get_id();
+            co_return std::shared_ptr<Subscriber::PublishNamespaceHandle>(
+                new NiceMock<MockPublishNamespaceHandle>(),
+                [&destroyedOn](Subscriber::PublishNamespaceHandle* h) {
+                  destroyedOn = std::this_thread::get_id();
+                  delete h;
+                }
+            );
+          }
+      );
+
+  PublishNamespace ann;
+  ann.requestID = RequestID(8);
+  auto result = folly::coro::blockingWait(filter_->publishNamespace(std::move(ann), nullptr));
+  ASSERT_TRUE(result.hasValue());
+  result.value().reset();
+
+  folly::Baton<> flushed;
+  targetExec_->add([&flushed]() { flushed.post(); });
+  flushed.wait();
+  EXPECT_EQ(destroyedOn, targetThread);
+}
+
+// The inner session drops the callback wrapper on targetExec_. The caller's
+// callback belongs to the caller, so its last reference goes away on callerExec.
+TEST_F(SubscriberCrossExecFilterTest, PublishNamespaceCallbackReleasesInnerOnCallerExec) {
+  folly::ManualExecutor callerExec;
+  std::shared_ptr<Subscriber::PublishNamespaceCallback> captured;
+  EXPECT_CALL(*inner_, publishNamespace(_, _))
+      .WillOnce(
+          [&captured](
+              PublishNamespace ann,
+              std::shared_ptr<Subscriber::PublishNamespaceCallback> cb
+          ) -> folly::coro::Task<Subscriber::PublishNamespaceResult> {
+            captured = std::move(cb);
+            co_return folly::makeUnexpected(PublishNamespaceError{
+                ann.requestID,
+                PublishNamespaceErrorCode::NOT_SUPPORTED,
+                "nope"
+            });
+          }
+      );
+
+  std::thread::id destroyedOn;
+  std::shared_ptr<Subscriber::PublishNamespaceCallback> callback(
+      new NiceMock<MockPublishNamespaceCallback>(),
+      [&destroyedOn](Subscriber::PublishNamespaceCallback* cb) {
+        destroyedOn = std::this_thread::get_id();
+        delete cb;
+      }
+  );
+  PublishNamespace ann;
+  ann.requestID = RequestID(9);
+  auto fut = folly::coro::co_withExecutor(
+                 &callerExec,
+                 filter_->publishNamespace(std::move(ann), std::move(callback))
+  )
+                 .start();
+  while (!fut.isReady()) {
+    callerExec.drive();
+  }
+
+  folly::Baton<> dropped;
+  targetExec_->add([&captured, &dropped]() {
+    captured.reset();
+    dropped.post();
+  });
+  dropped.wait();
+  callerExec.drain();
+  EXPECT_EQ(destroyedOn, std::this_thread::get_id());
 }
 
 TEST_F(SubscriberCrossExecFilterTest, PublishNamespaceReturnsError) {

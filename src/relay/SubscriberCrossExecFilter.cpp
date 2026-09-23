@@ -23,6 +23,13 @@ public:
   )
       : inner_(std::move(inner)), exec_(std::move(exec)) {}
 
+  ~CrossExecPublishNamespaceCallback() override {
+    // Inner dtor may touch session state; destroy it on exec_, not the dropping thread.
+    if (inner_) {
+      exec_->add([inner = std::move(inner_)]() mutable {});
+    }
+  }
+
   void publishNamespaceCancel(
       moxygen::PublishNamespaceErrorCode errorCode,
       std::string reasonPhrase
@@ -47,6 +54,13 @@ public:
       folly::Executor* exec
   )
       : inner_(std::move(inner)), exec_(exec) {}
+
+  ~CrossExecPublishNamespaceHandle() override {
+    // Inner dtor may touch session state; destroy it on exec_, not the dropping thread.
+    if (inner_) {
+      exec_->add([inner = std::move(inner_)]() mutable {});
+    }
+  }
 
   const moxygen::PublishNamespaceOk& publishNamespaceOk() const override {
     return inner_->publishNamespaceOk();
