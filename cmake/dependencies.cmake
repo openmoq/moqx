@@ -15,7 +15,7 @@
 # on the next reconfigure of an existing build dir. A cached pin would silently
 # shadow the file's value.
 set(MOXYGEN_REPOSITORY "openmoq/moxygen")
-set(MOXYGEN_REV "cda50e6d76b6433ed691d0706cc89abe337cc646")
+set(MOXYGEN_REV "ae88a7e7d7497222fcd73f1d10660caee203d40d")
 
 set(CATAPULT_REPOSITORY "Quicr/catapult")
 set(CATAPULT_REV "2bbf479fe2e65e425624316d335443a8c0fc0507")
