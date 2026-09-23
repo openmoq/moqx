@@ -522,15 +522,7 @@ jobs:
           LABEL="${{ steps.tags.outputs.label }}"
           TAG="${{ steps.tags.outputs.tag }}"
 
-          gh release delete "$TAG" --yes 2>/dev/null || true
-          git tag -d "$TAG" 2>/dev/null || true
-          git push origin ":refs/tags/$TAG" 2>/dev/null || true
-
-          gh release create "$TAG" artifacts/**/* \
-            --target "$GITHUB_SHA" \
-            --title "Latest build — ${LABEL} (${SHORT})" \
-            --prerelease \
-            --notes "$(cat <<EOF
+          NOTES=$(cat <<EOF
           Rolling snapshot of the latest build from \`${{ github.ref_name }}\`.
 
           **Commit:** \`${GITHUB_SHA}\`
@@ -539,7 +531,35 @@ jobs:
 
           This pre-release is automatically replaced on every push to \`${{ github.ref_name }}\`.
           EOF
-          )"
+          )
+
+          # Delete first on every attempt: a create that failed partway leaves
+          # a release behind, which the next attempt would collide with.
+          # timeout bounds a hung upload, which no retry would otherwise cover.
+          for attempt in 1 2 3; do
+            gh release delete "$TAG" --yes 2>/dev/null || true
+            git tag -d "$TAG" 2>/dev/null || true
+            git push origin ":refs/tags/$TAG" 2>/dev/null || true
+
+            if timeout --kill-after=30s 900 \
+                 gh release create "$TAG" artifacts/**/* \
+                   --target "$GITHUB_SHA" \
+                   --title "Latest build — ${LABEL} (${SHORT})" \
+                   --prerelease \
+                   --notes "$NOTES"; then
+              PUBLISHED=true
+              break
+            fi
+            echo "::warning::snapshot publish attempt ${attempt}/3 failed"
+            if [ "$attempt" -lt 3 ]; then
+              sleep $(( attempt * 10 ))
+            fi
+          done
+
+          if [ "${PUBLISHED:-}" != true ]; then
+            echo "::error::snapshot publish failed after 3 attempts"
+            exit 1
+          fi
 
       - name: Log in to GHCR
         if: steps.order.outputs.advance == 'true'
