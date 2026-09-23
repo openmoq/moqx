@@ -862,4 +862,373 @@ TEST_P(MoQRelayTest, PeerUnsubscribeDefersOnEmptyToRelayExec) {
   removeSession(subSession);
   driveIfMultiThread();
 }
+// Regression: a SUBSCRIBE that wins the first-subscriber race on one iothread must not be
+// failed because a different subscriber on the publisher's iothread already claimed that
+// thread's local-forwarder slot.
+//
+// The gate below forces this order:
+//   1. subOnPubThread joins the publisher thread's registry and holds a pending claim on
+//      the slot the publisher forwarder wants.
+//   2. sub1, on another iothread, reaches relayExec first, so it is the FirstSubscriber and
+//      hops to publisherExec to install the publisher forwarder.
+//   3. The hop saw an occupant and failed the SUBSCRIBE, which erased the registry entry
+//      and threw at everyone parked on it. subOnPubThread died too, the next arrival became
+//      FirstSubscriber, and the cycle repeated.
+TEST_P(MoQRelayTest, FirstSetupOverPendingClaimOnPublisherThread) {
+  if (relayMode() != RelayMode::LocalForwarderMT) {
+    GTEST_SKIP() << "only LF has a per-thread registry slot to contend for";
+  }
+
+  // Publisher on its own iothread: publisherExec is the thread whose registry slot
+  // the first-setup hop inspects.
+  auto& pubAux = makeAuxExec("pub-iothread");
+  auto* pubEvb = pubAux.evb;
+  auto publisherSession = createMockSessionOn(pubAux.exec);
+  auto subSessionOnPubThread = createMockSessionOn(pubAux.exec);
+  auto subSession1 = createMockSession(); // on exec_, a different iothread
+
+  doPublishNamespace(publisherSession, kTestNamespace);
+
+  SubscribeOk upstreamOk;
+  upstreamOk.requestID = RequestID(1);
+  upstreamOk.trackAlias = TrackAlias(1);
+  upstreamOk.expires = std::chrono::milliseconds(0);
+  upstreamOk.groupOrder = GroupOrder::OldestFirst;
+
+  // The upstream SUBSCRIBE is built from whichever subscribe won FirstSubscriber, and it
+  // carries this tag through, so the assertion below can name the winner.
+  constexpr uint64_t kSub1Tag = 4242;
+  std::shared_ptr<TrackConsumer> upstreamConsumer;
+  std::atomic<int> upstreamSubscribes{0};
+  std::atomic<uint64_t> upstreamTag{0};
+  // Keeps the publisher forwarder pending for a whole upstream round trip, like production.
+  // The displaced claim has to sit through that window.
+  folly::coro::Baton upstreamGate;
+  // The action is a plain lambda, not a coroutine: a coroutine body does not run until the
+  // Task is awaited, and `req` is gmock's copy, which is gone by then. Read it here and let
+  // the returned Task do the waiting.
+  EXPECT_CALL(*publisherSession, subscribe(_, _))
+      .WillOnce([&](const SubscribeRequest& req, std::shared_ptr<TrackConsumer> consumer) {
+        upstreamConsumer = std::move(consumer);
+        upstreamTag.store(
+            getFirstIntParam(req.params, TrackRequestParamKey::DELIVERY_TIMEOUT).value_or(0)
+        );
+        upstreamSubscribes.fetch_add(1);
+        return folly::coro::co_invoke(
+            [&upstreamGate, upstreamOk]() -> folly::coro::Task<Publisher::SubscribeResult> {
+              co_await upstreamGate;
+              auto handle = std::make_shared<NiceMock<MockSubscriptionHandle>>(upstreamOk);
+              co_return folly::Expected<std::shared_ptr<SubscriptionHandle>, SubscribeError>(handle
+              );
+            }
+        );
+      });
+  auto releaseUpstream = folly::makeGuard([&]() noexcept { upstreamGate.post(); });
+
+  auto consumer1 = createMockConsumer();
+  auto consumerOnPubThread = createMockConsumer();
+  std::atomic<bool> sub1GotData{false};
+  std::atomic<bool> pubThreadSubGotData{false};
+  auto sg1 = createMockSubgroupConsumer();
+  auto sgPub = createMockSubgroupConsumer();
+  EXPECT_CALL(*consumer1, beginSubgroup(0, 0, _, _))
+      .WillOnce([&](uint64_t, uint64_t, uint8_t, moxygen::BeginSubgroupOptions) {
+        sub1GotData.store(true);
+        return folly::makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(sg1);
+      });
+  EXPECT_CALL(*consumerOnPubThread, beginSubgroup(0, 0, _, _))
+      .WillOnce([&](uint64_t, uint64_t, uint8_t, moxygen::BeginSubgroupOptions) {
+        pubThreadSubGotData.store(true);
+        return folly::makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(sgPub);
+      });
+
+  // Hold relayExec so both subscribes queue their relay phase behind it, in a known
+  // order, while each has already claimed its own thread's registry slot.
+  auto relayGate = parkRelayExec();
+
+  // sub1 claims exec_'s slot and queues its relay phase first, so it wins FirstSubscriber.
+  auto sub1Req = makeSubscribeRequest(RequestID(0));
+  sub1Req.params.insertParam(
+      Parameter(folly::to_underlying(TrackRequestParamKey::DELIVERY_TIMEOUT), kSub1Tag)
+  );
+  auto sub1 = startSubscribe(sessionExec(), subSession1, std::move(sub1Req), consumer1);
+  // driveSessionExecOnly, not drive(): drive() rendezvouses with the parked relayEvb_.
+  for (int i = 0; i < 8; ++i) {
+    exec_->driveSessionExecOnly();
+  }
+
+  // Now the publisher thread's own subscriber claims that thread's slot. Its relay
+  // phase queues behind sub1's, so it becomes a subsequent subscriber while its
+  // Pending claim still occupies the slot sub1 is about to install into.
+  auto pubThreadSub = launchSubscribeOn(
+      pubEvb,
+      subSessionOnPubThread,
+      makeSubscribeRequest(RequestID(2)),
+      consumerOnPubThread
+  );
+
+  relayGate.release();
+  ASSERT_TRUE(driveUntil([&] { return upstreamSubscribes.load() > 0; }))
+      << "the first-setup subscribe should reach the upstream SUBSCRIBE";
+  ASSERT_EQ(upstreamTag.load(), kSub1Tag)
+      << "sub1 must win FirstSubscriber, or the slot it installs into holds its own claim "
+         "and this stops covering a foreign one";
+  releaseUpstream.dismiss();
+  upstreamGate.post();
+  ASSERT_TRUE(driveUntil([&] { return sub1.ready() && pubThreadSub.ready(); }))
+      << "every subscribe should unwind";
+
+  auto handle1 = sub1.handle();
+  auto handleOnPubThread = pubThreadSub.handle();
+  ASSERT_NE(handle1, nullptr);
+  ASSERT_NE(handleOnPubThread, nullptr);
+  getOrCreateMockState(subSession1)->subscribeHandles.push_back(handle1);
+  getOrCreateMockState(subSessionOnPubThread)->subscribeHandles.push_back(handleOnPubThread);
+
+  // Each must be wired to the live forwarder, not merely holding a SUBSCRIBE_OK.
+  ASSERT_NE(upstreamConsumer, nullptr);
+  pubEvb->runInEventBaseThreadAndWait([&]() {
+    auto sgRes = upstreamConsumer->beginSubgroup(0, 0, 0);
+    ASSERT_TRUE(sgRes.hasValue());
+    EXPECT_TRUE(sgRes.value()->endOfSubgroup().hasValue());
+  });
+  EXPECT_TRUE(driveUntil([&] { return sub1GotData.load() && pubThreadSubGotData.load(); }))
+      << "sub1=" << sub1GotData.load() << " pubThreadSub=" << pubThreadSubGotData.load();
+
+  // The pub-thread sessions' handles unsubscribe from forwarders that thread owns, so
+  // tear them down there rather than mutating those forwarders from the test thread.
+  pubEvb->runInEventBaseThreadAndWait([&]() {
+    removeSession(publisherSession);
+    removeSession(subSessionOnPubThread);
+  });
+  removeSession(subSession1);
+  drainExecs(4);
+}
+
+// A wake and the waiter's resumption are separate turns, so other work on that thread runs
+// in between. Two PUBLISHes for one track land in that window: the first releases the
+// waiter, the second takes the slot. The waiter has to end up on the forwarder that holds
+// the track when it resumes, not the one that released it.
+TEST_P(MoQRelayTest, ParkedSubscribeLandsOnTheLiveForwarderAfterARepublish) {
+  if (relayMode() != RelayMode::LocalForwarderMT) {
+    GTEST_SKIP() << "only LF has a per-thread registry slot to contend for";
+  }
+
+  auto& pubAux = makeAuxExec("pub-iothread");
+  auto* pubEvb = pubAux.evb;
+  auto firstPublisher = createMockSessionOn(pubAux.exec);
+  auto secondPublisher = createMockSessionOn(pubAux.exec);
+  // Holds the claim the waiter parks on, then loses the slot to the first PUBLISH.
+  auto claimingSub = createMockSessionOn(pubAux.exec);
+  auto parkedSub = createMockSessionOn(pubAux.exec);
+
+  doPublishNamespace(firstPublisher, kTestNamespace);
+
+  auto claimingConsumer = createMockConsumer();
+  auto parkedConsumer = createMockConsumer();
+  auto parkedSubgroup = createMockSubgroupConsumer();
+  std::atomic<bool> parkedGotData{false};
+  EXPECT_CALL(*parkedConsumer, beginSubgroup(0, 0, _, _))
+      .WillOnce([&](uint64_t, uint64_t, uint8_t, moxygen::BeginSubgroupOptions) {
+        parkedGotData.store(true);
+        return folly::makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(
+            parkedSubgroup
+        );
+      });
+
+  // Park relayExec so the first subscribe holds its claim open for the whole race.
+  auto relayGate = parkRelayExec();
+
+  auto claiming =
+      launchSubscribeOn(pubEvb, claimingSub, makeSubscribeRequest(RequestID(0)), claimingConsumer);
+  auto parked =
+      launchSubscribeOn(pubEvb, parkedSub, makeSubscribeRequest(RequestID(1)), parkedConsumer);
+  ASSERT_FALSE(parked.ready()) << "the second subscribe should be parked on the claim";
+
+  auto issuePublish = [&](const std::shared_ptr<MoQSession>& session) {
+    std::shared_ptr<TrackConsumer> consumer;
+    withSessionContext(session, [&]() {
+      PublishRequest pub;
+      pub.fullTrackName = kTestTrackName;
+      auto res = subscriberInterface()->publish(std::move(pub), createMockSubscriptionHandle());
+      EXPECT_TRUE(res.hasValue());
+      if (res.hasValue()) {
+        consumer = res->consumer;
+        co_withExecutor(folly::getKeepAliveToken(pubEvb), std::move(res->reply)).start();
+      }
+    });
+    return consumer;
+  };
+
+  // One turn, so the waiter released by the first PUBLISH cannot resume before the second.
+  std::shared_ptr<TrackConsumer> firstPubConsumer;
+  std::shared_ptr<TrackConsumer> secondPubConsumer;
+  pubEvb->runInEventBaseThreadAndWait([&]() {
+    firstPubConsumer = issuePublish(firstPublisher);
+    secondPubConsumer = issuePublish(secondPublisher);
+    EXPECT_FALSE(parked.ready()) << "the waiter must not resume inside the turn that wakes it";
+  });
+  ASSERT_NE(firstPubConsumer, nullptr);
+  ASSERT_NE(secondPubConsumer, nullptr);
+
+  for (int i = 0; i < 8 && !parked.ready(); ++i) {
+    pubEvb->runInEventBaseThreadAndWait([]() {});
+  }
+  ASSERT_TRUE(parked.ready()) << "the parked subscribe never resumed";
+  auto parkedHandle = parked.handle();
+  ASSERT_NE(parkedHandle, nullptr);
+  getOrCreateMockState(parkedSub)->subscribeHandles.push_back(parkedHandle);
+
+  // relayExec is still parked, so neither publisher forwarder has drained. Both can still
+  // deliver, and only the live one should reach the parked subscriber.
+  pubEvb->runInEventBaseThreadAndWait([&]() {
+    auto sgRes = secondPubConsumer->beginSubgroup(0, 0, 0);
+    ASSERT_TRUE(sgRes.hasValue());
+    EXPECT_TRUE(sgRes.value()->endOfSubgroup().hasValue());
+  });
+  for (int i = 0; i < 4 && !parkedGotData.load(); ++i) {
+    pubEvb->runInEventBaseThreadAndWait([]() {});
+  }
+  EXPECT_TRUE(parkedGotData.load())
+      << "the parked subscriber is not attached to the forwarder that holds the track";
+
+  relayGate.release();
+  EXPECT_TRUE(driveUntil([&] { return claiming.ready(); }))
+      << "the displaced subscribe never unwound";
+
+  pubEvb->runInEventBaseThreadAndWait([&]() {
+    removeSession(firstPublisher);
+    removeSession(secondPublisher);
+    removeSession(claimingSub);
+    removeSession(parkedSub);
+  });
+  drainExecs(4);
+}
+
+// The slot can turn over completely while a waiter is waking. Here the PUBLISH that
+// releases the waiter publishes done in the same turn, and a SUBSCRIBE queued ahead of the
+// waiter claims the empty slot. Finding the entry pending again is another setup to wait
+// out, not a failure.
+TEST_P(MoQRelayTest, ParkedSubscribeWaitsOutASlotReclaimedWhileItWasWaking) {
+  if (relayMode() != RelayMode::LocalForwarderMT) {
+    GTEST_SKIP() << "only LF has a per-thread registry slot to contend for";
+  }
+
+  auto& pubAux = makeAuxExec("pub-iothread");
+  auto* pubEvb = pubAux.evb;
+  auto publisherSession = createMockSessionOn(pubAux.exec);
+  // Holds the claim the waiter parks on; its own setup is stranded behind the relay gate.
+  auto claimingSub = createMockSessionOn(pubAux.exec);
+  auto parkedSub = createMockSessionOn(pubAux.exec);
+  auto reclaimingSub = createMockSessionOn(pubAux.exec);
+
+  doPublishNamespace(publisherSession, kTestNamespace);
+
+  SubscribeOk upstreamOk;
+  upstreamOk.requestID = RequestID(1);
+  upstreamOk.trackAlias = TrackAlias(1);
+  upstreamOk.expires = std::chrono::milliseconds(0);
+  upstreamOk.groupOrder = GroupOrder::OldestFirst;
+  std::shared_ptr<TrackConsumer> upstreamConsumer;
+  EXPECT_CALL(*publisherSession, subscribe(_, _))
+      .WillOnce(
+          [&](const SubscribeRequest&, std::shared_ptr<TrackConsumer> consumer
+          ) -> folly::coro::Task<Publisher::SubscribeResult> {
+            upstreamConsumer = std::move(consumer);
+            auto handle = std::make_shared<NiceMock<MockSubscriptionHandle>>(upstreamOk);
+            co_return folly::Expected<std::shared_ptr<SubscriptionHandle>, SubscribeError>(handle);
+          }
+      );
+
+  auto claimingConsumer = createMockConsumer();
+  auto parkedConsumer = createMockConsumer();
+  auto reclaimingConsumer = createMockConsumer();
+  auto parkedSubgroup = createMockSubgroupConsumer();
+  // Shares the forwarder, so it gets the same objects. Only the parked one is asserted on.
+  auto reclaimingSubgroup = createMockSubgroupConsumer();
+  ON_CALL(*reclaimingConsumer, beginSubgroup(_, _, _, _))
+      .WillByDefault(
+          [reclaimingSubgroup](uint64_t, uint64_t, uint8_t, moxygen::BeginSubgroupOptions) {
+            return folly::makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(
+                reclaimingSubgroup
+            );
+          }
+      );
+  std::atomic<bool> parkedGotData{false};
+  EXPECT_CALL(*parkedConsumer, beginSubgroup(0, 0, _, _))
+      .WillOnce([&](uint64_t, uint64_t, uint8_t, moxygen::BeginSubgroupOptions) {
+        parkedGotData.store(true);
+        return folly::makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(
+            parkedSubgroup
+        );
+      });
+
+  auto relayGate = parkRelayExec();
+
+  auto claiming =
+      launchSubscribeOn(pubEvb, claimingSub, makeSubscribeRequest(RequestID(0)), claimingConsumer);
+  auto parked =
+      launchSubscribeOn(pubEvb, parkedSub, makeSubscribeRequest(RequestID(1)), parkedConsumer);
+  ASSERT_FALSE(parked.ready()) << "the second subscribe should be parked on the claim";
+
+  PendingSubscribe reclaiming;
+  std::shared_ptr<TrackConsumer> pubConsumer;
+  pubEvb->runInEventBaseThreadAndWait([&]() {
+    // Queued ahead of the wake below, so it takes the vacated slot first. Started here
+    // rather than with launchSubscribeOn: the turn that wakes the waiter starts it inline.
+    reclaiming = startSubscribe(
+        pubEvb,
+        reclaimingSub,
+        makeSubscribeRequest(RequestID(2)),
+        reclaimingConsumer
+    );
+    withSessionContext(publisherSession, [&]() {
+      PublishRequest pub;
+      pub.fullTrackName = kTestTrackName;
+      auto res = subscriberInterface()->publish(std::move(pub), createMockSubscriptionHandle());
+      EXPECT_TRUE(res.hasValue());
+      if (res.hasValue()) {
+        pubConsumer = res->consumer;
+        co_withExecutor(folly::getKeepAliveToken(pubEvb), std::move(res->reply)).start();
+      }
+    });
+    ASSERT_NE(pubConsumer, nullptr);
+    pubConsumer->publishDone(
+        PublishDone{RequestID(0), PublishDoneStatusCode::SUBSCRIPTION_ENDED, 0, "publisher gone"}
+    );
+    EXPECT_FALSE(parked.ready()) << "the waiter must not resume inside the turn that wakes it";
+  });
+
+  for (int i = 0; i < 8; ++i) {
+    pubEvb->runInEventBaseThreadAndWait([]() {});
+  }
+  EXPECT_FALSE(parked.ready()) << "the waiter resolved against a slot still being set up";
+
+  relayGate.release();
+  ASSERT_TRUE(driveUntil([&] { return parked.ready() && reclaiming.ready() && claiming.ready(); }))
+      << "parked=" << parked.ready() << " reclaiming=" << reclaiming.ready()
+      << " claiming=" << claiming.ready();
+
+  auto parkedHandle = parked.handle();
+  ASSERT_NE(parkedHandle, nullptr);
+  getOrCreateMockState(parkedSub)->subscribeHandles.push_back(parkedHandle);
+
+  ASSERT_NE(upstreamConsumer, nullptr);
+  pubEvb->runInEventBaseThreadAndWait([&]() {
+    auto sgRes = upstreamConsumer->beginSubgroup(0, 0, 0);
+    ASSERT_TRUE(sgRes.hasValue());
+    EXPECT_TRUE(sgRes.value()->endOfSubgroup().hasValue());
+  });
+  EXPECT_TRUE(driveUntil([&] { return parkedGotData.load(); }))
+      << "the parked subscriber is not attached to the forwarder that holds the track";
+
+  pubEvb->runInEventBaseThreadAndWait([&]() {
+    removeSession(publisherSession);
+    removeSession(claimingSub);
+    removeSession(parkedSub);
+    removeSession(reclaimingSub);
+  });
+  drainExecs(4);
+}
+
 } // namespace openmoq::moqx::test

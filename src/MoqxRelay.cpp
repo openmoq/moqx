@@ -2321,8 +2321,7 @@ std::optional<SubscribeError> MoqxRelay::completeUpstreamSubscription(
 // returned PublisherAttachment.
 folly::coro::Task<MoqxRelay::PublisherAttachment> MoqxRelay::attachNewLocalForwarderOnRelayExec(
     const SubscribeRequest& subReq,
-    LocalForwarderRegistry* localReg,
-    std::shared_ptr<MoQForwarder> localFwd,
+    LocalForwarderRegistry* subscriberReg,
     folly::Executor* subscriberExec,
     std::shared_ptr<CrossExecFilter> crossExecFilter,
     bool forward
@@ -2341,6 +2340,13 @@ folly::coro::Task<MoqxRelay::PublisherAttachment> MoqxRelay::attachNewLocalForwa
     co_return attach;
   }
   std::shared_ptr<CrossExecFilter> relayChainFilter;
+  if (sr.firstSetup) {
+    // Built with its downstream: a CrossExecFilter that reaches the forwarder without one
+    // fails the first object, and the forwarder then drops it for the life of the track.
+    auto topNView = registry_.getTopNView(ftn);
+    XCHECK(topNView && topNView->chainHead) << "relay chain missing for " << ftn;
+    relayChainFilter = CrossExecFilter::create(relayExec_, topNView->chainHead);
+  }
   std::optional<folly::Expected<UpstreamOk, SubscribeError>> upstreamResult;
 
   // One publisherExec sortie to setup the publisher forwarder on its exec.
@@ -2353,8 +2359,7 @@ folly::coro::Task<MoqxRelay::PublisherAttachment> MoqxRelay::attachNewLocalForwa
         std::shared_ptr<MoQForwarder> publisherFwd;
         const char* failure = nullptr;
         if (sr.firstSetup) {
-          auto* occupant = localRegistry().getForEviction(ftn).get();
-          if (occupant && occupant != localFwd.get()) {
+          if (localRegistry().getIfReady(ftn)) {
             // A PUBLISH here raced a SUBSCRIBE from another thread.
             // TODO: join the publisher forwarder instead of failing the SUBSCRIBE.
             failure = "publisher forwarder already installed";
@@ -2386,7 +2391,7 @@ folly::coro::Task<MoqxRelay::PublisherAttachment> MoqxRelay::attachNewLocalForwa
         }
 
         auto cbs = buildLocalToPublisherCallbacks(
-            localReg,
+            subscriberReg,
             ftn,
             ChannelSubscriber(publisherFwd, publisherExec),
             subscriberExec
@@ -2406,7 +2411,6 @@ folly::coro::Task<MoqxRelay::PublisherAttachment> MoqxRelay::attachNewLocalForwa
           // Passive relay chain (top-N/termination/cache): forward=true so it observes every
           // object, passive=true so it doesn't count as a forwarding subscriber or in the
           // onEmpty quorum (the publisher's onEmpty still fires when the last real sub leaves).
-          relayChainFilter = CrossExecFilter::create(relayExec_, nullptr);
           publisherFwd->addChannelSubscriber(
               relayExec_,
               /*forward=*/true,
@@ -2446,14 +2450,6 @@ folly::coro::Task<MoqxRelay::PublisherAttachment> MoqxRelay::attachNewLocalForwa
     co_return attach;
   }
   auto upstreamOk = std::move(upstreamResult->value());
-
-  // Wire the relay chain before pending.complete() so buffered objects see the filters.
-  if (relayChainFilter) {
-    auto topNView = registry_.getTopNView(ftn);
-    if (topNView && topNView->chainHead) {
-      relayChainFilter->setDownstream(topNView->chainHead);
-    }
-  }
 
   auto& setup = *sr.firstSetup;
   if (auto err = completeUpstreamSubscription(
@@ -2563,20 +2559,23 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriber
   consumer =
       wrapWithTrackStats(trackStats_, ftn, std::move(consumer), stats::TrackDirection::Egress);
 
-  if (auto* pending = std::get_if<LocalForwarderRegistry::Pending>(&joined)) {
-    // Another subscriber owns setup. Wait for it.
+  // Another setup is running on this thread, so wait for it to complete.  It's possible that
+  // the first setup failed and another pending setup has been started, so loop until the entry
+  // is ready, or fails.  This loop should terminate assuming the subscription gets established.
+  while (auto* pending = std::get_if<LocalForwarderRegistry::Pending>(&joined)) {
     co_await folly::coro::co_awaitTry(std::move(pending->ready));
-    // Re-resolve: the entry may have been displaced while we were waiting. A failed setup
-    // fails this subscriber too.
-    auto ready = localReg->getIfReady(ftn);
-    if (!ready) {
+    auto state = localReg->lookup(ftn);
+    if (auto* ready = std::get_if<LocalForwarderRegistry::Ready>(&state)) {
+      joined = std::move(*ready);
+    } else if (auto* reclaimed = std::get_if<LocalForwarderRegistry::Pending>(&state)) {
+      joined = std::move(*reclaimed);
+    } else {
       co_return folly::makeUnexpected(SubscribeError{
           subReq.requestID,
           SubscribeErrorCode::INTERNAL_ERROR,
           "local forwarder setup failed"
       });
     }
-    joined = LocalForwarderRegistry::Ready{std::move(ready)};
   }
 
   if (auto* ready = std::get_if<LocalForwarderRegistry::Ready>(&joined)) {
@@ -2614,14 +2613,7 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriber
   // returning what the tail needs instead of mutating across the suspend.
   auto attach = co_await folly::coro::co_withExecutor(
       folly::getKeepAliveToken(relayExec_),
-      attachNewLocalForwarderOnRelayExec(
-          subReq,
-          localReg,
-          localFwd,
-          subscriberExec,
-          crossExecFilter,
-          forward
-      )
+      attachNewLocalForwarderOnRelayExec(subReq, localReg, subscriberExec, crossExecFilter, forward)
   );
 
   // Back on subscriberExec.

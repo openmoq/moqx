@@ -194,8 +194,6 @@ folly::coro::Task<void> UpstreamProvider::reconnectLoop() {
       XLOG(DBG1) << "UpstreamProvider::reconnectLoop connected, session=" << session_.get();
       reconnectBackoff_ = std::chrono::milliseconds(0);
       co_return; // Connected — exit. onMoQSessionClosed()/goaway() will respawn.
-    } catch (const folly::OperationCancelled&) {
-      co_return;
     } catch (const std::exception& ex) {
       if (stopRequested_.load(std::memory_order_acquire) || stopped_) {
         co_return;
