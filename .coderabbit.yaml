@@ -1,0 +1,199 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+#
+# CodeRabbit review context for moqx.
+#
+# The point of this file is to tell CodeRabbit where moqx's own documentation
+# and the normative MOQT specs live, so reviews cite them instead of guessing.
+# Keep the pointers in sync when docs move or new ones land.
+
+language: en-US
+
+reviews:
+  profile: chill
+
+  # design/ is a scratchpad of superseded design notes. Excluding it here keeps
+  # it out of CodeRabbit's sparse checkout, so stale material never reaches the
+  # review context.
+  path_filters:
+    - "!design/**"
+    - "!build/**"
+    - "!deps/**"
+    - "!.scratch/**"
+
+  path_instructions:
+    - path: "**"
+      instructions: |
+        moqx is a Media over QUIC Transport (MOQT) relay. It builds on moxygen
+        (https://github.com/openmoq/moxygen) for the MOQT session layer and runs
+        over two QUIC stacks: mvfst (via proxygen/quic) and picoquic.
+
+        Documentation map. These files are authoritative; prefer them over
+        inference from the diff, and flag a change that contradicts one without
+        updating it.
+
+        User-facing:
+        - README.md — what moqx is, supported draft, quickstart.
+        - BUILD.md — CMake presets, moxygen pinning, CPM-fetched deps.
+        - RUNNING.md — CLI flags and running a relay.
+        - CONTRIBUTING.md — PR scope, review, branch and merge conventions.
+        - docs/config.md — full YAML configuration reference.
+        - docs/logging.md — the --logging flag and XLOG conventions.
+        - docs/metrics.md — Prometheus endpoint and metric names.
+        - docs/relay-hops.md — deploying and configuring relay hops.
+        - docs/release.md — release branch model and artifacts.
+        - docs/ci-architecture.md — CI pipelines, upstream sync, deploy.
+        - docs/perf-tracking.md — perf regression workflow.
+        - scripts/README.md — what each helper script does.
+
+        Developer-facing (docs/dev):
+        - docs/dev/config.md — config system internals.
+        - docs/dev/local-forwarder-flow.md — LocalForwarder data plane and the
+          executor model.
+        - docs/dev/track-filter-ranking.md — TopNFilter and PropertyRanking.
+        - docs/dev/test-harness.md — writing a relay topology test.
+
+        moxygen (not in this repo):
+        - https://github.com/openmoq/moxygen/blob/main/ARCHITECTURE.md — the
+          Publisher/Subscriber and TrackConsumer APIs, MoQSession, MoQRelay,
+          MoQForwarder, MoQCache, executors and the threading model. moqx
+          subclasses, composes or forks these; MoqxRelay and MoqxCache are
+          forks of MoQRelay and MoQCache. Read it before judging how a change
+          uses or diverges from a moxygen interface.
+
+        Per CONTRIBUTING.md, a PR should carry a single cohesive thesis, a title
+        that states the functional impact, and tests or other pass/fail
+        evaluation criteria.
+
+    - path: "src/**/*.{h,cpp}"
+      instructions: |
+        Wire behavior must match the MOQT drafts moqx supports: draft-14,
+        draft-16 and draft-18. moqx negotiates all three, so a change to
+        framing, setup parameters, control-message semantics or error codes has
+        to state which versions it applies to and stay correct on the others.
+
+        Normative texts on the IETF Datatracker:
+        - draft-14: https://datatracker.ietf.org/doc/html/draft-ietf-moq-transport-14
+          (text: https://www.ietf.org/archive/id/draft-ietf-moq-transport-14.txt)
+        - draft-16: https://datatracker.ietf.org/doc/html/draft-ietf-moq-transport-16
+          (text: https://www.ietf.org/archive/id/draft-ietf-moq-transport-16.txt)
+        - draft-18: https://datatracker.ietf.org/doc/html/draft-ietf-moq-transport-18
+          (text: https://www.ietf.org/archive/id/draft-ietf-moq-transport-18.txt)
+        - all revisions: https://datatracker.ietf.org/doc/draft-ietf-moq-transport/
+
+        All three texts are checked in under docs/ref/, as
+        docs/ref/draft-ietf-moq-transport-{14,16,18}.txt. Prefer the local copy
+        — it is the exact revision moqx was written against.
+
+        Relay hops ride on an extension specified by
+        draft-lcurley-moq-relay-hops, vendored at
+        docs/ref/draft-lcurley-moq-relay-hops.txt and explained in
+        docs/relay-hops.md.
+
+    - path: "**/*.{h,cpp}"
+      instructions: |
+        Multi-threaded performance matters. moqx avoids mutexes and gratuitous
+        atomics, and that includes shared_ptr and weak_ptr, whose refcounts are
+        atomic. Flag a new lock, atomic, shared_ptr or weak_ptr unless the
+        change needs it and the PR justifies it.
+
+        Reuse code. moqx already depends on folly, so before accepting a new
+        utility function, check whether folly has a tested, optimized
+        equivalent and suggest it. Flag logic that duplicates existing moqx or
+        moxygen code, and suggest a refactor that shares it.
+
+        Flag overcommenting and dense or poorly worded comments. A comment
+        should match the local style, document a non-obvious invariant, and
+        describe the code as written. Flag comments that restate the code
+        below them or narrate how the code came to be, such as rejected
+        alternatives or what an earlier version did.
+
+    - path: "src/relay/**"
+      instructions: |
+        Read docs/dev/local-forwarder-flow.md before judging threading. In
+        LocalForwarder mode the relay runs across several I/O threads and keeps
+        per-subscriber delivery fan-out on the publisher's and subscribers' own
+        executors; relayExec_ still carries a single passive copy of every
+        object. Flag any delivery-path work that lands on the relay executor,
+        and any cross-executor access that does not go through the
+        CrossExec* wrappers.
+
+        Track ranking and self-exclusion are specified in
+        docs/dev/track-filter-ranking.md.
+
+    - path: "src/config/**"
+      instructions: |
+        docs/dev/config.md describes the config system internals;
+        docs/config.md is the user-facing reference and config.example.yaml the
+        worked example. A new or renamed config field has to appear in all
+        three — docs/config.md is generated by
+        scripts/dev/config-schema-to-markdown.sh.
+
+    - path: "src/{stats,admin}/**"
+      instructions: |
+        docs/metrics.md documents the Prometheus endpoint and the exported
+        metric names. Renaming or dropping a metric breaks dashboards and
+        alerts, so it needs a matching docs/metrics.md update and a note in the
+        PR description.
+
+    - path: "src/{logging/**,LoggingMultiFlag.*}"
+      instructions: |
+        docs/logging.md describes the --logging flag and how it drives XLOG
+        across moqx, moxygen, fizz, wangle, mvfst and picoquic. Keep new log
+        statements on XLOG with an appropriate category.
+
+    - path: "test/**"
+      instructions: |
+        docs/dev/test-harness.md covers the multi-relay integration harness in
+        test/lib/moq_harness.py. A new topology test claims a port base,
+        declares its topology, registers with ctest, and asserts on the admin
+        endpoints — check all four.
+
+    - path: "{scripts/**,cmake/**,superbuild/**,CMakeLists.txt,**/CMakeLists.txt,CMakePresets.json}"
+      instructions: |
+        BUILD.md covers the preset build, the moxygen pin and CPM-fetched deps;
+        scripts/README.md covers what each helper script does. Builds go
+        through scripts/configure.sh, scripts/build.sh and scripts/test.sh.
+
+    - path: ".github/workflows/**"
+      instructions: |
+        docs/ci-architecture.md describes the CI pipelines, the moxygen sync,
+        dependency-revision management, artifact publishing and relay deploy.
+        docs/release.md describes the release branch model. PR CI runs without
+        secrets; publish, release and deploy run only on push to main.
+
+    - path: "docs/ref/**"
+      instructions: |
+        Vendored IETF draft text. This is normative reference material, not
+        moqx source — consult it, but do not review it for style or defects.
+        A change here is a deliberate spec bump; the only thing worth checking
+        is that the supported-version list in README.md and in the code moved
+        with it.
+
+knowledge_base:
+  # Needed to read the IETF Datatracker drafts linked above.
+  web_search:
+    enabled: true
+
+  code_guidelines:
+    enabled: true
+    # Scoped so each doc reaches the code it actually governs. design/ is
+    # deliberately absent — those notes are stale.
+    filePatterns:
+      - files: "CONTRIBUTING.md"
+        applyTo: "**"
+      - files: "docs/relay-hops.md"
+        applyTo: "src/**"
+      - files: "docs/dev/local-forwarder-flow.md,docs/dev/track-filter-ranking.md"
+        applyTo: "src/relay/**,src/Moqx*,test/**"
+      - files: "docs/config.md,docs/dev/config.md"
+        applyTo: "src/config/**,test/config/**,config.example.yaml,**/*.config.yaml"
+      - files: "docs/metrics.md"
+        applyTo: "src/stats/**,src/admin/**,test/admin/**,docker/**"
+      - files: "docs/logging.md"
+        applyTo: "src/logging/**,src/LoggingMultiFlag.*"
+      - files: "docs/dev/test-harness.md"
+        applyTo: "test/**"
+      - files: "docs/ci-architecture.md,docs/release.md,docs/perf-tracking.md"
+        applyTo: ".github/**,scripts/**,docker/**"
+      - files: "BUILD.md,RUNNING.md,scripts/README.md"
+        applyTo: "scripts/**,cmake/**,superbuild/**,**/CMakeLists.txt,CMakePresets.json"

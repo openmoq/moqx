@@ -132,9 +132,9 @@ folly::coro::Task<void> UpstreamProvider::reconnectLoop() {
       XLOG(DBG1) << "UpstreamProvider::reconnectLoop connected, session=" << session_.get();
       reconnectBackoff_ = std::chrono::milliseconds(0);
       co_return; // Connected — exit. onMoQSessionClosed()/goaway() will respawn.
-    } catch (const folly::OperationCancelled&) {
-      co_return;
-    } catch (const std::exception& ex) {
+    } catch (const std::exception&) {
+      // A cancelled connect is not a stop signal: MoQSession cancels its own
+      // token when the upstream dies mid-setup.
       if (stopped_) {
         co_return;
       }
@@ -142,8 +142,6 @@ folly::coro::Task<void> UpstreamProvider::reconnectLoop() {
           reconnectBackoff_.count() == 0
               ? kInitialReconnectBackoff
               : std::min(reconnectBackoff_ * 2, std::chrono::milliseconds(kMaxReconnectBackoff));
-      XLOG(ERR) << "UpstreamProvider: connect failed: " << ex.what() << ", retrying in "
-                << reconnectBackoff_.count() << "ms";
     }
   }
 }

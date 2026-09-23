@@ -141,9 +141,13 @@ int main(int argc, char* argv[]) {
   // === 4. Initialize resources ===
   quicReuseportSetEnabled(config.mvfstBpfSteering);
 
+  // waitForAll: workers loop at exit until the EVB is idle, so a closing QUIC
+  // transport's drain timeout fires before the EVB is destroyed.
   auto ioExecutor = std::make_unique<folly::IOThreadPoolExecutor>(
       config.threads,
-      std::make_shared<folly::NamedThreadFactory>("moqx-io")
+      std::make_shared<folly::NamedThreadFactory>("moqx-io"),
+      folly::EventBaseManager::get(),
+      folly::IOThreadPoolExecutor::Options().setWaitForAll(true)
   );
 
   // === 5. Initialize dependencies ===

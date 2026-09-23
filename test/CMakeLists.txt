@@ -74,12 +74,18 @@ moqx_add_gtest(moqx_relay_test
     MoqxRelayTracksTests.cpp
     MoqxRelayTrackStatsTests.cpp
     MoqxRelayStateTests.cpp
+    MoqxRelayRendezvousTests.cpp
     MoqxRelayTestModes.cpp
   LIBS moqx_test_fixture moqx_test_main
 )
 
 moqx_add_gtest(moqx_namespace_tree_test
   SRCS NamespaceTreeTest.cpp
+  LIBS moqx_core moqx_test_main GTest::gmock
+)
+
+moqx_add_gtest(moqx_pending_rendezvous_tree_test
+  SRCS PendingRendezvousTreeTest.cpp
   LIBS moqx_core moqx_test_main GTest::gmock
 )
 
