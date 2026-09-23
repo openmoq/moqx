@@ -89,6 +89,24 @@ reviews:
         docs/ref/draft-lcurley-moq-relay-hops.txt and explained in
         docs/relay-hops.md.
 
+    - path: "**/*.{h,cpp}"
+      instructions: |
+        Multi-threaded performance matters. moqx avoids mutexes and gratuitous
+        atomics, and that includes shared_ptr and weak_ptr, whose refcounts are
+        atomic. Flag a new lock, atomic, shared_ptr or weak_ptr unless the
+        change needs it and the PR justifies it.
+
+        Reuse code. moqx already depends on folly, so before accepting a new
+        utility function, check whether folly has a tested, optimized
+        equivalent and suggest it. Flag logic that duplicates existing moqx or
+        moxygen code, and suggest a refactor that shares it.
+
+        Flag overcommenting and dense or poorly worded comments. A comment
+        should match the local style, document a non-obvious invariant, and
+        describe the code as written. Flag comments that restate the code
+        below them or narrate how the code came to be, such as rejected
+        alternatives or what an earlier version did.
+
     - path: "src/relay/**"
       instructions: |
         Read docs/dev/local-forwarder-flow.md before judging threading. In
