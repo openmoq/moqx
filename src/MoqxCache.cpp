@@ -997,7 +997,7 @@ public:
     inProgress_.post();
     if (fetchRangeIt_.isValid()) {
       auto current = *fetchRangeIt_;
-      // finFetch=true sets iterator to end(); guard prevents endOfFetch() re-entry dereference.
+      // A group-boundary crossing at the range end may already have retired the entry.
       if (fetchInProgressIt_ != fetchRangeIt_.track->fetchesInProgress.end()) {
         fetchInProgressIt_->second.progress = current;
         // Re-key the map entry when crossing a group boundary so the
@@ -1160,8 +1160,7 @@ public:
       // markNonExistentTo() record this one as a gap.
       fetchRangeIt_.next();
       if (finFetch) {
-        // Order-aware end (DESC: lowest position; ASC: end_).
-        markNonExistentTo(fetchRangeIt_.end());
+        finishRange();
       }
       updateInProgress();
     }
@@ -1203,8 +1202,7 @@ public:
   }
 
   folly::Expected<folly::Unit, MoQPublishError> endOfFetch() override {
-    // Mark all remaining positions as known (upstream has completed)
-    markNonExistentTo(fetchRangeIt_.end());
+    finishRange();
     updateInProgress();
     complete_.post();
     if (proxyFin_) {
@@ -1249,6 +1247,14 @@ public:
 
     // Forward to downstream consumer
     return consumer_->endOfUnknownRange(groupId, objectId, finFetch && proxyFin_);
+  }
+
+  // A short fetch proves non-existence only below the FETCH_OK End Location.
+  void setUpstreamEnd(AbsoluteLocation end) {
+    upstreamEnd_ = end;
+    for (const auto& [start, gapEnd] : std::exchange(pendingGaps_, {})) {
+      insertGap(start, gapEnd);
+    }
   }
 
   folly::coro::Task<void> complete() { co_await complete_; }
@@ -1317,6 +1323,8 @@ private:
   FetchRangeIterator fetchRangeIt_;
   MoqxCache& cache_;
   FullTrackName ftn_;
+  std::optional<AbsoluteLocation> upstreamEnd_;
+  std::vector<std::pair<AbsoluteLocation, AbsoluteLocation>> pendingGaps_;
 
   void markNonExistentTo(AbsoluteLocation target) {
     // Mark all positions from current iterator position up to (but not
@@ -1333,11 +1341,31 @@ private:
         fetchRangeIt_.maxLocation
     );
     for (const auto& [start, end] : ranges) {
-      fetchRangeIt_.track->insertGap(start, end);
+      insertGap(start, end);
     }
 
     // Advance iterator directly to target
     fetchRangeIt_.advanceTo(target);
+  }
+
+  // A DESC cursor ends at the lowest position and stays valid. Invalidate it so
+  // lookups above it do not wait on a finished fetch.
+  void finishRange() {
+    markNonExistentTo(fetchRangeIt_.end());
+    fetchRangeIt_.invalidate();
+  }
+
+  // Inclusive [start, end]. Held until FETCH_OK, which can arrive after the
+  // fetch stream FINs.
+  void insertGap(AbsoluteLocation start, AbsoluteLocation end) {
+    if (!upstreamEnd_) {
+      pendingGaps_.emplace_back(start, end);
+      return;
+    }
+    if (start >= *upstreamEnd_) {
+      return;
+    }
+    fetchRangeIt_.track->insertGap(start, std::min(end, *upstreamEnd_->prev()));
   }
 
   folly::Expected<folly::Unit, MoQPublishError> cacheImpl(
@@ -1381,10 +1409,8 @@ private:
       fetchRangeIt_.next();
       updateInProgress();
       if (finFetch) {
-        // Use the iterator's order-aware end. In DESC, end_ is the user's
-        // highest endpoint (the wrong direction); fetchRangeIt_.end()
-        // returns the iteration end (the lowest position).
-        markNonExistentTo(fetchRangeIt_.end());
+        finishRange();
+        updateInProgress();
         complete_.post();
       }
     }
@@ -1439,11 +1465,17 @@ folly::coro::Task<Publisher::FetchResult> MoqxCache::fetch(
     // here: the request forwarded upstream has to keep the wire form.
     FetchRangeIterator
         fetchRangeIt(standalone->start, toExclusiveEnd(standalone->end), fetch.groupOrder, track);
-    auto res = co_await upstream->fetch(
-        fetch,
-        std::make_shared<
-            FetchWriteback>(true, std::move(consumer), fetchRangeIt, *this, fetch.fullTrackName)
+    auto writeback = std::make_shared<FetchWriteback>(
+        true,
+        std::move(consumer),
+        fetchRangeIt,
+        *this,
+        fetch.fullTrackName
     );
+    auto res = co_await upstream->fetch(fetch, writeback);
+    if (res.hasValue()) {
+      writeback->setUpstreamEnd(res.value()->fetchOk().endLocation);
+    }
     recordUpstreamEndOfTrack(*track, res);
     co_return res;
   }
@@ -1738,9 +1770,8 @@ folly::coro::Task<Publisher::FetchResult> MoqxCache::fetchUpstream(
     adjFetchEnd = *pg;
   }
   FetchRangeIterator fetchRangeIt(fetchStart, fetchEnd, fetch.groupOrder, track);
-  // TODO: reconcile writeback end with upstream FetchOk.endLocation;
-  // a smaller upstream end leaves stale fetchInProgress range that
-  // makes concurrent lookups wait until endOfFetch.
+  // TODO: shrink the fetchInProgress range to a smaller upstream
+  // FetchOk.endLocation. Until then, lookups past it wait until endOfFetch.
   auto writeback = std::make_shared<FetchWriteback>(
       lastObject,
       consumer,
@@ -1761,6 +1792,7 @@ folly::coro::Task<Publisher::FetchResult> MoqxCache::fetchUpstream(
   }
 
   XLOG(DBG1) << "upstream success";
+  writeback->setUpstreamEnd(res.value()->fetchOk().endLocation);
   track->extensions = res.value()->fetchOk().extensions;
   recordUpstreamEndOfTrack(*track, res);
   if (lastObject) {
