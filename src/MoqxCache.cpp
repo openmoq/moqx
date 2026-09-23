@@ -2452,31 +2452,36 @@ bool MoqxCache::evictForByteLimitIfNeeded() {
       minEvictionBytes_ < maxCachedBytes_ ? maxCachedBytes_ - minEvictionBytes_ : 0;
 
   // Evict oldest evictable groups globally (covers both live and non-live
-  // tracks). After evicting a group from a non-live (fully evictable) track
-  // that becomes empty, also evict the empty track shell.
-  while (totalCachedBytes_ > targetBytes && !globalGroupLRU_.empty()) {
-    const auto& [ftn, groupID] = globalGroupLRU_.back();
-    auto trackIt = cache_.find(ftn);
+  // tracks), skipping each live track's join point. After evicting the last
+  // group of a non-live track, also evict the empty track shell. One pass:
+  // every step erases the entry or moves past it, so the loop cannot spin.
+  auto it = globalGroupLRU_.end();
+  while (totalCachedBytes_ > targetBytes && it != globalGroupLRU_.begin()) {
+    --it;
+    auto trackIt = cache_.find(it->first);
     if (trackIt == cache_.end()) {
       // Stale entry — should not happen since evictTrack now calls evictGroup
       // for every group, but guard defensively against future code paths.
-      XLOG(DFATAL) << "globalGroupLRU_ has stale entry for evicted track: " << ftn;
-      globalGroupLRU_.pop_back();
+      XLOG(DFATAL) << "globalGroupLRU_ has stale entry for evicted track: " << it->first;
+      it = globalGroupLRU_.erase(it);
       continue;
     }
     auto& track = *trackIt->second;
+    uint64_t groupID = it->second;
     if (!track.groups.contains(groupID)) {
-      // Every iteration must shrink the list, or this loop spins at 100% CPU.
       XLOG(DFATAL) << "globalGroupLRU_ has stale entry for evicted group " << groupID
-                   << " in track " << ftn;
-      globalGroupLRU_.pop_back();
+                   << " in track " << trackIt->first;
+      it = globalGroupLRU_.erase(it);
       continue;
     }
-    XLOG(DBG1) << "Evicting group " << groupID << " from track " << ftn
+    if (track.isJoinPoint(groupID)) {
+      continue;
+    }
+    XLOG(DBG1) << "Evicting group " << groupID << " from track " << trackIt->first
                << " for byte limit (bytes: " << totalCachedBytes_ << " > limit: " << maxCachedBytes_
                << ")";
-    // evictGroup() erases the globalGroupLRU_ node, invalidating ftn/groupID.
-    // Use trackIt->first for any post-eviction access to the track name.
+    // evictGroup() erases this node; step off it first.
+    ++it;
     evictGroup(track, groupID);
     if (track.groups.empty() && track.canEvict()) {
       evictTrack(trackIt->first);
@@ -2484,8 +2489,8 @@ bool MoqxCache::evictForByteLimitIfNeeded() {
   }
 
   if (totalCachedBytes_ > maxCachedBytes_) {
-    XLOG(DBG1) << "Cannot reduce cache below byte limit, all evictable "
-                  "groups are actively being written. Bytes: "
+    XLOG(DBG1) << "Cannot reduce cache below byte limit: every remaining group is "
+                  "being written or is a live track's join point. Bytes: "
                << totalCachedBytes_ << ", limit: " << maxCachedBytes_;
     return false;
   }
