@@ -472,7 +472,7 @@ std::shared_ptr<Subscriber::PublishNamespaceHandle> MoqxRelay::doPublishNamespac
       }
     }
   }
-  wakePendingRendezvousUnderNamespace(pubNs.trackNamespace);
+  pendingRendezvous_.wakeUnderNamespace(pubNs.trackNamespace);
   return nodePtr;
 }
 
@@ -943,7 +943,7 @@ MoqxRelay::PublishSetupResult MoqxRelay::publishWithSession(
 
   // Wake any SUBSCRIBE that's parked waiting for this exact track (draft 18+
   // RENDEZVOUS_TIMEOUT).
-  wakePendingRendezvousForTrack(pub.fullTrackName);
+  pendingRendezvous_.wakeForTrack(pub.fullTrackName);
 
   return PublishSetup{
       publishEntry.consumer,
@@ -3097,176 +3097,6 @@ void MoqxRelay::dumpState(RelayStateVisitor& visitor) const {
   }
 }
 
-// === Pending rendezvous tree ===
-
-MoqxRelay::PendingRendezvousNode&
-MoqxRelay::findOrCreatePendingRendezvousNode(const TrackNamespace& ns) {
-  auto* node = &pendingRendezvousRoot_;
-  for (const auto& part : ns.trackNamespace) {
-    auto& child = node->children[part];
-    if (!child) {
-      child = std::make_unique<PendingRendezvousNode>();
-    }
-    node = child.get();
-  }
-  return *node;
-}
-
-void MoqxRelay::addPendingRendezvous(
-    const FullTrackName& ftn,
-    const std::shared_ptr<moxygen::TimedBaton>& waiter
-) {
-  auto& node = findOrCreatePendingRendezvousNode(ftn.trackNamespace);
-  node.waitersByTrack[ftn.trackName].push_back(waiter);
-}
-
-void MoqxRelay::erasePendingRendezvous(
-    const FullTrackName& ftn,
-    const std::shared_ptr<moxygen::TimedBaton>& waiter
-) {
-  erasePendingRendezvousFromNode(pendingRendezvousRoot_, ftn, /*namespaceIndex=*/0, waiter);
-}
-
-void MoqxRelay::erasePendingRendezvousFromNode(
-    PendingRendezvousNode& node,
-    const FullTrackName& ftn,
-    size_t namespaceIndex,
-    const std::shared_ptr<moxygen::TimedBaton>& waiter
-) {
-  if (namespaceIndex < ftn.trackNamespace.trackNamespace.size()) {
-    const auto& part = ftn.trackNamespace.trackNamespace[namespaceIndex];
-    auto childIt = node.children.find(part);
-    if (childIt == node.children.end()) {
-      return;
-    }
-    erasePendingRendezvousFromNode(*childIt->second, ftn, namespaceIndex + 1, waiter);
-    if (childIt->second->empty()) {
-      node.children.erase(childIt);
-    }
-    return;
-  }
-
-  auto waitersIt = node.waitersByTrack.find(ftn.trackName);
-  if (waitersIt == node.waitersByTrack.end()) {
-    return;
-  }
-  auto& waiters = waitersIt->second;
-  waiters.erase(std::remove(waiters.begin(), waiters.end(), waiter), waiters.end());
-  if (waiters.empty()) {
-    node.waitersByTrack.erase(waitersIt);
-  }
-}
-
-// Removes every waiter in this subtree from the tree (namespace-level
-// publish/publishNamespace) into `out`, since all of it is now resolved.
-// Does NOT signal: see collectPendingRendezvousSubtree's declaration comment.
-void MoqxRelay::collectPendingRendezvousSubtree(
-    PendingRendezvousNode& node,
-    PendingRendezvousNode::WaiterList& out
-) {
-  for (auto& [_, trackWaiters] : node.waitersByTrack) {
-    out.insert(
-        out.end(),
-        std::make_move_iterator(trackWaiters.begin()),
-        std::make_move_iterator(trackWaiters.end())
-    );
-  }
-  node.waitersByTrack.clear();
-  for (auto& [_, child] : node.children) {
-    collectPendingRendezvousSubtree(*child, out);
-  }
-  node.children.clear();
-}
-
-// Walks down to the node at `ns`, applies `onNode`, then prunes any now-empty
-// ancestors on the way back up.
-void MoqxRelay::applyFnAtNamespaceNode(
-    const TrackNamespace& ns,
-    folly::FunctionRef<void(PendingRendezvousNode&)> onNode
-) {
-  auto* node = &pendingRendezvousRoot_;
-  std::vector<std::pair<PendingRendezvousNode*, std::string>> path;
-  bool foundNamespace = true;
-  for (const auto& part : ns.trackNamespace) {
-    auto childIt = node->children.find(part);
-    if (childIt == node->children.end()) {
-      foundNamespace = false;
-      break;
-    }
-    path.emplace_back(node, part);
-    node = childIt->second.get();
-  }
-
-  if (foundNamespace) {
-    onNode(*node);
-  }
-  // defensive clean up after waking
-  for (auto it = path.rbegin(); it != path.rend() && node->empty(); ++it) {
-    auto* parent = it->first;
-    parent->children.erase(it->second);
-    node = parent;
-  }
-}
-
-// Wakes only waiters for this exact track (a PUBLISH landed). Waiters for
-// other tracks under the same namespace node are left parked.
-void MoqxRelay::wakePendingRendezvousForTrack(const FullTrackName& ftn) {
-  PendingRendezvousNode::WaiterList toWake;
-  applyFnAtNamespaceNode(ftn.trackNamespace, [&](PendingRendezvousNode& node) {
-    auto waitersIt = node.waitersByTrack.find(ftn.trackName);
-    if (waitersIt != node.waitersByTrack.end()) {
-      toWake = std::move(waitersIt->second);
-      node.waitersByTrack.erase(waitersIt);
-    }
-  });
-  // Signal only once the tree walk/prune above is fully done: TimedBaton::signal()
-  // may resume the parked coroutine synchronously, re-entering erasePendingRendezvous()
-  // which must not observe (or corrupt) a container we were still iterating/mutating.
-  for (auto& waiter : toWake) {
-    waiter->signal();
-  }
-}
-
-// Wakes every waiter under this namespace (a PUBLISH_NAMESPACE landed) — any
-// track under it may now be resolvable.
-void MoqxRelay::wakePendingRendezvousUnderNamespace(const TrackNamespace& ns) {
-  PendingRendezvousNode::WaiterList toWake;
-  applyFnAtNamespaceNode(ns, [&](PendingRendezvousNode& node) {
-    collectPendingRendezvousSubtree(node, toWake);
-  });
-  // See the comment in wakePendingRendezvousForTrack: signal strictly after
-  // all tree mutation completes.
-  for (auto& waiter : toWake) {
-    waiter->signal();
-  }
-}
-
-std::optional<std::chrono::milliseconds> MoqxRelay::takeRendezvousTimeout(
-    SubscribeRequest& subReq,
-    const std::shared_ptr<MoQSession>& session
-) const {
-  // Below v18 key 0x04 is MAX_CACHE_DURATION, which is not ours to read or consume.
-  if (!isV18Plus(session)) {
-    return std::nullopt;
-  }
-  auto ms =
-      moxygen::getFirstIntParam(subReq.params, moxygen::TrackRequestParamKey::RENDEZVOUS_TIMEOUT);
-  // Per-hop param: consume it so it can never reach the upstream request.
-  subReq.params.eraseAllParamsOfType(moxygen::TrackRequestParamKey::RENDEZVOUS_TIMEOUT);
-  if (!ms.has_value() || *ms == 0) {
-    return std::nullopt;
-  }
-
-  // Hardcoded ceiling: bounds how long a rendezvous SUBSCRIBE
-  // can park a waiter, regardless of the client-requested RENDEZVOUS_TIMEOUT.
-  constexpr auto kMaxMs = static_cast<uint64_t>(kMaxRendezvousTimeout.count());
-  if (*ms > kMaxMs) {
-    XLOG(DBG1) << "Clamping RENDEZVOUS_TIMEOUT for " << subReq.fullTrackName << " from " << *ms
-               << "ms to " << kMaxMs << "ms";
-  }
-  return std::chrono::milliseconds(std::min(*ms, kMaxMs));
-}
-
 // Parks (at most once) until a publisher resolves for ftn or `timeout` elapses. A wake
 // is only a hint: if the publisher is gone again by the time we resume, the caller's
 // ordinary no-publisher path reports it.
@@ -3281,8 +3111,9 @@ folly::coro::Task<std::optional<SubscribeError>> MoqxRelay::rendezvousWithPublis
   }
 
   auto waiter = std::make_shared<moxygen::TimedBaton>();
-  addPendingRendezvous(ftn, waiter);
-  auto cleanup = folly::makeGuard([this, ftn, waiter] { erasePendingRendezvous(ftn, waiter); });
+  pendingRendezvous_.addWaiter(ftn, waiter);
+  auto cleanup =
+      folly::makeGuard([this, ftn, waiter] { pendingRendezvous_.eraseWaiter(ftn, waiter); });
 
   auto waitRes = co_await folly::coro::co_awaitTry(waiter->wait(timeout, timekeeper_.get()));
 

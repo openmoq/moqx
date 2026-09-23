@@ -84,6 +84,11 @@ moqx_add_gtest(moqx_namespace_tree_test
   LIBS moqx_core moqx_test_main GTest::gmock
 )
 
+moqx_add_gtest(moqx_pending_rendezvous_tree_test
+  SRCS PendingRendezvousTreeTest.cpp
+  LIBS moqx_core moqx_test_main GTest::gmock
+)
+
 moqx_add_gtest(moqx_config_test
   SRCS config/LoaderTest.cpp
   LIBS moqx_config_loader GTest::gtest_main GTest::gmock

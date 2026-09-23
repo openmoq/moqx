@@ -11,6 +11,7 @@
 
 #include "MoqxCache.h"
 #include "NamespaceTree.h"
+#include "PendingRendezvousTree.h"
 #include "SubscriptionRegistry.h"
 #include "UpstreamProvider.h"
 #include "config/Config.h"
@@ -118,7 +119,6 @@ public:
   static constexpr uint64_t kDefaultMaxDeselected = 0;
   static constexpr std::chrono::milliseconds kDefaultIdleTimeout{10'000};
   static constexpr std::chrono::milliseconds kDefaultActivityThreshold{2'000};
-  static constexpr std::chrono::milliseconds kMaxRendezvousTimeout{30'000};
 
   // relayExec, when set, is owned by the relay and isolates all state on it;
   // null runs everything on the calling thread. useLocalForwarders (requires
@@ -301,6 +301,11 @@ public:
     std::shared_ptr<moxygen::MoQSession> session{nullptr}; // publish session if exists
   };
   PublishState findPublishState(const moxygen::FullTrackName& ftn);
+
+  // Test accessor: pruning of a timed-out waiter's tree node happens
+  // asynchronously, with no other externally observable signal that it
+  // completed in time for a fast test to assert on.
+  bool hasPendingRendezvousWaiters() const { return !pendingRendezvous_.empty(); }
 
 private:
   class NamespaceSubscription;
@@ -674,61 +679,13 @@ private:
   uint64_t maxDeselected_{kDefaultMaxDeselected};
 
   // === Pending rendezvous (draft 18+ SUBSCRIBE with RENDEZVOUS_TIMEOUT) ===
-  // Subscribers waiting on a namespace/track that isn't published yet, indexed
-  // by namespace prefix. Woken by doPublishNamespace()/publishWithSession() when
-  // matching content arrives; otherwise each waiter's baton times out.
-
-  struct PendingRendezvousNode {
-    using WaiterList = std::vector<std::shared_ptr<moxygen::TimedBaton>>;
-
-    bool empty() const { return children.empty() && waitersByTrack.empty(); }
-
-    folly::F14FastMap<std::string, std::unique_ptr<PendingRendezvousNode>> children;
-    folly::F14FastMap<std::string, WaiterList> waitersByTrack;
-  };
-
-  PendingRendezvousNode pendingRendezvousRoot_;
-
-  PendingRendezvousNode& findOrCreatePendingRendezvousNode(const moxygen::TrackNamespace& ns);
-  void addPendingRendezvous(
-      const moxygen::FullTrackName& ftn,
-      const std::shared_ptr<moxygen::TimedBaton>& waiter
-  );
-  void erasePendingRendezvous(
-      const moxygen::FullTrackName& ftn,
-      const std::shared_ptr<moxygen::TimedBaton>& waiter
-  );
-  void erasePendingRendezvousFromNode(
-      PendingRendezvousNode& node,
-      const moxygen::FullTrackName& ftn,
-      size_t namespaceIndex,
-      const std::shared_ptr<moxygen::TimedBaton>& waiter
-  );
-  // Removes every waiter in this subtree from the tree and appends it to `out`.
-  // Callers must signal the collected waiters only after all tree mutation is
-  // complete: TimedBaton::signal() may resume the parked coroutine
-  // synchronously, which re-enters erasePendingRendezvous() and must not
-  // observe a container we are still iterating/mutating.
-  static void collectPendingRendezvousSubtree(
-      PendingRendezvousNode& node,
-      PendingRendezvousNode::WaiterList& out
-  );
-  void applyFnAtNamespaceNode(
-      const moxygen::TrackNamespace& ns,
-      folly::FunctionRef<void(PendingRendezvousNode&)> onNode
-  );
-  void wakePendingRendezvousForTrack(const moxygen::FullTrackName& ftn);
-  void wakePendingRendezvousUnderNamespace(const moxygen::TrackNamespace& ns);
-
-  // Clamped timeout if this SUBSCRIBE asks for a rendezvous, else nullopt; consumes the
-  // param. Reads no relay state, so callers may screen on any exec before hopping.
-  std::optional<std::chrono::milliseconds> takeRendezvousTimeout(
-      moxygen::SubscribeRequest& subReq,
-      const std::shared_ptr<moxygen::MoQSession>& session
-  ) const;
+  // Subscribers waiting on a namespace/track that isn't published yet. Woken by
+  // doPublishNamespace()/publishWithSession() when matching content arrives;
+  // otherwise each waiter's baton times out.
+  PendingRendezvousTree pendingRendezvous_;
 
   // Existence check, then park. Callers screen first. Must run on relayExec_ (inline
-  // in SingleThread mode): touches registry_/namespaceTree_/pendingRendezvousRoot_.
+  // in SingleThread mode): touches registry_/namespaceTree_/pendingRendezvous_.
   folly::coro::Task<std::optional<moxygen::SubscribeError>> rendezvousWithPublisherOrTimeout(
       const moxygen::SubscribeRequest& subReq,
       std::chrono::milliseconds timeout
