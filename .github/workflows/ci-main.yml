@@ -131,7 +131,7 @@ jobs:
           list-tests: failed
 
   # ════════════════════════════════════════════════════════════════════════════
-  # Conformance: mvfst × {d16, d18} × {Q, WT} + pico × {d16, d18} × Q
+  # Conformance: {mvfst, pico} × {d16, d18} × {Q, WT}
   # (mirrors ci-pr.yml)
   # ════════════════════════════════════════════════════════════════════════════
 
@@ -141,9 +141,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # mvfst — both transports for d16 and d18. pico — raw QUIC only;
-          # WT cells deferred until pico WT CONNECT (openmoq/moxygen#172 /
-          # PR #173) syncs in.
           - name: mvfst d16 Q
             versions: "16"
             transport: "Q"
@@ -164,9 +161,17 @@ jobs:
             versions: "16"
             transport: "Q"
             stack: "pico"
+          - name: pico d16 WT
+            versions: "16"
+            transport: ""
+            stack: "pico"
           - name: pico d18 Q
             versions: "18"
             transport: "Q"
+            stack: "pico"
+          - name: pico d18 WT
+            versions: "18"
+            transport: ""
             stack: "pico"
     name: conformance (${{ matrix.name }})
     runs-on: ubuntu-22.04
