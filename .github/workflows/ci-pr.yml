@@ -157,21 +157,6 @@ jobs:
             versions: "16"
             transport: "Q"
             stack: "pico"
-          # TEMPORARY — remove before merge. Re-runs the d18 row against the
-          # current moxygen pin and the d18 relay changes that landed since,
-          # so this PR proves every cell ci-main will run.
-          - name: mvfst d18 Q
-            versions: "18"
-            transport: "Q"
-            stack: "mvfst"
-          - name: mvfst d18 WT
-            versions: "18"
-            transport: ""
-            stack: "mvfst"
-          - name: pico d18 Q
-            versions: "18"
-            transport: "Q"
-            stack: "pico"
     name: conformance (${{ matrix.name }})
     runs-on: ubuntu-22.04
     # Ceiling for the from-source fallback; see the build job.
