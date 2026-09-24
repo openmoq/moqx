@@ -92,3 +92,27 @@ steps, logs.
 
 Report security issues via [SECURITY.md](SECURITY.md) — not public
 issues. Contributions are licensed under [LICENSE](LICENSE).
+
+Every C/C++ source file starts with one of two headers. New files use:
+
+```cpp
+/*
+ * Copyright (c) OpenMOQ contributors.
+ * This source code is licensed under the Apache 2.0 license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+```
+
+Files copied or substantially derived from moxygen keep Meta's copyright:
+
+```cpp
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ * Copyright (c) OpenMOQ contributors.
+ * Originally from github.com/facebookexperimental/moxygen.
+ * This source code is licensed under the Apache 2.0 license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+```
+
+Put a file description in its own comment below the header.
