@@ -201,7 +201,7 @@ Counters with per-code breakdowns:
 GET /metrics/track?service=<name>&namespace=<a/b>&track=<name>&limit=<N>&omit_metadata=<bool>
 ```
 
-Requires `admin.track_metrics_enabled` (default true); when it is false the
+Requires `admin.track_metrics_enabled: true` (default false). When it is false the
 counting filters are never installed and this endpoint returns `503`.
 
 Reports counters for **live tracks** — a track's series disappear when the track

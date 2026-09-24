@@ -501,10 +501,10 @@ admin:
 
 Either `plaintext: true` or a `tls` block must be set, but not both.
 
-`track_metrics_enabled: false` leaves the counting filters out of the data path
-entirely — nothing is installed, so there is no per-object cost — and
-`/metrics/track` answers `503` rather than an empty scrape that would read as
-"no live tracks".
+`track_metrics_enabled` defaults to `false`, which leaves the counting filters
+out of the data path entirely — nothing is installed, so there is no per-object
+cost — and `/metrics/track` answers `503` rather than an empty scrape that would
+read as "no live tracks".
 
 `track_metrics_endpoint_default_limit` and `track_metrics_endpoint_max_limit`
 bound `/metrics/track`; the default must not exceed the max. The limit is a

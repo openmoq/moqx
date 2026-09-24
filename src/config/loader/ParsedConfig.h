@@ -338,7 +338,7 @@ struct ParsedAdminConfig {
   rfl::Description<"Allow plain HTTP (mutually exclusive with tls)", bool> plaintext;
   rfl::Description<"TLS configuration", std::optional<ParsedAdminTlsConfig>> tls;
   rfl::Description<
-      "Enable per-track counting and the /metrics/track endpoint (default true)",
+      "Enable per-track counting and the /metrics/track endpoint (default false)",
       std::optional<bool>>
       track_metrics_enabled;
   rfl::Description<
