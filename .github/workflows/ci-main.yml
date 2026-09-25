@@ -117,6 +117,15 @@ jobs:
           ASAN_OPTIONS: ${{ matrix.leak_check && 'detect_leaks=1:abort_on_error=1' || '' }}
         run: scripts/test.sh ${{ matrix.preset }} --output-junit test-results.xml
 
+      - name: Upload harness logs
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: harness-logs-${{ matrix.name }}
+          path: .scratch/moq_harness_logs/
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Publish test results
         uses: dorny/test-reporter@v3
         if: success() || failure()
