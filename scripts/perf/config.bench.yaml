@@ -11,7 +11,7 @@
 #   MOQX_RELAY_ID      relay identity string in logs/metrics (default moqx-000)
 #   MOQX_STACK         quic stack for the listener: mvfst | picoquic (--quic-stack)
 #   MOQX_MOQT_VERSIONS advertised MoQT drafts, YAML inline list, server-preference
-#                      order (default [16, 14, 18]; first listed wins)
+#                      order (default [16, 18]; first listed wins)
 #   MOQX_PORT          UDP listen port
 #   MOQX_ADMIN_PORT    admin HTTP port
 #   MOQX_ENDPOINT      WebTransport endpoint path

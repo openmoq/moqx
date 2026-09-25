@@ -8,7 +8,7 @@ namespace {
 
 using namespace moxygen;
 
-constexpr uint64_t kVersion = kVersionDraftCurrent;
+constexpr uint64_t kVersion = kVersionDraft16;
 
 static TrackNamespace makeTrackNamespace() {
   std::vector<std::string> ns = {"conference", "room42"};

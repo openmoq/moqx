@@ -23,8 +23,8 @@
 #                          Congestion control follows the stack (bbr2 / bbr).
 #   --cert PATH            TLS cert PEM (picoquic only; see --quic-stack)
 #   --key PATH             TLS key PEM  (picoquic only; see --quic-stack)
-#   --draft N              pin a single MoQ draft, e.g. 16, 14, 18 (default: relay
-#                          offers 16,14,18 and all three parties negotiate 16).
+#   --draft N              pin a single MoQ draft, e.g. 16, 18 (default: relay
+#                          offers 16,18 and all three parties negotiate 16).
 #                          Sets the relay's offered versions AND the publisher/
 #                          subscriber --versions so all three agree.
 #   --no-relay-thread      Disable relay exec thread (use_relay_thread: false)
@@ -338,7 +338,7 @@ trap cleanup EXIT
   echo "quic_stack:       $QUIC_STACK"
   echo "cc:               ${CC:-n/a (qmux runs over TCP)}"
   [[ "$QUIC_STACK" == "picoquic" ]] && echo "tls_cert:         $CERT" || true
-  echo "draft:            ${DRAFT:-default (offers 16,14,18)}"
+  echo "draft:            ${DRAFT:-default (offers 16,18)}"
   echo "io_threads:       $IO_THREADS"
   echo "use_relay_thread: $USE_RELAY_THREAD"
   echo "local_forwarders: $USE_LOCAL_FORWARDERS"

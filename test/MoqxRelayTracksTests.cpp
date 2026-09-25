@@ -80,7 +80,7 @@ protected:
 
 // Pre-draft-18 sessions can't issue SUBSCRIBE_TRACKS at all.
 TEST_P(MoqxRelayTracksTest, SubscribeTracksRejectsPreV18) {
-  // createMockSession() defaults to kVersionDraftCurrent (draft-14).
+  // createMockSession() defaults to kVersionDraft16.
   auto session = createMockSession();
   auto res = subscribeTracks(session, TrackNamespace{{"test"}});
   ASSERT_FALSE(res.hasValue());

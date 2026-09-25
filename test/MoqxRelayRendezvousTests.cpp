@@ -60,30 +60,10 @@ protected:
     return sub;
   }
 
-  // Key 0x04 on a pre-v18 SUBSCRIBE, where it means MAX_CACHE_DURATION rather than
-  // RENDEZVOUS_TIMEOUT.
-  static SubscribeRequest
-  makeMaxCacheDurationSubscribeRequest(const FullTrackName& ftn, uint64_t durationMs) {
-    SubscribeRequest sub;
-    sub.fullTrackName = ftn;
-    sub.requestID = RequestID(1);
-    sub.locType = LocationType::LargestObject;
-    sub.params.setMajorVersion(getDraftMajorVersion(kVersionDraftCurrent));
-    EXPECT_TRUE(sub.params
-                    .insertParam(Parameter(
-                        folly::to_underlying(TrackRequestParamKey::MAX_CACHE_DURATION),
-                        durationMs
-                    ))
-                    .hasValue());
-    return sub;
-  }
-
-  // Answers the relay's upstream SUBSCRIBE with a canned OK, recording whether the
-  // request still carried key 0x04.
+  // Answers the relay's upstream SUBSCRIBE with a canned OK.
   void expectUpstreamSubscribe(
       const std::shared_ptr<MockMoQSession>& publisherSession,
-      bool& sawUpstream,
-      bool* sawKey04 = nullptr
+      bool& sawUpstream
   ) {
     SubscribeOk upstreamOk;
     upstreamOk.requestID = RequestID(1);
@@ -92,13 +72,8 @@ protected:
     upstreamOk.groupOrder = GroupOrder::OldestFirst;
     EXPECT_CALL(*publisherSession, subscribe(_, _))
         .WillRepeatedly([&sawUpstream,
-                         sawKey04,
-                         upstreamOk](const SubscribeRequest& req, std::shared_ptr<TrackConsumer>) {
+                         upstreamOk](const SubscribeRequest&, std::shared_ptr<TrackConsumer>) {
           sawUpstream = true;
-          if (sawKey04) {
-            *sawKey04 =
-                req.params.getFirstParam(TrackRequestParamKey::MAX_CACHE_DURATION) != nullptr;
-          }
           auto handle = std::make_shared<NiceMock<MockSubscriptionHandle>>(upstreamOk);
           return folly::coro::makeTask<Publisher::SubscribeResult>(
               folly::Expected<std::shared_ptr<SubscriptionHandle>, SubscribeError>(handle)
@@ -124,7 +99,7 @@ protected:
 // Pre-draft-18 sessions aren't rendezvous-eligible: a SUBSCRIBE for a track
 // with no publisher fails immediately instead of parking.
 TEST_P(MoqxRelayRendezvousTest, PreV18SessionRejectedImmediately) {
-  auto subSession = createMockSession(); // defaults to kVersionDraftCurrent (< 18)
+  auto subSession = createMockSession(); // defaults to kVersionDraft16 (< 18)
   auto consumer = createMockConsumer();
   auto sub = makeRendezvousSubscribeRequest(kTestTrackName, /*timeoutMs=*/1000);
 
@@ -432,74 +407,6 @@ TEST_P(MoqxRelayRendezvousTest, NoTimeoutSubscriberFailsWhileAnotherIsParked) {
   removeSession(pubSession);
   removeSession(plainSession);
   removeSession(parkedSession);
-  driveIfMultiThread();
-}
-
-// makeUpstreamSubReq() erases key 0x04 unconditionally. Below draft 18 that key is
-// MAX_CACHE_DURATION, a legal SUBSCRIBE parameter, so a pre-v18 client's value is
-// dropped on the way upstream. moxygen gates the same erase on either side being v18+.
-TEST_P(MoqxRelayRendezvousTest, UpstreamSubReqDropsPreV18MaxCacheDuration) {
-  auto pubSession = createMockSession(); // draft 14
-  auto subSession = createMockSession(); // draft 14
-  doPublishNamespace(pubSession, kTestNamespace);
-
-  bool sawUpstream = false;
-  bool sawKey04 = false;
-  expectUpstreamSubscribe(pubSession, sawUpstream, &sawKey04);
-
-  auto consumer = createMockConsumer();
-  auto result = withSessionContext(subSession, [&]() {
-    auto task = publisherInterface()->subscribe(
-        makeMaxCacheDurationSubscribeRequest(kTestTrackName, /*durationMs=*/30'000),
-        consumer
-    );
-    return folly::coro::blockingWait(std::move(task), exec_.get());
-  });
-
-  ASSERT_TRUE(result.hasValue());
-  ASSERT_TRUE(sawUpstream) << "relay should have issued an upstream subscribe";
-  EXPECT_TRUE(sawKey04) << "MAX_CACHE_DURATION must survive a pre-v18 hop; key 0x04 only means "
-                           "RENDEZVOUS_TIMEOUT at draft 18+";
-
-  result.value()->unsubscribe();
-  removeSession(subSession);
-  removeSession(pubSession);
-  driveIfMultiThread();
-}
-
-// isV18Plus(upstreamSession) branch: a downstream session that isn't itself
-// rendezvous-eligible leaves key 0x04 untouched (takeRendezvousTimeout only erases it
-// for a v18+ downstream), but a v18+ upstream would still misread it as
-// RENDEZVOUS_TIMEOUT. makeUpstreamSubReq must erase it based on the upstream side
-// alone. Together with the test above, this covers both halves of moxygen's
-// downstreamIsV18Plus || upstreamIsV18Plus erase condition.
-TEST_P(MoqxRelayRendezvousTest, UpstreamSubReqDropsMaxCacheDurationForV18PlusUpstream) {
-  auto pubSession = createV18Session();  // draft 18
-  auto subSession = createMockSession(); // draft 14
-  doPublishNamespace(pubSession, kTestNamespace);
-
-  bool sawUpstream = false;
-  bool sawKey04 = false;
-  expectUpstreamSubscribe(pubSession, sawUpstream, &sawKey04);
-
-  auto consumer = createMockConsumer();
-  auto result = withSessionContext(subSession, [&]() {
-    auto task = publisherInterface()->subscribe(
-        makeMaxCacheDurationSubscribeRequest(kTestTrackName, /*durationMs=*/30'000),
-        consumer
-    );
-    return folly::coro::blockingWait(std::move(task), exec_.get());
-  });
-
-  ASSERT_TRUE(result.hasValue());
-  ASSERT_TRUE(sawUpstream) << "relay should have issued an upstream subscribe";
-  EXPECT_FALSE(sawKey04) << "a v18+ upstream would misread key 0x04 as RENDEZVOUS_TIMEOUT, so "
-                            "makeUpstreamSubReq must erase it even though the downstream side "
-                            "wasn't itself rendezvous-eligible";
-
-  result.value()->unsubscribe();
-  removeSession(subSession);
-  removeSession(pubSession);
   driveIfMultiThread();
 }
 

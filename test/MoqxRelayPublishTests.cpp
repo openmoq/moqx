@@ -43,7 +43,7 @@ TEST_P(MoQRelayTest, PublishSuccess) {
 TEST_P(MoQRelayTest, PublishEmptyNamespaceRejectedPreV18) {
   relay_->setAllowedNamespacePrefix(TrackNamespace{{}});
   auto session = createMockSession();
-  // Default session negotiates kVersionDraftCurrent (draft-14, which is < 18)
+  // Default session negotiates kVersionDraft16 (< 18)
 
   PublishRequest pub;
   pub.fullTrackName = FullTrackName{TrackNamespace{{}}, "track1"};
