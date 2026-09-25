@@ -155,10 +155,9 @@ public:
     allowedNamespacePrefix_ = std::move(allowed);
   }
 
-  // Returns the per-session publish/subscribe handler: a cross-exec filter when
-  // relayExec_ is set, otherwise the relay itself.
-  virtual std::shared_ptr<moxygen::Publisher> createPublisherFilter();
-  virtual std::shared_ptr<moxygen::Subscriber> createSubscriberFilter();
+  // Returns the per-session publish/subscribe handler.
+  virtual std::shared_ptr<moxygen::Publisher> createPublisherFilter() = 0;
+  virtual std::shared_ptr<moxygen::Subscriber> createSubscriberFilter() = 0;
 
   // Store the upstream provider. The provider must have been constructed with
   // publishHandler=this and subscribeHandler=this so that the upstream relay's
@@ -200,11 +199,6 @@ public:
   // Releases per-session relay state; the servers call this as a session tears down.
   void onSessionEnd(std::shared_ptr<moxygen::MoQSession> session);
 
-  folly::coro::Task<SubscribeResult> subscribe(
-      moxygen::SubscribeRequest subReq,
-      std::shared_ptr<moxygen::TrackConsumer> consumer
-  ) override;
-
   folly::coro::Task<FetchResult>
   fetch(moxygen::Fetch fetch, std::shared_ptr<moxygen::FetchConsumer> consumer) override;
 
@@ -221,11 +215,6 @@ public:
   folly::coro::Task<moxygen::Subscriber::PublishNamespaceResult>
   publishNamespace(moxygen::PublishNamespace pubNs, std::shared_ptr<moxygen::Subscriber::PublishNamespaceCallback>)
       override;
-
-  PublishResult publish(
-      moxygen::PublishRequest pubReq,
-      std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle = nullptr
-  ) override;
 
   void goaway(moxygen::Goaway goaway) override {
     XLOG(INFO) << "Processing goaway uri=" << goaway.newSessionUri;
@@ -299,29 +288,31 @@ protected:
   // === Execution-mode hooks ===
 
   // Releases the registry entry once its publisher has terminated.
-  virtual void releasePublisherEntry(const moxygen::FullTrackName& ftn);
+  virtual void releasePublisherEntry(const moxygen::FullTrackName& ftn) = 0;
 
   // chainForwarder is null when another executor owns the forwarder.
-  virtual void wireForwarderCallback(const std::shared_ptr<moxygen::MoQForwarder>& chainForwarder);
+  virtual void wireForwarderCallback(const std::shared_ptr<moxygen::MoQForwarder>& chainForwarder
+  ) = 0;
 
+  // Returns false on synchronous failure.
   virtual bool addSubscriberAndPublish(
       std::shared_ptr<moxygen::MoQSession> subscriberSession,
       const ForwarderRef& publisherRef,
       bool forward,
       bool pinned
-  );
+  ) = 0;
 
   virtual ForwarderRef makeForwarderRef(
       const std::shared_ptr<moxygen::MoQForwarder>& forwarder,
       folly::Executor* publisherExec
-  ) const;
+  ) const = 0;
 
   // Build the filter chain for a track subscription: TopNFilter → RelayIngestFilter → (cache) →
   // forwarder. Used by both publish() and subscribe() paths to ensure consistent filter chain.
   virtual SubscriptionRegistry::FilterChainResult buildFilterChain(
       const moxygen::FullTrackName& ftn,
       std::shared_ptr<moxygen::MoQForwarder> forwarder
-  );
+  ) = 0;
 
   // Resolves a joining fetch against the relay's forwarder, rewriting fetch to a
   // standalone one and clearing joining when it can.
@@ -329,24 +320,26 @@ protected:
       moxygen::Fetch& fetch,
       moxygen::JoiningFetch*& joining,
       const std::shared_ptr<moxygen::MoQSession>& session
-  );
+  ) = 0;
 
   // Answers TRACK_STATUS from an active subscription's forwarder; nullopt goes upstream.
   virtual folly::coro::Task<std::optional<moxygen::TrackStatusOk>> readLocalTrackStatus(
       const SubscriptionRegistry::UpstreamView& upstreamView,
       const moxygen::TrackStatus& req
-  );
+  ) = 0;
 
   // Runs evict against the forwarder that holds session's subscriber for ftn.
   virtual void evictOnOwner(
       const moxygen::FullTrackName& ftn,
       const std::shared_ptr<moxygen::MoQSession>& session,
       folly::Function<void(const std::shared_ptr<moxygen::MoQForwarder>&)> evict
-  );
+  ) = 0;
 
   // The handle a downstream session calls unsubscribe() on for a relay-initiated PUBLISH.
   virtual std::shared_ptr<moxygen::Publisher::SubscriptionHandle>
-  makePeerHandle(std::shared_ptr<moxygen::MoQForwarder::Subscriber> subscriber);
+  makePeerHandle(std::shared_ptr<moxygen::MoQForwarder::Subscriber> subscriber) {
+    return subscriber;
+  }
 
   struct IngestChain {
     std::shared_ptr<IngestCounters> ingest;
@@ -511,8 +504,6 @@ protected:
   );
 
   // Impl methods — run on relayExec_ when set, or inline when relayExec_==nullptr.
-  folly::coro::Task<SubscribeResult>
-  subscribeImpl(moxygen::SubscribeRequest subReq, std::shared_ptr<moxygen::TrackConsumer> consumer);
   folly::coro::Task<FetchResult>
   fetchImpl(moxygen::Fetch fetch, std::shared_ptr<moxygen::FetchConsumer> consumer);
   folly::coro::Task<SubscribeNamespaceResult> subscribeNamespaceImpl(
@@ -550,17 +541,6 @@ protected:
   std::shared_ptr<folly::Executor> ownedRelayExec_;
   std::unique_ptr<folly::EventBaseThreadTimekeeper> timekeeper_;
   folly::Executor* relayExec_{nullptr};
-  // Only set in single-threaded mode (relayExec_ == null); used as the
-  // coroutine start executor for fire-and-forget tasks like doSubscribeUpdate.
-  folly::Executor* sessionExec_{nullptr};
-
-  void maybeSetSessionExec(moxygen::MoQSession& session) {
-    if (!relayExec_ && !sessionExec_) {
-      sessionExec_ = session.getExecutor();
-    }
-  }
-
-  folly::Executor* relayExec() const { return relayExec_ ? relayExec_ : sessionExec_; }
 
   std::shared_ptr<moxygen::Publisher> findUpstreamPublisher(const moxygen::TrackNamespace& ns) {
     auto session = namespaceTree_.findPublisherSession(ns);

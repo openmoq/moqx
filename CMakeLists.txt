@@ -381,6 +381,7 @@ add_library(moqx_core STATIC
   src/SubscriptionRegistry.cpp
   src/MoqxRelay.cpp
   src/LocalForwarderRelay.cpp
+  src/OwnedForwarderRelay.cpp
   src/MoqxRelayContext.cpp
   src/MoqxRelayServer.cpp
   src/MoqxPicoRelayServer.cpp

@@ -79,10 +79,6 @@ protected:
       const std::shared_ptr<moxygen::MoQSession>& session,
       folly::Function<void(const std::shared_ptr<moxygen::MoQForwarder>&)> evict
   ) override;
-  std::shared_ptr<moxygen::Publisher::SubscriptionHandle>
-  makePeerHandle(std::shared_ptr<moxygen::MoQForwarder::Subscriber> subscriber) override {
-    return subscriber;
-  }
 
 private:
   class LocalSubscribeFilter;
