@@ -13,6 +13,5 @@
 # from its CLI arg so it can run against every supported draft.
 MOQT_TEST_VERSIONS="[16, 18]"
 MOQT_CLIENT_VERSION=16
-if [[ -n "${MOQ_HARNESS_MOQT_VERSION:-}" ]]; then
-  MOQT_CLIENT_VERSION=$MOQ_HARNESS_MOQT_VERSION
-fi
+# One line, so test/lib/shellvars.py does not read the override as the default.
+if [[ -n "${MOQ_HARNESS_MOQT_VERSION:-}" ]]; then MOQT_CLIENT_VERSION=$MOQ_HARNESS_MOQT_VERSION; fi
