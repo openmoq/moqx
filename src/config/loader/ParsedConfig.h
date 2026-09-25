@@ -282,7 +282,7 @@ struct ParsedListenerConfig {
   rfl::Description<"TLS configuration", ParsedListenerTlsConfig> tls;
   rfl::Description<"WebTransport endpoint path", std::string> endpoint;
   rfl::Description<
-      "MOQT draft versions (empty = default 14,16)",
+      "MOQT draft versions: 16 and/or 18 (empty = default 16)",
       std::optional<std::vector<uint32_t>>>
       moqt_versions;
   rfl::Description<

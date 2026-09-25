@@ -17,7 +17,7 @@ namespace openmoq::moqx::test {
 // Test: SUBSCRIBE with an empty namespace is rejected pre-draft-18.
 TEST_P(MoQRelayTest, SubscribeEmptyNamespaceRejectedPreV18) {
   auto session = createMockSession();
-  // Default session negotiates kVersionDraftCurrent (draft-14, which is < 18)
+  // Default session negotiates kVersionDraft16 (< 18)
 
   auto consumer = createMockConsumer();
   auto handle = subscribeToTrack(
@@ -465,7 +465,7 @@ TEST_P(MoQRelayTest, UpstreamSubscribeThrowDoesNotStrandGate) {
   auto makeSessionOnPubThread = [&] {
     auto session = std::make_shared<NiceMock<MockMoQSession>>(pubExec);
     ON_CALL(*session, getNegotiatedVersion())
-        .WillByDefault(Return(std::optional<uint64_t>(kVersionDraftCurrent)));
+        .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
     getOrCreateMockState(session);
     return session;
   };
@@ -562,7 +562,7 @@ TEST_P(MoQRelayTest, CrossThreadSubsequentSubscriberSeedingRace) {
   auto subExec = subAux.exec;
   auto subSession2 = std::make_shared<NiceMock<MockMoQSession>>(subExec);
   ON_CALL(*subSession2, getNegotiatedVersion())
-      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraftCurrent)));
+      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
   getOrCreateMockState(subSession2);
 
   doPublishNamespace(publisherSession, kTestNamespace);
@@ -681,7 +681,7 @@ TEST_P(MoQRelayTest, PublishFanoutDuringParkedSubscribeSetup) {
   auto pubExec = pubAux.exec;
   auto publisherSession = std::make_shared<NiceMock<MockMoQSession>>(pubExec);
   ON_CALL(*publisherSession, getNegotiatedVersion())
-      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraftCurrent)));
+      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
   getOrCreateMockState(publisherSession);
 
   // One session on exec_ holding both the SUBSCRIBE_NAMESPACE that makes it a fanout

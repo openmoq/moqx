@@ -135,7 +135,7 @@ std::shared_ptr<MockMoQSession>
 MoQRelayTest::createMockSessionOn(std::shared_ptr<moxygen::MoQExecutor> exec) {
   auto session = std::make_shared<NiceMock<MockMoQSession>>(std::move(exec));
   ON_CALL(*session, getNegotiatedVersion())
-      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraftCurrent)));
+      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
   ON_CALL(*session, negotiatedSetupExtension(SetupExtension::RelayHops))
       .WillByDefault(Return(false));
   getOrCreateMockState(session);
@@ -383,6 +383,9 @@ std::shared_ptr<Publisher::SubscribeNamespaceHandle> MoQRelayTest::doSubscribeNa
 ) {
   SubscribeNamespace subNs;
   subNs.trackNamespacePrefix = nsPrefix;
+  if (!namespacePublishHandle) {
+    namespacePublishHandle = std::make_shared<NiceMock<MockNamespacePublishHandle>>();
+  }
   return withSessionContext(session, [&]() {
     auto task = publisherInterface()->subscribeNamespace(
         std::move(subNs),
@@ -447,7 +450,10 @@ std::shared_ptr<Publisher::SubscribeNamespaceHandle> MoQRelayTest::doSubscribeNa
   subNs.trackNamespacePrefix = nsPrefix;
   subNs.forward = forward;
   return withSessionContext(session, [&]() {
-    auto task = publisherInterface()->subscribeNamespace(std::move(subNs), nullptr);
+    auto task = publisherInterface()->subscribeNamespace(
+        std::move(subNs),
+        std::make_shared<NiceMock<MockNamespacePublishHandle>>()
+    );
     auto res = folly::coro::blockingWait(std::move(task), exec_.get());
     EXPECT_TRUE(res.hasValue());
     if (!res.hasValue()) {

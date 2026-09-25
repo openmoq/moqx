@@ -41,7 +41,7 @@ Relay tuning (templated into the config; CLI > .env > default):
 Listener (templated into the config; CLI > .env > default):
       --quic-stack STACK    listener quic stack: mvfst|picoquic|proxygen_qmux (default mvfst)
       --moqt-versions LIST  advertised MoQT drafts in server-preference order,
-                            e.g. 16,14,18 (default 16,14,18; first listed wins).
+                            e.g. 16,18 (default 16,18; first listed wins).
                             Pass a single value (e.g. 18) to pin one draft.
       --bind ADDR           bind address for the listener + admin (default 127.0.0.1;
                             use :: or 0.0.0.0 to accept remote clients, e.g. cross-box bench)
@@ -132,7 +132,7 @@ check_sysctl() {
 norm_bool() { case "${1,,}" in 1|true|yes|on) echo true ;; 0|false|no|off) echo false ;; *) echo INVALID ;; esac; }
 
 # normalize a MoQT versions value to a YAML inline list. Pass through an already
-# bracketed list (e.g. "[16, 14]"); wrap a comma list ("16,14" -> "[16, 14]").
+# bracketed list (e.g. "[16, 18]"); wrap a comma list ("16,18" -> "[16, 18]").
 norm_versions() { local v="${1//[[:space:]]/}"; [[ "$v" == \[*\] ]] && echo "$v" || echo "[${v//,/, }]"; }
 
 CLI_VERBOSE="" CLI_LOG_LEVEL="" CLI_VMODULE="" CLI_XLOG=""
@@ -239,8 +239,8 @@ export MOQX_STACK="${CLI_STACK:-${MOQX_STACK:-mvfst}}"
 case "$MOQX_STACK" in mvfst|picoquic|proxygen_qmux) ;; *) echo "invalid --quic-stack: $MOQX_STACK (want mvfst|picoquic|proxygen_qmux)" >&2; exit 2 ;; esac
 # MoQT drafts advertised by the listener (ALPN derives from these), in
 # server-preference order — the relay picks the first listed version the client
-# also supports. Default offers d16, d14, then d18 as a fallback.
-export MOQX_MOQT_VERSIONS="$(norm_versions "${CLI_MOQT_VERSIONS:-${MOQX_MOQT_VERSIONS:-16,14,18}}")"
+# also supports. Default offers d16, then d18 as a fallback.
+export MOQX_MOQT_VERSIONS="$(norm_versions "${CLI_MOQT_VERSIONS:-${MOQX_MOQT_VERSIONS:-16,18}}")"
 # Bind address for the listener + admin. Local-safe default (127.0.0.1); set
 # :: / 0.0.0.0 (e.g. via perf-test.sh or --bind) to accept remote clients.
 export MOQX_BIND_ADDR="${CLI_BIND:-${MOQX_BIND_ADDR:-127.0.0.1}}"

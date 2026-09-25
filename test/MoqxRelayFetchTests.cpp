@@ -14,7 +14,7 @@ namespace openmoq::moqx::test {
 // Test: FETCH with an empty namespace is rejected pre-draft-18.
 TEST_P(MoQRelayTest, FetchEmptyNamespaceRejectedPreV18) {
   auto session = createMockSession();
-  // Default session negotiates kVersionDraftCurrent (draft-14, which is < 18)
+  // Default session negotiates kVersionDraft16 (< 18)
 
   Fetch fetch(
       RequestID(0),

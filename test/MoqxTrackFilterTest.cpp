@@ -56,7 +56,7 @@ protected:
   std::shared_ptr<MockMoQSession> makeSession() {
     auto session = std::make_shared<NiceMock<MockMoQSession>>(exec_);
     ON_CALL(*session, getNegotiatedVersion())
-        .WillByDefault(Return(std::optional<uint64_t>(kVersionDraftCurrent)));
+        .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
 
     auto* raw = session.get();
     ON_CALL(*session, publish(_, _))

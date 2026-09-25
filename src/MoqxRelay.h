@@ -354,12 +354,6 @@ private:
   void forwardChangedImpl(const moxygen::FullTrackName& ftn, bool forward);
   void newGroupRequestedImpl(const moxygen::FullTrackName& ftn, uint64_t group);
 
-  folly::coro::Task<void> publishNamespaceToSession(
-      std::shared_ptr<moxygen::MoQSession> session,
-      moxygen::PublishNamespace pubNs,
-      std::shared_ptr<NamespaceTree::NamespaceNode> nodePtr
-  );
-
   struct PreparedPublish {
     std::shared_ptr<moxygen::MoQForwarder::Subscriber> subscriber;
     folly::coro::Task<folly::Expected<moxygen::PublishOk, moxygen::PublishError>> reply;

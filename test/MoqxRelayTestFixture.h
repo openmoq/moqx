@@ -241,6 +241,7 @@ protected:
       bool addToState = true
   );
 
+  // A null handle is replaced with a NiceMock, since MoQSession always supplies one.
   std::shared_ptr<Publisher::SubscribeNamespaceHandle> doSubscribeNamespace(
       std::shared_ptr<MoQSession> session,
       const TrackNamespace& nsPrefix,

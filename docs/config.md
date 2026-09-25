@@ -63,14 +63,14 @@ listeners:
       key_file:  /etc/moqx/key.pem
     endpoint: /moq-relay
     quic_stack: mvfst         # optional; default mvfst
-    moqt_versions: []         # optional; empty = default [14, 16]
+    moqt_versions: []         # optional; empty = default [16]
     quic: { ... }             # optional; overrides listener_defaults.quic
 ```
 
 **TLS:** For development only, `tls: {insecure: true}` skips certificate
 verification. This is incompatible with `quic_stack: picoquic`.
 
-**moqt_versions:**: Currently supports 14 and 16.
+**moqt_versions:**: Supports 16 and 18; any other value is rejected.
 
 **Duplicate listeners** (same address+port combination) are rejected.
 
