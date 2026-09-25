@@ -153,9 +153,6 @@ NamespaceTree::unpublishNamespace(
   for (const auto& [sess, info] : node->subscribers_) {
     result.subscribers.emplace_back(sess, info);
   }
-  for (auto& [sess, handle] : node->draft14PubNsHandles_) {
-    result.legacyHandles.emplace_back(sess, handle);
-  }
 
   NodeMutationGuard guard(*this, *node, ns);
   node->publisherSession_ = nullptr;
@@ -163,7 +160,6 @@ NamespaceTree::unpublishNamespace(
   result.relayHopPath = std::move(node->relayHopPath_);
   node->relayHopPath_.clear();
   node->publishNamespaceCallback_.reset();
-  node->draft14PubNsHandles_.clear();
 
   return result;
 }

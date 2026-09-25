@@ -49,7 +49,8 @@ std::string matchRuleErrorLabel(const std::string& name, size_t j) {
 
 // Default versions when moqt_versions is unset. Excludes draft-18 (in moxygen's
 // kSupportedVersions but not yet interoperable); configure moqt_versions to opt in.
-constexpr const char* kDefaultMoqtVersions = "14,16";
+constexpr const char* kDefaultMoqtVersions = "16";
+constexpr uint32_t kMinMoqtVersion = 16;
 
 std::string moqtVersionsToString(const ParsedListenerConfig& listener) {
   if (!listener.moqt_versions.value().has_value() || listener.moqt_versions.value()->empty()) {
@@ -386,6 +387,16 @@ void validateListener(
         "Listener '" + listener.name.value() +
         "': quic_stack \"picoquic\" does not support pkcs12_file yet; use cert_file/key_file"
     );
+  }
+  if (const auto& versions = listener.moqt_versions.value(); versions.has_value()) {
+    for (auto v : *versions) {
+      if (v < kMinMoqtVersion) {
+        errors.push_back(
+            "Listener '" + listener.name.value() + "': moqt_versions entry " + std::to_string(v) +
+            " is unsupported (minimum is " + std::to_string(kMinMoqtVersion) + ")"
+        );
+      }
+    }
   }
 }
 

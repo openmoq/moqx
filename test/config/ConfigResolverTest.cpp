@@ -1018,7 +1018,7 @@ TEST(ResolveConfig, MinimalInsecure) {
   EXPECT_EQ(resolved.listeners[0].address.getPort(), 9668);
   EXPECT_TRUE(std::holds_alternative<Insecure>(resolved.listeners[0].tlsMode));
   EXPECT_EQ(resolved.listeners[0].endpoint, "/moq-relay");
-  EXPECT_EQ(resolved.listeners[0].moqtVersions, "14,16");
+  EXPECT_EQ(resolved.listeners[0].moqtVersions, "16");
   EXPECT_THAT(result.value().warnings, IsEmpty());
 
   ASSERT_EQ(resolved.services.size(), 1);
@@ -1042,7 +1042,7 @@ TEST(ResolveConfig, FullTls) {
   tls.insecure = false;
   lc.tls = std::move(tls);
   lc.endpoint = std::string("/relay");
-  lc.moqt_versions = std::vector<uint32_t>{14, 16};
+  lc.moqt_versions = std::vector<uint32_t>{16, 18};
   cfg.listeners.value().push_back(std::move(lc));
   cfg.services.value().emplace("default", makeDefaultService());
   cfg.admin = std::optional<ParsedAdminConfig>{makeDefaultAdmin()};
@@ -1054,7 +1054,7 @@ TEST(ResolveConfig, FullTls) {
   EXPECT_EQ(resolved.listeners[0].name, "production");
   EXPECT_EQ(resolved.listeners[0].address.getPort(), 4443);
   EXPECT_EQ(resolved.listeners[0].endpoint, "/relay");
-  EXPECT_EQ(resolved.listeners[0].moqtVersions, "14,16");
+  EXPECT_EQ(resolved.listeners[0].moqtVersions, "16,18");
 
   ASSERT_TRUE(std::holds_alternative<TlsConfig>(resolved.listeners[0].tlsMode));
   const auto& creds = std::get<TlsConfig>(resolved.listeners[0].tlsMode);
@@ -1286,15 +1286,23 @@ TEST(ResolveConfig, VersionsEmpty) {
   auto cfg = makeMinimalInsecureConfig();
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasValue());
-  EXPECT_EQ(result.value().config.listeners[0].moqtVersions, "14,16");
+  EXPECT_EQ(result.value().config.listeners[0].moqtVersions, "16");
 }
 
 TEST(ResolveConfig, VersionsPopulated) {
   auto cfg = makeMinimalInsecureConfig();
-  cfg.listeners.value()[0].moqt_versions = std::vector<uint32_t>{14};
+  cfg.listeners.value()[0].moqt_versions = std::vector<uint32_t>{18};
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasValue());
-  EXPECT_EQ(result.value().config.listeners[0].moqtVersions, "14");
+  EXPECT_EQ(result.value().config.listeners[0].moqtVersions, "18");
+}
+
+TEST(ResolveConfig, VersionsBelowMinimumRejected) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.listeners.value()[0].moqt_versions = std::vector<uint32_t>{14, 16};
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("moqt_versions entry 14"));
 }
 
 TEST(ResolveConfig, AddressResolution) {

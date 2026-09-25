@@ -435,35 +435,10 @@ TEST_P(MoQRelayTest, SubscribeNamespaceDoesntAddDrainingPublish) {
   driveIfMultiThread(); // flush relay cleanup so it drops session refs before mocks are destroyed
 }
 
-TEST_P(MoQRelayTest, SubscribeNamespaceEmptyPrefixRejectedPreV16) {
-  // Default session uses kVersionDraftCurrent (draft-14, which is < 16)
+TEST_P(MoQRelayTest, SubscribeNamespaceEmptyPrefixAllowed) {
   auto session = createMockSession();
-
-  TrackNamespace emptyNs{{}};
-  SubscribeNamespace subNs;
-  subNs.trackNamespacePrefix = emptyNs;
-
-  withSessionContext(session, [&]() {
-    auto task = publisherInterface()->subscribeNamespace(std::move(subNs), nullptr);
-    auto res = folly::coro::blockingWait(std::move(task), exec_.get());
-    ASSERT_FALSE(res.hasValue()
-    ) << "Empty namespace prefix should be rejected for pre-v16 sessions";
-    EXPECT_EQ(res.error().errorCode, SubscribeNamespaceErrorCode::NAMESPACE_PREFIX_UNKNOWN);
-    EXPECT_EQ(res.error().reasonPhrase, "empty");
-  });
-
-  removeSession(session);
-}
-
-TEST_P(MoQRelayTest, SubscribeNamespaceEmptyPrefixAllowedV16) {
-  auto session = createMockSession();
-  // Override the negotiated version to draft-16
-  ON_CALL(*session, getNegotiatedVersion())
-      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
   auto publisher = createMockSession();
 
-  // A draft-16 subscriber receives announcements via the bidi NAMESPACE message
-  // (on the publish handle), not the separate-stream PUBLISH_NAMESPACE path.
   auto handle = std::make_shared<NiceMock<MockNamespacePublishHandle>>();
   EXPECT_CALL(*handle, namespaceMsg(_)).Times(1);
   EXPECT_CALL(*session, publishNamespace(_, _)).Times(0);
@@ -478,36 +453,20 @@ TEST_P(MoQRelayTest, SubscribeNamespaceEmptyPrefixAllowedV16) {
   driveIfMultiThread();
 }
 
-TEST_P(MoQRelayTest, ExactNamespaceSubscriberReceivesPublishNamespace) {
-  auto subscriber = createMockSession(); // default kVersionDraftCurrent (< 16)
+TEST_P(MoQRelayTest, ExactNamespaceSubscriberReceivesNamespace) {
+  auto subscriber = createMockSession();
   auto publisher = createMockSession();
 
-  // Subscribe with a non-null publish handle, as MoQRelaySession always does.
-  // A draft <= 15 subscriber must forward via the separate-stream
-  // PUBLISH_NAMESPACE path, never the bidi handle (whose namespaceMsg is an
-  // unimplemented moxygen stub that aborts the relay).
+  // An exact-match subscriber gets a bidi NAMESPACE with an empty suffix, never
+  // a separate-stream PUBLISH_NAMESPACE.
   auto handle = std::make_shared<NiceMock<MockNamespacePublishHandle>>();
-  EXPECT_CALL(*handle, namespaceMsg(_)).Times(0);
+  EXPECT_CALL(*handle, namespaceMsg(_)).WillOnce([](const TrackNamespace& suffix) {
+    EXPECT_TRUE(suffix.empty());
+  });
+  EXPECT_CALL(*subscriber, publishNamespace(_, _)).Times(0);
   doSubscribeNamespace(subscriber, kTestNamespace, /*addToState=*/true, handle);
 
-  // Expect the subscriber to receive a publishNamespace forwarding when
-  // the publisher announces the same exact namespace
-  EXPECT_CALL(*subscriber, publishNamespace(_, _))
-      .WillOnce(
-          [](PublishNamespace ann, auto) -> folly::coro::Task<Subscriber::PublishNamespaceResult> {
-            EXPECT_EQ(ann.trackNamespace, kTestNamespace);
-            co_return folly::makeUnexpected(PublishNamespaceError{
-                ann.requestID,
-                PublishNamespaceErrorCode::UNINTERESTED,
-                "test"
-            });
-          }
-      );
-
-  // Publisher announces the same exact namespace
   doPublishNamespace(publisher, kTestNamespace);
-
-  // Drive the executor so the async publishNamespace forwarding runs
   exec_->drive();
 
   removeSession(publisher);

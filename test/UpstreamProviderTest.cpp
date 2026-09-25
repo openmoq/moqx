@@ -694,10 +694,10 @@ protected:
     // Mock sessions representing two downstream subscribers.
     subSession1_ = std::make_shared<NiceMock<moxygen::test::MockMoQSession>>(clientExec());
     ON_CALL(*subSession1_, getNegotiatedVersion())
-        .WillByDefault(Return(std::optional<uint64_t>(kVersionDraftCurrent)));
+        .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
     subSession2_ = std::make_shared<NiceMock<moxygen::test::MockMoQSession>>(clientExec());
     ON_CALL(*subSession2_, getNegotiatedVersion())
-        .WillByDefault(Return(std::optional<uint64_t>(kVersionDraftCurrent)));
+        .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
   }
 
   void TearDown() override {
