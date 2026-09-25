@@ -35,7 +35,7 @@ protected:
 
   void SetUp() override {
     MoQRelayTest::SetUp();
-    relay_ = std::make_shared<MoqxRelay>(
+    relay_ = MoqxRelay::create(
         config::CacheConfig{0, 0}, // no cache
         /*relayID=*/"",
         /*relayHopID=*/0,
@@ -526,7 +526,7 @@ TEST_F(MoqxTrackFilterTest, PublishFirst_LateSubscriber_ValueChangeUpdatesRankin
 // not idle-evict them before that first cycle completes. This guards the
 // boundary case seen in the live load test where rank N was replaced by N+1.
 TEST_F(MoqxTrackFilterTest, FirstObjectCycle_DoesNotEvictSelectedTracksBeforeFirstObject) {
-  relay_ = std::make_shared<MoqxRelay>(
+  relay_ = MoqxRelay::create(
       config::CacheConfig{0, 0},
       /*relayID=*/"",
       /*relayHopID=*/0,
@@ -743,7 +743,7 @@ TEST_F(MoqxTrackFilterTest, Unsubscribe_StaleEntriesDoNotAffectResubscribe) {
 // to keep the setup minimal: three displaced tracks fills the queue to 3.
 TEST_F(MoqxTrackFilterTest, DeselectedQueueEviction_EvictsOldestEntry) {
   // Override relay_ with a tighter maxDeselected so eviction triggers quickly.
-  relay_ = std::make_shared<MoqxRelay>(
+  relay_ = MoqxRelay::create(
       config::CacheConfig{0, 0}, // no cache
       /*relayID=*/"",
       /*relayHopID=*/0,
@@ -835,7 +835,7 @@ TEST_F(MoqxTrackFilterTest, ForwardStateUpdatedWhenFilterSubscriberJoins) {
 // silent for longer than idleTimeout. An outsider that keeps sending objects
 // triggers the sweep (via the throttled onActivity callback) and is promoted.
 TEST_F(MoqxTrackFilterTest, IdleEviction_SilentTrackReplacedByActiveOutsider) {
-  relay_ = std::make_shared<MoqxRelay>(
+  relay_ = MoqxRelay::create(
       config::CacheConfig{0, 0}, // no cache
       /*relayID=*/"",
       /*relayHopID=*/0,

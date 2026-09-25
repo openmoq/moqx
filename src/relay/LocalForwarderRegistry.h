@@ -22,7 +22,7 @@ namespace openmoq::moqx {
 
 // Thread-local registry mapping FullTrackName → local MoQForwarder on one
 // iothread. All methods must be called on the owning thread. One instance per
-// iothread, stored in MoqxRelay::tlForwarders_.
+// iothread, stored in LocalForwarderRelay::tlForwarders_.
 //
 // An entry is in exactly one of three states:
 //

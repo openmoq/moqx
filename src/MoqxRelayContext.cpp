@@ -41,7 +41,7 @@ MoqxRelayContext::MoqxRelayContext(
     XCHECK_EQ(evbs.size(), services.size());
     size_t i = 0;
     for (const auto& [name, svc] : services) {
-      auto relay = std::make_shared<MoqxRelay>(
+      auto relay = MoqxRelay::create(
           svc.cache,
           relayID,
           relayHopID_,
@@ -62,7 +62,7 @@ MoqxRelayContext::MoqxRelayContext(
     }
   } else {
     for (const auto& [name, svc] : services) {
-      auto relay = std::make_shared<MoqxRelay>(
+      auto relay = MoqxRelay::create(
           svc.cache,
           relayID,
           relayHopID_,

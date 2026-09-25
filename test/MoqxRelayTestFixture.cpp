@@ -66,7 +66,7 @@ void MoQRelayTest::resetRelay(
     relayExec = std::make_shared<moxygen::MoQFollyExecutorImpl>(relayEvb_);
   }
   bool useLocalForwarders = relayEvb_ && relayMode() == RelayMode::LocalForwarderMT;
-  relay_ = std::make_shared<MoqxRelay>(
+  relay_ = MoqxRelay::create(
       std::move(cache),
       relayID,
       relayHopID,

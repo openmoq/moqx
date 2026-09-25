@@ -15,9 +15,7 @@
 #include "SubscriptionRegistry.h"
 #include "UpstreamProvider.h"
 #include "config/Config.h"
-#include "relay/ChannelSubscriber.h"
 #include "relay/ForwarderRef.h"
-#include "relay/LocalForwarderRegistry.h"
 #include "relay/PropertyRanking.h"
 #include "relay/RelayExecUtil.h"
 #include "stats/TrackStatsRegistry.h"
@@ -29,7 +27,7 @@
 #include <folly/futures/ThreadWheelTimekeeper.h>
 
 #include <folly/Executor.h>
-#include <folly/ThreadLocal.h>
+#include <folly/Function.h>
 #include <folly/container/F14Map.h>
 #include <folly/container/F14Set.h>
 #include <optional>
@@ -123,7 +121,7 @@ public:
   // relayExec, when set, is owned by the relay and isolates all state on it;
   // null runs everything on the calling thread. useLocalForwarders (requires
   // relayExec) enables the per-thread local-forwarder data plane.
-  explicit MoqxRelay(
+  static std::shared_ptr<MoqxRelay> create(
       config::CacheConfig cache = {},
       std::string relayID = {},
       uint64_t relayHopID = 0,
@@ -132,27 +130,7 @@ public:
       uint64_t maxDeselected = kDefaultMaxDeselected,
       std::chrono::milliseconds idleTimeout = kDefaultIdleTimeout,
       std::chrono::milliseconds activityThreshold = kDefaultActivityThreshold
-  )
-      : relayID_(std::move(relayID)),
-        relayHopID_(relayHopID == 0 ? generateRelayHopID() : relayHopID),
-        ownedRelayExec_(std::move(relayExec)), relayExec_(ownedRelayExec_.get()),
-        useLocalForwarders_(useLocalForwarders), maxDeselected_(maxDeselected),
-        idleTimeout_(idleTimeout), activityThreshold_(activityThreshold) {
-    XCHECK_LE(relayHopID_, kMaxRelayHopID);
-    // Park timers fire on the relay's own EventBase instead of folly's global
-    // timekeeper thread. Null (SingleThread mode, or a non-folly exec) falls back to it.
-    if (auto* follyExec = dynamic_cast<moxygen::MoQFollyExecutorImpl*>(relayExec_)) {
-      timekeeper_ =
-          std::make_unique<folly::EventBaseThreadTimekeeper>(*follyExec->getBackingEventBase());
-    }
-    if (cache.maxCachedTracks > 0) {
-      cache_ = std::make_unique<MoqxCache>(cache.maxCachedTracks, cache.maxCachedGroupsPerTrack);
-      cache_->setMaxCachedBytes(static_cast<size_t>(cache.maxCachedMb) * 1024 * 1024);
-      cache_->setMinEvictionBytes(static_cast<size_t>(cache.minEvictionKb) * 1024);
-      cache_->setDefaultMaxCacheDuration(cache.defaultMaxCacheDuration);
-      cache_->setMaxAllowedCacheDuration(cache.maxCacheDuration);
-    }
-  }
+  );
 
   folly::Executor* getRelayExec() const { return relayExec_; }
   uint64_t getRelayHopID() const { return relayHopID_; }
@@ -177,10 +155,10 @@ public:
     allowedNamespacePrefix_ = std::move(allowed);
   }
 
-  // Returns the per-session publish/subscribe handler: a local-forwarder or
-  // cross-exec filter when relayExec_ is set, otherwise the relay itself.
-  std::shared_ptr<moxygen::Publisher> createPublisherFilter();
-  std::shared_ptr<moxygen::Subscriber> createSubscriberFilter();
+  // Returns the per-session publish/subscribe handler: a cross-exec filter when
+  // relayExec_ is set, otherwise the relay itself.
+  virtual std::shared_ptr<moxygen::Publisher> createPublisherFilter();
+  virtual std::shared_ptr<moxygen::Subscriber> createSubscriberFilter();
 
   // Store the upstream provider. The provider must have been constructed with
   // publishHandler=this and subscribeHandler=this so that the upstream relay's
@@ -307,12 +285,83 @@ public:
   // completed in time for a fast test to assert on.
   bool hasPendingRendezvousWaiters() const { return !pendingRendezvous_.empty(); }
 
-private:
+protected:
+  MoqxRelay(
+      config::CacheConfig cache,
+      std::string relayID,
+      uint64_t relayHopID,
+      std::shared_ptr<folly::Executor> relayExec,
+      uint64_t maxDeselected,
+      std::chrono::milliseconds idleTimeout,
+      std::chrono::milliseconds activityThreshold
+  );
+
+  // === Execution-mode hooks ===
+
+  // Releases the registry entry once its publisher has terminated.
+  virtual void releasePublisherEntry(const moxygen::FullTrackName& ftn);
+
+  // chainForwarder is null when another executor owns the forwarder.
+  virtual void wireForwarderCallback(const std::shared_ptr<moxygen::MoQForwarder>& chainForwarder);
+
+  virtual bool addSubscriberAndPublish(
+      std::shared_ptr<moxygen::MoQSession> subscriberSession,
+      const ForwarderRef& publisherRef,
+      bool forward,
+      bool pinned
+  );
+
+  virtual ForwarderRef makeForwarderRef(
+      const std::shared_ptr<moxygen::MoQForwarder>& forwarder,
+      folly::Executor* publisherExec
+  ) const;
+
+  // Build the filter chain for a track subscription: TopNFilter → RelayIngestFilter → (cache) →
+  // forwarder. Used by both publish() and subscribe() paths to ensure consistent filter chain.
+  virtual SubscriptionRegistry::FilterChainResult buildFilterChain(
+      const moxygen::FullTrackName& ftn,
+      std::shared_ptr<moxygen::MoQForwarder> forwarder
+  );
+
+  // Resolves a joining fetch against the relay's forwarder, rewriting fetch to a
+  // standalone one and clearing joining when it can.
+  virtual std::optional<moxygen::FetchError> resolveJoiningFetchOnRelay(
+      moxygen::Fetch& fetch,
+      moxygen::JoiningFetch*& joining,
+      const std::shared_ptr<moxygen::MoQSession>& session
+  );
+
+  // Answers TRACK_STATUS from an active subscription's forwarder; nullopt goes upstream.
+  virtual folly::coro::Task<std::optional<moxygen::TrackStatusOk>> readLocalTrackStatus(
+      const SubscriptionRegistry::UpstreamView& upstreamView,
+      const moxygen::TrackStatus& req
+  );
+
+  // Runs evict against the forwarder that holds session's subscriber for ftn.
+  virtual void evictOnOwner(
+      const moxygen::FullTrackName& ftn,
+      const std::shared_ptr<moxygen::MoQSession>& session,
+      folly::Function<void(const std::shared_ptr<moxygen::MoQForwarder>&)> evict
+  );
+
+  // The handle a downstream session calls unsubscribe() on for a relay-initiated PUBLISH.
+  virtual std::shared_ptr<moxygen::Publisher::SubscriptionHandle>
+  makePeerHandle(std::shared_ptr<moxygen::MoQForwarder::Subscriber> subscriber);
+
+  struct IngestChain {
+    std::shared_ptr<IngestCounters> ingest;
+    std::shared_ptr<TopNFilter> topNFilter;
+    std::shared_ptr<moxygen::TrackConsumer> chainHead;
+  };
+  // TopNFilter → RelayIngestFilter → downstream, wrapped in ingest track stats.
+  IngestChain makeIngestChain(
+      const moxygen::FullTrackName& ftn,
+      std::shared_ptr<moxygen::TrackConsumer> downstream
+  );
+
   class NamespaceSubscription;
   class TracksSubscription;
   class RelayIngestFilter;
-  class LocalSubscribeFilter;
-  class LocalPublishFilter;
 
   // No-op NamespaceTree::Callback for the tracks-subscriber tree.
   // The tracks tree never has publishers, so onPublishNamespaceDone never fires.
@@ -372,63 +421,6 @@ private:
       folly::Executor* subscriberExec
   );
 
-  // This thread's registry, created on first use.
-  LocalForwarderRegistry& localRegistry();
-
-  ForwarderRef makeForwarderRef(
-      const std::shared_ptr<moxygen::MoQForwarder>& forwarder,
-      folly::Executor* publisherExec
-  ) const;
-
-  struct LocalForwarderBootstrap {
-    std::shared_ptr<moxygen::MoQForwarder> localFwd;
-    bool isNew{false};
-    LocalForwarderRegistry* localReg{nullptr};
-  };
-  LocalForwarderBootstrap
-  acquireLocalForwarder(const moxygen::FullTrackName& ftn, const InitialTrackState& initial);
-
-  // In LF mode the ref supplies only the track name and owning exec; the forwarder
-  // itself is resolved by name there, so it doesn't attach to a displaced one.
-  bool addSubscriberAndPublish(
-      std::shared_ptr<moxygen::MoQSession> subscriberSession,
-      const ForwarderRef& publisherRef,
-      bool forward,
-      bool pinned
-  );
-
-  struct ResolvedPublisher {
-    ForwarderRef ref;
-    ChannelSubscriber channelSub;
-    InitialTrackState initial;
-  };
-  // Launch on track.exec: reads the publisher forwarder's state where it is stable to
-  // initialize a new subscriber forwarder during publish fan-out.
-  folly::coro::Task<std::optional<ResolvedPublisher>> resolvePublisherOnItsExec(TrackRef track);
-
-  folly::coro::Task<void> addSubscriberAndPublishViaLocalForwarder(
-      std::shared_ptr<moxygen::MoQSession> subscriberSession,
-      TrackRef track,
-      bool forward,
-      bool pinned
-  );
-
-  moxygen::Subscriber::PublishResult publishFromPublisherExec(
-      moxygen::PublishRequest pub,
-      std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle,
-      std::shared_ptr<moxygen::MoQSession> session
-  );
-
-  // Called from publish path or first subscriber path on publisher's exec.
-  // The displaced forwarder (if any) is released on the publisher's exec after the
-  // new forwarder is registered with the relay's registry.
-  enum class InstallKind { FromPublish, FromSubscribe };
-  LocalForwarderRegistry::ParkResult installPublisherForwarder(
-      const moxygen::FullTrackName& ftn,
-      const std::shared_ptr<moxygen::MoQForwarder>& fwd,
-      InstallKind kind
-  );
-
   std::optional<moxygen::PublishError> validatePublishNamespace(
       const moxygen::FullTrackName& ftn,
       moxygen::RequestID requestID,
@@ -437,23 +429,7 @@ private:
 
   static bool emptyNamespaceAllowed(const std::shared_ptr<moxygen::MoQSession>& session);
 
-  folly::coro::Task<folly::Expected<moxygen::PublishOk, moxygen::PublishError>>
-  registerPublishOnRelayExec(
-      moxygen::PublishRequest pub,
-      std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle,
-      std::shared_ptr<moxygen::MoQSession> session,
-      ForwarderRef publisherRef,
-      std::shared_ptr<CrossExecFilter> relayChainFilter
-  );
-
   // TRACK_FILTER support
-
-  // Build the filter chain for a track subscription: TopNFilter → RelayIngestFilter → (cache) →
-  // forwarder. Used by both publish() and subscribe() paths to ensure consistent filter chain.
-  SubscriptionRegistry::FilterChainResult buildFilterChain(
-      const moxygen::FullTrackName& ftn,
-      std::shared_ptr<moxygen::MoQForwarder> forwarder
-  );
 
   // Get or create PropertyRanking for the given property type on a namespace node.
   // Retroactively registers any tracks already published under that node.
@@ -509,28 +485,6 @@ private:
 
   uint64_t getOrCreateLegacyPublisherHopID(const std::shared_ptr<moxygen::MoQSession>& session);
 
-  // Result of joinOrPrepareUpstreamSubscription (runs on relayExec_).
-  struct StatefulSubscribeResult {
-    folly::Executor* publisherExec{nullptr}; // owning executor of the publisher forwarder
-    std::optional<SubscribeResult> error;    // set on failure
-
-    // Set only for the FirstSubscriber path. Consumed by
-    // attachNewLocalForwarderOnRelayExec's publisherExec sortie (passive relay chain +
-    // upstream subscribe). Pending destructor fires on abandoned move.
-    struct FirstSubscriberSetup {
-      std::shared_ptr<moxygen::MoQForwarder> publisherForwarder;
-      std::shared_ptr<moxygen::MoQSession> upstreamSession;
-      moxygen::SubscribeRequest upstreamSubReq;
-      std::shared_ptr<moxygen::TrackConsumer> upstreamConsumer;
-      SubscriptionRegistry::UpstreamSubscribePending pending;
-      moxygen::RequestID clientRequestID;
-    };
-    std::optional<FirstSubscriberSetup> firstSetup;
-  };
-
-  folly::coro::Task<StatefulSubscribeResult>
-  joinOrPrepareUpstreamSubscription(moxygen::SubscribeRequest subReq);
-
   struct UpstreamOk {
     std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle;
     moxygen::RequestID requestID;
@@ -556,42 +510,6 @@ private:
       moxygen::RequestID clientRequestID
   );
 
-  // Output of attachNewLocalForwarderOnRelayExec, read on the subscriberExec tail. The relay
-  // chain filter is not exposed (setDownstream/teardown happen inside attach); the tail
-  // needs only ownsRelayChain to gate the sawOnEmpty teardown.
-  struct PublisherAttachment {
-    ForwarderRef publisherRef;
-    bool ownsRelayChain{false}; // firstSetup path installed the passive relay chain
-    std::shared_ptr<moxygen::MoQForwarder::Callback> finalCallback;
-    // Captured off the publisher forwarder on its own exec, the only race-free place.
-    InitialTrackState initial;
-    std::optional<SubscribeResult> error; // set => bail
-  };
-
-  folly::coro::Task<PublisherAttachment> attachNewLocalForwarderOnRelayExec(
-      const moxygen::SubscribeRequest& subReq,
-      LocalForwarderRegistry* subscriberReg,
-      folly::Executor* subscriberExec,
-      std::shared_ptr<CrossExecFilter> crossExecFilter,
-      bool forward
-  );
-
-  folly::coro::Task<SubscribeResult> subscribeFromSubscriberExec(
-      moxygen::SubscribeRequest subReq,
-      std::shared_ptr<moxygen::TrackConsumer> consumer,
-      std::shared_ptr<moxygen::MoQSession> session,
-      folly::Executor* subscriberExec
-  );
-
-  // Answers from this thread's local forwarder (race-free); nullopt defers to trackStatusImpl.
-  std::optional<moxygen::Publisher::TrackStatusResult>
-  trackStatusOnSubscriberExec(const moxygen::TrackStatus& req);
-
-  // Resolves a joining fetch against this thread's local forwarder (race-free). Rewrites to a
-  // standalone Fetch when largest is known, else clears joiningRequestID to defer to upstream.
-  moxygen::Fetch
-  fetchOnSubscriberExec(moxygen::Fetch fetch, const std::shared_ptr<moxygen::MoQSession>& session);
-
   // Impl methods — run on relayExec_ when set, or inline when relayExec_==nullptr.
   folly::coro::Task<SubscribeResult>
   subscribeImpl(moxygen::SubscribeRequest subReq, std::shared_ptr<moxygen::TrackConsumer> consumer);
@@ -607,10 +525,6 @@ private:
   );
   folly::coro::Task<moxygen::Publisher::TrackStatusResult> trackStatusImpl(moxygen::TrackStatus req
   );
-  // Must be scheduled on the publisher exec; looks the forwarder up in tlForwarders_ by FTN.
-  // nullopt means no active sub, defer upstream.
-  folly::coro::Task<std::optional<moxygen::TrackStatusOk>>
-  readPublisherForwarderStatus(bool hasHandle, moxygen::TrackStatus req);
   folly::coro::Task<void> onUpstreamConnectImpl(std::shared_ptr<moxygen::MoQSession> session);
 
   // Synchronous result of publishWithSession: the consumer the publisher writes
@@ -648,20 +562,6 @@ private:
 
   folly::Executor* relayExec() const { return relayExec_ ? relayExec_ : sessionExec_; }
 
-  // The relay's execution mode, derived from relayExec_/useLocalForwarders_:
-  //   SingleThread   - relayExec_ == nullptr: everything inline on the I/O thread.
-  //   RelayExec      - relayExec_ set, useLocalForwarders_ == false: relay state
-  //                    isolated on relayExec_; sessions hop via cross-exec filters.
-  //   LocalForwarder - relayExec_ set, useLocalForwarders_ == true: per-thread
-  //                    local forwarders shortcut the data plane.
-  enum class Mode { SingleThread, RelayExec, LocalForwarder };
-  Mode mode() const {
-    if (!relayExec_) {
-      return Mode::SingleThread;
-    }
-    return useLocalForwarders_ ? Mode::LocalForwarder : Mode::RelayExec;
-  }
-
   std::shared_ptr<moxygen::Publisher> findUpstreamPublisher(const moxygen::TrackNamespace& ns) {
     auto session = namespaceTree_.findPublisherSession(ns);
     if (!session) {
@@ -669,9 +569,6 @@ private:
     }
     return maybeWrapPublisher(relayExec_, std::move(session));
   }
-
-  bool useLocalForwarders_{false};
-  folly::ThreadLocalPtr<LocalForwarderRegistry> tlForwarders_;
 
   stats::TrackStatsRegistry trackStats_;
 

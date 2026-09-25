@@ -380,6 +380,7 @@ add_library(moqx_core STATIC
   src/PendingRendezvousTree.cpp
   src/SubscriptionRegistry.cpp
   src/MoqxRelay.cpp
+  src/LocalForwarderRelay.cpp
   src/MoqxRelayContext.cpp
   src/MoqxRelayServer.cpp
   src/MoqxPicoRelayServer.cpp
@@ -406,6 +407,7 @@ add_library(moqx_core STATIC
   src/relay/TopNFilter.cpp
   src/relay/TrackStatsFilter.cpp
   src/relay/PropertyRanking.cpp
+  src/relay/RelayDetail.cpp
   src/relay/CrossExecFilter.cpp
   src/relay/CrossExecForwarderCallback.cpp
   src/relay/WeakRelayForwarderCallback.cpp

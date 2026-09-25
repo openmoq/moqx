@@ -673,7 +673,7 @@ protected:
     serverPublisher_ = std::make_shared<NiceMock<MockPublisher>>();
     MoQIntegrationTestFixture::SetUp();
 
-    relay_ = std::make_shared<MoqxRelay>(config::CacheConfig{.maxCachedTracks = 0});
+    relay_ = MoqxRelay::create(config::CacheConfig{.maxCachedTracks = 0});
     relay_->setAllowedNamespacePrefix(TrackNamespace{}); // allow all namespaces
 
     auto onConnect = [relay = relay_](std::shared_ptr<MoQSession> session
