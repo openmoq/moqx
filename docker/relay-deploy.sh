@@ -17,6 +17,9 @@
 #   ENABLE_STATS      "true" → stats stack + public dashboard
 #   STATS_USER, STATS_PASSWORD, GRAFANA_ADMIN_PASSWORD   (required when stats on)
 #   STATS_PUBLIC_PORT (default 4533)
+#   CRASH_WATCH       "true" → install/refresh the host crash watcher (crash/)
+#   CRASH_GH_TOKEN    (optional) token the watcher files GitHub issues with;
+#                     empty → crash reports stay on the host
 set -euo pipefail
 cd "$(dirname "$0")"        # docker/
 
@@ -55,6 +58,32 @@ fi
 # on every deploy. Warn (don't fail) if it looks unapplied so a fresh host stands out.
 if [ "$(cat /proc/sys/net/core/wmem_max 2>/dev/null || echo 0)" -lt 16777216 ]; then
   echo "::warning::Host looks unprovisioned (net.core.wmem_max < 16 MiB). Run: sudo bash docker/setup-host.sh"
+fi
+
+# ── crash watcher ────────────────────────────────────────────────────────────
+# A host service, not a compose service: it keeps running through the compose
+# down below, so a crash during shutdown is caught too.
+install_if_changed() {  # src dst mode; succeeds only if dst was replaced
+  if sudo cmp -s "$1" "$2"; then return 1; fi
+  sudo install -D -m "$3" "$1" "$2" || exit 1
+}
+if [ "${CRASH_WATCH:-}" = "true" ]; then
+  if [ "$(cat /proc/sys/kernel/core_pattern)" != "/var/coredumps/core.%e.%p.%t" ]; then
+    echo "::warning::Relay core dumps are off (kernel.core_pattern). Run: sudo bash docker/setup-host.sh"
+  fi
+  env_file=$(mktemp)
+  printf 'GH_REPO=%s\nGH_TOKEN=%s\nCRASH_HOST=%s\n' "${GITHUB_REPOSITORY:-openmoq/moqx}" "${CRASH_GH_TOKEN:-}" "$DOMAIN" > "$env_file"
+  changed=false
+  install_if_changed crash/crash-watch.py /usr/local/libexec/moqx-crash/crash-watch.py 0755 && changed=true
+  install_if_changed crash/moqx-crash-watch.service /etc/systemd/system/moqx-crash-watch.service 0644 && changed=true
+  install_if_changed "$env_file" /etc/moqx-crash/env 0600 && changed=true
+  rm -f "$env_file"
+  if $changed || ! systemctl is-active --quiet moqx-crash-watch; then
+    sudo systemctl daemon-reload
+    sudo systemctl enable --quiet moqx-crash-watch
+    sudo systemctl restart moqx-crash-watch
+  fi
+  echo "==> Crash watcher: $(systemctl is-active moqx-crash-watch)"
 fi
 
 # ── pull + (re)create ────────────────────────────────────────────────────────

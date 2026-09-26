@@ -641,6 +641,8 @@ jobs:
           STATS_USER: ${{ secrets.STATS_USER }}
           STATS_PASSWORD: ${{ secrets.STATS_PASSWORD }}
           GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
+          CRASH_WATCH: "true"
+          CRASH_GH_TOKEN: ${{ secrets.OMOQ_CRASH_ISSUES_TOKEN }}
         run: bash docker/relay-deploy.sh
 
   # ════════════════════════════════════════════════════════════════════════════
