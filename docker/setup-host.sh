@@ -39,7 +39,9 @@ echo "    kernel tuning applied (rmem_max/wmem_max=16MiB, backlog=10000, optmem=
 # cores land in its /var/coredumps volume for crash/crash-watch.py. Host
 # processes have no /var/coredumps (don't create one) and dump nothing. apport
 # rewrites the pattern at boot and drops container crashes, so it is disabled.
-systemctl disable --now apport.service >/dev/null 2>&1 || true
+# apport is a sysv service here: `disable --now` would not stop it.
+systemctl stop apport.service >/dev/null 2>&1 || true
+systemctl disable apport.service >/dev/null 2>&1 || true
 tee /etc/sysctl.d/99-moqx-core.conf >/dev/null <<'SYSCTL'
 # moqx relay core dumps — managed by docker/setup-host.sh
 kernel.core_pattern = /var/coredumps/core.%e.%p.%t
