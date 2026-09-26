@@ -460,6 +460,15 @@ jobs:
   release:
     needs: [build, manifest]
     runs-on: ubuntu-22.04
+    # Main runs are otherwise fully parallel, and every rolling pointer is
+    # written here. Reading the current target and replacing it must not
+    # interleave: two runs reading the same target would both judge themselves
+    # ahead, and whichever wrote second would win regardless of age. One run at
+    # a time per ref, so the value read is the value replaced. Cheap to
+    # serialize — this job moves 0.12 GiB and some image tags.
+    concurrency:
+      group: ${{ github.workflow }}-release-${{ github.ref }}
+      cancel-in-progress: false
     outputs:
       tag: ${{ steps.tags.outputs.tag }}
       advanced: ${{ steps.order.outputs.advance }}
@@ -493,15 +502,32 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${{ steps.tags.outputs.tag }}"
-          CUR=$(gh release view "$TAG" --json targetCommitish --jq .targetCommitish 2>/dev/null || true)
-          STATUS=identical
-          if [ -n "$CUR" ]; then
-            STATUS=$(gh api "repos/${{ github.repository }}/compare/${CUR}...${GITHUB_SHA}" --jq .status)
+
+          # Only a 404 means "no snapshot yet". Treating a 5xx, a rate limit or
+          # an auth failure as absent would advance the pointers unconditionally
+          # and could deploy an older commit over a newer one.
+          if BODY=$(gh api "repos/${{ github.repository }}/releases/tags/$TAG" 2>&1); then
+            CUR=$(printf '%s' "$BODY" | jq -r '.target_commitish // ""')
+          elif printf '%s' "$BODY" | grep -q 'HTTP 404'; then
+            CUR=""
+          else
+            echo "::error::cannot read $TAG: $BODY"
+            exit 1
           fi
+
+          if [ -z "$CUR" ]; then
+            echo "advance=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          STATUS=$(gh api "repos/${{ github.repository }}/compare/${CUR}...${GITHUB_SHA}" --jq .status)
           case "$STATUS" in
             ahead|identical)
               echo "advance=true" >> "$GITHUB_OUTPUT" ;;
             *)
+              # A force-push can leave the target off the branch, which holds
+              # the pointers here for good; delete the rolling release once to
+              # recover (docs/release.md).
               echo "::notice::$TAG points at ${CUR:0:12}, which is $STATUS of this commit; leaving the rolling pointers"
               echo "advance=false" >> "$GITHUB_OUTPUT" ;;
           esac
@@ -597,7 +623,28 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # advanced was decided when the release job ran. A newer run can advance
+      # the pointers while this job waits for the relay runner, and deploying
+      # then would put the older commit on the relay. Read the target again.
+      - name: Confirm this commit is still current
+        id: current
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ needs.release.outputs.tag }}"
+          if ! CUR=$(gh api "repos/${{ github.repository }}/releases/tags/$TAG" --jq .target_commitish 2>&1); then
+            echo "::error::cannot read $TAG: $CUR"
+            exit 1
+          fi
+          if [ "$CUR" = "$GITHUB_SHA" ]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::$TAG now points at ${CUR:0:12}; a newer run has superseded this one, not deploying"
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Ensure DNS A record
+        if: steps.current.outputs.deploy == 'true'
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.OMOQ_CERTBOT_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.OMOQ_CERTBOT_SECRET_ACCESS_KEY }}
@@ -635,6 +682,7 @@ jobs:
           rm -f "$CHANGE_FILE"
 
       - name: Ensure TLS cert
+        if: steps.current.outputs.deploy == 'true'
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.OMOQ_CERTBOT_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.OMOQ_CERTBOT_SECRET_ACCESS_KEY }}
@@ -660,6 +708,7 @@ jobs:
           fi
 
       - name: Log in to GHCR
+        if: steps.current.outputs.deploy == 'true'
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
       # Auto-deploy uses the shared core (docker/relay-deploy.sh) with stats ON,
@@ -667,6 +716,7 @@ jobs:
       # this run's image by commit tag, not the registry's :latest, which a
       # parallel run may have moved since.
       - name: Deploy (relay + stats + public dashboard)
+        if: steps.current.outputs.deploy == 'true'
         env:
           ENABLE_STATS: "true"
           STATS_USER: ${{ secrets.STATS_USER }}
