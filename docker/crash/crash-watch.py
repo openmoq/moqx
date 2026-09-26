@@ -795,6 +795,9 @@ def watch():
         for line in proc.stdout:
             ev = json.loads(line)
             cid = ev["Actor"]["ID"]
+            # The container filter also matches longer names (moqx-grafana).
+            if ev["Actor"]["Attributes"].get("name") != CONTAINER:
+                continue
             if ev["Action"] == "oom":
                 oom_killed.add(cid)
                 continue
