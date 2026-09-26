@@ -533,7 +533,19 @@ jobs:
           fi
 
           if [ -z "$CUR" ]; then
-            echo "advance=true" >> "$GITHUB_OUTPUT"
+            # Absent is not always "never published": a newer run deletes the
+            # release before recreating it, and if that create fails the
+            # release is simply gone. An older queued run must not read that
+            # as a clean slate and take the pointers. Only the branch tip may
+            # claim a missing pointer.
+            TIP=$(gh api "repos/${{ github.repository }}/git/ref/heads/${{ github.ref_name }}" --jq .object.sha)
+            if [ "$GITHUB_SHA" = "$TIP" ]; then
+              echo "advance=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "::notice::$TAG is missing and this commit is not the ${{ github.ref_name }} tip; leaving the rolling pointers"
+              echo "advance=false" >> "$GITHUB_OUTPUT"
+              echo "state=held" >> "$GITHUB_OUTPUT"
+            fi
             exit 0
           fi
 
