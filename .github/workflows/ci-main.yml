@@ -469,6 +469,9 @@ jobs:
     concurrency:
       group: ${{ github.workflow }}-release-${{ github.ref }}
       cancel-in-progress: false
+      # queue: single (the default) cancels an already-pending job when another
+      # joins, which would drop a newer commit's snapshot and image tags.
+      queue: max
     outputs:
       tag: ${{ steps.tags.outputs.tag }}
       advanced: ${{ steps.order.outputs.advance }}
