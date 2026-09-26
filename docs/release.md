@@ -73,10 +73,10 @@ The deploy is a convenience with nothing downstream of it. If the relay ends up
 on the wrong build, redeploy it with the `deploy relay` workflow; the next push
 to `main` also puts it right.
 
-If `main` or a release branch is force-pushed, the pointer can end up on a
-commit that is no longer in the branch. Every later run then reads `diverged`
-and holds. To recover, delete the rolling pre-release once; the next push
-recreates it.
+`main` blocks force-pushes and deletions, so its pointer cannot end up off the
+branch. A release branch can: the pointer then reads `diverged` on every later
+run and holds. Delete that rolling pre-release once and the next push recreates
+it.
 
 ## Docker Image Tags
 
