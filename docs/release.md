@@ -48,12 +48,13 @@ conflict in favor of the release branch's pinned `MOXYGEN_REV`.
 
 ## Snapshot Releases
 
-Every push to `main` or `release/*` produces a rolling pre-release on GitHub:
+A push to `main` or `release/*` whose commit moves the snapshot forward
+produces a rolling pre-release on GitHub:
 
 - `main` → `snapshot-latest`
 - `release/<name>` → `snapshot-<name>-latest`
 
-Each push deletes and recreates the release at the new commit. Releases are marked `--prerelease` and contain the binary tarball (`moqx-bookworm-amd64.tar.gz`).
+Such a push deletes and recreates the release at its commit. Releases are marked `--prerelease` and contain the binary tarball (`moqx-bookworm-amd64.tar.gz`). A push that does not move the snapshot forward leaves the release alone — see Ordering below.
 
 ### Ordering
 
