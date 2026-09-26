@@ -488,7 +488,7 @@ jobs:
     outputs:
       tag: ${{ steps.tags.outputs.tag }}
       advanced: ${{ steps.order.outputs.advance }}
-      state: ${{ steps.order.outputs.state }}
+      state: ${{ steps.rolling.outputs.state || steps.order.outputs.state }}
     steps:
       - uses: actions/checkout@v5
 
@@ -534,15 +534,13 @@ jobs:
 
           if [ -z "$CUR" ]; then
             echo "advance=true" >> "$GITHUB_OUTPUT"
-            echo "state=moved" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           STATUS=$(gh api "repos/${{ github.repository }}/compare/${CUR}...${GITHUB_SHA}" --jq .status)
           case "$STATUS" in
             ahead|identical)
-              echo "advance=true" >> "$GITHUB_OUTPUT"
-              echo "state=moved" >> "$GITHUB_OUTPUT" ;;
+              echo "advance=true" >> "$GITHUB_OUTPUT" ;;
             *)
               # Expected while runs overlap: a newer commit already owns them.
               # diverged is unreachable on main (force-push and deletion are
@@ -613,6 +611,7 @@ jobs:
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
       - name: Advance rolling image tags
+        id: rolling
         if: steps.order.outputs.advance == 'true'
         run: |
           SHORT="${GITHUB_SHA:0:7}"
@@ -625,6 +624,9 @@ jobs:
                 "${IMAGE}:${SHORT}-arm64"
             done
           done
+          # Every rolling pointer is in place only now; a failure above leaves
+          # the state empty so the alerts do not claim otherwise.
+          echo "state=moved" >> "$GITHUB_OUTPUT"
 
   # ════════════════════════════════════════════════════════════════════════════
   # Deploy: auto-deploy main to moqx-main.ci.openmoq.org
