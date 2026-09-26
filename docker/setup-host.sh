@@ -2,8 +2,8 @@
 # One-time host provisioning for a moqx relay host.
 #
 # Sets up the HOST-level prerequisites the containerized relay + stats stack rely
-# on: QUIC/UDP kernel tuning and firewall rules. This is deliberately separate
-# from relay-deploy.sh (the per-deploy app bring-up) — host config shouldn't be
+# on: QUIC/UDP kernel tuning, relay core dumps, and firewall rules. This is
+# deliberately separate from relay-deploy.sh (the per-deploy app bring-up) — host config shouldn't be
 # re-applied on every redeploy. Run it ONCE per host (re-running is safe/idempotent);
 # relay-deploy.sh only *verifies* these are present and warns if not.
 #
@@ -33,6 +33,19 @@ SYSCTL
 # surface unrelated errors from other files on the host).
 sysctl -q -p /etc/sysctl.d/99-moqx-quic.conf
 echo "    kernel tuning applied (rmem_max/wmem_max=16MiB, backlog=10000, optmem=65536)"
+
+# ── relay core dumps ──────────────────────────────────────────────────────────
+# A file core_pattern resolves in the crashing process's mount namespace: relay
+# cores land in its /var/coredumps volume for crash/crash-watch.py. Host
+# processes have no /var/coredumps (don't create one) and dump nothing. apport
+# rewrites the pattern at boot and drops container crashes, so it is disabled.
+systemctl disable --now apport.service >/dev/null 2>&1 || true
+tee /etc/sysctl.d/99-moqx-core.conf >/dev/null <<'SYSCTL'
+# moqx relay core dumps — managed by docker/setup-host.sh
+kernel.core_pattern = /var/coredumps/core.%e.%p.%t
+SYSCTL
+sysctl -q -p /etc/sysctl.d/99-moqx-core.conf
+echo "    relay core dumps enabled (core_pattern -> the relay's /var/coredumps volume)"
 
 # ── firewall ──────────────────────────────────────────────────────────────────
 # Relay MoQ + pico + the public dashboard all live in the 4433-4533 range (kept
