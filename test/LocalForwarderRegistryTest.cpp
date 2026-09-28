@@ -5,6 +5,8 @@
  */
 
 #include "relay/LocalForwarderRegistry.h"
+#include "relay/ChannelSubscriber.h"
+#include "relay/NullConsumers.h"
 
 #include <folly/executors/InlineExecutor.h>
 #include <folly/portability/GMock.h>
@@ -583,6 +585,27 @@ TEST(LocalForwarderRegistryDeathTest, PendingEntryOutlivingRegistryAborts) {
       },
       "pending entry outlived its registry"
   );
+}
+
+// Each subscriber thread's registry keys one channel per publisher forwarder.
+TEST(LocalForwarderRegistryTest, OneChannelPerRegistry) {
+  Registry regA;
+  Registry regB;
+  EXPECT_NE(regA.channelId(), regB.channelId());
+
+  MoQForwarder fwd(kFtn);
+  auto first =
+      fwd.addSubscriber(regA.channelId(), /*forward=*/true, std::make_shared<NullTrackConsumer>());
+  auto again =
+      fwd.addSubscriber(regA.channelId(), /*forward=*/true, std::make_shared<NullTrackConsumer>());
+  fwd.addSubscriber(regB.channelId(), /*forward=*/true, std::make_shared<NullTrackConsumer>());
+  EXPECT_EQ(first, again);
+  EXPECT_EQ(fwd.subscriberCount(), 2u);
+
+  openmoq::moqx::removeChannelSubscriber(fwd, regA.channelId());
+  openmoq::moqx::removeChannelSubscriber(fwd, regA.channelId());
+  EXPECT_EQ(fwd.subscriberCount(), 1u);
+  EXPECT_NE(fwd.getSubscriber(regB.channelId()), nullptr);
 }
 
 } // namespace

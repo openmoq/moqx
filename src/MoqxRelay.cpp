@@ -666,8 +666,7 @@ Subscriber::PublishResult MoqxRelay::publishFromPublisherExec(
   auto crossExecFilter = CrossExecFilter::create(relayExec_, nullptr);
   // forward=true + passive=true: internal relay chain observes all objects but
   // does not count as a real forwarding subscriber.
-  localPubFwd
-      ->addChannelSubscriber(relayExec_, /*forward=*/true, crossExecFilter, /*passive=*/true);
+  localPubFwd->addSubscriber(relayChannelId_, /*forward=*/true, crossExecFilter, /*passive=*/true);
 
   auto publisherRef = makeForwarderRef(localPubFwd, session->getExecutor());
   auto ftn = pub.fullTrackName;
@@ -958,7 +957,7 @@ std::optional<MoqxRelay::PreparedPublish> MoqxRelay::startPublish(
     bool pinned,
     folly::Executor* subscriberExec
 ) {
-  auto subscriber = forwarder->addSubscriber(session, forward);
+  auto subscriber = forwarder->addSubscriber(session->sessionId(), forward);
   if (!subscriber) {
     XLOG(ERR) << "startPublish: addSubscriber null for " << forwarder->fullTrackName();
     return std::nullopt;
@@ -1038,20 +1037,20 @@ namespace {
 
 // Tears down an aborted local-forwarder setup: drops the channel sub(s) on the publisher
 // and drains subscriberLocalFwd via publishDone if given.  Only the first subscriber that
-// owns the relay chain can remove the relayExec's channel sub.
+// owns the relay chain can remove the relay chain's channel sub.
 // The drain runs inline, so a caller supplying subscriberLocalFwd must be on subscriberExec.
 void teardownLocalForwarderOnFailure(
     const openmoq::moqx::ForwarderRef& publisherRef,
-    folly::Executor* subscriberExec,
-    folly::Executor* relayExec,
+    SessionId subscriberChannelId,
+    std::optional<SessionId> relayChannelId,
     const std::shared_ptr<MoQForwarder>& subscriberLocalFwd = nullptr,
     std::string publishDoneReason = {}
 ) {
   if (publisherRef) {
-    publisherRef.post([ex = subscriberExec, re = relayExec](MoQForwarder& pf) {
-      pf.removeChannelSubscriberByExec(ex);
-      if (re) {
-        pf.removeChannelSubscriberByExec(re);
+    publisherRef.post([subscriberChannelId, relayChannelId](MoQForwarder& pf) {
+      removeChannelSubscriber(pf, subscriberChannelId);
+      if (relayChannelId) {
+        removeChannelSubscriber(pf, *relayChannelId);
       }
     });
   }
@@ -1095,13 +1094,13 @@ void teardownLocalForwarderOnFailure(
 //     localFwd.callback =
 //       LocalForwarderCallback(localReg, ftn,
 //         CrossExecForwarderCallback(publisherExec,
-//           ChannelForwarderCallback(channelSub, subscriberExec)))
+//           ChannelForwarderCallback(channelSub, channelId, subscriberExec)))
 //
 //   [subscriberExec] LocalForwarderCallback: removes from localReg on onEmpty,
 //                    passes through forwardChanged / newGroupRequested
 //       ↓ (CrossExecForwarderCallback dispatches to publisherExec)
 //   [publisherExec]    ChannelForwarderCallback:
-//                      onEmpty → publisherFwd->removeChannelSubscriberByExec(subscriberExec)
+//                      onEmpty → removeChannelSubscriber(publisherFwd, channelId)
 //                                (may cascade into publisherFwd's own callback chain above)
 //                      forwardChanged / newGroupRequested → launch background coro
 //                                                           → requestUpdate(handle_)
@@ -1142,10 +1141,15 @@ public:
 // channel-subscriber lifecycle events to the publisher and upstream handle.
 class ChannelForwarderCallback : public openmoq::moqx::TrackEventCallback {
 public:
-  ChannelForwarderCallback(ChannelSubscriber channelSub, folly::Executor* subscriberExec)
-      : channelSub_(std::move(channelSub)), subscriberExec_(subscriberExec) {}
+  ChannelForwarderCallback(
+      ChannelSubscriber channelSub,
+      moxygen::SessionId channelId,
+      folly::Executor* subscriberExec
+  )
+      : channelSub_(std::move(channelSub)), channelId_(channelId), subscriberExec_(subscriberExec) {
+  }
 
-  // Called on publisherExec immediately after addChannelSubscriber returns.
+  // Called on publisherExec immediately after the channel subscriber is added.
   void setHandle(std::shared_ptr<moxygen::Publisher::SubscriptionHandle> h) {
     handle_ = std::move(h);
   }
@@ -1155,9 +1159,9 @@ public:
   void setFilter(std::shared_ptr<CrossExecFilter> filter) { crossExecFilter_ = std::move(filter); }
 
   void onEmpty(const moxygen::FullTrackName& /*ftn*/) override {
-    channelSub_.detach(subscriberExec_);
+    channelSub_.detach(channelId_);
     // handle_ pins the chain (localFwd → callbacks → handle_ → CrossExecFilter → localFwd).
-    // removeChannelSubscriberByExec drops the publisher's ref but not this; in the replace
+    // removeChannelSubscriber drops the publisher's ref but not this; in the replace
     // scenario it never ran, so reset handle_ unconditionally.
     handle_.reset();
     // Post filter destruction to subscriberExec_ so FIFO ordering guarantees
@@ -1186,6 +1190,7 @@ public:
 
 private:
   ChannelSubscriber channelSub_;
+  moxygen::SessionId channelId_;
   folly::Executor* subscriberExec_;
   std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle_;
   std::shared_ptr<CrossExecFilter> crossExecFilter_;
@@ -1205,8 +1210,11 @@ LocalToPublisherCallbacks buildLocalToPublisherCallbacks(
     folly::Executor* subscriberExec
 ) {
   auto* publisherExec = channelSub.exec();
-  auto channelCb =
-      std::make_shared<ChannelForwarderCallback>(std::move(channelSub), subscriberExec);
+  auto channelCb = std::make_shared<ChannelForwarderCallback>(
+      std::move(channelSub),
+      localReg->channelId(),
+      subscriberExec
+  );
   auto crossExecCb = std::make_shared<CrossExecForwarderCallback>(publisherExec, channelCb);
   auto finalCallback =
       std::make_shared<LocalForwarderCallback>(localReg, std::move(ftn), std::move(crossExecCb));
@@ -1218,11 +1226,11 @@ LocalToPublisherCallbacks buildLocalToPublisherCallbacks(
 void installChannelSubscriber(
     ChannelForwarderCallback& channelCb,
     moxygen::MoQForwarder& publisherFwd,
-    folly::Executor* subscriberExec,
+    moxygen::SessionId channelId,
     bool forward,
     const std::shared_ptr<CrossExecFilter>& crossExecFilter
 ) {
-  auto chanHandle = publisherFwd.addChannelSubscriber(subscriberExec, forward, crossExecFilter);
+  auto chanHandle = publisherFwd.addSubscriber(channelId, forward, crossExecFilter);
   if (chanHandle) {
     channelCb.setHandle(chanHandle);
   }
@@ -1330,7 +1338,7 @@ folly::coro::Task<void> MoqxRelay::addSubscriberAndPublishViaLocalForwarder(
     installChannelSubscriber(
         *cbs.channelCb,
         publisherFwd,
-        subscriberExec,
+        localReg->channelId(),
         hasForwardingSub,
         crossExecFilter
     );
@@ -1351,8 +1359,8 @@ folly::coro::Task<void> MoqxRelay::addSubscriberAndPublishViaLocalForwarder(
     XLOG(ERR) << reason << " ftn=" << ftn;
     teardownLocalForwarderOnFailure(
         publisher->ref,
-        subscriberExec,
-        /*relayExec=*/nullptr,
+        localReg->channelId(),
+        /*relayChannelId=*/std::nullopt,
         localFwd,
         reason
     );
@@ -1631,7 +1639,7 @@ MoqxRelay::buildFilterChain(const FullTrackName& ftn, std::shared_ptr<MoQForward
   // Cache attaches as a passive subscriber of the forwarder.
   if (cache_) {
     forwarder->addSubscriber(
-        /*session=*/nullptr,
+        MoQSession::makeSessionId(),
         /*forward=*/true,
         cache_->makePassiveConsumer(ftn),
         /*passive=*/true
@@ -1943,7 +1951,7 @@ Publisher::SubscribeResult attachSubscriber(
     const SubscribeRequest& subReq,
     std::shared_ptr<TrackConsumer> consumer
 ) {
-  auto subscriber = fwd.addSubscriber(std::move(session), subReq, std::move(consumer));
+  auto subscriber = fwd.addSubscriber(session->sessionId(), subReq, std::move(consumer));
   if (!subscriber) {
     XLOG(ERR) << "addSubscriber returned null (draining?) for " << fwd.fullTrackName()
               << " reqID=" << subReq.requestID;
@@ -2102,7 +2110,7 @@ folly::coro::Task<MoqxRelay::PublisherAttachment> MoqxRelay::attachNewLocalForwa
         installChannelSubscriber(
             *cbs.channelCb,
             *publisherFwd,
-            subscriberExec,
+            subscriberReg->channelId(),
             forward,
             crossExecFilter
         );
@@ -2112,8 +2120,8 @@ folly::coro::Task<MoqxRelay::PublisherAttachment> MoqxRelay::attachNewLocalForwa
           // Passive relay chain (top-N/termination/cache): forward=true so it observes every
           // object, passive=true so it doesn't count as a forwarding subscriber or in the
           // onEmpty quorum (the publisher's onEmpty still fires when the last real sub leaves).
-          publisherFwd->addChannelSubscriber(
-              relayExec_,
+          publisherFwd->addSubscriber(
+              relayChannelId_,
               /*forward=*/true,
               relayChainFilter,
               /*passive=*/true
@@ -2317,8 +2325,8 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriber
   auto crossExecFilter = CrossExecFilter::create(subscriberExec, localFwd);
 
   // addSubscriber before the relay hop: numForwardingSubscribers() must be correct
-  // when addChannelSubscriber runs on publisherExec, so forward flag is right from the start.
-  auto sub = localFwd->addSubscriber(session, subReq, std::move(consumer));
+  // when the channel subscriber is added on publisherExec, so forward flag is right from the start.
+  auto sub = localFwd->addSubscriber(session->sessionId(), subReq, std::move(consumer));
   if (!sub) {
     co_return folly::makeUnexpected(makeAddSubscriberError(subReq.requestID));
   }
@@ -2339,8 +2347,8 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriber
     // upstream sub remain, so a later subscribe takes the SubsequentSubscriber path.
     teardownLocalForwarderOnFailure(
         attach.publisherRef,
-        subscriberExec,
-        attach.ownsRelayChain ? relayExec_ : nullptr
+        localReg->channelId(),
+        attach.ownsRelayChain ? std::optional(relayChannelId_) : std::nullopt
     );
     co_return folly::makeUnexpected(SubscribeError{
         subReq.requestID,
@@ -2352,8 +2360,8 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriber
   if (attach.error) {
     teardownLocalForwarderOnFailure(
         attach.publisherRef,
-        subscriberExec,
-        attach.ownsRelayChain ? relayExec_ : nullptr,
+        localReg->channelId(),
+        attach.ownsRelayChain ? std::optional(relayChannelId_) : std::nullopt,
         localFwd,
         attach.error->error().reasonPhrase
     );
@@ -2436,7 +2444,7 @@ MoqxRelay::subscribeImpl(SubscribeRequest subReq, std::shared_ptr<TrackConsumer>
     // Add subscriber first (with the client's original request) in case objects
     // arrive before subscribe OK.
     auto subscriber =
-        first->forwarder->addSubscriber(std::move(session), subReq, std::move(consumer));
+        first->forwarder->addSubscriber(session->sessionId(), subReq, std::move(consumer));
     if (!subscriber) {
       XLOG(ERR) << "addSubscriber returned null (draining?) for " << ftn
                 << " reqID=" << subReq.requestID;
@@ -2538,7 +2546,7 @@ Fetch MoqxRelay::fetchOnSubscriberExec(Fetch fetch, const std::shared_ptr<MoQSes
   auto* localReg = tlForwarders_.get();
   auto localFwd = localReg ? localReg->getIfReady(fetch.fullTrackName) : nullptr;
   if (localFwd) {
-    auto res = localFwd->resolveJoiningFetch(session, *joining);
+    auto res = localFwd->resolveJoiningFetch(session->sessionId(), *joining);
     if (res.hasValue()) {
       fetch.args = StandaloneFetch(res.value().start, res.value().end);
       return fetch;
@@ -2573,7 +2581,7 @@ MoqxRelay::fetchImpl(Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
       // Non-LF only (guarded above): the entry's ref is owned here.
       auto forwarder = fetchView->forwarder.getIfOwned();
       XCHECK(forwarder) << "joining fetch against a remote-owned entry";
-      auto res = forwarder->resolveJoiningFetch(session, *joining);
+      auto res = forwarder->resolveJoiningFetch(session->sessionId(), *joining);
       if (res.hasError()) {
         co_return folly::makeUnexpected(res.error());
       }
@@ -2922,17 +2930,17 @@ void MoqxRelay::onTrackEvicted(const FullTrackName& ftn, std::shared_ptr<MoQSess
 
   // PublishDone makes removeSubscriber notify the downstream via publishDone() rather
   // than silently dropping it.
-  auto evict = [session](const std::shared_ptr<MoQForwarder>& fwd) {
+  auto evict = [sessionId = session->sessionId()](const std::shared_ptr<MoQForwarder>& fwd) {
     if (!fwd) {
       return;
     }
-    auto sub = fwd->getSubscriber(session.get());
+    auto sub = fwd->getSubscriber(sessionId);
     if (!sub || sub->isPinned()) {
       XLOG(DBG4) << "onTrackEvicted: pinned/missing subscriber, skipping";
       return;
     }
     fwd->removeSubscriber(
-        session,
+        sessionId,
         PublishDone{RequestID(0), PublishDoneStatusCode::SUBSCRIPTION_ENDED, 0, "evicted"},
         "onTrackEvicted"
     );

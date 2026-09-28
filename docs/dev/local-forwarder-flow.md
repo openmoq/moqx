@@ -69,7 +69,7 @@ tell its own entry from one a reconnecting publisher put in its place.
 [Pub]         │     └─ tlForwarders_->replaceAndPark(ftn, fwd)  # → {claim, displaced}: the Claim plus
 [Pub]         │                                                 #   the parked occupant's identity
 [Pub]         ├─▶ claim.markReady(InitialTrackState{largest, extensions})
-[Pub]         ├─▶ localPubFwd->addChannelSubscriber(passive)  # passive copy → [Relay]
+[Pub]         ├─▶ localPubFwd->addSubscriber(relayChannelId_, passive)  # passive copy → [Relay]
 [Pub]         ├─▶ co_invoke(reply) ⇢⇢▶ [Relay]               # runs in the background
 [Pub]         └─▶ return {consumer, replyTask}                # immediate; the publisher can write now
 [Relay]            └─▶ registerPublishOnRelayExec()
@@ -181,7 +181,7 @@ upstream work, and nests a single sortie to `[Pub]` to wire the channel sub.
 [Pub]                        ├─▶ buildLocalToPublisherCallbacks()
 [Pub]                        ├─▶ installChannelSubscriber(localFwd ↔ publisherFwd)
 [Pub]                        ├─ if FIRST subscriber:
-[Pub]                        │    ├─▶ addChannelSubscriber(relayChain, passive)
+[Pub]                        │    ├─▶ addSubscriber(relayChannelId_, relayChain, passive)
 [Pub]                        │    ├─▶ subscribeUpstreamAndApplyOk()
 [Pub]                        │    └─▶ publisherClaim.markReady(InitialTrackState{ok})  # on OK only
 [Pub]                        └─▶ attach.initial = InitialTrackState::capture(publisherFwd)
@@ -218,7 +218,7 @@ frame's ref dies on the owning exec. What escapes to `[Relay]` and the tail is
 - **`PendingForwarderCallback` installed first** — events firing mid-setup are buffered, then
   replayed by `replayPendingFowarderEvents` so none are lost across the hops.
 - **`addSubscriber` before the hop** — `numForwardingSubscribers()` must be correct when
-  `addChannelSubscriber` runs on `[Pub]`, so the `forward` flag is right from the start.
+  the channel subscriber is added on `[Pub]`, so the `forward` flag is right from the start.
 - **Single `[Pub]` sortie** — merges channel-sub install + relay chain + upstream subscribe
   into one round-trip instead of bouncing `[Relay]↔[Pub]` twice.
 - **`sawOnEmpty` check in the tail** — all subscribers may cancel during the hops; if so,
@@ -329,8 +329,8 @@ changes, the publisher on `[Pub]` must react:
         └─ LocalForwarderCallback              # owns localReg removal (removeOnEmpty=true)
              └─ CrossExecForwarderCallback ⇢⇢▶ [Pub]
 [Pub]           └─ ChannelForwarderCallback:
-                     onEmpty           → channelSub.detach(subscriberExec)
-                                         # removeChannelSubscriberByExec on the publisher;
+                     onEmpty           → channelSub.detach(channelId)
+                                         # removeChannelSubscriber on the publisher;
                                          # may cascade into the publisher chain above
                      forwardChanged    → requestUpdate(handle, forward)   # background coro
                      newGroupRequested → requestUpdate(handle, group)     # background coro
@@ -341,6 +341,11 @@ on `[Pub]` where a strong ref is legitimately in hand. It also holds the channel
 can `requestUpdate` the publisher) and the `CrossExecFilter` ref; on `onEmpty` it posts the
 filter's destruction back to `[Sub]` so FIFO ordering lets any in-flight object lambdas there run
 before the filter is torn down.
+
+A forwarder keys its subscribers by `SessionId`. A channel has no session, so it uses a minted
+id. A subscriber thread's channel uses `localReg->channelId()`, which its
+registry mints once. The relay chain's channel uses `relayChannelId_`. A publisher forwarder
+therefore holds at most one channel per subscriber thread, plus the relay chain.
 
 ### Setup window: `PendingForwarderCallback`
 

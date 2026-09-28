@@ -629,6 +629,8 @@ private:
   std::shared_ptr<folly::Executor> ownedRelayExec_;
   std::unique_ptr<folly::EventBaseThreadTimekeeper> timekeeper_;
   folly::Executor* relayExec_{nullptr};
+  // Key for the relay chain's channel on each publisher forwarder.
+  const moxygen::SessionId relayChannelId_{moxygen::MoQSession::makeSessionId()};
   // Only set in single-threaded mode (relayExec_ == null); used as the
   // coroutine start executor for fire-and-forget tasks like doSubscribeUpdate.
   folly::Executor* sessionExec_{nullptr};
