@@ -49,6 +49,8 @@ MAX_NEW_ISSUES_PER_DAY = int(os.environ.get("CRASH_MAX_NEW_ISSUES_PER_DAY", "5")
 MAX_GDB_RUNS_PER_HOUR = int(os.environ.get("CRASH_MAX_GDB_RUNS_PER_HOUR", "6"))
 KEEP_BUNDLES = int(os.environ.get("CRASH_KEEP_BUNDLES", "20"))  # per signature
 KEEP_CORES = int(os.environ.get("CRASH_KEEP_CORES", "3"))  # per signature
+MAX_BUNDLES = int(os.environ.get("CRASH_MAX_BUNDLES", "500"))  # all signatures
+MAX_CORE_BYTES = int(float(os.environ.get("CRASH_MAX_CORE_GB", "20")) * 2**30)
 GDB_MEMORY = os.environ.get("CRASH_GDB_MEMORY", "8g")
 
 BUNDLES = CRASH_DIR / "bundles"
@@ -637,8 +639,12 @@ def issue_title(meta, top, frames):
     if not top:
         return f"Relay crash: {meta['signal']}, no usable stack"
     site = top[0]
-    if "::" not in site:  # e.g. a lambda's bare operator(): add where it is
-        locs = (f["loc"] for f in frames if f["loc"] and sig_name(f["fn"]) == site)
+    if "::" not in site:  # e.g. a lambda's bare operator(): add its source line
+        locs = (
+            f["loc"]
+            for f in frames
+            if re.search(r":\d+$", f["loc"]) and sig_name(f["fn"]) == site
+        )
         if loc := next(locs, None):
             site += f" at {short_path(loc)}"
     title = f"Relay crash: {meta['signal']} in {site}"
@@ -812,7 +818,8 @@ def process(bundle):
 
 
 def prune(sig):
-    """Keeps the newest bundles and cores of one signature."""
+    """Keeps the newest bundles and cores of sig, then holds the totals under
+    MAX_BUNDLES and MAX_CORE_BYTES by dropping the oldest."""
     mine = []
     for bundle in BUNDLES.iterdir():
         with contextlib.suppress(OSError, ValueError):
@@ -824,6 +831,17 @@ def prune(sig):
     for bundle in mine[KEEP_CORES:KEEP_BUNDLES]:
         for name in ("core", "core.zst"):
             (bundle / name).unlink(missing_ok=True)
+
+    oldest_first = sorted(BUNDLES.iterdir(), key=lambda b: b.name)
+    for bundle in oldest_first[: max(len(oldest_first) - MAX_BUNDLES, 0)]:
+        shutil.rmtree(bundle, ignore_errors=True)
+    cores = sorted(BUNDLES.glob("*/core.zst"), key=lambda p: p.parent.name)
+    total = sum(p.stat().st_size for p in cores)
+    for core in cores:
+        if total <= MAX_CORE_BYTES:
+            break
+        total -= core.stat().st_size
+        core.unlink()
 
 
 def worker(work):
