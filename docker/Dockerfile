@@ -77,6 +77,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY --from=moxygen /opt/moxygen/bin/moq_interop_client /usr/local/bin/moq_interop_client
 
+# Offer only the drafts the relay accepts, 18 preferred (the binary default).
+ENV MOQT_VERSIONS=18,16
+
 # Non-root, UID 1000 by interop-runner convention.
 RUN useradd -u 1000 -m interop
 USER interop
