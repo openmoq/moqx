@@ -1,0 +1,14 @@
+# Installed and restarted by docker/relay-deploy.sh (CRASH_WATCH=true).
+[Unit]
+Description=moqx relay crash watcher
+Requires=docker.service
+After=docker.service
+
+[Service]
+EnvironmentFile=-/etc/moqx-crash/env
+ExecStart=/usr/bin/python3 /usr/local/libexec/moqx-crash/crash-watch.py watch
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
