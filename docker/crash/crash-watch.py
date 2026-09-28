@@ -428,7 +428,19 @@ def core_dir(cid, attrs):
     return Path(r.stdout.strip()) if r.returncode == 0 else None
 
 
-def capture(ev, signo, oom):
+def pick_core(cores, died, run_start=None):
+    """The core this exit wrote, or None.
+
+    The kernel finishes writing a core just before the process exits, so a
+    core from outside a few seconds of the exit, or from before the crashed
+    run started, belongs to another crash.
+    """
+    lower = max(died - 5, run_start or 0)
+    found = [p for p in cores.glob("core.*") if lower <= p.stat().st_mtime <= died + 5]
+    return max(found, key=lambda p: p.stat().st_mtime, default=None)
+
+
+def capture(ev, signo, oom, run_start=None):
     """Moves the crash's core and log into a new bundle before anything else runs."""
     attrs, cid = ev["Actor"]["Attributes"], ev["Actor"]["ID"]
     died_ns = int(ev.get("timeNano") or int(ev["time"]) * 10**9)
@@ -443,18 +455,9 @@ def capture(ev, signo, oom):
 
     core_name = None
     cores = core_dir(cid, attrs)
-    if cores and cores.is_dir():
-        # The kernel finishes writing the core just before the process exits,
-        # so a core from outside a few seconds of the exit is from another
-        # crash. The container's StartedAt can't bound it: the relay has
-        # usually been restarted by the time it is read.
-        found = [
-            p for p in cores.glob("core.*") if died - 5 <= p.stat().st_mtime <= died + 5
-        ]
-        if found:
-            core = max(found, key=lambda p: p.stat().st_mtime)
-            shutil.move(str(core), str(bundle / "core"))
-            core_name = core.name
+    if cores and cores.is_dir() and (core := pick_core(cores, died, run_start)):
+        shutil.move(str(core), str(bundle / "core"))
+        core_name = core.name
 
     image_id = (
         attrs.get("com.docker.compose.image")
@@ -834,23 +837,27 @@ def worker(work):
             work.task_done()
 
 
-def on_event(line, oom_killed, work):
+def on_event(line, seen, work):
     ev = json.loads(line)
     cid = ev["Actor"]["ID"]
     # The container filter also matches longer names (moqx-grafana).
     if ev["Actor"]["Attributes"].get("name") != CONTAINER:
         return
+    if ev["Action"] == "start":
+        seen["started"][cid] = int(ev["timeNano"]) / 10**9
+        return
     if ev["Action"] == "oom":
-        oom_killed.add(cid)
+        seen["oom"].add(cid)
         return
     code = int(ev["Actor"]["Attributes"].get("exitCode", "0"))
     signo = code - 128 if code > 128 else 0
-    oom = signo == 9 and cid in oom_killed
-    oom_killed.discard(cid)
+    oom = signo == 9 and cid in seen["oom"]
+    seen["oom"].discard(cid)
+    run_start = seen["started"].pop(cid, None)
     if signo not in CRASH_SIGNALS and not oom:
         log(f"{CONTAINER} exited with code {code}, not a crash")
         return
-    work.put(capture(ev, signo, oom))
+    work.put(capture(ev, signo, oom, run_start))
 
 
 def watch():
@@ -860,13 +867,19 @@ def watch():
     github = "dry run" if DRY_RUN else ("on" if GH_TOKEN else "off (no GH_TOKEN)")
     log(f"watching container {CONTAINER}, GitHub reporting {github}")
     events = ["docker", "events", "--format", "{{json .}}"]
-    for f in ("type=container", f"container={CONTAINER}", "event=die", "event=oom"):
+    for f in [
+        "type=container",
+        f"container={CONTAINER}",
+        "event=start",
+        "event=die",
+        "event=oom",
+    ]:
         events += ["--filter", f]
-    oom_killed = set()
+    seen = {"oom": set(), "started": {}}  # by container id
     with subprocess.Popen(events, stdout=subprocess.PIPE, text=True) as proc:
         for line in proc.stdout:
             try:
-                on_event(line, oom_killed, work)
+                on_event(line, seen, work)
             except Exception:  # a restart would miss the events in between
                 log(f"event failed: {line.strip()[:300]}\n{traceback.format_exc()}")
     work.join()
