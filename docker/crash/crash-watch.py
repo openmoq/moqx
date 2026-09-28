@@ -207,16 +207,14 @@ def base_name(fn):
         s = head
 
 
-def sig_name(fn):
-    """Name that stays stable across builds: no clones, templates, lambda ids."""
-    s = re.sub(r"\s*\[clone [^\]]*\]", "", base_name(fn))
-    s = re.sub(r"\{lambda\([^{}]*\)#\d+\}|<lambda\([^<>]*\)>", "{lambda}", s)
-    s = s.replace("(anonymous namespace)::", "")
+def drop_templates(s, keep=""):
+    """s with each outermost template argument list replaced by keep."""
     for i, op in enumerate(OPERATORS):
         s = s.replace(op, f"\0{i}\0")
     out, depth = [], 0
     for c in s:
         if c == "<":
+            out.append(keep if depth == 0 else "")
             depth += 1
         elif c == ">":
             depth = max(depth - 1, 0)
@@ -225,6 +223,14 @@ def sig_name(fn):
     s = "".join(out)
     for i, op in enumerate(OPERATORS):
         s = s.replace(f"\0{i}\0", op)
+    return s
+
+
+def sig_name(fn):
+    """Name that stays stable across builds: no clones, templates, lambda ids."""
+    s = re.sub(r"\s*\[clone [^\]]*\]", "", base_name(fn))
+    s = re.sub(r"\{lambda\([^{}]*\)#\d+\}|<lambda\([^<>]*\)>", "{lambda}", s)
+    s = drop_templates(s.replace("(anonymous namespace)::", ""))
     head, _, tail = s.strip().rpartition(" ")
     if head and "operator" not in head and re.fullmatch(r"[\w:*& ]+", head):
         s = tail  # demangled return type
@@ -369,7 +375,10 @@ def source_links(frames, version, limit=3):
 def render(frames, limit=40):
     out = []
     for i, f in enumerate(frames[:limit]):
-        line = f"#{i:<3}{base_name(f['fn'])}"
+        name = base_name(f["fn"])
+        if not name.startswith("<"):  # keep "<signal handler called>"
+            name = drop_templates(name, "<…>")
+        line = f"#{i:<3}{name}"
         if f["loc"]:
             line += f"  {short_path(f['loc'])}"
         out.append(line[:300])
@@ -425,11 +434,14 @@ def capture(ev, signo, oom):
     core_name = None
     cores = core_dir(cid, attrs)
     if cores and cores.is_dir():
-        # The kernel finishes writing the core before the process exits.
+        # The kernel finishes writing the core just before the process exits,
+        # so an older core in the volume belongs to an earlier crash. The
+        # container's StartedAt can't bound it: the relay has usually been
+        # restarted by the time it is read.
         found = [
             p
             for p in cores.glob("core.*")
-            if died - 600 <= p.stat().st_mtime <= died + 5
+            if died - 30 <= p.stat().st_mtime <= died + 5
         ]
         if found:
             core = max(found, key=lambda p: p.stat().st_mtime)
@@ -586,12 +598,17 @@ def describe(meta, frames):
     return text
 
 
-def issue_title(meta, top):
+def issue_title(meta, top, frames):
     if meta["oom"]:
         return "Relay killed by the OOM killer"
     if not top:
         return f"Relay crash: {meta['signal']}, no usable stack"
-    title = f"Relay crash: {meta['signal']} in {top[0]}"
+    site = top[0]
+    if "::" not in site:  # e.g. a lambda's bare operator(): add where it is
+        locs = (f["loc"] for f in frames if f["loc"] and sig_name(f["fn"]) == site)
+        if loc := next(locs, None):
+            site += f" at {short_path(loc)}"
+    title = f"Relay crash: {meta['signal']} in {site}"
     return title if len(title) <= 120 else title[:117] + "..."
 
 
@@ -632,7 +649,7 @@ def report(sig, top, frames, meta, bundle, state):
         new = gh(
             "POST",
             f"repos/{GH_REPO}/issues",
-            {"title": issue_title(meta, top), "body": body, "labels": [LABEL]},
+            {"title": issue_title(meta, top, frames), "body": body, "labels": [LABEL]},
         )
         created.append(time.time())
         state.setdefault("issues", {})[sig] = new["number"]
