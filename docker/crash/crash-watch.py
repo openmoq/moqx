@@ -519,12 +519,12 @@ def slack(emoji, what, meta, number, title, url=None):
         log(f"dry run: slack: {text}")
         return
     data = json.dumps({"text": text}).encode()
-    req = urllib.request.Request(
-        SLACK_WEBHOOK_URL, data=data, headers={"Content-Type": "application/json"}
-    )
     try:
+        req = urllib.request.Request(
+            SLACK_WEBHOOK_URL, data=data, headers={"Content-Type": "application/json"}
+        )
         urllib.request.urlopen(req, timeout=10).close()
-    except OSError as e:
+    except (OSError, ValueError) as e:
         log(f"Slack post failed: {e!r}")
 
 
@@ -835,12 +835,14 @@ def prune(sig):
     oldest_first = sorted(BUNDLES.iterdir(), key=lambda b: b.name)
     for bundle in oldest_first[: max(len(oldest_first) - MAX_BUNDLES, 0)]:
         shutil.rmtree(bundle, ignore_errors=True)
-    cores = sorted(BUNDLES.glob("*/core.zst"), key=lambda p: p.parent.name)
-    total = sum(p.stat().st_size for p in cores)
+    # Raw cores too (zstd failed); blocks, not size, since they are sparse.
+    cores = [*BUNDLES.glob("*/core"), *BUNDLES.glob("*/core.zst")]
+    cores.sort(key=lambda p: p.parent.name)
+    total = sum(p.stat().st_blocks * 512 for p in cores)
     for core in cores:
         if total <= MAX_CORE_BYTES:
             break
-        total -= core.stat().st_size
+        total -= core.stat().st_blocks * 512
         core.unlink()
 
 
