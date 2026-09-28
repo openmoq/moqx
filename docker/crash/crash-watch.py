@@ -342,12 +342,17 @@ def gdb_decode(image_id, core):
     image = gdb_image(image_id)
     if not image:
         return None
-    return run(
-        ["docker", "run", "--rm", "--network", "none", "--memory", GDB_MEMORY]
-        + ["-v", f"{core.parent}:/crash:ro", image, *GDB_ARGS]
-        + [BINARY, f"/crash/{core.name}"],
-        timeout=1800,
-    ).stdout
+    # Named so a timed-out run can be removed: killing the CLI leaves it running.
+    name = f"moqx-crash-gdb-{core.parent.name}"
+    try:
+        return run(
+            ["docker", "run", "--rm", "--name", name, "--network", "none"]
+            + ["--memory", GDB_MEMORY, "-v", f"{core.parent}:/crash:ro", image]
+            + [*GDB_ARGS, BINARY, f"/crash/{core.name}"],
+            timeout=1800,
+        ).stdout
+    finally:
+        run(["docker", "rm", "-f", name])
 
 
 def short_path(loc):
@@ -424,24 +429,25 @@ def core_dir(cid, attrs):
 def capture(ev, signo, oom):
     """Moves the crash's core and log into a new bundle before anything else runs."""
     attrs, cid = ev["Actor"]["Attributes"], ev["Actor"]["ID"]
-    died = int(ev["time"])
+    died_ns = int(ev.get("timeNano") or int(ev["time"]) * 10**9)
+    died = died_ns / 10**9
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(died))
     bundle = BUNDLES / f"{stamp}-{cid[:12]}"
     bundle.mkdir(parents=True, exist_ok=True)
-    logs = run(["docker", "logs", "--until", str(died + 1), "--tail", "5000", cid])
+    # Up to the exit exactly: the restarted relay logs within the same second.
+    until = f"{died_ns // 10**9}.{died_ns % 10**9:09d}"
+    logs = run(["docker", "logs", "--until", until, "--tail", "5000", cid])
     (bundle / "container.log").write_text(logs.stdout)
 
     core_name = None
     cores = core_dir(cid, attrs)
     if cores and cores.is_dir():
         # The kernel finishes writing the core just before the process exits,
-        # so an older core in the volume belongs to an earlier crash. The
-        # container's StartedAt can't bound it: the relay has usually been
-        # restarted by the time it is read.
+        # so a core from outside a few seconds of the exit is from another
+        # crash. The container's StartedAt can't bound it: the relay has
+        # usually been restarted by the time it is read.
         found = [
-            p
-            for p in cores.glob("core.*")
-            if died - 30 <= p.stat().st_mtime <= died + 5
+            p for p in cores.glob("core.*") if died - 5 <= p.stat().st_mtime <= died + 5
         ]
         if found:
             core = max(found, key=lambda p: p.stat().st_mtime)
@@ -522,7 +528,6 @@ def find_issue(sig, site, state):
                 return issue, True
             if site_marker and site_marker in body and issue["state"] == "open":
                 same_site = same_site or issue
-                same_site = issue
         if len(issues) < 100:
             break
     return same_site, False
@@ -798,6 +803,25 @@ def worker(work):
             work.task_done()
 
 
+def on_event(line, oom_killed, work):
+    ev = json.loads(line)
+    cid = ev["Actor"]["ID"]
+    # The container filter also matches longer names (moqx-grafana).
+    if ev["Actor"]["Attributes"].get("name") != CONTAINER:
+        return
+    if ev["Action"] == "oom":
+        oom_killed.add(cid)
+        return
+    code = int(ev["Actor"]["Attributes"].get("exitCode", "0"))
+    signo = code - 128 if code > 128 else 0
+    oom = signo == 9 and cid in oom_killed
+    oom_killed.discard(cid)
+    if signo not in CRASH_SIGNALS and not oom:
+        log(f"{CONTAINER} exited with code {code}, not a crash")
+        return
+    work.put(capture(ev, signo, oom))
+
+
 def watch():
     BUNDLES.mkdir(parents=True, exist_ok=True)
     work = queue.Queue()
@@ -810,22 +834,10 @@ def watch():
     oom_killed = set()
     with subprocess.Popen(events, stdout=subprocess.PIPE, text=True) as proc:
         for line in proc.stdout:
-            ev = json.loads(line)
-            cid = ev["Actor"]["ID"]
-            # The container filter also matches longer names (moqx-grafana).
-            if ev["Actor"]["Attributes"].get("name") != CONTAINER:
-                continue
-            if ev["Action"] == "oom":
-                oom_killed.add(cid)
-                continue
-            code = int(ev["Actor"]["Attributes"].get("exitCode", "0"))
-            signo = code - 128 if code > 128 else 0
-            oom = signo == 9 and cid in oom_killed
-            oom_killed.discard(cid)
-            if signo not in CRASH_SIGNALS and not oom:
-                log(f"{CONTAINER} exited with code {code}, not a crash")
-                continue
-            work.put(capture(ev, signo, oom))
+            try:
+                on_event(line, oom_killed, work)
+            except Exception:  # a restart would miss the events in between
+                log(f"event failed: {line.strip()[:300]}\n{traceback.format_exc()}")
     work.join()
     sys.exit("docker events ended")
 
