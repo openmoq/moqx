@@ -20,6 +20,7 @@
 #   CRASH_WATCH       "true" → install/refresh the host crash watcher (crash/)
 #   CRASH_GH_TOKEN    (optional) token the watcher files GitHub issues with;
 #                     empty → crash reports stay on the host
+#   CRASH_SLACK_WEBHOOK_URL (optional) Slack webhook for new crash issues
 set -euo pipefail
 cd "$(dirname "$0")"        # docker/
 
@@ -72,7 +73,7 @@ if [ "${CRASH_WATCH:-}" = "true" ]; then
     echo "::warning::Relay core dumps are off (kernel.core_pattern). Run: sudo bash docker/setup-host.sh"
   fi
   env_file=$(mktemp)
-  printf 'GH_REPO=%s\nGH_TOKEN=%s\nCRASH_HOST=%s\n' "${GITHUB_REPOSITORY:-openmoq/moqx}" "${CRASH_GH_TOKEN:-}" "$DOMAIN" > "$env_file"
+  printf 'GH_REPO=%s\nGH_TOKEN=%s\nCRASH_HOST=%s\nSLACK_WEBHOOK_URL=%s\n' "${GITHUB_REPOSITORY:-openmoq/moqx}" "${CRASH_GH_TOKEN:-}" "$DOMAIN" "${CRASH_SLACK_WEBHOOK_URL:-}" > "$env_file"
   changed=false
   install_if_changed crash/crash-watch.py /usr/local/libexec/moqx-crash/crash-watch.py 0755 && changed=true
   install_if_changed crash/moqx-crash-watch.service /etc/systemd/system/moqx-crash-watch.service 0644 && changed=true

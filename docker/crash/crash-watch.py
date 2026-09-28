@@ -6,7 +6,8 @@ signal or the OOM killer, the watcher keeps the core dump and the run's log on
 this host, decodes the stack with gdb inside the image that crashed, and
 records the crash in one GitHub issue per unique stack. A repeat updates that
 issue's occurrence table, the first crash on a new build also adds a comment,
-and a crash on an issue closed as completed reopens it.
+and a crash on an issue closed as completed reopens it. New issues, new builds
+and reopens are also posted to Slack when SLACK_WEBHOOK_URL is set.
 
 Core dumps never leave this host: the repository is public and a core holds
 the relay's TLS key.
@@ -40,6 +41,7 @@ CRASH_DIR = Path(os.environ.get("CRASH_DIR", "/var/lib/moqx-crash"))
 HOST = os.environ.get("CRASH_HOST") or socket.getfqdn()
 GH_REPO = os.environ.get("GH_REPO", "openmoq/moqx")
 GH_TOKEN = os.environ.get("GH_TOKEN", "")
+SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL", "")
 LABEL = os.environ.get("CRASH_ISSUE_LABEL", "crash")
 DRY_RUN = os.environ.get("CRASH_DRY_RUN") == "1"
 # Caps that keep a crash loop from flooding the issue tracker or the disk.
@@ -498,6 +500,29 @@ def gh(method, path, body=None):
         return json.loads(resp.read() or b"null")
 
 
+def slack(emoji, what, meta, number, title, url=None):
+    """Posts one line about an issue to Slack. A failure is only logged."""
+    if not SLACK_WEBHOOK_URL and not DRY_RUN:
+        return
+    url = url or f"https://github.com/{GH_REPO}/issues/{number}"
+    title = title.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    text = (
+        f"{emoji} *{GH_REPO}* relay crashed on `{meta['host']}` (`{meta['version']}`): "
+        f"{what} <{url}|#{number} {title}>"
+    )
+    if DRY_RUN:
+        log(f"dry run: slack: {text}")
+        return
+    data = json.dumps({"text": text}).encode()
+    req = urllib.request.Request(
+        SLACK_WEBHOOK_URL, data=data, headers={"Content-Type": "application/json"}
+    )
+    try:
+        urllib.request.urlopen(req, timeout=10).close()
+    except OSError as e:
+        log(f"Slack post failed: {e!r}")
+
+
 def find_issue(sig, site, state):
     """(issue, exact) for sig, else an open issue with the same crash site.
 
@@ -651,27 +676,32 @@ def report(sig, top, frames, meta, bundle, state):
             ]
         )
         ensure_label()
+        title = issue_title(meta, top, frames)
         new = gh(
             "POST",
             f"repos/{GH_REPO}/issues",
-            {"title": issue_title(meta, top, frames), "body": body, "labels": [LABEL]},
+            {"title": title, "body": body, "labels": [LABEL]},
         )
         created.append(time.time())
         state.setdefault("issues", {})[sig] = new["number"]
+        slack(":boom:", "new issue", meta, new["number"], title, new.get("html_url"))
         return new["number"]
 
     number = issue["number"]
     body, new_build = bump(issue["body"] or "", row)
-    patch, lead = {"body": body}, None
+    patch, lead, note = {"body": body}, None, None
     if not exact:
         patch["body"] = f"{MARKER.format(sig)}\n{body}"
         lead = f"New call path into the same function (signature `{sig}`) on {row[0]} at {when} UTC."
+        note = (":boom:", "new call path for")
     elif issue["state"] == "closed":
         if issue.get("state_reason") == "completed":  # not "not planned"/duplicate
             patch["state"] = "open"
             lead = f"Seen again on {row[0]} at {when} UTC after this issue was closed."
+            note = (":rotating_light:", "reopened")
     elif new_build:
         lead = f"First seen on {row[0]} at {when} UTC."
+        note = (":repeat:", "first time on this build for")
     gh("PATCH", f"repos/{GH_REPO}/issues/{number}", patch)
     if lead:
         comment = (
@@ -679,6 +709,7 @@ def report(sig, top, frames, meta, bundle, state):
             f"<details><summary>Crashing thread</summary>\n\n```\n{stack}\n```\n\n</details>"
         )
         gh("POST", f"repos/{GH_REPO}/issues/{number}/comments", {"body": comment})
+        slack(*note, meta, number, issue.get("title", ""), issue.get("html_url"))
     state.setdefault("issues", {})[sig] = number
     return number
 

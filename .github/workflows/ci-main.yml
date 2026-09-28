@@ -643,6 +643,7 @@ jobs:
           GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
           CRASH_WATCH: "true"
           CRASH_GH_TOKEN: ${{ secrets.OMOQ_CRASH_DEBUG_TOKEN }}
+          CRASH_SLACK_WEBHOOK_URL: ${{ secrets.OMOQ_SLACK_WEBHOOK_URL }}
         run: bash docker/relay-deploy.sh
 
   # ════════════════════════════════════════════════════════════════════════════
