@@ -265,11 +265,14 @@ TEST_P(MoQRelayTest, SubscribeRejectsUpstreamUnsupportedMandatoryProperty) {
   upstreamOk.expires = std::chrono::milliseconds(0);
   upstreamOk.groupOrder = GroupOrder::OldestFirst;
   upstreamOk.extensions.insertMutableExtension(Extension{0x4000, 1});
+  std::shared_ptr<NiceMock<MockSubscriptionHandle>> upstreamHandle;
   EXPECT_CALL(*publisherSession, subscribe(_, _))
-      .WillOnce([upstreamOk](const SubscribeRequest&, std::shared_ptr<TrackConsumer>) {
-        auto handle = std::make_shared<NiceMock<MockSubscriptionHandle>>(upstreamOk);
+      .WillOnce([upstreamOk,
+                 &upstreamHandle](const SubscribeRequest&, std::shared_ptr<TrackConsumer>) {
+        upstreamHandle = std::make_shared<NiceMock<MockSubscriptionHandle>>(upstreamOk);
+        EXPECT_CALL(*upstreamHandle, unsubscribe());
         return folly::coro::makeTask<Publisher::SubscribeResult>(
-            folly::Expected<std::shared_ptr<SubscriptionHandle>, SubscribeError>(handle)
+            folly::Expected<std::shared_ptr<SubscriptionHandle>, SubscribeError>(upstreamHandle)
         );
       });
 
@@ -287,6 +290,8 @@ TEST_P(MoQRelayTest, SubscribeRejectsUpstreamUnsupportedMandatoryProperty) {
   removeSession(publisherSession);
   removeSession(subSession);
   driveIfMultiThread();
+  ASSERT_TRUE(upstreamHandle);
+  EXPECT_TRUE(testing::Mock::VerifyAndClearExpectations(upstreamHandle.get()));
 }
 
 // Regression: a second subscriber that arrives while a first subscriber's upstream

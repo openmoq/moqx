@@ -155,6 +155,81 @@ TEST_P(MoQRelayTest, FetchPrefersExactTrackOverNamespace) {
   removeSession(fetchSession);
 }
 
+// No-cache relay: an upstream FETCH_OK carrying a Mandatory Track Property is
+// rejected with UNSUPPORTED_EXTENSION and the upstream fetch is cancelled. The
+// upstream's endOfFetch() arrives first and must not reach the downstream.
+TEST_P(MoQRelayTest, FetchRejectsUpstreamUnsupportedMandatoryProperty) {
+  auto publisherSession = createMockSession();
+  auto fetchSession = createMockSession();
+  ON_CALL(*publisherSession, getNegotiatedVersion())
+      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft18)));
+  doPublishNamespace(publisherSession, kTestNamespace);
+
+  Extensions mandatoryExt;
+  mandatoryExt.insertMutableExtension(Extension{0x4000, 1});
+  std::shared_ptr<MockFetchHandle> upstreamHandle;
+  EXPECT_CALL(*publisherSession, fetch(_, _))
+      .WillOnce([&](Fetch, std::shared_ptr<FetchConsumer> consumer) {
+        consumer->endOfFetch();
+        upstreamHandle = std::make_shared<MockFetchHandle>(
+            FetchOk{RequestID(0), GroupOrder::OldestFirst, 0, AbsoluteLocation{1, 0}, mandatoryExt}
+        );
+        EXPECT_CALL(*upstreamHandle, fetchCancel());
+        return folly::coro::makeTask<Publisher::FetchResult>(upstreamHandle);
+      });
+
+  Fetch fetch(RequestID(0), kTestTrackName, AbsoluteLocation{0, 0}, AbsoluteLocation{1, 0});
+  auto fetchConsumer = std::make_shared<NiceMock<MockFetchConsumer>>();
+  EXPECT_CALL(*fetchConsumer, endOfFetch()).Times(0);
+  EXPECT_CALL(*fetchConsumer, reset(ResetStreamErrorCode::INTERNAL_ERROR));
+  withSessionContext(fetchSession, [&]() {
+    auto task = publisherInterface()->fetch(std::move(fetch), fetchConsumer);
+    auto res = folly::coro::blockingWait(std::move(task), exec_.get());
+    ASSERT_TRUE(res.hasError());
+    EXPECT_EQ(res.error().errorCode, FetchErrorCode::UNSUPPORTED_EXTENSION);
+  });
+
+  removeSession(publisherSession);
+  removeSession(fetchSession);
+  driveIfMultiThread();
+  ASSERT_TRUE(upstreamHandle);
+  EXPECT_TRUE(testing::Mock::VerifyAndClearExpectations(upstreamHandle.get()));
+}
+
+// draft-14/16 have no Mandatory Track Property concept, so a pre-v18 upstream
+// FETCH_OK carrying one is forwarded, including its held-back endOfFetch().
+TEST_P(MoQRelayTest, FetchIgnoresMandatoryPropertyPreV18) {
+  auto publisherSession = createMockSession();
+  auto fetchSession = createMockSession();
+  doPublishNamespace(publisherSession, kTestNamespace);
+
+  Extensions mandatoryExt;
+  mandatoryExt.insertMutableExtension(Extension{0x4000, 1});
+  EXPECT_CALL(*publisherSession, fetch(_, _))
+      .WillOnce([mandatoryExt](Fetch, std::shared_ptr<FetchConsumer> consumer) {
+        consumer->endOfFetch();
+        return folly::coro::makeTask<Publisher::FetchResult>(std::make_shared<MockFetchHandle>(
+            FetchOk{RequestID(0), GroupOrder::OldestFirst, 0, AbsoluteLocation{1, 0}, mandatoryExt}
+        ));
+      });
+
+  Fetch fetch(RequestID(0), kTestTrackName, AbsoluteLocation{0, 0}, AbsoluteLocation{1, 0});
+  auto fetchConsumer = std::make_shared<NiceMock<MockFetchConsumer>>();
+  EXPECT_CALL(*fetchConsumer, endOfFetch()).WillOnce([]() {
+    return folly::Expected<folly::Unit, MoQPublishError>(folly::unit);
+  });
+  EXPECT_CALL(*fetchConsumer, reset(_)).Times(0);
+  withSessionContext(fetchSession, [&]() {
+    auto task = publisherInterface()->fetch(std::move(fetch), fetchConsumer);
+    auto res = folly::coro::blockingWait(std::move(task), exec_.get());
+    EXPECT_TRUE(res.hasValue());
+  });
+
+  removeSession(publisherSession);
+  removeSession(fetchSession);
+  driveIfMultiThread();
+}
+
 // Joining fetch referencing a PUBLISH: onPublishOk must store the PUBLISH_OK
 // request id so the fetch matches the fanned-out subscription and resolves.
 TEST_P(MoQRelayTest, JoiningFetchAgainstPublish) {
