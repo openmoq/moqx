@@ -7,6 +7,7 @@
  */
 
 #include "MoqxCache.h"
+#include "relay/FetchOkGate.h"
 #include "relay/NullConsumers.h"
 #include "relay/TrackProperties.h"
 #include <folly/logging/xlog.h>
@@ -1466,16 +1467,27 @@ folly::coro::Task<Publisher::FetchResult> MoqxCache::fetch(
     // here: the request forwarded upstream has to keep the wire form.
     FetchRangeIterator
         fetchRangeIt(standalone->start, toExclusiveEnd(standalone->end), fetch.groupOrder, track);
-    auto writeback = std::make_shared<FetchWriteback>(
-        true,
-        std::move(consumer),
-        fetchRangeIt,
-        *this,
-        fetch.fullTrackName
-    );
+    auto gate = std::make_shared<FetchOkGate>(std::move(consumer));
+    auto writeback =
+        std::make_shared<FetchWriteback>(true, gate, fetchRangeIt, *this, fetch.fullTrackName);
     auto res = co_await upstream->fetch(fetch, writeback);
     if (res.hasValue()) {
+      if (hasUnsupportedMandatoryProperty(res.value()->fetchOk().extensions, upstreamVersion)) {
+        res.value()->fetchCancel();
+        if (!writeback->wasReset()) {
+          writeback->reset(ResetStreamErrorCode::INTERNAL_ERROR);
+        }
+        co_return folly::makeUnexpected(FetchError{
+            fetch.requestID,
+            FetchErrorCode::UNSUPPORTED_EXTENSION,
+            "unsupported mandatory track property"
+        });
+      }
       writeback->setUpstreamEnd(res.value()->fetchOk().endLocation);
+      gate->accept();
+    } else if (!writeback->wasReset() && gate->hasPendingTerminal()) {
+      // The held-back fin was the consumer's only terminal signal; replace it.
+      writeback->reset(ResetStreamErrorCode::CANCELLED);
     }
     recordUpstreamEndOfTrack(*track, res);
     co_return res;
@@ -1779,38 +1791,40 @@ folly::coro::Task<Publisher::FetchResult> MoqxCache::fetchUpstream(
   FetchRangeIterator fetchRangeIt(fetchStart, fetchEnd, fetch.groupOrder, track);
   // TODO: shrink the fetchInProgress range to a smaller upstream
   // FetchOk.endLocation. Until then, lookups past it wait until endOfFetch.
-  auto writeback = std::make_shared<FetchWriteback>(
-      lastObject,
-      consumer,
-      fetchRangeIt,
-      *this,
-      fetch.fullTrackName
-  );
+  auto gate = std::make_shared<FetchOkGate>(consumer);
+  auto writeback =
+      std::make_shared<FetchWriteback>(lastObject, gate, fetchRangeIt, *this, fetch.fullTrackName);
   auto res = co_await upstream->fetch(
       Fetch(0, fetch.fullTrackName, fetchStart, adjFetchEnd, fetch.priority, fetch.groupOrder),
       writeback
   );
   if (res.hasError()) {
     XLOG(ERR) << "upstream fetch failed err=" << res.error().reasonPhrase;
-    consumer->reset(ResetStreamErrorCode::CANCELLED);
+    if (!writeback->wasReset()) {
+      writeback->reset(ResetStreamErrorCode::CANCELLED);
+    }
     co_return folly::makeUnexpected(
         FetchError{fetch.requestID, res.error().errorCode, res.error().reasonPhrase}
     );
   }
 
-  XLOG(DBG1) << "upstream success";
-  writeback->setUpstreamEnd(res.value()->fetchOk().endLocation);
-  track->extensions = res.value()->fetchOk().extensions;
-  recordUpstreamEndOfTrack(*track, res);
-
-  if (hasUnsupportedMandatoryProperty(track->extensions, upstreamVersion)) {
-    consumer->reset(ResetStreamErrorCode::INTERNAL_ERROR);
+  if (hasUnsupportedMandatoryProperty(res.value()->fetchOk().extensions, upstreamVersion)) {
+    res.value()->fetchCancel();
+    if (!writeback->wasReset()) {
+      writeback->reset(ResetStreamErrorCode::INTERNAL_ERROR);
+    }
     co_return folly::makeUnexpected(FetchError{
         fetch.requestID,
         FetchErrorCode::UNSUPPORTED_EXTENSION,
         "unsupported mandatory track property"
     });
   }
+
+  XLOG(DBG1) << "upstream success";
+  writeback->setUpstreamEnd(res.value()->fetchOk().endLocation);
+  track->extensions = res.value()->fetchOk().extensions;
+  recordUpstreamEndOfTrack(*track, res);
+  gate->accept();
 
   if (lastObject) {
     if (!fetchHandle) {
