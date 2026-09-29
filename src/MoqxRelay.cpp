@@ -11,6 +11,7 @@
 #include "relay/CrossExecFilter.h"
 #include "relay/CrossExecForwarderCallback.h"
 #include "relay/CrossExecSubscriptionHandle.h"
+#include "relay/FetchOkGate.h"
 #include "relay/InitialTrackState.h"
 #include "relay/LocalForwarderCallback.h"
 #include "relay/NullConsumers.h"
@@ -2074,6 +2075,7 @@ MoqxRelay::subscribeUpstreamAndApplyOk(
   // Apply the OK to the forwarder; the NGR rides the outgoing SUBSCRIBE (record, don't fire).
   const auto& ok = subRes.value()->subscribeOk();
   if (hasUnsupportedMandatoryProperty(ok.extensions, upstreamVersion)) {
+    subRes.value()->unsubscribe();
     co_return folly::makeUnexpected(SubscribeError{
         clientRequestID,
         SubscribeErrorCode::UNSUPPORTED_EXTENSION,
@@ -2725,7 +2727,26 @@ MoqxRelay::fetchImpl(Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
       XLOG(DBG1) << "Upstream fetch {" << standalone->start.group << "," << standalone->start.object
                  << "}.." << standalone->end.group << "," << standalone->end.object << "}";
     }
-    co_return co_await upstreamPublisher->fetch(std::move(fetch), std::move(consumer));
+    auto requestID = fetch.requestID;
+    auto gate = std::make_shared<FetchOkGate>(std::move(consumer));
+    auto res = co_await upstreamPublisher->fetch(std::move(fetch), gate);
+    if (res.hasError()) {
+      if (gate->hasPendingTerminal()) {
+        gate->reset(ResetStreamErrorCode::CANCELLED);
+      }
+      co_return res;
+    }
+    if (hasUnsupportedMandatoryProperty(res.value()->fetchOk().extensions, upstreamVersion)) {
+      res.value()->fetchCancel();
+      gate->reset(ResetStreamErrorCode::INTERNAL_ERROR);
+      co_return folly::makeUnexpected(FetchError{
+          requestID,
+          FetchErrorCode::UNSUPPORTED_EXTENSION,
+          "unsupported mandatory track property"
+      });
+    }
+    gate->accept();
+    co_return res;
   }
   co_return co_await cache_
       ->fetch(std::move(fetch), std::move(consumer), std::move(upstreamPublisher), upstreamVersion);

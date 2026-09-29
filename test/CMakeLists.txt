@@ -344,6 +344,11 @@ moqx_add_gtest(moqx_track_properties_test
   LIBS moqx_core moqx_test_main GTest::gmock
 )
 
+moqx_add_gtest(moqx_fetch_ok_gate_test
+  SRCS FetchOkGateTest.cpp
+  LIBS moqx_core moqx_test_main GTest::gmock
+)
+
 moqx_add_gtest(moqx_local_forwarder_registry_test
   SRCS LocalForwarderRegistryTest.cpp
   LIBS moqx_core moqx_test_main GTest::gmock
