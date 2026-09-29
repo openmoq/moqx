@@ -1705,6 +1705,9 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
     // the returned handle so its teardown hops there too (no token: reciprocal).
     auto recipResult = co_await maybeWrapPublisher(relayExec_, session)
                            ->subscribeNamespace(std::move(peerSubNs), handle);
+    // The reciprocal is not cancellable. If the session closed while it was
+    // pending, its cleanup has already run and nothing removes a registration.
+    co_await folly::coro::co_safe_point;
     if (recipResult.hasError()) {
       XLOG(ERR) << "Reciprocal peer subNs failed: " << recipResult.error().reasonPhrase;
     } else {
