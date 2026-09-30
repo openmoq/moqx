@@ -18,9 +18,16 @@
 #   --relay-cpu PCT        Average relay CPU%
 #   --relay-rss-kb N       Peak relay RSS in KB
 #   --net-throughput-mbps N  Network throughput in Mbps
+#   --transport NAME       quic | webtransport | qmux
+#   --quic-stack STACK     Relay QUIC stack: mvfst | picoquic
+#   --cc ALGO              Congestion control the relay ran with
 #   --output PATH          Output JSON file
 
 set -euo pipefail
+
+# Bumped whenever the emitted shape changes; consumers (perf-compare.py, the
+# dashboard) treat a missing field as version 1 / mvfst.
+SCHEMA_VERSION=2
 
 # ── Defaults ───────────────────────────────────────────────────────────────────
 CLIENT_OUTPUT=""
@@ -40,6 +47,8 @@ RELAY_RSS_KB="0"
 NET_THROUGHPUT_MBPS="0"
 DELIVERY_TIMEOUT=500
 TRANSPORT="quic"
+QUIC_STACK="mvfst"
+CC=""
 OUTPUT="perf-results.json"
 
 # ── Arg parsing ────────────────────────────────────────────────────────────────
@@ -62,6 +71,8 @@ while [[ $# -gt 0 ]]; do
     --net-throughput-mbps) NET_THROUGHPUT_MBPS="$2"; shift 2 ;;
     --delivery-timeout)    DELIVERY_TIMEOUT="$2";    shift 2 ;;
     --transport)           TRANSPORT="$2";           shift 2 ;;
+    --quic-stack)          QUIC_STACK="$2";          shift 2 ;;
+    --cc)                  CC="$2";                  shift 2 ;;
     --output)              OUTPUT="$2";              shift 2 ;;
     *) echo "Unknown option: $1" >&2; exit 1 ;;
   esac
@@ -198,6 +209,7 @@ fi
 # ── Generate JSON ─────────────────────────────────────────────────────────────
 cat > "$OUTPUT" <<EOF
 {
+  "schema_version": $SCHEMA_VERSION,
   "commit": "$COMMIT",
   "commit_short": "${COMMIT:0:7}",
   "branch": "$BRANCH",
@@ -209,7 +221,9 @@ cat > "$OUTPUT" <<EOF
     "io_threads": $IO_THREADS,
     "client_threads": $CLIENT_THREADS,
     "delivery_timeout_ms": $DELIVERY_TIMEOUT,
-    "transport": "$TRANSPORT"
+    "transport": "$TRANSPORT",
+    "quic_stack": "$QUIC_STACK",
+    "cc": "$CC"
   },
   "results": {
     "peak_subscribers": $PEAK_SUBS,
