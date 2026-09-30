@@ -66,3 +66,6 @@ admin:
   track_metrics_enabled: true
   address: "${MOQX_BIND_ADDR}"
   plaintext: true
+
+# entrypoint.sh fills this with a logging.qlog block when MOQX_QLOG_SAMPLE > 0.
+${MOQX_QLOG_BLOCK}

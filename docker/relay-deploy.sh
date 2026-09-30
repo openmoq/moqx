@@ -15,6 +15,8 @@
 #   MOQX_CC, MOQX_PICO_CC, MOQX_BBR_SKIP_PROBE_RTT
 #                     (optional) congestion control overrides, see entrypoint.sh;
 #                     empty = entrypoint default
+#   MOQX_QLOG_SAMPLE  (optional) fraction of new mvfst connections to qlog;
+#                     empty = off
 #   PULL_IMAGE        (optional) full image ref to `docker pull` + retag :latest.
 #                     Empty → `docker compose pull` (compose's pinned :latest).
 #   ENABLE_STATS      "true" → stats stack + public dashboard
@@ -41,6 +43,7 @@ PUB_PORT="${STATS_PUBLIC_PORT:-4533}"
   echo "MOQX_CC=${MOQX_CC:-}"
   echo "MOQX_PICO_CC=${MOQX_PICO_CC:-}"
   echo "MOQX_BBR_SKIP_PROBE_RTT=${MOQX_BBR_SKIP_PROBE_RTT:-}"
+  echo "MOQX_QLOG_SAMPLE=${MOQX_QLOG_SAMPLE:-}"
   echo "MOQX_CPUS=$(nproc)"
   echo "MOQX_THREADS=$(nproc)"
 } > .env
@@ -132,18 +135,19 @@ if [ "${ENABLE_STATS:-}" = "true" ]; then
   ./grafana/publish-public-dashboard.sh publish || echo "::warning::public dashboard publish failed"
 fi
 
-# ── congestion control check ─────────────────────────────────────────────────
-# The mvfst settings live in the image's config template, so an older image
-# silently ignores them. Compare against the live config and fail on mismatch.
+# ── override check ───────────────────────────────────────────────────────────
+# The mvfst and qlog settings live in the image's config template, so an older
+# image silently ignores them. Compare against the live config; fail on mismatch.
 curl -sf "http://127.0.0.1:${ADMIN_PORT}/config" | python3 -c '
 import json, os, sys
+cfg = json.load(sys.stdin)
 want = {
     "mvfst": (os.environ.get("MOQX_CC") or "bbr",
               os.environ.get("MOQX_BBR_SKIP_PROBE_RTT") == "true"),
     "picoquic": (os.environ.get("MOQX_PICO_CC") or "bbr", None),
 }
 ok = True
-for l in json.load(sys.stdin)["listeners"]:
+for l in cfg["listeners"]:
     if l["quic_stack"] not in want:
         continue
     name = l["name"]
@@ -156,5 +160,14 @@ for l in json.load(sys.stdin)["listeners"]:
         print(f"::error::{name} is not running the requested congestion control"
               " (image predates the setting?)")
         ok = False
+want_qlog = float(os.environ.get("MOQX_QLOG_SAMPLE") or 0)
+qlog = (cfg.get("logging") or {}).get("qlog") or {}
+got_qlog = qlog.get("sample_rate", 0.0)
+qdir = qlog.get("dir", "-")
+print(f"==> qlog: sample_rate={got_qlog:g} dir={qdir}")
+if abs(got_qlog - want_qlog) > 1e-6:
+    print("::error::relay is not running the requested qlog sample rate"
+          " (image predates the setting?)")
+    ok = False
 sys.exit(0 if ok else 1)
 '

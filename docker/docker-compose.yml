@@ -46,6 +46,7 @@ services:
     volumes:
       - ${MOQX_CERTS_DIR:-/etc/letsencrypt}:/certs:ro
       - moqx-coredumps:/var/coredumps
+      - moqx-qlog:/var/log/moqx/qlog
       - ${MOQX_ENTRY:-./entrypoint.sh}:/usr/local/bin/entrypoint.sh:ro
     environment:
       MOQX_CERT: /certs/live/${DOMAIN}/fullchain.pem
@@ -67,6 +68,8 @@ services:
       MOQX_CC: ${MOQX_CC:-}
       MOQX_PICO_CC: ${MOQX_PICO_CC:-}
       MOQX_BBR_SKIP_PROBE_RTT: ${MOQX_BBR_SKIP_PROBE_RTT:-}
+      # Fraction of new mvfst connections to qlog; empty = off.
+      MOQX_QLOG_SAMPLE: ${MOQX_QLOG_SAMPLE:-}
     ulimits:
       core: -1
       # QUIC multiplexes many connections over few UDP sockets, so fd pressure is
@@ -369,5 +372,6 @@ services:
 volumes:
   prometheus-targets:
   moqx-coredumps:
+  moqx-qlog:
   prometheus-data:
   grafana-data:
