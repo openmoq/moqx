@@ -121,6 +121,9 @@ case "$QUIC_STACK" in
   *) echo "ERROR: --quic-stack must be 'mvfst' or 'picoquic'" >&2; exit 1 ;;
 esac
 
+RELAY_BIND_ADDR="::"
+[[ "$QUIC_STACK" == "picoquic" ]] && RELAY_BIND_ADDR="0.0.0.0"
+
 # Each stack spells BBR differently and the relay rejects the other's name.
 if [[ -z "$CC" ]]; then
   case "$QUIC_STACK" in
@@ -182,6 +185,7 @@ echo "  Duration:     ${DURATION}s"
 echo "  IO threads:   $IO_THREADS"
 echo "  Transport:    $TRANSPORT"
 echo "  QUIC stack:   $QUIC_STACK (cc $CC)"
+echo "  Bind address: $RELAY_BIND_ADDR"
 [[ ${#CLIENT_EXTRA_ARGS[@]} -gt 0 ]] && echo "  Client args:  ${CLIENT_EXTRA_ARGS[*]}"
 echo "  Warmup:       ${WARMUP}s (skip after client start)"
 echo "  Cooldown:     ${COOLDOWN}s (skip before client end)"
@@ -191,9 +195,9 @@ echo "════════════════════════�
 REMOTE_DIR="/tmp/moqx-perf-ci"
 
 timeout 5 ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "mkdir -p $REMOTE_DIR" || true
-timeout 5 ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "pkill -f '${REMOTE_DIR}/moqx' 2>/dev/null || true; pkill -f '${REMOTE_DIR}/moqtest_server' 2>/dev/null || true; pkill -f '${REMOTE_DIR}/perf-metrics.sh' 2>/dev/null || true" || true
+timeout 5 ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "pkill -f '^${REMOTE_DIR}/moqx' 2>/dev/null || true; pkill -f '^${REMOTE_DIR}/moqtest_server' 2>/dev/null || true; pkill -f '^bash ${REMOTE_DIR}/perf-metrics.sh' 2>/dev/null || true" || true
 timeout 5 ssh "${SSH_OPTS[@]}" "$CLIENT_HOST" "mkdir -p $REMOTE_DIR" || true
-timeout 5 ssh "${SSH_OPTS[@]}" "$CLIENT_HOST" "pkill -f '${REMOTE_DIR}/moqperf_test_client' 2>/dev/null || true" || true
+timeout 5 ssh "${SSH_OPTS[@]}" "$CLIENT_HOST" "pkill -f '^${REMOTE_DIR}/moqperf_test_client' 2>/dev/null || true" || true
 
 # ── Deploy binaries ────────────────────────────────────────────────────────────
 echo "Deploying binaries..."
@@ -240,8 +244,8 @@ fi
 # ── Cleanup trap ───────────────────────────────────────────────────────────────
 cleanup() {
   echo "Cleaning up remote processes..."
-  timeout 5 ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "pkill -f '${REMOTE_DIR}/moqx' 2>/dev/null || true; pkill -f '${REMOTE_DIR}/moqtest_server' 2>/dev/null || true; pkill -f '${REMOTE_DIR}/perf-metrics.sh' 2>/dev/null || true" 2>/dev/null || true
-  timeout 5 ssh "${SSH_OPTS[@]}" "$CLIENT_HOST" "pkill -f '${REMOTE_DIR}/moqperf_test_client' 2>/dev/null || true" 2>/dev/null || true
+  timeout 5 ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "pkill -f '^${REMOTE_DIR}/moqx' 2>/dev/null || true; pkill -f '^${REMOTE_DIR}/moqtest_server' 2>/dev/null || true; pkill -f '^bash ${REMOTE_DIR}/perf-metrics.sh' 2>/dev/null || true" 2>/dev/null || true
+  timeout 5 ssh "${SSH_OPTS[@]}" "$CLIENT_HOST" "pkill -f '^${REMOTE_DIR}/moqperf_test_client' 2>/dev/null || true" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -249,7 +253,7 @@ trap cleanup EXIT
 # Mirrors scripts/perf/perf-test.sh's relay launch so both harnesses share identical
 # tuning (thread count, flow control, UDP buffer, cc, GSO, recv batch). This
 # is what makes --io-threads actually take effect and stops CI trend drift.
-echo "Starting relay on $RELAY_HOST (quic_stack=$QUIC_STACK, io_threads=$IO_THREADS)..."
+echo "Starting relay on $RELAY_HOST (quic_stack=$QUIC_STACK, bind=$RELAY_BIND_ADDR, io_threads=$IO_THREADS)..."
 ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "
   ulimit -n 65536 2>/dev/null || true
   nohup env LD_LIBRARY_PATH=${REMOTE_DIR}/lib \
@@ -259,7 +263,7 @@ ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "
       ${RELAY_TLS_ARGS} --no-cache --ignore-path-mtu \
       --bin        ${REMOTE_DIR}/moqx \
       --config     ${REMOTE_DIR}/config.bench.yaml \
-      --bind       :: \
+      --bind       ${RELAY_BIND_ADDR} \
       --port       ${RELAY_PORT} \
       --admin-port ${ADMIN_PORT} \
       --endpoint   /moq-relay \
