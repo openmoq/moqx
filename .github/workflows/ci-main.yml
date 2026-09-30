@@ -494,8 +494,11 @@ jobs:
 
       - name: Compute tags
         id: tags
+        env:
+          # Through the environment: a release/** name is author-controlled and
+          # would otherwise be interpolated into this script's source.
+          BRANCH: ${{ github.ref_name }}
         run: |
-          BRANCH="${{ github.ref_name }}"
           if [[ "$BRANCH" == "main" ]]; then
             LABEL="main"
             TAG="snapshot-latest"
@@ -577,19 +580,22 @@ jobs:
         if: steps.order.outputs.advance == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The notes heredoc below is unquoted, so a release/** name reaching
+          # it as source would be command-substituted.
+          BRANCH: ${{ github.ref_name }}
         run: |
           SHORT="${GITHUB_SHA:0:7}"
           LABEL="${{ steps.tags.outputs.label }}"
           TAG="${{ steps.tags.outputs.tag }}"
 
           NOTES=$(cat <<EOF
-          Rolling snapshot of the latest build from \`${{ github.ref_name }}\`.
+          Rolling snapshot of the latest build from \`${BRANCH}\`.
 
           **Commit:** \`${GITHUB_SHA}\`
           **Built:** $(date -u +%Y-%m-%dT%H:%M:%SZ)
           **Docker:** \`ghcr.io/${{ github.repository }}:${SHORT}\`
 
-          This pre-release is automatically replaced on every push to \`${{ github.ref_name }}\`.
+          This pre-release is automatically replaced on every push to \`${BRANCH}\`.
           EOF
           )
 
