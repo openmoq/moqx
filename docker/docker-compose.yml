@@ -63,6 +63,10 @@ services:
       # IO worker threads — default matches the entrypoint (4); set to the core
       # count (e.g. 8) for sub-maximal load testing on the CI runner.
       MOQX_THREADS: ${MOQX_THREADS:-4}
+      # Congestion control per listener; empty = entrypoint default (bbr).
+      MOQX_CC: ${MOQX_CC:-}
+      MOQX_PICO_CC: ${MOQX_PICO_CC:-}
+      MOQX_BBR_SKIP_PROBE_RTT: ${MOQX_BBR_SKIP_PROBE_RTT:-}
     ulimits:
       core: -1
       # QUIC multiplexes many connections over few UDP sockets, so fd pressure is

@@ -19,6 +19,8 @@ listener_defaults:
     max_server_recv_packets_per_loop: ${MOQX_RECV_PKTS}
     udp_socket_buffer_bytes: ${MOQX_UDP_BUFFER}
     ignore_path_mtu: ${MOQX_IGNORE_PATH_MTU}
+    bbr:
+      probe_rtt_disabled_if_app_limited: ${MOQX_BBR_SKIP_PROBE_RTT}
 
 # Two listeners: mvfst on MOQX_PORT and (when enabled) picoquic on
 # MOQX_PICO_PORT — same cert/versions/endpoint, different stack + port.
@@ -38,6 +40,8 @@ listeners:
       key_file: "${MOQX_KEY}"
       insecure: ${MOQX_INSECURE}
     endpoint: "${MOQX_ENDPOINT}"
+    quic:
+      cc_algo: ${MOQX_CC}
 ${MOQX_PICO_LISTENER}
 
 services:

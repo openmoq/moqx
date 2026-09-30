@@ -33,6 +33,12 @@
 #   MOQX_RECV_PKTS        — mvfst max_server_recv_packets_per_loop (default: 256)
 #   MOQX_UDP_BUFFER       — relay UDP socket buffer bytes (default: net.core.wmem_max)
 #   MOQX_IGNORE_PATH_MTU  — send full-size packets, skip PMTU (default: false)
+#   MOQX_CC               — mvfst listener congestion control (default: bbr;
+#                           bbr|bbr2|bbr2modular|copa|cubic|newreno|none)
+#   MOQX_PICO_CC          — picoquic listener congestion control (default: bbr;
+#                           bbr|bbr1|c4|cubic|dcubic|fast|newreno|prague|reno)
+#   MOQX_BBR_SKIP_PROBE_RTT — mvfst bbr: skip PROBE_RTT while app-limited
+#                           (default: false)
 #   MOQX_JEMALLOC         — LD_PRELOAD jemalloc (~10% speedup). "auto" (default)
 #                           probes the multiarch paths; off/false/0 uses the
 #                           system allocator; an explicit path forces that lib.
@@ -114,6 +120,9 @@ export MOQX_SEND_PKTS="${MOQX_SEND_PKTS:-16}"
 export MOQX_RECV_PKTS="${MOQX_RECV_PKTS:-256}"
 export MOQX_UDP_BUFFER="${MOQX_UDP_BUFFER:-$(cat /proc/sys/net/core/wmem_max 2>/dev/null || echo 1048576)}"
 export MOQX_IGNORE_PATH_MTU="${MOQX_IGNORE_PATH_MTU:-false}"
+export MOQX_CC="${MOQX_CC:-bbr}"
+export MOQX_PICO_CC="${MOQX_PICO_CC:-bbr}"
+export MOQX_BBR_SKIP_PROBE_RTT="${MOQX_BBR_SKIP_PROBE_RTT:-false}"
 
 # Second (picoquic) listener for dual-stack serving. Opt out with
 # MOQX_PICO_ENABLE=false. picoquic needs real TLS, so it is auto-disabled under
@@ -140,6 +149,8 @@ if [ "$MOQX_PICO_ENABLE" = "true" ]; then
       key_file: "${MOQX_KEY}"
       insecure: ${MOQX_INSECURE}
     endpoint: "${MOQX_ENDPOINT}"
+    quic:
+      cc_algo: ${MOQX_PICO_CC}
 PICO
 )
 else
