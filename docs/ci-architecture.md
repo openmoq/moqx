@@ -73,6 +73,12 @@ facebookexperimental/moxygen  (upstream commit lands)
 
 The full chain from upstream commit to deployed relay is fully automated.
 
+Runs on `main` are parallel and can finish out of order, so the last two stages
+are conditional: the snapshot, the rolling image tags and the deploy only happen
+when the commit moves the snapshot forward. A run superseded by a newer commit
+publishes its per-commit tags and manifests and then stops, showing deploy as
+skipped. See [release.md](release.md#ordering).
+
 ---
 
 ## moxygen Workflows
