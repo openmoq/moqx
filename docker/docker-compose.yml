@@ -169,20 +169,15 @@ services:
       # Private stats surface — localhost only (tunnel). Full dashboard/admin.
       - "${STATS_BIND:-127.0.0.1}:${STATS_HTTPS_PORT:-443}:443/tcp"
       - "${STATS_BIND:-127.0.0.1}:${STATS_HTTP_PORT:-80}:80/tcp"
-      # Public dashboard surface — Grafana public-dashboard routes ONLY.
-      # Default 127.0.0.1 = off; set STATS_PUBLIC_BIND=0.0.0.0 to go public.
-      - "${STATS_PUBLIC_BIND:-127.0.0.1}:${STATS_PUBLIC_PORT:-4533}:${STATS_PUBLIC_PORT:-4533}/tcp"
     environment:
       DOMAIN: ${DOMAIN}
       STATS_USER: ${STATS_USER:-admin}
       STATS_PASSWORD: ${STATS_PASSWORD:-}
       STATS_HTPASSWD: ${STATS_HTPASSWD:-}
-      STATS_PUBLIC_PORT: ${STATS_PUBLIC_PORT:-4533}
     volumes:
       - ${MOQX_CERTS_DIR:-/etc/letsencrypt}:/certs:ro
       - ./nginx/templates:/etc/nginx/templates:ro
       - ./nginx/40-htpasswd.sh:/docker-entrypoint.d/40-htpasswd.sh:ro
-      - ./nginx/denylist.conf:/etc/nginx/denylist.conf:ro
       # Served at / — afrind's self-contained live dashboard (tools/, PR #479).
       - ../tools/metrics-dashboard.html:/usr/share/nginx/html/metrics-dashboard.html:ro
     logging:
@@ -247,10 +242,10 @@ services:
       GF_ANALYTICS_REPORTING_ENABLED: "false"
       # Land on the provisioned relay dashboard (read-only — see provider.yml).
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/provisioning/dashboards/moqx-overview.json
-      # Public dashboards: allow the per-dashboard tokenized public URL (served
-      # only via the nginx public port). Anonymous ORG access stays OFF — that
-      # would expose the whole instance; public dashboards don't need it.
-      GF_PUBLIC_DASHBOARDS_ENABLED: "true"
+      # Everything is behind nginx basic auth: no public (shared) dashboards and
+      # no anonymous access. Disabling the feature also stops serving any public
+      # dashboard already saved in grafana-data.
+      GF_PUBLIC_DASHBOARDS_ENABLED: "false"
       GF_AUTH_ANONYMOUS_ENABLED: "false"
       # Volkov Labs "Business Text" panel — renders the host-info card as a
       # formatted HTML template (clean, integrated) instead of chunky stat tiles.
@@ -277,8 +272,8 @@ services:
   # In the host netns it sees eth0 — the true platform ingress/egress. Because it
   # then leaves the compose bridge, Prometheus reaches it via host.docker.internal
   # (see the prometheus extra_hosts + the `node` job in prometheus.yml). Port 9100
-  # is bound host-wide but ufw default-denies it externally (only 22/443/4433:4533
-  # are open), and node metrics are non-secret on this open test relay regardless.
+  # is bound host-wide but ufw default-denies it externally (only 22, 443 and the
+  # relay's UDP ports are open), and node metrics are non-secret regardless.
   node-exporter:
     container_name: moqx-node-exporter
     image: prom/node-exporter:v1.8.2
@@ -335,6 +330,8 @@ services:
   # relay's namespace tree. /metrics/track takes a single namespace per
   # request, and namespaces come and go with events, so the list cannot be
   # static.
+  # Also serves moqx_namespace_origin on :9102 (peer relay ID or publisher IP
+  # per namespace) for the overview's Origin column.
   ns-targets:
     container_name: moqx-ns-targets
     image: python:3.12-alpine

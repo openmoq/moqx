@@ -233,7 +233,7 @@ jobs:
 
           # Deploy via the shared core (same script ci-main uses): writes .env,
           # pulls IMAGE_TAG (retagged :latest for compose), brings up the relay
-          # + stats + public dashboard when ENABLE_STATS, health check, publish.
+          # + stats stack when ENABLE_STATS, health check.
           PULL_IMAGE="ghcr.io/${{ github.repository }}:${IMAGE_TAG}" \
           MOQX_LOGGING="$LOGGING_CFG" \
           bash relay-deploy.sh
