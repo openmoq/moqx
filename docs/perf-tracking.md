@@ -42,6 +42,7 @@ Supported `workflow_dispatch` inputs (schedule runs use the defaults below):
 | `target_mbps` | `600` | Aggregate target throughput used to derive subscriber count |
 | `subscribers` | `0` | Optional override; zero derives count from target and profile |
 | `quic_stack` | `both` | Run `both`, `mvfst`, or `picoquic` |
+| `mvfst_cc` | `native` | mvfst CC override: `native` (`bbr2`), `bbr`, or `bbr2` |
 | `compare` | `true` | Compare against the published baseline and render a report into the step summary |
 | `pr` | _(blank)_ | PR number to also post the report to; blank = report stays in the step summary only |
 
@@ -62,6 +63,9 @@ receive the same derived count and client parameters within each profile.
 `subscribers` can override the count for smoke tests. Results record the
 profile, target, derived count, and object sizes; the aggregate target estimates
 offered load and does not guarantee measured throughput.
+The optional `mvfst_cc` dispatch input supports controlled CC experiments;
+use `compare: false` for overrides because published baselines are currently
+grouped by profile and stack, not congestion control.
 
 The 1 Mbps profile keeps the existing result filenames
 (`run-<sha>-mvfst.json` and `run-<sha>-picoquic.json`). Higher-rate profiles use

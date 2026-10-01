@@ -68,6 +68,14 @@ on:
           - mvfst
           - picoquic
         default: both
+      mvfst_cc:
+        description: 'mvfst congestion control override (native preserves bbr2)'
+        type: choice
+        options:
+          - native
+          - bbr
+          - bbr2
+        default: native
       compare:
         description: 'compare against the published nightly baseline and render a report'
         type: boolean
@@ -103,6 +111,10 @@ on:
         type: string
         required: false
         default: both
+      mvfst_cc:
+        type: string
+        required: false
+        default: native
       compare:
         type: boolean
         required: false
@@ -192,6 +204,12 @@ jobs:
             *) echo "ERROR: invalid quic_stack input: $STACK_SELECTION" >&2; exit 1 ;;
           esac
 
+          MVFST_CC="${{ inputs.mvfst_cc || 'native' }}"
+          case "$MVFST_CC" in
+            native|bbr|bbr2) ;;
+            *) echo "ERROR: mvfst_cc must be native, bbr, or bbr2" >&2; exit 1 ;;
+          esac
+
           TARGET_MBPS="${{ inputs.target_mbps }}"
           [[ -n "$TARGET_MBPS" ]] || TARGET_MBPS=600
           SUBSCRIBER_OVERRIDE="${{ inputs.subscribers || '0' }}"
@@ -220,6 +238,10 @@ jobs:
             CLIENT_ARGS="--first_object_size=${FIRST_OBJECT_SIZE} --other_object_size=${OTHER_OBJECT_SIZE} --objects_per_group 60 --delivery_timeout 5000"
 
             for STACK in "${STACKS[@]}"; do
+              CC_ARGS=()
+              if [[ "$STACK" == "mvfst" && "$MVFST_CC" != "native" ]]; then
+                CC_ARGS=(--cc "$MVFST_CC")
+              fi
               # Preserve the established 1 Mbps filenames; higher-rate profiles
               # add a profile component rather than replacing the old series.
               if [[ "$PROFILE" == "1mbps" ]]; then
@@ -243,6 +265,7 @@ jobs:
                 --profile-rate-mbps       "$PROFILE_RATE" \
                 --first-object-size       "$FIRST_OBJECT_SIZE" \
                 --other-object-size       "$OTHER_OBJECT_SIZE" \
+                "${CC_ARGS[@]}" \
                 --output                  "$FILE"; then
                 RUN_FILES+=("$FILE")
               else
