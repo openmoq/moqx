@@ -4,8 +4,8 @@ name: version release
 #
 # Tags vM.m.p on the dispatched ref (main or release/vM.m). Promotes the
 # corresponding rolling snapshot pre-release tarballs and, when feasible,
-# also builds portable linux-{amd64,arm64} tarballs against an explicit
-# moxygen release tag.
+# also builds portable linux-{amd64,arm64} and macos-15-arm64 tarballs
+# against an explicit moxygen release tag.
 #
 # Job graph (parallel):
 #
@@ -14,7 +14,7 @@ name: version release
 #     ▼
 #   create-release (--draft)
 #     │
-#     ├──► portable-build (matrix amd64/arm64, conditional)
+#     ├──► portable-build (matrix linux amd64/arm64 + macos arm64, conditional)
 #     │       └─► uploads directly to release
 #     ├──► promote-snapshot
 #     │       └─► xargs -P parallel uploads to release
@@ -201,7 +201,7 @@ jobs:
           # Probe portable assets.
           ASSETS=$(gh release view "$MOX_REF" --repo openmoq/moxygen --json assets --jq '.assets[].name')
           HAS_PORTABLE=true
-          for required in moxygen-linux-amd64.tar.gz moxygen-linux-arm64.tar.gz; do
+          for required in moxygen-linux-amd64.tar.gz moxygen-linux-arm64.tar.gz moxygen-macos-15-arm64.tar.gz; do
             if ! echo "$ASSETS" | grep -qx "$required"; then
               HAS_PORTABLE=false
               break
@@ -251,11 +251,12 @@ jobs:
           SNAPSHOT_SHA: ${{ needs.validate.outputs.snapshot_sha }}
         run: |
           if [ "$HAS_PORTABLE" = "true" ]; then
-            PORTABLE_NOTE="**Portable Linux tarballs** built against moxygen \`${MOX_REF}\`:
+            PORTABLE_NOTE="**Portable tarballs** built against moxygen \`${MOX_REF}\`:
           - \`moqx-linux-amd64.tar.gz\` — \`-march=x86-64-v2\` (≈ all cloud x86 since 2015)
-          - \`moqx-linux-arm64.tar.gz\` — \`-march=armv8-a\` (Graviton, Ampere, Apple M, RPi 3+, Rockchip)"
+          - \`moqx-linux-arm64.tar.gz\` — \`-march=armv8-a\` (Graviton, Ampere, Apple M, RPi 3+, Rockchip)
+          - \`moqx-macos-15-arm64.tar.gz\` — Apple silicon, macOS 15+, no Homebrew needed"
           else
-            PORTABLE_NOTE="_Portable Linux tarballs not produced for this release: moxygen \`${MOX_REF}\` does not include the required portable assets._"
+            PORTABLE_NOTE="_Portable tarballs not produced for this release: moxygen \`${MOX_REF}\` does not include the required portable assets._"
           fi
 
           # A failed prior run leaves an invisible draft; a second create with
@@ -296,7 +297,8 @@ jobs:
 
   # ════════════════════════════════════════════════════════════════════════════
   # Portable build: -O3, ISA-baselined, statically linked moqx-linux-{amd64,arm64}
-  # tarballs. Runs only when the moxygen reference carries portable assets.
+  # and moqx-macos-15-arm64 tarballs. Runs only when the moxygen reference
+  # carries portable assets.
   # Each runner uploads its own tarball directly to the draft release.
   # ════════════════════════════════════════════════════════════════════════════
 
@@ -322,7 +324,12 @@ jobs:
             runner: ubuntu-22.04-arm
             platform: linux-arm64
             cxx_flags: "-march=armv8-a -fno-omit-frame-pointer -fasynchronous-unwind-tables"
-    name: portable (${{ matrix.arch }})
+          # moxygen's macOS build takes the compiler defaults, so this does too.
+          - arch: arm64
+            runner: macos-15
+            platform: macos-15-arm64
+            cxx_flags: ""
+    name: portable (${{ matrix.platform }})
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Generate app token
@@ -345,8 +352,10 @@ jobs:
           # reaches the release build on its own. Only extras below: libdwarf
           # (prebuilt proxygen symbolizer), xxhash (folly), ca-certificates.
           scripts/install-system-deps.sh
-          sudo apt-get install -y --no-install-recommends \
-            ca-certificates libdwarf-dev libxxhash-dev
+          if [ "$RUNNER_OS" = Linux ]; then
+            sudo apt-get install -y --no-install-recommends \
+              ca-certificates libdwarf-dev libxxhash-dev
+          fi
 
       - name: Configure
         env:
@@ -361,9 +370,18 @@ jobs:
           # picks the tarball, a non-snapshot ref its release tag (BUILD.md#build).
           TAG_ARG=()
           [ "$MOX_REF" != "snapshot-latest" ] && TAG_ARG=(-DMOXYGEN_RELEASE_TAG="$MOX_REF")
-          # $ORIGIN/../lib plus the bundle step below make the tarball run on
-          # noble / RHEL 9 / AL2023 unaided. The version is passed in because the
-          # checkout is shallow, where git describe would yield a bare sha.
+          # Linux: $ORIGIN/../lib plus the bundle step below make the tarball run
+          # on noble / RHEL 9 / AL2023 unaided.
+          LINUX_ARGS=()
+          if [ "$RUNNER_OS" = Linux ]; then
+            LINUX_ARGS=(
+              -DCMAKE_INSTALL_RPATH='$ORIGIN/../lib'
+              -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON
+              -DCMAKE_DISABLE_FIND_PACKAGE_LibUnwind=TRUE
+            )
+          fi
+          # The version is passed in because the checkout is shallow, where git
+          # describe would yield a bare sha.
           cmake -S . -B _build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DMOQX_VERSION_STRING="${{ needs.validate.outputs.tag }}" \
@@ -371,18 +389,17 @@ jobs:
             "${TAG_ARG[@]}" \
             -DCMAKE_C_FLAGS="${{ matrix.cxx_flags }}" \
             -DCMAKE_CXX_FLAGS="${{ matrix.cxx_flags }}" \
-            -DCMAKE_INSTALL_RPATH='$ORIGIN/../lib' \
-            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
-            -DCMAKE_DISABLE_FIND_PACKAGE_LibUnwind=TRUE \
+            "${LINUX_ARGS[@]}" \
             -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/_install"
 
       - name: Build
-        run: cmake --build _build -j "$(nproc)"
+        run: cmake --build _build -j "$(getconf _NPROCESSORS_ONLN)"
 
       - name: Install
         run: cmake --install _build
 
       - name: Bundle non-toolchain dynamic deps
+        if: runner.os == 'Linux'
         run: |
           # Bundle SONAME-versioned .so deps so the tarball runs on any
           # modern Linux without distro-specific packages installed.
@@ -412,6 +429,34 @@ jobs:
           echo "==> bundled libs:"
           ls -lh _install/lib/
 
+      # Homebrew bumps library majors on upgrade, so the tarball carries its own
+      # copies, all referenced via @executable_path/../lib and ad-hoc re-signed.
+      - name: Bundle Homebrew dylibs
+        if: runner.os == 'macOS'
+        working-directory: _install
+        run: |
+          mkdir -p lib
+          # $2: the directory $1 was copied from, where its @rpath siblings live.
+          bundle() {
+            local dep base src
+            for dep in $(otool -L "$1" | awk 'NR > 1 && $1 ~ "^(/opt/homebrew/|/usr/local/|@rpath/)" { print $1 }'); do
+              base=$(basename "$dep")
+              src=$dep
+              if [[ $dep == @rpath/* ]]; then src="$2/$base"; fi
+              install_name_tool -change "$dep" "@executable_path/../lib/$base" "$1"
+              if [ ! -e "lib/$base" ]; then
+                cp -L "$src" "lib/$base"
+                chmod u+w "lib/$base"
+                install_name_tool -id "@executable_path/../lib/$base" "lib/$base"
+                bundle "lib/$base" "$(dirname "$(realpath "$src")")"
+              fi
+            done
+          }
+          for exe in bin/*; do bundle "$exe" ""; done
+          codesign --force --sign - lib/*.dylib bin/*
+          echo "==> bundled libs:"
+          ls -lh lib/
+
       - name: Package
         run: |
           ARTIFACT="moqx-${{ matrix.platform }}.tar.gz"
@@ -419,6 +464,7 @@ jobs:
           ls -lh "$ARTIFACT"
 
       - name: Smoke test
+        if: runner.os == 'Linux'
         run: |
           mkdir -p /tmp/moqx-smoke
           tar xzf "moqx-${{ matrix.platform }}.tar.gz" -C /tmp/moqx-smoke
@@ -428,6 +474,35 @@ jobs:
             echo "ERROR: missing shared libraries"
             exit 1
           fi
+
+      # Homebrew is installed here, so check what each binary references and
+      # what it actually loads, not merely that it starts.
+      - name: Smoke test (macOS)
+        if: runner.os == 'macOS'
+        env:
+          TAG: ${{ needs.validate.outputs.tag }}
+        run: |
+          mkdir -p /tmp/moqx-smoke
+          tar xzf "moqx-${{ matrix.platform }}.tar.gz" -C /tmp/moqx-smoke
+          echo "==> otool -L"
+          otool -L /tmp/moqx-smoke/bin/* /tmp/moqx-smoke/lib/*.dylib | tee /tmp/otool.out
+          if grep -E '^[[:space:]]' /tmp/otool.out | grep -v -E '@executable_path/\.\./lib/|^[[:space:]]+/usr/lib/|^[[:space:]]+/System/Library/'; then
+            echo "ERROR: references outside the tarball"
+            exit 1
+          fi
+          for exe in /tmp/moqx-smoke/bin/*; do
+            DYLD_PRINT_LIBRARIES=1 "$exe" --version > /tmp/dyld.out 2>&1 || true
+            if grep -E '/(opt/homebrew|usr/local)/' /tmp/dyld.out; then
+              echo "ERROR: $exe loaded a library from outside the tarball"
+              exit 1
+            fi
+          done
+          REPORTED=$(/tmp/moqx-smoke/bin/moqx --version 2>&1 || true)
+          echo "==> reported version: $REPORTED"
+          case "$REPORTED" in
+            *"$TAG"*) ;;
+            *) echo "ERROR: moqx does not report $TAG" >&2; exit 1 ;;
+          esac
 
       - name: Upload to release
         env:
