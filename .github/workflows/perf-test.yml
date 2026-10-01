@@ -23,7 +23,7 @@ name: perf test
 #
 # Publishing
 # ----------
-# Results stage as a Pages artifact (180-run rolling window + dashboard) and
+# Results stage as a Pages artifact (360-run rolling window + dashboard) and
 # only deploy on the nightly schedule. Manual / called runs upload the
 # artifact for inspection but do not publish — keeps experiments from
 # clobbering the main trend line at openmoq.org/moqx/.
@@ -47,6 +47,14 @@ on:
         description: 'peak subscribers'
         type: number
         default: 600
+      quic_stack:
+        description: 'QUIC stack(s) to test'
+        type: choice
+        options:
+          - both
+          - mvfst
+          - picoquic
+        default: both
       compare:
         description: 'compare against the published nightly baseline and render a report'
         type: boolean
@@ -70,6 +78,10 @@ on:
         type: number
         required: false
         default: 600
+      quic_stack:
+        type: string
+        required: false
+        default: both
       compare:
         type: boolean
         required: false
@@ -94,7 +106,7 @@ jobs:
     # Headroom for the from-source moxygen fallback on top of the perf runs.
     timeout-minutes: 240
     outputs:
-      run-file: ${{ steps.collect.outputs.run-file }}
+      run-files: ${{ steps.collect.outputs.run-files }}
     steps:
       - name: Generate app token
         id: app-token
@@ -144,31 +156,69 @@ jobs:
           PERF_RELAY_HOST:    ${{ secrets.PERF_RELAY_HOST }}
           PERF_CLIENT_HOST:   ${{ secrets.PERF_CLIENT_HOST }}
         run: |
-          FILE="run-${{ steps.sha.outputs.short }}.json"
+          STACK_SELECTION="${{ inputs.quic_stack || 'both' }}"
+          case "$STACK_SELECTION" in
+            both)     STACKS=(mvfst picoquic) ;;
+            mvfst)    STACKS=(mvfst) ;;
+            picoquic) STACKS=(picoquic) ;;
+            *) echo "ERROR: invalid quic_stack input: $STACK_SELECTION" >&2; exit 1 ;;
+          esac
+
+          RUN_FILES=()
+          FAILED_STACKS=()
           # Fallbacks: schedule events carry no `inputs`, so apply the canonical
           # nightly load when invoked by cron.
-          bash scripts/perf/perf-test-ci.sh \
-            --duration       "${{ inputs.duration || '120' }}" \
-            --subscriber-max "${{ inputs.subscribers || '600' }}" \
-            --ramp           150 \
-            --io-threads     4 \
-            --client-threads 8 \
-            --client-args    "--first_object_size=26516 --other_object_size=3788 --objects_per_group 60 --delivery_timeout 5000" \
-            --cooldown       10 \
-            --output         "$FILE"
-          echo "run-file=$FILE" >> "$GITHUB_OUTPUT"
+          for STACK in "${STACKS[@]}"; do
+            FILE="run-${{ steps.sha.outputs.short }}-${STACK}.json"
+            rm -f "$FILE"
+            if bash scripts/perf/perf-test-ci.sh \
+              --duration       "${{ inputs.duration || '120' }}" \
+              --subscriber-max "${{ inputs.subscribers || '600' }}" \
+              --ramp           150 \
+              --io-threads     4 \
+              --client-threads 8 \
+              --client-args    "--first_object_size=26516 --other_object_size=3788 --objects_per_group 60 --delivery_timeout 5000" \
+              --cooldown       10 \
+              --quic-stack     "$STACK" \
+              --output         "$FILE"; then
+              RUN_FILES+=("$FILE")
+            else
+              STATUS=$?
+              echo "WARNING: $STACK perf run failed (exit $STATUS)" >&2
+              if [[ "$STACK" != picoquic ]]; then
+                exit "$STATUS"
+              fi
+              FAILED_STACKS+=("$STACK")
+            fi
+          done
+
+          {
+            echo "run-files<<EOF"
+            if ((${#RUN_FILES[@]})); then printf '%s\n' "${RUN_FILES[@]}"; fi
+            echo "EOF"
+            echo "failed-stacks<<EOF"
+            if ((${#FAILED_STACKS[@]})); then printf '%s\n' "${FAILED_STACKS[@]}"; fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Render step summary
         if: always()
         env:
-          FILE: ${{ steps.collect.outputs.run-file }}
+          FILES: ${{ steps.collect.outputs.run-files }}
+          FAILED_STACKS: ${{ steps.collect.outputs.failed-stacks }}
         run: |
           {
             echo "## perf-test — $(date -u +'%Y-%m-%d %H:%M UTC')"
             echo
             echo "ref: \`${{ steps.sha.outputs.short }}\` · branch: \`${{ github.ref_name }}\` · subs: ${{ inputs.subscribers || '600' }} · duration: ${{ inputs.duration || '120' }}s"
             echo
-            if [ -f "$FILE" ]; then
+            if [[ -z "$FILES" ]]; then
+              echo "_no results JSON produced_"
+            fi
+            while IFS= read -r FILE; do
+              [[ -f "$FILE" ]] || continue
+              STACK=$(jq -r '.params.quic_stack // "mvfst"' "$FILE")
+              echo "### $STACK"
               echo '| metric | value |'
               echo '|---|---|'
               jq -r '
@@ -179,8 +229,10 @@ jobs:
                 | to_entries[]
                 | "| \(.key) | \(.value) |"
               ' "$FILE"
-            else
-              echo "_no results JSON produced_"
+              echo
+            done <<< "$FILES"
+            if [[ -n "$FAILED_STACKS" ]]; then
+              echo "Failed stack(s), non-fatal: $FAILED_STACKS"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -190,7 +242,7 @@ jobs:
         # No-op on the very first deploy (index.json 404).
         env:
           BASE: https://openmoq.org/moqx/perf
-          KEEP: 180
+          KEEP: 360
         run: |
           mkdir -p data
           if curl -fsSL "$BASE/index.json" -o data/index.json; then
@@ -202,8 +254,8 @@ jobs:
 
       - name: Stage Pages payload (dashboard + rolling window + new run)
         env:
-          KEEP: 180
-          FILE: ${{ steps.collect.outputs.run-file }}
+          KEEP: 360
+          FILES: ${{ steps.collect.outputs.run-files }}
         run: |
           OUT=perf-out
           mkdir -p "$OUT/perf"
@@ -212,15 +264,18 @@ jobs:
           # Copy historical runs, then the new run (overrides any stale copy
           # of the same SHA name)
           cp data/run-*.json "$OUT/perf/" 2>/dev/null || true
-          cp "$FILE" "$OUT/perf/$FILE"
+          while IFS= read -r FILE; do
+            [[ -f "$FILE" ]] || continue
+            cp "$FILE" "$OUT/perf/$FILE"
+          done <<< "$FILES"
           # Rebuild manifest with per-run metadata (branch + timestamp). The
           # run filenames are SHA-based, so they cannot be ordered by name —
-          # sort newest-first by timestamp. perf-compare.py filters entries by
-          # branch and the dashboard relies on chronological ordering. Cap KEEP.
+          # sort newest-first by timestamp. Historical files without a stack
+          # value are mvfst runs. Cap KEEP across both stacks.
           for f in "$OUT/perf/"run-*.json; do
             [ -e "$f" ] || continue
             jq -c --arg file "$(basename "$f")" \
-              '{file: $file, branch: (.branch // "unknown"), timestamp: (.timestamp // ""), commit: (.commit // "")}' "$f"
+              '{file: $file, branch: (.branch // "unknown"), quic_stack: (.params.quic_stack // "mvfst"), timestamp: (.timestamp // ""), commit: (.commit // "")}' "$f"
           done \
             | jq -s "sort_by(.timestamp) | reverse | .[0:${KEEP}] | {runs: .}" \
             > "$OUT/perf/index.json"
@@ -239,31 +294,50 @@ jobs:
         with:
           name: perf-results
           path: |
-            ${{ steps.collect.outputs.run-file }}
+            ${{ steps.collect.outputs.run-files }}
+            run-*.relay.log
             perf-out/
           retention-days: 30
 
       - name: Compare vs rolling baseline (report)
         # Opt-in via the `compare` input. perf-compare.py is non-blocking
         # (always exits 0) and renders a "no baseline yet" note on first run.
-        # Always compares against the published main trend, so the report is
-        # only meaningful when run at matching load (subs=1000).
+        # Each current run is compared only with history for its own stack.
         if: ${{ inputs.compare }}
         env:
-          FILE: ${{ steps.collect.outputs.run-file }}
+          FILES: ${{ steps.collect.outputs.run-files }}
         run: |
-          python3 scripts/perf/perf-compare.py \
-            --current "$FILE" \
-            --data-dir data \
-            --window 10 \
-            --threshold 5 \
-            --output comment.md
-          {
-            echo
-            echo "## perf comparison vs published baseline (subs=${{ inputs.subscribers || '600' }})"
-            echo
-            cat comment.md
-          } >> "$GITHUB_STEP_SUMMARY"
+          : > comment.md
+          COMPARED=0
+          while IFS= read -r FILE; do
+            [[ -f "$FILE" ]] || continue
+            STACK=$(jq -r '.params.quic_stack // "mvfst"' "$FILE")
+            REPORT="comment-${STACK}.md"
+            python3 scripts/perf/perf-compare.py \
+              --current "$FILE" \
+              --data-dir data \
+              --window 10 \
+              --threshold 5 \
+              --output "$REPORT"
+            {
+              echo "## $STACK perf comparison vs published baseline (subs=${{ inputs.subscribers || '600' }})"
+              echo
+              cat "$REPORT"
+              echo
+            } >> "$GITHUB_STEP_SUMMARY"
+            {
+              echo "## $STACK"
+              echo
+              cat "$REPORT"
+              echo
+            } >> comment.md
+            COMPARED=1
+          done <<< "$FILES"
+
+          if [[ "$COMPARED" -eq 0 ]]; then
+            echo "No successful stack results were available to compare." > comment.md
+            echo "No successful stack results were available to compare." >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Post comparison report to PR
         # Only when a PR number is supplied. Blank `pr` = zero PR footprint;

@@ -38,9 +38,20 @@ Supported `workflow_dispatch` inputs (schedule runs use the defaults below):
 | Input | Default | Description |
 |---|---:|---|
 | `duration` | `120` | Test duration in seconds |
-| `subscribers` | `100` | Peak subscribers |
+| `subscribers` | `600` | Peak subscribers |
+| `quic_stack` | `both` | Run `both`, `mvfst`, or `picoquic` |
 | `compare` | `true` | Compare against the published baseline and render a report into the step summary |
 | `pr` | _(blank)_ | PR number to also post the report to; blank = report stays in the step summary only |
+
+The nightly run and default manual dispatch test both stacks sequentially on the
+same VM pair. They are not a matrix because the relay and metrics poller are
+host-global. Results use separate files (`run-<sha>-mvfst.json` and
+`run-<sha>-picoquic.json`), and comparisons use only history for the same stack.
+A picoquic failure is initially non-fatal so it cannot prevent the mvfst result
+from being published. The dashboard defaults to compare mode, overlaying both
+stacks at shared commit positions. Single mode shows one stack's history and
+defaults to mvfst. The overlay distinguishes the stacks by color and line style
+and reports each stack's congestion-control algorithm.
 
 > **Branch under test:** there is no `ref` dispatch input — the run tests
 > whatever branch/tag is chosen in "Use workflow from". The `ref` input exists
@@ -89,8 +100,18 @@ Supported `workflow_dispatch` inputs (schedule runs use the defaults below):
 | Total Resets | count | ✗ | 50% |
 | UDP Errors/s | count | ✗ | 50% |
 
-Regression detection uses a rolling 10-run average on `main` as baseline.
-Warnings are non-blocking (PRs are not failed).
+Regression detection uses a rolling 10-run average on `main` for the same QUIC
+stack. Missing `schema_version` and `params.quic_stack` in historical results
+are treated as version 1 and mvfst respectively. Warnings are non-blocking
+(PRs are not failed).
+
+### Stack Comparability
+
+Each stack uses its native congestion-control spelling and algorithm: mvfst
+runs use `bbr2`, while picoquic runs use `bbr`. Consequently, differences
+between the two trend lines reflect both QUIC implementation and congestion
+control; cross-stack throughput comparisons are indicative, not controlled.
+Use each stack's own history to evaluate regressions.
 
 ## Test Parameters
 
@@ -201,5 +222,6 @@ queue and execute sequentially to avoid conflicting on the shared VMs.
 
 ## Data Retention
 
-The Pages payload keeps a rolling 180-run window (~6 months at 1 run/day).
-The manifest is rebuilt newest-first and capped during staging.
+The Pages payload keeps up to 360 run files, enough for roughly 180 nightly
+points per stack (about six months). The manifest is rebuilt newest-first and
+capped during staging.
