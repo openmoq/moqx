@@ -391,6 +391,7 @@ add_library(moqx_core STATIC
   src/admin/ConfigHandler.cpp
   src/admin/ConnectionLogsHandler.cpp
   src/admin/MetricsHandler.cpp
+  src/admin/QLogCaptureHandler.cpp
   src/admin/TrackMetricsHandler.cpp
   src/admin/StateHandler.cpp
   src/admin/StateResponse.cpp
@@ -412,6 +413,7 @@ add_library(moqx_core STATIC
   src/relay/PublisherCrossExecFilter.cpp
   src/relay/SubscriberCrossExecFilter.cpp
   src/logging/LogSetup.cpp
+  src/logging/QLogCapture.cpp
 )
 
 target_include_directories(moqx_core
