@@ -27,9 +27,9 @@ untrusted PR code.
   This is the only trigger that publishes to GitHub Pages.
 - **Manual run:** Actions tab → `perf test` (`workflow_dispatch`). Pick the
   branch/tag under test in the native **"Use workflow from"** selector, then
-  tune `subscribers`/`duration`, toggle `compare` to render a regression report,
-  and set `pr` to also post that report as a PR comment. Manual runs upload
-  artifacts but do not publish to the trend.
+  choose a `profile`, aggregate `target_mbps`, duration, and stack selection.
+  Set `subscribers` only to override the profile-derived count for a smoke run.
+  Manual runs upload artifacts but do not publish to the trend.
 - **Reusable call:** from another workflow via `workflow_call` (this form takes
   an explicit `ref` input for the commit/branch/tag to test).
 
@@ -38,29 +38,52 @@ Supported `workflow_dispatch` inputs (schedule runs use the defaults below):
 | Input | Default | Description |
 |---|---:|---|
 | `duration` | `120` | Test duration in seconds |
-| `subscribers` | `600` | Peak subscribers |
+| `profile` | `all` | Run all profiles or one of `1mbps`, `4mbps`, `16mbps` |
+| `target_mbps` | `600` | Aggregate target throughput used to derive subscriber count |
+| `subscribers` | `0` | Optional override; zero derives count from target and profile |
 | `quic_stack` | `both` | Run `both`, `mvfst`, or `picoquic` |
 | `compare` | `true` | Compare against the published baseline and render a report into the step summary |
 | `pr` | _(blank)_ | PR number to also post the report to; blank = report stays in the step summary only |
 
-The nightly run and default manual dispatch test both stacks sequentially on the
-same VM pair. They are not a matrix because the relay and metrics poller are
-host-global. Results use separate files (`run-<sha>-mvfst.json` and
-`run-<sha>-picoquic.json`), and comparisons use only history for the same stack.
-A picoquic failure is initially non-fatal so it cannot prevent the mvfst result
-from being published. The dashboard defaults to compare mode, overlaying both
-stacks at shared commit positions. Single mode shows one stack's history and
-defaults to mvfst. The overlay distinguishes the stacks by color and line style
-and reports each stack's congestion-control algorithm.
+The nightly run and default manual dispatch test each profile against both
+stacks sequentially on the same VM pair. They are not a matrix because the
+relay and metrics poller are host-global. Profiles are defined in
+[`scripts/perf/profiles.json`](/scripts/perf/profiles.json):
+
+| Profile | Nominal Mbps/subscriber | First object bytes | Other object bytes |
+|---|---:|---:|---:|
+| `1mbps` | 1 | 26,516 | 3,788 |
+| `4mbps` | 4 | 106,064 | 26,516 |
+| `16mbps` | 16 | 424,242 | 60,606 |
+
+Subscriber count is rounded from `target_mbps / mbps_per_subscriber`; at the
+default 600 Mbps target, profiles use 600, 150, and 38 subscribers. Both stacks
+receive the same derived count and client parameters within each profile.
+`subscribers` can override the count for smoke tests. Results record the
+profile, target, derived count, and object sizes; the aggregate target estimates
+offered load and does not guarantee measured throughput.
+
+The 1 Mbps profile keeps the existing result filenames
+(`run-<sha>-mvfst.json` and `run-<sha>-picoquic.json`). Higher-rate profiles use
+profile-qualified filenames, so existing 1 Mbps history remains valid and new
+profiles are additive. Historical records without `params.profile` are treated
+as `1mbps`; comparisons are isolated by both profile and stack. A picoquic
+failure is initially non-fatal so it cannot prevent mvfst results from being
+published.
+
+The dashboard defaults to Overview. It shows the latest throughput/core result
+for each profile and stack, followed by one history chart per profile with both
+stacks overlaid. Compare mode shows all tracked metrics for both stacks within
+the selected profile; Single mode shows one stack's history. The profile
+selector appears to the right of the mode selector in Compare and Single modes.
+Stack colors and line styles are consistent across modes.
 
 > **Branch under test:** there is no `ref` dispatch input — the run tests
 > whatever branch/tag is chosen in "Use workflow from". The `ref` input exists
 > only on the `workflow_call` form for programmatic callers.
 
-> **Subscriber note:** `workflow_dispatch` defaults `subscribers` to `100` for
-> quick smoke runs, while the nightly trend is captured at `1000`. The
-> comparison always scores against the published `main` trend, so for a
-> meaningful report dispatch with `subscribers: 1000`.
+> **Subscriber note:** use `subscribers` as a temporary override for smoke
+> runs. Normal runs derive counts from `target_mbps` and the selected profile.
 
 > **Referencing a run on a PR without posting:** leave `pr` blank. The
 > comparison report is always written to the run's **step summary**, whose URL
@@ -101,9 +124,9 @@ and reports each stack's congestion-control algorithm.
 | UDP Errors/s | count | ✗ | 50% |
 
 Regression detection uses a rolling 10-run average on `main` for the same QUIC
-stack. Missing `schema_version` and `params.quic_stack` in historical results
-are treated as version 1 and mvfst respectively. Warnings are non-blocking
-(PRs are not failed).
+stack and workload profile. Missing `schema_version`, `params.quic_stack`, and
+`params.profile` in historical results are treated as version 1, mvfst, and
+`1mbps` respectively. Warnings are non-blocking (PRs are not failed).
 
 ### Stack Comparability
 
@@ -222,6 +245,6 @@ queue and execute sequentially to avoid conflicting on the shared VMs.
 
 ## Data Retention
 
-The Pages payload keeps up to 360 run files, enough for roughly 180 nightly
-points per stack (about six months). The manifest is rebuilt newest-first and
-capped during staging.
+The Pages payload keeps up to 1080 run files, enough for roughly 180 nightly
+points for each of three profiles across two stacks (about six months). The
+manifest is rebuilt newest-first and capped during staging.

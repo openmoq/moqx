@@ -1,0 +1,22 @@
+{
+  "profiles": [
+    {
+      "id": "1mbps",
+      "mbps_per_subscriber": 1,
+      "first_object_size": 26516,
+      "other_object_size": 3788
+    },
+    {
+      "id": "4mbps",
+      "mbps_per_subscriber": 4,
+      "first_object_size": 106064,
+      "other_object_size": 26516
+    },
+    {
+      "id": "16mbps",
+      "mbps_per_subscriber": 16,
+      "first_object_size": 424242,
+      "other_object_size": 60606
+    }
+  ]
+}

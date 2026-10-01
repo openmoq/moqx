@@ -43,10 +43,15 @@ def run_stack(run: dict) -> str:
     return (run.get("params") or {}).get("quic_stack") or "mvfst"
 
 
+def run_profile(run: dict) -> str:
+    """Return the run's profile, treating historical results as 1mbps."""
+    return (run.get("params") or {}).get("profile") or "1mbps"
+
+
 def load_baseline_data(
-    data_dir: Path, branch: str, stack: str, window: int
+    data_dir: Path, branch: str, stack: str, profile: str, window: int
 ) -> list[dict]:
-    """Load the most recent N results for a branch and QUIC stack."""
+    """Load the most recent N results for a branch, stack, and profile."""
     results = []
     index_path = data_dir / "index.json"
 
@@ -54,12 +59,13 @@ def load_baseline_data(
         with open(index_path) as f:
             index = json.load(f)
 
-        # Missing stack metadata identifies legacy mvfst runs.
+        # Missing stack/profile metadata identifies legacy mvfst/1mbps runs.
         entries = [
             e
             for e in index.get("runs", [])
             if e.get("branch") == branch
             and (e.get("quic_stack") or "mvfst") == stack
+            and (e.get("profile") or "1mbps") == profile
         ]
         # Sort by timestamp descending
         entries.sort(key=lambda e: e.get("timestamp", ""), reverse=True)
@@ -81,7 +87,11 @@ def load_baseline_data(
                 continue
             try:
                 data = load_results_file(jf)
-                if data.get("branch") == branch and run_stack(data) == stack:
+                if (
+                    data.get("branch") == branch
+                    and run_stack(data) == stack
+                    and run_profile(data) == profile
+                ):
                     results.append(data)
             except (json.JSONDecodeError, KeyError):
                 continue
@@ -196,6 +206,7 @@ def generate_markdown(
 
     commit_short = current.get("commit_short", current.get("commit", "")[:7])
     stack = run_stack(current)
+    profile = run_profile(current)
 
     has_regressions = any(c["status"] == "regression" for c in comparisons)
     has_baseline = baseline_count > 0
@@ -209,11 +220,11 @@ def generate_markdown(
 
     if has_baseline:
         lines.append(
-            f"Comparing `{commit_short}` ({stack}) against rolling {baseline_count}-run average on `main` for the same stack."
+            f"Comparing `{commit_short}` ({profile}, {stack}) against rolling {baseline_count}-run average on `main` for the same profile and stack."
         )
     else:
         lines.append(
-            f"Results for `{commit_short}` ({stack}; no matching baseline data available yet)."
+            f"Results for `{commit_short}` ({profile}, {stack}; no matching baseline data available yet)."
         )
 
     lines.append("")
@@ -245,7 +256,12 @@ def generate_markdown(
     lines.append("")
     lines.append(f"- **Result:** {test_result}")
     lines.append(f"- **Stack:** {stack}")
+    lines.append(f"- **Profile:** {profile}")
     lines.append(f"- **Congestion control:** {params.get('cc', '?')}")
+    if params.get("target_throughput_mbps"):
+        lines.append(
+            f"- **Aggregate target:** {params['target_throughput_mbps']} Mbps"
+        )
     lines.append(
         f"- **Subscribers:** {params.get('subscriber_max', '?')} (ramp {params.get('ramp', '?')}/s)"
     )
@@ -303,7 +319,10 @@ def main():
     data_dir = Path(args.data_dir)
     baseline_branch = "main"  # Always compare against main
     stack = run_stack(current)
-    historical = load_baseline_data(data_dir, baseline_branch, stack, args.window)
+    profile = run_profile(current)
+    historical = load_baseline_data(
+        data_dir, baseline_branch, stack, profile, args.window
+    )
     baseline = compute_baseline(historical)
 
     # Compare
@@ -324,6 +343,7 @@ def main():
             "commit": current.get("commit"),
             "timestamp": current.get("timestamp"),
             "quic_stack": stack,
+            "profile": profile,
             "has_regressions": any(c["status"] == "regression" for c in comparisons),
             "baseline_count": len(historical),
             "comparisons": comparisons,

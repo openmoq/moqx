@@ -20,13 +20,18 @@
 #   --net-throughput-mbps N  Network throughput in Mbps
 #   --transport NAME       quic | webtransport | qmux
 #   --quic-stack STACK     Relay QUIC stack: mvfst | picoquic
+#   --profile NAME         Workload profile (legacy default: 1mbps)
+#   --target-throughput-mbps N  Aggregate target used to derive subscribers
+#   --profile-rate-mbps N  Nominal Mbps per subscriber for this profile
+#   --first-object-size N  Profile's first object size in bytes
+#   --other-object-size N  Profile's other object size in bytes
 #   --cc ALGO              Congestion control the relay ran with
 #   --output PATH          Output JSON file
 
 set -euo pipefail
 
 # Bumped whenever the emitted shape changes; consumers (perf-compare.py, the
-# dashboard) treat a missing field as version 1 / mvfst.
+# dashboard) treat missing stack/profile fields as mvfst/1mbps.
 SCHEMA_VERSION=2
 
 # ── Defaults ───────────────────────────────────────────────────────────────────
@@ -48,6 +53,11 @@ NET_THROUGHPUT_MBPS="0"
 DELIVERY_TIMEOUT=500
 TRANSPORT="quic"
 QUIC_STACK="mvfst"
+PROFILE="1mbps"
+TARGET_THROUGHPUT_MBPS="0"
+PROFILE_RATE_MBPS="1"
+FIRST_OBJECT_SIZE="0"
+OTHER_OBJECT_SIZE="0"
 CC=""
 OUTPUT="perf-results.json"
 
@@ -72,6 +82,11 @@ while [[ $# -gt 0 ]]; do
     --delivery-timeout)    DELIVERY_TIMEOUT="$2";    shift 2 ;;
     --transport)           TRANSPORT="$2";           shift 2 ;;
     --quic-stack)          QUIC_STACK="$2";          shift 2 ;;
+    --profile)             PROFILE="$2";             shift 2 ;;
+    --target-throughput-mbps) TARGET_THROUGHPUT_MBPS="$2"; shift 2 ;;
+    --profile-rate-mbps)   PROFILE_RATE_MBPS="$2";   shift 2 ;;
+    --first-object-size)   FIRST_OBJECT_SIZE="$2";   shift 2 ;;
+    --other-object-size)   OTHER_OBJECT_SIZE="$2";   shift 2 ;;
     --cc)                  CC="$2";                  shift 2 ;;
     --output)              OUTPUT="$2";              shift 2 ;;
     *) echo "Unknown option: $1" >&2; exit 1 ;;
@@ -223,6 +238,11 @@ cat > "$OUTPUT" <<EOF
     "delivery_timeout_ms": $DELIVERY_TIMEOUT,
     "transport": "$TRANSPORT",
     "quic_stack": "$QUIC_STACK",
+    "profile": "$PROFILE",
+    "target_throughput_mbps": $TARGET_THROUGHPUT_MBPS,
+    "profile_rate_mbps": $PROFILE_RATE_MBPS,
+    "first_object_size": $FIRST_OBJECT_SIZE,
+    "other_object_size": $OTHER_OBJECT_SIZE,
     "cc": "$CC"
   },
   "results": {

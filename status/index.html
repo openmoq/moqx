@@ -23,7 +23,8 @@
   .stack-stat.picoquic .value, .stack-name.picoquic { color: #f0883e; }
   .filters { margin-bottom: 16px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
   .filters label { display: flex; align-items: center; gap: 6px; }
-  .mode-stack-controls { display: flex; align-items: center; gap: 12px; }
+  .mode-stack-controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .filters #profile-control[hidden], .filters #stack-control[hidden], .grid[hidden] { display: none; }
   .mode-stack-controls #stack-control[hidden] { display: none; }
   .filters select, .filters input { background: #21262d; border: 1px solid #30363d; color: #e6edf3; padding: 6px 10px; border-radius: 6px; font-size: 0.85rem; }
   .mode-switch { display: inline-flex; border: 1px solid #30363d; border-radius: 6px; overflow: hidden; }
@@ -41,6 +42,15 @@
   .stack-comparison tr.picoquic th { border-left: 3px dashed #f0883e; }
   .stack-name, .stack-cc { display: block; }
   .stack-cc { color: #8b949e; font-size: 0.72rem; font-weight: 400; }
+  .overview-summary { display: block; width: 100%; overflow-x: auto; }
+  .overview-table { width: 100%; min-width: 620px; border-collapse: collapse; background: #161b22; }
+  .overview-table caption { padding: 0 12px 8px; color: #8b949e; font-size: 0.75rem; text-align: left; }
+  .overview-table th, .overview-table td { padding: 10px 12px; border-bottom: 1px solid #30363d; text-align: right; white-space: nowrap; }
+  .overview-table thead th { color: #8b949e; font-size: 0.75rem; font-weight: 500; }
+  .overview-table tbody th { text-align: left; }
+  .overview-table tbody td { font-size: 0.95rem; font-weight: 600; }
+  .overview-table tr.mvfst th { border-left: 3px solid #58a6ff; }
+  .overview-table tr.picoquic th { border-left: 3px dashed #f0883e; }
   a { color: #58a6ff; text-decoration: none; }
   a:hover { text-decoration: underline; }
   .loading { text-align: center; padding: 40px; color: #8b949e; }
@@ -49,7 +59,7 @@
     body { padding: 16px; }
     .filters label { flex: 1 1 calc(50% - 12px); min-width: 0; justify-content: space-between; }
     .mode-stack-controls { flex: 1 1 100%; }
-    .mode-stack-controls #stack-control { flex: 1 1 auto; }
+    .mode-stack-controls #profile-control, .mode-stack-controls #stack-control { flex: 1 1 120px; }
     .filters select { min-width: 0; max-width: 70%; }
     .grid { gap: 16px; }
     .summary { gap: 8px; }
@@ -70,9 +80,15 @@
   </label>
   <div class="mode-stack-controls">
     <div class="mode-switch" role="group" aria-label="Dashboard mode">
-      <button type="button" data-mode="compare" aria-pressed="true">Compare stacks</button>
+      <button type="button" data-mode="overview" aria-pressed="true">Overview</button>
+      <button type="button" data-mode="compare" aria-pressed="false">Compare stacks</button>
       <button type="button" data-mode="single" aria-pressed="false">Single</button>
     </div>
+    <label id="profile-control" hidden>Profile:
+      <select id="profile-filter">
+        <option value="1mbps">1 Mbps</option>
+      </select>
+    </label>
     <label id="stack-control" hidden>Stack:
       <select id="stack-filter">
         <option value="mvfst">mvfst</option>
@@ -91,7 +107,22 @@
 
 <div id="summary" class="summary"></div>
 
-<div class="grid">
+<div id="overview-grid" class="grid" hidden>
+  <div class="card">
+    <h3>1 Mbps · Throughput per Core</h3>
+    <canvas id="chart-overview-1mbps"></canvas>
+  </div>
+  <div class="card">
+    <h3>4 Mbps · Throughput per Core</h3>
+    <canvas id="chart-overview-4mbps"></canvas>
+  </div>
+  <div class="card">
+    <h3>16 Mbps · Throughput per Core</h3>
+    <canvas id="chart-overview-16mbps"></canvas>
+  </div>
+</div>
+
+<div id="metrics-grid" class="grid" hidden>
    <div class="card">
     <h3>Peak Subscribers</h3>
     <canvas id="chart-subscribers"></canvas>
@@ -145,6 +176,7 @@ const STACK_COLORS = {
   mvfst: '#58a6ff',
   picoquic: '#f0883e',
 };
+const PROFILE_IDS = ['1mbps', '4mbps', '16mbps'];
 const CHARTS = [
   ['chart-subscribers', 'peak_subscribers', CHART_COLORS.secondary],
   ['chart-throughput', 'throughput_mbps', CHART_COLORS.primary],
@@ -159,10 +191,14 @@ const CHARTS = [
 
 let allData = [];
 let charts = {};
-let viewMode = 'compare';
+let viewMode = 'overview';
 
 function getRunStack(run) {
   return run?.params?.quic_stack || 'mvfst';
+}
+
+function getRunProfile(run) {
+  return run?.params?.profile || '1mbps';
 }
 
 function populateBranchFilter() {
@@ -204,6 +240,23 @@ function populateStackFilter() {
   select.value = stacks.includes('mvfst') ? 'mvfst' : (stacks[0] || 'mvfst');
 }
 
+function populateProfileFilter() {
+  const select = document.getElementById('profile-filter');
+  const available = new Set(allData.map(getRunProfile));
+  const profiles = ['1mbps', '4mbps', '16mbps'].filter(profile => available.has(profile));
+  for (const profile of available) {
+    if (!profiles.includes(profile)) profiles.push(profile);
+  }
+
+  select.replaceChildren(...profiles.map(profile => {
+    const option = document.createElement('option');
+    option.value = profile;
+    option.textContent = profile.replace('mbps', ' Mbps');
+    return option;
+  }));
+  select.value = profiles.includes('1mbps') ? '1mbps' : (profiles[0] || '1mbps');
+}
+
 async function loadData() {
   try {
     const resp = await fetch(`${DATA_BASE_URL}/index.json`, { cache: 'no-store' });
@@ -223,6 +276,7 @@ async function loadData() {
     allData = results.filter(Boolean).reverse(); // chronological order
     populateBranchFilter();
     populateStackFilter();
+    populateProfileFilter();
     document.getElementById('loading').style.display = 'none';
     renderDashboard();
   } catch (e) {
@@ -233,18 +287,20 @@ async function loadData() {
 function getFilteredData() {
   const branch = document.getElementById('branch-filter').value;
   const stack = document.getElementById('stack-filter').value;
+  const profile = document.getElementById('profile-filter').value;
   const window = parseInt(document.getElementById('window-filter').value);
-  let filtered = allData.filter(d => d.branch === branch && getRunStack(d) === stack);
+  let filtered = allData.filter(d => d.branch === branch && getRunStack(d) === stack && getRunProfile(d) === profile);
   return filtered.slice(-window);
 }
 
-function getComparisonData() {
+function getComparisonData(selectedProfile = document.getElementById('profile-filter').value) {
   const branch = document.getElementById('branch-filter').value;
   const window = parseInt(document.getElementById('window-filter').value);
   const groups = new Map();
 
   for (const run of allData) {
     if (run.branch !== branch) continue;
+    if (getRunProfile(run) !== selectedProfile) continue;
     const stack = getRunStack(run);
     if (!Object.prototype.hasOwnProperty.call(STACK_COLORS, stack)) continue;
     const key = run.commit || run.commit_short || `${run.timestamp || '?'}-${stack}`;
@@ -267,16 +323,33 @@ function getComparisonData() {
 }
 
 function renderDashboard() {
-  const data = viewMode === 'compare' ? getComparisonData() : getFilteredData();
+  Object.values(charts).forEach(chart => chart.destroy());
+  charts = {};
+
+  const branch = document.getElementById('branch-filter').value;
+  const overview = viewMode === 'overview';
+  const overviewGrid = document.getElementById('overview-grid');
+  const metricsGrid = document.getElementById('metrics-grid');
+  overviewGrid.hidden = !overview;
+  metricsGrid.hidden = overview;
+  const data = overview
+    ? allData.filter(run => run.branch === branch)
+    : viewMode === 'compare' ? getComparisonData() : getFilteredData();
   if (data.length === 0) {
-    Object.values(charts).forEach(chart => chart.destroy());
-    charts = {};
     document.getElementById('summary').replaceChildren();
     document.getElementById('loading').textContent = 'No data for selected filters.';
     document.getElementById('loading').style.display = 'block';
     return;
   }
   document.getElementById('loading').style.display = 'none';
+
+  if (overview) {
+    renderOverviewSummary(data);
+    for (const profile of PROFILE_IDS) {
+      renderComparisonChart(`chart-overview-${profile}`, getComparisonData(profile), 'throughput_per_core_mbps');
+    }
+    return;
+  }
 
   if (viewMode === 'compare') {
     renderComparisonSummary(data);
@@ -329,6 +402,31 @@ function renderRunSummary(stackRuns) {
   container.innerHTML = `
     <table class="stack-comparison">
       <thead><tr><th scope="col">Stack / CC</th><th scope="col">Throughput</th><th scope="col">Mbps / core</th><th scope="col">Peak subscribers</th><th scope="col">Relay CPU</th><th scope="col">RSS</th><th scope="col">Average latency</th><th scope="col">RSS / session</th><th scope="col">Latest commit</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+}
+
+function renderOverviewSummary(branchData) {
+  const container = document.getElementById('summary');
+  container.className = 'summary overview-summary';
+  const rows = ['mvfst', 'picoquic'].map(stack => {
+    const cells = PROFILE_IDS.map(profile => {
+      const latest = branchData
+        .filter(run => getRunStack(run) === stack && getRunProfile(run) === profile)
+        .reduce((current, run) => !current || run.timestamp > current.timestamp ? run : current, null);
+      const value = latest?.results?.throughput_per_core_mbps;
+      return `<td>${value == null ? '—' : `${value} Mbps`}</td>`;
+    }).join('');
+    const stackRun = branchData
+      .filter(run => getRunStack(run) === stack)
+      .reduce((current, run) => !current || run.timestamp > current.timestamp ? run : current, null);
+    return `<tr class="${stack}"><th scope="row"><span class="stack-name ${stack}">${stack}</span><span class="stack-cc">CC · ${stackRun?.params?.cc || 'unknown'}</span></th>${cells}</tr>`;
+  }).join('');
+  container.innerHTML = `
+    <table class="overview-table">
+      <caption>Latest run · throughput per core</caption>
+      <thead><tr><th scope="col">Stack</th><th scope="col">1 Mbps</th><th scope="col">4 Mbps</th><th scope="col">16 Mbps</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>
   `;
@@ -463,6 +561,7 @@ function renderComparisonChart(canvasId, data, metric) {
 // Event listeners
 document.getElementById('branch-filter').addEventListener('change', renderDashboard);
 document.getElementById('stack-filter').addEventListener('change', renderDashboard);
+document.getElementById('profile-filter').addEventListener('change', renderDashboard);
 document.getElementById('window-filter').addEventListener('change', renderDashboard);
 document.querySelectorAll('.mode-switch button').forEach(button => {
   button.addEventListener('click', () => {
@@ -470,9 +569,10 @@ document.querySelectorAll('.mode-switch button').forEach(button => {
     document.querySelectorAll('.mode-switch button').forEach(option => {
       option.setAttribute('aria-pressed', String(option === button));
     });
-    document.getElementById('stack-control').hidden = viewMode === 'compare';
-    const unit = viewMode === 'compare' ? 'commits' : 'runs';
-    document.getElementById('window-label').textContent = viewMode === 'compare' ? 'Commits:' : 'Window:';
+    document.getElementById('profile-control').hidden = viewMode === 'overview';
+    document.getElementById('stack-control').hidden = viewMode !== 'single';
+    const unit = viewMode === 'single' ? 'runs' : 'commits';
+    document.getElementById('window-label').textContent = viewMode === 'single' ? 'Window:' : 'Commits:';
     document.querySelectorAll('#window-filter option').forEach(option => {
       option.textContent = `Last ${option.value} ${unit}`;
     });
