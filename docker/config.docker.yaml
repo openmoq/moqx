@@ -67,5 +67,9 @@ admin:
   address: "${MOQX_BIND_ADDR}"
   plaintext: true
 
-# entrypoint.sh fills this with a logging.qlog block when MOQX_QLOG_SAMPLE > 0.
-${MOQX_QLOG_BLOCK}
+# The directory is always set so the admin API can capture on demand;
+# MOQX_QLOG_SAMPLE > 0 also qlogs that fraction of every new mvfst connection.
+logging:
+  qlog:
+    dir: "${MOQX_QLOG_DIR}"
+    sample_rate: ${MOQX_QLOG_SAMPLE}

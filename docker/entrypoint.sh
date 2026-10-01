@@ -48,7 +48,8 @@
 #                e.g. DBG2 or "INFO,quic=WARN". moqx promotes it to folly's
 #                FOLLY_LOGGING env var internally. See docs/logging.md.
 #   MOQX_QLOG_SAMPLE — fraction of new mvfst connections to qlog, 0.0–1.0
-#                (default: 0 = off). Fetch a file with the admin
+#                (default: 0 = on-demand captures only, via the admin
+#                /qlog/capture route). Fetch a file with the admin
 #                /logs?connection_id=<dcid>&type=qlog route.
 #   MOQX_QLOG_DIR — qlog directory (default: /var/log/moqx/qlog); files older
 #                than 3 days are deleted at startup.
@@ -163,22 +164,12 @@ else
 fi
 export MOQX_PICO_LISTENER
 
-export MOQX_QLOG_SAMPLE="${MOQX_QLOG_SAMPLE:-0}"
+case "${MOQX_QLOG_SAMPLE:-}" in off|"") MOQX_QLOG_SAMPLE=0 ;; esac
+export MOQX_QLOG_SAMPLE
 export MOQX_QLOG_DIR="${MOQX_QLOG_DIR:-/var/log/moqx/qlog}"
 if [ -d "$MOQX_QLOG_DIR" ]; then
   find "$MOQX_QLOG_DIR" -name '*.qlog' -mtime +3 -delete 2>/dev/null || true
 fi
-case "$MOQX_QLOG_SAMPLE" in
-  0|0.0|off|"") MOQX_QLOG_BLOCK="" ;;
-  *) MOQX_QLOG_BLOCK=$(cat <<QLOG
-logging:
-  qlog:
-    dir: "${MOQX_QLOG_DIR}"
-    sample_rate: ${MOQX_QLOG_SAMPLE}
-QLOG
-) ;;
-esac
-export MOQX_QLOG_BLOCK
 
 CONFIG=/tmp/relay.yaml
 envsubst < /usr/local/share/moqx/config.docker.yaml > "$CONFIG"
