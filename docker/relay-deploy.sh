@@ -2,10 +2,9 @@
 # Shared relay deploy core — used by both ci-main (auto-deploy on main) and
 # deploy-relay (manual workflow_dispatch), so the two never drift.
 #
-# Writes docker/.env, (re)creates the relay — plus the stats stack + public
-# read-only dashboard when ENABLE_STATS=true — runs a health check, and
-# publishes the public dashboard. Cert/DNS/GHCR-login and any restart-only or
-# image-tag logic stay in the calling workflow.
+# Writes docker/.env, (re)creates the relay — plus the stats stack when
+# ENABLE_STATS=true — and runs a health check. Cert/DNS/GHCR-login and any
+# restart-only or image-tag logic stay in the calling workflow.
 #
 # Inputs (env vars):
 #   DOMAIN            (required) relay hostname / cert name
@@ -14,9 +13,8 @@
 #   MOQX_LOGGING      (optional) folly XLOG config; empty = baseline INFO
 #   PULL_IMAGE        (optional) full image ref to `docker pull` + retag :latest.
 #                     Empty → `docker compose pull` (compose's pinned :latest).
-#   ENABLE_STATS      "true" → stats stack + public dashboard
+#   ENABLE_STATS      "true" → stats stack
 #   STATS_USER, STATS_PASSWORD, GRAFANA_ADMIN_PASSWORD   (required when stats on)
-#   STATS_PUBLIC_PORT (default 4533)
 #   CRASH_WATCH       "true" → install/refresh the host crash watcher (crash/)
 #   CRASH_GH_TOKEN    (optional) token the watcher files GitHub issues with;
 #                     empty → crash reports stay on the host
@@ -26,7 +24,6 @@ cd "$(dirname "$0")"        # docker/
 
 RELAY_PORT="${RELAY_PORT:-4433}"
 ADMIN_PORT="${ADMIN_PORT:-8000}"
-PUB_PORT="${STATS_PUBLIC_PORT:-4533}"
 
 # ── docker/.env ──────────────────────────────────────────────────────────────
 {
@@ -48,8 +45,6 @@ if [ "${ENABLE_STATS:-}" = "true" ]; then
     echo "GRAFANA_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}"
     # CI runner has the disk; let the 365d time limit bound history at 3s/5s.
     echo "PROMETHEUS_RETENTION_SIZE=20GB"
-    # Stats implies the public read-only dashboard: bind its port public.
-    echo "STATS_PUBLIC_BIND=0.0.0.0"
     # Demo/debug box: fresh namespace discovery (compose default is 10s).
     echo "MOQX_TARGETS_INTERVAL=${MOQX_TARGETS_INTERVAL:-5}"
   } >> .env
@@ -112,16 +107,3 @@ for i in $(seq 1 30); do
   fi
 done
 echo "==> Relay running: $(curl -sf http://127.0.0.1:${ADMIN_PORT}/info)"
-
-# ── public read-only dashboard (stats only) ──────────────────────────────────
-if [ "${ENABLE_STATS:-}" = "true" ]; then
-  echo "==> Publishing public read-only dashboard on :${PUB_PORT}..."
-  # Firewall (the :8000/:9100 docker-subnet allows for the host-netns relay +
-  # node-exporter, and the public 4433:4533 range) is host provisioning — see
-  # docker/setup-host.sh. Not re-applied on every deploy.
-  for i in $(seq 1 30); do
-    docker exec moqx-grafana curl -sf -o /dev/null http://localhost:3000/api/health 2>/dev/null && break
-    sleep 1
-  done
-  ./grafana/publish-public-dashboard.sh publish || echo "::warning::public dashboard publish failed"
-fi

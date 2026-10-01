@@ -12,7 +12,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 export GRAFANA_CONTAINER="${GRAFANA_CONTAINER:-moqx-grafana}"
 exec python3 - <<'PY'
-import json, os, subprocess, glob
+import json, os, re, subprocess, glob
 
 C = os.environ["GRAFANA_CONTAINER"]
 SRC = "provisioning/dashboards"
@@ -32,24 +32,18 @@ if not fuid:
                "http://localhost:3000/api/folders"], body='{"title":"moqx (dev)"}')
     fuid = json.loads(r)["uid"]
 
-pubs = json.loads(gcurl(["http://localhost:3000/api/dashboards/public-dashboards"]))
-pubs = pubs.get("publicDashboards", pubs if isinstance(pubs, list) else [])
-tokmap = {x["accessToken"]: x["dashboardUid"] for x in pubs if x.get("isEnabled")}
-
 files = sorted(glob.glob(f"{SRC}/*.json"))
 if not files:
     print(f"No dashboards in {SRC}/"); raise SystemExit
+uids = "|".join(re.escape(json.load(open(f))["uid"]) for f in files)
 for f in files:
     d = json.load(open(f))
     d.pop("id", None); d.pop("version", None)
     d["uid"] = d["uid"] + "-dev"
     d["title"] = d["title"] + " (dev)"
     d["editable"] = True
-    # Cross-links navigate within the dev copies, not out to the public pages.
-    body = json.dumps(d)
-    for tok, duid in tokmap.items():
-        body = body.replace("/grafana/public-dashboards/" + tok, "/grafana/d/" + duid + "-dev")
-    d = json.loads(body)
+    # Cross-links navigate within the dev copies.
+    d = json.loads(re.sub(r"/grafana/d/(" + uids + r")(?![\w-])", r"/grafana/d/\1-dev", json.dumps(d)))
     payload = json.dumps({"dashboard": d, "folderUid": fuid,
                           "overwrite": True, "message": "dev copy"})
     gcurl(["-H", "Content-Type: application/json", "-d", "@-",
