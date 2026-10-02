@@ -396,7 +396,16 @@ public:
          update = std::move(update),
          id = routeID_,
          peerID = peerID_]() mutable {
-          self->params_ = update.params;
+          auto merged = self->params_;
+          for (const auto key :
+               {TrackRequestParamKey::HOP_PATH, TrackRequestParamKey::ROUTE_COST}) {
+            if (const auto* param = update.params.getFirstParam(key)) {
+              merged.eraseAllParamsOfType(key);
+              merged.insertParam(*param);
+            }
+          }
+          update.params = merged;
+          self->params_ = std::move(merged);
           if (auto r = relay.lock()) {
             r->doPublishNamespace(std::move(update), session, nullptr, peerID, id);
           }
