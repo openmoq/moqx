@@ -224,12 +224,43 @@ public:
   folly::coro::Task<FetchResult>
   fetch(moxygen::Fetch fetch, std::shared_ptr<moxygen::FetchConsumer> consumer) override {
     auto session = moxygen::MoQSession::getRequestSession();
-    auto resolved = relay_->fetchOnSubscriberExec(std::move(fetch), session);
-    // Joining resolved/deferred on subscriberExec; base filter wraps + hops to relayExec_.
-    return PublisherCrossExecFilter::fetch(std::move(resolved), std::move(consumer));
+    auto setup = relay_->resolveJoiningFetchOnSubscriberExec(fetch, *session);
+    if (setup.hasError()) {
+      return folly::coro::makeTask<FetchResult>(folly::makeUnexpected(std::move(setup.error())));
+    }
+    if (!setup->isReady()) {
+      return fetchAfterSetup(
+          std::move(*setup),
+          std::move(fetch),
+          std::move(session),
+          std::move(consumer)
+      );
+    }
+    // Base filter wraps + hops to relayExec_.
+    return PublisherCrossExecFilter::fetch(std::move(fetch), std::move(consumer));
   }
 
 private:
+  folly::coro::Task<FetchResult> fetchAfterSetup(
+      folly::SemiFuture<folly::Unit> setup,
+      moxygen::Fetch fetch,
+      std::shared_ptr<moxygen::MoQSession> session,
+      std::shared_ptr<moxygen::FetchConsumer> consumer
+  ) {
+    // A joining fetch pipelined behind its SUBSCRIBE resolves against the Largest from that
+    // setup. The setup can finish before this task runs. Another SUBSCRIBE's setup may replace a
+    // failed one.
+    do {
+      co_await folly::coro::co_awaitTry(std::move(setup));
+      auto next = relay_->resolveJoiningFetchOnSubscriberExec(fetch, *session);
+      if (next.hasError()) {
+        co_return folly::makeUnexpected(std::move(next.error()));
+      }
+      setup = std::move(*next);
+    } while (!setup.isReady());
+    co_return co_await PublisherCrossExecFilter::fetch(std::move(fetch), std::move(consumer));
+  }
+
   std::shared_ptr<MoqxRelay> relay_;
 };
 
@@ -2541,24 +2572,32 @@ MoqxRelay::trackStatusOnSubscriberExec(const TrackStatus& req) {
   return Publisher::TrackStatusResult(buildTrackStatusOk(*localFwd, /*hasHandle=*/true, req));
 }
 
-Fetch MoqxRelay::fetchOnSubscriberExec(Fetch fetch, const std::shared_ptr<MoQSession>& session) {
+folly::Expected<folly::SemiFuture<folly::Unit>, FetchError>
+MoqxRelay::resolveJoiningFetchOnSubscriberExec(Fetch& fetch, const MoQSession& session) {
   auto [standalone, joining] = fetchType(fetch);
   if (!joining) {
-    return fetch;
+    return folly::makeSemiFuture();
   }
+  // All of a session's subscriptions are on its thread's forwarders.
   auto* localReg = tlForwarders_.get();
-  auto localFwd = localReg ? localReg->getIfReady(fetch.fullTrackName) : nullptr;
-  if (localFwd) {
-    auto res = localFwd->resolveJoiningFetch(session->sessionId(), *joining);
-    if (res.hasValue()) {
-      fetch.args = StandaloneFetch(res.value().start, res.value().end);
-      return fetch;
-    }
+  auto state = localReg ? localReg->lookup(fetch.fullTrackName) : LocalForwarderRegistry::State{};
+  if (auto* pending = std::get_if<LocalForwarderRegistry::Pending>(&state)) {
+    return std::move(pending->ready);
   }
-  // Not resolvable yet (no largest, or pre-PUBLISH_OK on draft-18's separate
-  // stream): defer upstream by track name. Rare; fails if there's no upstream.
-  joining->joiningRequestID = std::nullopt;
-  return fetch;
+  auto* ready = std::get_if<LocalForwarderRegistry::Ready>(&state);
+  if (!ready) {
+    return folly::makeUnexpected(FetchError{
+        fetch.requestID,
+        FetchErrorCode::DOES_NOT_EXIST,
+        "No subscription for joining fetch"
+    });
+  }
+  auto res = ready->forwarder->resolveJoiningFetch(session.sessionId(), *joining);
+  if (res.hasError()) {
+    return folly::makeUnexpected(std::move(res.error()));
+  }
+  fetch.args = StandaloneFetch(res.value().start, res.value().end);
+  return folly::makeSemiFuture();
 }
 
 folly::coro::Task<Publisher::FetchResult>
@@ -2572,7 +2611,7 @@ MoqxRelay::fetchImpl(Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
   }
 
   auto [standalone, joining] = fetchType(fetch);
-  // LF mode resolves/defers joining in fetchOnSubscriberExec on the subscriber exec.
+  // LF mode resolves joining fetches on the subscriber exec.
   if (joining && mode() != Mode::LocalForwarder) {
     auto fetchView = registry_.getFetchView(fetch.fullTrackName);
     if (!fetchView) {
