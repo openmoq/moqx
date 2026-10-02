@@ -813,7 +813,7 @@ void validateService(
   mergedCaches.emplace(name, std::move(merged));
 
   if (svc.upstream.value() && svc.upstreams.value()) {
-    errors.push_back("upstream and upstreams are mutually exclusive");
+    errors.push_back("Service '" + name + "': upstream and upstreams are mutually exclusive");
   }
   if (svc.upstreams.value()) {
     for (const auto& peer : *svc.upstreams.value()) {
