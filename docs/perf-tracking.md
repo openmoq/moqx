@@ -132,6 +132,13 @@ stack and workload profile. Missing `schema_version`, `params.quic_stack`, and
 `params.profile` in historical results are treated as version 1, mvfst, and
 `1mbps` respectively. Warnings are non-blocking (PRs are not failed).
 
+From schema version 3, client metrics (throughput, peak throughput, totals,
+resets, failures, latency) cover only the steady-state window
+(`params.client_window`, client seconds after warmup and before cooldown).
+Earlier runs averaged throughput over the full run, including ramp-up and
+teardown, so v3 throughput is about 5% higher. `throughput_full_run_mbps`
+keeps the old calculation for continuity.
+
 On the first nightly run with the profile matrix, only `mvfst/1mbps` has a
 compatible published baseline: legacy runs are interpreted as that series.
 The other profiles and picoquic start without a baseline and become comparable

@@ -13,8 +13,8 @@
 #   --duration N           Test parameter
 #   --io-threads N         Test parameter
 #   --client-threads N     Test parameter
-#   --client-window-start N  Optional [AGGREGATE] second to start latency averaging
-#   --client-window-end N    Optional [AGGREGATE] second to end latency averaging
+#   --client-window-start N  Optional [AGGREGATE] second where steady state starts
+#   --client-window-end N    Optional [AGGREGATE] second where steady state ends
 #   --relay-cpu PCT        Average relay CPU%
 #   --relay-rss-kb N       Peak relay RSS in KB
 #   --net-throughput-mbps N  Network throughput in Mbps
@@ -32,7 +32,8 @@ set -euo pipefail
 
 # Bumped whenever the emitted shape changes; consumers (perf-compare.py, the
 # dashboard) treat missing stack/profile fields as mvfst/1mbps.
-SCHEMA_VERSION=2
+# v3: client totals/throughput/peak are windowed to steady state.
+SCHEMA_VERSION=3
 
 # ── Defaults ───────────────────────────────────────────────────────────────────
 CLIENT_OUTPUT=""
@@ -159,6 +160,53 @@ PEAK_MBPS=$(grep '\[AGGREGATE\]' "$CLIENT_OUTPUT" | grep -oP 'Mbps: \K[0-9.]+' |
 # Get total failures
 TOTAL_FAILURES=$(grep '\[AGGREGATE\]' "$CLIENT_OUTPUT" | grep -oP 'Failures: [0-9]+/s, \K[0-9]+' | tail -1 || echo "0")
 
+RUN_TOTAL_BYTES="$TOTAL_BYTES"
+RUN_THROUGHPUT_MBPS="$THROUGHPUT_MBPS"
+RUN_PEAK_MBPS="$PEAK_MBPS"
+
+# ── Window client metrics to steady state ─────────────────────────────────────
+# Totals are deltas of the running [AGGREGATE] totals between the last sample
+# before the window and the last sample in it; the final summary includes
+# ramp-up and teardown. Client MB/Mbps are MiB-based.
+CLIENT_WINDOW=""
+if [[ -n "$CLIENT_WINDOW_START" && -n "$CLIENT_WINDOW_END" ]]; then
+  read -r WIN_SAMPLES WIN_PEAK WIN_THROUGHPUT WIN_OBJECTS WIN_BYTES WIN_RESETS WIN_FAILURES < <(
+    awk -v s="$CLIENT_WINDOW_START" -v e="$CLIENT_WINDOW_END" '
+      /\[AGGREGATE\]/ {
+        if (!match($0, /\[([0-9]+)s\]/, t)) next
+        sec = t[1] + 0
+        match($0, /Mbps: ([0-9.]+)/, m)
+        match($0, /Total: ([0-9]+) objs, ([0-9.]+) MB/, tot)
+        match($0, /Resets: [0-9]+\/s, ([0-9]+) total/, r)
+        match($0, /Failures: [0-9]+\/s, ([0-9]+) total/, f)
+        if (sec < s) {
+          b_sec = sec; b_obj = tot[1]; b_mb = tot[2]; b_rst = r[1]; b_fail = f[1]
+        } else if (sec <= e) {
+          n++
+          if (m[1] + 0 > peak) peak = m[1] + 0
+          l_sec = sec; l_obj = tot[1]; l_mb = tot[2]; l_rst = r[1]; l_fail = f[1]
+        }
+      }
+      END {
+        if (n == 0 || l_sec <= b_sec) { print 0; exit }
+        printf "%d %.2f %.3f %d %.0f %d %d\n", n, peak,
+          (l_mb - b_mb) * 8 / (l_sec - b_sec), l_obj - b_obj,
+          (l_mb - b_mb) * 1048576, l_rst - b_rst, l_fail - b_fail
+      }
+    ' "$CLIENT_OUTPUT")
+  if [[ "${WIN_SAMPLES:-0}" -gt 0 ]]; then
+    CLIENT_WINDOW="${CLIENT_WINDOW_START}-${CLIENT_WINDOW_END}"
+    PEAK_MBPS="$WIN_PEAK"
+    THROUGHPUT_MBPS="$WIN_THROUGHPUT"
+    TOTAL_OBJECTS="$WIN_OBJECTS"
+    TOTAL_BYTES="$WIN_BYTES"
+    TOTAL_RESETS="$WIN_RESETS"
+    TOTAL_FAILURES="$WIN_FAILURES"
+  else
+    echo "WARNING: client window [${CLIENT_WINDOW_START},${CLIENT_WINDOW_END}]s has no [AGGREGATE] samples; using full-run client metrics" >&2
+  fi
+fi
+
 # ── Compute derived metrics ───────────────────────────────────────────────────
 # RSS per session (KB)
 if [[ "$PEAK_SUBS" -gt 0 && "$RELAY_RSS_KB" -gt 0 ]]; then
@@ -201,15 +249,15 @@ fi
 
 # Flag client totals that disagree with final throughput (moxygen getResults() race).
 # Client "Mbps" is MiB-based: bytes = Mbps * 2^20 / 8 * seconds.
-STATS_ANOMALY=$(awk -v b="$TOTAL_BYTES" -v t="$THROUGHPUT_MBPS" -v d="$CLIENT_DURATION" \
-  -v p="$PEAK_MBPS" -v tgt="$TARGET_THROUGHPUT_MBPS" 'BEGIN {
+STATS_ANOMALY=$(awk -v b="$RUN_TOTAL_BYTES" -v t="$RUN_THROUGHPUT_MBPS" -v d="$CLIENT_DURATION" \
+  -v p="$RUN_PEAK_MBPS" -v tgt="$TARGET_THROUGHPUT_MBPS" 'BEGIN {
     expected = t * 1048576 / 8 * d
     ref = (t > tgt) ? t : tgt
     bad = (expected > 0 && (b > 2 * expected || b < expected / 2)) || (ref > 0 && p > 10 * ref)
     print bad ? "true" : "false"
   }')
 if [[ "$STATS_ANOMALY" == "true" ]]; then
-  echo "::warning::$PROFILE/$QUIC_STACK implausible client stats: total_bytes=$TOTAL_BYTES throughput=${THROUGHPUT_MBPS}Mbps duration=${CLIENT_DURATION}s peak=${PEAK_MBPS}Mbps"
+  echo "::warning::$PROFILE/$QUIC_STACK implausible full-run client stats: total_bytes=$RUN_TOTAL_BYTES throughput=${RUN_THROUGHPUT_MBPS}Mbps duration=${CLIENT_DURATION}s peak=${RUN_PEAK_MBPS}Mbps"
 fi
 
 # RSS in MB
@@ -256,7 +304,8 @@ cat > "$OUTPUT" <<EOF
     "profile_rate_mbps": $PROFILE_RATE_MBPS,
     "first_object_size": $FIRST_OBJECT_SIZE,
     "other_object_size": $OTHER_OBJECT_SIZE,
-    "cc": "$CC"
+    "cc": "$CC",
+    "client_window": "$CLIENT_WINDOW"
   },
   "results": {
     "peak_subscribers": $PEAK_SUBS,
@@ -266,6 +315,7 @@ cat > "$OUTPUT" <<EOF
     "total_failures": $TOTAL_FAILURES,
     "delivery_success_pct": $DELIVERY_SUCCESS,
     "throughput_mbps": $THROUGHPUT_MBPS,
+    "throughput_full_run_mbps": $RUN_THROUGHPUT_MBPS,
     "avg_latency_ms": $AVG_LATENCY_MS,
     "peak_throughput_mbps": $PEAK_MBPS,
     "throughput_per_core_mbps": $THROUGHPUT_PER_CORE,

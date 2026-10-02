@@ -396,6 +396,9 @@ ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "cat ${REMOTE_DIR}/metrics.log 2>/dev/null" >
 
 WIN_START=$(( (MEASURE_START_EPOCH - POLLER_START_EPOCH) + WARMUP ))
 WIN_END=$(( (MEASURE_END_EPOCH - POLLER_START_EPOCH) - COOLDOWN ))
+# Same window in the client's [AGGREGATE] seconds, which count from client start.
+CLIENT_WIN_START=$WARMUP
+CLIENT_WIN_END=$(( (MEASURE_END_EPOCH - MEASURE_START_EPOCH) - COOLDOWN ))
 
 if [[ -s /tmp/perf-metrics-full.log ]]; then
   awk -F'\t' -v s="$WIN_START" -v e="$WIN_END" \
@@ -440,8 +443,8 @@ bash "$REPO/scripts/perf/perf-results-to-json.sh" \
   --duration "$DURATION" \
   --io-threads "$IO_THREADS" \
   --client-threads "$CLIENT_THREADS" \
-  --client-window-start "$WIN_START" \
-  --client-window-end "$WIN_END" \
+  --client-window-start "$CLIENT_WIN_START" \
+  --client-window-end "$CLIENT_WIN_END" \
   --relay-cpu "$CPU_AVG" \
   --relay-rss-kb "$POST_RSS" \
   --net-throughput-mbps "$NET_THROUGHPUT" \
