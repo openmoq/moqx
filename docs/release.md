@@ -130,6 +130,15 @@ When a release branch needs to absorb fixes from `main`:
 
 > TODO (Alan): formal version tagging policy. Today, snapshot releases are the only published artifact. A tagged `vX.Y.Z` release flow (analogous to moxygen's `version release` workflow) is planned — see [issue TBD].
 
+### Changelog
+
+Before tagging `vX.Y.Z`, land a PR on the branch being released that updates [CHANGELOG.md](/CHANGELOG.md):
+
+1. Rename the `[Unreleased]` heading to `[X.Y.Z] - YYYY-MM-DD`, dated the day of the tag.
+2. Add a fresh, empty `[Unreleased]` section above it.
+3. Review and polish the new release section, especially the headline entries.
+4. Append the output of [`scripts/dev/changelog-deps.sh`](/scripts/dev/changelog-deps.sh), which lists the dependencies changed since the previous release.
+
 ## Deploy
 
 `main` auto-deploys to `moqx-main.ci.openmoq.org` after every successful `ci main` run.
