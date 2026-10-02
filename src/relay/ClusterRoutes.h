@@ -73,7 +73,11 @@ public:
     if (!clusterPathValid(path)) {
       throw std::invalid_argument("invalid cluster path");
     }
-    const bool replaced = initialized_ && (path.front() == 0 || path.front() != origin_);
+    auto existing = routes_.find(id);
+    const bool sameRoute =
+        existing != routes_.end() && existing->second.path.front() == path.front();
+    const bool replaced =
+        initialized_ && !sameRoute && (path.front() == 0 || path.front() != origin_);
     if (replaced) {
       routes_.clear();
       ++contentEpoch_;
