@@ -340,6 +340,7 @@ class Actor:
                 str(moqbin / "moqdateserver"),
                 f"--relay_url={url}",
                 f"--ns={self.ns}",
+                f"--versions={self.harness.client_version}",
                 "--insecure",
             ]
         else:
@@ -348,6 +349,7 @@ class Actor:
                 f"--connect_url={url}",
                 f"--track_namespace={self.ns}",
                 f"--track_name={self.track}",
+                f"--versions={self.harness.client_version}",
                 "--insecure",
             ]
         return argv + self.flags
@@ -414,6 +416,13 @@ class Harness:
                 "MOQT_TEST_VERSIONS is not declared in test/test_versions.sh"
             )
         self.moqt_versions = versions["MOQT_TEST_VERSIONS"]
+        self.client_version = os.environ.get(
+            "MOQ_HARNESS_MOQT_VERSION"
+        ) or versions.get("MOQT_CLIENT_VERSION", "")
+        if not self.client_version:
+            raise HarnessError(
+                "MOQT_CLIENT_VERSION is not declared in test/test_versions.sh"
+            )
         self.relays: dict[str, Relay] = {}
         self.actors: dict[str, Actor] = {}
         self.failures = 0

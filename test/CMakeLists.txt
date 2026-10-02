@@ -235,58 +235,78 @@ moqx_add_gtest(moqx_relay_context_test
 # Registers an integration test once per QUIC stack. The mvfst run keeps the
 # plain name; the picoquic run gets a _picoquic suffix and selects the stack
 # through MOQ_HARNESS_QUIC_STACK, which the Python harness and the shell tests
-# both read. Both variants claim the same ports from test/test_ports.sh, so a
-# RESOURCE_LOCK keeps ctest from running them at the same time.
+# both read. Each draft in MOQT_VERSIONS other than 16 adds a _d<N> variant
+# that pins the clients through MOQ_HARNESS_MOQT_VERSION. All variants claim
+# the same ports from test/test_ports.sh, so a RESOURCE_LOCK keeps ctest from
+# running them at the same time.
 function(moqx_add_dual_stack_test name)
-  cmake_parse_arguments(ARG "" "TIMEOUT" "COMMAND;ENVIRONMENT" ${ARGN})
-  foreach(stack mvfst picoquic)
-    set(test_name "${name}")
-    if(NOT stack STREQUAL "mvfst")
-      string(APPEND test_name "_${stack}")
-    endif()
-    add_test(NAME ${test_name} COMMAND ${ARG_COMMAND})
-    set(test_env "MOQ_HARNESS_QUIC_STACK=${stack}")
-    if(ARG_ENVIRONMENT)
-      list(APPEND test_env ${ARG_ENVIRONMENT})
-    endif()
-    set_tests_properties(${test_name} PROPERTIES
-      ENVIRONMENT "${test_env}"
-      RESOURCE_LOCK "${name}_ports"
-    )
-    if(ARG_TIMEOUT)
-      set_tests_properties(${test_name} PROPERTIES TIMEOUT ${ARG_TIMEOUT})
-    endif()
+  cmake_parse_arguments(ARG "" "TIMEOUT" "COMMAND;ENVIRONMENT;MOQT_VERSIONS" ${ARGN})
+  if(NOT ARG_MOQT_VERSIONS)
+    set(ARG_MOQT_VERSIONS 16)
+  endif()
+  foreach(version ${ARG_MOQT_VERSIONS})
+    foreach(stack mvfst picoquic)
+      set(test_name "${name}")
+      if(NOT version STREQUAL "16")
+        string(APPEND test_name "_d${version}")
+      endif()
+      if(NOT stack STREQUAL "mvfst")
+        string(APPEND test_name "_${stack}")
+      endif()
+      add_test(NAME ${test_name} COMMAND ${ARG_COMMAND})
+      set(test_env "MOQ_HARNESS_QUIC_STACK=${stack}" "MOQ_HARNESS_MOQT_VERSION=${version}")
+      if(ARG_ENVIRONMENT)
+        list(APPEND test_env ${ARG_ENVIRONMENT})
+      endif()
+      set_tests_properties(${test_name} PROPERTIES
+        ENVIRONMENT "${test_env}"
+        RESOURCE_LOCK "${name}_ports"
+      )
+      if(ARG_TIMEOUT)
+        set_tests_properties(${test_name} PROPERTIES TIMEOUT ${ARG_TIMEOUT})
+      endif()
+    endforeach()
   endforeach()
 endfunction()
 
 moqx_add_dual_stack_test(relay_chain
   COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/test_relay_chain.py $<TARGET_FILE:moqx>
   TIMEOUT 120
+  MOQT_VERSIONS 16 18
   ENVIRONMENT "MOQBIN=${MOXYGEN_BIN_DIR}"
 )
 
 moqx_add_dual_stack_test(relay_hops_cycle
   COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/test_relay_hops_cycle.py $<TARGET_FILE:moqx>
   TIMEOUT 90
+  MOQT_VERSIONS 16 18
   ENVIRONMENT "MOQBIN=${MOXYGEN_BIN_DIR}"
 )
 
 moqx_add_dual_stack_test(relay_pyramid
   COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/test_relay_pyramid.py $<TARGET_FILE:moqx>
   TIMEOUT 120
+  MOQT_VERSIONS 16 18
   ENVIRONMENT "MOQBIN=${MOXYGEN_BIN_DIR}"
 )
 
-# QMUX is a TCP transport, not a QUIC stack, so this one has nothing to sweep.
-add_test(
-  NAME qmux_relay
-  COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_qmux_relay.sh $<TARGET_FILE:moqx>
-)
-set_tests_properties(qmux_relay PROPERTIES
-  TIMEOUT 60
-  SKIP_RETURN_CODE 77
-  ENVIRONMENT "MOQBIN=${MOXYGEN_BIN_DIR}"
-)
+# QMUX is a TCP transport, not a QUIC stack, so this one sweeps drafts only.
+foreach(version 16 18)
+  set(test_name qmux_relay)
+  if(NOT version STREQUAL "16")
+    string(APPEND test_name "_d${version}")
+  endif()
+  add_test(
+    NAME ${test_name}
+    COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_qmux_relay.sh $<TARGET_FILE:moqx>
+  )
+  set_tests_properties(${test_name} PROPERTIES
+    TIMEOUT 60
+    SKIP_RETURN_CODE 77
+    ENVIRONMENT "MOQBIN=${MOXYGEN_BIN_DIR};MOQ_HARNESS_MOQT_VERSION=${version}"
+    RESOURCE_LOCK qmux_relay_ports
+  )
+endforeach()
 
 moqx_add_dual_stack_test(admin_info_endpoint
   COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_admin_info.sh $<TARGET_FILE:moqx>
@@ -299,6 +319,7 @@ moqx_add_dual_stack_test(admin_metrics_endpoint
 )
 moqx_add_dual_stack_test(admin_track_metrics_endpoint
   COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_admin_track_metrics.sh $<TARGET_FILE:moqx>
+  MOQT_VERSIONS 16 18
   ENVIRONMENT "MOQBIN=${MOXYGEN_BIN_DIR}"
 )
 moqx_add_dual_stack_test(admin_cache_purge_endpoint
@@ -315,6 +336,7 @@ moqx_add_dual_stack_test(admin_connection_logs_endpoint
 )
 moqx_add_dual_stack_test(admin_cache_purge_concurrency_test
   COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_admin_cache_purge_race.sh $<TARGET_FILE:moqx>
+  MOQT_VERSIONS 16 18
   ENVIRONMENT "MOQBIN=${MOXYGEN_BIN_DIR}"
 )
 
