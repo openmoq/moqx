@@ -284,7 +284,7 @@ TEST(ConfigSerializerTest, SerializesClusterIdentityAndFreePeerCost) {
   EXPECT_EQ(sink.scalars["cluster.enabled"], "true");
   EXPECT_EQ(sink.scalars["cluster.hop_id"], "0");
   EXPECT_EQ(sink.scalars["cluster.cost_grace_ms"], "0");
-  EXPECT_FALSE(sink.scalars.contains("services.default.upstream"));
+  EXPECT_FALSE(sink.scalars.contains("services.default.upstream.url"));
   EXPECT_EQ(sink.scalars["services.default.upstreams.*.url"], peer.url);
   EXPECT_EQ(sink.scalars["services.default.upstreams.*.relay_cost"], "0");
 }
