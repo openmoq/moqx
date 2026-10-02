@@ -214,7 +214,7 @@ curl -X DELETE localhost:8000/qlog/capture                              # disarm
 
 - `count` (default 1, max 64) and `seconds` (default 60, max 600) bound the capture; arming again replaces it.
 - `mode=cc` (default) keeps congestion control, RTT, loss and pacing events and drops per-packet and per-stream events. `mode=full` keeps everything; use it for short windows.
-- Each captured connection logs `qlog capture: connection <dcid> (<mode>)` at INFO, so captures line up with the rest of the relay log.
+- Each captured connection logs `qlog capture: logging a new connection` at INFO, so captures line up with the rest of the relay log; `GET /qlog/capture` lists their files by connection ID.
 
 Open the files in [qvis](https://qvis.quictools.info/); it parses them in the browser.
 

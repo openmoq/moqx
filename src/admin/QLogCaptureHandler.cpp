@@ -14,14 +14,15 @@
 #include <sys/stat.h>
 
 #include <folly/Conv.h>
+#include <folly/io/Cursor.h>
 #include <folly/io/IOBuf.h>
-#include <folly/json/dynamic.h>
-#include <folly/json/json.h>
+#include <folly/io/IOBufQueue.h>
 #include <proxygen/httpserver/ResponseBuilder.h>
 #include <proxygen/lib/http/HTTPMessage.h>
 
 #include "admin/AdminResponse.h"
 #include "admin/AdminServer.h"
+#include "admin/JsonWriter.h"
 
 namespace openmoq::moqx::admin {
 
@@ -63,39 +64,49 @@ std::vector<QLogFile> listQLogFiles(const std::string& dir) {
   return files;
 }
 
-folly::dynamic statusJson(const QLogCapture::Status& status) {
-  const auto expires =
+// Capture status; with a directory, also the newest qlog files in it.
+std::unique_ptr<folly::IOBuf>
+statusBody(const QLogCapture::Status& status, const std::string* dir = nullptr) {
+  folly::IOBufQueue queue{folly::IOBufQueue::cacheChainLength()};
+  folly::io::QueueAppender app{&queue, 1024};
+  JsonWriter w{app};
+  w.beginObject();
+  w.field("armed", status.armed);
+  w.field("mode", QLogCapture::modeName(status.mode));
+  w.field("remaining", uint64_t{status.remaining});
+  w.field("captured", uint64_t{status.captured});
+  const int64_t expires =
       std::chrono::duration_cast<std::chrono::seconds>(status.expiresAt.time_since_epoch()).count();
-  return folly::dynamic::object("armed", status.armed)(
-      "mode", std::string(QLogCapture::modeName(status.mode))
-  )("remaining", status.remaining)("captured", status.captured)(
-      "expires_at", expires > 0 ? folly::dynamic(expires) : folly::dynamic(nullptr)
-  );
+  w.key("expires_at");
+  if (expires > 0) {
+    w.intVal(expires);
+  } else {
+    w.nullVal();
+  }
+  if (dir) {
+    w.field("dir", *dir);
+    w.key("files");
+    w.beginArray();
+    for (const auto& f : listQLogFiles(*dir)) {
+      w.beginObject();
+      w.field("connection_id", f.connectionId);
+      w.field("bytes", f.bytes);
+      w.field("modified", f.modified);
+      w.endObject();
+    }
+    w.endArray();
+  }
+  w.endObject();
+  app.write(static_cast<uint8_t>('\n'));
+  return queue.move();
 }
 
-void sendJson(proxygen::ResponseHandler* downstream, const folly::dynamic& body) {
+void sendJson(proxygen::ResponseHandler* downstream, std::unique_ptr<folly::IOBuf> body) {
   proxygen::ResponseBuilder(downstream)
       .status(200, proxygen::HTTPMessage::getDefaultReason(200))
       .header("Content-Type", "application/json")
-      .body(folly::IOBuf::copyBuffer(folly::toJson(body) + "\n"))
+      .body(std::move(body))
       .sendWithEOM();
-}
-
-// nullopt when present but not an integer within [1, max].
-std::optional<uint32_t> boundedParam(
-    const proxygen::HTTPMessage& req,
-    const std::string& name,
-    uint32_t defaultValue,
-    uint32_t max
-) {
-  if (!req.hasQueryParam(name)) {
-    return defaultValue;
-  }
-  auto value = folly::tryTo<uint32_t>(req.getDecodedQueryParam(name));
-  if (!value || *value < 1 || *value > max) {
-    return std::nullopt;
-  }
-  return *value;
 }
 
 } // namespace
@@ -121,7 +132,7 @@ void registerQLogCaptureRoutes(
           sendError(downstream, 503, kNotConfigured);
           return;
         }
-        auto count = boundedParam(*req, "count", 1, QLogCapture::kMaxCount);
+        auto count = boundedQueryParam(*req, "count", 1, QLogCapture::kMaxCount);
         if (!count) {
           sendError(
               downstream,
@@ -130,7 +141,7 @@ void registerQLogCaptureRoutes(
           );
           return;
         }
-        auto seconds = boundedParam(
+        auto seconds = boundedQueryParam(
             *req,
             "seconds",
             60,
@@ -154,7 +165,7 @@ void registerQLogCaptureRoutes(
           mode = *parsed;
         }
         capture->arm(*count, std::chrono::seconds(*seconds), mode);
-        sendJson(downstream, statusJson(capture->status()));
+        sendJson(downstream, statusBody(capture->status()));
       }
   );
 
@@ -173,7 +184,7 @@ void registerQLogCaptureRoutes(
           return;
         }
         capture->disarm();
-        sendJson(downstream, statusJson(capture->status()));
+        sendJson(downstream, statusBody(capture->status()));
       }
   );
 
@@ -191,17 +202,7 @@ void registerQLogCaptureRoutes(
           sendError(downstream, 503, kNotConfigured);
           return;
         }
-        auto body = statusJson(capture->status());
-        auto files = folly::dynamic::array();
-        for (const auto& f : listQLogFiles(qlogDir)) {
-          files.push_back(folly::dynamic::object("connection_id", f.connectionId)("bytes", f.bytes)(
-              "modified",
-              f.modified
-          ));
-        }
-        body["dir"] = qlogDir;
-        body["files"] = std::move(files);
-        sendJson(downstream, body);
+        sendJson(downstream, statusBody(capture->status(), &qlogDir));
       }
   );
 }

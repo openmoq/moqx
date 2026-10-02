@@ -6,9 +6,11 @@
 
 #pragma once
 
+#include <cstdint>
 #include <optional>
 #include <string>
 
+#include <folly/Conv.h>
 #include <folly/io/IOBuf.h>
 #include <proxygen/httpserver/ResponseBuilder.h>
 #include <proxygen/httpserver/ResponseHandler.h>
@@ -40,6 +42,23 @@ boolQueryParam(const proxygen::HTTPMessage& req, const std::string& name, bool d
     return false;
   }
   return std::nullopt;
+}
+
+// Returns nullopt if the param is present but not an integer within [1, max].
+inline std::optional<uint32_t> boundedQueryParam(
+    const proxygen::HTTPMessage& req,
+    const std::string& name,
+    uint32_t defaultValue,
+    uint32_t max
+) {
+  if (!req.hasQueryParam(name)) {
+    return defaultValue;
+  }
+  auto value = folly::tryTo<uint32_t>(req.getDecodedQueryParam(name));
+  if (!value || *value < 1 || *value > max) {
+    return std::nullopt;
+  }
+  return *value;
 }
 
 } // namespace openmoq::moqx::admin

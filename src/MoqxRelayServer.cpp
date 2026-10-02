@@ -5,7 +5,7 @@
  */
 
 #include "MoqxRelayServer.h"
-#include "logging/CaptureQLogger.h"
+#include "logging/CcQLogger.h"
 #include "stats/EventBaseStatsCollector.h"
 #include "stats/QuicStatsCollector.h"
 #include <moxygen/MoQRelaySession.h>
@@ -301,13 +301,26 @@ std::shared_ptr<quic::QLogger> MoqxRelayServer::makeQLogger(quic::VantagePoint v
   if (qlogDir_.empty()) {
     return nullptr;
   }
+  // streaming=true → AsyncFileWriter runs in its own background thread;
+  // the event-loop thread only pays for JSON serialisation + queue push.
+  auto fileQLogger = [&] {
+    return std::make_shared<quic::FileQLogger>(
+        vantagePoint,
+        "MOQT",
+        qlogDir_,
+        /*prettyJson=*/false,
+        /*streaming=*/true,
+        /*compress=*/false
+    );
+  };
   if (qlogCapture_) {
     if (auto mode = qlogCapture_->take()) {
-      return std::make_shared<logging::CaptureQLogger>(
-          vantagePoint,
-          qlogDir_,
-          *mode == logging::QLogCapture::Mode::Cc
-      );
+      XLOG(INFO) << "qlog capture: logging a new connection (mode="
+                 << logging::QLogCapture::modeName(*mode) << ")";
+      if (*mode == logging::QLogCapture::Mode::Cc) {
+        return std::make_shared<logging::CcQLogger>(vantagePoint, qlogDir_);
+      }
+      return fileQLogger();
     }
   }
   if (qlogSampleRate_ <= 0.0f) {
@@ -321,16 +334,7 @@ std::shared_ptr<quic::QLogger> MoqxRelayServer::makeQLogger(quic::VantagePoint v
       return nullptr;
     }
   }
-  // streaming=true → AsyncFileWriter runs in its own background thread;
-  // the event-loop thread only pays for JSON serialisation + queue push.
-  return std::make_shared<quic::FileQLogger>(
-      vantagePoint,
-      "MOQT",
-      qlogDir_,
-      /*prettyJson=*/false,
-      /*streaming=*/true,
-      /*compress=*/false
-  );
+  return fileQLogger();
 }
 
 } // namespace openmoq::moqx

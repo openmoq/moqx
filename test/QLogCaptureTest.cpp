@@ -5,7 +5,7 @@
  */
 
 #include "logging/QLogCapture.h"
-#include "logging/CaptureQLogger.h"
+#include "logging/CcQLogger.h"
 
 #include <filesystem>
 #include <set>
@@ -16,7 +16,7 @@
 #include <folly/json/json.h>
 #include <gtest/gtest.h>
 
-using openmoq::moqx::logging::CaptureQLogger;
+using openmoq::moqx::logging::CcQLogger;
 using openmoq::moqx::logging::QLogCapture;
 using namespace std::chrono_literals;
 
@@ -89,7 +89,7 @@ TEST(QLogCapture, ParsesMode) {
   EXPECT_FALSE(QLogCapture::parseMode("all").has_value());
 }
 
-class CaptureQLoggerTest : public ::testing::Test {
+class CcQLoggerTest : public ::testing::Test {
 protected:
   void SetUp() override {
     dir_ = std::filesystem::temp_directory_path() /
@@ -99,10 +99,10 @@ protected:
   void TearDown() override { std::filesystem::remove_all(dir_); }
 
   // Logs one stream event and one recovery event, returns the event names written.
-  std::set<std::string> logAndRead(bool ccOnly) {
+  template <typename Logger, typename... Args> std::set<std::string> logAndRead(Args&&... args) {
     const auto cid = quic::ConnectionId::createAndMaybeCrash({1, 2, 3, 4, 5, 6, 7, 8});
     {
-      CaptureQLogger logger(quic::VantagePoint::Server, dir_.string(), ccOnly);
+      Logger logger(quic::VantagePoint::Server, std::forward<Args>(args)...);
       logger.setDcid(cid);
       logger.addStreamStateUpdate(4, "on headers", std::nullopt);
       logger.addMetricUpdate(10ms, 5ms, 8ms, 1ms);
@@ -120,13 +120,13 @@ protected:
   std::filesystem::path dir_;
 };
 
-TEST_F(CaptureQLoggerTest, FullKeepsStreamEvents) {
-  auto names = logAndRead(/*ccOnly=*/false);
+TEST_F(CcQLoggerTest, FileQLoggerKeepsStreamEvents) {
+  auto names = logAndRead<quic::FileQLogger>("MOQT", dir_.string(), false, true, false);
   EXPECT_EQ(names.size(), 2u);
   EXPECT_TRUE(names.contains("quic:recovery_metrics_updated"));
 }
 
-TEST_F(CaptureQLoggerTest, CcOnlyDropsStreamEvents) {
-  auto names = logAndRead(/*ccOnly=*/true);
+TEST_F(CcQLoggerTest, DropsStreamEvents) {
+  auto names = logAndRead<CcQLogger>(dir_.string());
   EXPECT_EQ(names, std::set<std::string>{"quic:recovery_metrics_updated"});
 }
