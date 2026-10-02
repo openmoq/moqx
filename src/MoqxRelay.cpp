@@ -161,8 +161,8 @@ uint64_t generateRelayHopID() {
 
 // === LocalSubscribeFilter and LocalPublishFilter ===
 
-// LF-mode publish handler: overrides subscribe() to run subscribeFromSubscriberExec
-// on the subscriber's executor (no relayExec_ hop). Other Publisher methods fall
+// LF-mode publish handler: enters subscribeFromSubscriberExec on the subscriber's
+// executor, then hops to relayExec_ for route setup. Other Publisher methods fall
 // through to PublisherCrossExecFilter.
 class MoqxRelay::LocalSubscribeFilter final : public PublisherCrossExecFilter {
 public:
@@ -774,6 +774,9 @@ void MoqxRelay::advertiseNamespace(
                         warm->second.epoch == selected->contentEpoch && warm->second.warm;
   const auto cost = discount ? 0 : selected->cost;
   bool negotiated = session->negotiatedSetupExtension(SetupExtension::RelayHops);
+  const bool publisherChanged = previous != info.advertised->end() &&
+                                !previous->second.path.empty() && !path.empty() &&
+                                previous->second.path.front() != path.front();
   if (previous != info.advertised->end() &&
       (!negotiated ||
        (!contentChanged && previous->second.path == path && previous->second.cost == cost))) {
@@ -788,9 +791,12 @@ void MoqxRelay::advertiseNamespace(
     Namespace ns;
     ns.trackNamespaceSuffix = makeNamespaceSuffix(name, info.trackNamespacePrefix.size());
     setOutgoingHopPath(ns.params, session, selected->path, relayHopID_);
-    if (negotiated && cost) {
+    if (negotiated) {
       ns.params.insertParam(Parameter(folly::to_underlying(TrackRequestParamKey::ROUTE_COST), cost)
       );
+    }
+    if (publisherChanged) {
+      info.namespacePublishHandle->namespaceDoneMsg(ns.trackNamespaceSuffix);
     }
     info.namespacePublishHandle->namespaceMsg(ns);
   }

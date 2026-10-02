@@ -336,8 +336,17 @@ class Actor:
         url = f"https://localhost:{port}/moq-relay"
         moqbin = self.harness.moqbin
         if self.kind == "cluster-publisher":
+            if self.flags:
+                raise HarnessError(
+                    f"actor {self.name}: cluster-publisher does not accept flags"
+                )
             return [
-                str(self.harness.binary.parent / "test" / "moqx_cluster_advertiser"),
+                os.environ.get(
+                    "MOQX_CLUSTER_ADVERTISER",
+                    str(
+                        self.harness.binary.parent / "test" / "moqx_cluster_advertiser"
+                    ),
+                ),
                 f"moqt://localhost:{port}/moq-relay",
                 self.ns,
             ] + self.flags
@@ -486,6 +495,9 @@ class Harness:
         # change instead of a signature change across every test.
         if not track:
             raise HarnessError(f"actor {name}: track required")
+        actor_flags = _as_flags(flags)
+        if kind == "cluster-publisher" and actor_flags:
+            raise HarnessError(f"actor {name}: cluster-publisher does not accept flags")
         entry = Actor(
             harness=self,
             name=name,
@@ -493,7 +505,7 @@ class Harness:
             relay=relay,
             ns=ns,
             track=track,
-            flags=_as_flags(flags),
+            flags=actor_flags,
             timeout=float(timeout),
             out_path=self.tmpdir / f"actor-{name}.out",
         )

@@ -288,7 +288,7 @@ set_tests_properties(relay_chain PROPERTIES RESOURCE_LOCK relay_chain_ports)
 moqx_add_dual_stack_test(relay_hops_cycle
   COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/test_relay_hops_cycle.py $<TARGET_FILE:moqx>
   TIMEOUT 90
-  ENVIRONMENT "MOQBIN=${MOXYGEN_BIN_DIR}"
+  ENVIRONMENT "MOQBIN=${MOXYGEN_BIN_DIR};MOQX_CLUSTER_ADVERTISER=$<TARGET_FILE:moqx_cluster_advertiser>"
 )
 
 moqx_add_dual_stack_test(relay_pyramid

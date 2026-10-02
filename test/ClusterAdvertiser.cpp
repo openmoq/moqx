@@ -4,6 +4,8 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+// Publishes a synthetic draft-18 cluster namespace for relay integration tests.
+
 #include <folly/coro/BlockingWait.h>
 #include <folly/coro/Sleep.h>
 #include <folly/init/Init.h>

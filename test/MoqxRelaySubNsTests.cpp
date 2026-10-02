@@ -388,7 +388,7 @@ TEST_P(MoQRelayTest, ClusterUpdatesSelectStandbyPerPeerAndPreserveStream) {
   };
   auto first = publish(sourceA, {7, 10}, 1);
   ASSERT_TRUE(first.hasValue());
-  auto second = publish(sourceB, {7, 11}, 5);
+  auto second = publish(sourceB, {8, 11}, 5);
   ASSERT_TRUE(second.hasValue());
   driveIfMultiThread();
   ASSERT_EQ(allAds->namespaces.size(), 1);
@@ -415,17 +415,17 @@ TEST_P(MoQRelayTest, ClusterUpdatesSelectStandbyPerPeerAndPreserveStream) {
   );
   driveIfMultiThread();
   ASSERT_EQ(allAds->namespaces.size(), 2);
-  EXPECT_EQ(pathOf(allAds->namespaces.back()), (std::vector<uint64_t>{7, 11, 900}));
-  EXPECT_TRUE(allAds->dones.empty());
+  EXPECT_EQ(pathOf(allAds->namespaces.back()), (std::vector<uint64_t>{8, 11, 900}));
+  EXPECT_EQ(allAds->dones.size(), 1);
   second.value()->publishNamespaceDone();
   driveIfMultiThread();
   ASSERT_EQ(allAds->namespaces.size(), 3);
   EXPECT_EQ(pathOf(allAds->namespaces.back()), (std::vector<uint64_t>{7, 10, 900}));
-  EXPECT_TRUE(allAds->dones.empty());
+  EXPECT_EQ(allAds->dones.size(), 2);
   EXPECT_EQ(filteredAds->dones.size(), 1);
   first.value()->publishNamespaceDone();
   driveIfMultiThread();
-  EXPECT_EQ(allAds->dones.size(), 1);
+  EXPECT_EQ(allAds->dones.size(), 3);
   for (auto session : {sourceA, sourceB, observer, excluded}) {
     removeSession(session);
   }

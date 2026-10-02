@@ -8,6 +8,7 @@ import hashlib
 import http.server
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -26,14 +27,33 @@ class MediaHarness(Harness):
         super()._write_config(relay)
         config = relay.config_path.read_text()
         # Only replace the listener TLS block; peering still trusts local test TLS.
-        config = config.replace(
-            "      insecure: true",
-            "      insecure: false\n      cert_file: "
-            + json.dumps(str(self.tmpdir / "cert.pem"))
-            + "\n"
-            "      key_file: " + json.dumps(str(self.tmpdir / "key.pem")),
-            1,
-        )
+        if "      insecure: true" in config:
+            config = config.replace("      insecure: true", "      insecure: false", 1)
+            config = config.replace(
+                "      insecure: false",
+                "      insecure: false\n      cert_file: "
+                + json.dumps(str(self.tmpdir / "cert.pem"))
+                + "\n      key_file: "
+                + json.dumps(str(self.tmpdir / "key.pem")),
+                1,
+            )
+        else:
+            cert_line = re.compile(r'(?m)^      cert_file: .*harness-cert\.pem"$')
+            key_line = re.compile(r'(?m)^      key_file: .*harness-key\.pem"$')
+            config, cert_count = cert_line.subn(
+                "      cert_file: " + json.dumps(str(self.tmpdir / "cert.pem")),
+                config,
+                count=1,
+            )
+            config, key_count = key_line.subn(
+                "      key_file: " + json.dumps(str(self.tmpdir / "key.pem")),
+                config,
+                count=1,
+            )
+            if cert_count != 1 or key_count != 1:
+                raise HarnessError(
+                    "could not replace Playa listener certificate in relay config"
+                )
         relay.config_path.write_text(config)
 
 

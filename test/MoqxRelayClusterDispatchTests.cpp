@@ -52,9 +52,11 @@ class ClusterCostObserver : public Publisher::NamespacePublishHandle {
 public:
   std::atomic<uint64_t> cost{UINT64_MAX};
   std::atomic<uint64_t> updates{0};
+  std::atomic<bool> hasRouteCost{false};
   void namespaceMsg(const Namespace& ns) override {
     auto value = ns.params.getFirstParam(TrackRequestParamKey::ROUTE_COST);
     cost = value ? value->asUint64 : 0;
+    hasRouteCost = value != nullptr;
     ++updates;
   }
   void namespaceMsg(const TrackNamespace&) override {}
@@ -421,6 +423,7 @@ TEST_P(MoQRelayTest, ClusterWarmCostFollowsLiveIngressAndPreservesCostUpdates) {
   });
   ASSERT_TRUE(ad.hasValue());
   ASSERT_TRUE(driveUntil([&] { return costs->cost == 6; }));
+  EXPECT_TRUE(costs->hasRouteCost.load());
   SubscribeOk ok;
   ok.requestID = RequestID(0);
   ok.trackAlias = TrackAlias(0);
@@ -435,6 +438,7 @@ TEST_P(MoQRelayTest, ClusterWarmCostFollowsLiveIngressAndPreservesCostUpdates) {
   auto subscription = subscribeToTrack(reader, kTestTrackName, downstream, RequestID(4));
   ASSERT_NE(subscription, nullptr);
   ASSERT_TRUE(driveUntil([&] { return costs->cost == 0; }));
+  EXPECT_TRUE(costs->hasRouteCost.load());
   EXPECT_TRUE(requestClusterCostUpdate(ad.value(), 12, exec_.get()));
   driveIfMultiThread();
   EXPECT_EQ(cancellations.load(), 0);
