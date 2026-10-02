@@ -20,6 +20,18 @@ reviews:
     - "!deps/**"
     - "!.scratch/**"
 
+  pre_merge_checks:
+    custom_checks:
+      - name: "Changelog entry"
+        mode: warning
+        instructions: |
+          CONTRIBUTING.md#changelog defines which changes are user-visible.
+          Pass if the PR makes no user-visible change.
+          Pass if the PR adds a line to the Unreleased section of CHANGELOG.md.
+          Pass if the PR only edits CHANGELOG.md, such as cutting a release.
+          Fail if the PR makes a user-visible change and adds no such line.
+          Name the change that needs an entry and suggest the line.
+
   path_instructions:
     - path: "**"
       instructions: |
@@ -36,6 +48,8 @@ reviews:
         - BUILD.md — CMake presets, moxygen pinning, CPM-fetched deps.
         - RUNNING.md — CLI flags and running a relay.
         - CONTRIBUTING.md — PR scope, review, branch and merge conventions.
+        - CHANGELOG.md — user-visible changes per release; entry rules in
+          CONTRIBUTING.md#changelog.
         - docs/config.md — full YAML configuration reference.
         - docs/logging.md — the --logging flag and XLOG conventions.
         - docs/metrics.md — Prometheus endpoint and metric names.
@@ -158,6 +172,12 @@ reviews:
         dependency-revision management, artifact publishing and relay deploy.
         docs/release.md describes the release branch model. PR CI runs without
         secrets; publish, release and deploy run only on push to main.
+
+    - path: "CHANGELOG.md"
+      instructions: |
+        New entries go in the Unreleased section; a released section changes
+        only when a release is cut or to fix an error in it. Check each new
+        line against CONTRIBUTING.md#changelog.
 
     - path: "docs/ref/**"
       instructions: |
