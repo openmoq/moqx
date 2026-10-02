@@ -130,6 +130,7 @@ Merges the sync PR if CI passed. Deletes the sync branch after merge.
 **Trigger:** manual (version input) | **Time:** <1 min
 
 Promotes `snapshot-latest` artifacts to a versioned `vX.Y.Z` release (no rebuild).
+Release notes open with the version's [CHANGELOG.md](/CHANGELOG.md) section; see [release.md](/docs/release.md#changelog).
 
 ---
 

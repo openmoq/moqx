@@ -72,6 +72,23 @@ PR description if preserving history on `main` is warranted.
 
 > **Note:** *Delete branch on merge* is the current default setting.
 
+## Changelog
+
+[CHANGELOG.md](CHANGELOG.md) follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/). Versions follow [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html).
+
+- A PR adds its user-visible changes to the `[Unreleased]` section, in the same PR.
+- An entry covers what an operator or client of the shipped product can observe.
+- A headline feature goes directly under the `[Unreleased]` heading, above the subsections.
+- Everything else goes under the matching subheading: `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed` or `Security`. Create the subheading if it is missing.
+- Write for the operator, not the reviewer: what changed for them, in one sentence. Name the config key, flag or endpoint.
+- Link the doc section that covers the change, when one exists.
+- A breaking change starts with `**Breaking:**`.
+- Keep the file's style, including:
+  - version headings in setext form, underlined with `===`;
+  - full PR links: `([#123](https://github.com/openmoq/moqx/pull/123))`.
+
+Cutting a release: see [docs/release.md](docs/release.md#changelog).
+
 ## Local development
 
 Before submitting:
