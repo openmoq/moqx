@@ -33,6 +33,7 @@
 #include <folly/ThreadLocal.h>
 #include <folly/container/F14Map.h>
 #include <folly/container/F14Set.h>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -358,7 +359,7 @@ private:
     bool requiresRelay;
   };
   using LocalNamespaceRoutes = std::vector<LocalNamespaceRoute>;
-  std::atomic<std::shared_ptr<const LocalNamespaceRoutes>> localNamespaceRoutes_{
+  std::shared_ptr<const LocalNamespaceRoutes> localNamespaceRoutes_{
       std::make_shared<const LocalNamespaceRoutes>()
   };
   void refreshLocalNamespaceRoutes();

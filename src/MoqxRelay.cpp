@@ -623,14 +623,17 @@ void MoqxRelay::refreshLocalNamespaceRoutes() {
       },
       [] {}
   );
-  localNamespaceRoutes_.store(std::move(routes));
+  std::atomic_store(
+      &localNamespaceRoutes_,
+      std::shared_ptr<const LocalNamespaceRoutes>(std::move(routes))
+  );
 }
 
 bool MoqxRelay::canSubscribeLocally(
     const TrackNamespace& ns,
     const std::shared_ptr<MoQSession>& requester
 ) const {
-  auto routes = localNamespaceRoutes_.load();
+  auto routes = std::atomic_load(&localNamespaceRoutes_);
   const LocalNamespaceRoute* selected = nullptr;
   for (const auto& route : *routes) {
     if (ns.startsWith(route.ns) && (!selected || route.ns.size() > selected->ns.size())) {
@@ -2745,9 +2748,6 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriber
   // Join before the relay hop: serializes same-iothread races.
   auto joined = localReg->join(ftn, [&] { return std::make_shared<MoQForwarder>(ftn); });
 
-  consumer =
-      wrapWithTrackStats(trackStats_, ftn, std::move(consumer), stats::TrackDirection::Egress);
-
   // Another setup is running on this thread, so wait for it to complete.  It's possible that
   // the first setup failed and another pending setup has been started, so loop until the entry
   // is ready, or fails.  This loop should terminate assuming the subscription gets established.
@@ -2784,6 +2784,8 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriber
     if (auto err = checkRangeNotInPast(readyFwd, subReq)) {
       co_return folly::makeUnexpected(std::move(*err));
     }
+    consumer =
+        wrapWithTrackStats(trackStats_, ftn, std::move(consumer), stats::TrackDirection::Egress);
     co_return attachSubscriber(readyFwd, std::move(session), subReq, std::move(consumer));
   }
 
@@ -2804,6 +2806,8 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriber
 
   // addSubscriber before the relay hop: numForwardingSubscribers() must be correct
   // when the channel subscriber is added on publisherExec, so forward flag is right from the start.
+  consumer =
+      wrapWithTrackStats(trackStats_, ftn, std::move(consumer), stats::TrackDirection::Egress);
   auto sub = localFwd->addSubscriber(session->sessionId(), subReq, std::move(consumer));
   if (!sub) {
     co_return folly::makeUnexpected(makeAddSubscriberError(subReq.requestID));
