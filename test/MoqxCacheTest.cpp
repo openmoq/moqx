@@ -16,6 +16,7 @@
 #include <folly/portability/GMock.h>
 #include <folly/portability/GTest.h>
 #include <moxygen/MoQTrackProperties.h>
+#include <moxygen/MoQVersions.h>
 #include <moxygen/test/Mocks.h>
 
 using namespace testing;
@@ -586,6 +587,46 @@ CO_TEST_F(MoqxCacheTest, TestFetchMissUpstreamError) {
   EXPECT_TRUE(res.hasError());
 }
 
+// Upstream ends the fetch before failing it: the held-back fin must become a reset.
+CO_TEST_F(MoqxCacheTest, TestFetchMissUpstreamEndOfFetchBeforeUpstreamError) {
+  EXPECT_CALL(*upstream_, fetch(_, _))
+      .WillOnce([&](Fetch, std::shared_ptr<FetchConsumer> consumer) {
+        upstreamFetchConsumer_ = std::move(consumer);
+        auto endRes = upstreamFetchConsumer_->endOfFetch();
+        EXPECT_TRUE(endRes.hasValue());
+        return folly::coro::makeTask<Publisher::FetchResult>(folly::makeUnexpected(
+            FetchError{0, FetchErrorCode::INTERNAL_ERROR, "further-upstream reset"}
+        ));
+      });
+  EXPECT_CALL(*consumer_, endOfFetch()).Times(0);
+  EXPECT_CALL(*consumer_, reset(ResetStreamErrorCode::CANCELLED));
+  auto res = co_await cache_.fetch(getFetch({0, 0}, {0, 10}), trackingConsumer_, upstream_);
+  EXPECT_TRUE(res.hasError());
+}
+
+// New-track cache miss: FETCH_OK with a Mandatory Track Property arrives after
+// upstream already ended the fetch; downstream sees only the reset.
+CO_TEST_F(MoqxCacheTest, TestFetchMissUpstreamMandatoryPropertyRejected) {
+  Extensions mandatoryExt;
+  mandatoryExt.insertMutableExtension(Extension{0x4000, 1});
+  EXPECT_CALL(*upstream_, fetch(_, _))
+      .WillOnce([&](Fetch, std::shared_ptr<FetchConsumer> consumer) {
+        upstreamFetchConsumer_ = std::move(consumer);
+        EXPECT_TRUE(upstreamFetchConsumer_->endOfFetch().hasValue());
+        upstreamFetchHandle_ = std::make_shared<moxygen::MockFetchHandle>(
+            FetchOk{0, GroupOrder::OldestFirst, 0, AbsoluteLocation{1, 0}, mandatoryExt}
+        );
+        EXPECT_CALL(*upstreamFetchHandle_, fetchCancel());
+        return folly::coro::makeTask<Publisher::FetchResult>(upstreamFetchHandle_);
+      });
+  EXPECT_CALL(*consumer_, endOfFetch()).Times(0);
+  EXPECT_CALL(*consumer_, reset(ResetStreamErrorCode::INTERNAL_ERROR));
+  auto res = co_await cache_
+                 .fetch(getFetch({0, 0}, {0, 10}), trackingConsumer_, upstream_, kVersionDraft18);
+  EXPECT_TRUE(res.hasError());
+  EXPECT_EQ(res.error().errorCode, FetchErrorCode::UNSUPPORTED_EXTENSION);
+}
+
 CO_TEST_F(MoqxCacheTest, TestFetchMissTailUpstreamError) {
   // Test case for fetch with complete cache miss when no track is present
   populateCacheRange({0, 0}, {0, 1});
@@ -594,6 +635,104 @@ CO_TEST_F(MoqxCacheTest, TestFetchMissTailUpstreamError) {
   EXPECT_CALL(*consumer_, reset(_));
   auto res = co_await cache_.fetch(getFetch({0, 0}, {0, 10}), trackingConsumer_, upstream_);
   EXPECT_TRUE(res.hasError());
+}
+
+// An upstream FETCH_OK carrying an unsupported Mandatory
+// Track Property must be rejected with UNSUPPORTED_EXTENSION, and — since no
+// FETCH_OK has reached the downstream fetcher yet on this path — the
+// not-yet-established stream must be reset. Upstream ends the fetch before
+// FETCH_OK resolves, so that endOfFetch() must not reach the consumer.
+CO_TEST_F(MoqxCacheTest, TestFetchTailUpstreamMandatoryPropertyRejected) {
+  populateCacheRange({0, 0}, {0, 1});
+  Extensions mandatoryExt;
+  mandatoryExt.insertMutableExtension(Extension{0x4000, 1});
+  EXPECT_CALL(*upstream_, fetch(_, _))
+      .WillOnce([&](Fetch, std::shared_ptr<FetchConsumer> consumer) {
+        upstreamFetchConsumer_ = std::move(consumer);
+        EXPECT_TRUE(upstreamFetchConsumer_->endOfFetch().hasValue());
+        upstreamFetchHandle_ = std::make_shared<moxygen::MockFetchHandle>(
+            FetchOk{0, GroupOrder::OldestFirst, 0, AbsoluteLocation{1, 0}, mandatoryExt}
+        );
+        EXPECT_CALL(*upstreamFetchHandle_, fetchCancel());
+        return folly::coro::makeTask<Publisher::FetchResult>(upstreamFetchHandle_);
+      });
+  expectFetchObjects({0, 0}, {0, 1}, false);
+  EXPECT_CALL(*consumer_, endOfFetch()).Times(0);
+  EXPECT_CALL(*consumer_, reset(ResetStreamErrorCode::INTERNAL_ERROR));
+  auto res = co_await cache_
+                 .fetch(getFetch({0, 0}, {0, 10}), trackingConsumer_, upstream_, kVersionDraft18);
+  EXPECT_TRUE(res.hasError());
+  EXPECT_EQ(res.error().errorCode, FetchErrorCode::UNSUPPORTED_EXTENSION);
+}
+
+// draft-14/16 have no Mandatory Track Property concept, so an upstream on an
+// older negotiated version must not be rejected for one. upstreamVersion
+// defaults to 0 (unknown), which also skips the check.
+CO_TEST_F(MoqxCacheTest, TestFetchTailUpstreamMandatoryPropertyIgnoredPreDraft18) {
+  populateCacheRange({0, 0}, {0, 1});
+  Extensions mandatoryExt;
+  mandatoryExt.insertMutableExtension(Extension{0x4000, 1});
+  EXPECT_CALL(*upstream_, fetch(_, _))
+      .WillOnce([&](Fetch, std::shared_ptr<FetchConsumer> consumer) {
+        upstreamFetchConsumer_ = std::move(consumer);
+        upstreamFetchConsumer_->endOfFetch();
+        upstreamFetchHandle_ = std::make_shared<moxygen::MockFetchHandle>(
+            FetchOk{0, GroupOrder::OldestFirst, 0, AbsoluteLocation{1, 0}, mandatoryExt}
+        );
+        return folly::coro::makeTask<Publisher::FetchResult>(upstreamFetchHandle_);
+      });
+  expectFetchObjects({0, 0}, {0, 1}, true);
+  auto res = co_await cache_.fetch(getFetch({0, 0}, {0, 10}), trackingConsumer_, upstream_);
+  EXPECT_TRUE(res.hasValue());
+}
+
+// Upstream ends the fetch before failing it: the held-back fin must become a reset.
+CO_TEST_F(MoqxCacheTest, TestFetchTailUpstreamEndOfFetchBeforeUpstreamError) {
+  populateCacheRange({0, 0}, {0, 1});
+  EXPECT_CALL(*upstream_, fetch(_, _))
+      .WillOnce([&](Fetch, std::shared_ptr<FetchConsumer> consumer) {
+        upstreamFetchConsumer_ = std::move(consumer);
+        auto endRes = upstreamFetchConsumer_->endOfFetch();
+        EXPECT_TRUE(endRes.hasValue());
+        return folly::coro::makeTask<Publisher::FetchResult>(folly::makeUnexpected(
+            FetchError{0, FetchErrorCode::INTERNAL_ERROR, "further-upstream reset"}
+        ));
+      });
+  expectFetchObjects({0, 0}, {0, 1}, false);
+  EXPECT_CALL(*consumer_, endOfFetch()).Times(0);
+  EXPECT_CALL(*consumer_, reset(ResetStreamErrorCode::CANCELLED));
+  auto res = co_await cache_.fetch(getFetch({0, 0}, {0, 10}), trackingConsumer_, upstream_);
+  EXPECT_TRUE(res.hasError());
+}
+
+// Regression: when track state already lets fetch() take the fast path
+// (FETCH_OK returned synchronously, live track/known past data), fetchImpl
+// keeps running as a *detached* background task. A FetchError returned from
+// fetchUpstream() there would otherwise be silently discarded — the downstream
+// must instead learn about it via an explicit stream reset.
+CO_TEST_F(MoqxCacheTest, TestFetchLiveTrackDetachedUpstreamMandatoryPropertyRejected) {
+  populateCacheRange({0, 5}, {0, 6});
+  auto writeback = cache_.getSubscribeWriteback(kTestTrackName, trackConsumer_);
+
+  Extensions mandatoryExt;
+  mandatoryExt.insertMutableExtension(Extension{0x4000, 1});
+  EXPECT_CALL(*upstream_, fetch(_, _))
+      .WillOnce([&](Fetch, std::shared_ptr<FetchConsumer> consumer) {
+        upstreamFetchConsumer_ = std::move(consumer);
+        upstreamFetchHandle_ = std::make_shared<moxygen::MockFetchHandle>(
+            FetchOk{0, GroupOrder::OldestFirst, 0, AbsoluteLocation{1, 0}, mandatoryExt}
+        );
+        EXPECT_CALL(*upstreamFetchHandle_, fetchCancel());
+        return folly::coro::makeTask<Publisher::FetchResult>(upstreamFetchHandle_);
+      });
+  EXPECT_CALL(*consumer_, reset(ResetStreamErrorCode::INTERNAL_ERROR));
+
+  auto res = co_await cache_
+                 .fetch(getFetch({0, 0}, {0, 10}), trackingConsumer_, upstream_, kVersionDraft18);
+  EXPECT_TRUE(res.hasValue()
+  ) << "fast path returns FETCH_OK synchronously before the background task runs";
+
+  co_await folly::coro::co_reschedule_on_current_executor;
 }
 
 CO_TEST_F(MoqxCacheTest, TestFetchMissNoTrackUpstreamCompleteHit) {

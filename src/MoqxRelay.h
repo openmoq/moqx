@@ -537,7 +537,8 @@ private:
       moxygen::SubscribeRequest upstreamSubReq,
       std::shared_ptr<moxygen::TrackConsumer> upstreamConsumer,
       std::shared_ptr<moxygen::MoQForwarder> publisherFwd,
-      moxygen::RequestID clientRequestID
+      moxygen::RequestID clientRequestID,
+      std::optional<uint64_t> upstreamVersion
   );
 
   std::optional<moxygen::SubscribeError> completeUpstreamSubscription(
