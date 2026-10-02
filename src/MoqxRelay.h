@@ -580,10 +580,10 @@ private:
   std::optional<moxygen::Publisher::TrackStatusResult>
   trackStatusOnSubscriberExec(const moxygen::TrackStatus& req);
 
-  // Resolves a joining fetch against this thread's local forwarder (race-free). Rewrites to a
-  // standalone Fetch when largest is known, else clears joiningRequestID to defer to upstream.
-  moxygen::Fetch
-  fetchOnSubscriberExec(moxygen::Fetch fetch, const std::shared_ptr<moxygen::MoQSession>& session);
+  // Rewrites a joining fetch to a standalone fetch against this thread's local forwarder. Returns
+  // the setup to wait for while that forwarder is pending, and a ready future otherwise.
+  folly::Expected<folly::SemiFuture<folly::Unit>, moxygen::FetchError>
+  resolveJoiningFetchOnSubscriberExec(moxygen::Fetch& fetch, const moxygen::MoQSession& session);
 
   // Impl methods — run on relayExec_ when set, or inline when relayExec_==nullptr.
   folly::coro::Task<SubscribeResult>
