@@ -139,6 +139,9 @@ Before tagging `vX.Y.Z`, land a PR on the branch being released that updates [CH
 3. Review and polish the new release section, especially the headline entries.
 4. Append the output of [`scripts/dev/changelog-deps.sh`](/scripts/dev/changelog-deps.sh), which lists the dependencies changed since the previous release.
 
+[`version release`](/.github/workflows/version-release.yml) opens the GitHub release notes with this section, read at the snapshot commit it tags.
+It fails when a non-prerelease version has no section, so dispatch it once the snapshot includes the changelog PR.
+
 ## Deploy
 
 `main` auto-deploys to `moqx-main.ci.openmoq.org` after every successful `ci main` run.
