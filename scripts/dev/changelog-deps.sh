@@ -10,8 +10,8 @@
 # - Run it on the commit being released; see docs/release.md#changelog.
 # - Prints nothing when no pin changed; the release then gets no Dependencies section.
 # - A pin absent at <previous-tag> counts as changed.
-# - moxygen is named by its v* tag when MOXYGEN_REV carries one, else by short sha.
-#   Resolving the tag needs network access to github.com.
+# - moxygen is named by the v* release cmake/print-release-tag.cmake resolves
+#   MOXYGEN_REV to, else by short sha. Resolving needs network access to github.com.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
@@ -38,11 +38,8 @@ lines=()
 if changed MOXYGEN_REV; then
   repo=$(pin MOXYGEN_REPOSITORY)
   rev=$(pin MOXYGEN_REV)
-  # Annotated tags list twice (tag object, then ^{} peeled to the commit); match either.
-  tag=$(git ls-remote --tags "https://github.com/$repo" |
-    awk -v sha="$rev" '$1 == sha { sub("refs/tags/", "", $2); sub(/\^\{\}$/, "", $2); print $2 }' |
-    grep -E '^v[0-9]' | sort -uV | tail -n1 || true)
-  if [[ -n "$tag" ]]; then
+  tag=$(cmake -P cmake/print-release-tag.cmake 2>/dev/null || true)
+  if [[ "$tag" == v* ]]; then
     lines+=("- moxygen [$tag](https://github.com/$repo/releases/tag/$tag)")
   else
     lines+=("- moxygen [${rev:0:7}](https://github.com/$repo/commit/$rev)")
