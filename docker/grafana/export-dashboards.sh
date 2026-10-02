@@ -31,10 +31,6 @@ def g(path):
         ["docker", "exec", C, "curl", "-sf", "-u", f"admin:{gpass}",
          f"http://localhost:3000{path}"], text=True)
 
-pubs = json.loads(g("/api/dashboards/public-dashboards"))
-pubs = pubs.get("publicDashboards", pubs if isinstance(pubs, list) else [])
-tokmap = {x["accessToken"]: x["dashboardUid"] for x in pubs if x.get("isEnabled")}
-
 items = [d for d in json.loads(g("/api/search?type=dash-db"))
          if d.get("uid", "").startswith("moqx-") and d["uid"].endswith("-dev")]
 if not items:
@@ -48,12 +44,8 @@ for it in items:
     d["uid"] = d["uid"][:-4]                       # strip -dev
     if d.get("title", "").endswith(" (dev)"):
         d["title"] = d["title"][:-6]
-    # Reverse the import-time link rewrite: dev cross-links -> public URLs.
-    body = json.dumps(d)
-    for tok, duid in tokmap.items():
-        body = re.sub(r"/grafana/d/" + re.escape(duid) + r"-dev(/[A-Za-z0-9-]+)?",
-                      "/grafana/public-dashboards/" + tok, body)
-    d = json.loads(body)
+    # Reverse the import-time link rewrite: dev cross-links -> provisioned uids.
+    d = json.loads(re.sub(r"/grafana/d/(moqx-[\w-]+?)-dev(?![\w-])", r"/grafana/d/\1", json.dumps(d)))
     path = f"{DEST}/{d['uid']}.json"
     content = json.dumps(d, indent=2) + "\n"
     old = open(path).read() if os.path.exists(path) else ""
