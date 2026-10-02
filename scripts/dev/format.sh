@@ -42,9 +42,25 @@ else
   exit 1
 fi
 
-FILES=$(find src test tools -name '*.h' -o -name '*.hpp' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx')
+# Tracked files only, so local build trees and vendored packages (build-san/,
+# node_modules/) never reach the formatters. Stage a new file to include it.
+# Read NUL-delimited paths into arrays so spaces are preserved and deleted
+# tracked files are ignored. Keep this compatible with macOS Bash 3.2.
+FILES=()
+while IFS= read -r -d '' f; do
+  [[ -f "$f" ]] && FILES+=("$f")
+done < <(git ls-files -z -- src test tools | while IFS= read -r -d '' f; do
+  case "$f" in
+    *.h|*.hpp|*.cc|*.cpp|*.cxx) printf '%s\0' "$f" ;;
+  esac
+done)
 
-if [[ -z "${FILES}" ]]; then
+PY_FILES=()
+while IFS= read -r -d '' f; do
+  [[ -f "$f" ]] && PY_FILES+=("$f")
+done < <(git ls-files -z -- '*.py')
+
+if [[ ${#FILES[@]} -eq 0 && ${#PY_FILES[@]} -eq 0 ]]; then
   echo "No source files found."
   exit 0
 fi
@@ -58,21 +74,29 @@ APACHE_HEADER='/*
 if [[ "${1:-}" == "--check" ]]; then
   echo "Checking copyright headers..."
   header_errors=0
-  for f in ${FILES}; do
-    if ! head -1 "$f" | grep -q '^/\*'; then
-      echo "  missing copyright header: $f"
-      header_errors=1
-    fi
-  done
+  if [[ ${#FILES[@]} -gt 0 ]]; then
+    for f in "${FILES[@]}"; do
+      if ! head -1 "$f" | grep -q '^/\*'; then
+        echo "  missing copyright header: $f"
+        header_errors=1
+      fi
+    done
+  fi
 
   echo "Checking formatting..."
   cf_exit=0
-  ${CF_BIN} --dry-run -Werror ${FILES} || cf_exit=$?
+  if [[ ${#FILES[@]} -gt 0 ]]; then
+    "${CF_BIN}" --dry-run -Werror "${FILES[@]}" || cf_exit=$?
+  fi
 
+  # Explicit paths bypass ruff.toml's excludes unless --force-exclude is given.
+  # With no paths ruff would fall back to the whole tree, so skip instead.
   echo "Checking Python formatting and lint..."
   ruff_exit=0
-  "${RUFF[@]}" format --check . || ruff_exit=$?
-  "${RUFF[@]}" check . || ruff_exit=$?
+  if [[ ${#PY_FILES[@]} -gt 0 ]]; then
+    "${RUFF[@]}" format --check --force-exclude "${PY_FILES[@]}" || ruff_exit=$?
+    "${RUFF[@]}" check --force-exclude "${PY_FILES[@]}" || ruff_exit=$?
+  fi
 
   if [[ $header_errors -ne 0 ]]; then
     echo "error: files missing copyright headers (run scripts/dev/format.sh to fix)" >&2
@@ -82,17 +106,23 @@ if [[ "${1:-}" == "--check" ]]; then
   fi
 else
   echo "Adding missing copyright headers..."
-  for f in ${FILES}; do
-    if ! head -1 "$f" | grep -q '^/\*'; then
-      printf '%s\n\n' "${APACHE_HEADER}" | cat - "$f" > /tmp/hdr_tmp && mv /tmp/hdr_tmp "$f"
-    fi
-  done
+  if [[ ${#FILES[@]} -gt 0 ]]; then
+    for f in "${FILES[@]}"; do
+      if ! head -1 "$f" | grep -q '^/\*'; then
+        printf '%s\n\n' "${APACHE_HEADER}" | cat - "$f" > /tmp/hdr_tmp && mv /tmp/hdr_tmp "$f"
+      fi
+    done
+  fi
 
   echo "Formatting files..."
-  ${CF_BIN} -i ${FILES}
+  if [[ ${#FILES[@]} -gt 0 ]]; then
+    "${CF_BIN}" -i "${FILES[@]}"
+  fi
 
   # --fix is the safe fixes only; whatever is left exits non-zero for a human.
   echo "Formatting and linting Python..."
-  "${RUFF[@]}" format .
-  "${RUFF[@]}" check --fix .
+  if [[ ${#PY_FILES[@]} -gt 0 ]]; then
+    "${RUFF[@]}" format --force-exclude "${PY_FILES[@]}"
+    "${RUFF[@]}" check --fix --force-exclude "${PY_FILES[@]}"
+  fi
 fi

@@ -270,8 +270,9 @@ inline void serializeLogging(ConfigSink& s, const LoggingConfig& l) {
   s.endObject();
 }
 
-inline void serializeUpstream(ConfigSink& s, const UpstreamConfig& u) {
-  s.beginObject("upstream");
+inline void
+serializeUpstream(ConfigSink& s, const UpstreamConfig& u, std::string_view key = "upstream") {
+  s.beginObject(key);
   s.stringField("url", u.url);
   s.beginObject("tls");
   s.boolField("insecure", u.tls.insecure);
@@ -283,6 +284,11 @@ inline void serializeUpstream(ConfigSink& s, const UpstreamConfig& u) {
   s.endObject();
   s.intField("connect_timeout_ms", u.connectTimeout.count());
   s.intField("idle_timeout_ms", u.idleTimeout.count());
+  if (u.relayCost) {
+    s.uintField("relay_cost", *u.relayCost);
+  } else {
+    s.nullField("relay_cost");
+  }
   s.endObject();
 }
 
@@ -293,6 +299,15 @@ inline void serializeConfig(const Config& cfg, ConfigSink& s) {
 
   s.beginObject("");
   s.stringField("relay_id", cfg.relayID);
+  s.beginObject("cluster");
+  s.boolField("enabled", cfg.cluster.enabled);
+  if (cfg.cluster.hopID) {
+    s.uintField("hop_id", *cfg.cluster.hopID);
+  } else {
+    s.nullField("hop_id");
+  }
+  s.intField("cost_grace_ms", cfg.cluster.costGrace.count());
+  s.endObject();
   s.uintField("threads", cfg.threads);
   s.boolField("use_relay_thread", cfg.useRelayThread);
   s.boolField("use_local_forwarders", cfg.useLocalForwarders);
@@ -344,6 +359,11 @@ inline void serializeConfig(const Config& cfg, ConfigSink& s) {
     if (svc.upstream) {
       serializeUpstream(s, *svc.upstream);
     }
+    s.beginArray("upstreams");
+    for (const auto& peer : svc.upstreams) {
+      serializeUpstream(s, peer, "");
+    }
+    s.endArray();
     s.endObject();
   }
   s.endObject();

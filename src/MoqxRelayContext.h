@@ -42,6 +42,7 @@ public:
   virtual RelayStateVisitor& onServiceBegin(std::string_view name) = 0;
   // Called after relay->dumpState() if an upstream is configured for this service.
   virtual void onServiceUpstream(std::string_view url, std::string_view state) = 0;
+  virtual void onServiceUpstreams(const std::vector<std::pair<std::string, std::string>>&) {}
   virtual void onServiceEnd() = 0;
   virtual void onRelayEnd() = 0;
   // Checked between services so a consumer that has gone away stops the walk
@@ -59,6 +60,7 @@ public:
     config::ServiceConfig config;
     std::shared_ptr<MoqxRelay> relay;
     std::shared_ptr<const auth::AuthTokenVerifier> verifier;
+    std::vector<std::shared_ptr<UpstreamProvider>> upstreamProviders;
   };
 
   MoqxRelayContext(
@@ -66,8 +68,12 @@ public:
       const std::string& relayID,
       bool useRelayThread = true,
       bool useLocalForwarders = false,
-      uint64_t relayHopID = 0
+      std::optional<uint64_t> relayHopID = std::nullopt,
+      config::ClusterConfig cluster = {}
   );
+
+  uint64_t getRelayHopID() const { return relayHopID_; }
+  bool clusterEnabled() const { return cluster_.enabled; }
 
   void setStatsRegistry(std::shared_ptr<stats::StatsRegistry> registry);
 
@@ -164,6 +170,7 @@ private:
   ServiceMatcher serviceMatcher_;
   std::string relayID_;
   uint64_t relayHopID_;
+  config::ClusterConfig cluster_;
   folly::EventBase* cacheEvb_{nullptr};
   std::shared_ptr<stats::StatsRegistry> statsRegistry_;
   // One collector per io thread; tlStatsCollector_ binds each to its own thread.

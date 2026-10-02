@@ -55,3 +55,4 @@ docker/grafana/provisioning/dashboards/archive/
 __pycache__/
 *.pyc
 .ruff_cache/
+test/playa/node_modules/

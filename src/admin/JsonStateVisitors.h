@@ -190,6 +190,18 @@ public:
     w_.endObject();
   }
 
+  void onServiceUpstreams(const std::vector<std::pair<std::string, std::string>>& peers) override {
+    w_.key("upstreams");
+    w_.beginArray();
+    for (const auto& [url, state] : peers) {
+      w_.beginObject();
+      w_.field("url", url);
+      w_.field("state", state);
+      w_.endObject();
+    }
+    w_.endArray();
+  }
+
   void onServiceEnd() override {
     w_.endObject();
     c_.maybeFlush();

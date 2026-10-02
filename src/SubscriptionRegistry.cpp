@@ -109,6 +109,7 @@ bool SubscriptionRegistry::completeSubscription(
   auto& rsub = it->second;
   rsub.handle = std::move(handle);
   rsub.requestID = requestID;
+  rsub.source = upstreamSession;
   rsub.upstream = std::move(upstreamSession);
   rsub.publisher = std::move(publisher);
   rsub.promise.setValue(folly::unit);
@@ -119,6 +120,9 @@ void SubscriptionRegistry::failAndRemove(const moxygen::FullTrackName& ftn, Entr
   auto it = subscriptions_.find(ftn);
   if (it != subscriptions_.end() && it->second.epoch == epoch) {
     it->second.promise.setException(std::runtime_error("upstream subscribe failed"));
+    if (it->second.topNFilter) {
+      it->second.topNFilter->setActivityTarget(nullptr);
+    }
     subscriptions_.erase(it);
   }
 }
@@ -141,6 +145,9 @@ SubscriptionRegistry::PublishEntry SubscriptionRegistry::createFromPublish(
     auto* oldPublisherExec = it->second.upstream ? it->second.upstream->getExecutor() : nullptr;
     evicted =
         Evicted{std::move(it->second.forwarder), std::move(it->second.handle), oldPublisherExec};
+    if (it->second.topNFilter) {
+      it->second.topNFilter->setActivityTarget(nullptr);
+    }
     subscriptions_.erase(it);
   }
 
@@ -167,6 +174,30 @@ SubscriptionRegistry::PublishEntry SubscriptionRegistry::createFromPublish(
 
 bool SubscriptionRegistry::exists(const moxygen::FullTrackName& ftn) const {
   return subscriptions_.find(ftn) != subscriptions_.end();
+}
+
+bool SubscriptionRegistry::ownsIngest(
+    const moxygen::FullTrackName& ftn,
+    const IngestCounters* ingest
+) const {
+  auto it = subscriptions_.find(ftn);
+  return it != subscriptions_.end() && it->second.ingest.get() == ingest;
+}
+
+std::shared_ptr<IngestCounters> SubscriptionRegistry::getIngest(const moxygen::FullTrackName& ftn
+) const {
+  auto it = subscriptions_.find(ftn);
+  return it != subscriptions_.end() ? it->second.ingest : nullptr;
+}
+
+void SubscriptionRegistry::setSourcePath(
+    const moxygen::FullTrackName& ftn,
+    std::vector<uint64_t> path
+) {
+  auto it = subscriptions_.find(ftn);
+  if (it != subscriptions_.end()) {
+    it->second.sourcePath = std::move(path);
+  }
 }
 
 ForwarderRef SubscriptionRegistry::getForwarderRef(const moxygen::FullTrackName& ftn) const {
@@ -202,7 +233,9 @@ SubscriptionRegistry::getUpstreamView(const moxygen::FullTrackName& ftn) const {
       rsub.requestID,
       rsub.upstream ? rsub.upstream->getExecutor() : nullptr,
       rsub.isPublish,
-      rsub.promise.isFulfilled()
+      rsub.promise.isFulfilled(),
+      rsub.source,
+      rsub.sourcePath
   };
 }
 
@@ -229,6 +262,9 @@ ForwarderRef SubscriptionRegistry::onPublisherTerminated(const moxygen::FullTrac
   auto forwarder = rsub.forwarder.getIfOwned();
   XCHECK(forwarder) << "onPublisherTerminated on a remote-owned entry: " << ftn;
   if (forwarder->empty()) {
+    if (it->second.topNFilter) {
+      it->second.topNFilter->setActivityTarget(nullptr);
+    }
     subscriptions_.erase(it);
     return {};
   }
@@ -236,6 +272,10 @@ ForwarderRef SubscriptionRegistry::onPublisherTerminated(const moxygen::FullTrac
 }
 
 void SubscriptionRegistry::remove(const moxygen::FullTrackName& ftn) {
+  auto it = subscriptions_.find(ftn);
+  if (it != subscriptions_.end() && it->second.topNFilter) {
+    it->second.topNFilter->setActivityTarget(nullptr);
+  }
   subscriptions_.erase(ftn);
 }
 
@@ -259,6 +299,9 @@ void SubscriptionRegistry::removeIf(folly::FunctionRef<bool(const EntryView&)> p
         ingestOr(it->second.ingest)
     };
     if (predicate(view)) {
+      if (it->second.topNFilter) {
+        it->second.topNFilter->setActivityTarget(nullptr);
+      }
       it = subscriptions_.erase(it);
     } else {
       ++it;

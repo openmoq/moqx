@@ -16,6 +16,7 @@
 #include <folly/futures/SharedPromise.h>
 #include <folly/logging/xlog.h>
 
+#include <optional>
 #include <variant>
 #include <vector>
 
@@ -47,6 +48,7 @@ public:
   };
   struct Ready {
     std::shared_ptr<moxygen::MoQForwarder> forwarder;
+    std::optional<moxygen::SessionId> sourceSessionId;
   };
   using State = std::variant<Absent, Pending, Ready>;
 
@@ -75,6 +77,14 @@ public:
     const std::shared_ptr<moxygen::MoQForwarder>& forwarder() const {
       XCHECK(registry_) << "forwarder() on a resolved or empty Claim";
       return forwarder_;
+    }
+
+    void setSourceSessionId(moxygen::SessionId id) {
+      XCHECK(registry_) << "setSourceSessionId() on a resolved or empty Claim";
+      auto it = registry_->forwarders_.find(ftn_);
+      if (it != registry_->forwarders_.end() && it->second.forwarder == forwarder_) {
+        it->second.sourceSessionId = id;
+      }
     }
 
     // Separate from markReady() so a caller with setup to finish can order it before
@@ -193,7 +203,7 @@ public:
       if (it->second.ready) {
         return Pending{it->second.ready->getSemiFuture()};
       }
-      return Ready{it->second.forwarder};
+      return Ready{it->second.forwarder, it->second.sourceSessionId};
     }
     auto forwarder = factory();
     XCHECK(forwarder) << "join() factory returned null for " << ftn;
@@ -297,13 +307,14 @@ private:
     std::shared_ptr<moxygen::MoQForwarder> forwarder;
     // Non-null iff the entry is pending; it is the state discriminator.
     Promise ready;
+    std::optional<moxygen::SessionId> sourceSessionId;
   };
 
   static State stateOf(const Entry& entry) {
     if (entry.ready) {
       return Pending{entry.ready->getSemiFuture()};
     }
-    return Ready{entry.forwarder};
+    return Ready{entry.forwarder, entry.sourceSessionId};
   }
 
   ParkResult replaceImpl(
