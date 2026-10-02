@@ -27,6 +27,7 @@
 
 #include <folly/futures/ThreadWheelTimekeeper.h>
 
+#include <atomic>
 #include <folly/CancellationToken.h>
 #include <folly/Executor.h>
 #include <folly/ThreadLocal.h>
@@ -347,6 +348,24 @@ private:
   void onPublishNamespaceDone(const moxygen::TrackNamespace& ns) override;
 
   NamespaceTree namespaceTree_{*this};
+
+  // Subscriber threads may use the local forwarder only for an anonymous,
+  // ordinary source. Publish an immutable view rather than reading the tree
+  // outside relayExec_. Cluster routes remain selected on relayExec_.
+  struct LocalNamespaceRoute {
+    moxygen::TrackNamespace ns;
+    std::weak_ptr<moxygen::MoQSession> source;
+    bool requiresRelay;
+  };
+  using LocalNamespaceRoutes = std::vector<LocalNamespaceRoute>;
+  std::atomic<std::shared_ptr<const LocalNamespaceRoutes>> localNamespaceRoutes_{
+      std::make_shared<const LocalNamespaceRoutes>()
+  };
+  void refreshLocalNamespaceRoutes();
+  bool canSubscribeLocally(
+      const moxygen::TrackNamespace& ns,
+      const std::shared_ptr<moxygen::MoQSession>& requester
+  ) const;
 
   // Cluster tracks coalesce only within one advertisement lifetime and content
   // generation. Their forwarders live on relayExec, including in LF mode.

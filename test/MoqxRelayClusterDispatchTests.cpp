@@ -286,6 +286,23 @@ TEST_P(MoQRelayTest, ClusterSubscribeDoesNotEchoExactPublishedTrack) {
   removeSession(publisher);
 }
 
+TEST_P(MoQRelayTest, ClusterSubscribeDoesNotEchoUnadvertisedPublishedTrack) {
+  auto publisher = createMockSession();
+  doPublish(publisher, kTestTrackName);
+  EXPECT_EQ(
+      subscribeToTrack(
+          publisher,
+          kTestTrackName,
+          createMockConsumer(),
+          RequestID(18),
+          false,
+          SubscribeErrorCode::DOES_NOT_EXIST
+      ),
+      nullptr
+  );
+  removeSession(publisher);
+}
+
 TEST_P(MoQRelayTest, ClusterLocalHopCollisionCannotSubscribe) {
   resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "", 900);
   auto source = createMockSession();
@@ -793,7 +810,16 @@ TEST_P(MoQRelayTest, ClusterPathUpdateDetachesOnlyExcludedReader) {
 TEST_P(MoQRelayTest, ClusterJoiningFetchWaitsForMatchingSubscribeReady) {
   auto source = createMockSession();
   auto reader = createMockSession();
-  doPublishNamespace(source, kTestNamespace);
+  ON_CALL(*source, getNegotiatedVersion())
+      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft18)));
+  ON_CALL(*source, negotiatedSetupExtension(SetupExtension::RelayHops)).WillByDefault(Return(true));
+  auto publishNamespace = withSessionContext(source, [&] {
+    return folly::coro::blockingWait(
+        subscriberInterface()->publishNamespace(clusterAd({7, 10}, 0), nullptr),
+        exec_.get()
+    );
+  });
+  ASSERT_TRUE(publishNamespace.hasValue());
   auto pump = [&](auto ready) {
     for (size_t i = 0; i < 1000 && !ready(); ++i) {
       exec_->drive();

@@ -171,7 +171,31 @@ public:
 
   folly::coro::Task<SubscribeResult>
   subscribe(SubscribeRequest subReq, std::shared_ptr<TrackConsumer> consumer) override {
-    return PublisherCrossExecFilter::subscribe(std::move(subReq), std::move(consumer));
+    auto session = MoQSession::getRequestSession();
+    const auto version = session->getNegotiatedVersion();
+    // Draft-16 requesters have no negotiated Hop ID. Keep their subscriber-
+    // thread path so a local PUBLISH can resolve a pending forwarder directly.
+    if (version && getDraftMajorVersion(*version) < 18 &&
+        !session->negotiatedSetupExtension(SetupExtension::RelayHops) &&
+        session->getPeerHopID() == kMoQClusterAnonHopId &&
+        relay_->canSubscribeLocally(subReq.fullTrackName.trackNamespace, session)) {
+      if (subReq.fullTrackName.trackNamespace.empty() &&
+          !MoqxRelay::emptyNamespaceAllowed(session)) {
+        co_return folly::makeUnexpected(SubscribeError{
+            subReq.requestID,
+            SubscribeErrorCode::DOES_NOT_EXIST,
+            "namespace required"
+        });
+      }
+      auto* subscriberExec = session->getExecutor();
+      co_return co_await relay_->subscribeFromSubscriberExec(
+          std::move(subReq),
+          std::move(consumer),
+          std::move(session),
+          subscriberExec
+      );
+    }
+    co_return co_await PublisherCrossExecFilter::subscribe(std::move(subReq), std::move(consumer));
   }
 
   folly::coro::Task<TrackStatusResult> trackStatus(TrackStatus req) override {
@@ -578,6 +602,44 @@ void MoqxRelay::onUpstreamDisconnect(const std::shared_ptr<MoQSession>& session)
   }
 }
 
+void MoqxRelay::refreshLocalNamespaceRoutes() {
+  if (mode() != Mode::LocalForwarder) {
+    return;
+  }
+  auto routes = std::make_shared<LocalNamespaceRoutes>();
+  namespaceTree_.walkTree(
+      [&](std::string_view, const NamespaceTree::NamespaceNode& node) {
+        if (auto source = node.publisherSession()) {
+          auto route = node.publisherFrom(source);
+          routes->push_back(LocalNamespaceRoute{
+              node.trackNamespace,
+              source,
+              node.routeCount() != 1 || !route ||
+                  source->negotiatedSetupExtension(SetupExtension::RelayHops) ||
+                  source->getPeerHopID() != kMoQClusterAnonHopId || route->path.size() != 1 ||
+                  route->path.front() != kMoQClusterAnonHopId
+          });
+        }
+      },
+      [] {}
+  );
+  localNamespaceRoutes_.store(std::move(routes));
+}
+
+bool MoqxRelay::canSubscribeLocally(
+    const TrackNamespace& ns,
+    const std::shared_ptr<MoQSession>& requester
+) const {
+  auto routes = localNamespaceRoutes_.load();
+  const LocalNamespaceRoute* selected = nullptr;
+  for (const auto& route : *routes) {
+    if (ns.startsWith(route.ns) && (!selected || route.ns.size() > selected->ns.size())) {
+      selected = &route;
+    }
+  }
+  return !selected || (!selected->requiresRelay && selected->source.lock() != requester);
+}
+
 std::shared_ptr<Subscriber::PublishNamespaceHandle> MoqxRelay::doPublishNamespace(
     PublishNamespace pubNs,
     std::shared_ptr<MoQSession> session,
@@ -616,6 +678,7 @@ std::shared_ptr<Subscriber::PublishNamespaceHandle> MoqxRelay::doPublishNamespac
       session->getRelayLinkCost(),
       routeID
   );
+  refreshLocalNamespaceRoutes();
   {
     auto previousSuppression = suppressedClusterAdvertisement_;
     auto restore =
@@ -788,6 +851,7 @@ void MoqxRelay::doPublishNamespaceDone(
   if (result.hasError()) {
     return;
   }
+  refreshLocalNamespaceRoutes();
   refreshClusterSubscriptions();
   for (const auto& [outSession, info] : result->subscribers) {
     advertiseNamespace(result->node, outSession, info);
@@ -888,6 +952,7 @@ Subscriber::PublishResult MoqxRelay::publishFromPublisherExec(
   // hop below initiates publishDone on the publisher forwarder's exec in publishWithSession.
   auto install =
       installPublisherForwarder(pub.fullTrackName, localPubFwd, InstallKind::FromPublish);
+  install.claim.setSourceSessionId(session->sessionId());
   install.claim.markReady(InitialTrackState{pub.largest, pub.extensions});
 
   // crossExecFilter is a channel subscriber for the relay exec
@@ -1348,7 +1413,11 @@ bool MoqxRelay::addSubscriberAndPublish(
     return false;
   }
   rememberPublishedReader(publisherRef.track().ftn, subscriberSession);
-  if (mode() == Mode::LocalForwarder &&
+  auto source = registry_.getUpstreamView(publisherRef.track().ftn);
+  const bool clusterLink = subscriberSession->negotiatedSetupExtension(SetupExtension::RelayHops) ||
+                           (source && source->source &&
+                            source->source->negotiatedSetupExtension(SetupExtension::RelayHops));
+  if (mode() == Mode::LocalForwarder && clusterLink &&
       namespaceTree_.findPublisherNode(publisherRef.track().ftn.trackNamespace)) {
     // A route-bound publication must not join the subscriber thread's FTN-only
     // forwarder. Keep its actual session subscribers on this source's executor.
@@ -2097,6 +2166,7 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
     // the returned handle so its teardown hops there too (no token: reciprocal).
     auto recipResult = co_await maybeWrapPublisher(relayExec_, session)
                            ->subscribeNamespace(std::move(peerSubNs), handle);
+    co_await folly::coro::co_safe_point;
     if (!handshake->active) {
       if (recipResult.hasValue()) {
         recipResult.value()->unsubscribeNamespace();
@@ -2492,6 +2562,7 @@ folly::coro::Task<MoqxRelay::PublisherAttachment> MoqxRelay::attachNewLocalForwa
           publisherClaim = std::move(
               installPublisherForwarder(ftn, publisherFwd, InstallKind::FromSubscribe).claim
           );
+          publisherClaim.setSourceSessionId(sr.firstSetup->upstreamSession->sessionId());
         }
 
         auto cbs = buildLocalToPublisherCallbacks(
@@ -2697,6 +2768,18 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriber
   }
 
   if (auto* ready = std::get_if<LocalForwarderRegistry::Ready>(&joined)) {
+    if (ready->sourceSessionId == session->sessionId()) {
+      co_return folly::makeUnexpected(SubscribeError{
+          subReq.requestID,
+          SubscribeErrorCode::DOES_NOT_EXIST,
+          "no eligible exact-track source"
+      });
+    }
+    // A namespace can become a cluster route while a local waiter is parked.
+    if (!canSubscribeLocally(ftn.trackNamespace, session)) {
+      PublisherCrossExecFilter routed(relayExec_, shared_from_this());
+      co_return co_await routed.subscribe(std::move(subReq), std::move(consumer));
+    }
     auto& readyFwd = *ready->forwarder;
     if (auto err = checkRangeNotInPast(readyFwd, subReq)) {
       co_return folly::makeUnexpected(std::move(*err));
@@ -2736,6 +2819,17 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriber
 
   // Back on subscriberExec.
 
+  if (attach.error) {
+    teardownLocalForwarderOnFailure(
+        attach.publisherRef,
+        localReg->channelId(),
+        attach.ownsRelayChain ? std::optional(relayChannelId_) : std::nullopt,
+        localFwd,
+        attach.error->error().reasonPhrase
+    );
+    co_return std::move(*attach.error);
+  }
+
   if (pendingCb->sawOnEmpty_) {
     // All subscribers left during setup (localReg entry already removed by
     // PendingForwarderCallback::onEmpty). Drop the channel sub(s); the registry entry +
@@ -2750,17 +2844,6 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriber
         SubscribeErrorCode::INTERNAL_ERROR,
         "all subscribers cancelled during setup"
     });
-  }
-
-  if (attach.error) {
-    teardownLocalForwarderOnFailure(
-        attach.publisherRef,
-        localReg->channelId(),
-        attach.ownsRelayChain ? std::optional(relayChannelId_) : std::nullopt,
-        localFwd,
-        attach.error->error().reasonPhrase
-    );
-    co_return std::move(*attach.error);
   }
 
   claim.setInitialState(attach.initial);
@@ -4360,6 +4443,17 @@ void MoqxRelay::newGroupRequestedImpl(const FullTrackName& ftn, uint64_t group) 
     return;
   }
   XLOG(INFO) << "New group request detected for " << ftn;
+
+  // A namespace publication's forward update runs on relayExec_. Keep its NGR
+  // update on that executor too, so the publisher sees the updates in order.
+  if (upstreamView->isPublish) {
+    auto warm = publishedWarm_.find(ftn);
+    if (warm != publishedWarm_.end() && warm->second && warm->second->handle &&
+        !warm->second->stopped) {
+      launchUpdate(relayExec(), doNewGroupRequestUpdate(warm->second->handle, group));
+      return;
+    }
+  }
 
   // handle non-null (checked above) implies upstream is live, so publisherExec is set.
   XCHECK(upstreamView->publisherExec);
