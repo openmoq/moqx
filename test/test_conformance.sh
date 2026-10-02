@@ -3,11 +3,14 @@
 #
 # Usage: test_conformance.sh <moqx_binary> [versions] [Q] [stack]
 #
-#   versions — "14", "16", or "14,16" (default: moxygen default)
+#   versions — "16", "18", or "16,18" (default: the relay's default versions)
 #   Q        — literal "Q" to use raw QUIC transport (default: WebTransport)
 #   stack    — "mvfst" (default) or "pico" — selects the relay's QUIC stack
 #
 # Args are positional but order-independent: each is identified by content.
+#
+# A versions arg pins the relay too, not just the moqtest endpoints: drafts
+# outside the relay's default list (e.g. 18) otherwise fail ALPN negotiation.
 #
 # Environment:
 #   MOQBIN — path to moxygen install bin/ (for moqtest_client, moqtest_server)
@@ -16,9 +19,9 @@
 # Examples:
 #   test_conformance.sh ./build/default/moqx
 #   test_conformance.sh ./build/default/moqx 16
-#   test_conformance.sh ./build/default/moqx 14 Q          # mvfst, draft-14, raw QUIC
+#   test_conformance.sh ./build/default/moqx 18 Q          # mvfst, draft-18, raw QUIC
 #   test_conformance.sh ./build/default/moqx 16 Q pico     # picoquic, draft-16, raw QUIC
-#   test_conformance.sh ./build/default/moqx 14 pico       # picoquic, draft-14, WT
+#   test_conformance.sh ./build/default/moqx 18 pico       # picoquic, draft-18, WT
 
 set -euo pipefail
 
@@ -66,6 +69,7 @@ fi
 # rest of the suite selects its stack.
 QUIC_STACK="$MOQ_QUIC_STACK"
 DOWNSTREAM_ARGS=()
+VERSIONS=""
 SERVER_VERSIONS_FLAG=()
 SERVER_TRANSPORT_FLAG=()
 for arg in "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"; do
@@ -82,6 +86,7 @@ for arg in "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"; do
       ;;
     *)
       if [[ "$arg" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
+        VERSIONS="$arg"
         SERVER_VERSIONS_FLAG=(--versions="$arg")
       fi
       DOWNSTREAM_ARGS+=("$arg")
@@ -100,6 +105,12 @@ URL_HOST="localhost"
 # shared helpers at whatever won.
 MOQ_QUIC_STACK="$QUIC_STACK"
 LISTENER_STACK_BLOCK="$(moq_listener_stack_yaml "$TMPDIR")"
+
+# Pin the relay to the requested drafts; unset leaves it on its defaults.
+VERSIONS_BLOCK=""
+if [[ -n "$VERSIONS" ]]; then
+  VERSIONS_BLOCK=$'\n'"    moqt_versions: [${VERSIONS}]"
+fi
 
 # Generate a temp config with our ports
 TMPCONFIG="$TMPDIR/config.yaml"
@@ -132,7 +143,7 @@ listeners:
         address: "${BIND_ADDRESS}"
         port: ${RELAY_PORT}
 ${LISTENER_STACK_BLOCK}
-    endpoint: "/moq-relay"
+    endpoint: "/moq-relay"${VERSIONS_BLOCK}
 services:
   default:
     match:

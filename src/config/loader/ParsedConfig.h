@@ -282,7 +282,7 @@ struct ParsedListenerConfig {
   rfl::Description<"TLS configuration", ParsedListenerTlsConfig> tls;
   rfl::Description<"WebTransport endpoint path", std::string> endpoint;
   rfl::Description<
-      "MOQT draft versions (empty = default 14,16)",
+      "MOQT draft versions: 16 and/or 18 (empty = default 16)",
       std::optional<std::vector<uint32_t>>>
       moqt_versions;
   rfl::Description<
@@ -338,7 +338,7 @@ struct ParsedAdminConfig {
   rfl::Description<"Allow plain HTTP (mutually exclusive with tls)", bool> plaintext;
   rfl::Description<"TLS configuration", std::optional<ParsedAdminTlsConfig>> tls;
   rfl::Description<
-      "Enable per-track counting and the /metrics/track endpoint (default true)",
+      "Enable per-track counting and the /metrics/track endpoint (default false)",
       std::optional<bool>>
       track_metrics_enabled;
   rfl::Description<

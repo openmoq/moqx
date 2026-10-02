@@ -17,6 +17,11 @@ namespace openmoq::moqx {
 // the result to the caller. goaway() is fire-and-forget.
 //
 // Requires targetExec_ to be a FIFO executor if call ordering matters.
+//
+// The owning session can drop this filter while a call is still out. Each
+// coroutine below copies targetExec_ before its await and reads only locals after
+// it. It wraps the result before its co_safe_point, so a cancelled call destroys
+// the inner handle on targetExec_.
 class PublisherCrossExecFilter : public moxygen::Publisher {
 public:
   PublisherCrossExecFilter(folly::Executor* targetExec, std::shared_ptr<moxygen::Publisher> inner)

@@ -270,12 +270,7 @@ NamespaceTree::unpublishNamespace(
   node->routes_.remove(source->routeID);
   node->sources_.erase(source->routeID);
   node->refreshPublisher();
-  if (!node->routeCount()) {
-    for (auto& [sess, handle] : node->draft14PubNsHandles_) {
-      result.legacyHandles.emplace_back(sess, handle);
-    }
-    node->draft14PubNsHandles_.clear();
-  }
+
   return result;
 }
 

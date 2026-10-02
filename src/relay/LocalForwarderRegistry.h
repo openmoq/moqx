@@ -9,6 +9,7 @@
 #include "relay/InitialTrackState.h"
 
 #include <moxygen/MoQLocation.h>
+#include <moxygen/MoQSession.h>
 #include <moxygen/relay/MoQForwarder.h>
 
 #include <folly/container/F14Map.h>
@@ -147,6 +148,9 @@ public:
 
   LocalForwarderRegistry(const LocalForwarderRegistry&) = delete;
   LocalForwarderRegistry& operator=(const LocalForwarderRegistry&) = delete;
+
+  // Key for this thread's channel on each publisher forwarder. Readable from any thread.
+  moxygen::SessionId channelId() const { return channelId_; }
 
   // Names the occupant a replaceAndPark() call evicted, and is the only way to
   // reach it again. Move-only, and the destructor aborts on an unredeemed ticket,
@@ -382,6 +386,7 @@ private:
       std::vector<std::shared_ptr<moxygen::MoQForwarder>>,
       moxygen::FullTrackName::hash>
       displaced_;
+  const moxygen::SessionId channelId_{moxygen::MoQSession::makeSessionId()};
 };
 
 } // namespace openmoq::moqx

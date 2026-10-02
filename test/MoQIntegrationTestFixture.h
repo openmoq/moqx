@@ -11,7 +11,7 @@
 #include <folly/portability/GTest.h>
 #include <folly/synchronization/Baton.h>
 #include <moxygen/MoQClient.h>
-#include <moxygen/MoQClusterSession.h>
+#include <moxygen/MoQRelaySession.h>
 #include <moxygen/MoQServer.h>
 #include <moxygen/MoQVersions.h>
 #include <moxygen/Publisher.h>
@@ -118,7 +118,7 @@ protected:
     return std::make_unique<moxygen::MoQClient>(
         clientExec_,
         serverUrl(),
-        moxygen::MoQClusterSession::createClusterSessionFactory(),
+        moxygen::MoQRelaySession::createRelaySessionFactory(),
         std::make_shared<moxygen::test::InsecureVerifierDangerousDoNotUseInProduction>()
     );
   }
@@ -172,7 +172,7 @@ private:
         folly::MaybeManagedPtr<proxygen::WebTransport> wt,
         std::shared_ptr<moxygen::MoQExecutor> executor
     ) override {
-      return std::make_shared<moxygen::MoQClusterSession>(
+      return std::make_shared<moxygen::MoQRelaySession>(
           folly::MaybeManagedPtr<proxygen::WebTransport>(std::move(wt)),
           *this,
           std::move(executor)

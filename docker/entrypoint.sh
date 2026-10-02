@@ -17,7 +17,7 @@
 #   MOQX_BIND_ADDR  — listen address: 0.0.0.0 (default) or :: (dual-stack)
 #   MOQX_ENDPOINT   — WebTransport endpoint path (default: /moq-relay)
 #   MOQX_MOQT_VERSIONS — advertised MoQT draft versions, YAML inline list
-#                     (default: [16, 14, 18]). The relay selects by server
+#                     (default: [16, 18]). The relay selects by server
 #                     preference — the first listed version the client also
 #                     supports — so draft 18 listed last is a fallback: only
 #                     d18-only clients negotiate 18; clients that also speak
@@ -103,7 +103,7 @@ export MOQX_CERT="${MOQX_CERT:-}"
 export MOQX_KEY="${MOQX_KEY:-}"
 export MOQX_INSECURE="${MOQX_INSECURE:-false}"
 export MOQX_ENDPOINT="${MOQX_ENDPOINT:-/moq-relay}"
-export MOQX_MOQT_VERSIONS="${MOQX_MOQT_VERSIONS:-[16, 14, 18]}"
+export MOQX_MOQT_VERSIONS="${MOQX_MOQT_VERSIONS:-[16, 18]}"
 export MOQX_MAX_TRACKS="${MOQX_MAX_TRACKS:-1000}"
 export MOQX_MAX_GROUPS="${MOQX_MAX_GROUPS:-100}"
 export MOQX_CACHE="${MOQX_CACHE:-true}"

@@ -8,8 +8,8 @@
 #include "relay/PublisherCrossExecFilter.h"
 #include "relay/SubscriberCrossExecFilter.h"
 #include <folly/coro/Timeout.h>
-#include <moxygen/MoQClusterSession.h>
 #include <moxygen/MoQFilters.h>
+#include <moxygen/MoQRelaySession.h>
 #include <moxygen/MoQVersions.h>
 
 using namespace moxygen;
@@ -202,8 +202,6 @@ folly::coro::Task<void> UpstreamProvider::reconnectLoop() {
           reconnectBackoff_.count() == 0
               ? kInitialReconnectBackoff
               : std::min(reconnectBackoff_ * 2, std::chrono::milliseconds(kMaxReconnectBackoff));
-      XLOG(ERR) << "UpstreamProvider: connect failed: " << ex.what() << ", retrying in "
-                << reconnectBackoff_.count() << "ms";
     }
   }
 }
@@ -498,7 +496,7 @@ folly::coro::Task<void> UpstreamProvider::doConnect() {
   auto client = std::make_shared<MoQClient>(
       exec_,
       url_,
-      MoQClusterSession::createClusterSessionFactory(),
+      MoQRelaySession::createRelaySessionFactory(),
       verifier_
   );
   client_ = client;

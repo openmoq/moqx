@@ -11,7 +11,7 @@ from the build (MOQBIN overrides).
 
 Usage: python3 test/test_relay_chain.py [path/to/moqx] [--save-logs [DIR]]
   --save-logs [DIR]  Save relay DBG4 logs; DIR defaults to
-                     .scratch/moq_harness_logs/test_relay_chain
+                     .scratch/moq_harness_logs/test_relay_chain[_picoquic]
 """
 
 from lib.moq_harness import main

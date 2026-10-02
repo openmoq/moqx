@@ -124,8 +124,11 @@ python3 test/test_relay_test_name.py build/san/moqx --save-logs
 
 `--save-logs` runs the relays at `DBG4` and copies their logs, the generated
 configs and every actor's output to `.scratch/moq_harness_logs/<test name>/`
-(or to a directory you name). Otherwise the scratch directory is deleted on
-exit. The debug logging is deliberately *not* applied to actors —
+(or to a directory you name). A picoquic run appends `_picoquic` to the test
+name. A failed run saves the same files there without `--save-logs`, at the
+default log level. Otherwise the scratch directory is deleted on exit. A relay
+that exits non-zero also prints its sanitizer report, or its log tail if it
+has none. The debug logging is deliberately *not* applied to actors —
 `expect_received` looks for a leading digit, and a `DBG4` line starting with
 one would false-PASS.
 

@@ -10,7 +10,7 @@
 #include "stats/PicoQuicStatsCollector.h"
 #include <folly/io/async/EventBase.h>
 #include <folly/logging/xlog.h>
-#include <moxygen/MoQClusterSession.h>
+#include <moxygen/MoQRelaySession.h>
 #include <moxygen/openmoq/transport/pico/PicoTransportConfig.h>
 
 using namespace moxygen;
@@ -158,7 +158,7 @@ std::shared_ptr<MoQSession> MoqxPicoRelayServer::createSession(
     folly::MaybeManagedPtr<proxygen::WebTransport> wt,
     std::shared_ptr<MoQExecutor> executor
 ) {
-  return std::make_shared<MoQClusterSession>(
+  return std::make_shared<MoQRelaySession>(
       folly::MaybeManagedPtr<proxygen::WebTransport>(std::move(wt)),
       *this,
       std::move(executor)

@@ -377,6 +377,7 @@ add_library(moqx_core STATIC
   src/auth/Auth.cpp
   src/LoggingMultiFlag.cpp
   src/NamespaceTree.cpp
+  src/PendingRendezvousTree.cpp
   src/SubscriptionRegistry.cpp
   src/MoqxRelay.cpp
   src/MoqxRelayContext.cpp
@@ -423,7 +424,6 @@ target_link_libraries(moqx_core PUBLIC
   moqx_hmac_key
   moxygen::moxygen_relay_moq_forwarder
   moxygen::moxygen_moq_relay_session
-  moxygen::moxygen_moq_cluster_session
   moxygen::moxygen_moq_server
   moxygen::moxygen_moq_qmux_server
   moxygen::moxygen_qmux_utils

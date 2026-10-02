@@ -19,7 +19,7 @@ source-build workflow. Do not pair this relay with a pre-cluster dependency.
 
 Cluster negotiation requires draft 18 advertisement stream lifetimes. Configure
 mesh listeners explicitly with `moqt_versions: [18]`. The default listener
-versions remain `[14, 16]`. Upstream clients offer draft 18 and draft 16; the
+versions are `[16]`. Upstream clients offer draft 18 and draft 16; the
 latter provides ordinary chaining without the cluster extension. The old
 zero-length setup flag and request-level exclusion parameter are not the cluster
 wire format.

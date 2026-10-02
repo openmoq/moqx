@@ -1,10 +1,9 @@
 /*
  * Copyright (c) Meta Platforms, Inc. and affiliates.
- * Originally from github.com/facebookexperimental/moxygen.
- * See the moxygen LICENSE for the original license terms:
- * https://github.com/openmoq/moxygen/blob/main/LICENSE
- *
  * Copyright (c) OpenMOQ contributors.
+ * Originally from github.com/facebookexperimental/moxygen.
+ * This source code is licensed under the Apache 2.0 license found in the
+ * LICENSE file in the root directory of this source tree.
  */
 
 #include "MoqxRelayTestFixture.h"
@@ -14,7 +13,7 @@ namespace openmoq::moqx::test {
 // Test: FETCH with an empty namespace is rejected pre-draft-18.
 TEST_P(MoQRelayTest, FetchEmptyNamespaceRejectedPreV18) {
   auto session = createMockSession();
-  // Default session negotiates kVersionDraftCurrent (draft-14, which is < 18)
+  // Default session negotiates kVersionDraft16 (< 18)
 
   Fetch fetch(
       RequestID(0),

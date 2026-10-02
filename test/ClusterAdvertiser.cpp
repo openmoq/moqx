@@ -9,8 +9,8 @@
 #include <folly/init/Init.h>
 #include <folly/io/async/EventBase.h>
 #include <moxygen/MoQClient.h>
-#include <moxygen/MoQClusterSession.h>
 #include <moxygen/MoQFramer.h>
+#include <moxygen/MoQRelaySession.h>
 #include <moxygen/MoQVersions.h>
 #include <moxygen/events/MoQFollyExecutorImpl.h>
 #include <moxygen/util/InsecureVerifierDangerousDoNotUseInProduction.h>
@@ -32,7 +32,7 @@ advertise(std::shared_ptr<MoQExecutor> exec, std::string url, std::string name) 
   MoQClient client(
       exec,
       proxygen::URL(url),
-      MoQClusterSession::createClusterSessionFactory(),
+      MoQRelaySession::createRelaySessionFactory(),
       std::make_shared<test::InsecureVerifierDangerousDoNotUseInProduction>()
   );
   client.addSetupParameter(SetupParameter(static_cast<uint64_t>(SetupKey::HOP_ID), hopID));

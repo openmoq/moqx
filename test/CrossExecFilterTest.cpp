@@ -569,8 +569,8 @@ TEST_F(CrossExecFilterTest, FilterDestroyedWithQueuedObjectStreamUAF) {
 }
 
 // The same defect driven entirely through the real MoQForwarder API, no manual
-// reset(): removeChannelSubscriberByExec defaults pubDone to std::nullopt, so
-// removeSubscriberIt skips the publishDone that would have anchored the filter
+// reset(): removing the channel subscriber without a PublishDone makes
+// removeSubscriberIt skip the publishDone that would have anchored the filter
 // via shared_from_this() and erases the subscriber map entry — dropping the
 // forwarder's only ref inline, on the publisher's executor, while the
 // beginSubgroup lambda is still queued on the filter's target executor.
@@ -584,12 +584,13 @@ TEST(CrossExecFilterForwarderTest, ChannelSubscriberRemovedWithQueuedBeginSubgro
       ));
 
   auto fwd = std::make_shared<MoQForwarder>(FullTrackName{TrackNamespace{{"ns"}}, "track"});
-  fwd->addChannelSubscriber(&exec, /*forward=*/true, CrossExecFilter::create(&exec, inner));
+  auto channelId = MoQSession::makeSessionId();
+  fwd->addSubscriber(channelId, /*forward=*/true, CrossExecFilter::create(&exec, inner));
 
   auto sub = fwd->beginSubgroup(1, 0, 128, {});
   ASSERT_TRUE(sub.hasValue());
 
-  fwd->removeChannelSubscriberByExec(&exec);
+  fwd->removeSubscriber(channelId, std::nullopt, "test");
 
   exec.drain();
 }

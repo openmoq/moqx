@@ -26,7 +26,7 @@ and serves it. Override anything with a flag or env var — you rarely need to.
 ```
 
 Listens on **udp/4433** (MoQT), admin HTTP on **8000**, WebTransport endpoint
-**`/moq-relay`**. Offers MoQT drafts **16, 14, 18** (negotiates 16 with most
+**`/moq-relay`**. Offers MoQT drafts **16, 18** (negotiates 16 with most
 clients; draft-18-only clients get 18).
 
 ### The handful of commands you'll actually use
@@ -59,7 +59,7 @@ DOMAIN=relay.example.com ./scripts/moqx-run.sh --sudo
 | listen port | 4433 | `--port` |
 | admin port | 8000 | `--admin-port` |
 | endpoint | `/moq-relay` | `--endpoint` |
-| MoQT drafts | 16,14,18 (server-pref order) | `--moqt-versions` |
+| MoQT drafts | 16,18 (server-pref order) | `--moqt-versions` |
 | IO threads | 4 | `--threads` |
 | congestion control | bbr | `--cc` |
 | object cache | on | `--cache` / `--no-cache` |

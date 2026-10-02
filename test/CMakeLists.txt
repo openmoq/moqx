@@ -75,6 +75,7 @@ moqx_add_gtest(moqx_relay_test
     MoqxRelayTracksTests.cpp
     MoqxRelayTrackStatsTests.cpp
     MoqxRelayStateTests.cpp
+    MoqxRelayRendezvousTests.cpp
     MoqxRelayTestModes.cpp
   LIBS moqx_test_fixture moqx_test_main
 )
@@ -89,6 +90,10 @@ moqx_add_gtest(moqx_cluster_routes_test
   LIBS GTest::gtest_main
 )
 target_include_directories(moqx_cluster_routes_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
+moqx_add_gtest(moqx_pending_rendezvous_tree_test
+  SRCS PendingRendezvousTreeTest.cpp
+  LIBS moqx_core moqx_test_main GTest::gmock
+)
 
 moqx_add_gtest(moqx_config_test
   SRCS config/LoaderTest.cpp

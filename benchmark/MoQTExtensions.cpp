@@ -1,3 +1,9 @@
+/*
+ * Copyright (c) OpenMOQ contributors.
+ * This source code is licensed under the Apache 2.0 license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
 #include <folly/Benchmark.h>
 #include <moxygen/MoQFramer.h>
 #include <moxygen/MoQTypes.h>
@@ -6,7 +12,7 @@ namespace {
 
 using namespace moxygen;
 
-constexpr uint64_t kVersion = kVersionDraftCurrent;
+constexpr uint64_t kVersion = kVersionDraft16;
 
 // Build Extensions with N mutable int-type extensions.
 // Mirrors libquicr's ExtensionsSerialize/N benchmark which uses N extensions.
