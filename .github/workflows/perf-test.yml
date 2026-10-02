@@ -235,7 +235,7 @@ jobs:
             else
               RUN_SUBSCRIBERS="$DERIVED_SUBSCRIBERS"
             fi
-            CLIENT_ARGS="--first_object_size=${FIRST_OBJECT_SIZE} --other_object_size=${OTHER_OBJECT_SIZE} --objects_per_group 60 --delivery_timeout 5000"
+            CLIENT_ARGS="--first_object_size=${FIRST_OBJECT_SIZE} --other_object_size=${OTHER_OBJECT_SIZE} --objects_per_group 60"
 
             for STACK in "${STACKS[@]}"; do
               CC_ARGS=()
@@ -254,6 +254,7 @@ jobs:
               if bash scripts/perf/perf-test-ci.sh \
                 --duration                "${{ inputs.duration || '120' }}" \
                 --subscriber-max          "$RUN_SUBSCRIBERS" \
+                --delivery-timeout        5000 \
                 --ramp                    150 \
                 --io-threads              4 \
                 --client-threads          8 \
@@ -385,6 +386,7 @@ jobs:
           path: |
             ${{ steps.collect.outputs.run-files }}
             run-*.relay.log
+            run-*.client.log
             perf-out/
           retention-days: 30
 

@@ -199,6 +199,19 @@ else
   DELIVERY_SUCCESS="0"
 fi
 
+# Flag client totals that disagree with final throughput (moxygen getResults() race).
+# Client "Mbps" is MiB-based: bytes = Mbps * 2^20 / 8 * seconds.
+STATS_ANOMALY=$(awk -v b="$TOTAL_BYTES" -v t="$THROUGHPUT_MBPS" -v d="$CLIENT_DURATION" \
+  -v p="$PEAK_MBPS" -v tgt="$TARGET_THROUGHPUT_MBPS" 'BEGIN {
+    expected = t * 1048576 / 8 * d
+    ref = (t > tgt) ? t : tgt
+    bad = (expected > 0 && (b > 2 * expected || b < expected / 2)) || (ref > 0 && p > 10 * ref)
+    print bad ? "true" : "false"
+  }')
+if [[ "$STATS_ANOMALY" == "true" ]]; then
+  echo "::warning::$PROFILE/$QUIC_STACK implausible client stats: total_bytes=$TOTAL_BYTES throughput=${THROUGHPUT_MBPS}Mbps duration=${CLIENT_DURATION}s peak=${PEAK_MBPS}Mbps"
+fi
+
 # RSS in MB
 RELAY_RSS_MB=$(awk "BEGIN {printf \"%.1f\", $RELAY_RSS_KB / 1024}")
 
@@ -264,6 +277,7 @@ cat > "$OUTPUT" <<EOF
     "udp_errors_per_sec": $UDP_ERRORS_PER_SEC,
     "quic_bytes_written_per_sec": $QUIC_BYTES_WRITTEN_PER_SEC,
     "test_result": "$TEST_RESULT",
+    "stats_anomaly": $STATS_ANOMALY,
     "duration_actual_sec": $CLIENT_DURATION
   }
 }

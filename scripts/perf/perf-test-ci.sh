@@ -210,6 +210,7 @@ echo "════════════════════════�
 # ── Remote directory setup ─────────────────────────────────────────────────────
 REMOTE_DIR="/tmp/moqx-perf-ci"
 RELAY_LOG_OUTPUT="${OUTPUT%.json}.relay.log"
+CLIENT_LOG_OUTPUT="${OUTPUT%.json}.client.log"
 
 timeout 5 ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "mkdir -p $REMOTE_DIR" || true
 timeout 5 ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "pkill -f '^${REMOTE_DIR}/moqx' 2>/dev/null || true; pkill -f '^${REMOTE_DIR}/moqtest_server' 2>/dev/null || true; pkill -f '^bash ${REMOTE_DIR}/perf-metrics.sh' 2>/dev/null || true" || true
@@ -373,7 +374,7 @@ CLIENT_OUTPUT=$(ssh "${SSH_OPTS[@]}" "$CLIENT_HOST" "
     --num_threads=${CLIENT_THREADS} \
     ${CLIENT_EXTRA_ARGS_ESCAPED} \
     2>&1
-" | tee /tmp/perf-client-output.txt)
+" | tee "$CLIENT_LOG_OUTPUT")
 
 echo "---"
 echo "Client finished"
@@ -429,7 +430,7 @@ NET_THROUGHPUT=$(metrics_col_avg "ext_Mbps" "%.1f")
 # ── Parse results and generate JSON ──────────────────────────────────────────
 echo "Generating results JSON..."
 bash "$REPO/scripts/perf/perf-results-to-json.sh" \
-  --client-output /tmp/perf-client-output.txt \
+  --client-output "$CLIENT_LOG_OUTPUT" \
   --metrics-log /tmp/perf-metrics.log \
   --commit "$COMMIT_SHA" \
   --branch "$BRANCH" \

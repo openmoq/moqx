@@ -132,6 +132,13 @@ stack and workload profile. Missing `schema_version`, `params.quic_stack`, and
 `params.profile` in historical results are treated as version 1, mvfst, and
 `1mbps` respectively. Warnings are non-blocking (PRs are not failed).
 
+On the first nightly run with the profile matrix, only `mvfst/1mbps` has a
+compatible published baseline: legacy runs are interpreted as that series.
+The other profiles and picoquic start without a baseline and become comparable
+as nightly results accumulate. Comparisons are isolated by profile and stack,
+not by target or subscriber override; use `compare: false` for nonstandard
+load experiments.
+
 ### Stack Comparability
 
 Each stack uses its native congestion-control spelling and algorithm: mvfst
@@ -144,13 +151,13 @@ Use each stack's own history to evaluate regressions.
 
 | Parameter | Value | Rationale |
 |-----------|-------|-----------|
-| Subscribers | 1000 | Enough to stress relay fan-out |
-| Ramp rate | 100/s | 10s to reach peak, then 110s steady state |
+| Subscribers | Derived from target/profile: 600, 150, or 38 at the default 600 Mbps target | Rounded from `target_mbps / mbps_per_subscriber`; `subscribers` can override |
+| Ramp rate | 150/s | Fixed by the workflow |
 | Duration | 120s | Stable measurement window |
 | IO threads | 4 | Matches VM core count |
-| Client threads | 4 | Matches client VM cores |
+| Client threads | 8 | Fixed by the workflow |
 | Transport | QUIC | Primary protocol |
-| Delivery timeout | 500ms | Detects latency regressions |
+| Client delivery timeout | 5000ms | Passed through the runner and recorded in result JSON |
 
 ## Infrastructure Setup (One-Time)
 
