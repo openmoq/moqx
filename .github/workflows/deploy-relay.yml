@@ -1,7 +1,9 @@
 name: deploy relay
 
 # Ops controls for the CI relay (moqx-main.ci.openmoq.org + moqx-000 alias).
-# Restart, redeploy with a specific image tag, or change the log level.
+# Restart, redeploy with a specific image tag, or change the log level,
+# congestion control or qlog sampling. Overrides last until the next main-push
+# deploy.
 
 on:
   workflow_dispatch:
@@ -33,6 +35,50 @@ on:
           - "DBG2"
           - "DBG3"
           - "DBG4"
+      cc_mvfst:
+        description: "mvfst congestion control (default bbr)"
+        required: false
+        default: "default"
+        type: choice
+        options:
+          - "default"
+          - "bbr"
+          - "bbr2"
+          - "bbr2modular"
+          - "copa"
+          - "cubic"
+          - "newreno"
+      cc_pico:
+        description: "picoquic congestion control (default bbr)"
+        required: false
+        default: "default"
+        type: choice
+        options:
+          - "default"
+          - "bbr"
+          - "bbr1"
+          - "c4"
+          - "cubic"
+          - "dcubic"
+          - "fast"
+          - "newreno"
+          - "prague"
+          - "reno"
+      bbr_skip_probe_rtt:
+        description: "mvfst bbr: skip PROBE_RTT while app-limited"
+        required: false
+        type: boolean
+        default: false
+      qlog_sample_rate:
+        description: "mvfst qlog: fraction of new connections logged (1.0 is heavy)"
+        required: false
+        default: "off"
+        type: choice
+        options:
+          - "off"
+          - "0.01"
+          - "0.1"
+          - "1.0"
       enable_stats:
         description: "Enable stats dashboard (default enabled)"
         required: false
@@ -144,6 +190,10 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.OMOQ_CERTBOT_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.OMOQ_CERTBOT_SECRET_ACCESS_KEY }}
           ENABLE_STATS: ${{ inputs.enable_stats }}
+          MOQX_CC: ${{ inputs.cc_mvfst != 'default' && inputs.cc_mvfst || '' }}
+          MOQX_PICO_CC: ${{ inputs.cc_pico != 'default' && inputs.cc_pico || '' }}
+          MOQX_BBR_SKIP_PROBE_RTT: ${{ inputs.bbr_skip_probe_rtt }}
+          MOQX_QLOG_SAMPLE: ${{ inputs.qlog_sample_rate != 'off' && inputs.qlog_sample_rate || '' }}
           STATS_USER: ${{ secrets.STATS_USER }}
           STATS_PASSWORD: ${{ secrets.STATS_PASSWORD }}
           GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
@@ -194,11 +244,21 @@ jobs:
           SLACK_WEBHOOK_URL: ${{ secrets.OMOQ_SLACK_WEBHOOK_URL }}
           DOMAIN: ${{ steps.target.outputs.domain }}
           IMAGE_TAG: ${{ steps.target.outputs.image_tag }}
+          CC_MVFST: ${{ inputs.cc_mvfst }}
+          CC_PICO: ${{ inputs.cc_pico }}
+          SKIP_PROBE_RTT: ${{ inputs.bbr_skip_probe_rtt }}
+          QLOG: ${{ inputs.qlog_sample_rate }}
         run: |
           SHORT="${GITHUB_SHA:0:7}"
           ACTION=${{ inputs.restart_only && '"restarted"' || '"deployed"' }}
           STATUS=${{ job.status == 'success' && '":rocket:"' || '":x:"' }}
           TEXT="${STATUS} *${{ github.repository }}* ${ACTION} \`${IMAGE_TAG}\` on \`${DOMAIN}:${RELAY_PORT}\`"
+          OV=""
+          [ "$CC_MVFST" != "default" ] && OV+=" cc_mvfst=${CC_MVFST}"
+          [ "$CC_PICO" != "default" ] && OV+=" cc_pico=${CC_PICO}"
+          [ "$SKIP_PROBE_RTT" = "true" ] && OV+=" bbr_skip_probe_rtt"
+          [ "$QLOG" != "off" ] && OV+=" qlog=${QLOG}"
+          [ -n "$OV" ] && [ "${{ inputs.restart_only }}" != "true" ] && TEXT+=" (overrides:${OV})"
           curl -sf -X POST "$SLACK_WEBHOOK_URL" \
             -H "Content-Type: application/json" \
             --data "{\"text\": \"${TEXT}\"}" || true

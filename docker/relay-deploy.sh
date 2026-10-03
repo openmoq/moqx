@@ -12,6 +12,11 @@
 #   RELAY_PORT        (default 4433)
 #   ADMIN_PORT        (default 8000)
 #   MOQX_LOGGING      (optional) folly XLOG config; empty = baseline INFO
+#   MOQX_CC, MOQX_PICO_CC, MOQX_BBR_SKIP_PROBE_RTT
+#                     (optional) congestion control overrides, see entrypoint.sh;
+#                     empty = entrypoint default
+#   MOQX_QLOG_SAMPLE  (optional) fraction of new mvfst connections to qlog;
+#                     empty = off
 #   PULL_IMAGE        (optional) full image ref to `docker pull` + retag :latest.
 #                     Empty → `docker compose pull` (compose's pinned :latest).
 #   ENABLE_STATS      "true" → stats stack + public dashboard
@@ -35,6 +40,10 @@ PUB_PORT="${STATS_PUBLIC_PORT:-4533}"
   echo "MOQX_PORT=${RELAY_PORT}"
   echo "MOQX_ADMIN_PORT=${ADMIN_PORT}"
   echo "MOQX_LOGGING=${MOQX_LOGGING:-}"
+  echo "MOQX_CC=${MOQX_CC:-}"
+  echo "MOQX_PICO_CC=${MOQX_PICO_CC:-}"
+  echo "MOQX_BBR_SKIP_PROBE_RTT=${MOQX_BBR_SKIP_PROBE_RTT:-}"
+  echo "MOQX_QLOG_SAMPLE=${MOQX_QLOG_SAMPLE:-}"
   echo "MOQX_CPUS=$(nproc)"
   echo "MOQX_THREADS=$(nproc)"
 } > .env
@@ -125,3 +134,37 @@ if [ "${ENABLE_STATS:-}" = "true" ]; then
   done
   ./grafana/publish-public-dashboard.sh publish || echo "::warning::public dashboard publish failed"
 fi
+
+# ── override check ───────────────────────────────────────────────────────────
+# Compare the relay's live config with the requested settings; fail on mismatch.
+curl -sf "http://127.0.0.1:${ADMIN_PORT}/config" | python3 -c '
+import json, os, sys
+cfg = json.load(sys.stdin)
+want = {
+    "mvfst": (os.environ.get("MOQX_CC") or "bbr",
+              os.environ.get("MOQX_BBR_SKIP_PROBE_RTT") == "true"),
+    "picoquic": (os.environ.get("MOQX_PICO_CC") or "bbr", None),
+}
+ok = True
+for l in cfg["listeners"]:
+    if l["quic_stack"] not in want:
+        continue
+    name = l["name"]
+    cc, skip = want[l["quic_stack"]]
+    got_cc = l["quic"]["cc_algo"]
+    got_skip = l["mvfst"]["bbr"]["probe_rtt_disabled_if_app_limited"]
+    extra = "" if skip is None else f" probe_rtt_disabled_if_app_limited={str(got_skip).lower()}"
+    print(f"==> {name}: cc_algo={got_cc}{extra}")
+    if got_cc != cc or (skip is not None and got_skip != skip):
+        print(f"::error::{name} is not running the requested congestion control")
+        ok = False
+want_qlog = float(os.environ.get("MOQX_QLOG_SAMPLE") or 0)
+qlog = (cfg.get("logging") or {}).get("qlog") or {}
+got_qlog = qlog.get("sample_rate", 0.0)
+qdir = qlog.get("dir", "-")
+print(f"==> qlog: sample_rate={got_qlog:g} dir={qdir}")
+if abs(got_qlog - want_qlog) > 1e-6:
+    print("::error::relay is not running the requested qlog sample rate")
+    ok = False
+sys.exit(0 if ok else 1)
+'

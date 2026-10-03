@@ -46,7 +46,11 @@ services:
     volumes:
       - ${MOQX_CERTS_DIR:-/etc/letsencrypt}:/certs:ro
       - moqx-coredumps:/var/coredumps
+      - moqx-qlog:/var/log/moqx/qlog
       - ${MOQX_ENTRY:-./entrypoint.sh}:/usr/local/bin/entrypoint.sh:ro
+      # The template the entrypoint renders, from the same checkout, so settings
+      # added there take effect with any image tag.
+      - ./config.docker.yaml:/usr/local/share/moqx/config.docker.yaml:ro
     environment:
       MOQX_CERT: /certs/live/${DOMAIN}/fullchain.pem
       MOQX_KEY:  /certs/live/${DOMAIN}/privkey.pem
@@ -63,6 +67,12 @@ services:
       # IO worker threads — default matches the entrypoint (4); set to the core
       # count (e.g. 8) for sub-maximal load testing on the CI runner.
       MOQX_THREADS: ${MOQX_THREADS:-4}
+      # Congestion control per listener; empty = entrypoint default (bbr).
+      MOQX_CC: ${MOQX_CC:-}
+      MOQX_PICO_CC: ${MOQX_PICO_CC:-}
+      MOQX_BBR_SKIP_PROBE_RTT: ${MOQX_BBR_SKIP_PROBE_RTT:-}
+      # Fraction of new mvfst connections to qlog; empty = off.
+      MOQX_QLOG_SAMPLE: ${MOQX_QLOG_SAMPLE:-}
     ulimits:
       core: -1
       # QUIC multiplexes many connections over few UDP sockets, so fd pressure is
@@ -365,5 +375,6 @@ services:
 volumes:
   prometheus-targets:
   moqx-coredumps:
+  moqx-qlog:
   prometheus-data:
   grafana-data:
