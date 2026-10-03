@@ -6,6 +6,7 @@
 
 #include "relay/SessionParticipant.h"
 
+#include "MoqxRelaySession.h"
 #include "peering/PeeringBackend.h"
 #include "relay/ExecutorCheck.h"
 #include "relay/PlainRouteCodec.h"
@@ -191,6 +192,7 @@ SessionParticipant::snapshot(const moxygen::MoQSession& session, const PeeringBa
       .executor = session.getExecutor(),
       .address = session.getPeerAddress().describe(),
       .authority = session.getAuthority(),
+      .listener = std::string(MoqxRelaySession::listenerOf(session)),
       .routing =
           {
               .relayHops = session.negotiatedSetupExtension(moxygen::SetupExtension::RelayHops),

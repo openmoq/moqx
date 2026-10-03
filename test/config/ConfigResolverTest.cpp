@@ -2442,6 +2442,112 @@ TEST(ResolveConfig, MvfstAlgoFieldsRoundTrip) {
   EXPECT_FLOAT_EQ(out.l4s.ceTarget, 0.05f);
 }
 
+// --- Service listener binding ---
+
+// Appends an insecure mvfst listener on its own port.
+void addInsecureListener(ParsedConfig& cfg, std::string name, uint16_t port) {
+  ParsedListenerConfig lc;
+  lc.name = std::move(name);
+  ParsedSocketConfig sock;
+  sock.address = std::string("::");
+  sock.port = port;
+  ParsedUdpConfig udp;
+  udp.socket = std::move(sock);
+  lc.udp = std::move(udp);
+  ParsedListenerTlsConfig tls;
+  tls.insecure = true;
+  lc.tls = std::move(tls);
+  lc.endpoint = std::string("/moq-relay");
+  cfg.listeners.value().push_back(std::move(lc));
+}
+
+ParsedServiceConfig makeServiceOn(std::vector<std::string> listeners) {
+  auto svc = makeDefaultService();
+  svc.listeners = std::optional<std::vector<std::string>>{std::move(listeners)};
+  return svc;
+}
+
+TEST(ResolveConfig, ServiceListenersDefaultToAll) {
+  auto cfg = makeMinimalInsecureConfig("public");
+  addInsecureListener(cfg, "internal", 9670);
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue()) << result.error();
+  EXPECT_THAT(
+      result.value().config.services.at("default").listeners,
+      ElementsAre("public", "internal")
+  );
+}
+
+TEST(ResolveConfig, ServiceListenersExplicitSubset) {
+  auto cfg = makeMinimalInsecureConfig("public");
+  addInsecureListener(cfg, "internal", 9670);
+  cfg.services.value().at("default") = makeServiceOn({"internal"});
+  cfg.services.value().emplace("public-svc", makeServiceOn({"public"}));
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue()) << result.error();
+  EXPECT_THAT(result.value().config.services.at("default").listeners, ElementsAre("internal"));
+  EXPECT_THAT(result.value().config.services.at("public-svc").listeners, ElementsAre("public"));
+}
+
+TEST(ResolveConfig, ServiceListenersUnknownNameRejected) {
+  auto cfg = makeMinimalInsecureConfig("public");
+  cfg.services.value().at("default") = makeServiceOn({"public", "nope"});
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("unknown listener 'nope'"));
+}
+
+TEST(ResolveConfig, ServiceListenersListedTwiceRejected) {
+  auto cfg = makeMinimalInsecureConfig("public");
+  cfg.services.value().at("default") = makeServiceOn({"public", "public"});
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("listed twice"));
+}
+
+TEST(ResolveConfig, DuplicateListenerNameRejected) {
+  auto cfg = makeMinimalInsecureConfig("public");
+  addInsecureListener(cfg, "public", 9670);
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("Listener name 'public' is used by several listeners"));
+}
+
+TEST(ResolveConfig, ServiceListenersEmptyWarns) {
+  auto cfg = makeMinimalInsecureConfig("public");
+  // Same rule as "default": a service on no listener cannot collide with it.
+  cfg.services.value().emplace("unreachable", makeServiceOn({}));
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue()) << result.error();
+  EXPECT_THAT(
+      result.value().warnings,
+      ::testing::Contains(HasSubstr("Service 'unreachable': listeners is empty"))
+  );
+  EXPECT_THAT(result.value().config.services.at("unreachable").listeners, IsEmpty());
+}
+
+TEST(ResolveConfig, UnboundListenerWarns) {
+  auto cfg = makeMinimalInsecureConfig("public");
+  addInsecureListener(cfg, "idle", 9670);
+  cfg.services.value().at("default") = makeServiceOn({"public"});
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue()) << result.error();
+  EXPECT_THAT(
+      result.value().warnings,
+      ::testing::Contains(HasSubstr("Listener 'idle': no service is available on it"))
+  );
+  for (const auto& w : result.value().warnings) {
+    EXPECT_THAT(w, Not(HasSubstr("Listener 'public'")));
+  }
+}
+
 TEST(ResolveConfig, ListFormListenersWarnDeprecated) {
   auto cfg = makeMinimalInsecureConfig("main");
   auto noWarning = resolveConfig(cfg);
@@ -2459,6 +2565,110 @@ TEST(ResolveConfig, ListFormListenersWarnDeprecated) {
       result.value().warnings,
       ::testing::Contains(HasSubstr("listeners: the list form is deprecated"))
   );
+}
+
+size_t countOccurrences(std::string_view haystack, std::string_view needle) {
+  size_t n = 0;
+  for (auto pos = haystack.find(needle); pos != std::string_view::npos;
+       pos = haystack.find(needle, pos + needle.size())) {
+    ++n;
+  }
+  return n;
+}
+
+TEST(ResolveConfig, DuplicateRuleOnDisjointListenersAccepted) {
+  auto cfg = makeMinimalInsecureConfig("public");
+  addInsecureListener(cfg, "internal", 9670);
+  cfg.services.value().at("default") = makeServiceOn({"public"});
+  cfg.services.value().emplace("internal-svc", makeServiceOn({"internal"}));
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue()) << result.error();
+}
+
+TEST(ResolveConfig, DuplicateRuleOnSharedListenerRejected) {
+  auto cfg = makeMinimalInsecureConfig("public");
+  addInsecureListener(cfg, "internal", 9670);
+  cfg.services.value().at("default") = makeServiceOn({"public", "internal"});
+  cfg.services.value().emplace("internal-svc", makeServiceOn({"internal"}));
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(
+      result.error(),
+      HasSubstr(
+          "Duplicate (authority, path) combination on listener 'internal' in services 'default' "
+          "and 'internal-svc'"
+      )
+  );
+  EXPECT_THAT(result.error(), Not(HasSubstr("on listener 'public'")));
+}
+
+TEST(ResolveConfig, DuplicateRuleOnSeveralSharedListenersReportedOnce) {
+  auto cfg = makeMinimalInsecureConfig("public");
+  addInsecureListener(cfg, "internal", 9670);
+  cfg.services.value().at("default") = makeServiceOn({"public", "internal"});
+  cfg.services.value().emplace("other-svc", makeServiceOn({"public", "internal"}));
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_EQ(
+      countOccurrences(
+          result.error(),
+          "Duplicate (authority, path) combination on listeners 'public', 'internal'"
+      ),
+      1u
+  );
+  EXPECT_THAT(result.error(), Not(HasSubstr("on listener '")));
+}
+
+TEST(ResolveConfig, DuplicateRuleWithinServiceRejectedOnce) {
+  auto cfg = makeMinimalInsecureConfig("public");
+  addInsecureListener(cfg, "internal", 9670);
+  auto& rules = cfg.services.value().at("default").match.value();
+  rules.push_back(rules[0]);
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_EQ(
+      countOccurrences(result.error(), "Duplicate (authority, path) combination in service"),
+      1u
+  );
+  EXPECT_THAT(result.error(), Not(HasSubstr("on listener")));
+}
+
+TEST(ResolveConfig, DuplicateRuleWithinUnboundServiceRejected) {
+  auto cfg = makeMinimalInsecureConfig("public");
+  auto unbound = makeServiceOn({});
+  unbound.match.value()[0].path = PMatch{ParsedServiceConfig::MatchRule::PrefixPath{"/other/"}};
+  unbound.match.value().push_back(unbound.match.value()[0]);
+  cfg.services.value().emplace("unbound", std::move(unbound));
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(
+      result.error(),
+      HasSubstr("Duplicate (authority, path) combination in service 'unbound'")
+  );
+}
+
+TEST(ResolveConfig, PicoPathWarningsScopedToBoundServices) {
+  // The pico listener only serves the exact-path service, so the prefix-path
+  // service bound elsewhere must not trigger a pico warning.
+  auto cfg = makeMinimalPicoConfig();
+  addInsecureListener(cfg, "mvfst", 9670);
+  const auto picoName = cfg.listeners.value()[0].name.value();
+  cfg.services.value().at("default") = makeServiceOn({"mvfst"});
+
+  auto exact = makeServiceOn({picoName});
+  exact.match.value()[0].path = PMatch{ParsedServiceConfig::MatchRule::ExactPath{"/moq-relay"}};
+  cfg.services.value().emplace("exact-svc", std::move(exact));
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue()) << result.error();
+  for (const auto& w : result.value().warnings) {
+    EXPECT_THAT(w, Not(HasSubstr("Picoquic listener")));
+  }
 }
 
 } // namespace
