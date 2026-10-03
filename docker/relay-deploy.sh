@@ -136,8 +136,7 @@ if [ "${ENABLE_STATS:-}" = "true" ]; then
 fi
 
 # ── override check ───────────────────────────────────────────────────────────
-# The mvfst and qlog settings live in the image's config template, so an older
-# image silently ignores them. Compare against the live config; fail on mismatch.
+# Compare the relay's live config with the requested settings; fail on mismatch.
 curl -sf "http://127.0.0.1:${ADMIN_PORT}/config" | python3 -c '
 import json, os, sys
 cfg = json.load(sys.stdin)
@@ -157,8 +156,7 @@ for l in cfg["listeners"]:
     extra = "" if skip is None else f" probe_rtt_disabled_if_app_limited={str(got_skip).lower()}"
     print(f"==> {name}: cc_algo={got_cc}{extra}")
     if got_cc != cc or (skip is not None and got_skip != skip):
-        print(f"::error::{name} is not running the requested congestion control"
-              " (image predates the setting?)")
+        print(f"::error::{name} is not running the requested congestion control")
         ok = False
 want_qlog = float(os.environ.get("MOQX_QLOG_SAMPLE") or 0)
 qlog = (cfg.get("logging") or {}).get("qlog") or {}
@@ -166,8 +164,7 @@ got_qlog = qlog.get("sample_rate", 0.0)
 qdir = qlog.get("dir", "-")
 print(f"==> qlog: sample_rate={got_qlog:g} dir={qdir}")
 if abs(got_qlog - want_qlog) > 1e-6:
-    print("::error::relay is not running the requested qlog sample rate"
-          " (image predates the setting?)")
+    print("::error::relay is not running the requested qlog sample rate")
     ok = False
 sys.exit(0 if ok else 1)
 '

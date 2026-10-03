@@ -48,6 +48,9 @@ services:
       - moqx-coredumps:/var/coredumps
       - moqx-qlog:/var/log/moqx/qlog
       - ${MOQX_ENTRY:-./entrypoint.sh}:/usr/local/bin/entrypoint.sh:ro
+      # The template the entrypoint renders, from the same checkout, so settings
+      # added there take effect with any image tag.
+      - ./config.docker.yaml:/usr/local/share/moqx/config.docker.yaml:ro
     environment:
       MOQX_CERT: /certs/live/${DOMAIN}/fullchain.pem
       MOQX_KEY:  /certs/live/${DOMAIN}/privkey.pem
