@@ -6,7 +6,10 @@
 
 #pragma once
 
+#include <chrono>
+#include <cstdint>
 #include <string>
+#include <utility>
 
 #include <quic/logging/FileQLogger.h>
 
