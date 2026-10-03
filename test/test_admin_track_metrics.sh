@@ -264,7 +264,9 @@ python3 - "$TMPDIR/config.yaml" <<'PYEOF'
 import sys
 path = sys.argv[1]
 text = open(path).read()
-open(path, "w").write(text.replace("admin:\n", "admin:\n  track_metrics_enabled: false\n", 1))
+flipped = text.replace("track_metrics_enabled: true", "track_metrics_enabled: false", 1)
+assert flipped != text, "config has no track_metrics_enabled: true to flip"
+open(path, "w").write(flipped)
 PYEOF
 
 "$BINARY" --config="$TMPDIR/config.yaml" &

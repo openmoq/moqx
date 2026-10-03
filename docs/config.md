@@ -29,7 +29,7 @@ listener_defaults:         # optional; QUIC defaults inherited by all listeners
   quic: { ... }
 
 listeners:                 # required; at least one
-  - { ... }
+  main: { ... }
 
 service_defaults:          # optional; defaults inherited by all services
   cache: { ... }
@@ -46,6 +46,9 @@ admin:                     # optional; omit to disable the admin server
   { ... }
 ```
 
+**Duplicate keys** in any YAML mapping (two map-form listeners or two services
+with the same name, a field written twice) fail the load.
+
 ---
 
 ## Listeners
@@ -55,9 +58,11 @@ over HTTP/3 WebTransport, or, with `quic_stack: proxygen_qmux`, MOQT over QMux
 on TCP at the `udp.socket` address. HTTP/2 WebTransport is planned
 ([#152](https://github.com/openmoq/moqx/issues/152)).
 
+`listeners` is a map keyed by listener name:
+
 ```yaml
 listeners:
-  - name: main
+  main:
     udp:
       socket:
         address: "::"
@@ -76,11 +81,21 @@ verification. This is incompatible with `quic_stack: picoquic`.
 
 **moqt_versions:**: Supports 16 and 18; any other value is rejected.
 
+A list of entries that each set `name` is also accepted:
+
+```yaml
+listeners:
+  - name: main
+    udp: { ... }
+```
+
+In the map form an entry must not set `name`; in the list form it must.
+
 **Duplicate listeners** (same address+port combination) are rejected.
 
 ### QUIC Settings
 
-Set under `listener_defaults.quic` (global defaults) or `listeners[n].quic`
+Set under `listener_defaults.quic` (global defaults) or `listeners.<name>.quic`
 (per-listener override).
 
 | Field | Default | Notes |

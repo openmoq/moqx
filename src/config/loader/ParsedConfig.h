@@ -279,8 +279,8 @@ struct ParsedMvfstConfig {
 // Named proxygen_qmux (not bare "qmux") so a second qmux impl can be added later.
 using ParsedQuicStack = rfl::Literal<"mvfst", "picoquic", "proxygen_qmux">;
 
-struct ParsedListenerConfig {
-  rfl::Description<"Listener name", std::string> name;
+// A listener as written under its name in `listeners`.
+struct ParsedListenerEntry {
   rfl::Description<"UDP/QUIC transport config", ParsedUdpConfig> udp;
   rfl::Description<"TLS configuration", ParsedListenerTlsConfig> tls;
   rfl::Description<"WebTransport endpoint path", std::string> endpoint;
@@ -297,6 +297,31 @@ struct ParsedListenerConfig {
       "mvfst-specific CC tunables (overrides listener_defaults.mvfst; mvfst stack only)",
       std::optional<ParsedMvfstConfig>>
       mvfst;
+};
+
+// A listener with its name. Not read from the file as is: see ParsedListeners.
+struct ParsedListenerConfig : ParsedListenerEntry {
+  rfl::Description<"Listener name", std::string> name;
+};
+
+// Deprecated: an entry of the list form of `listeners`.
+struct ParsedDeprecatedListenerListEntry {
+  rfl::Description<"Deprecated: key the listener by its name instead", std::string> name;
+  rfl::Flatten<ParsedListenerEntry> listener;
+};
+
+// `listeners` accepts a map keyed by listener name, or the deprecated list form.
+// Reading normalizes both into this list, in file order; writing emits the map.
+class ParsedListeners : public std::vector<ParsedListenerConfig> {
+public:
+  using ReflectionType = rfl::
+      Variant<rfl::Object<ParsedListenerEntry>, std::vector<ParsedDeprecatedListenerListEntry>>;
+
+  ParsedListeners() = default;
+  // Throws std::invalid_argument on an empty name; reflect-cpp reports it as a
+  // parse error.
+  explicit ParsedListeners(ReflectionType listeners);
+  ReflectionType reflection() const;
 };
 
 struct ParsedCacheConfig {
@@ -579,8 +604,8 @@ struct ParsedLoggingConfig {
 
 struct ParsedConfig {
   rfl::Description<
-      "Listener definitions (currently exactly one supported)",
-      std::vector<ParsedListenerConfig>>
+      "Listener definitions: a map keyed by listener name, or a list of entries with `name`",
+      ParsedListeners>
       listeners;
   rfl::Description<
       "Default settings inherited by all services",

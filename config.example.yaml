@@ -1,8 +1,8 @@
 # moqx relay configuration
 # See: moqx dump-config-schema | scripts/dev/config-schema-to-markdown.sh
 
-listeners:
-  - name: main
+listeners:                    # Map keyed by listener name
+  main:
     udp:
       socket:
         address: "::"        # Bind address (default: "::" = all interfaces)

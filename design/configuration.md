@@ -59,7 +59,7 @@ The hierarchy should map to the MOQT connection model.
 
 ```
 global              ─── process-wide settings (worker_threads, log_level, telemetry)
-├── listeners[]     ─── named listener definitions
+├── listeners.<name> ─── named listener definitions
 │   ├── udp/tcp     ─── transport type (exactly one)
 │   │   ├── socket  ─── address, port, ipv6_only
 │   │   └── transport ─── implementation-specific config (e.g. mvfst, proxygen)
@@ -127,7 +127,7 @@ Every configuration parameter belongs to one of four lifecycle categories. The c
 
 | Lifecycle            | Meaning                                                                                                  | Examples                                                                              |
 | -------------------- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| **Static**           | Requires process restart. Cannot be changed at runtime.                                                  | `worker_threads`, `listeners[].udp.socket.address`, `listeners[].udp.socket.port`, `relay_id`, admin listener, QUIC stack |
+| **Static**           | Requires process restart. Cannot be changed at runtime.                                                  | `worker_threads`, `listeners.<name>.udp.socket.address`, `listeners.<name>.udp.socket.port`, `relay_id`, admin listener, QUIC stack |
 | **Reload:NewConn**   | Applied on config reload. Affects new connections/sessions only. Existing sessions keep old values.      | `services[].auth`, `services[].provider` (e.g. upstream URL), TLS cert/key, service matching rules |
 | **Reload:NewSub**    | Applied on config reload. Affects new subscriptions/tracks only. Existing subscriptions keep old values. | `tracks[].max_max_cache_duration_ms`, cache settings, routing rules, authorization rules |
 | **Reload:Immediate** | Applied on config reload. Takes effect on all existing connections/subscriptions.                        | `log_level`, `slow_subscriber_queue_max_bytes`, cache eviction policy, metrics config |
