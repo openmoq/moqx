@@ -57,6 +57,7 @@ struct ParticipantInfo {
   folly::Executor* executor{nullptr};
   std::string address;
   std::string authority;
+  std::string listener; // empty for outbound connections
   ParticipantRouting routing;
 };
 

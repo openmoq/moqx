@@ -47,6 +47,7 @@ service_defaults:
 
 services:
   live-streaming:
+    # listeners: [main]             # Optional: listeners this service is available on (default: all)
     match:
       - authority: {exact: "live.example.com"}
         path: {exact: "/moq-relay"}

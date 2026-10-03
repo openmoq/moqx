@@ -19,14 +19,18 @@ namespace openmoq::moqx {
 
 class ServiceMatcher {
 public:
-  explicit ServiceMatcher(const folly::F14FastMap<std::string, config::ServiceConfig>& services);
+  // Matches only the services whose `listeners` include listener.
+  ServiceMatcher(
+      const folly::F14FastMap<std::string, config::ServiceConfig>& services,
+      std::string_view listener
+  );
 
   // Returns service name for (authority, path) pair, or nullopt.
   // Priority: exact authority > wildcard authority > any authority.
   // Within each authority tier: exact path > longest prefix > any path.
   std::optional<std::string_view> match(std::string_view authority, std::string_view path) const;
 
-  // Returns the unique set of exact paths registered across all services and
+  // Returns the unique set of exact paths registered across this matcher's services and
   // authority tiers. Used by pico listeners to populate h3zero's WT path table.
   std::vector<std::string> allExactPaths() const;
 

@@ -5,10 +5,10 @@
  */
 
 #include "MoqxRelayServer.h"
+#include "MoqxRelaySession.h"
 #include "logging/CaptureQLogger.h"
 #include "stats/EventBaseStatsCollector.h"
 #include "stats/QuicStatsCollector.h"
-#include <moxygen/MoQRelaySession.h>
 #include <moxygen/events/MoQFollyExecutorImpl.h>
 #include <moxygen/util/InsecureVerifierDangerousDoNotUseInProduction.h>
 #include <proxygen/httpserver/samples/hq/FizzContext.h>
@@ -232,7 +232,8 @@ MoqxRelayServer::MoqxRelayServer(
               .txnTimeout = h3TxnTimeout(listenerCfg.mvfst),
           }
       ),
-      listenerCfg_(listenerCfg), context_(std::move(context)), ioExecutor_(ioExecutor) {
+      listenerCfg_(listenerCfg), context_(std::move(context)),
+      listenerMatcher_(context_->listenerMatcher(listenerCfg_.name)), ioExecutor_(ioExecutor) {
   // Advertise on every listener: activation is bilateral and loop protection
   // must not vary by listener configuration.
   if (const auto hopID = context_->getRelayHopID()) {
@@ -283,7 +284,7 @@ void MoqxRelayServer::onNewSession(std::shared_ptr<MoQSession> clientSession) {
 }
 
 void MoqxRelayServer::terminateClientSession(std::shared_ptr<MoQSession> session) {
-  context_->onSessionEnd(session);
+  context_->onSessionEnd(listenerMatcher_, session);
   MoQServer::terminateClientSession(std::move(session));
 }
 
@@ -297,14 +298,16 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayServer::validateAut
   if (!base.hasValue()) {
     return base;
   }
-  return context_->validateAuthority(clientSetup, negotiatedVersion, std::move(session));
+  return context_
+      ->validateAuthority(listenerMatcher_, clientSetup, negotiatedVersion, std::move(session));
 }
 
 std::shared_ptr<MoQSession> MoqxRelayServer::createSession(
     folly::MaybeManagedPtr<proxygen::WebTransport> wt,
     std::shared_ptr<MoQExecutor> executor
 ) {
-  return std::make_shared<MoQRelaySession>(
+  return std::make_shared<MoqxRelaySession>(
+      listenerMatcher_.name(),
       folly::MaybeManagedPtr<proxygen::WebTransport>(std::move(wt)),
       *this,
       std::move(executor)
