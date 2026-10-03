@@ -12,6 +12,8 @@ namespace {
 using openmoq::moqx::ServiceMatcher;
 using openmoq::moqx::config::ServiceConfig;
 
+constexpr const char* kListener = "bench";
+
 // Build a realistic service config with multiple services and match rules.
 folly::F14FastMap<std::string, ServiceConfig> makeTestServices() {
   folly::F14FastMap<std::string, ServiceConfig> services;
@@ -19,6 +21,7 @@ folly::F14FastMap<std::string, ServiceConfig> makeTestServices() {
   // Service with exact authority + exact path
   {
     ServiceConfig svc;
+    svc.listeners = {kListener};
     svc.cache = {100, 3};
     ServiceConfig::MatchEntry entry;
     entry.authority = ServiceConfig::MatchEntry::ExactAuthority{"relay.example.com"};
@@ -30,6 +33,7 @@ folly::F14FastMap<std::string, ServiceConfig> makeTestServices() {
   // Service with wildcard authority + prefix path
   {
     ServiceConfig svc;
+    svc.listeners = {kListener};
     svc.cache = {50, 3};
     ServiceConfig::MatchEntry entry;
     entry.authority = ServiceConfig::MatchEntry::WildcardAuthority{"*.test.example.com"};
@@ -41,6 +45,7 @@ folly::F14FastMap<std::string, ServiceConfig> makeTestServices() {
   // Catch-all service
   {
     ServiceConfig svc;
+    svc.listeners = {kListener};
     svc.cache = {10, 3};
     ServiceConfig::MatchEntry entry;
     entry.authority = ServiceConfig::MatchEntry::AnyAuthority{};
@@ -55,7 +60,7 @@ folly::F14FastMap<std::string, ServiceConfig> makeTestServices() {
 BENCHMARK(BM_ServiceMatcher_ExactMatch, iters) {
   folly::BenchmarkSuspender susp;
   auto services = makeTestServices();
-  ServiceMatcher matcher(services);
+  ServiceMatcher matcher(services, kListener);
   susp.dismiss();
   for (unsigned i = 0; i < iters; ++i) {
     auto result = matcher.match("relay.example.com", "/moq-relay");
@@ -66,7 +71,7 @@ BENCHMARK(BM_ServiceMatcher_ExactMatch, iters) {
 BENCHMARK(BM_ServiceMatcher_WildcardMatch, iters) {
   folly::BenchmarkSuspender susp;
   auto services = makeTestServices();
-  ServiceMatcher matcher(services);
+  ServiceMatcher matcher(services, kListener);
   susp.dismiss();
   for (unsigned i = 0; i < iters; ++i) {
     auto result = matcher.match("foo.test.example.com", "/test/bar");
@@ -77,7 +82,7 @@ BENCHMARK(BM_ServiceMatcher_WildcardMatch, iters) {
 BENCHMARK(BM_ServiceMatcher_FallbackMatch, iters) {
   folly::BenchmarkSuspender susp;
   auto services = makeTestServices();
-  ServiceMatcher matcher(services);
+  ServiceMatcher matcher(services, kListener);
   susp.dismiss();
   for (unsigned i = 0; i < iters; ++i) {
     auto result = matcher.match("unknown.host", "/something");
@@ -89,7 +94,7 @@ BENCHMARK(BM_ServiceMatcher_NoMatch, iters) {
   folly::BenchmarkSuspender susp;
   // Empty services — nothing matches
   folly::F14FastMap<std::string, ServiceConfig> empty;
-  ServiceMatcher matcher(empty);
+  ServiceMatcher matcher(empty, kListener);
   susp.dismiss();
   for (unsigned i = 0; i < iters; ++i) {
     auto result = matcher.match("any.host", "/any/path");

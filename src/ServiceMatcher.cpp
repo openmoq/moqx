@@ -49,9 +49,14 @@ std::optional<std::string_view> ServiceMatcher::PathRuleSet::match(std::string_v
   return std::nullopt;
 }
 
-ServiceMatcher::ServiceMatcher(const folly::F14FastMap<std::string, config::ServiceConfig>& services
+ServiceMatcher::ServiceMatcher(
+    const folly::F14FastMap<std::string, config::ServiceConfig>& services,
+    std::string_view listener
 ) {
   for (const auto& [name, svc] : services) {
+    if (std::find(svc.listeners.begin(), svc.listeners.end(), listener) == svc.listeners.end()) {
+      continue;
+    }
     for (const auto& entry : svc.match) {
       std::visit(
           [&](const auto& auth) {

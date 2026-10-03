@@ -33,6 +33,7 @@ protected:
       server_->stop();
     }
     config::ListenerConfig listener;
+    listener.name = "main";
     listener.address = folly::SocketAddress("::1", 0);
     listener.tlsMode = config::Insecure{};
     listener.endpoint = "/moq";
@@ -46,6 +47,7 @@ protected:
                      .authority = config::ServiceConfig::MatchEntry::AnyAuthority{},
                      .path = config::ServiceConfig::MatchEntry::PrefixPath{"/"},
                  }},
+                 .listeners = {"main"},
              }},
         },
         "test-relay"
