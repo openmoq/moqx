@@ -260,6 +260,7 @@ TEST(LocalForwarderRegistryTest, ReplaceCarriesDisplacedWaitersToTheSuccessor) {
   std::shared_ptr<MoQForwarder> seenByWaiter;
   auto observed = std::move(waiter)
                       .via(&folly::InlineExecutor::instance())
+                      // NOLINTNEXTLINE(performance-unnecessary-value-param)
                       .thenTry([&](folly::Try<folly::Unit> t) {
                         ++wakes;
                         EXPECT_TRUE(t.hasValue());
@@ -568,6 +569,7 @@ TEST(LocalForwarderRegistryTest, MovedFromClaimDoesNotResolve) {
     auto original = claimWith(reg, fwd);
     auto moved = std::move(original);
     moved.markReady(InitialTrackState{});
+    // NOLINTNEXTLINE(bugprone-use-after-move,hicpp-invalid-access-moved)
     EXPECT_FALSE(static_cast<bool>(original));
     // ~original must not fail the entry `moved` just marked ready.
   }

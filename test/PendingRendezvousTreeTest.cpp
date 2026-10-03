@@ -190,6 +190,7 @@ TEST_F(PendingRendezvousTreeTest, TakeRendezvousTimeoutClampedToMax) {
   auto clamped = takeRendezvousTimeout(sub, session);
 
   ASSERT_TRUE(clamped.has_value());
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_EQ(*clamped, kMaxRendezvousTimeout);
   EXPECT_EQ(sub.params.getFirstParam(TrackRequestParamKey::RENDEZVOUS_TIMEOUT), nullptr)
       << "the per-hop param must be consumed regardless of clamping";
@@ -212,6 +213,7 @@ TEST_F(PendingRendezvousTreeTest, TakeRendezvousTimeoutUnderMaxPassesThrough) {
   auto timeout = takeRendezvousTimeout(sub, session);
 
   ASSERT_TRUE(timeout.has_value());
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_EQ(*timeout, std::chrono::milliseconds(5000));
 }
 

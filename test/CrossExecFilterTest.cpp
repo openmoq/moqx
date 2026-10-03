@@ -134,6 +134,7 @@ TEST_F(CrossExecFilterTest, BeginSubgroupReturnsSubgroupImmediately) {
   ASSERT_NE(result.value(), nullptr);
   // The returned consumer is the cross-exec wrapper, not the inner subgroup
   EXPECT_NE(result.value().get(), static_cast<moxygen::SubgroupConsumer*>(innerSubgroup_.get()));
+  // NOLINTNEXTLINE(performance-unnecessary-copy-initialization)
   auto subFilter = result.value();
   subFilter->reset(ResetStreamErrorCode::CANCELLED);
   exec_.drain();
@@ -143,6 +144,7 @@ TEST_F(CrossExecFilterTest, BeginSubgroupRunsOnTargetExecutor) {
   EXPECT_CALL(*innerTrack_, beginSubgroup(1, 0, 128, _)).Times(1);
   auto result = filter_->beginSubgroup(1, 0, 128, {});
   EXPECT_TRUE(result.hasValue());
+  // NOLINTNEXTLINE(performance-unnecessary-copy-initialization)
   auto subFilter = result.value();
   subFilter->reset(ResetStreamErrorCode::CANCELLED);
   exec_.drain();
@@ -151,6 +153,7 @@ TEST_F(CrossExecFilterTest, BeginSubgroupRunsOnTargetExecutor) {
 TEST_F(CrossExecFilterTest, SubgroupObjectEnqueuedAfterBeginSubgroup) {
   auto subResult = filter_->beginSubgroup(1, 0, 128, {});
   ASSERT_TRUE(subResult.hasValue());
+  // NOLINTNEXTLINE(performance-unnecessary-copy-initialization)
   auto subFilter = subResult.value();
 
   auto objResult = subFilter->object(0, nullptr, noExtensions(), false);
@@ -175,6 +178,7 @@ TEST_F(CrossExecFilterTest, SubgroupObjectEnqueuedAfterBeginSubgroup) {
 TEST_F(CrossExecFilterTest, SubgroupEndOfSubgroupEnqueued) {
   auto subResult = filter_->beginSubgroup(2, 1, 64, {true});
   ASSERT_TRUE(subResult.hasValue());
+  // NOLINTNEXTLINE(performance-unnecessary-copy-initialization)
   auto subFilter = subResult.value();
 
   subFilter->endOfSubgroup();
@@ -188,6 +192,7 @@ TEST_F(CrossExecFilterTest, SubgroupEndOfSubgroupEnqueued) {
 TEST_F(CrossExecFilterTest, SubgroupEndOfGroupEnqueued) {
   auto subResult = filter_->beginSubgroup(1, 0, 128, {});
   ASSERT_TRUE(subResult.hasValue());
+  // NOLINTNEXTLINE(performance-unnecessary-copy-initialization)
   auto subFilter = subResult.value();
 
   subFilter->endOfGroup(5);
@@ -201,6 +206,7 @@ TEST_F(CrossExecFilterTest, SubgroupEndOfGroupEnqueued) {
 TEST_F(CrossExecFilterTest, SubgroupEndOfTrackAndGroupEnqueued) {
   auto subResult = filter_->beginSubgroup(1, 0, 128, {});
   ASSERT_TRUE(subResult.hasValue());
+  // NOLINTNEXTLINE(performance-unnecessary-copy-initialization)
   auto subFilter = subResult.value();
 
   subFilter->endOfTrackAndGroup(7);
@@ -214,6 +220,7 @@ TEST_F(CrossExecFilterTest, SubgroupEndOfTrackAndGroupEnqueued) {
 TEST_F(CrossExecFilterTest, SubgroupResetEnqueued) {
   auto subResult = filter_->beginSubgroup(1, 0, 128, {});
   ASSERT_TRUE(subResult.hasValue());
+  // NOLINTNEXTLINE(performance-unnecessary-copy-initialization)
   auto subFilter = subResult.value();
 
   subFilter->reset(ResetStreamErrorCode::CANCELLED);
@@ -227,6 +234,7 @@ TEST_F(CrossExecFilterTest, SubgroupResetEnqueued) {
 TEST_F(CrossExecFilterTest, SubgroupBeginObjectEnqueued) {
   auto subResult = filter_->beginSubgroup(1, 0, 128, {});
   ASSERT_TRUE(subResult.hasValue());
+  // NOLINTNEXTLINE(performance-unnecessary-copy-initialization)
   auto subFilter = subResult.value();
 
   subFilter->beginObject(3, 100, nullptr, noExtensions());
@@ -241,6 +249,7 @@ TEST_F(CrossExecFilterTest, SubgroupBeginObjectEnqueued) {
 TEST_F(CrossExecFilterTest, SubgroupObjectPayloadEnqueued) {
   auto subResult = filter_->beginSubgroup(1, 0, 128, {});
   ASSERT_TRUE(subResult.hasValue());
+  // NOLINTNEXTLINE(performance-unnecessary-copy-initialization)
   auto subFilter = subResult.value();
 
   // beginObject must precede objectPayload so the byte tracker knows the length.
@@ -322,6 +331,7 @@ TEST_F(CrossExecFilterTest, BeginSubgroupFailureGatesSubgroupNotTrack) {
 
   auto subResult = filter_->beginSubgroup(1, 0, 128, {});
   ASSERT_TRUE(subResult.hasValue());
+  // NOLINTNEXTLINE(performance-unnecessary-copy-initialization)
   auto subFilter = subResult.value();
 
   exec_.drain(); // inner beginSubgroup fails; error stored on subFilter

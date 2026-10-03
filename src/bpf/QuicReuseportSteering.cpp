@@ -145,6 +145,7 @@ void openmoq::moqx::ReuseportSteering::maybeAttach(int fd) {
         // listener failure, and client sockets (where the option legitimately
         // fails) re-run the rate-limited slow path per connection.
         XLOG_EVERY_N(WARN, 1000) << "quic reuseport BPF steering: setsockopt failed: "
+                                 // NOLINTNEXTLINE(concurrency-mt-unsafe)
                                  << std::strerror(errno);
         return;
       }

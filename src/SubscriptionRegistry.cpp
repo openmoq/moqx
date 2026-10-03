@@ -29,6 +29,7 @@ bool SubscriptionRegistry::UpstreamSubscribePending::complete(
   );
 }
 
+// NOLINTNEXTLINE(bugprone-exception-escape)
 SubscriptionRegistry::UpstreamSubscribePending::~UpstreamSubscribePending() {
   if (active_) {
     registry_->failAndRemove(ftn_, epoch_);
@@ -125,6 +126,7 @@ void SubscriptionRegistry::failAndRemove(const moxygen::FullTrackName& ftn, Entr
 
 SubscriptionRegistry::PublishEntry SubscriptionRegistry::createFromPublish(
     const moxygen::FullTrackName& ftn,
+    // NOLINTNEXTLINE(performance-unnecessary-value-param)
     ForwarderRef forwarder,
     std::shared_ptr<moxygen::MoQSession> session,
     std::shared_ptr<moxygen::Publisher> publisher,

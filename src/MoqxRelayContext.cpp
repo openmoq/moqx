@@ -250,6 +250,7 @@ void MoqxRelayContext::initThreadStatsCollectors(
   }
 }
 
+// NOLINTNEXTLINE(performance-unnecessary-value-param)
 void MoqxRelayContext::onNewSession(std::shared_ptr<MoQSession> clientSession) {
   auto& collector = *tlStatsCollector_;
   if (collector) {
@@ -276,6 +277,7 @@ void MoqxRelayContext::onSessionEnd(std::shared_ptr<MoQSession> session) {
 folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayContext::validateAuthority(
     const ClientSetup& clientSetup,
     uint64_t /*negotiatedVersion*/,
+    // NOLINTNEXTLINE(performance-unnecessary-value-param)
     std::shared_ptr<MoQSession> session
 ) {
   // Match service by authority + path

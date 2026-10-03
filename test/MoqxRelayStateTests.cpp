@@ -170,6 +170,7 @@ TEST_P(MoQRelayStateTest, IngestCountersCoverObjectsSentBeforeSubscribeOk) {
 
   std::shared_ptr<SubgroupConsumer> upstreamSg;
   EXPECT_CALL(*publisherSession, subscribe(_, _))
+      // NOLINTNEXTLINE(performance-unnecessary-value-param)
       .WillOnce([&](const SubscribeRequest&, std::shared_ptr<TrackConsumer> consumer) {
         // Write before answering: this object reaches the forwarder while the relay is
         // still inside the setup that installs the chain.

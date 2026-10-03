@@ -129,6 +129,7 @@ TEST_P(MoQRelayTest, FetchPrefersExactTrackOverNamespace) {
 
   EXPECT_CALL(*namespacePublisher, fetch(_, _)).Times(0);
   EXPECT_CALL(*trackPublisher, fetch(_, _))
+      // NOLINTNEXTLINE(performance-unnecessary-value-param)
       .WillOnce([](Fetch, std::shared_ptr<FetchConsumer> consumer) {
         // Terminate the fetch so the cross-exec consumer drops its
         // self-anchor; a real upstream always ends the fetch.
@@ -165,6 +166,7 @@ TEST_P(MoQRelayTest, JoiningFetchAgainstPublish) {
   std::atomic<bool> published{false};
   auto mockConsumer = createMockConsumer();
   EXPECT_CALL(*subscriber, publish(_, _))
+      // NOLINTNEXTLINE(performance-unnecessary-value-param)
       .WillOnce([&mockConsumer, &published](const PublishRequest&, auto) {
         published.store(true);
         return Subscriber::PublishResult(Subscriber::PublishConsumerAndReplyTask{
@@ -209,6 +211,7 @@ TEST_P(MoQRelayTest, JoiningFetchAgainstPublish) {
   auto capturedFetch = std::make_shared<Fetch>();
   EXPECT_CALL(*publisherSession, fetch(_, _))
       .WillOnce([capturedFetch,
+                 // NOLINTNEXTLINE(performance-unnecessary-value-param)
                  &upstreamFetched](Fetch f, std::shared_ptr<FetchConsumer> consumer) {
         *capturedFetch = std::move(f);
         upstreamFetched.store(true);

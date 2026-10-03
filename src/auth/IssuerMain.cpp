@@ -124,6 +124,7 @@ int runIssueCatTokenCommand(const char* programName) {
 
 } // namespace
 
+// NOLINTNEXTLINE(bugprone-exception-escape)
 int main(int argc, char* argv[]) {
   google::SetUsageMessage("moqx-issuer — mint a Catapult CAT4MOQ CWT for publishers/subscribers\n\n"
                           "Provide a key via --auth_secret, or via --config with --auth_service.\n"

@@ -36,6 +36,7 @@ TEST_P(MoQRelayTest, RelayPublishPropagatesDynamicGroupsToSubscribers) {
 
   auto dynGroups = getPublisherDynamicGroups(handle->subscribeOk());
   ASSERT_TRUE(dynGroups.has_value());
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_TRUE(*dynGroups);
 
   removeSession(subscriberSession);
@@ -63,6 +64,7 @@ TEST_P(MoQRelayTest, RelaySubscribePropagatesDynamicGroupsToAllSubscribers) {
   setPublisherDynamicGroups(upstreamOk, true);
 
   EXPECT_CALL(*publisherSession, subscribe(_, _))
+      // NOLINTNEXTLINE(performance-unnecessary-value-param)
       .WillOnce([upstreamOk](const auto& /*req*/, auto /*consumer*/) {
         auto handle = std::make_shared<NiceMock<MockSubscriptionHandle>>(upstreamOk);
         return folly::coro::makeTask<Publisher::SubscribeResult>(
@@ -76,6 +78,7 @@ TEST_P(MoQRelayTest, RelaySubscribePropagatesDynamicGroupsToAllSubscribers) {
   ASSERT_NE(handle1, nullptr);
   auto dynGroups1 = getPublisherDynamicGroups(handle1->subscribeOk());
   ASSERT_TRUE(dynGroups1.has_value());
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_TRUE(*dynGroups1);
 
   // Late-joining second subscriber – forwarder should propagate the stored
@@ -85,6 +88,7 @@ TEST_P(MoQRelayTest, RelaySubscribePropagatesDynamicGroupsToAllSubscribers) {
   ASSERT_NE(handle2, nullptr);
   auto dynGroups2 = getPublisherDynamicGroups(handle2->subscribeOk());
   ASSERT_TRUE(dynGroups2.has_value());
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_TRUE(*dynGroups2);
 
   removeSession(publisherSession);
@@ -117,6 +121,7 @@ TEST_P(MoQRelayTest, RelaySubscribeLateJoinerNGRForwardedUpstream) {
       )));
 
   EXPECT_CALL(*publisherSession, subscribe(_, _))
+      // NOLINTNEXTLINE(performance-unnecessary-value-param)
       .WillOnce([&upstreamHandle](const auto& /*req*/, auto /*consumer*/) {
         return folly::coro::makeTask<Publisher::SubscribeResult>(
             folly::Expected<std::shared_ptr<SubscriptionHandle>, SubscribeError>(upstreamHandle)
@@ -187,6 +192,7 @@ TEST_P(MoQRelayTest, RelayRequestUpdateNGRCascadedUpstream) {
       )));
 
   EXPECT_CALL(*publisherSession, subscribe(_, _))
+      // NOLINTNEXTLINE(performance-unnecessary-value-param)
       .WillOnce([&upstreamHandle](const auto& /*req*/, auto /*consumer*/) {
         return folly::coro::makeTask<Publisher::SubscribeResult>(
             folly::Expected<std::shared_ptr<SubscriptionHandle>, SubscribeError>(upstreamHandle)
@@ -229,6 +235,7 @@ TEST_P(MoQRelayTest, PublishOkNewNGRForwardedUpstream) {
   doPublishNamespace(publisherSession, kTestNamespace);
 
   auto mockConsumer = createMockConsumer();
+  // NOLINTNEXTLINE(performance-unnecessary-value-param)
   EXPECT_CALL(*subscriberSession, publish(_, _)).WillOnce([&mockConsumer](const auto&, auto) {
     TrackRequestParameters ngrParams(FrameType::PUBLISH_OK);
     ngrParams.insertParam(
@@ -322,16 +329,19 @@ TEST_P(MoQRelayTest, PublishOkDuplicateNGRNotForwardedUpstream) {
         std::move(ngrParams)
     });
     return Subscriber::PublishResult(
+        // NOLINTNEXTLINE(performance-unnecessary-value-param)
         Subscriber::PublishConsumerAndReplyTask{consumer, std::move(task)}
     );
   };
 
   auto mockConsumer1 = createMockConsumer();
+  // NOLINTNEXTLINE(performance-unnecessary-value-param)
   EXPECT_CALL(*subscriber1, publish(_, _)).WillOnce([&](const auto&, auto) {
     return makeNGRTask(RequestID(1), mockConsumer1, 8);
   });
 
   auto mockConsumer2 = createMockConsumer();
+  // NOLINTNEXTLINE(performance-unnecessary-value-param)
   EXPECT_CALL(*subscriber2, publish(_, _)).WillOnce([&](const auto&, auto) {
     return makeNGRTask(RequestID(2), mockConsumer2, 8);
   });

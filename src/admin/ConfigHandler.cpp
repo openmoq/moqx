@@ -105,6 +105,7 @@ void registerConfigRoute(AdminServer& adminServer, std::shared_ptr<const config:
           auto /*req*/,
           auto /*body*/,
           auto* downstream,
+          // NOLINTNEXTLINE(performance-unnecessary-value-param)
           auto /*cancelToken*/,
           const auto& /*egress*/
       ) {

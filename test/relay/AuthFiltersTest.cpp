@@ -13,6 +13,7 @@
 #include <folly/portability/GTest.h>
 #include <moxygen/test/Mocks.h>
 
+// NOLINTNEXTLINE(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp)
 using testing::_;
 using testing::NiceMock;
 using namespace moxygen;
@@ -49,9 +50,11 @@ AuthToken makeSignedToken(std::vector<Action> actions) {
   };
 }
 
+// NOLINTNEXTLINE(performance-unnecessary-value-param)
 Parameters withAuthToken(FrameType frameType, AuthToken token) {
   Parameters params(frameType);
   auto ok = params.insertParam(
+      // NOLINTNEXTLINE(hicpp-move-const-arg,performance-move-const-arg)
       Parameter(static_cast<uint64_t>(TrackRequestParamKey::AUTHORIZATION_TOKEN), std::move(token))
   );
   EXPECT_TRUE(ok.hasValue());
@@ -176,6 +179,7 @@ TEST_F(AuthFiltersTest, PublishSucceedsWithRequestTokenWhenSessionGrantsDoNotCov
 
   EXPECT_CALL(*subscriberInner_, publish(_, _))
       .WillOnce(
+          // NOLINTNEXTLINE(performance-unnecessary-value-param)
           [](PublishRequest pub, std::shared_ptr<SubscriptionHandle>) -> Subscriber::PublishResult {
             PublishOk ok;
             ok.requestID = pub.requestID;
@@ -264,6 +268,7 @@ TEST(
   // Publish: a per-request token additively unlocks it.
   EXPECT_CALL(*subscriberInner, publish(_, _))
       .WillOnce(
+          // NOLINTNEXTLINE(performance-unnecessary-value-param)
           [](PublishRequest p, std::shared_ptr<SubscriptionHandle>) -> Subscriber::PublishResult {
             PublishOk ok;
             ok.requestID = p.requestID;

@@ -33,6 +33,7 @@ public:
   // caller should stop walking.
   using Sink = folly::Function<bool(std::unique_ptr<folly::IOBuf>)>;
 
+  // NOLINTNEXTLINE(bugprone-implicit-widening-of-multiplication-result)
   static constexpr size_t kDefaultThreshold = 16 * 1024;
 
   explicit ChunkedJsonWriter(Sink sink, size_t threshold = kDefaultThreshold)
@@ -73,6 +74,7 @@ private:
   // crosses the threshold, so growing in smaller steps only buys proxygen a
   // longer buffer chain to write.
   static size_t growthFor(size_t threshold) {
+    // NOLINTNEXTLINE(bugprone-implicit-widening-of-multiplication-result)
     return std::clamp(threshold, size_t{1024}, size_t{64 * 1024});
   }
 

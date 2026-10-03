@@ -58,6 +58,7 @@ struct CacheConfig {
 };
 
 // ProxygenQmux carries MoQ over QMUX-on-TCP + Fizz TLS, not QUIC/UDP.
+// NOLINTNEXTLINE(performance-enum-size)
 enum class QuicStack { Mvfst, Picoquic, ProxygenQmux };
 
 struct QuicConfig {
@@ -239,6 +240,7 @@ struct ServiceConfig {
   AuthConfig auth;
 };
 
+// NOLINTNEXTLINE(bugprone-exception-escape)
 struct AdminConfig {
   folly::SocketAddress address;
   std::optional<TlsConfig> tls;
@@ -262,6 +264,7 @@ struct LoggingConfig {
   std::optional<QLogConfig> qlog;
 };
 
+// NOLINTNEXTLINE(bugprone-exception-escape)
 struct Config {
   std::vector<ListenerConfig> listeners;
   folly::F14FastMap<std::string, ServiceConfig> services;

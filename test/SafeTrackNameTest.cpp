@@ -92,21 +92,26 @@ TEST(SafeTrackNameTest, RejectsMalformedBytes) {
 TEST(SafeTrackNameTest, ParsesNamespaceTuples) {
   auto ns = parseSafeNamespace("conf-room1-layer0");
   ASSERT_TRUE(ns);
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_EQ(ns->trackNamespace, std::vector<std::string>({"conf", "room1", "layer0"}));
 
   auto empty = parseSafeNamespace("");
   ASSERT_TRUE(empty);
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_TRUE(empty->trackNamespace.empty());
 
   auto emptyTuples = parseSafeNamespace("-");
   ASSERT_TRUE(emptyTuples);
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_EQ(emptyTuples->trackNamespace, std::vector<std::string>({"", ""}));
 }
 
 TEST(SafeTrackNameTest, ParsesFullTrackName) {
   auto ftn = parseSafeFullTrackName("conf-room1--video");
   ASSERT_TRUE(ftn);
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_EQ(ftn->trackNamespace.trackNamespace, std::vector<std::string>({"conf", "room1"}));
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_EQ(ftn->trackName, "video");
 }
 
@@ -120,12 +125,16 @@ TEST(SafeTrackNameTest, RejectsFullTrackNameWithoutSeparator) {
 TEST(SafeTrackNameTest, ParsesEmptyTuplesAroundSeparator) {
   auto trailing = parseSafeFullTrackName("a---v");
   ASSERT_TRUE(trailing);
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_EQ(trailing->trackNamespace.trackNamespace, std::vector<std::string>({"a", ""}));
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_EQ(trailing->trackName, "v");
 
   auto emptyTrack = parseSafeFullTrackName("a--");
   ASSERT_TRUE(emptyTrack);
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_EQ(emptyTrack->trackNamespace.trackNamespace, std::vector<std::string>({"a"}));
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_EQ(emptyTrack->trackName, "");
 }
 
@@ -139,7 +148,9 @@ TEST(SafeTrackNameTest, RoundTripsAwkwardNames) {
   for (const auto& ftn : names) {
     auto parsed = parseSafeFullTrackName(safeName(ftn));
     ASSERT_TRUE(parsed) << safeName(ftn);
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     EXPECT_EQ(parsed->trackNamespace.trackNamespace, ftn.trackNamespace.trackNamespace);
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     EXPECT_EQ(parsed->trackName, ftn.trackName);
   }
 }

@@ -299,6 +299,7 @@ protected:
   }
 
   void expectUpstreamFetch(const FetchError& err) {
+    // NOLINTNEXTLINE(performance-unnecessary-value-param)
     EXPECT_CALL(*upstream_, fetch(_, _)).WillOnce([err](Fetch, std::shared_ptr<FetchConsumer>) {
       return folly::coro::makeTask<Publisher::FetchResult>(folly::makeUnexpected(err));
     });
@@ -306,6 +307,7 @@ protected:
 
   void expectUpstreamFetch(const FetchOk& ok) {
     EXPECT_CALL(*upstream_, fetch(_, _))
+        // NOLINTNEXTLINE(performance-unnecessary-value-param)
         .WillOnce([ok, this](Fetch, std::shared_ptr<FetchConsumer> consumer) {
           upstreamFetchConsumer_ = std::move(consumer);
           upstreamFetchConsumer_->endOfFetch();
@@ -318,6 +320,7 @@ protected:
       AbsoluteLocation start,
       AbsoluteLocation end,
       uint64_t objectsPerGroup = 10,
+      // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
       uint64_t objectIncrement = 1,
       uint64_t groupIncrement = 1,
       bool endOfGroup = false
@@ -344,6 +347,7 @@ protected:
       AbsoluteLocation start,
       AbsoluteLocation end,
       uint64_t objectsPerGroup = 10,
+      // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
       uint64_t objectIncrement = 1,
       uint64_t groupIncrement = 1,
       bool endOfGroup = false,
@@ -370,6 +374,7 @@ protected:
       AbsoluteLocation end,
       AbsoluteLocation start,
       uint64_t objectsPerGroup = 10,
+      // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
       uint64_t objectIncrement = 1,
       uint64_t groupDecrement = 1,
       bool endOfGroup = false,
@@ -419,6 +424,7 @@ protected:
       AbsoluteLocation start,
       bool endOfFetch,
       uint64_t objectsPerGroup = 10,
+      // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
       uint64_t objectIncrement = 1,
       int64_t groupDecrement = 1,
       bool endOfGroup = false,
@@ -481,6 +487,7 @@ protected:
       AbsoluteLocation end,
       bool endOfFetch,
       uint64_t objectsPerGroup = 10,
+      // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
       uint64_t objectIncrement = 1,
       uint64_t groupIncrement = 1,
       bool endOfGroup = false,
@@ -896,6 +903,7 @@ CO_TEST_F(MoqxCacheTest, TestFetchWaitsForFetchInProgress) {
   // Test case for fetch waiting for a fetch in progress
   expectUpstreamFetch({0, 0}, {0, 10}, 0, AbsoluteLocation{1, 0})
       .via(co_await folly::coro::co_current_executor)
+      // NOLINTNEXTLINE(performance-unnecessary-value-param)
       .thenTry([this](auto) { serveCacheRangeFromUpstream({0, 0}, {0, 10}); });
   auto consumer2{std::make_shared<moxygen::MockFetchConsumer>()};
   expectFetchObjects({0, 0}, {0, 10}, true);
@@ -968,6 +976,7 @@ CO_TEST_F(MoqxCacheTest, TestFetchWaitsForFetchInProgressError) {
     InSequence enforceOrder;
     expectUpstreamFetch({0, 0}, {0, 9}, 0, AbsoluteLocation{0, 9})
         .via(co_await folly::coro::co_current_executor)
+        // NOLINTNEXTLINE(performance-unnecessary-value-param)
         .thenTry([this](auto) {
           upstreamFetchConsumer_->reset(ResetStreamErrorCode::INTERNAL_ERROR);
         });
@@ -993,6 +1002,7 @@ CO_TEST_F(MoqxCacheTest, TestFetchWaitsForFetchInProgressErrorNeedsFetchOK) {
     InSequence enforceOrder;
     expectUpstreamFetch({0, 0}, {0, 1}, 0, AbsoluteLocation{1, 0})
         .via(co_await folly::coro::co_current_executor)
+        // NOLINTNEXTLINE(performance-unnecessary-value-param)
         .thenTry([this](auto) {
           upstreamFetchConsumer_->reset(ResetStreamErrorCode::INTERNAL_ERROR);
         });
@@ -1086,6 +1096,7 @@ CO_TEST_F(MoqxCacheTest, TestFetchCancel) {
   EXPECT_CALL(*consumer_, reset(_));
   co_await folly::coro::co_reschedule_on_current_executor;
   if (res.hasValue()) {
+    // NOLINTNEXTLINE(performance-unnecessary-copy-initialization)
     auto fetchHandle = res.value();
     fetchHandle->fetchCancel(); // Invoke fetchCancel on the FetchHandle
   }
@@ -1187,6 +1198,7 @@ CO_TEST_F(MoqxCacheTest, TestUpstreamFetchPartialWriteAndReset) {
   // Initiate an upstream fetch for one object
   expectUpstreamFetch({0, 0}, {0, 1}, 0, AbsoluteLocation{0, 0})
       .via(co_await folly::coro::co_current_executor)
+      // NOLINTNEXTLINE(performance-unnecessary-value-param)
       .thenTry([this](auto) {
         // Partially write the object using beginObject
         upstreamFetchConsumer_->beginObject(0, 0, 0, 100, makeBuf(50));
@@ -1261,6 +1273,7 @@ CO_TEST_F(MoqxCacheTest, TestUpstreamServesObjectWithGap) {
   // marks object 1 as not existing
   expectUpstreamFetch({0, 1}, {0, 3}, 0, AbsoluteLocation{0, 2})
       .via(co_await folly::coro::co_current_executor)
+      // NOLINTNEXTLINE(performance-unnecessary-value-param)
       .thenTry([this](auto) {
         // Serve object 2 directly with a gap extension (which is technically
         // redundant)
@@ -1286,6 +1299,7 @@ CO_TEST_F(MoqxCacheTest, TestUpstreamServesGroupWithGap) {
   // handling marks group 1 as not existing
   expectUpstreamFetch({1, 0}, {2, 1}, 0, AbsoluteLocation{2, 0})
       .via(co_await folly::coro::co_current_executor)
+      // NOLINTNEXTLINE(performance-unnecessary-value-param)
       .thenTry([this](auto) {
         // Serve object in group 2 - has a gap extension which is technically
         // redundant
@@ -1326,6 +1340,7 @@ CO_TEST_F(MoqxCacheTest, TestUpstreamServesEndOfTrack) {
   // Expect upstream fetch to be called with the specified range
   expectUpstreamFetch({0, 0}, {2, 1}, 0, AbsoluteLocation{2, 0})
       .via(co_await folly::coro::co_current_executor)
+      // NOLINTNEXTLINE(performance-unnecessary-value-param)
       .thenTry([this](auto) {
         // Include a checkpoint before endOfTrackAndGroup for coverage
         // group 0 and 1 implicitly do not exist
@@ -1421,6 +1436,7 @@ CO_TEST_F(MoqxCacheTest, TestUpstreamFetchUsingBeginObjectAndObjectPayload) {
   // are served below, so the range has to cover both.
   expectUpstreamFetch({0, 0}, {0, 2}, 0, AbsoluteLocation{0, 0})
       .via(co_await folly::coro::co_current_executor)
+      // NOLINTNEXTLINE(performance-unnecessary-value-param)
       .thenTry([this](auto) {
         // Begin an object with a specific size
         upstreamFetchConsumer_->beginObject(0, 0, 0, 100, makeBuf(50));
@@ -1752,6 +1768,7 @@ CO_TEST_F(MoqxCacheTest, FetchWritebackUpdateInProgressBoundaryCollision) {
     // inserted at key {10,0} before this lambda runs. Drive A's endOfFetch here
     // to hit the crash path, then drive B's endOfFetch to complete the test.
     EXPECT_CALL(*upstream_, fetch(_, _))
+        // NOLINTNEXTLINE(performance-unnecessary-value-param)
         .WillOnce([this](Fetch fetch, std::shared_ptr<FetchConsumer> consumerB) {
           auto [standalone, joining] = fetchType(fetch);
           EXPECT_EQ(standalone->start, (AbsoluteLocation{10, 0}));
@@ -1798,6 +1815,7 @@ CO_TEST_F(MoqxCacheTest, FetchWritebackUpdateInProgressDoubleCall) {
 
   expectUpstreamFetch({0, 0}, {2, 0}, 0, AbsoluteLocation{1, 0})
       .via(co_await folly::coro::co_current_executor)
+      // NOLINTNEXTLINE(performance-unnecessary-value-param)
       .thenTry([this](auto) {
         // endOfGroup advances iterator to {2,0}=maxLocation; branch 3 erases
         // the fetchesInProgress entry (fetchInProgressIt_=end()).
@@ -3023,6 +3041,7 @@ CO_TEST_F(MoqxCacheTest, TestDescendingFetchDoesNotMarkTopGroupTailAsGap) {
   ON_CALL(*firstConsumer, object(_, _, _, _, _, _, _)).WillByDefault(Return(folly::unit));
   ON_CALL(*firstConsumer, endOfFetch()).WillByDefault(Return(folly::unit));
   EXPECT_CALL(*upstream_, fetch(_, _))
+      // NOLINTNEXTLINE(performance-unnecessary-value-param)
       .WillOnce([this](Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
         auto [standalone, joining] = fetchType(fetch);
         EXPECT_EQ(standalone->start, (AbsoluteLocation{3, 3}));
@@ -3054,6 +3073,7 @@ CO_TEST_F(MoqxCacheTest, TestDescendingFetchDoesNotMarkTopGroupTailAsGap) {
   auto laterConsumer = std::make_shared<NiceMock<MockFetchConsumer>>();
   ON_CALL(*laterConsumer, endOfFetch()).WillByDefault(Return(folly::unit));
   EXPECT_CALL(*upstream_, fetch(_, _))
+      // NOLINTNEXTLINE(performance-unnecessary-value-param)
       .WillOnce([this](Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
         auto [standalone, joining] = fetchType(fetch);
         EXPECT_EQ(standalone->start, (AbsoluteLocation{5, 20}));
@@ -3085,6 +3105,7 @@ CO_TEST_F(MoqxCacheTest, TestDescendingFetchDoesNotMarkBottomGroupHeadAsGap) {
   ON_CALL(*firstConsumer, object(_, _, _, _, _, _, _)).WillByDefault(Return(folly::unit));
   ON_CALL(*firstConsumer, endOfFetch()).WillByDefault(Return(folly::unit));
   EXPECT_CALL(*upstream_, fetch(_, _))
+      // NOLINTNEXTLINE(performance-unnecessary-value-param)
       .WillOnce([this](Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
         auto [standalone, joining] = fetchType(fetch);
         EXPECT_EQ(standalone->start, (AbsoluteLocation{3, 5}));
@@ -3116,6 +3137,7 @@ CO_TEST_F(MoqxCacheTest, TestDescendingFetchDoesNotMarkBottomGroupHeadAsGap) {
   auto laterConsumer = std::make_shared<NiceMock<MockFetchConsumer>>();
   ON_CALL(*laterConsumer, endOfFetch()).WillByDefault(Return(folly::unit));
   EXPECT_CALL(*upstream_, fetch(_, _))
+      // NOLINTNEXTLINE(performance-unnecessary-value-param)
       .WillOnce([this](Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
         auto [standalone, joining] = fetchType(fetch);
         EXPECT_EQ(standalone->start, (AbsoluteLocation{3, 1}));
@@ -3146,6 +3168,7 @@ CO_TEST_F(MoqxCacheTest, TestDescendingFetchDoesNotGapCachedObject) {
   ON_CALL(*firstConsumer, object(_, _, _, _, _, _, _)).WillByDefault(Return(folly::unit));
   ON_CALL(*firstConsumer, endOfFetch()).WillByDefault(Return(folly::unit));
   EXPECT_CALL(*upstream_, fetch(_, _))
+      // NOLINTNEXTLINE(performance-unnecessary-value-param)
       .WillOnce([this](Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
         auto [standalone, joining] = fetchType(fetch);
         EXPECT_EQ(standalone->start, (AbsoluteLocation{3, 3}));
@@ -4271,6 +4294,7 @@ CO_TEST_F(MoqxCacheTest, TestBytesTrackedAcrossStreamingObject) {
     // Block scope: subConsumer destructor adds group 0 back to groupLRU_
     auto sub = writeback->beginSubgroup(0, 0, 0);
     EXPECT_TRUE(sub.hasValue());
+    // NOLINTNEXTLINE(performance-unnecessary-copy-initialization)
     auto subConsumer = sub.value();
     EXPECT_TRUE(subConsumer->beginObject(0, 200, makeBuf(100), {}).hasValue());
     EXPECT_TRUE(subConsumer->objectPayload(makeBuf(100), true).hasValue());
@@ -4527,6 +4551,7 @@ CO_TEST_F(MoqxCacheTest, TestPurgeWhileFetchParkedLeavesNoDanglingTrackLRU) {
     return folly::makeSemiFuture<uint64_t>(0);
   });
   EXPECT_CALL(*upstream_, fetch(_, _))
+      // NOLINTNEXTLINE(performance-unnecessary-value-param)
       .WillRepeatedly([this](Fetch, std::shared_ptr<FetchConsumer> consumer) {
         upstreamFetchConsumer_ = std::move(consumer);
         upstreamFetchConsumer_->endOfFetch();

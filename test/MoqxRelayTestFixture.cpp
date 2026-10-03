@@ -66,6 +66,7 @@ void MoQRelayTest::resetRelay(
   }
   bool useLocalForwarders = relayEvb_ && relayMode() == RelayMode::LocalForwarderMT;
   relay_ = std::make_shared<MoqxRelay>(
+      // NOLINTNEXTLINE(hicpp-move-const-arg,performance-move-const-arg)
       std::move(cache),
       relayID,
       relayHopID,
@@ -311,6 +312,7 @@ void MoQRelayTest::MockSessionState::cleanup() {
 }
 
 std::shared_ptr<MoQRelayTest::MockSessionState>
+// NOLINTNEXTLINE(performance-unnecessary-value-param)
 MoQRelayTest::getOrCreateMockState(std::shared_ptr<MoQSession> session) {
   auto it = mockSessions_.find(session.get());
   if (it == mockSessions_.end()) {
@@ -322,6 +324,7 @@ MoQRelayTest::getOrCreateMockState(std::shared_ptr<MoQSession> session) {
   return it->second;
 }
 
+// NOLINTNEXTLINE(performance-unnecessary-value-param)
 void MoQRelayTest::cleanupMockSession(std::shared_ptr<MoQSession> session) {
   auto it = mockSessions_.find(session.get());
   if (it != mockSessions_.end()) {
@@ -463,10 +466,12 @@ std::shared_ptr<Publisher::SubscribeNamespaceHandle> MoQRelayTest::doSubscribeNa
   });
 }
 
+// NOLINTNEXTLINE(performance-unnecessary-value-param)
 void MoQRelayTest::setupPublishSucceeds(std::shared_ptr<MockMoQSession> session) {
   ON_CALL(*session, publish(_, _))
       .WillByDefault(Invoke(
           [this, key = session.get()](
+              // NOLINTNEXTLINE(performance-unnecessary-value-param)
               PublishRequest pub,
               std::shared_ptr<Publisher::SubscriptionHandle> handle
           ) -> Subscriber::PublishResult {

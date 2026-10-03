@@ -79,6 +79,7 @@ struct RankIndex {
 /**
  * Track state within a TopNGroup.
  */
+// NOLINTNEXTLINE(performance-enum-size)
 enum class TrackState { Selected, Deselected };
 
 /**

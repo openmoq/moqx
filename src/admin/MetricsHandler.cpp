@@ -32,6 +32,7 @@ void registerMetricsRoute(
           auto req,
           auto /*body*/,
           auto* downstream,
+          // NOLINTNEXTLINE(performance-unnecessary-value-param)
           folly::CancellationToken cancelToken,
           const std::shared_ptr<EgressGate>& /*egress*/
       ) {

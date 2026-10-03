@@ -116,6 +116,7 @@ public:
 
   explicit NamespaceTree(Callback& cb) : cb_(cb), root_(*this) {}
 
+  // NOLINTNEXTLINE(performance-enum-size)
   enum class Error { NodeNotFound, NotOwner, NotSubscribed };
 
   // Longest-prefix match for the publisher of ns; null if none found.

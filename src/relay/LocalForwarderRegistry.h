@@ -117,6 +117,7 @@ public:
     )
         : registry_(registry), ftn_(std::move(ftn)), forwarder_(std::move(forwarder)) {}
 
+    // NOLINTNEXTLINE(bugprone-exception-escape)
     void resolveIfEngaged(folly::exception_wrapper ew) noexcept {
       if (registry_) {
         registry_->fail(ftn_, forwarder_.get(), std::move(ew));
@@ -289,6 +290,7 @@ public:
   }
 
 private:
+  // NOLINTNEXTLINE(performance-enum-size)
   enum class Park { No, Yes };
 
   using Promise = std::shared_ptr<folly::SharedPromise<folly::Unit>>;

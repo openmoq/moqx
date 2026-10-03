@@ -14,7 +14,9 @@ namespace openmoq::moqx::stats {
 
 namespace {
 
+// NOLINTNEXTLINE(performance-unnecessary-value-param)
 moxygen::FullTrackName makeFtn(std::string ns, std::string name) {
+  // NOLINTNEXTLINE(hicpp-move-const-arg,performance-move-const-arg)
   return moxygen::FullTrackName{moxygen::TrackNamespace(std::move(ns), "/"), std::move(name)};
 }
 

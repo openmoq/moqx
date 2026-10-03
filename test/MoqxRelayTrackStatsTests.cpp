@@ -245,6 +245,7 @@ TEST_P(MoQRelayTrackStatsTest, CountsEgressOnPublishFanout) {
   std::atomic<bool> published{false};
 
   EXPECT_CALL(*subscriber, publish(testing::_, testing::_))
+      // NOLINTNEXTLINE(performance-unnecessary-value-param)
       .WillOnce([&](const PublishRequest&, auto /*subHandle*/) {
         published.store(true);
         return Subscriber::PublishResult(Subscriber::PublishConsumerAndReplyTask{

@@ -177,6 +177,7 @@ void registerTrackMetricsRoute(
           std::unique_ptr<proxygen::HTTPMessage> req,
           std::unique_ptr<folly::IOBuf> /*body*/,
           proxygen::ResponseHandler* downstream,
+          // NOLINTNEXTLINE(performance-unnecessary-value-param)
           folly::CancellationToken cancelToken,
           const std::shared_ptr<EgressGate>& /*egress*/
       ) {

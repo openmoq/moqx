@@ -67,10 +67,12 @@ protected:
           }
         },
         /*onSelected=*/
+        // NOLINTNEXTLINE(performance-unnecessary-value-param)
         [this](const FullTrackName& f, std::shared_ptr<MoQSession> s, bool fwd) {
           selected_.push_back({f, s.get(), fwd});
         },
         /*onEvicted=*/
+        // NOLINTNEXTLINE(performance-unnecessary-value-param)
         [this](const FullTrackName& f, std::shared_ptr<MoQSession> s) {
           evicted_.push_back({f, s.get()});
         }

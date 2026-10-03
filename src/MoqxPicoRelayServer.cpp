@@ -91,6 +91,7 @@ MoqxPicoRelayServer::MoqxPicoRelayServer(
 }
 
 MoqxPicoRelayServer::~MoqxPicoRelayServer() {
+  // NOLINTNEXTLINE(clang-analyzer-optin.cplusplus.VirtualCall)
   stop();
 }
 
@@ -105,6 +106,7 @@ void MoqxPicoRelayServer::stop() {
   MoQPicoQuicShardedServer::stop();
 }
 
+// NOLINTNEXTLINE(performance-unnecessary-value-param)
 void MoqxPicoRelayServer::setStatsRegistry(std::shared_ptr<stats::StatsRegistry> registry) {
   context_->setStatsRegistry(registry);
   setPicoQuicStatsCallbackFactory(

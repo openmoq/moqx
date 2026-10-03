@@ -25,6 +25,7 @@
 
 namespace openmoq::moqx::auth {
 
+// NOLINTNEXTLINE(performance-enum-size)
 enum class AuthError {
   Missing,
   WrongTokenType,

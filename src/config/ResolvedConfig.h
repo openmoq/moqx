@@ -13,6 +13,7 @@
 
 namespace openmoq::moqx::config {
 
+// NOLINTNEXTLINE(bugprone-exception-escape)
 struct ResolvedConfig {
   Config config;
   std::vector<std::string> warnings;

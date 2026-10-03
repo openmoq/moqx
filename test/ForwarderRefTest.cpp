@@ -72,6 +72,7 @@ TEST(ForwarderRefTest, OwnedCoWithReturnsValueInline) {
       folly::coro::blockingWait(ref.co_with([](MoQForwarder& f) { return f.fullTrackName(); }));
 
   ASSERT_TRUE(result.has_value());
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_EQ(*result, kFtn);
 }
 
@@ -121,6 +122,7 @@ TEST(ForwarderRefTest, RemoteCoWithRoundTripsThroughTheOwnerThread) {
   }));
 
   ASSERT_TRUE(result.has_value());
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_EQ(*result, kFtn);
   EXPECT_EQ(ranOn, evbThreadId(evbThread));
 }
@@ -154,8 +156,10 @@ TEST(ForwarderRefTest, CoWithOutlivesATemporaryRef) {
   auto remoteResult = folly::coro::blockingWait(std::move(remote));
 
   ASSERT_TRUE(ownedResult.has_value());
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_EQ(*ownedResult, kFtn);
   ASSERT_TRUE(remoteResult.has_value());
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_EQ(*remoteResult, kFtn);
 }
 
@@ -176,6 +180,7 @@ TEST(ForwarderRefTest, MovedFromRefReadsEmpty) {
   auto ref = ForwarderRef::owned(fwd);
   auto moved = std::move(ref);
 
+  // NOLINTNEXTLINE(bugprone-use-after-move,hicpp-invalid-access-moved)
   EXPECT_FALSE(static_cast<bool>(ref));
   EXPECT_EQ(ref.getIfOwned(), nullptr);
 

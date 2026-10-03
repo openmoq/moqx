@@ -34,6 +34,7 @@ void registerBuiltinRoutes(AdminServer& server) {
           auto /*req*/,
           auto /*body*/,
           auto* downstream,
+          // NOLINTNEXTLINE(performance-unnecessary-value-param)
           auto /*cancelToken*/,
           const auto& /*egress*/
       ) {

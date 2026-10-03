@@ -84,20 +84,24 @@ public:
   void onServerStop() noexcept override {}
 
   proxygen::RequestHandler*
+  // NOLINTNEXTLINE(bugprone-exception-escape)
   onRequest(proxygen::RequestHandler* /*upstream*/, proxygen::HTTPMessage* msg) noexcept override {
     const auto& method = msg->getMethodString();
     const auto& path = msg->getPath();
 
     for (const auto& route : routes_) {
       if (route.method == method && route.path == path) {
+        // NOLINTNEXTLINE(bugprone-unhandled-exception-at-new)
         return new AdminRequestHandler(route.handler);
       }
     }
 
     // Unknown route → 404
+    // NOLINTNEXTLINE(bugprone-unhandled-exception-at-new)
     return new AdminRequestHandler([](auto /*req*/,
                                       auto /*body*/,
                                       auto* downstream,
+                                      // NOLINTNEXTLINE(performance-unnecessary-value-param)
                                       auto /*cancelToken*/,
                                       const auto& /*egress*/) {
       proxygen::ResponseBuilder(downstream)

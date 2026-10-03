@@ -71,6 +71,7 @@ void registerStateRoute(AdminServer& adminServer, std::shared_ptr<MoqxRelayConte
        )](auto /*req*/,
           auto /*body*/,
           auto* downstream,
+          // NOLINTNEXTLINE(performance-unnecessary-value-param)
           folly::CancellationToken cancelToken,
           std::shared_ptr<EgressGate> egress) {
         if (!context->ready()) {

@@ -21,6 +21,7 @@
 // purpose.
 namespace openmoq::moqx::auth {
 
+// NOLINTNEXTLINE(performance-enum-size)
 enum class Action : uint64_t {
   ClientSetup = 0,
   ServerSetup = 1,
@@ -33,6 +34,7 @@ enum class Action : uint64_t {
   TrackStatus = 8,
 };
 
+// NOLINTNEXTLINE(performance-enum-size)
 enum class MatchRuleType : uint64_t { Exact = 0, Prefix = 1, Suffix = 2, Contains = 3 };
 
 ENFORCE_EXHAUSTIVE_SWITCH_BEGIN

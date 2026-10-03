@@ -85,6 +85,7 @@ ServiceMatcher::ServiceMatcher(const folly::F14FastMap<std::string, config::Serv
 }
 
 std::optional<std::string_view>
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 ServiceMatcher::match(std::string_view authority, std::string_view path) const {
   // MOQT spec allows empty path in CLIENT_SETUP; normalize to "/" so
   // PrefixPath{"/"} always matches.

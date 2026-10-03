@@ -39,6 +39,7 @@ config::ServiceConfig makeServiceWithAuth(std::string authority, config::AuthCon
 // Build a MockMoQSession with the given authority and path.
 // Uses a shared executor so the session doesn't spin up its own thread.
 std::shared_ptr<NiceMock<test::MockMoQSession>>
+// NOLINTNEXTLINE(performance-unnecessary-value-param)
 makeSession(std::shared_ptr<MoQExecutor> exec, std::string authority, std::string path = "") {
   auto session = std::make_shared<NiceMock<test::MockMoQSession>>(exec);
   session->setAuthority(std::move(authority));

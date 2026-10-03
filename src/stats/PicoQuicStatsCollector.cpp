@@ -12,8 +12,10 @@ namespace openmoq::moqx::stats {
 
 /* static */
 std::shared_ptr<PicoQuicStatsCollector> PicoQuicStatsCollector::create(
+    // NOLINTNEXTLINE(performance-unnecessary-value-param)
     std::shared_ptr<StatsRegistry> registry,
     folly::EventBase* evb,
+    // NOLINTNEXTLINE(performance-unnecessary-value-param)
     std::shared_ptr<EventBaseStatsCollector> evbCollector
 ) {
   auto collector = std::shared_ptr<PicoQuicStatsCollector>(new PicoQuicStatsCollector(evb));

@@ -299,6 +299,7 @@ TEST_P(MoQRelayTest, SubsequentSubscriberWaitsForUpstreamLargestSeeding) {
                              std::shared_ptr<TrackConsumer> consumer,
                              RequestID requestID,
                              std::shared_ptr<std::optional<Publisher::SubscribeResult>> out) {
+    // NOLINTNEXTLINE(performance-unnecessary-value-param)
     withSessionContext(session, [&]() {
       SubscribeRequest sub;
       sub.fullTrackName = kTestTrackName;
@@ -333,16 +334,22 @@ TEST_P(MoQRelayTest, SubsequentSubscriberWaitsForUpstreamLargestSeeding) {
   upstreamGate.post();
   ASSERT_TRUE(pump([&] { return firstResult->has_value() && secondResult->has_value(); }));
 
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   ASSERT_TRUE(firstResult->value().hasValue());
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_EQ(firstResult->value().value()->subscribeOk().largest, kLargest);
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   ASSERT_TRUE(secondResult->value().hasValue());
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_EQ(secondResult->value().value()->subscribeOk().largest, kLargest)
       << "subsequent subscriber must observe the upstream-seeded largest, not a "
          "pre-seeding value";
 
   // Track the handles so cleanupMockSession tears down the subscriptions (else the
   // held consumers/sessions leak as unverified mocks at exit).
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   getOrCreateMockState(subSession1)->subscribeHandles.push_back(firstResult->value().value());
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   getOrCreateMockState(subSession2)->subscribeHandles.push_back(secondResult->value().value());
 
   removeSession(publisherSession);
@@ -392,6 +399,7 @@ TEST_P(MoQRelayTest, SubsequentSubscriberFailsWhenUpstreamSubscribeFails) {
                              std::shared_ptr<TrackConsumer> consumer,
                              RequestID requestID,
                              std::shared_ptr<std::optional<Publisher::SubscribeResult>> out) {
+    // NOLINTNEXTLINE(performance-unnecessary-value-param)
     withSessionContext(session, [&]() {
       SubscribeRequest sub;
       sub.fullTrackName = kTestTrackName;
@@ -430,15 +438,21 @@ TEST_P(MoQRelayTest, SubsequentSubscriberFailsWhenUpstreamSubscribeFails) {
   upstreamGate.post();
   ASSERT_TRUE(pump([&] { return firstResult->has_value() && secondResult->has_value(); }));
 
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_FALSE(firstResult->value().hasValue()) << "upstream rejected the subscribe";
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_FALSE(secondResult->value().hasValue())
       << "a subscriber released by a FAILED setup must get an error, not a SUBSCRIBE_OK "
          "for a forwarder with no upstream";
 
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   if (firstResult->value().hasValue()) {
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     getOrCreateMockState(subSession1)->subscribeHandles.push_back(firstResult->value().value());
   }
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   if (secondResult->value().hasValue()) {
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     getOrCreateMockState(subSession2)->subscribeHandles.push_back(secondResult->value().value());
   }
 
@@ -602,6 +616,7 @@ TEST_P(MoQRelayTest, CrossThreadSubsequentSubscriberSeedingRace) {
                              RequestID requestID,
                              std::shared_ptr<std::optional<Publisher::SubscribeResult>> out,
                              std::atomic<bool>* done) {
+    // NOLINTNEXTLINE(performance-unnecessary-value-param)
     withSessionContext(session, [&]() {
       SubscribeRequest sub;
       sub.fullTrackName = kTestTrackName;
@@ -647,13 +662,19 @@ TEST_P(MoQRelayTest, CrossThreadSubsequentSubscriberSeedingRace) {
   upstreamGate.post();
   ASSERT_TRUE(pumpExec([&] { return firstResult->has_value() && sub2Done.load(); }));
 
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   ASSERT_TRUE(firstResult->value().hasValue());
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_EQ(firstResult->value().value()->subscribeOk().largest, kLargest);
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   ASSERT_TRUE(secondResult->value().hasValue());
   // Post-OK the established largest must hold regardless of when sub2 resolved.
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_EQ(secondResult->value().value()->subscribeOk().largest, kLargest);
 
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   getOrCreateMockState(subSession1)->subscribeHandles.push_back(firstResult->value().value());
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   getOrCreateMockState(subSession2)->subscribeHandles.push_back(secondResult->value().value());
 
   removeSession(publisherSession);
@@ -772,6 +793,7 @@ TEST_P(MoQRelayTest, PublishFanoutDuringParkedSubscribeSetup) {
   ASSERT_TRUE(pump([&] { return subscribeDone.load(); })) << "parked subscribe never unwound";
   // The publish replaced the registry entry the subscribe was still setting up, so the
   // subscribe loses. Both racers resolving is what matters; neither aborts the process.
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   EXPECT_FALSE(subResult->value().hasValue());
 
   // The track is left usable: a fresh subscribe attaches to the publish and delivers.

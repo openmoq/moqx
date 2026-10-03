@@ -55,6 +55,7 @@ public:
 
   template <typename T> void num(T value) { append(folly::to<std::string>(value)); }
 
+  // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
   void header(std::string_view name, std::string_view type, std::string_view help) {
     if (omitMetadata_) {
       return;

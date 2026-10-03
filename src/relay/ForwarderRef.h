@@ -112,6 +112,7 @@ public:
       fn(*strong_);
       return;
     }
+    // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
     owner_->add([weak = weak_, fn = std::move(fn)]() mutable {
       if (auto fwd = weak.lock()) {
         fn(*fwd);
@@ -135,6 +136,7 @@ public:
   }
 
 private:
+  // NOLINTNEXTLINE(performance-enum-size)
   enum class Mode { Empty, Owned, Remote };
 
   template <class Fn, class R>

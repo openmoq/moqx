@@ -25,6 +25,7 @@ namespace openmoq::moqx::stats {
 using TrackClock = folly::chrono::coarse_steady_clock;
 
 // Which side of the relay a filter counts for.
+// NOLINTNEXTLINE(performance-enum-size)
 enum class TrackDirection { Ingest, Egress };
 
 struct DirectionCounters {

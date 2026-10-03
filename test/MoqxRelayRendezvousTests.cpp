@@ -72,6 +72,7 @@ protected:
     upstreamOk.groupOrder = GroupOrder::OldestFirst;
     EXPECT_CALL(*publisherSession, subscribe(_, _))
         .WillRepeatedly([&sawUpstream,
+                         // NOLINTNEXTLINE(performance-unnecessary-value-param)
                          upstreamOk](const SubscribeRequest&, std::shared_ptr<TrackConsumer>) {
           sawUpstream = true;
           auto handle = std::make_shared<NiceMock<MockSubscriptionHandle>>(upstreamOk);

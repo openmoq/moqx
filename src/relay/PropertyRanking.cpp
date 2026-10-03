@@ -11,8 +11,10 @@
 namespace openmoq::moqx {
 
 PropertyRanking::PropertyRanking(
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
     uint64_t propertyType,
     uint64_t maxDeselected,
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
     std::chrono::milliseconds idleTimeout,
     std::chrono::milliseconds sweepThrottle,
     GetLastActivityFn getLastActivity,
@@ -28,6 +30,7 @@ PropertyRanking::PropertyRanking(
 void PropertyRanking::registerTrack(
     const moxygen::FullTrackName& ftn,
     std::optional<uint64_t> initialPropertyValue,
+    // NOLINTNEXTLINE(performance-unnecessary-value-param)
     std::shared_ptr<moxygen::MoQSession> publisher
 ) {
   XCHECK(publisher) << "registerTrack requires a publisher session";
@@ -210,6 +213,7 @@ TopNGroup& PropertyRanking::getOrCreateTopNGroup(uint64_t maxSelected) {
 
 void PropertyRanking::addSessionToTopNGroup(
     uint64_t maxSelected,
+    // NOLINTNEXTLINE(performance-unnecessary-value-param)
     std::shared_ptr<moxygen::MoQSession> session,
     bool forward
 ) {

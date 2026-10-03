@@ -23,6 +23,7 @@ namespace openmoq::moqx::admin {
 // its executor -- so a consumer that stops draining cannot push back. This
 // bounds what that can cost instead: past the cap the response is abandoned.
 // Only our own queue counts against it; bytes handed to proxygen are released.
+// NOLINTNEXTLINE(bugprone-implicit-widening-of-multiplication-result)
 inline constexpr size_t kMaxBufferedStateBytes = 4 * 1024 * 1024;
 
 // Bytes handed to the pipe but not yet handed to proxygen.

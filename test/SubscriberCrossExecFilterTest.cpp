@@ -248,6 +248,7 @@ TEST_F(SubscriberCrossExecFilterTest, PublishRunsOnTargetExec) {
   ok.requestID = RequestID(3);
   EXPECT_CALL(*inner_, publish(_, _))
       .WillOnce(
+          // NOLINTNEXTLINE(performance-unnecessary-value-param)
           [ok](PublishRequest, std::shared_ptr<SubscriptionHandle>) -> Subscriber::PublishResult {
             auto consumer = std::make_shared<NiceMock<MockTrackConsumer>>();
             return Subscriber::PublishConsumerAndReplyTask{
@@ -274,6 +275,7 @@ TEST_F(SubscriberCrossExecFilterTest, PublishRunsOnTargetExec) {
 TEST_F(SubscriberCrossExecFilterTest, PublishInnerReturnsError) {
   EXPECT_CALL(*inner_, publish(_, _))
       .WillOnce(
+          // NOLINTNEXTLINE(performance-unnecessary-value-param)
           [](PublishRequest pub, std::shared_ptr<SubscriptionHandle>) -> Subscriber::PublishResult {
             return folly::makeUnexpected(
                 PublishError{pub.requestID, PublishErrorCode::NOT_SUPPORTED, "nope"}
@@ -297,6 +299,7 @@ TEST_F(SubscriberCrossExecFilterTest, PublishDataFlowsThroughConsumer) {
   EXPECT_CALL(*inner_, publish(_, _))
       .WillOnce(
           [innerConsumer,
+           // NOLINTNEXTLINE(performance-unnecessary-value-param)
            ok](PublishRequest, std::shared_ptr<SubscriptionHandle>) -> Subscriber::PublishResult {
             return Subscriber::PublishConsumerAndReplyTask{
                 innerConsumer,
@@ -336,6 +339,7 @@ TEST_F(SubscriberCrossExecFilterTest, PublishSafeAfterFilterDestroyed) {
   ok.requestID = RequestID(6);
   EXPECT_CALL(*inner_, publish(_, _))
       .WillOnce(
+          // NOLINTNEXTLINE(performance-unnecessary-value-param)
           [ok](PublishRequest, std::shared_ptr<SubscriptionHandle>) -> Subscriber::PublishResult {
             return Subscriber::PublishConsumerAndReplyTask{
                 std::make_shared<NiceMock<MockTrackConsumer>>(),

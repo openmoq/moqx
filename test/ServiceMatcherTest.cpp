@@ -22,6 +22,7 @@ std::pair<std::string, ServiceConfig> makeExactService(
 ) {
   std::vector<ME> entries;
   for (auto& v : exactValues) {
+    // NOLINTNEXTLINE(performance-inefficient-vector-operation)
     entries.push_back(ME{
         .authority = ME::ExactAuthority{std::move(v)},
         .path = ME::PrefixPath{"/"},
@@ -44,6 +45,7 @@ std::pair<std::string, ServiceConfig> makeWildcardService(
 ) {
   std::vector<ME> entries;
   for (auto& p : patterns) {
+    // NOLINTNEXTLINE(performance-inefficient-vector-operation)
     entries.push_back(ME{
         .authority = ME::WildcardAuthority{std::move(p)},
         .path = ME::PrefixPath{"/"},

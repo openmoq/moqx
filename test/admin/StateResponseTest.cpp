@@ -101,6 +101,7 @@ class StateResponseTest : public ::testing::Test {
 protected:
   // Feeds `chunks` through sendState with egress never paused.
   void
+  // NOLINTNEXTLINE(performance-unnecessary-value-param)
   run(std::vector<std::string> chunks,
       bool failAtEnd = false,
       folly::CancellationToken token = folly::CancellationToken()) {

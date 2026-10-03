@@ -54,6 +54,7 @@ Grants makeGrants(
 }
 
 AuthToken
+// NOLINTNEXTLINE(performance-unnecessary-value-param)
 makeToken(Grants grants, std::string_view secret = "secret", std::string_view keyID = "k1") {
   return AuthToken{
       .tokenType = 77,
@@ -330,9 +331,11 @@ TEST(AuthTest, MultiRuleCompoundMatchRoundtripsViaCwt) {
 
 namespace {
 
+// NOLINTNEXTLINE(performance-unnecessary-value-param)
 Parameters withAuthToken(FrameType frameType, AuthToken token) {
   Parameters params(frameType);
   auto ok = params.insertParam(
+      // NOLINTNEXTLINE(hicpp-move-const-arg,performance-move-const-arg)
       Parameter(static_cast<uint64_t>(TrackRequestParamKey::AUTHORIZATION_TOKEN), std::move(token))
   );
   EXPECT_TRUE(ok.hasValue());

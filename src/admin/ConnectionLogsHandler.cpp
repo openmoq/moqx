@@ -34,6 +34,7 @@ namespace openmoq::moqx::admin {
 namespace {
 
 constexpr size_t kMaxDownloadBytes = 512ULL * 1024 * 1024; // 512 MB hard cap
+// NOLINTNEXTLINE(bugprone-implicit-widening-of-multiplication-result)
 constexpr size_t kChunkSize = 64 * 1024;
 
 // Normalize a raw connection ID string:
@@ -92,6 +93,7 @@ std::unique_ptr<folly::IOBuf> readChunk(int fd) {
 // Runs on the admin event base. Every resumption point must re-check
 // cancelToken: downstream is destroyed as soon as cancellation fires.
 folly::coro::Task<void> streamLogFile(
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
     std::string filePath,
     std::string fileName,
     proxygen::ResponseHandler* downstream,
@@ -224,6 +226,7 @@ void registerConnectionLogsRoutes(
 
         auto* evb = folly::EventBaseManager::get()->getEventBase();
         folly::coro::co_withCancellation(
+            // NOLINTNEXTLINE(bugprone-use-after-move,hicpp-invalid-access-moved)
             cancelToken,
             folly::coro::co_withExecutor(
                 evb,

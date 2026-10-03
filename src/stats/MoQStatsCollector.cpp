@@ -12,6 +12,7 @@ namespace openmoq::moqx::stats {
 
 /* static */
 std::shared_ptr<MoQStatsCollector>
+// NOLINTNEXTLINE(performance-unnecessary-value-param)
 MoQStatsCollector::create_moq_stats_collector(std::shared_ptr<StatsRegistry> registry) {
   auto collector = std::shared_ptr<MoQStatsCollector>(new MoQStatsCollector());
   registry->registerCollector(collector);
