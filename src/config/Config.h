@@ -243,6 +243,8 @@ struct ServiceConfig {
   };
 
   std::vector<MatchEntry> match;
+  // Listener names; empty binds the service to none. Absent in YAML resolves to every listener.
+  std::vector<std::string> listeners;
   CacheConfig cache;
   std::optional<UpstreamConfig> upstream; // set if this service chains to an upstream relay
   AuthConfig auth;

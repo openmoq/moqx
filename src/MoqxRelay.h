@@ -59,7 +59,11 @@ public:
   virtual void onPeer(
       std::string_view address,
       std::string_view authority,
-      std::string_view relayID // empty if peer didn't include one
+      std::string_view relayID, // empty if peer didn't include one
+      // Empty for a session that was not accepted by a listener: an upstream connection.
+      // Defensive: a session is listed only after it sends a relay-token SUBSCRIBE_NAMESPACE,
+      // and a moqx upstream's reciprocal one carries no token.
+      std::string_view listener
   ) = 0;
   virtual void onPeersEnd() = 0;
 
@@ -498,6 +502,7 @@ private:
     std::string relayID; // from peer auth token; empty if not provided
     std::string address;
     std::string authority;
+    std::string listener; // empty for a session that was not accepted by a listener; see onPeer
   };
   // Reciprocal peer subNs handles: one per peer relay session that has
   // connected to us. Kept alive so the subscription is not immediately

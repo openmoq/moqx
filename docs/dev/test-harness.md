@@ -13,6 +13,7 @@ The existing tests are the best worked examples:
 | [`test/test_relay_chain.py`](/test/test_relay_chain.py) | A ← B | Both directions, joining fetch, `--publish` push mode |
 | [`test/test_relay_pyramid.py`](/test/test_relay_pyramid.py) | tree | Multi-hop fan-out, killing a relay, containment |
 | [`test/test_relay_hops_cycle.py`](/test/test_relay_hops_cycle.py) | A → B → C → A | A cycle, and asserting on stability rather than an event |
+| [`test/test_listener_services.py`](/test/test_listener_services.py) | A ← B, four listeners on A | Services bound to some of a relay's listeners, identical rules on disjoint listeners |
 
 ## The shape of a test
 
@@ -69,7 +70,7 @@ sockets — badly enough that one relay's readiness check can pass against
 another test's relay:
 
 ```bash
-TEST_HARNESS_TEST_NAME_BASE=19830
+TEST_HARNESS_TEST_NAME_BASE=19870
 ```
 
 The variable name is derived from `base_port_key`: `test_name` becomes
@@ -79,7 +80,7 @@ missing variable if you forget.
 Ten ports are reserved per test. `h.relay()` hands out one port per listener
 plus one for admin, counting up from the base, so five one-listener relays fill
 the block. A topology that needs more raises a `HarnessError`. The block from
-`19800` is reserved for harness tests through `19859`. Do not write literal
+`19800` is reserved for harness tests through `19879`. Do not write literal
 port numbers in comments in that file — the duplicate check greps every number
 in it.
 
@@ -144,6 +145,8 @@ h.relay(
     upstreams=None,
     relay_id=None,
     listeners=None,
+    service_listeners=None,
+    extra_services=None,
 )
 ```
 
@@ -156,7 +159,11 @@ yet just reconnects with backoff. `upstreams` takes a list of such names.
 by `/state`.
 
 `listeners` names the relay's listeners; the default is one, named after the
-relay. Actors that name no listener connect to the first.
+relay. Actors that name no listener connect to the first. `service_listeners`
+binds the default service to those listeners only; omitted, the service stays
+on all of them. `extra_services` maps further service names to the listeners
+each is bound to; every one gets the default service's match rule, so two
+services on one listener raise a `HarnessError`.
 
 ```python
 h.start()
@@ -281,6 +288,8 @@ tail, the actor's output, the publishers on that namespace.
 | `expect_relay_log(name, pattern, since=0)` | A line of the relay's log after `since` matches the regex; reliable for `WARN` and above, which the relay writes synchronously. Take `since` from `h.relay_log_mark(name)` before the action under test |
 | `expect_namespace_present(name, ns)` | `/state` `namespace_tree` contains `ns` |
 | `expect_peer_count(name, op, want)` | `/state` `downstream_peers` length |
+| `expect_peer_listener(name, want)` | A `/state` downstream peer connected on listener `want` |
+| `expect_service_listeners(name, want)` | `/config` `services.default.listeners` equals `want` |
 | `expect_upstream_state(name, want)` | `/state` `upstream.state`, e.g. `"connected"` |
 | `expect_relay_id(name, want)` | `/state` `relay_id` |
 | `expect_metric(name, metric, op, want)` | A `moqx_*` Prometheus metric |

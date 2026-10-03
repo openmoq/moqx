@@ -5,12 +5,12 @@
  */
 
 #include "MoqxPicoRelayServer.h"
+#include "MoqxRelaySession.h"
 
 #include "stats/EventBaseStatsCollector.h"
 #include "stats/PicoQuicStatsCollector.h"
 #include <folly/io/async/EventBase.h>
 #include <folly/logging/xlog.h>
-#include <moxygen/MoQRelaySession.h>
 #include <moxygen/openmoq/transport/pico/PicoTransportConfig.h>
 
 using namespace moxygen;
@@ -79,12 +79,13 @@ MoqxPicoRelayServer::MoqxPicoRelayServer(
           moxygen::PicoWebTransportConfig{
               .enableWebTransport = true,
               .enableQuicTransport = true,
-              .wtEndpoints = context->getExactServicePaths(),
+              .wtEndpoints = context->listener(listenerCfg.name).exactPaths(),
               // pico doesn't support session flow control, so limit to one per connection
               .wtMaxSessions = 1,
           }
       ),
-      listenerCfg_(listenerCfg), context_(std::move(context)), ioExecutor_(ioExecutor) {
+      listenerCfg_(listenerCfg), context_(std::move(context)),
+      listener_(context_->listener(listenerCfg_.name)), ioExecutor_(ioExecutor) {
   // Advertise on every listener: activation is bilateral and loop protection
   // must not vary by listener configuration.
   if (const auto hopID = context_->getRelayHopID()) {
@@ -137,7 +138,7 @@ void MoqxPicoRelayServer::onNewSession(std::shared_ptr<MoQSession> clientSession
 }
 
 void MoqxPicoRelayServer::terminateClientSession(std::shared_ptr<MoQSession> session) {
-  context_->onSessionEnd(session);
+  context_->onSessionEnd(listener_, session);
   MoQPicoQuicShardedServer::terminateClientSession(std::move(session));
 }
 
@@ -150,14 +151,15 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxPicoRelayServer::validat
   if (!base.hasValue()) {
     return base;
   }
-  return context_->validateAuthority(clientSetup, negotiatedVersion, std::move(session));
+  return context_->validateAuthority(listener_, clientSetup, negotiatedVersion, std::move(session));
 }
 
 std::shared_ptr<MoQSession> MoqxPicoRelayServer::createSession(
     folly::MaybeManagedPtr<proxygen::WebTransport> wt,
     std::shared_ptr<MoQExecutor> executor
 ) {
-  return std::make_shared<MoQRelaySession>(
+  return std::make_shared<MoqxRelaySession>(
+      listener_.name(),
       folly::MaybeManagedPtr<proxygen::WebTransport>(std::move(wt)),
       *this,
       std::move(executor)

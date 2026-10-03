@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# test_qmux_relay.sh — end-to-end test of a moqx relay's proxygen_qmux listener.
+# test_qmux_relay.sh — end-to-end test of a moqx relay's proxygen_qmux listeners.
 #
-# Starts one moqx relay with a single quic_stack: proxygen_qmux listener
-# (QMUX-on-TCP + Fizz, insecure), a moqdateserver publishing to it over qmux,
-# and a moqtextclient subscribing from it over qmux. Passes if at least one
-# date object flows through the relay within the timeout.
+# Starts one moqx relay with two quic_stack: proxygen_qmux listeners
+# (QMUX-on-TCP + Fizz, insecure); the service is bound to one of them.
+# A moqdateserver publishes to that listener over qmux and a moqtextclient
+# subscribes from it. Passes if at least one date object flows through the
+# relay within the timeout, and the other listener rejects a subscriber at setup.
 #
 # The moqtest_* binaries can't drive this: their client side speaks only
 # QUIC/WebTransport. moqdateserver/moqtextclient have a real client-side
@@ -55,6 +56,7 @@ TEXTCLIENT="$(resolve_qmux_bin moqtextclient)"
 RELAY_PORT=$TEST_QMUX_RELAY_LISTEN
 ADMIN_PORT=$TEST_QMUX_RELAY_ADMIN
 DATESERVER_PORT=$TEST_QMUX_DATESERVER_LISTEN
+ISOLATED_PORT=$TEST_QMUX_RELAY_ISOLATED_LISTEN
 NAMESPACE="moq-date"
 TIMEOUT=3   # seconds to wait for data
 
@@ -75,7 +77,7 @@ echo "Using publisher: $DATESERVER"
 echo "Using subscriber: $TEXTCLIENT"
 
 # qmux is TCP — check TCP listeners (relay chain checks UDP).
-for port in "$RELAY_PORT" "$ADMIN_PORT" "$DATESERVER_PORT"; do
+for port in "$RELAY_PORT" "$ADMIN_PORT" "$DATESERVER_PORT" "$ISOLATED_PORT"; do
   if ss -tlnp 2>/dev/null | grep -q ":$port "; then
     echo "ERROR: port $port already in use (stale process?)" >&2
     exit 1
@@ -86,6 +88,7 @@ done
 TMPDIR_SCRIPT="$(mktemp -d)"
 RELAY_CFG="$TMPDIR_SCRIPT/relay.yaml"
 CLIENT_OUT="$TMPDIR_SCRIPT/client.out"
+ISOLATED_OUT="$TMPDIR_SCRIPT/isolated.out"
 DATESERVER_LOG="$TMPDIR_SCRIPT/dateserver.log"
 RELAY_LOG="$TMPDIR_SCRIPT/relay.log"
 
@@ -145,7 +148,7 @@ wait_sessions() {
   done
 }
 
-# ── Relay config: a single proxygen_qmux listener, insecure ─────────────────────
+# ── Relay config: two proxygen_qmux listeners, insecure; the service is on one ──
 cat >"$RELAY_CFG" <<EOF
 relay_id: "qmux-test"
 listeners:
@@ -159,8 +162,19 @@ listeners:
       insecure: true
     endpoint: "/moq-relay"
     moqt_versions: ${MOQT_TEST_VERSIONS}
+  isolated:
+    quic_stack: proxygen_qmux
+    udp:
+      socket:
+        address: "::"
+        port: $ISOLATED_PORT
+    tls:
+      insecure: true
+    endpoint: "/moq-relay"
+    moqt_versions: ${MOQT_TEST_VERSIONS}
 services:
   default:
+    listeners: [qmux]
     match:
       - authority: {any: true}
         path: {prefix: "/"}
@@ -219,10 +233,38 @@ if grep -q "SubscribeError" "$CLIENT_OUT" 2>/dev/null; then
   exit 1
 elif grep -qE "^[0-9]" "$CLIENT_OUT" 2>/dev/null; then
   echo "PASS [qmux relay]: received '$(grep -E "^[0-9]" "$CLIENT_OUT" | head -1)'"
-  exit 0
 else
   echo "FAIL [qmux relay]: no data received over qmux" >&2
   cat "$CLIENT_OUT" >&2
   echo "--- dateserver log ---" >&2; cat "$DATESERVER_LOG" >&2 || true
+  exit 1
+fi
+
+# ── Subscriber on the listener no service is bound to ───────────────────────────
+echo "Starting moqtextclient on the isolated qmux listener..."
+"$TEXTCLIENT" \
+  --connect_url="https://localhost:$ISOLATED_PORT/moq-relay" \
+  --track_namespace="$NAMESPACE" --track_name="date" --qmux \
+  --versions="$MOQT_CLIENT_VERSION" --insecure \
+  >"$ISOLATED_OUT" 2>&1 &
+TCPID=$!
+PIDS+=($TCPID)
+deadline=$(( $(date +%s) + TIMEOUT ))
+while (( $(date +%s) < deadline )); do
+  grep -q "No service matched on listener 'isolated'" "$RELAY_LOG" 2>/dev/null && break
+  kill -0 "$TCPID" 2>/dev/null || break
+  sleep 0.1
+done
+kill "$TCPID" 2>/dev/null || true
+
+if grep -qE "^[0-9]" "$ISOLATED_OUT" 2>/dev/null; then
+  echo "FAIL [qmux isolated]: received data on a listener with no service" >&2
+  cat "$ISOLATED_OUT" >&2
+  exit 1
+elif grep -q "No service matched on listener 'isolated'" "$RELAY_LOG"; then
+  echo "PASS [qmux isolated]: rejected at setup"
+else
+  echo "FAIL [qmux isolated]: relay did not reject the session" >&2
+  cat "$ISOLATED_OUT" >&2
   exit 1
 fi

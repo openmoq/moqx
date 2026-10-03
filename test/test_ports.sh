@@ -49,10 +49,12 @@ TEST_ADMIN_CONNECTION_LOGS_ADMIN=9671
 TEST_CACHE_PURGE_RACE_RELAY=19678
 TEST_CACHE_PURGE_RACE_ADMIN=19679
 
-# test_qmux_relay.sh  (relay listener + admin, plus a throwaway dateserver listener)
+# test_qmux_relay.sh  (relay listener + admin, a throwaway dateserver listener,
+# and a relay listener no service is bound to)
 TEST_QMUX_RELAY_LISTEN=19680
 TEST_QMUX_RELAY_ADMIN=19681
 TEST_QMUX_DATESERVER_LISTEN=19682
+TEST_QMUX_RELAY_ISOLATED_LISTEN=19683
 
 # test_admin_track_metrics.sh
 TEST_ADMIN_TRACK_METRICS_LISTEN=19684
@@ -89,4 +91,5 @@ TEST_HARNESS_PYRAMID_BASE=19820
 TEST_HARNESS_UPSTREAMS_BASE=19830
 TEST_HARNESS_SIGHUP_BASE=19840
 TEST_HARNESS_CLUSTER_BASE=19850
-# Reserved for future harness tests through: 19859
+TEST_HARNESS_LISTENER_SERVICES_BASE=19860
+# Reserved for future harness tests through: 19879
