@@ -71,6 +71,28 @@ public:
     std::shared_ptr<const auth::AuthTokenVerifier> verifier;
   };
 
+  // A listener's routing: the services bound to it. A non-owning view of the
+  // issuing context's matcher, valid while that context lives. Immutable, so
+  // any thread may read it.
+  class ListenerHandle {
+  public:
+    const std::string& name() const { return name_; }
+
+    // Matches only the services bound to this listener.
+    std::optional<std::string_view> match(std::string_view authority, std::string_view path) const;
+
+    // Unique exact paths of the services bound to this listener.
+    std::vector<std::string> exactPaths() const;
+
+  private:
+    friend class MoqxRelayContext;
+    ListenerHandle(std::string name, const ServiceMatcher* matcher)
+        : name_(std::move(name)), matcher_(matcher) {}
+
+    std::string name_;
+    const ServiceMatcher* matcher_; // null: no service is bound to this listener
+  };
+
   MoqxRelayContext(
       const folly::F14FastMap<std::string, config::ServiceConfig>& services,
       const std::string& relayID,
@@ -78,6 +100,9 @@ public:
       bool useLocalForwarders = false,
       std::optional<config::ClusterConfig> cluster = config::ClusterConfig{}
   );
+
+  // A listener no service is bound to gets a handle that matches nothing.
+  ListenerHandle listener(std::string_view name) const;
 
   void setStatsRegistry(std::shared_ptr<stats::StatsRegistry> registry);
 
@@ -120,10 +145,6 @@ public:
       std::optional<moxygen::TrackNamespace> ns = {}
   );
 
-  // Returns the unique set of exact paths registered across all services.
-  // Used by pico listeners to populate the h3zero WebTransport path table.
-  std::vector<std::string> getExactServicePaths() const;
-
   struct TrackMetricsEntry {
     std::string service;
     moxygen::FullTrackName ftn;
@@ -149,7 +170,7 @@ public:
   // --- Delegation targets for MoqxRelayServer virtual overrides ---
 
   void onNewSession(std::shared_ptr<moxygen::MoQSession> session);
-  void onSessionEnd(std::shared_ptr<moxygen::MoQSession> session);
+  void onSessionEnd(const ListenerHandle& listener, std::shared_ptr<moxygen::MoQSession> session);
 
   // Must run after setStatsRegistry and before any listener accepts sessions.
   // initTrackStats=false skips per-track counting entirely, leaving the
@@ -157,7 +178,9 @@ public:
   void
   initThreadStatsCollectors(folly::IOThreadPoolExecutor& ioExecutor, bool initTrackStats = true);
 
+  // listener: the one the session arrived on. Only services bound to it can match.
   folly::Expected<folly::Unit, moxygen::SessionCloseErrorCode> validateAuthority(
+      const ListenerHandle& listener,
       const moxygen::ClientSetup& clientSetup,
       uint64_t negotiatedVersion,
       std::shared_ptr<moxygen::MoQSession> session
@@ -176,7 +199,9 @@ private:
   std::unique_ptr<folly::IOThreadPoolExecutor> relayThreadPool_;
 
   folly::F14FastMap<std::string, ServiceEntry> services_;
-  ServiceMatcher serviceMatcher_;
+  // Keyed by listener name; a listener no service is bound to has no entry.
+  // Node map: ListenerHandle points into it.
+  folly::F14NodeMap<std::string, ServiceMatcher> listenerMatchers_;
   std::string relayID_;
   std::optional<config::ClusterConfig> cluster_;
   std::shared_ptr<stats::StatsRegistry> statsRegistry_;
