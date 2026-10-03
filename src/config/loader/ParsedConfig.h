@@ -537,6 +537,10 @@ struct ParsedServiceConfig {
 
   rfl::Description<"Match rules for routing", std::vector<MatchRule>> match;
   rfl::Description<
+      "Names of the listeners this service is available on (absent = all listeners)",
+      std::optional<std::vector<std::string>>>
+      listeners;
+  rfl::Description<
       "Per-service cache settings (overrides service_defaults)",
       std::optional<ParsedCacheConfig>>
       cache;

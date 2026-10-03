@@ -38,6 +38,7 @@ service_defaults:          # optional; defaults inherited by all services
 
 services:                  # required; at least one
   my-service:
+    listeners: [ ... ]     # optional; default: all listeners
     match: [ ... ]
     cache: { ... }
     upstream: { ... }
@@ -110,13 +111,14 @@ Set under `listener_defaults.quic` (global defaults) or `listeners.<name>.quic`
 
 ## Services
 
-Services define how incoming connections are routed and can match MOQT
-sessions arriving on any listener. Each service has one or more match rules,
-optional cache settings, and an optional upstream.
+Services define how incoming connections are routed. Each service has one or
+more match rules, an optional list of listeners it is available on, optional
+cache settings, and an optional upstream.
 
 ```yaml
 services:
   live:
+    listeners: [public, internal]   # optional; default: all listeners
     match:
       - authority: {exact: "live.example.com"}
         path:      {prefix: "/"}
@@ -168,11 +170,49 @@ authority and path rules both match.
 2. `{prefix: "/live/"}` — longest prefix wins; `{prefix: "/"}` matches
 any path
 
-Duplicate (authority, path) combinations across all services are rejected.
+Duplicate (authority, path) combinations are rejected when the services
+holding them share a listener.
 
 **picoquic limitation:** Only exact path matches work reliably with
-picoquic. Prefix path rules will generate a warning and connections may fail to
-route correctly.
+picoquic. Prefix path rules on a service bound to a picoquic listener generate
+a warning, and connections may fail to route correctly.
+
+### Listener Binding
+
+`listeners` names the listeners a service is available on. Omit it to make the
+service available on every listener.
+
+- Matching runs per listener, over only the services bound to it. A service
+  that is not bound to a listener does not exist there: the next-best bound
+  match wins, and a session with no bound match is rejected.
+- A service bound to several listeners is one service: a publisher on one
+  listener feeds subscribers on another.
+- An unknown listener name, or one listed twice, is a config error.
+- `listeners: []` is a warning: the service is unreachable.
+- A listener that no service is bound to is a warning: it rejects every session.
+
+```yaml
+listeners:
+  public: { ... }
+  internal: { ... }
+services:
+  live:
+    listeners: [public, internal]
+    match:
+      - authority: {any: true}
+        path: {exact: "/moq-relay"}
+  ops:
+    listeners: [internal]
+    match:
+      - authority: {any: true}
+        path: {exact: "/ops"}
+```
+
+An mvfst listener accepts WebTransport sessions only on its `endpoint` path, so
+its WebTransport clients reach only the services that match that path.
+
+`/config` reports each service's resolved `listeners`. `/state` reports the
+listener each downstream peer connected on.
 
 ---
 

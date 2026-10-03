@@ -13,6 +13,7 @@ The existing tests are the best worked examples:
 | [`test/test_relay_chain.py`](/test/test_relay_chain.py) | A ← B | Both directions, joining fetch, `--publish` push mode |
 | [`test/test_relay_pyramid.py`](/test/test_relay_pyramid.py) | tree | Multi-hop fan-out, killing a relay, containment |
 | [`test/test_relay_hops_cycle.py`](/test/test_relay_hops_cycle.py) | A → B → C → A | A cycle, and asserting on stability rather than an event |
+| [`test/test_listener_services.py`](/test/test_listener_services.py) | A ← B, four listeners on A | Services bound to some of a relay's listeners, identical rules on disjoint listeners |
 
 ## The shape of a test
 
@@ -69,7 +70,7 @@ sockets — badly enough that one relay's readiness check can pass against
 another test's relay:
 
 ```bash
-TEST_HARNESS_TEST_NAME_BASE=19830
+TEST_HARNESS_TEST_NAME_BASE=19870
 ```
 
 The variable name is derived from `base_port_key`: `test_name` becomes
@@ -79,7 +80,7 @@ missing variable if you forget.
 Ten ports are reserved per test. `h.relay()` hands out one port per listener
 plus one for admin, counting up from the base, so five one-listener relays fill
 the block. A topology that needs more raises a `HarnessError`. The block from
-`19800` is reserved for harness tests through `19859`. Do not write literal
+`19800` is reserved for harness tests through `19879`. Do not write literal
 port numbers in comments in that file — the duplicate check greps every number
 in it.
 
