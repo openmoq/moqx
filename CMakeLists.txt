@@ -486,6 +486,7 @@ target_link_libraries(moqx_config INTERFACE
 
 add_library(moqx_config_loader STATIC
   src/config/Loader.cpp
+  src/config/YamlDuplicateKeys.cpp
   src/config/ConfigResolver.cpp
   src/config/ConfigInit.cpp
   src/config/Pkcs12.cpp
