@@ -7,6 +7,7 @@
  */
 
 #include "MoqxRelay.h"
+#include "MoqxRelaySession.h"
 #include "relay/ChannelSubscriber.h"
 #include "relay/ClusterPath.h"
 #include "relay/CrossExecFilter.h"
@@ -1948,7 +1949,8 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
               std::move(recipTracks),
               std::move(*peerID),
               session->getPeerAddress().describe(),
-              std::string(session->getAuthority())
+              std::string(session->getAuthority()),
+              std::string(MoqxRelaySession::listenerOf(*session))
           }
       );
     }
@@ -3435,7 +3437,7 @@ MoqxRelay::matchTracks(const TrackNamespace& nsPrefix, const std::string* trackN
 void MoqxRelay::dumpState(RelayStateVisitor& visitor) const {
   visitor.onPeersBegin();
   for (const auto& [id, peer] : peerSubNsHandles_) {
-    visitor.onPeer(peer.address, peer.authority, peer.relayID);
+    visitor.onPeer(peer.address, peer.authority, peer.relayID, peer.listener);
   }
   visitor.onPeersEnd();
   if (!visitor.alive()) {

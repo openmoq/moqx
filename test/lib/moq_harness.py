@@ -47,7 +47,7 @@ import sys
 import tempfile
 import time
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from string import Template
 
@@ -252,6 +252,7 @@ $tls_block
 _CONFIG_SERVICE = Template(
     """\
   $service:
+$service_listeners_line
     match:
       - authority: {any: true}
 $service_path_line
@@ -349,6 +350,10 @@ class Relay:
     relay_id: str
     # Listener name -> port; the first entry listens on `listen`.
     listeners: dict[str, int]
+    # Listener names the default service is bound to; None leaves it on all.
+    service_listeners: list[str] | None = None
+    # Further service name -> the listeners it is bound to.
+    extra_services: dict[str, list[str]] = field(default_factory=dict)
     proc: subprocess.Popen | None = None
     config_path: Path | None = None
     log_path: Path | None = None
@@ -537,6 +542,8 @@ class Harness:
         upstreams=None,
         relay_id=None,
         listeners=None,
+        service_listeners=None,
+        extra_services=None,
     ):
         """Declare a relay.
 
@@ -545,6 +552,9 @@ class Harness:
         - listeners: listener names. Default: one, named after the relay.
         - Peers, and actors without a listener, connect to the first listener.
         - Extra listeners take the ports after the admin port.
+        - service_listeners: binds the default service to these listeners only.
+        - extra_services: service name -> listeners; each gets the default
+          service's match rule, so only the binding tells them apart.
         """
         if self.started:
             raise HarnessError(f"relay {name}: declared after start()")
@@ -555,6 +565,18 @@ class Harness:
         names = list(listeners) if listeners else [name]
         if len(set(names)) != len(names):
             raise HarnessError(f"relay {name}: duplicate listener name")
+        bound = list(service_listeners or [])
+        extra = {svc: list(on) for svc, on in (extra_services or {}).items()}
+        if "default" in extra:
+            raise HarnessError(f"relay {name}: extra_services may not name default")
+        for label, on in [("service_listeners", bound)] + [
+            (f"extra_services[{svc}]", on) for svc, on in extra.items()
+        ]:
+            if len(set(on)) != len(on):
+                raise HarnessError(f"relay {name}: duplicate {label} name")
+            unknown = set(on) - set(names)
+            if unknown:
+                raise HarnessError(f"relay {name}: unknown {label} {sorted(unknown)}")
         if self._port_counter + 1 + len(names) > PORTS_PER_TEST:
             raise HarnessError(
                 f"relay {name}: the topology needs more than the "
@@ -571,6 +593,8 @@ class Harness:
             upstreams=list(upstreams or []),
             relay_id=relay_id if relay_id else f"{name}-test",
             listeners=dict(zip(names, ports)),
+            service_listeners=bound if service_listeners is not None else None,
+            extra_services=extra,
         )
         self.relays[name] = entry
         return entry
@@ -622,12 +646,19 @@ class Harness:
                     tls_block=tls_block,
                 )
             )
-        parts.append("services:\n")
-        parts.append(
-            _CONFIG_SERVICE.substitute(
-                service=json.dumps("default"), service_path_line=service_path_line
+
+        def service(name, listeners):
+            line = ""
+            if listeners is not None:
+                line = f"    listeners: {json.dumps(listeners)}\n"
+            return _CONFIG_SERVICE.substitute(
+                service=json.dumps(name),
+                service_listeners_line=line,
+                service_path_line=service_path_line,
             )
-        )
+
+        parts.append("services:\n")
+        parts.append(service("default", relay.service_listeners))
         if relay.upstream:
             upstream = self.relay_of(f"relay {relay.name}", relay.upstream)
             parts.append(_CONFIG_UPSTREAM.substitute(port=upstream.listen))
@@ -641,6 +672,8 @@ class Harness:
                         port=upstream.listen, relay_cost=cost
                     )
                 )
+        for name, listeners in relay.extra_services.items():
+            parts.append(service(name, listeners))
         parts.append(_CONFIG_ADMIN.substitute(port=relay.admin))
         path = self.tmpdir / f"{relay.name}.yaml"
         path.write_text("".join(parts), encoding="utf-8")
@@ -682,6 +715,15 @@ class Harness:
                 if link == relay.name:
                     raise HarnessError(
                         f"relay {relay.name}: cannot be its own upstream"
+                    )
+                upstream = self.relays[link]
+                first = next(iter(upstream.listeners))
+                if upstream.service_listeners is not None and (
+                    first not in upstream.service_listeners
+                ):
+                    raise HarnessError(
+                        f"relay {relay.name}: peers connect to {link}'s first "
+                        f"listener '{first}', which its service is not bound to"
                     )
 
         self._check_ports_free()
@@ -1141,6 +1183,34 @@ class Harness:
             else None
         )
         return f"upstreams[{index}]", got or "none"
+
+    def expect_peer_listener(self, name, want):
+        state, service = self._fetch_state("expect_peer_listener", name)
+        if state is None:
+            return
+        got = [p.get("listener") for p in _peers(service)]
+        if want in got:
+            self._pass(f"[{name} /state] downstream peer on listener {want}")
+        else:
+            self._fail(f"[{name} /state] downstream peer listeners={got}, want {want}")
+
+    def expect_service_listeners(self, name, want):
+        self.relay_of("expect_service_listeners", name)
+        body = self._admin(name, "config")
+        if body is None:
+            self._fail(f"[{name} /config] request failed: {self._admin_error}")
+            return
+        try:
+            got = _dig(json.loads(body), "services", "default", "listeners")
+        except ValueError:
+            self._fail(f"[{name} /config] not valid JSON")
+            return
+        if got == want:
+            self._pass(f"[{name} /config] services.default.listeners={got}")
+        else:
+            self._fail(
+                f"[{name} /config] services.default.listeners={got}, want {want}"
+            )
 
     def expect_upstream_state(self, name, want, index=None):
         """`index` selects an entry of an `upstreams` list."""
