@@ -12,9 +12,11 @@
 #   RELAY_PORT        (default 4433)
 #   ADMIN_PORT        (default 8000)
 #   MOQX_LOGGING      (optional) folly XLOG config; empty = baseline INFO
-#   MOQX_CC, MOQX_PICO_CC, MOQX_BBR_SKIP_PROBE_RTT
+#   MOQX_CC, MOQX_PICO_CC
 #                     (optional) congestion control overrides, see entrypoint.sh;
 #                     empty = entrypoint default
+#   MOQX_BBR_SKIP_PROBE_RTT (optional) mvfst bbr: skip PROBE_RTT while app-limited;
+#                     empty = true
 #   MOQX_QLOG_SAMPLE  (optional) fraction of new mvfst connections to qlog;
 #                     empty = off
 #   PULL_IMAGE        (optional) full image ref to `docker pull` + retag :latest.
@@ -42,7 +44,7 @@ PUB_PORT="${STATS_PUBLIC_PORT:-4533}"
   echo "MOQX_LOGGING=${MOQX_LOGGING:-}"
   echo "MOQX_CC=${MOQX_CC:-}"
   echo "MOQX_PICO_CC=${MOQX_PICO_CC:-}"
-  echo "MOQX_BBR_SKIP_PROBE_RTT=${MOQX_BBR_SKIP_PROBE_RTT:-}"
+  echo "MOQX_BBR_SKIP_PROBE_RTT=${MOQX_BBR_SKIP_PROBE_RTT:-true}"
   echo "MOQX_QLOG_SAMPLE=${MOQX_QLOG_SAMPLE:-}"
   echo "MOQX_CPUS=$(nproc)"
   echo "MOQX_THREADS=$(nproc)"
@@ -142,7 +144,7 @@ import json, os, sys
 cfg = json.load(sys.stdin)
 want = {
     "mvfst": (os.environ.get("MOQX_CC") or "bbr",
-              os.environ.get("MOQX_BBR_SKIP_PROBE_RTT") == "true"),
+              (os.environ.get("MOQX_BBR_SKIP_PROBE_RTT") or "true") == "true"),
     "picoquic": (os.environ.get("MOQX_PICO_CC") or "bbr", None),
 }
 ok = True

@@ -65,10 +65,10 @@ on:
           - "prague"
           - "reno"
       bbr_skip_probe_rtt:
-        description: "mvfst bbr: skip PROBE_RTT while app-limited"
+        description: "mvfst bbr: skip PROBE_RTT while app-limited (default on)"
         required: false
         type: boolean
-        default: false
+        default: true
       qlog_sample_rate:
         description: "mvfst qlog: fraction of new connections logged (1.0 is heavy)"
         required: false
@@ -256,7 +256,7 @@ jobs:
           OV=""
           [ "$CC_MVFST" != "default" ] && OV+=" cc_mvfst=${CC_MVFST}"
           [ "$CC_PICO" != "default" ] && OV+=" cc_pico=${CC_PICO}"
-          [ "$SKIP_PROBE_RTT" = "true" ] && OV+=" bbr_skip_probe_rtt"
+          [ "$SKIP_PROBE_RTT" != "true" ] && OV+=" bbr_skip_probe_rtt=false"
           [ "$QLOG" != "off" ] && OV+=" qlog=${QLOG}"
           [ -n "$OV" ] && [ "${{ inputs.restart_only }}" != "true" ] && TEXT+=" (overrides:${OV})"
           curl -sf -X POST "$SLACK_WEBHOOK_URL" \
