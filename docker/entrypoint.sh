@@ -33,6 +33,12 @@
 #   MOQX_RECV_PKTS        — mvfst max_server_recv_packets_per_loop (default: 256)
 #   MOQX_UDP_BUFFER       — relay UDP socket buffer bytes (default: net.core.wmem_max)
 #   MOQX_IGNORE_PATH_MTU  — send full-size packets, skip PMTU (default: false)
+#   MOQX_CC               — mvfst listener congestion control (default: bbr;
+#                           bbr|bbr2|bbr2modular|copa|cubic|newreno|none)
+#   MOQX_PICO_CC          — picoquic listener congestion control (default: bbr;
+#                           bbr|bbr1|c4|cubic|dcubic|fast|newreno|prague|reno)
+#   MOQX_BBR_SKIP_PROBE_RTT — mvfst bbr: skip PROBE_RTT while app-limited
+#                           (default: false)
 #   MOQX_JEMALLOC         — LD_PRELOAD jemalloc (~10% speedup). "auto" (default)
 #                           probes the multiarch paths; off/false/0 uses the
 #                           system allocator; an explicit path forces that lib.
@@ -41,6 +47,11 @@
 #   MOQX_LOGGING  — folly XLOG config for the whole stack (empty = baseline INFO);
 #                e.g. DBG2 or "INFO,quic=WARN". moqx promotes it to folly's
 #                FOLLY_LOGGING env var internally. See docs/logging.md.
+#   MOQX_QLOG_SAMPLE — fraction of new mvfst connections to qlog, 0.0–1.0
+#                (default: 0 = none). Fetch a file with the admin
+#                /logs?connection_id=<dcid>&type=qlog route.
+#   MOQX_QLOG_DIR — qlog directory (default: /var/log/moqx/qlog); files older
+#                than 3 days are deleted at startup.
 set -e
 
 # The whole stack logs via folly XLOG (configured by MOQX_LOGGING, handled in the
@@ -114,6 +125,9 @@ export MOQX_SEND_PKTS="${MOQX_SEND_PKTS:-16}"
 export MOQX_RECV_PKTS="${MOQX_RECV_PKTS:-256}"
 export MOQX_UDP_BUFFER="${MOQX_UDP_BUFFER:-$(cat /proc/sys/net/core/wmem_max 2>/dev/null || echo 1048576)}"
 export MOQX_IGNORE_PATH_MTU="${MOQX_IGNORE_PATH_MTU:-false}"
+export MOQX_CC="${MOQX_CC:-bbr}"
+export MOQX_PICO_CC="${MOQX_PICO_CC:-bbr}"
+export MOQX_BBR_SKIP_PROBE_RTT="${MOQX_BBR_SKIP_PROBE_RTT:-false}"
 
 # Second (picoquic) listener for dual-stack serving. Opt out with
 # MOQX_PICO_ENABLE=false. picoquic needs real TLS, so it is auto-disabled under
@@ -140,12 +154,21 @@ if [ "$MOQX_PICO_ENABLE" = "true" ]; then
       key_file: "${MOQX_KEY}"
       insecure: ${MOQX_INSECURE}
     endpoint: "${MOQX_ENDPOINT}"
+    quic:
+      cc_algo: ${MOQX_PICO_CC}
 PICO
 )
 else
   MOQX_PICO_LISTENER=""
 fi
 export MOQX_PICO_LISTENER
+
+case "${MOQX_QLOG_SAMPLE:-}" in off|"") MOQX_QLOG_SAMPLE=0 ;; esac
+export MOQX_QLOG_SAMPLE
+export MOQX_QLOG_DIR="${MOQX_QLOG_DIR:-/var/log/moqx/qlog}"
+if [ -d "$MOQX_QLOG_DIR" ]; then
+  find "$MOQX_QLOG_DIR" -name '*.qlog' -mmin +4320 -delete 2>/dev/null || true
+fi
 
 CONFIG=/tmp/relay.yaml
 envsubst < /usr/local/share/moqx/config.docker.yaml > "$CONFIG"
