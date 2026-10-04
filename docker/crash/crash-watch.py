@@ -18,6 +18,7 @@ usage:
   crash-watch.py gdb <bundle>     open gdb on a bundle's core
 """
 
+import calendar
 import contextlib
 import hashlib
 import json
@@ -103,6 +104,10 @@ FOLLY_LOC = re.compile(r"^\s{8,}(\S+:\d+)$")
 # Symbolizer-less ("safe mode") frame: module(symbol+offset)[address].
 FOLLY_RAW = re.compile(r"^(\S+\([^)]*\))\[0x[0-9a-f]+\]$")
 FATAL_LINE = re.compile(r"^F\d{4} \d\d:\d\d:\d\d.*$", re.M)
+GLOG_TIME = re.compile(r"^[IWEF](\d\d)(\d\d) (\d\d):(\d\d):(\d\d(?:\.\d+)?)")
+# A fatal line further than this before the exit did not stop the relay
+# (DFATAL logs at F but only aborts in debug builds).
+FATAL_WINDOW = 10  # seconds
 SHUTDOWN = re.compile(r"Received signal (\d+), shutting down")
 GDB_FRAME = re.compile(r"^#\d+\s+(?:0x[0-9a-f]+ in )?(.+)$")
 
@@ -131,8 +136,9 @@ OCC_START, OCC_END = "<!-- occurrences -->", "<!-- /occurrences -->"
 OCC_HEADER = ["Build", "Count", "First seen (UTC)", "Last seen (UTC)", "Latest bundle"]
 HELP = (
     "Core dumps stay on the relay host because they hold the relay's TLS key. "
-    f"Each bundle under `{BUNDLES}/` has `core.zst` and `container.log`, plus "
-    "`gdb.txt` (every thread) when gdb decoded it. To open a core in gdb, run "
+    f"Each bundle under `{BUNDLES}/` has `core.zst`, `container.log` (the last "
+    "5000 lines) and `run.log.zst` (the whole run), plus `gdb.txt` (every "
+    "thread) when gdb decoded it. To open a core in gdb, run "
     f"`sudo {SELF} gdb <bundle>` on the host.\n\n"
     "To merge this issue into another crash issue, copy its "
     "`moqx-crash-signature` line (view the source of this description) into that "
@@ -164,6 +170,28 @@ def read_text(path):
         return path.read_text(errors="replace")
     except OSError:
         return ""
+
+
+def log_time(line, near):
+    """Epoch time of a glog-format line, in the year of epoch `near` (UTC)."""
+    m = GLOG_TIME.match(line)
+    if not m:
+        return None
+    fields, sec = [int(g) for g in m.groups()[:4]], float(m.group(5))
+    year = time.gmtime(near).tm_year
+    t = calendar.timegm((year, *fields, 0)) + sec
+    if t > near + 86400:  # a December line read in January
+        t = calendar.timegm((year - 1, *fields, 0)) + sec
+    return t
+
+
+def ago(seconds):
+    seconds = int(seconds)
+    if seconds >= 3600:
+        return f"{seconds // 3600}h {seconds % 3600 // 60}m"
+    if seconds >= 60:
+        return f"{seconds // 60}m {seconds % 60}s"
+    return f"{seconds}s"
 
 
 def load_state():
@@ -442,6 +470,31 @@ def pick_core(cores, died, run_start=None):
     return max(found, key=lambda p: p.stat().st_mtime, default=None)
 
 
+def save_run_log(cid, run_start, until, path):
+    """Compresses the crashed run's whole log into path.
+
+    Without the run's start (the watcher started mid-run) this is everything
+    the container logged since it was created.
+    """
+    since = ["--since", f"{run_start:.9f}"] if run_start else []
+    cmd = ["docker", "logs", *since, "--until", until, cid]
+    try:
+        with open(path, "wb") as out:
+            docker = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+            )
+            try:
+                subprocess.run(
+                    ["zstd", "-q", "-T0"], stdin=docker.stdout, stdout=out, timeout=600
+                )
+            finally:
+                docker.stdout.close()
+                docker.kill()
+                docker.wait()
+    except (OSError, subprocess.TimeoutExpired) as e:
+        log(f"{path.parent.name}: run log not saved: {e!r}")
+
+
 def capture(ev, signo, oom, run_start=None):
     """Moves the crash's core and log into a new bundle before anything else runs."""
     attrs, cid = ev["Actor"]["Attributes"], ev["Actor"]["ID"]
@@ -454,6 +507,7 @@ def capture(ev, signo, oom, run_start=None):
     until = f"{died_ns // 10**9}.{died_ns % 10**9:09d}"
     logs = run(["docker", "logs", "--until", until, "--tail", "5000", cid])
     (bundle / "container.log").write_text(logs.stdout)
+    save_run_log(cid, run_start, until, bundle / "run.log.zst")
 
     core_name = None
     cores = core_dir(cid, attrs)
@@ -629,7 +683,14 @@ def describe(meta, frames):
     if links := source_links(frames, meta["version"]):
         text += f"\n\nRelay source: {', '.join(links)}"
     if meta.get("fatal"):
-        text += f"\n\nFatal log line:\n```\n{meta['fatal']}\n```"
+        age = meta.get("fatal_age")
+        if age is None or age <= FATAL_WINDOW:
+            text += f"\n\nFatal log line:\n```\n{meta['fatal']}\n```"
+        else:
+            text += (
+                f"\n\nLast fatal-level log line, {ago(age)} before the crash "
+                f"(the relay kept running after it):\n```\n{meta['fatal']}\n```"
+            )
     return text
 
 
@@ -749,6 +810,8 @@ def decode(bundle, meta, state):
     run_log = last_run(read_text(bundle / "container.log"))
     fatal = FATAL_LINE.findall(run_log)
     meta["fatal"] = fatal[-1][:500] if fatal else None
+    if fatal and (logged := log_time(fatal[-1], meta["died"])) is not None:
+        meta["fatal_age"] = round(meta["died"] - logged)
     if shutdown := SHUTDOWN.search(run_log):
         meta["shutdown_signal"] = int(shutdown.group(1))
     if meta["oom"]:
