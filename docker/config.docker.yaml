@@ -67,8 +67,8 @@ admin:
   address: "${MOQX_BIND_ADDR}"
   plaintext: true
 
-# The directory is always set so the admin API can capture on demand;
-# MOQX_QLOG_SAMPLE > 0 also qlogs that fraction of every new mvfst connection.
+# The directory is always set, for the admin log routes; MOQX_QLOG_SAMPLE > 0
+# qlogs that fraction of every new mvfst connection.
 logging:
   qlog:
     dir: "${MOQX_QLOG_DIR}"
