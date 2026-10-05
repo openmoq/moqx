@@ -186,7 +186,6 @@ int main(int argc, char* argv[]) {
   }
 
   if (!servers.empty()) {
-    context->setCacheEvb(ioExecutor->getAllEventBases()[0].get());
     context->initThreadStatsCollectors(
         *ioExecutor,
         /*initTrackStats=*/!config.admin || config.admin->trackMetricsEnabled
