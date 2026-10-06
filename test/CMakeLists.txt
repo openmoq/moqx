@@ -232,6 +232,11 @@ moqx_add_gtest(moqx_relay_context_test
     moxygen::moxygen_events_moq_folly_executor_impl
 )
 
+moqx_add_gtest(moqx_relay_server_test
+  SRCS MoqxRelayServerTest.cpp
+  LIBS moqx_core moqx_test_main moxygen::moxygen_util_quic_connector
+)
+
 # Registers an integration test once per QUIC stack. The mvfst run keeps the
 # plain name; the picoquic run gets a _picoquic suffix and selects the stack
 # through MOQ_HARNESS_QUIC_STACK, which the Python harness and the shell tests
