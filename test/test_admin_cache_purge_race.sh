@@ -32,6 +32,8 @@ source "$REPO/test/test_ports.sh"
 source "$REPO/test/test_versions.sh"
 # shellcheck source=test_relay_lifecycle.sh
 source "$REPO/test/test_relay_lifecycle.sh"
+# shellcheck source=test_quic_stack.sh
+source "$REPO/test/test_quic_stack.sh"
 DATESERVER="$MOQBIN/moqdateserver"
 TEXTCLIENT="$MOQBIN/moqtextclient"
 
@@ -55,6 +57,7 @@ TMPDIR_SCRIPT="$(mktemp -d)"
 RELAY_CFG="$TMPDIR_SCRIPT/relay.yaml"
 CLIENT_OUT="$TMPDIR_SCRIPT/client.out"
 DATESERVER_LOG="$TMPDIR_SCRIPT/dateserver.log"
+RELAY_LOG="$TMPDIR_SCRIPT/relay.log"
 PURGE_LOG="$TMPDIR_SCRIPT/purge.log"
 touch "$PURGE_LOG"
 
@@ -63,6 +66,8 @@ PIDS=()
 RELAY_PIDS=()
 
 cleanup() {
+  # First statement: $? is the status the script is exiting with.
+  local rc=$?
   for pid in "${PIDS[@]:-}" "${RELAY_PIDS[@]:-}"; do
     kill "$pid" 2>/dev/null || true
   done
@@ -82,6 +87,9 @@ cleanup() {
   reap_helpers "${PIDS[@]:-}"
   local relay_failed=0
   reap_relays "${RELAY_PIDS[@]:-}" || relay_failed=1
+  if (( rc != 0 || relay_failed != 0 )) && [[ -s "$RELAY_LOG" ]]; then
+    echo "--- relay log ---" >&2; cat "$RELAY_LOG" >&2 || true
+  fi
   rm -rf "$TMPDIR_SCRIPT"
   (( relay_failed == 0 )) || exit 1
 }
@@ -135,15 +143,14 @@ listeners:
       socket:
         address: "::"
         port: $RELAY_PORT
-    tls:
-      insecure: true
+$(moq_listener_stack_yaml "$TMPDIR_SCRIPT")
     endpoint: "/moq-relay"
     moqt_versions: ${MOQT_TEST_VERSIONS}
 services:
   default:
     match:
       - authority: {any: true}
-        path: {prefix: "/"}
+$(moq_service_path_yaml)
     cache:
       enabled: true
       max_tracks: 100
@@ -159,7 +166,7 @@ evict_stale_relay
 
 # ── Start relay ────────────────────────────────────────────────────────────────
 echo "Starting relay on port $RELAY_PORT (cache enabled)..."
-"$BINARY" --config="$RELAY_CFG" >/dev/null 2>&1 &
+"$BINARY" --config="$RELAY_CFG" >"$RELAY_LOG" 2>&1 &
 RELAY_PID=$!
 RELAY_PIDS+=($RELAY_PID)
 wait_ready

@@ -50,8 +50,7 @@ public:
     }
 
     bool hasContent() const {
-      return !publishes_.empty() || !subscribers_.empty() || !draft14PubNsHandles_.empty() ||
-             publisherSession_ != nullptr;
+      return !publishes_.empty() || !subscribers_.empty() || publisherSession_ != nullptr;
     }
 
     using moxygen::Subscriber::PublishNamespaceHandle::setPublishNamespaceOk;
@@ -59,7 +58,7 @@ public:
     struct NamespaceSubscriberInfo {
       bool forward{true};
       moxygen::SubscribeNamespaceOptions options{moxygen::SubscribeNamespaceOptions::BOTH};
-      // Handle for NAMESPACE/NAMESPACE_DONE on the bidi stream (draft 16+); null for draft <= 15.
+      // Handle for NAMESPACE/NAMESPACE_DONE on the bidi stream; null for SUBSCRIBE_TRACKS entries.
       std::shared_ptr<moxygen::Publisher::NamespacePublishHandle> namespacePublishHandle;
       moxygen::TrackNamespace trackNamespacePrefix;
       std::optional<moxygen::TrackFilter> trackFilter;
@@ -91,13 +90,6 @@ public:
       }
     }
 
-    void addDraft14PublishNamespaceHandle(
-        std::shared_ptr<moxygen::MoQSession> session,
-        std::shared_ptr<moxygen::Subscriber::PublishNamespaceHandle> handle
-    ) {
-      draft14PubNsHandles_.emplace(std::move(session), std::move(handle));
-    }
-
   private:
     friend class NamespaceTree;
 
@@ -112,23 +104,13 @@ public:
     folly::F14FastMap<std::string, std::shared_ptr<NamespaceNode>> children_;
     std::shared_ptr<moxygen::Subscriber::PublishNamespaceCallback> publishNamespaceCallback_;
     folly::F14FastMap<uint64_t, std::shared_ptr<PropertyRanking>> rankings_;
-    // Per-subscriber handles for draft<=14 (one per publishNamespace() call), keyed by session.
-    folly::F14FastMap<
-        std::shared_ptr<moxygen::MoQSession>,
-        std::shared_ptr<moxygen::Subscriber::PublishNamespaceHandle>>
-        draft14PubNsHandles_;
   };
 
   using SessionSubscriberList = std::vector<
       std::pair<std::shared_ptr<moxygen::MoQSession>, NamespaceNode::NamespaceSubscriberInfo>>;
 
-  using LegacyDoneHandleList = std::vector<std::pair<
-      std::shared_ptr<moxygen::MoQSession>,
-      std::shared_ptr<moxygen::Subscriber::PublishNamespaceHandle>>>;
-
   struct UnpublishNamespaceResult {
     SessionSubscriberList subscribers;
-    LegacyDoneHandleList legacyHandles;
     std::vector<uint64_t> relayHopPath;
   };
 

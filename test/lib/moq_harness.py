@@ -95,6 +95,9 @@ def _lines(path):
         return []
 
 
+_SANITIZER_REPORT = re.compile(r"(ERROR|WARNING): \w+Sanitizer")
+
+
 def _tail(path, count):
     return _lines(path)[-count:]
 
@@ -213,25 +216,71 @@ use_relay_thread: true
 use_local_forwarders: true
 listeners:
   - name: $name
+$quic_stack_line
     udp:
       socket:
         address: "::"
         port: $listen
-    tls:
-      insecure: true
+$tls_block
     endpoint: "/moq-relay"
     moqt_versions: $moqt_versions
 services:
   default:
     match:
       - authority: {any: true}
-        path: {prefix: "/"}
+$service_path_line
     cache:
       enabled: false
       max_tracks: 100
       max_groups_per_track: 3
 """
 )
+
+# Override to exercise the picoquic listener stack instead of the mvfst
+# default: MOQ_HARNESS_QUIC_STACK=picoquic. Picoquic rejects `insecure: true`
+# (openmoq/moxygen#176), so this also switches the listener to a real,
+# harness-generated cert.
+_QUIC_STACK = os.environ.get("MOQ_HARNESS_QUIC_STACK", "mvfst")
+
+
+def _tls_config(tmpdir: Path) -> tuple[str, str, str]:
+    if _QUIC_STACK != "picoquic":
+        return "", "    tls:\n      insecure: true\n", '        path: {prefix: "/"}\n'
+    cert = tmpdir / "harness-cert.pem"
+    key = tmpdir / "harness-key.pem"
+    if not cert.exists():
+        subprocess.run(
+            [
+                "openssl",
+                "req",
+                "-x509",
+                "-newkey",
+                "rsa:2048",
+                "-nodes",
+                "-keyout",
+                str(key),
+                "-out",
+                str(cert),
+                "-days",
+                "1",
+                "-subj",
+                "/CN=localhost",
+                "-addext",
+                "subjectAltName=DNS:localhost",
+            ],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    # picoquic's WebTransport endpoint table only matches exact paths
+    # (moxygen openmoq/moxygen#170-adjacent); a prefix match registers no
+    # endpoints at all and every connection is rejected.
+    return (
+        "    quic_stack: picoquic\n",
+        f'    tls:\n      insecure: false\n      cert_file: "{cert}"\n      key_file: "{key}"\n',
+        '        path: {exact: "/moq-relay"}\n',
+    )
+
 
 _CONFIG_UPSTREAM = Template(
     """\
@@ -443,12 +492,16 @@ class Harness:
 
     # ── Startup ────────────────────────────────────────────────────────────────
     def _write_config(self, relay):
+        quic_stack_line, tls_block, service_path_line = _tls_config(self.tmpdir)
         parts = [
             _CONFIG_HEAD.substitute(
                 relay_id=relay.relay_id,
                 name=relay.name,
                 listen=relay.listen,
                 moqt_versions=self.moqt_versions,
+                quic_stack_line=quic_stack_line,
+                tls_block=tls_block,
+                service_path_line=service_path_line,
             )
         ]
         if relay.upstream:
@@ -573,10 +626,19 @@ class Harness:
         relay = self.relays.get(name)
         if relay is None or relay.log_path is None:
             return
-        lines = _tail(relay.log_path, 40)
+        lines = _lines(relay.log_path)
+        # A leak report runs past any fixed tail, and its first frames matter.
+        start = next(
+            (i for i, line in enumerate(lines) if _SANITIZER_REPORT.search(line)),
+            None,
+        )
+        if start is None:
+            lines, label = lines[-40:], "tail"
+        else:
+            lines, label = lines[start : start + 400], "sanitizer report"
         if not lines:
             return
-        print(f"--- relay {name} log (tail) ---", file=sys.stderr)
+        print(f"--- relay {name} log ({label}) ---", file=sys.stderr)
         print("\n".join(lines), file=sys.stderr)
 
     def _dump_publishers(self, ns):
@@ -907,6 +969,7 @@ class Harness:
                     "or sanitizer leak",
                     file=sys.stderr,
                 )
+                self._dump_relay_log(relay.name)
                 relay_failed = True
 
         return relay_failed
@@ -976,6 +1039,10 @@ def main(run, base_port_key):
 
     args = _parse_args(sys.argv[1:])
     script_stem = Path(sys.argv[0]).stem
+    # Per-test and per-stack, like the ctest names: concurrent tests all
+    # produce relay-A.log and A.yaml, and would otherwise clobber each other.
+    stack_suffix = "" if _QUIC_STACK == "mvfst" else f"_{_QUIC_STACK}"
+    default_log_dir = _REPO / ".scratch/moq_harness_logs" / (script_stem + stack_suffix)
 
     # ctest's TIMEOUT sends SIGTERM, and Python's default handler exits without
     # running `finally` — leaving relays bound to this test's ports and failing
@@ -1001,13 +1068,10 @@ def main(run, base_port_key):
 
         relay_log_args = []
         if args.save_logs is not None:
-            # Per-test subdirectory: concurrent tests all produce relay-A.log
-            # and A.yaml, and would otherwise clobber each other under
-            # ctest --parallel.
             log_dir = (
                 Path(args.save_logs)
                 if isinstance(args.save_logs, str)
-                else _REPO / ".scratch/moq_harness_logs" / script_stem
+                else default_log_dir
             )
             # Deliberately NOT applied to actors: expect_received looks for a
             # leading digit, and a DBG4 line starting with one would false-PASS.
@@ -1035,6 +1099,9 @@ def main(run, base_port_key):
         rc = error.code if isinstance(error.code, int) else 1
     finally:
         relay_failed = harness.cleanup() if harness is not None else False
+        failed = rc != 0 or relay_failed or (harness is not None and harness.failures)
+        if log_dir is None and failed:
+            log_dir = default_log_dir
         if tmpdir is not None:
             if log_dir is not None:
                 log_dir.mkdir(parents=True, exist_ok=True)

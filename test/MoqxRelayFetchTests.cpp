@@ -1,20 +1,34 @@
 /*
  * Copyright (c) Meta Platforms, Inc. and affiliates.
- * Originally from github.com/facebookexperimental/moxygen.
- * See the moxygen LICENSE for the original license terms:
- * https://github.com/openmoq/moxygen/blob/main/LICENSE
- *
  * Copyright (c) OpenMOQ contributors.
+ * Originally from github.com/facebookexperimental/moxygen.
+ * This source code is licensed under the Apache 2.0 license found in the
+ * LICENSE file in the root directory of this source tree.
  */
 
 #include "MoqxRelayTestFixture.h"
 
+#include <folly/ScopeGuard.h>
+#include <folly/coro/Baton.h>
+
 namespace openmoq::moqx::test {
+
+namespace {
+// Fails any upstream fetch, and records that one was made.
+void failUpstreamFetches(MockMoQSession& session, std::atomic<bool>& fetched) {
+  ON_CALL(session, fetch(_, _)).WillByDefault([&fetched](Fetch, std::shared_ptr<FetchConsumer>) {
+    fetched.store(true);
+    return folly::coro::makeTask<Publisher::FetchResult>(folly::makeUnexpected(
+        FetchError{RequestID(0), FetchErrorCode::INTERNAL_ERROR, "unexpected upstream fetch"}
+    ));
+  });
+}
+} // namespace
 
 // Test: FETCH with an empty namespace is rejected pre-draft-18.
 TEST_P(MoQRelayTest, FetchEmptyNamespaceRejectedPreV18) {
   auto session = createMockSession();
-  // Default session negotiates kVersionDraftCurrent (draft-14, which is < 18)
+  // Default session negotiates kVersionDraft16 (< 18)
 
   Fetch fetch(
       RequestID(0),
@@ -243,6 +257,286 @@ TEST_P(MoQRelayTest, JoiningFetchAgainstPublish) {
 
   removeSession(publisherSession);
   removeSession(subscriber);
+  driveIfMultiThread();
+}
+
+// A joining FETCH pipelined behind its SUBSCRIBE, sent while that subscribe is still setting up
+// this thread's forwarder, resolves against the joiner's subscription once setup completes.
+TEST_P(MoQRelayTest, JoiningFetchWaitsForItsSubscribeSetup) {
+  if (relayMode() != RelayMode::LocalForwarderMT) {
+    GTEST_SKIP() << "only LF sets up a per-thread forwarder the fetch can race";
+  }
+
+  // Publisher on its own iothread, so the subscriber thread's entry stays Pending while the
+  // upstream SUBSCRIBE is held.
+  auto& pubAux = makeAuxExec("pub-iothread");
+  auto* pubEvb = pubAux.evb;
+  auto publisherSession = std::make_shared<NiceMock<MockMoQSession>>(pubAux.exec);
+  ON_CALL(*publisherSession, getNegotiatedVersion())
+      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
+  getOrCreateMockState(publisherSession);
+  auto subSession = createMockSession();
+  doPublishNamespace(publisherSession, kTestNamespace);
+
+  SubscribeOk upstreamOk;
+  upstreamOk.requestID = RequestID(1);
+  upstreamOk.trackAlias = TrackAlias(1);
+  upstreamOk.expires = std::chrono::milliseconds(0);
+  upstreamOk.groupOrder = GroupOrder::OldestFirst;
+  upstreamOk.largest = AbsoluteLocation{3, 2};
+
+  folly::coro::Baton upstreamGate;
+  std::atomic<bool> upstreamSubscribeCalled{false};
+  EXPECT_CALL(*publisherSession, subscribe(_, _))
+      .WillOnce(
+          [&](const SubscribeRequest&,
+              std::shared_ptr<TrackConsumer>) -> folly::coro::Task<Publisher::SubscribeResult> {
+            upstreamSubscribeCalled.store(true);
+            co_await upstreamGate;
+            auto handle = std::make_shared<NiceMock<MockSubscriptionHandle>>(upstreamOk);
+            co_return folly::Expected<std::shared_ptr<SubscriptionHandle>, SubscribeError>(handle);
+          }
+      );
+  auto releaseGate = folly::makeGuard([&]() noexcept { upstreamGate.post(); });
+
+  std::atomic<bool> upstreamFetched{false};
+  auto capturedFetch = std::make_shared<Fetch>();
+  EXPECT_CALL(*publisherSession, fetch(_, _))
+      .WillOnce([capturedFetch,
+                 &upstreamFetched](Fetch f, std::shared_ptr<FetchConsumer> consumer) {
+        *capturedFetch = std::move(f);
+        upstreamFetched.store(true);
+        consumer->endOfFetch();
+        return folly::coro::makeTask<Publisher::FetchResult>(std::make_shared<MockFetchHandle>(
+            FetchOk{RequestID(0), GroupOrder::OldestFirst, 0, AbsoluteLocation{3, 3}, {}}
+        ));
+      });
+
+  auto pump = [&](auto pred) {
+    for (int i = 0; i < 1000 && !pred(); ++i) {
+      exec_->drive();
+      pubEvb->runInEventBaseThreadAndWait([] {});
+    }
+    return pred();
+  };
+
+  auto subResult = std::make_shared<std::optional<Publisher::SubscribeResult>>();
+  std::atomic<bool> subscribeDone{false};
+  auto fetchResult = std::make_shared<std::optional<Publisher::FetchResult>>();
+  std::atomic<bool> fetchDone{false};
+  auto fetchConsumer = std::make_shared<NiceMock<MockFetchConsumer>>();
+  EXPECT_CALL(*fetchConsumer, endOfFetch()).WillOnce([]() {
+    return folly::Expected<folly::Unit, MoQPublishError>(folly::unit);
+  });
+  withSessionContext(subSession, [&]() {
+    SubscribeRequest sub;
+    sub.fullTrackName = kTestTrackName;
+    sub.requestID = RequestID(0);
+    sub.locType = LocationType::LargestObject;
+    auto subTask = publisherInterface()->subscribe(std::move(sub), createMockConsumer());
+    co_withExecutor(
+        static_cast<folly::DrivableExecutor*>(exec_.get()),
+        folly::coro::co_invoke(
+            [t = std::move(subTask), subResult, &subscribeDone](
+            ) mutable -> folly::coro::Task<void> {
+              *subResult = co_await std::move(t);
+              subscribeDone.store(true);
+            }
+        )
+    ).start();
+  });
+  ASSERT_TRUE(pump([&] { return upstreamSubscribeCalled.load(); }))
+      << "subscribe should park in the gated upstream SUBSCRIBE";
+
+  withSessionContext(subSession, [&]() {
+    Fetch joining(RequestID(2), RequestID(0), /*joiningStart=*/1, FetchType::RELATIVE_JOINING);
+    joining.fullTrackName = kTestTrackName;
+    auto fetchTask = publisherInterface()->fetch(std::move(joining), fetchConsumer);
+    co_withExecutor(
+        static_cast<folly::DrivableExecutor*>(exec_.get()),
+        folly::coro::co_invoke(
+            [t = std::move(fetchTask), fetchResult, &fetchDone](
+            ) mutable -> folly::coro::Task<void> {
+              *fetchResult = co_await std::move(t);
+              fetchDone.store(true);
+            }
+        )
+    ).start();
+  });
+  for (int i = 0; i < 50; ++i) {
+    exec_->drive();
+    pubEvb->runInEventBaseThreadAndWait([] {});
+  }
+  EXPECT_FALSE(upstreamFetched.load()) << "the joining fetch went upstream before its subscribe";
+
+  releaseGate.dismiss();
+  upstreamGate.post();
+  ASSERT_TRUE(pump([&] { return subscribeDone.load() && fetchDone.load(); }));
+  ASSERT_TRUE(subResult->value().hasValue());
+  EXPECT_TRUE(fetchResult->value().hasValue());
+  ASSERT_TRUE(upstreamFetched.load());
+
+  // One group back from Largest {3, 2}.
+  auto [standalone, joiningArgs] = fetchType(*capturedFetch);
+  EXPECT_EQ(joiningArgs, nullptr) << "joining fetch was deferred instead of resolved";
+  ASSERT_NE(standalone, nullptr);
+  EXPECT_EQ(standalone->start, (AbsoluteLocation{2, 0}));
+  EXPECT_EQ(standalone->end, (AbsoluteLocation{3, 3}));
+
+  subResult->value().value()->unsubscribe();
+  subResult->reset();
+  fetchResult->reset();
+  removeSession(publisherSession);
+  removeSession(subSession);
+  for (int i = 0; i < 4; ++i) {
+    driveIfMultiThread();
+    pubEvb->runInEventBaseThreadAndWait([] {});
+  }
+}
+
+// A joining FETCH pipelined behind a SUBSCRIBE that fails gets an error from the relay.
+TEST_P(MoQRelayTest, JoiningFetchFailsWithItsSubscribe) {
+  if (relayMode() != RelayMode::LocalForwarderMT) {
+    GTEST_SKIP() << "only LF sets up a per-thread forwarder the fetch can race";
+  }
+
+  auto& pubAux = makeAuxExec("pub-iothread");
+  auto* pubEvb = pubAux.evb;
+  auto publisherSession = std::make_shared<NiceMock<MockMoQSession>>(pubAux.exec);
+  ON_CALL(*publisherSession, getNegotiatedVersion())
+      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
+  getOrCreateMockState(publisherSession);
+  auto subSession = createMockSession();
+  doPublishNamespace(publisherSession, kTestNamespace);
+
+  folly::coro::Baton upstreamGate;
+  std::atomic<bool> upstreamSubscribeCalled{false};
+  EXPECT_CALL(*publisherSession, subscribe(_, _))
+      .WillOnce(
+          [&](const SubscribeRequest&,
+              std::shared_ptr<TrackConsumer>) -> folly::coro::Task<Publisher::SubscribeResult> {
+            upstreamSubscribeCalled.store(true);
+            co_await upstreamGate;
+            co_return folly::makeUnexpected(
+                SubscribeError{RequestID(1), SubscribeErrorCode::INTERNAL_ERROR, "upstream failed"}
+            );
+          }
+      );
+  auto releaseGate = folly::makeGuard([&]() noexcept { upstreamGate.post(); });
+  std::atomic<bool> upstreamFetched{false};
+  failUpstreamFetches(*publisherSession, upstreamFetched);
+
+  auto pump = [&](auto pred) {
+    for (int i = 0; i < 1000 && !pred(); ++i) {
+      exec_->drive();
+      pubEvb->runInEventBaseThreadAndWait([] {});
+    }
+    return pred();
+  };
+
+  auto subResult = std::make_shared<std::optional<Publisher::SubscribeResult>>();
+  std::atomic<bool> subscribeDone{false};
+  auto fetchResult = std::make_shared<std::optional<Publisher::FetchResult>>();
+  std::atomic<bool> fetchDone{false};
+  auto fetchConsumer = std::make_shared<NiceMock<MockFetchConsumer>>();
+  withSessionContext(subSession, [&]() {
+    auto subTask =
+        publisherInterface()->subscribe(makeSubscribeRequest(RequestID(0)), createMockConsumer());
+    co_withExecutor(
+        static_cast<folly::DrivableExecutor*>(exec_.get()),
+        folly::coro::co_invoke(
+            [t = std::move(subTask), subResult, &subscribeDone](
+            ) mutable -> folly::coro::Task<void> {
+              *subResult = co_await std::move(t);
+              subscribeDone.store(true);
+            }
+        )
+    ).start();
+  });
+  ASSERT_TRUE(pump([&] { return upstreamSubscribeCalled.load(); }))
+      << "subscribe should wait in the gated upstream SUBSCRIBE";
+
+  withSessionContext(subSession, [&]() {
+    Fetch joining(RequestID(2), RequestID(0), /*joiningStart=*/1, FetchType::RELATIVE_JOINING);
+    joining.fullTrackName = kTestTrackName;
+    auto fetchTask = publisherInterface()->fetch(std::move(joining), fetchConsumer);
+    co_withExecutor(
+        static_cast<folly::DrivableExecutor*>(exec_.get()),
+        folly::coro::co_invoke(
+            [t = std::move(fetchTask), fetchResult, &fetchDone](
+            ) mutable -> folly::coro::Task<void> {
+              *fetchResult = co_await std::move(t);
+              fetchDone.store(true);
+            }
+        )
+    ).start();
+  });
+
+  releaseGate.dismiss();
+  upstreamGate.post();
+  ASSERT_TRUE(pump([&] { return subscribeDone.load() && fetchDone.load(); }));
+  EXPECT_FALSE(subResult->value().hasValue());
+  EXPECT_FALSE(fetchResult->value().hasValue());
+  EXPECT_FALSE(upstreamFetched.load()) << "the joining fetch went upstream unresolved";
+
+  subResult->reset();
+  fetchResult->reset();
+  removeSession(publisherSession);
+  removeSession(subSession);
+  for (int i = 0; i < 4; ++i) {
+    driveIfMultiThread();
+    pubEvb->runInEventBaseThreadAndWait([] {});
+  }
+}
+
+// A joining FETCH that names a subscription the session does not have gets an error from the
+// relay.
+TEST_P(MoQRelayTest, JoiningFetchWithoutSubscriptionFails) {
+  auto publisherSession = createMockSession();
+  auto fetchSession = createMockSession();
+  doPublishNamespace(publisherSession, kTestNamespace);
+  std::atomic<bool> upstreamFetched{false};
+  failUpstreamFetches(*publisherSession, upstreamFetched);
+
+  Fetch joining(RequestID(2), RequestID(0), /*joiningStart=*/1, FetchType::RELATIVE_JOINING);
+  joining.fullTrackName = kTestTrackName;
+  auto fetchConsumer = std::make_shared<NiceMock<MockFetchConsumer>>();
+  withSessionContext(fetchSession, [&]() {
+    auto task = publisherInterface()->fetch(std::move(joining), fetchConsumer);
+    auto res = folly::coro::blockingWait(std::move(task), exec_.get());
+    ASSERT_FALSE(res.hasValue());
+    EXPECT_EQ(res.error().errorCode, FetchErrorCode::DOES_NOT_EXIST);
+  });
+  EXPECT_FALSE(upstreamFetched.load()) << "the joining fetch went upstream unresolved";
+
+  removeSession(publisherSession);
+  removeSession(fetchSession);
+}
+
+// A joining FETCH that names the wrong request for the session's subscription gets an error
+// from the relay.
+TEST_P(MoQRelayTest, JoiningFetchForWrongRequestFails) {
+  auto publisherSession = createMockSession();
+  auto subSession = createMockSession();
+  doPublish(publisherSession, kTestTrackName);
+  auto handle = subscribeToTrack(subSession, kTestTrackName, createMockConsumer(), RequestID(0));
+  ASSERT_NE(handle, nullptr);
+  std::atomic<bool> upstreamFetched{false};
+  failUpstreamFetches(*publisherSession, upstreamFetched);
+
+  Fetch joining(RequestID(2), RequestID(5), /*joiningStart=*/1, FetchType::RELATIVE_JOINING);
+  joining.fullTrackName = kTestTrackName;
+  auto fetchConsumer = std::make_shared<NiceMock<MockFetchConsumer>>();
+  withSessionContext(subSession, [&]() {
+    auto task = publisherInterface()->fetch(std::move(joining), fetchConsumer);
+    auto res = folly::coro::blockingWait(std::move(task), exec_.get());
+    EXPECT_FALSE(res.hasValue());
+  });
+  EXPECT_FALSE(upstreamFetched.load()) << "the joining fetch went upstream unresolved";
+
+  handle->unsubscribe();
+  removeSession(publisherSession);
+  removeSession(subSession);
   driveIfMultiThread();
 }
 

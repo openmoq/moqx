@@ -31,7 +31,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-"$(dirname "$0")/make_test_config.sh" "$LISTEN_PORT" "$ADMIN_PORT" --cert "$CERT" --key "$KEY" > "$TMPDIR/config.yaml"
+"$(dirname "$0")/make_test_config.sh" "$LISTEN_PORT" "$ADMIN_PORT" --cert "$CERT" --key "$KEY" --tmpdir "$TMPDIR" > "$TMPDIR/config.yaml"
 
 ADMIN_URL="https://localhost:${ADMIN_PORT}/info"
 

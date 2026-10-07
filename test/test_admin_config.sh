@@ -6,6 +6,8 @@ BINARY="${1:-$(dirname "$0")/../build/default/moqx}"
 source "$(dirname "$0")/test_ports.sh"
 # shellcheck source=test_relay_lifecycle.sh
 source "$(dirname "$0")/test_relay_lifecycle.sh"
+# shellcheck source=test_quic_stack.sh
+source "$(dirname "$0")/test_quic_stack.sh"
 LISTEN_PORT=$TEST_ADMIN_CONFIG_LISTEN
 ADMIN_PORT=$TEST_ADMIN_CONFIG_ADMIN
 ADMIN_URL="http://localhost:${ADMIN_PORT}/config"
@@ -28,7 +30,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-"$(dirname "$0")/make_test_config.sh" "$LISTEN_PORT" "$ADMIN_PORT" > "$TMPDIR/config.yaml"
+"$(dirname "$0")/make_test_config.sh" "$LISTEN_PORT" "$ADMIN_PORT" --tmpdir "$TMPDIR" > "$TMPDIR/config.yaml"
 
 # Start moqx with the generated config in the background.
 "$BINARY" --config="$TMPDIR/config.yaml" &
@@ -75,8 +77,19 @@ if ! grep -q '"endpoint":"/moq-relay"' <<<"$RESPONSE"; then
   exit 1
 fi
 
-# The default service has an insecure (plaintext) listener.
-if ! grep -q '"insecure":true' <<<"$RESPONSE"; then
+# The dump must report the listener's real TLS mode. Picoquic rejects
+# `insecure: true`, so under that stack the listener serves a generated cert and
+# the dump has to name it.
+if [[ "$MOQ_QUIC_STACK" = picoquic ]]; then
+  if ! grep -q '"insecure":false' <<<"$RESPONSE"; then
+    echo "FAIL: expected insecure:false for the cert-bearing listener" >&2
+    exit 1
+  fi
+  if ! grep -q '"cert_file":"[^"]*moqx-test-cert.pem"' <<<"$RESPONSE"; then
+    echo "FAIL: expected the generated cert path in the listener dump" >&2
+    exit 1
+  fi
+elif ! grep -q '"insecure":true' <<<"$RESPONSE"; then
   echo "FAIL: expected insecure:true for plaintext listener" >&2
   exit 1
 fi

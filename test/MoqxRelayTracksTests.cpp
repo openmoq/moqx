@@ -1,10 +1,9 @@
 /*
  * Copyright (c) Meta Platforms, Inc. and affiliates.
- * Originally from github.com/facebookexperimental/moxygen.
- * See the moxygen LICENSE for the original license terms:
- * https://github.com/openmoq/moxygen/blob/main/LICENSE
- *
  * Copyright (c) OpenMOQ contributors.
+ * Originally from github.com/facebookexperimental/moxygen.
+ * This source code is licensed under the Apache 2.0 license found in the
+ * LICENSE file in the root directory of this source tree.
  */
 
 // Draft 18+: SUBSCRIBE_TRACKS relay tests.
@@ -80,7 +79,7 @@ protected:
 
 // Pre-draft-18 sessions can't issue SUBSCRIBE_TRACKS at all.
 TEST_P(MoqxRelayTracksTest, SubscribeTracksRejectsPreV18) {
-  // createMockSession() defaults to kVersionDraftCurrent (draft-14).
+  // createMockSession() defaults to kVersionDraft16.
   auto session = createMockSession();
   auto res = subscribeTracks(session, TrackNamespace{{"test"}});
   ASSERT_FALSE(res.hasValue());

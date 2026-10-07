@@ -6,6 +6,8 @@
 
 #include "config/loader/ConfigResolver.h"
 
+#include <algorithm>
+#include <array>
 #include <cstdlib>
 #include <filesystem>
 #include <iomanip>
@@ -49,7 +51,9 @@ std::string matchRuleErrorLabel(const std::string& name, size_t j) {
 
 // Default versions when moqt_versions is unset. Excludes draft-18 (in moxygen's
 // kSupportedVersions but not yet interoperable); configure moqt_versions to opt in.
-constexpr const char* kDefaultMoqtVersions = "14,16";
+constexpr const char* kDefaultMoqtVersions = "16";
+// moxygen's kSupportedVersions from draft 16 up; this library does not link moxygen.
+constexpr std::array<uint32_t, 2> kSupportedMoqtVersions{16, 18};
 
 std::string moqtVersionsToString(const ParsedListenerConfig& listener) {
   if (!listener.moqt_versions.value().has_value() || listener.moqt_versions.value()->empty()) {
@@ -386,6 +390,17 @@ void validateListener(
         "Listener '" + listener.name.value() +
         "': quic_stack \"picoquic\" does not support pkcs12_file yet; use cert_file/key_file"
     );
+  }
+  if (const auto& versions = listener.moqt_versions.value(); versions.has_value()) {
+    for (auto v : *versions) {
+      if (std::find(kSupportedMoqtVersions.begin(), kSupportedMoqtVersions.end(), v) ==
+          kSupportedMoqtVersions.end()) {
+        errors.push_back(
+            "Listener '" + listener.name.value() + "': moqt_versions entry " + std::to_string(v) +
+            " is unsupported (supported: " + folly::join(", ", kSupportedMoqtVersions) + ")"
+        );
+      }
+    }
   }
 }
 

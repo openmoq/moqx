@@ -1,14 +1,17 @@
 /*
  * Copyright (c) Meta Platforms, Inc. and affiliates.
- * Originally from github.com/facebookexperimental/moxygen.
- * See the moxygen LICENSE for the original license terms:
- * https://github.com/openmoq/moxygen/blob/main/LICENSE
- *
  * Copyright (c) OpenMOQ contributors.
+ * Originally from github.com/facebookexperimental/moxygen.
+ * This source code is licensed under the Apache 2.0 license found in the
+ * LICENSE file in the root directory of this source tree.
  */
 
 #include "MoqxRelayTestFixture.h"
 #include "UpstreamProvider.h"
+
+#include <folly/CancellationToken.h>
+#include <folly/coro/Promise.h>
+#include <folly/coro/WithCancellation.h>
 
 namespace openmoq::moqx::test {
 
@@ -233,6 +236,72 @@ TEST_P(MoQRelayTest, PeerNamespaceNotEchoedBack_FullProductionPath) {
   bridgeHandle1.reset();
   removeSession(session1);
   removeSession(session2);
+}
+
+// Answers the reciprocal subscribeNamespace only after fail() is called.
+class StalledReciprocalSession : public NiceMock<MockMoQSession> {
+public:
+  explicit StalledReciprocalSession(std::shared_ptr<MoQExecutor> exec)
+      : NiceMock<MockMoQSession>(std::move(exec)) {
+    auto [promise, future] = folly::coro::makePromiseContract<void>();
+    reply_ = std::move(promise);
+    replied_ = std::move(future);
+  }
+
+  folly::coro::Task<Publisher::SubscribeNamespaceResult>
+  subscribeNamespace(SubscribeNamespace subNs, std::shared_ptr<Publisher::NamespacePublishHandle>)
+      override {
+    // A closing peer session fails its pending requests. It does not throw.
+    co_await folly::coro::co_withCancellation(folly::CancellationToken{}, std::move(replied_));
+    co_return folly::makeUnexpected(SubscribeNamespaceError{
+        subNs.requestID,
+        SubscribeNamespaceErrorCode::INTERNAL_ERROR,
+        "Session closed"
+    });
+  }
+
+  void fail() { reply_.setValue(); }
+
+private:
+  folly::coro::Promise<void> reply_;
+  folly::coro::Future<void> replied_;
+};
+
+// The session is cancelled and removed before its pending reciprocal fails.
+// The relay must not register the peer's subscription afterward.
+TEST_P(MoQRelayTest, PeerClosedDuringReciprocalIsNotRegistered) {
+  resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "sg-sin-2-1");
+  relay_->setAllowedNamespacePrefix(kAllowedPrefix);
+  auto peer = std::make_shared<StalledReciprocalSession>(exec_);
+  ON_CALL(*peer, getNegotiatedVersion())
+      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
+  getOrCreateMockState(peer);
+
+  auto nsHandle = std::make_shared<NiceMock<MockNamespacePublishHandle>>();
+  std::weak_ptr<Publisher::NamespacePublishHandle> weakHandle = nsHandle;
+  folly::CancellationSource cancelSource;
+  auto result = withSessionContext(peer, [&]() {
+    return folly::coro::co_withExecutor(
+               sessionExec(),
+               folly::coro::co_withCancellation(
+                   cancelSource.getToken(),
+                   publisherInterface()
+                       ->subscribeNamespace(makePeerSubNs("jp-osa-1"), std::move(nsHandle))
+               )
+    )
+        .start();
+  });
+  driveUntil([] { return false; }, 5);
+  ASSERT_FALSE(result.isReady());
+
+  cancelSource.requestCancellation();
+  removeSession(peer);
+  peer->fail();
+  ASSERT_TRUE(driveUntil([&] { return result.isReady(); }));
+
+  EXPECT_THROW(std::move(result).get(), folly::OperationCancelled);
+  EXPECT_TRUE(weakHandle.expired());
+  EXPECT_EQ(peer.use_count(), 1);
 }
 
 // Regression test: when a bridge handle is destroyed (ungraceful session close)

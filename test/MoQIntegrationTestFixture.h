@@ -40,6 +40,9 @@ protected:
   // Subclasses optionally override to provide server's Subscriber handler
   virtual std::shared_ptr<moxygen::Subscriber> createServerSubscribeHandler() { return nullptr; }
 
+  // Override to kill the client's session while it awaits SERVER_SETUP
+  virtual bool refuseClientSetup() { return false; }
+
   void SetUp() override {
     // Start the server thread. The server must be constructed and started
     // on the same thread (QuicServer requirement).
@@ -141,6 +144,16 @@ private:
         std::shared_ptr<const fizz::server::FizzServerContext> fizzContext
     )
         : MoQServer(std::move(fizzContext), "/test"), fixture_(fixture) {}
+
+    folly::Try<moxygen::Setup> onClientSetup(
+        moxygen::Setup clientSetup,
+        const std::shared_ptr<moxygen::MoQSession>& session
+    ) override {
+      if (fixture_.refuseClientSetup()) {
+        return folly::Try<moxygen::Setup>(std::runtime_error("test server refused the handshake"));
+      }
+      return moxygen::MoQServer::onClientSetup(std::move(clientSetup), session);
+    }
 
     void onNewSession(std::shared_ptr<moxygen::MoQSession> session) override {
       XLOG(DBG1) << "TestServer: new session " << session.get();

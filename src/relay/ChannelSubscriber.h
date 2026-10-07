@@ -12,9 +12,21 @@
 #include <folly/logging/xlog.h>
 
 #include <memory>
+#include <optional>
 #include <thread>
 
 namespace openmoq::moqx {
+
+// No-op when publisher has no channel under channelId.
+inline void removeChannelSubscriber(
+    moxygen::MoQForwarder& publisher,
+    moxygen::SessionId channelId,
+    std::optional<moxygen::PublishDone> pubDone = std::nullopt
+) {
+  if (publisher.getSubscriber(channelId)) {
+    publisher.removeSubscriber(channelId, std::move(pubDone), "removeChannelSubscriber");
+  }
+}
 
 // A local forwarder's channel subscription on a publisher's forwarder.  Must be
 // constructed on the publisher's executor: the thread it captures there is the only
@@ -34,11 +46,11 @@ public:
   folly::Executor* exec() const { return publisherExec_; }
 
   // No-op once the publisher's forwarder is gone; it took the subscription with it.
-  void detach(folly::Executor* subscriberExec) const {
+  void detach(moxygen::SessionId channelId) const {
     XCHECK_EQ(publisherThread_, std::this_thread::get_id())
         << "channel subscriber detached off the publisher's thread";
     if (auto publisher = publisherFwd_.lock()) {
-      publisher->removeChannelSubscriberByExec(subscriberExec);
+      removeChannelSubscriber(*publisher, channelId);
     }
   }
 

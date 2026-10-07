@@ -1,5 +1,7 @@
 /*
  * Copyright (c) OpenMOQ contributors.
+ * This source code is licensed under the Apache 2.0 license found in the
+ * LICENSE file in the root directory of this source tree.
  */
 
 #include "relay/InitialTrackState.h"
@@ -25,13 +27,13 @@ Extensions extensionsWith(uint64_t value) {
   return e;
 }
 
-// addSubscriber only uses the session as a map key, so a null one is enough here.
 std::shared_ptr<MoQForwarder::Subscriber> addSubscriber(MoQForwarder& forwarder) {
   SubscribeRequest req;
   req.fullTrackName = kFtn;
   req.requestID = RequestID(1);
   req.forward = true;
-  return forwarder.addSubscriber(nullptr, req, std::make_shared<NullTrackConsumer>());
+  return forwarder
+      .addSubscriber(MoQSession::makeSessionId(), req, std::make_shared<NullTrackConsumer>());
 }
 
 TEST(InitialTrackStateTest, CaptureRoundTripsPositionAndProperties) {

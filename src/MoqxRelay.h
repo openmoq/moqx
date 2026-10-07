@@ -1,16 +1,16 @@
 /*
  * Copyright (c) Meta Platforms, Inc. and affiliates.
- * Originally from github.com/facebookexperimental/moxygen.
- * See the moxygen LICENSE for the original license terms:
- * https://github.com/openmoq/moxygen/blob/main/LICENSE
- *
  * Copyright (c) OpenMOQ contributors.
+ * Originally from github.com/facebookexperimental/moxygen.
+ * This source code is licensed under the Apache 2.0 license found in the
+ * LICENSE file in the root directory of this source tree.
  */
 
 #pragma once
 
 #include "MoqxCache.h"
 #include "NamespaceTree.h"
+#include "PendingRendezvousTree.h"
 #include "SubscriptionRegistry.h"
 #include "UpstreamProvider.h"
 #include "config/Config.h"
@@ -21,7 +21,11 @@
 #include "relay/RelayExecUtil.h"
 #include "stats/TrackStatsRegistry.h"
 #include <moxygen/MoQSession.h>
+#include <moxygen/events/MoQFollyExecutorImpl.h>
 #include <moxygen/relay/MoQForwarder.h>
+#include <moxygen/util/TimedBaton.h>
+
+#include <folly/futures/ThreadWheelTimekeeper.h>
 
 #include <folly/Executor.h>
 #include <folly/ThreadLocal.h>
@@ -134,6 +138,12 @@ public:
         useLocalForwarders_(useLocalForwarders), maxDeselected_(maxDeselected),
         idleTimeout_(idleTimeout), activityThreshold_(activityThreshold) {
     XCHECK_LE(relayHopID_, kMaxRelayHopID);
+    // Park timers fire on the relay's own EventBase instead of folly's global
+    // timekeeper thread. Null (SingleThread mode, or a non-folly exec) falls back to it.
+    if (auto* follyExec = dynamic_cast<moxygen::MoQFollyExecutorImpl*>(relayExec_)) {
+      timekeeper_ =
+          std::make_unique<folly::EventBaseThreadTimekeeper>(*follyExec->getBackingEventBase());
+    }
     if (cache.maxCachedTracks > 0) {
       cache_ = std::make_unique<MoqxCache>(cache.maxCachedTracks, cache.maxCachedGroupsPerTrack);
       cache_->setMaxCachedBytes(static_cast<size_t>(cache.maxCachedMb) * 1024 * 1024);
@@ -291,6 +301,11 @@ public:
   };
   PublishState findPublishState(const moxygen::FullTrackName& ftn);
 
+  // Test accessor: pruning of a timed-out waiter's tree node happens
+  // asynchronously, with no other externally observable signal that it
+  // completed in time for a fast test to assert on.
+  bool hasPendingRendezvousWaiters() const { return !pendingRendezvous_.empty(); }
+
 private:
   class NamespaceSubscription;
   class TracksSubscription;
@@ -337,12 +352,6 @@ private:
   void onEmptyImpl(const moxygen::FullTrackName& ftn);
   void forwardChangedImpl(const moxygen::FullTrackName& ftn, bool forward);
   void newGroupRequestedImpl(const moxygen::FullTrackName& ftn, uint64_t group);
-
-  folly::coro::Task<void> publishNamespaceToSession(
-      std::shared_ptr<moxygen::MoQSession> session,
-      moxygen::PublishNamespace pubNs,
-      std::shared_ptr<NamespaceTree::NamespaceNode> nodePtr
-  );
 
   struct PreparedPublish {
     std::shared_ptr<moxygen::MoQForwarder::Subscriber> subscriber;
@@ -571,10 +580,10 @@ private:
   std::optional<moxygen::Publisher::TrackStatusResult>
   trackStatusOnSubscriberExec(const moxygen::TrackStatus& req);
 
-  // Resolves a joining fetch against this thread's local forwarder (race-free). Rewrites to a
-  // standalone Fetch when largest is known, else clears joiningRequestID to defer to upstream.
-  moxygen::Fetch
-  fetchOnSubscriberExec(moxygen::Fetch fetch, const std::shared_ptr<moxygen::MoQSession>& session);
+  // Rewrites a joining fetch to a standalone fetch against this thread's local forwarder. Returns
+  // the setup to wait for while that forwarder is pending, and a ready future otherwise.
+  folly::Expected<folly::SemiFuture<folly::Unit>, moxygen::FetchError>
+  resolveJoiningFetchOnSubscriberExec(moxygen::Fetch& fetch, const moxygen::MoQSession& session);
 
   // Impl methods — run on relayExec_ when set, or inline when relayExec_==nullptr.
   folly::coro::Task<SubscribeResult>
@@ -618,7 +627,10 @@ private:
   );
 
   std::shared_ptr<folly::Executor> ownedRelayExec_;
+  std::unique_ptr<folly::EventBaseThreadTimekeeper> timekeeper_;
   folly::Executor* relayExec_{nullptr};
+  // Key for the relay chain's channel on each publisher forwarder.
+  const moxygen::SessionId relayChannelId_{moxygen::MoQSession::makeSessionId()};
   // Only set in single-threaded mode (relayExec_ == null); used as the
   // coroutine start executor for fire-and-forget tasks like doSubscribeUpdate.
   folly::Executor* sessionExec_{nullptr};
@@ -660,6 +672,19 @@ private:
 
   std::unique_ptr<MoqxCache> cache_;
   uint64_t maxDeselected_{kDefaultMaxDeselected};
+
+  // === Pending rendezvous (draft 18+ SUBSCRIBE with RENDEZVOUS_TIMEOUT) ===
+  // Subscribers waiting on a namespace/track that isn't published yet. Woken by
+  // doPublishNamespace()/publishWithSession() when matching content arrives;
+  // otherwise each waiter's baton times out.
+  PendingRendezvousTree pendingRendezvous_;
+
+  // Existence check, then park. Callers screen first. Must run on relayExec_ (inline
+  // in SingleThread mode): touches registry_/namespaceTree_/pendingRendezvous_.
+  folly::coro::Task<std::optional<moxygen::SubscribeError>> rendezvousWithPublisherOrTimeout(
+      const moxygen::SubscribeRequest& subReq,
+      std::chrono::milliseconds timeout
+  );
 
   std::chrono::milliseconds idleTimeout_{kDefaultIdleTimeout};
   std::chrono::milliseconds activityThreshold_{kDefaultActivityThreshold};

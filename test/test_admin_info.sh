@@ -28,7 +28,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-"$(dirname "$0")/make_test_config.sh" "$LISTEN_PORT" "$ADMIN_PORT" > "$TMPDIR/config.yaml"
+"$(dirname "$0")/make_test_config.sh" "$LISTEN_PORT" "$ADMIN_PORT" --tmpdir "$TMPDIR" > "$TMPDIR/config.yaml"
 
 # Start moqx with the generated config in the background.
 "$BINARY" --config="$TMPDIR/config.yaml" &

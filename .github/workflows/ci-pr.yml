@@ -1,8 +1,8 @@
 name: ci pr
 
-# PR verification: format + build/test matrix + d16 conformance.
-# Main push uses ci-main.yml which runs the full conformance grid and
-# microbenchmarks, and adds publish/release/notify.
+# PR verification: format + build/test matrix + the conformance grid.
+# Main push uses ci-main.yml, which runs the same grid plus microbenchmarks,
+# and adds publish/release/notify.
 
 on:
   pull_request:
@@ -112,6 +112,15 @@ jobs:
           ASAN_OPTIONS: ${{ matrix.leak_check && 'detect_leaks=1:abort_on_error=1' || '' }}
         run: scripts/test.sh ${{ matrix.preset }} --output-junit test-results.xml
 
+      - name: Upload harness logs
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: harness-logs-${{ matrix.name }}
+          path: .scratch/moq_harness_logs/
+          if-no-files-found: ignore
+          retention-days: 7
+
       # dorny/test-reporter writes a Check Run, which needs 'checks: write' on
       # GITHUB_TOKEN. Fork-PR tokens are read-only regardless of workflow perms,
       # so skip on cross-repo PRs. test-log output above still shows pass/fail.
@@ -142,9 +151,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # d16 cells only; ci-main runs the full grid (d14 + d16) on every
-          # main push. pico WT cells deferred until pico WT CONNECT
-          # (openmoq/moxygen#172 / PR #173) syncs in.
           - name: mvfst d16 Q
             versions: "16"
             transport: "Q"
@@ -153,9 +159,29 @@ jobs:
             versions: "16"
             transport: ""
             stack: "mvfst"
+          - name: mvfst d18 Q
+            versions: "18"
+            transport: "Q"
+            stack: "mvfst"
+          - name: mvfst d18 WT
+            versions: "18"
+            transport: ""
+            stack: "mvfst"
           - name: pico d16 Q
             versions: "16"
             transport: "Q"
+            stack: "pico"
+          - name: pico d16 WT
+            versions: "16"
+            transport: ""
+            stack: "pico"
+          - name: pico d18 Q
+            versions: "18"
+            transport: "Q"
+            stack: "pico"
+          - name: pico d18 WT
+            versions: "18"
+            transport: ""
             stack: "pico"
     name: conformance (${{ matrix.name }})
     runs-on: ubuntu-22.04

@@ -23,6 +23,13 @@ public:
   )
       : inner_(std::move(inner)), exec_(std::move(exec)) {}
 
+  ~CrossExecPublishNamespaceCallback() override {
+    // Inner dtor may touch session state; destroy it on exec_, not the dropping thread.
+    if (inner_) {
+      exec_->add([inner = std::move(inner_)]() mutable {});
+    }
+  }
+
   void publishNamespaceCancel(
       moxygen::PublishNamespaceErrorCode errorCode,
       std::string reasonPhrase
@@ -47,6 +54,13 @@ public:
       folly::Executor* exec
   )
       : inner_(std::move(inner)), exec_(exec) {}
+
+  ~CrossExecPublishNamespaceHandle() override {
+    // Inner dtor may touch session state; destroy it on exec_, not the dropping thread.
+    if (inner_) {
+      exec_->add([inner = std::move(inner_)]() mutable {});
+    }
+  }
 
   const moxygen::PublishNamespaceOk& publishNamespaceOk() const override {
     return inner_->publishNamespaceOk();
@@ -81,15 +95,16 @@ SubscriberCrossExecFilter::publishNamespace(
                                         std::move(callerExec)
                                     )
                                   : nullptr;
+  auto* targetExec = targetExec_;
   auto result = co_await folly::coro::co_withExecutor(
-      folly::getKeepAliveToken(targetExec_),
+      folly::getKeepAliveToken(targetExec),
       inner_->publishNamespace(std::move(pubNs), std::move(wrappedCallback))
   );
   if (result.hasValue()) {
-    co_return std::make_shared<CrossExecPublishNamespaceHandle>(
-        std::move(result.value()),
-        targetExec_
-    );
+    auto handle =
+        std::make_shared<CrossExecPublishNamespaceHandle>(std::move(result.value()), targetExec);
+    co_await folly::coro::co_safe_point;
+    co_return handle;
   }
   co_return result;
 }

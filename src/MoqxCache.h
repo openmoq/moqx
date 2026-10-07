@@ -1,10 +1,9 @@
 /*
  * Copyright (c) Meta Platforms, Inc. and affiliates.
- * Originally from github.com/facebookexperimental/moxygen.
- * See the moxygen LICENSE for the original license terms:
- * https://github.com/openmoq/moxygen/blob/main/LICENSE
- *
  * Copyright (c) OpenMOQ contributors.
+ * Originally from github.com/facebookexperimental/moxygen.
+ * This source code is licensed under the Apache 2.0 license found in the
+ * LICENSE file in the root directory of this source tree.
  */
 
 #pragma once
@@ -291,8 +290,8 @@ private:
 
     folly::Expected<folly::Unit, moxygen::MoQPublishError>
     updateLargest(moxygen::AbsoluteLocation current, bool endOfTrack = false);
-    // The requested end, clamped to one past the largest object in the track
-    // but never below start.
+    // The requested end, clamped to one past the track's Largest Object but
+    // never below start.  Only clamped when the Largest is known.
     FetchOkEnd
     fetchOkEnd(moxygen::AbsoluteLocation start, moxygen::AbsoluteLocation exclusiveEnd) const;
     CacheGroup& getOrCreateGroup(uint64_t groupID);

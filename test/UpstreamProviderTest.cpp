@@ -590,6 +590,27 @@ TEST_F(UpstreamProviderTest, OnDisconnectHookFires) {
   );
 }
 
+// An upstream that dies between CLIENT_SETUP and SERVER_SETUP surfaces as
+// cancellation, not an error, because MoQSession cancels its own token.
+class UpstreamSetupCancelledTest : public UpstreamProviderTest {
+protected:
+  bool refuseClientSetup() override { return refuseNextSetup_.exchange(false); }
+
+  std::atomic<bool> refuseNextSetup_{true};
+};
+
+TEST_F(UpstreamSetupCancelledTest, ConnectCancelledDuringSetupRetries) {
+  folly::coro::blockingWait(
+      [&]() -> folly::coro::Task<void> {
+        // start() returns once the loop connects or gives up, so the retry runs inline.
+        co_await provider_->start();
+        EXPECT_NE(provider_->currentSession(), nullptr);
+        EXPECT_EQ(provider_->stateString(), "connected");
+      }(),
+      &clientEvb()
+  );
+}
+
 // stop() before a session close must not spawn a reconnect loop.
 TEST_F(UpstreamProviderTest, StopSuppressesReconnectAfterSessionClose) {
   allowSubscribe();
@@ -673,10 +694,10 @@ protected:
     // Mock sessions representing two downstream subscribers.
     subSession1_ = std::make_shared<NiceMock<moxygen::test::MockMoQSession>>(clientExec());
     ON_CALL(*subSession1_, getNegotiatedVersion())
-        .WillByDefault(Return(std::optional<uint64_t>(kVersionDraftCurrent)));
+        .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
     subSession2_ = std::make_shared<NiceMock<moxygen::test::MockMoQSession>>(clientExec());
     ON_CALL(*subSession2_, getNegotiatedVersion())
-        .WillByDefault(Return(std::optional<uint64_t>(kVersionDraftCurrent)));
+        .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
   }
 
   void TearDown() override {

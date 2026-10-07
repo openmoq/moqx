@@ -3,11 +3,14 @@
 #
 # Usage: test_conformance.sh <moqx_binary> [versions] [Q] [stack]
 #
-#   versions — "14", "16", or "14,16" (default: moxygen default)
+#   versions — "16", "18", or "16,18" (default: the relay's default versions)
 #   Q        — literal "Q" to use raw QUIC transport (default: WebTransport)
 #   stack    — "mvfst" (default) or "pico" — selects the relay's QUIC stack
 #
 # Args are positional but order-independent: each is identified by content.
+#
+# A versions arg pins the relay too, not just the moqtest endpoints: drafts
+# outside the relay's default list (e.g. 18) otherwise fail ALPN negotiation.
 #
 # Environment:
 #   MOQBIN — path to moxygen install bin/ (for moqtest_client, moqtest_server)
@@ -16,9 +19,9 @@
 # Examples:
 #   test_conformance.sh ./build/default/moqx
 #   test_conformance.sh ./build/default/moqx 16
-#   test_conformance.sh ./build/default/moqx 14 Q          # mvfst, draft-14, raw QUIC
+#   test_conformance.sh ./build/default/moqx 18 Q          # mvfst, draft-18, raw QUIC
 #   test_conformance.sh ./build/default/moqx 16 Q pico     # picoquic, draft-16, raw QUIC
-#   test_conformance.sh ./build/default/moqx 14 pico       # picoquic, draft-14, WT
+#   test_conformance.sh ./build/default/moqx 18 pico       # picoquic, draft-18, WT
 
 set -euo pipefail
 
@@ -35,6 +38,9 @@ source "$(dirname "${BASH_SOURCE[0]}")/test_moqbin.sh"
 resolve_moqbin "$MOQX_BIN"
 # shellcheck source=test_relay_lifecycle.sh
 source "$(dirname "${BASH_SOURCE[0]}")/test_relay_lifecycle.sh"
+
+# shellcheck source=test_quic_stack.sh
+source "$(dirname "${BASH_SOURCE[0]}")/test_quic_stack.sh"
 
 # moxygen conformance script: MOXYGEN_SRC override, else the moxygen source this
 # build resolved — the cache records it wherever it lives, including a local
@@ -59,14 +65,20 @@ if [[ ! -x "$CONFORMANCE_SCRIPT" ]]; then
 fi
 
 # Parse args. Each one is identified by content so order doesn't matter.
-QUIC_STACK="mvfst"
+# A positional stack name overrides MOQ_HARNESS_QUIC_STACK, which is how the
+# rest of the suite selects its stack.
+QUIC_STACK="$MOQ_QUIC_STACK"
 DOWNSTREAM_ARGS=()
+VERSIONS=""
 SERVER_VERSIONS_FLAG=()
 SERVER_TRANSPORT_FLAG=()
 for arg in "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"; do
   case "$arg" in
-    mvfst|pico)
-      QUIC_STACK="$arg"
+    mvfst)
+      QUIC_STACK="mvfst"
+      ;;
+    pico|picoquic)
+      QUIC_STACK="picoquic"
       ;;
     Q)
       SERVER_TRANSPORT_FLAG=(--quic_transport=true)
@@ -74,6 +86,7 @@ for arg in "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"; do
       ;;
     *)
       if [[ "$arg" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
+        VERSIONS="$arg"
         SERVER_VERSIONS_FLAG=(--versions="$arg")
       fi
       DOWNSTREAM_ARGS+=("$arg")
@@ -85,32 +98,18 @@ done
 RELAY_PORT=$((19700 + RANDOM % 100))
 ADMIN_PORT=$((RELAY_PORT + 1))
 
-# picoquic dual-stack v6 bind doesn't currently receive v4-mapped packets
-# (openmoq/moxygen#170). Bind v4 explicitly when stack=pico; mvfst is fine on "::".
-# picoquic also requires real TLS credentials — insecure mode is unsupported
-# (openmoq/moxygen#176). URL_HOST is the matching client-side address — must
-# agree with the bind family or 'localhost' may resolve to ::1 and miss the
-# v4-only listener (CI's /etc/hosts lists ::1 first).
 TMPDIR=$(mktemp -d)
-if [[ "$QUIC_STACK" = "pico" ]]; then
-  BIND_ADDRESS="0.0.0.0"
-  URL_HOST="127.0.0.1"
-  STACK_LINE="    quic_stack: picoquic"
-  # Generate ephemeral self-signed cert valid for localhost.
-  openssl req -newkey rsa:2048 -nodes \
-    -keyout "$TMPDIR/cert.key" -x509 -out "$TMPDIR/cert.pem" \
-    -subj '/CN=conformance-test' -addext 'subjectAltName=DNS:localhost' \
-    >/dev/null 2>&1
-  TLS_BLOCK="    tls:
-      insecure: false
-      cert_file: \"$TMPDIR/cert.pem\"
-      key_file: \"$TMPDIR/cert.key\""
-else
-  BIND_ADDRESS="::"
-  URL_HOST="localhost"
-  STACK_LINE=""
-  TLS_BLOCK="    tls:
-      insecure: true"
+BIND_ADDRESS="::"
+URL_HOST="localhost"
+# The positional argument may have overridden the environment, so re-point the
+# shared helpers at whatever won.
+MOQ_QUIC_STACK="$QUIC_STACK"
+LISTENER_STACK_BLOCK="$(moq_listener_stack_yaml "$TMPDIR")"
+
+# Pin the relay to the requested drafts; unset leaves it on its defaults.
+VERSIONS_BLOCK=""
+if [[ -n "$VERSIONS" ]]; then
+  VERSIONS_BLOCK=$'\n'"    moqt_versions: [${VERSIONS}]"
 fi
 
 # Generate a temp config with our ports
@@ -139,13 +138,12 @@ trap cleanup EXIT
 cat > "$TMPCONFIG" <<EOF
 listeners:
   - name: conformance
-${STACK_LINE}
     udp:
       socket:
         address: "${BIND_ADDRESS}"
         port: ${RELAY_PORT}
-${TLS_BLOCK}
-    endpoint: "/moq-relay"
+${LISTENER_STACK_BLOCK}
+    endpoint: "/moq-relay"${VERSIONS_BLOCK}
 services:
   default:
     match:

@@ -77,7 +77,7 @@ listeners:
       key_file: /etc/ssl/key.pem
       insecure: false
     endpoint: "/relay"
-    moqt_versions: [14, 16]
+    moqt_versions: [16, 18]
 services:
   live:
     match:
@@ -106,8 +106,8 @@ admin:
   EXPECT_EQ(l.endpoint.value(), "/relay");
   ASSERT_TRUE(l.moqt_versions.value().has_value());
   EXPECT_EQ(l.moqt_versions.value()->size(), 2);
-  EXPECT_EQ((*l.moqt_versions.value())[0], 14);
-  EXPECT_EQ((*l.moqt_versions.value())[1], 16);
+  EXPECT_EQ((*l.moqt_versions.value())[0], 16);
+  EXPECT_EQ((*l.moqt_versions.value())[1], 18);
 
   ASSERT_EQ(cfg.services.value().size(), 1);
   const auto& svc = cfg.services.value().at("live");

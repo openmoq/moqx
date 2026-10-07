@@ -30,7 +30,7 @@ mkdir -p "$TMPDIR/mlog"
 mkdir -p "$TMPDIR/qlog"
 
 # Add logging config to the test config
-"$(dirname "$0")/make_test_config.sh" "$LISTEN_PORT" "$ADMIN_PORT" > "$TMPDIR/config.yaml"
+"$(dirname "$0")/make_test_config.sh" "$LISTEN_PORT" "$ADMIN_PORT" --tmpdir "$TMPDIR" > "$TMPDIR/config.yaml"
 cat <<EOF >> "$TMPDIR/config.yaml"
 logging:
   mlog:

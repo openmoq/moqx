@@ -377,6 +377,7 @@ add_library(moqx_core STATIC
   src/auth/Auth.cpp
   src/LoggingMultiFlag.cpp
   src/NamespaceTree.cpp
+  src/PendingRendezvousTree.cpp
   src/SubscriptionRegistry.cpp
   src/MoqxRelay.cpp
   src/MoqxRelayContext.cpp

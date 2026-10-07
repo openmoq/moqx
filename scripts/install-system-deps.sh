@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# Copyright (c) OpenMOQ contributors.
+# Originally from github.com/facebookexperimental/moxygen.
+# This source code is licensed under the Apache 2.0 license found in the
+# LICENSE file in the root directory of this source tree.
+#
 # install-system-deps.sh — install the system libraries moqx needs.
 #
 # Required in BOTH dependency modes: the prebuilt moxygen install ships
@@ -119,12 +125,6 @@ install_macos() {
     brew install \
         cmake ninja ccache openssl@3 glog gflags double-conversion \
         libevent libsodium zstd boost fmt c-ares gperf brotli jq
-    # Homebrew ships CMake 4.x; the from-source moxygen build needs the 3.x
-    # series (same reason as the Linux pin above). Prebuilt-mode builds are fine.
-    case "$(cmake --version 2>/dev/null | sed -nE 's/.*version ([0-9]+).*/\1/p' | head -1)" in
-        4*) echo "WARNING: CMake 4.x detected — from-source moxygen builds need CMake 3.x:"
-            echo "         pip3 install 'cmake<4'  (and ensure it precedes brew's on PATH)" ;;
-    esac
 }
 
 if [[ "$(uname)" == "Darwin" ]]; then

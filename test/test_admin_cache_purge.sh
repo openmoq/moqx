@@ -29,7 +29,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-"$(dirname "$0")/make_test_config.sh" "$LISTEN_PORT" "$ADMIN_PORT" > "$TMPDIR/config.yaml"
+"$(dirname "$0")/make_test_config.sh" "$LISTEN_PORT" "$ADMIN_PORT" --tmpdir "$TMPDIR" > "$TMPDIR/config.yaml"
 
 "$BINARY" --config="$TMPDIR/config.yaml" &
 MOQX_PID=$!
