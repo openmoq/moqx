@@ -103,7 +103,7 @@ scrape_configs:
     # Display-form labels: decode the common safe-form escapes (.2d '-', .2e '.')
     # for tables and legends; links and query params keep the safe labels.
     # Interim until the relay emits display labels itself.
-    metric_relabel_configs:
+    metric_relabel_configs: &display_labels
       - source_labels: [namespace]
         regex: '(.+)'
         target_label: namespace_display
@@ -172,3 +172,13 @@ scrape_configs:
         regex: '(.*)\.2e(.*)'
         target_label: track_display
         replacement: '${1}.${2}'
+
+  # Origin (peer relay ID or publisher IP) per namespace, from ns-targets, for
+  # the overview's Origin column. Same display labels as the per-track series.
+  - job_name: moqx-ns-origin
+    scrape_interval: 5s
+    static_configs:
+      - targets: ['ns-targets:9102']
+        labels:
+          instance: moqx-relay
+    metric_relabel_configs: *display_labels
