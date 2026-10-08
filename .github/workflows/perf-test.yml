@@ -47,6 +47,10 @@ on:
         description: 'subscriber override; 0 derives count from target and profile'
         type: number
         default: 0
+      client_threads:
+        description: 'number of perf client event-loop threads'
+        type: number
+        default: 8
       target_mbps:
         description: 'aggregate target throughput used to derive subscribers'
         type: number
@@ -99,6 +103,10 @@ on:
         type: number
         required: false
         default: 0
+      client_threads:
+        type: number
+        required: false
+        default: 8
       target_mbps:
         type: number
         required: false
@@ -213,12 +221,17 @@ jobs:
           TARGET_MBPS="${{ inputs.target_mbps }}"
           [[ -n "$TARGET_MBPS" ]] || TARGET_MBPS=600
           SUBSCRIBER_OVERRIDE="${{ inputs.subscribers || '0' }}"
+          CLIENT_THREADS="${{ inputs.client_threads || '8' }}"
           if ! jq -en --argjson target "$TARGET_MBPS" '$target > 0' >/dev/null; then
             echo "ERROR: target_mbps must be greater than zero" >&2
             exit 1
           fi
           if [[ ! "$SUBSCRIBER_OVERRIDE" =~ ^[0-9]+$ ]]; then
             echo "ERROR: subscribers override must be zero or a positive integer" >&2
+            exit 1
+          fi
+          if [[ ! "$CLIENT_THREADS" =~ ^[1-9][0-9]*$ ]]; then
+            echo "ERROR: client_threads must be a positive integer" >&2
             exit 1
           fi
 
@@ -257,7 +270,7 @@ jobs:
                 --delivery-timeout        5000 \
                 --ramp                    150 \
                 --io-threads              4 \
-                --client-threads          8 \
+                --client-threads          "$CLIENT_THREADS" \
                 --client-args             "$CLIENT_ARGS" \
                 --cooldown                10 \
                 --quic-stack              "$STACK" \
