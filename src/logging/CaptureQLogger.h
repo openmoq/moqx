@@ -7,6 +7,7 @@
 #pragma once
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <utility>
@@ -61,6 +62,7 @@ public:
   void addPacket(const quic::VersionNegotiationPacket&, uint64_t, bool) override {}
   void addPacket(const quic::RegularQuicWritePacket&, uint64_t) override {}
   void addPacket(const quic::RetryPacket&, uint64_t, bool) override {}
+  void addPacketDrop(size_t, std::string) override {}
   void addPacketBuffered(quic::ProtectionType, uint64_t) override {}
   void addDatagramReceived(uint64_t) override {}
   void addStreamStateUpdate(quic::StreamId, std::string, quic::Optional<std::chrono::milliseconds>)

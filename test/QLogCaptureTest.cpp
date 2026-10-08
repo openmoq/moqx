@@ -134,6 +134,7 @@ protected:
       logger.setDcid(cid);
       logger.addPacketBuffered(quic::ProtectionType::KeyPhaseZero, 1200);
       logger.addDatagramReceived(1200);
+      logger.addPacketDrop(1200, "test");
       logger.addStreamStateUpdate(4, "on headers", std::nullopt);
       logger.addMetricUpdate(10ms, 5ms, 8ms, 1ms);
     }
@@ -152,7 +153,7 @@ protected:
 
 TEST_F(CaptureQLoggerTest, FullModeKeepsEverything) {
   auto names = logAndRead<CaptureQLogger>(dir_.string(), QLogCapture::Mode::Full);
-  EXPECT_EQ(names.size(), 4u);
+  EXPECT_EQ(names.size(), 5u);
   EXPECT_TRUE(names.contains("quic:recovery_metrics_updated"));
 }
 

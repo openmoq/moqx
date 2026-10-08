@@ -43,7 +43,7 @@ constexpr size_t kMaxScannedEntries = 10000;
 struct QLogFile {
   std::string connectionId;
   int64_t bytes;
-  int64_t modified;
+  int64_t modifiedNs;
 };
 
 struct QLogListing {
@@ -51,13 +51,25 @@ struct QLogListing {
   bool truncated{false};       // stopped after kMaxScannedEntries
 };
 
+int64_t mtimeNs(const struct stat& st) {
+#ifdef __APPLE__
+  const auto& ts = st.st_mtimespec;
+#else
+  const auto& ts = st.st_mtim;
+#endif
+  return int64_t{ts.tv_sec} * 1'000'000'000 + ts.tv_nsec;
+}
+
 // Blocking; must run off the event-loop thread. Keeps the newest
-// kMaxListedFiles of at most kMaxScannedEntries directory entries.
+// kMaxListedFiles of at most kMaxScannedEntries directory entries. Throws if
+// the directory cannot be read.
 QLogListing listQLogFiles(const std::string& dir) {
   QLogListing listing;
   auto& files = listing.files;
   // Heap order puts the oldest kept file at the front.
-  const auto newer = [](const QLogFile& a, const QLogFile& b) { return a.modified > b.modified; };
+  const auto newer = [](const QLogFile& a, const QLogFile& b) {
+    return a.modifiedNs > b.modifiedNs;
+  };
   size_t scanned = 0;
   std::error_code ec;
   for (std::filesystem::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
@@ -73,7 +85,7 @@ QLogListing listQLogFiles(const std::string& dir) {
     if (::stat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) {
       continue;
     }
-    QLogFile file{path.stem().string(), static_cast<int64_t>(st.st_size), st.st_mtime};
+    QLogFile file{path.stem().string(), static_cast<int64_t>(st.st_size), mtimeNs(st)};
     if (files.size() < kMaxListedFiles) {
       files.push_back(std::move(file));
       std::push_heap(files.begin(), files.end(), newer);
@@ -82,6 +94,9 @@ QLogListing listQLogFiles(const std::string& dir) {
       files.back() = std::move(file);
       std::push_heap(files.begin(), files.end(), newer);
     }
+  }
+  if (ec) {
+    throw std::filesystem::filesystem_error("qlog listing", dir, ec);
   }
   std::sort_heap(files.begin(), files.end(), newer);
   return listing;
@@ -113,7 +128,7 @@ statusBody(const QLogCapture::Status& status, const QLogListing* listing = nullp
       w.beginObject();
       w.field("connection_id", f.connectionId);
       w.field("bytes", f.bytes);
-      w.field("modified", f.modified);
+      w.field("modified", f.modifiedNs / 1'000'000'000);
       w.endObject();
     }
     w.endArray();
