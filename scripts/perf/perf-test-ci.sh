@@ -345,6 +345,8 @@ until ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "
   sleep 0.5
 done
 echo "Publisher connected"
+echo "Waiting 5s for publisher/relay to settle..."
+sleep 5
 
 # ── Run performance test client ───────────────────────────────────────────────
 RELAY_IP=$(ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "hostname -I | awk '{print \$1}'")
