@@ -21,8 +21,9 @@ listeners:
       insecure: true          # Skip TLS for local development
     endpoint: "/moq-relay"    # WebTransport endpoint path
     # moqt_versions: [16, 18] # MOQT draft versions, 16 and/or 18 (empty = default 16)
-    # quic:                   # Per-listener QUIC overrides (optional; inherits listener_defaults.quic)
-    #   max_data: 33554432    # Override connection flow control window for this listener
+    quic:                     # Per-listener QUIC overrides (optional; inherits listener_defaults.quic)
+      cc_algo: bbr2           # Congestion control (default: bbr); names differ per stack, see docs/config.md
+      # max_data: 33554432    # Override connection flow control window for this listener
 
 service_defaults:
   # Per-service cache merges field-by-field: set only the fields you want to override.

@@ -11,8 +11,8 @@
 #   RELAY_PORT        (default 4433)
 #   ADMIN_PORT        (default 8000)
 #   MOQX_LOGGING      (optional) folly XLOG config; empty = baseline INFO
-#   MOQX_CC, MOQX_PICO_CC
-#                     (optional) congestion control overrides, see entrypoint.sh;
+#   MOQX_CC           (optional) mvfst congestion control; empty = bbr2
+#   MOQX_PICO_CC      (optional) picoquic congestion control, see entrypoint.sh;
 #                     empty = entrypoint default
 #   MOQX_BBR_SKIP_PROBE_RTT (optional) mvfst bbr: skip PROBE_RTT while app-limited;
 #                     empty = true
@@ -31,6 +31,7 @@ cd "$(dirname "$0")"        # docker/
 
 RELAY_PORT="${RELAY_PORT:-4433}"
 ADMIN_PORT="${ADMIN_PORT:-8000}"
+export MOQX_CC="${MOQX_CC:-bbr2}"
 
 # ── docker/.env ──────────────────────────────────────────────────────────────
 {
@@ -39,7 +40,7 @@ ADMIN_PORT="${ADMIN_PORT:-8000}"
   echo "MOQX_PORT=${RELAY_PORT}"
   echo "MOQX_ADMIN_PORT=${ADMIN_PORT}"
   echo "MOQX_LOGGING=${MOQX_LOGGING:-}"
-  echo "MOQX_CC=${MOQX_CC:-}"
+  echo "MOQX_CC=${MOQX_CC}"
   echo "MOQX_PICO_CC=${MOQX_PICO_CC:-}"
   echo "MOQX_BBR_SKIP_PROBE_RTT=${MOQX_BBR_SKIP_PROBE_RTT:-true}"
   echo "MOQX_QLOG_SAMPLE=${MOQX_QLOG_SAMPLE:-}"
@@ -125,7 +126,7 @@ curl -sf "http://127.0.0.1:${ADMIN_PORT}/config" | python3 -c '
 import json, os, sys
 cfg = json.load(sys.stdin)
 want = {
-    "mvfst": (os.environ.get("MOQX_CC") or "bbr",
+    "mvfst": (os.environ["MOQX_CC"],
               (os.environ.get("MOQX_BBR_SKIP_PROBE_RTT") or "true") == "true"),
     "picoquic": (os.environ.get("MOQX_PICO_CC") or "bbr", None),
 }
