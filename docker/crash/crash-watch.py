@@ -480,18 +480,26 @@ def save_run_log(cid, run_start, until, path):
     cmd = ["docker", "logs", *since, "--until", until, cid]
     try:
         with open(path, "wb") as out:
+            # The relay logs to stderr, so docker's own errors share the stream.
             docker = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
             )
             try:
-                subprocess.run(
+                zstd = subprocess.run(
                     ["zstd", "-q", "-T0"], stdin=docker.stdout, stdout=out, timeout=600
                 )
+                if zstd.returncode == 0:
+                    docker.wait(timeout=60)
             finally:
                 docker.stdout.close()
                 docker.kill()
                 docker.wait()
+        if zstd.returncode or docker.returncode:
+            raise OSError(
+                f"zstd exited {zstd.returncode}, docker logs exited {docker.returncode}"
+            )
     except (OSError, subprocess.TimeoutExpired) as e:
+        path.unlink(missing_ok=True)
         log(f"{path.parent.name}: run log not saved: {e!r}")
 
 
