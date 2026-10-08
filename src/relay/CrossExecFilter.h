@@ -115,15 +115,29 @@ class CrossExecSubgroupFilter final : public moxygen::SubgroupConsumerFilter,
                                       public CrossExecLifetime<CrossExecSubgroupFilter> {
 public:
   static std::shared_ptr<CrossExecSubgroupFilter>
-  create(folly::Executor* targetExec, bool deepCopyPayload = true) {
-    auto f = std::make_shared<CrossExecSubgroupFilter>(PrivateTag{}, targetExec, deepCopyPayload);
+  create(
+      folly::Executor* targetExec,
+      uint64_t groupID,
+      uint64_t subgroupID,
+      bool deepCopyPayload = true
+  ) {
+    auto f = std::make_shared<CrossExecSubgroupFilter>(
+        PrivateTag{}, targetExec, groupID, subgroupID, deepCopyPayload);
     f->selfGuard_ = f;
     return f;
   }
 
-  CrossExecSubgroupFilter(PrivateTag, folly::Executor* targetExec, bool deepCopyPayload = true)
+  CrossExecSubgroupFilter(
+      PrivateTag,
+      folly::Executor* targetExec,
+      uint64_t groupID,
+      uint64_t subgroupID,
+      bool deepCopyPayload = true
+  )
       : moxygen::SubgroupConsumerFilter(nullptr),
-        CrossExecLifetime<CrossExecSubgroupFilter>(targetExec, deepCopyPayload) {}
+        CrossExecLifetime<CrossExecSubgroupFilter>(targetExec, deepCopyPayload),
+        groupID_(groupID),
+        subgroupID_(subgroupID) {}
 
   folly::Expected<folly::Unit, moxygen::MoQPublishError> object(
       uint64_t objectID,
@@ -169,6 +183,8 @@ public:
   void setKeepAlive(std::shared_ptr<moxygen::TrackConsumer> ka) { keepAlive_ = std::move(ka); }
 
 private:
+  uint64_t groupID_;
+  uint64_t subgroupID_;
   ObjectPayloadByteTracker payloadTracker_;
   std::shared_ptr<moxygen::TrackConsumer> keepAlive_;
 };
