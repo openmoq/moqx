@@ -45,7 +45,7 @@ listener_defaults:
     max_stream_data: 16777216     # 16 MB per-stream flow control
     max_uni_streams: 8192
     max_bidi_streams: 16
-    idle_timeout_ms: 30000
+    idle_timeout_ms: 60000
     min_ack_delay_us: 1000
     max_ack_delay_us: 25000
   mvfst:
