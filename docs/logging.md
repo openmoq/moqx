@@ -212,9 +212,11 @@ curl -o c.qlog 'localhost:8000/logs?connection_id=<id>&type=qlog'       # fetch 
 curl -X DELETE localhost:8000/qlog/capture                              # disarm
 ```
 
-- `count` (default 1, max 64) and `seconds` (default 60, max 600) bound the capture; arming again replaces it.
+- `count` (default 1, max 64) and `seconds` (default 60, max 600) bound the capture.
+- Arming while a capture is in progress returns 409. `replace=1` replaces the capture configuration; connections already being captured keep logging.
 - `mode=cc` (default) keeps congestion control, RTT, loss and pacing events and drops per-packet and per-stream events. `mode=full` keeps everything; use it for short windows.
-- Each captured connection logs `qlog capture: logging a new connection` at INFO, so captures line up with the rest of the relay log; `GET /qlog/capture` lists their files by connection ID.
+- Each captured connection logs `qlog capture: connection <id> (<mode>)` at INFO, so captures line up with the rest of the relay log.
+- `GET /qlog/capture` lists the newest 100 qlog files by connection ID. It scans at most 10,000 directory entries; `"truncated": true` means it stopped early and may have missed newer files.
 
 Open the files in [qvis](https://qvis.quictools.info/); it parses them in the browser.
 

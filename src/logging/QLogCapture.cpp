@@ -12,26 +12,36 @@
 
 namespace openmoq::moqx::logging {
 
-void QLogCapture::arm(uint32_t count, std::chrono::seconds duration, Mode mode) {
+bool QLogCapture::arm(
+    uint32_t count,
+    std::chrono::seconds duration,
+    Mode mode,
+    bool replace,
+    std::chrono::steady_clock::time_point now
+) {
   count = std::min(count, kMaxCount);
   duration = std::min(duration, kMaxDuration);
-  std::lock_guard lock(mutex_);
-  mode_ = mode;
-  remaining_ = count;
-  captured_ = 0;
-  deadline_ = std::chrono::steady_clock::now() + duration;
-  expiresAt_ = std::chrono::system_clock::now() + duration;
+  auto state = state_.wlock();
+  if (!replace && state->live(now)) {
+    return false;
+  }
+  state->mode = mode;
+  state->remaining = count;
+  state->captured = 0;
+  state->deadline = now + duration;
+  state->expiresAt = std::chrono::system_clock::now() + duration;
   armed_.store(count > 0, std::memory_order_release);
   XLOG(INFO) << "qlog capture armed: next " << count << " connection(s) within " << duration.count()
              << "s, mode=" << modeName(mode);
+  return true;
 }
 
 void QLogCapture::disarm() {
-  std::lock_guard lock(mutex_);
+  auto state = state_.wlock();
   if (armed_.load(std::memory_order_relaxed)) {
-    XLOG(INFO) << "qlog capture disarmed after " << captured_ << " connection(s)";
+    XLOG(INFO) << "qlog capture disarmed after " << state->captured << " connection(s)";
   }
-  remaining_ = 0;
+  state->remaining = 0;
   armed_.store(false, std::memory_order_release);
 }
 
@@ -39,29 +49,29 @@ std::optional<QLogCapture::Mode> QLogCapture::take(std::chrono::steady_clock::ti
   if (!armed_.load(std::memory_order_acquire)) {
     return std::nullopt;
   }
-  std::lock_guard lock(mutex_);
-  if (remaining_ == 0 || now >= deadline_) {
-    remaining_ = 0;
+  auto state = state_.wlock();
+  if (!state->live(now)) {
+    state->remaining = 0;
     armed_.store(false, std::memory_order_release);
     return std::nullopt;
   }
-  --remaining_;
-  ++captured_;
-  if (remaining_ == 0) {
+  --state->remaining;
+  ++state->captured;
+  if (state->remaining == 0) {
     armed_.store(false, std::memory_order_release);
   }
-  return mode_;
+  return state->mode;
 }
 
 QLogCapture::Status QLogCapture::status(std::chrono::steady_clock::time_point now) const {
-  std::lock_guard lock(mutex_);
-  const bool live = remaining_ > 0 && now < deadline_;
+  auto state = state_.rlock();
+  const bool live = state->live(now);
   return Status{
       .armed = live,
-      .mode = mode_,
-      .remaining = live ? remaining_ : 0,
-      .captured = captured_,
-      .expiresAt = expiresAt_,
+      .mode = state->mode,
+      .remaining = live ? state->remaining : 0,
+      .captured = state->captured,
+      .expiresAt = state->expiresAt,
   };
 }
 

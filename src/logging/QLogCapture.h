@@ -9,9 +9,10 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
-#include <mutex>
 #include <optional>
 #include <string_view>
+
+#include <folly/Synchronized.h>
 
 namespace openmoq::moqx::logging {
 
@@ -37,8 +38,14 @@ public:
     std::chrono::system_clock::time_point expiresAt;
   };
 
-  // Replaces any capture in progress. count and duration are clamped to the maxima.
-  void arm(uint32_t count, std::chrono::seconds duration, Mode mode);
+  // Returns false, changing nothing, if a capture is in progress and !replace.
+  // count and duration are clamped to the maxima.
+  bool
+  arm(uint32_t count,
+      std::chrono::seconds duration,
+      Mode mode,
+      bool replace,
+      std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
   void disarm();
 
   // Claims one connection if armed and not expired; returns the mode to log it with.
@@ -51,14 +58,21 @@ public:
   static std::optional<Mode> parseMode(std::string_view name);
 
 private:
-  mutable std::mutex mutex_;
-  // Lets take() skip the lock when no capture is armed.
+  struct State {
+    Mode mode{Mode::Cc};
+    uint32_t remaining{0};
+    uint32_t captured{0};
+    std::chrono::steady_clock::time_point deadline;
+    std::chrono::system_clock::time_point expiresAt;
+
+    bool live(std::chrono::steady_clock::time_point now) const {
+      return remaining > 0 && now < deadline;
+    }
+  };
+
+  folly::Synchronized<State> state_;
+  // Lets take() skip the lock when no capture is armed. Written under the lock.
   std::atomic<bool> armed_{false};
-  Mode mode_{Mode::Cc};
-  uint32_t remaining_{0};
-  uint32_t captured_{0};
-  std::chrono::steady_clock::time_point deadline_;
-  std::chrono::system_clock::time_point expiresAt_;
 };
 
 } // namespace openmoq::moqx::logging
