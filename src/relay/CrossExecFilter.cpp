@@ -251,6 +251,9 @@ CrossExecFilter::beginSubgroup(
     moxygen::Priority priority,
     moxygen::BeginSubgroupOptions options
 ) {
+  if (groupID == 0 && subgroupID == 0) {
+    XLOG(INFO) << "CrossExecFilter first subgroup group=0 subgroup=0";
+  }
   if (auto err = loadDeferredError()) {
     return folly::makeUnexpected(*err);
   }

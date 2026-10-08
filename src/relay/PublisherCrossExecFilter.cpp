@@ -7,6 +7,7 @@
 #include "relay/PublisherCrossExecFilter.h"
 #include "relay/CrossExecFilter.h"
 #include "relay/CrossExecSubscriptionHandle.h"
+#include <folly/logging/xlog.h>
 
 namespace openmoq::moqx {
 
@@ -195,6 +196,8 @@ folly::coro::Task<moxygen::Publisher::SubscribeResult> PublisherCrossExecFilter:
     moxygen::SubscribeRequest sub,
     std::shared_ptr<moxygen::TrackConsumer> callback
 ) {
+  auto requestID = sub.requestID;
+  XLOG(INFO) << "PublisherCrossExecFilter subscribe start requestID=" << requestID;
   auto callerExec = co_await folly::coro::co_current_executor;
   auto wrappedConsumer =
       CrossExecFilter::create(callerExec, std::move(callback), /*deepCopyPayload=*/false);
@@ -203,6 +206,9 @@ folly::coro::Task<moxygen::Publisher::SubscribeResult> PublisherCrossExecFilter:
       folly::getKeepAliveToken(targetExec),
       inner_->subscribe(std::move(sub), std::move(wrappedConsumer))
   );
+  XLOG(INFO) << "PublisherCrossExecFilter subscribe "
+             << (result.hasValue() ? "succeeded" : "failed")
+             << " requestID=" << requestID;
   if (result.hasValue()) {
     auto handle =
         std::make_shared<CrossExecSubscriptionHandle>(std::move(result.value()), targetExec);
