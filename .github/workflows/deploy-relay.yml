@@ -36,7 +36,7 @@ on:
           - "DBG3"
           - "DBG4"
       cc_mvfst:
-        description: "mvfst congestion control (default bbr)"
+        description: "mvfst congestion control (default bbr2)"
         required: false
         default: "default"
         type: choice
