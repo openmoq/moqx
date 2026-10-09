@@ -45,9 +45,9 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.mox-token.outputs.token }}
         run: |
-          RUN_ID=$(gh run list --repo openmoq/moxygen --workflow tmp-pgo-e2e.yml \
-            --branch ci/pgo-portable-build --status success --limit 1 \
-            --json databaseId --jq '.[0].databaseId // empty')
+          # REST lookup: the runner's gh predates run list --branch/--status.
+          RUN_ID=$(gh api "repos/openmoq/moxygen/actions/workflows/tmp-pgo-e2e.yml/runs?branch=ci/pgo-portable-build&status=success&per_page=1" \
+            --jq '.workflow_runs[0].id // empty')
           [ -n "$RUN_ID" ] || { echo "no successful tmp pgo e2e run on moxygen" >&2; exit 1; }
           echo "moxygen run: https://github.com/openmoq/moxygen/actions/runs/$RUN_ID"
           echo "MOXYGEN_RUN_ID=$RUN_ID" >> "$GITHUB_ENV"
