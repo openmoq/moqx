@@ -156,7 +156,8 @@ jobs:
           BINARY=build/default/moqx
           MOQBIN_ARG=()
           if [[ -n "$RELEASE" ]]; then
-            gh release download "$RELEASE" --pattern moqx-linux-amd64.tar.gz --dir _release --clobber
+            rm -rf _release
+            gh release download "$RELEASE" --pattern moqx-linux-amd64.tar.gz --dir _release
             mkdir -p _release/moqx
             tar xzf _release/moqx-linux-amd64.tar.gz -C _release/moqx
             BINARY=_release/moqx/bin/moqx
