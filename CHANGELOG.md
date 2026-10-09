@@ -20,6 +20,7 @@ How to add an entry: see [CONTRIBUTING.md](/CONTRIBUTING.md#changelog).
 
 ## Changed
 
+- Docker image: the mvfst listener defaults to bbr2 congestion control (`MOQX_CC`). ([#801](https://github.com/openmoq/moqx/pull/801))
 - A draft-18 SUBSCRIBE_NAMESPACE or SUBSCRIBE_TRACKS matching more than 1000 namespaces and tracks fails with NAMESPACE_TOO_LARGE. ([#667](https://github.com/openmoq/moqx/pull/667))
 
 ## Fixed
