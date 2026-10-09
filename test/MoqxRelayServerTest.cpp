@@ -7,6 +7,8 @@
 #include "MoqxRelayServer.h"
 
 #include <folly/coro/BlockingWait.h>
+#include <folly/coro/Sleep.h>
+#include <folly/io/IOBuf.h>
 #include <folly/portability/GTest.h>
 #include <moxygen/util/InsecureVerifierDangerousDoNotUseInProduction.h>
 #include <moxygen/util/QuicConnector.h>
@@ -83,6 +85,26 @@ TEST_F(MoqxRelayServerTest, AcceptsHttp3PeerWithoutReliableResetSupport) {
 
   ASSERT_NE(client_, nullptr);
   EXPECT_TRUE(client_->good());
+}
+
+TEST_F(MoqxRelayServerTest, ReliableResetKeepsConnectionOpen) {
+  connect("h3", true);
+  ASSERT_NE(client_, nullptr);
+  ASSERT_TRUE(client_->getState()->peerAdvertisedReliableStreamResetSupport);
+
+  auto stream = client_->createUnidirectionalStream();
+  ASSERT_TRUE(stream.has_value());
+  // Reserved HTTP/3 stream type 0x21, which the server must ignore.
+  ASSERT_TRUE(client_->writeChain(*stream, folly::IOBuf::copyBuffer("\x21reliable"), false));
+  ASSERT_TRUE(client_->updateReliableDeliveryCheckpoint(*stream));
+  ASSERT_TRUE(client_->writeChain(*stream, folly::IOBuf::copyBuffer("unreliable"), false));
+  ASSERT_TRUE(client_->resetStreamReliably(*stream, quic::ApplicationErrorCode(0x10c)));
+
+  folly::coro::blockingWait(folly::coro::sleep(std::chrono::seconds(1)), &clientEvb_);
+
+  EXPECT_TRUE(client_->good());
+  EXPECT_FALSE(client_->getState()->localConnectionError.has_value());
+  EXPECT_FALSE(client_->getState()->peerConnectionError.has_value());
 }
 
 } // namespace
