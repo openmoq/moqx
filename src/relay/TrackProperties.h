@@ -40,4 +40,12 @@ inline bool hasUnsupportedMandatoryProperty(
          hasUnsupportedMandatoryProperty(ext);
 }
 
+inline moxygen::FetchError unsupportedMandatoryPropertyFetchError(moxygen::RequestID requestID) {
+  return moxygen::FetchError{
+      requestID,
+      moxygen::FetchErrorCode::UNSUPPORTED_EXTENSION,
+      "unsupported mandatory track property"
+  };
+}
+
 } // namespace openmoq::moqx

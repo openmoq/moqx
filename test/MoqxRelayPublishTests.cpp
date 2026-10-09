@@ -84,8 +84,7 @@ TEST_P(MoQRelayTest, PublishEmptyNamespaceAllowedV18) {
   removeSession(session);
 }
 
-// A PUBLISH carrying a Mandatory Track Property moqx
-// does not understand must be rejected with UNSUPPORTED_EXTENSION on draft-18+.
+// draft-18+: a PUBLISH carrying a Mandatory Track Property fails with UNSUPPORTED_EXTENSION.
 TEST_P(MoQRelayTest, PublishRejectsUnsupportedMandatoryProperty) {
   auto publisherSession = createMockSession();
   ON_CALL(*publisherSession, getNegotiatedVersion())

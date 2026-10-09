@@ -249,7 +249,8 @@ TEST_P(MoQRelayTest, FirstSubscriberViaUpstreamSubscribeReceivesData) {
   driveIfMultiThread();
 }
 
-// UNSUPPORTED_EXTENSION, cancelling the downstream subscription.
+// An upstream SUBSCRIBE_OK carrying a Mandatory Track Property fails the
+// downstream SUBSCRIBE with UNSUPPORTED_EXTENSION and cancels upstream.
 TEST_P(MoQRelayTest, SubscribeRejectsUpstreamUnsupportedMandatoryProperty) {
   auto publisherSession = createMockSession();
   auto subSession = createMockSession();

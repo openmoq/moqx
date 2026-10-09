@@ -623,20 +623,28 @@ void MoqxRelay::onPublishDone(const FullTrackName& ftn) {
   }
 }
 
-// Validates a publish namespace against allowedNamespacePrefix_ (UNINTERESTED)
-// and non-emptiness (INTERNAL_ERROR, unless the negotiated draft allows it).
-// Returns std::nullopt on success. Safe to call on any thread (reads only
-// immutable config plus the caller-supplied emptyNamespaceAllowed).
-std::optional<PublishError> MoqxRelay::validatePublishNamespace(
-    const FullTrackName& ftn,
-    RequestID requestID,
-    bool emptyNamespaceAllowed
+// Validates a PUBLISH against allowedNamespacePrefix_ (UNINTERESTED), namespace
+// non-emptiness (INTERNAL_ERROR, unless the negotiated draft allows it) and
+// Mandatory Track Properties (UNSUPPORTED_EXTENSION). Returns std::nullopt on
+// success. Safe to call on any thread (reads only immutable config and the
+// session's negotiated version).
+std::optional<PublishError> MoqxRelay::validatePublish(
+    const PublishRequest& pub,
+    const std::shared_ptr<MoQSession>& session
 ) const {
-  if (!ftn.trackNamespace.startsWith(allowedNamespacePrefix_)) {
-    return PublishError{requestID, PublishErrorCode::UNINTERESTED, "bad namespace"};
+  const auto& ns = pub.fullTrackName.trackNamespace;
+  if (!ns.startsWith(allowedNamespacePrefix_)) {
+    return PublishError{pub.requestID, PublishErrorCode::UNINTERESTED, "bad namespace"};
   }
-  if (ftn.trackNamespace.empty() && !emptyNamespaceAllowed) {
-    return PublishError{requestID, PublishErrorCode::INTERNAL_ERROR, "namespace required"};
+  if (ns.empty() && !emptyNamespaceAllowed(session)) {
+    return PublishError{pub.requestID, PublishErrorCode::INTERNAL_ERROR, "namespace required"};
+  }
+  if (hasUnsupportedMandatoryProperty(pub.extensions, session->getNegotiatedVersion())) {
+    return PublishError{
+        pub.requestID,
+        PublishErrorCode::UNSUPPORTED_EXTENSION,
+        "unsupported mandatory track property"
+    };
   }
   return std::nullopt;
 }
@@ -677,23 +685,8 @@ Subscriber::PublishResult MoqxRelay::publishFromPublisherExec(
     std::shared_ptr<Publisher::SubscriptionHandle> handle,
     std::shared_ptr<MoQSession> session
 ) {
-  if (auto err = validatePublishNamespace(
-          pub.fullTrackName,
-          pub.requestID,
-          emptyNamespaceAllowed(session)
-      )) {
+  if (auto err = validatePublish(pub, session)) {
     return folly::makeUnexpected(std::move(*err));
-  }
-
-  if (hasUnsupportedMandatoryProperty(
-          pub.extensions,
-          session ? session->getNegotiatedVersion() : std::nullopt
-      )) {
-    return folly::makeUnexpected(PublishError{
-        pub.requestID,
-        RequestErrorCode::UNSUPPORTED_EXTENSION,
-        "unsupported mandatory track property"
-    });
   }
 
   auto localPubFwd = std::make_shared<MoQForwarder>(pub.fullTrackName);
@@ -784,22 +777,8 @@ MoqxRelay::publish(PublishRequest pub, std::shared_ptr<Publisher::SubscriptionHa
   // getRequestSession() stays valid on relayExec_: RequestContext propagates
   // across the filter's executor hop. Validate before touching state.
   auto session = MoQSession::getRequestSession();
-  if (auto err = validatePublishNamespace(
-          pub.fullTrackName,
-          pub.requestID,
-          emptyNamespaceAllowed(session)
-      )) {
+  if (auto err = validatePublish(pub, session)) {
     return folly::makeUnexpected(std::move(*err));
-  }
-  if (hasUnsupportedMandatoryProperty(
-          pub.extensions,
-          session ? session->getNegotiatedVersion() : std::nullopt
-      )) {
-    return folly::makeUnexpected(PublishError{
-        pub.requestID,
-        RequestErrorCode::UNSUPPORTED_EXTENSION,
-        "unsupported mandatory track property"
-    });
   }
   XCHECK(mode() != Mode::LocalForwarder) << "publish() bypassed by LocalPublishFilter in LF mode";
 
@@ -2756,21 +2735,20 @@ MoqxRelay::fetchImpl(Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
   // namespace-level publisher, matching subscribeImpl's resolution order.
   auto fetchView = registry_.getFetchView(fetch.fullTrackName);
   std::shared_ptr<Publisher> upstreamPublisher;
-  // Negotiated version of whichever session upstreamPublisher is backed by
   std::optional<uint64_t> upstreamVersion;
   if (fetchView) {
     upstreamPublisher = fetchView->publisher;
     upstreamVersion = fetchView->upstreamVersion;
   } else {
-    upstreamPublisher = findUpstreamPublisher(fetch.fullTrackName.trackNamespace);
-    if (!upstreamPublisher && upstream_) {
+    const auto& ns = fetch.fullTrackName.trackNamespace;
+    auto upstreamSession = namespaceTree_.findPublisherSession(ns);
+    if (!upstreamSession && upstream_) {
       co_await upstream_->waitForConnected(kUpstreamConnectWaitTimeout);
-      upstreamPublisher = findUpstreamPublisher(fetch.fullTrackName.trackNamespace);
+      upstreamSession = namespaceTree_.findPublisherSession(ns);
     }
-    if (upstreamPublisher) {
-      auto upstreamSession =
-          namespaceTree_.findPublisherSession(fetch.fullTrackName.trackNamespace);
-      upstreamVersion = upstreamSession ? upstreamSession->getNegotiatedVersion() : std::nullopt;
+    if (upstreamSession) {
+      upstreamVersion = upstreamSession->getNegotiatedVersion();
+      upstreamPublisher = maybeWrapPublisher(relayExec_, std::move(upstreamSession));
     }
   }
   if (!upstreamPublisher) {
@@ -2800,11 +2778,7 @@ MoqxRelay::fetchImpl(Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
     if (hasUnsupportedMandatoryProperty(res.value()->fetchOk().extensions, upstreamVersion)) {
       res.value()->fetchCancel();
       gate->reset(ResetStreamErrorCode::INTERNAL_ERROR);
-      co_return folly::makeUnexpected(FetchError{
-          requestID,
-          FetchErrorCode::UNSUPPORTED_EXTENSION,
-          "unsupported mandatory track property"
-      });
+      co_return folly::makeUnexpected(unsupportedMandatoryPropertyFetchError(requestID));
     }
     gate->accept();
     co_return res;

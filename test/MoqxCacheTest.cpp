@@ -637,11 +637,8 @@ CO_TEST_F(MoqxCacheTest, TestFetchMissTailUpstreamError) {
   EXPECT_TRUE(res.hasError());
 }
 
-// An upstream FETCH_OK carrying an unsupported Mandatory
-// Track Property must be rejected with UNSUPPORTED_EXTENSION, and — since no
-// FETCH_OK has reached the downstream fetcher yet on this path — the
-// not-yet-established stream must be reset. Upstream ends the fetch before
-// FETCH_OK resolves, so that endOfFetch() must not reach the consumer.
+// Cache-tail miss: FETCH_OK with a Mandatory Track Property arrives after
+// upstream already ended the fetch; downstream sees only the reset.
 CO_TEST_F(MoqxCacheTest, TestFetchTailUpstreamMandatoryPropertyRejected) {
   populateCacheRange({0, 0}, {0, 1});
   Extensions mandatoryExt;
@@ -665,9 +662,7 @@ CO_TEST_F(MoqxCacheTest, TestFetchTailUpstreamMandatoryPropertyRejected) {
   EXPECT_EQ(res.error().errorCode, FetchErrorCode::UNSUPPORTED_EXTENSION);
 }
 
-// draft-14/16 have no Mandatory Track Property concept, so an upstream on an
-// older negotiated version must not be rejected for one. upstreamVersion
-// defaults to 0 (unknown), which also skips the check.
+// Without a draft-18+ upstreamVersion (here the nullopt default) the property is forwarded.
 CO_TEST_F(MoqxCacheTest, TestFetchTailUpstreamMandatoryPropertyIgnoredPreDraft18) {
   populateCacheRange({0, 0}, {0, 1});
   Extensions mandatoryExt;
@@ -705,11 +700,8 @@ CO_TEST_F(MoqxCacheTest, TestFetchTailUpstreamEndOfFetchBeforeUpstreamError) {
   EXPECT_TRUE(res.hasError());
 }
 
-// Regression: when track state already lets fetch() take the fast path
-// (FETCH_OK returned synchronously, live track/known past data), fetchImpl
-// keeps running as a *detached* background task. A FetchError returned from
-// fetchUpstream() there would otherwise be silently discarded — the downstream
-// must instead learn about it via an explicit stream reset.
+// Fast path: FETCH_OK already went downstream and fetchImpl runs detached, so
+// the rejection reaches the consumer only as a reset.
 CO_TEST_F(MoqxCacheTest, TestFetchLiveTrackDetachedUpstreamMandatoryPropertyRejected) {
   populateCacheRange({0, 5}, {0, 6});
   auto writeback = cache_.getSubscribeWriteback(kTestTrackName, trackConsumer_);

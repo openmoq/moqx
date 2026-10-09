@@ -1477,11 +1477,7 @@ folly::coro::Task<Publisher::FetchResult> MoqxCache::fetch(
         if (!writeback->wasReset()) {
           writeback->reset(ResetStreamErrorCode::INTERNAL_ERROR);
         }
-        co_return folly::makeUnexpected(FetchError{
-            fetch.requestID,
-            FetchErrorCode::UNSUPPORTED_EXTENSION,
-            "unsupported mandatory track property"
-        });
+        co_return folly::makeUnexpected(unsupportedMandatoryPropertyFetchError(fetch.requestID));
       }
       writeback->setUpstreamEnd(res.value()->fetchOk().endLocation);
       gate->accept();
@@ -1813,11 +1809,7 @@ folly::coro::Task<Publisher::FetchResult> MoqxCache::fetchUpstream(
     if (!writeback->wasReset()) {
       writeback->reset(ResetStreamErrorCode::INTERNAL_ERROR);
     }
-    co_return folly::makeUnexpected(FetchError{
-        fetch.requestID,
-        FetchErrorCode::UNSUPPORTED_EXTENSION,
-        "unsupported mandatory track property"
-    });
+    co_return folly::makeUnexpected(unsupportedMandatoryPropertyFetchError(fetch.requestID));
   }
 
   XLOG(DBG1) << "upstream success";
