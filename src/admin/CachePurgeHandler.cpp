@@ -76,8 +76,7 @@ void registerCachePurgeRoute(AdminServer& adminServer, std::shared_ptr<MoqxRelay
           }
         }
 
-        auto* cacheEvb = ctx->cacheEvb();
-        if (!cacheEvb) {
+        if (!ctx->ready()) {
           proxygen::ResponseBuilder(downstream)
               .status(503, proxygen::HTTPMessage::getDefaultReason(503))
               .body(folly::IOBuf::copyBuffer("{\"error\":\"cache not ready\"}\n"))
@@ -85,26 +84,16 @@ void registerCachePurgeRoute(AdminServer& adminServer, std::shared_ptr<MoqxRelay
           return;
         }
 
-        // Outer coroutine stays on the admin EVB so sendWithEOM is thread-safe.
-        // The inner co_withExecutor(cacheEvb, ...) switches to the cache EVB to
-        // run the eviction, then resumes here on the admin EVB.
+        // Runs on the admin EVB so sendWithEOM is thread-safe.
         folly::coro::co_withCancellation(
             cancelToken,
             folly::coro::co_withExecutor(
                 folly::EventBaseManager::get()->getEventBase(),
-                [](auto c,
-                   auto svcName,
-                   auto maybeFtn,
-                   auto maybeNs,
-                   auto* ds,
-                   auto* cEvb,
-                   auto token) -> folly::coro::Task<void> {
-                  size_t evicted = 0;
+                [](auto c, auto svcName, auto maybeFtn, auto maybeNs, auto* ds, auto token
+                ) -> folly::coro::Task<void> {
+                  folly::Expected<size_t, MoqxRelayContext::PurgeError> evicted{0};
                   try {
-                    evicted = co_await folly::coro::co_withExecutor(
-                        cEvb,
-                        c->purgeCache(svcName, maybeFtn, maybeNs)
-                    );
+                    evicted = co_await c->purgeCache(svcName, maybeFtn, maybeNs);
                   } catch (const std::exception& e) {
                     XLOG(ERR) << "CachePurgeHandler: purge threw: " << e.what();
                     if (!token.isCancellationRequested()) {
@@ -118,13 +107,26 @@ void registerCachePurgeRoute(AdminServer& adminServer, std::shared_ptr<MoqxRelay
                   if (token.isCancellationRequested()) {
                     co_return;
                   }
-                  auto respBody = std::string("{\"evicted\":") + std::to_string(evicted) + "}\n";
+                  if (evicted.hasError()) {
+                    bool unknown = evicted.error() == MoqxRelayContext::PurgeError::UnknownService;
+                    uint16_t status = unknown ? 404 : 400;
+                    proxygen::ResponseBuilder(ds)
+                        .status(status, proxygen::HTTPMessage::getDefaultReason(status))
+                        .header("Content-Type", "application/json")
+                        .body(folly::IOBuf::copyBuffer(
+                            unknown ? "{\"error\":\"unknown service\"}\n"
+                                    : "{\"error\":\"service required\"}\n"
+                        ))
+                        .sendWithEOM();
+                    co_return;
+                  }
+                  auto respBody = std::string("{\"evicted\":") + std::to_string(*evicted) + "}\n";
                   proxygen::ResponseBuilder(ds)
                       .status(200, proxygen::HTTPMessage::getDefaultReason(200))
                       .header("Content-Type", "application/json")
                       .body(folly::IOBuf::copyBuffer(respBody))
                       .sendWithEOM();
-                }(ctx, serviceName, ftn, nsOnly, downstream, cacheEvb, cancelToken)
+                }(ctx, serviceName, ftn, nsOnly, downstream, cancelToken)
             )
         )
             .start();
