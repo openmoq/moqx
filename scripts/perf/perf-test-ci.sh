@@ -211,7 +211,6 @@ echo "════════════════════════�
 REMOTE_DIR="/tmp/moqx-perf-ci"
 RELAY_LOG_OUTPUT="${OUTPUT%.json}.relay.log"
 CLIENT_LOG_OUTPUT="${OUTPUT%.json}.client.log"
-SERVER_LOG_OUTPUT="${OUTPUT%.json}.server.log"
 
 timeout 5 ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "mkdir -p $REMOTE_DIR" || true
 timeout 5 ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "pkill -f '^${REMOTE_DIR}/moqx' 2>/dev/null || true; pkill -f '^${REMOTE_DIR}/moqtest_server' 2>/dev/null || true; pkill -f '^bash ${REMOTE_DIR}/perf-metrics.sh' 2>/dev/null || true" || true
@@ -264,7 +263,6 @@ fi
 cleanup() {
   echo "Cleaning up remote processes..."
   timeout 5 ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "cat ${REMOTE_DIR}/relay.log" > "$RELAY_LOG_OUTPUT" 2>/dev/null || true
-  timeout 5 ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "cat ${REMOTE_DIR}/server.log" > "$SERVER_LOG_OUTPUT" 2>/dev/null || true
   timeout 5 ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "pkill -f '^${REMOTE_DIR}/moqx' 2>/dev/null || true; pkill -f '^${REMOTE_DIR}/moqtest_server' 2>/dev/null || true; pkill -f '^bash ${REMOTE_DIR}/perf-metrics.sh' 2>/dev/null || true" 2>/dev/null || true
   timeout 5 ssh "${SSH_OPTS[@]}" "$CLIENT_HOST" "pkill -f '^${REMOTE_DIR}/moqperf_test_client' 2>/dev/null || true" 2>/dev/null || true
 }
@@ -345,8 +343,6 @@ until ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "
   sleep 0.5
 done
 echo "Publisher connected"
-echo "Waiting 5s for publisher/relay to settle..."
-sleep 5
 
 # ── Run performance test client ───────────────────────────────────────────────
 RELAY_IP=$(ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "hostname -I | awk '{print \$1}'")

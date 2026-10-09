@@ -43,7 +43,7 @@
   .stack-name, .stack-cc { display: block; }
   .stack-cc { color: #8b949e; font-size: 0.72rem; font-weight: 400; }
   .overview-summary { display: block; width: 100%; overflow-x: auto; }
-  .overview-table { width: 100%; min-width: 620px; border-collapse: collapse; background: #161b22; }
+  .overview-table { width: 100%; min-width: 1120px; border-collapse: collapse; background: #161b22; }
   .overview-table caption { padding: 0 12px 8px; color: #8b949e; font-size: 0.75rem; text-align: left; }
   .overview-table th, .overview-table td { padding: 10px 12px; border-bottom: 1px solid #30363d; text-align: right; white-space: nowrap; }
   .overview-table thead th { color: #8b949e; font-size: 0.75rem; font-weight: 500; }
@@ -51,6 +51,7 @@
   .overview-table tbody td { font-size: 0.95rem; font-weight: 600; }
   .overview-table tr.mvfst th { border-left: 3px solid #58a6ff; }
   .overview-table tr.picoquic th { border-left: 3px dashed #f0883e; }
+  #overview-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   a { color: #58a6ff; text-decoration: none; }
   a:hover { text-decoration: underline; }
   .loading { text-align: center; padding: 40px; color: #8b949e; }
@@ -64,6 +65,7 @@
     .grid { gap: 16px; }
     .summary { gap: 8px; }
     .stat { flex: 1 1 140px; min-width: 0; }
+    #overview-grid { grid-template-columns: minmax(0, 1fr); }
   }
 </style>
 </head>
@@ -119,6 +121,30 @@
   <div class="card">
     <h3>16 Mbps · Throughput per Core</h3>
     <canvas id="chart-overview-16mbps"></canvas>
+  </div>
+  <div class="card">
+    <h3>1 Mbps · Throughput</h3>
+    <canvas id="chart-overview-throughput-1mbps"></canvas>
+  </div>
+  <div class="card">
+    <h3>4 Mbps · Throughput</h3>
+    <canvas id="chart-overview-throughput-4mbps"></canvas>
+  </div>
+  <div class="card">
+    <h3>16 Mbps · Throughput</h3>
+    <canvas id="chart-overview-throughput-16mbps"></canvas>
+  </div>
+  <div class="card">
+    <h3>1 Mbps · Relay CPU</h3>
+    <canvas id="chart-overview-cpu-1mbps"></canvas>
+  </div>
+  <div class="card">
+    <h3>4 Mbps · Relay CPU</h3>
+    <canvas id="chart-overview-cpu-4mbps"></canvas>
+  </div>
+  <div class="card">
+    <h3>16 Mbps · Relay CPU</h3>
+    <canvas id="chart-overview-cpu-16mbps"></canvas>
   </div>
 </div>
 
@@ -345,8 +371,14 @@ function renderDashboard() {
 
   if (overview) {
     renderOverviewSummary(data);
-    for (const profile of PROFILE_IDS) {
-      renderComparisonChart(`chart-overview-${profile}`, getComparisonData(profile), 'throughput_per_core_mbps');
+    for (const [suffix, metric] of [
+      ['', 'throughput_per_core_mbps'],
+      ['-throughput', 'throughput_mbps'],
+      ['-cpu', 'relay_cpu_pct'],
+    ]) {
+      for (const profile of PROFILE_IDS) {
+        renderComparisonChart(`chart-overview${suffix}-${profile}`, getComparisonData(profile), metric);
+      }
     }
     return;
   }
@@ -410,23 +442,34 @@ function renderRunSummary(stackRuns) {
 function renderOverviewSummary(branchData) {
   const container = document.getElementById('summary');
   container.className = 'summary overview-summary';
+  const metrics = [
+    ['throughput_per_core_mbps', 'TP/core', 'Mbps'],
+    ['throughput_mbps', 'Throughput', 'Mbps'],
+    ['relay_cpu_pct', 'Relay CPU', '%'],
+  ];
   const rows = ['mvfst', 'picoquic'].map(stack => {
-    const cells = PROFILE_IDS.map(profile => {
+    const cells = PROFILE_IDS.flatMap(profile => {
       const latest = branchData
         .filter(run => getRunStack(run) === stack && getRunProfile(run) === profile)
         .reduce((current, run) => !current || run.timestamp > current.timestamp ? run : current, null);
-      const value = latest?.results?.throughput_per_core_mbps;
-      return `<td>${value == null ? '—' : `${value} Mbps`}</td>`;
+      return metrics.map(([metric, , unit]) => {
+        const value = latest?.results?.[metric];
+        const formattedValue = unit === '%' ? `${value}%` : `${value} ${unit}`;
+        return `<td>${value == null ? '—' : formattedValue}</td>`;
+      });
     }).join('');
-    const stackRun = branchData
+    const latestStackRun = branchData
       .filter(run => getRunStack(run) === stack)
       .reduce((current, run) => !current || run.timestamp > current.timestamp ? run : current, null);
-    return `<tr class="${stack}"><th scope="row"><span class="stack-name ${stack}">${stack}</span><span class="stack-cc">CC · ${stackRun?.params?.cc || 'unknown'}</span></th>${cells}</tr>`;
+    return `<tr class="${stack}"><th scope="row"><span class="stack-name ${stack}">${stack}</span><span class="stack-cc">CC · ${latestStackRun?.params?.cc || 'unknown'}</span></th>${cells}</tr>`;
   }).join('');
   container.innerHTML = `
     <table class="overview-table">
-      <caption>Latest run · throughput per core</caption>
-      <thead><tr><th scope="col">Stack</th><th scope="col">1 Mbps</th><th scope="col">4 Mbps</th><th scope="col">16 Mbps</th></tr></thead>
+      <caption>Latest result per profile</caption>
+      <thead>
+        <tr><th scope="col" rowspan="2">Stack / CC</th>${PROFILE_IDS.map(profile => `<th scope="colgroup" colspan="${metrics.length}">${profile.replace('mbps', ' Mbps')}</th>`).join('')}</tr>
+        <tr>${PROFILE_IDS.map(() => metrics.map(([, label]) => `<th scope="col">${label}</th>`).join('')).join('')}</tr>
+      </thead>
       <tbody>${rows}</tbody>
     </table>
   `;

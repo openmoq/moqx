@@ -49,8 +49,6 @@ folly::Expected<folly::Unit, moxygen::MoQPublishError> CrossExecSubgroupFilter::
       auto result =
           downstream_->object(objectID, std::move(payload), std::move(extensions), finSubgroup);
       if (result.hasError()) {
-        XLOG(ERR) << "CrossExecSubgroupFilter object failed group=" << groupID_
-                  << " subgroup=" << subgroupID_ << ": " << result.error().describe();
         closeWithError(result.error(), std::move(downstream_));
       }
     }
@@ -84,8 +82,6 @@ folly::Expected<folly::Unit, moxygen::MoQPublishError> CrossExecSubgroupFilter::
     auto result =
         downstream_->beginObject(objectID, length, std::move(payload), std::move(extensions));
     if (result.hasError()) {
-      XLOG(ERR) << "CrossExecSubgroupFilter beginObject failed group=" << groupID_
-                << " subgroup=" << subgroupID_ << ": " << result.error().describe();
       closeWithError(result.error(), std::move(downstream_));
     }
   });
@@ -104,8 +100,6 @@ CrossExecSubgroupFilter::objectPayload(moxygen::Payload payload, bool finSubgrou
     if (downstream_) {
       auto result = downstream_->objectPayload(std::move(payload), finSubgroup);
       if (result.hasError()) {
-        XLOG(ERR) << "CrossExecSubgroupFilter objectPayload failed group=" << groupID_
-                  << " subgroup=" << subgroupID_ << ": " << result.error().describe();
         closeWithError(result.error(), std::move(downstream_));
       }
     }
@@ -127,8 +121,7 @@ CrossExecSubgroupFilter::endOfGroup(uint64_t endOfGroupObjectID) {
       auto result = downstream_->endOfGroup(endOfGroupObjectID);
       if (result.hasError()) {
         // terminal — no storeDeferredError needed
-        XLOG(ERR) << "CrossExecSubgroupFilter endOfGroup failed group=" << groupID_
-            << " subgroup=" << subgroupID_ << ": " << result.error().describe();
+        XLOG(ERR) << "endOfGroup: " << result.error().describe();
       }
     }
     deactivate();
@@ -147,9 +140,7 @@ CrossExecSubgroupFilter::endOfTrackAndGroup(uint64_t endOfTrackObjectID) {
       auto result = downstream_->endOfTrackAndGroup(endOfTrackObjectID);
       if (result.hasError()) {
         // terminal — no storeDeferredError needed
-        XLOG(ERR) << "CrossExecSubgroupFilter endOfTrackAndGroup failed group="
-            << groupID_ << " subgroup=" << subgroupID_ << ": "
-            << result.error().describe();
+        XLOG(ERR) << "endOfTrackAndGroup: " << result.error().describe();
       }
     }
     deactivate();
@@ -167,8 +158,7 @@ folly::Expected<folly::Unit, moxygen::MoQPublishError> CrossExecSubgroupFilter::
       auto result = downstream_->endOfSubgroup();
       if (result.hasError()) {
         // terminal — no storeDeferredError needed
-        XLOG(ERR) << "CrossExecSubgroupFilter endOfSubgroup failed group=" << groupID_
-            << " subgroup=" << subgroupID_ << ": " << result.error().describe();
+        XLOG(ERR) << "endOfSubgroup: " << result.error().describe();
       }
     }
     deactivate();
@@ -177,9 +167,6 @@ folly::Expected<folly::Unit, moxygen::MoQPublishError> CrossExecSubgroupFilter::
 }
 
 void CrossExecSubgroupFilter::reset(moxygen::ResetStreamErrorCode error) {
-  XLOG(ERR) << "CrossExecSubgroupFilter reset group=" << groupID_
-            << " subgroup=" << subgroupID_ << " error="
-            << static_cast<uint64_t>(error);
   // storeDeferredError on calling thread; lambda needs no storeDeferredError even if downstream_ is
   // null
   storeDeferredError(moxygen::MoQPublishError::CANCELLED);
@@ -251,14 +238,10 @@ CrossExecFilter::beginSubgroup(
     moxygen::Priority priority,
     moxygen::BeginSubgroupOptions options
 ) {
-  if (groupID == 0 && subgroupID == 0) {
-    XLOG(INFO) << "CrossExecFilter first subgroup group=0 subgroup=0";
-  }
   if (auto err = loadDeferredError()) {
     return folly::makeUnexpected(*err);
   }
-  auto subFilter =
-      CrossExecSubgroupFilter::create(targetExec_, groupID, subgroupID, deepCopyPayload_);
+  auto subFilter = CrossExecSubgroupFilter::create(targetExec_, deepCopyPayload_);
   targetExec_->add([this, subFilter, groupID, subgroupID, priority, options]() mutable {
     if (!downstream_) {
       subFilter->closeWithError(moxygen::MoQPublishError::WRITE_ERROR);
