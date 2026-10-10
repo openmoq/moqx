@@ -162,6 +162,8 @@ HTTP_CODE=$(curl -sw "%{http_code}" -o /dev/null "${TRACK_URL}?namespace=test.2f
 # against real series rather than an empty body.
 # shellcheck source=test_moqbin.sh
 source "$(dirname "$0")/test_moqbin.sh"
+# shellcheck source=test_versions.sh
+source "$(dirname "$0")/test_versions.sh"
 resolve_moqbin "$BINARY"
 DATESERVER="$MOQBIN/moqdateserver"
 TEXTCLIENT="$MOQBIN/moqtextclient"
@@ -175,7 +177,7 @@ if [[ -x "$DATESERVER" && -x "$TEXTCLIENT" ]]; then
   for ns in "$DATE_NS" "$DATE_NS2"; do
     "$DATESERVER" \
       --relay_url="https://localhost:${LISTEN_PORT}/moq-relay" \
-      --ns="$ns" --publish --insecure \
+      --ns="$ns" --publish --versions="$MOQT_CLIENT_VERSION" --insecure \
       >"$TMPDIR/dateserver-${ns}.log" 2>&1 &
     DATESERVER_PIDS+=("$!")
   done
@@ -188,7 +190,8 @@ if [[ -x "$DATESERVER" && -x "$TEXTCLIENT" ]]; then
   for ns in "$DATE_NS" "$DATE_NS2"; do
     "$TEXTCLIENT" \
       --connect_url="https://localhost:${LISTEN_PORT}/moq-relay" \
-      --track_namespace="$ns" --track_name="date" --insecure \
+      --track_namespace="$ns" --track_name="date" \
+      --versions="$MOQT_CLIENT_VERSION" --insecure \
       >"$TMPDIR/textclient-${ns}.log" 2>&1 &
     TEXTCLIENT_PIDS+=("$!")
   done
