@@ -12,6 +12,7 @@
 #include "admin/ConfigHandler.h"
 #include "admin/ConnectionLogsHandler.h"
 #include "admin/MetricsHandler.h"
+#include "admin/QLogCaptureHandler.h"
 #include "admin/StateHandler.h"
 #include "admin/TrackMetricsHandler.h"
 #include "bpf/QuicReuseportSteering.h"
@@ -133,6 +134,7 @@ int main(int argc, char* argv[]) {
     return qlogResult.error();
   }
   const cfg::QLogConfig* qlogConfig = *qlogResult;
+  auto qlogCapture = qlogConfig ? std::make_shared<logging::QLogCapture>() : nullptr;
 
   // === 3. Set up signal handling ===
   folly::EventBase evb;
@@ -175,7 +177,8 @@ int main(int argc, char* argv[]) {
           ioExecutor.get(),
           statsRegistry,
           mlog.factory,
-          qlogConfig
+          qlogConfig,
+          qlogCapture
       ));
     }
   } catch (const std::exception& e) {
@@ -209,6 +212,7 @@ int main(int argc, char* argv[]) {
   admin::registerTrackMetricsRoute(adminServer, context, trackLimits);
   admin::registerConfigRoute(adminServer, std::make_shared<const cfg::Config>(config));
   admin::registerConnectionLogsRoutes(adminServer, config.logging);
+  admin::registerQLogCaptureRoutes(adminServer, qlogCapture, qlogConfig ? qlogConfig->dir : "");
 
   // === 8. Start serving ===
   for (auto& server : servers) {

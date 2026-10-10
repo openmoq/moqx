@@ -188,13 +188,37 @@ XLOG and qlog have different jobs:
 - **XLOG** is the ad-hoc operator/dev surface — code-embedded clues, controlled by `--logging`. Good for "what just went wrong."
 - **qlog** is the IETF-standard structured QUIC log — JSON consumed by external tooling like [qvis](https://qvis.quictools.info/) for packet timelines, congestion control, stream events. Good for "trace a single session" investigations.
 
-Per-session qlog enablement and random sampling are planned (the moqx admin surface will let you opt one connection in at a time). For now, enable qlog at the picoquic level for all connections:
+Independent channels — enabling one doesn't suppress the other.
 
-```bash
-moqx --config c.yaml --qlog-dir /tmp/qlogs --logging=quic.picoquic=INFO
+qlog covers mvfst listeners only; picoquic listeners write none. Setting a directory enables it:
+
+```yaml
+logging:
+  qlog:
+    dir: /var/log/moqx/qlog
+    sample_rate: 0   # fraction of all new connections; 0 = on-demand captures only
 ```
 
-Independent channels — enabling one doesn't suppress the other.
+Each connection's file is `<dir>/<dcid>.qlog`, where `dcid` is the client's original destination connection ID. Every logged event is serialized on the connection's IO thread, so keep `sample_rate` low on a loaded relay and prefer on-demand captures.
+
+### On-demand capture
+
+With a directory set, the admin API qlogs the next N new connections:
+
+```bash
+curl -X POST 'localhost:8000/qlog/capture?count=2&seconds=60&mode=cc'   # arm
+curl localhost:8000/qlog/capture                                        # status + newest files
+curl -o c.qlog 'localhost:8000/logs?connection_id=<id>&type=qlog'       # fetch one
+curl -X DELETE localhost:8000/qlog/capture                              # disarm
+```
+
+- `count` (default 1, max 64) and `seconds` (default 60, max 600) bound the capture.
+- Arming while a capture is in progress returns 409. `replace=1` replaces the capture configuration; connections already being captured keep logging.
+- `mode=cc` (default) keeps congestion control, RTT, loss and pacing events and drops per-packet and per-stream events. `mode=full` keeps everything; use it for short windows.
+- Each captured connection logs `qlog capture: connection <id> (<mode>)` at INFO, so captures line up with the rest of the relay log.
+- `GET /qlog/capture` lists the newest 100 qlog files by connection ID. It scans at most 10,000 directory entries; `"truncated": true` means it stopped early and may have missed newer files.
+
+Open the files in [qvis](https://qvis.quictools.info/); it parses them in the browser.
 
 ## Troubleshooting
 

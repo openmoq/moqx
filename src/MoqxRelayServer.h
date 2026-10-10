@@ -10,6 +10,7 @@
 
 #include "MoqxRelayContext.h"
 #include "config/Config.h"
+#include "logging/QLogCapture.h"
 #include "stats/StatsRegistry.h"
 #include <folly/executors/IOThreadPoolExecutor.h>
 #include <moxygen/MoQServer.h>
@@ -39,6 +40,10 @@ public:
   void setQLogConfig(const config::QLogConfig& cfg) {
     qlogDir_ = cfg.dir;
     qlogSampleRate_ = cfg.sampleRate;
+  }
+
+  void setQLogCapture(std::shared_ptr<logging::QLogCapture> capture) {
+    qlogCapture_ = std::move(capture);
   }
 
   // Preferred entry point: binds the address from the stored ListenerConfig.
@@ -72,6 +77,7 @@ private:
   bool stopped_{false};
   std::string qlogDir_;
   float qlogSampleRate_{0.0f};
+  std::shared_ptr<logging::QLogCapture> qlogCapture_;
 };
 
 } // namespace openmoq::moqx

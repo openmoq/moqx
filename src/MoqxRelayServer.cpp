@@ -5,6 +5,7 @@
  */
 
 #include "MoqxRelayServer.h"
+#include "logging/CaptureQLogger.h"
 #include "stats/EventBaseStatsCollector.h"
 #include "stats/QuicStatsCollector.h"
 #include <moxygen/MoQRelaySession.h>
@@ -302,6 +303,14 @@ std::shared_ptr<MoQSession> MoqxRelayServer::createSession(
 std::shared_ptr<quic::QLogger> MoqxRelayServer::makeQLogger(quic::VantagePoint vantagePoint) {
   if (qlogDir_.empty()) {
     return nullptr;
+  }
+  if (qlogCapture_) {
+    if (auto mode = qlogCapture_->take()) {
+      if (*mode == logging::QLogCapture::Mode::Cc) {
+        return std::make_shared<logging::CcQLogger>(vantagePoint, qlogDir_);
+      }
+      return std::make_shared<logging::CaptureQLogger>(vantagePoint, qlogDir_, *mode);
+    }
   }
   if (qlogSampleRate_ <= 0.0f) {
     return nullptr;

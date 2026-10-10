@@ -170,6 +170,11 @@ moqx_add_gtest(moqx_logging_multi_flag_test
   LIBS moqx_core GTest::gtest_main GTest::gmock
 )
 
+moqx_add_gtest(moqx_qlog_capture_test
+  SRCS QLogCaptureTest.cpp
+  LIBS moqx_core GTest::gtest_main GTest::gmock
+)
+
 moqx_add_gtest(moqx_pico_quic_stats_test
   SRCS stats/PicoQuicStatsCollectorTest.cpp
   LIBS moqx_core GTest::gtest_main GTest::gmock
