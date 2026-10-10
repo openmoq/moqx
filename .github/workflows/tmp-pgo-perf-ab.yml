@@ -1,0 +1,136 @@
+name: tmp pgo perf ab
+
+# TEMPORARY, delete before merging ci/pgo-release-consumers. A/B on the perf
+# VMs: moqx built against moxygen's plain and pgo linux-amd64 tarballs from the
+# latest successful "tmp pgo e2e" run on openmoq/moxygen ci/pgo-portable-build
+# (same commit, same flags). The load generators come from the plain prefix for
+# both variants. Triggers only when this file changes; shares the perf VMs with
+# the nightly through the perf-test concurrency group.
+
+on:
+  push:
+    branches: [ci/pgo-release-consumers]
+    paths: ['.github/workflows/tmp-pgo-perf-ab.yml']
+
+concurrency:
+  group: perf-test
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  ab:
+    runs-on: [self-hosted, relay]
+    timeout-minutes: 240
+    env:
+      CXX_FLAGS: "-march=x86-64-v2 -fno-omit-frame-pointer -fasynchronous-unwind-tables"
+      RUNS: "3"
+    steps:
+      - uses: actions/create-github-app-token@v2
+        id: mox-token
+        with:
+          app-id: ${{ secrets.OMOQ_APP_ID }}
+          private-key: ${{ secrets.OMOQ_APP_PRIV_KEY }}
+          owner: openmoq
+          repositories: moxygen
+          permission-actions: read
+
+      - uses: actions/checkout@v5
+
+      - name: Install packages the portable prefix link needs
+        run: sudo apt-get install -y --no-install-recommends libxxhash-dev libdwarf-dev
+
+      - name: Download moxygen tarballs
+        env:
+          GH_TOKEN: ${{ steps.mox-token.outputs.token }}
+        run: |
+          # REST lookup: the runner's gh predates run list --branch/--status.
+          RUN_ID=$(gh api "repos/openmoq/moxygen/actions/workflows/tmp-pgo-e2e.yml/runs?branch=ci/pgo-portable-build&status=success&per_page=1" \
+            --jq '.workflow_runs[0].id // empty')
+          [ -n "$RUN_ID" ] || { echo "no successful tmp pgo e2e run on moxygen" >&2; exit 1; }
+          echo "moxygen run: https://github.com/openmoq/moxygen/actions/runs/$RUN_ID"
+          echo "MOXYGEN_RUN_ID=$RUN_ID" >> "$GITHUB_ENV"
+          rm -rf _ab
+          for v in plain pgo; do
+            gh run download "$RUN_ID" --repo openmoq/moxygen -n "moxygen-linux-amd64-$v" -D "_ab/$v"
+            mkdir -p "_ab/$v/prefix"
+            tar xzf "_ab/$v/moxygen-linux-amd64.tar.gz" -C "_ab/$v/prefix"
+            ls "_ab/$v/prefix/bin" | tr '\n' ' '; echo
+          done
+
+      - name: Build moqx against each prefix
+        run: |
+          export MOQX_DEPS_CACHE="$HOME/.cache/moqx"
+          for v in plain pgo; do
+            cmake -S . -B "_ab/$v/build" -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DMOQX_BUILD_TESTS=OFF \
+              -DMOQX_MOXYGEN_PREBUILT=OFF \
+              -DCMAKE_PREFIX_PATH="$PWD/_ab/$v/prefix" \
+              -DCMAKE_DISABLE_FIND_PACKAGE_LibUnwind=TRUE \
+              -DCMAKE_C_FLAGS="$CXX_FLAGS" \
+              -DCMAKE_CXX_FLAGS="$CXX_FLAGS" \
+              -DMOQX_VERSION_STRING="ab-$v"
+            cmake --build "_ab/$v/build" -j$(( $(nproc) - 2 ))
+            "_ab/$v/build/moqx" --version
+          done
+
+      - name: Configure SSH for perf VMs
+        env:
+          PERF_SSH_KEY: ${{ secrets.PERF_SSH_KEY }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$PERF_SSH_KEY" > ~/.ssh/perf-key
+          chmod 600 ~/.ssh/perf-key
+          echo "PERF_SSH_KEY_FILE=$HOME/.ssh/perf-key" >> "$GITHUB_ENV"
+
+      - name: Run the A/B on the perf VMs
+        env:
+          PERF_RELAY_HOST:  ${{ secrets.PERF_RELAY_HOST }}
+          PERF_CLIENT_HOST: ${{ secrets.PERF_CLIENT_HOST }}
+        run: |
+          for r in $(seq 1 "$RUNS"); do
+            for v in plain pgo; do
+              echo "::group::run $r $v"
+              bash scripts/perf/perf-test-ci.sh \
+                --binary "$PWD/_ab/$v/build/moqx" \
+                --moqbin "$PWD/_ab/plain/prefix/bin" \
+                --duration 120 --subscriber-max 600 --ramp 150 \
+                --io-threads 4 --client-threads 8 \
+                --client-args "--first_object_size=26516 --other_object_size=3788 --objects_per_group 60 --delivery_timeout 5000" \
+                --cooldown 10 \
+                --output "_ab/run-$v-$r.json"
+              echo "::endgroup::"
+            done
+          done
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## pgo A/B on the perf VMs"
+            echo
+            echo "moxygen run \`${MOXYGEN_RUN_ID:-?}\` · subs=600 · 120s · nightly object mix · io_threads=4 · load generators from the plain prefix"
+            echo
+            echo '| variant | run | relay CPU % | throughput Mbps | net Mbps | Mbps per core |'
+            echo '|---|---|---|---|---|---|'
+            for f in _ab/run-*.json; do
+              [ -e "$f" ] || continue
+              b=$(basename "$f" .json); v=${b#run-}; v=${v%-*}; r=${b##*-}
+              jq -r --arg v "$v" --arg r "$r" \
+                '.results | "| \($v) | \($r) | \(.relay_cpu_pct) | \(.throughput_mbps) | \(.net_throughput_mbps) | \(.throughput_per_core_mbps) |"' "$f"
+            done
+            echo
+            for v in plain pgo; do
+              ls _ab/run-$v-*.json >/dev/null 2>&1 || continue
+              jq -rs --arg v "$v" '[.[] | .results.relay_cpu_pct] | sort | "median relay CPU% \($v): \(.[(length/2|floor)])  (n=\(length))"' _ab/run-$v-*.json
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: pgo-ab-results
+          path: _ab/run-*.json
+          retention-days: 14
