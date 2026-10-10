@@ -9,6 +9,9 @@ How to add an entry: see [CONTRIBUTING.md](/CONTRIBUTING.md#changelog).
 [Unreleased]
 ============
 
+[0.3.6] - 2026-10-10
+====================
+
 - **Breaking:** dropped MoQT draft-14 support. ([#761](https://github.com/openmoq/moqx/pull/761))
   - A config with [`moqt_versions`](/docs/config.md#listeners) containing 14 fails at startup.
 
@@ -22,6 +25,8 @@ How to add an entry: see [CONTRIBUTING.md](/CONTRIBUTING.md#changelog).
 
 - Docker image: the mvfst listener defaults to bbr2 congestion control (`MOQX_CC`). ([#801](https://github.com/openmoq/moqx/pull/801))
 - A draft-18 SUBSCRIBE_NAMESPACE or SUBSCRIBE_TRACKS matching more than 1000 namespaces and tracks fails with NAMESPACE_TOO_LARGE. ([#667](https://github.com/openmoq/moqx/pull/667))
+- `POST /cache/purge` purges one service, named by `service`; it is required when several services are configured. ([#794](https://github.com/openmoq/moqx/pull/794))
+- Docker interop client image: offers drafts 18 and 16 only. ([#770](https://github.com/openmoq/moqx/pull/770))
 
 ## Fixed
 
@@ -32,12 +37,18 @@ How to add an entry: see [CONTRIBUTING.md](/CONTRIBUTING.md#changelog).
 - The relay requested objects from upstream with no forwarding subscriber. ([#742](https://github.com/openmoq/moqx/pull/742))
 - The relay stopped reconnecting after an upstream dropped mid-handshake. ([#737](https://github.com/openmoq/moqx/pull/737))
 - FETCH served from the cache could return wrong or missing objects. ([#734](https://github.com/openmoq/moqx/pull/734), [#735](https://github.com/openmoq/moqx/pull/735), [#736](https://github.com/openmoq/moqx/pull/736), [#750](https://github.com/openmoq/moqx/pull/750), [#755](https://github.com/openmoq/moqx/pull/755))
-- A crash in multi-threaded mode. ([#733](https://github.com/openmoq/moqx/pull/733))
+- Crashes in multi-threaded mode. ([#733](https://github.com/openmoq/moqx/pull/733), [#793](https://github.com/openmoq/moqx/pull/793))
 - A shutdown error log for relays with an upstream. ([#746](https://github.com/openmoq/moqx/pull/746))
 - A peer's namespace subscription outlived its session. ([#775](https://github.com/openmoq/moqx/pull/775))
 - An upstream connect failure is logged only once. ([#744](https://github.com/openmoq/moqx/pull/744))
 - With `use_local_forwarders`, a joining FETCH pipelined behind its SUBSCRIBE resolved against a stale or missing Largest. ([#783](https://github.com/openmoq/moqx/pull/783))
 - FETCH served from the cache scrambled the payload of an object that arrived in three or more chunks. ([#808](https://github.com/openmoq/moqx/pull/808))
+- Cache eviction could drop a live track's newest group, such as a catalog written once, so late joiners missed it. ([#739](https://github.com/openmoq/moqx/pull/739))
+- picoquic WebTransport clients could not connect to the mvfst listener, which did not advertise `reset_stream_at`. ([#797](https://github.com/openmoq/moqx/pull/797))
+
+## Dependencies
+
+- moxygen [v0.3.6](https://github.com/openmoq/moxygen/releases/tag/v0.3.6)
 
 [0.3.5] - 2026-09-11
 ====================
