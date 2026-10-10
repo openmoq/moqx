@@ -133,6 +133,9 @@ quic::TransportSettings
 buildTransportSettings(const config::QuicConfig& quic, const config::MvfstConfig& mvfst) {
   // Start with MoQServer's optimized defaults, then apply config overrides.
   quic::TransportSettings ts;
+  // WebTransport over HTTP/3 draft-16 section 3.1 requires reset_stream_at.
+  // Advertising support is safe for native MoQT peers that do not enable it.
+  ts.advertisedReliableResetStreamSupport = true;
   ts.defaultCongestionController = quic::CongestionControlType::Copa;
   ts.pacingEnabled = mvfst.pacingEnabled;
   ts.maxCwndInMss = mvfst.maxCwndInMss;
