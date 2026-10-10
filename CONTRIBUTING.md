@@ -80,6 +80,7 @@ PR description if preserving history on `main` is warranted.
 - An entry covers what an operator or client of the shipped product can observe.
 - A headline feature goes directly under the `[Unreleased]` heading, above the subsections.
 - Everything else goes under the matching subheading: `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed` or `Security`. Create the subheading if it is missing.
+- `Dependencies` belongs to the release PR (see [docs/release.md](docs/release.md#changelog)). Other PRs do not add or edit it.
 - Write for the operator, not the reviewer: what changed for them, in one sentence. Name the config key, flag or endpoint.
 - Link the doc section that covers the change, when one exists.
 - A breaking change starts with `**Breaking:**`.
