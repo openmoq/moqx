@@ -75,15 +75,8 @@ public:
   // so that worker EVBs are available. workerEvb is used for upstream connections.
   void initUpstreams(folly::EventBase* workerEvb);
 
-  // Sets the cache EVB used to serialize purge() calls with relay callbacks.
-  void setCacheEvb(folly::EventBase* evb) { cacheEvb_ = evb; }
-
   // False until initUpstreams() runs, before which there is nothing to walk.
   bool ready() const { return workerEvb_ != nullptr; }
-
-  // Returns the cache EVB used to serialize purge() calls with relay callbacks.
-  // Null until setCacheEvb() is called.
-  folly::EventBase* cacheEvb() const { return cacheEvb_; }
 
   // Walks every service, calling visitor methods as it goes. Each service's
   // walk is placed on the executor that owns that service's state; the visitor
@@ -101,12 +94,13 @@ public:
   // KeepAlive tokens throughout.
   void drainExecs(const std::vector<folly::Executor::KeepAlive<folly::EventBase>>& ioEvbs);
 
-  // Force-evicts cached tracks unconditionally. Scoped by optional ftn or ns;
-  // if both are empty all tracks are evicted. Optionally scoped to a single
-  // service. Returns number of tracks evicted.
-  // MUST be awaited on cacheEvb().
-  folly::coro::Task<size_t> purgeCache(
-      std::string_view serviceName = {},
+  enum class PurgeError { ServiceRequired, UnknownService };
+
+  // Force-evicts one service's tracks matching ftn or ns, or all of them when
+  // both are empty, and returns the count. An empty serviceName selects the
+  // only service. Awaitable from any executor.
+  folly::coro::Task<folly::Expected<size_t, PurgeError>> purgeCache(
+      std::string_view serviceName,
       std::optional<moxygen::FullTrackName> ftn = {},
       std::optional<moxygen::TrackNamespace> ns = {}
   );
@@ -164,7 +158,6 @@ private:
   ServiceMatcher serviceMatcher_;
   std::string relayID_;
   uint64_t relayHopID_;
-  folly::EventBase* cacheEvb_{nullptr};
   std::shared_ptr<stats::StatsRegistry> statsRegistry_;
   // One collector per io thread; tlStatsCollector_ binds each to its own thread.
   std::vector<std::shared_ptr<stats::MoQStatsCollector>> statsCollectors_;

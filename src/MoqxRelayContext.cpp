@@ -194,32 +194,44 @@ void MoqxRelayContext::drainExecs(
   }
 }
 
-folly::coro::Task<size_t> MoqxRelayContext::purgeCache(
+folly::coro::Task<folly::Expected<size_t, MoqxRelayContext::PurgeError>>
+MoqxRelayContext::purgeCache(
     std::string_view serviceName,
     std::optional<moxygen::FullTrackName> ftn,
     std::optional<moxygen::TrackNamespace> ns
 ) {
-  auto purgeServiceCache = [&](MoqxRelay& r) -> size_t {
-    if (ftn) {
-      return r.purge(*ftn);
+  XCHECK(workerEvb_) << "purgeCache: initUpstreams must run first";
+  auto it = services_.end();
+  if (serviceName.empty()) {
+    if (services_.size() != 1) {
+      co_return folly::makeUnexpected(PurgeError::ServiceRequired);
     }
-    if (ns) {
-      return r.purge(*ns);
-    }
-    return r.purge();
-  };
-  size_t total = 0;
-  if (!serviceName.empty()) {
-    if (auto it = services_.find(std::string(serviceName)); it != services_.end()) {
-      total = purgeServiceCache(*it->second.relay);
-    }
+    it = services_.begin();
   } else {
-    for (auto& [name, entry] : services_) {
-      XLOG(DBG1) << "Purging service: " << name;
-      total += purgeServiceCache(*entry.relay);
+    it = services_.find(std::string(serviceName));
+    if (it == services_.end()) {
+      co_return folly::makeUnexpected(PurgeError::UnknownService);
     }
   }
-  co_return total;
+
+  auto purgeOn = [](std::shared_ptr<MoqxRelay> relay,
+                    std::optional<moxygen::FullTrackName> ftn,
+                    std::optional<moxygen::TrackNamespace> ns) -> folly::coro::Task<size_t> {
+    if (ftn) {
+      co_return relay->purge(*ftn);
+    }
+    if (ns) {
+      co_return relay->purge(*ns);
+    }
+    co_return relay->purge();
+  };
+  XLOG(DBG1) << "Purging service: " << it->first;
+  // Config allows a null relay exec only with threads==1, where the worker EVB owns the cache.
+  auto* exec = it->second.relay->getRelayExec();
+  co_return co_await folly::coro::co_withExecutor(
+      exec ? exec : static_cast<folly::Executor*>(workerEvb_),
+      purgeOn(it->second.relay, std::move(ftn), std::move(ns))
+  );
 }
 
 void MoqxRelayContext::initThreadStatsCollectors(

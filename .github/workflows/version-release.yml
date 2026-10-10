@@ -35,6 +35,9 @@ name: version release
 #                                  One dispatch releases both repos, tags
 #                                  agreeing by construction.
 #
+# Release notes open with the [<version>] section of CHANGELOG.md at the
+# snapshot commit; validate fails when a non-prerelease version has none.
+#
 # Snapshot source — derived from dispatched ref:
 #   dispatched on main         → consume snapshot-latest
 #   dispatched on release/vM.m → consume snapshot-vM.m-latest
@@ -79,6 +82,7 @@ jobs:
       snapshot_sha: ${{ steps.v.outputs.snapshot_sha }}
       moxygen_ref: ${{ steps.v.outputs.moxygen_ref }}
       has_portable: ${{ steps.v.outputs.has_portable }}
+      changelog: ${{ steps.v.outputs.changelog }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -133,6 +137,21 @@ jobs:
             echo "Error: $SNAPSHOT_TAG release not found. Push to the dispatched branch first to produce a snapshot." >&2
             exit 1
           fi
+
+          # Release notes open with the CHANGELOG.md section as of the commit
+          # being tagged. A prerelease may go without one.
+          CHANGELOG_SRC=$(mktemp)
+          git show "$SNAPSHOT_SHA:CHANGELOG.md" > "$CHANGELOG_SRC" 2>/dev/null || true
+          if ! CHANGELOG=$(scripts/dev/changelog-section.sh "$VERSION" "$CHANGELOG_SRC"); then
+            if [[ "$VERSION" != *-* ]]; then
+              echo "Error: CHANGELOG.md at ${SNAPSHOT_SHA:0:12} has no [$VERSION] section." >&2
+              echo "Land the release's changelog PR (docs/release.md#changelog) and wait for $SNAPSHOT_TAG to rebuild." >&2
+              exit 1
+            fi
+            CHANGELOG=""
+          fi
+          # Root-relative links resolve against the tagged tree.
+          CHANGELOG=$(sed -E "s#\]\(/#](${{ github.server_url }}/${{ github.repository }}/blob/${TAG}/#g" <<<"$CHANGELOG")
 
           # Resolve the moxygen tag exactly the way the build will (git tags
           # at the pin; immutable v* preferred over snapshot-*). Anything else
@@ -214,6 +233,9 @@ jobs:
             echo "==> moxygen $MOX_REF lacks portable assets — portable matrix will be skipped"
           fi
 
+          # Random delimiter: a fixed one could appear in the changelog text,
+          # end the value early, and let the lines after it override outputs.
+          DELIM="CHANGELOG_$(openssl rand -hex 16)"
           {
             echo "version=$VERSION"
             echo "tag=$TAG"
@@ -221,6 +243,9 @@ jobs:
             echo "snapshot_sha=$SNAPSHOT_SHA"
             echo "moxygen_ref=$MOX_REF"
             echo "has_portable=$HAS_PORTABLE"
+            echo "changelog<<$DELIM"
+            printf '%s\n' "$CHANGELOG"
+            echo "$DELIM"
           } >> "$GITHUB_OUTPUT"
 
   # ════════════════════════════════════════════════════════════════════════════
@@ -249,6 +274,7 @@ jobs:
           HAS_PORTABLE: ${{ needs.validate.outputs.has_portable }}
           SNAPSHOT_TAG: ${{ needs.validate.outputs.snapshot_tag }}
           SNAPSHOT_SHA: ${{ needs.validate.outputs.snapshot_sha }}
+          CHANGELOG: ${{ needs.validate.outputs.changelog }}
         run: |
           if [ "$HAS_PORTABLE" = "true" ]; then
             PORTABLE_NOTE="**Portable tarballs** built against moxygen \`${MOX_REF}\`:
@@ -285,6 +311,8 @@ jobs:
             --title "moqx $VERSION" \
             "${PRERELEASE_FLAG[@]}" \
             --notes "$(cat <<EOF
+          ${CHANGELOG}
+
           **Version:** \`${VERSION}\`
           **Commit:** \`${SNAPSHOT_SHA}\`
           **moxygen reference:** \`${MOX_REF}\`

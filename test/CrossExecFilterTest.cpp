@@ -533,6 +533,50 @@ TEST(FetchCrossExecFilterLifetimeTest, DownstreamReleasedOnTargetExecutor) {
   EXPECT_EQ(releaseThread, std::this_thread::get_id());
 }
 
+// The subgroup counterpart of the test above (#787, #789). The session calls
+// endOfSubgroup() and then drops its ref on its io thread. If the relay runs the
+// endOfSubgroup lambda first, the session's drop is the last one. downstream_
+// must still be released on the relay, because ~SubgroupWriteback edits the
+// cache LRU.
+TEST(CrossExecSubgroupFilterLifetimeTest, DownstreamReleasedOnTargetExecutor) {
+  folly::ManualExecutor relayExec;
+  std::thread::id releaseThread;
+
+  auto innerSubgroup = std::shared_ptr<NiceMock<MockSubgroupConsumer>>(
+      new NiceMock<MockSubgroupConsumer>(),
+      [&releaseThread](NiceMock<MockSubgroupConsumer>* p) {
+        releaseThread = std::this_thread::get_id();
+        delete p;
+      }
+  );
+  ON_CALL(*innerSubgroup, endOfSubgroup())
+      .WillByDefault(Return(folly::makeExpected<MoQPublishError>(folly::unit)));
+  auto innerTrack = std::make_shared<NiceMock<MockTrackConsumer>>();
+  // Return() would keep a copy; moving out leaves downstream_ the only owner.
+  EXPECT_CALL(*innerTrack, beginSubgroup(_, _, _, _)).WillOnce([&innerSubgroup](auto&&...) {
+    return folly::makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(
+        std::move(innerSubgroup)
+    );
+  });
+
+  auto filter = CrossExecFilter::create(&relayExec, innerTrack);
+  auto r = filter->beginSubgroup(1, 0, 128, {});
+  ASSERT_TRUE(r.hasValue());
+  auto sessionRef = std::move(r.value()); // the session's subgroupCallback_
+  relayExec.drain();
+
+  // The relay runs the endOfSubgroup lambda, releasing selfGuard_, before the
+  // session drops its ref.
+  ASSERT_TRUE(sessionRef->endOfSubgroup().hasValue());
+  relayExec.drain();
+
+  std::thread sessionThread([&sessionRef] { sessionRef.reset(); });
+  sessionThread.join();
+  relayExec.drain();
+
+  EXPECT_EQ(releaseThread, std::this_thread::get_id());
+}
+
 // ---- CrossExecFilter lifetime ----
 
 // UAF regression tests: unlike its siblings, CrossExecFilter has no selfGuard_,
