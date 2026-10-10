@@ -37,6 +37,7 @@ How to add an entry: see [CONTRIBUTING.md](/CONTRIBUTING.md#changelog).
 - A peer's namespace subscription outlived its session. ([#775](https://github.com/openmoq/moqx/pull/775))
 - An upstream connect failure is logged only once. ([#744](https://github.com/openmoq/moqx/pull/744))
 - With `use_local_forwarders`, a joining FETCH pipelined behind its SUBSCRIBE resolved against a stale or missing Largest. ([#783](https://github.com/openmoq/moqx/pull/783))
+- FETCH served from the cache scrambled the payload of an object that arrived in three or more chunks. ([#808](https://github.com/openmoq/moqx/pull/808))
 
 [0.3.5] - 2026-09-11
 ====================
