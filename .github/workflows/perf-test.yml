@@ -55,6 +55,10 @@ on:
         description: 'PR number to post the report to (blank = report only in the step summary)'
         type: string
         default: ''
+      release:
+        description: 'moqx release tag to measure (its moqx-linux-amd64.tar.gz) instead of the build of the selected ref'
+        type: string
+        default: ''
 
   workflow_call:
     inputs:
@@ -143,11 +147,28 @@ jobs:
         env:
           PERF_RELAY_HOST:    ${{ secrets.PERF_RELAY_HOST }}
           PERF_CLIENT_HOST:   ${{ secrets.PERF_CLIENT_HOST }}
+          GH_TOKEN:           ${{ github.token }}
+          RELEASE:            ${{ inputs.release }}
         run: |
           FILE="run-${{ steps.sha.outputs.short }}.json"
+          # A release tag measures its published portable tarball instead of this
+          # build. The moqtest tools still come from the build's moxygen prefix.
+          BINARY=build/default/moqx
+          MOQBIN_ARG=()
+          if [[ -n "$RELEASE" ]]; then
+            rm -rf _release
+            gh release download "$RELEASE" --pattern moqx-linux-amd64.tar.gz --dir _release
+            mkdir -p _release/moqx
+            tar xzf _release/moqx-linux-amd64.tar.gz -C _release/moqx
+            BINARY=_release/moqx/bin/moqx
+            FILE="run-${RELEASE}.json"
+            source build/default/moqx-tools.env
+            MOQBIN_ARG=(--moqbin "$MOQBIN")
+          fi
           # Fallbacks: schedule events carry no `inputs`, so apply the canonical
           # nightly load when invoked by cron.
           bash scripts/perf/perf-test-ci.sh \
+            --binary         "$BINARY" "${MOQBIN_ARG[@]}" \
             --duration       "${{ inputs.duration || '120' }}" \
             --subscriber-max "${{ inputs.subscribers || '600' }}" \
             --ramp           150 \
@@ -168,6 +189,10 @@ jobs:
             echo
             echo "ref: \`${{ steps.sha.outputs.short }}\` · branch: \`${{ github.ref_name }}\` · subs: ${{ inputs.subscribers || '600' }} · duration: ${{ inputs.duration || '120' }}s"
             echo
+            if [ -n "${{ inputs.release }}" ]; then
+              echo "binary: \`moqx-linux-amd64.tar.gz\` from release \`${{ inputs.release }}\`"
+              echo
+            fi
             if [ -f "$FILE" ]; then
               echo '| metric | value |'
               echo '|---|---|'

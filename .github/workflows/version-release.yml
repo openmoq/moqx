@@ -24,6 +24,9 @@ name: version release
 #
 # Inputs:
 #   version  required. semver, e.g. 1.2.3
+#   pgo      optional. Profile-guided builds: forwarded to the moxygen release
+#            this run mints, and the release image ships
+#            moqx-linux-<arch>.tar.gz unchanged instead of a bookworm rebuild.
 #
 # The moxygen consumed is always the one MOXYGEN_REV pins. On the release
 # MOXYGEN_REV resolves to:
@@ -54,6 +57,11 @@ on:
         description: 'moqx version (e.g. 1.2.3)'
         required: true
         type: string
+      pgo:
+        description: 'Profile-guided builds: forwarded to the moxygen release this run mints; the release image ships the portable tarball unchanged'
+        required: false
+        type: boolean
+        default: false
 
 # Serialize per-version dispatches: prevents two runs with the same
 # version from both passing validate's tag-doesn't-exist check and
@@ -161,6 +169,9 @@ jobs:
           if MOX_REF=$(cmake -P cmake/print-release-tag.cmake 2>/dev/null) \
               && [[ "$MOX_REF" != snapshot* ]]; then
             echo "==> MOXYGEN_REV $MOX_PIN resolves to moxygen release $MOX_REF"
+            if [[ "${{ inputs.pgo }}" == "true" ]]; then
+              echo "==> pgo: moxygen $MOX_REF already exists; its portable tarballs are used as released"
+            fi
           else
             # No named moxygen release at the pin: mint one, same version, at
             # exactly the pinned commit. moxygen publishes atomically (draft
@@ -180,7 +191,8 @@ jobs:
             echo "==> no named moxygen release at ${MOX_PIN:0:12} — dispatching moxygen version-release $MOX_TAG there"
             SINCE=$(date -u -d '-1 minute' +%Y-%m-%dT%H:%M:%S+00:00)
             GH_TOKEN="$MOX_DISPATCH_TOKEN" gh workflow run omoq-version-release.yml \
-              --repo "$MOX_REPO" --ref main -f "version=$VERSION" -f "rev=$MOX_PIN"
+              --repo "$MOX_REPO" --ref main -f "version=$VERSION" -f "rev=$MOX_PIN" \
+              -f "pgo=${{ inputs.pgo }}"
 
             # gh workflow run returns no run id; the run appears a few seconds later.
             RUN_ID=""
@@ -229,6 +241,9 @@ jobs:
 
           if [ "$HAS_PORTABLE" = "true" ]; then
             echo "==> moxygen $MOX_REF has portable assets — portable matrix will run"
+          elif [[ "${{ inputs.pgo }}" == "true" ]]; then
+            echo "Error: pgo needs moxygen $MOX_REF to carry portable assets; the release image would have no tarball to ship." >&2
+            exit 1
           else
             echo "==> moxygen $MOX_REF lacks portable assets — portable matrix will be skipped"
           fi
@@ -281,6 +296,10 @@ jobs:
           - \`moqx-linux-amd64.tar.gz\` — \`-march=x86-64-v2\` (≈ all cloud x86 since 2015)
           - \`moqx-linux-arm64.tar.gz\` — \`-march=armv8-a\` (Graviton, Ampere, Apple M, RPi 3+, Rockchip)
           - \`moqx-macos-15-arm64.tar.gz\` — Apple silicon, macOS 15+, no Homebrew needed"
+            if [[ "${{ inputs.pgo }}" == "true" ]]; then
+              PORTABLE_NOTE+="
+          - the release image carries \`moqx-linux-<arch>.tar.gz\` unchanged (pgo); profile-guided when moxygen \`${MOX_REF}\` was released with pgo"
+            fi
           else
             PORTABLE_NOTE="_Portable tarballs not produced for this release: moxygen \`${MOX_REF}\` does not include the required portable assets._"
           fi
@@ -605,7 +624,15 @@ jobs:
   # ════════════════════════════════════════════════════════════════════════════
 
   release-image:
-    needs: [validate, create-release]
+    # Waits for portable-build so pgo can ship its tarball. Without moxygen
+    # portable assets that job is skipped, and pgo has already failed validate.
+    needs: [validate, create-release, portable-build]
+    if: |
+      always() &&
+      needs.validate.result == 'success' &&
+      needs.create-release.result == 'success' &&
+      needs.portable-build.result != 'failure' &&
+      needs.portable-build.result != 'cancelled'
     permissions:
       packages: write
     strategy:
@@ -640,9 +667,19 @@ jobs:
           IMAGE="ghcr.io/${{ github.repository }}"
           ARCH="${{ matrix.arch }}"
           TAG="${{ needs.validate.outputs.tag }}"
-          docker buildx build -f docker/Dockerfile --target relay --load \
+          # pgo: ship the portable tarball this release just uploaded instead of
+          # rebuilding moqx against the bookworm snapshot prebuilt.
+          TARGET=relay
+          PORTABLE=()
+          if [[ "${{ inputs.pgo }}" == "true" ]]; then
+            gh release download "$TAG" --pattern "moqx-linux-${ARCH}.tar.gz" --dir docker/_portable --clobber
+            TARGET=relay-portable
+            PORTABLE=(--build-arg "MOQX_PORTABLE_TARBALL=docker/_portable/moqx-linux-${ARCH}.tar.gz")
+          fi
+          docker buildx build -f docker/Dockerfile --target "$TARGET" --load \
             --secret id=github_token,env=GITHUB_TOKEN \
             --build-arg MOQX_VERSION_STRING="$TAG" \
+            "${PORTABLE[@]}" \
             --cache-from "type=registry,ref=${IMAGE}/buildcache:${ARCH}" \
             -t "${IMAGE}:${TAG}-${ARCH}" \
             .

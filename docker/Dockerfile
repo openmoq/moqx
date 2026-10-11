@@ -1,6 +1,7 @@
-# Targets: `relay` (default) and `interop-client`. Both consume the one moxygen
-# prefix built by the `moxygen` stage, so the two images can never disagree about
-# which moxygen they carry.
+# Targets: `relay` (default), `relay-portable` and `interop-client`. relay and
+# interop-client consume the one moxygen prefix built by the `moxygen` stage, so
+# the two images can never disagree about which moxygen they carry.
+# relay-portable ships a release's moqx-linux-<arch>.tar.gz unchanged.
 #
 # ── moxygen prefix ───────────────────────────────────────────────────────
 # Keyed on the pin and the build system, never on src/, so a source-only commit
@@ -86,8 +87,8 @@ USER interop
 
 ENTRYPOINT ["moq_interop_client"]
 
-# ── relay: the published moqx image. Last, so it is the default target. ──
-FROM debian:bookworm-slim AS relay
+# ── relay runtime, shared by the two relay targets below ─────────────────
+FROM debian:bookworm-slim AS relay-base
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libunwind8 libsodium23 libboost-context1.74.0 \
@@ -107,10 +108,25 @@ LABEL org.opencontainers.image.title="moqx" \
       org.opencontainers.image.source="https://github.com/openmoq/moqx" \
       org.opencontainers.image.licenses="Apache-2.0"
 
-COPY --from=builder /install/bin/moqx /usr/local/bin/moqx
-COPY --from=builder /install/bin/moqx-issuer /usr/local/bin/moqx-issuer
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY docker/config.docker.yaml /usr/local/share/moqx/config.docker.yaml
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+
+# ── relay-portable: a release's moqx-linux-<arch>.tar.gz, unchanged ───────
+# version-release builds this when pgo is on, so the image carries the same
+# profile-guided binary as the tarball. ADD extracts bin/ and lib/ (rpath
+# $ORIGIN/../lib) under /opt/moqx; the symlinks keep entrypoint.sh's paths.
+FROM relay-base AS relay-portable
+
+ARG MOQX_PORTABLE_TARBALL
+ADD ${MOQX_PORTABLE_TARBALL} /opt/moqx/
+RUN ln -s /opt/moqx/bin/moqx /usr/local/bin/moqx \
+    && ln -s /opt/moqx/bin/moqx-issuer /usr/local/bin/moqx-issuer
+
+# ── relay: the published moqx image. Last, so it is the default target. ──
+FROM relay-base AS relay
+
+COPY --from=builder /install/bin/moqx /usr/local/bin/moqx
+COPY --from=builder /install/bin/moqx-issuer /usr/local/bin/moqx-issuer
