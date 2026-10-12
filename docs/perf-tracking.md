@@ -160,6 +160,19 @@ as nightly results accumulate. Comparisons are isolated by profile and stack,
 not by CPU target or subscriber override; use `compare: false` for nonstandard
 load experiments and while establishing a baseline for the recalibrated counts.
 
+### Preserving Published History
+
+The nightly publisher requires the published manifest and every retained run
+file to download and validate before it stages a Pages deployment. A failed
+request, malformed manifest, missing run file, or invalid run JSON fails the
+`perf` job, which prevents deployment and leaves the current dashboard intact.
+
+For a genuine first deployment only, set the repository Actions variable
+`MOQX_PERF_ALLOW_EMPTY_BASELINE` to `true` for the scheduled bootstrap run, then
+remove it. This permits an HTTP 404 for `index.json` to mean an empty baseline;
+network errors, other HTTP statuses, and missing or invalid run files still fail
+the job.
+
 ### Stack Comparability
 
 Each stack uses its native congestion-control spelling and algorithm: mvfst

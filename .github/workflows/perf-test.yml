@@ -342,17 +342,43 @@ jobs:
       - name: Pull rolling baseline from currently-published Pages
         # Downloads index.json + the latest N run JSONs into data/ so
         # perf-compare.py can score the new run against history.
-        # No-op on the very first deploy (index.json 404).
+        # A 404 is an empty baseline only when explicitly authorized for bootstrap.
         env:
           BASE: https://openmoq.org/moqx/perf
           KEEP: 1080
+          ALLOW_EMPTY_BASELINE: ${{ vars.MOQX_PERF_ALLOW_EMPTY_BASELINE || 'false' }}
         run: |
           mkdir -p data
-          if curl -fsSL "$BASE/index.json" -o data/index.json; then
-            jq -r '.runs[].file' data/index.json | head -n $((KEEP - 1)) | \
-              while read -r f; do
-                curl -fsSL "$BASE/$f" -o "data/$f" 2>/dev/null || true
-              done
+          MANIFEST="$RUNNER_TEMP/perf-index.json"
+          set +e
+          HTTP_STATUS=$(curl -sSL --retry 3 --retry-delay 2 --retry-max-time 30 \
+            -o "$MANIFEST" -w '%{http_code}' "$BASE/index.json")
+          CURL_STATUS=$?
+          set -e
+
+          if [[ "$HTTP_STATUS" == "404" && "$ALLOW_EMPTY_BASELINE" == "true" ]]; then
+            echo "::warning::No published perf baseline; explicit bootstrap is enabled."
+          elif [[ "$CURL_STATUS" -ne 0 || "$HTTP_STATUS" != "200" ]]; then
+            echo "ERROR: could not fetch perf baseline index (HTTP $HTTP_STATUS, curl $CURL_STATUS)." >&2
+            exit 1
+          else
+            if ! jq -e 'type == "object" and (.runs | type) == "array" and all(.runs[]; (.file | type) == "string" and (.file | test("^run-[A-Za-z0-9_.-]+\\.json$")))' "$MANIFEST" >/dev/null; then
+              echo "ERROR: published perf baseline index is malformed or contains an invalid run filename." >&2
+              exit 1
+            fi
+
+            cp "$MANIFEST" data/index.json
+            while IFS= read -r f; do
+              if ! curl -fsSL --retry 3 --retry-delay 2 --retry-max-time 30 \
+                "$BASE/$f" -o "data/$f"; then
+                echo "ERROR: could not download indexed perf run: $f" >&2
+                exit 1
+              fi
+              if ! jq -e 'type == "object"' "data/$f" >/dev/null; then
+                echo "ERROR: indexed perf run is not valid JSON: $f" >&2
+                exit 1
+              fi
+            done < <(jq -r --argjson limit "$((KEEP - 1))" '.runs[:$limit][] | .file' "$MANIFEST")
           fi
 
       - name: Stage Pages payload (dashboard + rolling window + new run)
