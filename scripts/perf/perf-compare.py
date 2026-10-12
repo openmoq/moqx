@@ -258,9 +258,9 @@ def generate_markdown(
     lines.append(f"- **Stack:** {stack}")
     lines.append(f"- **Profile:** {profile}")
     lines.append(f"- **Congestion control:** {params.get('cc', '?')}")
-    if params.get("target_throughput_mbps"):
+    if params.get("target_cpu_pct"):
         lines.append(
-            f"- **Aggregate target:** {params['target_throughput_mbps']} Mbps"
+            f"- **CPU calibration target:** {params['target_cpu_pct']}%"
         )
     lines.append(
         f"- **Subscribers:** {params.get('subscriber_max', '?')} (ramp {params.get('ramp', '?')}/s)"

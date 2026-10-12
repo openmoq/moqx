@@ -27,7 +27,7 @@ untrusted PR code.
   This is the only trigger that publishes to GitHub Pages.
 - **Manual run:** Actions tab → `perf test` (`workflow_dispatch`). Pick the
   branch/tag under test in the native **"Use workflow from"** selector, then
-  choose a `profile`, aggregate `target_mbps`, duration, and stack selection.
+  choose a `profile`, `target_cpu_pct`, duration, and stack selection.
   Set `subscribers` only to override the profile-derived count for a smoke run.
   Manual runs upload artifacts but do not publish to the trend.
 - **Reusable call:** from another workflow via `workflow_call` (this form takes
@@ -39,7 +39,7 @@ Supported `workflow_dispatch` inputs (schedule runs use the defaults below):
 |---|---:|---|
 | `duration` | `120` | Test duration in seconds |
 | `profile` | `all` | Run all profiles or one of `1mbps`, `4mbps`, `16mbps` |
-| `target_mbps` | `600` | Scaling target; 600 uses the CPU-calibrated profile counts below |
+| `target_cpu_pct` | `300` | CPU calibration target; 300% is 75% of four cores |
 | `subscribers` | `0` | Optional override shared by both stacks; zero uses the scaled profile count |
 | `quic_stack` | `both` | Run `both`, `mvfst`, or `picoquic` |
 | `mvfst_cc` | `native` | mvfst CC override: `native` (`bbr2`), `bbr`, or `bbr2` |
@@ -51,20 +51,25 @@ stacks sequentially on the same VM pair. They are not a matrix because the
 relay and metrics poller are host-global. Profiles are defined in
 [`scripts/perf/profiles.json`](/scripts/perf/profiles.json):
 
-| Profile | Nominal Mbps/subscriber | First object bytes | Other object bytes |
-|---|---:|---:|---:|
-| `1mbps` | 1 | 26,516 | 3,788 |
-| `4mbps` | 4 | 106,064 | 26,516 |
-| `16mbps` | 16 | 424,242 | 60,606 |
+| Profile | Nominal Mbps/subscriber | Subscribers at 300% CPU | First object bytes | Other object bytes |
+|---|---:|---:|---:|---:|
+| `1mbps` | 1 | 728 | 26,516 | 3,788 |
+| `4mbps` | 4 | 256 | 106,064 | 26,516 |
+| `16mbps` | 16 | 144 | 424,242 | 60,606 |
 
-At the default 600 Mbps scaling target, the CPU-calibrated counts are 696, 232,
-and 128 subscribers for the 1, 4, and 16 Mbps profiles. For another target, the
-profile count scales proportionally and rounds up to a multiple of 8 so the
-client's eight threads can all receive an equal subscriber allocation. Both
-stacks receive the same count and client parameters within each profile.
-`subscribers` overrides the derived count for both stacks. Results record the
-profile, target, derived count, and object sizes; this scaling target is not a
-throughput cap, and measured load depends on the profile and relay capacity.
+Each profile defines `subscribers_at_300pct_cpu`, currently calibrated from
+mvfst (`bbr2`) runs on the dedicated four-core relay VM. These counts estimate
+slightly above 300% CPU; they are not an adaptive CPU limiter or a guarantee.
+The workflow scales counts as
+`max(8, ceil(subscribers_at_300pct_cpu * target_cpu_pct / 300 / 8) * 8)`.
+Rounding to a multiple of 8 gives the client's eight threads equal subscriber
+allocations. Both stacks receive the same derived count and client parameters,
+so Picoquic may use less CPU on the identical workload.
+`subscribers` overrides the derived count for both stacks; use a multiple of 8
+to avoid the client truncating the count. Results record `target_cpu_pct`, the
+subscriber count, nominal profile rate, and object sizes. The runner takes
+`--subscriber-max` as the actual count; its `--target-cpu-pct` option records
+metadata only and does not change that count or enforce a CPU limit.
 The optional `mvfst_cc` dispatch input supports controlled CC experiments;
 use `compare: false` for overrides because published baselines are currently
 grouped by profile and stack, not congestion control.
@@ -91,7 +96,7 @@ Stack colors and line styles are consistent across modes.
 > only on the `workflow_call` form for programmatic callers.
 
 > **Subscriber note:** use `subscribers` as a temporary override for smoke
-> runs. Normal runs derive counts from `target_mbps` and the selected profile.
+> runs. Normal runs derive counts from `target_cpu_pct` and the selected profile.
 
 > **Referencing a run on a PR without posting:** leave `pr` blank. The
 > comparison report is always written to the run's **step summary**, whose URL
@@ -143,12 +148,17 @@ Earlier runs averaged throughput over the full run, including ramp-up and
 teardown, so v3 throughput is about 5% higher. `throughput_full_run_mbps`
 keeps the old calculation for continuity.
 
+Schema version 4 records the CPU calibration target as `params.target_cpu_pct`.
+Client-stat anomaly detection checks full-run totals
+against measured throughput and flags peaks above ten times the full-run
+throughput; it no longer uses an assumed aggregate throughput target.
+
 On the first nightly run with the profile matrix, only `mvfst/1mbps` has a
 compatible published baseline: legacy runs are interpreted as that series.
 The other profiles and picoquic start without a baseline and become comparable
 as nightly results accumulate. Comparisons are isolated by profile and stack,
-not by target or subscriber override; use `compare: false` for nonstandard
-load experiments.
+not by CPU target or subscriber override; use `compare: false` for nonstandard
+load experiments and while establishing a baseline for the recalibrated counts.
 
 ### Stack Comparability
 
@@ -162,7 +172,7 @@ Use each stack's own history to evaluate regressions.
 
 | Parameter | Value | Rationale |
 |-----------|-------|-----------|
-| Subscribers | 696, 232, or 128 at the default 600 Mbps scaling target | CPU-calibrated by profile, rounded up to a multiple of 8; `subscribers` can override |
+| Subscribers | 728, 256, or 144 at the default 300% CPU calibration target | Shared by both stacks; proportional CPU scaling rounds up to a multiple of 8; `subscribers` can override |
 | Ramp rate | 150/s | Fixed by the workflow |
 | Duration | 120s | Stable measurement window |
 | IO threads | 4 | Matches VM core count |

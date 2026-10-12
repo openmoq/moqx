@@ -23,7 +23,7 @@
 #   --client-threads N    Client threads (default: 4)
 #   --quic-stack STACK    Relay QUIC stack: mvfst|picoquic (default: mvfst)
 #   --profile NAME        Workload profile (default: 1mbps)
-#   --target-throughput-mbps N  Aggregate target metadata (default: unset)
+#   --target-cpu-pct N    CPU calibration target metadata (default: unset)
 #   --profile-rate-mbps N Nominal profile throughput per subscriber
 #   --first-object-size N Profile's first object size in bytes
 #   --other-object-size N Profile's other object size in bytes
@@ -60,7 +60,7 @@ DELIVERY_TIMEOUT=500
 TRANSPORT="quic"
 QUIC_STACK="mvfst"
 PROFILE="1mbps"
-TARGET_THROUGHPUT_MBPS="0"
+TARGET_CPU_PCT="0"
 PROFILE_RATE_MBPS="1"
 FIRST_OBJECT_SIZE="0"
 OTHER_OBJECT_SIZE="0"
@@ -93,7 +93,7 @@ while [[ $# -gt 0 ]]; do
     --transport)       TRANSPORT="$2";       shift 2 ;;
     --quic-stack)      QUIC_STACK="$2";      shift 2 ;;
     --profile)         PROFILE="$2";         shift 2 ;;
-    --target-throughput-mbps) TARGET_THROUGHPUT_MBPS="$2"; shift 2 ;;
+    --target-cpu-pct)   TARGET_CPU_PCT="$2"; shift 2 ;;
     --profile-rate-mbps) PROFILE_RATE_MBPS="$2"; shift 2 ;;
     --first-object-size) FIRST_OBJECT_SIZE="$2"; shift 2 ;;
     --other-object-size) OTHER_OBJECT_SIZE="$2"; shift 2 ;;
@@ -200,7 +200,7 @@ echo "  Duration:     ${DURATION}s"
 echo "  IO threads:   $IO_THREADS"
 echo "  Transport:    $TRANSPORT"
 echo "  QUIC stack:   $QUIC_STACK (cc $CC)"
-echo "  Profile:      $PROFILE (target ${TARGET_THROUGHPUT_MBPS} Mbps, nominal ${PROFILE_RATE_MBPS} Mbps/subscriber)"
+echo "  Profile:      $PROFILE (CPU calibration target ${TARGET_CPU_PCT}%, nominal ${PROFILE_RATE_MBPS} Mbps/subscriber)"
 echo "  Bind address: $RELAY_BIND_ADDR"
 [[ ${#CLIENT_EXTRA_ARGS[@]} -gt 0 ]] && echo "  Client args:  ${CLIENT_EXTRA_ARGS[*]}"
 echo "  Warmup:       ${WARMUP}s (skip after client start)"
@@ -452,7 +452,7 @@ bash "$REPO/scripts/perf/perf-results-to-json.sh" \
   --transport "$TRANSPORT" \
   --quic-stack "$QUIC_STACK" \
   --profile "$PROFILE" \
-  --target-throughput-mbps "$TARGET_THROUGHPUT_MBPS" \
+  --target-cpu-pct "$TARGET_CPU_PCT" \
   --profile-rate-mbps "$PROFILE_RATE_MBPS" \
   --first-object-size "$FIRST_OBJECT_SIZE" \
   --other-object-size "$OTHER_OBJECT_SIZE" \

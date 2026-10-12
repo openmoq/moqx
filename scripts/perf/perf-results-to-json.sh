@@ -21,7 +21,7 @@
 #   --transport NAME       quic | webtransport | qmux
 #   --quic-stack STACK     Relay QUIC stack: mvfst | picoquic
 #   --profile NAME         Workload profile (legacy default: 1mbps)
-#   --target-throughput-mbps N  Aggregate target used to derive subscribers
+#   --target-cpu-pct N     CPU calibration target used to derive subscribers
 #   --profile-rate-mbps N  Nominal Mbps per subscriber for this profile
 #   --first-object-size N  Profile's first object size in bytes
 #   --other-object-size N  Profile's other object size in bytes
@@ -32,8 +32,8 @@ set -euo pipefail
 
 # Bumped whenever the emitted shape changes; consumers (perf-compare.py, the
 # dashboard) treat missing stack/profile fields as mvfst/1mbps.
-# v3: client totals/throughput/peak are windowed to steady state.
-SCHEMA_VERSION=3
+# v4: CPU calibration target replaces aggregate throughput target.
+SCHEMA_VERSION=4
 
 # ── Defaults ───────────────────────────────────────────────────────────────────
 CLIENT_OUTPUT=""
@@ -55,7 +55,7 @@ DELIVERY_TIMEOUT=500
 TRANSPORT="quic"
 QUIC_STACK="mvfst"
 PROFILE="1mbps"
-TARGET_THROUGHPUT_MBPS="0"
+TARGET_CPU_PCT="0"
 PROFILE_RATE_MBPS="1"
 FIRST_OBJECT_SIZE="0"
 OTHER_OBJECT_SIZE="0"
@@ -84,7 +84,7 @@ while [[ $# -gt 0 ]]; do
     --transport)           TRANSPORT="$2";           shift 2 ;;
     --quic-stack)          QUIC_STACK="$2";          shift 2 ;;
     --profile)             PROFILE="$2";             shift 2 ;;
-    --target-throughput-mbps) TARGET_THROUGHPUT_MBPS="$2"; shift 2 ;;
+    --target-cpu-pct)       TARGET_CPU_PCT="$2";       shift 2 ;;
     --profile-rate-mbps)   PROFILE_RATE_MBPS="$2";   shift 2 ;;
     --first-object-size)   FIRST_OBJECT_SIZE="$2";   shift 2 ;;
     --other-object-size)   OTHER_OBJECT_SIZE="$2";   shift 2 ;;
@@ -250,10 +250,9 @@ fi
 # Flag client totals that disagree with final throughput (moxygen getResults() race).
 # Client "Mbps" is MiB-based: bytes = Mbps * 2^20 / 8 * seconds.
 STATS_ANOMALY=$(awk -v b="$RUN_TOTAL_BYTES" -v t="$RUN_THROUGHPUT_MBPS" -v d="$CLIENT_DURATION" \
-  -v p="$RUN_PEAK_MBPS" -v tgt="$TARGET_THROUGHPUT_MBPS" 'BEGIN {
+  -v p="$RUN_PEAK_MBPS" 'BEGIN {
     expected = t * 1048576 / 8 * d
-    ref = (t > tgt) ? t : tgt
-    bad = (expected > 0 && (b > 2 * expected || b < expected / 2)) || (ref > 0 && p > 10 * ref)
+    bad = (expected > 0 && (b > 2 * expected || b < expected / 2)) || (t > 0 && p > 10 * t)
     print bad ? "true" : "false"
   }')
 if [[ "$STATS_ANOMALY" == "true" ]]; then
@@ -300,7 +299,7 @@ cat > "$OUTPUT" <<EOF
     "transport": "$TRANSPORT",
     "quic_stack": "$QUIC_STACK",
     "profile": "$PROFILE",
-    "target_throughput_mbps": $TARGET_THROUGHPUT_MBPS,
+    "target_cpu_pct": $TARGET_CPU_PCT,
     "profile_rate_mbps": $PROFILE_RATE_MBPS,
     "first_object_size": $FIRST_OBJECT_SIZE,
     "other_object_size": $OTHER_OBJECT_SIZE,

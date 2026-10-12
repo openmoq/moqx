@@ -44,13 +44,13 @@ on:
         type: number
         default: 120
       subscribers:
-        description: 'subscriber override; 0 derives count from target and profile'
+        description: 'subscriber override; 0 derives count from CPU target and profile'
         type: number
         default: 0
-      target_mbps:
-        description: 'scaling target; 600 Mbps uses CPU-calibrated profile subscriber counts'
+      target_cpu_pct:
+        description: 'CPU calibration target; 300% is 75% of four cores (shared counts for both stacks)'
         type: number
-        default: 600
+        default: 300
       profile:
         description: 'workload profile(s) to test'
         type: choice
@@ -99,10 +99,10 @@ on:
         type: number
         required: false
         default: 0
-      target_mbps:
+      target_cpu_pct:
         type: number
         required: false
-        default: 600
+        default: 300
       profile:
         type: string
         required: false
@@ -191,7 +191,7 @@ jobs:
           PROFILE_SELECTION: ${{ inputs.profile || 'all' }}
           STACK_SELECTION: ${{ inputs.quic_stack || 'both' }}
           MVFST_CC: ${{ inputs.mvfst_cc || 'native' }}
-          TARGET_MBPS: ${{ inputs.target_mbps }}
+          TARGET_CPU_PCT: ${{ inputs.target_cpu_pct }}
           SUBSCRIBER_OVERRIDE: ${{ inputs.subscribers || '0' }}
           DURATION: ${{ inputs.duration || '120' }}
           COMMIT_SHORT: ${{ steps.sha.outputs.short }}
@@ -214,9 +214,9 @@ jobs:
             *) echo "ERROR: mvfst_cc must be native, bbr, or bbr2" >&2; exit 1 ;;
           esac
 
-          [[ -n "$TARGET_MBPS" ]] || TARGET_MBPS=600
-          if ! jq -en --argjson target "$TARGET_MBPS" '$target > 0' >/dev/null; then
-            echo "ERROR: target_mbps must be greater than zero" >&2
+          [[ -n "$TARGET_CPU_PCT" ]] || TARGET_CPU_PCT=300
+          if ! jq -en --argjson target "$TARGET_CPU_PCT" '($target | type) == "number" and $target > 0' >/dev/null; then
+            echo "ERROR: target_cpu_pct must be greater than zero" >&2
             exit 1
           fi
           if [[ ! "$SUBSCRIBER_OVERRIDE" =~ ^[0-9]+$ ]]; then
@@ -233,10 +233,10 @@ jobs:
           for PROFILE in "${PROFILES[@]}"; do
             PROFILE_DATA=$(jq -c --arg id "$PROFILE" '.profiles[] | select(.id == $id)' scripts/perf/profiles.json)
             PROFILE_RATE=$(jq -r '.mbps_per_subscriber' <<< "$PROFILE_DATA")
-            PROFILE_BASE_SUBSCRIBERS=$(jq -r '.subscribers_at_600_mbps' <<< "$PROFILE_DATA")
+            PROFILE_BASE_SUBSCRIBERS=$(jq -r '.subscribers_at_300pct_cpu' <<< "$PROFILE_DATA")
             FIRST_OBJECT_SIZE=$(jq -r '.first_object_size' <<< "$PROFILE_DATA")
             OTHER_OBJECT_SIZE=$(jq -r '.other_object_size' <<< "$PROFILE_DATA")
-            DERIVED_SUBSCRIBERS=$(jq -nr --argjson target "$TARGET_MBPS" --argjson subscribers "$PROFILE_BASE_SUBSCRIBERS" '((($target * $subscribers / 600 / 8) | ceil) * 8) | if . < 8 then 8 else . end')
+            DERIVED_SUBSCRIBERS=$(jq -nr --argjson target "$TARGET_CPU_PCT" --argjson subscribers "$PROFILE_BASE_SUBSCRIBERS" '((($target * $subscribers / 300 / 8) | ceil) * 8) | if . < 8 then 8 else . end')
             if ((SUBSCRIBER_OVERRIDE > 0)); then
               RUN_SUBSCRIBERS="$SUBSCRIBER_OVERRIDE"
             else
@@ -257,7 +257,7 @@ jobs:
                 FILE="run-${COMMIT_SHORT}-${PROFILE}-${STACK}.json"
               fi
               rm -f "$FILE"
-              echo "Running $PROFILE on $STACK: target=${TARGET_MBPS}Mbps subscribers=$RUN_SUBSCRIBERS"
+              echo "Running $PROFILE on $STACK: CPU calibration target=${TARGET_CPU_PCT}% subscribers=$RUN_SUBSCRIBERS"
               if bash scripts/perf/perf-test-ci.sh \
                 --duration                "$DURATION" \
                 --subscriber-max          "$RUN_SUBSCRIBERS" \
@@ -269,7 +269,7 @@ jobs:
                 --cooldown                10 \
                 --quic-stack              "$STACK" \
                 --profile                  "$PROFILE" \
-                --target-throughput-mbps  "$TARGET_MBPS" \
+                --target-cpu-pct          "$TARGET_CPU_PCT" \
                 --profile-rate-mbps       "$PROFILE_RATE" \
                 --first-object-size       "$FIRST_OBJECT_SIZE" \
                 --other-object-size       "$OTHER_OBJECT_SIZE" \
@@ -305,13 +305,13 @@ jobs:
           FAILED_CASES: ${{ steps.collect.outputs.failed-cases }}
           COMMIT_SHORT: ${{ steps.sha.outputs.short }}
           BRANCH_NAME: ${{ github.ref_name }}
-          TARGET_MBPS: ${{ inputs.target_mbps || '600' }}
+          TARGET_CPU_PCT: ${{ inputs.target_cpu_pct }}
           DURATION: ${{ inputs.duration || '120' }}
         run: |
           {
             echo "## perf-test — $(date -u +'%Y-%m-%d %H:%M UTC')"
             echo
-            printf 'ref: `%s` · branch: `%s` · target: %s Mbps · duration: %ss\n' "$COMMIT_SHORT" "$BRANCH_NAME" "$TARGET_MBPS" "$DURATION"
+            printf 'ref: `%s` · branch: `%s` · CPU calibration target: %s%% · duration: %ss\n' "$COMMIT_SHORT" "$BRANCH_NAME" "${TARGET_CPU_PCT:-300}" "$DURATION"
             echo
             if [[ -z "$FILES" ]]; then
               echo "_no results JSON produced_"
