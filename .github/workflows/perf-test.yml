@@ -48,7 +48,7 @@ on:
         type: number
         default: 0
       target_mbps:
-        description: 'aggregate target throughput used to derive subscribers'
+        description: 'scaling target; 600 Mbps uses CPU-calibrated profile subscriber counts'
         type: number
         default: 600
       profile:
@@ -233,9 +233,10 @@ jobs:
           for PROFILE in "${PROFILES[@]}"; do
             PROFILE_DATA=$(jq -c --arg id "$PROFILE" '.profiles[] | select(.id == $id)' scripts/perf/profiles.json)
             PROFILE_RATE=$(jq -r '.mbps_per_subscriber' <<< "$PROFILE_DATA")
+            PROFILE_BASE_SUBSCRIBERS=$(jq -r '.subscribers_at_600_mbps' <<< "$PROFILE_DATA")
             FIRST_OBJECT_SIZE=$(jq -r '.first_object_size' <<< "$PROFILE_DATA")
             OTHER_OBJECT_SIZE=$(jq -r '.other_object_size' <<< "$PROFILE_DATA")
-            DERIVED_SUBSCRIBERS=$(jq -nr --argjson target "$TARGET_MBPS" --argjson rate "$PROFILE_RATE" '($target / $rate | round) | if . < 1 then 1 else . end')
+            DERIVED_SUBSCRIBERS=$(jq -nr --argjson target "$TARGET_MBPS" --argjson subscribers "$PROFILE_BASE_SUBSCRIBERS" '((($target * $subscribers / 600 / 8) | ceil) * 8) | if . < 8 then 8 else . end')
             if ((SUBSCRIBER_OVERRIDE > 0)); then
               RUN_SUBSCRIBERS="$SUBSCRIBER_OVERRIDE"
             else

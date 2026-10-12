@@ -39,8 +39,8 @@ Supported `workflow_dispatch` inputs (schedule runs use the defaults below):
 |---|---:|---|
 | `duration` | `120` | Test duration in seconds |
 | `profile` | `all` | Run all profiles or one of `1mbps`, `4mbps`, `16mbps` |
-| `target_mbps` | `600` | Aggregate target throughput used to derive subscriber count |
-| `subscribers` | `0` | Optional override; zero derives count from target and profile |
+| `target_mbps` | `600` | Scaling target; 600 uses the CPU-calibrated profile counts below |
+| `subscribers` | `0` | Optional override shared by both stacks; zero uses the scaled profile count |
 | `quic_stack` | `both` | Run `both`, `mvfst`, or `picoquic` |
 | `mvfst_cc` | `native` | mvfst CC override: `native` (`bbr2`), `bbr`, or `bbr2` |
 | `compare` | `true` | Compare against the published baseline and render a report into the step summary |
@@ -57,12 +57,14 @@ relay and metrics poller are host-global. Profiles are defined in
 | `4mbps` | 4 | 106,064 | 26,516 |
 | `16mbps` | 16 | 424,242 | 60,606 |
 
-Subscriber count is rounded from `target_mbps / mbps_per_subscriber`; at the
-default 600 Mbps target, profiles use 600, 150, and 38 subscribers. Both stacks
-receive the same derived count and client parameters within each profile.
-`subscribers` can override the count for smoke tests. Results record the
-profile, target, derived count, and object sizes; the aggregate target estimates
-offered load and does not guarantee measured throughput.
+At the default 600 Mbps scaling target, the CPU-calibrated counts are 696, 232,
+and 128 subscribers for the 1, 4, and 16 Mbps profiles. For another target, the
+profile count scales proportionally and rounds up to a multiple of 8 so the
+client's eight threads can all receive an equal subscriber allocation. Both
+stacks receive the same count and client parameters within each profile.
+`subscribers` overrides the derived count for both stacks. Results record the
+profile, target, derived count, and object sizes; this scaling target is not a
+throughput cap, and measured load depends on the profile and relay capacity.
 The optional `mvfst_cc` dispatch input supports controlled CC experiments;
 use `compare: false` for overrides because published baselines are currently
 grouped by profile and stack, not congestion control.
@@ -160,7 +162,7 @@ Use each stack's own history to evaluate regressions.
 
 | Parameter | Value | Rationale |
 |-----------|-------|-----------|
-| Subscribers | Derived from target/profile: 600, 150, or 38 at the default 600 Mbps target | Rounded from `target_mbps / mbps_per_subscriber`; `subscribers` can override |
+| Subscribers | 696, 232, or 128 at the default 600 Mbps scaling target | CPU-calibrated by profile, rounded up to a multiple of 8; `subscribers` can override |
 | Ramp rate | 150/s | Fixed by the workflow |
 | Duration | 120s | Stable measurement window |
 | IO threads | 4 | Matches VM core count |
