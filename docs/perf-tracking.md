@@ -235,17 +235,23 @@ ssh-copy-id -i perf-key.pub root@<relay-ip>
 ssh-copy-id -i perf-key.pub root@<client-ip>
 ```
 
-### 4. Add GitHub Secrets
+### 4. Add GitHub Secrets and Variables
 
 In the repository settings → Secrets and variables → Actions:
 
 | Secret | Value |
 |--------|-------|
-| `OMOQ_APP_ID` | GitHub App id used for checkout/tokened operations |
+| `OMOQ_APP_ID` | Numeric GitHub App ID used by other workflows that still accept `app-id` |
 | `OMOQ_APP_PRIV_KEY` | GitHub App private key |
 | `PERF_SSH_KEY` | Contents of `perf-key` (private key) |
 | `PERF_RELAY_HOST` | `root@<relay-ip>` |
 | `PERF_CLIENT_HOST` | `root@<client-ip>` |
+
+Add this repository Actions variable for `perf-test.yml`'s GitHub App token steps:
+
+| Variable | Value |
+|----------|-------|
+| `OMOQ_APP_CLIENT_ID` | Client ID from the GitHub App settings (not the numeric App ID) |
 
 ### 5. Enable GitHub Pages (GitHub Actions Source)
 

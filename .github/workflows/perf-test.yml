@@ -145,7 +145,7 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@v3
         with:
-          app-id: ${{ secrets.OMOQ_APP_ID }}
+          client-id: ${{ vars.OMOQ_APP_CLIENT_ID }}
           private-key: ${{ secrets.OMOQ_APP_PRIV_KEY }}
 
       - uses: actions/checkout@v5
@@ -505,7 +505,7 @@ jobs:
       - uses: actions/create-github-app-token@v3
         id: app-token
         with:
-          app-id: ${{ secrets.OMOQ_APP_ID }}
+          client-id: ${{ vars.OMOQ_APP_CLIENT_ID }}
           private-key: ${{ secrets.OMOQ_APP_PRIV_KEY }}
       - id: deployment
         uses: actions/deploy-pages@v5
