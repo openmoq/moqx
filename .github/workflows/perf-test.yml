@@ -188,15 +188,20 @@ jobs:
         env:
           PERF_RELAY_HOST:    ${{ secrets.PERF_RELAY_HOST }}
           PERF_CLIENT_HOST:   ${{ secrets.PERF_CLIENT_HOST }}
+          PROFILE_SELECTION: ${{ inputs.profile || 'all' }}
+          STACK_SELECTION: ${{ inputs.quic_stack || 'both' }}
+          MVFST_CC: ${{ inputs.mvfst_cc || 'native' }}
+          TARGET_MBPS: ${{ inputs.target_mbps }}
+          SUBSCRIBER_OVERRIDE: ${{ inputs.subscribers || '0' }}
+          DURATION: ${{ inputs.duration || '120' }}
+          COMMIT_SHORT: ${{ steps.sha.outputs.short }}
         run: |
-          PROFILE_SELECTION="${{ inputs.profile || 'all' }}"
           case "$PROFILE_SELECTION" in
             all) mapfile -t PROFILES < <(jq -r '.profiles[].id' scripts/perf/profiles.json) ;;
             1mbps|4mbps|16mbps) PROFILES=("$PROFILE_SELECTION") ;;
             *) echo "ERROR: invalid profile input: $PROFILE_SELECTION" >&2; exit 1 ;;
           esac
 
-          STACK_SELECTION="${{ inputs.quic_stack || 'both' }}"
           case "$STACK_SELECTION" in
             both)     STACKS=(mvfst picoquic) ;;
             mvfst)    STACKS=(mvfst) ;;
@@ -204,21 +209,22 @@ jobs:
             *) echo "ERROR: invalid quic_stack input: $STACK_SELECTION" >&2; exit 1 ;;
           esac
 
-          MVFST_CC="${{ inputs.mvfst_cc || 'native' }}"
           case "$MVFST_CC" in
             native|bbr|bbr2) ;;
             *) echo "ERROR: mvfst_cc must be native, bbr, or bbr2" >&2; exit 1 ;;
           esac
 
-          TARGET_MBPS="${{ inputs.target_mbps }}"
           [[ -n "$TARGET_MBPS" ]] || TARGET_MBPS=600
-          SUBSCRIBER_OVERRIDE="${{ inputs.subscribers || '0' }}"
           if ! jq -en --argjson target "$TARGET_MBPS" '$target > 0' >/dev/null; then
             echo "ERROR: target_mbps must be greater than zero" >&2
             exit 1
           fi
           if [[ ! "$SUBSCRIBER_OVERRIDE" =~ ^[0-9]+$ ]]; then
             echo "ERROR: subscribers override must be zero or a positive integer" >&2
+            exit 1
+          fi
+          if [[ ! "$DURATION" =~ ^[0-9]+$ ]] || ((DURATION <= 0)); then
+            echo "ERROR: duration must be a positive integer" >&2
             exit 1
           fi
 
@@ -245,14 +251,14 @@ jobs:
               # Preserve the established 1 Mbps filenames; higher-rate profiles
               # add a profile component rather than replacing the old series.
               if [[ "$PROFILE" == "1mbps" ]]; then
-                FILE="run-${{ steps.sha.outputs.short }}-${STACK}.json"
+                FILE="run-${COMMIT_SHORT}-${STACK}.json"
               else
-                FILE="run-${{ steps.sha.outputs.short }}-${PROFILE}-${STACK}.json"
+                FILE="run-${COMMIT_SHORT}-${PROFILE}-${STACK}.json"
               fi
               rm -f "$FILE"
               echo "Running $PROFILE on $STACK: target=${TARGET_MBPS}Mbps subscribers=$RUN_SUBSCRIBERS"
               if bash scripts/perf/perf-test-ci.sh \
-                --duration                "${{ inputs.duration || '120' }}" \
+                --duration                "$DURATION" \
                 --subscriber-max          "$RUN_SUBSCRIBERS" \
                 --delivery-timeout        5000 \
                 --ramp                    150 \
@@ -272,9 +278,6 @@ jobs:
               else
                 STATUS=$?
                 echo "WARNING: $PROFILE/$STACK perf run failed (exit $STATUS)" >&2
-                if [[ "$STACK" != picoquic ]]; then
-                  exit "$STATUS"
-                fi
                 FAILED_CASES+=("$PROFILE/$STACK")
               fi
             done
@@ -289,16 +292,25 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
+          if ((${#FAILED_CASES[@]})); then
+            printf 'ERROR: requested perf case failed: %s\n' "${FAILED_CASES[@]}" >&2
+            exit 1
+          fi
+
       - name: Render step summary
         if: always()
         env:
           FILES: ${{ steps.collect.outputs.run-files }}
           FAILED_CASES: ${{ steps.collect.outputs.failed-cases }}
+          COMMIT_SHORT: ${{ steps.sha.outputs.short }}
+          BRANCH_NAME: ${{ github.ref_name }}
+          TARGET_MBPS: ${{ inputs.target_mbps || '600' }}
+          DURATION: ${{ inputs.duration || '120' }}
         run: |
           {
             echo "## perf-test — $(date -u +'%Y-%m-%d %H:%M UTC')"
             echo
-            echo "ref: \`${{ steps.sha.outputs.short }}\` · branch: \`${{ github.ref_name }}\` · target: ${{ inputs.target_mbps || '600' }} Mbps · duration: ${{ inputs.duration || '120' }}s"
+            printf 'ref: `%s` · branch: `%s` · target: %s Mbps · duration: %ss\n' "$COMMIT_SHORT" "$BRANCH_NAME" "$TARGET_MBPS" "$DURATION"
             echo
             if [[ -z "$FILES" ]]; then
               echo "_no results JSON produced_"
@@ -322,7 +334,7 @@ jobs:
               echo
             done <<< "$FILES"
             if [[ -n "$FAILED_CASES" ]]; then
-              echo "Failed profile/stack case(s), non-fatal: $FAILED_CASES"
+              printf 'Failed profile/stack case(s): %s\n' "$FAILED_CASES"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 

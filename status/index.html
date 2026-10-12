@@ -38,6 +38,7 @@
   .stack-comparison thead th { color: #8b949e; font-size: 0.72rem; font-weight: 500; }
   .stack-comparison tbody th { text-align: left; }
   .stack-comparison tbody td { font-size: 0.9rem; font-weight: 600; }
+  .stack-comparison td.better { color: #55ee55; }
   .stack-comparison tr.mvfst th { border-left: 3px solid #58a6ff; }
   .stack-comparison tr.picoquic th { border-left: 3px dashed #f0883e; }
   .stack-name, .stack-cc { display: block; }
@@ -49,6 +50,7 @@
   .overview-table thead th { color: #8b949e; font-size: 0.75rem; font-weight: 500; }
   .overview-table tbody th { text-align: left; }
   .overview-table tbody td { font-size: 0.95rem; font-weight: 600; }
+  .overview-table td.better { color: #55ee55; }
   .overview-table tr.mvfst th { border-left: 3px solid #58a6ff; }
   .overview-table tr.picoquic th { border-left: 3px dashed #f0883e; }
   #overview-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -329,11 +331,12 @@ function getComparisonData(selectedProfile = document.getElementById('profile-fi
     if (getRunProfile(run) !== selectedProfile) continue;
     const stack = getRunStack(run);
     if (!Object.prototype.hasOwnProperty.call(STACK_COLORS, stack)) continue;
-    const key = run.commit || run.commit_short || `${run.timestamp || '?'}-${stack}`;
+    const runId = run.workflow_run_id;
+    const key = runId || run.commit || run.commit_short || `${run.timestamp || '?'}-${stack}`;
     if (!groups.has(key)) {
       groups.set(key, {
         key,
-        label: run.commit_short || run.commit?.slice(0, 7) || '?',
+        label: runId ? runId.slice(-6) : run.commit_short || run.commit?.slice(0, 7) || '?',
         timestamp: run.timestamp || '',
         runs: {},
       });
@@ -412,6 +415,14 @@ function renderComparisonSummary(data) {
 function renderRunSummary(stackRuns) {
   const container = document.getElementById('summary');
   container.className = 'summary comparison-summary';
+  const resultsByStack = new Map(stackRuns.map(({stack, run}) => [stack, run?.results || {}]));
+  const betterClass = (stack, metric, higherIsBetter) => {
+    const value = resultsByStack.get(stack)?.[metric];
+    const otherStack = stack === 'mvfst' ? 'picoquic' : 'mvfst';
+    const otherValue = resultsByStack.get(otherStack)?.[metric];
+    if (!Number.isFinite(value) || !Number.isFinite(otherValue) || value === otherValue) return '';
+    return (higherIsBetter ? value > otherValue : value < otherValue) ? 'better' : '';
+  };
   const rows = stackRuns.map(({stack, run}) => {
     const results = run?.results || {};
     const params = run?.params || {};
@@ -420,13 +431,13 @@ function renderRunSummary(stackRuns) {
     return `
       <tr class="${stack}">
         <th scope="row"><span class="stack-name ${stack}">${stack}</span><span class="stack-cc">CC · ${params.cc || 'unknown'}</span></th>
-        <td>${results.throughput_mbps ?? '—'} Mbps</td>
-        <td>${results.throughput_per_core_mbps ?? '—'} Mbps</td>
+        <td class="${betterClass(stack, 'throughput_mbps', true)}">${results.throughput_mbps ?? '—'} Mbps</td>
+        <td class="${betterClass(stack, 'throughput_per_core_mbps', true)}">${results.throughput_per_core_mbps ?? '—'} Mbps</td>
         <td>${results.peak_subscribers ?? '—'}</td>
-        <td>${results.relay_cpu_pct == null ? '—' : `${results.relay_cpu_pct}%`}</td>
-        <td>${results.relay_rss_mb ?? '—'} MB</td>
-        <td>${results.avg_latency_ms ?? '—'} ms</td>
-        <td>${results.rss_per_session_kb ?? '—'} KB</td>
+        <td class="${betterClass(stack, 'relay_cpu_pct', false)}">${results.relay_cpu_pct == null ? '—' : `${results.relay_cpu_pct}%`}</td>
+        <td class="${betterClass(stack, 'relay_rss_mb', false)}">${results.relay_rss_mb ?? '—'} MB</td>
+        <td class="${betterClass(stack, 'avg_latency_ms', false)}">${results.avg_latency_ms ?? '—'} ms</td>
+        <td class="${betterClass(stack, 'rss_per_session_kb', false)}">${results.rss_per_session_kb ?? '—'} KB</td>
         <td>${commit ? `<a class="commit-link" href="${REPO_URL}/commit/${commit}">${commitLabel}</a>` : commitLabel}</td>
       </tr>
     `;
@@ -443,19 +454,34 @@ function renderOverviewSummary(branchData) {
   const container = document.getElementById('summary');
   container.className = 'summary overview-summary';
   const metrics = [
-    ['throughput_per_core_mbps', 'TP/core', 'Mbps'],
-    ['throughput_mbps', 'Throughput', 'Mbps'],
-    ['relay_cpu_pct', 'Relay CPU', '%'],
+    ['throughput_per_core_mbps', 'TP/core', 'Mbps', true],
+    ['throughput_mbps', 'Throughput', 'Mbps', true],
+    ['relay_cpu_pct', 'Relay CPU', '%', false],
   ];
+  const latestRunsByProfile = new Map(PROFILE_IDS.map(profile => [
+    profile,
+    Object.fromEntries(['mvfst', 'picoquic'].map(stack => [
+      stack,
+      branchData
+        .filter(run => getRunStack(run) === stack && getRunProfile(run) === profile)
+        .reduce((current, run) => !current || run.timestamp > current.timestamp ? run : current, null),
+    ])),
+  ]));
+  const betterClass = (stack, profile, metric, higherIsBetter) => {
+    const profileRuns = latestRunsByProfile.get(profile);
+    const value = profileRuns?.[stack]?.results?.[metric];
+    const otherStack = stack === 'mvfst' ? 'picoquic' : 'mvfst';
+    const otherValue = profileRuns?.[otherStack]?.results?.[metric];
+    if (!Number.isFinite(value) || !Number.isFinite(otherValue) || value === otherValue) return '';
+    return (higherIsBetter ? value > otherValue : value < otherValue) ? 'better' : '';
+  };
   const rows = ['mvfst', 'picoquic'].map(stack => {
     const cells = PROFILE_IDS.flatMap(profile => {
-      const latest = branchData
-        .filter(run => getRunStack(run) === stack && getRunProfile(run) === profile)
-        .reduce((current, run) => !current || run.timestamp > current.timestamp ? run : current, null);
-      return metrics.map(([metric, , unit]) => {
+      const latest = latestRunsByProfile.get(profile)?.[stack];
+      return metrics.map(([metric, , unit, higherIsBetter]) => {
         const value = latest?.results?.[metric];
-        const formattedValue = unit === '%' ? `${value}%` : `${value} ${unit}`;
-        return `<td>${value == null ? '—' : formattedValue}</td>`;
+        const formattedValue = value == null ? '—' : unit === '%' ? `${value}%` : `${value} ${unit}`;
+        return `<td class="${betterClass(stack, profile, metric, higherIsBetter)}">${formattedValue}</td>`;
       });
     }).join('');
     const latestStackRun = branchData

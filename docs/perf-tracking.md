@@ -71,9 +71,11 @@ The 1 Mbps profile keeps the existing result filenames
 (`run-<sha>-mvfst.json` and `run-<sha>-picoquic.json`). Higher-rate profiles use
 profile-qualified filenames, so existing 1 Mbps history remains valid and new
 profiles are additive. Historical records without `params.profile` are treated
-as `1mbps`; comparisons are isolated by both profile and stack. A picoquic
-failure is initially non-fatal so it cannot prevent mvfst results from being
-published.
+as `1mbps`; comparisons are isolated by both profile and stack. All requested
+profile/stack cases are attempted. If any case fails, the workflow fails after
+recording the successful results and failed cases. The step summary, successful
+partial results, and diagnostic logs are retained, but nightly publication is
+skipped.
 
 The dashboard defaults to Overview. It shows the latest throughput/core result
 for each profile and stack, followed by one history chart per profile with both
