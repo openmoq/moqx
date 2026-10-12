@@ -523,17 +523,8 @@ Prometheus a series set that reshuffles between scrapes.  See [docs/metrics.md] 
 
 ---
 
-## Configuration Lifecycle
+## Reloading
 
-Some settings take effect immediately on reload; others require new connections
-or a restart.
-
-| Lifecycle | When changes apply | Examples |
-|---|---|---|
-| **Static** | Process restart required | listeners, admin, relay_id, TLS certificates, QUIC stack |
-| **Reload:NewConn** | New connections/sessions only | service match rules, upstream URL |
-| **Reload:NewSub** | New subscriptions/tracks only | cache settings |
-| **Reload:Immediate** | All connections immediately | (reserved for future fields) |
-
-Send `SIGHUP` to reload the config file. Static fields are ignored on reload; a
-warning is logged if they differ from the running config.
+Config is read once at startup; every change requires a restart. Reload is
+planned ([#786](https://github.com/openmoq/moqx/issues/786),
+[design/hot-reloading.md](/design/hot-reloading.md)).
