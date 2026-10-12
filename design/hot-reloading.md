@@ -2,6 +2,8 @@
 
 ## Hot-Reloading Design
 
+Parameter lifecycles, the SIGHUP-over-inotify decision and API persistence are in [configuration.md](configuration.md).
+
 ### Terminology
 
 - **Config reload**: Re-reading and applying configuration without stopping the process. May affect only new or all connections depending on parameter lifecycle.
@@ -38,6 +40,6 @@ For deploying new binaries or making changes to static parameters, the relay sup
 
 **eBPF-based steering**: An eBPF program attached to the UDP socket steers packets for existing connection IDs to the old process and new connections to the new process.
 
-> **Note**: We will likely need eBPF-based steering between I/O threads anyway for QUIC connection affinity (ensuring all packets for a given connection are processed by the same thread). Extending this to process-level steering during restarts is incremental work on top of that foundation. See [QUIC-LB](https://datatracker.ietf.org/doc/draft-ietf-quic-load-balancers/) and [Relay Requirements §3.7](https://github.com/OpenMOQ/relay-requirements/blob/main/relay-requirements.md) for the connection ID generation API requirement.
+> **Note**: Process-level steering builds on the per-thread BPF reuseport steering used for QUIC connection affinity ([src/bpf/QuicReuseportSteering.cpp](/src/bpf/QuicReuseportSteering.cpp)). The connection ID encodes the owning process alongside the I/O thread. See [QUIC-LB](https://datatracker.ietf.org/doc/draft-ietf-quic-load-balancers/) and [Relay Requirements §3.7](https://github.com/OpenMOQ/relay-requirements/blob/main/relay-requirements.md) for the connection ID generation API requirement.
 
 **State handoff**: We explicitly do **not** attempt to transfer in-memory state (cache, subscription state) between old and new processes. This is complex, error-prone, and the correct approach for stateless horizontal scaling is to rely on upstream re-subscription and cache warming. GOAWAY gives clients the signal to reconnect to the new process.

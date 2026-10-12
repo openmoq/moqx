@@ -10,6 +10,8 @@
 
 The relay needs both file-based configuration for base deployment and a runtime API for dynamic updates. Configuration must be hierarchical, mapping naturally to MOQT's connection model (authority, path, namespace).
 
+Reload mechanics (SIGHUP, runtime API, graceful binary restart) are in [hot-reloading.md](hot-reloading.md).
+
 ### Requirements References
 
 - [Relay Requirements 2.2](https://github.com/OpenMOQ/relay-requirements/blob/main/relay-requirements.md): "configurable via environment variables and/or a configuration file (e.g., YAML, TOML). Configuration should be reloadable without requiring a server restart where possible."
