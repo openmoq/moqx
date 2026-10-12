@@ -551,6 +551,8 @@ function renderChart(canvasId, data, metric, color) {
           ticks: { color: '#8b949e' },
           grid: { color: '#21262d' },
           beginAtZero: false,
+          ...(metric === 'delivery_success_pct' ? { max: 100 } : {}),
+          ...(metric === 'total_resets' ? { min: 0 } : {}),
         }
       },
       onClick: (evt, elements) => {
@@ -614,6 +616,8 @@ function renderComparisonChart(canvasId, data, metric) {
           ticks: { color: '#8b949e' },
           grid: { color: '#21262d' },
           beginAtZero: false,
+          ...(metric === 'delivery_success_pct' ? { max: 100 } : {}),
+          ...(metric === 'total_resets' ? { min: 0 } : {}),
         },
       },
       onClick: (evt, elements) => {
