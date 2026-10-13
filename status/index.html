@@ -229,6 +229,14 @@ function getRunProfile(run) {
   return run?.params?.profile || '1mbps';
 }
 
+function isMeaningfullyBetter(value, otherValue, higherIsBetter) {
+  if (!Number.isFinite(value) || !Number.isFinite(otherValue)) return false;
+  const difference = Math.abs(value - otherValue);
+  const scale = Math.max(Math.abs(value), Math.abs(otherValue));
+  if (difference === 0 || difference / scale <= 0.01) return false;
+  return higherIsBetter ? value > otherValue : value < otherValue;
+}
+
 function populateBranchFilter() {
   const select = document.getElementById('branch-filter');
   const branches = Array.from(new Set(
@@ -420,8 +428,7 @@ function renderRunSummary(stackRuns) {
     const value = resultsByStack.get(stack)?.[metric];
     const otherStack = stack === 'mvfst' ? 'picoquic' : 'mvfst';
     const otherValue = resultsByStack.get(otherStack)?.[metric];
-    if (!Number.isFinite(value) || !Number.isFinite(otherValue) || value === otherValue) return '';
-    return (higherIsBetter ? value > otherValue : value < otherValue) ? 'better' : '';
+    return isMeaningfullyBetter(value, otherValue, higherIsBetter) ? 'better' : '';
   };
   const rows = stackRuns.map(({stack, run}) => {
     const results = run?.results || {};
@@ -472,8 +479,7 @@ function renderOverviewSummary(branchData) {
     const value = profileRuns?.[stack]?.results?.[metric];
     const otherStack = stack === 'mvfst' ? 'picoquic' : 'mvfst';
     const otherValue = profileRuns?.[otherStack]?.results?.[metric];
-    if (!Number.isFinite(value) || !Number.isFinite(otherValue) || value === otherValue) return '';
-    return (higherIsBetter ? value > otherValue : value < otherValue) ? 'better' : '';
+    return isMeaningfullyBetter(value, otherValue, higherIsBetter) ? 'better' : '';
   };
   const rows = ['mvfst', 'picoquic'].map(stack => {
     const cells = PROFILE_IDS.flatMap(profile => {
