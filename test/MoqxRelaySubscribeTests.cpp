@@ -249,6 +249,51 @@ TEST_P(MoQRelayTest, FirstSubscriberViaUpstreamSubscribeReceivesData) {
   driveIfMultiThread();
 }
 
+// An upstream SUBSCRIBE_OK carrying a Mandatory Track Property fails the
+// downstream SUBSCRIBE with UNSUPPORTED_EXTENSION and cancels upstream.
+TEST_P(MoQRelayTest, SubscribeRejectsUpstreamUnsupportedMandatoryProperty) {
+  auto publisherSession = createMockSession();
+  auto subSession = createMockSession();
+  ON_CALL(*publisherSession, getNegotiatedVersion())
+      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft18)));
+
+  doPublishNamespace(publisherSession, kTestNamespace);
+
+  SubscribeOk upstreamOk;
+  upstreamOk.requestID = RequestID(1);
+  upstreamOk.trackAlias = TrackAlias(1);
+  upstreamOk.expires = std::chrono::milliseconds(0);
+  upstreamOk.groupOrder = GroupOrder::OldestFirst;
+  upstreamOk.extensions.insertMutableExtension(Extension{0x4000, 1});
+  std::shared_ptr<NiceMock<MockSubscriptionHandle>> upstreamHandle;
+  EXPECT_CALL(*publisherSession, subscribe(_, _))
+      .WillOnce([upstreamOk,
+                 &upstreamHandle](const SubscribeRequest&, std::shared_ptr<TrackConsumer>) {
+        upstreamHandle = std::make_shared<NiceMock<MockSubscriptionHandle>>(upstreamOk);
+        EXPECT_CALL(*upstreamHandle, unsubscribe());
+        return folly::coro::makeTask<Publisher::SubscribeResult>(
+            folly::Expected<std::shared_ptr<SubscriptionHandle>, SubscribeError>(upstreamHandle)
+        );
+      });
+
+  auto consumer = createMockConsumer();
+  auto handle = subscribeToTrack(
+      subSession,
+      kTestTrackName,
+      consumer,
+      RequestID(0),
+      /*addToState=*/false,
+      SubscribeErrorCode::UNSUPPORTED_EXTENSION
+  );
+  EXPECT_EQ(handle, nullptr);
+
+  removeSession(publisherSession);
+  removeSession(subSession);
+  driveIfMultiThread();
+  ASSERT_TRUE(upstreamHandle);
+  EXPECT_TRUE(testing::Mock::VerifyAndClearExpectations(upstreamHandle.get()));
+}
+
 // Regression: a second subscriber that arrives while a first subscriber's upstream
 // SUBSCRIBE is still in flight must observe the upstream-seeded largest. In
 // LocalForwarderMT the second takes the acquireLocalForwarder isNew=false fast path

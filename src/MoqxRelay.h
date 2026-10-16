@@ -425,10 +425,9 @@ private:
       InstallKind kind
   );
 
-  std::optional<moxygen::PublishError> validatePublishNamespace(
-      const moxygen::FullTrackName& ftn,
-      moxygen::RequestID requestID,
-      bool emptyNamespaceAllowed
+  std::optional<moxygen::PublishError> validatePublish(
+      const moxygen::PublishRequest& pub,
+      const std::shared_ptr<moxygen::MoQSession>& session
   ) const;
 
   static bool emptyNamespaceAllowed(const std::shared_ptr<moxygen::MoQSession>& session);
@@ -540,7 +539,8 @@ private:
       moxygen::SubscribeRequest upstreamSubReq,
       std::shared_ptr<moxygen::TrackConsumer> upstreamConsumer,
       std::shared_ptr<moxygen::MoQForwarder> publisherFwd,
-      moxygen::RequestID clientRequestID
+      moxygen::RequestID clientRequestID,
+      std::optional<uint64_t> upstreamVersion
   );
 
   std::optional<moxygen::SubscribeError> completeUpstreamSubscription(

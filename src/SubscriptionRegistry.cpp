@@ -213,7 +213,13 @@ SubscriptionRegistry::getFetchView(const moxygen::FullTrackName& ftn) const {
     return std::nullopt;
   }
   const auto& rsub = it->second;
-  return FetchView{rsub.forwarder, rsub.publisher, rsub.requestID, rsub.promise.isFulfilled()};
+  return FetchView{
+      rsub.forwarder,
+      rsub.publisher,
+      rsub.requestID,
+      rsub.promise.isFulfilled(),
+      rsub.upstream ? rsub.upstream->getNegotiatedVersion() : std::nullopt
+  };
 }
 
 ForwarderRef SubscriptionRegistry::onPublisherTerminated(const moxygen::FullTrackName& ftn) {
