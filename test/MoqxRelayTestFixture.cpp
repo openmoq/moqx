@@ -58,7 +58,8 @@ void MoQRelayTest::SetUp() {
 void MoQRelayTest::resetRelay(
     config::CacheConfig cache,
     const std::string& relayID,
-    uint64_t relayHopID
+    uint64_t relayHopID,
+    std::chrono::milliseconds costGrace
 ) {
   std::shared_ptr<folly::Executor> relayExec;
   if (relayEvb_) {
@@ -73,7 +74,8 @@ void MoQRelayTest::resetRelay(
       useLocalForwarders,
       MoqxRelay::kDefaultMaxDeselected,
       MoqxRelay::kDefaultIdleTimeout,
-      MoqxRelay::kDefaultActivityThreshold
+      MoqxRelay::kDefaultActivityThreshold,
+      costGrace
   );
   if (relayEvb_) {
     if (relayMode() == RelayMode::LocalForwarderMT) {
@@ -134,6 +136,7 @@ std::shared_ptr<MockMoQSession>
 MoQRelayTest::createMockSessionOn(std::shared_ptr<moxygen::MoQExecutor> exec, uint64_t version) {
   auto session = std::make_shared<NiceMock<MockMoQSession>>(std::move(exec));
   ON_CALL(*session, getNegotiatedVersion()).WillByDefault(Return(std::optional<uint64_t>(version)));
+  ON_CALL(*session, getRelayLinkCost()).WillByDefault(Return(uint64_t{1}));
   ON_CALL(*session, negotiatedSetupExtension(SetupExtension::RelayHops))
       .WillByDefault(Return(false));
   getOrCreateMockState(session);

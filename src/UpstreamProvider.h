@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <fizz/protocol/CertificateVerifier.h>
 #include <folly/CancellationToken.h>
 #include <folly/coro/SharedPromise.h>
@@ -63,7 +64,9 @@ public:
       OnConnectHook onConnect = nullptr,
       OnDisconnectHook onDisconnect = nullptr,
       std::chrono::milliseconds connectTimeout = std::chrono::milliseconds(5000),
-      std::chrono::milliseconds idleTimeout = std::chrono::milliseconds(5000)
+      std::chrono::milliseconds idleTimeout = std::chrono::milliseconds(5000),
+      std::optional<uint64_t> clusterHopID = std::nullopt,
+      std::optional<uint64_t> relayCost = std::nullopt
   );
 
   ~UpstreamProvider() override;
@@ -122,9 +125,10 @@ public:
   void onMoQSessionClosed(moxygen::SessionCloseErrorCode error, folly::Optional<uint32_t> wtError)
       override;
 
-  // Access the current session (may be null)
+  // Owner-executor only. Access the current session (may be null).
   std::shared_ptr<moxygen::MoQSession> currentSession() const { return session_; }
 
+  // Owner-executor only.
   std::string stateString() const {
     switch (state_) {
     case State::Disconnected:
@@ -138,26 +142,30 @@ public:
   }
 
 private:
+  class OwnerPublisher;
+  class OwnerSubscriber;
+
+  std::optional<uint64_t> clusterHopID_;
+  std::optional<uint64_t> relayCost_;
   enum class State { Disconnected, Connecting, Connected };
 
-  // Returns the current session if already connected, null otherwise.
-  // Used for the synchronous fast path in forwarding methods.
+  // Owner-executor only. Returns the current session if already connected.
   std::shared_ptr<moxygen::MoQSession> getSession() const {
-    if (!stopped_ && state_ == State::Connected && session_) {
+    if (!stopRequested_.load(std::memory_order_acquire) && !stopped_ &&
+        state_ == State::Connected && session_) {
       return session_;
     }
     return nullptr;
   }
 
-  // Resets session_ and client_ on the exec thread (while EVBs are alive),
+  // Resets session_ and client_ on the owner executor (while EVBs are alive),
   // allowing ~MoQClientBase() to call moqSession_->close() on a live EVB.
-  folly::coro::Task<void> close();
+  void close();
 
-  // Ensures a session exists, connecting if needed. Called by slow-path
-  // coroutines when getSession() returns null.
+  // Ensures a session exists, connecting if needed. Owner-executor only.
   folly::coro::Task<std::shared_ptr<moxygen::MoQSession>> getOrConnectSession();
 
-  // Slow-path coroutine forwarders: called when not yet connected.
+  // Owner-executor implementations used behind the cross-executor facades.
   folly::coro::Task<SubscribeResult>
   coSubscribe(moxygen::SubscribeRequest sub, std::shared_ptr<moxygen::TrackConsumer> callback);
   folly::coro::Task<FetchResult>
@@ -175,6 +183,10 @@ private:
       std::shared_ptr<moxygen::TrackConsumer> pending,
       moxygen::RequestID reqID
   );
+  PublishResult
+  publishOnOwner(moxygen::PublishRequest pub, std::shared_ptr<moxygen::SubscriptionHandle> handle);
+  folly::coro::Task<void> waitForConnectedOnOwner(std::chrono::milliseconds timeout);
+  void stopOnOwner();
 
   // Performs the actual connection to upstream.
   folly::coro::Task<void> doConnect();
@@ -187,7 +199,7 @@ private:
   folly::coro::Task<void> reconnectLoop();
 
   State state_{State::Disconnected};
-  std::unique_ptr<moxygen::MoQClient> client_;
+  std::shared_ptr<moxygen::MoQClient> client_;
   std::shared_ptr<moxygen::MoQSession> session_;
   std::shared_ptr<moxygen::Publisher> publishHandler_;
   std::shared_ptr<moxygen::Subscriber> subscribeHandler_;
@@ -199,6 +211,10 @@ private:
   std::chrono::milliseconds connectTimeout_;
   std::chrono::milliseconds idleTimeout_;
   bool stopped_{false};
+
+  // Synchronous publish() must reject immediately after stop() is requested,
+  // before the owner executor processes the shutdown callback.
+  std::atomic<bool> stopRequested_{false};
 
   // Connection gating: when Connecting, operations co_await this
   std::optional<folly::coro::SharedPromise<folly::Unit>> connectPromise_;

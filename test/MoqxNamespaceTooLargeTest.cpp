@@ -45,14 +45,42 @@ protected:
   // Publish `count` distinct tracks under kNs directly via relay_->publish().
   // In SingleThread mode (relayExec_==nullptr) this registers the track in
   // namespaceTree_ synchronously, so no driving is needed to make it visible.
-  void
-  publishTracks(std::shared_ptr<MoQSession> session, int count, const std::string& prefix = "t") {
+  void publishTracks(
+      std::shared_ptr<MoQSession> session,
+      int count,
+      const std::string& prefix = "t",
+      const std::vector<uint64_t>& path = {}
+  ) {
+    auto ns = kNs;
+    if (!path.empty()) {
+      ns = TrackNamespace(std::vector<std::string>{"conf", "room1", prefix});
+      PublishNamespace ad;
+      ad.trackNamespace = ns;
+      ad.params.insertParam(Parameter(
+          folly::to_underlying(TrackRequestParamKey::HOP_PATH),
+          encodeRelayHopPath(path, kVersionDraft18).value()
+      ));
+      auto result = withSessionContext(session, [&] {
+        return folly::coro::blockingWait(
+            relay_->publishNamespace(std::move(ad), nullptr),
+            exec_.get()
+        );
+      });
+      ASSERT_TRUE(result.hasValue());
+      getOrCreateMockState(session)->publishNamespaceHandles.push_back(*result);
+    }
     withSessionContext(session, [&] {
       for (int i = 0; i < count; ++i) {
         PublishRequest pub;
-        pub.fullTrackName = FullTrackName{kNs, prefix + std::to_string(i)};
+        pub.fullTrackName = FullTrackName{ns, prefix + std::to_string(i)};
         pub.requestID = RequestID(nextId_++);
         pub.groupOrder = GroupOrder::OldestFirst;
+        if (!path.empty()) {
+          pub.params.insertParam(Parameter(
+              folly::to_underlying(TrackRequestParamKey::HOP_PATH),
+              encodeRelayHopPath(path, kVersionDraft18).value()
+          ));
+        }
         auto result = relay_->publish(std::move(pub), makePublishHandle());
         ASSERT_TRUE(result.hasValue());
       }
@@ -68,6 +96,35 @@ protected:
           TrackNamespace(std::vector<std::string>{"conf", "room1", "n" + std::to_string(i)})
       );
       ASSERT_NE(handle, nullptr);
+    }
+  }
+
+  void publishClusterNamespaces(
+      std::shared_ptr<MockMoQSession> session,
+      const std::vector<uint64_t>& path,
+      uint64_t cost,
+      int count
+  ) {
+    ON_CALL(*session, negotiatedSetupExtension(SetupExtension::RelayHops))
+        .WillByDefault(Return(true));
+    for (int i = 0; i < count; ++i) {
+      PublishNamespace pub;
+      pub.trackNamespace =
+          TrackNamespace(std::vector<std::string>{"conf", "room1", "n" + std::to_string(i)});
+      pub.params.insertParam(Parameter(
+          folly::to_underlying(TrackRequestParamKey::HOP_PATH),
+          encodeRelayHopPath(path, kVersionDraft18).value()
+      ));
+      pub.params.insertParam(Parameter(folly::to_underlying(TrackRequestParamKey::ROUTE_COST), cost)
+      );
+      auto result = withSessionContext(session, [&] {
+        return folly::coro::blockingWait(
+            relay_->publishNamespace(std::move(pub), nullptr),
+            exec_.get()
+        );
+      });
+      ASSERT_TRUE(result.hasValue());
+      getOrCreateMockState(session)->publishNamespaceHandles.push_back(*result);
     }
   }
 
@@ -146,6 +203,34 @@ TEST_F(MoqxNamespaceTooLargeTest, SubscribeTracks_OverThreshold_RejectedWithoutS
   EXPECT_EQ(res2.error().errorCode, SubscribeTracksErrorCode::NAMESPACE_TOO_LARGE);
 }
 
+TEST_F(MoqxNamespaceTooLargeTest, SubscribeTracks_ExcludedPathsDoNotCount) {
+  auto publisher = createMockSession(kVersionDraft18);
+  ON_CALL(*publisher, negotiatedSetupExtension(SetupExtension::RelayHops))
+      .WillByDefault(Return(true));
+  publishTracks(publisher, kMaxNamespaceMatches + 1, "excluded", {7, 10});
+  publishTracks(publisher, kMaxNamespaceMatches, "eligible", {7, 11});
+  auto subscriber = makeSubscriber();
+  ON_CALL(*subscriber, getPeerHopID()).WillByDefault(Return(uint64_t{10}));
+  EXPECT_CALL(*subscriber, publish(_, _)).Times(static_cast<int>(kMaxNamespaceMatches));
+  auto result = doSubscribeTracks(subscriber);
+  ASSERT_TRUE(result.hasValue());
+  exec_->driveFor(50);
+}
+
+TEST_F(MoqxNamespaceTooLargeTest, SubscribeNamespace_ExcludedTrackPathsDoNotCount) {
+  auto publisher = createMockSession(kVersionDraft18);
+  ON_CALL(*publisher, negotiatedSetupExtension(SetupExtension::RelayHops))
+      .WillByDefault(Return(true));
+  publishTracks(publisher, kMaxNamespaceMatches + 1, "excluded", {7, 10});
+  publishTracks(publisher, kMaxNamespaceMatches, "eligible", {7, 11});
+  auto subscriber = makeSubscriber();
+  ON_CALL(*subscriber, getPeerHopID()).WillByDefault(Return(uint64_t{10}));
+  EXPECT_CALL(*subscriber, publish(_, _)).Times(static_cast<int>(kMaxNamespaceMatches));
+  auto result = doSubscribeNamespace(subscriber);
+  ASSERT_TRUE(result.hasValue());
+  exec_->driveFor(50);
+}
+
 // ---------------------------------------------------------------------------
 // SUBSCRIBE_NAMESPACE
 // ---------------------------------------------------------------------------
@@ -193,6 +278,33 @@ TEST_F(MoqxNamespaceTooLargeTest, SubscribeNamespace_OverThresholdPublishedNames
   auto publishOnlySub = makeSubscriber();
   EXPECT_TRUE(doSubscribeNamespace(publishOnlySub, std::nullopt, SubscribeNamespaceOptions::PUBLISH)
                   .hasValue());
+}
+
+TEST_F(MoqxNamespaceTooLargeTest, SubscribeNamespace_ClusterExcludedPathsDoNotCount) {
+  auto source = createMockSession(kVersionDraft18);
+  publishClusterNamespaces(source, {7, 10}, 1, kMaxNamespaceMatches + 1);
+  auto subscriber = makeSubscriber();
+  ON_CALL(*subscriber, getPeerHopID()).WillByDefault(Return(uint64_t{10}));
+  ON_CALL(*subscriber, negotiatedSetupExtension(SetupExtension::RelayHops))
+      .WillByDefault(Return(true));
+  auto result =
+      doSubscribeNamespace(subscriber, std::nullopt, SubscribeNamespaceOptions::NAMESPACE);
+  EXPECT_TRUE(result.hasValue());
+}
+
+TEST_F(MoqxNamespaceTooLargeTest, SubscribeNamespace_ClusterEligibleStandbyCountsTowardLimit) {
+  auto active = createMockSession(kVersionDraft18);
+  auto standby = createMockSession(kVersionDraft18);
+  publishClusterNamespaces(active, {7, 10}, 1, kMaxNamespaceMatches + 1);
+  publishClusterNamespaces(standby, {7, 11}, 5, kMaxNamespaceMatches + 1);
+  auto subscriber = makeSubscriber();
+  ON_CALL(*subscriber, getPeerHopID()).WillByDefault(Return(uint64_t{10}));
+  ON_CALL(*subscriber, negotiatedSetupExtension(SetupExtension::RelayHops))
+      .WillByDefault(Return(true));
+  auto result =
+      doSubscribeNamespace(subscriber, std::nullopt, SubscribeNamespaceOptions::NAMESPACE);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_EQ(result.error().errorCode, SubscribeNamespaceErrorCode::NAMESPACE_TOO_LARGE);
 }
 
 // TRACK_FILTER subscribers with maxSelected < kMaxNamespaceMatches are exempt:

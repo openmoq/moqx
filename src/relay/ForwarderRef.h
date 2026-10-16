@@ -87,6 +87,16 @@ public:
     return ref;
   }
 
+  // Opaque ownership identity; callers can compare sources without accessing a remote forwarder.
+  std::weak_ptr<void> identity() const {
+    return mode_ == Mode::Owned ? std::weak_ptr<void>(strong_) : std::weak_ptr<void>(weak_);
+  }
+
+  bool references(const std::weak_ptr<void>& source) const {
+    auto current = identity();
+    return mode_ != Mode::Empty && !current.owner_before(source) && !source.owner_before(current);
+  }
+
   // A publication was referenced, whether or not it is still alive.
   explicit operator bool() const { return mode_ != Mode::Empty; }
 

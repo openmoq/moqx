@@ -10,6 +10,7 @@
 
 #include <folly/ScopeGuard.h>
 #include <folly/coro/Baton.h>
+#include <folly/synchronization/Baton.h>
 
 namespace openmoq::moqx::test {
 
@@ -511,6 +512,114 @@ TEST_P(MoQRelayTest, JoiningFetchWithoutSubscriptionFails) {
 
   removeSession(publisherSession);
   removeSession(fetchSession);
+}
+
+TEST_P(MoQRelayTest, JoiningFetchAgainstDirectPublishWithoutSubscriptionFails) {
+  auto publisherSession = createMockSession();
+  auto fetchSession = createMockSession();
+  doPublish(publisherSession, kTestTrackName);
+  std::atomic<bool> upstreamFetched{false};
+  failUpstreamFetches(*publisherSession, upstreamFetched);
+  Fetch joining(RequestID(2), RequestID(0), 1, FetchType::RELATIVE_JOINING);
+  joining.fullTrackName = kTestTrackName;
+  withSessionContext(fetchSession, [&] {
+    auto result = folly::coro::blockingWait(
+        publisherInterface()
+            ->fetch(std::move(joining), std::make_shared<NiceMock<MockFetchConsumer>>()),
+        exec_.get()
+    );
+    ASSERT_FALSE(result.hasValue());
+    EXPECT_EQ(result.error().errorCode, FetchErrorCode::DOES_NOT_EXIST);
+  });
+  EXPECT_FALSE(upstreamFetched.load());
+  removeSession(publisherSession);
+  removeSession(fetchSession);
+}
+
+TEST_P(MoQRelayTest, JoiningFetchRejectsReplacementBeforeLocalTeardown) {
+  if (relayMode() != RelayMode::LocalForwarderMT) {
+    GTEST_SKIP() << "requires separate publisher, subscriber and relay executors";
+  }
+  auto& publisherExec = makeAuxExec("old-publisher");
+  auto source = std::make_shared<NiceMock<MockMoQSession>>(publisherExec.exec);
+  ON_CALL(*source, getNegotiatedVersion())
+      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
+  getOrCreateMockState(source);
+  auto reader = createMockSession();
+  doPublishNamespace(source, kTestNamespace);
+  SubscribeOk ok;
+  ok.requestID = RequestID(1);
+  ok.trackAlias = TrackAlias(1);
+  ok.largest = AbsoluteLocation{4, 1};
+  EXPECT_CALL(*source, subscribe(_, _))
+      .WillOnce(Return(folly::coro::makeTask<Publisher::SubscribeResult>(
+          std::make_shared<NiceMock<MockSubscriptionHandle>>(ok)
+      )));
+  auto subscription = subscribeToTrack(reader, kTestTrackName, createMockConsumer(), RequestID(0));
+  ASSERT_NE(subscription, nullptr);
+
+  // Keep the old local subscription alive while relayExec processes the replacement.
+  folly::Baton<> publisherBlocked;
+  folly::Baton<> releasePublisher;
+  publisherExec.evb->runInEventBaseThread([&] {
+    publisherBlocked.post();
+    releasePublisher.wait();
+  });
+  publisherBlocked.wait();
+  auto unblock = folly::makeGuard([&] { releasePublisher.post(); });
+  auto& replacementExec = makeAuxExec("replacement-publisher");
+  auto replacement = std::make_shared<NiceMock<MockMoQSession>>(replacementExec.exec);
+  ON_CALL(*replacement, getNegotiatedVersion())
+      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft18)));
+  getOrCreateMockState(replacement);
+  ON_CALL(*replacement, negotiatedSetupExtension(SetupExtension::RelayHops))
+      .WillByDefault(Return(true));
+  PublishNamespace ad;
+  ad.trackNamespace = kTestNamespace;
+  ad.params.insertParam(Parameter(
+      folly::to_underlying(TrackRequestParamKey::HOP_PATH),
+      encodeRelayHopPath({7, 11}, kVersionDraft18).value()
+  ));
+  auto advertisement = withSessionContext(replacement, [&] {
+    return folly::coro::blockingWait(
+        subscriberInterface()->publishNamespace(std::move(ad), nullptr),
+        exec_.get()
+    );
+  });
+  ASSERT_TRUE(advertisement.hasValue());
+  std::optional<Subscriber::PublishResult> publication;
+  replacementExec.evb->runInEventBaseThreadAndWait([&] {
+    withSessionContext(replacement, [&] {
+      PublishRequest publish;
+      publish.fullTrackName = kTestTrackName;
+      publication =
+          subscriberInterface()->publish(std::move(publish), createMockSubscriptionHandle());
+    });
+  });
+  ASSERT_TRUE(publication->hasValue());
+  folly::coro::blockingWait(std::move(publication->value().reply), exec_.get());
+  std::atomic<bool> replacementFetched{false};
+  failUpstreamFetches(*replacement, replacementFetched);
+  Fetch joining(RequestID(2), RequestID(0), 1, FetchType::RELATIVE_JOINING);
+  joining.fullTrackName = kTestTrackName;
+  withSessionContext(reader, [&] {
+    auto result = folly::coro::blockingWait(
+        publisherInterface()
+            ->fetch(std::move(joining), std::make_shared<NiceMock<MockFetchConsumer>>()),
+        exec_.get()
+    );
+    ASSERT_FALSE(result.hasValue());
+    EXPECT_EQ(result.error().errorCode, FetchErrorCode::DOES_NOT_EXIST);
+  });
+  EXPECT_FALSE(replacementFetched.load()) << "old subscription range reached replacement publisher";
+  unblock.dismiss();
+  releasePublisher.post();
+  publisherExec.evb->runInEventBaseThreadAndWait([] {});
+  subscription->unsubscribe();
+  removeSession(reader);
+  removeSession(source);
+  removeSession(replacement);
+  drainExecs();
 }
 
 // A joining FETCH that names the wrong request for the session's subscription gets an error
