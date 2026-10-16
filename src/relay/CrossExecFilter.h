@@ -125,6 +125,17 @@ public:
       : moxygen::SubgroupConsumerFilter(nullptr),
         CrossExecLifetime<CrossExecSubgroupFilter>(targetExec, deepCopyPayload) {}
 
+  // downstream_ and keepAlive_ belong to targetExec_, so release them there,
+  // downstream_ first because it points into its parent. targetExec_ must
+  // outlive the filter.
+  ~CrossExecSubgroupFilter() override {
+    if (downstream_ || keepAlive_) {
+      targetExec_->add([d = std::move(downstream_), ka = std::move(keepAlive_)]() mutable {
+        d.reset();
+      });
+    }
+  }
+
   folly::Expected<folly::Unit, moxygen::MoQPublishError> object(
       uint64_t objectID,
       moxygen::Payload payload,

@@ -47,7 +47,7 @@ for i in $(seq 1 100); do
   fi
 done
 
-# Test 1: POST /cache/purge with empty JSON body purges all services.
+# Test 1: POST /cache/purge with empty JSON body purges the only service.
 RESPONSE=$(curl -sf -X POST "$PURGE_URL" -H 'Content-Type: application/json' -d '{}')
 echo "POST /cache/purge {}: $RESPONSE"
 if ! echo "$RESPONSE" | grep -q '"evicted":'; then
@@ -63,11 +63,12 @@ if ! echo "$RESPONSE" | grep -q '"evicted":'; then
   exit 1
 fi
 
-# Test 3: POST /cache/purge with unknown service returns evicted:0.
-RESPONSE=$(curl -sf -X POST "$PURGE_URL" -H 'Content-Type: application/json' -d '{"service":"nonexistent"}')
-echo "POST /cache/purge {service:nonexistent}: $RESPONSE"
-if ! echo "$RESPONSE" | grep -q '"evicted":0'; then
-  echo "FAIL: expected evicted:0 for unknown service, got: $RESPONSE" >&2
+# Test 3: POST /cache/purge with unknown service returns 404.
+HTTP_CODE=$(curl -sw "%{http_code}" -o /dev/null -X POST "$PURGE_URL" \
+  -H 'Content-Type: application/json' -d '{"service":"nonexistent"}' 2>/dev/null)
+echo "POST /cache/purge {service:nonexistent}: HTTP $HTTP_CODE"
+if [[ "$HTTP_CODE" != "404" ]]; then
+  echo "FAIL: expected 404 for unknown service, got $HTTP_CODE" >&2
   exit 1
 fi
 

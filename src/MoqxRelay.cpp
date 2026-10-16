@@ -224,12 +224,43 @@ public:
   folly::coro::Task<FetchResult>
   fetch(moxygen::Fetch fetch, std::shared_ptr<moxygen::FetchConsumer> consumer) override {
     auto session = moxygen::MoQSession::getRequestSession();
-    auto resolved = relay_->fetchOnSubscriberExec(std::move(fetch), session);
-    // Joining resolved/deferred on subscriberExec; base filter wraps + hops to relayExec_.
-    return PublisherCrossExecFilter::fetch(std::move(resolved), std::move(consumer));
+    auto setup = relay_->resolveJoiningFetchOnSubscriberExec(fetch, *session);
+    if (setup.hasError()) {
+      return folly::coro::makeTask<FetchResult>(folly::makeUnexpected(std::move(setup.error())));
+    }
+    if (!setup->isReady()) {
+      return fetchAfterSetup(
+          std::move(*setup),
+          std::move(fetch),
+          std::move(session),
+          std::move(consumer)
+      );
+    }
+    // Base filter wraps + hops to relayExec_.
+    return PublisherCrossExecFilter::fetch(std::move(fetch), std::move(consumer));
   }
 
 private:
+  folly::coro::Task<FetchResult> fetchAfterSetup(
+      folly::SemiFuture<folly::Unit> setup,
+      moxygen::Fetch fetch,
+      std::shared_ptr<moxygen::MoQSession> session,
+      std::shared_ptr<moxygen::FetchConsumer> consumer
+  ) {
+    // A joining fetch pipelined behind its SUBSCRIBE resolves against the Largest from that
+    // setup. The setup can finish before this task runs. Another SUBSCRIBE's setup may replace a
+    // failed one.
+    do {
+      co_await folly::coro::co_awaitTry(std::move(setup));
+      auto next = relay_->resolveJoiningFetchOnSubscriberExec(fetch, *session);
+      if (next.hasError()) {
+        co_return folly::makeUnexpected(std::move(next.error()));
+      }
+      setup = std::move(*next);
+    } while (!setup.isReady());
+    co_return co_await PublisherCrossExecFilter::fetch(std::move(fetch), std::move(consumer));
+  }
+
   std::shared_ptr<MoqxRelay> relay_;
 };
 
@@ -1719,6 +1750,9 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
     // Fall through: register the peer as a normal subNs subscriber so it
     // receives namespace announcements as publishers connect.
   }
+  auto maybeNegotiatedVersion = session->getNegotiatedVersion();
+  CHECK(maybeNegotiatedVersion.has_value());
+
   SubscribeNamespaceOptions effectiveOptions;
   effectiveOptions = subNs.options;
 
@@ -1732,6 +1766,96 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
     if (const auto* param = subNs.params.getFirstParam(TrackRequestParamKey::EXCLUDE_HOP)) {
       excludeHop = param->asUint64;
     }
+  }
+
+  // Collect-then-act: a single read-only subtree walk gathers every match this
+  // subscription would forward
+  struct NamespaceMatch {
+    TrackNamespace prefix;
+    std::shared_ptr<NamespaceTree::NamespaceNode> node;
+  };
+  struct TrackMatch {
+    FullTrackName ftn;
+    ForwarderRef forwarder;
+  };
+  std::vector<NamespaceMatch> namespaceMatches;
+  std::vector<TrackMatch> trackMatches;
+
+  // Peer relay subNs uses an empty prefix by design, so it is exempt from the limit;
+  // NAMESPACE_TOO_LARGE doesn't apply pre-18.
+  bool enforceLimit = incomingPeerID.empty() && getDraftMajorVersion(*maybeNegotiatedVersion) >= 18;
+  // A small maxSelected only bounds track fan-out (via PropertyRanking); it doesn't
+  // limit namespaceMatches, so namespace fan-out must always count toward the threshold.
+  bool trackFilterExempt = trackFilter && trackFilter->maxSelected < kMaxNamespaceMatches;
+  // Always false for draft 18+ (parser forces NAMESPACE); skips the per-node track scan.
+  bool wantPublishes = subNs.options == SubscribeNamespaceOptions::BOTH ||
+                       subNs.options == SubscribeNamespaceOptions::PUBLISH;
+  // TRACK_FILTER subscribers get tracks via PropertyRanking, so only their matches are counted.
+  bool collectTracks = wantPublishes && !trackFilter;
+  bool countTracks = wantPublishes && trackFilter && enforceLimit && !trackFilterExempt;
+  size_t trackCount = 0;
+  auto overLimit = [&] {
+    return enforceLimit &&
+           namespaceMatches.size() + trackMatches.size() + trackCount > kMaxNamespaceMatches;
+  };
+
+  auto anchorNode = namespaceTree_.findNode(
+      subNs.trackNamespacePrefix,
+      /*createMissingNodes=*/false
+  );
+  if (anchorNode) {
+    namespaceTree_.forEachNodeInSubtree(
+        subNs.trackNamespacePrefix,
+        anchorNode,
+        [&](const TrackNamespace& prefix, std::shared_ptr<NamespaceTree::NamespaceNode> node) {
+          if (overLimit()) {
+            return;
+          }
+          if (node->publisherSession() &&
+              (incomingPeerID.empty() || node->publisherPeerID() != incomingPeerID) &&
+              shouldForwardNamespace(
+                  node->publisherSession(),
+                  session,
+                  subNs.options,
+                  excludeHop,
+                  node->relayHopPath(),
+                  relayHopID_
+              )) {
+            namespaceMatches.push_back(NamespaceMatch{prefix, node});
+          }
+          if (!collectTracks && !countTracks) {
+            return;
+          }
+          node->forEachPublish([&](const std::string& trackName,
+                                   const std::shared_ptr<MoQSession>& publishSession) {
+            if (overLimit()) {
+              return;
+            }
+            if (publishSession == session) {
+              return;
+            }
+            if (countTracks) {
+              ++trackCount;
+              return;
+            }
+            FullTrackName ftn{prefix, trackName};
+            auto forwarder = registry_.getForwarderRef(ftn);
+            if (!forwarder) {
+              XLOG(ERR) << "Invalid state, no subscription for publish ftn=" << ftn;
+              return;
+            }
+            trackMatches.push_back(TrackMatch{std::move(ftn), std::move(forwarder)});
+          });
+        }
+    );
+  }
+
+  if (overLimit()) {
+    co_return folly::makeUnexpected(SubscribeNamespaceError{
+        subNs.requestID,
+        SubscribeNamespaceErrorCode::NAMESPACE_TOO_LARGE,
+        "Namespace prefix matches too many entries"
+    });
   }
 
   auto nodePtr = namespaceTree_.addNamespaceSubscriber(
@@ -1756,57 +1880,21 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
     ranking->addSessionToTopNGroup(trackFilter->maxSelected, session, subNs.forward);
   }
 
-  // Find all nested PublishNamespaces/Publishes and forward
-  namespaceTree_.forEachNodeInSubtree(
-      subNs.trackNamespacePrefix,
-      nodePtr,
-      [&](const TrackNamespace& prefix, std::shared_ptr<NamespaceTree::NamespaceNode> node) {
-        if (node->publisherSession() &&
-            (incomingPeerID.empty() || node->publisherPeerID() != incomingPeerID) &&
-            shouldForwardNamespace(
-                node->publisherSession(),
-                session,
-                subNs.options,
-                excludeHop,
-                node->relayHopPath(),
-                relayHopID_
-            )) {
-          if (subNs.options == SubscribeNamespaceOptions::NAMESPACE ||
-              subNs.options == SubscribeNamespaceOptions::BOTH) {
-            // Compute the suffix: prefix minus subNs.trackNamespacePrefix
-            auto suffix = makeNamespaceSuffix(prefix, subNs.trackNamespacePrefix.size());
-            Namespace ns;
-            ns.trackNamespaceSuffix = std::move(suffix);
-            setOutgoingHopPath(ns.params, session, node->relayHopPath(), relayHopID_);
-            namespacePublishHandle->namespaceMsg(ns);
-          }
-        }
-        node->forEachPublish([&](const std::string& trackName,
-                                 const std::shared_ptr<MoQSession>& publishSession) {
-          FullTrackName ftn{prefix, trackName};
-          auto forwarder = registry_.getForwarderRef(ftn);
-          if (!forwarder) {
-            XLOG(ERR) << "Invalid state, no subscription for publish ftn=" << ftn;
-            return;
-          }
-          // TRACK_FILTER subscribers: PropertyRanking drives selection via
-          // onTrackSelected; skip direct publish here.
-          if (trackFilter) {
-            return;
-          }
-
-          if (subNs.options == SubscribeNamespaceOptions::BOTH ||
-              subNs.options == SubscribeNamespaceOptions::PUBLISH) {
-            if (publishSession != session) {
-              if (!addSubscriberAndPublish(session, forwarder, subNs.forward, /*pinned=*/true)) {
-                XLOG(ERR) << "addSubscriberAndPublish failed for " << ftn;
-                return;
-              }
-            }
-          }
-        });
-      }
-  );
+  // Act phase: replay the collected matches (already filtered by options).
+  for (auto& match : namespaceMatches) {
+    // Compute the suffix: prefix minus subNs.trackNamespacePrefix
+    auto suffix = makeNamespaceSuffix(match.prefix, subNs.trackNamespacePrefix.size());
+    Namespace ns;
+    ns.trackNamespaceSuffix = std::move(suffix);
+    setOutgoingHopPath(ns.params, session, match.node->relayHopPath(), relayHopID_);
+    namespacePublishHandle->namespaceMsg(ns);
+  }
+  // Empty for TRACK_FILTER subscribers: PropertyRanking drives selection via onTrackSelected.
+  for (auto& match : trackMatches) {
+    if (!addSubscriberAndPublish(session, match.forwarder, subNs.forward, /*pinned=*/true)) {
+      XLOG(ERR) << "addSubscriberAndPublish failed for " << match.ftn;
+    }
+  }
   co_return std::make_shared<NamespaceSubscription>(
       shared_from_this(),
       std::move(session),
@@ -1854,6 +1942,53 @@ folly::coro::Task<Publisher::SubscribeTracksResult> MoqxRelay::subscribeTracks(
     });
   }
 
+  struct TrackMatch {
+    FullTrackName ftn;
+    ForwarderRef forwarder;
+  };
+  std::vector<TrackMatch> trackMatches;
+
+  // Walk the existing publish tree and emit PUBLISH for each matching
+  // already-published track (backfill for new subscriber).
+  auto pubNode =
+      namespaceTree_.findNode(subTracks.trackNamespacePrefix, /*createMissingNodes=*/false);
+  if (pubNode) {
+    namespaceTree_.forEachNodeInSubtree(
+        subTracks.trackNamespacePrefix,
+        pubNode,
+        [&](const TrackNamespace& prefix, std::shared_ptr<NamespaceTree::NamespaceNode> node) {
+          if (trackMatches.size() > kMaxNamespaceMatches) {
+            return;
+          }
+          node->forEachPublish([&](const std::string& trackName,
+                                   const std::shared_ptr<MoQSession>& publishSession) {
+            if (trackMatches.size() > kMaxNamespaceMatches) {
+              return;
+            }
+            if (publishSession == session) {
+              // Don't echo the subscriber's own published tracks.
+              return;
+            }
+            FullTrackName ftn{prefix, trackName};
+            auto forwarder = registry_.getForwarderRef(ftn);
+            if (!forwarder) {
+              XLOG(ERR) << "Invalid state, no subscription for publish ftn=" << ftn;
+              return;
+            }
+            trackMatches.push_back(TrackMatch{std::move(ftn), std::move(forwarder)});
+          });
+        }
+    );
+  }
+
+  if (trackMatches.size() > kMaxNamespaceMatches) {
+    co_return folly::makeUnexpected(SubscribeTracksError{
+        subTracks.requestID,
+        SubscribeTracksErrorCode::NAMESPACE_TOO_LARGE,
+        "Namespace prefix matches too many entries"
+    });
+  }
+
   // Register in the parallel tracks tree (independent overlap space).
   // Tracks-tree entries always behave like PUBLISH-style subscribers;
   // options is unused for this tree.
@@ -1870,33 +2005,11 @@ folly::coro::Task<Publisher::SubscribeTracksResult> MoqxRelay::subscribeTracks(
       }
   );
 
-  // Walk the existing publish tree and emit PUBLISH for each matching
-  // already-published track (backfill for new subscriber).
-  auto pubNode =
-      namespaceTree_.findNode(subTracks.trackNamespacePrefix, /*createMissingNodes=*/false);
-  if (pubNode) {
-    namespaceTree_.forEachNodeInSubtree(
-        subTracks.trackNamespacePrefix,
-        pubNode,
-        [&](const TrackNamespace& prefix, std::shared_ptr<NamespaceTree::NamespaceNode> node) {
-          node->forEachPublish([&](const std::string& trackName,
-                                   const std::shared_ptr<MoQSession>& publishSession) {
-            if (publishSession == session) {
-              // Don't echo the subscriber's own published tracks.
-              return;
-            }
-            FullTrackName ftn{prefix, trackName};
-            auto forwarder = registry_.getForwarderRef(ftn);
-            if (!forwarder) {
-              return;
-            }
-            if (!addSubscriberAndPublish(session, forwarder, subTracks.forward, /*pinned=*/true)) {
-              XLOG(ERR) << "addSubscriberAndPublish failed for " << ftn;
-              return;
-            }
-          });
-        }
-    );
+  // emit PUBLISH for each matching already-published track (backfill for new subscriber).
+  for (auto& match : trackMatches) {
+    if (!addSubscriberAndPublish(session, match.forwarder, subTracks.forward, /*pinned=*/true)) {
+      XLOG(ERR) << "addSubscriberAndPublish failed for " << match.ftn;
+    }
   }
 
   RequestOk subTracksOk{.requestID = subTracks.requestID};
@@ -2541,24 +2654,32 @@ MoqxRelay::trackStatusOnSubscriberExec(const TrackStatus& req) {
   return Publisher::TrackStatusResult(buildTrackStatusOk(*localFwd, /*hasHandle=*/true, req));
 }
 
-Fetch MoqxRelay::fetchOnSubscriberExec(Fetch fetch, const std::shared_ptr<MoQSession>& session) {
+folly::Expected<folly::SemiFuture<folly::Unit>, FetchError>
+MoqxRelay::resolveJoiningFetchOnSubscriberExec(Fetch& fetch, const MoQSession& session) {
   auto [standalone, joining] = fetchType(fetch);
   if (!joining) {
-    return fetch;
+    return folly::makeSemiFuture();
   }
+  // All of a session's subscriptions are on its thread's forwarders.
   auto* localReg = tlForwarders_.get();
-  auto localFwd = localReg ? localReg->getIfReady(fetch.fullTrackName) : nullptr;
-  if (localFwd) {
-    auto res = localFwd->resolveJoiningFetch(session->sessionId(), *joining);
-    if (res.hasValue()) {
-      fetch.args = StandaloneFetch(res.value().start, res.value().end);
-      return fetch;
-    }
+  auto state = localReg ? localReg->lookup(fetch.fullTrackName) : LocalForwarderRegistry::State{};
+  if (auto* pending = std::get_if<LocalForwarderRegistry::Pending>(&state)) {
+    return std::move(pending->ready);
   }
-  // Not resolvable yet (no largest, or pre-PUBLISH_OK on draft-18's separate
-  // stream): defer upstream by track name. Rare; fails if there's no upstream.
-  joining->joiningRequestID = std::nullopt;
-  return fetch;
+  auto* ready = std::get_if<LocalForwarderRegistry::Ready>(&state);
+  if (!ready) {
+    return folly::makeUnexpected(FetchError{
+        fetch.requestID,
+        FetchErrorCode::DOES_NOT_EXIST,
+        "No subscription for joining fetch"
+    });
+  }
+  auto res = ready->forwarder->resolveJoiningFetch(session.sessionId(), *joining);
+  if (res.hasError()) {
+    return folly::makeUnexpected(std::move(res.error()));
+  }
+  fetch.args = StandaloneFetch(res.value().start, res.value().end);
+  return folly::makeSemiFuture();
 }
 
 folly::coro::Task<Publisher::FetchResult>
@@ -2572,7 +2693,7 @@ MoqxRelay::fetchImpl(Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
   }
 
   auto [standalone, joining] = fetchType(fetch);
-  // LF mode resolves/defers joining in fetchOnSubscriberExec on the subscriber exec.
+  // LF mode resolves joining fetches on the subscriber exec.
   if (joining && mode() != Mode::LocalForwarder) {
     auto fetchView = registry_.getFetchView(fetch.fullTrackName);
     if (!fetchView) {

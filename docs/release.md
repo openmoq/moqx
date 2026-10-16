@@ -48,12 +48,35 @@ conflict in favor of the release branch's pinned `MOXYGEN_REV`.
 
 ## Snapshot Releases
 
-Every push to `main` or `release/*` produces a rolling pre-release on GitHub:
+A push to `main` or `release/*` whose commit moves the snapshot forward
+produces a rolling pre-release on GitHub:
 
 - `main` → `snapshot-latest`
 - `release/<name>` → `snapshot-<name>-latest`
 
-Each push deletes and recreates the release at the new commit, so the tag always points at the most recent build. Releases are marked `--prerelease` and contain the binary tarball (`moqx-bookworm-amd64.tar.gz`).
+Such a push deletes and recreates the release at its commit. Releases are marked `--prerelease` and contain the binary tarball (`moqx-bookworm-amd64.tar.gz`). A push that does not move the snapshot forward leaves the release alone — see Ordering below.
+
+### Ordering
+
+Runs on `main` are parallel, so they can finish out of order. The rolling
+pointers — this release, the `main-latest` and `latest` image tags, and the
+`moqx-main` deploy — only ever move **forward**. Before writing them the release
+job compares its commit against the one the release currently points at, and a
+run whose commit is behind or diverged stops there with a notice: no snapshot,
+no rolling image tags, no deploy. Per-commit tags and manifests are published
+either way, so nothing is lost — the newer run owns the pointers.
+
+The release job takes one run at a time per branch so that comparison cannot
+race, and it fails rather than guessing if it cannot read the current pointer.
+
+The deploy is a convenience with nothing downstream of it. If the relay ends up
+on the wrong build, redeploy it with the `deploy relay` workflow; the next push
+to `main` also puts it right.
+
+`main` blocks force-pushes and deletions, so its pointer cannot end up off the
+branch. A release branch can: the pointer then reads `diverged` on every later
+run and holds. Delete that rolling pre-release once and the next push recreates
+it.
 
 ## Docker Image Tags
 
@@ -62,9 +85,9 @@ Per-build images are pushed to `ghcr.io/openmoq/moqx`:
 | Tag | Contents | Lifecycle |
 |---|---|---|
 | `<short-sha>` | Exact build | Permanent |
-| `main-latest` | Most recent main build | Replaced on every push to `main` |
-| `latest` | Same as `main-latest` (back-compat alias) | Replaced on every push to `main` |
-| `<release-name>-latest` | Most recent build of `release/<name>` | Replaced on every push to that release branch |
+| `main-latest` | Most recent main build | Moves forward only (see Ordering) |
+| `latest` | Same as `main-latest` (back-compat alias) | Moves forward only (see Ordering) |
+| `<release-name>-latest` | Most recent build of `release/<name>` | Moves forward only (see Ordering) |
 
 The interop client image (`ghcr.io/openmoq/moqx-interop-client`) follows the same tagging scheme.
 
@@ -106,6 +129,18 @@ When a release branch needs to absorb fixes from `main`:
 ## Tagged Releases
 
 > TODO (Alan): formal version tagging policy. Today, snapshot releases are the only published artifact. A tagged `vX.Y.Z` release flow (analogous to moxygen's `version release` workflow) is planned — see [issue TBD].
+
+### Changelog
+
+Before tagging `vX.Y.Z`, land a PR on the branch being released that updates [CHANGELOG.md](/CHANGELOG.md):
+
+1. Rename the `[Unreleased]` heading to `[X.Y.Z] - YYYY-MM-DD`, dated the day of the tag.
+2. Add a fresh, empty `[Unreleased]` section above it.
+3. Review and polish the new release section, especially the headline entries.
+4. Append the output of [`scripts/dev/changelog-deps.sh`](/scripts/dev/changelog-deps.sh), which lists the dependencies changed since the previous release.
+
+[`version release`](/.github/workflows/version-release.yml) opens the GitHub release notes with this section, read at the snapshot commit it tags.
+It fails when a non-prerelease version has no section, so dispatch it once the snapshot includes the changelog PR.
 
 ## Deploy
 

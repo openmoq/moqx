@@ -11,8 +11,8 @@ specifications.
 Comprehensive YAML-based configuration design with hierarchical scope (global →
 listeners → services → tracks), a runtime API for hot reload, parameter
 lifecycle classification (`static` / `reload:newconn` / `reload:newsub` /
-`reload:immediate`), and validation tooling. See also
-[configuration.example.yaml](configuration.example.yaml) for a concrete example.
+`reload:immediate`), and validation tooling. Current format:
+[docs/config.md](/docs/config.md).
 
 ### [hot-reloading.md](hot-reloading.md)
 Config reload via `SIGHUP` and a runtime management API for dynamic updates

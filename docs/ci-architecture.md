@@ -73,6 +73,12 @@ facebookexperimental/moxygen  (upstream commit lands)
 
 The full chain from upstream commit to deployed relay is fully automated.
 
+Runs on `main` are parallel and can finish out of order, so the last two stages
+are conditional: the snapshot, the rolling image tags and the deploy only happen
+when the commit moves the snapshot forward. A run superseded by a newer commit
+publishes its per-commit tags and manifests and then stops, showing deploy as
+skipped. See [release.md](release.md#ordering).
+
 ---
 
 ## moxygen Workflows
@@ -124,6 +130,7 @@ Merges the sync PR if CI passed. Deletes the sync branch after merge.
 **Trigger:** manual (version input) | **Time:** <1 min
 
 Promotes `snapshot-latest` artifacts to a versioned `vX.Y.Z` release (no rebuild).
+Release notes open with the version's [CHANGELOG.md](/CHANGELOG.md) section; see [release.md](/docs/release.md#changelog).
 
 ---
 

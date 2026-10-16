@@ -118,6 +118,9 @@ public:
   static constexpr uint64_t kDefaultMaxDeselected = 0;
   static constexpr std::chrono::milliseconds kDefaultIdleTimeout{10'000};
   static constexpr std::chrono::milliseconds kDefaultActivityThreshold{2'000};
+  // Max namespace/track matches a SUBSCRIBE_NAMESPACE or SUBSCRIBE_TRACKS may enumerate before
+  // NAMESPACE_TOO_LARGE (draft 18+).
+  static constexpr uint64_t kMaxNamespaceMatches = 1000;
 
   // relayExec, when set, is owned by the relay and isolates all state on it;
   // null runs everything on the calling thread. useLocalForwarders (requires
@@ -580,10 +583,10 @@ private:
   std::optional<moxygen::Publisher::TrackStatusResult>
   trackStatusOnSubscriberExec(const moxygen::TrackStatus& req);
 
-  // Resolves a joining fetch against this thread's local forwarder (race-free). Rewrites to a
-  // standalone Fetch when largest is known, else clears joiningRequestID to defer to upstream.
-  moxygen::Fetch
-  fetchOnSubscriberExec(moxygen::Fetch fetch, const std::shared_ptr<moxygen::MoQSession>& session);
+  // Rewrites a joining fetch to a standalone fetch against this thread's local forwarder. Returns
+  // the setup to wait for while that forwarder is pending, and a ready future otherwise.
+  folly::Expected<folly::SemiFuture<folly::Unit>, moxygen::FetchError>
+  resolveJoiningFetchOnSubscriberExec(moxygen::Fetch& fetch, const moxygen::MoQSession& session);
 
   // Impl methods — run on relayExec_ when set, or inline when relayExec_==nullptr.
   folly::coro::Task<SubscribeResult>

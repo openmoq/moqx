@@ -35,6 +35,14 @@ MATCHER_P(HasChainDataLengthOf, n, "") {
   return arg->computeChainDataLength() == uint64_t(n);
 }
 
+MATCHER_P(HasPayload, expected, "") {
+  std::string actual;
+  for (auto range : *arg) {
+    actual.append(reinterpret_cast<const char*>(range.data()), range.size());
+  }
+  return actual == expected;
+}
+
 // Helper to create extensions with Prior Object ID Gap
 Extensions makeObjectGapExtensions(uint64_t gap) {
   Extensions ext;
@@ -1389,6 +1397,44 @@ CO_TEST_F(MoqxCacheTest, TestRecacheStreamedObjectWithPartialFirstChunk) {
       .WillOnce(Return(folly::unit));
   auto fetchRes = co_await cache_.fetch(getFetch({0, 0}, {0, 1}), trackingConsumer_, upstream_);
   EXPECT_TRUE(fetchRes.hasValue());
+  co_await folly::coro::co_reschedule_on_current_executor;
+}
+
+// A streamed object's chunks are cached in arrival order (#807).
+CO_TEST_F(MoqxCacheTest, TestStreamedObjectChunksCachedInOrder) {
+  auto writeback = cache_.getSubscribeWriteback(kTestTrackName, trackConsumer_);
+  auto subgroupConsumer = writeback->beginSubgroup(0, 0, 0).value();
+  EXPECT_FALSE(subgroupConsumer->beginObject(0, 9, folly::IOBuf::copyBuffer("aaa")).hasError());
+  EXPECT_FALSE(subgroupConsumer->objectPayload(folly::IOBuf::copyBuffer("bbb"), false).hasError());
+  EXPECT_FALSE(subgroupConsumer->objectPayload(folly::IOBuf::copyBuffer("ccc"), false).hasError());
+  writeback.reset();
+
+  EXPECT_CALL(*consumer_, object(0, 0, 0, HasPayload("aaabbbccc"), _, _, _))
+      .WillOnce(Return(folly::unit));
+  auto res = co_await cache_.fetch(getFetch({0, 0}, {0, 1}), trackingConsumer_, upstream_);
+  EXPECT_TRUE(res.hasValue());
+  co_await folly::coro::co_reschedule_on_current_executor;
+}
+
+CO_TEST_F(MoqxCacheTest, TestUpstreamFetchedObjectChunksCachedInOrder) {
+  expectUpstreamFetch({0, 0}, {0, 1}, 0, AbsoluteLocation{0, 0})
+      .via(co_await folly::coro::co_current_executor)
+      .thenTry([this](auto) {
+        upstreamFetchConsumer_->beginObject(0, 0, 0, 9, folly::IOBuf::copyBuffer("aaa"));
+        upstreamFetchConsumer_->objectPayload(folly::IOBuf::copyBuffer("bbb"), false);
+        upstreamFetchConsumer_->objectPayload(folly::IOBuf::copyBuffer("ccc"), true);
+      });
+  EXPECT_CALL(*consumer_, beginObject(0, 0, 0, 9, _, _)).WillOnce(Return(folly::unit));
+  EXPECT_CALL(*consumer_, objectPayload(_, _))
+      .Times(2)
+      .WillRepeatedly(Return(ObjectPublishStatus::IN_PROGRESS));
+  auto res = co_await cache_.fetch(getFetch({0, 0}, {0, 1}), trackingConsumer_, upstream_);
+  EXPECT_TRUE(res.hasValue());
+
+  EXPECT_CALL(*consumer_, object(0, 0, 0, HasPayload("aaabbbccc"), _, _, _))
+      .WillOnce(Return(folly::unit));
+  res = co_await cache_.fetch(getFetch({0, 0}, {0, 1}), trackingConsumer_, upstream_);
+  EXPECT_TRUE(res.hasValue());
   co_await folly::coro::co_reschedule_on_current_executor;
 }
 
@@ -4456,7 +4502,9 @@ CO_TEST_F(MoqxCacheTest, TestTrackEvictionWithOpenSubgroupDoesNotSpin) {
 
   EXPECT_FALSE(cache_.hasCachedObject(kTestTrackName, {2, 0}));
   EXPECT_TRUE(cache_.hasCachedObject(kTestTrackName, {3, 0}));
-  EXPECT_EQ(cache_.totalCachedBytes(), 100u);
+  // track2 is live and group 0 is its newest: a join point, kept.
+  EXPECT_TRUE(cache_.hasCachedObject(track2, {0, 0}));
+  EXPECT_EQ(cache_.totalCachedBytes(), 200u);
   co_return;
 }
 
@@ -5023,4 +5071,65 @@ CO_TEST_F(MoqxCacheTest, FetchWritebackCachesZeroLengthNormalObject) {
   auto end = upstreamFetchConsumer_->endOfFetch();
   EXPECT_TRUE(end.hasValue());
 }
+
+CO_TEST_F(MoqxCacheTest, ByteLimitEvictionSparesEachLiveTracksNewestGroup) {
+  // A once-written track (a catalog) is the oldest in the global LRU, so byte
+  // pressure evicted it first. Each live track's newest group is kept.
+  cache_.setMinEvictionBytes(0);
+  cache_.setMaxCachedBytes(700);
+
+  // The "catalog": six groups written up front, then nothing more.
+  FullTrackName catalog{TrackNamespace{{"live"}}, "catalog"};
+  auto catalogWriteback = cache_.getSubscribeWriteback(catalog, trackConsumer_);
+  for (uint64_t g = 0; g <= 5; ++g) {
+    catalogWriteback->datagram(ObjectHeader(g, 0, 0, 0, 100), makeBuf(100));
+  }
+
+  // The "video": keeps writing, and pushes the cache over its byte limit.
+  FullTrackName video{TrackNamespace{{"live"}}, "video"};
+  auto videoWriteback = cache_.getSubscribeWriteback(video, trackConsumer_);
+  for (uint64_t g = 0; g <= 9; ++g) {
+    videoWriteback->datagram(ObjectHeader(g, 0, 0, 0, 100), makeBuf(100));
+  }
+
+  // Older groups of both tracks are evicted; each live track keeps its newest.
+  EXPECT_TRUE(cache_.hasCachedObject(catalog, {5, 0}));
+  EXPECT_FALSE(cache_.hasCachedObject(catalog, {0, 0}));
+  EXPECT_TRUE(cache_.hasCachedObject(video, {9, 0}));
+  EXPECT_FALSE(cache_.hasCachedObject(video, {0, 0}));
+  EXPECT_EQ(cache_.totalCachedBytes(), 700u);
+
+  // A late subscriber's FETCH for it is served from the cache alone: upstream_
+  // is a StrictMock and must not be asked.
+  auto res = co_await cache_.fetch(getFetch(catalog, {5, 0}, {5, 1}), trackingConsumer_, upstream_);
+  EXPECT_TRUE(res.hasValue());
+  EXPECT_EQ(res.value()->fetchOk().endLocation, (AbsoluteLocation{5, 1}));
+  expectFetchObjects({5, 0}, {5, 1}, false);
+}
+
+TEST_F(MoqxCacheTest, ByteLimitEvictionTakesTheNewestGroupOnceTheTrackIsNotLive) {
+  // The protection lasts exactly as long as the track is being published. Once
+  // its writeback is gone, the newest group is an ordinary LRU entry again.
+  cache_.setMinEvictionBytes(0);
+  cache_.setMaxCachedBytes(700);
+
+  FullTrackName catalog{TrackNamespace{{"live"}}, "catalog"};
+  auto catalogWriteback = cache_.getSubscribeWriteback(catalog, trackConsumer_);
+  for (uint64_t g = 0; g <= 5; ++g) {
+    catalogWriteback->datagram(ObjectHeader(g, 0, 0, 0, 100), makeBuf(100));
+  }
+  catalogWriteback.reset();
+
+  FullTrackName video{TrackNamespace{{"live"}}, "video"};
+  auto videoWriteback = cache_.getSubscribeWriteback(video, trackConsumer_);
+  for (uint64_t g = 0; g <= 9; ++g) {
+    videoWriteback->datagram(ObjectHeader(g, 0, 0, 0, 100), makeBuf(100));
+  }
+
+  EXPECT_FALSE(cache_.hasCachedObject(catalog, {5, 0}));
+  EXPECT_TRUE(cache_.hasCachedObject(video, {9, 0}));
+  EXPECT_FALSE(cache_.hasCachedObject(video, {0, 0}));
+  EXPECT_EQ(cache_.totalCachedBytes(), 700u);
+}
+
 } // namespace openmoq::moqx::test

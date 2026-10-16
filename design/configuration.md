@@ -10,6 +10,8 @@
 
 The relay needs both file-based configuration for base deployment and a runtime API for dynamic updates. Configuration must be hierarchical, mapping naturally to MOQT's connection model (authority, path, namespace).
 
+Reload mechanics (SIGHUP, runtime API, graceful binary restart) are in [hot-reloading.md](hot-reloading.md).
+
 ### Requirements References
 
 - [Relay Requirements 2.2](https://github.com/OpenMOQ/relay-requirements/blob/main/relay-requirements.md): "configurable via environment variables and/or a configuration file (e.g., YAML, TOML). Configuration should be reloadable without requiring a server restart where possible."
@@ -42,18 +44,14 @@ The relay needs both file-based configuration for base deployment and a runtime 
 
 ## Configuration Format
 
-### Decision: YAML
+Implemented: YAML, deserialized into strongly-typed C++ structs. Current format: [docs/config.md](/docs/config.md), [config.example.yaml](/config.example.yaml).
 
-**Chosen**: YAML as the file-based configuration format.
-
-**Rationale:**
+Rationale:
 
 - Widely used in infrastructure tooling. Operators already know it.
-- Supported by mature C++ parsing libraries ([yaml-cpp](https://github.com/jbeder/yaml-cpp), [rapidyaml](https://github.com/biojppm/rapidyaml)).
+- Typed deserialization avoids YAML's implicit-type pitfalls (e.g. the "Norway problem", `NO` parsed as boolean), as in Envoy and Kubernetes.
 
-**YAML pitfalls** (e.g., the "Norway problem" where `NO` is parsed as boolean): mitigated by always deserializing into strongly-typed C++ structs. The relay never interprets raw YAML scalars as implicit types. Values are always parsed as the expected type defined in the config schema, or rejected. This is consistent with how Envoy and Kubernetes handle YAML.
-
-For the API we can use the same format, require JSON serialization or go with something completly else (e.g. JSON Patch for updating).
+Open: the API may use the same format, require JSON, or use something else (e.g. JSON Patch for updates).
 
 ## Configuration Hierarchy
 
@@ -77,36 +75,9 @@ global              ─── process-wide settings (worker_threads, log_level, 
 
 ### Matching Model
 
-A client connects to a **listener** (transport), then sends `CLIENT_SETUP` with **authority** and **path**. These are matched against **services**.
+Implemented: services matched by CLIENT_SETUP authority + path; exact/wildcard/any authority, exact/prefix path ([docs/config.md#matching-rules](/docs/config.md#matching-rules)).
 
-Each service defines one or more `match` entries. Each entry pairs an **authority** matcher with a **path** matcher:
-
-```yaml
-services:
-  example:
-    match:
-      - authority: {exact: "live.example.com"}
-        path: {exact: "/moq-relay"}
-      - authority: {wildcard: "*.live.example.com"}
-        path: {prefix: "/live/"}
-      - authority: {any: true}
-        path: {prefix: "/"}
-```
-
-**Authority matching priority** (highest to lowest):
-
-1. **Exact**: `{exact: "live.example.com"}` — O(1) hash lookup.
-2. **Wildcard**: `{wildcard: "*.example.com"}` — matches single-label subdomains only (e.g. `foo.example.com`), not the bare domain or multi-label subdomains. O(1) suffix lookup.
-3. **Any**: `{any: true}` — catch-all fallback.
-
-Regex authority matching is planned but not yet implemented.
-
-**Path matching priority** (within matched authority tier):
-
-1. **Exact**: `{exact: "/moq-relay"}` — O(1) hash lookup.
-2. **Prefix**: `{prefix: "/live/"}` — longest prefix wins. Uses simple string prefix matching (not segment-aware).
-
-`{prefix: "/"}` matches any valid MOQT path and serves as the catch-all pattern.
+Planned: regex authority and path matchers, and namespace/track matchers under `tracks[]`.
 
 > **Specificity rule**: When multiple prefix rules match within the same priority category, the more specific prefix wins. "More specific" means a longer tuple (more fields) or a domain with more segments (more dots), not longer in terms of bytes.
 
@@ -133,7 +104,9 @@ Regex authority matching is planned but not yet implemented.
 
 Configuration parameters are inherited down the hierarchy. A more specific level overrides its parent. This follows the nginx model where `server` inherits from `http`, and `location` overrides `server`.
 
-The `service_defaults` block provides defaults inherited by all services. Individual services can override any of these values.
+Implemented: `listener_defaults` → listeners, `service_defaults` → services.
+
+Planned: services → `tracks[]`.
 
 ### Include Directives
 
@@ -154,10 +127,17 @@ Every configuration parameter belongs to one of four lifecycle categories. The c
 
 | Lifecycle            | Meaning                                                                                                  | Examples                                                                              |
 | -------------------- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| **Static**           | Requires process restart. Cannot be changed at runtime.                                                  | `worker_threads`, `listeners[].udp.socket.address`, `listeners[].udp.socket.port`     |
-| **Reload:NewConn**   | Applied on config reload. Affects new connections/sessions only. Existing sessions keep old values.      | `services[].auth`, `services[].provider`, TLS cert/key, service matching rules        |
-| **Reload:NewSub**    | Applied on config reload. Affects new subscriptions/tracks only. Existing subscriptions keep old values. | `tracks[].max_max_cache_duration_ms`, routing rules, authorization rules              |
+| **Static**           | Requires process restart. Cannot be changed at runtime.                                                  | `worker_threads`, `listeners[].udp.socket.address`, `listeners[].udp.socket.port`, `relay_id`, admin listener, QUIC stack |
+| **Reload:NewConn**   | Applied on config reload. Affects new connections/sessions only. Existing sessions keep old values.      | `services[].auth`, `services[].provider` (e.g. upstream URL), TLS cert/key, service matching rules |
+| **Reload:NewSub**    | Applied on config reload. Affects new subscriptions/tracks only. Existing subscriptions keep old values. | `tracks[].max_max_cache_duration_ms`, cache settings, routing rules, authorization rules |
 | **Reload:Immediate** | Applied on config reload. Takes effect on all existing connections/subscriptions.                        | `log_level`, `slow_subscriber_queue_max_bytes`, cache eviction policy, metrics config |
+
+## Further Ideas
+
+- **Batching** per service and per track (latency vs. throughput), e.g. `min_batch_size`, `max_batch_delay`.
+- **`max_sessions`** per service.
+- **Congestion control** per service ([Relay Requirements 3.6](https://github.com/OpenMOQ/relay-requirements/blob/main/relay-requirements.md)).
+- **Telemetry** configuration under `global`.
 
 ## Design Decisions
 
@@ -223,15 +203,10 @@ If operators need shared snippets, they should use their config management tool'
 
 ## Configuration Validation Tool
 
-The relay must provide a CLI tool (or subcommand) for validating configuration files before deployment.
+Implemented: `moqx validate-config`, `moqx dump-config-schema`, `--strict_config` ([docs/config.md#tooling](/docs/config.md#tooling)). Follows `nginx -t`, `envoy --mode validate`, `haproxy -c`.
 
-### Requirements
+Planned:
 
-- **Syntax validation**: Parse YAML and report syntax errors with line numbers.
-- **Schema validation**: Validate against the config schema (required fields, types, allowed values).
-- **Semantic validation**: Check for logical errors (e.g., duplicate service names, overlapping matchers, invalid regex patterns, referenced files exist).
-- **Dry-run mode**: Load the config as the relay would, including resolving includes, without starting listeners.
-- **Diff mode**: Compare two config files and show what would change (useful for reviewing changes before reload).
-- **Exit codes**: Return non-zero on validation failure for CI/CD integration.
-
-This follows the pattern established by `nginx -t`, `envoy --mode validate`, and `haproxy -c`.
+- **Semantic validation** for planned features: overlapping matchers, invalid regex patterns, include files exist.
+- **Dry-run with includes**: resolve `services_include` as the relay would, without starting listeners.
+- **Diff mode**: compare two config files and show what would change (useful for reviewing changes before reload).

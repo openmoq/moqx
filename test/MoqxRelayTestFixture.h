@@ -95,10 +95,13 @@ protected:
   void SetUp() override;
   void TearDown() override;
 
-  std::shared_ptr<MockMoQSession> createMockSession();
+  std::shared_ptr<MockMoQSession> createMockSession(uint64_t version = kVersionDraft16);
   // A session whose executor is some other iothread, for tests that split publisher and
   // subscriber across threads.
-  std::shared_ptr<MockMoQSession> createMockSessionOn(std::shared_ptr<moxygen::MoQExecutor> exec);
+  std::shared_ptr<MockMoQSession> createMockSessionOn(
+      std::shared_ptr<moxygen::MoQExecutor> exec,
+      uint64_t version = kVersionDraft16
+  );
   std::shared_ptr<Publisher::SubscriptionHandle> createMockSubscriptionHandle();
 
   void removeSession(std::shared_ptr<MoQSession> sess);

@@ -50,15 +50,16 @@ sysctl -q -p /etc/sysctl.d/99-moqx-core.conf
 echo "    relay core dumps enabled (core_pattern -> the relay's /var/coredumps volume)"
 
 # ── firewall ──────────────────────────────────────────────────────────────────
-# Relay MoQ + pico + the public dashboard all live in the 4433-4533 range (kept
-# in-range on purpose so the Linode cloud firewall needs no change).
-ufw allow 4433:4533/udp >/dev/null
-ufw allow 4433:4533/tcp >/dev/null
+# Relay MoQ (mvfst) + pico listeners. The stats surface stays on localhost.
+ufw allow 4433:4434/udp >/dev/null
+# Remove the wider 4433:4533 rules if present.
+ufw delete allow 4433:4533/udp >/dev/null 2>&1 || true
+ufw delete allow 4433:4533/tcp >/dev/null 2>&1 || true
 # node-exporter runs in the host network namespace (to read the real NIC), so the
 # bridged Prometheus reaches it via the host gateway — that hop traverses the host
 # firewall. Allow only the private docker subnets (external stays denied by ufw's
 # default policy). The relay is bridge-networked, so its admin needs no such rule.
 ufw allow from 172.16.0.0/12 to any port 9100 proto tcp >/dev/null   # node-exporter
-echo "    firewall rules applied (4433:4533 public; docker-subnet -> :8000/:9100)"
+echo "    firewall rules applied (4433:4434/udp public; docker-subnet -> :8000/:9100)"
 
 echo "==> Done. relay-deploy.sh can now bring up the stack."

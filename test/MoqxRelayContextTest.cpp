@@ -6,6 +6,8 @@
 
 #include "MoqxRelayContext.h"
 
+#include <folly/coro/BlockingWait.h>
+#include <folly/io/async/ScopedEventBaseThread.h>
 #include <folly/portability/GMock.h>
 #include <folly/portability/GTest.h>
 #include <moxygen/MoQTypes.h>
@@ -207,6 +209,31 @@ TEST_F(MoqxRelayContextTest, ValidateAuthority_AnonymousClaimDoesNotBypassRequir
 
   ASSERT_FALSE(result.hasValue());
   EXPECT_EQ(result.error(), SessionCloseErrorCode::UNAUTHORIZED);
+}
+
+// --- purgeCache ---
+
+TEST_F(MoqxRelayContextTest, PurgeCache_TwoServicesRequireName) {
+  folly::F14FastMap<std::string, config::ServiceConfig> services = {
+      {"svc-a", makeService("a.example.com")},
+      {"svc-b", makeService("b.example.com")},
+  };
+  MoqxRelayContext ctx(services, "test-relay");
+  folly::ScopedEventBaseThread worker;
+  ctx.initUpstreams(worker.getEventBase());
+  FullTrackName ftn{TrackNamespace({"live"}), "video"};
+
+  auto unnamed = folly::coro::blockingWait(ctx.purgeCache("", ftn, std::nullopt));
+  ASSERT_TRUE(unnamed.hasError());
+  EXPECT_EQ(unnamed.error(), MoqxRelayContext::PurgeError::ServiceRequired);
+
+  auto unknown = folly::coro::blockingWait(ctx.purgeCache("svc-c", ftn, std::nullopt));
+  ASSERT_TRUE(unknown.hasError());
+  EXPECT_EQ(unknown.error(), MoqxRelayContext::PurgeError::UnknownService);
+
+  auto named = folly::coro::blockingWait(ctx.purgeCache("svc-a", ftn, std::nullopt));
+  ASSERT_TRUE(named.hasValue());
+  EXPECT_EQ(*named, 0u);
 }
 
 } // namespace

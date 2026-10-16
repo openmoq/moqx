@@ -237,6 +237,11 @@ moqx_add_gtest(moqx_relay_context_test
     moxygen::moxygen_events_moq_folly_executor_impl
 )
 
+moqx_add_gtest(moqx_relay_server_test
+  SRCS MoqxRelayServerTest.cpp
+  LIBS moqx_core moqx_test_main moxygen::moxygen_util_quic_connector
+)
+
 # Registers an integration test once per QUIC stack. The mvfst run keeps the
 # plain name; the picoquic run gets a _picoquic suffix and selects the stack
 # through MOQ_HARNESS_QUIC_STACK, which the Python harness and the shell tests
@@ -374,6 +379,12 @@ moqx_add_gtest(moqx_property_ranking_self_exclusion_test
 # TRACK_FILTER integration tests (in-process relay, no live server)
 moqx_add_gtest(moqx_track_filter_test
   SRCS MoqxTrackFilterTest.cpp
+  LIBS moqx_test_fixture moqx_test_main
+)
+
+# NAMESPACE_TOO_LARGE fan-out guard tests (in-process relay, no live server)
+moqx_add_gtest(moqx_namespace_too_large_test
+  SRCS MoqxNamespaceTooLargeTest.cpp
   LIBS moqx_test_fixture moqx_test_main
 )
 
