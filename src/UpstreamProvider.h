@@ -44,6 +44,9 @@ moxygen::SubscribeNamespace makePeerSubNs(std::optional<std::string> relayID = s
  * the relay peering handshake. On disconnect it proactively reconnects
  * immediately, then backs off exponentially (1s → 60s cap) on repeated
  * failures.
+ *
+ * All state lives on exec_. Only stop() and waitForConnected() may be called
+ * from another thread.
  */
 class UpstreamProvider : public moxygen::Publisher,
                          public moxygen::Subscriber,
@@ -71,14 +74,15 @@ public:
   // Initiates the first connection to the upstream server.
   folly::coro::Task<void> start();
 
-  // Gracefully shuts down, closes the session, cancels reconnection.
+  // Gracefully shuts down, closes the session, cancels reconnection. Takes
+  // effect when exec_ runs it.
   void stop();
 
   // Suspends until the upstream session is Connected (i.e., QUIC session
   // established + peering handshake completed), or the timeout elapses.
   // Returns immediately if already connected, stopped, or no connection is
   // in progress.  Swallows connection errors — caller must re-check state.
-  folly::coro::Task<void> waitForConnected(std::chrono::milliseconds timeout);
+  folly::coro::TaskWithExecutor<void> waitForConnected(std::chrono::milliseconds timeout);
 
   // --- Publisher interface (forwarded to upstream session) ---
 
@@ -151,7 +155,13 @@ private:
 
   // Resets session_ and client_ on the exec thread (while EVBs are alive),
   // allowing ~MoQClientBase() to call moqSession_->close() on a live EVB.
-  folly::coro::Task<void> close();
+  void close();
+
+  void stopOnOwner();
+  static folly::coro::Task<void> waitForConnectedOnOwner(
+      std::shared_ptr<UpstreamProvider> self,
+      std::chrono::milliseconds timeout
+  );
 
   // Ensures a session exists, connecting if needed. Called by slow-path
   // coroutines when getSession() returns null.

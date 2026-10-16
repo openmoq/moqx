@@ -141,6 +141,8 @@ protected:
 
   void TearDown() override {
     provider_->stop();
+    // Clear the hooks before the server teardown closes the session.
+    clientEvb().loopOnce();
     MoQIntegrationTestFixture::TearDown();
   }
 
@@ -362,6 +364,7 @@ TEST_F(UpstreamProviderTest, StopFailsPendingOperations) {
       [&]() -> folly::coro::Task<void> {
         co_await provider_->start();
         provider_->stop();
+        co_await folly::coro::co_reschedule_on_current_executor;
 
         bool threw = false;
         try {
@@ -426,6 +429,7 @@ TEST_F(UpstreamProviderTest, PublishFailsWhenStopped) {
   pub.fullTrackName = kTestTrack;
   pub.groupOrder = GroupOrder::OldestFirst;
 
+  clientEvb().loopOnce();
   auto result = provider_->publish(std::move(pub), nullptr);
   EXPECT_TRUE(result.hasError());
   EXPECT_EQ(result.error().errorCode, PublishErrorCode::INTERNAL_ERROR);
@@ -541,6 +545,23 @@ TEST_F(UpstreamProviderTest, WaitForConnectedAlreadyConnected) {
       }(),
       &clientEvb()
   );
+}
+
+// A caller on another thread must not read provider state until the provider's executor runs.
+TEST_F(UpstreamProviderTest, WaitForConnectedRunsOnProviderExecutor) {
+  folly::EventBase callerEvb;
+  bool done = false;
+  auto waiter = [&]() -> folly::coro::Task<void> {
+    co_await provider_->waitForConnected(std::chrono::milliseconds(100));
+    done = true;
+  };
+  folly::coro::co_withExecutor(&callerEvb, waiter()).start();
+
+  callerEvb.loopOnce(EVLOOP_NONBLOCK);
+  EXPECT_FALSE(done);
+  clientEvb().loopOnce(EVLOOP_NONBLOCK);
+  callerEvb.loopOnce(EVLOOP_NONBLOCK);
+  EXPECT_TRUE(done);
 }
 
 // --- Shutdown / close paths ---
