@@ -233,6 +233,12 @@ private:
     RelaySubscription(ForwarderRef f, std::shared_ptr<moxygen::MoQSession> u, EntryEpoch e)
         : forwarder(std::move(f)), epoch(e), upstream(std::move(u)),
           lastObjectTime(std::chrono::steady_clock::now()) {}
+    // The publisher's filter chain can outlive this entry.
+    ~RelaySubscription() {
+      if (topNFilter) {
+        topNFilter->setActivityTarget(nullptr);
+      }
+    }
 
     ForwarderRef forwarder;
     EntryEpoch epoch;

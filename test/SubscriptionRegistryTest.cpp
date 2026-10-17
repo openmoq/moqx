@@ -224,3 +224,44 @@ TEST(SubscriptionRegistryTest, OnPublisherTerminatedErasesEmptyEntry) {
   EXPECT_FALSE(static_cast<bool>(result));
   EXPECT_FALSE(registry.exists(kFtn));
 }
+
+// === Activity target ===
+
+// A publisher's filter chain can outlive its entry, so an erased entry must stop being the
+// filter's activity target. Under ASAN, a write to the erased entry is a heap-use-after-free.
+TEST(SubscriptionRegistryTest, ErasedEntryIsNotActivityTarget) {
+  constexpr uint64_t kProp = 0x10;
+  Extensions ext;
+  ext.insertMutableExtension(Extension{kProp, 1});
+
+  auto publishWithFilter = [](SubscriptionRegistry& registry, std::shared_ptr<TopNFilter>& out) {
+    registry.createFromPublish(
+        kFtn,
+        ForwarderRef::owned(std::make_shared<MoQForwarder>(kFtn, std::nullopt)),
+        nullptr,
+        nullptr,
+        RequestID(0),
+        nullptr,
+        [&out] {
+          out = std::make_shared<TopNFilter>(kFtn, nullptr);
+          out->registerObserver(kProp, PropertyObserver{});
+          return SubscriptionRegistry::FilterChainResult{nullptr, out};
+        }
+    );
+  };
+
+  {
+    SubscriptionRegistry registry;
+    std::shared_ptr<TopNFilter> replaced, replacement;
+    publishWithFilter(registry, replaced);
+    publishWithFilter(registry, replacement);
+    replaced->checkProperties(ext);
+  }
+  {
+    SubscriptionRegistry registry;
+    std::shared_ptr<TopNFilter> removed;
+    publishWithFilter(registry, removed);
+    registry.remove(kFtn);
+    removed->checkProperties(ext);
+  }
+}
