@@ -16,6 +16,7 @@ How to add an entry: see [CONTRIBUTING.md](/CONTRIBUTING.md#changelog).
 ## Fixed
 
 - With an [`upstream`](/docs/config.md#upstreams) configured, the relay could crash while waiting for the upstream connection or while shutting down. ([#821](https://github.com/openmoq/moqx/pull/821))
+- With an [`upstream`](/docs/config.md#upstreams) configured, the relay could crash when it shut down just as the upstream connection completed. ([#825](https://github.com/openmoq/moqx/pull/825))
 
 [0.3.6] - 2026-10-10
 ====================

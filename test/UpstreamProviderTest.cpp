@@ -8,6 +8,7 @@
 #include "MoQIntegrationTestFixture.h"
 #include "MoqxRelay.h"
 
+#include <folly/coro/Baton.h>
 #include <folly/coro/BlockingWait.h>
 #include <folly/coro/Collect.h>
 #include <folly/coro/Sleep.h>
@@ -653,6 +654,78 @@ TEST_F(UpstreamProviderTest, StopSuppressesReconnectAfterSessionClose) {
       }(),
       &clientEvb()
   );
+}
+
+// stop() clears onConnect_ while its coroutine is suspended; the coroutine still reads its
+// captures when it resumes.
+TEST_F(UpstreamProviderTest, StopDuringOnConnectKeepsHookAlive) {
+  folly::coro::Baton entered, release;
+  auto marker = std::make_shared<int>(0);
+  provider_ = std::make_shared<UpstreamProvider>(
+      clientExec(),
+      serverUrl(),
+      /*publishHandler=*/nullptr,
+      /*subscribeHandler=*/nullptr,
+      std::make_shared<moxygen::test::InsecureVerifierDangerousDoNotUseInProduction>(),
+      /*onConnect=*/
+      [marker, &entered, &release](std::shared_ptr<MoQSession>) -> folly::coro::Task<void> {
+        entered.post();
+        co_await release;
+        ++*marker;
+      }
+  );
+
+  folly::coro::blockingWait(
+      [&]() -> folly::coro::Task<void> {
+        folly::coro::co_withExecutor(&clientEvb(), provider_->start()).start();
+        co_await entered;
+        provider_->stop();
+        co_await folly::coro::co_reschedule_on_current_executor;
+        release.post();
+        co_await folly::coro::co_reschedule_on_current_executor;
+      }(),
+      &clientEvb()
+  );
+}
+
+// stop() during the hook closes the session, so the connect it interrupted must fail.
+TEST_F(UpstreamProviderTest, StopDuringOnConnectFailsSubscribe) {
+  folly::coro::Baton entered, release;
+  provider_ = std::make_shared<UpstreamProvider>(
+      clientExec(),
+      serverUrl(),
+      /*publishHandler=*/nullptr,
+      /*subscribeHandler=*/nullptr,
+      std::make_shared<moxygen::test::InsecureVerifierDangerousDoNotUseInProduction>(),
+      /*onConnect=*/
+      [&entered, &release](std::shared_ptr<MoQSession>) -> folly::coro::Task<void> {
+        entered.post();
+        co_await release;
+      }
+  );
+
+  bool done = false;
+  bool threw = false;
+  auto subscribe = [&]() -> folly::coro::Task<void> {
+    auto result = co_await folly::coro::co_awaitTry(
+        provider_->subscribe(makeSubscribeRequest(), makeReceiver())
+    );
+    threw = result.hasException();
+    done = true;
+  };
+  folly::coro::blockingWait(
+      [&]() -> folly::coro::Task<void> {
+        folly::coro::co_withExecutor(&clientEvb(), subscribe()).start();
+        co_await entered;
+        provider_->stop();
+        co_await folly::coro::co_reschedule_on_current_executor;
+        release.post();
+        co_await folly::coro::sleep(std::chrono::milliseconds(50));
+      }(),
+      &clientEvb()
+  );
+  EXPECT_TRUE(done);
+  EXPECT_TRUE(threw);
 }
 
 // ===== RelayUpstreamSubscribeRaceTest =============================================
