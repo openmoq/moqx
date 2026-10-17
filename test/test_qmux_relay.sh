@@ -185,7 +185,8 @@ wait_ready "$ADMIN_PORT" "relay"
 echo "Starting moqdateserver (qmux publisher)..."
 "$DATESERVER" \
   --relay_url="https://localhost:$RELAY_PORT/moq-relay" \
-  --ns="$NAMESPACE" --qmux --quic=false --port="$DATESERVER_PORT" --insecure \
+  --ns="$NAMESPACE" --qmux --quic=false --port="$DATESERVER_PORT" \
+  --versions="$MOQT_CLIENT_VERSION" --insecure \
   >"$DATESERVER_LOG" 2>&1 &
 PIDS+=($!)
 wait_sessions "$ADMIN_PORT" 1 "publisher"
@@ -196,7 +197,8 @@ wait_sessions "$ADMIN_PORT" 1 "publisher"
 echo "Starting moqtextclient (qmux subscriber)..."
 "$TEXTCLIENT" \
   --connect_url="https://localhost:$RELAY_PORT/moq-relay" \
-  --track_namespace="$NAMESPACE" --track_name="date" --qmux --insecure \
+  --track_namespace="$NAMESPACE" --track_name="date" --qmux \
+  --versions="$MOQT_CLIENT_VERSION" --insecure \
   >"$CLIENT_OUT" 2>&1 &
 TCPID=$!
 PIDS+=($TCPID)
