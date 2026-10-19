@@ -292,6 +292,15 @@ _CONFIG_UPSTREAM = Template(
 """
 )
 
+_CONFIG_UPSTREAMS_ENTRY = Template(
+    """\
+      - url: "moqt://localhost:$port/moq-relay"
+        tls:
+          insecure: true
+        idle_timeout_ms: 60000
+"""
+)
+
 _CONFIG_ADMIN = Template(
     """\
 admin:
@@ -308,6 +317,7 @@ class Relay:
     listen: int
     admin: int
     upstream: str | None
+    upstreams: list[str]
     relay_id: str
     proc: subprocess.Popen | None = None
     config_path: Path | None = None
@@ -450,15 +460,22 @@ class Harness:
             raise HarnessError(f"{context}: unknown relay '{name}'")
         return relay
 
+    @staticmethod
+    def _links(relay):
+        return [relay.upstream] if relay.upstream else relay.upstreams
+
     def _expected_peers(self, target):
-        return sum(1 for r in self.relays.values() if r.upstream == target)
+        return sum(self._links(r).count(target) for r in self.relays.values())
 
     # ── Topology declaration ───────────────────────────────────────────────────
-    def relay(self, name, upstream=None, relay_id=None):
+    def relay(self, name, upstream=None, upstreams=None, relay_id=None):
+        """`upstream` writes the single-upstream form; `upstreams` writes a list."""
         if self.started:
             raise HarnessError(f"relay {name}: declared after start()")
         if name in self.relays:
             raise HarnessError(f"relay: duplicate relay '{name}'")
+        if upstream and upstreams:
+            raise HarnessError(f"relay {name}: upstream and upstreams are exclusive")
         listen = self.base_port + self._port_counter
         self._port_counter += 2
         entry = Relay(
@@ -466,6 +483,7 @@ class Harness:
             listen=listen,
             admin=listen + 1,
             upstream=upstream,
+            upstreams=list(upstreams or []),
             relay_id=relay_id if relay_id else f"{name}-test",
         )
         self.relays[name] = entry
@@ -516,6 +534,11 @@ class Harness:
         if relay.upstream:
             upstream = self.relay_of(f"relay {relay.name}", relay.upstream)
             parts.append(_CONFIG_UPSTREAM.substitute(port=upstream.listen))
+        elif relay.upstreams:
+            parts.append("    upstreams:\n")
+            for link in relay.upstreams:
+                upstream = self.relay_of(f"relay {relay.name}", link)
+                parts.append(_CONFIG_UPSTREAMS_ENTRY.substitute(port=upstream.listen))
         parts.append(_CONFIG_ADMIN.substitute(port=relay.admin))
         path = self.tmpdir / f"{relay.name}.yaml"
         path.write_text("".join(parts), encoding="utf-8")
@@ -548,15 +571,15 @@ class Harness:
         self.started = True
 
         for relay in self.relays.values():
-            if relay.upstream is None:
-                continue
-            if relay.upstream not in self.relays:
-                raise HarnessError(
-                    f"relay {relay.name}: upstream names undeclared relay "
-                    f"'{relay.upstream}'"
-                )
-            if relay.upstream == relay.name:
-                raise HarnessError(f"relay {relay.name}: cannot be its own upstream")
+            for link in self._links(relay):
+                if link not in self.relays:
+                    raise HarnessError(
+                        f"relay {relay.name}: upstream names undeclared relay '{link}'"
+                    )
+                if link == relay.name:
+                    raise HarnessError(
+                        f"relay {relay.name}: cannot be its own upstream"
+                    )
 
         self._check_ports_free()
 
@@ -849,16 +872,40 @@ class Harness:
         else:
             self._fail(f"[{name} /state] downstream_peers={got}, want {op} {want}")
 
-    def expect_upstream_state(self, name, want):
+    @staticmethod
+    def _upstream_state(service, index):
+        if index is None:
+            return "upstream", _dig(service, "upstream", "state") or "none"
+        links = _dig(service, "upstreams")
+        got = (
+            links[index].get("state")
+            if isinstance(links, list) and index < len(links)
+            else None
+        )
+        return f"upstreams[{index}]", got or "none"
+
+    def expect_upstream_state(self, name, want, index=None):
+        """`index` selects an entry of an `upstreams` list."""
         state, service = self._fetch_state("expect_upstream_state", name)
         if state is None:
             return
-        got = _dig(service, "upstream", "state")
-        got = got if got is not None else "none"
+        label, got = self._upstream_state(service, index)
         if got == want:
-            self._pass(f"[{name} /state] upstream.state={got}")
+            self._pass(f"[{name} /state] {label}.state={got}")
         else:
-            self._fail(f"[{name} /state] upstream.state={got}, want {want}")
+            self._fail(f"[{name} /state] {label}.state={got}, want {want}")
+
+    def wait_upstream_state(self, name, want, index=None):
+        """expect_upstream_state, polling: a peer can see the link before it is connected."""
+        self.relay_of("wait_upstream_state", name)
+        label, got = "upstream", "none"
+        for _ in _until(READY_TIMEOUT):
+            service = _dig(self._state(name), "services", "default")
+            label, got = self._upstream_state(service, index)
+            if got == want:
+                self._pass(f"[{name} /state] {label}.state={got}")
+                return
+        self._fail(f"[{name} /state] {label}.state={got}, want {want}")
 
     def expect_relay_id(self, name, want):
         state, _ = self._fetch_state("expect_relay_id", name)

@@ -21,6 +21,7 @@
 #include "relay/TrackStatsFilter.h"
 #include "relay/WeakRelayForwarderCallback.h"
 #include <algorithm>
+#include <folly/CancellationToken.h>
 #include <folly/container/F14Set.h>
 #include <folly/coro/Collect.h>
 #include <moxygen/MoQFilters.h>
@@ -379,6 +380,9 @@ folly::coro::Task<void> MoqxRelay::onUpstreamConnect(std::shared_ptr<MoQSession>
 }
 
 folly::coro::Task<void> MoqxRelay::onUpstreamConnectImpl(std::shared_ptr<MoQSession> session) {
+  // A disconnect during the handshake erases this entry, so its handles are dropped.
+  const auto id = session->sessionId();
+  upstreamHandles_.try_emplace(id);
   auto nsHandle = makeNamespaceBridgeHandle(weak_from_this(), session, {}, relayExec_);
   auto subNs = makePeerSubNs(relayID_);
   // subscribeNamespace must run on the upstream session's executor
@@ -386,8 +390,12 @@ folly::coro::Task<void> MoqxRelay::onUpstreamConnectImpl(std::shared_ptr<MoQSess
       folly::getKeepAliveToken(session->getExecutor()),
       session->subscribeNamespace(std::move(subNs), nsHandle)
   );
+  auto it = upstreamHandles_.find(id);
+  if (it == upstreamHandles_.end()) {
+    co_return;
+  }
   if (result.hasValue()) {
-    upstreamSubNsHandle_ = std::move(result.value());
+    it->second.subNs = std::move(result.value());
   } else {
     XLOG(ERR) << "MoqxRelay: upstream peer subNs failed: " << result.error().reasonPhrase;
   }
@@ -398,16 +406,45 @@ folly::coro::Task<void> MoqxRelay::onUpstreamConnectImpl(std::shared_ptr<MoQSess
       folly::getKeepAliveToken(session->getExecutor()),
       session->subscribeTracks(makePeerSubTracks(relayID_), nullptr)
   );
+  it = upstreamHandles_.find(id);
+  if (it == upstreamHandles_.end()) {
+    co_return;
+  }
   if (tracks.hasValue()) {
-    upstreamTracksHandle_ = std::move(tracks.value());
+    it->second.tracks = std::move(tracks.value());
   } else {
     XLOG(ERR) << "MoqxRelay: upstream peer subTracks failed: " << tracks.error().reasonPhrase;
   }
 }
 
-void MoqxRelay::onUpstreamDisconnect() {
-  upstreamSubNsHandle_.reset();
-  upstreamTracksHandle_.reset();
+void MoqxRelay::onUpstreamDisconnect(const std::shared_ptr<MoQSession>& session) {
+  if (session) {
+    upstreamHandles_.erase(session->sessionId());
+  }
+}
+
+folly::coro::Task<void> MoqxRelay::waitForUpstreams(folly::Function<bool()> routed) {
+  folly::CancellationSource routedSource;
+  std::vector<folly::coro::Task<void>> waits;
+  waits.reserve(upstreams_.size());
+  for (const auto& upstream : upstreams_) {
+    waits.push_back(folly::coro::co_invoke(
+        [&routed, &routedSource, wait = upstream->waitForConnected(kUpstreamConnectWaitTimeout)](
+        ) mutable -> folly::coro::Task<void> {
+          co_await std::move(wait);
+          if (routed()) {
+            routedSource.requestCancellation();
+          }
+        }
+    ));
+  }
+  co_await folly::coro::co_withCancellation(
+      folly::cancellation_token_merge(
+          co_await folly::coro::co_current_cancellation_token,
+          routedSource.getToken()
+      ),
+      folly::coro::collectAllRange(std::move(waits))
+  );
 }
 
 std::shared_ptr<Subscriber::PublishNamespaceHandle> MoqxRelay::doPublishNamespace(
@@ -2266,9 +2303,11 @@ folly::coro::Task<MoqxRelay::StatefulSubscribeResult>
 MoqxRelay::joinOrPrepareUpstreamSubscription(SubscribeRequest subReq) {
   const auto& ftn = subReq.fullTrackName;
 
-  if (!registry_.exists(ftn) && upstream_ &&
+  if (!registry_.exists(ftn) && !upstreams_.empty() &&
       !namespaceTree_.findPublisherSession(ftn.trackNamespace)) {
-    co_await upstream_->waitForConnected(kUpstreamConnectWaitTimeout);
+    co_await waitForUpstreams([&] {
+      return namespaceTree_.findPublisherSession(ftn.trackNamespace) != nullptr;
+    });
   }
 
   // upstreamSession is set by the factory for the first subscriber that needs to go upstream.
@@ -2491,8 +2530,8 @@ MoqxRelay::subscribeImpl(SubscribeRequest subReq, std::shared_ptr<TrackConsumer>
   // TOCTOU fix: if we might be the first subscriber, wait for the upstream
   // connection before branching. A concurrent coroutine may emplace the entry
   // while we are suspended, so we re-check inside getOrCreateFromSubscribe.
-  if (!registry_.exists(ftn) && upstream_ && !findUpstreamPublisher(ftn.trackNamespace)) {
-    co_await upstream_->waitForConnected(kUpstreamConnectWaitTimeout);
+  if (!registry_.exists(ftn) && !upstreams_.empty() && !findUpstreamPublisher(ftn.trackNamespace)) {
+    co_await waitForUpstreams([&] { return findUpstreamPublisher(ftn.trackNamespace) != nullptr; });
   }
 
   consumer =
@@ -2692,9 +2731,11 @@ MoqxRelay::fetchImpl(Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
     upstreamPublisher = fetchView->publisher;
   } else {
     upstreamPublisher = findUpstreamPublisher(fetch.fullTrackName.trackNamespace);
-    if (!upstreamPublisher && upstream_) {
-      co_await upstream_->waitForConnected(kUpstreamConnectWaitTimeout);
-      upstreamPublisher = findUpstreamPublisher(fetch.fullTrackName.trackNamespace);
+    if (!upstreamPublisher && !upstreams_.empty()) {
+      co_await waitForUpstreams([&] {
+        upstreamPublisher = findUpstreamPublisher(fetch.fullTrackName.trackNamespace);
+        return upstreamPublisher != nullptr;
+      });
     }
   }
   if (!upstreamPublisher) {
@@ -2775,9 +2816,11 @@ folly::coro::Task<Publisher::TrackStatusResult> MoqxRelay::trackStatusImpl(Track
       upstreamPublisher = upstreamView->publisher;
     } else {
       upstreamPublisher = findUpstreamPublisher(trackStatus.fullTrackName.trackNamespace);
-      if (!upstreamPublisher && upstream_) {
-        co_await upstream_->waitForConnected(kUpstreamConnectWaitTimeout);
-        upstreamPublisher = findUpstreamPublisher(trackStatus.fullTrackName.trackNamespace);
+      if (!upstreamPublisher && !upstreams_.empty()) {
+        co_await waitForUpstreams([&] {
+          upstreamPublisher = findUpstreamPublisher(trackStatus.fullTrackName.trackNamespace);
+          return upstreamPublisher != nullptr;
+        });
       }
     }
     if (!upstreamPublisher) {

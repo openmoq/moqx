@@ -104,6 +104,14 @@ std::shared_ptr<fizz::CertificateVerifier> makeUpstreamVerifier(const config::Up
   return nullptr; // nullptr = fizz uses system CAs
 }
 
+// dumpState pairs these with relay->upstreamProviders() by index.
+std::vector<config::UpstreamConfig> upstreamConfigs(const config::ServiceConfig& svc) {
+  if (svc.upstream) {
+    return {*svc.upstream};
+  }
+  return svc.upstreams;
+}
+
 } // namespace
 
 void MoqxRelayContext::initUpstreams(folly::EventBase* workerEvb) {
@@ -112,49 +120,58 @@ void MoqxRelayContext::initUpstreams(folly::EventBase* workerEvb) {
 
   auto workerExec = std::make_shared<moxygen::MoQFollyExecutorImpl>(workerEvb);
   for (auto& [name, entry] : services_) {
-    if (!entry.config.upstream) {
-      continue;
+    for (const auto& cfg : upstreamConfigs(entry.config)) {
+      startUpstream(entry, cfg, workerExec);
     }
-    const auto& cfg = *entry.config.upstream;
-    auto verifier = makeUpstreamVerifier(cfg.tls);
-    auto relay = entry.relay;
-    auto* relayExec = relay->getRelayExec();
-    auto onConnect = [relay,
-                      relayExec](std::shared_ptr<MoQSession> session) -> folly::coro::Task<void> {
-      if (relayExec) {
-        co_return co_await folly::coro::co_withExecutor(
-            folly::getKeepAliveToken(relayExec),
-            relay->onUpstreamConnect(session)
-        );
-      }
-      co_return co_await relay->onUpstreamConnect(session);
-    };
-    auto onDisconnect = [relay, relayExec]() {
-      runOnExec(relayExec, [relay]() { relay->onUpstreamDisconnect(); });
-    };
-    // Mode-aware filters (as inbound sessions): LF mode needs LocalPublishFilter for upstream
-    // PUBLISH.
-    std::shared_ptr<moxygen::Publisher> pubHandler = relay->createPublisherFilter();
-    std::shared_ptr<moxygen::Subscriber> subHandler = relay->createSubscriberFilter();
-    auto provider = std::make_shared<UpstreamProvider>(
-        workerExec,
-        proxygen::URL(cfg.url),
-        /*publishHandler=*/pubHandler,
-        /*subscribeHandler=*/subHandler,
-        verifier,
-        std::move(onConnect),
-        std::move(onDisconnect),
-        cfg.connectTimeout,
-        cfg.idleTimeout,
-        getRelayHopID()
-    );
-    entry.relay->setUpstreamProvider(provider);
-
-    // Eagerly connect so the peering handshake fires before any subscribers
-    // arrive. The connection is lazy in UpstreamProvider but we kick it off
-    // now so the upstream namespace tree is ready.
-    co_withExecutor(workerExec.get(), provider->start()).start();
   }
+}
+
+void MoqxRelayContext::startUpstream(
+    ServiceEntry& entry,
+    const config::UpstreamConfig& cfg,
+    const std::shared_ptr<moxygen::MoQFollyExecutorImpl>& workerExec
+) {
+  auto verifier = makeUpstreamVerifier(cfg.tls);
+  auto relay = entry.relay;
+  auto* relayExec = relay->getRelayExec();
+  auto onConnect = [relay,
+                    relayExec](std::shared_ptr<MoQSession> session) -> folly::coro::Task<void> {
+    if (relayExec) {
+      co_return co_await folly::coro::co_withExecutor(
+          folly::getKeepAliveToken(relayExec),
+          relay->onUpstreamConnect(session)
+      );
+    }
+    co_return co_await relay->onUpstreamConnect(session);
+  };
+  auto onDisconnect = [relay, relayExec](std::shared_ptr<MoQSession> session) {
+    runOnExec(relayExec, [relay, session = std::move(session)]() {
+      relay->onUpstreamDisconnect(session);
+    });
+  };
+  // Mode-aware filters (as inbound sessions): LF mode needs LocalPublishFilter for upstream
+  // PUBLISH.
+  std::shared_ptr<moxygen::Publisher> pubHandler = relay->createPublisherFilter();
+  std::shared_ptr<moxygen::Subscriber> subHandler = relay->createSubscriberFilter();
+  auto provider = std::make_shared<UpstreamProvider>(
+      workerExec,
+      proxygen::URL(cfg.url),
+      /*publishHandler=*/pubHandler,
+      /*subscribeHandler=*/subHandler,
+      verifier,
+      std::move(onConnect),
+      std::move(onDisconnect),
+      cfg.connectTimeout,
+      cfg.idleTimeout,
+      getRelayHopID(),
+      cfg.relayCost
+  );
+  entry.relay->addUpstreamProvider(provider);
+
+  // Eagerly connect so the peering handshake fires before any subscribers
+  // arrive. The connection is lazy in UpstreamProvider but we kick it off
+  // now so the upstream namespace tree is ready.
+  co_withExecutor(workerExec.get(), provider->start()).start();
 }
 
 void MoqxRelayContext::stop() {
@@ -428,9 +445,12 @@ folly::coro::Task<void> dumpOnOwner(std::shared_ptr<MoqxRelay> relay, RelayState
 
 // UpstreamProvider lives on the worker EVB and its state_ is a plain enum
 // written there, so read it on that thread rather than the caller's.
-folly::coro::Task<std::string> readUpstreamState(std::shared_ptr<MoqxRelay> relay) {
-  auto up = relay->upstreamProvider();
-  co_return up ? up->stateString() : "disconnected";
+folly::coro::Task<std::vector<std::string>> readUpstreamStates(std::shared_ptr<MoqxRelay> relay) {
+  std::vector<std::string> states;
+  for (const auto& up : relay->upstreamProviders()) {
+    states.push_back(up->stateString());
+  }
+  co_return states;
 }
 
 } // namespace
@@ -449,17 +469,17 @@ folly::coro::Task<void> MoqxRelayContext::dumpState(RelayContextVisitor& visitor
   struct Service {
     std::string name;
     std::shared_ptr<MoqxRelay> relay;
-    std::optional<std::string> upstreamUrl;
+    bool upstreamList;
+    std::vector<std::string> upstreamUrls;
   };
   std::vector<Service> services;
   services.reserve(services_.size());
   for (const auto& [name, entry] : services_) {
-    services.push_back(
-        {name,
-         entry.relay,
-         entry.config.upstream ? std::optional<std::string>(entry.config.upstream->url)
-                               : std::nullopt}
-    );
+    Service service{name, entry.relay, !entry.config.upstreams.empty(), {}};
+    for (const auto& cfg : upstreamConfigs(entry.config)) {
+      service.upstreamUrls.push_back(cfg.url);
+    }
+    services.push_back(std::move(service));
   }
 
   for (auto& service : services) {
@@ -474,12 +494,22 @@ folly::coro::Task<void> MoqxRelayContext::dumpState(RelayContextVisitor& visitor
         exec ? exec : static_cast<folly::Executor*>(workerEvb_),
         dumpOnOwner(service.relay, &rv)
     );
-    if (service.upstreamUrl) {
-      auto upstreamState = co_await folly::coro::co_withExecutor(
+    if (!service.upstreamUrls.empty()) {
+      auto states = co_await folly::coro::co_withExecutor(
           static_cast<folly::Executor*>(workerEvb_),
-          readUpstreamState(service.relay)
+          readUpstreamStates(service.relay)
       );
-      visitor.onServiceUpstream(*service.upstreamUrl, upstreamState);
+      std::vector<RelayContextVisitor::UpstreamState> upstreams;
+      for (size_t i = 0; i < service.upstreamUrls.size(); ++i) {
+        upstreams.push_back(
+            {service.upstreamUrls[i], i < states.size() ? states[i] : "disconnected"}
+        );
+      }
+      if (service.upstreamList) {
+        visitor.onServiceUpstreams(upstreams);
+      } else {
+        visitor.onServiceUpstream(upstreams.front().url, upstreams.front().state);
+      }
     }
     visitor.onServiceEnd();
   }

@@ -10,6 +10,7 @@
 #include "UpstreamProvider.h"
 
 #include <folly/CancellationToken.h>
+#include <folly/coro/Baton.h>
 #include <folly/coro/Promise.h>
 #include <folly/coro/WithCancellation.h>
 
@@ -429,11 +430,97 @@ TEST_P(MoQRelayTest, UpstreamPeeringSubscribesTracksOnDraft18) {
       EXPECT_FALSE(peer->tracksRequests[0].forward);
     }
 
-    verifyOnRelayExec([&] { relay_->onUpstreamDisconnect(); });
+    verifyOnRelayExec([&] { relay_->onUpstreamDisconnect(peer); });
     driveIfMultiThread();
     EXPECT_TRUE(peer->tracksHandle.expired());
     removeSession(peer);
   }
+}
+
+// Each upstream session keeps its own peering handles.
+TEST_P(MoQRelayTest, UpstreamDisconnectReleasesOnlyThatSession) {
+  resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "sg-sin-2-1");
+  std::vector<std::shared_ptr<PeerTracksSession>> peers;
+  for (int i = 0; i < 2; ++i) {
+    auto peer = std::make_shared<PeerTracksSession>(exec_);
+    ON_CALL(*peer, getNegotiatedVersion())
+        .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft18)));
+    getOrCreateMockState(peer);
+    if (auto* relayExec = relay_->getRelayExec()) {
+      folly::coro::co_withExecutor(
+          folly::getKeepAliveToken(relayExec),
+          relay_->onUpstreamConnect(peer)
+      )
+          .start();
+    } else {
+      folly::coro::blockingWait(relay_->onUpstreamConnect(peer), exec_.get());
+    }
+    ASSERT_TRUE(driveUntil([&] { return peer->tracksRequests.size() == 1; }));
+    peers.push_back(std::move(peer));
+  }
+  driveIfMultiThread();
+
+  verifyOnRelayExec([&] { relay_->onUpstreamDisconnect(peers[0]); });
+  driveIfMultiThread();
+  EXPECT_TRUE(peers[0]->tracksHandle.expired());
+  EXPECT_FALSE(peers[1]->tracksHandle.expired());
+
+  verifyOnRelayExec([&] { relay_->onUpstreamDisconnect(peers[1]); });
+  driveIfMultiThread();
+  EXPECT_TRUE(peers[1]->tracksHandle.expired());
+  for (auto& peer : peers) {
+    removeSession(peer);
+  }
+}
+
+// Holds its SUBSCRIBE_NAMESPACE reply until the test posts the gate.
+class GatedPeerSession : public PeerTracksSession {
+public:
+  using PeerTracksSession::PeerTracksSession;
+
+  folly::coro::Task<Publisher::SubscribeNamespaceResult>
+  subscribeNamespace(SubscribeNamespace subNs, std::shared_ptr<Publisher::NamespacePublishHandle>)
+      override {
+    ++namespaceRequests;
+    co_await *gate;
+    auto handle = std::make_shared<NiceMock<MockSubscribeNamespaceHandle>>(
+        SubscribeNamespaceOk{subNs.requestID}
+    );
+    namespaceHandle = handle;
+    replied = true;
+    co_return handle;
+  }
+
+  std::shared_ptr<folly::coro::Baton> gate = std::make_shared<folly::coro::Baton>();
+  std::weak_ptr<Publisher::SubscribeNamespaceHandle> namespaceHandle;
+  bool replied{false};
+};
+
+// A disconnect while the peering handshake waits drops that session's handles, and
+// the handshake does not go on to SUBSCRIBE_TRACKS.
+TEST_P(MoQRelayTest, UpstreamDisconnectDuringHandshakeDropsItsHandles) {
+  resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "sg-sin-2-1");
+  auto peer = std::make_shared<GatedPeerSession>(exec_);
+  ON_CALL(*peer, getNegotiatedVersion())
+      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft18)));
+  getOrCreateMockState(peer);
+  if (auto* relayExec = relay_->getRelayExec()) {
+    folly::coro::co_withExecutor(
+        folly::getKeepAliveToken(relayExec),
+        relay_->onUpstreamConnect(peer)
+    )
+        .start();
+  } else {
+    folly::coro::co_withExecutor(sessionExec(), relay_->onUpstreamConnect(peer)).start();
+  }
+  ASSERT_TRUE(driveUntil([&] { return peer->namespaceRequests == 1; }));
+
+  verifyOnRelayExec([&] { relay_->onUpstreamDisconnect(peer); });
+  peer->gate->post();
+  EXPECT_TRUE(driveUntil([&] { return peer->replied && peer->namespaceHandle.expired(); }));
+  driveIfMultiThread();
+  EXPECT_TRUE(peer->tracksRequests.empty());
+  removeSession(peer);
 }
 
 TEST_P(MoQRelayTest, ReciprocalPeeringSubscribesTracksOnDraft18) {
