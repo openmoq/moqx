@@ -215,6 +215,48 @@ TEST_F(UpstreamProviderTest, ConnectAndSetup) {
   );
 }
 
+// The server advertises RELAY_HOPS, as a moqx relay listener does.
+class UpstreamRelayHopsTest : public UpstreamProviderTest {
+protected:
+  void configureServer(moxygen::MoQServer& server) override {
+    server.addSetupParameter(
+        SetupParameter(folly::to_underlying(SetupKey::RELAY_HOPS), std::string{})
+    );
+  }
+};
+
+TEST_F(UpstreamRelayHopsTest, NegotiatesRelayHopsOnDraft18) {
+  folly::coro::blockingWait(
+      [&]() -> folly::coro::Task<void> {
+        co_await provider_->start();
+        auto session = provider_->currentSession();
+        EXPECT_NE(session, nullptr);
+        if (session) {
+          EXPECT_EQ(getDraftMajorVersion(*session->getNegotiatedVersion()), 18u);
+          EXPECT_TRUE(session->negotiatedSetupExtension(SetupExtension::RelayHops));
+        }
+      }(),
+      &clientEvb()
+  );
+}
+
+// Relay-to-relay links use draft 18.
+TEST_F(UpstreamProviderTest, ConnectsWithDraft18) {
+  folly::coro::blockingWait(
+      [&]() -> folly::coro::Task<void> {
+        co_await provider_->start();
+        auto session = provider_->currentSession();
+        EXPECT_NE(session, nullptr);
+        auto version = session ? session->getNegotiatedVersion() : std::nullopt;
+        EXPECT_TRUE(version.has_value());
+        if (version) {
+          EXPECT_EQ(getDraftMajorVersion(*version), 18u);
+        }
+      }(),
+      &clientEvb()
+  );
+}
+
 // Exercises slow path (coSubscribe): not yet connected when subscribe is called.
 TEST_F(UpstreamProviderTest, SubscribeForwardsToUpstream) {
   expectSubscribe();
@@ -765,6 +807,16 @@ protected:
 
   void SetUp() override {
     serverPublisher_ = std::make_shared<NiceMock<MockPublisher>>();
+    // The peering handshake waits for this reply.
+    ON_CALL(*serverPublisher_, subscribeTracks(_, _))
+        .WillByDefault(
+            [](SubscribeTracks subTracks, std::shared_ptr<Publisher::PublishBlockedHandle>)
+                -> folly::coro::Task<Publisher::SubscribeTracksResult> {
+              SubscribeTracksOk ok;
+              ok.requestID = subTracks.requestID;
+              co_return std::make_shared<NiceMock<MockSubscribeTracksHandle>>(std::move(ok));
+            }
+        );
     MoQIntegrationTestFixture::SetUp();
 
     relay_ = std::make_shared<MoqxRelay>(config::CacheConfig{.maxCachedTracks = 0});

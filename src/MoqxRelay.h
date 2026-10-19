@@ -481,9 +481,11 @@ private:
   // Holds the peer subNs handle for the upstream (initiating) direction.
   // Kept alive so the subscription is not cancelled when onUpstreamConnect returns.
   std::shared_ptr<moxygen::Publisher::SubscribeNamespaceHandle> upstreamSubNsHandle_;
+  std::shared_ptr<moxygen::Publisher::SubscribeTracksHandle> upstreamTracksHandle_;
 
   struct PeerInfo {
     std::shared_ptr<moxygen::Publisher::SubscribeNamespaceHandle> handle;
+    std::shared_ptr<moxygen::Publisher::SubscribeTracksHandle> tracksHandle; // draft 18+
     std::string relayID; // from peer auth token; empty if not provided
   };
   // Reciprocal peer subNs handles: one per peer relay session that has

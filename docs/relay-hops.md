@@ -92,9 +92,8 @@ networks. In production, use certificates trusted by the system trust store or
 set `ca_cert` to the cluster CA. `ca_cert` and `insecure: true` are mutually
 exclusive.
 
-The implementation supports draft-16, draft-17, and draft-18 hop-path
-encodings. Configure at least one common supported MOQT version on every peer
-link.
+Relay-to-relay links use MOQT draft 18. Every relay that accepts upstream
+connections must include 18 in its listener `moqt_versions`.
 
 All links in the cycle must negotiate relay hops. If any relay or link does not
 preserve `HOP_PATH`, loop detection is no longer end-to-end. Keep every graph

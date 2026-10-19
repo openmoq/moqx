@@ -31,11 +31,15 @@ namespace openmoq::moqx {
 // the token (may be empty string if the peer didn't include one).
 // Returns std::nullopt if subNs is not a peer subNs at all.
 std::optional<std::string> getPeerRelayID(const moxygen::SubscribeNamespace& subNs);
+std::optional<std::string> getPeerRelayID(const moxygen::TrackRequestParameters& params);
 
 // Builds a wildcard SubscribeNamespace(prefix={}, BOTH).
 // With relayID: includes the relay auth token (initiating peer).
 // Without relayID: no token (reciprocal response — prevents loops).
 moxygen::SubscribeNamespace makePeerSubNs(std::optional<std::string> relayID = std::nullopt);
+
+// Draft 18 moved pushed tracks out of SUBSCRIBE_NAMESPACE, so relay peering sends this too.
+moxygen::SubscribeTracks makePeerSubTracks(const std::string& relayID);
 
 /**
  * UpstreamProvider connects to a remote MoQ endpoint as a client and presents

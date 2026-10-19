@@ -43,6 +43,9 @@ protected:
   // Override to kill the client's session while it awaits SERVER_SETUP
   virtual bool refuseClientSetup() { return false; }
 
+  // Override to add setup parameters; runs before the server accepts sessions.
+  virtual void configureServer(moxygen::MoQServer& /*server*/) {}
+
   void SetUp() override {
     // Start the server thread. The server must be constructed and started
     // on the same thread (QuicServer requirement).
@@ -66,6 +69,7 @@ protected:
 
       // Create and start the server on this thread
       server_ = std::make_shared<TestServer>(*this, std::move(fizzContext));
+      configureServer(*server_);
       server_->start(folly::SocketAddress("::1", 0));
 
       // Get the assigned port

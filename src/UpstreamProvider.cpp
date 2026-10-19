@@ -18,9 +18,9 @@ namespace openmoq::moqx {
 // Must fit in a QUIC variable-length integer (top 2 bits must be 00, i.e. < 2^62).
 static constexpr uint64_t kRelayAuthTokenType = 0x1B2C'3D4E'5F6A'7B8CULL;
 
-std::optional<std::string> getPeerRelayID(const SubscribeNamespace& subNs) {
+std::optional<std::string> getPeerRelayID(const TrackRequestParameters& params) {
   const uint64_t authKey = static_cast<uint64_t>(TrackRequestParamKey::AUTHORIZATION_TOKEN);
-  for (const auto& param : subNs.params) {
+  for (const auto& param : params) {
     if (param.key == authKey && param.asAuthToken.tokenType == kRelayAuthTokenType) {
       return param.asAuthToken.tokenValue;
     }
@@ -28,22 +28,40 @@ std::optional<std::string> getPeerRelayID(const SubscribeNamespace& subNs) {
   return std::nullopt;
 }
 
+std::optional<std::string> getPeerRelayID(const SubscribeNamespace& subNs) {
+  return getPeerRelayID(subNs.params);
+}
+
+namespace {
+void addRelayToken(TrackRequestParameters& params, const std::string& relayID) {
+  params.insertParam(Parameter(
+      static_cast<uint64_t>(TrackRequestParamKey::AUTHORIZATION_TOKEN),
+      AuthToken{
+          .tokenType = kRelayAuthTokenType,
+          .tokenValue = relayID,
+          .alias = AuthToken::DontRegister,
+      }
+  ));
+}
+} // namespace
+
 SubscribeNamespace makePeerSubNs(std::optional<std::string> relayID) {
   SubscribeNamespace subNs;
   subNs.trackNamespacePrefix = {};
   subNs.options = SubscribeNamespaceOptions::BOTH;
   subNs.forward = false;
   if (relayID) {
-    subNs.params.insertParam(Parameter(
-        static_cast<uint64_t>(TrackRequestParamKey::AUTHORIZATION_TOKEN),
-        AuthToken{
-            .tokenType = kRelayAuthTokenType,
-            .tokenValue = *relayID,
-            .alias = AuthToken::DontRegister,
-        }
-    ));
+    addRelayToken(subNs.params, *relayID);
   }
   return subNs;
+}
+
+SubscribeTracks makePeerSubTracks(const std::string& relayID) {
+  SubscribeTracks subTracks;
+  subTracks.trackNamespacePrefix = {};
+  subTracks.forward = false;
+  addRelayToken(subTracks.params, relayID);
+  return subTracks;
 }
 
 namespace {
@@ -423,15 +441,14 @@ folly::coro::Task<void> UpstreamProvider::doConnect() {
   ts.datagramConfig.writeBufSize = 1000;
   ts.datagramConfig.sendDropOldDataFirst = true;
 
-  // Relay chaining requires draft 16+. Only offer standard draft-16 ALPN
-  // ("moqt-16") so we fail fast if the upstream doesn't support it.
+  // Relay links use draft 18 only.
   co_await client_->setupMoQSession(
       connectTimeout_,
       idleTimeout_,
       publishHandler_,
       subscribeHandler_,
       ts,
-      getMoqtProtocols("16", /*useStandard=*/true)
+      getMoqtProtocols("18", /*useStandard=*/true)
   );
 
   session_ = client_->moqSession_;
