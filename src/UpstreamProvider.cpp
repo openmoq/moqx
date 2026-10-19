@@ -440,8 +440,12 @@ folly::coro::Task<void> UpstreamProvider::doConnect() {
   // Register for close notifications
   session_->setSessionCloseCallback(this);
 
-  if (onConnect_) {
-    co_await onConnect_(session_);
+  // stop() can clear onConnect_ while the hook's coroutine still runs in its closure.
+  if (auto onConnect = onConnect_) {
+    co_await onConnect(session_);
+  }
+  if (stopped_) {
+    co_yield folly::coro::co_error(std::runtime_error("UpstreamProvider stopped"));
   }
 
   XLOG(DBG1) << "UpstreamProvider::doConnect completed, session=" << session_.get();
