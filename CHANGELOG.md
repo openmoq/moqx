@@ -17,6 +17,7 @@ How to add an entry: see [CONTRIBUTING.md](/CONTRIBUTING.md#changelog).
 
 - The relay could crash when a new PUBLISH replaced a track that a TRACK_FILTER subscription was ranking. ([#823](https://github.com/openmoq/moqx/pull/823))
 - Docker: the relay image starts with its default config under a non-root uid; `/var/log/moqx/qlog` is created writable. ([#827](https://github.com/openmoq/moqx/pull/827))
+- With an [`upstream`](/docs/config.md#upstreams) configured, the relay could crash while waiting for the upstream connection or while shutting down. ([#821](https://github.com/openmoq/moqx/pull/821))
 
 [0.3.6] - 2026-10-10
 ====================

@@ -94,8 +94,8 @@ UpstreamProvider::UpstreamProvider(
 }
 
 UpstreamProvider::~UpstreamProvider() {
-  // close() holds shared_from_this() and runs during MoQServer::stop() EVB
-  // drain — both before member dtors fire. These must be null by now.
+  // stop() holds shared_from_this() until stopOnOwner() runs during the
+  // MoQServer::stop() EVB drain, before member dtors fire. These must be null by now.
   XCHECK(!session_) << "UpstreamProvider dtor with live session; was stop() called?";
   XCHECK(!client_) << "UpstreamProvider dtor with live client; was stop() called?";
   XLOG(DBG1) << "UpstreamProvider destroyed";
@@ -146,17 +146,22 @@ folly::coro::Task<void> UpstreamProvider::reconnectLoop() {
   }
 }
 
-folly::coro::Task<void> UpstreamProvider::close() {
-  auto self = shared_from_this();
+void UpstreamProvider::close() {
   XLOG(DBG1) << "UpstreamProvider::close";
   session_.reset();
   client_.reset(); // ~MoQClientBase() calls moqSession_->close() implicitly
   state_ = State::Disconnected;
-  co_return;
 }
 
 void UpstreamProvider::stop() {
   XLOG(DBG1) << "UpstreamProvider::stop";
+  exec_->add([self = shared_from_this()] { self->stopOnOwner(); });
+}
+
+void UpstreamProvider::stopOnOwner() {
+  if (stopped_) {
+    return;
+  }
   stopped_ = true;
 
   // Cancel any in-progress backoff sleep or connect in reconnectLoop().
@@ -169,9 +174,7 @@ void UpstreamProvider::stop() {
   onConnect_ = nullptr;
   onDisconnect_ = nullptr;
 
-  // Close the upstream session on the exec EVB thread while EVBs are still
-  // alive.
-  co_withExecutor(exec_.get(), close()).start();
+  close();
 }
 
 // --- Publisher interface ---
@@ -444,14 +447,27 @@ folly::coro::Task<void> UpstreamProvider::doConnect() {
   XLOG(DBG1) << "UpstreamProvider::doConnect completed, session=" << session_.get();
 }
 
-folly::coro::Task<void> UpstreamProvider::waitForConnected(std::chrono::milliseconds timeout) {
-  if (stopped_ || (state_ == State::Connected && session_)) {
+folly::coro::TaskWithExecutor<void>
+UpstreamProvider::waitForConnected(std::chrono::milliseconds timeout) {
+  return folly::coro::co_withExecutor(
+      folly::getKeepAliveToken(exec_.get()),
+      waitForConnectedOnOwner(shared_from_this(), timeout)
+  );
+}
+
+folly::coro::Task<void> UpstreamProvider::waitForConnectedOnOwner(
+    std::shared_ptr<UpstreamProvider> self,
+    std::chrono::milliseconds timeout
+) {
+  if (self->stopped_ || (self->state_ == State::Connected && self->session_)) {
     co_return;
   }
-  if (!connectPromise_) {
+  if (!self->connectPromise_) {
     co_return;
   }
-  co_await folly::coro::co_awaitTry(folly::coro::timeout(connectPromise_->getFuture(), timeout));
+  co_await folly::coro::co_awaitTry(
+      folly::coro::timeout(self->connectPromise_->getFuture(), timeout)
+  );
 }
 
 void UpstreamProvider::resetSession() {
