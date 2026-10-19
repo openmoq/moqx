@@ -605,7 +605,7 @@ TEST(LocalForwarderRegistryTest, OneChannelPerRegistry) {
   openmoq::moqx::removeChannelSubscriber(fwd, regA.channelId());
   openmoq::moqx::removeChannelSubscriber(fwd, regA.channelId());
   EXPECT_EQ(fwd.subscriberCount(), 1u);
-  EXPECT_NE(fwd.getSubscriber(regB.channelId()), nullptr);
+  EXPECT_NE(fwd.findSubscriber(regB.channelId()), nullptr);
 }
 
 } // namespace

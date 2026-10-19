@@ -3058,7 +3058,7 @@ void MoqxRelay::onTrackEvicted(const FullTrackName& ftn, std::shared_ptr<MoQSess
     if (!fwd) {
       return;
     }
-    auto sub = fwd->getSubscriber(sessionId);
+    auto sub = fwd->findSubscriber(sessionId);
     if (!sub || sub->isPinned()) {
       XLOG(DBG4) << "onTrackEvicted: pinned/missing subscriber, skipping";
       return;

@@ -23,7 +23,7 @@ inline void removeChannelSubscriber(
     moxygen::SessionId channelId,
     std::optional<moxygen::PublishDone> pubDone = std::nullopt
 ) {
-  if (publisher.getSubscriber(channelId)) {
+  if (publisher.findSubscriber(channelId)) {
     publisher.removeSubscriber(channelId, std::move(pubDone), "removeChannelSubscriber");
   }
 }

@@ -55,10 +55,6 @@ public:
   void refreshTimeout() noexcept override {}
   void pauseIngress() noexcept override {}
   void resumeIngress() noexcept override {}
-  folly::Expected<ResponseHandler*, proxygen::ProxygenError>
-  newPushedResponse(proxygen::PushHandler*) noexcept override {
-    return folly::makeUnexpected(proxygen::kErrorUnknown);
-  }
   const wangle::TransportInfo& getSetupTransportInfo() const noexcept override { return info_; }
   void getCurrentTransportInfo(wangle::TransportInfo*) const override {}
 

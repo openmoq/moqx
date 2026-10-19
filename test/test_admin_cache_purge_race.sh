@@ -175,7 +175,7 @@ wait_ready
 echo "Starting moqdateserver (publisher)..."
 "$DATESERVER" \
   --relay_url="https://localhost:$RELAY_PORT/moq-relay" \
-  --ns="$NAMESPACE" --insecure \
+  --ns="$NAMESPACE" --versions="$MOQT_CLIENT_VERSION" --insecure \
   >"$DATESERVER_LOG" 2>&1 &
 DATESERVER_PID=$!
 PIDS+=($DATESERVER_PID)
@@ -185,7 +185,8 @@ wait_sessions 1 "publisher connected"
 echo "Starting moqtextclient (subscriber)..."
 "$TEXTCLIENT" \
   --connect_url="https://localhost:$RELAY_PORT/moq-relay" \
-  --track_namespace="$NAMESPACE" --track_name="date" --insecure \
+  --track_namespace="$NAMESPACE" --track_name="date" \
+  --versions="$MOQT_CLIENT_VERSION" --insecure \
   >"$CLIENT_OUT" 2>&1 &
 CLIENT_PID=$!
 PIDS+=($CLIENT_PID)

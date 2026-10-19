@@ -384,6 +384,17 @@ jobs:
           echo "Response: $RESP"
           echo "$RESP" | grep -q '"service":"moqx"' || { echo "FAIL: bad /info response"; exit 1; }
           docker stop moqx-smoke && docker rm moqx-smoke
+          echo "==> Start container with the default config as a non-root uid"
+          docker run -d --name moqx-smoke-default --network host --user 1000:65534 \
+            -e MOQX_INSECURE=true "${IMAGE}"
+          for i in $(seq 1 100); do
+            if curl -sf http://127.0.0.1:8000/info >/dev/null 2>&1; then break; fi
+            sleep 0.1
+            if [ "$i" -eq 100 ]; then
+              echo "ERROR: default config did not start as 1000:65534"; docker logs moqx-smoke-default; exit 1
+            fi
+          done
+          docker stop moqx-smoke-default && docker rm moqx-smoke-default
           echo "==> Smoke test passed"
 
       # Same Dockerfile, same moxygen stage — so the client binary and the relay
