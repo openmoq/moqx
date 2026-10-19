@@ -1528,6 +1528,42 @@ TEST(ResolveConfig, RelayIDExplicitPreserved) {
   EXPECT_EQ(result.value().config.relayID, "my-relay-1");
 }
 
+// --- cluster tests ---
+
+TEST(ResolveConfig, ClusterAbsentEnablesWithRandomHopID) {
+  auto cfg = makeMinimalInsecureConfig();
+  auto r1 = resolveConfig(cfg);
+  auto r2 = resolveConfig(cfg);
+  ASSERT_TRUE(r1.hasValue());
+  ASSERT_TRUE(r2.hasValue());
+  EXPECT_TRUE(r1.value().config.cluster.enabled);
+  EXPECT_NE(r1.value().config.cluster.hopID, 0);
+  EXPECT_NE(r1.value().config.cluster.hopID, r2.value().config.cluster.hopID);
+}
+
+TEST(ResolveConfig, ClusterHopIDZeroStaysAnonymous) {
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedClusterConfig cluster;
+  cluster.hop_id = uint64_t{0};
+  cfg.cluster = cluster;
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  EXPECT_TRUE(result.value().config.cluster.enabled);
+  EXPECT_EQ(result.value().config.cluster.hopID, 0);
+}
+
+TEST(ResolveConfig, ClusterExplicitPreserved) {
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedClusterConfig cluster;
+  cluster.enabled = false;
+  cluster.hop_id = uint64_t{1001};
+  cfg.cluster = cluster;
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  EXPECT_FALSE(result.value().config.cluster.enabled);
+  EXPECT_EQ(result.value().config.cluster.hopID, 1001);
+}
+
 // --- threads tests ---
 
 TEST(ResolveConfig, ThreadsAbsentDefaultsToOne) {

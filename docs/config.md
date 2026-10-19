@@ -22,6 +22,9 @@ moqx --config <path> --strict_config    # reject unknown fields,
 relay_id: "my-relay"       # optional; auto-generated if absent
 threads: 1                 # optional; default 1 (only 1 currently supported)
 
+cluster:                   # optional; MoQ Cluster negotiation and Hop ID
+  { ... }
+
 listener_defaults:         # optional; QUIC defaults inherited by all listeners
   quic: { ... }
 
@@ -428,16 +431,42 @@ Publishers and subscribers can connect to any relay. Subscriptions are forwarded
 up toward the root as needed, and data flows back down to wherever subscribers
 are.
 
-MoQ Cluster negotiation is automatic between supporting moqx peers and requires
-no YAML setting. An advertisement from a non-negotiated session gets the
-anonymous path `[0]`. When it next crosses a negotiated relay link, the outgoing
-path is `[0, local-relay]`. A non-negotiated subscriber receives NAMESPACE
-without HOP_PATH or ROUTE_COST.
+MoQ Cluster negotiation is automatic between supporting moqx peers. The optional
+[`cluster`](#cluster) block can disable it or set the Hop ID. An advertisement
+from a non-negotiated session gets the anonymous path `[0]`. When it next
+crosses a negotiated relay link, the outgoing path is `[0, local-relay]`. A
+non-negotiated subscriber receives NAMESPACE without HOP_PATH or ROUTE_COST.
 
 Loop prevention is only end-to-end across links that negotiated MoQ Cluster.
 Keep any graph segment containing a relay without MoQ Cluster acyclic, because
 that relay cannot preserve the path needed to recognize a returning
 advertisement.
+
+### Cluster
+
+```yaml
+cluster:
+  enabled: true   # optional; default true
+  hop_id: 1001    # optional; random if absent, 0 is anonymous
+```
+
+With `enabled: false`, listeners and upstream connections do not declare
+`HOP_ID`, so no link negotiates MoQ Cluster. This lets the relay peer with a
+relay or relay network that does not support MoQ Cluster, or that implements an
+incompatible version of it. A negotiated link closes the session on a malformed
+`HOP_PATH`, so an incompatible peer otherwise cannot stay connected.
+
+Disabling MoQ Cluster leaves loop prevention to the operator:
+
+- Neither this relay nor its peers can detect an advertisement that returns
+  through it. Keep the part of the graph that contains this relay a tree. Relays
+  peer in both directions, so two paths between any pair of relays form a
+  cycle.
+- Peers see this relay's advertisements as anonymous, without its path or
+  ROUTE_COST, so they cannot rank routes through it.
+
+The Hop ID applies to every service. A relay with Hop ID 0 withholds its identity and cannot detect loops
+through itself. See [relay-hops.md](relay-hops.md).
 
 ### Limitations
 

@@ -66,12 +66,15 @@ public:
       const std::string& relayID,
       bool useRelayThread = true,
       bool useLocalForwarders = false,
-      uint64_t relayHopID = 0
+      config::ClusterConfig cluster = {}
   );
 
   void setStatsRegistry(std::shared_ptr<stats::StatsRegistry> registry);
 
-  uint64_t getRelayHopID() const { return relayHopID_; }
+  // The HOP_ID to declare in SETUP. Unset when MoQ Cluster is disabled.
+  std::optional<uint64_t> getRelayHopID() const {
+    return cluster_.enabled ? std::optional<uint64_t>(cluster_.hopID) : std::nullopt;
+  }
 
   // Must be called once, after all MoqxRelayServer instances have been started,
   // so that worker EVBs are available. workerEvb is used for upstream connections.
@@ -159,7 +162,7 @@ private:
   folly::F14FastMap<std::string, ServiceEntry> services_;
   ServiceMatcher serviceMatcher_;
   std::string relayID_;
-  uint64_t relayHopID_;
+  config::ClusterConfig cluster_;
   std::shared_ptr<stats::StatsRegistry> statsRegistry_;
   // One collector per io thread; tlStatsCollector_ binds each to its own thread.
   std::vector<std::shared_ptr<stats::MoQStatsCollector>> statsCollectors_;
