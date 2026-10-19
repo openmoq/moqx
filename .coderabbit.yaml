@@ -10,6 +10,8 @@ language: en-US
 
 reviews:
   profile: chill
+  # Request changes on actionable findings; approve once they are resolved.
+  request_changes_workflow: true
 
   # design/ is a scratchpad of superseded design notes. Excluding it here keeps
   # it out of CodeRabbit's sparse checkout, so stale material never reaches the
