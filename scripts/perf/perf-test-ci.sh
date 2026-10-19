@@ -289,7 +289,7 @@ ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "
       --threads    ${IO_THREADS} \
       --quic-stack ${QUIC_STACK} \
       --cc         ${CC} \
-      --relay-thread --no-local-forwarders \
+      --relay-thread --local-forwarders -j auto \
       > ${REMOTE_DIR}/relay.log 2>&1 &
   echo \$!
 " > /tmp/relay_pid.txt
