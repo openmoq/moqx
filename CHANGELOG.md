@@ -16,6 +16,7 @@ How to add an entry: see [CONTRIBUTING.md](/CONTRIBUTING.md#changelog).
 ## Changed
 
 - **Breaking:** an [`upstream`](/docs/config.md#upstreams) connection uses MoQT draft 18, so the upstream relay's listener must include 18 in `moqt_versions`. Peering also carries tracks that publishers push with PUBLISH. ([#TODO:REPLACEME](https://github.com/openmoq/moqx/pull/TODO:REPLACEME))
+- **Breaking:** relay links implement [MoQ Cluster](/docs/relay-hops.md) (draft-lcurley-moq-cluster-01) in place of relay hops, so namespace loop protection across a cycle requires every relay in it to run this version. Advertisements also carry `ROUTE_COST`. ([#TODO:REPLACEME](https://github.com/openmoq/moqx/pull/TODO:REPLACEME))
 
 ## Fixed
 

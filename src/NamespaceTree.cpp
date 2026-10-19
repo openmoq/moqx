@@ -100,7 +100,8 @@ NamespaceTree::SetPublisherResult NamespaceTree::setPublisher(
     std::shared_ptr<Subscriber::PublishNamespaceCallback> callback,
     std::string peerID,
     RequestID requestID,
-    std::vector<uint64_t> relayHopPath
+    std::vector<uint64_t> relayHopPath,
+    uint64_t routeCost
 ) {
   SetPublisherResult result;
   auto node = findNode(ns, /*createMissingNodes=*/true, &result.subscribers);
@@ -124,6 +125,7 @@ NamespaceTree::SetPublisherResult NamespaceTree::setPublisher(
   node->publisherSession_ = std::move(session);
   node->publisherPeerID_ = std::move(peerID);
   node->relayHopPath_ = std::move(relayHopPath);
+  node->routeCost_ = routeCost;
   node->publishNamespaceCallback_ = std::move(callback);
   node->trackNamespace = ns;
   node->setPublishNamespaceOk({.requestID = requestID, .requestSpecificParams = {}});
@@ -156,6 +158,7 @@ NamespaceTree::unpublishNamespace(
   node->publisherPeerID_.clear();
   result.relayHopPath = std::move(node->relayHopPath_);
   node->relayHopPath_.clear();
+  node->routeCost_ = 0;
   node->publishNamespaceCallback_.reset();
 
   return result;

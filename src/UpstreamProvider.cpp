@@ -102,12 +102,13 @@ UpstreamProvider::UpstreamProvider(
     OnConnectHook onConnect,
     OnDisconnectHook onDisconnect,
     std::chrono::milliseconds connectTimeout,
-    std::chrono::milliseconds idleTimeout
+    std::chrono::milliseconds idleTimeout,
+    std::optional<uint64_t> hopID
 )
     : publishHandler_(std::move(publishHandler)), subscribeHandler_(std::move(subscribeHandler)),
       url_(std::move(url)), exec_(std::move(exec)), verifier_(std::move(verifier)),
       onConnect_(std::move(onConnect)), onDisconnect_(std::move(onDisconnect)),
-      connectTimeout_(connectTimeout), idleTimeout_(idleTimeout) {
+      connectTimeout_(connectTimeout), idleTimeout_(idleTimeout), hopID_(hopID) {
   XLOG(DBG1) << "UpstreamProvider created, url=" << url_.getUrl();
 }
 
@@ -428,11 +429,10 @@ folly::coro::Task<void> UpstreamProvider::doConnect() {
       MoQRelaySession::createRelaySessionFactory(),
       verifier_
   );
-  // Advertise on every upstream session. The extension stays inactive unless
-  // the peer also advertises it.
-  client_->addSetupParameter(
-      SetupParameter(folly::to_underlying(SetupKey::RELAY_HOPS), std::string{})
-  );
+  // The extension stays inactive unless the peer also declares a Hop ID.
+  if (hopID_) {
+    client_->addSetupParameter(SetupParameter(folly::to_underlying(SetupKey::HOP_ID), *hopID_));
+  }
 
   quic::TransportSettings ts;
   ts.orderedReadCallbacks = true;

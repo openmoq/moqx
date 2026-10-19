@@ -36,13 +36,12 @@ operational relay identity; it does not set or expose the protocol Hop ID.
 
 On each peer session:
 
-- moqx advertises the zero-length `RELAY_HOPS` setup option;
-- the extension becomes active only when both peers advertise support;
-- negotiated advertisements carry `HOP_PATH`;
+- moqx declares its Hop ID in the `HOP_ID` setup option;
+- the extension becomes active only when both peers declare a Hop ID;
+- negotiated advertisements carry `HOP_PATH` and `ROUTE_COST`;
 - moqx appends its Hop ID before forwarding an advertisement;
 - moqx drops an advertisement whose incoming path already contains its Hop ID;
-- the wildcard upstream namespace subscription carries `EXCLUDE_HOP` for the
-  local Hop ID.
+- moqx does not advertise a path to a peer whose Hop ID is on that path.
 
 Negotiation is session-local. Support on one peer connection does not imply
 support on any other connection.
@@ -97,7 +96,7 @@ connections must include 18 in its listener `moqt_versions`.
 
 All links in the cycle must negotiate relay hops. If any relay or link does not
 preserve `HOP_PATH`, loop detection is no longer end-to-end. Keep every graph
-segment containing a legacy or non-supporting relay acyclic.
+segment containing a relay without MoQ Cluster acyclic.
 
 ## Rolling Upgrade Procedure
 
@@ -113,9 +112,9 @@ Do not add a cycle while unsupported relays remain in that cycle.
 6. Verify that namespace state reaches every relay and then remains stable.
 
 If an older relay must remain in service, keep the portion of the graph that
-crosses it acyclic. A supporting moqx relay assigns a stable random stand-in
-origin ID to advertisements received from a non-negotiated source session, but
-the legacy hop cannot carry path state through a cycle.
+crosses it acyclic. A supporting moqx relay gives advertisements from a
+non-negotiated source session the anonymous path `[0]`, but the older relay
+cannot carry path state through a cycle.
 
 ## Verify the Deployment
 
@@ -138,9 +137,8 @@ ctest --test-dir build \
 ```
 
 A returning advertisement is dropped before it is registered or forwarded.
-Malformed non-empty paths close the offending session with
-`PROTOCOL_VIOLATION`; a negotiated advertisement missing `HOP_PATH` is dropped
-without closing the session.
+A negotiated advertisement with a malformed or missing `HOP_PATH` closes the
+offending session with `PROTOCOL_VIOLATION`.
 
 ## Current Scope and Limitations
 
