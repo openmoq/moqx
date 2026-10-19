@@ -425,22 +425,12 @@ folly::coro::Task<void> MoqxRelay::onUpstreamConnectImpl(std::shared_ptr<MoQSess
 }
 
 void MoqxRelay::onSessionEnd(std::shared_ptr<MoQSession> session) {
-  // Raw key plus an owner compare: neither takes a strong ref, so the session is never
-  // released on relayExec_. lock() here would reintroduce that bug.
-  runOnExec(
-      relayExec_,
-      [self = weak_from_this(), key = session.get(), weak = std::weak_ptr<MoQSession>(session)]() {
-        auto relay = self.lock();
-        if (!relay) {
-          return;
-        }
-        auto it = relay->legacyPublisherHopIDs_.find(key);
-        if (it != relay->legacyPublisherHopIDs_.end() && !it->second.session.owner_before(weak) &&
-            !weak.owner_before(it->second.session)) {
-          relay->legacyPublisherHopIDs_.erase(it);
-        }
-      }
-  );
+  // Capture only the ID: a strong ref would release the session on relayExec_.
+  runOnExec(relayExec_, [self = weak_from_this(), id = session->sessionId()]() {
+    if (auto relay = self.lock()) {
+      relay->legacyPublisherHopIDs_.erase(id);
+    }
+  });
 }
 
 void MoqxRelay::onUpstreamDisconnect() {
@@ -536,20 +526,11 @@ std::optional<std::vector<uint64_t>> MoqxRelay::ingestRelayHopPath(
 }
 
 uint64_t MoqxRelay::getOrCreateLegacyPublisherHopID(const std::shared_ptr<MoQSession>& session) {
-  const auto* key = session.get();
-  auto it = legacyPublisherHopIDs_.find(key);
-  if (it != legacyPublisherHopIDs_.end()) {
-    auto existing = it->second.session.lock();
-    if (existing == session) {
-      return it->second.hopID;
-    }
-    // Stale only if onSessionEnd was missed and the address was recycled.
-    legacyPublisherHopIDs_.erase(it);
+  auto [it, inserted] = legacyPublisherHopIDs_.try_emplace(session->sessionId(), 0);
+  if (inserted) {
+    it->second = generateRelayHopID();
   }
-
-  auto hopID = generateRelayHopID();
-  legacyPublisherHopIDs_.emplace(key, LegacyPublisherHopID{session, hopID});
-  return hopID;
+  return it->second;
 }
 
 folly::coro::Task<Subscriber::PublishNamespaceResult> MoqxRelay::publishNamespace(
@@ -1774,8 +1755,14 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
         }
       }
       peerSubNsHandles_.emplace(
-          session.get(),
-          PeerInfo{std::move(recipResult.value()), std::move(recipTracks), std::move(*peerID)}
+          session->sessionId(),
+          PeerInfo{
+              std::move(recipResult.value()),
+              std::move(recipTracks),
+              std::move(*peerID),
+              session->getPeerAddress().describe(),
+              std::string(session->getAuthority())
+          }
       );
     }
     // Fall through: register the peer as a normal subNs subscriber so it
@@ -1940,7 +1927,7 @@ void MoqxRelay::unsubscribeNamespace(
 ) {
   XLOG(DBG1) << __func__ << " nsp=" << trackNamespacePrefix;
   // Clean up the reciprocal peer subNs handle for this session if present.
-  peerSubNsHandles_.erase(session.get());
+  peerSubNsHandles_.erase(session->sessionId());
   auto result = namespaceTree_.removeNamespaceSubscriber(trackNamespacePrefix, session);
   if (result.hasError() && result.error() == NamespaceTree::Error::NotSubscribed) {
     XLOG(DBG1) << "Namespace prefix was not subscribed by this session";
@@ -3137,8 +3124,8 @@ MoqxRelay::matchTracks(const TrackNamespace& nsPrefix, const std::string* trackN
 
 void MoqxRelay::dumpState(RelayStateVisitor& visitor) const {
   visitor.onPeersBegin();
-  for (const auto& [sess, peer] : peerSubNsHandles_) {
-    visitor.onPeer(sess->getPeerAddress().describe(), sess->getAuthority(), peer.relayID);
+  for (const auto& [id, peer] : peerSubNsHandles_) {
+    visitor.onPeer(peer.address, peer.authority, peer.relayID);
   }
   visitor.onPeersEnd();
   if (!visitor.alive()) {

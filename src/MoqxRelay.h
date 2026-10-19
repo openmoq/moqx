@@ -487,17 +487,15 @@ private:
     std::shared_ptr<moxygen::Publisher::SubscribeNamespaceHandle> handle;
     std::shared_ptr<moxygen::Publisher::SubscribeTracksHandle> tracksHandle; // draft 18+
     std::string relayID; // from peer auth token; empty if not provided
+    std::string address;
+    std::string authority;
   };
   // Reciprocal peer subNs handles: one per peer relay session that has
   // connected to us. Kept alive so the subscription is not immediately
-  // cancelled. Keyed by raw session pointer (valid for session lifetime).
-  folly::F14FastMap<moxygen::MoQSession*, PeerInfo> peerSubNsHandles_;
+  // cancelled.
+  folly::F14FastMap<moxygen::SessionId, PeerInfo, moxygen::SessionId::hash> peerSubNsHandles_;
 
-  struct LegacyPublisherHopID {
-    std::weak_ptr<moxygen::MoQSession> session;
-    uint64_t hopID;
-  };
-  folly::F14FastMap<const moxygen::MoQSession*, LegacyPublisherHopID> legacyPublisherHopIDs_;
+  folly::F14FastMap<moxygen::SessionId, uint64_t, moxygen::SessionId::hash> legacyPublisherHopIDs_;
   SubscriptionRegistry registry_;
 
   std::optional<std::vector<uint64_t>> ingestRelayHopPath(
