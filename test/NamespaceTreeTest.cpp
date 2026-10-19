@@ -345,4 +345,19 @@ TEST_F(NamespaceTreeTest, PublishKeepsNodeAliveAfterNamespaceDone) {
   EXPECT_EQ(tree_.findNode(nsAB), nullptr); // fully pruned
 }
 
+// Test: Replacing a namespace's publisher leaves its ancestors prunable
+TEST_F(NamespaceTreeTest, ReplacedPublisherKeepsAncestorsPrunable) {
+  auto pub1 = makeSession();
+  auto pub2 = makeSession();
+
+  TrackNamespace nsAB{{"test", "A", "B"}};
+  TrackNamespace nsA{{"test", "A"}};
+  publish(nsAB, pub1);
+  publish(nsAB, pub2);
+  unpublish(nsAB, pub2);
+
+  EXPECT_EQ(tree_.findNode(nsAB), nullptr);
+  EXPECT_EQ(tree_.findNode(nsA), nullptr);
+}
+
 } // namespace openmoq::moqx::test

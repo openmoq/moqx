@@ -105,6 +105,11 @@ NamespaceTree::SetPublisherResult NamespaceTree::setPublisher(
   SetPublisherResult result;
   auto node = findNode(ns, /*createMissingNodes=*/true, &result.subscribers);
 
+  for (const auto& [sess, info] : node->subscribers_) {
+    result.subscribers.emplace_back(sess, info);
+  }
+
+  NodeMutationGuard guard(*this, *node, ns);
   if (node->publisherSession_) {
     result.replacedSession = node->publisherSession_;
     if (node->publishNamespaceCallback_) {
@@ -116,22 +121,14 @@ NamespaceTree::SetPublisherResult NamespaceTree::setPublisher(
     }
     node->publisherSession_.reset();
   }
+  node->publisherSession_ = std::move(session);
+  node->publisherPeerID_ = std::move(peerID);
+  node->relayHopPath_ = std::move(relayHopPath);
+  node->publishNamespaceCallback_ = std::move(callback);
+  node->trackNamespace = ns;
+  node->setPublishNamespaceOk({.requestID = requestID, .requestSpecificParams = {}});
 
-  for (const auto& [sess, info] : node->subscribers_) {
-    result.subscribers.emplace_back(sess, info);
-  }
-
-  {
-    NodeMutationGuard guard(*this, *node, ns);
-    node->publisherSession_ = std::move(session);
-    node->publisherPeerID_ = std::move(peerID);
-    node->relayHopPath_ = std::move(relayHopPath);
-    node->publishNamespaceCallback_ = std::move(callback);
-    node->trackNamespace = ns;
-    node->setPublishNamespaceOk({.requestID = requestID, .requestSpecificParams = {}});
-  }
-
-  result.node = std::move(node);
+  result.node = node;
   return result;
 }
 
