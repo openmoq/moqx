@@ -81,8 +81,10 @@ folly::coro::Task<Publisher::SubscribeTracksResult> AuthPublisherFilter::subscri
     std::shared_ptr<PublishBlockedHandle> publishBlockedHandle
 ) {
   // SUBSCRIBE_TRACKS is namespace-level, like SUBSCRIBE_NAMESPACE; gate on the
-  // prefix. Unlike peering, which uses SUBSCRIBE_NAMESPACE, there is no peer
-  // bypass for SUBSCRIBE_TRACKS.
+  // prefix. Peer relays skip grant checks, as for SUBSCRIBE_NAMESPACE.
+  if (peeringEnabled_ && getPeerRelayID(subTracks.params).has_value()) {
+    return downstream_->subscribeTracks(std::move(subTracks), std::move(publishBlockedHandle));
+  }
   auto ok = auth::authorize(
       *verifier_,
       auth::Action::SubscribeNamespace,

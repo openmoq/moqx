@@ -13,6 +13,10 @@ How to add an entry: see [CONTRIBUTING.md](/CONTRIBUTING.md#changelog).
 
 - Admin API: [`/qlog/capture`](/docs/logging.md#on-demand-capture) qlogs the next N new mvfst connections on a running relay. ([#779](https://github.com/openmoq/moqx/pull/779))
 
+## Changed
+
+- **Breaking:** an [`upstream`](/docs/config.md#upstreams) connection uses MoQT draft 18, so the upstream relay's listener must include 18 in `moqt_versions`. Peering also carries tracks that publishers push with PUBLISH. ([#833](https://github.com/openmoq/moqx/pull/833))
+
 ## Fixed
 
 - The relay could crash when a new PUBLISH replaced a track that a TRACK_FILTER subscription was ranking. ([#823](https://github.com/openmoq/moqx/pull/823))

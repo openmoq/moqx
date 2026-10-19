@@ -374,6 +374,9 @@ track becomes available to subscribers on any relay in the connected network.
 moqx maintains the upstream connection at all times, reconnecting automatically
 with exponential backoff up to 60 seconds on failure.
 
+The upstream connection uses MoQT draft 18, so the upstream relay's listener must
+include 18 in [`moqt_versions`](#listeners).
+
 ```yaml
 services:
   live:

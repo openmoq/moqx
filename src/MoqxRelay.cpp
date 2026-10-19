@@ -410,6 +410,18 @@ folly::coro::Task<void> MoqxRelay::onUpstreamConnectImpl(std::shared_ptr<MoQSess
   } else {
     XLOG(ERR) << "MoqxRelay: upstream peer subNs failed: " << result.error().reasonPhrase;
   }
+  if (getDraftMajorVersion(*session->getNegotiatedVersion()) < 18) {
+    co_return;
+  }
+  auto tracks = co_await folly::coro::co_withExecutor(
+      folly::getKeepAliveToken(session->getExecutor()),
+      session->subscribeTracks(makePeerSubTracks(relayID_), nullptr)
+  );
+  if (tracks.hasValue()) {
+    upstreamTracksHandle_ = std::move(tracks.value());
+  } else {
+    XLOG(ERR) << "MoqxRelay: upstream peer subTracks failed: " << tracks.error().reasonPhrase;
+  }
 }
 
 void MoqxRelay::onSessionEnd(std::shared_ptr<MoQSession> session) {
@@ -433,6 +445,7 @@ void MoqxRelay::onSessionEnd(std::shared_ptr<MoQSession> session) {
 
 void MoqxRelay::onUpstreamDisconnect() {
   upstreamSubNsHandle_.reset();
+  upstreamTracksHandle_.reset();
 }
 
 std::shared_ptr<Subscriber::PublishNamespaceHandle> MoqxRelay::doPublishNamespace(
@@ -1749,9 +1762,20 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
     if (recipResult.hasError()) {
       XLOG(ERR) << "Reciprocal peer subNs failed: " << recipResult.error().reasonPhrase;
     } else {
+      std::shared_ptr<Publisher::SubscribeTracksHandle> recipTracks;
+      if (getDraftMajorVersion(*session->getNegotiatedVersion()) >= 18) {
+        auto tracks = co_await maybeWrapPublisher(relayExec_, session)
+                          ->subscribeTracks(makePeerSubTracks(relayID_), nullptr);
+        co_await folly::coro::co_safe_point;
+        if (tracks.hasValue()) {
+          recipTracks = std::move(tracks.value());
+        } else {
+          XLOG(ERR) << "Reciprocal peer subTracks failed: " << tracks.error().reasonPhrase;
+        }
+      }
       peerSubNsHandles_.emplace(
           session.get(),
-          PeerInfo{std::move(recipResult.value()), std::move(*peerID)}
+          PeerInfo{std::move(recipResult.value()), std::move(recipTracks), std::move(*peerID)}
       );
     }
     // Fall through: register the peer as a normal subNs subscriber so it
@@ -1838,7 +1862,8 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
             if (overLimit()) {
               return;
             }
-            if (publishSession == session) {
+            if (publishSession == session ||
+                (!incomingPeerID.empty() && isPeerSession(publishSession, incomingPeerID))) {
               return;
             }
             if (countTracks) {
@@ -1910,6 +1935,12 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
   );
 }
 
+bool MoqxRelay::isPeerSession(const std::shared_ptr<MoQSession>& session, const std::string& peerID)
+    const {
+  auto it = peerSubNsHandles_.find(session.get());
+  return it != peerSubNsHandles_.end() && it->second.relayID == peerID;
+}
+
 void MoqxRelay::unsubscribeNamespace(
     const TrackNamespace& trackNamespacePrefix,
     std::shared_ptr<MoQSession> session
@@ -1954,6 +1985,10 @@ folly::coro::Task<Publisher::SubscribeTracksResult> MoqxRelay::subscribeTracks(
     ForwarderRef forwarder;
   };
   std::vector<TrackMatch> trackMatches;
+  // Peer relays are exempt, as for SUBSCRIBE_NAMESPACE.
+  const auto peerID = relayID_.empty() ? std::nullopt : getPeerRelayID(subTracks.params);
+  const bool enforceLimit = !peerID;
+  auto overLimit = [&] { return enforceLimit && trackMatches.size() > kMaxNamespaceMatches; };
 
   // Walk the existing publish tree and emit PUBLISH for each matching
   // already-published track (backfill for new subscriber).
@@ -1964,15 +1999,15 @@ folly::coro::Task<Publisher::SubscribeTracksResult> MoqxRelay::subscribeTracks(
         subTracks.trackNamespacePrefix,
         pubNode,
         [&](const TrackNamespace& prefix, std::shared_ptr<NamespaceTree::NamespaceNode> node) {
-          if (trackMatches.size() > kMaxNamespaceMatches) {
+          if (overLimit()) {
             return;
           }
           node->forEachPublish([&](const std::string& trackName,
                                    const std::shared_ptr<MoQSession>& publishSession) {
-            if (trackMatches.size() > kMaxNamespaceMatches) {
+            if (overLimit()) {
               return;
             }
-            if (publishSession == session) {
+            if (publishSession == session || (peerID && isPeerSession(publishSession, *peerID))) {
               // Don't echo the subscriber's own published tracks.
               return;
             }
@@ -1988,7 +2023,7 @@ folly::coro::Task<Publisher::SubscribeTracksResult> MoqxRelay::subscribeTracks(
     );
   }
 
-  if (trackMatches.size() > kMaxNamespaceMatches) {
+  if (overLimit()) {
     co_return folly::makeUnexpected(SubscribeTracksError{
         subTracks.requestID,
         SubscribeTracksErrorCode::NAMESPACE_TOO_LARGE,

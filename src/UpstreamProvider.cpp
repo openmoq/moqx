@@ -18,9 +18,9 @@ namespace openmoq::moqx {
 // Must fit in a QUIC variable-length integer (top 2 bits must be 00, i.e. < 2^62).
 static constexpr uint64_t kRelayAuthTokenType = 0x1B2C'3D4E'5F6A'7B8CULL;
 
-std::optional<std::string> getPeerRelayID(const SubscribeNamespace& subNs) {
+std::optional<std::string> getPeerRelayID(const TrackRequestParameters& params) {
   const uint64_t authKey = static_cast<uint64_t>(TrackRequestParamKey::AUTHORIZATION_TOKEN);
-  for (const auto& param : subNs.params) {
+  for (const auto& param : params) {
     if (param.key == authKey && param.asAuthToken.tokenType == kRelayAuthTokenType) {
       return param.asAuthToken.tokenValue;
     }
@@ -28,22 +28,40 @@ std::optional<std::string> getPeerRelayID(const SubscribeNamespace& subNs) {
   return std::nullopt;
 }
 
+std::optional<std::string> getPeerRelayID(const SubscribeNamespace& subNs) {
+  return getPeerRelayID(subNs.params);
+}
+
+namespace {
+void addRelayToken(TrackRequestParameters& params, const std::string& relayID) {
+  params.insertParam(Parameter(
+      static_cast<uint64_t>(TrackRequestParamKey::AUTHORIZATION_TOKEN),
+      AuthToken{
+          .tokenType = kRelayAuthTokenType,
+          .tokenValue = relayID,
+          .alias = AuthToken::DontRegister,
+      }
+  ));
+}
+} // namespace
+
 SubscribeNamespace makePeerSubNs(std::optional<std::string> relayID) {
   SubscribeNamespace subNs;
   subNs.trackNamespacePrefix = {};
   subNs.options = SubscribeNamespaceOptions::BOTH;
   subNs.forward = false;
   if (relayID) {
-    subNs.params.insertParam(Parameter(
-        static_cast<uint64_t>(TrackRequestParamKey::AUTHORIZATION_TOKEN),
-        AuthToken{
-            .tokenType = kRelayAuthTokenType,
-            .tokenValue = *relayID,
-            .alias = AuthToken::DontRegister,
-        }
-    ));
+    addRelayToken(subNs.params, *relayID);
   }
   return subNs;
+}
+
+SubscribeTracks makePeerSubTracks(const std::string& relayID) {
+  SubscribeTracks subTracks;
+  subTracks.trackNamespacePrefix = {};
+  subTracks.forward = false;
+  addRelayToken(subTracks.params, relayID);
+  return subTracks;
 }
 
 namespace {
@@ -54,23 +72,6 @@ namespace {
 class PendingTrackConsumer : public TrackConsumerFilter {
 public:
   PendingTrackConsumer() : TrackConsumerFilter(nullptr) {}
-};
-
-// Presents an upstream SUBSCRIBE_NAMESPACE(options=PUBLISH) handle as a
-// SubscribeTracksHandle, since subscribeTracks() maps onto subscribeNamespace().
-class UpstreamSubscribeTracksHandle : public Publisher::SubscribeTracksHandle {
-public:
-  explicit UpstreamSubscribeTracksHandle(std::shared_ptr<Publisher::SubscribeNamespaceHandle> inner)
-      : Publisher::SubscribeTracksHandle(inner->subscribeNamespaceOk()), inner_(std::move(inner)) {}
-
-  void unsubscribeTracks() override { inner_->unsubscribeNamespace(); }
-
-  folly::coro::Task<RequestUpdateResult> requestUpdate(RequestUpdate update) override {
-    return inner_->requestUpdate(std::move(update));
-  }
-
-private:
-  std::shared_ptr<Publisher::SubscribeNamespaceHandle> inner_;
 };
 
 } // namespace
@@ -243,23 +244,11 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> UpstreamProvider::coSubsc
 
 folly::coro::Task<Publisher::SubscribeTracksResult> UpstreamProvider::subscribeTracks(
     SubscribeTracks subTracks,
-    std::shared_ptr<PublishBlockedHandle> /*publishBlockedHandle*/
+    std::shared_ptr<PublishBlockedHandle> publishBlockedHandle
 ) {
   XLOG(DBG1) << "UpstreamProvider::subscribeTracks nsp=" << subTracks.trackNamespacePrefix;
-  // SUBSCRIBE_TRACKS == SUBSCRIBE_NAMESPACE with options=PUBLISH: both request
-  // PUBLISH for matching tracks under a prefix and want no NAMESPACE messages,
-  // so there is no namespace handle to forward.
-  SubscribeNamespace subNs;
-  subNs.requestID = subTracks.requestID;
-  subNs.trackNamespacePrefix = subTracks.trackNamespacePrefix;
-  subNs.forward = subTracks.forward;
-  subNs.params = std::move(subTracks.params);
-  subNs.options = SubscribeNamespaceOptions::PUBLISH;
-  auto result = co_await subscribeNamespace(std::move(subNs), /*handle=*/nullptr);
-  if (result.hasError()) {
-    co_return folly::makeUnexpected(std::move(result.error()));
-  }
-  co_return std::make_shared<UpstreamSubscribeTracksHandle>(std::move(result.value()));
+  auto sess = co_await getOrConnectSession();
+  co_return co_await sess->subscribeTracks(std::move(subTracks), std::move(publishBlockedHandle));
 }
 
 // --- Subscriber interface ---
@@ -423,15 +412,14 @@ folly::coro::Task<void> UpstreamProvider::doConnect() {
   ts.datagramConfig.writeBufSize = 1000;
   ts.datagramConfig.sendDropOldDataFirst = true;
 
-  // Relay chaining requires draft 16+. Only offer standard draft-16 ALPN
-  // ("moqt-16") so we fail fast if the upstream doesn't support it.
+  // Relay links use draft 18 only.
   co_await client_->setupMoQSession(
       connectTimeout_,
       idleTimeout_,
       publishHandler_,
       subscribeHandler_,
       ts,
-      getMoqtProtocols("16", /*useStandard=*/true)
+      getMoqtProtocols("18", /*useStandard=*/true)
   );
 
   session_ = client_->moqSession_;

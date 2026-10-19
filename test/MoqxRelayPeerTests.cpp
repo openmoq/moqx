@@ -187,55 +187,99 @@ private:
 // Unlike PeerNamespaceNotEchoedBackOnReconnect (which injects the namespace
 // directly via makeNamespaceBridgeHandle), this test goes through the full
 // publisherInterface()->subscribeNamespace() production path so the bug in the call-site is
-// exercised.
+// exercised. It also checks that a track the peer pushed on session1 is not
+// PUBLISHed back to session2.
 TEST_P(MoQRelayTest, PeerNamespaceNotEchoedBack_FullProductionPath) {
   resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "sg-sin-2-1");
   relay_->setAllowedNamespacePrefix(kAllowedPrefix);
+  const FullTrackName peerTrack{kTestNamespace, "peer"};
+  const FullTrackName localTrack{kTestNamespace, "local"};
 
-  // Step 1: jp-osa-1 connects as session1.  It will announce kTestNamespace
-  // to us via the reciprocal bridge handle when we subscribe to it.
-  // bridgeHandle1 is held here (not inside the session) to model the production
-  // lifetime: the handle lives in the coroutine frame, separate from the session.
-  std::shared_ptr<Publisher::NamespacePublishHandle> bridgeHandle1;
-  auto session1 = std::make_shared<PeerAnnounceSession>(exec_, kTestNamespace, bridgeHandle1);
-  ON_CALL(*session1, getNegotiatedVersion())
-      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
-  getOrCreateMockState(session1);
+  for (auto version : {kVersionDraft16, kVersionDraft18}) {
+    SCOPED_TRACE(version);
+    const bool d18 = version == kVersionDraft18;
 
-  auto nsHandle1 = std::make_shared<NiceMock<MockNamespacePublishHandle>>();
-  withSessionContext(session1, [&]() {
-    auto task = publisherInterface()->subscribeNamespace(makePeerSubNs("jp-osa-1"), nsHandle1);
-    folly::coro::blockingWait(std::move(task), exec_.get());
-  });
+    // Step 1: jp-osa-1 connects as session1.  It will announce kTestNamespace
+    // to us via the reciprocal bridge handle when we subscribe to it.
+    // bridgeHandle1 is held here (not inside the session) to model the production
+    // lifetime: the handle lives in the coroutine frame, separate from the session.
+    std::shared_ptr<Publisher::NamespacePublishHandle> bridgeHandle1;
+    auto session1 = std::make_shared<PeerAnnounceSession>(exec_, kTestNamespace, bridgeHandle1);
+    ON_CALL(*session1, getNegotiatedVersion())
+        .WillByDefault(Return(std::optional<uint64_t>(version)));
+    getOrCreateMockState(session1);
 
-  // kTestNamespace should now be in the tree with sourcePeerID="jp-osa-1".
-  verifyOnRelayExec([&] {
-    EXPECT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 1u);
-  });
+    auto nsHandle1 = std::make_shared<NiceMock<MockNamespacePublishHandle>>();
+    withSessionContext(session1, [&]() {
+      auto task = publisherInterface()->subscribeNamespace(makePeerSubNs("jp-osa-1"), nsHandle1);
+      auto res = folly::coro::blockingWait(std::move(task), exec_.get());
+      ASSERT_TRUE(res.hasValue());
+      getOrCreateMockState(session1)->subscribeNamespaceHandles.push_back(*res);
+    });
 
-  // Step 2: jp-osa-1 reconnects as session2 and re-subscribes.
-  // kTestNamespace must NOT be echoed back.
-  auto session2 = createMockSession();
-  ON_CALL(*session2, getNegotiatedVersion())
-      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
+    // kTestNamespace should now be in the tree with sourcePeerID="jp-osa-1".
+    verifyOnRelayExec([&] {
+      EXPECT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 1u);
+    });
 
-  auto nsHandle2 = std::make_shared<NiceMock<MockNamespacePublishHandle>>();
-  bool echoedBack = false;
-  ON_CALL(*nsHandle2, namespaceMsg(_)).WillByDefault([&echoedBack](const TrackNamespace&) {
-    echoedBack = true;
-  });
+    doPublish(session1, peerTrack);
+    auto local = createMockSession();
+    doPublish(local, localTrack);
 
-  withSessionContext(session2, [&]() {
-    auto task = publisherInterface()->subscribeNamespace(makePeerSubNs("jp-osa-1"), nsHandle2);
-    folly::coro::blockingWait(std::move(task), exec_.get());
-  });
+    // Step 2: jp-osa-1 reconnects as session2 and re-subscribes.
+    // kTestNamespace must NOT be echoed back.
+    auto session2 = createMockSession();
+    ON_CALL(*session2, getNegotiatedVersion())
+        .WillByDefault(Return(std::optional<uint64_t>(version)));
 
-  EXPECT_FALSE(echoedBack) << "Relay echoed peer namespace back on reconnect (production path)";
+    auto nsHandle2 = std::make_shared<NiceMock<MockNamespacePublishHandle>>();
+    bool echoedBack = false;
+    ON_CALL(*nsHandle2, namespaceMsg(_)).WillByDefault([&echoedBack](const TrackNamespace&) {
+      echoedBack = true;
+    });
 
-  // Simulate session1's coroutine frame being destroyed before session cleanup.
-  bridgeHandle1.reset();
-  removeSession(session1);
-  removeSession(session2);
+    setupPublishSucceeds(session2);
+    EXPECT_CALL(*session2, publish(Field(&PublishRequest::fullTrackName, peerTrack), _)).Times(0);
+    EXPECT_CALL(*session2, publish(Field(&PublishRequest::fullTrackName, localTrack), _)).Times(1);
+
+    auto subNs2 = makePeerSubNs("jp-osa-1");
+    if (d18) {
+      // The draft 18 parser forces NAMESPACE, so only SUBSCRIBE_TRACKS sends PUBLISH.
+      subNs2.options = SubscribeNamespaceOptions::NAMESPACE;
+    }
+    withSessionContext(session2, [&]() {
+      auto task = publisherInterface()->subscribeNamespace(std::move(subNs2), nsHandle2);
+      auto res = folly::coro::blockingWait(std::move(task), exec_.get());
+      ASSERT_TRUE(res.hasValue());
+      getOrCreateMockState(session2)->subscribeNamespaceHandles.push_back(*res);
+    });
+
+    EXPECT_FALSE(echoedBack) << "Relay echoed peer namespace back on reconnect (production path)";
+
+    std::shared_ptr<Publisher::SubscribeTracksHandle> tracksHandle;
+    if (d18) {
+      withSessionContext(session2, [&]() {
+        auto result = folly::coro::blockingWait(
+            publisherInterface()->subscribeTracks(makePeerSubTracks("jp-osa-1")),
+            exec_.get()
+        );
+        ASSERT_TRUE(result.hasValue());
+        tracksHandle = std::move(result.value());
+      });
+    }
+    exec_->driveFor(5);
+    EXPECT_TRUE(testing::Mock::VerifyAndClearExpectations(session2.get()));
+    if (tracksHandle) {
+      withSessionContext(session2, [&]() { tracksHandle->unsubscribeTracks(); });
+    }
+    removeSession(local);
+
+    // Simulate session1's coroutine frame being destroyed before session cleanup.
+    bridgeHandle1.reset();
+    removeSession(session1);
+    removeSession(session2);
+    driveIfMultiThread();
+  }
 }
 
 // Answers the reciprocal subscribeNamespace only after fail() is called.
@@ -365,6 +409,104 @@ TEST_P(MoQRelayTest, BridgeHandleDestructorDoesNotEvictNewPublisher) {
   bridgeHandle2.reset();
   removeSession(session1);
   removeSession(session2);
+}
+
+// Records the peering requests a relay sends it. tracksHandle stays weak so a test
+// can check the relay released it.
+class PeerTracksSession : public NiceMock<MockMoQSession> {
+public:
+  explicit PeerTracksSession(std::shared_ptr<MoQExecutor> exec)
+      : NiceMock<MockMoQSession>(std::move(exec)) {}
+
+  folly::coro::Task<Publisher::SubscribeNamespaceResult>
+  subscribeNamespace(SubscribeNamespace subNs, std::shared_ptr<Publisher::NamespacePublishHandle>)
+      override {
+    ++namespaceRequests;
+    co_return std::make_shared<NiceMock<MockSubscribeNamespaceHandle>>(
+        SubscribeNamespaceOk{subNs.requestID}
+    );
+  }
+
+  folly::coro::Task<Publisher::SubscribeTracksResult>
+  subscribeTracks(SubscribeTracks subTracks, std::shared_ptr<Publisher::PublishBlockedHandle>)
+      override {
+    tracksRequests.push_back(subTracks);
+    SubscribeTracksOk ok;
+    ok.requestID = subTracks.requestID;
+    auto handle = std::make_shared<NiceMock<MockSubscribeTracksHandle>>(std::move(ok));
+    tracksHandle = handle;
+    co_return handle;
+  }
+
+  int namespaceRequests{0};
+  std::vector<SubscribeTracks> tracksRequests;
+  std::weak_ptr<Publisher::SubscribeTracksHandle> tracksHandle;
+};
+
+// Draft 18 dropped SUBSCRIBE_NAMESPACE's BOTH option, so a relay also needs
+// SUBSCRIBE_TRACKS to receive a peer's pushed tracks.
+TEST_P(MoQRelayTest, UpstreamPeeringSubscribesTracksOnDraft18) {
+  resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "sg-sin-2-1");
+  for (auto version : {kVersionDraft16, kVersionDraft18}) {
+    SCOPED_TRACE(version);
+    auto peer = std::make_shared<PeerTracksSession>(exec_);
+    ON_CALL(*peer, getNegotiatedVersion()).WillByDefault(Return(std::optional<uint64_t>(version)));
+    getOrCreateMockState(peer);
+
+    if (auto* relayExec = relay_->getRelayExec()) {
+      folly::coro::co_withExecutor(
+          folly::getKeepAliveToken(relayExec),
+          relay_->onUpstreamConnect(peer)
+      )
+          .start();
+    } else {
+      folly::coro::blockingWait(relay_->onUpstreamConnect(peer), exec_.get());
+    }
+    const size_t wantTracks = version == kVersionDraft18 ? 1 : 0;
+    ASSERT_TRUE(driveUntil([&] {
+      return peer->namespaceRequests == 1 && peer->tracksRequests.size() == wantTracks;
+    }));
+    driveIfMultiThread();
+    ASSERT_EQ(peer->tracksRequests.size(), wantTracks);
+    if (wantTracks) {
+      EXPECT_TRUE(peer->tracksRequests[0].trackNamespacePrefix.empty());
+      EXPECT_FALSE(peer->tracksRequests[0].forward);
+    }
+
+    verifyOnRelayExec([&] { relay_->onUpstreamDisconnect(); });
+    driveIfMultiThread();
+    EXPECT_TRUE(peer->tracksHandle.expired());
+    removeSession(peer);
+  }
+}
+
+TEST_P(MoQRelayTest, ReciprocalPeeringSubscribesTracksOnDraft18) {
+  resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "sg-sin-2-1");
+  for (auto version : {kVersionDraft16, kVersionDraft18}) {
+    SCOPED_TRACE(version);
+    auto peer = std::make_shared<PeerTracksSession>(exec_);
+    ON_CALL(*peer, getNegotiatedVersion()).WillByDefault(Return(std::optional<uint64_t>(version)));
+    getOrCreateMockState(peer);
+
+    std::shared_ptr<Publisher::SubscribeNamespaceHandle> peerSub;
+    auto nsHandle = std::make_shared<NiceMock<MockNamespacePublishHandle>>();
+    withSessionContext(peer, [&]() {
+      auto result = folly::coro::blockingWait(
+          publisherInterface()->subscribeNamespace(makePeerSubNs("jp-osa-1"), nsHandle),
+          exec_.get()
+      );
+      ASSERT_TRUE(result.hasValue());
+      peerSub = std::move(result.value());
+    });
+    driveIfMultiThread();
+    EXPECT_EQ(peer->namespaceRequests, 1);
+    ASSERT_EQ(peer->tracksRequests.size(), version == kVersionDraft18 ? 1u : 0u);
+
+    peerSub->unsubscribeNamespace();
+    driveIfMultiThread();
+    EXPECT_TRUE(peer->tracksHandle.expired());
+    removeSession(peer);
+  }
 }
 
 } // namespace openmoq::moqx::test
