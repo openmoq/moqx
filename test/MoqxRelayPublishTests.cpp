@@ -9,6 +9,8 @@
 #include "MoqxRelayTestFixture.h"
 #include <atomic>
 
+#include <folly/coro/Baton.h>
+
 namespace openmoq::moqx::test {
 
 // Test: Verify allowed namespace prefix is set correctly
@@ -644,6 +646,110 @@ TEST_P(MoQRelayTest, EmptyNamespacePublishNamespaceDone) {
   });
 
   removeSession(publisher);
+}
+
+// Holds the track consumer that opened it, as MoQSession's StreamPublisherImpl does.
+class ConsumerHoldingSubgroup : public NiceMock<MockSubgroupConsumer> {
+public:
+  explicit ConsumerHoldingSubgroup(std::shared_ptr<TrackConsumer> owner)
+      : owner_(std::move(owner)) {}
+
+private:
+  std::shared_ptr<TrackConsumer> owner_;
+};
+
+// Holds the subscription handle it was published with, as MoQSession's
+// TrackPublisherImpl does, and hands out subgroups that hold it back.
+class HandleHoldingConsumer : public NiceMock<MockTrackConsumer>,
+                              public std::enable_shared_from_this<HandleHoldingConsumer> {
+public:
+  explicit HandleHoldingConsumer(std::shared_ptr<Publisher::SubscriptionHandle> handle)
+      : handle_(std::move(handle)) {
+    ON_CALL(*this, beginSubgroup(_, _, _, _)).WillByDefault([this](auto, auto, auto, auto) {
+      return folly::makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(
+          std::make_shared<ConsumerHoldingSubgroup>(shared_from_this())
+      );
+    });
+  }
+
+private:
+  std::shared_ptr<Publisher::SubscriptionHandle> handle_;
+};
+
+// A downstream that rejects the relay's PUBLISH must not leave the relay holding
+// its consumer, which holds the relay's handle in turn.
+TEST_P(MoQRelayTest, RejectedPublishReleasesDownstreamConsumer) {
+  auto publisherSession = createMockSession();
+  auto subscriberSession = createMockSession();
+  doPublishNamespace(publisherSession, kTestNamespace);
+
+  bool published = false;
+  std::weak_ptr<TrackConsumer> downstream;
+  EXPECT_CALL(*subscriberSession, publish(_, _))
+      .WillOnce([&](PublishRequest pub, std::shared_ptr<Publisher::SubscriptionHandle> handle) {
+        auto consumer = std::make_shared<HandleHoldingConsumer>(std::move(handle));
+        downstream = consumer;
+        published = true;
+        return Subscriber::PublishResult(Subscriber::PublishConsumerAndReplyTask{
+            std::move(consumer),
+            folly::coro::makeTask<folly::Expected<PublishOk, PublishError>>(folly::makeUnexpected(
+                PublishError{pub.requestID, PublishErrorCode::UNINTERESTED, "not interested"}
+            ))
+        });
+      });
+  doSubscribeNamespace(subscriberSession, kTestNamespace);
+  doPublish(publisherSession, kTestTrackName);
+
+  EXPECT_TRUE(driveUntil([&] { return published && downstream.expired(); }));
+
+  removeSession(subscriberSession);
+  removeSession(publisherSession);
+  driveIfMultiThread();
+}
+
+// The same holds when the downstream already has a subgroup open for the track
+// when it refuses: the subgroup holds the consumer, too.
+TEST_P(MoQRelayTest, RejectedPublishReleasesConsumerWithOpenSubgroup) {
+  auto publisherSession = createMockSession();
+  auto subscriberSession = createMockSession();
+  doPublishNamespace(publisherSession, kTestNamespace);
+
+  auto refuse = std::make_shared<folly::coro::Baton>();
+  bool published = false;
+  std::weak_ptr<TrackConsumer> downstream;
+  EXPECT_CALL(*subscriberSession, publish(_, _))
+      .WillOnce([&](PublishRequest pub, std::shared_ptr<Publisher::SubscriptionHandle> handle) {
+        auto consumer = std::make_shared<HandleHoldingConsumer>(std::move(handle));
+        downstream = consumer;
+        published = true;
+        auto reply = [](std::shared_ptr<folly::coro::Baton> gate, RequestID requestID
+                     ) -> folly::coro::Task<folly::Expected<PublishOk, PublishError>> {
+          co_await *gate;
+          co_return folly::makeUnexpected(
+              PublishError{requestID, PublishErrorCode::UNINTERESTED, "not interested"}
+          );
+        };
+        return Subscriber::PublishResult(Subscriber::PublishConsumerAndReplyTask{
+            std::move(consumer),
+            reply(refuse, pub.requestID)
+        });
+      });
+  doSubscribeNamespace(subscriberSession, kTestNamespace);
+  auto publisher = doPublish(publisherSession, kTestTrackName);
+  ASSERT_TRUE(driveUntil([&] { return published; }));
+
+  auto subgroup = publisher->beginSubgroup(0, 0, 0);
+  ASSERT_TRUE(subgroup.hasValue());
+  driveIfMultiThread();
+  ASSERT_FALSE(downstream.expired());
+
+  refuse->post();
+  EXPECT_TRUE(driveUntil([&] { return downstream.expired(); }));
+  subgroup.value()->reset(ResetStreamErrorCode::CANCELLED);
+
+  removeSession(subscriberSession);
+  removeSession(publisherSession);
+  driveIfMultiThread();
 }
 
 } // namespace openmoq::moqx::test

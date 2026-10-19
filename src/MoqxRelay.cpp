@@ -958,17 +958,24 @@ folly::coro::Task<void> awaitPublishReply(
     std::shared_ptr<MoQForwarder::Subscriber> subscriber,
     folly::coro::Task<folly::Expected<PublishOk, PublishError>> reply
 ) {
+  // The track publisher holds `subscriber` as its handle, so drop the consumer and its
+  // subgroups too or the pair leaks. unsubscribe() resets subgroups but keeps them.
+  auto abandon = [&] {
+    subscriber->unsubscribe();
+    subscriber->subgroups.clear();
+    subscriber->trackConsumer.reset();
+  };
   auto result = co_await co_awaitTry(std::move(reply));
   if (result.hasException()) {
     XLOG(ERR) << "Publish reply exception for " << forwarder->fullTrackName()
               << " subscriber=" << subscriber.get() << ": " << result.exception().what();
-    subscriber->unsubscribe();
+    abandon();
     co_return;
   }
   if (result.value().hasError()) {
     XLOG(ERR) << "Publish reply error for " << forwarder->fullTrackName()
               << " subscriber=" << subscriber.get() << ": " << result.value().error().reasonPhrase;
-    subscriber->unsubscribe();
+    abandon();
     co_return;
   }
   XLOG(DBG1) << "Received PublishOk for " << forwarder->fullTrackName()
