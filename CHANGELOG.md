@@ -17,6 +17,7 @@ How to add an entry: see [CONTRIBUTING.md](/CONTRIBUTING.md#changelog).
 - A relay keeps every MoQ Cluster advertisement of a namespace and routes a new subscription over the best one, by path and cost. ([#TODO:REPLACEME](https://github.com/openmoq/moqx/pull/TODO:REPLACEME))
 - A namespace subscriber is told the best route it may use and gets an update when that route changes. A change of publisher withdraws the namespace before advertising it again. ([#TODO:REPLACEME](https://github.com/openmoq/moqx/pull/TODO:REPLACEME))
 - PUBLISH_NAMESPACE accepts REQUEST_UPDATE for its `HOP_PATH` and `ROUTE_COST`. An update or a repeated NAMESPACE from the same origin keeps the namespace's subscriptions running instead of tearing them down. ([#TODO:REPLACEME](https://github.com/openmoq/moqx/pull/TODO:REPLACEME))
+- A MoQ Cluster peer's SUBSCRIBE, FETCH, and TRACK_STATUS are not served over a route that runs through that peer. ([#TODO:REPLACEME](https://github.com/openmoq/moqx/pull/TODO:REPLACEME))
 
 ## Changed
 

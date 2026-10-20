@@ -700,8 +700,36 @@ private:
     return useLocalForwarders_ ? Mode::LocalForwarder : Mode::RelayExec;
   }
 
-  std::shared_ptr<moxygen::Publisher> findUpstreamPublisher(const moxygen::TrackNamespace& ns) {
-    auto session = namespaceTree_.findPublisherSession(ns);
+  // Routes a request from requester may not use. Unset unless it negotiated MoQ Cluster.
+  static std::optional<RouteExclusion>
+  exclusionFor(const std::shared_ptr<moxygen::MoQSession>& requester);
+  // Whether exclusion rules out source as the upstream for ns.
+  bool excludesSource(
+      const std::optional<RouteExclusion>& exclusion,
+      const moxygen::TrackNamespace& ns,
+      std::optional<moxygen::SessionId> source
+  ) const;
+  // A requester excluded from an existing subscription's source.
+  bool excludedFromSubscription(
+      const std::optional<RouteExclusion>& exclusion,
+      const moxygen::FullTrackName& ftn
+  ) const {
+    return excludesSource(exclusion, ftn.trackNamespace, registry_.upstreamSessionId(ftn));
+  }
+  // Whether a SUBSCRIBE for ftn under exclusion would be refused. Runs on relayExec_.
+  folly::coro::Task<bool> refusedUnder(RouteExclusion exclusion, moxygen::FullTrackName ftn) {
+    if (registry_.exists(ftn)) {
+      co_return excludedFromSubscription(exclusion, ftn);
+    }
+    co_return !namespaceTree_.findPublisherSession(ftn.trackNamespace, exclusion) &&
+        namespaceTree_.findPublisherSession(ftn.trackNamespace);
+  }
+
+  std::shared_ptr<moxygen::Publisher> findUpstreamPublisher(
+      const moxygen::TrackNamespace& ns,
+      const std::optional<RouteExclusion>& exclusion = std::nullopt
+  ) {
+    auto session = namespaceTree_.findPublisherSession(ns, exclusion.value_or(RouteExclusion{}));
     if (!session) {
       return nullptr;
     }

@@ -57,7 +57,12 @@ On each peer session:
   advertises it again;
 - a repeated NAMESPACE, or a REQUEST_UPDATE on a PUBLISH_NAMESPACE, from the
   same origin updates the route in place and leaves its subscriptions running.
-  A new origin replaces the route and ends the subscriptions it served.
+  A new origin replaces the route and ends the subscriptions it served;
+- SUBSCRIBE, FETCH, and TRACK_STATUS from a negotiated peer skip routes whose
+  path contains that peer's Hop ID, and routes from the peer's own session. A
+  track keeps one upstream subscription, so a peer that its existing source
+  runs through gets `DOES_NOT_EXIST`. Sessions that did not negotiate MoQ
+  Cluster route as before.
 
 Negotiation is session-local. Support on one peer connection does not imply
 support on any other connection.

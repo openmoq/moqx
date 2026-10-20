@@ -766,6 +766,250 @@ TEST_P(MoQRelayTest, RequestUpdateRevisesTheRoute) {
   driveIfMultiThread();
 }
 
+// A cluster peer may not be served over a route that runs through it, or by
+// its own session. Only such routes exist here, so every request fails.
+TEST_P(MoQRelayTest, RequestsSkipRoutesThroughTheRequester) {
+  resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "", 900);
+  auto publisher = createMockSession();
+  negotiateCluster(*publisher);
+  doPublishNamespaceMsg(publisher, clusterAdvert({100}, 1));
+  auto peer100 = createMockSession();
+  negotiateCluster(*peer100, 100);
+  driveIfMultiThread();
+
+  for (const auto& requester : {peer100, publisher}) {
+    subscribeToTrack(
+        requester,
+        kTestTrackName,
+        createMockConsumer(),
+        RequestID(1),
+        /*addToState=*/false,
+        SubscribeErrorCode::DOES_NOT_EXIST
+    );
+    withSessionContext(requester, [&] {
+      Fetch fetch(RequestID(2), kTestTrackName, AbsoluteLocation{0, 0}, AbsoluteLocation{1, 0});
+      auto res = folly::coro::blockingWait(
+          publisherInterface()
+              ->fetch(std::move(fetch), std::make_shared<NiceMock<MockFetchConsumer>>()),
+          exec_.get()
+      );
+      ASSERT_TRUE(res.hasError());
+      EXPECT_EQ(res.error().errorCode, FetchErrorCode::DOES_NOT_EXIST);
+
+      TrackStatus trackStatus;
+      trackStatus.fullTrackName = kTestTrackName;
+      trackStatus.requestID = RequestID(3);
+      auto status =
+          folly::coro::blockingWait(publisherInterface()->trackStatus(trackStatus), exec_.get());
+      ASSERT_TRUE(status.hasError());
+      EXPECT_EQ(status.error().errorCode, TrackStatusErrorCode::DOES_NOT_EXIST);
+    });
+  }
+
+  removeSession(publisher);
+  removeSession(peer100);
+  driveIfMultiThread();
+}
+
+// A track has one upstream subscription. A cluster peer whose Hop ID is on
+// its source's path cannot join it; a plain client and an unrelated peer can.
+TEST_P(MoQRelayTest, ExcludedRequesterCannotJoinASubscriptionThroughIt) {
+  resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "", 900);
+  auto publisher = createMockSession();
+  negotiateCluster(*publisher);
+  doPublishNamespaceMsg(publisher, clusterAdvert({100}, 1));
+  doPublish(publisher, kTestTrackName);
+
+  auto client = createMockSession();
+  subscribeToTrack(client, kTestTrackName, createMockConsumer(), RequestID(1));
+  auto peer100 = createMockSession();
+  negotiateCluster(*peer100, 100);
+  subscribeToTrack(
+      peer100,
+      kTestTrackName,
+      createMockConsumer(),
+      RequestID(1),
+      /*addToState=*/false,
+      SubscribeErrorCode::DOES_NOT_EXIST
+  );
+  auto peer300 = createMockSession();
+  negotiateCluster(*peer300, 300);
+  subscribeToTrack(peer300, kTestTrackName, createMockConsumer(), RequestID(1));
+
+  for (const auto& session : {publisher, client, peer100, peer300}) {
+    removeSession(session);
+  }
+  driveIfMultiThread();
+}
+
+// A FETCH is not bound to the track's one upstream subscription. When that
+// subscription's source runs through the requesting peer, the fetch takes
+// another route.
+TEST_P(MoQRelayTest, FetchFromAnExcludedSubscriptionTakesAnotherRoute) {
+  resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "", 900);
+  auto peerD = createMockSession();
+  negotiateCluster(*peerD, 100);
+  auto peerX = createMockSession();
+  negotiateCluster(*peerX, 300);
+  doPublishNamespaceMsg(peerD, clusterAdvert({100}, 1));
+  doPublishNamespaceMsg(peerX, clusterAdvert({300}, 5));
+  driveIfMultiThread();
+
+  EXPECT_CALL(*peerD, subscribe(_, _)).WillOnce([](const auto& req, auto /*consumer*/) {
+    SubscribeOk ok;
+    ok.requestID = req.requestID;
+    ok.trackAlias = TrackAlias(1);
+    ok.expires = std::chrono::milliseconds(0);
+    ok.groupOrder = GroupOrder::OldestFirst;
+    auto handle = std::make_shared<NiceMock<MockSubscriptionHandle>>(std::move(ok));
+    return folly::coro::makeTask<Publisher::SubscribeResult>(
+        folly::Expected<std::shared_ptr<SubscriptionHandle>, SubscribeError>(handle)
+    );
+  });
+  auto client = createMockSession();
+  subscribeToTrack(client, kTestTrackName, createMockConsumer(), RequestID(1));
+
+  EXPECT_CALL(*peerD, fetch(_, _)).Times(0);
+  EXPECT_CALL(*peerX, fetch(_, _)).WillOnce([](Fetch, std::shared_ptr<FetchConsumer> consumer) {
+    consumer->endOfFetch();
+    return folly::coro::makeTask<Publisher::FetchResult>(std::make_shared<MockFetchHandle>(
+        FetchOk{RequestID(0), GroupOrder::OldestFirst, 0, AbsoluteLocation{0, 0}, {}}
+    ));
+  });
+  auto fetchConsumer = std::make_shared<NiceMock<MockFetchConsumer>>();
+  ON_CALL(*fetchConsumer, endOfFetch())
+      .WillByDefault(Return(folly::makeExpected<MoQPublishError>(folly::unit)));
+  withSessionContext(peerD, [&] {
+    Fetch fetch(RequestID(2), kTestTrackName, AbsoluteLocation{0, 0}, AbsoluteLocation{1, 0});
+    auto res = folly::coro::blockingWait(
+        publisherInterface()->fetch(std::move(fetch), fetchConsumer),
+        exec_.get()
+    );
+    EXPECT_TRUE(res.hasValue());
+  });
+  driveIfMultiThread();
+
+  for (const auto& session : {peerD, peerX, client}) {
+    removeSession(session);
+  }
+  driveIfMultiThread();
+}
+
+// A refused cluster peer must not fail a plain client that, in LF mode, waits on the
+// peer's claim of the same thread's local forwarder.
+TEST_P(MoQRelayTest, RefusedPeerDoesNotFailAConcurrentClient) {
+  if (relayMode() != RelayMode::LocalForwarderMT) {
+    GTEST_SKIP() << "only LF has a per-thread claim to share";
+  }
+  resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "", 900);
+  auto publisher = createMockSession();
+  negotiateCluster(*publisher);
+  doPublishNamespaceMsg(publisher, clusterAdvert({100}, 1));
+  driveIfMultiThread();
+  EXPECT_CALL(*publisher, subscribe(_, _)).WillOnce([](const auto& req, auto /*consumer*/) {
+    SubscribeOk ok;
+    ok.requestID = req.requestID;
+    ok.trackAlias = TrackAlias(1);
+    ok.expires = std::chrono::milliseconds(0);
+    ok.groupOrder = GroupOrder::OldestFirst;
+    auto handle = std::make_shared<NiceMock<MockSubscriptionHandle>>(std::move(ok));
+    return folly::coro::makeTask<Publisher::SubscribeResult>(
+        folly::Expected<std::shared_ptr<SubscriptionHandle>, SubscribeError>(handle)
+    );
+  });
+
+  auto peer100 = createMockSession();
+  negotiateCluster(*peer100, 100);
+  auto client = createMockSession();
+  auto peerConsumer = createMockConsumer();
+  auto clientConsumer = createMockConsumer();
+
+  // Hold the relay exec so the peer's claim stays open until the client waits on it.
+  RelayGate gate(relayEvb_);
+  auto peerSub =
+      startSubscribe(sessionExec(), peer100, makeSubscribeRequest(RequestID(1)), peerConsumer);
+  exec_->driveSessionExecOnly();
+  auto clientSub =
+      startSubscribe(sessionExec(), client, makeSubscribeRequest(RequestID(1)), clientConsumer);
+  exec_->driveSessionExecOnly();
+  gate.release();
+  ASSERT_TRUE(driveUntil([&] { return peerSub.ready() && clientSub.ready(); }));
+
+  ASSERT_TRUE(peerSub.result->hasValue());
+  ASSERT_TRUE(peerSub.result->value().hasError());
+  EXPECT_EQ(peerSub.result->value().error().errorCode, SubscribeErrorCode::DOES_NOT_EXIST);
+  auto clientHandle = clientSub.handle();
+  ASSERT_NE(clientHandle, nullptr);
+  getOrCreateMockState(client)->subscribeHandles.push_back(clientHandle);
+
+  for (const auto& session : {publisher, peer100, client}) {
+    removeSession(session);
+  }
+  driveIfMultiThread();
+}
+
+// An end user may subscribe to a track in a namespace it published: the relay
+// subscribes back to that session. A cluster session may not.
+TEST_P(MoQRelayTest, EndUserSubscribesThroughItsOwnPublishNamespace) {
+  auto client = createMockSession();
+  doPublishNamespace(client, kTestNamespace);
+  EXPECT_CALL(*client, subscribe(_, _)).WillOnce([](const auto& req, auto /*consumer*/) {
+    SubscribeOk ok;
+    ok.requestID = req.requestID;
+    ok.trackAlias = TrackAlias(1);
+    ok.expires = std::chrono::milliseconds(0);
+    ok.groupOrder = GroupOrder::OldestFirst;
+    auto handle = std::make_shared<NiceMock<MockSubscriptionHandle>>(std::move(ok));
+    return folly::coro::makeTask<Publisher::SubscribeResult>(
+        folly::Expected<std::shared_ptr<SubscriptionHandle>, SubscribeError>(handle)
+    );
+  });
+  EXPECT_NE(subscribeToTrack(client, kTestTrackName, createMockConsumer(), RequestID(1)), nullptr);
+
+  auto cluster = createMockSession();
+  negotiateCluster(*cluster);
+  const TrackNamespace clusterNs{{"test", "cluster"}};
+  doPublishNamespaceMsg(cluster, clusterAdvert({100}, 1, clusterNs));
+  EXPECT_CALL(*cluster, subscribe(_, _)).Times(0);
+  subscribeToTrack(
+      cluster,
+      FullTrackName{clusterNs, "track1"},
+      createMockConsumer(),
+      RequestID(1),
+      /*addToState=*/false,
+      SubscribeErrorCode::DOES_NOT_EXIST
+  );
+
+  removeSession(client);
+  removeSession(cluster);
+  driveIfMultiThread();
+}
+
+// An end user may SUBSCRIBE to a track it pushed with PUBLISH. A cluster session may not.
+// SUBSCRIBE_TRACKS does not push a session's own tracks back to it (MoqxRelayTracksTest).
+TEST_P(MoQRelayTest, EndUserSubscribesToItsOwnPublish) {
+  auto client = createMockSession();
+  doPublish(client, kTestTrackName);
+  EXPECT_NE(subscribeToTrack(client, kTestTrackName, createMockConsumer(), RequestID(1)), nullptr);
+
+  auto cluster = createMockSession();
+  negotiateCluster(*cluster);
+  const FullTrackName clusterTrack{TrackNamespace{{"test", "cluster"}}, "track1"};
+  doPublish(cluster, clusterTrack);
+  subscribeToTrack(
+      cluster,
+      clusterTrack,
+      createMockConsumer(),
+      RequestID(1),
+      /*addToState=*/false,
+      SubscribeErrorCode::DOES_NOT_EXIST
+  );
+
+  removeSession(client);
+  removeSession(cluster);
+  driveIfMultiThread();
+}
+
 // NAMESPACE_TOO_LARGE counts only the namespaces that would be advertised.
 TEST_P(MoQRelayTest, NamespaceLimitCountsOnlyAdvertisableNamespaces) {
   resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "", 900);
