@@ -65,7 +65,7 @@ static_assert(
     "MvfstConfig::L4S changed — update serializeMvfst()"
 );
 static_assert(
-    rfl::internal::num_fields<ServiceConfig> == 4,
+    rfl::internal::num_fields<ServiceConfig> == 5,
     "ServiceConfig changed — update serializeConfig()"
 );
 static_assert(
@@ -89,7 +89,7 @@ static_assert(
     "AnonymousScope changed — update serializeAuth()"
 );
 static_assert(
-    rfl::internal::num_fields<UpstreamConfig> == 4,
+    rfl::internal::num_fields<UpstreamConfig> == 5,
     "UpstreamConfig changed — update serializeUpstream()"
 );
 static_assert(
@@ -261,6 +261,18 @@ TEST(ConfigSerializerTest, AnonymousClaimEmptyNamespaceMatchSerializesAsEmptyArr
   serializeConfig(cfg, sink);
   // An empty array emits no scalar leaf; the null sentinel must be absent.
   EXPECT_EQ(sink.scalars.count("services.default.auth.anonymous_claim.*.namespace_segments"), 0u);
+}
+
+TEST(ConfigSerializerTest, SerializesUpstreamsList) {
+  Config cfg = makeFullConfig();
+  auto& svc = cfg.services.at("default");
+  svc.upstream.reset();
+  svc.upstreams.push_back(UpstreamConfig{.url = "moqt://a:4433/", .relayCost = 0});
+  RecordingSink sink;
+  serializeConfig(cfg, sink);
+  EXPECT_FALSE(sink.scalars.contains("services.default.upstream.url"));
+  EXPECT_EQ(sink.scalars["services.default.upstreams.*.url"], "moqt://a:4433/");
+  EXPECT_EQ(sink.scalars["services.default.upstreams.*.relay_cost"], "0");
 }
 
 TEST(ConfigSerializerTest, RedactsHmacSecret) {

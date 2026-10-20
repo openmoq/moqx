@@ -40,8 +40,14 @@ public:
   virtual void onRelayBegin(std::string_view relayID, int64_t activeSessions) = 0;
   // Called before relay->dumpState(). Returns the visitor to pass into dumpState.
   virtual RelayStateVisitor& onServiceBegin(std::string_view name) = 0;
+  struct UpstreamState {
+    std::string url;
+    std::string state;
+  };
   // Called after relay->dumpState() if an upstream is configured for this service.
   virtual void onServiceUpstream(std::string_view url, std::string_view state) = 0;
+  // As onServiceUpstream, for a service configured with an upstreams list.
+  virtual void onServiceUpstreams(const std::vector<UpstreamState>& upstreams) = 0;
   virtual void onServiceEnd() = 0;
   virtual void onRelayEnd() = 0;
   // Checked between services so a consumer that has gone away stops the walk
@@ -154,6 +160,12 @@ public:
   );
 
 private:
+  void startUpstream(
+      ServiceEntry& entry,
+      const config::UpstreamConfig& cfg,
+      const std::shared_ptr<moxygen::MoQFollyExecutorImpl>& workerExec
+  );
+
   // When use_relay_thread=true: one dedicated thread per service, each with its
   // own executor, isolating relay state from I/O threads.  Null when disabled.
   // Each relay owns its MoQFollyExecutorImpl; the pool just keeps threads alive.

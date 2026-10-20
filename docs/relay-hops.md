@@ -92,9 +92,10 @@ upstream:
 
 The shortened fragments belong under the same `services.<name>` entry on their
 respective relays. The complete listener, TLS, service, and upstream schemas are
-in [the configuration reference](config.md#relay-architectures). Each service
-maintains at most one upstream connection, reconnecting with backoff after a
-failure. Services do not share namespace or hop-path state.
+in [the configuration reference](config.md#relay-architectures). A service
+peers with one `upstream` or with each entry of an `upstreams` list,
+reconnecting each link with backoff after a failure. Services do not share
+namespace or hop-path state.
 
 Use `tls.insecure: true` only in isolated development or integration-test
 networks. In production, use certificates trusted by the system trust store or
@@ -151,8 +152,8 @@ offending session with `PROTOCOL_VIOLATION`.
 
 ## Current Scope and Limitations
 
-- Each service supports one upstream; multi-upstream path selection, failover,
-  and load balancing are not implemented.
+- A service may list several upstreams, but path selection between them,
+  failover, and load balancing are not implemented.
 - Shortest-path selection, redundant-origin comparison, topology coalescing,
   and trust-boundary path stripping described as optional behavior in the draft
   are not implemented.

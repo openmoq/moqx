@@ -190,6 +190,18 @@ public:
     w_.endObject();
   }
 
+  void onServiceUpstreams(const std::vector<UpstreamState>& upstreams) override {
+    w_.key("upstreams");
+    w_.beginArray();
+    for (const auto& upstream : upstreams) {
+      w_.beginObject();
+      w_.field("url", upstream.url);
+      w_.field("state", upstream.state);
+      w_.endObject();
+    }
+    w_.endArray();
+  }
+
   void onServiceEnd() override {
     w_.endObject();
     c_.maybeFlush();

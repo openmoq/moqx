@@ -1465,6 +1465,37 @@ TEST(ResolveConfig, UpstreamAbsent) {
   EXPECT_FALSE(result.value().config.services.at("default").upstream.has_value());
 }
 
+TEST(ResolveConfig, UpstreamsResolveInOrderWithRelayCost) {
+  auto cfg = makeMinimalInsecureConfig();
+  auto free = makeUpstreamConfig("moqt://a:4433/");
+  free.relay_cost = uint64_t{0};
+  cfg.services.value().at("default").upstreams =
+      std::vector<ParsedUpstreamConfig>{free, makeUpstreamConfig("moqt://b:4433/")};
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  const auto& svc = result.value().config.services.at("default");
+  EXPECT_FALSE(svc.upstream.has_value());
+  ASSERT_EQ(svc.upstreams.size(), 2u);
+  EXPECT_EQ(svc.upstreams[0].url, "moqt://a:4433/");
+  EXPECT_EQ(svc.upstreams[0].relayCost, 0u);
+  EXPECT_EQ(svc.upstreams[1].relayCost, 1u);
+}
+
+TEST(ResolveConfig, UpstreamAndUpstreamsAreExclusive) {
+  auto cfg = makeMinimalInsecureConfig();
+  setServiceUpstream(cfg, makeUpstreamConfig());
+  cfg.services.value().at("default").upstreams =
+      std::vector<ParsedUpstreamConfig>{makeUpstreamConfig()};
+  EXPECT_TRUE(resolveConfig(cfg).hasError());
+}
+
+TEST(ResolveConfig, UpstreamsEntryIsValidated) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().at("default").upstreams =
+      std::vector<ParsedUpstreamConfig>{makeUpstreamConfig("")};
+  EXPECT_TRUE(resolveConfig(cfg).hasError());
+}
+
 TEST(ResolveConfig, UpstreamInsecureFalseNoCA) {
   auto cfg = makeMinimalInsecureConfig();
   setServiceUpstream(cfg, makeUpstreamConfig());
