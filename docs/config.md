@@ -411,11 +411,11 @@ own independent upstream graph. Two services on the same physical server can
 peer with completely different upstream servers.
 
 Tree topologies remain the simplest deployment model. A service may also contain
-a relay cycle when every relay in that cycle negotiates the `RELAY_HOPS` setup
-option. moqx assigns one random Hop ID to the running relay context, retains the
-origin-to-relay path on namespace advertisements, appends its own ID when
-forwarding, and drops an advertisement if its own ID is already present. Its
-wildcard upstream subscription also excludes its own Hop ID.
+a relay cycle when every relay in that cycle negotiates MoQ Cluster by declaring
+the `HOP_ID` setup option. moqx assigns one random Hop ID to the running relay
+context, retains the origin-to-relay path on namespace advertisements, appends
+its own ID when forwarding, and drops an advertisement if its own ID is already
+present. It does not advertise a path to a peer whose Hop ID is on that path.
 
 ```
           relay-a ─┐
@@ -428,25 +428,25 @@ Publishers and subscribers can connect to any relay. Subscriptions are forwarded
 up toward the root as needed, and data flows back down to wherever subscribers
 are.
 
-Relay-hops negotiation is automatic between supporting moqx peers and requires
-no YAML setting. A non-supporting publisher or origin is represented by one
-stable, random stand-in Hop ID for the lifetime of its session; when an
-advertisement next crosses a negotiated relay link, the outgoing path is
-`[stand-in-origin, local-relay]`. Non-negotiated subscribers continue to receive
-the legacy namespace format without hop parameters.
+MoQ Cluster negotiation is automatic between supporting moqx peers and requires
+no YAML setting. An advertisement from a non-negotiated session gets the
+anonymous path `[0]`. When it next crosses a negotiated relay link, the outgoing
+path is `[0, local-relay]`. A non-negotiated subscriber receives NAMESPACE
+without HOP_PATH or ROUTE_COST.
 
-Loop prevention is only end-to-end across links that negotiated `RELAY_HOPS`.
-Keep any graph segment containing a legacy relay acyclic, because a legacy relay
-cannot preserve the path needed to recognize a returning advertisement.
+Loop prevention is only end-to-end across links that negotiated MoQ Cluster.
+Keep any graph segment containing a relay without MoQ Cluster acyclic, because
+that relay cannot preserve the path needed to recognize a returning
+advertisement.
 
 ### Limitations
 
 - **Single upstream per service.** Each service can have at most one
 upstream. Multiple upstreams, failover, or load balancing across upstreams are
 not currently supported.
-- **Legacy relay segments must remain acyclic.** Negotiated moqx peers detect
-returning namespace advertisements, but a non-supporting relay cannot carry the
-hop path through the graph.
+- **Cycles need MoQ Cluster on every relay.** Negotiated moqx peers detect
+returning namespace advertisements, but a relay without MoQ Cluster cannot carry
+the hop path through the graph.
 - **No upstream authentication.** Upstreams are connected without any
 application-level credential exchange beyond TLS.
 - **Upstream connection is per-service, not per-track.** A single upstream

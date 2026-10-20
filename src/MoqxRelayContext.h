@@ -71,6 +71,8 @@ public:
 
   void setStatsRegistry(std::shared_ptr<stats::StatsRegistry> registry);
 
+  uint64_t getRelayHopID() const { return relayHopID_; }
+
   // Must be called once, after all MoqxRelayServer instances have been started,
   // so that worker EVBs are available. workerEvb is used for upstream connections.
   void initUpstreams(folly::EventBase* workerEvb);
