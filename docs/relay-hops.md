@@ -152,11 +152,11 @@ offending session with `PROTOCOL_VIOLATION`.
 
 ## Current Scope and Limitations
 
-- A service may list several upstreams, but path selection between them,
-  failover, and load balancing are not implemented.
-- Shortest-path selection, redundant-origin comparison, topology coalescing,
-  and trust-boundary path stripping described as optional behavior in the draft
-  are not implemented.
+- A new subscription takes the best route by the draft's path-selection rule.
+  Failover, load balancing, and moving an existing subscription to a better
+  route are not implemented.
+- Redundant-origin comparison, topology coalescing, and trust-boundary path
+  stripping described as optional behavior in the draft are not implemented.
 - Hop IDs are opaque routing-loop identifiers, not authentication or
   authorization credentials.
 - `HOP_PATH` exposes path length. Protect peer links with TLS and consider this
