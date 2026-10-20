@@ -38,8 +38,6 @@
 
 namespace openmoq::moqx {
 
-uint64_t generateRelayHopID();
-
 class CrossExecFilter;
 
 // Visitor interface for relay state inspection.
@@ -132,8 +130,7 @@ public:
       std::chrono::milliseconds idleTimeout = kDefaultIdleTimeout,
       std::chrono::milliseconds activityThreshold = kDefaultActivityThreshold
   )
-      : relayID_(std::move(relayID)),
-        relayHopID_(relayHopID == 0 ? generateRelayHopID() : relayHopID),
+      : relayID_(std::move(relayID)), relayHopID_(relayHopID),
         ownedRelayExec_(std::move(relayExec)), relayExec_(ownedRelayExec_.get()),
         useLocalForwarders_(useLocalForwarders), maxDeselected_(maxDeselected),
         idleTimeout_(idleTimeout), activityThreshold_(activityThreshold) {

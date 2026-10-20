@@ -253,6 +253,21 @@ TEST_F(UpstreamClusterTest, NegotiatesClusterOnDraft18) {
   );
 }
 
+// The default provider does not declare a Hop ID, as with cluster.enabled false.
+TEST_F(UpstreamClusterTest, NoHopIDLeavesClusterOff) {
+  folly::coro::blockingWait(
+      [&]() -> folly::coro::Task<void> {
+        co_await provider_->start();
+        auto session = provider_->currentSession();
+        EXPECT_NE(session, nullptr);
+        if (session) {
+          EXPECT_FALSE(session->negotiatedSetupExtension(SetupExtension::RelayHops));
+        }
+      }(),
+      &clientEvb()
+  );
+}
+
 // Relay-to-relay links use draft 18.
 TEST_F(UpstreamProviderTest, ConnectsWithDraft18) {
   folly::coro::blockingWait(

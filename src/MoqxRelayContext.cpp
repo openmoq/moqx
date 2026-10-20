@@ -28,10 +28,9 @@ MoqxRelayContext::MoqxRelayContext(
     const std::string& relayID,
     bool useRelayThread,
     bool useLocalForwarders,
-    uint64_t relayHopID
+    config::ClusterConfig cluster
 )
-    : serviceMatcher_(services), relayID_(relayID),
-      relayHopID_(relayHopID == 0 ? generateRelayHopID() : relayHopID) {
+    : serviceMatcher_(services), relayID_(relayID), cluster_(cluster) {
   if (useRelayThread && !services.empty()) {
     relayThreadPool_ = std::make_unique<folly::IOThreadPoolExecutor>(
         services.size(),
@@ -44,7 +43,7 @@ MoqxRelayContext::MoqxRelayContext(
       auto relay = std::make_shared<MoqxRelay>(
           svc.cache,
           relayID,
-          relayHopID_,
+          cluster_.hopID,
           std::make_shared<moxygen::MoQFollyExecutorImpl>(evbs[i++].get()),
           useLocalForwarders,
           MoqxRelay::kDefaultMaxDeselected,
@@ -65,7 +64,7 @@ MoqxRelayContext::MoqxRelayContext(
       auto relay = std::make_shared<MoqxRelay>(
           svc.cache,
           relayID,
-          relayHopID_,
+          cluster_.hopID,
           nullptr,
           false,
           MoqxRelay::kDefaultMaxDeselected,
@@ -147,7 +146,7 @@ void MoqxRelayContext::initUpstreams(folly::EventBase* workerEvb) {
         std::move(onDisconnect),
         cfg.connectTimeout,
         cfg.idleTimeout,
-        relayHopID_
+        getRelayHopID()
     );
     entry.relay->setUpstreamProvider(provider);
 
