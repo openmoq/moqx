@@ -10,6 +10,7 @@
 #include <folly/Expected.h>
 #include <folly/Unit.h>
 #include <folly/container/F14Map.h>
+#include <folly/hash/Hash.h>
 #include <moxygen/MoQSession.h>
 #include <moxygen/MoQTypes.h>
 
@@ -68,7 +69,26 @@ public:
       std::shared_ptr<moxygen::Publisher::NamespacePublishHandle> namespacePublishHandle;
       moxygen::TrackNamespace trackNamespacePrefix;
       std::optional<moxygen::TrackFilter> trackFilter;
+      std::string peerID; // relay ID of a peer relay subscriber
     };
+
+    // What one SUBSCRIBE_NAMESPACE was last told about this namespace.
+    struct Advertisement {
+      moxygen::SessionId source;
+      std::vector<uint64_t> path;
+      uint64_t cost{0};
+    };
+    // A subscriber session and its prefix length: one session can hold nested prefixes.
+    using AdvertisementKey = std::pair<moxygen::SessionId, size_t>;
+
+    const Advertisement* findAdvertisement(const AdvertisementKey& key) const {
+      auto it = advertisements_.find(key);
+      return it != advertisements_.end() ? &it->second : nullptr;
+    }
+    void setAdvertisement(const AdvertisementKey& key, Advertisement advertisement) {
+      advertisements_.insert_or_assign(key, std::move(advertisement));
+    }
+    void eraseAdvertisement(const AdvertisementKey& key) { advertisements_.erase(key); }
 
     // One advertisement of this namespace. A session holds at most one route here.
     struct Route {
@@ -128,6 +148,12 @@ public:
     static bool betterRoute(const Route& a, const Route& b);
 
     std::vector<Route> routes_;
+    struct AdvertisementKeyHash {
+      size_t operator()(const AdvertisementKey& key) const {
+        return folly::hash::hash_combine(moxygen::SessionId::hash{}(key.first), key.second);
+      }
+    };
+    folly::F14FastMap<AdvertisementKey, Advertisement, AdvertisementKeyHash> advertisements_;
     folly::F14FastMap<std::string, std::shared_ptr<moxygen::MoQSession>> publishes_;
     folly::F14FastMap<std::shared_ptr<moxygen::MoQSession>, NamespaceSubscriberInfo> subscribers_;
     folly::F14FastMap<std::string, std::shared_ptr<NamespaceNode>> children_;
@@ -215,7 +241,8 @@ public:
       NamespaceNode::NamespaceSubscriberInfo info
   );
 
-  // NodeNotFound and NotSubscribed are both ignorable (already gone).
+  // Also forgets what the subscription was told. NodeNotFound and NotSubscribed
+  // are both ignorable (already gone).
   folly::Expected<folly::Unit, Error> removeNamespaceSubscriber(
       const moxygen::TrackNamespace& ns,
       const std::shared_ptr<moxygen::MoQSession>& session

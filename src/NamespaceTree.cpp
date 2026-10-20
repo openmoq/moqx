@@ -273,6 +273,10 @@ folly::Expected<folly::Unit, NamespaceTree::Error> NamespaceTree::removeNamespac
       rankingIt->second->removeSessionFromTopNGroup(it->second.trackFilter->maxSelected, session);
     }
   }
+  const NamespaceNode::AdvertisementKey key{session->sessionId(), ns.size()};
+  forEachNodeInSubtree(ns, node, [&](const TrackNamespace&, const auto& n) {
+    n->eraseAdvertisement(key);
+  });
   NodeMutationGuard guard(*this, *node, ns);
   node->subscribers_.erase(it);
   return folly::unit;

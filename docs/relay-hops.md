@@ -51,7 +51,10 @@ On each peer session:
 - negotiated advertisements carry `HOP_PATH` and `ROUTE_COST`;
 - moqx appends its Hop ID before forwarding an advertisement;
 - moqx drops an advertisement whose incoming path already contains its Hop ID;
-- moqx does not advertise a path to a peer whose Hop ID is on that path.
+- moqx does not advertise a path to a peer whose Hop ID is on that path;
+- moqx advertises each subscriber the best path it may use, and sends an update
+  when that path changes. A change of publisher withdraws the namespace and
+  advertises it again.
 
 Negotiation is session-local. Support on one peer connection does not imply
 support on any other connection.

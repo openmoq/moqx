@@ -484,18 +484,68 @@ std::shared_ptr<Subscriber::PublishNamespaceHandle> MoqxRelay::doPublishNamespac
     });
   }
   for (auto& [outSession, info] : sessions) {
-    if (shouldForwardNamespace(session, outSession, info.options, route->path, relayHopID_)) {
-      if (info.namespacePublishHandle) {
-        auto suffix = makeNamespaceSuffix(pubNs.trackNamespace, info.trackNamespacePrefix.size());
-        Namespace ns;
-        ns.trackNamespaceSuffix = std::move(suffix);
-        setOutgoingHopPath(ns.params, outSession, route->path, route->cost, relayHopID_);
-        info.namespacePublishHandle->namespaceMsg(ns);
-      }
-    }
+    reconcileAdvertisement(*nodePtr, outSession, info);
   }
+
   pendingRendezvous_.wakeUnderNamespace(pubNs.trackNamespace);
   return nodePtr;
+}
+
+const NamespaceTree::NamespaceNode::Route* MoqxRelay::advertisableRoute(
+    const NamespaceNode& node,
+    const std::shared_ptr<MoQSession>& subscriber,
+    const NamespaceNode::NamespaceSubscriberInfo& info
+) const {
+  return node.selectRoute([&](const NamespaceNode::Route& r) {
+    return (info.peerID.empty() || r.peerID != info.peerID) &&
+           shouldForwardNamespace(r.session, subscriber, info.options, r.path, relayHopID_);
+  });
+}
+
+void MoqxRelay::reconcileAdvertisement(
+    NamespaceNode& node,
+    const std::shared_ptr<MoQSession>& subscriber,
+    const NamespaceNode::NamespaceSubscriberInfo& info
+) {
+  if (!info.namespacePublishHandle) {
+    return;
+  }
+  const NamespaceNode::AdvertisementKey key{
+      subscriber->sessionId(),
+      info.trackNamespacePrefix.size()
+  };
+  const auto* route = advertisableRoute(node, subscriber, info);
+  const auto* sent = node.findAdvertisement(key);
+  auto suffix = makeNamespaceSuffix(node.trackNamespace, info.trackNamespacePrefix.size());
+  // The same session, or the same non-zero origin, is the same publisher.
+  // Moving to a different publisher withdraws the old advertisement first.
+  auto samePublisher = [&] {
+    return sent->source == route->session->sessionId() ||
+           (!sent->path.empty() && !route->path.empty() &&
+            sent->path.front() != kMoQClusterAnonHopId &&
+            sent->path.front() == route->path.front());
+  };
+  if (sent && (!route || !samePublisher())) {
+    info.namespacePublishHandle->namespaceDoneMsg(suffix);
+    node.eraseAdvertisement(key);
+    sent = nullptr;
+  }
+  if (!route) {
+    return;
+  }
+  // Only a negotiated subscriber sees HOP_PATH and ROUTE_COST, so only it gets updates.
+  if (sent && (!subscriber->negotiatedSetupExtension(SetupExtension::RelayHops) ||
+               (sent->path == route->path && sent->cost == route->cost))) {
+    return;
+  }
+  Namespace ns;
+  ns.trackNamespaceSuffix = std::move(suffix);
+  setOutgoingHopPath(ns.params, subscriber, route->path, route->cost, relayHopID_);
+  info.namespacePublishHandle->namespaceMsg(ns);
+  node.setAdvertisement(
+      key,
+      NamespaceNode::Advertisement{route->session->sessionId(), route->path, route->cost}
+  );
 }
 
 std::optional<MoqxRelay::IngestedRoute>
@@ -564,21 +614,9 @@ void MoqxRelay::doPublishNamespaceDone(
     }
     return;
   }
-  const auto& removed = result.value().removed;
-  const auto& node = *result.value().node;
+  auto& node = *result.value().node;
   for (auto& [outSession, info] : result.value().subscribers) {
-    // Same predicate as the advertisement, so a subscriber excluded then is not
-    // told a namespace it never heard about is done. A subscriber that another
-    // route still reaches keeps the namespace.
-    auto reaches = [&](const NamespaceTree::NamespaceNode::Route& r) {
-      return shouldForwardNamespace(r.session, outSession, info.options, r.path, relayHopID_);
-    };
-    if (reaches(removed) && !node.selectRoute(reaches)) {
-      if (info.namespacePublishHandle) {
-        auto suffix = makeNamespaceSuffix(trackNamespace, info.trackNamespacePrefix.size());
-        info.namespacePublishHandle->namespaceDoneMsg(suffix);
-      }
-    }
+    reconcileAdvertisement(node, outSession, info);
   }
 }
 
@@ -1769,10 +1807,16 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
 
   // Collect-then-act: a single read-only subtree walk gathers every match this
   // subscription would forward
+  NamespaceTree::NamespaceNode::NamespaceSubscriberInfo info{
+      subNs.forward,
+      effectiveOptions,
+      namespacePublishHandle,
+      subNs.trackNamespacePrefix,
+      trackFilter,
+      incomingPeerID
+  };
   struct NamespaceMatch {
-    TrackNamespace prefix;
-    std::vector<uint64_t> path;
-    uint64_t cost;
+    std::shared_ptr<NamespaceTree::NamespaceNode> node;
   };
   struct TrackMatch {
     FullTrackName ftn;
@@ -1811,12 +1855,8 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
           if (overLimit()) {
             return;
           }
-          const auto* route = node->selectRoute([&](const NamespaceTree::NamespaceNode::Route& r) {
-            return (incomingPeerID.empty() || r.peerID != incomingPeerID) &&
-                   shouldForwardNamespace(r.session, session, subNs.options, r.path, relayHopID_);
-          });
-          if (route) {
-            namespaceMatches.push_back(NamespaceMatch{prefix, route->path, route->cost});
+          if (advertisableRoute(*node, session, info)) {
+            namespaceMatches.push_back(NamespaceMatch{node});
           }
           if (!collectTracks && !countTracks) {
             return;
@@ -1854,17 +1894,7 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
     });
   }
 
-  auto nodePtr = namespaceTree_.addNamespaceSubscriber(
-      subNs.trackNamespacePrefix,
-      session,
-      NamespaceTree::NamespaceNode::NamespaceSubscriberInfo{
-          subNs.forward,
-          effectiveOptions,
-          namespacePublishHandle,
-          subNs.trackNamespacePrefix,
-          trackFilter
-      }
-  );
+  auto nodePtr = namespaceTree_.addNamespaceSubscriber(subNs.trackNamespacePrefix, session, info);
 
   // If TRACK_FILTER is present, enroll session in PropertyRanking for top-N selection.
   // NOTE: onSelected callbacks fire synchronously within addSessionToTopNGroup() for
@@ -1877,12 +1907,7 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
 
   // Act phase: replay the collected matches (already filtered by options).
   for (auto& match : namespaceMatches) {
-    // Compute the suffix: prefix minus subNs.trackNamespacePrefix
-    auto suffix = makeNamespaceSuffix(match.prefix, subNs.trackNamespacePrefix.size());
-    Namespace ns;
-    ns.trackNamespaceSuffix = std::move(suffix);
-    setOutgoingHopPath(ns.params, session, match.path, match.cost, relayHopID_);
-    namespacePublishHandle->namespaceMsg(ns);
+    reconcileAdvertisement(*match.node, session, info);
   }
   // Empty for TRACK_FILTER subscribers: PropertyRanking drives selection via onTrackSelected.
   for (auto& match : trackMatches) {
