@@ -30,9 +30,12 @@ namespace openmoq::moqx {
 // otherwise each waiter's baton times out on its own.
 class PendingRendezvousTree {
 public:
-  // Parks `waiter` on ftn until erased or woken.
-  void
-  addWaiter(const moxygen::FullTrackName& ftn, const std::shared_ptr<moxygen::TimedBaton>& waiter);
+  // Parks `waiter` on ftn until erased or woken. `session` is the SUBSCRIBE's session.
+  void addWaiter(
+      const moxygen::FullTrackName& ftn,
+      const std::shared_ptr<moxygen::TimedBaton>& waiter,
+      moxygen::SessionId session
+  );
 
   // Removes `waiter` from ftn's park list, pruning now-empty ancestor nodes.
   void eraseWaiter(
@@ -41,8 +44,9 @@ public:
   );
 
   // Wakes only waiters for this exact track (a PUBLISH landed). Waiters for
-  // other tracks under the same namespace node are left parked.
-  void wakeForTrack(const moxygen::FullTrackName& ftn);
+  // other tracks under the same namespace node are left parked. Returns the
+  // sessions of the woken waiters.
+  std::vector<moxygen::SessionId> wakeForTrack(const moxygen::FullTrackName& ftn);
 
   // Wakes every waiter under this namespace (a PUBLISH_NAMESPACE landed) — any
   // track under it may now be resolvable.
@@ -54,7 +58,11 @@ public:
 
 private:
   struct Node {
-    using WaiterList = std::vector<std::shared_ptr<moxygen::TimedBaton>>;
+    struct Waiter {
+      std::shared_ptr<moxygen::TimedBaton> baton;
+      moxygen::SessionId session;
+    };
+    using WaiterList = std::vector<Waiter>;
 
     bool empty() const { return children.empty() && waitersByTrack.empty(); }
 

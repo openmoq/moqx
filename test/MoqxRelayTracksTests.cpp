@@ -220,6 +220,57 @@ TEST_P(MoqxRelayTracksTest, UnsubscribeTracksStopsFanout) {
   driveIfMultiThread();
 }
 
+// Draft-18 §5.1: a SUBSCRIBE for a track the session already receives via a relay-sent
+// PUBLISH is a second subscription in the same role.
+TEST_P(MoqxRelayTracksTest, SubscribeAfterPublishFanoutIsDuplicate) {
+  auto subscriber = createV18Session();
+  auto publisher = createMockSession();
+  setupPublishSucceeds(subscriber);
+  doSubscribeTracks(subscriber, kTestNamespace);
+
+  EXPECT_CALL(*subscriber, publish(_, _)).Times(1);
+  doPublish(publisher, kTestTrackName);
+  exec_->driveFor(5);
+  ASSERT_TRUE(testing::Mock::VerifyAndClearExpectations(subscriber.get()));
+
+  subscribeToTrack(
+      subscriber,
+      kTestTrackName,
+      createMockConsumer(),
+      RequestID(1),
+      /*addToState=*/false,
+      SubscribeErrorCode::DUPLICATE_SUBSCRIPTION
+  );
+
+  removeSession(subscriber);
+  removeSession(publisher);
+  driveIfMultiThread();
+}
+
+// Draft-18 §5.1: SUBSCRIBE_TRACKS backfill skips a track the session already SUBSCRIBEd to,
+// rather than sending a PUBLISH that would take over that subscription.
+TEST_P(MoqxRelayTracksTest, BackfillSkipsTrackAlreadySubscribed) {
+  auto subscriber = createV18Session();
+  auto publisher = createMockSession();
+  setupPublishSucceeds(subscriber);
+  doPublish(publisher, kTestTrackName);
+  driveIfMultiThread();
+
+  ASSERT_NE(
+      subscribeToTrack(subscriber, kTestTrackName, createMockConsumer(), RequestID(1)),
+      nullptr
+  );
+
+  EXPECT_CALL(*subscriber, publish(_, _)).Times(0);
+  doSubscribeTracks(subscriber, kTestNamespace);
+  exec_->driveFor(5);
+
+  ASSERT_TRUE(testing::Mock::VerifyAndClearExpectations(subscriber.get()));
+  removeSession(subscriber);
+  removeSession(publisher);
+  driveIfMultiThread();
+}
+
 INSTANTIATE_TEST_SUITE_P(
     AllModes,
     MoqxRelayTracksTest,

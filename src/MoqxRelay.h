@@ -689,6 +689,7 @@ private:
   // in SingleThread mode): touches registry_/namespaceTree_/pendingRendezvous_.
   folly::coro::Task<std::optional<moxygen::SubscribeError>> rendezvousWithPublisherOrTimeout(
       const moxygen::SubscribeRequest& subReq,
+      moxygen::SessionId session,
       std::chrono::milliseconds timeout
   );
 
