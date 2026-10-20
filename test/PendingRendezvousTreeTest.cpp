@@ -41,6 +41,7 @@ std::shared_ptr<moxygen::test::MockMoQSession> makeV18Session() {
 class PendingRendezvousTreeTest : public ::testing::Test {
 protected:
   PendingRendezvousTree tree_;
+  static constexpr SessionId kSession{1};
 
   static std::shared_ptr<TimedBaton> makeWaiter() { return std::make_shared<TimedBaton>(); }
 };
@@ -48,7 +49,7 @@ protected:
 TEST_F(PendingRendezvousTreeTest, WakeForTrackSignalsWaiter) {
   FullTrackName ftn{TrackNamespace{{"test", "ns"}}, "track"};
   auto waiter = makeWaiter();
-  tree_.addWaiter(ftn, waiter);
+  tree_.addWaiter(ftn, waiter, kSession);
 
   tree_.wakeForTrack(ftn);
 
@@ -61,8 +62,8 @@ TEST_F(PendingRendezvousTreeTest, WakeForTrackLeavesOtherTrackParked) {
   FullTrackName ftnB{ns, "trackB"};
   auto waiterA = makeWaiter();
   auto waiterB = makeWaiter();
-  tree_.addWaiter(ftnA, waiterA);
-  tree_.addWaiter(ftnB, waiterB);
+  tree_.addWaiter(ftnA, waiterA, kSession);
+  tree_.addWaiter(ftnB, waiterB, kSession);
 
   tree_.wakeForTrack(ftnA);
 
@@ -77,8 +78,8 @@ TEST_F(PendingRendezvousTreeTest, WakeUnderNamespaceSignalsDescendantWaiters) {
   FullTrackName ftnChild{childNs, "trackChild"};
   auto waiterRoot = makeWaiter();
   auto waiterChild = makeWaiter();
-  tree_.addWaiter(ftnRoot, waiterRoot);
-  tree_.addWaiter(ftnChild, waiterChild);
+  tree_.addWaiter(ftnRoot, waiterRoot, kSession);
+  tree_.addWaiter(ftnChild, waiterChild, kSession);
 
   tree_.wakeUnderNamespace(ns);
 
@@ -92,8 +93,8 @@ TEST_F(PendingRendezvousTreeTest, WakeUnderNamespaceLeavesAncestorNamespaceParke
   FullTrackName ftnChild{TrackNamespace{{"a", "b"}}, "track"};
   auto waiterParent = makeWaiter();
   auto waiterChild = makeWaiter();
-  tree_.addWaiter(ftnParent, waiterParent);
-  tree_.addWaiter(ftnChild, waiterChild);
+  tree_.addWaiter(ftnParent, waiterParent, kSession);
+  tree_.addWaiter(ftnChild, waiterChild, kSession);
 
   tree_.wakeUnderNamespace(TrackNamespace{{"a", "b"}});
 
@@ -108,8 +109,8 @@ TEST_F(PendingRendezvousTreeTest, WakeUnderNamespaceLeavesSiblingNamespaceParked
   FullTrackName ftnB{TrackNamespace{{"b"}}, "track"};
   auto waiterA = makeWaiter();
   auto waiterB = makeWaiter();
-  tree_.addWaiter(ftnA, waiterA);
-  tree_.addWaiter(ftnB, waiterB);
+  tree_.addWaiter(ftnA, waiterA, kSession);
+  tree_.addWaiter(ftnB, waiterB, kSession);
 
   tree_.wakeUnderNamespace(TrackNamespace{{"a"}});
 
@@ -122,8 +123,8 @@ TEST_F(PendingRendezvousTreeTest, EraseWaiterRemovesOnlyThatWaiter) {
   FullTrackName ftn{TrackNamespace{{"test", "ns"}}, "track"};
   auto waiter1 = makeWaiter();
   auto waiter2 = makeWaiter();
-  tree_.addWaiter(ftn, waiter1);
-  tree_.addWaiter(ftn, waiter2);
+  tree_.addWaiter(ftn, waiter1, kSession);
+  tree_.addWaiter(ftn, waiter2, kSession);
 
   tree_.eraseWaiter(ftn, waiter1);
   tree_.wakeForTrack(ftn);
@@ -139,6 +140,26 @@ TEST_F(PendingRendezvousTreeTest, EraseWaiterOnUnknownTrackIsNoOp) {
   tree_.eraseWaiter(ftn, waiter); // must not crash despite never being added
 }
 
+TEST_F(PendingRendezvousTreeTest, WakeForTrackReturnsSessionsOfExactTrack) {
+  FullTrackName ftn{TrackNamespace{{"test", "ns"}}, "track"};
+  FullTrackName sibling{TrackNamespace{{"test", "ns"}}, "other"};
+  FullTrackName ancestor{TrackNamespace{{"test"}}, "track"};
+  const SessionId parkedA{1};
+  const SessionId parkedB{2};
+  const SessionId erased{3};
+  const SessionId elsewhere{4};
+  auto erasedWaiter = makeWaiter();
+  tree_.addWaiter(ftn, makeWaiter(), parkedA);
+  tree_.addWaiter(ftn, makeWaiter(), parkedB);
+  tree_.addWaiter(ftn, erasedWaiter, erased);
+  tree_.addWaiter(sibling, makeWaiter(), elsewhere);
+  tree_.addWaiter(ancestor, makeWaiter(), elsewhere);
+  tree_.eraseWaiter(ftn, erasedWaiter);
+
+  EXPECT_THAT(tree_.wakeForTrack(ftn), UnorderedElementsAre(parkedA, parkedB));
+  EXPECT_THAT(tree_.wakeForTrack(ftn), IsEmpty()) << "woken waiters are removed";
+}
+
 // Regression coverage for the reentrant wake-while-iterating fix (see
 // wakeForTrack's declaration comment): two waiters parked on the same track
 // must both resolve from a single wake, since the wake path signals only
@@ -147,8 +168,8 @@ TEST_F(PendingRendezvousTreeTest, MultipleWaitersOnSameTrackAllSignaledByOneWake
   FullTrackName ftn{TrackNamespace{{"test", "ns"}}, "track"};
   auto waiterA = makeWaiter();
   auto waiterB = makeWaiter();
-  tree_.addWaiter(ftn, waiterA);
-  tree_.addWaiter(ftn, waiterB);
+  tree_.addWaiter(ftn, waiterA, kSession);
+  tree_.addWaiter(ftn, waiterB, kSession);
 
   tree_.wakeForTrack(ftn);
 
@@ -164,8 +185,8 @@ TEST_F(PendingRendezvousTreeTest, MultipleWaitersUnderNamespaceAllSignaledByOneW
   FullTrackName ftnB{ns, "trackB"};
   auto waiterA = makeWaiter();
   auto waiterB = makeWaiter();
-  tree_.addWaiter(ftnA, waiterA);
-  tree_.addWaiter(ftnB, waiterB);
+  tree_.addWaiter(ftnA, waiterA, kSession);
+  tree_.addWaiter(ftnB, waiterB, kSession);
 
   tree_.wakeUnderNamespace(ns);
 
