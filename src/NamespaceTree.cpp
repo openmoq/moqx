@@ -119,6 +119,35 @@ NamespaceTree::findPublisherSession(const TrackNamespace& ns, const RouteExclusi
   return route ? route->session : nullptr;
 }
 
+const NamespaceTree::NamespaceNode::Route* NamespaceTree::NamespaceNode::findRoute(SessionId session
+) const {
+  auto it = std::find_if(routes_.begin(), routes_.end(), [&](const Route& r) {
+    return r.session->sessionId() == session;
+  });
+  return it != routes_.end() ? &*it : nullptr;
+}
+
+namespace {
+// One advertisement keeps its first Hop ID, even 0: its stream is the continuity.
+bool sameOrigin(const std::vector<uint64_t>& a, const std::vector<uint64_t>& b) {
+  return !a.empty() && !b.empty() && a.front() == b.front();
+}
+} // namespace
+
+void NamespaceTree::reviseRoute(
+    NamespaceNode::Route& route,
+    std::vector<uint64_t> path,
+    uint64_t cost,
+    SetPublisherResult& result
+) {
+  if (!sameOrigin(route.path, path)) {
+    route.seq = ++nextRouteSeq_;
+    result.replacedSession = route.session;
+  }
+  route.path = std::move(path);
+  route.cost = cost;
+}
+
 NamespaceTree::SetPublisherResult NamespaceTree::setPublisher(
     const TrackNamespace& ns,
     std::shared_ptr<MoQSession> session,
@@ -135,39 +164,67 @@ NamespaceTree::SetPublisherResult NamespaceTree::setPublisher(
   for (const auto& [sess, info] : node->subscribers_) {
     result.subscribers.emplace_back(sess, info);
   }
+  result.node = node;
 
-  {
-    NodeMutationGuard guard(*this, *node, ns);
-    auto displaced = std::find_if(node->routes_.begin(), node->routes_.end(), [&](const auto& r) {
-      return r.session == session || (!fromCluster && !r.fromCluster);
-    });
-    if (displaced != node->routes_.end()) {
-      result.replacedSession = displaced->session;
-      if (displaced->callback) {
-        displaced->callback->publishNamespaceCancel(
-            PublishNamespaceErrorCode::CANCELLED,
-            "New publisher"
-        );
-      }
-      node->routes_.erase(displaced);
-    }
-    node->routes_.push_back(NamespaceNode::Route{
-        .session = std::move(session),
-        .callback = std::move(callback),
-        .peerID = std::move(peerID),
-        .path = std::move(relayHopPath),
-        .cost = routeCost,
-        .seq = ++nextRouteSeq_,
-        .fromCluster = fromCluster,
-    });
-    node->trackNamespace = ns;
-    // Routes share the node as their handle. Only pre-draft-18 sessions put this
-    // request ID on the wire, and those routes are not fromCluster, one per node.
-    if (!fromCluster) {
-      node->setPublishNamespaceOk({.requestID = requestID, .requestSpecificParams = {}});
-    }
+  auto existing = std::find_if(node->routes_.begin(), node->routes_.end(), [&](const auto& r) {
+    return r.session == session || (!fromCluster && !r.fromCluster);
+  });
+  // A NAMESPACE (the only advertisement without a callback) repeated by its session.
+  if (existing != node->routes_.end() && existing->session == session && fromCluster &&
+      !existing->callback && !callback) {
+    existing->peerID = std::move(peerID);
+    reviseRoute(*existing, std::move(relayHopPath), routeCost, result);
+    return result;
   }
 
+  NodeMutationGuard guard(*this, *node, ns);
+  if (existing != node->routes_.end()) {
+    result.replacedSession = existing->session;
+    if (existing->callback) {
+      existing->callback->publishNamespaceCancel(
+          PublishNamespaceErrorCode::CANCELLED,
+          "New publisher"
+      );
+    }
+    node->routes_.erase(existing);
+  }
+  node->routes_.push_back(NamespaceNode::Route{
+      .session = std::move(session),
+      .callback = std::move(callback),
+      .peerID = std::move(peerID),
+      .requestID = requestID,
+      .path = std::move(relayHopPath),
+      .cost = routeCost,
+      .seq = ++nextRouteSeq_,
+      .fromCluster = fromCluster,
+  });
+  node->trackNamespace = ns;
+  return result;
+}
+
+folly::Expected<NamespaceTree::SetPublisherResult, NamespaceTree::Error> NamespaceTree::updateRoute(
+    const TrackNamespace& ns,
+    SessionId session,
+    RequestID requestID,
+    std::vector<uint64_t> path,
+    uint64_t cost
+) {
+  auto node = findNode(ns);
+  if (!node) {
+    return folly::makeUnexpected(Error::NodeNotFound);
+  }
+  auto it = std::find_if(node->routes_.begin(), node->routes_.end(), [&](const auto& r) {
+    return r.session->sessionId() == session && r.requestID == requestID;
+  });
+  if (it == node->routes_.end()) {
+    return folly::makeUnexpected(Error::NotOwner);
+  }
+  SetPublisherResult result;
+  findNode(ns, /*createMissingNodes=*/false, &result.subscribers);
+  for (const auto& [sess, info] : node->subscribers_) {
+    result.subscribers.emplace_back(sess, info);
+  }
+  reviseRoute(*it, std::move(path), cost, result);
   result.node = std::move(node);
   return result;
 }
@@ -175,16 +232,17 @@ NamespaceTree::SetPublisherResult NamespaceTree::setPublisher(
 folly::Expected<NamespaceTree::UnpublishNamespaceResult, NamespaceTree::Error>
 NamespaceTree::unpublishNamespace(
     const TrackNamespace& ns,
-    const std::shared_ptr<MoQSession>& session
+    SessionId session,
+    std::optional<RequestID> requestID
 ) {
   auto node = findNode(ns);
   if (!node) {
     return folly::makeUnexpected(Error::NodeNotFound);
   }
   auto it = std::find_if(node->routes_.begin(), node->routes_.end(), [&](const auto& r) {
-    return r.session == session;
+    return r.session->sessionId() == session && (!requestID || r.requestID == *requestID);
   });
-  if (!session || it == node->routes_.end()) {
+  if (it == node->routes_.end()) {
     return folly::makeUnexpected(Error::NotOwner);
   }
 
@@ -338,7 +396,7 @@ std::shared_ptr<NamespaceTree::NamespaceNode> NamespaceTree::findNode(
     auto it = nodePtr->children_.find(name);
     if (it == nodePtr->children_.end()) {
       if (createMissingNodes) {
-        auto node = std::make_shared<NamespaceNode>(*this, nodePtr.get());
+        auto node = std::make_shared<NamespaceNode>(nodePtr.get());
         node->trackNamespace = partialNs;
         nodePtr->children_.emplace(name, node);
         nodePtr = std::move(node);
