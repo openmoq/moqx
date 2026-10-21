@@ -93,11 +93,9 @@ TEST_P(MoQRelayTest, TrackStatusSuccessfulForward) {
     auto task = publisherInterface()->trackStatus(trackStatus);
     auto res = folly::coro::blockingWait(std::move(task), exec_.get());
 
-    // Should return status from local forwarder
-    // Since no data was sent, statusCode should be TRACK_NOT_STARTED
+    // Should return status from local forwarder; no data was sent yet
     EXPECT_TRUE(res.hasValue());
-    EXPECT_EQ(res.value().statusCode, TrackStatusCode::TRACK_NOT_STARTED);
-    EXPECT_EQ(res.value().fullTrackName, kTestTrackName);
+    EXPECT_FALSE(res.value().largest.has_value());
   });
 
   removeSession(clientSession);
@@ -159,7 +157,7 @@ TEST_P(MoQRelayTest, TrackStatusUnsubscribedRequesterReadsForwarder) {
 
   doPublishNamespace(publisherSession, kTestNamespace);
 
-  // Publish with an initial largest so the forwarder reports IN_PROGRESS.
+  // Publish with an initial largest so the forwarder reports it.
   PublishRequest pub;
   pub.fullTrackName = kTestTrackName;
   pub.largest = AbsoluteLocation{4, 2};
@@ -188,8 +186,6 @@ TEST_P(MoQRelayTest, TrackStatusUnsubscribedRequesterReadsForwarder) {
     auto task = publisherInterface()->trackStatus(trackStatus);
     auto res = folly::coro::blockingWait(std::move(task), exec_.get());
     ASSERT_TRUE(res.hasValue());
-    EXPECT_EQ(res.value().statusCode, TrackStatusCode::IN_PROGRESS);
-    EXPECT_EQ(res.value().fullTrackName, kTestTrackName);
     ASSERT_TRUE(res.value().largest.has_value());
     EXPECT_EQ(res.value().largest->group, 4);
     EXPECT_EQ(res.value().largest->object, 2);

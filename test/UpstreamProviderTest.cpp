@@ -57,7 +57,6 @@ Publisher::TrackStatusResult makeTrackStatusOk(const TrackStatus& req) {
   TrackStatusOk ok;
   ok.requestID = req.requestID;
   ok.trackAlias = TrackAlias(req.requestID.value);
-  ok.statusCode = TrackStatusCode::IN_PROGRESS;
   return ok;
 }
 

@@ -609,7 +609,7 @@ private:
   // Must be scheduled on the publisher exec; looks the forwarder up in tlForwarders_ by FTN.
   // nullopt means no active sub, defer upstream.
   folly::coro::Task<std::optional<moxygen::TrackStatusOk>>
-  readPublisherForwarderStatus(bool hasHandle, moxygen::TrackStatus req);
+  readPublisherForwarderStatus(moxygen::TrackStatus req);
   folly::coro::Task<void> onUpstreamConnectImpl(std::shared_ptr<moxygen::MoQSession> session);
 
   // Synchronous result of publishWithSession: the consumer the publisher writes
