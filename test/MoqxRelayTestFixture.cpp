@@ -338,6 +338,14 @@ std::shared_ptr<Subscriber::PublishNamespaceHandle> MoQRelayTest::doPublishNames
 ) {
   PublishNamespace ann;
   ann.trackNamespace = ns;
+  return doPublishNamespaceMsg(std::move(session), std::move(ann), addToState);
+}
+
+std::shared_ptr<Subscriber::PublishNamespaceHandle> MoQRelayTest::doPublishNamespaceMsg(
+    std::shared_ptr<MoQSession> session,
+    PublishNamespace ann,
+    bool addToState
+) {
   return withSessionContext(session, [&]() {
     auto task = subscriberInterface()->publishNamespace(std::move(ann), nullptr);
     auto res = folly::coro::blockingWait(std::move(task), exec_.get());
