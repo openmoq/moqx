@@ -105,6 +105,8 @@ struct MvfstConfig {
   // Ignore the peer's path MTU and send full-size (max UDP payload) packets.
   // Useful for testing / controlled networks; off by default to respect PMTU.
   bool canIgnorePathMTU{false};
+  // Raw-QUIC sessions only; WebTransport-over-H3 is unaffected.
+  bool useQuicWtSession{true};
 
   // BBR (BBR1) congestion control tunables.
   // conservativeRecovery is shared with BBR2.

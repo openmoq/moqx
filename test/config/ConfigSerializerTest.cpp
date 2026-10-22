@@ -37,7 +37,7 @@ static_assert(
     "QuicConfig changed — update serializeQuic()"
 );
 static_assert(
-    rfl::internal::num_fields<MvfstConfig> == 14,
+    rfl::internal::num_fields<MvfstConfig> == 15,
     "MvfstConfig changed — update serializeMvfst()"
 );
 static_assert(

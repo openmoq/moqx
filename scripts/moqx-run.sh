@@ -36,6 +36,8 @@ Relay tuning (templated into the config; CLI > .env > default):
       --cache / --no-cache  relay object cache (default: on)
       --relay-thread / --no-relay-thread   dedicated relay exec thread (default: on)
       --ignore-path-mtu     send full-size pkts, skip PMTU discovery (default: off)
+      --quic-wt-session / --no-quic-wt-session   raw-QUIC sessions use QuicWtSession
+                            instead of QuicWebTransport, mvfst only (default: on)
       --bpf-steering        mvfst CID reuseport steering, Linux+mvfst (default: off)
 
 Listener (templated into the config; CLI > .env > default):
@@ -164,6 +166,8 @@ while (($#)); do
     --relay-thread)    CLI_RELAY_THREAD=true;  shift ;;
     --no-relay-thread) CLI_RELAY_THREAD=false; shift ;;
     --ignore-path-mtu) CLI_IGNORE_PMTU=true; shift ;;
+    --quic-wt-session)    CLI_QUIC_WT=true;  shift ;;
+    --no-quic-wt-session) CLI_QUIC_WT=false; shift ;;
     --bpf-steering)    CLI_BPF=true;         shift ;;
     --quic-stack)    CLI_STACK="$2"; shift 2 ;;
     --moqt-versions) CLI_MOQT_VERSIONS="$2"; shift 2 ;;
@@ -228,11 +232,12 @@ MOQX_RELAY_THREAD="$(norm_bool "${CLI_RELAY_THREAD:-${MOQX_RELAY_THREAD:-true}}"
 # bpf steering and ignore_path_mtu are experimental (Linux+mvfst); default off.
 MOQX_BPF_STEERING="$(norm_bool "${CLI_BPF:-${MOQX_BPF_STEERING:-false}}")"
 MOQX_IGNORE_PATH_MTU="$(norm_bool "${CLI_IGNORE_PMTU:-${MOQX_IGNORE_PATH_MTU:-false}}")"
-for b in MOQX_LOCAL_FWD MOQX_CACHE MOQX_RELAY_THREAD MOQX_BPF_STEERING MOQX_IGNORE_PATH_MTU; do
+MOQX_QUIC_WT_SESSION="$(norm_bool "${CLI_QUIC_WT:-${MOQX_QUIC_WT_SESSION:-true}}")"
+for b in MOQX_LOCAL_FWD MOQX_CACHE MOQX_RELAY_THREAD MOQX_BPF_STEERING MOQX_IGNORE_PATH_MTU MOQX_QUIC_WT_SESSION; do
   [[ "${!b}" == INVALID ]] && { echo "invalid boolean for $b (want true/false)" >&2; exit 2; }
 done
 export MOQX_LOCAL_FWD MOQX_CACHE MOQX_RELAY_THREAD
-export MOQX_BPF_STEERING MOQX_IGNORE_PATH_MTU
+export MOQX_BPF_STEERING MOQX_IGNORE_PATH_MTU MOQX_QUIC_WT_SESSION
 
 # ── Listener knobs (CLI > .env/env > default), exported for envsubst ──────
 export MOQX_STACK="${CLI_STACK:-${MOQX_STACK:-mvfst}}"
@@ -333,7 +338,7 @@ if (( DRY_RUN )); then
   echo "relay_id=$MOQX_RELAY_ID stack=$MOQX_STACK moqt_versions=$MOQX_MOQT_VERSIONS bind=$MOQX_BIND_ADDR port=$MOQX_PORT admin_port=$MOQX_ADMIN_PORT endpoint=$MOQX_ENDPOINT insecure=$MOQX_INSECURE"
   echo "resolved_config=$RESOLVED_CONFIG"
   echo "threads=$MOQX_THREADS relay_thread=$MOQX_RELAY_THREAD local_fwd=$MOQX_LOCAL_FWD bpf_steering=$MOQX_BPF_STEERING cache=$MOQX_CACHE"
-  echo "cc=$MOQX_CC send_pkts=$MOQX_SEND_PKTS recv_pkts=$MOQX_RECV_PKTS udp_buffer=$MOQX_UDP_BUFFER ignore_path_mtu=$MOQX_IGNORE_PATH_MTU"
+  echo "cc=$MOQX_CC send_pkts=$MOQX_SEND_PKTS recv_pkts=$MOQX_RECV_PKTS udp_buffer=$MOQX_UDP_BUFFER ignore_path_mtu=$MOQX_IGNORE_PATH_MTU quic_wt_session=$MOQX_QUIC_WT_SESSION"
   echo "# resolved env"
   echo "GLOG_minloglevel=$GLOG_minloglevel GLOG_v=$GLOG_v"
   echo "GLOG_vmodule=$GLOG_vmodule"

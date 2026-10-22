@@ -172,6 +172,12 @@ struct ParsedMvfstConfig {
       "path MTU is known; leave off to respect PMTU discovery.",
       std::optional<bool>>
       ignore_path_mtu;
+  rfl::Description<
+      "Run raw-QUIC MoQT sessions over proxygen's QuicWtSession (WtStreamManager) "
+      "instead of QuicWebTransport (default: true). WebTransport-over-H3 sessions "
+      "are unaffected.",
+      std::optional<bool>>
+      use_quic_wt_session;
 
   // BBR (BBR1) congestion control tunables.
   // conservative_recovery is shared with BBR2 — set it here when using either.
