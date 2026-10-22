@@ -46,6 +46,9 @@ protected:
   // Override to add setup parameters; runs before the server accepts sessions.
   virtual void configureServer(moxygen::MoQServer& /*server*/) {}
 
+  // Runs on the server thread for each CLIENT_SETUP it accepts.
+  virtual void onServerClientSetup(const moxygen::Setup& /*clientSetup*/) {}
+
   void SetUp() override {
     // Start the server thread. The server must be constructed and started
     // on the same thread (QuicServer requirement).
@@ -156,6 +159,7 @@ private:
       if (fixture_.refuseClientSetup()) {
         return folly::Try<moxygen::Setup>(std::runtime_error("test server refused the handshake"));
       }
+      fixture_.onServerClientSetup(clientSetup);
       return moxygen::MoQServer::onClientSetup(std::move(clientSetup), session);
     }
 
