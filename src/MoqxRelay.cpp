@@ -2139,7 +2139,7 @@ MoqxRelay::subscribeUpstreamAndApplyOk(
   co_return UpstreamOk{std::move(subRes.value()), ok.requestID, ok.extensions, ok.largest};
 }
 
-// Runs on relayExec_: caches the OK's extensions and fulfills `pending`, returning a
+// Runs on relayExec_: fulfills `pending` and caches the OK's Largest and extensions, returning a
 // SubscribeError on reconnect (pending replaced) or nullopt. Shared by subscribeImpl
 // and the LF path; the caller applies upstreamOk.largest (target differs per path).
 std::optional<SubscribeError> MoqxRelay::completeUpstreamSubscription(
@@ -2150,9 +2150,6 @@ std::optional<SubscribeError> MoqxRelay::completeUpstreamSubscription(
     std::shared_ptr<Publisher> upstreamPublisher,
     RequestID clientRequestID
 ) {
-  if (cache_) {
-    cache_->setTrackExtensions(ftn, upstreamOk.extensions);
-  }
   if (!pending.complete(
           std::move(upstreamOk.handle),
           upstreamOk.requestID,
@@ -2165,6 +2162,10 @@ std::optional<SubscribeError> MoqxRelay::completeUpstreamSubscription(
         SubscribeErrorCode::INTERNAL_ERROR,
         "publisher reconnected during subscribe"
     };
+  }
+  // After complete(): the cache does not lower a replaced subscription's Largest.
+  if (cache_) {
+    cache_->setTrackState(ftn, upstreamOk.largest, upstreamOk.extensions);
   }
   return std::nullopt;
 }
@@ -2533,7 +2534,8 @@ folly::coro::Task<Publisher::SubscribeResult>
 MoqxRelay::subscribeImpl(SubscribeRequest subReq, std::shared_ptr<TrackConsumer> consumer) {
   auto session = MoQSession::getRequestSession();
   maybeSetSessionExec(*session);
-  const auto& ftn = subReq.fullTrackName;
+  // A copy: subReq moves upstream before the cache and registry use the name.
+  const auto ftn = subReq.fullTrackName;
 
   if (ftn.trackNamespace.empty() && !emptyNamespaceAllowed(session)) {
     co_return folly::makeUnexpected(

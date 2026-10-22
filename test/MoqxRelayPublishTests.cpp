@@ -584,6 +584,152 @@ TEST_P(MoQRelayTest, PublishReconnectDuringSubscribeSuccessPathCrash) {
   verifyOnRelayExec([&] { relay_->doPublishNamespaceDone(kTestNamespace, publisherSession2); });
 }
 
+// The upstream SUBSCRIBE_OK's Largest reaches the cache, so a FETCH up to it is
+// answered at once and fetches the uncached part upstream.
+TEST_P(MoQRelayTest, SubscribeOkLargestReachesCache) {
+  resetRelay(config::CacheConfig{.maxCachedTracks = 10});
+  relay_->setAllowedNamespacePrefix(kAllowedPrefix);
+  auto publisherSession = createMockSession();
+  auto subscriberSession = createMockSession();
+  auto fetchSession = createMockSession();
+  doPublishNamespace(publisherSession, kTestNamespace);
+
+  EXPECT_CALL(*publisherSession, subscribe(_, _))
+      .WillOnce(
+          [](SubscribeRequest subReq,
+             std::shared_ptr<TrackConsumer>) -> folly::coro::Task<Publisher::SubscribeResult> {
+            SubscribeOk ok;
+            ok.requestID = subReq.requestID;
+            ok.trackAlias = TrackAlias(subReq.requestID.value);
+            ok.expires = std::chrono::milliseconds(0);
+            ok.groupOrder = GroupOrder::OldestFirst;
+            ok.largest = AbsoluteLocation{5, 0};
+            co_return std::make_shared<NiceMock<MockSubscriptionHandle>>(std::move(ok));
+          }
+      );
+  auto handle =
+      subscribeToTrack(subscriberSession, kTestTrackName, createMockConsumer(), RequestID(1));
+  ASSERT_NE(handle, nullptr);
+
+  std::atomic<bool> upstreamFetched{false};
+  EXPECT_CALL(*publisherSession, fetch(_, _))
+      .WillOnce([&upstreamFetched](Fetch, std::shared_ptr<FetchConsumer> consumer) {
+        upstreamFetched.store(true);
+        consumer->endOfFetch();
+        return folly::coro::makeTask<Publisher::FetchResult>(std::make_shared<MockFetchHandle>(
+            FetchOk{RequestID(0), GroupOrder::OldestFirst, 0, AbsoluteLocation{2, 0}, {}}
+        ));
+      });
+  Fetch fetch(RequestID(0), kTestTrackName, AbsoluteLocation{0, 0}, AbsoluteLocation{6, 0});
+  auto fetchConsumer = std::make_shared<NiceMock<MockFetchConsumer>>();
+  ON_CALL(*fetchConsumer, endOfFetch())
+      .WillByDefault(Return(folly::makeExpected<MoQPublishError>(folly::unit)));
+  withSessionContext(fetchSession, [&]() {
+    auto task = publisherInterface()->fetch(std::move(fetch), fetchConsumer);
+    auto res = folly::coro::blockingWait(std::move(task), exec_.get());
+    ASSERT_TRUE(res.hasValue());
+    EXPECT_EQ(res.value()->fetchOk().endLocation, (AbsoluteLocation{5, 1}));
+  });
+  EXPECT_TRUE(driveUntil([&] { return upstreamFetched.load(); }));
+
+  handle->unsubscribe();
+  removeSession(subscriberSession);
+  removeSession(fetchSession);
+  removeSession(publisherSession);
+  driveIfMultiThread();
+}
+
+// A SUBSCRIBE_OK that arrives after a reconnect replaced its entry leaves the
+// cache's Largest alone, so a FETCH waits for the new publisher's answer.
+TEST_P(MoQRelayTest, ReplacedSubscribeOkLeavesCacheLargest) {
+  resetRelay(config::CacheConfig{.maxCachedTracks = 10});
+  relay_->setAllowedNamespacePrefix(kAllowedPrefix);
+  auto publisherSession1 = createMockSession();
+  auto publisherSession2 = createMockSession();
+  auto subscriberSession = createMockSession();
+  auto fetchSession = createMockSession();
+
+  PublishNamespace pn;
+  pn.trackNamespace = kTestNamespace;
+  relay_->doPublishNamespace(pn, publisherSession1, nullptr);
+
+  std::shared_ptr<TrackConsumer> pub2Consumer;
+  EXPECT_CALL(*publisherSession1, subscribe(_, _))
+      .WillOnce(
+          [this,
+           publisherSession2,
+           &pub2Consumer](SubscribeRequest subReq, std::shared_ptr<TrackConsumer>)
+              -> folly::coro::Task<Publisher::SubscribeResult> {
+            PublishNamespace pn2;
+            pn2.trackNamespace = kTestNamespace;
+            relay_->doPublishNamespace(pn2, publisherSession2, nullptr);
+            {
+              folly::RequestContextScopeGuard ctx;
+              folly::RequestContext::get()->setContextData(
+                  sessionRequestToken(),
+                  std::make_unique<MoQSession::MoQSessionRequestData>(publisherSession2)
+              );
+              PublishRequest pub;
+              pub.fullTrackName = kTestTrackName;
+              auto res =
+                  subscriberInterface()->publish(std::move(pub), createMockSubscriptionHandle());
+              EXPECT_TRUE(res.hasValue()) << "publish in mock unexpectedly failed";
+              if (res.hasValue()) {
+                pub2Consumer = res->consumer;
+                co_await std::move(res->reply);
+              }
+            }
+            SubscribeOk ok;
+            ok.requestID = subReq.requestID;
+            ok.trackAlias = TrackAlias(subReq.requestID.value);
+            ok.expires = std::chrono::milliseconds(0);
+            ok.groupOrder = GroupOrder::OldestFirst;
+            ok.largest = AbsoluteLocation{5, 0};
+            co_return std::make_shared<NiceMock<MockSubscriptionHandle>>(std::move(ok));
+          }
+      );
+
+  withSessionContext(subscriberSession, [&]() {
+    SubscribeRequest sub;
+    sub.fullTrackName = kTestTrackName;
+    sub.requestID = RequestID(1);
+    sub.locType = LocationType::LargestObject;
+    auto result = folly::coro::blockingWait(
+        publisherInterface()->subscribe(std::move(sub), createMockConsumer()),
+        exec_.get()
+    );
+    EXPECT_FALSE(result.hasValue()) << "subscribe should fail (publisher reconnected)";
+  });
+
+  EXPECT_CALL(*publisherSession2, fetch(_, _))
+      .WillOnce([](Fetch, std::shared_ptr<FetchConsumer> consumer) {
+        consumer->endOfFetch();
+        return folly::coro::makeTask<Publisher::FetchResult>(std::make_shared<MockFetchHandle>(
+            FetchOk{RequestID(0), GroupOrder::OldestFirst, 0, AbsoluteLocation{0, 1}, {}}
+        ));
+      });
+  // Ends inside the stale Largest, which would answer it from the cache.
+  Fetch fetch(RequestID(0), kTestTrackName, AbsoluteLocation{0, 0}, AbsoluteLocation{3, 0});
+  auto fetchConsumer = std::make_shared<NiceMock<MockFetchConsumer>>();
+  ON_CALL(*fetchConsumer, endOfFetch())
+      .WillByDefault(Return(folly::makeExpected<MoQPublishError>(folly::unit)));
+  withSessionContext(fetchSession, [&]() {
+    auto task = publisherInterface()->fetch(std::move(fetch), fetchConsumer);
+    auto res = folly::coro::blockingWait(std::move(task), exec_.get());
+    ASSERT_TRUE(res.hasValue());
+    EXPECT_EQ(res.value()->fetchOk().endLocation, (AbsoluteLocation{0, 1}));
+  });
+
+  if (pub2Consumer) {
+    pub2Consumer->publishDone(
+        {RequestID(0), PublishDoneStatusCode::SESSION_CLOSED, 0, "test cleanup"}
+    );
+  }
+  verifyOnRelayExec([&] { relay_->doPublishNamespaceDone(kTestNamespace, publisherSession2); });
+  removeSession(fetchSession);
+  driveIfMultiThread();
+}
+
 // Regression: after publishDone the namespace-tree node must be pruned when
 // the track was the only remaining content.  (Was a bug before unpublishTrack
 // gained a NodeMutationGuard; kept as a regression guard.)

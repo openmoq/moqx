@@ -139,7 +139,12 @@ public:
     return maxAllowedCacheDuration_;
   }
 
-  void setTrackExtensions(const moxygen::FullTrackName& ftn, moxygen::Extensions extensions);
+  // Takes Largest from SUBSCRIBE_OK so a cached track does not keep a stale one.
+  void setTrackState(
+      const moxygen::FullTrackName& ftn,
+      std::optional<moxygen::AbsoluteLocation> largest,
+      moxygen::Extensions extensions
+  );
 
   TimePoint now() const { return clock_(); }
 
@@ -454,6 +459,8 @@ private:
   // defaultMaxCacheDuration_, or nullopt if neither is set.
   std::optional<std::chrono::milliseconds>
   getEffectiveCacheDuration(const moxygen::Extensions& extensions) const;
+
+  CacheTrack& getOrCreateTrack(const moxygen::FullTrackName& ftn);
 
   // Track LRU management helpers
   void addTrackToLRU(const moxygen::FullTrackName& ftn, CacheTrack& track);

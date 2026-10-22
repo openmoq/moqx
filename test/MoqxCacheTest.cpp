@@ -838,6 +838,21 @@ CO_TEST_F(MoqxCacheTest, TestFetchOnLiveTrackPastLargest) {
   expectFetchObjects({0, 0}, {0, 1}, false);
 }
 
+// A live fetch ends at upstream's Largest and fetches the uncached part upstream.
+CO_TEST_F(MoqxCacheTest, TestLiveFetchRunsToUpstreamLargest) {
+  populateCacheRange({0, 0}, {0, 5});
+  auto writeback = cache_.getSubscribeWriteback(kTestTrackName, trackConsumer_);
+  cache_.setTrackState(kTestTrackName, AbsoluteLocation{1, 4}, noExtensions());
+
+  expectUpstreamFetch({0, 5}, {1, 5}, 0, AbsoluteLocation{1, 5});
+  auto res = co_await cache_.fetch(getFetch({0, 0}, {1, 5}), trackingConsumer_, upstream_);
+  CO_ASSERT_TRUE(res.hasValue());
+  EXPECT_EQ(res.value()->fetchOk().endLocation, (AbsoluteLocation{1, 5}));
+  expectFetchObjects({0, 0}, {1, 5}, true);
+  co_await folly::coro::co_reschedule_on_current_executor;
+  serveCacheRangeFromUpstream({0, 5}, {1, 5});
+}
+
 CO_TEST_F(MoqxCacheTest, TestFetchEndBeyondEndOfTrack) {
   // Test case for fetch end beyond the end of track
   populateCacheRange({0, 0}, {0, 5});
@@ -2356,7 +2371,7 @@ TEST_F(MoqxCacheTest, TestDatagramForwardsLastInGroup) {
 TEST_F(MoqxCacheTest, TestDatagramForwardsLastInGroupWhenCachingSkipped) {
   // Same as above, but on the shouldSkipCaching() passthrough path.
   cache_.setDefaultMaxCacheDuration(std::chrono::milliseconds(0));
-  cache_.setTrackExtensions(kTestTrackName, Extensions{});
+  cache_.setTrackState(kTestTrackName, std::nullopt, Extensions{});
   auto writeback = cache_.getSubscribeWriteback(kTestTrackName, trackConsumer_);
 
   EXPECT_CALL(*trackConsumer_, datagram(_, _, true)).WillOnce(Return(folly::unit));
@@ -2786,7 +2801,7 @@ CO_TEST_F(MoqxCacheTest, TestSkipUncachedAfterTTLExpiration) {
   // takes the "live track" fast path and fires fetchImpl asynchronously.
   auto currentTime = std::make_shared<MoqxCache::TimePoint>(MoqxCache::SteadyClock::now());
   cache_.setClockForTesting([currentTime]() { return *currentTime; });
-  cache_.setTrackExtensions(kTestTrackName, makeCacheDurationExt(1000));
+  cache_.setTrackState(kTestTrackName, std::nullopt, makeCacheDurationExt(1000));
 
   auto wb = cache_.getSubscribeWriteback(kTestTrackName, trackConsumer_);
   wb->datagram(ObjectHeader(0, 0, 0, 0, 100), makeBuf(100));
@@ -3865,7 +3880,7 @@ TEST_F(MoqxCacheTest, TestMaxCacheDurationExpiration) {
   populateCacheRange({0, 0}, {0, 5});
   EXPECT_TRUE(cache_.hasCachedObject(kTestTrackName, {0, 0}));
 
-  cache_.setTrackExtensions(kTestTrackName, makeCacheDurationExt(1000));
+  cache_.setTrackState(kTestTrackName, std::nullopt, makeCacheDurationExt(1000));
 
   // Advance clock past TTL
   currentTime += std::chrono::milliseconds(1001);
@@ -3880,7 +3895,7 @@ TEST_F(MoqxCacheTest, TestMaxCacheDurationNotExpired) {
   cache_.setClockForTesting([&currentTime]() { return currentTime; });
 
   populateCacheRange({0, 0}, {0, 5});
-  cache_.setTrackExtensions(kTestTrackName, makeCacheDurationExt(1000));
+  cache_.setTrackState(kTestTrackName, std::nullopt, makeCacheDurationExt(1000));
 
   // Advance clock within TTL
   currentTime += std::chrono::milliseconds(999);
@@ -3910,7 +3925,7 @@ TEST_F(MoqxCacheTest, TestMaxCacheDurationRefreshOnRecache) {
   auto currentTime = MoqxCache::SteadyClock::now();
   cache_.setClockForTesting([&currentTime]() { return currentTime; });
 
-  cache_.setTrackExtensions(kTestTrackName, makeCacheDurationExt(1000));
+  cache_.setTrackState(kTestTrackName, std::nullopt, makeCacheDurationExt(1000));
 
   // Cache object at T=0
   populateCacheRange({0, 0}, {0, 1});
@@ -3935,7 +3950,7 @@ CO_TEST_F(MoqxCacheTest, TestMaxCacheDurationFetchMissOnExpired) {
   cache_.setClockForTesting([&currentTime]() { return currentTime; });
 
   populateCacheRange({0, 0}, {0, 10});
-  cache_.setTrackExtensions(kTestTrackName, makeCacheDurationExt(1000));
+  cache_.setTrackState(kTestTrackName, std::nullopt, makeCacheDurationExt(1000));
 
   // Advance past TTL
   currentTime += std::chrono::milliseconds(1001);
@@ -3963,7 +3978,7 @@ TEST_F(MoqxCacheTest, TestMaxCacheDurationMixedExpiration) {
   auto currentTime = MoqxCache::SteadyClock::now();
   cache_.setClockForTesting([&currentTime]() { return currentTime; });
 
-  cache_.setTrackExtensions(kTestTrackName, makeCacheDurationExt(1000));
+  cache_.setTrackState(kTestTrackName, std::nullopt, makeCacheDurationExt(1000));
 
   // Cache objects 0-4 at T=0
   populateCacheRange({0, 0}, {0, 5});
@@ -3988,10 +4003,10 @@ TEST_F(MoqxCacheTest, TestClearMaxCacheDuration) {
   cache_.setClockForTesting([&currentTime]() { return currentTime; });
 
   populateCacheRange({0, 0}, {0, 5});
-  cache_.setTrackExtensions(kTestTrackName, makeCacheDurationExt(1000));
+  cache_.setTrackState(kTestTrackName, std::nullopt, makeCacheDurationExt(1000));
 
   // Clear the TTL by updating extensions without a cache duration
-  cache_.setTrackExtensions(kTestTrackName, Extensions{});
+  cache_.setTrackState(kTestTrackName, std::nullopt, Extensions{});
 
   // Advance clock past what was the TTL
   currentTime += std::chrono::milliseconds(2000);
@@ -4024,7 +4039,7 @@ TEST_F(MoqxCacheTest, TestPerTrackDurationOverridesDefault) {
   cache_.setClockForTesting([&currentTime]() { return currentTime; });
 
   cache_.setDefaultMaxCacheDuration(std::chrono::milliseconds(500));
-  cache_.setTrackExtensions(kTestTrackName, makeCacheDurationExt(2000));
+  cache_.setTrackState(kTestTrackName, std::nullopt, makeCacheDurationExt(2000));
   populateCacheRange({0, 0}, {0, 5});
 
   // Past the default TTL but within the per-track TTL
@@ -4039,7 +4054,7 @@ TEST_F(MoqxCacheTest, TestPerTrackDurationOverridesDefault) {
 TEST_F(MoqxCacheTest, TestZeroDefaultDurationSkipsCaching) {
   // defaultMaxCacheDuration=0ms + no publisher duration → objects not cached.
   cache_.setDefaultMaxCacheDuration(std::chrono::milliseconds(0));
-  cache_.setTrackExtensions(kTestTrackName, Extensions{});
+  cache_.setTrackState(kTestTrackName, std::nullopt, Extensions{});
   populateCacheRange({0, 0}, {0, 5});
 
   EXPECT_FALSE(cache_.hasCachedObject(kTestTrackName, {0, 0}));
@@ -4052,7 +4067,7 @@ TEST_F(MoqxCacheTest, TestZeroDefaultDurationPublisherOverrides) {
   cache_.setClockForTesting([&currentTime]() { return currentTime; });
 
   cache_.setDefaultMaxCacheDuration(std::chrono::milliseconds(0));
-  cache_.setTrackExtensions(kTestTrackName, makeCacheDurationExt(1000));
+  cache_.setTrackState(kTestTrackName, std::nullopt, makeCacheDurationExt(1000));
   populateCacheRange({0, 0}, {0, 5});
 
   EXPECT_TRUE(cache_.hasCachedObject(kTestTrackName, {0, 0}));
@@ -4068,7 +4083,7 @@ TEST_F(MoqxCacheTest, TestMaxAllowedCacheDurationClampsPublisher) {
   cache_.setClockForTesting([&currentTime]() { return currentTime; });
 
   cache_.setMaxAllowedCacheDuration(std::chrono::milliseconds(500));
-  cache_.setTrackExtensions(kTestTrackName, makeCacheDurationExt(2000));
+  cache_.setTrackState(kTestTrackName, std::nullopt, makeCacheDurationExt(2000));
   populateCacheRange({0, 0}, {0, 5});
 
   // Within the cap
@@ -4086,7 +4101,7 @@ TEST_F(MoqxCacheTest, TestMaxAllowedCacheDurationNoClampWhenUnder) {
   cache_.setClockForTesting([&currentTime]() { return currentTime; });
 
   cache_.setMaxAllowedCacheDuration(std::chrono::milliseconds(500));
-  cache_.setTrackExtensions(kTestTrackName, makeCacheDurationExt(300));
+  cache_.setTrackState(kTestTrackName, std::nullopt, makeCacheDurationExt(300));
   populateCacheRange({0, 0}, {0, 5});
 
   // Within publisher TTL
@@ -4181,11 +4196,11 @@ TEST_F(MoqxCacheTest, SubgroupWritebackBeginObjectCacheErrorResetsInner) {
 }
 
 CO_TEST_F(MoqxCacheTest, TestFetchOkIncludesTrackExtensions) {
-  // Set extensions on the track via setTrackExtensions
+  // Set extensions on the track via setTrackState
   Extensions ext;
   ext.insertMutableExtension(Extension{kDeliveryTimeoutExtensionType, 5000});
   ext.insertMutableExtension(Extension{0xBEEF'0000, 42});
-  cache_.setTrackExtensions(kTestTrackName, ext);
+  cache_.setTrackState(kTestTrackName, std::nullopt, ext);
 
   // Populate cache so the fetch is a full cache hit
   populateCacheRange({0, 0}, {0, 10});
@@ -4215,7 +4230,7 @@ CO_TEST_F(MoqxCacheTest, TestUpstreamFetchSavesExtensionsToTrack) {
 
   // Set extensions on the track (simulates what MoQRelay does after
   // SubscribeOk)
-  cache_.setTrackExtensions(kTestTrackName, upstreamExt);
+  cache_.setTrackState(kTestTrackName, std::nullopt, upstreamExt);
 
   // Serve data from upstream so the cache is populated
   expectFetchObjects({0, 0}, {0, 10}, true);
@@ -4826,7 +4841,7 @@ TEST_F(MoqxCacheTest, ExpiredObjectByteAccounting) {
   // Set per-track cache duration on track A only, and advance clock past expiry
   auto testClock = MoqxCache::SteadyClock::now();
   cache_.setClockForTesting([&testClock]() { return testClock; });
-  cache_.setTrackExtensions(trackA, makeCacheDurationExt(1));
+  cache_.setTrackState(trackA, std::nullopt, makeCacheDurationExt(1));
   testClock += std::chrono::milliseconds(100);
 
   // Trigger expiry erasure on track A's object — leaks 100 bytes in
