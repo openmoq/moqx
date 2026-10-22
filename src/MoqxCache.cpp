@@ -1893,18 +1893,35 @@ MoqxCache::getEffectiveCacheDuration(const Extensions& extensions) const {
   return defaultMaxCacheDuration_;
 }
 
-void MoqxCache::setTrackExtensions(const FullTrackName& ftn, Extensions extensions) {
-  if (auto dur = getEffectiveCacheDuration(extensions)) {
-    setMaxCacheDuration(ftn, *dur);
-  } else {
-    clearMaxCacheDuration(ftn);
-  }
+MoqxCache::CacheTrack& MoqxCache::getOrCreateTrack(const FullTrackName& ftn) {
   auto it = cache_.find(ftn);
   if (it == cache_.end()) {
     it = cache_.emplace(ftn, std::make_shared<CacheTrack>()).first;
     addTrackToLRU(ftn, *it->second);
   }
-  it->second->extensions = std::move(extensions);
+  return *it->second;
+}
+
+void MoqxCache::setTrackState(
+    const FullTrackName& ftn,
+    std::optional<AbsoluteLocation> largest,
+    Extensions extensions
+) {
+  if (auto dur = getEffectiveCacheDuration(extensions)) {
+    setMaxCacheDuration(ftn, *dur);
+  } else {
+    clearMaxCacheDuration(ftn);
+  }
+  auto& track = getOrCreateTrack(ftn);
+  track.extensions = std::move(extensions);
+  if (!largest) {
+    return;
+  }
+  auto res = track.updateLargest(*largest);
+  if (res.hasError()) {
+    // Upstream's Largest is past the cached end of track.
+    XLOG(ERR) << "setTrackState ftn=" << ftn << " err=" << res.error().msg;
+  }
 }
 
 MoqxCache::FetchRangeIterator::FetchRangeIterator(

@@ -2139,7 +2139,7 @@ MoqxRelay::subscribeUpstreamAndApplyOk(
   co_return UpstreamOk{std::move(subRes.value()), ok.requestID, ok.extensions, ok.largest};
 }
 
-// Runs on relayExec_: caches the OK's extensions and fulfills `pending`, returning a
+// Runs on relayExec_: caches the OK's Largest and extensions and fulfills `pending`, returning a
 // SubscribeError on reconnect (pending replaced) or nullopt. Shared by subscribeImpl
 // and the LF path; the caller applies upstreamOk.largest (target differs per path).
 std::optional<SubscribeError> MoqxRelay::completeUpstreamSubscription(
@@ -2151,7 +2151,7 @@ std::optional<SubscribeError> MoqxRelay::completeUpstreamSubscription(
     RequestID clientRequestID
 ) {
   if (cache_) {
-    cache_->setTrackExtensions(ftn, upstreamOk.extensions);
+    cache_->setTrackState(ftn, upstreamOk.largest, upstreamOk.extensions);
   }
   if (!pending.complete(
           std::move(upstreamOk.handle),
