@@ -169,6 +169,74 @@ TEST_P(MoQRelayTest, FetchPrefersExactTrackOverNamespace) {
   removeSession(fetchSession);
 }
 
+// A republished track's PUBLISH Largest is past the cached objects, so a FETCH
+// up to it goes upstream for the rest.
+TEST_P(MoQRelayTest, FetchAfterRepublishRunsToPublishLargest) {
+  resetRelay(config::CacheConfig{.maxCachedTracks = 10});
+  relay_->setAllowedNamespacePrefix(kAllowedPrefix);
+  auto firstPublisher = createMockSession();
+  auto secondPublisher = createMockSession();
+  auto fetchSession = createMockSession();
+
+  auto firstConsumer = doPublish(firstPublisher, kTestTrackName, /*addToState=*/false);
+  auto sg = firstConsumer->beginSubgroup(0, 0, 0);
+  ASSERT_TRUE(sg.hasValue()) << sg.error().describe();
+  EXPECT_TRUE(sg.value()->object(0, folly::IOBuf::copyBuffer("abc")).hasValue());
+  EXPECT_TRUE(sg.value()->endOfSubgroup().hasValue());
+  firstConsumer->publishDone(
+      {RequestID(0), PublishDoneStatusCode::SUBSCRIPTION_ENDED, 0, "publisher ended"}
+  );
+  driveIfMultiThread();
+
+  PublishRequest pub;
+  pub.fullTrackName = kTestTrackName;
+  pub.largest = AbsoluteLocation{5, 0};
+  withSessionContext(secondPublisher, [&]() {
+    auto res = subscriberInterface()->publish(std::move(pub), createMockSubscriptionHandle());
+    ASSERT_TRUE(res.hasValue());
+    getOrCreateMockState(secondPublisher)->publishConsumers.push_back(res->consumer);
+    co_withExecutor(static_cast<folly::DrivableExecutor*>(exec_.get()), std::move(res->reply))
+        .start();
+  });
+  driveIfMultiThread();
+
+  std::atomic<bool> upstreamFetched{false};
+  auto capturedFetch = std::make_shared<Fetch>();
+  EXPECT_CALL(*secondPublisher, fetch(_, _))
+      .WillOnce([capturedFetch,
+                 &upstreamFetched](Fetch f, std::shared_ptr<FetchConsumer> consumer) {
+        *capturedFetch = std::move(f);
+        upstreamFetched.store(true);
+        consumer->endOfFetch();
+        return folly::coro::makeTask<Publisher::FetchResult>(std::make_shared<MockFetchHandle>(
+            FetchOk{RequestID(0), GroupOrder::OldestFirst, 0, AbsoluteLocation{5, 1}, {}}
+        ));
+      });
+
+  Fetch fetch(RequestID(0), kTestTrackName, AbsoluteLocation{0, 0}, AbsoluteLocation{6, 0});
+  auto fetchConsumer = std::make_shared<NiceMock<MockFetchConsumer>>();
+  EXPECT_CALL(*fetchConsumer, object(0, _, 0, _, _, _, _))
+      .WillOnce(Return(folly::makeExpected<MoQPublishError>(folly::unit)));
+  ON_CALL(*fetchConsumer, endOfFetch())
+      .WillByDefault(Return(folly::makeExpected<MoQPublishError>(folly::unit)));
+  withSessionContext(fetchSession, [&]() {
+    auto task = publisherInterface()->fetch(std::move(fetch), fetchConsumer);
+    auto res = folly::coro::blockingWait(std::move(task), exec_.get());
+    ASSERT_TRUE(res.hasValue());
+    EXPECT_EQ(res.value()->fetchOk().endLocation, (AbsoluteLocation{5, 1}));
+  });
+  ASSERT_TRUE(driveUntil([&] { return upstreamFetched.load(); }))
+      << "fetch past the cached Largest did not go upstream";
+  auto [standalone, joining] = fetchType(*capturedFetch);
+  ASSERT_NE(standalone, nullptr);
+  EXPECT_EQ(standalone->start, (AbsoluteLocation{0, 1}));
+
+  removeSession(firstPublisher);
+  removeSession(secondPublisher);
+  removeSession(fetchSession);
+  driveIfMultiThread();
+}
+
 // Joining fetch referencing a PUBLISH: onPublishOk must store the PUBLISH_OK
 // request id so the fetch matches the fanned-out subscription and resolves.
 TEST_P(MoQRelayTest, JoiningFetchAgainstPublish) {
