@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""test_relay_hops_cycle.py — RELAY_HOPS stabilizes A -> B -> C -> A.
+"""test_relay_hops_cycle.py — MoQ Cluster hop paths stabilize A -> B -> C -> A.
 
 A namespace published at A must reach every relay in the cycle and then stop
-changing: relay-hops drops an advertisement whose HOP_PATH already contains
-the local Hop ID, so the tree converges instead of circulating forever.
-See docs/relay-hops.md.
+changing: a relay drops an advertisement whose HOP_PATH already contains its
+own Hop ID, so the tree converges instead of circulating forever.
+See docs/moq-cluster.md.
 
 Usage: python3 test/test_relay_hops_cycle.py [path/to/moqx] [--save-logs [DIR]]
 """

@@ -21,7 +21,7 @@ Import it, declare a topology, start it, act, assert:
 
 Relays may form a cycle: `upstream` may name a relay declared later, and start()
 brings every relay up before waiting for any of them to peer. See
-docs/relay-hops.md.
+docs/moq-cluster.md.
 
 Assertions are soft — they tally into Harness.failures and main() decides the
 exit status, so one failure does not hide the rest of the run.

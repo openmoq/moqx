@@ -38,9 +38,6 @@
 
 namespace openmoq::moqx {
 
-// Draft 16 encodes Hop IDs as QUIC variable-length integers.
-inline constexpr uint64_t kMaxRelayHopID = (uint64_t{1} << 62) - 1;
-
 uint64_t generateRelayHopID();
 
 class CrossExecFilter;
@@ -140,7 +137,6 @@ public:
         ownedRelayExec_(std::move(relayExec)), relayExec_(ownedRelayExec_.get()),
         useLocalForwarders_(useLocalForwarders), maxDeselected_(maxDeselected),
         idleTimeout_(idleTimeout), activityThreshold_(activityThreshold) {
-    XCHECK_LE(relayHopID_, kMaxRelayHopID);
     // Park timers fire on the relay's own EventBase instead of folly's global
     // timekeeper thread. Null (SingleThread mode, or a non-folly exec) falls back to it.
     if (auto* follyExec = dynamic_cast<moxygen::MoQFollyExecutorImpl*>(relayExec_)) {
@@ -222,7 +218,7 @@ public:
   void onUpstreamDisconnect();
 
   // Releases per-session relay state; the servers call this as a session tears down.
-  void onSessionEnd(std::shared_ptr<moxygen::MoQSession> session);
+  void onSessionEnd(std::shared_ptr<moxygen::MoQSession> /*session*/) {}
 
   folly::coro::Task<SubscribeResult> subscribe(
       moxygen::SubscribeRequest subReq,
@@ -474,7 +470,7 @@ private:
   moxygen::TrackNamespace allowedNamespacePrefix_;
   // Operational identity used by relay authentication and upstream routing.
   std::string relayID_;
-  // Opaque random protocol identity required by draft-lcurley-moq-relay-hops.
+  // Opaque random protocol identity required by draft-lcurley-moq-cluster-01.
   uint64_t relayHopID_;
   std::shared_ptr<UpstreamProvider> upstream_;
 
@@ -498,15 +494,17 @@ private:
   bool isPeerSession(const std::shared_ptr<moxygen::MoQSession>& session, const std::string& peerID)
       const;
 
-  folly::F14FastMap<moxygen::SessionId, uint64_t, moxygen::SessionId::hash> legacyPublisherHopIDs_;
   SubscriptionRegistry registry_;
 
-  std::optional<std::vector<uint64_t>> ingestRelayHopPath(
+  struct IngestedRoute {
+    std::vector<uint64_t> path;
+    uint64_t cost; // ROUTE_COST plus the sender's link cost
+  };
+  // Returns nullopt to drop the advertisement. A malformed path also closes the session.
+  std::optional<IngestedRoute> ingestRoute(
       const moxygen::PublishNamespace& pubNs,
       const std::shared_ptr<moxygen::MoQSession>& session
   );
-
-  uint64_t getOrCreateLegacyPublisherHopID(const std::shared_ptr<moxygen::MoQSession>& session);
 
   // Result of joinOrPrepareUpstreamSubscription (runs on relayExec_).
   struct StatefulSubscribeResult {

@@ -62,12 +62,13 @@ public:
       std::shared_ptr<moxygen::Publisher::NamespacePublishHandle> namespacePublishHandle;
       moxygen::TrackNamespace trackNamespacePrefix;
       std::optional<moxygen::TrackFilter> trackFilter;
-      std::optional<uint64_t> excludeHop;
     };
 
     std::shared_ptr<moxygen::MoQSession> publisherSession() const { return publisherSession_; }
     const std::string& publisherPeerID() const { return publisherPeerID_; }
     const std::vector<uint64_t>& relayHopPath() const { return relayHopPath_; }
+    // The publisher's ROUTE_COST plus the cost of its link to this relay.
+    uint64_t routeCost() const { return routeCost_; }
 
     size_t subscriberCount() const { return subscribers_.size(); }
 
@@ -99,6 +100,7 @@ public:
     std::shared_ptr<moxygen::MoQSession> publisherSession_;
     std::string publisherPeerID_;
     std::vector<uint64_t> relayHopPath_;
+    uint64_t routeCost_{0};
     folly::F14FastMap<std::string, std::shared_ptr<moxygen::MoQSession>> publishes_;
     folly::F14FastMap<std::shared_ptr<moxygen::MoQSession>, NamespaceSubscriberInfo> subscribers_;
     folly::F14FastMap<std::string, std::shared_ptr<NamespaceNode>> children_;
@@ -142,7 +144,8 @@ public:
       std::shared_ptr<moxygen::Subscriber::PublishNamespaceCallback> callback,
       std::string peerID,
       moxygen::RequestID requestID,
-      std::vector<uint64_t> relayHopPath = {}
+      std::vector<uint64_t> relayHopPath = {},
+      uint64_t routeCost = 0
   );
 
   // NodeNotFound: node already pruned (ignorable). NotOwner: session mismatch (log and ignore).

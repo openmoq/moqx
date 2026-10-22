@@ -56,7 +56,7 @@ reviews:
         - docs/config.md — full YAML configuration reference.
         - docs/logging.md — the --logging flag and XLOG conventions.
         - docs/metrics.md — Prometheus endpoint and metric names.
-        - docs/relay-hops.md — deploying and configuring relay hops.
+        - docs/moq-cluster.md — deploying and configuring MoQ Cluster.
         - docs/release.md — release branch model and artifacts.
         - docs/ci-architecture.md — CI pipelines, upstream sync, deploy.
         - docs/perf-tracking.md — perf regression workflow.
@@ -99,10 +99,10 @@ reviews:
         docs/ref/draft-ietf-moq-transport-{16,18}.txt. Prefer the local copy
         — it is the exact revision moqx was written against.
 
-        Relay hops ride on an extension specified by
-        draft-lcurley-moq-relay-hops, vendored at
-        docs/ref/draft-lcurley-moq-relay-hops.txt and explained in
-        docs/relay-hops.md.
+        Relay links ride on the MoQ Cluster extension specified by
+        draft-lcurley-moq-cluster-01, vendored at
+        docs/ref/draft-lcurley-moq-cluster-01.txt and explained in
+        docs/moq-cluster.md.
 
     - path: "**/*.{h,cpp}"
       instructions: |
@@ -202,7 +202,7 @@ knowledge_base:
     filePatterns:
       - files: "CONTRIBUTING.md"
         applyTo: "**"
-      - files: "docs/relay-hops.md"
+      - files: "docs/moq-cluster.md"
         applyTo: "src/**"
       - files: "docs/dev/local-forwarder-flow.md,docs/dev/track-filter-ranking.md"
         applyTo: "src/relay/**,src/Moqx*,test/**"

@@ -134,6 +134,8 @@ std::shared_ptr<MockMoQSession>
 MoQRelayTest::createMockSessionOn(std::shared_ptr<moxygen::MoQExecutor> exec, uint64_t version) {
   auto session = std::make_shared<NiceMock<MockMoQSession>>(std::move(exec));
   ON_CALL(*session, getNegotiatedVersion()).WillByDefault(Return(std::optional<uint64_t>(version)));
+  // A real session reports 1 when the peer did not declare RELAY_COST.
+  ON_CALL(*session, getRelayLinkCost()).WillByDefault(Return(uint64_t{1}));
   ON_CALL(*session, negotiatedSetupExtension(SetupExtension::RelayHops))
       .WillByDefault(Return(false));
   getOrCreateMockState(session);
