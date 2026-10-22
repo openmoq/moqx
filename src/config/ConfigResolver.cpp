@@ -533,6 +533,7 @@ UpstreamConfig resolveUpstream(const ParsedUpstreamConfig& upstream) {
       .connectTimeout =
           std::chrono::milliseconds(upstream.connect_timeout_ms.value().value_or(5000)),
       .idleTimeout = std::chrono::milliseconds(upstream.idle_timeout_ms.value().value_or(5000)),
+      .relayCost = upstream.relay_cost.value().value_or(1),
   };
 }
 
@@ -814,6 +815,14 @@ void validateService(
   // Validate per-service upstream if present.
   if (svc.upstream.value().has_value()) {
     validateUpstream(*svc.upstream.value(), errors);
+  }
+  if (const auto& upstreams = svc.upstreams.value()) {
+    if (svc.upstream.value().has_value()) {
+      errors.push_back("Service '" + name + "': upstream and upstreams are mutually exclusive");
+    }
+    for (const auto& upstream : *upstreams) {
+      validateUpstream(upstream, errors);
+    }
   }
   validateServiceAuth(name, svc, config, mergedAuths, errors, warnings);
 }
@@ -1169,11 +1178,18 @@ ServiceConfig resolveService(
   if (svc.upstream.value().has_value()) {
     upstream = resolveUpstream(*svc.upstream.value());
   }
+  std::vector<UpstreamConfig> upstreams;
+  if (const auto& parsed = svc.upstreams.value()) {
+    for (const auto& entry : *parsed) {
+      upstreams.push_back(resolveUpstream(entry));
+    }
+  }
   return ServiceConfig{
       .match = std::move(entries),
       .cache = resolveCacheConfig(cache),
       .upstream = std::move(upstream),
       .auth = resolveAuth(auth),
+      .upstreams = std::move(upstreams),
   };
 }
 

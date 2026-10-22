@@ -396,6 +396,21 @@ services:
       idle_timeout_ms: 5000          # optional; default 5000
 ```
 
+To peer with several relays, list them under `upstreams` instead. Each entry
+takes the same fields as `upstream`, and a service cannot set both:
+
+```yaml
+    upstreams:
+      - url: moqt://hub-a.example.com:4433/moq-relay
+        relay_cost: 0                # optional; default 1
+      - url: moqt://hub-b.example.com:4433/moq-relay
+```
+
+**`relay_cost`** is the MoQ Cluster `RELAY_COST` that this relay declares on
+the link. It prices what this relay sends to that upstream: 0 makes the link
+free, and the default 1 ranks routes by hop count. It is only sent when
+[`cluster`](#cluster) is enabled.
+
 **`tls.insecure: true`** skips certificate verification. It cannot be
 combined with `ca_cert`.
 
@@ -472,17 +487,17 @@ through itself. See [moq-cluster.md](moq-cluster.md).
 
 ### Limitations
 
-- **Single upstream per service.** Each service can have at most one
-upstream. Multiple upstreams, failover, or load balancing across upstreams are
-not currently supported.
+- **Upstreams are not ranked yet.** When two upstreams advertise the same
+namespace, the later advertisement replaces the earlier one. Failover and load
+balancing across upstreams are not currently supported.
 - **Cycles need MoQ Cluster on every relay.** Negotiated moqx peers detect
 returning namespace advertisements, but a relay without MoQ Cluster cannot carry
 the hop path through the graph.
 - **No upstream authentication.** Upstreams are connected without any
 application-level credential exchange beyond TLS.
-- **Upstream connection is per-service, not per-track.** A single upstream
-session is shared for all tracks within a service; there is no per-track
-upstream routing.
+- **Upstreams are chosen by namespace, not per track.** A track routes to the
+upstream session that advertised its namespace. The configuration does not
+route individual tracks.
 
 ---
 

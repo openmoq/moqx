@@ -86,12 +86,14 @@ UpstreamProvider::UpstreamProvider(
     OnDisconnectHook onDisconnect,
     std::chrono::milliseconds connectTimeout,
     std::chrono::milliseconds idleTimeout,
-    std::optional<uint64_t> hopID
+    std::optional<uint64_t> hopID,
+    uint64_t relayCost
 )
     : publishHandler_(std::move(publishHandler)), subscribeHandler_(std::move(subscribeHandler)),
       url_(std::move(url)), exec_(std::move(exec)), verifier_(std::move(verifier)),
       onConnect_(std::move(onConnect)), onDisconnect_(std::move(onDisconnect)),
-      connectTimeout_(connectTimeout), idleTimeout_(idleTimeout), hopID_(hopID) {
+      connectTimeout_(connectTimeout), idleTimeout_(idleTimeout), hopID_(hopID),
+      relayCost_(relayCost) {
   XLOG(DBG1) << "UpstreamProvider created, url=" << url_.getUrl();
 }
 
@@ -403,6 +405,9 @@ folly::coro::Task<void> UpstreamProvider::doConnect() {
   // The extension stays inactive unless the peer also declares a Hop ID.
   if (hopID_) {
     client_->addSetupParameter(SetupParameter(folly::to_underlying(SetupKey::HOP_ID), *hopID_));
+    client_->addSetupParameter(
+        SetupParameter(folly::to_underlying(SetupKey::RELAY_COST), relayCost_)
+    );
   }
 
   quic::TransportSettings ts;
@@ -467,7 +472,7 @@ void UpstreamProvider::resetSession() {
   if (session_) {
     session_->setSessionCloseCallback(nullptr);
     if (onDisconnect_) {
-      onDisconnect_();
+      onDisconnect_(session_);
     }
   }
   session_.reset();

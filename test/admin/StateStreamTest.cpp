@@ -89,6 +89,22 @@ void walk(RelayContextVisitor& v) {
   v.onRelayEnd();
 }
 
+TEST(StateStreamTest, ReportsEveryUpstreamInAList) {
+  Collected out;
+  ChunkedJsonWriter writer(sinkInto(out), 1);
+  JsonRelayContextVisitor visitor(writer);
+  visitor.onRelayBegin("mesh", 0);
+  visitor.onServiceBegin("live");
+  visitor.onServiceUpstreams({{"moqt://a/", "connected"}, {"moqt://b/", "disconnected"}});
+  visitor.onServiceEnd();
+  visitor.onRelayEnd();
+  writer.flush();
+  const auto upstreams = folly::parseJson(out.body())["services"]["live"]["upstreams"];
+  ASSERT_EQ(upstreams.size(), 2u);
+  EXPECT_EQ(upstreams[0]["url"].asString(), "moqt://a/");
+  EXPECT_EQ(upstreams[1]["state"].asString(), "disconnected");
+}
+
 std::string bodyAtThreshold(size_t threshold, Collected& out) {
   ChunkedJsonWriter w(sinkInto(out), threshold);
   JsonRelayContextVisitor visitor(w);
