@@ -26,13 +26,23 @@ artifact.
 
 ## Configuration Model
 
-MoQ Cluster negotiation is automatic. There is no YAML field and no feature
-toggle.
+MoQ Cluster negotiation is on by default. The optional top-level `cluster`
+block controls it:
 
-At process startup, moqx creates one random Hop ID for the relay context. The ID
-is stable for that process lifetime and shared by its services and sessions. It
-is regenerated after a restart. The existing top-level `relay_id` setting is an
-operational relay identity; it does not set or expose the protocol Hop ID.
+```yaml
+cluster:
+  enabled: true   # false: do not declare HOP_ID, so no link negotiates MoQ Cluster
+  hop_id: 1001    # absent: random per process; 0: anonymous
+```
+
+Disable it only to peer with a relay network that lacks MoQ Cluster or
+implements it incompatibly. The operator must then keep that part of the graph
+a tree; see [config.md](config.md#cluster).
+
+The Hop ID is shared by all services and sessions of the process. A random one
+changes after a restart. A relay with Hop ID 0 withholds its identity, so it
+cannot detect loops through itself. The top-level `relay_id` setting is a
+separate operational identity and does not set the Hop ID.
 
 On each peer session:
 
@@ -105,8 +115,7 @@ Do not add a cycle while unsupported relays remain in that cycle.
 1. Keep the current topology acyclic.
 2. Deploy the MoQ Cluster-capable moxygen and moqx build to every relay that will
    participate.
-3. Restart each process so it uses the new binary and generates its process
-   Hop ID.
+3. Restart each process so it uses the new binary.
 4. Verify each relay's health, upstream connectivity, and namespace propagation.
 5. Update the upstream blocks to introduce the cycle.
 6. Verify that namespace state reaches every relay and then remains stable.
@@ -142,7 +151,6 @@ offending session with `PROTOCOL_VIOLATION`.
 
 ## Current Scope and Limitations
 
-- There is no YAML feature flag or operator-configured Hop ID.
 - Each service supports one upstream; multi-upstream path selection, failover,
   and load balancing are not implemented.
 - Shortest-path selection, redundant-origin comparison, topology coalescing,

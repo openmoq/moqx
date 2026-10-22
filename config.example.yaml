@@ -113,6 +113,10 @@ logging:                    # Logging configuration (optional)
 
 # relay_id: "my-relay-1"     # Relay identity (optional; random hex string generated if absent)
 
+# cluster:                    # MoQ Cluster on draft 18+ relay links (optional)
+#   enabled: true             # false: no loop detection; see docs/config.md#cluster (default: true)
+#   hop_id: 1001              # Hop ID (random if absent; 0 is anonymous)
+
 # listener_defaults:          # Default settings inherited by all listeners
 #   quic:                     # QUIC transport tunables (optional; uses sensible defaults)
 #     max_data: 67108864      # Connection flow control window (bytes, default: 64MB)

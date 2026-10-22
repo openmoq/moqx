@@ -21,7 +21,6 @@
 #include "relay/TrackStatsFilter.h"
 #include "relay/WeakRelayForwarderCallback.h"
 #include <algorithm>
-#include <folly/Random.h>
 #include <folly/container/F14Set.h>
 #include <folly/coro/Collect.h>
 #include <moxygen/MoQFilters.h>
@@ -167,14 +166,6 @@ moxygen::SubscribeRequest makeUpstreamSubReq(
 using namespace moxygen;
 
 namespace openmoq::moqx {
-
-uint64_t generateRelayHopID() {
-  uint64_t hopID = 0;
-  do {
-    folly::Random::secureRandom(&hopID, sizeof(hopID));
-  } while (hopID == kMoQClusterAnonHopId);
-  return hopID;
-}
 
 // === LocalSubscribeFilter and LocalPublishFilter ===
 
