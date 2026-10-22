@@ -509,6 +509,35 @@ TEST_P(MoQRelayTest, SubscribeNs_ForwardTrue_EmptyForwarder_SingleRequestUpdate)
   }
 }
 
+// A forward toggle leaves the upstream subscription's range and priority as they were.
+TEST_P(MoQRelayTest, ForwardRequestUpdateSetsOnlyForward) {
+  auto pubSession = createMockSession();
+  doPublishNamespace(pubSession, kTestNamespace);
+  auto mockHandle = makePublishHandle();
+  doPublishWithHandle(pubSession, kTestTrackName, mockHandle);
+
+  EXPECT_CALL(*mockHandle, requestUpdateCalled(_)).WillOnce([](const RequestUpdate& u) {
+    EXPECT_EQ(u.forward, std::optional<bool>(true));
+    EXPECT_FALSE(u.start.has_value());
+    EXPECT_FALSE(u.endGroup.has_value());
+    EXPECT_FALSE(u.priority.has_value());
+  });
+
+  auto subSession = createMockSession();
+  setupPublishSucceeds(subSession);
+  doSubscribeNamespaceWithForward(subSession, kTestNamespace, /*forward=*/true);
+  for (int i = 0; i < 5; i++) {
+    exec_->drive();
+  }
+  ASSERT_TRUE(testing::Mock::VerifyAndClearExpectations(mockHandle.get()));
+
+  removeSession(subSession);
+  removeSession(pubSession);
+  for (int i = 0; i < 3; i++) {
+    exec_->drive();
+  }
+}
+
 // Bug: when a subscriber with forward=false joins a namespace whose track
 // forwarder is empty, the relay fires a spurious REQUEST_UPDATE(forward=false)
 // at the if(forwarder->empty()) site — even though the upstream is already at

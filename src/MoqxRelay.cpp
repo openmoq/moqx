@@ -41,12 +41,9 @@ void launchUpdate(folly::Executor* exec, folly::coro::Task<void> task) {
 folly::coro::Task<void>
 doSubscribeUpdate(std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle, bool forward) {
   auto res = co_await handle->requestUpdate(moxygen::RequestUpdate{
-      moxygen::RequestID(0),
-      handle->subscribeOk().requestID,
-      moxygen::kLocationMin,
-      moxygen::kLocationMax.group,
-      moxygen::kDefaultPriority,
-      forward
+      .requestID = moxygen::RequestID(0),
+      .existingRequestID = handle->subscribeOk().requestID,
+      .forward = forward
   });
   if (res.hasError()) {
     XLOG(ERR) << "requestUpdate failed: " << res.error().reasonPhrase;
