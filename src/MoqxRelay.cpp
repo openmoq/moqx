@@ -818,6 +818,9 @@ MoqxRelay::PublishSetupResult MoqxRelay::publishWithSession(
       std::move(handle),
       [&] { return buildFilterChain(pub.fullTrackName, chainForwarder); }
   );
+  if (cache_) {
+    cache_->setTrackState(pub.fullTrackName, pub.largest, pub.extensions);
+  }
 
   if (publishEntry.evicted) {
     XLOG(DBG1) << "New publisher for existing subscription";
