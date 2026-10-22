@@ -70,7 +70,8 @@ public:
       OnConnectHook onConnect = nullptr,
       OnDisconnectHook onDisconnect = nullptr,
       std::chrono::milliseconds connectTimeout = std::chrono::milliseconds(5000),
-      std::chrono::milliseconds idleTimeout = std::chrono::milliseconds(5000)
+      std::chrono::milliseconds idleTimeout = std::chrono::milliseconds(5000),
+      std::optional<uint64_t> hopID = std::nullopt
   );
 
   ~UpstreamProvider() override;
@@ -212,6 +213,9 @@ private:
   OnDisconnectHook onDisconnect_;
   std::chrono::milliseconds connectTimeout_;
   std::chrono::milliseconds idleTimeout_;
+  // Unset leaves MoQ Cluster off on this link, for a peer that lacks it or
+  // implements it incompatibly. Loop detection then does not cross the link.
+  std::optional<uint64_t> hopID_;
   bool stopped_{false};
 
   // Connection gating: when Connecting, operations co_await this

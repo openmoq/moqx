@@ -214,17 +214,29 @@ TEST_F(UpstreamProviderTest, ConnectAndSetup) {
   );
 }
 
-// The server advertises RELAY_HOPS, as a moqx relay listener does.
-class UpstreamRelayHopsTest : public UpstreamProviderTest {
+// The server declares a Hop ID, as a moqx relay listener does.
+class UpstreamClusterTest : public UpstreamProviderTest {
 protected:
+  static constexpr uint64_t kServerHop = 500;
+
   void configureServer(moxygen::MoQServer& server) override {
-    server.addSetupParameter(
-        SetupParameter(folly::to_underlying(SetupKey::RELAY_HOPS), std::string{})
-    );
+    server.addSetupParameter(SetupParameter(folly::to_underlying(SetupKey::HOP_ID), kServerHop));
   }
 };
 
-TEST_F(UpstreamRelayHopsTest, NegotiatesRelayHopsOnDraft18) {
+TEST_F(UpstreamClusterTest, NegotiatesClusterOnDraft18) {
+  provider_ = std::make_shared<UpstreamProvider>(
+      clientExec(),
+      serverUrl(),
+      /*publishHandler=*/nullptr,
+      /*subscribeHandler=*/nullptr,
+      std::make_shared<moxygen::test::InsecureVerifierDangerousDoNotUseInProduction>(),
+      /*onConnect=*/nullptr,
+      /*onDisconnect=*/nullptr,
+      std::chrono::milliseconds(5000),
+      std::chrono::milliseconds(5000),
+      /*hopID=*/400
+  );
   folly::coro::blockingWait(
       [&]() -> folly::coro::Task<void> {
         co_await provider_->start();
@@ -233,6 +245,7 @@ TEST_F(UpstreamRelayHopsTest, NegotiatesRelayHopsOnDraft18) {
         if (session) {
           EXPECT_EQ(getDraftMajorVersion(*session->getNegotiatedVersion()), 18u);
           EXPECT_TRUE(session->negotiatedSetupExtension(SetupExtension::RelayHops));
+          EXPECT_EQ(session->getPeerHopID(), kServerHop);
         }
       }(),
       &clientEvb()

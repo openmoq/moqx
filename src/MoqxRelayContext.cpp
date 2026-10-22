@@ -146,7 +146,8 @@ void MoqxRelayContext::initUpstreams(folly::EventBase* workerEvb) {
         std::move(onConnect),
         std::move(onDisconnect),
         cfg.connectTimeout,
-        cfg.idleTimeout
+        cfg.idleTimeout,
+        relayHopID_
     );
     entry.relay->setUpstreamProvider(provider);
 
