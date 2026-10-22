@@ -288,6 +288,8 @@ folly::Expected<folly::Unit, MoQPublishError> MoqxCache::CacheGroup::cacheObject
 ) {
   XLOG(DBG1) << "caching group=" << groupID << " objID=" << objectID
              << " status=" << (uint32_t)status << " complete=" << uint32_t(complete);
+  // Writers buffer chunked objects and commit them whole.
+  XDCHECK(complete);
 
   // Reject caching into a known gap
   if (track.gaps.contains({groupID, objectID})) {
@@ -333,7 +335,7 @@ folly::Expected<folly::Unit, MoQPublishError> MoqxCache::CacheGroup::cacheObject
           MoQPublishError(MoQPublishError::MALFORMED_TRACK, "Invalid status change")
       );
     }
-    if (status == ObjectStatus::NORMAL && complete && cachedObject->complete &&
+    if (status == ObjectStatus::NORMAL &&
         ((!payload && cachedObject->payload) || (payload && !cachedObject->payload) ||
          (payload && cachedObject->payload && newPayloadSize != cachedObject->payloadSize))) {
       XLOG(ERR) << "Payload mismatch; objID=" << objectID;
@@ -348,23 +350,11 @@ folly::Expected<folly::Unit, MoQPublishError> MoqxCache::CacheGroup::cacheObject
       );
     }
 
-    if (cachedObject->complete && !complete) {
-      // The first chunk of a re-delivery replaces a whole object. Stop
-      // advertising the location until it is whole again: a fetch would
-      // neither serve it nor skip past it.
-      track.cachedContent.remove({groupID, objectID}, {groupID, objectID});
-    }
-
     // TODO: Consider removing status from CacheEntry. For fetch streams, we
     // could only publish NORMAL objects and let END_OF_GROUP/END_OF_TRACK be
     // implicit from the gap information.
-    cachedObject->status = status;
+    // The payload never changes; the most recent property set replaces the cached one.
     cachedObject->extensions = extensions;
-    totalBytes -= cachedObject->payloadSize;
-    cachedObject->payload = std::move(payload);
-    cachedObject->payloadSize = newPayloadSize;
-    totalBytes += newPayloadSize;
-    cachedObject->complete = complete;
     cachedObject->cachedAt = now;
   } else {
     auto entry = std::make_unique<CacheEntry>(
@@ -380,9 +370,7 @@ folly::Expected<folly::Unit, MoQPublishError> MoqxCache::CacheGroup::cacheObject
     totalBytes += newPayloadSize;
     objects[objectID] = std::move(entry);
   }
-  if (complete) {
-    track.cachedContent.insert({groupID, objectID});
-  }
+  track.cachedContent.insert({groupID, objectID});
   if (objectID >= maxCachedObject) {
     maxCachedObject = objectID;
   }
@@ -598,6 +586,16 @@ folly::Expected<folly::Unit, MoQPublishError> MoqxCache::CacheTrack::processGapE
   return folly::unit;
 }
 
+// A chunked object being received; committed to the cache only once complete.
+struct MoqxCache::PendingObject {
+  uint64_t groupID;
+  uint64_t subgroup;
+  uint64_t objectID;
+  Extensions extensions;
+  Payload payload;
+  uint64_t remaining;
+};
+
 class MoqxCache::SubgroupWriteback : public SubgroupConsumer {
 public:
   SubgroupWriteback(
@@ -632,6 +630,7 @@ public:
     if (cacheTrack_.shouldSkipCaching()) {
       return consumer_->object(objID, std::move(payload), std::move(ext), finSub);
     }
+    pendingObject_.reset();
     auto res = cacheTrack_.updateLargest({group_, objID});
     if (!res) {
       consumer_->reset(ResetStreamErrorCode::INTERNAL_ERROR);
@@ -672,29 +671,21 @@ public:
       consumer_->reset(ResetStreamErrorCode::INTERNAL_ERROR);
       return res;
     }
-    auto cacheRes = cache_.cacheObjectAndUpdateBytes(
-        cacheGroup_,
-        cacheTrack_,
-        group_,
-        subgroup_,
-        objectID,
-        ObjectStatus::NORMAL,
-        extensions,
-        initialPayload ? initialPayload->clone() : nullptr,
-        false,
-        false,
-        cache_.now()
-    );
-    if (cacheRes.hasError()) {
-      consumer_->reset(ResetStreamErrorCode::INTERNAL_ERROR);
-      return cacheRes;
-    }
-    currentObject_ = objectID;
-    currentLength_ = length;
-    if (initialPayload) {
-      size_t initBytes = initialPayload->computeChainDataLength();
-      XCHECK_GE(currentLength_, initBytes);
-      currentLength_ -= initBytes;
+
+    size_t initBytes = initialPayload ? initialPayload->computeChainDataLength() : 0;
+    XCHECK_LE(initBytes, length);
+    pendingObject_.emplace(PendingObject{
+        .groupID = group_,
+        .subgroup = subgroup_,
+        .objectID = objectID,
+        .extensions = extensions,
+        .payload = initialPayload ? initialPayload->clone() : nullptr,
+        .remaining = length - initBytes
+    });
+    if (pendingObject_->remaining == 0) {
+      if (auto cacheRes = commitPendingObject(); !cacheRes) {
+        return cacheRes;
+      }
     }
     return consumer_
         ->beginObject(objectID, length, std::move(initialPayload), std::move(extensions));
@@ -705,23 +696,23 @@ public:
     if (cacheTrack_.shouldSkipCaching()) {
       return consumer_->objectPayload(std::move(payload), finSubgroup);
     }
-    auto& object = cacheGroup_.objects[currentObject_];
-    size_t addedBytes = payload->computeChainDataLength();
-    if (object->payload) {
-      object->payload->appendToChain(payload->clone());
-    } else {
-      object->payload = payload->clone();
+    if (pendingObject_) {
+      size_t addedBytes = payload->computeChainDataLength();
+      XCHECK_GE(pendingObject_->remaining, addedBytes);
+      if (pendingObject_->payload) {
+        pendingObject_->payload->appendToChain(payload->clone());
+      } else {
+        pendingObject_->payload = payload->clone();
+      }
+      pendingObject_->remaining -= addedBytes;
+      if (pendingObject_->remaining == 0) {
+        if (auto cacheRes = commitPendingObject(); !cacheRes) {
+          return folly::makeUnexpected(cacheRes.error());
+        }
+      } else if (finSubgroup) {
+        pendingObject_.reset();
+      }
     }
-    XCHECK_GE(currentLength_, addedBytes);
-    currentLength_ -= addedBytes;
-    if (currentLength_ == 0) {
-      object->complete = true;
-      cacheTrack_.cachedContent.insert({group_, currentObject_});
-    }
-    object->payloadSize += addedBytes;
-    cacheGroup_.totalBytes += addedBytes;
-    cache_.totalCachedBytes_ += addedBytes;
-    cache_.evictForByteLimitIfNeeded();
     return consumer_->objectPayload(std::move(payload), finSubgroup);
   }
 
@@ -729,6 +720,7 @@ public:
     if (cacheTrack_.shouldSkipCaching()) {
       return consumer_->endOfGroup(endOfGroupObjectID);
     }
+    pendingObject_.reset();
     auto res = cacheTrack_.updateLargest({group_, endOfGroupObjectID});
     if (!res) {
       consumer_->reset(ResetStreamErrorCode::INTERNAL_ERROR);
@@ -762,6 +754,7 @@ public:
     if (cacheTrack_.shouldSkipCaching()) {
       return consumer_->endOfTrackAndGroup(endOfTrackObjectID);
     }
+    pendingObject_.reset();
     auto res = cacheTrack_.updateLargest({group_, endOfTrackObjectID}, true);
     if (!res) {
       consumer_->reset(ResetStreamErrorCode::INTERNAL_ERROR);
@@ -791,9 +784,34 @@ public:
     return consumer_->endOfSubgroup();
   }
 
-  void reset(ResetStreamErrorCode error) override { return consumer_->reset(error); }
+  void reset(ResetStreamErrorCode error) override {
+    pendingObject_.reset();
+    return consumer_->reset(error);
+  }
 
 private:
+  folly::Expected<folly::Unit, MoQPublishError> commitPendingObject() {
+    auto p = std::move(*pendingObject_);
+    pendingObject_.reset();
+    auto cacheRes = cache_.cacheObjectAndUpdateBytes(
+        cacheGroup_,
+        cacheTrack_,
+        p.groupID,
+        p.subgroup,
+        p.objectID,
+        ObjectStatus::NORMAL,
+        p.extensions,
+        std::move(p.payload),
+        /*complete=*/true,
+        /*forwardingPreferenceIsDatagram=*/false,
+        cache_.now()
+    );
+    if (cacheRes.hasError()) {
+      consumer_->reset(ResetStreamErrorCode::INTERNAL_ERROR);
+    }
+    return cacheRes;
+  }
+
   uint64_t group_;
   uint64_t subgroup_;
   std::shared_ptr<SubgroupConsumer> consumer_;
@@ -803,8 +821,7 @@ private:
   CacheGroup& cacheGroup_;
   MoqxCache& cache_;
   FullTrackName ftn_;
-  uint64_t currentObject_{0};
-  uint64_t currentLength_{0};
+  std::optional<PendingObject> pendingObject_;
 };
 
 // Caches incoming objects from a subscription and forwards to the consumer.
@@ -1052,6 +1069,7 @@ public:
           forwardingPreferenceIsDatagram
       );
     }
+    dropPendingObject();
     constexpr auto kNormal = ObjectStatus::NORMAL;
     auto res = cacheImpl(
         gID,
@@ -1060,7 +1078,6 @@ public:
         kNormal,
         ext,
         payload ? payload->clone() : nullptr,
-        true,
         fin,
         forwardingPreferenceIsDatagram
     );
@@ -1097,17 +1114,27 @@ public:
     if (fetchRangeIt_.track->shouldSkipCaching()) {
       return consumer_->beginObject(gID, sgID, objID, len, std::move(initPayload), std::move(ext));
     }
-    constexpr auto kNormal = ObjectStatus::NORMAL;
-    auto payload = initPayload ? initPayload->clone() : nullptr;
-    auto res = cacheImpl(gID, sgID, objID, kNormal, ext, std::move(payload), false, false);
-    if (!res) {
+    dropPendingObject();
+    // Commit expects the cursor on this object; gap checks run in cacheObject at commit.
+    markNonExistentTo({gID, objID});
+    if (auto res = fetchRangeIt_.track->updateLargest({gID, objID}); !res) {
+      updateInProgress();
       return res;
     }
-    currentLength_ = len;
-    if (initPayload) {
-      size_t initBytes = initPayload->computeChainDataLength();
-      XCHECK_GE(currentLength_, initBytes);
-      currentLength_ -= initBytes;
+    size_t initBytes = initPayload ? initPayload->computeChainDataLength() : 0;
+    XCHECK_GE(len, initBytes);
+    pendingObject_.emplace(PendingObject{
+        .groupID = gID,
+        .subgroup = sgID,
+        .objectID = objID,
+        .extensions = ext,
+        .payload = initPayload ? initPayload->clone() : nullptr,
+        .remaining = len - initBytes
+    });
+    if (pendingObject_->remaining == 0) {
+      if (auto commitRes = commitPendingObject(/*finFetch=*/false); !commitRes) {
+        return commitRes;
+      }
     }
     return consumer_->beginObject(gID, sgID, objID, len, std::move(initPayload), std::move(ext));
   }
@@ -1125,42 +1152,27 @@ public:
     if (fetchRangeIt_.track->shouldSkipCaching()) {
       return consumer_->objectPayload(std::move(payload), finFetch && proxyFin_);
     }
-    auto& group =
-        fetchRangeIt_.track->getOrCreateGroupWithEviction(fetchRangeIt_->group, cache_, ftn_);
-    // Only the fetch's first group is pinned, so a later one can be evicted
-    // out from under an object in progress.
-    auto objectIt = group.objects.find(fetchRangeIt_->object);
-    if (objectIt == group.objects.end() || !objectIt->second) {
+    if (!pendingObject_) {
       XLOG(ERR) << "objectPayload with no object in progress at " << *fetchRangeIt_;
       return folly::makeUnexpected(
           MoQPublishError(MoQPublishError::MALFORMED_TRACK, "Payload without beginObject")
       );
     }
-    auto& object = objectIt->second;
     size_t addedBytes = payload->computeChainDataLength();
-    if (object->payload) {
-      object->payload->appendToChain(payload->clone());
+    XCHECK_GE(pendingObject_->remaining, addedBytes);
+    if (pendingObject_->payload) {
+      pendingObject_->payload->appendToChain(payload->clone());
     } else {
-      object->payload = payload->clone();
+      pendingObject_->payload = payload->clone();
     }
-    XCHECK_GE(currentLength_, addedBytes);
-    currentLength_ -= addedBytes;
-    const bool objectComplete = currentLength_ == 0;
-    if (objectComplete) {
-      object->complete = true;
-      fetchRangeIt_.track->cachedContent.insert(*fetchRangeIt_);
-    }
-    object->payloadSize += addedBytes;
-    group.totalBytes += addedBytes;
-    cache_.totalCachedBytes_ += addedBytes;
-    cache_.evictForByteLimitIfNeeded();
-    if (objectComplete || finFetch) {
-      // A cursor left on a completed object makes the next object's
-      // markNonExistentTo() record this one as a gap.
-      fetchRangeIt_.next();
-      if (finFetch) {
-        finishRange();
+    pendingObject_->remaining -= addedBytes;
+    if (pendingObject_->remaining == 0) {
+      if (auto res = commitPendingObject(finFetch); !res) {
+        return folly::makeUnexpected(res.error());
       }
+    } else if (finFetch) {
+      dropPendingObject();
+      finishRange();
       updateInProgress();
     }
     return consumer_->objectPayload(std::move(payload), finFetch && proxyFin_);
@@ -1174,9 +1186,10 @@ public:
     if (fetchRangeIt_.track->shouldSkipCaching()) {
       return consumer_->endOfGroup(gID, sgID, objID, fin && proxyFin_);
     }
+    dropPendingObject();
     // cacheImpl -> cacheObject inserts gap for remaining objects in this group
     constexpr auto kEndOfGroup = ObjectStatus::END_OF_GROUP;
-    auto res = cacheImpl(gID, sgID, objID, kEndOfGroup, noExtensions(), nullptr, true, fin);
+    auto res = cacheImpl(gID, sgID, objID, kEndOfGroup, noExtensions(), nullptr, fin);
     if (!res) {
       return res;
     }
@@ -1191,9 +1204,10 @@ public:
     if (fetchRangeIt_.track->shouldSkipCaching()) {
       return consumer_->endOfTrackAndGroup(gID, sgID, objID);
     }
+    dropPendingObject();
     // cacheImpl -> cacheObject inserts gaps for remaining objects and groups
     constexpr auto kEndOfTrack = ObjectStatus::END_OF_TRACK;
-    auto res = cacheImpl(gID, sgID, objID, kEndOfTrack, noExtensions(), nullptr, true, true);
+    auto res = cacheImpl(gID, sgID, objID, kEndOfTrack, noExtensions(), nullptr, true);
     if (!res) {
       return res;
     }
@@ -1201,6 +1215,7 @@ public:
   }
 
   folly::Expected<folly::Unit, MoQPublishError> endOfFetch() override {
+    dropPendingObject();
     finishRange();
     updateInProgress();
     complete_.post();
@@ -1213,6 +1228,7 @@ public:
 
   void reset(ResetStreamErrorCode error) override {
     XLOG(DBG1) << "FetchWriteback reset=" << uint32_t(error);
+    pendingObject_.reset();
     consumer_->reset(error);
     wasReset_ = true;
     complete_.post();
@@ -1231,6 +1247,7 @@ public:
     // Skip iterator forward WITHOUT marking objects as missing.
     // This allows the cache to potentially serve these objects later
     // if they become available from another source.
+    pendingObject_.reset();
     AbsoluteLocation target{groupId, objectId};
     fetchRangeIt_.advanceTo(target);
     // Advance past target
@@ -1315,7 +1332,6 @@ private:
   std::shared_ptr<FetchConsumer> consumer_;
   folly::coro::Baton inProgress_;
   folly::coro::Baton complete_;
-  uint64_t currentLength_{0};
   bool beginObjectAccepted_{false};
   bool wasReset_{false};
   folly::CancellationSource cancelSource_;
@@ -1324,6 +1340,33 @@ private:
   FullTrackName ftn_;
   std::optional<AbsoluteLocation> upstreamEnd_;
   std::vector<std::pair<AbsoluteLocation, AbsoluteLocation>> pendingGaps_;
+  std::optional<PendingObject> pendingObject_;
+
+  folly::Expected<folly::Unit, MoQPublishError> commitPendingObject(bool finFetch) {
+    auto p = std::move(*pendingObject_);
+    pendingObject_.reset();
+    return cacheImpl(
+        p.groupID,
+        p.subgroup,
+        p.objectID,
+        ObjectStatus::NORMAL,
+        p.extensions,
+        std::move(p.payload),
+        finFetch
+    );
+  }
+
+  // A truncated object stays unknown: step the cursor past it so later gap
+  // marking does not record it as non-existent.
+  void dropPendingObject() {
+    if (!pendingObject_) {
+      return;
+    }
+    XLOG(ERR) << "Dropping incomplete object at {" << pendingObject_->groupID << ","
+              << pendingObject_->objectID << "}";
+    pendingObject_.reset();
+    fetchRangeIt_.next();
+  }
 
   void markNonExistentTo(AbsoluteLocation target) {
     // Mark all positions from current iterator position up to (but not
@@ -1374,7 +1417,6 @@ private:
       ObjectStatus status,
       const Extensions& extensions,
       Payload payload,
-      bool complete,
       bool finFetch,
       bool forwardingPreferenceIsDatagram = false
   ) {
@@ -1388,7 +1430,7 @@ private:
         status,
         extensions,
         std::move(payload),
-        complete,
+        /*complete=*/true,
         forwardingPreferenceIsDatagram,
         cache_.now()
     );
@@ -1404,14 +1446,12 @@ private:
       updateInProgress();
       return res;
     }
-    if (complete) {
-      fetchRangeIt_.next();
+    fetchRangeIt_.next();
+    updateInProgress();
+    if (finFetch) {
+      finishRange();
       updateInProgress();
-      if (finFetch) {
-        finishRange();
-        updateInProgress();
-        complete_.post();
-      }
+      complete_.post();
     }
     return folly::unit;
   }

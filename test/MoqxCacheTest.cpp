@@ -1453,10 +1453,8 @@ CO_TEST_F(MoqxCacheTest, TestUpstreamFetchedObjectChunksCachedInOrder) {
   co_await folly::coro::co_reschedule_on_current_executor;
 }
 
-// Re-delivery leaves the cached copy incomplete until its last chunk lands.
-// A fetch in that window has to treat the object as a miss and move past it;
-// cachedContent still advertising the location stalls the fetch loop.
-CO_TEST_F(MoqxCacheTest, TestFetchWhileCachedObjectIsBeingRecached) {
+// A re-delivery still being received must not hide the copy already cached.
+CO_TEST_F(MoqxCacheTest, TestFetchServesCachedObjectWhileItIsRedelivered) {
   auto writeback = cache_.getSubscribeWriteback(kTestTrackName, trackConsumer_);
   writeback->objectStream(ObjectHeader(0, 0, 0, 0, 200), makeBuf(200));
   writeback.reset();
@@ -1466,12 +1464,213 @@ CO_TEST_F(MoqxCacheTest, TestFetchWhileCachedObjectIsBeingRecached) {
   auto subgroupConsumer = writeback->beginSubgroup(0, 0, 0).value();
   EXPECT_FALSE(subgroupConsumer->beginObject(0, 200, makeBuf(50)).hasError());
 
-  // Reaching upstream at all is the point: the object is a miss, and the
-  // fetch has to get past it to the end of the range.
-  expectUpstreamFetch(FetchError{0, FetchErrorCode::DOES_NOT_EXIST, "gone"});
-  EXPECT_CALL(*consumer_, reset(_));
+  EXPECT_CALL(*consumer_, object(0, 0, 0, HasChainDataLengthOf(200), _, _, _))
+      .WillOnce(Return(folly::unit));
   auto res = co_await cache_.fetch(getFetch({0, 0}, {0, 1}), trackingConsumer_, upstream_);
   EXPECT_TRUE(res.hasValue());
+  co_await folly::coro::co_reschedule_on_current_executor;
+}
+
+// The first viewer's SUBSCRIBE and joining FETCH make a live copy and an
+// upstream FETCH copy of the same object arrive in chunks at the same time.
+// The cache must end up with one copy, not the two spliced together.
+CO_TEST_F(MoqxCacheTest, TestConcurrentLiveAndFetchChunksDoNotSplice) {
+  expectUpstreamFetch({0, 0}, {0, 1}, 0, AbsoluteLocation{0, 1});
+  auto res = co_await cache_.fetch(getFetch({0, 0}, {0, 1}), trackingConsumer_, upstream_);
+  EXPECT_TRUE(res.hasValue());
+
+  auto writeback = cache_.getSubscribeWriteback(kTestTrackName, trackConsumer_);
+  auto live = writeback->beginSubgroup(0, 0, 0).value();
+
+  EXPECT_CALL(*consumer_, beginObject(0, 0, 0, 6, _, _)).WillOnce(Return(folly::unit));
+  EXPECT_CALL(*consumer_, objectPayload(_, true)).WillOnce(Return(ObjectPublishStatus::DONE));
+  EXPECT_FALSE(live->beginObject(0, 6, folly::IOBuf::copyBuffer("aaa")).hasError());
+  EXPECT_FALSE(
+      upstreamFetchConsumer_->beginObject(0, 0, 0, 6, folly::IOBuf::copyBuffer("aaa")).hasError()
+  );
+  EXPECT_FALSE(live->objectPayload(folly::IOBuf::copyBuffer("bbb"), false).hasError());
+  EXPECT_FALSE(
+      upstreamFetchConsumer_->objectPayload(folly::IOBuf::copyBuffer("bbb"), true).hasError()
+  );
+  live.reset();
+  writeback.reset();
+
+  EXPECT_CALL(*consumer_, object(0, 0, 0, HasPayload("aaabbb"), _, _, _))
+      .WillOnce(Return(folly::unit));
+  res = co_await cache_.fetch(getFetch({0, 0}, {0, 1}), trackingConsumer_, upstream_);
+  EXPECT_TRUE(res.hasValue());
+  co_await folly::coro::co_reschedule_on_current_executor;
+}
+
+// Same, with the two copies split at different points.
+CO_TEST_F(MoqxCacheTest, TestConcurrentLiveAndFetchChunksSplitDifferently) {
+  expectUpstreamFetch({0, 0}, {0, 1}, 0, AbsoluteLocation{0, 1});
+  auto res = co_await cache_.fetch(getFetch({0, 0}, {0, 1}), trackingConsumer_, upstream_);
+  EXPECT_TRUE(res.hasValue());
+
+  auto writeback = cache_.getSubscribeWriteback(kTestTrackName, trackConsumer_);
+  auto live = writeback->beginSubgroup(0, 0, 0).value();
+
+  EXPECT_CALL(*consumer_, beginObject(0, 0, 0, 6, _, _)).WillOnce(Return(folly::unit));
+  EXPECT_CALL(*consumer_, objectPayload(_, true)).WillOnce(Return(ObjectPublishStatus::DONE));
+  EXPECT_FALSE(live->beginObject(0, 6, folly::IOBuf::copyBuffer("a")).hasError());
+  EXPECT_FALSE(
+      upstreamFetchConsumer_->beginObject(0, 0, 0, 6, folly::IOBuf::copyBuffer("aaab")).hasError()
+  );
+  EXPECT_FALSE(live->objectPayload(folly::IOBuf::copyBuffer("aabbb"), false).hasError());
+  EXPECT_FALSE(
+      upstreamFetchConsumer_->objectPayload(folly::IOBuf::copyBuffer("bb"), true).hasError()
+  );
+  live.reset();
+  writeback.reset();
+
+  EXPECT_CALL(*consumer_, object(0, 0, 0, HasPayload("aaabbb"), _, _, _))
+      .WillOnce(Return(folly::unit));
+  res = co_await cache_.fetch(getFetch({0, 0}, {0, 1}), trackingConsumer_, upstream_);
+  EXPECT_TRUE(res.hasValue());
+  co_await folly::coro::co_reschedule_on_current_executor;
+}
+
+// The FETCH copy completes first; the live copy completing later is a no-op.
+CO_TEST_F(MoqxCacheTest, TestConcurrentFetchCompletesBeforeLive) {
+  expectUpstreamFetch({0, 0}, {0, 1}, 0, AbsoluteLocation{0, 1});
+  auto res = co_await cache_.fetch(getFetch({0, 0}, {0, 1}), trackingConsumer_, upstream_);
+  EXPECT_TRUE(res.hasValue());
+
+  auto writeback = cache_.getSubscribeWriteback(kTestTrackName, trackConsumer_);
+  auto live = writeback->beginSubgroup(0, 0, 0).value();
+
+  EXPECT_CALL(*consumer_, beginObject(0, 0, 0, 6, _, _)).WillOnce(Return(folly::unit));
+  EXPECT_CALL(*consumer_, objectPayload(_, true)).WillOnce(Return(ObjectPublishStatus::DONE));
+  EXPECT_FALSE(
+      upstreamFetchConsumer_->beginObject(0, 0, 0, 6, folly::IOBuf::copyBuffer("aaa")).hasError()
+  );
+  EXPECT_FALSE(live->beginObject(0, 6, folly::IOBuf::copyBuffer("aaa")).hasError());
+  EXPECT_FALSE(
+      upstreamFetchConsumer_->objectPayload(folly::IOBuf::copyBuffer("bbb"), true).hasError()
+  );
+  EXPECT_FALSE(live->objectPayload(folly::IOBuf::copyBuffer("bbb"), false).hasError());
+  live.reset();
+  writeback.reset();
+
+  EXPECT_CALL(*consumer_, object(0, 0, 0, HasPayload("aaabbb"), _, _, _))
+      .WillOnce(Return(folly::unit));
+  res = co_await cache_.fetch(getFetch({0, 0}, {0, 1}), trackingConsumer_, upstream_);
+  EXPECT_TRUE(res.hasValue());
+  co_await folly::coro::co_reschedule_on_current_executor;
+}
+
+// A whole FETCH copy arriving while the live copy is still in chunks.
+CO_TEST_F(MoqxCacheTest, TestWholeFetchObjectWhileLiveObjectInProgress) {
+  expectUpstreamFetch({0, 0}, {0, 1}, 0, AbsoluteLocation{0, 1});
+  auto res = co_await cache_.fetch(getFetch({0, 0}, {0, 1}), trackingConsumer_, upstream_);
+  EXPECT_TRUE(res.hasValue());
+
+  auto writeback = cache_.getSubscribeWriteback(kTestTrackName, trackConsumer_);
+  auto live = writeback->beginSubgroup(0, 0, 0).value();
+
+  EXPECT_CALL(*consumer_, object(0, 0, 0, _, _, true, _)).WillOnce(Return(folly::unit));
+  EXPECT_FALSE(live->beginObject(0, 6, folly::IOBuf::copyBuffer("aaa")).hasError());
+  EXPECT_FALSE(upstreamFetchConsumer_
+                   ->object(0, 0, 0, folly::IOBuf::copyBuffer("aaabbb"), noExtensions(), true)
+                   .hasError());
+  EXPECT_FALSE(live->objectPayload(folly::IOBuf::copyBuffer("bbb"), false).hasError());
+  live.reset();
+  writeback.reset();
+
+  EXPECT_CALL(*consumer_, object(0, 0, 0, HasPayload("aaabbb"), _, _, _))
+      .WillOnce(Return(folly::unit));
+  res = co_await cache_.fetch(getFetch({0, 0}, {0, 1}), trackingConsumer_, upstream_);
+  EXPECT_TRUE(res.hasValue());
+  co_await folly::coro::co_reschedule_on_current_executor;
+}
+
+// A duplicate keeps the cached payload but replaces the cached properties.
+CO_TEST_F(MoqxCacheTest, TestDuplicateObjectReplacesExtensionsNotPayload) {
+  constexpr uint64_t kExtType = 0x40;
+  Extensions first;
+  first.insertMutableExtension(Extension{kExtType, 1});
+  Extensions second;
+  second.insertMutableExtension(Extension{kExtType, 2});
+
+  auto writeback = cache_.getSubscribeWriteback(kTestTrackName, trackConsumer_);
+  ObjectHeader header(0, 0, 0, 0, 3);
+  header.extensions = first;
+  EXPECT_FALSE(writeback->objectStream(header, folly::IOBuf::copyBuffer("abc")).hasError());
+  header.extensions = second;
+  EXPECT_FALSE(writeback->objectStream(header, folly::IOBuf::copyBuffer("xyz")).hasError());
+  writeback.reset();
+
+  EXPECT_CALL(*consumer_, object(0, 0, 0, HasPayload("abc"), _, _, _))
+      .WillOnce([kExtType](auto, auto, auto, auto, const Extensions& ext, auto, auto) {
+        EXPECT_EQ(ext.getIntExtension(kExtType), 2);
+        return folly::unit;
+      });
+  auto res = co_await cache_.fetch(getFetch({0, 0}, {0, 1}), trackingConsumer_, upstream_);
+  EXPECT_TRUE(res.hasValue());
+  co_await folly::coro::co_reschedule_on_current_executor;
+}
+
+// A live object cut off mid-payload leaves nothing in the cache.
+TEST_F(MoqxCacheTest, TestLiveObjectResetMidPayloadIsNotCached) {
+  auto writeback = cache_.getSubscribeWriteback(kTestTrackName, trackConsumer_);
+  auto subgroupConsumer = writeback->beginSubgroup(0, 0, 0).value();
+  EXPECT_FALSE(subgroupConsumer->beginObject(0, 6, folly::IOBuf::copyBuffer("aaa")).hasError());
+  subgroupConsumer->reset(ResetStreamErrorCode::CANCELLED);
+  subgroupConsumer.reset();
+  writeback.reset();
+  EXPECT_FALSE(cache_.hasCachedObject(kTestTrackName, {0, 0}));
+  EXPECT_EQ(cache_.totalCachedBytes(), 0);
+
+  writeback = cache_.getSubscribeWriteback(kTestTrackName, trackConsumer_);
+  EXPECT_FALSE(writeback->objectStream(ObjectHeader(0, 0, 0, 0, 6), makeBuf(6)).hasError());
+  writeback.reset();
+  EXPECT_TRUE(cache_.hasCachedObject(kTestTrackName, {0, 0}));
+  EXPECT_EQ(cache_.totalCachedBytes(), 6);
+}
+
+// An upstream FETCH that ends mid-object leaves that object unknown, not a
+// gap, so a later FETCH still asks upstream for it.
+CO_TEST_F(MoqxCacheTest, TestFetchEndingMidObjectLeavesObjectUnknown) {
+  expectUpstreamFetch({0, 0}, {0, 2}, 0, AbsoluteLocation{0, 2});
+  auto res = co_await cache_.fetch(getFetch({0, 0}, {0, 2}), consumer_, upstream_);
+  EXPECT_TRUE(res.hasValue());
+  EXPECT_CALL(*consumer_, beginObject(0, 0, 0, 6, _, _)).WillOnce(Return(folly::unit));
+  EXPECT_CALL(*consumer_, endOfFetch()).WillOnce(Return(folly::unit));
+  upstreamFetchConsumer_->beginObject(0, 0, 0, 6, folly::IOBuf::copyBuffer("aaa"));
+  upstreamFetchConsumer_->endOfFetch();
+  co_await folly::coro::co_reschedule_on_current_executor;
+
+  // {0, 1} is a gap now, so only {0, 0} goes upstream.
+  auto consumer2 = std::make_shared<StrictMock<moxygen::MockFetchConsumer>>();
+  expectUpstreamFetch({0, 0}, {0, 1}, 0, AbsoluteLocation{0, 1})
+      .via(co_await folly::coro::co_current_executor)
+      .thenTry([this](auto) {
+        upstreamFetchConsumer_->object(0, 0, 0, makeBuf(6), noExtensions(), true);
+      });
+  EXPECT_CALL(*consumer2, object(0, 0, 0, _, _, false, _)).WillOnce(Return(folly::unit));
+  EXPECT_CALL(*consumer2, endOfFetch()).WillOnce(Return(folly::unit));
+  res = co_await cache_.fetch(getFetch({0, 0}, {0, 2}), consumer2, upstream_);
+  EXPECT_TRUE(res.hasValue());
+}
+
+// A chunked object that ends a non-final upstream range must let the fetch
+// move on to the rest of the range.
+CO_TEST_F(MoqxCacheTest, TestChunkedObjectEndingUpstreamRangeCompletesFetch) {
+  populateCacheRange({0, 1}, {0, 2});
+  expectUpstreamFetch({0, 0}, {0, 1}, 0, AbsoluteLocation{0, 1});
+  auto res = co_await cache_.fetch(getFetch({0, 0}, {0, 2}), trackingConsumer_, upstream_);
+  EXPECT_TRUE(res.hasValue());
+  co_await folly::coro::co_reschedule_on_current_executor;
+
+  {
+    InSequence enforceOrder;
+    EXPECT_CALL(*consumer_, beginObject(0, 0, 0, 6, _, _)).WillOnce(Return(folly::unit));
+    EXPECT_CALL(*consumer_, objectPayload(_, false)).WillOnce(Return(ObjectPublishStatus::DONE));
+    EXPECT_CALL(*consumer_, object(0, 0, 1, _, _, true, _)).WillOnce(Return(folly::unit));
+  }
+  upstreamFetchConsumer_->beginObject(0, 0, 0, 6, folly::IOBuf::copyBuffer("aaa"));
+  upstreamFetchConsumer_->objectPayload(folly::IOBuf::copyBuffer("bbb"), true);
   co_await folly::coro::co_reschedule_on_current_executor;
 }
 
@@ -4324,7 +4523,7 @@ CO_TEST_F(MoqxCacheTest, TestSetMaxCachedBytesTriggersEviction) {
 }
 
 CO_TEST_F(MoqxCacheTest, TestBytesTrackedAcrossStreamingObject) {
-  // Verify byte tracking accumulates correctly via objectPayload() chunks.
+  // Verify a streamed object's bytes are tracked once its last chunk lands.
   // Write a 200-byte object in two 100-byte chunks, then apply a byte limit.
   auto writeback = cache_.getSubscribeWriteback(kTestTrackName, trackConsumer_);
 
@@ -4875,7 +5074,7 @@ TEST_F(MoqxCacheTest, RecacheIncompleteObjectByteAccounting) {
   writebackB.reset(); // enters LRU first → oldest
 
   // Create track A SECOND (newer in LRU)
-  // Step 1: Cache an incomplete object with 50-byte initial payload
+  // Step 1: Start an object with a 50-byte first chunk and abandon it.
   auto writeback1 = cache_.getSubscribeWriteback(kTestTrackName, trackConsumer_);
   auto subRes = writeback1->beginSubgroup(0, 0, kDefaultPriority);
   ASSERT_TRUE(subRes.hasValue());
@@ -4885,22 +5084,20 @@ TEST_F(MoqxCacheTest, RecacheIncompleteObjectByteAccounting) {
   // Release subgroup and writeback without completing the object
   subConsumer.reset();
   writeback1.reset();
+  // The abandoned object leaves no bytes behind.
+  EXPECT_FALSE(cache_.hasCachedObject(kTestTrackName, {0, 0}));
+  EXPECT_EQ(cache_.totalCachedBytes(), 100);
 
-  // Step 2: Re-cache the same object as complete with 200-byte payload via a
-  // new writeback. This triggers the overwrite path in cacheObject where
-  // payloadSize changes from 50 to 200 but totalBytes is not updated.
+  // Step 2: Cache the same object complete (200 bytes) via a new writeback.
   auto writeback2 = cache_.getSubscribeWriteback(kTestTrackName, trackConsumer_);
   auto osRes = writeback2->objectStream(ObjectHeader(0, 0, 0, 0, 200), makeBuf(200));
   EXPECT_TRUE(osRes.hasValue());
   writeback2.reset(); // enters LRU second → newer
 
-  // Without fix: totalCachedBytes_ = 50 (track A, stale) + 100 (track B) = 150
-  // With fix:    totalCachedBytes_ = 200 (track A, correct) + 100 (track B) =
-  // 300 Set byte limit to 250 — only correct accounting triggers eviction.
+  // totalCachedBytes_ = 200 (track A) + 100 (track B) = 300; a 250-byte
+  // limit evicts the oldest LRU track (track B).
   cache_.setMaxCachedBytes(250);
 
-  // With correct accounting (300 > 250), oldest LRU track (track B) is evicted.
-  // Without fix (150 < 250), no eviction occurs — both tracks survive.
   EXPECT_FALSE(cache_.hasTrack(trackB));
   EXPECT_TRUE(cache_.hasTrack(kTestTrackName));
 }

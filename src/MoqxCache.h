@@ -215,6 +215,7 @@ private:
   class SubgroupWriteback;
   class FetchWriteback;
   class FetchHandle;
+  struct PendingObject;
   struct CacheTrack; // Forward declaration for CacheGroup::cacheObject
 
   // Entry for a group
