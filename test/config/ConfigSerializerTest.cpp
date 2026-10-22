@@ -23,7 +23,11 @@
 namespace {
 using namespace openmoq::moqx::config;
 
-static_assert(rfl::internal::num_fields<Config> == 9, "Config changed — update serializeConfig()");
+static_assert(rfl::internal::num_fields<Config> == 10, "Config changed — update serializeConfig()");
+static_assert(
+    rfl::internal::num_fields<ClusterConfig> == 1,
+    "ClusterConfig changed — update serializeConfig()"
+);
 static_assert(
     rfl::internal::num_fields<ListenerConfig> == 8,
     "ListenerConfig changed — update serializeConfig()"
@@ -165,6 +169,7 @@ private:
 Config makeFullConfig() {
   Config cfg;
   cfg.relayID = "test-relay";
+  cfg.cluster = ClusterConfig{.hopID = 1001};
   cfg.threads = 4;
   cfg.useRelayThread = true;
   cfg.useLocalForwarders = false;
@@ -210,6 +215,8 @@ TEST(ConfigSerializerTest, VisitsAllSections) {
 
   EXPECT_EQ(sink.scalars["relay_id"], "test-relay");
   EXPECT_EQ(sink.scalars["threads"], "4");
+  EXPECT_EQ(sink.scalars["cluster.enabled"], "true");
+  EXPECT_EQ(sink.scalars["cluster.hop_id"], "1001");
   EXPECT_EQ(sink.scalars["admin.address"], "[::1]:9999");
   EXPECT_EQ(sink.scalars["admin.tls.cert_file"], "/etc/admin.crt");
 
@@ -228,6 +235,15 @@ TEST(ConfigSerializerTest, VisitsAllSections) {
   EXPECT_EQ(sink.scalars["logging.mlog.dir"], "/var/log/mlog");
   EXPECT_EQ(sink.scalars["logging.mlog.sample_rate"], "0.500000");
   EXPECT_EQ(sink.scalars["logging.qlog.dir"], "/var/log/qlog");
+}
+
+TEST(ConfigSerializerTest, DisabledClusterOmitsHopID) {
+  Config cfg = makeFullConfig();
+  cfg.cluster.reset();
+  RecordingSink sink;
+  serializeConfig(cfg, sink);
+  EXPECT_EQ(sink.scalars["cluster.enabled"], "false");
+  EXPECT_EQ(sink.scalars.count("cluster.hop_id"), 0u);
 }
 
 // Regression: a scope without namespace_match (matches ANY namespace) must

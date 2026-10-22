@@ -826,6 +826,15 @@ std::string generateRelayID() {
   return oss.str();
 }
 
+uint64_t generateHopID() {
+  std::random_device rd;
+  uint64_t val = 0;
+  while (val == 0) {
+    val = (static_cast<uint64_t>(rd()) << 32) | static_cast<uint64_t>(rd());
+  }
+  return val;
+}
+
 // --- Resolution helpers ---
 
 // Apply parsed quic fields onto a QuicConfig, field by field.
@@ -1381,6 +1390,14 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
   // Resolve relayID: use configured value or generate a random hex string
   std::string relayID = config.relay_id.value().value_or(generateRelayID());
 
+  std::optional<ClusterConfig> cluster;
+  const auto& parsedCluster = config.cluster.value();
+  if (!parsedCluster) {
+    cluster = ClusterConfig{.hopID = generateHopID()};
+  } else if (parsedCluster->enabled.value().value_or(true)) {
+    cluster = ClusterConfig{.hopID = parsedCluster->hop_id.value().value_or(generateHopID())};
+  }
+
   // Resolve logging config
   std::optional<LoggingConfig> loggingConfig;
   if (config.logging.value().has_value()) {
@@ -1455,6 +1472,7 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
               .useLocalForwarders = useLocalForwarders,
               .mvfstBpfSteering = mvfstBpfSteering,
               .logging = std::move(loggingConfig),
+              .cluster = cluster,
           },
       .warnings = std::move(warnings),
   };

@@ -297,6 +297,12 @@ inline void serializeConfig(const Config& cfg, ConfigSink& s) {
   s.boolField("use_relay_thread", cfg.useRelayThread);
   s.boolField("use_local_forwarders", cfg.useLocalForwarders);
   s.boolField("mvfst_bpf_steering", cfg.mvfstBpfSteering);
+  s.beginObject("cluster");
+  s.boolField("enabled", cfg.cluster.has_value());
+  if (cfg.cluster) {
+    s.uintField("hop_id", cfg.cluster->hopID);
+  }
+  s.endObject();
 
   if (cfg.admin) {
     s.beginObject("admin");

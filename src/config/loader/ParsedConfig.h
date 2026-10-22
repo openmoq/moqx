@@ -357,6 +357,15 @@ struct ParsedUpstreamTlsConfig {
       ca_cert;
 };
 
+struct ParsedClusterConfig {
+  rfl::Description<"Negotiate MoQ Cluster on draft 18+ links (default: true)", std::optional<bool>>
+      enabled;
+  rfl::Description<
+      "MoQ Cluster Hop ID (optional; random if absent, 0 is anonymous)",
+      std::optional<uint64_t>>
+      hop_id;
+};
+
 struct ParsedUpstreamConfig {
   rfl::Description<"Upstream MoQ server URL (moqt://host:port/path)", std::string> url;
   rfl::Description<"TLS configuration for upstream connection", ParsedUpstreamTlsConfig> tls;
@@ -588,6 +597,7 @@ struct ParsedConfig {
       std::optional<bool>>
       mvfst_bpf_steering;
   rfl::Description<"Logging configuration", std::optional<ParsedLoggingConfig>> logging;
+  rfl::Description<"MoQ Cluster settings", std::optional<ParsedClusterConfig>> cluster;
 };
 
 } // namespace openmoq::moqx::config
