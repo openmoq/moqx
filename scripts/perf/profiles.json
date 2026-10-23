@@ -3,21 +3,21 @@
     {
       "id": "1mbps",
       "mbps_per_subscriber": 1,
-      "subscribers_at_300pct_cpu": 728,
+      "subscribers_at_300pct_cpu": 824,
       "first_object_size": 26516,
       "other_object_size": 3788
     },
     {
       "id": "4mbps",
       "mbps_per_subscriber": 4,
-      "subscribers_at_300pct_cpu": 256,
+      "subscribers_at_300pct_cpu": 304,
       "first_object_size": 106064,
       "other_object_size": 26516
     },
     {
       "id": "16mbps",
       "mbps_per_subscriber": 16,
-      "subscribers_at_300pct_cpu": 144,
+      "subscribers_at_300pct_cpu": 160,
       "first_object_size": 424242,
       "other_object_size": 60606
     }
