@@ -5,7 +5,11 @@
  */
 
 #include "NamespaceTree.h"
+#include "relay/ClusterPath.h"
 #include <folly/logging/xlog.h>
+
+#include <algorithm>
+#include <tuple>
 
 using namespace moxygen;
 
@@ -76,10 +80,18 @@ void NamespaceTree::tryPruneSelf(NamespaceNode& node, bool hadContent, const Tra
   }
 }
 
-std::shared_ptr<MoQSession> NamespaceTree::findPublisherSession(const TrackNamespace& ns) {
-  // publish()/subscribeNamespace() create nodes with no publisher; don't let
+bool NamespaceTree::NamespaceNode::betterRoute(const Route& a, const Route& b) {
+  auto hasAnon = [](const Route& r) {
+    return std::find(r.path.begin(), r.path.end(), kMoQClusterAnonHopId) != r.path.end();
+  };
+  return std::tuple(hasAnon(a), a.cost, a.path.size(), b.seq) <
+         std::tuple(hasAnon(b), b.cost, b.path.size(), a.seq);
+}
+
+const NamespaceTree::NamespaceNode* NamespaceTree::findRouteNode(const TrackNamespace& ns) const {
+  // publish()/subscribeNamespace() create nodes with no routes; don't let
   // those shadow a publishing ancestor further up the path.
-  std::shared_ptr<MoQSession> deepestPublisher = root_.publisherSession_;
+  const NamespaceNode* deepest = root_.routes_.empty() ? nullptr : &root_;
   const NamespaceNode* node = &root_;
   for (size_t i = 0; i < ns.size(); i++) {
     auto it = node->children_.find(ns[i]);
@@ -87,11 +99,53 @@ std::shared_ptr<MoQSession> NamespaceTree::findPublisherSession(const TrackNames
       break;
     }
     node = it->second.get();
-    if (node->publisherSession_) {
-      deepestPublisher = node->publisherSession_;
+    if (!node->routes_.empty()) {
+      deepest = node;
     }
   }
-  return deepestPublisher;
+  return deepest;
+}
+
+std::shared_ptr<MoQSession>
+NamespaceTree::findPublisherSession(const TrackNamespace& ns, const RouteExclusion& exclusion) {
+  const auto* node = findRouteNode(ns);
+  if (!node) {
+    return nullptr;
+  }
+  const auto* route = node->selectRoute([&](const NamespaceNode::Route& r) {
+    return (!exclusion.session || r.session->sessionId() != *exclusion.session) &&
+           !clusterPathContains(r.path, exclusion.hop);
+  });
+  return route ? route->session : nullptr;
+}
+
+const NamespaceTree::NamespaceNode::Route* NamespaceTree::NamespaceNode::findRoute(SessionId session
+) const {
+  auto it = std::find_if(routes_.begin(), routes_.end(), [&](const Route& r) {
+    return r.session->sessionId() == session;
+  });
+  return it != routes_.end() ? &*it : nullptr;
+}
+
+namespace {
+// One advertisement keeps its first Hop ID, even 0: its stream is the continuity.
+bool sameOrigin(const std::vector<uint64_t>& a, const std::vector<uint64_t>& b) {
+  return !a.empty() && !b.empty() && a.front() == b.front();
+}
+} // namespace
+
+void NamespaceTree::reviseRoute(
+    NamespaceNode::Route& route,
+    std::vector<uint64_t> path,
+    uint64_t cost,
+    SetPublisherResult& result
+) {
+  if (!sameOrigin(route.path, path)) {
+    route.seq = ++nextRouteSeq_;
+    result.replacedSession = route.session;
+  }
+  route.path = std::move(path);
+  route.cost = cost;
 }
 
 NamespaceTree::SetPublisherResult NamespaceTree::setPublisher(
@@ -101,7 +155,8 @@ NamespaceTree::SetPublisherResult NamespaceTree::setPublisher(
     std::string peerID,
     RequestID requestID,
     std::vector<uint64_t> relayHopPath,
-    uint64_t routeCost
+    uint64_t routeCost,
+    bool fromCluster
 ) {
   SetPublisherResult result;
   auto node = findNode(ns, /*createMissingNodes=*/true, &result.subscribers);
@@ -109,41 +164,85 @@ NamespaceTree::SetPublisherResult NamespaceTree::setPublisher(
   for (const auto& [sess, info] : node->subscribers_) {
     result.subscribers.emplace_back(sess, info);
   }
+  result.node = node;
+
+  auto existing = std::find_if(node->routes_.begin(), node->routes_.end(), [&](const auto& r) {
+    return r.session == session || (!fromCluster && !r.fromCluster);
+  });
+  // A NAMESPACE (the only advertisement without a callback) repeated by its session.
+  if (existing != node->routes_.end() && existing->session == session && fromCluster &&
+      !existing->callback && !callback) {
+    existing->peerID = std::move(peerID);
+    reviseRoute(*existing, std::move(relayHopPath), routeCost, result);
+    return result;
+  }
 
   NodeMutationGuard guard(*this, *node, ns);
-  if (node->publisherSession_) {
-    result.replacedSession = node->publisherSession_;
-    if (node->publishNamespaceCallback_) {
-      node->publishNamespaceCallback_->publishNamespaceCancel(
+  if (existing != node->routes_.end()) {
+    result.replacedSession = existing->session;
+    if (existing->callback) {
+      existing->callback->publishNamespaceCancel(
           PublishNamespaceErrorCode::CANCELLED,
           "New publisher"
       );
-      node->publishNamespaceCallback_.reset();
     }
-    node->publisherSession_.reset();
+    node->routes_.erase(existing);
   }
-  node->publisherSession_ = std::move(session);
-  node->publisherPeerID_ = std::move(peerID);
-  node->relayHopPath_ = std::move(relayHopPath);
-  node->routeCost_ = routeCost;
-  node->publishNamespaceCallback_ = std::move(callback);
+  node->routes_.push_back(NamespaceNode::Route{
+      .session = std::move(session),
+      .callback = std::move(callback),
+      .peerID = std::move(peerID),
+      .requestID = requestID,
+      .path = std::move(relayHopPath),
+      .cost = routeCost,
+      .seq = ++nextRouteSeq_,
+      .fromCluster = fromCluster,
+  });
   node->trackNamespace = ns;
-  node->setPublishNamespaceOk({.requestID = requestID, .requestSpecificParams = {}});
+  return result;
+}
 
-  result.node = node;
+folly::Expected<NamespaceTree::SetPublisherResult, NamespaceTree::Error> NamespaceTree::updateRoute(
+    const TrackNamespace& ns,
+    SessionId session,
+    RequestID requestID,
+    std::vector<uint64_t> path,
+    uint64_t cost
+) {
+  auto node = findNode(ns);
+  if (!node) {
+    return folly::makeUnexpected(Error::NodeNotFound);
+  }
+  auto it = std::find_if(node->routes_.begin(), node->routes_.end(), [&](const auto& r) {
+    return r.session->sessionId() == session && r.requestID == requestID;
+  });
+  if (it == node->routes_.end()) {
+    return folly::makeUnexpected(Error::NotOwner);
+  }
+  SetPublisherResult result;
+  findNode(ns, /*createMissingNodes=*/false, &result.subscribers);
+  for (const auto& [sess, info] : node->subscribers_) {
+    result.subscribers.emplace_back(sess, info);
+  }
+  reviseRoute(*it, std::move(path), cost, result);
+  result.node = std::move(node);
   return result;
 }
 
 folly::Expected<NamespaceTree::UnpublishNamespaceResult, NamespaceTree::Error>
 NamespaceTree::unpublishNamespace(
     const TrackNamespace& ns,
-    const std::shared_ptr<MoQSession>& session
+    SessionId session,
+    std::optional<RequestID> requestID
 ) {
   auto node = findNode(ns);
   if (!node) {
     return folly::makeUnexpected(Error::NodeNotFound);
   }
-  if (node->publisherSession_ == nullptr || node->publisherSession_ != session) {
+  auto it = std::find_if(node->routes_.begin(), node->routes_.end(), [&](const auto& r) {
+    return r.session->sessionId() == session && (!requestID || r.requestID == *requestID);
+  });
+  if (it == node->routes_.end()) {
     return folly::makeUnexpected(Error::NotOwner);
   }
 
@@ -154,13 +253,10 @@ NamespaceTree::unpublishNamespace(
   }
 
   NodeMutationGuard guard(*this, *node, ns);
-  node->publisherSession_ = nullptr;
-  node->publisherPeerID_.clear();
-  result.relayHopPath = std::move(node->relayHopPath_);
-  node->relayHopPath_.clear();
-  node->routeCost_ = 0;
-  node->publishNamespaceCallback_.reset();
-
+  result.removed = std::move(*it);
+  result.removed.callback.reset();
+  node->routes_.erase(it);
+  result.node = node;
   return result;
 }
 
@@ -235,6 +331,10 @@ folly::Expected<folly::Unit, NamespaceTree::Error> NamespaceTree::removeNamespac
       rankingIt->second->removeSessionFromTopNGroup(it->second.trackFilter->maxSelected, session);
     }
   }
+  const NamespaceNode::AdvertisementKey key{session->sessionId(), ns.size()};
+  forEachNodeInSubtree(ns, node, [&](const TrackNamespace&, const auto& n) {
+    n->eraseAdvertisement(key);
+  });
   NodeMutationGuard guard(*this, *node, ns);
   node->subscribers_.erase(it);
   return folly::unit;
@@ -296,7 +396,7 @@ std::shared_ptr<NamespaceTree::NamespaceNode> NamespaceTree::findNode(
     auto it = nodePtr->children_.find(name);
     if (it == nodePtr->children_.end()) {
       if (createMissingNodes) {
-        auto node = std::make_shared<NamespaceNode>(*this, nodePtr.get());
+        auto node = std::make_shared<NamespaceNode>(nodePtr.get());
         node->trackNamespace = partialNs;
         nodePtr->children_.emplace(name, node);
         nodePtr = std::move(node);

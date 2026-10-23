@@ -93,6 +93,60 @@ TEST_P(MoQRelayTest, RouteCostAccumulatesAndReplaySkipsPeersOnThePath) {
   driveIfMultiThread();
 }
 
+// A second cluster advertisement of a namespace coexists with the first and leaves
+// the subscriptions it serves running. A second advertisement from a session without MoQ
+// Cluster replaces the first and ends them.
+TEST_P(MoQRelayTest, ClusterRoutesCoexistButPlainRoutesReplace) {
+  resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "", 900);
+  auto tracks = [&](const TrackNamespace& ns) {
+    size_t matched = 0;
+    verifyOnRelayExec([&] { matched = relay_->matchTracks(ns, nullptr, 10).matched; });
+    return matched;
+  };
+  auto advertise = [&](const std::shared_ptr<MockMoQSession>& session, uint64_t origin) {
+    PublishNamespace pubNs;
+    pubNs.trackNamespace = kTestNamespace;
+    pubNs.params.insertParam(Parameter(
+        folly::to_underlying(TrackRequestParamKey::HOP_PATH),
+        encodeRelayHopPath({origin}, kVersionDraft18).value()
+    ));
+    auto result = withSessionContext(session, [&] {
+      return folly::coro::blockingWait(
+          subscriberInterface()->publishNamespace(std::move(pubNs), nullptr),
+          exec_.get()
+      );
+    });
+    ASSERT_TRUE(result.hasValue());
+    driveIfMultiThread();
+  };
+
+  auto first = createMockSession();
+  negotiateCluster(*first);
+  advertise(first, 100);
+  doPublish(first, kTestTrackName);
+  ASSERT_EQ(tracks(kTestNamespace), 1u);
+  auto second = createMockSession();
+  negotiateCluster(*second);
+  advertise(second, 200);
+  EXPECT_EQ(tracks(kTestNamespace), 1u);
+
+  const TrackNamespace plainNs{{"test", "plain"}};
+  auto plain1 = createMockSession();
+  doPublishNamespace(plain1, plainNs);
+  doPublish(plain1, FullTrackName{plainNs, "track1"});
+  ASSERT_EQ(tracks(plainNs), 1u);
+  auto plain2 = createMockSession();
+  doPublishNamespace(plain2, plainNs);
+  driveIfMultiThread();
+  EXPECT_EQ(tracks(plainNs), 0u);
+  EXPECT_EQ(tracks(kTestNamespace), 1u);
+
+  for (const auto& session : {first, second, plain1, plain2}) {
+    removeSession(session);
+  }
+  driveIfMultiThread();
+}
+
 TEST_P(MoQRelayTest, AnonymousPublisherUsesZeroOriginAndAppendsRelayHop) {
   constexpr uint64_t kRelayHop = 900;
   resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "", kRelayHop);
@@ -366,6 +420,675 @@ TEST_P(MoQRelayTest, ExcludedSubscriberGetsNoNamespaceDone) {
   for (auto& subscriber : subscribers) {
     removeSession(subscriber);
   }
+  driveIfMultiThread();
+}
+
+PublishNamespace
+clusterAdvert(std::vector<uint64_t> path, uint64_t cost, TrackNamespace ns = kTestNamespace) {
+  PublishNamespace pubNs;
+  pubNs.trackNamespace = std::move(ns);
+  pubNs.params.insertParam(Parameter(
+      folly::to_underlying(TrackRequestParamKey::HOP_PATH),
+      encodeRelayHopPath(path, kVersionDraft18).value()
+  ));
+  pubNs.params.insertParam(Parameter(folly::to_underlying(TrackRequestParamKey::ROUTE_COST), cost));
+  return pubNs;
+}
+
+std::vector<uint64_t> hopPathOf(const Namespace& ns) {
+  const auto* param = ns.params.getFirstParam(TrackRequestParamKey::HOP_PATH);
+  return param ? decodeRelayHopPath(param->asString, kVersionDraft18).value()
+               : std::vector<uint64_t>{};
+}
+
+// One session may hold nested SUBSCRIBE_NAMESPACE prefixes. Each is told the namespace
+// on its own, and unsubscribing one leaves the other's view as it was.
+TEST_P(MoQRelayTest, NestedPrefixesFromOneSessionAreTrackedApart) {
+  resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "", 900);
+  auto subscriber = createMockSession();
+  negotiateCluster(*subscriber);
+  auto outer = std::make_shared<RecordingNamespacePublishHandle>();
+  doSubscribeNamespace(subscriber, TrackNamespace{{"test"}}, true, outer);
+  auto inner = std::make_shared<RecordingNamespacePublishHandle>();
+  auto innerSub = doSubscribeNamespace(subscriber, kTestNamespace, false, inner);
+
+  auto publisher = createMockSession();
+  negotiateCluster(*publisher);
+  doPublishNamespaceMsg(publisher, clusterAdvert({100}, 5));
+  driveIfMultiThread();
+  EXPECT_EQ(outer->namespaces.size(), 1u);
+  EXPECT_EQ(inner->namespaces.size(), 1u);
+
+  doPublishNamespaceMsg(publisher, clusterAdvert({100}, 1));
+  driveIfMultiThread();
+  EXPECT_EQ(outer->namespaces.size(), 2u);
+  EXPECT_EQ(inner->namespaces.size(), 2u);
+
+  innerSub->unsubscribeNamespace();
+  driveIfMultiThread();
+  verifyOnRelayExec([&] { relay_->doPublishNamespaceDone(kTestNamespace, publisher); });
+  driveIfMultiThread();
+  EXPECT_EQ(outer->dones.size(), 1u);
+  EXPECT_TRUE(inner->dones.empty());
+
+  removeSession(publisher);
+  removeSession(subscriber);
+  driveIfMultiThread();
+}
+
+// Each subscriber is told the best route it may use. Moving to a different
+// publisher withdraws the old advertisement first.
+TEST_P(MoQRelayTest, EachSubscriberIsAdvertisedItsBestRoute) {
+  constexpr uint64_t kRelayHop = 900;
+  resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "", kRelayHop);
+  auto viaPeer = createMockSession();
+  negotiateCluster(*viaPeer);
+  auto direct = createMockSession();
+  negotiateCluster(*direct);
+
+  // open may use both routes; peer100 is excluded from the one through hop 100.
+  auto open = createMockSession();
+  negotiateCluster(*open);
+  auto openHandle = std::make_shared<RecordingNamespacePublishHandle>();
+  doSubscribeNamespace(open, kTestNamespace, true, openHandle);
+  auto peer100 = createMockSession();
+  negotiateCluster(*peer100, 100);
+  auto peer100Handle = std::make_shared<RecordingNamespacePublishHandle>();
+  doSubscribeNamespace(peer100, kTestNamespace, true, peer100Handle);
+
+  doPublishNamespaceMsg(viaPeer, clusterAdvert({100}, 5));
+  driveIfMultiThread();
+  ASSERT_EQ(openHandle->namespaces.size(), 1u);
+  EXPECT_EQ(hopPathOf(openHandle->namespaces[0]), (std::vector<uint64_t>{100, kRelayHop}));
+  EXPECT_TRUE(peer100Handle->namespaces.empty());
+
+  doPublishNamespaceMsg(direct, clusterAdvert({200}, 1));
+  driveIfMultiThread();
+  verifyOnRelayExec([&] {
+    EXPECT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 2u);
+  });
+  EXPECT_EQ(openHandle->dones.size(), 1u);
+  ASSERT_EQ(openHandle->namespaces.size(), 2u);
+  EXPECT_EQ(hopPathOf(openHandle->namespaces[1]), (std::vector<uint64_t>{200, kRelayHop}));
+  ASSERT_EQ(peer100Handle->namespaces.size(), 1u);
+  EXPECT_EQ(hopPathOf(peer100Handle->namespaces[0]), (std::vector<uint64_t>{200, kRelayHop}));
+
+  auto late = createMockSession();
+  negotiateCluster(*late);
+  auto lateHandle = std::make_shared<RecordingNamespacePublishHandle>();
+  doSubscribeNamespace(late, kTestNamespace, true, lateHandle);
+  ASSERT_EQ(lateHandle->namespaces.size(), 1u);
+  EXPECT_EQ(hopPathOf(lateHandle->namespaces[0]), (std::vector<uint64_t>{200, kRelayHop}));
+
+  verifyOnRelayExec([&] { relay_->doPublishNamespaceDone(kTestNamespace, direct); });
+  driveIfMultiThread();
+  EXPECT_EQ(openHandle->dones.size(), 2u);
+  ASSERT_EQ(openHandle->namespaces.size(), 3u);
+  EXPECT_EQ(hopPathOf(openHandle->namespaces[2]), (std::vector<uint64_t>{100, kRelayHop}));
+  EXPECT_EQ(peer100Handle->dones.size(), 1u);
+
+  verifyOnRelayExec([&] { relay_->doPublishNamespaceDone(kTestNamespace, viaPeer); });
+  driveIfMultiThread();
+  EXPECT_EQ(openHandle->dones.size(), 3u);
+  EXPECT_EQ(peer100Handle->dones.size(), 1u);
+  EXPECT_EQ(peer100Handle->namespaces.size(), 1u);
+
+  for (const auto& session : {viaPeer, direct, open, peer100, late}) {
+    removeSession(session);
+  }
+  driveIfMultiThread();
+}
+
+// A better path from the same origin is an update. A subscriber that did not negotiate
+// MoQ Cluster sees no path, so it hears nothing new.
+TEST_P(MoQRelayTest, SameOriginRouteChangeIsAnUpdate) {
+  constexpr uint64_t kRelayHop = 900;
+  resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "", kRelayHop);
+  auto first = createMockSession();
+  negotiateCluster(*first);
+  auto second = createMockSession();
+  negotiateCluster(*second);
+
+  auto cluster = createMockSession();
+  negotiateCluster(*cluster);
+  auto clusterHandle = std::make_shared<RecordingNamespacePublishHandle>();
+  doSubscribeNamespace(cluster, kTestNamespace, true, clusterHandle);
+  auto plain = createMockSession();
+  auto plainHandle = std::make_shared<RecordingNamespacePublishHandle>();
+  doSubscribeNamespace(plain, kTestNamespace, true, plainHandle);
+
+  doPublishNamespaceMsg(first, clusterAdvert({100, 5}, 5));
+  driveIfMultiThread();
+  doPublishNamespaceMsg(second, clusterAdvert({100, 6}, 2));
+  driveIfMultiThread();
+  // The same session lowering its own cost is an update too.
+  doPublishNamespaceMsg(second, clusterAdvert({100, 6}, 1));
+  driveIfMultiThread();
+
+  EXPECT_TRUE(clusterHandle->dones.empty());
+  ASSERT_EQ(clusterHandle->namespaces.size(), 3u);
+  EXPECT_EQ(hopPathOf(clusterHandle->namespaces[1]), (std::vector<uint64_t>{100, 6, kRelayHop}));
+  const auto* cost =
+      clusterHandle->namespaces[2].params.getFirstParam(TrackRequestParamKey::ROUTE_COST);
+  ASSERT_NE(cost, nullptr);
+  EXPECT_EQ(cost->asUint64, 2u); // 1 plus the default link cost
+  EXPECT_TRUE(plainHandle->dones.empty());
+  EXPECT_EQ(plainHandle->namespaces.size(), 1u);
+
+  for (const auto& session : {first, second, cluster, plain}) {
+    removeSession(session);
+  }
+  driveIfMultiThread();
+}
+
+// Unsubscribing forgets what the subscription was told, so subscribing again
+// replays the namespace.
+TEST_P(MoQRelayTest, ResubscribeReplaysTheNamespace) {
+  resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "", 900);
+  auto publisher = createMockSession();
+  negotiateCluster(*publisher);
+  doPublishNamespaceMsg(publisher, clusterAdvert({100}, 1));
+  driveIfMultiThread();
+
+  auto subscriber = createMockSession();
+  negotiateCluster(*subscriber);
+  auto firstHandle = std::make_shared<RecordingNamespacePublishHandle>();
+  auto subscription = doSubscribeNamespace(subscriber, kTestNamespace, false, firstHandle);
+  EXPECT_EQ(firstHandle->namespaces.size(), 1u);
+  subscription->unsubscribeNamespace();
+  driveIfMultiThread();
+
+  auto secondHandle = std::make_shared<RecordingNamespacePublishHandle>();
+  doSubscribeNamespace(subscriber, kTestNamespace, true, secondHandle);
+  EXPECT_EQ(secondHandle->namespaces.size(), 1u);
+
+  removeSession(publisher);
+  removeSession(subscriber);
+  driveIfMultiThread();
+}
+
+// A handle from a session's earlier PUBLISH_NAMESPACE cannot update or end the newer
+// one. A malformed HOP_PATH in REQUEST_UPDATE closes the session.
+TEST_P(MoQRelayTest, RequestUpdateRejectsStaleHandlesAndMalformedPaths) {
+  resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "", 900);
+  auto publisher = createMockSession();
+  negotiateCluster(*publisher);
+  auto publishWith = [&](RequestID requestID) {
+    auto pubNs = clusterAdvert({100}, 1);
+    pubNs.requestID = requestID;
+    auto result = withSessionContext(publisher, [&] {
+      return folly::coro::blockingWait(
+          subscriberInterface()->publishNamespace(
+              std::move(pubNs),
+              std::make_shared<NiceMock<MockPublishNamespaceCallback>>()
+          ),
+          exec_.get()
+      );
+    });
+    EXPECT_TRUE(result.hasValue());
+    driveIfMultiThread();
+    return result.hasValue() ? result.value() : nullptr;
+  };
+  auto update = [&](const std::shared_ptr<Subscriber::PublishNamespaceHandle>& handle,
+                    std::string hopPath) {
+    RequestUpdate req;
+    req.requestID = RequestID(7);
+    req.params.insertParam(
+        Parameter(folly::to_underlying(TrackRequestParamKey::HOP_PATH), std::move(hopPath))
+    );
+    auto result = folly::coro::blockingWait(handle->requestUpdate(std::move(req)), exec_.get());
+    driveIfMultiThread();
+    return result;
+  };
+
+  auto stale = publishWith(RequestID(1));
+  auto current = publishWith(RequestID(3));
+  ASSERT_NE(stale, nullptr);
+  ASSERT_NE(current, nullptr);
+
+  EXPECT_TRUE(update(stale, encodeRelayHopPath({300}, kVersionDraft18).value()).hasError());
+  stale->publishNamespaceDone();
+  driveIfMultiThread();
+  verifyOnRelayExec([&] {
+    EXPECT_EQ(relay_->findPublishNamespaceSession(kTestNamespace), publisher);
+  });
+
+  // A truncated two-byte draft-18 varint.
+  EXPECT_TRUE(update(current, std::string("\x80", 1)).hasError());
+  EXPECT_TRUE(publisher->isClosed());
+
+  removeSession(publisher);
+  driveIfMultiThread();
+}
+
+// A repeated NAMESPACE whose path now runs through this relay ends the route
+// it would update, as a looped REQUEST_UPDATE does.
+TEST_P(MoQRelayTest, LoopedRepeatNamespaceEndsTheRoute) {
+  constexpr uint64_t kRelayHop = 900;
+  resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "", kRelayHop);
+  auto peer = createMockSession();
+  negotiateCluster(*peer);
+  auto subscriber = createMockSession();
+  negotiateCluster(*subscriber);
+  auto namespaceHandle = std::make_shared<RecordingNamespacePublishHandle>();
+  doSubscribeNamespace(subscriber, kTestNamespace, true, namespaceHandle);
+
+  doPublishNamespaceMsg(peer, clusterAdvert({100}, 1));
+  driveIfMultiThread();
+  ASSERT_EQ(namespaceHandle->namespaces.size(), 1u);
+
+  PublishNamespace looped = clusterAdvert({100, kRelayHop}, 1);
+  withSessionContext(peer, [&] {
+    folly::coro::blockingWait(
+        subscriberInterface()->publishNamespace(std::move(looped), nullptr),
+        exec_.get()
+    );
+  });
+  driveIfMultiThread();
+  EXPECT_EQ(namespaceHandle->dones.size(), 1u);
+  verifyOnRelayExec([&] { EXPECT_EQ(relay_->findPublishNamespaceSession(kTestNamespace), nullptr); }
+  );
+
+  removeSession(peer);
+  removeSession(subscriber);
+  driveIfMultiThread();
+}
+
+// REQUEST_UPDATE on a PUBLISH_NAMESPACE. A new cost from the same origin is an
+// update in place: subscriptions stay up. A new origin withdraws and
+// re-advertises, and drops the subscriptions it served. A looped path ends it.
+TEST_P(MoQRelayTest, RequestUpdateRevisesTheRoute) {
+  constexpr uint64_t kRelayHop = 900;
+  resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "", kRelayHop);
+  auto publisher = createMockSession();
+  negotiateCluster(*publisher);
+  auto subscriber = createMockSession();
+  negotiateCluster(*subscriber);
+  auto namespaceHandle = std::make_shared<RecordingNamespacePublishHandle>();
+  doSubscribeNamespace(subscriber, kTestNamespace, true, namespaceHandle);
+
+  auto handle = doPublishNamespaceMsg(publisher, clusterAdvert({100}, 5));
+  ASSERT_NE(handle, nullptr);
+  doPublish(publisher, kTestTrackName);
+  driveIfMultiThread();
+  ASSERT_EQ(namespaceHandle->namespaces.size(), 1u);
+
+  auto update = [&](std::optional<std::vector<uint64_t>> path, std::optional<uint64_t> cost) {
+    RequestUpdate req;
+    req.requestID = RequestID(7);
+    if (path) {
+      req.params.insertParam(Parameter(
+          folly::to_underlying(TrackRequestParamKey::HOP_PATH),
+          encodeRelayHopPath(*path, kVersionDraft18).value()
+      ));
+    }
+    if (cost) {
+      req.params.insertParam(
+          Parameter(folly::to_underlying(TrackRequestParamKey::ROUTE_COST), *cost)
+      );
+    }
+    auto result = folly::coro::blockingWait(handle->requestUpdate(std::move(req)), exec_.get());
+    driveIfMultiThread();
+    return result;
+  };
+  auto tracks = [&] {
+    size_t matched = 0;
+    verifyOnRelayExec([&] { matched = relay_->matchTracks(kTestNamespace, nullptr, 10).matched; });
+    return matched;
+  };
+  ASSERT_EQ(tracks(), 1u);
+
+  ASSERT_TRUE(update(std::nullopt, 1).hasValue());
+  EXPECT_TRUE(namespaceHandle->dones.empty());
+  ASSERT_EQ(namespaceHandle->namespaces.size(), 2u);
+  EXPECT_EQ(hopPathOf(namespaceHandle->namespaces[1]), (std::vector<uint64_t>{100, kRelayHop}));
+  const auto* cost =
+      namespaceHandle->namespaces[1].params.getFirstParam(TrackRequestParamKey::ROUTE_COST);
+  ASSERT_NE(cost, nullptr);
+  EXPECT_EQ(cost->asUint64, 2u); // 1 plus the default link cost
+  EXPECT_EQ(tracks(), 1u);
+
+  ASSERT_TRUE(update(std::vector<uint64_t>{300}, std::nullopt).hasValue());
+  EXPECT_EQ(namespaceHandle->dones.size(), 1u);
+  ASSERT_EQ(namespaceHandle->namespaces.size(), 3u);
+  EXPECT_EQ(hopPathOf(namespaceHandle->namespaces[2]), (std::vector<uint64_t>{300, kRelayHop}));
+  EXPECT_EQ(tracks(), 0u);
+
+  auto looped = update(std::vector<uint64_t>{300, kRelayHop}, std::nullopt);
+  ASSERT_TRUE(looped.hasError());
+  EXPECT_EQ(looped.error().errorCode, RequestErrorCode::UNINTERESTED);
+  EXPECT_EQ(namespaceHandle->dones.size(), 2u);
+  verifyOnRelayExec([&] { EXPECT_EQ(relay_->findPublishNamespaceSession(kTestNamespace), nullptr); }
+  );
+
+  removeSession(publisher);
+  removeSession(subscriber);
+  driveIfMultiThread();
+}
+
+// A plain session's REQUEST_UPDATE cannot give its route a HOP_PATH or
+// ROUTE_COST that outranks a MoQ Cluster route.
+TEST_P(MoQRelayTest, PlainRequestUpdateKeepsTheAnonymousPath) {
+  constexpr uint64_t kRelayHop = 900;
+  resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "", kRelayHop);
+  auto cluster = createMockSession();
+  negotiateCluster(*cluster);
+  auto plain = createMockSession();
+  auto subscriber = createMockSession();
+  negotiateCluster(*subscriber);
+  auto namespaceHandle = std::make_shared<RecordingNamespacePublishHandle>();
+  doSubscribeNamespace(subscriber, kTestNamespace, true, namespaceHandle);
+
+  doPublishNamespaceMsg(cluster, clusterAdvert({100}, 5));
+  auto plainHandle = doPublishNamespace(plain, kTestNamespace);
+  ASSERT_NE(plainHandle, nullptr);
+  driveIfMultiThread();
+  ASSERT_EQ(namespaceHandle->namespaces.size(), 1u);
+
+  RequestUpdate req;
+  req.requestID = RequestID(7);
+  req.params.insertParam(Parameter(
+      folly::to_underlying(TrackRequestParamKey::HOP_PATH),
+      encodeRelayHopPath({7}, kVersionDraft18).value()
+  ));
+  req.params.insertParam(Parameter(folly::to_underlying(TrackRequestParamKey::ROUTE_COST), 0));
+  auto result = folly::coro::blockingWait(plainHandle->requestUpdate(std::move(req)), exec_.get());
+  driveIfMultiThread();
+
+  EXPECT_TRUE(result.hasValue());
+  EXPECT_TRUE(namespaceHandle->dones.empty());
+  ASSERT_EQ(namespaceHandle->namespaces.size(), 1u);
+  EXPECT_EQ(hopPathOf(namespaceHandle->namespaces[0]), (std::vector<uint64_t>{100, kRelayHop}));
+  verifyOnRelayExec([&] { EXPECT_EQ(relay_->findPublishNamespaceSession(kTestNamespace), cluster); }
+  );
+
+  for (const auto& session : {cluster, plain, subscriber}) {
+    removeSession(session);
+  }
+  driveIfMultiThread();
+}
+
+// A cluster peer may not be served over a route that runs through it, or by
+// its own session. Only such routes exist here, so every request fails.
+TEST_P(MoQRelayTest, RequestsSkipRoutesThroughTheRequester) {
+  resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "", 900);
+  auto publisher = createMockSession();
+  negotiateCluster(*publisher);
+  doPublishNamespaceMsg(publisher, clusterAdvert({100}, 1));
+  auto peer100 = createMockSession();
+  negotiateCluster(*peer100, 100);
+  driveIfMultiThread();
+
+  for (const auto& requester : {peer100, publisher}) {
+    subscribeToTrack(
+        requester,
+        kTestTrackName,
+        createMockConsumer(),
+        RequestID(1),
+        /*addToState=*/false,
+        SubscribeErrorCode::DOES_NOT_EXIST
+    );
+    withSessionContext(requester, [&] {
+      Fetch fetch(RequestID(2), kTestTrackName, AbsoluteLocation{0, 0}, AbsoluteLocation{1, 0});
+      auto res = folly::coro::blockingWait(
+          publisherInterface()
+              ->fetch(std::move(fetch), std::make_shared<NiceMock<MockFetchConsumer>>()),
+          exec_.get()
+      );
+      ASSERT_TRUE(res.hasError());
+      EXPECT_EQ(res.error().errorCode, FetchErrorCode::DOES_NOT_EXIST);
+
+      TrackStatus trackStatus;
+      trackStatus.fullTrackName = kTestTrackName;
+      trackStatus.requestID = RequestID(3);
+      auto status =
+          folly::coro::blockingWait(publisherInterface()->trackStatus(trackStatus), exec_.get());
+      ASSERT_TRUE(status.hasError());
+      EXPECT_EQ(status.error().errorCode, TrackStatusErrorCode::DOES_NOT_EXIST);
+    });
+  }
+
+  removeSession(publisher);
+  removeSession(peer100);
+  driveIfMultiThread();
+}
+
+// A track has one upstream subscription. A cluster peer whose Hop ID is on
+// its source's path cannot join it; a plain client and an unrelated peer can.
+TEST_P(MoQRelayTest, ExcludedRequesterCannotJoinASubscriptionThroughIt) {
+  resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "", 900);
+  auto publisher = createMockSession();
+  negotiateCluster(*publisher);
+  doPublishNamespaceMsg(publisher, clusterAdvert({100}, 1));
+  doPublish(publisher, kTestTrackName);
+
+  auto client = createMockSession();
+  subscribeToTrack(client, kTestTrackName, createMockConsumer(), RequestID(1));
+  auto peer100 = createMockSession();
+  negotiateCluster(*peer100, 100);
+  subscribeToTrack(
+      peer100,
+      kTestTrackName,
+      createMockConsumer(),
+      RequestID(1),
+      /*addToState=*/false,
+      SubscribeErrorCode::DOES_NOT_EXIST
+  );
+  auto peer300 = createMockSession();
+  negotiateCluster(*peer300, 300);
+  subscribeToTrack(peer300, kTestTrackName, createMockConsumer(), RequestID(1));
+
+  for (const auto& session : {publisher, client, peer100, peer300}) {
+    removeSession(session);
+  }
+  driveIfMultiThread();
+}
+
+// A FETCH is not bound to the track's one upstream subscription. When that
+// subscription's source runs through the requesting peer, the fetch takes
+// another route.
+TEST_P(MoQRelayTest, FetchFromAnExcludedSubscriptionTakesAnotherRoute) {
+  resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "", 900);
+  auto peerD = createMockSession();
+  negotiateCluster(*peerD, 100);
+  auto peerX = createMockSession();
+  negotiateCluster(*peerX, 300);
+  doPublishNamespaceMsg(peerD, clusterAdvert({100}, 1));
+  doPublishNamespaceMsg(peerX, clusterAdvert({300}, 5));
+  driveIfMultiThread();
+
+  EXPECT_CALL(*peerD, subscribe(_, _)).WillOnce([](const auto& req, auto /*consumer*/) {
+    SubscribeOk ok;
+    ok.requestID = req.requestID;
+    ok.trackAlias = TrackAlias(1);
+    ok.expires = std::chrono::milliseconds(0);
+    ok.groupOrder = GroupOrder::OldestFirst;
+    auto handle = std::make_shared<NiceMock<MockSubscriptionHandle>>(std::move(ok));
+    return folly::coro::makeTask<Publisher::SubscribeResult>(
+        folly::Expected<std::shared_ptr<SubscriptionHandle>, SubscribeError>(handle)
+    );
+  });
+  auto client = createMockSession();
+  subscribeToTrack(client, kTestTrackName, createMockConsumer(), RequestID(1));
+
+  EXPECT_CALL(*peerD, fetch(_, _)).Times(0);
+  EXPECT_CALL(*peerX, fetch(_, _)).WillOnce([](Fetch, std::shared_ptr<FetchConsumer> consumer) {
+    consumer->endOfFetch();
+    return folly::coro::makeTask<Publisher::FetchResult>(std::make_shared<MockFetchHandle>(
+        FetchOk{RequestID(0), GroupOrder::OldestFirst, 0, AbsoluteLocation{0, 0}, {}}
+    ));
+  });
+  auto fetchConsumer = std::make_shared<NiceMock<MockFetchConsumer>>();
+  ON_CALL(*fetchConsumer, endOfFetch())
+      .WillByDefault(Return(folly::makeExpected<MoQPublishError>(folly::unit)));
+  withSessionContext(peerD, [&] {
+    Fetch fetch(RequestID(2), kTestTrackName, AbsoluteLocation{0, 0}, AbsoluteLocation{1, 0});
+    auto res = folly::coro::blockingWait(
+        publisherInterface()->fetch(std::move(fetch), fetchConsumer),
+        exec_.get()
+    );
+    EXPECT_TRUE(res.hasValue());
+  });
+  driveIfMultiThread();
+
+  for (const auto& session : {peerD, peerX, client}) {
+    removeSession(session);
+  }
+  driveIfMultiThread();
+}
+
+// A refused cluster peer must not fail a plain client that, in LF mode, waits on the
+// peer's claim of the same thread's local forwarder.
+TEST_P(MoQRelayTest, RefusedPeerDoesNotFailAConcurrentClient) {
+  if (relayMode() != RelayMode::LocalForwarderMT) {
+    GTEST_SKIP() << "only LF has a per-thread claim to share";
+  }
+  resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "", 900);
+  auto publisher = createMockSession();
+  negotiateCluster(*publisher);
+  doPublishNamespaceMsg(publisher, clusterAdvert({100}, 1));
+  driveIfMultiThread();
+  EXPECT_CALL(*publisher, subscribe(_, _)).WillOnce([](const auto& req, auto /*consumer*/) {
+    SubscribeOk ok;
+    ok.requestID = req.requestID;
+    ok.trackAlias = TrackAlias(1);
+    ok.expires = std::chrono::milliseconds(0);
+    ok.groupOrder = GroupOrder::OldestFirst;
+    auto handle = std::make_shared<NiceMock<MockSubscriptionHandle>>(std::move(ok));
+    return folly::coro::makeTask<Publisher::SubscribeResult>(
+        folly::Expected<std::shared_ptr<SubscriptionHandle>, SubscribeError>(handle)
+    );
+  });
+
+  auto peer100 = createMockSession();
+  negotiateCluster(*peer100, 100);
+  auto client = createMockSession();
+  auto peerConsumer = createMockConsumer();
+  auto clientConsumer = createMockConsumer();
+
+  // Hold the relay exec so the peer's claim stays open until the client waits on it.
+  RelayGate gate(relayEvb_);
+  auto peerSub =
+      startSubscribe(sessionExec(), peer100, makeSubscribeRequest(RequestID(1)), peerConsumer);
+  exec_->driveSessionExecOnly();
+  auto clientSub =
+      startSubscribe(sessionExec(), client, makeSubscribeRequest(RequestID(1)), clientConsumer);
+  exec_->driveSessionExecOnly();
+  gate.release();
+  ASSERT_TRUE(driveUntil([&] { return peerSub.ready() && clientSub.ready(); }));
+
+  ASSERT_TRUE(peerSub.result->hasValue());
+  ASSERT_TRUE(peerSub.result->value().hasError());
+  EXPECT_EQ(peerSub.result->value().error().errorCode, SubscribeErrorCode::DOES_NOT_EXIST);
+  auto clientHandle = clientSub.handle();
+  ASSERT_NE(clientHandle, nullptr);
+  getOrCreateMockState(client)->subscribeHandles.push_back(clientHandle);
+
+  for (const auto& session : {publisher, peer100, client}) {
+    removeSession(session);
+  }
+  driveIfMultiThread();
+}
+
+// An end user may subscribe to a track in a namespace it published: the relay
+// subscribes back to that session. A cluster session may not.
+TEST_P(MoQRelayTest, EndUserSubscribesThroughItsOwnPublishNamespace) {
+  auto client = createMockSession();
+  doPublishNamespace(client, kTestNamespace);
+  EXPECT_CALL(*client, subscribe(_, _)).WillOnce([](const auto& req, auto /*consumer*/) {
+    SubscribeOk ok;
+    ok.requestID = req.requestID;
+    ok.trackAlias = TrackAlias(1);
+    ok.expires = std::chrono::milliseconds(0);
+    ok.groupOrder = GroupOrder::OldestFirst;
+    auto handle = std::make_shared<NiceMock<MockSubscriptionHandle>>(std::move(ok));
+    return folly::coro::makeTask<Publisher::SubscribeResult>(
+        folly::Expected<std::shared_ptr<SubscriptionHandle>, SubscribeError>(handle)
+    );
+  });
+  EXPECT_NE(subscribeToTrack(client, kTestTrackName, createMockConsumer(), RequestID(1)), nullptr);
+
+  auto cluster = createMockSession();
+  negotiateCluster(*cluster);
+  const TrackNamespace clusterNs{{"test", "cluster"}};
+  doPublishNamespaceMsg(cluster, clusterAdvert({100}, 1, clusterNs));
+  EXPECT_CALL(*cluster, subscribe(_, _)).Times(0);
+  subscribeToTrack(
+      cluster,
+      FullTrackName{clusterNs, "track1"},
+      createMockConsumer(),
+      RequestID(1),
+      /*addToState=*/false,
+      SubscribeErrorCode::DOES_NOT_EXIST
+  );
+
+  removeSession(client);
+  removeSession(cluster);
+  driveIfMultiThread();
+}
+
+// An end user may SUBSCRIBE to a track it pushed with PUBLISH. A cluster session may not.
+// SUBSCRIBE_TRACKS does not push a session's own tracks back to it (MoqxRelayTracksTest).
+TEST_P(MoQRelayTest, EndUserSubscribesToItsOwnPublish) {
+  auto client = createMockSession();
+  doPublish(client, kTestTrackName);
+  EXPECT_NE(subscribeToTrack(client, kTestTrackName, createMockConsumer(), RequestID(1)), nullptr);
+
+  auto cluster = createMockSession();
+  negotiateCluster(*cluster);
+  const FullTrackName clusterTrack{TrackNamespace{{"test", "cluster"}}, "track1"};
+  doPublish(cluster, clusterTrack);
+  subscribeToTrack(
+      cluster,
+      clusterTrack,
+      createMockConsumer(),
+      RequestID(1),
+      /*addToState=*/false,
+      SubscribeErrorCode::DOES_NOT_EXIST
+  );
+
+  removeSession(client);
+  removeSession(cluster);
+  driveIfMultiThread();
+}
+
+// NAMESPACE_TOO_LARGE counts only the namespaces that would be advertised.
+TEST_P(MoQRelayTest, NamespaceLimitCountsOnlyAdvertisableNamespaces) {
+  resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "", 900);
+  auto publisher = createMockSession();
+  negotiateCluster(*publisher);
+  for (size_t i = 0; i <= MoqxRelay::kMaxNamespaceMatches; ++i) {
+    auto ns = kTestNamespace;
+    ns.append("n" + std::to_string(i));
+    doPublishNamespaceMsg(publisher, clusterAdvert({100}, 1, std::move(ns)), false);
+  }
+  driveIfMultiThread();
+
+  auto subscribe = [&](const std::shared_ptr<MockMoQSession>& subscriber) {
+    SubscribeNamespace subNs;
+    subNs.trackNamespacePrefix = kTestNamespace;
+    return withSessionContext(subscriber, [&] {
+      return folly::coro::blockingWait(
+          publisherInterface()->subscribeNamespace(
+              std::move(subNs),
+              std::make_shared<RecordingNamespacePublishHandle>()
+          ),
+          exec_.get()
+      );
+    });
+  };
+  auto excluded = createMockSession();
+  negotiateCluster(*excluded, 100);
+  EXPECT_TRUE(subscribe(excluded).hasValue());
+  auto open = createMockSession();
+  negotiateCluster(*open);
+  auto tooLarge = subscribe(open);
+  ASSERT_TRUE(tooLarge.hasError());
+  EXPECT_EQ(tooLarge.error().errorCode, SubscribeNamespaceErrorCode::NAMESPACE_TOO_LARGE);
+
+  removeSession(publisher);
+  removeSession(excluded);
+  removeSession(open);
   driveIfMultiThread();
 }
 
