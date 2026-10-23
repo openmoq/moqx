@@ -87,9 +87,9 @@ MoqxPicoRelayServer::MoqxPicoRelayServer(
       listenerCfg_(listenerCfg), context_(std::move(context)), ioExecutor_(ioExecutor) {
   // Advertise on every listener: activation is bilateral and loop protection
   // must not vary by listener configuration.
-  addSetupParameter(
-      SetupParameter(folly::to_underlying(SetupKey::HOP_ID), context_->getRelayHopID())
-  );
+  if (const auto hopID = context_->getRelayHopID()) {
+    addSetupParameter(SetupParameter(folly::to_underlying(SetupKey::HOP_ID), *hopID));
+  }
 }
 
 MoqxPicoRelayServer::~MoqxPicoRelayServer() {

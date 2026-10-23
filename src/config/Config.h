@@ -177,6 +177,10 @@ struct UpstreamTlsConfig {
   std::optional<std::string> caCertFile; // mutually exclusive with insecure=true
 };
 
+struct ClusterConfig {
+  uint64_t hopID{0}; // 0 is anonymous
+};
+
 struct UpstreamConfig {
   std::string url;
   UpstreamTlsConfig tls;
@@ -272,6 +276,7 @@ struct Config {
   bool useLocalForwarders{false};
   bool mvfstBpfSteering{true};
   std::optional<LoggingConfig> logging;
+  std::optional<ClusterConfig> cluster; // unset when MoQ Cluster is disabled
 };
 
 } // namespace openmoq::moqx::config
