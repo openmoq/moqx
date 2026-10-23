@@ -270,8 +270,8 @@ inline void serializeLogging(ConfigSink& s, const LoggingConfig& l) {
   s.endObject();
 }
 
-inline void serializeUpstream(ConfigSink& s, const UpstreamConfig& u) {
-  s.beginObject("upstream");
+inline void serializeUpstream(ConfigSink& s, const UpstreamConfig& u, std::string_view key) {
+  s.beginObject(key);
   s.stringField("url", u.url);
   s.beginObject("tls");
   s.boolField("insecure", u.tls.insecure);
@@ -283,6 +283,7 @@ inline void serializeUpstream(ConfigSink& s, const UpstreamConfig& u) {
   s.endObject();
   s.intField("connect_timeout_ms", u.connectTimeout.count());
   s.intField("idle_timeout_ms", u.idleTimeout.count());
+  s.uintField("relay_cost", u.relayCost);
   s.endObject();
 }
 
@@ -348,8 +349,13 @@ inline void serializeConfig(const Config& cfg, ConfigSink& s) {
     serializeCache(s, svc.cache);
     serializeAuth(s, svc.auth);
     if (svc.upstream) {
-      serializeUpstream(s, *svc.upstream);
+      serializeUpstream(s, *svc.upstream, "upstream");
     }
+    s.beginArray("upstreams");
+    for (const auto& upstream : svc.upstreams) {
+      serializeUpstream(s, upstream, "");
+    }
+    s.endArray();
     s.endObject();
   }
   s.endObject();

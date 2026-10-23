@@ -186,6 +186,7 @@ struct UpstreamConfig {
   UpstreamTlsConfig tls;
   std::chrono::milliseconds connectTimeout{5000};
   std::chrono::milliseconds idleTimeout{5000};
+  uint64_t relayCost{1}; // declared as RELAY_COST; 0 is free
 };
 
 struct AuthConfig {
@@ -241,6 +242,7 @@ struct ServiceConfig {
   CacheConfig cache;
   std::optional<UpstreamConfig> upstream; // set if this service chains to an upstream relay
   AuthConfig auth;
+  std::vector<UpstreamConfig> upstreams; // exclusive with upstream
 };
 
 struct AdminConfig {

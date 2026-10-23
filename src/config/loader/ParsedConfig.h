@@ -375,6 +375,10 @@ struct ParsedUpstreamConfig {
       "MoQ session idle timeout in milliseconds (default: 5000)",
       std::optional<uint32_t>>
       idle_timeout_ms;
+  rfl::Description<
+      "MoQ Cluster RELAY_COST of what this relay sends on the link (default: 1; 0 is free)",
+      std::optional<uint64_t>>
+      relay_cost;
 };
 
 struct ParsedAuthConfig {
@@ -509,6 +513,10 @@ struct ParsedServiceConfig {
       "Upstream MoQ server for this service (optional; enables relay chaining)",
       std::optional<ParsedUpstreamConfig>>
       upstream;
+  rfl::Description<
+      "Several upstream MoQ servers for this service (optional; exclusive with upstream)",
+      std::optional<std::vector<ParsedUpstreamConfig>>>
+      upstreams;
   rfl::Description<
       "Authentication and authorization settings for this service",
       std::optional<ParsedAuthConfig>>

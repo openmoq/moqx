@@ -13,6 +13,7 @@ How to add an entry: see [CONTRIBUTING.md](/CONTRIBUTING.md#changelog).
 
 - Admin API: [`/qlog/capture`](/docs/logging.md#on-demand-capture) qlogs the next N new mvfst connections on a running relay. ([#779](https://github.com/openmoq/moqx/pull/779))
 - [`cluster`](/docs/config.md#cluster) config: `enabled` turns MoQ Cluster negotiation off, and `hop_id` sets a stable Hop ID, with 0 for an anonymous relay. ([#837](https://github.com/openmoq/moqx/pull/837))
+- A service can peer with several relays through an [`upstreams`](/docs/config.md#upstreams) list, and each upstream link takes a `relay_cost`. `/state` reports a list's links under `upstreams`. ([#838](https://github.com/openmoq/moqx/pull/838))
 
 ## Changed
 
