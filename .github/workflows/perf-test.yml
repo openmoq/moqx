@@ -84,6 +84,10 @@ on:
         description: 'PR number to post the report to (blank = report only in the step summary)'
         type: string
         default: ''
+      release:
+        description: 'moqx release tag to measure (its moqx-linux-amd64.tar.gz) instead of the build of the selected ref'
+        type: string
+        default: ''
 
   workflow_call:
     inputs:
@@ -195,7 +199,25 @@ jobs:
           SUBSCRIBER_OVERRIDE: ${{ inputs.subscribers || '0' }}
           DURATION: ${{ inputs.duration || '120' }}
           COMMIT_SHORT: ${{ steps.sha.outputs.short }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE: ${{ inputs.release }}
         run: |
+          # A release tag measures its published portable tarball instead of this
+          # build. The moqtest tools still come from the build's moxygen prefix.
+          BINARY=build/default/moqx
+          MOQBIN_ARG=()
+          RUN_ID="$COMMIT_SHORT"
+          if [[ -n "$RELEASE" ]]; then
+            rm -rf _release
+            gh release download "$RELEASE" --pattern moqx-linux-amd64.tar.gz --dir _release
+            mkdir -p _release/moqx
+            tar xzf _release/moqx-linux-amd64.tar.gz -C _release/moqx
+            BINARY=_release/moqx/bin/moqx
+            RUN_ID="$RELEASE"
+            source build/default/moqx-tools.env
+            MOQBIN_ARG=(--moqbin "$MOQBIN")
+          fi
+
           case "$PROFILE_SELECTION" in
             all) mapfile -t PROFILES < <(jq -r '.profiles[].id' scripts/perf/profiles.json) ;;
             1mbps|4mbps|16mbps) PROFILES=("$PROFILE_SELECTION") ;;
@@ -252,13 +274,14 @@ jobs:
               # Preserve the established 1 Mbps filenames; higher-rate profiles
               # add a profile component rather than replacing the old series.
               if [[ "$PROFILE" == "1mbps" ]]; then
-                FILE="run-${COMMIT_SHORT}-${STACK}.json"
+                FILE="run-${RUN_ID}-${STACK}.json"
               else
-                FILE="run-${COMMIT_SHORT}-${PROFILE}-${STACK}.json"
+                FILE="run-${RUN_ID}-${PROFILE}-${STACK}.json"
               fi
               rm -f "$FILE"
               echo "Running $PROFILE on $STACK: CPU calibration target=${TARGET_CPU_PCT}% subscribers=$RUN_SUBSCRIBERS"
               if bash scripts/perf/perf-test-ci.sh \
+                --binary                  "$BINARY" "${MOQBIN_ARG[@]}" \
                 --duration                "$DURATION" \
                 --subscriber-max          "$RUN_SUBSCRIBERS" \
                 --delivery-timeout        5000 \
@@ -307,12 +330,17 @@ jobs:
           BRANCH_NAME: ${{ github.ref_name }}
           TARGET_CPU_PCT: ${{ inputs.target_cpu_pct }}
           DURATION: ${{ inputs.duration || '120' }}
+          RELEASE: ${{ inputs.release }}
         run: |
           {
             echo "## perf-test — $(date -u +'%Y-%m-%d %H:%M UTC')"
             echo
             printf 'ref: `%s` · branch: `%s` · CPU calibration target: %s%% · duration: %ss\n' "$COMMIT_SHORT" "$BRANCH_NAME" "${TARGET_CPU_PCT:-300}" "$DURATION"
             echo
+            if [[ -n "$RELEASE" ]]; then
+              printf 'binary: `moqx-linux-amd64.tar.gz` from release `%s`\n' "$RELEASE"
+              echo
+            fi
             if [[ -z "$FILES" ]]; then
               echo "_no results JSON produced_"
             fi

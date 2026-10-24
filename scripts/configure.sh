@@ -31,7 +31,8 @@
 #   -DVAR=VALUE:                   forwarded to the moqx configure. The variables
 #                                  this script owns are refused — MOQX_MOXYGEN_PREBUILT,
 #                                  CMAKE_PREFIX_PATH, CPM_moxygen_SOURCE,
-#                                  MOQX_MOXYGEN_PROFILE and MOQX_ALLOW_ABI_SKEW are
+#                                  MOQX_MOXYGEN_PROFILE, MOQX_MOXYGEN_PORTABLE,
+#                                  MOQX_MOXYGEN_CXX_FLAGS and MOQX_ALLOW_ABI_SKEW are
 #                                  what --moxygen, --moxygen-dir and the env vars
 #                                  below decide. For anything else, drive cmake
 #                                  directly (see BUILD.md).
@@ -43,6 +44,14 @@
 # a sanitizer build unless MOQX_ALLOW_UNINSTRUMENTED_DEPS=1 — and the fallback then
 # builds the uninstrumented stack too, so losing the prebuilt cannot silently turn a
 # short lane into a long instrumented one.
+#
+# MOQX_PGO (off|generate|use) and MOQX_LTO, from the preset or -D, also reach the
+# superbuild and need --moxygen from-source. release-pgo is the instrumented pass;
+# rerun it with -DMOQX_PGO=use after training (scripts/pgo/train.sh) — same build
+# dirs, which the profile is keyed on.
+#
+# Env for the superbuild: MOQX_MOXYGEN_PORTABLE=ON builds moxygen like its portable
+# release; MOQX_MOXYGEN_CXX_FLAGS adds compile flags (e.g. -march) to the stack.
 #
 # Env: MOQX_BUILD_JOBS is the job count for the moxygen source build when -j is
 # absent. Both override the default (cores, derated by free RAM for sanitizer
@@ -105,6 +114,8 @@ for arg in ${passthru[@]+"${passthru[@]}"}; do
     -DCMAKE_PREFIX_PATH[:=]*)     die "-DCMAKE_PREFIX_PATH is set by --moxygen/--moxygen-dir; to point at your own prefix drive cmake directly (see BUILD.md)" ;;
     -DCPM_moxygen_SOURCE[:=]*)    die "-DCPM_moxygen_SOURCE is what --moxygen-dir sets" ;;
     -DMOQX_MOXYGEN_PROFILE[:=]*)  die "MOQX_MOXYGEN_PROFILE is an env var here — it goes to the superbuild, not to moqx" ;;
+    -DMOQX_MOXYGEN_PORTABLE[:=]*|-DMOQX_MOXYGEN_CXX_FLAGS[:=]*)
+                                  die "MOQX_MOXYGEN_PORTABLE and MOQX_MOXYGEN_CXX_FLAGS are env vars here — they go to the superbuild, not to moqx" ;;
     -DMOQX_ALLOW_ABI_SKEW[:=]*)   die "set MOQX_ALLOW_UNINSTRUMENTED_DEPS=1 instead; it covers the whole degraded combination" ;;
   esac
 done
@@ -188,6 +199,25 @@ if [[ "$needs_profile" == default && "$moxygen_profile" != default ]]; then
   use: configure.sh san|tsan --moxygen from-source   (or unset MOQX_MOXYGEN_PROFILE)"
 fi
 
+# PGO and LTO, read like the sanitizer flags above. The stack must be compiled
+# with them too, so only the source build can serve them.
+preset_var() { sed -n "s/^ *$1\(:[A-Z]*\)\{0,1\}=\"\(.*\)\"\$/\2/p" <<<"$preset_info" | tail -1; }
+pgo="$(preset_var MOQX_PGO)" lto="$(preset_var MOQX_LTO)" pgo_dir="$(preset_var MOQX_PGO_DIR)"
+for arg in ${passthru[@]+"${passthru[@]}"}; do
+  case "$arg" in
+    -DMOQX_PGO[:=]*)     pgo="${arg#*=}" ;;
+    -DMOQX_LTO[:=]*)     lto="${arg#*=}" ;;
+    -DMOQX_PGO_DIR[:=]*) pgo_dir="${arg#*=}" ;;
+  esac
+done
+pgo="${pgo:-off}"
+if truthy "${lto:-OFF}"; then lto=ON; else lto=OFF; fi
+if [[ ( "$pgo" != off || "$lto" == ON ) && "$moxygen" != from-source ]]; then
+  die "MOQX_PGO=$pgo MOQX_LTO=$lto needs the stack compiled with the same flags, which
+  --moxygen $moxygen cannot deliver —
+  use: configure.sh $profile --moxygen from-source"
+fi
+
 build_dir="build/$profile"
 sb="$SCRATCH/moxygen-build"; [[ "$profile" != default ]] && sb+="-$profile"
 if ((clean)) && [[ -d "$sb" ]]; then
@@ -218,6 +248,11 @@ configure_from_source() {
   # stale san/tsan value would rebuild an instrumented moxygen under a
   # non-instrumented moqx.
   cfg+=("-DMOQX_MOXYGEN_PROFILE=$moxygen_profile")
+  # Same reason: always passed, so a reused superbuild dir drops stale values.
+  cfg+=("-DMOQX_PGO=$pgo" "-DMOQX_LTO=$lto"
+        "-DMOQX_MOXYGEN_PORTABLE=${MOQX_MOXYGEN_PORTABLE:-OFF}"
+        "-DMOQX_MOXYGEN_CXX_FLAGS=${MOQX_MOXYGEN_CXX_FLAGS:-}")
+  if [[ -n "$pgo_dir" ]]; then cfg+=("-DMOQX_PGO_DIR=$pgo_dir"); else cfg+=("-UMOQX_PGO_DIR"); fi
   if [[ -n "$moxygen_dir" ]]; then
     # Local checkout: rebuild on every configure so source edits take effect.
     cfg+=("-DCPM_moxygen_SOURCE=$moxygen_dir" "-DMOQX_MOXYGEN_BUILD_ALWAYS=ON")

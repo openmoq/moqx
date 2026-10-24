@@ -1,0 +1,217 @@
+name: tmp optimized perf ab
+
+# TEMPORARY, delete before merging ci/pgo-release-consumers. Builds
+# moqx-linux-amd64 from source two ways, plain and optimized (PGO trained on moqx
+# plus LTO), with version-release's portable flags, then A/Bs the two relays on
+# the perf VMs: local forwarders on, 4 IO threads, mvfst and picoquic, runs
+# alternating. The load generators come from the plain build for both. Triggers
+# when this file changes, or by dispatch; the perf job shares the VMs with the nightly
+# through the perf-test concurrency group.
+
+on:
+  push:
+    branches: [ci/pgo-release-consumers]
+    paths: ['.github/workflows/tmp-pgo-perf-ab.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [plain, optimized]
+    name: build (${{ matrix.variant }})
+    runs-on: ubuntu-22.04
+    timeout-minutes: 300
+    env:
+      CXX_FLAGS: "-march=x86-64-v2 -fno-omit-frame-pointer -fasynchronous-unwind-tables"
+      MOQX_MOXYGEN_PORTABLE: 'ON'
+      MOQX_MOXYGEN_CXX_FLAGS: "-march=x86-64-v2 -fno-omit-frame-pointer -fasynchronous-unwind-tables"
+    steps:
+      - uses: actions/checkout@v5
+
+      # Fat LTO objects grow the build tree; Evidence reports its size.
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Install system dependencies
+        run: |
+          scripts/install-system-deps.sh
+          sudo apt-get install -y --no-install-recommends ca-certificates libdwarf-dev libxxhash-dev
+
+      - name: Configure
+        run: |
+          printf '%s\n' \
+            -DMOQX_VERSION_STRING="ab-${{ matrix.variant }}" \
+            -DCMAKE_C_FLAGS="$CXX_FLAGS" \
+            -DCMAKE_CXX_FLAGS="$CXX_FLAGS" \
+            -DCMAKE_INSTALL_RPATH='$ORIGIN/../lib' \
+            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+            -DCMAKE_DISABLE_FIND_PACKAGE_LibUnwind=TRUE \
+            -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/_install" > "$RUNNER_TEMP/args"
+          mapfile -t ARGS < "$RUNNER_TEMP/args"
+          if [ "${{ matrix.variant }}" = optimized ]; then
+            scripts/configure.sh release-pgo --moxygen from-source "${ARGS[@]}"
+          else
+            scripts/configure.sh release-pgo --moxygen from-source -DMOQX_PGO=off -DMOQX_LTO=OFF "${ARGS[@]}"
+          fi
+
+      - name: Build
+        run: cmake --build build/release-pgo -j "$(nproc)"
+
+      - name: Train
+        if: matrix.variant == 'optimized'
+        run: bash scripts/pgo/train.sh --relay build/release-pgo/moqx --work-dir "$RUNNER_TEMP/pgo-train"
+
+      - name: Rebuild with the profile and LTO
+        if: matrix.variant == 'optimized'
+        run: |
+          mapfile -t ARGS < "$RUNNER_TEMP/args"
+          scripts/configure.sh release-pgo --moxygen from-source -DMOQX_PGO=use "${ARGS[@]}"
+          cmake --build build/release-pgo -j "$(nproc)"
+
+      - name: Install and package
+        run: |
+          cmake --install build/release-pgo
+          mkdir -p _install/lib
+          LIBARCH="$(uname -m)-linux-gnu"
+          for lib in libboost_context.so.1.74.0 libgflags.so.2.2 libsodium.so.23 \
+              libdouble-conversion.so.3 libevent-2.1.so.7 libzstd.so.1 libcares.so.2 \
+              libbrotlidec.so.1 libbrotlienc.so.1 libbrotlicommon.so.1; do
+            [ -f "/usr/lib/${LIBARCH}/${lib}" ] && cp -L "/usr/lib/${LIBARCH}/${lib}" _install/lib/
+          done
+          mkdir -p _out
+          tar czf _out/moqx-linux-amd64.tar.gz -C _install .
+          if [ "${{ matrix.variant }}" = plain ]; then
+            mkdir -p _out/tools
+            cp .scratch/moxygen-build-release-pgo/moxygen-install/bin/{moqtest_server,moqperf_test_client} _out/tools/
+          fi
+          _install/bin/moqx --version
+          ldd _install/bin/moqx | grep 'not found' && exit 1 || true
+
+      - name: Evidence
+        if: always()
+        run: |
+          mkdir -p _out
+          if [ -d "$RUNNER_TEMP/pgo-train" ]; then
+            tar czf _out/pgo-train-logs.tar.gz --exclude discard -C "$RUNNER_TEMP" pgo-train
+            tar czf _out/pgo-profile.tar.gz -C build pgo-profile
+          fi
+          {
+            echo "### build (${{ matrix.variant }})"
+            echo '```'
+            ls -l _install/bin/moqx _out/*.tar.gz 2>/dev/null || true
+            echo "LTO-renamed locals in moqx (0 = no LTO link): $(nm _install/bin/moqx 2>/dev/null | grep -c 'lto_priv' || true)"
+            OBJ=$(find build/release-pgo -name 'MoqxRelay.cpp.o' | head -1)
+            [ -n "$OBJ" ] && echo "LTO sections in $(basename "$OBJ"): $(readelf -S "$OBJ" | grep -c 'gnu.lto' || true)"
+            [ -d build/pgo-profile ] && echo "profile: $(find build/pgo-profile -name '*.gcda' | wc -l) .gcda, $(du -sh build/pgo-profile | cut -f1)"
+            du -sh build/release-pgo .scratch 2>/dev/null || true
+            df -h /
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: ab-${{ matrix.variant }}
+          path: _out/
+          retention-days: 7
+
+  ab:
+    needs: build
+    runs-on: [self-hosted, relay]
+    timeout-minutes: 240
+    concurrency:
+      group: perf-test
+      cancel-in-progress: false
+    env:
+      RUNS: "3"
+      SUBSCRIBERS: "728"
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v7
+        with:
+          path: _ab
+
+      - name: Unpack
+        run: |
+          for v in plain optimized; do
+            mkdir -p "_ab/$v"
+            tar xzf "_ab/ab-$v/moqx-linux-amd64.tar.gz" -C "_ab/$v"
+            "_ab/$v/bin/moqx" --version
+          done
+          chmod +x _ab/ab-plain/tools/*
+
+      - name: Configure SSH for perf VMs
+        env:
+          PERF_SSH_KEY: ${{ secrets.PERF_SSH_KEY }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$PERF_SSH_KEY" > ~/.ssh/perf-key
+          chmod 600 ~/.ssh/perf-key
+          echo "PERF_SSH_KEY_FILE=$HOME/.ssh/perf-key" >> "$GITHUB_ENV"
+
+      - name: Run the A/B on the perf VMs
+        env:
+          PERF_RELAY_HOST:  ${{ secrets.PERF_RELAY_HOST }}
+          PERF_CLIENT_HOST: ${{ secrets.PERF_CLIENT_HOST }}
+        run: |
+          for r in $(seq 1 "$RUNS"); do
+            for stack in mvfst picoquic; do
+              for v in plain optimized; do
+                echo "::group::run $r $stack $v"
+                bash scripts/perf/perf-test-ci.sh \
+                  --binary "$PWD/_ab/$v/bin/moqx" \
+                  --moqbin "$PWD/_ab/ab-plain/tools" \
+                  --quic-stack "$stack" --local-forwarders \
+                  --duration 120 --subscriber-max "$SUBSCRIBERS" --ramp 150 \
+                  --io-threads 4 --client-threads 8 --delivery-timeout 5000 \
+                  --profile 1mbps --first-object-size 26516 --other-object-size 3788 \
+                  --client-args "--first_object_size=26516 --other_object_size=3788 --objects_per_group 60" \
+                  --cooldown 10 \
+                  --output "_ab/run-$stack-$v-$r.json"
+                echo "::endgroup::"
+              done
+            done
+          done
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## plain vs optimized (PGO + LTO) on the perf VMs"
+            echo
+            echo "subs=$SUBSCRIBERS · 120s · 1mbps object mix · local forwarders · io_threads=4 · load generators from the plain build"
+            echo
+            echo '| stack | variant | run | relay CPU % | throughput Mbps | net Mbps | Mbps per core |'
+            echo '|---|---|---|---|---|---|---|'
+            for f in _ab/run-*.json; do
+              [ -e "$f" ] || continue
+              IFS=- read -r _ stack v r <<< "$(basename "$f" .json)"
+              jq -r --arg s "$stack" --arg v "$v" --arg r "$r" \
+                '.results | "| \($s) | \($v) | \($r) | \(.relay_cpu_pct) | \(.throughput_mbps) | \(.net_throughput_mbps) | \(.throughput_per_core_mbps) |"' "$f"
+            done
+            echo
+            for stack in mvfst picoquic; do
+              for v in plain optimized; do
+                ls _ab/run-$stack-$v-*.json >/dev/null 2>&1 || continue
+                jq -rs --arg s "$stack" --arg v "$v" '[.[] | .results.relay_cpu_pct] | sort | "median relay CPU% \($s) \($v): \(.[(length/2|floor)])  (n=\(length))"' _ab/run-$stack-$v-*.json
+              done
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: optimized-ab-results
+          path: |
+            _ab/run-*.json
+            _ab/run-*.log
+          retention-days: 7
