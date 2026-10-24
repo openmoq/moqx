@@ -251,7 +251,8 @@ private:
         moxygen::Payload payload,
         bool complete,
         bool forwardingPreferenceIsDatagram,
-        TimePoint now
+        TimePoint now,
+        uint64_t offset = 0
     );
   };
 
@@ -499,7 +500,9 @@ private:
   void evictGroup(CacheTrack& track, uint64_t groupID);
   bool evictForByteLimitIfNeeded();
 
-  // Wraps cacheObject() + byte accounting + eviction check + lastWrite update
+  // Wraps cacheObject() + byte accounting + eviction check + lastWrite update.
+  // offset > 0 continues a chunked object; only bytes past the cached ones are
+  // written. complete means this chunk ends the writer's copy.
   folly::Expected<folly::Unit, moxygen::MoQPublishError> cacheObjectAndUpdateBytes(
       CacheGroup& group,
       CacheTrack& track,
@@ -511,7 +514,8 @@ private:
       moxygen::Payload payload,
       bool complete,
       bool forwardingPreferenceIsDatagram,
-      TimePoint now
+      TimePoint now,
+      uint64_t offset = 0
   );
 };
 
