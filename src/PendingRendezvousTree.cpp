@@ -32,10 +32,11 @@ PendingRendezvousTree::Node& PendingRendezvousTree::findOrCreateNode(const Track
 
 void PendingRendezvousTree::addWaiter(
     const FullTrackName& ftn,
-    const std::shared_ptr<moxygen::TimedBaton>& waiter
+    const std::shared_ptr<moxygen::TimedBaton>& waiter,
+    SessionId session
 ) {
   auto& node = findOrCreateNode(ftn.trackNamespace);
-  node.waitersByTrack[ftn.trackName].push_back(waiter);
+  node.waitersByTrack[ftn.trackName].push_back(Node::Waiter{waiter, session});
 }
 
 void PendingRendezvousTree::eraseWaiter(
@@ -48,7 +49,14 @@ void PendingRendezvousTree::eraseWaiter(
       return;
     }
     auto& waiters = waitersIt->second;
-    waiters.erase(std::remove(waiters.begin(), waiters.end(), waiter), waiters.end());
+    waiters.erase(
+        std::remove_if(
+            waiters.begin(),
+            waiters.end(),
+            [&](const Node::Waiter& w) { return w.baton == waiter; }
+        ),
+        waiters.end()
+    );
     if (waiters.empty()) {
       node.waitersByTrack.erase(waitersIt);
     }
@@ -101,7 +109,7 @@ void PendingRendezvousTree::applyAtNamespaceNode(
   }
 }
 
-void PendingRendezvousTree::wakeForTrack(const FullTrackName& ftn) {
+std::vector<SessionId> PendingRendezvousTree::wakeForTrack(const FullTrackName& ftn) {
   Node::WaiterList toWake;
   applyAtNamespaceNode(ftn.trackNamespace, [&](Node& node) {
     auto waitersIt = node.waitersByTrack.find(ftn.trackName);
@@ -113,9 +121,13 @@ void PendingRendezvousTree::wakeForTrack(const FullTrackName& ftn) {
   // Signal only once the tree walk/prune above is fully done: TimedBaton::signal()
   // may resume the parked coroutine synchronously, re-entering eraseWaiter()
   // which must not observe (or corrupt) a container we were still iterating/mutating.
+  std::vector<SessionId> woken;
+  woken.reserve(toWake.size());
   for (auto& waiter : toWake) {
-    waiter->signal();
+    woken.push_back(waiter.session);
+    waiter.baton->signal();
   }
+  return woken;
 }
 
 void PendingRendezvousTree::wakeUnderNamespace(const TrackNamespace& ns) {
@@ -123,7 +135,7 @@ void PendingRendezvousTree::wakeUnderNamespace(const TrackNamespace& ns) {
   applyAtNamespaceNode(ns, [&](Node& node) { collectSubtree(node, toWake); });
   // See the comment in wakeForTrack: signal strictly after all tree mutation completes.
   for (auto& waiter : toWake) {
-    waiter->signal();
+    waiter.baton->signal();
   }
 }
 

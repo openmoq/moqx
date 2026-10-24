@@ -573,6 +573,106 @@ TEST_P(MoqxRelayRendezvousTest, CancellationWhileParkedStopsWithoutResult) {
   driveIfMultiThread();
 }
 
+// Draft-18 §9.5 (#1533): when a PUBLISH arrives, a session holding a SUBSCRIBE parked on
+// RENDEZVOUS_TIMEOUT for that track gets no PUBLISH via its SUBSCRIBE_TRACKS; the SUBSCRIBE
+// proceeds instead. Other SUBSCRIBE_TRACKS sessions still get the PUBLISH.
+TEST_P(MoqxRelayRendezvousTest, ParkedSubscribeTakesPrecedenceOverSubscribeTracks) {
+  auto subSession = createV18Session();
+  auto otherSession = createV18Session();
+  auto pubSession = createMockSession();
+  setupPublishSucceeds(subSession);
+  setupPublishSucceeds(otherSession);
+
+  auto subscribeTracks = [&](const std::shared_ptr<MockMoQSession>& session) {
+    SubscribeTracks subTracks;
+    subTracks.trackNamespacePrefix = kTestNamespace;
+    subTracks.forward = true;
+    auto res = withSessionContext(session, [&]() {
+      auto task = publisherInterface()->subscribeTracks(std::move(subTracks));
+      return folly::coro::blockingWait(std::move(task), exec_.get());
+    });
+    EXPECT_TRUE(res.hasValue());
+    return res.hasValue() ? *res : nullptr;
+  };
+  auto subTracksHandle = subscribeTracks(subSession);
+  auto otherTracksHandle = subscribeTracks(otherSession);
+  ASSERT_TRUE(subTracksHandle && otherTracksHandle);
+
+  EXPECT_CALL(*subSession, publish(_, _)).Times(0);
+  EXPECT_CALL(*otherSession, publish(_, _)).Times(1);
+
+  auto consumer = createMockConsumer();
+  auto future =
+      startSubscribe(subSession, makeRendezvousSubscribeRequest(kTestTrackName, 5000), consumer);
+  exec_->driveFor(10);
+  ASSERT_FALSE(future.isReady()) << "subscribe should be parked awaiting rendezvous";
+
+  doPublish(pubSession, kTestTrackName);
+
+  ASSERT_TRUE(driveUntil([&] { return future.isReady(); }));
+  auto result = std::move(future).value();
+  ASSERT_TRUE(result.hasValue()) << "the parked SUBSCRIBE must proceed";
+  exec_->driveFor(5);
+  EXPECT_TRUE(testing::Mock::VerifyAndClearExpectations(subSession.get()));
+  EXPECT_TRUE(testing::Mock::VerifyAndClearExpectations(otherSession.get()));
+
+  result.value()->unsubscribe();
+  withSessionContext(subSession, [&]() { subTracksHandle->unsubscribeTracks(); });
+  withSessionContext(otherSession, [&]() { otherTracksHandle->unsubscribeTracks(); });
+  removeSession(pubSession);
+  removeSession(subSession);
+  removeSession(otherSession);
+  driveIfMultiThread();
+}
+
+// Same precedence for a TRACK_FILTER SUBSCRIBE_NAMESPACE: PropertyRanking selects the new
+// track during PUBLISH setup, and that selection must not PUBLISH to the woken session.
+TEST_P(MoqxRelayRendezvousTest, ParkedSubscribeTakesPrecedenceOverTrackFilter) {
+  constexpr uint64_t kPropType = 0x100;
+  auto subSession = createV18Session();
+  auto pubSession = createMockSession();
+  setupPublishSucceeds(subSession);
+
+  SubscribeNamespace subNs;
+  subNs.trackNamespacePrefix = kTestNamespace;
+  subNs.options = SubscribeNamespaceOptions::PUBLISH;
+  subNs.forward = true;
+  TrackRequestParameter p;
+  p.key = folly::to_underlying(TrackRequestParamKey::TRACK_FILTER);
+  p.asTrackFilter = TrackFilter{kPropType, /*maxSelected=*/1};
+  subNs.params.insertParam(p);
+  auto subNsHandle = withSessionContext(subSession, [&]() {
+    auto task = publisherInterface()->subscribeNamespace(
+        std::move(subNs),
+        std::make_shared<NiceMock<MockNamespacePublishHandle>>()
+    );
+    return folly::coro::blockingWait(std::move(task), exec_.get());
+  });
+  ASSERT_TRUE(subNsHandle.hasValue());
+  getOrCreateMockState(subSession)->subscribeNamespaceHandles.push_back(*subNsHandle);
+
+  EXPECT_CALL(*subSession, publish(_, _)).Times(0);
+
+  auto consumer = createMockConsumer();
+  auto future =
+      startSubscribe(subSession, makeRendezvousSubscribeRequest(kTestTrackName, 5000), consumer);
+  exec_->driveFor(10);
+  ASSERT_FALSE(future.isReady()) << "subscribe should be parked awaiting rendezvous";
+
+  doPublish(pubSession, kTestTrackName);
+
+  ASSERT_TRUE(driveUntil([&] { return future.isReady(); }));
+  auto result = std::move(future).value();
+  ASSERT_TRUE(result.hasValue()) << "the parked SUBSCRIBE must proceed, not hit DUPLICATE";
+  exec_->driveFor(5);
+  EXPECT_TRUE(testing::Mock::VerifyAndClearExpectations(subSession.get()));
+
+  result.value()->unsubscribe();
+  removeSession(pubSession);
+  removeSession(subSession);
+  driveIfMultiThread();
+}
+
 INSTANTIATE_TEST_SUITE_P(
     AllModes,
     MoqxRelayRendezvousTest,

@@ -682,11 +682,14 @@ private:
   // doPublishNamespace()/publishWithSession() when matching content arrives;
   // otherwise each waiter's baton times out.
   PendingRendezvousTree pendingRendezvous_;
+  // Sessions woken by the PUBLISH being set up; onTrackSelected must not PUBLISH to them.
+  folly::F14FastSet<moxygen::SessionId, moxygen::SessionId::hash> rendezvousPrecedence_;
 
   // Existence check, then park. Callers screen first. Must run on relayExec_ (inline
   // in SingleThread mode): touches registry_/namespaceTree_/pendingRendezvous_.
   folly::coro::Task<std::optional<moxygen::SubscribeError>> rendezvousWithPublisherOrTimeout(
       const moxygen::SubscribeRequest& subReq,
+      moxygen::SessionId session,
       std::chrono::milliseconds timeout
   );
 

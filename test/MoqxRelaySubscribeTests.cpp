@@ -32,6 +32,45 @@ TEST_P(MoQRelayTest, SubscribeEmptyNamespaceRejectedPreV18) {
   removeSession(session);
 }
 
+// Draft-18 §5.1: a second SUBSCRIBE is DUPLICATE_SUBSCRIPTION even when its range is also stale.
+TEST_P(MoQRelayTest, DuplicateSubscribeWinsOverRangeInPast) {
+  auto publisherSession = createMockSession();
+  auto subSession = createMockSession();
+  auto publishConsumer = doPublish(publisherSession, kTestTrackName);
+
+  auto consumer = createMockConsumer();
+  ON_CALL(*consumer, objectStream(_, _, _))
+      .WillByDefault(Return(folly::makeExpected<MoQPublishError>(folly::unit)));
+  auto handle = subscribeToTrack(subSession, kTestTrackName, consumer, RequestID(1));
+  ASSERT_NE(handle, nullptr);
+
+  ObjectHeader hdr;
+  hdr.group = 5;
+  hdr.id = 0;
+  publishConsumer->objectStream(hdr, folly::IOBuf::copyBuffer("x"));
+  driveIfMultiThread();
+  exec_->driveFor(5);
+
+  SubscribeRequest stale;
+  stale.fullTrackName = kTestTrackName;
+  stale.requestID = RequestID(3);
+  stale.locType = LocationType::AbsoluteRange;
+  stale.start = AbsoluteLocation{0, 0};
+  stale.endGroup = 1;
+  withSessionContext(subSession, [&]() {
+    auto res = folly::coro::blockingWait(
+        publisherInterface()->subscribe(std::move(stale), createMockConsumer()),
+        exec_.get()
+    );
+    ASSERT_TRUE(res.hasError());
+    EXPECT_EQ(res.error().errorCode, SubscribeErrorCode::DUPLICATE_SUBSCRIPTION);
+  });
+
+  removeSession(publisherSession);
+  removeSession(subSession);
+  driveIfMultiThread();
+}
+
 // Test: SUBSCRIBE with an empty namespace is accepted on draft-18+.
 TEST_P(MoQRelayTest, SubscribeEmptyNamespaceAllowedV18) {
   relay_->setAllowedNamespacePrefix(TrackNamespace{{}});
