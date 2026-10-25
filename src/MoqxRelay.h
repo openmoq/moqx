@@ -260,11 +260,13 @@ public:
 
   std::vector<std::shared_ptr<moxygen::MoQSession>>
   findPublishNamespaceSessions(const moxygen::TrackNamespace& ns) {
-    auto session = findPublishNamespaceSession(ns);
-    if (session) {
-      return {session};
+    std::vector<std::shared_ptr<moxygen::MoQSession>> sessions;
+    if (const auto* node = namespaceTree_.findRouteNode(ns)) {
+      for (const auto& route : node->routes()) {
+        sessions.push_back(route.session);
+      }
     }
-    return {};
+    return sessions;
   }
 
   // Sync cores of publishNamespace/publishNamespaceDone. Called by the
@@ -509,7 +511,8 @@ private:
 
   struct IngestedRoute {
     std::vector<uint64_t> path;
-    uint64_t cost; // ROUTE_COST plus the sender's link cost
+    uint64_t cost;    // ROUTE_COST plus the sender's link cost
+    bool fromCluster; // the session negotiated MoQ Cluster
   };
   // Returns nullopt to drop the advertisement. A malformed path also closes the session.
   std::optional<IngestedRoute> ingestRoute(
