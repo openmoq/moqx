@@ -9,6 +9,7 @@
 #include "auth/HmacKey.h"
 #include "util/ExhaustiveSwitch.h"
 
+#include <catapult/claims.hpp>
 #include <catapult/crypto.hpp>
 #include <catapult/cwt.hpp>
 #include <catapult/error.hpp>
@@ -103,6 +104,32 @@ Grants grantsFromToken(const catapult::CatToken& token) {
     grants.scopes.push_back(std::move(scope));
   }
   return grants;
+}
+
+// strict_claims accepts only the claims that grantsFromToken enforces.
+bool hasOnlyEnforcedClaims(std::string_view cwtBytes) {
+  CborReader cose(cwtBytes);
+  uint64_t coseLen = 0;
+  std::string payload;
+  if (!cose.readArrayLen(coseLen) || coseLen < 3 || !cose.skip() || !cose.skip() ||
+      !cose.readBytes(payload)) {
+    return false;
+  }
+  CborReader claims(payload);
+  uint64_t numClaims = 0;
+  if (!claims.readMapLen(numClaims)) {
+    return false;
+  }
+  for (uint64_t i = 0; i < numClaims; ++i) {
+    int64_t key = 0;
+    if (!claims.readInt(key) ||
+        (key != catapult::CLAIM_EXP && key != catapult::CLAIM_MOQT &&
+         key != catapult::CLAIM_MOQT_REVAL) ||
+        !claims.skip()) {
+      return false;
+    }
+  }
+  return claims.eof();
 }
 
 Grants buildAnonymousGrants(const std::vector<config::AuthConfig::AnonymousScope>& configScopes) {
@@ -200,6 +227,9 @@ folly::Expected<Grants, AuthError> AuthTokenVerifier::verify(const AuthToken& to
     try {
       catapult::HmacSha256Algorithm hmac(derived.key);
       auto cwt = catapult::Cwt::validateCwt(span, hmac);
+      if (config_.strictClaims && !hasOnlyEnforcedClaims(token.tokenValue)) {
+        return folly::makeUnexpected(AuthError::Malformed);
+      }
       auto grants = grantsFromToken(cwt.payload);
       if (grants.expiresAt <= std::chrono::system_clock::now()) {
         return folly::makeUnexpected(AuthError::Expired);

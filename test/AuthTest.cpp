@@ -6,7 +6,10 @@
 
 #include "auth/Auth.h"
 #include "auth/AuthTokenIssuer.h"
+#include "auth/HmacKey.h"
 
+#include <catapult/crypto.hpp>
+#include <catapult/cwt.hpp>
 #include <folly/portability/GTest.h>
 
 using namespace openmoq::moqx;
@@ -306,6 +309,36 @@ TEST(AuthTest, VerifiesCatapultCwtWithOpenScope) {
 
   ASSERT_TRUE(grants.hasValue());
   EXPECT_TRUE(allows(grants.value(), Action::ClientSetup, TrackNamespace{}));
+}
+
+TEST(AuthTest, StrictClaimsAcceptsOnlyEnforcedClaims) {
+  auto config = makeConfig();
+  config.strictClaims = true;
+  AuthTokenVerifier verifier(config);
+  EXPECT_TRUE(verifier.verify(makeToken(makeGrants({Action::ClientSetup}, {}, {}))).hasValue());
+}
+
+TEST(AuthTest, StrictClaimsRejectsUnenforcedClaim) {
+  catapult::CatToken cat;
+  cat.withExpiration(std::chrono::system_clock::now() + std::chrono::hours(1));
+  cat.withIssuer("issuer.example");
+  catapult::HmacSha256Algorithm hmac(deriveHmacKey("secret"));
+  catapult::Cwt cwt(catapult::ALG_HMAC256_256, cat);
+  cwt.withKeyId("k1");
+  auto bytes = cwt.createCwt(catapult::CwtMode::MACed, hmac);
+  AuthToken token{
+      .tokenType = 77,
+      .tokenValue = std::string(bytes.begin(), bytes.end()),
+      .alias = AuthToken::DontRegister,
+  };
+
+  EXPECT_TRUE(AuthTokenVerifier(makeConfig()).verify(token).hasValue());
+
+  auto config = makeConfig();
+  config.strictClaims = true;
+  auto strict = AuthTokenVerifier(config).verify(token);
+  ASSERT_TRUE(strict.hasError());
+  EXPECT_EQ(strict.error(), AuthError::Malformed);
 }
 
 TEST(AuthTest, MultiRuleCompoundMatchRoundtripsViaCwt) {
