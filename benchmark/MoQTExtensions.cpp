@@ -101,7 +101,7 @@ void BM_ExtensionsSerialize(folly::UserCounters& counters, unsigned iters, int n
   susp.dismiss();
   size_t totalBytes = 0;
   for (unsigned i = 0; i < iters; ++i) {
-    buf.reset();
+    buf.clearAndTryReuseLargestBuffer();
     size_t sz = 0;
     bool err = false;
     writer.writeExtensions(buf, exts, sz, err);
@@ -126,7 +126,7 @@ void BM_ExtensionsSerializeArray(folly::UserCounters& counters, unsigned iters, 
   susp.dismiss();
   size_t totalBytes = 0;
   for (unsigned i = 0; i < iters; ++i) {
-    buf.reset();
+    buf.clearAndTryReuseLargestBuffer();
     size_t sz = 0;
     bool err = false;
     writer.writeExtensions(buf, exts, sz, err);
@@ -216,7 +216,7 @@ void BM_ExtensionsRoundTrip(folly::UserCounters& counters, unsigned iters, int n
     folly::doNotOptimizeAway(res);
     folly::doNotOptimizeAway(header.extensions);
 
-    outBuf.reset();
+    outBuf.clearAndTryReuseLargestBuffer();
     size_t outSz = 0;
     bool outErr = false;
     writer.writeExtensions(outBuf, header.extensions, outSz, outErr);
@@ -284,7 +284,7 @@ void BM_ExtensionsSerialize_LibquicrShape(
   susp.dismiss();
   size_t totalBytes = 0;
   for (unsigned i = 0; i < iters; ++i) {
-    buf.reset();
+    buf.clearAndTryReuseLargestBuffer();
     size_t sz = 0;
     bool err = false;
     writer.writeExtensions(buf, exts, sz, err);
@@ -309,7 +309,7 @@ void BM_ExtensionsSerialize_LikeLibquicrAllArray(
   susp.dismiss();
   size_t totalBytes = 0;
   for (unsigned i = 0; i < iters; ++i) {
-    buf.reset();
+    buf.clearAndTryReuseLargestBuffer();
     size_t sz = 0;
     bool err = false;
     writer.writeExtensions(buf, exts, sz, err);
@@ -417,7 +417,7 @@ void BM_ExtensionsRoundTrip_LibquicrShape(
     folly::doNotOptimizeAway(res);
     folly::doNotOptimizeAway(header.extensions);
 
-    outBuf.reset();
+    outBuf.clearAndTryReuseLargestBuffer();
     size_t outSz = 0;
     bool outErr = false;
     writer.writeExtensions(outBuf, header.extensions, outSz, outErr);
@@ -456,7 +456,7 @@ void BM_ExtensionsRoundTrip_LikeLibquicrAllArray(
     folly::doNotOptimizeAway(res);
     folly::doNotOptimizeAway(header.extensions);
 
-    outBuf.reset();
+    outBuf.clearAndTryReuseLargestBuffer();
     size_t outSz = 0;
     bool outErr = false;
     writer.writeExtensions(outBuf, header.extensions, outSz, outErr);
