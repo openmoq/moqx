@@ -16,11 +16,13 @@ How to add an entry: see [CONTRIBUTING.md](/CONTRIBUTING.md#changelog).
 - A service can peer with several relays through an [`upstreams`](/docs/config.md#upstreams) list, and each upstream link takes a `relay_cost`. `/state` reports a list's links under `upstreams`. ([#838](https://github.com/openmoq/moqx/pull/838))
 - A relay keeps every MoQ Cluster advertisement of a namespace and routes a new subscription over the best one, by path and cost. ([#840](https://github.com/openmoq/moqx/pull/840))
 - A namespace subscriber is told the best route it may use and gets an update when that route changes. A change of publisher withdraws the namespace before advertising it again. ([#840](https://github.com/openmoq/moqx/pull/840))
+- PUBLISH_NAMESPACE accepts REQUEST_UPDATE for its `HOP_PATH` and `ROUTE_COST`. ([#840](https://github.com/openmoq/moqx/pull/840))
 
 ## Changed
 
 - **Breaking:** an [`upstream`](/docs/config.md#upstreams) connection uses MoQT draft 18, so the upstream relay's listener must include 18 in `moqt_versions`. Peering also carries tracks that publishers push with PUBLISH. ([#833](https://github.com/openmoq/moqx/pull/833))
 - **Breaking:** [MoQ Cluster](/docs/moq-cluster.md) ([draft-01](https://datatracker.ietf.org/doc/draft-lcurley-moq-cluster/01/)) replaces relay hops. Advertisements now carry `ROUTE_COST`. Loop protection requires every relay in a cycle to run this version. ([#836](https://github.com/openmoq/moqx/pull/836))
+- A repeated NAMESPACE from the same origin keeps the namespace's subscriptions running instead of tearing them down. ([#840](https://github.com/openmoq/moqx/pull/840))
 
 ## Fixed
 
