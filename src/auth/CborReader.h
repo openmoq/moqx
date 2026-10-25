@@ -76,7 +76,7 @@ public:
     return false;
   }
 
-  bool readBytes(std::string& out) {
+  bool readBytes(std::string_view& out) {
     uint8_t major = 0;
     uint64_t len = 0;
     if (!readType(major, len) ||
@@ -84,7 +84,7 @@ public:
         len > data_.size() - pos_) {
       return false;
     }
-    out.assign(data_.data() + pos_, static_cast<size_t>(len));
+    out = data_.substr(pos_, static_cast<size_t>(len));
     pos_ += static_cast<size_t>(len);
     return true;
   }
