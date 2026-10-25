@@ -414,8 +414,9 @@ free, and the default 1 ranks routes by hop count. It is only sent when
 **`tls.insecure: true`** skips certificate verification. It cannot be
 combined with `ca_cert`.
 
-**`ca_cert`** pins a custom CA certificate. Omit to use the system trust
-store.
+**`ca_cert`** pins a custom CA certificate, a PEM file. The upstream's
+certificate must chain to it and match the URL's host. The relay does not
+start if the file cannot be loaded. Omit to use the system trust store.
 
 ### Relay Architectures
 

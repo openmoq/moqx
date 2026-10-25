@@ -32,6 +32,10 @@
 
 namespace openmoq::moqx {
 
+// Returns nullptr to use the system CAs. Throws if tls.ca_cert cannot be loaded.
+std::shared_ptr<fizz::CertificateVerifier> makeUpstreamVerifier(const config::UpstreamTlsConfig& tls
+);
+
 // Visitor interface for the top-level relay context state dump.
 // onServiceBegin returns the RelayStateVisitor to use for that service's relay.
 class RelayContextVisitor {

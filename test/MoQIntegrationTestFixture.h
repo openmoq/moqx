@@ -49,6 +49,10 @@ protected:
   // Runs on the server thread for each CLIENT_SETUP it accepts.
   virtual void onServerClientSetup(const moxygen::Setup& /*clientSetup*/) {}
 
+  // Empty paths make the server present proxygen's built-in insecure cert.
+  virtual std::string serverCertFile() const { return ""; }
+  virtual std::string serverKeyFile() const { return ""; }
+
   void SetUp() override {
     // Start the server thread. The server must be constructed and started
     // on the same thread (QuicServer requirement).
@@ -66,8 +70,8 @@ protected:
       auto fizzContext = quic::samples::createFizzServerContextWithInsecureDefault(
           alpns,
           fizz::server::ClientAuthMode::None,
-          "" /* cert */,
-          "" /* key */
+          serverCertFile(),
+          serverKeyFile()
       );
 
       // Create and start the server on this thread

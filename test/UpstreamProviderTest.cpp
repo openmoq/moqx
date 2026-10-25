@@ -7,6 +7,7 @@
 #include "UpstreamProvider.h"
 #include "MoQIntegrationTestFixture.h"
 #include "MoqxRelay.h"
+#include "MoqxRelayContext.h"
 
 #include <folly/SocketAddress.h>
 #include <folly/coro/Baton.h>
@@ -1101,6 +1102,58 @@ TEST_F(RelayUpstreamHungPeerTest, MissReturnsOnceAnUpstreamRoutesIt) {
       }(),
       &clientEvb()
   );
+}
+
+// --- upstream.tls.ca_cert ---
+
+// The fixture's default server presents proxygen's built-in cert, which the test CA did not sign.
+class UpstreamCACertTest : public MoQIntegrationTestFixture {
+protected:
+  std::shared_ptr<Publisher> createServerPublishHandler() override {
+    return std::make_shared<NiceMock<MockPublisher>>();
+  }
+
+  // UpstreamProvider retries a failed connect forever, so dial once with a bare client.
+  bool connectTrustingTestCA() {
+    auto verifier = makeUpstreamVerifier(config::UpstreamTlsConfig{.caCertFile = TEST_CERT_PATH});
+    MoQClient
+        client(clientExec(), serverUrl(), MoQRelaySession::createRelaySessionFactory(), verifier);
+    bool connected = false;
+    folly::coro::blockingWait(
+        [&]() -> folly::coro::Task<void> {
+          try {
+            co_await client.setupMoQSession(
+                std::chrono::seconds(2),
+                std::chrono::seconds(2),
+                nullptr,
+                nullptr,
+                quic::TransportSettings(),
+                getMoqtProtocols("18", /*useStandard=*/true)
+            );
+            connected = true;
+            client.moqSession_->close(SessionCloseErrorCode::NO_ERROR);
+          } catch (const std::exception& e) {
+            XLOG(DBG1) << "connect failed: " << e.what();
+          }
+        }(),
+        &clientEvb()
+    );
+    return connected;
+  }
+};
+
+class UpstreamCACertSignedServerTest : public UpstreamCACertTest {
+protected:
+  std::string serverCertFile() const override { return TEST_CERT_PATH; }
+  std::string serverKeyFile() const override { return TEST_KEY_PATH; }
+};
+
+TEST_F(UpstreamCACertSignedServerTest, ConnectsWhenTheConfiguredCASignedTheServerCert) {
+  EXPECT_TRUE(connectTrustingTestCA());
+}
+
+TEST_F(UpstreamCACertTest, RejectsAServerCertOutsideTheConfiguredCA) {
+  EXPECT_FALSE(connectTrustingTestCA());
 }
 
 } // namespace openmoq::moqx::test

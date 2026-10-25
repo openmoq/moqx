@@ -367,6 +367,10 @@ moqx_add_gtest(moqx_upstream_provider_test
     moxygen::moxygen_moqclient
     GTest::gmock
 )
+target_compile_definitions(moqx_upstream_provider_test PRIVATE
+  TEST_CERT_PATH="${CMAKE_CURRENT_SOURCE_DIR}/test_cert.pem"
+  TEST_KEY_PATH="${CMAKE_CURRENT_SOURCE_DIR}/test_key.pem"
+)
 
 moqx_add_gtest(moqx_subscription_registry_test
   SRCS SubscriptionRegistryTest.cpp

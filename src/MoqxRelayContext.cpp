@@ -10,6 +10,7 @@
 #include "relay/RelayExecUtil.h"
 #include "relay/SubscriberCrossExecFilter.h"
 #include "stats/MoQStatsCollector.h"
+#include <fizz/protocol/DefaultCertificateVerifier.h>
 #include <moxygen/events/MoQFollyExecutorImpl.h>
 #include <moxygen/util/InsecureVerifierDangerousDoNotUseInProduction.h>
 
@@ -87,8 +88,6 @@ void MoqxRelayContext::setStatsRegistry(std::shared_ptr<stats::StatsRegistry> re
   statsRegistry_ = std::move(registry);
 }
 
-namespace {
-
 // Relay chaining requires draft 16+ for wildcard subscribeNamespace and
 // NAMESPACE messages on the bidi stream. Connections negotiating an earlier
 // draft will not receive namespace announcements from the upstream relay.
@@ -97,12 +96,29 @@ std::shared_ptr<fizz::CertificateVerifier> makeUpstreamVerifier(const config::Up
   if (tls.insecure) {
     return std::make_shared<moxygen::test::InsecureVerifierDangerousDoNotUseInProduction>();
   }
-  if (tls.caCertFile) {
-    // TODO: load custom CA cert via fizz OpenSSLCertUtils / X509 store
-    XLOG(WARN) << "upstream.tls.ca_cert is not yet implemented; using system CAs";
+  if (!tls.caCertFile) {
+    return nullptr; // nullptr = fizz uses system CAs
   }
-  return nullptr; // nullptr = fizz uses system CAs
+  std::unique_ptr<fizz::DefaultCertificateVerifier> verifier;
+  fizz::Error err;
+  auto status = fizz::Status::Fail;
+  try {
+    status = fizz::DefaultCertificateVerifier::createFromCAFile(
+        verifier,
+        err,
+        fizz::VerificationContext::Client,
+        *tls.caCertFile
+    );
+  } catch (const std::exception& e) {
+    XLOG(WARN) << "upstream.tls.ca_cert: " << e.what();
+  }
+  if (status != fizz::Status::Success) {
+    throw std::runtime_error("upstream.tls.ca_cert: cannot load " + *tls.caCertFile);
+  }
+  return verifier;
 }
+
+namespace {
 
 // dumpState pairs these with relay->upstreamProviders() by index.
 std::vector<config::UpstreamConfig> upstreamConfigs(const config::ServiceConfig& svc) {
