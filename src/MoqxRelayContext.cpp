@@ -10,6 +10,7 @@
 #include "relay/RelayExecUtil.h"
 #include "relay/SubscriberCrossExecFilter.h"
 #include "stats/MoQStatsCollector.h"
+#include <fizz/protocol/DefaultCertificateVerifier.h>
 #include <moxygen/events/MoQFollyExecutorImpl.h>
 #include <moxygen/util/InsecureVerifierDangerousDoNotUseInProduction.h>
 
@@ -97,11 +98,20 @@ std::shared_ptr<fizz::CertificateVerifier> makeUpstreamVerifier(const config::Up
   if (tls.insecure) {
     return std::make_shared<moxygen::test::InsecureVerifierDangerousDoNotUseInProduction>();
   }
-  if (tls.caCertFile) {
-    // TODO: load custom CA cert via fizz OpenSSLCertUtils / X509 store
-    XLOG(WARN) << "upstream.tls.ca_cert is not yet implemented; using system CAs";
+  if (!tls.caCertFile) {
+    return nullptr; // nullptr = fizz uses system CAs
   }
-  return nullptr; // nullptr = fizz uses system CAs
+  std::unique_ptr<fizz::DefaultCertificateVerifier> verifier;
+  fizz::Error err;
+  if (fizz::DefaultCertificateVerifier::createFromCAFile(
+          verifier,
+          err,
+          fizz::VerificationContext::Client,
+          *tls.caCertFile
+      ) != fizz::Status::Success) {
+    throw std::runtime_error("upstream.tls.ca_cert: cannot load " + *tls.caCertFile);
+  }
+  return verifier;
 }
 
 // dumpState pairs these with relay->upstreamProviders() by index.
