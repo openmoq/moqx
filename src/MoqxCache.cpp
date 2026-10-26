@@ -2489,8 +2489,14 @@ void MoqxCache::evictGroup(CacheTrack& track, uint64_t groupID) {
     group.globalLruIter_.reset();
   }
 
-  // Remove from cachedContent
-  track.cachedContent.remove({groupID, 0}, {groupID, kLocationMax.object});
+  track.forgetRange({groupID, 0}, {groupID, kLocationMax.object});
+  // Groups that the Prior Group ID Gap marks absent do not have a CacheGroup.
+  if (group.seenPriorGroupIdGap.value_or(0) > 0) {
+    track.forgetRange(
+        {groupID - *group.seenPriorGroupIdGap, 0},
+        {groupID - 1, kLocationMax.object}
+    );
+  }
 
   // Subtract group's bytes from the cache total
   XCHECK_GE(totalCachedBytes_, group.totalBytes);

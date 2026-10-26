@@ -342,6 +342,12 @@ private:
       gaps.insert(start, end);
       cachedContent.insert(start, end);
     }
+
+    // A forgotten gap sends a later FETCH of that range upstream.
+    void forgetRange(moxygen::AbsoluteLocation start, moxygen::AbsoluteLocation end) {
+      gaps.remove(start, end);
+      cachedContent.remove(start, end);
+    }
   };
 
   // Group-order-aware iterator for traversing groups (objects within groups
