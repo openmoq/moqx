@@ -36,7 +36,7 @@ fi
 # what enforces it). Progress watchdog: healthy apt prints continuously, so
 # kill the call after 2 minutes of output silence; hard-cap the whole call at
 # 15 minutes as a backstop against a mirror that trickles forever.
-apt_get() {
+apt_get_once() {
     local log pid rc size prev=-1 idle=0
     log=$(mktemp)
     $SUDO timeout -k 30 900 apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 "$@" >"$log" 2>&1 &
@@ -63,6 +63,31 @@ apt_get() {
     wait "$pid" && rc=0 || rc=$?
     rm -f "$log"
     return "$rc"
+}
+
+# GitHub-hosted runners fetch from azure.archive.ubuntu.com, which can serve
+# archives at a few kB/s for many minutes (actions/runner-images#14823).
+drop_azure_mirror() {
+    local files
+    # grep exits 2 for a missing path even when another path matches.
+    files=$(grep -l 'azure\.archive\.ubuntu\.com' /etc/apt/apt-mirrors.txt \
+        /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true)
+    [ -n "$files" ] || return 1
+    echo "Switching apt from azure.archive.ubuntu.com to archive.ubuntu.com" >&2
+    # shellcheck disable=SC2086 # $files holds one path per line
+    $SUDO sed -i 's/azure\.archive\.ubuntu\.com/archive.ubuntu.com/g' $files
+}
+
+apt_get() {
+    local rc=0
+    apt_get_once "$@" || rc=$?
+    if [ "$rc" -ne 124 ] || ! drop_azure_mirror; then
+        return "$rc"
+    fi
+    if [ "$1" != update ]; then
+        apt_get_once update
+    fi
+    apt_get_once "$@"
 }
 
 # reflect-cpp (a moqx dependency) needs CMake >= 3.23, newer than the 3.22 that
