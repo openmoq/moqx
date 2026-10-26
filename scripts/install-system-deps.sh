@@ -31,13 +31,21 @@ if [ "$(id -u)" -ne 0 ]; then
     fi
 fi
 
+descendants() {
+    local child
+    for child in $(pgrep -P "$1"); do
+        echo "$child"
+        descendants "$child"
+    done
+}
+
 # apt can hang past its own transfer timeouts: a dribbling mirror defeats the
 # 30s read timeout, and a wedged https helper never fires it (the helper is
 # what enforces it). Progress watchdog: healthy apt prints continuously, so
 # kill the call after 2 minutes of output silence; hard-cap the whole call at
 # 15 minutes as a backstop against a mirror that trickles forever.
-apt_get() {
-    local log pid rc size prev=-1 idle=0
+apt_get_once() {
+    local log pid procs p rc size prev=-1 idle=0
     log=$(mktemp)
     $SUDO timeout -k 30 900 apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 "$@" >"$log" 2>&1 &
     pid=$!
@@ -49,10 +57,17 @@ apt_get() {
             idle=$((idle + 5))
             if [ "$idle" -ge 120 ]; then
                 echo "ERROR: apt-get made no progress for ${idle}s; aborting" >&2
-                $SUDO kill "$pid" 2>/dev/null || true
+                # Killing only sudo or timeout leaves apt-get holding the dpkg lock.
+                procs="$pid $(descendants "$pid")"
+                # shellcheck disable=SC2086 # $procs holds one pid per word
+                $SUDO kill $procs 2>/dev/null || true
                 sleep 5
-                $SUDO kill -9 "$pid" 2>/dev/null || true
+                # shellcheck disable=SC2086
+                $SUDO kill -9 $procs 2>/dev/null || true
                 wait "$pid" 2>/dev/null || true
+                for p in $procs; do
+                    while $SUDO kill -0 "$p" 2>/dev/null; do sleep 1; done
+                done
                 rm -f "$log"
                 return 124
             fi
@@ -63,6 +78,31 @@ apt_get() {
     wait "$pid" && rc=0 || rc=$?
     rm -f "$log"
     return "$rc"
+}
+
+# GitHub-hosted runners fetch from azure.archive.ubuntu.com, which can serve
+# archives at a few kB/s for many minutes (actions/runner-images#14823).
+drop_azure_mirror() {
+    local files
+    # grep exits 2 for a missing path even when another path matches.
+    files=$(grep -l 'azure\.archive\.ubuntu\.com' /etc/apt/apt-mirrors.txt \
+        /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true)
+    [ -n "$files" ] || return 1
+    echo "Switching apt from azure.archive.ubuntu.com to archive.ubuntu.com" >&2
+    # shellcheck disable=SC2086 # $files holds one path per line
+    $SUDO sed -i 's/azure\.archive\.ubuntu\.com/archive.ubuntu.com/g' $files
+}
+
+apt_get() {
+    local rc=0
+    apt_get_once "$@" || rc=$?
+    if [ "$rc" -ne 124 ] || ! drop_azure_mirror; then
+        return "$rc"
+    fi
+    if [ "$1" != update ]; then
+        apt_get_once update
+    fi
+    apt_get_once "$@"
 }
 
 # reflect-cpp (a moqx dependency) needs CMake >= 3.23, newer than the 3.22 that
