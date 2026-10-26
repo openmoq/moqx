@@ -3394,6 +3394,69 @@ CO_TEST_F(MoqxCacheTest, TestGroupEviction) {
   co_return;
 }
 
+// The cache serves a FETCH of a stale gap locally, so an upstream FETCH shows
+// that eviction dropped the gap.
+CO_TEST_F(MoqxCacheTest, TestGroupEvictionDropsEndOfGroupGaps) {
+  cache_.setMaxCachedGroupsPerTrack(2);
+  auto writeback = cache_.getSubscribeWriteback(kTestTrackName, trackConsumer_);
+  for (uint64_t g = 0; g < 100; ++g) {
+    EXPECT_TRUE(writeback->objectStream(ObjectHeader(g, 0, 0, 0, 100), makeBuf(100)).hasValue());
+    EXPECT_TRUE(writeback
+                    ->objectStream(ObjectHeader(g, 0, 1, 0, ObjectStatus::END_OF_GROUP), nullptr)
+                    .hasValue());
+  }
+  writeback.reset();
+  EXPECT_FALSE(cache_.hasCachedObject(kTestTrackName, {10, 0}));
+
+  expectUpstreamFetch(FetchOk{0, GroupOrder::OldestFirst, false, {10, 2}, {}});
+  EXPECT_CALL(*consumer_, endOfFetch()).WillOnce(Return(folly::unit));
+  auto res = co_await cache_.fetch(getFetch({10, 2}, {10, 3}), consumer_, upstream_);
+  EXPECT_TRUE(res.hasValue());
+}
+
+CO_TEST_F(MoqxCacheTest, TestGroupEvictionDropsPriorGroupIdGaps) {
+  cache_.setMaxCachedGroupsPerTrack(2);
+  auto writeback = cache_.getSubscribeWriteback(kTestTrackName, trackConsumer_);
+  EXPECT_TRUE(writeback->objectStream(ObjectHeader(0, 0, 0, 0, 100), makeBuf(100)).hasValue());
+  for (uint64_t g = 2; g < 100; g += 2) {
+    ObjectHeader header(g, 0, 0, 0, 100);
+    header.extensions = makeGroupGapExtensions(1);
+    EXPECT_TRUE(writeback->objectStream(header, makeBuf(100)).hasValue());
+  }
+  writeback.reset();
+  EXPECT_FALSE(cache_.hasCachedObject(kTestTrackName, {10, 0}));
+
+  expectUpstreamFetch(FetchOk{0, GroupOrder::OldestFirst, false, {9, 0}, {}});
+  EXPECT_CALL(*consumer_, endOfFetch()).WillOnce(Return(folly::unit));
+  auto res = co_await cache_.fetch(getFetch({9, 0}, {9, 1}), consumer_, upstream_);
+  EXPECT_TRUE(res.hasValue());
+}
+
+// Each upstream group starts at object 3, so the fetch marks {g,0..2} absent
+// before the object and the END_OF_GROUP tail after it.
+CO_TEST_F(MoqxCacheTest, TestGroupEvictionDropsFetchedGaps) {
+  cache_.setMaxCachedGroupsPerTrack(2);
+  auto downstream = std::make_shared<NiceMock<moxygen::MockFetchConsumer>>();
+  ON_CALL(*downstream, object(_, _, _, _, _, _, _)).WillByDefault(Return(folly::unit));
+  ON_CALL(*downstream, endOfGroup(_, _, _, _)).WillByDefault(Return(folly::unit));
+  ON_CALL(*downstream, endOfFetch()).WillByDefault(Return(folly::unit));
+  expectUpstreamFetch({0, 0}, {20, 0}, false, AbsoluteLocation{20, 0});
+  auto res = co_await cache_.fetch(getFetch({0, 0}, {20, 0}), downstream, upstream_);
+  EXPECT_TRUE(res.hasValue());
+  for (uint64_t g = 0; g < 20; ++g) {
+    upstreamFetchConsumer_->object(g, 0, 3, makeBuf(100));
+    upstreamFetchConsumer_->endOfGroup(g, 0, 4);
+  }
+  upstreamFetchConsumer_->endOfFetch();
+  co_await folly::coro::co_reschedule_on_current_executor;
+  EXPECT_FALSE(cache_.hasCachedObject(kTestTrackName, {10, 3}));
+
+  expectUpstreamFetch(FetchOk{0, GroupOrder::OldestFirst, false, {10, 0}, {}});
+  EXPECT_CALL(*consumer_, endOfFetch()).WillOnce(Return(folly::unit));
+  res = co_await cache_.fetch(getFetch({10, 0}, {10, 1}), consumer_, upstream_);
+  EXPECT_TRUE(res.hasValue());
+}
+
 CO_TEST_F(MoqxCacheTest, TestGroupNotEvictedDuringActiveWrite) {
   // Verify that a group being actively written to via SubgroupWriteback
   // is not evicted when a new group triggers eviction.
