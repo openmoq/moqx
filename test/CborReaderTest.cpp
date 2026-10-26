@@ -130,7 +130,7 @@ TEST(CborReaderTest, ReadBytesHandlesByteAndTextStrings) {
     putHead(data, major, 3);
     data.append("abc");
     CborReader reader(data);
-    std::string out;
+    std::string_view out;
     ASSERT_TRUE(reader.readBytes(out)) << "major=" << int(major);
     EXPECT_EQ(out, "abc");
     EXPECT_TRUE(reader.eof());
@@ -142,7 +142,7 @@ TEST(CborReaderTest, ReadBytesRejectsLengthPastEndOfBuffer) {
   putHead(data, 2, 5); // claims 5 bytes...
   data.append("ab");   // ...but only 2 are present
   CborReader reader(data);
-  std::string out;
+  std::string_view out;
   EXPECT_FALSE(reader.readBytes(out));
 }
 
