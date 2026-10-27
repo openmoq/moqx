@@ -653,13 +653,15 @@ jobs:
   release-image:
     # Waits for portable-build so optimize can ship its tarball. Without moxygen
     # portable assets that job is skipped, and optimize has already failed validate.
+    # Without optimize, a failed portable lane does not hold the image back.
     needs: [validate, create-release, portable-build]
     if: |
       always() &&
       needs.validate.result == 'success' &&
       needs.create-release.result == 'success' &&
-      needs.portable-build.result != 'failure' &&
-      needs.portable-build.result != 'cancelled'
+      (!inputs.optimize ||
+       (needs.portable-build.result != 'failure' &&
+        needs.portable-build.result != 'cancelled'))
     permissions:
       packages: write
     strategy:
