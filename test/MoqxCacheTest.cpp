@@ -3457,6 +3457,27 @@ CO_TEST_F(MoqxCacheTest, TestGroupEvictionDropsFetchedGaps) {
   EXPECT_TRUE(res.hasValue());
 }
 
+// Each empty single-object FETCH records one gap interval. Past the cap, the
+// lowest gap is dropped, so only its FETCH goes upstream again.
+CO_TEST_F(MoqxCacheTest, TestGapIntervalCapDropsLowest) {
+  for (uint64_t g = 0; g <= kMaxGapIntervalsPerTrack; ++g) {
+    expectUpstreamFetch(FetchOk{0, GroupOrder::OldestFirst, false, {1000, 0}, {}});
+    EXPECT_CALL(*consumer_, endOfFetch()).WillOnce(Return(folly::unit));
+    auto res = co_await cache_.fetch(getFetch({2 * g, 0}, {2 * g, 1}), consumer_, upstream_);
+    EXPECT_TRUE(res.hasValue());
+    co_await folly::coro::co_reschedule_on_current_executor;
+  }
+
+  EXPECT_CALL(*consumer_, endOfFetch()).WillOnce(Return(folly::unit));
+  auto res = co_await cache_.fetch(getFetch({2, 0}, {2, 1}), consumer_, upstream_);
+  EXPECT_TRUE(res.hasValue());
+
+  expectUpstreamFetch(FetchOk{0, GroupOrder::OldestFirst, false, {1000, 0}, {}});
+  EXPECT_CALL(*consumer_, endOfFetch()).WillOnce(Return(folly::unit));
+  res = co_await cache_.fetch(getFetch({0, 0}, {0, 1}), consumer_, upstream_);
+  EXPECT_TRUE(res.hasValue());
+}
+
 CO_TEST_F(MoqxCacheTest, TestGroupNotEvictedDuringActiveWrite) {
   // Verify that a group being actively written to via SubgroupWriteback
   // is not evicted when a new group triggers eviction.
