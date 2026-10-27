@@ -26,6 +26,9 @@ constexpr size_t kDefaultMaxCachedGroupsPerTrack = 3;
 constexpr size_t kDefaultMaxCachedBytes = 10 * 1024 * 1024; // 10 MB
 constexpr size_t kDefaultMinEvictionBytes = 100 * 1024;     // 100 KB
 
+// Cap on gap intervals per track, which the byte budget does not count.
+constexpr size_t kMaxGapIntervalsPerTrack = 256;
+
 class MoqxCache {
 public:
   using SteadyClock = std::chrono::steady_clock;
@@ -341,12 +344,22 @@ private:
     void insertGap(moxygen::AbsoluteLocation start, moxygen::AbsoluteLocation end) {
       gaps.insert(start, end);
       cachedContent.insert(start, end);
+      enforceGapLimit();
     }
 
     // A forgotten gap sends a later FETCH of that range upstream.
     void forgetRange(moxygen::AbsoluteLocation start, moxygen::AbsoluteLocation end) {
       gaps.remove(start, end);
       cachedContent.remove(start, end);
+      // Removing a range from inside a gap splits it in two.
+      enforceGapLimit();
+    }
+
+    void enforceGapLimit() {
+      while (gaps.size() > kMaxGapIntervalsPerTrack) {
+        auto lowest = gaps.popFront();
+        cachedContent.remove(lowest->first, lowest->second);
+      }
     }
   };
 
