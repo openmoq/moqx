@@ -120,7 +120,13 @@ jobs:
                   "glob",
                   "grep_search",
                   "list_directory",
-                  "activate_skill"
+                  "activate_skill",
+                  "mcp_github_*"
+                ],
+                "allowed": [
+                  "mcp_github_add_comment_to_pending_review",
+                  "mcp_github_pull_request_read",
+                  "mcp_github_pull_request_review_write"
                 ]
               }
             }

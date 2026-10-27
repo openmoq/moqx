@@ -132,7 +132,8 @@ jobs:
                   "glob",
                   "grep_search",
                   "list_directory",
-                  "activate_skill"
+                  "activate_skill",
+                  "mcp_github_*"
                 ]
               }
             }
