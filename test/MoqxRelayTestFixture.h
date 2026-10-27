@@ -188,19 +188,33 @@ protected:
   // with relayEvb_ via runInEventBaseThreadAndWait, so this deterministically
   // advances the relay's async cascades (e.g. forwardChanged/NGR requestUpdate)
   // instead of guessing a fixed drive count. Returns done() — false means it
-  // timed out. In SingleThread mode drive() degrades to a single loopOnce.
+  // timed out.
   template <typename Pred> bool driveUntil(Pred&& done, int maxIters = 500) {
-    // SingleThread mode is fully synchronous: there is no relay thread to await,
-    // so at most one loopOnce can make new progress. Cap iterations at 1 to
-    // avoid spinning loopOnce maxIters times when a predicate stays false.
-    int iters = relayEvb_ ? maxIters : 1;
-    for (int i = 0; i < iters && !done(); ++i) {
-      exec_->drive();
-      for (auto& aux : auxExecs_) {
-        aux->evb->runInEventBaseThreadAndWait([]() {});
+    if (!relayEvb_) {
+      // SingleThread: drive()'s loopOnce blocks until a timer when nothing is queued, so
+      // drain queued work without blocking, then allow one blocking turn for timers.
+      auto* evb = exec_->getBackingEventBase();
+      for (int i = 0; i < maxIters && !done(); ++i) {
+        evb->loopOnce(EVLOOP_NONBLOCK);
+        flushAuxExecs();
       }
+      if (!done()) {
+        exec_->drive();
+        flushAuxExecs();
+      }
+      return done();
+    }
+    for (int i = 0; i < maxIters && !done(); ++i) {
+      exec_->drive();
+      flushAuxExecs();
     }
     return done();
+  }
+
+  void flushAuxExecs() {
+    for (auto& aux : auxExecs_) {
+      aux->evb->runInEventBaseThreadAndWait([]() {});
+    }
   }
 
   template <typename Func>
