@@ -39,9 +39,16 @@ void launchUpdate(folly::Executor* exec, folly::coro::Task<void> task) {
   folly::coro::co_withExecutor(folly::getKeepAliveToken(exec), std::move(task)).start();
 }
 
+using LargestCallback = folly::Function<void(moxygen::AbsoluteLocation)>;
+
 // Free coroutines, not inline lambdas — captures would dangle past suspension.
-folly::coro::Task<void>
-doSubscribeUpdate(std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle, bool forward) {
+// onLargest sees the Largest Object in the REQUEST_UPDATE_OK before largest completes.
+folly::coro::Task<void> doSubscribeUpdate(
+    std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle,
+    bool forward,
+    moxygen::MoQForwarder::LargestPromise largest = {},
+    LargestCallback onLargest = nullptr
+) {
   auto res = co_await handle->requestUpdate(moxygen::RequestUpdate{
       .requestID = moxygen::RequestID(0),
       .existingRequestID = handle->subscribeOk().requestID,
@@ -49,6 +56,17 @@ doSubscribeUpdate(std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle
   });
   if (res.hasError()) {
     XLOG(ERR) << "requestUpdate failed: " << res.error().reasonPhrase;
+    co_return;
+  }
+  for (const auto& param : res->requestSpecificParams) {
+    if (param.key == folly::to_underlying(moxygen::TrackRequestParamKey::LARGEST_OBJECT) &&
+        param.largestObject) {
+      if (onLargest) {
+        onLargest(*param.largestObject);
+      }
+      largest.complete(param.largestObject);
+      break;
+    }
   }
 }
 
@@ -64,6 +82,7 @@ folly::coro::Task<void> doNewGroupRequestUpdate(
       folly::to_underlying(moxygen::TrackRequestParamKey::NEW_GROUP_REQUEST),
       group
   ));
+  // The OK's Largest Object is ignored.
   auto res = co_await handle->requestUpdate(std::move(update));
   if (res.hasError()) {
     XLOG(ERR) << "NEW_GROUP_REQUEST update failed: " << res.error().reasonPhrase;
@@ -1155,7 +1174,11 @@ public:
   )
       : localReg_(localReg), ftn_(std::move(ftn)), fillHandler_(std::move(fillHandler)) {}
 
-  void forwardChanged(moxygen::MoQForwarder*, bool f) override { lastForward_ = f; }
+  void forwardChanged(moxygen::MoQForwarder*, bool f, moxygen::MoQForwarder::LargestPromise largest)
+      override {
+    lastForward_ = f;
+    lastLargest_ = std::move(largest);
+  }
   // Served now: this runs on the same executor as the final callback.
   void fillRequested(
       moxygen::MoQForwarder*,
@@ -1176,6 +1199,7 @@ public:
   moxygen::FullTrackName ftn_;
   openmoq::moqx::LocalForwarderCallback::FillHandler fillHandler_;
   std::optional<bool> lastForward_;
+  moxygen::MoQForwarder::LargestPromise lastLargest_;
   std::optional<uint64_t> maxGroup_;
   bool sawOnEmpty_{false};
 };
@@ -1214,11 +1238,17 @@ public:
     }
   }
 
-  void forwardChanged(const moxygen::FullTrackName&, bool forward) override {
+  // The channel's REQUEST_UPDATE_OK carries the publisher forwarder's Largest, which
+  // waits for the publisher's own resume.
+  void forwardChanged(
+      const moxygen::FullTrackName&,
+      bool forward,
+      moxygen::MoQForwarder::LargestPromise largest
+  ) override {
     if (!handle_) {
       return;
     }
-    launchUpdate(channelSub_.exec(), doSubscribeUpdate(handle_, forward));
+    launchUpdate(channelSub_.exec(), doSubscribeUpdate(handle_, forward, std::move(largest)));
   }
 
   void newGroupRequested(const moxygen::FullTrackName&, uint64_t group) override {
@@ -1287,12 +1317,13 @@ void installChannelSubscriber(
 void replayPendingFowarderEvents(
     moxygen::MoQForwarder* localFwd,
     const std::shared_ptr<moxygen::MoQForwarder::Callback>& finalCallback,
-    const PendingForwarderCallback& pendingCb,
+    PendingForwarderCallback& pendingCb,
     bool forward
 ) {
   localFwd->setCallback(finalCallback);
   if (pendingCb.lastForward_ && *pendingCb.lastForward_ != forward) {
-    finalCallback->forwardChanged(localFwd, *pendingCb.lastForward_);
+    finalCallback
+        ->forwardChanged(localFwd, *pendingCb.lastForward_, std::move(pendingCb.lastLargest_));
   }
   if (pendingCb.maxGroup_) {
     finalCallback->newGroupRequested(localFwd, *pendingCb.maxGroup_);
@@ -2909,6 +2940,7 @@ void MoqxRelay::onEmptyImpl(const FullTrackName& ftn) {
   if (upstreamView->isPublish) {
     // if it's publish, don't unsubscribe, just subscribeUpdate forward=false
     XLOG(DBG1) << "Updating upstream subscription forward=false";
+    // The OK's Largest Object is ignored.
     launchUpdate(
         upstreamView->publisherExec,
         doSubscribeUpdate(upstreamView->handle, /*forward=*/false)
@@ -2922,11 +2954,19 @@ void MoqxRelay::onEmptyImpl(const FullTrackName& ftn) {
   }
 }
 
-void MoqxRelay::forwardChanged(MoQForwarder* forwarder, bool forward) {
-  forwardChangedImpl(forwarder->fullTrackName(), forward);
+void MoqxRelay::forwardChanged(
+    MoQForwarder* forwarder,
+    bool forward,
+    MoQForwarder::LargestPromise largest
+) {
+  forwardChangedImpl(forwarder->fullTrackName(), forward, std::move(largest));
 }
 
-void MoqxRelay::forwardChangedImpl(const FullTrackName& ftn, bool forward) {
+void MoqxRelay::forwardChangedImpl(
+    const FullTrackName& ftn,
+    bool forward,
+    MoQForwarder::LargestPromise largest
+) {
   auto upstreamView = registry_.getUpstreamView(ftn);
   if (!upstreamView) {
     return;
@@ -2944,7 +2984,16 @@ void MoqxRelay::forwardChangedImpl(const FullTrackName& ftn, bool forward) {
 
   // handle non-null (checked above) implies upstream is live, so publisherExec is set.
   XCHECK(upstreamView->publisherExec);
-  launchUpdate(upstreamView->publisherExec, doSubscribeUpdate(upstreamView->handle, forward));
+  launchUpdate(
+      upstreamView->publisherExec,
+      doSubscribeUpdate(
+          upstreamView->handle,
+          forward,
+          std::move(largest),
+          // A forward=0 OK's Largest Object is ignored.
+          forward ? cacheUpstreamLargestCallback(ftn, upstreamView->handle.get()) : nullptr
+      )
+  );
 }
 
 void MoqxRelay::newGroupRequested(MoQForwarder* forwarder, uint64_t group) {
@@ -3005,6 +3054,33 @@ void MoqxRelay::newGroupRequestedImpl(const FullTrackName& ftn, uint64_t group) 
   // handle non-null (checked above) implies upstream is live, so publisherExec is set.
   XCHECK(upstreamView->publisherExec);
   launchUpdate(upstreamView->publisherExec, doNewGroupRequestUpdate(upstreamView->handle, group));
+}
+
+LargestCallback MoqxRelay::cacheUpstreamLargestCallback(
+    const FullTrackName& ftn,
+    const Publisher::SubscriptionHandle* handle
+) {
+  // Runs on publisherExec before the resume's LargestPromise completes. A FETCH for the
+  // gap can only follow the subscriber's OK, so it reaches relayExec after this update.
+  return [relay = weak_from_this(), relayExec = relayExec_, ftn, handle](AbsoluteLocation value) {
+    runOnExec(relayExec, [relay, ftn, handle, value] {
+      if (auto strong = relay.lock()) {
+        strong->cacheUpstreamLargest(ftn, handle, value);
+      }
+    });
+  };
+}
+
+void MoqxRelay::cacheUpstreamLargest(
+    const FullTrackName& ftn,
+    const Publisher::SubscriptionHandle* handle,
+    AbsoluteLocation value
+) {
+  auto upstreamView = registry_.getUpstreamView(ftn);
+  // The track may have ended or moved to another upstream since the update went out.
+  if (cache_ && upstreamView && upstreamView->handle.get() == handle) {
+    cache_->updateLargest(ftn, value);
+  }
 }
 
 // TRACK_FILTER support

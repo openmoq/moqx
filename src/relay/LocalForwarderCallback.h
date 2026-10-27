@@ -53,8 +53,12 @@ public:
     localReg_->remove(ftn_, forwarder);
   }
 
-  void forwardChanged(moxygen::MoQForwarder* forwarder, bool forward) override {
-    downstream_->forwardChanged(forwarder, forward);
+  void forwardChanged(
+      moxygen::MoQForwarder* forwarder,
+      bool forward,
+      moxygen::MoQForwarder::LargestPromise largest
+  ) override {
+    downstream_->forwardChanged(forwarder, forward, std::move(largest));
   }
 
   void newGroupRequested(moxygen::MoQForwarder* forwarder, uint64_t group) override {
