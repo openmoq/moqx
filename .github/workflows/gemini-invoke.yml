@@ -38,7 +38,7 @@ jobs:
           permission-pull-requests: 'write'
 
       - name: 'Checkout Code'
-        uses: 'actions/checkout@v4' # ratchet:exclude
+        uses: 'actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8' # ratchet:actions/checkout@v6
         with:
           persist-credentials: 'false'
 
@@ -66,7 +66,7 @@ jobs:
 
       - name: 'Run Gemini CLI'
         id: 'run_gemini'
-        uses: 'google-github-actions/run-gemini-cli@v0' # ratchet:exclude
+        uses: 'google-github-actions/run-gemini-cli@f77273f4c914e4bf38440cf36a0369cb64a37489' # ratchet:google-github-actions/run-gemini-cli@v0
         env:
           GEMINI_CLI_TRUST_WORKSPACE: 'true'
           GITHUB_TOKEN: '${{ steps.mint_identity_token.outputs.token || secrets.GITHUB_TOKEN || github.token }}'
@@ -79,7 +79,7 @@ jobs:
           gemini_api_key: '${{ secrets.OMOQ_GEMINI_API_KEY }}'
           gemini_cli_version: '${{ vars.GEMINI_CLI_VERSION }}'
           gemini_debug: '${{ fromJSON(vars.GEMINI_DEBUG || vars.ACTIONS_STEP_DEBUG || false) }}'
-          gemini_model: '${{ vars.GEMINI_MODEL }}'
+          gemini_model: '${{ vars.GEMINI_MODEL || ''gemini-3.1-pro-preview-customtools'' }}'
           google_api_key: '${{ secrets.GOOGLE_API_KEY }}'
           use_gemini_code_assist: '${{ vars.GOOGLE_GENAI_USE_GCA }}'
           use_vertex_ai: '${{ vars.GOOGLE_GENAI_USE_VERTEXAI }}'
@@ -90,7 +90,7 @@ jobs:
           settings: |-
             {
               "model": {
-                "maxSessionTurns": 25
+                "maxSessionTurns": 20
               },
               "telemetry": {
                 "enabled": true,
@@ -127,7 +127,13 @@ jobs:
                 }
               },
               "tools": {
-                "core": []
+                "core": [
+                  "read_file",
+                  "glob",
+                  "grep_search",
+                  "list_directory",
+                  "activate_skill"
+                ]
               }
             }
           prompt: '/gemini-invoke'

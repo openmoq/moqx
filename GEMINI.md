@@ -32,4 +32,4 @@
 ## Paths & Files to Ignore
 
 - Do **not** read or cite `design/**` (superseded scratchpad notes), `build/**`, `deps/**`, or `.scratch/**`.
-- Treat `docs/ref/**` as read-only vendored IETF specifications (consult for normative rules, do not review for prose/style).
+- Treat `docs/ref/**` as read-only vendored IETF specifications (consult for normative rules using `grep_search` or targeted line ranges rather than reading an entire draft file into context; do not review for prose/style).
