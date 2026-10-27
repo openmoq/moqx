@@ -128,4 +128,4 @@ jobs:
             [
               "https://github.com/gemini-cli-extensions/code-review"
             ]
-          prompt: '/pr-code-review'
+          prompt: '/pr-code-review REPOSITORY=${{ github.repository }} PULL_REQUEST_NUMBER=${{ github.event.pull_request.number || github.event.issue.number }} ADDITIONAL_CONTEXT=${{ inputs.additional_context }}'
