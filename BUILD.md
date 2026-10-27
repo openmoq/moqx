@@ -166,6 +166,31 @@ Instrumented TUs peak over 2 GB each, enough for the core count to OOM the compi
 on a smaller host, so these profiles derate the default job count by free RAM. `-j` and
 `MOQX_BUILD_JOBS` still win outright.
 
+## PGO and LTO
+
+```bash
+scripts/configure.sh release-pgo --moxygen from-source                  # instrumented
+scripts/build.sh release-pgo
+scripts/pgo/train.sh                                                    # loopback training
+scripts/configure.sh release-pgo --moxygen from-source -DMOQX_PGO=use
+scripts/build.sh release-pgo                                            # profile-guided + LTO
+```
+
+`release-pgo` is a Release build of moqx and the whole stack from source, with
+`MOQX_PGO=generate`, `MOQX_LTO=ON` and tests off.
+[`scripts/pgo/train.sh`](/scripts/pgo/train.sh) runs the instrumented relay over
+loopback the way it is deployed (jemalloc, local forwarders, 4 IO threads, mvfst
+and picoquic) and leaves the profile in `build/pgo-profile` (`MOQX_PGO_DIR`). The
+second configure applies it. GCC keys the profile on object paths, so both passes
+use the same preset and build dirs. Only moqx's final link runs LTO; every object
+also carries normal machine code, so the other links skip it.
+
+Like sanitizers, PGO and LTO need `--moxygen from-source`. Compiles run with
+ccache disabled (`CCACHE_DISABLE=1`), since a cache hit would ignore the profile.
+The stack is built without moxygen's tests, so moqx's tests stay off too.
+Training needs `libjemalloc2`. The `version release` workflow's `optimize` input
+runs these steps for linux-amd64.
+
 ## Custom presets
 
 Profiles are CMake presets. Add your own in `CMakeUserPresets.json`
@@ -182,7 +207,8 @@ of its own, leaving the interceptors undefined at link.
 ## Docker, formatting, IDE, CI
 
 - **Docker** — [`docker/Dockerfile`](/docker/Dockerfile) builds via the same
-  `cmake --preset` flow, with targets `relay` (default) and `interop-client`. Its
+  `cmake --preset` flow, with targets `relay` (default) and `interop-client`, plus
+  `relay-portable`, which wraps a release's portable tarball instead. Its
   `moxygen` stage resolves the prefix the same way `prebuilt-with-fallback` does,
   and is keyed on the pin rather than on `src/` so a source change reuses it.
 - **Format / lint** — [`scripts/dev/format.sh`](/scripts/dev/format.sh)

@@ -2,11 +2,11 @@
 # train.sh — train a GCC PGO profile by driving an instrumented moqx over loopback.
 #
 # Runs the relay as deployed (jemalloc, local forwarders, 4 IO threads, relay
-# thread, cache) on mvfst and on picoquic, over raw QUIC and WebTransport, under moqtest_server
-# and moqperf_test_client load. SIGTERM stops the relay so libgcov writes its
-# counters. The publisher and client come from the same instrumented stack, so
-# they write theirs under a discard GCOV_PREFIX. Scenarios share the profile
-# dir, which libgcov sums into; it is emptied first.
+# thread, cache) on mvfst and on picoquic, over raw QUIC and WebTransport,
+# under moqtest_server and moqperf_test_client load. SIGTERM stops the relay
+# so libgcov writes its counters. The publisher and client come from the same
+# instrumented stack, so they write theirs under a discard GCOV_PREFIX.
+# Scenarios share the profile dir, which libgcov sums into; it is emptied first.
 #
 # Usage:
 #   scripts/pgo/train.sh [--relay PATH] [--moqbin DIR] [--profile-dir DIR]
