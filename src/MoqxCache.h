@@ -145,6 +145,8 @@ public:
       std::optional<moxygen::AbsoluteLocation> largest,
       moxygen::Extensions extensions
   );
+  // Largest from REQUEST_UPDATE_OK, which does not carry track properties.
+  void updateLargest(const moxygen::FullTrackName& ftn, moxygen::AbsoluteLocation largest);
 
   TimePoint now() const { return clock_(); }
 
