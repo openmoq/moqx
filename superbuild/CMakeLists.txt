@@ -44,8 +44,13 @@ include(${_top}/cmake/PgoFlags.cmake)
 
 find_program(CCACHE_PROGRAM ccache)
 set(_launchers "")
-# Not under PGO: a cache hit would ignore the profile.
-if(CCACHE_PROGRAM AND MOQX_PGO STREQUAL "off")
+if(NOT MOQX_PGO STREQUAL "off")
+  # A list; LIST_SEPARATOR on the ExternalProject turns | back into ;.
+  string(REPLACE ";" "|" _pgo_launcher "${MOQX_PGO_LAUNCHER}")
+  set(_launchers
+    -DCMAKE_C_COMPILER_LAUNCHER=${_pgo_launcher}
+    -DCMAKE_CXX_COMPILER_LAUNCHER=${_pgo_launcher})
+elseif(CCACHE_PROGRAM)
   set(_launchers
     -DCMAKE_C_COMPILER_LAUNCHER=${CCACHE_PROGRAM}
     -DCMAKE_CXX_COMPILER_LAUNCHER=${CCACHE_PROGRAM})
@@ -184,6 +189,7 @@ ExternalProject_Add(moxygen
   BINARY_DIR    "${_moxygen_build}"
   INSTALL_DIR   "${_moxygen_install}"
   BUILD_ALWAYS  ${MOQX_MOXYGEN_BUILD_ALWAYS}
+  LIST_SEPARATOR |
   USES_TERMINAL_CONFIGURE ON
   USES_TERMINAL_BUILD     ON
   USES_TERMINAL_INSTALL   ON

@@ -12,8 +12,11 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 include(cmake/PgoFlags.cmake)
 
 # Route the compiler through ccache when it is installed, without a toolchain edit.
-# Not under PGO: a cache hit would ignore the profile.
-if(NOT DEFINED CMAKE_CXX_COMPILER_LAUNCHER AND MOQX_PGO STREQUAL "off")
+# PGO builds run every compile with ccache disabled instead (cmake/PgoFlags.cmake).
+if(NOT MOQX_PGO STREQUAL "off")
+  set(CMAKE_C_COMPILER_LAUNCHER ${MOQX_PGO_LAUNCHER})
+  set(CMAKE_CXX_COMPILER_LAUNCHER ${MOQX_PGO_LAUNCHER})
+elseif(NOT DEFINED CMAKE_CXX_COMPILER_LAUNCHER)
   find_program(CCACHE_PROGRAM ccache)
   if(CCACHE_PROGRAM)
     set(CMAKE_C_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")

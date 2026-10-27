@@ -7,7 +7,8 @@
 #   MOQX_LTO      LTO bytecode in every object; moqx links with LTO
 #
 # Outputs (lists): MOQX_OPT_COMPILE_FLAGS, MOQX_OPT_LINK_FLAGS for moqx's
-# executables, MOQX_OPT_DEPS_LINK_FLAGS for moxygen's own executables.
+# executables, MOQX_OPT_DEPS_LINK_FLAGS for moxygen's own executables, and
+# MOQX_PGO_LAUNCHER, the compiler launcher for PGO builds.
 
 set(MOQX_PGO "off" CACHE STRING "Profile-guided optimization pass: off | generate | use")
 set_property(CACHE MOQX_PGO PROPERTY STRINGS off generate use)
@@ -22,6 +23,12 @@ option(MOQX_LTO "Link-time optimization across moqx and the moxygen stack" OFF)
 set(MOQX_OPT_COMPILE_FLAGS "")
 set(MOQX_OPT_LINK_FLAGS "")
 set(MOQX_OPT_DEPS_LINK_FLAGS "")
+# A ccache hit would ignore the profile, and ccache can come in as a launcher,
+# from the environment or as a wrapper on PATH; disabling it covers all three.
+set(MOQX_PGO_LAUNCHER "")
+if(NOT MOQX_PGO STREQUAL "off")
+  set(MOQX_PGO_LAUNCHER "${CMAKE_COMMAND}" -E env CCACHE_DISABLE=1)
+endif()
 if(MOQX_PGO STREQUAL "generate")
   list(APPEND MOQX_OPT_COMPILE_FLAGS "-fprofile-generate=${MOQX_PGO_DIR}" -fprofile-update=atomic)
   # Pulls in libgcov's __gcov_dump, which src/main.cpp references weakly.

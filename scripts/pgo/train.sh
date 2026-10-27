@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # train.sh — train a GCC PGO profile by driving an instrumented moqx over loopback.
 #
-# Runs the relay as deployed (local forwarders, 4 IO threads, relay thread, cache)
-# on mvfst and on picoquic, over raw QUIC and WebTransport, under moqtest_server
+# Runs the relay as deployed (jemalloc, local forwarders, 4 IO threads, relay
+# thread, cache) on mvfst and on picoquic, over raw QUIC and WebTransport, under moqtest_server
 # and moqperf_test_client load. SIGTERM stops the relay so libgcov writes its
 # counters. The publisher and client come from the same instrumented stack, so
 # they write theirs under a discard GCOV_PREFIX. Scenarios share the profile
@@ -164,11 +164,14 @@ run_scenario() {
     "$REPO/scripts/moqx-run.sh" --env /dev/null \
       --bin "$RELAY" --config "$REPO/scripts/perf/config.bench.yaml" \
       --bind 127.0.0.1 --port "$PORT" --admin-port "$ADMIN_PORT" --endpoint "$ENDPOINT" \
-      --threads "$IO_THREADS" --local-forwarders --relay-thread --cache --ignore-path-mtu \
+      --threads "$IO_THREADS" --jemalloc --local-forwarders --relay-thread --cache --ignore-path-mtu \
       --quic-stack "$stack" --cc "$cc" "${tls[@]}" \
       >"$dir/relay.log" 2>&1 &
   RELAY_PID=$!     # moqx-run execs moqx
   wait_until 30 relay_ready || die "relay not ready (see $dir/relay.log)"
+  # folly takes jemalloc-only paths when it is loaded; train on the allocator we ship.
+  grep -q libjemalloc "/proc/$RELAY_PID/maps" \
+    || die "jemalloc is not loaded in the relay (install libjemalloc2; see $dir/relay.log)"
 
   GCOV_PREFIX="$DISCARD" "$MOQBIN/moqtest_server" \
     --relay_url="$RELAY_URL" "$tflag" --include_timestamp_extension=true \

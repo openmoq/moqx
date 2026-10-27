@@ -401,11 +401,12 @@ jobs:
         run: |
           # Base library set via the shared installer, so a new moqx dependency
           # reaches the release build on its own. Only extras below: libdwarf
-          # (prebuilt proxygen symbolizer), xxhash (folly), ca-certificates.
+          # (prebuilt proxygen symbolizer), xxhash (folly), ca-certificates, and
+          # jemalloc, which PGO training preloads as the image does.
           scripts/install-system-deps.sh
           if [ "$RUNNER_OS" = Linux ]; then
             sudo apt-get install -y --no-install-recommends \
-              ca-certificates libdwarf-dev libxxhash-dev
+              ca-certificates libdwarf-dev libxxhash-dev libjemalloc2
           fi
 
       - name: Configure
