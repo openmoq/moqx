@@ -119,9 +119,7 @@ TEST_P(MoQRelayTest, PublishExtensionsForwardedToSubscribers) {
                   true,
                   0,
                   GroupOrder::OldestFirst,
-                  LocationType::LargestObject,
-                  std::nullopt,
-                  std::nullopt
+                  LocationFilter::nextObject()
               };
             }()
         });
@@ -183,9 +181,7 @@ TEST_P(MoQRelayTest, PublishExtensionsForwardedToLateJoiners) {
                   true,
                   0,
                   GroupOrder::OldestFirst,
-                  LocationType::LargestObject,
-                  std::nullopt,
-                  std::nullopt
+                  LocationFilter::nextObject()
               };
             }()
         });
@@ -227,9 +223,7 @@ TEST_P(MoQRelayTest, PublishExtensionsForwardedToLateJoiners) {
                       true,
                       0,
                       GroupOrder::OldestFirst,
-                      LocationType::LargestObject,
-                      std::nullopt,
-                      std::nullopt
+                      LocationFilter::nextObject()
                   };
                 }()
             });
@@ -481,7 +475,7 @@ TEST_P(MoQRelayTest, PublishReconnectDuringSubscribeScopeGuardCrash) {
     SubscribeRequest sub;
     sub.fullTrackName = kTestTrackName;
     sub.requestID = RequestID(1);
-    sub.locType = LocationType::LargestObject;
+    sub.filter = LocationFilter::nextObject();
     auto result = folly::coro::blockingWait(
         publisherInterface()->subscribe(std::move(sub), createMockConsumer()),
         exec_.get()
@@ -563,7 +557,7 @@ TEST_P(MoQRelayTest, PublishReconnectDuringSubscribeSuccessPathCrash) {
     SubscribeRequest sub;
     sub.fullTrackName = kTestTrackName;
     sub.requestID = RequestID(1);
-    sub.locType = LocationType::LargestObject;
+    sub.filter = LocationFilter::nextObject();
     auto result = folly::coro::blockingWait(
         publisherInterface()->subscribe(std::move(sub), createMockConsumer()),
         exec_.get()
@@ -693,7 +687,7 @@ TEST_P(MoQRelayTest, ReplacedSubscribeOkLeavesCacheLargest) {
     SubscribeRequest sub;
     sub.fullTrackName = kTestTrackName;
     sub.requestID = RequestID(1);
-    sub.locType = LocationType::LargestObject;
+    sub.filter = LocationFilter::nextObject();
     auto result = folly::coro::blockingWait(
         publisherInterface()->subscribe(std::move(sub), createMockConsumer()),
         exec_.get()

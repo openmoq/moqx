@@ -248,6 +248,10 @@ public:
   folly::Expected<folly::Unit, moxygen::MoQPublishError> publishDone(moxygen::PublishDone pubDone
   ) override;
 
+  // Synchronous, so the caller must already be on the target executor.
+  folly::Expected<std::shared_ptr<moxygen::FetchConsumer>, moxygen::MoQPublishError>
+  beginFill(moxygen::RequestID requestID) override;
+
   uint64_t objectStreamErrors() const {
     return objectStreamErrors_.load(std::memory_order_relaxed);
   }

@@ -270,8 +270,8 @@ inline void serializeLogging(ConfigSink& s, const LoggingConfig& l) {
   s.endObject();
 }
 
-inline void serializeUpstream(ConfigSink& s, const UpstreamConfig& u) {
-  s.beginObject("upstream");
+inline void serializeUpstream(ConfigSink& s, const UpstreamConfig& u, std::string_view key) {
+  s.beginObject(key);
   s.stringField("url", u.url);
   s.beginObject("tls");
   s.boolField("insecure", u.tls.insecure);
@@ -283,6 +283,7 @@ inline void serializeUpstream(ConfigSink& s, const UpstreamConfig& u) {
   s.endObject();
   s.intField("connect_timeout_ms", u.connectTimeout.count());
   s.intField("idle_timeout_ms", u.idleTimeout.count());
+  s.uintField("relay_cost", u.relayCost);
   s.endObject();
 }
 
@@ -297,6 +298,12 @@ inline void serializeConfig(const Config& cfg, ConfigSink& s) {
   s.boolField("use_relay_thread", cfg.useRelayThread);
   s.boolField("use_local_forwarders", cfg.useLocalForwarders);
   s.boolField("mvfst_bpf_steering", cfg.mvfstBpfSteering);
+  s.beginObject("cluster");
+  s.boolField("enabled", cfg.cluster.has_value());
+  if (cfg.cluster) {
+    s.uintField("hop_id", cfg.cluster->hopID);
+  }
+  s.endObject();
 
   if (cfg.admin) {
     s.beginObject("admin");
@@ -342,8 +349,13 @@ inline void serializeConfig(const Config& cfg, ConfigSink& s) {
     serializeCache(s, svc.cache);
     serializeAuth(s, svc.auth);
     if (svc.upstream) {
-      serializeUpstream(s, *svc.upstream);
+      serializeUpstream(s, *svc.upstream, "upstream");
     }
+    s.beginArray("upstreams");
+    for (const auto& upstream : svc.upstreams) {
+      serializeUpstream(s, upstream, "");
+    }
+    s.endArray();
     s.endObject();
   }
   s.endObject();

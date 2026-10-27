@@ -25,6 +25,16 @@ void WeakRelayForwarderCallback::newGroupRequested(
   newGroupRequested(forwarder->fullTrackName(), group);
 }
 
+void WeakRelayForwarderCallback::fillRequested(
+    moxygen::MoQForwarder* forwarder,
+    std::shared_ptr<moxygen::TrackConsumer> consumer,
+    moxygen::Fetch fetch
+) {
+  if (auto r = relay_.lock()) {
+    r->fillRequested(forwarder, std::move(consumer), std::move(fetch));
+  }
+}
+
 void WeakRelayForwarderCallback::onEmpty(const moxygen::FullTrackName& ftn) {
   if (auto r = relay_.lock()) {
     r->onEmptyImpl(ftn);

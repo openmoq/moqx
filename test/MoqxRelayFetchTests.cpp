@@ -23,6 +23,54 @@ void failUpstreamFetches(MockMoQSession& session, std::atomic<bool>& fetched) {
     ));
   });
 }
+
+// Answers the upstream SUBSCRIBE with `largest`.
+void answerUpstreamSubscribe(MockMoQSession& session, AbsoluteLocation largest) {
+  SubscribeOk ok;
+  ok.requestID = RequestID(1);
+  ok.trackAlias = TrackAlias(1);
+  ok.expires = std::chrono::milliseconds(0);
+  ok.groupOrder = GroupOrder::OldestFirst;
+  ok.largest = largest;
+  EXPECT_CALL(session, subscribe(_, _)).WillOnce([ok](const auto& /*req*/, auto /*consumer*/) {
+    return folly::coro::makeTask<Publisher::SubscribeResult>(
+        folly::Expected<std::shared_ptr<SubscriptionHandle>, SubscribeError>(
+            std::make_shared<NiceMock<MockSubscriptionHandle>>(ok)
+        )
+    );
+  });
+}
+
+// Records the upstream FETCH into `captured` and ends it at once.
+void answerUpstreamFetch(MockMoQSession& session, std::shared_ptr<Fetch> captured) {
+  EXPECT_CALL(session, fetch(_, _))
+      .WillOnce([captured](Fetch f, std::shared_ptr<FetchConsumer> consumer) {
+        *captured = std::move(f);
+        consumer->endOfFetch();
+        return folly::coro::makeTask<Publisher::FetchResult>(std::make_shared<MockFetchHandle>(
+            FetchOk{RequestID(0), GroupOrder::OldestFirst, 0, AbsoluteLocation{5, 0}, {}}
+        ));
+      });
+}
+
+// Accepts one fill for `requestID` on `consumer` and sets `ended` when the fill ends.
+void acceptFill(MockTrackConsumer& consumer, RequestID requestID, std::atomic<bool>& ended) {
+  auto fill = std::make_shared<NiceMock<MockFetchConsumer>>();
+  EXPECT_CALL(*fill, endOfFetch()).WillOnce([&ended]() {
+    ended.store(true);
+    return folly::makeExpected<MoQPublishError>(folly::unit);
+  });
+  EXPECT_CALL(consumer, beginFill(requestID))
+      .WillOnce(Return(
+          folly::makeExpected<MoQPublishError>(std::shared_ptr<FetchConsumer>(std::move(fill)))
+      ));
+}
+
+FillParameters fillFrom(AbsoluteLocation start) {
+  FillParameters fill;
+  fill.locationFilter = LocationFilter::absoluteStart(start);
+  return fill;
+}
 } // namespace
 
 // Test: FETCH with an empty namespace is rejected pre-draft-18.
@@ -258,9 +306,7 @@ TEST_P(MoQRelayTest, JoiningFetchAgainstPublish) {
                   /*forward=*/true,
                   0,
                   GroupOrder::OldestFirst,
-                  LocationType::LargestObject,
-                  std::nullopt,
-                  std::nullopt
+                  LocationFilter::nextObject()
               };
             }()
         });
@@ -400,7 +446,7 @@ TEST_P(MoQRelayTest, JoiningFetchWaitsForItsSubscribeSetup) {
     SubscribeRequest sub;
     sub.fullTrackName = kTestTrackName;
     sub.requestID = RequestID(0);
-    sub.locType = LocationType::LargestObject;
+    sub.filter = LocationFilter::nextObject();
     auto subTask = publisherInterface()->subscribe(std::move(sub), createMockConsumer());
     co_withExecutor(
         static_cast<folly::DrivableExecutor*>(exec_.get()),
@@ -603,6 +649,107 @@ TEST_P(MoQRelayTest, JoiningFetchForWrongRequestFails) {
   EXPECT_FALSE(upstreamFetched.load()) << "the joining fetch went upstream unresolved";
 
   handle->unsubscribe();
+  removeSession(publisherSession);
+  removeSession(subSession);
+  driveIfMultiThread();
+}
+
+// A draft 20 SUBSCRIBE's fill opens on the subscriber's consumer and is served by an
+// upstream FETCH that ends at upstream's Largest Object.
+TEST_P(MoQRelayTest, SubscribeFillFetchesUpstreamThroughLargest) {
+  auto publisherSession = createMockSession();
+  auto subSession = createMockSession(kVersionDraft20);
+  doPublishNamespace(publisherSession, kTestNamespace);
+  answerUpstreamSubscribe(*publisherSession, AbsoluteLocation{5, 0});
+  auto upstreamFetch = std::make_shared<Fetch>();
+  answerUpstreamFetch(*publisherSession, upstreamFetch);
+
+  auto consumer = createMockConsumer();
+  std::atomic<bool> fillEnded{false};
+  acceptFill(*consumer, RequestID(1), fillEnded);
+
+  auto sub = makeSubscribeRequest(RequestID(1));
+  sub.fill = fillFrom({3, 0});
+  auto pending = startSubscribe(sessionExec(), subSession, std::move(sub), consumer);
+  ASSERT_TRUE(driveUntil([&] { return pending.ready(); }));
+  getOrCreateMockState(subSession)->subscribeHandles.push_back(pending.handle());
+
+  ASSERT_TRUE(driveUntil([&] { return fillEnded.load(); })) << "the fill did not end";
+  auto [standalone, joining] = fetchType(*upstreamFetch);
+  ASSERT_NE(standalone, nullptr);
+  EXPECT_EQ(standalone->start, (AbsoluteLocation{3, 0}));
+  EXPECT_EQ(standalone->end, (AbsoluteLocation{5, 1}));
+
+  removeSession(publisherSession);
+  removeSession(subSession);
+  driveIfMultiThread();
+}
+
+// A subscriber that joins an existing subscription gets its fill too.
+TEST_P(MoQRelayTest, JoiningSubscriberFillFetchesUpstream) {
+  auto publisherSession = createMockSession();
+  auto firstSession = createMockSession(kVersionDraft20);
+  auto secondSession = createMockSession(kVersionDraft20);
+  doPublishNamespace(publisherSession, kTestNamespace);
+  answerUpstreamSubscribe(*publisherSession, AbsoluteLocation{5, 0});
+  auto upstreamFetch = std::make_shared<Fetch>();
+  answerUpstreamFetch(*publisherSession, upstreamFetch);
+
+  ASSERT_NE(
+      subscribeToTrack(firstSession, kTestTrackName, createMockConsumer(), RequestID(1)),
+      nullptr
+  );
+
+  auto consumer = createMockConsumer();
+  std::atomic<bool> fillEnded{false};
+  acceptFill(*consumer, RequestID(2), fillEnded);
+  auto sub = makeSubscribeRequest(RequestID(2));
+  sub.fill = fillFrom({4, 0});
+  auto pending = startSubscribe(sessionExec(), secondSession, std::move(sub), consumer);
+  ASSERT_TRUE(driveUntil([&] { return pending.ready(); }));
+  getOrCreateMockState(secondSession)->subscribeHandles.push_back(pending.handle());
+
+  ASSERT_TRUE(driveUntil([&] { return fillEnded.load(); })) << "the fill did not end";
+  auto [standalone, joining] = fetchType(*upstreamFetch);
+  ASSERT_NE(standalone, nullptr);
+  EXPECT_EQ(standalone->start, (AbsoluteLocation{4, 0}));
+
+  removeSession(publisherSession);
+  removeSession(firstSession);
+  removeSession(secondSession);
+  driveIfMultiThread();
+}
+
+// A fill requested by REQUEST_UPDATE opens under the update's request ID.
+TEST_P(MoQRelayTest, RequestUpdateFillFetchesUpstream) {
+  auto publisherSession = createMockSession();
+  auto subSession = createMockSession(kVersionDraft20);
+  doPublishNamespace(publisherSession, kTestNamespace);
+  answerUpstreamSubscribe(*publisherSession, AbsoluteLocation{5, 0});
+  auto upstreamFetch = std::make_shared<Fetch>();
+  answerUpstreamFetch(*publisherSession, upstreamFetch);
+
+  auto consumer = createMockConsumer();
+  auto handle = subscribeToTrack(subSession, kTestTrackName, consumer, RequestID(1));
+  ASSERT_NE(handle, nullptr);
+
+  std::atomic<bool> fillEnded{false};
+  acceptFill(*consumer, RequestID(3), fillEnded);
+  RequestUpdate update;
+  update.requestID = RequestID(3);
+  update.existingRequestID = RequestID(1);
+  update.fill = fillFrom({2, 0});
+  withSessionContext(subSession, [&]() {
+    auto res = folly::coro::blockingWait(handle->requestUpdate(std::move(update)), exec_.get());
+    EXPECT_TRUE(res.hasValue());
+  });
+
+  ASSERT_TRUE(driveUntil([&] { return fillEnded.load(); })) << "the fill did not end";
+  auto [standalone, joining] = fetchType(*upstreamFetch);
+  ASSERT_NE(standalone, nullptr);
+  EXPECT_EQ(standalone->start, (AbsoluteLocation{2, 0}));
+  EXPECT_EQ(standalone->end, (AbsoluteLocation{5, 1}));
+
   removeSession(publisherSession);
   removeSession(subSession);
   driveIfMultiThread();

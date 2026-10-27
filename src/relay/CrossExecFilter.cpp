@@ -213,6 +213,17 @@ std::shared_ptr<CrossExecFilter> CrossExecFilter::create(
   );
 }
 
+folly::Expected<std::shared_ptr<moxygen::FetchConsumer>, moxygen::MoQPublishError>
+CrossExecFilter::beginFill(moxygen::RequestID requestID) {
+  if (auto err = loadDeferredError()) {
+    return folly::makeUnexpected(*err);
+  }
+  if (!downstream_) {
+    return folly::makeUnexpected(moxygen::MoQPublishError(moxygen::MoQPublishError::WRITE_ERROR));
+  }
+  return downstream_->beginFill(requestID);
+}
+
 folly::Expected<folly::Unit, moxygen::MoQPublishError>
 CrossExecFilter::setTrackAlias(moxygen::TrackAlias alias) {
   if (auto err = loadDeferredError()) {

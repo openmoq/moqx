@@ -20,7 +20,6 @@
 #   --ramp N              Subscribers/sec (default: 100)
 #   --duration N          Test duration seconds (default: 120)
 #   --io-threads N        Relay IO threads (default: 4)
-#   --local-forwarders    Per-IO-thread local forwarders on the relay (default: off)
 #   --client-threads N    Client threads (default: 4)
 #   --quic-stack STACK    Relay QUIC stack: mvfst|picoquic (default: mvfst)
 #   --profile NAME        Workload profile (default: 1mbps)
@@ -56,7 +55,6 @@ SUBSCRIBER_MAX=1000
 RAMP=100
 DURATION=120
 IO_THREADS=4
-LOCAL_FWD_FLAG="--no-local-forwarders"
 CLIENT_THREADS=4
 DELIVERY_TIMEOUT=500
 TRANSPORT="quic"
@@ -89,7 +87,6 @@ while [[ $# -gt 0 ]]; do
     --ramp)            RAMP="$2";            shift 2 ;;
     --duration)        DURATION="$2";        shift 2 ;;
     --io-threads)      IO_THREADS="$2";      shift 2 ;;
-    --local-forwarders) LOCAL_FWD_FLAG="--local-forwarders"; shift ;;
     --client-threads)  CLIENT_THREADS="$2";  shift 2 ;;
     --client-args)     read -ra CLIENT_EXTRA_ARGS <<< "$2"; shift 2 ;;
     --delivery-timeout) DELIVERY_TIMEOUT="$2"; shift 2 ;;
@@ -201,7 +198,6 @@ echo "  Client VM:    $CLIENT_HOST"
 echo "  Subscribers:  $SUBSCRIBER_MAX (ramp $RAMP/s)"
 echo "  Duration:     ${DURATION}s"
 echo "  IO threads:   $IO_THREADS"
-echo "  Forwarders:   $LOCAL_FWD_FLAG"
 echo "  Transport:    $TRANSPORT"
 echo "  QUIC stack:   $QUIC_STACK (cc $CC)"
 echo "  Profile:      $PROFILE (CPU calibration target ${TARGET_CPU_PCT}%, nominal ${PROFILE_RATE_MBPS} Mbps/subscriber)"
@@ -293,7 +289,7 @@ ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "
       --threads    ${IO_THREADS} \
       --quic-stack ${QUIC_STACK} \
       --cc         ${CC} \
-      --relay-thread ${LOCAL_FWD_FLAG} \
+      --relay-thread --local-forwarders -j auto \
       > ${REMOTE_DIR}/relay.log 2>&1 &
   echo \$!
 " > /tmp/relay_pid.txt

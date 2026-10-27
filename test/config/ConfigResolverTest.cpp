@@ -1465,6 +1465,37 @@ TEST(ResolveConfig, UpstreamAbsent) {
   EXPECT_FALSE(result.value().config.services.at("default").upstream.has_value());
 }
 
+TEST(ResolveConfig, UpstreamsResolveInOrderWithRelayCost) {
+  auto cfg = makeMinimalInsecureConfig();
+  auto free = makeUpstreamConfig("moqt://a:4433/");
+  free.relay_cost = uint64_t{0};
+  cfg.services.value().at("default").upstreams =
+      std::vector<ParsedUpstreamConfig>{free, makeUpstreamConfig("moqt://b:4433/")};
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  const auto& svc = result.value().config.services.at("default");
+  EXPECT_FALSE(svc.upstream.has_value());
+  ASSERT_EQ(svc.upstreams.size(), 2u);
+  EXPECT_EQ(svc.upstreams[0].url, "moqt://a:4433/");
+  EXPECT_EQ(svc.upstreams[0].relayCost, 0u);
+  EXPECT_EQ(svc.upstreams[1].relayCost, 1u);
+}
+
+TEST(ResolveConfig, UpstreamAndUpstreamsAreExclusive) {
+  auto cfg = makeMinimalInsecureConfig();
+  setServiceUpstream(cfg, makeUpstreamConfig());
+  cfg.services.value().at("default").upstreams =
+      std::vector<ParsedUpstreamConfig>{makeUpstreamConfig()};
+  EXPECT_TRUE(resolveConfig(cfg).hasError());
+}
+
+TEST(ResolveConfig, UpstreamsEntryIsValidated) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().at("default").upstreams =
+      std::vector<ParsedUpstreamConfig>{makeUpstreamConfig("")};
+  EXPECT_TRUE(resolveConfig(cfg).hasError());
+}
+
 TEST(ResolveConfig, UpstreamInsecureFalseNoCA) {
   auto cfg = makeMinimalInsecureConfig();
   setServiceUpstream(cfg, makeUpstreamConfig());
@@ -1526,6 +1557,52 @@ TEST(ResolveConfig, RelayIDExplicitPreserved) {
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasValue());
   EXPECT_EQ(result.value().config.relayID, "my-relay-1");
+}
+
+// --- cluster tests ---
+
+TEST(ResolveConfig, ClusterAbsentEnablesWithRandomHopID) {
+  auto cfg = makeMinimalInsecureConfig();
+  auto r1 = resolveConfig(cfg);
+  auto r2 = resolveConfig(cfg);
+  ASSERT_TRUE(r1.hasValue());
+  ASSERT_TRUE(r2.hasValue());
+  ASSERT_TRUE(r1.value().config.cluster && r2.value().config.cluster);
+  EXPECT_NE(r1.value().config.cluster->hopID, 0);
+  EXPECT_NE(r1.value().config.cluster->hopID, r2.value().config.cluster->hopID);
+}
+
+TEST(ResolveConfig, ClusterHopIDZeroStaysAnonymous) {
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedClusterConfig cluster;
+  cluster.hop_id = uint64_t{0};
+  cfg.cluster = cluster;
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  ASSERT_TRUE(result.value().config.cluster);
+  EXPECT_EQ(result.value().config.cluster->hopID, 0);
+}
+
+TEST(ResolveConfig, ClusterHopIDPreserved) {
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedClusterConfig cluster;
+  cluster.hop_id = uint64_t{1001};
+  cfg.cluster = cluster;
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  ASSERT_TRUE(result.value().config.cluster);
+  EXPECT_EQ(result.value().config.cluster->hopID, 1001);
+}
+
+TEST(ResolveConfig, ClusterDisabledResolvesUnset) {
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedClusterConfig cluster;
+  cluster.enabled = false;
+  cluster.hop_id = uint64_t{1001};
+  cfg.cluster = cluster;
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  EXPECT_FALSE(result.value().config.cluster);
 }
 
 // --- threads tests ---

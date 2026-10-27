@@ -168,7 +168,8 @@ int main(int argc, char* argv[]) {
       config.services,
       config.relayID,
       config.useRelayThread,
-      config.useLocalForwarders
+      config.useLocalForwarders,
+      config.cluster
   );
 
   // === 6a. Stats registry ===
@@ -235,11 +236,21 @@ int main(int argc, char* argv[]) {
     XLOG(INFO) << "Admin server listening on " << config.admin->address.describe();
   }
 
+  // Listeners and admin are already up, so a failure here skips the loop and
+  // takes the normal teardown path instead of returning early.
+  int exitCode = 0;
   if (!servers.empty()) {
-    context->initUpstreams(ioExecutor->getAllEventBases()[0].get());
+    try {
+      context->initUpstreams(ioExecutor->getAllEventBases()[0].get());
+    } catch (const std::exception& e) {
+      std::cerr << "Error: failed to initialize upstreams: " << e.what() << "\n";
+      exitCode = 1;
+    }
   }
 
-  evb.loopForever();
+  if (exitCode == 0) {
+    evb.loopForever();
+  }
 
   // Hard shutdown watchdog: if teardown hangs, force-exit after 10 seconds.
   std::thread([relayID = config.relayID] {
@@ -298,5 +309,5 @@ int main(int argc, char* argv[]) {
   }
 
   // === 14. Exit with appropriate code ===
-  return 0;
+  return exitCode;
 }

@@ -300,6 +300,13 @@ moqx_add_dual_stack_test(relay_pyramid
   ENVIRONMENT "MOQBIN=${MOXYGEN_BIN_DIR}"
 )
 
+moqx_add_dual_stack_test(relay_upstreams
+  COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/test_relay_upstreams.py $<TARGET_FILE:moqx>
+  TIMEOUT 90
+  MOQT_VERSIONS 16 18
+  ENVIRONMENT "MOQBIN=${MOXYGEN_BIN_DIR}"
+)
+
 # QMUX is a TCP transport, not a QUIC stack, so this one sweeps drafts only.
 foreach(version 16 18)
   set(test_name qmux_relay)
@@ -359,6 +366,10 @@ moqx_add_gtest(moqx_upstream_provider_test
     moxygen::moxygen_events_moq_folly_executor_impl
     moxygen::moxygen_moqclient
     GTest::gmock
+)
+target_compile_definitions(moqx_upstream_provider_test PRIVATE
+  TEST_CERT_PATH="${CMAKE_CURRENT_SOURCE_DIR}/test_cert.pem"
+  TEST_KEY_PATH="${CMAKE_CURRENT_SOURCE_DIR}/test_key.pem"
 )
 
 moqx_add_gtest(moqx_subscription_registry_test

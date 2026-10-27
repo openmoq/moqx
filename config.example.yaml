@@ -67,6 +67,11 @@ services:
     #   tls:
     #     insecure: false         # true = skip cert verification (dev only)
     #     # ca_cert: /path/to/ca.pem  # Custom CA cert (mutually exclusive with insecure: true)
+    #   relay_cost: 1             # MoQ Cluster RELAY_COST on this link (default: 1; 0 is free)
+    # upstreams:                  # Optional: several upstreams instead of upstream
+    #   - url: "moqt://peer-a.example.com:4433/moq-relay"
+    #     relay_cost: 0
+    #   - url: "moqt://peer-b.example.com:4433/moq-relay"
     # auth:                       # Optional: enable CAT-style authorization for this service
     #   enabled: true             # Turn auth on for this service (default: false)
     #   token_type: 16            # MOQT AUTHORIZATION_TOKEN type for CAT4MOQ/moqxr; 0 is valid for private deployments
@@ -112,6 +117,10 @@ logging:                    # Logging configuration (optional)
     sample_rate: 1.0       # Fraction of connections to log (0.0–1.0, default: 0.0; mvfst only)
 
 # relay_id: "my-relay-1"     # Relay identity (optional; random hex string generated if absent)
+
+# cluster:                    # MoQ Cluster on draft 18+ relay links (optional)
+#   enabled: true             # false: no loop detection; see docs/config.md#cluster (default: true)
+#   hop_id: 1001              # Hop ID (random if absent; 0 is anonymous)
 
 # listener_defaults:          # Default settings inherited by all listeners
 #   quic:                     # QUIC transport tunables (optional; uses sensible defaults)

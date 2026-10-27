@@ -22,6 +22,9 @@ moqx --config <path> --strict_config    # reject unknown fields,
 relay_id: "my-relay"       # optional; auto-generated if absent
 threads: 1                 # optional; default 1 (only 1 currently supported)
 
+cluster:                   # optional; MoQ Cluster negotiation and Hop ID
+  { ... }
+
 listener_defaults:         # optional; QUIC defaults inherited by all listeners
   quic: { ... }
 
@@ -179,7 +182,7 @@ services:
 | `hmac_keys` | empty | Required when `enabled: true`. Each key needs a non-empty `id` and `secret`; duplicate key IDs are rejected. The token issuer must use the same key ID and secret. |
 | `require_setup_token` | `true` | Requires a valid setup token authorizing `client_setup` during session setup. If `false`, clients can connect without setup grants; per-request actions still need an authorized token or a matching `anonymous_claim` entry. |
 | `allow_request_token_override` | `true` | Lets a token on a request count as one more candidate grant for that request, alongside the session's setup-token grants and `anonymous_claim`. If `false`, request tokens are ignored and authorization uses only the setup token grants and `anonymous_claim`. |
-| `strict_claims` | `false` | Rejects unsupported claims when `true`. Keep this `false` for current CAT4MOQ interop unless every issuer is known to send only supported claims. |
+| `strict_claims` | `false` | When `true`, rejects a token that carries any claim other than `exp` and `moqt`, the claims the relay enforces. It also rejects a repeated claim and an `exp` that is not an unsigned integer. The relay does not enforce `moqt-reval`, so a token that carries it is rejected. Keep this `false` for current CAT4MOQ interop unless every issuer is known to send only supported claims. |
 | `max_tokens_per_message` | none | Required when `enabled: true`, directly or via `service_defaults.auth.max_tokens_per_message`. Caps how many `AUTHORIZATION_TOKEN` params of the configured `token_type` a single SETUP or request message may carry; a message over the cap is rejected outright, not truncated. Params of other token types are not counted. Bounds per-message verification cost against a client attaching many tokens to one message. Must be >= 1. |
 | `anonymous_claim` | empty | Statically-granted scopes applied to every request on this service, regardless of what token (if any) authenticated it. See [Anonymous Claim](#anonymous-claim) below. |
 
@@ -393,11 +396,27 @@ services:
       idle_timeout_ms: 5000          # optional; default 5000
 ```
 
+To peer with several relays, list them under `upstreams` instead. Each entry
+takes the same fields as `upstream`, and a service cannot set both:
+
+```yaml
+    upstreams:
+      - url: moqt://hub-a.example.com:4433/moq-relay
+        relay_cost: 0                # optional; default 1
+      - url: moqt://hub-b.example.com:4433/moq-relay
+```
+
+**`relay_cost`** is the MoQ Cluster `RELAY_COST` that this relay declares on
+the link. It prices what this relay sends to that upstream: 0 makes the link
+free, and the default 1 ranks routes by hop count. It is only sent when
+[`cluster`](#cluster) is enabled.
+
 **`tls.insecure: true`** skips certificate verification. It cannot be
 combined with `ca_cert`.
 
-**`ca_cert`** pins a custom CA certificate. Omit to use the system trust
-store.
+**`ca_cert`** pins a custom CA certificate, a PEM file. The upstream's
+certificate must chain to it and match the URL's host. The relay does not
+start if the file cannot be loaded. Omit to use the system trust store.
 
 ### Relay Architectures
 
@@ -428,30 +447,58 @@ Publishers and subscribers can connect to any relay. Subscriptions are forwarded
 up toward the root as needed, and data flows back down to wherever subscribers
 are.
 
-MoQ Cluster negotiation is automatic between supporting moqx peers and requires
-no YAML setting. An advertisement from a non-negotiated session gets the
-anonymous path `[0]`. When it next crosses a negotiated relay link, the outgoing
-path is `[0, local-relay]`. A non-negotiated subscriber receives NAMESPACE
-without HOP_PATH or ROUTE_COST.
+MoQ Cluster negotiation is automatic between supporting moqx peers. The optional
+[`cluster`](#cluster) block can disable it or set the Hop ID. An advertisement
+from a non-negotiated session gets the anonymous path `[0]`. When it next
+crosses a negotiated relay link, the outgoing path is `[0, local-relay]`. A
+non-negotiated subscriber receives NAMESPACE without HOP_PATH or ROUTE_COST.
 
 Loop prevention is only end-to-end across links that negotiated MoQ Cluster.
 Keep any graph segment containing a relay without MoQ Cluster acyclic, because
 that relay cannot preserve the path needed to recognize a returning
 advertisement.
 
+### Cluster
+
+```yaml
+cluster:
+  enabled: true   # optional; default true
+  hop_id: 1001    # optional; random if absent, 0 is anonymous
+```
+
+With `enabled: false`, listeners and upstream connections do not declare
+`HOP_ID`, so no link negotiates MoQ Cluster. This lets the relay peer with a
+relay or relay network that does not support MoQ Cluster, or that implements an
+incompatible version of it. A negotiated link closes the session on a malformed
+`HOP_PATH`, so an incompatible peer otherwise cannot stay connected.
+
+Disabling MoQ Cluster leaves loop prevention to the operator:
+
+- Neither this relay nor its peers can detect an advertisement that returns
+  through it. Keep the part of the graph that contains this relay a tree. Relays
+  peer in both directions, so two paths between any pair of relays form a
+  cycle.
+- Peers see this relay's advertisements as anonymous, without its path or
+  ROUTE_COST, so they cannot rank routes through it.
+
+The Hop ID applies to every service, and each relay needs its own. Two relays
+with the same `hop_id` drop each other's advertisements as loops, so they cannot
+peer. A relay with Hop ID 0 withholds its identity and cannot detect loops
+through itself. See [moq-cluster.md](moq-cluster.md).
+
 ### Limitations
 
-- **Single upstream per service.** Each service can have at most one
-upstream. Multiple upstreams, failover, or load balancing across upstreams are
-not currently supported.
+- **Upstreams are not ranked yet.** When two upstreams advertise the same
+namespace, the later advertisement replaces the earlier one. Failover and load
+balancing across upstreams are not currently supported.
 - **Cycles need MoQ Cluster on every relay.** Negotiated moqx peers detect
 returning namespace advertisements, but a relay without MoQ Cluster cannot carry
 the hop path through the graph.
 - **No upstream authentication.** Upstreams are connected without any
 application-level credential exchange beyond TLS.
-- **Upstream connection is per-service, not per-track.** A single upstream
-session is shared for all tracks within a service; there is no per-track
-upstream routing.
+- **Upstreams are chosen by namespace, not per track.** A track routes to the
+upstream session that advertised its namespace. The configuration does not
+route individual tracks.
 
 ---
 

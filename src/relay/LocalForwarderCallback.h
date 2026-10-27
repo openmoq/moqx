@@ -8,6 +8,7 @@
 
 #include "relay/LocalForwarderRegistry.h"
 
+#include <functional>
 #include <memory>
 #include <moxygen/relay/MoQForwarder.h>
 
@@ -60,11 +61,26 @@ public:
     downstream_->newGroupRequested(forwarder, group);
   }
 
+  using FillHandler = std::function<void(std::shared_ptr<moxygen::TrackConsumer>, moxygen::Fetch)>;
+  void setFillHandler(FillHandler fillHandler) { fillHandler_ = std::move(fillHandler); }
+
+  // Serves inline: beginFill has to run on this executor, and downstream_ runs on another.
+  void fillRequested(
+      moxygen::MoQForwarder* /*forwarder*/,
+      std::shared_ptr<moxygen::TrackConsumer> consumer,
+      moxygen::Fetch fetch
+  ) override {
+    if (fillHandler_) {
+      fillHandler_(std::move(consumer), std::move(fetch));
+    }
+  }
+
 private:
   LocalForwarderRegistry* localReg_;
   moxygen::FullTrackName ftn_;
   std::shared_ptr<moxygen::MoQForwarder::Callback> downstream_;
   bool removeOnEmpty_;
+  FillHandler fillHandler_;
 };
 
 } // namespace openmoq::moqx

@@ -236,4 +236,22 @@ TEST_F(MoqxRelayContextTest, PurgeCache_TwoServicesRequireName) {
   EXPECT_EQ(*named, 0u);
 }
 
+// --- upstreams ---
+
+TEST_F(MoqxRelayContextTest, UnreadableUpstreamCACertFailsStartup) {
+  auto svc = makeService("a.example.com");
+  svc.upstream = config::UpstreamConfig{
+      .url = "moqt://origin.example.com:4433/",
+      .tls = config::UpstreamTlsConfig{.caCertFile = "/nonexistent/ca.pem"},
+  };
+  MoqxRelayContext ctx({{"svc-a", svc}}, "test-relay");
+  folly::ScopedEventBaseThread worker;
+  EXPECT_THAT(
+      [&] { ctx.initUpstreams(worker.getEventBase()); },
+      testing::ThrowsMessage<std::runtime_error>(
+          testing::HasSubstr("upstream.tls.ca_cert: cannot load /nonexistent/ca.pem")
+      )
+  );
+}
+
 } // namespace

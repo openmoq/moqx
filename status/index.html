@@ -113,6 +113,18 @@
 
 <div id="overview-grid" class="grid" hidden>
   <div class="card">
+    <h3>1 Mbps · Relay CPU (%)</h3>
+    <canvas id="chart-overview-cpu-1mbps"></canvas>
+  </div>
+  <div class="card">
+    <h3>4 Mbps · Relay CPU (%)</h3>
+    <canvas id="chart-overview-cpu-4mbps"></canvas>
+  </div>
+  <div class="card">
+    <h3>16 Mbps · Relay CPU (%)</h3>
+    <canvas id="chart-overview-cpu-16mbps"></canvas>
+  </div>
+  <div class="card">
     <h3>1 Mbps · Throughput per Core</h3>
     <canvas id="chart-overview-1mbps"></canvas>
   </div>
@@ -125,28 +137,28 @@
     <canvas id="chart-overview-16mbps"></canvas>
   </div>
   <div class="card">
-    <h3>1 Mbps · Throughput</h3>
-    <canvas id="chart-overview-throughput-1mbps"></canvas>
+    <h3>1 Mbps · Average latency (ms)</h3>
+    <canvas id="chart-overview-latency-1mbps"></canvas>
   </div>
   <div class="card">
-    <h3>4 Mbps · Throughput</h3>
-    <canvas id="chart-overview-throughput-4mbps"></canvas>
+    <h3>4 Mbps · Average latency (ms)</h3>
+    <canvas id="chart-overview-latency-4mbps"></canvas>
   </div>
   <div class="card">
-    <h3>16 Mbps · Throughput</h3>
-    <canvas id="chart-overview-throughput-16mbps"></canvas>
+    <h3>16 Mbps · Average latency (ms)</h3>
+    <canvas id="chart-overview-latency-16mbps"></canvas>
   </div>
   <div class="card">
-    <h3>1 Mbps · Relay CPU</h3>
-    <canvas id="chart-overview-cpu-1mbps"></canvas>
+    <h3>1 Mbps · RSS per session (KB)</h3>
+    <canvas id="chart-overview-rss-session-1mbps"></canvas>
   </div>
   <div class="card">
-    <h3>4 Mbps · Relay CPU</h3>
-    <canvas id="chart-overview-cpu-4mbps"></canvas>
+    <h3>4 Mbps · RSS per session (KB)</h3>
+    <canvas id="chart-overview-rss-session-4mbps"></canvas>
   </div>
   <div class="card">
-    <h3>16 Mbps · Relay CPU</h3>
-    <canvas id="chart-overview-cpu-16mbps"></canvas>
+    <h3>16 Mbps · RSS per session (KB)</h3>
+    <canvas id="chart-overview-rss-session-16mbps"></canvas>
   </div>
 </div>
 
@@ -383,9 +395,10 @@ function renderDashboard() {
   if (overview) {
     renderOverviewSummary(data);
     for (const [suffix, metric] of [
-      ['', 'throughput_per_core_mbps'],
-      ['-throughput', 'throughput_mbps'],
       ['-cpu', 'relay_cpu_pct'],
+      ['', 'throughput_per_core_mbps'],
+      ['-latency', 'avg_latency_ms'],
+      ['-rss-session', 'rss_per_session_kb'],
     ]) {
       for (const profile of PROFILE_IDS) {
         renderComparisonChart(`chart-overview${suffix}-${profile}`, getComparisonData(profile), metric);
@@ -461,9 +474,10 @@ function renderOverviewSummary(branchData) {
   const container = document.getElementById('summary');
   container.className = 'summary overview-summary';
   const metrics = [
-    ['throughput_per_core_mbps', 'TP/core', 'Mbps', true],
-    ['throughput_mbps', 'Throughput', 'Mbps', true],
     ['relay_cpu_pct', 'Relay CPU', '%', false],
+    ['throughput_per_core_mbps', 'TP/core', 'Mbps', true],
+    ['avg_latency_ms', 'Average latency', 'ms', false],
+    ['rss_per_session_kb', 'RSS per session', 'KB', false],
   ];
   const latestRunsByProfile = new Map(PROFILE_IDS.map(profile => [
     profile,

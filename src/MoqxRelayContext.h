@@ -32,6 +32,10 @@
 
 namespace openmoq::moqx {
 
+// Returns nullptr to use the system CAs. Throws if tls.ca_cert cannot be loaded.
+std::shared_ptr<fizz::CertificateVerifier> makeUpstreamVerifier(const config::UpstreamTlsConfig& tls
+);
+
 // Visitor interface for the top-level relay context state dump.
 // onServiceBegin returns the RelayStateVisitor to use for that service's relay.
 class RelayContextVisitor {
@@ -40,8 +44,14 @@ public:
   virtual void onRelayBegin(std::string_view relayID, int64_t activeSessions) = 0;
   // Called before relay->dumpState(). Returns the visitor to pass into dumpState.
   virtual RelayStateVisitor& onServiceBegin(std::string_view name) = 0;
+  struct UpstreamState {
+    std::string url;
+    std::string state;
+  };
   // Called after relay->dumpState() if an upstream is configured for this service.
   virtual void onServiceUpstream(std::string_view url, std::string_view state) = 0;
+  // As onServiceUpstream, for a service configured with an upstreams list.
+  virtual void onServiceUpstreams(const std::vector<UpstreamState>& upstreams) = 0;
   virtual void onServiceEnd() = 0;
   virtual void onRelayEnd() = 0;
   // Checked between services so a consumer that has gone away stops the walk
@@ -66,12 +76,15 @@ public:
       const std::string& relayID,
       bool useRelayThread = true,
       bool useLocalForwarders = false,
-      uint64_t relayHopID = 0
+      std::optional<config::ClusterConfig> cluster = config::ClusterConfig{}
   );
 
   void setStatsRegistry(std::shared_ptr<stats::StatsRegistry> registry);
 
-  uint64_t getRelayHopID() const { return relayHopID_; }
+  // The HOP_ID to declare in SETUP. Unset when MoQ Cluster is disabled.
+  std::optional<uint64_t> getRelayHopID() const {
+    return cluster_ ? std::optional<uint64_t>(cluster_->hopID) : std::nullopt;
+  }
 
   // Must be called once, after all MoqxRelayServer instances have been started,
   // so that worker EVBs are available. workerEvb is used for upstream connections.
@@ -151,6 +164,12 @@ public:
   );
 
 private:
+  void startUpstream(
+      ServiceEntry& entry,
+      const config::UpstreamConfig& cfg,
+      const std::shared_ptr<moxygen::MoQFollyExecutorImpl>& workerExec
+  );
+
   // When use_relay_thread=true: one dedicated thread per service, each with its
   // own executor, isolating relay state from I/O threads.  Null when disabled.
   // Each relay owns its MoQFollyExecutorImpl; the pool just keeps threads alive.
@@ -159,7 +178,7 @@ private:
   folly::F14FastMap<std::string, ServiceEntry> services_;
   ServiceMatcher serviceMatcher_;
   std::string relayID_;
-  uint64_t relayHopID_;
+  std::optional<config::ClusterConfig> cluster_;
   std::shared_ptr<stats::StatsRegistry> statsRegistry_;
   // One collector per io thread; tlStatsCollector_ binds each to its own thread.
   std::vector<std::shared_ptr<stats::MoQStatsCollector>> statsCollectors_;

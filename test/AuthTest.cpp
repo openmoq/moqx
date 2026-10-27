@@ -6,7 +6,11 @@
 
 #include "auth/Auth.h"
 #include "auth/AuthTokenIssuer.h"
+#include "auth/HmacKey.h"
 
+#include <catapult/crypto.hpp>
+#include <catapult/cwt.hpp>
+#include <folly/String.h>
 #include <folly/portability/GTest.h>
 
 using namespace openmoq::moqx;
@@ -60,6 +64,43 @@ makeToken(Grants grants, std::string_view secret = "secret", std::string_view ke
       .tokenValue = signGrants(keyID, secret, grants),
       .alias = AuthToken::DontRegister,
   };
+}
+
+std::vector<uint8_t> cborBytes(const std::vector<uint8_t>& data) {
+  std::vector<uint8_t> out;
+  if (data.size() < 24) {
+    out.push_back(static_cast<uint8_t>(0x40 | data.size()));
+  } else {
+    out.push_back(0x58);
+    out.push_back(static_cast<uint8_t>(data.size()));
+  }
+  out.insert(out.end(), data.begin(), data.end());
+  return out;
+}
+
+// Builds a COSE_Mac0 token from a hex claims map, so that a test can send any claim value.
+AuthToken makeRawCwt(std::string_view claimsHex) {
+  const std::vector<uint8_t> header{0xa1, 0x01, static_cast<uint8_t>(catapult::ALG_HMAC256_256)};
+  const auto claims = folly::unhexlify(claimsHex);
+  const std::vector<uint8_t> payload(claims.begin(), claims.end());
+  catapult::HmacSha256Algorithm hmac(deriveHmacKey("secret"));
+  const auto tag = hmac.sign(catapult::createCoseSign1Input(header, payload));
+  std::vector<uint8_t> cwt{0x84};
+  for (const auto& part :
+       {cborBytes(header), std::vector<uint8_t>{0xa0}, cborBytes(payload), cborBytes(tag)}) {
+    cwt.insert(cwt.end(), part.begin(), part.end());
+  }
+  return AuthToken{
+      .tokenType = 77,
+      .tokenValue = std::string(cwt.begin(), cwt.end()),
+      .alias = AuthToken::DontRegister,
+  };
+}
+
+folly::Expected<Grants, AuthError> verifyStrict(const AuthToken& token) {
+  auto config = makeConfig();
+  config.strictClaims = true;
+  return AuthTokenVerifier(config).verify(token);
 }
 
 config::AuthConfig::AnonymousScope makeAnonymousConfigScope(
@@ -306,6 +347,67 @@ TEST(AuthTest, VerifiesCatapultCwtWithOpenScope) {
 
   ASSERT_TRUE(grants.hasValue());
   EXPECT_TRUE(allows(grants.value(), Action::ClientSetup, TrackNamespace{}));
+}
+
+TEST(AuthTest, StrictClaimsAcceptsOnlyEnforcedClaims) {
+  auto config = makeConfig();
+  config.strictClaims = true;
+  AuthTokenVerifier verifier(config);
+  EXPECT_TRUE(verifier.verify(makeToken(makeGrants({Action::ClientSetup}, {}, {}))).hasValue());
+}
+
+TEST(AuthTest, StrictClaimsRejectsUnenforcedClaim) {
+  catapult::CatToken cat;
+  cat.withExpiration(std::chrono::system_clock::now() + std::chrono::hours(1));
+  cat.withIssuer("issuer.example");
+  catapult::HmacSha256Algorithm hmac(deriveHmacKey("secret"));
+  catapult::Cwt cwt(catapult::ALG_HMAC256_256, cat);
+  cwt.withKeyId("k1");
+  auto bytes = cwt.createCwt(catapult::CwtMode::MACed, hmac);
+  AuthToken token{
+      .tokenType = 77,
+      .tokenValue = std::string(bytes.begin(), bytes.end()),
+      .alias = AuthToken::DontRegister,
+  };
+
+  EXPECT_TRUE(AuthTokenVerifier(makeConfig()).verify(token).hasValue());
+
+  auto config = makeConfig();
+  config.strictClaims = true;
+  auto strict = AuthTokenVerifier(config).verify(token);
+  ASSERT_TRUE(strict.hasError());
+  EXPECT_EQ(strict.error(), AuthError::Malformed);
+}
+
+TEST(AuthTest, StrictClaimsAcceptsRawCwtWithoutKid) {
+  auto token = makeRawCwt("a1041af4865700"); // {exp: 4102444800}
+  EXPECT_TRUE(AuthTokenVerifier(makeConfig()).verify(token).hasValue());
+  EXPECT_TRUE(verifyStrict(token).hasValue());
+}
+
+TEST(AuthTest, StrictClaimsRejectsMalformedExp) {
+  for (auto claims : {
+           "a1046a31373030303030303030", // {exp: "1700000000"}
+           "a10420",                     // {exp: -1}
+           "a2041af4865700041af4865700", // exp twice
+       }) {
+    SCOPED_TRACE(claims);
+    auto strict = verifyStrict(makeRawCwt(claims));
+    ASSERT_TRUE(strict.hasError());
+    EXPECT_EQ(strict.error(), AuthError::Malformed);
+  }
+}
+
+TEST(AuthTest, StrictClaimsRejectsMoqtReval) {
+  auto strict = verifyStrict(makeRawCwt("a2041af486570019fde9183c")); // {exp, moqt-reval: 60}
+  ASSERT_TRUE(strict.hasError());
+  EXPECT_EQ(strict.error(), AuthError::Malformed);
+}
+
+TEST(AuthTest, StrictClaimsReportsExpiryFirst) {
+  auto strict = verifyStrict(makeRawCwt("a20401016178")); // {exp: 1, iss: "x"}
+  ASSERT_TRUE(strict.hasError());
+  EXPECT_EQ(strict.error(), AuthError::Expired);
 }
 
 TEST(AuthTest, MultiRuleCompoundMatchRoundtripsViaCwt) {

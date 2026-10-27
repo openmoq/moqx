@@ -389,9 +389,7 @@ TEST_P(MoQRelayTest, SubscribeNamespaceDoesntAddDrainingPublish) {
                   /*forward=*/true,
                   /*subscriberPriority=*/0,
                   /*groupOrder=*/GroupOrder::OldestFirst,
-                  /*locType=*/LocationType::LargestObject,
-                  /*start=*/std::nullopt,
-                  /*endGroup=*/std::nullopt
+                  /*filter=*/LocationFilter::nextObject()
               };
             }()
         });
@@ -533,8 +531,7 @@ TEST_P(MoQRelayTest, ForwardRequestUpdateSetsOnlyForward) {
 
   EXPECT_CALL(*mockHandle, requestUpdateCalled(_)).WillOnce([](const RequestUpdate& u) {
     EXPECT_EQ(u.forward, std::optional<bool>(true));
-    EXPECT_FALSE(u.start.has_value());
-    EXPECT_FALSE(u.endGroup.has_value());
+    EXPECT_FALSE(u.filter.has_value());
     EXPECT_FALSE(u.priority.has_value());
   });
 

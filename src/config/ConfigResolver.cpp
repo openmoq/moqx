@@ -533,6 +533,7 @@ UpstreamConfig resolveUpstream(const ParsedUpstreamConfig& upstream) {
       .connectTimeout =
           std::chrono::milliseconds(upstream.connect_timeout_ms.value().value_or(5000)),
       .idleTimeout = std::chrono::milliseconds(upstream.idle_timeout_ms.value().value_or(5000)),
+      .relayCost = upstream.relay_cost.value().value_or(1),
   };
 }
 
@@ -815,6 +816,14 @@ void validateService(
   if (svc.upstream.value().has_value()) {
     validateUpstream(*svc.upstream.value(), errors);
   }
+  if (const auto& upstreams = svc.upstreams.value()) {
+    if (svc.upstream.value().has_value()) {
+      errors.push_back("Service '" + name + "': upstream and upstreams are mutually exclusive");
+    }
+    for (const auto& upstream : *upstreams) {
+      validateUpstream(upstream, errors);
+    }
+  }
   validateServiceAuth(name, svc, config, mergedAuths, errors, warnings);
 }
 
@@ -824,6 +833,15 @@ std::string generateRelayID() {
   std::ostringstream oss;
   oss << std::hex << std::setfill('0') << std::setw(16) << val;
   return oss.str();
+}
+
+uint64_t generateHopID() {
+  std::random_device rd;
+  uint64_t val = 0;
+  while (val == 0) {
+    val = (static_cast<uint64_t>(rd()) << 32) | static_cast<uint64_t>(rd());
+  }
+  return val;
 }
 
 // --- Resolution helpers ---
@@ -1160,11 +1178,18 @@ ServiceConfig resolveService(
   if (svc.upstream.value().has_value()) {
     upstream = resolveUpstream(*svc.upstream.value());
   }
+  std::vector<UpstreamConfig> upstreams;
+  if (const auto& parsed = svc.upstreams.value()) {
+    for (const auto& entry : *parsed) {
+      upstreams.push_back(resolveUpstream(entry));
+    }
+  }
   return ServiceConfig{
       .match = std::move(entries),
       .cache = resolveCacheConfig(cache),
       .upstream = std::move(upstream),
       .auth = resolveAuth(auth),
+      .upstreams = std::move(upstreams),
   };
 }
 
@@ -1381,6 +1406,14 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
   // Resolve relayID: use configured value or generate a random hex string
   std::string relayID = config.relay_id.value().value_or(generateRelayID());
 
+  std::optional<ClusterConfig> cluster;
+  const auto& parsedCluster = config.cluster.value();
+  if (!parsedCluster) {
+    cluster = ClusterConfig{.hopID = generateHopID()};
+  } else if (parsedCluster->enabled.value().value_or(true)) {
+    cluster = ClusterConfig{.hopID = parsedCluster->hop_id.value().value_or(generateHopID())};
+  }
+
   // Resolve logging config
   std::optional<LoggingConfig> loggingConfig;
   if (config.logging.value().has_value()) {
@@ -1455,6 +1488,7 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
               .useLocalForwarders = useLocalForwarders,
               .mvfstBpfSteering = mvfstBpfSteering,
               .logging = std::move(loggingConfig),
+              .cluster = cluster,
           },
       .warnings = std::move(warnings),
   };

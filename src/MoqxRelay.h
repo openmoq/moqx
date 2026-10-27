@@ -28,17 +28,17 @@
 #include <folly/futures/ThreadWheelTimekeeper.h>
 
 #include <folly/Executor.h>
+#include <folly/Function.h>
 #include <folly/ThreadLocal.h>
 #include <folly/container/F14Map.h>
 #include <folly/container/F14Set.h>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace openmoq::moqx {
-
-uint64_t generateRelayHopID();
 
 class CrossExecFilter;
 
@@ -132,8 +132,7 @@ public:
       std::chrono::milliseconds idleTimeout = kDefaultIdleTimeout,
       std::chrono::milliseconds activityThreshold = kDefaultActivityThreshold
   )
-      : relayID_(std::move(relayID)),
-        relayHopID_(relayHopID == 0 ? generateRelayHopID() : relayHopID),
+      : relayID_(std::move(relayID)), relayHopID_(relayHopID),
         ownedRelayExec_(std::move(relayExec)), relayExec_(ownedRelayExec_.get()),
         useLocalForwarders_(useLocalForwarders), maxDeselected_(maxDeselected),
         idleTimeout_(idleTimeout), activityThreshold_(activityThreshold) {
@@ -180,11 +179,11 @@ public:
   std::shared_ptr<moxygen::Publisher> createPublisherFilter();
   std::shared_ptr<moxygen::Subscriber> createSubscriberFilter();
 
-  // Store the upstream provider. The provider must have been constructed with
+  // Store an upstream provider. The provider must have been constructed with
   // publishHandler=this and subscribeHandler=this so that the upstream relay's
   // reciprocal subNs and namespace announcements route through MoqxRelay.
-  void setUpstreamProvider(std::shared_ptr<UpstreamProvider> upstream) {
-    upstream_ = std::move(upstream);
+  void addUpstreamProvider(std::shared_ptr<UpstreamProvider> upstream) {
+    upstreams_.push_back(std::move(upstream));
   }
 
   // Force-evicts a specific track unconditionally. Not thread-safe.
@@ -196,14 +195,14 @@ public:
   // Force-evicts all cached tracks unconditionally. Not thread-safe.
   size_t purge() { return cache_ ? cache_->purge() : 0; }
 
-  // Stops and releases the upstream provider, breaking the shared_ptr cycle
+  // Stops and releases the upstream providers, breaking the shared_ptr cycle
   // between MoqxRelay and UpstreamProvider. Safe to call with no upstream.
   void stop() {
-    if (upstream_) {
-      upstream_->stop();
-      // Do not reset upstream_ here: the provider's session/client live on the
+    for (const auto& upstream : upstreams_) {
+      upstream->stop();
+      // Do not reset upstreams_ here: the provider's session/client live on the
       // worker EVB thread and must be freed there (via the reconnect coroutine's
-      // shared_from_this dropping after it co_returns). Releasing upstream_ when
+      // shared_from_this dropping after it co_returns). Releasing upstreams_ when
       // relay is destroyed naturally (services_ cleared) is safe because by then
       // stop() has already cleared the back-refs so relay's refcount == 1.
     }
@@ -213,9 +212,9 @@ public:
   // established. Issues the peer subNs handshake and saves the handle.
   folly::coro::Task<void> onUpstreamConnect(std::shared_ptr<moxygen::MoQSession> session);
 
-  // Called by UpstreamProvider's onDisconnect hook when the upstream session
-  // closes. Releases the peer subNs handle.
-  void onUpstreamDisconnect();
+  // Called by UpstreamProvider's onDisconnect hook when an upstream session
+  // closes. Releases that session's peering handles.
+  void onUpstreamDisconnect(const std::shared_ptr<moxygen::MoQSession>& session);
 
   // Releases per-session relay state; the servers call this as a session tears down.
   void onSessionEnd(std::shared_ptr<moxygen::MoQSession> /*session*/) {}
@@ -283,8 +282,9 @@ public:
       std::shared_ptr<moxygen::MoQSession> session
   );
 
-  // Returns the upstream provider, or null if none is configured.
-  std::shared_ptr<UpstreamProvider> upstreamProvider() const { return upstream_; }
+  const std::vector<std::shared_ptr<UpstreamProvider>>& upstreamProviders() const {
+    return upstreams_;
+  }
 
   // Walks relay state by calling visitor methods. Synchronous throughout: it
   // iterates maps that a suspension would let another task mutate, so a visitor
@@ -343,6 +343,15 @@ private:
   void onEmpty(moxygen::MoQForwarder* forwarder) override;
   void forwardChanged(moxygen::MoQForwarder* forwarder, bool forward) override;
   void newGroupRequested(moxygen::MoQForwarder* forwarder, uint64_t group) override;
+  void fillRequested(
+      moxygen::MoQForwarder* forwarder,
+      std::shared_ptr<moxygen::TrackConsumer> consumer,
+      moxygen::Fetch fetch
+  ) override;
+
+  // Must run on the requesting session's executor, inside its request context.
+  void serveFill(std::shared_ptr<moxygen::TrackConsumer> consumer, moxygen::Fetch fetch);
+  std::function<void(std::shared_ptr<moxygen::TrackConsumer>, moxygen::Fetch)> makeFillHandler();
 
   friend class WeakRelayForwarderCallback;
 
@@ -470,14 +479,16 @@ private:
   moxygen::TrackNamespace allowedNamespacePrefix_;
   // Operational identity used by relay authentication and upstream routing.
   std::string relayID_;
-  // Opaque random protocol identity required by draft-lcurley-moq-cluster-01.
+  // MoQ Cluster Hop ID. 0 is anonymous.
   uint64_t relayHopID_;
-  std::shared_ptr<UpstreamProvider> upstream_;
+  std::vector<std::shared_ptr<UpstreamProvider>> upstreams_;
 
-  // Holds the peer subNs handle for the upstream (initiating) direction.
-  // Kept alive so the subscription is not cancelled when onUpstreamConnect returns.
-  std::shared_ptr<moxygen::Publisher::SubscribeNamespaceHandle> upstreamSubNsHandle_;
-  std::shared_ptr<moxygen::Publisher::SubscribeTracksHandle> upstreamTracksHandle_;
+  struct UpstreamHandles {
+    std::shared_ptr<moxygen::Publisher::SubscribeNamespaceHandle> subNs;
+    std::shared_ptr<moxygen::Publisher::SubscribeTracksHandle> tracks; // draft 18+
+  };
+  // Keeps each connected upstream session's peering subscriptions alive.
+  folly::F14FastMap<moxygen::SessionId, UpstreamHandles, moxygen::SessionId::hash> upstreamHandles_;
 
   struct PeerInfo {
     std::shared_ptr<moxygen::Publisher::SubscribeNamespaceHandle> handle;
@@ -609,6 +620,8 @@ private:
   folly::coro::Task<std::optional<moxygen::TrackStatusOk>>
   readPublisherForwarderStatus(moxygen::TrackStatus req);
   folly::coro::Task<void> onUpstreamConnectImpl(std::shared_ptr<moxygen::MoQSession> session);
+  // Waits, up to a timeout, until routed() holds or every upstream has finished connecting.
+  folly::coro::Task<void> waitForUpstreams(folly::Function<bool()> routed);
 
   // Synchronous result of publishWithSession: the consumer the publisher writes
   // to and the PublishOk to return to the publisher.  Returned synchronously so

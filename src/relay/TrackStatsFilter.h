@@ -53,6 +53,11 @@ public:
   datagram(const moxygen::ObjectHeader& header, moxygen::Payload payload, bool lastInGroup = false)
       override;
 
+  folly::Expected<std::shared_ptr<moxygen::FetchConsumer>, moxygen::MoQPublishError>
+  beginFill(moxygen::RequestID requestID) override {
+    return downstream_->beginFill(requestID);
+  }
+
   static constexpr size_t kRecentGroups = RecentGroupWindow::kSize;
 
 private:

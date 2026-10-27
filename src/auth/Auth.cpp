@@ -9,6 +9,7 @@
 #include "auth/HmacKey.h"
 #include "util/ExhaustiveSwitch.h"
 
+#include <catapult/claims.hpp>
 #include <catapult/crypto.hpp>
 #include <catapult/cwt.hpp>
 #include <catapult/error.hpp>
@@ -24,6 +25,7 @@
 #include <memory>
 #include <span>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 using namespace moxygen;
@@ -103,6 +105,46 @@ Grants grantsFromToken(const catapult::CatToken& token) {
     grants.scopes.push_back(std::move(scope));
   }
   return grants;
+}
+
+// strict_claims accepts only the claims that grantsFromToken enforces.
+bool hasOnlyEnforcedClaims(std::string_view cwtBytes) {
+  CborReader cose(cwtBytes);
+  uint64_t coseLen = 0;
+  std::string_view payload;
+  // COSE_Mac0 and COSE_Sign1 are [protected, unprotected, payload, tag].
+  if (!cose.readArrayLen(coseLen) || coseLen != 4 || !cose.skip() || !cose.skip() ||
+      !cose.readBytes(payload)) {
+    return false;
+  }
+  CborReader claims(payload);
+  uint64_t numClaims = 0;
+  if (!claims.readMapLen(numClaims)) {
+    return false;
+  }
+  bool seenExp = false;
+  bool seenMoqt = false;
+  for (uint64_t i = 0; i < numClaims; ++i) {
+    int64_t key = 0;
+    if (!claims.readInt(key)) {
+      return false;
+    }
+    if (key == catapult::CLAIM_EXP) {
+      // catapult drops any other exp, which leaves the token without an expiry.
+      uint64_t exp = 0;
+      if (std::exchange(seenExp, true) || !claims.readUInt(exp) ||
+          exp > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+        return false;
+      }
+    } else if (key == catapult::CLAIM_MOQT) {
+      if (std::exchange(seenMoqt, true) || !claims.skip()) {
+        return false;
+      }
+    } else {
+      return false;
+    }
+  }
+  return claims.eof();
 }
 
 Grants buildAnonymousGrants(const std::vector<config::AuthConfig::AnonymousScope>& configScopes) {
@@ -201,8 +243,12 @@ folly::Expected<Grants, AuthError> AuthTokenVerifier::verify(const AuthToken& to
       catapult::HmacSha256Algorithm hmac(derived.key);
       auto cwt = catapult::Cwt::validateCwt(span, hmac);
       auto grants = grantsFromToken(cwt.payload);
+      // Report Expired before Malformed so that the client refreshes its token.
       if (grants.expiresAt <= std::chrono::system_clock::now()) {
         return folly::makeUnexpected(AuthError::Expired);
+      }
+      if (config_.strictClaims && !hasOnlyEnforcedClaims(token.tokenValue)) {
+        return folly::makeUnexpected(AuthError::Malformed);
       }
       return grants;
     } catch (const catapult::CryptoError&) {

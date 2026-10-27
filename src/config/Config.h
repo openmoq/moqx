@@ -177,11 +177,16 @@ struct UpstreamTlsConfig {
   std::optional<std::string> caCertFile; // mutually exclusive with insecure=true
 };
 
+struct ClusterConfig {
+  uint64_t hopID{0}; // 0 is anonymous
+};
+
 struct UpstreamConfig {
   std::string url;
   UpstreamTlsConfig tls;
   std::chrono::milliseconds connectTimeout{5000};
   std::chrono::milliseconds idleTimeout{5000};
+  uint64_t relayCost{1}; // declared as RELAY_COST; 0 is free
 };
 
 struct AuthConfig {
@@ -237,6 +242,7 @@ struct ServiceConfig {
   CacheConfig cache;
   std::optional<UpstreamConfig> upstream; // set if this service chains to an upstream relay
   AuthConfig auth;
+  std::vector<UpstreamConfig> upstreams; // exclusive with upstream
 };
 
 struct AdminConfig {
@@ -272,6 +278,7 @@ struct Config {
   bool useLocalForwarders{false};
   bool mvfstBpfSteering{true};
   std::optional<LoggingConfig> logging;
+  std::optional<ClusterConfig> cluster; // unset when MoQ Cluster is disabled
 };
 
 } // namespace openmoq::moqx::config

@@ -133,7 +133,7 @@ TEST_P(MoQRelayTest, RelaySubscribeLateJoinerNGRForwardedUpstream) {
   SubscribeRequest sub2;
   sub2.fullTrackName = kTestTrackName;
   sub2.requestID = RequestID(2);
-  sub2.locType = LocationType::LargestObject;
+  sub2.filter = LocationFilter::nextObject();
   sub2.params.insertParam(
       Parameter(folly::to_underlying(TrackRequestParamKey::NEW_GROUP_REQUEST), uint64_t(8))
   );
@@ -239,9 +239,7 @@ TEST_P(MoQRelayTest, PublishOkNewNGRForwardedUpstream) {
         true,
         0,
         GroupOrder::OldestFirst,
-        LocationType::LargestObject,
-        std::nullopt,
-        std::nullopt,
+        LocationFilter::nextObject(),
         std::move(ngrParams)
     });
     return Subscriber::PublishResult(
@@ -316,9 +314,7 @@ TEST_P(MoQRelayTest, PublishOkDuplicateNGRNotForwardedUpstream) {
         true,
         0,
         GroupOrder::OldestFirst,
-        LocationType::LargestObject,
-        std::nullopt,
-        std::nullopt,
+        LocationFilter::nextObject(),
         std::move(ngrParams)
     });
     return Subscriber::PublishResult(

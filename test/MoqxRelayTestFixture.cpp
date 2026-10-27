@@ -147,7 +147,7 @@ MoQRelayTest::makeSubscribeRequest(RequestID requestID, const FullTrackName& tra
   SubscribeRequest sub;
   sub.fullTrackName = trackName;
   sub.requestID = requestID;
-  sub.locType = LocationType::LargestObject;
+  sub.filter = LocationFilter::nextObject();
   return sub;
 }
 
@@ -255,7 +255,7 @@ std::shared_ptr<SubscriptionHandle> MoQRelayTest::subscribeToTrack(
   SubscribeRequest sub;
   sub.fullTrackName = trackName;
   sub.requestID = requestID;
-  sub.locType = LocationType::LargestObject;
+  sub.filter = LocationFilter::nextObject();
   std::shared_ptr<SubscriptionHandle> handle{nullptr};
   withSessionContext(session, [&]() {
     auto task = publisherInterface()->subscribe(std::move(sub), consumer);
@@ -477,9 +477,7 @@ void MoQRelayTest::setupPublishSucceeds(std::shared_ptr<MockMoQSession> session)
                 /*forward=*/pub.forward,
                 /*priority=*/128,
                 GroupOrder::Default,
-                LocationType::LargestObject,
-                /*start=*/std::nullopt,
-                /*endGroup=*/std::make_optional(uint64_t(0))
+                LocationFilter::nextObject()
             };
             return Subscriber::PublishConsumerAndReplyTask{
                 createMockConsumer(),

@@ -12,11 +12,14 @@ How to add an entry: see [CONTRIBUTING.md](/CONTRIBUTING.md#changelog).
 ## Added
 
 - Admin API: [`/qlog/capture`](/docs/logging.md#on-demand-capture) qlogs the next N new mvfst connections on a running relay. ([#779](https://github.com/openmoq/moqx/pull/779))
+- [`cluster`](/docs/config.md#cluster) config: `enabled` turns MoQ Cluster negotiation off, and `hop_id` sets a stable Hop ID, with 0 for an anonymous relay. ([#837](https://github.com/openmoq/moqx/pull/837))
+- A service can peer with several relays through an [`upstreams`](/docs/config.md#upstreams) list, and each upstream link takes a `relay_cost`. `/state` reports a list's links under `upstreams`. ([#838](https://github.com/openmoq/moqx/pull/838))
 
 ## Changed
 
 - **Breaking:** an [`upstream`](/docs/config.md#upstreams) connection uses MoQT draft 18, so the upstream relay's listener must include 18 in `moqt_versions`. Peering also carries tracks that publishers push with PUBLISH. ([#833](https://github.com/openmoq/moqx/pull/833))
 - **Breaking:** [MoQ Cluster](/docs/moq-cluster.md) ([draft-01](https://datatracker.ietf.org/doc/draft-lcurley-moq-cluster/01/)) replaces relay hops. Advertisements now carry `ROUTE_COST`. Loop protection requires every relay in a cycle to run this version. ([#836](https://github.com/openmoq/moqx/pull/836))
+- With [`strict_claims`](/docs/config.md#authentication-and-authorization) on, the relay rejects a token that carries a claim other than `exp` and `moqt`, repeats a claim, or has an `exp` that is not an unsigned integer. ([#868](https://github.com/openmoq/moqx/pull/868))
 
 ## Fixed
 
@@ -27,6 +30,8 @@ How to add an entry: see [CONTRIBUTING.md](/CONTRIBUTING.md#changelog).
 - The relay leaked memory each time a subscriber rejected a track that the relay pushed with PUBLISH. ([#831](https://github.com/openmoq/moqx/pull/831))
 - After a publisher restarted a track, a FETCH that the relay answered from its cache stopped at the previous session's Largest Object and did not return the newer objects. ([#849](https://github.com/openmoq/moqx/pull/849))
 - A track that a publisher pushed with PUBLISH had the same stale-Largest FETCH problem after a restart, and its publisher-set cache duration was ignored in favor of the [cache](/docs/config.md#cache) default. ([#850](https://github.com/openmoq/moqx/pull/850))
+- [`upstream.tls.ca_cert`](/docs/config.md#upstreams) was ignored, so upstream certificates were checked against the system trust store. The relay now requires them to chain to that CA and match the URL's host, and it does not start if the file cannot be loaded. ([#865](https://github.com/openmoq/moqx/pull/865))
+- The [cache](/docs/config.md#cache) kept gap markers of evicted groups on a long-lived track, using memory outside its size limit. ([#875](https://github.com/openmoq/moqx/pull/875))
 
 [0.3.6] - 2026-10-10
 ====================
@@ -42,6 +47,7 @@ How to add an entry: see [CONTRIBUTING.md](/CONTRIBUTING.md#changelog).
 
 ## Changed
 
+- Performance dashboard: the overview shows relay CPU, throughput per core, average latency, and RSS per session for each profile. ([#859](https://github.com/openmoq/moqx/pull/859))
 - Docker image: the mvfst listener defaults to bbr2 congestion control (`MOQX_CC`). ([#801](https://github.com/openmoq/moqx/pull/801))
 - A draft-18 SUBSCRIBE_NAMESPACE or SUBSCRIBE_TRACKS matching more than 1000 namespaces and tracks fails with NAMESPACE_TOO_LARGE. ([#667](https://github.com/openmoq/moqx/pull/667))
 - `POST /cache/purge` purges one service, named by `service`; it is required when several services are configured. ([#794](https://github.com/openmoq/moqx/pull/794))

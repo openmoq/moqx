@@ -255,9 +255,7 @@ TEST_P(MoQRelayTrackStatsTest, CountsEgressOnPublishFanout) {
                   true,
                   0,
                   GroupOrder::OldestFirst,
-                  LocationType::LargestObject,
-                  std::nullopt,
-                  std::nullopt
+                  LocationFilter::nextObject()
               };
             }()
         });

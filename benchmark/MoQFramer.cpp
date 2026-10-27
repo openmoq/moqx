@@ -5,6 +5,7 @@
  */
 
 #include <folly/Benchmark.h>
+#include <folly/logging/xlog.h>
 #include <moxygen/MoQFramer.h>
 #include <moxygen/MoQTypes.h>
 #include <quic/codec/QuicInteger.h>
@@ -112,7 +113,7 @@ BENCHMARK(BM_WriteSubscribeRequest, iters) {
   folly::IOBufQueue buf;
   susp.dismiss();
   for (unsigned i = 0; i < iters; ++i) {
-    buf.reset();
+    buf.clearAndTryReuseLargestBuffer();
     auto res = writer.writeSubscribeRequest(buf, req);
     folly::doNotOptimizeAway(res);
   }
@@ -132,7 +133,7 @@ BENCHMARK(BM_WriteSubgroupHeader, iters) {
   folly::IOBufQueue buf;
   susp.dismiss();
   for (unsigned i = 0; i < iters; ++i) {
-    buf.reset();
+    buf.clearAndTryReuseLargestBuffer();
     auto res =
         writer.writeSubgroupHeader(buf, TrackAlias(1), header, SubgroupOptions{});
     folly::doNotOptimizeAway(res);
@@ -155,7 +156,7 @@ BENCHMARK(BM_WriteStreamObject, iters) {
   folly::IOBufQueue buf;
   susp.dismiss();
   for (unsigned i = 0; i < iters; ++i) {
-    buf.reset();
+    buf.clearAndTryReuseLargestBuffer();
     auto res = writer.writeStreamObject(
         buf,
         getSubgroupStreamType(kVersion, SubgroupIDFormat::Present, false, false),
@@ -175,7 +176,7 @@ BENCHMARK(BM_WritePublishNamespace, iters) {
   folly::IOBufQueue buf;
   susp.dismiss();
   for (unsigned i = 0; i < iters; ++i) {
-    buf.reset();
+    buf.clearAndTryReuseLargestBuffer();
     auto res = writer.writePublishNamespace(buf, pubNs);
     folly::doNotOptimizeAway(res);
   }
@@ -193,7 +194,7 @@ BENCHMARK(BM_WriteFetch, iters) {
   folly::IOBufQueue buf;
   susp.dismiss();
   for (unsigned i = 0; i < iters; ++i) {
-    buf.reset();
+    buf.clearAndTryReuseLargestBuffer();
     auto res = writer.writeFetch(buf, fetch);
     folly::doNotOptimizeAway(res);
   }
@@ -201,16 +202,18 @@ BENCHMARK(BM_WriteFetch, iters) {
 
 // --- Parse benchmarks ---
 
-// Helper: skip a QUIC varint in a folly::io::Cursor.
-// Returns the decoded value.
-static uint64_t skipVarint(folly::io::Cursor& cursor) {
-  uint8_t first = cursor.read<uint8_t>();
-  uint8_t lenBits = first >> 6;
-  uint64_t val = first & 0x3f;
-  for (int i = 0; i < (1 << lenBits) - 1; ++i) {
-    val = (val << 8) | cursor.read<uint8_t>();
-  }
-  return val;
+static size_t skipFrameHeader(const MoQFrameParser& parser, folly::io::Cursor& cursor) {
+  parser.decodeVarint(cursor);
+  return cursor.readBE<uint16_t>();
+}
+
+// Fails the run if the benchmark would only time a parse error.
+template <typename ParseFn>
+static void
+checkParses(const MoQFrameParser& parser, const folly::IOBuf* wireData, ParseFn parse) {
+  folly::io::Cursor cursor(wireData);
+  auto frameLen = skipFrameHeader(parser, cursor);
+  XCHECK(parse(cursor, frameLen).hasValue());
 }
 
 BENCHMARK(BM_ParseSubscribeRequest, iters) {
@@ -226,12 +229,14 @@ BENCHMARK(BM_ParseSubscribeRequest, iters) {
   // between iters.
   MoQFrameParser parser;
   parser.initializeVersion(kVersion);
+  checkParses(parser, wireData.get(),[&](auto& c, size_t len) {
+    return parser.parseSubscribeRequest(c, len);
+  });
   susp.dismiss();
 
   for (unsigned i = 0; i < iters; ++i) {
     folly::io::Cursor cursor(wireData.get());
-    skipVarint(cursor); // frame type
-    auto frameLen = skipVarint(cursor); // payload length
+    auto frameLen = skipFrameHeader(parser, cursor);
     auto res = parser.parseSubscribeRequest(cursor, frameLen);
     folly::doNotOptimizeAway(res);
   }
@@ -251,12 +256,14 @@ BENCHMARK(BM_ParseFetch, iters) {
   auto wireData = writeBuf.move();
   MoQFrameParser parser;
   parser.initializeVersion(kVersion);
+  checkParses(parser, wireData.get(),[&](auto& c, size_t len) {
+    return parser.parseFetch(c, len);
+  });
   susp.dismiss();
 
   for (unsigned i = 0; i < iters; ++i) {
     folly::io::Cursor cursor(wireData.get());
-    skipVarint(cursor);
-    auto frameLen = skipVarint(cursor);
+    auto frameLen = skipFrameHeader(parser, cursor);
     auto res = parser.parseFetch(cursor, frameLen);
     folly::doNotOptimizeAway(res);
   }
@@ -274,12 +281,14 @@ BENCHMARK(BM_ParsePublishNamespace, iters) {
   auto wireData = writeBuf.move();
   MoQFrameParser parser;
   parser.initializeVersion(kVersion);
+  checkParses(parser, wireData.get(),[&](auto& c, size_t len) {
+    return parser.parsePublishNamespace(c, len);
+  });
   susp.dismiss();
 
   for (unsigned i = 0; i < iters; ++i) {
     folly::io::Cursor cursor(wireData.get());
-    skipVarint(cursor);
-    auto frameLen = skipVarint(cursor);
+    auto frameLen = skipFrameHeader(parser, cursor);
     auto res = parser.parsePublishNamespace(cursor, frameLen);
     folly::doNotOptimizeAway(res);
   }
@@ -302,8 +311,7 @@ BENCHMARK(BM_SubscribeRoundTrip, iters) {
     writer.writeSubscribeRequest(writeBuf, req);
     auto buf = writeBuf.move();
     folly::io::Cursor cursor(buf.get());
-    skipVarint(cursor);
-    auto frameLen = skipVarint(cursor);
+    auto frameLen = skipFrameHeader(parser, cursor);
     auto res = parser.parseSubscribeRequest(cursor, frameLen);
     folly::doNotOptimizeAway(res);
   }

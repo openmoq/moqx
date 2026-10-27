@@ -38,7 +38,7 @@ protected:
     SubscribeRequest sub;
     sub.fullTrackName = ftn;
     sub.requestID = RequestID(1);
-    sub.locType = LocationType::LargestObject;
+    sub.filter = LocationFilter::nextObject();
     sub.params.setMajorVersion(getDraftMajorVersion(kVersionDraft18));
     EXPECT_TRUE(
         sub.params
@@ -55,7 +55,7 @@ protected:
     SubscribeRequest sub;
     sub.fullTrackName = ftn;
     sub.requestID = RequestID(1);
-    sub.locType = LocationType::LargestObject;
+    sub.filter = LocationFilter::nextObject();
     sub.params.setMajorVersion(getDraftMajorVersion(kVersionDraft18));
     return sub;
   }

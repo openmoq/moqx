@@ -129,7 +129,7 @@ TEST_P(MoQRelayTest, Subscribe_SecondForwardingSubscriber_SingleRequestUpdate) {
     SubscribeRequest sub;
     sub.fullTrackName = kTestTrackName;
     sub.requestID = RequestID(1);
-    sub.locType = LocationType::LargestObject;
+    sub.filter = LocationFilter::nextObject();
     sub.forward = false;
     withSessionContext(s1, [&]() {
       auto res = folly::coro::blockingWait(
@@ -159,7 +159,7 @@ TEST_P(MoQRelayTest, Subscribe_SecondForwardingSubscriber_SingleRequestUpdate) {
     SubscribeRequest sub;
     sub.fullTrackName = kTestTrackName;
     sub.requestID = RequestID(2);
-    sub.locType = LocationType::LargestObject;
+    sub.filter = LocationFilter::nextObject();
     sub.forward = true;
     withSessionContext(s2, [&]() {
       auto res = folly::coro::blockingWait(
@@ -249,6 +249,61 @@ TEST_P(MoQRelayTest, FirstSubscriberViaUpstreamSubscribeReceivesData) {
   driveIfMultiThread();
 }
 
+// A range that ends before Largest Object is refused below draft 20 and accepted at 20.
+TEST_P(MoQRelayTest, PastRangeRefusedOnlyBelowDraft20) {
+  auto publisherSession = createMockSession();
+  doPublishNamespace(publisherSession, kTestNamespace);
+
+  SubscribeOk upstreamOk;
+  upstreamOk.requestID = RequestID(1);
+  upstreamOk.trackAlias = TrackAlias(1);
+  upstreamOk.expires = std::chrono::milliseconds(0);
+  upstreamOk.groupOrder = GroupOrder::OldestFirst;
+  upstreamOk.largest = AbsoluteLocation{5, 0};
+  EXPECT_CALL(*publisherSession, subscribe(_, _))
+      .WillOnce([&upstreamOk](const auto& /*req*/, auto /*consumer*/) {
+        return folly::coro::makeTask<Publisher::SubscribeResult>(
+            folly::Expected<std::shared_ptr<SubscriptionHandle>, SubscribeError>(
+                std::make_shared<NiceMock<MockSubscriptionHandle>>(upstreamOk)
+            )
+        );
+      });
+
+  auto firstSession = createMockSession();
+  ASSERT_NE(
+      subscribeToTrack(firstSession, kTestTrackName, createMockConsumer(), RequestID(1)),
+      nullptr
+  );
+
+  auto subscribePastRange = [&](const std::shared_ptr<MoQSession>& session) {
+    auto sub = makeSubscribeRequest(RequestID(3));
+    sub.filter = LocationFilter::range(kLocationMin, uint64_t(2));
+    auto pending = startSubscribe(sessionExec(), session, std::move(sub), createMockConsumer());
+    EXPECT_TRUE(driveUntil([&] { return pending.ready(); }));
+    return pending;
+  };
+
+  auto d16Session = createMockSession(kVersionDraft16);
+  auto refused = subscribePastRange(d16Session);
+  ASSERT_TRUE(refused.ready());
+  ASSERT_TRUE(refused.result->hasValue());
+  ASSERT_TRUE(refused.result->value().hasError());
+  EXPECT_EQ(refused.result->value().error().errorCode, SubscribeErrorCode::INVALID_RANGE);
+
+  auto d20Session = createMockSession(kVersionDraft20);
+  auto accepted = subscribePastRange(d20Session);
+  ASSERT_TRUE(accepted.ready());
+  auto handle = accepted.handle();
+  ASSERT_NE(handle, nullptr);
+  getOrCreateMockState(d20Session)->subscribeHandles.push_back(handle);
+
+  removeSession(publisherSession);
+  removeSession(firstSession);
+  removeSession(d16Session);
+  removeSession(d20Session);
+  driveIfMultiThread();
+}
+
 // Regression: a second subscriber that arrives while a first subscriber's upstream
 // SUBSCRIBE is still in flight must observe the upstream-seeded largest. In
 // LocalForwarderMT the second takes the acquireLocalForwarder isNew=false fast path
@@ -303,7 +358,7 @@ TEST_P(MoQRelayTest, SubsequentSubscriberWaitsForUpstreamLargestSeeding) {
       SubscribeRequest sub;
       sub.fullTrackName = kTestTrackName;
       sub.requestID = requestID;
-      sub.locType = LocationType::LargestObject;
+      sub.filter = LocationFilter::nextObject();
       auto task = publisherInterface()->subscribe(std::move(sub), std::move(consumer));
       co_withExecutor(
           static_cast<folly::DrivableExecutor*>(exec_.get()),
@@ -396,7 +451,7 @@ TEST_P(MoQRelayTest, SubsequentSubscriberFailsWhenUpstreamSubscribeFails) {
       SubscribeRequest sub;
       sub.fullTrackName = kTestTrackName;
       sub.requestID = requestID;
-      sub.locType = LocationType::LargestObject;
+      sub.filter = LocationFilter::nextObject();
       auto task = publisherInterface()->subscribe(std::move(sub), std::move(consumer));
       // ST/MT signal first-subscriber failure by throwing out of the SubsequentSubscriber
       // task; normalize to an error result so both shapes are comparable.
@@ -500,7 +555,7 @@ TEST_P(MoQRelayTest, UpstreamSubscribeThrowDoesNotStrandGate) {
     SubscribeRequest sub;
     sub.fullTrackName = kTestTrackName;
     sub.requestID = RequestID(0);
-    sub.locType = LocationType::LargestObject;
+    sub.filter = LocationFilter::nextObject();
     auto task = publisherInterface()->subscribe(std::move(sub), createMockConsumer());
     co_withExecutor(
         static_cast<folly::DrivableExecutor*>(exec_.get()),
@@ -521,7 +576,7 @@ TEST_P(MoQRelayTest, UpstreamSubscribeThrowDoesNotStrandGate) {
       SubscribeRequest sub;
       sub.fullTrackName = kTestTrackName;
       sub.requestID = RequestID(2);
-      sub.locType = LocationType::LargestObject;
+      sub.filter = LocationFilter::nextObject();
       auto task = publisherInterface()->subscribe(std::move(sub), secondConsumer);
       co_withExecutor(
           folly::getKeepAliveToken(pubEvb),
@@ -606,7 +661,7 @@ TEST_P(MoQRelayTest, CrossThreadSubsequentSubscriberSeedingRace) {
       SubscribeRequest sub;
       sub.fullTrackName = kTestTrackName;
       sub.requestID = requestID;
-      sub.locType = LocationType::LargestObject;
+      sub.filter = LocationFilter::nextObject();
       auto task = publisherInterface()->subscribe(std::move(sub), createMockConsumer());
       co_withExecutor(
           startExec,
@@ -729,7 +784,7 @@ TEST_P(MoQRelayTest, PublishFanoutDuringParkedSubscribeSetup) {
     SubscribeRequest sub;
     sub.fullTrackName = kTestTrackName;
     sub.requestID = RequestID(0);
-    sub.locType = LocationType::LargestObject;
+    sub.filter = LocationFilter::nextObject();
     auto task = publisherInterface()->subscribe(std::move(sub), subConsumer);
     co_withExecutor(
         static_cast<folly::DrivableExecutor*>(exec_.get()),

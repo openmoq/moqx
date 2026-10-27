@@ -357,6 +357,15 @@ struct ParsedUpstreamTlsConfig {
       ca_cert;
 };
 
+struct ParsedClusterConfig {
+  rfl::Description<"Negotiate MoQ Cluster on draft 18+ links (default: true)", std::optional<bool>>
+      enabled;
+  rfl::Description<
+      "MoQ Cluster Hop ID (optional; random if absent, 0 is anonymous)",
+      std::optional<uint64_t>>
+      hop_id;
+};
+
 struct ParsedUpstreamConfig {
   rfl::Description<"Upstream MoQ server URL (moqt://host:port/path)", std::string> url;
   rfl::Description<"TLS configuration for upstream connection", ParsedUpstreamTlsConfig> tls;
@@ -366,6 +375,10 @@ struct ParsedUpstreamConfig {
       "MoQ session idle timeout in milliseconds (default: 5000)",
       std::optional<uint32_t>>
       idle_timeout_ms;
+  rfl::Description<
+      "MoQ Cluster RELAY_COST of what this relay sends on the link (default: 1; 0 is free)",
+      std::optional<uint64_t>>
+      relay_cost;
 };
 
 struct ParsedAuthConfig {
@@ -501,6 +514,10 @@ struct ParsedServiceConfig {
       std::optional<ParsedUpstreamConfig>>
       upstream;
   rfl::Description<
+      "Several upstream MoQ servers for this service (optional; exclusive with upstream)",
+      std::optional<std::vector<ParsedUpstreamConfig>>>
+      upstreams;
+  rfl::Description<
       "Authentication and authorization settings for this service",
       std::optional<ParsedAuthConfig>>
       auth;
@@ -588,6 +605,7 @@ struct ParsedConfig {
       std::optional<bool>>
       mvfst_bpf_steering;
   rfl::Description<"Logging configuration", std::optional<ParsedLoggingConfig>> logging;
+  rfl::Description<"MoQ Cluster settings", std::optional<ParsedClusterConfig>> cluster;
 };
 
 } // namespace openmoq::moqx::config
