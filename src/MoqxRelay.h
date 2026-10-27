@@ -341,7 +341,11 @@ private:
   NamespaceTree tracksTree_{tracksTreeCb_};
 
   void onEmpty(moxygen::MoQForwarder* forwarder) override;
-  void forwardChanged(moxygen::MoQForwarder* forwarder, bool forward) override;
+  void forwardChanged(
+      moxygen::MoQForwarder* forwarder,
+      bool forward,
+      moxygen::MoQForwarder::LargestPromise largest
+  ) override;
   void newGroupRequested(moxygen::MoQForwarder* forwarder, uint64_t group) override;
   void fillRequested(
       moxygen::MoQForwarder* forwarder,
@@ -358,8 +362,23 @@ private:
   // FTN-keyed impl variants — called by the MoQForwarder::Callback overrides
   // above (single-thread) or by WeakRelayForwarderCallback on relay exec.
   void onEmptyImpl(const moxygen::FullTrackName& ftn);
-  void forwardChangedImpl(const moxygen::FullTrackName& ftn, bool forward);
+  void forwardChangedImpl(
+      const moxygen::FullTrackName& ftn,
+      bool forward,
+      moxygen::MoQForwarder::LargestPromise largest
+  );
   void newGroupRequestedImpl(const moxygen::FullTrackName& ftn, uint64_t group);
+
+  // Posts the Largest from a resume's REQUEST_UPDATE_OK to the cache on relayExec_.
+  folly::Function<void(moxygen::AbsoluteLocation)> cacheUpstreamLargestCallback(
+      const moxygen::FullTrackName& ftn,
+      const moxygen::Publisher::SubscriptionHandle* handle
+  );
+  void cacheUpstreamLargest(
+      const moxygen::FullTrackName& ftn,
+      const moxygen::Publisher::SubscriptionHandle* handle,
+      moxygen::AbsoluteLocation value
+  );
 
   struct PreparedPublish {
     std::shared_ptr<moxygen::MoQForwarder::Subscriber> subscriber;

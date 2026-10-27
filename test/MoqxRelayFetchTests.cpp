@@ -10,6 +10,10 @@
 
 #include <folly/ScopeGuard.h>
 #include <folly/coro/Baton.h>
+#include <folly/futures/Promise.h>
+
+#include <deque>
+#include <mutex>
 
 namespace openmoq::moqx::test {
 
@@ -282,6 +286,90 @@ TEST_P(MoQRelayTest, FetchAfterRepublishRunsToPublishLargest) {
   removeSession(firstPublisher);
   removeSession(secondPublisher);
   removeSession(fetchSession);
+  driveIfMultiThread();
+}
+
+// A subscriber pauses and resumes a PUBLISH. The resume's OK reports the Largest from
+// the publisher's REQUEST_UPDATE_OK, and a FETCH for the gap goes upstream.
+TEST_P(MoQRelayTest, ResumeReportsUpstreamLargest) {
+  resetRelay(config::CacheConfig{.maxCachedTracks = 10});
+  relay_->setAllowedNamespacePrefix(kAllowedPrefix);
+  auto publisherSession = createMockSession();
+  auto subscriberSession = createMockSession();
+  auto fetchSession = createMockSession();
+
+  // The publisher reports upstreamLargest in each REQUEST_UPDATE_OK.
+  auto upstreamLargest = std::make_shared<AbsoluteLocation>(AbsoluteLocation{3, 0});
+  auto mockHandle = makePublishHandle();
+  ON_CALL(*mockHandle, requestUpdateResult()).WillByDefault([upstreamLargest] {
+    RequestOk ok;
+    ok.requestSpecificParams.emplace_back(
+        folly::to_underlying(TrackRequestParamKey::LARGEST_OBJECT),
+        *upstreamLargest
+    );
+    return folly::makeExpected<RequestError>(std::move(ok));
+  });
+  auto publishConsumer = doPublishWithHandle(publisherSession, kTestTrackName, mockHandle);
+  auto sg = publishConsumer->beginSubgroup(0, 0, 0);
+  ASSERT_TRUE(sg.hasValue()) << sg.error().describe();
+  EXPECT_TRUE(sg.value()->object(0, folly::IOBuf::copyBuffer("abc")).hasValue());
+  EXPECT_TRUE(sg.value()->endOfSubgroup().hasValue());
+  driveIfMultiThread();
+
+  auto handle =
+      subscribeToTrack(subscriberSession, kTestTrackName, createMockConsumer(), RequestID(1));
+  ASSERT_NE(handle, nullptr);
+  auto forwardUpdate = [&](RequestID requestID, bool forward) {
+    RequestUpdate update;
+    update.requestID = requestID;
+    update.existingRequestID = RequestID(1);
+    update.forward = forward;
+    return folly::coro::blockingWait(handle->requestUpdate(std::move(update)), exec_.get());
+  };
+  ASSERT_TRUE(forwardUpdate(RequestID(2), false).hasValue());
+  driveIfMultiThread();
+
+  // The publisher produced through {5, 0} while paused.
+  *upstreamLargest = AbsoluteLocation{5, 0};
+  auto ok = forwardUpdate(RequestID(3), true);
+  ASSERT_TRUE(ok.hasValue());
+  ASSERT_EQ(ok->requestSpecificParams.size(), 1);
+  EXPECT_EQ(ok->requestSpecificParams[0].largestObject, (AbsoluteLocation{5, 0}));
+
+  std::atomic<bool> upstreamFetched{false};
+  auto capturedFetch = std::make_shared<Fetch>();
+  EXPECT_CALL(*publisherSession, fetch(_, _))
+      .WillOnce([capturedFetch,
+                 &upstreamFetched](Fetch f, std::shared_ptr<FetchConsumer> consumer) {
+        *capturedFetch = std::move(f);
+        upstreamFetched.store(true);
+        consumer->endOfFetch();
+        return folly::coro::makeTask<Publisher::FetchResult>(std::make_shared<MockFetchHandle>(
+            FetchOk{RequestID(0), GroupOrder::OldestFirst, 0, AbsoluteLocation{5, 1}, {}}
+        ));
+      });
+  Fetch fetch(RequestID(0), kTestTrackName, AbsoluteLocation{0, 0}, AbsoluteLocation{6, 0});
+  auto fetchConsumer = std::make_shared<NiceMock<MockFetchConsumer>>();
+  EXPECT_CALL(*fetchConsumer, object(0, _, 0, _, _, _, _))
+      .WillOnce(Return(folly::makeExpected<MoQPublishError>(folly::unit)));
+  ON_CALL(*fetchConsumer, endOfFetch())
+      .WillByDefault(Return(folly::makeExpected<MoQPublishError>(folly::unit)));
+  withSessionContext(fetchSession, [&]() {
+    auto task = publisherInterface()->fetch(std::move(fetch), fetchConsumer);
+    auto res = folly::coro::blockingWait(std::move(task), exec_.get());
+    ASSERT_TRUE(res.hasValue());
+    EXPECT_EQ(res.value()->fetchOk().endLocation, (AbsoluteLocation{5, 1}));
+  });
+  ASSERT_TRUE(driveUntil([&] { return upstreamFetched.load(); }))
+      << "fetch past the cached Largest did not go upstream";
+  auto [standalone, joining] = fetchType(*capturedFetch);
+  ASSERT_NE(standalone, nullptr);
+  EXPECT_EQ(standalone->start, (AbsoluteLocation{0, 1}));
+
+  handle->unsubscribe();
+  removeSession(subscriberSession);
+  removeSession(fetchSession);
+  removeSession(publisherSession);
   driveIfMultiThread();
 }
 
@@ -754,5 +842,346 @@ TEST_P(MoQRelayTest, RequestUpdateFillFetchesUpstream) {
   removeSession(subSession);
   driveIfMultiThread();
 }
+
+namespace {
+// Holds each forward=1 REQUEST_UPDATE until the test answers it, and answers the rest at once.
+class HeldResumeHandle : public Publisher::SubscriptionHandle {
+public:
+  HeldResumeHandle() : SubscriptionHandle(makeOk()) {}
+
+  void unsubscribe() override {}
+
+  folly::coro::Task<folly::Expected<RequestOk, RequestError>> requestUpdate(RequestUpdate update
+  ) override {
+    if (!update.forward.value_or(false)) {
+      co_return emptyOk();
+    }
+    auto [promise, future] = folly::makePromiseContract<folly::Expected<RequestOk, RequestError>>();
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      held_.push_back(std::move(promise));
+    }
+    co_return co_await std::move(future);
+  }
+
+  size_t held() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return held_.size();
+  }
+
+  // Answers the oldest held resume with `largest` as its Largest Object.
+  void replyLargest(AbsoluteLocation largest) {
+    auto ok = emptyOk();
+    ok.requestSpecificParams.emplace_back(
+        folly::to_underlying(TrackRequestParamKey::LARGEST_OBJECT),
+        largest
+    );
+    reply(std::move(ok));
+  }
+
+  void replyError() {
+    reply(folly::makeUnexpected(
+        RequestError(RequestID(0), RequestErrorCode::INTERNAL_ERROR, "resume failed")
+    ));
+  }
+
+  void failAll() {
+    while (held() > 0) {
+      replyError();
+    }
+  }
+
+private:
+  static SubscribeOk makeOk() {
+    SubscribeOk ok;
+    ok.requestID = RequestID(0);
+    ok.trackAlias = TrackAlias(0);
+    ok.expires = std::chrono::milliseconds(0);
+    ok.groupOrder = GroupOrder::Default;
+    return ok;
+  }
+
+  static RequestOk emptyOk() {
+    return RequestOk{.requestID = RequestID(0), .requestSpecificParams = {}, .trackProperties = {}};
+  }
+
+  void reply(folly::Expected<RequestOk, RequestError> result) {
+    folly::Promise<folly::Expected<RequestOk, RequestError>> promise;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (held_.empty()) {
+        ADD_FAILURE() << "no resume is held";
+        return;
+      }
+      promise = std::move(held_.front());
+      held_.pop_front();
+    }
+    promise.setValue(std::move(result));
+  }
+
+  mutable std::mutex mutex_;
+  std::deque<folly::Promise<folly::Expected<RequestOk, RequestError>>> held_;
+};
+
+std::optional<AbsoluteLocation> okLargest(const RequestOk& ok) {
+  for (const auto& param : ok.requestSpecificParams) {
+    if (param.key == folly::to_underlying(TrackRequestParamKey::LARGEST_OBJECT)) {
+      return param.largestObject;
+    }
+  }
+  return std::nullopt;
+}
+} // namespace
+
+// A PUBLISH whose handle holds each resume, so a test sees what waits on the publisher's
+// REQUEST_UPDATE_OK.
+class MoqxRelayResumeTest : public MoQRelayTest {
+protected:
+  void SetUp() override {
+    MoQRelayTest::SetUp();
+    resetRelay(config::CacheConfig{.maxCachedTracks = 10});
+    relay_->setAllowedNamespacePrefix(kAllowedPrefix);
+    publisherSession_ = createMockSession();
+    publishConsumer_ = doPublishWithHandle(publisherSession_, kTestTrackName, upstream_);
+  }
+
+  void TearDown() override {
+    upstream_->failAll();
+    // Released before the relay thread, which the filter posts its delete to.
+    publishConsumer_.reset();
+    MoQRelayTest::TearDown();
+  }
+
+  // Subscribes, and answers the resume that the SUBSCRIBE starts with `largest`.
+  std::shared_ptr<SubscriptionHandle> subscribe(
+      const std::shared_ptr<MoQSession>& session,
+      std::shared_ptr<TrackConsumer> consumer,
+      AbsoluteLocation largest
+  ) {
+    auto pending = startSubscribe(
+        sessionExec(),
+        session,
+        makeSubscribeRequest(RequestID(1)),
+        std::move(consumer)
+    );
+    if (!driveUntil([&] { return upstream_->held() == 1; })) {
+      ADD_FAILURE() << "the SUBSCRIBE did not resume the publisher";
+      return nullptr;
+    }
+    upstream_->replyLargest(largest);
+    if (!driveUntil([&] { return pending.ready(); })) {
+      ADD_FAILURE() << "the SUBSCRIBE did not finish";
+      return nullptr;
+    }
+    return pending.handle();
+  }
+
+  // Starts a REQUEST_UPDATE on `exec` without waiting for its OK.
+  folly::SemiFuture<folly::Expected<RequestOk, RequestError>> startUpdate(
+      const std::shared_ptr<MoQSession>& session,
+      const std::shared_ptr<SubscriptionHandle>& handle,
+      RequestUpdate update,
+      folly::Executor* exec = nullptr
+  ) {
+    return withSessionContext(session, [&]() {
+      return co_withExecutor(
+                 folly::getKeepAliveToken(exec ? exec : sessionExec()),
+                 handle->requestUpdate(std::move(update))
+      )
+          .start();
+    });
+  }
+
+  static RequestUpdate forwardUpdate(RequestID requestID, bool forward) {
+    RequestUpdate update;
+    update.requestID = requestID;
+    update.existingRequestID = RequestID(1);
+    update.forward = forward;
+    return update;
+  }
+
+  // Pauses the subscription, which pauses the publisher.
+  void pause(
+      const std::shared_ptr<MoQSession>& session,
+      const std::shared_ptr<SubscriptionHandle>& handle,
+      folly::Executor* exec = nullptr
+  ) {
+    auto ok = startUpdate(session, handle, forwardUpdate(RequestID(2), false), exec);
+    ASSERT_TRUE(driveUntil([&] { return ok.isReady(); })) << "the pause did not finish";
+    ASSERT_TRUE(std::move(ok).get().hasValue());
+  }
+
+  std::shared_ptr<HeldResumeHandle> upstream_ = std::make_shared<HeldResumeHandle>();
+  std::shared_ptr<MockMoQSession> publisherSession_;
+  std::shared_ptr<TrackConsumer> publishConsumer_;
+};
+
+// A resume's REQUEST_UPDATE_OK waits for the publisher's, and reports its Largest Object.
+TEST_P(MoqxRelayResumeTest, ResumeOkWaitsForPublisherReply) {
+  auto subSession = createMockSession();
+  auto handle = subscribe(subSession, createMockConsumer(), {3, 0});
+  ASSERT_NE(handle, nullptr);
+  pause(subSession, handle);
+
+  auto ok = startUpdate(subSession, handle, forwardUpdate(RequestID(3), true));
+  ASSERT_TRUE(driveUntil([&] { return upstream_->held() == 1; }));
+  EXPECT_FALSE(ok.isReady()) << "REQUEST_UPDATE_OK did not wait for the publisher";
+
+  upstream_->replyLargest({5, 2});
+  ASSERT_TRUE(driveUntil([&] { return ok.isReady(); }));
+  auto res = std::move(ok).get();
+  ASSERT_TRUE(res.hasValue());
+  EXPECT_EQ(okLargest(*res), (AbsoluteLocation{5, 2}));
+
+  handle->unsubscribe();
+  removeSession(subSession);
+  removeSession(publisherSession_);
+  driveIfMultiThread();
+}
+
+// An object that arrives before the publisher's REQUEST_UPDATE_OK is past the Largest
+// Object in it, so the downstream OK reports the object.
+TEST_P(MoqxRelayResumeTest, ObjectBeforePublisherReplyWins) {
+  auto subSession = createMockSession();
+  auto consumer = createMockConsumer();
+  std::atomic<bool> gotObject{false};
+  ON_CALL(*consumer, beginSubgroup(_, _, _, _))
+      .WillByDefault([this, &gotObject](auto, auto, auto, auto) {
+        auto sg = createMockSubgroupConsumer();
+        ON_CALL(*sg, object(_, _, _, _)).WillByDefault([&gotObject](auto, auto, auto, auto) {
+          gotObject.store(true);
+          return folly::makeExpected<MoQPublishError>(folly::unit);
+        });
+        return folly::makeExpected<MoQPublishError>(std::shared_ptr<SubgroupConsumer>(sg));
+      });
+  auto handle = subscribe(subSession, consumer, {3, 0});
+  ASSERT_NE(handle, nullptr);
+  pause(subSession, handle);
+
+  auto ok = startUpdate(subSession, handle, forwardUpdate(RequestID(3), true));
+  ASSERT_TRUE(driveUntil([&] { return upstream_->held() == 1; }));
+  auto sg = publishConsumer_->beginSubgroup(5, 0, 0);
+  ASSERT_TRUE(sg.hasValue()) << sg.error().describe();
+  EXPECT_TRUE(sg.value()->object(3, folly::IOBuf::copyBuffer("abc")).hasValue());
+  ASSERT_TRUE(driveUntil([&] { return gotObject.load(); }));
+
+  upstream_->replyLargest({5, 2});
+  ASSERT_TRUE(driveUntil([&] { return ok.isReady(); }));
+  auto res = std::move(ok).get();
+  ASSERT_TRUE(res.hasValue());
+  EXPECT_EQ(okLargest(*res), (AbsoluteLocation{5, 3}));
+
+  EXPECT_TRUE(sg.value()->endOfSubgroup().hasValue());
+  handle->unsubscribe();
+  removeSession(subSession);
+  removeSession(publisherSession_);
+  driveIfMultiThread();
+}
+
+// A failed resume upstream releases the downstream OK with the Largest Object from before
+// the pause.
+TEST_P(MoqxRelayResumeTest, PublisherErrorReleasesWithOldLargest) {
+  auto subSession = createMockSession();
+  auto handle = subscribe(subSession, createMockConsumer(), {3, 0});
+  ASSERT_NE(handle, nullptr);
+  pause(subSession, handle);
+
+  auto ok = startUpdate(subSession, handle, forwardUpdate(RequestID(3), true));
+  ASSERT_TRUE(driveUntil([&] { return upstream_->held() == 1; }));
+  upstream_->replyError();
+  ASSERT_TRUE(driveUntil([&] { return ok.isReady(); }));
+  auto res = std::move(ok).get();
+  ASSERT_TRUE(res.hasValue());
+  EXPECT_EQ(okLargest(*res), (AbsoluteLocation{3, 0}));
+
+  handle->unsubscribe();
+  removeSession(subSession);
+  removeSession(publisherSession_);
+  driveIfMultiThread();
+}
+
+// A fill in the resume ends at the publisher's Largest Object, not the one from before
+// the pause.
+TEST_P(MoqxRelayResumeTest, FillInResumeEndsAtPublisherLargest) {
+  auto subSession = createMockSession(kVersionDraft20);
+  auto consumer = createMockConsumer();
+  auto handle = subscribe(subSession, consumer, {3, 0});
+  ASSERT_NE(handle, nullptr);
+  pause(subSession, handle);
+
+  auto upstreamFetch = std::make_shared<Fetch>();
+  answerUpstreamFetch(*publisherSession_, upstreamFetch);
+  std::atomic<bool> fillEnded{false};
+  acceptFill(*consumer, RequestID(3), fillEnded);
+  auto update = forwardUpdate(RequestID(3), true);
+  update.fill = fillFrom({1, 0});
+  auto ok = startUpdate(subSession, handle, std::move(update));
+  ASSERT_TRUE(driveUntil([&] { return upstream_->held() == 1; }));
+  upstream_->replyLargest({5, 2});
+
+  ASSERT_TRUE(driveUntil([&] { return ok.isReady() && fillEnded.load(); }))
+      << "the resume or its fill did not finish";
+  auto [standalone, joining] = fetchType(*upstreamFetch);
+  ASSERT_NE(standalone, nullptr);
+  EXPECT_EQ(standalone->start, (AbsoluteLocation{1, 0}));
+  EXPECT_EQ(standalone->end, (AbsoluteLocation{5, 3}));
+
+  handle->unsubscribe();
+  removeSession(subSession);
+  removeSession(publisherSession_);
+  driveIfMultiThread();
+}
+
+// With the subscriber on its own thread, LocalForwarder resumes through the channel to the
+// publisher's forwarder, and the OK still waits for the publisher.
+TEST_P(MoqxRelayResumeTest, CrossThreadResumeWaitsForPublisherReply) {
+  auto& subAux = makeAuxExec("resume-sub");
+  auto subSession = createMockSessionOn(subAux.exec);
+  auto pending = launchSubscribeOn(
+      subAux.evb,
+      subSession,
+      makeSubscribeRequest(RequestID(1)),
+      createMockConsumer()
+  );
+  ASSERT_TRUE(driveUntil([&] { return upstream_->held() == 1; }));
+  upstream_->replyLargest({3, 0});
+  ASSERT_TRUE(driveUntil([&] { return pending.ready(); }));
+  auto handle = pending.handle();
+  ASSERT_NE(handle, nullptr);
+  pause(subSession, handle, subAux.evb);
+
+  auto ok = startUpdate(subSession, handle, forwardUpdate(RequestID(3), true), subAux.evb);
+  ASSERT_TRUE(driveUntil([&] { return upstream_->held() == 1; }));
+  EXPECT_FALSE(ok.isReady()) << "REQUEST_UPDATE_OK did not wait for the publisher";
+
+  upstream_->replyLargest({5, 2});
+  ASSERT_TRUE(driveUntil([&] { return ok.isReady(); }));
+  auto res = std::move(ok).get();
+  ASSERT_TRUE(res.hasValue());
+  EXPECT_EQ(okLargest(*res), (AbsoluteLocation{5, 2}));
+
+  getOrCreateMockState(subSession)->subscribeHandles.push_back(handle);
+  removeSession(publisherSession_);
+  removeSession(subSession);
+  driveIfMultiThread();
+  subAux.evb->runInEventBaseThreadAndWait([] {});
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    AllModes,
+    MoqxRelayResumeTest,
+    ::testing::Values(RelayMode::SingleThread, RelayMode::MultiThread, RelayMode::LocalForwarderMT),
+    [](const ::testing::TestParamInfo<RelayMode>& info) -> std::string {
+      switch (info.param) {
+      case RelayMode::SingleThread:
+        return "SingleThread";
+      case RelayMode::MultiThread:
+        return "MultiThread";
+      case RelayMode::LocalForwarderMT:
+        return "LocalForwarderMT";
+      }
+      return "Unknown";
+    }
+);
 
 } // namespace openmoq::moqx::test

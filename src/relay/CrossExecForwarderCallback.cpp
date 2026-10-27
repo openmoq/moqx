@@ -20,9 +20,16 @@ void CrossExecForwarderCallback::onPublishDone(moxygen::MoQForwarder* forwarder)
   });
 }
 
-void CrossExecForwarderCallback::forwardChanged(moxygen::MoQForwarder* forwarder, bool forward) {
-  targetExec_->add([ftn = forwarder->fullTrackName(), downstream = downstream_, forward]() mutable {
-    downstream->forwardChanged(ftn, forward);
+void CrossExecForwarderCallback::forwardChanged(
+    moxygen::MoQForwarder* forwarder,
+    bool forward,
+    moxygen::MoQForwarder::LargestPromise largest
+) {
+  targetExec_->add([ftn = forwarder->fullTrackName(),
+                    downstream = downstream_,
+                    forward,
+                    largest = std::move(largest)]() mutable {
+    downstream->forwardChanged(ftn, forward, std::move(largest));
   });
 }
 
