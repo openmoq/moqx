@@ -55,6 +55,7 @@ $(moq_service_path_yaml)
       enabled: true
       max_tracks: 100
       max_groups_per_track: 3
+    max_subscription_buffer_kb: 51200
 admin:
   port: ${ADMIN_PORT}
   address: "::1"

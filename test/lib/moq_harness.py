@@ -233,6 +233,7 @@ $service_path_line
       enabled: false
       max_tracks: 100
       max_groups_per_track: 3
+    max_subscription_buffer_kb: 51200
 """
 )
 

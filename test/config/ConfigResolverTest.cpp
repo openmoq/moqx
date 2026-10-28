@@ -68,6 +68,12 @@ ParsedServiceConfig makeDefaultService() {
   return svc;
 }
 
+ParsedServiceDefaultsConfig makeServiceDefaults() {
+  ParsedServiceDefaultsConfig defaults;
+  defaults.max_subscription_buffer_kb = std::optional<uint32_t>{51200};
+  return defaults;
+}
+
 ParsedAuthConfig::HmacKey makeAuthKey(std::string id = "key-1", std::string secret = "secret") {
   ParsedAuthConfig::HmacKey key;
   key.id = std::move(id);
@@ -136,6 +142,7 @@ ParsedConfig makeMinimalInsecureConfig(std::string name = "test") {
   lc.endpoint = std::string("/moq-relay");
   cfg.listeners.value().push_back(std::move(lc));
   cfg.services.value().emplace("default", makeDefaultService());
+  cfg.service_defaults = std::optional<ParsedServiceDefaultsConfig>{makeServiceDefaults()};
   cfg.admin = std::optional<ParsedAdminConfig>{makeDefaultAdmin()};
   return cfg;
 }
@@ -477,7 +484,7 @@ TEST(ResolveConfig, NoCacheAndNoServiceDefaultsCache) {
   entry.authority = AuthMatch{ParsedServiceConfig::MatchRule::AnyAuthority{true}};
   entry.path = anyPath();
   svc.match.value().push_back(std::move(entry));
-  // No cache set, no service_defaults
+  // No cache set, no service_defaults.cache
   cfg.services.value().emplace("no-cache", std::move(svc));
 
   auto result = resolveConfig(cfg);
@@ -839,7 +846,7 @@ TEST(ResolveConfig, AuthMaxTokensPerMessageInheritsServiceDefaults) {
 
   ParsedServiceDefaultsConfig::AuthDefaults authDefaults;
   authDefaults.max_tokens_per_message = std::optional<uint32_t>{6};
-  ParsedServiceDefaultsConfig defaults;
+  auto defaults = makeServiceDefaults();
   defaults.auth = std::optional<ParsedServiceDefaultsConfig::AuthDefaults>{authDefaults};
   cfg.service_defaults.value() = std::optional<ParsedServiceDefaultsConfig>{defaults};
 
@@ -857,13 +864,37 @@ TEST(ResolveConfig, AuthMaxTokensPerMessageServiceOverridesServiceDefaults) {
 
   ParsedServiceDefaultsConfig::AuthDefaults authDefaults;
   authDefaults.max_tokens_per_message = std::optional<uint32_t>{6};
-  ParsedServiceDefaultsConfig defaults;
+  auto defaults = makeServiceDefaults();
   defaults.auth = std::optional<ParsedServiceDefaultsConfig::AuthDefaults>{authDefaults};
   cfg.service_defaults.value() = std::optional<ParsedServiceDefaultsConfig>{defaults};
 
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasValue());
   EXPECT_EQ(result.value().config.services.at("svc").auth.maxTokensPerMessage, 10u);
+}
+
+TEST(ResolveConfig, SubscriptionBufferRequired) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.service_defaults.value()->max_subscription_buffer_kb = std::nullopt;
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("max_subscription_buffer_kb is required"));
+}
+
+TEST(ResolveConfig, SubscriptionBufferInheritsAndOverridesServiceDefaults) {
+  auto cfg = makeMinimalInsecureConfig();
+  auto defaults = makeServiceDefaults();
+  defaults.max_subscription_buffer_kb = std::optional<uint32_t>{64};
+  cfg.service_defaults.value() = std::optional<ParsedServiceDefaultsConfig>{defaults};
+
+  auto inherited = resolveConfig(cfg);
+  ASSERT_TRUE(inherited.hasValue());
+  EXPECT_EQ(inherited.value().config.services.at("default").maxSubscriptionBufferKb, 64u);
+
+  cfg.services.value().at("default").max_subscription_buffer_kb = std::optional<uint32_t>{128};
+  auto overridden = resolveConfig(cfg);
+  ASSERT_TRUE(overridden.hasValue());
+  EXPECT_EQ(overridden.value().config.services.at("default").maxSubscriptionBufferKb, 128u);
 }
 
 TEST(ResolveConfig, AuthAnonymousClaimRoundTripsAllFields) {
@@ -1046,6 +1077,7 @@ TEST(ResolveConfig, FullTls) {
   lc.moqt_versions = std::vector<uint32_t>{16, 18};
   cfg.listeners.value().push_back(std::move(lc));
   cfg.services.value().emplace("default", makeDefaultService());
+  cfg.service_defaults = std::optional<ParsedServiceDefaultsConfig>{makeServiceDefaults()};
   cfg.admin = std::optional<ParsedAdminConfig>{makeDefaultAdmin()};
 
   auto result = resolveConfig(cfg);
@@ -1092,7 +1124,7 @@ TEST(ResolveConfig, CacheInheritanceFromServiceDefaults) {
   auto cfg = makeMinimalInsecureConfig();
   cfg.services.value().clear();
 
-  ParsedServiceDefaultsConfig defaults;
+  auto defaults = makeServiceDefaults();
   ParsedCacheConfig defaultCache;
   defaultCache.enabled = std::optional<bool>{true};
   defaultCache.max_tracks = std::optional<uint32_t>{50};
@@ -1116,7 +1148,7 @@ TEST(ResolveConfig, CachePerServiceOverridesDefaults) {
   auto cfg = makeMinimalInsecureConfig();
   cfg.services.value().clear();
 
-  ParsedServiceDefaultsConfig defaults;
+  auto defaults = makeServiceDefaults();
   ParsedCacheConfig defaultCache;
   defaultCache.enabled = std::optional<bool>{true};
   defaultCache.max_tracks = std::optional<uint32_t>{50};
@@ -1144,7 +1176,7 @@ TEST(ResolveConfig, CachePartialOverrideMergesWithDefaults) {
   auto cfg = makeMinimalInsecureConfig();
   cfg.services.value().clear();
 
-  ParsedServiceDefaultsConfig defaults;
+  auto defaults = makeServiceDefaults();
   ParsedCacheConfig defaultCache;
   defaultCache.enabled = std::optional<bool>{true};
   defaultCache.max_tracks = std::optional<uint32_t>{50};
@@ -2086,7 +2118,7 @@ TEST(ResolveConfig, CacheDurationMergesWithDefaults) {
   auto cfg = makeMinimalInsecureConfig();
   cfg.services.value().clear();
 
-  ParsedServiceDefaultsConfig defaults;
+  auto defaults = makeServiceDefaults();
   ParsedCacheConfig defaultCache;
   defaultCache.enabled = std::optional<bool>{true};
   defaultCache.max_tracks = std::optional<uint32_t>{50};
@@ -2149,7 +2181,7 @@ TEST(ResolveConfig, CacheByteLimitsMergeWithDefaults) {
   auto cfg = makeMinimalInsecureConfig();
   cfg.services.value().clear();
 
-  ParsedServiceDefaultsConfig defaults;
+  auto defaults = makeServiceDefaults();
   ParsedCacheConfig defaultCache;
   defaultCache.enabled = std::optional<bool>{true};
   defaultCache.max_tracks = std::optional<uint32_t>{50};

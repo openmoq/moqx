@@ -43,6 +43,7 @@ service_defaults:
   auth:
     max_tokens_per_message: 4            # Caps AUTHORIZATION_TOKEN params of the service's token_type per
                                           # message; a message over the cap is rejected outright, not truncated.
+  max_subscription_buffer_kb: 51200      # Required. 50 MB; see docs/config.md#services. 0 is unlimited.
 
 services:
   live-streaming:
