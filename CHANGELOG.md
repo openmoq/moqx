@@ -33,6 +33,7 @@ How to add an entry: see [CONTRIBUTING.md](/CONTRIBUTING.md#changelog).
 - A track that a publisher pushed with PUBLISH had the same stale-Largest FETCH problem after a restart, and its publisher-set cache duration was ignored in favor of the [cache](/docs/config.md#cache) default. ([#850](https://github.com/openmoq/moqx/pull/850))
 - [`upstream.tls.ca_cert`](/docs/config.md#upstreams) was ignored, so upstream certificates were checked against the system trust store. The relay now requires them to chain to that CA and match the URL's host, and it does not start if the file cannot be loaded. ([#865](https://github.com/openmoq/moqx/pull/865))
 - The [cache](/docs/config.md#cache) kept gap markers of evicted groups on a long-lived track, using memory outside its size limit. ([#875](https://github.com/openmoq/moqx/pull/875))
+- `SIGHUP` no longer ends the relay; it logs that config [reload](/docs/config.md#reloading) is not supported.
 
 [0.3.6] - 2026-10-10
 ====================
