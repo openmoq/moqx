@@ -25,7 +25,8 @@ const FullTrackName kFtn{kTestNs, "track1"};
 struct RecordingTrackEventCallback : public TrackEventCallback {
   void onEmpty(const FullTrackName& ftn) override { onEmptyFtn = ftn; }
 
-  void forwardChanged(const FullTrackName& ftn, bool forward) override {
+  void
+  forwardChanged(const FullTrackName& ftn, bool forward, MoQForwarder::LargestPromise) override {
     forwardChangedFtn = ftn;
     lastForward = forward;
   }
@@ -64,7 +65,9 @@ TEST_F(CrossExecForwarderCallbackTest, QueuedEventsCarryTheNameNotTheForwarder) 
   const std::pair<const char*, Fire> cases[] = {
       {"onEmpty", [](CrossExecForwarderCallback& cb, MoQForwarder* f) { cb.onEmpty(f); }},
       {"forwardChanged",
-       [](CrossExecForwarderCallback& cb, MoQForwarder* f) { cb.forwardChanged(f, true); }},
+       [](CrossExecForwarderCallback& cb, MoQForwarder* f) {
+         cb.forwardChanged(f, true, MoQForwarder::LargestPromise());
+       }},
       {"newGroupRequested",
        [](CrossExecForwarderCallback& cb, MoQForwarder* f) { cb.newGroupRequested(f, 7); }},
       {"onPublishDone", [](CrossExecForwarderCallback& cb, MoQForwarder* f) { cb.onPublishDone(f); }

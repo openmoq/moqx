@@ -27,7 +27,11 @@ public:
 
   void onEmpty(moxygen::MoQForwarder* forwarder) override;
   void onPublishDone(moxygen::MoQForwarder* forwarder) override;
-  void forwardChanged(moxygen::MoQForwarder* forwarder, bool forward) override;
+  void forwardChanged(
+      moxygen::MoQForwarder* forwarder,
+      bool forward,
+      moxygen::MoQForwarder::LargestPromise largest
+  ) override;
   void newGroupRequested(moxygen::MoQForwarder* forwarder, uint64_t group) override;
 
 private:

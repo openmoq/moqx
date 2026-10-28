@@ -28,7 +28,11 @@ public:
   explicit WeakRelayForwarderCallback(std::weak_ptr<MoqxRelay> relay) : relay_(std::move(relay)) {}
 
   void onEmpty(moxygen::MoQForwarder* forwarder) override;
-  void forwardChanged(moxygen::MoQForwarder* forwarder, bool forward) override;
+  void forwardChanged(
+      moxygen::MoQForwarder* forwarder,
+      bool forward,
+      moxygen::MoQForwarder::LargestPromise largest
+  ) override;
   void newGroupRequested(moxygen::MoQForwarder* forwarder, uint64_t group) override;
   void fillRequested(
       moxygen::MoQForwarder* forwarder,
@@ -37,7 +41,11 @@ public:
   ) override;
 
   void onEmpty(const moxygen::FullTrackName& ftn) override;
-  void forwardChanged(const moxygen::FullTrackName& ftn, bool forward) override;
+  void forwardChanged(
+      const moxygen::FullTrackName& ftn,
+      bool forward,
+      moxygen::MoQForwarder::LargestPromise largest
+  ) override;
   void newGroupRequested(const moxygen::FullTrackName& ftn, uint64_t group) override;
   void onPublishDone(const moxygen::FullTrackName& ftn) override;
 

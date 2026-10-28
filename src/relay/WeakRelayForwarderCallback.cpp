@@ -14,8 +14,12 @@ void WeakRelayForwarderCallback::onEmpty(moxygen::MoQForwarder* forwarder) {
   onEmpty(forwarder->fullTrackName());
 }
 
-void WeakRelayForwarderCallback::forwardChanged(moxygen::MoQForwarder* forwarder, bool forward) {
-  forwardChanged(forwarder->fullTrackName(), forward);
+void WeakRelayForwarderCallback::forwardChanged(
+    moxygen::MoQForwarder* forwarder,
+    bool forward,
+    moxygen::MoQForwarder::LargestPromise largest
+) {
+  forwardChanged(forwarder->fullTrackName(), forward, std::move(largest));
 }
 
 void WeakRelayForwarderCallback::newGroupRequested(
@@ -41,9 +45,13 @@ void WeakRelayForwarderCallback::onEmpty(const moxygen::FullTrackName& ftn) {
   }
 }
 
-void WeakRelayForwarderCallback::forwardChanged(const moxygen::FullTrackName& ftn, bool forward) {
+void WeakRelayForwarderCallback::forwardChanged(
+    const moxygen::FullTrackName& ftn,
+    bool forward,
+    moxygen::MoQForwarder::LargestPromise largest
+) {
   if (auto r = relay_.lock()) {
-    r->forwardChangedImpl(ftn, forward);
+    r->forwardChangedImpl(ftn, forward, std::move(largest));
   }
 }
 

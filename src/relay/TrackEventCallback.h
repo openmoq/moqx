@@ -17,7 +17,11 @@ public:
   virtual ~TrackEventCallback() = default;
 
   virtual void onEmpty(const moxygen::FullTrackName& ftn) = 0;
-  virtual void forwardChanged(const moxygen::FullTrackName& ftn, bool forward) = 0;
+  virtual void forwardChanged(
+      const moxygen::FullTrackName& ftn,
+      bool forward,
+      moxygen::MoQForwarder::LargestPromise largest
+  ) = 0;
   virtual void newGroupRequested(const moxygen::FullTrackName& ftn, uint64_t group) = 0;
   virtual void onPublishDone(const moxygen::FullTrackName& ftn) = 0;
 };

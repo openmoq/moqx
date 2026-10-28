@@ -1912,15 +1912,17 @@ void MoqxCache::setTrackState(
   } else {
     clearMaxCacheDuration(ftn);
   }
-  auto& track = getOrCreateTrack(ftn);
-  track.extensions = std::move(extensions);
-  if (!largest) {
-    return;
+  getOrCreateTrack(ftn).extensions = std::move(extensions);
+  if (largest) {
+    updateLargest(ftn, *largest);
   }
-  auto res = track.updateLargest(*largest);
+}
+
+void MoqxCache::updateLargest(const FullTrackName& ftn, AbsoluteLocation largest) {
+  auto res = getOrCreateTrack(ftn).updateLargest(largest);
   if (res.hasError()) {
     // Upstream's Largest is past the cached end of track.
-    XLOG(ERR) << "setTrackState ftn=" << ftn << " err=" << res.error().msg;
+    XLOG(ERR) << "updateLargest ftn=" << ftn << " err=" << res.error().msg;
   }
 }
 
