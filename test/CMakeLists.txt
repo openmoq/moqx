@@ -307,6 +307,12 @@ moqx_add_dual_stack_test(relay_upstreams
   ENVIRONMENT "MOQBIN=${MOXYGEN_BIN_DIR}"
 )
 
+moqx_add_dual_stack_test(relay_sighup
+  COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/test_relay_sighup.py $<TARGET_FILE:moqx>
+  TIMEOUT 60
+  ENVIRONMENT "MOQBIN=${MOXYGEN_BIN_DIR}"
+)
+
 # QMUX is a TCP transport, not a QUIC stack, so this one sweeps drafts only.
 foreach(version 16 18)
   set(test_name qmux_relay)
@@ -324,13 +330,6 @@ foreach(version 16 18)
     RESOURCE_LOCK qmux_relay_ports
   )
 endforeach()
-
-# Signal handling does not depend on the QUIC stack, so this runs once.
-add_test(
-  NAME relay_sighup
-  COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_relay_sighup.sh $<TARGET_FILE:moqx>
-)
-set_tests_properties(relay_sighup PROPERTIES TIMEOUT 30)
 
 moqx_add_dual_stack_test(admin_info_endpoint
   COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_admin_info.sh $<TARGET_FILE:moqx>
