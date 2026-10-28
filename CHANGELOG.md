@@ -34,6 +34,7 @@ How to add an entry: see [CONTRIBUTING.md](/CONTRIBUTING.md#changelog).
 - [`upstream.tls.ca_cert`](/docs/config.md#upstreams) was ignored, so upstream certificates were checked against the system trust store. The relay now requires them to chain to that CA and match the URL's host, and it does not start if the file cannot be loaded. ([#865](https://github.com/openmoq/moqx/pull/865))
 - The [cache](/docs/config.md#cache) kept gap markers of evicted groups on a long-lived track, using memory outside its size limit. ([#875](https://github.com/openmoq/moqx/pull/875))
 - A subscriber that resumes a paused subscription now gets the publisher's current Largest Object in its REQUEST_UPDATE_OK, so it can FETCH the objects published while it was paused. ([#876](https://github.com/openmoq/moqx/pull/876))
+- A SUBSCRIBE that arrives while the relay is resuming a paused publisher now reports the publisher's current Largest Object in SUBSCRIBE_OK. ([#877](https://github.com/openmoq/moqx/pull/877))
 
 [0.3.6] - 2026-10-10
 ====================

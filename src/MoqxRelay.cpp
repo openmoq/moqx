@@ -2126,25 +2126,38 @@ SubscribeError makeAddSubscriberError(RequestID requestID) {
 
 // Adds a subscriber to fwd, fires any pending NEW_GROUP_REQUEST, and maps a null
 // result (forwarder draining) to INTERNAL_ERROR. Shared by the subscribe paths
-// that attach to an already-live forwarder.
-Publisher::SubscribeResult attachSubscriber(
-    MoQForwarder& fwd,
+// that attach to an already-live forwarder. While a resume is in flight, the
+// SUBSCRIBE_OK waits for the source's Largest, as a resuming REQUEST_UPDATE_OK does.
+folly::coro::Task<Publisher::SubscribeResult> attachSubscriber(
+    std::shared_ptr<MoQForwarder> fwd,
     std::shared_ptr<MoQSession> session,
-    const SubscribeRequest& subReq,
+    SubscribeRequest subReq,
     std::shared_ptr<TrackConsumer> consumer
 ) {
-  auto subscriber = fwd.addSubscriber(session->sessionId(), subReq, std::move(consumer));
+  auto subscriber = fwd->addSubscriber(session->sessionId(), subReq, std::move(consumer));
   if (!subscriber) {
-    XLOG(ERR) << "addSubscriber returned null (draining?) for " << fwd.fullTrackName()
+    XLOG(ERR) << "addSubscriber returned null (draining?) for " << fwd->fullTrackName()
               << " reqID=" << subReq.requestID;
-    return folly::makeUnexpected(makeAddSubscriberError(subReq.requestID));
+    co_return folly::makeUnexpected(makeAddSubscriberError(subReq.requestID));
   }
-  XLOG(DBG4) << "added subscriber for ftn=" << fwd.fullTrackName();
-  fwd.tryProcessNewGroupRequest(subReq.params);
+  XLOG(DBG4) << "added subscriber for ftn=" << fwd->fullTrackName();
+  fwd->tryProcessNewGroupRequest(subReq.params);
+  if (auto ready = fwd->largestReady()) {
+    co_await std::move(*ready);
+    // The source's Largest can pass the end of a range checked before the wait.
+    if (auto err = checkRangeNotInPast(*fwd, subReq, *session)) {
+      subscriber->unsubscribe();
+      co_return folly::makeUnexpected(std::move(*err));
+    }
+    if (auto largest = fwd->largest()) {
+      subscriber->updateLargest(*largest);
+    }
+  }
+  // After the wait, so a fill resolves against the source's Largest.
   if (subReq.fill) {
     subscriber->requestFill(subReq.requestID, *subReq.fill);
   }
-  return subscriber;
+  co_return subscriber;
 }
 
 } // namespace
@@ -2327,6 +2340,11 @@ folly::coro::Task<MoqxRelay::PublisherAttachment> MoqxRelay::attachNewLocalForwa
             publisherClaim.markReady(InitialTrackState{ok.largest, ok.extensions});
           }
         }
+        // The channel subscriber can resume the publisher, whose Largest then arrives
+        // with the publisher's reply.
+        if (auto ready = publisherFwd->largestReady()) {
+          co_await std::move(*ready);
+        }
         // Capture largest/extensions on publisherExec to set the initial state for the
         // subscriber.  Captured but ignored when the firstSetup returned an error.
         attach.initial = InitialTrackState::capture(*publisherFwd);
@@ -2495,7 +2513,12 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriber
     if (auto err = checkRangeNotInPast(readyFwd, subReq, *session)) {
       co_return folly::makeUnexpected(std::move(*err));
     }
-    co_return attachSubscriber(readyFwd, std::move(session), subReq, std::move(consumer));
+    co_return co_await attachSubscriber(
+        ready->forwarder,
+        std::move(session),
+        subReq,
+        std::move(consumer)
+    );
   }
 
   // This thread owns setup. The claim stays open until the tail, so same-thread attachers
@@ -2561,6 +2584,12 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriber
   // Also on the subscriber, so a post-SUBSCRIBE_OK joining fetch resolves.
   attach.initial.applyTo(*sub);
   replayPendingFowarderEvents(localFwd.get(), attach.finalCallback, *pendingCb, forward);
+  // The publisher's Largest can pass the end of the requested range.
+  if (auto err = checkRangeNotInPast(*localFwd, subReq, *session)) {
+    claim.markReady();
+    sub->unsubscribe();
+    co_return folly::makeUnexpected(std::move(*err));
+  }
   localFwd->tryProcessNewGroupRequest(subReq.params);
   claim.markReady();
   if (subReq.fill) {
@@ -2696,7 +2725,12 @@ MoqxRelay::subscribeImpl(SubscribeRequest subReq, std::shared_ptr<TrackConsumer>
     if (auto err = checkRangeNotInPast(*forwarder, subReq, *session)) {
       co_return folly::makeUnexpected(std::move(*err));
     }
-    co_return attachSubscriber(*forwarder, std::move(session), subReq, std::move(consumer));
+    co_return co_await attachSubscriber(
+        std::move(forwarder),
+        std::move(session),
+        subReq,
+        std::move(consumer)
+    );
   }
 }
 

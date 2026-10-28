@@ -289,8 +289,9 @@ TEST_P(MoQRelayTest, FetchAfterRepublishRunsToPublishLargest) {
   driveIfMultiThread();
 }
 
-// A subscriber pauses and resumes a PUBLISH. The resume's OK reports the Largest from
-// the publisher's REQUEST_UPDATE_OK, and a FETCH for the gap goes upstream.
+// A subscriber resumes the paused PUBLISH, first with SUBSCRIBE and then with
+// REQUEST_UPDATE after a pause. Each OK reports the Largest from the publisher's
+// REQUEST_UPDATE_OK, and a FETCH for the gap goes upstream.
 TEST_P(MoQRelayTest, ResumeReportsUpstreamLargest) {
   resetRelay(config::CacheConfig{.maxCachedTracks = 10});
   relay_->setAllowedNamespacePrefix(kAllowedPrefix);
@@ -319,6 +320,7 @@ TEST_P(MoQRelayTest, ResumeReportsUpstreamLargest) {
   auto handle =
       subscribeToTrack(subscriberSession, kTestTrackName, createMockConsumer(), RequestID(1));
   ASSERT_NE(handle, nullptr);
+  EXPECT_EQ(handle->subscribeOk().largest, (AbsoluteLocation{3, 0}));
   auto forwardUpdate = [&](RequestID requestID, bool forward) {
     RequestUpdate update;
     update.requestID = requestID;
@@ -1016,6 +1018,51 @@ protected:
   std::shared_ptr<TrackConsumer> publishConsumer_;
 };
 
+// A SUBSCRIBE that resumes the paused publisher waits for its REQUEST_UPDATE_OK, and its
+// SUBSCRIBE_OK reports that Largest Object.
+TEST_P(MoqxRelayResumeTest, SubscribeWaitsForPublisherReply) {
+  auto subSession = createMockSession();
+  auto pending = startSubscribe(
+      sessionExec(),
+      subSession,
+      makeSubscribeRequest(RequestID(1)),
+      createMockConsumer()
+  );
+  ASSERT_TRUE(driveUntil([&] { return upstream_->held() == 1; }));
+  EXPECT_FALSE(pending.ready()) << "SUBSCRIBE_OK did not wait for the publisher";
+
+  upstream_->replyLargest({3, 0});
+  ASSERT_TRUE(driveUntil([&] { return pending.ready(); }));
+  auto handle = pending.handle();
+  ASSERT_NE(handle, nullptr);
+  EXPECT_EQ(handle->subscribeOk().largest, (AbsoluteLocation{3, 0}));
+
+  handle->unsubscribe();
+  removeSession(subSession);
+  removeSession(publisherSession_);
+  driveIfMultiThread();
+}
+
+// Below draft 20, a bounded SUBSCRIBE fails with INVALID_RANGE when the publisher's reply
+// moves Largest past its end group.
+TEST_P(MoqxRelayResumeTest, SubscribeEndBehindPublisherLargestIsRejected) {
+  auto subSession = createMockSession(kVersionDraft16);
+  auto sub = makeSubscribeRequest(RequestID(1));
+  sub.filter = LocationFilter::range(kLocationMin, uint64_t(2));
+  auto pending = startSubscribe(sessionExec(), subSession, std::move(sub), createMockConsumer());
+  ASSERT_TRUE(driveUntil([&] { return upstream_->held() == 1; }));
+
+  upstream_->replyLargest({5, 0});
+  ASSERT_TRUE(driveUntil([&] { return pending.ready(); }));
+  ASSERT_TRUE(pending.result->hasValue());
+  ASSERT_TRUE(pending.result->value().hasError());
+  EXPECT_EQ(pending.result->value().error().errorCode, SubscribeErrorCode::INVALID_RANGE);
+
+  removeSession(subSession);
+  removeSession(publisherSession_);
+  driveIfMultiThread();
+}
+
 // A resume's REQUEST_UPDATE_OK waits for the publisher's, and reports its Largest Object.
 TEST_P(MoqxRelayResumeTest, ResumeOkWaitsForPublisherReply) {
   auto subSession = createMockSession();
@@ -1148,6 +1195,7 @@ TEST_P(MoqxRelayResumeTest, CrossThreadResumeWaitsForPublisherReply) {
   ASSERT_TRUE(driveUntil([&] { return pending.ready(); }));
   auto handle = pending.handle();
   ASSERT_NE(handle, nullptr);
+  EXPECT_EQ(handle->subscribeOk().largest, (AbsoluteLocation{3, 0}));
   pause(subSession, handle, subAux.evb);
 
   auto ok = startUpdate(subSession, handle, forwardUpdate(RequestID(3), true), subAux.evb);

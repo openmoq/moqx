@@ -1125,13 +1125,11 @@ TEST_P(MoQRelayTest, ParkedSubscribeLandsOnTheLiveForwarderAfterARepublish) {
   ASSERT_NE(firstPubConsumer, nullptr);
   ASSERT_NE(secondPubConsumer, nullptr);
 
-  for (int i = 0; i < 8 && !parked.ready(); ++i) {
+  // The waiter resumes and attaches, but its SUBSCRIBE_OK waits for the publisher to
+  // resume, which goes through the parked relayExec.
+  for (int i = 0; i < 8; ++i) {
     pubEvb->runInEventBaseThreadAndWait([]() {});
   }
-  ASSERT_TRUE(parked.ready()) << "the parked subscribe never resumed";
-  auto parkedHandle = parked.handle();
-  ASSERT_NE(parkedHandle, nullptr);
-  getOrCreateMockState(parkedSub)->subscribeHandles.push_back(parkedHandle);
 
   // relayExec is still parked, so neither publisher forwarder has drained. Both can still
   // deliver, and only the live one should reach the parked subscriber.
@@ -1147,6 +1145,10 @@ TEST_P(MoQRelayTest, ParkedSubscribeLandsOnTheLiveForwarderAfterARepublish) {
       << "the parked subscriber is not attached to the forwarder that holds the track";
 
   relayGate.release();
+  ASSERT_TRUE(driveUntil([&] { return parked.ready(); })) << "the parked subscribe never resumed";
+  auto parkedHandle = parked.handle();
+  ASSERT_NE(parkedHandle, nullptr);
+  getOrCreateMockState(parkedSub)->subscribeHandles.push_back(parkedHandle);
   EXPECT_TRUE(driveUntil([&] { return claiming.ready(); }))
       << "the displaced subscribe never unwound";
 
