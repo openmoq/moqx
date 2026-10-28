@@ -1,0 +1,1 @@
+- After a publisher restarted a track, a FETCH that the relay answered from its cache stopped at the previous session's Largest Object and did not return the newer objects. ([#849](https://github.com/openmoq/moqx/pull/849))

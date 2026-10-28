@@ -27,7 +27,7 @@
    - **Config (`src/config/**`)**: New or renamed fields must appear in `docs/dev/config.md`, `docs/config.md` (generated via `scripts/dev/config-schema-to-markdown.sh`), and `config.example.yaml`.
    - **Metrics (`src/{stats,admin}/**`)**: Renaming or dropping a Prometheus metric must update `docs/metrics.md`.
    - **Logging (`src/logging/**`)**: Keep new log statements on `XLOG` with an appropriate category (`docs/logging.md`).
-   - **Changelog (`CHANGELOG.md`)**: User-visible changes per `CONTRIBUTING.md#changelog` must include an entry under `Unreleased`.
+   - **Changelog (`changelog.d/`)**: User-visible changes per `CONTRIBUTING.md#changelog` must include an entry file under `changelog.d/`, in the format of `changelog.d/README.md`.
 
 ## Paths & Files to Ignore
 

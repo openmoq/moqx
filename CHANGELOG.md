@@ -9,31 +9,7 @@ How to add an entry: see [CONTRIBUTING.md](/CONTRIBUTING.md#changelog).
 [Unreleased]
 ============
 
-## Added
-
-- Admin API: [`/qlog/capture`](/docs/logging.md#on-demand-capture) qlogs the next N new mvfst connections on a running relay. ([#779](https://github.com/openmoq/moqx/pull/779))
-- [`cluster`](/docs/config.md#cluster) config: `enabled` turns MoQ Cluster negotiation off, and `hop_id` sets a stable Hop ID, with 0 for an anonymous relay. ([#837](https://github.com/openmoq/moqx/pull/837))
-- A service can peer with several relays through an [`upstreams`](/docs/config.md#upstreams) list, and each upstream link takes a `relay_cost`. `/state` reports a list's links under `upstreams`. ([#838](https://github.com/openmoq/moqx/pull/838))
-- A release cut with the `version release` workflow's `optimize` input ships a profile-guided, link-time-optimized `linux-amd64` relay, in the tarball and the image, that uses less CPU at the same throughput. See [PGO and LTO](/BUILD.md#pgo-and-lto). ([#804](https://github.com/openmoq/moqx/pull/804))
-
-## Changed
-
-- **Breaking:** an [`upstream`](/docs/config.md#upstreams) connection uses MoQT draft 18, so the upstream relay's listener must include 18 in `moqt_versions`. Peering also carries tracks that publishers push with PUBLISH. ([#833](https://github.com/openmoq/moqx/pull/833))
-- **Breaking:** [MoQ Cluster](/docs/moq-cluster.md) ([draft-01](https://datatracker.ietf.org/doc/draft-lcurley-moq-cluster/01/)) replaces relay hops. Advertisements now carry `ROUTE_COST`. Loop protection requires every relay in a cycle to run this version. ([#836](https://github.com/openmoq/moqx/pull/836))
-- With [`strict_claims`](/docs/config.md#authentication-and-authorization) on, the relay rejects a token that carries a claim other than `exp` and `moqt`, repeats a claim, or has an `exp` that is not an unsigned integer. ([#868](https://github.com/openmoq/moqx/pull/868))
-
-## Fixed
-
-- The relay could crash when a new PUBLISH replaced a track that a TRACK_FILTER subscription was ranking. ([#823](https://github.com/openmoq/moqx/pull/823))
-- Docker: the relay image starts with its default config under a non-root uid; `/var/log/moqx/qlog` is created writable. ([#827](https://github.com/openmoq/moqx/pull/827))
-- With an [`upstream`](/docs/config.md#upstreams) configured, the relay could crash while waiting for the upstream connection or while shutting down. ([#821](https://github.com/openmoq/moqx/pull/821))
-- With an [`upstream`](/docs/config.md#upstreams) configured, the relay could crash when it shut down just as the upstream connection completed. ([#825](https://github.com/openmoq/moqx/pull/825))
-- The relay leaked memory each time a subscriber rejected a track that the relay pushed with PUBLISH. ([#831](https://github.com/openmoq/moqx/pull/831))
-- After a publisher restarted a track, a FETCH that the relay answered from its cache stopped at the previous session's Largest Object and did not return the newer objects. ([#849](https://github.com/openmoq/moqx/pull/849))
-- A track that a publisher pushed with PUBLISH had the same stale-Largest FETCH problem after a restart, and its publisher-set cache duration was ignored in favor of the [cache](/docs/config.md#cache) default. ([#850](https://github.com/openmoq/moqx/pull/850))
-- [`upstream.tls.ca_cert`](/docs/config.md#upstreams) was ignored, so upstream certificates were checked against the system trust store. The relay now requires them to chain to that CA and match the URL's host, and it does not start if the file cannot be loaded. ([#865](https://github.com/openmoq/moqx/pull/865))
-- The [cache](/docs/config.md#cache) kept gap markers of evicted groups on a long-lived track, using memory outside its size limit. ([#875](https://github.com/openmoq/moqx/pull/875))
-- A client sending sparse FETCHes could grow the [cache](/docs/config.md#cache)'s gap markers without bound; each track now keeps at most 256. ([#880](https://github.com/openmoq/moqx/pull/880))
+Entries for the next release are in [changelog.d/](/changelog.d/README.md).
 
 [0.3.6] - 2026-10-10
 ====================
