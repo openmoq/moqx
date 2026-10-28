@@ -810,6 +810,17 @@ class Harness:
             )
             self._dump_relay_log(name)
 
+    def relay_signal(self, name, signum):
+        """Send a running relay <signum>. Asserts nothing: assert on what follows."""
+        relay = self.relay_of("relay_signal", name)
+        if signum in (signal.SIGKILL, signal.SIGTERM, signal.SIGINT):
+            raise HarnessError(
+                f"relay_signal: use relay_kill or relay_stop, not signal {signum}"
+            )
+        if relay.proc is None or relay.proc.poll() is not None:
+            raise HarnessError(f"relay_signal: relay {name} is not running")
+        relay.proc.send_signal(signum)
+
     # ── Assertions ─────────────────────────────────────────────────────────────
     def expect_received(self, actor):
         out = _lines(actor.out_path)
@@ -940,6 +951,14 @@ class Harness:
             self._pass(f"[{name}] relay alive")
         else:
             self._fail(f"[{name}] relay is not running")
+            self._dump_relay_log(name)
+
+    def expect_relay_log(self, name, text):
+        relay = self.relay_of("expect_relay_log", name)
+        if any(text in line for line in _lines(relay.log_path)):
+            self._pass(f"[{name}] relay log contains {text!r}")
+        else:
+            self._fail(f"[{name}] relay log lacks {text!r}")
             self._dump_relay_log(name)
 
     def expect_settled(self, settle, *names):

@@ -260,6 +260,7 @@ tail, the actor's output, the publishers on that namespace.
 | `expect_relay_id(name, want)` | `/state` `relay_id` |
 | `expect_metric(name, metric, op, want)` | A `moqx_*` Prometheus metric |
 | `expect_relay_alive(name)` | The relay process is still running |
+| `expect_relay_log(name, text)` | A line of the relay's log contains `text` |
 | `relay_stop(name)` | Doubles as an assertion: the relay exited 0 on `SIGTERM` |
 | `expect_settled(settle, *names)` | Every named relay's whole `namespace_tree` is unchanged over a `settle`-second window; defaults to all relays still up |
 
@@ -310,6 +311,10 @@ A test does not need to take its relays down at the end. Teardown `SIGTERM`s
 every relay the test left running and fails the run if one exits non-zero —
 `relay_stop` is for when you need that check to happen *mid-test*, so the
 assertions that follow can observe the aftermath.
+
+`h.relay_signal(name, signum)` sends a running relay any other signal and
+asserts nothing. [`test_relay_sighup.py`](/test/test_relay_sighup.py) follows a
+`SIGHUP` with assertions that the relay and its sessions kept running.
 
 ## Failing correctly
 
