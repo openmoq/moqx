@@ -20,25 +20,6 @@ defaults:
     shell: 'bash'
 
 jobs:
-  debugger:
-    if: |-
-      ${{ fromJSON(vars.GEMINI_DEBUG || vars.ACTIONS_STEP_DEBUG || 'false') }}
-    runs-on: 'ubuntu-latest'
-    permissions:
-      contents: 'read'
-    steps:
-      - name: 'Print context for debugging'
-        env:
-          DEBUG_event_name: '${{ github.event_name }}'
-          DEBUG_event__action: '${{ github.event.action }}'
-          DEBUG_event__comment__author_association: '${{ github.event.comment.author_association }}'
-          DEBUG_event__issue__author_association: '${{ github.event.issue.author_association }}'
-          DEBUG_event__pull_request__author_association: '${{ github.event.pull_request.author_association }}'
-          DEBUG_event__review__author_association: '${{ github.event.review.author_association }}'
-          DEBUG_event: '${{ toJSON(github.event) }}'
-        run: |-
-          env | grep '^DEBUG_'
-
   dispatch:
     # For PRs: only if not from a fork and not a draft
     # For comments: only if user types @gemini-cli and is OWNER/MEMBER/COLLABORATOR
