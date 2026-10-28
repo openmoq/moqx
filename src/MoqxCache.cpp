@@ -684,7 +684,8 @@ public:
   folly::Expected<folly::Unit, MoQPublishError>
   beginObject(uint64_t objectID, uint64_t length, Payload initialPayload, Extensions extensions)
       override {
-    if (cacheTrack_.shouldSkipCaching()) {
+    cachingCurrentObject_ = !cacheTrack_.shouldSkipCaching();
+    if (!cachingCurrentObject_) {
       return consumer_
           ->beginObject(objectID, length, std::move(initialPayload), std::move(extensions));
     }
@@ -721,11 +722,11 @@ public:
 
   folly::Expected<ObjectPublishStatus, MoQPublishError>
   objectPayload(Payload payload, bool finSubgroup) override {
-    if (cacheTrack_.shouldSkipCaching()) {
+    // Duration changes apply from the next object; eviction stops caching immediately.
+    if (!cachingCurrentObject_ || cacheTrack_.evicted) {
       return consumer_->objectPayload(std::move(payload), finSubgroup);
     }
     size_t addedBytes = payload->computeChainDataLength();
-    // Caching can resume mid-object, after a beginObject() that was not cached.
     if (currentOffset_ + addedBytes > currentLength_) {
       XLOG(ERR) << "Payload past cached object length; group=" << group_
                 << " objID=" << currentObject_;
@@ -835,8 +836,9 @@ private:
   MoqxCache& cache_;
   FullTrackName ftn_;
   uint64_t currentObject_{0};
-  uint64_t currentLength_{0}; // Total length of the current object
-  uint64_t currentOffset_{0}; // Payload length received so far
+  uint64_t currentLength_{0};        // Total length of the current object
+  uint64_t currentOffset_{0};        // Payload length received so far
+  bool cachingCurrentObject_{false}; // Snapshot taken at beginObject()
 };
 
 // Caches incoming objects from a subscription and forwards to the consumer.
@@ -1006,12 +1008,16 @@ public:
       const FullTrackName& ftn
   )
       : proxyFin_(proxyFin), consumer_(std::move(consumer)), fetchRangeIt_(std::move(fetchRangeIt)),
-        cache_(cache), ftn_(ftn) {
+        cache_(cache), ftn_(ftn), cachingEnabled_(!fetchRangeIt_.track->shouldSkipCaching()) {
     // Track becomes non-evictable (remove from LRU)
     cache_.removeTrackFromLRU(*fetchRangeIt_.track);
 
-    auto start = fetchRangeIt_.minLocation;
-    emplaceAndPinGroup(start, FetchInProgressEntry{fetchRangeIt_.maxLocation, start, this});
+    fetchInProgressIt_ = fetchRangeIt_.track->fetchesInProgress.end();
+    // Nothing will be cached, so no other fetch should wait on this one.
+    if (cachingEnabled_) {
+      auto start = fetchRangeIt_.minLocation;
+      emplaceAndPinGroup(start, FetchInProgressEntry{fetchRangeIt_.maxLocation, start, this});
+    }
   }
 
   ~FetchWriteback() override {
@@ -1073,7 +1079,10 @@ public:
     if (auto res = checkInRange({gID, objID}); !res) {
       return res;
     }
-    if (fetchRangeIt_.track->shouldSkipCaching()) {
+    if (skipCaching()) {
+      if (fin) {
+        onFetchStreamEnd();
+      }
       return consumer_->object(
           gID,
           sgID,
@@ -1126,7 +1135,7 @@ public:
     if (!inRange) {
       return inRange;
     }
-    if (fetchRangeIt_.track->shouldSkipCaching()) {
+    if (skipCaching()) {
       return consumer_->beginObject(gID, sgID, objID, len, std::move(initPayload), std::move(ext));
     }
     constexpr auto kNormal = ObjectStatus::NORMAL;
@@ -1154,11 +1163,13 @@ public:
           MoQPublishError(MoQPublishError::MALFORMED_TRACK, "Payload without beginObject")
       );
     }
-    if (fetchRangeIt_.track->shouldSkipCaching()) {
+    if (skipCaching()) {
+      if (finFetch) {
+        onFetchStreamEnd();
+      }
       return consumer_->objectPayload(std::move(payload), finFetch && proxyFin_);
     }
     size_t addedBytes = payload->computeChainDataLength();
-    // Caching can resume mid-object, after a beginObject() that was not cached.
     if (currentOffset_ + addedBytes > currentLength_) {
       XLOG(ERR) << "Payload past cached object length at " << *fetchRangeIt_;
       reset(ResetStreamErrorCode::MALFORMED_TRACK);
@@ -1208,7 +1219,10 @@ public:
     if (auto res = checkInRange({gID, objID}); !res) {
       return res;
     }
-    if (fetchRangeIt_.track->shouldSkipCaching()) {
+    if (skipCaching()) {
+      if (fin) {
+        onFetchStreamEnd();
+      }
       return consumer_->endOfGroup(gID, sgID, objID, fin && proxyFin_);
     }
     // cacheImpl -> cacheObject inserts gap for remaining objects in this group
@@ -1225,7 +1239,8 @@ public:
     if (auto res = checkInRange({gID, objID}); !res) {
       return res;
     }
-    if (fetchRangeIt_.track->shouldSkipCaching()) {
+    if (skipCaching()) {
+      onFetchStreamEnd();
       return consumer_->endOfTrackAndGroup(gID, sgID, objID);
     }
     // cacheImpl -> cacheObject inserts gaps for remaining objects and groups
@@ -1238,9 +1253,7 @@ public:
   }
 
   folly::Expected<folly::Unit, MoQPublishError> endOfFetch() override {
-    finishRange();
-    updateInProgress();
-    complete_.post();
+    onFetchStreamEnd();
     if (proxyFin_) {
       XLOG(DBG1) << "Forward End of Fetch";
       return consumer_->endOfFetch();
@@ -1298,6 +1311,20 @@ public:
   bool wasReset() const { return wasReset_; }
 
 private:
+  // A later change in cache duration must not flip caching mid-fetch.
+  bool skipCaching() const { return !cachingEnabled_ || fetchRangeIt_.track->evicted; }
+
+  // An uncached fetch's cursor never moved, so it proves nothing about the range.
+  void onFetchStreamEnd() {
+    if (skipCaching()) {
+      fetchRangeIt_.invalidate();
+    } else {
+      finishRange();
+    }
+    updateInProgress();
+    complete_.post();
+  }
+
   // Upstream may only send what it was asked for, markers included: a marker
   // takes an object ID like any object.  Anything else would be cached and
   // forwarded to a consumer that never requested it, and the gap marking would
@@ -1361,6 +1388,7 @@ private:
   FetchRangeIterator fetchRangeIt_;
   MoqxCache& cache_;
   FullTrackName ftn_;
+  const bool cachingEnabled_;
   std::optional<AbsoluteLocation> upstreamEnd_;
   std::vector<std::pair<AbsoluteLocation, AbsoluteLocation>> pendingGaps_;
 
