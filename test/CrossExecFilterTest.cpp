@@ -376,6 +376,102 @@ TEST_F(FetchCrossExecFilterTest, MultipleCallsDeliveredInOrder) {
   exec_.drain();
 }
 
+std::unique_ptr<folly::IOBuf> makeHalfWindow() {
+  auto buf = folly::IOBuf::create(FetchCrossExecFilter::kWindowBytes / 2);
+  buf->append(FetchCrossExecFilter::kWindowBytes / 2);
+  return buf;
+}
+
+TEST_F(FetchCrossExecFilterTest, ReadyWithoutAskingDownstreamUnderWindow) {
+  EXPECT_CALL(*inner_, awaitReadyToConsume()).Times(0);
+  EXPECT_TRUE(filter_->object(1, 0, 0, makeHalfWindow(), noExtensions()).hasValue());
+  exec_.drain();
+
+  auto ready = filter_->awaitReadyToConsume();
+  ASSERT_TRUE(ready.hasValue());
+  EXPECT_TRUE(ready.value().isReady());
+  filter_->endOfFetch();
+  exec_.drain();
+}
+
+// A full window reports BLOCKED. Readiness waits for the downstream and then
+// reopens the window.
+TEST_F(FetchCrossExecFilterTest, FullWindowBlocksUntilDownstreamReady) {
+  EXPECT_TRUE(filter_->object(1, 0, 0, makeHalfWindow(), noExtensions()).hasValue());
+  auto blocked = filter_->object(1, 0, 1, makeHalfWindow(), noExtensions());
+  ASSERT_TRUE(blocked.hasError());
+  EXPECT_EQ(blocked.error().code, MoQPublishError::BLOCKED);
+
+  auto [downstreamPromise, downstreamReady] = folly::makePromiseContract<uint64_t>();
+  EXPECT_CALL(*inner_, awaitReadyToConsume())
+      .WillOnce(Return(folly::makeExpected<MoQPublishError>(std::move(downstreamReady))));
+  auto ready = filter_->awaitReadyToConsume();
+  ASSERT_TRUE(ready.hasValue());
+  auto readyFuture = std::move(ready.value()).via(&exec_);
+  exec_.drain();
+  EXPECT_FALSE(readyFuture.isReady());
+
+  downstreamPromise.setValue(0);
+  exec_.drain();
+  EXPECT_TRUE(readyFuture.isReady());
+  EXPECT_TRUE(filter_->object(1, 0, 2, makeHalfWindow(), noExtensions()).hasValue());
+  filter_->endOfFetch();
+  exec_.drain();
+}
+
+TEST_F(FetchCrossExecFilterTest, PartialObjectBytesCountTowardWindow) {
+  ON_CALL(*inner_, beginObject(_, _, _, _, _, _))
+      .WillByDefault(Return(folly::makeExpected<MoQPublishError>(folly::unit)));
+  ON_CALL(*inner_, objectPayload(_, _))
+      .WillByDefault(Return(folly::makeExpected<MoQPublishError>(ObjectPublishStatus::DONE)));
+  EXPECT_TRUE(filter_
+                  ->beginObject(
+                      1,
+                      0,
+                      0,
+                      FetchCrossExecFilter::kWindowBytes,
+                      makeHalfWindow(),
+                      noExtensions()
+                  )
+                  .hasValue());
+  auto blocked = filter_->objectPayload(makeHalfWindow(), false);
+  ASSERT_TRUE(blocked.hasError());
+  EXPECT_EQ(blocked.error().code, MoQPublishError::BLOCKED);
+  filter_->endOfFetch();
+  exec_.drain();
+}
+
+// A downstream that returns BLOCKED has accepted the object, so the fetch stays open.
+TEST_F(FetchCrossExecFilterTest, DownstreamBlockedKeepsFetchOpen) {
+  EXPECT_CALL(*inner_, object(1, 0, 0, _, _, false, false))
+      .WillOnce(Return(folly::makeUnexpected(MoQPublishError(MoQPublishError::BLOCKED))));
+  EXPECT_CALL(*inner_, object(1, 0, 1, _, _, false, false)).Times(1);
+  EXPECT_TRUE(filter_->object(1, 0, 0, nullptr, noExtensions()).hasValue());
+  exec_.drain();
+  EXPECT_TRUE(filter_->object(1, 0, 1, nullptr, noExtensions()).hasValue());
+  filter_->endOfFetch();
+  exec_.drain();
+}
+
+// A downstream readiness error resolves the wait, and the next call reports it.
+TEST_F(FetchCrossExecFilterTest, DownstreamReadinessErrorReportedOnNextCall) {
+  EXPECT_TRUE(filter_->object(1, 0, 0, makeHalfWindow(), noExtensions()).hasValue());
+  EXPECT_TRUE(filter_->object(1, 0, 1, makeHalfWindow(), noExtensions()).hasError());
+  EXPECT_CALL(*inner_, awaitReadyToConsume())
+      .WillOnce(Return(folly::makeUnexpected(MoQPublishError(MoQPublishError::WRITE_ERROR))));
+
+  auto ready = filter_->awaitReadyToConsume();
+  ASSERT_TRUE(ready.hasValue());
+  auto readyFuture = std::move(ready.value()).via(&exec_);
+  exec_.drain();
+  EXPECT_TRUE(readyFuture.isReady());
+
+  auto next = filter_->object(1, 0, 2, makeHalfWindow(), noExtensions());
+  ASSERT_TRUE(next.hasError());
+  EXPECT_EQ(next.error().code, MoQPublishError::WRITE_ERROR);
+  exec_.drain();
+}
+
 TEST_F(FetchCrossExecFilterTest, EndOfUnknownRangeEnqueued) {
   filter_->object(1, 0, 0, nullptr, noExtensions(), false, false);
   filter_->endOfUnknownRange(1, 1, false);

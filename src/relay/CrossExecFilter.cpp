@@ -6,6 +6,7 @@
 
 #include "relay/CrossExecFilter.h"
 
+#include <folly/futures/Future.h>
 #include <folly/logging/xlog.h>
 
 namespace openmoq::moqx {
@@ -23,6 +24,11 @@ moxygen::Payload maybeDeepCopy(moxygen::Payload& payload, bool deepCopy) {
   auto copy = payload->cloneCoalesced();
   copy->unshare();
   return copy;
+}
+
+// A FetchConsumer that returns BLOCKED has accepted the call.
+template <typename T> bool closesFetch(const folly::Expected<T, moxygen::MoQPublishError>& result) {
+  return result.hasError() && result.error().code != moxygen::MoQPublishError::BLOCKED;
 }
 
 } // namespace
@@ -354,6 +360,7 @@ folly::Expected<folly::Unit, moxygen::MoQPublishError> FetchCrossExecFilter::obj
     enqueueDeactivate();
     return folly::makeUnexpected(*err);
   }
+  auto bytes = payload ? payload->computeChainDataLength() : 0;
   auto capturedPayload = maybeDeepCopy(payload, deepCopyPayload_);
   targetExec_->add([this,
                     groupID,
@@ -373,7 +380,7 @@ folly::Expected<folly::Unit, moxygen::MoQPublishError> FetchCrossExecFilter::obj
           finFetch,
           forwardingPreferenceIsDatagram
       );
-      if (result.hasError()) {
+      if (closesFetch(result)) {
         closeWithError(result.error(), std::move(downstream_));
       }
     }
@@ -381,7 +388,10 @@ folly::Expected<folly::Unit, moxygen::MoQPublishError> FetchCrossExecFilter::obj
       deactivate();
     }
   });
-  return folly::unit;
+  if (finFetch) {
+    return folly::unit;
+  }
+  return countQueuedBytes(bytes);
 }
 
 folly::Expected<folly::Unit, moxygen::MoQPublishError> FetchCrossExecFilter::beginObject(
@@ -397,6 +407,7 @@ folly::Expected<folly::Unit, moxygen::MoQPublishError> FetchCrossExecFilter::beg
     return folly::makeUnexpected(*err);
   }
   payloadTracker_.beginObject(length, initialPayload);
+  auto bytes = initialPayload ? initialPayload->computeChainDataLength() : 0;
   auto capturedPayload = maybeDeepCopy(initialPayload, deepCopyPayload_);
   targetExec_->add([this,
                     groupID,
@@ -416,11 +427,11 @@ folly::Expected<folly::Unit, moxygen::MoQPublishError> FetchCrossExecFilter::beg
         std::move(payload),
         std::move(extensions)
     );
-    if (result.hasError()) {
+    if (closesFetch(result)) {
       closeWithError(result.error(), std::move(downstream_));
     }
   });
-  return folly::unit;
+  return countQueuedBytes(bytes);
 }
 
 folly::Expected<moxygen::ObjectPublishStatus, moxygen::MoQPublishError>
@@ -430,11 +441,12 @@ FetchCrossExecFilter::objectPayload(moxygen::Payload payload, bool finFetch) {
     return folly::makeUnexpected(*err);
   }
   auto status = payloadTracker_.consume(payload);
+  auto bytes = payload ? payload->computeChainDataLength() : 0;
   auto capturedPayload = maybeDeepCopy(payload, deepCopyPayload_);
   targetExec_->add([this, payload = std::move(capturedPayload), finFetch]() mutable {
     if (downstream_) {
       auto result = downstream_->objectPayload(std::move(payload), finFetch);
-      if (result.hasError()) {
+      if (closesFetch(result)) {
         closeWithError(result.error(), std::move(downstream_));
       }
     }
@@ -442,6 +454,11 @@ FetchCrossExecFilter::objectPayload(moxygen::Payload payload, bool finFetch) {
       deactivate();
     }
   });
+  if (!finFetch) {
+    if (auto blocked = countQueuedBytes(bytes); blocked.hasError()) {
+      return folly::makeUnexpected(blocked.error());
+    }
+  }
   return status;
 }
 
@@ -458,7 +475,7 @@ folly::Expected<folly::Unit, moxygen::MoQPublishError> FetchCrossExecFilter::end
   targetExec_->add([this, groupID, subgroupID, objectID, finFetch]() {
     if (downstream_) {
       auto result = downstream_->endOfGroup(groupID, subgroupID, objectID, finFetch);
-      if (result.hasError()) {
+      if (closesFetch(result)) {
         closeWithError(result.error(), std::move(downstream_));
       }
     }
@@ -525,7 +542,7 @@ FetchCrossExecFilter::endOfUnknownRange(uint64_t groupID, uint64_t objectID, boo
   targetExec_->add([this, groupID, objectID, finFetch]() {
     if (downstream_) {
       auto result = downstream_->endOfUnknownRange(groupID, objectID, finFetch);
-      if (result.hasError()) {
+      if (closesFetch(result)) {
         closeWithError(result.error(), std::move(downstream_));
       }
     }
@@ -550,14 +567,66 @@ void FetchCrossExecFilter::reset(moxygen::ResetStreamErrorCode error) {
   });
 }
 
+folly::Expected<folly::Unit, moxygen::MoQPublishError>
+FetchCrossExecFilter::countQueuedBytes(uint64_t bytes) {
+  queuedBytes_ += bytes;
+  if (queuedBytes_ < kWindowBytes) {
+    return folly::unit;
+  }
+  return folly::makeUnexpected(
+      moxygen::MoQPublishError(moxygen::MoQPublishError::BLOCKED, "cross-exec fetch window full")
+  );
+}
+
 folly::Expected<folly::SemiFuture<uint64_t>, moxygen::MoQPublishError>
 FetchCrossExecFilter::awaitReadyToConsume() {
   if (auto err = loadDeferredError()) {
     enqueueDeactivate();
     return folly::makeUnexpected(*err);
   }
-  // TODO: backpressure not implemented; always reports ready
-  return folly::makeSemiFuture<uint64_t>(0);
+  if (queuedBytes_ < kWindowBytes) {
+    return folly::makeSemiFuture<uint64_t>(0);
+  }
+  // Every byte queued so far reaches downstream_ before this lambda runs. A
+  // failure resolves readiness and leaves the error for the next call to report.
+  auto [promise, ready] = folly::makePromiseContract<uint64_t>();
+  targetExec_->add([self = shared_from_this(), promise = std::move(promise)]() mutable {
+    if (!self->downstream_) {
+      promise.setValue(0);
+      return;
+    }
+    auto downstreamReady = self->downstream_->awaitReadyToConsume();
+    if (downstreamReady.hasError()) {
+      self->closeWithError(downstreamReady.error(), std::move(self->downstream_));
+      promise.setValue(0);
+      return;
+    }
+    std::move(downstreamReady.value())
+        .via(folly::getKeepAliveToken(self->targetExec_))
+        .thenTry([weak = std::weak_ptr<FetchCrossExecFilter>(self),
+                  promise = std::move(promise)](folly::Try<uint64_t> result) mutable {
+          if (result.hasValue()) {
+            promise.setValue(*result);
+            return;
+          }
+          // A failed future means the downstream can no longer write.
+          if (auto filter = weak.lock(); filter && filter->downstream_) {
+            filter->closeWithError(
+                moxygen::MoQPublishError::WRITE_ERROR,
+                std::move(filter->downstream_)
+            );
+          }
+          promise.setValue(0);
+        });
+  });
+  // The caller's executor runs this continuation. Only that executor touches queuedBytes_.
+  return std::move(ready).deferValue([weak = weak_from_this(),
+                                      drained = queuedBytes_](uint64_t value) {
+    if (auto filter = weak.lock()) {
+      filter->queuedBytes_ -= drained;
+    }
+    return value;
+  });
 }
 
 } // namespace openmoq::moqx

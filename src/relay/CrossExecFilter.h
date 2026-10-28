@@ -263,8 +263,10 @@ private:
 };
 
 // Forwards all FetchConsumer calls to a target executor (fire-and-forget).
-// All data methods return success immediately on the calling thread after
-// checking deferredError_; the actual call runs asynchronously on targetExec.
+// Data methods check deferredError_ and return on the calling thread. The call
+// itself runs asynchronously on targetExec. A data method returns BLOCKED once
+// kWindowBytes of payload are queued. awaitReadyToConsume() then resolves when
+// the downstream is ready for more.
 //
 // Requires targetExec to be a FIFO executor so that delivery order is
 // preserved without additional synchronization.
@@ -346,9 +348,16 @@ public:
   folly::Expected<folly::SemiFuture<uint64_t>, moxygen::MoQPublishError>
   awaitReadyToConsume() override;
 
+  static constexpr uint64_t kWindowBytes = 1024 * 1024;
+
 private:
+  folly::Expected<folly::Unit, moxygen::MoQPublishError> countQueuedBytes(uint64_t bytes);
+
   std::shared_ptr<moxygen::FetchConsumer> downstream_;
   ObjectPayloadByteTracker payloadTracker_;
+  // Payload bytes queued since the downstream was last ready. Only the calling
+  // executor touches it, including awaitReadyToConsume()'s continuation.
+  uint64_t queuedBytes_{0};
 };
 
 } // namespace openmoq::moqx
