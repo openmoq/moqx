@@ -18,12 +18,7 @@ namespace openmoq::moqx::test {
 
 class NamespaceTreeTest : public ::testing::Test {
 protected:
-  struct NullCallback : public NamespaceTree::Callback {
-    void onPublishNamespaceDone(const TrackNamespace&) override {}
-  };
-
-  NullCallback cb_;
-  NamespaceTree tree_{cb_};
+  NamespaceTree tree_;
 
   std::shared_ptr<MoQSession> makeSession() {
     return std::make_shared<NiceMock<moxygen::test::MockMoQSession>>();
@@ -35,7 +30,7 @@ protected:
   }
 
   void unpublish(const TrackNamespace& ns, const std::shared_ptr<MoQSession>& session) {
-    tree_.unpublishNamespace(ns, session); // NodeNotFound / NotOwner are ignorable
+    tree_.unpublishNamespace(ns, session->sessionId()); // NodeNotFound / NotOwner are ignorable
   }
 
   void subscribe(const TrackNamespace& ns, std::shared_ptr<MoQSession> session) {
@@ -429,12 +424,48 @@ TEST_F(NamespaceTreeRouteTest, UnpublishRemovesOnlyThatSessionsRoute) {
   auto b = makeSession();
   advertise(ns_, a, {1, 7}, 1);
   advertise(ns_, b, {2, 7}, 2);
-  auto result = tree_.unpublishNamespace(ns_, a);
+  auto result = tree_.unpublishNamespace(ns_, a->sessionId());
   ASSERT_TRUE(result.hasValue());
   EXPECT_EQ(result->removed.session, a);
   EXPECT_EQ(tree_.findPublisherSession(ns_), b);
   unpublish(ns_, b);
   EXPECT_EQ(tree_.findNode(ns_), nullptr);
+}
+
+// A repeated NAMESPACE keeps the advertisement while its origin holds.
+TEST_F(NamespaceTreeRouteTest, RepeatedNamespaceFromTheSameOriginUpdatesInPlace) {
+  auto peer = makeSession();
+  advertise(ns_, peer, {1, 7}, 5);
+  const auto seq = tree_.findNode(ns_)->routes()[0].seq;
+
+  EXPECT_EQ(advertise(ns_, peer, {1, 8}, 3).replacedSession, nullptr);
+  auto route = tree_.findNode(ns_)->routes()[0];
+  EXPECT_EQ(route.seq, seq);
+  EXPECT_EQ(route.path, (std::vector<uint64_t>{1, 8}));
+  EXPECT_EQ(route.cost, 3u);
+
+  EXPECT_EQ(advertise(ns_, peer, {2, 8}, 3).replacedSession, peer);
+  ASSERT_EQ(tree_.findNode(ns_)->routes().size(), 1u);
+  EXPECT_NE(tree_.findNode(ns_)->routes()[0].seq, seq);
+}
+
+// A PUBLISH_NAMESPACE is named by its session and request ID, so a stale
+// request cannot change or end a newer one.
+TEST_F(NamespaceTreeRouteTest, RouteIsNamedBySessionAndRequestID) {
+  auto publisher = makeSession();
+  tree_.setPublisher(ns_, publisher, nullptr, {}, RequestID(4), {1, 7}, 5, /*fromCluster=*/true);
+  const auto id = publisher->sessionId();
+  EXPECT_EQ(
+      tree_.updateRoute(ns_, id, RequestID(3), {1, 7}, 1).error(),
+      NamespaceTree::Error::NotOwner
+  );
+  EXPECT_TRUE(tree_.updateRoute(ns_, id, RequestID(4), {1, 7}, 1).hasValue());
+  EXPECT_EQ(tree_.findNode(ns_)->routes()[0].cost, 1u);
+  EXPECT_EQ(
+      tree_.unpublishNamespace(ns_, id, RequestID(3)).error(),
+      NamespaceTree::Error::NotOwner
+  );
+  EXPECT_TRUE(tree_.unpublishNamespace(ns_, id, RequestID(4)).hasValue());
 }
 
 // The deepest tier decides: when all of its routes are excluded, a shorter
