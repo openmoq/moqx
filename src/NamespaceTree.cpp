@@ -119,10 +119,10 @@ NamespaceTree::findPublisherSession(const TrackNamespace& ns, const RouteExclusi
   return route ? route->session : nullptr;
 }
 
-const NamespaceTree::NamespaceNode::Route* NamespaceTree::NamespaceNode::findRoute(SessionId session
-) const {
+const NamespaceTree::NamespaceNode::Route*
+NamespaceTree::NamespaceNode::findRoute(SessionId sessionId) const {
   auto it = std::find_if(routes_.begin(), routes_.end(), [&](const Route& r) {
-    return r.session->sessionId() == session;
+    return r.session->sessionId() == sessionId;
   });
   return it != routes_.end() ? &*it : nullptr;
 }
@@ -204,7 +204,7 @@ NamespaceTree::SetPublisherResult NamespaceTree::setPublisher(
 
 folly::Expected<NamespaceTree::SetPublisherResult, NamespaceTree::Error> NamespaceTree::updateRoute(
     const TrackNamespace& ns,
-    SessionId session,
+    SessionId sessionId,
     RequestID requestID,
     std::vector<uint64_t> path,
     uint64_t cost
@@ -214,7 +214,7 @@ folly::Expected<NamespaceTree::SetPublisherResult, NamespaceTree::Error> Namespa
     return folly::makeUnexpected(Error::NodeNotFound);
   }
   auto it = std::find_if(node->routes_.begin(), node->routes_.end(), [&](const auto& r) {
-    return r.session->sessionId() == session && r.requestID == requestID;
+    return r.session->sessionId() == sessionId && r.requestID == requestID;
   });
   if (it == node->routes_.end()) {
     return folly::makeUnexpected(Error::NotOwner);
@@ -232,7 +232,7 @@ folly::Expected<NamespaceTree::SetPublisherResult, NamespaceTree::Error> Namespa
 folly::Expected<NamespaceTree::UnpublishNamespaceResult, NamespaceTree::Error>
 NamespaceTree::unpublishNamespace(
     const TrackNamespace& ns,
-    SessionId session,
+    SessionId sessionId,
     std::optional<RequestID> requestID
 ) {
   auto node = findNode(ns);
@@ -240,7 +240,7 @@ NamespaceTree::unpublishNamespace(
     return folly::makeUnexpected(Error::NodeNotFound);
   }
   auto it = std::find_if(node->routes_.begin(), node->routes_.end(), [&](const auto& r) {
-    return r.session->sessionId() == session && (!requestID || r.requestID == *requestID);
+    return r.session->sessionId() == sessionId && (!requestID || r.requestID == *requestID);
   });
   if (it == node->routes_.end()) {
     return folly::makeUnexpected(Error::NotOwner);
@@ -333,7 +333,7 @@ folly::Expected<folly::Unit, NamespaceTree::Error> NamespaceTree::removeNamespac
   }
   const NamespaceNode::AdvertisementKey key{session->sessionId(), ns.size()};
   forEachNodeInSubtree(ns, node, [&](const TrackNamespace&, const auto& n) {
-    n->eraseAdvertisement(key);
+    n->eraseSubscriberAdvertisement(key);
   });
   NodeMutationGuard guard(*this, *node, ns);
   node->subscribers_.erase(it);

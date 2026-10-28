@@ -29,6 +29,10 @@ struct RouteExclusion {
 
 // Hierarchical tree tracking PUBLISH_NAMESPACE announcements and
 // SUBSCRIBE_NAMESPACE subscriptions.
+//
+// A route is an announcement of a namespace that the relay received. A node
+// can hold several. An advertisement is what the relay last sent one
+// SUBSCRIBE_NAMESPACE about the namespace, built from the best route.
 class NamespaceTree {
 public:
   struct NamespaceNode {
@@ -59,29 +63,29 @@ public:
     // A subscriber session and its prefix length: one session can hold nested prefixes.
     using AdvertisementKey = std::pair<moxygen::SessionId, size_t>;
 
-    const Advertisement* findAdvertisement(const AdvertisementKey& key) const {
+    const Advertisement* findSubscriberAdvertisement(const AdvertisementKey& key) const {
       auto it = advertisements_.find(key);
       return it != advertisements_.end() ? &it->second : nullptr;
     }
-    void setAdvertisement(const AdvertisementKey& key, Advertisement advertisement) {
+    void setSubscriberAdvertisement(const AdvertisementKey& key, Advertisement advertisement) {
       advertisements_.insert_or_assign(key, std::move(advertisement));
     }
-    void eraseAdvertisement(const AdvertisementKey& key) { advertisements_.erase(key); }
+    void eraseSubscriberAdvertisement(const AdvertisementKey& key) { advertisements_.erase(key); }
 
-    // One advertisement of this namespace. A session holds at most one route here.
+    // A session holds at most one route here.
     struct Route {
       std::shared_ptr<moxygen::MoQSession> session;
       std::shared_ptr<moxygen::Subscriber::PublishNamespaceCallback> callback;
       std::string peerID;
-      moxygen::RequestID requestID; // with session, names the advertisement
+      moxygen::RequestID requestID; // with session, names the route
       std::vector<uint64_t> path;
       uint64_t cost{0};        // ROUTE_COST plus the sender's link cost
-      uint64_t seq{0};         // advertisement generation; newer wins ties
+      uint64_t seq{0};         // route generation; newer wins ties
       bool fromCluster{false}; // from a session that negotiated MoQ Cluster
     };
 
     const std::vector<Route>& routes() const { return routes_; }
-    const Route* findRoute(moxygen::SessionId session) const;
+    const Route* findRoute(moxygen::SessionId sessionId) const;
 
     // Best eligible route by the MoQ Cluster path-selection rule: a path
     // without 0, then lowest cost, then shortest path, then newest.
@@ -153,13 +157,14 @@ public:
   // The deepest node covering ns that has routes. Null if none does.
   const NamespaceNode* findRouteNode(const moxygen::TrackNamespace& ns) const;
 
-  // True if session's route at any node from the root through ns matches pred.
+  // True if sessionId's route at any node from the root through ns matches pred.
   template <typename Pred>
-  bool anyRouteAlongPath(const moxygen::TrackNamespace& ns, moxygen::SessionId session, Pred&& pred)
+  bool
+  hasRouteAlongPath(const moxygen::TrackNamespace& ns, moxygen::SessionId sessionId, Pred&& pred)
       const {
     const NamespaceNode* node = &root_;
     for (size_t i = 0;; i++) {
-      if (const auto* route = node->findRoute(session); route && pred(*route)) {
+      if (const auto* route = node->findRoute(sessionId); route && pred(*route)) {
         return true;
       }
       if (i == ns.size()) {
@@ -206,21 +211,21 @@ public:
       bool fromCluster = false
   );
 
-  // Replaces the path and cost of session's route for requestID. A new origin
-  // starts a new advertisement generation. NotOwner: no such route.
+  // Replaces the path and cost of sessionId's route for requestID. A new origin
+  // starts a new route generation. NotOwner: no such route.
   folly::Expected<SetPublisherResult, Error> updateRoute(
       const moxygen::TrackNamespace& ns,
-      moxygen::SessionId session,
+      moxygen::SessionId sessionId,
       moxygen::RequestID requestID,
       std::vector<uint64_t> path,
       uint64_t cost
   );
 
-  // Removes session's route, if requestID is unset or names it. NodeNotFound:
+  // Removes sessionId's route, if requestID is unset or names it. NodeNotFound:
   // node already pruned (ignorable). NotOwner: no such route (log and ignore).
   folly::Expected<UnpublishNamespaceResult, Error> unpublishNamespace(
       const moxygen::TrackNamespace& ns,
-      moxygen::SessionId session,
+      moxygen::SessionId sessionId,
       std::optional<moxygen::RequestID> requestID = std::nullopt
   );
 
