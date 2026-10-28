@@ -194,15 +194,16 @@ assertions read and what failure dumps print.
 
 ## Waiting
 
-Only three waits exist, and a test should use them rather than `time.sleep`:
+A test should use these waits rather than `time.sleep`:
 
 | Call | Waits for |
 |---|---|
 | `h.wait_relay_ready(name)` | The admin endpoint answers (`start()` already does this) |
 | `h.wait_sessions_atleast(name, want)` | `moqActiveSessions >= want` — see below |
 | `h.wait_namespace(name, ns)` | `ns` appears in that relay's `namespace_tree` |
+| `h.wait_relay_log(name, text)` | A line of that relay's log, since it started, contains `text` |
 
-All three raise `HarnessError` on timeout after dumping the relay log — they
+They raise `HarnessError` on timeout after dumping the relay log — they
 abort the run rather than tallying a failure, because everything after them is
 meaningless.
 
@@ -260,7 +261,6 @@ tail, the actor's output, the publishers on that namespace.
 | `expect_relay_id(name, want)` | `/state` `relay_id` |
 | `expect_metric(name, metric, op, want)` | A `moqx_*` Prometheus metric |
 | `expect_relay_alive(name)` | The relay process is still running |
-| `expect_relay_log(name, text)` | A line of the relay's log contains `text` |
 | `relay_stop(name)` | Doubles as an assertion: the relay exited 0 on `SIGTERM` |
 | `expect_settled(settle, *names)` | Every named relay's whole `namespace_tree` is unchanged over a `settle`-second window; defaults to all relays still up |
 

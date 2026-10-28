@@ -22,6 +22,7 @@ def run(h):
 
     h.case("A publisher connected before SIGHUP still serves a new subscriber")
     h.relay_signal("A", signal.SIGHUP)
+    h.wait_relay_log("A", "Ignoring SIGHUP")
     sub = h.actor(
         "sub", "subscriber", relay="A", ns=NAMESPACE, track="date", timeout=TIMEOUT
     )
@@ -29,9 +30,7 @@ def run(h):
     h.expect_received(sub)
     h.expect_no_errors(sub)
 
-    # sub.run() took TIMEOUT seconds, the window for the relay to handle SIGHUP.
-    h.case("The relay logs SIGHUP and keeps running")
-    h.expect_relay_log("A", "Ignoring SIGHUP")
+    h.case("The relay keeps running")
     h.expect_relay_alive("A")
     h.expect_metric("A", "moqActiveSessions", "ge", 1)
 
