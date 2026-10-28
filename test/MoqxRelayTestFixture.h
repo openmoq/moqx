@@ -236,6 +236,11 @@ protected:
       const TrackNamespace& ns,
       bool addToState = true
   );
+  std::shared_ptr<Subscriber::PublishNamespaceHandle> doPublishNamespaceMsg(
+      std::shared_ptr<MoQSession> session,
+      PublishNamespace ann,
+      bool addToState = true
+  );
 
   std::shared_ptr<TrackConsumer> doPublish(
       std::shared_ptr<MoQSession> session,

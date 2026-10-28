@@ -423,40 +423,70 @@ TEST_P(MoQRelayTest, ExcludedSubscriberGetsNoNamespaceDone) {
   driveIfMultiThread();
 }
 
-// Two cluster routes for one namespace coexist. A subscriber hears NAMESPACE_DONE
-// only once no remaining route reaches it, and a late subscriber is replayed the
-// best route.
-TEST_P(MoQRelayTest, CoexistingRoutesKeepTheNamespaceUntilTheLastOneGoes) {
+PublishNamespace
+clusterAdvert(std::vector<uint64_t> path, uint64_t cost, TrackNamespace ns = kTestNamespace) {
+  PublishNamespace pubNs;
+  pubNs.trackNamespace = std::move(ns);
+  pubNs.params.insertParam(Parameter(
+      folly::to_underlying(TrackRequestParamKey::HOP_PATH),
+      encodeRelayHopPath(path, kVersionDraft18).value()
+  ));
+  pubNs.params.insertParam(Parameter(folly::to_underlying(TrackRequestParamKey::ROUTE_COST), cost));
+  return pubNs;
+}
+
+std::vector<uint64_t> hopPathOf(const Namespace& ns) {
+  const auto* param = ns.params.getFirstParam(TrackRequestParamKey::HOP_PATH);
+  return param ? decodeRelayHopPath(param->asString, kVersionDraft18).value()
+               : std::vector<uint64_t>{};
+}
+
+// One session may hold nested SUBSCRIBE_NAMESPACE prefixes. Each is told the namespace
+// on its own, and unsubscribing one leaves the other's view as it was.
+TEST_P(MoQRelayTest, NestedPrefixesFromOneSessionAreTrackedApart) {
+  resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "", 900);
+  auto subscriber = createMockSession();
+  negotiateCluster(*subscriber);
+  auto outer = std::make_shared<RecordingNamespacePublishHandle>();
+  doSubscribeNamespace(subscriber, TrackNamespace{{"test"}}, true, outer);
+  auto inner = std::make_shared<RecordingNamespacePublishHandle>();
+  auto innerSub = doSubscribeNamespace(subscriber, kTestNamespace, false, inner);
+
+  auto publisher = createMockSession();
+  negotiateCluster(*publisher);
+  doPublishNamespaceMsg(publisher, clusterAdvert({100}, 5));
+  driveIfMultiThread();
+  EXPECT_EQ(outer->namespaces.size(), 1u);
+  EXPECT_EQ(inner->namespaces.size(), 1u);
+
+  doPublishNamespaceMsg(publisher, clusterAdvert({100}, 1));
+  driveIfMultiThread();
+  EXPECT_EQ(outer->namespaces.size(), 2u);
+  EXPECT_EQ(inner->namespaces.size(), 2u);
+
+  innerSub->unsubscribeNamespace();
+  driveIfMultiThread();
+  verifyOnRelayExec([&] { relay_->doPublishNamespaceDone(kTestNamespace, publisher); });
+  driveIfMultiThread();
+  EXPECT_EQ(outer->dones.size(), 1u);
+  EXPECT_TRUE(inner->dones.empty());
+
+  removeSession(publisher);
+  removeSession(subscriber);
+  driveIfMultiThread();
+}
+
+// Each subscriber is told the best route it may use. Moving to a different
+// publisher withdraws the old advertisement first.
+TEST_P(MoQRelayTest, EachSubscriberIsAdvertisedItsBestRoute) {
   constexpr uint64_t kRelayHop = 900;
   resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "", kRelayHop);
-
-  auto publishFrom = [&](const std::shared_ptr<MockMoQSession>& publisher,
-                         std::vector<uint64_t> path,
-                         uint64_t cost) {
-    PublishNamespace pubNs;
-    pubNs.trackNamespace = kTestNamespace;
-    pubNs.params.insertParam(Parameter(
-        folly::to_underlying(TrackRequestParamKey::HOP_PATH),
-        encodeRelayHopPath(path, kVersionDraft18).value()
-    ));
-    pubNs.params.insertParam(Parameter(folly::to_underlying(TrackRequestParamKey::ROUTE_COST), cost)
-    );
-    auto result = withSessionContext(publisher, [&] {
-      return folly::coro::blockingWait(
-          subscriberInterface()->publishNamespace(std::move(pubNs), nullptr),
-          exec_.get()
-      );
-    });
-    ASSERT_TRUE(result.hasValue());
-    driveIfMultiThread();
-  };
-
   auto viaPeer = createMockSession();
   negotiateCluster(*viaPeer);
   auto direct = createMockSession();
   negotiateCluster(*direct);
 
-  // open hears both routes; peer100 is excluded from the one through hop 100.
+  // open may use both routes; peer100 is excluded from the one through hop 100.
   auto open = createMockSession();
   negotiateCluster(*open);
   auto openHandle = std::make_shared<RecordingNamespacePublishHandle>();
@@ -466,41 +496,154 @@ TEST_P(MoQRelayTest, CoexistingRoutesKeepTheNamespaceUntilTheLastOneGoes) {
   auto peer100Handle = std::make_shared<RecordingNamespacePublishHandle>();
   doSubscribeNamespace(peer100, kTestNamespace, true, peer100Handle);
 
-  publishFrom(viaPeer, {100}, 5);
-  publishFrom(direct, {200}, 1);
+  doPublishNamespaceMsg(viaPeer, clusterAdvert({100}, 5));
+  driveIfMultiThread();
+  ASSERT_EQ(openHandle->namespaces.size(), 1u);
+  EXPECT_EQ(hopPathOf(openHandle->namespaces[0]), (std::vector<uint64_t>{100, kRelayHop}));
+  EXPECT_TRUE(peer100Handle->namespaces.empty());
+
+  doPublishNamespaceMsg(direct, clusterAdvert({200}, 1));
+  driveIfMultiThread();
   verifyOnRelayExec([&] {
     EXPECT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 2u);
-    EXPECT_EQ(relay_->findPublishNamespaceSession(kTestNamespace), direct);
   });
-  EXPECT_EQ(openHandle->namespaces.size(), 2u);
-  EXPECT_EQ(peer100Handle->namespaces.size(), 1u);
+  EXPECT_EQ(openHandle->dones.size(), 1u);
+  ASSERT_EQ(openHandle->namespaces.size(), 2u);
+  EXPECT_EQ(hopPathOf(openHandle->namespaces[1]), (std::vector<uint64_t>{200, kRelayHop}));
+  ASSERT_EQ(peer100Handle->namespaces.size(), 1u);
+  EXPECT_EQ(hopPathOf(peer100Handle->namespaces[0]), (std::vector<uint64_t>{200, kRelayHop}));
 
   auto late = createMockSession();
   negotiateCluster(*late);
   auto lateHandle = std::make_shared<RecordingNamespacePublishHandle>();
   doSubscribeNamespace(late, kTestNamespace, true, lateHandle);
   ASSERT_EQ(lateHandle->namespaces.size(), 1u);
-  const auto* hopPath =
-      lateHandle->namespaces.front().params.getFirstParam(TrackRequestParamKey::HOP_PATH);
-  ASSERT_NE(hopPath, nullptr);
-  EXPECT_EQ(
-      decodeRelayHopPath(hopPath->asString, kVersionDraft18).value(),
-      (std::vector<uint64_t>{200, kRelayHop})
-  );
+  EXPECT_EQ(hopPathOf(lateHandle->namespaces[0]), (std::vector<uint64_t>{200, kRelayHop}));
 
   verifyOnRelayExec([&] { relay_->doPublishNamespaceDone(kTestNamespace, direct); });
   driveIfMultiThread();
-  EXPECT_TRUE(openHandle->dones.empty());
+  EXPECT_EQ(openHandle->dones.size(), 2u);
+  ASSERT_EQ(openHandle->namespaces.size(), 3u);
+  EXPECT_EQ(hopPathOf(openHandle->namespaces[2]), (std::vector<uint64_t>{100, kRelayHop}));
   EXPECT_EQ(peer100Handle->dones.size(), 1u);
 
   verifyOnRelayExec([&] { relay_->doPublishNamespaceDone(kTestNamespace, viaPeer); });
   driveIfMultiThread();
-  EXPECT_EQ(openHandle->dones.size(), 1u);
+  EXPECT_EQ(openHandle->dones.size(), 3u);
   EXPECT_EQ(peer100Handle->dones.size(), 1u);
+  EXPECT_EQ(peer100Handle->namespaces.size(), 1u);
 
   for (const auto& session : {viaPeer, direct, open, peer100, late}) {
     removeSession(session);
   }
+  driveIfMultiThread();
+}
+
+// A better path from the same origin is an update. A subscriber that did not negotiate
+// MoQ Cluster sees no path, so it hears nothing new.
+TEST_P(MoQRelayTest, SameOriginRouteChangeIsAnUpdate) {
+  constexpr uint64_t kRelayHop = 900;
+  resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "", kRelayHop);
+  auto first = createMockSession();
+  negotiateCluster(*first);
+  auto second = createMockSession();
+  negotiateCluster(*second);
+
+  auto cluster = createMockSession();
+  negotiateCluster(*cluster);
+  auto clusterHandle = std::make_shared<RecordingNamespacePublishHandle>();
+  doSubscribeNamespace(cluster, kTestNamespace, true, clusterHandle);
+  auto plain = createMockSession();
+  auto plainHandle = std::make_shared<RecordingNamespacePublishHandle>();
+  doSubscribeNamespace(plain, kTestNamespace, true, plainHandle);
+
+  doPublishNamespaceMsg(first, clusterAdvert({100, 5}, 5));
+  driveIfMultiThread();
+  doPublishNamespaceMsg(second, clusterAdvert({100, 6}, 2));
+  driveIfMultiThread();
+  // The same session lowering its own cost is an update too.
+  doPublishNamespaceMsg(second, clusterAdvert({100, 6}, 1));
+  driveIfMultiThread();
+
+  EXPECT_TRUE(clusterHandle->dones.empty());
+  ASSERT_EQ(clusterHandle->namespaces.size(), 3u);
+  EXPECT_EQ(hopPathOf(clusterHandle->namespaces[1]), (std::vector<uint64_t>{100, 6, kRelayHop}));
+  const auto* cost =
+      clusterHandle->namespaces[2].params.getFirstParam(TrackRequestParamKey::ROUTE_COST);
+  ASSERT_NE(cost, nullptr);
+  EXPECT_EQ(cost->asUint64, 2u); // 1 plus the default link cost
+  EXPECT_TRUE(plainHandle->dones.empty());
+  EXPECT_EQ(plainHandle->namespaces.size(), 1u);
+
+  for (const auto& session : {first, second, cluster, plain}) {
+    removeSession(session);
+  }
+  driveIfMultiThread();
+}
+
+// Unsubscribing forgets what the subscription was told, so subscribing again
+// replays the namespace.
+TEST_P(MoQRelayTest, ResubscribeReplaysTheNamespace) {
+  resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "", 900);
+  auto publisher = createMockSession();
+  negotiateCluster(*publisher);
+  doPublishNamespaceMsg(publisher, clusterAdvert({100}, 1));
+  driveIfMultiThread();
+
+  auto subscriber = createMockSession();
+  negotiateCluster(*subscriber);
+  auto firstHandle = std::make_shared<RecordingNamespacePublishHandle>();
+  auto subscription = doSubscribeNamespace(subscriber, kTestNamespace, false, firstHandle);
+  EXPECT_EQ(firstHandle->namespaces.size(), 1u);
+  subscription->unsubscribeNamespace();
+  driveIfMultiThread();
+
+  auto secondHandle = std::make_shared<RecordingNamespacePublishHandle>();
+  doSubscribeNamespace(subscriber, kTestNamespace, true, secondHandle);
+  EXPECT_EQ(secondHandle->namespaces.size(), 1u);
+
+  removeSession(publisher);
+  removeSession(subscriber);
+  driveIfMultiThread();
+}
+
+// NAMESPACE_TOO_LARGE counts only the namespaces that would be advertised.
+TEST_P(MoQRelayTest, NamespaceLimitCountsOnlyAdvertisableNamespaces) {
+  resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "", 900);
+  auto publisher = createMockSession();
+  negotiateCluster(*publisher);
+  for (size_t i = 0; i <= MoqxRelay::kMaxNamespaceMatches; ++i) {
+    auto ns = kTestNamespace;
+    ns.append("n" + std::to_string(i));
+    doPublishNamespaceMsg(publisher, clusterAdvert({100}, 1, std::move(ns)), false);
+  }
+  driveIfMultiThread();
+
+  auto subscribe = [&](const std::shared_ptr<MockMoQSession>& subscriber) {
+    SubscribeNamespace subNs;
+    subNs.trackNamespacePrefix = kTestNamespace;
+    return withSessionContext(subscriber, [&] {
+      return folly::coro::blockingWait(
+          publisherInterface()->subscribeNamespace(
+              std::move(subNs),
+              std::make_shared<RecordingNamespacePublishHandle>()
+          ),
+          exec_.get()
+      );
+    });
+  };
+  auto excluded = createMockSession();
+  negotiateCluster(*excluded, 100);
+  EXPECT_TRUE(subscribe(excluded).hasValue());
+  auto open = createMockSession();
+  negotiateCluster(*open);
+  auto tooLarge = subscribe(open);
+  ASSERT_TRUE(tooLarge.hasError());
+  EXPECT_EQ(tooLarge.error().errorCode, SubscribeNamespaceErrorCode::NAMESPACE_TOO_LARGE);
+
+  removeSession(publisher);
+  removeSession(excluded);
+  removeSession(open);
   driveIfMultiThread();
 }
 
