@@ -514,6 +514,19 @@ private:
     uint64_t cost;    // ROUTE_COST plus the sender's link cost
     bool fromCluster; // the session negotiated MoQ Cluster
   };
+  using NamespaceNode = NamespaceTree::NamespaceNode;
+  // The route to advertise to one SUBSCRIBE_NAMESPACE. Null if none may be.
+  const NamespaceNode::Route* advertisableRoute(
+      const NamespaceNode& node,
+      const std::shared_ptr<moxygen::MoQSession>& subscriber,
+      const NamespaceNode::NamespaceSubscriberInfo& info
+  ) const;
+  // Sends NAMESPACE, an update, or NAMESPACE_DONE so the subscription matches advertisableRoute.
+  void reconcileAdvertisement(
+      NamespaceNode& node,
+      const std::shared_ptr<moxygen::MoQSession>& subscriber,
+      const NamespaceNode::NamespaceSubscriberInfo& info
+  );
   // Returns nullopt to drop the advertisement. A malformed path also closes the session.
   std::optional<IngestedRoute> ingestRoute(
       const moxygen::PublishNamespace& pubNs,
