@@ -76,17 +76,15 @@ PR description if preserving history on `main` is warranted.
 
 [CHANGELOG.md](CHANGELOG.md) follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/). Versions follow [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html).
 
-- A PR adds its user-visible changes to the `[Unreleased]` section, in the same PR.
+- A PR adds an entry file for its user-visible changes to [changelog.d/](changelog.d/README.md); that README defines the format.
 - An entry covers what an operator or client of the shipped product can observe.
-- A headline feature goes directly under the `[Unreleased]` heading, above the subsections.
-- Everything else goes under the matching subheading: `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed` or `Security`. Create the subheading if it is missing.
+- A headline feature goes in `changelog.d/headline/`.
+- Everything else goes in the matching section directory: `added`, `changed`, `deprecated`, `removed`, `fixed` or `security`.
 - `Dependencies` belongs to the release PR (see [docs/release.md](docs/release.md#changelog)). Other PRs do not add or edit it.
 - Write for the operator, not the reviewer: what changed for them, in one sentence. Name the config key, flag or endpoint.
 - Link the doc section that covers the change, when one exists.
 - A breaking change starts with `**Breaking:**`.
-- Keep the file's style, including:
-  - version headings in setext form, underlined with `===`;
-  - full PR links: `([#123](https://github.com/openmoq/moqx/pull/123))`.
+- CHANGELOG.md version headings are in setext form, underlined with `===`.
 
 Cutting a release: see [docs/release.md](docs/release.md#changelog).
 

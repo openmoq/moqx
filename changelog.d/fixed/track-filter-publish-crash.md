@@ -1,0 +1,1 @@
+- The relay could crash when a new PUBLISH replaced a track that a TRACK_FILTER subscription was ranking. ([#823](https://github.com/openmoq/moqx/pull/823))

@@ -1,0 +1,1 @@
+- [`upstream.tls.ca_cert`](/docs/config.md#upstreams) was ignored, so upstream certificates were checked against the system trust store. The relay now requires them to chain to that CA and match the URL's host, and it does not start if the file cannot be loaded. ([#865](https://github.com/openmoq/moqx/pull/865))

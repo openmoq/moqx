@@ -1,0 +1,1 @@
+- A service can peer with several relays through an [`upstreams`](/docs/config.md#upstreams) list, and each upstream link takes a `relay_cost`. `/state` reports a list's links under `upstreams`. ([#838](https://github.com/openmoq/moqx/pull/838))

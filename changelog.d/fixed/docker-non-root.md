@@ -1,0 +1,1 @@
+- Docker: the relay image starts with its default config under a non-root uid; `/var/log/moqx/qlog` is created writable. ([#827](https://github.com/openmoq/moqx/pull/827))
