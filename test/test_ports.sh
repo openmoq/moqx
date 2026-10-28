@@ -41,11 +41,7 @@ TEST_ADMIN_CONFIG_ADMIN=9669
 TEST_ADMIN_CONNECTION_LOGS_LISTEN=9670
 TEST_ADMIN_CONNECTION_LOGS_ADMIN=9671
 
-# test_relay_sighup.sh
-TEST_RELAY_SIGHUP_LISTEN=19668
-TEST_RELAY_SIGHUP_ADMIN=19669
-
-# The eight ports between the block above and the one below are free: they held
+# The ten ports between the block above and the one below are free: they held
 # test_relay_chain.sh and test_relay_hops_cycle.sh, which now allocate from the
 # harness bases at the end of this file. Claim them before extending the range.
 
@@ -89,4 +85,5 @@ TEST_HARNESS_CHAIN_BASE=19800
 TEST_HARNESS_HOPS_BASE=19810
 TEST_HARNESS_PYRAMID_BASE=19820
 TEST_HARNESS_UPSTREAMS_BASE=19830
+TEST_HARNESS_SIGHUP_BASE=19840
 # Reserved for future harness tests through: 19859
