@@ -492,7 +492,9 @@ TEST_P(MoQRelayTest, PublishReconnectDuringSubscribeScopeGuardCrash) {
   }
   // Relay state mutations must run on the relay executor; doPublishNamespaceDone
   // touches the namespace tree, which publishDone also cleans up via relayEvb_.
-  verifyOnRelayExec([&] { relay_->doPublishNamespaceDone(kTestNamespace, publisherSession2); });
+  verifyOnRelayExec([&] {
+    relay_->doPublishNamespaceDone(kTestNamespace, publisherSession2->sessionId());
+  });
   // The publisher forwarder reaches the relay through relayExec_, so it drops its session
   // refs a hop after the calls above.
   driveIfMultiThread();
@@ -575,7 +577,9 @@ TEST_P(MoQRelayTest, PublishReconnectDuringSubscribeSuccessPathCrash) {
   }
   // Relay state mutations must run on the relay executor; doPublishNamespaceDone
   // touches the namespace tree, which publishDone also cleans up via relayEvb_.
-  verifyOnRelayExec([&] { relay_->doPublishNamespaceDone(kTestNamespace, publisherSession2); });
+  verifyOnRelayExec([&] {
+    relay_->doPublishNamespaceDone(kTestNamespace, publisherSession2->sessionId());
+  });
 }
 
 // The upstream SUBSCRIBE_OK's Largest reaches the cache, so a FETCH up to it is
@@ -719,7 +723,9 @@ TEST_P(MoQRelayTest, ReplacedSubscribeOkLeavesCacheLargest) {
         {RequestID(0), PublishDoneStatusCode::SESSION_CLOSED, 0, "test cleanup"}
     );
   }
-  verifyOnRelayExec([&] { relay_->doPublishNamespaceDone(kTestNamespace, publisherSession2); });
+  verifyOnRelayExec([&] {
+    relay_->doPublishNamespaceDone(kTestNamespace, publisherSession2->sessionId());
+  });
   removeSession(fetchSession);
   driveIfMultiThread();
 }

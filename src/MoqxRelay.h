@@ -258,15 +258,7 @@ public:
   }
 
   std::vector<std::shared_ptr<moxygen::MoQSession>>
-  findPublishNamespaceSessions(const moxygen::TrackNamespace& ns) {
-    std::vector<std::shared_ptr<moxygen::MoQSession>> sessions;
-    if (const auto* node = namespaceTree_.findRouteNode(ns)) {
-      for (const auto& route : node->routes()) {
-        sessions.push_back(route.session);
-      }
-    }
-    return sessions;
-  }
+  findPublishNamespaceSessions(const moxygen::TrackNamespace& ns);
 
   // Sync cores of publishNamespace/publishNamespaceDone. Called by the
   // Subscriber coroutine interface and directly by MoqxRelayNamespaceHandle
@@ -278,22 +270,18 @@ public:
       std::string peerID = {}
   );
 
+  // Ends sessionId's route, if requestID is unset or names it.
   void doPublishNamespaceDone(
       const moxygen::TrackNamespace& trackNamespace,
-      std::shared_ptr<moxygen::MoQSession> session
-  );
-  // Ends session's route, if requestID is unset or names it.
-  void doPublishNamespaceDone(
-      const moxygen::TrackNamespace& trackNamespace,
-      moxygen::SessionId session,
-      std::optional<moxygen::RequestID> requestID
+      moxygen::SessionId sessionId,
+      std::optional<moxygen::RequestID> requestID = std::nullopt
   );
 
-  // REQUEST_UPDATE for the route that session's PUBLISH_NAMESPACE requestID made.
-  // Omitted parameters keep their value.
+  // Applies a REQUEST_UPDATE to one route, found by sessionId and the requestID of its
+  // PUBLISH_NAMESPACE. Omitted parameters are unchanged.
   moxygen::Subscriber::PublishNamespaceHandle::RequestUpdateResult updatePublishNamespace(
       const moxygen::TrackNamespace& trackNamespace,
-      moxygen::SessionId session,
+      moxygen::SessionId sessionId,
       moxygen::RequestID requestID,
       const moxygen::RequestUpdate& update
   );
@@ -519,15 +507,16 @@ private:
     uint64_t cost;    // ROUTE_COST plus the sender's link cost
     bool fromCluster; // the session negotiated MoQ Cluster
   };
-  // A negotiated sender's HOP_PATH and ROUTE_COST. Unset when the parameter is absent.
+  // A MoQ Cluster sender's HOP_PATH and ROUTE_COST. moxygen has already validated them.
   struct ClusterParams {
-    std::optional<std::vector<uint64_t>> path;
+    std::vector<uint64_t> path;   // empty when HOP_PATH is absent
     std::optional<uint64_t> cost; // with the sender's link cost added
   };
-  enum class ClusterParamsError { Malformed, Loop };
-  folly::Expected<ClusterParams, ClusterParamsError> readClusterParams(
+  // Nullopt if HOP_PATH contains this relay.
+  std::optional<ClusterParams> readClusterParams(
       const moxygen::TrackRequestParameters& params,
-      moxygen::MoQSession& session
+      uint64_t version,
+      uint64_t linkCost
   ) const;
   using NamespaceNode = NamespaceTree::NamespaceNode;
   // The route to advertise to one SUBSCRIBE_NAMESPACE. Null if none may be.
@@ -536,18 +525,15 @@ private:
       const std::shared_ptr<moxygen::MoQSession>& subscriber,
       const NamespaceNode::NamespaceSubscriberInfo& info
   ) const;
-  // Erases subscriptions under ns that session serves.
-  void dropSubscriptionsFrom(
-      const moxygen::TrackNamespace& ns,
-      const std::shared_ptr<moxygen::MoQSession>& session
-  );
+  // Erases subscriptions under ns whose upstream is sessionId.
+  void dropSubscriptionsFrom(const moxygen::TrackNamespace& ns, moxygen::SessionId sessionId);
   // Sends NAMESPACE, an update, or NAMESPACE_DONE so the subscription matches advertisableRoute.
   void reconcileAdvertisement(
       NamespaceNode& node,
       const std::shared_ptr<moxygen::MoQSession>& subscriber,
       const NamespaceNode::NamespaceSubscriberInfo& info
   );
-  // Returns nullopt to drop the advertisement. A malformed path also closes the session.
+  // Nullopt if the route loops through this relay.
   std::optional<IngestedRoute> ingestRoute(
       const moxygen::PublishNamespace& pubNs,
       const std::shared_ptr<moxygen::MoQSession>& session
@@ -710,14 +696,12 @@ private:
     return useLocalForwarders_ ? Mode::LocalForwarder : Mode::RelayExec;
   }
 
-  // Routes a request from requester may not use. Unset unless it negotiated MoQ Cluster.
-  static std::optional<RouteExclusion>
-  exclusionFor(const std::shared_ptr<moxygen::MoQSession>& requester);
-  // Whether exclusion rules out source as the upstream for ns.
+  // Whether exclusion rules out sourceId as the upstream for ns. sourceId is unset only
+  // while a finished publisher's subscribers drain.
   bool excludesSource(
       const std::optional<RouteExclusion>& exclusion,
       const moxygen::TrackNamespace& ns,
-      std::optional<moxygen::SessionId> source
+      std::optional<moxygen::SessionId> sourceId
   ) const;
   // A requester excluded from an existing subscription's source.
   bool excludedFromSubscription(
@@ -727,7 +711,7 @@ private:
     return excludesSource(exclusion, ftn.trackNamespace, registry_.upstreamSessionId(ftn));
   }
   // Whether a SUBSCRIBE for ftn under exclusion would be refused. Runs on relayExec_.
-  folly::coro::Task<bool> refusedUnder(RouteExclusion exclusion, moxygen::FullTrackName ftn) {
+  folly::coro::Task<bool> refusedByExclusion(RouteExclusion exclusion, moxygen::FullTrackName ftn) {
     if (registry_.exists(ftn)) {
       co_return excludedFromSubscription(exclusion, ftn);
     }

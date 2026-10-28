@@ -121,6 +121,18 @@ bool shouldForwardNamespace(
          (peerHop == moxygen::kMoQClusterAnonHopId || peerHop != localHopID);
 }
 
+// Routes that a request from requester may not use. Unset unless it negotiated MoQ Cluster.
+std::optional<openmoq::moqx::RouteExclusion>
+exclusionFor(const std::shared_ptr<moxygen::MoQSession>& requester) {
+  if (!requester || !requester->negotiatedSetupExtension(moxygen::SetupExtension::RelayHops)) {
+    return std::nullopt;
+  }
+  return openmoq::moqx::RouteExclusion{
+      .session = requester->sessionId(),
+      .hop = requester->getPeerHopID()
+  };
+}
+
 // Below draft 20, rejects a bounded subscription whose end group is already behind
 // the forwarder's largest group (the client should FETCH instead). Draft 20 accepts
 // it. Returns std::nullopt when the range is acceptable.
@@ -308,16 +320,16 @@ public:
   NamespaceRouteHandle(
       std::weak_ptr<MoqxRelay> relay,
       TrackNamespace ns,
-      SessionId session,
+      SessionId sessionId,
       RequestID requestID
   )
-      : relay_(std::move(relay)), ns_(std::move(ns)), session_(session), requestID_(requestID) {
+      : relay_(std::move(relay)), ns_(std::move(ns)), sessionId_(sessionId), requestID_(requestID) {
     setPublishNamespaceOk({.requestID = requestID, .requestSpecificParams = {}});
   }
 
   void publishNamespaceDone() override {
     if (auto relay = relay_.lock()) {
-      relay->doPublishNamespaceDone(ns_, session_, requestID_);
+      relay->doPublishNamespaceDone(ns_, sessionId_, requestID_);
     }
   }
 
@@ -328,13 +340,13 @@ public:
           RequestError{update.requestID, RequestErrorCode::INTERNAL_ERROR, "relay gone"}
       );
     }
-    co_return relay->updatePublishNamespace(ns_, session_, requestID_, update);
+    co_return relay->updatePublishNamespace(ns_, sessionId_, requestID_, update);
   }
 
 private:
   std::weak_ptr<MoqxRelay> relay_;
   TrackNamespace ns_;
-  SessionId session_;
+  SessionId sessionId_;
   RequestID requestID_;
 };
 } // namespace
@@ -359,8 +371,8 @@ public:
       return;
     }
     for (const auto& ns : activeNamespaces_) {
-      runOnExec(relayExec_, [relay, ns, session = session_]() mutable {
-        relay->doPublishNamespaceDone(ns, session);
+      runOnExec(relayExec_, [relay, ns, sessionId = session_->sessionId()]() mutable {
+        relay->doPublishNamespaceDone(ns, sessionId);
       });
     }
   }
@@ -390,9 +402,9 @@ public:
 
   void namespaceDoneMsg(const TrackNamespace& suffix) override {
     activeNamespaces_.erase(suffix);
-    runOnExec(relayExec_, [relay = relay_, suffix, session = session_]() mutable {
+    runOnExec(relayExec_, [relay = relay_, suffix, sessionId = session_->sessionId()]() mutable {
       if (auto r = relay.lock()) {
-        r->doPublishNamespaceDone(suffix, session);
+        r->doPublishNamespaceDone(suffix, sessionId);
       }
     });
   }
@@ -500,16 +512,16 @@ std::shared_ptr<Subscriber::PublishNamespaceHandle> MoqxRelay::doPublishNamespac
   XLOG(DBG1) << __func__ << " ns=" << pubNs.trackNamespace;
   auto route = ingestRoute(pubNs, session);
   if (!route) {
-    // A repeated NAMESPACE that now loops withdraws the route it would update.
+    // Remove the route of a peer whose repeated NAMESPACE now loops.
     if (!callback) {
-      doPublishNamespaceDone(pubNs.trackNamespace, session);
+      doPublishNamespaceDone(pubNs.trackNamespace, session->sessionId());
     }
     return nullptr;
   }
   if (!pubNs.trackNamespace.startsWith(allowedNamespacePrefix_)) {
     return nullptr;
   }
-  auto [nodePtr, sessions, replacedSession] = namespaceTree_.setPublisher(
+  auto [nodePtr, nsSubscribers, replacedSession] = namespaceTree_.setPublisher(
       pubNs.trackNamespace,
       session,
       std::move(callback),
@@ -522,9 +534,9 @@ std::shared_ptr<Subscriber::PublishNamespaceHandle> MoqxRelay::doPublishNamespac
   if (replacedSession) {
     XLOG(WARNING) << "PublishNamespace: Existing session (" << replacedSession.get()
                   << ") has already published trackNamespace=" << pubNs.trackNamespace;
-    dropSubscriptionsFrom(pubNs.trackNamespace, replacedSession);
+    dropSubscriptionsFrom(pubNs.trackNamespace, replacedSession->sessionId());
   }
-  for (auto& [outSession, info] : sessions) {
+  for (auto& [outSession, info] : nsSubscribers) {
     reconcileAdvertisement(*nodePtr, outSession, info);
   }
 
@@ -537,12 +549,20 @@ std::shared_ptr<Subscriber::PublishNamespaceHandle> MoqxRelay::doPublishNamespac
   );
 }
 
-void MoqxRelay::dropSubscriptionsFrom(
-    const TrackNamespace& ns,
-    const std::shared_ptr<MoQSession>& session
-) {
+std::vector<std::shared_ptr<MoQSession>>
+MoqxRelay::findPublishNamespaceSessions(const TrackNamespace& ns) {
+  std::vector<std::shared_ptr<MoQSession>> sessions;
+  if (const auto* node = namespaceTree_.findRouteNode(ns)) {
+    for (const auto& route : node->routes()) {
+      sessions.push_back(route.session);
+    }
+  }
+  return sessions;
+}
+
+void MoqxRelay::dropSubscriptionsFrom(const TrackNamespace& ns, SessionId sessionId) {
   registry_.removeIf([&](const SubscriptionRegistry::EntryView& e) {
-    if (e.ftn.trackNamespace.startsWith(ns) && e.upstream == session) {
+    if (e.ftn.trackNamespace.startsWith(ns) && e.upstream && e.upstream->sessionId() == sessionId) {
       XLOG(DBG4) << "Erasing subscription to " << e.ftn;
       return true;
     }
@@ -564,59 +584,43 @@ Subscriber::PublishNamespaceHandle::RequestUpdateResult MoqxRelay::updatePublish
   if (!route || route->requestID != requestID) {
     return fail(RequestErrorCode::INTERNAL_ERROR, "no such PUBLISH_NAMESPACE");
   }
-  RequestOk ok;
-  ok.requestID = update.requestID;
-  // A plain route keeps the anonymous path whatever the update carries.
-  if (!route->fromCluster) {
-    return ok;
-  }
-  auto session = route->session;
-  auto params = readClusterParams(update.params, *session);
-  if (params.hasError() && params.error() == ClusterParamsError::Loop) {
+  const auto& session = *route->session;
+  auto params =
+      readClusterParams(update.params, *session.getNegotiatedVersion(), session.getRelayLinkCost());
+  if (!params) {
     doPublishNamespaceDone(trackNamespace, sessionId, requestID);
-    return fail(RequestErrorCode::UNINTERESTED, "HOP_PATH contains this relay");
+    return fail(
+        RequestErrorCode::UNINTERESTED,
+        fmt::format("HOP_PATH contains this relay's hop ID {}", relayHopID_)
+    );
   }
-  if (params.hasError()) {
-    runOnSessionExec(relayExec_, session->getExecutor(), [session] {
-      session->close(SessionCloseErrorCode::PROTOCOL_VIOLATION);
-    });
-    return fail(RequestErrorCode::INTERNAL_ERROR, "malformed HOP_PATH");
-  }
-  auto path = params->path.value_or(route->path);
+  auto path = params->path.empty() ? route->path : std::move(params->path);
   auto cost = params->cost.value_or(route->cost);
   auto result = namespaceTree_.updateRoute(trackNamespace, sessionId, requestID, path, cost);
-  if (result.hasError()) {
-    return fail(RequestErrorCode::INTERNAL_ERROR, "no such PUBLISH_NAMESPACE");
-  }
+  XCHECK(result.hasValue()) << "findRoute found this route on the same executor";
   if (result->replacedSession) {
-    dropSubscriptionsFrom(trackNamespace, result->replacedSession);
+    dropSubscriptionsFrom(trackNamespace, result->replacedSession->sessionId());
   }
   for (auto& [outSession, info] : result->subscribers) {
     reconcileAdvertisement(*result->node, outSession, info);
   }
+  RequestOk ok;
+  ok.requestID = update.requestID;
   return ok;
-}
-
-std::optional<RouteExclusion> MoqxRelay::exclusionFor(const std::shared_ptr<MoQSession>& requester
-) {
-  if (!requester || !requester->negotiatedSetupExtension(SetupExtension::RelayHops)) {
-    return std::nullopt;
-  }
-  return RouteExclusion{.session = requester->sessionId(), .hop = requester->getPeerHopID()};
 }
 
 bool MoqxRelay::excludesSource(
     const std::optional<RouteExclusion>& exclusion,
     const TrackNamespace& ns,
-    std::optional<SessionId> source
+    std::optional<SessionId> sourceId
 ) const {
-  if (!exclusion || !source) {
+  if (!exclusion || !sourceId) {
     return false;
   }
-  if (exclusion->session == *source) {
+  if (exclusion->session == *sourceId) {
     return true;
   }
-  return namespaceTree_.anyRouteAlongPath(ns, *source, [&](const NamespaceNode::Route& route) {
+  return namespaceTree_.hasRouteAlongPath(ns, *sourceId, [&](const NamespaceNode::Route& route) {
     return openmoq::moqx::clusterPathContains(route.path, exclusion->hop);
   });
 }
@@ -645,7 +649,7 @@ void MoqxRelay::reconcileAdvertisement(
       info.trackNamespacePrefix.size()
   };
   const auto* route = advertisableRoute(node, subscriber, info);
-  const auto* sent = node.findAdvertisement(key);
+  const auto* sent = node.findSubscriberAdvertisement(key);
   auto suffix = makeNamespaceSuffix(node.trackNamespace, info.trackNamespacePrefix.size());
   // The same advertisement, or the same non-zero origin, is the same publisher.
   // Moving to a different publisher withdraws the old advertisement first.
@@ -656,13 +660,13 @@ void MoqxRelay::reconcileAdvertisement(
   };
   if (sent && (!route || !samePublisher())) {
     info.namespacePublishHandle->namespaceDoneMsg(suffix);
-    node.eraseAdvertisement(key);
+    node.eraseSubscriberAdvertisement(key);
     sent = nullptr;
   }
   if (!route) {
     return;
   }
-  // Only a negotiated subscriber sees HOP_PATH and ROUTE_COST, so only it gets updates.
+  // Only send HOP_PATH and ROUTE_COST updates to subscribers that negotiated MoQ Cluster.
   if (sent && (!subscriber->negotiatedSetupExtension(SetupExtension::RelayHops) ||
                (sent->path == route->path && sent->cost == route->cost))) {
     return;
@@ -671,24 +675,28 @@ void MoqxRelay::reconcileAdvertisement(
   ns.trackNamespaceSuffix = std::move(suffix);
   setOutgoingHopPath(ns.params, subscriber, route->path, route->cost, relayHopID_);
   info.namespacePublishHandle->namespaceMsg(ns);
-  node.setAdvertisement(key, NamespaceNode::Advertisement{route->seq, route->path, route->cost});
+  node.setSubscriberAdvertisement(
+      key,
+      NamespaceNode::Advertisement{route->seq, route->path, route->cost}
+  );
 }
 
-folly::Expected<MoqxRelay::ClusterParams, MoqxRelay::ClusterParamsError>
-MoqxRelay::readClusterParams(const TrackRequestParameters& params, MoQSession& session) const {
+std::optional<MoqxRelay::ClusterParams> MoqxRelay::readClusterParams(
+    const TrackRequestParameters& params,
+    uint64_t version,
+    uint64_t linkCost
+) const {
   ClusterParams out;
   if (const auto* hopPath = params.getFirstParam(TrackRequestParamKey::HOP_PATH)) {
-    auto decoded = decodeRelayHopPath(hopPath->asString, *session.getNegotiatedVersion());
-    if (decoded.hasError()) {
-      return folly::makeUnexpected(ClusterParamsError::Malformed);
-    }
+    auto decoded = decodeRelayHopPath(hopPath->asString, version);
+    XCHECK(decoded.hasValue()) << "moxygen rejects a malformed HOP_PATH";
     if (clusterPathContains(decoded.value(), relayHopID_)) {
-      return folly::makeUnexpected(ClusterParamsError::Loop);
+      return std::nullopt;
     }
     out.path = std::move(decoded.value());
   }
   if (const auto* cost = params.getFirstParam(TrackRequestParamKey::ROUTE_COST)) {
-    out.cost = clusterAddCost(cost->asUint64, session.getRelayLinkCost());
+    out.cost = clusterAddCost(cost->asUint64, linkCost);
   }
   return out;
 }
@@ -704,19 +712,13 @@ MoqxRelay::ingestRoute(const PublishNamespace& pubNs, const std::shared_ptr<MoQS
     return route;
   }
   route.fromCluster = true;
-  auto params = readClusterParams(pubNs.params, *session);
-  if (params.hasError() && params.error() == ClusterParamsError::Loop) {
+  auto params = readClusterParams(pubNs.params, *session->getNegotiatedVersion(), route.cost);
+  if (!params) {
     XLOG(DBG1) << "Dropping looped namespace ns=" << pubNs.trackNamespace;
     return std::nullopt;
   }
-  if (params.hasError() || !params->path) {
-    XLOG(WARN) << "Closing session for missing or malformed HOP_PATH ns=" << pubNs.trackNamespace;
-    runOnSessionExec(relayExec_, session->getExecutor(), [session] {
-      session->close(SessionCloseErrorCode::PROTOCOL_VIOLATION);
-    });
-    return std::nullopt;
-  }
-  route.path = std::move(*params->path);
+  XCHECK(!params->path.empty()) << "moxygen requires HOP_PATH from a MoQ Cluster session";
+  route.path = std::move(params->path);
   route.cost = params->cost.value_or(route.cost);
   return route;
 }
@@ -746,20 +748,11 @@ folly::coro::Task<Subscriber::PublishNamespaceResult> MoqxRelay::publishNamespac
 
 void MoqxRelay::doPublishNamespaceDone(
     const TrackNamespace& trackNamespace,
-    std::shared_ptr<MoQSession> session
-) {
-  if (session) {
-    doPublishNamespaceDone(trackNamespace, session->sessionId(), std::nullopt);
-  }
-}
-
-void MoqxRelay::doPublishNamespaceDone(
-    const TrackNamespace& trackNamespace,
-    SessionId session,
+    SessionId sessionId,
     std::optional<RequestID> requestID
 ) {
   XLOG(DBG1) << __func__ << " ns=" << trackNamespace;
-  auto result = namespaceTree_.unpublishNamespace(trackNamespace, session, requestID);
+  auto result = namespaceTree_.unpublishNamespace(trackNamespace, sessionId, requestID);
   if (result.hasError()) {
     if (result.error() == NamespaceTree::Error::NodeNotFound) {
       XLOG(DBG1) << "Node already pruned for ns=" << trackNamespace;
@@ -2610,10 +2603,12 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriber
     }
   }
 
-  // Refuse a cluster peer before it claims this thread's forwarder and fails its waiters.
+  // Check a cluster peer's exclusion on relayExec_ before it joins this thread's forwarder.
+  // A peer that joins a ready forwarder does not visit relayExec_ and could receive its own
+  // data. A peer that claims the forwarder and is then refused would fail its waiters.
   if (auto exclusion = exclusionFor(session); exclusion && co_await folly::coro::co_withExecutor(
                                                                folly::getKeepAliveToken(relayExec_),
-                                                               refusedUnder(*exclusion, ftn)
+                                                               refusedByExclusion(*exclusion, ftn)
                                                            )) {
     co_return folly::makeUnexpected(SubscribeError{
         subReq.requestID,
