@@ -43,6 +43,12 @@ stage, so they cannot disagree about which moxygen they carry.
 
 `version release` is the exception and stays strict: a versioned artifact must
 ship a published, digest-verified dependency, not whatever a runner compiled.
+Its `optimize` input is the one deliberate departure. PGO and LTO need moqx and
+the stack compiled together, so the linux-amd64 lane builds both from source at
+the pins. It builds them instrumented, trains on moqx
+([`scripts/pgo/train.sh`](/scripts/pgo/train.sh)), and rebuilds with the
+profile plus LTO. The release image then ships the portable tarballs instead of
+rebuilding.
 
 ## End-to-End Flow
 

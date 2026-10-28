@@ -9,8 +9,14 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # scripts/dev/lint.sh reads compile_commands.json from the build dir.
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+include(cmake/PgoFlags.cmake)
+
 # Route the compiler through ccache when it is installed, without a toolchain edit.
-if(NOT DEFINED CMAKE_CXX_COMPILER_LAUNCHER)
+# PGO builds run every compile with ccache disabled instead (cmake/PgoFlags.cmake).
+if(NOT MOQX_PGO STREQUAL "off")
+  set(CMAKE_C_COMPILER_LAUNCHER ${MOQX_PGO_LAUNCHER})
+  set(CMAKE_CXX_COMPILER_LAUNCHER ${MOQX_PGO_LAUNCHER})
+elseif(NOT DEFINED CMAKE_CXX_COMPILER_LAUNCHER)
   find_program(CCACHE_PROGRAM ccache)
   if(CCACHE_PROGRAM)
     set(CMAKE_C_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
@@ -68,6 +74,9 @@ elseif(_moqx_own_profile STREQUAL "tsan")
   add_link_options(${MOQX_TSAN_FLAGS})
 endif()
 
+add_compile_options(${MOQX_OPT_COMPILE_FLAGS})
+add_link_options(${MOQX_OPT_LINK_FLAGS})
+
 include(cmake/CheckSystemDeps.cmake)
 
 # GFLAGS_SHARED=OFF makes moxygen's FindGflags steer glog at a second, static
@@ -123,6 +132,13 @@ if(NOT moxygen_FOUND AND MOQX_MOXYGEN_PREBUILT)
       "resolves to the uninstrumented prebuilt. Build a matching stack:\n"
       "  scripts/configure.sh ${_moqx_own_profile} --moxygen from-source\n"
       "(or pass -DMOQX_ALLOW_ABI_SKEW=ON to knowingly link the uninstrumented one).")
+  endif()
+  # The prebuilt carries neither a profile nor LTO bytecode.
+  if(NOT MOQX_PGO STREQUAL "off" OR MOQX_LTO)
+    message(FATAL_ERROR
+      "MOQX_PGO=${MOQX_PGO} MOQX_LTO=${MOQX_LTO} needs the stack built with the same flags, "
+      "not the prebuilt:\n"
+      "  scripts/configure.sh release-pgo --moxygen from-source")
   endif()
   include(cmake/FetchMoxygenPrebuilt.cmake)
   find_package(moxygen REQUIRED CONFIG)
@@ -550,6 +566,13 @@ target_link_libraries(moqx-issuer PRIVATE moqx_warnings)
 # --- Tests ---
 
 if(MOQX_BUILD_TESTS)
+  # A PGO/LTO superbuild leaves out moxygen's tests and the GTest config they install.
+  find_package(GTest QUIET CONFIG)
+  if(NOT GTest_FOUND AND (NOT MOQX_PGO STREQUAL "off" OR MOQX_LTO))
+    message(FATAL_ERROR
+      "MOQX_BUILD_TESTS needs GTest, which a PGO/LTO moxygen build does not install; "
+      "pass -DMOQX_BUILD_TESTS=OFF")
+  endif()
   enable_testing()
   add_subdirectory(test)
 endif()

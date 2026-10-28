@@ -24,6 +24,10 @@ name: version release
 #
 # Inputs:
 #   version  required. semver, e.g. 1.2.3
+#   optimize optional. moqx-linux-amd64.tar.gz is built from source at the
+#            pins with PGO trained on moqx (scripts/pgo/train.sh) plus LTO, and
+#            the release image ships moqx-linux-<arch>.tar.gz unchanged instead
+#            of a bookworm rebuild.
 #
 # The moxygen consumed is always the one MOXYGEN_REV pins. On the release
 # MOXYGEN_REV resolves to:
@@ -54,6 +58,11 @@ on:
         description: 'moqx version (e.g. 1.2.3)'
         required: true
         type: string
+      optimize:
+        description: 'linux-amd64 tarball built from source with PGO trained on moqx plus LTO (about an hour more); the release image ships the portable tarballs'
+        required: false
+        type: boolean
+        default: false
 
 # Serialize per-version dispatches: prevents two runs with the same
 # version from both passing validate's tag-doesn't-exist check and
@@ -229,6 +238,9 @@ jobs:
 
           if [ "$HAS_PORTABLE" = "true" ]; then
             echo "==> moxygen $MOX_REF has portable assets — portable matrix will run"
+          elif [[ "${{ inputs.optimize }}" == "true" ]]; then
+            echo "Error: optimize needs moxygen $MOX_REF to carry portable assets: the other portable lanes link them, and the release image ships the tarballs." >&2
+            exit 1
           else
             echo "==> moxygen $MOX_REF lacks portable assets — portable matrix will be skipped"
           fi
@@ -281,6 +293,11 @@ jobs:
           - \`moqx-linux-amd64.tar.gz\` — \`-march=x86-64-v2\` (≈ all cloud x86 since 2015)
           - \`moqx-linux-arm64.tar.gz\` — \`-march=armv8-a\` (Graviton, Ampere, Apple M, RPi 3+, Rockchip)
           - \`moqx-macos-15-arm64.tar.gz\` — Apple silicon, macOS 15+, no Homebrew needed"
+            if [[ "${{ inputs.optimize }}" == "true" ]]; then
+              PORTABLE_NOTE+="
+          - \`moqx-linux-amd64.tar.gz\` is built from source at the pins, profile-guided (trained on moqx with local forwarders and 4 IO threads, on mvfst and picoquic) and link-time optimized across moqx and the stack
+          - the release image carries \`moqx-linux-<arch>.tar.gz\` unchanged"
+            fi
           else
             PORTABLE_NOTE="_Portable tarballs not produced for this release: moxygen \`${MOX_REF}\` does not include the required portable assets._"
           fi
@@ -326,7 +343,8 @@ jobs:
   # ════════════════════════════════════════════════════════════════════════════
   # Portable build: -O3, ISA-baselined, statically linked moqx-linux-{amd64,arm64}
   # and moqx-macos-15-arm64 tarballs. Runs only when the moxygen reference
-  # carries portable assets.
+  # carries portable assets. With optimize, linux-amd64 builds the stack from
+  # source instead: instrumented, trained on moqx, rebuilt with the profile + LTO.
   # Each runner uploads its own tarball directly to the draft release.
   # ════════════════════════════════════════════════════════════════════════════
 
@@ -359,6 +377,11 @@ jobs:
             cxx_flags: ""
     name: portable (${{ matrix.platform }})
     runs-on: ${{ matrix.runner }}
+    env:
+      OPTIMIZE: ${{ inputs.optimize && matrix.platform == 'linux-amd64' }}
+      # Read by scripts/configure.sh's superbuild on the optimized path.
+      MOQX_MOXYGEN_PORTABLE: 'ON'
+      MOQX_MOXYGEN_CXX_FLAGS: ${{ matrix.cxx_flags }}
     steps:
       - name: Generate app token
         id: app-token
@@ -378,11 +401,12 @@ jobs:
         run: |
           # Base library set via the shared installer, so a new moqx dependency
           # reaches the release build on its own. Only extras below: libdwarf
-          # (prebuilt proxygen symbolizer), xxhash (folly), ca-certificates.
+          # (prebuilt proxygen symbolizer), xxhash (folly), ca-certificates, and
+          # jemalloc, which PGO training preloads as the image does.
           scripts/install-system-deps.sh
           if [ "$RUNNER_OS" = Linux ]; then
             sudo apt-get install -y --no-install-recommends \
-              ca-certificates libdwarf-dev libxxhash-dev
+              ca-certificates libdwarf-dev libxxhash-dev libjemalloc2
           fi
 
       - name: Configure
@@ -410,21 +434,44 @@ jobs:
           fi
           # The version is passed in because the checkout is shallow, where git
           # describe would yield a bare sha.
-          cmake -S . -B _build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DMOQX_VERSION_STRING="${{ needs.validate.outputs.tag }}" \
-            -DMOQX_BUILD_TESTS=OFF \
-            "${TAG_ARG[@]}" \
-            -DCMAKE_C_FLAGS="${{ matrix.cxx_flags }}" \
-            -DCMAKE_CXX_FLAGS="${{ matrix.cxx_flags }}" \
-            "${LINUX_ARGS[@]}" \
-            -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/_install"
+          if [ "$OPTIMIZE" = true ]; then
+            # The instrumented pass; the next step trains and rebuilds with the
+            # same args, kept in a file for it.
+            printf '%s\n' \
+              -DMOQX_VERSION_STRING="${{ needs.validate.outputs.tag }}" \
+              -DCMAKE_C_FLAGS="${{ matrix.cxx_flags }}" \
+              -DCMAKE_CXX_FLAGS="${{ matrix.cxx_flags }}" \
+              "${LINUX_ARGS[@]}" \
+              -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/_install" > "$RUNNER_TEMP/optimize-args"
+            mapfile -t ARGS < "$RUNNER_TEMP/optimize-args"
+            scripts/configure.sh release-pgo --moxygen from-source "${ARGS[@]}"
+            echo "BUILD_DIR=build/release-pgo" >> "$GITHUB_ENV"
+          else
+            cmake -S . -B _build -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DMOQX_VERSION_STRING="${{ needs.validate.outputs.tag }}" \
+              -DMOQX_BUILD_TESTS=OFF \
+              "${TAG_ARG[@]}" \
+              -DCMAKE_C_FLAGS="${{ matrix.cxx_flags }}" \
+              -DCMAKE_CXX_FLAGS="${{ matrix.cxx_flags }}" \
+              "${LINUX_ARGS[@]}" \
+              -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/_install"
+            echo "BUILD_DIR=_build" >> "$GITHUB_ENV"
+          fi
 
       - name: Build
-        run: cmake --build _build -j "$(getconf _NPROCESSORS_ONLN)"
+        run: cmake --build "$BUILD_DIR" -j "$(getconf _NPROCESSORS_ONLN)"
+
+      - name: Train the profile on moqx, rebuild with it and LTO
+        if: env.OPTIMIZE == 'true'
+        run: |
+          bash scripts/pgo/train.sh --relay build/release-pgo/moqx --work-dir "$RUNNER_TEMP/pgo-train"
+          mapfile -t ARGS < "$RUNNER_TEMP/optimize-args"
+          scripts/configure.sh release-pgo --moxygen from-source -DMOQX_PGO=use "${ARGS[@]}"
+          cmake --build build/release-pgo -j "$(getconf _NPROCESSORS_ONLN)"
 
       - name: Install
-        run: cmake --install _build
+        run: cmake --install "$BUILD_DIR"
 
       - name: Bundle non-toolchain dynamic deps
         if: runner.os == 'Linux'
@@ -605,7 +652,17 @@ jobs:
   # ════════════════════════════════════════════════════════════════════════════
 
   release-image:
-    needs: [validate, create-release]
+    # Waits for portable-build so optimize can ship its tarball. Without moxygen
+    # portable assets that job is skipped, and optimize has already failed validate.
+    # Without optimize, a failed portable lane does not hold the image back.
+    needs: [validate, create-release, portable-build]
+    if: |
+      always() &&
+      needs.validate.result == 'success' &&
+      needs.create-release.result == 'success' &&
+      (!inputs.optimize ||
+       (needs.portable-build.result != 'failure' &&
+        needs.portable-build.result != 'cancelled'))
     permissions:
       packages: write
     strategy:
@@ -631,18 +688,37 @@ jobs:
 
       - uses: docker/setup-buildx-action@v4
 
+      # This job's GITHUB_TOKEN has packages only, and the release is still a draft.
+      - name: Generate app token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.OMOQ_APP_ID }}
+          private-key: ${{ secrets.OMOQ_APP_PRIV_KEY }}
+
       # Reads ci-main's buildcache. Writing it back with mode=max evicts the
       # ccache and dependency caches sharing the repo's 10 GB budget.
       - name: Build with the release version baked in
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           IMAGE="ghcr.io/${{ github.repository }}"
           ARCH="${{ matrix.arch }}"
           TAG="${{ needs.validate.outputs.tag }}"
-          docker buildx build -f docker/Dockerfile --target relay --load \
+          # optimize: ship the portable tarball this release just uploaded instead
+          # of rebuilding moqx against the bookworm snapshot prebuilt.
+          TARGET=relay
+          PORTABLE=()
+          if [[ "${{ inputs.optimize }}" == "true" ]]; then
+            gh release download "$TAG" --pattern "moqx-linux-${ARCH}.tar.gz" --dir docker/_portable --clobber
+            TARGET=relay-portable
+            PORTABLE=(--build-arg "MOQX_PORTABLE_TARBALL=docker/_portable/moqx-linux-${ARCH}.tar.gz")
+          fi
+          docker buildx build -f docker/Dockerfile --target "$TARGET" --load \
             --secret id=github_token,env=GITHUB_TOKEN \
             --build-arg MOQX_VERSION_STRING="$TAG" \
+            "${PORTABLE[@]}" \
             --cache-from "type=registry,ref=${IMAGE}/buildcache:${ARCH}" \
             -t "${IMAGE}:${TAG}-${ARCH}" \
             .
