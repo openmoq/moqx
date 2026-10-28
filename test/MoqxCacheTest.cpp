@@ -4288,6 +4288,24 @@ TEST_F(MoqxCacheTest, TestZeroDefaultDurationSkipsCaching) {
   EXPECT_FALSE(cache_.hasCachedObject(kTestTrackName, {0, 4}));
 }
 
+// A fetch that is not cached must not record its range as non-existent, or a
+// later fetch of the same range is answered empty instead of going upstream.
+CO_TEST_F(MoqxCacheTest, TestZeroDurationFetchLeavesRangeUnknown) {
+  cache_.setTrackState(kTestTrackName, std::nullopt, makeCacheDurationExt(0));
+  expectUpstreamFetch({0, 0}, {0, 10}, 0, AbsoluteLocation{0, 10});
+  auto res = co_await cache_.fetch(getFetch({0, 0}, {0, 10}), consumer_, upstream_);
+  EXPECT_TRUE(res.hasValue());
+  expectFetchObjects({0, 0}, {0, 10}, true);
+  serveCacheRangeFromUpstream({0, 0}, {0, 10});
+  co_await folly::coro::co_reschedule_on_current_executor;
+  EXPECT_FALSE(cache_.hasCachedObject(kTestTrackName, {0, 0}));
+
+  auto consumer2 = std::make_shared<StrictMock<moxygen::MockFetchConsumer>>();
+  expectUpstreamFetch({0, 0}, {0, 10}, 0, AbsoluteLocation{0, 10});
+  res = co_await cache_.fetch(getFetch({0, 0}, {0, 10}), consumer2, upstream_);
+  EXPECT_TRUE(res.hasValue());
+}
+
 TEST_F(MoqxCacheTest, TestZeroDefaultDurationPublisherOverrides) {
   // defaultMaxCacheDuration=0ms but publisher sets 1000ms → objects are cached.
   auto currentTime = MoqxCache::SteadyClock::now();
