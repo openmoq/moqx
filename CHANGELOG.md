@@ -41,6 +41,7 @@ How to add an entry: see [CONTRIBUTING.md](/CONTRIBUTING.md#changelog).
 - A client sending sparse FETCHes could grow the [cache](/docs/config.md#cache)'s gap markers without bound; each track now keeps at most 256. ([#880](https://github.com/openmoq/moqx/pull/880))
 - The relay could serve a MoQ Cluster peer's SUBSCRIBE, FETCH, or TRACK_STATUS over a route that runs back through that peer. ([#840](https://github.com/openmoq/moqx/pull/840))
 - A slow FETCH subscriber made the relay read the whole requested range from the publisher and hold it in memory. The relay now stops reading from the publisher until the subscriber catches up. ([#870](https://github.com/openmoq/moqx/pull/870))
+- `SIGHUP` no longer ends the relay; it logs that config [reload](/docs/config.md#reloading) is not supported. ([#884](https://github.com/openmoq/moqx/pull/884))
 
 [0.3.6] - 2026-10-10
 ====================
