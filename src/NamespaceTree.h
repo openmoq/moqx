@@ -20,6 +20,12 @@
 
 namespace openmoq::moqx {
 
+// Routes a request may not use.
+struct RouteExclusion {
+  std::optional<moxygen::SessionId> session;
+  uint64_t hop{moxygen::kMoQClusterAnonHopId};
+};
+
 // Hierarchical tree tracking PUBLISH_NAMESPACE announcements and
 // SUBSCRIBE_NAMESPACE subscriptions. Relay-specific notifications are
 // delivered via Callback.
@@ -50,7 +56,7 @@ public:
     }
 
     bool hasContent() const {
-      return !publishes_.empty() || !subscribers_.empty() || publisherSession_ != nullptr;
+      return !publishes_.empty() || !subscribers_.empty() || !routes_.empty();
     }
 
     using moxygen::Subscriber::PublishNamespaceHandle::setPublishNamespaceOk;
@@ -64,11 +70,33 @@ public:
       std::optional<moxygen::TrackFilter> trackFilter;
     };
 
-    std::shared_ptr<moxygen::MoQSession> publisherSession() const { return publisherSession_; }
-    const std::string& publisherPeerID() const { return publisherPeerID_; }
-    const std::vector<uint64_t>& relayHopPath() const { return relayHopPath_; }
-    // The publisher's ROUTE_COST plus the cost of its link to this relay.
-    uint64_t routeCost() const { return routeCost_; }
+    // One advertisement of this namespace. A session holds at most one route here.
+    struct Route {
+      std::shared_ptr<moxygen::MoQSession> session;
+      std::shared_ptr<moxygen::Subscriber::PublishNamespaceCallback> callback;
+      std::string peerID;
+      std::vector<uint64_t> path;
+      uint64_t cost{0};        // ROUTE_COST plus the sender's link cost
+      uint64_t seq{0};         // arrival order; newer wins ties
+      bool fromCluster{false}; // from a session that negotiated MoQ Cluster
+    };
+
+    const std::vector<Route>& routes() const { return routes_; }
+
+    // Best eligible route by the MoQ Cluster path-selection rule: a path
+    // without 0, then lowest cost, then shortest path, then newest.
+    template <typename Pred> const Route* selectRoute(Pred&& eligible) const {
+      const Route* best = nullptr;
+      for (const auto& route : routes_) {
+        if (eligible(route) && (!best || betterRoute(route, *best))) {
+          best = &route;
+        }
+      }
+      return best;
+    }
+    const Route* selectRoute() const {
+      return selectRoute([](const Route&) { return true; });
+    }
 
     size_t subscriberCount() const { return subscribers_.size(); }
 
@@ -97,14 +125,12 @@ public:
     NamespaceTree& tree_;
     NamespaceNode* parent_{nullptr};
     size_t activeChildCount_{0};
-    std::shared_ptr<moxygen::MoQSession> publisherSession_;
-    std::string publisherPeerID_;
-    std::vector<uint64_t> relayHopPath_;
-    uint64_t routeCost_{0};
+    static bool betterRoute(const Route& a, const Route& b);
+
+    std::vector<Route> routes_;
     folly::F14FastMap<std::string, std::shared_ptr<moxygen::MoQSession>> publishes_;
     folly::F14FastMap<std::shared_ptr<moxygen::MoQSession>, NamespaceSubscriberInfo> subscribers_;
     folly::F14FastMap<std::string, std::shared_ptr<NamespaceNode>> children_;
-    std::shared_ptr<moxygen::Subscriber::PublishNamespaceCallback> publishNamespaceCallback_;
     folly::F14FastMap<uint64_t, std::shared_ptr<PropertyRanking>> rankings_;
   };
 
@@ -112,16 +138,22 @@ public:
       std::pair<std::shared_ptr<moxygen::MoQSession>, NamespaceNode::NamespaceSubscriberInfo>>;
 
   struct UnpublishNamespaceResult {
+    std::shared_ptr<NamespaceNode> node;
     SessionSubscriberList subscribers;
-    std::vector<uint64_t> relayHopPath;
+    NamespaceNode::Route removed;
   };
 
   explicit NamespaceTree(Callback& cb) : cb_(cb), root_(*this) {}
 
   enum class Error { NodeNotFound, NotOwner, NotSubscribed };
 
-  // Longest-prefix match for the publisher of ns; null if none found.
-  std::shared_ptr<moxygen::MoQSession> findPublisherSession(const moxygen::TrackNamespace& ns);
+  // The deepest node covering ns that has routes. Null if none does.
+  const NamespaceNode* findRouteNode(const moxygen::TrackNamespace& ns) const;
+
+  // Session of the best route at the deepest node covering ns that has routes.
+  // Null if that node has no eligible route: shorter prefixes are not consulted.
+  std::shared_ptr<moxygen::MoQSession>
+  findPublisherSession(const moxygen::TrackNamespace& ns, const RouteExclusion& exclusion = {});
 
   std::shared_ptr<NamespaceNode> findNode(
       const moxygen::TrackNamespace& ns,
@@ -131,7 +163,9 @@ public:
 
   // Result of setPublisher. node is the target node; subscribers are all
   // prefix + exact sessions; replacedSession is non-null when an existing
-  // publisher was displaced (caller must clean up its track subscriptions).
+  // route was displaced (caller must clean up its track subscriptions). A
+  // route that is not fromCluster displaces the node's other such route, and
+  // any route displaces the same session's earlier route. Other routes coexist.
   struct SetPublisherResult {
     std::shared_ptr<NamespaceNode> node;
     SessionSubscriberList subscribers;
@@ -145,10 +179,12 @@ public:
       std::string peerID,
       moxygen::RequestID requestID,
       std::vector<uint64_t> relayHopPath = {},
-      uint64_t routeCost = 0
+      uint64_t routeCost = 0,
+      bool fromCluster = false
   );
 
-  // NodeNotFound: node already pruned (ignorable). NotOwner: session mismatch (log and ignore).
+  // Removes session's route. NodeNotFound: node already pruned (ignorable).
+  // NotOwner: session has no route here (log and ignore).
   folly::Expected<UnpublishNamespaceResult, Error> unpublishNamespace(
       const moxygen::TrackNamespace& ns,
       const std::shared_ptr<moxygen::MoQSession>& session
@@ -276,6 +312,7 @@ private:
 
   Callback& cb_;
   NamespaceNode root_{*this};
+  uint64_t nextRouteSeq_{0};
 };
 
 } // namespace openmoq::moqx
