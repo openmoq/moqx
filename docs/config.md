@@ -512,9 +512,12 @@ through itself. See [moq-cluster.md](moq-cluster.md).
 
 ### Limitations
 
-- **Upstreams are not ranked yet.** When two upstreams advertise the same
-namespace, the later advertisement replaces the earlier one. Failover and load
-balancing across upstreams are not currently supported.
+- **Routes are chosen once.** When several upstreams advertise the same
+namespace over MoQ Cluster, a new subscription takes the best route: one
+without an anonymous hop, then the lowest cost, then the shortest path. An
+existing subscription stays on its route, and failover and load balancing
+across upstreams are not currently supported. A link that did not negotiate MoQ
+Cluster still replaces any earlier such advertisement of the namespace.
 - **Cycles need MoQ Cluster on every relay.** Negotiated moqx peers detect
 returning namespace advertisements, but a relay without MoQ Cluster cannot carry
 the hop path through the graph.
