@@ -54,7 +54,10 @@ On each peer session:
 - moqx does not advertise a path to a peer whose Hop ID is on that path;
 - moqx advertises each subscriber the best path it may use, and sends an update
   when that path changes. A change of publisher withdraws the namespace and
-  advertises it again.
+  advertises it again;
+- a repeated NAMESPACE, or a REQUEST_UPDATE on a PUBLISH_NAMESPACE, from the
+  same origin updates the route in place and leaves its subscriptions running.
+  A new origin replaces the route and ends the subscriptions it served.
 
 Negotiation is session-local. Support on one peer connection does not imply
 support on any other connection.
