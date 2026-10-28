@@ -1,0 +1,1 @@
+- `SIGHUP` no longer ends the relay; it logs that config [reload](/docs/config.md#reloading) is not supported.

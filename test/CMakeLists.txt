@@ -325,6 +325,13 @@ foreach(version 16 18)
   )
 endforeach()
 
+# Signal handling does not depend on the QUIC stack, so this runs once.
+add_test(
+  NAME relay_sighup
+  COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_relay_sighup.sh $<TARGET_FILE:moqx>
+)
+set_tests_properties(relay_sighup PROPERTIES TIMEOUT 30)
+
 moqx_add_dual_stack_test(admin_info_endpoint
   COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_admin_info.sh $<TARGET_FILE:moqx>
 )
