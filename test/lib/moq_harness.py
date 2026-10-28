@@ -757,6 +757,21 @@ class Harness:
             f"namespace '{ns}' did not reach relay {name} after {READY_TIMEOUT:g}s"
         )
 
+    def wait_relay_log(self, name, text):
+        relay = self.relay_of("wait_relay_log", name)
+        for _ in _until(READY_TIMEOUT):
+            # Polled before the read, so a line logged just before exit still counts.
+            exited = relay.proc is not None and relay.proc.poll() is not None
+            if any(text in line for line in _lines(relay.log_path)):
+                return
+            if exited:
+                self._dump_relay_log(name)
+                raise HarnessError(f"relay {name} exited before logging {text!r}")
+        self._dump_relay_log(name)
+        raise HarnessError(
+            f"relay {name} did not log {text!r} after {READY_TIMEOUT:g}s"
+        )
+
     # ── Relay lifecycle ────────────────────────────────────────────────────────
     def relay_kill(self, name):
         """SIGKILL a relay and flag it, exempting it from the clean-exit check.
@@ -951,14 +966,6 @@ class Harness:
             self._pass(f"[{name}] relay alive")
         else:
             self._fail(f"[{name}] relay is not running")
-            self._dump_relay_log(name)
-
-    def expect_relay_log(self, name, text):
-        relay = self.relay_of("expect_relay_log", name)
-        if any(text in line for line in _lines(relay.log_path)):
-            self._pass(f"[{name}] relay log contains {text!r}")
-        else:
-            self._fail(f"[{name}] relay log lacks {text!r}")
             self._dump_relay_log(name)
 
     def expect_settled(self, settle, *names):
