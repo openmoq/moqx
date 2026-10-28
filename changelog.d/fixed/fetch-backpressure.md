@@ -1,0 +1,1 @@
+- A slow FETCH subscriber made the relay read the whole requested range from the publisher and hold it in memory. The relay now stops reading from the publisher until the subscriber catches up. ([#870](https://github.com/openmoq/moqx/pull/870))

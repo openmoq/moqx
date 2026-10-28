@@ -1,0 +1,1 @@
+- The relay could serve a MoQ Cluster peer's SUBSCRIBE, FETCH, or TRACK_STATUS over a route that runs back through that peer. ([#840](https://github.com/openmoq/moqx/pull/840))
