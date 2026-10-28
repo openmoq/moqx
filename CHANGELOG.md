@@ -15,6 +15,9 @@ How to add an entry: see [CONTRIBUTING.md](/CONTRIBUTING.md#changelog).
 - [`cluster`](/docs/config.md#cluster) config: `enabled` turns MoQ Cluster negotiation off, and `hop_id` sets a stable Hop ID, with 0 for an anonymous relay. ([#837](https://github.com/openmoq/moqx/pull/837))
 - A service can peer with several relays through an [`upstreams`](/docs/config.md#upstreams) list, and each upstream link takes a `relay_cost`. `/state` reports a list's links under `upstreams`. ([#838](https://github.com/openmoq/moqx/pull/838))
 - A release cut with the `version release` workflow's `optimize` input ships a profile-guided, link-time-optimized `linux-amd64` relay, in the tarball and the image, that uses less CPU at the same throughput. See [PGO and LTO](/BUILD.md#pgo-and-lto). ([#804](https://github.com/openmoq/moqx/pull/804))
+- A relay keeps every MoQ Cluster advertisement of a namespace and routes a new subscription over the best one, by path and cost. ([#840](https://github.com/openmoq/moqx/pull/840))
+- A namespace subscriber is told the best route it may use and gets an update when that route changes. A change of publisher withdraws the namespace before advertising it again. ([#840](https://github.com/openmoq/moqx/pull/840))
+- PUBLISH_NAMESPACE accepts REQUEST_UPDATE for its `HOP_PATH` and `ROUTE_COST`. ([#840](https://github.com/openmoq/moqx/pull/840))
 
 ## Changed
 
@@ -22,6 +25,7 @@ How to add an entry: see [CONTRIBUTING.md](/CONTRIBUTING.md#changelog).
 - **Breaking:** [MoQ Cluster](/docs/moq-cluster.md) ([draft-01](https://datatracker.ietf.org/doc/draft-lcurley-moq-cluster/01/)) replaces relay hops. Advertisements now carry `ROUTE_COST`. Loop protection requires every relay in a cycle to run this version. ([#836](https://github.com/openmoq/moqx/pull/836))
 - With [`strict_claims`](/docs/config.md#authentication-and-authorization) on, the relay rejects a token that carries a claim other than `exp` and `moqt`, repeats a claim, or has an `exp` that is not an unsigned integer. ([#868](https://github.com/openmoq/moqx/pull/868))
 - **Breaking:** every service must set [`max_subscription_buffer_kb`](/docs/config.md#services), directly or in `service_defaults`. It limits the maximum number of KB the relay holds for one subscription; past it the relay ends the subscription with `TOO_FAR_BEHIND`. On mvfst the count includes bytes sent but not yet acknowledged. The shipped configs use 51200 (50 MB), and 0 removes the limit. Before this, a slow subscriber could make the relay buffer without limit. ([#866](https://github.com/openmoq/moqx/pull/866))
+- A repeated NAMESPACE from the same origin keeps the namespace's subscriptions running instead of tearing them down. ([#840](https://github.com/openmoq/moqx/pull/840))
 
 ## Fixed
 
@@ -35,6 +39,7 @@ How to add an entry: see [CONTRIBUTING.md](/CONTRIBUTING.md#changelog).
 - [`upstream.tls.ca_cert`](/docs/config.md#upstreams) was ignored, so upstream certificates were checked against the system trust store. The relay now requires them to chain to that CA and match the URL's host, and it does not start if the file cannot be loaded. ([#865](https://github.com/openmoq/moqx/pull/865))
 - The [cache](/docs/config.md#cache) kept gap markers of evicted groups on a long-lived track, using memory outside its size limit. ([#875](https://github.com/openmoq/moqx/pull/875))
 - A client sending sparse FETCHes could grow the [cache](/docs/config.md#cache)'s gap markers without bound; each track now keeps at most 256. ([#880](https://github.com/openmoq/moqx/pull/880))
+- The relay could serve a MoQ Cluster peer's SUBSCRIBE, FETCH, or TRACK_STATUS over a route that runs back through that peer. ([#840](https://github.com/openmoq/moqx/pull/840))
 
 [0.3.6] - 2026-10-10
 ====================

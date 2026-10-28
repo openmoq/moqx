@@ -106,8 +106,7 @@ public:
 class MoqxRelay : public moxygen::Publisher,
                   public moxygen::Subscriber,
                   public std::enable_shared_from_this<MoqxRelay>,
-                  public moxygen::MoQForwarder::Callback,
-                  public NamespaceTree::Callback {
+                  public moxygen::MoQForwarder::Callback {
 public:
   // Default for maxDeselected (tracks kept in deselected queue before eviction).
   // Set to 0 until pause/resume forwarding callbacks are wired in PropertyRanking;
@@ -259,13 +258,7 @@ public:
   }
 
   std::vector<std::shared_ptr<moxygen::MoQSession>>
-  findPublishNamespaceSessions(const moxygen::TrackNamespace& ns) {
-    auto session = findPublishNamespaceSession(ns);
-    if (session) {
-      return {session};
-    }
-    return {};
-  }
+  findPublishNamespaceSessions(const moxygen::TrackNamespace& ns);
 
   // Sync cores of publishNamespace/publishNamespaceDone. Called by the
   // Subscriber coroutine interface and directly by MoqxRelayNamespaceHandle
@@ -277,9 +270,20 @@ public:
       std::string peerID = {}
   );
 
+  // Ends sessionId's route, if requestID is unset or names it.
   void doPublishNamespaceDone(
       const moxygen::TrackNamespace& trackNamespace,
-      std::shared_ptr<moxygen::MoQSession> session
+      moxygen::SessionId sessionId,
+      std::optional<moxygen::RequestID> requestID = std::nullopt
+  );
+
+  // Applies a REQUEST_UPDATE to one route, found by sessionId and the requestID of its
+  // PUBLISH_NAMESPACE. Omitted parameters are unchanged.
+  moxygen::Subscriber::PublishNamespaceHandle::RequestUpdateResult updatePublishNamespace(
+      const moxygen::TrackNamespace& trackNamespace,
+      moxygen::SessionId sessionId,
+      moxygen::RequestID requestID,
+      const moxygen::RequestUpdate& update
   );
 
   const std::vector<std::shared_ptr<UpstreamProvider>>& upstreamProviders() const {
@@ -312,12 +316,6 @@ private:
   class LocalSubscribeFilter;
   class LocalPublishFilter;
 
-  // No-op NamespaceTree::Callback for the tracks-subscriber tree.
-  // The tracks tree never has publishers, so onPublishNamespaceDone never fires.
-  struct NullCallback : public NamespaceTree::Callback {
-    void onPublishNamespaceDone(const moxygen::TrackNamespace&) override {}
-  };
-
   void unsubscribeNamespace(
       const moxygen::TrackNamespace& prefix,
       std::shared_ptr<moxygen::MoQSession> session
@@ -331,14 +329,11 @@ private:
 
   void onPublishDone(const moxygen::FullTrackName& ftn);
 
-  void onPublishNamespaceDone(const moxygen::TrackNamespace& ns) override;
-
-  NamespaceTree namespaceTree_{*this};
+  NamespaceTree namespaceTree_;
 
   // Draft 18+: parallel tree for SUBSCRIBE_TRACKS. Independent overlap space;
   // only `children` and `sessions` are populated (no publishers, no callbacks).
-  NullCallback tracksTreeCb_;
-  NamespaceTree tracksTree_{tracksTreeCb_};
+  NamespaceTree tracksTree_;
 
   void onEmpty(moxygen::MoQForwarder* forwarder) override;
   void forwardChanged(moxygen::MoQForwarder* forwarder, bool forward) override;
@@ -509,9 +504,36 @@ private:
 
   struct IngestedRoute {
     std::vector<uint64_t> path;
-    uint64_t cost; // ROUTE_COST plus the sender's link cost
+    uint64_t cost;    // ROUTE_COST plus the sender's link cost
+    bool fromCluster; // the session negotiated MoQ Cluster
   };
-  // Returns nullopt to drop the advertisement. A malformed path also closes the session.
+  // A MoQ Cluster sender's HOP_PATH and ROUTE_COST. moxygen has already validated them.
+  struct ClusterParams {
+    std::vector<uint64_t> path;   // empty when HOP_PATH is absent
+    std::optional<uint64_t> cost; // with the sender's link cost added
+  };
+  // Nullopt if HOP_PATH contains this relay.
+  std::optional<ClusterParams> readClusterParams(
+      const moxygen::TrackRequestParameters& params,
+      uint64_t version,
+      uint64_t linkCost
+  ) const;
+  using NamespaceNode = NamespaceTree::NamespaceNode;
+  // The route to advertise to one SUBSCRIBE_NAMESPACE. Null if none may be.
+  const NamespaceNode::Route* advertisableRoute(
+      const NamespaceNode& node,
+      const std::shared_ptr<moxygen::MoQSession>& subscriber,
+      const NamespaceNode::NamespaceSubscriberInfo& info
+  ) const;
+  // Erases subscriptions under ns whose upstream is sessionId.
+  void dropSubscriptionsFrom(const moxygen::TrackNamespace& ns, moxygen::SessionId sessionId);
+  // Sends NAMESPACE, an update, or NAMESPACE_DONE so the subscription matches advertisableRoute.
+  void reconcileAdvertisement(
+      NamespaceNode& node,
+      const std::shared_ptr<moxygen::MoQSession>& subscriber,
+      const NamespaceNode::NamespaceSubscriberInfo& info
+  );
+  // Nullopt if the route loops through this relay.
   std::optional<IngestedRoute> ingestRoute(
       const moxygen::PublishNamespace& pubNs,
       const std::shared_ptr<moxygen::MoQSession>& session
@@ -674,8 +696,34 @@ private:
     return useLocalForwarders_ ? Mode::LocalForwarder : Mode::RelayExec;
   }
 
-  std::shared_ptr<moxygen::Publisher> findUpstreamPublisher(const moxygen::TrackNamespace& ns) {
-    auto session = namespaceTree_.findPublisherSession(ns);
+  // Whether exclusion rules out sourceId as the upstream for ns. sourceId is unset only
+  // while a finished publisher's subscribers drain.
+  bool excludesSource(
+      const std::optional<RouteExclusion>& exclusion,
+      const moxygen::TrackNamespace& ns,
+      std::optional<moxygen::SessionId> sourceId
+  ) const;
+  // A requester excluded from an existing subscription's source.
+  bool excludedFromSubscription(
+      const std::optional<RouteExclusion>& exclusion,
+      const moxygen::FullTrackName& ftn
+  ) const {
+    return excludesSource(exclusion, ftn.trackNamespace, registry_.upstreamSessionId(ftn));
+  }
+  // Whether a SUBSCRIBE for ftn under exclusion would be refused. Runs on relayExec_.
+  folly::coro::Task<bool> refusedByExclusion(RouteExclusion exclusion, moxygen::FullTrackName ftn) {
+    if (registry_.exists(ftn)) {
+      co_return excludedFromSubscription(exclusion, ftn);
+    }
+    co_return !namespaceTree_.findPublisherSession(ftn.trackNamespace, exclusion) &&
+        namespaceTree_.findPublisherSession(ftn.trackNamespace);
+  }
+
+  std::shared_ptr<moxygen::Publisher> findUpstreamPublisher(
+      const moxygen::TrackNamespace& ns,
+      const std::optional<RouteExclusion>& exclusion = std::nullopt
+  ) {
+    auto session = namespaceTree_.findPublisherSession(ns, exclusion.value_or(RouteExclusion{}));
     if (!session) {
       return nullptr;
     }

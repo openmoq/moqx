@@ -51,7 +51,18 @@ On each peer session:
 - negotiated advertisements carry `HOP_PATH` and `ROUTE_COST`;
 - moqx appends its Hop ID before forwarding an advertisement;
 - moqx drops an advertisement whose incoming path already contains its Hop ID;
-- moqx does not advertise a path to a peer whose Hop ID is on that path.
+- moqx does not advertise a path to a peer whose Hop ID is on that path;
+- moqx advertises each subscriber the best path it may use, and sends an update
+  when that path changes. A change of publisher withdraws the namespace and
+  advertises it again;
+- a repeated NAMESPACE, or a REQUEST_UPDATE on a PUBLISH_NAMESPACE, from the
+  same origin updates the route in place and leaves its subscriptions running.
+  A new origin replaces the route and ends the subscriptions it served;
+- SUBSCRIBE, FETCH, and TRACK_STATUS from a negotiated peer skip routes whose
+  path contains that peer's Hop ID, and routes from the peer's own session. A
+  track keeps one upstream subscription, so a peer that its existing source
+  runs through gets `DOES_NOT_EXIST`. Sessions that did not negotiate MoQ
+  Cluster route as before.
 
 Negotiation is session-local. Support on one peer connection does not imply
 support on any other connection.
@@ -152,11 +163,11 @@ offending session with `PROTOCOL_VIOLATION`.
 
 ## Current Scope and Limitations
 
-- A service may list several upstreams, but path selection between them,
-  failover, and load balancing are not implemented.
-- Shortest-path selection, redundant-origin comparison, topology coalescing,
-  and trust-boundary path stripping described as optional behavior in the draft
-  are not implemented.
+- A new subscription takes the best route by the draft's path-selection rule.
+  Failover, load balancing, and moving an existing subscription to a better
+  route are not implemented.
+- Redundant-origin comparison, topology coalescing, and trust-boundary path
+  stripping described as optional behavior in the draft are not implemented.
 - Hop IDs are opaque routing-loop identifiers, not authentication or
   authorization credentials.
 - `HOP_PATH` exposes path length. Protect peer links with TLS and consider this

@@ -18,12 +18,7 @@ namespace openmoq::moqx::test {
 
 class NamespaceTreeTest : public ::testing::Test {
 protected:
-  struct NullCallback : public NamespaceTree::Callback {
-    void onPublishNamespaceDone(const TrackNamespace&) override {}
-  };
-
-  NullCallback cb_;
-  NamespaceTree tree_{cb_};
+  NamespaceTree tree_;
 
   std::shared_ptr<MoQSession> makeSession() {
     return std::make_shared<NiceMock<moxygen::test::MockMoQSession>>();
@@ -35,7 +30,7 @@ protected:
   }
 
   void unpublish(const TrackNamespace& ns, const std::shared_ptr<MoQSession>& session) {
-    tree_.unpublishNamespace(ns, session); // NodeNotFound / NotOwner are ignorable
+    tree_.unpublishNamespace(ns, session->sessionId()); // NodeNotFound / NotOwner are ignorable
   }
 
   void subscribe(const TrackNamespace& ns, std::shared_ptr<MoQSession> session) {
@@ -358,6 +353,135 @@ TEST_F(NamespaceTreeTest, ReplacedPublisherKeepsAncestorsPrunable) {
 
   EXPECT_EQ(tree_.findNode(nsAB), nullptr);
   EXPECT_EQ(tree_.findNode(nsA), nullptr);
+}
+
+class NamespaceTreeRouteTest : public NamespaceTreeTest {
+protected:
+  NamespaceTree::SetPublisherResult advertise(
+      const TrackNamespace& ns,
+      std::shared_ptr<MoQSession> session,
+      std::vector<uint64_t> path,
+      uint64_t cost
+  ) {
+    return tree_.setPublisher(
+        ns,
+        std::move(session),
+        nullptr,
+        {},
+        RequestID(0),
+        std::move(path),
+        cost,
+        /*fromCluster=*/true
+    );
+  }
+
+  const TrackNamespace ns_{{"test", "A"}};
+};
+
+// The MoQ Cluster rule: no 0 in the path, then cost, then length, then newest.
+TEST_F(NamespaceTreeRouteTest, SelectsByAnonCostLengthThenNewest) {
+  auto anonCheap = makeSession();
+  auto expensive = makeSession();
+  auto longer = makeSession();
+  auto older = makeSession();
+  auto newer = makeSession();
+  advertise(ns_, anonCheap, {0, 7}, 1);
+  advertise(ns_, expensive, {1, 7}, 9);
+  EXPECT_EQ(tree_.findPublisherSession(ns_), expensive);
+  advertise(ns_, longer, {1, 2, 7}, 3);
+  EXPECT_EQ(tree_.findPublisherSession(ns_), longer);
+  advertise(ns_, older, {1, 7}, 3);
+  EXPECT_EQ(tree_.findPublisherSession(ns_), older);
+  advertise(ns_, newer, {2, 7}, 3);
+  EXPECT_EQ(tree_.findPublisherSession(ns_), newer);
+  EXPECT_EQ(tree_.findNode(ns_)->routes().size(), 5u);
+}
+
+TEST_F(NamespaceTreeRouteTest, PlainRouteReplacesOnlyThePlainRoute) {
+  auto cluster = makeSession();
+  auto plain1 = makeSession();
+  auto plain2 = makeSession();
+  advertise(ns_, cluster, {1, 7}, 5);
+  EXPECT_EQ(tree_.setPublisher(ns_, plain1, nullptr, {}, RequestID(0)).replacedSession, nullptr);
+  EXPECT_EQ(tree_.setPublisher(ns_, plain2, nullptr, {}, RequestID(0)).replacedSession, plain1);
+  const auto& routes = tree_.findNode(ns_)->routes();
+  ASSERT_EQ(routes.size(), 2u);
+  EXPECT_EQ(routes[0].session, cluster);
+  EXPECT_EQ(routes[1].session, plain2);
+}
+
+TEST_F(NamespaceTreeRouteTest, SameSessionReplacesItsRoute) {
+  auto peer = makeSession();
+  advertise(ns_, peer, {1, 7}, 5);
+  EXPECT_EQ(advertise(ns_, peer, {2, 7}, 3).replacedSession, peer);
+  const auto& routes = tree_.findNode(ns_)->routes();
+  ASSERT_EQ(routes.size(), 1u);
+  EXPECT_EQ(routes[0].path, (std::vector<uint64_t>{2, 7}));
+}
+
+TEST_F(NamespaceTreeRouteTest, UnpublishRemovesOnlyThatSessionsRoute) {
+  auto a = makeSession();
+  auto b = makeSession();
+  advertise(ns_, a, {1, 7}, 1);
+  advertise(ns_, b, {2, 7}, 2);
+  auto result = tree_.unpublishNamespace(ns_, a->sessionId());
+  ASSERT_TRUE(result.hasValue());
+  EXPECT_EQ(result->removed.session, a);
+  EXPECT_EQ(tree_.findPublisherSession(ns_), b);
+  unpublish(ns_, b);
+  EXPECT_EQ(tree_.findNode(ns_), nullptr);
+}
+
+// A repeated NAMESPACE keeps the advertisement while its origin holds.
+TEST_F(NamespaceTreeRouteTest, RepeatedNamespaceFromTheSameOriginUpdatesInPlace) {
+  auto peer = makeSession();
+  advertise(ns_, peer, {1, 7}, 5);
+  const auto seq = tree_.findNode(ns_)->routes()[0].seq;
+
+  EXPECT_EQ(advertise(ns_, peer, {1, 8}, 3).replacedSession, nullptr);
+  auto route = tree_.findNode(ns_)->routes()[0];
+  EXPECT_EQ(route.seq, seq);
+  EXPECT_EQ(route.path, (std::vector<uint64_t>{1, 8}));
+  EXPECT_EQ(route.cost, 3u);
+
+  EXPECT_EQ(advertise(ns_, peer, {2, 8}, 3).replacedSession, peer);
+  ASSERT_EQ(tree_.findNode(ns_)->routes().size(), 1u);
+  EXPECT_NE(tree_.findNode(ns_)->routes()[0].seq, seq);
+}
+
+// A PUBLISH_NAMESPACE is named by its session and request ID, so a stale
+// request cannot change or end a newer one.
+TEST_F(NamespaceTreeRouteTest, RouteIsNamedBySessionAndRequestID) {
+  auto publisher = makeSession();
+  tree_.setPublisher(ns_, publisher, nullptr, {}, RequestID(4), {1, 7}, 5, /*fromCluster=*/true);
+  const auto id = publisher->sessionId();
+  EXPECT_EQ(
+      tree_.updateRoute(ns_, id, RequestID(3), {1, 7}, 1).error(),
+      NamespaceTree::Error::NotOwner
+  );
+  EXPECT_TRUE(tree_.updateRoute(ns_, id, RequestID(4), {1, 7}, 1).hasValue());
+  EXPECT_EQ(tree_.findNode(ns_)->routes()[0].cost, 1u);
+  EXPECT_EQ(
+      tree_.unpublishNamespace(ns_, id, RequestID(3)).error(),
+      NamespaceTree::Error::NotOwner
+  );
+  EXPECT_TRUE(tree_.unpublishNamespace(ns_, id, RequestID(4)).hasValue());
+}
+
+// The deepest tier decides: when all of its routes are excluded, a shorter
+// prefix does not serve the request.
+TEST_F(NamespaceTreeRouteTest, ExclusionDoesNotFallBackToAShorterPrefix) {
+  auto parent = makeSession();
+  auto viaPeer = makeSession();
+  auto local = makeSession();
+  advertise(TrackNamespace{{"test"}}, parent, {3, 7}, 1);
+  advertise(ns_, viaPeer, {1, 7}, 1);
+  advertise(ns_, local, {2, 7}, 5);
+
+  EXPECT_EQ(tree_.findPublisherSession(ns_, {.hop = 1}), local);
+  EXPECT_EQ(tree_.findPublisherSession(ns_, {.session = viaPeer->sessionId()}), local);
+  unpublish(ns_, local);
+  EXPECT_EQ(tree_.findPublisherSession(ns_, {.hop = 1}), nullptr);
 }
 
 } // namespace openmoq::moqx::test
