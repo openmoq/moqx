@@ -31,9 +31,10 @@ listener_defaults:         # optional; QUIC defaults inherited by all listeners
 listeners:                 # required; at least one
   - { ... }
 
-service_defaults:          # optional; cache and auth defaults inherited by all services
+service_defaults:          # optional; defaults inherited by all services
   cache: { ... }
   auth: { max_tokens_per_message: 4 }
+  max_subscription_buffer_kb: 5120
 
 services:                  # required; at least one
   my-service:
@@ -121,7 +122,13 @@ services:
     upstream:
       url: moqt://origin.example.com:4433/moq-relay
       tls: {insecure: false}
+    max_subscription_buffer_kb: 5120
 ```
+
+`max_subscription_buffer_kb` (default 5120, or `service_defaults.max_subscription_buffer_kb`)
+caps how much a subscription may buffer for a subscriber that reads too slowly. Past the
+cap, the relay ends the subscription with PUBLISH_DONE TOO_FAR_BEHIND. The cap applies to
+client sessions and to this service's upstream sessions. 0 removes the cap.
 
 ### Matching Rules
 

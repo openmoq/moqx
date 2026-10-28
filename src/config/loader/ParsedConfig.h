@@ -521,6 +521,11 @@ struct ParsedServiceConfig {
       "Authentication and authorization settings for this service",
       std::optional<ParsedAuthConfig>>
       auth;
+  rfl::Description<
+      "KB a subscription may buffer for a slow subscriber before the relay ends it with "
+      "TOO_FAR_BEHIND; 0 is unlimited (overrides service_defaults, default: 5120)",
+      std::optional<uint32_t>>
+      max_subscription_buffer_kb;
 };
 
 struct ParsedListenerDefaultsConfig {
@@ -544,6 +549,10 @@ struct ParsedServiceDefaultsConfig {
         max_tokens_per_message;
   };
   rfl::Description<"Default auth settings for services", std::optional<AuthDefaults>> auth;
+  rfl::Description<
+      "Default max_subscription_buffer_kb for services that don't set their own",
+      std::optional<uint32_t>>
+      max_subscription_buffer_kb;
 };
 
 struct ParsedMLogConfig {

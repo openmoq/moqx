@@ -866,6 +866,28 @@ TEST(ResolveConfig, AuthMaxTokensPerMessageServiceOverridesServiceDefaults) {
   EXPECT_EQ(result.value().config.services.at("svc").auth.maxTokensPerMessage, 10u);
 }
 
+TEST(ResolveConfig, SubscriptionBufferDefaultsTo5MB) {
+  auto result = resolveConfig(makeMinimalInsecureConfig());
+  ASSERT_TRUE(result.hasValue());
+  EXPECT_EQ(result.value().config.services.at("default").maxSubscriptionBufferKb, 5120u);
+}
+
+TEST(ResolveConfig, SubscriptionBufferInheritsAndOverridesServiceDefaults) {
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedServiceDefaultsConfig defaults;
+  defaults.max_subscription_buffer_kb = std::optional<uint32_t>{64};
+  cfg.service_defaults.value() = std::optional<ParsedServiceDefaultsConfig>{defaults};
+
+  auto inherited = resolveConfig(cfg);
+  ASSERT_TRUE(inherited.hasValue());
+  EXPECT_EQ(inherited.value().config.services.at("default").maxSubscriptionBufferKb, 64u);
+
+  cfg.services.value().at("default").max_subscription_buffer_kb = std::optional<uint32_t>{128};
+  auto overridden = resolveConfig(cfg);
+  ASSERT_TRUE(overridden.hasValue());
+  EXPECT_EQ(overridden.value().config.services.at("default").maxSubscriptionBufferKb, 128u);
+}
+
 TEST(ResolveConfig, AuthAnonymousClaimRoundTripsAllFields) {
   auto cfg = makeMinimalInsecureConfig();
   cfg.services.value().clear();

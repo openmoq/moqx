@@ -1168,7 +1168,8 @@ ServiceConfig::MatchEntry resolveMatchEntry(const ParsedServiceConfig::MatchRule
 ServiceConfig resolveService(
     const ParsedServiceConfig& svc,
     const ParsedCacheConfig& cache,
-    const std::optional<ParsedAuthConfig>& auth
+    const std::optional<ParsedAuthConfig>& auth,
+    uint32_t maxSubscriptionBufferKb
 ) {
   std::vector<ServiceConfig::MatchEntry> entries;
   for (const auto& entry : svc.match.value()) {
@@ -1190,6 +1191,7 @@ ServiceConfig resolveService(
       .upstream = std::move(upstream),
       .auth = resolveAuth(auth),
       .upstreams = std::move(upstreams),
+      .maxSubscriptionBufferKb = maxSubscriptionBufferKb,
   };
 }
 
@@ -1355,7 +1357,19 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
     std::optional<ParsedAuthConfig> auth = authIt != mergedAuths.end()
                                                ? std::optional<ParsedAuthConfig>(authIt->second)
                                                : std::nullopt;
-    resolvedServices.emplace(name, resolveService(svc, mergedCaches.at(name), auth));
+    auto bufferKb = svc.max_subscription_buffer_kb.value();
+    if (!bufferKb && config.service_defaults.value()) {
+      bufferKb = config.service_defaults.value()->max_subscription_buffer_kb.value();
+    }
+    resolvedServices.emplace(
+        name,
+        resolveService(
+            svc,
+            mergedCaches.at(name),
+            auth,
+            bufferKb.value_or(ServiceConfig{}.maxSubscriptionBufferKb)
+        )
+    );
   }
 
   // Resolve admin config

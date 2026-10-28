@@ -348,6 +348,7 @@ inline void serializeConfig(const Config& cfg, ConfigSink& s) {
     s.endArray();
     serializeCache(s, svc.cache);
     serializeAuth(s, svc.auth);
+    s.uintField("max_subscription_buffer_kb", svc.maxSubscriptionBufferKb);
     if (svc.upstream) {
       serializeUpstream(s, *svc.upstream, "upstream");
     }

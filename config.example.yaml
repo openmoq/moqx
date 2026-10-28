@@ -43,6 +43,8 @@ service_defaults:
   auth:
     max_tokens_per_message: 4            # Caps AUTHORIZATION_TOKEN params of the service's token_type per
                                           # message; a message over the cap is rejected outright, not truncated.
+  # max_subscription_buffer_kb: 5120     # KB a subscription may buffer for a slow subscriber before the
+                                         # relay ends it with TOO_FAR_BEHIND. Default: 5120. 0 is unlimited.
 
 services:
   live-streaming:
