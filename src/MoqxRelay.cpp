@@ -597,6 +597,30 @@ Subscriber::PublishNamespaceHandle::RequestUpdateResult MoqxRelay::updatePublish
   return ok;
 }
 
+std::optional<RouteExclusion> MoqxRelay::exclusionFor(const std::shared_ptr<MoQSession>& requester
+) {
+  if (!requester || !requester->negotiatedSetupExtension(SetupExtension::RelayHops)) {
+    return std::nullopt;
+  }
+  return RouteExclusion{.session = requester->sessionId(), .hop = requester->getPeerHopID()};
+}
+
+bool MoqxRelay::excludesSource(
+    const std::optional<RouteExclusion>& exclusion,
+    const TrackNamespace& ns,
+    std::optional<SessionId> source
+) const {
+  if (!exclusion || !source) {
+    return false;
+  }
+  if (exclusion->session == *source) {
+    return true;
+  }
+  return namespaceTree_.anyRouteAlongPath(ns, *source, [&](const NamespaceNode::Route& route) {
+    return openmoq::moqx::clusterPathContains(route.path, exclusion->hop);
+  });
+}
+
 const NamespaceTree::NamespaceNode::Route* MoqxRelay::advertisableRoute(
     const NamespaceNode& node,
     const std::shared_ptr<MoQSession>& subscriber,
@@ -2476,11 +2500,12 @@ folly::coro::Task<MoqxRelay::PublisherAttachment> MoqxRelay::attachNewLocalForwa
 folly::coro::Task<MoqxRelay::StatefulSubscribeResult>
 MoqxRelay::joinOrPrepareUpstreamSubscription(SubscribeRequest subReq) {
   const auto& ftn = subReq.fullTrackName;
+  const auto exclusion = exclusionFor(MoQSession::getRequestSession());
 
   if (!registry_.exists(ftn) && !upstreams_.empty() &&
-      !namespaceTree_.findPublisherSession(ftn.trackNamespace)) {
+      !findUpstreamPublisher(ftn.trackNamespace, exclusion)) {
     co_await waitForUpstreams([&] {
-      return namespaceTree_.findPublisherSession(ftn.trackNamespace) != nullptr;
+      return findUpstreamPublisher(ftn.trackNamespace, exclusion) != nullptr;
     });
   }
 
@@ -2492,9 +2517,12 @@ MoqxRelay::joinOrPrepareUpstreamSubscription(SubscribeRequest subReq) {
       // a relay-direct callback would run there and touch registry_ off relayExec_.
       std::shared_ptr<MoQForwarder::Callback>(nullptr),
       [this, &ftn](std::shared_ptr<MoQForwarder> f) { return buildFilterChain(ftn, std::move(f)); },
-      [this, &ftn, &upstreamSession](const std::shared_ptr<MoQForwarder>& f
+      [this, &ftn, &upstreamSession, &exclusion](const std::shared_ptr<MoQForwarder>& f
       ) -> std::optional<ForwarderRef> {
-        upstreamSession = namespaceTree_.findPublisherSession(ftn.trackNamespace);
+        upstreamSession = namespaceTree_.findPublisherSession(
+            ftn.trackNamespace,
+            exclusion.value_or(RouteExclusion{})
+        );
         if (!upstreamSession) {
           return std::nullopt;
         }
@@ -2539,6 +2567,17 @@ MoqxRelay::joinOrPrepareUpstreamSubscription(SubscribeRequest subReq) {
     auto sub = co_await std::get<folly::coro::Task<SubscriptionRegistry::SubsequentSubscriber>>(
         std::move(firstOrSubsequent)
     );
+    if (excludedFromSubscription(exclusion, ftn)) {
+      co_return StatefulSubscribeResult{
+          nullptr,
+          folly::makeUnexpected(SubscribeError{
+              subReq.requestID,
+              SubscribeErrorCode::DOES_NOT_EXIST,
+              "track is served through the requester"
+          }),
+          std::nullopt
+      };
+    }
     auto upstreamView = registry_.getUpstreamView(ftn);
     auto* publisherExec = upstreamView ? upstreamView->publisherExec : nullptr;
     // Return the publisherExec to the subscriber thread to complete setup.
@@ -2569,6 +2608,18 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriber
         )) {
       co_return folly::makeUnexpected(std::move(*rendezvousErr));
     }
+  }
+
+  // Refuse a cluster peer before it claims this thread's forwarder and fails its waiters.
+  if (auto exclusion = exclusionFor(session); exclusion && co_await folly::coro::co_withExecutor(
+                                                               folly::getKeepAliveToken(relayExec_),
+                                                               refusedUnder(*exclusion, ftn)
+                                                           )) {
+    co_return folly::makeUnexpected(SubscribeError{
+        subReq.requestID,
+        SubscribeErrorCode::DOES_NOT_EXIST,
+        "track is served through the requester"
+    });
   }
 
   // Join before the relay hop: serializes same-iothread races.
@@ -2708,8 +2759,12 @@ MoqxRelay::subscribeImpl(SubscribeRequest subReq, std::shared_ptr<TrackConsumer>
   // TOCTOU fix: if we might be the first subscriber, wait for the upstream
   // connection before branching. A concurrent coroutine may emplace the entry
   // while we are suspended, so we re-check inside getOrCreateFromSubscribe.
-  if (!registry_.exists(ftn) && !upstreams_.empty() && !findUpstreamPublisher(ftn.trackNamespace)) {
-    co_await waitForUpstreams([&] { return findUpstreamPublisher(ftn.trackNamespace) != nullptr; });
+  const auto exclusion = exclusionFor(session);
+  if (!registry_.exists(ftn) && !upstreams_.empty() &&
+      !findUpstreamPublisher(ftn.trackNamespace, exclusion)) {
+    co_await waitForUpstreams([&] {
+      return findUpstreamPublisher(ftn.trackNamespace, exclusion) != nullptr;
+    });
   }
 
   consumer =
@@ -2721,9 +2776,12 @@ MoqxRelay::subscribeImpl(SubscribeRequest subReq, std::shared_ptr<TrackConsumer>
       ftn,
       shared_from_this(),
       [this, &ftn](std::shared_ptr<MoQForwarder> f) { return buildFilterChain(ftn, std::move(f)); },
-      [this, &ftn, &upstreamSession](const std::shared_ptr<MoQForwarder>& f
+      [this, &ftn, &upstreamSession, &exclusion](const std::shared_ptr<MoQForwarder>& f
       ) -> std::optional<ForwarderRef> {
-        upstreamSession = namespaceTree_.findPublisherSession(ftn.trackNamespace);
+        upstreamSession = namespaceTree_.findPublisherSession(
+            ftn.trackNamespace,
+            exclusion.value_or(RouteExclusion{})
+        );
         if (!upstreamSession) {
           return std::nullopt;
         }
@@ -2795,6 +2853,13 @@ MoqxRelay::subscribeImpl(SubscribeRequest subReq, std::shared_ptr<TrackConsumer>
     auto sub = co_await std::get<folly::coro::Task<SubscriptionRegistry::SubsequentSubscriber>>(
         std::move(firstOrSubsequent)
     );
+    if (excludedFromSubscription(exclusion, ftn)) {
+      co_return folly::makeUnexpected(SubscribeError(
+          {subReq.requestID,
+           SubscribeErrorCode::DOES_NOT_EXIST,
+           "track is served through the requester"}
+      ));
+    }
     // LocalPublishFilter routes LF-mode subscribes to subscribeFromSubscriberExec, so
     // the entry's ref is owned here.
     auto forwarder = sub.forwarder.getIfOwned();
@@ -2907,14 +2972,16 @@ MoqxRelay::fetchImpl(Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
   // Prefer an exact-track upstream (from publish/subscribe) over a broader
   // namespace-level publisher, matching subscribeImpl's resolution order.
   auto fetchView = registry_.getFetchView(fetch.fullTrackName);
+  const auto exclusion = exclusionFor(session);
   std::shared_ptr<Publisher> upstreamPublisher;
-  if (fetchView) {
+  // A fetch does not join the subscription, so an excluded source falls back to routing.
+  if (fetchView && !excludedFromSubscription(exclusion, fetch.fullTrackName)) {
     upstreamPublisher = fetchView->publisher;
   } else {
-    upstreamPublisher = findUpstreamPublisher(fetch.fullTrackName.trackNamespace);
+    upstreamPublisher = findUpstreamPublisher(fetch.fullTrackName.trackNamespace, exclusion);
     if (!upstreamPublisher && !upstreams_.empty()) {
       co_await waitForUpstreams([&] {
-        upstreamPublisher = findUpstreamPublisher(fetch.fullTrackName.trackNamespace);
+        upstreamPublisher = findUpstreamPublisher(fetch.fullTrackName.trackNamespace, exclusion);
         return upstreamPublisher != nullptr;
       });
     }
@@ -2991,14 +3058,16 @@ folly::coro::Task<Publisher::TrackStatusResult> MoqxRelay::trackStatusImpl(Track
   // No active subscription — fall through to the upstream path.
   {
     // No active subscription — try registry publisher first, then namespace tree
+    const auto exclusion = exclusionFor(session);
     std::shared_ptr<Publisher> upstreamPublisher;
-    if (upstreamView) {
+    if (upstreamView && !excludedFromSubscription(exclusion, trackStatus.fullTrackName)) {
       upstreamPublisher = upstreamView->publisher;
     } else {
-      upstreamPublisher = findUpstreamPublisher(trackStatus.fullTrackName.trackNamespace);
+      const auto& ns = trackStatus.fullTrackName.trackNamespace;
+      upstreamPublisher = findUpstreamPublisher(ns, exclusion);
       if (!upstreamPublisher && !upstreams_.empty()) {
         co_await waitForUpstreams([&] {
-          upstreamPublisher = findUpstreamPublisher(trackStatus.fullTrackName.trackNamespace);
+          upstreamPublisher = findUpstreamPublisher(ns, exclusion);
           return upstreamPublisher != nullptr;
         });
       }

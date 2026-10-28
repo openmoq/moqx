@@ -153,6 +153,26 @@ public:
   // The deepest node covering ns that has routes. Null if none does.
   const NamespaceNode* findRouteNode(const moxygen::TrackNamespace& ns) const;
 
+  // True if session's route at any node from the root through ns matches pred.
+  template <typename Pred>
+  bool anyRouteAlongPath(const moxygen::TrackNamespace& ns, moxygen::SessionId session, Pred&& pred)
+      const {
+    const NamespaceNode* node = &root_;
+    for (size_t i = 0;; i++) {
+      if (const auto* route = node->findRoute(session); route && pred(*route)) {
+        return true;
+      }
+      if (i == ns.size()) {
+        return false;
+      }
+      auto it = node->children_.find(ns[i]);
+      if (it == node->children_.end()) {
+        return false;
+      }
+      node = it->second.get();
+    }
+  }
+
   // Session of the best route at the deepest node covering ns that has routes.
   // Null if that node has no eligible route: shorter prefixes are not consulted.
   std::shared_ptr<moxygen::MoQSession>
