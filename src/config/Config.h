@@ -243,6 +243,7 @@ struct ServiceConfig {
   std::optional<UpstreamConfig> upstream; // set if this service chains to an upstream relay
   AuthConfig auth;
   std::vector<UpstreamConfig> upstreams; // exclusive with upstream
+  uint32_t maxSubscriptionBufferKb{0};   // 0 = unlimited
 };
 
 struct AdminConfig {

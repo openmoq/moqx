@@ -396,12 +396,15 @@ folly::coro::Task<std::shared_ptr<MoQSession>> UpstreamProvider::getOrConnectSes
 folly::coro::Task<void> UpstreamProvider::doConnect() {
   XLOG(DBG1) << "UpstreamProvider::doConnect url=" << url_.getUrl();
 
-  client_ = std::make_unique<MoQClient>(
-      exec_,
-      url_,
-      MoQRelaySession::createRelaySessionFactory(),
-      verifier_
-  );
+  auto sessionFactory = [makeRelaySession = MoQRelaySession::createRelaySessionFactory(),
+                         bufferBytes = subscriptionBufferBytes_](auto wt, auto exec) {
+    auto session = makeRelaySession(std::move(wt), std::move(exec));
+    auto settings = session->getMoqSettings();
+    settings.bufferingThresholds.perSubscription = bufferBytes;
+    session->setMoqSettings(settings);
+    return session;
+  };
+  client_ = std::make_unique<MoQClient>(exec_, url_, std::move(sessionFactory), verifier_);
   // The extension stays inactive unless the peer also declares a Hop ID.
   if (hopID_) {
     client_->addSetupParameter(SetupParameter(folly::to_underlying(SetupKey::HOP_ID), *hopID_));

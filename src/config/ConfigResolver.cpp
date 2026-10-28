@@ -736,6 +736,17 @@ void validateServiceAuth(
 
 // --- Service validation ---
 
+std::optional<uint32_t>
+mergedSubscriptionBufferKb(const ParsedServiceConfig& svc, const ParsedConfig& config) {
+  if (svc.max_subscription_buffer_kb.value()) {
+    return svc.max_subscription_buffer_kb.value();
+  }
+  if (config.service_defaults.value()) {
+    return config.service_defaults.value()->max_subscription_buffer_kb.value();
+  }
+  return std::nullopt;
+}
+
 void validateService(
     const std::string& name,
     const ParsedServiceConfig& svc,
@@ -811,6 +822,13 @@ void validateService(
   }
 
   mergedCaches.emplace(name, std::move(merged));
+
+  if (!mergedSubscriptionBufferKb(svc, config)) {
+    errors.push_back(
+        "Service '" + name +
+        "': max_subscription_buffer_kb is required (set it directly or in service_defaults)"
+    );
+  }
 
   // Validate per-service upstream if present.
   if (svc.upstream.value().has_value()) {
@@ -1168,7 +1186,8 @@ ServiceConfig::MatchEntry resolveMatchEntry(const ParsedServiceConfig::MatchRule
 ServiceConfig resolveService(
     const ParsedServiceConfig& svc,
     const ParsedCacheConfig& cache,
-    const std::optional<ParsedAuthConfig>& auth
+    const std::optional<ParsedAuthConfig>& auth,
+    uint32_t maxSubscriptionBufferKb
 ) {
   std::vector<ServiceConfig::MatchEntry> entries;
   for (const auto& entry : svc.match.value()) {
@@ -1190,6 +1209,7 @@ ServiceConfig resolveService(
       .upstream = std::move(upstream),
       .auth = resolveAuth(auth),
       .upstreams = std::move(upstreams),
+      .maxSubscriptionBufferKb = maxSubscriptionBufferKb,
   };
 }
 
@@ -1355,7 +1375,10 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
     std::optional<ParsedAuthConfig> auth = authIt != mergedAuths.end()
                                                ? std::optional<ParsedAuthConfig>(authIt->second)
                                                : std::nullopt;
-    resolvedServices.emplace(name, resolveService(svc, mergedCaches.at(name), auth));
+    resolvedServices.emplace(
+        name,
+        resolveService(svc, mergedCaches.at(name), auth, *mergedSubscriptionBufferKb(svc, config))
+    );
   }
 
   // Resolve admin config

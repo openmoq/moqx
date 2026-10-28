@@ -65,7 +65,7 @@ static_assert(
     "MvfstConfig::L4S changed — update serializeMvfst()"
 );
 static_assert(
-    rfl::internal::num_fields<ServiceConfig> == 5,
+    rfl::internal::num_fields<ServiceConfig> == 6,
     "ServiceConfig changed — update serializeConfig()"
 );
 static_assert(
@@ -194,6 +194,7 @@ Config makeFullConfig() {
   );
   svc.cache.maxCachedTracks = 100;
   svc.cache.maxCachedGroupsPerTrack = 3;
+  svc.maxSubscriptionBufferKb = 51200;
   svc.auth.enabled = true;
   svc.auth.hmacKeys.push_back({"key-1", "super-secret-value"});
   svc.upstream = UpstreamConfig{};
@@ -231,6 +232,7 @@ TEST(ConfigSerializerTest, VisitsAllSections) {
   EXPECT_EQ(sink.scalars["services.default.match.*.path.prefix"], "/");
   EXPECT_EQ(sink.scalars["services.default.upstream.url"], "https://upstream.example/relay");
   EXPECT_EQ(sink.scalars["services.default.upstream.tls.ca_cert_file"], "/etc/ca.pem");
+  EXPECT_EQ(sink.scalars["services.default.max_subscription_buffer_kb"], "51200");
 
   EXPECT_EQ(sink.scalars["logging.mlog.dir"], "/var/log/mlog");
   EXPECT_EQ(sink.scalars["logging.mlog.sample_rate"], "0.500000");

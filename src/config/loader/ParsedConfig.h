@@ -521,6 +521,12 @@ struct ParsedServiceConfig {
       "Authentication and authorization settings for this service",
       std::optional<ParsedAuthConfig>>
       auth;
+  rfl::Description<
+      "KB of a subscription's data the relay may hold unacknowledged (mvfst) or unsent "
+      "(picoquic) before it ends the subscription with TOO_FAR_BEHIND; 0 is unlimited. "
+      "Required here or in service_defaults; overrides service_defaults",
+      std::optional<uint32_t>>
+      max_subscription_buffer_kb;
 };
 
 struct ParsedListenerDefaultsConfig {
@@ -544,6 +550,10 @@ struct ParsedServiceDefaultsConfig {
         max_tokens_per_message;
   };
   rfl::Description<"Default auth settings for services", std::optional<AuthDefaults>> auth;
+  rfl::Description<
+      "max_subscription_buffer_kb for services that do not set their own",
+      std::optional<uint32_t>>
+      max_subscription_buffer_kb;
 };
 
 struct ParsedMLogConfig {

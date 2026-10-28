@@ -31,9 +31,10 @@ listener_defaults:         # optional; QUIC defaults inherited by all listeners
 listeners:                 # required; at least one
   - { ... }
 
-service_defaults:          # optional; cache and auth defaults inherited by all services
+service_defaults:          # optional; defaults inherited by all services
   cache: { ... }
   auth: { max_tokens_per_message: 4 }
+  max_subscription_buffer_kb: 51200   # required here or on each service
 
 services:                  # required; at least one
   my-service:
@@ -121,7 +122,30 @@ services:
     upstream:
       url: moqt://origin.example.com:4433/moq-relay
       tls: {insecure: false}
+    max_subscription_buffer_kb: 51200
 ```
+
+`max_subscription_buffer_kb` is required, set on the service or in
+`service_defaults`. It limits the maximum number of KB the relay holds for one
+subscription across all of its streams. When a write would exceed it, the relay
+ends the subscription with PUBLISH_DONE TOO_FAR_BEHIND. 0 removes the limit.
+The limit applies to client sessions and to this service's upstream sessions.
+FETCH responses do not count toward it.
+
+What counts as held depends on the QUIC stack:
+
+- `mvfst` (including every upstream session): bytes written to the transport
+  that the peer has not yet acknowledged. In-flight bytes count, so the limit
+  must cover the subscription's bitrate times the downstream RTT plus its
+  largest object. For example, a 20 Mbps stream holds about 1.25 MB per 500 ms
+  of RTT, and one keyframe can add 5 MB.
+- `picoquic`: bytes that picoquic has not yet put into a packet, which means
+  bytes waiting on flow control, congestion control, or pacing. Sent bytes
+  stop counting before the peer acknowledges them.
+
+The shipped configs use 51200 (50 MB). The limit is a last resort against a
+subscriber that falls far behind, so it should not trip for a subscriber
+that keeps up.
 
 ### Matching Rules
 

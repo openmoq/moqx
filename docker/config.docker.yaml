@@ -60,6 +60,7 @@ services:
       enabled: ${MOQX_CACHE}
       max_tracks: ${MOQX_MAX_TRACKS}
       max_groups_per_track: ${MOQX_MAX_GROUPS}
+    max_subscription_buffer_kb: 51200
 
 admin:
   port: ${MOQX_ADMIN_PORT}

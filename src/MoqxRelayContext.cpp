@@ -120,6 +120,10 @@ std::shared_ptr<fizz::CertificateVerifier> makeUpstreamVerifier(const config::Up
 
 namespace {
 
+uint64_t subscriptionBufferBytes(const config::ServiceConfig& svc) {
+  return uint64_t(svc.maxSubscriptionBufferKb) * 1024;
+}
+
 // dumpState pairs these with relay->upstreamProviders() by index.
 std::vector<config::UpstreamConfig> upstreamConfigs(const config::ServiceConfig& svc) {
   if (svc.upstream) {
@@ -182,6 +186,7 @@ void MoqxRelayContext::startUpstream(
       getRelayHopID(),
       cfg.relayCost
   );
+  provider->setSubscriptionBufferBytes(subscriptionBufferBytes(entry.config));
   entry.relay->addUpstreamProvider(provider);
 
   // Eagerly connect so the peering handshake fires before any subscribers
@@ -371,6 +376,9 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayContext::validateAu
   }
   session->setPublishHandler(std::move(pub));
   session->setSubscribeHandler(std::move(sub));
+  auto settings = session->getMoqSettings();
+  settings.bufferingThresholds.perSubscription = subscriptionBufferBytes(entry.config);
+  session->setMoqSettings(settings);
   return folly::unit;
 }
 
