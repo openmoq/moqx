@@ -918,6 +918,8 @@ void applyMvfstOverride(MvfstConfig& base, const ParsedMvfstConfig& overlay) {
     base.numGROBuffers = *v;
   if (auto v = overlay.ignore_path_mtu.value())
     base.canIgnorePathMTU = *v;
+  if (auto v = overlay.use_quic_wt_session.value())
+    base.useQuicWtSession = *v;
   if (const auto& b = overlay.bbr.value()) {
     if (auto v = b->conservative_recovery.value())
       base.bbr.conservativeRecovery = *v;

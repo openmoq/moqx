@@ -219,6 +219,7 @@ MoqxRelayServer::MoqxRelayServer(
           listenerCfg.endpoint,
           MoQServer::Options{
               .transportSettings = buildTransportSettings(listenerCfg.quic, listenerCfg.mvfst),
+              .useQuicWtSession = [use = listenerCfg.mvfst.useQuicWtSession] { return use; },
               .udpSendBufferBytes = listenerCfg.mvfst.udpSocketBufferBytes,
               .udpRecvBufferBytes = listenerCfg.mvfst.udpSocketBufferBytes,
           }
