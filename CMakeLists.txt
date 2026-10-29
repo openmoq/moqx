@@ -280,6 +280,8 @@ file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/moqx-tools.env"
      CONTENT "MOQBIN='${MOXYGEN_BIN_DIR}'\n")
 
 find_package(OpenSSL REQUIRED)
+# Other deps' include dirs can hold headers from a different OpenSSL.
+include_directories(BEFORE SYSTEM ${OPENSSL_INCLUDE_DIR})
 
 # --- yaml-cpp (CPM) ---
 CPMAddPackage(
