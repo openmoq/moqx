@@ -299,6 +299,7 @@ _CONFIG_UPSTREAMS_ENTRY = Template(
         tls:
           insecure: true
         idle_timeout_ms: 60000
+        relay_cost: $relay_cost
 """
 )
 
@@ -462,15 +463,24 @@ class Harness:
         return relay
 
     @staticmethod
-    def _links(relay):
-        return [relay.upstream] if relay.upstream else relay.upstreams
+    def _link_name(link):
+        return link[0] if isinstance(link, tuple) else link
+
+    @classmethod
+    def _links(cls, relay):
+        if relay.upstream:
+            return [relay.upstream]
+        return [cls._link_name(link) for link in relay.upstreams]
 
     def _expected_peers(self, target):
         return sum(self._links(r).count(target) for r in self.relays.values())
 
     # ── Topology declaration ───────────────────────────────────────────────────
     def relay(self, name, *, upstream=None, upstreams=None, relay_id=None):
-        """`upstream` writes the single-upstream form; `upstreams` writes a list."""
+        """`upstream` writes the single-upstream form; `upstreams` writes a list.
+
+        An `upstreams` entry is a relay name, or (name, relay_cost).
+        """
         if self.started:
             raise HarnessError(f"relay {name}: declared after start()")
         if name in self.relays:
@@ -538,8 +548,13 @@ class Harness:
         elif relay.upstreams:
             parts.append("    upstreams:\n")
             for link in relay.upstreams:
-                upstream = self.relay_of(f"relay {relay.name}", link)
-                parts.append(_CONFIG_UPSTREAMS_ENTRY.substitute(port=upstream.listen))
+                name, cost = link if isinstance(link, tuple) else (link, 1)
+                upstream = self.relay_of(f"relay {relay.name}", name)
+                parts.append(
+                    _CONFIG_UPSTREAMS_ENTRY.substitute(
+                        port=upstream.listen, relay_cost=cost
+                    )
+                )
         parts.append(_CONFIG_ADMIN.substitute(port=relay.admin))
         path = self.tmpdir / f"{relay.name}.yaml"
         path.write_text("".join(parts), encoding="utf-8")
@@ -772,6 +787,49 @@ class Harness:
             f"relay {name} did not log {text!r} after {READY_TIMEOUT:g}s"
         )
 
+    @staticmethod
+    def _has_subscription(service, ns, track):
+        subs = _dig(service, "subscriptions")
+        return isinstance(subs, list) and any(
+            sub.get("namespace") == [ns] and sub.get("track_name") == track
+            for sub in subs
+        )
+
+    def wait_subscription(self, name, ns, track):
+        """Wait until relay `name` carries a subscription to ns/track."""
+        self.relay_of("wait_subscription", name)
+        for _ in _until(READY_TIMEOUT):
+            service = _dig(self._state(name), "services", "default")
+            if self._has_subscription(service, ns, track):
+                self._pass(f"[{name} /state] subscription to {ns}/{track}")
+                return
+        self._dump_relay_log(name)
+        raise HarnessError(
+            f"relay {name}: no subscription to {ns}/{track} after {READY_TIMEOUT:g}s"
+        )
+
+    def wait_namespace_route(self, name, ns, via):
+        """Wait until relay `name` routes ns through relay `via`."""
+        self.relay_of("wait_namespace_route", name)
+        want = self.relay_of("wait_namespace_route", via).relay_id
+        got = None
+        for _ in _until(READY_TIMEOUT):
+            node = _dig(
+                self._state(name),
+                "services",
+                "default",
+                "namespace_tree",
+                "children",
+                ns,
+            )
+            got = node.get("peer_id") if isinstance(node, dict) else None
+            if got == want:
+                return
+        self._dump_relay_log(name)
+        raise HarnessError(
+            f"relay {name}: namespace '{ns}' routes via peer_id={got}, want {want}"
+        )
+
     # ── Relay lifecycle ────────────────────────────────────────────────────────
     def relay_kill(self, name):
         """SIGKILL a relay and flag it, exempting it from the clean-exit check.
@@ -888,6 +946,27 @@ class Harness:
         else:
             self._fail(f"[{name} /state] namespace_tree missing {ns}")
 
+    def wait_peer_count(self, name, want):
+        """Wait until relay `name` lists exactly `want` downstream peers."""
+        self.relay_of("wait_peer_count", name)
+        got = None
+        for _ in _until(READY_TIMEOUT):
+            peers = _dig(self._state(name), "services", "default", "downstream_peers")
+            got = len(peers) if isinstance(peers, list) else 0
+            if got == want:
+                return
+        self._dump_relay_log(name)
+        raise HarnessError(f"relay {name}: downstream_peers={got}, want {want}")
+
+    def expect_no_subscription(self, name, ns, track):
+        state, service = self._fetch_state("expect_no_subscription", name)
+        if state is None:
+            return
+        if self._has_subscription(service, ns, track):
+            self._fail(f"[{name} /state] unexpected subscription to {ns}/{track}")
+        else:
+            self._pass(f"[{name} /state] no subscription to {ns}/{track}")
+
     def expect_peer_count(self, name, op, want):
         state, service = self._fetch_state("expect_peer_count", name)
         if state is None:
@@ -971,7 +1050,7 @@ class Harness:
     def expect_settled(self, settle, *names):
         """Snapshot each relay's whole namespace_tree, settle, re-snapshot, compare.
 
-        This is the observable for relay-hops loop suppression: /state exposes
+        This is the observable for MoQ Cluster loop suppression: /state exposes
         no hop_id or hop_path, so a tree that stops changing is the available
         signal. The comparison spans the entire tree, not one namespace —
         circulation shows up as churn anywhere in it.
