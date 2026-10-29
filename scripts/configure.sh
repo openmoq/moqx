@@ -68,6 +68,12 @@ SCRATCH="${MOQX_SCRATCH_PATH:-$ROOT/.scratch}"
 # and the moqx build land on the same clones. Only the no-HOME default differs
 # from CMake's own: a scripted build has $ROOT/.scratch to fall back on.
 export MOQX_DEPS_CACHE="${MOQX_DEPS_CACHE:-${HOME:-$SCRATCH}/.cache/moqx}"
+# Homebrew may link openssl@4 as the default; the cached prebuilt deps were built
+# against openssl@3, and FindOpenSSL reads this env var in both builds.
+if [[ "$(uname)" == Darwin && -z "${OPENSSL_ROOT_DIR:-}" ]] && command -v brew >/dev/null &&
+  ossl3="$(brew --prefix --installed openssl@3 2>/dev/null)"; then
+  export OPENSSL_ROOT_DIR="$ossl3"
+fi
 
 die() { echo "configure.sh: $*" >&2; exit 1; }
 usage() { awk 'NR>1 && /^#/ {sub(/^# ?/,""); print; next} NR>1 {exit}' "${BASH_SOURCE[0]}"; exit "${1:-0}"; }
