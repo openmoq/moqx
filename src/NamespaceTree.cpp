@@ -127,6 +127,19 @@ NamespaceTree::NamespaceNode::findRoute(SessionId sessionId) const {
   return it != routes_.end() ? &*it : nullptr;
 }
 
+std::vector<const NamespaceTree::NamespaceNode::Route*>
+NamespaceTree::NamespaceNode::rankedRoutes() const {
+  std::vector<const Route*> ranked;
+  ranked.reserve(routes_.size());
+  for (const auto& route : routes_) {
+    ranked.push_back(&route);
+  }
+  std::sort(ranked.begin(), ranked.end(), [](const Route* a, const Route* b) {
+    return betterRoute(*a, *b);
+  });
+  return ranked;
+}
+
 namespace {
 // One advertisement keeps its first Hop ID, even 0: its stream is the continuity.
 bool sameOrigin(const std::vector<uint64_t>& a, const std::vector<uint64_t>& b) {

@@ -3436,19 +3436,19 @@ void MoqxRelay::dumpState(RelayStateVisitor& visitor) const {
   visitor.onNamespaceTreeBegin();
   namespaceTree_.walkTree(
       [&](std::string_view childKey, const NamespaceTree::NamespaceNode& node) {
-        std::string publisherAddr;
-        std::string publisherPeerID;
-        if (const auto* route = node.selectRoute()) {
-          publisherAddr = route->session->getPeerAddress().describe();
-          publisherPeerID = route->peerID;
+        const auto ranked = node.rankedRoutes();
+        std::vector<RelayStateVisitor::NamespaceRouteInfo> routes;
+        routes.reserve(ranked.size());
+        for (const auto* route : ranked) {
+          routes.push_back({
+              .address = route->session->getPeerAddress().describe(),
+              .peerID = route->peerID,
+              .path = route->path,
+              .cost = route->cost,
+              .fromCluster = route->fromCluster,
+          });
         }
-        visitor.beginNamespaceNode(
-            childKey,
-            node.trackNamespace,
-            node.subscriberCount(),
-            publisherAddr,
-            publisherPeerID
-        );
+        visitor.beginNamespaceNode(childKey, node.trackNamespace, node.subscriberCount(), routes);
       },
       [&]() { visitor.endNamespaceNode(); }
   );

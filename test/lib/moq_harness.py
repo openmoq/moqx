@@ -830,6 +830,33 @@ class Harness:
             f"relay {name}: namespace '{ns}' routes via peer_id={got}, want {want}"
         )
 
+    def wait_routes(self, name, ns, want):
+        """Wait until relay `name` holds exactly `want` routes for ns."""
+        self.relay_of("wait_routes", name)
+        got = None
+        for _ in _until(READY_TIMEOUT):
+            node = _dig(
+                self._state(name),
+                "services",
+                "default",
+                "namespace_tree",
+                "children",
+                ns,
+            )
+            if not isinstance(node, dict):
+                continue
+            # A node without routes omits the field.
+            routes = node.get("routes", [])
+            if not isinstance(routes, list):
+                continue
+            got = len(routes)
+            if got == want:
+                return
+        self._dump_relay_log(name)
+        raise HarnessError(
+            f"relay {name}: namespace '{ns}' has {got} routes, want {want}"
+        )
+
     # ── Relay lifecycle ────────────────────────────────────────────────────────
     def relay_kill(self, name):
         """SIGKILL a relay and flag it, exempting it from the clean-exit check.

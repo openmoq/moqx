@@ -203,6 +203,7 @@ A test should use these waits rather than `time.sleep`:
 | `h.wait_namespace(name, ns)` | `ns` appears in that relay's `namespace_tree` |
 | `h.wait_relay_log(name, text)` | A line of that relay's log, since it started, contains `text` |
 | `h.wait_namespace_route(name, ns, via)` | That relay's best route for `ns` runs through relay `via` |
+| `h.wait_routes(name, ns, want)` | That relay holds exactly `want` routes for `ns` |
 | `h.wait_subscription(name, ns, track)` | That relay's `subscriptions` include `ns`/`track` |
 | `h.wait_peer_count(name, want)` | That relay lists exactly `want` `downstream_peers` |
 

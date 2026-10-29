@@ -63,6 +63,12 @@ inline const TrackNamespace kTestNamespace{{"test", "namespace"}};
 inline const TrackNamespace kAllowedPrefix{{"test"}};
 inline const FullTrackName kTestTrackName{kTestNamespace, "track1"};
 
+// A draft-18 session that negotiated MoQ Cluster and declared peerHop.
+void negotiateCluster(MockMoQSession& session, uint64_t peerHop = 0);
+
+PublishNamespace
+clusterAdvert(std::vector<uint64_t> path, uint64_t cost, TrackNamespace ns = kTestNamespace);
+
 // TestMoQExecutor that can be driven for tests.
 // Compiles with a -Winaccessible-base warning: folly::Executor is reached both
 // virtually (DrivableExecutor) and non-virtually (moxygen's MoQExecutor), so it
