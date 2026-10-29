@@ -83,6 +83,8 @@ jobs:
             }
 
       - name: 'Acknowledge request'
+        if: |-
+          ${{ github.event_name != 'pull_request' }}
         env:
           GITHUB_TOKEN: '${{ steps.mint_identity_token.outputs.token || secrets.GITHUB_TOKEN || github.token }}'
           ISSUE_NUMBER: '${{ github.event.pull_request.number || github.event.issue.number }}'
