@@ -167,7 +167,9 @@ Publish a test namespace on one relay and confirm that it appears in the
 `namespace_tree` returned by `/state` on every expected relay. Take a second
 snapshot after a settle interval and confirm that the tree is unchanged.
 `upstream.state`, or each entry of `upstreams`, reports whether a link is
-connected.
+connected. Each `namespace_tree` node lists its `routes` best first, with each
+route's `hop_path`, `cost`, and whether it is `from_cluster`. `publisher` and
+`peer_id` name the best route.
 
 For a source checkout, run the relay integration tests:
 

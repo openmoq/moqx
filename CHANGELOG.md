@@ -18,6 +18,7 @@ How to add an entry: see [CONTRIBUTING.md](/CONTRIBUTING.md#changelog).
 - A relay keeps every MoQ Cluster advertisement of a namespace and routes a new subscription over the best one, by path and cost. ([#840](https://github.com/openmoq/moqx/pull/840))
 - A namespace subscriber is told the best route it may use and gets an update when that route changes. A change of publisher withdraws the namespace before advertising it again. ([#840](https://github.com/openmoq/moqx/pull/840))
 - PUBLISH_NAMESPACE accepts REQUEST_UPDATE for its `HOP_PATH` and `ROUTE_COST`. ([#840](https://github.com/openmoq/moqx/pull/840))
+- Admin API: [`/state`](/docs/moq-cluster.md#verify-the-deployment) lists every route of each namespace, best first, with its hop path and cost. ([#TODO:REPLACEME](https://github.com/openmoq/moqx/pull/TODO:REPLACEME))
 
 ## Changed
 

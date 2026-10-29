@@ -395,6 +395,15 @@ TEST_F(NamespaceTreeRouteTest, SelectsByAnonCostLengthThenNewest) {
   advertise(ns_, newer, {2, 7}, 3);
   EXPECT_EQ(tree_.findPublisherSession(ns_), newer);
   EXPECT_EQ(tree_.findNode(ns_)->routes().size(), 5u);
+
+  std::vector<std::shared_ptr<MoQSession>> order;
+  for (const auto* route : tree_.findNode(ns_)->rankedRoutes()) {
+    order.push_back(route->session);
+  }
+  EXPECT_EQ(
+      order,
+      (std::vector<std::shared_ptr<MoQSession>>{newer, older, longer, expensive, anonCheap})
+  );
 }
 
 TEST_F(NamespaceTreeRouteTest, PlainRouteReplacesOnlyThePlainRoute) {
