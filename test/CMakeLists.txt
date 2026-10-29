@@ -300,6 +300,13 @@ moqx_add_dual_stack_test(relay_pyramid
   ENVIRONMENT "MOQBIN=${MOXYGEN_BIN_DIR}"
 )
 
+moqx_add_dual_stack_test(relay_cluster_diamond
+  COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/test_relay_cluster_diamond.py $<TARGET_FILE:moqx>
+  TIMEOUT 120
+  MOQT_VERSIONS 16 18
+  ENVIRONMENT "MOQBIN=${MOXYGEN_BIN_DIR}"
+)
+
 moqx_add_dual_stack_test(relay_upstreams
   COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/test_relay_upstreams.py $<TARGET_FILE:moqx>
   TIMEOUT 90
