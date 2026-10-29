@@ -757,6 +757,21 @@ class Harness:
             f"namespace '{ns}' did not reach relay {name} after {READY_TIMEOUT:g}s"
         )
 
+    def wait_relay_log(self, name, text):
+        relay = self.relay_of("wait_relay_log", name)
+        for _ in _until(READY_TIMEOUT):
+            # Polled before the read, so a line logged just before exit still counts.
+            exited = relay.proc is not None and relay.proc.poll() is not None
+            if any(text in line for line in _lines(relay.log_path)):
+                return
+            if exited:
+                self._dump_relay_log(name)
+                raise HarnessError(f"relay {name} exited before logging {text!r}")
+        self._dump_relay_log(name)
+        raise HarnessError(
+            f"relay {name} did not log {text!r} after {READY_TIMEOUT:g}s"
+        )
+
     # ── Relay lifecycle ────────────────────────────────────────────────────────
     def relay_kill(self, name):
         """SIGKILL a relay and flag it, exempting it from the clean-exit check.
@@ -809,6 +824,17 @@ class Harness:
                 f"[{name}] relay exited {status} on SIGTERM — crash or sanitizer leak"
             )
             self._dump_relay_log(name)
+
+    def relay_signal(self, name, signum):
+        """Send a running relay <signum>. Asserts nothing: assert on what follows."""
+        relay = self.relay_of("relay_signal", name)
+        if signum in (signal.SIGKILL, signal.SIGTERM, signal.SIGINT):
+            raise HarnessError(
+                f"relay_signal: use relay_kill or relay_stop, not signal {signum}"
+            )
+        if relay.proc is None or relay.proc.poll() is not None:
+            raise HarnessError(f"relay_signal: relay {name} is not running")
+        relay.proc.send_signal(signum)
 
     # ── Assertions ─────────────────────────────────────────────────────────────
     def expect_received(self, actor):

@@ -61,14 +61,21 @@ namespace cfg = config;
 
 constexpr std::string_view kServeCommand = "serve";
 
-class ShutdownSignalHandler : public folly::AsyncSignalHandler {
+class SignalHandler : public folly::AsyncSignalHandler {
 public:
-  explicit ShutdownSignalHandler(folly::EventBase* evb) : AsyncSignalHandler(evb) {
+  static void ignoreHangup() { std::signal(SIGHUP, SIG_IGN); }
+
+  explicit SignalHandler(folly::EventBase* evb) : AsyncSignalHandler(evb) {
     registerSignalHandler(SIGTERM);
     registerSignalHandler(SIGINT);
+    registerSignalHandler(SIGHUP);
   }
 
   void signalReceived(int signum) noexcept override {
+    if (signum == SIGHUP) {
+      XLOG(WARNING) << "Ignoring SIGHUP: config reload is not supported, restart to apply changes";
+      return;
+    }
     XLOG(INFO) << "Received signal " << signum << ", shutting down";
     getEventBase()->terminateLoopSoon();
   }
@@ -77,6 +84,7 @@ public:
 } // namespace
 
 int main(int argc, char* argv[]) {
+  SignalHandler::ignoreHangup();
 
   // === 1. Parse command-line flags/config ===
   // CLI args, config files, env vars
@@ -144,7 +152,7 @@ int main(int argc, char* argv[]) {
 
   // === 3. Set up signal handling ===
   folly::EventBase evb;
-  ShutdownSignalHandler signalHandler(&evb);
+  SignalHandler signalHandler(&evb);
 
   // === 4. Initialize resources ===
   quicReuseportSetEnabled(config.mvfstBpfSteering);

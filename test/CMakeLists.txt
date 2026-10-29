@@ -307,6 +307,12 @@ moqx_add_dual_stack_test(relay_upstreams
   ENVIRONMENT "MOQBIN=${MOXYGEN_BIN_DIR}"
 )
 
+moqx_add_dual_stack_test(relay_sighup
+  COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/test_relay_sighup.py $<TARGET_FILE:moqx>
+  TIMEOUT 60
+  ENVIRONMENT "MOQBIN=${MOXYGEN_BIN_DIR}"
+)
+
 # QMUX is a TCP transport, not a QUIC stack, so this one sweeps drafts only.
 foreach(version 16 18)
   set(test_name qmux_relay)

@@ -605,3 +605,4 @@ Prometheus a series set that reshuffles between scrapes.  See [docs/metrics.md] 
 Config is read once at startup; every change requires a restart. Reload is
 planned ([#786](https://github.com/openmoq/moqx/issues/786),
 [design/hot-reloading.md](/design/hot-reloading.md)).
+On `SIGHUP` the relay logs a warning and keeps running.

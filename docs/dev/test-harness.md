@@ -194,15 +194,16 @@ assertions read and what failure dumps print.
 
 ## Waiting
 
-Only three waits exist, and a test should use them rather than `time.sleep`:
+A test should use these waits rather than `time.sleep`:
 
 | Call | Waits for |
 |---|---|
 | `h.wait_relay_ready(name)` | The admin endpoint answers (`start()` already does this) |
 | `h.wait_sessions_atleast(name, want)` | `moqActiveSessions >= want` — see below |
 | `h.wait_namespace(name, ns)` | `ns` appears in that relay's `namespace_tree` |
+| `h.wait_relay_log(name, text)` | A line of that relay's log, since it started, contains `text` |
 
-All three raise `HarnessError` on timeout after dumping the relay log — they
+They raise `HarnessError` on timeout after dumping the relay log — they
 abort the run rather than tallying a failure, because everything after them is
 meaningless.
 
@@ -310,6 +311,10 @@ A test does not need to take its relays down at the end. Teardown `SIGTERM`s
 every relay the test left running and fails the run if one exits non-zero —
 `relay_stop` is for when you need that check to happen *mid-test*, so the
 assertions that follow can observe the aftermath.
+
+`h.relay_signal(name, signum)` sends a running relay any other signal and
+asserts nothing. [`test_relay_sighup.py`](/test/test_relay_sighup.py) follows a
+`SIGHUP` with assertions that the relay and its sessions kept running.
 
 ## Failing correctly
 
