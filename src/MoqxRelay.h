@@ -81,12 +81,19 @@ public:
   virtual void onNamespaceTreeBegin() = 0;
   // Depth-first traversal. childKey is the map key in the parent's children
   // map; empty string for the root node.
+  struct NamespaceRouteInfo {
+    std::string address;
+    std::string peerID;
+    std::vector<uint64_t> path;
+    uint64_t cost{0};
+    bool fromCluster{false};
+  };
+  // routes are best first.
   virtual void beginNamespaceNode(
       std::string_view childKey,
       const moxygen::TrackNamespace& ns,
       size_t sessionCount,
-      std::string_view publisherAddress,
-      std::string_view peerID
+      const std::vector<NamespaceRouteInfo>& routes
   ) = 0;
   virtual void endNamespaceNode() = 0;
   virtual void onNamespaceTreeEnd() = 0;

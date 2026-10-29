@@ -1,0 +1,1 @@
+- Admin API: [`/state`](/docs/moq-cluster.md#verify-the-deployment) lists every route of each namespace, best first, with its hop path and cost.

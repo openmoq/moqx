@@ -86,6 +86,8 @@ public:
 
     const std::vector<Route>& routes() const { return routes_; }
     const Route* findRoute(moxygen::SessionId sessionId) const;
+    // Best first, by selectRoute's rule.
+    std::vector<const Route*> rankedRoutes() const;
 
     // Best eligible route by the MoQ Cluster path-selection rule: a path
     // without 0, then lowest cost, then shortest path, then newest.
