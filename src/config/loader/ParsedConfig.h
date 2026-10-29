@@ -274,6 +274,14 @@ struct ParsedMvfstConfig {
       "default of 1 MB). Increase to reduce EAGAIN errors under high fan-out burst load.",
       std::optional<uint64_t>>
       udp_socket_buffer_bytes;
+  rfl::Description<
+      "Idle timeout in ms for each HTTP/3 transaction, the WebTransport CONNECT stream included. "
+      "Default: 0 (none; a WebTransport session lasts as long as its QUIC connection, see "
+      "quic.idle_timeout_ms). A nonzero value ends a WebTransport session whose CONNECT stream "
+      "stays quiet that long, e.g. a publisher with no subscribers. At most a year "
+      "(31536000000).",
+      std::optional<uint64_t>>
+      h3_txn_timeout_ms;
 };
 
 struct ParsedListenerConfig {

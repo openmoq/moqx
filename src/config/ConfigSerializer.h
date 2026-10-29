@@ -120,6 +120,7 @@ inline void serializeMvfst(ConfigSink& s, const MvfstConfig& m) {
   s.uintField("num_gro_buffers", m.numGROBuffers);
   s.boolField("can_ignore_path_mtu", m.canIgnorePathMTU);
   s.uintField("udp_socket_buffer_bytes", m.udpSocketBufferBytes);
+  s.uintField("h3_txn_timeout_ms", m.h3TxnTimeoutMs);
 
   s.beginObject("bbr");
   s.boolField("conservative_recovery", m.bbr.conservativeRecovery);

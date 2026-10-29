@@ -12,6 +12,7 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include <limits>
 #include <variant>
 
 namespace openmoq::moqx::config {
@@ -2237,6 +2238,7 @@ TEST(ResolveConfig, MvfstDefaultsRoundTrip) {
   EXPECT_TRUE(mvfst.bbr2.enableRecoveryInStartup);
   EXPECT_TRUE(mvfst.bbr2.enableRecoveryInProbeStates);
   EXPECT_FLOAT_EQ(mvfst.l4s.ceTarget, 0.0f);
+  EXPECT_EQ(mvfst.h3TxnTimeoutMs, 0u);
 }
 
 // listener_defaults.mvfst propagates to listeners; per-listener overrides win;
@@ -2247,6 +2249,7 @@ TEST(ResolveConfig, MvfstInheritanceAndOverride) {
   ParsedMvfstConfig defaults;
   defaults.max_cwnd_in_mss = std::optional<uint64_t>{100000};
   defaults.num_gro_buffers = std::optional<uint32_t>{4};
+  defaults.h3_txn_timeout_ms = std::optional<uint64_t>{60000};
   ParsedListenerDefaultsConfig ld;
   ld.mvfst = std::optional<ParsedMvfstConfig>{std::move(defaults)};
   cfg.listener_defaults = std::optional<ParsedListenerDefaultsConfig>{std::move(ld)};
@@ -2260,6 +2263,7 @@ TEST(ResolveConfig, MvfstInheritanceAndOverride) {
   const auto& mvfst = result.value().config.listeners[0].mvfst;
   EXPECT_EQ(mvfst.maxCwndInMss, 200000u); // per-listener wins
   EXPECT_EQ(mvfst.numGROBuffers, 4u);     // from defaults
+  EXPECT_EQ(mvfst.h3TxnTimeoutMs, 60000u);
 
   // Validation uses merged values: max_conn_packets_sent_per_loop=0 in defaults
   // triggers error even when the per-listener fragment doesn't set it.
@@ -2295,6 +2299,25 @@ TEST(ResolveConfig, MvfstZeroValuesAreErrors) {
     ASSERT_TRUE(result.hasError()) << "expected error for " << tc.field;
     EXPECT_THAT(result.error(), HasSubstr(tc.field));
   }
+}
+
+// h3_txn_timeout_ms above a year is an error; the year itself is accepted.
+TEST(ResolveConfig, MvfstH3TxnTimeoutAboveAYearIsError) {
+  constexpr uint64_t kMax = MvfstConfig::kMaxH3TxnTimeoutMs;
+  for (uint64_t bad : {kMax + 1, std::numeric_limits<uint64_t>::max()}) {
+    auto cfg = makeMinimalInsecureConfig();
+    ParsedMvfstConfig mvfst;
+    mvfst.h3_txn_timeout_ms = std::optional<uint64_t>{bad};
+    setListenerMvfst(cfg, std::move(mvfst));
+    auto result = resolveConfig(cfg);
+    ASSERT_TRUE(result.hasError()) << "h3_txn_timeout_ms=" << bad;
+    EXPECT_THAT(result.error(), HasSubstr("h3_txn_timeout_ms"));
+  }
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedMvfstConfig mvfst;
+  mvfst.h3_txn_timeout_ms = std::optional<uint64_t>{kMax};
+  setListenerMvfst(cfg, std::move(mvfst));
+  EXPECT_FALSE(resolveConfig(cfg).hasError());
 }
 
 // copa.delta_param must be in (0, 1); l4s.ce_target must be 0 or in (0, 1).

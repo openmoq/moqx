@@ -29,6 +29,7 @@ How to add an entry: see [CONTRIBUTING.md](/CONTRIBUTING.md#changelog).
 
 ## Fixed
 
+- A WebTransport session on an mvfst listener no longer ends after 60 s while its publisher has no subscribers. [`mvfst.h3_txn_timeout_ms`](/docs/config.md#listeners) sets an HTTP/3 idle timeout again; the default, 0, has none. ([#882](https://github.com/openmoq/moqx/pull/882))
 - The relay could crash when a new PUBLISH replaced a track that a TRACK_FILTER subscription was ranking. ([#823](https://github.com/openmoq/moqx/pull/823))
 - Docker: the relay image starts with its default config under a non-root uid; `/var/log/moqx/qlog` is created writable. ([#827](https://github.com/openmoq/moqx/pull/827))
 - With an [`upstream`](/docs/config.md#upstreams) configured, the relay could crash while waiting for the upstream connection or while shutting down. ([#821](https://github.com/openmoq/moqx/pull/821))
