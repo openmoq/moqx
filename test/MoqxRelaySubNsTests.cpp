@@ -26,14 +26,6 @@ public:
   std::vector<TrackNamespace> dones;
 };
 
-// A draft-18 session that negotiated MoQ Cluster and declared peerHop.
-void negotiateCluster(MockMoQSession& session, uint64_t peerHop = 0) {
-  ON_CALL(session, getNegotiatedVersion())
-      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft18)));
-  ON_CALL(session, negotiatedSetupExtension(SetupExtension::RelayHops)).WillByDefault(Return(true));
-  ON_CALL(session, getPeerHopID()).WillByDefault(Return(peerHop));
-}
-
 // The relay advertises a negotiated sender's ROUTE_COST plus the sender's link cost,
 // saturating. A peer that subscribes later is not replayed a path through it.
 TEST_P(MoQRelayTest, RouteCostAccumulatesAndReplaySkipsPeersOnThePath) {
@@ -374,18 +366,6 @@ TEST_P(MoQRelayTest, ExcludedSubscriberGetsNoNamespaceDone) {
     removeSession(subscriber);
   }
   driveIfMultiThread();
-}
-
-PublishNamespace
-clusterAdvert(std::vector<uint64_t> path, uint64_t cost, TrackNamespace ns = kTestNamespace) {
-  PublishNamespace pubNs;
-  pubNs.trackNamespace = std::move(ns);
-  pubNs.params.insertParam(Parameter(
-      folly::to_underlying(TrackRequestParamKey::HOP_PATH),
-      encodeRelayHopPath(path, kVersionDraft18).value()
-  ));
-  pubNs.params.insertParam(Parameter(folly::to_underlying(TrackRequestParamKey::ROUTE_COST), cost));
-  return pubNs;
 }
 
 std::vector<uint64_t> hopPathOf(const Namespace& ns) {
