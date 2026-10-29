@@ -31,6 +31,7 @@ def run(h):
     pub.start()
     for name in ("B", "C", "D", "E"):
         h.wait_namespace(name, NAMESPACE)
+    h.wait_routes("D", NAMESPACE, 2)
 
     h.case("A subscription on D takes the cheaper, longer path through C")
     sub = h.actor(
