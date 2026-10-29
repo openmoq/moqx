@@ -1,0 +1,1 @@
+- With [`strict_claims`](/docs/config.md#authentication-and-authorization) on, the relay rejects a token that carries a claim other than `exp` and `moqt`, repeats a claim, or has an `exp` that is not an unsigned integer. ([#868](https://github.com/openmoq/moqx/pull/868))

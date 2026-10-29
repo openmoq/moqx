@@ -1,0 +1,1 @@
+- A track that a publisher pushed with PUBLISH had the same stale-Largest FETCH problem after a restart, and its publisher-set cache duration was ignored in favor of the [cache](/docs/config.md#cache) default. ([#850](https://github.com/openmoq/moqx/pull/850))

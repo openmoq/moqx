@@ -332,7 +332,6 @@ jobs:
 
           **Version:** \`${VERSION}\`
           **Commit:** \`${SNAPSHOT_SHA}\`
-          **moxygen reference:** \`${MOX_REF}\`
 
           Standard tarballs promoted from [\`${SNAPSHOT_TAG}\`](${{ github.server_url }}/${{ github.repository }}/releases/tag/${SNAPSHOT_TAG}).
 
