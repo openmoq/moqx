@@ -6,6 +6,7 @@ on:
     types:
       - 'opened'
       - 'ready_for_review'
+      - 'labeled'
   workflow_dispatch:
     inputs:
       pr_number:
@@ -27,11 +28,13 @@ defaults:
 
 jobs:
   review:
-    # PR events: same-repo heads only (forks get no secrets), not drafts.
+    # Same-repo heads only (forks get no secrets); drafts only via the gemini-review label.
     if: |-
       github.event_name == 'workflow_dispatch' || (
-        github.event.pull_request.head.repo.fork == false &&
-        github.event.pull_request.draft == false
+        github.event.pull_request.head.repo.fork == false && (
+          (github.event.action == 'labeled' && github.event.label.name == 'gemini-review') ||
+          (github.event.action != 'labeled' && github.event.pull_request.draft == false)
+        )
       )
     runs-on: 'ubuntu-latest'
     timeout-minutes: 7
@@ -52,6 +55,18 @@ jobs:
           permission-contents: 'read'
           permission-issues: 'write'
           permission-pull-requests: 'write'
+
+      # Lets the label be added again for the next review.
+      - name: 'Remove gemini-review label'
+        if: |-
+          ${{ github.event.action == 'labeled' }}
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: '${{ steps.mint_identity_token.outputs.token || secrets.GITHUB_TOKEN || github.token }}'
+          PULL_REQUEST_NUMBER: '${{ github.event.pull_request.number }}'
+          REPOSITORY: '${{ github.repository }}'
+        run: |-
+          gh api --silent -X DELETE "repos/${REPOSITORY}/issues/${PULL_REQUEST_NUMBER}/labels/gemini-review"
 
       - name: 'Checkout repository'
         uses: 'actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8' # ratchet:actions/checkout@v6
@@ -150,17 +165,3 @@ jobs:
               "https://github.com/gemini-cli-extensions/code-review"
             ]
           prompt: '/pr-code-review REPOSITORY=${{ github.repository }} PULL_REQUEST_NUMBER=${{ github.event.pull_request.number || inputs.pr_number }} ADDITIONAL_CONTEXT=${{ inputs.additional_context }}'
-
-      - name: 'Send failure comment'
-        if: |-
-          ${{ failure() }}
-        env:
-          GITHUB_TOKEN: '${{ steps.mint_identity_token.outputs.token || secrets.GITHUB_TOKEN || github.token }}'
-          PULL_REQUEST_NUMBER: '${{ github.event.pull_request.number || inputs.pr_number }}'
-          MESSAGE: |-
-            🤖 Gemini review failed. See [the logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).
-          REPOSITORY: '${{ github.repository }}'
-        run: |-
-          gh pr comment "${PULL_REQUEST_NUMBER}" \
-            --body "${MESSAGE}" \
-            --repo "${REPOSITORY}"
