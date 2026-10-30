@@ -1,15 +1,24 @@
 name: '🔎 Gemini Review'
 
+# No comment triggers: they can't be filtered by body, so each comment leaves a skipped run.
 on:
-  workflow_call:
+  pull_request:
+    types:
+      - 'opened'
+      - 'ready_for_review'
+  workflow_dispatch:
     inputs:
+      pr_number:
+        type: 'number'
+        description: 'Pull request to review'
+        required: true
       additional_context:
         type: 'string'
-        description: 'Any additional context from the request'
+        description: 'Extra instructions for the review'
         required: false
 
 concurrency:
-  group: '${{ github.workflow }}-review-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.issue.number }}'
+  group: '${{ github.workflow }}-${{ github.event.pull_request.number || inputs.pr_number }}'
   cancel-in-progress: true
 
 defaults:
@@ -18,6 +27,12 @@ defaults:
 
 jobs:
   review:
+    # PR events: same-repo heads only (forks get no secrets), not drafts.
+    if: |-
+      github.event_name == 'workflow_dispatch' || (
+        github.event.pull_request.head.repo.fork == false &&
+        github.event.pull_request.draft == false
+      )
     runs-on: 'ubuntu-latest'
     timeout-minutes: 7
     permissions:
@@ -54,7 +69,7 @@ jobs:
             '{repository: $repo, pull_request_number: $pr, additional_context: $context}' > .gemini/context.json
         env:
           REPOSITORY: '${{ github.repository }}'
-          PULL_REQUEST_NUMBER: '${{ github.event.pull_request.number || github.event.issue.number }}'
+          PULL_REQUEST_NUMBER: '${{ github.event.pull_request.number || inputs.pr_number }}'
           ADDITIONAL_CONTEXT: '${{ inputs.additional_context }}'
 
       - name: 'Run Gemini pull request review'
@@ -65,7 +80,7 @@ jobs:
           GITHUB_TOKEN: '${{ steps.mint_identity_token.outputs.token || secrets.GITHUB_TOKEN || github.token }}'
           GEMINI_API_KEY: '${{ secrets.OMOQ_GEMINI_API_KEY }}'
           REPOSITORY: '${{ github.repository }}'
-          PULL_REQUEST_NUMBER: '${{ github.event.pull_request.number || github.event.issue.number }}'
+          PULL_REQUEST_NUMBER: '${{ github.event.pull_request.number || inputs.pr_number }}'
           ADDITIONAL_CONTEXT: '${{ inputs.additional_context }}'
         with:
           gcp_location: '${{ vars.GOOGLE_CLOUD_LOCATION }}'
@@ -81,8 +96,8 @@ jobs:
           use_vertex_ai: '${{ vars.GOOGLE_GENAI_USE_VERTEXAI }}'
           upload_artifacts: '${{ vars.UPLOAD_ARTIFACTS }}'
           workflow_name: 'gemini-review'
-          # Explicitly set the PR number to handle `issue_comment` triggers (which GitHub treats as issues, not PRs)
-          github_pr_number: '${{ github.event.pull_request.number || github.event.issue.number }}'
+          # workflow_dispatch carries no PR in its event.
+          github_pr_number: '${{ github.event.pull_request.number || inputs.pr_number }}'
           settings: |-
             {
               "model": {
@@ -134,4 +149,18 @@ jobs:
             [
               "https://github.com/gemini-cli-extensions/code-review"
             ]
-          prompt: '/pr-code-review REPOSITORY=${{ github.repository }} PULL_REQUEST_NUMBER=${{ github.event.pull_request.number || github.event.issue.number }} ADDITIONAL_CONTEXT=${{ inputs.additional_context }}'
+          prompt: '/pr-code-review REPOSITORY=${{ github.repository }} PULL_REQUEST_NUMBER=${{ github.event.pull_request.number || inputs.pr_number }} ADDITIONAL_CONTEXT=${{ inputs.additional_context }}'
+
+      - name: 'Send failure comment'
+        if: |-
+          ${{ failure() }}
+        env:
+          GITHUB_TOKEN: '${{ steps.mint_identity_token.outputs.token || secrets.GITHUB_TOKEN || github.token }}'
+          PULL_REQUEST_NUMBER: '${{ github.event.pull_request.number || inputs.pr_number }}'
+          MESSAGE: |-
+            🤖 Gemini review failed. See [the logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).
+          REPOSITORY: '${{ github.repository }}'
+        run: |-
+          gh pr comment "${PULL_REQUEST_NUMBER}" \
+            --body "${MESSAGE}" \
+            --repo "${REPOSITORY}"
