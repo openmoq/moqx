@@ -602,6 +602,8 @@ private:
     std::shared_ptr<moxygen::MoQForwarder::Callback> finalCallback;
     // Captured off the publisher forwarder on its own exec, the only race-free place.
     InitialTrackState initial;
+    // Set when the subscriber shares publisherExec and joined the publisher forwarder.
+    std::shared_ptr<moxygen::MoQForwarder::Subscriber> directPublisherSub;
     std::optional<SubscribeResult> error; // set => bail
   };
 
@@ -610,7 +612,9 @@ private:
       LocalForwarderRegistry* subscriberReg,
       folly::Executor* subscriberExec,
       std::shared_ptr<CrossExecFilter> crossExecFilter,
-      bool forward
+      bool forward,
+      moxygen::SessionId subscriberId,
+      std::shared_ptr<moxygen::TrackConsumer> consumer
   );
 
   folly::coro::Task<SubscribeResult> subscribeFromSubscriberExec(
