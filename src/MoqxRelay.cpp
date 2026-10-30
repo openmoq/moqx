@@ -2344,7 +2344,9 @@ folly::coro::Task<MoqxRelay::PublisherAttachment> MoqxRelay::attachNewLocalForwa
     LocalForwarderRegistry* subscriberReg,
     folly::Executor* subscriberExec,
     std::shared_ptr<CrossExecFilter> crossExecFilter,
-    bool forward
+    bool forward,
+    SessionId subscriberId,
+    std::shared_ptr<TrackConsumer> consumer
 ) {
   // Runs on relayExec_.
   const auto& ftn = subReq.fullTrackName;
@@ -2410,22 +2412,31 @@ folly::coro::Task<MoqxRelay::PublisherAttachment> MoqxRelay::attachNewLocalForwa
           );
         }
 
-        auto cbs = buildLocalToPublisherCallbacks(
-            subscriberReg,
-            ftn,
-            ChannelSubscriber(publisherFwd, publisherExec),
-            subscriberExec,
-            makeFillHandler()
-        );
-        attach.finalCallback = cbs.finalCallback;
+        if (publisherExec == subscriberExec) {
+          // This thread's entry holds publisherFwd, and joining FETCHes resolve against it.
+          attach.directPublisherSub = publisherFwd->addSubscriber(subscriberId, subReq, consumer);
+          if (!attach.directPublisherSub) {
+            attach.error = folly::makeUnexpected(makeAddSubscriberError(subReq.requestID));
+            co_return;
+          }
+        } else {
+          auto cbs = buildLocalToPublisherCallbacks(
+              subscriberReg,
+              ftn,
+              ChannelSubscriber(publisherFwd, publisherExec),
+              subscriberExec,
+              makeFillHandler()
+          );
+          attach.finalCallback = cbs.finalCallback;
 
-        installChannelSubscriber(
-            *cbs.channelCb,
-            *publisherFwd,
-            subscriberReg->channelId(),
-            forward,
-            crossExecFilter
-        );
+          installChannelSubscriber(
+              *cbs.channelCb,
+              *publisherFwd,
+              subscriberReg->channelId(),
+              forward,
+              crossExecFilter
+          );
+        }
 
         if (sr.firstSetup) {
           auto& setup = *sr.firstSetup;
@@ -2669,7 +2680,7 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriber
 
   // addSubscriber before the relay hop: numForwardingSubscribers() must be correct
   // when the channel subscriber is added on publisherExec, so forward flag is right from the start.
-  auto sub = localFwd->addSubscriber(session->sessionId(), subReq, std::move(consumer));
+  auto sub = localFwd->addSubscriber(session->sessionId(), subReq, consumer);
   if (!sub) {
     co_return folly::makeUnexpected(makeAddSubscriberError(subReq.requestID));
   }
@@ -2679,10 +2690,22 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriber
   // returning what the tail needs instead of mutating across the suspend.
   auto attach = co_await folly::coro::co_withExecutor(
       folly::getKeepAliveToken(relayExec_),
-      attachNewLocalForwarderOnRelayExec(subReq, localReg, subscriberExec, crossExecFilter, forward)
+      attachNewLocalForwarderOnRelayExec(
+          subReq,
+          localReg,
+          subscriberExec,
+          crossExecFilter,
+          forward,
+          session->sessionId(),
+          std::move(consumer)
+      )
   );
 
   // Back on subscriberExec.
+
+  if (attach.directPublisherSub && (pendingCb->sawOnEmpty_ || attach.error)) {
+    attach.directPublisherSub->unsubscribe();
+  }
 
   if (pendingCb->sawOnEmpty_) {
     // All subscribers left during setup (localReg entry already removed by
@@ -2712,10 +2735,18 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriber
   }
 
   claim.setInitialState(attach.initial);
+  if (attach.directPublisherSub) {
+    // localFwd has no source, so this does not send PUBLISH_DONE, and markReady() is a no-op.
+    sub->unsubscribe();
+    sub = std::move(attach.directPublisherSub);
+  } else {
+    replayPendingFowarderEvents(localFwd.get(), attach.finalCallback, *pendingCb, forward);
+  }
   // Also on the subscriber, so a post-SUBSCRIBE_OK joining fetch resolves.
   attach.initial.applyTo(*sub);
-  replayPendingFowarderEvents(localFwd.get(), attach.finalCallback, *pendingCb, forward);
-  localFwd->tryProcessNewGroupRequest(subReq.params);
+  if (auto* fwd = sub->forwarder) {
+    fwd->tryProcessNewGroupRequest(subReq.params);
+  }
   claim.markReady();
   if (subReq.fill) {
     sub->requestFill(subReq.requestID, *subReq.fill);
