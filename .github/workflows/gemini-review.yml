@@ -164,4 +164,4 @@ jobs:
             [
               "https://github.com/gemini-cli-extensions/code-review"
             ]
-          prompt: '/pr-code-review REPOSITORY=${{ github.repository }} PULL_REQUEST_NUMBER=${{ github.event.pull_request.number || inputs.pr_number }} ADDITIONAL_CONTEXT=${{ inputs.additional_context }}'
+          prompt: '/pr-code-review REPOSITORY=${{ github.repository }} PULL_REQUEST_NUMBER=${{ github.event.pull_request.number || inputs.pr_number }} ADDITIONAL_CONTEXT=${{ inputs.additional_context }} OVERRIDE_SUBMIT_REVIEW_STEP_3: When calling submit_pending_pull_request_review, use event "APPROVE" if there are no CRITICAL, HIGH, or MEDIUM inline comments; otherwise use event "COMMENT".'
