@@ -18,10 +18,6 @@ on:
         description: 'Extra instructions for the review'
         required: false
 
-concurrency:
-  group: '${{ github.workflow }}-${{ github.event.pull_request.number || inputs.pr_number }}'
-  cancel-in-progress: true
-
 defaults:
   run:
     shell: 'bash'
@@ -36,6 +32,10 @@ jobs:
           (github.event.action != 'labeled' && github.event.pull_request.draft == false)
         )
       )
+    # Job-level so a skipped run for another label doesn't cancel a review.
+    concurrency:
+      group: '${{ github.workflow }}-${{ github.event.pull_request.number || inputs.pr_number }}'
+      cancel-in-progress: true
     runs-on: 'ubuntu-latest'
     timeout-minutes: 7
     permissions:
