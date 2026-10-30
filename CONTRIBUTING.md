@@ -41,6 +41,10 @@ PRs run CI with no secrets. Publish, release, and deploy run only on
 At least one approving review is required. The reviewer pool is small —
 be patient, reciprocate.
 
+Gemini reviews a PR when it is opened or marked ready for review. To ask
+for another review, add the `gemini-review` label; it is removed when the
+review starts.
+
 **Admin override** (`gh pr merge --admin`) is for:
 - CI/infrastructure repairs blocked by branch protection itself.
 - Release-critical merges under urgency.
