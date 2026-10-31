@@ -28,7 +28,7 @@ Entries for the next release are in [changelog.d/](/changelog.d/README.md).
 
 - Admin API: [`/qlog/capture`](/docs/logging.md#on-demand-capture) qlogs the next N new mvfst connections on a running relay. ([#779](https://github.com/openmoq/moqx/pull/779))
 - A release cut with the `version release` workflow's `optimize` input ships a profile-guided, link-time-optimized `linux-amd64` relay, in the tarball and the image, that uses less CPU at the same throughput. See [PGO and LTO](/BUILD.md#pgo-and-lto). ([#804](https://github.com/openmoq/moqx/pull/804))
-- [`cluster`](/docs/config.md#cluster) config: `enabled` turns MoQ Cluster negotiation off, and `hop_id` sets a stable Hop ID, with 0 for an anonymous relay. ([#837](https://github.com/openmoq/moqx/pull/837))
+- [`cluster`](/docs/config.md#cluster) config: `enabled: false` turns MoQ Cluster negotiation off, and `hop_id` sets a stable Hop ID, with 0 for an anonymous relay. ([#837](https://github.com/openmoq/moqx/pull/837))
 - A service can peer with several relays through an [`upstreams`](/docs/config.md#upstreams) list, and each upstream link takes a `relay_cost`. `/state` reports a list's links under `upstreams`. ([#838](https://github.com/openmoq/moqx/pull/838))
 - A relay keeps every MoQ Cluster advertisement of a namespace and routes a new subscription over the best one, by path and cost. ([#840](https://github.com/openmoq/moqx/pull/840))
 - A namespace subscriber is told the best route it may use and gets an update when that route changes. A change of publisher withdraws the namespace before advertising it again. ([#840](https://github.com/openmoq/moqx/pull/840))
