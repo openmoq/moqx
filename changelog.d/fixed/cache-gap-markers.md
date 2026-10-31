@@ -1,1 +1,0 @@
-- The [cache](/docs/config.md#cache) kept gap markers of evicted groups on a long-lived track, using memory outside its size limit. ([#875](https://github.com/openmoq/moqx/pull/875))

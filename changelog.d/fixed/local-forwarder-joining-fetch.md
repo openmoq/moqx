@@ -1,1 +1,0 @@
-- With `use_local_forwarders`, a subscriber on the publisher's I/O thread could have its joining FETCH refused with "Session has no active subscribe".

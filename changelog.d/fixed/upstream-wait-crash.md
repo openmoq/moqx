@@ -1,1 +1,0 @@
-- With an [`upstream`](/docs/config.md#upstreams) configured, the relay could crash while waiting for the upstream connection or while shutting down. ([#821](https://github.com/openmoq/moqx/pull/821))
