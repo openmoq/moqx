@@ -47,7 +47,9 @@ review starts.
 
 To ask Gemini a question, mention `@gemini-cli` in a PR comment or a
 review-thread reply, then add the label. If any such questions are still
-unanswered, Gemini answers them in place of a review.
+unanswered, Gemini answers them in place of a review. It answers people
+with write access, on PRs from branches in this repository; other
+contributors can ask a maintainer to pass a question on.
 
 **Admin override** (`gh pr merge --admin`) is for:
 - CI/infrastructure repairs blocked by branch protection itself.
