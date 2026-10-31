@@ -74,7 +74,7 @@ jobs:
         with:
           persist-credentials: 'false'
 
-      # Comments and thread replies from writers that mention @gemini-cli and carry no reply marker yet.
+      # Comments and thread replies from users with write access that mention @gemini-cli and have no answer yet.
       # Permission, not author_association: the token can't see private org membership.
       - name: 'Find unanswered questions'
         id: 'questions'
