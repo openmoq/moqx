@@ -45,6 +45,10 @@ Gemini reviews a PR when it is opened or marked ready for review. To ask
 for another review, add the `gemini-review` label; it is removed when the
 review starts.
 
+To ask Gemini a question, mention `@gemini-cli` in a PR comment or a
+review-thread reply, then add the label. If any such questions are still
+unanswered, Gemini answers them in place of a review.
+
 **Admin override** (`gh pr merge --admin`) is for:
 - CI/infrastructure repairs blocked by branch protection itself.
 - Release-critical merges under urgency.
