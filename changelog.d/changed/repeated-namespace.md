@@ -1,1 +1,0 @@
-- A repeated NAMESPACE from the same origin keeps the namespace's subscriptions running instead of tearing them down. ([#840](https://github.com/openmoq/moqx/pull/840))

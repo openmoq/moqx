@@ -1,1 +1,0 @@
-- A relay keeps every MoQ Cluster advertisement of a namespace and routes a new subscription over the best one, by path and cost. ([#840](https://github.com/openmoq/moqx/pull/840))

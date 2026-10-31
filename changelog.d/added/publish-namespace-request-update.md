@@ -1,1 +1,0 @@
-- PUBLISH_NAMESPACE accepts REQUEST_UPDATE for its `HOP_PATH` and `ROUTE_COST`. ([#840](https://github.com/openmoq/moqx/pull/840))
