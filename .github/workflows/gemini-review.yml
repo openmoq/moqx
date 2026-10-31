@@ -74,7 +74,8 @@ jobs:
         with:
           persist-credentials: 'false'
 
-      # Maintainer comments and thread replies that mention @gemini-cli and carry no reply marker yet.
+      # Comments and thread replies from writers that mention @gemini-cli and carry no reply marker yet.
+      # Permission, not author_association: the token can't see private org membership.
       - name: 'Find unanswered questions'
         id: 'questions'
         if: |-
@@ -90,12 +91,19 @@ jobs:
           fetch "issues/${PULL_REQUEST_NUMBER}/comments" issue.json
           fetch "pulls/${PULL_REQUEST_NUMBER}/comments" thread.json
           fetch "pulls/${PULL_REQUEST_NUMBER}/reviews" review.json
+          jq -r '.[] | select(.user.type != "Bot" and (.body // "" | test("@gemini-cli\\b"; "i"))) | .user.login' \
+            "${RUNNER_TEMP}/issue.json" "${RUNNER_TEMP}/thread.json" "${RUNNER_TEMP}/review.json" \
+            | sort -u | while read -r login; do
+              permission=$(gh api "repos/${REPOSITORY}/collaborators/${login}/permission" --jq '.permission' || echo 'none')
+              jq -n --arg login "${login}" --arg permission "${permission}" '{($login): $permission}'
+            done | jq -s 'add // {}' > "${RUNNER_TEMP}/permission.json"
           jq -n \
             --slurpfile issue "${RUNNER_TEMP}/issue.json" \
             --slurpfile thread "${RUNNER_TEMP}/thread.json" \
-            --slurpfile review "${RUNNER_TEMP}/review.json" '
+            --slurpfile review "${RUNNER_TEMP}/review.json" \
+            --slurpfile permission "${RUNNER_TEMP}/permission.json" '
             def asks: (.body // "") | test("@gemini-cli\\b"; "i") and (test("@gemini-cli\\s+/review\\b"; "i") | not);
-            def trusted: .user.type != "Bot" and (.author_association | IN("OWNER", "MEMBER", "COLLABORATOR"));
+            def trusted: .user.type != "Bot" and ($permission[0][.user.login] // "none" | IN("admin", "maintain", "write"));
             [($issue[0] + $thread[0])[] | .body // "" | scan("<!-- gemini-reply-to: ([a-z]+-[0-9]+) -->") | .[0]] as $answered
             | $thread[0] as $all
             | [
