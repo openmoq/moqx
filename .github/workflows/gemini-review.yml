@@ -1,6 +1,7 @@
 name: '🔎 Gemini Review'
 
 # No comment triggers: they can't be filtered by body, so each comment leaves a skipped run.
+# The gemini-review label answers unanswered /gemini comments if there are any, else reviews.
 on:
   pull_request:
     types:
@@ -73,7 +74,56 @@ jobs:
         with:
           persist-credentials: 'false'
 
+      # Comments and thread replies from users with write access that ask /gemini and have no answer yet.
+      # Permission, not author_association: the token can't see private org membership.
+      - name: 'Find unanswered questions'
+        id: 'questions'
+        if: |-
+          ${{ github.event.action == 'labeled' }}
+        env:
+          GITHUB_TOKEN: '${{ steps.mint_identity_token.outputs.token || secrets.GITHUB_TOKEN || github.token }}'
+          PULL_REQUEST_NUMBER: '${{ github.event.pull_request.number }}'
+          REPOSITORY: '${{ github.repository }}'
+        run: |-
+          fetch() {
+            gh api --paginate "repos/${REPOSITORY}/$1" --jq '.[]' | jq -s . > "${RUNNER_TEMP}/$2"
+          }
+          fetch "issues/${PULL_REQUEST_NUMBER}/comments" issue.json
+          fetch "pulls/${PULL_REQUEST_NUMBER}/comments" thread.json
+          fetch "pulls/${PULL_REQUEST_NUMBER}/reviews" review.json
+          jq -r '.[] | select(.user.type != "Bot" and (.body // "" | test("(^|\\s)/gemini($|[^\\w-])"; "i"))) | .user.login' \
+            "${RUNNER_TEMP}/issue.json" "${RUNNER_TEMP}/thread.json" "${RUNNER_TEMP}/review.json" \
+            | sort -u | while read -r login; do
+              permission=$(gh api "repos/${REPOSITORY}/collaborators/${login}/permission" --jq '.permission' || echo 'none')
+              jq -n --arg login "${login}" --arg permission "${permission}" '{($login): $permission}'
+            done | jq -s 'add // {}' > "${RUNNER_TEMP}/permission.json"
+          jq -n \
+            --slurpfile issue "${RUNNER_TEMP}/issue.json" \
+            --slurpfile thread "${RUNNER_TEMP}/thread.json" \
+            --slurpfile review "${RUNNER_TEMP}/review.json" \
+            --slurpfile permission "${RUNNER_TEMP}/permission.json" '
+            def asks: (.body // "") | test("(^|\\s)/gemini($|[^\\w-])"; "i");
+            def trusted: .user.type != "Bot" and ($permission[0][.user.login] // "none" | IN("admin", "maintain", "write"));
+            [($issue[0] + $thread[0])[] | select(.user.type == "Bot") | .body // "" | scan("<!-- gemini-reply-to: ([a-z]+-[0-9]+) -->") | .[0]] as $answered
+            | $thread[0] as $all
+            | [
+                ($issue[0][] | select(asks and trusted)
+                  | {id: "comment-\(.id)", kind: "comment", author: .user.login, body, url: .html_url, created_at}),
+                ($review[0][] | select(asks and trusted)
+                  | {id: "review-\(.id)", kind: "review", author: .user.login, body, url: .html_url, created_at: .submitted_at}),
+                ($all[] | select(asks and trusted) | . as $c | (.in_reply_to_id // .id) as $root
+                  | {id: "thread-\(.id)", kind: "thread", reply_to: $root, path, line: (.line // .original_line), diff_hunk,
+                     earlier: [$all[] | select((.in_reply_to_id // .id) == $root and .created_at < $c.created_at) | {author: .user.login, body}],
+                     author: .user.login, body, url: .html_url, created_at})
+              ]
+            | map(select(.id | IN($answered[]) | not)) | sort_by(.created_at) | .[:10]' > gemini-questions.json
+          if [[ "$(jq length gemini-questions.json)" -gt 0 ]]; then
+            echo 'mode=reply' >> "${GITHUB_OUTPUT}"
+          fi
+
       - name: 'Prepare prompt context'
+        if: |-
+          ${{ steps.questions.outputs.mode != 'reply' }}
         shell: 'bash'
         run: |-
           mkdir -p .gemini
@@ -88,6 +138,8 @@ jobs:
           ADDITIONAL_CONTEXT: '${{ inputs.additional_context }}'
 
       - name: 'Run Gemini pull request review'
+        if: |-
+          ${{ steps.questions.outputs.mode != 'reply' }}
         uses: 'google-github-actions/run-gemini-cli@f77273f4c914e4bf38440cf36a0369cb64a37489' # ratchet:google-github-actions/run-gemini-cli@v0
         id: 'gemini_pr_review'
         env:
@@ -165,3 +217,121 @@ jobs:
               "https://github.com/gemini-cli-extensions/code-review"
             ]
           prompt: '/pr-code-review REPOSITORY=${{ github.repository }} PULL_REQUEST_NUMBER=${{ github.event.pull_request.number || inputs.pr_number }} ADDITIONAL_CONTEXT=${{ inputs.additional_context }} OVERRIDE_SUBMIT_REVIEW_STEP_3: When calling submit_pending_pull_request_review, use event "APPROVE" if there are no CRITICAL, HIGH, or MEDIUM inline comments; otherwise use event "COMMENT".'
+
+      # Read-only GitHub tools; the next step posts the answers.
+      - name: 'Run Gemini replies'
+        if: |-
+          ${{ steps.questions.outputs.mode == 'reply' }}
+        uses: 'google-github-actions/run-gemini-cli@f77273f4c914e4bf38440cf36a0369cb64a37489' # ratchet:google-github-actions/run-gemini-cli@v0
+        id: 'gemini_replies'
+        env:
+          GEMINI_CLI_TRUST_WORKSPACE: 'true'
+          GITHUB_TOKEN: '${{ steps.mint_identity_token.outputs.token || secrets.GITHUB_TOKEN || github.token }}'
+          GEMINI_API_KEY: '${{ secrets.OMOQ_GEMINI_API_KEY }}'
+        with:
+          gcp_location: '${{ vars.GOOGLE_CLOUD_LOCATION }}'
+          gcp_project_id: '${{ vars.GOOGLE_CLOUD_PROJECT }}'
+          gcp_service_account: '${{ vars.SERVICE_ACCOUNT_EMAIL }}'
+          gcp_workload_identity_provider: '${{ vars.GCP_WIF_PROVIDER }}'
+          gemini_api_key: '${{ secrets.OMOQ_GEMINI_API_KEY }}'
+          gemini_cli_version: '${{ vars.GEMINI_CLI_VERSION }}'
+          gemini_debug: '${{ fromJSON(vars.GEMINI_DEBUG || vars.ACTIONS_STEP_DEBUG || ''false'') }}'
+          gemini_model: '${{ vars.GEMINI_MODEL || ''gemini-3.1-pro-preview-customtools'' }}'
+          google_api_key: '${{ secrets.GOOGLE_API_KEY }}'
+          use_gemini_code_assist: '${{ vars.GOOGLE_GENAI_USE_GCA }}'
+          use_vertex_ai: '${{ vars.GOOGLE_GENAI_USE_VERTEXAI }}'
+          upload_artifacts: '${{ vars.UPLOAD_ARTIFACTS }}'
+          workflow_name: 'gemini-reply'
+          github_pr_number: '${{ github.event.pull_request.number }}'
+          settings: |-
+            {
+              "model": {
+                "maxSessionTurns": 20
+              },
+              "telemetry": {
+                "enabled": true,
+                "target": "local",
+                "outfile": ".gemini/telemetry.log"
+              },
+              "mcpServers": {
+                "github": {
+                  "command": "docker",
+                  "args": [
+                    "run",
+                    "-i",
+                    "--rm",
+                    "-e",
+                    "GITHUB_PERSONAL_ACCESS_TOKEN",
+                    "ghcr.io/github/github-mcp-server:v0.27.0"
+                  ],
+                  "includeTools": [
+                    "pull_request_read"
+                  ],
+                  "env": {
+                    "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"
+                  }
+                }
+              },
+              "tools": {
+                "core": [
+                  "read_file",
+                  "glob",
+                  "grep_search",
+                  "list_directory",
+                  "write_file",
+                  "mcp_github_*"
+                ],
+                "allowed": [
+                  "mcp_github_pull_request_read",
+                  "write_file"
+                ]
+              }
+            }
+          prompt: >-
+            Answer the questions that maintainers asked you on pull request
+            #${{ github.event.pull_request.number }} in ${{ github.repository }}.
+            They are listed in gemini-questions.json. Each has an id, an author and a body;
+            questions in review threads also have the file path, line, diff hunk and the
+            earlier comments in their thread. Use this checkout, and pull_request_read for the
+            diff and the rest of the discussion. Follow the priorities and path rules in
+            GEMINI.md, not its review format. Answer each question directly and briefly in
+            GitHub Markdown, cite file:line where it helps, and say so when you are unsure.
+            You cannot push or post: for a requested change, describe it or show a patch.
+            Write gemini-replies.json as a JSON array of {"id": "<question id>", "body": "<answer>"},
+            one entry per question.
+
+      # Thread questions get a reply in the thread; the marker records the question as answered.
+      - name: 'Post replies'
+        if: |-
+          ${{ steps.questions.outputs.mode == 'reply' }}
+        env:
+          GITHUB_TOKEN: '${{ steps.mint_identity_token.outputs.token || secrets.GITHUB_TOKEN || github.token }}'
+          PULL_REQUEST_NUMBER: '${{ github.event.pull_request.number }}'
+          REPOSITORY: '${{ github.repository }}'
+        run: |-
+          replies=$(jq -c --slurpfile asked gemini-questions.json '
+            ($asked[0] | map({(.id): .}) | add) as $byid
+            | [.[] | select((.id | type == "string") and $byid[.id] != null and (.body | type == "string" and length > 0))]
+            | unique_by(.id) | .[] | $byid[.id] as $q
+            | {kind: $q.kind, reply_to: $q.reply_to,
+               body: ((if $q.kind == "thread" then "" else "In reply to [this comment](\($q.url)):\n\n" end)
+                 + .body + "\n\n<!-- gemini-reply-to: \($q.id) -->")}' gemini-replies.json) || replies=''
+          if [[ -z "${replies}" ]]; then
+            echo '::error::Gemini wrote no answers to gemini-replies.json.'
+            exit 1
+          fi
+          while IFS= read -r reply; do
+            body=$(jq -r .body <<< "${reply}")
+            if [[ "$(jq -r .kind <<< "${reply}")" == 'thread' ]]; then
+              gh api --silent -X POST "repos/${REPOSITORY}/pulls/${PULL_REQUEST_NUMBER}/comments/$(jq -r .reply_to <<< "${reply}")/replies" -f body="${body}"
+            else
+              gh api --silent -X POST "repos/${REPOSITORY}/issues/${PULL_REQUEST_NUMBER}/comments" -f body="${body}"
+            fi
+          done <<< "${replies}"
+          posted=$(wc -l <<< "${replies}")
+          asked=$(jq length gemini-questions.json)
+          if (( posted < asked )); then
+            echo "::error::Gemini answered ${posted} of ${asked} questions; add the label again for the rest."
+            exit 1
+          fi
+          echo "::notice::Posted ${posted} answers."
