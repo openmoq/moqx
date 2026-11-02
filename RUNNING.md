@@ -122,6 +122,12 @@ cat /proc/net/udp | grep 1151    # or via docker exec
 
 Fields: `drops` (last column) = packets discarded, `tx_queue` (5th column) = send backlog.
 
+## Host Tuning
+
+Kernel UDP buffers, open-file limits, jemalloc and the relay's thread settings
+all affect throughput. [docs/tuning.md](/docs/tuning.md) covers each one;
+`scripts/host-check.sh` reports a host, and with `--pid` a running relay.
+
 ---
 
 ## Docker

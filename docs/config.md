@@ -20,13 +20,14 @@ moqx --config <path> --strict_config    # reject unknown fields,
 
 ```yaml
 relay_id: "my-relay"       # optional; auto-generated if absent
-threads: 1                 # optional; default 1 (only 1 currently supported)
+threads: 1                 # optional; IO worker threads, default 1 (see Threading)
 
 cluster:                   # optional; MoQ Cluster negotiation and Hop ID
   { ... }
 
 listener_defaults:         # optional; QUIC defaults inherited by all listeners
   quic: { ... }
+  mvfst: { ... }           # mvfst listeners only
 
 listeners:                 # required; at least one
   - { ... }
@@ -45,6 +46,20 @@ services:                  # required; at least one
 admin:                     # optional; omit to disable the admin server
   { ... }
 ```
+
+---
+
+## Threading
+
+| Field | Default | Notes |
+|---|---|---|
+| `threads` | 1 | IO worker threads. Must be ≥ 1; more than 1 requires `use_relay_thread: true`. |
+| `use_relay_thread` | `true` | One dedicated thread per service holds that service's relay state. |
+| `use_local_forwarders` | `false` | Forward to each subscriber from its own IO thread, cutting cross-thread hops on the data path. Requires `use_relay_thread`. |
+| `mvfst_bpf_steering` | `true` | BPF reuseport filter that steers each packet to the mvfst worker named in its connection ID. Linux and mvfst only; `false` leaves distribution to the kernel. |
+
+`moqx-run.sh` and the Docker image run 4 threads, with local forwarders on and
+BPF steering off; see [tuning.md](tuning.md#relay-config).
 
 ---
 
@@ -69,6 +84,7 @@ listeners:
     quic_stack: mvfst         # optional; default mvfst
     moqt_versions: []         # optional; empty = default [16]
     quic: { ... }             # optional; overrides listener_defaults.quic
+    mvfst: { ... }            # optional; overrides listener_defaults.mvfst
 ```
 
 **TLS:** For development only, `tls: {insecure: true}` skips certificate
@@ -100,6 +116,26 @@ Set under `listener_defaults.quic` (global defaults) or `listeners[n].quic`
 - `mvfst`: `bbr`, `bbr2`, `bbr2modular`, `copa`, `cubic`, `newreno`
 - `picoquic`: `bbr`, `bbr1`, `c4`, `cubic`, `dcubic`, `fast`, `newreno`,
 `prague`, `reno`
+
+### mvfst Settings
+
+Set under `listener_defaults.mvfst` or `listeners[n].mvfst`. Only mvfst
+listeners use them; picoquic listeners ignore the block.
+
+| Field | Default | Notes |
+|---|---|---|
+| `udp_socket_buffer_bytes` | 0 | UDP socket send and receive buffer. 0 = moxygen's 1 MB. The kernel caps it at `net.core.wmem_max`/`rmem_max`; see [tuning.md](tuning.md#socket-buffers-the-relay-asks-for). |
+| `enable_gso` | `true` | Send with GSO; falls back to `sendmmsg` if unavailable. Disable only where GSO is advertised but broken. |
+| `max_conn_packets_sent_per_loop` | 48 | Packets written per connection per event-loop pass. |
+| `use_recvmmsg` | `true` | Read several packets per syscall. |
+| `max_server_recv_packets_per_loop` | 64 | Incoming packets handled per read callback; 0 = unlimited. |
+| `num_gro_buffers` | 1 | UDP GRO receive buffers; 1 = off, up to 64. |
+| `ignore_path_mtu` | `false` | Send full-size packets without path MTU discovery. Only for networks with a known MTU. |
+| `max_cwnd_in_mss` | 860000 | Congestion window cap, in MSS. |
+| `pacing_enabled` | `true` | Required for `bbr` and `bbr2`. |
+
+Congestion control tunables nest under `bbr`, `bbr2`, `cubic`, `copa` and `l4s`;
+`moqx dump-config-schema` lists them with descriptions.
 
 ---
 

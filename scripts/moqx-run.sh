@@ -61,8 +61,8 @@ Targeting:
 Execution:
   -j, --jemalloc [PATH]     LD_PRELOAD jemalloc for the relay (~10% speedup).
                             Bare flag auto-detects libjemalloc.so.2.
-      --check-sysctl        report current vs recommended UDP/network sysctls
-                            (with the commands to raise them) and exit
+      --check-sysctl        run scripts/host-check.sh (UDP sysctls vs recommended,
+                            limits, jemalloc, NIC) and exit; 1 if a sysctl is low
       --sudo                run the relay under sudo (only needed to read a
                             root-owned key, e.g. letsencrypt's 0600 privkey;
                             default is no sudo)
@@ -86,47 +86,15 @@ Examples:
   $0                                       # serve with .env + defaults
   $0 --threads 8 --udp-buffer 16777216     # 8 IO threads, 16 MB socket buffer
   $0 --recv-pkts 256 -j                    # Alan's recv loop + jemalloc
-  $0 --check-sysctl                        # audit kernel UDP buffers, then exit
+  $0 --check-sysctl                        # audit host tuning, then exit
   $0 --subcmd validate-config              # just validate the config
   DOMAIN=relay.example.com $0 --sudo       # real TLS, root-owned letsencrypt key
   $0 -n                                    # show what would run
 EOF
 }
 
-# ── sysctl probe — report current vs recommended; print fix commands ───────
-# Reports only; never changes anything. Recommended values target a
-# high-fan-out UDP relay (the #1 source of silent packet drops).
-check_sysctl() {
-  local mode="${1:-report}"          # report = full table; warn = only if low
-  local keys=(net.core.rmem_max net.core.wmem_max net.core.rmem_default \
-              net.core.wmem_default net.core.netdev_max_backlog \
-              net.core.optmem_max net.ipv4.udp_rmem_min net.ipv4.udp_wmem_min)
-  local rec=(16777216 16777216 4194304 4194304 65536 1048576 262144 262144)
-  local i key r cur status low_cmd=""
-  [[ "$mode" == report ]] && printf '%-30s %-14s %-14s %s\n' SYSCTL CURRENT RECOMMENDED STATUS
-  for i in "${!keys[@]}"; do
-    key="${keys[$i]}"; r="${rec[$i]}"
-    cur="$(sysctl -n "$key" 2>/dev/null || true)"
-    if [[ -z "$cur" ]]; then
-      status="n/a"
-    elif [[ "$cur" =~ ^[0-9]+$ ]] && (( cur < r )); then
-      status="LOW"; low_cmd+=" $key=$r"
-    else
-      status="ok"
-    fi
-    [[ "$mode" == report ]] && printf '%-30s %-14s %-14s %s\n' "$key" "${cur:-?}" "$r" "$status"
-  done
-  if [[ -n "$low_cmd" ]]; then
-    [[ "$mode" == report ]] && echo
-    echo "WARNING: UDP buffer/backlog sysctls below recommended for high fan-out." >&2
-    echo "  raise (run yourself — NOT executed here):" >&2
-    echo "    sudo sysctl -w$low_cmd" >&2
-    echo "  persist: put those KEY=VALUE lines in /etc/sysctl.d/99-moqx.conf, then 'sudo sysctl --system'" >&2
-    return 1
-  fi
-  [[ "$mode" == report ]] && echo "All recommended sysctls satisfied."
-  return 0
-}
+# Recommended sysctls and the host report live in host-check.sh (read-only).
+HOST_CHECK="$SCRIPT_DIR/host-check.sh"
 
 # normalize a boolean-ish value to true/false (or "INVALID")
 norm_bool() { case "${1,,}" in 1|true|yes|on) echo true ;; 0|false|no|off) echo false ;; *) echo INVALID ;; esac; }
@@ -192,7 +160,10 @@ while (($#)); do
 done
 
 # --check-sysctl: report and exit (no .env / binary needed)
-if (( CHECK_SYSCTL )); then check_sysctl report; exit $?; fi
+if (( CHECK_SYSCTL )); then
+  [[ -f "$HOST_CHECK" ]] || { echo "host check not found: $HOST_CHECK" >&2; exit 1; }
+  bash "$HOST_CHECK" --strict; exit $?
+fi
 
 # ── Folly XLOG passthrough (moxygen uses folly::XLOG, ignores GLOG_*) ──────
 [[ -n "$CLI_XLOG" ]] && PASSTHRU+=("--logging=$CLI_XLOG")
@@ -360,7 +331,7 @@ if (( DRY_RUN )); then
 fi
 
 # ── Pre-flight: warn (don't block) if UDP sysctls are below recommended ───
-[[ "$SUBCMD" == serve ]] && { check_sysctl warn || true; }
+[[ "$SUBCMD" == serve && -f "$HOST_CHECK" ]] && { bash "$HOST_CHECK" --warn || true; }
 
 # ── Pre-flight: real-TLS cert/key must be readable by whoever runs the relay ─
 # moxygen SIGABRTs ("no certificates read") on a missing/unreadable cert (#173),

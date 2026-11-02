@@ -1,0 +1,1 @@
+- [Host and relay tuning guide](/docs/tuning.md) and [`scripts/host-check.sh`](/scripts/host-check.sh), a read-only report of the UDP sysctls, limits, jemalloc and NIC settings on a host or a running relay. Each perf-test run now records it for both VMs in `run-*.host.txt`.
