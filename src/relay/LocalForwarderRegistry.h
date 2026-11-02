@@ -273,11 +273,12 @@ public:
   // Called from a forwarder's onPublishDone, which fires on this thread. The identity
   // check makes teardown order-independent: a terminated forwarder can only vacate its
   // own entry, so it never clobbers a newer forwarder that has since claimed the same
-  // track name.
-  void remove(const moxygen::FullTrackName& ftn, const moxygen::MoQForwarder* expected) {
+  // track name. Returns the vacated forwarder, or null.
+  std::shared_ptr<moxygen::MoQForwarder>
+  remove(const moxygen::FullTrackName& ftn, const moxygen::MoQForwarder* expected) {
     auto it = forwarders_.find(ftn);
     if (it == forwarders_.end() || it->second.forwarder.get() != expected) {
-      return;
+      return nullptr;
     }
     // Remove the entry before setting the exception: otherwise waiters that
     // resume inline would wait on the same entry again.
@@ -286,6 +287,7 @@ public:
     if (entry.ready) {
       entry.ready->setException(std::runtime_error("local forwarder removed"));
     }
+    return std::move(entry.forwarder);
   }
 
 private:
