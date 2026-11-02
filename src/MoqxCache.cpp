@@ -981,21 +981,6 @@ private:
   FullTrackName ftn_;
 };
 
-MoqxCache::FetchWriteback* MoqxCache::CacheTrack::findFetchInProgress(AbsoluteLocation loc) {
-  if (fetchesInProgress.empty()) {
-    return nullptr;
-  }
-  auto it = fetchesInProgress.upper_bound(loc);
-  if (it == fetchesInProgress.begin()) {
-    return nullptr;
-  }
-  --it;
-  if (loc >= it->first && loc < it->second.end && loc >= it->second.progress) {
-    return it->second.writeback;
-  }
-  return nullptr;
-}
-
 // Caches incoming objects and forwards them to the consumer. Handles gaps in
 // the range by marking NonExistent objects.
 class MoqxCache::FetchWriteback : public FetchConsumer {
@@ -1037,10 +1022,10 @@ public:
       // A group-boundary crossing at the range end may already have retired the entry.
       if (fetchInProgressIt_ != fetchRangeIt_.track->fetchesInProgress.end()) {
         fetchInProgressIt_->second.progress = current;
-        // Re-key the map entry when crossing a group boundary so the
-        // old key slot is available for new fetches of evicted groups.
+        // Re-key the entry when crossing a group boundary so the fetch pins
+        // the group it is writing.
         if (current.group > fetchInProgressIt_->first.group) {
-          if (current < fetchRangeIt_.maxLocation) { // concurrent fetch may already hold that slot
+          if (current < fetchRangeIt_.maxLocation) {
             auto entry = fetchInProgressIt_->second;
             eraseAndMakeGroupEvictable();
             emplaceAndPinGroup(current, entry);
@@ -1341,9 +1326,7 @@ private:
   }
 
   void emplaceAndPinGroup(AbsoluteLocation loc, FetchInProgressEntry entry) {
-    auto [it, inserted] = fetchRangeIt_.track->fetchesInProgress.emplace(loc, entry);
-    XCHECK(inserted);
-    fetchInProgressIt_ = it;
+    fetchInProgressIt_ = fetchRangeIt_.track->fetchesInProgress.emplace(loc, entry);
     // Eagerly create the group if it doesn't exist so we can pin it before
     // any object lands. Otherwise getOrCreateGroupWithEviction would put
     // it in the LRU and a concurrent eviction could free the group while
@@ -1390,6 +1373,7 @@ private:
   FullTrackName ftn_;
   const bool cachingEnabled_;
   std::optional<AbsoluteLocation> upstreamEnd_;
+  std::optional<AbsoluteLocation> largestReceived_;
   std::vector<std::pair<AbsoluteLocation, AbsoluteLocation>> pendingGaps_;
 
   void markNonExistentTo(AbsoluteLocation target) {
@@ -1421,10 +1405,19 @@ private:
     fetchRangeIt_.invalidate();
   }
 
-  // Inclusive [start, end]. Held until FETCH_OK, which can arrive after the
-  // fetch stream FINs.
+  // Inclusive [start, end]. Every received object is below the FETCH_OK End
+  // Location, so the part below a received object is recorded now. The rest is
+  // held until FETCH_OK, which can arrive after the fetch stream FINs.
   void insertGap(AbsoluteLocation start, AbsoluteLocation end) {
     if (!upstreamEnd_) {
+      if (largestReceived_ && start < *largestReceived_) {
+        auto finalEnd = std::min(end, *largestReceived_->prev());
+        fetchRangeIt_.track->insertGap(start, finalEnd);
+        if (finalEnd == end) {
+          return;
+        }
+        start = *finalEnd.next();
+      }
       pendingGaps_.emplace_back(start, end);
       return;
     }
@@ -1459,9 +1452,13 @@ private:
         forwardingPreferenceIsDatagram,
         cache_.now()
     );
+    AbsoluteLocation loc{groupID, objectID};
+    if (!largestReceived_ || loc > *largestReceived_) {
+      largestReceived_ = loc;
+    }
     // In a fetch, positions between received objects are known to not exist
     // (fetch is ordered, gaps indicate non-existence)
-    markNonExistentTo({groupID, objectID});
+    markNonExistentTo(loc);
     if (cacheRes.hasError()) {
       updateInProgress();
       return cacheRes;
@@ -1483,6 +1480,16 @@ private:
     return folly::unit;
   }
 };
+
+MoqxCache::FetchWriteback* MoqxCache::CacheTrack::findFetchInProgress(AbsoluteLocation loc) {
+  for (auto it = fetchesInProgress.upper_bound(loc); it != fetchesInProgress.begin();) {
+    const auto& entry = (--it)->second;
+    if (loc < entry.end && loc >= entry.progress) {
+      return entry.writeback;
+    }
+  }
+  return nullptr;
+}
 
 std::shared_ptr<TrackConsumer> MoqxCache::makePassiveConsumer(const FullTrackName& ftn) {
   return getSubscribeWriteback(ftn, std::make_shared<moxygen::NullTrackConsumer>());
@@ -1618,7 +1625,10 @@ folly::coro::Task<Publisher::FetchResult> MoqxCache::fetchImpl(
   while (!token.isCancellationRequested() && (*fetchRangeIt) != fetchRangeIt.end()) {
     auto current = *fetchRangeIt;
     auto* blockingWriteback = track->findFetchInProgress(current);
-    if (blockingWriteback) {
+    // A pending miss run goes upstream before the wait, so a later fetch of
+    // the same range waits on it.
+    const bool flushBeforeWait = blockingWriteback && fetchStart;
+    if (blockingWriteback && !fetchStart) {
       XLOG(DBG1) << "fetchInProgress for {" << current.group << "," << current.object << "}";
       co_await blockingWriteback->waitFor(current);
       cachedNow = now();
@@ -1632,13 +1642,16 @@ folly::coro::Task<Publisher::FetchResult> MoqxCache::fetchImpl(
 
     // Call getCachedObjectMaybe first: it realizes TTL by clearing
     // expired entries from cachedContent, avoiding a phantom flush.
-    auto* cachedObject = getCachedObjectMaybe(*track, current, cachedNow);
-    if (!cachedObject && !track->gaps.contains(current)) {
+    auto* cachedObject =
+        flushBeforeWait ? nullptr : getCachedObjectMaybe(*track, current, cachedNow);
+    if (!flushBeforeWait && !cachedObject && !track->gaps.contains(current)) {
       if (!fetchStart) {
         fetchStart = current;
       }
       // Jump to the next known boundary (cached object or gap) so the
       // upstream fetch range stays bounded without O(n) iteration.
+      // Known dedup limitation: the jump does not stop at another fetch's
+      // in-progress range, so this run requests that range upstream again.
       fetchRangeIt.skipUncached();
       continue;
     }
@@ -1649,15 +1662,16 @@ folly::coro::Task<Publisher::FetchResult> MoqxCache::fetchImpl(
     // no object to keep alive, and the gap's group may not exist, so
     // groups[current.group] would auto-insert a null entry.
     auto pin = cachedObject ? track->groups[current.group] : nullptr;
-    // Boundary (hit or gap): flush any accumulated upstream miss range
-    // so the upstream fetch doesn't span the boundary. A well-formed
-    // upstream cannot transition this position from exists -> not-exists
-    // during the await (writeback rejects out-of-range data and
-    // gap/EOG over a served object), so the pre-await hit/gap decision
-    // stays authoritative.
+    // Boundary (hit, gap or fetch in progress): flush any accumulated
+    // upstream miss range so the upstream fetch doesn't span the boundary.
+    // A well-formed upstream cannot transition this position from
+    // exists -> not-exists during the await (writeback rejects out-of-range
+    // data and gap/EOG over a served object), so the pre-await hit/gap
+    // decision stays authoritative.
     if (fetchStart) {
       XLOG(DBG1) << "flushing accumulated upstream miss at boundary {" << current.group << ","
-                 << current.object << "} (" << (cachedObject ? "hit" : "gap") << ")";
+                 << current.object << "} ("
+                 << (flushBeforeWait ? "in progress" : (cachedObject ? "hit" : "gap")) << ")";
       auto intervals = getFetchIntervals(
           fetchRangeIt.minLocation,
           fetchRangeIt.maxLocation,
@@ -1683,6 +1697,10 @@ folly::coro::Task<Publisher::FetchResult> MoqxCache::fetchImpl(
         } // else success but only returns FetchOk on lastObject
       }
       fetchStart.reset();
+    }
+    if (flushBeforeWait) {
+      // The flush's await may have destroyed blockingWriteback, so look it up again.
+      continue;
     }
 
     if (!cachedObject) {
