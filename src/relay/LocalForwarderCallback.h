@@ -41,6 +41,8 @@ public:
         removeOnEmpty_(removeOnEmpty) {}
 
   void onEmpty(moxygen::MoQForwarder* forwarder) override {
+    // Released on return: dropping it can destroy the forwarder and this callback.
+    auto hold = std::move(drainHold_);
     downstream_->onEmpty(forwarder);
     if (removeOnEmpty_) {
       localReg_->remove(ftn_, forwarder);
@@ -50,7 +52,11 @@ public:
   void onPublishDone(moxygen::MoQForwarder* forwarder) override {
     downstream_->onPublishDone(forwarder);
     // Source-driven teardown (publisher/upstream terminated). Identity-checked.
-    localReg_->remove(ftn_, forwarder);
+    auto removed = localReg_->remove(ftn_, forwarder);
+    // Keeps a draining forwarder alive until onEmpty, after the session drops its ref.
+    if (forwarder->subscriberCount() > 0) {
+      drainHold_ = std::move(removed);
+    }
   }
 
   void forwardChanged(moxygen::MoQForwarder* forwarder, bool forward) override {
@@ -81,6 +87,7 @@ private:
   std::shared_ptr<moxygen::MoQForwarder::Callback> downstream_;
   bool removeOnEmpty_;
   FillHandler fillHandler_;
+  std::shared_ptr<moxygen::MoQForwarder> drainHold_;
 };
 
 } // namespace openmoq::moqx

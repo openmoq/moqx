@@ -323,6 +323,74 @@ TEST_P(MoQRelayTest, PublisherReconnectWithOpenSubgroupNoSegfault) {
   removeSession(reconnectedSession);
 }
 
+// PUBLISH_DONE arrives before the last objects of an open subgroup (#903). MoQSession
+// drops its TrackConsumer right after delivering publishDone. The remaining objects
+// must still reach the subscriber, and the stream must end with a FIN.
+TEST_P(MoQRelayTest, PublishDoneBeforeSubgroupTailDeliversTail) {
+  auto publisherSession = createMockSession();
+  auto subscriberSession = createMockSession();
+  doPublishNamespace(publisherSession, kTestNamespace);
+
+  // addToState=false: the test holds the only session-side ref, as MoQSession does.
+  auto consumer = doPublish(publisherSession, kTestTrackName, /*addToState=*/false);
+  ASSERT_NE(consumer, nullptr);
+
+  auto mockSg = createMockSubgroupConsumer();
+  auto mockConsumer = createMockConsumer();
+  EXPECT_CALL(*mockConsumer, beginSubgroup(0, 0, _, _))
+      .WillOnce(Return(
+          folly::makeExpected<MoQPublishError>(std::static_pointer_cast<SubgroupConsumer>(mockSg))
+      ));
+  std::atomic<bool> gotPublishDone{false};
+  EXPECT_CALL(*mockConsumer, publishDone(_)).WillOnce([&](const PublishDone&) {
+    gotPublishDone.store(true);
+    return folly::makeExpected<MoQPublishError>(folly::unit);
+  });
+  std::atomic<int> objects{0};
+  EXPECT_CALL(*mockSg, object(_, _, _, _))
+      .Times(2)
+      .WillRepeatedly([&](uint64_t, Payload, Extensions, bool) {
+        objects.fetch_add(1);
+        return folly::makeExpected<MoQPublishError>(folly::unit);
+      });
+  std::atomic<bool> gotFin{false};
+  EXPECT_CALL(*mockSg, endOfSubgroup()).WillOnce([&]() {
+    gotFin.store(true);
+    return folly::makeExpected<MoQPublishError>(folly::unit);
+  });
+  EXPECT_CALL(*mockSg, reset(_)).Times(0);
+
+  auto subHandle = subscribeToTrack(subscriberSession, kTestTrackName, mockConsumer);
+  ASSERT_NE(subHandle, nullptr);
+
+  std::shared_ptr<SubgroupConsumer> sg;
+  withSessionContext(publisherSession, [&]() {
+    auto sgRes = consumer->beginSubgroup(0, 0, 0, moxygen::BeginSubgroupOptions{});
+    ASSERT_TRUE(sgRes.hasValue());
+    sg = *sgRes;
+  });
+  driveIfMultiThread();
+  ASSERT_TRUE(sg->object(0, folly::IOBuf::copyBuffer("head")).hasValue());
+  ASSERT_TRUE(driveUntil([&] { return objects.load() == 1; }));
+
+  withSessionContext(publisherSession, [&]() {
+    consumer->publishDone({RequestID(0), PublishDoneStatusCode::TRACK_ENDED, 1, "track ended"});
+  });
+  consumer.reset();
+  ASSERT_TRUE(driveUntil([&] { return gotPublishDone.load(); }));
+
+  // The tail of the subgroup arrives after PUBLISH_DONE.
+  EXPECT_TRUE(sg->object(1, folly::IOBuf::copyBuffer("tail")).hasValue());
+  EXPECT_TRUE(sg->endOfSubgroup().hasValue());
+  EXPECT_TRUE(driveUntil([&] { return gotFin.load(); }));
+  EXPECT_EQ(objects.load(), 2);
+
+  sg.reset();
+  removeSession(publisherSession);
+  removeSession(subscriberSession);
+  driveIfMultiThread();
+}
+
 // ============================================================
 // Publish Replaces Subscribe Tests
 // ============================================================
