@@ -259,14 +259,14 @@ private:
     );
   };
 
-  // Map from fetch range start to (end, writeback). Supports O(log n)
-  // range queries to find if a position is being fetched upstream.
+  // Map from fetch range start to (end, writeback). Upstream fetches can
+  // overlap, so two entries may share a start.
   struct FetchInProgressEntry {
     moxygen::AbsoluteLocation end;
     moxygen::AbsoluteLocation progress;
     FetchWriteback* writeback{};
   };
-  using FetchesInProgressMap = std::map<moxygen::AbsoluteLocation, FetchInProgressEntry>;
+  using FetchesInProgressMap = std::multimap<moxygen::AbsoluteLocation, FetchInProgressEntry>;
 
   // FETCH_OK's End Location is exclusive: one past the last object in the
   // response.
