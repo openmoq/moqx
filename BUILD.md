@@ -189,7 +189,9 @@ Like sanitizers, PGO and LTO need `--moxygen from-source`. Compiles run with
 ccache disabled (`CCACHE_DISABLE=1`), since a cache hit would ignore the profile.
 The stack is built without moxygen's tests, so moqx's tests stay off too.
 Training needs `libjemalloc2`. The `version release` workflow's `optimize` input
-runs these steps for linux-amd64.
+runs these steps for linux-amd64 and linux-arm64. arm64 builds with gcc-12, since
+gcc-11 fails on the stack at `-O3` there; set `CC`, `CXX` and, for `train.sh`,
+`GCOV_DUMP=gcov-dump-12` to match.
 
 ## Custom presets
 
