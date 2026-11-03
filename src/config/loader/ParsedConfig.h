@@ -286,7 +286,7 @@ struct ParsedListenerConfig {
       std::optional<std::vector<uint32_t>>>
       moqt_versions;
   rfl::Description<
-      "QUIC stack to use: \"mvfst\" (default) or \"picoquic\"",
+      "QUIC stack to use: \"mvfst\" (default), \"picoquic\" or \"proxygen_qmux\"",
       std::optional<std::string>>
       quic_stack;
   rfl::Description<
