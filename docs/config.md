@@ -50,10 +50,10 @@ admin:                     # optional; omit to disable the admin server
 
 ## Listeners
 
-Each listener binds a port and accepts connections.  For now, only UDP+QUIC
-is supported, both MOQT using native QUIC and MOQT over HTTP/3 WebTransport.
-We will add support for HTTP/2 WebTransport and MOQT over QMux in the
-future.
+Each listener binds a port and accepts connections: MOQT over native QUIC and
+over HTTP/3 WebTransport, or, with `quic_stack: proxygen_qmux`, MOQT over QMux
+on TCP at the `udp.socket` address. HTTP/2 WebTransport is planned
+([#152](https://github.com/openmoq/moqx/issues/152)).
 
 ```yaml
 listeners:
@@ -66,7 +66,7 @@ listeners:
       cert_file: /etc/moqx/cert.pem
       key_file:  /etc/moqx/key.pem
     endpoint: /moq-relay
-    quic_stack: mvfst         # optional; default mvfst
+    quic_stack: mvfst         # optional; mvfst (default), picoquic or proxygen_qmux
     moqt_versions: []         # optional; empty = default [16]
     quic: { ... }             # optional; overrides listener_defaults.quic
 ```
@@ -383,10 +383,6 @@ at the service level inherits from `service_defaults`.
 | `min_eviction_kb` | 64 | Eviction batch floor in KB. When the cache exceeds `max_cached_mb`, LRU tracks are evicted until usage falls to `max_cached_mb − min_eviction_kb`. |
 | `max_cache_duration_s` | 86400 (1 day) | Hard cap on how long any track can be cached. Must not be 0. Publisher-set durations are clamped to this value. Also used as the default track duration when `default_max_cache_duration_s` is absent. |
 | `default_max_cache_duration_s` | absent | Default TTL for tracks that don't carry a publisher-set duration. **absent** → use `max_cache_duration_s`. **0** → do not cache unless the publisher explicitly sets a duration (opt-in caching). **N** → cache for N seconds by default. |
-
-> **Note:** `max_cached_mb`, `min_eviction_kb`, `max_cache_duration_s`,
-> and `default_max_cache_duration_s` are pending in PR #140 and not yet
-> in the released config.
 
 ---
 
