@@ -36,6 +36,14 @@ competing publishers using a shared cache, with per-publisher metrics and
 seamless failover. Open questions remain around streaming objects and thread
 safety.
 
+### [plugins.md](plugins.md)
+Plugin levels (compiled in, C ABI, trusted and untrusted WebAssembly), their
+goals and limits, and the shared hook model.
+
+### [plugins-level1.md](plugins-level1.md)
+Level 1 API decisions: instances, lifecycle, config, control plane, router,
+local endpoints, data-plane attach and hold, builtin plugins, delivery stack.
+
 ### [moxygen-vanilla-plan.md](moxygen-vanilla-plan.md)
 Seven-phase plan to wrap moxygen's `Publisher`/`Subscriber` interfaces in a
 C++20 standard library API with no folly exposure. Targets API modernization;
