@@ -381,6 +381,16 @@ TEST(ConfigLoader, ListenersMapFormNamesFromKeys) {
   EXPECT_EQ(cfg.listeners.value()[0].name.value(), "public");
   EXPECT_EQ(cfg.listeners.value()[1].name.value(), "internal");
   EXPECT_EQ(cfg.listeners.value()[1].endpoint.value(), "/moq-relay");
+  EXPECT_FALSE(cfg.listeners.value().listForm());
+}
+
+TEST(ConfigLoader, ListenersListFormRecorded) {
+  TempYamlFile yaml(listenersYaml("\n  - name: main" + std::string(kListenerBody)));
+
+  auto cfg = loadConfig(yaml.path(), /*strict=*/true);
+  ASSERT_EQ(cfg.listeners.value().size(), 1);
+  EXPECT_EQ(cfg.listeners.value()[0].name.value(), "main");
+  EXPECT_TRUE(cfg.listeners.value().listForm());
 }
 
 TEST(ConfigLoader, ListenersMapEntryWithNameRejectedWhenStrict) {

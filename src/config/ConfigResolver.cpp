@@ -1226,6 +1226,10 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
   std::vector<QuicConfig> mergedQuicConfigs;
   std::vector<MvfstConfig> mergedMvfstConfigs;
   std::vector<std::optional<TlsMaterial>> listenerTlsMaterials;
+
+  if (config.listeners.value().listForm()) {
+    warnings.push_back("listeners: the list form is deprecated; key each listener by its name");
+  }
   {
     std::unordered_set<std::string> listenerAddrs;
     for (const auto& listener : config.listeners.value()) {

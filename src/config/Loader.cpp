@@ -33,6 +33,7 @@ ParsedListeners::ParsedListeners(ReflectionType listeners) {
         }
         push_back({{std::move(alt[i].listener.get())}, std::move(alt[i].name.value())});
       }
+      listForm_ = true;
     } else {
       for (auto& [key, listener] : alt) {
         if (key.empty()) {
