@@ -10,6 +10,8 @@
 #include <folly/coro/Sleep.h>
 #include <folly/io/IOBuf.h>
 #include <folly/portability/GTest.h>
+#include <moxygen/MoQWebTransportClient.h>
+#include <moxygen/events/MoQFollyExecutorImpl.h>
 #include <moxygen/util/InsecureVerifierDangerousDoNotUseInProduction.h>
 #include <moxygen/util/QuicConnector.h>
 #include <quic/client/QuicClientTransport.h>
@@ -24,14 +26,28 @@ namespace {
 
 class MoqxRelayServerTest : public ::testing::Test {
 protected:
-  void SetUp() override {
+  void SetUp() override { startServer(); }
+
+  void startServer(uint64_t h3TxnTimeoutMs = 0) {
+    if (server_) {
+      server_->stop();
+    }
     config::ListenerConfig listener;
     listener.address = folly::SocketAddress("::1", 0);
     listener.tlsMode = config::Insecure{};
     listener.endpoint = "/moq";
     listener.moqtVersions = "18";
+    listener.mvfst.h3TxnTimeoutMs = h3TxnTimeoutMs;
     auto context = std::make_shared<MoqxRelayContext>(
-        folly::F14FastMap<std::string, config::ServiceConfig>{},
+        folly::F14FastMap<std::string, config::ServiceConfig>{
+            {"default",
+             config::ServiceConfig{
+                 .match = {{
+                     .authority = config::ServiceConfig::MatchEntry::AnyAuthority{},
+                     .path = config::ServiceConfig::MatchEntry::PrefixPath{"/"},
+                 }},
+             }},
+        },
         "test-relay"
     );
     server_ = std::make_unique<MoqxRelayServer>(listener, std::move(context), &ioExecutor_);
@@ -39,6 +55,7 @@ protected:
   }
 
   void TearDown() override {
+    wtClient_.reset();
     if (client_) {
       client_->closeNow({});
       client_.reset();
@@ -66,10 +83,32 @@ protected:
     );
   }
 
+  void connectWebTransport() {
+    wtClient_ = std::make_unique<moxygen::MoQWebTransportClient>(
+        std::make_shared<moxygen::MoQFollyExecutorImpl>(&clientEvb_),
+        proxygen::URL(
+            folly::to<std::string>("https://localhost:", server_->getAddress().getPort(), "/moq")
+        ),
+        std::make_shared<moxygen::test::InsecureVerifierDangerousDoNotUseInProduction>()
+    );
+    folly::coro::blockingWait(
+        wtClient_->setupMoQSession(
+            std::chrono::seconds(5),
+            std::chrono::seconds(30),
+            nullptr,
+            nullptr,
+            quic::TransportSettings(),
+            moxygen::getMoqtProtocols("18", true)
+        ),
+        &clientEvb_
+    );
+  }
+
   folly::EventBase clientEvb_;
   folly::IOThreadPoolExecutor ioExecutor_{1};
   std::unique_ptr<MoqxRelayServer> server_;
   std::shared_ptr<quic::QuicClientTransport> client_;
+  std::unique_ptr<moxygen::MoQWebTransportClient> wtClient_;
 };
 
 TEST_F(MoqxRelayServerTest, AdvertisesReliableResetSupportForWebTransport) {
@@ -105,6 +144,23 @@ TEST_F(MoqxRelayServerTest, ReliableResetKeepsConnectionOpen) {
   EXPECT_TRUE(client_->good());
   EXPECT_FALSE(client_->getState()->localConnectionError.has_value());
   EXPECT_FALSE(client_->getState()->peerConnectionError.has_value());
+}
+
+TEST_F(MoqxRelayServerTest, H3TxnTimeoutEndsIdleWebTransportSession) {
+  startServer(/*h3TxnTimeoutMs=*/1000);
+  connectWebTransport();
+  auto session = wtClient_->moqSession_;
+  ASSERT_NE(session, nullptr);
+  ASSERT_FALSE(session->isClosed());
+
+  // Deadline under the 30 s QUIC and client timeouts and the 60 s default.
+  auto start = std::chrono::steady_clock::now();
+  while (!session->isClosed() && std::chrono::steady_clock::now() < start + std::chrono::seconds(10)
+  ) {
+    folly::coro::blockingWait(folly::coro::sleep(std::chrono::milliseconds(50)), &clientEvb_);
+  }
+  EXPECT_TRUE(session->isClosed());
+  EXPECT_GE(std::chrono::steady_clock::now() - start, std::chrono::milliseconds(500));
 }
 
 } // namespace

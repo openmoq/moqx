@@ -239,7 +239,11 @@ moqx_add_gtest(moqx_relay_context_test
 
 moqx_add_gtest(moqx_relay_server_test
   SRCS MoqxRelayServerTest.cpp
-  LIBS moqx_core moqx_test_main moxygen::moxygen_util_quic_connector
+  LIBS
+    moqx_core
+    moqx_test_main
+    moxygen::moxygen_util_quic_connector
+    moxygen::moxygen_moq_webtransport_client
 )
 
 # Registers an integration test once per QUIC stack. The mvfst run keeps the

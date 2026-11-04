@@ -1054,17 +1054,16 @@ void validateMvfstConfig(
   if (mvfst.numGROBuffers == 0) {
     errors.push_back(context + " mvfst: num_gro_buffers must be >= 1");
   }
-  if (mvfst.h3TxnTimeoutMs > MvfstConfig::kMaxH3TxnTimeoutMs) {
-    errors.push_back(
-        context + " mvfst: h3_txn_timeout_ms (" + std::to_string(mvfst.h3TxnTimeoutMs) +
-        ") must be at most " + std::to_string(MvfstConfig::kMaxH3TxnTimeoutMs) +
-        " (a year); use 0 for none"
-    );
-  }
   if (mvfst.numGROBuffers > 64) {
     warnings.push_back(
         context + " mvfst: num_gro_buffers (" + std::to_string(mvfst.numGROBuffers) +
         ") exceeds 64; most kernels cap GRO at 64 buffers"
+    );
+  }
+  if (mvfst.h3TxnTimeoutMs > MvfstConfig::kMaxH3TxnTimeoutMs) {
+    errors.push_back(
+        context + " mvfst: h3_txn_timeout_ms must be <= " +
+        std::to_string(MvfstConfig::kMaxH3TxnTimeoutMs) + " (0 = none)"
     );
   }
   if (mvfst.copa.deltaParam <= 0.0 || mvfst.copa.deltaParam >= 1.0) {

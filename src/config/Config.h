@@ -154,12 +154,8 @@ struct MvfstConfig {
   // Increase when high fan-out causes EAGAIN bursts under load.
   uint64_t udpSocketBufferBytes{0};
 
-  // Idle timeout per HTTP/3 transaction, the WebTransport CONNECT stream
-  // included. 0 = none: a WebTransport session then lasts as long as its QUIC
-  // connection (quic.idleTimeoutMs). proxygen's 60 s ends an idle publisher's
-  // session, because nothing is sent on the CONNECT stream while no one subscribes.
+  // HTTP/3 transaction and WebTransport session idle timeout. 0 = none.
   uint64_t h3TxnTimeoutMs{0};
-  // Largest h3TxnTimeoutMs, a year; "none" uses it too.
   static constexpr uint64_t kMaxH3TxnTimeoutMs = 365ull * 24 * 60 * 60 * 1000;
 
   BBR bbr;

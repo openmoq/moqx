@@ -1,0 +1,1 @@
+- A WebTransport session on an mvfst listener no longer closes after 60 s of inactivity. [`mvfst.h3_txn_timeout_ms`](/docs/config.md#listeners) sets an idle timeout; 0 (the default) disables it.

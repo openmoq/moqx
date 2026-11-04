@@ -5,6 +5,7 @@
  */
 
 #include "config/loader/Loader.h"
+#include "config/loader/ConfigResolver.h"
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
@@ -286,6 +287,36 @@ services:
 
   ASSERT_EQ(cfg.services.value().size(), 1);
   EXPECT_FALSE(cfg.services.value().at("default").cache.value().has_value());
+}
+
+// The YAML reader wraps a negative uint64_t; the resolver's upper bound rejects it.
+TEST(ConfigLoader, NegativeH3TxnTimeoutRejected) {
+  TempYamlFile yaml(R"(
+listeners:
+  - name: main
+    udp:
+      socket:
+        address: "::"
+        port: 9668
+    tls:
+      insecure: true
+    endpoint: "/moq-relay"
+    mvfst:
+      h3_txn_timeout_ms: -1
+services:
+  default:
+    match:
+      - authority: {any: true}
+        path: {prefix: "/"}
+admin:
+  port: 9669
+  address: "::1"
+  plaintext: true
+)");
+
+  auto result = resolveConfig(loadConfig(yaml.path()));
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("h3_txn_timeout_ms"));
 }
 
 // --- Schema generation test ---

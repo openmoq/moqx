@@ -2301,7 +2301,6 @@ TEST(ResolveConfig, MvfstZeroValuesAreErrors) {
   }
 }
 
-// h3_txn_timeout_ms above a year is an error; the year itself is accepted.
 TEST(ResolveConfig, MvfstH3TxnTimeoutAboveAYearIsError) {
   constexpr uint64_t kMax = MvfstConfig::kMaxH3TxnTimeoutMs;
   for (uint64_t bad : {kMax + 1, std::numeric_limits<uint64_t>::max()}) {

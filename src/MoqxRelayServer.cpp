@@ -207,9 +207,7 @@ buildTransportSettings(const config::QuicConfig& quic, const config::MvfstConfig
   return ts;
 }
 
-// MoQServer keeps proxygen's 60 s for a non-positive txnTimeout, so "none" is
-// the largest value, a year; the QUIC idle timeout still ends a session whose
-// peer is gone. The resolver rejects larger values.
+// MoQServer ignores a non-positive txnTimeout, so "none" is the maximum.
 std::chrono::milliseconds h3TxnTimeout(const config::MvfstConfig& mvfst) {
   if (mvfst.h3TxnTimeoutMs == 0) {
     return std::chrono::milliseconds(config::MvfstConfig::kMaxH3TxnTimeoutMs);
