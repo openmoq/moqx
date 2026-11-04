@@ -25,10 +25,10 @@ defaults:
 
 jobs:
   review:
-    # Same-repo heads only (forks get no secrets); drafts only via the gemini-review label.
+    # Same-repo heads only (cross-repo heads get no secrets); drafts only via the gemini-review label.
     if: |-
       github.event_name == 'workflow_dispatch' || (
-        github.event.pull_request.head.repo.fork == false && (
+        github.event.pull_request.head.repo.full_name == github.repository && (
           (github.event.action == 'labeled' && github.event.label.name == 'gemini-review') ||
           (github.event.action != 'labeled' && github.event.pull_request.draft == false)
         )
@@ -122,10 +122,12 @@ jobs:
           fi
 
       - name: 'Prepare prompt context'
+        id: 'context'
         if: |-
           ${{ steps.questions.outputs.mode != 'reply' }}
         shell: 'bash'
         run: |-
+          echo "started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "${GITHUB_OUTPUT}"
           mkdir -p .gemini
           jq -n \
             --arg repo "${REPOSITORY}" \
@@ -216,7 +218,37 @@ jobs:
             [
               "https://github.com/gemini-cli-extensions/code-review"
             ]
-          prompt: '/pr-code-review REPOSITORY=${{ github.repository }} PULL_REQUEST_NUMBER=${{ github.event.pull_request.number || inputs.pr_number }} ADDITIONAL_CONTEXT=${{ inputs.additional_context }} OVERRIDE_SUBMIT_REVIEW_STEP_3: When calling submit_pending_pull_request_review, use event "APPROVE" if there are no CRITICAL, HIGH, or MEDIUM inline comments; otherwise use event "COMMENT".'
+          prompt: '/pr-code-review REPOSITORY=${{ github.repository }} PULL_REQUEST_NUMBER=${{ github.event.pull_request.number || inputs.pr_number }} ADDITIONAL_CONTEXT=${{ inputs.additional_context }}'
+
+      # The review prompt only submits COMMENT; approve the reviewed commit if every inline comment is tagged LOW.
+      - name: 'Approve clean review'
+        if: |-
+          ${{ steps.questions.outputs.mode != 'reply' }}
+        env:
+          GITHUB_TOKEN: '${{ steps.mint_identity_token.outputs.token || secrets.GITHUB_TOKEN || github.token }}'
+          PULL_REQUEST_NUMBER: '${{ github.event.pull_request.number || inputs.pr_number }}'
+          REPOSITORY: '${{ github.repository }}'
+          STARTED_AT: '${{ steps.context.outputs.started_at }}'
+        run: |-
+          review=$(gh api --paginate "repos/${REPOSITORY}/pulls/${PULL_REQUEST_NUMBER}/reviews" --jq '.[]' \
+            | jq -s -c --arg since "${STARTED_AT}" \
+              '[.[] | select(.user.type == "Bot" and .submitted_at >= $since and (.body // "" | contains("Review Summary")))] | last // empty')
+          if [[ -z "${review}" ]]; then
+            echo '::notice::Found no Gemini review from this run.'
+            exit 0
+          fi
+          if [[ "$(jq -r .state <<< "${review}")" != 'COMMENTED' ]]; then
+            echo "::notice::Gemini review is already $(jq -r .state <<< "${review}")."
+            exit 0
+          fi
+          above_low=$(gh api --paginate "repos/${REPOSITORY}/pulls/${PULL_REQUEST_NUMBER}/reviews/$(jq -r .id <<< "${review}")/comments" \
+            --jq '[.[] | select(.body | test("\\A\\s*(<COMMENT>\\s*)?\\**\\[LOW\\]"; "i") | not)] | length' | jq -s add)
+          if [[ "${above_low}" -gt 0 ]]; then
+            echo "::notice::${above_low} Gemini comments are above LOW; not approving."
+            exit 0
+          fi
+          gh api --silent -X POST "repos/${REPOSITORY}/pulls/${PULL_REQUEST_NUMBER}/reviews" \
+            -f commit_id="$(jq -r .commit_id <<< "${review}")" -f event='APPROVE' -f body='Gemini found nothing above LOW.'
 
       # Read-only GitHub tools; the next step posts the answers.
       - name: 'Run Gemini replies'
