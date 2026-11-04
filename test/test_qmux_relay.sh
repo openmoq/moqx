@@ -149,7 +149,7 @@ wait_sessions() {
 cat >"$RELAY_CFG" <<EOF
 relay_id: "qmux-test"
 listeners:
-  - name: qmux
+  qmux:
     quic_stack: proxygen_qmux
     udp:
       socket:
