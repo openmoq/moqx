@@ -338,6 +338,12 @@ foreach(version 16 18)
   )
 endforeach()
 
+# Validates config files only; binds no port and runs no stack.
+add_test(
+  NAME validate_config
+  COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_validate_config.sh $<TARGET_FILE:moqx>
+)
+
 moqx_add_dual_stack_test(admin_info_endpoint
   COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_admin_info.sh $<TARGET_FILE:moqx>
 )

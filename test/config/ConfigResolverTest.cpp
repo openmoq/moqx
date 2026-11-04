@@ -2420,5 +2420,24 @@ TEST(ResolveConfig, MvfstAlgoFieldsRoundTrip) {
   EXPECT_FLOAT_EQ(out.l4s.ceTarget, 0.05f);
 }
 
+TEST(ResolveConfig, ListFormListenersWarnDeprecated) {
+  auto cfg = makeMinimalInsecureConfig("main");
+  auto noWarning = resolveConfig(cfg);
+  ASSERT_TRUE(noWarning.hasValue()) << noWarning.error();
+  EXPECT_THAT(noWarning.value().warnings, Not(::testing::Contains(HasSubstr("list form"))));
+
+  std::vector<ParsedDeprecatedListenerListEntry> entries;
+  for (const auto& listener : cfg.listeners.value()) {
+    entries.push_back({listener.name.value(), static_cast<const ParsedListenerEntry&>(listener)});
+  }
+  cfg.listeners = ParsedListeners(ParsedListeners::ReflectionType(std::move(entries)));
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue()) << result.error();
+  EXPECT_THAT(
+      result.value().warnings,
+      ::testing::Contains(HasSubstr("listeners: the list form is deprecated"))
+  );
+}
+
 } // namespace
 } // namespace openmoq::moqx::config
