@@ -276,6 +276,9 @@ struct ParsedMvfstConfig {
       udp_socket_buffer_bytes;
 };
 
+// Named proxygen_qmux (not bare "qmux") so a second qmux impl can be added later.
+using ParsedQuicStack = rfl::Literal<"mvfst", "picoquic", "proxygen_qmux">;
+
 struct ParsedListenerConfig {
   rfl::Description<"Listener name", std::string> name;
   rfl::Description<"UDP/QUIC transport config", ParsedUdpConfig> udp;
@@ -287,7 +290,7 @@ struct ParsedListenerConfig {
       moqt_versions;
   rfl::Description<
       "QUIC stack to use: \"mvfst\" (default), \"picoquic\" or \"proxygen_qmux\"",
-      std::optional<std::string>>
+      std::optional<ParsedQuicStack>>
       quic_stack;
   rfl::Description<
       "QUIC transport settings (overrides listener_defaults.quic)",

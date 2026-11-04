@@ -201,7 +201,7 @@ TEST(ResolveConfig, InsecureFalseNoCerts) {
 
 TEST(ResolveConfig, PicoquicInsecureRejected) {
   auto cfg = makeMinimalInsecureConfig();
-  cfg.listeners.value()[0].quic_stack = std::string("picoquic");
+  cfg.listeners.value()[0].quic_stack = ParsedQuicStack::make<"picoquic">();
 
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasError());
@@ -357,7 +357,7 @@ TEST(ResolveConfig, Pkcs12PicoquicRejected) {
   tls.insecure = false;
   tls.pkcs12_file = p12.path();
   tls.pkcs12_password_file = pwFile.path();
-  cfg.listeners.value()[0].quic_stack = std::string("picoquic");
+  cfg.listeners.value()[0].quic_stack = ParsedQuicStack::make<"picoquic">();
 
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasError());
@@ -1933,7 +1933,7 @@ TEST(ResolveConfig, QuicCcAlgoPicoOnlyRejectedByMvfst) {
   EXPECT_THAT(result.error(), HasSubstr("cc_algo"));
   EXPECT_THAT(result.error(), HasSubstr("dcubic"));
 
-  cfg.listeners.value()[0].quic_stack = std::optional<std::string>{"picoquic"};
+  cfg.listeners.value()[0].quic_stack = ParsedQuicStack::make<"picoquic">();
   cfg.listeners.value()[0].tls.value().insecure = false;
   cfg.listeners.value()[0].tls.value().cert_file = std::optional<std::string>{"cert.pem"};
   cfg.listeners.value()[0].tls.value().key_file = std::optional<std::string>{"key.pem"};
@@ -1954,7 +1954,7 @@ TEST(ResolveConfig, QuicCcAlgoMvfstOnlyRejectedByPico) {
   ASSERT_TRUE(result.hasValue());
   EXPECT_EQ(result.value().config.listeners[0].quic.ccAlgo, "bbr2");
 
-  cfg.listeners.value()[0].quic_stack = std::optional<std::string>{"picoquic"};
+  cfg.listeners.value()[0].quic_stack = ParsedQuicStack::make<"picoquic">();
   cfg.listeners.value()[0].tls.value().insecure = false;
   cfg.listeners.value()[0].tls.value().cert_file = std::optional<std::string>{"cert.pem"};
   cfg.listeners.value()[0].tls.value().key_file = std::optional<std::string>{"key.pem"};
@@ -1982,7 +1982,7 @@ TEST(ResolveConfig, QuicCcAlgoRoundTrips) {
 ParsedConfig makeMinimalPicoConfig() {
   auto cfg = makeMinimalInsecureConfig();
   auto& lc = cfg.listeners.value()[0];
-  lc.quic_stack = std::optional<std::string>{"picoquic"};
+  lc.quic_stack = ParsedQuicStack::make<"picoquic">();
   lc.tls.value().insecure = false;
   lc.tls.value().cert_file = std::optional<std::string>{"cert.pem"};
   lc.tls.value().key_file = std::optional<std::string>{"key.pem"};
