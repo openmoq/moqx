@@ -70,15 +70,17 @@ TEST_CONFORMANCE_PORT_MIN=19700
 TEST_CONFORMANCE_PORT_MAX=19799
 
 # test/lib/moq_harness.py — each harness test gets its own base, and each
-# h.relay() call takes the next listener/admin pair counting up from it.
+# h.relay() call takes the next ports counting up from it: one per listener,
+# plus one for admin.
 #
 # These MUST be distinct per test: scripts/test.sh runs ctest --parallel, so
 # harness tests execute concurrently. Sharing a base makes them fight over the
 # same ports, and a relay can even pass its readiness check against another
 # test's relay listening on the same admin port.
 #
-# Placed above the conformance span, not inside it. Ten ports per test = five
-# relay pairs. Set HARNESS_BASE_PORT to override.
+# Placed above the conformance span, not inside it. Ten ports per test, e.g.
+# five one-listener relays; h.relay() rejects a topology that needs more. Set
+# HARNESS_BASE_PORT to override.
 # Do not write literal port numbers in comments here: the duplicate check
 # greps every number in this file and cannot tell a comment from an assignment.
 TEST_HARNESS_CHAIN_BASE=19800
