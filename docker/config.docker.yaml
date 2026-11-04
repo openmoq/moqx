@@ -28,7 +28,7 @@ listener_defaults:
 # block, or leaves it empty when MOQX_PICO_ENABLE=false or MOQX_INSECURE=true
 # (picoquic needs real TLS).
 listeners:
-  - name: relay-mvfst
+  relay-mvfst:
     quic_stack: mvfst
     moqt_versions: ${MOQX_MOQT_VERSIONS}
     udp:

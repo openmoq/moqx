@@ -215,7 +215,7 @@ threads: 2
 use_relay_thread: true
 use_local_forwarders: true
 listeners:
-  - name: $name
+  $name:
 $quic_stack_line
     udp:
       socket:
