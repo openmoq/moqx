@@ -322,6 +322,12 @@ public:
   // parse error.
   explicit ParsedListeners(ReflectionType listeners);
   ReflectionType reflection() const;
+
+  // True when read from the deprecated list form.
+  bool listForm() const { return listForm_; }
+
+private:
+  bool listForm_{false};
 };
 
 struct ParsedCacheConfig {
@@ -603,10 +609,7 @@ struct ParsedLoggingConfig {
 };
 
 struct ParsedConfig {
-  rfl::Description<
-      "Listener definitions: a map keyed by listener name, or a list of entries with `name`",
-      ParsedListeners>
-      listeners;
+  rfl::Description<"Listener definitions, keyed by listener name", ParsedListeners> listeners;
   rfl::Description<
       "Default settings inherited by all services",
       std::optional<ParsedServiceDefaultsConfig>>

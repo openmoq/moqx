@@ -81,16 +81,6 @@ verification. This is incompatible with `quic_stack: picoquic`.
 
 **moqt_versions:**: Supports 16 and 18; any other value is rejected.
 
-A list of entries that each set `name` is also accepted:
-
-```yaml
-listeners:
-  - name: main
-    udp: { ... }
-```
-
-In the map form an entry must not set `name`; in the list form it must.
-
 **Duplicate listeners** (same address+port combination) are rejected.
 
 ### QUIC Settings
