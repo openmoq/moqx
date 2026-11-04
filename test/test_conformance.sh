@@ -137,7 +137,7 @@ trap cleanup EXIT
 
 cat > "$TMPCONFIG" <<EOF
 listeners:
-  - name: conformance
+  conformance:
     udp:
       socket:
         address: "${BIND_ADDRESS}"

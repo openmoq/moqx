@@ -38,7 +38,7 @@ done
 
 cat <<EOF
 listeners:
-  - name: main
+  main:
     udp:
       socket:
         address: "::"

@@ -16,8 +16,8 @@ case "$MOQ_QUIC_STACK" in
     ;;
 esac
 
-# Writes the stack and tls keys of a listeners[] entry, indented to sit under
-# `- name:`. Picoquic rejects `insecure: true`, so it serves a self-signed
+# Writes the stack and tls keys of a `listeners.<name>` entry, indented to sit
+# under the name key. Picoquic rejects `insecure: true`, so it serves a self-signed
 # localhost cert generated into $1, the caller's temp directory.
 moq_listener_stack_yaml() {
   if [[ "$MOQ_QUIC_STACK" != picoquic ]]; then
