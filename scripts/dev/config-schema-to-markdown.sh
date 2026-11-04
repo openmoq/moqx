@@ -49,7 +49,7 @@ def type_str:
   resolve_anyof |
   if .type == "array" then
     (.items | resolve_ref | .type // "object") + "[]"
-  elif .type then .type
+  elif .type then .type + (if .enum then " (" + (.enum | join(", ")) + ")" else "" end)
   elif ."$ref" then "object"
   else "unknown"
   end;

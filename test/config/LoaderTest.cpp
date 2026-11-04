@@ -416,6 +416,34 @@ admin:
   EXPECT_THROW(loadConfig(yaml.path(), /*strict=*/true), std::runtime_error);
 }
 
+TEST(ConfigLoader, UnknownQuicStackRejected) {
+  TempYamlFile yaml(R"(
+listeners:
+  - name: main
+    udp:
+      socket:
+        address: "::"
+        port: 9668
+    tls:
+      insecure: true
+    endpoint: "/moq-relay"
+    quic_stack: qmux
+services:
+  default:
+    match:
+      - authority: {any: true}
+        path: {prefix: "/"}
+)");
+
+  try {
+    loadConfig(yaml.path());
+    FAIL() << "expected an unknown quic_stack to fail the load";
+  } catch (const std::runtime_error& e) {
+    EXPECT_THAT(e.what(), HasSubstr("qmux"));
+    EXPECT_THAT(e.what(), HasSubstr("proxygen_qmux"));
+  }
+}
+
 #ifdef CONFIG_EXAMPLE_PATH
 TEST(ConfigLoader, ExampleYamlValid) {
   EXPECT_NO_THROW(loadConfig(CONFIG_EXAMPLE_PATH, /*strict=*/true));

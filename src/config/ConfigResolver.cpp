@@ -29,16 +29,16 @@ namespace openmoq::moqx::config {
 
 namespace {
 
-constexpr const char* kStackMvfst = "mvfst";
-constexpr const char* kStackPicoquic = "picoquic";
-// Named proxygen_qmux (not bare "qmux") so a second qmux impl can be added later.
-constexpr const char* kStackProxygenQmux = "proxygen_qmux";
-
-QuicStack parseQuicStack(const std::string& stackStr) {
-  if (stackStr == kStackPicoquic) {
-    return QuicStack::Picoquic;
+QuicStack parseQuicStack(const std::optional<ParsedQuicStack>& stack) {
+  if (!stack.has_value()) {
+    return QuicStack::Mvfst;
   }
-  if (stackStr == kStackProxygenQmux) {
+  switch (stack->value()) {
+  case ParsedQuicStack::value_of<"mvfst">():
+    return QuicStack::Mvfst;
+  case ParsedQuicStack::value_of<"picoquic">():
+    return QuicStack::Picoquic;
+  case ParsedQuicStack::value_of<"proxygen_qmux">():
     return QuicStack::ProxygenQmux;
   }
   return QuicStack::Mvfst;
@@ -368,24 +368,15 @@ void validateListener(
       warnings
   );
 
-  // quic_stack validation
-  const auto& stackOpt = listener.quic_stack.value();
-  if (stackOpt.has_value() && *stackOpt != kStackMvfst && *stackOpt != kStackPicoquic &&
-      *stackOpt != kStackProxygenQmux) {
-    errors.push_back(
-        "Listener '" + listener.name.value() + "': unknown quic_stack '" + *stackOpt +
-        "' (expected \"mvfst\", \"picoquic\", or \"proxygen_qmux\")"
-    );
-  }
-  if (stackOpt.value_or(kStackMvfst) == kStackPicoquic && listener.tls.value().insecure.value()) {
+  const bool picoquic = parseQuicStack(listener.quic_stack.value()) == QuicStack::Picoquic;
+  if (picoquic && listener.tls.value().insecure.value()) {
     errors.push_back(
         "Listener '" + listener.name.value() +
         "': quic_stack \"picoquic\" requires real TLS credentials (insecure: true is not supported)"
     );
   }
   const auto& pkcs12File = listener.tls.value().pkcs12_file.value();
-  if (stackOpt.value_or(kStackMvfst) == kStackPicoquic && pkcs12File.has_value() &&
-      !pkcs12File->empty()) {
+  if (picoquic && pkcs12File.has_value() && !pkcs12File->empty()) {
     errors.push_back(
         "Listener '" + listener.name.value() +
         "': quic_stack \"picoquic\" does not support pkcs12_file yet; use cert_file/key_file"
@@ -1138,8 +1129,7 @@ ListenerConfig resolveListener(
     tlsMode = resolveTlsConfig(tls, std::move(material));
   }
 
-  const auto& stackStr = listener.quic_stack.value().value_or(kStackMvfst);
-  auto quicStack = parseQuicStack(stackStr);
+  auto quicStack = parseQuicStack(listener.quic_stack.value());
 
   return ListenerConfig{
       .name = listener.name.value(),
@@ -1258,8 +1248,7 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
         errors.push_back("Duplicate listener address: " + addr);
       }
       auto quic = mergeQuicConfig(quicDefaults, listener.quic.value());
-      const auto stackStr = listener.quic_stack.value().value_or(kStackMvfst);
-      const auto stack = parseQuicStack(stackStr);
+      const auto stack = parseQuicStack(listener.quic_stack.value());
       validateQuicConfig(quic, stack, "Listener '" + listener.name.value() + "'", errors, warnings);
       mergedQuicConfigs.push_back(quic);
       mergedMvfstConfigs.push_back(mergeMvfstConfig(mvfstDefaults, listener.mvfst.value()));
@@ -1291,7 +1280,7 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
   {
     std::vector<std::string> picoListenerNames;
     for (const auto& listener : config.listeners.value()) {
-      if (listener.quic_stack.value().value_or(kStackMvfst) == kStackPicoquic) {
+      if (parseQuicStack(listener.quic_stack.value()) == QuicStack::Picoquic) {
         picoListenerNames.push_back(listener.name.value());
       }
     }
