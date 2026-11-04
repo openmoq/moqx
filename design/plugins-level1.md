@@ -103,9 +103,15 @@ stateSnapshot()                          -> Task<folly::dynamic>
 
 Admission:
 
-- moxygen gains `validateAuthorityAsync()` on `ServerSetupCallback`, with a default that calls the synchronous one. Setup stays incomplete until it resolves. Requests, data streams and datagrams that arrive meanwhile are held, bounded by an admission deadline and count and byte limits. Exceeding a bound closes the session.
-- A rejected admission closes the session with the mapped `SessionCloseErrorCode`.
-- A plugin that only verifies a local token completes inline. The wire is unchanged for it.
+- moxygen gains `validateAuthorityAsync()` on `ServerSetupCallback`, returning `Task<Expected<Unit, SessionCloseErrorCode>>`. Its default calls the synchronous `validateAuthority()`, which stays pure virtual. Setup stays incomplete until it resolves.
+- Traffic that arrives meanwhile is held, bounded by count and byte limits. Exceeding a bound closes the session.
+  - The control stream: the codec stops after `CLIENT_SETUP` and keeps the unparsed suffix (`ParseResult::BLOCKED`), so a request in the same read is not dispatched. The read loop resumes the codec on acceptance. A FIN seen while blocked is replayed.
+  - Request bidi streams (uni-control versions): parked before their first read, so the data stays in the transport and QUIC flow control throttles the peer. Count limit on parked streams.
+  - Data uni streams: the existing pre-setup buffer.
+  - Datagrams after `CLIENT_SETUP`: buffered raw, count and byte limit. Before `CLIENT_SETUP` they still close the session.
+- No deadline in moxygen. The check is host code, and the host bounds `admit` with its own timeout. A check that never resolves holds the session until the peer disconnects.
+- A rejected admission closes the session with the returned `SessionCloseErrorCode`. Before draft 18, `SERVER_SETUP` is sent only on acceptance.
+- The check starts inline on the session executor. A plugin that only verifies a local token completes without suspending, and the wire is unchanged for it.
 - `PUBLISH` returns a deferred consumer with `consumerReady=false`; the host points it at the relay once `authorize` resolves.
 - Checks run under the session's cancellation. The host checks for cancellation before dispatch, so a check that ignores cancellation never reaches the relay.
 
@@ -224,7 +230,7 @@ src/plugins/extension-tagger/
 
 A stack of branches, each a PR on the one below it. Every step keeps today's behavior and tests.
 
-1. moxygen: `validateAuthorityAsync`, held requests, admission deadline. Built against locally with `scripts/configure.sh --moxygen-dir` until it merges.
+1. moxygen (openmoq fork): codec block/resume, then `validateAuthorityAsync` with held traffic and bounds. moqx builds against the checkout with `scripts/configure.sh --moxygen-dir` until the fork merges it.
 2. moqx: API, registry, config envelope, lifecycle, `cat4moq-auth`.
 3. moqx: `SourceLease` and an explicit request context replace `MoQSession` in the subscription registry and the relay's request paths. Routing still in the host.
 4. moqx: local endpoints.
