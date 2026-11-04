@@ -654,6 +654,42 @@ TEST_P(MoQRelayTest, JoiningFetchForWrongRequestFails) {
   driveIfMultiThread();
 }
 
+// A track's first subscriber, on the publisher's executor, gets its joining FETCH resolved
+// after SUBSCRIBE_OK (#883).
+TEST_P(MoQRelayTest, FirstSubscriberJoiningFetchOnPublisherExec) {
+  auto publisherSession = createMockSession();
+  auto subSession = createMockSession();
+  doPublishNamespace(publisherSession, kTestNamespace);
+  answerUpstreamSubscribe(*publisherSession, AbsoluteLocation{3, 2});
+  auto upstreamFetch = std::make_shared<Fetch>();
+  answerUpstreamFetch(*publisherSession, upstreamFetch);
+
+  auto handle = subscribeToTrack(subSession, kTestTrackName, createMockConsumer(), RequestID(0));
+  ASSERT_NE(handle, nullptr);
+
+  Fetch joining(RequestID(2), RequestID(0), /*joiningStart=*/0, FetchType::RELATIVE_JOINING);
+  joining.fullTrackName = kTestTrackName;
+  auto fetchConsumer = std::make_shared<NiceMock<MockFetchConsumer>>();
+  ON_CALL(*fetchConsumer, endOfFetch())
+      .WillByDefault(Return(folly::makeExpected<MoQPublishError>(folly::unit)));
+  withSessionContext(subSession, [&]() {
+    auto task = publisherInterface()->fetch(std::move(joining), fetchConsumer);
+    auto res = folly::coro::blockingWait(std::move(task), exec_.get());
+    ASSERT_TRUE(res.hasValue()) << res.error().reasonPhrase;
+  });
+
+  auto [standalone, joiningArgs] = fetchType(*upstreamFetch);
+  EXPECT_EQ(joiningArgs, nullptr) << "joining fetch was not resolved to standalone";
+  ASSERT_NE(standalone, nullptr);
+  EXPECT_EQ(standalone->start, (AbsoluteLocation{3, 0}));
+  EXPECT_EQ(standalone->end, (AbsoluteLocation{3, 3}));
+
+  handle->unsubscribe();
+  removeSession(publisherSession);
+  removeSession(subSession);
+  driveIfMultiThread();
+}
+
 // A draft 20 SUBSCRIBE's fill opens on the subscriber's consumer and is served by an
 // upstream FETCH that ends at upstream's Largest Object.
 TEST_P(MoQRelayTest, SubscribeFillFetchesUpstreamThroughLargest) {

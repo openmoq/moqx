@@ -154,6 +154,7 @@ service_defaults:
     enabled: true
     max_tracks: 1000
     max_groups_per_track: 100
+  max_subscription_buffer_kb: 51200
 admin:
   port: ${ADMIN_PORT}
   address: "::1"

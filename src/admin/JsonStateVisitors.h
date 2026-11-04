@@ -77,8 +77,7 @@ public:
       std::string_view childKey,
       const moxygen::TrackNamespace& ns,
       size_t sessionCount,
-      std::string_view publisherAddress,
-      std::string_view peerID
+      const std::vector<NamespaceRouteInfo>& routes
   ) override {
     if (!childKey.empty()) {
       w_.key(childKey);
@@ -92,11 +91,31 @@ public:
     w_.endArray();
     w_.key("namespace_subscribers");
     w_.uintVal(static_cast<uint64_t>(sessionCount));
-    if (!publisherAddress.empty()) {
-      w_.field("publisher", publisherAddress);
-    }
-    if (!peerID.empty()) {
-      w_.field("peer_id", peerID);
+    // publisher and peer_id name the best route.
+    if (!routes.empty()) {
+      w_.field("publisher", routes.front().address);
+      if (!routes.front().peerID.empty()) {
+        w_.field("peer_id", routes.front().peerID);
+      }
+      w_.key("routes");
+      w_.beginArray();
+      for (const auto& route : routes) {
+        w_.beginObject();
+        w_.field("address", route.address);
+        if (!route.peerID.empty()) {
+          w_.field("peer_id", route.peerID);
+        }
+        w_.key("hop_path");
+        w_.beginArray();
+        for (auto hop : route.path) {
+          w_.uintVal(hop);
+        }
+        w_.endArray();
+        w_.field("cost", route.cost);
+        w_.field("from_cluster", route.fromCluster);
+        w_.endObject();
+      }
+      w_.endArray();
     }
     w_.key("children");
     w_.beginObject();

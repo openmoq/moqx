@@ -77,6 +77,9 @@ public:
 
   ~UpstreamProvider() override;
 
+  // Takes effect on the next connect; 0 is unlimited.
+  void setSubscriptionBufferBytes(uint64_t bytes) { subscriptionBufferBytes_ = bytes; }
+
   // Initiates the first connection to the upstream server.
   folly::coro::Task<void> start();
 
@@ -218,6 +221,7 @@ private:
   // implements it incompatibly. Loop detection then does not cross the link.
   std::optional<uint64_t> hopID_;
   uint64_t relayCost_;
+  uint64_t subscriptionBufferBytes_{0};
   bool stopped_{false};
 
   // Connection gating: when Connecting, operations co_await this

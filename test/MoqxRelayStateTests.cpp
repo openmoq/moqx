@@ -267,6 +267,33 @@ TEST_P(MoQRelayStateTest, AnnouncedNamespaceAppearsInTree) {
   exec_->drive();
 }
 
+TEST_P(MoQRelayStateTest, NamespaceRoutesAreListedBestFirst) {
+  resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "", 900);
+  auto costly = createMockSession();
+  negotiateCluster(*costly);
+  auto cheap = createMockSession();
+  negotiateCluster(*cheap);
+  doPublishNamespaceMsg(costly, clusterAdvert({100}, 5));
+  doPublishNamespaceMsg(cheap, clusterAdvert({200}, 1));
+  driveIfMultiThread();
+
+  auto state = dumpState();
+
+  const auto& node = state["namespace_tree"]["children"]["test"]["children"]["namespace"];
+  const auto& routes = node["routes"];
+  ASSERT_EQ(routes.size(), 2) << folly::toJson(node);
+  EXPECT_EQ(folly::toJson(routes[0]["hop_path"]), "[200]");
+  EXPECT_EQ(routes[0]["cost"].asInt(), 2); // 1 plus the default link cost
+  EXPECT_TRUE(routes[0]["from_cluster"].asBool());
+  EXPECT_EQ(folly::toJson(routes[1]["hop_path"]), "[100]");
+  EXPECT_EQ(routes[1]["cost"].asInt(), 6);
+  EXPECT_EQ(node["publisher"], routes[0]["address"]);
+
+  removeSession(costly);
+  removeSession(cheap);
+  exec_->drive();
+}
+
 INSTANTIATE_TEST_SUITE_P(
     AllModes,
     MoQRelayStateTest,

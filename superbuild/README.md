@@ -29,5 +29,8 @@ cmake --build .scratch/moxygen-build   # -> .scratch/moxygen-build/moxygen-insta
 | `-DMOQX_MOXYGEN_BUILD_ALWAYS=ON` | rebuild on every build (local-checkout iteration) |
 | `-DMOQX_MOXYGEN_PROFILE=san\|tsan` | build an instrumented moxygen (matches moqx's sanitizer presets) |
 | `-DBOOST_USE_STATIC_LIBS=auto\|on\|off` | override the static/shared Boost probe (`auto` = probe, the default) |
+| `-DMOQX_PGO=off\|generate\|use`, `-DMOQX_LTO=ON` | build the stack with PGO and LTO to match moqx's `release-pgo` preset: libraries only, plus the moqtest tools for training ([BUILD.md](/BUILD.md#pgo-and-lto)) |
+| `-DMOQX_MOXYGEN_PORTABLE=ON` | build moxygen like its portable release: Release, static system libs, no libunwind |
+| `-DMOQX_MOXYGEN_CXX_FLAGS="…"` | extra C and C++ compile flags for the stack, e.g. `-march=x86-64-v2` |
 
 Each knob also reads the same-named env var.

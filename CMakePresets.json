@@ -27,6 +27,17 @@
         "CMAKE_BUILD_TYPE": "Debug",
         "MOQX_ENABLE_TSAN": "ON"
       }
+    },
+    {
+      "name": "release-pgo",
+      "inherits": "default",
+      "displayName": "Release, PGO + LTO (instrumented; -DMOQX_PGO=use for the optimized pass)",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "MOQX_PGO": "generate",
+        "MOQX_LTO": "ON",
+        "MOQX_BUILD_TESTS": "OFF"
+      }
     }
   ]
 }

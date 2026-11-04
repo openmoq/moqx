@@ -178,8 +178,10 @@ upstream work, and nests a single sortie to `[Pub]` to wire the channel sub.
 [Pub]                        │              raced this SUBSCRIBE) ⇒ INTERNAL_ERROR
 [Pub]                        ├─ if FIRST: installPublisherForwarder(InstallKind::FromSubscribe)
 [Pub]                        │              # chain + tl entry; publisher Claim held across setup
-[Pub]                        ├─▶ buildLocalToPublisherCallbacks()
-[Pub]                        ├─▶ installChannelSubscriber(localFwd ↔ publisherFwd)
+[Pub]                        ├─ if [Pub] == [Sub]: directPublisherSub = publisherFwd->addSubscriber()
+[Pub]                        │              # the tl entry holds publisherFwd; localFwd gets no source
+[Pub]                        ├─ else: buildLocalToPublisherCallbacks()
+[Pub]                        │        installChannelSubscriber(localFwd ↔ publisherFwd)
 [Pub]                        ├─ if FIRST subscriber:
 [Pub]                        │    ├─▶ addSubscriber(relayChannelId_, relayChain, passive)
 [Pub]                        │    ├─▶ subscribeUpstreamAndApplyOk()
@@ -189,12 +191,16 @@ upstream work, and nests a single sortie to `[Pub]` to wire the channel sub.
 [Relay]                 ├─ if FIRST: relayChainFilter->setDownstream(topNFilter)
 [Relay]                 └─ if FIRST: completeUpstreamSubscription() pending.complete()
 [Sub]              ◀── back on subscriberExec (tail)
+[Sub]              ├─ sawOnEmpty or error? ─▶ directPublisherSub->unsubscribe()
 [Sub]              ├─ sawOnEmpty? ─▶ teardownLocalForwarderOnFailure()  # via attach.publisherRef
 [Sub]              ├─ error?      ─▶ teardownLocalForwarderOnFailure(localFwd)  # + publishDone;
 [Sub]              │                                                 #   ~Claim vacates the entry
 [Sub]              ├─▶ claim.setInitialState(attach.initial)
-[Sub]              ├─▶ replayPendingFowarderEvents()             # drain buffered events
-[Sub]              └─▶ claim.markReady() ─▶ return sub           # releases parked joiners
+[Sub]              ├─ directPublisherSub? ─▶ sub->unsubscribe(); sub = directPublisherSub
+[Sub]              │                         # no PUBLISH_DONE: localFwd has no source
+[Sub]              ├─ else ─▶ replayPendingFowarderEvents()      # drain buffered events
+[Sub]              └─▶ claim.markReady() ─▶ return sub           # releases parked joiners;
+[Sub]                                                            #   a no-op for directPublisherSub
 ```
 
 The first subscriber does the heavy lifting (upstream subscribe + installing the relay chain,
@@ -202,6 +208,11 @@ the same passive cache/Top-N chain described in [Data flow](#data-flow)). Subseq
 subscribers on the same thread hit the `attachSubscriber` fast path; on other threads they take
 the non-first half of the sortie: resolve the live publisher forwarder from `tlForwarders_` on
 the publisher exec, install the channel sub, and read its established largest/extensions.
+
+When the sortie runs on the subscriber's own thread (`[Pub] == [Sub]`), the tl entry there
+holds `publisherFwd`, and joining FETCHes resolve against the tl entry. The subscriber joins
+`publisherFwd` directly, and `localFwd` is dropped without a source, so the thread keeps one
+forwarder per track.
 
 The strong ref to the publisher forwarder exists only inside the sortie: the relay-side frame
 carries it in, the tl entry takes ownership, and on every exit — success, error, or throw — the
@@ -219,6 +230,8 @@ frame's ref dies on the owning exec. What escapes to `[Relay]` and the tail is
   replayed by `replayPendingFowarderEvents` so none are lost across the hops.
 - **`addSubscriber` before the hop** — `numForwardingSubscribers()` must be correct when
   the channel subscriber is added on `[Pub]`, so the `forward` flag is right from the start.
+- **`directPublisherSub` added in the sortie** — it joins `publisherFwd` before the upstream
+  SUBSCRIBE goes out, so it misses nothing between the sortie and the tail.
 - **Single `[Pub]` sortie** — merges channel-sub install + relay chain + upstream subscribe
   into one round-trip instead of bouncing `[Relay]↔[Pub]` twice.
 - **`sawOnEmpty` check in the tail** — all subscribers may cancel during the hops; if so,

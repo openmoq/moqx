@@ -75,6 +75,16 @@ TEST_F(MoqxRelayContextTest, ValidateAuthority_Hit) {
   EXPECT_TRUE(result.hasValue());
 }
 
+TEST_F(MoqxRelayContextTest, ValidateAuthority_AppliesSubscriptionBufferLimit) {
+  auto svc = makeService("live.example.com");
+  svc.maxSubscriptionBufferKb = 64;
+  MoqxRelayContext ctx({{"svc", svc}}, "test-relay");
+
+  auto session = makeSession(exec_, "live.example.com");
+  ASSERT_TRUE(ctx.validateAuthority(emptySetup_, anyVersion_, session).hasValue());
+  EXPECT_EQ(session->getMoqSettings().bufferingThresholds.perSubscription, 64u * 1024);
+}
+
 TEST_F(MoqxRelayContextTest, ValidateAuthority_Miss) {
   folly::F14FastMap<std::string, config::ServiceConfig> services = {
       {"svc", makeService("live.example.com")},

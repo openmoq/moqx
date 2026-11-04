@@ -195,6 +195,22 @@ TEST_P(MoqxRelayTracksTest, NoSelfEchoOnSubscribeTracks) {
   driveIfMultiThread();
 }
 
+// The same holds when SUBSCRIBE_TRACKS comes first: the publisher's later
+// PUBLISH fans out to other tracks subscribers, not back to it.
+TEST_P(MoqxRelayTracksTest, NoSelfEchoWhenPublishFollowsSubscribeTracks) {
+  auto publisherSubscriber = createV18Session();
+  setupPublishSucceeds(publisherSubscriber);
+  doSubscribeTracks(publisherSubscriber, kTestNamespace);
+
+  EXPECT_CALL(*publisherSubscriber, publish(_, _)).Times(0);
+  doPublish(publisherSubscriber, kTestTrackName);
+  exec_->driveFor(5);
+
+  ASSERT_TRUE(testing::Mock::VerifyAndClearExpectations(publisherSubscriber.get()));
+  removeSession(publisherSubscriber);
+  driveIfMultiThread();
+}
+
 // Verify that unsubscribeTracks() stops future fan-out to that session.
 TEST_P(MoqxRelayTracksTest, UnsubscribeTracksStopsFanout) {
   auto subscriber = createV18Session();

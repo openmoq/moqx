@@ -10,6 +10,24 @@
 
 namespace openmoq::moqx::test {
 
+void negotiateCluster(MockMoQSession& session, uint64_t peerHop) {
+  ON_CALL(session, getNegotiatedVersion())
+      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft18)));
+  ON_CALL(session, negotiatedSetupExtension(SetupExtension::RelayHops)).WillByDefault(Return(true));
+  ON_CALL(session, getPeerHopID()).WillByDefault(Return(peerHop));
+}
+
+PublishNamespace clusterAdvert(std::vector<uint64_t> path, uint64_t cost, TrackNamespace ns) {
+  PublishNamespace pubNs;
+  pubNs.trackNamespace = std::move(ns);
+  pubNs.params.insertParam(Parameter(
+      folly::to_underlying(TrackRequestParamKey::HOP_PATH),
+      encodeRelayHopPath(path, kVersionDraft18).value()
+  ));
+  pubNs.params.insertParam(Parameter(folly::to_underlying(TrackRequestParamKey::ROUTE_COST), cost));
+  return pubNs;
+}
+
 TestMoQExecutor::TestMoQExecutor() : MoQFollyExecutorImpl(&evb_) {}
 TestMoQExecutor::~TestMoQExecutor() = default;
 void TestMoQExecutor::add(folly::Func func) {
@@ -338,6 +356,14 @@ std::shared_ptr<Subscriber::PublishNamespaceHandle> MoQRelayTest::doPublishNames
 ) {
   PublishNamespace ann;
   ann.trackNamespace = ns;
+  return doPublishNamespaceMsg(std::move(session), std::move(ann), addToState);
+}
+
+std::shared_ptr<Subscriber::PublishNamespaceHandle> MoQRelayTest::doPublishNamespaceMsg(
+    std::shared_ptr<MoQSession> session,
+    PublishNamespace ann,
+    bool addToState
+) {
   return withSessionContext(session, [&]() {
     auto task = subscriberInterface()->publishNamespace(std::move(ann), nullptr);
     auto res = folly::coro::blockingWait(std::move(task), exec_.get());

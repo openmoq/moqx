@@ -948,6 +948,8 @@ TEST_P(MoQRelayTest, FirstSetupOverPendingClaimOnPublisherThread) {
   upstreamOk.trackAlias = TrackAlias(1);
   upstreamOk.expires = std::chrono::milliseconds(0);
   upstreamOk.groupOrder = GroupOrder::OldestFirst;
+  // Gives the joining FETCH below a Largest to count back from.
+  upstreamOk.largest = AbsoluteLocation{0, 0};
 
   // The upstream SUBSCRIBE is built from whichever subscribe won FirstSubscriber, and it
   // carries this tag through, so the assertion below can name the winner.
@@ -985,12 +987,12 @@ TEST_P(MoQRelayTest, FirstSetupOverPendingClaimOnPublisherThread) {
   std::atomic<bool> pubThreadSubGotData{false};
   auto sg1 = createMockSubgroupConsumer();
   auto sgPub = createMockSubgroupConsumer();
-  EXPECT_CALL(*consumer1, beginSubgroup(0, 0, _, _))
+  EXPECT_CALL(*consumer1, beginSubgroup(1, 0, _, _))
       .WillOnce([&](uint64_t, uint64_t, uint8_t, moxygen::BeginSubgroupOptions) {
         sub1GotData.store(true);
         return folly::makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(sg1);
       });
-  EXPECT_CALL(*consumerOnPubThread, beginSubgroup(0, 0, _, _))
+  EXPECT_CALL(*consumerOnPubThread, beginSubgroup(1, 0, _, _))
       .WillOnce([&](uint64_t, uint64_t, uint8_t, moxygen::BeginSubgroupOptions) {
         pubThreadSubGotData.store(true);
         return folly::makeExpected<MoQPublishError, std::shared_ptr<SubgroupConsumer>>(sgPub);
@@ -1039,15 +1041,49 @@ TEST_P(MoQRelayTest, FirstSetupOverPendingClaimOnPublisherThread) {
   getOrCreateMockState(subSession1)->subscribeHandles.push_back(handle1);
   getOrCreateMockState(subSessionOnPubThread)->subscribeHandles.push_back(handleOnPubThread);
 
-  // Each must be wired to the live forwarder, not merely holding a SUBSCRIBE_OK.
+  // Each must be wired to the live forwarder, not merely holding a SUBSCRIBE_OK. Group 1
+  // follows the Largest, so every subscriber's range covers the whole group.
   ASSERT_NE(upstreamConsumer, nullptr);
   pubEvb->runInEventBaseThreadAndWait([&]() {
-    auto sgRes = upstreamConsumer->beginSubgroup(0, 0, 0);
+    auto sgRes = upstreamConsumer->beginSubgroup(1, 0, 0);
     ASSERT_TRUE(sgRes.hasValue());
     EXPECT_TRUE(sgRes.value()->endOfSubgroup().hasValue());
   });
   EXPECT_TRUE(driveUntil([&] { return sub1GotData.load() && pubThreadSubGotData.load(); }))
       << "sub1=" << sub1GotData.load() << " pubThreadSub=" << pubThreadSubGotData.load();
+
+  // Media also reaches a forwarder that lost its registry slot. A joining FETCH resolves
+  // against the slot, so it fails unless the subscriber is on that forwarder (#883).
+  EXPECT_CALL(*publisherSession, fetch(_, _))
+      .WillOnce([](Fetch, std::shared_ptr<FetchConsumer> consumer) {
+        consumer->endOfFetch();
+        return folly::coro::makeTask<Publisher::FetchResult>(std::make_shared<MockFetchHandle>(
+            FetchOk{RequestID(0), GroupOrder::OldestFirst, 0, AbsoluteLocation{0, 1}, {}}
+        ));
+      });
+  auto fetchConsumer = std::make_shared<NiceMock<MockFetchConsumer>>();
+  ON_CALL(*fetchConsumer, endOfFetch())
+      .WillByDefault(Return(folly::makeExpected<MoQPublishError>(folly::unit)));
+  auto fetchResult = std::make_shared<std::optional<Publisher::FetchResult>>();
+  pubEvb->runInEventBaseThreadAndWait([&]() {
+    withSessionContext(subSessionOnPubThread, [&]() {
+      Fetch joining(RequestID(4), RequestID(2), /*joiningStart=*/0, FetchType::RELATIVE_JOINING);
+      joining.fullTrackName = kTestTrackName;
+      auto task = publisherInterface()->fetch(std::move(joining), fetchConsumer);
+      co_withExecutor(
+          folly::getKeepAliveToken(pubEvb),
+          folly::coro::co_invoke(
+              [t = std::move(task), fetchResult]() mutable -> folly::coro::Task<void> {
+                *fetchResult = co_await std::move(t);
+              }
+          )
+      ).start();
+    });
+  });
+  ASSERT_TRUE(driveUntil([&] { return fetchResult->has_value(); }));
+  EXPECT_TRUE(fetchResult->value().hasValue())
+      << "joining fetch: " << fetchResult->value().error().reasonPhrase;
+  fetchResult->reset();
 
   // The pub-thread sessions' handles unsubscribe from forwarders that thread owns, so
   // tear them down there rather than mutating those forwarders from the test thread.

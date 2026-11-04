@@ -188,6 +188,8 @@ public:
     bool isReady; // promise fulfilled
   };
   std::optional<UpstreamView> getUpstreamView(const moxygen::FullTrackName& ftn) const;
+  // Unset while the first subscribe is still in flight.
+  std::optional<moxygen::SessionId> upstreamSessionId(const moxygen::FullTrackName& ftn) const;
 
   // For fetch()
   struct FetchView {

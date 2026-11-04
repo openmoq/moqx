@@ -66,9 +66,19 @@ void walk(RelayContextVisitor& v) {
   rv.onSubscriptionsEnd();
 
   rv.onNamespaceTreeBegin();
-  rv.beginNamespaceNode("", moxygen::TrackNamespace{}, 0, "", "");
-  rv.beginNamespaceNode("test", moxygen::TrackNamespace{{"test"}}, 2, "10.0.0.1:1", "peer-a");
-  rv.beginNamespaceNode("inner", moxygen::TrackNamespace{{"test", "inner"}}, 1, "", "");
+  rv.beginNamespaceNode("", moxygen::TrackNamespace{}, 0, {});
+  rv.beginNamespaceNode(
+      "test",
+      moxygen::TrackNamespace{{"test"}},
+      2,
+      {{.address = "10.0.0.1:1",
+        .peerID = "peer-a",
+        .path = {100, 200},
+        .cost = 3,
+        .fromCluster = true},
+       {.address = "10.0.0.3:3", .path = {0}, .cost = 1}}
+  );
+  rv.beginNamespaceNode("inner", moxygen::TrackNamespace{{"test", "inner"}}, 1, {});
   rv.endNamespaceNode();
   rv.endNamespaceNode();
   rv.endNamespaceNode();
@@ -212,11 +222,20 @@ TEST(StateStreamTest, NestsNamespaceChildrenByKey) {
   EXPECT_EQ(test["namespace_subscribers"].asInt(), 2);
   EXPECT_EQ(test["publisher"].asString(), "10.0.0.1:1");
   EXPECT_EQ(test["peer_id"].asString(), "peer-a");
+  const auto& routes = test["routes"];
+  ASSERT_EQ(routes.size(), 2u);
+  EXPECT_EQ(folly::toJson(routes[0]["hop_path"]), "[100,200]");
+  EXPECT_EQ(routes[0]["cost"].asInt(), 3);
+  EXPECT_TRUE(routes[0]["from_cluster"].asBool());
+  EXPECT_EQ(routes[1]["address"].asString(), "10.0.0.3:3");
+  EXPECT_EQ(routes[1].count("peer_id"), 0);
+  EXPECT_FALSE(routes[1]["from_cluster"].asBool());
 
   const auto& inner = test["children"]["inner"];
   EXPECT_EQ(folly::toJson(inner["full_namespace"]), R"(["test","inner"])");
   // A node with no publisher or peer omits both rather than emitting "".
   EXPECT_EQ(inner.count("publisher"), 0);
+  EXPECT_EQ(inner.count("routes"), 0);
   EXPECT_EQ(inner.count("peer_id"), 0);
 }
 

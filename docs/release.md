@@ -134,10 +134,13 @@ When a release branch needs to absorb fixes from `main`:
 
 Before tagging `vX.Y.Z`, land a PR on the branch being released that updates [CHANGELOG.md](/CHANGELOG.md):
 
-1. Rename the `[Unreleased]` heading to `[X.Y.Z] - YYYY-MM-DD`, dated the day of the tag.
-2. Add a fresh, empty `[Unreleased]` section above it.
-3. Review and polish the new release section, especially the headline entries.
-4. Append the output of [`scripts/dev/changelog-deps.sh`](/scripts/dev/changelog-deps.sh), which lists the dependencies changed since the previous release.
+1. Run [`scripts/dev/changelog-release.py X.Y.Z`](/scripts/dev/changelog-release.py), with `--date` set to the day of the tag if that is not today. It needs full history and an authenticated `gh`.
+   - It adds a `[X.Y.Z]` section with the entries in [changelog.d/](/changelog.d/README.md) and the dependencies changed since the previous release.
+   - It deletes the entry files.
+2. Review and polish the new section, especially the headline entries.
+
+If `changelog.d/` or `cmake/dependencies.cmake` changes on the branch being released before this PR merges, reset the PR to that branch and redo both steps, reusing the polish from the PR's previous version.
+Restoring the entry files in a new commit would link them to that commit's PR.
 
 [`version release`](/.github/workflows/version-release.yml) opens the GitHub release notes with this section, read at the snapshot commit it tags.
 It fails when a non-prerelease version has no section, so dispatch it once the snapshot includes the changelog PR.

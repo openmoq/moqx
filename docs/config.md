@@ -31,9 +31,10 @@ listener_defaults:         # optional; QUIC defaults inherited by all listeners
 listeners:                 # required; at least one
   - { ... }
 
-service_defaults:          # optional; cache and auth defaults inherited by all services
+service_defaults:          # optional; defaults inherited by all services
   cache: { ... }
   auth: { max_tokens_per_message: 4 }
+  max_subscription_buffer_kb: 51200   # required here or on each service
 
 services:                  # required; at least one
   my-service:
@@ -49,10 +50,10 @@ admin:                     # optional; omit to disable the admin server
 
 ## Listeners
 
-Each listener binds a port and accepts connections.  For now, only UDP+QUIC
-is supported, both MOQT using native QUIC and MOQT over HTTP/3 WebTransport.
-We will add support for HTTP/2 WebTransport and MOQT over QMux in the
-future.
+Each listener binds a port and accepts connections: MOQT over native QUIC and
+over HTTP/3 WebTransport, or, with `quic_stack: proxygen_qmux`, MOQT over QMux
+on TCP at the `udp.socket` address. HTTP/2 WebTransport is planned
+([#152](https://github.com/openmoq/moqx/issues/152)).
 
 ```yaml
 listeners:
@@ -65,7 +66,7 @@ listeners:
       cert_file: /etc/moqx/cert.pem
       key_file:  /etc/moqx/key.pem
     endpoint: /moq-relay
-    quic_stack: mvfst         # optional; default mvfst
+    quic_stack: mvfst         # optional; mvfst (default), picoquic or proxygen_qmux
     moqt_versions: []         # optional; empty = default [16]
     quic: { ... }             # optional; overrides listener_defaults.quic
 ```
@@ -128,7 +129,30 @@ services:
     upstream:
       url: moqt://origin.example.com:4433/moq-relay
       tls: {insecure: false}
+    max_subscription_buffer_kb: 51200
 ```
+
+`max_subscription_buffer_kb` is required, set on the service or in
+`service_defaults`. It limits the maximum number of KB the relay holds for one
+subscription across all of its streams. When a write would exceed it, the relay
+ends the subscription with PUBLISH_DONE TOO_FAR_BEHIND. 0 removes the limit.
+The limit applies to client sessions and to this service's upstream sessions.
+FETCH responses do not count toward it.
+
+What counts as held depends on the QUIC stack:
+
+- `mvfst` (including every upstream session): bytes written to the transport
+  that the peer has not yet acknowledged. In-flight bytes count, so the limit
+  must cover the subscription's bitrate times the downstream RTT plus its
+  largest object. For example, a 20 Mbps stream holds about 1.25 MB per 500 ms
+  of RTT, and one keyframe can add 5 MB.
+- `picoquic`: bytes that picoquic has not yet put into a packet, which means
+  bytes waiting on flow control, congestion control, or pacing. Sent bytes
+  stop counting before the peer acknowledges them.
+
+The shipped configs use 51200 (50 MB). The limit is a last resort against a
+subscriber that falls far behind, so it should not trip for a subscriber
+that keeps up.
 
 ### Matching Rules
 
@@ -367,10 +391,6 @@ at the service level inherits from `service_defaults`.
 | `max_cache_duration_s` | 86400 (1 day) | Hard cap on how long any track can be cached. Must not be 0. Publisher-set durations are clamped to this value. Also used as the default track duration when `default_max_cache_duration_s` is absent. |
 | `default_max_cache_duration_s` | absent | Default TTL for tracks that don't carry a publisher-set duration. **absent** → use `max_cache_duration_s`. **0** → do not cache unless the publisher explicitly sets a duration (opt-in caching). **N** → cache for N seconds by default. |
 
-> **Note:** `max_cached_mb`, `min_eviction_kb`, `max_cache_duration_s`,
-> and `default_max_cache_duration_s` are pending in PR #140 and not yet
-> in the released config.
-
 ---
 
 ## Upstreams
@@ -495,9 +515,12 @@ through itself. See [moq-cluster.md](moq-cluster.md).
 
 ### Limitations
 
-- **Upstreams are not ranked yet.** When two upstreams advertise the same
-namespace, the later advertisement replaces the earlier one. Failover and load
-balancing across upstreams are not currently supported.
+- **Routes are chosen once.** When several upstreams advertise the same
+namespace over MoQ Cluster, a new subscription takes the best route: one
+without an anonymous hop, then the lowest cost, then the shortest path. An
+existing subscription stays on its route, and failover and load balancing
+across upstreams are not currently supported. A link that did not negotiate MoQ
+Cluster still replaces any earlier such advertisement of the namespace.
 - **Cycles need MoQ Cluster on every relay.** Negotiated moqx peers detect
 returning namespace advertisements, but a relay without MoQ Cluster cannot carry
 the hop path through the graph.
@@ -585,3 +608,4 @@ Prometheus a series set that reshuffles between scrapes.  See [docs/metrics.md] 
 Config is read once at startup; every change requires a restart. Reload is
 planned ([#786](https://github.com/openmoq/moqx/issues/786),
 [design/hot-reloading.md](/design/hot-reloading.md)).
+On `SIGHUP` the relay logs a warning and keeps running.

@@ -47,6 +47,12 @@ FOLLY_INIT_LOGGING_CONFIG(".=INFO;default:async=true,sync_level=WARN");
 DEFINE_string(config, "", "Path to config file (required)");
 DEFINE_bool(strict_config, false, "Reject unknown config fields");
 
+#ifdef __linux__
+// libgcov's counter writer: linked in only by MOQX_PGO=generate builds, null otherwise.
+// NOLINTNEXTLINE(bugprone-reserved-identifier,cert-dcl51-cpp)
+extern "C" void __gcov_dump() __attribute__((weak));
+#endif
+
 using namespace openmoq::moqx;
 
 namespace {
@@ -55,14 +61,21 @@ namespace cfg = config;
 
 constexpr std::string_view kServeCommand = "serve";
 
-class ShutdownSignalHandler : public folly::AsyncSignalHandler {
+class SignalHandler : public folly::AsyncSignalHandler {
 public:
-  explicit ShutdownSignalHandler(folly::EventBase* evb) : AsyncSignalHandler(evb) {
+  static void ignoreHangup() { std::signal(SIGHUP, SIG_IGN); }
+
+  explicit SignalHandler(folly::EventBase* evb) : AsyncSignalHandler(evb) {
     registerSignalHandler(SIGTERM);
     registerSignalHandler(SIGINT);
+    registerSignalHandler(SIGHUP);
   }
 
   void signalReceived(int signum) noexcept override {
+    if (signum == SIGHUP) {
+      XLOG(WARNING) << "Ignoring SIGHUP: config reload is not supported, restart to apply changes";
+      return;
+    }
     XLOG(INFO) << "Received signal " << signum << ", shutting down";
     getEventBase()->terminateLoopSoon();
   }
@@ -71,6 +84,7 @@ public:
 } // namespace
 
 int main(int argc, char* argv[]) {
+  SignalHandler::ignoreHangup();
 
   // === 1. Parse command-line flags/config ===
   // CLI args, config files, env vars
@@ -138,7 +152,7 @@ int main(int argc, char* argv[]) {
 
   // === 3. Set up signal handling ===
   folly::EventBase evb;
-  ShutdownSignalHandler signalHandler(&evb);
+  SignalHandler signalHandler(&evb);
 
   // === 4. Initialize resources ===
   quicReuseportSetEnabled(config.mvfstBpfSteering);
@@ -250,6 +264,12 @@ int main(int argc, char* argv[]) {
   std::thread([relayID = config.relayID] {
     std::this_thread::sleep_for(std::chrono::seconds(10));
     XLOG(ERR) << "Shutdown timed out after 10s (relay_id=" << relayID << "), forcing exit";
+#ifdef __linux__
+    // _Exit skips the exit-time profile write.
+    if (__gcov_dump) {
+      __gcov_dump();
+    }
+#endif
     std::_Exit(1);
   }).detach();
 

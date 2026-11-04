@@ -352,10 +352,10 @@ TEST(LocalForwarderRegistryTest, RemoveIsIdentityChecked) {
   claimWith(reg, fwd).markReady(InitialTrackState{});
 
   auto other = makeForwarder();
-  reg.remove(kFtn, other.get());
+  EXPECT_EQ(reg.remove(kFtn, other.get()), nullptr);
   EXPECT_EQ(reg.getIfReady(kFtn), fwd);
 
-  reg.remove(kFtn, fwd.get());
+  EXPECT_EQ(reg.remove(kFtn, fwd.get()), fwd);
   EXPECT_TRUE(std::holds_alternative<Absent>(reg.lookup(kFtn)));
 }
 

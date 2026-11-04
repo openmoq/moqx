@@ -311,6 +311,21 @@ TEST_F(UpstreamProviderTest, ConnectsWithDraft18) {
   );
 }
 
+TEST_F(UpstreamProviderTest, AppliesSubscriptionBufferLimit) {
+  provider_->setSubscriptionBufferBytes(64 * 1024);
+  folly::coro::blockingWait(
+      [&]() -> folly::coro::Task<void> {
+        co_await provider_->start();
+        auto session = provider_->currentSession();
+        EXPECT_NE(session, nullptr);
+        if (session) {
+          EXPECT_EQ(session->getMoqSettings().bufferingThresholds.perSubscription, 64u * 1024);
+        }
+      }(),
+      &clientEvb()
+  );
+}
+
 // Exercises slow path (coSubscribe): not yet connected when subscribe is called.
 TEST_F(UpstreamProviderTest, SubscribeForwardsToUpstream) {
   expectSubscribe();

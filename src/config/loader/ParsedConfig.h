@@ -284,6 +284,9 @@ struct ParsedMvfstConfig {
       h3_txn_timeout_ms;
 };
 
+// Named proxygen_qmux (not bare "qmux") so a second qmux impl can be added later.
+using ParsedQuicStack = rfl::Literal<"mvfst", "picoquic", "proxygen_qmux">;
+
 struct ParsedListenerConfig {
   rfl::Description<"Listener name", std::string> name;
   rfl::Description<"UDP/QUIC transport config", ParsedUdpConfig> udp;
@@ -293,10 +296,7 @@ struct ParsedListenerConfig {
       "MOQT draft versions: 16 and/or 18 (empty = default 16)",
       std::optional<std::vector<uint32_t>>>
       moqt_versions;
-  rfl::Description<
-      "QUIC stack to use: \"mvfst\" (default) or \"picoquic\"",
-      std::optional<std::string>>
-      quic_stack;
+  rfl::Description<"QUIC stack to use (default: mvfst)", std::optional<ParsedQuicStack>> quic_stack;
   rfl::Description<
       "QUIC transport settings (overrides listener_defaults.quic)",
       std::optional<ParsedQuicConfig>>
@@ -529,6 +529,12 @@ struct ParsedServiceConfig {
       "Authentication and authorization settings for this service",
       std::optional<ParsedAuthConfig>>
       auth;
+  rfl::Description<
+      "KB of a subscription's data the relay may hold unacknowledged (mvfst) or unsent "
+      "(picoquic) before it ends the subscription with TOO_FAR_BEHIND; 0 is unlimited. "
+      "Required here or in service_defaults; overrides service_defaults",
+      std::optional<uint32_t>>
+      max_subscription_buffer_kb;
 };
 
 struct ParsedListenerDefaultsConfig {
@@ -552,6 +558,10 @@ struct ParsedServiceDefaultsConfig {
         max_tokens_per_message;
   };
   rfl::Description<"Default auth settings for services", std::optional<AuthDefaults>> auth;
+  rfl::Description<
+      "max_subscription_buffer_kb for services that do not set their own",
+      std::optional<uint32_t>>
+      max_subscription_buffer_kb;
 };
 
 struct ParsedMLogConfig {
