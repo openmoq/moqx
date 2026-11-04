@@ -288,10 +288,7 @@ struct ParsedListenerConfig {
       "MOQT draft versions: 16 and/or 18 (empty = default 16)",
       std::optional<std::vector<uint32_t>>>
       moqt_versions;
-  rfl::Description<
-      "QUIC stack to use: \"mvfst\" (default), \"picoquic\" or \"proxygen_qmux\"",
-      std::optional<ParsedQuicStack>>
-      quic_stack;
+  rfl::Description<"QUIC stack to use (default: mvfst)", std::optional<ParsedQuicStack>> quic_stack;
   rfl::Description<
       "QUIC transport settings (overrides listener_defaults.quic)",
       std::optional<ParsedQuicConfig>>
