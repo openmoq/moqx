@@ -63,6 +63,8 @@ POLL_INTERVAL = 0.1
 # can take a while to finish a response that started promptly.
 ADMIN_TIMEOUT = 5.0
 ACTOR_GRACE = 2.0
+# How long wait() polls for a subscriber to log that it is running.
+STARTUP_TIMEOUT = 5.0
 # Longer than the relay's own 10s teardown watchdog, so a relay that trips the
 # watchdog reports its _Exit(1) rather than being SIGKILLed here and blamed for
 # a hang it already diagnosed.
@@ -86,6 +88,8 @@ class HarnessError(Exception):
 
 
 _ACTOR_ERROR = re.compile(r"SubscribeError|Fetch.*failed")
+# moqtextclient logs this once it has started, before it connects.
+_SUBSCRIBER_RUNNING = re.compile(r"MoQTextClient\.cpp:\d+\] run$")
 
 
 def _lines(path):
@@ -394,6 +398,7 @@ class Actor:
         if self.deadline is None:
             self.proc.wait()
         else:
+            self._extend_past_startup()
             try:
                 self.proc.wait(timeout=max(0.0, self.deadline - time.monotonic()))
             except subprocess.TimeoutExpired:
@@ -401,6 +406,27 @@ class Actor:
                 _reap(self.proc, ACTOR_GRACE)
         self.proc = None
         self.deadline = None
+
+    def _extend_past_startup(self):
+        """Restart a subscriber's window once it logs that it is running.
+
+        Sanitizer startup under load can take most of a short window. A subscriber that is already
+        running when wait() starts keeps its spawn deadline.
+        """
+
+        def running():
+            return any(
+                _SUBSCRIBER_RUNNING.search(line) for line in _lines(self.out_path)
+            )
+
+        if self.kind == "publisher" or running():
+            return
+        for _ in _until(STARTUP_TIMEOUT):
+            if self.proc.poll() is not None:
+                return
+            if running():
+                self.deadline = max(self.deadline, time.monotonic() + self.timeout)
+                return
 
     def run(self):
         self.start()
