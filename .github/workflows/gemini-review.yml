@@ -1,23 +1,11 @@
 name: '🔎 Gemini Review'
 
+# Runs only when the gemini-review label is added: answers unanswered /gemini comments if there are any, else reviews.
 # No comment triggers: they can't be filtered by body, so each comment leaves a skipped run.
-# The gemini-review label answers unanswered /gemini comments if there are any, else reviews.
 on:
   pull_request:
     types:
-      - 'opened'
-      - 'ready_for_review'
       - 'labeled'
-  workflow_dispatch:
-    inputs:
-      pr_number:
-        type: 'number'
-        description: 'Pull request to review'
-        required: true
-      additional_context:
-        type: 'string'
-        description: 'Extra instructions for the review'
-        required: false
 
 defaults:
   run:
@@ -25,17 +13,13 @@ defaults:
 
 jobs:
   review:
-    # Same-repo heads only (cross-repo heads get no secrets); drafts only via the gemini-review label.
+    # Same-repo heads only: cross-repo heads get no secrets.
     if: |-
-      github.event_name == 'workflow_dispatch' || (
-        github.event.pull_request.head.repo.full_name == github.repository && (
-          (github.event.action == 'labeled' && github.event.label.name == 'gemini-review') ||
-          (github.event.action != 'labeled' && github.event.pull_request.draft == false)
-        )
-      )
+      github.event.label.name == 'gemini-review' &&
+      github.event.pull_request.head.repo.full_name == github.repository
     # Job-level so a skipped run for another label doesn't cancel a review.
     concurrency:
-      group: '${{ github.workflow }}-${{ github.event.pull_request.number || inputs.pr_number }}'
+      group: '${{ github.workflow }}-${{ github.event.pull_request.number }}'
       cancel-in-progress: true
     runs-on: 'ubuntu-latest'
     timeout-minutes: 7
@@ -59,8 +43,6 @@ jobs:
 
       # Lets the label be added again for the next review.
       - name: 'Remove gemini-review label'
-        if: |-
-          ${{ github.event.action == 'labeled' }}
         continue-on-error: true
         env:
           GITHUB_TOKEN: '${{ steps.mint_identity_token.outputs.token || secrets.GITHUB_TOKEN || github.token }}'
@@ -78,8 +60,6 @@ jobs:
       # Permission, not author_association: the token can't see private org membership.
       - name: 'Find unanswered questions'
         id: 'questions'
-        if: |-
-          ${{ github.event.action == 'labeled' }}
         env:
           GITHUB_TOKEN: '${{ steps.mint_identity_token.outputs.token || secrets.GITHUB_TOKEN || github.token }}'
           PULL_REQUEST_NUMBER: '${{ github.event.pull_request.number }}'
@@ -132,12 +112,10 @@ jobs:
           jq -n \
             --arg repo "${REPOSITORY}" \
             --arg pr "${PULL_REQUEST_NUMBER}" \
-            --arg context "${ADDITIONAL_CONTEXT}" \
-            '{repository: $repo, pull_request_number: $pr, additional_context: $context}' > .gemini/context.json
+            '{repository: $repo, pull_request_number: $pr}' > .gemini/context.json
         env:
           REPOSITORY: '${{ github.repository }}'
-          PULL_REQUEST_NUMBER: '${{ github.event.pull_request.number || inputs.pr_number }}'
-          ADDITIONAL_CONTEXT: '${{ inputs.additional_context }}'
+          PULL_REQUEST_NUMBER: '${{ github.event.pull_request.number }}'
 
       - name: 'Run Gemini pull request review'
         if: |-
@@ -149,8 +127,7 @@ jobs:
           GITHUB_TOKEN: '${{ steps.mint_identity_token.outputs.token || secrets.GITHUB_TOKEN || github.token }}'
           GEMINI_API_KEY: '${{ secrets.OMOQ_GEMINI_API_KEY }}'
           REPOSITORY: '${{ github.repository }}'
-          PULL_REQUEST_NUMBER: '${{ github.event.pull_request.number || inputs.pr_number }}'
-          ADDITIONAL_CONTEXT: '${{ inputs.additional_context }}'
+          PULL_REQUEST_NUMBER: '${{ github.event.pull_request.number }}'
         with:
           gcp_location: '${{ vars.GOOGLE_CLOUD_LOCATION }}'
           gcp_project_id: '${{ vars.GOOGLE_CLOUD_PROJECT }}'
@@ -165,8 +142,7 @@ jobs:
           use_vertex_ai: '${{ vars.GOOGLE_GENAI_USE_VERTEXAI }}'
           upload_artifacts: '${{ vars.UPLOAD_ARTIFACTS }}'
           workflow_name: 'gemini-review'
-          # workflow_dispatch carries no PR in its event.
-          github_pr_number: '${{ github.event.pull_request.number || inputs.pr_number }}'
+          github_pr_number: '${{ github.event.pull_request.number }}'
           settings: |-
             {
               "model": {
@@ -218,7 +194,7 @@ jobs:
             [
               "https://github.com/gemini-cli-extensions/code-review"
             ]
-          prompt: '/pr-code-review REPOSITORY=${{ github.repository }} PULL_REQUEST_NUMBER=${{ github.event.pull_request.number || inputs.pr_number }} ADDITIONAL_CONTEXT=${{ inputs.additional_context }}'
+          prompt: '/pr-code-review REPOSITORY=${{ github.repository }} PULL_REQUEST_NUMBER=${{ github.event.pull_request.number }} ADDITIONAL_CONTEXT=none'
 
       # The review prompt only submits COMMENT; approve the reviewed commit if every inline comment is tagged LOW.
       - name: 'Approve clean review'
@@ -226,7 +202,7 @@ jobs:
           ${{ steps.questions.outputs.mode != 'reply' }}
         env:
           GITHUB_TOKEN: '${{ steps.mint_identity_token.outputs.token || secrets.GITHUB_TOKEN || github.token }}'
-          PULL_REQUEST_NUMBER: '${{ github.event.pull_request.number || inputs.pr_number }}'
+          PULL_REQUEST_NUMBER: '${{ github.event.pull_request.number }}'
           REPOSITORY: '${{ github.repository }}'
           STARTED_AT: '${{ steps.context.outputs.started_at }}'
         run: |-
