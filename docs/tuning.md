@@ -167,5 +167,6 @@ scripts/host-check.sh --strict                   # exit 1 if a sysctl is low
   because the container has its own network namespace; use
   `sudo nsenter -t <pid> -n ss -uampn` for that.
 - Every perf-test run uploads `run-*.host.txt` in its `perf-results` artifact:
-  the report for both VMs, plus the relay process after the run. See
+  the report for both VMs, plus the relay process after the run. A VM
+  whose check failed has no section; the run carries on. See
   [perf-tracking.md](/docs/perf-tracking.md).

@@ -229,8 +229,9 @@ sysctl -p /etc/sysctl.d/99-moqx-quic.conf
 bash scripts/host-check.sh --strict
 ```
 
-Each run records both VMs' settings in `run-*.host.txt`; see
-[tuning.md](tuning.md) for what each setting does.
+Each run also tries to save both VMs' settings in `run-*.host.txt`. If SSH
+or the check fails for a VM, its section is missing and the run carries on.
+See [tuning.md](tuning.md) for what each setting does.
 
 ### 3. Configure SSH Access
 
