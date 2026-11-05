@@ -53,57 +53,66 @@ backend's executor, so that executor has to outlive them.
 
 ## 2. `PeeringBackend` interface; move MoQ Cluster behind it (no behavior change)
 
-`src/peering/PeeringBackend.h`, owned by `MoqxRelayContext`, one instance per service relay:
+Four commits on top of the #676 stack:
+- 2a `peering-backend`: the interface and the upstream lifecycle.
+- 2b `peering-handshake`: the upstream handshake.
+- 2c `peering-reciprocal`: the reciprocal SUBSCRIBE_NAMESPACE and peer identity.
+- 2d `peering-route-codec`: HOP_PATH and ROUTE_COST.
+
+`src/peering/PeeringBackend.h`. `MoqxRelayContext` owns one per service, and the relay holds a raw pointer to it:
 ```cpp
 class PeeringBackend {
  public:
-  virtual ~PeeringBackend() = default;
-  virtual void start(std::shared_ptr<MoqxRelay> relay, folly::EventBase* evb) = 0;
-  virtual folly::coro::Task<void> stop() = 0;
-  virtual bool hasPendingPeers() const = 0;                  // feeds waitForUpstreams
-  virtual void visitState(RelayStateVisitor&) const = 0;     // onPeersBegin/onPeer/onPeersEnd
-  virtual void visitContext(RelayContextVisitor&) const = 0; // onServiceUpstream(s)
-  virtual bool isPeerRequest(const moxygen::TrackRequestParameters&) const = 0; // AuthFilters bypass
-  // Runtime peer admin (step 8). Runs on the backend's executor.
-  virtual void visitPeerMetrics(PeerMetricsVisitor&) const = 0;  // /metrics/peers (step 7)
-  virtual folly::coro::Task<PeerAdminResult> adminPeer(PeerAdminOp op) = 0;
+  // Context thread.
+  virtual void start(folly::EventBase* workerEvb) = 0;
+  virtual void stop() = 0;  // before the IO threads drain
+  // Relay executor (the IO thread in SingleThread mode).
+  virtual bool hasPeers() const = 0;
+  virtual folly::coro::Task<void> waitForPeers(folly::Function<bool()> routed) = 0;
+  virtual void visitState(RelayStateVisitor&) const = 0;  // onPeer rows
+  virtual bool holdsSessionHandles() const = 0;
+  virtual folly::coro::Task<std::optional<std::string>>
+  onSubscribeNamespace(Participant requester, const moxygen::SubscribeNamespace&) = 0;  // peer id
+  virtual void onUnsubscribeNamespace(moxygen::SessionId) = 0;
+  virtual bool isPeer(moxygen::SessionId, const std::string& peerID) const = 0;
+  // Any executor.
+  virtual const RouteCodec& routeCodec() const = 0;
+  virtual std::optional<std::string> peerID(const moxygen::TrackRequestParameters&) const = 0;
+  virtual folly::coro::Task<void> visitContext(RelayContextVisitor&) const = 0;  // upstream rows
+  virtual folly::coro::Task<void> visitPeerMetrics(PeerMetricsVisitor&) const = 0;  // step 7
+  virtual folly::coro::Task<PeerAdminResult> adminPeer(PeerAdminOp) = 0;          // step 8
 };
-// PeerAdminOp{kind: Add|Remove|SetMetric|Restart, peer: string, metric: optional<uint64_t>}
-// PeerAdminResult{ok, action, peer, metric, message} (same shape as moq::peering::PeerAdminResult)
 ```
-`src/peering/MoqClusterPeering.{h,cpp}` gets what is MoQ Cluster–specific today. Line numbers are against the top
-of the #676 stack (#937).
-- `UpstreamProvider` creation and start: `MoqxRelayContext::initUpstreams/startUpstream`
-  (`src/MoqxRelayContext.cpp:138-200`). `UpstreamProvider` already takes `relayExec` and wraps its handlers in a
-  `SessionParticipant` per connection.
-- The handshake: `onUpstreamConnectImpl` (`src/MoqxRelay.cpp:425`), `onUpstreamDisconnect` (`:473`) and
-  `upstreamHandles_` (`src/MoqxRelay.h:486-491`). The handshake calls the upstream through `runOnExecutor`, and
-  the handles are `ExecBound` on the upstream session's executor. `UpstreamProvider::stop()` fires the disconnect
-  hook, so they are released before the IO threads stop.
-- The reciprocal branch of `subscribeNamespaceImpl` (`src/MoqxRelay.cpp:1901-1960`) and `peerSubNsHandles_`
-  (`src/MoqxRelay.h:493-505`). The relay calls a backend hook here instead of inlining it, and passes the
-  requester's `Participant`.
-- HOP_PATH/ROUTE_COST encode and decode: `setOutgoingHopPath` and `exclusionFor` (`src/MoqxRelay.cpp:83-140`)
-  and `readClusterParams` (`:683`). These become a `RouteCodec` the backend installs. The codec reads
-  `ParticipantInfo::relayHops`, `peerHopID` and `linkCost`, so the participant does not need anything new.
-- The HOP_ID setup parameter on the three servers (`MoqxRelayServer.cpp:238`, `MoqxPicoRelayServer.cpp:90`,
-  `MoqxQmuxRelayServer.cpp:87`). The context passes it only when the backend is MoQ Cluster.
+- `waitForPeers` keeps today's behavior: it waits on each peer's connect for up to 5 s, and stops early once
+  `routed()` holds.
+- `PeerAdminOp` and `PeerAdminResult` address a peer by host and port, like `moq::peering::PeerAdminResult`.
+  `PeerMetrics` mirrors `moq::peering::PeerSnapshot`.
+- `peerID()` serves both the auth filter's peer bypass and the SUBSCRIBE_TRACKS match limit.
 
-`MoqClusterPeering` dials sessions and runs its handshake on their executors, so it may name `MoQSession`, like
-`UpstreamProvider` and `MoqxRelayContext` do. It is not a `SessionConfined.h` file. The relay hooks that it calls
-are relay entry points, so they run on `relayExec_`.
+`src/peering/MoqClusterPeering.{h,cpp}` holds the MoQ Cluster parts:
+- The `UpstreamProvider`s: start, stop, `/state` rows and the wait.
+- The upstream handshake, with `upstreamHandles_`.
+- The reciprocal SUBSCRIBE_NAMESPACE, with `peerSubNsHandles_` and the `/state` peer rows.
+- A `MoqClusterRouteCodec`.
 
-These parts stay in the relay because they are backend-neutral:
+It may name `MoQSession`, like `UpstreamProvider`, so it is not a `SessionConfined.h` file. Its state lives on the
+relay executor.
+
+`src/peering/RouteCodec.h` reads and writes the route parameters on announcements, and says which routes a request
+may use (`ingest`, `readUpdate`, `encode`, `mayAdvertise`, `exclusionFor`). `MoqClusterRouteCodec` carries the
+HOP_PATH/ROUTE_COST rules. A relay without a backend uses one with its own hop id.
+
+These stay in the relay because they are backend-neutral:
 - `NamespaceTree` multi-route storage and `betterRoute`.
-- `RouteExclusion`.
+- `RouteExclusion` and `excludesSource`.
 - `reconcileAdvertisement`.
-- Echo suppression by peerID.
+- Echo suppression by peer id.
 
-A route from a non-cluster backend gets `path={}`, `cost=0`, `fromCluster=false`, the same as a plain publisher.
+The HOP_ID setup parameter stays with the context's `getRelayHopID()`. Cluster config is global and the servers are
+shared across services. Step 4 makes `cluster.enabled` and `moq_peering` mutually exclusive.
 
-Tests: move the `UpstreamProviderTest` lifecycle and `MoqxRelayPeerTests` handshake cases to drive
-`MoqClusterPeering`. The Python `relay_chain`, `relay_hops_cycle`, `relay_cluster_diamond` and `relay_upstreams`
-tests stay green.
+A participant that does not negotiate MoQ Cluster gets the route `path={kMoQClusterAnonHopId}`,
+`cost=linkCost`, `fromCluster=false`.
 
 ## 3. Build: moq-peering dependency
 
@@ -137,6 +146,7 @@ services:
 - Resolve in `ConfigResolver.cpp`, serialize in `ConfigSerializer.h`, document in `docs/config.md` and
   `config.example.yaml`.
 - `MoqxRelayContext` builds a `MoqPeeringBackend` or a `MoqClusterPeering` per service.
+- `moq_peering` requires a relay executor. SingleThread mode (`use_relay_thread: false`) rejects it.
 
 ## 5. `MoqPeeringBackend`: control plane
 
@@ -227,9 +237,9 @@ the same layout.
   - RelayExec mode: `PublisherCrossExecFilter(relayExec_, relay)` hops to `relayExec_` and wraps the consumer, so
     objects come back to the peering evb. The returned `CrossExecSubscriptionHandle` releases the relay's handle on
     `relayExec_`.
-  - Open: `createPublisherFilter()` does not fit the other modes. In LocalForwarder mode it subscribes on the
-    caller's executor through that thread's forwarder registry, which the peering evb does not have. In
-    SingleThread mode it is the relay itself, so the backend has to hop to the relay's IO thread first.
+  - LocalForwarder mode: `createPublisherFilter()` subscribes on the caller's executor through that thread's
+    forwarder registry. The registry is created on first use on any thread, so the peering evb gets its own.
+    SingleThread mode is rejected in config (step 4).
   - Call the handle's `requestUpdate` inside the same `ParticipantScope`, because a fill needs the requester.
 - `MoqPeeringTrackConsumer` / `SubgroupConsumer` serialize through `MoQFrameWriter` at `moqt_version`:
   - The first object of a (group, subgroup) → subgroup header + object, sent with `SendData(kNewStream)`.
