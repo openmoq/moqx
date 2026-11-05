@@ -89,18 +89,20 @@ class PeeringBackend {
   `PeerMetrics` mirrors `moq::peering::PeerSnapshot`.
 - `peerID()` serves both the auth filter's peer bypass and the SUBSCRIBE_TRACKS match limit.
 
-`src/peering/MoqClusterPeering.{h,cpp}` holds the MoQ Cluster parts:
+`src/peering/MoqtRelayBackend.{h,cpp}` holds relay peering over MoQT sessions:
 - The `UpstreamProvider`s: start, stop, `/state` rows and the wait.
 - The upstream handshake, with `upstreamHandles_`.
 - The reciprocal SUBSCRIBE_NAMESPACE, with `peerSubNsHandles_` and the `/state` peer rows.
-- A `MoqClusterRouteCodec`.
+- A `MoqClusterRouteCodec` when the relay has a Hop ID, and a `PlainRouteCodec` otherwise.
+- A `weak_ptr` to the relay. The context owns the relay and drops it before the backend.
 
 It may name `MoQSession`, like `UpstreamProvider`, so it is not a `SessionConfined.h` file. Its state lives on the
 relay executor.
 
 `src/peering/RouteCodec.h` reads and writes the route parameters on announcements, and says which routes a request
 may use (`ingest`, `readUpdate`, `encode`, `mayAdvertise`, `exclusionFor`). `MoqClusterRouteCodec` carries the
-HOP_PATH/ROUTE_COST rules. A relay without a backend uses one with its own hop id.
+HOP_PATH/ROUTE_COST rules, and `PlainRouteCodec` ignores both parameters. A relay without a backend uses a
+`PlainRouteCodec`.
 
 These stay in the relay because they are backend-neutral:
 - `NamespaceTree` multi-route storage and `betterRoute`.
@@ -109,7 +111,7 @@ These stay in the relay because they are backend-neutral:
 - Echo suppression by peer id.
 
 The HOP_ID setup parameter stays with the context's `getRelayHopID()`. Cluster config is global and the servers are
-shared across services. Step 4 makes `cluster.enabled` and `moq_peering` mutually exclusive.
+shared across services. The relay does not hold a Hop ID. The backend gets it from the context. Step 4 makes `cluster.enabled` and `moq_peering` mutually exclusive.
 
 A participant that does not negotiate MoQ Cluster gets the route `path={kMoQClusterAnonHopId}`,
 `cost=linkCost`, `fromCluster=false`.
@@ -145,7 +147,7 @@ services:
 - Add `ParsedMoqPeeringConfig` (`src/config/loader/ParsedConfig.h`) and `MoqPeeringConfig` (`src/config/Config.h`).
 - Resolve in `ConfigResolver.cpp`, serialize in `ConfigSerializer.h`, document in `docs/config.md` and
   `config.example.yaml`.
-- `MoqxRelayContext` builds a `MoqPeeringBackend` or a `MoqClusterPeering` per service.
+- `MoqxRelayContext` builds a `MoqPeeringBackend` or a `MoqtRelayBackend` per service.
 - `moq_peering` requires a relay executor. SingleThread mode (`use_relay_thread: false`) rejects it.
 
 ## 5. `MoqPeeringBackend`: control plane
@@ -355,14 +357,14 @@ Each backend parses its own `peer` string.
 `PeerManager::AddPeer/RemovePeer/SetPeerMetric/RestartPeer`, through `PeerManagerApi`. Translate the library's
 `PeerAdminResult` directly: `ok=false` with "duplicate" maps to 409, and "does not exist" maps to 404.
 
-**moq-cluster** (`peer` = upstream URL, e.g. `moqt://host:port/path`). `MoqClusterPeering` keeps its
+**moq-cluster** (`peer` = upstream URL, e.g. `moqt://host:port/path`). `MoqtRelayBackend` keeps its
 `UpstreamProvider`s in a map keyed by normalized URL instead of the startup-only list.
 - Add: build and start an `UpstreamProvider` the way `startUpstream` does. TLS settings come from the service's
   upstream TLS config, or `insecure`/`ca_cert` in the body.
 - Remove:
   - `provider->stop()`.
   - Run `onUpstreamDisconnect` for its session, so its routes and handles go.
-  - Erase it from `MoqxRelay::upstreamProviders()`.
+  - Erase it from the backend's provider map.
 - Metric: set `relayCost`. RELAY_COST is a SETUP parameter, so the new value takes effect when the peer reconnects.
   The response says so; pass `"restart": true` to reconnect in the same call.
 - Restart: close the provider's current session. `reconnectLoop` dials again, with its backoff reset.
@@ -375,7 +377,7 @@ mutating, so they get the same exposure as `POST /cache/purge`. Document them in
 Tests:
 - `test/admin/PeerAdminHandlerTest.cpp`: body parsing and status mapping against a fake backend.
 - `MoqPeeringBackendTest`: each op reaches `FakePeerManager` with the right arguments.
-- `MoqClusterPeering` tests:
+- `MoqtRelayBackend` tests:
   - Add starts a provider and runs the peer handshake.
   - Remove withdraws that peer's routes.
   - Metric + restart re-sends SETUP with the new RELAY_COST.
