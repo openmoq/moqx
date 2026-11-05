@@ -210,6 +210,11 @@ moqx_add_gtest(moqx_auth_filters_test
     moxygen::moqtest_utils
 )
 
+moqx_add_gtest(moqx_exec_bound_test
+  SRCS relay/ExecBoundTest.cpp
+  LIBS moqx_core GTest::gtest_main
+)
+
 moqx_add_gtest(moqx_session_participant_test
   SRCS relay/SessionParticipantTest.cpp
   LIBS

@@ -37,6 +37,13 @@ std::optional<ForwarderRef> noRef(const std::shared_ptr<MoQForwarder>&) {
   return std::nullopt;
 }
 
+// The upstream's facts. These tests pass null handles, so the executor never runs a release.
+std::shared_ptr<const ParticipantInfo> upstreamInfo() {
+  return std::make_shared<const ParticipantInfo>(
+      ParticipantInfo{.executor = &folly::InlineExecutor::instance()}
+  );
+}
+
 // LF mode: the entry holds only a weak ref, and the publisher exec's registry is what
 // keeps the forwarder alive. Nothing here plays that part, so the forwarder can die
 // while the entry is still present.
@@ -63,7 +70,7 @@ TEST(SubscriptionRegistryTest, AwaitSubsequentSucceeds) {
       registry.getOrCreateFromSubscribe(kFtn, nullptr, subscribeChain, ownedRef)
   );
 
-  EXPECT_TRUE(first.pending.complete(nullptr, RequestID(0), nullptr, nullptr));
+  EXPECT_TRUE(first.pending.complete({}, RequestID(0), upstreamInfo(), nullptr));
 
   folly::EventBase evb;
   auto sub = folly::coro::blockingWait(std::move(task), &evb);
@@ -116,7 +123,7 @@ TEST(SubscriptionRegistryTest, PendingCompleteReturnsFalseWhenEntryGone) {
 
   registry.remove(kFtn); // simulate publisher replacing the entry mid-subscribe
 
-  EXPECT_FALSE(first.pending.complete(nullptr, RequestID(0), nullptr, nullptr));
+  EXPECT_FALSE(first.pending.complete({}, RequestID(0), upstreamInfo(), nullptr));
 }
 
 // Regression: awaitSubsequent must re-find after suspension; erased entry throws.
@@ -142,7 +149,7 @@ TEST(SubscriptionRegistryTest, AwaitSubsequentHandlesErasedEntry) {
       std::move(std::get<folly::coro::Task<SubscriptionRegistry::SubsequentSubscriber>>(token2));
 
   // Upstream subscribe succeeds — fulfills the promise.
-  EXPECT_TRUE(first.pending.complete(nullptr, RequestID(0), nullptr, nullptr));
+  EXPECT_TRUE(first.pending.complete({}, RequestID(0), upstreamInfo(), nullptr));
 
   // Entry is erased before the subsequent coroutine resumes.
   registry.remove(kFtn);
@@ -159,13 +166,13 @@ TEST(SubscriptionRegistryTest, CreateFromPublishEvictsSubscribeEntry) {
       registry.getOrCreateFromSubscribe(kFtn, nullptr, subscribeChain, ownedRef)
   );
   auto originalForwarder = first.forwarder;
-  first.pending.complete(nullptr, RequestID(0), nullptr, nullptr);
+  first.pending.complete({}, RequestID(0), upstreamInfo(), nullptr);
 
   auto newForwarder = std::make_shared<MoQForwarder>(kFtn, std::nullopt);
   auto entry = registry.createFromPublish(
       kFtn,
       ForwarderRef::owned(newForwarder),
-      nullptr,
+      upstreamInfo(),
       nullptr,
       RequestID(1),
       nullptr,
@@ -213,7 +220,7 @@ TEST(SubscriptionRegistryTest, OnPublisherTerminatedErasesEmptyEntry) {
   registry.createFromPublish(
       kFtn,
       ForwarderRef::owned(forwarder),
-      nullptr,
+      upstreamInfo(),
       nullptr,
       RequestID(0),
       nullptr,
@@ -238,7 +245,7 @@ TEST(SubscriptionRegistryTest, ErasedEntryIsNotActivityTarget) {
     registry.createFromPublish(
         kFtn,
         ForwarderRef::owned(std::make_shared<MoQForwarder>(kFtn, std::nullopt)),
-        nullptr,
+        upstreamInfo(),
         nullptr,
         RequestID(0),
         nullptr,
