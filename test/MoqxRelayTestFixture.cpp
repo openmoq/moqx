@@ -244,7 +244,7 @@ std::shared_ptr<Publisher::SubscriptionHandle> MoQRelayTest::createMockSubscript
   ok.requestID = RequestID(0);
   ok.trackAlias = TrackAlias(0);
   ok.expires = std::chrono::milliseconds(0);
-  ok.groupOrder = GroupOrder::Default;
+  ok.groupOrder = GroupOrder::OldestFirst;
   auto handle = std::make_shared<NiceMock<MockSubscriptionHandle>>(std::move(ok));
   return handle;
 }
@@ -502,7 +502,7 @@ void MoQRelayTest::setupPublishSucceeds(std::shared_ptr<MockMoQSession> session)
                 pub.requestID,
                 /*forward=*/pub.forward,
                 /*priority=*/128,
-                GroupOrder::Default,
+                std::nullopt,
                 LocationFilter::nextObject()
             };
             return Subscriber::PublishConsumerAndReplyTask{
@@ -530,7 +530,7 @@ std::shared_ptr<NiceMock<MockSubscriptionHandle>> MoQRelayTest::makePublishHandl
   ok.requestID = RequestID(0);
   ok.trackAlias = TrackAlias(0);
   ok.expires = std::chrono::milliseconds(0);
-  ok.groupOrder = GroupOrder::Default;
+  ok.groupOrder = GroupOrder::OldestFirst;
   auto handle = std::make_shared<NiceMock<MockSubscriptionHandle>>(std::move(ok));
   ON_CALL(*handle, requestUpdateResult())
       .WillByDefault(Return(folly::makeExpected<RequestError>(RequestOk{})));

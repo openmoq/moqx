@@ -198,4 +198,44 @@ TEST_P(MoQRelayTest, TrackStatusUnsubscribedRequesterReadsForwarder) {
   driveIfMultiThread();
 }
 
+TEST_P(MoQRelayTest, TrackStatusCarriesPublisherGroupOrder) {
+  auto publisherSession = createMockSession();
+  auto subscriber = createMockSession();
+
+  doPublishNamespace(publisherSession, kTestNamespace);
+
+  PublishRequest pub;
+  pub.fullTrackName = kTestTrackName;
+  setPublisherGroupOrder(pub, GroupOrder::NewestFirst);
+  withSessionContext(publisherSession, [&]() {
+    auto res = subscriberInterface()->publish(std::move(pub), createMockSubscriptionHandle());
+    ASSERT_TRUE(res.hasValue());
+    getOrCreateMockState(publisherSession)->publishConsumers.push_back(res->consumer);
+    co_withExecutor(static_cast<folly::DrivableExecutor*>(exec_.get()), std::move(res->reply))
+        .start();
+  });
+  exec_->drive();
+
+  auto consumer = createMockConsumer();
+  auto handle = subscribeToTrack(subscriber, kTestTrackName, consumer, RequestID(1));
+  ASSERT_NE(handle, nullptr);
+  driveIfMultiThread();
+
+  TrackStatus trackStatus;
+  trackStatus.fullTrackName = kTestTrackName;
+  trackStatus.requestID = RequestID(2);
+  withSessionContext(subscriber, [&]() {
+    auto task = publisherInterface()->trackStatus(trackStatus);
+    auto res = folly::coro::blockingWait(std::move(task), exec_.get());
+    ASSERT_TRUE(res.hasValue());
+    EXPECT_EQ(res.value().groupOrder, GroupOrder::NewestFirst);
+    EXPECT_EQ(getPublisherGroupOrder(res.value().trackProperties), GroupOrder::NewestFirst);
+  });
+
+  removeSession(subscriber);
+  exec_->drive();
+  removeSession(publisherSession);
+  driveIfMultiThread();
+}
+
 } // namespace openmoq::moqx::test
