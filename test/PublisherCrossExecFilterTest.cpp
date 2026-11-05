@@ -344,7 +344,7 @@ TEST_F(PublisherCrossExecFilterTest, SubscribeNamespaceForwardsToInner) {
 }
 
 TEST_F(PublisherCrossExecFilterTest, SubscribeNamespaceReturnsSuccess) {
-  auto handle = std::make_shared<NiceMock<MockSubscribeNamespaceHandle>>();
+  auto handle = std::make_shared<NiceMock<MockSubscribeNamespaceHandle>>(SubscribeNamespaceOk{});
   EXPECT_CALL(*inner_, subscribeNamespace(_, _))
       .WillOnce(
           [handle](SubscribeNamespace, std::shared_ptr<Publisher::NamespacePublishHandle>)

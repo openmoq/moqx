@@ -7,6 +7,7 @@
 #include "relay/SubscriberCrossExecFilter.h"
 
 #include "relay/CrossExecFilter.h"
+#include "relay/ExecBound.h"
 
 namespace openmoq::moqx {
 
@@ -19,29 +20,21 @@ class CrossExecPublishNamespaceCallback : public moxygen::Subscriber::PublishNam
 public:
   CrossExecPublishNamespaceCallback(
       std::shared_ptr<moxygen::Subscriber::PublishNamespaceCallback> inner,
-      folly::Executor::KeepAlive<> exec
+      folly::Executor* exec
   )
-      : inner_(std::move(inner)), exec_(std::move(exec)) {}
-
-  ~CrossExecPublishNamespaceCallback() override {
-    // Inner dtor may touch session state; destroy it on exec_, not the dropping thread.
-    if (inner_) {
-      exec_->add([inner = std::move(inner_)]() mutable {});
-    }
-  }
+      : inner_(std::move(inner), exec) {}
 
   void publishNamespaceCancel(
       moxygen::PublishNamespaceErrorCode errorCode,
       std::string reasonPhrase
   ) override {
-    exec_->add([inner = inner_, errorCode, reason = std::move(reasonPhrase)]() mutable {
+    inner_.post([errorCode, reason = std::move(reasonPhrase)](const auto& inner) mutable {
       inner->publishNamespaceCancel(errorCode, std::move(reason));
     });
   }
 
 private:
-  std::shared_ptr<moxygen::Subscriber::PublishNamespaceCallback> inner_;
-  folly::Executor::KeepAlive<> exec_;
+  ExecBound<std::shared_ptr<moxygen::Subscriber::PublishNamespaceCallback>> inner_;
 };
 
 // Wraps a PublishNamespaceHandle so that publishNamespaceDone() and
@@ -53,33 +46,20 @@ public:
       std::shared_ptr<moxygen::Subscriber::PublishNamespaceHandle> inner,
       folly::Executor* exec
   )
-      : inner_(std::move(inner)), exec_(exec) {}
-
-  ~CrossExecPublishNamespaceHandle() override {
-    // Inner dtor may touch session state; destroy it on exec_, not the dropping thread.
-    if (inner_) {
-      exec_->add([inner = std::move(inner_)]() mutable {});
-    }
-  }
-
-  const moxygen::PublishNamespaceOk& publishNamespaceOk() const override {
-    return inner_->publishNamespaceOk();
-  }
+      : PublishNamespaceHandle(inner->publishNamespaceOk()), inner_(std::move(inner), exec) {}
 
   void publishNamespaceDone() override {
-    exec_->add([inner = inner_]() mutable { inner->publishNamespaceDone(); });
+    inner_.post([](const auto& inner) { inner->publishNamespaceDone(); });
   }
 
   folly::coro::Task<RequestUpdateResult> requestUpdate(moxygen::RequestUpdate update) override {
-    co_return co_await folly::coro::co_withExecutor(
-        folly::getKeepAliveToken(exec_),
-        inner_->requestUpdate(std::move(update))
-    );
+    co_return co_await inner_.run([update = std::move(update)](const auto& inner) mutable {
+      return inner->requestUpdate(std::move(update));
+    });
   }
 
 private:
-  std::shared_ptr<moxygen::Subscriber::PublishNamespaceHandle> inner_;
-  folly::Executor* exec_;
+  ExecBound<std::shared_ptr<moxygen::Subscriber::PublishNamespaceHandle>> inner_;
 };
 
 } // namespace
@@ -90,11 +70,10 @@ SubscriberCrossExecFilter::publishNamespace(
     std::shared_ptr<PublishNamespaceCallback> callback
 ) {
   auto callerExec = co_await folly::coro::co_current_executor;
-  auto wrappedCallback = callback ? std::make_shared<CrossExecPublishNamespaceCallback>(
-                                        std::move(callback),
-                                        std::move(callerExec)
-                                    )
-                                  : nullptr;
+  auto wrappedCallback =
+      callback
+          ? std::make_shared<CrossExecPublishNamespaceCallback>(std::move(callback), callerExec)
+          : nullptr;
   auto* targetExec = targetExec_;
   auto result = co_await folly::coro::co_withExecutor(
       folly::getKeepAliveToken(targetExec),

@@ -6,6 +6,7 @@
 
 #include "relay/ExecBound.h"
 
+#include <folly/coro/BlockingWait.h>
 #include <folly/io/async/ScopedEventBaseThread.h>
 #include <folly/portability/GTest.h>
 #include <moxygen/events/MoQFollyExecutorImpl.h>
@@ -105,6 +106,23 @@ TEST_F(ExecBoundTest, LaunchRunsTheTaskOnItsExecutor) {
       ranOn = std::this_thread::get_id();
       co_return;
     });
+  }
+  drainOwner();
+  EXPECT_EQ(ranOn, ownerThread());
+}
+
+TEST_F(ExecBoundTest, RunReturnsTheTaskResultFromItsExecutor) {
+  std::thread::id destroyedOn;
+  std::thread::id ranOn;
+  {
+    ExecBound<std::shared_ptr<Tracker>> bound(std::make_shared<Tracker>(&destroyedOn), &exec_);
+    auto result = folly::coro::blockingWait(
+        bound.run([&](const std::shared_ptr<Tracker>&) -> folly::coro::Task<int> {
+          ranOn = std::this_thread::get_id();
+          co_return 7;
+        })
+    );
+    EXPECT_EQ(result, 7);
   }
   drainOwner();
   EXPECT_EQ(ranOn, ownerThread());

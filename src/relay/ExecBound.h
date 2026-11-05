@@ -57,17 +57,22 @@ public:
     exec_->add([value = value_, fn = std::move(fn)]() mutable { fn(std::as_const(value)); });
   }
 
-  // Starts fn(value), a Task<void>, on exec. The task owns its copy.
-  template <typename Fn> void launch(Fn fn) const {
-    if (!value_) {
-      return;
-    }
-    folly::coro::co_withExecutor(
+  // Returns a task that runs fn(value), which returns a Task, on exec. The task owns its copy.
+  template <typename Fn> auto run(Fn fn) const {
+    XCHECK(value_);
+    return folly::coro::co_withExecutor(
         folly::getKeepAliveToken(exec_),
         folly::coro::co_invoke([value = value_, fn = std::move(fn)]() mutable {
           return fn(std::as_const(value));
         })
-    ).start();
+    );
+  }
+
+  // Starts run(fn) without waiting for it.
+  template <typename Fn> void launch(Fn fn) const {
+    if (value_) {
+      run(std::move(fn)).start();
+    }
   }
 
   explicit operator bool() const { return static_cast<bool>(value_); }
