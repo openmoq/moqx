@@ -146,6 +146,12 @@ jobs:
             echo "Error: $SNAPSHOT_TAG release not found. Push to the dispatched branch first to produce a snapshot." >&2
             exit 1
           fi
+          # The builds check out SNAPSHOT_SHA, but the pins below are read at the branch head.
+          if ! git diff --quiet "$SNAPSHOT_SHA" HEAD -- cmake/dependencies.cmake; then
+            echo "Error: cmake/dependencies.cmake differs between $SNAPSHOT_TAG (${SNAPSHOT_SHA:0:12}) and the branch head." >&2
+            echo "Wait for the branch head's snapshot to publish, then dispatch again." >&2
+            exit 1
+          fi
 
           # Release notes open with the CHANGELOG.md section as of the commit
           # being tagged. A prerelease may go without one.
