@@ -184,10 +184,13 @@ subscribers; on a publisher it is declaration only.
 | `actor.stop()` | `SIGTERM` now, for a publisher you are done with |
 
 The deadline is stamped at `start()`, not at `wait()`, so an actor started
-early and waited on late gets the window the test declared. Nothing signals the
-child at the deadline itself: it lives until `wait()` runs. Exit status is
-never asserted — an actor with a timeout is *expected* to be killed. Assert on
-`expect_received` instead.
+early and waited on late gets the window the test declared. A subscriber that
+has not logged that it is running when `wait()` starts gets a new window of
+`timeout` from when it does. `wait()` polls up to 5s (`STARTUP_TIMEOUT`) for
+that log line, so budget a failing subscriber that much extra time. Nothing
+signals the child at the deadline itself: it lives until `wait()` runs. Exit
+status is never asserted — an actor with a timeout is *expected* to be killed.
+Assert on `expect_received` instead.
 
 Output goes to `actor-<name>.out` in the scratch directory, which is what the
 assertions read and what failure dumps print.
