@@ -75,7 +75,7 @@ protected:
                 publishDoneCount_[raw][ftn]++;
                 return folly::makeExpected<MoQPublishError>(folly::unit);
               }));
-          PublishOk ok{pub.requestID, true, 128, GroupOrder::Default, LocationFilter::nextObject()};
+          PublishOk ok{pub.requestID, true, 128, std::nullopt, LocationFilter::nextObject()};
           return Subscriber::PublishConsumerAndReplyTask{
               std::static_pointer_cast<TrackConsumer>(consumer),
               folly::coro::makeTask<folly::Expected<PublishOk, PublishError>>(std::move(ok))

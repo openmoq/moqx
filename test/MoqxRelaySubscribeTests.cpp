@@ -249,8 +249,8 @@ TEST_P(MoQRelayTest, FirstSubscriberViaUpstreamSubscribeReceivesData) {
   driveIfMultiThread();
 }
 
-// A range that ends before Largest Object is refused below draft 20 and accepted at 20.
-TEST_P(MoQRelayTest, PastRangeRefusedOnlyBelowDraft20) {
+// A range that ends before Largest Object is refused below draft 22 and accepted at 22.
+TEST_P(MoQRelayTest, PastRangeRefusedOnlyBelowDraft22) {
   auto publisherSession = createMockSession();
   doPublishNamespace(publisherSession, kTestNamespace);
 
@@ -290,17 +290,17 @@ TEST_P(MoQRelayTest, PastRangeRefusedOnlyBelowDraft20) {
   ASSERT_TRUE(refused.result->value().hasError());
   EXPECT_EQ(refused.result->value().error().errorCode, SubscribeErrorCode::INVALID_RANGE);
 
-  auto d20Session = createMockSession(kVersionDraft20);
-  auto accepted = subscribePastRange(d20Session);
+  auto d22Session = createMockSession(kVersionDraft22);
+  auto accepted = subscribePastRange(d22Session);
   ASSERT_TRUE(accepted.ready());
   auto handle = accepted.handle();
   ASSERT_NE(handle, nullptr);
-  getOrCreateMockState(d20Session)->subscribeHandles.push_back(handle);
+  getOrCreateMockState(d22Session)->subscribeHandles.push_back(handle);
 
   removeSession(publisherSession);
   removeSession(firstSession);
   removeSession(d16Session);
-  removeSession(d20Session);
+  removeSession(d22Session);
   driveIfMultiThread();
 }
 

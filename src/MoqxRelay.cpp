@@ -133,8 +133,8 @@ exclusionFor(const std::shared_ptr<moxygen::MoQSession>& requester) {
   };
 }
 
-// Below draft 20, rejects a bounded subscription whose end group is already behind
-// the forwarder's largest group (the client should FETCH instead). Draft 20 accepts
+// Below draft 22, rejects a bounded subscription whose end group is already behind
+// the forwarder's largest group (the client should FETCH instead). Draft 22 accepts
 // it. Returns std::nullopt when the range is acceptable.
 std::optional<moxygen::SubscribeError> checkRangeNotInPast(
     moxygen::MoQForwarder& fwd,
@@ -172,7 +172,7 @@ moxygen::SubscribeRequest makeUpstreamSubReq(
     base.params.eraseAllParamsOfType(moxygen::TrackRequestParamKey::RENDEZVOUS_TIMEOUT);
   }
   base.priority = kDefaultUpstreamPriority;
-  base.groupOrder = moxygen::GroupOrder::Default;
+  base.groupOrder.reset();
   base.filter = moxygen::LocationFilter::nextObject();
   // Downstream fills come from the cache and an upstream FETCH.
   base.fill.reset();
@@ -2909,6 +2909,9 @@ TrackStatusOk buildTrackStatusOk(MoQForwarder& fwd, const TrackStatus& req) {
   TrackStatusOk ok;
   ok.requestID = req.requestID;
   ok.groupOrder = fwd.groupOrder();
+  ok.trackProperties.insertMutableExtension(
+      Extension{kPublisherGroupOrderExtensionType, folly::to_underlying(fwd.groupOrder())}
+  );
   ok.largest = fwd.largest();
   return ok;
 }
@@ -2933,9 +2936,9 @@ MoqxRelay::resolveJoiningFetchOnSubscriberExec(Fetch& fetch, const MoQSession& s
   if (!joining) {
     return folly::makeSemiFuture();
   }
-  // A draft 20 FETCH carries no Fetch Type, so it always parses as standalone.
+  // A draft 22 FETCH carries no Fetch Type, so it always parses as standalone.
   XCHECK(!useFillFetch(session.getNegotiatedVersion().value_or(0)))
-      << "joining FETCH under a draft 20 session";
+      << "joining FETCH under a draft 22 session";
   // All of a session's subscriptions are on its thread's forwarders.
   auto* localReg = tlForwarders_.get();
   auto state = localReg ? localReg->lookup(fetch.fullTrackName) : LocalForwarderRegistry::State{};
@@ -2969,9 +2972,9 @@ MoqxRelay::fetchImpl(Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
   }
 
   auto [standalone, joining] = fetchType(fetch);
-  // A draft 20 FETCH carries no Fetch Type, so it always parses as standalone.
+  // A draft 22 FETCH carries no Fetch Type, so it always parses as standalone.
   XCHECK(!joining || !useFillFetch(session->getNegotiatedVersion().value_or(0)))
-      << "joining FETCH under a draft 20 session";
+      << "joining FETCH under a draft 22 session";
   // LF mode resolves joining fetches on the subscriber exec.
   if (joining && mode() != Mode::LocalForwarder) {
     auto fetchView = registry_.getFetchView(fetch.fullTrackName);

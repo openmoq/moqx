@@ -8,9 +8,9 @@
 
 #include <algorithm>
 #include <chrono>
+#include <fmt/format.h>
 #include <folly/CancellationToken.h>
 #include <folly/Conv.h>
-#include <folly/Format.h>
 #include <folly/coro/Task.h>
 #include <folly/coro/WithCancellation.h>
 #include <folly/io/IOBuf.h>
@@ -147,7 +147,7 @@ formatTrackMetrics(const MoqxRelayContext::TrackMetricsResult& result, bool omit
       out.append(labels[i]);
       out.num(millis / 1000);
       out.append(".");
-      out.append(folly::sformat("{:03d}", millis % 1000));
+      out.append(fmt::format("{:03d}", millis % 1000));
       out.append("\n");
     }
     out.append("\n");

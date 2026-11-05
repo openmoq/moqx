@@ -690,11 +690,11 @@ TEST_P(MoQRelayTest, FirstSubscriberJoiningFetchOnPublisherExec) {
   driveIfMultiThread();
 }
 
-// A draft 20 SUBSCRIBE's fill opens on the subscriber's consumer and is served by an
+// A draft 22 SUBSCRIBE's fill opens on the subscriber's consumer and is served by an
 // upstream FETCH that ends at upstream's Largest Object.
 TEST_P(MoQRelayTest, SubscribeFillFetchesUpstreamThroughLargest) {
   auto publisherSession = createMockSession();
-  auto subSession = createMockSession(kVersionDraft20);
+  auto subSession = createMockSession(kVersionDraft22);
   doPublishNamespace(publisherSession, kTestNamespace);
   answerUpstreamSubscribe(*publisherSession, AbsoluteLocation{5, 0});
   auto upstreamFetch = std::make_shared<Fetch>();
@@ -724,8 +724,8 @@ TEST_P(MoQRelayTest, SubscribeFillFetchesUpstreamThroughLargest) {
 // A subscriber that joins an existing subscription gets its fill too.
 TEST_P(MoQRelayTest, JoiningSubscriberFillFetchesUpstream) {
   auto publisherSession = createMockSession();
-  auto firstSession = createMockSession(kVersionDraft20);
-  auto secondSession = createMockSession(kVersionDraft20);
+  auto firstSession = createMockSession(kVersionDraft22);
+  auto secondSession = createMockSession(kVersionDraft22);
   doPublishNamespace(publisherSession, kTestNamespace);
   answerUpstreamSubscribe(*publisherSession, AbsoluteLocation{5, 0});
   auto upstreamFetch = std::make_shared<Fetch>();
@@ -759,7 +759,7 @@ TEST_P(MoQRelayTest, JoiningSubscriberFillFetchesUpstream) {
 // A fill requested by REQUEST_UPDATE opens under the update's request ID.
 TEST_P(MoQRelayTest, RequestUpdateFillFetchesUpstream) {
   auto publisherSession = createMockSession();
-  auto subSession = createMockSession(kVersionDraft20);
+  auto subSession = createMockSession(kVersionDraft22);
   doPublishNamespace(publisherSession, kTestNamespace);
   answerUpstreamSubscribe(*publisherSession, AbsoluteLocation{5, 0});
   auto upstreamFetch = std::make_shared<Fetch>();
