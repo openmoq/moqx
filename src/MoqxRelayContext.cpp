@@ -8,6 +8,7 @@
 #include "relay/AuthFilters.h"
 #include "relay/PublisherCrossExecFilter.h"
 #include "relay/RelayExecUtil.h"
+#include "relay/SessionParticipant.h"
 #include "relay/SubscriberCrossExecFilter.h"
 #include "stats/MoQStatsCollector.h"
 #include <fizz/protocol/DefaultCertificateVerifier.h>
@@ -374,8 +375,9 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayContext::validateAu
     );
     sub = std::make_shared<AuthSubscriberFilter>(std::move(sub), entry.verifier, grants.value());
   }
-  session->setPublishHandler(std::move(pub));
-  session->setSubscribeHandler(std::move(sub));
+  auto participant = std::make_shared<SessionParticipant>(std::move(pub), std::move(sub));
+  session->setPublishHandler(participant);
+  session->setSubscribeHandler(std::move(participant));
   auto settings = session->getMoqSettings();
   settings.bufferingThresholds.perSubscription = subscriptionBufferBytes(entry.config);
   session->setMoqSettings(settings);

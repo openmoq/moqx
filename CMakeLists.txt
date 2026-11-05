@@ -422,6 +422,8 @@ add_library(moqx_core STATIC
   src/UpstreamProvider.cpp
   src/SafeTrackName.cpp
   src/relay/AuthFilters.cpp
+  src/relay/Participant.cpp
+  src/relay/SessionParticipant.cpp
   src/relay/TopNFilter.cpp
   src/relay/TrackStatsFilter.cpp
   src/relay/PropertyRanking.cpp

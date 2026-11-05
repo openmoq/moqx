@@ -6,7 +6,6 @@
 
 #include "PendingRendezvousTree.h"
 
-#include <moxygen/MoQSession.h>
 #include <moxygen/MoQVersions.h>
 
 #include <folly/logging/xlog.h>
@@ -128,10 +127,9 @@ void PendingRendezvousTree::wakeUnderNamespace(const TrackNamespace& ns) {
 }
 
 std::optional<std::chrono::milliseconds>
-takeRendezvousTimeout(SubscribeRequest& subReq, const std::shared_ptr<MoQSession>& session) {
+takeRendezvousTimeout(SubscribeRequest& subReq, uint64_t subscriberVersion) {
   // Applicable for d18+ only
-  auto version = session ? session->getNegotiatedVersion() : std::optional<uint64_t>{};
-  if (!version.has_value() || getDraftMajorVersion(*version) < 18) {
+  if (getDraftMajorVersion(subscriberVersion) < 18) {
     return std::nullopt;
   }
   auto ms = getFirstIntParam(subReq.params, TrackRequestParamKey::RENDEZVOUS_TIMEOUT);
