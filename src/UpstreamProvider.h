@@ -8,6 +8,7 @@
 
 #include <fizz/protocol/CertificateVerifier.h>
 #include <folly/CancellationToken.h>
+#include <folly/Executor.h>
 #include <folly/coro/SharedPromise.h>
 #include <folly/coro/Sleep.h>
 #include <folly/coro/Task.h>
@@ -66,6 +67,7 @@ public:
       proxygen::URL url,
       std::shared_ptr<moxygen::Publisher> publishHandler,
       std::shared_ptr<moxygen::Subscriber> subscribeHandler,
+      folly::Executor* relayExec,
       std::shared_ptr<fizz::CertificateVerifier> verifier = nullptr,
       OnConnectHook onConnect = nullptr,
       OnDisconnectHook onDisconnect = nullptr,
@@ -210,6 +212,7 @@ private:
   std::shared_ptr<moxygen::MoQSession> session_;
   std::shared_ptr<moxygen::Publisher> publishHandler_;
   std::shared_ptr<moxygen::Subscriber> subscribeHandler_;
+  folly::Executor* relayExec_;
   proxygen::URL url_;
   std::shared_ptr<moxygen::MoQExecutor> exec_;
   std::shared_ptr<fizz::CertificateVerifier> verifier_;

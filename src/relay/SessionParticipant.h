@@ -25,13 +25,17 @@ class SessionParticipant : public moxygen::Publisher,
 public:
   SessionParticipant(
       std::shared_ptr<moxygen::Publisher> publisher,
-      std::shared_ptr<moxygen::Subscriber> subscriber
+      std::shared_ptr<moxygen::Subscriber> subscriber,
+      folly::Executor* relayExec
   )
-      : publisher_(std::move(publisher)), subscriber_(std::move(subscriber)) {}
+      : publisher_(std::move(publisher)), subscriber_(std::move(subscriber)),
+        relayExec_(relayExec) {}
 
   // Must run on the session's executor, after SETUP.
   static ParticipantInfo snapshot(const moxygen::MoQSession& session);
-  static Participant makeParticipant(const std::shared_ptr<moxygen::MoQSession>& session);
+  // With a relayExec, calls from the relay hop to the session's executor.
+  static Participant
+  makeParticipant(const std::shared_ptr<moxygen::MoQSession>& session, folly::Executor* relayExec);
 
   folly::coro::Task<TrackStatusResult> trackStatus(moxygen::TrackStatus req) override;
 
@@ -70,6 +74,7 @@ private:
 
   std::shared_ptr<moxygen::Publisher> publisher_;
   std::shared_ptr<moxygen::Subscriber> subscriber_;
+  folly::Executor* relayExec_;
   // Built on the first request, after SETUP.
   std::optional<Participant> participant_;
   bool goawayForwarded_{false};
