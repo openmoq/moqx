@@ -41,10 +41,12 @@ PRs run CI with no secrets. Publish, release, and deploy run only on
 At least one approving review is required. The reviewer pool is small —
 be patient, reciprocate.
 
-Gemini reviews a PR only when someone adds the `gemini-review` label.
-The label is removed when the review starts, so add it again for another
-review. A review with no comments above LOW also approves the
-reviewed commit, and that approval counts toward the required one.
+Gemini reviews a PR from a branch in this repository only when someone
+adds the `gemini-review` label. The label is removed when the review
+starts, so add it again for another review. GitHub doesn't run the review
+while the PR has merge conflicts: resolve them, then remove the label and
+add it again. A review with nothing above LOW also approves the reviewed
+commit, and that approval counts toward the required one.
 
 To ask Gemini a question, start a PR comment or a review-thread reply
 with `/gemini` and your question, then add the label. If any such

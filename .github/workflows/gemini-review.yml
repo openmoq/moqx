@@ -62,6 +62,7 @@ jobs:
         id: 'questions'
         env:
           GITHUB_TOKEN: '${{ steps.mint_identity_token.outputs.token || secrets.GITHUB_TOKEN || github.token }}'
+          GEMINI_LOGIN: '${{ steps.mint_identity_token.outputs.app-slug && format(''{0}[bot]'', steps.mint_identity_token.outputs.app-slug) || ''github-actions[bot]'' }}'
           PULL_REQUEST_NUMBER: '${{ github.event.pull_request.number }}'
           REPOSITORY: '${{ github.repository }}'
         run: |-
@@ -71,20 +72,32 @@ jobs:
           fetch "issues/${PULL_REQUEST_NUMBER}/comments" issue.json
           fetch "pulls/${PULL_REQUEST_NUMBER}/comments" thread.json
           fetch "pulls/${PULL_REQUEST_NUMBER}/reviews" review.json
+          # 404 means the account no longer exists; any other error must not silently drop a question.
           jq -r '.[] | select(.user.type != "Bot" and (.body // "" | test("(^|\\s)/gemini($|[^\\w-])"; "i"))) | .user.login' \
             "${RUNNER_TEMP}/issue.json" "${RUNNER_TEMP}/thread.json" "${RUNNER_TEMP}/review.json" \
-            | sort -u | while read -r login; do
-              permission=$(gh api "repos/${REPOSITORY}/collaborators/${login}/permission" --jq '.permission' || echo 'none')
-              jq -n --arg login "${login}" --arg permission "${permission}" '{($login): $permission}'
-            done | jq -s 'add // {}' > "${RUNNER_TEMP}/permission.json"
+            | sort -u > "${RUNNER_TEMP}/askers.txt"
+          : > "${RUNNER_TEMP}/permission.jsonl"
+          while read -r login; do
+            if ! permission=$(gh api "repos/${REPOSITORY}/collaborators/${login}/permission" --jq '.permission' 2> "${RUNNER_TEMP}/permission.err"); then
+              if ! grep -q '(HTTP 404)' "${RUNNER_TEMP}/permission.err"; then
+                echo "::error::Could not read the permission of ${login}: $(cat "${RUNNER_TEMP}/permission.err")"
+                exit 1
+              fi
+              permission='none'
+            fi
+            jq -n --arg login "${login}" --arg permission "${permission}" '{($login): $permission}' >> "${RUNNER_TEMP}/permission.jsonl"
+          done < "${RUNNER_TEMP}/askers.txt"
+          jq -s 'add // {}' "${RUNNER_TEMP}/permission.jsonl" > "${RUNNER_TEMP}/permission.json"
           jq -n \
+            --arg login "${GEMINI_LOGIN}" \
             --slurpfile issue "${RUNNER_TEMP}/issue.json" \
             --slurpfile thread "${RUNNER_TEMP}/thread.json" \
             --slurpfile review "${RUNNER_TEMP}/review.json" \
             --slurpfile permission "${RUNNER_TEMP}/permission.json" '
             def asks: (.body // "") | test("(^|\\s)/gemini($|[^\\w-])"; "i");
             def trusted: .user.type != "Bot" and ($permission[0][.user.login] // "none" | IN("admin", "maintain", "write"));
-            [($issue[0] + $thread[0])[] | select(.user.type == "Bot") | .body // "" | scan("<!-- gemini-reply-to: ([a-z]+-[0-9]+) -->") | .[0]] as $answered
+            [($issue[0] + $thread[0])[] | select(.user.login == $login) | .body // ""
+              | capture("<!-- gemini-reply-to: (?<id>[a-z]+-[0-9]+) -->\\s*\\z") | .id] as $answered
             | $thread[0] as $all
             | [
                 ($issue[0][] | select(asks and trusted)
@@ -96,8 +109,15 @@ jobs:
                      earlier: [$all[] | select((.in_reply_to_id // .id) == $root and .created_at < $c.created_at) | {author: .user.login, body}],
                      author: .user.login, body, url: .html_url, created_at})
               ]
-            | map(select(.id | IN($answered[]) | not)) | sort_by(.created_at) | .[:10]' > gemini-questions.json
-          if [[ "$(jq length gemini-questions.json)" -gt 0 ]]; then
+            | map(select(.id | IN($answered[]) | not)) | sort_by(.created_at)' > "${RUNNER_TEMP}/all-questions.json"
+          # Gemini can write to the workspace, so the post step reads the RUNNER_TEMP copy.
+          jq '.[:10]' "${RUNNER_TEMP}/all-questions.json" > "${RUNNER_TEMP}/gemini-questions.json"
+          cp "${RUNNER_TEMP}/gemini-questions.json" gemini-questions.json
+          total=$(jq length "${RUNNER_TEMP}/all-questions.json")
+          if (( total > 10 )); then
+            echo "::warning::Answering 10 of ${total} questions; add the label again for the rest."
+          fi
+          if (( total > 0 )); then
             echo 'mode=reply' >> "${GITHUB_OUTPUT}"
           fi
 
@@ -196,35 +216,44 @@ jobs:
             ]
           prompt: '/pr-code-review REPOSITORY=${{ github.repository }} PULL_REQUEST_NUMBER=${{ github.event.pull_request.number }} ADDITIONAL_CONTEXT=none'
 
-      # The review prompt only submits COMMENT; approve the reviewed commit if every inline comment is tagged LOW.
+      # Approve this run's review if no inline comment or summary finding is above LOW.
+      # Gemini's review tool can approve too, so its approval is dismissed if anything is above LOW.
       - name: 'Approve clean review'
         if: |-
           ${{ steps.questions.outputs.mode != 'reply' }}
         env:
           GITHUB_TOKEN: '${{ steps.mint_identity_token.outputs.token || secrets.GITHUB_TOKEN || github.token }}'
+          GEMINI_LOGIN: '${{ steps.mint_identity_token.outputs.app-slug && format(''{0}[bot]'', steps.mint_identity_token.outputs.app-slug) || ''github-actions[bot]'' }}'
           PULL_REQUEST_NUMBER: '${{ github.event.pull_request.number }}'
           REPOSITORY: '${{ github.repository }}'
           STARTED_AT: '${{ steps.context.outputs.started_at }}'
         run: |-
-          review=$(gh api --paginate "repos/${REPOSITORY}/pulls/${PULL_REQUEST_NUMBER}/reviews" --jq '.[]' \
-            | jq -s -c --arg since "${STARTED_AT}" \
-              '[.[] | select(.user.type == "Bot" and .submitted_at >= $since and (.body // "" | contains("Review Summary")))] | last // empty')
+          reviews="repos/${REPOSITORY}/pulls/${PULL_REQUEST_NUMBER}/reviews"
+          review=$(gh api --paginate "${reviews}" --jq '.[]' \
+            | jq -s -c --arg since "${STARTED_AT}" --arg login "${GEMINI_LOGIN}" \
+              '[.[] | select(.user.login == $login and .submitted_at >= $since and (.body // "" | contains("Review Summary")))] | last // empty')
           if [[ -z "${review}" ]]; then
             echo '::notice::Found no Gemini review from this run.'
             exit 0
           fi
-          if [[ "$(jq -r .state <<< "${review}")" != 'COMMENTED' ]]; then
-            echo "::notice::Gemini review is already $(jq -r .state <<< "${review}")."
-            exit 0
+          id=$(jq -r .id <<< "${review}")
+          state=$(jq -r .state <<< "${review}")
+          inline=$(gh api --paginate "${reviews}/${id}/comments" \
+            --jq '[.[] | select(.body | test("\\A\\s*(<COMMENT>\\s*)?\\**\\[LOW\\]"; "i") | not)] | length' | jq -s 'add // 0')
+          summary=$(jq '[.body // "" | match("\\[(CRITICAL|HIGH|MEDIUM)\\]"; "gi")] | length' <<< "${review}")
+          above_low=$(( inline + summary ))
+          if [[ "${state}" == 'APPROVED' && "${above_low}" -gt 0 ]]; then
+            gh api --silent -X PUT "${reviews}/${id}/dismissals" -f event='DISMISS' \
+              -f message="Gemini approved with ${above_low} findings above LOW."
+            echo "::warning::Dismissed Gemini's approval: ${above_low} findings above LOW."
+          elif [[ "${state}" != 'COMMENTED' ]]; then
+            echo "::notice::Gemini review is already ${state}."
+          elif [[ "${above_low}" -gt 0 ]]; then
+            echo "::notice::${above_low} Gemini findings are above LOW; not approving."
+          else
+            gh api --silent -X POST "${reviews}" \
+              -f commit_id="$(jq -r .commit_id <<< "${review}")" -f event='APPROVE' -f body='Gemini found nothing above LOW.'
           fi
-          above_low=$(gh api --paginate "repos/${REPOSITORY}/pulls/${PULL_REQUEST_NUMBER}/reviews/$(jq -r .id <<< "${review}")/comments" \
-            --jq '[.[] | select(.body | test("\\A\\s*(<COMMENT>\\s*)?\\**\\[LOW\\]"; "i") | not)] | length' | jq -s add)
-          if [[ "${above_low}" -gt 0 ]]; then
-            echo "::notice::${above_low} Gemini comments are above LOW; not approving."
-            exit 0
-          fi
-          gh api --silent -X POST "repos/${REPOSITORY}/pulls/${PULL_REQUEST_NUMBER}/reviews" \
-            -f commit_id="$(jq -r .commit_id <<< "${review}")" -f event='APPROVE' -f body='Gemini found nothing above LOW.'
 
       # Read-only GitHub tools; the next step posts the answers.
       - name: 'Run Gemini replies'
@@ -317,9 +346,9 @@ jobs:
           PULL_REQUEST_NUMBER: '${{ github.event.pull_request.number }}'
           REPOSITORY: '${{ github.repository }}'
         run: |-
-          replies=$(jq -c --slurpfile asked gemini-questions.json '
+          replies=$(jq -c --slurpfile asked "${RUNNER_TEMP}/gemini-questions.json" '
             ($asked[0] | map({(.id): .}) | add) as $byid
-            | [.[] | select((.id | type == "string") and $byid[.id] != null and (.body | type == "string" and length > 0))]
+            | [.[] | select((.id | type == "string") and $byid[.id] != null and (.body | type == "string" and test("\\S")))]
             | unique_by(.id) | .[] | $byid[.id] as $q
             | {kind: $q.kind, reply_to: $q.reply_to,
                body: ((if $q.kind == "thread" then "" else "In reply to [this comment](\($q.url)):\n\n" end)
@@ -337,7 +366,7 @@ jobs:
             fi
           done <<< "${replies}"
           posted=$(wc -l <<< "${replies}")
-          asked=$(jq length gemini-questions.json)
+          asked=$(jq length "${RUNNER_TEMP}/gemini-questions.json")
           if (( posted < asked )); then
             echo "::error::Gemini answered ${posted} of ${asked} questions; add the label again for the rest."
             exit 1
