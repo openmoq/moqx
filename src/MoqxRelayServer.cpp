@@ -207,6 +207,14 @@ buildTransportSettings(const config::QuicConfig& quic, const config::MvfstConfig
   return ts;
 }
 
+// MoQServer ignores a non-positive txnTimeout, so "none" is the maximum.
+std::chrono::milliseconds h3TxnTimeout(const config::MvfstConfig& mvfst) {
+  if (mvfst.h3TxnTimeoutMs == 0) {
+    return std::chrono::milliseconds(config::MvfstConfig::kMaxH3TxnTimeoutMs);
+  }
+  return std::chrono::milliseconds(mvfst.h3TxnTimeoutMs);
+}
+
 } // namespace
 
 MoqxRelayServer::MoqxRelayServer(
@@ -221,6 +229,7 @@ MoqxRelayServer::MoqxRelayServer(
               .transportSettings = buildTransportSettings(listenerCfg.quic, listenerCfg.mvfst),
               .udpSendBufferBytes = listenerCfg.mvfst.udpSocketBufferBytes,
               .udpRecvBufferBytes = listenerCfg.mvfst.udpSocketBufferBytes,
+              .txnTimeout = h3TxnTimeout(listenerCfg.mvfst),
           }
       ),
       listenerCfg_(listenerCfg), context_(std::move(context)), ioExecutor_(ioExecutor) {

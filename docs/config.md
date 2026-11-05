@@ -83,6 +83,11 @@ verification. This is incompatible with `quic_stack: picoquic`.
 
 **Duplicate listeners** (same address+port combination) are rejected.
 
+**WebTransport idle timeout (mvfst):** `mvfst.h3_txn_timeout_ms` (per listener
+or in `listener_defaults`) closes a WebTransport session after that many ms
+without new streams, stream data or datagrams. 0 (default) disables it; the
+maximum is a year.
+
 ### QUIC Settings
 
 Set under `listener_defaults.quic` (global defaults) or `listeners.<name>.quic`

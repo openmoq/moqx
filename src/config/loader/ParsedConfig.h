@@ -274,6 +274,11 @@ struct ParsedMvfstConfig {
       "default of 1 MB). Increase to reduce EAGAIN errors under high fan-out burst load.",
       std::optional<uint64_t>>
       udp_socket_buffer_bytes;
+  rfl::Description<
+      "HTTP/3 transaction idle timeout in ms; ends idle WebTransport sessions. "
+      "Default: 0 (none). At most a year (31536000000).",
+      std::optional<uint64_t>>
+      h3_txn_timeout_ms;
 };
 
 // Named proxygen_qmux (not bare "qmux") so a second qmux impl can be added later.

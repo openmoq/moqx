@@ -154,6 +154,10 @@ struct MvfstConfig {
   // Increase when high fan-out causes EAGAIN bursts under load.
   uint64_t udpSocketBufferBytes{0};
 
+  // HTTP/3 transaction and WebTransport session idle timeout. 0 = none.
+  uint64_t h3TxnTimeoutMs{0};
+  static constexpr uint64_t kMaxH3TxnTimeoutMs = 365ull * 24 * 60 * 60 * 1000;
+
   BBR bbr;
   BBR2 bbr2;
   Cubic cubic;

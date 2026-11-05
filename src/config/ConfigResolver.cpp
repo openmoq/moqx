@@ -963,6 +963,8 @@ void applyMvfstOverride(MvfstConfig& base, const ParsedMvfstConfig& overlay) {
   }
   if (auto v = overlay.udp_socket_buffer_bytes.value())
     base.udpSocketBufferBytes = *v;
+  if (auto v = overlay.h3_txn_timeout_ms.value())
+    base.h3TxnTimeoutMs = *v;
 }
 
 MvfstConfig mergeMvfstConfig(
@@ -1056,6 +1058,12 @@ void validateMvfstConfig(
     warnings.push_back(
         context + " mvfst: num_gro_buffers (" + std::to_string(mvfst.numGROBuffers) +
         ") exceeds 64; most kernels cap GRO at 64 buffers"
+    );
+  }
+  if (mvfst.h3TxnTimeoutMs > MvfstConfig::kMaxH3TxnTimeoutMs) {
+    errors.push_back(
+        context + " mvfst: h3_txn_timeout_ms must be <= " +
+        std::to_string(MvfstConfig::kMaxH3TxnTimeoutMs) + " (0 = none)"
     );
   }
   if (mvfst.copa.deltaParam <= 0.0 || mvfst.copa.deltaParam >= 1.0) {
