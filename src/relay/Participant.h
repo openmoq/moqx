@@ -104,6 +104,36 @@ const Participant& requestParticipant();
 // The caller must already be in a per-request context.
 void attachParticipant(Participant participant);
 
+// Attaches the participant to each REQUEST_UPDATE, which can carry a fill that the relay serves as
+// this participant.
+class ParticipantSubscriptionHandle : public moxygen::SubscriptionHandle {
+public:
+  ParticipantSubscriptionHandle(
+      std::shared_ptr<moxygen::SubscriptionHandle> inner,
+      Participant participant
+  )
+      : inner_(std::move(inner)), participant_(std::move(participant)) {
+    if (inner_->hasSubscribeOk()) {
+      setSubscribeOk(inner_->subscribeOk());
+    }
+  }
+
+  const moxygen::SubscribeOk& subscribeOk() const override { return inner_->subscribeOk(); }
+
+  void unsubscribe() override { inner_->unsubscribe(); }
+
+  void cancelFill(moxygen::RequestID requestID) override { inner_->cancelFill(requestID); }
+
+  folly::coro::Task<RequestUpdateResult> requestUpdate(moxygen::RequestUpdate update) override {
+    attachParticipant(participant_);
+    return inner_->requestUpdate(std::move(update));
+  }
+
+private:
+  std::shared_ptr<moxygen::SubscriptionHandle> inner_;
+  Participant participant_;
+};
+
 // Creates a request context for a caller that a session did not start, such as a peering backend.
 class ParticipantScope {
 public:

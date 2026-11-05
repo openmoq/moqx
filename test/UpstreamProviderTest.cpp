@@ -925,10 +925,14 @@ protected:
     relay_ = std::make_shared<MoqxRelay>(config::CacheConfig{.maxCachedTracks = 0});
     relay_->setAllowedNamespacePrefix(TrackNamespace{}); // allow all namespaces
 
-    auto onConnect = [relay = relay_](std::shared_ptr<MoQSession> session
-                     ) -> folly::coro::Task<void> { co_await relay->onUpstreamConnect(session); };
+    auto onConnect = [relay =
+                          relay_](std::shared_ptr<MoQSession> session) -> folly::coro::Task<void> {
+      co_await relay->onUpstreamConnect(
+          SessionParticipant::makeParticipant(session, relay->getRelayExec())
+      );
+    };
     auto onDisconnect = [relay = relay_](std::shared_ptr<MoQSession> session) {
-      relay->onUpstreamDisconnect(session);
+      relay->onUpstreamDisconnect(session->sessionId());
     };
 
     provider_ = std::make_shared<UpstreamProvider>(

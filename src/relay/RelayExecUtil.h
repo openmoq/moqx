@@ -42,15 +42,6 @@ maybeCrossExec(folly::Executor* exec, std::shared_ptr<moxygen::Publisher> p) {
   return std::make_shared<PublisherCrossExecFilter>(exec, std::move(p));
 }
 
-// Wraps session as a Publisher, targeting its executor when relayExec is set.
-inline std::shared_ptr<moxygen::Publisher>
-maybeWrapPublisher(folly::Executor* relayExec, std::shared_ptr<moxygen::MoQSession> session) {
-  // Evaluate getExecutor() before std::move(session) to avoid unspecified
-  // argument evaluation order leaving session moved-from.
-  auto* exec = relayExec ? session->getExecutor() : nullptr;
-  return maybeCrossExec(exec, std::shared_ptr<moxygen::Publisher>(std::move(session)));
-}
-
 // Runs fn on exec (fire-and-forget) if exec is non-null; otherwise runs it
 // inline on the calling thread.
 template <typename Fn> void runOnExec(folly::Executor* exec, Fn&& fn) {

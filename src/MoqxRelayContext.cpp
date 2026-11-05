@@ -155,19 +155,21 @@ void MoqxRelayContext::startUpstream(
   auto verifier = makeUpstreamVerifier(cfg.tls);
   auto relay = entry.relay;
   auto* relayExec = relay->getRelayExec();
+  // The hooks run on the upstream session's executor.
   auto onConnect = [relay,
                     relayExec](std::shared_ptr<MoQSession> session) -> folly::coro::Task<void> {
+    auto upstream = SessionParticipant::makeParticipant(session, relayExec);
     if (relayExec) {
       co_return co_await folly::coro::co_withExecutor(
           folly::getKeepAliveToken(relayExec),
-          relay->onUpstreamConnect(session)
+          relay->onUpstreamConnect(std::move(upstream))
       );
     }
-    co_return co_await relay->onUpstreamConnect(session);
+    co_return co_await relay->onUpstreamConnect(std::move(upstream));
   };
   auto onDisconnect = [relay, relayExec](std::shared_ptr<MoQSession> session) {
-    runOnExec(relayExec, [relay, session = std::move(session)]() {
-      relay->onUpstreamDisconnect(session);
+    runOnExec(relayExec, [relay, sessionId = session->sessionId()]() {
+      relay->onUpstreamDisconnect(sessionId);
     });
   };
   // Mode-aware filters (as inbound sessions): LF mode needs LocalPublishFilter for upstream
@@ -318,7 +320,7 @@ void MoqxRelayContext::onSessionEnd(std::shared_ptr<MoQSession> session) {
   // The session belongs to whichever service its authority+path matched at setup.
   if (auto name = serviceMatcher_.match(session->getAuthority(), session->getPath())) {
     if (auto it = services_.find(*name); it != services_.end()) {
-      it->second.relay->onSessionEnd(std::move(session));
+      it->second.relay->onSessionEnd(session->sessionId());
     }
   }
   // Per-session auth state lives on the session's AuthFilter and is released
