@@ -60,7 +60,7 @@ protected:
 // ---- publishNamespace ----
 
 TEST_F(SubscriberCrossExecFilterTest, PublishNamespaceForwardsToInner) {
-  auto nsHandle = std::make_shared<NiceMock<MockPublishNamespaceHandle>>();
+  auto nsHandle = std::make_shared<NiceMock<MockPublishNamespaceHandle>>(PublishNamespaceOk{});
   EXPECT_CALL(*inner_, publishNamespace(_, _))
       .WillOnce(
           [nsHandle](PublishNamespace, std::shared_ptr<Subscriber::PublishNamespaceCallback>)
@@ -89,7 +89,7 @@ TEST_F(SubscriberCrossExecFilterTest, PublishNamespaceHandleReleasesInnerOnTarge
               -> folly::coro::Task<Subscriber::PublishNamespaceResult> {
             targetThread = std::this_thread::get_id();
             co_return std::shared_ptr<Subscriber::PublishNamespaceHandle>(
-                new NiceMock<MockPublishNamespaceHandle>(),
+                new NiceMock<MockPublishNamespaceHandle>(PublishNamespaceOk{}),
                 [&destroyedOn](Subscriber::PublishNamespaceHandle* h) {
                   destroyedOn = std::this_thread::get_id();
                   delete h;
@@ -200,7 +200,7 @@ TEST_F(SubscriberCrossExecFilterTest, PublishNamespaceResumesAfterFilterDestroye
               -> folly::coro::Task<Subscriber::PublishNamespaceResult> {
             targetThread = std::this_thread::get_id();
             std::shared_ptr<Subscriber::PublishNamespaceHandle> handle(
-                new NiceMock<MockPublishNamespaceHandle>(),
+                new NiceMock<MockPublishNamespaceHandle>(PublishNamespaceOk{}),
                 [&destroyedOn](Subscriber::PublishNamespaceHandle* h) {
                   destroyedOn = std::this_thread::get_id();
                   delete h;
