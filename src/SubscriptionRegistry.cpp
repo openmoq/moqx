@@ -15,7 +15,7 @@ namespace openmoq::moqx {
 bool SubscriptionRegistry::UpstreamSubscribePending::complete(
     std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle,
     moxygen::RequestID requestID,
-    std::shared_ptr<moxygen::MoQSession> upstreamSession,
+    std::shared_ptr<const ParticipantInfo> upstream,
     std::shared_ptr<moxygen::Publisher> publisher
 ) {
   active_ = false;
@@ -24,7 +24,7 @@ bool SubscriptionRegistry::UpstreamSubscribePending::complete(
       epoch_,
       std::move(handle),
       requestID,
-      std::move(upstreamSession),
+      std::move(upstream),
       std::move(publisher)
   );
 }
@@ -99,7 +99,7 @@ bool SubscriptionRegistry::completeSubscription(
     EntryEpoch epoch,
     std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle,
     moxygen::RequestID requestID,
-    std::shared_ptr<moxygen::MoQSession> upstreamSession,
+    std::shared_ptr<const ParticipantInfo> upstream,
     std::shared_ptr<moxygen::Publisher> publisher
 ) {
   auto it = subscriptions_.find(ftn);
@@ -109,7 +109,7 @@ bool SubscriptionRegistry::completeSubscription(
   auto& rsub = it->second;
   rsub.handle = std::move(handle);
   rsub.requestID = requestID;
-  rsub.upstream = std::move(upstreamSession);
+  rsub.upstream = std::move(upstream);
   rsub.publisher = std::move(publisher);
   rsub.promise.setValue(folly::unit);
   return true;
@@ -126,7 +126,7 @@ void SubscriptionRegistry::failAndRemove(const moxygen::FullTrackName& ftn, Entr
 SubscriptionRegistry::PublishEntry SubscriptionRegistry::createFromPublish(
     const moxygen::FullTrackName& ftn,
     ForwarderRef forwarder,
-    std::shared_ptr<moxygen::MoQSession> session,
+    std::shared_ptr<const ParticipantInfo> publisherInfo,
     std::shared_ptr<moxygen::Publisher> publisher,
     moxygen::RequestID requestID,
     std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle,
@@ -138,7 +138,7 @@ SubscriptionRegistry::PublishEntry SubscriptionRegistry::createFromPublish(
   // publishDone → onEmpty may fire during the erase.
   auto it = subscriptions_.find(ftn);
   if (it != subscriptions_.end()) {
-    auto* oldPublisherExec = it->second.upstream ? it->second.upstream->getExecutor() : nullptr;
+    auto* oldPublisherExec = it->second.upstream ? it->second.upstream->executor : nullptr;
     evicted =
         Evicted{std::move(it->second.forwarder), std::move(it->second.handle), oldPublisherExec};
     subscriptions_.erase(it);
@@ -147,7 +147,7 @@ SubscriptionRegistry::PublishEntry SubscriptionRegistry::createFromPublish(
   auto [emplaceIt, inserted] = subscriptions_.emplace(
       std::piecewise_construct,
       std::forward_as_tuple(ftn),
-      std::forward_as_tuple(std::move(forwarder), session, nextEpoch())
+      std::forward_as_tuple(std::move(forwarder), std::move(publisherInfo), nextEpoch())
   );
   auto& rsub = emplaceIt->second;
   rsub.promise.setValue(folly::unit);
@@ -200,7 +200,7 @@ SubscriptionRegistry::getUpstreamView(const moxygen::FullTrackName& ftn) const {
       rsub.publisher,
       rsub.handle,
       rsub.requestID,
-      rsub.upstream ? rsub.upstream->getExecutor() : nullptr,
+      rsub.upstream ? rsub.upstream->executor : nullptr,
       rsub.isPublish,
       rsub.promise.isFulfilled()
   };
@@ -212,7 +212,7 @@ SubscriptionRegistry::upstreamSessionId(const moxygen::FullTrackName& ftn) const
   if (it == subscriptions_.end() || !it->second.upstream) {
     return std::nullopt;
   }
-  return it->second.upstream->sessionId();
+  return it->second.upstream->sessionId;
 }
 
 std::optional<SubscriptionRegistry::FetchView>

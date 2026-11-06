@@ -267,7 +267,7 @@ TEST_F(MoqxTrackFilterTest, SubscribeFirst_Top1_OnlyHighestForwarded) {
 // ---------------------------------------------------------------------------
 
 // Late subscriber should receive top-N from already-published tracks via
-// getOrCreateRanking retroactive registration + addSessionToTopNGroup.
+// getOrCreateRanking retroactive registration + addSubscriberToTopNGroup.
 TEST_F(MoqxTrackFilterTest, PublishFirst_LateSubscriber_GetsTopN) {
   auto pubSess = makeSession();
 

@@ -487,7 +487,7 @@ TEST_P(MoQRelayTest, PublishReconnectDuringSubscribeScopeGuardCrash) {
   // upstream session and call publisherSession1->subscribe().
   PublishNamespace pn;
   pn.trackNamespace = kTestNamespace;
-  relay_->doPublishNamespace(pn, publisherSession1, nullptr);
+  relay_->doPublishNamespace(pn, participantOf(publisherSession1), nullptr);
 
   // Configure publisher 1's subscribe() mock to simulate publisher reconnect
   // inline (the relay calls this during co_await upstreamSession->subscribe()):
@@ -509,7 +509,7 @@ TEST_P(MoQRelayTest, PublishReconnectDuringSubscribeScopeGuardCrash) {
             // Step 1: publisher 2 takes over the namespace.
             PublishNamespace pn2;
             pn2.trackNamespace = kTestNamespace;
-            relay_->doPublishNamespace(pn2, publisherSession2, nullptr);
+            relay_->doPublishNamespace(pn2, participantOf(publisherSession2), nullptr);
 
             // Step 2: publisher 2 publishes the FTN, creating a new
             // subscriptions_ entry with the promise already satisfied.
@@ -584,7 +584,7 @@ TEST_P(MoQRelayTest, PublishReconnectDuringSubscribeSuccessPathCrash) {
 
   PublishNamespace pn;
   pn.trackNamespace = kTestNamespace;
-  relay_->doPublishNamespace(pn, publisherSession1, nullptr);
+  relay_->doPublishNamespace(pn, participantOf(publisherSession1), nullptr);
 
   std::shared_ptr<TrackConsumer> pub2Consumer;
   EXPECT_CALL(*publisherSession1, subscribe(_, _))
@@ -595,7 +595,7 @@ TEST_P(MoQRelayTest, PublishReconnectDuringSubscribeSuccessPathCrash) {
               -> folly::coro::Task<Publisher::SubscribeResult> {
             PublishNamespace pn2;
             pn2.trackNamespace = kTestNamespace;
-            relay_->doPublishNamespace(pn2, publisherSession2, nullptr);
+            relay_->doPublishNamespace(pn2, participantOf(publisherSession2), nullptr);
 
             {
               folly::RequestContextScopeGuard ctx;
@@ -723,7 +723,7 @@ TEST_P(MoQRelayTest, ReplacedSubscribeOkLeavesCacheLargest) {
 
   PublishNamespace pn;
   pn.trackNamespace = kTestNamespace;
-  relay_->doPublishNamespace(pn, publisherSession1, nullptr);
+  relay_->doPublishNamespace(pn, participantOf(publisherSession1), nullptr);
 
   std::shared_ptr<TrackConsumer> pub2Consumer;
   EXPECT_CALL(*publisherSession1, subscribe(_, _))
@@ -734,7 +734,7 @@ TEST_P(MoQRelayTest, ReplacedSubscribeOkLeavesCacheLargest) {
               -> folly::coro::Task<Publisher::SubscribeResult> {
             PublishNamespace pn2;
             pn2.trackNamespace = kTestNamespace;
-            relay_->doPublishNamespace(pn2, publisherSession2, nullptr);
+            relay_->doPublishNamespace(pn2, participantOf(publisherSession2), nullptr);
             {
               folly::RequestContextScopeGuard ctx;
               folly::RequestContext::get()->setContextData(
@@ -820,7 +820,7 @@ TEST_P(MoQRelayTest, PublishDonePrunesNamespaceTreeNode) {
   verifyOnRelayExec([&] {
     auto state = relay_->findPublishState(kTestTrackName);
     EXPECT_TRUE(state.nodeExists);
-    EXPECT_EQ(state.session, publisher);
+    EXPECT_EQ(state.publisher, publisher->sessionId());
   });
 
   // publishNamespaceDone — node stays alive because the track publish is still active
@@ -832,7 +832,7 @@ TEST_P(MoQRelayTest, PublishDonePrunesNamespaceTreeNode) {
   verifyOnRelayExec([&] {
     auto state = relay_->findPublishState(kTestTrackName);
     EXPECT_TRUE(state.nodeExists);
-    EXPECT_EQ(state.session, publisher);
+    EXPECT_EQ(state.publisher, publisher->sessionId());
   });
 
   // End the track publish — node should now be pruned
@@ -844,7 +844,7 @@ TEST_P(MoQRelayTest, PublishDonePrunesNamespaceTreeNode) {
 
   verifyOnRelayExec([&] {
     auto state = relay_->findPublishState(kTestTrackName);
-    EXPECT_EQ(state.session, nullptr);
+    EXPECT_EQ(state.publisher, std::nullopt);
     EXPECT_FALSE(state.nodeExists) << "Node persists after publish ended; pruning did not run";
   });
 

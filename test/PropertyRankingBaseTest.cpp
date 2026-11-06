@@ -8,7 +8,7 @@
  * Unit tests for PropertyRanking top-N base logic (no self-exclusion).
  *
  * Covers:
- * - registerTrack + addSessionToTopNGroup → correct sessions notified at top-N boundary
+ * - registerTrack + addSubscriberToTopNGroup → correct sessions notified at top-N boundary
  * - updateSortValue fast path: no notification when threshold not crossed
  * - updateSortValue slow path: correct promotions/evictions across multiple
  *   TopNGroups with different N
@@ -24,7 +24,7 @@
 
 #include <folly/portability/GMock.h>
 #include <folly/portability/GTest.h>
-#include <moxygen/test/MockMoQSession.h>
+#include <moxygen/MoQSession.h>
 #include <moxygen/test/Mocks.h>
 
 using namespace testing;
@@ -45,12 +45,13 @@ class RankingHarness {
 public:
   struct SelectEvent {
     FullTrackName ftn;
-    MoQSession* session;
+    SessionId session;
     bool forward;
+    const moxygen::Subscriber* subscriber;
   };
   struct EvictEvent {
     FullTrackName ftn;
-    MoQSession* session;
+    SessionId session;
   };
 
   explicit RankingHarness(
@@ -72,17 +73,17 @@ public:
             },
             [this](
                 const FullTrackName& f,
-                const std::vector<std::pair<std::shared_ptr<MoQSession>, bool>>& sessions
+                const std::vector<std::pair<Participant, bool>>& subscribers
             ) {
-              for (auto& [s, fwd] : sessions) {
-                selected_.push_back({f, s.get(), fwd});
+              for (auto& [s, fwd] : subscribers) {
+                selected_.push_back({f, s.info->sessionId, fwd, s.subscriber.get()});
               }
             },
-            [this](const FullTrackName& f, std::shared_ptr<MoQSession> s, bool fwd) {
-              selected_.push_back({f, s.get(), fwd});
+            [this](const FullTrackName& f, const Participant& s, bool fwd) {
+              selected_.push_back({f, s.info->sessionId, fwd, s.subscriber.get()});
             },
-            [this](const FullTrackName& f, std::shared_ptr<MoQSession> s) {
-              evicted_.push_back({f, s.get()});
+            [this](const FullTrackName& f, const Participant& s) {
+              evicted_.push_back({f, s.info->sessionId});
             }
         )) {}
 
@@ -105,7 +106,7 @@ public:
   }
 
   // Count select events for a (track, session) pair
-  int selectCount(const FullTrackName& f, MoQSession* s) const {
+  int selectCount(const FullTrackName& f, SessionId s) const {
     int n = 0;
     for (auto& e : selected_) {
       if (e.ftn == f && e.session == s) {
@@ -139,76 +140,81 @@ private:
   std::unique_ptr<PropertyRanking> ranking_;
 };
 
-// Minimal stub session (not a real MoQSession, just needs a unique address)
-// We use NiceMock<MockMoQSession> from moxygen mocks but that requires an
-// executor. Instead, we make shared_ptrs to distinct mock objects so that
-// the F14FastMap keys are unique pointers.
-//
-// PropertyRanking only stores shared_ptr<MoQSession> as map keys and passes
-// them back through callbacks — it never calls any MoQSession methods itself.
-// So we can cast a shared_ptr<MockMoQSession> (which IS a MoQSession) safely.
-
 class PropertyRankingBaseTest : public ::testing::Test {
 protected:
-  // PropertyRanking only stores shared_ptr<MoQSession> as map keys and passes
-  // them back through callbacks — it never calls any MoQSession methods.
-  // MockMoQSession has a default constructor for exactly this use case.
-  std::shared_ptr<MoQSession> makeSession() {
-    auto s = std::make_shared<NiceMock<moxygen::test::MockMoQSession>>();
-    sessions_.push_back(s);
-    return std::static_pointer_cast<MoQSession>(s);
+  // PropertyRanking keys on the participant's ID and passes it back through callbacks.
+  static Participant makeParticipant() {
+    return Participant(
+        std::make_shared<const ParticipantInfo>(
+            ParticipantInfo{.sessionId = MoQSession::makeSessionId()}
+        ),
+        nullptr,
+        nullptr
+    );
   }
 
-  std::vector<std::shared_ptr<NiceMock<moxygen::test::MockMoQSession>>> sessions_;
+  static SessionId idOf(const Participant& participant) { return participant.info->sessionId; }
+
   // Placeholder publisher for tracks whose publisher identity doesn't matter.
-  std::shared_ptr<MoQSession> defaultPublisher_{makeSession()};
+  Participant defaultPublisher_{makeParticipant()};
 };
 
 // ---------------------------------------------------------------------------
-// registerTrack + addSessionToTopNGroup
+// registerTrack + addSubscriberToTopNGroup
 // ---------------------------------------------------------------------------
 
 TEST_F(PropertyRankingBaseTest, RegisterThenSubscribe_TopNBoundary) {
   RankingHarness h;
 
   // 3 tracks registered before any subscriber
-  h.ranking().registerTrack(ftn("a"), 90, defaultPublisher_);
-  h.ranking().registerTrack(ftn("b"), 80, defaultPublisher_);
-  h.ranking().registerTrack(ftn("c"), 70, defaultPublisher_);
-  h.ranking().registerTrack(ftn("d"), 20, defaultPublisher_);
+  h.ranking().registerTrack(ftn("a"), 90, idOf(defaultPublisher_));
+  h.ranking().registerTrack(ftn("b"), 80, idOf(defaultPublisher_));
+  h.ranking().registerTrack(ftn("c"), 70, idOf(defaultPublisher_));
+  h.ranking().registerTrack(ftn("d"), 20, idOf(defaultPublisher_));
 
   // Subscriber joins wanting top-2
-  auto sub = makeSession();
-  h.ranking().addSessionToTopNGroup(2, sub, /*forward=*/true);
+  auto sub = makeParticipant();
+  h.ranking().addSubscriberToTopNGroup(2, sub, /*forward=*/true);
 
   // Should have received exactly ftn("a") and ftn("b")
-  EXPECT_EQ(h.selectCount(ftn("a"), sub.get()), 1);
-  EXPECT_EQ(h.selectCount(ftn("b"), sub.get()), 1);
-  EXPECT_EQ(h.selectCount(ftn("c"), sub.get()), 0);
-  EXPECT_EQ(h.selectCount(ftn("d"), sub.get()), 0);
+  EXPECT_EQ(h.selectCount(ftn("a"), idOf(sub)), 1);
+  EXPECT_EQ(h.selectCount(ftn("b"), idOf(sub)), 1);
+  EXPECT_EQ(h.selectCount(ftn("c"), idOf(sub)), 0);
+  EXPECT_EQ(h.selectCount(ftn("d"), idOf(sub)), 0);
+}
+
+TEST_F(PropertyRankingBaseTest, SelectPassesTheStoredSubscriber) {
+  RankingHarness h;
+  h.ranking().registerTrack(ftn("a"), 100, idOf(defaultPublisher_));
+  auto subscriber = std::make_shared<moxygen::Subscriber>();
+  Participant sub(makeParticipant().info, nullptr, subscriber);
+  h.ranking().addSubscriberToTopNGroup(1, sub, /*forward=*/true);
+
+  ASSERT_EQ(h.selected_.size(), 1);
+  EXPECT_EQ(h.selected_[0].subscriber, subscriber.get());
 }
 
 TEST_F(PropertyRankingBaseTest, SubscribeThenRegister_TopNBoundary) {
   RankingHarness h;
 
-  auto sub = makeSession();
-  h.ranking().addSessionToTopNGroup(2, sub, /*forward=*/true);
+  auto sub = makeParticipant();
+  h.ranking().addSubscriberToTopNGroup(2, sub, /*forward=*/true);
 
   // Tracks arrive after subscriber
-  h.ranking().registerTrack(ftn("a"), 90, defaultPublisher_);
-  h.ranking().registerTrack(ftn("b"), 80, defaultPublisher_);
-  h.ranking().registerTrack(ftn("c"), 70, defaultPublisher_); // rank 2 — not in top-2
+  h.ranking().registerTrack(ftn("a"), 90, idOf(defaultPublisher_));
+  h.ranking().registerTrack(ftn("b"), 80, idOf(defaultPublisher_));
+  h.ranking().registerTrack(ftn("c"), 70, idOf(defaultPublisher_)); // rank 2 — not in top-2
 
-  EXPECT_EQ(h.selectCount(ftn("a"), sub.get()), 1);
-  EXPECT_EQ(h.selectCount(ftn("b"), sub.get()), 1);
-  EXPECT_EQ(h.selectCount(ftn("c"), sub.get()), 0);
+  EXPECT_EQ(h.selectCount(ftn("a"), idOf(sub)), 1);
+  EXPECT_EQ(h.selectCount(ftn("b"), idOf(sub)), 1);
+  EXPECT_EQ(h.selectCount(ftn("c"), idOf(sub)), 0);
 }
 
 TEST_F(PropertyRankingBaseTest, ForwardFlagPassedThrough_False) {
   RankingHarness h;
-  auto sub = makeSession();
-  h.ranking().addSessionToTopNGroup(1, sub, /*forward=*/false);
-  h.ranking().registerTrack(ftn("a"), 10, defaultPublisher_);
+  auto sub = makeParticipant();
+  h.ranking().addSubscriberToTopNGroup(1, sub, /*forward=*/false);
+  h.ranking().registerTrack(ftn("a"), 10, idOf(defaultPublisher_));
 
   ASSERT_EQ(h.selected_.size(), 1u);
   EXPECT_FALSE(h.selected_[0].forward);
@@ -216,9 +222,9 @@ TEST_F(PropertyRankingBaseTest, ForwardFlagPassedThrough_False) {
 
 TEST_F(PropertyRankingBaseTest, ForwardFlagPassedThrough_True) {
   RankingHarness h;
-  auto sub = makeSession();
-  h.ranking().addSessionToTopNGroup(1, sub, /*forward=*/true);
-  h.ranking().registerTrack(ftn("a"), 10, defaultPublisher_);
+  auto sub = makeParticipant();
+  h.ranking().addSubscriberToTopNGroup(1, sub, /*forward=*/true);
+  h.ranking().registerTrack(ftn("a"), 10, idOf(defaultPublisher_));
 
   ASSERT_EQ(h.selected_.size(), 1u);
   EXPECT_TRUE(h.selected_[0].forward);
@@ -230,14 +236,14 @@ TEST_F(PropertyRankingBaseTest, ForwardFlagPassedThrough_True) {
 
 TEST_F(PropertyRankingBaseTest, FastPath_NoNotificationWhenThresholdNotCrossed) {
   RankingHarness h;
-  auto sub = makeSession();
-  h.ranking().addSessionToTopNGroup(2, sub, true);
+  auto sub = makeParticipant();
+  h.ranking().addSubscriberToTopNGroup(2, sub, true);
 
   // 4 tracks: top-2 = {a=90, b=80}; {c=70, d=50} are outside
-  h.ranking().registerTrack(ftn("a"), 90, defaultPublisher_);
-  h.ranking().registerTrack(ftn("b"), 80, defaultPublisher_);
-  h.ranking().registerTrack(ftn("c"), 70, defaultPublisher_); // rank 2 — just outside top-2
-  h.ranking().registerTrack(ftn("d"), 50, defaultPublisher_); // rank 3
+  h.ranking().registerTrack(ftn("a"), 90, idOf(defaultPublisher_));
+  h.ranking().registerTrack(ftn("b"), 80, idOf(defaultPublisher_));
+  h.ranking().registerTrack(ftn("c"), 70, idOf(defaultPublisher_)); // rank 2 — just outside top-2
+  h.ranking().registerTrack(ftn("d"), 50, idOf(defaultPublisher_)); // rank 3
   h.clearEvents();
 
   // Move "d" from rank 3 to rank 2 — still outside top-2, no notification
@@ -251,9 +257,9 @@ TEST_F(PropertyRankingBaseTest, FastPath_NoNotificationWhenThresholdNotCrossed) 
 
 TEST_F(PropertyRankingBaseTest, FastPath_SameValueNoNotification) {
   RankingHarness h;
-  auto sub = makeSession();
-  h.ranking().addSessionToTopNGroup(1, sub, true);
-  h.ranking().registerTrack(ftn("a"), 50, defaultPublisher_);
+  auto sub = makeParticipant();
+  h.ranking().addSubscriberToTopNGroup(1, sub, true);
+  h.ranking().registerTrack(ftn("a"), 50, idOf(defaultPublisher_));
   h.clearEvents();
 
   h.ranking().updateSortValue(ftn("a"), 50); // no change
@@ -266,41 +272,42 @@ TEST_F(PropertyRankingBaseTest, FastPath_SameValueNoNotification) {
 
 TEST_F(PropertyRankingBaseTest, SlowPath_TrackPromotedWhenCrossesThreshold) {
   RankingHarness h;
-  auto sub = makeSession();
-  h.ranking().addSessionToTopNGroup(1, sub, true);
+  auto sub = makeParticipant();
+  h.ranking().addSubscriberToTopNGroup(1, sub, true);
 
-  h.ranking().registerTrack(ftn("a"), 80, defaultPublisher_);
-  h.ranking().registerTrack(ftn("b"), 60, defaultPublisher_); // rank 1 — not in top-1
+  h.ranking().registerTrack(ftn("a"), 80, idOf(defaultPublisher_));
+  h.ranking().registerTrack(ftn("b"), 60, idOf(defaultPublisher_)); // rank 1 — not in top-1
   h.clearEvents();
 
   // "b" jumps to rank 0 — should be selected, "a" deselected
   h.ranking().updateSortValue(ftn("b"), 90);
-  EXPECT_EQ(h.selectCount(ftn("b"), sub.get()), 1);
-  EXPECT_EQ(h.selectCount(ftn("a"), sub.get()), 0);
+  EXPECT_EQ(h.selectCount(ftn("b"), idOf(sub)), 1);
+  EXPECT_EQ(h.selectCount(ftn("a"), idOf(sub)), 0);
 }
 
 TEST_F(PropertyRankingBaseTest, SlowPath_MultipleTopNGroups) {
   RankingHarness h;
-  auto sub1 = makeSession(); // wants top-1
-  auto sub3 = makeSession(); // wants top-3
+  auto sub1 = makeParticipant(); // wants top-1
+  auto sub3 = makeParticipant(); // wants top-3
 
-  h.ranking().addSessionToTopNGroup(1, sub1, true);
-  h.ranking().addSessionToTopNGroup(3, sub3, true);
+  h.ranking().addSubscriberToTopNGroup(1, sub1, true);
+  h.ranking().addSubscriberToTopNGroup(3, sub3, true);
 
-  h.ranking().registerTrack(ftn("a"), 100, defaultPublisher_);
-  h.ranking().registerTrack(ftn("b"), 80, defaultPublisher_);
-  h.ranking().registerTrack(ftn("c"), 60, defaultPublisher_);
-  h.ranking().registerTrack(ftn("d"), 40, defaultPublisher_); // rank 3 — NOT in top-3, not in top-1
+  h.ranking().registerTrack(ftn("a"), 100, idOf(defaultPublisher_));
+  h.ranking().registerTrack(ftn("b"), 80, idOf(defaultPublisher_));
+  h.ranking().registerTrack(ftn("c"), 60, idOf(defaultPublisher_));
+  h.ranking()
+      .registerTrack(ftn("d"), 40, idOf(defaultPublisher_)); // rank 3 — NOT in top-3, not in top-1
   h.clearEvents();
 
   // "d" surpasses "a" — crosses threshold for both groups
   h.ranking().updateSortValue(ftn("d"), 110);
 
   // sub1 (top-1) should now receive "d"
-  EXPECT_GE(h.selectCount(ftn("d"), sub1.get()), 1);
+  EXPECT_GE(h.selectCount(ftn("d"), idOf(sub1)), 1);
   // sub3 (top-3) should also receive "d" — it was NOT in top-3 before (rank 3 is not < 3),
   // now it's rank 0 so sub3 should be notified
-  EXPECT_GE(h.selectCount(ftn("d"), sub3.get()), 1);
+  EXPECT_GE(h.selectCount(ftn("d"), idOf(sub3)), 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -315,47 +322,47 @@ TEST_F(PropertyRankingBaseTest, RemoveSelected_PromotesFromDeselectedQueue) {
   // Step 1: c registers at 95 — c→rank0(selected), a→rank1(deselected, enters queue)
   // Step 2: remove c — a should be promoted from deselected queue
   RankingHarness h;
-  auto sub = makeSession();
-  h.ranking().addSessionToTopNGroup(1, sub, true);
+  auto sub = makeParticipant();
+  h.ranking().addSubscriberToTopNGroup(1, sub, true);
 
-  h.ranking().registerTrack(ftn("a"), 90, defaultPublisher_); // selected
-  h.ranking().registerTrack(ftn("b"), 80, defaultPublisher_); // rank 1, unselected
+  h.ranking().registerTrack(ftn("a"), 90, idOf(defaultPublisher_)); // selected
+  h.ranking().registerTrack(ftn("b"), 80, idOf(defaultPublisher_)); // rank 1, unselected
   h.clearEvents();
 
   // c arrives louder than a → a falls to deselected queue
   h.ranking().registerTrack(
       ftn("c"),
       95,
-      defaultPublisher_
+      idOf(defaultPublisher_)
   ); // c→rank0(selected), a→rank1(deselected queue)
   h.clearEvents();
 
   // Remove c (selected): a should be promoted from deselected queue
   h.ranking().removeTrack(ftn("c"));
-  EXPECT_EQ(h.selectCount(ftn("a"), sub.get()), 1);
-  EXPECT_EQ(h.selectCount(ftn("b"), sub.get()), 0);
+  EXPECT_EQ(h.selectCount(ftn("a"), idOf(sub)), 1);
+  EXPECT_EQ(h.selectCount(ftn("b"), idOf(sub)), 0);
 }
 
 TEST_F(PropertyRankingBaseTest, RemoveSelected_PromotesFromRankedList) {
   RankingHarness h;
-  auto sub = makeSession();
-  h.ranking().addSessionToTopNGroup(1, sub, true);
+  auto sub = makeParticipant();
+  h.ranking().addSubscriberToTopNGroup(1, sub, true);
 
-  h.ranking().registerTrack(ftn("a"), 90, defaultPublisher_);
-  h.ranking().registerTrack(ftn("b"), 70, defaultPublisher_); // rank 1
+  h.ranking().registerTrack(ftn("a"), 90, idOf(defaultPublisher_));
+  h.ranking().registerTrack(ftn("b"), 70, idOf(defaultPublisher_)); // rank 1
   h.clearEvents();
 
   h.ranking().removeTrack(ftn("a"));
-  EXPECT_EQ(h.selectCount(ftn("b"), sub.get()), 1);
+  EXPECT_EQ(h.selectCount(ftn("b"), idOf(sub)), 1);
 }
 
 TEST_F(PropertyRankingBaseTest, RemoveDeselected_NoPromotionNeeded) {
   RankingHarness h;
-  auto sub = makeSession();
-  h.ranking().addSessionToTopNGroup(1, sub, true);
+  auto sub = makeParticipant();
+  h.ranking().addSubscriberToTopNGroup(1, sub, true);
 
-  h.ranking().registerTrack(ftn("a"), 90, defaultPublisher_);
-  h.ranking().registerTrack(ftn("b"), 70, defaultPublisher_); // rank 1 — deselected
+  h.ranking().registerTrack(ftn("a"), 90, idOf(defaultPublisher_));
+  h.ranking().registerTrack(ftn("b"), 70, idOf(defaultPublisher_)); // rank 1 — deselected
   h.clearEvents();
 
   // Removing a deselected track should not trigger any selection notification
@@ -369,26 +376,26 @@ TEST_F(PropertyRankingBaseTest, RemoveDeselected_NoPromotionNeeded) {
 
 TEST_F(PropertyRankingBaseTest, TwoGroupsDifferentN_IndependentSelection) {
   RankingHarness h;
-  auto sub1 = makeSession(); // top-1
-  auto sub3 = makeSession(); // top-3
+  auto sub1 = makeParticipant(); // top-1
+  auto sub3 = makeParticipant(); // top-3
 
-  h.ranking().addSessionToTopNGroup(1, sub1, true);
-  h.ranking().addSessionToTopNGroup(3, sub3, true);
+  h.ranking().addSubscriberToTopNGroup(1, sub1, true);
+  h.ranking().addSubscriberToTopNGroup(3, sub3, true);
 
-  h.ranking().registerTrack(ftn("a"), 100, defaultPublisher_);
-  h.ranking().registerTrack(ftn("b"), 80, defaultPublisher_);
-  h.ranking().registerTrack(ftn("c"), 60, defaultPublisher_);
-  h.ranking().registerTrack(ftn("d"), 40, defaultPublisher_);
+  h.ranking().registerTrack(ftn("a"), 100, idOf(defaultPublisher_));
+  h.ranking().registerTrack(ftn("b"), 80, idOf(defaultPublisher_));
+  h.ranking().registerTrack(ftn("c"), 60, idOf(defaultPublisher_));
+  h.ranking().registerTrack(ftn("d"), 40, idOf(defaultPublisher_));
 
   // sub1 should have received only "a"
-  EXPECT_EQ(h.selectCount(ftn("a"), sub1.get()), 1);
-  EXPECT_EQ(h.selectCount(ftn("b"), sub1.get()), 0);
+  EXPECT_EQ(h.selectCount(ftn("a"), idOf(sub1)), 1);
+  EXPECT_EQ(h.selectCount(ftn("b"), idOf(sub1)), 0);
 
   // sub3 should have received "a", "b", "c"
-  EXPECT_EQ(h.selectCount(ftn("a"), sub3.get()), 1);
-  EXPECT_EQ(h.selectCount(ftn("b"), sub3.get()), 1);
-  EXPECT_EQ(h.selectCount(ftn("c"), sub3.get()), 1);
-  EXPECT_EQ(h.selectCount(ftn("d"), sub3.get()), 0);
+  EXPECT_EQ(h.selectCount(ftn("a"), idOf(sub3)), 1);
+  EXPECT_EQ(h.selectCount(ftn("b"), idOf(sub3)), 1);
+  EXPECT_EQ(h.selectCount(ftn("c"), idOf(sub3)), 1);
+  EXPECT_EQ(h.selectCount(ftn("d"), idOf(sub3)), 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -405,20 +412,26 @@ TEST_F(PropertyRankingBaseTest, DeselectedQueueBounded_EvictionFires) {
   //   round 2: c=100 registered → c selected, b enters queue (size 2, at limit).
   //   round 3: d=110 registered → d selected, c enters queue (size 3 > max=2 → eviction).
   RankingHarness h(/*maxDeselected=*/2);
-  auto sub = makeSession();
-  h.ranking().addSessionToTopNGroup(1, sub, true);
+  auto sub = makeParticipant();
+  h.ranking().addSubscriberToTopNGroup(1, sub, true);
 
-  h.ranking().registerTrack(ftn("a"), 90, defaultPublisher_); // selected
-  h.ranking()
-      .registerTrack(ftn("b"), 95, defaultPublisher_); // b→selected, a→deselected queue (size 1)
-  h.ranking()
-      .registerTrack(ftn("c"), 100, defaultPublisher_); // c→selected, b→deselected queue (size 2)
-  EXPECT_EQ(h.evicted_.size(), 0u);                     // not yet
+  h.ranking().registerTrack(ftn("a"), 90, idOf(defaultPublisher_)); // selected
+  h.ranking().registerTrack(
+      ftn("b"),
+      95,
+      idOf(defaultPublisher_)
+  ); // b→selected, a→deselected queue (size 1)
+  h.ranking().registerTrack(
+      ftn("c"),
+      100,
+      idOf(defaultPublisher_)
+  );                                // c→selected, b→deselected queue (size 2)
+  EXPECT_EQ(h.evicted_.size(), 0u); // not yet
 
   h.ranking().registerTrack(
       ftn("d"),
       110,
-      defaultPublisher_
+      idOf(defaultPublisher_)
   );                                // d→selected, c→deselected queue (size 3 > 2)
   EXPECT_GE(h.evicted_.size(), 1u); // oldest entry evicted
 }
@@ -429,13 +442,13 @@ TEST_F(PropertyRankingBaseTest, DeselectedQueueBounded_EvictionFires) {
 
 TEST_F(PropertyRankingBaseTest, RemoveSession_GroupRemainsIfOtherSessionsExist) {
   RankingHarness h;
-  auto sub1 = makeSession();
-  auto sub2 = makeSession();
+  auto sub1 = makeParticipant();
+  auto sub2 = makeParticipant();
 
-  h.ranking().addSessionToTopNGroup(2, sub1, true);
-  h.ranking().addSessionToTopNGroup(2, sub2, true);
+  h.ranking().addSubscriberToTopNGroup(2, sub1, true);
+  h.ranking().addSubscriberToTopNGroup(2, sub2, true);
 
-  h.ranking().removeSessionFromTopNGroup(2, sub1);
+  h.ranking().removeSubscriberFromTopNGroup(2, idOf(sub1));
 
   const auto* grp = h.ranking().getTopNGroup(2);
   ASSERT_NE(grp, nullptr);
@@ -444,10 +457,10 @@ TEST_F(PropertyRankingBaseTest, RemoveSession_GroupRemainsIfOtherSessionsExist) 
 
 TEST_F(PropertyRankingBaseTest, RemoveLastSession_GroupRemoved) {
   RankingHarness h;
-  auto sub = makeSession();
-  h.ranking().addSessionToTopNGroup(3, sub, true);
+  auto sub = makeParticipant();
+  h.ranking().addSubscriberToTopNGroup(3, sub, true);
 
-  h.ranking().removeSessionFromTopNGroup(3, sub);
+  h.ranking().removeSubscriberFromTopNGroup(3, idOf(sub));
 
   EXPECT_EQ(h.ranking().getTopNGroup(3), nullptr);
   EXPECT_TRUE(h.ranking().empty());
@@ -455,13 +468,13 @@ TEST_F(PropertyRankingBaseTest, RemoveLastSession_GroupRemoved) {
 
 TEST_F(PropertyRankingBaseTest, RemoveLastSession_ThresholdUpdated) {
   RankingHarness h;
-  auto sub1 = makeSession();
-  auto sub2 = makeSession();
+  auto sub1 = makeParticipant();
+  auto sub2 = makeParticipant();
 
-  h.ranking().addSessionToTopNGroup(1, sub1, true);
-  h.ranking().addSessionToTopNGroup(3, sub2, true);
+  h.ranking().addSubscriberToTopNGroup(1, sub1, true);
+  h.ranking().addSubscriberToTopNGroup(3, sub2, true);
 
-  h.ranking().removeSessionFromTopNGroup(3, sub2); // group N=3 gone
+  h.ranking().removeSubscriberFromTopNGroup(3, idOf(sub2)); // group N=3 gone
 
   // Only N=1 group remains; threshold should reflect that
   EXPECT_NE(h.ranking().getTopNGroup(1), nullptr);
@@ -486,28 +499,28 @@ TEST_F(PropertyRankingBaseTest, SlowPath_CrossesLowerThreshold_HigherGroupUnchan
   // notification; the N=4 group's state is unchanged (track was already
   // selected there).
   RankingHarness h;
-  auto sub2 = makeSession(); // top-2
-  auto sub4 = makeSession(); // top-4
+  auto sub2 = makeParticipant(); // top-2
+  auto sub4 = makeParticipant(); // top-4
 
-  h.ranking().addSessionToTopNGroup(2, sub2, true);
-  h.ranking().addSessionToTopNGroup(4, sub4, true);
+  h.ranking().addSubscriberToTopNGroup(2, sub2, true);
+  h.ranking().addSubscriberToTopNGroup(4, sub4, true);
 
-  h.ranking().registerTrack(ftn("a"), 100, defaultPublisher_); // rank 0
-  h.ranking().registerTrack(ftn("b"), 80, defaultPublisher_);  // rank 1
-  h.ranking().registerTrack(ftn("c"), 60, defaultPublisher_);  // rank 2
-  h.ranking().registerTrack(ftn("d"), 40, defaultPublisher_);  // rank 3 — in top-4, not top-2
+  h.ranking().registerTrack(ftn("a"), 100, idOf(defaultPublisher_)); // rank 0
+  h.ranking().registerTrack(ftn("b"), 80, idOf(defaultPublisher_));  // rank 1
+  h.ranking().registerTrack(ftn("c"), 60, idOf(defaultPublisher_));  // rank 2
+  h.ranking().registerTrack(ftn("d"), 40, idOf(defaultPublisher_));  // rank 3 — in top-4, not top-2
   h.clearEvents();
 
   // d jumps to rank 1: crosses the N=2 boundary (3→1), stays inside N=4
   h.ranking().updateSortValue(ftn("d"), 90); // order: a=100, d=90, b=80, c=60
 
   // sub2 should be notified about d entering top-2
-  EXPECT_EQ(h.selectCount(ftn("d"), sub2.get()), 1);
+  EXPECT_EQ(h.selectCount(ftn("d"), idOf(sub2)), 1);
   // sub4 should NOT be notified — d was already in its top-4
-  EXPECT_EQ(h.selectCount(ftn("d"), sub4.get()), 0);
+  EXPECT_EQ(h.selectCount(ftn("d"), idOf(sub4)), 0);
   // b was at rank 1 (selected for both), falls to rank 2: leaves top-2
   // sub2 gets no additional select events (b was demoted, not selected)
-  EXPECT_EQ(h.selectCount(ftn("b"), sub2.get()), 0);
+  EXPECT_EQ(h.selectCount(ftn("b"), idOf(sub2)), 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -519,19 +532,19 @@ TEST_F(PropertyRankingBaseTest, RemoveSelected_FallbackPicksHighestNonSelected) 
   // Remove a: fallback scan should promote c (rank 2, highest non-selected),
   // not d (rank 3).
   RankingHarness h;
-  auto sub = makeSession();
-  h.ranking().addSessionToTopNGroup(2, sub, true);
+  auto sub = makeParticipant();
+  h.ranking().addSubscriberToTopNGroup(2, sub, true);
 
-  h.ranking().registerTrack(ftn("a"), 100, defaultPublisher_);
-  h.ranking().registerTrack(ftn("b"), 80, defaultPublisher_);
-  h.ranking().registerTrack(ftn("c"), 60, defaultPublisher_);
-  h.ranking().registerTrack(ftn("d"), 40, defaultPublisher_);
+  h.ranking().registerTrack(ftn("a"), 100, idOf(defaultPublisher_));
+  h.ranking().registerTrack(ftn("b"), 80, idOf(defaultPublisher_));
+  h.ranking().registerTrack(ftn("c"), 60, idOf(defaultPublisher_));
+  h.ranking().registerTrack(ftn("d"), 40, idOf(defaultPublisher_));
   h.clearEvents();
 
   h.ranking().removeTrack(ftn("a"));
-  EXPECT_EQ(h.selectCount(ftn("c"), sub.get()), 1);
-  EXPECT_EQ(h.selectCount(ftn("d"), sub.get()), 0);
-  EXPECT_EQ(h.selectCount(ftn("b"), sub.get()), 0); // b was already selected
+  EXPECT_EQ(h.selectCount(ftn("c"), idOf(sub)), 1);
+  EXPECT_EQ(h.selectCount(ftn("d"), idOf(sub)), 0);
+  EXPECT_EQ(h.selectCount(ftn("b"), idOf(sub)), 0); // b was already selected
 }
 
 // ---------------------------------------------------------------------------
@@ -545,12 +558,12 @@ TEST_F(PropertyRankingBaseTest, RemoveSelected_FallbackPicksHighestNonSelected) 
 TEST_F(PropertyRankingBaseTest, UpdateSortValue_SweepIdleAndRecomputeDoNotDoubleSelect) {
   // idleTimeout=100ms so sweepIdle is active. maxDeselected=0 (immediate evict).
   RankingHarness h(0, std::chrono::milliseconds(100));
-  auto sub = makeSession();
+  auto sub = makeParticipant();
 
   // a (100) is top-1; b (50) is outside. Neither has activity → both "never published".
-  h.ranking().registerTrack(ftn("a"), 100, defaultPublisher_);
-  h.ranking().registerTrack(ftn("b"), 50, defaultPublisher_);
-  h.ranking().addSessionToTopNGroup(1, sub, true);
+  h.ranking().registerTrack(ftn("a"), 100, idOf(defaultPublisher_));
+  h.ranking().registerTrack(ftn("b"), 50, idOf(defaultPublisher_));
+  h.ranking().addSubscriberToTopNGroup(1, sub, true);
   h.clearEvents();
 
   // Stamp b's activity so only a is idle.
@@ -567,11 +580,11 @@ TEST_F(PropertyRankingBaseTest, UpdateSortValue_SweepIdleAndRecomputeDoNotDouble
 TEST_F(PropertyRankingBaseTest, SweepThrottle_SkipsRunIfCalledTooSoon) {
   // sweepThrottle=500ms: a second sweepIdle() call within that window is a no-op.
   RankingHarness h(0, std::chrono::milliseconds(100), std::chrono::milliseconds(500));
-  auto sub = makeSession();
+  auto sub = makeParticipant();
 
-  h.ranking().registerTrack(ftn("a"), 100, defaultPublisher_);
-  h.ranking().registerTrack(ftn("b"), 90, defaultPublisher_);
-  h.ranking().addSessionToTopNGroup(1, sub, true);
+  h.ranking().registerTrack(ftn("a"), 100, idOf(defaultPublisher_));
+  h.ranking().registerTrack(ftn("b"), 90, idOf(defaultPublisher_));
+  h.ranking().addSubscriberToTopNGroup(1, sub, true);
   h.clearEvents();
 
   // a is idle, b is active.
@@ -581,13 +594,12 @@ TEST_F(PropertyRankingBaseTest, SweepThrottle_SkipsRunIfCalledTooSoon) {
   h.ranking().sweepIdle();
   EXPECT_EQ(h.selectCount(ftn("b")), 1);
 
-  // Re-register a (so it's back as a candidate) and clear events.
-  h.ranking().registerTrack(ftn("a"), 100, defaultPublisher_);
+  // b goes idle, so only the throttle keeps the second sweep from evicting it.
+  h.setActivityTime(ftn("b"), std::chrono::steady_clock::now() - std::chrono::seconds(1));
   h.clearEvents();
 
-  // Second sweep immediately after: throttle suppresses it — a is NOT evicted again.
   h.ranking().sweepIdle();
-  EXPECT_EQ(h.selectCount(ftn("a")), 0);
+  EXPECT_EQ(h.evictCount(ftn("b")), 0);
 }
 
 // sweepIdle tests
@@ -596,13 +608,13 @@ TEST_F(PropertyRankingBaseTest, SweepThrottle_SkipsRunIfCalledTooSoon) {
 TEST_F(PropertyRankingBaseTest, SweepIdle_IdleTrackEvictedAndReplacementPromoted) {
   // Setup: 3 tracks, N=2 group, idleTimeout=100ms
   RankingHarness h(5, std::chrono::milliseconds(100));
-  auto sub = makeSession();
+  auto sub = makeParticipant();
 
-  h.ranking().registerTrack(ftn("a"), 100, defaultPublisher_); // rank 0
-  h.ranking().registerTrack(ftn("b"), 90, defaultPublisher_);  // rank 1
-  h.ranking().registerTrack(ftn("c"), 80, defaultPublisher_);  // rank 2
+  h.ranking().registerTrack(ftn("a"), 100, idOf(defaultPublisher_)); // rank 0
+  h.ranking().registerTrack(ftn("b"), 90, idOf(defaultPublisher_));  // rank 1
+  h.ranking().registerTrack(ftn("c"), 80, idOf(defaultPublisher_));  // rank 2
 
-  h.ranking().addSessionToTopNGroup(2, sub, true);
+  h.ranking().addSubscriberToTopNGroup(2, sub, true);
   h.clearEvents();
 
   // Set activity times: a and c are active (recent), b is idle (old)
@@ -628,13 +640,14 @@ TEST_F(PropertyRankingBaseTest, SweepIdle_IdleTrackEvictedAndReplacementPromoted
 TEST_F(PropertyRankingBaseTest, SweepIdle_TrackThatNeverPublishedIsTreatedAsIdle) {
   // A track with epoch timestamp (never published) should be evicted
   RankingHarness h(5, std::chrono::milliseconds(100));
-  auto sub = makeSession();
+  auto sub = makeParticipant();
 
-  h.ranking().registerTrack(ftn("a"), 100, defaultPublisher_); // rank 0
-  h.ranking().registerTrack(ftn("b"), 90, defaultPublisher_);  // rank 1 - never sets activity time
-  h.ranking().registerTrack(ftn("c"), 80, defaultPublisher_);  // rank 2
+  h.ranking().registerTrack(ftn("a"), 100, idOf(defaultPublisher_)); // rank 0
+  h.ranking()
+      .registerTrack(ftn("b"), 90, idOf(defaultPublisher_)); // rank 1 - never sets activity time
+  h.ranking().registerTrack(ftn("c"), 80, idOf(defaultPublisher_)); // rank 2
 
-  h.ranking().addSessionToTopNGroup(2, sub, true);
+  h.ranking().addSubscriberToTopNGroup(2, sub, true);
   h.clearEvents();
 
   // Only set activity for a and c; b has epoch (never published)
@@ -657,12 +670,12 @@ TEST_F(PropertyRankingBaseTest, SweepIdle_TrackThatNeverPublishedIsTreatedAsIdle
 TEST_F(PropertyRankingBaseTest, SweepIdle_NoEvictionWhenIdleTimeoutIsZero) {
   // idleTimeout=0 disables idle eviction
   RankingHarness h(5, std::chrono::milliseconds(0));
-  auto sub = makeSession();
+  auto sub = makeParticipant();
 
-  h.ranking().registerTrack(ftn("a"), 100, defaultPublisher_);
-  h.ranking().registerTrack(ftn("b"), 90, defaultPublisher_);
+  h.ranking().registerTrack(ftn("a"), 100, idOf(defaultPublisher_));
+  h.ranking().registerTrack(ftn("b"), 90, idOf(defaultPublisher_));
 
-  h.ranking().addSessionToTopNGroup(2, sub, true);
+  h.ranking().addSubscriberToTopNGroup(2, sub, true);
   h.clearEvents();
 
   // Even with old activity time, should not evict when timeout is 0
@@ -679,12 +692,12 @@ TEST_F(PropertyRankingBaseTest, SweepIdle_NoEvictionWhenIdleTimeoutIsZero) {
 
 TEST_F(PropertyRankingBaseTest, SweepIdle_ActiveTracksNotEvicted) {
   RankingHarness h(5, std::chrono::milliseconds(100));
-  auto sub = makeSession();
+  auto sub = makeParticipant();
 
-  h.ranking().registerTrack(ftn("a"), 100, defaultPublisher_);
-  h.ranking().registerTrack(ftn("b"), 90, defaultPublisher_);
+  h.ranking().registerTrack(ftn("a"), 100, idOf(defaultPublisher_));
+  h.ranking().registerTrack(ftn("b"), 90, idOf(defaultPublisher_));
 
-  h.ranking().addSessionToTopNGroup(2, sub, true);
+  h.ranking().addSubscriberToTopNGroup(2, sub, true);
   h.clearEvents();
 
   // Both tracks are active (recent activity)

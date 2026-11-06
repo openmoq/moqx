@@ -234,7 +234,7 @@ TEST_P(MoQRelayTest, RelayHopLoopIsDroppedBeforeNamespaceRegistration) {
   });
   EXPECT_TRUE(result.hasError());
 
-  verifyOnRelayExec([&] { EXPECT_EQ(relay_->findPublishNamespaceSession(kTestNamespace), nullptr); }
+  verifyOnRelayExec([&] { EXPECT_EQ(relay_->findNamespacePublisher(kTestNamespace), std::nullopt); }
   );
   removeSession(publisher);
 }
@@ -438,9 +438,7 @@ TEST_P(MoQRelayTest, EachSubscriberIsAdvertisedItsBestRoute) {
 
   doPublishNamespaceMsg(direct, clusterAdvert({200}, 1));
   driveIfMultiThread();
-  verifyOnRelayExec([&] {
-    EXPECT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 2u);
-  });
+  verifyOnRelayExec([&] { EXPECT_EQ(relay_->findNamespacePublishers(kTestNamespace).size(), 2u); });
   EXPECT_EQ(openHandle->dones.size(), 1u);
   ASSERT_EQ(openHandle->namespaces.size(), 2u);
   EXPECT_EQ(hopPathOf(openHandle->namespaces[1]), (std::vector<uint64_t>{200, kRelayHop}));
@@ -579,7 +577,7 @@ TEST_P(MoQRelayTest, RequestUpdateRejectsStaleHandles) {
   stale->publishNamespaceDone();
   driveIfMultiThread();
   verifyOnRelayExec([&] {
-    EXPECT_EQ(relay_->findPublishNamespaceSession(kTestNamespace), publisher);
+    EXPECT_EQ(relay_->findNamespacePublisher(kTestNamespace), publisher->sessionId());
   });
 
   removeSession(publisher);
@@ -611,7 +609,7 @@ TEST_P(MoQRelayTest, LoopedRepeatNamespaceEndsTheRoute) {
   });
   driveIfMultiThread();
   EXPECT_EQ(namespaceHandle->dones.size(), 1u);
-  verifyOnRelayExec([&] { EXPECT_EQ(relay_->findPublishNamespaceSession(kTestNamespace), nullptr); }
+  verifyOnRelayExec([&] { EXPECT_EQ(relay_->findNamespacePublisher(kTestNamespace), std::nullopt); }
   );
 
   removeSession(peer);
@@ -683,7 +681,7 @@ TEST_P(MoQRelayTest, RequestUpdateRevisesTheRoute) {
   ASSERT_TRUE(looped.hasError());
   EXPECT_EQ(looped.error().errorCode, RequestErrorCode::UNINTERESTED);
   EXPECT_EQ(namespaceHandle->dones.size(), 2u);
-  verifyOnRelayExec([&] { EXPECT_EQ(relay_->findPublishNamespaceSession(kTestNamespace), nullptr); }
+  verifyOnRelayExec([&] { EXPECT_EQ(relay_->findNamespacePublisher(kTestNamespace), std::nullopt); }
   );
 
   removeSession(publisher);
@@ -1256,7 +1254,7 @@ TEST_P(MoQRelayTest, SubscribeNs_ForwardFalse_EmptyForwarder_NoRequestUpdate) {
   }
 }
 
-// Bug: publishWithSession counts every matching namespace subscriber, ignoring its
+// Bug: publishWithParticipant counts every matching namespace subscriber, ignoring its
 // forward flag, so a track whose only subscriber has forward=false is answered with
 // PUBLISH_OK(forward=true). The publisher then sends objects the forwarder has no
 // forwarding subscriber to deliver to, and no forwardChanged fires to correct it
