@@ -12,8 +12,8 @@
 #include "NamespaceTree.h"
 #include "PendingRendezvousTree.h"
 #include "SubscriptionRegistry.h"
-#include "UpstreamProvider.h"
 #include "config/Config.h"
+#include "peering/PeeringBackend.h"
 #include "relay/ChannelSubscriber.h"
 #include "relay/ExecBound.h"
 #include "relay/ForwarderRef.h"
@@ -188,12 +188,8 @@ public:
   std::shared_ptr<moxygen::Publisher> createPublisherFilter();
   std::shared_ptr<moxygen::Subscriber> createSubscriberFilter();
 
-  // Store an upstream provider. The provider must have been constructed with
-  // publishHandler=this and subscribeHandler=this so that the upstream relay's
-  // reciprocal subNs and namespace announcements route through MoqxRelay.
-  void addUpstreamProvider(std::shared_ptr<UpstreamProvider> upstream) {
-    upstreams_.push_back(std::move(upstream));
-  }
+  // Set before the relay serves requests.
+  void setPeering(PeeringBackend* peering) { peering_ = peering; }
 
   // Force-evicts a specific track unconditionally. Not thread-safe.
   size_t purge(const moxygen::FullTrackName& ftn) { return cache_ ? cache_->purge(ftn) : 0; }
@@ -203,19 +199,6 @@ public:
 
   // Force-evicts all cached tracks unconditionally. Not thread-safe.
   size_t purge() { return cache_ ? cache_->purge() : 0; }
-
-  // Stops and releases the upstream providers, breaking the shared_ptr cycle
-  // between MoqxRelay and UpstreamProvider. Safe to call with no upstream.
-  void stop() {
-    for (const auto& upstream : upstreams_) {
-      upstream->stop();
-      // Do not reset upstreams_ here: the provider's session/client live on the
-      // worker EVB thread and must be freed there (via the reconnect coroutine's
-      // shared_from_this dropping after it co_returns). Releasing upstreams_ when
-      // relay is destroyed naturally (services_ cleared) is safe because by then
-      // stop() has already cleared the back-refs so relay's refcount == 1.
-    }
-  }
 
   // True while relay state still holds a handle that a session owns. Run on the relay executor.
   bool holdsSessionHandles() const {
@@ -300,10 +283,6 @@ public:
       moxygen::RequestID requestID,
       const moxygen::RequestUpdate& update
   );
-
-  const std::vector<std::shared_ptr<UpstreamProvider>>& upstreamProviders() const {
-    return upstreams_;
-  }
 
   // Walks relay state by calling visitor methods. Synchronous throughout: it
   // iterates maps that a suspension would let another task mutate, so a visitor
@@ -482,7 +461,8 @@ private:
   std::string relayID_;
   // MoQ Cluster Hop ID. 0 is anonymous.
   uint64_t relayHopID_;
-  std::vector<std::shared_ptr<UpstreamProvider>> upstreams_;
+  // Owned by the context, which keeps it alive while this relay serves requests.
+  PeeringBackend* peering_{nullptr};
 
   // Session-owned handles keep their session alive, so they are released on its executor.
   struct UpstreamHandles {
@@ -654,8 +634,6 @@ private:
   folly::coro::Task<std::optional<moxygen::TrackStatusOk>>
   readPublisherForwarderStatus(moxygen::TrackStatus req);
   folly::coro::Task<void> onUpstreamConnectImpl(Participant upstream);
-  // Waits, up to a timeout, until routed() holds or every upstream has finished connecting.
-  folly::coro::Task<void> waitForUpstreams(folly::Function<bool()> routed);
 
   // Synchronous result of publishWithParticipant: the consumer the publisher writes
   // to and the PublishOk to return to the publisher.  Returned synchronously so
