@@ -22,7 +22,6 @@
 #include "relay/PropertyRanking.h"
 #include "relay/RelayExecUtil.h"
 #include "stats/TrackStatsRegistry.h"
-#include <moxygen/MoQSession.h>
 #include <moxygen/events/MoQFollyExecutorImpl.h>
 #include <moxygen/relay/MoQForwarder.h>
 #include <moxygen/util/TimedBaton.h>
@@ -144,11 +143,13 @@ public:
         ownedRelayExec_(std::move(relayExec)), relayExec_(ownedRelayExec_.get()),
         useLocalForwarders_(useLocalForwarders), maxDeselected_(maxDeselected),
         idleTimeout_(idleTimeout), activityThreshold_(activityThreshold) {
-    // Park timers fire on the relay's own EventBase instead of folly's global
-    // timekeeper thread. Null (SingleThread mode, or a non-folly exec) falls back to it.
-    if (auto* follyExec = dynamic_cast<moxygen::MoQFollyExecutorImpl*>(relayExec_)) {
-      timekeeper_ =
-          std::make_unique<folly::EventBaseThreadTimekeeper>(*follyExec->getBackingEventBase());
+    if (relayExec_) {
+      auto* follyExec = dynamic_cast<moxygen::MoQFollyExecutorImpl*>(relayExec_);
+      XCHECK(follyExec) << "the relay executor must be EventBase-backed";
+      relayEvb_ = follyExec->getBackingEventBase();
+      // Park timers fire on the relay's own EventBase. Without a relay executor, they use
+      // folly's global timekeeper thread.
+      timekeeper_ = std::make_unique<folly::EventBaseThreadTimekeeper>(*relayEvb_);
     }
     if (cache.maxCachedTracks > 0) {
       cache_ = std::make_unique<MoqxCache>(cache.maxCachedTracks, cache.maxCachedGroupsPerTrack);
@@ -632,6 +633,7 @@ private:
   folly::Expected<folly::SemiFuture<folly::Unit>, moxygen::FetchError>
   resolveJoiningFetchOnSubscriberExec(moxygen::Fetch& fetch, const ParticipantInfo& subscriber);
 
+  bool onRelayExec() const { return !relayEvb_ || relayEvb_->isInEventBaseThread(); }
   // Impl methods — run on relayExec_ when set, or inline when relayExec_==nullptr.
   folly::coro::Task<SubscribeResult>
   subscribeImpl(moxygen::SubscribeRequest subReq, std::shared_ptr<moxygen::TrackConsumer> consumer);
@@ -677,8 +679,9 @@ private:
   std::shared_ptr<folly::Executor> ownedRelayExec_;
   std::unique_ptr<folly::EventBaseThreadTimekeeper> timekeeper_;
   folly::Executor* relayExec_{nullptr};
+  folly::EventBase* relayEvb_{nullptr}; // relayExec_'s EventBase
   // Key for the relay chain's channel on each publisher forwarder.
-  const moxygen::SessionId relayChannelId_{moxygen::MoQSession::makeSessionId()};
+  const moxygen::SessionId relayChannelId_{makeSessionId()};
   // Only set in single-threaded mode (relayExec_ == null); used as the
   // coroutine start executor for fire-and-forget tasks like doSubscribeUpdate.
   folly::Executor* sessionExec_{nullptr};
