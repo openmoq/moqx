@@ -8,13 +8,13 @@
 
 #include "MoqxRelay.h"
 #include "MoqxRelayContext.h"
+#include "relay/ExecutorCheck.h"
 #include "relay/RelayExecUtil.h"
 #include "relay/SessionParticipant.h"
 
 #include <folly/CancellationToken.h>
 #include <folly/coro/Collect.h>
 #include <folly/coro/Invoke.h>
-#include <folly/coro/Result.h>
 #include <moxygen/events/MoQFollyExecutorImpl.h>
 
 using namespace moxygen;
@@ -39,8 +39,9 @@ MoqtRelayBackend::MoqtRelayBackend(
     const config::ServiceConfig& service,
     std::optional<uint64_t> hopID
 )
-    : relay_(relay), relayExec_(relay->getRelayExec()), configs_(upstreamConfigs(service)),
-      hopID_(hopID), subscriptionBufferBytes_(config::subscriptionBufferBytes(service)) {}
+    : relay_(relay), relayExec_(relay->getRelayExec()), relayID_(relay->getRelayID()),
+      configs_(upstreamConfigs(service)), hopID_(hopID),
+      subscriptionBufferBytes_(config::subscriptionBufferBytes(service)) {}
 
 void MoqtRelayBackend::start(folly::EventBase* workerEvb) {
   workerEvb_ = workerEvb;
@@ -59,29 +60,22 @@ void MoqtRelayBackend::startUpstream(
   XCHECK(relay) << "start() runs while the context holds the relay";
   auto* relayExec = relayExec_;
   // The hooks run on the upstream session's executor. The context keeps this backend until after
-  // stop() and the shutdown drain, so neither the hooks nor the work they post outlive it.
-  auto onConnect = [this, weak = relay_, relayExec](std::shared_ptr<MoQSession> session
-                   ) -> folly::coro::Task<void> {
-    auto relay = weak.lock();
-    if (!relay) {
-      co_return;
-    }
+  // stop() and the shutdown drain, so neither the hooks nor the work they post outlive it. A
+  // suspended handshake depends on its session's close failing it during that drain.
+  auto onConnect = [this,
+                    relayExec](std::shared_ptr<MoQSession> session) -> folly::coro::Task<void> {
     auto upstream = SessionParticipant::makeParticipant(session, relayExec);
     if (relayExec) {
       co_return co_await folly::coro::co_withExecutor(
           folly::getKeepAliveToken(relayExec),
-          onUpstreamConnect(std::move(relay), std::move(upstream))
+          onUpstreamConnect(std::move(upstream))
       );
     }
-    co_return co_await onUpstreamConnect(std::move(relay), std::move(upstream));
+    co_return co_await onUpstreamConnect(std::move(upstream));
   };
-  auto onDisconnect = [this, weak = relay_, relayExec](std::shared_ptr<MoQSession> session) {
-    runOnExec(relayExec, [this, weak, sessionId = session->sessionId()]() {
-      handshakingUpstreams_.erase(sessionId);
-      connectedUpstreams_.erase(sessionId);
-      if (auto relay = weak.lock()) {
-        relay->onUpstreamDisconnect(sessionId);
-      }
+  auto onDisconnect = [this, relayExec](std::shared_ptr<MoQSession> session) {
+    runOnExec(relayExec, [this, sessionId = session->sessionId()]() {
+      onUpstreamDisconnect(sessionId);
     });
   };
   // Mode-aware filters (as inbound sessions): LF mode needs LocalPublishFilter for upstream
@@ -124,6 +118,67 @@ void MoqtRelayBackend::stop() {
     // shared_from_this dropping after it co_returns). The backend's destructor
     // releases upstreams_ after the context drains the executors.
   }
+}
+
+folly::coro::Task<void> MoqtRelayBackend::onUpstreamConnect(Participant upstream) {
+  XDCHECK(onExecutor(relayExec_));
+  auto relay = relay_.lock();
+  if (!relay) {
+    co_return;
+  }
+  // A disconnect during the handshake erases this entry, so its handles are dropped and the
+  // upstream is not marked connected.
+  const auto id = upstream.info->sessionId;
+  auto* sessionExec = upstream.info->executor;
+  upstreamHandles_.try_emplace(id);
+  auto nsHandle = makeNamespaceBridgeHandle(std::move(relay), upstream, {}, relayExec_);
+  auto subNs = makePeerSubNs(relayID_);
+  auto result = co_await upstream.runOnExecutor(
+      [&](Participant::OnExecutor onExecutor
+      ) -> folly::coro::Task<Publisher::SubscribeNamespaceResult> {
+        co_return co_await onExecutor.publisher().subscribeNamespace(std::move(subNs), nsHandle);
+      }
+  );
+  ExecBound<std::shared_ptr<Publisher::SubscribeNamespaceHandle>> subNsHandle;
+  if (result.hasValue()) {
+    subNsHandle = {std::move(result.value()), sessionExec};
+  } else {
+    XLOG(ERR) << "Upstream peer subNs failed: " << result.error().reasonPhrase;
+  }
+  auto it = upstreamHandles_.find(id);
+  if (it == upstreamHandles_.end()) {
+    co_return;
+  }
+  it->second.subNs = std::move(subNsHandle);
+  if (getDraftMajorVersion(upstream.info->version) >= 18) {
+    auto tracks = co_await upstream.runOnExecutor(
+        [&](Participant::OnExecutor onExecutor
+        ) -> folly::coro::Task<Publisher::SubscribeTracksResult> {
+          co_return co_await onExecutor.publisher().subscribeTracks(
+              makePeerSubTracks(relayID_),
+              nullptr
+          );
+        }
+    );
+    ExecBound<std::shared_ptr<Publisher::SubscribeTracksHandle>> tracksHandle;
+    if (tracks.hasValue()) {
+      tracksHandle = {std::move(tracks.value()), sessionExec};
+    } else {
+      XLOG(ERR) << "Upstream peer subTracks failed: " << tracks.error().reasonPhrase;
+    }
+    it = upstreamHandles_.find(id);
+    if (it == upstreamHandles_.end()) {
+      co_return;
+    }
+    it->second.tracks = std::move(tracksHandle);
+  }
+  connectedUpstreams_.insert(id);
+}
+
+void MoqtRelayBackend::onUpstreamDisconnect(SessionId upstream) {
+  XDCHECK(onExecutor(relayExec_));
+  connectedUpstreams_.erase(upstream);
+  upstreamHandles_.erase(upstream);
 }
 
 folly::coro::Task<void> MoqtRelayBackend::waitForPeers(folly::Function<bool()> routed) {
@@ -186,18 +241,6 @@ folly::coro::Task<PeerAdminResult> MoqtRelayBackend::executePeerAdminOp(PeerAdmi
       .metric = op.metric,
       .message = "MoQT relay peering does not support peer admin"
   };
-}
-
-folly::coro::Task<void>
-MoqtRelayBackend::onUpstreamConnect(std::shared_ptr<MoqxRelay> relay, Participant upstream) {
-  auto sessionId = upstream.info->sessionId;
-  handshakingUpstreams_.insert(sessionId);
-  auto handshake = co_await folly::coro::co_awaitTry(relay->onUpstreamConnect(std::move(upstream)));
-  // A disconnect during the handshake has already erased the session.
-  if (handshakingUpstreams_.erase(sessionId) && handshake.hasValue()) {
-    connectedUpstreams_.insert(sessionId);
-  }
-  co_yield folly::coro::co_result(std::move(handshake));
 }
 
 } // namespace openmoq::moqx
