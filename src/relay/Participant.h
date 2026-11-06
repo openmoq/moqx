@@ -7,8 +7,12 @@
 #pragma once
 
 #include <moxygen/MoQTypes.h>
+#include <moxygen/Publisher.h>
+#include <moxygen/Subscriber.h>
 
 #include <folly/Executor.h>
+#include <folly/coro/Invoke.h>
+#include <folly/coro/Task.h>
 #include <folly/io/async/Request.h>
 
 #include <cstdint>
@@ -30,9 +34,67 @@ struct ParticipantInfo {
   std::string authority;
 };
 
-// What the relay keeps about a participant.
-struct Participant {
+// What the relay keeps about a participant. publisher and subscriber are callable from the relay's
+// thread, and dropping them does not end the participant.
+class Participant {
+public:
+  // Calls into the participant without an executor hop. Only runOnExecutor creates one. It is
+  // move-only, so a lambda cannot capture it by copy.
+  class OnExecutor {
+  public:
+    OnExecutor(OnExecutor&&) = default;
+    OnExecutor& operator=(OnExecutor&&) = default;
+    OnExecutor(const OnExecutor&) = delete;
+    OnExecutor& operator=(const OnExecutor&) = delete;
+
+    moxygen::Publisher& publisher() const { return *publisher_; }
+    moxygen::Subscriber& subscriber() const { return *subscriber_; }
+
+  private:
+    friend class Participant;
+    OnExecutor(std::shared_ptr<moxygen::Publisher> p, std::shared_ptr<moxygen::Subscriber> s)
+        : publisher_(std::move(p)), subscriber_(std::move(s)) {}
+
+    std::shared_ptr<moxygen::Publisher> publisher_;
+    std::shared_ptr<moxygen::Subscriber> subscriber_;
+  };
+
+  Participant() = default;
+  // The on-executor pair defaults to publisher and subscriber.
+  Participant(
+      std::shared_ptr<const ParticipantInfo> info,
+      std::shared_ptr<moxygen::Publisher> publisher,
+      std::shared_ptr<moxygen::Subscriber> subscriber,
+      std::shared_ptr<moxygen::Publisher> onExecutorPublisher = nullptr,
+      std::shared_ptr<moxygen::Subscriber> onExecutorSubscriber = nullptr
+  )
+      : info(std::move(info)), publisher(std::move(publisher)), subscriber(std::move(subscriber)),
+        onExecutorPublisher_(
+            onExecutorPublisher ? std::move(onExecutorPublisher) : this->publisher
+        ),
+        onExecutorSubscriber_(
+            onExecutorSubscriber ? std::move(onExecutorSubscriber) : this->subscriber
+        ) {}
+
+  // Runs fn(OnExecutor) as a task on info->executor.
+  template <typename Fn> auto runOnExecutor(Fn fn) const {
+    // co_invoke keeps fn, and so a coroutine lambda's captures, alive until the task finishes.
+    return folly::coro::co_withExecutor(
+        folly::getKeepAliveToken(info->executor),
+        folly::coro::co_invoke(
+            std::move(fn),
+            OnExecutor(onExecutorPublisher_, onExecutorSubscriber_)
+        )
+    );
+  }
+
   std::shared_ptr<const ParticipantInfo> info;
+  std::shared_ptr<moxygen::Publisher> publisher;
+  std::shared_ptr<moxygen::Subscriber> subscriber;
+
+private:
+  std::shared_ptr<moxygen::Publisher> onExecutorPublisher_;
+  std::shared_ptr<moxygen::Subscriber> onExecutorSubscriber_;
 };
 
 // The participant follows the request across executor hops. XCHECKs outside a participant's

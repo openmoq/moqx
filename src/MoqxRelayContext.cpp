@@ -179,6 +179,7 @@ void MoqxRelayContext::startUpstream(
       proxygen::URL(cfg.url),
       /*publishHandler=*/pubHandler,
       /*subscribeHandler=*/subHandler,
+      relay->getRelayExec(),
       verifier,
       std::move(onConnect),
       std::move(onDisconnect),
@@ -375,7 +376,11 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayContext::validateAu
     );
     sub = std::make_shared<AuthSubscriberFilter>(std::move(sub), entry.verifier, grants.value());
   }
-  auto participant = std::make_shared<SessionParticipant>(std::move(pub), std::move(sub));
+  auto participant = std::make_shared<SessionParticipant>(
+      std::move(pub),
+      std::move(sub),
+      entry.relay->getRelayExec()
+  );
   session->setPublishHandler(participant);
   session->setSubscribeHandler(std::move(participant));
   auto settings = session->getMoqSettings();

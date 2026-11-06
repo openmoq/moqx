@@ -210,6 +210,16 @@ moqx_add_gtest(moqx_auth_filters_test
     moxygen::moqtest_utils
 )
 
+moqx_add_gtest(moqx_session_participant_test
+  SRCS relay/SessionParticipantTest.cpp
+  LIBS
+    moqx_core
+    GTest::gtest_main
+    GTest::gmock
+    moxygen::moqtest_utils
+    Folly::folly_executors_manual_executor
+)
+
 # Header-only decoder, tested in isolation — src/ headers without moqx_core.
 moqx_add_gtest(moqx_cbor_reader_test
   SRCS CborReaderTest.cpp
