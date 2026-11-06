@@ -122,7 +122,7 @@ TEST_P(MoQRelayTest, FetchEmptyNamespaceAllowedV18) {
 }
 
 // Test: fetch fallback to subscriptions_ after publisher termination must not
-// crash. When findPublishNamespaceSession returns null (no publishNamespace),
+// crash. When findNamespacePublisher is unset (no publishNamespace),
 // fetch falls back to subscriptions_. After onPublishDone, upstream is null
 // but the subscription entry remains if the forwarder has subscribers.
 TEST_P(MoQRelayTest, FetchAfterPublisherTermination) {
@@ -130,7 +130,7 @@ TEST_P(MoQRelayTest, FetchAfterPublisherTermination) {
   auto subSession = createMockSession();
   auto fetchSession = createMockSession();
 
-  // Publish WITHOUT publishNamespace so findPublishNamespaceSession returns null
+  // Publish WITHOUT publishNamespace so findNamespacePublisher is unset
   // and fetch falls back to subscriptions_
   auto publishConsumer = doPublish(publisherSession, kTestTrackName, /*addToState=*/false);
 
@@ -786,6 +786,74 @@ TEST_P(MoQRelayTest, RequestUpdateFillFetchesUpstream) {
   EXPECT_EQ(standalone->start, (AbsoluteLocation{2, 0}));
   EXPECT_EQ(standalone->end, (AbsoluteLocation{5, 1}));
 
+  removeSession(publisherSession);
+  removeSession(subSession);
+  driveIfMultiThread();
+}
+
+// A REQUEST_UPDATE fill on a track that the relay PUBLISHed to the subscriber. MoQSession
+// dispatches the update in a request context that carries only the session.
+TEST_P(MoQRelayTest, RequestUpdateFillOnARelayPublishFetchesUpstream) {
+  auto publisherSession = createMockSession();
+  auto subSession = createMockSession(kVersionDraft22);
+  auto consumer = createMockConsumer();
+  std::shared_ptr<Publisher::SubscriptionHandle> peer;
+  RequestID publishID;
+  ON_CALL(*subSession, publish(_, _))
+      .WillByDefault([&](PublishRequest pub, std::shared_ptr<Publisher::SubscriptionHandle> h) {
+        peer = std::move(h);
+        publishID = pub.requestID;
+        PublishOk ok{
+            pub.requestID,
+            /*forward=*/true,
+            /*priority=*/128,
+            std::nullopt,
+            LocationFilter::nextObject()
+        };
+        return Subscriber::PublishResult(Subscriber::PublishConsumerAndReplyTask{
+            consumer,
+            folly::coro::makeTask<folly::Expected<PublishOk, PublishError>>(std::move(ok))
+        });
+      });
+  doPublishNamespace(publisherSession, kTestNamespace);
+  doSubscribeNamespace(subSession, kTestNamespace);
+  auto upstreamFetch = std::make_shared<Fetch>();
+  answerUpstreamFetch(*publisherSession, upstreamFetch);
+  withSessionContext(publisherSession, [&] {
+    PublishRequest pub;
+    pub.fullTrackName = kTestTrackName;
+    pub.largest = AbsoluteLocation{5, 0};
+    auto res = subscriberInterface()->publish(std::move(pub), makePublishHandle());
+    ASSERT_TRUE(res.hasValue());
+    getOrCreateMockState(publisherSession)->publishConsumers.push_back(res->consumer);
+    co_withExecutor(static_cast<folly::DrivableExecutor*>(exec_.get()), std::move(res->reply))
+        .start();
+  });
+  ASSERT_TRUE(driveUntil([&] { return peer != nullptr; })) << "the relay did not PUBLISH";
+
+  std::atomic<bool> fillEnded{false};
+  acceptFill(*consumer, RequestID(3), fillEnded);
+  RequestUpdate update;
+  update.requestID = RequestID(3);
+  update.existingRequestID = publishID;
+  update.fill = fillFrom({0, 0});
+  {
+    folly::RequestContextScopeGuard guard;
+    folly::RequestContext::get()->setContextData(
+        sessionRequestToken(),
+        std::make_unique<MoQSession::MoQSessionRequestData>(subSession)
+    );
+    auto res = folly::coro::blockingWait(peer->requestUpdate(std::move(update)), exec_.get());
+    EXPECT_TRUE(res.hasValue());
+  }
+
+  ASSERT_TRUE(driveUntil([&] { return fillEnded.load(); })) << "the fill did not end";
+  auto [standalone, joining] = fetchType(*upstreamFetch);
+  ASSERT_NE(standalone, nullptr);
+  EXPECT_EQ(standalone->start, (AbsoluteLocation{0, 0}));
+  EXPECT_EQ(standalone->end, (AbsoluteLocation{5, 1}));
+
+  peer.reset();
   removeSession(publisherSession);
   removeSession(subSession);
   driveIfMultiThread();

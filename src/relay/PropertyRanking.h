@@ -6,9 +6,10 @@
 
 #pragma once
 
+#include "relay/Participant.h"
+
 #include <folly/container/F14Map.h>
 #include <folly/container/F14Set.h>
-#include <moxygen/MoQSession.h>
 #include <moxygen/MoQTypes.h>
 
 #include <chrono>
@@ -59,12 +60,7 @@ struct RankKey {
  */
 struct RankedEntry {
   moxygen::FullTrackName ftn;
-  // Raw pointer for O(1) identity comparisons in hot paths (computeWaterlineKey,
-  // reconcilePublisherSelection). Safe because the caller holds a
-  // live shared_ptr to the session being compared, and removeTrack is called
-  // before session destruction. ABA protection is provided by the weak_ptr in
-  // publisherTrackCount_, not here.
-  moxygen::MoQSession* publisherRaw{nullptr};
+  moxygen::SessionId publisher;
 };
 
 /**
@@ -85,10 +81,11 @@ enum class TrackState { Selected, Deselected };
  * Per-session state within a TopNGroup.
  *
  * Self-exclusion is determined dynamically by comparing RankedEntry::publisher
- * with the session pointer. There's no separate "publishedTracks" set — a track
+ * with the session's id. There's no separate "publishedTracks" set — a track
  * is a self-track iff its publisher == this session.
  */
 struct SessionInfo {
+  Participant participant;
   bool forward{true};
 
   // Waterline for self-exclusion (publisher-subscribers only).
@@ -110,7 +107,7 @@ struct TopNGroup {
 
   // Session -> state mapping. Not redundant with MoqxRelay's namespace tree:
   // this groups sessions by N for O(1) batch notifications.
-  folly::F14FastMap<std::shared_ptr<moxygen::MoQSession>, SessionInfo> sessions;
+  folly::F14FastMap<moxygen::SessionId, SessionInfo, moxygen::SessionId::hash> sessions;
 
   // Track -> state (Selected or Deselected).
   // Only contains tracks that are either in top-N or in the deselected queue
@@ -136,20 +133,17 @@ struct TopNGroup {
  */
 class PropertyRanking {
 public:
-  using SelectCallback = std::function<void(
-      const moxygen::FullTrackName& ftn,
-      std::shared_ptr<moxygen::MoQSession> session,
-      bool forward
-  )>;
+  using SelectCallback = std::function<
+      void(const moxygen::FullTrackName& ftn, const Participant& subscriber, bool forward)>;
 
-  using EvictCallback = std::function<
-      void(const moxygen::FullTrackName& ftn, std::shared_ptr<moxygen::MoQSession> session)>;
+  using EvictCallback =
+      std::function<void(const moxygen::FullTrackName& ftn, const Participant& subscriber)>;
 
   // Batch notification callback for viewer sessions.
   // Called once per track state change with all affected sessions.
   using BatchSelectCallback = std::function<void(
       const moxygen::FullTrackName& ftn,
-      const std::vector<std::pair<std::shared_ptr<moxygen::MoQSession>, bool>>& sessions
+      const std::vector<std::pair<Participant, bool>>& subscribers
   )>;
 
   // Returns the last activity time for a track. Called during sweepIdle().
@@ -202,7 +196,7 @@ public:
   void registerTrack(
       const moxygen::FullTrackName& ftn,
       std::optional<uint64_t> initialPropertyValue,
-      std::shared_ptr<moxygen::MoQSession> publisher
+      moxygen::SessionId publisher
   );
 
   /**
@@ -222,33 +216,22 @@ public:
   TopNGroup& getOrCreateTopNGroup(uint64_t maxSelected);
 
   /**
-   * Add a session to a TopNGroup.
-   * Self-exclusion is automatic: if this session is the publisher of any
+   * Add a subscriber to a TopNGroup.
+   * Self-exclusion is automatic: if this subscriber is the publisher of any
    * registered track, those tracks will be excluded from its top-N selection.
    */
-  void addSessionToTopNGroup(
-      uint64_t maxSelected,
-      std::shared_ptr<moxygen::MoQSession> session,
-      bool forward
-  );
+  void addSubscriberToTopNGroup(uint64_t maxSelected, Participant subscriber, bool forward);
 
   /**
-   * Update the forward flag for a session in a TopNGroup.
+   * Update the forward flag for a subscriber in a TopNGroup.
    * Use case: subscriber initially joins with forward=false, later wants to forward.
    */
-  void updateSessionForward(
-      uint64_t maxSelected,
-      const std::shared_ptr<moxygen::MoQSession>& session,
-      bool forward
-  );
+  void updateSubscriberForward(uint64_t maxSelected, moxygen::SessionId subscriber, bool forward);
 
   /**
-   * Remove a session from a TopNGroup.
+   * Remove a subscriber from a TopNGroup.
    */
-  void removeSessionFromTopNGroup(
-      uint64_t maxSelected,
-      const std::shared_ptr<moxygen::MoQSession>& session
-  );
+  void removeSubscriberFromTopNGroup(uint64_t maxSelected, moxygen::SessionId subscriber);
 
   /**
    * Remove TopNGroup (last subscriber with this N left).
@@ -324,29 +307,24 @@ private:
   void promoteNextAvailableTrack(TopNGroup& group, const moxygen::FullTrackName& excludeFtn);
 
   // Check if session owns any tracks in rankedTracks_ (is a publisher).
-  bool isPublisher(const std::shared_ptr<moxygen::MoQSession>& session) const;
+  bool isPublisher(moxygen::SessionId session) const;
 
   // Compute the waterline key for a publisher-subscriber session.
   // Returns the RankKey of the Nth non-self track (the lowest-ranked track
   // that should still be selected for this session). Returns nullopt if
   // fewer than N non-self tracks exist (meaning all non-self tracks are selected).
-  std::optional<RankKey> computeWaterlineKey(
-      const std::shared_ptr<moxygen::MoQSession>& session,
-      uint64_t maxSelected
-  ) const;
+  std::optional<RankKey>
+  computeWaterlineKey(moxygen::SessionId session, uint64_t maxSelected) const;
 
   // Recompute the publisher's personal top-N and fire callbacks for the delta.
   // Evicts tracks that left the selection; selects tracks that entered it.
   // Updates info.waterlineKey and info.selectedTracks to reflect the new state.
-  void reconcilePublisherSelection(
-      SessionInfo& info,
-      uint64_t maxSelected,
-      const std::shared_ptr<moxygen::MoQSession>& session
-  );
+  void
+  reconcilePublisherSelection(SessionInfo& info, uint64_t maxSelected, moxygen::SessionId session);
 
   // Reconcile all TopNGroups where session appears, handling the case where
   // a newly-registered track makes a viewer into a publisher-subscriber.
-  void reconcilePublisherInAllGroups(const std::shared_ptr<moxygen::MoQSession>& session);
+  void reconcilePublisherInAllGroups(moxygen::SessionId session);
 
   void invalidateRankCache() { rankCacheValid_ = false; }
 
@@ -371,7 +349,7 @@ private:
   // MoQSession::cleanup() reliably fires removeTrack for all tracks on session
   // close (via subscribeError → processPublishDone → cb->publishDone), so the
   // map never holds zombie entries.
-  folly::F14FastMap<moxygen::MoQSession*, size_t> publisherTrackCount_;
+  folly::F14FastMap<moxygen::SessionId, size_t, moxygen::SessionId::hash> publisherTrackCount_;
 
   uint64_t nextSeq_{0};
   uint64_t selectionThreshold_{0};

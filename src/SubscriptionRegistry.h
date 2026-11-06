@@ -7,13 +7,13 @@
 #pragma once
 
 #include "relay/ForwarderRef.h"
+#include "relay/Participant.h"
 #include "relay/RecentGroupWindow.h"
 #include "relay/TopNFilter.h"
 #include <folly/Function.h>
 #include <folly/container/F14Map.h>
 #include <folly/coro/SharedPromise.h>
 #include <folly/coro/Task.h>
-#include <moxygen/MoQSession.h>
 #include <moxygen/relay/MoQForwarder.h>
 
 #include <chrono>
@@ -91,12 +91,12 @@ public:
 
     // Re-finds by ftn and checks the epoch, so a reconnecting publisher that
     // replaced the entry during the caller's co_await suspension is not mistaken
-    // for it. Sets handle, requestID, upstreamSession, publisher; fulfills
+    // for it. Sets handle, requestID, upstream, publisher; fulfills
     // promise. Returns false if entry is gone or replaced.
     bool complete(
         std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle,
         moxygen::RequestID requestID,
-        std::shared_ptr<moxygen::MoQSession> upstreamSession,
+        std::shared_ptr<const ParticipantInfo> upstream,
         std::shared_ptr<moxygen::Publisher> publisher
     );
 
@@ -156,7 +156,7 @@ public:
   PublishEntry createFromPublish(
       const moxygen::FullTrackName& ftn,
       ForwarderRef forwarder,
-      std::shared_ptr<moxygen::MoQSession> session,
+      std::shared_ptr<const ParticipantInfo> publisherInfo,
       std::shared_ptr<moxygen::Publisher> publisher,
       moxygen::RequestID requestID,
       std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle,
@@ -218,7 +218,7 @@ public:
   struct EntryView {
     const moxygen::FullTrackName& ftn;
     const ForwarderRef& forwarder;
-    std::shared_ptr<moxygen::MoQSession> upstream;
+    std::shared_ptr<const ParticipantInfo> upstream;
     bool isPublish;
     std::chrono::steady_clock::time_point lastObjectTime;
     const IngestCounters& ingest;
@@ -232,7 +232,7 @@ public:
 
 private:
   struct RelaySubscription {
-    RelaySubscription(ForwarderRef f, std::shared_ptr<moxygen::MoQSession> u, EntryEpoch e)
+    RelaySubscription(ForwarderRef f, std::shared_ptr<const ParticipantInfo> u, EntryEpoch e)
         : forwarder(std::move(f)), epoch(e), upstream(std::move(u)),
           lastObjectTime(std::chrono::steady_clock::now()) {}
     // The publisher's filter chain can outlive this entry.
@@ -244,9 +244,10 @@ private:
 
     ForwarderRef forwarder;
     EntryEpoch epoch;
-    std::shared_ptr<moxygen::MoQSession> upstream;
+    std::shared_ptr<const ParticipantInfo> upstream;
     std::shared_ptr<moxygen::Publisher> publisher;
     moxygen::RequestID requestID{0};
+    // TODO(#676): can keep the publisher's session alive past its executor. See UpstreamHandles.
     std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle;
     folly::coro::SharedPromise<folly::Unit> promise;
     bool isPublish{false};
@@ -262,7 +263,7 @@ private:
       EntryEpoch epoch,
       std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle,
       moxygen::RequestID requestID,
-      std::shared_ptr<moxygen::MoQSession> upstreamSession,
+      std::shared_ptr<const ParticipantInfo> upstream,
       std::shared_ptr<moxygen::Publisher> publisher
   );
 
