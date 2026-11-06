@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <moxygen/MoQFramer.h>
 #include <moxygen/MoQTypes.h>
 #include <moxygen/Publisher.h>
 #include <moxygen/Subscriber.h>
@@ -17,9 +18,36 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace openmoq::moqx {
+
+class RouteCodec;
+
+// Routes that touch a participant: routes it announced, and routes whose path runs through
+// its hop.
+struct RouteExclusion {
+  std::optional<moxygen::SessionId> session;   // routes announced on this session
+  uint64_t hop{moxygen::kMoQClusterAnonHopId}; // routes whose path contains it; 0 disables it
+};
+
+// How a participant's routes are read, written and filtered.
+struct ParticipantRouting {
+  // From the session's SETUP.
+  bool relayHops{false};                             // negotiated MoQ Cluster
+  uint64_t peerHopID{moxygen::kMoQClusterAnonHopId}; // its MoQ Cluster Hop ID
+  uint64_t linkCost{1};                              // added to each route it announces
+
+  // Chosen by PeeringBackend::routingFor().
+  std::shared_ptr<const RouteCodec> codec;
+  // Its routes are learned through relay peering, so they coexist with other routes.
+  bool fromPeering{false};
+  // The relay re-advertises an announcement to it when the best route changes.
+  bool wantsUpdates{false};
+  // Routes that its requests skip and that the relay does not advertise to it.
+  std::optional<RouteExclusion> exclusion;
+};
 
 // Facts about whoever is on the other end of a request, taken at its first request. It is a value,
 // so relay code can read it on any thread and cannot call the participant through it.
@@ -27,11 +55,9 @@ struct ParticipantInfo {
   moxygen::SessionId sessionId;
   uint64_t version{0};
   folly::Executor* executor{nullptr};
-  bool relayHops{false};
-  uint64_t peerHopID{0};
-  uint64_t linkCost{1};
   std::string address;
   std::string authority;
+  ParticipantRouting routing;
 };
 
 // What the relay keeps about a participant. publisher and subscriber are callable from the relay's

@@ -112,7 +112,7 @@ public:
         }
         w_.endArray();
         w_.field("cost", route.cost);
-        w_.field("from_cluster", route.fromCluster);
+        w_.field("from_peering", route.fromPeering);
         w_.endObject();
       }
       w_.endArray();
