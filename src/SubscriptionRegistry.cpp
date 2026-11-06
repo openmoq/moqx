@@ -8,12 +8,14 @@
 
 #include <folly/logging/xlog.h>
 
+#include <algorithm>
+
 namespace openmoq::moqx {
 
 // === UpstreamSubscribePending ===
 
 bool SubscriptionRegistry::UpstreamSubscribePending::complete(
-    std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle,
+    ExecBound<std::shared_ptr<moxygen::Publisher::SubscriptionHandle>> handle,
     moxygen::RequestID requestID,
     std::shared_ptr<const ParticipantInfo> upstream,
     std::shared_ptr<moxygen::Publisher> publisher
@@ -97,7 +99,7 @@ folly::coro::Task<SubscriptionRegistry::SubsequentSubscriber> SubscriptionRegist
 bool SubscriptionRegistry::completeSubscription(
     const moxygen::FullTrackName& ftn,
     EntryEpoch epoch,
-    std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle,
+    ExecBound<std::shared_ptr<moxygen::Publisher::SubscriptionHandle>> handle,
     moxygen::RequestID requestID,
     std::shared_ptr<const ParticipantInfo> upstream,
     std::shared_ptr<moxygen::Publisher> publisher
@@ -138,12 +140,11 @@ SubscriptionRegistry::PublishEntry SubscriptionRegistry::createFromPublish(
   // publishDone → onEmpty may fire during the erase.
   auto it = subscriptions_.find(ftn);
   if (it != subscriptions_.end()) {
-    auto* oldPublisherExec = it->second.upstream ? it->second.upstream->executor : nullptr;
-    evicted =
-        Evicted{std::move(it->second.forwarder), std::move(it->second.handle), oldPublisherExec};
+    evicted = Evicted{std::move(it->second.forwarder), std::move(it->second.handle)};
     subscriptions_.erase(it);
   }
 
+  auto* publisherExec = publisherInfo->executor;
   auto [emplaceIt, inserted] = subscriptions_.emplace(
       std::piecewise_construct,
       std::forward_as_tuple(ftn),
@@ -152,7 +153,7 @@ SubscriptionRegistry::PublishEntry SubscriptionRegistry::createFromPublish(
   auto& rsub = emplaceIt->second;
   rsub.promise.setValue(folly::unit);
   rsub.requestID = requestID;
-  rsub.handle = std::move(handle);
+  rsub.handle = {std::move(handle), publisherExec};
   rsub.publisher = std::move(publisher);
   rsub.isPublish = true;
 
@@ -163,6 +164,12 @@ SubscriptionRegistry::PublishEntry SubscriptionRegistry::createFromPublish(
   topNFilter->setActivityTarget(&rsub.lastObjectTime);
 
   return PublishEntry{std::move(consumer), std::move(evicted)};
+}
+
+bool SubscriptionRegistry::holdsHandles() const {
+  return std::any_of(subscriptions_.begin(), subscriptions_.end(), [](const auto& entry) {
+    return static_cast<bool>(entry.second.handle);
+  });
 }
 
 bool SubscriptionRegistry::exists(const moxygen::FullTrackName& ftn) const {
@@ -198,7 +205,7 @@ SubscriptionRegistry::getUpstreamView(const moxygen::FullTrackName& ftn) const {
   return UpstreamView{
       rsub.forwarder,
       rsub.publisher,
-      rsub.handle,
+      static_cast<bool>(rsub.handle),
       rsub.requestID,
       rsub.upstream ? rsub.upstream->executor : nullptr,
       rsub.isPublish,
