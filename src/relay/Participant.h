@@ -144,4 +144,7 @@ private:
   folly::RequestContextScopeGuard guard_;
 };
 
+// Draws from the sequence that MoQSession ids come from, so ids stay unique across both.
+moxygen::SessionId makeSessionId();
+
 } // namespace openmoq::moqx

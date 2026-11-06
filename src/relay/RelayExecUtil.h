@@ -10,7 +10,6 @@
 #include "PublisherCrossExecFilter.h"
 #include <folly/Executor.h>
 #include <memory>
-#include <moxygen/MoQSession.h>
 #include <utility>
 
 namespace openmoq::moqx {

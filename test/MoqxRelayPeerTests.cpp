@@ -22,7 +22,8 @@ TEST_P(MoQRelayTest, NamespaceBridgeHandleForwardsNamespaceMsg) {
 
   // Bridge handle routes NAMESPACE messages from peerSession into the relay.
   // For peering the subscription prefix is empty, so the suffix == full namespace.
-  auto handle = makeNamespaceBridgeHandle(relay_, participantOf(peerSession));
+  auto handle =
+      makeNamespaceBridgeHandle(relay_, participantOf(peerSession), {}, relay_->getRelayExec());
   handle->namespaceMsg(kTestNamespace);
 
   verifyOnRelayExec([&] {
@@ -39,7 +40,8 @@ TEST_P(MoQRelayTest, NamespaceBridgeHandleForwardsNamespaceMsg) {
 // Test: makeNamespaceBridgeHandle routes namespaceDoneMsg to doPublishNamespaceDone
 TEST_P(MoQRelayTest, NamespaceBridgeHandleForwardsDoneMsg) {
   auto peerSession = createMockSession();
-  auto handle = makeNamespaceBridgeHandle(relay_, participantOf(peerSession));
+  auto handle =
+      makeNamespaceBridgeHandle(relay_, participantOf(peerSession), {}, relay_->getRelayExec());
 
   handle->namespaceMsg(kTestNamespace);
   verifyOnRelayExec([&] { EXPECT_EQ(relay_->findNamespacePublishers(kTestNamespace).size(), 1u); });
@@ -74,7 +76,12 @@ TEST_P(MoQRelayTest, PeerNamespaceNotEchoedBackOnReconnect) {
   // Step 1: session1 is the peer's old (unreaped) connection.  Inject NS as
   // if it arrived from peer "jp-osa-1" via the bridge handle.
   auto session1 = createMockSession();
-  auto bridgeHandle = makeNamespaceBridgeHandle(relay_, participantOf(session1), "jp-osa-1");
+  auto bridgeHandle = makeNamespaceBridgeHandle(
+      relay_,
+      participantOf(session1),
+      "jp-osa-1",
+      relay_->getRelayExec()
+  );
   bridgeHandle->namespaceMsg(kTestNamespace);
   verifyOnRelayExec([&] { EXPECT_EQ(relay_->findNamespacePublishers(kTestNamespace).size(), 1u); });
 
@@ -351,8 +358,12 @@ TEST_P(MoQRelayTest, BridgeHandleDestructorCleansUpNamespaces) {
 
   // Simulate the bridge path: create a handle and announce a namespace through
   // it, as happens when the relay subscribes to an upstream/peer.
-  auto bridgeHandle =
-      makeNamespaceBridgeHandle(relay_, participantOf(upstreamSession), /*peerID=*/{});
+  auto bridgeHandle = makeNamespaceBridgeHandle(
+      relay_,
+      participantOf(upstreamSession),
+      /*peerID=*/{},
+      relay_->getRelayExec()
+  );
   bridgeHandle->namespaceMsg(kTestNamespace);
   verifyOnRelayExec([&] { EXPECT_EQ(relay_->findNamespacePublishers(kTestNamespace).size(), 1u); });
 
@@ -377,12 +388,22 @@ TEST_P(MoQRelayTest, BridgeHandleDestructorDoesNotEvictNewPublisher) {
   auto session2 = createMockSession();
 
   // session1 announces NS via bridge handle.
-  auto bridgeHandle1 = makeNamespaceBridgeHandle(relay_, participantOf(session1), /*peerID=*/{});
+  auto bridgeHandle1 = makeNamespaceBridgeHandle(
+      relay_,
+      participantOf(session1),
+      /*peerID=*/{},
+      relay_->getRelayExec()
+  );
   bridgeHandle1->namespaceMsg(kTestNamespace);
   verifyOnRelayExec([&] { EXPECT_EQ(relay_->findNamespacePublishers(kTestNamespace).size(), 1u); });
 
   // session2 takes over NS (conflict path evicts session1, sets sourceSession=session2).
-  auto bridgeHandle2 = makeNamespaceBridgeHandle(relay_, participantOf(session2), /*peerID=*/{});
+  auto bridgeHandle2 = makeNamespaceBridgeHandle(
+      relay_,
+      participantOf(session2),
+      /*peerID=*/{},
+      relay_->getRelayExec()
+  );
   bridgeHandle2->namespaceMsg(kTestNamespace);
   verifyOnRelayExec([&] { EXPECT_EQ(relay_->findNamespacePublishers(kTestNamespace).size(), 1u); });
 

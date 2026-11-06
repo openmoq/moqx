@@ -7,6 +7,7 @@
 #include "relay/Participant.h"
 
 #include <folly/logging/xlog.h>
+#include <moxygen/MoQSession.h>
 
 namespace openmoq::moqx {
 
@@ -41,6 +42,10 @@ void attachParticipant(Participant participant) {
 
 ParticipantScope::ParticipantScope(Participant participant) {
   attachParticipant(std::move(participant));
+}
+
+moxygen::SessionId makeSessionId() {
+  return moxygen::MoQSession::makeSessionId();
 }
 
 } // namespace openmoq::moqx

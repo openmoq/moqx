@@ -13,6 +13,8 @@
 #include <algorithm>
 #include <string_view>
 
+#include "relay/SessionConfined.h"
+
 using namespace moxygen;
 
 namespace openmoq::moqx {
