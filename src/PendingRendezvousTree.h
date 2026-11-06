@@ -18,10 +18,6 @@
 #include <string>
 #include <vector>
 
-namespace moxygen {
-class MoQSession;
-} // namespace moxygen
-
 namespace openmoq::moqx {
 
 // Tree of SUBSCRIBEs parked on a namespace/track that isn't published yet
@@ -80,11 +76,9 @@ private:
 inline constexpr std::chrono::milliseconds kMaxRendezvousTimeout{30'000};
 
 // Clamped timeout if this SUBSCRIBE asks for a rendezvous, else nullopt; consumes the
-// param regardless of clamping. Reads nothing but subReq/session, so callers may
+// param regardless of clamping. Reads nothing but its arguments, so callers may
 // screen on any exec before hopping.
-std::optional<std::chrono::milliseconds> takeRendezvousTimeout(
-    moxygen::SubscribeRequest& subReq,
-    const std::shared_ptr<moxygen::MoQSession>& session
-);
+std::optional<std::chrono::milliseconds>
+takeRendezvousTimeout(moxygen::SubscribeRequest& subReq, uint64_t subscriberVersion);
 
 } // namespace openmoq::moqx

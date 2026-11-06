@@ -8,6 +8,7 @@
 #include "MoQIntegrationTestFixture.h"
 #include "MoqxRelay.h"
 #include "MoqxRelayContext.h"
+#include "relay/SessionParticipant.h"
 
 #include <folly/SocketAddress.h>
 #include <folly/coro/Baton.h>
@@ -965,6 +966,7 @@ protected:
   // is preserved across suspension / resumption by folly's coro framework.
   folly::coro::Task<void> subscribeTask(std::shared_ptr<MoQSession> sess, SubscribeRequest req) {
     folly::RequestContextScopeGuard ctx;
+    attachParticipant(SessionParticipant::makeParticipant(sess));
     folly::RequestContext::get()->setContextData(
         folly::RequestToken("moq_session"),
         std::make_unique<MoQSession::MoQSessionRequestData>(std::move(sess))

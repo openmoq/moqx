@@ -10,7 +10,6 @@
 #include <folly/portability/GMock.h>
 #include <folly/portability/GTest.h>
 #include <moxygen/MoQVersions.h>
-#include <moxygen/test/MockMoQSession.h>
 
 using namespace testing;
 using namespace moxygen;
@@ -28,13 +27,6 @@ constexpr auto kNotSignaledTimeout = 20ms;
 bool waitFor(const std::shared_ptr<TimedBaton>& waiter, std::chrono::milliseconds timeout) {
   auto res = folly::coro::blockingWait(folly::coro::co_awaitTry(waiter->wait(timeout)));
   return !res.hasException();
-}
-
-std::shared_ptr<moxygen::test::MockMoQSession> makeV18Session() {
-  auto session = std::make_shared<NiceMock<moxygen::test::MockMoQSession>>();
-  ON_CALL(*session, getNegotiatedVersion())
-      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft18)));
-  return session;
 }
 } // namespace
 
@@ -176,7 +168,6 @@ TEST_F(PendingRendezvousTreeTest, MultipleWaitersUnderNamespaceAllSignaledByOneW
 // RENDEZVOUS_TIMEOUT is clamped to kMaxRendezvousTimeout regardless of how
 // large the client requests it.
 TEST_F(PendingRendezvousTreeTest, TakeRendezvousTimeoutClampedToMax) {
-  auto session = makeV18Session();
   SubscribeRequest sub;
   sub.fullTrackName = FullTrackName{TrackNamespace{{"test", "ns"}}, "track"};
   sub.params.setMajorVersion(getDraftMajorVersion(kVersionDraft18));
@@ -187,7 +178,7 @@ TEST_F(PendingRendezvousTreeTest, TakeRendezvousTimeoutClampedToMax) {
                   ))
                   .hasValue());
 
-  auto clamped = takeRendezvousTimeout(sub, session);
+  auto clamped = takeRendezvousTimeout(sub, kVersionDraft18);
 
   ASSERT_TRUE(clamped.has_value());
   EXPECT_EQ(*clamped, kMaxRendezvousTimeout);
@@ -197,7 +188,6 @@ TEST_F(PendingRendezvousTreeTest, TakeRendezvousTimeoutClampedToMax) {
 
 // A request under the ceiling passes through unclamped.
 TEST_F(PendingRendezvousTreeTest, TakeRendezvousTimeoutUnderMaxPassesThrough) {
-  auto session = makeV18Session();
   SubscribeRequest sub;
   sub.fullTrackName = FullTrackName{TrackNamespace{{"test", "ns"}}, "track"};
   sub.params.setMajorVersion(getDraftMajorVersion(kVersionDraft18));
@@ -209,7 +199,7 @@ TEST_F(PendingRendezvousTreeTest, TakeRendezvousTimeoutUnderMaxPassesThrough) {
           .hasValue()
   );
 
-  auto timeout = takeRendezvousTimeout(sub, session);
+  auto timeout = takeRendezvousTimeout(sub, kVersionDraft18);
 
   ASSERT_TRUE(timeout.has_value());
   EXPECT_EQ(*timeout, std::chrono::milliseconds(5000));

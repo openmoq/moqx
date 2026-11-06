@@ -13,6 +13,7 @@
 
 #include "MoqxRelay.h"
 #include "relay/PublisherCrossExecFilter.h"
+#include "relay/SessionParticipant.h"
 #include "relay/SubscriberCrossExecFilter.h"
 #include <atomic>
 #include <folly/Try.h>
@@ -212,6 +213,7 @@ protected:
   template <typename Func>
   auto withSessionContext(std::shared_ptr<MoQSession> session, Func&& func) -> decltype(func()) {
     folly::RequestContextScopeGuard guard;
+    attachParticipant(SessionParticipant::makeParticipant(session));
     folly::RequestContext::get()->setContextData(
         sessionRequestToken(),
         std::make_unique<MoQSession::MoQSessionRequestData>(std::move(session))

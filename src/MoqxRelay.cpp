@@ -123,14 +123,11 @@ bool shouldForwardNamespace(
 
 // Routes that a request from requester may not use. Unset unless it negotiated MoQ Cluster.
 std::optional<openmoq::moqx::RouteExclusion>
-exclusionFor(const std::shared_ptr<moxygen::MoQSession>& requester) {
-  if (!requester || !requester->negotiatedSetupExtension(moxygen::SetupExtension::RelayHops)) {
+exclusionFor(const openmoq::moqx::ParticipantInfo& requester) {
+  if (!requester.relayHops) {
     return std::nullopt;
   }
-  return openmoq::moqx::RouteExclusion{
-      .session = requester->sessionId(),
-      .hop = requester->getPeerHopID()
-  };
+  return openmoq::moqx::RouteExclusion{.session = requester.sessionId, .hop = requester.peerHopID};
 }
 
 // Below draft 22, rejects a bounded subscription whose end group is already behind
@@ -139,9 +136,9 @@ exclusionFor(const std::shared_ptr<moxygen::MoQSession>& requester) {
 std::optional<moxygen::SubscribeError> checkRangeNotInPast(
     moxygen::MoQForwarder& fwd,
     const moxygen::SubscribeRequest& subReq,
-    const moxygen::MoQSession& session
+    uint64_t subscriberVersion
 ) {
-  if (moxygen::useFillFetch(session.getNegotiatedVersion().value_or(0))) {
+  if (moxygen::useFillFetch(subscriberVersion)) {
     return std::nullopt;
   }
   auto endGroup = subReq.filter.legacyEndGroup();
@@ -201,20 +198,21 @@ public:
       std::shared_ptr<moxygen::TrackConsumer> consumer
   ) override {
     auto session = moxygen::MoQSession::getRequestSession();
-    if (subReq.fullTrackName.trackNamespace.empty() && !MoqxRelay::emptyNamespaceAllowed(session)) {
+    const auto& subscriber = *requestParticipant().info;
+    if (subReq.fullTrackName.trackNamespace.empty() &&
+        !MoqxRelay::emptyNamespaceAllowed(subscriber)) {
       co_return folly::makeUnexpected(moxygen::SubscribeError{
           subReq.requestID,
           moxygen::SubscribeErrorCode::DOES_NOT_EXIST,
           "namespace required"
       });
     }
-    auto* subscriberExec = session->getExecutor();
-    // No executor hop: subscribeFromSubscriberExec starts on subscriberExec.
+    // No executor hop: subscribeFromSubscriberExec starts on the subscriber's executor.
     co_return co_await relay_->subscribeFromSubscriberExec(
         std::move(subReq),
         std::move(consumer),
         std::move(session),
-        subscriberExec
+        subscriber
     );
   }
 
@@ -228,18 +226,13 @@ public:
 
   folly::coro::Task<FetchResult>
   fetch(moxygen::Fetch fetch, std::shared_ptr<moxygen::FetchConsumer> consumer) override {
-    auto session = moxygen::MoQSession::getRequestSession();
-    auto setup = relay_->resolveJoiningFetchOnSubscriberExec(fetch, *session);
+    const auto& subscriber = *requestParticipant().info;
+    auto setup = relay_->resolveJoiningFetchOnSubscriberExec(fetch, subscriber);
     if (setup.hasError()) {
       return folly::coro::makeTask<FetchResult>(folly::makeUnexpected(std::move(setup.error())));
     }
     if (!setup->isReady()) {
-      return fetchAfterSetup(
-          std::move(*setup),
-          std::move(fetch),
-          std::move(session),
-          std::move(consumer)
-      );
+      return fetchAfterSetup(std::move(*setup), std::move(fetch), subscriber, std::move(consumer));
     }
     // Base filter wraps + hops to relayExec_.
     return PublisherCrossExecFilter::fetch(std::move(fetch), std::move(consumer));
@@ -249,7 +242,7 @@ private:
   folly::coro::Task<FetchResult> fetchAfterSetup(
       folly::SemiFuture<folly::Unit> setup,
       moxygen::Fetch fetch,
-      std::shared_ptr<moxygen::MoQSession> session,
+      ParticipantInfo subscriber,
       std::shared_ptr<moxygen::FetchConsumer> consumer
   ) {
     // A joining fetch pipelined behind its SUBSCRIBE resolves against the Largest from that
@@ -257,7 +250,7 @@ private:
     // failed one.
     do {
       co_await folly::coro::co_awaitTry(std::move(setup));
-      auto next = relay_->resolveJoiningFetchOnSubscriberExec(fetch, *session);
+      auto next = relay_->resolveJoiningFetchOnSubscriberExec(fetch, subscriber);
       if (next.hasError()) {
         co_return folly::makeUnexpected(std::move(next.error()));
       }
@@ -294,7 +287,12 @@ public:
       std::shared_ptr<moxygen::SubscriptionHandle> handle
   ) override {
     auto session = moxygen::MoQSession::getRequestSession();
-    return relay_->publishFromPublisherExec(std::move(pub), std::move(handle), std::move(session));
+    return relay_->publishFromPublisherExec(
+        std::move(pub),
+        std::move(handle),
+        std::move(session),
+        *requestParticipant().info
+    );
   }
 
 private:
@@ -810,10 +808,8 @@ std::optional<PublishError> MoqxRelay::validatePublishNamespace(
 }
 
 // Draft 18+ allows an empty track namespace (PUBLISH/SUBSCRIBE/FETCH/TRACK_STATUS).
-bool MoqxRelay::emptyNamespaceAllowed(const std::shared_ptr<MoQSession>& session) {
-  auto maybeNegotiatedVersion = session->getNegotiatedVersion();
-  XCHECK(maybeNegotiatedVersion.has_value());
-  return getDraftMajorVersion(*maybeNegotiatedVersion) >= 18;
+bool MoqxRelay::emptyNamespaceAllowed(const ParticipantInfo& participant) {
+  return getDraftMajorVersion(participant.version) >= 18;
 }
 
 // Chain and entry claim are one call: LocalForwarderCallback vacates the entry when the
@@ -845,12 +841,13 @@ LocalForwarderRegistry::ParkResult MoqxRelay::installPublisherForwarder(
 Subscriber::PublishResult MoqxRelay::publishFromPublisherExec(
     PublishRequest pub,
     std::shared_ptr<Publisher::SubscriptionHandle> handle,
-    std::shared_ptr<MoQSession> session
+    std::shared_ptr<MoQSession> session,
+    const ParticipantInfo& publisher
 ) {
   if (auto err = validatePublishNamespace(
           pub.fullTrackName,
           pub.requestID,
-          emptyNamespaceAllowed(session)
+          emptyNamespaceAllowed(publisher)
       )) {
     return folly::makeUnexpected(std::move(*err));
   }
@@ -871,7 +868,7 @@ Subscriber::PublishResult MoqxRelay::publishFromPublisherExec(
   // does not count as a real forwarding subscriber.
   localPubFwd->addSubscriber(relayChannelId_, /*forward=*/true, crossExecFilter, /*passive=*/true);
 
-  auto publisherRef = makeForwarderRef(localPubFwd, session->getExecutor());
+  auto publisherRef = makeForwarderRef(localPubFwd, publisher.executor);
   auto ftn = pub.fullTrackName;
   auto reply = folly::coro::co_invoke(
       [exec = relayExec_,
@@ -943,19 +940,20 @@ MoqxRelay::publish(PublishRequest pub, std::shared_ptr<Publisher::SubscriptionHa
   // getRequestSession() stays valid on relayExec_: RequestContext propagates
   // across the filter's executor hop. Validate before touching state.
   auto session = MoQSession::getRequestSession();
+  const auto& publisher = *requestParticipant().info;
   if (auto err = validatePublishNamespace(
           pub.fullTrackName,
           pub.requestID,
-          emptyNamespaceAllowed(session)
+          emptyNamespaceAllowed(publisher)
       )) {
     return folly::makeUnexpected(std::move(*err));
   }
   XCHECK(mode() != Mode::LocalForwarder) << "publish() bypassed by LocalPublishFilter in LF mode";
 
-  maybeSetSessionExec(*session);
+  maybeSetSessionExec(publisher);
   auto forwarder = std::make_shared<MoQForwarder>(pub.fullTrackName, pub.largest);
   forwarder->setExtensions(pub.extensions);
-  auto publisherRef = makeForwarderRef(forwarder, session->getExecutor());
+  auto publisherRef = makeForwarderRef(forwarder, publisher.executor);
   auto setup = publishWithSession(
       std::move(pub),
       std::move(handle),
@@ -1907,6 +1905,8 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
   XLOG(DBG1) << __func__ << " nsp=" << subNs.trackNamespacePrefix;
 
   auto session = MoQSession::getRequestSession();
+  const auto subscriberInfo = requestParticipant().info;
+  const ParticipantInfo& subscriber = *subscriberInfo;
 
   // Relay peering: if the incoming subNs carries a relay auth token, the peer
   // is a relay. Reciprocate with our own peer subNs so the peer gets our
@@ -1931,7 +1931,7 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
       XLOG(ERR) << "Reciprocal peer subNs failed: " << recipResult.error().reasonPhrase;
     } else {
       std::shared_ptr<Publisher::SubscribeTracksHandle> recipTracks;
-      if (getDraftMajorVersion(*session->getNegotiatedVersion()) >= 18) {
+      if (getDraftMajorVersion(subscriber.version) >= 18) {
         auto tracks = co_await maybeWrapPublisher(relayExec_, session)
                           ->subscribeTracks(makePeerSubTracks(relayID_), nullptr);
         co_await folly::coro::co_safe_point;
@@ -1942,22 +1942,19 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
         }
       }
       peerSubNsHandles_.emplace(
-          session->sessionId(),
+          subscriber.sessionId,
           PeerInfo{
               std::move(recipResult.value()),
               std::move(recipTracks),
               std::move(*peerID),
-              session->getPeerAddress().describe(),
-              std::string(session->getAuthority())
+              subscriber.address,
+              subscriber.authority
           }
       );
     }
     // Fall through: register the peer as a normal subNs subscriber so it
     // receives namespace announcements as publishers connect.
   }
-  auto maybeNegotiatedVersion = session->getNegotiatedVersion();
-  CHECK(maybeNegotiatedVersion.has_value());
-
   SubscribeNamespaceOptions effectiveOptions;
   effectiveOptions = subNs.options;
 
@@ -1989,7 +1986,7 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
 
   // Peer relay subNs uses an empty prefix by design, so it is exempt from the limit;
   // NAMESPACE_TOO_LARGE doesn't apply pre-18.
-  bool enforceLimit = incomingPeerID.empty() && getDraftMajorVersion(*maybeNegotiatedVersion) >= 18;
+  bool enforceLimit = incomingPeerID.empty() && getDraftMajorVersion(subscriber.version) >= 18;
   // A small maxSelected only bounds track fan-out (via PropertyRanking); it doesn't
   // limit namespaceMatches, so namespace fan-out must always count toward the threshold.
   bool trackFilterExempt = trackFilter && trackFilter->maxSelected < kMaxNamespaceMatches;
@@ -2112,9 +2109,7 @@ folly::coro::Task<Publisher::SubscribeTracksResult> MoqxRelay::subscribeTracks(
   XLOG(DBG1) << __func__ << " nsp=" << subTracks.trackNamespacePrefix;
 
   auto session = MoQSession::getRequestSession();
-  auto maybeNegotiatedVersion = session->getNegotiatedVersion();
-  XCHECK(maybeNegotiatedVersion.has_value());
-  if (getDraftMajorVersion(*maybeNegotiatedVersion) < 18) {
+  if (getDraftMajorVersion(requestParticipant().info->version) < 18) {
     co_return folly::makeUnexpected(SubscribeTracksError{
         subTracks.requestID,
         SubscribeTracksErrorCode::NOT_SUPPORTED,
@@ -2346,13 +2341,14 @@ folly::coro::Task<MoqxRelay::PublisherAttachment> MoqxRelay::attachNewLocalForwa
     std::shared_ptr<CrossExecFilter> crossExecFilter,
     bool forward,
     SessionId subscriberId,
+    std::optional<RouteExclusion> exclusion,
     std::shared_ptr<TrackConsumer> consumer
 ) {
   // Runs on relayExec_.
   const auto& ftn = subReq.fullTrackName;
   PublisherAttachment attach;
 
-  auto sr = co_await joinOrPrepareUpstreamSubscription(subReq);
+  auto sr = co_await joinOrPrepareUpstreamSubscription(subReq, std::move(exclusion));
   if (sr.error) {
     attach.error = std::move(*sr.error);
     co_return attach; // pending dtor fires when sr is destroyed, cleaning the registry
@@ -2503,10 +2499,11 @@ folly::coro::Task<MoqxRelay::PublisherAttachment> MoqxRelay::attachNewLocalForwa
 // Runs on relayExec_: registry lookup + FirstSubscriber setup. Defers the upstream
 // subscribe to attachNewLocalForwarderOnRelayExec (issued from its publisherExec sortie,
 // after the channel subs are installed); returns firstSetup for it to complete.
-folly::coro::Task<MoqxRelay::StatefulSubscribeResult>
-MoqxRelay::joinOrPrepareUpstreamSubscription(SubscribeRequest subReq) {
+folly::coro::Task<MoqxRelay::StatefulSubscribeResult> MoqxRelay::joinOrPrepareUpstreamSubscription(
+    SubscribeRequest subReq,
+    std::optional<RouteExclusion> exclusion
+) {
   const auto& ftn = subReq.fullTrackName;
-  const auto exclusion = exclusionFor(MoQSession::getRequestSession());
 
   if (!registry_.exists(ftn) && !upstreams_.empty() &&
       !findUpstreamPublisher(ftn.trackNamespace, exclusion)) {
@@ -2598,15 +2595,17 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriber
     SubscribeRequest subReq,
     std::shared_ptr<TrackConsumer> consumer,
     std::shared_ptr<MoQSession> session,
-    folly::Executor* subscriberExec
+    ParticipantInfo subscriber
 ) {
   const auto& ftn = subReq.fullTrackName;
   auto* localReg = &localRegistry();
+  auto* subscriberExec = subscriber.executor;
+  const auto exclusion = exclusionFor(subscriber);
 
   // Park before claiming this thread's forwarder, so a later SUBSCRIBE for the same
   // ftn is never bound to our timeout. The gate keeps the relayExec_ hop off the
   // common path: a ready local forwarder means a publisher already resolved.
-  if (auto rendezvousTimeout = takeRendezvousTimeout(subReq, session);
+  if (auto rendezvousTimeout = takeRendezvousTimeout(subReq, subscriber.version);
       rendezvousTimeout && !localReg->getIfReady(ftn)) {
     if (auto rendezvousErr = co_await folly::coro::co_withExecutor(
             folly::getKeepAliveToken(relayExec_),
@@ -2619,10 +2618,10 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriber
   // Check a cluster peer's exclusion on relayExec_ before it joins this thread's forwarder.
   // A peer that joins a ready forwarder does not visit relayExec_ and could receive its own
   // data. A peer that claims the forwarder and is then refused would fail its waiters.
-  if (auto exclusion = exclusionFor(session); exclusion && co_await folly::coro::co_withExecutor(
-                                                               folly::getKeepAliveToken(relayExec_),
-                                                               refusedByExclusion(*exclusion, ftn)
-                                                           )) {
+  if (exclusion && co_await folly::coro::co_withExecutor(
+                       folly::getKeepAliveToken(relayExec_),
+                       refusedByExclusion(*exclusion, ftn)
+                   )) {
     co_return folly::makeUnexpected(SubscribeError{
         subReq.requestID,
         SubscribeErrorCode::DOES_NOT_EXIST,
@@ -2657,7 +2656,7 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriber
 
   if (auto* ready = std::get_if<LocalForwarderRegistry::Ready>(&joined)) {
     auto& readyFwd = *ready->forwarder;
-    if (auto err = checkRangeNotInPast(readyFwd, subReq, *session)) {
+    if (auto err = checkRangeNotInPast(readyFwd, subReq, subscriber.version)) {
       co_return folly::makeUnexpected(std::move(*err));
     }
     co_return attachSubscriber(readyFwd, std::move(session), subReq, std::move(consumer));
@@ -2696,7 +2695,8 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriber
           subscriberExec,
           crossExecFilter,
           forward,
-          session->sessionId(),
+          subscriber.sessionId,
+          exclusion,
           std::move(consumer)
       )
   );
@@ -2764,11 +2764,13 @@ MoqxRelay::subscribe(SubscribeRequest subReq, std::shared_ptr<TrackConsumer> con
 folly::coro::Task<Publisher::SubscribeResult>
 MoqxRelay::subscribeImpl(SubscribeRequest subReq, std::shared_ptr<TrackConsumer> consumer) {
   auto session = MoQSession::getRequestSession();
-  maybeSetSessionExec(*session);
+  const auto requesterInfo = requestParticipant().info;
+  const ParticipantInfo& requester = *requesterInfo;
+  maybeSetSessionExec(requester);
   // A copy: subReq moves upstream before the cache and registry use the name.
   const auto ftn = subReq.fullTrackName;
 
-  if (ftn.trackNamespace.empty() && !emptyNamespaceAllowed(session)) {
+  if (ftn.trackNamespace.empty() && !emptyNamespaceAllowed(requester)) {
     co_return folly::makeUnexpected(
         SubscribeError({subReq.requestID, SubscribeErrorCode::DOES_NOT_EXIST, "namespace required"})
     );
@@ -2777,7 +2779,7 @@ MoqxRelay::subscribeImpl(SubscribeRequest subReq, std::shared_ptr<TrackConsumer>
   // Resolve (or wait out our own rendezvous) before ever committing a
   // FirstSubscriber/SubsequentSubscriber entry, so a concurrent SUBSCRIBE for the
   // same ftn is never bound to our RENDEZVOUS_TIMEOUT.
-  if (auto rendezvousTimeout = takeRendezvousTimeout(subReq, session)) {
+  if (auto rendezvousTimeout = takeRendezvousTimeout(subReq, requester.version)) {
     if (auto rendezvousErr =
             co_await rendezvousWithPublisherOrTimeout(subReq, *rendezvousTimeout)) {
       co_return folly::makeUnexpected(std::move(*rendezvousErr));
@@ -2787,7 +2789,7 @@ MoqxRelay::subscribeImpl(SubscribeRequest subReq, std::shared_ptr<TrackConsumer>
   // TOCTOU fix: if we might be the first subscriber, wait for the upstream
   // connection before branching. A concurrent coroutine may emplace the entry
   // while we are suspended, so we re-check inside getOrCreateFromSubscribe.
-  const auto exclusion = exclusionFor(session);
+  const auto exclusion = exclusionFor(requester);
   if (!registry_.exists(ftn) && !upstreams_.empty() &&
       !findUpstreamPublisher(ftn.trackNamespace, exclusion)) {
     co_await waitForUpstreams([&] {
@@ -2829,7 +2831,7 @@ MoqxRelay::subscribeImpl(SubscribeRequest subReq, std::shared_ptr<TrackConsumer>
     // Add subscriber first (with the client's original request) in case objects
     // arrive before subscribe OK.
     auto subscriber =
-        first->forwarder->addSubscriber(session->sessionId(), subReq, std::move(consumer));
+        first->forwarder->addSubscriber(requester.sessionId, subReq, std::move(consumer));
     if (!subscriber) {
       XLOG(ERR) << "addSubscriber returned null (draining?) for " << ftn
                 << " reqID=" << subReq.requestID;
@@ -2892,7 +2894,7 @@ MoqxRelay::subscribeImpl(SubscribeRequest subReq, std::shared_ptr<TrackConsumer>
     // the entry's ref is owned here.
     auto forwarder = sub.forwarder.getIfOwned();
     XCHECK(forwarder) << "subscribeImpl reached with a remote forwarder ref";
-    if (auto err = checkRangeNotInPast(*forwarder, subReq, *session)) {
+    if (auto err = checkRangeNotInPast(*forwarder, subReq, requester.version)) {
       co_return folly::makeUnexpected(std::move(*err));
     }
     co_return attachSubscriber(*forwarder, std::move(session), subReq, std::move(consumer));
@@ -2931,14 +2933,13 @@ MoqxRelay::trackStatusOnSubscriberExec(const TrackStatus& req) {
 }
 
 folly::Expected<folly::SemiFuture<folly::Unit>, FetchError>
-MoqxRelay::resolveJoiningFetchOnSubscriberExec(Fetch& fetch, const MoQSession& session) {
+MoqxRelay::resolveJoiningFetchOnSubscriberExec(Fetch& fetch, const ParticipantInfo& subscriber) {
   auto [standalone, joining] = fetchType(fetch);
   if (!joining) {
     return folly::makeSemiFuture();
   }
   // A draft 22 FETCH carries no Fetch Type, so it always parses as standalone.
-  XCHECK(!useFillFetch(session.getNegotiatedVersion().value_or(0)))
-      << "joining FETCH under a draft 22 session";
+  XCHECK(!useFillFetch(subscriber.version)) << "joining FETCH under a draft 22 session";
   // All of a session's subscriptions are on its thread's forwarders.
   auto* localReg = tlForwarders_.get();
   auto state = localReg ? localReg->lookup(fetch.fullTrackName) : LocalForwarderRegistry::State{};
@@ -2953,7 +2954,7 @@ MoqxRelay::resolveJoiningFetchOnSubscriberExec(Fetch& fetch, const MoQSession& s
         "No subscription for joining fetch"
     });
   }
-  auto res = ready->forwarder->resolveJoiningFetch(session.sessionId(), *joining);
+  auto res = ready->forwarder->resolveJoiningFetch(subscriber.sessionId, *joining);
   if (res.hasError()) {
     return folly::makeUnexpected(std::move(res.error()));
   }
@@ -2963,9 +2964,10 @@ MoqxRelay::resolveJoiningFetchOnSubscriberExec(Fetch& fetch, const MoQSession& s
 
 folly::coro::Task<Publisher::FetchResult>
 MoqxRelay::fetchImpl(Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
-  auto session = MoQSession::getRequestSession();
+  const auto subscriberInfo = requestParticipant().info;
+  const ParticipantInfo& subscriber = *subscriberInfo;
 
-  if (fetch.fullTrackName.trackNamespace.empty() && !emptyNamespaceAllowed(session)) {
+  if (fetch.fullTrackName.trackNamespace.empty() && !emptyNamespaceAllowed(subscriber)) {
     co_return folly::makeUnexpected(
         FetchError({fetch.requestID, FetchErrorCode::DOES_NOT_EXIST, "namespace required"})
     );
@@ -2973,8 +2975,7 @@ MoqxRelay::fetchImpl(Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
 
   auto [standalone, joining] = fetchType(fetch);
   // A draft 22 FETCH carries no Fetch Type, so it always parses as standalone.
-  XCHECK(!joining || !useFillFetch(session->getNegotiatedVersion().value_or(0)))
-      << "joining FETCH under a draft 22 session";
+  XCHECK(!joining || !useFillFetch(subscriber.version)) << "joining FETCH under a draft 22 session";
   // LF mode resolves joining fetches on the subscriber exec.
   if (joining && mode() != Mode::LocalForwarder) {
     auto fetchView = registry_.getFetchView(fetch.fullTrackName);
@@ -2987,7 +2988,7 @@ MoqxRelay::fetchImpl(Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
       // Non-LF only (guarded above): the entry's ref is owned here.
       auto forwarder = fetchView->forwarder.getIfOwned();
       XCHECK(forwarder) << "joining fetch against a remote-owned entry";
-      auto res = forwarder->resolveJoiningFetch(session->sessionId(), *joining);
+      auto res = forwarder->resolveJoiningFetch(subscriber.sessionId, *joining);
       if (res.hasError()) {
         co_return folly::makeUnexpected(res.error());
       }
@@ -3003,7 +3004,7 @@ MoqxRelay::fetchImpl(Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
   // Prefer an exact-track upstream (from publish/subscribe) over a broader
   // namespace-level publisher, matching subscribeImpl's resolution order.
   auto fetchView = registry_.getFetchView(fetch.fullTrackName);
-  const auto exclusion = exclusionFor(session);
+  const auto exclusion = exclusionFor(subscriber);
   std::shared_ptr<Publisher> upstreamPublisher;
   // A fetch does not join the subscription, so an excluded source falls back to routing.
   if (fetchView && !excludedFromSubscription(exclusion, fetch.fullTrackName)) {
@@ -3056,9 +3057,11 @@ folly::coro::Task<Publisher::TrackStatusResult> MoqxRelay::trackStatusImpl(Track
 ) {
   XLOG(DBG1) << __func__ << " ftn=" << trackStatus.fullTrackName;
 
-  auto session = MoQSession::getRequestSession();
+  const auto requesterInfo = requestParticipant().info;
 
-  if (trackStatus.fullTrackName.trackNamespace.empty() && !emptyNamespaceAllowed(session)) {
+  const ParticipantInfo& requester = *requesterInfo;
+
+  if (trackStatus.fullTrackName.trackNamespace.empty() && !emptyNamespaceAllowed(requester)) {
     co_return folly::makeUnexpected(TrackStatusError(
         {trackStatus.requestID, TrackStatusErrorCode::DOES_NOT_EXIST, "namespace required"}
     ));
@@ -3089,7 +3092,7 @@ folly::coro::Task<Publisher::TrackStatusResult> MoqxRelay::trackStatusImpl(Track
   // No active subscription — fall through to the upstream path.
   {
     // No active subscription — try registry publisher first, then namespace tree
-    const auto exclusion = exclusionFor(session);
+    const auto exclusion = exclusionFor(requester);
     std::shared_ptr<Publisher> upstreamPublisher;
     if (upstreamView && !excludedFromSubscription(exclusion, trackStatus.fullTrackName)) {
       upstreamPublisher = upstreamView->publisher;

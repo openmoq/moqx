@@ -17,6 +17,7 @@
 #include "relay/ChannelSubscriber.h"
 #include "relay/ForwarderRef.h"
 #include "relay/LocalForwarderRegistry.h"
+#include "relay/Participant.h"
 #include "relay/PropertyRanking.h"
 #include "relay/RelayExecUtil.h"
 #include "stats/TrackStatsRegistry.h"
@@ -419,7 +420,8 @@ private:
   moxygen::Subscriber::PublishResult publishFromPublisherExec(
       moxygen::PublishRequest pub,
       std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle,
-      std::shared_ptr<moxygen::MoQSession> session
+      std::shared_ptr<moxygen::MoQSession> session,
+      const ParticipantInfo& publisher
   );
 
   // Called from publish path or first subscriber path on publisher's exec.
@@ -438,7 +440,7 @@ private:
       bool emptyNamespaceAllowed
   ) const;
 
-  static bool emptyNamespaceAllowed(const std::shared_ptr<moxygen::MoQSession>& session);
+  static bool emptyNamespaceAllowed(const ParticipantInfo& participant);
 
   folly::coro::Task<folly::Expected<moxygen::PublishOk, moxygen::PublishError>>
   registerPublishOnRelayExec(
@@ -565,8 +567,10 @@ private:
     std::optional<FirstSubscriberSetup> firstSetup;
   };
 
-  folly::coro::Task<StatefulSubscribeResult>
-  joinOrPrepareUpstreamSubscription(moxygen::SubscribeRequest subReq);
+  folly::coro::Task<StatefulSubscribeResult> joinOrPrepareUpstreamSubscription(
+      moxygen::SubscribeRequest subReq,
+      std::optional<RouteExclusion> exclusion
+  );
 
   struct UpstreamOk {
     std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle;
@@ -614,6 +618,7 @@ private:
       std::shared_ptr<CrossExecFilter> crossExecFilter,
       bool forward,
       moxygen::SessionId subscriberId,
+      std::optional<RouteExclusion> exclusion,
       std::shared_ptr<moxygen::TrackConsumer> consumer
   );
 
@@ -621,7 +626,7 @@ private:
       moxygen::SubscribeRequest subReq,
       std::shared_ptr<moxygen::TrackConsumer> consumer,
       std::shared_ptr<moxygen::MoQSession> session,
-      folly::Executor* subscriberExec
+      ParticipantInfo subscriber
   );
 
   // Answers from this thread's local forwarder (race-free); nullopt defers to trackStatusImpl.
@@ -631,7 +636,7 @@ private:
   // Rewrites a joining fetch to a standalone fetch against this thread's local forwarder. Returns
   // the setup to wait for while that forwarder is pending, and a ready future otherwise.
   folly::Expected<folly::SemiFuture<folly::Unit>, moxygen::FetchError>
-  resolveJoiningFetchOnSubscriberExec(moxygen::Fetch& fetch, const moxygen::MoQSession& session);
+  resolveJoiningFetchOnSubscriberExec(moxygen::Fetch& fetch, const ParticipantInfo& subscriber);
 
   // Impl methods — run on relayExec_ when set, or inline when relayExec_==nullptr.
   folly::coro::Task<SubscribeResult>
@@ -685,9 +690,9 @@ private:
   // coroutine start executor for fire-and-forget tasks like doSubscribeUpdate.
   folly::Executor* sessionExec_{nullptr};
 
-  void maybeSetSessionExec(moxygen::MoQSession& session) {
+  void maybeSetSessionExec(const ParticipantInfo& requester) {
     if (!relayExec_ && !sessionExec_) {
-      sessionExec_ = session.getExecutor();
+      sessionExec_ = requester.executor;
     }
   }
 
