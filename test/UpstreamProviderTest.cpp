@@ -961,7 +961,7 @@ TEST_F(UpstreamProviderTest, StopDuringOnConnectFailsSubscribe) {
 //   start.  The QUIC handshake is async, so start() suspends at network I/O.
 //   subscribeTask(1) and subscribeTask(2) then enter waitForConnected() and
 //   block on connectPromise_.  After the handshake completes,
-//   relay.onUpstreamConnect → session.subscribeNamespace; the server mock
+//   peering.onUpstreamConnect → session.subscribeNamespace; the server mock
 //   calls nsHandle->namespaceMsg(kTestNamespace) which invokes
 //   MoqxRelayNamespaceHandle::namespaceMsg → relay.doPublishNamespace
 //   synchronously, so the namespace is in the relay tree before
@@ -988,15 +988,20 @@ protected:
 
     relay_ = std::make_shared<MoqxRelay>(config::CacheConfig{.maxCachedTracks = 0});
     relay_->setAllowedNamespacePrefix(TrackNamespace{}); // allow all namespaces
+    peering_ = std::make_unique<MoqtRelayBackend>(
+        relay_,
+        config::ServiceConfig{},
+        /*hopID=*/std::nullopt
+    );
+    relay_->setPeering(peering_.get());
 
-    auto onConnect = [relay =
-                          relay_](std::shared_ptr<MoQSession> session) -> folly::coro::Task<void> {
-      co_await relay->onUpstreamConnect(
-          SessionParticipant::makeParticipant(session, relay->getRelayExec())
-      );
+    auto onConnect = [peering = peering_.get(),
+                      relayExec = relay_->getRelayExec()](std::shared_ptr<MoQSession> session
+                     ) -> folly::coro::Task<void> {
+      co_await peering->onUpstreamConnect(SessionParticipant::makeParticipant(session, relayExec));
     };
-    auto onDisconnect = [relay = relay_](std::shared_ptr<MoQSession> session) {
-      relay->onUpstreamDisconnect(session->sessionId());
+    auto onDisconnect = [peering = peering_.get()](std::shared_ptr<MoQSession> session) {
+      peering->onUpstreamDisconnect(session->sessionId());
     };
 
     provider_ = std::make_shared<UpstreamProvider>(
@@ -1009,12 +1014,6 @@ protected:
         std::move(onConnect),
         std::move(onDisconnect)
     );
-    peering_ = std::make_unique<MoqtRelayBackend>(
-        relay_,
-        config::ServiceConfig{},
-        /*hopID=*/std::nullopt
-    );
-    relay_->setPeering(peering_.get());
     peering_->addUpstream(provider_);
 
     // Mock sessions representing two downstream subscribers.
@@ -1176,7 +1175,7 @@ TEST_F(RelayUpstreamSubscribeRaceTest, SubscribeDuringTheHandshakeWaitsForItsRou
 }
 
 TEST_F(RelayUpstreamSubscribeRaceTest, ConcurrentSubscribesSameTrack) {
-  // Server accepts the peer subNs sent by relay.onUpstreamConnect and
+  // Server accepts the peer subNs sent by peering.onUpstreamConnect and
   // immediately announces kTestNamespace so it appears in the relay tree before
   // connectPromise_ is fulfilled.  The trackNamespacePrefix of the peer subNs
   // is {} (wildcard), so the suffix passed to namespaceMsg IS the full namespace.

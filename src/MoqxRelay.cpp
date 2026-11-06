@@ -416,63 +416,6 @@ std::shared_ptr<Publisher::NamespacePublishHandle> makeNamespaceBridgeHandle(
   );
 }
 
-folly::coro::Task<void> MoqxRelay::onUpstreamConnect(Participant upstream) {
-  co_return co_await onUpstreamConnectImpl(std::move(upstream));
-}
-
-folly::coro::Task<void> MoqxRelay::onUpstreamConnectImpl(Participant upstream) {
-  XDCHECK(onRelayExec());
-  // A disconnect during the handshake erases this entry, so its handles are dropped.
-  const auto id = upstream.info->sessionId;
-  auto* sessionExec = upstream.info->executor;
-  upstreamHandles_.try_emplace(id);
-  auto nsHandle = makeNamespaceBridgeHandle(weak_from_this(), upstream, {}, relayExec_);
-  auto subNs = makePeerSubNs(relayID_);
-  auto result = co_await upstream.runOnExecutor(
-      [&](Participant::OnExecutor onExecutor) -> folly::coro::Task<SubscribeNamespaceResult> {
-        co_return co_await onExecutor.publisher().subscribeNamespace(std::move(subNs), nsHandle);
-      }
-  );
-  ExecBound<std::shared_ptr<Publisher::SubscribeNamespaceHandle>> subNsHandle;
-  if (result.hasValue()) {
-    subNsHandle = {std::move(result.value()), sessionExec};
-  } else {
-    XLOG(ERR) << "MoqxRelay: upstream peer subNs failed: " << result.error().reasonPhrase;
-  }
-  auto it = upstreamHandles_.find(id);
-  if (it == upstreamHandles_.end()) {
-    co_return;
-  }
-  it->second.subNs = std::move(subNsHandle);
-  if (getDraftMajorVersion(upstream.info->version) < 18) {
-    co_return;
-  }
-  auto tracks = co_await upstream.runOnExecutor(
-      [&](Participant::OnExecutor onExecutor) -> folly::coro::Task<SubscribeTracksResult> {
-        co_return co_await onExecutor.publisher().subscribeTracks(
-            makePeerSubTracks(relayID_),
-            nullptr
-        );
-      }
-  );
-  ExecBound<std::shared_ptr<Publisher::SubscribeTracksHandle>> tracksHandle;
-  if (tracks.hasValue()) {
-    tracksHandle = {std::move(tracks.value()), sessionExec};
-  } else {
-    XLOG(ERR) << "MoqxRelay: upstream peer subTracks failed: " << tracks.error().reasonPhrase;
-  }
-  it = upstreamHandles_.find(id);
-  if (it == upstreamHandles_.end()) {
-    co_return;
-  }
-  it->second.tracks = std::move(tracksHandle);
-}
-
-void MoqxRelay::onUpstreamDisconnect(SessionId upstream) {
-  XDCHECK(onRelayExec());
-  upstreamHandles_.erase(upstream);
-}
-
 std::shared_ptr<Subscriber::PublishNamespaceHandle> MoqxRelay::doPublishNamespace(
     PublishNamespace pubNs,
     Participant publisher,
