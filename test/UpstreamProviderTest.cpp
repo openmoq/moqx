@@ -8,6 +8,7 @@
 #include "MoQIntegrationTestFixture.h"
 #include "MoqxRelay.h"
 #include "MoqxRelayContext.h"
+#include "peering/MoqtRelayBackend.h"
 #include "relay/SessionParticipant.h"
 
 #include <folly/SocketAddress.h>
@@ -1008,7 +1009,13 @@ protected:
         std::move(onConnect),
         std::move(onDisconnect)
     );
-    relay_->addUpstreamProvider(provider_);
+    peering_ = std::make_unique<MoqtRelayBackend>(
+        relay_,
+        config::ServiceConfig{},
+        /*hopID=*/std::nullopt
+    );
+    relay_->setPeering(peering_.get());
+    peering_->addUpstream(provider_);
 
     // Mock sessions representing two downstream subscribers.
     subSession1_ = std::make_shared<NiceMock<moxygen::test::MockMoQSession>>(clientExec());
@@ -1020,7 +1027,7 @@ protected:
   }
 
   void TearDown() override {
-    relay_->stop();
+    peering_->stop();
     MoQIntegrationTestFixture::TearDown();
   }
 
@@ -1058,6 +1065,8 @@ protected:
   }
 
   std::shared_ptr<NiceMock<MockPublisher>> serverPublisher_;
+  // Declared before relay_ so that it is destroyed after it.
+  std::unique_ptr<MoqtRelayBackend> peering_;
   std::shared_ptr<MoqxRelay> relay_;
   std::shared_ptr<UpstreamProvider> provider_;
   std::shared_ptr<NiceMock<moxygen::test::MockMoQSession>> subSession1_;
@@ -1066,6 +1075,106 @@ protected:
 
 // Without the fix this test crashes with PromiseAlreadySatisfied → std::terminate.
 // With the fix both subscribes complete successfully.
+// A backend that dials its configured upstream reports the link, and stops reporting peers
+// pending once the upstream session connects.
+TEST_F(RelayUpstreamSubscribeRaceTest, BackendReportsItsDialedUpstream) {
+  ON_CALL(*serverPublisher_, subscribeNamespace(_, _))
+      .WillByDefault(
+          [](SubscribeNamespace subNs, std::shared_ptr<Publisher::NamespacePublishHandle>)
+              -> folly::coro::Task<Publisher::SubscribeNamespaceResult> {
+            co_return makeSubscribeNamespaceOk(subNs);
+          }
+      );
+  config::ServiceConfig service;
+  service.upstream = config::UpstreamConfig{.url = serverUrl().getUrl(), .tls = {.insecure = true}};
+  MoqtRelayBackend backend(relay_, service, /*hopID=*/std::nullopt);
+  backend.start(&clientEvb());
+  EXPECT_TRUE(backend.peersPending());
+  for (int i = 0; i < 2000 && backend.peersPending(); ++i) {
+    clientEvb().loopOnce(EVLOOP_NONBLOCK);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  EXPECT_FALSE(backend.peersPending());
+
+  struct Links : PeerVisitor {
+    std::vector<PeerLink> links;
+    void onPeer(const PeerLink& link) override { links.push_back(link); }
+  };
+  // The provider reports Connected once the peering handshake finishes.
+  Links links;
+  for (int i = 0; i < 2000; ++i) {
+    links.links.clear();
+    folly::coro::blockingWait(backend.visitPeers(links), &clientEvb());
+    if (!links.links.empty() && links.links[0].state == PeerLink::State::Connected) {
+      break;
+    }
+    clientEvb().loopOnce(EVLOOP_NONBLOCK);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  ASSERT_EQ(links.links.size(), 1u);
+  EXPECT_EQ(links.links[0].direction, PeerLink::Direction::Dialed);
+  EXPECT_EQ(links.links[0].state, PeerLink::State::Connected);
+  EXPECT_EQ(links.links[0].address, serverUrl().getUrl());
+
+  backend.stop();
+  clientEvb().loop();
+}
+
+// Peers stay pending until the peering handshake finishes, so a subscribe that arrives during the
+// handshake waits for the route that the handshake brings.
+TEST_F(RelayUpstreamSubscribeRaceTest, SubscribeDuringTheHandshakeWaitsForItsRoute) {
+  folly::coro::Baton respond;
+  std::atomic<bool> handshakeStarted{false};
+  ON_CALL(*serverPublisher_, subscribeNamespace(_, _))
+      .WillByDefault(
+          [&](SubscribeNamespace subNs, std::shared_ptr<Publisher::NamespacePublishHandle> nsHandle
+          ) -> folly::coro::Task<Publisher::SubscribeNamespaceResult> {
+            handshakeStarted = true;
+            co_await respond;
+            nsHandle->namespaceMsg(kTestNamespace);
+            co_return makeSubscribeNamespaceOk(subNs);
+          }
+      );
+  ON_CALL(*serverPublisher_, subscribe(_, _))
+      .WillByDefault(
+          [](SubscribeRequest sub,
+             std::shared_ptr<TrackConsumer>) -> folly::coro::Task<Publisher::SubscribeResult> {
+            co_return makeSubscribeOk(sub);
+          }
+      );
+  config::ServiceConfig service;
+  service.upstream = config::UpstreamConfig{.url = serverUrl().getUrl(), .tls = {.insecure = true}};
+  MoqtRelayBackend backend(relay_, service, /*hopID=*/std::nullopt);
+  relay_->setPeering(&backend);
+  backend.start(&clientEvb());
+  auto pump = [&](auto done, int loops = 2000) {
+    for (int i = 0; i < loops && !done(); ++i) {
+      clientEvb().loopOnce(EVLOOP_NONBLOCK);
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+  };
+  pump([&] { return handshakeStarted.load(); });
+  ASSERT_TRUE(handshakeStarted);
+  EXPECT_TRUE(backend.peersPending());
+
+  auto subscribed = folly::coro::co_withExecutor(
+                        &clientEvb(),
+                        subscribeTask(subSession1_, makeSubscribeRequest())
+  )
+                        .start();
+  pump([] { return false; }, /*loops=*/50);
+  EXPECT_FALSE(subscribed.isReady());
+
+  respond.post();
+  pump([&] { return subscribed.isReady(); });
+  EXPECT_TRUE(subscribed.isReady());
+  EXPECT_FALSE(backend.peersPending());
+
+  backend.stop();
+  clientEvb().loop();
+  relay_->setPeering(peering_.get());
+}
+
 TEST_F(RelayUpstreamSubscribeRaceTest, ConcurrentSubscribesSameTrack) {
   // Server accepts the peer subNs sent by relay.onUpstreamConnect and
   // immediately announces kTestNamespace so it appears in the relay tree before
@@ -1145,7 +1254,7 @@ protected:
         nullptr,
         std::chrono::seconds(10)
     );
-    relay_->addUpstreamProvider(hung_);
+    peering_->addUpstream(hung_);
   }
 
   void TearDown() override {
