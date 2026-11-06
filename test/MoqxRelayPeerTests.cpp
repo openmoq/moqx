@@ -466,11 +466,11 @@ TEST_P(MoQRelayTest, UpstreamPeeringSubscribesTracksOnDraft18) {
     if (auto* relayExec = relay_->getRelayExec()) {
       folly::coro::co_withExecutor(
           folly::getKeepAliveToken(relayExec),
-          relay_->onUpstreamConnect(participantOf(peer))
+          peering_->onUpstreamConnect(participantOf(peer))
       )
           .start();
     } else {
-      folly::coro::blockingWait(relay_->onUpstreamConnect(participantOf(peer)), exec_.get());
+      folly::coro::blockingWait(peering_->onUpstreamConnect(participantOf(peer)), exec_.get());
     }
     const size_t wantTracks = version == kVersionDraft18 ? 1 : 0;
     ASSERT_TRUE(driveUntil([&] {
@@ -483,7 +483,7 @@ TEST_P(MoQRelayTest, UpstreamPeeringSubscribesTracksOnDraft18) {
       EXPECT_FALSE(peer->tracksRequests[0].forward);
     }
 
-    verifyOnRelayExec([&] { relay_->onUpstreamDisconnect(peer->sessionId()); });
+    verifyOnRelayExec([&] { peering_->onUpstreamDisconnect(peer->sessionId()); });
     exec_->drive();
     EXPECT_TRUE(peer->tracksHandle.expired());
     removeSession(peer);
@@ -502,23 +502,23 @@ TEST_P(MoQRelayTest, UpstreamDisconnectReleasesOnlyThatSession) {
     if (auto* relayExec = relay_->getRelayExec()) {
       folly::coro::co_withExecutor(
           folly::getKeepAliveToken(relayExec),
-          relay_->onUpstreamConnect(participantOf(peer))
+          peering_->onUpstreamConnect(participantOf(peer))
       )
           .start();
     } else {
-      folly::coro::blockingWait(relay_->onUpstreamConnect(participantOf(peer)), exec_.get());
+      folly::coro::blockingWait(peering_->onUpstreamConnect(participantOf(peer)), exec_.get());
     }
     ASSERT_TRUE(driveUntil([&] { return peer->tracksRequests.size() == 1; }));
     peers.push_back(std::move(peer));
   }
   driveIfMultiThread();
 
-  verifyOnRelayExec([&] { relay_->onUpstreamDisconnect(peers[0]->sessionId()); });
+  verifyOnRelayExec([&] { peering_->onUpstreamDisconnect(peers[0]->sessionId()); });
   exec_->drive();
   EXPECT_TRUE(peers[0]->tracksHandle.expired());
   EXPECT_FALSE(peers[1]->tracksHandle.expired());
 
-  verifyOnRelayExec([&] { relay_->onUpstreamDisconnect(peers[1]->sessionId()); });
+  verifyOnRelayExec([&] { peering_->onUpstreamDisconnect(peers[1]->sessionId()); });
   exec_->drive();
   EXPECT_TRUE(peers[1]->tracksHandle.expired());
   for (auto& peer : peers) {
@@ -560,16 +560,16 @@ TEST_P(MoQRelayTest, UpstreamDisconnectDuringHandshakeDropsItsHandles) {
   if (auto* relayExec = relay_->getRelayExec()) {
     folly::coro::co_withExecutor(
         folly::getKeepAliveToken(relayExec),
-        relay_->onUpstreamConnect(participantOf(peer))
+        peering_->onUpstreamConnect(participantOf(peer))
     )
         .start();
   } else {
-    folly::coro::co_withExecutor(sessionExec(), relay_->onUpstreamConnect(participantOf(peer)))
+    folly::coro::co_withExecutor(sessionExec(), peering_->onUpstreamConnect(participantOf(peer)))
         .start();
   }
   ASSERT_TRUE(driveUntil([&] { return peer->namespaceRequests == 1; }));
 
-  verifyOnRelayExec([&] { relay_->onUpstreamDisconnect(peer->sessionId()); });
+  verifyOnRelayExec([&] { peering_->onUpstreamDisconnect(peer->sessionId()); });
   peer->gate->post();
   EXPECT_TRUE(driveUntil([&] { return peer->replied && peer->namespaceHandle.expired(); }));
   driveIfMultiThread();
