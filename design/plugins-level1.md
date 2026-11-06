@@ -15,6 +15,7 @@ Decisions for the first implementation of [plugins.md](plugins.md). Auth, routin
 - The host keeps session state on the session and passes it to that plugin's request hooks.
 - Hooks run on the executor of their call site. Each hook documents which one.
 - Session and request hooks run on the session's I/O worker. One service instance serves every worker, so these hooks run concurrently.
+- Upstream `setupParams` runs on the upstream connection's worker. Listener `setupParams` runs at startup.
 - Route hooks run on the service's relay executor.
 - Shared plugin state is immutable after `start()` or synchronized by the plugin.
 - A plugin may start threads. Only `attach`, `detach` and `Continuation::resolve` are callable from them. Everything else goes back to the owning executor.
@@ -24,6 +25,8 @@ Decisions for the first implementation of [plugins.md](plugins.md). Auth, routin
 - Root `start()` runs on the main EventBase before listeners start, in config order.
 - Service `start()` runs on the service's relay executor, after the relay exists and before it accepts sessions, in config order.
 - `stop()` runs in reverse: services, then roots. The host awaits every `stop()` before draining executors.
+- Before `stop()`, the host stops starting hooks and waits for every hook call in flight, including timed-out ones and `sessionEnded` for sessions that end late.
+- A failed `start()` stops what already started, in reverse.
 - A failed `start()` aborts startup with its error.
 - `start()` and `stop()` are coroutines. `start()` runs under a cancellation the host fires at shutdown; `stop()` does not.
 - Startup and shutdown are the only lifecycle events. Services are not added or removed at runtime.
@@ -54,10 +57,12 @@ services:
             - url: "moqt://origin.example.com:4433/moq-relay"
 ```
 
-- `plugins:` entries replace the `auth:`, `cluster:`, `upstream:` and `upstreams:` sections. Old configs fail validation with a message naming the replacement.
+- `plugins:` entries replace the `auth:`, `cluster:`, `upstream:` and `upstreams:` sections. Old configs fail validation with a message naming the replacement. `service_defaults.auth` gives way to `service_defaults.plugins`.
 - Upstream connections are router configuration. A service-scope router lists them directly; a process-scope router keys them by service name.
 - A chain runs process entries first, then service entries, each sorted by `rank`, ties in list order.
-- `id` is unique per scope. It names the plugin in logs, `/state` and errors.
+- `id` is unique within each service's chain: process entries and that service's entries. It names the plugin in logs, `/state` and errors.
+- `service_defaults.plugins` maps a plugin type to a partial `config`. It is deep-merged into each service-scope entry of that type: objects merge, the entry's values win, arrays and scalars are replaced. It never creates an entry and never applies to process entries. Every field can be defaulted, secrets included.
+- `admission_timeout_ms` and `authorize_timeout_ms` (per service, with `service_defaults`) bound the whole `admit` and `authorize` chains.
 - Each builtin registers in [src/plugins/Builtins.cpp](/src/plugins/Builtins.cpp): type name, factory, a reflect-cpp config struct, and a redacting serializer. The loader reads the envelope and hands the `config` subtree to the plugin's struct, so `moqx --validate` and `/config` keep typed errors and redaction.
 - Registration is one explicit list. Static-constructor registration is rejected: an archive can drop an unreferenced translation unit.
 - Validate-only mode runs the factories. Factories have no side effects.
@@ -77,10 +82,21 @@ Every control-plane hook is a coroutine (`folly::coro::Task`). A hook that never
 Session hooks, on the session's I/O worker:
 
 ```text
-setupParams(scope)                       -> Task<Params>            // SETUP parameters to declare; scope = listener | upstream
 admit(SetupView)                         -> Task<Result<SessionState>>
 sessionEnded(SessionState)               -> Task<void>
 ```
+
+Setup parameter hooks:
+
+```text
+Root::setupParams(ListenerScope)         -> Task<Result<Params>>    // at startup, process scope only
+setupParams(UpstreamScope)               -> Task<Result<Params>>    // each upstream connect, on its worker
+```
+
+- Listener parameters are a configured ClientHello policy, evaluated once at startup and cached. A listener is one policy; ClientHello matchers (SNI) each become their own. Values depend only on the policy, never on the connection.
+- Listener `SERVER_SETUP` cannot depend on the service: in draft 18+ it is sent before `CLIENT_SETUP`. A service-scope entry cannot declare listener parameters.
+- Two plugins declaring one key is a startup error. So is a key the host or moxygen writes itself.
+- `admit` failing on one plugin still runs `sessionEnded` for the plugins whose `admit` succeeded.
 
 Request hooks, on the session's I/O worker:
 
@@ -99,7 +115,8 @@ Snapshot hook, on the relay executor:
 stateSnapshot()                          -> Task<folly::dynamic>
 ```
 
-- Each plugin's snapshot appears in `/state` under `plugins.<id>`. The host prints what it owns: subscriptions, cache, tracks.
+- Each plugin's snapshot appears in `/state` under `services.<service>.plugins.<id>`. The host prints what it owns: subscriptions, cache, tracks.
+- A snapshot that fails or stalls shows as an error for that plugin and does not hold up `/state`.
 
 Admission:
 
@@ -109,10 +126,11 @@ Admission:
   - Request bidi streams (uni-control versions): parked before their first read, so the data stays in the transport and QUIC flow control throttles the peer. Count limit on parked streams.
   - Data uni streams: the existing pre-setup buffer.
   - Datagrams after `CLIENT_SETUP`: buffered raw, count and byte limit. Before `CLIENT_SETUP` they still close the session.
-- No deadline in moxygen. The check is host code, and the host bounds `admit` with its own timeout. A check that never resolves holds the session until the peer disconnects.
+- No deadline in moxygen. The check is host code, and the host bounds the `admit` chain with `admission_timeout_ms`. Expiry closes the session with `INTERNAL_ERROR`; a late result is discarded.
 - A rejected admission closes the session with the returned `SessionCloseErrorCode`. Before draft 18, `SERVER_SETUP` is sent only on acceptance.
 - The check starts inline on the session executor. A plugin that only verifies a local token completes without suspending, and the wire is unchanged for it.
-- `PUBLISH` returns a deferred consumer with `consumerReady=false`; the host points it at the relay once `authorize` resolves.
+- `PUBLISH` returns a deferred consumer with `consumerReady=false`; the host points it at the relay once `authorize` resolves. An `authorize` that completes inline keeps today's path.
+- `authorize_timeout_ms` bounds the `authorize` chain. Expiry rejects the request with `INTERNAL_ERROR`.
 - Checks run under the session's cancellation. The host checks for cancellation before dispatch, so a check that ignores cancellation never reaches the relay.
 
 ## Router
