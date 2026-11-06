@@ -727,8 +727,10 @@ TEST_F(UpstreamProviderTest, StopIsIdempotent) {
 
 // onDisconnect hook fires when the upstream session is closed.
 TEST_F(UpstreamProviderTest, OnDisconnectHookFires) {
-  // Replace the default (never-started) provider with one that has the hook.
-  bool fired = false;
+  // Replace the default (never-started) provider with one that has the hook. The hook also fires
+  // from TearDown's stop(), after this frame is gone.
+  auto firedState = std::make_shared<bool>(false);
+  auto& fired = *firedState;
   provider_ = std::make_shared<UpstreamProvider>(
       clientExec(),
       serverUrl(),
@@ -737,7 +739,8 @@ TEST_F(UpstreamProviderTest, OnDisconnectHookFires) {
       /*relayExec=*/nullptr,
       std::make_shared<moxygen::test::InsecureVerifierDangerousDoNotUseInProduction>(),
       /*onConnect=*/nullptr,
-      /*onDisconnect=*/[&fired](std::shared_ptr<MoQSession> session) { fired = session != nullptr; }
+      /*onDisconnect=*/
+      [firedState](std::shared_ptr<MoQSession> session) { *firedState = session != nullptr; }
   );
 
   folly::coro::blockingWait(
@@ -750,6 +753,66 @@ TEST_F(UpstreamProviderTest, OnDisconnectHookFires) {
         provider_->currentSession()->close(SessionCloseErrorCode::NO_ERROR);
         co_await folly::coro::sleep(std::chrono::milliseconds(50));
         EXPECT_TRUE(fired);
+      }(),
+      &clientEvb()
+  );
+}
+
+// stop() reports the connected session as disconnected, so the relay can release its handles while
+// the session's executor still runs.
+TEST_F(UpstreamProviderTest, StopFiresOnDisconnectHook) {
+  auto disconnected = std::make_shared<std::shared_ptr<MoQSession>>();
+  provider_ = std::make_shared<UpstreamProvider>(
+      clientExec(),
+      serverUrl(),
+      /*publishHandler=*/nullptr,
+      /*subscribeHandler=*/nullptr,
+      /*relayExec=*/nullptr,
+      std::make_shared<moxygen::test::InsecureVerifierDangerousDoNotUseInProduction>(),
+      /*onConnect=*/nullptr,
+      /*onDisconnect=*/
+      [disconnected](std::shared_ptr<MoQSession> session) { *disconnected = std::move(session); }
+  );
+
+  folly::coro::blockingWait(
+      [&]() -> folly::coro::Task<void> {
+        co_await provider_->start();
+        auto session = provider_->currentSession();
+        EXPECT_NE(session, nullptr);
+        provider_->stop();
+        co_await folly::coro::sleep(std::chrono::milliseconds(50));
+        EXPECT_EQ(*disconnected, session);
+        disconnected->reset();
+      }(),
+      &clientEvb()
+  );
+}
+
+// A hook that closes its session runs once for that session.
+TEST_F(UpstreamProviderTest, StopReportsASessionTheHookClosesOnce) {
+  auto calls = std::make_shared<int>(0);
+  provider_ = std::make_shared<UpstreamProvider>(
+      clientExec(),
+      serverUrl(),
+      /*publishHandler=*/nullptr,
+      /*subscribeHandler=*/nullptr,
+      /*relayExec=*/nullptr,
+      std::make_shared<moxygen::test::InsecureVerifierDangerousDoNotUseInProduction>(),
+      /*onConnect=*/nullptr,
+      /*onDisconnect=*/
+      [calls](std::shared_ptr<MoQSession> session) {
+        ++*calls;
+        session->close(SessionCloseErrorCode::NO_ERROR);
+      }
+  );
+
+  folly::coro::blockingWait(
+      [&]() -> folly::coro::Task<void> {
+        co_await provider_->start();
+        EXPECT_NE(provider_->currentSession(), nullptr);
+        provider_->stop();
+        co_await folly::coro::sleep(std::chrono::milliseconds(50));
+        EXPECT_EQ(*calls, 1);
       }(),
       &clientEvb()
   );

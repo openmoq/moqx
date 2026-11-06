@@ -423,24 +423,26 @@ folly::coro::Task<void> MoqxRelay::onUpstreamConnect(Participant upstream) {
 folly::coro::Task<void> MoqxRelay::onUpstreamConnectImpl(Participant upstream) {
   // A disconnect during the handshake erases this entry, so its handles are dropped.
   const auto id = upstream.info->sessionId;
+  auto* sessionExec = upstream.info->executor;
   upstreamHandles_.try_emplace(id);
   auto nsHandle = makeNamespaceBridgeHandle(weak_from_this(), upstream, {}, relayExec_);
   auto subNs = makePeerSubNs(relayID_);
-  // TODO(#676): unwrapped because upstreamHandles_ outlives the session's executor at shutdown.
   auto result = co_await upstream.runOnExecutor(
       [&](Participant::OnExecutor onExecutor) -> folly::coro::Task<SubscribeNamespaceResult> {
         co_return co_await onExecutor.publisher().subscribeNamespace(std::move(subNs), nsHandle);
       }
   );
+  ExecBound<std::shared_ptr<Publisher::SubscribeNamespaceHandle>> subNsHandle;
+  if (result.hasValue()) {
+    subNsHandle = {std::move(result.value()), sessionExec};
+  } else {
+    XLOG(ERR) << "MoqxRelay: upstream peer subNs failed: " << result.error().reasonPhrase;
+  }
   auto it = upstreamHandles_.find(id);
   if (it == upstreamHandles_.end()) {
     co_return;
   }
-  if (result.hasValue()) {
-    it->second.subNs = std::move(result.value());
-  } else {
-    XLOG(ERR) << "MoqxRelay: upstream peer subNs failed: " << result.error().reasonPhrase;
-  }
+  it->second.subNs = std::move(subNsHandle);
   if (getDraftMajorVersion(upstream.info->version) < 18) {
     co_return;
   }
@@ -452,15 +454,17 @@ folly::coro::Task<void> MoqxRelay::onUpstreamConnectImpl(Participant upstream) {
         );
       }
   );
+  ExecBound<std::shared_ptr<Publisher::SubscribeTracksHandle>> tracksHandle;
+  if (tracks.hasValue()) {
+    tracksHandle = {std::move(tracks.value()), sessionExec};
+  } else {
+    XLOG(ERR) << "MoqxRelay: upstream peer subTracks failed: " << tracks.error().reasonPhrase;
+  }
   it = upstreamHandles_.find(id);
   if (it == upstreamHandles_.end()) {
     co_return;
   }
-  if (tracks.hasValue()) {
-    it->second.tracks = std::move(tracks.value());
-  } else {
-    XLOG(ERR) << "MoqxRelay: upstream peer subTracks failed: " << tracks.error().reasonPhrase;
-  }
+  it->second.tracks = std::move(tracksHandle);
 }
 
 void MoqxRelay::onUpstreamDisconnect(SessionId upstream) {
@@ -982,10 +986,7 @@ MoqxRelay::PublishSetupResult MoqxRelay::publishWithParticipant(
     auto& evicted = *publishEntry.evicted;
     // Null handle => previous publisher already terminated and onPublishDone() tore it down; skip.
     if (evicted.handle) {
-      // Depending on mode, this is inline or a hop to publisherExec.
-      runOnSessionExec(relayExec_, evicted.publisherExec, [h = evicted.handle] {
-        h->unsubscribe();
-      });
+      evicted.handle.post([](const auto& handle) { handle->unsubscribe(); });
       PublishDone done{
           RequestID(0),
           PublishDoneStatusCode::SUBSCRIPTION_ENDED,
@@ -1921,8 +1922,8 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
       peerSubNsHandles_.emplace(
           subscriber.sessionId,
           PeerInfo{
-              std::move(recipResult.value()),
-              std::move(recipTracks),
+              {std::move(recipResult.value()), subscriber.executor},
+              {std::move(recipTracks), subscriber.executor},
               std::move(*peerID),
               subscriber.address,
               subscriber.authority
@@ -2251,6 +2252,7 @@ Publisher::SubscribeResult attachSubscriber(
 folly::coro::Task<folly::Expected<MoqxRelay::UpstreamOk, SubscribeError>>
 MoqxRelay::subscribeUpstreamAndApplyOk(
     Publisher& upstream,
+    folly::Executor* upstreamExec,
     SubscribeRequest upstreamSubReq,
     std::shared_ptr<TrackConsumer> upstreamConsumer,
     std::shared_ptr<MoQForwarder> publisherFwd,
@@ -2271,7 +2273,12 @@ MoqxRelay::subscribeUpstreamAndApplyOk(
   publisherFwd->tryProcessNewGroupRequest(params, /*fire=*/false);
   // Moving the handle shared_ptr keeps the pointee (and `ok`) alive, so reading ok.*
   // in the same initializer is well-defined.
-  co_return UpstreamOk{std::move(subRes.value()), ok.requestID, ok.extensions, ok.largest};
+  co_return UpstreamOk{
+      {std::move(subRes.value()), upstreamExec},
+      ok.requestID,
+      ok.extensions,
+      ok.largest
+  };
 }
 
 // Runs on relayExec_: fulfills `pending` and caches the OK's Largest and extensions, returning a
@@ -2421,6 +2428,7 @@ folly::coro::Task<MoqxRelay::PublisherAttachment> MoqxRelay::attachNewLocalForwa
       setup.upstreamSubReq.forward = forward;
       upstreamResult = co_await subscribeUpstreamAndApplyOk(
           upstream->publisher(),
+          publisherExec,
           std::move(setup.upstreamSubReq),
           std::move(setup.upstreamConsumer),
           publisherFwd,
@@ -2829,6 +2837,7 @@ MoqxRelay::subscribeImpl(SubscribeRequest subReq, std::shared_ptr<TrackConsumer>
     // pending destructor fires on the error path.
     auto okOrErr = co_await subscribeUpstreamAndApplyOk(
         *upstreamPublisher,
+        upstream->info->executor,
         std::move(subReq),
         first->consumer,
         first->forwarder,
@@ -3111,28 +3120,23 @@ void MoqxRelay::onEmptyImpl(const FullTrackName& ftn) {
     return;
   }
 
-  if (!upstreamView->handle) {
-    // Handle is null - publisher terminated via FilterConsumer
+  if (!upstreamView->upstreamLive) {
     XLOG(INFO) << "Publisher terminated for " << ftn;
     registry_.remove(ftn);
     return;
   }
 
-  // Handle exists - just last subscriber left. requestUpdate/unsubscribe mutate
+  // Upstream live - just last subscriber left. requestUpdate/unsubscribe mutate
   // the upstream session inline (no self-hop), so they must run on publisherExec.
   XLOG(INFO) << "Last subscriber removed for " << ftn;
-  XCHECK(upstreamView->publisherExec);
   if (upstreamView->isPublish) {
     // if it's publish, don't unsubscribe, just subscribeUpdate forward=false
     XLOG(DBG1) << "Updating upstream subscription forward=false";
-    launchUpdate(
-        upstreamView->publisherExec,
-        doSubscribeUpdate(upstreamView->handle, /*forward=*/false)
-    );
-  } else {
-    runOnSessionExec(relayExec_, upstreamView->publisherExec, [h = upstreamView->handle] {
-      h->unsubscribe();
+    registry_.launchOnHandle(ftn, [](const auto& handle) {
+      return doSubscribeUpdate(handle, /*forward=*/false);
     });
+  } else {
+    registry_.postToHandle(ftn, [](const auto& handle) { handle->unsubscribe(); });
     XLOG(DBG4) << "Erasing subscription to " << ftn;
     registry_.remove(ftn);
   }
@@ -3151,16 +3155,15 @@ void MoqxRelay::forwardChangedImpl(const FullTrackName& ftn, bool forward) {
     // Ignore: it's the first subscriber, forward update not needed
     return;
   }
-  if (!upstreamView->handle) {
-    // Publisher terminated (onPublishDone cleared handle/upstream)
+  if (!upstreamView->upstreamLive) {
     XLOG(DBG4) << "Ignoring forward change for " << ftn << " - publisher terminated";
     return;
   }
   XLOG(INFO) << "Updating forward for " << ftn << " forward=" << forward;
 
-  // handle non-null (checked above) implies upstream is live, so publisherExec is set.
-  XCHECK(upstreamView->publisherExec);
-  launchUpdate(upstreamView->publisherExec, doSubscribeUpdate(upstreamView->handle, forward));
+  registry_.launchOnHandle(ftn, [forward](const auto& handle) {
+    return doSubscribeUpdate(handle, forward);
+  });
 }
 
 void MoqxRelay::newGroupRequested(MoQForwarder* forwarder, uint64_t group) {
@@ -3207,15 +3210,15 @@ void MoqxRelay::serveFill(std::shared_ptr<TrackConsumer> consumer, Fetch fetch) 
 void MoqxRelay::newGroupRequestedImpl(const FullTrackName& ftn, uint64_t group) {
   auto upstreamView = registry_.getUpstreamView(ftn);
   // Check if handle is still valid (publisher may have terminated)
-  if (!upstreamView || !upstreamView->handle) {
+  if (!upstreamView || !upstreamView->upstreamLive) {
     XLOG(DBG4) << "Ignoring NEW_GROUP_REQUEST for " << ftn << " - publisher terminated";
     return;
   }
   XLOG(INFO) << "New group request detected for " << ftn;
 
-  // handle non-null (checked above) implies upstream is live, so publisherExec is set.
-  XCHECK(upstreamView->publisherExec);
-  launchUpdate(upstreamView->publisherExec, doNewGroupRequestUpdate(upstreamView->handle, group));
+  registry_.launchOnHandle(ftn, [group](const auto& handle) {
+    return doNewGroupRequestUpdate(handle, group);
+  });
 }
 
 // TRACK_FILTER support

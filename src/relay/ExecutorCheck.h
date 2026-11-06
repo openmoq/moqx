@@ -12,7 +12,14 @@
 
 namespace openmoq::moqx {
 
-// For debug asserts. Also true when exec is not EventBase-backed, since its thread is unknown.
+// True only while this thread runs exec's loop. False when exec is not EventBase-backed.
+inline bool isOnExecutor(folly::Executor* exec) {
+  auto* follyExec = dynamic_cast<moxygen::MoQFollyExecutorImpl*>(exec);
+  return follyExec && follyExec->getBackingEventBase()->inRunningEventBaseThread();
+}
+
+// For debug asserts. Unlike isOnExecutor(), it also passes while exec's loop is not running, and
+// for an exec that is not EventBase-backed.
 inline bool onExecutor(folly::Executor* exec) {
   auto* follyExec = dynamic_cast<moxygen::MoQFollyExecutorImpl*>(exec);
   return !follyExec || follyExec->getBackingEventBase()->isInEventBaseThread();

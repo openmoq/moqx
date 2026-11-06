@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include "relay/ExecBound.h"
 #include "relay/ForwarderRef.h"
 #include "relay/Participant.h"
 #include "relay/RecentGroupWindow.h"
@@ -94,7 +95,7 @@ public:
     // for it. Sets handle, requestID, upstream, publisher; fulfills
     // promise. Returns false if entry is gone or replaced.
     bool complete(
-        std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle,
+        ExecBound<std::shared_ptr<moxygen::Publisher::SubscriptionHandle>> handle,
         moxygen::RequestID requestID,
         std::shared_ptr<const ParticipantInfo> upstream,
         std::shared_ptr<moxygen::Publisher> publisher
@@ -141,8 +142,8 @@ public:
 
   struct Evicted {
     ForwarderRef forwarder;
-    std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle; // may be null
-    folly::Executor* publisherExec{nullptr}; // old publisher's session exec, for handle teardown
+    // May be null. Bound to the old publisher's session exec.
+    ExecBound<std::shared_ptr<moxygen::Publisher::SubscriptionHandle>> handle;
   };
 
   struct PublishEntry {
@@ -166,6 +167,7 @@ public:
   // === Lookup ===
 
   bool exists(const moxygen::FullTrackName& ftn) const;
+  bool holdsHandles() const;
   // Empty ref if there is no entry.
   ForwarderRef getForwarderRef(const moxygen::FullTrackName& ftn) const;
 
@@ -181,13 +183,25 @@ public:
   struct UpstreamView {
     ForwarderRef forwarder;
     std::shared_ptr<moxygen::Publisher> publisher;
-    std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle;
+    bool upstreamLive;
     moxygen::RequestID requestID;
     folly::Executor* publisherExec{nullptr}; // executor the publisher forwarder lives on
     bool isPublish;
     bool isReady; // promise fulfilled
   };
   std::optional<UpstreamView> getUpstreamView(const moxygen::FullTrackName& ftn) const;
+  // Runs fn(handle) on the publisher's executor, if there is a handle.
+  template <typename Fn> void postToHandle(const moxygen::FullTrackName& ftn, Fn fn) const {
+    if (auto it = subscriptions_.find(ftn); it != subscriptions_.end()) {
+      it->second.handle.post(std::move(fn));
+    }
+  }
+  // Starts fn(handle), a Task<void>, on the publisher's executor, if there is a handle.
+  template <typename Fn> void launchOnHandle(const moxygen::FullTrackName& ftn, Fn fn) const {
+    if (auto it = subscriptions_.find(ftn); it != subscriptions_.end()) {
+      it->second.handle.launch(std::move(fn));
+    }
+  }
   // Unset while the first subscribe is still in flight.
   std::optional<moxygen::SessionId> upstreamSessionId(const moxygen::FullTrackName& ftn) const;
 
@@ -247,8 +261,8 @@ private:
     std::shared_ptr<const ParticipantInfo> upstream;
     std::shared_ptr<moxygen::Publisher> publisher;
     moxygen::RequestID requestID{0};
-    // TODO(#676): can keep the publisher's session alive past its executor. See UpstreamHandles.
-    std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle;
+    // Bound to upstream->executor: the handle keeps the publisher's session alive.
+    ExecBound<std::shared_ptr<moxygen::Publisher::SubscriptionHandle>> handle;
     folly::coro::SharedPromise<folly::Unit> promise;
     bool isPublish{false};
     std::shared_ptr<TopNFilter> topNFilter;
@@ -261,7 +275,7 @@ private:
   bool completeSubscription(
       const moxygen::FullTrackName& ftn,
       EntryEpoch epoch,
-      std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle,
+      ExecBound<std::shared_ptr<moxygen::Publisher::SubscriptionHandle>> handle,
       moxygen::RequestID requestID,
       std::shared_ptr<const ParticipantInfo> upstream,
       std::shared_ptr<moxygen::Publisher> publisher

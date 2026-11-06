@@ -463,7 +463,7 @@ TEST_P(MoQRelayTest, UpstreamPeeringSubscribesTracksOnDraft18) {
     }
 
     verifyOnRelayExec([&] { relay_->onUpstreamDisconnect(peer->sessionId()); });
-    driveIfMultiThread();
+    exec_->drive();
     EXPECT_TRUE(peer->tracksHandle.expired());
     removeSession(peer);
   }
@@ -493,12 +493,12 @@ TEST_P(MoQRelayTest, UpstreamDisconnectReleasesOnlyThatSession) {
   driveIfMultiThread();
 
   verifyOnRelayExec([&] { relay_->onUpstreamDisconnect(peers[0]->sessionId()); });
-  driveIfMultiThread();
+  exec_->drive();
   EXPECT_TRUE(peers[0]->tracksHandle.expired());
   EXPECT_FALSE(peers[1]->tracksHandle.expired());
 
   verifyOnRelayExec([&] { relay_->onUpstreamDisconnect(peers[1]->sessionId()); });
-  driveIfMultiThread();
+  exec_->drive();
   EXPECT_TRUE(peers[1]->tracksHandle.expired());
   for (auto& peer : peers) {
     removeSession(peer);
@@ -579,7 +579,7 @@ TEST_P(MoQRelayTest, ReciprocalPeeringSubscribesTracksOnDraft18) {
     ASSERT_EQ(peer->tracksRequests.size(), version == kVersionDraft18 ? 1u : 0u);
 
     peerSub->unsubscribeNamespace();
-    driveIfMultiThread();
+    exec_->drive();
     EXPECT_TRUE(peer->tracksHandle.expired());
     removeSession(peer);
   }

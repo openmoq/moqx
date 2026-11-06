@@ -9,6 +9,7 @@
 
 #include <folly/coro/BlockingWait.h>
 #include <folly/executors/InlineExecutor.h>
+#include <folly/executors/ManualExecutor.h>
 #include <folly/io/async/EventBase.h>
 #include <folly/portability/GMock.h>
 #include <folly/portability/GTest.h>
@@ -37,6 +38,13 @@ std::optional<ForwarderRef> noRef(const std::shared_ptr<MoQForwarder>&) {
   return std::nullopt;
 }
 
+// The upstream's facts. A release runs on the handle's own executor, not on this one.
+std::shared_ptr<const ParticipantInfo> upstreamInfo() {
+  return std::make_shared<const ParticipantInfo>(
+      ParticipantInfo{.executor = &folly::InlineExecutor::instance()}
+  );
+}
+
 // LF mode: the entry holds only a weak ref, and the publisher exec's registry is what
 // keeps the forwarder alive. Nothing here plays that part, so the forwarder can die
 // while the entry is still present.
@@ -63,7 +71,7 @@ TEST(SubscriptionRegistryTest, AwaitSubsequentSucceeds) {
       registry.getOrCreateFromSubscribe(kFtn, nullptr, subscribeChain, ownedRef)
   );
 
-  EXPECT_TRUE(first.pending.complete(nullptr, RequestID(0), nullptr, nullptr));
+  EXPECT_TRUE(first.pending.complete({}, RequestID(0), upstreamInfo(), nullptr));
 
   folly::EventBase evb;
   auto sub = folly::coro::blockingWait(std::move(task), &evb);
@@ -116,7 +124,7 @@ TEST(SubscriptionRegistryTest, PendingCompleteReturnsFalseWhenEntryGone) {
 
   registry.remove(kFtn); // simulate publisher replacing the entry mid-subscribe
 
-  EXPECT_FALSE(first.pending.complete(nullptr, RequestID(0), nullptr, nullptr));
+  EXPECT_FALSE(first.pending.complete({}, RequestID(0), upstreamInfo(), nullptr));
 }
 
 // Regression: awaitSubsequent must re-find after suspension; erased entry throws.
@@ -142,7 +150,7 @@ TEST(SubscriptionRegistryTest, AwaitSubsequentHandlesErasedEntry) {
       std::move(std::get<folly::coro::Task<SubscriptionRegistry::SubsequentSubscriber>>(token2));
 
   // Upstream subscribe succeeds — fulfills the promise.
-  EXPECT_TRUE(first.pending.complete(nullptr, RequestID(0), nullptr, nullptr));
+  EXPECT_TRUE(first.pending.complete({}, RequestID(0), upstreamInfo(), nullptr));
 
   // Entry is erased before the subsequent coroutine resumes.
   registry.remove(kFtn);
@@ -159,13 +167,13 @@ TEST(SubscriptionRegistryTest, CreateFromPublishEvictsSubscribeEntry) {
       registry.getOrCreateFromSubscribe(kFtn, nullptr, subscribeChain, ownedRef)
   );
   auto originalForwarder = first.forwarder;
-  first.pending.complete(nullptr, RequestID(0), nullptr, nullptr);
+  first.pending.complete({}, RequestID(0), upstreamInfo(), nullptr);
 
   auto newForwarder = std::make_shared<MoQForwarder>(kFtn, std::nullopt);
   auto entry = registry.createFromPublish(
       kFtn,
       ForwarderRef::owned(newForwarder),
-      nullptr,
+      upstreamInfo(),
       nullptr,
       RequestID(1),
       nullptr,
@@ -175,6 +183,40 @@ TEST(SubscriptionRegistryTest, CreateFromPublishEvictsSubscribeEntry) {
   ASSERT_TRUE(entry.evicted.has_value());
   EXPECT_EQ(entry.evicted->forwarder.getIfOwned(), originalForwarder);
   EXPECT_EQ(registry.getForwarderRef(kFtn).getIfOwned(), newForwarder);
+}
+
+TEST(SubscriptionRegistryTest, EvictedHandleReleasesOnItsExecutor) {
+  struct Handle : Publisher::SubscriptionHandle {
+    void unsubscribe() override {}
+    folly::coro::Task<RequestUpdateResult> requestUpdate(RequestUpdate) override {
+      co_return RequestOk{};
+    }
+  };
+  SubscriptionRegistry registry;
+  auto first = std::get<SubscriptionRegistry::FirstSubscriber>(
+      registry.getOrCreateFromSubscribe(kFtn, nullptr, subscribeChain, ownedRef)
+  );
+  folly::ManualExecutor upstreamExec;
+  auto handle = std::make_shared<Handle>();
+  std::weak_ptr<Handle> released = handle;
+  first.pending.complete({std::move(handle), &upstreamExec}, RequestID(0), upstreamInfo(), nullptr);
+
+  auto entry = registry.createFromPublish(
+      kFtn,
+      ForwarderRef::owned(std::make_shared<MoQForwarder>(kFtn, std::nullopt)),
+      upstreamInfo(),
+      nullptr,
+      RequestID(1),
+      nullptr,
+      publishChain
+  );
+  ASSERT_TRUE(entry.evicted.has_value());
+  EXPECT_TRUE(entry.evicted->handle);
+
+  entry.evicted.reset();
+  EXPECT_FALSE(released.expired()) << "released off its executor";
+  upstreamExec.drain();
+  EXPECT_TRUE(released.expired());
 }
 
 // Cleanup keys off identity, not liveness. In LF mode the forwarder can already be gone
@@ -213,7 +255,7 @@ TEST(SubscriptionRegistryTest, OnPublisherTerminatedErasesEmptyEntry) {
   registry.createFromPublish(
       kFtn,
       ForwarderRef::owned(forwarder),
-      nullptr,
+      upstreamInfo(),
       nullptr,
       RequestID(0),
       nullptr,
@@ -238,7 +280,7 @@ TEST(SubscriptionRegistryTest, ErasedEntryIsNotActivityTarget) {
     registry.createFromPublish(
         kFtn,
         ForwarderRef::owned(std::make_shared<MoQForwarder>(kFtn, std::nullopt)),
-        nullptr,
+        upstreamInfo(),
         nullptr,
         RequestID(0),
         nullptr,

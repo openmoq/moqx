@@ -174,6 +174,9 @@ void UpstreamProvider::stopOnOwner() {
   // Cancel any in-progress backoff sleep or connect in reconnectLoop().
   stopSource_.requestCancellation();
 
+  // The relay releases the session's peering handles while this executor still runs.
+  resetSession();
+
   // Break the shared_ptr cycle: relay owns us via upstream_, and we hold
   // back-refs to relay through these members.
   publishHandler_.reset();
