@@ -994,6 +994,7 @@ protected:
         /*hopID=*/std::nullopt
     );
     relay_->setPeering(peering_.get());
+    relay_->setReciprocalPeerHandler(peering_->reciprocalMoqtPeerHandler());
 
     auto onConnect = [peering = peering_.get(),
                       relayExec = relay_->getRelayExec()](std::shared_ptr<MoQSession> session
