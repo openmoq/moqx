@@ -12,6 +12,7 @@
 #pragma once
 
 #include "MoqxRelay.h"
+#include "peering/MoqtRelayBackend.h"
 #include "relay/PublisherCrossExecFilter.h"
 #include "relay/SessionParticipant.h"
 #include "relay/SubscriberCrossExecFilter.h"
@@ -331,6 +332,7 @@ protected:
 
   std::shared_ptr<TestMoQExecutor> exec_;
   std::shared_ptr<MoqxRelay> relay_;
+  std::unique_ptr<MoqtRelayBackend> peering_;
   std::unique_ptr<folly::ScopedEventBaseThread> relayThread_;
   folly::EventBase* relayEvb_{nullptr};
   std::vector<std::unique_ptr<AuxExec>> auxExecs_;

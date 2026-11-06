@@ -161,6 +161,7 @@ public:
   }
 
   folly::Executor* getRelayExec() const { return relayExec_; }
+  const std::string& getRelayID() const { return relayID_; }
   uint64_t getRelayHopID() const { return relayHopID_; }
 
   // execs must cover every thread the data plane runs on (io threads plus
@@ -202,16 +203,8 @@ public:
 
   // True while relay state still holds a handle that a session owns. Run on the relay executor.
   bool holdsSessionHandles() const {
-    return !upstreamHandles_.empty() || !peerSubNsHandles_.empty() || registry_.holdsHandles();
+    return !peerSubNsHandles_.empty() || registry_.holdsHandles();
   }
-
-  // Called by UpstreamProvider's onConnect hook after a new upstream session is
-  // established. Issues the peer subNs handshake and saves the handle.
-  folly::coro::Task<void> onUpstreamConnect(Participant upstream);
-
-  // Called by UpstreamProvider's onDisconnect hook when an upstream session
-  // closes. Releases that session's peering handles.
-  void onUpstreamDisconnect(moxygen::SessionId upstream);
 
   // Releases per-session relay state; the servers call this as a session tears down.
   void onSessionEnd(moxygen::SessionId /*session*/) {}
@@ -464,14 +457,6 @@ private:
   // Owned by the context, which keeps it alive while this relay serves requests.
   PeeringBackend* peering_{nullptr};
 
-  // Session-owned handles keep their session alive, so they are released on its executor.
-  struct UpstreamHandles {
-    ExecBound<std::shared_ptr<moxygen::Publisher::SubscribeNamespaceHandle>> subNs;
-    ExecBound<std::shared_ptr<moxygen::Publisher::SubscribeTracksHandle>> tracks; // draft 18+
-  };
-  // Keeps each connected upstream session's peering subscriptions alive.
-  folly::F14FastMap<moxygen::SessionId, UpstreamHandles, moxygen::SessionId::hash> upstreamHandles_;
-
   struct PeerInfo {
     ExecBound<std::shared_ptr<moxygen::Publisher::SubscribeNamespaceHandle>> handle;
     ExecBound<std::shared_ptr<moxygen::Publisher::SubscribeTracksHandle>> tracksHandle; // draft 18+
@@ -633,7 +618,6 @@ private:
   // nullopt means no active sub, defer upstream.
   folly::coro::Task<std::optional<moxygen::TrackStatusOk>>
   readPublisherForwarderStatus(moxygen::TrackStatus req);
-  folly::coro::Task<void> onUpstreamConnectImpl(Participant upstream);
 
   // Synchronous result of publishWithParticipant: the consumer the publisher writes
   // to and the PublishOk to return to the publisher.  Returned synchronously so
