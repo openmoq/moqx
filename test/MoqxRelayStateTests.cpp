@@ -5,6 +5,7 @@
  */
 
 #include "MoqxRelayTestFixture.h"
+#include "UpstreamProvider.h"
 
 #include <folly/json.h>
 
@@ -69,6 +70,50 @@ protected:
     return walk.finish();
   }
 };
+
+TEST_P(MoQRelayStateTest, PeerRelayIsReportedAsAnAcceptedLink) {
+  // A peer session that accepts the relay's reciprocal SUBSCRIBE_NAMESPACE.
+  class PeerSession : public NiceMock<MockMoQSession> {
+  public:
+    using NiceMock<MockMoQSession>::NiceMock;
+    folly::coro::Task<Publisher::SubscribeNamespaceResult> subscribeNamespace(
+        SubscribeNamespace subNs,
+        std::shared_ptr<Publisher::NamespacePublishHandle> /*handle*/
+    ) override {
+      co_return std::make_shared<NiceMock<MockSubscribeNamespaceHandle>>(
+          SubscribeNamespaceOk{subNs.requestID}
+      );
+    }
+  };
+  resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "sg-sin-2-1");
+  relay_->setAllowedNamespacePrefix(kAllowedPrefix);
+  auto peer = std::make_shared<PeerSession>(exec_);
+  ON_CALL(*peer, getNegotiatedVersion())
+      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
+  getOrCreateMockState(peer);
+  withSessionContext(peer, [&] {
+    folly::coro::blockingWait(
+        publisherInterface()->subscribeNamespace(
+            makePeerSubNs("jp-osa-1"),
+            std::make_shared<NiceMock<MockNamespacePublishHandle>>()
+        ),
+        exec_.get()
+    );
+  });
+  driveIfMultiThread();
+
+  struct Links : PeerVisitor {
+    std::vector<PeerLink> links;
+    void onPeer(const PeerLink& link) override { links.push_back(link); }
+  } links;
+  folly::coro::blockingWait(peering_->visitPeers(links), exec_.get());
+  ASSERT_EQ(links.links.size(), 1u);
+  EXPECT_EQ(links.links[0].direction, PeerLink::Direction::Accepted);
+  EXPECT_EQ(links.links[0].relayID, "jp-osa-1");
+
+  removeSession(peer);
+  driveIfMultiThread();
+}
 
 TEST_P(MoQRelayStateTest, EmptyRelayHasRootTreeAndNoSubscriptions) {
   auto state = dumpState();

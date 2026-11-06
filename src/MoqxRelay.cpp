@@ -7,7 +7,6 @@
  */
 
 #include "MoqxRelay.h"
-#include "UpstreamProvider.h"
 #include "relay/ChannelSubscriber.h"
 #include "relay/ClusterPath.h"
 #include "relay/CrossExecFilter.h"
@@ -1812,54 +1811,17 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
   const Participant requester = requestParticipant();
   const ParticipantInfo& subscriber = *requester.info;
 
-  // Relay peering: if the incoming subNs carries a relay auth token, the peer
-  // is a relay. Reciprocate with our own peer subNs so the peer gets our
-  // namespace announcements as publishers connect.
   std::string incomingPeerID;
-  if (auto peerID = !relayID_.empty() ? getPeerRelayID(subNs) : std::nullopt) {
-    incomingPeerID = *peerID;
-    XLOG(INFO) << __func__ << ": peer relay detected peer_id=" << *peerID
-               << ", reciprocating peer subNs";
-    // Tag with the peer's relay ID so we suppress echoing these namespaces
-    // back to that peer on reconnect.
-    auto handle =
-        makeNamespaceBridgeHandle(weak_from_this(), requester, incomingPeerID, relayExec_);
-    auto peerSubNs = makePeerSubNs();
-    // The participant's publisher runs the call on the peer session's executor and wraps
-    // the returned handle so its teardown hops there too (no token: reciprocal).
-    auto recipResult =
-        co_await requester.publisher->subscribeNamespace(std::move(peerSubNs), handle);
-    // The reciprocal is not cancellable. If the session closed while it was
-    // pending, its cleanup has already run and nothing removes a registration.
-    co_await folly::coro::co_safe_point;
-    if (recipResult.hasError()) {
-      XLOG(ERR) << "Reciprocal peer subNs failed: " << recipResult.error().reasonPhrase;
-    } else {
-      std::shared_ptr<Publisher::SubscribeTracksHandle> recipTracks;
-      if (getDraftMajorVersion(subscriber.version) >= 18) {
-        auto tracks =
-            co_await requester.publisher->subscribeTracks(makePeerSubTracks(relayID_), nullptr);
-        co_await folly::coro::co_safe_point;
-        if (tracks.hasValue()) {
-          recipTracks = std::move(tracks.value());
-        } else {
-          XLOG(ERR) << "Reciprocal peer subTracks failed: " << tracks.error().reasonPhrase;
-        }
-      }
-      peerSubNsHandles_.emplace(
-          subscriber.sessionId,
-          PeerInfo{
-              {std::move(recipResult.value()), subscriber.executor},
-              {std::move(recipTracks), subscriber.executor},
-              std::move(*peerID),
-              subscriber.address,
-              subscriber.authority
-          }
-      );
+  if (reciprocal_) {
+    if (auto peerID = reciprocal_->authorizePeer(subNs.params)) {
+      XLOG(INFO) << __func__ << ": peer relay detected peer_id=" << *peerID
+                 << ", reciprocating peer subNs";
+      co_await reciprocal_->onPeerConnected(requester, *peerID);
+      incomingPeerID = std::move(*peerID);
     }
-    // Fall through: register the peer as a normal subNs subscriber so it
-    // receives namespace announcements as publishers connect.
   }
+  // Register the peer as a normal subNs subscriber so it receives namespace
+  // announcements as publishers connect.
   SubscribeNamespaceOptions effectiveOptions;
   effectiveOptions = subNs.options;
 
@@ -1931,7 +1893,7 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
             }
             const auto publisherId = publisher.info->sessionId;
             if (publisherId == subscriber.sessionId ||
-                (!incomingPeerID.empty() && isPeerSession(publisherId, incomingPeerID))) {
+                (!incomingPeerID.empty() && reciprocal_->peerIdOf(publisherId) == incomingPeerID)) {
               return;
             }
             if (countTracks) {
@@ -1987,9 +1949,11 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
   );
 }
 
-bool MoqxRelay::isPeerSession(SessionId session, const std::string& peerID) const {
-  auto it = peerSubNsHandles_.find(session);
-  return it != peerSubNsHandles_.end() && it->second.relayID == peerID;
+void MoqxRelay::onSessionEnd(SessionId session) {
+  XDCHECK(onRelayExec());
+  if (reciprocal_ && reciprocal_->peerIdOf(session)) {
+    reciprocal_->onPeerClosed(session);
+  }
 }
 
 void MoqxRelay::unsubscribeNamespace(
@@ -1998,8 +1962,9 @@ void MoqxRelay::unsubscribeNamespace(
 ) {
   XDCHECK(onRelayExec());
   XLOG(DBG1) << __func__ << " nsp=" << trackNamespacePrefix;
-  // Clean up the reciprocal peer subNs handle for this session if present.
-  peerSubNsHandles_.erase(session);
+  if (reciprocal_ && reciprocal_->peerIdOf(session)) {
+    reciprocal_->onPeerDisconnected(session);
+  }
   auto result = namespaceTree_.removeNamespaceSubscriber(trackNamespacePrefix, session);
   if (result.hasError() && result.error() == NamespaceTree::Error::NotSubscribed) {
     XLOG(DBG1) << "Namespace prefix was not subscribed by this session";
@@ -2038,7 +2003,7 @@ folly::coro::Task<Publisher::SubscribeTracksResult> MoqxRelay::subscribeTracks(
   };
   std::vector<TrackMatch> trackMatches;
   // Peer relays are exempt, as for SUBSCRIBE_NAMESPACE.
-  const auto peerID = relayID_.empty() ? std::nullopt : getPeerRelayID(subTracks.params);
+  const auto peerID = reciprocal_ ? reciprocal_->authorizePeer(subTracks.params) : std::nullopt;
   const bool enforceLimit = !peerID;
   auto overLimit = [&] { return enforceLimit && trackMatches.size() > kMaxNamespaceMatches; };
 
@@ -2059,7 +2024,8 @@ folly::coro::Task<Publisher::SubscribeTracksResult> MoqxRelay::subscribeTracks(
               return;
             }
             const auto publisherId = publisher.info->sessionId;
-            if (publisherId == session || (peerID && isPeerSession(publisherId, *peerID))) {
+            if (publisherId == session ||
+                (peerID && reciprocal_->peerIdOf(publisherId) == peerID)) {
               // Don't echo the subscriber's own published tracks.
               return;
             }
@@ -3337,15 +3303,6 @@ MoqxRelay::matchTracks(const TrackNamespace& nsPrefix, const std::string* trackN
 }
 
 void MoqxRelay::dumpState(RelayStateVisitor& visitor) const {
-  visitor.onPeersBegin();
-  for (const auto& [id, peer] : peerSubNsHandles_) {
-    visitor.onPeer(peer.address, peer.authority, peer.relayID);
-  }
-  visitor.onPeersEnd();
-  if (!visitor.alive()) {
-    return;
-  }
-
   visitor.onSubscriptionsBegin();
   registry_.forEach([&](const SubscriptionRegistry::EntryView& e) {
     std::string sourceAddr;
