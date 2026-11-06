@@ -46,7 +46,6 @@ MoqxRelayContext::MoqxRelayContext(
       auto relay = std::make_shared<MoqxRelay>(
           svc.cache,
           relayID,
-          getRelayHopID().value_or(0),
           std::make_shared<moxygen::MoQFollyExecutorImpl>(evbs[i++].get()),
           useLocalForwarders,
           MoqxRelay::kDefaultMaxDeselected,
@@ -60,7 +59,6 @@ MoqxRelayContext::MoqxRelayContext(
       auto relay = std::make_shared<MoqxRelay>(
           svc.cache,
           relayID,
-          getRelayHopID().value_or(0),
           nullptr,
           false,
           MoqxRelay::kDefaultMaxDeselected,
@@ -344,7 +342,8 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayContext::validateAu
   auto participant = std::make_shared<SessionParticipant>(
       std::move(pub),
       std::move(sub),
-      entry.relay->getRelayExec()
+      entry.relay->getRelayExec(),
+      entry.peering.get()
   );
   session->setPublishHandler(participant);
   session->setSubscribeHandler(std::move(participant));

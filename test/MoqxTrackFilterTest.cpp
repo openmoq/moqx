@@ -38,7 +38,6 @@ protected:
     relay_ = std::make_shared<MoqxRelay>(
         config::CacheConfig{0, 0}, // no cache
         /*relayID=*/"",
-        /*relayHopID=*/0,
         /*relayExec=*/nullptr,
         /*useLocalForwarders=*/false,
         /*maxDeselected=*/0
@@ -521,7 +520,6 @@ TEST_F(MoqxTrackFilterTest, FirstObjectCycle_DoesNotEvictSelectedTracksBeforeFir
   relay_ = std::make_shared<MoqxRelay>(
       config::CacheConfig{0, 0},
       /*relayID=*/"",
-      /*relayHopID=*/0,
       /*relayExec=*/nullptr,
       /*useLocalForwarders=*/false,
       /*maxDeselected=*/0,
@@ -738,7 +736,6 @@ TEST_F(MoqxTrackFilterTest, DeselectedQueueEviction_EvictsOldestEntry) {
   relay_ = std::make_shared<MoqxRelay>(
       config::CacheConfig{0, 0}, // no cache
       /*relayID=*/"",
-      /*relayHopID=*/0,
       /*relayExec=*/nullptr,
       /*useLocalForwarders=*/false,
       /*maxDeselected=*/2
@@ -830,7 +827,6 @@ TEST_F(MoqxTrackFilterTest, IdleEviction_SilentTrackReplacedByActiveOutsider) {
   relay_ = std::make_shared<MoqxRelay>(
       config::CacheConfig{0, 0}, // no cache
       /*relayID=*/"",
-      /*relayHopID=*/0,
       /*relayExec=*/nullptr,
       /*useLocalForwarders=*/false,
       /*maxDeselected=*/5,

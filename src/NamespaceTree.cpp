@@ -177,7 +177,7 @@ NamespaceTree::SetPublisherResult NamespaceTree::setPublisher(
     RequestID requestID,
     std::vector<uint64_t> relayHopPath,
     uint64_t routeCost,
-    bool fromCluster
+    bool fromPeering
 ) {
   SetPublisherResult result;
   auto node = findNode(ns, /*createMissingNodes=*/true, &result.subscribers);
@@ -186,11 +186,11 @@ NamespaceTree::SetPublisherResult NamespaceTree::setPublisher(
 
   const auto session = publisher.info->sessionId;
   auto existing = std::find_if(node->routes_.begin(), node->routes_.end(), [&](const auto& r) {
-    return r.participant.info->sessionId == session || (!fromCluster && !r.fromCluster);
+    return r.participant.info->sessionId == session || (!fromPeering && !r.fromPeering);
   });
   // A NAMESPACE (the only advertisement without a callback) repeated by its session.
   if (existing != node->routes_.end() && existing->participant.info->sessionId == session &&
-      fromCluster && !existing->callback && !callback) {
+      fromPeering && !existing->callback && !callback) {
     existing->peerID = std::move(peerID);
     reviseRoute(*existing, std::move(relayHopPath), routeCost, result);
     return result;
@@ -215,7 +215,7 @@ NamespaceTree::SetPublisherResult NamespaceTree::setPublisher(
       .path = std::move(relayHopPath),
       .cost = routeCost,
       .seq = ++nextRouteSeq_,
-      .fromCluster = fromCluster,
+      .fromPeering = fromPeering,
   });
   node->trackNamespace = ns;
   return result;

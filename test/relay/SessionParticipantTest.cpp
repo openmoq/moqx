@@ -6,6 +6,9 @@
 
 #include "relay/SessionParticipant.h"
 
+#include "MoqxRelay.h"
+#include "peering/MoqtRelayBackend.h"
+#include "relay/MoqClusterRouteCodec.h"
 #include "relay/PublisherCrossExecFilter.h"
 
 #include <folly/coro/BlockingWait.h>
@@ -69,9 +72,9 @@ TEST_F(SessionParticipantTest, SnapshotMatchesSession) {
     EXPECT_EQ(info.sessionId, session->sessionId());
     EXPECT_EQ(info.version, kVersionDraft16);
     EXPECT_EQ(info.executor, exec_.get());
-    EXPECT_TRUE(info.relayHops);
-    EXPECT_EQ(info.peerHopID, 7);
-    EXPECT_EQ(info.linkCost, 3);
+    EXPECT_TRUE(info.routing.relayHops);
+    EXPECT_EQ(info.routing.peerHopID, 7);
+    EXPECT_EQ(info.routing.linkCost, 3);
   });
   destroyOnSessionThread(session);
 }
@@ -151,6 +154,40 @@ TEST_F(SessionParticipantTest, AttachesParticipantToEachRequest) {
     }
   });
   EXPECT_EQ(seen, std::vector<SessionId>(7, session->sessionId()));
+  destroyOnSessionThread(session);
+}
+
+// The participant attached to a request carries the routing that the peering backend chose for a
+// session that negotiated MoQ Cluster.
+TEST_F(SessionParticipantTest, AttachedParticipantCarriesTheBackendsRouting) {
+  auto session = makeSession();
+  auto relay = std::make_shared<MoqxRelay>(config::CacheConfig{});
+  MoqtRelayBackend backend(relay, config::ServiceConfig{}, /*hopID=*/900);
+  auto relayPublisher = std::make_shared<NiceMock<MockPublisher>>();
+  auto participant = std::make_shared<SessionParticipant>(
+      relayPublisher,
+      std::make_shared<NiceMock<MockSubscriber>>(),
+      &relayExec_,
+      &backend
+  );
+  std::optional<ParticipantRouting> routing;
+  EXPECT_CALL(*relayPublisher, trackStatus(_)).WillOnce([&](TrackStatus req) {
+    routing = requestParticipant().info->routing;
+    return folly::coro::makeTask<Publisher::TrackStatusResult>(
+        folly::makeUnexpected(RequestError{req.requestID, RequestErrorCode::DOES_NOT_EXIST, "test"})
+    );
+  });
+  onSessionThread([&] {
+    session->setPublishHandler(participant);
+    folly::RequestContextScopeGuard guard;
+    (void)participant->trackStatus(TrackStatus{});
+  });
+  ASSERT_TRUE(routing);
+  EXPECT_TRUE(routing->fromPeering);
+  EXPECT_TRUE(routing->wantsUpdates);
+  EXPECT_NE(dynamic_cast<const MoqClusterRouteCodec*>(routing->codec.get()), nullptr);
+  ASSERT_TRUE(routing->exclusion);
+  EXPECT_EQ(routing->exclusion->hop, 7);
   destroyOnSessionThread(session);
 }
 

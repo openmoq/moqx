@@ -22,12 +22,6 @@
 
 namespace openmoq::moqx {
 
-// Routes a request may not use.
-struct RouteExclusion {
-  std::optional<moxygen::SessionId> session;
-  uint64_t hop{moxygen::kMoQClusterAnonHopId};
-};
-
 // Hierarchical tree tracking PUBLISH_NAMESPACE announcements and
 // SUBSCRIBE_NAMESPACE subscriptions.
 //
@@ -82,7 +76,7 @@ public:
       std::vector<uint64_t> path;
       uint64_t cost{0};        // ROUTE_COST plus the sender's link cost
       uint64_t seq{0};         // route generation; newer wins ties
-      bool fromCluster{false}; // from a session that negotiated MoQ Cluster
+      bool fromPeering{false}; // learned through relay peering
     };
 
     const std::vector<Route>& routes() const { return routes_; }
@@ -204,7 +198,7 @@ public:
     std::optional<moxygen::SessionId> replacedPublisher;
   };
 
-  // A route that is not fromCluster displaces the node's other such route, and a session's
+  // A local route (not fromPeering) displaces the node's other local route, and a session's
   // route displaces its own earlier one. A repeated NAMESPACE updates it in place. Other routes
   // coexist.
   SetPublisherResult setPublisher(
@@ -215,7 +209,7 @@ public:
       moxygen::RequestID requestID,
       std::vector<uint64_t> relayHopPath = {},
       uint64_t routeCost = 0,
-      bool fromCluster = false
+      bool fromPeering = false
   );
 
   // Replaces the path and cost of sessionId's route for requestID. A new origin
