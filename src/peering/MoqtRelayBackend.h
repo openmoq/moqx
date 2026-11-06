@@ -9,8 +9,10 @@
 #include "UpstreamProvider.h"
 #include "config/Config.h"
 #include "peering/PeeringBackend.h"
+#include "relay/ExecBound.h"
 #include "relay/Participant.h"
 
+#include <folly/container/F14Map.h>
 #include <folly/container/F14Set.h>
 #include <moxygen/events/MoQFollyExecutorImpl.h>
 
@@ -38,10 +40,18 @@ public:
   bool peersPending() const override { return connectedUpstreams_.size() < upstreams_.size(); }
   folly::coro::Task<void> waitForPeers(folly::Function<bool()> routed) override;
   void visitState(RelayStateVisitor& /*visitor*/) const override {}
-  bool holdsSessionHandles() const override { return false; }
+  bool holdsSessionHandles() const override { return !upstreamHandles_.empty(); }
 
   folly::coro::Task<void> visitPeers(PeerVisitor& visitor) const override;
   folly::coro::Task<PeerAdminResult> executePeerAdminOp(PeerAdminOp op) override;
+
+  // Called by UpstreamProvider's onConnect hook after a new upstream session is
+  // established. Issues the peer subNs handshake and saves the handle.
+  folly::coro::Task<void> onUpstreamConnect(Participant upstream);
+
+  // Called by UpstreamProvider's onDisconnect hook when an upstream session
+  // closes. Releases that session's peering handles.
+  void onUpstreamDisconnect(moxygen::SessionId upstream);
 
   // For tests that build their own provider. Call before the relay serves requests.
   void addUpstream(std::shared_ptr<UpstreamProvider> upstream) {
@@ -49,8 +59,6 @@ public:
   }
 
 private:
-  // On the relay executor.
-  folly::coro::Task<void> onUpstreamConnect(std::shared_ptr<MoqxRelay> relay, Participant upstream);
   void startUpstream(
       const config::UpstreamConfig& cfg,
       const std::shared_ptr<moxygen::MoQFollyExecutorImpl>& workerExec
@@ -60,16 +68,23 @@ private:
   // providers' filters drop their references to the relay.
   std::weak_ptr<MoqxRelay> relay_;
   folly::Executor* relayExec_;
+  std::string relayID_;
   std::vector<config::UpstreamConfig> configs_;
   std::optional<uint64_t> hopID_;
   uint64_t subscriptionBufferBytes_;
   folly::EventBase* workerEvb_{nullptr};
   // Filled by start(), before the servers accept requests.
   std::vector<std::shared_ptr<UpstreamProvider>> upstreams_;
-  // Upstream sessions, by whether their handshake has finished. On the relay executor.
-  folly::F14FastSet<moxygen::SessionId, moxygen::SessionId::hash> handshakingUpstreams_;
+  // Upstream sessions whose handshake has finished. On the relay executor.
   folly::F14FastSet<moxygen::SessionId, moxygen::SessionId::hash> connectedUpstreams_;
   bool stopped_{false};
+
+  struct UpstreamHandles {
+    ExecBound<std::shared_ptr<moxygen::Publisher::SubscribeNamespaceHandle>> subNs;
+    ExecBound<std::shared_ptr<moxygen::Publisher::SubscribeTracksHandle>> tracks; // draft 18+
+  };
+  // Keeps each connected upstream session's peering subscriptions alive. On the relay executor.
+  folly::F14FastMap<moxygen::SessionId, UpstreamHandles, moxygen::SessionId::hash> upstreamHandles_;
 };
 
 } // namespace openmoq::moqx

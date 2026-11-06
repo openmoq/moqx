@@ -83,6 +83,9 @@ void MoQRelayTest::resetRelay(
     relayExec = std::make_shared<moxygen::MoQFollyExecutorImpl>(relayEvb_);
   }
   bool useLocalForwarders = relayEvb_ && relayMode() == RelayMode::LocalForwarderMT;
+  if (relay_) {
+    relay_->setPeering(nullptr);
+  }
   relay_ = std::make_shared<MoqxRelay>(
       std::move(cache),
       relayID,
@@ -93,6 +96,12 @@ void MoQRelayTest::resetRelay(
       MoqxRelay::kDefaultIdleTimeout,
       MoqxRelay::kDefaultActivityThreshold
   );
+  peering_ = std::make_unique<MoqtRelayBackend>(
+      relay_,
+      config::ServiceConfig{},
+      /*hopID=*/std::nullopt
+  );
+  relay_->setPeering(peering_.get());
   if (relayEvb_) {
     if (relayMode() == RelayMode::LocalForwarderMT) {
       publisherInterface_ = relay_->createPublisherFilter();
@@ -138,7 +147,12 @@ void MoQRelayTest::TearDown() {
   exec_->setRelayEvb(nullptr);
   publisherInterface_.reset();
   subscriberInterface_.reset();
+  // Something may still hold the relay, so it must not point at the freed backend.
+  if (relay_) {
+    relay_->setPeering(nullptr);
+  }
   relay_.reset();
+  peering_.reset();
   relayThread_.reset();
   relayEvb_ = nullptr;
   drainExecs();
