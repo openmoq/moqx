@@ -6,6 +6,8 @@
 
 #include "relay/ExecBound.h"
 
+#include <folly/coro/Baton.h>
+#include <folly/coro/BlockingWait.h>
 #include <folly/io/async/ScopedEventBaseThread.h>
 #include <folly/portability/GTest.h>
 #include <moxygen/events/MoQFollyExecutorImpl.h>
@@ -83,6 +85,20 @@ TEST_F(ExecBoundTest, PostOnItsExecutorRunsInline) {
   EXPECT_TRUE(ranInline);
 }
 
+TEST_F(ExecBoundTest, AddQueuesEvenOnItsExecutor) {
+  std::thread::id destroyedOn;
+  bool ranInline = true;
+  bool ran = false;
+  owner_.getEventBase()->runInEventBaseThreadAndWait([&] {
+    ExecBound<std::shared_ptr<Tracker>> bound(std::make_shared<Tracker>(&destroyedOn), &exec_);
+    bound.add([&](const std::shared_ptr<Tracker>&) { ran = true; });
+    ranInline = ran;
+  });
+  drainOwner();
+  EXPECT_FALSE(ranInline);
+  EXPECT_TRUE(ran);
+}
+
 TEST_F(ExecBoundTest, PostMayReleaseTheBoundValue) {
   std::thread::id destroyedOn;
   bool aliveAfterReset = false;
@@ -108,6 +124,65 @@ TEST_F(ExecBoundTest, LaunchRunsTheTaskOnItsExecutor) {
   }
   drainOwner();
   EXPECT_EQ(ranOn, ownerThread());
+}
+
+TEST_F(ExecBoundTest, RunReturnsTheTaskResultFromItsExecutor) {
+  std::thread::id destroyedOn;
+  std::thread::id ranOn;
+  {
+    ExecBound<std::shared_ptr<Tracker>> bound(std::make_shared<Tracker>(&destroyedOn), &exec_);
+    auto result = folly::coro::blockingWait(
+        bound.run([&](const std::shared_ptr<Tracker>&) -> folly::coro::Task<int> {
+          ranOn = std::this_thread::get_id();
+          co_return 7;
+        })
+    );
+    EXPECT_EQ(result, 7);
+  }
+  drainOwner();
+  EXPECT_EQ(ranOn, ownerThread());
+}
+
+// The task keeps its own copy after the ExecBound resets, and dropping the task off the executor
+// still releases that copy there.
+TEST_F(ExecBoundTest, RunTaskReleasesItsCopyOnItsExecutor) {
+  std::thread::id destroyedOn;
+  ExecBound<std::shared_ptr<Tracker>> bound(std::make_shared<Tracker>(&destroyedOn), &exec_);
+  auto task =
+      bound.run([](const std::shared_ptr<Tracker>&) -> folly::coro::Task<void> { co_return; });
+  bound.reset();
+  drainOwner();
+  EXPECT_EQ(destroyedOn, std::thread::id()) << "the task's copy is still alive";
+
+  {
+    auto dropped = std::move(task);
+  }
+  drainOwner();
+  EXPECT_EQ(destroyedOn, ownerThread());
+}
+
+// A task suspended past a reset still reads the value when it resumes.
+TEST_F(ExecBoundTest, RunTaskReadsTheValueAfterResumingPastAReset) {
+  std::thread::id destroyedOn;
+  ExecBound<std::shared_ptr<Tracker>> bound(std::make_shared<Tracker>(&destroyedOn), &exec_);
+  folly::coro::Baton resume;
+  bool sawValue = false;
+  auto done = bound
+                  .run([&](const std::shared_ptr<Tracker>& tracker) -> folly::coro::Task<void> {
+                    co_await resume;
+                    sawValue = tracker && tracker->destroyedOn == &destroyedOn;
+                  })
+                  .start();
+  drainOwner();
+  bound.reset();
+  drainOwner();
+  EXPECT_EQ(destroyedOn, std::thread::id()) << "the suspended task's copy is still alive";
+
+  resume.post();
+  std::move(done).get();
+  drainOwner();
+  EXPECT_TRUE(sawValue);
+  EXPECT_EQ(destroyedOn, ownerThread());
 }
 
 TEST_F(ExecBoundTest, MoveAssignmentReleasesTheOldValueOnItsExecutor) {

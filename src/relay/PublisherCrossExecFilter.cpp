@@ -7,42 +7,31 @@
 #include "relay/PublisherCrossExecFilter.h"
 #include "relay/CrossExecFilter.h"
 #include "relay/CrossExecSubscriptionHandle.h"
+#include "relay/ExecBound.h"
 
 namespace openmoq::moqx {
 
 namespace {
 
+// Readers take a handle's Ok when it is created, so each result wrapper here copies its inner's.
 class CrossExecFetchHandle : public moxygen::Publisher::FetchHandle {
 public:
   CrossExecFetchHandle(
       std::shared_ptr<moxygen::Publisher::FetchHandle> inner,
       folly::Executor* exec
   )
-      : inner_(std::move(inner)), exec_(exec) {}
-
-  ~CrossExecFetchHandle() override {
-    // Inner dtor may touch session state; destroy it on exec_, not the dropping thread.
-    if (inner_) {
-      exec_->add([inner = std::move(inner_)]() mutable {});
-    }
-  }
-
-  const moxygen::FetchOk& fetchOk() const override { return inner_->fetchOk(); }
+      : FetchHandle(inner->fetchOk()), inner_(std::move(inner), exec) {}
 
   void fetchCancel() override {
-    exec_->add([inner = inner_]() mutable { inner->fetchCancel(); });
+    inner_.add([](const auto& inner) { inner->fetchCancel(); });
   }
 
   folly::coro::Task<RequestUpdateResult> requestUpdate(moxygen::RequestUpdate update) override {
-    co_return co_await folly::coro::co_withExecutor(
-        folly::getKeepAliveToken(exec_),
-        inner_->requestUpdate(std::move(update))
-    );
+    return forwardRequestUpdate(inner_, std::move(update));
   }
 
 private:
-  std::shared_ptr<moxygen::Publisher::FetchHandle> inner_;
-  folly::Executor* exec_;
+  ExecBound<std::shared_ptr<moxygen::Publisher::FetchHandle>> inner_;
 };
 
 // Wraps a NamespacePublishHandle so that namespaceMsg() and namespaceDoneMsg()
@@ -52,32 +41,24 @@ class CrossExecNamespacePublishHandle : public moxygen::Publisher::NamespacePubl
 public:
   CrossExecNamespacePublishHandle(
       std::shared_ptr<moxygen::Publisher::NamespacePublishHandle> inner,
-      folly::Executor::KeepAlive<> exec
+      folly::Executor* exec
   )
-      : inner_(std::move(inner)), exec_(std::move(exec)) {}
-
-  ~CrossExecNamespacePublishHandle() override {
-    // Inner dtor may touch session state; destroy it on exec_, not the dropping thread.
-    if (inner_) {
-      exec_->add([inner = std::move(inner_)]() mutable {});
-    }
-  }
+      : inner_(std::move(inner), exec) {}
 
   void namespaceMsg(const moxygen::TrackNamespace& ns) override {
-    exec_->add([inner = inner_, ns]() mutable { inner->namespaceMsg(ns); });
+    inner_.add([ns](const auto& inner) { inner->namespaceMsg(ns); });
   }
 
   void namespaceMsg(const moxygen::Namespace& ns) override {
-    exec_->add([inner = inner_, ns]() mutable { inner->namespaceMsg(ns); });
+    inner_.add([ns](const auto& inner) { inner->namespaceMsg(ns); });
   }
 
   void namespaceDoneMsg(const moxygen::TrackNamespace& ns) override {
-    exec_->add([inner = inner_, ns]() mutable { inner->namespaceDoneMsg(ns); });
+    inner_.add([ns](const auto& inner) { inner->namespaceDoneMsg(ns); });
   }
 
 private:
-  std::shared_ptr<moxygen::Publisher::NamespacePublishHandle> inner_;
-  folly::Executor::KeepAlive<> exec_;
+  ExecBound<std::shared_ptr<moxygen::Publisher::NamespacePublishHandle>> inner_;
 };
 
 class CrossExecSubscribeNamespaceHandle : public moxygen::Publisher::SubscribeNamespaceHandle {
@@ -86,33 +67,18 @@ public:
       std::shared_ptr<moxygen::Publisher::SubscribeNamespaceHandle> inner,
       folly::Executor* exec
   )
-      : inner_(std::move(inner)), exec_(exec) {}
-
-  ~CrossExecSubscribeNamespaceHandle() override {
-    // Inner dtor may touch session state; destroy it on exec_, not the dropping thread.
-    if (inner_) {
-      exec_->add([inner = std::move(inner_)]() mutable {});
-    }
-  }
-
-  const moxygen::SubscribeNamespaceOk& subscribeNamespaceOk() const override {
-    return inner_->subscribeNamespaceOk();
-  }
+      : SubscribeNamespaceHandle(inner->subscribeNamespaceOk()), inner_(std::move(inner), exec) {}
 
   void unsubscribeNamespace() override {
-    exec_->add([inner = inner_]() mutable { inner->unsubscribeNamespace(); });
+    inner_.add([](const auto& inner) { inner->unsubscribeNamespace(); });
   }
 
   folly::coro::Task<RequestUpdateResult> requestUpdate(moxygen::RequestUpdate update) override {
-    co_return co_await folly::coro::co_withExecutor(
-        folly::getKeepAliveToken(exec_),
-        inner_->requestUpdate(std::move(update))
-    );
+    return forwardRequestUpdate(inner_, std::move(update));
   }
 
 private:
-  std::shared_ptr<moxygen::Publisher::SubscribeNamespaceHandle> inner_;
-  folly::Executor* exec_;
+  ExecBound<std::shared_ptr<moxygen::Publisher::SubscribeNamespaceHandle>> inner_;
 };
 
 // Wraps a PublishBlockedHandle so publishBlocked() dispatches back to the
@@ -121,29 +87,21 @@ class CrossExecPublishBlockedHandle : public moxygen::Publisher::PublishBlockedH
 public:
   CrossExecPublishBlockedHandle(
       std::shared_ptr<moxygen::Publisher::PublishBlockedHandle> inner,
-      folly::Executor::KeepAlive<> exec
+      folly::Executor* exec
   )
-      : inner_(std::move(inner)), exec_(std::move(exec)) {}
-
-  ~CrossExecPublishBlockedHandle() override {
-    // Inner dtor may touch session state; destroy it on exec_, not the dropping thread.
-    if (inner_) {
-      exec_->add([inner = std::move(inner_)]() mutable {});
-    }
-  }
+      : inner_(std::move(inner), exec) {}
 
   void publishBlocked(
       const moxygen::TrackNamespace& trackNamespaceSuffix,
       const std::string& trackName
   ) override {
-    exec_->add([inner = inner_, trackNamespaceSuffix, trackName]() mutable {
+    inner_.add([trackNamespaceSuffix, trackName](const auto& inner) {
       inner->publishBlocked(trackNamespaceSuffix, trackName);
     });
   }
 
 private:
-  std::shared_ptr<moxygen::Publisher::PublishBlockedHandle> inner_;
-  folly::Executor::KeepAlive<> exec_;
+  ExecBound<std::shared_ptr<moxygen::Publisher::PublishBlockedHandle>> inner_;
 };
 
 class CrossExecSubscribeTracksHandle : public moxygen::Publisher::SubscribeTracksHandle {
@@ -152,33 +110,18 @@ public:
       std::shared_ptr<moxygen::Publisher::SubscribeTracksHandle> inner,
       folly::Executor* exec
   )
-      : inner_(std::move(inner)), exec_(exec) {}
-
-  ~CrossExecSubscribeTracksHandle() override {
-    // Inner dtor may touch session state; destroy it on exec_, not the dropping thread.
-    if (inner_) {
-      exec_->add([inner = std::move(inner_)]() mutable {});
-    }
-  }
-
-  const moxygen::SubscribeTracksOk& subscribeTracksOk() const override {
-    return inner_->subscribeTracksOk();
-  }
+      : SubscribeTracksHandle(inner->subscribeTracksOk()), inner_(std::move(inner), exec) {}
 
   void unsubscribeTracks() override {
-    exec_->add([inner = inner_]() mutable { inner->unsubscribeTracks(); });
+    inner_.add([](const auto& inner) { inner->unsubscribeTracks(); });
   }
 
   folly::coro::Task<RequestUpdateResult> requestUpdate(moxygen::RequestUpdate update) override {
-    co_return co_await folly::coro::co_withExecutor(
-        folly::getKeepAliveToken(exec_),
-        inner_->requestUpdate(std::move(update))
-    );
+    return forwardRequestUpdate(inner_, std::move(update));
   }
 
 private:
-  std::shared_ptr<moxygen::Publisher::SubscribeTracksHandle> inner_;
-  folly::Executor* exec_;
+  ExecBound<std::shared_ptr<moxygen::Publisher::SubscribeTracksHandle>> inner_;
 };
 
 } // namespace
@@ -244,7 +187,7 @@ PublisherCrossExecFilter::subscribeNamespace(
   auto callerExec = co_await folly::coro::co_current_executor;
   auto wrappedHandle = namespacePublishHandle ? std::make_shared<CrossExecNamespacePublishHandle>(
                                                     std::move(namespacePublishHandle),
-                                                    std::move(callerExec)
+                                                    callerExec
                                                 )
                                               : nullptr;
   auto* targetExec = targetExec_;
@@ -269,7 +212,7 @@ PublisherCrossExecFilter::subscribeTracks(
   auto callerExec = co_await folly::coro::co_current_executor;
   auto wrappedHandle = publishBlockedHandle ? std::make_shared<CrossExecPublishBlockedHandle>(
                                                   std::move(publishBlockedHandle),
-                                                  std::move(callerExec)
+                                                  callerExec
                                               )
                                             : nullptr;
   auto* targetExec = targetExec_;
