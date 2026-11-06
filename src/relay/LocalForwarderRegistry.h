@@ -7,9 +7,9 @@
 #pragma once
 
 #include "relay/InitialTrackState.h"
+#include "relay/Participant.h"
 
 #include <moxygen/MoQLocation.h>
-#include <moxygen/MoQSession.h>
 #include <moxygen/relay/MoQForwarder.h>
 
 #include <folly/container/F14Map.h>
@@ -388,7 +388,7 @@ private:
       std::vector<std::shared_ptr<moxygen::MoQForwarder>>,
       moxygen::FullTrackName::hash>
       displaced_;
-  const moxygen::SessionId channelId_{moxygen::MoQSession::makeSessionId()};
+  const moxygen::SessionId channelId_{makeSessionId()};
 };
 
 } // namespace openmoq::moqx
