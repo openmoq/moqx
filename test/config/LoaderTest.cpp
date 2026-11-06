@@ -65,6 +65,36 @@ admin:
   EXPECT_EQ(svc.cache.value()->max_groups_per_track.value(), 3);
 }
 
+TEST(ConfigLoader, ServiceListeners) {
+  TempYamlFile yaml(R"(
+listeners:
+  - name: public
+    udp:
+      socket:
+        address: "::"
+        port: 9668
+    tls:
+      insecure: true
+    endpoint: "/moq-relay"
+services:
+  bound:
+    listeners: [public]
+    match:
+      - authority: {any: true}
+        path: {prefix: "/"}
+  unbound:
+    match:
+      - authority: {any: true}
+        path: {prefix: "/x/"}
+)");
+
+  auto cfg = loadConfig(yaml.path());
+  const auto& bound = cfg.services.value().at("bound").listeners.value();
+  ASSERT_TRUE(bound.has_value());
+  EXPECT_THAT(*bound, ::testing::ElementsAre("public"));
+  EXPECT_FALSE(cfg.services.value().at("unbound").listeners.value().has_value());
+}
+
 TEST(ConfigLoader, FullConfig) {
   TempYamlFile yaml(R"(
 listeners:

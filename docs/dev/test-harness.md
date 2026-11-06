@@ -13,6 +13,7 @@ The existing tests are the best worked examples:
 | [`test/test_relay_chain.py`](/test/test_relay_chain.py) | A ← B | Both directions, joining fetch, `--publish` push mode |
 | [`test/test_relay_pyramid.py`](/test/test_relay_pyramid.py) | tree | Multi-hop fan-out, killing a relay, containment |
 | [`test/test_relay_hops_cycle.py`](/test/test_relay_hops_cycle.py) | A → B → C → A | A cycle, and asserting on stability rather than an event |
+| [`test/test_listener_services.py`](/test/test_listener_services.py) | A ← B, four listeners on A | Services bound to some of a relay's listeners, identical rules on disjoint listeners |
 
 ## The shape of a test
 
@@ -69,17 +70,19 @@ sockets — badly enough that one relay's readiness check can pass against
 another test's relay:
 
 ```bash
-TEST_HARNESS_TEST_NAME_BASE=19830
+TEST_HARNESS_TEST_NAME_BASE=19870
 ```
 
 The variable name is derived from `base_port_key`: `test_name` becomes
 `TEST_HARNESS_TEST_NAME_BASE`. The harness raises a `HarnessError` naming the
 missing variable if you forget.
 
-Ten ports are reserved per test, which is five relays: `h.relay()` hands out
-listener/admin pairs counting up from the base. The block from `19800` is
-reserved for harness tests through `19859`. Do not write literal port numbers
-in comments in that file — the duplicate check greps every number in it.
+Ten ports are reserved per test. `h.relay()` hands out one port per listener
+plus one for admin, counting up from the base, so five one-listener relays fill
+the block. A topology that needs more raises a `HarnessError`. The block from
+`19800` is reserved for harness tests through `19879`. Do not write literal
+port numbers in comments in that file — the duplicate check greps every number
+in it.
 
 ### 2. Write the test file
 
@@ -135,15 +138,31 @@ one would false-PASS.
 ## Declaring the topology
 
 ```python
-h.relay(name, upstream=None, relay_id=None)
+h.relay(
+    name,
+    *,
+    upstream=None,
+    upstreams=None,
+    relay_id=None,
+    listeners=None,
+    service_listeners=None,
+    extra_services=None,
+)
 ```
 
 `upstream` names another relay by its harness name; the generated config points
-this relay's upstream URL at that relay's listener. It may name a relay
+this relay's upstream URL at that relay's first listener. It may name a relay
 declared *later*, so cycles work: `start()` brings every relay up before
 waiting for any of them to peer, and a relay whose upstream is not listening
-yet just reconnects with backoff. `relay_id` defaults to `<name>-test` and is
-the operational identity reported by `/state`.
+yet just reconnects with backoff. `upstreams` takes a list of such names.
+`relay_id` defaults to `<name>-test` and is the operational identity reported
+by `/state`.
+
+`listeners` names the relay's listeners; the default is one, named after the
+relay. Actors that name no listener connect to the first. `service_listeners`
+binds the default service to those listeners only; omitted, the service stays
+on all of them. `extra_services` maps further service names to the listeners
+each is bound to; every one gets the default service's match rule.
 
 ```python
 h.start()
@@ -151,7 +170,8 @@ h.start()
 
 Validates the topology, pre-flights every port, writes the configs, starts all
 relays, waits for each admin endpoint, then waits for each relay to accept the
-number of peer sessions the topology implies — no hand-counted session numbers.
+number of peer sessions the topology implies, and to list them as
+`downstream_peers` — no hand-counted session numbers.
 Finally it records each relay's session count as its **baseline**, which is
 what `"+n"` is measured against later. Declaring a relay after `start()` is an
 error; declaring an actor after it is normal.
@@ -166,7 +186,7 @@ rather than writing a config file beside the test.
 ## Actors
 
 ```python
-actor = h.actor(name, kind, relay, ns, track, flags=None, timeout=0)
+actor = h.actor(name, kind, relay, ns, track, flags=None, timeout=0, listener=None)
 ```
 
 `kind` is `"publisher"` (`moqdateserver`) or `"subscriber"`
@@ -174,7 +194,8 @@ actor = h.actor(name, kind, relay, ns, track, flags=None, timeout=0)
 taken as-is (`flags="--jrfetch --join_start=1"`). `timeout` bounds how long
 `wait()` blocks; `0` means wait forever, which is what a long-lived publisher
 wants. `track` is required for both kinds but only reaches the command line for
-subscribers; on a publisher it is declaration only.
+subscribers; on a publisher it is declaration only. `listener` picks one of the
+relay's listeners; the default is its first.
 
 | Call | Effect |
 |---|---|
@@ -203,16 +224,15 @@ A test should use these waits rather than `time.sleep`:
 |---|---|
 | `h.wait_relay_ready(name)` | The admin endpoint answers (`start()` already does this) |
 | `h.wait_sessions_atleast(name, want)` | `moqActiveSessions >= want` — see below |
-| `h.wait_namespace(name, ns)` | `ns` appears in that relay's `namespace_tree` |
+| `h.wait_namespace(name, ns, service="default")` | `ns` appears in that service's `namespace_tree` on that relay |
 | `h.wait_relay_log(name, text)` | A line of that relay's log, since it started, contains `text` |
 | `h.wait_namespace_route(name, ns, via)` | That relay's best route for `ns` runs through relay `via` |
 | `h.wait_routes(name, ns, want)` | That relay holds exactly `want` routes for `ns` |
 | `h.wait_subscription(name, ns, track)` | That relay's `subscriptions` include `ns`/`track` |
-| `h.wait_peer_count(name, want)` | That relay lists exactly `want` `downstream_peers` |
+| `h.wait_peer_count(name, want)` | That relay lists exactly `want` `downstream_peers` (`start()` already does this) |
 
-They raise `HarnessError` on timeout after dumping the relay log — they
-abort the run rather than tallying a failure, because everything after them is
-meaningless.
+Each raises `HarnessError` on timeout after dumping the relay log, aborting the
+run rather than tallying a failure, because everything after it is meaningless.
 
 `wait_sessions_atleast` takes exactly two forms: `"+n"`, relative to the
 post-`start()` baseline, or a bare non-negative count (`3` or `"3"`), absolute.
@@ -261,9 +281,14 @@ tail, the actor's output, the publishers on that namespace.
 | Assertion | Checks |
 |---|---|
 | `expect_received(actor)` | The actor's output has a data line |
+| `expect_nothing_received(actor)` | The actor's output has no data line |
+| `expect_actor_output(actor, pattern)` | A line of the actor's output matches the regex |
 | `expect_no_errors(actor)` | No `SubscribeError` / failed fetch in its output |
+| `expect_relay_log(name, pattern, since=0)` | A line of the relay's log after `since` matches the regex; reliable for `WARN` and above, which the relay writes synchronously. Take `since` from `h.relay_log_mark(name)` before the action under test |
 | `expect_namespace_present(name, ns)` | `/state` `namespace_tree` contains `ns` |
 | `expect_peer_count(name, op, want)` | `/state` `downstream_peers` length |
+| `expect_peer_listener(name, want)` | A `/state` downstream peer connected on listener `want` |
+| `expect_service_listeners(name, want)` | `/config` `services.default.listeners` equals `want` |
 | `expect_upstream_state(name, want)` | `/state` `upstream.state`, e.g. `"connected"` |
 | `expect_relay_id(name, want)` | `/state` `relay_id` |
 | `expect_metric(name, metric, op, want)` | A `moqx_*` Prometheus metric |

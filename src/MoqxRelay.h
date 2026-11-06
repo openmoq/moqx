@@ -59,7 +59,8 @@ public:
   virtual void onPeer(
       std::string_view address,
       std::string_view authority,
-      std::string_view relayID // empty if peer didn't include one
+      std::string_view relayID, // empty if peer didn't include one
+      std::string_view listener // empty if the session's listener is unknown
   ) = 0;
   virtual void onPeersEnd() = 0;
 
@@ -498,6 +499,7 @@ private:
     std::string relayID; // from peer auth token; empty if not provided
     std::string address;
     std::string authority;
+    std::string listener; // empty if the session's listener is unknown
   };
   // Reciprocal peer subNs handles: one per peer relay session that has
   // connected to us. Kept alive so the subscription is not immediately

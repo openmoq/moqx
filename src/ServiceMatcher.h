@@ -19,7 +19,11 @@ namespace openmoq::moqx {
 
 class ServiceMatcher {
 public:
-  explicit ServiceMatcher(const folly::F14FastMap<std::string, config::ServiceConfig>& services);
+  // Matches only the services whose `listeners` include listener.
+  ServiceMatcher(
+      const folly::F14FastMap<std::string, config::ServiceConfig>& services,
+      std::string_view listener
+  );
 
   // Returns service name for (authority, path) pair, or nullopt.
   // Priority: exact authority > wildcard authority > any authority.
