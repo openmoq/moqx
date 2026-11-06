@@ -421,7 +421,7 @@ private:
       moxygen::PublishRequest pub,
       std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle,
       std::shared_ptr<moxygen::MoQSession> session,
-      const ParticipantInfo& publisher
+      const Participant& publisher
   );
 
   // Called from publish path or first subscriber path on publisher's exec.
@@ -447,6 +447,7 @@ private:
       moxygen::PublishRequest pub,
       std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle,
       std::shared_ptr<moxygen::MoQSession> session,
+      Participant publisher,
       ForwarderRef publisherRef,
       std::shared_ptr<CrossExecFilter> relayChainFilter
   );
@@ -678,6 +679,7 @@ private:
       moxygen::PublishRequest pub,
       std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle,
       std::shared_ptr<moxygen::MoQSession> session,
+      const Participant& publisher,
       ForwarderRef publisherRef
   );
 

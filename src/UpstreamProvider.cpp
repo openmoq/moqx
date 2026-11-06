@@ -82,6 +82,7 @@ UpstreamProvider::UpstreamProvider(
     proxygen::URL url,
     std::shared_ptr<Publisher> publishHandler,
     std::shared_ptr<Subscriber> subscribeHandler,
+    folly::Executor* relayExec,
     std::shared_ptr<fizz::CertificateVerifier> verifier,
     OnConnectHook onConnect,
     OnDisconnectHook onDisconnect,
@@ -91,10 +92,10 @@ UpstreamProvider::UpstreamProvider(
     uint64_t relayCost
 )
     : publishHandler_(std::move(publishHandler)), subscribeHandler_(std::move(subscribeHandler)),
-      url_(std::move(url)), exec_(std::move(exec)), verifier_(std::move(verifier)),
-      onConnect_(std::move(onConnect)), onDisconnect_(std::move(onDisconnect)),
-      connectTimeout_(connectTimeout), idleTimeout_(idleTimeout), hopID_(hopID),
-      relayCost_(relayCost) {
+      relayExec_(relayExec), url_(std::move(url)), exec_(std::move(exec)),
+      verifier_(std::move(verifier)), onConnect_(std::move(onConnect)),
+      onDisconnect_(std::move(onDisconnect)), connectTimeout_(connectTimeout),
+      idleTimeout_(idleTimeout), hopID_(hopID), relayCost_(relayCost) {
   XCHECK_EQ(!publishHandler_, !subscribeHandler_) << "a SessionParticipant needs both handlers";
   XLOG(DBG1) << "UpstreamProvider created, url=" << url_.getUrl();
 }
@@ -426,7 +427,8 @@ folly::coro::Task<void> UpstreamProvider::doConnect() {
   std::shared_ptr<Publisher> pub = publishHandler_;
   std::shared_ptr<Subscriber> sub = subscribeHandler_;
   if (pub) {
-    auto participant = std::make_shared<SessionParticipant>(std::move(pub), std::move(sub));
+    auto participant =
+        std::make_shared<SessionParticipant>(std::move(pub), std::move(sub), relayExec_);
     pub = participant;
     sub = std::move(participant);
   }
