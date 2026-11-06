@@ -61,6 +61,7 @@ public:
       std::function<folly::coro::Task<void>(std::shared_ptr<moxygen::MoQSession>)>;
   using OnDisconnectHook = std::function<void(std::shared_ptr<moxygen::MoQSession>)>;
 
+  // publishHandler and subscribeHandler are both set or both null.
   UpstreamProvider(
       std::shared_ptr<moxygen::MoQExecutor> exec,
       proxygen::URL url,

@@ -5,6 +5,7 @@
  */
 
 #include "UpstreamProvider.h"
+#include "relay/SessionParticipant.h"
 #include <folly/coro/Timeout.h>
 #include <moxygen/MoQFilters.h>
 #include <moxygen/MoQRelaySession.h>
@@ -94,6 +95,7 @@ UpstreamProvider::UpstreamProvider(
       onConnect_(std::move(onConnect)), onDisconnect_(std::move(onDisconnect)),
       connectTimeout_(connectTimeout), idleTimeout_(idleTimeout), hopID_(hopID),
       relayCost_(relayCost) {
+  XCHECK_EQ(!publishHandler_, !subscribeHandler_) << "a SessionParticipant needs both handlers";
   XLOG(DBG1) << "UpstreamProvider created, url=" << url_.getUrl();
 }
 
@@ -420,12 +422,20 @@ folly::coro::Task<void> UpstreamProvider::doConnect() {
   ts.datagramConfig.writeBufSize = 1000;
   ts.datagramConfig.sendDropOldDataFirst = true;
 
+  // A SessionParticipant binds to one session, so each connection gets its own.
+  std::shared_ptr<Publisher> pub = publishHandler_;
+  std::shared_ptr<Subscriber> sub = subscribeHandler_;
+  if (pub) {
+    auto participant = std::make_shared<SessionParticipant>(std::move(pub), std::move(sub));
+    pub = participant;
+    sub = std::move(participant);
+  }
   // Relay links use draft 18 only.
   co_await client_->setupMoQSession(
       connectTimeout_,
       idleTimeout_,
-      publishHandler_,
-      subscribeHandler_,
+      std::move(pub),
+      std::move(sub),
       ts,
       getMoqtProtocols("18", /*useStandard=*/true)
   );
