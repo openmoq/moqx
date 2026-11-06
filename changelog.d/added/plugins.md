@@ -1,0 +1,1 @@
+- [Plugins](/docs/config.md#plugins): `plugins:` entries at process and service scope, `service_defaults.plugins`, and per-service `admission_timeout_ms` and `authorize_timeout_ms`.

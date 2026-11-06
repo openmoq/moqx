@@ -6,6 +6,7 @@
 
 #include "MoqxRelayContext.h"
 #include "relay/AuthFilters.h"
+#include "relay/PluginFilters.h"
 #include "relay/PublisherCrossExecFilter.h"
 #include "relay/RelayExecUtil.h"
 #include "relay/SubscriberCrossExecFilter.h"
@@ -29,9 +30,11 @@ MoqxRelayContext::MoqxRelayContext(
     const std::string& relayID,
     bool useRelayThread,
     bool useLocalForwarders,
-    std::optional<config::ClusterConfig> cluster
+    std::optional<config::ClusterConfig> cluster,
+    std::shared_ptr<plugin::PluginHost> plugins
 )
-    : serviceMatcher_(services), relayID_(relayID), cluster_(cluster) {
+    : serviceMatcher_(services), relayID_(relayID), cluster_(cluster),
+      plugins_(std::move(plugins)) {
   if (useRelayThread && !services.empty()) {
     relayThreadPool_ = std::make_unique<folly::IOThreadPoolExecutor>(
         services.size(),
@@ -56,7 +59,8 @@ MoqxRelayContext::MoqxRelayContext(
           ServiceEntry{
               svc,
               std::move(relay),
-              std::make_shared<const auth::AuthTokenVerifier>(svc.auth)
+              std::make_shared<const auth::AuthTokenVerifier>(svc.auth),
+              name
           }
       );
     }
@@ -77,11 +81,17 @@ MoqxRelayContext::MoqxRelayContext(
           ServiceEntry{
               svc,
               std::move(relay),
-              std::make_shared<const auth::AuthTokenVerifier>(svc.auth)
+              std::make_shared<const auth::AuthTokenVerifier>(svc.auth),
+              name
           }
       );
     }
   }
+}
+
+folly::Executor* MoqxRelayContext::relayExecutor(std::string_view service) const {
+  auto it = services_.find(std::string(service));
+  return it == services_.end() ? nullptr : it->second.relay->getRelayExec();
 }
 
 void MoqxRelayContext::setStatsRegistry(std::shared_ptr<stats::StatsRegistry> registry) {
@@ -187,6 +197,25 @@ void MoqxRelayContext::startUpstream(
       cfg.relayCost
   );
   provider->setSubscriptionBufferBytes(subscriptionBufferBytes(entry.config));
+  if (plugins_ && !entry.config.plugins.empty()) {
+    provider->setSetupParamsProvider(
+        [plugins = plugins_, service = entry.serviceName, url = cfg.url](
+        ) -> folly::coro::Task<folly::Expected<std::vector<moxygen::SetupParameter>, std::string>> {
+          auto params = co_await plugins->upstreamParams(service, url);
+          if (params.hasError()) {
+            co_return folly::makeUnexpected(params.error());
+          }
+          std::vector<moxygen::SetupParameter> out;
+          for (const auto& param : params.value()) {
+            out.push_back(std::visit(
+                [&](const auto& value) { return moxygen::SetupParameter(param.key, value); },
+                param.value
+            ));
+          }
+          co_return out;
+        }
+    );
+  }
   entry.relay->addUpstreamProvider(provider);
 
   // Eagerly connect so the peering handshake fires before any subscribers
@@ -310,6 +339,7 @@ void MoqxRelayContext::onNewSession(std::shared_ptr<MoQSession> clientSession) {
 }
 
 void MoqxRelayContext::onSessionEnd(std::shared_ptr<MoQSession> session) {
+  const MoQSession* key = session.get();
   if (auto& collector = *tlStatsCollector_) {
     collector->onSessionEnd();
   }
@@ -321,11 +351,21 @@ void MoqxRelayContext::onSessionEnd(std::shared_ptr<MoQSession> session) {
   }
   // Per-session auth state lives on the session's AuthFilter and is released
   // when the session drops it.
+  std::shared_ptr<plugin::PluginSession> pluginSession;
+  pluginSessions_.withWLock([&](auto& sessions) {
+    if (auto it = sessions.find(key); it != sessions.end()) {
+      pluginSession = std::move(it->second);
+      sessions.erase(it);
+    }
+  });
+  if (pluginSession) {
+    pluginSession->end();
+  }
 }
 
-folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayContext::validateAuthority(
-    const ClientSetup& clientSetup,
-    uint64_t /*negotiatedVersion*/,
+folly::coro::Task<folly::Expected<folly::Unit, SessionCloseErrorCode>> MoqxRelayContext::admit(
+    ClientSetup clientSetup,
+    uint64_t negotiatedVersion,
     std::shared_ptr<MoQSession> session
 ) {
   // Match service by authority + path
@@ -334,7 +374,7 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayContext::validateAu
   auto matchedName = serviceMatcher_.match(authority, path);
   if (!matchedName) {
     XLOG(ERR) << "No service matched authority=" << authority << " path=" << path;
-    return folly::makeUnexpected(SessionCloseErrorCode::INVALID_AUTHORITY);
+    co_return folly::makeUnexpected(SessionCloseErrorCode::INVALID_AUTHORITY);
   }
 
   // Route: verify the setup token, then install the session's filter handlers.
@@ -349,22 +389,57 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayContext::validateAu
               << " reason=" << auth::toString(grants.error());
     switch (grants.error()) {
     case auth::AuthError::Expired:
-      return folly::makeUnexpected(SessionCloseErrorCode::EXPIRED_AUTH_TOKEN);
+      co_return folly::makeUnexpected(SessionCloseErrorCode::EXPIRED_AUTH_TOKEN);
     case auth::AuthError::Malformed:
-      return folly::makeUnexpected(SessionCloseErrorCode::MALFORMED_AUTH_TOKEN);
+      co_return folly::makeUnexpected(SessionCloseErrorCode::MALFORMED_AUTH_TOKEN);
     case auth::AuthError::BadSignature:
     case auth::AuthError::Forbidden:
     case auth::AuthError::Missing:
     case auth::AuthError::WrongTokenType:
     case auth::AuthError::TooManyTokens:
-      return folly::makeUnexpected(SessionCloseErrorCode::UNAUTHORIZED);
+      co_return folly::makeUnexpected(SessionCloseErrorCode::UNAUTHORIZED);
     }
-    return folly::makeUnexpected(SessionCloseErrorCode::UNAUTHORIZED);
+    co_return folly::makeUnexpected(SessionCloseErrorCode::UNAUTHORIZED);
   }
-  // Wrap the relay's handlers in auth filters when grants are present (auth on);
-  // a null grants pointer means auth is disabled, so install the relay directly.
   std::shared_ptr<Publisher> pub = entry.relay->createPublisherFilter();
   std::shared_ptr<Subscriber> sub = entry.relay->createSubscriberFilter();
+
+  if (plugins_ && plugins_->chain(*matchedName)) {
+    auto* executor = co_await folly::coro::co_current_executor;
+    auto pluginSession = plugins_->newSession(
+        *matchedName,
+        authority,
+        path,
+        negotiatedVersion,
+        folly::getKeepAliveToken(executor)
+    );
+    if (!pluginSession) {
+      XLOG(ERR) << "Refusing session during shutdown authority=" << authority;
+      co_return folly::makeUnexpected(SessionCloseErrorCode::INTERNAL_ERROR);
+    }
+    // Registered before the chain runs, so a rejected session still gets
+    // sessionEnded for the plugins that admitted it.
+    pluginSessions_.wlock()->insert_or_assign(session.get(), pluginSession);
+    auto setup = std::make_shared<const ClientSetup>(std::move(clientSetup));
+    auto admitted = co_await pluginSession->admit(&setup->params, setup);
+    if (admitted.hasError()) {
+      XLOG(ERR) << "Admission failed for authority=" << authority << " path=" << path
+                << " reason=" << admitted.error().reason;
+      co_return folly::makeUnexpected(toCloseCode(admitted.error().kind));
+    }
+    if (pluginSession->chain().any(plugin::Hook::Authorize)) {
+      pub =
+          std::make_shared<PluginPublisherFilter>(std::move(pub), pluginSession, !relayID_.empty());
+      sub = std::make_shared<PluginSubscriberFilter>(
+          std::move(sub),
+          pluginSession,
+          !relayID_.empty()
+      );
+    }
+  }
+
+  // Wrap the relay's handlers in auth filters when grants are present (auth on);
+  // a null grants pointer means auth is disabled, so install the relay directly.
   if (grants.value()) {
     pub = std::make_shared<AuthPublisherFilter>(
         std::move(pub),
@@ -379,7 +454,7 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayContext::validateAu
   auto settings = session->getMoqSettings();
   settings.bufferingThresholds.perSubscription = subscriptionBufferBytes(entry.config);
   session->setMoqSettings(settings);
-  return folly::unit;
+  co_return folly::unit;
 }
 
 std::vector<std::string> MoqxRelayContext::getExactServicePaths() const {
@@ -479,6 +554,11 @@ folly::coro::Task<std::vector<std::string>> readUpstreamStates(std::shared_ptr<M
 
 } // namespace
 
+namespace {
+// A snapshot that takes longer shows as an error instead of holding up /state.
+constexpr std::chrono::seconds kSnapshotBudget{2};
+} // namespace
+
 folly::coro::Task<void> MoqxRelayContext::dumpState(RelayContextVisitor& visitor) const {
   XCHECK(workerEvb_) << "dumpState: initUpstreams must run first";
 
@@ -533,6 +613,12 @@ folly::coro::Task<void> MoqxRelayContext::dumpState(RelayContextVisitor& visitor
         visitor.onServiceUpstreams(upstreams);
       } else {
         visitor.onServiceUpstream(upstreams.front().url, upstreams.front().state);
+      }
+    }
+    if (plugins_) {
+      auto snapshots = co_await plugins_->snapshots(service.name, kSnapshotBudget);
+      if (!snapshots.empty()) {
+        visitor.onServicePlugins(snapshots);
       }
     }
     visitor.onServiceEnd();

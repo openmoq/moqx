@@ -141,16 +141,17 @@ void MoqxPicoRelayServer::terminateClientSession(std::shared_ptr<MoQSession> ses
   MoQPicoQuicShardedServer::terminateClientSession(std::move(session));
 }
 
-folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxPicoRelayServer::validateAuthority(
-    const ClientSetup& clientSetup,
+folly::coro::Task<folly::Expected<folly::Unit, SessionCloseErrorCode>>
+MoqxPicoRelayServer::validateAuthorityAsync(
+    ClientSetup clientSetup,
     uint64_t negotiatedVersion,
     std::shared_ptr<MoQSession> session
 ) {
   auto base = MoQPicoQuicShardedServer::validateAuthority(clientSetup, negotiatedVersion, session);
   if (!base.hasValue()) {
-    return base;
+    co_return base;
   }
-  return context_->validateAuthority(clientSetup, negotiatedVersion, std::move(session));
+  co_return co_await context_->admit(std::move(clientSetup), negotiatedVersion, std::move(session));
 }
 
 std::shared_ptr<MoQSession> MoqxPicoRelayServer::createSession(

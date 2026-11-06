@@ -38,6 +38,15 @@ config::ServiceConfig makeServiceWithAuth(std::string authority, config::AuthCon
   return svc;
 }
 
+folly::Expected<folly::Unit, SessionCloseErrorCode> admitSync(
+    MoqxRelayContext& ctx,
+    const ClientSetup& setup,
+    uint64_t version,
+    std::shared_ptr<MoQSession> session
+) {
+  return folly::coro::blockingWait(ctx.admit(setup, version, std::move(session)));
+}
+
 // Build a MockMoQSession with the given authority and path.
 // Uses a shared executor so the session doesn't spin up its own thread.
 std::shared_ptr<NiceMock<test::MockMoQSession>>
@@ -61,51 +70,51 @@ protected:
   uint64_t anyVersion_{0};
 };
 
-// --- validateAuthority ---
+// --- admit ---
 
-TEST_F(MoqxRelayContextTest, ValidateAuthority_Hit) {
+TEST_F(MoqxRelayContextTest, Admit_Hit) {
   folly::F14FastMap<std::string, config::ServiceConfig> services = {
       {"svc", makeService("live.example.com")},
   };
   MoqxRelayContext ctx(services, "test-relay");
 
   auto session = makeSession(exec_, "live.example.com");
-  auto result = ctx.validateAuthority(emptySetup_, anyVersion_, session);
+  auto result = admitSync(ctx, emptySetup_, anyVersion_, session);
 
   EXPECT_TRUE(result.hasValue());
 }
 
-TEST_F(MoqxRelayContextTest, ValidateAuthority_AppliesSubscriptionBufferLimit) {
+TEST_F(MoqxRelayContextTest, Admit_AppliesSubscriptionBufferLimit) {
   auto svc = makeService("live.example.com");
   svc.maxSubscriptionBufferKb = 64;
   MoqxRelayContext ctx({{"svc", svc}}, "test-relay");
 
   auto session = makeSession(exec_, "live.example.com");
-  ASSERT_TRUE(ctx.validateAuthority(emptySetup_, anyVersion_, session).hasValue());
+  ASSERT_TRUE(admitSync(ctx, emptySetup_, anyVersion_, session).hasValue());
   EXPECT_EQ(session->getMoqSettings().bufferingThresholds.perSubscription, 64u * 1024);
 }
 
-TEST_F(MoqxRelayContextTest, ValidateAuthority_Miss) {
+TEST_F(MoqxRelayContextTest, Admit_Miss) {
   folly::F14FastMap<std::string, config::ServiceConfig> services = {
       {"svc", makeService("live.example.com")},
   };
   MoqxRelayContext ctx(services, "test-relay");
 
   auto session = makeSession(exec_, "unknown.example.com");
-  auto result = ctx.validateAuthority(emptySetup_, anyVersion_, session);
+  auto result = admitSync(ctx, emptySetup_, anyVersion_, session);
 
   ASSERT_FALSE(result.hasValue());
   EXPECT_EQ(result.error(), SessionCloseErrorCode::INVALID_AUTHORITY);
 }
 
-TEST_F(MoqxRelayContextTest, ValidateAuthority_EmptyAuthority_Miss) {
+TEST_F(MoqxRelayContextTest, Admit_EmptyAuthority_Miss) {
   folly::F14FastMap<std::string, config::ServiceConfig> services = {
       {"svc", makeService("live.example.com")},
   };
   MoqxRelayContext ctx(services, "test-relay");
 
   auto session = makeSession(exec_, "");
-  auto result = ctx.validateAuthority(emptySetup_, anyVersion_, session);
+  auto result = admitSync(ctx, emptySetup_, anyVersion_, session);
 
   ASSERT_FALSE(result.hasValue());
   EXPECT_EQ(result.error(), SessionCloseErrorCode::INVALID_AUTHORITY);
@@ -113,7 +122,7 @@ TEST_F(MoqxRelayContextTest, ValidateAuthority_EmptyAuthority_Miss) {
 
 // Two services with distinct authorities: each session is routed to the right
 // one (and the wrong authority still misses).
-TEST_F(MoqxRelayContextTest, ValidateAuthority_TwoServices) {
+TEST_F(MoqxRelayContextTest, Admit_TwoServices) {
   folly::F14FastMap<std::string, config::ServiceConfig> services = {
       {"svc-a", makeService("a.example.com")},
       {"svc-b", makeService("b.example.com")},
@@ -124,17 +133,17 @@ TEST_F(MoqxRelayContextTest, ValidateAuthority_TwoServices) {
   auto sessionB = makeSession(exec_, "b.example.com");
   auto sessionC = makeSession(exec_, "c.example.com");
 
-  EXPECT_TRUE(ctx.validateAuthority(emptySetup_, anyVersion_, sessionA).hasValue());
-  EXPECT_TRUE(ctx.validateAuthority(emptySetup_, anyVersion_, sessionB).hasValue());
+  EXPECT_TRUE(admitSync(ctx, emptySetup_, anyVersion_, sessionA).hasValue());
+  EXPECT_TRUE(admitSync(ctx, emptySetup_, anyVersion_, sessionB).hasValue());
 
-  auto miss = ctx.validateAuthority(emptySetup_, anyVersion_, sessionC);
+  auto miss = admitSync(ctx, emptySetup_, anyVersion_, sessionC);
   ASSERT_FALSE(miss.hasValue());
   EXPECT_EQ(miss.error(), SessionCloseErrorCode::INVALID_AUTHORITY);
 }
 
 // Path matching: sessions on the same authority but different paths route to
 // the right service.
-TEST_F(MoqxRelayContextTest, ValidateAuthority_PathRouting) {
+TEST_F(MoqxRelayContextTest, Admit_PathRouting) {
   folly::F14FastMap<std::string, config::ServiceConfig> services = {
       {"relay",
        config::ServiceConfig{
@@ -159,20 +168,17 @@ TEST_F(MoqxRelayContextTest, ValidateAuthority_PathRouting) {
   auto sessionLive = makeSession(exec_, "any.host", "/live/stream");
   auto sessionOther = makeSession(exec_, "any.host", "/other");
 
-  EXPECT_TRUE(ctx.validateAuthority(emptySetup_, anyVersion_, sessionRelay).hasValue());
-  EXPECT_TRUE(ctx.validateAuthority(emptySetup_, anyVersion_, sessionLive).hasValue());
+  EXPECT_TRUE(admitSync(ctx, emptySetup_, anyVersion_, sessionRelay).hasValue());
+  EXPECT_TRUE(admitSync(ctx, emptySetup_, anyVersion_, sessionLive).hasValue());
 
-  auto miss = ctx.validateAuthority(emptySetup_, anyVersion_, sessionOther);
+  auto miss = admitSync(ctx, emptySetup_, anyVersion_, sessionOther);
   ASSERT_FALSE(miss.hasValue());
   EXPECT_EQ(miss.error(), SessionCloseErrorCode::INVALID_AUTHORITY);
 }
 
 // --- validateAuthority: anonymous claim ---
 
-TEST_F(
-    MoqxRelayContextTest,
-    ValidateAuthority_AnonymousClaimAllowsConnectWithoutSetupTokenWhenNotRequired
-) {
+TEST_F(MoqxRelayContextTest, Admit_AnonymousClaimAllowsConnectWithoutSetupTokenWhenNotRequired) {
   folly::F14FastMap<std::string, config::ServiceConfig> services = {
       {"svc",
        makeServiceWithAuth(
@@ -191,12 +197,12 @@ TEST_F(
   MoqxRelayContext ctx(services, "test-relay");
 
   auto session = makeSession(exec_, "live.example.com");
-  auto result = ctx.validateAuthority(emptySetup_, anyVersion_, session);
+  auto result = admitSync(ctx, emptySetup_, anyVersion_, session);
 
   EXPECT_TRUE(result.hasValue());
 }
 
-TEST_F(MoqxRelayContextTest, ValidateAuthority_AnonymousClaimDoesNotBypassRequiredSetupToken) {
+TEST_F(MoqxRelayContextTest, Admit_AnonymousClaimDoesNotBypassRequiredSetupToken) {
   folly::F14FastMap<std::string, config::ServiceConfig> services = {
       {"svc",
        makeServiceWithAuth(
@@ -215,7 +221,7 @@ TEST_F(MoqxRelayContextTest, ValidateAuthority_AnonymousClaimDoesNotBypassRequir
   MoqxRelayContext ctx(services, "test-relay");
 
   auto session = makeSession(exec_, "live.example.com");
-  auto result = ctx.validateAuthority(emptySetup_, anyVersion_, session);
+  auto result = admitSync(ctx, emptySetup_, anyVersion_, session);
 
   ASSERT_FALSE(result.hasValue());
   EXPECT_EQ(result.error(), SessionCloseErrorCode::UNAUTHORIZED);

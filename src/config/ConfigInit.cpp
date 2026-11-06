@@ -46,7 +46,7 @@ folly::Expected<ResolvedConfig, int> handleConfigSubcommand(
     return folly::makeUnexpected(1);
   }
 
-  auto result = resolveConfig(parsed);
+  auto result = resolveConfig(parsed, ResolveOptions{.strict = strictConfig});
   if (result.hasError()) {
     std::cerr << "Error: " << result.error() << std::endl;
     return folly::makeUnexpected(1);

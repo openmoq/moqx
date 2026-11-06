@@ -504,3 +504,39 @@ moqx_add_gtest(moqx_cache_test
     Folly::folly_coro_gtest_helpers
     Folly::folly_io_async_scoped_event_base_thread
 )
+
+# --- Plugin API (design/plugins-level1.md) ---
+
+add_library(moqx_test_plugin STATIC
+  plugin/TestPlugin.cpp
+)
+target_include_directories(moqx_test_plugin PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_link_libraries(moqx_test_plugin
+  PUBLIC
+    moqx_plugin
+    Folly::folly_coro_baton
+  PRIVATE
+    moqx_warnings
+)
+
+moqx_add_gtest(moqx_plugin_config_test
+  SRCS plugin/PluginConfigTest.cpp
+  LIBS moqx_config_loader moqx_test_plugin GTest::gtest_main GTest::gmock
+)
+
+moqx_add_gtest(moqx_plugin_host_test
+  SRCS plugin/PluginHostTest.cpp
+  LIBS moqx_test_plugin moqx_test_main GTest::gmock
+)
+
+moqx_add_gtest(moqx_plugin_session_test
+  SRCS plugin/PluginSessionTest.cpp
+  LIBS
+    moqx_core
+    moqx_test_plugin
+    moqx_test_main
+    GTest::gmock
+    moxygen::moxygen_events_moq_folly_executor_impl
+)

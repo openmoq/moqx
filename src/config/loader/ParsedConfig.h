@@ -468,6 +468,21 @@ struct ParsedAuthConfig {
       max_tokens_per_message;
 };
 
+// One `plugins:` entry (design/plugins-level1.md#configuration-and-registration).
+struct ParsedPluginEntry {
+  rfl::Description<"Registered plugin type", std::string> type;
+  rfl::Description<
+      "Name in logs, /state and errors; unique within each service's chain (default: type)",
+      std::optional<std::string>>
+      id;
+  rfl::Description<
+      "Chain position: lower runs first, ties in list order (default: 0)",
+      std::optional<int64_t>>
+      rank;
+  rfl::Description<"The plugin's own config, checked by its type", std::optional<rfl::Generic>>
+      config;
+};
+
 struct ParsedServiceConfig {
   struct MatchRule {
     struct ExactAuthority {
@@ -527,6 +542,20 @@ struct ParsedServiceConfig {
       "Required here or in service_defaults; overrides service_defaults",
       std::optional<uint32_t>>
       max_subscription_buffer_kb;
+  rfl::Description<
+      "Plugins for this service, after the process-scope ones",
+      std::optional<std::vector<ParsedPluginEntry>>>
+      plugins;
+  rfl::Description<
+      "Budget in milliseconds for the whole admit chain; expiry closes the session "
+      "(default: 5000, or service_defaults)",
+      std::optional<uint32_t>>
+      admission_timeout_ms;
+  rfl::Description<
+      "Budget in milliseconds for the whole authorize chain of one request; expiry rejects it "
+      "(default: 5000, or service_defaults)",
+      std::optional<uint32_t>>
+      authorize_timeout_ms;
 };
 
 struct ParsedListenerDefaultsConfig {
@@ -554,6 +583,19 @@ struct ParsedServiceDefaultsConfig {
       "max_subscription_buffer_kb for services that do not set their own",
       std::optional<uint32_t>>
       max_subscription_buffer_kb;
+  rfl::Description<
+      "Partial plugin config by type, deep-merged into each service entry of that type; "
+      "the entry's own values win",
+      std::optional<std::map<std::string, rfl::Generic>>>
+      plugins;
+  rfl::Description<
+      "admission_timeout_ms for services that do not set their own",
+      std::optional<uint32_t>>
+      admission_timeout_ms;
+  rfl::Description<
+      "authorize_timeout_ms for services that do not set their own",
+      std::optional<uint32_t>>
+      authorize_timeout_ms;
 };
 
 struct ParsedMLogConfig {
@@ -616,6 +658,10 @@ struct ParsedConfig {
       mvfst_bpf_steering;
   rfl::Description<"Logging configuration", std::optional<ParsedLoggingConfig>> logging;
   rfl::Description<"MoQ Cluster settings", std::optional<ParsedClusterConfig>> cluster;
+  rfl::Description<
+      "Plugins applied to every service, ahead of each service's own",
+      std::optional<std::vector<ParsedPluginEntry>>>
+      plugins;
 };
 
 } // namespace openmoq::moqx::config

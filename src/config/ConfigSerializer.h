@@ -12,6 +12,8 @@
 
 #include "auth/Action.h"
 #include "config/Config.h"
+#include "config/ConfigSink.h"
+#include "plugin/PluginType.h"
 
 // Format-agnostic walk over a resolved Config. The walker lives next to the
 // Config types (no JSON/YAML dependency) so the field list has a single home;
@@ -22,25 +24,6 @@
 // static_asserts in test/config/ConfigSerializerTest.cpp fail the build if you
 // forget. See docs/dev/config.md ("How to add a new config field").
 namespace openmoq::moqx::config {
-
-// Sink callbacks. An empty `key` means the value is an array element (rendered
-// without a key); a non-empty `key` means it is a named object field.
-class ConfigSink {
-public:
-  virtual ~ConfigSink() = default;
-
-  virtual void beginObject(std::string_view key) = 0;
-  virtual void endObject() = 0;
-  virtual void beginArray(std::string_view key) = 0;
-  virtual void endArray() = 0;
-
-  virtual void stringField(std::string_view key, std::string_view value) = 0;
-  virtual void boolField(std::string_view key, bool value) = 0;
-  virtual void intField(std::string_view key, int64_t value) = 0;
-  virtual void uintField(std::string_view key, uint64_t value) = 0;
-  virtual void doubleField(std::string_view key, double value) = 0;
-  virtual void nullField(std::string_view key) = 0;
-};
 
 namespace detail {
 
@@ -198,6 +181,20 @@ inline void serializeCache(ConfigSink& s, const CacheConfig& c) {
   s.endObject();
 }
 
+inline void serializePlugins(ConfigSink& s, const std::vector<PluginEntryConfig>& entries) {
+  s.beginArray("plugins");
+  for (const auto& entry : entries) {
+    s.beginObject("");
+    s.stringField("type", entry.type);
+    s.stringField("id", entry.id);
+    s.intField("rank", entry.rank);
+    // The type redacts its own secrets.
+    entry.pluginType->serialize(entry.config.get(), s);
+    s.endObject();
+  }
+  s.endArray();
+}
+
 inline void serializeAuth(ConfigSink& s, const AuthConfig& a) {
   s.beginObject("auth");
   s.boolField("enabled", a.enabled);
@@ -349,6 +346,9 @@ inline void serializeConfig(const Config& cfg, ConfigSink& s) {
     serializeCache(s, svc.cache);
     serializeAuth(s, svc.auth);
     s.uintField("max_subscription_buffer_kb", svc.maxSubscriptionBufferKb);
+    serializePlugins(s, svc.plugins);
+    s.uintField("admission_timeout_ms", svc.admissionTimeout.count());
+    s.uintField("authorize_timeout_ms", svc.authorizeTimeout.count());
     if (svc.upstream) {
       serializeUpstream(s, *svc.upstream, "upstream");
     }
@@ -360,6 +360,8 @@ inline void serializeConfig(const Config& cfg, ConfigSink& s) {
     s.endObject();
   }
   s.endObject();
+
+  serializePlugins(s, cfg.plugins);
 
   if (cfg.logging) {
     serializeLogging(s, *cfg.logging);

@@ -405,6 +405,15 @@ folly::coro::Task<void> UpstreamProvider::doConnect() {
     return session;
   };
   client_ = std::make_unique<MoQClient>(exec_, url_, std::move(sessionFactory), verifier_);
+  if (setupParamsProvider_) {
+    auto params = co_await setupParamsProvider_();
+    if (params.hasError()) {
+      co_yield folly::coro::co_error(std::runtime_error("setup parameters: " + params.error()));
+    }
+    for (auto& param : params.value()) {
+      client_->addSetupParameter(std::move(param));
+    }
+  }
   // The extension stays inactive unless the peer also declares a Hop ID.
   if (hopID_) {
     client_->addSetupParameter(SetupParameter(folly::to_underlying(SetupKey::HOP_ID), *hopID_));

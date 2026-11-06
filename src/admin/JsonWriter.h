@@ -85,6 +85,12 @@ public:
     append("null");
     needsComma_ = true;
   }
+  // `json` must be one complete, valid JSON value.
+  void rawVal(std::string_view json) {
+    maybeComma();
+    append(json);
+    needsComma_ = true;
+  }
 
   void field(std::string_view k, std::string_view v) {
     key(k);

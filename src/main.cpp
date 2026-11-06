@@ -19,6 +19,7 @@
 #include "config/loader/ConfigInit.h"
 #include "logging/LogSetup.h"
 #include "moqx/Version.h"
+#include "plugin/Host.h"
 #include "stats/StatsRegistry.h"
 
 #include <csignal>
@@ -26,6 +27,7 @@
 #include <chrono>
 #include <thread>
 
+#include <folly/coro/BlockingWait.h>
 #include <folly/executors/IOThreadPoolExecutor.h>
 #include <folly/executors/thread_factory/NamedThreadFactory.h>
 #include <folly/init/Init.h>
@@ -36,6 +38,7 @@
 #include "LoggingMultiFlag.h"
 
 #include <cstdlib>
+#include <functional>
 #include <iostream>
 #include <string_view>
 
@@ -77,8 +80,17 @@ public:
       return;
     }
     XLOG(INFO) << "Received signal " << signum << ", shutting down";
+    if (onShutdown_) {
+      onShutdown_();
+    }
     getEventBase()->terminateLoopSoon();
   }
+
+  // Runs on a shutdown signal, before the loop is asked to stop.
+  void setOnShutdown(std::function<void()> onShutdown) { onShutdown_ = std::move(onShutdown); }
+
+private:
+  std::function<void()> onShutdown_;
 };
 
 } // namespace
@@ -167,7 +179,22 @@ int main(int argc, char* argv[]) {
   );
 
   // === 5. Initialize dependencies ===
-  // TODO: TBD
+  // Plugin roots start before any listener exists; a signal cancels startup.
+  auto pluginHost = plugin::PluginHost::create(config);
+  if (pluginHost.hasError()) {
+    std::cerr << "Error: " << pluginHost.error() << "\n";
+    return 1;
+  }
+  auto plugins = std::move(pluginHost.value());
+  folly::CancellationSource startupCancel;
+  signalHandler.setOnShutdown([&startupCancel] { startupCancel.requestCancellation(); });
+  auto onMain = [&evb](auto task) {
+    return folly::coro::blockingWait(folly::coro::co_withExecutor(&evb, std::move(task)), &evb);
+  };
+  if (auto started = onMain(plugins->startRoots(startupCancel.getToken())); started.hasError()) {
+    std::cerr << "Error: " << started.error() << "\n";
+    return 1;
+  }
 
   // === 6. Initialize services ===
   // Construct and configure the application's own services
@@ -177,7 +204,8 @@ int main(int argc, char* argv[]) {
       config.relayID,
       config.useRelayThread,
       config.useLocalForwarders,
-      config.cluster
+      config.cluster,
+      plugins
   );
 
   // === 6a. Stats registry ===
@@ -200,6 +228,45 @@ int main(int argc, char* argv[]) {
     // Listener setup (e.g. TLS cert loading) can throw. Report cleanly and exit
     // non-zero rather than letting it reach std::terminate / SIGABRT (#173).
     std::cerr << "Error: failed to initialize listener: " << e.what() << "\n";
+    return 1;
+  }
+
+  // Listener SETUP parameters, then each service's plugins, all before any
+  // listener accepts a session.
+  std::optional<std::string> pluginError;
+  for (size_t i = 0; i < servers.size() && !pluginError; ++i) {
+    auto params = onMain(plugins->listenerParams(config.listeners[i].name));
+    if (params.hasError()) {
+      pluginError = params.error();
+      break;
+    }
+    for (const auto& param : params.value()) {
+      servers[i]->addSetupParameter(std::visit(
+          [&](const auto& value) { return moxygen::SetupParameter(param.key, value); },
+          param.value
+      ));
+    }
+  }
+  if (!pluginError) {
+    auto created = plugins->createServices([&](std::string_view service) {
+      auto* exec = context->relayExecutor(service);
+      return exec ? folly::getKeepAliveToken(exec)
+                  : folly::Executor::KeepAlive<>(ioExecutor->getAllEventBases()[0]);
+    });
+    if (created.hasError()) {
+      pluginError = created.error();
+    }
+  }
+  if (!pluginError) {
+    if (auto started = onMain(plugins->startServices(startupCancel.getToken()));
+        started.hasError()) {
+      pluginError = started.error();
+    }
+  }
+  if (pluginError) {
+    std::cerr << "Error: " << *pluginError << "\n";
+    onMain(plugins->stop());
+    servers.clear();
     return 1;
   }
 
@@ -302,6 +369,9 @@ int main(int argc, char* argv[]) {
   for (auto& server : servers) {
     server->stop();
   }
+  // Waits for every session's plugin record and hook call, then stops the
+  // plugins, all while the io threads still run.
+  onMain(plugins->stop());
   // Settle the cross-executor teardown cascade while every loop is still
   // healthy; ~MoQServer frees the per-thread MoQExecutors and ioExecutor.reset()
   // will terminate an IO thread when it reaches zero queued work without keepalives.

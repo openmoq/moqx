@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <variant>
@@ -23,6 +24,10 @@
 // helper in ConfigSerializer.h (the single source of truth for the /config dump).
 // A field-count static_assert in test/config/ConfigSerializerTest.cpp breaks the
 // build until you do. See docs/dev/config.md ("How to add a new config field").
+namespace openmoq::moqx::plugin {
+struct PluginType;
+} // namespace openmoq::moqx::plugin
+
 namespace openmoq::moqx::config {
 
 // Resolved, in-memory TLS material produced by transcoding a PKCS#12 bundle
@@ -216,6 +221,15 @@ struct AuthConfig {
   uint32_t maxTokensPerMessage{0};
 };
 
+// One `plugins:` entry. `config` is the type's parsed config struct.
+struct PluginEntryConfig {
+  std::string type;
+  std::string id;
+  int64_t rank{0};
+  std::shared_ptr<const plugin::PluginType> pluginType;
+  std::shared_ptr<const void> config;
+};
+
 struct ServiceConfig {
   struct MatchEntry {
     struct ExactAuthority {
@@ -244,6 +258,11 @@ struct ServiceConfig {
   AuthConfig auth;
   std::vector<UpstreamConfig> upstreams; // exclusive with upstream
   uint32_t maxSubscriptionBufferKb{0};   // 0 = unlimited
+  // Service-scope entries, in list order, service_defaults.plugins merged in.
+  std::vector<PluginEntryConfig> plugins;
+  // Budgets for the whole admit and authorize chains.
+  std::chrono::milliseconds admissionTimeout{5000};
+  std::chrono::milliseconds authorizeTimeout{5000};
 };
 
 struct AdminConfig {
@@ -279,7 +298,8 @@ struct Config {
   bool useLocalForwarders{false};
   bool mvfstBpfSteering{true};
   std::optional<LoggingConfig> logging;
-  std::optional<ClusterConfig> cluster; // unset when MoQ Cluster is disabled
+  std::optional<ClusterConfig> cluster;   // unset when MoQ Cluster is disabled
+  std::vector<PluginEntryConfig> plugins; // process scope, in list order
 };
 
 } // namespace openmoq::moqx::config

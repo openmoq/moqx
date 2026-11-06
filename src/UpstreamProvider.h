@@ -80,6 +80,14 @@ public:
   // Takes effect on the next connect; 0 is unlimited.
   void setSubscriptionBufferBytes(uint64_t bytes) { subscriptionBufferBytes_ = bytes; }
 
+  // Extra CLIENT_SETUP parameters, fetched on every connect attempt; an error
+  // fails that attempt.
+  using SetupParamsProvider = std::function<
+      folly::coro::Task<folly::Expected<std::vector<moxygen::SetupParameter>, std::string>>()>;
+  void setSetupParamsProvider(SetupParamsProvider provider) {
+    setupParamsProvider_ = std::move(provider);
+  }
+
   // Initiates the first connection to the upstream server.
   folly::coro::Task<void> start();
 
@@ -222,6 +230,7 @@ private:
   std::optional<uint64_t> hopID_;
   uint64_t relayCost_;
   uint64_t subscriptionBufferBytes_{0};
+  SetupParamsProvider setupParamsProvider_;
   bool stopped_{false};
 
   // Connection gating: when Connecting, operations co_await this

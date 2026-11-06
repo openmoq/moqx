@@ -43,8 +43,10 @@ public:
 
   void terminateClientSession(std::shared_ptr<moxygen::MoQSession> session) override;
 
-  folly::Expected<folly::Unit, moxygen::SessionCloseErrorCode> validateAuthority(
-      const moxygen::ClientSetup& clientSetup,
+  // The base authority format check, then MoqxRelayContext::admit.
+  folly::coro::Task<folly::Expected<folly::Unit, moxygen::SessionCloseErrorCode>>
+  validateAuthorityAsync(
+      moxygen::ClientSetup clientSetup,
       uint64_t negotiatedVersion,
       std::shared_ptr<moxygen::MoQSession> session
   ) override;

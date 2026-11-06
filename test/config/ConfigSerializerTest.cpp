@@ -23,7 +23,7 @@
 namespace {
 using namespace openmoq::moqx::config;
 
-static_assert(rfl::internal::num_fields<Config> == 10, "Config changed — update serializeConfig()");
+static_assert(rfl::internal::num_fields<Config> == 11, "Config changed — update serializeConfig()");
 static_assert(
     rfl::internal::num_fields<ClusterConfig> == 1,
     "ClusterConfig changed — update serializeConfig()"
@@ -65,8 +65,12 @@ static_assert(
     "MvfstConfig::L4S changed — update serializeMvfst()"
 );
 static_assert(
-    rfl::internal::num_fields<ServiceConfig> == 6,
+    rfl::internal::num_fields<ServiceConfig> == 9,
     "ServiceConfig changed — update serializeConfig()"
+);
+static_assert(
+    rfl::internal::num_fields<PluginEntryConfig> == 5,
+    "PluginEntryConfig changed — update serializePlugins()"
 );
 static_assert(
     rfl::internal::num_fields<ServiceConfig::MatchEntry> == 2,

@@ -6,6 +6,8 @@
 
 #pragma once
 
+#include <folly/json/json.h>
+
 #include <chrono>
 #include <string_view>
 
@@ -219,6 +221,22 @@ public:
       w_.endObject();
     }
     w_.endArray();
+  }
+
+  void onServicePlugins(const std::vector<plugin::PluginSnapshot>& plugins) override {
+    w_.key("plugins");
+    w_.beginObject();
+    for (const auto& snapshot : plugins) {
+      w_.key(snapshot.id);
+      if (snapshot.error) {
+        w_.beginObject();
+        w_.field("error", std::string_view(*snapshot.error));
+        w_.endObject();
+      } else {
+        w_.rawVal(folly::toJson(snapshot.value));
+      }
+    }
+    w_.endObject();
   }
 
   void onServiceEnd() override {

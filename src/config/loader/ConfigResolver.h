@@ -12,12 +12,21 @@
 
 #include "config/ResolvedConfig.h"
 #include "config/loader/ParsedConfig.h"
+#include "plugin/PluginType.h"
 
 namespace openmoq::moqx::config {
 
 /// Validate and resolve a ParsedConfig into concrete Config types.
 /// Returns warnings alongside the config on success.
 /// On validation failure, returns a combined error string.
-folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& config);
+struct ResolveOptions {
+  // Plugin types to resolve against; null means the builtins.
+  const plugin::Registry* registry{nullptr};
+  // Reject unknown fields inside plugin configs too.
+  bool strict{false};
+};
+
+folly::Expected<ResolvedConfig, std::string>
+resolveConfig(const ParsedConfig& config, const ResolveOptions& options = {});
 
 } // namespace openmoq::moqx::config

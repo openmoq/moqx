@@ -14,12 +14,14 @@
 #include "UpstreamProvider.h"
 #include "auth/Auth.h"
 #include "config/Config.h"
+#include "plugin/Host.h"
 #include "stats/MoQStatsCollector.h"
 #include "stats/StatsRegistry.h"
 #include <moxygen/MoQServerBase.h>
 #include <moxygen/MoQSession.h>
 
 #include <folly/Expected.h>
+#include <folly/Synchronized.h>
 #include <folly/ThreadLocal.h>
 #include <folly/container/F14Map.h>
 #include <folly/coro/Task.h>
@@ -52,6 +54,8 @@ public:
   virtual void onServiceUpstream(std::string_view url, std::string_view state) = 0;
   // As onServiceUpstream, for a service configured with an upstreams list.
   virtual void onServiceUpstreams(const std::vector<UpstreamState>& upstreams) = 0;
+  // Called after the upstreams for a service with plugins that snapshot.
+  virtual void onServicePlugins(const std::vector<plugin::PluginSnapshot>& /*plugins*/) {}
   virtual void onServiceEnd() = 0;
   virtual void onRelayEnd() = 0;
   // Checked between services so a consumer that has gone away stops the walk
@@ -69,6 +73,7 @@ public:
     config::ServiceConfig config;
     std::shared_ptr<MoqxRelay> relay;
     std::shared_ptr<const auth::AuthTokenVerifier> verifier;
+    std::string serviceName;
   };
 
   MoqxRelayContext(
@@ -76,8 +81,13 @@ public:
       const std::string& relayID,
       bool useRelayThread = true,
       bool useLocalForwarders = false,
-      std::optional<config::ClusterConfig> cluster = config::ClusterConfig{}
+      std::optional<config::ClusterConfig> cluster = config::ClusterConfig{},
+      std::shared_ptr<plugin::PluginHost> plugins = nullptr
   );
+
+  // The executor that owns `service`'s relay state; null in single-thread
+  // mode, where the caller supplies the io worker.
+  folly::Executor* relayExecutor(std::string_view service) const;
 
   void setStatsRegistry(std::shared_ptr<stats::StatsRegistry> registry);
 
@@ -157,8 +167,11 @@ public:
   void
   initThreadStatsCollectors(folly::IOThreadPoolExecutor& ioExecutor, bool initTrackStats = true);
 
-  folly::Expected<folly::Unit, moxygen::SessionCloseErrorCode> validateAuthority(
-      const moxygen::ClientSetup& clientSetup,
+  // Matches the service, verifies the setup token, runs the service's admit
+  // chain and installs the session's handlers. Runs on the session executor;
+  // completes inline when no plugin suspends.
+  folly::coro::Task<folly::Expected<folly::Unit, moxygen::SessionCloseErrorCode>> admit(
+      moxygen::ClientSetup clientSetup,
       uint64_t negotiatedVersion,
       std::shared_ptr<moxygen::MoQSession> session
   );
@@ -184,6 +197,11 @@ private:
   std::vector<std::shared_ptr<stats::MoQStatsCollector>> statsCollectors_;
   folly::ThreadLocal<std::shared_ptr<stats::MoQStatsCollector>> tlStatsCollector_;
   folly::EventBase* workerEvb_{nullptr};
+  std::shared_ptr<plugin::PluginHost> plugins_;
+  // Keyed by session; ended from onSessionEnd on the session's worker.
+  folly::Synchronized<
+      folly::F14FastMap<const moxygen::MoQSession*, std::shared_ptr<plugin::PluginSession>>>
+      pluginSessions_;
 };
 
 } // namespace openmoq::moqx

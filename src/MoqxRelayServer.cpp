@@ -278,17 +278,17 @@ void MoqxRelayServer::terminateClientSession(std::shared_ptr<MoQSession> session
   MoQServer::terminateClientSession(std::move(session));
 }
 
-folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayServer::validateAuthority(
-    const ClientSetup& clientSetup,
+folly::coro::Task<folly::Expected<folly::Unit, SessionCloseErrorCode>>
+MoqxRelayServer::validateAuthorityAsync(
+    ClientSetup clientSetup,
     uint64_t negotiatedVersion,
     std::shared_ptr<MoQSession> session
 ) {
-  // Base class format validation
   auto base = MoQServer::validateAuthority(clientSetup, negotiatedVersion, session);
   if (!base.hasValue()) {
-    return base;
+    co_return base;
   }
-  return context_->validateAuthority(clientSetup, negotiatedVersion, std::move(session));
+  co_return co_await context_->admit(std::move(clientSetup), negotiatedVersion, std::move(session));
 }
 
 std::shared_ptr<MoQSession> MoqxRelayServer::createSession(

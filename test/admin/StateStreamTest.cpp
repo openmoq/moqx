@@ -115,6 +115,24 @@ TEST(StateStreamTest, ReportsEveryUpstreamInAList) {
   EXPECT_EQ(upstreams[1]["state"].asString(), "disconnected");
 }
 
+TEST(StateStreamTest, PluginSnapshotsNestUnderTheService) {
+  Collected out;
+  ChunkedJsonWriter writer(sinkInto(out), 1);
+  JsonRelayContextVisitor visitor(writer);
+  visitor.onRelayBegin("mesh", 0);
+  visitor.onServiceBegin("live");
+  visitor.onServicePlugins({
+      {.id = "router", .value = folly::dynamic::object("routes", 3)},
+      {.id = "stuck", .value = nullptr, .error = "snapshot timed out"},
+  });
+  visitor.onServiceEnd();
+  visitor.onRelayEnd();
+  writer.flush();
+  const auto plugins = folly::parseJson(out.body())["services"]["live"]["plugins"];
+  EXPECT_EQ(plugins["router"]["routes"].asInt(), 3);
+  EXPECT_EQ(plugins["stuck"]["error"].asString(), "snapshot timed out");
+}
+
 std::string bodyAtThreshold(size_t threshold, Collected& out) {
   ChunkedJsonWriter w(sinkInto(out), threshold);
   JsonRelayContextVisitor visitor(w);

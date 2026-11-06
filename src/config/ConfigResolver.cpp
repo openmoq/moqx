@@ -24,6 +24,8 @@
 
 #include "auth/Action.h"
 #include "config/Pkcs12.h"
+#include "plugin/Registry.h"
+#include "plugins/Builtins.h"
 
 namespace openmoq::moqx::config {
 
@@ -1213,9 +1215,147 @@ ServiceConfig resolveService(
   };
 }
 
+// --- Plugins ---
+
+std::string pluginLabel(const std::string& scopeLabel, size_t i, const ParsedPluginEntry& entry) {
+  return scopeLabel + "plugins[" + std::to_string(i) + "] (" + entry.type.value() + ")";
+}
+
+// Parses and checks one entry; the factory runs once to surface its errors.
+std::optional<PluginEntryConfig> resolvePluginEntry(
+    const ParsedPluginEntry& entry,
+    plugin::Scope scope,
+    const std::string& label,
+    const plugin::Registry& registry,
+    bool strict,
+    const std::map<std::string, rfl::Generic>* defaults,
+    std::vector<std::string>& errors
+) {
+  auto type = plugin::findType(registry, entry.type.value());
+  if (!type) {
+    errors.push_back(label + ": unknown plugin type");
+    return std::nullopt;
+  }
+  if (!type->allows(scope)) {
+    errors.push_back(
+        label + ": not allowed at " +
+        (scope == plugin::Scope::Process ? "process scope (top-level plugins)" : "service scope")
+    );
+    return std::nullopt;
+  }
+  rfl::Generic generic = entry.config.value().value_or(rfl::Generic(rfl::Generic::Object()));
+  if (defaults) {
+    if (auto it = defaults->find(type->name); it != defaults->end()) {
+      generic = plugin::mergeGeneric(it->second, generic);
+    }
+  }
+  auto parsed = type->parse(generic, strict);
+  if (parsed.hasError()) {
+    errors.push_back(label + ": config: " + parsed.error());
+    return std::nullopt;
+  }
+  auto root = type->create(parsed.value().get());
+  if (root.hasError()) {
+    errors.push_back(label + ": " + root.error().reason);
+    return std::nullopt;
+  }
+  // Listener SETUP is sent before the service is known.
+  if (scope == plugin::Scope::Service && root.value()->declaresListenerParams()) {
+    errors.push_back(label + ": declares listener SETUP parameters, allowed at process scope only");
+    return std::nullopt;
+  }
+  return PluginEntryConfig{
+      .type = type->name,
+      .id = entry.id.value().value_or(type->name),
+      .rank = entry.rank.value().value_or(0),
+      .pluginType = std::move(type),
+      .config = std::move(parsed.value()),
+  };
+}
+
+std::vector<PluginEntryConfig> resolvePluginList(
+    const std::optional<std::vector<ParsedPluginEntry>>& entries,
+    plugin::Scope scope,
+    const std::string& scopeLabel,
+    const plugin::Registry& registry,
+    bool strict,
+    const std::map<std::string, rfl::Generic>* defaults,
+    std::vector<std::string>& errors
+) {
+  std::vector<PluginEntryConfig> out;
+  if (!entries) {
+    return out;
+  }
+  for (size_t i = 0; i < entries->size(); ++i) {
+    const auto& entry = (*entries)[i];
+    auto label = pluginLabel(scopeLabel, i, entry);
+    if (auto resolved =
+            resolvePluginEntry(entry, scope, label, registry, strict, defaults, errors)) {
+      out.push_back(std::move(*resolved));
+    }
+  }
+  return out;
+}
+
+// Ids name a plugin in /state, logs and errors, so they are unique within
+// each service's chain: process entries plus that service's own.
+void validatePluginIds(
+    const std::vector<PluginEntryConfig>& processEntries,
+    const std::vector<PluginEntryConfig>& serviceEntries,
+    const std::string& serviceName,
+    std::vector<std::string>& errors
+) {
+  std::unordered_set<std::string> ids;
+  for (const auto& entry : processEntries) {
+    ids.insert(entry.id);
+  }
+  std::unordered_set<std::string> serviceIds;
+  for (const auto& entry : serviceEntries) {
+    if (!serviceIds.insert(entry.id).second) {
+      errors.push_back("Service '" + serviceName + "': duplicate plugin id '" + entry.id + "'");
+    } else if (ids.contains(entry.id)) {
+      errors.push_back(
+          "Service '" + serviceName + "': plugin id '" + entry.id +
+          "' is also a top-level plugin id"
+      );
+    }
+  }
+}
+
+void validatePluginDefaults(
+    const std::map<std::string, rfl::Generic>& defaults,
+    const plugin::Registry& registry,
+    std::vector<std::string>& errors
+) {
+  for (const auto& [typeName, generic] : defaults) {
+    auto label = "service_defaults.plugins." + typeName;
+    auto type = plugin::findType(registry, typeName);
+    if (!type) {
+      errors.push_back(label + ": unknown plugin type");
+      continue;
+    }
+    if (!type->serviceScope) {
+      errors.push_back(label + ": type is not allowed at service scope");
+      continue;
+    }
+    const auto* object = std::get_if<rfl::Generic::Object>(&generic.variant());
+    if (!object) {
+      errors.push_back(label + ": must be an object of config fields");
+      continue;
+    }
+    for (const auto& [field, value] : *object) {
+      if (std::find(type->fieldNames.begin(), type->fieldNames.end(), field) ==
+          type->fieldNames.end()) {
+        errors.push_back(label + ": unknown field '" + field + "'");
+      }
+    }
+  }
+}
+
 } // namespace
 
-folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& config) {
+folly::Expected<ResolvedConfig, std::string>
+resolveConfig(const ParsedConfig& config, const ResolveOptions& options) {
   std::vector<std::string> errors;
   std::vector<std::string> warnings;
 
@@ -1347,6 +1487,79 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
 
   const bool mvfstBpfSteering = config.mvfst_bpf_steering.value().value_or(true);
 
+  // === Validate plugins ===
+  const auto& registry = options.registry ? *options.registry : plugins::builtinTypes();
+  const std::map<std::string, rfl::Generic>* pluginDefaults = nullptr;
+  const auto& serviceDefaults = config.service_defaults.value();
+  if (serviceDefaults && serviceDefaults->plugins.value()) {
+    pluginDefaults = &*serviceDefaults->plugins.value();
+    validatePluginDefaults(*pluginDefaults, registry, errors);
+  }
+  auto processPlugins = resolvePluginList(
+      config.plugins.value(),
+      plugin::Scope::Process,
+      "",
+      registry,
+      options.strict,
+      nullptr,
+      errors
+  );
+  {
+    std::unordered_set<std::string> ids;
+    for (const auto& entry : processPlugins) {
+      if (!ids.insert(entry.id).second) {
+        errors.push_back("Duplicate top-level plugin id '" + entry.id + "'");
+      }
+    }
+  }
+  std::unordered_map<std::string, std::vector<PluginEntryConfig>> servicePlugins;
+  for (const auto& [name, svc] : services) {
+    auto entries = resolvePluginList(
+        svc.plugins.value(),
+        plugin::Scope::Service,
+        "Service '" + name + "': ",
+        registry,
+        options.strict,
+        pluginDefaults,
+        errors
+    );
+    validatePluginIds(processPlugins, entries, name, errors);
+    servicePlugins.emplace(name, std::move(entries));
+  }
+
+  // Own value, then service_defaults, then 5000.
+  auto chainTimeout = [&](const std::string& name,
+                          std::optional<uint32_t> own,
+                          std::optional<uint32_t> fallback,
+                          const char* field) {
+    uint32_t ms = own.value_or(fallback.value_or(5000));
+    if (ms == 0) {
+      errors.push_back("Service '" + name + "': " + field + " must be >= 1");
+    }
+    return std::chrono::milliseconds(ms);
+  };
+  std::unordered_map<std::string, std::pair<std::chrono::milliseconds, std::chrono::milliseconds>>
+      chainTimeouts;
+  for (const auto& [name, svc] : services) {
+    chainTimeouts.emplace(
+        name,
+        std::make_pair(
+            chainTimeout(
+                name,
+                svc.admission_timeout_ms.value(),
+                serviceDefaults ? serviceDefaults->admission_timeout_ms.value() : std::nullopt,
+                "admission_timeout_ms"
+            ),
+            chainTimeout(
+                name,
+                svc.authorize_timeout_ms.value(),
+                serviceDefaults ? serviceDefaults->authorize_timeout_ms.value() : std::nullopt,
+                "authorize_timeout_ms"
+            )
+        )
+    );
+  }
+
   // === Validate logging ===
   if (config.logging.value().has_value()) {
     const auto& logging = *config.logging.value();
@@ -1375,10 +1588,11 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
     std::optional<ParsedAuthConfig> auth = authIt != mergedAuths.end()
                                                ? std::optional<ParsedAuthConfig>(authIt->second)
                                                : std::nullopt;
-    resolvedServices.emplace(
-        name,
-        resolveService(svc, mergedCaches.at(name), auth, *mergedSubscriptionBufferKb(svc, config))
-    );
+    auto resolved =
+        resolveService(svc, mergedCaches.at(name), auth, *mergedSubscriptionBufferKb(svc, config));
+    resolved.plugins = std::move(servicePlugins.at(name));
+    std::tie(resolved.admissionTimeout, resolved.authorizeTimeout) = chainTimeouts.at(name);
+    resolvedServices.emplace(name, std::move(resolved));
   }
 
   // Resolve admin config
@@ -1512,6 +1726,7 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
               .mvfstBpfSteering = mvfstBpfSteering,
               .logging = std::move(loggingConfig),
               .cluster = cluster,
+              .plugins = std::move(processPlugins),
           },
       .warnings = std::move(warnings),
   };

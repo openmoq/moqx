@@ -389,6 +389,45 @@ target_link_libraries(moqx_hmac_key PUBLIC OpenSSL::Crypto)
 
 target_link_libraries(moqx_hmac_key PRIVATE moqx_warnings)
 
+# --- Plugin API and host (design/plugins-level1.md) ---
+
+add_library(moqx_plugin STATIC
+  src/plugin/Api.cpp
+  src/plugin/Host.cpp
+  src/plugin/Registry.cpp
+)
+
+target_include_directories(moqx_plugin
+  PUBLIC
+    ${PROJECT_SOURCE_DIR}/src
+)
+
+target_link_libraries(moqx_plugin PUBLIC
+  moqx_config
+  reflectcpp
+  Folly::folly_coro_task
+  Folly::folly_json_dynamic
+  Folly::folly_logging_logging
+  moxygen::moxygen_moq_types
+)
+
+target_link_libraries(moqx_plugin PRIVATE moqx_warnings)
+
+# --- Builtin plugins: one explicit list (src/plugins/Builtins.cpp) ---
+
+add_library(moqx_builtin_plugins STATIC
+  src/plugins/Builtins.cpp
+)
+
+target_include_directories(moqx_builtin_plugins
+  PUBLIC
+    ${PROJECT_SOURCE_DIR}/src
+)
+
+target_link_libraries(moqx_builtin_plugins PUBLIC moqx_plugin)
+
+target_link_libraries(moqx_builtin_plugins PRIVATE moqx_warnings)
+
 # --- Core library ---
 
 add_library(moqx_core STATIC
@@ -422,6 +461,7 @@ add_library(moqx_core STATIC
   src/UpstreamProvider.cpp
   src/SafeTrackName.cpp
   src/relay/AuthFilters.cpp
+  src/relay/PluginFilters.cpp
   src/relay/TopNFilter.cpp
   src/relay/TrackStatsFilter.cpp
   src/relay/PropertyRanking.cpp
@@ -442,6 +482,7 @@ target_include_directories(moqx_core
 target_link_libraries(moqx_core PUBLIC
   moqx_cache
   moqx_hmac_key
+  moqx_plugin
   moxygen::moxygen_relay_moq_forwarder
   moxygen::moxygen_moq_relay_session
   moxygen::moxygen_moq_server
@@ -498,6 +539,7 @@ target_include_directories(moqx_config_loader
 
 target_link_libraries(moqx_config_loader PUBLIC
   moqx_config
+  moqx_builtin_plugins
   reflectcpp
   yaml-cpp
   Folly::folly_file_util

@@ -42,6 +42,9 @@ services:                  # required; at least one
     cache: { ... }
     upstream: { ... }
 
+plugins:                   # optional; process-scope plugins, see Plugins
+  - { ... }
+
 admin:                     # optional; omit to disable the admin server
   { ... }
 ```
@@ -170,6 +173,39 @@ picoquic. Prefix path rules will generate a warning and connections may fail to
 route correctly.
 
 ---
+
+## Plugins
+
+Plugins are compiled into moqx and enabled per entry. Design: [design/plugins-level1.md](/design/plugins-level1.md).
+
+```yaml
+plugins:                      # process scope: applies to every service
+  - type: some-plugin
+    id: shared                # optional; defaults to type
+    rank: 10                  # optional; defaults to 0
+    config: { ... }           # the plugin's own settings
+
+service_defaults:
+  admission_timeout_ms: 5000
+  authorize_timeout_ms: 5000
+  plugins:                    # partial config by type, merged into service entries
+    some-plugin: { ... }
+
+services:
+  live:
+    plugins:                  # service scope
+      - type: some-plugin
+        config: { ... }
+```
+
+- A service's chain runs the process entries, then its own entries, each sorted by `rank`, ties in list order.
+- `id` names the plugin in logs, errors and `/state`. It is unique within each service's chain: process entries plus that service's entries.
+- `config` is checked by the plugin type. Under `--strict_config`, unknown fields are errors.
+- `service_defaults.plugins` maps a type to a partial `config`, deep-merged into each service entry of that type. Objects merge and the entry's own values win; lists and scalars are replaced. It never adds an entry and never applies to process entries. Every field can be defaulted, secrets included.
+- `admission_timeout_ms` bounds the whole admission chain of a session. Expiry closes the session with `INTERNAL_ERROR`.
+- `authorize_timeout_ms` bounds the whole authorization chain of one request. Expiry rejects the request with `INTERNAL_ERROR`.
+- Both default to 5000 and are set per service or in `service_defaults`.
+- `/state` shows each plugin's snapshot under `services.<service>.plugins.<id>`.
 
 ## Authentication and Authorization
 
