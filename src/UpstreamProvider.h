@@ -141,6 +141,10 @@ public:
   // Access the current session (may be null)
   std::shared_ptr<moxygen::MoQSession> currentSession() const { return session_; }
 
+  enum class State { Disconnected, Connecting, Connected };
+  // On exec_.
+  State state() const { return state_; }
+
   std::string stateString() const {
     switch (state_) {
     case State::Disconnected:
@@ -154,8 +158,6 @@ public:
   }
 
 private:
-  enum class State { Disconnected, Connecting, Connected };
-
   // Returns the current session if already connected, null otherwise.
   // Used for the synchronous fast path in forwarding methods.
   std::shared_ptr<moxygen::MoQSession> getSession() const {

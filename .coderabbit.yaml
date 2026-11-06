@@ -151,7 +151,8 @@ reviews:
         the poison list, a header that directly includes <moxygen/MoQSession.h>,
         and a session-owned handle kept in relay state without an ExecBound.
         Only SessionParticipant, Participant.cpp, MoqxRelayContext,
-        UpstreamProvider and the relay servers may name MoQSession.
+        UpstreamProvider, src/peering/ and the relay servers may name
+        MoQSession.
 
     - path: "src/config/**"
       instructions: |
