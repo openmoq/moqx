@@ -329,7 +329,7 @@ TEST_P(MoQRelayStateTest, NamespaceRoutesAreListedBestFirst) {
   ASSERT_EQ(routes.size(), 2) << folly::toJson(node);
   EXPECT_EQ(folly::toJson(routes[0]["hop_path"]), "[200]");
   EXPECT_EQ(routes[0]["cost"].asInt(), 2); // 1 plus the default link cost
-  EXPECT_TRUE(routes[0]["from_cluster"].asBool());
+  EXPECT_TRUE(routes[0]["from_peering"].asBool());
   EXPECT_EQ(folly::toJson(routes[1]["hop_path"]), "[100]");
   EXPECT_EQ(routes[1]["cost"].asInt(), 6);
   EXPECT_EQ(node["publisher"], routes[0]["address"]);

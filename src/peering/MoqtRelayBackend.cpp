@@ -9,12 +9,15 @@
 #include "MoqxRelay.h"
 #include "MoqxRelayContext.h"
 #include "relay/ExecutorCheck.h"
+#include "relay/MoqClusterRouteCodec.h"
+#include "relay/PlainRouteCodec.h"
 #include "relay/RelayExecUtil.h"
 #include "relay/SessionParticipant.h"
 
 #include <folly/CancellationToken.h>
 #include <folly/coro/Collect.h>
 #include <folly/coro/Invoke.h>
+#include <folly/logging/xlog.h>
 #include <moxygen/MoQVersions.h>
 #include <moxygen/events/MoQFollyExecutorImpl.h>
 
@@ -41,6 +44,7 @@ MoqtRelayBackend::MoqtRelayBackend(
     std::optional<uint64_t> hopID
 )
     : relay_(relay), relayExec_(relay->getRelayExec()), relayID_(relay->getRelayID()),
+      clusterCodec_(hopID ? std::make_shared<const MoqClusterRouteCodec>(*hopID) : nullptr),
       configs_(upstreamConfigs(service)), hopID_(hopID),
       subscriptionBufferBytes_(config::subscriptionBufferBytes(service)) {}
 
@@ -65,7 +69,7 @@ void MoqtRelayBackend::startUpstream(
   // suspended handshake depends on its session's close failing it during that drain.
   auto onConnect = [this,
                     relayExec](std::shared_ptr<MoQSession> session) -> folly::coro::Task<void> {
-    auto upstream = SessionParticipant::makeParticipant(session, relayExec);
+    auto upstream = SessionParticipant::makeParticipant(session, relayExec, this);
     if (relayExec) {
       co_return co_await folly::coro::co_withExecutor(
           folly::getKeepAliveToken(relayExec),
@@ -95,7 +99,8 @@ void MoqtRelayBackend::startUpstream(
       cfg.connectTimeout,
       cfg.idleTimeout,
       hopID_,
-      cfg.relayCost
+      cfg.relayCost,
+      this
   );
   provider->setSubscriptionBufferBytes(subscriptionBufferBytes_);
   upstreams_.push_back(provider);
@@ -330,6 +335,21 @@ folly::coro::Task<void> MoqtRelayBackend::visitPeers(PeerVisitor& visitor) const
   for (const auto& link : accepted) {
     visitor.onPeer(link);
   }
+}
+
+ParticipantRouting MoqtRelayBackend::routingFor(const ParticipantInfo& info) const {
+  if (!clusterCodec_ || !info.routing.relayHops) {
+    return plainRouting(info.routing);
+  }
+  // The peer drops each advertisement from this relay as a loop: the path ends in its own Hop ID.
+  XLOG_IF(WARN, info.routing.peerHopID == hopID_)
+      << "MoQ Cluster peer " << info.address << " claims this relay's Hop ID " << *hopID_;
+  auto routing = info.routing;
+  routing.codec = clusterCodec_;
+  routing.fromPeering = true;
+  routing.wantsUpdates = true;
+  routing.exclusion = RouteExclusion{.session = info.sessionId, .hop = info.routing.peerHopID};
+  return routing;
 }
 
 folly::coro::Task<PeerAdminResult> MoqtRelayBackend::executePeerAdminOp(PeerAdminOp op) {

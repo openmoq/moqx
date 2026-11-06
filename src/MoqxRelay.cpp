@@ -77,54 +77,22 @@ moxygen::TrackNamespace makeNamespaceSuffix(const moxygen::TrackNamespace& src, 
   );
 }
 
-void setOutgoingHopPath(
-    moxygen::TrackRequestParameters& params,
-    const openmoq::moqx::ParticipantInfo& subscriber,
-    const std::vector<uint64_t>& incomingPath,
-    uint64_t routeCost,
-    uint64_t localHopID
+// True when participant announced the route, or the route's path runs through participant's
+// exclusion hop. The relay does not advertise such a route to participant.
+bool touches(
+    const openmoq::moqx::NamespaceTree::NamespaceNode::Route& route,
+    const openmoq::moqx::ParticipantInfo& participant
 ) {
-  params.eraseAllParamsOfType(moxygen::TrackRequestParamKey::HOP_PATH);
-  params.eraseAllParamsOfType(moxygen::TrackRequestParamKey::ROUTE_COST);
-  if (!subscriber.relayHops) {
-    return;
+  if (route.participant.info->sessionId == participant.sessionId) {
+    return true;
   }
-  auto outgoingPath = incomingPath;
-  outgoingPath.push_back(localHopID);
-  auto encodedPath = moxygen::encodeRelayHopPath(outgoingPath, subscriber.version);
-  XCHECK(encodedPath.hasValue());
-  params.insertParam(moxygen::Parameter(
-      folly::to_underlying(moxygen::TrackRequestParamKey::HOP_PATH),
-      std::move(encodedPath.value())
-  ));
-  params.insertParam(
-      moxygen::Parameter(folly::to_underlying(moxygen::TrackRequestParamKey::ROUTE_COST), routeCost)
-  );
+  const auto& exclusion = participant.routing.exclusion;
+  return exclusion && openmoq::moqx::clusterPathContains(route.path, exclusion->hop);
 }
 
-// A peer must not be advertised a path that runs through it.
-bool shouldForwardNamespace(
-    const openmoq::moqx::ParticipantInfo& publisher,
-    const openmoq::moqx::ParticipantInfo& subscriber,
-    moxygen::SubscribeNamespaceOptions options,
-    const std::vector<uint64_t>& incomingPath,
-    uint64_t localHopID
-) {
-  const auto peerHop = subscriber.peerHopID;
-  return subscriber.sessionId != publisher.sessionId &&
-         (options == moxygen::SubscribeNamespaceOptions::NAMESPACE ||
-          options == moxygen::SubscribeNamespaceOptions::BOTH) &&
-         !openmoq::moqx::clusterPathContains(incomingPath, peerHop) &&
-         (peerHop == moxygen::kMoQClusterAnonHopId || peerHop != localHopID);
-}
-
-// Routes that a request from requester may not use. Unset unless it negotiated MoQ Cluster.
-std::optional<openmoq::moqx::RouteExclusion>
-exclusionFor(const openmoq::moqx::ParticipantInfo& requester) {
-  if (!requester.relayHops) {
-    return std::nullopt;
-  }
-  return openmoq::moqx::RouteExclusion{.session = requester.sessionId, .hop = requester.peerHopID};
+bool shouldForwardNamespace(moxygen::SubscribeNamespaceOptions options) {
+  return options == moxygen::SubscribeNamespaceOptions::NAMESPACE ||
+         options == moxygen::SubscribeNamespaceOptions::BOTH;
 }
 
 // Below draft 22, rejects a bounded subscription whose end group is already behind
@@ -423,8 +391,10 @@ std::shared_ptr<Subscriber::PublishNamespaceHandle> MoqxRelay::doPublishNamespac
 ) {
   XLOG(DBG1) << __func__ << " ns=" << pubNs.trackNamespace;
   const auto sessionId = publisher.info->sessionId;
-  auto route = ingestRoute(pubNs, *publisher.info);
+  auto route = publisher.info->routing.codec->readRoute(pubNs.params, *publisher.info);
+  const bool fromPeering = publisher.info->routing.fromPeering;
   if (!route) {
+    XLOG(DBG1) << "Dropping looped namespace ns=" << pubNs.trackNamespace;
     // Remove the route of a peer whose repeated NAMESPACE now loops.
     if (!callback) {
       doPublishNamespaceDone(pubNs.trackNamespace, sessionId);
@@ -442,7 +412,7 @@ std::shared_ptr<Subscriber::PublishNamespaceHandle> MoqxRelay::doPublishNamespac
       pubNs.requestID,
       route->path,
       route->cost,
-      route->fromCluster
+      fromPeering
   );
   if (replacedPublisher) {
     XLOG(WARNING) << "PublishNamespace: Existing session (" << replacedPublisher->value
@@ -498,15 +468,12 @@ Subscriber::PublishNamespaceHandle::RequestUpdateResult MoqxRelay::updatePublish
     return fail(RequestErrorCode::INTERNAL_ERROR, "no such PUBLISH_NAMESPACE");
   }
   const auto& publisher = *route->participant.info;
-  auto params = readClusterParams(update.params, publisher.version, publisher.linkCost);
+  auto params = publisher.routing.codec->readRouteUpdate(update.params, publisher);
   if (!params) {
     doPublishNamespaceDone(trackNamespace, sessionId, requestID);
-    return fail(
-        RequestErrorCode::UNINTERESTED,
-        fmt::format("HOP_PATH contains this relay's hop ID {}", relayHopID_)
-    );
+    return fail(RequestErrorCode::UNINTERESTED, "HOP_PATH contains this relay's hop ID");
   }
-  XCHECK(route->fromCluster || (params->path.empty() && !params->cost))
+  XCHECK(route->fromPeering || (params->path.empty() && !params->cost))
       << "moxygen rejects cluster parameters from a session that did not negotiate MoQ Cluster";
   auto path = params->path.empty() ? route->path : std::move(params->path);
   auto cost = params->cost.value_or(route->cost);
@@ -545,13 +512,8 @@ const NamespaceTree::NamespaceNode::Route* MoqxRelay::advertisableRoute(
     const NamespaceNode::NamespaceSubscriberInfo& info
 ) const {
   return node.selectRoute([&](const NamespaceNode::Route& r) {
-    return (info.peerID.empty() || r.peerID != info.peerID) && shouldForwardNamespace(
-                                                                   *r.participant.info,
-                                                                   subscriber,
-                                                                   info.options,
-                                                                   r.path,
-                                                                   relayHopID_
-                                                               );
+    return (info.peerID.empty() || r.peerID != info.peerID) &&
+           shouldForwardNamespace(info.options) && !touches(r, subscriber);
   });
 }
 
@@ -582,60 +544,18 @@ void MoqxRelay::reconcileAdvertisement(
   if (!route) {
     return;
   }
-  // Only send HOP_PATH and ROUTE_COST updates to subscribers that negotiated MoQ Cluster.
-  if (sent && (!subscriber.relayHops || (sent->path == route->path && sent->cost == route->cost))) {
+  if (sent && (!subscriber.routing.wantsUpdates ||
+               (sent->path == route->path && sent->cost == route->cost))) {
     return;
   }
   Namespace ns;
   ns.trackNamespaceSuffix = std::move(suffix);
-  setOutgoingHopPath(ns.params, subscriber, route->path, route->cost, relayHopID_);
+  subscriber.routing.codec->writeRoute(ns.params, subscriber, route->path, route->cost);
   info.namespacePublishHandle->namespaceMsg(ns);
   node.setSubscriberAdvertisement(
       key,
       NamespaceNode::Advertisement{route->seq, route->path, route->cost}
   );
-}
-
-std::optional<MoqxRelay::ClusterParams> MoqxRelay::readClusterParams(
-    const TrackRequestParameters& params,
-    uint64_t version,
-    uint64_t linkCost
-) const {
-  ClusterParams out;
-  if (const auto* hopPath = params.getFirstParam(TrackRequestParamKey::HOP_PATH)) {
-    auto decoded = decodeRelayHopPath(hopPath->asString, version);
-    XCHECK(decoded.hasValue()) << "moxygen rejects a malformed HOP_PATH";
-    if (clusterPathContains(decoded.value(), relayHopID_)) {
-      return std::nullopt;
-    }
-    out.path = std::move(decoded.value());
-  }
-  if (const auto* cost = params.getFirstParam(TrackRequestParamKey::ROUTE_COST)) {
-    out.cost = clusterAddCost(cost->asUint64, linkCost);
-  }
-  return out;
-}
-
-std::optional<MoqxRelay::IngestedRoute>
-MoqxRelay::ingestRoute(const PublishNamespace& pubNs, const ParticipantInfo& publisher) {
-  IngestedRoute route{
-      .path = {kMoQClusterAnonHopId},
-      .cost = publisher.linkCost,
-      .fromCluster = false
-  };
-  if (!publisher.relayHops) {
-    return route;
-  }
-  route.fromCluster = true;
-  auto params = readClusterParams(pubNs.params, publisher.version, route.cost);
-  if (!params) {
-    XLOG(DBG1) << "Dropping looped namespace ns=" << pubNs.trackNamespace;
-    return std::nullopt;
-  }
-  XCHECK(!params->path.empty()) << "moxygen requires HOP_PATH from a MoQ Cluster session";
-  route.path = std::move(params->path);
-  route.cost = params->cost.value_or(route.cost);
-  return route;
 }
 
 folly::coro::Task<Subscriber::PublishNamespaceResult> MoqxRelay::publishNamespace(
@@ -2483,7 +2403,7 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriber
   const auto& ftn = subReq.fullTrackName;
   auto* localReg = &localRegistry();
   auto* subscriberExec = subscriber.executor;
-  const auto exclusion = exclusionFor(subscriber);
+  const auto exclusion = subscriber.routing.exclusion;
 
   // Park before claiming this thread's forwarder, so a later SUBSCRIBE for the same
   // ftn is never bound to our timeout. The gate keeps the relayExec_ hop off the
@@ -2672,7 +2592,7 @@ MoqxRelay::subscribeImpl(SubscribeRequest subReq, std::shared_ptr<TrackConsumer>
   // TOCTOU fix: if we might be the first subscriber, wait for the upstream
   // connection before branching. A concurrent coroutine may emplace the entry
   // while we are suspended, so we re-check inside getOrCreateFromSubscribe.
-  const auto exclusion = exclusionFor(requester);
+  const auto exclusion = requester.routing.exclusion;
   if (!registry_.exists(ftn) && peering_ && peering_->peersPending() &&
       !findUpstreamPublisher(ftn.trackNamespace, exclusion)) {
     co_await peering_->waitForPeers([&] {
@@ -2887,7 +2807,7 @@ MoqxRelay::fetchImpl(Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
   // Prefer an exact-track upstream (from publish/subscribe) over a broader
   // namespace-level publisher, matching subscribeImpl's resolution order.
   auto fetchView = registry_.getFetchView(fetch.fullTrackName);
-  const auto exclusion = exclusionFor(subscriber);
+  const auto exclusion = subscriber.routing.exclusion;
   std::shared_ptr<Publisher> upstreamPublisher;
   // A fetch does not join the subscription, so an excluded source falls back to routing.
   if (fetchView && !excludedFromSubscription(exclusion, fetch.fullTrackName)) {
@@ -2976,7 +2896,7 @@ folly::coro::Task<Publisher::TrackStatusResult> MoqxRelay::trackStatusImpl(Track
   // No active subscription — fall through to the upstream path.
   {
     // No active subscription — try registry publisher first, then namespace tree
-    const auto exclusion = exclusionFor(requester);
+    const auto exclusion = requester.routing.exclusion;
     std::shared_ptr<Publisher> upstreamPublisher;
     if (upstreamView && !excludedFromSubscription(exclusion, trackStatus.fullTrackName)) {
       upstreamPublisher = upstreamView->publisher;
@@ -3340,7 +3260,7 @@ void MoqxRelay::dumpState(RelayStateVisitor& visitor) const {
               .peerID = route->peerID,
               .path = route->path,
               .cost = route->cost,
-              .fromCluster = route->fromCluster,
+              .fromPeering = route->fromPeering,
           });
         }
         visitor.beginNamespaceNode(childKey, node.trackNamespace, node.subscriberCount(), routes);

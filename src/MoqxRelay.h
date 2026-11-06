@@ -21,6 +21,7 @@
 #include "relay/Participant.h"
 #include "relay/PropertyRanking.h"
 #include "relay/RelayExecUtil.h"
+#include "relay/RouteCodec.h"
 #include "stats/TrackStatsRegistry.h"
 #include <moxygen/events/MoQFollyExecutorImpl.h>
 #include <moxygen/relay/MoQForwarder.h>
@@ -87,7 +88,7 @@ public:
     std::string peerID;
     std::vector<uint64_t> path;
     uint64_t cost{0};
-    bool fromCluster{false};
+    bool fromPeering{false};
   };
   // routes are best first.
   virtual void beginNamespaceNode(
@@ -132,17 +133,16 @@ public:
   explicit MoqxRelay(
       config::CacheConfig cache = {},
       std::string relayID = {},
-      uint64_t relayHopID = 0,
       std::shared_ptr<folly::Executor> relayExec = nullptr,
       bool useLocalForwarders = false,
       uint64_t maxDeselected = kDefaultMaxDeselected,
       std::chrono::milliseconds idleTimeout = kDefaultIdleTimeout,
       std::chrono::milliseconds activityThreshold = kDefaultActivityThreshold
   )
-      : relayID_(std::move(relayID)), relayHopID_(relayHopID),
-        ownedRelayExec_(std::move(relayExec)), relayExec_(ownedRelayExec_.get()),
-        useLocalForwarders_(useLocalForwarders), maxDeselected_(maxDeselected),
-        idleTimeout_(idleTimeout), activityThreshold_(activityThreshold) {
+      : relayID_(std::move(relayID)), ownedRelayExec_(std::move(relayExec)),
+        relayExec_(ownedRelayExec_.get()), useLocalForwarders_(useLocalForwarders),
+        maxDeselected_(maxDeselected), idleTimeout_(idleTimeout),
+        activityThreshold_(activityThreshold) {
     if (relayExec_) {
       auto* follyExec = dynamic_cast<moxygen::MoQFollyExecutorImpl*>(relayExec_);
       XCHECK(follyExec) << "the relay executor must be EventBase-backed";
@@ -162,7 +162,6 @@ public:
 
   folly::Executor* getRelayExec() const { return relayExec_; }
   const std::string& getRelayID() const { return relayID_; }
-  uint64_t getRelayHopID() const { return relayHopID_; }
 
   // execs must cover every thread the data plane runs on (io threads plus
   // relayExec_).
@@ -452,8 +451,6 @@ private:
   moxygen::TrackNamespace allowedNamespacePrefix_;
   // Operational identity used by relay authentication and upstream routing.
   std::string relayID_;
-  // MoQ Cluster Hop ID. 0 is anonymous.
-  uint64_t relayHopID_;
   // Owned by the context, which keeps it alive while this relay serves requests.
   PeeringBackend* peering_{nullptr};
   // Part of *peering_, or null.
@@ -461,22 +458,6 @@ private:
 
   SubscriptionRegistry registry_;
 
-  struct IngestedRoute {
-    std::vector<uint64_t> path;
-    uint64_t cost;    // ROUTE_COST plus the sender's link cost
-    bool fromCluster; // the session negotiated MoQ Cluster
-  };
-  // A MoQ Cluster sender's HOP_PATH and ROUTE_COST. moxygen has already validated them.
-  struct ClusterParams {
-    std::vector<uint64_t> path;   // empty when HOP_PATH is absent
-    std::optional<uint64_t> cost; // with the sender's link cost added
-  };
-  // Nullopt if HOP_PATH contains this relay.
-  std::optional<ClusterParams> readClusterParams(
-      const moxygen::TrackRequestParameters& params,
-      uint64_t version,
-      uint64_t linkCost
-  ) const;
   using NamespaceNode = NamespaceTree::NamespaceNode;
   // The route to advertise to one SUBSCRIBE_NAMESPACE. Null if none may be.
   const NamespaceNode::Route* advertisableRoute(
@@ -492,9 +473,6 @@ private:
       const ParticipantInfo& subscriber,
       const NamespaceNode::NamespaceSubscriberInfo& info
   );
-  // Nullopt if the route loops through this relay.
-  std::optional<IngestedRoute>
-  ingestRoute(const moxygen::PublishNamespace& pubNs, const ParticipantInfo& publisher);
 
   // Result of joinOrPrepareUpstreamSubscription (runs on relayExec_).
   struct StatefulSubscribeResult {

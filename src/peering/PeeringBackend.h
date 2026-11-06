@@ -128,6 +128,11 @@ public:
   // Stops the backend's own threads. Runs after the drain.
   virtual void join() {}
 
+  // Returns info.routing with the backend's fields chosen, given the SETUP facts that it
+  // already holds. Pure, so any executor may call it. The session adapter calls it when it
+  // builds a session's Participant.
+  virtual ParticipantRouting routingFor(const ParticipantInfo& info) const = 0;
+
   // On the relay executor. Returns true while a configured peer is still connecting or
   // reconnecting, so waitForPeers() could still find a route.
   virtual bool peersPending() const = 0;

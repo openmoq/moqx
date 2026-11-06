@@ -69,9 +69,9 @@ TEST_F(SessionParticipantTest, SnapshotMatchesSession) {
     EXPECT_EQ(info.sessionId, session->sessionId());
     EXPECT_EQ(info.version, kVersionDraft16);
     EXPECT_EQ(info.executor, exec_.get());
-    EXPECT_TRUE(info.relayHops);
-    EXPECT_EQ(info.peerHopID, 7);
-    EXPECT_EQ(info.linkCost, 3);
+    EXPECT_TRUE(info.routing.relayHops);
+    EXPECT_EQ(info.routing.peerHopID, 7);
+    EXPECT_EQ(info.routing.linkCost, 3);
   });
   destroyOnSessionThread(session);
 }

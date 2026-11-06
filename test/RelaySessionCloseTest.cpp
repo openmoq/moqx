@@ -52,7 +52,6 @@ protected:
     relay_ = std::make_shared<MoqxRelay>(
         config::CacheConfig{.maxCachedTracks = 0},
         /*relayID=*/"",
-        /*relayHopID=*/0,
         relayExec_
     );
     relay_->setAllowedNamespacePrefix(TrackNamespace{});
