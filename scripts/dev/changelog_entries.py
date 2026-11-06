@@ -2,10 +2,14 @@
 
 - File layout and format: see changelog.d/README.md.
 - Each entry links the PRs that added its files, looked up with `gh`.
+- GitHub links a rebase-merged PR to its last commit only. A file added by an
+  earlier commit is matched to the PR by author date and message.
 - A file with no PR yet, e.g. uncommitted, renders unlinked with a warning on stderr.
 - Entries are ordered by their lowest PR number; unlinked entries go last.
 """
 
+import datetime
+import functools
 import json
 import re
 import sys
@@ -22,6 +26,61 @@ LINKS_RE = re.compile(rf"\s+\(({LINK}(?:, {LINK})*)\)$")
 ENTRIES = ROOT / "changelog.d"
 
 
+@functools.cache
+def pulls(sha):
+    """PRs that GitHub associates with commit `sha`, or None if GitHub lacks it."""
+    res = run("gh", "api", f"repos/{REPO}/commits/{sha}/pulls")
+    if res.returncode:
+        # On failure, gh prints the error body to stdout.
+        # 422: GitHub has no such commit, e.g. one not pushed yet.
+        if re.search(r'"status": ?"422"', res.stdout):
+            return None
+        die(f"gh api for {sha} failed: {res.stdout.strip() or res.stderr.strip()}")
+    return sorted(json.loads(res.stdout), key=lambda p: p["merged_at"] or "~")
+
+
+@functools.cache
+def authored(number):
+    """(author time, message) of each commit of PR `number`."""
+    query = ".[].commit | [.author.date, .message] | @json"
+    api = f"repos/{REPO}/pulls/{number}/commits"
+    res = run("gh", "api", "--paginate", "--jq", query, api)
+    if res.returncode:
+        die(f"gh api for #{number} failed: {res.stderr.strip()}")
+    commits = set()
+    for date, message in map(json.loads, res.stdout.splitlines()):
+        # Python before 3.11 rejects the "Z" suffix.
+        stamp = datetime.datetime.fromisoformat(date.replace("Z", "+00:00"))
+        commits.add((int(stamp.timestamp()), message.strip()))
+    return commits
+
+
+def rebased_pr(sha):
+    """Number of the merged PR whose rebase merge wrote `sha`, or None."""
+    # Rebasing keeps a commit's author date and message.
+    show = run("git", "show", "-s", "--format=%at%n%B", sha).stdout
+    date, message = show.split("\n", 1)
+    commit = (int(date), message.strip())
+    out = run("git", "rev-list", "--ancestry-path", "--parents", f"{sha}..HEAD").stdout
+    # A rebase merge writes a line of single-parent commits.
+    children = {}
+    for c, *parents in map(str.split, out.splitlines()):
+        if len(parents) == 1:
+            children.setdefault(parents[0], []).append(c)
+    # On each path, the first commit with a PR is the rebase merge's last one, if any.
+    todo = list(children.get(sha, []))
+    while todo:
+        last = todo.pop()
+        found = pulls(last)
+        if found == []:
+            todo += children.get(last, [])
+        for p in found or []:
+            merged = p["merged_at"] and p["merge_commit_sha"] == last
+            if merged and commit in authored(p["number"]):
+                return p["number"]
+    return None
+
+
 def pr_of(path):
     """Number of the PR that added `path`, or None.
 
@@ -32,15 +91,10 @@ def pr_of(path):
         return None
     log = "git log --no-renames --diff-filter=A -1 --format=%H --".split()
     sha = run(*log, str(rel(path))).stdout.strip()
-    res = run("gh", "api", f"repos/{REPO}/commits/{sha}/pulls")
-    if res.returncode:
-        # On failure, gh prints the error body to stdout.
-        # 422: GitHub has no such commit, e.g. one not pushed yet.
-        if re.search(r'"status": ?"422"', res.stdout):
-            return None
-        die(f"gh api for {sha} failed: {res.stdout.strip() or res.stderr.strip()}")
-    pulls = sorted(json.loads(res.stdout), key=lambda p: p["merged_at"] or "~")
-    return pulls[0]["number"] if pulls else None
+    found = pulls(sha)
+    if found == []:
+        return rebased_pr(sha)
+    return found[0]["number"] if found else None
 
 
 def read(path):
