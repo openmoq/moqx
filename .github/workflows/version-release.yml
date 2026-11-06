@@ -24,10 +24,10 @@ name: version release
 #
 # Inputs:
 #   version  required. semver, e.g. 1.2.3
-#   optimize optional. moqx-linux-amd64.tar.gz is built from source at the
-#            pins with PGO trained on moqx (scripts/pgo/train.sh) plus LTO, and
-#            the release image ships moqx-linux-<arch>.tar.gz unchanged instead
-#            of a bookworm rebuild.
+#   optimize optional. moqx-linux-{amd64,arm64}.tar.gz are built from source
+#            at the pins with PGO trained on moqx (scripts/pgo/train.sh) plus
+#            LTO, and the release image ships moqx-linux-<arch>.tar.gz unchanged
+#            instead of a bookworm rebuild.
 #
 # The moxygen consumed is always the one MOXYGEN_REV pins. On the release
 # MOXYGEN_REV resolves to:
@@ -59,7 +59,7 @@ on:
         required: true
         type: string
       optimize:
-        description: 'linux-amd64 tarball built from source with PGO trained on moqx plus LTO (about an hour more); the release image ships the portable tarballs'
+        description: 'Linux tarballs built from source with PGO trained on moqx plus LTO (about an hour more); the release image ships the portable tarballs'
         required: false
         type: boolean
         default: false
@@ -144,6 +144,12 @@ jobs:
             --jq ".[] | select(.tag_name == \"$SNAPSHOT_TAG\") | .target_commitish")
           if [[ -z "$SNAPSHOT_SHA" ]]; then
             echo "Error: $SNAPSHOT_TAG release not found. Push to the dispatched branch first to produce a snapshot." >&2
+            exit 1
+          fi
+          # The builds check out SNAPSHOT_SHA, but the pins below are read at the branch head.
+          if ! git diff --quiet "$SNAPSHOT_SHA" HEAD -- cmake/dependencies.cmake; then
+            echo "Error: cmake/dependencies.cmake differs between $SNAPSHOT_TAG (${SNAPSHOT_SHA:0:12}) and the branch head." >&2
+            echo "Wait for the branch head's snapshot to publish, then dispatch again." >&2
             exit 1
           fi
 
@@ -295,7 +301,7 @@ jobs:
           - \`moqx-macos-15-arm64.tar.gz\` — Apple silicon, macOS 15+, no Homebrew needed"
             if [[ "${{ inputs.optimize }}" == "true" ]]; then
               PORTABLE_NOTE+="
-          - \`moqx-linux-amd64.tar.gz\` is built from source at the pins, profile-guided (trained on moqx with local forwarders and 4 IO threads, on mvfst and picoquic) and link-time optimized across moqx and the stack
+          - \`moqx-linux-amd64.tar.gz\` and \`moqx-linux-arm64.tar.gz\` are built from source at the pins, profile-guided (trained on moqx with local forwarders and 4 IO threads, on mvfst and picoquic) and link-time optimized across moqx and the stack
           - the release image carries \`moqx-linux-<arch>.tar.gz\` unchanged"
             fi
           else
@@ -342,7 +348,7 @@ jobs:
   # ════════════════════════════════════════════════════════════════════════════
   # Portable build: -O3, ISA-baselined, statically linked moqx-linux-{amd64,arm64}
   # and moqx-macos-15-arm64 tarballs. Runs only when the moxygen reference
-  # carries portable assets. With optimize, linux-amd64 builds the stack from
+  # carries portable assets. With optimize, the Linux lanes build the stack from
   # source instead: instrumented, trained on moqx, rebuilt with the profile + LTO.
   # Each runner uploads its own tarball directly to the draft release.
   # ════════════════════════════════════════════════════════════════════════════
@@ -369,6 +375,9 @@ jobs:
             runner: ubuntu-22.04-arm
             platform: linux-arm64
             cxx_flags: "-march=armv8-a -fno-omit-frame-pointer -fasynchronous-unwind-tables"
+            # gcc-11 ICEs on proxygen at -O3 on aarch64, and LTO needs one
+            # compiler for the stack and moqx.
+            optimize_gcc: "12"
           # moxygen's macOS build takes the compiler defaults, so this does too.
           - arch: arm64
             runner: macos-15
@@ -377,7 +386,7 @@ jobs:
     name: portable (${{ matrix.platform }})
     runs-on: ${{ matrix.runner }}
     env:
-      OPTIMIZE: ${{ inputs.optimize && matrix.platform == 'linux-amd64' }}
+      OPTIMIZE: ${{ inputs.optimize && startsWith(matrix.platform, 'linux-') }}
       # Read by scripts/configure.sh's superbuild on the optimized path.
       MOQX_MOXYGEN_PORTABLE: 'ON'
       MOQX_MOXYGEN_CXX_FLAGS: ${{ matrix.cxx_flags }}
@@ -407,6 +416,14 @@ jobs:
             sudo apt-get install -y --no-install-recommends \
               ca-certificates libdwarf-dev libxxhash-dev libjemalloc2
           fi
+
+      - name: Install the optimized lane's compiler
+        if: env.OPTIMIZE == 'true' && matrix.optimize_gcc
+        run: |
+          V=${{ matrix.optimize_gcc }}
+          sudo apt-get install -y --no-install-recommends "gcc-$V" "g++-$V"
+          # GCOV_DUMP: train.sh reads profiles with the matching gcov-dump.
+          { echo "CC=gcc-$V"; echo "CXX=g++-$V"; echo "GCOV_DUMP=gcov-dump-$V"; } >> "$GITHUB_ENV"
 
       - name: Configure
         env:
