@@ -11,6 +11,8 @@
 #include <algorithm>
 #include <tuple>
 
+#include "relay/SessionConfined.h"
+
 using namespace moxygen;
 
 namespace openmoq::moqx {

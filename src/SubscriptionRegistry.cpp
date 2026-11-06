@@ -10,6 +10,8 @@
 
 #include <algorithm>
 
+#include "relay/SessionConfined.h"
+
 namespace openmoq::moqx {
 
 // === UpstreamSubscribePending ===

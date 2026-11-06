@@ -28,6 +28,8 @@
 #include <moxygen/MoQFilters.h>
 #include <moxygen/MoQTrackProperties.h>
 
+#include "relay/SessionConfined.h"
+
 namespace {
 constexpr uint8_t kDefaultUpstreamPriority = 128;
 constexpr std::chrono::seconds kUpstreamConnectWaitTimeout(5);
@@ -421,6 +423,7 @@ folly::coro::Task<void> MoqxRelay::onUpstreamConnect(Participant upstream) {
 }
 
 folly::coro::Task<void> MoqxRelay::onUpstreamConnectImpl(Participant upstream) {
+  XDCHECK(onRelayExec());
   // A disconnect during the handshake erases this entry, so its handles are dropped.
   const auto id = upstream.info->sessionId;
   auto* sessionExec = upstream.info->executor;
@@ -468,6 +471,7 @@ folly::coro::Task<void> MoqxRelay::onUpstreamConnectImpl(Participant upstream) {
 }
 
 void MoqxRelay::onUpstreamDisconnect(SessionId upstream) {
+  XDCHECK(onRelayExec());
   upstreamHandles_.erase(upstream);
 }
 
@@ -568,6 +572,7 @@ Subscriber::PublishNamespaceHandle::RequestUpdateResult MoqxRelay::updatePublish
     RequestID requestID,
     const RequestUpdate& update
 ) {
+  XDCHECK(onRelayExec());
   auto fail = [&](RequestErrorCode code, std::string reason) {
     return folly::makeUnexpected(RequestError{update.requestID, code, std::move(reason)});
   };
@@ -728,6 +733,7 @@ folly::coro::Task<Subscriber::PublishNamespaceResult> MoqxRelay::publishNamespac
     PublishNamespace pubNs,
     std::shared_ptr<Subscriber::PublishNamespaceCallback> callback
 ) {
+  XDCHECK(onRelayExec());
   // TODO: store auth for forwarding on future SubscribeNamespace?
   auto requestID = pubNs.requestID;
   auto result = doPublishNamespace(std::move(pubNs), requestParticipant(), std::move(callback));
@@ -744,6 +750,7 @@ void MoqxRelay::doPublishNamespaceDone(
     SessionId sessionId,
     std::optional<RequestID> requestID
 ) {
+  XDCHECK(onRelayExec());
   XLOG(DBG1) << __func__ << " ns=" << trackNamespace;
   auto result = namespaceTree_.unpublishNamespace(trackNamespace, sessionId, requestID);
   if (result.hasError()) {
@@ -762,6 +769,7 @@ void MoqxRelay::doPublishNamespaceDone(
 }
 
 void MoqxRelay::onPublishDone(const FullTrackName& ftn) {
+  XDCHECK(onRelayExec());
   XLOG(DBG1) << __func__ << " ftn=" << ftn;
 
   auto upstreamView = registry_.getUpstreamView(ftn);
@@ -923,6 +931,7 @@ folly::coro::Task<folly::Expected<PublishOk, PublishError>> MoqxRelay::registerP
 // publishFromPublisherExec instead).
 Subscriber::PublishResult
 MoqxRelay::publish(PublishRequest pub, std::shared_ptr<Publisher::SubscriptionHandle> handle) {
+  XDCHECK(onRelayExec());
   XLOG(DBG1) << __func__ << " ftn=" << pub.fullTrackName;
   XCHECK(handle) << "Publish handle cannot be null";
   // The participant stays valid on relayExec_: RequestContext propagates
@@ -1839,7 +1848,7 @@ MoqxRelay::buildFilterChain(const FullTrackName& ftn, std::shared_ptr<MoQForward
   // Cache attaches as a passive subscriber of the forwarder.
   if (cache_) {
     forwarder->addSubscriber(
-        MoQSession::makeSessionId(),
+        makeSessionId(),
         /*forward=*/true,
         cache_->makePassiveConsumer(ftn),
         /*passive=*/true
@@ -1880,6 +1889,7 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
     SubscribeNamespace subNs,
     std::shared_ptr<NamespacePublishHandle> namespacePublishHandle
 ) {
+  XDCHECK(onRelayExec());
   XLOG(DBG1) << __func__ << " nsp=" << subNs.trackNamespacePrefix;
 
   const Participant requester = requestParticipant();
@@ -2069,6 +2079,7 @@ void MoqxRelay::unsubscribeNamespace(
     const TrackNamespace& trackNamespacePrefix,
     SessionId session
 ) {
+  XDCHECK(onRelayExec());
   XLOG(DBG1) << __func__ << " nsp=" << trackNamespacePrefix;
   // Clean up the reciprocal peer subNs handle for this session if present.
   peerSubNsHandles_.erase(session);
@@ -2083,6 +2094,7 @@ folly::coro::Task<Publisher::SubscribeTracksResult> MoqxRelay::subscribeTracks(
     SubscribeTracks subTracks,
     std::shared_ptr<PublishBlockedHandle> /*publishBlockedHandle*/
 ) {
+  XDCHECK(onRelayExec());
   XLOG(DBG1) << __func__ << " nsp=" << subTracks.trackNamespacePrefix;
 
   const Participant requester = requestParticipant();
@@ -2186,6 +2198,7 @@ folly::coro::Task<Publisher::SubscribeTracksResult> MoqxRelay::subscribeTracks(
 }
 
 void MoqxRelay::unsubscribeTracks(const TrackNamespace& trackNamespacePrefix, SessionId session) {
+  XDCHECK(onRelayExec());
   XLOG(DBG1) << __func__ << " nsp=" << trackNamespacePrefix;
   auto result = tracksTree_.removeNamespaceSubscriber(trackNamespacePrefix, session);
   if (result.hasError() && result.error() == NamespaceTree::Error::NotSubscribed) {
@@ -2750,6 +2763,7 @@ MoqxRelay::subscribe(SubscribeRequest subReq, std::shared_ptr<TrackConsumer> con
 
 folly::coro::Task<Publisher::SubscribeResult>
 MoqxRelay::subscribeImpl(SubscribeRequest subReq, std::shared_ptr<TrackConsumer> consumer) {
+  XDCHECK(onRelayExec());
   const auto requesterInfo = requestParticipant().info;
   const ParticipantInfo& requester = *requesterInfo;
   maybeSetSessionExec(requester);
@@ -2949,6 +2963,7 @@ MoqxRelay::resolveJoiningFetchOnSubscriberExec(Fetch& fetch, const ParticipantIn
 
 folly::coro::Task<Publisher::FetchResult>
 MoqxRelay::fetchImpl(Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
+  XDCHECK(onRelayExec());
   const auto subscriberInfo = requestParticipant().info;
   const ParticipantInfo& subscriber = *subscriberInfo;
 
@@ -3040,6 +3055,7 @@ folly::coro::Task<Publisher::TrackStatusResult> MoqxRelay::trackStatus(TrackStat
 
 folly::coro::Task<Publisher::TrackStatusResult> MoqxRelay::trackStatusImpl(TrackStatus trackStatus
 ) {
+  XDCHECK(onRelayExec());
   XLOG(DBG1) << __func__ << " ftn=" << trackStatus.fullTrackName;
 
   const auto requesterInfo = requestParticipant().info;
@@ -3115,6 +3131,7 @@ void MoqxRelay::onEmpty(MoQForwarder* forwarder) {
 }
 
 void MoqxRelay::onEmptyImpl(const FullTrackName& ftn) {
+  XDCHECK(onRelayExec());
   auto upstreamView = registry_.getUpstreamView(ftn);
   if (!upstreamView) {
     return;
@@ -3147,6 +3164,7 @@ void MoqxRelay::forwardChanged(MoQForwarder* forwarder, bool forward) {
 }
 
 void MoqxRelay::forwardChangedImpl(const FullTrackName& ftn, bool forward) {
+  XDCHECK(onRelayExec());
   auto upstreamView = registry_.getUpstreamView(ftn);
   if (!upstreamView) {
     return;
@@ -3208,6 +3226,7 @@ void MoqxRelay::serveFill(std::shared_ptr<TrackConsumer> consumer, Fetch fetch) 
 }
 
 void MoqxRelay::newGroupRequestedImpl(const FullTrackName& ftn, uint64_t group) {
+  XDCHECK(onRelayExec());
   auto upstreamView = registry_.getUpstreamView(ftn);
   // Check if handle is still valid (publisher may have terminated)
   if (!upstreamView || !upstreamView->upstreamLive) {
