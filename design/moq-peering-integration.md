@@ -194,6 +194,15 @@ virtual wrapper over `moq::peering::PeerManager` so unit tests can substitute a 
     - The engine also takes a single `info_base_->mutex_` that the network thread contends for.
     - A new subgroup (often every group) would therefore stall whatever thread calls it. On the relay thread that
       stalls all control. On an IO thread it stalls every MoQ session on that evb.
+    - So the backend cannot reuse the EventBase that `start()` passes in. That is IO thread 0
+      (`main.cpp` passes `getAllEventBases()[0]`), which also runs client sessions. The backend starts its own
+      thread in `start()`, returns it from `executors()` so the shutdown drain covers it, and stops it in `join()`.
+    - The wait does not protect anything on this path. `Engine::SendData` records the open under the lock
+      (`ArmOpen`), queues objects that arrive before the stream exists (`QueueDuringOpen`), and the posted lambda
+      opens the stream, drains the queue and applies an early EndSubgroup. `Invoke` already posts without waiting
+      when the caller is inside another connection's packet loop. Ask upstream to post from every thread
+      (`PeerSession::OnConnectionThread` → `QuicConnection::Dispatch`). That removes the wait, though also the only
+      backpressure. With it, the backend could reuse an existing EventBase.
   - The peering evb owns all backend state: the track_hash maps, import parsers, export consumers and the stats
     collector. Every `PeerManager` call happens there. Every `Delegate` callback copies its arguments and `add()`s
     onto it. Do not lock.
