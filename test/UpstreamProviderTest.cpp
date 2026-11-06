@@ -143,6 +143,7 @@ protected:
         serverUrl(),
         /*publishHandler=*/nullptr,
         /*subscribeHandler=*/nullptr,
+        /*relayExec=*/nullptr,
         std::make_shared<moxygen::test::InsecureVerifierDangerousDoNotUseInProduction>()
     );
   }
@@ -255,6 +256,7 @@ TEST_F(UpstreamClusterTest, NegotiatesClusterOnDraft18) {
       serverUrl(),
       /*publishHandler=*/nullptr,
       /*subscribeHandler=*/nullptr,
+      /*relayExec=*/nullptr,
       std::make_shared<moxygen::test::InsecureVerifierDangerousDoNotUseInProduction>(),
       /*onConnect=*/nullptr,
       /*onDisconnect=*/nullptr,
@@ -482,6 +484,7 @@ TEST_F(UpstreamProviderTest, PeerSubNsHandshakeOnConnect) {
       serverUrl(),
       /*publishHandler=*/nullptr,
       /*subscribeHandler=*/nullptr,
+      /*relayExec=*/nullptr,
       std::make_shared<moxygen::test::InsecureVerifierDangerousDoNotUseInProduction>(),
       /*onConnect=*/
       [](std::shared_ptr<MoQSession> session) -> folly::coro::Task<void> {
@@ -731,6 +734,7 @@ TEST_F(UpstreamProviderTest, OnDisconnectHookFires) {
       serverUrl(),
       /*publishHandler=*/nullptr,
       /*subscribeHandler=*/nullptr,
+      /*relayExec=*/nullptr,
       std::make_shared<moxygen::test::InsecureVerifierDangerousDoNotUseInProduction>(),
       /*onConnect=*/nullptr,
       /*onDisconnect=*/[&fired](std::shared_ptr<MoQSession> session) { fired = session != nullptr; }
@@ -805,6 +809,7 @@ TEST_F(UpstreamProviderTest, StopDuringOnConnectKeepsHookAlive) {
       serverUrl(),
       /*publishHandler=*/nullptr,
       /*subscribeHandler=*/nullptr,
+      /*relayExec=*/nullptr,
       std::make_shared<moxygen::test::InsecureVerifierDangerousDoNotUseInProduction>(),
       /*onConnect=*/
       [marker, &entered, &release](std::shared_ptr<MoQSession>) -> folly::coro::Task<void> {
@@ -835,6 +840,7 @@ TEST_F(UpstreamProviderTest, StopDuringOnConnectFailsSubscribe) {
       serverUrl(),
       /*publishHandler=*/nullptr,
       /*subscribeHandler=*/nullptr,
+      /*relayExec=*/nullptr,
       std::make_shared<moxygen::test::InsecureVerifierDangerousDoNotUseInProduction>(),
       /*onConnect=*/
       [&entered, &release](std::shared_ptr<MoQSession>) -> folly::coro::Task<void> {
@@ -930,6 +936,7 @@ protected:
         serverUrl(),
         relay_, // publishHandler: upstream NAMESPACE messages enter relay tree
         relay_, // subscribeHandler: relay's publishes forwarded upstream
+        relay_->getRelayExec(),
         std::make_shared<moxygen::test::InsecureVerifierDangerousDoNotUseInProduction>(),
         std::move(onConnect),
         std::move(onDisconnect)
@@ -966,7 +973,7 @@ protected:
   // is preserved across suspension / resumption by folly's coro framework.
   folly::coro::Task<void> subscribeTask(std::shared_ptr<MoQSession> sess, SubscribeRequest req) {
     folly::RequestContextScopeGuard ctx;
-    attachParticipant(SessionParticipant::makeParticipant(sess));
+    attachParticipant(SessionParticipant::makeParticipant(sess, relay_->getRelayExec()));
     folly::RequestContext::get()->setContextData(
         folly::RequestToken("moq_session"),
         std::make_unique<MoQSession::MoQSessionRequestData>(std::move(sess))
@@ -1065,6 +1072,7 @@ protected:
         proxygen::URL(folly::to<std::string>("moqt://[::1]:", silentAddr.getPort(), "/test")),
         relay_,
         relay_,
+        relay_->getRelayExec(),
         std::make_shared<moxygen::test::InsecureVerifierDangerousDoNotUseInProduction>(),
         nullptr,
         nullptr,
