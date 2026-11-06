@@ -30,6 +30,7 @@
 #   MOQX_MAX_TRACKS    cache max tracks (when cache enabled)
 #   MOQX_MAX_GROUPS    cache max groups per track (when cache enabled)
 #   MOQX_IGNORE_PATH_MTU  skip PMTU discovery, send full-size packets (true|false)
+#   MOQX_QUIC_WT_SESSION  raw-QUIC sessions use QuicWtSession, not QuicWebTransport (true|false)
 #   DOMAIN             TLS cert hostname under /etc/letsencrypt/live/
 
 relay_id: "${MOQX_RELAY_ID}"
@@ -54,6 +55,7 @@ listener_defaults:
     max_server_recv_packets_per_loop: ${MOQX_RECV_PKTS}
     udp_socket_buffer_bytes: ${MOQX_UDP_BUFFER}
     ignore_path_mtu: ${MOQX_IGNORE_PATH_MTU}
+    use_quic_wt_session: ${MOQX_QUIC_WT_SESSION}
     bbr2:
       exit_startup_on_loss: true
       enable_recovery_in_startup: true
