@@ -23,8 +23,9 @@
 #   ENABLE_STATS      "true" → stats stack
 #   STATS_USER, STATS_PASSWORD, GRAFANA_ADMIN_PASSWORD   (required when stats on)
 #   CRASH_WATCH       "true" → install/refresh the host crash watcher (crash/)
-#   CRASH_GH_TOKEN    (optional) token the watcher files GitHub issues with;
-#                     empty → crash reports stay on the host
+#   CRASH_GH_TOKEN    (optional) token with Issues write on openmoq/crash-report,
+#                     where the watcher files issues; empty → crash reports stay
+#                     on the host
 #   CRASH_SLACK_WEBHOOK_URL (optional) Slack webhook for new crash issues
 set -euo pipefail
 cd "$(dirname "$0")"        # docker/
