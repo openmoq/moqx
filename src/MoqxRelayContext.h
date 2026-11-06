@@ -67,6 +67,8 @@ class MoqxRelayContext {
 public:
   struct ServiceEntry {
     config::ServiceConfig config;
+    // Declared before relay, so the relay is destroyed first.
+    std::unique_ptr<PeeringBackend> peering;
     std::shared_ptr<MoqxRelay> relay;
     std::shared_ptr<const auth::AuthTokenVerifier> verifier;
   };
@@ -86,8 +88,8 @@ public:
     return cluster_ ? std::optional<uint64_t>(cluster_->hopID) : std::nullopt;
   }
 
-  // Must be called once, after all MoqxRelayServer instances have been started,
-  // so that worker EVBs are available. workerEvb is used for upstream connections.
+  // Starts each service's peering backend. Call once, before the servers start accepting.
+  // The backends may use workerEvb for anything that needs an EventBase.
   void initUpstreams(folly::EventBase* workerEvb);
 
   // False until initUpstreams() runs, before which there is nothing to walk.
@@ -108,6 +110,9 @@ public:
   // This is an expedient fixup to ensure the threads live long enough without holding
   // KeepAlive tokens throughout.
   void drainExecs(const std::vector<folly::Executor::KeepAlive<folly::EventBase>>& ioEvbs);
+
+  // Stops the peering backends' own threads. Call after drainExecs().
+  void join();
 
   enum class PurgeError { ServiceRequired, UnknownService };
 
@@ -164,10 +169,10 @@ public:
   );
 
 private:
-  void startUpstream(
-      ServiceEntry& entry,
-      const config::UpstreamConfig& cfg,
-      const std::shared_ptr<moxygen::MoQFollyExecutorImpl>& workerExec
+  void addService(
+      const std::string& name,
+      const config::ServiceConfig& svc,
+      std::shared_ptr<MoqxRelay> relay
   );
 
   // When use_relay_thread=true: one dedicated thread per service, each with its

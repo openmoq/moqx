@@ -7,6 +7,7 @@
  */
 
 #include "MoqxRelay.h"
+#include "UpstreamProvider.h"
 #include "relay/ChannelSubscriber.h"
 #include "relay/ClusterPath.h"
 #include "relay/CrossExecFilter.h"
@@ -21,9 +22,7 @@
 #include "relay/TrackStatsFilter.h"
 #include "relay/WeakRelayForwarderCallback.h"
 #include <algorithm>
-#include <folly/CancellationToken.h>
 #include <folly/container/F14Set.h>
-#include <folly/coro/Collect.h>
 #include <moxygen/FillFetch.h>
 #include <moxygen/MoQFilters.h>
 #include <moxygen/MoQTrackProperties.h>
@@ -32,7 +31,6 @@
 
 namespace {
 constexpr uint8_t kDefaultUpstreamPriority = 128;
-constexpr std::chrono::seconds kUpstreamConnectWaitTimeout(5);
 
 // Fire-and-forget an upstream-update coroutine on exec — the
 // co_withExecutor(getKeepAliveToken(exec), ...).start() idiom shared by the
@@ -473,30 +471,6 @@ folly::coro::Task<void> MoqxRelay::onUpstreamConnectImpl(Participant upstream) {
 void MoqxRelay::onUpstreamDisconnect(SessionId upstream) {
   XDCHECK(onRelayExec());
   upstreamHandles_.erase(upstream);
-}
-
-folly::coro::Task<void> MoqxRelay::waitForUpstreams(folly::Function<bool()> routed) {
-  folly::CancellationSource routedSource;
-  std::vector<folly::coro::Task<void>> waits;
-  waits.reserve(upstreams_.size());
-  for (const auto& upstream : upstreams_) {
-    waits.push_back(folly::coro::co_invoke(
-        [&routed, &routedSource, wait = upstream->waitForConnected(kUpstreamConnectWaitTimeout)](
-        ) mutable -> folly::coro::Task<void> {
-          co_await std::move(wait);
-          if (routed()) {
-            routedSource.requestCancellation();
-          }
-        }
-    ));
-  }
-  co_await folly::coro::co_withCancellation(
-      folly::cancellation_token_merge(
-          co_await folly::coro::co_current_cancellation_token,
-          routedSource.getToken()
-      ),
-      folly::coro::collectAllRange(std::move(waits))
-  );
 }
 
 std::shared_ptr<Subscriber::PublishNamespaceHandle> MoqxRelay::doPublishNamespace(
@@ -2508,9 +2482,9 @@ folly::coro::Task<MoqxRelay::StatefulSubscribeResult> MoqxRelay::joinOrPrepareUp
 ) {
   const auto& ftn = subReq.fullTrackName;
 
-  if (!registry_.exists(ftn) && !upstreams_.empty() &&
+  if (!registry_.exists(ftn) && peering_ && peering_->peersPending() &&
       !findUpstreamPublisher(ftn.trackNamespace, exclusion)) {
-    co_await waitForUpstreams([&] {
+    co_await peering_->waitForPeers([&] {
       return findUpstreamPublisher(ftn.trackNamespace, exclusion) != nullptr;
     });
   }
@@ -2790,9 +2764,9 @@ MoqxRelay::subscribeImpl(SubscribeRequest subReq, std::shared_ptr<TrackConsumer>
   // connection before branching. A concurrent coroutine may emplace the entry
   // while we are suspended, so we re-check inside getOrCreateFromSubscribe.
   const auto exclusion = exclusionFor(requester);
-  if (!registry_.exists(ftn) && !upstreams_.empty() &&
+  if (!registry_.exists(ftn) && peering_ && peering_->peersPending() &&
       !findUpstreamPublisher(ftn.trackNamespace, exclusion)) {
-    co_await waitForUpstreams([&] {
+    co_await peering_->waitForPeers([&] {
       return findUpstreamPublisher(ftn.trackNamespace, exclusion) != nullptr;
     });
   }
@@ -3011,8 +2985,8 @@ MoqxRelay::fetchImpl(Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
     upstreamPublisher = fetchView->publisher;
   } else {
     upstreamPublisher = findUpstreamPublisher(fetch.fullTrackName.trackNamespace, exclusion);
-    if (!upstreamPublisher && !upstreams_.empty()) {
-      co_await waitForUpstreams([&] {
+    if (!upstreamPublisher && peering_ && peering_->peersPending()) {
+      co_await peering_->waitForPeers([&] {
         upstreamPublisher = findUpstreamPublisher(fetch.fullTrackName.trackNamespace, exclusion);
         return upstreamPublisher != nullptr;
       });
@@ -3100,8 +3074,8 @@ folly::coro::Task<Publisher::TrackStatusResult> MoqxRelay::trackStatusImpl(Track
     } else {
       const auto& ns = trackStatus.fullTrackName.trackNamespace;
       upstreamPublisher = findUpstreamPublisher(ns, exclusion);
-      if (!upstreamPublisher && !upstreams_.empty()) {
-        co_await waitForUpstreams([&] {
+      if (!upstreamPublisher && peering_ && peering_->peersPending()) {
+        co_await peering_->waitForPeers([&] {
           upstreamPublisher = findUpstreamPublisher(ns, exclusion);
           return upstreamPublisher != nullptr;
         });
