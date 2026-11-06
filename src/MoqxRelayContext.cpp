@@ -234,6 +234,19 @@ void MoqxRelayContext::drainExecs(
     }
     folly::collectAll(std::move(pending)).get();
   }
+
+  // Once the IO threads stop, releasing a leftover handle would post to a freed executor.
+  if constexpr (folly::kIsDebug) {
+    for (auto& [name, entry] : services_) {
+      auto* exec = entry.relay->getRelayExec();
+      if (!exec && execs.empty()) {
+        continue;
+      }
+      folly::via(exec ? exec : execs.front(), [relay = entry.relay, name = name] {
+        XCHECK(!relay->holdsSessionHandles()) << "relay " << name << " still holds session handles";
+      }).get();
+    }
+  }
 }
 
 folly::coro::Task<folly::Expected<size_t, MoqxRelayContext::PurgeError>>

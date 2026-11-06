@@ -15,6 +15,7 @@
 #include "UpstreamProvider.h"
 #include "config/Config.h"
 #include "relay/ChannelSubscriber.h"
+#include "relay/ExecBound.h"
 #include "relay/ForwarderRef.h"
 #include "relay/LocalForwarderRegistry.h"
 #include "relay/Participant.h"
@@ -213,6 +214,11 @@ public:
       // relay is destroyed naturally (services_ cleared) is safe because by then
       // stop() has already cleared the back-refs so relay's refcount == 1.
     }
+  }
+
+  // True while relay state still holds a handle that a session owns. Run on the relay executor.
+  bool holdsSessionHandles() const {
+    return !upstreamHandles_.empty() || !peerSubNsHandles_.empty() || registry_.holdsHandles();
   }
 
   // Called by UpstreamProvider's onConnect hook after a new upstream session is
@@ -477,19 +483,17 @@ private:
   uint64_t relayHopID_;
   std::vector<std::shared_ptr<UpstreamProvider>> upstreams_;
 
-  // TODO(#676): session-owned handles keep their sessions alive, and ~MoqxRelay drops them after
-  // those sessions' executors are gone. Release them on their executors during stop(). This
-  // applies to UpstreamHandles, PeerInfo and the registry's subscription handles.
+  // Session-owned handles keep their session alive, so they are released on its executor.
   struct UpstreamHandles {
-    std::shared_ptr<moxygen::Publisher::SubscribeNamespaceHandle> subNs;
-    std::shared_ptr<moxygen::Publisher::SubscribeTracksHandle> tracks; // draft 18+
+    ExecBound<std::shared_ptr<moxygen::Publisher::SubscribeNamespaceHandle>> subNs;
+    ExecBound<std::shared_ptr<moxygen::Publisher::SubscribeTracksHandle>> tracks; // draft 18+
   };
   // Keeps each connected upstream session's peering subscriptions alive.
   folly::F14FastMap<moxygen::SessionId, UpstreamHandles, moxygen::SessionId::hash> upstreamHandles_;
 
   struct PeerInfo {
-    std::shared_ptr<moxygen::Publisher::SubscribeNamespaceHandle> handle;
-    std::shared_ptr<moxygen::Publisher::SubscribeTracksHandle> tracksHandle; // draft 18+
+    ExecBound<std::shared_ptr<moxygen::Publisher::SubscribeNamespaceHandle>> handle;
+    ExecBound<std::shared_ptr<moxygen::Publisher::SubscribeTracksHandle>> tracksHandle; // draft 18+
     std::string relayID; // from peer auth token; empty if not provided
     std::string address;
     std::string authority;
@@ -563,7 +567,7 @@ private:
   );
 
   struct UpstreamOk {
-    std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle;
+    ExecBound<std::shared_ptr<moxygen::Publisher::SubscriptionHandle>> handle;
     moxygen::RequestID requestID;
     moxygen::Extensions extensions;
     std::optional<moxygen::AbsoluteLocation> largest;
@@ -572,6 +576,7 @@ private:
   folly::coro::Task<folly::Expected<UpstreamOk, moxygen::SubscribeError>>
   subscribeUpstreamAndApplyOk(
       moxygen::Publisher& upstream,
+      folly::Executor* upstreamExec,
       moxygen::SubscribeRequest upstreamSubReq,
       std::shared_ptr<moxygen::TrackConsumer> upstreamConsumer,
       std::shared_ptr<moxygen::MoQForwarder> publisherFwd,

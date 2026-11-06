@@ -210,6 +210,11 @@ moqx_add_gtest(moqx_auth_filters_test
     moxygen::moqtest_utils
 )
 
+moqx_add_gtest(moqx_exec_bound_test
+  SRCS relay/ExecBoundTest.cpp
+  LIBS moqx_core GTest::gtest_main
+)
+
 moqx_add_gtest(moqx_session_participant_test
   SRCS relay/SessionParticipantTest.cpp
   LIBS
@@ -418,7 +423,7 @@ target_compile_definitions(moqx_upstream_provider_test PRIVATE
 
 moqx_add_gtest(moqx_subscription_registry_test
   SRCS SubscriptionRegistryTest.cpp
-  LIBS moqx_core moqx_test_main GTest::gmock
+  LIBS moqx_core moqx_test_main GTest::gmock Folly::folly_executors_manual_executor
 )
 
 moqx_add_gtest(moqx_initial_track_state_test

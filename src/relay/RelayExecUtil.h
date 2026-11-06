@@ -52,12 +52,4 @@ template <typename Fn> void runOnExec(folly::Executor* exec, Fn&& fn) {
   }
 }
 
-// When relayExec is set, dispatches fn to sessionExec (fire-and-forget).
-// Otherwise runs fn inline (caller is already on the correct thread).
-// Use this when relay state changes need to notify a specific session's executor.
-template <typename Fn>
-void runOnSessionExec(folly::Executor* relayExec, folly::Executor* sessionExec, Fn&& fn) {
-  runOnExec(relayExec ? sessionExec : nullptr, std::forward<Fn>(fn));
-}
-
 } // namespace openmoq::moqx
