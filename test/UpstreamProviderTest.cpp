@@ -725,13 +725,21 @@ TEST_F(UpstreamProviderTest, StopIsIdempotent) {
 TEST_F(UpstreamProviderTest, OnDisconnectHookFires) {
   // Replace the default (never-started) provider with one that has the hook.
   bool fired = false;
+  int connects = 0;
+  folly::coro::Baton reconnected;
   provider_ = std::make_shared<UpstreamProvider>(
       clientExec(),
       serverUrl(),
       /*publishHandler=*/nullptr,
       /*subscribeHandler=*/nullptr,
       std::make_shared<moxygen::test::InsecureVerifierDangerousDoNotUseInProduction>(),
-      /*onConnect=*/nullptr,
+      /*onConnect=*/
+      [&connects, &reconnected](std::shared_ptr<MoQSession>) -> folly::coro::Task<void> {
+        if (++connects == 2) {
+          reconnected.post();
+        }
+        co_return;
+      },
       /*onDisconnect=*/[&fired](std::shared_ptr<MoQSession> session) { fired = session != nullptr; }
   );
 
@@ -743,7 +751,8 @@ TEST_F(UpstreamProviderTest, OnDisconnectHookFires) {
           co_return;
         }
         provider_->currentSession()->close(SessionCloseErrorCode::NO_ERROR);
-        co_await folly::coro::sleep(std::chrono::milliseconds(50));
+        // Waiting for the reconnect keeps TearDown from stopping it mid-setup.
+        co_await reconnected;
         EXPECT_TRUE(fired);
       }(),
       &clientEvb()

@@ -352,6 +352,8 @@ void UpstreamProvider::onMoQSessionClosed(
 // --- Private methods ---
 
 folly::coro::Task<std::shared_ptr<MoQSession>> UpstreamProvider::getOrConnectSession() {
+  // coSubscribe() and the other slow-path forwarders do not keep the provider alive.
+  auto self = shared_from_this();
   if (stopped_) {
     XLOG(DBG1) << "UpstreamProvider::getOrConnectSession - stopped";
     co_yield folly::coro::co_error(std::runtime_error("UpstreamProvider stopped"));
@@ -404,12 +406,13 @@ folly::coro::Task<void> UpstreamProvider::doConnect() {
     session->setMoqSettings(settings);
     return session;
   };
-  client_ = std::make_unique<MoQClient>(exec_, url_, std::move(sessionFactory), verifier_);
+  // This coroutine owns the client until setup succeeds, so stop() cannot destroy it mid-setup.
+  client_.reset();
+  auto client = std::make_unique<MoQClient>(exec_, url_, std::move(sessionFactory), verifier_);
   // The extension stays inactive unless the peer also declares a Hop ID.
   if (hopID_) {
-    client_->addSetupParameter(SetupParameter(folly::to_underlying(SetupKey::HOP_ID), *hopID_));
-    client_->addSetupParameter(
-        SetupParameter(folly::to_underlying(SetupKey::RELAY_COST), relayCost_)
+    client->addSetupParameter(SetupParameter(folly::to_underlying(SetupKey::HOP_ID), *hopID_));
+    client->addSetupParameter(SetupParameter(folly::to_underlying(SetupKey::RELAY_COST), relayCost_)
     );
   }
 
@@ -421,7 +424,7 @@ folly::coro::Task<void> UpstreamProvider::doConnect() {
   ts.datagramConfig.sendDropOldDataFirst = true;
 
   // Relay links use draft 18 only.
-  co_await client_->setupMoQSession(
+  co_await client->setupMoQSession(
       connectTimeout_,
       idleTimeout_,
       publishHandler_,
@@ -429,7 +432,11 @@ folly::coro::Task<void> UpstreamProvider::doConnect() {
       ts,
       getMoqtProtocols("18", /*useStandard=*/true)
   );
+  if (stopped_) {
+    co_yield folly::coro::co_error(std::runtime_error("UpstreamProvider stopped"));
+  }
 
+  client_ = std::move(client);
   session_ = client_->moqSession_;
   CHECK(session_) << "setupMoQSession succeeded but session is null";
 
