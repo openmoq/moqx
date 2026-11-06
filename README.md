@@ -68,7 +68,7 @@ Pins live in [/cmake/dependencies.cmake](/cmake/dependencies.cmake).
 
 ## Docs
 
-- Build [/BUILD.md](/BUILD.md) · Run [/RUNNING.md](/RUNNING.md) · Metrics [/docs/metrics.md](/docs/metrics.md)
+- Build [/BUILD.md](/BUILD.md) · Run [/RUNNING.md](/RUNNING.md) · Tuning [/docs/tuning.md](/docs/tuning.md) · Metrics [/docs/metrics.md](/docs/metrics.md)
 - Design: [/design/](/design)
 
 ## License

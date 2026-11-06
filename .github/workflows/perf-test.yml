@@ -456,6 +456,7 @@ jobs:
             ${{ steps.collect.outputs.run-files }}
             run-*.relay.log
             run-*.client.log
+            run-*.host.txt
             perf-out/
           retention-days: 30
 

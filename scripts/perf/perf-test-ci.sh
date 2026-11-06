@@ -211,6 +211,7 @@ echo "════════════════════════�
 REMOTE_DIR="/tmp/moqx-perf-ci"
 RELAY_LOG_OUTPUT="${OUTPUT%.json}.relay.log"
 CLIENT_LOG_OUTPUT="${OUTPUT%.json}.client.log"
+HOST_REPORT_OUTPUT="${OUTPUT%.json}.host.txt"
 
 timeout 5 ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "mkdir -p $REMOTE_DIR" || true
 timeout 5 ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "pkill -f '^${REMOTE_DIR}/moqx' 2>/dev/null || true; pkill -f '^${REMOTE_DIR}/moqtest_server' 2>/dev/null || true; pkill -f '^bash ${REMOTE_DIR}/perf-metrics.sh' 2>/dev/null || true" || true
@@ -227,7 +228,21 @@ rsync -az -e "ssh ${SSH_OPTS[*]}" "$RELAY_RUN_SCRIPT" "${RELAY_HOST}:${REMOTE_DI
 rsync -az -e "ssh ${SSH_OPTS[*]}" "$RELAY_CONFIG_TEMPLATE" "${RELAY_HOST}:${REMOTE_DIR}/config.bench.yaml"
 rsync -az -e "ssh ${SSH_OPTS[*]}" "$LOCAL_LIBDIR/" "${RELAY_HOST}:${REMOTE_DIR}/lib/"
 rsync -az -e "ssh ${SSH_OPTS[*]}" "$LOCAL_LIBDIR/" "${CLIENT_HOST}:${REMOTE_DIR}/lib/"
+rsync -az -e "ssh ${SSH_OPTS[*]}" "$REPO/scripts/host-check.sh" "$REPO/scripts/host" "${RELAY_HOST}:${REMOTE_DIR}/"
+rsync -az -e "ssh ${SSH_OPTS[*]}" "$REPO/scripts/host-check.sh" "$REPO/scripts/host" "${CLIENT_HOST}:${REMOTE_DIR}/"
 echo "Deploy complete"
+
+# ── Host report (both VMs; the relay process section is added after the run) ──
+{
+  echo "### relay VM"
+  ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "bash ${REMOTE_DIR}/host-check.sh"
+  echo
+  echo "### client VM"
+  ssh "${SSH_OPTS[@]}" "$CLIENT_HOST" "bash ${REMOTE_DIR}/host-check.sh"
+} > "$HOST_REPORT_OUTPUT" 2>&1 || true
+echo "::group::Host report ($HOST_REPORT_OUTPUT)"
+cat "$HOST_REPORT_OUTPUT"
+echo "::endgroup::"
 
 # moqx-run.sh renders config.bench.yaml with envsubst; make sure it's installed.
 if ! ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "command -v envsubst >/dev/null 2>&1"; then
@@ -274,7 +289,7 @@ trap cleanup EXIT
 # is what makes --io-threads actually take effect and stops CI trend drift.
 echo "Starting relay on $RELAY_HOST (quic_stack=$QUIC_STACK, bind=$RELAY_BIND_ADDR, io_threads=$IO_THREADS)..."
 ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "
-  ulimit -n 65536 2>/dev/null || true
+  ulimit -n 65536 2>/dev/null || echo \"WARNING: relay open-file limit stays at \$(ulimit -n) (hard limit \$(ulimit -Hn))\" >&2
   nohup env LD_LIBRARY_PATH=${REMOTE_DIR}/lib \
     MOQX_RELAY_ID=perf-ci-relay \
     MOQX_RESOLVED_CONFIG=${REMOTE_DIR}/relay.yaml \
@@ -363,7 +378,7 @@ if [[ ${#CLIENT_EXTRA_ARGS[@]} -gt 0 ]]; then
 fi
 
 CLIENT_OUTPUT=$(ssh "${SSH_OPTS[@]}" "$CLIENT_HOST" "
-  ulimit -n 65536 2>/dev/null || true
+  ulimit -n 65536 2>/dev/null || echo \"WARNING: client open-file limit stays at \$(ulimit -n) (hard limit \$(ulimit -Hn))\" >&2
   env LD_LIBRARY_PATH=${REMOTE_DIR}/lib ${REMOTE_DIR}/moqperf_test_client \
     --relay_url='${CLIENT_RELAY_URL}' \
     ${QUIC_FLAG} \
@@ -385,6 +400,16 @@ MEASURE_END_EPOCH=$(ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "date +%s")
 POST_RSS=$(ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "
   cat /proc/${RELAY_PID}/status 2>/dev/null | grep VmRSS | awk '{print \$2}' || echo 0
 ")
+
+# Relay process limits, allocator and per-socket drops, taken while it still runs.
+{
+  echo
+  echo "### relay process (after the run)"
+  ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "bash ${REMOTE_DIR}/host-check.sh --pid ${RELAY_PID}" | sed -n '/^== process/,$p'
+} >> "$HOST_REPORT_OUTPUT" 2>&1 || true
+echo "::group::Relay process report"
+sed -n '/^### relay process/,$p' "$HOST_REPORT_OUTPUT"
+echo "::endgroup::"
 
 # ── Collect + window the metrics log ──────────────────────────────────────────
 # The poller samples the whole run — idle pre-connect, the subscriber ramp, and

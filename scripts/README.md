@@ -83,6 +83,9 @@ Full option list: `./scripts/moqx-run.sh --help`.
 
 ## Other scripts
 
+- [`host-check.sh`](/scripts/host-check.sh) — read-only report of the host settings
+  that affect the relay (UDP sysctls vs [`host/99-moqx-quic.conf`](/scripts/host/99-moqx-quic.conf),
+  limits, jemalloc, NIC); `--pid` adds a running relay. See [docs/tuning.md](/docs/tuning.md).
 - [`perf/perf-test.sh`](/scripts/perf/perf-test.sh) — relay throughput / subscriber-ramp perf test
   (drives the relay via `moqx-run.sh`). See `./scripts/perf/perf-test.sh` header for
   options; short flags `-s`/`-d`/`-t`/`-l`/`-j` mirror the common ones.

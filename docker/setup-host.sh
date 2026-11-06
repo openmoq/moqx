@@ -19,20 +19,13 @@ echo "==> moqx host provisioning"
 # The relay sizes its UDP socket buffer to net.core.wmem_max (see entrypoint.sh),
 # and the stock 208 KB default throttles a high-fanout QUIC relay. net.core.* are
 # host-global (not namespaced), so they must be set on the host; the container
-# reads the host value. Persisted so a reboot keeps them.
-tee /etc/sysctl.d/99-moqx-quic.conf >/dev/null <<'SYSCTL'
-# moqx QUIC/UDP relay tuning — managed by docker/setup-host.sh
-net.core.rmem_max = 16777216
-net.core.wmem_max = 16777216
-net.core.rmem_default = 1048576
-net.core.wmem_default = 1048576
-net.core.netdev_max_backlog = 10000
-net.core.optmem_max = 65536
-SYSCTL
+# reads the host value. Persisted so a reboot keeps them. Values: docs/tuning.md.
+QUIC_CONF="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/scripts/host/99-moqx-quic.conf"
+install -m 0644 "$QUIC_CONF" /etc/sysctl.d/99-moqx-quic.conf
 # Apply only our drop-in (not --system, which reloads every drop-in and would
 # surface unrelated errors from other files on the host).
 sysctl -q -p /etc/sysctl.d/99-moqx-quic.conf
-echo "    kernel tuning applied (rmem_max/wmem_max=16MiB, backlog=10000, optmem=65536)"
+echo "    kernel tuning applied ($QUIC_CONF)"
 
 # ── relay core dumps ──────────────────────────────────────────────────────────
 # A file core_pattern resolves in the crashing process's mount namespace: relay
