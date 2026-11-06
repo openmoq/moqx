@@ -344,7 +344,9 @@ TEST_F(PublisherCrossExecFilterTest, SubscribeNamespaceForwardsToInner) {
 }
 
 TEST_F(PublisherCrossExecFilterTest, SubscribeNamespaceReturnsSuccess) {
-  auto handle = std::make_shared<NiceMock<MockSubscribeNamespaceHandle>>();
+  auto handle = std::make_shared<NiceMock<MockSubscribeNamespaceHandle>>(
+      SubscribeNamespaceOk{.requestID = RequestID(5)}
+  );
   EXPECT_CALL(*inner_, subscribeNamespace(_, _))
       .WillOnce(
           [handle](SubscribeNamespace, std::shared_ptr<Publisher::NamespacePublishHandle>)
@@ -359,7 +361,45 @@ TEST_F(PublisherCrossExecFilterTest, SubscribeNamespaceReturnsSuccess) {
   subAnn.requestID = RequestID(5);
   auto result = folly::coro::blockingWait(filter_->subscribeNamespace(std::move(subAnn), nullptr));
   ASSERT_TRUE(result.hasValue());
-  EXPECT_NE(result.value(), nullptr);
+  ASSERT_NE(result.value(), nullptr);
+  EXPECT_EQ(result.value()->subscribeNamespaceOk().requestID, RequestID(5));
+}
+
+TEST_F(PublisherCrossExecFilterTest, UnsubscribeNamespaceRunsOnTheTargetExecutor) {
+  auto handle = std::make_shared<NiceMock<MockSubscribeNamespaceHandle>>(
+      SubscribeNamespaceOk{.requestID = RequestID(5)}
+  );
+  EXPECT_CALL(*inner_, subscribeNamespace(_, _))
+      .WillOnce(
+          [handle](SubscribeNamespace, std::shared_ptr<Publisher::NamespacePublishHandle>)
+              -> folly::coro::Task<Publisher::SubscribeNamespaceResult> {
+            co_return folly::makeExpected<SubscribeNamespaceError>(
+                std::shared_ptr<Publisher::SubscribeNamespaceHandle>(handle)
+            );
+          }
+      );
+  std::thread::id targetThread;
+  folly::Baton<> recorded;
+  targetExec_->add([&] {
+    targetThread = std::this_thread::get_id();
+    recorded.post();
+  });
+  recorded.wait();
+  std::optional<std::thread::id> unsubscribedOn;
+  folly::Baton<> unsubscribed;
+  EXPECT_CALL(*handle, unsubscribeNamespace()).WillOnce([&] {
+    unsubscribedOn = std::this_thread::get_id();
+    unsubscribed.post();
+  });
+
+  auto result =
+      folly::coro::blockingWait(filter_->subscribeNamespace(SubscribeNamespace{}, nullptr));
+  ASSERT_TRUE(result.hasValue());
+  ASSERT_NE(result.value(), handle) << "the filter wraps the inner handle";
+  EXPECT_EQ(result.value()->subscribeNamespaceOk().requestID, RequestID(5));
+  result.value()->unsubscribeNamespace();
+  ASSERT_TRUE(unsubscribed.try_wait_for(std::chrono::seconds(5)));
+  EXPECT_EQ(unsubscribedOn, targetThread);
 }
 
 // ---- goaway ----

@@ -54,20 +54,33 @@ public:
       fn(std::as_const(value));
       return;
     }
-    exec_->add([value = value_, fn = std::move(fn)]() mutable { fn(std::as_const(value)); });
+    add(std::move(fn));
   }
 
-  // Starts fn(value), a Task<void>, on exec. The task owns its copy.
-  template <typename Fn> void launch(Fn fn) const {
-    if (!value_) {
-      return;
+  // Queues fn(value) on exec, even from exec, so fn does not run inside the caller.
+  template <typename Fn> void add(Fn fn) const {
+    if (value_) {
+      exec_->add([value = value_, fn = std::move(fn)]() mutable { fn(std::as_const(value)); });
     }
-    folly::coro::co_withExecutor(
+  }
+
+  // Returns a task that runs fn(value), which returns a Task, on exec. The task's frame can be
+  // destroyed on the awaiting thread, so its copy is an ExecBound too.
+  template <typename Fn> auto run(Fn fn) const {
+    XCHECK(value_);
+    return folly::coro::co_withExecutor(
         folly::getKeepAliveToken(exec_),
-        folly::coro::co_invoke([value = value_, fn = std::move(fn)]() mutable {
-          return fn(std::as_const(value));
+        folly::coro::co_invoke([bound = ExecBound(value_, exec_), fn = std::move(fn)]() mutable {
+          return fn(std::as_const(bound.value_));
         })
-    ).start();
+    );
+  }
+
+  // Starts run(fn) without waiting for it.
+  template <typename Fn> void launch(Fn fn) const {
+    if (value_) {
+      run(std::move(fn)).start();
+    }
   }
 
   explicit operator bool() const { return static_cast<bool>(value_); }
