@@ -85,6 +85,7 @@ void MoQRelayTest::resetRelay(
   bool useLocalForwarders = relayEvb_ && relayMode() == RelayMode::LocalForwarderMT;
   if (relay_) {
     relay_->setPeering(nullptr);
+    relay_->setReciprocalPeerHandler(nullptr);
   }
   relay_ = std::make_shared<MoqxRelay>(
       std::move(cache),
@@ -102,6 +103,7 @@ void MoQRelayTest::resetRelay(
       /*hopID=*/std::nullopt
   );
   relay_->setPeering(peering_.get());
+  relay_->setReciprocalPeerHandler(peering_->reciprocalMoqtPeerHandler());
   if (relayEvb_) {
     if (relayMode() == RelayMode::LocalForwarderMT) {
       publisherInterface_ = relay_->createPublisherFilter();
@@ -150,6 +152,7 @@ void MoQRelayTest::TearDown() {
   // Something may still hold the relay, so it must not point at the freed backend.
   if (relay_) {
     relay_->setPeering(nullptr);
+    relay_->setReciprocalPeerHandler(nullptr);
   }
   relay_.reset();
   peering_.reset();

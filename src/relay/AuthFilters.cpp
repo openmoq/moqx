@@ -6,7 +6,7 @@
 
 #include "relay/AuthFilters.h"
 
-#include "UpstreamProvider.h" // getPeerRelayID
+#include "peering/PeeringBackend.h"
 
 using namespace moxygen;
 
@@ -54,7 +54,7 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> AuthPublisherFilter::subs
 ) {
   // Peer relays authenticate via their relay token, validated downstream;
   // only non-peer subscribers go through grant-based auth here.
-  bool isPeer = peeringEnabled_ && getPeerRelayID(subNs).has_value();
+  bool isPeer = reciprocal_ && reciprocal_->authorizePeer(subNs.params).has_value();
   if (!isPeer) {
     auto ok = auth::authorize(
         *verifier_,
@@ -82,7 +82,7 @@ folly::coro::Task<Publisher::SubscribeTracksResult> AuthPublisherFilter::subscri
 ) {
   // SUBSCRIBE_TRACKS is namespace-level, like SUBSCRIBE_NAMESPACE; gate on the
   // prefix. Peer relays skip grant checks, as for SUBSCRIBE_NAMESPACE.
-  if (peeringEnabled_ && getPeerRelayID(subTracks.params).has_value()) {
+  if (reciprocal_ && reciprocal_->authorizePeer(subTracks.params).has_value()) {
     return downstream_->subscribeTracks(std::move(subTracks), std::move(publishBlockedHandle));
   }
   auto ok = auth::authorize(
