@@ -519,6 +519,7 @@ TEST_P(MoQRelayTest, PublishReconnectDuringSubscribeScopeGuardCrash) {
                   sessionRequestToken(),
                   std::make_unique<MoQSession::MoQSessionRequestData>(publisherSession2)
               );
+              attachParticipant(SessionParticipant::makeParticipant(publisherSession2));
               PublishRequest pub;
               pub.fullTrackName = kTestTrackName;
               auto res =
@@ -600,6 +601,7 @@ TEST_P(MoQRelayTest, PublishReconnectDuringSubscribeSuccessPathCrash) {
                   sessionRequestToken(),
                   std::make_unique<MoQSession::MoQSessionRequestData>(publisherSession2)
               );
+              attachParticipant(SessionParticipant::makeParticipant(publisherSession2));
               PublishRequest pub;
               pub.fullTrackName = kTestTrackName;
               auto res =
@@ -735,6 +737,7 @@ TEST_P(MoQRelayTest, ReplacedSubscribeOkLeavesCacheLargest) {
                   sessionRequestToken(),
                   std::make_unique<MoQSession::MoQSessionRequestData>(publisherSession2)
               );
+              attachParticipant(SessionParticipant::makeParticipant(publisherSession2));
               PublishRequest pub;
               pub.fullTrackName = kTestTrackName;
               auto res =
