@@ -217,14 +217,14 @@ public:
 
   // Called by UpstreamProvider's onConnect hook after a new upstream session is
   // established. Issues the peer subNs handshake and saves the handle.
-  folly::coro::Task<void> onUpstreamConnect(std::shared_ptr<moxygen::MoQSession> session);
+  folly::coro::Task<void> onUpstreamConnect(Participant upstream);
 
   // Called by UpstreamProvider's onDisconnect hook when an upstream session
   // closes. Releases that session's peering handles.
-  void onUpstreamDisconnect(const std::shared_ptr<moxygen::MoQSession>& session);
+  void onUpstreamDisconnect(moxygen::SessionId upstream);
 
   // Releases per-session relay state; the servers call this as a session tears down.
-  void onSessionEnd(std::shared_ptr<moxygen::MoQSession> /*session*/) {}
+  void onSessionEnd(moxygen::SessionId /*session*/) {}
 
   folly::coro::Task<SubscribeResult> subscribe(
       moxygen::SubscribeRequest subReq,
@@ -260,20 +260,20 @@ public:
   folly::coro::Task<moxygen::Publisher::TrackStatusResult> trackStatus(moxygen::TrackStatus req
   ) override;
 
-  std::shared_ptr<moxygen::MoQSession> findPublishNamespaceSession(const moxygen::TrackNamespace& ns
-  ) {
-    return namespaceTree_.findPublisherSession(ns);
+  // Test accessors: the session of the best route, and the sessions of all routes, at the deepest
+  // node covering ns.
+  std::optional<moxygen::SessionId> findNamespacePublisher(const moxygen::TrackNamespace& ns) {
+    auto publisher = namespaceTree_.findPublisher(ns);
+    return publisher ? std::optional(publisher->info->sessionId) : std::nullopt;
   }
-
-  std::vector<std::shared_ptr<moxygen::MoQSession>>
-  findPublishNamespaceSessions(const moxygen::TrackNamespace& ns);
+  std::vector<moxygen::SessionId> findNamespacePublishers(const moxygen::TrackNamespace& ns);
 
   // Sync cores of publishNamespace/publishNamespaceDone. Called by the
-  // Subscriber coroutine interface and directly by MoqxRelayNamespaceHandle
-  // (which provides the session explicitly — no getRequestSession() needed).
+  // Subscriber coroutine interface and by MoqxRelayNamespaceHandle, which
+  // passes the publisher explicitly.
   std::shared_ptr<moxygen::Subscriber::PublishNamespaceHandle> doPublishNamespace(
       moxygen::PublishNamespace pubNs,
-      std::shared_ptr<moxygen::MoQSession> session,
+      Participant publisher,
       std::shared_ptr<moxygen::Subscriber::PublishNamespaceCallback> callback,
       std::string peerID = {}
   );
@@ -307,8 +307,8 @@ public:
 
   // Test accessor: check if a publish exists and return node/publish state
   struct PublishState {
-    bool nodeExists{false};                                // true if tree node exists
-    std::shared_ptr<moxygen::MoQSession> session{nullptr}; // publish session if exists
+    bool nodeExists{false};                      // true if tree node exists
+    std::optional<moxygen::SessionId> publisher; // publish session if exists
   };
   PublishState findPublishState(const moxygen::FullTrackName& ftn);
 
@@ -324,16 +324,10 @@ private:
   class LocalSubscribeFilter;
   class LocalPublishFilter;
 
-  void unsubscribeNamespace(
-      const moxygen::TrackNamespace& prefix,
-      std::shared_ptr<moxygen::MoQSession> session
-  );
+  void unsubscribeNamespace(const moxygen::TrackNamespace& prefix, moxygen::SessionId session);
 
   // Draft 18+
-  void unsubscribeTracks(
-      const moxygen::TrackNamespace& prefix,
-      std::shared_ptr<moxygen::MoQSession> session
-  );
+  void unsubscribeTracks(const moxygen::TrackNamespace& prefix, moxygen::SessionId session);
 
   void onPublishDone(const moxygen::FullTrackName& ftn);
 
@@ -369,11 +363,11 @@ private:
     folly::coro::Task<folly::Expected<moxygen::PublishOk, moxygen::PublishError>> reply;
   };
   std::optional<PreparedPublish> startPublish(
-      std::shared_ptr<moxygen::MoQSession> session,
+      moxygen::Subscriber& publishTo,
+      const Participant& subscriber,
       std::shared_ptr<moxygen::MoQForwarder> forwarder,
       bool forward,
-      bool pinned,
-      folly::Executor* subscriberExec
+      bool pinned
   );
 
   // This thread's registry, created on first use.
@@ -395,7 +389,7 @@ private:
   // In LF mode the ref supplies only the track name and owning exec; the forwarder
   // itself is resolved by name there, so it doesn't attach to a displaced one.
   bool addSubscriberAndPublish(
-      std::shared_ptr<moxygen::MoQSession> subscriberSession,
+      const Participant& subscriber,
       const ForwarderRef& publisherRef,
       bool forward,
       bool pinned
@@ -411,7 +405,8 @@ private:
   folly::coro::Task<std::optional<ResolvedPublisher>> resolvePublisherOnItsExec(TrackRef track);
 
   folly::coro::Task<void> addSubscriberAndPublishViaLocalForwarder(
-      std::shared_ptr<moxygen::MoQSession> subscriberSession,
+      Participant::OnExecutor onExecutor,
+      Participant subscriber,
       TrackRef track,
       bool forward,
       bool pinned
@@ -420,7 +415,6 @@ private:
   moxygen::Subscriber::PublishResult publishFromPublisherExec(
       moxygen::PublishRequest pub,
       std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle,
-      std::shared_ptr<moxygen::MoQSession> session,
       const Participant& publisher
   );
 
@@ -446,7 +440,6 @@ private:
   registerPublishOnRelayExec(
       moxygen::PublishRequest pub,
       std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle,
-      std::shared_ptr<moxygen::MoQSession> session,
       Participant publisher,
       ForwarderRef publisherRef,
       std::shared_ptr<CrossExecFilter> relayChainFilter
@@ -471,15 +464,11 @@ private:
   );
 
   // Called by PropertyRanking when a track enters a session's top-N selection.
-  void onTrackSelected(
-      const moxygen::FullTrackName& ftn,
-      std::shared_ptr<moxygen::MoQSession> session,
-      bool forward
-  );
+  void
+  onTrackSelected(const moxygen::FullTrackName& ftn, const Participant& subscriber, bool forward);
 
   // Called by PropertyRanking when a track is evicted from a session's deselected queue.
-  void
-  onTrackEvicted(const moxygen::FullTrackName& ftn, std::shared_ptr<moxygen::MoQSession> session);
+  void onTrackEvicted(const moxygen::FullTrackName& ftn, const Participant& subscriber);
 
   moxygen::TrackNamespace allowedNamespacePrefix_;
   // Operational identity used by relay authentication and upstream routing.
@@ -488,6 +477,9 @@ private:
   uint64_t relayHopID_;
   std::vector<std::shared_ptr<UpstreamProvider>> upstreams_;
 
+  // TODO(#676): session-owned handles keep their sessions alive, and ~MoqxRelay drops them after
+  // those sessions' executors are gone. Release them on their executors during stop(). This
+  // applies to UpstreamHandles, PeerInfo and the registry's subscription handles.
   struct UpstreamHandles {
     std::shared_ptr<moxygen::Publisher::SubscribeNamespaceHandle> subNs;
     std::shared_ptr<moxygen::Publisher::SubscribeTracksHandle> tracks; // draft 18+
@@ -507,8 +499,7 @@ private:
   // cancelled.
   folly::F14FastMap<moxygen::SessionId, PeerInfo, moxygen::SessionId::hash> peerSubNsHandles_;
   // Also true for a reconnecting peer's earlier session, which may still hold its pushed tracks.
-  bool isPeerSession(const std::shared_ptr<moxygen::MoQSession>& session, const std::string& peerID)
-      const;
+  bool isPeerSession(moxygen::SessionId session, const std::string& peerID) const;
 
   SubscriptionRegistry registry_;
 
@@ -532,7 +523,7 @@ private:
   // The route to advertise to one SUBSCRIBE_NAMESPACE. Null if none may be.
   const NamespaceNode::Route* advertisableRoute(
       const NamespaceNode& node,
-      const std::shared_ptr<moxygen::MoQSession>& subscriber,
+      const ParticipantInfo& subscriber,
       const NamespaceNode::NamespaceSubscriberInfo& info
   ) const;
   // Erases subscriptions under ns whose upstream is sessionId.
@@ -540,14 +531,12 @@ private:
   // Sends NAMESPACE, an update, or NAMESPACE_DONE so the subscription matches advertisableRoute.
   void reconcileAdvertisement(
       NamespaceNode& node,
-      const std::shared_ptr<moxygen::MoQSession>& subscriber,
+      const ParticipantInfo& subscriber,
       const NamespaceNode::NamespaceSubscriberInfo& info
   );
   // Nullopt if the route loops through this relay.
-  std::optional<IngestedRoute> ingestRoute(
-      const moxygen::PublishNamespace& pubNs,
-      const std::shared_ptr<moxygen::MoQSession>& session
-  );
+  std::optional<IngestedRoute>
+  ingestRoute(const moxygen::PublishNamespace& pubNs, const ParticipantInfo& publisher);
 
   // Result of joinOrPrepareUpstreamSubscription (runs on relayExec_).
   struct StatefulSubscribeResult {
@@ -559,7 +548,7 @@ private:
     // upstream subscribe). Pending destructor fires on abandoned move.
     struct FirstSubscriberSetup {
       std::shared_ptr<moxygen::MoQForwarder> publisherForwarder;
-      std::shared_ptr<moxygen::MoQSession> upstreamSession;
+      Participant upstream;
       moxygen::SubscribeRequest upstreamSubReq;
       std::shared_ptr<moxygen::TrackConsumer> upstreamConsumer;
       SubscriptionRegistry::UpstreamSubscribePending pending;
@@ -582,7 +571,7 @@ private:
 
   folly::coro::Task<folly::Expected<UpstreamOk, moxygen::SubscribeError>>
   subscribeUpstreamAndApplyOk(
-      std::shared_ptr<moxygen::Publisher> upstream,
+      moxygen::Publisher& upstream,
       moxygen::SubscribeRequest upstreamSubReq,
       std::shared_ptr<moxygen::TrackConsumer> upstreamConsumer,
       std::shared_ptr<moxygen::MoQForwarder> publisherFwd,
@@ -593,7 +582,7 @@ private:
       const moxygen::FullTrackName& ftn,
       UpstreamOk& upstreamOk,
       SubscriptionRegistry::UpstreamSubscribePending& pending,
-      std::shared_ptr<moxygen::MoQSession> upstreamSession,
+      std::shared_ptr<const ParticipantInfo> upstream,
       std::shared_ptr<moxygen::Publisher> upstreamPublisher,
       moxygen::RequestID clientRequestID
   );
@@ -626,7 +615,6 @@ private:
   folly::coro::Task<SubscribeResult> subscribeFromSubscriberExec(
       moxygen::SubscribeRequest subReq,
       std::shared_ptr<moxygen::TrackConsumer> consumer,
-      std::shared_ptr<moxygen::MoQSession> session,
       ParticipantInfo subscriber
   );
 
@@ -658,11 +646,11 @@ private:
   // nullopt means no active sub, defer upstream.
   folly::coro::Task<std::optional<moxygen::TrackStatusOk>>
   readPublisherForwarderStatus(moxygen::TrackStatus req);
-  folly::coro::Task<void> onUpstreamConnectImpl(std::shared_ptr<moxygen::MoQSession> session);
+  folly::coro::Task<void> onUpstreamConnectImpl(Participant upstream);
   // Waits, up to a timeout, until routed() holds or every upstream has finished connecting.
   folly::coro::Task<void> waitForUpstreams(folly::Function<bool()> routed);
 
-  // Synchronous result of publishWithSession: the consumer the publisher writes
+  // Synchronous result of publishWithParticipant: the consumer the publisher writes
   // to and the PublishOk to return to the publisher.  Returned synchronously so
   // the reply coro (coPublish) can co_return the PublishOk immediately after
   // setup without waiting for any downstream peer handshake.
@@ -672,13 +660,11 @@ private:
   };
   using PublishSetupResult = folly::Expected<PublishSetup, moxygen::PublishError>;
 
-  // Contains all the inline publish() logic, taking session explicitly so it
-  // can be called from either the I/O thread (relayExec_==nullptr) or from
-  // coPublish on relay exec (where getRequestSession() would return null).
-  PublishSetupResult publishWithSession(
+  // Contains all the inline publish() logic, taking the publisher explicitly so it
+  // can be called from either the I/O thread (relayExec_==nullptr) or relayExec_.
+  PublishSetupResult publishWithParticipant(
       moxygen::PublishRequest pub,
       std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle,
-      std::shared_ptr<moxygen::MoQSession> session,
       const Participant& publisher,
       ForwarderRef publisherRef
   );
@@ -733,19 +719,16 @@ private:
     if (registry_.exists(ftn)) {
       co_return excludedFromSubscription(exclusion, ftn);
     }
-    co_return !namespaceTree_.findPublisherSession(ftn.trackNamespace, exclusion) &&
-        namespaceTree_.findPublisherSession(ftn.trackNamespace);
+    co_return !namespaceTree_.findPublisher(ftn.trackNamespace, exclusion) &&
+        namespaceTree_.findPublisher(ftn.trackNamespace);
   }
 
   std::shared_ptr<moxygen::Publisher> findUpstreamPublisher(
       const moxygen::TrackNamespace& ns,
       const std::optional<RouteExclusion>& exclusion = std::nullopt
   ) {
-    auto session = namespaceTree_.findPublisherSession(ns, exclusion.value_or(RouteExclusion{}));
-    if (!session) {
-      return nullptr;
-    }
-    return maybeWrapPublisher(relayExec_, std::move(session));
+    auto publisher = namespaceTree_.findPublisher(ns, exclusion.value_or(RouteExclusion{}));
+    return publisher ? publisher->publisher : nullptr;
   }
 
   bool useLocalForwarders_{false};
@@ -758,7 +741,7 @@ private:
 
   // === Pending rendezvous (draft 18+ SUBSCRIBE with RENDEZVOUS_TIMEOUT) ===
   // Subscribers waiting on a namespace/track that isn't published yet. Woken by
-  // doPublishNamespace()/publishWithSession() when matching content arrives;
+  // doPublishNamespace()/publishWithParticipant() when matching content arrives;
   // otherwise each waiter's baton times out.
   PendingRendezvousTree pendingRendezvous_;
 
@@ -780,7 +763,7 @@ private:
 // and reciprocal (MoqxRelay) paths.
 std::shared_ptr<moxygen::Publisher::NamespacePublishHandle> makeNamespaceBridgeHandle(
     std::weak_ptr<MoqxRelay> relay,
-    std::shared_ptr<moxygen::MoQSession> session,
+    Participant publisher,
     std::string peerID = {},
     folly::Executor* relayExec = nullptr
 );

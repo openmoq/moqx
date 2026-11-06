@@ -760,7 +760,7 @@ private:
       // Note: Self-exclusion is automatic in the relay's PropertyRanking
       // implementation - there is no explicit flag in TrackFilter. When a
       // session publishes a track and subscribes with TRACK_FILTER, the relay
-      // compares RankedEntry::publisher with the session pointer and excludes
+      // compares RankedEntry::publisher with the session id and excludes
       // any track where publisher == subscriber session. See PropertyRanking.h:
       // "Self-exclusion is automatic: if this session is the publisher of any
       // registered track, those tracks will be excluded from its top-N selection."

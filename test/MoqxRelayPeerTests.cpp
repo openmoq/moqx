@@ -22,14 +22,14 @@ TEST_P(MoQRelayTest, NamespaceBridgeHandleForwardsNamespaceMsg) {
 
   // Bridge handle routes NAMESPACE messages from peerSession into the relay.
   // For peering the subscription prefix is empty, so the suffix == full namespace.
-  auto handle = makeNamespaceBridgeHandle(relay_, peerSession);
+  auto handle = makeNamespaceBridgeHandle(relay_, participantOf(peerSession));
   handle->namespaceMsg(kTestNamespace);
 
   verifyOnRelayExec([&] {
-    auto sessions = relay_->findPublishNamespaceSessions(kTestNamespace);
+    auto sessions = relay_->findNamespacePublishers(kTestNamespace);
     EXPECT_EQ(sessions.size(), 1u);
     if (!sessions.empty()) {
-      EXPECT_EQ(sessions[0], peerSession);
+      EXPECT_EQ(sessions[0], peerSession->sessionId());
     }
   });
 
@@ -39,17 +39,13 @@ TEST_P(MoQRelayTest, NamespaceBridgeHandleForwardsNamespaceMsg) {
 // Test: makeNamespaceBridgeHandle routes namespaceDoneMsg to doPublishNamespaceDone
 TEST_P(MoQRelayTest, NamespaceBridgeHandleForwardsDoneMsg) {
   auto peerSession = createMockSession();
-  auto handle = makeNamespaceBridgeHandle(relay_, peerSession);
+  auto handle = makeNamespaceBridgeHandle(relay_, participantOf(peerSession));
 
   handle->namespaceMsg(kTestNamespace);
-  verifyOnRelayExec([&] {
-    EXPECT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 1u);
-  });
+  verifyOnRelayExec([&] { EXPECT_EQ(relay_->findNamespacePublishers(kTestNamespace).size(), 1u); });
 
   handle->namespaceDoneMsg(kTestNamespace);
-  verifyOnRelayExec([&] {
-    EXPECT_TRUE(relay_->findPublishNamespaceSessions(kTestNamespace).empty());
-  });
+  verifyOnRelayExec([&] { EXPECT_TRUE(relay_->findNamespacePublishers(kTestNamespace).empty()); });
 
   removeSession(peerSession);
 }
@@ -78,11 +74,9 @@ TEST_P(MoQRelayTest, PeerNamespaceNotEchoedBackOnReconnect) {
   // Step 1: session1 is the peer's old (unreaped) connection.  Inject NS as
   // if it arrived from peer "jp-osa-1" via the bridge handle.
   auto session1 = createMockSession();
-  auto bridgeHandle = makeNamespaceBridgeHandle(relay_, session1, "jp-osa-1");
+  auto bridgeHandle = makeNamespaceBridgeHandle(relay_, participantOf(session1), "jp-osa-1");
   bridgeHandle->namespaceMsg(kTestNamespace);
-  verifyOnRelayExec([&] {
-    EXPECT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 1u);
-  });
+  verifyOnRelayExec([&] { EXPECT_EQ(relay_->findNamespacePublishers(kTestNamespace).size(), 1u); });
 
   // Step 2: jp-osa-1 reconnects as session2 and sends a peer SUBSCRIBE_NAMESPACE.
   // Peer-to-peer sessions negotiate draft-16 (empty prefix is a 16+ feature).
@@ -219,9 +213,8 @@ TEST_P(MoQRelayTest, PeerNamespaceNotEchoedBack_FullProductionPath) {
     });
 
     // kTestNamespace should now be in the tree with sourcePeerID="jp-osa-1".
-    verifyOnRelayExec([&] {
-      EXPECT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 1u);
-    });
+    verifyOnRelayExec([&] { EXPECT_EQ(relay_->findNamespacePublishers(kTestNamespace).size(), 1u); }
+    );
 
     doPublish(session1, peerTrack);
     auto local = createMockSession();
@@ -358,11 +351,10 @@ TEST_P(MoQRelayTest, BridgeHandleDestructorCleansUpNamespaces) {
 
   // Simulate the bridge path: create a handle and announce a namespace through
   // it, as happens when the relay subscribes to an upstream/peer.
-  auto bridgeHandle = makeNamespaceBridgeHandle(relay_, upstreamSession, /*peerID=*/{});
+  auto bridgeHandle =
+      makeNamespaceBridgeHandle(relay_, participantOf(upstreamSession), /*peerID=*/{});
   bridgeHandle->namespaceMsg(kTestNamespace);
-  verifyOnRelayExec([&] {
-    EXPECT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 1u);
-  });
+  verifyOnRelayExec([&] { EXPECT_EQ(relay_->findNamespacePublishers(kTestNamespace).size(), 1u); });
 
   // Drop the bridge handle without graceful namespaceDoneMsg — simulates
   // ungraceful session close destroying SubNsStreamCallback.
@@ -370,7 +362,7 @@ TEST_P(MoQRelayTest, BridgeHandleDestructorCleansUpNamespaces) {
 
   // Tree entry must be gone.
   verifyOnRelayExec([&] {
-    EXPECT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 0u)
+    EXPECT_EQ(relay_->findNamespacePublishers(kTestNamespace).size(), 0u)
         << "Stale namespace tree entry persists after bridge handle destruction";
   });
 
@@ -385,25 +377,21 @@ TEST_P(MoQRelayTest, BridgeHandleDestructorDoesNotEvictNewPublisher) {
   auto session2 = createMockSession();
 
   // session1 announces NS via bridge handle.
-  auto bridgeHandle1 = makeNamespaceBridgeHandle(relay_, session1, /*peerID=*/{});
+  auto bridgeHandle1 = makeNamespaceBridgeHandle(relay_, participantOf(session1), /*peerID=*/{});
   bridgeHandle1->namespaceMsg(kTestNamespace);
-  verifyOnRelayExec([&] {
-    EXPECT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 1u);
-  });
+  verifyOnRelayExec([&] { EXPECT_EQ(relay_->findNamespacePublishers(kTestNamespace).size(), 1u); });
 
   // session2 takes over NS (conflict path evicts session1, sets sourceSession=session2).
-  auto bridgeHandle2 = makeNamespaceBridgeHandle(relay_, session2, /*peerID=*/{});
+  auto bridgeHandle2 = makeNamespaceBridgeHandle(relay_, participantOf(session2), /*peerID=*/{});
   bridgeHandle2->namespaceMsg(kTestNamespace);
-  verifyOnRelayExec([&] {
-    EXPECT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 1u);
-  });
+  verifyOnRelayExec([&] { EXPECT_EQ(relay_->findNamespacePublishers(kTestNamespace).size(), 1u); });
 
   // Now session1's handle is destroyed (ungraceful close detected late).
   // It must NOT evict session2's entry.
   bridgeHandle1.reset();
 
   verifyOnRelayExec([&] {
-    EXPECT_EQ(relay_->findPublishNamespaceSessions(kTestNamespace).size(), 1u)
+    EXPECT_EQ(relay_->findNamespacePublishers(kTestNamespace).size(), 1u)
         << "Stale bridge handle destructor evicted the new publisher's entry";
   });
 
@@ -457,11 +445,11 @@ TEST_P(MoQRelayTest, UpstreamPeeringSubscribesTracksOnDraft18) {
     if (auto* relayExec = relay_->getRelayExec()) {
       folly::coro::co_withExecutor(
           folly::getKeepAliveToken(relayExec),
-          relay_->onUpstreamConnect(peer)
+          relay_->onUpstreamConnect(participantOf(peer))
       )
           .start();
     } else {
-      folly::coro::blockingWait(relay_->onUpstreamConnect(peer), exec_.get());
+      folly::coro::blockingWait(relay_->onUpstreamConnect(participantOf(peer)), exec_.get());
     }
     const size_t wantTracks = version == kVersionDraft18 ? 1 : 0;
     ASSERT_TRUE(driveUntil([&] {
@@ -474,7 +462,7 @@ TEST_P(MoQRelayTest, UpstreamPeeringSubscribesTracksOnDraft18) {
       EXPECT_FALSE(peer->tracksRequests[0].forward);
     }
 
-    verifyOnRelayExec([&] { relay_->onUpstreamDisconnect(peer); });
+    verifyOnRelayExec([&] { relay_->onUpstreamDisconnect(peer->sessionId()); });
     driveIfMultiThread();
     EXPECT_TRUE(peer->tracksHandle.expired());
     removeSession(peer);
@@ -493,23 +481,23 @@ TEST_P(MoQRelayTest, UpstreamDisconnectReleasesOnlyThatSession) {
     if (auto* relayExec = relay_->getRelayExec()) {
       folly::coro::co_withExecutor(
           folly::getKeepAliveToken(relayExec),
-          relay_->onUpstreamConnect(peer)
+          relay_->onUpstreamConnect(participantOf(peer))
       )
           .start();
     } else {
-      folly::coro::blockingWait(relay_->onUpstreamConnect(peer), exec_.get());
+      folly::coro::blockingWait(relay_->onUpstreamConnect(participantOf(peer)), exec_.get());
     }
     ASSERT_TRUE(driveUntil([&] { return peer->tracksRequests.size() == 1; }));
     peers.push_back(std::move(peer));
   }
   driveIfMultiThread();
 
-  verifyOnRelayExec([&] { relay_->onUpstreamDisconnect(peers[0]); });
+  verifyOnRelayExec([&] { relay_->onUpstreamDisconnect(peers[0]->sessionId()); });
   driveIfMultiThread();
   EXPECT_TRUE(peers[0]->tracksHandle.expired());
   EXPECT_FALSE(peers[1]->tracksHandle.expired());
 
-  verifyOnRelayExec([&] { relay_->onUpstreamDisconnect(peers[1]); });
+  verifyOnRelayExec([&] { relay_->onUpstreamDisconnect(peers[1]->sessionId()); });
   driveIfMultiThread();
   EXPECT_TRUE(peers[1]->tracksHandle.expired());
   for (auto& peer : peers) {
@@ -551,15 +539,16 @@ TEST_P(MoQRelayTest, UpstreamDisconnectDuringHandshakeDropsItsHandles) {
   if (auto* relayExec = relay_->getRelayExec()) {
     folly::coro::co_withExecutor(
         folly::getKeepAliveToken(relayExec),
-        relay_->onUpstreamConnect(peer)
+        relay_->onUpstreamConnect(participantOf(peer))
     )
         .start();
   } else {
-    folly::coro::co_withExecutor(sessionExec(), relay_->onUpstreamConnect(peer)).start();
+    folly::coro::co_withExecutor(sessionExec(), relay_->onUpstreamConnect(participantOf(peer)))
+        .start();
   }
   ASSERT_TRUE(driveUntil([&] { return peer->namespaceRequests == 1; }));
 
-  verifyOnRelayExec([&] { relay_->onUpstreamDisconnect(peer); });
+  verifyOnRelayExec([&] { relay_->onUpstreamDisconnect(peer->sessionId()); });
   peer->gate->post();
   EXPECT_TRUE(driveUntil([&] { return peer->replied && peer->namespaceHandle.expired(); }));
   driveIfMultiThread();

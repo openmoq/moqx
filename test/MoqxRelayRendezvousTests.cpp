@@ -305,7 +305,7 @@ TEST_P(MoqxRelayRendezvousTest, PublishNamespaceWakesParkedSubscribe) {
   driveIfMultiThread();
 }
 
-// findPublisherSession() is a prefix match, so a publisher at an ancestor namespace
+// findPublisher() is a prefix match, so a publisher at an ancestor namespace
 // serves deeper tracks. The subtree wake has to reach them.
 TEST_P(MoqxRelayRendezvousTest, AncestorPublishNamespaceWakesDeeperWaiter) {
   const TrackNamespace deepNs{{"test", "namespace", "deep"}};
@@ -416,7 +416,7 @@ TEST_P(MoqxRelayRendezvousTest, NoTimeoutSubscriberFailsWhileAnotherIsParked) {
 }
 
 // A publisher announcing the empty namespace claims every track, so waking the whole
-// trie is right and each waiter must then route to it. findPublisherSession() seeds
+// trie is right and each waiter must then route to it. findPublisher() seeds
 // deepestPublisher from root_.publisherSession_, so a root publisher does resolve.
 TEST_P(MoqxRelayRendezvousTest, EmptyNamespacePublishNamespaceResolvesWaiters) {
   relay_->setAllowedNamespacePrefix(TrackNamespace{});

@@ -390,6 +390,17 @@ moqx_add_dual_stack_test(admin_cache_purge_concurrency_test
   ENVIRONMENT "MOQBIN=${MOXYGEN_BIN_DIR}"
 )
 
+moqx_add_gtest(moqx_relay_session_close_test
+  SRCS RelaySessionCloseTest.cpp
+  LIBS
+    moqx_core
+    moqx_test_utils
+    moqx_test_main
+    moxygen::moxygen_events_moq_folly_executor_impl
+    moxygen::moxygen_moqclient
+    GTest::gmock
+)
+
 moqx_add_gtest(moqx_upstream_provider_test
   SRCS UpstreamProviderTest.cpp
   LIBS

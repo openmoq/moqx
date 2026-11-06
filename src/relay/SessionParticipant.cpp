@@ -18,35 +18,6 @@ namespace openmoq::moqx {
 
 namespace {
 
-// A REQUEST_UPDATE can carry a fill, which the relay serves as this participant.
-class ParticipantSubscriptionHandle : public moxygen::SubscriptionHandle {
-public:
-  ParticipantSubscriptionHandle(
-      std::shared_ptr<moxygen::SubscriptionHandle> inner,
-      Participant participant
-  )
-      : inner_(std::move(inner)), participant_(std::move(participant)) {
-    if (inner_->hasSubscribeOk()) {
-      setSubscribeOk(inner_->subscribeOk());
-    }
-  }
-
-  const moxygen::SubscribeOk& subscribeOk() const override { return inner_->subscribeOk(); }
-
-  void unsubscribe() override { inner_->unsubscribe(); }
-
-  void cancelFill(moxygen::RequestID requestID) override { inner_->cancelFill(requestID); }
-
-  folly::coro::Task<RequestUpdateResult> requestUpdate(moxygen::RequestUpdate update) override {
-    attachParticipant(participant_);
-    return inner_->requestUpdate(std::move(update));
-  }
-
-private:
-  std::shared_ptr<moxygen::SubscriptionHandle> inner_;
-  Participant participant_;
-};
-
 constexpr std::string_view kSessionClosed = "session closed";
 
 // Must lock on the session's executor, so another thread never holds the last reference.
