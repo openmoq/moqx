@@ -4,13 +4,13 @@
 Follows Docker events for the relay container. When the relay dies on a crash
 signal or the OOM killer, the watcher keeps the core dump and the run's log on
 this host, decodes the stack with gdb inside the image that crashed, and
-records the crash in one GitHub issue per unique stack. A repeat updates that
-issue's occurrence table, the first crash on a new build also adds a comment,
-and a crash on an issue closed as completed reopens it. New issues, new builds
-and reopens are also posted to Slack when SLACK_WEBHOOK_URL is set.
+records the crash in one issue per unique stack in ISSUE_REPO. A repeat updates
+that issue's occurrence table, the first crash on a new build also adds a
+comment, and a crash on an issue closed as completed reopens it. New issues,
+new builds and reopens are also posted to Slack when SLACK_WEBHOOK_URL is set.
 
-Core dumps never leave this host: the repository is public and a core holds
-the relay's TLS key.
+ISSUE_REPO is private because a stack can reveal an unfixed vulnerability. Core
+dumps never leave this host: a core holds the relay's TLS key.
 
 usage:
   crash-watch.py [watch]          follow Docker events (the systemd service)
@@ -40,7 +40,8 @@ from pathlib import Path
 CONTAINER = os.environ.get("CRASH_CONTAINER", "moqx")
 CRASH_DIR = Path(os.environ.get("CRASH_DIR", "/var/lib/moqx-crash"))
 HOST = os.environ.get("CRASH_HOST") or socket.getfqdn()
-GH_REPO = os.environ.get("GH_REPO", "openmoq/moqx")
+GH_REPO = os.environ.get("GH_REPO", "openmoq/moqx")  # the relay's source
+ISSUE_REPO = os.environ.get("CRASH_ISSUE_REPO", "openmoq/crash-report")
 GH_TOKEN = os.environ.get("GH_TOKEN", "")
 SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL", "")
 LABEL = os.environ.get("CRASH_ISSUE_LABEL", "crash")
@@ -571,7 +572,7 @@ def slack(emoji, what, meta, number, title, url=None):
     """Posts one line about an issue to Slack. A failure is only logged."""
     if not SLACK_WEBHOOK_URL and not DRY_RUN:
         return
-    url = url or f"https://github.com/{GH_REPO}/issues/{number}"
+    url = url or f"https://github.com/{ISSUE_REPO}/issues/{number}"
     title = title.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     text = (
         f"{emoji} *{GH_REPO}* relay crashed on `{meta['host']}` (`{meta['version']}`): "
@@ -605,14 +606,14 @@ def find_issue(sig, site, state):
     number = state.get("issues", {}).get(sig)
     if number:
         with contextlib.suppress(urllib.error.HTTPError):
-            issue = gh("GET", f"repos/{GH_REPO}/issues/{number}")
+            issue = gh("GET", f"repos/{ISSUE_REPO}/issues/{number}")
             if marker in (issue.get("body") or "") and live(issue):
                 return issue, True
     same_site = None
     for page in range(1, 11):
         issues = gh(
             "GET",
-            f"repos/{GH_REPO}/issues?labels={LABEL}&state=all&per_page=100&page={page}",
+            f"repos/{ISSUE_REPO}/issues?labels={LABEL}&state=all&per_page=100&page={page}",
         )
         for issue in filter(live, issues):
             body = issue.get("body") or ""
@@ -629,7 +630,7 @@ def ensure_label():
     try:
         gh(
             "POST",
-            f"repos/{GH_REPO}/labels",
+            f"repos/{ISSUE_REPO}/labels",
             {"name": LABEL, "color": "b60205", "description": "Relay crash"},
         )
     except urllib.error.HTTPError as e:
@@ -757,7 +758,7 @@ def report(sig, top, frames, meta, bundle, state):
         title = issue_title(meta, top, frames)
         new = gh(
             "POST",
-            f"repos/{GH_REPO}/issues",
+            f"repos/{ISSUE_REPO}/issues",
             {"title": title, "body": body, "labels": [LABEL]},
         )
         created.append(time.time())
@@ -780,13 +781,13 @@ def report(sig, top, frames, meta, bundle, state):
     elif new_build:
         lead = f"First seen on {row[0]} at {when} UTC."
         note = (":repeat:", "first time on this build for")
-    gh("PATCH", f"repos/{GH_REPO}/issues/{number}", patch)
+    gh("PATCH", f"repos/{ISSUE_REPO}/issues/{number}", patch)
     if lead:
         comment = (
             f"{lead} Bundle `{bundle.name}`.\n\n{describe(meta, frames)}\n\n"
             f"<details><summary>Crashing thread</summary>\n\n```\n{stack}\n```\n\n</details>"
         )
-        gh("POST", f"repos/{GH_REPO}/issues/{number}/comments", {"body": comment})
+        gh("POST", f"repos/{ISSUE_REPO}/issues/{number}/comments", {"body": comment})
         slack(*note, meta, number, issue.get("title", ""), issue.get("html_url"))
     state.setdefault("issues", {})[sig] = number
     return number
