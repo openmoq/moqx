@@ -170,6 +170,38 @@ TEST_F(PluginConfigTest, ServiceDefaultsMergeIntoServiceEntries) {
   EXPECT_EQ(svc.authorizeTimeout, std::chrono::milliseconds(75));
 }
 
+// A scalar reaches the plugin as written, whatever YAML would type it as.
+TEST_F(PluginConfigTest, ScalarsKeepTheirText) {
+  auto res =
+      resolve("", "    plugins:\n      - type: test\n        config: {name: 007, secret: 1}\n");
+  ASSERT_TRUE(res.hasValue()) << res.error();
+  const auto* cfg =
+      static_cast<const TestConfig*>(res->config.services.at("live").plugins[0].config.get());
+  EXPECT_EQ(cfg->name, "007");
+  EXPECT_EQ(cfg->secret, "1");
+}
+
+TEST_F(PluginConfigTest, ServiceDefaultsDoNotLeakBetweenServices) {
+  auto res = resolve(
+      "service_defaults:\n  plugins:\n    test: {tag: 3, secret: shared}\n",
+      "    plugins:\n      - type: test\n        config: {tag: 5}\n"
+      "  other:\n"
+      "    match:\n      - authority: {exact: \"other.example.com\"}\n        path: {prefix: "
+      "\"/\"}\n"
+      "    cache: {enabled: false, max_tracks: 1, max_groups_per_track: 1}\n"
+      "    max_subscription_buffer_kb: 1024\n"
+      "    plugins:\n      - type: test\n"
+  );
+  ASSERT_TRUE(res.hasValue()) << res.error();
+  auto config = [&](const std::string& service) {
+    return static_cast<const TestConfig*>(res->config.services.at(service).plugins[0].config.get());
+  };
+  EXPECT_EQ(config("live")->tag, 5);
+  EXPECT_EQ(config("live")->secret, "shared");
+  EXPECT_EQ(config("other")->tag, 3);
+  EXPECT_EQ(config("other")->secret, "shared");
+}
+
 TEST_F(PluginConfigTest, ServiceDefaultsRejectUnknownTypeAndField) {
   auto res = resolve("service_defaults:\n  plugins:\n    nope: {}\n    test: {bogus: 1}\n");
   ASSERT_TRUE(res.hasError());

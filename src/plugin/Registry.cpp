@@ -8,23 +8,17 @@
 
 namespace openmoq::moqx::plugin {
 
-rfl::Generic mergeGeneric(rfl::Generic base, const rfl::Generic& overlay) {
-  auto* baseObject = std::get_if<rfl::Generic::Object>(&base.variant());
-  const auto* overlayObject = std::get_if<rfl::Generic::Object>(&overlay.variant());
-  if (!baseObject || !overlayObject) {
-    return overlay;
+YAML::Node mergeYaml(const YAML::Node& base, const YAML::Node& overlay) {
+  if (!base.IsMap() || !overlay.IsMap()) {
+    return YAML::Clone(overlay);
   }
-  for (const auto& [key, value] : *overlayObject) {
-    auto it = std::find_if(baseObject->begin(), baseObject->end(), [&](const auto& entry) {
-      return entry.first == key;
-    });
-    if (it == baseObject->end()) {
-      baseObject->insert(key, value);
-    } else {
-      it->second = mergeGeneric(std::move(it->second), value);
-    }
+  // YAML::Node copies share storage; clone so `base` stays as it was.
+  YAML::Node merged = YAML::Clone(base);
+  for (const auto& entry : overlay) {
+    const auto key = entry.first.as<std::string>();
+    merged[key] = merged[key] ? mergeYaml(merged[key], entry.second) : YAML::Clone(entry.second);
   }
-  return base;
+  return merged;
 }
 
 void writeGeneric(config::ConfigSink& sink, std::string_view key, const rfl::Generic& value) {

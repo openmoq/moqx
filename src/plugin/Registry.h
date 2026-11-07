@@ -15,15 +15,17 @@
 #include "plugin/PluginType.h"
 
 #include <rfl.hpp>
+#include <rfl/yaml.hpp>
+#include <yaml-cpp/yaml.h>
 
 #include <functional>
 #include <string>
 
 namespace openmoq::moqx::plugin {
 
-// Deep-merges `overlay` into `base`: objects merge key by key, everything else
-// is replaced by the overlay's value.
-rfl::Generic mergeGeneric(rfl::Generic base, const rfl::Generic& overlay);
+// Deep-merges `overlay` into a copy of `base`: maps merge key by key,
+// everything else is replaced by the overlay's value. Neither input changes.
+YAML::Node mergeYaml(const YAML::Node& base, const YAML::Node& overlay);
 
 // Walks a generic value into the sink; an empty key renders an array element.
 void writeGeneric(config::ConfigSink& sink, std::string_view key, const rfl::Generic& value);
@@ -47,10 +49,11 @@ std::shared_ptr<const PluginType> makePluginType(
   for (const auto& field : rfl::fields<Config>()) {
     type->fieldNames.push_back(field.name());
   }
-  type->parse = [](const rfl::Generic& generic,
+  type->parse = [](const YAML::Node& node,
                    bool strict) -> folly::Expected<std::shared_ptr<const void>, std::string> {
-    auto parsed = strict ? rfl::from_generic<Config, rfl::NoExtraFields>(generic)
-                         : rfl::from_generic<Config>(generic);
+    const auto var = rfl::yaml::InputVarType(node);
+    auto parsed =
+        strict ? rfl::yaml::read<Config, rfl::NoExtraFields>(var) : rfl::yaml::read<Config>(var);
     if (!parsed) {
       return folly::makeUnexpected(std::string(parsed.error().what()));
     }

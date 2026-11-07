@@ -15,9 +15,9 @@
 #include <string>
 #include <vector>
 
-namespace rfl {
-class Generic;
-} // namespace rfl
+namespace YAML {
+class Node;
+} // namespace YAML
 
 namespace openmoq::moqx::config {
 class ConfigSink;
@@ -35,9 +35,9 @@ struct PluginType {
   bool serviceScope{false};
   // Top-level config field names, checked against service_defaults.plugins.
   std::vector<std::string> fieldNames;
-  // Errors name the offending field.
+  // Parses the entry's `config` subtree as written. Errors name the field.
   std::function<folly::Expected<std::shared_ptr<const void>, std::string>(
-      const rfl::Generic& config,
+      const YAML::Node& config,
       bool strict
   )>
       parse;

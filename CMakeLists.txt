@@ -405,6 +405,7 @@ target_include_directories(moqx_plugin
 target_link_libraries(moqx_plugin PUBLIC
   moqx_config
   reflectcpp
+  yaml-cpp
   Folly::folly_coro_task
   Folly::folly_json_dynamic
   Folly::folly_logging_logging

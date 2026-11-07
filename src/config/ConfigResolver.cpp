@@ -1032,7 +1032,7 @@ std::optional<PluginEntryConfig> resolvePluginEntry(
     const std::string& label,
     const plugin::Registry& registry,
     bool strict,
-    const std::map<std::string, rfl::Generic>* defaults,
+    const std::map<std::string, PluginConfigNode>* defaults,
     std::vector<std::string>& errors
 ) {
   auto type = plugin::findType(registry, entry.type.value());
@@ -1047,13 +1047,13 @@ std::optional<PluginEntryConfig> resolvePluginEntry(
     );
     return std::nullopt;
   }
-  rfl::Generic generic = entry.config.value().value_or(rfl::Generic(rfl::Generic::Object()));
+  YAML::Node node = entry.config.value().value_or(PluginConfigNode()).node();
   if (defaults) {
     if (auto it = defaults->find(type->name); it != defaults->end()) {
-      generic = plugin::mergeGeneric(it->second, generic);
+      node = plugin::mergeYaml(it->second.node(), node);
     }
   }
-  auto parsed = type->parse(generic, strict);
+  auto parsed = type->parse(node, strict);
   if (parsed.hasError()) {
     errors.push_back(label + ": config: " + parsed.error());
     return std::nullopt;
@@ -1083,7 +1083,7 @@ std::vector<PluginEntryConfig> resolvePluginList(
     const std::string& scopeLabel,
     const plugin::Registry& registry,
     bool strict,
-    const std::map<std::string, rfl::Generic>* defaults,
+    const std::map<std::string, PluginConfigNode>* defaults,
     std::vector<std::string>& errors
 ) {
   std::vector<PluginEntryConfig> out;
@@ -1127,11 +1127,11 @@ void validatePluginIds(
 }
 
 void validatePluginDefaults(
-    const std::map<std::string, rfl::Generic>& defaults,
+    const std::map<std::string, PluginConfigNode>& defaults,
     const plugin::Registry& registry,
     std::vector<std::string>& errors
 ) {
-  for (const auto& [typeName, generic] : defaults) {
+  for (const auto& [typeName, config] : defaults) {
     auto label = "service_defaults.plugins." + typeName;
     auto type = plugin::findType(registry, typeName);
     if (!type) {
@@ -1142,12 +1142,12 @@ void validatePluginDefaults(
       errors.push_back(label + ": type is not allowed at service scope");
       continue;
     }
-    const auto* object = std::get_if<rfl::Generic::Object>(&generic.variant());
-    if (!object) {
+    if (!config.node().IsMap()) {
       errors.push_back(label + ": must be an object of config fields");
       continue;
     }
-    for (const auto& [field, value] : *object) {
+    for (const auto& item : config.node()) {
+      const auto field = item.first.as<std::string>();
       if (std::find(type->fieldNames.begin(), type->fieldNames.end(), field) ==
           type->fieldNames.end()) {
         errors.push_back(label + ": unknown field '" + field + "'");
@@ -1295,7 +1295,7 @@ resolveConfig(const ParsedConfig& config, const ResolveOptions& options) {
 
   // === Validate plugins ===
   const auto& registry = options.registry ? *options.registry : plugins::builtinTypes();
-  const std::map<std::string, rfl::Generic>* pluginDefaults = nullptr;
+  const std::map<std::string, PluginConfigNode>* pluginDefaults = nullptr;
   const auto& serviceDefaults = config.service_defaults.value();
   if (serviceDefaults && serviceDefaults->plugins.value()) {
     pluginDefaults = &*serviceDefaults->plugins.value();

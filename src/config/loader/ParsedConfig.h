@@ -15,6 +15,8 @@
 #include <rfl.hpp>
 #include <rfl/yaml.hpp>
 
+#include "config/loader/PluginConfigNode.h"
+
 namespace openmoq::moqx::config {
 
 // Note: fields wrapped in rfl::Description<"...", T> expose a .value() accessor
@@ -392,7 +394,7 @@ struct ParsedPluginEntry {
       "Chain position: lower runs first, ties in list order (default: 0)",
       std::optional<int64_t>>
       rank;
-  rfl::Description<"The plugin's own config, checked by its type", std::optional<rfl::Generic>>
+  rfl::Description<"The plugin's own config, checked by its type", std::optional<PluginConfigNode>>
       config;
 };
 
@@ -495,7 +497,7 @@ struct ParsedServiceDefaultsConfig {
   rfl::Description<
       "Partial plugin config by type, deep-merged into each service entry of that type; "
       "the entry's own values win",
-      std::optional<std::map<std::string, rfl::Generic>>>
+      std::optional<std::map<std::string, PluginConfigNode>>>
       plugins;
   rfl::Description<
       "admission_timeout_ms for services that do not set their own",
