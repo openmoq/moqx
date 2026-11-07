@@ -41,7 +41,7 @@ struct PluginType {
       bool strict
   )>
       parse;
-  // No side effects: --validate calls it and drops the result.
+  // No side effects: validate-config calls it and drops the result.
   std::function<Result<std::unique_ptr<Root>>(const void* config)> create;
   // Writes the config with secrets redacted.
   std::function<void(const void* config, config::ConfigSink& sink)> serialize;
