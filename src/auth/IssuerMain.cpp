@@ -71,7 +71,9 @@ auth::IssueTokenOptions makeIssueTokenOptions(const cfg::ResolvedConfig* resolve
     }
     auto authConfig = plugins::cat4moq::serviceAuthConfig(it->second, FLAGS_auth_plugin_id);
     if (authConfig.hasError()) {
-      throw std::invalid_argument("service " + FLAGS_auth_service + ": " + authConfig.error());
+      throw std::invalid_argument(
+          "service " + FLAGS_auth_service + ": " + authConfig.error() + " (--auth_plugin_id)"
+      );
     }
     auto key = auth::selectHmacKey(authConfig.value(), FLAGS_auth_key_id);
     keyID = std::move(key.id);
