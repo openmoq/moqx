@@ -20,6 +20,7 @@
 #include "logging/LogSetup.h"
 #include "moqx/Version.h"
 #include "plugin/Host.h"
+#include "relay/PluginFilters.h"
 #include "stats/StatsRegistry.h"
 #include <moxygen/events/MoQFollyExecutorImpl.h>
 
@@ -246,11 +247,8 @@ int main(int argc, char* argv[]) {
       pluginError = params.error();
       break;
     }
-    for (const auto& param : params.value()) {
-      servers[i]->addSetupParameter(std::visit(
-          [&](const auto& value) { return moxygen::SetupParameter(param.key, value); },
-          param.value
-      ));
+    for (auto& param : toSetupParameters(params.value())) {
+      servers[i]->addSetupParameter(std::move(param));
     }
   }
   if (!pluginError) {

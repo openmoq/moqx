@@ -24,6 +24,7 @@
 namespace openmoq::moqx {
 
 moxygen::SessionCloseErrorCode toCloseCode(plugin::Error::Kind kind);
+std::vector<moxygen::SetupParameter> toSetupParameters(const plugin::Params& params);
 moxygen::RequestErrorCode toRequestCode(plugin::Error::Kind kind);
 
 class PluginPublisherFilter : public moxygen::Publisher {

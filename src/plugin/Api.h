@@ -105,6 +105,8 @@ struct RequestView {
   bool peer{false};
 };
 
+// MoQT key-value rules: an even key carries a number, an odd key bytes. Keys
+// the host or moxygen writes itself are refused.
 struct SetupParam {
   uint64_t key{0};
   std::variant<uint64_t, std::string> value;

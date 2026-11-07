@@ -66,6 +66,11 @@ public:
 
   folly::coro::Task<Result<std::shared_ptr<SessionState>>> admit(const SetupView& setup) override {
     script_->record("admit:" + name_ + "@" + std::string(setup.session.service));
+    if (script_->recordParam) {
+      if (auto value = setup.params.uintParam(*script_->recordParam)) {
+        script_->record("param:" + name_ + "=" + std::to_string(*value));
+      }
+    }
     if (script_->suspendAdmit) {
       co_await waitGate(*script_, script_->admitGate);
       auto token = co_await folly::coro::co_current_cancellation_token;

@@ -9,6 +9,7 @@
 
 #include "MoqxRelayServer.h"
 #include "plugin/TestPlugin.h"
+#include "relay/PluginFilters.h"
 
 #include <folly/coro/BlockingWait.h>
 #include <folly/portability/GMock.h>
@@ -37,23 +38,34 @@ protected:
     script_ = currentScript();
   }
 
-  void start() {
+  static config::PluginEntryConfig entry(std::string id, bool listenerParams = false) {
+    TestConfig plugin;
+    plugin.name = id;
+    plugin.listener_params = listenerParams;
+    return config::PluginEntryConfig{
+        .type = "test",
+        .id = id,
+        .rank = 0,
+        .pluginType = testType(),
+        .config = std::make_shared<const TestConfig>(plugin),
+    };
+  }
+
+  static config::ServiceConfig service(std::vector<config::PluginEntryConfig> plugins) {
     config::ServiceConfig svc;
     svc.match = {config::ServiceConfig::MatchEntry{
         .authority = config::ServiceConfig::MatchEntry::AnyAuthority{},
         .path = config::ServiceConfig::MatchEntry::PrefixPath{"/"},
     }};
-    TestConfig plugin;
-    plugin.name = "gate";
-    svc.plugins = {config::PluginEntryConfig{
-        .type = "test",
-        .id = "gate",
-        .rank = 0,
-        .pluginType = testType(),
-        .config = std::make_shared<const TestConfig>(plugin),
-    }};
+    svc.plugins = std::move(plugins);
+    return svc;
+  }
+
+  // `process` entries are process scope; "gate" serves the service.
+  void start(std::vector<config::PluginEntryConfig> process = {}) {
     config::Config cfg;
-    cfg.services.emplace("live", svc);
+    cfg.plugins = std::move(process);
+    cfg.services.emplace("live", service({entry("gate")}));
     host_ = PluginHost::create(cfg).value();
 
     context_ = std::make_shared<MoqxRelayContext>(
@@ -76,6 +88,11 @@ protected:
     listener.endpoint = "/moq";
     listener.moqtVersions = "18";
     server_ = std::make_shared<MoqxRelayServer>(listener, context_, &ioExecutor_);
+    auto params = folly::coro::blockingWait(host_->listenerParams("main"));
+    ASSERT_TRUE(params.hasValue()) << params.error();
+    for (auto& param : toSetupParameters(params.value())) {
+      server_->addSetupParameter(std::move(param));
+    }
     server_->start();
 
     client_ = std::make_unique<MoQClient>(
@@ -158,6 +175,10 @@ protected:
   }
 
   std::shared_ptr<Script> script_;
+  // A second relay for upstream tests. Declared before the io pool so it
+  // outlives work its upstream still has queued there.
+  std::shared_ptr<PluginHost> edgeHost_;
+  std::shared_ptr<MoqxRelayContext> edge_;
   folly::IOThreadPoolExecutor ioExecutor_{1};
   folly::EventBase clientEvb_;
   std::shared_ptr<MoQFollyExecutorImpl> clientExec_ =
@@ -226,6 +247,64 @@ TEST_F(PluginSessionTest, InlinePublishIsAccepted) {
   auto result = await(spawn(std::move(published->reply)));
   EXPECT_TRUE(result.hasValue()) << result.error().reasonPhrase;
   EXPECT_EQ(authorizedCount(), 1);
+}
+
+TEST_F(PluginSessionTest, ListenerParamsReachTheClient) {
+  script_->listenerParams["setup"] = {
+      SetupParam{0x7A10, uint64_t{7}},
+      SetupParam{0x7A11, std::string("x")},
+  };
+  start({entry("setup", /*listenerParams=*/true)});
+  const auto& peer = client_->moqSession_->getPeerSetupParams();
+  ASSERT_TRUE(peer.has_value());
+  const auto* number = peer->getFirstParam(0x7A10);
+  const auto* bytes = peer->getFirstParam(0x7A11);
+  ASSERT_NE(number, nullptr);
+  ASSERT_NE(bytes, nullptr);
+  EXPECT_EQ(number->asUint64, 7);
+  EXPECT_EQ(bytes->asString, "x");
+}
+
+TEST_F(PluginSessionTest, UpstreamParamsReachTheUpstream) {
+  script_->hooks = Hook::Admit | Hook::UpstreamSetupParams;
+  script_->recordParam = 0x7A10;
+  script_->upstreamParams["edge"] = {SetupParam{0x7A10, uint64_t{42}}};
+  start();
+
+  // A second relay whose service "edge" chains to the first one.
+  auto edgeService = service({entry("edge")});
+  edgeService.upstreams = {config::UpstreamConfig{
+      .url = folly::to<std::string>("moqt://localhost:", server_->getAddress().getPort(), "/moq"),
+      .tls = config::UpstreamTlsConfig{.insecure = true},
+  }};
+  config::Config edgeCfg;
+  edgeCfg.services.emplace("edge", edgeService);
+  edgeHost_ = PluginHost::create(edgeCfg).value();
+  edge_ = std::make_shared<MoqxRelayContext>(
+      edgeCfg.services,
+      "edge-relay",
+      /*useRelayThread=*/true,
+      /*useLocalForwarders=*/false,
+      std::nullopt,
+      edgeHost_
+  );
+  ASSERT_TRUE(edgeHost_
+                  ->createServices([&](std::string_view svc) {
+                    return folly::getKeepAliveToken(edge_->relayExecutor(svc));
+                  })
+                  .hasValue());
+  edge_->initUpstreams(ioExecutor_.getAllEventBases()[0].get());
+
+  for (int i = 0; i < 1000; ++i) {
+    auto events = *script_->events.rlock();
+    if (std::find(events.begin(), events.end(), "param:gate=42") != events.end()) {
+      break;
+    }
+    pump(std::chrono::milliseconds(5));
+  }
+  EXPECT_THAT(*script_->events.rlock(), ::testing::Contains("param:gate=42"));
+  edge_->stop();
+  folly::coro::blockingWait(edgeHost_->stop());
 }
 
 TEST_F(PluginSessionTest, SessionCloseRunsSessionEnded) {

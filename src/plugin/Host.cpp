@@ -353,8 +353,25 @@ bool isHostKey(uint64_t key) {
 
 folly::Expected<folly::Unit, std::string>
 mergeParams(Params& into, const Params& from, std::string_view owner) {
+  constexpr uint64_t kVarintLimit = uint64_t{1} << 62;
   for (const auto& param : from) {
     auto keyText = std::to_string(param.key);
+    auto fail = [&](std::string_view why) {
+      return folly::makeUnexpected(
+          "plugin '" + std::string(owner) + "' SETUP parameter " + keyText + ": " + std::string(why)
+      );
+    };
+    if (param.key >= kVarintLimit) {
+      return fail("key does not fit in a QUIC varint");
+    }
+    // MoQT encodes an even key's value as a varint and an odd key's as bytes.
+    const auto* number = std::get_if<uint64_t>(&param.value);
+    if ((param.key % 2 == 0) != (number != nullptr)) {
+      return fail(param.key % 2 == 0 ? "an even key takes a number" : "an odd key takes bytes");
+    }
+    if (number && *number >= kVarintLimit) {
+      return fail("value does not fit in a QUIC varint");
+    }
     if (isHostKey(param.key)) {
       return folly::makeUnexpected(
           "plugin '" + std::string(owner) + "' declares SETUP parameter " + keyText +

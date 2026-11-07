@@ -54,6 +54,9 @@ struct Script {
   // Ignore cancellation while suspended.
   std::atomic<bool> ignoreCancellation{false};
 
+  // When set, admit records "param:<id>=<value>" for this SETUP key.
+  std::optional<uint64_t> recordParam;
+
   std::map<std::string, Params> listenerParams;
   std::map<std::string, Params> upstreamParams;
   // Per plugin id: snapshot answer; absent means {"id": id}.

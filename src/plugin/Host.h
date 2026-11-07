@@ -270,8 +270,9 @@ private:
   std::shared_ptr<InflightTracker> tracker_{std::make_shared<InflightTracker>()};
 };
 
-// Merges one plugin's parameters into `into`; a key already present or
-// written by the host is an error naming `owner`.
+// Merges one plugin's parameters into `into`. Errors name `owner`:
+// - a key already present, or one the host or moxygen writes;
+// - a value of the wrong kind for its key's parity, or past a QUIC varint.
 folly::Expected<folly::Unit, std::string>
 mergeParams(Params& into, const Params& from, std::string_view owner);
 

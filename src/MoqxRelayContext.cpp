@@ -207,14 +207,7 @@ void MoqxRelayContext::startUpstream(
           if (params.hasError()) {
             co_return folly::makeUnexpected(params.error());
           }
-          std::vector<moxygen::SetupParameter> out;
-          for (const auto& param : params.value()) {
-            out.push_back(std::visit(
-                [&](const auto& value) { return moxygen::SetupParameter(param.key, value); },
-                param.value
-            ));
-          }
-          co_return out;
+          co_return toSetupParameters(params.value());
         }
     );
   }

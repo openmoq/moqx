@@ -309,11 +309,11 @@ TEST_F(PluginHostTest, ListenerParamsMergeAndRejectConflicts) {
   cfg.plugins = {entry("a", 0, true), entry("b", 0, true)};
   auto host = PluginHost::create(cfg).value();
   script_->listenerParams["a"] = {SetupParam{0x1000, uint64_t{1}}};
-  script_->listenerParams["b"] = {SetupParam{0x1002, std::string("x")}};
+  script_->listenerParams["b"] = {SetupParam{0x1003, std::string("x")}};
   auto params = run(host->listenerParams("main"));
   ASSERT_TRUE(params.hasValue()) << params.error();
   ASSERT_EQ(params->size(), 2);
-  EXPECT_EQ((*params)[1].key, 0x1002);
+  EXPECT_EQ((*params)[1].key, 0x1003);
 
   script_->listenerParams["b"] = {SetupParam{0x1000, uint64_t{2}}};
   auto duplicate = run(host->listenerParams("main"));
@@ -326,6 +326,26 @@ TEST_F(PluginHostTest, ListenerParamsMergeAndRejectConflicts) {
   auto reserved = run(host->listenerParams("main"));
   ASSERT_TRUE(reserved.hasError());
   EXPECT_THAT(reserved.error(), HasSubstr("which the host writes"));
+}
+
+TEST_F(PluginHostTest, ParamsMustMatchTheirKeyParity) {
+  Params into;
+  EXPECT_TRUE(mergeParams(into, {SetupParam{0x7A10, uint64_t{1}}}, "a").hasValue());
+  EXPECT_TRUE(mergeParams(into, {SetupParam{0x7A11, std::string("x")}}, "a").hasValue());
+
+  auto evenBytes = mergeParams(into, {SetupParam{0x7A12, std::string("x")}}, "a");
+  ASSERT_TRUE(evenBytes.hasError());
+  EXPECT_THAT(evenBytes.error(), HasSubstr("an even key takes a number"));
+  auto oddNumber = mergeParams(into, {SetupParam{0x7A13, uint64_t{1}}}, "a");
+  ASSERT_TRUE(oddNumber.hasError());
+  EXPECT_THAT(oddNumber.error(), HasSubstr("an odd key takes bytes"));
+  auto bigValue = mergeParams(into, {SetupParam{0x7A14, uint64_t{1} << 62}}, "a");
+  ASSERT_TRUE(bigValue.hasError());
+  EXPECT_THAT(bigValue.error(), HasSubstr("value does not fit"));
+  auto bigKey = mergeParams(into, {SetupParam{uint64_t{1} << 62, uint64_t{1}}}, "a");
+  ASSERT_TRUE(bigKey.hasError());
+  EXPECT_THAT(bigKey.error(), HasSubstr("key does not fit"));
+  EXPECT_EQ(into.size(), 2);
 }
 
 TEST_F(PluginHostTest, UpstreamParamsComeFromTheServiceChain) {

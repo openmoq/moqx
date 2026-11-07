@@ -35,6 +35,17 @@ SessionCloseErrorCode toCloseCode(Kind kind) {
   return SessionCloseErrorCode::INTERNAL_ERROR;
 }
 
+std::vector<SetupParameter> toSetupParameters(const plugin::Params& params) {
+  std::vector<SetupParameter> out;
+  out.reserve(params.size());
+  for (const auto& param : params) {
+    out.push_back(
+        std::visit([&](const auto& value) { return SetupParameter(param.key, value); }, param.value)
+    );
+  }
+  return out;
+}
+
 RequestErrorCode toRequestCode(Kind kind) {
   switch (kind) {
   case Kind::ExpiredToken:
@@ -93,11 +104,13 @@ plugin::Result<folly::Unit> stillLive(
   return result;
 }
 
+// `session` is owned here: the filter can go with the session's handlers
+// while the check is suspended.
 folly::coro::Task<plugin::Result<folly::Unit>>
-check(plugin::PluginSession& session, plugin::RequestArgs args) {
+check(std::shared_ptr<plugin::PluginSession> session, plugin::RequestArgs args) {
   auto token = co_await folly::coro::co_current_cancellation_token;
-  auto result = co_await session.authorize(std::move(args), token);
-  co_return stillLive(std::move(result), session, token);
+  auto result = co_await session->authorize(std::move(args), token);
+  co_return stillLive(std::move(result), *session, token);
 }
 
 // Holds PUBLISH objects' consumer until the check passes. moxygen installs it
@@ -114,8 +127,10 @@ folly::coro::Task<Publisher::SubscribeResult>
 PluginPublisherFilter::subscribe(SubscribeRequest sub, std::shared_ptr<TrackConsumer> consumer) {
   auto req = std::make_shared<SubscribeRequest>(std::move(sub));
   auto peer = peeringEnabled_ && getPeerRelayID(req->params).has_value();
+  // Copied before suspending: the filter may be gone when the check resumes.
+  auto downstream = downstream_;
   auto ok = co_await check(
-      *session_,
+      session_,
       requestArgs(
           plugin::RequestKind::Subscribe,
           req,
@@ -128,15 +143,17 @@ PluginPublisherFilter::subscribe(SubscribeRequest sub, std::shared_ptr<TrackCons
   if (ok.hasError()) {
     co_return folly::makeUnexpected(requestError(req->requestID, ok.error()));
   }
-  co_return co_await downstream_->subscribe(std::move(*req), std::move(consumer));
+  co_return co_await downstream->subscribe(std::move(*req), std::move(consumer));
 }
 
 folly::coro::Task<Publisher::FetchResult>
 PluginPublisherFilter::fetch(Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
   auto req = std::make_shared<Fetch>(std::move(fetch));
   auto peer = peeringEnabled_ && getPeerRelayID(req->params).has_value();
+  // Copied before suspending: the filter may be gone when the check resumes.
+  auto downstream = downstream_;
   auto ok = co_await check(
-      *session_,
+      session_,
       requestArgs(
           plugin::RequestKind::Fetch,
           req,
@@ -149,7 +166,7 @@ PluginPublisherFilter::fetch(Fetch fetch, std::shared_ptr<FetchConsumer> consume
   if (ok.hasError()) {
     co_return folly::makeUnexpected(requestError(req->requestID, ok.error()));
   }
-  co_return co_await downstream_->fetch(std::move(*req), std::move(consumer));
+  co_return co_await downstream->fetch(std::move(*req), std::move(consumer));
 }
 
 folly::coro::Task<Publisher::SubscribeNamespaceResult> PluginPublisherFilter::subscribeNamespace(
@@ -158,8 +175,10 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> PluginPublisherFilter::su
 ) {
   auto req = std::make_shared<SubscribeNamespace>(std::move(subNs));
   auto peer = peeringEnabled_ && getPeerRelayID(*req).has_value();
+  // Copied before suspending: the filter may be gone when the check resumes.
+  auto downstream = downstream_;
   auto ok = co_await check(
-      *session_,
+      session_,
       requestArgs(
           plugin::RequestKind::SubscribeNamespace,
           req,
@@ -172,7 +191,7 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> PluginPublisherFilter::su
   if (ok.hasError()) {
     co_return folly::makeUnexpected(requestError(req->requestID, ok.error()));
   }
-  co_return co_await downstream_->subscribeNamespace(std::move(*req), std::move(handle));
+  co_return co_await downstream->subscribeNamespace(std::move(*req), std::move(handle));
 }
 
 folly::coro::Task<Publisher::SubscribeTracksResult> PluginPublisherFilter::subscribeTracks(
@@ -181,8 +200,10 @@ folly::coro::Task<Publisher::SubscribeTracksResult> PluginPublisherFilter::subsc
 ) {
   auto req = std::make_shared<SubscribeTracks>(std::move(subTracks));
   auto peer = peeringEnabled_ && getPeerRelayID(req->params).has_value();
+  // Copied before suspending: the filter may be gone when the check resumes.
+  auto downstream = downstream_;
   auto ok = co_await check(
-      *session_,
+      session_,
       requestArgs(
           plugin::RequestKind::SubscribeTracks,
           req,
@@ -195,15 +216,17 @@ folly::coro::Task<Publisher::SubscribeTracksResult> PluginPublisherFilter::subsc
   if (ok.hasError()) {
     co_return folly::makeUnexpected(requestError(req->requestID, ok.error()));
   }
-  co_return co_await downstream_->subscribeTracks(std::move(*req), std::move(publishBlockedHandle));
+  co_return co_await downstream->subscribeTracks(std::move(*req), std::move(publishBlockedHandle));
 }
 
 folly::coro::Task<Publisher::TrackStatusResult>
 PluginPublisherFilter::trackStatus(const TrackStatus status) {
   auto req = std::make_shared<TrackStatus>(status);
   auto peer = peeringEnabled_ && getPeerRelayID(req->params).has_value();
+  // Copied before suspending: the filter may be gone when the check resumes.
+  auto downstream = downstream_;
   auto ok = co_await check(
-      *session_,
+      session_,
       requestArgs(
           plugin::RequestKind::TrackStatus,
           req,
@@ -216,7 +239,7 @@ PluginPublisherFilter::trackStatus(const TrackStatus status) {
   if (ok.hasError()) {
     co_return folly::makeUnexpected(requestError(req->requestID, ok.error()));
   }
-  co_return co_await downstream_->trackStatus(*req);
+  co_return co_await downstream->trackStatus(*req);
 }
 
 void PluginPublisherFilter::goaway(Goaway g) {
@@ -287,8 +310,10 @@ folly::coro::Task<Subscriber::PublishNamespaceResult> PluginSubscriberFilter::pu
 ) {
   auto req = std::make_shared<PublishNamespace>(std::move(pubNs));
   auto peer = peeringEnabled_ && getPeerRelayID(req->params).has_value();
+  // Copied before suspending: the filter may be gone when the check resumes.
+  auto downstream = downstream_;
   auto ok = co_await check(
-      *session_,
+      session_,
       requestArgs(
           plugin::RequestKind::PublishNamespace,
           req,
@@ -301,7 +326,7 @@ folly::coro::Task<Subscriber::PublishNamespaceResult> PluginSubscriberFilter::pu
   if (ok.hasError()) {
     co_return folly::makeUnexpected(requestError(req->requestID, ok.error()));
   }
-  co_return co_await downstream_->publishNamespace(std::move(*req), std::move(callback));
+  co_return co_await downstream->publishNamespace(std::move(*req), std::move(callback));
 }
 
 void PluginSubscriberFilter::goaway(Goaway g) {
