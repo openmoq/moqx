@@ -63,7 +63,7 @@ services:
 - `id` is unique within each service's chain: process entries and that service's entries. It names the plugin in logs, `/state` and errors.
 - `service_defaults.plugins` maps a plugin type to a partial `config`. It is deep-merged into each service-scope entry of that type: objects merge, the entry's values win, arrays and scalars are replaced. It never creates an entry and never applies to process entries. Every field can be defaulted, secrets included.
 - `admission_timeout_ms` and `authorize_timeout_ms` (per service, with `service_defaults`) bound the whole `admit` and `authorize` chains.
-- Each builtin registers in [src/plugins/Builtins.cpp](/src/plugins/Builtins.cpp): type name, factory, a reflect-cpp config struct, and a redacting serializer. The loader reads the envelope and hands the `config` subtree to the plugin's struct, so `moqx --validate` and `/config` keep typed errors and redaction.
+- Each builtin registers in [src/plugins/Builtins.cpp](/src/plugins/Builtins.cpp): type name, factory, a reflect-cpp config struct, and a redacting serializer. The loader reads the envelope and hands the `config` subtree to the plugin's struct, so `moqx validate-config` and `/config` keep typed errors and redaction.
 - Registration is one explicit list. Static-constructor registration is rejected: an archive can drop an unreferenced translation unit.
 - Validate-only mode runs the factories. Factories have no side effects.
 
