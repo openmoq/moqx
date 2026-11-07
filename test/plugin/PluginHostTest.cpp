@@ -9,6 +9,7 @@
 
 #include <folly/coro/BlockingWait.h>
 #include <folly/io/async/EventBase.h>
+#include <folly/json/json.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <moxygen/MoQTypes.h>
@@ -347,7 +348,7 @@ TEST_F(PluginHostTest, SnapshotsReportErrorsAndStalls) {
   auto snapshots = run(host->snapshots("live", std::chrono::milliseconds(1000)));
   ASSERT_EQ(snapshots.size(), 2);
   EXPECT_EQ(snapshots[0].id, "ok");
-  EXPECT_EQ(snapshots[0].value["id"], "ok");
+  EXPECT_EQ(folly::parseJson(snapshots[0].json)["id"], "ok");
   ASSERT_TRUE(snapshots[1].error.has_value());
   EXPECT_THAT(*snapshots[1].error, HasSubstr("boom"));
 

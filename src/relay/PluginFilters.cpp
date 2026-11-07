@@ -80,10 +80,24 @@ plugin::RequestArgs requestArgs(
   };
 }
 
+// The session may end, or the request be cancelled, while a suspended check
+// resumes; neither may reach the relay.
+plugin::Result<folly::Unit> stillLive(
+    plugin::Result<folly::Unit> result,
+    const plugin::PluginSession& session,
+    const folly::CancellationToken& token
+) {
+  if (result.hasValue() && (session.ended() || token.isCancellationRequested())) {
+    return plugin::fail(plugin::Error::Kind::Internal, "request cancelled");
+  }
+  return result;
+}
+
 folly::coro::Task<plugin::Result<folly::Unit>>
 check(plugin::PluginSession& session, plugin::RequestArgs args) {
   auto token = co_await folly::coro::co_current_cancellation_token;
-  co_return co_await session.authorize(std::move(args), std::move(token));
+  auto result = co_await session.authorize(std::move(args), token);
+  co_return stillLive(std::move(result), session, token);
 }
 
 // Holds PUBLISH objects' consumer until the check passes. moxygen installs it
@@ -244,7 +258,8 @@ PluginSubscriberFilter::publish(PublishRequest pub, std::shared_ptr<Subscription
        downstream = downstream_,
        context = std::move(context)](
       ) mutable -> folly::coro::Task<folly::Expected<PublishOk, PublishError>> {
-        auto ok = co_await session->awaitAuthorize(std::move(started));
+        auto token = co_await folly::coro::co_current_cancellation_token;
+        auto ok = stillLive(co_await session->awaitAuthorize(std::move(started)), *session, token);
         if (ok.hasError()) {
           co_return folly::makeUnexpected(requestError(req->requestID, ok.error()));
         }

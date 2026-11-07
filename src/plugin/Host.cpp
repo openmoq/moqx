@@ -11,6 +11,7 @@
 #include <folly/coro/Collect.h>
 #include <folly/coro/TimedWait.h>
 #include <folly/coro/WithCancellation.h>
+#include <folly/json/json.h>
 #include <folly/logging/xlog.h>
 #include <moxygen/MoQTypes.h>
 
@@ -617,7 +618,7 @@ PluginHost::snapshots(std::string service, std::chrono::milliseconds budget) {
     }
     InflightGuard guard(tracker_);
     if (!guard) {
-      out.push_back(PluginSnapshot{member.id, nullptr, "shutting down"});
+      out.push_back(PluginSnapshot{member.id, "", "shutting down"});
       continue;
     }
     auto snapshot = folly::coro::co_withExecutor(
@@ -632,11 +633,16 @@ PluginHost::snapshots(std::string service, std::chrono::milliseconds budget) {
     auto result =
         co_await folly::coro::co_awaitTry(folly::coro::timed_wait(std::move(snapshot), budget));
     if (result.hasException()) {
-      out.push_back(PluginSnapshot{member.id, nullptr, describe(result.exception())});
+      out.push_back(PluginSnapshot{member.id, "", describe(result.exception())});
     } else if (!*result) {
-      out.push_back(PluginSnapshot{member.id, nullptr, "snapshot timed out"});
+      out.push_back(PluginSnapshot{member.id, "", "snapshot timed out"});
     } else {
-      out.push_back(PluginSnapshot{member.id, std::move(**result), std::nullopt});
+      // A plugin value can fail to serialize (NaN, a non-string key).
+      try {
+        out.push_back(PluginSnapshot{member.id, folly::toJson(**result), std::nullopt});
+      } catch (const std::exception& ex) {
+        out.push_back(PluginSnapshot{member.id, "", ex.what()});
+      }
     }
   }
   co_return out;

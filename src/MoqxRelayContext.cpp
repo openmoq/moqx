@@ -197,7 +197,9 @@ void MoqxRelayContext::startUpstream(
       cfg.relayCost
   );
   provider->setSubscriptionBufferBytes(subscriptionBufferBytes(entry.config));
-  if (plugins_ && !entry.config.plugins.empty()) {
+  // Process-scope plugins are in the chain too, so a service without its own
+  // entries can still have one.
+  if (plugins_ && plugins_->chain(entry.serviceName)) {
     provider->setSetupParamsProvider(
         [plugins = plugins_, service = entry.serviceName, url = cfg.url](
         ) -> folly::coro::Task<folly::Expected<std::vector<moxygen::SetupParameter>, std::string>> {

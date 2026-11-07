@@ -186,8 +186,9 @@ private:
 
 struct PluginSnapshot {
   std::string id;
-  folly::dynamic value;
-  // Set when the snapshot failed or stalled; value is then null.
+  // The snapshot as JSON; empty when `error` is set.
+  std::string json;
+  // Set when the snapshot failed, stalled or could not be written as JSON.
   std::optional<std::string> error;
 };
 

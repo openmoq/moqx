@@ -6,8 +6,6 @@
 
 #pragma once
 
-#include <folly/json/json.h>
-
 #include <chrono>
 #include <string_view>
 
@@ -233,7 +231,7 @@ public:
         w_.field("error", std::string_view(*snapshot.error));
         w_.endObject();
       } else {
-        w_.rawVal(folly::toJson(snapshot.value));
+        w_.rawVal(snapshot.json);
       }
     }
     w_.endObject();

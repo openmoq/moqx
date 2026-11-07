@@ -21,6 +21,7 @@
 #include "moqx/Version.h"
 #include "plugin/Host.h"
 #include "stats/StatsRegistry.h"
+#include <moxygen/events/MoQFollyExecutorImpl.h>
 
 #include <csignal>
 
@@ -179,6 +180,10 @@ int main(int argc, char* argv[]) {
   );
 
   // === 5. Initialize dependencies ===
+  // Relay state without a relay thread lives on io worker 0. This executor's
+  // keepalive does not pin that EventBase, which plugin chains outlive.
+  auto singleThreadExec =
+      std::make_shared<moxygen::MoQFollyExecutorImpl>(ioExecutor->getAllEventBases()[0].get());
   // Plugin roots start before any listener exists; a signal cancels startup.
   auto pluginHost = plugin::PluginHost::create(config);
   if (pluginHost.hasError()) {
@@ -228,6 +233,7 @@ int main(int argc, char* argv[]) {
     // Listener setup (e.g. TLS cert loading) can throw. Report cleanly and exit
     // non-zero rather than letting it reach std::terminate / SIGABRT (#173).
     std::cerr << "Error: failed to initialize listener: " << e.what() << "\n";
+    onMain(plugins->stop());
     return 1;
   }
 
@@ -250,8 +256,7 @@ int main(int argc, char* argv[]) {
   if (!pluginError) {
     auto created = plugins->createServices([&](std::string_view service) {
       auto* exec = context->relayExecutor(service);
-      return exec ? folly::getKeepAliveToken(exec)
-                  : folly::Executor::KeepAlive<>(ioExecutor->getAllEventBases()[0]);
+      return folly::getKeepAliveToken(exec ? exec : singleThreadExec.get());
     });
     if (created.hasError()) {
       pluginError = created.error();
@@ -323,7 +328,8 @@ int main(int argc, char* argv[]) {
     }
   }
 
-  if (exitCode == 0) {
+  // A signal during startup was consumed by the loop that drove it.
+  if (exitCode == 0 && !startupCancel.isCancellationRequested()) {
     evb.loopForever();
   }
 

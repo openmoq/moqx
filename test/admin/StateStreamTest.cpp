@@ -122,8 +122,8 @@ TEST(StateStreamTest, PluginSnapshotsNestUnderTheService) {
   visitor.onRelayBegin("mesh", 0);
   visitor.onServiceBegin("live");
   visitor.onServicePlugins({
-      {.id = "router", .value = folly::dynamic::object("routes", 3)},
-      {.id = "stuck", .value = nullptr, .error = "snapshot timed out"},
+      {.id = "router", .json = R"({"routes":3})"},
+      {.id = "stuck", .error = "snapshot timed out"},
   });
   visitor.onServiceEnd();
   visitor.onRelayEnd();
