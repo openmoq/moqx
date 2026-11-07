@@ -7,6 +7,7 @@ name: moxygen sync
 # moxygen PRs that need immediate propagation); the routine cron-cascade
 # does not use it.
 # One PR at a time — blocks if one is pending.
+# Waits for the target commit's moxygen `ci main`; no published snapshot, no PR.
 #
 # Branch naming: sync-moxygen/<short-sha>
 # Auto-merged by auto-merge-moxygen.yml after ci-pr passes.
@@ -24,6 +25,11 @@ on:
   repository_dispatch:
     types: [moxygen-update]
   workflow_dispatch:
+
+# A newer sync replaces one still waiting on a moxygen build.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
 
 permissions:
   contents: write
@@ -148,8 +154,37 @@ jobs:
             echo "needs_update=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Create sync branch and PR
+      # moqx fetches moxygen's prebuilt by tag, so pinning a commit with no published
+      # snapshot makes every build job compile moxygen from source.
+      - name: Wait for the moxygen snapshot
         if: steps.blocking.outputs.blocked == 'false' && steps.target.outputs.needs_update == 'true'
+        id: snapshot
+        timeout-minutes: 90
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          TARGET_SHA: ${{ steps.target.outputs.target_sha }}
+        run: |
+          MOXYGEN=openmoq/moxygen
+          TAG="snapshot-${TARGET_SHA:0:12}"
+          published() { gh api "repos/$MOXYGEN/releases/tags/$TAG" --silent 2>/dev/null; }
+
+          if ! published; then
+            RUN_ID=$(gh run list --repo "$MOXYGEN" --workflow omoq-ci-main.yml --commit "$TARGET_SHA" --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+            if [ -n "$RUN_ID" ]; then
+              echo "Waiting for moxygen ci main run $RUN_ID"
+              gh run watch "$RUN_ID" --repo "$MOXYGEN" --interval 60 >/dev/null || true
+            fi
+          fi
+
+          if published; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::No published $TAG on $MOXYGEN, so no sync PR. The next sync tries again."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create sync branch and PR
+        if: steps.snapshot.outputs.ready == 'true'
         id: new_pr
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -226,7 +261,7 @@ jobs:
 
       # ── Approve PR (different identity for required review) ──
       - name: Approve PR
-        if: steps.blocking.outputs.blocked == 'false' && steps.target.outputs.needs_update == 'true'
+        if: steps.snapshot.outputs.ready == 'true'
         env:
           GH_TOKEN: ${{ secrets.OMOQ_SYNC_TOKEN }}
         run: |
