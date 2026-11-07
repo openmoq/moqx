@@ -1,0 +1,1 @@
+- Authorization is now the [`cat4moq-auth`](/docs/config.md#cat4moq-auth) plugin. Configs with `auth:` or `service_defaults.auth:` fail validation: move them into a `plugins:` entry and `service_defaults.plugins.cat4moq-auth`. `moqx-issuer` reads that entry; `--auth_plugin_id` picks one when a service has several.

@@ -192,18 +192,19 @@ moqx_add_gtest(moqx_service_matcher_test
 
 moqx_add_gtest(moqx_auth_test
   SRCS AuthTest.cpp
-  LIBS moqx_core moqx_issuer_lib GTest::gtest_main
+  LIBS moqx_auth moqx_plugin moqx_issuer_lib GTest::gtest_main
 )
 
 moqx_add_gtest(moqx_auth_token_issuer_test
   SRCS AuthTokenIssuerTest.cpp
-  LIBS moqx_core moqx_issuer_lib GTest::gtest_main
+  LIBS moqx_auth moqx_issuer_lib GTest::gtest_main
 )
 
-moqx_add_gtest(moqx_auth_filters_test
-  SRCS relay/AuthFiltersTest.cpp
+moqx_add_gtest(moqx_cat4moq_auth_test
+  SRCS plugins/Cat4moqAuthTest.cpp
   LIBS
     moqx_core
+    moqx_config_loader
     moqx_issuer_lib
     GTest::gtest_main
     GTest::gmock

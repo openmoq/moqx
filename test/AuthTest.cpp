@@ -4,9 +4,10 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-#include "auth/Auth.h"
+#include "AuthTestAdapters.h"
 #include "auth/AuthTokenIssuer.h"
 #include "auth/HmacKey.h"
+#include "plugin/Api.h"
 
 #include <catapult/crypto.hpp>
 #include <catapult/cwt.hpp>
@@ -31,11 +32,10 @@ std::string namespaceBytes(const TrackNamespace& ns) {
   return out;
 }
 
-config::AuthConfig makeConfig() {
-  return config::AuthConfig{
-      .enabled = true,
+AuthConfig makeConfig() {
+  return AuthConfig{
       .tokenType = 77,
-      .hmacKeys = {config::AuthConfig::HmacKey{.id = "k1", .secret = "secret"}},
+      .hmacKeys = {AuthConfig::HmacKey{.id = "k1", .secret = "secret"}},
       .requireSetupToken = true,
       .allowRequestTokenOverride = true,
       .maxTokensPerMessage = 4,
@@ -100,15 +100,15 @@ AuthToken makeRawCwt(std::string_view claimsHex) {
 folly::Expected<Grants, AuthError> verifyStrict(const AuthToken& token) {
   auto config = makeConfig();
   config.strictClaims = true;
-  return AuthTokenVerifier(config).verify(token);
+  return verify(AuthTokenVerifier(config), token);
 }
 
-config::AuthConfig::AnonymousScope makeAnonymousConfigScope(
+AuthConfig::AnonymousScope makeAnonymousConfigScope(
     std::vector<Action> actions,
     std::optional<std::vector<std::string>> namespaceSegments = std::nullopt,
     std::optional<std::string> trackName = std::nullopt
 ) {
-  return config::AuthConfig::AnonymousScope{
+  return AuthConfig::AnonymousScope{
       .actions = std::move(actions),
       .namespaceSegments = std::move(namespaceSegments),
       .trackName = std::move(trackName),
@@ -125,7 +125,7 @@ TEST(AuthTest, VerifiesSignedTokenAndAllowsMatchingAction) {
       {MatchRule{.type = MatchRule::Type::Exact, .value = namespaceBytes(ns)}},
       {MatchRule{.type = MatchRule::Type::Exact, .value = "video"}}
   ));
-  auto grants = verifier.verify(token);
+  auto grants = verify(verifier, token);
   ASSERT_TRUE(grants.hasValue());
   EXPECT_TRUE(allows(grants.value(), Action::Subscribe, FullTrackName{ns, "video"}));
   EXPECT_FALSE(allows(grants.value(), Action::Publish, FullTrackName{ns, "video"}));
@@ -232,10 +232,10 @@ TEST(AuthTest, FindAuthTokensSelectsMatchingAuthorizationToken) {
           .hasValue()
   );
 
-  auto tokens = findAuthTokens(params, 77);
+  auto tokens = plugin::ParamsView(&params).authTokens(77);
   ASSERT_EQ(tokens.size(), 1);
-  EXPECT_EQ(tokens[0].tokenValue, "right");
-  EXPECT_TRUE(findAuthTokens(params, 78).empty());
+  EXPECT_EQ(tokens[0].value, "right");
+  EXPECT_TRUE(plugin::ParamsView(&params).authTokens(78).empty());
 }
 
 TEST(AuthTest, FindAuthTokensReturnsAllMatchingTokens) {
@@ -267,44 +267,46 @@ TEST(AuthTest, FindAuthTokensReturnsAllMatchingTokens) {
           .hasValue()
   );
 
-  auto tokens = findAuthTokens(params, 77);
+  auto tokens = plugin::ParamsView(&params).authTokens(77);
   ASSERT_EQ(tokens.size(), 2);
-  EXPECT_EQ(tokens[0].tokenValue, "first");
-  EXPECT_EQ(tokens[1].tokenValue, "second");
+  EXPECT_EQ(tokens[0].value, "first");
+  EXPECT_EQ(tokens[1].value, "second");
 }
 
 TEST(AuthTest, RejectsBadSignature) {
   auto token = makeToken(makeGrants({Action::ClientSetup}, {}, {}));
   token.tokenValue.back() ^= 0x01;
   AuthTokenVerifier verifier(makeConfig());
-  auto grants = verifier.verify(token);
+  auto grants = verify(verifier, token);
   ASSERT_TRUE(grants.hasError());
   EXPECT_EQ(grants.error(), AuthError::BadSignature);
 }
 
 TEST(AuthTest, SelectsConfiguredKeyByID) {
   auto config = makeConfig();
-  config.hmacKeys.push_back(config::AuthConfig::HmacKey{.id = "k2", .secret = "secret-2"});
+  config.hmacKeys.push_back(AuthConfig::HmacKey{.id = "k2", .secret = "secret-2"});
 
   AuthTokenVerifier verifier(config);
   auto grants =
-      verifier.verify(makeToken(makeGrants({Action::ClientSetup}, {}, {}), "secret-2", "k2"));
+      verify(verifier, makeToken(makeGrants({Action::ClientSetup}, {}, {}), "secret-2", "k2"));
   ASSERT_TRUE(grants.hasValue());
 
   auto missingKey =
-      verifier.verify(makeToken(makeGrants({Action::ClientSetup}, {}, {}), "secret-3", "k3"));
+      verify(verifier, makeToken(makeGrants({Action::ClientSetup}, {}, {}), "secret-3", "k3"));
   ASSERT_TRUE(missingKey.hasError());
   EXPECT_EQ(missingKey.error(), AuthError::BadSignature);
 }
 
-TEST(AuthTest, RejectsWrongTokenType) {
+TEST(AuthTest, IgnoresTokensOfAnotherType) {
   auto token = makeToken(makeGrants({Action::ClientSetup}, {}, {}));
   token.tokenType = 78;
   AuthTokenVerifier verifier(makeConfig());
+  Parameters params(FrameType::CLIENT_SETUP);
+  params.insertParam(Parameter(folly::to_underlying(SetupKey::AUTHORIZATION_TOKEN), token));
 
-  auto grants = verifier.verify(token);
+  auto grants = authenticateSetup(verifier, params);
   ASSERT_TRUE(grants.hasError());
-  EXPECT_EQ(grants.error(), AuthError::WrongTokenType);
+  EXPECT_EQ(grants.error(), AuthError::Missing);
 }
 
 TEST(AuthTest, RejectsEmptyTokenAsMalformed) {
@@ -312,7 +314,7 @@ TEST(AuthTest, RejectsEmptyTokenAsMalformed) {
 
   auto empty = makeToken(makeGrants({Action::ClientSetup}, {}, {}));
   empty.tokenValue.clear();
-  auto emptyRes = verifier.verify(empty);
+  auto emptyRes = verify(verifier, empty);
   ASSERT_TRUE(emptyRes.hasError());
   EXPECT_EQ(emptyRes.error(), AuthError::Malformed);
 }
@@ -327,7 +329,7 @@ TEST(AuthTest, RejectsGarbageBytesAsMalformedOrBadSig) {
       .tokenValue = std::string("\xde\xad\xbe\xef", 4),
       .alias = AuthToken::DontRegister,
   };
-  auto result = verifier.verify(token);
+  auto result = verify(verifier, token);
   ASSERT_TRUE(result.hasError());
   EXPECT_TRUE(result.error() == AuthError::Malformed || result.error() == AuthError::BadSignature);
 }
@@ -336,14 +338,14 @@ TEST(AuthTest, RejectsExpiredToken) {
   auto expired = makeGrants({Action::ClientSetup}, {}, {});
   expired.expiresAt = std::chrono::system_clock::time_point(std::chrono::seconds(1'735'689'600));
   AuthTokenVerifier verifier(makeConfig());
-  auto grants = verifier.verify(makeToken(expired));
+  auto grants = verify(verifier, makeToken(expired));
   ASSERT_TRUE(grants.hasError());
   EXPECT_EQ(grants.error(), AuthError::Expired);
 }
 
 TEST(AuthTest, VerifiesCatapultCwtWithOpenScope) {
   AuthTokenVerifier verifier(makeConfig());
-  auto grants = verifier.verify(makeToken(makeGrants({Action::ClientSetup}, {}, {})));
+  auto grants = verify(verifier, makeToken(makeGrants({Action::ClientSetup}, {}, {})));
 
   ASSERT_TRUE(grants.hasValue());
   EXPECT_TRUE(allows(grants.value(), Action::ClientSetup, TrackNamespace{}));
@@ -353,7 +355,7 @@ TEST(AuthTest, StrictClaimsAcceptsOnlyEnforcedClaims) {
   auto config = makeConfig();
   config.strictClaims = true;
   AuthTokenVerifier verifier(config);
-  EXPECT_TRUE(verifier.verify(makeToken(makeGrants({Action::ClientSetup}, {}, {}))).hasValue());
+  EXPECT_TRUE(verify(verifier, makeToken(makeGrants({Action::ClientSetup}, {}, {}))).hasValue());
 }
 
 TEST(AuthTest, StrictClaimsRejectsUnenforcedClaim) {
@@ -370,18 +372,18 @@ TEST(AuthTest, StrictClaimsRejectsUnenforcedClaim) {
       .alias = AuthToken::DontRegister,
   };
 
-  EXPECT_TRUE(AuthTokenVerifier(makeConfig()).verify(token).hasValue());
+  EXPECT_TRUE(verify(AuthTokenVerifier(makeConfig()), token).hasValue());
 
   auto config = makeConfig();
   config.strictClaims = true;
-  auto strict = AuthTokenVerifier(config).verify(token);
+  auto strict = verify(AuthTokenVerifier(config), token);
   ASSERT_TRUE(strict.hasError());
   EXPECT_EQ(strict.error(), AuthError::Malformed);
 }
 
 TEST(AuthTest, StrictClaimsAcceptsRawCwtWithoutKid) {
   auto token = makeRawCwt("a1041af4865700"); // {exp: 4102444800}
-  EXPECT_TRUE(AuthTokenVerifier(makeConfig()).verify(token).hasValue());
+  EXPECT_TRUE(verify(AuthTokenVerifier(makeConfig()), token).hasValue());
   EXPECT_TRUE(verifyStrict(token).hasValue());
 }
 
@@ -420,7 +422,7 @@ TEST(AuthTest, MultiRuleCompoundMatchRoundtripsViaCwt) {
        MatchRule{.type = MatchRule::Type::Suffix, .value = ".mp4"}}
   );
   AuthTokenVerifier verifier(makeConfig());
-  auto result = verifier.verify(makeToken(grants));
+  auto result = verify(verifier, makeToken(grants));
   ASSERT_TRUE(result.hasValue());
   TrackNamespace ns{};
   EXPECT_TRUE(allows(result.value(), Action::Subscribe, FullTrackName{ns, "live-stream.mp4"}));
@@ -841,7 +843,7 @@ TEST(AuthTest, AuthenticateSetupAnonymousClaimNeverSatisfiesClientSetupGate) {
 
 TEST(AuthTest, AuthorizeAnonymousClaimNamespaceMatchRestrictsToConfiguredPrefix) {
   auto config = makeConfig();
-  config.anonymousClaim = {config::AuthConfig::AnonymousScope{
+  config.anonymousClaim = {AuthConfig::AnonymousScope{
       .actions = {Action::Fetch},
       .namespaceSegments = std::vector<std::string>{"live"},
       .namespaceMatchMode = MatchRuleType::Prefix,

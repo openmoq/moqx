@@ -5,6 +5,7 @@
  */
 
 #include "auth/AuthTokenIssuer.h"
+#include "AuthTestAdapters.h"
 
 #include "auth/Auth.h"
 
@@ -28,18 +29,20 @@ TEST(AuthTokenIssuerTest, IssuesSetupAndPublishTokenAcceptedByVerifier) {
 
   auto issued = issueToken(options);
 
-  AuthTokenVerifier verifier(config::AuthConfig{
-      .enabled = true,
+  AuthTokenVerifier verifier(AuthConfig{
       .tokenType = 16,
-      .hmacKeys = {config::AuthConfig::HmacKey{.id = "cat-dev", .secret = secret}},
+      .hmacKeys = {AuthConfig::HmacKey{.id = "cat-dev", .secret = secret}},
       .requireSetupToken = true,
       .allowRequestTokenOverride = true,
   });
-  auto grants = verifier.verify(AuthToken{
-      .tokenType = 16,
-      .tokenValue = issued.tokenValue,
-      .alias = AuthToken::DontRegister,
-  });
+  auto grants = verify(
+      verifier,
+      AuthToken{
+          .tokenType = 16,
+          .tokenValue = issued.tokenValue,
+          .alias = AuthToken::DontRegister,
+      }
+  );
 
   ASSERT_TRUE(grants.hasValue());
   EXPECT_TRUE(allows(grants.value(), Action::ClientSetup, TrackNamespace{}));
@@ -76,13 +79,12 @@ TEST(AuthTokenIssuerTest, ParsesSlashSeparatedNamespace) {
 }
 
 TEST(AuthTokenIssuerTest, SelectsConfiguredHmacKeyByID) {
-  config::AuthConfig auth{
-      .enabled = true,
+  AuthConfig auth{
       .tokenType = 16,
       .hmacKeys =
           {
-              config::AuthConfig::HmacKey{.id = "old", .secret = "old-secret"},
-              config::AuthConfig::HmacKey{.id = "active", .secret = "active-secret"},
+              AuthConfig::HmacKey{.id = "old", .secret = "old-secret"},
+              AuthConfig::HmacKey{.id = "active", .secret = "active-secret"},
           },
   };
 

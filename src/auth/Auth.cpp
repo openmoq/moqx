@@ -17,6 +17,7 @@
 #include <folly/Conv.h>
 #include <folly/Expected.h>
 #include <folly/Range.h>
+#include <folly/String.h>
 #include <folly/logging/xlog.h>
 
 #include <algorithm>
@@ -27,8 +28,6 @@
 #include <stdexcept>
 #include <utility>
 #include <vector>
-
-using namespace moxygen;
 
 namespace openmoq::moqx::auth {
 namespace {
@@ -147,7 +146,7 @@ bool hasOnlyEnforcedClaims(std::string_view cwtBytes) {
   return claims.eof();
 }
 
-Grants buildAnonymousGrants(const std::vector<config::AuthConfig::AnonymousScope>& configScopes) {
+Grants buildAnonymousGrants(const std::vector<AuthConfig::AnonymousScope>& configScopes) {
   Grants grants; // expiresAt stays time_point::max() -- a static claim never expires
   for (const auto& configScope : configScopes) {
     Scope scope;
@@ -155,7 +154,7 @@ Grants buildAnonymousGrants(const std::vector<config::AuthConfig::AnonymousScope
     if (configScope.namespaceSegments) {
       scope.namespaceMatches.push_back(MatchRule{
           .type = configScope.namespaceMatchMode,
-          .value = canonicalNamespace(TrackNamespace{*configScope.namespaceSegments}),
+          .value = canonicalNamespace(*configScope.namespaceSegments),
       });
     }
     if (configScope.trackName) {
@@ -185,8 +184,7 @@ denialError(const std::vector<Grants>& verifiedGrants, std::optional<AuthError> 
 // Verifies every token, pooling grants from the ones that succeed. A token
 // that fails to verify is dropped as a non-viable candidate; `firstError`
 // keeps the earliest failure for a caller with nothing else to report.
-VerifiedTokens
-verifyTokens(const AuthTokenVerifier& verifier, const std::vector<AuthToken>& tokens) {
+VerifiedTokens verifyTokens(const AuthTokenVerifier& verifier, const TokenValues& tokens) {
   VerifiedTokens result;
   for (const auto& token : tokens) {
     auto verified = verifier.verify(token);
@@ -203,7 +201,7 @@ verifyTokens(const AuthTokenVerifier& verifier, const std::vector<AuthToken>& to
 
 } // namespace
 
-AuthTokenVerifier::AuthTokenVerifier(config::AuthConfig config) : config_(std::move(config)) {
+AuthTokenVerifier::AuthTokenVerifier(AuthConfig config) : config_(std::move(config)) {
   derivedKeys_.reserve(config_.hmacKeys.size());
   for (const auto& key : config_.hmacKeys) {
     const std::size_t idx = derivedKeys_.size();
@@ -215,18 +213,12 @@ AuthTokenVerifier::AuthTokenVerifier(config::AuthConfig config) : config_(std::m
   anonymousGrants_ = buildAnonymousGrants(config_.anonymousClaim);
 }
 
-folly::Expected<Grants, AuthError> AuthTokenVerifier::verify(const AuthToken& token) const {
-  if (!config_.enabled) {
-    return Grants{};
-  }
-  if (token.tokenType != config_.tokenType) {
-    return folly::makeUnexpected(AuthError::WrongTokenType);
-  }
-  if (token.tokenValue.empty()) {
+folly::Expected<Grants, AuthError> AuthTokenVerifier::verify(std::string_view token) const {
+  if (token.empty()) {
     return folly::makeUnexpected(AuthError::Malformed);
   }
 
-  const auto tokenBytes = toBytes(token.tokenValue);
+  const auto tokenBytes = toBytes(token);
   const auto span = std::span<const uint8_t>(tokenBytes.data(), tokenBytes.size());
 
   // Peek the COSE protected header to extract kid without any crypto.
@@ -247,7 +239,7 @@ folly::Expected<Grants, AuthError> AuthTokenVerifier::verify(const AuthToken& to
       if (grants.expiresAt <= std::chrono::system_clock::now()) {
         return folly::makeUnexpected(AuthError::Expired);
       }
-      if (config_.strictClaims && !hasOnlyEnforcedClaims(token.tokenValue)) {
+      if (config_.strictClaims && !hasOnlyEnforcedClaims(token)) {
         return folly::makeUnexpected(AuthError::Malformed);
       }
       return grants;
@@ -276,13 +268,8 @@ folly::Expected<Grants, AuthError> AuthTokenVerifier::verify(const AuthToken& to
   return folly::makeUnexpected(AuthError::BadSignature);
 }
 
-folly::Expected<std::shared_ptr<const std::vector<Grants>>, AuthError>
-authenticateSetup(const AuthTokenVerifier& verifier, const Parameters& setupParams) {
-  if (!verifier.enabled()) {
-    return std::shared_ptr<const std::vector<Grants>>{};
-  }
-
-  auto tokens = findAuthTokens(setupParams, verifier.tokenType());
+folly::Expected<std::vector<Grants>, AuthError>
+authenticateSetup(const AuthTokenVerifier& verifier, const TokenValues& tokens) {
   if (tokens.size() > verifier.maxTokensPerMessage()) {
     XLOG(WARN) << "authenticateSetup: " << tokens.size() << " setup tokens exceeds "
                << "max_tokens_per_message=" << verifier.maxTokensPerMessage() << "; rejecting";
@@ -297,26 +284,21 @@ authenticateSetup(const AuthTokenVerifier& verifier, const Parameters& setupPara
     // Session is authorized iff any verified setup token grants ClientSetup;
     // all verified tokens' scopes still pool into the session grants below,
     // not just the one that granted it.
-    if (!allowsAny(verifiedGrants, Action::ClientSetup, TrackNamespace{})) {
+    if (!allowsAny(verifiedGrants, Action::ClientSetup, Namespace{})) {
       return folly::makeUnexpected(denialError(verifiedGrants, firstError));
     }
   }
-  return std::make_shared<const std::vector<Grants>>(std::move(verifiedGrants));
+  return std::move(verifiedGrants);
 }
 
 folly::Expected<folly::Unit, AuthError> authorize(
     const AuthTokenVerifier& verifier,
     Action action,
-    const Parameters& params,
-    const TrackNamespace& ns,
+    const TokenValues& tokens,
+    Namespace ns,
     const std::vector<Grants>& sessionGrants,
     std::optional<std::string_view> trackName
 ) {
-  if (!verifier.enabled()) {
-    return folly::unit;
-  }
-
-  auto tokens = findAuthTokens(params, verifier.tokenType());
   if (tokens.size() > verifier.maxTokensPerMessage()) {
     XLOG(WARN) << "authorize: " << tokens.size() << " request tokens exceeds "
                << "max_tokens_per_message=" << verifier.maxTokensPerMessage()
@@ -340,10 +322,9 @@ folly::Expected<folly::Unit, AuthError> authorize(
   const auto now = std::chrono::system_clock::now();
   bool permitted = false;
   if (trackName) {
-    const FullTrackName ftn{ns, std::string(*trackName)};
-    permitted = allowsAny(requestGrants, action, ftn, now) ||
-                allowsAny(sessionGrants, action, ftn, now) ||
-                allows(anonymousGrants, action, ftn, now);
+    permitted = allowsAny(requestGrants, action, ns, *trackName, now) ||
+                allowsAny(sessionGrants, action, ns, *trackName, now) ||
+                allows(anonymousGrants, action, ns, *trackName, now);
   } else {
     permitted = allowsAny(requestGrants, action, ns, now) ||
                 allowsAny(sessionGrants, action, ns, now) ||
@@ -351,21 +332,10 @@ folly::Expected<folly::Unit, AuthError> authorize(
   }
   if (!permitted) {
     XLOG(DBG1) << "authorize: action=" << static_cast<uint64_t>(action)
-               << " not permitted for ns=" << ns;
+               << " not permitted for ns=" << folly::join('/', ns);
     return folly::makeUnexpected(denialError(requestGrants, firstError));
   }
   return folly::unit;
-}
-
-std::vector<AuthToken> findAuthTokens(const Parameters& params, uint64_t tokenType) {
-  const auto authKey = folly::to_underlying(TrackRequestParamKey::AUTHORIZATION_TOKEN);
-  std::vector<AuthToken> tokens;
-  for (const auto& param : params) {
-    if (param.key == authKey && param.asAuthToken.tokenType == tokenType) {
-      tokens.push_back(param.asAuthToken);
-    }
-  }
-  return tokens;
 }
 
 namespace {
@@ -375,7 +345,7 @@ namespace {
 bool allowsImpl(
     const Grants& grants,
     Action action,
-    const TrackNamespace& ns,
+    Namespace ns,
     std::optional<std::string_view> trackName,
     std::chrono::system_clock::time_point now
 ) {
@@ -417,7 +387,7 @@ bool allowsImpl(
 bool allows(
     const Grants& grants,
     Action action,
-    const TrackNamespace& ns,
+    Namespace ns,
     std::chrono::system_clock::time_point now
 ) {
   return allowsImpl(grants, action, ns, std::nullopt, now);
@@ -426,16 +396,17 @@ bool allows(
 bool allows(
     const Grants& grants,
     Action action,
-    const FullTrackName& ftn,
+    Namespace ns,
+    std::string_view track,
     std::chrono::system_clock::time_point now
 ) {
-  return allowsImpl(grants, action, ftn.trackNamespace, std::string_view(ftn.trackName), now);
+  return allowsImpl(grants, action, ns, track, now);
 }
 
 bool allowsAny(
     const std::vector<Grants>& grantsList,
     Action action,
-    const TrackNamespace& ns,
+    Namespace ns,
     std::chrono::system_clock::time_point now
 ) {
   return std::any_of(grantsList.begin(), grantsList.end(), [&](const Grants& grants) {
@@ -446,11 +417,12 @@ bool allowsAny(
 bool allowsAny(
     const std::vector<Grants>& grantsList,
     Action action,
-    const FullTrackName& ftn,
+    Namespace ns,
+    std::string_view track,
     std::chrono::system_clock::time_point now
 ) {
   return std::any_of(grantsList.begin(), grantsList.end(), [&](const Grants& grants) {
-    return allows(grants, action, ftn, now);
+    return allows(grants, action, ns, track, now);
   });
 }
 
@@ -458,8 +430,6 @@ const char* toString(AuthError error) {
   switch (error) {
   case AuthError::Missing:
     return "missing authorization token";
-  case AuthError::WrongTokenType:
-    return "wrong authorization token type";
   case AuthError::Malformed:
     return "malformed authorization token";
   case AuthError::BadSignature:

@@ -5,6 +5,7 @@
  */
 
 #include "config/ConfigSerializer.h"
+#include "plugins/cat4moq-auth/Cat4moqAuth.h"
 
 #include <map>
 #include <string>
@@ -65,7 +66,7 @@ static_assert(
     "MvfstConfig::L4S changed — update serializeMvfst()"
 );
 static_assert(
-    rfl::internal::num_fields<ServiceConfig> == 9,
+    rfl::internal::num_fields<ServiceConfig> == 8,
     "ServiceConfig changed — update serializeConfig()"
 );
 static_assert(
@@ -79,18 +80,6 @@ static_assert(
 static_assert(
     rfl::internal::num_fields<CacheConfig> == 6,
     "CacheConfig changed — update serializeCache()"
-);
-static_assert(
-    rfl::internal::num_fields<AuthConfig> == 8,
-    "AuthConfig changed — update serializeAuth()"
-);
-static_assert(
-    rfl::internal::num_fields<AuthConfig::HmacKey> == 2,
-    "HmacKey changed — update serializeAuth()"
-);
-static_assert(
-    rfl::internal::num_fields<AuthConfig::AnonymousScope> == 5,
-    "AnonymousScope changed — update serializeAuth()"
 );
 static_assert(
     rfl::internal::num_fields<UpstreamConfig> == 5,
@@ -199,8 +188,15 @@ Config makeFullConfig() {
   svc.cache.maxCachedTracks = 100;
   svc.cache.maxCachedGroupsPerTrack = 3;
   svc.maxSubscriptionBufferKb = 51200;
-  svc.auth.enabled = true;
-  svc.auth.hmacKeys.push_back({"key-1", "super-secret-value"});
+  openmoq::moqx::plugins::cat4moq::Config auth;
+  auth.hmac_keys = {{.id = "key-1", .secret = "super-secret-value"}};
+  auth.max_tokens_per_message = 4;
+  svc.plugins.push_back(PluginEntryConfig{
+      .type = "cat4moq-auth",
+      .id = "auth",
+      .pluginType = openmoq::moqx::plugins::cat4moq::type(),
+      .config = std::make_shared<const openmoq::moqx::plugins::cat4moq::Config>(auth),
+  });
   svc.upstream = UpstreamConfig{};
   svc.upstream->url = "https://upstream.example/relay";
   svc.upstream->tls.caCertFile = "/etc/ca.pem";
@@ -256,28 +252,6 @@ TEST(ConfigSerializerTest, DisabledClusterOmitsHopID) {
 // serialize distinguishably from one with an explicit empty segment list
 // (matches only the zero-segment namespace) -- collapsing both to [] would
 // make a wide-open anonymous claim unauditable over the /config endpoint.
-TEST(ConfigSerializerTest, AnonymousClaimAbsentNamespaceMatchSerializesAsNull) {
-  Config cfg = makeFullConfig();
-  auto& scope = cfg.services.at("default").auth.anonymousClaim.emplace_back();
-  scope.actions.push_back(openmoq::moqx::auth::Action::Subscribe);
-
-  RecordingSink sink;
-  serializeConfig(cfg, sink);
-  EXPECT_EQ(sink.scalars["services.default.auth.anonymous_claim.*.namespace_segments"], "null");
-}
-
-TEST(ConfigSerializerTest, AnonymousClaimEmptyNamespaceMatchSerializesAsEmptyArray) {
-  Config cfg = makeFullConfig();
-  auto& scope = cfg.services.at("default").auth.anonymousClaim.emplace_back();
-  scope.actions.push_back(openmoq::moqx::auth::Action::Subscribe);
-  scope.namespaceSegments = std::vector<std::string>{};
-
-  RecordingSink sink;
-  serializeConfig(cfg, sink);
-  // An empty array emits no scalar leaf; the null sentinel must be absent.
-  EXPECT_EQ(sink.scalars.count("services.default.auth.anonymous_claim.*.namespace_segments"), 0u);
-}
-
 TEST(ConfigSerializerTest, SerializesUpstreamsList) {
   Config cfg = makeFullConfig();
   auto& svc = cfg.services.at("default");
@@ -295,8 +269,8 @@ TEST(ConfigSerializerTest, RedactsHmacSecret) {
   RecordingSink sink;
   serializeConfig(cfg, sink);
 
-  EXPECT_EQ(sink.scalars["services.default.auth.hmac_keys.*.id"], "key-1");
-  EXPECT_EQ(sink.scalars["services.default.auth.hmac_keys.*.secret"], "<redacted>");
+  EXPECT_EQ(sink.scalars["services.default.plugins.*.config.hmac_keys.*.id"], "key-1");
+  EXPECT_EQ(sink.scalars["services.default.plugins.*.config.hmac_keys.*.secret"], "<redacted>");
   for (const auto& [_, value] : sink.scalars) {
     EXPECT_NE(value, "super-secret-value") << "secret leaked into serialized config";
   }

@@ -6,12 +6,16 @@
 
 #include "plugins/Builtins.h"
 
+#include "plugins/cat4moq-auth/Cat4moqAuth.h"
+
 namespace openmoq::moqx::plugins {
 
 // One explicit list: a static registration constructor in an archive member
 // that nothing references would be dropped by the linker.
 const plugin::Registry& builtinTypes() {
-  static const plugin::Registry registry{};
+  static const plugin::Registry registry{
+      cat4moq::type(),
+  };
   return registry;
 }
 

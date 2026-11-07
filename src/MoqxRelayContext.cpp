@@ -5,7 +5,6 @@
  */
 
 #include "MoqxRelayContext.h"
-#include "relay/AuthFilters.h"
 #include "relay/PluginFilters.h"
 #include "relay/PublisherCrossExecFilter.h"
 #include "relay/RelayExecUtil.h"
@@ -54,15 +53,7 @@ MoqxRelayContext::MoqxRelayContext(
           MoqxRelay::kDefaultIdleTimeout,
           MoqxRelay::kDefaultActivityThreshold
       );
-      services_.emplace(
-          name,
-          ServiceEntry{
-              svc,
-              std::move(relay),
-              std::make_shared<const auth::AuthTokenVerifier>(svc.auth),
-              name
-          }
-      );
+      services_.emplace(name, ServiceEntry{svc, std::move(relay), name});
     }
   } else {
     for (const auto& [name, svc] : services) {
@@ -76,15 +67,7 @@ MoqxRelayContext::MoqxRelayContext(
           MoqxRelay::kDefaultIdleTimeout,
           MoqxRelay::kDefaultActivityThreshold
       );
-      services_.emplace(
-          name,
-          ServiceEntry{
-              svc,
-              std::move(relay),
-              std::make_shared<const auth::AuthTokenVerifier>(svc.auth),
-              name
-          }
-      );
+      services_.emplace(name, ServiceEntry{svc, std::move(relay), name});
     }
   }
 }
@@ -344,8 +327,6 @@ void MoqxRelayContext::onSessionEnd(std::shared_ptr<MoQSession> session) {
       it->second.relay->onSessionEnd(std::move(session));
     }
   }
-  // Per-session auth state lives on the session's AuthFilter and is released
-  // when the session drops it.
   std::shared_ptr<plugin::PluginSession> pluginSession;
   pluginSessions_.withWLock([&](auto& sessions) {
     if (auto it = sessions.find(key); it != sessions.end()) {
@@ -372,30 +353,11 @@ folly::coro::Task<folly::Expected<folly::Unit, SessionCloseErrorCode>> MoqxRelay
     co_return folly::makeUnexpected(SessionCloseErrorCode::INVALID_AUTHORITY);
   }
 
-  // Route: verify the setup token, then install the session's filter handlers.
   // createPublisher/SubscriberFilter wraps the relay in cross-exec filters when
   // the service runs on a dedicated relay thread.
   auto it = services_.find(*matchedName);
   CHECK(it != services_.end()) << "Service '" << *matchedName << "' matched but no entry found";
   auto& entry = it->second;
-  auto grants = auth::authenticateSetup(*entry.verifier, clientSetup.params);
-  if (grants.hasError()) {
-    XLOG(ERR) << "Authorization failed for authority=" << authority << " path=" << path
-              << " reason=" << auth::toString(grants.error());
-    switch (grants.error()) {
-    case auth::AuthError::Expired:
-      co_return folly::makeUnexpected(SessionCloseErrorCode::EXPIRED_AUTH_TOKEN);
-    case auth::AuthError::Malformed:
-      co_return folly::makeUnexpected(SessionCloseErrorCode::MALFORMED_AUTH_TOKEN);
-    case auth::AuthError::BadSignature:
-    case auth::AuthError::Forbidden:
-    case auth::AuthError::Missing:
-    case auth::AuthError::WrongTokenType:
-    case auth::AuthError::TooManyTokens:
-      co_return folly::makeUnexpected(SessionCloseErrorCode::UNAUTHORIZED);
-    }
-    co_return folly::makeUnexpected(SessionCloseErrorCode::UNAUTHORIZED);
-  }
   std::shared_ptr<Publisher> pub = entry.relay->createPublisherFilter();
   std::shared_ptr<Subscriber> sub = entry.relay->createSubscriberFilter();
 
@@ -433,17 +395,6 @@ folly::coro::Task<folly::Expected<folly::Unit, SessionCloseErrorCode>> MoqxRelay
     }
   }
 
-  // Wrap the relay's handlers in auth filters when grants are present (auth on);
-  // a null grants pointer means auth is disabled, so install the relay directly.
-  if (grants.value()) {
-    pub = std::make_shared<AuthPublisherFilter>(
-        std::move(pub),
-        entry.verifier,
-        grants.value(),
-        !relayID_.empty()
-    );
-    sub = std::make_shared<AuthSubscriberFilter>(std::move(sub), entry.verifier, grants.value());
-  }
   session->setPublishHandler(std::move(pub));
   session->setSubscribeHandler(std::move(sub));
   auto settings = session->getMoqSettings();

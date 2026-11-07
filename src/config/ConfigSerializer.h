@@ -10,7 +10,6 @@
 #include <string_view>
 #include <variant>
 
-#include "auth/Action.h"
 #include "config/Config.h"
 #include "config/ConfigSink.h"
 #include "plugin/PluginType.h"
@@ -35,20 +34,6 @@ inline std::string_view quicStackName(QuicStack s) {
     return "picoquic";
   case QuicStack::ProxygenQmux:
     return "proxygen_qmux";
-  }
-  return "unknown";
-}
-
-inline std::string_view matchRuleTypeName(auth::MatchRuleType m) {
-  switch (m) {
-  case auth::MatchRuleType::Exact:
-    return "exact";
-  case auth::MatchRuleType::Prefix:
-    return "prefix";
-  case auth::MatchRuleType::Suffix:
-    return "suffix";
-  case auth::MatchRuleType::Contains:
-    return "contains";
   }
   return "unknown";
 }
@@ -195,57 +180,6 @@ inline void serializePlugins(ConfigSink& s, const std::vector<PluginEntryConfig>
   s.endArray();
 }
 
-inline void serializeAuth(ConfigSink& s, const AuthConfig& a) {
-  s.beginObject("auth");
-  s.boolField("enabled", a.enabled);
-  s.uintField("token_type", a.tokenType);
-  s.boolField("require_setup_token", a.requireSetupToken);
-  s.boolField("allow_request_token_override", a.allowRequestTokenOverride);
-  s.boolField("strict_claims", a.strictClaims);
-  s.uintField("max_tokens_per_message", a.maxTokensPerMessage);
-  s.beginArray("hmac_keys");
-  for (const auto& k : a.hmacKeys) {
-    s.beginObject("");
-    s.stringField("id", k.id);
-    // Signing secrets are never serialized — redacted at the source so no sink
-    // can leak them (e.g. over the /config admin endpoint).
-    s.stringField("secret", "<redacted>");
-    s.endObject();
-  }
-  s.endArray();
-  s.beginArray("anonymous_claim");
-  for (const auto& scope : a.anonymousClaim) {
-    s.beginObject("");
-    s.beginArray("actions");
-    for (const auto& action : scope.actions) {
-      s.stringField("", auth::actionName(action));
-    }
-    s.endArray();
-    // null (match any namespace) must stay distinguishable from an explicit
-    // empty list, which matches only the zero-segment namespace (see
-    // Config.h's AnonymousScope).
-    if (scope.namespaceSegments) {
-      s.beginArray("namespace_segments");
-      for (const auto& seg : *scope.namespaceSegments) {
-        s.stringField("", seg);
-      }
-      s.endArray();
-    } else {
-      s.nullField("namespace_segments");
-    }
-    s.stringField("namespace_match_mode", matchRuleTypeName(scope.namespaceMatchMode));
-    if (scope.trackName) {
-      s.stringField("track_name", *scope.trackName);
-    } else {
-      s.nullField("track_name");
-    }
-    s.stringField("track_match_mode", matchRuleTypeName(scope.trackMatchMode));
-    s.endObject();
-  }
-  s.endArray();
-  s.endObject();
-}
-
 inline void serializeLogging(ConfigSink& s, const LoggingConfig& l) {
   s.beginObject("logging");
   if (l.mlog) {
@@ -344,7 +278,6 @@ inline void serializeConfig(const Config& cfg, ConfigSink& s) {
     }
     s.endArray();
     serializeCache(s, svc.cache);
-    serializeAuth(s, svc.auth);
     s.uintField("max_subscription_buffer_kb", svc.maxSubscriptionBufferKb);
     serializePlugins(s, svc.plugins);
     s.uintField("admission_timeout_ms", svc.admissionTimeout.count());

@@ -381,93 +381,6 @@ struct ParsedUpstreamConfig {
       relay_cost;
 };
 
-struct ParsedAuthConfig {
-  struct HmacKey {
-    rfl::Description<"Key identifier embedded in the token envelope", std::string> id;
-    rfl::Description<"Shared HMAC secret for this key id", std::string> secret;
-  };
-
-  // A statically-granted scope applied to every request on this service,
-  // regardless of what token (if any) authenticated it (see docs/config.md).
-  struct AnonymousScope {
-    struct ExactNamespace {
-      rfl::Description<"Match this exact ordered namespace segment list", std::vector<std::string>>
-          exact;
-    };
-    struct PrefixNamespace {
-      rfl::Description<
-          "Match namespaces whose leading segments equal this list",
-          std::vector<std::string>>
-          prefix;
-    };
-    struct SuffixNamespace {
-      rfl::Description<
-          "Match namespaces whose trailing segments equal this list",
-          std::vector<std::string>>
-          suffix;
-    };
-    struct ContainsNamespace {
-      rfl::Description<
-          "Match namespaces containing this segment list as a contiguous run",
-          std::vector<std::string>>
-          contains;
-    };
-    using NamespaceMatch =
-        rfl::Variant<ExactNamespace, PrefixNamespace, SuffixNamespace, ContainsNamespace>;
-
-    struct ExactTrack {
-      rfl::Description<"Match this exact track name", std::string> exact;
-    };
-    struct PrefixTrack {
-      rfl::Description<"Match track names starting with this value", std::string> prefix;
-    };
-    struct SuffixTrack {
-      rfl::Description<"Match track names ending with this value", std::string> suffix;
-    };
-    struct ContainsTrack {
-      rfl::Description<"Match track names containing this value", std::string> contains;
-    };
-    using TrackMatch = rfl::Variant<ExactTrack, PrefixTrack, SuffixTrack, ContainsTrack>;
-
-    rfl::Description<
-        "CAT4MOQ action names this scope grants without any token; client_setup/server_setup are "
-        "rejected -- the anonymous claim never authorizes session setup",
-        std::vector<std::string>>
-        actions;
-    rfl::Description<"Namespace match; omit to match any namespace", std::optional<NamespaceMatch>>
-        namespace_match;
-    rfl::Description<"Track match; omit to match any track", std::optional<TrackMatch>> track_match;
-  };
-
-  rfl::Description<"Enable per-service authorization", bool> enabled;
-  rfl::Description<"Expected MOQT AUTHORIZATION_TOKEN token type", std::optional<uint64_t>>
-      token_type;
-  rfl::Description<"Accepted HMAC signing keys", std::optional<std::vector<HmacKey>>> hmac_keys;
-  rfl::Description<
-      "Require a valid setup token during CLIENT_SETUP (default: true)",
-      std::optional<bool>>
-      require_setup_token;
-  rfl::Description<
-      "Allow request AUTHORIZATION_TOKEN to override setup credentials (default: true)",
-      std::optional<bool>>
-      allow_request_token_override;
-  rfl::Description<
-      "Reject unsupported token claims instead of ignoring them (default: false)",
-      std::optional<bool>>
-      strict_claims;
-  rfl::Description<
-      "Anonymous (no-token) access grants applied to every request on this service, in "
-      "addition to any verified setup/request token grants (default: none)",
-      std::optional<std::vector<AnonymousScope>>>
-      anonymous_claim;
-  rfl::Description<
-      "Maximum AUTHORIZATION_TOKEN parameters allowed per SETUP or per request message; "
-      "a message over the cap is rejected outright. Required (directly or via "
-      "service_defaults.auth) when enabled: true -- bounds per-message verification cost.",
-      std::optional<uint32_t>>
-      max_tokens_per_message;
-};
-
 // One `plugins:` entry (design/plugins-level1.md#configuration-and-registration).
 struct ParsedPluginEntry {
   rfl::Description<"Registered plugin type", std::string> type;
@@ -532,9 +445,10 @@ struct ParsedServiceConfig {
       "Several upstream MoQ servers for this service (optional; exclusive with upstream)",
       std::optional<std::vector<ParsedUpstreamConfig>>>
       upstreams;
+  // Parsed only to be refused with a pointer to its replacement.
   rfl::Description<
-      "Authentication and authorization settings for this service",
-      std::optional<ParsedAuthConfig>>
+      "Removed: configure a cat4moq-auth entry under plugins",
+      std::optional<rfl::Generic>>
       auth;
   rfl::Description<
       "KB of a subscription's data the relay may hold unacknowledged (mvfst) or unsent "
@@ -570,15 +484,10 @@ struct ParsedListenerDefaultsConfig {
 struct ParsedServiceDefaultsConfig {
   rfl::Description<"Default cache settings for services", std::optional<ParsedCacheConfig>> cache;
 
-  // Only max_tokens_per_message is inheritable; auth fields absent here
-  // (keys, claims, flags) are per-service only.
-  struct AuthDefaults {
-    rfl::Description<
-        "Default auth.max_tokens_per_message for services that don't set their own",
-        std::optional<uint32_t>>
-        max_tokens_per_message;
-  };
-  rfl::Description<"Default auth settings for services", std::optional<AuthDefaults>> auth;
+  // Parsed only to be refused with a pointer to its replacement.
+  rfl::
+      Description<"Removed: use service_defaults.plugins.cat4moq-auth", std::optional<rfl::Generic>>
+          auth;
   rfl::Description<
       "max_subscription_buffer_kb for services that do not set their own",
       std::optional<uint32_t>>

@@ -187,7 +187,7 @@ IssuedToken issueToken(const IssueTokenOptions& options) {
   if (!options.trackNamespace.trackNamespace.empty()) {
     namespaceMatches.push_back(MatchRule{
         .type = MatchRule::Type::Exact,
-        .value = canonicalNamespace(options.trackNamespace),
+        .value = canonicalNamespace(options.trackNamespace.trackNamespace),
     });
   }
 
@@ -241,12 +241,9 @@ std::string signGrants(std::string_view keyID, std::string_view secret, const Gr
   return std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size());
 }
 
-config::AuthConfig::HmacKey selectHmacKey(const config::AuthConfig& auth, std::string_view keyID) {
-  if (!auth.enabled) {
-    throw std::invalid_argument("service auth is not enabled");
-  }
+AuthConfig::HmacKey selectHmacKey(const AuthConfig& auth, std::string_view keyID) {
   if (auth.hmacKeys.empty()) {
-    throw std::invalid_argument("service auth has no HMAC keys");
+    throw std::invalid_argument("cat4moq-auth has no HMAC keys");
   }
   if (keyID.empty()) {
     return auth.hmacKeys.front();
@@ -256,7 +253,7 @@ config::AuthConfig::HmacKey selectHmacKey(const config::AuthConfig& auth, std::s
       return key;
     }
   }
-  throw std::invalid_argument("service auth has no HMAC key with id: " + std::string(keyID));
+  throw std::invalid_argument("cat4moq-auth has no HMAC key with id: " + std::string(keyID));
 }
 
 } // namespace openmoq::moqx::auth

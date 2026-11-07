@@ -12,7 +12,6 @@
 #include "MoqxRelay.h"
 #include "ServiceMatcher.h"
 #include "UpstreamProvider.h"
-#include "auth/Auth.h"
 #include "config/Config.h"
 #include "plugin/Host.h"
 #include "stats/MoQStatsCollector.h"
@@ -72,7 +71,6 @@ public:
   struct ServiceEntry {
     config::ServiceConfig config;
     std::shared_ptr<MoqxRelay> relay;
-    std::shared_ptr<const auth::AuthTokenVerifier> verifier;
     std::string serviceName;
   };
 
@@ -167,8 +165,8 @@ public:
   void
   initThreadStatsCollectors(folly::IOThreadPoolExecutor& ioExecutor, bool initTrackStats = true);
 
-  // Matches the service, verifies the setup token, runs the service's admit
-  // chain and installs the session's handlers. Runs on the session executor;
+  // Matches the service, runs its admit chain and installs the session's
+  // handlers. Runs on the session executor;
   // completes inline when no plugin suspends.
   folly::coro::Task<folly::Expected<folly::Unit, moxygen::SessionCloseErrorCode>> admit(
       moxygen::ClientSetup clientSetup,

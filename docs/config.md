@@ -33,7 +33,8 @@ listeners:                 # required; at least one
 
 service_defaults:          # optional; defaults inherited by all services
   cache: { ... }
-  auth: { max_tokens_per_message: 4 }
+  plugins:                 # partial plugin config by type
+    cat4moq-auth: { max_tokens_per_message: 4 }
   max_subscription_buffer_kb: 51200   # required here or on each service
 
 services:                  # required; at least one
@@ -209,8 +210,10 @@ services:
 
 ## Authentication and Authorization
 
-Authentication is configured per service under `services.<name>.auth`. When
-enabled, moqx expects MOQT `AUTHORIZATION_TOKEN` parameters whose token type
+### cat4moq-auth
+
+Authorization is the `cat4moq-auth` [plugin](#plugins), one service-scope entry per service that enforces it.
+moqx then expects MOQT `AUTHORIZATION_TOKEN` parameters whose token type
 matches the configured `token_type`. The token value is a CAT/CWT token signed
 with an HMAC key shared by the token issuer and the relay.
 
@@ -220,30 +223,33 @@ services:
     match:
       - authority: {exact: "live.example.com"}
         path: {exact: "/moq-relay"}
-    auth:
-      enabled: true
-      token_type: 16
-      hmac_keys:
-        - id: "cat-dev"
-          secret: "replace-with-long-random-secret"
-      require_setup_token: true
-      allow_request_token_override: true
-      strict_claims: false
-      max_tokens_per_message: 4
-      anonymous_claim:
-        - actions: [subscribe, fetch]
-          namespace_match: {prefix: ["live"]}
+    plugins:
+      - type: cat4moq-auth
+        config:
+          token_type: 16
+          hmac_keys:
+            - id: "cat-dev"
+              secret: "replace-with-long-random-secret"
+          require_setup_token: true
+          allow_request_token_override: true
+          strict_claims: false
+          max_tokens_per_message: 4
+          anonymous_claim:
+            - actions: [subscribe, fetch]
+              namespace_match: {prefix: ["live"]}
 ```
+
+- The `auth:` and `service_defaults.auth:` sections are replaced by this entry and `service_defaults.plugins.cat4moq-auth`. A config that still has them fails validation.
+- A rejected setup closes the session with `EXPIRED_AUTH_TOKEN`, `MALFORMED_AUTH_TOKEN` or `UNAUTHORIZED`. A rejected request answers `UNAUTHORIZED`.
 
 | Field | Default | Notes |
 |---|---|---|
-| `enabled` | `false` | Enables CAT-style authorization for this service. When `false`, nothing is enforced and the other `auth` fields have no effect. |
 | `token_type` | `0` | MOQT `AUTHORIZATION_TOKEN` type to accept. Use `16` with CAT4MOQ tokens produced for moqxr's CAT wrapper. Type `0` is valid for private or out-of-band deployments. The value must fit in a QUIC variable integer. |
-| `hmac_keys` | empty | Required when `enabled: true`. Each key needs a non-empty `id` and `secret`; duplicate key IDs are rejected. The token issuer must use the same key ID and secret. |
+| `hmac_keys` | none | Required. Each key needs a non-empty `id` and `secret`; duplicate key IDs are rejected. The token issuer must use the same key ID and secret. |
 | `require_setup_token` | `true` | Requires a valid setup token authorizing `client_setup` during session setup. If `false`, clients can connect without setup grants; per-request actions still need an authorized token or a matching `anonymous_claim` entry. |
 | `allow_request_token_override` | `true` | Lets a token on a request count as one more candidate grant for that request, alongside the session's setup-token grants and `anonymous_claim`. If `false`, request tokens are ignored and authorization uses only the setup token grants and `anonymous_claim`. |
 | `strict_claims` | `false` | When `true`, rejects a token that carries any claim other than `exp` and `moqt`, the claims the relay enforces. It also rejects a repeated claim and an `exp` that is not an unsigned integer. The relay does not enforce `moqt-reval`, so a token that carries it is rejected. Keep this `false` for current CAT4MOQ interop unless every issuer is known to send only supported claims. |
-| `max_tokens_per_message` | none | Required when `enabled: true`, directly or via `service_defaults.auth.max_tokens_per_message`. Caps how many `AUTHORIZATION_TOKEN` params of the configured `token_type` a single SETUP or request message may carry; a message over the cap is rejected outright, not truncated. Params of other token types are not counted. Bounds per-message verification cost against a client attaching many tokens to one message. Must be >= 1. |
+| `max_tokens_per_message` | none | Required, directly or via `service_defaults.plugins.cat4moq-auth.max_tokens_per_message`. Caps how many `AUTHORIZATION_TOKEN` params of the configured `token_type` a single SETUP or request message may carry; a message over the cap is rejected outright, not truncated. Params of other token types are not counted. Bounds per-message verification cost against a client attaching many tokens to one message. Must be >= 1. |
 | `anonymous_claim` | empty | Statically-granted scopes applied to every request on this service, regardless of what token (if any) authenticated it. See [Anonymous Claim](#anonymous-claim) below. |
 
 The relay only verifies tokens; it does not call an external grant handler.
@@ -269,15 +275,16 @@ widens what an already-connected session (or an anonymous one, when
 `require_setup_token: false`) can do per request.
 
 ```yaml
-auth:
-  enabled: true
-  hmac_keys: [{id: "cat-dev", secret: "replace-with-long-random-secret"}]
-  require_setup_token: true
-  max_tokens_per_message: 4
-  anonymous_claim:
-    - actions: [subscribe, fetch]
-      namespace_match: {prefix: ["live"]}
-      track_match: {exact: "video"}
+plugins:
+  - type: cat4moq-auth
+    config:
+      hmac_keys: [{id: "cat-dev", secret: "replace-with-long-random-secret"}]
+      require_setup_token: true
+      max_tokens_per_message: 4
+      anonymous_claim:
+        - actions: [subscribe, fetch]
+          namespace_match: {prefix: ["live"]}
+          track_match: {exact: "video"}
 ```
 
 Each entry:
@@ -298,7 +305,8 @@ scope.
 
 Use the standalone `moqx-issuer` binary as the deployment/operator tool. For
 production-like deployments, point it at the same config file used by the relay
-so the selected service key is read from one place:
+so the selected service key is read from one place. `--auth-service` names the
+service; `--auth-plugin-id` picks its `cat4moq-auth` entry when it has several:
 
 ```bash
 moqx-issuer \
@@ -399,7 +407,7 @@ key ID, waiting for old tokens to expire, then removing the old key.
 namespace, or wrong track is rejected.
 - Auth is currently service-local. Upstream relay connections still have no
 application-level credential exchange beyond TLS.
-- `max_tokens_per_message` is inheritable from `service_defaults.auth`
+- `max_tokens_per_message`, like every `cat4moq-auth` field, can come from `service_defaults.plugins.cat4moq-auth`.
 
 ---
 

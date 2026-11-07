@@ -7,17 +7,17 @@
 #pragma once
 
 #include "auth/Action.h"
-#include "config/Config.h"
+#include "auth/AuthConfig.h"
 
 #include <folly/Expected.h>
 #include <folly/Unit.h>
 #include <folly/lang/Bits.h>
-#include <moxygen/MoQTypes.h>
 
 #include <chrono>
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -27,7 +27,6 @@ namespace openmoq::moqx::auth {
 
 enum class AuthError {
   Missing,
-  WrongTokenType,
   Malformed,
   BadSignature,
   Expired,
@@ -52,12 +51,18 @@ struct Grants {
   std::vector<Scope> scopes;
 };
 
+// A track namespace: its segments in order.
+using Namespace = std::span<const std::string>;
+
+// The values of a message's AUTHORIZATION_TOKENs of the configured type.
+using TokenValues = std::vector<std::string>;
+
 // Length-prefixed byte-encoding of a namespace's segments, used both as a
 // MatchRule value and as the bytes matched against it. A stable wire format:
 // signer and verifier must produce byte-identical output independently.
-inline std::string canonicalNamespace(const moxygen::TrackNamespace& ns) {
+inline std::string canonicalNamespace(Namespace ns) {
   std::string out;
-  for (const auto& field : ns.trackNamespace) {
+  for (const auto& field : ns) {
     const uint32_t lenBigEndian = folly::Endian::big(static_cast<uint32_t>(field.size()));
     out.append(reinterpret_cast<const char*>(&lenBigEndian), sizeof(lenBigEndian));
     out.append(field);
@@ -67,9 +72,8 @@ inline std::string canonicalNamespace(const moxygen::TrackNamespace& ns) {
 
 class AuthTokenVerifier {
 public:
-  explicit AuthTokenVerifier(config::AuthConfig config);
+  explicit AuthTokenVerifier(AuthConfig config);
 
-  bool enabled() const { return config_.enabled; }
   uint64_t tokenType() const { return config_.tokenType; }
   bool requireSetupToken() const { return config_.requireSetupToken; }
   bool allowRequestTokenOverride() const { return config_.allowRequestTokenOverride; }
@@ -77,8 +81,7 @@ public:
   // Caps how many AUTHORIZATION_TOKEN params of the configured tokenType()
   // one message may carry; a message over the cap is rejected outright, not
   // truncated. Params of other token types are not counted. 0 would reject
-  // every message carrying a matching token. Config validation requires >=1
-  // when enabled().
+  // every message carrying a matching token. Config validation requires >=1.
   uint32_t maxTokensPerMessage() const { return config_.maxTokensPerMessage; }
 
   // Statically-configured anonymous claim, applied as a floor on every
@@ -86,7 +89,8 @@ public:
   // Action::ClientSetup — it can't bypass a required setup token.
   const Grants& anonymousGrants() const { return anonymousGrants_; }
 
-  folly::Expected<Grants, AuthError> verify(const moxygen::AuthToken& token) const;
+  // `token` is the value of one token of tokenType().
+  folly::Expected<Grants, AuthError> verify(std::string_view token) const;
 
 private:
   // HMAC key material derived once at construction. keyIdIndex_ maps each
@@ -98,23 +102,17 @@ private:
     std::vector<uint8_t> key;
   };
 
-  config::AuthConfig config_;
+  AuthConfig config_;
   std::vector<DerivedKey> derivedKeys_;
   std::unordered_map<std::string, std::size_t> keyIdIndex_;
   Grants anonymousGrants_;
 };
 
-// Returns every AUTHORIZATION_TOKEN parameter matching tokenType, not just the
-// first — a message may carry more than one, and a request is authorized if
-// any one of them verifies and covers the action (see authorize()).
-std::vector<moxygen::AuthToken>
-findAuthTokens(const moxygen::Parameters& params, uint64_t tokenType);
-
 // Namespace-level authorization (e.g. PublishNamespace, SubscribeNamespace, setup).
 bool allows(
     const Grants& grants,
     Action action,
-    const moxygen::TrackNamespace& ns,
+    Namespace ns,
     std::chrono::system_clock::time_point now = std::chrono::system_clock::now()
 );
 
@@ -122,7 +120,8 @@ bool allows(
 bool allows(
     const Grants& grants,
     Action action,
-    const moxygen::FullTrackName& ftn,
+    Namespace ns,
+    std::string_view track,
     std::chrono::system_clock::time_point now = std::chrono::system_clock::now()
 );
 
@@ -130,7 +129,7 @@ bool allows(
 bool allowsAny(
     const std::vector<Grants>& grantsList,
     Action action,
-    const moxygen::TrackNamespace& ns,
+    Namespace ns,
     std::chrono::system_clock::time_point now = std::chrono::system_clock::now()
 );
 
@@ -138,19 +137,19 @@ bool allowsAny(
 bool allowsAny(
     const std::vector<Grants>& grantsList,
     Action action,
-    const moxygen::FullTrackName& ftn,
+    Namespace ns,
+    std::string_view track,
     std::chrono::system_clock::time_point now = std::chrono::system_clock::now()
 );
 
 const char* toString(AuthError error);
 
-// Verifies the setup AUTHORIZATION_TOKEN(s): null when auth is disabled,
-// else every successfully-verified token's grants. When requireSetupToken()
-// is set, connecting is additionally gated on whether any one of them
-// permits Action::ClientSetup; without it, verified grants pool into the
-// session with no ClientSetup check.
-folly::Expected<std::shared_ptr<const std::vector<Grants>>, AuthError>
-authenticateSetup(const AuthTokenVerifier& verifier, const moxygen::Parameters& setupParams);
+// Verifies the setup tokens and returns every verified token's grants. When
+// requireSetupToken() is set, connecting is additionally gated on whether any
+// one of them permits Action::ClientSetup; without it, verified grants pool
+// into the session with no ClientSetup check.
+folly::Expected<std::vector<Grants>, AuthError>
+authenticateSetup(const AuthTokenVerifier& verifier, const TokenValues& setupTokens);
 
 // Authorizes a request against session grants, or per-request token(s) when
 // allow_request_token_override is set. Permitted if any verified request
@@ -158,8 +157,8 @@ authenticateSetup(const AuthTokenVerifier& verifier, const moxygen::Parameters& 
 folly::Expected<folly::Unit, AuthError> authorize(
     const AuthTokenVerifier& verifier,
     Action action,
-    const moxygen::Parameters& params,
-    const moxygen::TrackNamespace& ns,
+    const TokenValues& requestTokens,
+    Namespace ns,
     const std::vector<Grants>& sessionGrants,
     std::optional<std::string_view> trackName = std::nullopt
 );

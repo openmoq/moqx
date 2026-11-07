@@ -413,6 +413,37 @@ target_link_libraries(moqx_plugin PUBLIC
 
 target_link_libraries(moqx_plugin PRIVATE moqx_warnings)
 
+# --- CAT4MOQ token verification (moxygen-free) ---
+
+add_library(moqx_auth STATIC
+  src/auth/Auth.cpp
+)
+
+target_include_directories(moqx_auth
+  PUBLIC
+    ${PROJECT_SOURCE_DIR}/src
+)
+
+target_link_libraries(moqx_auth PUBLIC
+  moqx_hmac_key
+  catapult
+  Folly::folly_expected
+  Folly::folly_logging_logging
+  Folly::folly_string
+)
+
+target_link_libraries(moqx_auth PRIVATE moqx_warnings)
+
+# --- cat4moq-auth plugin ---
+
+add_library(moqx_plugin_cat4moq_auth STATIC
+  src/plugins/cat4moq-auth/Cat4moqAuth.cpp
+)
+
+target_link_libraries(moqx_plugin_cat4moq_auth PUBLIC moqx_plugin moqx_auth)
+
+target_link_libraries(moqx_plugin_cat4moq_auth PRIVATE moqx_warnings)
+
 # --- Builtin plugins: one explicit list (src/plugins/Builtins.cpp) ---
 
 add_library(moqx_builtin_plugins STATIC
@@ -424,14 +455,13 @@ target_include_directories(moqx_builtin_plugins
     ${PROJECT_SOURCE_DIR}/src
 )
 
-target_link_libraries(moqx_builtin_plugins PUBLIC moqx_plugin)
+target_link_libraries(moqx_builtin_plugins PUBLIC moqx_plugin moqx_plugin_cat4moq_auth)
 
 target_link_libraries(moqx_builtin_plugins PRIVATE moqx_warnings)
 
 # --- Core library ---
 
 add_library(moqx_core STATIC
-  src/auth/Auth.cpp
   src/LoggingMultiFlag.cpp
   src/NamespaceTree.cpp
   src/PendingRendezvousTree.cpp
@@ -460,7 +490,6 @@ add_library(moqx_core STATIC
   src/stats/EventBaseStatsCollector.cpp
   src/UpstreamProvider.cpp
   src/SafeTrackName.cpp
-  src/relay/AuthFilters.cpp
   src/relay/PluginFilters.cpp
   src/relay/TopNFilter.cpp
   src/relay/TrackStatsFilter.cpp
@@ -582,6 +611,7 @@ target_include_directories(moqx_issuer_lib
 )
 
 target_link_libraries(moqx_issuer_lib PUBLIC
+  moqx_auth
   moqx_hmac_key
   moqx_config
   catapult

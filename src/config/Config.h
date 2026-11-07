@@ -6,8 +6,6 @@
 
 #pragma once
 
-#include "auth/Action.h"
-
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -194,33 +192,6 @@ struct UpstreamConfig {
   uint64_t relayCost{1}; // declared as RELAY_COST; 0 is free
 };
 
-struct AuthConfig {
-  struct HmacKey {
-    std::string id;
-    std::string secret;
-  };
-
-  // A statically-granted scope applied to every request, regardless of
-  // token.
-  struct AnonymousScope {
-    std::vector<auth::Action> actions;
-    // nullopt matches any namespace. An empty vector matches only the zero-segment namespace.
-    std::optional<std::vector<std::string>> namespaceSegments;
-    auth::MatchRuleType namespaceMatchMode{auth::MatchRuleType::Exact};
-    std::optional<std::string> trackName; // nullopt = match any track
-    auth::MatchRuleType trackMatchMode{auth::MatchRuleType::Exact};
-  };
-
-  bool enabled{false};
-  uint64_t tokenType{0};
-  std::vector<HmacKey> hmacKeys;
-  bool requireSetupToken{true};
-  bool allowRequestTokenOverride{true};
-  bool strictClaims{false};
-  std::vector<AnonymousScope> anonymousClaim; // empty = no anonymous access (default)
-  uint32_t maxTokensPerMessage{0};
-};
-
 // One `plugins:` entry. `config` is the type's parsed config struct.
 struct PluginEntryConfig {
   std::string type;
@@ -255,9 +226,8 @@ struct ServiceConfig {
   std::vector<MatchEntry> match;
   CacheConfig cache;
   std::optional<UpstreamConfig> upstream; // set if this service chains to an upstream relay
-  AuthConfig auth;
-  std::vector<UpstreamConfig> upstreams; // exclusive with upstream
-  uint32_t maxSubscriptionBufferKb{0};   // 0 = unlimited
+  std::vector<UpstreamConfig> upstreams;  // exclusive with upstream
+  uint32_t maxSubscriptionBufferKb{0};    // 0 = unlimited
   // Service-scope entries, in list order, service_defaults.plugins merged in.
   std::vector<PluginEntryConfig> plugins;
   // Budgets for the whole admit and authorize chains.
