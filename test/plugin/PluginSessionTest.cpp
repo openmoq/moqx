@@ -146,6 +146,7 @@ protected:
   void TearDown() override {
     script_->admitGate.post();
     script_->authorizeGate.post();
+    script_->upstreamParamsGate.post();
     if (edge_) {
       edge_->stop();
     }
