@@ -8,6 +8,27 @@
 
 namespace openmoq::moqx::plugin {
 
+std::optional<std::string> nonStringKey(const YAML::Node& node) {
+  if (node.IsMap()) {
+    for (const auto& entry : node) {
+      if (!entry.first.IsScalar()) {
+        return YAML::Dump(entry.first);
+      }
+      if (auto bad = nonStringKey(entry.second)) {
+        return bad;
+      }
+    }
+  } else if (node.IsSequence()) {
+    for (const auto& element : node) {
+      if (auto bad = nonStringKey(element)) {
+        return bad;
+      }
+    }
+  }
+  return std::nullopt;
+}
+
+// Callers check nonStringKey first: keys are scalars here.
 YAML::Node mergeYaml(const YAML::Node& base, const YAML::Node& overlay) {
   if (!base.IsMap() || !overlay.IsMap()) {
     return YAML::Clone(overlay);
@@ -15,7 +36,7 @@ YAML::Node mergeYaml(const YAML::Node& base, const YAML::Node& overlay) {
   // YAML::Node copies share storage; clone so `base` stays as it was.
   YAML::Node merged = YAML::Clone(base);
   for (const auto& entry : overlay) {
-    const auto key = entry.first.as<std::string>();
+    const auto& key = entry.first.Scalar();
     merged[key] = merged[key] ? mergeYaml(merged[key], entry.second) : YAML::Clone(entry.second);
   }
   return merged;

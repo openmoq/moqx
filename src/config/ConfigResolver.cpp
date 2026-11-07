@@ -1047,11 +1047,20 @@ std::optional<PluginEntryConfig> resolvePluginEntry(
     );
     return std::nullopt;
   }
-  YAML::Node node = entry.config.value().value_or(PluginConfigNode()).node();
+  const PluginConfigNode own = entry.config.value().value_or(PluginConfigNode());
+  const PluginConfigNode* inherited = nullptr;
   if (defaults) {
     if (auto it = defaults->find(type->name); it != defaults->end()) {
-      node = plugin::mergeYaml(it->second.node(), node);
+      inherited = &it->second;
     }
+  }
+  // Built fresh: assigning into a copy of a YAML::Node writes through to the
+  // parsed entry it shares storage with.
+  const YAML::Node node =
+      inherited ? plugin::mergeYaml(inherited->node(), own.node()) : YAML::Clone(own.node());
+  if (auto bad = plugin::nonStringKey(node)) {
+    errors.push_back(label + ": config: map keys must be strings, found " + *bad);
+    return std::nullopt;
   }
   auto parsed = type->parse(node, strict);
   if (parsed.hasError()) {
@@ -1146,8 +1155,12 @@ void validatePluginDefaults(
       errors.push_back(label + ": must be an object of config fields");
       continue;
     }
+    if (auto bad = plugin::nonStringKey(config.node())) {
+      errors.push_back(label + ": map keys must be strings, found " + *bad);
+      continue;
+    }
     for (const auto& item : config.node()) {
-      const auto field = item.first.as<std::string>();
+      const auto field = item.first.Scalar();
       if (std::find(type->fieldNames.begin(), type->fieldNames.end(), field) ==
           type->fieldNames.end()) {
         errors.push_back(label + ": unknown field '" + field + "'");

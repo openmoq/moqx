@@ -19,6 +19,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include <functional>
+#include <optional>
 #include <string>
 
 namespace openmoq::moqx::plugin {
@@ -26,6 +27,10 @@ namespace openmoq::moqx::plugin {
 // Deep-merges `overlay` into a copy of `base`: maps merge key by key,
 // everything else is replaced by the overlay's value. Neither input changes.
 YAML::Node mergeYaml(const YAML::Node& base, const YAML::Node& overlay);
+
+// The first map key in `node`, at any depth, that is not a scalar; rendered
+// as YAML.
+std::optional<std::string> nonStringKey(const YAML::Node& node);
 
 // Walks a generic value into the sink; an empty key renders an array element.
 void writeGeneric(config::ConfigSink& sink, std::string_view key, const rfl::Generic& value);

@@ -202,6 +202,32 @@ TEST_F(PluginConfigTest, ServiceDefaultsDoNotLeakBetweenServices) {
   EXPECT_EQ(config("other")->secret, "shared");
 }
 
+TEST_F(PluginConfigTest, NonStringKeysAreConfigErrors) {
+  auto entry = resolve("", "    plugins:\n      - type: test\n        config: {[a]: 1}\n");
+  ASSERT_TRUE(entry.hasError());
+  EXPECT_THAT(entry.error(), HasSubstr("plugins[0] (test): config: map keys must be strings"));
+  auto defaults = resolve("service_defaults:\n  plugins:\n    test: {[a]: 1}\n");
+  ASSERT_TRUE(defaults.hasError());
+  EXPECT_THAT(
+      defaults.error(),
+      HasSubstr("service_defaults.plugins.test: map keys must be strings")
+  );
+}
+
+TEST_F(PluginConfigTest, ResolvingLeavesTheParsedConfigAsIs) {
+  std::string yaml = std::string(kBase) + "service_defaults:\n  plugins:\n    test: {tag: 3}\n" +
+                     std::string(kServices) +
+                     "    plugins:\n      - type: test\n        config: {secret: own}\n";
+  auto parsed = rfl::yaml::read<config::ParsedConfig>(yaml);
+  ASSERT_TRUE(parsed);
+  ASSERT_TRUE(config::resolveConfig(*parsed, {.registry = &registry_}).hasValue());
+  const auto& entry = parsed->services.value().at("live").plugins.value()->at(0);
+  // The merge with service_defaults must not be stored back into the entry.
+  ASSERT_TRUE(entry.config.value().has_value());
+  EXPECT_FALSE(entry.config.value()->node()["tag"]);
+  EXPECT_EQ(entry.config.value()->node()["secret"].Scalar(), "own");
+}
+
 TEST_F(PluginConfigTest, ServiceDefaultsRejectUnknownTypeAndField) {
   auto res = resolve("service_defaults:\n  plugins:\n    nope: {}\n    test: {bogus: 1}\n");
   ASSERT_TRUE(res.hasError());
