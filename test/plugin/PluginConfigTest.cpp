@@ -206,6 +206,12 @@ TEST_F(PluginConfigTest, NonStringKeysAreConfigErrors) {
   auto entry = resolve("", "    plugins:\n      - type: test\n        config: {[a]: 1}\n");
   ASSERT_TRUE(entry.hasError());
   EXPECT_THAT(entry.error(), HasSubstr("plugins[0] (test): config: map keys must be strings"));
+  auto inherited = resolve(
+      "service_defaults:\n  plugins:\n    test: {tag: 1}\n",
+      "    plugins:\n      - type: test\n        config: {[a]: 1}\n"
+  );
+  ASSERT_TRUE(inherited.hasError());
+  EXPECT_THAT(inherited.error(), HasSubstr("plugins[0] (test): config: map keys must be strings"));
   auto defaults = resolve("service_defaults:\n  plugins:\n    test: {[a]: 1}\n");
   ASSERT_TRUE(defaults.hasError());
   EXPECT_THAT(

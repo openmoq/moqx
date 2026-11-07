@@ -1048,6 +1048,12 @@ std::optional<PluginEntryConfig> resolvePluginEntry(
     return std::nullopt;
   }
   const PluginConfigNode own = entry.config.value().value_or(PluginConfigNode());
+  // Before merging: mergeYaml reads keys as scalars. Defaults are checked in
+  // validatePluginDefaults.
+  if (auto bad = plugin::nonStringKey(own.node())) {
+    errors.push_back(label + ": config: map keys must be strings, found " + *bad);
+    return std::nullopt;
+  }
   const PluginConfigNode* inherited = nullptr;
   if (defaults) {
     if (auto it = defaults->find(type->name); it != defaults->end()) {
@@ -1058,10 +1064,6 @@ std::optional<PluginEntryConfig> resolvePluginEntry(
   // parsed entry it shares storage with.
   const YAML::Node node =
       inherited ? plugin::mergeYaml(inherited->node(), own.node()) : YAML::Clone(own.node());
-  if (auto bad = plugin::nonStringKey(node)) {
-    errors.push_back(label + ": config: map keys must be strings, found " + *bad);
-    return std::nullopt;
-  }
   auto parsed = type->parse(node, strict);
   if (parsed.hasError()) {
     errors.push_back(label + ": config: " + parsed.error());
