@@ -13,6 +13,7 @@
 // - Config reference: docs/config.md#cat4moq-auth.
 
 #include "auth/AuthConfig.h"
+#include "config/Config.h"
 #include "plugin/PluginType.h"
 
 #include <folly/Expected.h>
@@ -91,5 +92,10 @@ struct Config {
 folly::Expected<auth::AuthConfig, std::string> resolve(const Config& config);
 
 std::shared_ptr<const plugin::PluginType> type();
+
+// The verifier config of `service`'s cat4moq-auth entry: the one with id
+// `pluginId`, or the only one when `pluginId` is empty.
+folly::Expected<auth::AuthConfig, std::string>
+serviceAuthConfig(const config::ServiceConfig& service, std::string_view pluginId);
 
 } // namespace openmoq::moqx::plugins::cat4moq

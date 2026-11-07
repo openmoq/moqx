@@ -217,6 +217,20 @@ TEST_F(Cat4moqAuthTest, AnonymousClaimCoversSubscribeButNotPublish) {
   ASSERT_TRUE(admit({}).hasValue());
   expectSubscribeReachesRelay();
   EXPECT_TRUE(subscribe().hasValue());
+  EXPECT_CALL(*publisher_, fetch(_, _))
+      .WillOnce(
+          [](Fetch f, std::shared_ptr<FetchConsumer>) -> folly::coro::Task<Publisher::FetchResult> {
+            co_return std::make_shared<NiceMock<MockFetchHandle>>(FetchOk{.requestID = f.requestID}
+            );
+          }
+      );
+  Fetch fetch(
+      RequestID(4),
+      FullTrackName{TrackNamespace{{"live"}}, "video"},
+      AbsoluteLocation{0, 0},
+      AbsoluteLocation{1, 0}
+  );
+  EXPECT_TRUE(run(pub_->fetch(std::move(fetch), nullptr)).hasValue());
   auto rejected = publish();
   ASSERT_TRUE(rejected.hasError());
   EXPECT_EQ(rejected.error().errorCode, PublishErrorCode::UNAUTHORIZED);
@@ -289,6 +303,57 @@ TEST_F(Cat4moqAuthTest, PeerBypassCoversOnlyNamespaceInterestWithPeering) {
   EXPECT_EQ(subscribed.error().errorCode, SubscribeErrorCode::UNAUTHORIZED);
 }
 
+// SUBSCRIBE_TRACKS is checked as SUBSCRIBE_NAMESPACE on its prefix, and peers
+// skip it like SUBSCRIBE_NAMESPACE.
+TEST_F(Cat4moqAuthTest, SubscribeTracksIsNamespaceInterest) {
+  peering_ = true;
+  auto prefixGrant = grantsFor({Action::SubscribeNamespace});
+  prefixGrant.scopes[0].namespaceMatches.push_back(auth::MatchRule{
+      .type = auth::MatchRule::Type::Prefix,
+      .value = auth::canonicalNamespace(std::vector<std::string>{"live"}),
+  });
+  start(baseConfig());
+  ASSERT_TRUE(admit({tokenFor(grantsFor({Action::ClientSetup})), tokenFor(prefixGrant)}).hasValue()
+  );
+  EXPECT_CALL(*publisher_, subscribeTracks(_, _))
+      .Times(2)
+      .WillRepeatedly(
+          [](SubscribeTracks req, std::shared_ptr<Publisher::PublishBlockedHandle>)
+              -> folly::coro::Task<Publisher::SubscribeTracksResult> {
+            co_return folly::makeUnexpected(SubscribeTracksError{
+                req.requestID,
+                SubscribeTracksErrorCode::INTERNAL_ERROR,
+                "reached the relay"
+            });
+          }
+      );
+  auto tracks = [&](std::vector<std::string> prefix, Parameters params) {
+    SubscribeTracks req;
+    req.requestID = RequestID(5);
+    req.trackNamespacePrefix = TrackNamespace{std::move(prefix)};
+    req.params = std::move(params);
+    return run(pub_->subscribeTracks(std::move(req), nullptr));
+  };
+  // Granted prefix.
+  auto granted = tracks({"live", "room"}, Parameters(FrameType::SUBSCRIBE_TRACKS));
+  ASSERT_TRUE(granted.hasError());
+  EXPECT_EQ(granted.error().reasonPhrase, "reached the relay");
+  // Outside the grant.
+  auto denied = tracks({"other"}, Parameters(FrameType::SUBSCRIBE_TRACKS));
+  ASSERT_TRUE(denied.hasError());
+  EXPECT_EQ(denied.error().errorCode, SubscribeTracksErrorCode::UNAUTHORIZED);
+  // A peer, outside the grant.
+  auto peer = tracks(
+      {"other"},
+      withTokens(
+          FrameType::SUBSCRIBE_TRACKS,
+          {AuthToken{.tokenType = kRelayTokenType, .tokenValue = "peer-relay"}}
+      )
+  );
+  ASSERT_TRUE(peer.hasError());
+  EXPECT_EQ(peer.error().reasonPhrase, "reached the relay");
+}
+
 TEST_F(Cat4moqAuthTest, NoPeerBypassWithoutPeering) {
   start(baseConfig());
   ASSERT_TRUE(admit({tokenFor(grantsFor({Action::ClientSetup}))}).hasValue());
@@ -351,6 +416,130 @@ TEST(Cat4moqAuthConfigTest, MaxTokensComesFromTheEntryOrServiceDefaults) {
       plugins::cat4moq::resolve(*static_cast<const plugins::cat4moq::Config*>(entry.config.get()));
   ASSERT_TRUE(resolved.hasValue());
   EXPECT_EQ(resolved->maxTokensPerMessage, 3);
+}
+
+TEST(Cat4moqAuthConfigTest, EntryValueBeatsServiceDefaults) {
+  auto res = resolveYaml(
+      std::string(kEntry) + "          max_tokens_per_message: 7\n" +
+      "service_defaults:\n  plugins:\n    cat4moq-auth: {max_tokens_per_message: 3}\n"
+  );
+  ASSERT_TRUE(res.hasValue()) << res.error();
+  const auto& entry = res->config.services.at("live").plugins.at(0);
+  auto resolved =
+      plugins::cat4moq::resolve(*static_cast<const plugins::cat4moq::Config*>(entry.config.get()));
+  ASSERT_TRUE(resolved.hasValue());
+  EXPECT_EQ(resolved->maxTokensPerMessage, 7);
+}
+
+auth::AuthConfig resolvedEntry(const std::string& configYaml) {
+  auto res =
+      resolveYaml("    plugins:\n      - type: cat4moq-auth\n        config:\n" + configYaml);
+  EXPECT_TRUE(res.hasValue()) << (res.hasError() ? res.error() : "");
+  if (!res.hasValue()) {
+    return {};
+  }
+  const auto& entry = res->config.services.at("live").plugins.at(0);
+  auto resolved =
+      plugins::cat4moq::resolve(*static_cast<const plugins::cat4moq::Config*>(entry.config.get()));
+  EXPECT_TRUE(resolved.hasValue());
+  return resolved.value_or(auth::AuthConfig{});
+}
+
+// Values YAML would type as numbers stay the strings they were written as.
+TEST(Cat4moqAuthConfigTest, UnquotedScalarsReadAsWritten) {
+  auto config = resolvedEntry(R"(          hmac_keys: [{id: 1, secret: 0012345678901234567}]
+          max_tokens_per_message: 2
+          anonymous_claim:
+            - actions: [subscribe]
+              namespace_match: {prefix: [live, 2024]}
+              track_match: {exact: 007}
+)");
+  ASSERT_EQ(config.hmacKeys.size(), 1);
+  EXPECT_EQ(config.hmacKeys[0].id, "1");
+  EXPECT_EQ(config.hmacKeys[0].secret, "0012345678901234567");
+  ASSERT_EQ(config.anonymousClaim.size(), 1);
+  EXPECT_EQ(config.anonymousClaim[0].namespaceSegments, (std::vector<std::string>{"live", "2024"}));
+  EXPECT_EQ(config.anonymousClaim[0].trackName, "007");
+}
+
+TEST(Cat4moqAuthConfigTest, ResolveMapsEveryField) {
+  using Mode = auth::MatchRuleType;
+  auto config = resolvedEntry(R"(          token_type: 16
+          hmac_keys: [{id: a, secret: s1}, {id: b, secret: s2}]
+          require_setup_token: false
+          allow_request_token_override: false
+          strict_claims: true
+          max_tokens_per_message: 3
+          anonymous_claim:
+            - actions: [subscribe, fetch]
+              namespace_match: {exact: [x]}
+              track_match: {exact: t}
+            - actions: [subscribe]
+              namespace_match: {prefix: [y]}
+              track_match: {prefix: t}
+            - actions: [subscribe]
+              namespace_match: {suffix: [z]}
+              track_match: {suffix: t}
+            - actions: [subscribe]
+              namespace_match: {contains: [w]}
+              track_match: {contains: t}
+            - actions: [track_status]
+)");
+  EXPECT_EQ(config.tokenType, 16);
+  ASSERT_EQ(config.hmacKeys.size(), 2);
+  EXPECT_EQ(config.hmacKeys[1].id, "b");
+  EXPECT_EQ(config.hmacKeys[1].secret, "s2");
+  EXPECT_FALSE(config.requireSetupToken);
+  EXPECT_FALSE(config.allowRequestTokenOverride);
+  EXPECT_TRUE(config.strictClaims);
+  EXPECT_EQ(config.maxTokensPerMessage, 3);
+  ASSERT_EQ(config.anonymousClaim.size(), 5);
+  const auto& claims = config.anonymousClaim;
+  EXPECT_EQ(claims[0].actions, (std::vector<Action>{Action::Subscribe, Action::Fetch}));
+  const std::vector<std::pair<std::string, Mode>>
+      expected{{"x", Mode::Exact}, {"y", Mode::Prefix}, {"z", Mode::Suffix}, {"w", Mode::Contains}};
+  for (size_t i = 0; i < expected.size(); ++i) {
+    EXPECT_EQ(claims[i].namespaceSegments, std::vector<std::string>{expected[i].first});
+    EXPECT_EQ(claims[i].namespaceMatchMode, expected[i].second);
+    EXPECT_EQ(claims[i].trackName, "t");
+    EXPECT_EQ(claims[i].trackMatchMode, expected[i].second);
+  }
+  // Omitted matches match any namespace and track.
+  EXPECT_FALSE(claims[4].namespaceSegments.has_value());
+  EXPECT_FALSE(claims[4].trackName.has_value());
+}
+
+TEST(Cat4moqAuthConfigTest, ResolveDefaults) {
+  auto config = resolvedEntry(R"(          hmac_keys: [{id: a, secret: s}]
+          max_tokens_per_message: 1
+)");
+  EXPECT_EQ(config.tokenType, 0);
+  EXPECT_TRUE(config.requireSetupToken);
+  EXPECT_TRUE(config.allowRequestTokenOverride);
+  EXPECT_FALSE(config.strictClaims);
+  EXPECT_TRUE(config.anonymousClaim.empty());
+}
+
+TEST(Cat4moqAuthConfigTest, ServiceAuthConfigPicksTheEntry) {
+  auto res = resolveYaml(R"(    plugins:
+      - type: cat4moq-auth
+        id: first
+        config: {token_type: 1, max_tokens_per_message: 1, hmac_keys: [{id: a, secret: s}]}
+      - type: cat4moq-auth
+        id: second
+        config: {token_type: 2, max_tokens_per_message: 1, hmac_keys: [{id: a, secret: s}]}
+)");
+  ASSERT_TRUE(res.hasValue()) << res.error();
+  const auto& service = res->config.services.at("live");
+  auto ambiguous = plugins::cat4moq::serviceAuthConfig(service, "");
+  ASSERT_TRUE(ambiguous.hasError());
+  EXPECT_THAT(ambiguous.error(), HasSubstr("several cat4moq-auth entries"));
+  auto second = plugins::cat4moq::serviceAuthConfig(service, "second");
+  ASSERT_TRUE(second.hasValue());
+  EXPECT_EQ(second->tokenType, 2);
+  auto missing = plugins::cat4moq::serviceAuthConfig(service, "third");
+  ASSERT_TRUE(missing.hasError());
+  EXPECT_THAT(missing.error(), HasSubstr("no matching cat4moq-auth entry"));
 }
 
 TEST(Cat4moqAuthConfigTest, ReportsEveryProblem) {

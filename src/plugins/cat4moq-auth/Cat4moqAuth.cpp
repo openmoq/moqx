@@ -256,6 +256,24 @@ folly::Expected<auth::AuthConfig, std::string> resolve(const Config& config) {
   return out;
 }
 
+folly::Expected<auth::AuthConfig, std::string>
+serviceAuthConfig(const config::ServiceConfig& service, std::string_view pluginId) {
+  const config::PluginEntryConfig* found = nullptr;
+  for (const auto& entry : service.plugins) {
+    if (entry.type != kType || (!pluginId.empty() && entry.id != pluginId)) {
+      continue;
+    }
+    if (found) {
+      return folly::makeUnexpected(std::string("several cat4moq-auth entries; pick one by id"));
+    }
+    found = &entry;
+  }
+  if (!found) {
+    return folly::makeUnexpected(std::string("no matching cat4moq-auth entry"));
+  }
+  return resolve(*static_cast<const Config*>(found->config.get()));
+}
+
 std::shared_ptr<const plugin::PluginType> type() {
   return plugin::makePluginType<Config>(
       std::string(kType),

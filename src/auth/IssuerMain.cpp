@@ -52,33 +52,6 @@ namespace cfg = config;
 
 constexpr std::string_view kServeCommand = "serve";
 
-// The service's cat4moq-auth entry, chosen by --auth_plugin_id when there are
-// several.
-auth::AuthConfig serviceAuthConfig(const cfg::ServiceConfig& service) {
-  const cfg::PluginEntryConfig* found = nullptr;
-  for (const auto& entry : service.plugins) {
-    if (entry.type != plugins::cat4moq::kType ||
-        (!FLAGS_auth_plugin_id.empty() && entry.id != FLAGS_auth_plugin_id)) {
-      continue;
-    }
-    if (found) {
-      throw std::invalid_argument(
-          "service has several cat4moq-auth entries; pick one with --auth_plugin_id"
-      );
-    }
-    found = &entry;
-  }
-  if (!found) {
-    throw std::invalid_argument("service has no matching cat4moq-auth entry");
-  }
-  auto resolved =
-      plugins::cat4moq::resolve(*static_cast<const plugins::cat4moq::Config*>(found->config.get()));
-  if (resolved.hasError()) {
-    throw std::invalid_argument(resolved.error());
-  }
-  return std::move(resolved.value());
-}
-
 auth::IssueTokenOptions makeIssueTokenOptions(const cfg::ResolvedConfig* resolvedConfig) {
   std::string keyID = FLAGS_auth_key_id;
   std::string secret = FLAGS_auth_secret;
@@ -96,7 +69,11 @@ auth::IssueTokenOptions makeIssueTokenOptions(const cfg::ResolvedConfig* resolve
     if (it == services.end()) {
       throw std::invalid_argument("unknown auth service: " + FLAGS_auth_service);
     }
-    auto key = auth::selectHmacKey(serviceAuthConfig(it->second), FLAGS_auth_key_id);
+    auto authConfig = plugins::cat4moq::serviceAuthConfig(it->second, FLAGS_auth_plugin_id);
+    if (authConfig.hasError()) {
+      throw std::invalid_argument("service " + FLAGS_auth_service + ": " + authConfig.error());
+    }
+    auto key = auth::selectHmacKey(authConfig.value(), FLAGS_auth_key_id);
     keyID = std::move(key.id);
     secret = std::move(key.secret);
   } else if (keyID.empty()) {

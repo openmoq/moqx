@@ -248,10 +248,6 @@ TEST(ConfigSerializerTest, DisabledClusterOmitsHopID) {
   EXPECT_EQ(sink.scalars.count("cluster.hop_id"), 0u);
 }
 
-// Regression: a scope without namespace_match (matches ANY namespace) must
-// serialize distinguishably from one with an explicit empty segment list
-// (matches only the zero-segment namespace) -- collapsing both to [] would
-// make a wide-open anonymous claim unauditable over the /config endpoint.
 TEST(ConfigSerializerTest, SerializesUpstreamsList) {
   Config cfg = makeFullConfig();
   auto& svc = cfg.services.at("default");

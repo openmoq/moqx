@@ -212,7 +212,7 @@ services:
 
 ### cat4moq-auth
 
-Authorization is the `cat4moq-auth` [plugin](#plugins), one service-scope entry per service that enforces it.
+Authorization is the `cat4moq-auth` [plugin](#plugins), a service-scope entry on each service that enforces it. A service may have several entries, for example with different keys; a request must pass every one.
 moqx then expects MOQT `AUTHORIZATION_TOKEN` parameters whose token type
 matches the configured `token_type`. The token value is a CAT/CWT token signed
 with an HMAC key shared by the token issuer and the relay.
