@@ -6,8 +6,8 @@ name: ci pr
 
 on:
   pull_request:
-    # ready_for_review included so promoting a draft triggers the conformance
-    # jobs its draft gate skipped.
+    # ready_for_review included so promoting a draft triggers the jobs drafts
+    # leave out: conformance and macos.
     types: [opened, synchronize, reopened, ready_for_review]
 
 concurrency:
@@ -41,40 +41,33 @@ jobs:
         # `key` is the lane id (ccache keys, option gating); `name` renders into
         # the status-check name. Renaming a lane branch protection requires stops
         # that check reporting — update the ruleset in the same change.
-        include:
-          - name: linux
-            key: linux
-            preset: default
-            # Compile coverage for benchmark/: the microbenchmark job is main-only,
-            # so nothing else builds those TUs before merge.
-            extra_cmake: -DMOQX_BUILD_BENCHMARKS=ON
-            runner: ubuntu-22.04
-          # arm64 is validated by the publish-side docker build (ci-main publish
-          # arm64 entry); skipped here to avoid the ubuntu-runner ↔ bookworm-tarball
-          # glog ABI mismatch. arm64 regressions surface at main-push time.
-          - name: macos
-            key: macos
-            preset: default
-            runner: macos-15
-          # ASan on moqx's own TUs, over the uninstrumented prebuilt folly, for a
-          # fast PR signal. Full-stack instrumentation needs a prebuilt
-          # instrumented moxygen: openmoq/moqx#579.
-          # RelWithDebInfo: the prebuilt is NDEBUG and folly's kIsDebug is ABI.
-          - name: asan debug
-            key: asan
-            preset: san
-            extra_cmake: -DCMAKE_BUILD_TYPE=RelWithDebInfo
-            # The san preset demands an instrumented moxygen; this lane knowingly
-            # takes the uninstrumented one. Without it configure.sh refuses.
-            uninstrumented_deps: true
-            leak_check: true
-            runner: [self-hosted, build]
-            # Sized by memory, not cores. The self-hosted boxes are 16c/31GB;
-            # the heaviest test TUs peak near 2.3 GB of cc1plus RSS each
-            # under Debug+ASan. Worst-case concurrent footprint is 38 GB at
-            # -j16 and 34 GB at -j14, both of which OOM-kill the compiler.
-            # -j10 lands at ~25 GB, leaving headroom for the co-resident relay.
-            build_jobs: 10
+        #
+        # Computed so drafts omit macos with no skipped job: the org shares 5 macOS
+        # slots and stack pushes fill them. Promotion runs it (ready_for_review above).
+        #
+        # linux: -DMOQX_BUILD_BENCHMARKS=ON is compile coverage for benchmark/: the
+        # microbenchmark job is main-only, so nothing else builds those TUs before merge.
+        #
+        # arm64 is validated by the publish-side docker build (ci-main publish
+        # arm64 entry); skipped here to avoid the ubuntu-runner ↔ bookworm-tarball
+        # glog ABI mismatch. arm64 regressions surface at main-push time.
+        #
+        # asan debug: ASan on moqx's own TUs, over the uninstrumented prebuilt folly,
+        # for a fast PR signal. Full-stack instrumentation needs a prebuilt
+        # instrumented moxygen: openmoq/moqx#579.
+        # RelWithDebInfo: the prebuilt is NDEBUG and folly's kIsDebug is ABI.
+        # uninstrumented_deps: the san preset demands an instrumented moxygen; this
+        # lane knowingly takes the uninstrumented one. Without it configure.sh refuses.
+        # build_jobs: sized by memory, not cores. The self-hosted boxes are 16c/31GB;
+        # the heaviest test TUs peak near 2.3 GB of cc1plus RSS each
+        # under Debug+ASan. Worst-case concurrent footprint is 38 GB at
+        # -j16 and 34 GB at -j14, both of which OOM-kill the compiler.
+        # -j10 lands at ~25 GB, leaving headroom for the co-resident relay.
+        include: >-
+          ${{ fromJSON(format('[{0}{1},{2}]',
+          '{"name":"linux","key":"linux","preset":"default","extra_cmake":"-DMOQX_BUILD_BENCHMARKS=ON","runner":"ubuntu-22.04"}',
+          !github.event.pull_request.draft && ',{"name":"macos","key":"macos","preset":"default","runner":"macos-15"}' || '',
+          '{"name":"asan debug","key":"asan","preset":"san","extra_cmake":"-DCMAKE_BUILD_TYPE=RelWithDebInfo","uninstrumented_deps":true,"leak_check":true,"runner":["self-hosted","build"],"build_jobs":10}')) }}
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
     # Ceiling for the from-source fallback, not the normal runtime (~28 min).
@@ -108,6 +101,8 @@ jobs:
         run: ccache -s
 
       - name: Test
+        # Bounds a hung test; the job ceiling is sized for a from-source build.
+        timeout-minutes: 15
         env:
           ASAN_OPTIONS: ${{ matrix.leak_check && 'detect_leaks=1:abort_on_error=1' || '' }}
         run: scripts/test.sh ${{ matrix.preset }} --output-junit test-results.xml

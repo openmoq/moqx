@@ -7,7 +7,7 @@ name: ci main
 #
 #   check-format ──────────────────────────────────────────────────────────────────┐
 #   build (linux, asan debug) ── publish (docker+smoke) ── release ────────────────┼── notify
-#   microbenchmark (linux, macos) ────────────────────────────────────────────────-┤
+#   microbenchmark (linux) ───────────────────────────────────────────────────────-┤
 #                                                                                  └── prune-caches
 
 on:
@@ -116,6 +116,8 @@ jobs:
         run: ccache -s
 
       - name: Test
+        # Bounds a hung test; the job ceiling is sized for a from-source build.
+        timeout-minutes: 15
         env:
           ASAN_OPTIONS: ${{ matrix.leak_check && 'detect_leaks=1:abort_on_error=1' || '' }}
         run: scripts/test.sh ${{ matrix.preset }} --output-junit test-results.xml
@@ -227,11 +229,6 @@ jobs:
         include:
           - name: linux
             runner: ubuntu-22.04
-          - name: macos
-            # Pinned to the moxygen publish runner: releases ship
-            # moxygen-macos-15-arm64.tar.gz and no macos-26 one, so macos-latest
-            # 404s. Keep in lockstep with the build job above.
-            runner: macos-15
     name: microbenchmark (${{ matrix.name }})
     runs-on: ${{ matrix.runner }}
     # Ceiling for the from-source fallback; see the build job.
