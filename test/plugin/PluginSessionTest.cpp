@@ -116,9 +116,42 @@ protected:
     );
   }
 
+  // A second relay whose service "edge", served by plugin "edge", chains to
+  // the first one.
+  void startEdge() {
+    auto edgeService = service({entry("edge")});
+    edgeService.upstreams = {config::UpstreamConfig{
+        .url = folly::to<std::string>("moqt://localhost:", server_->getAddress().getPort(), "/moq"),
+        .tls = config::UpstreamTlsConfig{.insecure = true},
+    }};
+    config::Config edgeCfg;
+    edgeCfg.services.emplace("edge", edgeService);
+    edgeHost_ = PluginHost::create(edgeCfg).value();
+    edge_ = std::make_shared<MoqxRelayContext>(
+        edgeCfg.services,
+        "edge-relay",
+        /*useRelayThread=*/true,
+        /*useLocalForwarders=*/false,
+        std::nullopt,
+        edgeHost_
+    );
+    ASSERT_TRUE(edgeHost_
+                    ->createServices([&](std::string_view svc) {
+                      return folly::getKeepAliveToken(edge_->relayExecutor(svc));
+                    })
+                    .hasValue());
+    edge_->initUpstreams(ioExecutor_.getAllEventBases()[0].get());
+  }
+
   void TearDown() override {
     script_->admitGate.post();
     script_->authorizeGate.post();
+    if (edge_) {
+      edge_->stop();
+    }
+    if (edgeHost_) {
+      folly::coro::blockingWait(edgeHost_->stop());
+    }
     if (client_ && client_->moqSession_) {
       client_->moqSession_->close(SessionCloseErrorCode::NO_ERROR);
     }
@@ -271,29 +304,7 @@ TEST_F(PluginSessionTest, UpstreamParamsReachTheUpstream) {
   script_->upstreamParams["edge"] = {SetupParam{0x7A10, uint64_t{42}}};
   start();
 
-  // A second relay whose service "edge" chains to the first one.
-  auto edgeService = service({entry("edge")});
-  edgeService.upstreams = {config::UpstreamConfig{
-      .url = folly::to<std::string>("moqt://localhost:", server_->getAddress().getPort(), "/moq"),
-      .tls = config::UpstreamTlsConfig{.insecure = true},
-  }};
-  config::Config edgeCfg;
-  edgeCfg.services.emplace("edge", edgeService);
-  edgeHost_ = PluginHost::create(edgeCfg).value();
-  edge_ = std::make_shared<MoqxRelayContext>(
-      edgeCfg.services,
-      "edge-relay",
-      /*useRelayThread=*/true,
-      /*useLocalForwarders=*/false,
-      std::nullopt,
-      edgeHost_
-  );
-  ASSERT_TRUE(edgeHost_
-                  ->createServices([&](std::string_view svc) {
-                    return folly::getKeepAliveToken(edge_->relayExecutor(svc));
-                  })
-                  .hasValue());
-  edge_->initUpstreams(ioExecutor_.getAllEventBases()[0].get());
+  startEdge();
 
   for (int i = 0; i < 1000; ++i) {
     auto events = *script_->events.rlock();
@@ -303,8 +314,31 @@ TEST_F(PluginSessionTest, UpstreamParamsReachTheUpstream) {
     pump(std::chrono::milliseconds(5));
   }
   EXPECT_THAT(*script_->events.rlock(), ::testing::Contains("param:gate=42"));
+}
+
+TEST_F(PluginSessionTest, UpstreamStopWhileParamsSuspended) {
+  script_->hooks = Hook::Admit | Hook::UpstreamSetupParams;
+  script_->suspendUpstreamParams = true;
+  start();
+  // The test client's own session is admitted first; only the edge's counts.
+  for (int i = 0; i < 1000 && script_->events.rlock()->empty(); ++i) {
+    pump(std::chrono::milliseconds(5));
+  }
+  script_->take();
+  startEdge();
+  for (int i = 0; i < 1000; ++i) {
+    auto events = *script_->events.rlock();
+    if (std::find(events.begin(), events.end(), "upstream:edge@edge") != events.end()) {
+      break;
+    }
+    pump(std::chrono::milliseconds(5));
+  }
+  EXPECT_THAT(*script_->events.rlock(), ::testing::Contains("upstream:edge@edge"));
   edge_->stop();
-  folly::coro::blockingWait(edgeHost_->stop());
+  script_->upstreamParamsGate.post();
+  pump(std::chrono::milliseconds(100));
+  // The connect attempt ended without reaching the main relay.
+  EXPECT_THAT(*script_->events.rlock(), ::testing::Not(::testing::Contains("admit:gate@live")));
 }
 
 TEST_F(PluginSessionTest, SessionCloseRunsSessionEnded) {

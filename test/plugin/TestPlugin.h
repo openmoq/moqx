@@ -58,6 +58,9 @@ struct Script {
   std::optional<uint64_t> recordParam;
 
   std::map<std::string, Params> listenerParams;
+  // When set, upstream setupParams waits for the gate, ignoring cancellation.
+  std::atomic<bool> suspendUpstreamParams{false};
+  folly::coro::Baton upstreamParamsGate;
   std::map<std::string, Params> upstreamParams;
   // Per plugin id: snapshot answer; absent means {"id": id}.
   folly::Synchronized<std::map<std::string, std::string>> snapshotThrows;

@@ -108,6 +108,9 @@ public:
 
   folly::coro::Task<Result<Params>> setupParams(const UpstreamScope& scope) override {
     script_->record("upstream:" + name_ + "@" + std::string(scope.service));
+    if (script_->suspendUpstreamParams) {
+      co_await script_->upstreamParamsGate;
+    }
     auto it = script_->upstreamParams.find(name_);
     co_return it == script_->upstreamParams.end() ? Params{} : it->second;
   }
