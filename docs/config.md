@@ -275,16 +275,18 @@ widens what an already-connected session (or an anonymous one, when
 `require_setup_token: false`) can do per request.
 
 ```yaml
-plugins:
-  - type: cat4moq-auth
-    config:
-      hmac_keys: [{id: "cat-dev", secret: "replace-with-long-random-secret"}]
-      require_setup_token: true
-      max_tokens_per_message: 4
-      anonymous_claim:
-        - actions: [subscribe, fetch]
-          namespace_match: {prefix: ["live"]}
-          track_match: {exact: "video"}
+services:
+  live:
+    plugins:
+      - type: cat4moq-auth
+        config:
+          hmac_keys: [{id: "cat-dev", secret: "replace-with-long-random-secret"}]
+          require_setup_token: true
+          max_tokens_per_message: 4
+          anonymous_claim:
+            - actions: [subscribe, fetch]
+              namespace_match: {prefix: ["live"]}
+              track_match: {exact: "video"}
 ```
 
 Each entry:
