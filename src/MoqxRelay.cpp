@@ -884,7 +884,10 @@ MoqxRelay::PublishSetupResult MoqxRelay::publishWithParticipant(
       hasTrackFilterSub = true;
       continue;
     }
-    if (subscriber.info->sessionId != publisherId && !publishedByPeer(publisherId, info.peerID)) {
+    if (subscriber.info->sessionId != publisherId && !publishedByPeer(publisherId, info.peerID) &&
+        !pendingRendezvous_.isWaiting(pub.fullTrackName, subscriber.info->sessionId) &&
+        (info.options == SubscribeNamespaceOptions::PUBLISH ||
+         info.options == SubscribeNamespaceOptions::BOTH)) {
       nForwardingSubscribers += info.forward ? 1 : 0;
       if (!addSubscriberAndPublish(subscriber, publisherRef, info.forward, /*pinned=*/true)) {
         XLOG(ERR) << "addSubscriberAndPublish failed for " << pub.fullTrackName;
@@ -893,14 +896,39 @@ MoqxRelay::PublishSetupResult MoqxRelay::publishWithParticipant(
     }
   }
 
+  // Draft 18+: also fan out to SUBSCRIBE_TRACKS subscribers from the parallel
+  // tracks tree. They live in an independent overlap space and only want
+  // PUBLISH messages (no NAMESPACE / NAMESPACE_DONE).
+  NamespaceTree::SubscriberList tracksSubscribers;
+  auto tracksNode = tracksTree_.findNode(
+      pub.fullTrackName.trackNamespace,
+      /*createMissingNodes=*/false,
+      &tracksSubscribers
+  );
+  if (tracksNode) {
+    tracksNode->forEachSubscriber(
+        [&](const Participant& subscriber,
+            const NamespaceTree::NamespaceNode::NamespaceSubscriberInfo& info) {
+          tracksSubscribers.emplace_back(subscriber, info);
+        }
+    );
+  }
+  for (auto& [subscriber, info] : tracksSubscribers) {
+    if (subscriber.info->sessionId != publisherId && !publishedByPeer(publisherId, info.peerID) &&
+        !pendingRendezvous_.isWaiting(pub.fullTrackName, subscriber.info->sessionId)) {
+      nForwardingSubscribers += info.forward ? 1 : 0;
+      if (!addSubscriberAndPublish(subscriber, publisherRef, info.forward, /*pinned=*/true)) {
+        XLOG(ERR) << "addSubscriberAndPublish failed for " << pub.fullTrackName;
+        continue;
+      }
+    }
+  }
+  pendingRendezvous_.wakeForTrack(pub.fullTrackName);
+
   // Forward if a direct subscriber is forwarding, or for any TRACK_FILTER subscriber
   // (PropertyRanking needs objects to evaluate property values for ranking).
   // When subscribers join later via subscribeNamespace, forwardChanged() sends REQUEST_UPDATE.
   bool shouldForward = (nForwardingSubscribers > 0) || hasTrackFilterSub;
-
-  // Wake any SUBSCRIBE that's parked waiting for this exact track (draft 18+
-  // RENDEZVOUS_TIMEOUT).
-  pendingRendezvous_.wakeForTrack(pub.fullTrackName);
 
   return PublishSetup{
       publishEntry.consumer,
@@ -944,6 +972,17 @@ folly::coro::Task<void> awaitPublishReply(
   XLOG(DBG1) << "Received PublishOk for " << forwarder->fullTrackName()
              << " subscriber=" << subscriber.get();
   subscriber->onPublishOk(result.value().value());
+}
+
+// Draft-18 §5.1: one subscription per track per role. Every attach path shares the
+// session's forwarder slot, so a PUBLISH must not clobber an existing one.
+bool alreadySubscribed(const MoQForwarder& fwd, moxygen::SessionId sessionId) {
+  if (!fwd.findSubscriber(sessionId)) {
+    return false;
+  }
+  XLOG(DBG1) << "Not sending PUBLISH for " << fwd.fullTrackName()
+             << ": session already subscribed sess=" << sessionId;
+  return true;
 }
 
 } // namespace
@@ -995,6 +1034,12 @@ bool MoqxRelay::addSubscriberAndPublish(
     bool pinned
 ) {
   XCHECK(publisherRef) << "addSubscriberAndPublish: empty forwarder ref";
+  // TODO: if the woken SUBSCRIBE then fails, replay this skipped PUBLISH.
+  if (pendingRendezvous_.isWaiting(publisherRef.track().ftn, subscriber.info->sessionId)) {
+    XLOG(DBG1) << "Not sending PUBLISH: SUBSCRIBE pending for this track sess="
+               << subscriber.info->sessionId;
+    return true; // it's a skip, not a failure
+  }
   if (mode() == Mode::LocalForwarder) {
     // TODO: we don't want to complete the publisher's replyTask until we've initiated
     // publish and attached the consumer for every SUB_NS subscriber.  So .start()
@@ -1016,6 +1061,9 @@ bool MoqxRelay::addSubscriberAndPublish(
   }
   auto forwarder = publisherRef.getIfOwned();
   XCHECK(forwarder) << "addSubscriberAndPublish: remote ref outside LocalForwarder mode";
+  if (alreadySubscribed(*forwarder, subscriber.info->sessionId)) {
+    return true;
+  }
   auto p = startPublish(*subscriber.subscriber, subscriber, forwarder, forward, pinned);
   if (!p) {
     return false;
@@ -1294,6 +1342,9 @@ folly::coro::Task<void> MoqxRelay::addSubscriberAndPublishViaLocalForwarder(
   // Fast path: local forwarder already exists on this thread.
   if (auto* localReg = tlForwarders_.get()) {
     if (auto localFwd = localReg->getIfReady(ftn)) {
+      if (alreadySubscribed(*localFwd, subscriber.info->sessionId)) {
+        co_return;
+      }
       auto p = startPublish(onExecutor.subscriber(), subscriber, localFwd, forward, pinned);
       if (p) {
         co_await awaitPublishReply(localFwd, std::move(p->subscriber), std::move(p->reply));
@@ -1313,6 +1364,9 @@ folly::coro::Task<void> MoqxRelay::addSubscriberAndPublishViaLocalForwarder(
   auto [localFwd, isNew, localReg] = acquireLocalForwarder(ftn, publisher->initial);
   if (!localFwd) {
     // Setup for this track is in flight on this thread; drop the fanout.
+    co_return;
+  }
+  if (!isNew && alreadySubscribed(*localFwd, subscriber.info->sessionId)) {
     co_return;
   }
 
@@ -2053,6 +2107,73 @@ MoqxRelay::PublishState MoqxRelay::findPublishState(const FullTrackName& ftn) {
   return state;
 }
 
+// RAII handle keeping a parked SUBSCRIBE's waiter in `pendingRendezvous_` until
+// release() (called once the subscriber's forwarder slot is taken, or on unwind).
+// Control-plane only (one per rendezvous SUBSCRIBE): `weak_ptr<MoqxRelay>` avoids
+// extending relay lifetime or racing shutdown when LocalForwarder mode posts the
+// erase back from the subscriber's io thread to `relayExec_`.
+class MoqxRelay::RendezvousTicket {
+public:
+  RendezvousTicket() = default;
+  RendezvousTicket(
+      std::weak_ptr<MoqxRelay> relay,
+      folly::Executor* postToExecutor,
+      moxygen::FullTrackName ftn,
+      std::shared_ptr<RendezvousWaiter> waiter
+  )
+      : relay_(std::move(relay)), postToExecutor_(postToExecutor), ftn_(std::move(ftn)),
+        waiter_(std::move(waiter)) {}
+
+  RendezvousTicket(const RendezvousTicket&) = delete;
+  RendezvousTicket& operator=(const RendezvousTicket&) = delete;
+
+  RendezvousTicket(RendezvousTicket&&) noexcept = default;
+  RendezvousTicket& operator=(RendezvousTicket&& other) noexcept {
+    if (this != &other) {
+      release();
+      relay_ = std::move(other.relay_);
+      postToExecutor_ = other.postToExecutor_;
+      ftn_ = std::move(other.ftn_);
+      waiter_ = std::move(other.waiter_);
+    }
+    return *this;
+  }
+
+  ~RendezvousTicket() { release(); }
+
+  void release() noexcept {
+    if (!waiter_) {
+      return;
+    }
+    auto waiter = std::move(waiter_);
+    if (!postToExecutor_) {
+      if (auto relay = relay_.lock()) {
+        relay->pendingRendezvous_.eraseWaiter(ftn_, waiter.get());
+      }
+      return;
+    }
+    try {
+      postToExecutor_->add(
+          [relay = std::move(relay_), ftn = std::move(ftn_), waiter = std::move(waiter)] {
+            if (auto r = relay.lock()) {
+              r->pendingRendezvous_.eraseWaiter(ftn, waiter.get());
+            }
+          }
+      );
+    } catch (const std::exception& ex) {
+      XLOG(ERR) << "Failed to post rendezvous erase: " << ex.what();
+    } catch (...) {
+      XLOG(ERR) << "Failed to post rendezvous erase: unknown exception";
+    }
+  }
+
+private:
+  std::weak_ptr<MoqxRelay> relay_;
+  folly::Executor* postToExecutor_{nullptr};
+  moxygen::FullTrackName ftn_;
+  std::shared_ptr<RendezvousWaiter> waiter_;
+};
+
 // === Multi-iothread subscribe helpers ===
 
 namespace {
@@ -2069,16 +2190,32 @@ SubscribeError makeAddSubscriberError(RequestID requestID) {
 // that attach to an already-live forwarder.
 Publisher::SubscribeResult attachSubscriber(
     MoQForwarder& fwd,
-    SessionId subscriberId,
+    const ParticipantInfo& subscriberInfo,
     const SubscribeRequest& subReq,
     std::shared_ptr<TrackConsumer> consumer
 ) {
-  auto subscriber = fwd.addSubscriber(subscriberId, subReq, std::move(consumer));
+  // Draft-18 §5.1. A draining entry's subscription already ended, so it doesn't count.
+  if (auto existing = fwd.findSubscriber(subscriberInfo.sessionId);
+      existing && !existing->receivedPublishDone_) {
+    XLOG(DBG1) << "Duplicate SUBSCRIBE for " << fwd.fullTrackName()
+               << " reqID=" << subReq.requestID;
+    return folly::makeUnexpected(SubscribeError{
+        subReq.requestID,
+        SubscribeErrorCode::DUPLICATE_SUBSCRIPTION,
+        "session already subscribed to this track"
+    });
+  }
+  if (auto err = checkRangeNotInPast(fwd, subReq, subscriberInfo.version)) {
+    return folly::makeUnexpected(std::move(*err));
+  }
+  auto subscriber = fwd.addSubscriber(subscriberInfo.sessionId, subReq, std::move(consumer));
   if (!subscriber) {
     XLOG(ERR) << "addSubscriber returned null (draining?) for " << fwd.fullTrackName()
               << " reqID=" << subReq.requestID;
     return folly::makeUnexpected(makeAddSubscriberError(subReq.requestID));
   }
+  // TRACK_FILTER eviction must never remove a direct SUBSCRIBE.
+  subscriber->pinned = true;
   XLOG(DBG4) << "added subscriber for ftn=" << fwd.fullTrackName();
   fwd.tryProcessNewGroupRequest(subReq.params);
   if (subReq.fill) {
@@ -2435,14 +2572,17 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriber
   // Park before claiming this thread's forwarder, so a later SUBSCRIBE for the same
   // ftn is never bound to our timeout. The gate keeps the relayExec_ hop off the
   // common path: a ready local forwarder means a publisher already resolved.
+  RendezvousTicket rendezvousTicket;
   if (auto rendezvousTimeout = takeRendezvousTimeout(subReq, subscriber.version);
       rendezvousTimeout && !localReg->getIfReady(ftn)) {
-    if (auto rendezvousErr = co_await folly::coro::co_withExecutor(
-            folly::getKeepAliveToken(relayExec_),
-            rendezvousWithPublisherOrTimeout(subReq, *rendezvousTimeout)
-        )) {
-      co_return folly::makeUnexpected(std::move(*rendezvousErr));
+    auto parked = co_await folly::coro::co_withExecutor(
+        folly::getKeepAliveToken(relayExec_),
+        rendezvousWithPublisherOrTimeout(subReq, subscriber.sessionId, *rendezvousTimeout)
+    );
+    if (parked.hasError()) {
+      co_return folly::makeUnexpected(std::move(parked.error()));
     }
+    rendezvousTicket = std::move(parked.value());
   }
 
   // Check a cluster peer's exclusion on relayExec_ before it joins this thread's forwarder.
@@ -2485,11 +2625,7 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriber
   }
 
   if (auto* ready = std::get_if<LocalForwarderRegistry::Ready>(&joined)) {
-    auto& readyFwd = *ready->forwarder;
-    if (auto err = checkRangeNotInPast(readyFwd, subReq, subscriber.version)) {
-      co_return folly::makeUnexpected(std::move(*err));
-    }
-    co_return attachSubscriber(readyFwd, subscriber.sessionId, subReq, std::move(consumer));
+    co_return attachSubscriber(*ready->forwarder, subscriber, subReq, std::move(consumer));
   }
 
   // This thread owns setup. The claim stays open until the tail, so same-thread attachers
@@ -2513,6 +2649,8 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriber
   if (!sub) {
     co_return folly::makeUnexpected(makeAddSubscriberError(subReq.requestID));
   }
+  sub->pinned = true;
+  rendezvousTicket.release();
   bool forward = (localFwd->numForwardingSubscribers() > 0);
 
   // Relay phase: register + wire (+ maybe first-subscriber upstream subscribe) on relayExec_,
@@ -2609,11 +2747,14 @@ MoqxRelay::subscribeImpl(SubscribeRequest subReq, std::shared_ptr<TrackConsumer>
   // Resolve (or wait out our own rendezvous) before ever committing a
   // FirstSubscriber/SubsequentSubscriber entry, so a concurrent SUBSCRIBE for the
   // same ftn is never bound to our RENDEZVOUS_TIMEOUT.
+  RendezvousTicket rendezvousTicket;
   if (auto rendezvousTimeout = takeRendezvousTimeout(subReq, requester.version)) {
-    if (auto rendezvousErr =
-            co_await rendezvousWithPublisherOrTimeout(subReq, *rendezvousTimeout)) {
-      co_return folly::makeUnexpected(std::move(*rendezvousErr));
+    auto parked =
+        co_await rendezvousWithPublisherOrTimeout(subReq, requester.sessionId, *rendezvousTimeout);
+    if (parked.hasError()) {
+      co_return folly::makeUnexpected(std::move(parked.error()));
     }
+    rendezvousTicket = std::move(parked.value());
   }
 
   // TOCTOU fix: if we might be the first subscriber, wait for the upstream
@@ -2665,6 +2806,8 @@ MoqxRelay::subscribeImpl(SubscribeRequest subReq, std::shared_ptr<TrackConsumer>
                 << " reqID=" << subReq.requestID;
       co_return folly::makeUnexpected(makeAddSubscriberError(subReq.requestID));
     }
+    subscriber->pinned = true;
+    rendezvousTicket.release();
     XLOG(DBG4) << "added subscriber for ftn=" << ftn;
 
     // Subscribe upstream with forward set only while we have forwarding
@@ -2723,10 +2866,7 @@ MoqxRelay::subscribeImpl(SubscribeRequest subReq, std::shared_ptr<TrackConsumer>
     // the entry's ref is owned here.
     auto forwarder = sub.forwarder.getIfOwned();
     XCHECK(forwarder) << "subscribeImpl reached with a remote forwarder ref";
-    if (auto err = checkRangeNotInPast(*forwarder, subReq, requester.version)) {
-      co_return folly::makeUnexpected(std::move(*err));
-    }
-    co_return attachSubscriber(*forwarder, requester.sessionId, subReq, std::move(consumer));
+    co_return attachSubscriber(*forwarder, requester, subReq, std::move(consumer));
   }
 }
 
@@ -3335,42 +3475,58 @@ void MoqxRelay::dumpState(RelayStateVisitor& visitor) const {
 // Parks (at most once) until a publisher resolves for ftn or `timeout` elapses. A wake
 // is only a hint: if the publisher is gone again by the time we resume, the caller's
 // ordinary no-publisher path reports it.
-folly::coro::Task<std::optional<SubscribeError>> MoqxRelay::rendezvousWithPublisherOrTimeout(
+folly::coro::Task<folly::Expected<MoqxRelay::RendezvousTicket, SubscribeError>>
+MoqxRelay::rendezvousWithPublisherOrTimeout(
     const SubscribeRequest& subReq,
+    SessionId sessionId,
     std::chrono::milliseconds timeout
 ) {
   const auto& ftn = subReq.fullTrackName;
 
-  if (registry_.exists(ftn) || namespaceTree_.findPublisher(ftn.trackNamespace)) {
-    co_return std::nullopt;
+  // Before the shortcut: a woken waiter that hasn't attached yet still owns the slot.
+  if (pendingRendezvous_.isWaiting(ftn, sessionId)) {
+    co_return folly::makeUnexpected(SubscribeError{
+        subReq.requestID,
+        SubscribeErrorCode::DUPLICATE_SUBSCRIPTION,
+        "SUBSCRIBE already pending for this track"
+    });
   }
 
-  auto waiter = std::make_shared<moxygen::TimedBaton>();
+  if (registry_.exists(ftn) || namespaceTree_.findPublisher(ftn.trackNamespace)) {
+    co_return RendezvousTicket{};
+  }
+
+  auto waiter = std::make_shared<RendezvousWaiter>(sessionId);
+  auto ticket = RendezvousTicket{
+      weak_from_this(),
+      mode() == Mode::LocalForwarder ? relayExec_ : nullptr,
+      ftn,
+      waiter
+  };
   pendingRendezvous_.addWaiter(ftn, waiter);
-  auto cleanup =
-      folly::makeGuard([this, ftn, waiter] { pendingRendezvous_.eraseWaiter(ftn, waiter); });
 
-  auto waitRes = co_await folly::coro::co_awaitTry(waiter->wait(timeout, timekeeper_.get()));
+  auto waitRes = co_await folly::coro::co_awaitTry(waiter->baton.wait(timeout, timekeeper_.get()));
 
-  if (waitRes.hasException()) {
+  if (waitRes.template hasException<folly::OperationCancelled>()) {
+    co_yield folly::coro::co_stopped_may_throw;
+  }
+  if (waitRes.hasException() && !waiter->signalled) {
     if (waitRes.template hasException<folly::FutureTimeout>()) {
-      co_return SubscribeError{
+      co_return folly::makeUnexpected(SubscribeError{
           subReq.requestID,
           SubscribeErrorCode::TIMEOUT,
           "rendezvous timeout expired"
-      };
+      });
     }
-    if (waitRes.template hasException<folly::OperationCancelled>()) {
-      co_yield folly::coro::co_stopped_may_throw;
-    }
-    co_return SubscribeError{
+
+    co_return folly::makeUnexpected(SubscribeError{
         subReq.requestID,
         SubscribeErrorCode::INTERNAL_ERROR,
         folly::to<std::string>("rendezvous wait failed: ", waitRes.exception().what().toStdString())
-    };
+    });
   }
-
-  co_return std::nullopt;
+  XDCHECK(waiter->signalled);
+  co_return std::move(ticket);
 }
 
 } // namespace openmoq::moqx

@@ -102,6 +102,22 @@ protected:
     });
   }
 
+  // SingleThread mode doesn't drive exec_ here, so a SUBSCRIBE woken by an earlier PUBLISH
+  // is still between its wake and its attach when the backfill runs.
+  Publisher::SubscribeTracksResult
+  subscribeTracksBeforeResume(const std::shared_ptr<MockMoQSession>& session) {
+    SubscribeTracks subTracks;
+    subTracks.trackNamespacePrefix = kTestNamespace;
+    subTracks.forward = true;
+    return withSessionContext(session, [&]() {
+      auto task = publisherInterface()->subscribeTracks(std::move(subTracks));
+      if (relayMode() == RelayMode::SingleThread) {
+        return folly::coro::blockingWait(std::move(task));
+      }
+      return folly::coro::blockingWait(std::move(task), exec_.get());
+    });
+  }
+
   // Cancels a subscribe that is still waiting after an early ASSERT return.
   // Otherwise it resumes on the relay's executor after the relay frees it.
   void TearDown() override {
@@ -581,6 +597,294 @@ TEST_P(MoqxRelayRendezvousTest, WaiterAtTeardownIsCancelled) {
 
   exec_->driveFor(10);
   ASSERT_FALSE(future.isReady()) << "subscribe should be parked awaiting rendezvous";
+}
+
+// Draft-18 §9.5 (#1533): when a PUBLISH arrives, a session holding a SUBSCRIBE parked on
+// RENDEZVOUS_TIMEOUT for that track gets no PUBLISH via its SUBSCRIBE_TRACKS; the SUBSCRIBE
+// proceeds instead. Other SUBSCRIBE_TRACKS sessions still get the PUBLISH.
+TEST_P(MoqxRelayRendezvousTest, ParkedSubscribeTakesPrecedenceOverSubscribeTracks) {
+  auto subSession = createV18Session();
+  auto otherSession = createV18Session();
+  auto pubSession = createMockSession();
+  setupPublishSucceeds(subSession);
+  setupPublishSucceeds(otherSession);
+
+  auto subscribeTracks = [&](const std::shared_ptr<MockMoQSession>& session) {
+    SubscribeTracks subTracks;
+    subTracks.trackNamespacePrefix = kTestNamespace;
+    subTracks.forward = true;
+    auto res = withSessionContext(session, [&]() {
+      auto task = publisherInterface()->subscribeTracks(std::move(subTracks));
+      return folly::coro::blockingWait(std::move(task), exec_.get());
+    });
+    EXPECT_TRUE(res.hasValue());
+    return res.hasValue() ? *res : nullptr;
+  };
+  auto subTracksHandle = subscribeTracks(subSession);
+  auto otherTracksHandle = subscribeTracks(otherSession);
+  ASSERT_TRUE(subTracksHandle && otherTracksHandle);
+
+  EXPECT_CALL(*subSession, publish(_, _)).Times(0);
+  EXPECT_CALL(*otherSession, publish(_, _)).Times(1);
+
+  auto consumer = createMockConsumer();
+  auto future =
+      startSubscribe(subSession, makeRendezvousSubscribeRequest(kTestTrackName, 5000), consumer);
+  exec_->driveFor(10);
+  ASSERT_FALSE(future.isReady()) << "subscribe should be parked awaiting rendezvous";
+
+  doPublish(pubSession, kTestTrackName);
+
+  ASSERT_TRUE(driveUntil([&] { return future.isReady(); }));
+  auto result = std::move(future).value();
+  ASSERT_TRUE(result.hasValue()) << "the parked SUBSCRIBE must proceed";
+  exec_->driveFor(5);
+  EXPECT_TRUE(testing::Mock::VerifyAndClearExpectations(subSession.get()));
+  EXPECT_TRUE(testing::Mock::VerifyAndClearExpectations(otherSession.get()));
+
+  result.value()->unsubscribe();
+  withSessionContext(subSession, [&]() { subTracksHandle->unsubscribeTracks(); });
+  withSessionContext(otherSession, [&]() { otherTracksHandle->unsubscribeTracks(); });
+  removeSession(pubSession);
+  removeSession(subSession);
+  removeSession(otherSession);
+  driveIfMultiThread();
+}
+
+// Same precedence for a TRACK_FILTER SUBSCRIBE_NAMESPACE: PropertyRanking selects the new
+// track during PUBLISH setup, and that selection must not PUBLISH to the woken session.
+TEST_P(MoqxRelayRendezvousTest, ParkedSubscribeTakesPrecedenceOverTrackFilter) {
+  constexpr uint64_t kPropType = 0x100;
+  auto subSession = createV18Session();
+  auto pubSession = createMockSession();
+  setupPublishSucceeds(subSession);
+
+  SubscribeNamespace subNs;
+  subNs.trackNamespacePrefix = kTestNamespace;
+  subNs.options = SubscribeNamespaceOptions::PUBLISH;
+  subNs.forward = true;
+  TrackRequestParameter p;
+  p.key = folly::to_underlying(TrackRequestParamKey::TRACK_FILTER);
+  p.asTrackFilter = TrackFilter{kPropType, /*maxSelected=*/1};
+  subNs.params.insertParam(p);
+  auto subNsHandle = withSessionContext(subSession, [&]() {
+    auto task = publisherInterface()->subscribeNamespace(
+        std::move(subNs),
+        std::make_shared<NiceMock<MockNamespacePublishHandle>>()
+    );
+    return folly::coro::blockingWait(std::move(task), exec_.get());
+  });
+  ASSERT_TRUE(subNsHandle.hasValue());
+  getOrCreateMockState(subSession)->subscribeNamespaceHandles.push_back(*subNsHandle);
+
+  EXPECT_CALL(*subSession, publish(_, _)).Times(0);
+
+  auto consumer = createMockConsumer();
+  auto future =
+      startSubscribe(subSession, makeRendezvousSubscribeRequest(kTestTrackName, 5000), consumer);
+  exec_->driveFor(10);
+  ASSERT_FALSE(future.isReady()) << "subscribe should be parked awaiting rendezvous";
+
+  doPublish(pubSession, kTestTrackName);
+
+  ASSERT_TRUE(driveUntil([&] { return future.isReady(); }));
+  auto result = std::move(future).value();
+  ASSERT_TRUE(result.hasValue()) << "the parked SUBSCRIBE must proceed, not hit DUPLICATE";
+  exec_->driveFor(5);
+  EXPECT_TRUE(testing::Mock::VerifyAndClearExpectations(subSession.get()));
+
+  result.value()->unsubscribe();
+  removeSession(pubSession);
+  removeSession(subSession);
+  driveIfMultiThread();
+}
+
+// A SUBSCRIBE_TRACKS backfill landing after the PUBLISH woke the SUBSCRIBE, but before the
+// SUBSCRIBE took its forwarder slot, must still skip the session. Only SingleThread mode
+// reliably lands the backfill in that window; the other modes check the same outcome.
+TEST_P(MoqxRelayRendezvousTest, WokenSubscribeKeepsPrecedenceOverBackfill) {
+  auto subSession = createV18Session();
+  auto pubSession = createMockSession();
+  setupPublishSucceeds(subSession);
+  EXPECT_CALL(*subSession, publish(_, _)).Times(0);
+
+  auto consumer = createMockConsumer();
+  auto future =
+      startSubscribe(subSession, makeRendezvousSubscribeRequest(kTestTrackName, 5000), consumer);
+  exec_->driveFor(10);
+  ASSERT_FALSE(future.isReady()) << "subscribe should be parked awaiting rendezvous";
+
+  doPublish(pubSession, kTestTrackName);
+  if (relayMode() == RelayMode::SingleThread) {
+    ASSERT_FALSE(future.isReady()) << "the woken SUBSCRIBE should not have resumed yet";
+    EXPECT_TRUE(relay_->hasPendingRendezvousWaiters())
+        << "a woken waiter stays in the tree until its SUBSCRIBE attaches";
+  }
+
+  auto tracks = subscribeTracksBeforeResume(subSession);
+  ASSERT_TRUE(tracks.hasValue());
+
+  ASSERT_TRUE(driveUntil([&] { return future.isReady(); }));
+  auto result = std::move(future).value();
+  ASSERT_TRUE(result.hasValue()) << "the woken SUBSCRIBE must proceed, not hit DUPLICATE";
+  exec_->driveFor(5);
+  EXPECT_TRUE(testing::Mock::VerifyAndClearExpectations(subSession.get()));
+  verifyOnRelayExec([&] {
+    EXPECT_FALSE(relay_->hasPendingRendezvousWaiters())
+        << "the attached SUBSCRIBE must release its waiter";
+  });
+
+  result.value()->unsubscribe();
+  withSessionContext(subSession, [&]() { (*tracks)->unsubscribeTracks(); });
+  removeSession(pubSession);
+  removeSession(subSession);
+  driveIfMultiThread();
+}
+
+// Only SingleThread mode can hold a woken SUBSCRIBE before it resumes: exec_ runs the
+// resume only when the test drives it, while the other modes resume it on the relay thread.
+class MoqxRelayRendezvousSingleThreadTest : public MoqxRelayRendezvousTest {
+protected:
+  RelayMode relayMode() const override { return RelayMode::SingleThread; }
+};
+
+// Same window, but a replacement publisher PUBLISHes the track: its fan-out must skip the
+// session too, and the SUBSCRIBE then attaches to the replacement.
+TEST_F(MoqxRelayRendezvousSingleThreadTest, WokenSubscribeKeepsPrecedenceOverReplacementPublish) {
+  auto subSession = createV18Session();
+  auto pubSession = createMockSession();
+  auto replacementSession = createMockSession();
+  setupPublishSucceeds(subSession);
+  auto tracks = subscribeTracksBeforeResume(subSession);
+  ASSERT_TRUE(tracks.hasValue());
+  EXPECT_CALL(*subSession, publish(_, _)).Times(0);
+
+  auto consumer = createMockConsumer();
+  auto future =
+      startSubscribe(subSession, makeRendezvousSubscribeRequest(kTestTrackName, 5000), consumer);
+  exec_->driveFor(10);
+  ASSERT_FALSE(future.isReady()) << "subscribe should be parked awaiting rendezvous";
+
+  doPublish(pubSession, kTestTrackName);
+  ASSERT_FALSE(future.isReady()) << "the woken SUBSCRIBE should not have resumed yet";
+  doPublish(replacementSession, kTestTrackName);
+  ASSERT_FALSE(future.isReady());
+
+  exec_->driveFor(20);
+  ASSERT_TRUE(future.isReady());
+  auto result = std::move(future).value();
+  ASSERT_TRUE(result.hasValue()) << "the woken SUBSCRIBE must proceed, not hit DUPLICATE";
+  EXPECT_TRUE(testing::Mock::VerifyAndClearExpectations(subSession.get()));
+  EXPECT_FALSE(relay_->hasPendingRendezvousWaiters());
+
+  result.value()->unsubscribe();
+  withSessionContext(subSession, [&]() { (*tracks)->unsubscribeTracks(); });
+  removeSession(replacementSession);
+  removeSession(pubSession);
+  removeSession(subSession);
+  driveIfMultiThread();
+}
+
+// The timer fires, then a PUBLISH wakes the waiter, all before the SUBSCRIBE resumes. The
+// PUBLISH already skipped the session in favour of the SUBSCRIBE, so it must succeed
+// rather than time out (G6).
+TEST_F(MoqxRelayRendezvousSingleThreadTest, WakeAfterTimerFiresBeforeResumeSucceeds) {
+  auto subSession = createV18Session();
+  auto pubSession = createMockSession();
+  auto consumer = createMockConsumer();
+
+  auto future =
+      startSubscribe(subSession, makeRendezvousSubscribeRequest(kTestTrackName, 20), consumer);
+  exec_->driveFor(5);
+  ASSERT_FALSE(future.isReady()) << "subscribe should be parked awaiting rendezvous";
+
+  // Without driving exec_, the timer fires and queues the resume there.
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  doPublish(pubSession, kTestTrackName);
+  ASSERT_FALSE(future.isReady());
+
+  exec_->driveFor(20);
+  ASSERT_TRUE(future.isReady());
+  auto result = std::move(future).value();
+  ASSERT_TRUE(result.hasValue()) << "a woken waiter must not report TIMEOUT";
+
+  result.value()->unsubscribe();
+  removeSession(pubSession);
+  removeSession(subSession);
+  driveIfMultiThread();
+}
+
+// Draft-18 §5.1: a second SUBSCRIBE from a session whose SUBSCRIBE for the track is parked
+// is a duplicate. The first stays parked and still resolves.
+TEST_P(MoqxRelayRendezvousTest, SecondParkedSubscribeIsDuplicate) {
+  auto subSession = createV18Session();
+  auto pubSession = createMockSession();
+
+  auto future = startSubscribe(
+      subSession,
+      makeRendezvousSubscribeRequest(kTestTrackName, 5000),
+      createMockConsumer()
+  );
+  exec_->driveFor(10);
+  ASSERT_FALSE(future.isReady()) << "subscribe should be parked awaiting rendezvous";
+
+  auto second = makeRendezvousSubscribeRequest(kTestTrackName, 5000);
+  second.requestID = RequestID(3);
+  auto dup = withSessionContext(subSession, [&]() {
+    auto task = publisherInterface()->subscribe(std::move(second), createMockConsumer());
+    return folly::coro::blockingWait(std::move(task), exec_.get());
+  });
+  ASSERT_TRUE(dup.hasError());
+  EXPECT_EQ(dup.error().errorCode, SubscribeErrorCode::DUPLICATE_SUBSCRIPTION);
+  EXPECT_FALSE(future.isReady()) << "the first SUBSCRIBE must stay parked";
+
+  doPublish(pubSession, kTestTrackName);
+  ASSERT_TRUE(driveUntil([&] { return future.isReady(); }));
+  auto result = std::move(future).value();
+  ASSERT_TRUE(result.hasValue());
+
+  result.value()->unsubscribe();
+  removeSession(pubSession);
+  removeSession(subSession);
+  driveIfMultiThread();
+}
+
+// A woken SUBSCRIBE that then fails leaves the session with neither the SUBSCRIBE nor the
+// PUBLISH its fan-out skipped. Pins known gap; flip it once the PUBLISH is replayed.
+TEST_F(MoqxRelayRendezvousSingleThreadTest, SubscribeFailingAfterWakeGetsNoPublish) {
+  auto subSession = createV18Session();
+  auto pubSession = createMockSession();
+  setupPublishSucceeds(subSession);
+  auto tracks = subscribeTracksBeforeResume(subSession);
+  ASSERT_TRUE(tracks.hasValue());
+  EXPECT_CALL(*subSession, publish(_, _)).Times(0);
+
+  auto sub = makeRendezvousSubscribeRequest(kTestTrackName, 5000);
+  sub.filter = LocationFilter::range(kLocationMin, uint64_t(1));
+  auto future = startSubscribe(subSession, std::move(sub), createMockConsumer());
+  exec_->driveFor(10);
+  ASSERT_FALSE(future.isReady()) << "subscribe should be parked awaiting rendezvous";
+
+  auto publishConsumer = doPublish(pubSession, kTestTrackName);
+  ObjectHeader hdr;
+  hdr.group = 5;
+  hdr.id = 0;
+  publishConsumer->objectStream(hdr, folly::IOBuf::copyBuffer("x"));
+  ASSERT_FALSE(future.isReady()) << "the woken SUBSCRIBE should not have resumed yet";
+
+  exec_->driveFor(20);
+  ASSERT_TRUE(future.isReady());
+  auto result = std::move(future).value();
+  ASSERT_TRUE(result.hasError());
+  EXPECT_EQ(result.error().errorCode, SubscribeErrorCode::INVALID_RANGE);
+  EXPECT_TRUE(testing::Mock::VerifyAndClearExpectations(subSession.get()));
+  EXPECT_FALSE(relay_->hasPendingRendezvousWaiters())
+      << "the failed SUBSCRIBE must release its waiter";
+
+  withSessionContext(subSession, [&]() { (*tracks)->unsubscribeTracks(); });
+  removeSession(pubSession);
+  removeSession(subSession);
+  driveIfMultiThread();
 }
 
 INSTANTIATE_TEST_SUITE_P(
