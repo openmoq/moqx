@@ -7,6 +7,8 @@
 #include "PendingRendezvousTree.h"
 
 #include <folly/coro/BlockingWait.h>
+#include <folly/coro/Task.h>
+#include <folly/executors/InlineExecutor.h>
 #include <folly/portability/GMock.h>
 #include <folly/portability/GTest.h>
 #include <moxygen/MoQVersions.h>
@@ -25,8 +27,8 @@ namespace {
 constexpr auto kSignaledTimeout = 5s;
 constexpr auto kNotSignaledTimeout = 20ms;
 
-bool waitFor(const std::shared_ptr<TimedBaton>& waiter, std::chrono::milliseconds timeout) {
-  auto res = folly::coro::blockingWait(folly::coro::co_awaitTry(waiter->wait(timeout)));
+bool waitFor(const std::shared_ptr<RendezvousWaiter>& waiter, std::chrono::milliseconds timeout) {
+  auto res = folly::coro::blockingWait(folly::coro::co_awaitTry(waiter->baton.wait(timeout)));
   return !res.hasException();
 }
 
@@ -41,8 +43,11 @@ std::shared_ptr<moxygen::test::MockMoQSession> makeV18Session() {
 class PendingRendezvousTreeTest : public ::testing::Test {
 protected:
   PendingRendezvousTree tree_;
+  static constexpr SessionId kSession{1};
 
-  static std::shared_ptr<TimedBaton> makeWaiter() { return std::make_shared<TimedBaton>(); }
+  static std::shared_ptr<RendezvousWaiter> makeWaiter(SessionId session = kSession) {
+    return std::make_shared<RendezvousWaiter>(session);
+  }
 };
 
 TEST_F(PendingRendezvousTreeTest, WakeForTrackSignalsWaiter) {
@@ -125,7 +130,7 @@ TEST_F(PendingRendezvousTreeTest, EraseWaiterRemovesOnlyThatWaiter) {
   tree_.addWaiter(ftn, waiter1);
   tree_.addWaiter(ftn, waiter2);
 
-  tree_.eraseWaiter(ftn, waiter1);
+  tree_.eraseWaiter(ftn, waiter1.get());
   tree_.wakeForTrack(ftn);
 
   EXPECT_FALSE(waitFor(waiter1, kNotSignaledTimeout)) << "erased waiter must not be woken";
@@ -136,7 +141,147 @@ TEST_F(PendingRendezvousTreeTest, EraseWaiterOnUnknownTrackIsNoOp) {
   FullTrackName ftn{TrackNamespace{{"never", "added"}}, "track"};
   auto waiter = makeWaiter();
 
-  tree_.eraseWaiter(ftn, waiter); // must not crash despite never being added
+  tree_.eraseWaiter(ftn, waiter.get()); // must not crash despite never being added
+}
+
+// isWaiting matches on (exact track, session): not a sibling track, not the same
+// track name under an ancestor namespace, not another session, and not an erased
+// waiter. Woken waiters stay in the tree, so isWaiting stays true until erased.
+TEST_F(PendingRendezvousTreeTest, IsWaitingMatchesExactTrackAndSession) {
+  FullTrackName ftn{TrackNamespace{{"test", "ns"}}, "track"};
+  FullTrackName sibling{TrackNamespace{{"test", "ns"}}, "other"};
+  FullTrackName ancestor{TrackNamespace{{"test"}}, "track"};
+  FullTrackName unknown{TrackNamespace{{"never", "added"}}, "track"};
+  const SessionId parkedA{1};
+  const SessionId parkedB{2};
+  const SessionId erased{3};
+  const SessionId elsewhere{4};
+
+  EXPECT_FALSE(tree_.isWaiting(ftn, parkedA)) << "empty tree";
+
+  auto waiterA = makeWaiter(parkedA);
+  auto waiterB = makeWaiter(parkedB);
+  auto erasedWaiter = makeWaiter(erased);
+  tree_.addWaiter(ftn, waiterA);
+  tree_.addWaiter(ftn, waiterB);
+  tree_.addWaiter(ftn, erasedWaiter);
+  tree_.addWaiter(sibling, makeWaiter(elsewhere));
+  tree_.addWaiter(ancestor, makeWaiter(elsewhere));
+  tree_.eraseWaiter(ftn, erasedWaiter.get());
+
+  EXPECT_TRUE(tree_.isWaiting(ftn, parkedA));
+  EXPECT_TRUE(tree_.isWaiting(ftn, parkedB));
+  EXPECT_FALSE(tree_.isWaiting(ftn, erased)) << "erased waiter";
+  EXPECT_FALSE(tree_.isWaiting(ftn, elsewhere)) << "session parked only on sibling/ancestor";
+  EXPECT_FALSE(tree_.isWaiting(sibling, parkedA)) << "sibling track";
+  EXPECT_FALSE(tree_.isWaiting(ancestor, parkedA)) << "same track name, ancestor namespace";
+  EXPECT_FALSE(tree_.isWaiting(unknown, parkedA)) << "namespace not in tree";
+
+  tree_.wakeForTrack(ftn);
+
+  EXPECT_TRUE(waiterA->signalled);
+  EXPECT_TRUE(waiterB->signalled);
+  EXPECT_TRUE(tree_.isWaiting(ftn, parkedA)) << "woken waiters stay in the tree";
+  EXPECT_TRUE(tree_.isWaiting(ftn, parkedB)) << "woken waiters stay in the tree";
+
+  tree_.eraseWaiter(ftn, waiterA.get());
+
+  EXPECT_FALSE(tree_.isWaiting(ftn, parkedA));
+  EXPECT_TRUE(tree_.isWaiting(ftn, parkedB)) << "erase removes only that waiter";
+}
+
+// TimedBaton::signal() throws on a second call, so a repeated wake (e.g. a
+// re-PUBLISH before the woken SUBSCRIBE attaches) must skip signalled waiters.
+TEST_F(PendingRendezvousTreeTest, WakeForTrackKeepsWaiterAndSignalsOnce) {
+  FullTrackName ftn{TrackNamespace{{"test", "ns"}}, "track"};
+  auto waiter = makeWaiter();
+  tree_.addWaiter(ftn, waiter);
+
+  EXPECT_NO_THROW(tree_.wakeForTrack(ftn));
+  EXPECT_NO_THROW(tree_.wakeForTrack(ftn)) << "second wake must not re-signal";
+  EXPECT_NO_THROW(tree_.wakeUnderNamespace(ftn.trackNamespace))
+      << "namespace wake must not re-signal a track-woken waiter";
+
+  EXPECT_TRUE(waiter->signalled);
+  EXPECT_TRUE(tree_.isWaiting(ftn, kSession));
+  EXPECT_FALSE(tree_.empty());
+  EXPECT_TRUE(waitFor(waiter, kSignaledTimeout));
+
+  tree_.eraseWaiter(ftn, waiter.get());
+  EXPECT_TRUE(tree_.empty()) << "erase prunes the now-empty ancestors";
+}
+
+// PUBLISH_NAMESPACE-woken waiters also stay in the tree (decision (A)), and only
+// descendants of the woken namespace are marked.
+TEST_F(PendingRendezvousTreeTest, WakeUnderNamespaceKeepsWaiters) {
+  FullTrackName ftnRoot{TrackNamespace{{"a"}}, "track"};
+  FullTrackName ftnChild{TrackNamespace{{"a", "b"}}, "track"};
+  FullTrackName ftnGrandchild{TrackNamespace{{"a", "b", "c"}}, "other"};
+  auto waiterRoot = makeWaiter();
+  auto waiterChild = makeWaiter();
+  auto waiterGrandchild = makeWaiter();
+  tree_.addWaiter(ftnRoot, waiterRoot);
+  tree_.addWaiter(ftnChild, waiterChild);
+  tree_.addWaiter(ftnGrandchild, waiterGrandchild);
+
+  EXPECT_NO_THROW(tree_.wakeUnderNamespace(TrackNamespace{{"a", "b"}}));
+  EXPECT_NO_THROW(tree_.wakeUnderNamespace(TrackNamespace{{"a", "b"}}))
+      << "second wake must not re-signal";
+  EXPECT_NO_THROW(tree_.wakeForTrack(ftnChild))
+      << "track wake must not re-signal a namespace-woken waiter";
+
+  EXPECT_TRUE(waiterChild->signalled);
+  EXPECT_TRUE(waiterGrandchild->signalled);
+  EXPECT_FALSE(waiterRoot->signalled) << "ancestor namespace is not woken";
+  EXPECT_TRUE(tree_.isWaiting(ftnChild, kSession));
+  EXPECT_TRUE(tree_.isWaiting(ftnGrandchild, kSession));
+  EXPECT_TRUE(tree_.isWaiting(ftnRoot, kSession));
+  EXPECT_TRUE(waitFor(waiterChild, kSignaledTimeout));
+  EXPECT_TRUE(waitFor(waiterGrandchild, kSignaledTimeout));
+
+  tree_.eraseWaiter(ftnChild, waiterChild.get());
+  tree_.eraseWaiter(ftnGrandchild, waiterGrandchild.get());
+  tree_.eraseWaiter(ftnRoot, waiterRoot.get());
+  EXPECT_TRUE(tree_.empty());
+}
+
+// Collect-then-signal regression: the first waiter's continuation resumes inline
+// inside signal() and erases every waiter on the track, mutating the waiter list
+// and pruning the node. The wake must not touch the tree after signalling, and
+// the second waiter (already collected) must still be signalled. Run under ASAN
+// to catch a use-after-free.
+TEST_F(PendingRendezvousTreeTest, SignalReentersEraseWaiter) {
+  FullTrackName ftn{TrackNamespace{{"test", "ns"}}, "track"};
+  auto waiterA = makeWaiter(SessionId{1});
+  auto waiterB = makeWaiter(SessionId{2});
+  tree_.addWaiter(ftn, waiterA);
+  tree_.addWaiter(ftn, waiterB);
+
+  bool resumed = false;
+  auto onWake = [](PendingRendezvousTree& tree,
+                   FullTrackName ftn,
+                   std::shared_ptr<RendezvousWaiter> a,
+                   std::shared_ptr<RendezvousWaiter> b,
+                   bool& resumed) -> folly::coro::Task<void> {
+    co_await a->baton.wait();
+    resumed = true;
+    tree.eraseWaiter(ftn, a.get());
+    tree.eraseWaiter(ftn, b.get());
+  };
+  folly::coro::co_withExecutor(
+      &folly::InlineExecutor::instance(),
+      onWake(tree_, ftn, waiterA, waiterB, resumed)
+  )
+      .start();
+  ASSERT_FALSE(resumed);
+
+  tree_.wakeForTrack(ftn);
+
+  EXPECT_TRUE(resumed) << "continuation should resume inline inside signal()";
+  EXPECT_TRUE(waiterB->signalled);
+  EXPECT_TRUE(tree_.empty());
+  EXPECT_TRUE(waitFor(waiterB, kSignaledTimeout))
+      << "waiter collected before the reentrant erase must still be signalled";
 }
 
 // Regression coverage for the reentrant wake-while-iterating fix (see

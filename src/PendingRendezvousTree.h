@@ -24,37 +24,52 @@ class MoQSession;
 
 namespace openmoq::moqx {
 
+// Shared between PendingRendezvousTree and the parked subscribe coroutine's
+// RendezvousTicket (control-plane only, one per rendezvous SUBSCRIBE). Also keeps
+// the waiter alive in toWake while signal() resumes the coroutine inline and
+// re-enters eraseWaiter().
+struct RendezvousWaiter {
+  explicit RendezvousWaiter(moxygen::SessionId id) : sessionId(id) {}
+  moxygen::TimedBaton baton;
+  moxygen::SessionId sessionId;
+  bool signalled{false}; // read and written on the relay exec only
+};
+
 // Tree of SUBSCRIBEs parked on a namespace/track that isn't published yet
 // (draft 18+ RENDEZVOUS_TIMEOUT), indexed by namespace prefix. Woken via
 // wakeForTrack()/wakeUnderNamespace() when matching content arrives;
-// otherwise each waiter's baton times out on its own.
+// otherwise each waiter's baton times out on its own. Woken waiters stay in
+// the tree (marked `signalled`) until their RendezvousTicket calls eraseWaiter(),
+// so isWaiting() continues to report them and grant SUBSCRIBE precedence over
+// relay-sent PUBLISHes until the subscriber's forwarder slot is taken.
 class PendingRendezvousTree {
 public:
-  // Parks `waiter` on ftn until erased or woken.
-  void
-  addWaiter(const moxygen::FullTrackName& ftn, const std::shared_ptr<moxygen::TimedBaton>& waiter);
+  // Parks `waiter` on ftn until eraseWaiter() is called.
+  void addWaiter(const moxygen::FullTrackName& ftn, std::shared_ptr<RendezvousWaiter> waiter);
 
   // Removes `waiter` from ftn's park list, pruning now-empty ancestor nodes.
-  void eraseWaiter(
-      const moxygen::FullTrackName& ftn,
-      const std::shared_ptr<moxygen::TimedBaton>& waiter
-  );
+  void eraseWaiter(const moxygen::FullTrackName& ftn, const RendezvousWaiter* waiter);
 
-  // Wakes only waiters for this exact track (a PUBLISH landed). Waiters for
-  // other tracks under the same namespace node are left parked.
+  // Marks and signals unsignalled waiters for this exact track (a PUBLISH landed).
+  // Waiters stay in the tree until eraseWaiter(); other tracks under the same
+  // namespace node are untouched.
   void wakeForTrack(const moxygen::FullTrackName& ftn);
 
-  // Wakes every waiter under this namespace (a PUBLISH_NAMESPACE landed) — any
-  // track under it may now be resolvable.
+  // Marks and signals every unsignalled waiter under this namespace (a
+  // PUBLISH_NAMESPACE landed) — any track under it may now be resolvable.
+  // Waiters stay in the tree until eraseWaiter().
   void wakeUnderNamespace(const moxygen::TrackNamespace& ns);
 
-  // True if no waiter is parked anywhere in the tree. Mainly for tests to
-  // confirm eraseWaiter's ancestor pruning leaves no dangling nodes behind.
+  // True if no waiter is in the tree. Mainly for tests to confirm
+  // eraseWaiter's ancestor pruning leaves no dangling nodes behind.
   bool empty() const { return root_.empty(); }
+
+  // True if `sessionId` has a waiter in the tree for `ftn` (signalled or not).
+  bool isWaiting(const moxygen::FullTrackName& ftn, moxygen::SessionId sessionId) const;
 
 private:
   struct Node {
-    using WaiterList = std::vector<std::shared_ptr<moxygen::TimedBaton>>;
+    using WaiterList = std::vector<std::shared_ptr<RendezvousWaiter>>;
 
     bool empty() const { return children.empty() && waitersByTrack.empty(); }
 
@@ -63,10 +78,13 @@ private:
   };
 
   Node& findOrCreateNode(const moxygen::TrackNamespace& ns);
-  // Removes every waiter in this subtree from the tree and appends it to `out`.
-  // Don't signal them until the caller is done mutating the tree: signal() can
-  // resume a waiter synchronously, and it would re-enter eraseWaiter() mid-walk.
+
+  // Marks every unsignalled waiter in this subtree as signalled and appends it
+  // to `out` without removing it from the tree. Don't signal them until the
+  // walk is complete: signal() can resume a waiter synchronously, and it would
+  // re-enter eraseWaiter() mid-walk.
   static void collectSubtree(Node& node, Node::WaiterList& out);
+
   // Walks down to the node at `ns`, applies `onNode`, then prunes any
   // now-empty ancestors on the way back up.
   void
