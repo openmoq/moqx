@@ -8,6 +8,9 @@
 
 #include "MoqxRelayTestFixture.h"
 
+#include <folly/CancellationToken.h>
+#include <folly/coro/WithCancellation.h>
+
 namespace openmoq::moqx::test {
 
 class RecordingNamespacePublishHandle : public Publisher::NamespacePublishHandle {
@@ -535,6 +538,40 @@ TEST_P(MoQRelayTest, ResubscribeReplaysTheNamespace) {
   auto secondHandle = std::make_shared<RecordingNamespacePublishHandle>();
   doSubscribeNamespace(subscriber, kTestNamespace, true, secondHandle);
   EXPECT_EQ(secondHandle->namespaces.size(), 1u);
+
+  removeSession(publisher);
+  removeSession(subscriber);
+  driveIfMultiThread();
+}
+
+// The session closes while the relay registers its SUBSCRIBE_NAMESPACE. The caller gets
+// OperationCancelled, so the registration has to go with it.
+TEST_P(MoQRelayTest, CancelledSubscribeNamespaceLeavesNoSubscriber) {
+  if (!relayEvb_) {
+    GTEST_SKIP() << "only the cross-exec filter observes the caller's cancellation";
+  }
+  auto subscriber = createMockSession();
+  auto handle = std::make_shared<RecordingNamespacePublishHandle>();
+  folly::CancellationSource cancel;
+  cancel.requestCancellation();
+  withSessionContext(subscriber, [&]() {
+    SubscribeNamespace subNs;
+    subNs.trackNamespacePrefix = kTestNamespace;
+    auto res = folly::coro::blockingWait(
+        folly::coro::co_awaitTry(folly::coro::co_withCancellation(
+            cancel.getToken(),
+            publisherInterface()->subscribeNamespace(std::move(subNs), handle)
+        )),
+        exec_.get()
+    );
+    EXPECT_TRUE(res.hasException<folly::OperationCancelled>());
+  });
+  driveIfMultiThread();
+
+  auto publisher = createMockSession();
+  doPublishNamespace(publisher, kTestNamespace);
+  driveIfMultiThread();
+  EXPECT_TRUE(handle->namespaces.empty());
 
   removeSession(publisher);
   removeSession(subscriber);
