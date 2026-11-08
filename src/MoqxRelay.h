@@ -31,7 +31,6 @@
 #include <folly/Function.h>
 #include <folly/ThreadLocal.h>
 #include <folly/container/F14Map.h>
-#include <folly/container/F14Set.h>
 #include <functional>
 #include <optional>
 #include <string>
@@ -311,9 +310,9 @@ public:
   };
   PublishState findPublishState(const moxygen::FullTrackName& ftn);
 
-  // Test accessor: pruning of a timed-out waiter's tree node happens
-  // asynchronously, with no other externally observable signal that it
-  // completed in time for a fast test to assert on.
+  // Test accessor: stays true while any waiter is in the tree (until the woken
+  // SUBSCRIBE releases its RendezvousTicket, or the waiter times out/cancels —
+  // and in LocalForwarder mode until the posted erase runs on relayExec_).
   bool hasPendingRendezvousWaiters() const { return !pendingRendezvous_.empty(); }
 
 private:
@@ -322,6 +321,7 @@ private:
   class RelayIngestFilter;
   class LocalSubscribeFilter;
   class LocalPublishFilter;
+  class RendezvousTicket;
 
   void unsubscribeNamespace(
       const moxygen::TrackNamespace& prefix,
@@ -752,13 +752,21 @@ private:
   // === Pending rendezvous (draft 18+ SUBSCRIBE with RENDEZVOUS_TIMEOUT) ===
   // Subscribers waiting on a namespace/track that isn't published yet. Woken by
   // doPublishNamespace()/publishWithSession() when matching content arrives;
-  // otherwise each waiter's baton times out.
+  // otherwise each waiter's baton times out. Waiters stay in the tree until
+  // their RendezvousTicket is released once the subscriber's forwarder slot is
+  // taken, so isWaiting() holds SUBSCRIBE precedence over PUBLISH across the
+  // wake-to-attach window.
   PendingRendezvousTree pendingRendezvous_;
 
-  // Existence check, then park. Callers screen first. Must run on relayExec_ (inline
-  // in SingleThread mode): touches registry_/namespaceTree_/pendingRendezvous_.
-  folly::coro::Task<std::optional<moxygen::SubscribeError>> rendezvousWithPublisherOrTimeout(
+  // Existence check, then park. Callers screen first. Returns a RendezvousTicket
+  // holding the waiter in `pendingRendezvous_` until the caller takes its
+  // forwarder slot (or an empty ticket if a publisher already existed). Must run
+  // on relayExec_ (inline in SingleThread mode): touches
+  // registry_/namespaceTree_/pendingRendezvous_.
+  folly::coro::Task<folly::Expected<RendezvousTicket, moxygen::SubscribeError>>
+  rendezvousWithPublisherOrTimeout(
       const moxygen::SubscribeRequest& subReq,
+      moxygen::SessionId sessionId,
       std::chrono::milliseconds timeout
   );
 
