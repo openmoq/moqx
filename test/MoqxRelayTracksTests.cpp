@@ -11,6 +11,9 @@
 
 #include "MoqxRelayTestFixture.h"
 
+#include <folly/CancellationToken.h>
+#include <folly/coro/WithCancellation.h>
+
 namespace openmoq::moqx::test {
 
 // ============================================================================
@@ -119,6 +122,42 @@ TEST_P(MoqxRelayTracksTest, NewPublishFanoutToTracksSubscriber) {
   removeSession(publisher);
   // Flush the async forwarder teardown onto the relay exec (MT modes), else
   // the forwarder keeps the subscriber session + consumer alive past exit.
+  driveIfMultiThread();
+}
+
+// The session closes while the relay registers its SUBSCRIBE_TRACKS. The caller gets
+// OperationCancelled, so the registration has to go with it.
+TEST_P(MoqxRelayTracksTest, CancelledSubscribeTracksLeavesNoSubscriber) {
+  if (!relayEvb_) {
+    GTEST_SKIP() << "only the cross-exec filter observes the caller's cancellation";
+  }
+  auto subscriber = createV18Session();
+  auto publisher = createMockSession();
+  setupPublishSucceeds(subscriber);
+  folly::CancellationSource cancel;
+  cancel.requestCancellation();
+  withSessionContext(subscriber, [&]() {
+    SubscribeTracks subTracks;
+    subTracks.trackNamespacePrefix = kTestNamespace;
+    subTracks.forward = true;
+    auto res = folly::coro::blockingWait(
+        folly::coro::co_awaitTry(folly::coro::co_withCancellation(
+            cancel.getToken(),
+            publisherInterface()->subscribeTracks(std::move(subTracks))
+        )),
+        exec_.get()
+    );
+    EXPECT_TRUE(res.hasException<folly::OperationCancelled>());
+  });
+  driveIfMultiThread();
+
+  EXPECT_CALL(*subscriber, publish(_, _)).Times(0);
+  doPublish(publisher, kTestTrackName);
+  exec_->driveFor(5);
+
+  ASSERT_TRUE(testing::Mock::VerifyAndClearExpectations(subscriber.get()));
+  removeSession(subscriber);
+  removeSession(publisher);
   driveIfMultiThread();
 }
 

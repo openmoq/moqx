@@ -47,6 +47,7 @@ protected:
   }
 
   void TearDown() override {
+    subNsHandles_.clear();
     relay_.reset();
     exec_->driveFor(10);
   }
@@ -167,6 +168,7 @@ protected:
       ASSERT_TRUE(result.hasValue());
       handle = *result;
     });
+    subNsHandles_.push_back(handle);
     return handle;
   }
 
@@ -194,6 +196,7 @@ protected:
           exec_.get()
       );
       ASSERT_TRUE(result.hasValue());
+      subNsHandles_.push_back(*result);
     });
   }
 
@@ -208,6 +211,9 @@ protected:
 
   uint64_t nextId_{1};
   uint64_t nextObjId_{0};
+
+  // Dropping a handle unsubscribes, so the subscriptions last until TearDown.
+  std::vector<std::shared_ptr<Publisher::SubscribeNamespaceHandle>> subNsHandles_;
 
   // per-session record of which FTNs were pushed via publish()
   std::map<MoQSession*, std::vector<FullTrackName>> publishedTracks_;
@@ -432,7 +438,8 @@ TEST_F(MoqxTrackFilterTest, ForwardFalse_TracksStillSelected) {
         relay_->subscribeNamespace(std::move(subNs), nullptr),
         exec_.get()
     );
-    EXPECT_TRUE(result.hasValue());
+    ASSERT_TRUE(result.hasValue());
+    subNsHandles_.push_back(*result);
   });
 
   auto cA = doPublish(pubSess, "a", 100);
