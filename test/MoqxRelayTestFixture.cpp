@@ -90,7 +90,6 @@ void MoQRelayTest::resetRelay(
   relay_ = std::make_shared<MoqxRelay>(
       std::move(cache),
       relayID,
-      relayHopID,
       std::move(relayExec),
       useLocalForwarders,
       MoqxRelay::kDefaultMaxDeselected,
@@ -100,7 +99,7 @@ void MoQRelayTest::resetRelay(
   peering_ = std::make_unique<MoqtRelayBackend>(
       relay_,
       config::ServiceConfig{},
-      /*hopID=*/std::nullopt
+      relayHopID ? std::optional(relayHopID) : std::nullopt
   );
   relay_->setPeering(peering_.get());
   relay_->setReciprocalPeerHandler(peering_->reciprocalMoqtPeerHandler());

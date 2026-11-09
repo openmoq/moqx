@@ -25,6 +25,8 @@
 
 namespace openmoq::moqx {
 
+class PeeringBackend;
+
 // --- Relay peering auth helpers ---
 // Used by UpstreamProvider (initiating peer subNs) and MoqxRelay (reciprocation).
 
@@ -75,7 +77,8 @@ public:
       std::chrono::milliseconds connectTimeout = std::chrono::milliseconds(5000),
       std::chrono::milliseconds idleTimeout = std::chrono::milliseconds(5000),
       std::optional<uint64_t> hopID = std::nullopt,
-      uint64_t relayCost = 1
+      uint64_t relayCost = 1,
+      const PeeringBackend* peering = nullptr
   );
 
   ~UpstreamProvider() override;
@@ -227,6 +230,8 @@ private:
   // implements it incompatibly. Loop detection then does not cross the link.
   std::optional<uint64_t> hopID_;
   uint64_t relayCost_;
+  // The backend that chooses each session's routing. Null gives plain routing.
+  const PeeringBackend* peering_;
   uint64_t subscriptionBufferBytes_{0};
   bool stopped_{false};
 

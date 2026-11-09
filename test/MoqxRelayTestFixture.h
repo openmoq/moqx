@@ -213,13 +213,15 @@ protected:
 
   // What the relay would hold for session.
   Participant participantOf(const std::shared_ptr<MoQSession>& session) {
-    return SessionParticipant::makeParticipant(session, relay_->getRelayExec());
+    return SessionParticipant::makeParticipant(session, relay_->getRelayExec(), peering_.get());
   }
 
   template <typename Func>
   auto withSessionContext(std::shared_ptr<MoQSession> session, Func&& func) -> decltype(func()) {
     folly::RequestContextScopeGuard guard;
-    attachParticipant(SessionParticipant::makeParticipant(session, relay_->getRelayExec()));
+    attachParticipant(
+        SessionParticipant::makeParticipant(session, relay_->getRelayExec(), peering_.get())
+    );
     folly::RequestContext::get()->setContextData(
         sessionRequestToken(),
         std::make_unique<MoQSession::MoQSessionRequestData>(std::move(session))

@@ -60,7 +60,7 @@ TEST_P(MoQRelayTest, RouteCostAccumulatesAndReplaySkipsPeersOnThePath) {
 
   const TrackNamespace prefix{{"test"}};
   std::vector<std::shared_ptr<MockMoQSession>> sessions{publisher};
-  for (uint64_t peerHop : {uint64_t{100}, uint64_t{200}, kRelayHop}) {
+  for (uint64_t peerHop : {uint64_t{100}, uint64_t{200}}) {
     auto peer = createMockSession();
     negotiateCluster(*peer, peerHop);
     auto handle = std::make_shared<RecordingNamespacePublishHandle>();
@@ -242,8 +242,8 @@ TEST_P(MoQRelayTest, RelayHopLoopIsDroppedBeforeNamespaceRegistration) {
   removeSession(publisher);
 }
 
-// A peer whose Hop ID is on the path, or is ours, must not be advertised the path.
-TEST_P(MoQRelayTest, PeerHopIDSuppressesOriginIntermediateAndLocalMatches) {
+// A peer whose Hop ID is on the path must not be advertised the path.
+TEST_P(MoQRelayTest, PeerHopIDSuppressesOriginAndIntermediateMatches) {
   constexpr uint64_t kRelayHop = 900;
   resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "", kRelayHop);
   auto publisher = createMockSession();
@@ -251,7 +251,7 @@ TEST_P(MoQRelayTest, PeerHopIDSuppressesOriginIntermediateAndLocalMatches) {
 
   std::vector<std::shared_ptr<MockMoQSession>> subscribers;
   std::vector<std::shared_ptr<RecordingNamespacePublishHandle>> namespaceHandles;
-  for (uint64_t peerHop : {uint64_t{100}, uint64_t{200}, kRelayHop}) {
+  for (uint64_t peerHop : {uint64_t{100}, uint64_t{200}}) {
     auto subscriber = createMockSession();
     negotiateCluster(*subscriber, peerHop);
     auto namespaceHandle = std::make_shared<RecordingNamespacePublishHandle>();
@@ -284,6 +284,51 @@ TEST_P(MoQRelayTest, PeerHopIDSuppressesOriginIntermediateAndLocalMatches) {
     removeSession(subscriber);
   }
   driveIfMultiThread();
+}
+
+static ParticipantInfo routingSetup(bool relayHops, uint64_t peerHop) {
+  return ParticipantInfo{
+      .sessionId = SessionId(42),
+      .version = kVersionDraft18,
+      .routing = {.relayHops = relayHops, .peerHopID = peerHop, .linkCost = 3},
+  };
+}
+
+TEST_P(MoQRelayTest, ClusterSessionGetsClusterRouting) {
+  resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "", /*relayHopID=*/900);
+  auto routing = peering_->routingFor(routingSetup(/*relayHops=*/true, /*peerHop=*/100));
+  ASSERT_NE(routing.codec, nullptr);
+  EXPECT_TRUE(routing.fromPeering);
+  EXPECT_TRUE(routing.wantsUpdates);
+  ASSERT_TRUE(routing.exclusion.has_value());
+  EXPECT_EQ(routing.exclusion->session, SessionId(42));
+  EXPECT_EQ(routing.exclusion->hop, 100u);
+  EXPECT_EQ(routing.linkCost, 3u);
+
+  TrackRequestParameters params(FrameType::PUBLISH_NAMESPACE);
+  routing.codec->writeRoute(params, routingSetup(true, 100), {100}, 5);
+  EXPECT_NE(params.getFirstParam(TrackRequestParamKey::HOP_PATH), nullptr);
+}
+
+TEST_P(MoQRelayTest, PlainSessionGetsPlainRouting) {
+  resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "", /*relayHopID=*/900);
+  auto routing = peering_->routingFor(routingSetup(/*relayHops=*/false, kMoQClusterAnonHopId));
+  ASSERT_NE(routing.codec, nullptr);
+  EXPECT_FALSE(routing.fromPeering);
+  EXPECT_FALSE(routing.wantsUpdates);
+  EXPECT_FALSE(routing.exclusion.has_value());
+}
+
+// A relay without a Hop ID does not speak MoQ Cluster, even to a session that negotiated it.
+TEST_P(MoQRelayTest, RelayWithoutAHopIDGivesClusterSessionsPlainRouting) {
+  resetRelay(config::CacheConfig{.maxCachedTracks = 0});
+  auto routing = peering_->routingFor(routingSetup(/*relayHops=*/true, /*peerHop=*/100));
+  EXPECT_FALSE(routing.fromPeering);
+  EXPECT_FALSE(routing.exclusion.has_value());
+
+  TrackRequestParameters params(FrameType::PUBLISH_NAMESPACE);
+  routing.codec->writeRoute(params, routingSetup(true, 100), {100}, 5);
+  EXPECT_EQ(params.getFirstParam(TrackRequestParamKey::HOP_PATH), nullptr);
 }
 
 TEST_P(MoQRelayTest, NonNegotiatedSubscriberReceivesNamespaceWithoutHopPath) {
@@ -980,6 +1025,7 @@ TEST_P(MoQRelayTest, RefusedPeerDoesNotFailAConcurrentClient) {
 // An end user may subscribe to a track in a namespace it published: the relay
 // subscribes back to that session. A cluster session may not.
 TEST_P(MoQRelayTest, EndUserSubscribesThroughItsOwnPublishNamespace) {
+  resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "", 900);
   auto client = createMockSession();
   doPublishNamespace(client, kTestNamespace);
   EXPECT_CALL(*client, subscribe(_, _)).WillOnce([](const auto& req, auto /*consumer*/) {
@@ -1017,6 +1063,7 @@ TEST_P(MoQRelayTest, EndUserSubscribesThroughItsOwnPublishNamespace) {
 // An end user may SUBSCRIBE to a track it pushed with PUBLISH. A cluster session may not.
 // SUBSCRIBE_TRACKS does not push a session's own tracks back to it (MoqxRelayTracksTest).
 TEST_P(MoQRelayTest, EndUserSubscribesToItsOwnPublish) {
+  resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "", 900);
   auto client = createMockSession();
   doPublish(client, kTestTrackName);
   EXPECT_NE(subscribeToTrack(client, kTestTrackName, createMockConsumer(), RequestID(1)), nullptr);

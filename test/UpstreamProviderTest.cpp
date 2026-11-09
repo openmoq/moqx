@@ -1047,7 +1047,9 @@ protected:
   // is preserved across suspension / resumption by folly's coro framework.
   folly::coro::Task<void> subscribeTask(std::shared_ptr<MoQSession> sess, SubscribeRequest req) {
     folly::RequestContextScopeGuard ctx;
-    attachParticipant(SessionParticipant::makeParticipant(sess, relay_->getRelayExec()));
+    attachParticipant(
+        SessionParticipant::makeParticipant(sess, relay_->getRelayExec(), peering_.get())
+    );
     folly::RequestContext::get()->setContextData(
         folly::RequestToken("moq_session"),
         std::make_unique<MoQSession::MoQSessionRequestData>(std::move(sess))

@@ -75,7 +75,7 @@ void walk(RelayContextVisitor& v) {
         .peerID = "peer-a",
         .path = {100, 200},
         .cost = 3,
-        .fromCluster = true},
+        .fromPeering = true},
        {.address = "10.0.0.3:3", .path = {0}, .cost = 1}}
   );
   rv.beginNamespaceNode("inner", moxygen::TrackNamespace{{"test", "inner"}}, 1, {});
@@ -226,10 +226,10 @@ TEST(StateStreamTest, NestsNamespaceChildrenByKey) {
   ASSERT_EQ(routes.size(), 2u);
   EXPECT_EQ(folly::toJson(routes[0]["hop_path"]), "[100,200]");
   EXPECT_EQ(routes[0]["cost"].asInt(), 3);
-  EXPECT_TRUE(routes[0]["from_cluster"].asBool());
+  EXPECT_TRUE(routes[0]["from_peering"].asBool());
   EXPECT_EQ(routes[1]["address"].asString(), "10.0.0.3:3");
   EXPECT_EQ(routes[1].count("peer_id"), 0);
-  EXPECT_FALSE(routes[1]["from_cluster"].asBool());
+  EXPECT_FALSE(routes[1]["from_peering"].asBool());
 
   const auto& inner = test["children"]["inner"];
   EXPECT_EQ(folly::toJson(inner["full_namespace"]), R"(["test","inner"])");
