@@ -24,8 +24,9 @@ namespace openmoq::moqx {
 
 class MoqxRelay;
 
-// Relay peering over MoQT sessions: dials the service's configured upstream relays.
-class MoqtRelayBackend : public PeeringBackend {
+// Relay peering over MoQT sessions: dials the service's configured upstream relays, and
+// reciprocates a peer relay's SUBSCRIBE_NAMESPACE.
+class MoqtRelayBackend : public PeeringBackend, public ReciprocalMoqtPeerHandler {
 public:
   MoqtRelayBackend(
       std::shared_ptr<MoqxRelay> relay,
@@ -39,11 +40,18 @@ public:
 
   bool peersPending() const override { return connectedUpstreams_.size() < upstreams_.size(); }
   folly::coro::Task<void> waitForPeers(folly::Function<bool()> routed) override;
-  void visitState(RelayStateVisitor& /*visitor*/) const override {}
-  bool holdsSessionHandles() const override { return !upstreamHandles_.empty(); }
+  bool holdsSessionHandles() const override;
+  ReciprocalMoqtPeerHandler* reciprocalMoqtPeerHandler() override { return this; }
 
   folly::coro::Task<void> visitPeers(PeerVisitor& visitor) const override;
   folly::coro::Task<PeerAdminResult> executePeerAdminOp(PeerAdminOp op) override;
+
+  std::optional<std::string> authorizePeer(const moxygen::TrackRequestParameters& params
+  ) const override;
+  folly::coro::Task<bool> onPeerConnected(Participant peer, std::string peerID) override;
+  void onPeerDisconnected(moxygen::SessionId session) override;
+  void onPeerClosed(moxygen::SessionId session) override;
+  std::optional<std::string> peerIdOf(moxygen::SessionId session) const override;
 
   // Called by UpstreamProvider's onConnect hook after a new upstream session is
   // established. Issues the peer subNs handshake and saves the handle.
@@ -85,6 +93,18 @@ private:
   };
   // Keeps each connected upstream session's peering subscriptions alive. On the relay executor.
   folly::F14FastMap<moxygen::SessionId, UpstreamHandles, moxygen::SessionId::hash> upstreamHandles_;
+
+  struct PeerInfo {
+    std::string relayID;
+    std::string address;
+    std::string authority;
+    // The reciprocal subscriptions, until the peer's SUBSCRIBE_NAMESPACE ends.
+    ExecBound<std::shared_ptr<moxygen::Publisher::SubscribeNamespaceHandle>> subNs;
+    ExecBound<std::shared_ptr<moxygen::Publisher::SubscribeTracksHandle>> tracks; // draft 18+
+    bool open{false}; // while the peer's SUBSCRIBE_NAMESPACE is open
+  };
+  // Each peer relay session, from onPeerConnected() until it closes. On the relay executor.
+  folly::F14FastMap<moxygen::SessionId, PeerInfo, moxygen::SessionId::hash> peers_;
 };
 
 } // namespace openmoq::moqx

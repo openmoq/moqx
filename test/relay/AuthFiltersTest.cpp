@@ -6,6 +6,10 @@
 
 #include "relay/AuthFilters.h"
 
+#include "MoqxRelay.h"
+#include "UpstreamProvider.h"
+#include "peering/MoqtRelayBackend.h"
+
 #include "auth/AuthTokenIssuer.h"
 
 #include <folly/coro/BlockingWait.h>
@@ -71,7 +75,7 @@ protected:
         publisherInner_,
         verifier_,
         std::make_shared<const std::vector<Grants>>(std::move(sessionGrants)),
-        /*peeringEnabled=*/false
+        /*peering=*/nullptr
     );
   }
 
@@ -89,6 +93,58 @@ protected:
 };
 
 } // namespace
+
+// A peer relay's relay token skips the grant checks, so an empty grant list does not block it.
+TEST_F(AuthFiltersTest, PeerRelaySkipsGrantChecks) {
+  auto relay = std::make_shared<MoqxRelay>(config::CacheConfig{}, "sg-sin-2-1");
+  MoqtRelayBackend backend(relay, config::ServiceConfig{}, /*hopID=*/std::nullopt);
+  AuthPublisherFilter filter(
+      publisherInner_,
+      verifier_,
+      std::make_shared<const std::vector<Grants>>(),
+      backend.reciprocalMoqtPeerHandler()
+  );
+  auto unsupported = [](RequestID id) {
+    return folly::makeUnexpected(RequestError{id, RequestErrorCode::NOT_SUPPORTED, "inner"});
+  };
+  EXPECT_CALL(*publisherInner_, subscribeNamespace(_, _)).WillOnce([&](SubscribeNamespace s, auto) {
+    return folly::coro::makeTask<Publisher::SubscribeNamespaceResult>(unsupported(s.requestID));
+  });
+  EXPECT_CALL(*publisherInner_, subscribeTracks(_, _)).WillOnce([&](SubscribeTracks s, auto) {
+    return folly::coro::makeTask<Publisher::SubscribeTracksResult>(unsupported(s.requestID));
+  });
+
+  auto peerSubNs =
+      folly::coro::blockingWait(filter.subscribeNamespace(makePeerSubNs("jp-osa-1"), nullptr));
+  EXPECT_EQ(peerSubNs.error().errorCode, RequestErrorCode::NOT_SUPPORTED);
+  auto peerSubTracks =
+      folly::coro::blockingWait(filter.subscribeTracks(makePeerSubTracks("jp-osa-1"), nullptr));
+  EXPECT_EQ(peerSubTracks.error().errorCode, RequestErrorCode::NOT_SUPPORTED);
+  auto plainSubNs = folly::coro::blockingWait(filter.subscribeNamespace(makePeerSubNs(), nullptr));
+  EXPECT_EQ(plainSubNs.error().errorCode, RequestErrorCode::UNAUTHORIZED);
+}
+
+// A relay that does not have a relay ID does not accept peers, so a relay token alone is not
+// enough.
+TEST_F(AuthFiltersTest, RelayWithoutAnIdChecksGrantsForRelayTokens) {
+  auto relay = std::make_shared<MoqxRelay>(config::CacheConfig{}, /*relayID=*/"");
+  MoqtRelayBackend backend(relay, config::ServiceConfig{}, /*hopID=*/std::nullopt);
+  AuthPublisherFilter filter(
+      publisherInner_,
+      verifier_,
+      std::make_shared<const std::vector<Grants>>(),
+      backend.reciprocalMoqtPeerHandler()
+  );
+  EXPECT_CALL(*publisherInner_, subscribeNamespace(_, _)).Times(0);
+  EXPECT_CALL(*publisherInner_, subscribeTracks(_, _)).Times(0);
+
+  auto subNs =
+      folly::coro::blockingWait(filter.subscribeNamespace(makePeerSubNs("jp-osa-1"), nullptr));
+  EXPECT_EQ(subNs.error().errorCode, RequestErrorCode::UNAUTHORIZED);
+  auto subTracks =
+      folly::coro::blockingWait(filter.subscribeTracks(makePeerSubTracks("jp-osa-1"), nullptr));
+  EXPECT_EQ(subTracks.error().errorCode, RequestErrorCode::UNAUTHORIZED);
+}
 
 // Two session-grants entries where only the second covers Subscribe: the
 // filter must permit it (any pool element satisfying is enough).
@@ -213,8 +269,7 @@ TEST(
   auto subscriberInner = std::make_shared<NiceMock<MockSubscriber>>();
   auto emptySessionGrants = std::make_shared<const std::vector<Grants>>();
 
-  AuthPublisherFilter
-      pubFilter(publisherInner, verifier, emptySessionGrants, /*peeringEnabled=*/false);
+  AuthPublisherFilter pubFilter(publisherInner, verifier, emptySessionGrants, /*peering=*/nullptr);
   AuthSubscriberFilter subFilter(subscriberInner, verifier, emptySessionGrants);
 
   // Subscribe: anonymous claim covers it.

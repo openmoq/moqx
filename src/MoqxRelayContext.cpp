@@ -79,6 +79,7 @@ void MoqxRelayContext::addService(
 ) {
   auto peering = std::make_unique<MoqtRelayBackend>(relay, svc, getRelayHopID());
   relay->setPeering(peering.get());
+  relay->setReciprocalPeerHandler(peering->reciprocalMoqtPeerHandler());
   services_.emplace(
       name,
       ServiceEntry{
@@ -279,7 +280,10 @@ void MoqxRelayContext::onSessionEnd(std::shared_ptr<MoQSession> session) {
   // The session belongs to whichever service its authority+path matched at setup.
   if (auto name = serviceMatcher_.match(session->getAuthority(), session->getPath())) {
     if (auto it = services_.find(*name); it != services_.end()) {
-      it->second.relay->onSessionEnd(session->sessionId());
+      auto relay = it->second.relay;
+      runOnExec(relay->getRelayExec(), [relay, sessionId = session->sessionId()] {
+        relay->onSessionEnd(sessionId);
+      });
     }
   }
   // Per-session auth state lives on the session's AuthFilter and is released
@@ -333,7 +337,7 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayContext::validateAu
         std::move(pub),
         entry.verifier,
         grants.value(),
-        !relayID_.empty()
+        entry.peering->reciprocalMoqtPeerHandler()
     );
     sub = std::make_shared<AuthSubscriberFilter>(std::move(sub), entry.verifier, grants.value());
   }
@@ -440,18 +444,31 @@ std::string_view linkStateName(PeerLink::State state) {
   return "unknown";
 }
 
-// Reports the service's dialed links as /state's upstream or upstreams.
-folly::coro::Task<void>
-reportUpstreams(const PeeringBackend& peering, bool upstreamList, RelayContextVisitor& visitor) {
+// Reports the service's accepted links as /state's downstream_peers, and its dialed links as
+// upstream or upstreams.
+folly::coro::Task<void> reportPeers(
+    const PeeringBackend& peering,
+    bool upstreamList,
+    RelayContextVisitor& visitor,
+    RelayStateVisitor& relayVisitor
+) {
   struct Collect : PeerVisitor {
+    std::vector<PeerLink> accepted;
     std::vector<RelayContextVisitor::UpstreamState> upstreams;
     void onPeer(const PeerLink& link) override {
-      if (link.direction == PeerLink::Direction::Dialed) {
+      if (link.direction == PeerLink::Direction::Accepted) {
+        accepted.push_back(link);
+      } else {
         upstreams.push_back({link.address, std::string(linkStateName(link.state))});
       }
     }
   } collect;
   co_await peering.visitPeers(collect);
+  relayVisitor.onPeersBegin();
+  for (const auto& link : collect.accepted) {
+    relayVisitor.onPeer(link.address, link.authority, link.relayID);
+  }
+  relayVisitor.onPeersEnd();
   if (collect.upstreams.empty()) {
     co_return;
   }
@@ -508,7 +525,7 @@ folly::coro::Task<void> MoqxRelayContext::dumpState(RelayContextVisitor& visitor
         exec ? exec : static_cast<folly::Executor*>(workerEvb_),
         dumpOnOwner(service.relay, &rv)
     );
-    co_await reportUpstreams(*service.peering, service.upstreamList, visitor);
+    co_await reportPeers(*service.peering, service.upstreamList, visitor, rv);
     visitor.onServiceEnd();
   }
   visitor.onRelayEnd();
