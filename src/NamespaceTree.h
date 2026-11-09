@@ -28,6 +28,17 @@ struct RouteExclusion {
   uint64_t hop{moxygen::kMoQClusterAnonHopId};
 };
 
+// GCC 12 fails to compile NamespaceNode's maps when this struct is nested inside it.
+struct NamespaceSubscriberInfo {
+  bool forward{true};
+  moxygen::SubscribeNamespaceOptions options{moxygen::SubscribeNamespaceOptions::BOTH};
+  // Handle for NAMESPACE/NAMESPACE_DONE on the bidi stream; null for SUBSCRIBE_TRACKS entries.
+  std::shared_ptr<moxygen::Publisher::NamespacePublishHandle> namespacePublishHandle;
+  moxygen::TrackNamespace trackNamespacePrefix;
+  std::optional<moxygen::TrackFilter> trackFilter;
+  std::string peerID; // relay ID of a peer relay subscriber
+};
+
 // Hierarchical tree tracking PUBLISH_NAMESPACE announcements and
 // SUBSCRIBE_NAMESPACE subscriptions.
 //
@@ -45,15 +56,7 @@ public:
       return !publishes_.empty() || !subscribers_.empty() || !routes_.empty();
     }
 
-    struct NamespaceSubscriberInfo {
-      bool forward{true};
-      moxygen::SubscribeNamespaceOptions options{moxygen::SubscribeNamespaceOptions::BOTH};
-      // Handle for NAMESPACE/NAMESPACE_DONE on the bidi stream; null for SUBSCRIBE_TRACKS entries.
-      std::shared_ptr<moxygen::Publisher::NamespacePublishHandle> namespacePublishHandle;
-      moxygen::TrackNamespace trackNamespacePrefix;
-      std::optional<moxygen::TrackFilter> trackFilter;
-      std::string peerID; // relay ID of a peer relay subscriber
-    };
+    using NamespaceSubscriberInfo = ::openmoq::moqx::NamespaceSubscriberInfo;
 
     // What one SUBSCRIBE_NAMESPACE was last told about this namespace.
     struct Advertisement {
