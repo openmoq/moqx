@@ -1630,12 +1630,10 @@ public:
       : Publisher::SubscribeNamespaceHandle(std::move(ok)), relay_(std::move(relay)),
         session_(session), trackNamespacePrefix_(std::move(trackNamespacePrefix)) {}
 
-  void unsubscribeNamespace() override {
-    if (relay_) {
-      relay_->unsubscribeNamespace(trackNamespacePrefix_, session_);
-      relay_.reset();
-    }
-  }
+  // A caller cancelled after registration drops the handle without unsubscribing.
+  ~NamespaceSubscription() override { release(); }
+
+  void unsubscribeNamespace() override { release(); }
 
   folly::coro::Task<RequestUpdateResult> requestUpdate(RequestUpdate reqUpdate) override {
     co_return folly::makeUnexpected(RequestError{
@@ -1646,6 +1644,13 @@ public:
   }
 
 private:
+  void release() {
+    if (relay_) {
+      relay_->unsubscribeNamespace(trackNamespacePrefix_, session_);
+      relay_.reset();
+    }
+  }
+
   std::shared_ptr<MoqxRelay> relay_;
   SessionId session_;
   TrackNamespace trackNamespacePrefix_;
@@ -1664,12 +1669,9 @@ public:
       : Publisher::SubscribeTracksHandle(std::move(ok)), relay_(std::move(relay)),
         session_(session), trackNamespacePrefix_(std::move(trackNamespacePrefix)) {}
 
-  void unsubscribeTracks() override {
-    if (relay_) {
-      relay_->unsubscribeTracks(trackNamespacePrefix_, session_);
-      relay_.reset();
-    }
-  }
+  ~TracksSubscription() override { release(); }
+
+  void unsubscribeTracks() override { release(); }
 
   folly::coro::Task<RequestUpdateResult> requestUpdate(RequestUpdate reqUpdate) override {
     // Draft-18 Section 10.9.2 allows REQUEST_UPDATE for SUBSCRIBE_TRACKS to update
@@ -1685,6 +1687,13 @@ public:
   }
 
 private:
+  void release() {
+    if (relay_) {
+      relay_->unsubscribeTracks(trackNamespacePrefix_, session_);
+      relay_.reset();
+    }
+  }
+
   std::shared_ptr<MoqxRelay> relay_;
   SessionId session_;
   TrackNamespace trackNamespacePrefix_;
