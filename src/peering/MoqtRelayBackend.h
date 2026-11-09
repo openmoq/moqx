@@ -11,6 +11,7 @@
 #include "peering/PeeringBackend.h"
 #include "relay/ExecBound.h"
 #include "relay/Participant.h"
+#include "relay/RouteCodec.h"
 
 #include <folly/container/F14Map.h>
 #include <folly/container/F14Set.h>
@@ -42,6 +43,7 @@ public:
   folly::coro::Task<void> waitForPeers(folly::Function<bool()> routed) override;
   bool holdsSessionHandles() const override;
   ReciprocalMoqtPeerHandler* reciprocalMoqtPeerHandler() override { return this; }
+  ParticipantRouting routingFor(const ParticipantInfo& info) const override;
 
   folly::coro::Task<void> visitPeers(PeerVisitor& visitor) const override;
   folly::coro::Task<PeerAdminResult> executePeerAdminOp(PeerAdminOp op) override;
@@ -77,6 +79,8 @@ private:
   std::weak_ptr<MoqxRelay> relay_;
   folly::Executor* relayExec_;
   std::string relayID_;
+  // MoQ Cluster's codec, set when this relay has a Hop ID.
+  std::shared_ptr<const RouteCodec> clusterCodec_;
   std::vector<config::UpstreamConfig> configs_;
   std::optional<uint64_t> hopID_;
   uint64_t subscriptionBufferBytes_;

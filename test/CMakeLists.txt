@@ -215,6 +215,11 @@ moqx_add_gtest(moqx_exec_bound_test
   LIBS moqx_core GTest::gtest_main
 )
 
+moqx_add_gtest(moqx_route_codec_test
+  SRCS relay/RouteCodecTest.cpp
+  LIBS moqx_core GTest::gtest_main
+)
+
 moqx_add_gtest(moqx_session_participant_test
   SRCS relay/SessionParticipantTest.cpp
   LIBS
