@@ -13,8 +13,10 @@
 #include "relay/SessionParticipant.h"
 
 #include <folly/CancellationToken.h>
+#include <folly/ScopeGuard.h>
 #include <folly/coro/Collect.h>
 #include <folly/coro/Invoke.h>
+#include <moxygen/MoQVersions.h>
 #include <moxygen/events/MoQFollyExecutorImpl.h>
 
 using namespace moxygen;
@@ -181,6 +183,97 @@ void MoqtRelayBackend::onUpstreamDisconnect(SessionId upstream) {
   upstreamHandles_.erase(upstream);
 }
 
+std::optional<std::string> MoqtRelayBackend::authorizePeer(const TrackRequestParameters& params
+) const {
+  return relayID_.empty() ? std::nullopt : getPeerRelayID(params);
+}
+
+folly::coro::Task<bool> MoqtRelayBackend::onPeerConnected(Participant peer, std::string peerID) {
+  XDCHECK(onExecutor(relayExec_));
+  const ParticipantInfo& info = *peer.info;
+  const auto session = info.sessionId;
+  auto& entry = peers_[session];
+  if (entry.open) {
+    co_return false;
+  }
+  entry.open = true;
+  entry.relayID = peerID;
+  entry.address = info.address;
+  entry.authority = info.authority;
+  // A request cancelled here does not reach onPeerDisconnected(), so it closes itself.
+  auto closeOnCancel = folly::makeGuard([this, session] {
+    if (auto it = peers_.find(session); it != peers_.end()) {
+      it->second.open = false;
+    }
+  });
+  auto relay = relay_.lock();
+  XCHECK(relay) << "the relay calls its backend";
+  // Tag with the peer's relay ID so we suppress echoing these namespaces
+  // back to that peer on reconnect.
+  auto handle = makeNamespaceBridgeHandle(std::move(relay), peer, peerID, relayExec_);
+  auto peerSubNs = makePeerSubNs();
+  // The participant's publisher runs the call on the peer session's executor and wraps
+  // the returned handle so its teardown hops there too (no token: reciprocal).
+  auto recipResult = co_await peer.publisher->subscribeNamespace(std::move(peerSubNs), handle);
+  co_await folly::coro::co_safe_point;
+  if (recipResult.hasError()) {
+    XLOG(ERR) << "Reciprocal peer subNs failed: " << recipResult.error().reasonPhrase;
+    closeOnCancel.dismiss();
+    co_return true;
+  }
+  std::shared_ptr<Publisher::SubscribeTracksHandle> recipTracks;
+  if (getDraftMajorVersion(info.version) >= 18) {
+    auto tracks = co_await peer.publisher->subscribeTracks(makePeerSubTracks(relayID_), nullptr);
+    co_await folly::coro::co_safe_point;
+    if (tracks.hasValue()) {
+      recipTracks = std::move(tracks.value());
+    } else {
+      XLOG(ERR) << "Reciprocal peer subTracks failed: " << tracks.error().reasonPhrase;
+    }
+  }
+  closeOnCancel.dismiss();
+  // Gone when the session closed during the reciprocal. Returning drops its handles here.
+  auto it = peers_.find(session);
+  if (it == peers_.end()) {
+    co_return true;
+  }
+  it->second.subNs = {std::move(recipResult.value()), info.executor};
+  it->second.tracks = {std::move(recipTracks), info.executor};
+  co_return true;
+}
+
+void MoqtRelayBackend::onPeerDisconnected(SessionId session) {
+  XDCHECK(onExecutor(relayExec_));
+  if (auto it = peers_.find(session); it != peers_.end()) {
+    it->second.subNs.reset();
+    it->second.tracks.reset();
+    it->second.open = false;
+  }
+}
+
+void MoqtRelayBackend::onPeerClosed(SessionId session) {
+  XDCHECK(onExecutor(relayExec_));
+  peers_.erase(session);
+}
+
+std::optional<std::string> MoqtRelayBackend::peerIdOf(SessionId session) const {
+  XDCHECK(onExecutor(relayExec_));
+  auto it = peers_.find(session);
+  return it == peers_.end() ? std::nullopt : std::optional(it->second.relayID);
+}
+
+bool MoqtRelayBackend::holdsSessionHandles() const {
+  if (!upstreamHandles_.empty()) {
+    return true;
+  }
+  for (const auto& [session, peer] : peers_) {
+    if (peer.subNs || peer.tracks) {
+      return true;
+    }
+  }
+  return false;
+}
+
 folly::coro::Task<void> MoqtRelayBackend::waitForPeers(folly::Function<bool()> routed) {
   folly::CancellationSource routedSource;
   std::vector<folly::coro::Task<void>> waits;
@@ -206,31 +299,54 @@ folly::coro::Task<void> MoqtRelayBackend::waitForPeers(folly::Function<bool()> r
 }
 
 folly::coro::Task<void> MoqtRelayBackend::visitPeers(PeerVisitor& visitor) const {
-  if (configs_.empty()) {
-    co_return;
+  if (!configs_.empty()) {
+    XCHECK(workerEvb_) << "visitPeers() runs after start()";
+    // UpstreamProvider lives on the worker EVB and its state_ is a plain enum
+    // written there, so read it on that thread rather than the caller's.
+    auto states = co_await folly::coro::co_withExecutor(
+        static_cast<folly::Executor*>(workerEvb_),
+        folly::coro::co_invoke([this]() -> folly::coro::Task<std::vector<UpstreamProvider::State>> {
+          std::vector<UpstreamProvider::State> out;
+          for (const auto& up : upstreams_) {
+            out.push_back(up->state());
+          }
+          co_return out;
+        })
+    );
+    for (size_t i = 0; i < configs_.size(); ++i) {
+      auto state = i < states.size() ? states[i] : UpstreamProvider::State::Disconnected;
+      visitor.onPeer(PeerLink{
+          .direction = PeerLink::Direction::Dialed,
+          .state = state == UpstreamProvider::State::Connected    ? PeerLink::State::Connected
+                   : state == UpstreamProvider::State::Connecting ? PeerLink::State::Connecting
+                                                                  : PeerLink::State::Disconnected,
+          .address = configs_[i].url,
+      });
+    }
   }
-  XCHECK(workerEvb_) << "visitPeers() runs after start()";
-  // UpstreamProvider lives on the worker EVB and its state_ is a plain enum
-  // written there, so read it on that thread rather than the caller's.
-  auto states = co_await folly::coro::co_withExecutor(
-      static_cast<folly::Executor*>(workerEvb_),
-      folly::coro::co_invoke([this]() -> folly::coro::Task<std::vector<UpstreamProvider::State>> {
-        std::vector<UpstreamProvider::State> out;
-        for (const auto& up : upstreams_) {
-          out.push_back(up->state());
-        }
-        co_return out;
-      })
-  );
-  for (size_t i = 0; i < configs_.size(); ++i) {
-    auto state = i < states.size() ? states[i] : UpstreamProvider::State::Disconnected;
-    visitor.onPeer(PeerLink{
-        .direction = PeerLink::Direction::Dialed,
-        .state = state == UpstreamProvider::State::Connected    ? PeerLink::State::Connected
-                 : state == UpstreamProvider::State::Connecting ? PeerLink::State::Connecting
-                                                                : PeerLink::State::Disconnected,
-        .address = configs_[i].url,
-    });
+  auto readAccepted = [this]() -> folly::coro::Task<std::vector<PeerLink>> {
+    std::vector<PeerLink> out;
+    for (const auto& [session, peer] : peers_) {
+      out.push_back(PeerLink{
+          .direction = PeerLink::Direction::Accepted,
+          .state = PeerLink::State::Connected,
+          .address = peer.address,
+          .authority = peer.authority,
+          .relayID = peer.relayID,
+      });
+    }
+    co_return out;
+  };
+  // peers_ is confined to the relay executor, or to the worker EVB without one.
+  folly::Executor* exec = relayExec_ ? relayExec_ : static_cast<folly::Executor*>(workerEvb_);
+  std::vector<PeerLink> accepted;
+  if (exec) {
+    accepted = co_await folly::coro::co_withExecutor(exec, readAccepted());
+  } else {
+    accepted = co_await readAccepted();
+  }
+  for (const auto& link : accepted) {
+    visitor.onPeer(link);
   }
 }
 

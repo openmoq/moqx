@@ -191,6 +191,7 @@ public:
 
   // Set before the relay serves requests.
   void setPeering(PeeringBackend* peering) { peering_ = peering; }
+  void setReciprocalPeerHandler(ReciprocalMoqtPeerHandler* handler) { reciprocal_ = handler; }
 
   // Force-evicts a specific track unconditionally. Not thread-safe.
   size_t purge(const moxygen::FullTrackName& ftn) { return cache_ ? cache_->purge(ftn) : 0; }
@@ -202,12 +203,11 @@ public:
   size_t purge() { return cache_ ? cache_->purge() : 0; }
 
   // True while relay state still holds a handle that a session owns. Run on the relay executor.
-  bool holdsSessionHandles() const {
-    return !peerSubNsHandles_.empty() || registry_.holdsHandles();
-  }
+  bool holdsSessionHandles() const { return registry_.holdsHandles(); }
 
-  // Releases per-session relay state; the servers call this as a session tears down.
-  void onSessionEnd(moxygen::SessionId /*session*/) {}
+  // Releases per-session relay state. The context calls it on the relay executor as a session
+  // tears down.
+  void onSessionEnd(moxygen::SessionId session);
 
   folly::coro::Task<SubscribeResult> subscribe(
       moxygen::SubscribeRequest subReq,
@@ -456,20 +456,8 @@ private:
   uint64_t relayHopID_;
   // Owned by the context, which keeps it alive while this relay serves requests.
   PeeringBackend* peering_{nullptr};
-
-  struct PeerInfo {
-    ExecBound<std::shared_ptr<moxygen::Publisher::SubscribeNamespaceHandle>> handle;
-    ExecBound<std::shared_ptr<moxygen::Publisher::SubscribeTracksHandle>> tracksHandle; // draft 18+
-    std::string relayID; // from peer auth token; empty if not provided
-    std::string address;
-    std::string authority;
-  };
-  // Reciprocal peer subNs handles: one per peer relay session that has
-  // connected to us. Kept alive so the subscription is not immediately
-  // cancelled.
-  folly::F14FastMap<moxygen::SessionId, PeerInfo, moxygen::SessionId::hash> peerSubNsHandles_;
-  // Also true for a reconnecting peer's earlier session, which may still hold its pushed tracks.
-  bool isPeerSession(moxygen::SessionId session, const std::string& peerID) const;
+  // Part of *peering_, or null.
+  ReciprocalMoqtPeerHandler* reciprocal_{nullptr};
 
   SubscriptionRegistry registry_;
 
@@ -490,6 +478,9 @@ private:
       uint64_t linkCost
   ) const;
   using NamespaceNode = NamespaceTree::NamespaceNode;
+  // True when publisher is a session of the peer relay whose ID is peerID. False for an empty
+  // peerID.
+  bool publishedByPeer(moxygen::SessionId publisher, const std::string& peerID) const;
   // The route to advertise to one SUBSCRIBE_NAMESPACE. Null if none may be.
   const NamespaceNode::Route* advertisableRoute(
       const NamespaceNode& node,
@@ -729,8 +720,8 @@ private:
 // Creates a NamespacePublishHandle that bridges NAMESPACE/NAMESPACE_DONE
 // messages from a peer relay into relay->doPublishNamespace(). When relayExec
 // is non-null, callbacks are dispatched to it so relay state is only mutated
-// on the relay executor thread. Used for both the initiating (UpstreamProvider)
-// and reciprocal (MoqxRelay) paths.
+// on the relay executor thread. The peering backend uses it for both the upstream
+// handshake and the reciprocal SUBSCRIBE_NAMESPACE.
 std::shared_ptr<moxygen::Publisher::NamespacePublishHandle> makeNamespaceBridgeHandle(
     std::weak_ptr<MoqxRelay> relay,
     Participant publisher,

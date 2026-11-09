@@ -16,6 +16,8 @@
 
 namespace openmoq::moqx {
 
+class ReciprocalMoqtPeerHandler;
+
 // Per-session publisher-side auth gate: authorizes each request against the
 // session's grants, then forwards to the downstream publisher.
 class AuthPublisherFilter : public moxygen::Publisher {
@@ -24,10 +26,10 @@ public:
       std::shared_ptr<moxygen::Publisher> downstream,
       std::shared_ptr<const auth::AuthTokenVerifier> verifier,
       std::shared_ptr<const std::vector<auth::Grants>> grants,
-      bool peeringEnabled
+      const ReciprocalMoqtPeerHandler* reciprocal
   )
       : downstream_(std::move(downstream)), verifier_(std::move(verifier)),
-        grants_(std::move(grants)), peeringEnabled_(peeringEnabled) {}
+        grants_(std::move(grants)), reciprocal_(reciprocal) {}
 
   folly::coro::Task<SubscribeResult> subscribe(
       moxygen::SubscribeRequest sub,
@@ -55,7 +57,8 @@ private:
   std::shared_ptr<moxygen::Publisher> downstream_;
   std::shared_ptr<const auth::AuthTokenVerifier> verifier_;
   std::shared_ptr<const std::vector<auth::Grants>> grants_;
-  bool peeringEnabled_;
+  // Owned by the peering backend, which outlives every session. Null without reciprocal peering.
+  const ReciprocalMoqtPeerHandler* reciprocal_;
 };
 
 // Per-session subscriber-side auth gate: authorizes PUBLISH/PUBLISH_NAMESPACE,

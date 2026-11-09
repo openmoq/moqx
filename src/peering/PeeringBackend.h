@@ -6,10 +6,13 @@
 
 #pragma once
 
+#include "relay/Participant.h"
+
 #include <folly/Executor.h>
 #include <folly/Function.h>
 #include <folly/coro/Task.h>
 #include <folly/io/async/EventBase.h>
+#include <moxygen/MoQTypes.h>
 
 #include <cstdint>
 #include <optional>
@@ -17,8 +20,6 @@
 #include <vector>
 
 namespace openmoq::moqx {
-
-class RelayStateVisitor;
 
 // An admin request for one peer.
 struct PeerAdminOp {
@@ -73,6 +74,38 @@ public:
   virtual void onPeer(const PeerLink& link) = 0;
 };
 
+// Sends a reciprocal SUBSCRIBE_NAMESPACE to each inbound peer relay that presents a relay
+// token, and records which sessions belong to peer relays. Only the MoQT relay backend has
+// one.
+class ReciprocalMoqtPeerHandler {
+public:
+  virtual ~ReciprocalMoqtPeerHandler() = default;
+
+  // Returns the peer's relay ID when params carry a relay token, and unset otherwise.
+  // Unset for every request when this relay does not have a relay ID. Pure, so any
+  // executor may call it.
+  virtual std::optional<std::string> authorizePeer(const moxygen::TrackRequestParameters& params
+  ) const = 0;
+
+  // The relay calls this on its executor when an authorized peer sends SUBSCRIBE_NAMESPACE for
+  // the empty prefix. Returns false, sending nothing, while the session already has one open.
+  // Otherwise records the session as the peer's, and sends the peer a SUBSCRIBE_NAMESPACE, plus
+  // a SUBSCRIBE_TRACKS on draft 18 and later. Completes after both replies arrive.
+  virtual folly::coro::Task<bool> onPeerConnected(Participant peer, std::string peerID) = 0;
+
+  // The relay calls this on its executor when that SUBSCRIBE_NAMESPACE ends. Releases what
+  // onPeerConnected() sent. The session stays the peer's until it closes.
+  virtual void onPeerDisconnected(moxygen::SessionId session) = 0;
+
+  // The relay calls this on its executor when a peer's session closes. Forgets the
+  // session's relay ID, and releases anything that onPeerDisconnected() did not.
+  virtual void onPeerClosed(moxygen::SessionId session) = 0;
+
+  // On the relay executor. Returns the relay ID of the peer relay that owns session, or
+  // unset when session is not a peer relay's.
+  virtual std::optional<std::string> peerIdOf(moxygen::SessionId session) const = 0;
+};
+
 // How one service's relay reaches other relays. The context owns one per service, and
 // destroys it after the relay. Every lifecycle call runs on the context's thread: start(),
 // then stop(), then a drain of every executor, then join().
@@ -104,14 +137,13 @@ public:
   // backend calls it on the relay executor.
   virtual folly::coro::Task<void> waitForPeers(folly::Function<bool()> routed) = 0;
 
-  // On the relay executor. Reports each peer relay that subscribed to this relay through
-  // visitor.onPeer().
-  virtual void visitState(RelayStateVisitor& visitor) const = 0;
-
   // On the relay executor. Returns true while the backend holds a handle that keeps a
   // session alive, such as a peering subscription. Debug builds check that this returns
   // false after stop().
   virtual bool holdsSessionHandles() const = 0;
+
+  // Returns the backend's reciprocal peer handler, or null. The result does not change.
+  virtual ReciprocalMoqtPeerHandler* reciprocalMoqtPeerHandler() { return nullptr; }
 
   // Reports each peer link, for /state and metrics. Any executor may await it. The task
   // reads each piece of state on that state's executor, and calls visitor on the awaiting
