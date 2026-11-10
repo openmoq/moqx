@@ -19,6 +19,12 @@ Config reload via `SIGHUP` and a runtime management API for dynamic updates
 without restarts. Graceful binary restart uses eBPF-based connection steering to
 hand off live connections.
 
+### [hot-reload-phase1.md](hot-reload-phase1.md)
+Phase 1 of config reload: `SIGHUP` and `POST /config/reload` add new listeners
+and services, and bind existing services to new listeners, without a restart.
+Other changes are reported and ignored. Later phases tear down changed listeners
+and services, then change services in place.
+
 ### [miss-handler.md](miss-handler.md)
 Hierarchical cache composition abstraction allowing caches to delegate fetches
 up a chain (memory → disk → remote → origin). Open questions on filter support
