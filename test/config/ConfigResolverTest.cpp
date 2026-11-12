@@ -2461,5 +2461,121 @@ TEST(ResolveConfig, ListFormListenersWarnDeprecated) {
   );
 }
 
+ParsedAccessLogSinkConfig makeAccessSink(std::string name = "main") {
+  ParsedAccessLogSinkConfig sink;
+  sink.name = std::move(name);
+  sink.file = std::string("-");
+  return sink;
+}
+
+ParsedConfig withAccessSinks(std::vector<ParsedAccessLogSinkConfig> sinks) {
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedLoggingConfig logging;
+  logging.access = std::move(sinks);
+  cfg.logging = std::move(logging);
+  return cfg;
+}
+
+TEST(ResolveConfig, AccessLogResolvesSinkAndDefaults) {
+  auto sink = makeAccessSink();
+  sink.events = std::vector<std::string>{"session", "FETCH"};
+  ParsedAccessLogFormatConfig format;
+  format.request = std::string("$schema $time $event $req");
+  format.event = std::map<std::string, std::string>{{"FETCH", "$schema $time $event $fetch_ms"}};
+  sink.format = std::move(format);
+  auto cfg = withAccessSinks({std::move(sink)});
+  cfg.relay_id = std::string("edge-1");
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue()) << result.error();
+  const auto& access = result.value().config.logging->access;
+  ASSERT_TRUE(access.has_value());
+  EXPECT_EQ(access->queueLimit, 65536u);
+  ASSERT_EQ(access->sinks.size(), 1u);
+  const auto& resolved = access->sinks[0];
+  EXPECT_EQ(std::get<AccessLogFileOutput>(resolved.output).path, "-");
+  EXPECT_EQ(resolved.events, (std::vector<std::string>{"session", "FETCH"}));
+  EXPECT_EQ(resolved.sessionSample, 1.0);
+  EXPECT_EQ(resolved.batchRecords, 256u);
+  EXPECT_EQ(resolved.classFormats.at("request"), "$schema $time $event $req");
+  EXPECT_EQ(resolved.eventFormats.at("FETCH"), "$schema $time $event $fetch_ms");
+  EXPECT_THAT(result.value().warnings, ::testing::Not(::testing::Contains(HasSubstr("relay_id"))));
+}
+
+TEST(ResolveConfig, AccessLogWarnsWithoutRelayId) {
+  auto result = resolveConfig(withAccessSinks({makeAccessSink()}));
+  ASSERT_TRUE(result.hasValue()) << result.error();
+  EXPECT_THAT(result.value().warnings, ::testing::Contains(HasSubstr("relay_id is not set")));
+}
+
+TEST(ResolveConfig, AccessLogRejectsBadTemplatesAndNames) {
+  auto bad = makeAccessSink("bad");
+  bad.events = std::vector<std::string>{"session", "nope", "internal", "LOG_DROPPED"};
+  bad.services = std::vector<std::string>{"lvie"};
+  ParsedAccessLogFormatConfig format;
+  format.session = std::string("$time $session");
+  format.event = std::map<std::string, std::string>{{"WHATEVER", "$event"}};
+  bad.format = std::move(format);
+  ParsedAccessLogSampleConfig sample;
+  sample.session = 1.5;
+  bad.sample = sample;
+  auto result = resolveConfig(withAccessSinks({std::move(bad), makeAccessSink("bad")}));
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("unknown event or class 'nope'"));
+  EXPECT_THAT(result.error(), HasSubstr("unknown event or class 'internal'"));
+  EXPECT_THAT(result.error(), HasSubstr("unknown event or class 'LOG_DROPPED'"));
+  EXPECT_THAT(result.error(), HasSubstr("unknown service 'lvie'"));
+  EXPECT_THAT(result.error(), HasSubstr("format.session: template must include $event"));
+  EXPECT_THAT(result.error(), HasSubstr("format.event: unknown event 'WHATEVER'"));
+  EXPECT_THAT(result.error(), HasSubstr("sample.session must be in [0.0, 1.0]"));
+  EXPECT_THAT(result.error(), HasSubstr("duplicate sink name"));
+}
+
+TEST(ResolveConfig, AccessLogRejectsTemplatesWithDifferentPrefixes) {
+  auto sink = makeAccessSink();
+  ParsedAccessLogFormatConfig format;
+  format.request = std::string("$time $event $req");
+  sink.format = std::move(format);
+  auto result = resolveConfig(withAccessSinks({std::move(sink)}));
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("must match up to and including $event"));
+}
+
+TEST(ResolveConfig, AccessLogRequiresAFile) {
+  auto sink = makeAccessSink();
+  sink.file = std::nullopt;
+  auto result = resolveConfig(withAccessSinks({std::move(sink)}));
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("an output is required"));
+}
+
+TEST(ResolveConfig, AccessLogRejectsANanSampleRate) {
+  auto sink = makeAccessSink();
+  ParsedAccessLogSampleConfig sample;
+  sample.session = std::numeric_limits<double>::quiet_NaN();
+  sink.sample = sample;
+  auto result = resolveConfig(withAccessSinks({std::move(sink)}));
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("sample.session must be in [0.0, 1.0]"));
+}
+
+TEST(ResolveConfig, AccessLogKeepsAQueueLimitWithoutSinks) {
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedLoggingConfig logging;
+  logging.access_queue_limit = 1024u;
+  cfg.logging = std::move(logging);
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue()) << result.error();
+  ASSERT_TRUE(result.value().config.logging->access.has_value());
+  EXPECT_EQ(result.value().config.logging->access->queueLimit, 1024u);
+}
+
+TEST(ResolveConfig, AccessLogRejectsMissingDirectory) {
+  auto sink = makeAccessSink();
+  sink.file = std::string("/nonexistent-moqx-dir/access.log");
+  auto result = resolveConfig(withAccessSinks({std::move(sink)}));
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("does not exist"));
+}
+
 } // namespace
 } // namespace openmoq::moqx::config

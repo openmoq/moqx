@@ -117,6 +117,19 @@ logging:                    # Logging configuration (optional)
     dir: "/tmp/moqx-qlog"          # Output directory; files named <cid_hex>.qlog (mvfst)
     sample_rate: 1.0       # Fraction of connections to log (0.0–1.0, default: 0.0; mvfst only)
 
+  # resource:               # Fleet identity on every access log record (optional)
+  #   region: us-east-1
+  #   pop: iad3
+  #   tier: edge            # origin, mid or edge
+  # access:                 # Access log sinks (optional); see docs/config.md#loggingaccess
+  #   - name: main
+  #     file: "/tmp/moqx-access.log"   # "-" writes to stdout
+  #     events: [session, request]     # Classes and/or event names (default: all)
+  #     sample: { session: 1.0 }       # Fraction of sessions; errors bypass sampling
+  #   - name: errors
+  #     file: "/tmp/moqx-access-errors.log"
+  #     errors_only: true
+
 # relay_id: "my-relay-1"     # Relay identity (optional; random hex string generated if absent)
 
 # cluster:                    # MoQ Cluster on draft 18+ relay links (optional)

@@ -607,10 +607,77 @@ struct ParsedQLogConfig {
       sample_rate;
 };
 
+struct ParsedLoggingResourceConfig {
+  rfl::Description<"Region, on every access log record", std::optional<std::string>> region;
+  rfl::Description<"Point of presence", std::optional<std::string>> pop;
+  rfl::Description<"Cluster name", std::optional<std::string>> cluster;
+  rfl::Description<"Host name (default: the system host name)", std::optional<std::string>> host;
+  rfl::Description<"Tier: origin, mid or edge", std::optional<std::string>> tier;
+};
+
+struct ParsedAccessLogSampleConfig {
+  rfl::Description<
+      "Fraction of sessions whose non-error records this sink writes (0.0-1.0, default 1.0)",
+      std::optional<double>>
+      session;
+};
+
+struct ParsedAccessLogBatchConfig {
+  rfl::Description<"Records per write (default 256)", std::optional<uint32_t>> records;
+  rfl::Description<
+      "Longest a record waits for a write, in ms (default 1000)",
+      std::optional<uint32_t>>
+      flush_ms;
+};
+
+struct ParsedAccessLogFormatConfig {
+  rfl::Description<"Template for session records", std::optional<std::string>> session;
+  rfl::Description<"Template for request records", std::optional<std::string>> request;
+  rfl::Description<"Template for periodic records", std::optional<std::string>> periodic;
+  rfl::Description<
+      "Per-event templates that replace the class template, keyed by event name",
+      std::optional<std::map<std::string, std::string>>>
+      event;
+};
+
+struct ParsedAccessLogSinkConfig {
+  rfl::Description<"Sink name, unique across access log sinks", std::string> name;
+  rfl::Description<"Output file; \"-\" writes to stdout", std::optional<std::string>> file;
+  rfl::Description<
+      "Record classes (session, request, periodic) and event names to write (default: all)",
+      std::optional<std::vector<std::string>>>
+      events;
+  rfl::Description<
+      "Only write sessions of these services (default: all)",
+      std::optional<std::vector<std::string>>>
+      services;
+  rfl::Description<
+      "Only write sessions of these peer classes (default: all)",
+      std::optional<std::vector<std::string>>>
+      peer_classes;
+  rfl::Description<"Write only error records (default: false)", std::optional<bool>> errors_only;
+  rfl::Description<"Sampling rates", std::optional<ParsedAccessLogSampleConfig>> sample;
+  rfl::Description<"Write batching", std::optional<ParsedAccessLogBatchConfig>> batch;
+  rfl::Description<
+      "Line templates (default: one per class)",
+      std::optional<ParsedAccessLogFormatConfig>>
+      format;
+};
+
 struct ParsedLoggingConfig {
   rfl::Description<"MoQ-level (mlog) per-session logging", std::optional<ParsedMLogConfig>> mlog;
   rfl::Description<"QUIC-level (qlog) per-connection logging", std::optional<ParsedQLogConfig>>
       qlog;
+  rfl::Description<
+      "Fleet identity on every access log record",
+      std::optional<ParsedLoggingResourceConfig>>
+      resource;
+  rfl::Description<
+      "Access log records queued for the writer before new ones are dropped (default 65536)",
+      std::optional<uint32_t>>
+      access_queue_limit;
+  rfl::Description<"Access log sinks", std::optional<std::vector<ParsedAccessLogSinkConfig>>>
+      access;
 };
 
 struct ParsedConfig {

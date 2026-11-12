@@ -100,4 +100,37 @@ TemplateEncoder defaultTemplateEncoder() {
   return encoder;
 }
 
+folly::Expected<TemplateEncoder, std::string> makeTemplateEncoder(
+    const std::map<std::string, std::string>& classFormats,
+    const std::map<std::string, std::string>& eventFormats
+) {
+  auto encoder = defaultTemplateEncoder();
+  for (const auto& [name, text] : classFormats) {
+    auto cls = parseAccessLogClass(name);
+    if (!cls || *cls == AccessLogClass::Internal) {
+      return folly::makeUnexpected(fmt::format("unknown class '{}'", name));
+    }
+    auto tmpl = AccessLogTemplate::parse(text);
+    if (tmpl.hasError()) {
+      return folly::makeUnexpected(fmt::format("format.{}: {}", name, tmpl.error()));
+    }
+    encoder.setClassTemplate(*cls, std::move(*tmpl));
+  }
+  for (const auto& [name, text] : eventFormats) {
+    auto event = parseAccessLogEvent(name);
+    if (!event || accessLogClass(*event) == AccessLogClass::Internal) {
+      return folly::makeUnexpected(fmt::format("unknown event '{}'", name));
+    }
+    auto tmpl = AccessLogTemplate::parse(text);
+    if (tmpl.hasError()) {
+      return folly::makeUnexpected(fmt::format("format.event.{}: {}", name, tmpl.error()));
+    }
+    encoder.setEventTemplate(*event, std::move(*tmpl));
+  }
+  if (auto error = encoder.alignPrefixes()) {
+    return folly::makeUnexpected(std::move(*error));
+  }
+  return encoder;
+}
+
 } // namespace openmoq::moqx::logging

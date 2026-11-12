@@ -7,8 +7,11 @@
 #pragma once
 
 #include <array>
+#include <map>
 #include <optional>
 #include <string>
+
+#include <folly/Expected.h>
 
 #include "logging/access/AccessLogTemplate.h"
 
@@ -37,5 +40,12 @@ private:
 // The default templates for the session, request and internal classes. Each starts with
 // "$schema $time $event".
 TemplateEncoder defaultTemplateEncoder();
+
+// The default templates with a sink's overrides, keyed by class or event name. Fails on an
+// unknown name, an invalid template, or templates whose prefixes differ.
+folly::Expected<TemplateEncoder, std::string> makeTemplateEncoder(
+    const std::map<std::string, std::string>& classFormats,
+    const std::map<std::string, std::string>& eventFormats
+);
 
 } // namespace openmoq::moqx::logging

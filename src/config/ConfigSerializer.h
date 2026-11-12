@@ -268,6 +268,57 @@ inline void serializeLogging(ConfigSink& s, const LoggingConfig& l) {
   } else {
     s.nullField("qlog");
   }
+  s.beginObject("resource");
+  s.stringField("region", l.resource.region);
+  s.stringField("pop", l.resource.pop);
+  s.stringField("cluster", l.resource.cluster);
+  s.stringField("host", l.resource.host);
+  s.stringField("tier", l.resource.tier);
+  s.endObject();
+  if (l.access) {
+    s.uintField("access_queue_limit", l.access->queueLimit);
+    s.beginArray("access");
+    auto strings = [&s](std::string_view key, const std::vector<std::string>& values) {
+      s.beginArray(key);
+      for (const auto& v : values) {
+        s.stringField("", v);
+      }
+      s.endArray();
+    };
+    for (const auto& sink : l.access->sinks) {
+      s.beginObject("");
+      s.stringField("name", sink.name);
+      std::visit(
+          [&s](const AccessLogFileOutput& file) { s.stringField("file", file.path); },
+          sink.output
+      );
+      strings("events", sink.events);
+      strings("services", sink.services);
+      strings("peer_classes", sink.peerClasses);
+      s.boolField("errors_only", sink.errorsOnly);
+      s.beginObject("sample");
+      s.doubleField("session", sink.sessionSample);
+      s.endObject();
+      s.beginObject("batch");
+      s.uintField("records", sink.batchRecords);
+      s.uintField("flush_ms", sink.flushMs);
+      s.endObject();
+      s.beginObject("format");
+      for (const auto& [cls, text] : sink.classFormats) {
+        s.stringField(cls, text);
+      }
+      s.beginObject("event");
+      for (const auto& [event, text] : sink.eventFormats) {
+        s.stringField(event, text);
+      }
+      s.endObject();
+      s.endObject();
+      s.endObject();
+    }
+    s.endArray();
+  } else {
+    s.nullField("access");
+  }
   s.endObject();
 }
 
