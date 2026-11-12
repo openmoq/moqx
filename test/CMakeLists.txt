@@ -247,6 +247,16 @@ target_include_directories(moqx_safe_track_name_test PRIVATE
   ${PROJECT_SOURCE_DIR}/src
 )
 
+moqx_add_gtest(moqx_access_log_template_test
+  SRCS logging/access/AccessLogTemplateTest.cpp
+  LIBS moqx_core GTest::gtest_main
+)
+
+moqx_add_gtest(moqx_access_log_test
+  SRCS logging/access/MoqxAccessLogTest.cpp
+  LIBS moqx_core moqx_test_main
+)
+
 moqx_add_gtest(moqx_relay_context_test
   SRCS MoqxRelayContextTest.cpp
   LIBS
