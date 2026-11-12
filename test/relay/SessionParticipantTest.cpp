@@ -6,6 +6,8 @@
 
 #include "relay/SessionParticipant.h"
 
+#include "MockClusterPeer.h"
+
 #include "MoqxRelay.h"
 #include "peering/MoqtRelayBackend.h"
 #include "relay/MoqClusterRouteCodec.h"
@@ -36,10 +38,7 @@ protected:
     auto session = std::make_shared<NiceMock<MockMoQSession>>(exec_);
     ON_CALL(*session, getNegotiatedVersion())
         .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
-    ON_CALL(*session, getPeerHopID()).WillByDefault(Return(uint64_t{7}));
-    ON_CALL(*session, getRelayLinkCost()).WillByDefault(Return(uint64_t{3}));
-    ON_CALL(*session, negotiatedSetupExtension(SetupExtension::RelayHops))
-        .WillByDefault(Return(true));
+    openmoq::moqx::test::negotiateClusterPeer(*session, 7, 3);
     return session;
   }
 

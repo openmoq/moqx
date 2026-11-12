@@ -43,8 +43,8 @@ public:
       const std::vector<uint64_t>& /*path*/,
       uint64_t /*cost*/
   ) const override {
-    params.eraseAllParamsOfType(moxygen::TrackRequestParamKey::HOP_PATH);
-    params.eraseAllParamsOfType(moxygen::TrackRequestParamKey::ROUTE_COST);
+    params.eraseAllParamsOfType(moxygen::MoQClusterExtension::kHopPathParam);
+    params.eraseAllParamsOfType(moxygen::MoQClusterExtension::kRouteCostParam);
   }
 };
 

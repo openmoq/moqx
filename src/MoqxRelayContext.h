@@ -16,6 +16,7 @@
 #include "config/Config.h"
 #include "stats/MoQStatsCollector.h"
 #include "stats/StatsRegistry.h"
+#include <moxygen/MoQExtension.h>
 #include <moxygen/MoQServerBase.h>
 #include <moxygen/MoQSession.h>
 
@@ -87,6 +88,10 @@ public:
   std::optional<uint64_t> getRelayHopID() const {
     return cluster_ ? std::optional<uint64_t>(cluster_->hopID) : std::nullopt;
   }
+
+  // The extensions every listener adds: MoQ Cluster when it is enabled, and Top
+  // Tracks so subscribers may send TOP_TRACKS_FILTER.
+  std::vector<std::shared_ptr<moxygen::MoQExtension>> makeServerExtensions() const;
 
   // Starts each service's peering backend. Call once, before the servers start accepting.
   // The backends may use workerEvb for anything that needs an EventBase.

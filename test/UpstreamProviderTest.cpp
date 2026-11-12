@@ -10,6 +10,7 @@
 #include "MoqxRelayContext.h"
 #include "peering/MoqtRelayBackend.h"
 #include "relay/SessionParticipant.h"
+#include <moxygen/openmoq/extensions/MoQClusterExtension.h>
 
 #include <folly/SocketAddress.h>
 #include <folly/coro/Baton.h>
@@ -231,11 +232,12 @@ protected:
   static constexpr uint64_t kNoRelayCost = std::numeric_limits<uint64_t>::max();
 
   void configureServer(moxygen::MoQServer& server) override {
-    server.addSetupParameter(SetupParameter(folly::to_underlying(SetupKey::HOP_ID), kServerHop));
+    server.addExtension(std::make_shared<moxygen::MoQClusterExtension>(kServerHop));
   }
 
   void onServerClientSetup(const moxygen::Setup& clientSetup) override {
-    const auto* cost = clientSetup.params.getFirstParam(SetupKey::RELAY_COST);
+    const auto* cost =
+        clientSetup.params.getFirstParam(moxygen::MoQClusterExtension::kRelayCostOption);
     clientRelayCost_ = cost ? cost->asUint64 : kNoRelayCost;
     clientSetupSeen_.post();
   }
@@ -273,8 +275,8 @@ TEST_F(UpstreamClusterTest, NegotiatesClusterOnDraft18) {
         EXPECT_NE(session, nullptr);
         if (session) {
           EXPECT_EQ(getDraftMajorVersion(*session->getNegotiatedVersion()), 18u);
-          EXPECT_TRUE(session->negotiatedSetupExtension(SetupExtension::RelayHops));
-          EXPECT_EQ(session->getPeerHopID(), kServerHop);
+          EXPECT_TRUE(moxygen::MoQClusterExtension::isNegotiated(*session));
+          EXPECT_EQ(moxygen::MoQClusterExtension::peerHopID(*session), kServerHop);
         }
       }(),
       &clientEvb()
@@ -290,7 +292,7 @@ TEST_F(UpstreamClusterTest, NoHopIDLeavesClusterOff) {
         auto session = provider_->currentSession();
         EXPECT_NE(session, nullptr);
         if (session) {
-          EXPECT_FALSE(session->negotiatedSetupExtension(SetupExtension::RelayHops));
+          EXPECT_FALSE(moxygen::MoQClusterExtension::isNegotiated(*session));
         }
       }(),
       &clientEvb()

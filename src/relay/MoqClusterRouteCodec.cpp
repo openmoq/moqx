@@ -8,9 +8,8 @@
 
 #include "relay/ClusterPath.h"
 
-#include <folly/Utility.h>
 #include <folly/logging/xlog.h>
-#include <moxygen/MoQFramer.h>
+#include <moxygen/openmoq/extensions/MoQClusterExtension.h>
 
 using namespace moxygen;
 
@@ -36,7 +35,7 @@ std::optional<RouteParams> MoqClusterRouteCodec::readRouteUpdate(
     const ParticipantInfo& publisher
 ) const {
   RouteParams out;
-  if (const auto* hopPath = params.getFirstParam(TrackRequestParamKey::HOP_PATH)) {
+  if (const auto* hopPath = params.getFirstParam(MoQClusterExtension::kHopPathParam)) {
     auto decoded = decodeRelayHopPath(hopPath->asString, publisher.version);
     XCHECK(decoded.hasValue()) << "moxygen rejects a malformed HOP_PATH";
     if (clusterPathContains(decoded.value(), localHopID_)) {
@@ -44,7 +43,7 @@ std::optional<RouteParams> MoqClusterRouteCodec::readRouteUpdate(
     }
     out.path = std::move(decoded.value());
   }
-  if (const auto* cost = params.getFirstParam(TrackRequestParamKey::ROUTE_COST)) {
+  if (const auto* cost = params.getFirstParam(MoQClusterExtension::kRouteCostParam)) {
     out.cost = clusterAddCost(cost->asUint64, publisher.routing.linkCost);
   }
   return out;
@@ -56,17 +55,14 @@ void MoqClusterRouteCodec::writeRoute(
     const std::vector<uint64_t>& path,
     uint64_t cost
 ) const {
-  params.eraseAllParamsOfType(TrackRequestParamKey::HOP_PATH);
-  params.eraseAllParamsOfType(TrackRequestParamKey::ROUTE_COST);
+  params.eraseAllParamsOfType(MoQClusterExtension::kHopPathParam);
+  params.eraseAllParamsOfType(MoQClusterExtension::kRouteCostParam);
   auto outgoingPath = path;
   outgoingPath.push_back(localHopID_);
   auto encodedPath = encodeRelayHopPath(outgoingPath, subscriber.version);
   XCHECK(encodedPath.hasValue());
-  params.insertParam(Parameter(
-      folly::to_underlying(TrackRequestParamKey::HOP_PATH),
-      std::move(encodedPath.value())
-  ));
-  params.insertParam(Parameter(folly::to_underlying(TrackRequestParamKey::ROUTE_COST), cost));
+  params.insertParam(Parameter(MoQClusterExtension::kHopPathParam, std::move(encodedPath.value())));
+  params.insertParam(Parameter(MoQClusterExtension::kRouteCostParam, cost));
 }
 
 } // namespace openmoq::moqx

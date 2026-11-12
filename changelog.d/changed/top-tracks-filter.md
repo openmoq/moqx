@@ -1,0 +1,1 @@
+- **Breaking:** TRACK_FILTER is now the Top Tracks Filter from [moq-transport#1981](https://github.com/moq-wg/moq-transport/pull/1981): parameter 0x31 instead of 0x30, carried on SUBSCRIBE_TRACKS instead of SUBSCRIBE_NAMESPACE from draft 18, and capped by the relay's MAX_TOP_TRACKS of 100, so update clients along with the relay.

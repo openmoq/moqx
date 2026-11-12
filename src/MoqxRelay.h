@@ -126,6 +126,9 @@ public:
   // Max namespace/track matches a SUBSCRIBE_NAMESPACE or SUBSCRIBE_TRACKS may enumerate before
   // NAMESPACE_TOO_LARGE (draft 18+).
   static constexpr uint64_t kMaxNamespaceMatches = 1000;
+  // Declared as MAX_TOP_TRACKS. moxygen closes the session of a peer that asks for more.
+  // Below kMaxNamespaceMatches, so a filter from the wire never counts toward that limit.
+  static constexpr uint64_t kMaxTopTracks = 100;
 
   // relayExec, when set, is owned by the relay and isolates all state on it;
   // null runs everything on the calling thread. useLocalForwarders (requires

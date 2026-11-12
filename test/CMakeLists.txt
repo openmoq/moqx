@@ -229,6 +229,8 @@ moqx_add_gtest(moqx_session_participant_test
     moxygen::moqtest_utils
     Folly::folly_executors_manual_executor
 )
+# For MockClusterPeer.h.
+target_include_directories(moqx_session_participant_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 # Header-only decoder, tested in isolation — src/ headers without moqx_core.
 moqx_add_gtest(moqx_cbor_reader_test

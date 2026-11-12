@@ -14,6 +14,7 @@
 #include <folly/hash/Hash.h>
 #include <moxygen/MoQFramer.h>
 #include <moxygen/MoQTypes.h>
+#include <moxygen/openmoq/extensions/TopTracksExtension.h>
 
 #include <deque>
 #include <optional>

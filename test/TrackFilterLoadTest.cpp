@@ -39,6 +39,7 @@
 #include <moxygen/MoQRelaySession.h>
 #include <moxygen/MoQWebTransportClient.h>
 #include <moxygen/events/MoQFollyExecutorImpl.h>
+#include <moxygen/openmoq/extensions/TopTracksExtension.h>
 #include <moxygen/relay/MoQRelayClient.h>
 #include <moxygen/util/InsecureVerifierDangerousDoNotUseInProduction.h>
 
@@ -736,6 +737,8 @@ private:
         MoQRelaySession::createRelaySessionFactory(),
         verifier
     );
+    // The relay may only receive filters; this client may only send them.
+    client->addExtension(std::make_shared<TopTracksExtension>(0));
     auto handler = std::make_shared<LoadTestSubscriber>(id, true, metrics_);
 
     try {
@@ -770,9 +773,10 @@ private:
           TrackNamespace(std::vector<std::string>{FLAGS_namespace_prefix, "audio"});
       subNs.forward = true;
 
-      TrackFilter filter(kAudioLevelPropertyType, FLAGS_top_n);
-      Parameter trackFilterParam(folly::to_underlying(TrackRequestParamKey::TRACK_FILTER), filter);
-      subNs.params.insertParam(std::move(trackFilterParam));
+      subNs.params.insertParam(TopTracksExtension::encode(
+          TrackFilter{kAudioLevelPropertyType, static_cast<uint64_t>(FLAGS_top_n)},
+          session->getNegotiatedVersion().value()
+      ));
 
       auto nsHandle = std::make_shared<LoadTestNamespacePublishHandle>();
       auto subResult = co_await session->subscribeNamespace(std::move(subNs), nsHandle);
@@ -830,6 +834,8 @@ private:
         MoQRelaySession::createRelaySessionFactory(),
         verifier
     );
+    // The relay may only receive filters; this client may only send them.
+    client->addExtension(std::make_shared<TopTracksExtension>(0));
     auto handler = std::make_shared<LoadTestSubscriber>(FLAGS_panelists + id, false, metrics_);
 
     try {
@@ -857,9 +863,10 @@ private:
           TrackNamespace(std::vector<std::string>{FLAGS_namespace_prefix, "audio"});
       subNs.forward = true;
 
-      TrackFilter filter(kAudioLevelPropertyType, FLAGS_top_n);
-      Parameter trackFilterParam(folly::to_underlying(TrackRequestParamKey::TRACK_FILTER), filter);
-      subNs.params.insertParam(std::move(trackFilterParam));
+      subNs.params.insertParam(TopTracksExtension::encode(
+          TrackFilter{kAudioLevelPropertyType, static_cast<uint64_t>(FLAGS_top_n)},
+          session->getNegotiatedVersion().value()
+      ));
 
       auto nsHandle = std::make_shared<LoadTestNamespacePublishHandle>();
       auto subResult = co_await session->subscribeNamespace(std::move(subNs), nsHandle);
