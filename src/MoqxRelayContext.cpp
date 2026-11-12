@@ -14,6 +14,8 @@
 #include "stats/MoQStatsCollector.h"
 #include <fizz/protocol/DefaultCertificateVerifier.h>
 #include <moxygen/events/MoQFollyExecutorImpl.h>
+#include <moxygen/openmoq/extensions/MoQClusterExtension.h>
+#include <moxygen/openmoq/extensions/TopTracksExtension.h>
 #include <moxygen/util/InsecureVerifierDangerousDoNotUseInProduction.h>
 
 #include <folly/coro/Collect.h>
@@ -68,6 +70,16 @@ MoqxRelayContext::MoqxRelayContext(
       addService(name, svc, std::move(relay));
     }
   }
+}
+
+std::vector<std::shared_ptr<MoQExtension>> MoqxRelayContext::makeServerExtensions() const {
+  std::vector<std::shared_ptr<MoQExtension>> extensions{
+      std::make_shared<TopTracksExtension>(MoqxRelay::kMaxTopTracks)
+  };
+  if (const auto hopID = getRelayHopID()) {
+    extensions.push_back(std::make_shared<MoQClusterExtension>(*hopID));
+  }
+  return extensions;
 }
 
 void MoqxRelayContext::addService(

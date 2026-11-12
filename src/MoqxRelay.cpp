@@ -1760,11 +1760,8 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
   SubscribeNamespaceOptions effectiveOptions;
   effectiveOptions = subNs.options;
 
-  // Parse parameters defined for SUBSCRIBE_NAMESPACE.
-  std::optional<TrackFilter> trackFilter;
-  if (const auto* param = subNs.params.getFirstParam(TrackRequestParamKey::TRACK_FILTER)) {
-    trackFilter = param->asTrackFilter;
-  }
+  // moxygen has already checked the filter against kMaxTopTracks.
+  const auto trackFilter = TopTracksExtension::find(subNs.params, subscriber.version);
 
   // Collect-then-act: a single read-only subtree walk gathers every match this
   // subscription would forward

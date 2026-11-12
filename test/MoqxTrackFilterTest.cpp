@@ -153,10 +153,9 @@ protected:
     subNs.options = SubscribeNamespaceOptions::PUBLISH;
     subNs.forward = true;
 
-    TrackRequestParameter p;
-    p.key = folly::to_underlying(TrackRequestParamKey::TRACK_FILTER);
-    p.asTrackFilter = TrackFilter{kPropType, maxSelected};
-    subNs.params.insertParam(p);
+    subNs.params.insertParam(
+        TopTracksExtension::encode(TrackFilter{kPropType, maxSelected}, kVersionDraft16)
+    );
 
     std::shared_ptr<Publisher::SubscribeNamespaceHandle> handle;
     withSessionContext(session, [&] {
@@ -426,10 +425,7 @@ TEST_F(MoqxTrackFilterTest, ForwardFalse_TracksStillSelected) {
   subNs.options = SubscribeNamespaceOptions::PUBLISH;
   subNs.forward = false; // subscriber does not want forwarding
 
-  TrackRequestParameter p;
-  p.key = folly::to_underlying(TrackRequestParamKey::TRACK_FILTER);
-  p.asTrackFilter = TrackFilter{kPropType, 2};
-  subNs.params.insertParam(p);
+  subNs.params.insertParam(TopTracksExtension::encode(TrackFilter{kPropType, 2}, kVersionDraft16));
 
   auto viewer = makeSession();
   withSessionContext(viewer, [&] {

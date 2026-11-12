@@ -84,10 +84,10 @@ protected:
     subNs.options = options;
     subNs.forward = true;
     if (trackFilterMaxSelected) {
-      TrackRequestParameter p;
-      p.key = folly::to_underlying(TrackRequestParamKey::TRACK_FILTER);
-      p.asTrackFilter = TrackFilter{kPropType, *trackFilterMaxSelected};
-      subNs.params.insertParam(p);
+      subNs.params.insertParam(TopTracksExtension::encode(
+          TrackFilter{kPropType, *trackFilterMaxSelected},
+          session->getNegotiatedVersion().value()
+      ));
     }
     return withSessionContext(session, [&] {
       return folly::coro::blockingWait(
