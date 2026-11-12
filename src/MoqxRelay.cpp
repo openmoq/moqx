@@ -510,8 +510,7 @@ const NamespaceTree::NamespaceNode::Route* MoqxRelay::advertisableRoute(
     const NamespaceNode::NamespaceSubscriberInfo& info
 ) const {
   return node.selectRoute([&](const NamespaceNode::Route& r) {
-    return (info.peerID.empty() || r.peerID != info.peerID) &&
-           shouldForwardNamespace(info.options) && !touches(r, subscriber);
+    return (info.peerID.empty() || r.peerID != info.peerID) && !touches(r, subscriber);
   });
 }
 
@@ -844,12 +843,10 @@ MoqxRelay::PublishSetupResult MoqxRelay::publishWithParticipant(
 
   auto topNFilter = registry_.getTopNView(pub.fullTrackName)->topNFilter;
 
-  // Register in the namespace tree. The ranking callback fires once per
-  // PropertyRanking on the path from this node to the root — registering the
-  // track and wiring observers so TRACK_FILTER subscribers see it.
-  auto [nodePtr, subscribers] = namespaceTree_.addPublish(
-      pub.fullTrackName,
-      publisher,
+  namespaceTree_.addPublish(pub.fullTrackName, publisher);
+  // Register the track with every top-N ranking covering it.
+  tracksTree_.forEachRankingOnPath(
+      pub.fullTrackName.trackNamespace,
       [&](uint64_t propertyType, const std::shared_ptr<PropertyRanking>& ranking) {
         auto initialPropertyValue = pub.extensions.getIntExtension(propertyType);
         ranking->registerTrack(pub.fullTrackName, initialPropertyValue, publisherId);
@@ -880,42 +877,13 @@ MoqxRelay::PublishSetupResult MoqxRelay::publishWithParticipant(
 
   uint64_t nForwardingSubscribers = 0;
   bool hasTrackFilterSub = false;
-  for (auto& [subscriber, info] : subscribers) {
+  for (auto& [subscriber, info] :
+       tracksTree_.subscribersCovering(pub.fullTrackName.trackNamespace)) {
     if (info.trackFilter) {
-      // TRACK_FILTER subscribers: PropertyRanking handles selection via
-      // onTrackSelected; don't publish directly here.
+      // PropertyRanking selects these through onTrackSelected.
       hasTrackFilterSub = true;
       continue;
     }
-    if (subscriber.info->sessionId != publisherId && !publishedByPeer(publisherId, info.peerID) &&
-        (info.options == SubscribeNamespaceOptions::PUBLISH ||
-         info.options == SubscribeNamespaceOptions::BOTH)) {
-      nForwardingSubscribers += info.forward ? 1 : 0;
-      if (!addSubscriberAndPublish(subscriber, publisherRef, info.forward, /*pinned=*/true)) {
-        XLOG(ERR) << "addSubscriberAndPublish failed for " << pub.fullTrackName;
-        continue;
-      }
-    }
-  }
-
-  // Draft 18+: also fan out to SUBSCRIBE_TRACKS subscribers from the parallel
-  // tracks tree. They live in an independent overlap space and only want
-  // PUBLISH messages (no NAMESPACE / NAMESPACE_DONE).
-  NamespaceTree::SubscriberList tracksSubscribers;
-  auto tracksNode = tracksTree_.findNode(
-      pub.fullTrackName.trackNamespace,
-      /*createMissingNodes=*/false,
-      &tracksSubscribers
-  );
-  if (tracksNode) {
-    tracksNode->forEachSubscriber(
-        [&](const Participant& subscriber,
-            const NamespaceTree::NamespaceNode::NamespaceSubscriberInfo& info) {
-          tracksSubscribers.emplace_back(subscriber, info);
-        }
-    );
-  }
-  for (auto& [subscriber, info] : tracksSubscribers) {
     if (subscriber.info->sessionId != publisherId && !publishedByPeer(publisherId, info.peerID)) {
       nForwardingSubscribers += info.forward ? 1 : 0;
       if (!addSubscriberAndPublish(subscriber, publisherRef, info.forward, /*pinned=*/true)) {
@@ -1459,10 +1427,12 @@ public:
       std::shared_ptr<MoqxRelay> relay,
       SessionId session,
       SubscribeNamespaceOk ok,
-      TrackNamespace trackNamespacePrefix
+      TrackNamespace trackNamespacePrefix,
+      bool tracks
   )
       : Publisher::SubscribeNamespaceHandle(std::move(ok)), relay_(std::move(relay)),
-        session_(session), trackNamespacePrefix_(std::move(trackNamespacePrefix)) {}
+        session_(session), trackNamespacePrefix_(std::move(trackNamespacePrefix)), tracks_(tracks) {
+  }
 
   // A caller cancelled after registration drops the handle without unsubscribing.
   ~NamespaceSubscription() override { release(); }
@@ -1480,7 +1450,7 @@ public:
 private:
   void release() {
     if (relay_) {
-      relay_->unsubscribeNamespace(trackNamespacePrefix_, session_);
+      relay_->unsubscribeNamespace(trackNamespacePrefix_, session_, tracks_);
       relay_.reset();
     }
   }
@@ -1488,6 +1458,8 @@ private:
   std::shared_ptr<MoqxRelay> relay_;
   SessionId session_;
   TrackNamespace trackNamespacePrefix_;
+  // Only a PUBLISH or BOTH subscription made a tracks entry to remove.
+  bool tracks_;
 };
 
 // Draft 18+: handle returned from subscribeTracks(). Calls unsubscribeTracks()
@@ -1738,6 +1710,21 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
   const Participant requester = requestParticipant();
   const ParticipantInfo& subscriber = *requester.info;
 
+  // Either subscription's end would remove the one entry the trees keep per prefix.
+  const auto nsNode = namespaceTree_.findNode(subNs.trackNamespacePrefix);
+  if ((nsNode && nsNode->hasSubscriber(subscriber.sessionId)) ||
+      tracksTree_.hasSubscriber(
+          subNs.trackNamespacePrefix,
+          subscriber.sessionId,
+          TrackSubscriptionSource::SubscribeNamespace
+      )) {
+    co_return folly::makeUnexpected(SubscribeNamespaceError{
+        subNs.requestID,
+        SubscribeNamespaceErrorCode::DUPLICATE_SUBSCRIPTION,
+        "The session already has a SUBSCRIBE_NAMESPACE at this prefix"
+    });
+  }
+
   std::string incomingPeerID;
   // Peering takes the empty prefix, once per session at a time.
   if (reciprocal_ && subNs.trackNamespacePrefix.empty()) {
@@ -1760,20 +1747,14 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
   SubscribeNamespaceOptions effectiveOptions;
   effectiveOptions = subNs.options;
 
-  // Parse parameters defined for SUBSCRIBE_NAMESPACE.
-  std::optional<TrackFilter> trackFilter;
-  if (const auto* param = subNs.params.getFirstParam(TrackRequestParamKey::TRACK_FILTER)) {
-    trackFilter = param->asTrackFilter;
-  }
+  // moxygen has already checked the filter against kMaxTopTracks.
+  const auto trackFilter = TopTracksExtension::find(subNs.params, subscriber.version);
 
   // Collect-then-act: a single read-only subtree walk gathers every match this
   // subscription would forward
   NamespaceTree::NamespaceNode::NamespaceSubscriberInfo info{
-      subNs.forward,
-      effectiveOptions,
       namespacePublishHandle,
       subNs.trackNamespacePrefix,
-      trackFilter,
       incomingPeerID
   };
   struct NamespaceMatch {
@@ -1792,9 +1773,10 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
   // A small maxSelected only bounds track fan-out (via PropertyRanking); it doesn't
   // limit namespaceMatches, so namespace fan-out must always count toward the threshold.
   bool trackFilterExempt = trackFilter && trackFilter->maxSelected < kMaxNamespaceMatches;
+  const bool wantNamespaces = shouldForwardNamespace(effectiveOptions);
   // Always false for draft 18+ (parser forces NAMESPACE); skips the per-node track scan.
-  bool wantPublishes = subNs.options == SubscribeNamespaceOptions::BOTH ||
-                       subNs.options == SubscribeNamespaceOptions::PUBLISH;
+  const bool wantPublishes = effectiveOptions == SubscribeNamespaceOptions::BOTH ||
+                             effectiveOptions == SubscribeNamespaceOptions::PUBLISH;
   // TRACK_FILTER subscribers get tracks via PropertyRanking, so only their matches are counted.
   bool collectTracks = wantPublishes && !trackFilter;
   bool countTracks = wantPublishes && trackFilter && enforceLimit && !trackFilterExempt;
@@ -1816,7 +1798,7 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
           if (overLimit()) {
             return;
           }
-          if (advertisableRoute(*node, subscriber, info)) {
+          if (wantNamespaces && advertisableRoute(*node, subscriber, info)) {
             namespaceMatches.push_back(NamespaceMatch{node});
           }
           if (!collectTracks && !countTracks) {
@@ -1855,15 +1837,20 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
     });
   }
 
-  auto nodePtr = namespaceTree_.addNamespaceSubscriber(subNs.trackNamespacePrefix, requester, info);
-
-  // If TRACK_FILTER is present, enroll session in PropertyRanking for top-N selection.
-  // NOTE: onSelected callbacks fire synchronously within addSubscriberToTopNGroup() for
-  // tracks already in top-N, triggering onTrackSelected() before this call returns.
-  if (trackFilter) {
-    auto ranking =
-        getOrCreateRanking(nodePtr, trackFilter->propertyType, subNs.trackNamespacePrefix);
-    ranking->addSubscriberToTopNGroup(trackFilter->maxSelected, requester, subNs.forward);
+  if (wantNamespaces) {
+    namespaceTree_.addNamespaceSubscriber(subNs.trackNamespacePrefix, requester, info);
+  }
+  if (wantPublishes) {
+    addTrackSubscriber(
+        subNs.trackNamespacePrefix,
+        requester,
+        TrackSubscriberInfo{
+            TrackSubscriptionSource::SubscribeNamespace,
+            subNs.forward,
+            trackFilter,
+            incomingPeerID
+        }
+    );
   }
 
   // Act phase: replay the collected matches (already filtered by options).
@@ -1880,7 +1867,8 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
       shared_from_this(),
       subscriber.sessionId,
       SubscribeNamespaceOk{.requestID = subNs.requestID, .requestSpecificParams = {}},
-      subNs.trackNamespacePrefix
+      subNs.trackNamespacePrefix,
+      wantPublishes
   );
 }
 
@@ -1897,15 +1885,23 @@ void MoqxRelay::onSessionEnd(SessionId session) {
 
 void MoqxRelay::unsubscribeNamespace(
     const TrackNamespace& trackNamespacePrefix,
-    SessionId session
+    SessionId session,
+    bool tracks
 ) {
   XDCHECK(onRelayExec());
   XLOG(DBG1) << __func__ << " nsp=" << trackNamespacePrefix;
   if (reciprocal_ && trackNamespacePrefix.empty() && reciprocal_->peerIdOf(session)) {
     reciprocal_->onPeerDisconnected(session);
   }
+  if (tracks) {
+    tracksTree_.removeSubscriber(
+        trackNamespacePrefix,
+        session,
+        TrackSubscriptionSource::SubscribeNamespace
+    );
+  }
   auto result = namespaceTree_.removeNamespaceSubscriber(trackNamespacePrefix, session);
-  if (result.hasError() && result.error() == NamespaceTree::Error::NotSubscribed) {
+  if (result.hasError() && result.error() == NamespaceTree::Error::NotSubscribed && !tracks) {
     XLOG(DBG1) << "Namespace prefix was not subscribed by this session";
   }
 }
@@ -1928,7 +1924,7 @@ folly::coro::Task<Publisher::SubscribeTracksResult> MoqxRelay::subscribeTracks(
     });
   }
 
-  if (tracksTree_.hasOverlappingTracksSubscription(subTracks.trackNamespacePrefix, session)) {
+  if (tracksTree_.hasOverlap(subTracks.trackNamespacePrefix, session)) {
     co_return folly::makeUnexpected(SubscribeTracksError{
         subTracks.requestID,
         SubscribeTracksErrorCode::PREFIX_OVERLAP,
@@ -1944,13 +1940,23 @@ folly::coro::Task<Publisher::SubscribeTracksResult> MoqxRelay::subscribeTracks(
   // Peer relays are exempt, as for SUBSCRIBE_NAMESPACE.
   const auto peerID = reciprocal_ ? reciprocal_->authorizePeer(subTracks.params) : std::nullopt;
   const bool enforceLimit = !peerID;
-  auto overLimit = [&] { return enforceLimit && trackMatches.size() > kMaxNamespaceMatches; };
+  // moxygen has already checked the filter against kMaxTopTracks.
+  const auto trackFilter = TopTracksExtension::find(subTracks.params, requester.info->version);
+  // A top-N subscriber gets its tracks from the ranking. Like SUBSCRIBE_NAMESPACE, it
+  // counts toward the limit only when maxSelected does not already bound it.
+  const bool collectTracks = !trackFilter;
+  const bool countTracks =
+      trackFilter && enforceLimit && trackFilter->maxSelected >= kMaxNamespaceMatches;
+  size_t trackCount = 0;
+  auto overLimit = [&] {
+    return enforceLimit && trackMatches.size() + trackCount > kMaxNamespaceMatches;
+  };
 
   // Walk the existing publish tree and emit PUBLISH for each matching
   // already-published track (backfill for new subscriber).
   auto pubNode =
       namespaceTree_.findNode(subTracks.trackNamespacePrefix, /*createMissingNodes=*/false);
-  if (pubNode) {
+  if (pubNode && (collectTracks || countTracks)) {
     namespaceTree_.forEachNodeInSubtree(
         subTracks.trackNamespacePrefix,
         pubNode,
@@ -1965,6 +1971,10 @@ folly::coro::Task<Publisher::SubscribeTracksResult> MoqxRelay::subscribeTracks(
             const auto publisherId = publisher.info->sessionId;
             if (publisherId == session || publishedByPeer(publisherId, peerID.value_or(""))) {
               // Don't echo the subscriber's own published tracks.
+              return;
+            }
+            if (countTracks) {
+              ++trackCount;
               return;
             }
             FullTrackName ftn{prefix, trackName};
@@ -1987,18 +1997,13 @@ folly::coro::Task<Publisher::SubscribeTracksResult> MoqxRelay::subscribeTracks(
     });
   }
 
-  // Register in the parallel tracks tree (independent overlap space).
-  // Tracks-tree entries always behave like PUBLISH-style subscribers;
-  // options is unused for this tree.
-  tracksTree_.addNamespaceSubscriber(
+  addTrackSubscriber(
       subTracks.trackNamespacePrefix,
       requester,
-      NamespaceTree::NamespaceNode::NamespaceSubscriberInfo{
+      TrackSubscriberInfo{
+          TrackSubscriptionSource::SubscribeTracks,
           subTracks.forward,
-          SubscribeNamespaceOptions::PUBLISH,
-          /*namespacePublishHandle=*/nullptr,
-          subTracks.trackNamespacePrefix,
-          /*trackFilter=*/std::nullopt,
+          trackFilter,
           peerID.value_or("")
       }
   );
@@ -2022,8 +2027,11 @@ folly::coro::Task<Publisher::SubscribeTracksResult> MoqxRelay::subscribeTracks(
 void MoqxRelay::unsubscribeTracks(const TrackNamespace& trackNamespacePrefix, SessionId session) {
   XDCHECK(onRelayExec());
   XLOG(DBG1) << __func__ << " nsp=" << trackNamespacePrefix;
-  auto result = tracksTree_.removeNamespaceSubscriber(trackNamespacePrefix, session);
-  if (result.hasError() && result.error() == NamespaceTree::Error::NotSubscribed) {
+  if (!tracksTree_.removeSubscriber(
+          trackNamespacePrefix,
+          session,
+          TrackSubscriptionSource::SubscribeTracks
+      )) {
     XLOG(DBG1) << "Tracks prefix was not subscribed by this session";
   }
 }
@@ -3065,11 +3073,11 @@ void MoqxRelay::newGroupRequestedImpl(const FullTrackName& ftn, uint64_t group) 
 // TRACK_FILTER support
 
 std::shared_ptr<PropertyRanking> MoqxRelay::getOrCreateRanking(
-    std::shared_ptr<NamespaceTree::NamespaceNode> node,
+    TracksTree::Node& node,
     uint64_t propertyType,
     const TrackNamespace& ns
 ) {
-  auto& ranking = namespaceTree_.getOrInsertRanking(*node, propertyType);
+  auto& ranking = tracksTree_.ranking(node, propertyType);
   if (!ranking) {
     ranking = std::make_shared<PropertyRanking>(
         propertyType,
@@ -3100,11 +3108,15 @@ std::shared_ptr<PropertyRanking> MoqxRelay::getOrCreateRanking(
         }
     );
 
-    // Retroactively register tracks already published under this node and all
+    // Retroactively register tracks already published under ns and all
     // descendants. A subscriber at /conf should see tracks at /conf/room1/track1.
+    auto publishNode = namespaceTree_.findNode(ns, /*createMissingNodes=*/false);
+    if (!publishNode) {
+      return ranking;
+    }
     namespaceTree_.forEachNodeInSubtree(
         ns,
-        node,
+        publishNode,
         [&](const TrackNamespace& prefix, std::shared_ptr<NamespaceTree::NamespaceNode> current) {
           // Collect tracks at this level with their last-activity time and current
           // property value, then sort by lastObjectTime ascending so arrivalSeq
@@ -3168,6 +3180,26 @@ std::shared_ptr<PropertyRanking> MoqxRelay::getOrCreateRanking(
     );
   }
   return ranking;
+}
+
+void MoqxRelay::addTrackSubscriber(
+    const TrackNamespace& prefix,
+    const Participant& subscriber,
+    TrackSubscriberInfo info
+) {
+  const auto filter = info.trackFilter;
+  const bool forward = info.forward;
+  auto* node = tracksTree_.addSubscriber(prefix, subscriber, std::move(info));
+  if (!node) {
+    // The first subscription stays, filter included, so a repeat must not join a ranking.
+    XLOG(DBG1) << "Repeated track subscription at " << prefix;
+    return;
+  }
+  if (filter) {
+    // Selects the tracks already in the top N before it returns.
+    getOrCreateRanking(*node, filter->propertyType, prefix)
+        ->addSubscriberToTopNGroup(filter->maxSelected, subscriber, forward);
+  }
 }
 
 void MoqxRelay::onTrackSelected(

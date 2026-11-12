@@ -395,6 +395,7 @@ add_library(moqx_core STATIC
   src/auth/Auth.cpp
   src/LoggingMultiFlag.cpp
   src/NamespaceTree.cpp
+  src/TracksTree.cpp
   src/PendingRendezvousTree.cpp
   src/SubscriptionRegistry.cpp
   src/MoqxRelay.cpp
@@ -452,6 +453,7 @@ target_link_libraries(moqx_core PUBLIC
   moxygen::moxygen_moq_qmux_server
   moxygen::moxygen_qmux_utils
   moxygen::openmoq_pico_evb_sharded_server_transport
+  moxygen::openmoq_extensions
   proxygen::proxygenhttpserver
   # Workaround: wangle::wangle_acceptor_acceptor_core uses AsyncFdSocket from
   # FizzAcceptorHandshakeHelper but omits this dep from its cmake config.

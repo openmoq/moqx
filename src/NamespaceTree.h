@@ -7,7 +7,6 @@
 #pragma once
 
 #include "relay/Participant.h"
-#include "relay/PropertyRanking.h"
 #include <folly/Expected.h>
 #include <folly/Unit.h>
 #include <folly/container/F14Map.h>
@@ -24,17 +23,15 @@ namespace openmoq::moqx {
 
 // GCC 12 fails to compile NamespaceNode's maps when this struct is nested inside it.
 struct NamespaceSubscriberInfo {
-  bool forward{true};
-  moxygen::SubscribeNamespaceOptions options{moxygen::SubscribeNamespaceOptions::BOTH};
-  // Handle for NAMESPACE/NAMESPACE_DONE on the bidi stream; null for SUBSCRIBE_TRACKS entries.
+  // Handle for NAMESPACE/NAMESPACE_DONE on the bidi stream.
   std::shared_ptr<moxygen::Publisher::NamespacePublishHandle> namespacePublishHandle;
   moxygen::TrackNamespace trackNamespacePrefix;
-  std::optional<moxygen::TrackFilter> trackFilter;
   std::string peerID; // relay ID of a peer relay subscriber
 };
 
-// Hierarchical tree tracking PUBLISH_NAMESPACE announcements and
-// SUBSCRIBE_NAMESPACE subscriptions.
+// Hierarchical tree tracking PUBLISH_NAMESPACE announcements, published tracks,
+// and the SUBSCRIBE_NAMESPACE subscriptions that want NAMESPACE. Subscriptions
+// that want tracks live in TracksTree.
 //
 // A route is an announcement of a namespace that the relay received. A node
 // can hold several. An advertisement is what the relay last sent one
@@ -103,6 +100,7 @@ public:
     }
 
     size_t subscriberCount() const { return subscribers_.size(); }
+    bool hasSubscriber(moxygen::SessionId session) const { return subscribers_.contains(session); }
 
     const Participant* findPublish(const std::string& trackName) const {
       auto it = publishes_.find(trackName);
@@ -144,7 +142,6 @@ public:
     folly::F14FastMap<std::string, Participant> publishes_;
     folly::F14FastMap<moxygen::SessionId, SubscriberEntry, moxygen::SessionId::hash> subscribers_;
     folly::F14FastMap<std::string, std::shared_ptr<NamespaceNode>> children_;
-    folly::F14FastMap<uint64_t, std::shared_ptr<PropertyRanking>> rankings_;
   };
 
   using SubscriberList =
@@ -237,18 +234,10 @@ public:
   folly::Expected<folly::Unit, Error>
   unpublishTrack(const moxygen::TrackNamespace& ns, const std::string& trackName);
 
-  struct AddPublishResult {
-    std::shared_ptr<NamespaceNode> node;
-    SubscriberList subscribers;
-  };
-  using OnRankingFn = std::function<void(uint64_t, const std::shared_ptr<PropertyRanking>&)>;
+  // Records ftn.trackName→publisher.
+  std::shared_ptr<NamespaceNode>
+  addPublish(const moxygen::FullTrackName& ftn, Participant publisher);
 
-  // Records ftn.trackName→publisher, collects prefix+exact subscribers, and
-  // calls onRanking for every non-null PropertyRanking at the node and ancestors.
-  AddPublishResult
-  addPublish(const moxygen::FullTrackName& ftn, Participant publisher, OnRankingFn onRanking = {});
-
-  // Returns the node so the caller can wire up PropertyRanking if needed.
   std::shared_ptr<NamespaceNode> addNamespaceSubscriber(
       const moxygen::TrackNamespace& ns,
       Participant subscriber,
@@ -259,17 +248,6 @@ public:
   // are both ignorable (already gone).
   folly::Expected<folly::Unit, Error>
   removeNamespaceSubscriber(const moxygen::TrackNamespace& ns, moxygen::SessionId session);
-
-  // Returns the PropertyRanking slot for propertyType at node, inserting null if absent.
-  std::shared_ptr<PropertyRanking>& getOrInsertRanking(NamespaceNode& node, uint64_t propertyType);
-
-  // Draft 18+ helpers for the SUBSCRIBE_TRACKS parallel tree.
-  // Checks whether any existing subscriber entry in this tree for `session`
-  // overlaps the given prefix (exact, ancestor, or descendant match).
-  bool hasOverlappingTracksSubscription(
-      const moxygen::TrackNamespace& trackNamespacePrefix,
-      moxygen::SessionId session
-  ) const;
 
   // DFS walk. begin(childKey, node) is called on entry; end() on exit after
   // all children. childKey is empty for the root.
@@ -347,8 +325,6 @@ private:
       uint64_t cost,
       SetPublisherResult& result
   );
-
-  bool hasTracksSubscriptionInSubtree(const NamespaceNode& node, moxygen::SessionId session) const;
 
   void incrementActiveChildren(NamespaceNode& node);
   void tryPruneChild(NamespaceNode& parentNode, const std::string& childKey);

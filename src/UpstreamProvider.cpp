@@ -10,6 +10,7 @@
 #include <moxygen/MoQFilters.h>
 #include <moxygen/MoQRelaySession.h>
 #include <moxygen/MoQVersions.h>
+#include <moxygen/openmoq/extensions/MoQClusterExtension.h>
 
 using namespace moxygen;
 
@@ -414,10 +415,7 @@ folly::coro::Task<void> UpstreamProvider::doConnect() {
   client_ = std::make_unique<MoQClient>(exec_, url_, std::move(sessionFactory), verifier_);
   // The extension stays inactive unless the peer also declares a Hop ID.
   if (hopID_) {
-    client_->addSetupParameter(SetupParameter(folly::to_underlying(SetupKey::HOP_ID), *hopID_));
-    client_->addSetupParameter(
-        SetupParameter(folly::to_underlying(SetupKey::RELAY_COST), relayCost_)
-    );
+    client_->addExtension(std::make_shared<MoQClusterExtension>(*hopID_, relayCost_));
   }
 
   quic::TransportSettings ts;

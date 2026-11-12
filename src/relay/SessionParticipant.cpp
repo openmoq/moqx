@@ -13,6 +13,7 @@
 #include "relay/SubscriberCrossExecFilter.h"
 
 #include <folly/logging/xlog.h>
+#include <moxygen/openmoq/extensions/MoQClusterExtension.h>
 
 #include <utility>
 
@@ -193,9 +194,9 @@ SessionParticipant::snapshot(const moxygen::MoQSession& session, const PeeringBa
       .authority = session.getAuthority(),
       .routing =
           {
-              .relayHops = session.negotiatedSetupExtension(moxygen::SetupExtension::RelayHops),
-              .peerHopID = session.getPeerHopID(),
-              .linkCost = session.getRelayLinkCost(),
+              .relayHops = moxygen::MoQClusterExtension::isNegotiated(session),
+              .peerHopID = moxygen::MoQClusterExtension::peerHopID(session),
+              .linkCost = moxygen::MoQClusterExtension::linkCost(session),
           },
   };
   info.routing = peering ? peering->routingFor(info) : plainRouting(info.routing);
