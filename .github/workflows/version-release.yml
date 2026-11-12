@@ -4,7 +4,7 @@ name: version release
 #
 # Tags vM.m.p on the dispatched ref (main or release/vM.m). Promotes the
 # corresponding rolling snapshot pre-release tarballs and, when feasible,
-# also builds portable linux-{amd64,arm64} and macos-15-arm64 tarballs
+# also builds portable linux-{amd64,arm64} tarballs
 # against an explicit moxygen release tag.
 #
 # Job graph (parallel):
@@ -14,7 +14,7 @@ name: version release
 #     ▼
 #   create-release (--draft)
 #     │
-#     ├──► portable-build (matrix linux amd64/arm64 + macos arm64, conditional)
+#     ├──► portable-build (matrix linux amd64/arm64, conditional)
 #     │       └─► uploads directly to release
 #     ├──► promote-snapshot
 #     │       └─► xargs -P parallel uploads to release
@@ -235,7 +235,7 @@ jobs:
           # Probe portable assets.
           ASSETS=$(gh release view "$MOX_REF" --repo openmoq/moxygen --json assets --jq '.assets[].name')
           HAS_PORTABLE=true
-          for required in moxygen-linux-amd64.tar.gz moxygen-linux-arm64.tar.gz moxygen-macos-15-arm64.tar.gz; do
+          for required in moxygen-linux-amd64.tar.gz moxygen-linux-arm64.tar.gz; do
             if ! echo "$ASSETS" | grep -qx "$required"; then
               HAS_PORTABLE=false
               break
@@ -297,8 +297,7 @@ jobs:
           if [ "$HAS_PORTABLE" = "true" ]; then
             PORTABLE_NOTE="**Portable tarballs** built against moxygen \`${MOX_REF}\`:
           - \`moqx-linux-amd64.tar.gz\` — \`-march=x86-64-v2\` (≈ all cloud x86 since 2015)
-          - \`moqx-linux-arm64.tar.gz\` — \`-march=armv8-a\` (Graviton, Ampere, Apple M, RPi 3+, Rockchip)
-          - \`moqx-macos-15-arm64.tar.gz\` — Apple silicon, macOS 15+, no Homebrew needed"
+          - \`moqx-linux-arm64.tar.gz\` — \`-march=armv8-a\` (Graviton, Ampere, Apple M, RPi 3+, Rockchip)"
             if [[ "${{ inputs.optimize }}" == "true" ]]; then
               PORTABLE_NOTE+="
           - \`moqx-linux-amd64.tar.gz\` and \`moqx-linux-arm64.tar.gz\` are built from source at the pins, profile-guided (trained on moqx with local forwarders and 4 IO threads, on mvfst and picoquic) and link-time optimized across moqx and the stack
@@ -347,9 +346,9 @@ jobs:
 
   # ════════════════════════════════════════════════════════════════════════════
   # Portable build: -O3, ISA-baselined, statically linked moqx-linux-{amd64,arm64}
-  # and moqx-macos-15-arm64 tarballs. Runs only when the moxygen reference
-  # carries portable assets. With optimize, the Linux lanes build the stack from
-  # source instead: instrumented, trained on moqx, rebuilt with the profile + LTO.
+  # tarballs. Runs only when the moxygen reference carries portable assets. With
+  # optimize, the lanes build the stack from source instead: instrumented,
+  # trained on moqx, rebuilt with the profile + LTO.
   # Each runner uploads its own tarball directly to the draft release.
   # ════════════════════════════════════════════════════════════════════════════
 
@@ -378,11 +377,6 @@ jobs:
             # gcc-11 ICEs on proxygen at -O3 on aarch64, and LTO needs one
             # compiler for the stack and moqx.
             optimize_gcc: "12"
-          # moxygen's macOS build takes the compiler defaults, so this does too.
-          - arch: arm64
-            runner: macos-15
-            platform: macos-15-arm64
-            cxx_flags: ""
     name: portable (${{ matrix.platform }})
     runs-on: ${{ matrix.runner }}
     env:
@@ -520,34 +514,6 @@ jobs:
           echo "==> bundled libs:"
           ls -lh _install/lib/
 
-      # Homebrew bumps library majors on upgrade, so the tarball carries its own
-      # copies, all referenced via @executable_path/../lib and ad-hoc re-signed.
-      - name: Bundle Homebrew dylibs
-        if: runner.os == 'macOS'
-        working-directory: _install
-        run: |
-          mkdir -p lib
-          # $2: the directory $1 was copied from, where its @rpath siblings live.
-          bundle() {
-            local dep base src
-            for dep in $(otool -L "$1" | awk 'NR > 1 && $1 ~ "^(/opt/homebrew/|/usr/local/|@rpath/)" { print $1 }'); do
-              base=$(basename "$dep")
-              src=$dep
-              if [[ $dep == @rpath/* ]]; then src="$2/$base"; fi
-              install_name_tool -change "$dep" "@executable_path/../lib/$base" "$1"
-              if [ ! -e "lib/$base" ]; then
-                cp -L "$src" "lib/$base"
-                chmod u+w "lib/$base"
-                install_name_tool -id "@executable_path/../lib/$base" "lib/$base"
-                bundle "lib/$base" "$(dirname "$(realpath "$src")")"
-              fi
-            done
-          }
-          for exe in bin/*; do bundle "$exe" ""; done
-          codesign --force --sign - lib/*.dylib bin/*
-          echo "==> bundled libs:"
-          ls -lh lib/
-
       - name: Package
         run: |
           ARTIFACT="moqx-${{ matrix.platform }}.tar.gz"
@@ -565,35 +531,6 @@ jobs:
             echo "ERROR: missing shared libraries"
             exit 1
           fi
-
-      # Homebrew is installed here, so check what each binary references and
-      # what it actually loads, not merely that it starts.
-      - name: Smoke test (macOS)
-        if: runner.os == 'macOS'
-        env:
-          TAG: ${{ needs.validate.outputs.tag }}
-        run: |
-          mkdir -p /tmp/moqx-smoke
-          tar xzf "moqx-${{ matrix.platform }}.tar.gz" -C /tmp/moqx-smoke
-          echo "==> otool -L"
-          otool -L /tmp/moqx-smoke/bin/* /tmp/moqx-smoke/lib/*.dylib | tee /tmp/otool.out
-          if grep -E '^[[:space:]]' /tmp/otool.out | grep -v -E '@executable_path/\.\./lib/|^[[:space:]]+/usr/lib/|^[[:space:]]+/System/Library/'; then
-            echo "ERROR: references outside the tarball"
-            exit 1
-          fi
-          for exe in /tmp/moqx-smoke/bin/*; do
-            DYLD_PRINT_LIBRARIES=1 "$exe" --version > /tmp/dyld.out 2>&1 || true
-            if grep -E '/(opt/homebrew|usr/local)/' /tmp/dyld.out; then
-              echo "ERROR: $exe loaded a library from outside the tarball"
-              exit 1
-            fi
-          done
-          REPORTED=$(/tmp/moqx-smoke/bin/moqx --version 2>&1 || true)
-          echo "==> reported version: $REPORTED"
-          case "$REPORTED" in
-            *"$TAG"*) ;;
-            *) echo "ERROR: moqx does not report $TAG" >&2; exit 1 ;;
-          esac
 
       - name: Upload to release
         env:

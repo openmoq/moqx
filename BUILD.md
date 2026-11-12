@@ -96,9 +96,10 @@ cmake --preset default && cmake --build build/default && ctest --test-dir build/
 A moxygen install already on `CMAKE_PREFIX_PATH` is used as-is (tried before any
 download). No prebuilt for your platform → configure errors and points here; force
 a published tag with `-DMOQX_PLATFORM=<tag>`. Platform tags are
-`ubuntu-<version_id>-<arch>`, `bookworm-<arch>` (Debian and its derivatives) and
-`macos-<major>-<arch>`, `<arch>` ∈ {`amd64`, `arm64`} — what is actually published
-is on [openmoq/moxygen's releases](https://github.com/openmoq/moxygen/releases).
+`ubuntu-<version_id>-<arch>` and `bookworm-<arch>` (Debian and its derivatives),
+`<arch>` ∈ {`amd64`, `arm64`} — what is actually published is on
+[openmoq/moxygen's releases](https://github.com/openmoq/moxygen/releases). macOS
+has no prebuilt; build from source.
 
 **From source:**
 
