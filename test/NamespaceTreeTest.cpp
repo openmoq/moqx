@@ -61,7 +61,7 @@ protected:
       const std::string& trackName,
       const Participant& participant
   ) {
-    tree_.addPublish({ns, trackName}, participant, {});
+    tree_.addPublish({ns, trackName}, participant);
   }
 };
 

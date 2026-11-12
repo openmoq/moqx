@@ -71,7 +71,7 @@ DEFINE_bool(insecure, false, "Skip certificate verification");
 DEFINE_string(namespace_prefix, "loadtest", "Namespace prefix");
 DEFINE_string(report_file, "track_filter_report.txt", "Output report file");
 DEFINE_bool(verbose, false, "Enable verbose output");
-DEFINE_string(alpns, "moqt-16,moqt-15,moq-00", "Comma-separated list of ALPN protocols to use");
+DEFINE_string(alpns, "moqt-18,moqt-16", "Comma-separated list of ALPN protocols to use");
 DEFINE_int32(num_threads, 1, "Number of IO threads for client connections");
 DEFINE_int32(drain_period_ms, 2000, "Drain period before verification (ms)");
 
@@ -724,6 +724,38 @@ private:
     }
   }
 
+  // Subscribes to the audio namespace with the top-N filter. Draft 18 moved the
+  // filter from SUBSCRIBE_NAMESPACE to SUBSCRIBE_TRACKS. Null on failure; the
+  // subscription lasts as long as the returned handle.
+  folly::coro::Task<std::shared_ptr<void>>
+  subscribeTopN(std::shared_ptr<MoQSession> session, RequestID requestID) {
+    const auto version = session->getNegotiatedVersion().value();
+    const TrackNamespace prefix(std::vector<std::string>{FLAGS_namespace_prefix, "audio"});
+    auto filter = TopTracksExtension::encode(
+        TrackFilter{kAudioLevelPropertyType, static_cast<uint64_t>(FLAGS_top_n)},
+        version
+    );
+    if (getDraftMajorVersion(version) >= 18) {
+      SubscribeTracks subTracks;
+      subTracks.requestID = requestID;
+      subTracks.trackNamespacePrefix = prefix;
+      subTracks.forward = true;
+      subTracks.params.insertParam(std::move(filter));
+      auto result = co_await session->subscribeTracks(std::move(subTracks));
+      co_return result.hasValue() ? std::shared_ptr<void>(std::move(result.value())) : nullptr;
+    }
+    SubscribeNamespace subNs;
+    subNs.requestID = requestID;
+    subNs.trackNamespacePrefix = prefix;
+    subNs.forward = true;
+    subNs.params.insertParam(std::move(filter));
+    auto result = co_await session->subscribeNamespace(
+        std::move(subNs),
+        std::make_shared<LoadTestNamespacePublishHandle>()
+    );
+    co_return result.hasValue() ? std::shared_ptr<void>(std::move(result.value())) : nullptr;
+  }
+
   folly::coro::Task<bool> connectPanelist(int id) {
     proxygen::URL url(FLAGS_relay_url);
     auto verifier =
@@ -767,20 +799,9 @@ private:
       // any track where publisher == subscriber session. See PropertyRanking.h:
       // "Self-exclusion is automatic: if this session is the publisher of any
       // registered track, those tracks will be excluded from its top-N selection."
-      SubscribeNamespace subNs;
-      subNs.requestID = RequestID{static_cast<uint64_t>(id * 2)};
-      subNs.trackNamespacePrefix =
-          TrackNamespace(std::vector<std::string>{FLAGS_namespace_prefix, "audio"});
-      subNs.forward = true;
-
-      subNs.params.insertParam(TopTracksExtension::encode(
-          TrackFilter{kAudioLevelPropertyType, static_cast<uint64_t>(FLAGS_top_n)},
-          session->getNegotiatedVersion().value()
-      ));
-
-      auto nsHandle = std::make_shared<LoadTestNamespacePublishHandle>();
-      auto subResult = co_await session->subscribeNamespace(std::move(subNs), nsHandle);
-      if (subResult.hasError()) {
+      auto subscribeHandle =
+          co_await subscribeTopN(session, RequestID{static_cast<uint64_t>(id * 2)});
+      if (!subscribeHandle) {
         co_return false;
       }
 
@@ -810,7 +831,7 @@ private:
           .client = std::move(client),
           .session = session,
           .consumer = pubResponse.consumer,
-          .subscribeHandle = std::move(subResult.value())
+          .subscribeHandle = std::move(subscribeHandle)
       });
       metrics_.recordConnectedClient(id, true);
 
@@ -857,26 +878,17 @@ private:
       session->setMaxConcurrentRequests(10000);
 
       // Subscribe with TRACK_FILTER only (no publishing)
-      SubscribeNamespace subNs;
-      subNs.requestID = RequestID{static_cast<uint64_t>((FLAGS_panelists + id) * 2)};
-      subNs.trackNamespacePrefix =
-          TrackNamespace(std::vector<std::string>{FLAGS_namespace_prefix, "audio"});
-      subNs.forward = true;
-
-      subNs.params.insertParam(TopTracksExtension::encode(
-          TrackFilter{kAudioLevelPropertyType, static_cast<uint64_t>(FLAGS_top_n)},
-          session->getNegotiatedVersion().value()
-      ));
-
-      auto nsHandle = std::make_shared<LoadTestNamespacePublishHandle>();
-      auto subResult = co_await session->subscribeNamespace(std::move(subNs), nsHandle);
-      if (subResult.hasError()) {
+      auto subscribeHandle = co_await subscribeTopN(
+          session,
+          RequestID{static_cast<uint64_t>((FLAGS_panelists + id) * 2)}
+      );
+      if (!subscribeHandle) {
         co_return false;
       }
 
       subscriberClients_.push_back(std::move(client));
       subscriberSessions_.push_back(session);
-      subscriberHandles_.push_back(std::move(subResult.value()));
+      subscriberHandles_.push_back(std::move(subscribeHandle));
       metrics_.recordConnectedClient(FLAGS_panelists + id, false);
 
       co_return true;
@@ -968,13 +980,13 @@ private:
     std::unique_ptr<MoQWebTransportClient> client;
     std::shared_ptr<MoQSession> session;
     std::shared_ptr<TrackConsumer> consumer;
-    std::shared_ptr<Publisher::SubscribeNamespaceHandle> subscribeHandle;
+    std::shared_ptr<void> subscribeHandle;
   };
   std::vector<PanelistState> panelists_;
 
   std::vector<std::unique_ptr<MoQWebTransportClient>> subscriberClients_;
   std::vector<std::shared_ptr<MoQSession>> subscriberSessions_;
-  std::vector<std::shared_ptr<Publisher::SubscribeNamespaceHandle>> subscriberHandles_;
+  std::vector<std::shared_ptr<void>> subscriberHandles_;
 };
 
 } // namespace
