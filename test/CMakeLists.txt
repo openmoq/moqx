@@ -257,6 +257,17 @@ moqx_add_gtest(moqx_relay_context_test
     moxygen::moxygen_events_moq_folly_executor_impl
 )
 
+moqx_add_gtest(moqx_fizz_context_builder_test
+  SRCS tls/FizzContextBuilderTest.cpp
+  LIBS
+    moqx_core
+    moqx_config_loader
+    moqx_test_utils
+    moqx_test_main
+    OpenSSL::Crypto
+    GTest::gmock
+)
+
 moqx_add_gtest(moqx_relay_server_test
   SRCS MoqxRelayServerTest.cpp
   LIBS
