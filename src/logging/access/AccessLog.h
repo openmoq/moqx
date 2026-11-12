@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <string_view>
@@ -40,6 +41,13 @@ public:
   virtual AccessLogSinkMask
   eventMask(const AccessLogSessionGate& gate, AccessLogEvent event, bool isError) const = 0;
   virtual void submit(std::unique_ptr<AccessLogRecord> record, AccessLogSinkMask mask) = 0;
+
+  // After this, a request that ends gets end_reason "shutdown".
+  void beginShutdown() { shuttingDown_.store(true, std::memory_order_relaxed); }
+  bool shuttingDown() const { return shuttingDown_.load(std::memory_order_relaxed); }
+
+private:
+  std::atomic<bool> shuttingDown_{false};
 };
 
 } // namespace openmoq::moqx::logging
