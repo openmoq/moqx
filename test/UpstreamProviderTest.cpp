@@ -488,7 +488,8 @@ TEST_F(UpstreamProviderTest, PeerSubNsHandshakeOnConnect) {
       /*relayExec=*/nullptr,
       std::make_shared<moxygen::test::InsecureVerifierDangerousDoNotUseInProduction>(),
       /*onConnect=*/
-      [](std::shared_ptr<MoQSession> session) -> folly::coro::Task<void> {
+      [](std::shared_ptr<MoQSession> session,
+         std::shared_ptr<logging::AccessLogSessionContext>) -> folly::coro::Task<void> {
         auto result = co_await session->subscribeNamespace(makePeerSubNs("test-relay-id"), nullptr);
         EXPECT_TRUE(result.hasValue());
       }
@@ -876,7 +877,10 @@ TEST_F(UpstreamProviderTest, StopDuringOnConnectKeepsHookAlive) {
       /*relayExec=*/nullptr,
       std::make_shared<moxygen::test::InsecureVerifierDangerousDoNotUseInProduction>(),
       /*onConnect=*/
-      [marker, &entered, &release](std::shared_ptr<MoQSession>) -> folly::coro::Task<void> {
+      [marker,
+       &entered,
+       &release](std::shared_ptr<MoQSession>, std::shared_ptr<logging::AccessLogSessionContext>)
+          -> folly::coro::Task<void> {
         entered.post();
         co_await release;
         ++*marker;
@@ -907,7 +911,9 @@ TEST_F(UpstreamProviderTest, StopDuringOnConnectFailsSubscribe) {
       /*relayExec=*/nullptr,
       std::make_shared<moxygen::test::InsecureVerifierDangerousDoNotUseInProduction>(),
       /*onConnect=*/
-      [&entered, &release](std::shared_ptr<MoQSession>) -> folly::coro::Task<void> {
+      [&entered,
+       &release](std::shared_ptr<MoQSession>, std::shared_ptr<logging::AccessLogSessionContext>)
+          -> folly::coro::Task<void> {
         entered.post();
         co_await release;
       }
@@ -996,9 +1002,11 @@ protected:
     relay_->setPeering(peering_.get());
     relay_->setReciprocalPeerHandler(peering_->reciprocalMoqtPeerHandler());
 
-    auto onConnect = [peering = peering_.get(),
-                      relayExec = relay_->getRelayExec()](std::shared_ptr<MoQSession> session
-                     ) -> folly::coro::Task<void> {
+    auto onConnect =
+        [peering = peering_.get(),
+         relayExec = relay_->getRelayExec(
+         )](std::shared_ptr<MoQSession> session,
+            std::shared_ptr<logging::AccessLogSessionContext>) -> folly::coro::Task<void> {
       co_await peering->onUpstreamConnect(SessionParticipant::makeParticipant(session, relayExec));
     };
     auto onDisconnect = [peering = peering_.get()](std::shared_ptr<MoQSession> session) {

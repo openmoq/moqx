@@ -316,6 +316,23 @@ admin:
 """
 )
 
+# Every relay writes an access log next to its config. --save-logs keeps it, along with
+# the relay's other logs.
+_CONFIG_ACCESS_LOG = Template(
+    """\
+logging:
+  access:
+    - name: harness
+      file: "$path"
+      events: [session, request, messages]
+      format:
+        session: "$$schema $$time $$event $$relay_id $$session $$opened $$peer $$local $$peer_class $$service $$authority $$path $$upstream $$version $$status $$latency_ms $$error_class $$error_code $$reason $$duration_ms $$requests"
+        request: "$$schema $$time $$event $$relay_id $$session $$version $$dir $$req $$ftn $$alias $$status $$latency_ms $$error_class $$error_code $$reason $$end_reason $$age_ms $$largest"
+        event:
+          FETCH: "$$schema $$time $$event $$relay_id $$session $$version $$dir $$req $$ftn $$fetch_type $$start $$end $$status $$latency_ms $$error_code $$reason $$end_reason $$fetch_ms"
+"""
+)
+
 
 @dataclass
 class Relay:
@@ -582,6 +599,9 @@ class Harness:
                     )
                 )
         parts.append(_CONFIG_ADMIN.substitute(port=relay.admin))
+        parts.append(
+            _CONFIG_ACCESS_LOG.substitute(path=self.tmpdir / f"{relay.name}-access.log")
+        )
         path = self.tmpdir / f"{relay.name}.yaml"
         path.write_text("".join(parts), encoding="utf-8")
         relay.config_path = path

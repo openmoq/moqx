@@ -5,6 +5,8 @@
  */
 
 #include "MoqxRelayContext.h"
+#include "MoqxRelaySession.h"
+#include "logging/access/AccessLogSessionContext.h"
 #include "peering/MoqtRelayBackend.h"
 #include "relay/AuthFilters.h"
 #include "relay/PublisherCrossExecFilter.h"
@@ -269,11 +271,40 @@ void MoqxRelayContext::onNewSession(std::shared_ptr<MoQSession> clientSession) {
     clientSession->setSubscriberStatsCallback(collector->subscriberCallback());
     collector->onSessionStart();
   }
+  if (accessLog_) {
+    if (auto* session = dynamic_cast<MoqxRelaySession*>(clientSession.get())) {
+      session->setAccessLogContext(std::make_shared<logging::AccessLogSessionContext>(
+          accessLog_,
+          logging::AccessLogOpenedBy::Peer
+      ));
+    }
+  }
+}
+
+void MoqxRelayContext::setAccessLog(std::shared_ptr<logging::AccessLog> accessLog) {
+  accessLog_ = accessLog->enabled() ? std::move(accessLog) : nullptr;
+  for (auto& [name, entry] : services_) {
+    entry.peering->setAccessLog(accessLog_, name);
+  }
+}
+
+void MoqxRelayContext::onSetupRejected(
+    const std::shared_ptr<MoQSession>& session,
+    SessionCloseErrorCode error
+) {
+  if (auto accessLogContext = MoqxRelaySession::accessLogContextOf(*session)) {
+    auto* accepted = static_cast<MoqxRelaySession*>(session.get());
+    accessLogContext->setup(session, {}, "participant", {}, accepted->localAddress());
+    accessLogContext->writeSetup(logging::AccessLogStatus::Rejected, folly::to_underlying(error));
+  }
 }
 
 void MoqxRelayContext::onSessionEnd(std::shared_ptr<MoQSession> session) {
   if (auto& collector = *tlStatsCollector_) {
     collector->onSessionEnd();
+  }
+  if (auto accessLogContext = MoqxRelaySession::accessLogContextOf(*session)) {
+    accessLogContext->writeSessionEnd(*session);
   }
   // The session belongs to whichever service its authority+path matched at setup.
   if (auto name = serviceMatcher_.match(session->getAuthority(), session->getPath())) {
@@ -294,9 +325,40 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayContext::validateAu
     std::shared_ptr<MoQSession> session
 ) {
   // Match service by authority + path
+  auto matchedName = serviceMatcher_.match(session->getAuthority(), session->getPath());
+  auto accessLogContext = MoqxRelaySession::accessLogContextOf(*session);
+  if (accessLogContext) {
+    auto* accepted = static_cast<MoqxRelaySession*>(session.get());
+    accessLogContext->setup(
+        session,
+        std::string(matchedName.value_or("")),
+        "participant",
+        {},
+        accepted->localAddress()
+    );
+  }
+  auto result = authorizeSession(clientSetup, session, matchedName, accessLogContext);
+  if (accessLogContext) {
+    if (result.hasValue()) {
+      accessLogContext->writeSetup(logging::AccessLogStatus::Ok);
+    } else {
+      accessLogContext->writeSetup(
+          logging::AccessLogStatus::Rejected,
+          folly::to_underlying(result.error())
+      );
+    }
+  }
+  return result;
+}
+
+folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayContext::authorizeSession(
+    const ClientSetup& clientSetup,
+    const std::shared_ptr<MoQSession>& session,
+    std::optional<std::string_view> matchedName,
+    std::shared_ptr<logging::AccessLogSessionContext> accessLogContext
+) {
   const auto& authority = session->getAuthority();
   const auto& path = session->getPath();
-  auto matchedName = serviceMatcher_.match(authority, path);
   if (!matchedName) {
     XLOG(ERR) << "No service matched authority=" << authority << " path=" << path;
     return folly::makeUnexpected(SessionCloseErrorCode::INVALID_AUTHORITY);
@@ -343,7 +405,8 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayContext::validateAu
       std::move(pub),
       std::move(sub),
       entry.relay->getRelayExec(),
-      entry.peering.get()
+      entry.peering.get(),
+      std::move(accessLogContext)
   );
   session->setPublishHandler(participant);
   session->setSubscribeHandler(std::move(participant));

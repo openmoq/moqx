@@ -38,6 +38,10 @@ public:
 
   void start(folly::EventBase* workerEvb) override;
   void stop() override;
+  void setAccessLog(std::shared_ptr<logging::AccessLog> log, std::string service) override {
+    accessLog_ = std::move(log);
+    accessLogService_ = std::move(service);
+  }
 
   bool peersPending() const override { return connectedUpstreams_.size() < upstreams_.size(); }
   folly::coro::Task<void> waitForPeers(folly::Function<bool()> routed) override;
@@ -84,6 +88,8 @@ private:
   std::vector<config::UpstreamConfig> configs_;
   std::optional<uint64_t> hopID_;
   uint64_t subscriptionBufferBytes_;
+  std::shared_ptr<logging::AccessLog> accessLog_;
+  std::string accessLogService_;
   folly::EventBase* workerEvb_{nullptr};
   // Filled by start(), before the servers accept requests.
   std::vector<std::shared_ptr<UpstreamProvider>> upstreams_;

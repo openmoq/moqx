@@ -21,6 +21,10 @@
 
 namespace openmoq::moqx {
 
+namespace logging {
+class AccessLog;
+}
+
 // An admin request for one peer.
 struct PeerAdminOp {
   enum class Kind { Add, Remove, SetMetric, Restart };
@@ -116,6 +120,9 @@ public:
   // Connects to the configured peers, before the servers start accepting. The backend may
   // use evb for anything that needs an EventBase, such as MoQ sessions, HTTP or QUIC.
   virtual void start(folly::EventBase* evb) = 0;
+
+  // Logs the backend's MoQ sessions under service. Runs before start().
+  virtual void setAccessLog(std::shared_ptr<logging::AccessLog> /*log*/, std::string /*service*/) {}
 
   // Withdraws the backend's routes, ends its subscriptions, and releases its handles in
   // relay state. Every executor still runs, so each release can hop to its own executor.

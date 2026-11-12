@@ -32,6 +32,11 @@
 
 namespace openmoq::moqx {
 
+namespace logging {
+class AccessLog;
+class AccessLogSessionContext;
+} // namespace logging
+
 // Returns nullptr to use the system CAs. Throws if tls.ca_cert cannot be loaded.
 std::shared_ptr<fizz::CertificateVerifier> makeUpstreamVerifier(const config::UpstreamTlsConfig& tls
 );
@@ -155,6 +160,14 @@ public:
 
   void onNewSession(std::shared_ptr<moxygen::MoQSession> session);
   void onSessionEnd(std::shared_ptr<moxygen::MoQSession> session);
+  // The server rejected the setup before validateAuthority ran.
+  void onSetupRejected(
+      const std::shared_ptr<moxygen::MoQSession>& session,
+      moxygen::SessionCloseErrorCode error
+  );
+
+  // Must run before any listener accepts sessions.
+  void setAccessLog(std::shared_ptr<logging::AccessLog> accessLog);
 
   // Must run after setStatsRegistry and before any listener accepts sessions.
   // initTrackStats=false skips per-track counting entirely, leaving the
@@ -169,6 +182,13 @@ public:
   );
 
 private:
+  folly::Expected<folly::Unit, moxygen::SessionCloseErrorCode> authorizeSession(
+      const moxygen::ClientSetup& clientSetup,
+      const std::shared_ptr<moxygen::MoQSession>& session,
+      std::optional<std::string_view> matchedName,
+      std::shared_ptr<logging::AccessLogSessionContext> accessLogContext
+  );
+
   void addService(
       const std::string& name,
       const config::ServiceConfig& svc,
@@ -189,6 +209,7 @@ private:
   std::vector<std::shared_ptr<stats::MoQStatsCollector>> statsCollectors_;
   folly::ThreadLocal<std::shared_ptr<stats::MoQStatsCollector>> tlStatsCollector_;
   folly::EventBase* workerEvb_{nullptr};
+  std::shared_ptr<logging::AccessLog> accessLog_;
 };
 
 } // namespace openmoq::moqx
