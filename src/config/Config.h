@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <string>
 #include <variant>
@@ -272,9 +273,37 @@ struct QLogConfig {
   float sampleRate{1.0f}; // fraction of connections to log (0.0–1.0); mvfst only
 };
 
+// Each output type is its own config key, so syslog and OTLP outputs can join the variant.
+struct AccessLogFileOutput {
+  std::string path; // "-" = stdout
+};
+using AccessLogOutput = std::variant<AccessLogFileOutput>;
+
+// Template texts are validated by the resolver and parsed again when the sinks are built.
+struct AccessLogSinkConfig {
+  std::string name;
+  AccessLogOutput output;
+  std::vector<std::string> events; // class and event names; empty = all
+  std::vector<std::string> services;
+  std::vector<std::string> peerClasses;
+  bool errorsOnly{false};
+  double sessionSample{1.0};
+  uint32_t batchRecords{256};
+  uint32_t flushMs{1000};
+  std::map<std::string, std::string> classFormats; // class name -> template
+  std::map<std::string, std::string> eventFormats; // event name -> template
+};
+
+struct AccessLogConfig {
+  uint32_t queueLimit{65536};
+  std::map<std::string, std::string> vars; // name -> value, printed by $name
+  std::vector<AccessLogSinkConfig> sinks;
+};
+
 struct LoggingConfig {
   std::optional<MLogConfig> mlog;
   std::optional<QLogConfig> qlog;
+  std::optional<AccessLogConfig> access;
 };
 
 struct Config {

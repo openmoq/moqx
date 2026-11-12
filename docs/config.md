@@ -597,6 +597,56 @@ logging:
 |---|---|
 | `dir`, `sample_rate` | Static — requires restart |
 
+### `logging.access`
+
+Writes an operator-facing access log: one line per session event and per request, written
+when the outcome is known. Each sink has its own output, filter, sampling and templates.
+
+```yaml
+logging:
+  access_vars: { region: us-east-1, pop: iad3, tier: edge }  # printed by $region, $pop, $tier
+  access_queue_limit: 65536       # records queued for the writer; overflow drops them
+  access:
+    - name: main
+      file: /var/log/moqx/access.log   # "-" writes to stdout
+      events: [session, request]       # classes and/or event names (default: all)
+      services: [live]                 # default: all
+      peer_classes: [participant, relay-peer]  # default: all
+      sample: { session: 1.0 }
+      batch: { records: 256, flush_ms: 1000 }
+      format:
+        request: "$schema $time $event $session $dir $req $ftn $status $latency_ms"
+        event:
+          FETCH: "$schema $time $event $session $req $ftn $status $end_reason $fetch_ms"
+    - name: errors
+      file: /var/log/moqx/access-errors.log
+      errors_only: true
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `access_vars` | `{string: string}` | none | Template variables that every sink can print, for fleet identity such as region or pop. `$name` prints the value as written. A name uses `a-z`, `0-9` and `_`, and must not be a built-in variable. A value must not contain spaces or control bytes. |
+| `access_queue_limit` | `uint32` | `65536` | Records waiting for the writer. A record that arrives when the queue is full is dropped and counted, and each sink later writes a `LOG_DROPPED` line. |
+| `access[].name` | `string` | required | Unique sink name. |
+| `access[].file` | `string` | required | The sink's output: a file opened in append mode, or `-` for stdout. It is the only output type for now. |
+| `access[].events` | `[string]` | all | Classes (`session`, `request`, `periodic`) and event names (`SETUP`, `SUBSCRIBE`, `FETCH`, ...). `NAMESPACE`, `NAMESPACE_DONE` and `PUBLISH_BLOCKED` are written only to sinks that list them by name or by `messages`. |
+| `access[].services`, `access[].peer_classes` | `[string]` | all | Only sessions of these services (names from `services`) and peer classes (`participant`, `relay-peer`). |
+| `access[].errors_only` | `bool` | `false` | Write only error records. |
+| `access[].sample.session` | `double` | `1.0` | Fraction of sessions whose non-error records this sink writes. The choice is a hash of the session ID, so a session sampled at one rate is also sampled at every higher rate. Errors bypass sampling. |
+| `access[].batch.records`, `access[].batch.flush_ms` | `uint32` | `256`, `1000` | A sink writes when it has this many records, or when its oldest record has waited this long. |
+| `access[].format.{session,request,periodic}` | `string` | built in | Template for each record class. Variables are `$name` or `${name}`. Every template must include `$event`, and all of a sink's templates must be identical up to and including `$event`, so `$event` is in the same column on every line. Variables that apply to only some classes must come after it. |
+| `access[].format.event.<EVENT>` | `string` | — | Template for one event, replacing its class template. |
+
+In a rendered line, `-` means the field does not apply to the record or is not known, and
+`0` is a real zero. Names use the `safeName()` form (`ns1-ns2--track`), and free text
+escapes space, `"`, `\` and non-printable bytes as `\xHH`.
+
+#### Lifecycle
+
+| Field | Lifecycle |
+|---|---|
+| `logging.access_vars`, `logging.access_queue_limit`, `logging.access` | Static — requires restart |
+
 ---
 
 ## Admin Server
