@@ -1,0 +1,1 @@
+- A moq-peering unsubscribe now pauses the local publisher with forward=0 when no peering subscriber and no directly connected client still wants the track. An open subgroup no longer leaves the publisher sending.
