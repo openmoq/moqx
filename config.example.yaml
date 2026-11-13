@@ -44,6 +44,11 @@ service_defaults:
     max_tokens_per_message: 4            # Caps AUTHORIZATION_TOKEN params of the service's token_type per
                                           # message; a message over the cap is rejected outright, not truncated.
   max_subscription_buffer_kb: 51200      # Required. 50 MB; see docs/config.md#services. 0 is unlimited.
+  # access_log:                          # Which access log records services write (optional)
+  #   sample: { session: 0.1 }           # Fraction of sessions; errors bypass sampling
+  #   sinks:                             # Default: every sink in logging.access, every class
+  #     - { name: main, events: [session, request] }
+  #     - { name: errors, errors_only: true }
 
 services:
   live-streaming:
@@ -63,6 +68,8 @@ services:
       # max_cache_duration_s: 3600         # Override: tighter max TTL for this service
       # default_max_cache_duration_s: 60   # Override: tighter default TTL for this service
       # default_max_cache_duration_s: 0    # Override: opt-in-only for this service
+    # access_log:                 # sample overrides service_defaults key by key; sinks replaces its list
+    #   sample: { session: 1.0 }
     # upstream:                   # Optional: enable relay chaining for this service
     #   url: "moqt://origin.example.com:4433/moq-relay"
     #   tls:
@@ -116,6 +123,17 @@ logging:                    # Logging configuration (optional)
   qlog:                     # QUIC-level per-connection packet tracing (optional)
     dir: "/tmp/moqx-qlog"          # Output directory; files named <cid_hex>.qlog (mvfst)
     sample_rate: 1.0       # Fraction of connections to log (0.0–1.0, default: 0.0; mvfst only)
+
+  # access_vars:            # Access log template variables (optional): $region, $pop, $tier
+  #   region: us-east-1
+  #   pop: iad3
+  #   tier: edge
+  # access_queue_limit: 65536  # Access log records queued for the writer before new ones are dropped
+  # access:                 # Access log sinks (optional); see docs/config.md#loggingaccess
+  #   - name: main
+  #     file: "/tmp/moqx-access.log"   # "-" writes to stdout
+  #   - name: errors
+  #     file: "/tmp/moqx-access-errors.log"
 
 # relay_id: "my-relay-1"     # Relay identity (optional; random hex string generated if absent)
 
