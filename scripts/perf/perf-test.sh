@@ -35,6 +35,10 @@
 #   -l, --relay-log SPEC   folly XLOG config passed as --logging=SPEC to relay
 #   --bpf-steering         Enable mvfst BPF reuseport steering (requires MOQX_ENABLE_BPF_STEERING build)
 #   --no-bpf-steering      Disable mvfst BPF reuseport steering (default)
+#   --no-quic-wt-session   Relay runs raw-QUIC sessions over QuicWebTransport
+#                          instead of QuicWtSession (WtStreamManager); publisher/
+#                          subscriber are unchanged. Requires --transport quic
+#                          and --quic-stack mvfst.
 #   -j, --jemalloc         LD_PRELOAD jemalloc for the relay AND the perf client
 #                          (moqx-run auto-detects the lib for the relay; the client
 #                          side is resolved here, on the remote host for --remote-client)
@@ -84,6 +88,7 @@ IO_THREADS=1
 CLIENT_THREADS=2
 RELAY_LOG_SPEC=""
 BPF_STEERING="false"
+QUIC_WT_SESSION="true"
 JEMALLOC=""
 RUN_METRICS=false
 PERF_DURATION=0
@@ -120,6 +125,7 @@ while [[ $# -gt 0 ]]; do
     -l|--relay-log)     RELAY_LOG_SPEC="$2";      shift 2 ;;
     --bpf-steering)     BPF_STEERING="true";      shift ;;
     --no-bpf-steering)  BPF_STEERING="false";     shift ;;
+    --no-quic-wt-session) QUIC_WT_SESSION="false"; shift ;;
     -j|--jemalloc)      JEMALLOC="auto";           shift ;;
     --metrics)          RUN_METRICS=true;          shift ;;
     --perf-duration)    PERF_DURATION="$2";        shift 2 ;;
@@ -218,6 +224,9 @@ if [[ "$TRANSPORT" == "qmux" ]]; then
   QUIC_STACK="proxygen_qmux"
 fi
 QUIC_STACK="${QUIC_STACK:-mvfst}"
+if [[ "$QUIC_WT_SESSION" == false && ( "$TRANSPORT" != "quic" || "$QUIC_STACK" != "mvfst" ) ]]; then
+  echo "ERROR: --no-quic-wt-session requires --transport quic and --quic-stack mvfst" >&2; exit 1
+fi
 if [[ "$QUIC_STACK" != "mvfst" && "$BPF_STEERING" == true ]]; then
   echo "ERROR: --bpf-steering is an mvfst feature; drop it or use --quic-stack mvfst" >&2; exit 1
 fi
@@ -350,6 +359,7 @@ trap cleanup EXIT
   echo "jemalloc:         ${JEMALLOC:-none}"
   echo "udp_socket_buf:     $UDP_SOCKET_BUFFER_BYTES"
   echo "mvfst_bpf_steering: $BPF_STEERING"
+  echo "quic_wt_session:    $QUIC_WT_SESSION"
   [[ "$PERF_DURATION" -gt 0 ]] && echo "perf_duration:    ${PERF_DURATION}s (delay=$(( 3 * SUBSCRIBER_MAX / RAMP ))s)" || true
   [[ -n "$PERF_EVENTS" ]] && echo "perf_events:      $PERF_EVENTS" || true
   [[ -n "$REMOTE_CLIENT_HOST" ]] && echo "remote_client:    $REMOTE_CLIENT_HOST" || true
@@ -383,6 +393,7 @@ fi
 [[ "$USE_RELAY_THREAD" == true ]]     && RELAY_RUN_ARGS+=(--relay-thread)     || RELAY_RUN_ARGS+=(--no-relay-thread)
 [[ "$USE_LOCAL_FORWARDERS" == true ]] && RELAY_RUN_ARGS+=(--local-forwarders) || RELAY_RUN_ARGS+=(--no-local-forwarders)
 [[ "$BPF_STEERING" == true ]] && RELAY_RUN_ARGS+=(--bpf-steering)
+[[ "$QUIC_WT_SESSION" == false ]] && RELAY_RUN_ARGS+=(--no-quic-wt-session)
 [[ "$TRANSPORT" == "qmux" ]]  && RELAY_RUN_ARGS+=(--quic-stack proxygen_qmux)
 [[ -n "$DRAFT" ]]             && RELAY_RUN_ARGS+=(--moqt-versions "$DRAFT")
 [[ -n "$RELAY_LOG_SPEC" ]]    && RELAY_RUN_ARGS+=(-x "$RELAY_LOG_SPEC")
