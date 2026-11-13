@@ -10,6 +10,7 @@
 #include <moxygen/MoQFilters.h>
 #include <moxygen/MoQRelaySession.h>
 #include <moxygen/MoQVersions.h>
+#include <moxygen/openmoq/extensions/MoQClusterExtension.h>
 
 using namespace moxygen;
 
@@ -89,13 +90,14 @@ UpstreamProvider::UpstreamProvider(
     std::chrono::milliseconds connectTimeout,
     std::chrono::milliseconds idleTimeout,
     std::optional<uint64_t> hopID,
-    uint64_t relayCost
+    uint64_t relayCost,
+    const PeeringBackend* peering
 )
     : publishHandler_(std::move(publishHandler)), subscribeHandler_(std::move(subscribeHandler)),
       relayExec_(relayExec), url_(std::move(url)), exec_(std::move(exec)),
       verifier_(std::move(verifier)), onConnect_(std::move(onConnect)),
       onDisconnect_(std::move(onDisconnect)), connectTimeout_(connectTimeout),
-      idleTimeout_(idleTimeout), hopID_(hopID), relayCost_(relayCost) {
+      idleTimeout_(idleTimeout), hopID_(hopID), relayCost_(relayCost), peering_(peering) {
   XCHECK_EQ(!publishHandler_, !subscribeHandler_) << "a SessionParticipant needs both handlers";
   XLOG(DBG1) << "UpstreamProvider created, url=" << url_.getUrl();
 }
@@ -413,10 +415,7 @@ folly::coro::Task<void> UpstreamProvider::doConnect() {
   client_ = std::make_unique<MoQClient>(exec_, url_, std::move(sessionFactory), verifier_);
   // The extension stays inactive unless the peer also declares a Hop ID.
   if (hopID_) {
-    client_->addSetupParameter(SetupParameter(folly::to_underlying(SetupKey::HOP_ID), *hopID_));
-    client_->addSetupParameter(
-        SetupParameter(folly::to_underlying(SetupKey::RELAY_COST), relayCost_)
-    );
+    client_->addExtension(std::make_shared<MoQClusterExtension>(*hopID_, relayCost_));
   }
 
   quic::TransportSettings ts;
@@ -431,7 +430,7 @@ folly::coro::Task<void> UpstreamProvider::doConnect() {
   std::shared_ptr<Subscriber> sub = subscribeHandler_;
   if (pub) {
     auto participant =
-        std::make_shared<SessionParticipant>(std::move(pub), std::move(sub), relayExec_);
+        std::make_shared<SessionParticipant>(std::move(pub), std::move(sub), relayExec_, peering_);
     pub = participant;
     sub = std::move(participant);
   }

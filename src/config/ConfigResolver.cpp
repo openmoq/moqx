@@ -1454,8 +1454,7 @@ void validateMoqPeering(
   }
   if (!upstreamServices.empty()) {
     warnings.push_back(
-        "peering.method is moq-peering, so MoQ Cluster is off. Service upstreams still dial "
-        "MoQT (" +
+        "peering.method is moq-peering, so service upstreams are not dialed (" +
         folly::join(", ", upstreamServices) + ")"
     );
   }

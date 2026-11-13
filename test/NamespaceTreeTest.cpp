@@ -61,7 +61,7 @@ protected:
       const std::string& trackName,
       const Participant& participant
   ) {
-    tree_.addPublish({ns, trackName}, participant, {});
+    tree_.addPublish({ns, trackName}, participant);
   }
 };
 
@@ -397,7 +397,7 @@ protected:
         RequestID(0),
         std::move(path),
         cost,
-        /*fromCluster=*/true
+        /*fromPeering=*/true
     );
   }
 
@@ -495,7 +495,7 @@ TEST_F(NamespaceTreeRouteTest, RepeatedNamespaceFromTheSameOriginUpdatesInPlace)
 // request cannot change or end a newer one.
 TEST_F(NamespaceTreeRouteTest, RouteIsNamedBySessionAndRequestID) {
   auto publisher = makeParticipant();
-  tree_.setPublisher(ns_, publisher, nullptr, {}, RequestID(4), {1, 7}, 5, /*fromCluster=*/true);
+  tree_.setPublisher(ns_, publisher, nullptr, {}, RequestID(4), {1, 7}, 5, /*fromPeering=*/true);
   const auto id = idOf(publisher);
   EXPECT_EQ(
       tree_.updateRoute(ns_, id, RequestID(3), {1, 7}, 1).error(),

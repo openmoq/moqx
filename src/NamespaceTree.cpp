@@ -177,7 +177,7 @@ NamespaceTree::SetPublisherResult NamespaceTree::setPublisher(
     RequestID requestID,
     std::vector<uint64_t> relayHopPath,
     uint64_t routeCost,
-    bool fromCluster
+    bool fromPeering
 ) {
   SetPublisherResult result;
   auto node = findNode(ns, /*createMissingNodes=*/true, &result.subscribers);
@@ -186,11 +186,11 @@ NamespaceTree::SetPublisherResult NamespaceTree::setPublisher(
 
   const auto session = publisher.info->sessionId;
   auto existing = std::find_if(node->routes_.begin(), node->routes_.end(), [&](const auto& r) {
-    return r.participant.info->sessionId == session || (!fromCluster && !r.fromCluster);
+    return r.participant.info->sessionId == session || (!fromPeering && !r.fromPeering);
   });
   // A NAMESPACE (the only advertisement without a callback) repeated by its session.
   if (existing != node->routes_.end() && existing->participant.info->sessionId == session &&
-      fromCluster && !existing->callback && !callback) {
+      fromPeering && !existing->callback && !callback) {
     existing->peerID = std::move(peerID);
     reviseRoute(*existing, std::move(relayHopPath), routeCost, result);
     return result;
@@ -215,7 +215,7 @@ NamespaceTree::SetPublisherResult NamespaceTree::setPublisher(
       .path = std::move(relayHopPath),
       .cost = routeCost,
       .seq = ++nextRouteSeq_,
-      .fromCluster = fromCluster,
+      .fromPeering = fromPeering,
   });
   node->trackNamespace = ns;
   return result;
@@ -286,30 +286,12 @@ NamespaceTree::unpublishTrack(const TrackNamespace& ns, const std::string& track
   return folly::unit;
 }
 
-NamespaceTree::AddPublishResult
-NamespaceTree::addPublish(const FullTrackName& ftn, Participant publisher, OnRankingFn onRanking) {
-  AddPublishResult result;
-  result.node = findNode(ftn.trackNamespace, /*createMissingNodes=*/true, &result.subscribers);
-  appendSubscribers(*result.node, result.subscribers);
-  {
-    NodeMutationGuard guard(*this, *result.node, ftn.trackNamespace);
-    result.node->publishes_.insert_or_assign(ftn.trackName, std::move(publisher));
-  }
-  if (onRanking) {
-    for (const NamespaceNode* node = result.node.get(); node != nullptr; node = node->parent_) {
-      for (const auto& [propertyType, ranking] : node->rankings_) {
-        if (ranking) {
-          onRanking(propertyType, ranking);
-        }
-      }
-    }
-  }
-  return result;
-}
-
-std::shared_ptr<PropertyRanking>&
-NamespaceTree::getOrInsertRanking(NamespaceNode& node, uint64_t propertyType) {
-  return node.rankings_[propertyType];
+std::shared_ptr<NamespaceTree::NamespaceNode>
+NamespaceTree::addPublish(const FullTrackName& ftn, Participant publisher) {
+  auto node = findNode(ftn.trackNamespace, /*createMissingNodes=*/true);
+  NodeMutationGuard guard(*this, *node, ftn.trackNamespace);
+  node->publishes_.insert_or_assign(ftn.trackName, std::move(publisher));
+  return node;
 }
 
 std::shared_ptr<NamespaceTree::NamespaceNode> NamespaceTree::addNamespaceSubscriber(
@@ -337,13 +319,6 @@ NamespaceTree::removeNamespaceSubscriber(const TrackNamespace& ns, SessionId ses
   if (it == node->subscribers_.end()) {
     return folly::makeUnexpected(Error::NotSubscribed);
   }
-  const auto& trackFilter = it->second.info.trackFilter;
-  if (trackFilter) {
-    auto rankingIt = node->rankings_.find(trackFilter->propertyType);
-    if (rankingIt != node->rankings_.end()) {
-      rankingIt->second->removeSubscriberFromTopNGroup(trackFilter->maxSelected, session);
-    }
-  }
   const NamespaceNode::AdvertisementKey key{session, ns.size()};
   forEachNodeInSubtree(ns, node, [&](const TrackNamespace&, const auto& n) {
     n->eraseSubscriberAdvertisement(key);
@@ -351,44 +326,6 @@ NamespaceTree::removeNamespaceSubscriber(const TrackNamespace& ns, SessionId ses
   NodeMutationGuard guard(*this, *node, ns);
   node->subscribers_.erase(it);
   return folly::unit;
-}
-
-bool NamespaceTree::hasTracksSubscriptionInSubtree(
-    const NamespaceNode& root,
-    moxygen::SessionId session
-) const {
-  std::vector<const NamespaceNode*> nodesToVisit{&root};
-  while (!nodesToVisit.empty()) {
-    const auto* node = nodesToVisit.back();
-    nodesToVisit.pop_back();
-    if (node->subscribers_.find(session) != node->subscribers_.end()) {
-      return true;
-    }
-    for (const auto& [_, child] : node->children_) {
-      nodesToVisit.push_back(child.get());
-    }
-  }
-  return false;
-}
-
-bool NamespaceTree::hasOverlappingTracksSubscription(
-    const moxygen::TrackNamespace& trackNamespacePrefix,
-    moxygen::SessionId session
-) const {
-  const NamespaceNode* node = &root_;
-  for (size_t i = 0; i < trackNamespacePrefix.size(); i++) {
-    // Nodes visited before the target prefix are strict ancestors.
-    if (node->subscribers_.find(session) != node->subscribers_.end()) {
-      return true;
-    }
-    auto it = node->children_.find(trackNamespacePrefix[i]);
-    if (it == node->children_.end()) {
-      return false;
-    }
-    node = it->second.get();
-  }
-  // The target subtree covers exact-prefix and descendant registrations.
-  return hasTracksSubscriptionInSubtree(*node, session);
 }
 
 std::shared_ptr<NamespaceTree::NamespaceNode> NamespaceTree::findNode(

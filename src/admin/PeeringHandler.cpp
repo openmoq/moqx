@@ -10,15 +10,21 @@
 #include <string>
 #include <utility>
 
+#include <folly/CancellationToken.h>
+#include <folly/coro/Task.h>
+#include <folly/coro/WithCancellation.h>
 #include <folly/io/IOBuf.h>
+#include <folly/io/async/EventBaseManager.h>
 #include <folly/json/dynamic.h>
 #include <folly/json/json.h>
 #include <folly/logging/xlog.h>
 #include <proxygen/httpserver/ResponseBuilder.h>
 #include <proxygen/lib/http/HTTPMessage.h>
 
+#include "MoqxRelayContext.h"
 #include "admin/AdminServer.h"
 #include "config/PeerEndpoint.h"
+#include "peering/MoqPeeringBackend.h"
 #include "peering/PeerJson.h"
 
 namespace openmoq::moqx::admin {
@@ -170,14 +176,14 @@ void registerPeeringRoutes(
     AdminServer& adminServer,
     config::PeeringMethod method,
     std::optional<uint64_t> clusterHopId,
-    std::shared_ptr<peering::MoqPeeringRuntime> runtime
+    std::shared_ptr<MoqxRelayContext> context
 ) {
   const bool moqPeering = method == config::PeeringMethod::MoqPeering;
 
   adminServer.addRoute(
       "GET",
       "/peering",
-      [moqPeering, clusterHopId, weak = std::weak_ptr<peering::MoqPeeringRuntime>(runtime)](
+      [moqPeering, clusterHopId, weak = std::weak_ptr<MoqxRelayContext>(context)](
           auto /*req*/,
           auto /*body*/,
           auto* downstream,
@@ -192,12 +198,17 @@ void registerPeeringRoutes(
           );
           return;
         }
-        auto runtimeLocked = weak.lock();
-        if (!runtimeLocked) {
+        auto ctx = weak.lock();
+        if (!ctx) {
           sendError(downstream, 503, "moq-peering is not running");
           return;
         }
-        sendJson(downstream, 200, peering::peeringStatusJson(runtimeLocked->status()));
+        auto status = ctx->moqPeeringStatus();
+        if (!status) {
+          sendError(downstream, 503, "moq-peering is not running");
+          return;
+        }
+        sendJson(downstream, 200, peering::peeringStatusJson(*status));
       }
   );
 
@@ -219,22 +230,22 @@ void registerPeeringRoutes(
         "POST",
         command.path,
         [moqPeering,
-         weak = std::weak_ptr<peering::MoqPeeringRuntime>(runtime),
+         weak = std::weak_ptr<MoqxRelayContext>(context),
          name = std::string(command.name),
          metricRequired = command.metricRequired,
          metricAllowed = command.metricAllowed](
             std::unique_ptr<proxygen::HTTPMessage> req,
             std::unique_ptr<folly::IOBuf> body,
             proxygen::ResponseHandler* downstream,
-            auto /*cancelToken*/,
+            folly::CancellationToken cancelToken,
             const auto& /*egress*/
         ) {
           if (!moqPeering) {
             sendError(downstream, 409, "peering method is cluster");
             return;
           }
-          auto runtimeLocked = weak.lock();
-          if (!runtimeLocked) {
+          auto ctx = weak.lock();
+          if (!ctx) {
             sendError(downstream, 503, "moq-peering is not running");
             return;
           }
@@ -258,19 +269,47 @@ void registerPeeringRoutes(
             return;
           }
 
-          peering::PeerCommandResult result;
-          if (name == "add-peer") {
-            result = runtimeLocked->addPeer(parsed.host, parsed.port, parsed.metric);
-          } else if (name == "remove-peer") {
-            result = runtimeLocked->removePeer(parsed.host, parsed.port);
+          PeerAdminOp::Kind kind = PeerAdminOp::Kind::Add;
+          if (name == "remove-peer") {
+            kind = PeerAdminOp::Kind::Remove;
           } else if (name == "restart-peer") {
-            result = runtimeLocked->restartPeer(parsed.host, parsed.port);
-          } else {
-            result =
-                runtimeLocked->setPeerMetric(parsed.host, parsed.port, parsed.metric.value_or(0));
+            kind = PeerAdminOp::Kind::Restart;
+          } else if (name == "set-peer-metric") {
+            kind = PeerAdminOp::Kind::SetMetric;
           }
-          logCommand(name, result);
-          sendJson(downstream, result.ok ? 200 : 409, peering::peerCommandJson(result));
+          PeerAdminOp op{
+              .kind = kind,
+              .peer = moqPeerToken(parsed.host, parsed.port),
+              .metric = parsed.metric
+          };
+
+          folly::coro::co_withCancellation(
+              cancelToken,
+              folly::coro::co_withExecutor(
+                  folly::EventBaseManager::get()->getEventBase(),
+                  [](auto locked,
+                     PeerAdminOp adminOp,
+                     std::string action,
+                     PeerRequest request,
+                     proxygen::ResponseHandler* ds,
+                     folly::CancellationToken token) -> folly::coro::Task<void> {
+                    auto result = co_await locked->executePeerAdminOp(std::move(adminOp));
+                    if (token.isCancellationRequested()) {
+                      co_return;
+                    }
+                    peering::PeerCommandResult shown;
+                    shown.ok = result.error == PeerAdminResult::Error::None;
+                    shown.host = std::move(request.host);
+                    shown.port = request.port;
+                    shown.metric = result.metric;
+                    shown.action = std::move(result.action);
+                    shown.message = std::move(result.message);
+                    logCommand(action, shown);
+                    sendJson(ds, shown.ok ? 200 : 409, peering::peerCommandJson(shown));
+                  }(std::move(ctx), std::move(op), name, std::move(parsed), downstream, cancelToken)
+              )
+          )
+              .start();
         }
     );
   }

@@ -211,11 +211,9 @@ int main(int argc, char* argv[]) {
       config.relayID,
       config.useRelayThread,
       config.useLocalForwarders,
-      config.cluster
+      config.cluster,
+      peeringRuntime
   );
-  if (peeringRuntime) {
-    context->attachPeering(peeringRuntime);
-  }
 
   // === 6a. Stats registry ===
   auto statsRegistry = std::make_shared<stats::StatsRegistry>();
@@ -267,15 +265,29 @@ int main(int argc, char* argv[]) {
       adminServer,
       config.peeringMethod,
       config.cluster ? std::optional<uint64_t>(config.cluster->hopID) : std::nullopt,
-      peeringRuntime
+      context
   );
   admin::registerConnectionLogsRoutes(adminServer, config.logging);
   admin::registerQLogCaptureRoutes(adminServer, qlogCapture, qlogConfig ? qlogConfig->dir : "");
 
   // === 8. Start serving ===
-  for (auto& server : servers) {
-    // addr ignored — each server binds its own listenerCfg address
-    server->start(folly::SocketAddress{});
+  // The peering backends start before the servers accept, so a request does not see a backend
+  // that is still starting. A failure skips the servers and the loop, and takes the normal
+  // teardown path.
+  int exitCode = 0;
+  if (!servers.empty()) {
+    try {
+      context->initUpstreams(ioExecutor->getAllEventBases()[0].get());
+    } catch (const std::exception& e) {
+      std::cerr << "Error: failed to initialize upstreams: " << e.what() << "\n";
+      exitCode = 1;
+    }
+  }
+  if (exitCode == 0) {
+    for (auto& server : servers) {
+      // addr ignored — each server binds its own listenerCfg address
+      server->start(folly::SocketAddress{});
+    }
   }
 
   // Start admin after servers so every stats collector is registered before /metrics can read them.
@@ -285,18 +297,6 @@ int main(int argc, char* argv[]) {
     }
 
     XLOG(INFO) << "Admin server listening on " << config.admin->address.describe();
-  }
-
-  // Listeners and admin are already up, so a failure here skips the loop and
-  // takes the normal teardown path instead of returning early.
-  int exitCode = 0;
-  if (!servers.empty()) {
-    try {
-      context->initUpstreams(ioExecutor->getAllEventBases()[0].get());
-    } catch (const std::exception& e) {
-      std::cerr << "Error: failed to initialize upstreams: " << e.what() << "\n";
-      exitCode = 1;
-    }
   }
 
   if (exitCode == 0) {
@@ -339,9 +339,9 @@ int main(int argc, char* argv[]) {
   // === 13. Clean up resources ===
   // Stop admin last — allows a final metrics scrape during drain.
   adminServer.stop();
-  // Stop announcements before the runtime joins its threads. The bridge stays
-  // alive until the context is destroyed, so a callback already inside it can finish.
-  context->detachPeering();
+  // stop() already cleared the moq-peering callback. Drop the runtime while the
+  // context still holds the backend, so a callback that already entered can finish
+  // and the peering threads join before the IO pool drains.
   peeringRuntime.reset();
 
   // Stop servers before joining the IO pool — stop() needs worker EVBs alive,
@@ -353,6 +353,7 @@ int main(int argc, char* argv[]) {
   // healthy; ~MoQServer frees the per-thread MoQExecutors and ioExecutor.reset()
   // will terminate an IO thread when it reaches zero queued work without keepalives.
   context->drainExecs(ioExecutor->getAllEventBases());
+  context->join();
   servers.clear();
   ioExecutor.reset();
 

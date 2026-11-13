@@ -11,7 +11,10 @@
 #include <optional>
 
 #include "config/Config.h"
-#include "peering/MoqPeeringRuntime.h"
+
+namespace openmoq::moqx {
+class MoqxRelayContext;
+}
 
 namespace openmoq::moqx::admin {
 
@@ -28,14 +31,15 @@ class AdminServer;
 // POST /peering/restart-peer    {"host","port"}
 // POST /peering/set-peer-metric {"host","port","metric"}
 //
-// runtime is null when the process started with the cluster method. Those
-// POST routes then answer 409. The admin listener is the existing management
-// port; add-peer dials the named host, so that port stays on a trusted network.
+// context is null only when the caller has no relay. POST routes answer 409
+// when the process started with the cluster method. The admin listener is the
+// existing management port; add-peer dials the named host, so that port stays
+// on a trusted network.
 void registerPeeringRoutes(
     AdminServer& adminServer,
     config::PeeringMethod method,
     std::optional<uint64_t> clusterHopId,
-    std::shared_ptr<peering::MoqPeeringRuntime> runtime
+    std::shared_ptr<MoqxRelayContext> context
 );
 
 } // namespace openmoq::moqx::admin

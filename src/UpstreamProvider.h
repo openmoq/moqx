@@ -25,6 +25,8 @@
 
 namespace openmoq::moqx {
 
+class PeeringBackend;
+
 // --- Relay peering auth helpers ---
 // Used by UpstreamProvider (initiating peer subNs) and MoqxRelay (reciprocation).
 
@@ -75,7 +77,8 @@ public:
       std::chrono::milliseconds connectTimeout = std::chrono::milliseconds(5000),
       std::chrono::milliseconds idleTimeout = std::chrono::milliseconds(5000),
       std::optional<uint64_t> hopID = std::nullopt,
-      uint64_t relayCost = 1
+      uint64_t relayCost = 1,
+      const PeeringBackend* peering = nullptr
   );
 
   ~UpstreamProvider() override;
@@ -141,6 +144,10 @@ public:
   // Access the current session (may be null)
   std::shared_ptr<moxygen::MoQSession> currentSession() const { return session_; }
 
+  enum class State { Disconnected, Connecting, Connected };
+  // On exec_.
+  State state() const { return state_; }
+
   std::string stateString() const {
     switch (state_) {
     case State::Disconnected:
@@ -154,8 +161,6 @@ public:
   }
 
 private:
-  enum class State { Disconnected, Connecting, Connected };
-
   // Returns the current session if already connected, null otherwise.
   // Used for the synchronous fast path in forwarding methods.
   std::shared_ptr<moxygen::MoQSession> getSession() const {
@@ -225,6 +230,8 @@ private:
   // implements it incompatibly. Loop detection then does not cross the link.
   std::optional<uint64_t> hopID_;
   uint64_t relayCost_;
+  // The backend that chooses each session's routing. Null gives plain routing.
+  const PeeringBackend* peering_;
   uint64_t subscriptionBufferBytes_{0};
   bool stopped_{false};
 

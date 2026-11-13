@@ -5,7 +5,8 @@
  */
 
 #include "MoqxRelayContext.h"
-#include "peering/PeeringBridge.h"
+#include "peering/MoqPeeringBackend.h"
+#include "peering/MoqtRelayBackend.h"
 #include "relay/AuthFilters.h"
 #include "relay/PublisherCrossExecFilter.h"
 #include "relay/RelayExecUtil.h"
@@ -14,6 +15,8 @@
 #include "stats/MoQStatsCollector.h"
 #include <fizz/protocol/DefaultCertificateVerifier.h>
 #include <moxygen/events/MoQFollyExecutorImpl.h>
+#include <moxygen/openmoq/extensions/MoQClusterExtension.h>
+#include <moxygen/openmoq/extensions/TopTracksExtension.h>
 #include <moxygen/util/InsecureVerifierDangerousDoNotUseInProduction.h>
 
 #include <folly/coro/Collect.h>
@@ -31,9 +34,13 @@ MoqxRelayContext::MoqxRelayContext(
     const std::string& relayID,
     bool useRelayThread,
     bool useLocalForwarders,
-    std::optional<config::ClusterConfig> cluster
+    std::optional<config::ClusterConfig> cluster,
+    std::shared_ptr<peering::MoqPeeringRuntime> moqPeering
 )
     : serviceMatcher_(services), relayID_(relayID), cluster_(cluster) {
+  if (moqPeering) {
+    moqPeering_ = std::make_shared<MoqPeeringCore>(std::move(moqPeering));
+  }
   if (useRelayThread && !services.empty()) {
     relayThreadPool_ = std::make_unique<folly::IOThreadPoolExecutor>(
         services.size(),
@@ -46,69 +53,93 @@ MoqxRelayContext::MoqxRelayContext(
       auto relay = std::make_shared<MoqxRelay>(
           svc.cache,
           relayID,
-          getRelayHopID().value_or(0),
           std::make_shared<moxygen::MoQFollyExecutorImpl>(evbs[i++].get()),
           useLocalForwarders,
           MoqxRelay::kDefaultMaxDeselected,
           MoqxRelay::kDefaultIdleTimeout,
           MoqxRelay::kDefaultActivityThreshold
       );
-      services_.emplace(
-          name,
-          ServiceEntry{
-              svc,
-              std::move(relay),
-              std::make_shared<const auth::AuthTokenVerifier>(svc.auth)
-          }
-      );
+      addService(name, svc, std::move(relay));
     }
   } else {
     for (const auto& [name, svc] : services) {
       auto relay = std::make_shared<MoqxRelay>(
           svc.cache,
           relayID,
-          getRelayHopID().value_or(0),
           nullptr,
           false,
           MoqxRelay::kDefaultMaxDeselected,
           MoqxRelay::kDefaultIdleTimeout,
           MoqxRelay::kDefaultActivityThreshold
       );
-      services_.emplace(
-          name,
-          ServiceEntry{
-              svc,
-              std::move(relay),
-              std::make_shared<const auth::AuthTokenVerifier>(svc.auth)
-          }
-      );
+      addService(name, svc, std::move(relay));
     }
+  }
+  if (moqPeering_) {
+    moqPeering_->arm();
   }
 }
 
 MoqxRelayContext::~MoqxRelayContext() {
-  detachPeering();
+  if (moqPeering_) {
+    moqPeering_->disarm();
+  }
 }
 
-void MoqxRelayContext::attachPeering(std::shared_ptr<peering::MoqPeeringRuntime> runtime) {
-  detachPeering();
-  if (!runtime) {
-    return;
+std::optional<peering::PeeringStatus> MoqxRelayContext::moqPeeringStatus() const {
+  if (!moqPeering_) {
+    return std::nullopt;
   }
-  auto bridge = std::make_shared<PeeringBridge>(std::move(runtime));
-  std::vector<std::shared_ptr<MoqxRelay>> relays;
-  relays.reserve(services_.size());
-  for (auto& [name, entry] : services_) {
-    relays.push_back(entry.relay);
-  }
-  bridge->attach(relays);
-  peeringBridge_ = std::move(bridge);
+  return moqPeering_->status();
 }
 
-void MoqxRelayContext::detachPeering() {
-  if (peeringBridge_) {
-    peeringBridge_->detach();
+folly::coro::Task<PeerAdminResult> MoqxRelayContext::executePeerAdminOp(PeerAdminOp op) {
+  if (!moqPeering_) {
+    co_return PeerAdminResult{
+        .error = PeerAdminResult::Error::Unsupported,
+        .peer = std::move(op.peer),
+        .metric = op.metric,
+        .message = "peering method is cluster"
+    };
   }
+  co_return moqPeering_->execute(std::move(op));
+}
+
+std::vector<std::shared_ptr<MoQExtension>> MoqxRelayContext::makeServerExtensions() const {
+  std::vector<std::shared_ptr<MoQExtension>> extensions{
+      std::make_shared<TopTracksExtension>(MoqxRelay::kMaxTopTracks)
+  };
+  if (const auto hopID = getRelayHopID()) {
+    extensions.push_back(std::make_shared<MoQClusterExtension>(*hopID));
+  }
+  return extensions;
+}
+
+void MoqxRelayContext::addService(
+    const std::string& name,
+    const config::ServiceConfig& svc,
+    std::shared_ptr<MoqxRelay> relay
+) {
+  std::unique_ptr<PeeringBackend> peering;
+  if (moqPeering_) {
+    moqPeering_->addRelay(relay);
+    peering = std::make_unique<MoqPeeringBackend>(relay, moqPeering_);
+    relay->setPeering(peering.get());
+  } else {
+    auto moqt = std::make_unique<MoqtRelayBackend>(relay, svc, getRelayHopID());
+    relay->setPeering(moqt.get());
+    relay->setReciprocalPeerHandler(moqt->reciprocalMoqtPeerHandler());
+    peering = std::move(moqt);
+  }
+  services_.emplace(
+      name,
+      ServiceEntry{
+          svc,
+          std::move(peering),
+          std::move(relay),
+          std::make_shared<const auth::AuthTokenVerifier>(svc.auth)
+      }
+  );
 }
 
 void MoqxRelayContext::setStatsRegistry(std::shared_ptr<stats::StatsRegistry> registry) {
@@ -145,89 +176,23 @@ makeUpstreamVerifier(const config::UpstreamTlsConfig& tls) {
   return verifier;
 }
 
-namespace {
-
-uint64_t subscriptionBufferBytes(const config::ServiceConfig& svc) {
-  return uint64_t(svc.maxSubscriptionBufferKb) * 1024;
-}
-
-// dumpState pairs these with relay->upstreamProviders() by index.
-std::vector<config::UpstreamConfig> upstreamConfigs(const config::ServiceConfig& svc) {
-  if (svc.upstream) {
-    return {*svc.upstream};
-  }
-  return svc.upstreams;
-}
-
-} // namespace
-
 void MoqxRelayContext::initUpstreams(folly::EventBase* workerEvb) {
   CHECK(workerEvb) << "initUpstreams: workerEvb must not be null";
   workerEvb_ = workerEvb;
-
-  auto workerExec = std::make_shared<moxygen::MoQFollyExecutorImpl>(workerEvb);
   for (auto& [name, entry] : services_) {
-    for (const auto& cfg : upstreamConfigs(entry.config)) {
-      startUpstream(entry, cfg, workerExec);
-    }
+    entry.peering->start(workerEvb);
   }
-}
-
-void MoqxRelayContext::startUpstream(
-    ServiceEntry& entry,
-    const config::UpstreamConfig& cfg,
-    const std::shared_ptr<moxygen::MoQFollyExecutorImpl>& workerExec
-) {
-  auto verifier = makeUpstreamVerifier(cfg.tls);
-  auto relay = entry.relay;
-  auto* relayExec = relay->getRelayExec();
-  // The hooks run on the upstream session's executor.
-  auto onConnect = [relay,
-                    relayExec](std::shared_ptr<MoQSession> session) -> folly::coro::Task<void> {
-    auto upstream = SessionParticipant::makeParticipant(session, relayExec);
-    if (relayExec) {
-      co_return co_await folly::coro::co_withExecutor(
-          folly::getKeepAliveToken(relayExec),
-          relay->onUpstreamConnect(std::move(upstream))
-      );
-    }
-    co_return co_await relay->onUpstreamConnect(std::move(upstream));
-  };
-  auto onDisconnect = [relay, relayExec](std::shared_ptr<MoQSession> session) {
-    runOnExec(relayExec, [relay, sessionId = session->sessionId()]() {
-      relay->onUpstreamDisconnect(sessionId);
-    });
-  };
-  // Mode-aware filters (as inbound sessions): LF mode needs LocalPublishFilter for upstream
-  // PUBLISH.
-  std::shared_ptr<moxygen::Publisher> pubHandler = relay->createPublisherFilter();
-  std::shared_ptr<moxygen::Subscriber> subHandler = relay->createSubscriberFilter();
-  auto provider = std::make_shared<UpstreamProvider>(
-      workerExec,
-      proxygen::URL(cfg.url),
-      /*publishHandler=*/pubHandler,
-      /*subscribeHandler=*/subHandler,
-      relay->getRelayExec(),
-      verifier,
-      std::move(onConnect),
-      std::move(onDisconnect),
-      cfg.connectTimeout,
-      cfg.idleTimeout,
-      getRelayHopID(),
-      cfg.relayCost
-  );
-  provider->setSubscriptionBufferBytes(subscriptionBufferBytes(entry.config));
-  entry.relay->addUpstreamProvider(provider);
-
-  // Eagerly connect so the peering handshake fires before any subscribers
-  // arrive. The connection is lazy in UpstreamProvider but we kick it off
-  // now so the upstream namespace tree is ready.
-  co_withExecutor(workerExec.get(), provider->start()).start();
 }
 
 void MoqxRelayContext::stop() {
   for (auto& [name, entry] : services_) {
-    entry.relay->stop();
+    entry.peering->stop();
+  }
+}
+
+void MoqxRelayContext::join() {
+  for (auto& [name, entry] : services_) {
+    entry.peering->join();
   }
 }
 
@@ -250,6 +215,9 @@ void MoqxRelayContext::drainExecs(
     if (auto* relayExec = entry.relay->getRelayExec()) {
       execs.push_back(relayExec);
     }
+    for (auto* exec : entry.peering->executors()) {
+      execs.push_back(exec);
+    }
   }
 
   for (int round = 0; round < kShutdownDrainRounds; ++round) {
@@ -268,9 +236,13 @@ void MoqxRelayContext::drainExecs(
       if (!exec && execs.empty()) {
         continue;
       }
-      folly::via(exec ? exec : execs.front(), [relay = entry.relay, name = name] {
-        XCHECK(!relay->holdsSessionHandles()) << "relay " << name << " still holds session handles";
-      }).get();
+      folly::via(
+          exec ? exec : execs.front(),
+          [relay = entry.relay, peering = entry.peering.get(), name = name] {
+            XCHECK(!relay->holdsSessionHandles() && !peering->holdsSessionHandles())
+                << "relay " << name << " still holds session handles";
+          }
+      ).get();
     }
   }
 }
@@ -359,7 +331,10 @@ void MoqxRelayContext::onSessionEnd(std::shared_ptr<MoQSession> session) {
   // The session belongs to whichever service its authority+path matched at setup.
   if (auto name = serviceMatcher_.match(session->getAuthority(), session->getPath())) {
     if (auto it = services_.find(*name); it != services_.end()) {
-      it->second.relay->onSessionEnd(session->sessionId());
+      auto relay = it->second.relay;
+      runOnExec(relay->getRelayExec(), [relay, sessionId = session->sessionId()] {
+        relay->onSessionEnd(sessionId);
+      });
     }
   }
   // Per-session auth state lives on the session's AuthFilter and is released
@@ -413,19 +388,20 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayContext::validateAu
         std::move(pub),
         entry.verifier,
         grants.value(),
-        !relayID_.empty()
+        entry.peering->reciprocalMoqtPeerHandler()
     );
     sub = std::make_shared<AuthSubscriberFilter>(std::move(sub), entry.verifier, grants.value());
   }
   auto participant = std::make_shared<SessionParticipant>(
       std::move(pub),
       std::move(sub),
-      entry.relay->getRelayExec()
+      entry.relay->getRelayExec(),
+      entry.peering.get()
   );
   session->setPublishHandler(participant);
   session->setSubscribeHandler(std::move(participant));
   auto settings = session->getMoqSettings();
-  settings.bufferingThresholds.perSubscription = subscriptionBufferBytes(entry.config);
+  settings.bufferingThresholds.perSubscription = config::subscriptionBufferBytes(entry.config);
   session->setMoqSettings(settings);
   return folly::unit;
 }
@@ -510,21 +486,58 @@ folly::coro::Task<MoqxRelayContext::TrackMetricsResult> MoqxRelayContext::aggreg
 
 namespace {
 
+std::string_view linkStateName(PeerLink::State state) {
+  switch (state) {
+  case PeerLink::State::Connected:
+    return "connected";
+  case PeerLink::State::Connecting:
+    return "connecting";
+  case PeerLink::State::Disconnected:
+    return "disconnected";
+  }
+  return "unknown";
+}
+
+// Reports the service's accepted links as /state's downstream_peers, and its dialed links as
+// upstream or upstreams.
+folly::coro::Task<void> reportPeers(
+    const PeeringBackend& peering,
+    bool upstreamList,
+    RelayContextVisitor& visitor,
+    RelayStateVisitor& relayVisitor
+) {
+  struct Collect : PeerVisitor {
+    std::vector<PeerLink> accepted;
+    std::vector<RelayContextVisitor::UpstreamState> upstreams;
+    void onPeer(const PeerLink& link) override {
+      if (link.direction == PeerLink::Direction::Accepted) {
+        accepted.push_back(link);
+      } else {
+        upstreams.push_back({link.address, std::string(linkStateName(link.state))});
+      }
+    }
+  } collect;
+  co_await peering.visitPeers(collect);
+  relayVisitor.onPeersBegin();
+  for (const auto& link : collect.accepted) {
+    relayVisitor.onPeer(link.address, link.authority, link.relayID);
+  }
+  relayVisitor.onPeersEnd();
+  if (collect.upstreams.empty()) {
+    co_return;
+  }
+  if (upstreamList) {
+    visitor.onServiceUpstreams(collect.upstreams);
+  } else {
+    visitor.onServiceUpstream(collect.upstreams.front().url, collect.upstreams.front().state);
+  }
+}
+
 // No suspension inside, so holding the visitor by pointer across the call is
 // safe: the caller's frame outlives it.
 folly::coro::Task<void> dumpOnOwner(std::shared_ptr<MoqxRelay> relay, RelayStateVisitor* visitor) {
   relay->dumpState(*visitor);
   co_return;
-}
-
-// UpstreamProvider lives on the worker EVB and its state_ is a plain enum
-// written there, so read it on that thread rather than the caller's.
-folly::coro::Task<std::vector<std::string>> readUpstreamStates(std::shared_ptr<MoqxRelay> relay) {
-  std::vector<std::string> states;
-  for (const auto& up : relay->upstreamProviders()) {
-    states.push_back(up->stateString());
-  }
-  co_return states;
 }
 
 } // namespace
@@ -543,17 +556,15 @@ folly::coro::Task<void> MoqxRelayContext::dumpState(RelayContextVisitor& visitor
   struct Service {
     std::string name;
     std::shared_ptr<MoqxRelay> relay;
-    bool upstreamList;
-    std::vector<std::string> upstreamUrls;
+    const PeeringBackend* peering;
+    bool upstreamList; // the service configured an `upstreams` list
   };
   std::vector<Service> services;
   services.reserve(services_.size());
   for (const auto& [name, entry] : services_) {
-    Service service{name, entry.relay, !entry.config.upstreams.empty(), {}};
-    for (const auto& cfg : upstreamConfigs(entry.config)) {
-      service.upstreamUrls.push_back(cfg.url);
-    }
-    services.push_back(std::move(service));
+    services.push_back(
+        Service{name, entry.relay, entry.peering.get(), !entry.config.upstreams.empty()}
+    );
   }
 
   for (auto& service : services) {
@@ -568,23 +579,7 @@ folly::coro::Task<void> MoqxRelayContext::dumpState(RelayContextVisitor& visitor
         exec ? exec : static_cast<folly::Executor*>(workerEvb_),
         dumpOnOwner(service.relay, &rv)
     );
-    if (!service.upstreamUrls.empty()) {
-      auto states = co_await folly::coro::co_withExecutor(
-          static_cast<folly::Executor*>(workerEvb_),
-          readUpstreamStates(service.relay)
-      );
-      std::vector<RelayContextVisitor::UpstreamState> upstreams;
-      for (size_t i = 0; i < service.upstreamUrls.size(); ++i) {
-        upstreams.push_back(
-            {service.upstreamUrls[i], i < states.size() ? states[i] : "disconnected"}
-        );
-      }
-      if (service.upstreamList) {
-        visitor.onServiceUpstreams(upstreams);
-      } else {
-        visitor.onServiceUpstream(upstreams.front().url, upstreams.front().state);
-      }
-    }
+    co_await reportPeers(*service.peering, service.upstreamList, visitor, rv);
     visitor.onServiceEnd();
   }
   visitor.onRelayEnd();

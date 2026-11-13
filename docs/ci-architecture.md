@@ -96,12 +96,10 @@ skipped. See [release.md](release.md#ordering).
 | Job | Runner | Purpose |
 |-----|--------|---------|
 | linux | ubuntu-22.04 | Build + test |
-| macos | macos-15 | Build + test |
 | pico (linux) | ubuntu-22.04 | Picoquic transport build |
-| pico (macos) | macos-15 | Picoquic transport build |
 | asan debug | ubuntu-22.04 | ASAN/UBSAN build + test |
 
-Required checks: `linux`, `macos`.
+Required checks: `linux`, `asan debug`.
 
 ### 2. `ci main` — Build, Publish, Release, Notify
 
@@ -111,7 +109,7 @@ Required checks: `linux`, `macos`.
 build (5 jobs) ──► publish (4 platforms) ──► release ──► notify + dispatch to moqx
 ```
 
-Publish produces per-platform tarballs (ubuntu, bookworm, macos) + debug symbol archives.
+Publish produces per-platform tarballs (ubuntu, bookworm) + debug symbol archives.
 Release creates/updates `snapshot-latest` pre-release.
 Notify dispatches `moxygen-update` to moqx via `repository_dispatch`.
 
@@ -242,7 +240,7 @@ Based on recent runs (March 2026):
 
 | Event | Wall clock | Approx billed minutes |
 |-------|-----------|----------------------|
-| moxygen PR | ~28 min | ~55 (+ macos 10x multiplier) |
+| moxygen PR | ~28 min | ~55 |
 | moxygen main push | ~40 min | ~75 (3-platform publish) |
 | moqx PR | ~5 min | ~10 |
 | moqx main push | ~11 min | ~15 |

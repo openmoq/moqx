@@ -14,8 +14,10 @@
 #include "UpstreamProvider.h"
 #include "auth/Auth.h"
 #include "config/Config.h"
+#include "peering/MoqPeeringRuntime.h"
 #include "stats/MoQStatsCollector.h"
 #include "stats/StatsRegistry.h"
+#include <moxygen/MoQExtension.h>
 #include <moxygen/MoQServerBase.h>
 #include <moxygen/MoQSession.h>
 
@@ -32,11 +34,7 @@
 
 namespace openmoq::moqx {
 
-namespace peering {
-class MoqPeeringRuntime;
-}
-
-class PeeringBridge;
+class MoqPeeringCore;
 
 // Returns nullptr to use the system CAs. Throws if tls.ca_cert cannot be loaded.
 std::shared_ptr<fizz::CertificateVerifier>
@@ -73,34 +71,44 @@ class MoqxRelayContext {
 public:
   struct ServiceEntry {
     config::ServiceConfig config;
+    // Declared before relay, so the relay is destroyed first.
+    std::unique_ptr<PeeringBackend> peering;
     std::shared_ptr<MoqxRelay> relay;
     std::shared_ptr<const auth::AuthTokenVerifier> verifier;
   };
 
+  // moqPeering is set when the process selected moq-peering. Each service then uses
+  // that backend instead of MoqtRelayBackend. Null selects MoQT relay peering.
   MoqxRelayContext(
       const folly::F14FastMap<std::string, config::ServiceConfig>& services,
       const std::string& relayID,
       bool useRelayThread = true,
       bool useLocalForwarders = false,
-      std::optional<config::ClusterConfig> cluster = config::ClusterConfig{}
+      std::optional<config::ClusterConfig> cluster = config::ClusterConfig{},
+      std::shared_ptr<peering::MoqPeeringRuntime> moqPeering = nullptr
   );
   ~MoqxRelayContext();
 
   void setStatsRegistry(std::shared_ptr<stats::StatsRegistry> registry);
 
-  // Announces local PUBLISH and PUBLISH_NAMESPACE on this runtime, and injects
-  // peer announcements into every service relay.
-  void attachPeering(std::shared_ptr<peering::MoqPeeringRuntime> runtime);
-  // Clears the runtime callback. Destroy the runtime after this returns.
-  void detachPeering();
+  // The local moq-peering node, when this process selected that method and the
+  // runtime is still alive.
+  std::optional<peering::PeeringStatus> moqPeeringStatus() const;
+
+  // Runs the op on the moq-peering backend. Cluster peering answers Unsupported.
+  folly::coro::Task<PeerAdminResult> executePeerAdminOp(PeerAdminOp op);
 
   // The HOP_ID to declare in SETUP. Unset when MoQ Cluster is disabled.
   std::optional<uint64_t> getRelayHopID() const {
     return cluster_ ? std::optional<uint64_t>(cluster_->hopID) : std::nullopt;
   }
 
-  // Must be called once, after all MoqxRelayServer instances have been started,
-  // so that worker EVBs are available. workerEvb is used for upstream connections.
+  // The extensions every listener adds: MoQ Cluster when it is enabled, and Top
+  // Tracks so subscribers may send TOP_TRACKS_FILTER.
+  std::vector<std::shared_ptr<moxygen::MoQExtension>> makeServerExtensions() const;
+
+  // Starts each service's peering backend. Call once, before the servers start accepting.
+  // The backends may use workerEvb for anything that needs an EventBase.
   void initUpstreams(folly::EventBase* workerEvb);
 
   // False until initUpstreams() runs, before which there is nothing to walk.
@@ -121,6 +129,9 @@ public:
   // This is an expedient fixup to ensure the threads live long enough without holding
   // KeepAlive tokens throughout.
   void drainExecs(const std::vector<folly::Executor::KeepAlive<folly::EventBase>>& ioEvbs);
+
+  // Stops the peering backends' own threads. Call after drainExecs().
+  void join();
 
   enum class PurgeError { ServiceRequired, UnknownService };
 
@@ -177,10 +188,10 @@ public:
   );
 
 private:
-  void startUpstream(
-      ServiceEntry& entry,
-      const config::UpstreamConfig& cfg,
-      const std::shared_ptr<moxygen::MoQFollyExecutorImpl>& workerExec
+  void addService(
+      const std::string& name,
+      const config::ServiceConfig& svc,
+      std::shared_ptr<MoqxRelay> relay
   );
 
   // When use_relay_thread=true: one dedicated thread per service, each with its
@@ -197,7 +208,9 @@ private:
   std::vector<std::shared_ptr<stats::MoQStatsCollector>> statsCollectors_;
   folly::ThreadLocal<std::shared_ptr<stats::MoQStatsCollector>> tlStatsCollector_;
   folly::EventBase* workerEvb_{nullptr};
-  std::shared_ptr<PeeringBridge> peeringBridge_;
+  // Process-wide moq-peering state. Null when the method is cluster.
+  // The destructor disarms it while the relays in services_ are still alive.
+  std::shared_ptr<MoqPeeringCore> moqPeering_;
 };
 
 } // namespace openmoq::moqx

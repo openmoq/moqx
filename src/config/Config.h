@@ -254,6 +254,10 @@ struct ServiceConfig {
   uint32_t maxSubscriptionBufferKb{0};   // 0 = unlimited
 };
 
+inline uint64_t subscriptionBufferBytes(const ServiceConfig& svc) {
+  return uint64_t(svc.maxSubscriptionBufferKb) * 1024;
+}
+
 struct AdminConfig {
   folly::SocketAddress address;
   std::optional<TlsConfig> tls;

@@ -4,59 +4,178 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-#include "peering/PeeringBridge.h"
+#include "peering/MoqPeeringBackend.h"
 
 #include "MoqxRelay.h"
+#include "config/PeerEndpoint.h"
+#include "relay/PlainRouteCodec.h"
 
 #include <folly/logging/xlog.h>
 
+#include <charconv>
 #include <utility>
 
 namespace openmoq::moqx {
+namespace {
 
-PeeringBridge::PeeringBridge(std::shared_ptr<peering::MoqPeeringRuntime> runtime)
-    : runtime_(std::move(runtime)) {}
+constexpr size_t kMaxPeerTokenBytes = 300;
 
-PeeringBridge::~PeeringBridge() {
-  detach();
+std::optional<std::pair<std::string, uint16_t>> parsePeerToken(std::string_view peer) {
+  if (peer.empty() || peer.size() > kMaxPeerTokenBytes) {
+    return std::nullopt;
+  }
+  std::string_view host;
+  std::string_view portText;
+  if (peer.front() == '[') {
+    const auto end = peer.find(']');
+    if (end == std::string_view::npos || end + 2 > peer.size() || peer[end + 1] != ':') {
+      return std::nullopt;
+    }
+    host = peer.substr(1, end - 1);
+    portText = peer.substr(end + 2);
+  } else {
+    const auto colon = peer.rfind(':');
+    if (colon == std::string_view::npos || colon == 0 || colon + 1 == peer.size()) {
+      return std::nullopt;
+    }
+    host = peer.substr(0, colon);
+    portText = peer.substr(colon + 1);
+  }
+  uint32_t port = 0;
+  const auto* first = portText.data();
+  const auto parsed = std::from_chars(first, first + portText.size(), port);
+  if (parsed.ec != std::errc{} || parsed.ptr != first + portText.size()) {
+    return std::nullopt;
+  }
+  if (config::validatePeerPort(port)) {
+    return std::nullopt;
+  }
+  std::string normalized;
+  if (config::normalizePeerHost(host, normalized)) {
+    return std::nullopt;
+  }
+  return std::make_pair(std::move(normalized), static_cast<uint16_t>(port));
 }
 
-void PeeringBridge::attach(const std::vector<std::shared_ptr<MoqxRelay>>& relays) {
-  auto self = shared_from_this();
-  std::vector<std::weak_ptr<MoqxRelay>> stored;
-  stored.reserve(relays.size());
-  for (const auto& relay : relays) {
-    if (!relay) {
-      continue;
-    }
-    relay->setPeeringAnnouncer(self);
-    stored.push_back(relay);
+PeerAdminResult::Error errorFor(const peering::PeerCommandResult& result) {
+  if (result.ok) {
+    return PeerAdminResult::Error::None;
   }
+  if (result.message.find("does not exist") != std::string::npos) {
+    return PeerAdminResult::Error::NotFound;
+  }
+  if (result.message.find("duplicate") != std::string::npos) {
+    return PeerAdminResult::Error::Duplicate;
+  }
+  return PeerAdminResult::Error::Invalid;
+}
+
+PeerLink::State linkState(std::string_view status) {
+  if (status == "connected") {
+    return PeerLink::State::Connected;
+  }
+  if (status == "disconnected") {
+    return PeerLink::State::Disconnected;
+  }
+  return PeerLink::State::Connecting;
+}
+
+} // namespace
+
+std::string moqPeerToken(std::string_view host, uint16_t port) {
+  std::string out;
+  if (host.find(':') != std::string_view::npos) {
+    out.reserve(host.size() + 8);
+    out.push_back('[');
+    out.append(host);
+    out.push_back(']');
+  } else {
+    out.assign(host);
+  }
+  out.push_back(':');
+  out.append(std::to_string(port));
+  return out;
+}
+
+MoqPeeringCore::MoqPeeringCore(std::shared_ptr<peering::MoqPeeringRuntime> runtime)
+    : runtime_(std::move(runtime)) {}
+
+MoqPeeringCore::~MoqPeeringCore() {
+  if (auto runtime = runtime_.lock()) {
+    runtime->setEvents(nullptr);
+  }
+}
+
+void MoqPeeringCore::addRelay(const std::shared_ptr<MoqxRelay>& relay) {
+  if (!relay) {
+    return;
+  }
+  relay->setPeeringAnnouncer(shared_from_this());
+  std::lock_guard<std::mutex> lock(mu_);
+  relays_.push_back(relay);
+}
+
+void MoqPeeringCore::arm() {
+  bool first = false;
   {
     std::lock_guard<std::mutex> lock(mu_);
-    relays_ = std::move(stored);
-    detached_ = false;
+    if (!armed_) {
+      armed_ = true;
+      first = true;
+    }
+  }
+  if (!first) {
+    return;
   }
   if (auto runtime = runtime_.lock()) {
     runtime->setEvents(this);
   }
 }
 
-void PeeringBridge::detach() {
+void MoqPeeringCore::detach(MoqxRelay& relay) {
+  bool last = false;
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    std::erase_if(relays_, [&](const std::weak_ptr<MoqxRelay>& weak) {
+      auto locked = weak.lock();
+      return !locked || locked.get() == &relay;
+    });
+    last = relays_.empty();
+    if (last) {
+      armed_ = false;
+      writers_.clear();
+      readers_.clear();
+      peerSubs_.clear();
+      pulls_.clear();
+    }
+  }
+  relay.setPeeringAnnouncer(nullptr);
+  if (last) {
+    if (auto runtime = runtime_.lock()) {
+      runtime->setEvents(nullptr);
+    }
+  }
+}
+
+void MoqPeeringCore::disarm() {
   std::vector<std::shared_ptr<MoqxRelay>> relays;
   {
     std::lock_guard<std::mutex> lock(mu_);
-    if (detached_) {
+    if (!armed_ && relays_.empty()) {
       return;
     }
-    detached_ = true;
+    armed_ = false;
     relays.reserve(relays_.size());
-    for (const auto& relay : relays_) {
-      if (auto locked = relay.lock()) {
+    for (const auto& weak : relays_) {
+      if (auto locked = weak.lock()) {
         relays.push_back(std::move(locked));
       }
     }
     relays_.clear();
+    writers_.clear();
+    readers_.clear();
+    peerSubs_.clear();
+    pulls_.clear();
   }
   if (auto runtime = runtime_.lock()) {
     runtime->setEvents(nullptr);
@@ -66,31 +185,120 @@ void PeeringBridge::detach() {
   }
 }
 
-void PeeringBridge::announceNamespace(const moxygen::TrackNamespace& ns) {
+std::optional<peering::PeeringStatus> MoqPeeringCore::status() const {
+  auto runtime = runtime_.lock();
+  if (!runtime) {
+    return std::nullopt;
+  }
+  return runtime->status();
+}
+
+PeerAdminResult MoqPeeringCore::execute(PeerAdminOp op) {
+  auto runtime = runtime_.lock();
+  if (!runtime) {
+    return PeerAdminResult{
+        .error = PeerAdminResult::Error::Invalid,
+        .peer = std::move(op.peer),
+        .metric = op.metric,
+        .message = "moq-peering is not running"
+    };
+  }
+  auto parsed = parsePeerToken(op.peer);
+  if (!parsed) {
+    return PeerAdminResult{
+        .error = PeerAdminResult::Error::Invalid,
+        .peer = std::move(op.peer),
+        .metric = op.metric,
+        .message = "peer must be host:port"
+    };
+  }
+  if (op.kind == PeerAdminOp::Kind::SetMetric && !op.metric) {
+    return PeerAdminResult{
+        .error = PeerAdminResult::Error::Invalid,
+        .peer = std::move(op.peer),
+        .message = "metric is required"
+    };
+  }
+  peering::PeerCommandResult result;
+  switch (op.kind) {
+  case PeerAdminOp::Kind::Add:
+    result = runtime->addPeer(parsed->first, parsed->second, op.metric);
+    break;
+  case PeerAdminOp::Kind::Remove:
+    result = runtime->removePeer(parsed->first, parsed->second);
+    break;
+  case PeerAdminOp::Kind::Restart:
+    result = runtime->restartPeer(parsed->first, parsed->second);
+    break;
+  case PeerAdminOp::Kind::SetMetric:
+    result = runtime->setPeerMetric(parsed->first, parsed->second, *op.metric);
+    break;
+  }
+  const auto& host = result.host.empty() ? parsed->first : result.host;
+  const auto port = result.port == 0 ? parsed->second : result.port;
+  return PeerAdminResult{
+      .error = errorFor(result),
+      .peer = moqPeerToken(host, port),
+      .metric = result.metric ? result.metric : op.metric,
+      .message = std::move(result.message),
+      .action = std::move(result.action)
+  };
+}
+
+std::vector<PeerLink> MoqPeeringCore::links() const {
+  auto current = status();
+  if (!current) {
+    return {};
+  }
+  std::vector<PeerLink> out;
+  out.reserve(current->peers.size());
+  for (const auto& peer : current->peers) {
+    PeerLink link;
+    link.direction =
+        peer.origin == "dialed" ? PeerLink::Direction::Dialed : PeerLink::Direction::Accepted;
+    link.state = linkState(peer.status);
+    link.address = moqPeerToken(peer.host, peer.port);
+    link.authority = peer.contact;
+    link.relayID = peer.nodeId;
+    link.metrics = PeerMetrics{
+        .srttUs = peer.srttUs,
+        .metric = peer.metric,
+        .nodeMetric = peer.nodeMetric,
+        .connectTimeUs = peer.connectTimeUs,
+        .subscribeTracks = peer.subscribeTracks,
+        .publishes = peer.publishes,
+        .activeStreams = peer.activeStreams
+    };
+    out.push_back(std::move(link));
+  }
+  return out;
+}
+
+void MoqPeeringCore::announceNamespace(const moxygen::TrackNamespace& ns) {
   if (auto runtime = runtime_.lock()) {
     runtime->announceNamespace(ns.trackNamespace);
   }
 }
 
-void PeeringBridge::withdrawNamespace(const moxygen::TrackNamespace& ns) {
+void MoqPeeringCore::withdrawNamespace(const moxygen::TrackNamespace& ns) {
   if (auto runtime = runtime_.lock()) {
     runtime->withdrawNamespace(ns.trackNamespace);
   }
 }
 
-void PeeringBridge::announceTrack(const moxygen::FullTrackName& ftn) {
+void MoqPeeringCore::announceTrack(const moxygen::FullTrackName& ftn) {
   if (auto runtime = runtime_.lock()) {
     runtime->announceTrack(ftn.trackNamespace.trackNamespace, ftn.trackName);
   }
 }
 
-void PeeringBridge::withdrawTrack(const moxygen::FullTrackName& ftn) {
+void MoqPeeringCore::withdrawTrack(const moxygen::FullTrackName& ftn) {
   if (auto runtime = runtime_.lock()) {
     runtime->withdrawTrack(ftn.trackNamespace.trackNamespace, ftn.trackName);
   }
 }
 
-void PeeringBridge::sendObject(const moxygen::FullTrackName& ftn, PeeringObject object) {
+void MoqPeeringCore::sendObject(const moxygen::FullTrackName& ftn, PeeringObject object) {
   auto runtime = runtime_.lock();
   if (!runtime) {
     return;
@@ -105,7 +313,7 @@ void PeeringBridge::sendObject(const moxygen::FullTrackName& ftn, PeeringObject 
   bool resetStream = false;
   {
     std::lock_guard<std::mutex> lock(mu_);
-    if (detached_) {
+    if (!armed_) {
       return;
     }
     if (object.datagram) {
@@ -171,7 +379,7 @@ void PeeringBridge::sendObject(const moxygen::FullTrackName& ftn, PeeringObject 
   }
 }
 
-void PeeringBridge::endSubgroup(
+void MoqPeeringCore::endSubgroup(
     const moxygen::FullTrackName& ftn,
     uint64_t group,
     uint64_t subgroup,
@@ -196,7 +404,7 @@ void PeeringBridge::endSubgroup(
   runtime->endSubgroup(ftn.trackNamespace.trackNamespace, ftn.trackName, group, subgroup, reset);
 }
 
-void PeeringBridge::subscribeTrack(const moxygen::FullTrackName& ftn) {
+void MoqPeeringCore::subscribeTrack(const moxygen::FullTrackName& ftn) {
   auto runtime = runtime_.lock();
   if (!runtime) {
     return;
@@ -207,7 +415,7 @@ void PeeringBridge::subscribeTrack(const moxygen::FullTrackName& ftn) {
   }
   {
     std::lock_guard<std::mutex> lock(mu_);
-    if (detached_) {
+    if (!armed_) {
       return;
     }
     pulls_[*hash] = ftn;
@@ -220,7 +428,7 @@ void PeeringBridge::subscribeTrack(const moxygen::FullTrackName& ftn) {
   );
 }
 
-void PeeringBridge::unsubscribeTrack(const moxygen::FullTrackName& ftn) {
+void MoqPeeringCore::unsubscribeTrack(const moxygen::FullTrackName& ftn) {
   auto runtime = runtime_.lock();
   if (!runtime) {
     return;
@@ -232,21 +440,25 @@ void PeeringBridge::unsubscribeTrack(const moxygen::FullTrackName& ftn) {
   runtime->unsubscribe(ftn.trackNamespace.trackNamespace, ftn.trackName);
 }
 
-void PeeringBridge::onNamespace(std::vector<std::string> nameSpace, bool withdrawn) {
+void MoqPeeringCore::onNamespace(std::vector<std::string> nameSpace, bool withdrawn) {
   moxygen::TrackNamespace ns{std::move(nameSpace)};
   dispatch([ns = std::move(ns), withdrawn](MoqxRelay& relay) {
     relay.injectPeeringNamespace(ns, withdrawn);
   });
 }
 
-void PeeringBridge::onTrack(std::vector<std::string> nameSpace, std::string track, bool withdrawn) {
+void MoqPeeringCore::onTrack(
+    std::vector<std::string> nameSpace,
+    std::string track,
+    bool withdrawn
+) {
   moxygen::FullTrackName ftn{moxygen::TrackNamespace{std::move(nameSpace)}, std::move(track)};
   dispatch([ftn = std::move(ftn), withdrawn](MoqxRelay& relay) {
     relay.injectPeeringTrack(ftn, withdrawn);
   });
 }
 
-void PeeringBridge::onSubscribe(
+void MoqPeeringCore::onSubscribe(
     std::vector<std::string> nameSpace,
     std::string track,
     uint64_t trackHash,
@@ -259,7 +471,7 @@ void PeeringBridge::onSubscribe(
   moxygen::FullTrackName ftn{moxygen::TrackNamespace{std::move(nameSpace)}, std::move(track)};
   {
     std::lock_guard<std::mutex> lock(mu_);
-    if (detached_) {
+    if (!armed_) {
       return;
     }
     peerSubs_[trackHash] = ftn;
@@ -267,7 +479,7 @@ void PeeringBridge::onSubscribe(
   dispatch([ftn](MoqxRelay& relay) { relay.notePeerSubscribe(ftn); });
 }
 
-void PeeringBridge::onUnsubscribe(uint64_t trackHash, bool subscribersRemain) {
+void MoqPeeringCore::onUnsubscribe(uint64_t trackHash, bool subscribersRemain) {
   if (subscribersRemain) {
     return;
   }
@@ -284,7 +496,7 @@ void PeeringBridge::onUnsubscribe(uint64_t trackHash, bool subscribersRemain) {
   dispatch([ftn](MoqxRelay& relay) { relay.notePeerUnsubscribe(ftn); });
 }
 
-void PeeringBridge::onData(
+void MoqPeeringCore::onData(
     uint64_t trackHash,
     bool isNewStream,
     std::optional<uint64_t> streamId,
@@ -297,7 +509,7 @@ void PeeringBridge::onData(
   bool broken = false;
   {
     std::lock_guard<std::mutex> lock(mu_);
-    if (detached_) {
+    if (!armed_) {
       return;
     }
     auto it = pulls_.find(trackHash);
@@ -354,13 +566,13 @@ void PeeringBridge::onData(
   }
 }
 
-void PeeringBridge::onStreamClosed(uint64_t trackHash, uint64_t streamId, bool reset) {
+void MoqPeeringCore::onStreamClosed(uint64_t trackHash, uint64_t streamId, bool reset) {
   moxygen::FullTrackName ftn;
   std::vector<PeeringStreamReader::Event> events;
   bool known = false;
   {
     std::lock_guard<std::mutex> lock(mu_);
-    if (detached_) {
+    if (!armed_) {
       return;
     }
     auto it = pulls_.find(trackHash);
@@ -398,11 +610,11 @@ void PeeringBridge::onStreamClosed(uint64_t trackHash, uint64_t streamId, bool r
   dispatch([ftn, streamId](MoqxRelay& relay) { relay.finishPeeringIngress(ftn, streamId, false); });
 }
 
-void PeeringBridge::dispatch(std::function<void(MoqxRelay&)> fn) {
+void MoqPeeringCore::dispatch(std::function<void(MoqxRelay&)> fn) {
   std::vector<std::shared_ptr<MoqxRelay>> relays;
   {
     std::lock_guard<std::mutex> lock(mu_);
-    if (detached_) {
+    if (!armed_) {
       return;
     }
     relays.reserve(relays_.size());
@@ -415,6 +627,41 @@ void PeeringBridge::dispatch(std::function<void(MoqxRelay&)> fn) {
   for (const auto& relay : relays) {
     relay->deferOnRelay([relay, fn]() { fn(*relay); });
   }
+}
+
+MoqPeeringBackend::MoqPeeringBackend(
+    std::shared_ptr<MoqxRelay> relay,
+    std::shared_ptr<MoqPeeringCore> core
+)
+    : relay_(std::move(relay)), core_(std::move(core)) {}
+
+void MoqPeeringBackend::start(folly::EventBase* /*evb*/) {
+  core_->arm();
+}
+
+void MoqPeeringBackend::stop() {
+  if (auto relay = relay_.lock()) {
+    core_->detach(*relay);
+  }
+}
+
+folly::coro::Task<void> MoqPeeringBackend::waitForPeers(folly::Function<bool()> /*routed*/) {
+  co_return;
+}
+
+ParticipantRouting MoqPeeringBackend::routingFor(const ParticipantInfo& info) const {
+  return plainRouting(info.routing);
+}
+
+folly::coro::Task<void> MoqPeeringBackend::visitPeers(PeerVisitor& visitor) const {
+  for (const auto& link : core_->links()) {
+    visitor.onPeer(link);
+  }
+  co_return;
+}
+
+folly::coro::Task<PeerAdminResult> MoqPeeringBackend::executePeerAdminOp(PeerAdminOp op) {
+  co_return core_->execute(std::move(op));
 }
 
 } // namespace openmoq::moqx

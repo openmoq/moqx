@@ -38,7 +38,6 @@ protected:
     relay_ = std::make_shared<MoqxRelay>(
         config::CacheConfig{0, 0}, // no cache
         /*relayID=*/"",
-        /*relayHopID=*/0,
         /*relayExec=*/nullptr,
         /*useLocalForwarders=*/false,
         /*maxDeselected=*/0
@@ -48,16 +47,17 @@ protected:
 
   void TearDown() override {
     subNsHandles_.clear();
+    subTracksHandles_.clear();
     relay_.reset();
     exec_->driveFor(10);
   }
 
   // Create a mock session wired to accept publish() calls.
   // publish() calls are recorded in publishedTracks_[session.get()].
-  std::shared_ptr<MockMoQSession> makeSession() {
+  std::shared_ptr<MockMoQSession> makeSession(uint64_t version = kVersionDraft16) {
     auto session = std::make_shared<NiceMock<MockMoQSession>>(exec_);
     ON_CALL(*session, getNegotiatedVersion())
-        .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
+        .WillByDefault(Return(std::optional<uint64_t>(version)));
 
     auto* raw = session.get();
     ON_CALL(*session, publish(_, _))
@@ -154,10 +154,9 @@ protected:
     subNs.options = SubscribeNamespaceOptions::PUBLISH;
     subNs.forward = true;
 
-    TrackRequestParameter p;
-    p.key = folly::to_underlying(TrackRequestParamKey::TRACK_FILTER);
-    p.asTrackFilter = TrackFilter{kPropType, maxSelected};
-    subNs.params.insertParam(p);
+    subNs.params.insertParam(
+        TopTracksExtension::encode(TrackFilter{kPropType, maxSelected}, kVersionDraft16)
+    );
 
     std::shared_ptr<Publisher::SubscribeNamespaceHandle> handle;
     withSessionContext(session, [&] {
@@ -169,6 +168,30 @@ protected:
       handle = *result;
     });
     subNsHandles_.push_back(handle);
+    return handle;
+  }
+
+  // Draft 18+: SUBSCRIBE_TRACKS with TOP_TRACKS_FILTER; session must be draft 18+.
+  std::shared_ptr<Publisher::SubscribeTracksHandle>
+  doSubscribeTracksFilter(std::shared_ptr<MoQSession> session, uint64_t maxSelected) {
+    SubscribeTracks subTracks;
+    subTracks.trackNamespacePrefix = kNs;
+    subTracks.requestID = RequestID(nextId_++);
+    subTracks.forward = true;
+    subTracks.params.insertParam(TopTracksExtension::encode(
+        TrackFilter{kPropType, maxSelected},
+        session->getNegotiatedVersion().value()
+    ));
+    std::shared_ptr<Publisher::SubscribeTracksHandle> handle;
+    withSessionContext(session, [&] {
+      auto result = folly::coro::blockingWait(
+          relay_->subscribeTracks(std::move(subTracks), nullptr),
+          exec_.get()
+      );
+      ASSERT_TRUE(result.hasValue());
+      handle = *result;
+    });
+    subTracksHandles_.push_back(handle);
     return handle;
   }
 
@@ -214,6 +237,7 @@ protected:
 
   // Dropping a handle unsubscribes, so the subscriptions last until TearDown.
   std::vector<std::shared_ptr<Publisher::SubscribeNamespaceHandle>> subNsHandles_;
+  std::vector<std::shared_ptr<Publisher::SubscribeTracksHandle>> subTracksHandles_;
 
   // per-session record of which FTNs were pushed via publish()
   std::map<MoQSession*, std::vector<FullTrackName>> publishedTracks_;
@@ -427,10 +451,7 @@ TEST_F(MoqxTrackFilterTest, ForwardFalse_TracksStillSelected) {
   subNs.options = SubscribeNamespaceOptions::PUBLISH;
   subNs.forward = false; // subscriber does not want forwarding
 
-  TrackRequestParameter p;
-  p.key = folly::to_underlying(TrackRequestParamKey::TRACK_FILTER);
-  p.asTrackFilter = TrackFilter{kPropType, 2};
-  subNs.params.insertParam(p);
+  subNs.params.insertParam(TopTracksExtension::encode(TrackFilter{kPropType, 2}, kVersionDraft16));
 
   auto viewer = makeSession();
   withSessionContext(viewer, [&] {
@@ -528,7 +549,6 @@ TEST_F(MoqxTrackFilterTest, FirstObjectCycle_DoesNotEvictSelectedTracksBeforeFir
   relay_ = std::make_shared<MoqxRelay>(
       config::CacheConfig{0, 0},
       /*relayID=*/"",
-      /*relayHopID=*/0,
       /*relayExec=*/nullptr,
       /*useLocalForwarders=*/false,
       /*maxDeselected=*/0,
@@ -745,7 +765,6 @@ TEST_F(MoqxTrackFilterTest, DeselectedQueueEviction_EvictsOldestEntry) {
   relay_ = std::make_shared<MoqxRelay>(
       config::CacheConfig{0, 0}, // no cache
       /*relayID=*/"",
-      /*relayHopID=*/0,
       /*relayExec=*/nullptr,
       /*useLocalForwarders=*/false,
       /*maxDeselected=*/2
@@ -837,7 +856,6 @@ TEST_F(MoqxTrackFilterTest, IdleEviction_SilentTrackReplacedByActiveOutsider) {
   relay_ = std::make_shared<MoqxRelay>(
       config::CacheConfig{0, 0}, // no cache
       /*relayID=*/"",
-      /*relayHopID=*/0,
       /*relayExec=*/nullptr,
       /*useLocalForwarders=*/false,
       /*maxDeselected=*/5,
@@ -1017,6 +1035,149 @@ TEST_F(MoqxTrackFilterTest, PublisherSubscriber_ViewerReceivesSelfTrack) {
 
   cSelf->publishDone(makePublishDone());
   cA->publishDone(makePublishDone());
+}
+
+// ---------------------------------------------------------------------------
+// Tests: draft 18+ SUBSCRIBE_TRACKS carries the filter
+// ---------------------------------------------------------------------------
+
+TEST_F(MoqxTrackFilterTest, SubscribeTracks_SubscribeFirst_Top2Of3) {
+  auto pubSess = makeSession();
+  auto viewer = makeSession(kVersionDraft18);
+  doSubscribeTracksFilter(viewer, /*maxSelected=*/2);
+
+  auto cA = doPublish(pubSess, "a", 100);
+  auto cB = doPublish(pubSess, "b", 80);
+  auto cC = doPublish(pubSess, "c", 40);
+  exec_->driveFor(20);
+
+  EXPECT_EQ(publishCount(viewer.get(), ftn("a")), 1);
+  EXPECT_EQ(publishCount(viewer.get(), ftn("b")), 1);
+  EXPECT_EQ(publishCount(viewer.get(), ftn("c")), 0);
+
+  cA->publishDone(makePublishDone());
+  cB->publishDone(makePublishDone());
+  cC->publishDone(makePublishDone());
+}
+
+TEST_F(MoqxTrackFilterTest, SubscribeTracks_LateSubscriber_GetsTopN) {
+  auto pubSess = makeSession();
+  auto cA = doPublish(pubSess, "a", 100);
+  auto cB = doPublish(pubSess, "b", 80);
+  auto cC = doPublish(pubSess, "c", 40);
+  exec_->driveFor(10);
+
+  auto viewer = makeSession(kVersionDraft18);
+  doSubscribeTracksFilter(viewer, /*maxSelected=*/2);
+  exec_->driveFor(20);
+
+  EXPECT_EQ(publishCount(viewer.get(), ftn("a")), 1);
+  EXPECT_EQ(publishCount(viewer.get(), ftn("b")), 1);
+  EXPECT_EQ(publishCount(viewer.get(), ftn("c")), 0);
+
+  cA->publishDone(makePublishDone());
+  cB->publishDone(makePublishDone());
+  cC->publishDone(makePublishDone());
+}
+
+// The ranking belongs to the subscription, so it outlives a namespace that goes quiet.
+TEST_F(MoqxTrackFilterTest, SubscribeTracks_RankingSurvivesEmptyNamespace) {
+  auto pubSess = makeSession();
+  auto viewer = makeSession(kVersionDraft18);
+  doSubscribeTracksFilter(viewer, /*maxSelected=*/1);
+
+  auto cFirst = doPublish(pubSess, "first", 50);
+  exec_->driveFor(10);
+  cFirst->publishDone(makePublishDone());
+  exec_->driveFor(10);
+
+  auto cLoud = doPublish(pubSess, "loud", 100);
+  auto cQuiet = doPublish(pubSess, "quiet", 30);
+  exec_->driveFor(20);
+
+  EXPECT_EQ(publishCount(viewer.get(), ftn("loud")), 1);
+  EXPECT_EQ(publishCount(viewer.get(), ftn("quiet")), 0);
+
+  cLoud->publishDone(makePublishDone());
+  cQuiet->publishDone(makePublishDone());
+}
+
+TEST_F(MoqxTrackFilterTest, SubscribeTracks_Unsubscribe_StopsSelection) {
+  auto pubSess = makeSession();
+  auto viewer = makeSession(kVersionDraft18);
+  auto handle = doSubscribeTracksFilter(viewer, /*maxSelected=*/2);
+  withSessionContext(viewer, [&] { handle->unsubscribeTracks(); });
+  exec_->driveFor(10);
+
+  auto cA = doPublish(pubSess, "a", 100);
+  exec_->driveFor(20);
+  EXPECT_EQ(publishCount(viewer.get(), ftn("a")), 0);
+
+  cA->publishDone(makePublishDone());
+}
+
+// A draft-18 session may hold SUBSCRIBE_NAMESPACE and SUBSCRIBE_TRACKS at one
+// prefix; ending the namespace subscription leaves the tracks one in place.
+TEST_F(MoqxTrackFilterTest, SubscribeTracks_SurvivesNamespaceUnsubscribeAtSamePrefix) {
+  auto pubSess = makeSession();
+  auto viewer = makeSession(kVersionDraft18);
+
+  SubscribeNamespace subNs;
+  subNs.trackNamespacePrefix = kNs;
+  subNs.requestID = RequestID(nextId_++);
+  subNs.options = SubscribeNamespaceOptions::NAMESPACE;
+  std::shared_ptr<Publisher::SubscribeNamespaceHandle> nsHandle;
+  withSessionContext(viewer, [&] {
+    auto result = folly::coro::blockingWait(
+        relay_->subscribeNamespace(std::move(subNs), nullptr),
+        exec_.get()
+    );
+    ASSERT_TRUE(result.hasValue());
+    nsHandle = *result;
+  });
+  doSubscribeTracksFilter(viewer, /*maxSelected=*/1);
+  withSessionContext(viewer, [&] { nsHandle->unsubscribeNamespace(); });
+  exec_->driveFor(10);
+
+  auto cLoud = doPublish(pubSess, "loud", 100);
+  auto cQuiet = doPublish(pubSess, "quiet", 30);
+  exec_->driveFor(20);
+
+  EXPECT_EQ(publishCount(viewer.get(), ftn("loud")), 1);
+  EXPECT_EQ(publishCount(viewer.get(), ftn("quiet")), 0);
+
+  cLoud->publishDone(makePublishDone());
+  cQuiet->publishDone(makePublishDone());
+}
+
+// A repeated SUBSCRIBE_NAMESPACE at one prefix is rejected, and the first one
+// keeps its filter.
+TEST_F(MoqxTrackFilterTest, RepeatedSubscription_IsRejected) {
+  auto pubSess = makeSession();
+  auto viewer = makeSession();
+  doSubscribeFilter(viewer, /*maxSelected=*/1);
+
+  SubscribeNamespace repeat;
+  repeat.trackNamespacePrefix = kNs;
+  repeat.requestID = RequestID(nextId_++);
+  repeat.options = SubscribeNamespaceOptions::NAMESPACE;
+  withSessionContext(viewer, [&] {
+    auto result = folly::coro::blockingWait(
+        relay_->subscribeNamespace(std::move(repeat), nullptr),
+        exec_.get()
+    );
+    ASSERT_FALSE(result.hasValue());
+    EXPECT_EQ(result.error().errorCode, SubscribeNamespaceErrorCode::DUPLICATE_SUBSCRIPTION);
+  });
+
+  auto cLoud = doPublish(pubSess, "loud", 100);
+  auto cQuiet = doPublish(pubSess, "quiet", 30);
+  exec_->driveFor(20);
+  EXPECT_EQ(publishCount(viewer.get(), ftn("loud")), 1);
+  EXPECT_EQ(publishCount(viewer.get(), ftn("quiet")), 0);
+
+  cLoud->publishDone(makePublishDone());
+  cQuiet->publishDone(makePublishDone());
 }
 
 } // namespace

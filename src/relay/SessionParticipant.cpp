@@ -6,11 +6,14 @@
 
 #include "relay/SessionParticipant.h"
 
+#include "peering/PeeringBackend.h"
 #include "relay/ExecutorCheck.h"
+#include "relay/PlainRouteCodec.h"
 #include "relay/PublisherCrossExecFilter.h"
 #include "relay/SubscriberCrossExecFilter.h"
 
 #include <folly/logging/xlog.h>
+#include <moxygen/openmoq/extensions/MoQClusterExtension.h>
 
 #include <utility>
 
@@ -181,23 +184,29 @@ private:
 
 } // namespace
 
-ParticipantInfo SessionParticipant::snapshot(const moxygen::MoQSession& session) {
-  const bool relayHops = session.negotiatedSetupExtension(moxygen::SetupExtension::RelayHops);
-  return ParticipantInfo{
+ParticipantInfo
+SessionParticipant::snapshot(const moxygen::MoQSession& session, const PeeringBackend* peering) {
+  ParticipantInfo info{
       .sessionId = session.sessionId(),
       .version = session.getNegotiatedVersion().value_or(0),
       .executor = session.getExecutor(),
-      .relayHops = relayHops,
-      .peerHopID = session.getPeerHopID(),
-      .linkCost = session.getRelayLinkCost(),
       .address = session.getPeerAddress().describe(),
       .authority = session.getAuthority(),
+      .routing =
+          {
+              .relayHops = moxygen::MoQClusterExtension::isNegotiated(session),
+              .peerHopID = moxygen::MoQClusterExtension::peerHopID(session),
+              .linkCost = moxygen::MoQClusterExtension::linkCost(session),
+          },
   };
+  info.routing = peering ? peering->routingFor(info) : plainRouting(info.routing);
+  return info;
 }
 
 Participant SessionParticipant::makeParticipant(
     const std::shared_ptr<moxygen::MoQSession>& session,
-    folly::Executor* relayExec
+    folly::Executor* relayExec,
+    const PeeringBackend* peering
 ) {
   std::shared_ptr<moxygen::Publisher> onExecutorPublisher =
       std::make_shared<WeakSessionPublisher>(WeakSession(session));
@@ -211,7 +220,7 @@ Participant SessionParticipant::makeParticipant(
     subscriber = std::make_shared<SubscriberCrossExecFilter>(exec, std::move(subscriber));
   }
   return Participant(
-      std::make_shared<const ParticipantInfo>(snapshot(*session)),
+      std::make_shared<const ParticipantInfo>(snapshot(*session, peering)),
       std::move(publisher),
       std::move(subscriber),
       std::move(onExecutorPublisher),
@@ -224,7 +233,7 @@ void SessionParticipant::attachToRequest() {
     auto session = getSession();
     XCHECK(session) << "a session request outlived its session";
     XDCHECK(onExecutor(session->getExecutor())) << "session request off its executor";
-    participant_ = makeParticipant(session, relayExec_);
+    participant_ = makeParticipant(session, relayExec_, peering_);
   }
   attachParticipant(*participant_);
 }

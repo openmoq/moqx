@@ -568,7 +568,7 @@ peering:
 
 moq-peering does not validate the peer's certificate. Treat the peering network as trusted, or terminate it where the packets are already authenticated. The admin routes that dial a peer belong on the existing admin listener; keep that listener on a trusted address. `add-peer` accepts a hostname or an IP literal, including private addresses, and rejects a URL.
 
-Service `upstream` entries still open MoQT sessions when `moq-peering` is selected. Those sessions do not negotiate MoQ Cluster. The load warns when any service has an upstream.
+Service `upstream` entries are not dialed when `moq-peering` is selected. The load warns when any service has an upstream.
 
 The admin API can add, remove, and restart a peer after startup, and can read each session. See [Admin Server](#admin-server).
 

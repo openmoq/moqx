@@ -52,10 +52,6 @@ jobs:
           # arm64 is validated by the publish-side docker build (ci-main publish
           # arm64 entry); skipped here to avoid the ubuntu-runner ↔ bookworm-tarball
           # glog ABI mismatch. arm64 regressions surface at main-push time.
-          - name: macos
-            key: macos
-            preset: default
-            runner: macos-15
           # ASan on moqx's own TUs, over the uninstrumented prebuilt folly, for a
           # fast PR signal. Full-stack instrumentation needs a prebuilt
           # instrumented moxygen: openmoq/moqx#579.

@@ -8,14 +8,15 @@
 
 #include "peering/MoqPeeringRuntime.h"
 #include "peering/PeeringAnnouncer.h"
-#include "relay/Participant.h"
+#include "peering/PeeringBackend.h"
 
-#include <cstdint>
 #include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <string>
+#include <string_view>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -24,29 +25,32 @@ namespace openmoq::moqx {
 
 class MoqxRelay;
 
-// Connects every service relay to one moq-peering runtime.
-//
-// A local PUBLISH_NAMESPACE becomes a namespace announcement, and a local
-// PUBLISH becomes a track announcement. A peer's announcement is injected
-// into each relay, which is what SUBSCRIBE_NAMESPACE and SUBSCRIBE_TRACKS
-// already deliver to clients. Objects use the same split: a peer subscribe
-// pulls local objects out, and a local subscribe pulls peer objects in.
-class PeeringBridge : public PeeringAnnouncer,
-                      public peering::PeeringEvents,
-                      public std::enable_shared_from_this<PeeringBridge> {
+// host:port, with an IPv6 host in brackets. The form executePeerAdminOp parses.
+std::string moqPeerToken(std::string_view host, uint16_t port);
+
+// One moq-peering runtime for the process. Every service relay announces through it,
+// and peer announcements, subscribes, and objects are injected back into each relay.
+// moq-peering does not open a MoQT session, so this is not a MoqtRelayBackend.
+class MoqPeeringCore : public PeeringAnnouncer,
+                       public peering::PeeringEvents,
+                       public std::enable_shared_from_this<MoqPeeringCore> {
 public:
-  explicit PeeringBridge(std::shared_ptr<peering::MoqPeeringRuntime> runtime);
-  ~PeeringBridge() override;
+  explicit MoqPeeringCore(std::shared_ptr<peering::MoqPeeringRuntime> runtime);
+  ~MoqPeeringCore() override;
 
-  PeeringBridge(const PeeringBridge&) = delete;
-  PeeringBridge& operator=(const PeeringBridge&) = delete;
+  MoqPeeringCore(const MoqPeeringCore&) = delete;
+  MoqPeeringCore& operator=(const MoqPeeringCore&) = delete;
 
-  void attach(const std::vector<std::shared_ptr<MoqxRelay>>& relays);
+  void addRelay(const std::shared_ptr<MoqxRelay>& relay);
+  // Accepts peer callbacks. Relays must already be added.
+  void arm();
+  void detach(MoqxRelay& relay);
+  // Drops every relay and clears the runtime callback. Idempotent.
+  void disarm();
 
-  // Stops callbacks and drops each relay's announcer. The runtime may still
-  // be running; destroy it after this returns so in-flight callbacks finish
-  // against a live bridge.
-  void detach();
+  std::optional<peering::PeeringStatus> status() const;
+  PeerAdminResult execute(PeerAdminOp op);
+  std::vector<PeerLink> links() const;
 
   void announceNamespace(const moxygen::TrackNamespace& ns) override;
   void withdrawNamespace(const moxygen::TrackNamespace& ns) override;
@@ -88,7 +92,6 @@ private:
   moxygen::SessionId sessionId_{makeSessionId()};
   std::mutex mu_;
   std::vector<std::weak_ptr<MoqxRelay>> relays_;
-  // Hash to name for tracks peers subscribe to, and tracks we subscribe to.
   std::map<uint64_t, moxygen::FullTrackName> peerSubs_;
   std::map<uint64_t, moxygen::FullTrackName> pulls_;
   struct StreamKey {
@@ -101,7 +104,31 @@ private:
   };
   std::map<StreamKey, std::unique_ptr<PeeringSubgroupWriter>> writers_;
   std::map<std::pair<uint64_t, uint64_t>, std::unique_ptr<PeeringStreamReader>> readers_;
-  bool detached_{false};
+  bool armed_{false};
+};
+
+// The PeeringBackend installed for each service when the process selected moq-peering.
+// The services share one MoqPeeringCore.
+class MoqPeeringBackend : public PeeringBackend {
+public:
+  MoqPeeringBackend(std::shared_ptr<MoqxRelay> relay, std::shared_ptr<MoqPeeringCore> core);
+
+  void start(folly::EventBase* evb) override;
+  void stop() override;
+
+  // Peer announcements are injected when they arrive. A subscribe does not wait
+  // for the QUIC handshake, so this stays false.
+  bool peersPending() const override { return false; }
+  folly::coro::Task<void> waitForPeers(folly::Function<bool()> routed) override;
+  bool holdsSessionHandles() const override { return false; }
+  ParticipantRouting routingFor(const ParticipantInfo& info) const override;
+
+  folly::coro::Task<void> visitPeers(PeerVisitor& visitor) const override;
+  folly::coro::Task<PeerAdminResult> executePeerAdminOp(PeerAdminOp op) override;
+
+private:
+  std::weak_ptr<MoqxRelay> relay_;
+  std::shared_ptr<MoqPeeringCore> core_;
 };
 
 } // namespace openmoq::moqx

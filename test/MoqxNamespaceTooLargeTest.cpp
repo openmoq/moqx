@@ -84,10 +84,10 @@ protected:
     subNs.options = options;
     subNs.forward = true;
     if (trackFilterMaxSelected) {
-      TrackRequestParameter p;
-      p.key = folly::to_underlying(TrackRequestParamKey::TRACK_FILTER);
-      p.asTrackFilter = TrackFilter{kPropType, *trackFilterMaxSelected};
-      subNs.params.insertParam(p);
+      subNs.params.insertParam(TopTracksExtension::encode(
+          TrackFilter{kPropType, *trackFilterMaxSelected},
+          session->getNegotiatedVersion().value()
+      ));
     }
     return withSessionContext(session, [&] {
       return folly::coro::blockingWait(
@@ -97,11 +97,20 @@ protected:
     });
   }
 
-  Publisher::SubscribeTracksResult doSubscribeTracks(std::shared_ptr<MoQSession> session) {
+  Publisher::SubscribeTracksResult doSubscribeTracks(
+      std::shared_ptr<MoQSession> session,
+      std::optional<uint64_t> trackFilterMaxSelected = std::nullopt
+  ) {
     SubscribeTracks subTracks;
     subTracks.trackNamespacePrefix = kNs;
     subTracks.requestID = RequestID(nextId_++);
     subTracks.forward = true;
+    if (trackFilterMaxSelected) {
+      subTracks.params.insertParam(TopTracksExtension::encode(
+          TrackFilter{kPropType, *trackFilterMaxSelected},
+          session->getNegotiatedVersion().value()
+      ));
+    }
     return withSessionContext(session, [&] {
       return folly::coro::blockingWait(relay_->subscribeTracks(std::move(subTracks)), exec_.get());
     });
@@ -215,6 +224,25 @@ TEST_F(MoqxNamespaceTooLargeTest, SubscribeNamespace_TrackFilterMaxSelectedAtThr
   auto res = doSubscribeNamespace(subSession, /*trackFilterMaxSelected=*/kMaxNamespaceMatches);
   ASSERT_FALSE(res.hasValue());
   EXPECT_EQ(res.error().errorCode, SubscribeNamespaceErrorCode::NAMESPACE_TOO_LARGE);
+}
+
+// SUBSCRIBE_TRACKS carries the filter on the draft-18 wire, with the same exemption.
+TEST_F(MoqxNamespaceTooLargeTest, SubscribeTracks_TrackFilterSmallMaxSelected_Exempt) {
+  auto pubSession = createMockSession(kVersionDraft18);
+  publishTracks(pubSession, kMaxNamespaceMatches + 1);
+
+  auto subSession = makeSubscriber();
+  EXPECT_TRUE(doSubscribeTracks(subSession, /*trackFilterMaxSelected=*/5).hasValue());
+}
+
+TEST_F(MoqxNamespaceTooLargeTest, SubscribeTracks_TrackFilterMaxSelectedAtThreshold_NotExempt) {
+  auto pubSession = createMockSession(kVersionDraft18);
+  publishTracks(pubSession, kMaxNamespaceMatches + 1);
+
+  auto subSession = makeSubscriber();
+  auto res = doSubscribeTracks(subSession, /*trackFilterMaxSelected=*/kMaxNamespaceMatches);
+  ASSERT_FALSE(res.hasValue());
+  EXPECT_EQ(res.error().errorCode, SubscribeTracksErrorCode::NAMESPACE_TOO_LARGE);
 }
 
 } // namespace
