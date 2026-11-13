@@ -14,8 +14,9 @@
 
 namespace openmoq::moqx {
 
-// Local PUBLISH and PUBLISH_NAMESPACE cross this into moq-peering. The relay
-// calls it on the relay executor. Implementations must not re-enter the relay.
+// Local PUBLISH and PUBLISH_NAMESPACE cross this into moq-peering. The peering
+// participant calls it on the relay executor. Implementations must not re-enter
+// the relay.
 class PeeringAnnouncer {
 public:
   virtual ~PeeringAnnouncer() = default;

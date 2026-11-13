@@ -5,12 +5,14 @@
  */
 
 #include "MoqxRelayTestFixture.h"
+#include "peering/MoqPeeringParticipant.h"
 #include "peering/PeeringAnnouncer.h"
 #include "peering/PeeringObject.h"
 
 #include <folly/io/IOBuf.h>
 #include <gmock/gmock.h>
 
+#include <atomic>
 #include <mutex>
 #include <string>
 
@@ -66,9 +68,17 @@ public:
   std::vector<FullTrackName> unsubscribed;
 };
 
+std::shared_ptr<MoqPeeringParticipant>
+makePeering(const std::shared_ptr<MoqxRelay>& relay, std::shared_ptr<RecordingAnnouncer> announcer) {
+  auto participant = std::make_shared<MoqPeeringParticipant>(std::move(announcer), relay);
+  participant->attach();
+  return participant;
+}
+
 TEST_P(MoQRelayTest, PeeringAnnouncesLocalPublishAndNamespace) {
   auto announcer = std::make_shared<RecordingAnnouncer>();
-  relay_->setPeeringAnnouncer(announcer);
+  auto peering = makePeering(relay_, announcer);
+  ASSERT_TRUE(driveUntil([&] { return peering->ready(); }));
   auto first = createMockSession();
   auto second = createMockSession();
 
@@ -120,11 +130,12 @@ TEST_P(MoQRelayTest, PeeringAnnouncesLocalPublishAndNamespace) {
 
 TEST_P(MoQRelayTest, PeeringInjectsNamespaceAndTrack) {
   auto announcer = std::make_shared<RecordingAnnouncer>();
-  relay_->setPeeringAnnouncer(announcer);
+  auto peering = makePeering(relay_, announcer);
+  ASSERT_TRUE(driveUntil([&] { return peering->ready(); }));
 
   verifyOnRelayExec([&] {
-    relay_->injectPeeringNamespace(kTestNamespace, false);
-    relay_->injectPeeringTrack(kTestTrackName, false);
+    peering->onNamespace(kTestNamespace, false);
+    peering->onTrack(kTestTrackName, false);
   });
 
   std::optional<SessionId> namespacePublisher;
@@ -149,8 +160,8 @@ TEST_P(MoQRelayTest, PeeringInjectsNamespaceAndTrack) {
   }
 
   verifyOnRelayExec([&] {
-    relay_->injectPeeringNamespace(kTestNamespace, true);
-    relay_->injectPeeringTrack(kTestTrackName, true);
+    peering->onNamespace(kTestNamespace, true);
+    peering->onTrack(kTestTrackName, true);
   });
   bool cleared = false;
   for (int i = 0; i < (relayEvb_ ? 20 : 1) && !cleared; ++i) {
@@ -165,13 +176,53 @@ TEST_P(MoQRelayTest, PeeringInjectsNamespaceAndTrack) {
   EXPECT_TRUE(cleared);
 }
 
+// A subscriber can arrive once the peered namespace is published and before the
+// track announce. That subscribe has to pull, and the later track inject must
+// not tear the pull down.
+TEST_P(MoQRelayTest, PeeringSubscribeBeforeTrackInjectPulls) {
+  auto announcer = std::make_shared<RecordingAnnouncer>();
+  auto peering = makePeering(relay_, announcer);
+  ASSERT_TRUE(driveUntil([&] { return peering->ready(); }));
+  verifyOnRelayExec([&] { peering->onNamespace(kTestNamespace, false); });
+  ASSERT_TRUE(driveUntil([&] {
+    bool published = false;
+    verifyOnRelayExec([&] {
+      auto publisher = relay_->findNamespacePublisher(kTestNamespace);
+      published = publisher && *publisher == announcer->sessionId();
+    });
+    return published;
+  }));
+
+  auto subscriber = createMockSession();
+  auto mock = createMockConsumer();
+  ASSERT_NE(subscribeToTrack(subscriber, kTestTrackName, mock, RequestID(1)), nullptr);
+  ASSERT_TRUE(driveUntil([&] {
+    std::lock_guard<std::mutex> lock(announcer->mu);
+    return announcer->subscribed.size() == 1u;
+  }));
+
+  verifyOnRelayExec([&] { peering->onTrack(kTestTrackName, false); });
+  int turns = 0;
+  driveUntil([&] { return ++turns > (relayEvb_ ? 8 : 0); });
+  {
+    std::lock_guard<std::mutex> lock(announcer->mu);
+    EXPECT_TRUE(announcer->unsubscribed.empty());
+    EXPECT_EQ(announcer->subscribed.size(), 1u);
+  }
+  removeSession(subscriber);
+  exec_->drive();
+}
+
 TEST_P(MoQRelayTest, PeeringSendsObjectsToSubscribedPeer) {
   auto announcer = std::make_shared<RecordingAnnouncer>();
-  relay_->setPeeringAnnouncer(announcer);
+  auto peering = makePeering(relay_, announcer);
+  ASSERT_TRUE(driveUntil([&] { return peering->ready(); }));
   auto session = createMockSession();
   doPublishNamespace(session, kTestNamespace);
   auto consumer = doPublish(session, kTestTrackName);
-  verifyOnRelayExec([&] { relay_->notePeerSubscribe(kTestTrackName); });
+  verifyOnRelayExec([&] { peering->onSubscribe(kTestTrackName); });
+  int turns = 0;
+  ASSERT_TRUE(driveUntil([&] { return ++turns > (relayEvb_ ? 4 : 0); }));
 
   ObjectHeader header(9, 2, 4, /*priority=*/6, ObjectStatus::NORMAL);
   auto payload = folly::IOBuf::copyBuffer(std::string("hello-peer"));
@@ -201,7 +252,8 @@ TEST_P(MoQRelayTest, PeeringSendsObjectsToSubscribedPeer) {
 // subscribe has to send REQUEST_UPDATE forward=true or it never writes objects.
 TEST_P(MoQRelayTest, PeeringSubscribeResumesPausedPublisher) {
   auto announcer = std::make_shared<RecordingAnnouncer>();
-  relay_->setPeeringAnnouncer(announcer);
+  auto peering = makePeering(relay_, announcer);
+  ASSERT_TRUE(driveUntil([&] { return peering->ready(); }));
   auto session = createMockSession();
   doPublishNamespace(session, kTestNamespace);
   auto handle = makePublishHandle();
@@ -212,7 +264,7 @@ TEST_P(MoQRelayTest, PeeringSubscribeResumesPausedPublisher) {
     resumed = update.forward.has_value() && *update.forward;
   });
 
-  verifyOnRelayExec([&] { relay_->notePeerSubscribe(kTestTrackName); });
+  verifyOnRelayExec([&] { peering->onSubscribe(kTestTrackName); });
   ASSERT_TRUE(driveUntil([&] { return resumed; }));
   ASSERT_TRUE(Mock::VerifyAndClearExpectations(handle.get()));
 
@@ -224,7 +276,8 @@ TEST_P(MoQRelayTest, PeeringSubscribeResumesPausedPublisher) {
 // publisher then keeps sending after the last peer subscriber has left.
 TEST_P(MoQRelayTest, PeeringUnsubscribePausesPublisher) {
   auto announcer = std::make_shared<RecordingAnnouncer>();
-  relay_->setPeeringAnnouncer(announcer);
+  auto peering = makePeering(relay_, announcer);
+  ASSERT_TRUE(driveUntil([&] { return peering->ready(); }));
   auto session = createMockSession();
   doPublishNamespace(session, kTestNamespace);
   auto handle = makePublishHandle();
@@ -235,7 +288,7 @@ TEST_P(MoQRelayTest, PeeringUnsubscribePausesPublisher) {
   EXPECT_CALL(*handle, requestUpdateCalled(_)).WillOnce([&](const RequestUpdate& update) {
     forwarding = update.forward.has_value() && *update.forward;
   });
-  verifyOnRelayExec([&] { relay_->notePeerSubscribe(kTestTrackName); });
+  verifyOnRelayExec([&] { peering->onSubscribe(kTestTrackName); });
   ASSERT_TRUE(driveUntil([&] { return forwarding; }));
   ASSERT_TRUE(Mock::VerifyAndClearExpectations(handle.get()));
 
@@ -250,7 +303,7 @@ TEST_P(MoQRelayTest, PeeringUnsubscribePausesPublisher) {
   EXPECT_CALL(*handle, requestUpdateCalled(_)).WillOnce([&](const RequestUpdate& update) {
     paused = update.forward.has_value() && !*update.forward;
   });
-  verifyOnRelayExec([&] { relay_->notePeerUnsubscribe(kTestTrackName); });
+  verifyOnRelayExec([&] { peering->onUnsubscribe(kTestTrackName); });
   ASSERT_TRUE(driveUntil([&] { return paused; }));
   removeSession(session);
 }
@@ -259,7 +312,8 @@ TEST_P(MoQRelayTest, PeeringUnsubscribePausesPublisher) {
 // after the last peering subscriber leaves.
 TEST_P(MoQRelayTest, PeeringUnsubscribeKeepsForwardingClient) {
   auto announcer = std::make_shared<RecordingAnnouncer>();
-  relay_->setPeeringAnnouncer(announcer);
+  auto peering = makePeering(relay_, announcer);
+  ASSERT_TRUE(driveUntil([&] { return peering->ready(); }));
   auto session = createMockSession();
   doPublishNamespace(session, kTestNamespace);
   auto handle = makePublishHandle();
@@ -288,21 +342,25 @@ TEST_P(MoQRelayTest, PeeringUnsubscribeKeepsForwardingClient) {
     }
   });
   verifyOnRelayExec([&] {
-    relay_->notePeerSubscribe(kTestTrackName);
-    relay_->notePeerUnsubscribe(kTestTrackName);
+    peering->onSubscribe(kTestTrackName);
+    peering->onUnsubscribe(kTestTrackName);
   });
   driveUntil([&] { return paused; }, 20);
   EXPECT_FALSE(paused);
   removeSession(subscriber);
   removeSession(session);
+  // The last local subscriber leaving queues a publisher update. Run it before
+  // the mock handle is destroyed with the test.
+  exec_->drive();
 }
 
 TEST_P(MoQRelayTest, PeeringDeliversObjectsToLocalSubscriber) {
   auto announcer = std::make_shared<RecordingAnnouncer>();
-  relay_->setPeeringAnnouncer(announcer);
+  auto peering = makePeering(relay_, announcer);
+  ASSERT_TRUE(driveUntil([&] { return peering->ready(); }));
   verifyOnRelayExec([&] {
-    relay_->injectPeeringNamespace(kTestNamespace, false);
-    relay_->injectPeeringTrack(kTestTrackName, false);
+    peering->onNamespace(kTestNamespace, false);
+    peering->onTrack(kTestTrackName, false);
   });
   bool published = false;
   for (int i = 0; i < (relayEvb_ ? 20 : 1) && !published; ++i) {
@@ -362,7 +420,7 @@ TEST_P(MoQRelayTest, PeeringDeliversObjectsToLocalSubscriber) {
   auto events = reader.take();
   verifyOnRelayExec([&] {
     for (const auto& event : events) {
-      relay_->acceptPeeringEvent(kTestTrackName, 11, event);
+      peering->acceptEvent(kTestTrackName, 11, event);
     }
   });
   ASSERT_TRUE(driveUntil([&] {
@@ -380,6 +438,69 @@ TEST_P(MoQRelayTest, PeeringDeliversObjectsToLocalSubscriber) {
     EXPECT_EQ(announcer->subscribed[0], kTestTrackName);
   }
   removeSession(subscriber);
+}
+
+// Data is still arriving when the last local subscriber disconnects. The open
+// subgroup must not hide forward=0, or the peered publisher keeps sending.
+TEST_P(MoQRelayTest, PeeringOpenSubgroupDisconnectUnpulls) {
+  auto announcer = std::make_shared<RecordingAnnouncer>();
+  auto peering = makePeering(relay_, announcer);
+  ASSERT_TRUE(driveUntil([&] { return peering->ready(); }));
+  verifyOnRelayExec([&] {
+    peering->onNamespace(kTestNamespace, false);
+    peering->onTrack(kTestTrackName, false);
+  });
+  bool published = false;
+  for (int i = 0; i < (relayEvb_ ? 20 : 1) && !published; ++i) {
+    if (relayEvb_) {
+      exec_->drive();
+    }
+    verifyOnRelayExec([&] {
+      auto track = relay_->findPublishState(kTestTrackName);
+      published = track.publisher && *track.publisher == announcer->sessionId();
+    });
+  }
+  ASSERT_TRUE(published);
+
+  auto subscriber = createMockSession();
+  auto mock = createMockConsumer();
+  auto mockSg = createMockSubgroupConsumer();
+  std::atomic<bool> opened{false};
+  EXPECT_CALL(*mock, beginSubgroup(3, 1, 4, testing::_))
+      .WillOnce(testing::DoAll(
+          testing::InvokeWithoutArgs([&] { opened = true; }),
+          testing::Return(
+              folly::makeExpected<MoQPublishError>(
+                  std::static_pointer_cast<SubgroupConsumer>(mockSg)
+              )
+          )
+      ));
+  subscribeToTrack(subscriber, kTestTrackName, mock, RequestID(1));
+  ASSERT_TRUE(driveUntil([&] {
+    std::lock_guard<std::mutex> lock(announcer->mu);
+    return announcer->subscribed.size() == 1u;
+  }));
+
+  PeeringStreamReader::Event header;
+  header.kind = PeeringStreamReader::Event::Kind::Subgroup;
+  header.object.group = 3;
+  header.object.subgroup = 1;
+  header.object.priority = 4;
+  verifyOnRelayExec([&] { peering->acceptEvent(kTestTrackName, 11, header); });
+  ASSERT_TRUE(driveUntil([&] { return opened.load(); }));
+
+  removeSession(subscriber);
+  ASSERT_TRUE(driveUntil([&] {
+    std::lock_guard<std::mutex> lock(announcer->mu);
+    return announcer->unsubscribed.size() == 1u;
+  }));
+  {
+    std::lock_guard<std::mutex> lock(announcer->mu);
+    EXPECT_EQ(announcer->unsubscribed[0], kTestTrackName);
+  }
+  if (exec_) {
+    exec_->drive();
+  }
 }
 
 } // namespace openmoq::moqx::test

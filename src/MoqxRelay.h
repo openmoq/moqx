@@ -14,7 +14,6 @@
 #include "SubscriptionRegistry.h"
 #include "TracksTree.h"
 #include "config/Config.h"
-#include "peering/PeeringAnnouncer.h"
 #include "peering/PeeringBackend.h"
 #include "relay/ChannelSubscriber.h"
 #include "relay/ExecBound.h"
@@ -171,7 +170,7 @@ public:
 
   // Peering publishes bind their handle to this relay's executor. That executor
   // is destroyed before the subscription registry, so drop those handles first.
-  ~MoqxRelay() override;
+  ~MoqxRelay() override = default;
 
   folly::Executor* getRelayExec() const { return relayExec_; }
   const std::string& getRelayID() const { return relayID_; }
@@ -299,42 +298,9 @@ public:
   // single io thread when there is none.
   void dumpState(RelayStateVisitor& visitor) const;
 
-  // moq-peering. The announcer is called when a local client publishes a
-  // namespace or track, and when objects or subscribe interest cross the
-  // peering session. Peer announcements and objects are injected back through
-  // the methods below, on the relay executor.
-  void setPeeringAnnouncer(std::shared_ptr<PeeringAnnouncer> announcer);
+  // Runs fn on the executor that owns relay state. A caller already on that
+  // executor runs inline. Peering callbacks use this to leave the peering thread.
   void deferOnRelay(folly::Function<void()> fn);
-  void injectPeeringNamespace(moxygen::TrackNamespace ns, bool withdrawn);
-  void injectPeeringTrack(moxygen::FullTrackName ftn, bool withdrawn);
-  void notePeerSubscribe(const moxygen::FullTrackName& ftn);
-  void notePeerUnsubscribe(const moxygen::FullTrackName& ftn);
-  void deliverPeeringObject(const moxygen::FullTrackName& ftn, const PeeringObject& object);
-  void acceptPeeringEvent(
-      const moxygen::FullTrackName& ftn,
-      uint64_t streamId,
-      const PeeringStreamReader::Event& event
-  );
-  void finishPeeringIngress(const moxygen::FullTrackName& ftn, uint64_t streamId, bool reset);
-  void finishPeeringSubgroup(
-      const moxygen::FullTrackName& ftn,
-      uint64_t group,
-      uint64_t subgroup,
-      bool reset
-  );
-  // Called from the ingest filter on the relay executor.
-  void forwardPublishedObject(
-      const moxygen::FullTrackName& ftn,
-      uint64_t group,
-      uint64_t subgroup,
-      uint64_t objectId,
-      uint8_t priority,
-      uint8_t status,
-      bool lastInGroup,
-      bool datagram,
-      const moxygen::Payload& payload,
-      const moxygen::Extensions& extensions
-  );
 
   // Test accessor: check if a publish exists and return node/publish state
   struct PublishState {
@@ -366,30 +332,6 @@ private:
   void unsubscribeTracks(const moxygen::TrackNamespace& prefix, moxygen::SessionId session);
 
   void onPublishDone(const moxygen::FullTrackName& ftn);
-
-  struct PeeringSnap {
-    std::shared_ptr<PeeringAnnouncer> announcer;
-    moxygen::SessionId sessionId;
-  };
-  PeeringSnap peeringSnap() const;
-  const Participant& peeringParticipant(moxygen::SessionId session);
-  bool
-  hasLocalNamespacePublisher(const moxygen::TrackNamespace& ns, moxygen::SessionId peering) const;
-  void noteLocalNamespace(const moxygen::TrackNamespace& ns, moxygen::SessionId publisher);
-  void noteLocalNamespaceDone(const moxygen::TrackNamespace& ns);
-  void noteLocalTrack(const moxygen::FullTrackName& ftn, moxygen::SessionId publisher);
-  void noteLocalTrackDone(const moxygen::FullTrackName& ftn);
-  void endPeeringTrack(const moxygen::FullTrackName& ftn);
-  uint64_t nextPeeringRequest();
-  bool isPeeringPublisher(const moxygen::FullTrackName& ftn);
-  bool peerWantsTrack(const moxygen::FullTrackName& ftn);
-  void noteLocalPeeringSubscribe(const moxygen::FullTrackName& ftn);
-  void noteLocalPeeringUnsubscribe(const moxygen::FullTrackName& ftn);
-  void attachPeerFanout(const moxygen::FullTrackName& ftn);
-  void detachPeerFanout(const moxygen::FullTrackName& ftn);
-  // forward=0 when no peer and no local client is still forwarding.
-  void pauseLivePublisher(const moxygen::FullTrackName& ftn);
-  void completeDeferredPublishDone(const moxygen::FullTrackName& ftn);
 
   NamespaceTree namespaceTree_;
 
@@ -694,6 +636,10 @@ private:
       ForwarderRef publisherRef
   );
 
+  // True when this session already has a subscribe or publish for the track, or a
+  // subscribe to it is still in flight. Relay executor only.
+  bool trackServedBy(const moxygen::FullTrackName& ftn, moxygen::SessionId session) const;
+
   std::shared_ptr<folly::Executor> ownedRelayExec_;
   std::unique_ptr<folly::EventBaseThreadTimekeeper> timekeeper_;
   folly::Executor* relayExec_{nullptr};
@@ -789,29 +735,6 @@ private:
 
   std::chrono::milliseconds idleTimeout_{kDefaultIdleTimeout};
   std::chrono::milliseconds activityThreshold_{kDefaultActivityThreshold};
-
-  mutable std::mutex peeringMu_;
-  std::shared_ptr<PeeringAnnouncer> peeringAnnouncer_;
-  moxygen::SessionId peeringSessionId_{};
-  Participant peeringParticipant_;
-  std::set<moxygen::TrackNamespace> announcedNamespaces_;
-  std::set<moxygen::FullTrackName> announcedTracks_;
-  std::map<moxygen::TrackNamespace, moxygen::RequestID> peeringNamespaceRequests_;
-  std::map<moxygen::FullTrackName, std::shared_ptr<moxygen::TrackConsumer>> peeringTracks_;
-  std::map<std::pair<moxygen::FullTrackName, uint64_t>, std::shared_ptr<moxygen::SubgroupConsumer>>
-      peerIngress_;
-  // Tracks a peer has subscribed to, and the fanout subscriber that keeps the
-  // local publisher forwarding. peeringPull_ is tracks we asked a peer for.
-  std::set<moxygen::FullTrackName> peerInterest_;
-  std::set<moxygen::FullTrackName> peerFanout_;
-  std::set<moxygen::FullTrackName> peeringPull_;
-  // PUBLISH_DONE arrived while a peer still held the fanout. The handle stays
-  // until that fanout is removed and forward=0 has been sent.
-  std::set<moxygen::FullTrackName> deferredPublishDone_;
-  // A forward=0 update already went out. Cleared when forwarding resumes.
-  std::set<moxygen::FullTrackName> publisherPaused_;
-  const moxygen::SessionId peerFanoutId_{makeSessionId()};
-  uint64_t peeringRequestSeq_{0};
 };
 
 // Creates a NamespacePublishHandle that bridges NAMESPACE/NAMESPACE_DONE

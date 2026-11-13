@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include "peering/MoqPeeringParticipant.h"
 #include "peering/MoqPeeringRuntime.h"
 #include "peering/PeeringAnnouncer.h"
 #include "peering/PeeringBackend.h"
@@ -28,9 +29,10 @@ class MoqxRelay;
 // host:port, with an IPv6 host in brackets. The form executePeerAdminOp parses.
 std::string moqPeerToken(std::string_view host, uint16_t port);
 
-// One moq-peering runtime for the process. Every service relay announces through it,
-// and peer announcements, subscribes, and objects are injected back into each relay.
-// moq-peering does not open a MoQT session, so this is not a MoqtRelayBackend.
+// One moq-peering runtime for the process. Each service relay gets one
+// MoqPeeringParticipant. Peer announcements, subscribes, and objects are
+// delivered to those participants. moq-peering does not open a MoQT session,
+// so this is not a MoqtRelayBackend.
 class MoqPeeringCore : public PeeringAnnouncer,
                        public peering::PeeringEvents,
                        public std::enable_shared_from_this<MoqPeeringCore> {
@@ -86,12 +88,12 @@ public:
   void onStreamClosed(uint64_t trackHash, uint64_t streamId, bool reset) override;
 
 private:
-  void dispatch(std::function<void(MoqxRelay&)> fn);
+  void dispatch(std::function<void(MoqPeeringParticipant&)> fn);
 
   std::weak_ptr<peering::MoqPeeringRuntime> runtime_;
   moxygen::SessionId sessionId_{makeSessionId()};
   std::mutex mu_;
-  std::vector<std::weak_ptr<MoqxRelay>> relays_;
+  std::vector<std::shared_ptr<MoqPeeringParticipant>> participants_;
   std::map<uint64_t, moxygen::FullTrackName> peerSubs_;
   std::map<uint64_t, moxygen::FullTrackName> pulls_;
   struct StreamKey {

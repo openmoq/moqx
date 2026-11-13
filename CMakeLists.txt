@@ -520,6 +520,7 @@ add_library(moqx_core STATIC
   src/admin/StateResponse.cpp
   src/peering/PeerJson.cpp
   src/peering/MoqPeeringBackend.cpp
+  src/peering/MoqPeeringParticipant.cpp
   src/peering/PeeringObject.cpp
   src/stats/StatsRegistry.cpp
   src/stats/TrackStatsRegistry.cpp

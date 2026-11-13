@@ -1,0 +1,1 @@
+- moq-peering is one relay participant. Peer announces, subscribes, and objects go through the publisher, subscriber, and track consumer interfaces, and the relay no longer keeps a separate peering fanout.

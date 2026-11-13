@@ -110,9 +110,9 @@ void MoqPeeringCore::addRelay(const std::shared_ptr<MoqxRelay>& relay) {
   if (!relay) {
     return;
   }
-  relay->setPeeringAnnouncer(shared_from_this());
+  auto participant = std::make_shared<MoqPeeringParticipant>(shared_from_this(), relay);
   std::lock_guard<std::mutex> lock(mu_);
-  relays_.push_back(relay);
+  participants_.push_back(std::move(participant));
 }
 
 void MoqPeeringCore::arm() {
@@ -130,17 +130,30 @@ void MoqPeeringCore::arm() {
   if (auto runtime = runtime_.lock()) {
     runtime->setEvents(this);
   }
+  std::vector<std::shared_ptr<MoqPeeringParticipant>> participants;
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    participants = participants_;
+  }
+  for (const auto& participant : participants) {
+    participant->attach();
+  }
 }
 
 void MoqPeeringCore::detach(MoqxRelay& relay) {
+  std::shared_ptr<MoqPeeringParticipant> gone;
   bool last = false;
   {
     std::lock_guard<std::mutex> lock(mu_);
-    std::erase_if(relays_, [&](const std::weak_ptr<MoqxRelay>& weak) {
-      auto locked = weak.lock();
-      return !locked || locked.get() == &relay;
+    std::erase_if(participants_, [&](const std::shared_ptr<MoqPeeringParticipant>& participant) {
+      auto held = participant->relay();
+      if (held && held.get() == &relay) {
+        gone = participant;
+        return true;
+      }
+      return !held;
     });
-    last = relays_.empty();
+    last = participants_.empty();
     if (last) {
       armed_ = false;
       writers_.clear();
@@ -149,7 +162,9 @@ void MoqPeeringCore::detach(MoqxRelay& relay) {
       pulls_.clear();
     }
   }
-  relay.setPeeringAnnouncer(nullptr);
+  if (gone) {
+    gone->detach();
+  }
   if (last) {
     if (auto runtime = runtime_.lock()) {
       runtime->setEvents(nullptr);
@@ -158,20 +173,14 @@ void MoqPeeringCore::detach(MoqxRelay& relay) {
 }
 
 void MoqPeeringCore::disarm() {
-  std::vector<std::shared_ptr<MoqxRelay>> relays;
+  std::vector<std::shared_ptr<MoqPeeringParticipant>> participants;
   {
     std::lock_guard<std::mutex> lock(mu_);
-    if (!armed_ && relays_.empty()) {
+    if (!armed_ && participants_.empty()) {
       return;
     }
     armed_ = false;
-    relays.reserve(relays_.size());
-    for (const auto& weak : relays_) {
-      if (auto locked = weak.lock()) {
-        relays.push_back(std::move(locked));
-      }
-    }
-    relays_.clear();
+    participants = std::move(participants_);
     writers_.clear();
     readers_.clear();
     peerSubs_.clear();
@@ -180,8 +189,8 @@ void MoqPeeringCore::disarm() {
   if (auto runtime = runtime_.lock()) {
     runtime->setEvents(nullptr);
   }
-  for (const auto& relay : relays) {
-    relay->setPeeringAnnouncer(nullptr);
+  for (const auto& participant : participants) {
+    participant->detach();
   }
 }
 
@@ -442,8 +451,8 @@ void MoqPeeringCore::unsubscribeTrack(const moxygen::FullTrackName& ftn) {
 
 void MoqPeeringCore::onNamespace(std::vector<std::string> nameSpace, bool withdrawn) {
   moxygen::TrackNamespace ns{std::move(nameSpace)};
-  dispatch([ns = std::move(ns), withdrawn](MoqxRelay& relay) {
-    relay.injectPeeringNamespace(ns, withdrawn);
+  dispatch([ns = std::move(ns), withdrawn](MoqPeeringParticipant& participant) {
+    participant.onNamespace(ns, withdrawn);
   });
 }
 
@@ -452,15 +461,9 @@ void MoqPeeringCore::onTrack(
     std::string track,
     bool withdrawn
 ) {
-  moxygen::TrackNamespace ns{std::move(nameSpace)};
-  moxygen::FullTrackName ftn{ns, std::move(track)};
-  // A track announce does not carry a separate namespace announce. Publish the
-  // namespace too, so SUBSCRIBE_NAMESPACE on this relay learns the name.
-  if (!withdrawn) {
-    dispatch([ns](MoqxRelay& relay) { relay.injectPeeringNamespace(ns, false); });
-  }
-  dispatch([ftn = std::move(ftn), withdrawn](MoqxRelay& relay) {
-    relay.injectPeeringTrack(ftn, withdrawn);
+  moxygen::FullTrackName ftn{moxygen::TrackNamespace{std::move(nameSpace)}, std::move(track)};
+  dispatch([ftn = std::move(ftn), withdrawn](MoqPeeringParticipant& participant) {
+    participant.onTrack(ftn, withdrawn);
   });
 }
 
@@ -482,7 +485,7 @@ void MoqPeeringCore::onSubscribe(
     }
     peerSubs_[trackHash] = ftn;
   }
-  dispatch([ftn](MoqxRelay& relay) { relay.notePeerSubscribe(ftn); });
+  dispatch([ftn](MoqPeeringParticipant& participant) { participant.onSubscribe(ftn); });
 }
 
 void MoqPeeringCore::onUnsubscribe(uint64_t trackHash, bool subscribersRemain) {
@@ -499,7 +502,7 @@ void MoqPeeringCore::onUnsubscribe(uint64_t trackHash, bool subscribersRemain) {
     ftn = it->second;
     peerSubs_.erase(it);
   }
-  dispatch([ftn](MoqxRelay& relay) { relay.notePeerUnsubscribe(ftn); });
+  dispatch([ftn](MoqPeeringParticipant& participant) { participant.onUnsubscribe(ftn); });
 }
 
 void MoqPeeringCore::onData(
@@ -551,14 +554,16 @@ void MoqPeeringCore::onData(
   }
   if (streamId && (replaced || broken)) {
     const uint64_t id = *streamId;
-    dispatch([ftn, id](MoqxRelay& relay) { relay.finishPeeringIngress(ftn, id, true); });
+    dispatch([ftn, id](MoqPeeringParticipant& participant) {
+      participant.finishIngress(ftn, id, true);
+    });
     if (broken) {
       return;
     }
   }
   if (datagram) {
-    dispatch([ftn, object = std::move(*datagram)](MoqxRelay& relay) {
-      relay.deliverPeeringObject(ftn, object);
+    dispatch([ftn, object = std::move(*datagram)](MoqPeeringParticipant& participant) {
+      participant.deliverObject(ftn, object);
     });
   }
   if (!streamId) {
@@ -566,8 +571,8 @@ void MoqPeeringCore::onData(
   }
   const uint64_t id = *streamId;
   for (auto& event : events) {
-    dispatch([ftn, id, event = std::move(event)](MoqxRelay& relay) {
-      relay.acceptPeeringEvent(ftn, id, event);
+    dispatch([ftn, id, event = std::move(event)](MoqPeeringParticipant& participant) {
+      participant.acceptEvent(ftn, id, event);
     });
   }
 }
@@ -603,35 +608,36 @@ void MoqPeeringCore::onStreamClosed(uint64_t trackHash, uint64_t streamId, bool 
     return;
   }
   if (reset) {
-    dispatch([ftn, streamId](MoqxRelay& relay) {
-      relay.finishPeeringIngress(ftn, streamId, true);
+    dispatch([ftn, streamId](MoqPeeringParticipant& participant) {
+      participant.finishIngress(ftn, streamId, true);
     });
     return;
   }
   for (auto& event : events) {
-    dispatch([ftn, streamId, event = std::move(event)](MoqxRelay& relay) {
-      relay.acceptPeeringEvent(ftn, streamId, event);
+    dispatch([ftn, streamId, event = std::move(event)](MoqPeeringParticipant& participant) {
+      participant.acceptEvent(ftn, streamId, event);
     });
   }
-  dispatch([ftn, streamId](MoqxRelay& relay) { relay.finishPeeringIngress(ftn, streamId, false); });
+  dispatch([ftn, streamId](MoqPeeringParticipant& participant) {
+    participant.finishIngress(ftn, streamId, false);
+  });
 }
 
-void MoqPeeringCore::dispatch(std::function<void(MoqxRelay&)> fn) {
-  std::vector<std::shared_ptr<MoqxRelay>> relays;
+void MoqPeeringCore::dispatch(std::function<void(MoqPeeringParticipant&)> fn) {
+  std::vector<std::shared_ptr<MoqPeeringParticipant>> participants;
   {
     std::lock_guard<std::mutex> lock(mu_);
     if (!armed_) {
       return;
     }
-    relays.reserve(relays_.size());
-    for (const auto& relay : relays_) {
-      if (auto locked = relay.lock()) {
-        relays.push_back(std::move(locked));
-      }
-    }
+    participants = participants_;
   }
-  for (const auto& relay : relays) {
-    relay->deferOnRelay([relay, fn]() { fn(*relay); });
+  for (const auto& participant : participants) {
+    auto relay = participant->relay();
+    if (!relay) {
+      continue;
+    }
+    relay->deferOnRelay([participant, fn]() { fn(*participant); });
   }
 }
 

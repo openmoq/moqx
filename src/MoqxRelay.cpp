@@ -15,7 +15,6 @@
 #include "relay/InitialTrackState.h"
 #include "relay/LocalForwarderCallback.h"
 #include "relay/NullConsumers.h"
-#include "relay/PlainRouteCodec.h"
 #include "relay/PublisherCrossExecFilter.h"
 #include "relay/SubscriberCrossExecFilter.h"
 #include "relay/TrackEventCallback.h"
@@ -39,6 +38,86 @@ constexpr uint8_t kDefaultUpstreamPriority = 128;
 // forwarder-callback update paths.
 void launchUpdate(folly::Executor* exec, folly::coro::Task<void> task) {
   folly::coro::co_withExecutor(folly::getKeepAliveToken(exec), std::move(task)).start();
+}
+
+// Runs the function on the calling thread. A coroutine that does not hop
+// finishes before start() returns, so a subscriber can be paused before it is
+// removed.
+class CallingThreadExecutor final : public folly::Executor {
+ public:
+  void add(folly::Func func) override { func(); }
+};
+
+CallingThreadExecutor& callingThreadExecutor() {
+  static CallingThreadExecutor exec;
+  return exec;
+}
+
+// The last subscriber leaving while a subgroup is open does not fire
+// forwardChanged: removal waits for onEmpty, and onEmpty waits for the
+// subgroup. Clear forward first so the publisher is paused while the stream
+// is still open.
+void dropForward(const std::shared_ptr<moxygen::MoQForwarder::Subscriber>& subscriber) {
+  if (!subscriber || subscriber->passive || !subscriber->shouldForward || !subscriber->forwarder) {
+    return;
+  }
+  moxygen::RequestUpdate update;
+  update.forward = false;
+  folly::coro::co_withExecutor(
+      folly::getKeepAliveToken(callingThreadExecutor()),
+      subscriber->requestUpdate(std::move(update))
+  )
+      .start();
+}
+
+class ClearForwardOnUnsubscribe : public moxygen::SubscriptionHandle {
+ public:
+  explicit ClearForwardOnUnsubscribe(std::shared_ptr<moxygen::MoQForwarder::Subscriber> inner)
+      : inner_(std::move(inner)) {
+    if (inner_ && inner_->hasSubscribeOk()) {
+      setSubscribeOk(inner_->subscribeOk());
+    }
+  }
+
+  void unsubscribe() override {
+    if (!inner_) {
+      return;
+    }
+    auto inner = std::move(inner_);
+    dropForward(inner);
+    inner->unsubscribe();
+  }
+
+  void cancelFill(moxygen::RequestID id) override {
+    if (inner_) {
+      inner_->cancelFill(id);
+    }
+  }
+
+  folly::coro::Task<RequestUpdateResult> requestUpdate(moxygen::RequestUpdate update) override {
+    if (!inner_) {
+      co_return folly::makeUnexpected(
+          moxygen::RequestError{
+              update.requestID,
+              moxygen::RequestErrorCode::INTERNAL_ERROR,
+              "unsubscribed"
+          }
+      );
+    }
+    co_return co_await inner_->requestUpdate(std::move(update));
+  }
+
+ private:
+  std::shared_ptr<moxygen::MoQForwarder::Subscriber> inner_;
+};
+
+std::shared_ptr<moxygen::SubscriptionHandle>
+pauseOnUnsubscribe(std::shared_ptr<moxygen::SubscriptionHandle> handle) {
+  auto subscriber = std::dynamic_pointer_cast<moxygen::MoQForwarder::Subscriber>(handle);
+  if (!subscriber) {
+    return handle;
+  }
+  return std::make_shared<ClearForwardOnUnsubscribe>(std::move(subscriber));
 }
 
 // Free coroutines, not inline lambdas — captures would dangle past suspension.
@@ -442,7 +521,6 @@ std::shared_ptr<Subscriber::PublishNamespaceHandle> MoqxRelay::doPublishNamespac
   }
 
   pendingRendezvous_.wakeUnderNamespace(pubNs.trackNamespace);
-  noteLocalNamespace(pubNs.trackNamespace, sessionId);
   return std::make_shared<NamespaceRouteHandle>(
       weak_from_this(),
       pubNs.trackNamespace,
@@ -612,28 +690,17 @@ void MoqxRelay::doPublishNamespaceDone(
       XLOG(DBG1) << "Ignoring publishNamespaceDone for ns=" << trackNamespace
                  << " (no owner or non-owner session)";
     }
-    noteLocalNamespaceDone(trackNamespace);
     return;
   }
   auto& node = *result.value().node;
   for (auto& [subscriber, info] : result.value().subscribers) {
     reconcileAdvertisement(node, *subscriber.info, info);
   }
-  noteLocalNamespaceDone(trackNamespace);
 }
 
 void MoqxRelay::onPublishDone(const FullTrackName& ftn) {
   XDCHECK(onRelayExec());
   XLOG(DBG1) << __func__ << " ftn=" << ftn;
-
-  // Local-forwarder mode drops the publish handle here. A peer unsubscribe that
-  // has not run yet would then have nothing to send forward=0 on, and the
-  // publisher stays at forward=1. Hold the handle until that pause is queued.
-  if (mode() == Mode::LocalForwarder &&
-      (peerInterest_.contains(ftn) || peerFanout_.contains(ftn))) {
-    deferredPublishDone_.insert(ftn);
-    return;
-  }
 
   auto upstreamView = registry_.getUpstreamView(ftn);
   if (upstreamView && upstreamView->isPublish) {
@@ -651,82 +718,6 @@ void MoqxRelay::onPublishDone(const FullTrackName& ftn) {
       XLOG(DBG1) << "Publisher terminated with no subscribers, cleaning up " << ftn;
     }
   }
-  publisherPaused_.erase(ftn);
-  deferredPublishDone_.erase(ftn);
-  noteLocalTrackDone(ftn);
-}
-
-void MoqxRelay::completeDeferredPublishDone(const FullTrackName& ftn) {
-  XDCHECK(onRelayExec());
-  if (deferredPublishDone_.erase(ftn) == 0) {
-    return;
-  }
-  onPublishDone(ftn);
-}
-
-namespace {
-
-class IdlePublisher : public Publisher {};
-
-class IdleSubscriber : public Subscriber {};
-
-class PeeringPublishHandle : public Publisher::SubscriptionHandle {
-public:
-  void unsubscribe() override {}
-
-  folly::coro::Task<RequestUpdateResult> requestUpdate(RequestUpdate update) override {
-    co_return folly::makeUnexpected(
-        RequestError{
-            update.requestID,
-            RequestErrorCode::NOT_SUPPORTED,
-            "moq-peering publish does not accept request updates"
-        }
-    );
-  }
-};
-
-folly::coro::Task<void> logPeeringPublishReply(
-    folly::coro::Task<folly::Expected<PublishOk, PublishError>> reply,
-    FullTrackName ftn
-) {
-  auto result = co_await std::move(reply);
-  if (result.hasError()) {
-    XLOG(WARNING) << "moq-peering track registration failed ftn=" << safeName(ftn)
-                  << " reason=" << result.error().reasonPhrase;
-  }
-}
-
-} // namespace
-
-MoqxRelay::~MoqxRelay() {
-  auto dropPeeringPublishes = [this] {
-    std::vector<FullTrackName> names;
-    names.reserve(peeringTracks_.size());
-    for (const auto& entry : peeringTracks_) {
-      names.push_back(entry.first);
-    }
-    peerIngress_.clear();
-    peeringTracks_.clear();
-    for (const auto& ftn : names) {
-      registry_.remove(ftn);
-    }
-  };
-  if (relayEvb_ && !relayEvb_->isInEventBaseThread()) {
-    relayEvb_->runInEventBaseThreadAndWait(dropPeeringPublishes);
-    return;
-  }
-  dropPeeringPublishes();
-}
-
-MoqxRelay::PeeringSnap MoqxRelay::peeringSnap() const {
-  std::lock_guard<std::mutex> lock(peeringMu_);
-  return PeeringSnap{peeringAnnouncer_, peeringSessionId_};
-}
-
-void MoqxRelay::setPeeringAnnouncer(std::shared_ptr<PeeringAnnouncer> announcer) {
-  std::lock_guard<std::mutex> lock(peeringMu_);
-  peeringAnnouncer_ = std::move(announcer);
-  peeringSessionId_ = peeringAnnouncer_ ? peeringAnnouncer_->sessionId() : SessionId{};
 }
 
 void MoqxRelay::deferOnRelay(folly::Function<void()> fn) {
@@ -741,529 +732,6 @@ void MoqxRelay::deferOnRelay(folly::Function<void()> fn) {
     return;
   }
   fn();
-}
-
-const Participant& MoqxRelay::peeringParticipant(SessionId session) {
-  if (!peeringParticipant_.info || peeringParticipant_.info->sessionId != session) {
-    auto info = std::make_shared<ParticipantInfo>();
-    info->sessionId = session;
-    info->version = kVersionDraft18;
-    info->executor = peeringExecutor();
-    info->address = "moq-peering";
-    // A peer announcement is a route. It needs a codec, and fromPeering so it
-    // sits beside a local publisher of the same namespace.
-    info->routing = plainRouting({});
-    info->routing.fromPeering = true;
-    peeringParticipant_ = Participant(
-        std::move(info),
-        std::make_shared<IdlePublisher>(),
-        std::make_shared<IdleSubscriber>()
-    );
-  }
-  return peeringParticipant_;
-}
-
-bool MoqxRelay::hasLocalNamespacePublisher(const TrackNamespace& ns, SessionId peering) const {
-  const auto* node = namespaceTree_.findRouteNode(ns);
-  if (!node) {
-    return false;
-  }
-  for (const auto& route : node->routes()) {
-    if (route.participant.info && route.participant.info->sessionId != peering) {
-      return true;
-    }
-  }
-  return false;
-}
-
-void MoqxRelay::noteLocalNamespace(const TrackNamespace& ns, SessionId publisher) {
-  auto snap = peeringSnap();
-  if (!snap.announcer || publisher == snap.sessionId) {
-    return;
-  }
-  if (!announcedNamespaces_.insert(ns).second) {
-    return;
-  }
-  XLOG(DBG1) << "moq-peering announce namespace ns=" << safeName(ns);
-  snap.announcer->announceNamespace(ns);
-}
-
-void MoqxRelay::noteLocalNamespaceDone(const TrackNamespace& ns) {
-  auto snap = peeringSnap();
-  if (!snap.announcer || hasLocalNamespacePublisher(ns, snap.sessionId)) {
-    return;
-  }
-  if (announcedNamespaces_.erase(ns) == 0) {
-    return;
-  }
-  XLOG(DBG1) << "moq-peering withdraw namespace ns=" << safeName(ns);
-  snap.announcer->withdrawNamespace(ns);
-}
-
-void MoqxRelay::noteLocalTrack(const FullTrackName& ftn, SessionId publisher) {
-  auto snap = peeringSnap();
-  if (!snap.announcer || publisher == snap.sessionId) {
-    return;
-  }
-  if (!announcedTracks_.insert(ftn).second) {
-    return;
-  }
-  // A peer learns the namespace from this too. A publisher that only sends
-  // PUBLISH never emits PUBLISH_NAMESPACE, and the subscriber's
-  // SUBSCRIBE_NAMESPACE would otherwise see nothing.
-  noteLocalNamespace(ftn.trackNamespace, publisher);
-  XLOG(INFO) << "moq-peering announce track ftn=" << safeName(ftn);
-  snap.announcer->announceTrack(ftn);
-  attachPeerFanout(ftn);
-}
-
-void MoqxRelay::noteLocalTrackDone(const FullTrackName& ftn) {
-  auto snap = peeringSnap();
-  if (!snap.announcer || !announcedTracks_.contains(ftn)) {
-    return;
-  }
-  if (auto state = findPublishState(ftn); state.publisher && *state.publisher != snap.sessionId) {
-    return;
-  }
-  announcedTracks_.erase(ftn);
-  XLOG(INFO) << "moq-peering withdraw track ftn=" << safeName(ftn);
-  snap.announcer->withdrawTrack(ftn);
-  bool tracksLeft = false;
-  for (const auto& announced : announcedTracks_) {
-    if (announced.trackNamespace == ftn.trackNamespace) {
-      tracksLeft = true;
-      break;
-    }
-  }
-  if (!tracksLeft && !hasLocalNamespacePublisher(ftn.trackNamespace, snap.sessionId)) {
-    noteLocalNamespaceDone(ftn.trackNamespace);
-  }
-}
-
-uint64_t MoqxRelay::nextPeeringRequest() {
-  return ++peeringRequestSeq_;
-}
-
-void MoqxRelay::endPeeringTrack(const FullTrackName& ftn) {
-  noteLocalPeeringUnsubscribe(ftn);
-  auto it = peeringTracks_.find(ftn);
-  if (it == peeringTracks_.end()) {
-    return;
-  }
-  auto consumer = std::move(it->second);
-  peeringTracks_.erase(it);
-  if (!consumer) {
-    return;
-  }
-  auto done = consumer->publishDone(
-      PublishDone{
-          .requestID = RequestID(0),
-          .statusCode = PublishDoneStatusCode::TRACK_ENDED,
-          .streamCount = 0,
-          .reasonPhrase = "peering withdraw"
-      }
-  );
-  if (done.hasError()) {
-    XLOG(DBG1) << "moq-peering track withdraw failed ftn=" << safeName(ftn);
-  }
-}
-
-void MoqxRelay::injectPeeringNamespace(TrackNamespace ns, bool withdrawn) {
-  XDCHECK(onRelayExec());
-  auto snap = peeringSnap();
-  if (!snap.announcer) {
-    return;
-  }
-  if (withdrawn) {
-    auto it = peeringNamespaceRequests_.find(ns);
-    if (it == peeringNamespaceRequests_.end()) {
-      return;
-    }
-    auto requestID = it->second;
-    peeringNamespaceRequests_.erase(it);
-    doPublishNamespaceDone(ns, snap.sessionId, requestID);
-    return;
-  }
-  if (peeringNamespaceRequests_.contains(ns)) {
-    return;
-  }
-  auto requestID = RequestID(nextPeeringRequest());
-  PublishNamespace pub;
-  pub.requestID = requestID;
-  pub.trackNamespace = ns;
-  auto handle = doPublishNamespace(std::move(pub), peeringParticipant(snap.sessionId), nullptr);
-  if (!handle) {
-    XLOG(DBG1) << "moq-peering namespace not accepted ns=" << safeName(ns);
-    return;
-  }
-  peeringNamespaceRequests_.emplace(std::move(ns), requestID);
-}
-
-void MoqxRelay::injectPeeringTrack(FullTrackName ftn, bool withdrawn) {
-  XDCHECK(onRelayExec());
-  if (withdrawn) {
-    endPeeringTrack(ftn);
-    return;
-  }
-  if (peeringTracks_.contains(ftn)) {
-    return;
-  }
-  auto snap = peeringSnap();
-  if (!snap.announcer) {
-    return;
-  }
-  const auto& participant = peeringParticipant(snap.sessionId);
-  auto requestID = RequestID(nextPeeringRequest());
-  PublishRequest pub;
-  pub.requestID = requestID;
-  pub.fullTrackName = ftn;
-  pub.trackAlias = TrackAlias(requestID.value);
-  pub.forward = true;
-  pub.groupOrder = GroupOrder::OldestFirst;
-  auto handle = std::make_shared<PeeringPublishHandle>();
-  if (mode() == Mode::LocalForwarder) {
-    XCHECK(relayExec_) << "local forwarders require a relay executor";
-    auto published = publishFromPublisherExec(std::move(pub), std::move(handle), participant);
-    if (published.hasError()) {
-      XLOG(WARNING) << "moq-peering track rejected ftn=" << safeName(ftn)
-                    << " reason=" << published.error().reasonPhrase;
-      return;
-    }
-    peeringTracks_.emplace(ftn, published->consumer);
-    XLOG(INFO) << "moq-peering injected track ftn=" << safeName(ftn);
-    co_withExecutor(
-        folly::getKeepAliveToken(relayExec_),
-        logPeeringPublishReply(std::move(published->reply), ftn)
-    )
-        .start();
-    return;
-  }
-  auto forwarder = std::make_shared<MoQForwarder>(ftn);
-  auto setup = publishWithParticipant(
-      std::move(pub),
-      std::move(handle),
-      participant,
-      makeForwarderRef(forwarder, participant.info->executor)
-  );
-  if (setup.hasError()) {
-    XLOG(WARNING) << "moq-peering track rejected ftn=" << safeName(ftn)
-                  << " reason=" << setup.error().reasonPhrase;
-    return;
-  }
-  XLOG(INFO) << "moq-peering injected track ftn=" << safeName(ftn);
-  peeringTracks_.emplace(std::move(ftn), std::move(setup->consumer));
-}
-
-bool MoqxRelay::isPeeringPublisher(const FullTrackName& ftn) {
-  auto snap = peeringSnap();
-  if (!snap.announcer) {
-    return false;
-  }
-  auto state = findPublishState(ftn);
-  return state.publisher && *state.publisher == snap.sessionId;
-}
-
-bool MoqxRelay::peerWantsTrack(const FullTrackName& ftn) {
-  return peerInterest_.contains(ftn) && !isPeeringPublisher(ftn);
-}
-
-void MoqxRelay::noteLocalPeeringSubscribe(const FullTrackName& ftn) {
-  auto snap = peeringSnap();
-  if (!snap.announcer) {
-    return;
-  }
-  if (!peeringPull_.insert(ftn).second) {
-    return;
-  }
-  XLOG(INFO) << "moq-peering subscribe track ftn=" << safeName(ftn);
-  snap.announcer->subscribeTrack(ftn);
-}
-
-void MoqxRelay::noteLocalPeeringUnsubscribe(const FullTrackName& ftn) {
-  if (peeringPull_.erase(ftn) == 0) {
-    return;
-  }
-  auto snap = peeringSnap();
-  if (!snap.announcer) {
-    return;
-  }
-  XLOG(DBG1) << "moq-peering unsubscribe track ftn=" << safeName(ftn);
-  snap.announcer->unsubscribeTrack(ftn);
-}
-
-void MoqxRelay::attachPeerFanout(const FullTrackName& ftn) {
-  XDCHECK(onRelayExec());
-  if (!peerWantsTrack(ftn)) {
-    return;
-  }
-  auto ref = registry_.getForwarderRef(ftn);
-  if (!ref) {
-    XLOG(DBG1) << "moq-peering subscribe waiting for publish ftn=" << safeName(ftn);
-    return;
-  }
-  peerFanout_.insert(ftn);
-  auto id = peerFanoutId_;
-  ref.post([id](MoQForwarder& fwd) {
-    if (fwd.findSubscriber(id)) {
-      return;
-    }
-    fwd.addSubscriber(id, /*forward=*/true, std::make_shared<moxygen::NullTrackConsumer>());
-  });
-}
-
-void MoqxRelay::pauseLivePublisher(const FullTrackName& ftn) {
-  XDCHECK(onRelayExec());
-  // A local client that is still forwarding keeps the publisher going. Callers
-  // check that before asking for the pause.
-  if (peerInterest_.contains(ftn)) {
-    return;
-  }
-  forwardChangedImpl(ftn, false);
-}
-
-void MoqxRelay::detachPeerFanout(const FullTrackName& ftn) {
-  XDCHECK(onRelayExec());
-  peerFanout_.erase(ftn);
-  auto ref = registry_.getForwarderRef(ftn);
-  auto relay = weak_from_this();
-  auto finish = [relay, ftn](bool idle) {
-    if (auto self = relay.lock()) {
-      self->deferOnRelay([self, ftn, idle] {
-        if (!idle) {
-          return;
-        }
-        // No local client is forwarding. Pause first, while the publish handle
-        // still exists, then apply a PUBLISH_DONE that waited for this.
-        self->pauseLivePublisher(ftn);
-        self->completeDeferredPublishDone(ftn);
-      });
-    }
-  };
-  if (!ref) {
-    finish(true);
-    return;
-  }
-  auto id = peerFanoutId_;
-  ref.post([id, finish = std::move(finish)](MoQForwarder& fwd) mutable {
-    auto sub = fwd.findSubscriber(id);
-    if (sub) {
-      // removeSubscriber suppresses forwardChanged when this is the last
-      // subscriber and a subgroup is still open, so the publisher keeps sending.
-      // Drop the forwarding count first. That sends forward=0 immediately when
-      // no client subscriber is still forwarding.
-      if (!sub->passive && sub->shouldForward) {
-        sub->shouldForward = false;
-        fwd.removeForwardingSubscriber();
-      }
-      fwd.removeSubscriber(id, std::nullopt, "moq-peering unsubscribe");
-    }
-    // Whatever the callback above did, this count is the local clients still
-    // forwarding. Zero means the publisher has to be paused.
-    finish(fwd.numForwardingSubscribers() == 0);
-  });
-}
-
-void MoqxRelay::notePeerSubscribe(const FullTrackName& ftn) {
-  XDCHECK(onRelayExec());
-  XLOG(INFO) << "moq-peering subscribe ftn=" << safeName(ftn);
-  peerInterest_.insert(ftn);
-  attachPeerFanout(ftn);
-}
-
-void MoqxRelay::notePeerUnsubscribe(const FullTrackName& ftn) {
-  XDCHECK(onRelayExec());
-  XLOG(INFO) << "moq-peering unsubscribe ftn=" << safeName(ftn);
-  peerInterest_.erase(ftn);
-  detachPeerFanout(ftn);
-}
-
-void MoqxRelay::deliverPeeringObject(const FullTrackName& ftn, const PeeringObject& object) {
-  XDCHECK(onRelayExec());
-  if (object.payload.size() > kMaxPeeringPayload) {
-    XLOG(WARNING) << "moq-peering dropped an object larger than 1MiB";
-    return;
-  }
-  auto it = peeringTracks_.find(ftn);
-  if (it == peeringTracks_.end() || !it->second) {
-    return;
-  }
-  ObjectHeader header(
-      object.group,
-      object.subgroup,
-      object.objectId,
-      object.priority,
-      static_cast<ObjectStatus>(object.status)
-  );
-  auto payload = folly::IOBuf::copyBuffer(object.payload.data(), object.payload.size());
-  folly::Expected<folly::Unit, MoQPublishError> result = folly::unit;
-  if (object.datagram) {
-    result = it->second->datagram(header, std::move(payload), object.lastInGroup);
-  } else {
-    result = it->second->objectStream(header, std::move(payload), object.lastInGroup);
-  }
-  if (result.hasError()) {
-    XLOG(DBG1) << "moq-peering object not delivered ftn=" << safeName(ftn);
-  }
-}
-
-void MoqxRelay::acceptPeeringEvent(
-    const FullTrackName& ftn,
-    uint64_t streamId,
-    const PeeringStreamReader::Event& event
-) {
-  XDCHECK(onRelayExec());
-  const auto key = std::make_pair(ftn, streamId);
-  if (event.kind == PeeringStreamReader::Event::Kind::End) {
-    finishPeeringIngress(ftn, streamId, false);
-    return;
-  }
-  auto track = peeringTracks_.find(ftn);
-  if (track == peeringTracks_.end() || !track->second) {
-    return;
-  }
-  if (event.kind == PeeringStreamReader::Event::Kind::Subgroup) {
-    moxygen::BeginSubgroupOptions options;
-    options.includeExtensions = event.options.hasExtensions;
-    options.subgroupIDFormat = event.options.subgroupIDFormat;
-    options.containsLastInGroup = event.options.hasEndOfGroup;
-    options.beginsWithFirstObject = event.options.beginsWithFirstObject;
-    auto opened = track->second->beginSubgroup(
-        event.object.group,
-        event.object.subgroup,
-        event.object.priority,
-        options
-    );
-    if (!opened) {
-      XLOG(DBG1) << "moq-peering subgroup not opened ftn=" << safeName(ftn);
-      return;
-    }
-    peerIngress_[key] = std::move(opened.value());
-    return;
-  }
-
-  auto ingress = peerIngress_.find(key);
-  if (ingress == peerIngress_.end() || !ingress->second) {
-    return;
-  }
-  auto consumer = ingress->second;
-  auto payload = folly::IOBuf::copyBuffer(event.object.payload.data(), event.object.payload.size());
-  const auto status = static_cast<ObjectStatus>(event.object.status);
-  folly::Expected<folly::Unit, MoQPublishError> result = folly::unit;
-  bool closed = false;
-  if (status == ObjectStatus::END_OF_GROUP) {
-    result = consumer->endOfGroup(event.object.objectId);
-    closed = true;
-  } else if (status == ObjectStatus::END_OF_TRACK) {
-    result = consumer->endOfTrackAndGroup(event.object.objectId);
-    closed = true;
-  } else {
-    result =
-        consumer
-            ->object(event.object.objectId, std::move(payload), event.object.extensions, event.fin);
-    if (event.fin) {
-      auto ended = consumer->endOfSubgroup();
-      if (ended.hasError() && result.hasValue()) {
-        result = ended;
-      }
-      closed = true;
-    }
-  }
-  if (closed) {
-    peerIngress_.erase(key);
-  }
-  if (result.hasError()) {
-    XLOG(DBG1) << "moq-peering object not delivered ftn=" << safeName(ftn);
-  }
-}
-
-void MoqxRelay::finishPeeringIngress(const FullTrackName& ftn, uint64_t streamId, bool reset) {
-  XDCHECK(onRelayExec());
-  auto it = peerIngress_.find(std::make_pair(ftn, streamId));
-  if (it == peerIngress_.end()) {
-    return;
-  }
-  auto consumer = std::move(it->second);
-  peerIngress_.erase(it);
-  if (!consumer) {
-    return;
-  }
-  if (reset) {
-    consumer->reset(ResetStreamErrorCode::CANCELLED);
-    return;
-  }
-  auto result = consumer->endOfSubgroup();
-  if (result.hasError()) {
-    XLOG(DBG1) << "moq-peering subgroup end failed ftn=" << safeName(ftn);
-  }
-}
-
-void MoqxRelay::finishPeeringSubgroup(
-    const FullTrackName& ftn,
-    uint64_t group,
-    uint64_t subgroup,
-    bool reset
-) {
-  XDCHECK(onRelayExec());
-  auto snap = peeringSnap();
-  if (!snap.announcer) {
-    return;
-  }
-  snap.announcer->endSubgroup(ftn, group, subgroup, reset);
-}
-
-std::optional<std::vector<uint8_t>> copyPeeringPayload(const Payload& payload) {
-  if (!payload) {
-    return std::vector<uint8_t>{};
-  }
-  const size_t len = payload->computeChainDataLength();
-  if (len > kMaxPeeringPayload) {
-    return std::nullopt;
-  }
-  if (len == 0) {
-    return std::vector<uint8_t>{};
-  }
-  auto copy = payload->clone();
-  copy->coalesce();
-  const auto* data = copy->data();
-  return std::vector<uint8_t>(data, data + copy->length());
-}
-
-void MoqxRelay::forwardPublishedObject(
-    const FullTrackName& ftn,
-    uint64_t group,
-    uint64_t subgroup,
-    uint64_t objectId,
-    uint8_t priority,
-    uint8_t status,
-    bool lastInGroup,
-    bool datagram,
-    const Payload& payload,
-    const Extensions& extensions
-) {
-  XDCHECK(onRelayExec());
-  if (!peerWantsTrack(ftn)) {
-    return;
-  }
-  auto bytes = copyPeeringPayload(payload);
-  if (!bytes) {
-    XLOG(WARNING) << "moq-peering dropped an object larger than 1MiB";
-    return;
-  }
-  auto snap = peeringSnap();
-  if (!snap.announcer) {
-    return;
-  }
-  PeeringObject object;
-  object.datagram = datagram;
-  object.lastInGroup = lastInGroup;
-  object.status = status;
-  object.priority = priority;
-  object.group = group;
-  object.subgroup = subgroup;
-  object.objectId = objectId;
-  object.extensions = extensions;
-  object.payload = std::move(*bytes);
-  snap.announcer->sendObject(ftn, std::move(object));
 }
 
 // Validates a publish namespace against allowedNamespacePrefix_ (UNINTERESTED)
@@ -1315,11 +783,31 @@ LocalForwarderRegistry::ParkResult MoqxRelay::installPublisherForwarder(
 
 // Called from LocalPublishFilter::publish() on publisherExec. Creates the publisher's
 // local forwarder and sets up the publisher forwarder on relayExec_.
+bool MoqxRelay::trackServedBy(const FullTrackName& ftn, SessionId session) const {
+  XDCHECK(onRelayExec());
+  if (!registry_.exists(ftn)) {
+    return false;
+  }
+  // No upstream yet: the first subscribe is in flight and is the one that will
+  // pull this track. A different session is a publisher we still replace.
+  auto upstream = registry_.upstreamSessionId(ftn);
+  return !upstream || *upstream == session;
+}
+
 Subscriber::PublishResult MoqxRelay::publishFromPublisherExec(
     PublishRequest pub,
     std::shared_ptr<Publisher::SubscriptionHandle> handle,
     const Participant& publisher
 ) {
+  if (onRelayExec() && trackServedBy(pub.fullTrackName, publisher.info->sessionId)) {
+    return folly::makeUnexpected(
+        PublishError{
+            pub.requestID,
+            PublishErrorCode::INTERNAL_ERROR,
+            "moq-peering track already served"
+        }
+    );
+  }
   if (auto err = validatePublishNamespace(
           pub.fullTrackName,
           pub.requestID,
@@ -1448,6 +936,15 @@ MoqxRelay::PublishSetupResult MoqxRelay::publishWithParticipant(
     ForwarderRef publisherRef
 ) {
   const auto publisherId = publisher.info->sessionId;
+  if (trackServedBy(pub.fullTrackName, publisherId)) {
+    return folly::makeUnexpected(
+        PublishError{
+            pub.requestID,
+            PublishErrorCode::INTERNAL_ERROR,
+            "moq-peering track already served"
+        }
+    );
+  }
   std::shared_ptr<MoQForwarder> chainForwarder;
   if (mode() != Mode::LocalForwarder) {
     // Strong ref to forwarder is allowed in non-LF modes
@@ -1539,23 +1036,14 @@ MoqxRelay::PublishSetupResult MoqxRelay::publishWithParticipant(
     }
   }
 
-  // Forward if a direct subscriber is forwarding, a peer subscribed through
-  // moq-peering, or any TRACK_FILTER subscriber needs objects to rank.
-  // When subscribers join later, forwardChanged() sends REQUEST_UPDATE.
-  bool shouldForward =
-      (nForwardingSubscribers > 0) || hasTrackFilterSub || peerWantsTrack(pub.fullTrackName);
+  // Forward if a direct subscriber is forwarding, or any TRACK_FILTER subscriber
+  // needs objects to rank. When subscribers join later, forwardChanged() sends
+  // REQUEST_UPDATE.
+  bool shouldForward = (nForwardingSubscribers > 0) || hasTrackFilterSub;
 
   // Wake any SUBSCRIBE that's parked waiting for this exact track (draft 18+
   // RENDEZVOUS_TIMEOUT).
   pendingRendezvous_.wakeForTrack(pub.fullTrackName);
-  noteLocalTrack(pub.fullTrackName, publisherId);
-  if (isPeeringPublisher(pub.fullTrackName)) {
-    if (shouldForward) {
-      noteLocalPeeringSubscribe(pub.fullTrackName);
-    }
-  } else {
-    attachPeerFanout(pub.fullTrackName);
-  }
 
   return PublishSetup{
       publishEntry.consumer,
@@ -2168,22 +1656,16 @@ private:
 
 namespace {
 
-// Records ingested objects for one subgroup and copies them toward moq-peering
-// when a peer is subscribed. The group and subgroup IDs are fixed at beginSubgroup.
+// Records ingested objects for one subgroup. The group id is fixed at beginSubgroup.
 class RelayIngestSubgroupFilter : public moxygen::SubgroupConsumerFilter {
 public:
   RelayIngestSubgroupFilter(
-      std::weak_ptr<MoqxRelay> relay,
-      FullTrackName ftn,
       std::shared_ptr<IngestCounters> ingest,
       uint64_t groupID,
-      uint64_t subgroupID,
-      uint8_t priority,
       std::shared_ptr<SubgroupConsumer> downstream
   )
-      : moxygen::SubgroupConsumerFilter(std::move(downstream)), relay_(std::move(relay)),
-        ftn_(std::move(ftn)), ingest_(std::move(ingest)), groupID_(groupID),
-        subgroupID_(subgroupID), priority_(priority) {}
+      : moxygen::SubgroupConsumerFilter(std::move(downstream)), ingest_(std::move(ingest)),
+        groupID_(groupID) {}
 
   folly::Expected<folly::Unit, MoQPublishError> object(
       uint64_t objectID,
@@ -2192,7 +1674,6 @@ public:
       bool finSubgroup = false
   ) override {
     ingest_->record(groupID_, objectID);
-    forward(objectID, static_cast<uint8_t>(ObjectStatus::NORMAL), finSubgroup, payload, extensions);
     return moxygen::SubgroupConsumerFilter::object(
         objectID,
         std::move(payload),
@@ -2208,21 +1689,6 @@ public:
       moxygen::Extensions extensions = moxygen::noExtensions()
   ) override {
     ingest_->record(groupID_, objectID);
-    pending_ = {};
-    if (length <= kMaxPeeringPayload) {
-      if (auto copied = copyPeeringPayload(initialPayload)) {
-        if (copied->size() <= length) {
-          pending_.active = true;
-          pending_.objectId = objectID;
-          pending_.expected = length;
-          pending_.bytes = std::move(*copied);
-          pending_.extensions = extensions;
-          if (pending_.bytes.size() == length) {
-            emitPending(false);
-          }
-        }
-      }
-    }
     return moxygen::SubgroupConsumerFilter::beginObject(
         objectID,
         length,
@@ -2231,105 +1697,21 @@ public:
     );
   }
 
-  folly::Expected<ObjectPublishStatus, MoQPublishError>
-  objectPayload(Payload payload, bool finSubgroup = false) override {
-    if (pending_.active) {
-      auto copied = copyPeeringPayload(payload);
-      const size_t add = copied ? copied->size() : 0;
-      if (!copied || pending_.bytes.size() + add > pending_.expected ||
-          pending_.bytes.size() + add > kMaxPeeringPayload) {
-        pending_.active = false;
-      } else {
-        pending_.bytes.insert(pending_.bytes.end(), copied->begin(), copied->end());
-        if (pending_.bytes.size() == pending_.expected || finSubgroup) {
-          emitPending(finSubgroup);
-        }
-      }
-    }
-    return moxygen::SubgroupConsumerFilter::objectPayload(std::move(payload), finSubgroup);
-  }
-
   // endOfGroup/endOfTrackAndGroup deliver a real status object, so they count.
   folly::Expected<folly::Unit, MoQPublishError> endOfGroup(uint64_t endOfGroupObjectID) override {
     ingest_->record(groupID_, endOfGroupObjectID);
-    Payload empty;
-    forward(endOfGroupObjectID, static_cast<uint8_t>(ObjectStatus::END_OF_GROUP), true, empty);
     return moxygen::SubgroupConsumerFilter::endOfGroup(endOfGroupObjectID);
   }
 
   folly::Expected<folly::Unit, MoQPublishError>
   endOfTrackAndGroup(uint64_t endOfTrackObjectID) override {
     ingest_->record(groupID_, endOfTrackObjectID);
-    Payload empty;
-    forward(endOfTrackObjectID, static_cast<uint8_t>(ObjectStatus::END_OF_TRACK), true, empty);
     return moxygen::SubgroupConsumerFilter::endOfTrackAndGroup(endOfTrackObjectID);
   }
 
-  folly::Expected<folly::Unit, MoQPublishError> endOfSubgroup() override {
-    if (auto relay = relay_.lock()) {
-      relay->finishPeeringSubgroup(ftn_, groupID_, subgroupID_, false);
-    }
-    return moxygen::SubgroupConsumerFilter::endOfSubgroup();
-  }
-
-  void reset(ResetStreamErrorCode error) override {
-    if (auto relay = relay_.lock()) {
-      relay->finishPeeringSubgroup(ftn_, groupID_, subgroupID_, true);
-    }
-    moxygen::SubgroupConsumerFilter::reset(error);
-  }
-
 private:
-  void forward(
-      uint64_t objectID,
-      uint8_t status,
-      bool lastInGroup,
-      const Payload& payload,
-      const moxygen::Extensions& extensions = moxygen::noExtensions()
-  ) {
-    if (auto relay = relay_.lock()) {
-      relay->forwardPublishedObject(
-          ftn_,
-          groupID_,
-          subgroupID_,
-          objectID,
-          priority_,
-          status,
-          lastInGroup,
-          false,
-          payload,
-          extensions
-      );
-    }
-  }
-
-  void emitPending(bool lastInGroup) {
-    auto payload = folly::IOBuf::copyBuffer(pending_.bytes.data(), pending_.bytes.size());
-    forward(
-        pending_.objectId,
-        static_cast<uint8_t>(ObjectStatus::NORMAL),
-        lastInGroup,
-        payload,
-        pending_.extensions
-    );
-    pending_ = {};
-  }
-
-  struct PendingObject {
-    bool active{false};
-    uint64_t objectId{0};
-    uint64_t expected{0};
-    std::vector<uint8_t> bytes;
-    moxygen::Extensions extensions;
-  };
-
-  std::weak_ptr<MoqxRelay> relay_;
-  FullTrackName ftn_;
   std::shared_ptr<IngestCounters> ingest_;
   uint64_t groupID_;
-  uint64_t subgroupID_{0};
-  uint8_t priority_{0};
-  PendingObject pending_;
 };
 
 } // namespace
@@ -2364,28 +1746,20 @@ public:
     if (!res) {
       return res;
     }
-    return std::static_pointer_cast<SubgroupConsumer>(std::make_shared<RelayIngestSubgroupFilter>(
-        relay_,
-        ftn_,
-        ingest_,
-        groupID,
-        subgroupID,
-        priority,
-        std::move(res.value())
-    ));
+    return std::static_pointer_cast<SubgroupConsumer>(
+        std::make_shared<RelayIngestSubgroupFilter>(ingest_, groupID, std::move(res.value()))
+    );
   }
 
   folly::Expected<folly::Unit, MoQPublishError>
   objectStream(const ObjectHeader& header, Payload payload, bool lastInGroup = false) override {
     ingest_->record(header.group, header.id);
-    forwardHeader(header, lastInGroup, false, payload);
     return TrackConsumerFilter::objectStream(header, std::move(payload), lastInGroup);
   }
 
   folly::Expected<folly::Unit, MoQPublishError>
   datagram(const ObjectHeader& header, Payload payload, bool lastInGroup = false) override {
     ingest_->record(header.group, header.id);
-    forwardHeader(header, lastInGroup, true, payload);
     return TrackConsumerFilter::datagram(header, std::move(payload), lastInGroup);
   }
 
@@ -2401,28 +1775,6 @@ public:
   }
 
 private:
-  void forwardHeader(
-      const ObjectHeader& header,
-      bool lastInGroup,
-      bool datagram,
-      const Payload& payload
-  ) {
-    if (auto relay = relay_.lock()) {
-      relay->forwardPublishedObject(
-          ftn_,
-          header.group,
-          header.subgroup,
-          header.id,
-          header.priority.value_or(kDefaultPriority),
-          static_cast<uint8_t>(header.status),
-          lastInGroup,
-          datagram,
-          payload,
-          header.extensions
-      );
-    }
-  }
-
   std::weak_ptr<MoqxRelay> relay_;
   FullTrackName ftn_;
   std::shared_ptr<IngestCounters> ingest_;
@@ -2821,11 +2173,6 @@ folly::coro::Task<Publisher::SubscribeTracksResult> MoqxRelay::subscribeTracks(
     if (!addSubscriberAndPublish(requester, match.forwarder, subTracks.forward, /*pinned=*/true)) {
       XLOG(ERR) << "addSubscriberAndPublish failed for " << match.ftn;
       continue;
-    }
-    // Adding the subscriber also fires forwardChanged, which pulls. Call it
-    // here as well so a peering publish still pulls if that callback is missed.
-    if (subTracks.forward && isPeeringPublisher(match.ftn)) {
-      noteLocalPeeringSubscribe(match.ftn);
     }
   }
 
@@ -3409,7 +2756,7 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriber
   if (subReq.fill) {
     sub->requestFill(subReq.requestID, *subReq.fill);
   }
-  co_return sub;
+  co_return pauseOnUnsubscribe(std::move(sub));
 }
 
 // === End multi-iothread subscribe helpers ===
@@ -3534,7 +2881,7 @@ MoqxRelay::subscribeImpl(SubscribeRequest subReq, std::shared_ptr<TrackConsumer>
     if (fill) {
       subscriber->requestFill(clientRequestID, *fill);
     }
-    co_return subscriber;
+    co_return pauseOnUnsubscribe(std::move(subscriber));
 
   } else {
     auto sub = co_await std::get<folly::coro::Task<SubscriptionRegistry::SubsequentSubscriber>>(
@@ -3555,10 +2902,10 @@ MoqxRelay::subscribeImpl(SubscribeRequest subReq, std::shared_ptr<TrackConsumer>
       co_return folly::makeUnexpected(std::move(*err));
     }
     auto attached = attachSubscriber(*forwarder, requester.sessionId, subReq, std::move(consumer));
-    if (attached.hasValue() && subReq.forward && isPeeringPublisher(ftn)) {
-      noteLocalPeeringSubscribe(ftn);
+    if (attached.hasError()) {
+      co_return folly::makeUnexpected(std::move(attached.error()));
     }
-    co_return attached;
+    co_return pauseOnUnsubscribe(std::move(attached.value()));
   }
 }
 
@@ -3798,10 +3145,6 @@ void MoqxRelay::onEmpty(MoQForwarder* forwarder) {
 
 void MoqxRelay::onEmptyImpl(const FullTrackName& ftn) {
   XDCHECK(onRelayExec());
-  if (isPeeringPublisher(ftn)) {
-    noteLocalPeeringUnsubscribe(ftn);
-    return;
-  }
   auto upstreamView = registry_.getUpstreamView(ftn);
   if (!upstreamView) {
     return;
@@ -3835,14 +3178,6 @@ void MoqxRelay::forwardChanged(MoQForwarder* forwarder, bool forward) {
 
 void MoqxRelay::forwardChangedImpl(const FullTrackName& ftn, bool forward) {
   XDCHECK(onRelayExec());
-  if (isPeeringPublisher(ftn)) {
-    if (forward) {
-      noteLocalPeeringSubscribe(ftn);
-    } else {
-      noteLocalPeeringUnsubscribe(ftn);
-    }
-    return;
-  }
   auto upstreamView = registry_.getUpstreamView(ftn);
   if (!upstreamView) {
     return;
@@ -3855,13 +3190,6 @@ void MoqxRelay::forwardChangedImpl(const FullTrackName& ftn, bool forward) {
   }
   if (!upstreamView->upstreamLive) {
     XLOG(DBG4) << "Ignoring forward change for " << ftn << " - publisher terminated";
-    return;
-  }
-  // The peer-unsubscribe path and this callback can both ask for forward=0.
-  // One update is enough, and a later forward=1 has to be able to resume.
-  if (forward) {
-    publisherPaused_.erase(ftn);
-  } else if (!publisherPaused_.insert(ftn).second) {
     return;
   }
   XLOG(INFO) << "Updating forward for " << ftn << " forward=" << forward;
@@ -3914,9 +3242,6 @@ void MoqxRelay::serveFill(std::shared_ptr<TrackConsumer> consumer, Fetch fetch) 
 
 void MoqxRelay::newGroupRequestedImpl(const FullTrackName& ftn, uint64_t group) {
   XDCHECK(onRelayExec());
-  if (isPeeringPublisher(ftn)) {
-    return;
-  }
   auto upstreamView = registry_.getUpstreamView(ftn);
   // Check if handle is still valid (publisher may have terminated)
   if (!upstreamView || !upstreamView->upstreamLive) {
