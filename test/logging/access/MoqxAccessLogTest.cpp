@@ -13,12 +13,16 @@
 #include <mutex>
 #include <optional>
 
+#include <fcntl.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <folly/ScopeGuard.h>
 #include <folly/String.h>
 #include <folly/coro/BlockingWait.h>
 #include <folly/coro/Sleep.h>
+#include <folly/coro/Timeout.h>
 #include <folly/io/async/EventBaseManager.h>
 #include <folly/synchronization/Baton.h>
 #include <gtest/gtest.h>
@@ -318,10 +322,16 @@ TEST(MoqxAccessLogTest, MetricsNameEachSink) {
 // Never completes a write unless it is cancelled.
 class StuckTransport : public AccessLogTransport {
 public:
-  explicit StuckTransport(std::shared_ptr<std::atomic<bool>> cancelled)
-      : cancelled_(std::move(cancelled)) {}
+  explicit StuckTransport(
+      std::shared_ptr<std::atomic<bool>> cancelled,
+      std::shared_ptr<folly::Baton<>> started = nullptr
+  )
+      : cancelled_(std::move(cancelled)), started_(std::move(started)) {}
 
   folly::coro::Task<AccessLogWriteResult> write(const folly::IOBuf&) override {
+    if (started_ && !started_->ready()) {
+      started_->post();
+    }
     auto slept = co_await folly::coro::co_awaitTry(folly::coro::sleep(60s));
     cancelled_->store(slept.hasException());
     co_return AccessLogWriteResult{AccessLogWriteStatus::Retry};
@@ -330,6 +340,7 @@ public:
 
 private:
   std::shared_ptr<std::atomic<bool>> cancelled_;
+  std::shared_ptr<folly::Baton<>> started_;
 };
 
 TEST(MoqxAccessLogTest, StopCancelsAWriteThatPassesTheDeadline) {
@@ -355,6 +366,88 @@ TEST(MoqxAccessLogTest, StopCancelsAWriteThatPassesTheDeadline) {
   log.reset();
   EXPECT_LT(std::chrono::steady_clock::now() - start, 10s);
   EXPECT_TRUE(cancelled->load());
+}
+
+TEST(MoqxAccessLogTest, StopCancelsAFlushThatStartedBeforeIt) {
+  auto cancelled = std::make_shared<std::atomic<bool>>(false);
+  auto started = std::make_shared<folly::Baton<>>();
+  AccessLogSinkOptions opts;
+  opts.name = "stuck";
+  opts.batchRecords = 1;
+  std::vector<std::unique_ptr<AccessLogSink>> sinks;
+  sinks.push_back(std::make_unique<AccessLogSink>(
+      std::move(opts),
+      encoderFor("$seq $event"),
+      std::make_unique<StuckTransport>(cancelled, started)
+  ));
+  auto log = makeLog(std::move(sinks));
+  log->start();
+  auto gate = log->gateSession("live", "viewer", "s1");
+  log->submit(
+      record(AccessLogEvent::SUBSCRIBE),
+      log->eventMask(gate, AccessLogEvent::SUBSCRIBE, false)
+  );
+  ASSERT_TRUE(started->try_wait_for(5s));
+  auto start = std::chrono::steady_clock::now();
+  log->stop(start + 200ms);
+  log.reset();
+  EXPECT_LT(std::chrono::steady_clock::now() - start, 5s);
+  EXPECT_TRUE(cancelled->load());
+}
+
+TEST(MoqxAccessLogTest, FileTransportWaitsOnAFullFifoUntilCancelled) {
+  auto dir =
+      std::filesystem::temp_directory_path() / ("moqx-access-fifo-" + std::to_string(::getpid()));
+  std::filesystem::create_directories(dir);
+  SCOPE_EXIT {
+    std::filesystem::remove_all(dir);
+  };
+  auto path = (dir / "access.fifo").string();
+  ASSERT_EQ(::mkfifo(path.c_str(), 0600), 0);
+  // The reader stays open and does not read.
+  int reader = ::open(path.c_str(), O_RDONLY | O_NONBLOCK);
+  ASSERT_GE(reader, 0);
+  SCOPE_EXIT {
+    ::close(reader);
+  };
+  auto transport = FileTransport::open(path);
+  ASSERT_TRUE(transport.hasValue()) << transport.error();
+
+  constexpr size_t kSize = 4 << 20;
+  auto data = folly::IOBuf::copyBuffer(std::string(kSize, 'x'));
+  auto start = std::chrono::steady_clock::now();
+  auto result =
+      folly::coro::blockingWait(folly::coro::timeoutNoDiscard((*transport)->write(*data), 200ms));
+  EXPECT_LT(std::chrono::steady_clock::now() - start, 5s);
+  EXPECT_EQ(result.status, AccessLogWriteStatus::Retry);
+  EXPECT_GT(result.bytesWritten, 0u);
+  EXPECT_LT(result.bytesWritten, kSize);
+}
+
+TEST(MoqxAccessLogTest, StdoutTransportSurvivesASocketWhoseReaderClosed) {
+  int fds[2];
+  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0);
+  ::fflush(stdout);
+  int savedStdout = ::dup(STDOUT_FILENO);
+  ASSERT_GE(savedStdout, 0);
+  // Nothing may print while fd 1 is the socket, so the checks come after fd 1 is restored.
+  ::dup2(fds[0], STDOUT_FILENO);
+  auto transport = StdoutTransport::open();
+  auto line = folly::IOBuf::copyBuffer(std::string("SETUP\n"));
+  auto delivered = folly::coro::blockingWait(transport->write(*line));
+  char buf[16] = {};
+  auto received = ::read(fds[1], buf, sizeof(buf));
+  ::close(fds[1]);
+  // Without MSG_NOSIGNAL, this write raises SIGPIPE and ends the test binary.
+  auto broken = folly::coro::blockingWait(transport->write(*line));
+  folly::coro::blockingWait(transport->close());
+  ::dup2(savedStdout, STDOUT_FILENO);
+  ::close(savedStdout);
+  ::close(fds[0]);
+
+  EXPECT_EQ(delivered.status, AccessLogWriteStatus::Ok);
+  EXPECT_EQ(std::string(buf, received > 0 ? size_t(received) : 0), "SETUP\n");
+  EXPECT_EQ(broken.status, AccessLogWriteStatus::Retry);
 }
 
 TEST(MoqxAccessLogTest, FileTransportReopensAfterRotation) {

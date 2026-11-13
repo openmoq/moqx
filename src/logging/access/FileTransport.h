@@ -16,12 +16,11 @@
 
 namespace openmoq::moqx::logging {
 
-// Appends lines to a file. reopen() reopens the path, for logrotate.
+// Appends lines to a file. reopen() reopens the path, for logrotate. A write to a full FIFO
+// waits for room without blocking the writer thread.
 class FileTransport : public AccessLogTransport {
 public:
   static folly::Expected<std::unique_ptr<FileTransport>, std::string> open(std::string path);
-  // Writes to fd 1, which the transport does not own or reopen.
-  static std::unique_ptr<FileTransport> standardOutput();
 
   folly::coro::Task<AccessLogWriteResult> write(const folly::IOBuf& data) override;
   void reopen() override;
@@ -33,6 +32,23 @@ private:
 
   std::string path_;
   folly::File file_;
+};
+
+// Writes lines to the fd 1 that the relay inherited: a file, pipe, tty, or a socket such as
+// the journal's. reopen() does nothing.
+class StdoutTransport : public AccessLogTransport {
+public:
+  static std::unique_ptr<StdoutTransport> open();
+
+  folly::coro::Task<AccessLogWriteResult> write(const folly::IOBuf& data) override;
+  void reopen() override {}
+  folly::coro::Task<void> close() override;
+
+private:
+  StdoutTransport(folly::File file, bool socket) : file_(std::move(file)), socket_(socket) {}
+
+  folly::File file_;
+  bool socket_;
 };
 
 } // namespace openmoq::moqx::logging

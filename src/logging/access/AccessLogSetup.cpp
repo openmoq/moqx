@@ -120,7 +120,7 @@ makeAccessLog(const config::Config& config) {
     std::visit(
         [&](const config::AccessLogFileOutput& file) {
           if (file.path == "-") {
-            transport = FileTransport::standardOutput();
+            transport = StdoutTransport::open();
             return;
           }
           auto opened = FileTransport::open(file.path);
