@@ -389,6 +389,27 @@ target_link_libraries(moqx_hmac_key PUBLIC OpenSSL::Crypto)
 
 target_link_libraries(moqx_hmac_key PRIVATE moqx_warnings)
 
+# --- Access log record, variables and templates (shared with the config resolver) ---
+
+add_library(moqx_access_log_format STATIC
+  src/SafeTrackName.cpp
+  src/logging/access/AccessLogTemplate.cpp
+  src/logging/access/AccessLogVars.cpp
+  src/logging/access/TemplateEncoder.cpp
+)
+
+target_include_directories(moqx_access_log_format
+  PUBLIC
+    ${PROJECT_SOURCE_DIR}/src
+)
+
+target_link_libraries(moqx_access_log_format PUBLIC
+  moxygen::moxygen_moq_types
+  Folly::folly_expected
+)
+
+target_link_libraries(moqx_access_log_format PRIVATE moqx_warnings)
+
 # --- Core library ---
 
 add_library(moqx_core STATIC
@@ -423,7 +444,6 @@ add_library(moqx_core STATIC
   src/UpstreamProvider.cpp
   src/peering/MoqtRelayBackend.cpp
   src/relay/MoqClusterRouteCodec.cpp
-  src/SafeTrackName.cpp
   src/relay/AuthFilters.cpp
   src/relay/Participant.cpp
   src/relay/SessionParticipant.cpp
@@ -437,6 +457,10 @@ add_library(moqx_core STATIC
   src/relay/SubscriberCrossExecFilter.cpp
   src/logging/LogSetup.cpp
   src/logging/QLogCapture.cpp
+  src/logging/access/MoqxAccessLog.cpp
+  src/logging/access/AccessLogSink.cpp
+  src/logging/access/FileTransport.cpp
+  src/stats/AccessLogPrometheus.cpp
 )
 
 target_include_directories(moqx_core
@@ -445,6 +469,7 @@ target_include_directories(moqx_core
 )
 
 target_link_libraries(moqx_core PUBLIC
+  moqx_access_log_format
   moqx_cache
   moqx_hmac_key
   moxygen::moxygen_relay_moq_forwarder
@@ -513,6 +538,7 @@ target_link_libraries(moqx_config_loader PUBLIC
 # PKCS#12 transcode (Pkcs12.cpp) + OPENSSL_cleanse in ConfigResolver.cpp;
 # folly cert utils supplies OpenSSLCertUtils::pemEncode.
 target_link_libraries(moqx_config_loader PRIVATE
+  moqx_access_log_format
   OpenSSL::Crypto
   Folly::folly_ssl_openssl_cert_utils
 )
