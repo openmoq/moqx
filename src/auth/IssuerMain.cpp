@@ -34,6 +34,11 @@ DEFINE_string(
     "Comma-separated CAT4MOQ actions"
 );
 DEFINE_string(auth_namespace, "", "Slash-separated track namespace");
+DEFINE_string(
+    auth_namespace_match,
+    "exact",
+    "Namespace match mode: exact, prefix, suffix, or contains"
+);
 DEFINE_string(auth_track, "", "Optional track name");
 DEFINE_int32(auth_ttl_seconds, 3600, "Token lifetime in seconds");
 DEFINE_string(auth_output, "base64-prefix", "Output encoding: base64-prefix, base64, hex, or raw");
@@ -76,6 +81,7 @@ auth::IssueTokenOptions makeIssueTokenOptions(const cfg::ResolvedConfig* resolve
       .actions = auth::parseActions(FLAGS_auth_actions),
       .ttl = std::chrono::seconds(FLAGS_auth_ttl_seconds),
   };
+  options.namespaceMatchType = auth::parseNamespaceMatchType(FLAGS_auth_namespace_match);
   if (!FLAGS_auth_namespace.empty()) {
     options.trackNamespace = auth::parseTrackNamespace(FLAGS_auth_namespace);
   }
@@ -128,7 +134,8 @@ int main(int argc, char* argv[]) {
   google::SetUsageMessage("moqx-issuer — mint a Catapult CAT4MOQ CWT for publishers/subscribers\n\n"
                           "Provide a key via --auth_secret, or via --config with --auth_service.\n"
                           "Usage: moqx-issuer --auth_secret <secret> --auth_actions <a,b,c> "
-                          "[--auth_namespace <ns>] [--auth_track <t>]");
+                          "[--auth_namespace <ns>] [--auth_namespace_match <mode>] "
+                          "[--auth_track <t>]");
   folly::Init init(&argc, &argv, true);
   return runIssueCatTokenCommand(argv[0]);
 }

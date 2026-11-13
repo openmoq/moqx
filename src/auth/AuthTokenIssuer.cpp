@@ -138,6 +138,23 @@ std::vector<Action> parseActions(std::string_view value) {
   return actions;
 }
 
+MatchRuleType parseNamespaceMatchType(std::string_view value) {
+  const auto normalized = trim(value);
+  if (normalized == "exact") {
+    return MatchRuleType::Exact;
+  }
+  if (normalized == "prefix") {
+    return MatchRuleType::Prefix;
+  }
+  if (normalized == "suffix") {
+    return MatchRuleType::Suffix;
+  }
+  if (normalized == "contains") {
+    return MatchRuleType::Contains;
+  }
+  throw std::invalid_argument("unknown namespace match mode: " + normalized);
+}
+
 moxygen::TrackNamespace parseTrackNamespace(std::string_view value) {
   moxygen::TrackNamespace ns;
   std::size_t start = 0;
@@ -171,6 +188,10 @@ IssuedToken issueToken(const IssueTokenOptions& options) {
   if (options.ttl <= std::chrono::seconds::zero()) {
     throw std::invalid_argument("CAT4MOQ ttl must be greater than zero");
   }
+  if (options.trackNamespace.trackNamespace.empty() &&
+      options.namespaceMatchType != MatchRuleType::Exact) {
+    throw std::invalid_argument("namespace match mode requires a namespace");
+  }
 
   Grants grants;
   grants.expiresAt = options.now + options.ttl;
@@ -186,7 +207,7 @@ IssuedToken issueToken(const IssueTokenOptions& options) {
   std::vector<MatchRule> namespaceMatches;
   if (!options.trackNamespace.trackNamespace.empty()) {
     namespaceMatches.push_back(MatchRule{
-        .type = MatchRule::Type::Exact,
+        .type = options.namespaceMatchType,
         .value = canonicalNamespace(options.trackNamespace),
     });
   }

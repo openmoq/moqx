@@ -10,6 +10,8 @@
 
 #include <folly/portability/GTest.h>
 
+#include <stdexcept>
+
 using namespace openmoq::moqx;
 using namespace openmoq::moqx::auth;
 using namespace moxygen;
@@ -52,9 +54,76 @@ TEST(AuthTokenIssuerTest, IssuesSetupAndPublishTokenAcceptedByVerifier) {
   ));
   EXPECT_FALSE(allows(
       grants.value(),
+      Action::PublishNamespace,
+      TrackNamespace{{"cat4moq.example", "event"}}
+  ));
+  EXPECT_FALSE(allows(
+      grants.value(),
       Action::Publish,
       FullTrackName{TrackNamespace{{"cat4moq.example"}}, "audio"}
   ));
+}
+
+TEST(AuthTokenIssuerTest, IssuesPrefixNamespaceGrants) {
+  const std::string secret = "operator-test-secret-with-enough-entropy";
+  IssueTokenOptions options{
+      .keyID = "cat-dev",
+      .secret = secret,
+      .actions = {Action::ClientSetup, Action::PublishNamespace, Action::Publish},
+      .trackNamespace = TrackNamespace{{"hypersolid", "cat"}},
+      .namespaceMatchType = MatchRuleType::Prefix,
+      .trackName = "video",
+      .ttl = std::chrono::seconds(3600),
+      .now = std::chrono::system_clock::time_point(std::chrono::seconds(1'800'000'000)),
+  };
+
+  auto issued = issueToken(options);
+  AuthTokenVerifier verifier(config::AuthConfig{
+      .enabled = true,
+      .tokenType = 16,
+      .hmacKeys = {config::AuthConfig::HmacKey{.id = "cat-dev", .secret = secret}},
+      .requireSetupToken = true,
+      .allowRequestTokenOverride = true,
+  });
+  auto grants = verifier.verify(AuthToken{
+      .tokenType = 16,
+      .tokenValue = issued.tokenValue,
+      .alias = AuthToken::DontRegister,
+  });
+
+  ASSERT_TRUE(grants.hasValue());
+  EXPECT_TRUE(allows(grants.value(), Action::ClientSetup, TrackNamespace{}));
+  EXPECT_TRUE(allows(
+      grants.value(),
+      Action::PublishNamespace,
+      TrackNamespace{{"hypersolid", "cat", "event1"}}
+  ));
+  EXPECT_TRUE(allows(
+      grants.value(),
+      Action::Publish,
+      FullTrackName{TrackNamespace{{"hypersolid", "cat", "event1"}}, "video"}
+  ));
+  EXPECT_FALSE(allows(
+      grants.value(),
+      Action::PublishNamespace,
+      TrackNamespace{{"hypersolid", "catalog"}}
+  ));
+  EXPECT_FALSE(allows(
+      grants.value(),
+      Action::Publish,
+      FullTrackName{TrackNamespace{{"hypersolid", "cat", "event1"}}, "audio"}
+  ));
+}
+
+TEST(AuthTokenIssuerTest, RequiresNamespaceForNonExactMatchMode) {
+  IssueTokenOptions options{
+      .keyID = "cat-dev",
+      .secret = "operator-test-secret-with-enough-entropy",
+      .actions = {Action::Publish},
+      .namespaceMatchType = MatchRuleType::Prefix,
+  };
+
+  EXPECT_THROW(issueToken(options), std::invalid_argument);
 }
 
 TEST(AuthTokenIssuerTest, ParsesOperatorActionNames) {
@@ -64,6 +133,14 @@ TEST(AuthTokenIssuerTest, ParsesOperatorActionNames) {
   EXPECT_EQ(actions[0], Action::ClientSetup);
   EXPECT_EQ(actions[1], Action::PublishNamespace);
   EXPECT_EQ(actions[2], Action::Publish);
+}
+
+TEST(AuthTokenIssuerTest, ParsesNamespaceMatchModes) {
+  EXPECT_EQ(parseNamespaceMatchType("exact"), MatchRuleType::Exact);
+  EXPECT_EQ(parseNamespaceMatchType("prefix"), MatchRuleType::Prefix);
+  EXPECT_EQ(parseNamespaceMatchType("suffix"), MatchRuleType::Suffix);
+  EXPECT_EQ(parseNamespaceMatchType("contains"), MatchRuleType::Contains);
+  EXPECT_THROW(parseNamespaceMatchType("wildcard"), std::invalid_argument);
 }
 
 TEST(AuthTokenIssuerTest, ParsesSlashSeparatedNamespace) {
