@@ -34,11 +34,7 @@ DEFINE_string(
     "Comma-separated CAT4MOQ actions"
 );
 DEFINE_string(auth_namespace, "", "Slash-separated track namespace");
-DEFINE_string(
-    auth_namespace_match,
-    "exact",
-  "Namespace match mode: exact, prefix, or suffix"
-);
+DEFINE_string(auth_namespace_match, "exact", "Namespace match mode: exact, prefix, or suffix");
 DEFINE_string(auth_track, "", "Optional track name");
 DEFINE_int32(auth_ttl_seconds, 3600, "Token lifetime in seconds");
 DEFINE_string(auth_output, "base64-prefix", "Output encoding: base64-prefix, base64, hex, or raw");

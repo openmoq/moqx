@@ -52,11 +52,9 @@ TEST(AuthTokenIssuerTest, IssuesSetupAndPublishTokenAcceptedByVerifier) {
       Action::Publish,
       FullTrackName{TrackNamespace{{"cat4moq.example"}}, "video"}
   ));
-  EXPECT_FALSE(allows(
-      grants.value(),
-      Action::PublishNamespace,
-      TrackNamespace{{"cat4moq.example", "event"}}
-  ));
+  EXPECT_FALSE(
+      allows(grants.value(), Action::PublishNamespace, TrackNamespace{{"cat4moq.example", "event"}})
+  );
   EXPECT_FALSE(allows(
       grants.value(),
       Action::Publish,
@@ -70,7 +68,7 @@ TEST(AuthTokenIssuerTest, IssuesPrefixNamespaceGrants) {
       .keyID = "cat-dev",
       .secret = secret,
       .actions = {Action::ClientSetup, Action::PublishNamespace, Action::Publish},
-      .trackNamespace = TrackNamespace{{"hypersolid", "cat"}},
+      .trackNamespace = TrackNamespace{{"testnamespace", "cat"}},
       .namespaceMatchType = MatchRuleType::Prefix,
       .trackName = "video",
       .ttl = std::chrono::seconds(3600),
@@ -96,22 +94,20 @@ TEST(AuthTokenIssuerTest, IssuesPrefixNamespaceGrants) {
   EXPECT_TRUE(allows(
       grants.value(),
       Action::PublishNamespace,
-      TrackNamespace{{"hypersolid", "cat", "event1"}}
+      TrackNamespace{{"testnamespace", "cat", "event1"}}
   ));
   EXPECT_TRUE(allows(
       grants.value(),
       Action::Publish,
-      FullTrackName{TrackNamespace{{"hypersolid", "cat", "event1"}}, "video"}
+      FullTrackName{TrackNamespace{{"testnamespace", "cat", "event1"}}, "video"}
   ));
-  EXPECT_FALSE(allows(
-      grants.value(),
-      Action::PublishNamespace,
-      TrackNamespace{{"hypersolid", "catalog"}}
-  ));
+  EXPECT_FALSE(
+      allows(grants.value(), Action::PublishNamespace, TrackNamespace{{"testnamespace", "catalog"}})
+  );
   EXPECT_FALSE(allows(
       grants.value(),
       Action::Publish,
-      FullTrackName{TrackNamespace{{"hypersolid", "cat", "event1"}}, "audio"}
+      FullTrackName{TrackNamespace{{"testnamespace", "cat", "event1"}}, "audio"}
   ));
 }
 
@@ -139,7 +135,7 @@ TEST(AuthTokenIssuerTest, ParsesNamespaceMatchModes) {
   EXPECT_EQ(parseNamespaceMatchType("exact"), MatchRuleType::Exact);
   EXPECT_EQ(parseNamespaceMatchType("prefix"), MatchRuleType::Prefix);
   EXPECT_EQ(parseNamespaceMatchType("suffix"), MatchRuleType::Suffix);
-    EXPECT_THROW(parseNamespaceMatchType("contains"), std::invalid_argument);
+  EXPECT_THROW(parseNamespaceMatchType("contains"), std::invalid_argument);
   EXPECT_THROW(parseNamespaceMatchType("wildcard"), std::invalid_argument);
 }
 
