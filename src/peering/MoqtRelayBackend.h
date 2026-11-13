@@ -102,6 +102,7 @@ private:
     std::string relayID;
     std::string address;
     std::string authority;
+    std::string listener;
     // The reciprocal subscriptions, until the peer's SUBSCRIBE_NAMESPACE ends.
     ExecBound<std::shared_ptr<moxygen::Publisher::SubscribeNamespaceHandle>> subNs;
     ExecBound<std::shared_ptr<moxygen::Publisher::SubscribeTracksHandle>> tracks; // draft 18+

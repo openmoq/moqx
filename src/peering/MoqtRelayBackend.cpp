@@ -205,6 +205,7 @@ folly::coro::Task<bool> MoqtRelayBackend::onPeerConnected(Participant peer, std:
   entry.relayID = peerID;
   entry.address = info.address;
   entry.authority = info.authority;
+  entry.listener = info.listener;
   // A request cancelled here does not reach onPeerDisconnected(), so it closes itself.
   auto closeOnCancel = folly::makeGuard([this, session] {
     if (auto it = peers_.find(session); it != peers_.end()) {
@@ -338,6 +339,7 @@ folly::coro::Task<void> MoqtRelayBackend::visitPeers(PeerVisitor& visitor) const
           .address = peer.address,
           .authority = peer.authority,
           .relayID = peer.relayID,
+          .listener = peer.listener,
       });
     }
     co_return out;

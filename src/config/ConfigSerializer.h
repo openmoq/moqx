@@ -347,6 +347,11 @@ inline void serializeConfig(const Config& cfg, ConfigSink& s) {
       serializeMatch(s, m);
     }
     s.endArray();
+    s.beginArray("listeners");
+    for (const auto& l : svc.listeners) {
+      s.stringField("", l);
+    }
+    s.endArray();
     serializeCache(s, svc.cache);
     serializeAuth(s, svc.auth);
     s.uintField("max_subscription_buffer_kb", svc.maxSubscriptionBufferKb);
