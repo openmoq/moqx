@@ -11,6 +11,7 @@
 #include <folly/portability/GTest.h>
 
 #include <stdexcept>
+#include <tuple>
 
 using namespace openmoq::moqx;
 using namespace openmoq::moqx::auth;
@@ -59,6 +60,11 @@ TEST(AuthTokenIssuerTest, IssuesSetupAndPublishTokenAcceptedByVerifier) {
       grants.value(),
       Action::Publish,
       FullTrackName{TrackNamespace{{"cat4moq.example"}}, "audio"}
+  ));
+  EXPECT_FALSE(allows(
+      grants.value(),
+      Action::Publish,
+      FullTrackName{TrackNamespace{{"cat4moq.example"}}, "video-hd"}
   ));
 }
 
@@ -122,6 +128,69 @@ TEST(AuthTokenIssuerTest, RequiresNamespaceForNonExactMatchMode) {
   EXPECT_THROW(issueToken(options), std::invalid_argument);
 }
 
+TEST(AuthTokenIssuerTest, IssuesPrefixAndSuffixTrackGrants) {
+  const std::string secret = "operator-test-secret-with-enough-entropy";
+  AuthTokenVerifier verifier(config::AuthConfig{
+      .enabled = true,
+      .tokenType = 16,
+      .hmacKeys = {config::AuthConfig::HmacKey{.id = "cat-dev", .secret = secret}},
+  });
+  for (const auto& [mode, allowed, denied] :
+       {std::tuple{MatchRuleType::Prefix, "video-hd", "hd-video"},
+        std::tuple{MatchRuleType::Suffix, "hd-video", "video-hd"}}) {
+    IssueTokenOptions options{
+        .keyID = "cat-dev",
+        .secret = secret,
+        .actions = {Action::PublishNamespace, Action::Publish},
+        .trackNamespace = TrackNamespace{{"live"}},
+        .namespaceMatchType = MatchRuleType::Prefix,
+        .trackName = "video",
+        .trackMatchType = mode,
+        .now = std::chrono::system_clock::time_point(std::chrono::seconds(1'800'000'000)),
+    };
+    auto issued = issueToken(options);
+    auto grants = verifier.verify(AuthToken{
+        .tokenType = 16,
+        .tokenValue = issued.tokenValue,
+        .alias = AuthToken::DontRegister,
+    });
+
+    ASSERT_TRUE(grants.hasValue());
+    EXPECT_TRUE(allows(grants.value(), Action::PublishNamespace, TrackNamespace{{"live", "event"}})
+    );
+    EXPECT_TRUE(allows(
+        grants.value(),
+        Action::Publish,
+        FullTrackName{TrackNamespace{{"live", "event"}}, "video"}
+    ));
+    EXPECT_TRUE(allows(
+        grants.value(),
+        Action::Publish,
+        FullTrackName{TrackNamespace{{"live", "event"}}, allowed}
+    ));
+    EXPECT_FALSE(allows(
+        grants.value(),
+        Action::Publish,
+        FullTrackName{TrackNamespace{{"live", "event"}}, denied}
+    ));
+    EXPECT_FALSE(
+        allows(grants.value(), Action::Publish, FullTrackName{TrackNamespace{{"other"}}, allowed})
+    );
+  }
+}
+
+TEST(AuthTokenIssuerTest, RequiresTrackForNonExactMatchMode) {
+  IssueTokenOptions options{
+      .keyID = "cat-dev",
+      .secret = "operator-test-secret-with-enough-entropy",
+      .actions = {Action::Publish},
+  };
+  for (auto mode : {MatchRuleType::Prefix, MatchRuleType::Suffix}) {
+    options.trackMatchType = mode;
+    EXPECT_THROW(issueToken(options), std::invalid_argument);
+  }
+}
+
 TEST(AuthTokenIssuerTest, ParsesOperatorActionNames) {
   auto actions = parseActions("client_setup,publish_namespace,publish");
 
@@ -137,6 +206,14 @@ TEST(AuthTokenIssuerTest, ParsesNamespaceMatchModes) {
   EXPECT_EQ(parseNamespaceMatchType("suffix"), MatchRuleType::Suffix);
   EXPECT_THROW(parseNamespaceMatchType("contains"), std::invalid_argument);
   EXPECT_THROW(parseNamespaceMatchType("wildcard"), std::invalid_argument);
+}
+
+TEST(AuthTokenIssuerTest, ParsesTrackMatchModes) {
+  EXPECT_EQ(parseTrackMatchType("exact"), MatchRuleType::Exact);
+  EXPECT_EQ(parseTrackMatchType("prefix"), MatchRuleType::Prefix);
+  EXPECT_EQ(parseTrackMatchType("suffix"), MatchRuleType::Suffix);
+  EXPECT_THROW(parseTrackMatchType("contains"), std::invalid_argument);
+  EXPECT_THROW(parseTrackMatchType("wildcard"), std::invalid_argument);
 }
 
 TEST(AuthTokenIssuerTest, ParsesSlashSeparatedNamespace) {

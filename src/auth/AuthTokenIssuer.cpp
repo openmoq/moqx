@@ -115,6 +115,20 @@ bool isNamespaceAction(Action action) {
   return false;
 }
 
+MatchRuleType parseMatchType(std::string_view value, std::string_view target) {
+  const auto normalized = trim(value);
+  if (normalized == "exact") {
+    return MatchRuleType::Exact;
+  }
+  if (normalized == "prefix") {
+    return MatchRuleType::Prefix;
+  }
+  if (normalized == "suffix") {
+    return MatchRuleType::Suffix;
+  }
+  throw std::invalid_argument("unknown " + std::string(target) + " match mode: " + normalized);
+}
+
 } // namespace
 
 std::vector<Action> parseActions(std::string_view value) {
@@ -139,17 +153,11 @@ std::vector<Action> parseActions(std::string_view value) {
 }
 
 MatchRuleType parseNamespaceMatchType(std::string_view value) {
-  const auto normalized = trim(value);
-  if (normalized == "exact") {
-    return MatchRuleType::Exact;
-  }
-  if (normalized == "prefix") {
-    return MatchRuleType::Prefix;
-  }
-  if (normalized == "suffix") {
-    return MatchRuleType::Suffix;
-  }
-  throw std::invalid_argument("unknown namespace match mode: " + normalized);
+  return parseMatchType(value, "namespace");
+}
+
+MatchRuleType parseTrackMatchType(std::string_view value) {
+  return parseMatchType(value, "track");
 }
 
 moxygen::TrackNamespace parseTrackNamespace(std::string_view value) {
@@ -188,6 +196,9 @@ IssuedToken issueToken(const IssueTokenOptions& options) {
   if (options.trackNamespace.trackNamespace.empty() &&
       options.namespaceMatchType != MatchRuleType::Exact) {
     throw std::invalid_argument("namespace match mode requires a namespace");
+  }
+  if (!options.trackName.has_value() && options.trackMatchType != MatchRuleType::Exact) {
+    throw std::invalid_argument("track match mode requires a track");
   }
 
   Grants grants;
@@ -236,7 +247,7 @@ IssuedToken issueToken(const IssueTokenOptions& options) {
     std::vector<MatchRule> trackMatches;
     if (options.trackName.has_value()) {
       trackMatches.push_back(MatchRule{
-          .type = MatchRule::Type::Exact,
+          .type = options.trackMatchType,
           .value = *options.trackName,
       });
     }
