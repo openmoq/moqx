@@ -105,6 +105,8 @@ struct MvfstConfig {
   // Ignore the peer's path MTU and send full-size (max UDP payload) packets.
   // Useful for testing / controlled networks; off by default to respect PMTU.
   bool canIgnorePathMTU{false};
+  // Raise the loss time threshold past the lateness of each spurious loss.
+  bool adaptiveLossTimeThreshold{false};
 
   // BBR (BBR1) congestion control tunables.
   // conservativeRecovery is shared with BBR2.

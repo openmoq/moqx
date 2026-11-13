@@ -909,6 +909,8 @@ void applyMvfstOverride(MvfstConfig& base, const ParsedMvfstConfig& overlay) {
     base.numGROBuffers = *v;
   if (auto v = overlay.ignore_path_mtu.value())
     base.canIgnorePathMTU = *v;
+  if (auto v = overlay.adaptive_loss_time_threshold.value())
+    base.adaptiveLossTimeThreshold = *v;
   if (const auto& b = overlay.bbr.value()) {
     if (auto v = b->conservative_recovery.value())
       base.bbr.conservativeRecovery = *v;
