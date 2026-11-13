@@ -150,6 +150,7 @@ buildTransportSettings(const config::QuicConfig& quic, const config::MvfstConfig
   ts.maxRecvBatchSize = mvfst.maxServerRecvPacketsPerLoop;
   ts.numGROBuffers_ = mvfst.numGROBuffers;
   ts.canIgnorePathMTU = mvfst.canIgnorePathMTU;
+  ts.useAdaptiveLossTimeThresholds = mvfst.adaptiveLossTimeThreshold;
   ts.advertisedInitialConnectionFlowControlWindow = quic.maxData;
   ts.advertisedInitialBidiLocalStreamFlowControlWindow = quic.maxStreamData;
   ts.advertisedInitialBidiRemoteStreamFlowControlWindow = quic.maxStreamData;
