@@ -1,0 +1,3 @@
+- A subscriber on one moqx relay now pulls a track announced by a peered relay. The peer announce is applied on the relay thread, and the track's namespace is announced with it.
+- A namespace learned through moq-peering is published with a route codec, so the receiving relay no longer crashes on the announce.
+- When the last moq-peering subscriber leaves and no local client is forwarding, the publisher is set to forward=0. That update is sent before a publish teardown drops the handle.

@@ -452,7 +452,13 @@ void MoqPeeringCore::onTrack(
     std::string track,
     bool withdrawn
 ) {
-  moxygen::FullTrackName ftn{moxygen::TrackNamespace{std::move(nameSpace)}, std::move(track)};
+  moxygen::TrackNamespace ns{std::move(nameSpace)};
+  moxygen::FullTrackName ftn{ns, std::move(track)};
+  // A track announce does not carry a separate namespace announce. Publish the
+  // namespace too, so SUBSCRIBE_NAMESPACE on this relay learns the name.
+  if (!withdrawn) {
+    dispatch([ns](MoqxRelay& relay) { relay.injectPeeringNamespace(ns, false); });
+  }
   dispatch([ftn = std::move(ftn), withdrawn](MoqxRelay& relay) {
     relay.injectPeeringTrack(ftn, withdrawn);
   });

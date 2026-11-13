@@ -387,6 +387,9 @@ private:
   void noteLocalPeeringUnsubscribe(const moxygen::FullTrackName& ftn);
   void attachPeerFanout(const moxygen::FullTrackName& ftn);
   void detachPeerFanout(const moxygen::FullTrackName& ftn);
+  // forward=0 when no peer and no local client is still forwarding.
+  void pauseLivePublisher(const moxygen::FullTrackName& ftn);
+  void completeDeferredPublishDone(const moxygen::FullTrackName& ftn);
 
   NamespaceTree namespaceTree_;
 
@@ -802,6 +805,11 @@ private:
   std::set<moxygen::FullTrackName> peerInterest_;
   std::set<moxygen::FullTrackName> peerFanout_;
   std::set<moxygen::FullTrackName> peeringPull_;
+  // PUBLISH_DONE arrived while a peer still held the fanout. The handle stays
+  // until that fanout is removed and forward=0 has been sent.
+  std::set<moxygen::FullTrackName> deferredPublishDone_;
+  // A forward=0 update already went out. Cleared when forwarding resumes.
+  std::set<moxygen::FullTrackName> publisherPaused_;
   const moxygen::SessionId peerFanoutId_{makeSessionId()};
   uint64_t peeringRequestSeq_{0};
 };

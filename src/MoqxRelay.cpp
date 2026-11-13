@@ -15,6 +15,7 @@
 #include "relay/InitialTrackState.h"
 #include "relay/LocalForwarderCallback.h"
 #include "relay/NullConsumers.h"
+#include "relay/PlainRouteCodec.h"
 #include "relay/PublisherCrossExecFilter.h"
 #include "relay/SubscriberCrossExecFilter.h"
 #include "relay/TrackEventCallback.h"
@@ -625,6 +626,15 @@ void MoqxRelay::onPublishDone(const FullTrackName& ftn) {
   XDCHECK(onRelayExec());
   XLOG(DBG1) << __func__ << " ftn=" << ftn;
 
+  // Local-forwarder mode drops the publish handle here. A peer unsubscribe that
+  // has not run yet would then have nothing to send forward=0 on, and the
+  // publisher stays at forward=1. Hold the handle until that pause is queued.
+  if (mode() == Mode::LocalForwarder &&
+      (peerInterest_.contains(ftn) || peerFanout_.contains(ftn))) {
+    deferredPublishDone_.insert(ftn);
+    return;
+  }
+
   auto upstreamView = registry_.getUpstreamView(ftn);
   if (upstreamView && upstreamView->isPublish) {
     namespaceTree_.unpublishTrack(ftn.trackNamespace, ftn.trackName);
@@ -641,7 +651,17 @@ void MoqxRelay::onPublishDone(const FullTrackName& ftn) {
       XLOG(DBG1) << "Publisher terminated with no subscribers, cleaning up " << ftn;
     }
   }
+  publisherPaused_.erase(ftn);
+  deferredPublishDone_.erase(ftn);
   noteLocalTrackDone(ftn);
+}
+
+void MoqxRelay::completeDeferredPublishDone(const FullTrackName& ftn) {
+  XDCHECK(onRelayExec());
+  if (deferredPublishDone_.erase(ftn) == 0) {
+    return;
+  }
+  onPublishDone(ftn);
 }
 
 namespace {
@@ -710,12 +730,14 @@ void MoqxRelay::setPeeringAnnouncer(std::shared_ptr<PeeringAnnouncer> announcer)
 }
 
 void MoqxRelay::deferOnRelay(folly::Function<void()> fn) {
-  if (relayEvb_) {
-    relayEvb_->runInLoop(std::move(fn));
-    return;
-  }
+  // Peering callbacks arrive on a peering thread. runInLoop() is only valid on
+  // the EventBase thread, so a foreign caller has to use the thread-safe hop.
   if (auto* exec = relayExec()) {
     exec->add(std::move(fn));
+    return;
+  }
+  if (relayEvb_) {
+    relayEvb_->runInEventBaseThread(std::move(fn));
     return;
   }
   fn();
@@ -728,6 +750,10 @@ const Participant& MoqxRelay::peeringParticipant(SessionId session) {
     info->version = kVersionDraft18;
     info->executor = peeringExecutor();
     info->address = "moq-peering";
+    // A peer announcement is a route. It needs a codec, and fromPeering so it
+    // sits beside a local publisher of the same namespace.
+    info->routing = plainRouting({});
+    info->routing.fromPeering = true;
     peeringParticipant_ = Participant(
         std::move(info),
         std::make_shared<IdlePublisher>(),
@@ -782,7 +808,11 @@ void MoqxRelay::noteLocalTrack(const FullTrackName& ftn, SessionId publisher) {
   if (!announcedTracks_.insert(ftn).second) {
     return;
   }
-  XLOG(DBG1) << "moq-peering announce track ftn=" << safeName(ftn);
+  // A peer learns the namespace from this too. A publisher that only sends
+  // PUBLISH never emits PUBLISH_NAMESPACE, and the subscriber's
+  // SUBSCRIBE_NAMESPACE would otherwise see nothing.
+  noteLocalNamespace(ftn.trackNamespace, publisher);
+  XLOG(INFO) << "moq-peering announce track ftn=" << safeName(ftn);
   snap.announcer->announceTrack(ftn);
   attachPeerFanout(ftn);
 }
@@ -796,8 +826,18 @@ void MoqxRelay::noteLocalTrackDone(const FullTrackName& ftn) {
     return;
   }
   announcedTracks_.erase(ftn);
-  XLOG(DBG1) << "moq-peering withdraw track ftn=" << safeName(ftn);
+  XLOG(INFO) << "moq-peering withdraw track ftn=" << safeName(ftn);
   snap.announcer->withdrawTrack(ftn);
+  bool tracksLeft = false;
+  for (const auto& announced : announcedTracks_) {
+    if (announced.trackNamespace == ftn.trackNamespace) {
+      tracksLeft = true;
+      break;
+    }
+  }
+  if (!tracksLeft && !hasLocalNamespacePublisher(ftn.trackNamespace, snap.sessionId)) {
+    noteLocalNamespaceDone(ftn.trackNamespace);
+  }
 }
 
 uint64_t MoqxRelay::nextPeeringRequest() {
@@ -890,6 +930,7 @@ void MoqxRelay::injectPeeringTrack(FullTrackName ftn, bool withdrawn) {
       return;
     }
     peeringTracks_.emplace(ftn, published->consumer);
+    XLOG(INFO) << "moq-peering injected track ftn=" << safeName(ftn);
     co_withExecutor(
         folly::getKeepAliveToken(relayExec_),
         logPeeringPublishReply(std::move(published->reply), ftn)
@@ -909,6 +950,7 @@ void MoqxRelay::injectPeeringTrack(FullTrackName ftn, bool withdrawn) {
                   << " reason=" << setup.error().reasonPhrase;
     return;
   }
+  XLOG(INFO) << "moq-peering injected track ftn=" << safeName(ftn);
   peeringTracks_.emplace(std::move(ftn), std::move(setup->consumer));
 }
 
@@ -933,7 +975,7 @@ void MoqxRelay::noteLocalPeeringSubscribe(const FullTrackName& ftn) {
   if (!peeringPull_.insert(ftn).second) {
     return;
   }
-  XLOG(DBG1) << "moq-peering subscribe track ftn=" << safeName(ftn);
+  XLOG(INFO) << "moq-peering subscribe track ftn=" << safeName(ftn);
   snap.announcer->subscribeTrack(ftn);
 }
 
@@ -969,28 +1011,55 @@ void MoqxRelay::attachPeerFanout(const FullTrackName& ftn) {
   });
 }
 
+void MoqxRelay::pauseLivePublisher(const FullTrackName& ftn) {
+  XDCHECK(onRelayExec());
+  // A local client that is still forwarding keeps the publisher going. Callers
+  // check that before asking for the pause.
+  if (peerInterest_.contains(ftn)) {
+    return;
+  }
+  forwardChangedImpl(ftn, false);
+}
+
 void MoqxRelay::detachPeerFanout(const FullTrackName& ftn) {
   XDCHECK(onRelayExec());
   peerFanout_.erase(ftn);
   auto ref = registry_.getForwarderRef(ftn);
+  auto relay = weak_from_this();
+  auto finish = [relay, ftn](bool idle) {
+    if (auto self = relay.lock()) {
+      self->deferOnRelay([self, ftn, idle] {
+        if (!idle) {
+          return;
+        }
+        // No local client is forwarding. Pause first, while the publish handle
+        // still exists, then apply a PUBLISH_DONE that waited for this.
+        self->pauseLivePublisher(ftn);
+        self->completeDeferredPublishDone(ftn);
+      });
+    }
+  };
   if (!ref) {
+    finish(true);
     return;
   }
   auto id = peerFanoutId_;
-  ref.post([id](MoQForwarder& fwd) {
+  ref.post([id, finish = std::move(finish)](MoQForwarder& fwd) mutable {
     auto sub = fwd.findSubscriber(id);
-    if (!sub) {
-      return;
+    if (sub) {
+      // removeSubscriber suppresses forwardChanged when this is the last
+      // subscriber and a subgroup is still open, so the publisher keeps sending.
+      // Drop the forwarding count first. That sends forward=0 immediately when
+      // no client subscriber is still forwarding.
+      if (!sub->passive && sub->shouldForward) {
+        sub->shouldForward = false;
+        fwd.removeForwardingSubscriber();
+      }
+      fwd.removeSubscriber(id, std::nullopt, "moq-peering unsubscribe");
     }
-    // removeSubscriber suppresses forwardChanged when this is the last
-    // subscriber and a subgroup is still open, so the publisher keeps sending.
-    // Drop the forwarding count first. That sends forward=0 immediately when
-    // no client subscriber is still forwarding.
-    if (!sub->passive && sub->shouldForward) {
-      sub->shouldForward = false;
-      fwd.removeForwardingSubscriber();
-    }
-    fwd.removeSubscriber(id, std::nullopt, "moq-peering unsubscribe");
+    // Whatever the callback above did, this count is the local clients still
+    // forwarding. Zero means the publisher has to be paused.
+    finish(fwd.numForwardingSubscribers() == 0);
   });
 }
 
@@ -2445,11 +2514,13 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
           subscriber.sessionId,
           TrackSubscriptionSource::SubscribeNamespace
       )) {
-    co_return folly::makeUnexpected(SubscribeNamespaceError{
-        subNs.requestID,
-        SubscribeNamespaceErrorCode::DUPLICATE_SUBSCRIPTION,
-        "The session already has a SUBSCRIBE_NAMESPACE at this prefix"
-    });
+    co_return folly::makeUnexpected(
+        SubscribeNamespaceError{
+            subNs.requestID,
+            SubscribeNamespaceErrorCode::DUPLICATE_SUBSCRIPTION,
+            "The session already has a SUBSCRIBE_NAMESPACE at this prefix"
+        }
+    );
   }
 
   std::string incomingPeerID;
@@ -2460,11 +2531,13 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
                  << ", reciprocating peer subNs";
       const bool accepted = co_await reciprocal_->onPeerConnected(requester, *peerID);
       if (!accepted) {
-        co_return folly::makeUnexpected(SubscribeNamespaceError{
-            subNs.requestID,
-            SubscribeNamespaceErrorCode::DUPLICATE_SUBSCRIPTION,
-            "The session already has a peering SUBSCRIBE_NAMESPACE"
-        });
+        co_return folly::makeUnexpected(
+            SubscribeNamespaceError{
+                subNs.requestID,
+                SubscribeNamespaceErrorCode::DUPLICATE_SUBSCRIPTION,
+                "The session already has a peering SUBSCRIBE_NAMESPACE"
+            }
+        );
       }
       incomingPeerID = std::move(*peerID);
     }
@@ -2656,11 +2729,13 @@ folly::coro::Task<Publisher::SubscribeTracksResult> MoqxRelay::subscribeTracks(
   }
 
   if (tracksTree_.hasOverlap(subTracks.trackNamespacePrefix, session)) {
-    co_return folly::makeUnexpected(SubscribeTracksError{
-        subTracks.requestID,
-        SubscribeTracksErrorCode::PREFIX_OVERLAP,
-        "Overlapping SUBSCRIBE_TRACKS exists in this session"
-    });
+    co_return folly::makeUnexpected(
+        SubscribeTracksError{
+            subTracks.requestID,
+            SubscribeTracksErrorCode::PREFIX_OVERLAP,
+            "Overlapping SUBSCRIBE_TRACKS exists in this session"
+        }
+    );
   }
 
   struct TrackMatch {
@@ -2745,6 +2820,12 @@ folly::coro::Task<Publisher::SubscribeTracksResult> MoqxRelay::subscribeTracks(
   for (auto& match : trackMatches) {
     if (!addSubscriberAndPublish(requester, match.forwarder, subTracks.forward, /*pinned=*/true)) {
       XLOG(ERR) << "addSubscriberAndPublish failed for " << match.ftn;
+      continue;
+    }
+    // Adding the subscriber also fires forwardChanged, which pulls. Call it
+    // here as well so a peering publish still pulls if that callback is missed.
+    if (subTracks.forward && isPeeringPublisher(match.ftn)) {
+      noteLocalPeeringSubscribe(match.ftn);
     }
   }
 
@@ -3774,6 +3855,13 @@ void MoqxRelay::forwardChangedImpl(const FullTrackName& ftn, bool forward) {
   }
   if (!upstreamView->upstreamLive) {
     XLOG(DBG4) << "Ignoring forward change for " << ftn << " - publisher terminated";
+    return;
+  }
+  // The peer-unsubscribe path and this callback can both ask for forward=0.
+  // One update is enough, and a later forward=1 has to be able to resume.
+  if (forward) {
+    publisherPaused_.erase(ftn);
+  } else if (!publisherPaused_.insert(ftn).second) {
     return;
   }
   XLOG(INFO) << "Updating forward for " << ftn << " forward=" << forward;
