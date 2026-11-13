@@ -197,8 +197,9 @@ MoQRelayTest::PendingSubscribe MoQRelayTest::startSubscribe(
     co_withExecutor(
         folly::getKeepAliveToken(startExec),
         folly::coro::co_invoke(
-            [t = std::move(task), result = pending.result, done = pending.done](
-            ) mutable -> folly::coro::Task<void> {
+            [t = std::move(task),
+             result = pending.result,
+             done = pending.done]() mutable -> folly::coro::Task<void> {
               *result = co_await folly::coro::co_awaitTry(std::move(t));
               done->store(true);
             }
@@ -434,7 +435,8 @@ std::shared_ptr<MockSubgroupConsumer> MoQRelayTest::createMockSubgroupConsumer()
   ON_CALL(*sg, beginObject(_, _, _, _))
       .WillByDefault(Return(folly::makeExpected<MoQPublishError>(folly::unit)));
   ON_CALL(*sg, objectPayload(_, _))
-      .WillByDefault(Return(folly::makeExpected<MoQPublishError>(ObjectPublishStatus::IN_PROGRESS))
+      .WillByDefault(
+          Return(folly::makeExpected<MoQPublishError>(ObjectPublishStatus::IN_PROGRESS))
       );
   ON_CALL(*sg, endOfSubgroup())
       .WillByDefault(Return(folly::makeExpected<MoQPublishError>(folly::unit)));

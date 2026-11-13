@@ -5,6 +5,7 @@
  */
 
 #include "MoqxRelayContext.h"
+#include "peering/PeeringBridge.h"
 #include "relay/AuthFilters.h"
 #include "relay/PublisherCrossExecFilter.h"
 #include "relay/RelayExecUtil.h"
@@ -85,6 +86,31 @@ MoqxRelayContext::MoqxRelayContext(
   }
 }
 
+MoqxRelayContext::~MoqxRelayContext() {
+  detachPeering();
+}
+
+void MoqxRelayContext::attachPeering(std::shared_ptr<peering::MoqPeeringRuntime> runtime) {
+  detachPeering();
+  if (!runtime) {
+    return;
+  }
+  auto bridge = std::make_shared<PeeringBridge>(std::move(runtime));
+  std::vector<std::shared_ptr<MoqxRelay>> relays;
+  relays.reserve(services_.size());
+  for (auto& [name, entry] : services_) {
+    relays.push_back(entry.relay);
+  }
+  bridge->attach(relays);
+  peeringBridge_ = std::move(bridge);
+}
+
+void MoqxRelayContext::detachPeering() {
+  if (peeringBridge_) {
+    peeringBridge_->detach();
+  }
+}
+
 void MoqxRelayContext::setStatsRegistry(std::shared_ptr<stats::StatsRegistry> registry) {
   statsRegistry_ = std::move(registry);
 }
@@ -92,8 +118,8 @@ void MoqxRelayContext::setStatsRegistry(std::shared_ptr<stats::StatsRegistry> re
 // Relay chaining requires draft 16+ for wildcard subscribeNamespace and
 // NAMESPACE messages on the bidi stream. Connections negotiating an earlier
 // draft will not receive namespace announcements from the upstream relay.
-std::shared_ptr<fizz::CertificateVerifier> makeUpstreamVerifier(const config::UpstreamTlsConfig& tls
-) {
+std::shared_ptr<fizz::CertificateVerifier>
+makeUpstreamVerifier(const config::UpstreamTlsConfig& tls) {
   if (tls.insecure) {
     return std::make_shared<moxygen::test::InsecureVerifierDangerousDoNotUseInProduction>();
   }
@@ -440,10 +466,12 @@ folly::coro::Task<MoqxRelayContext::TrackMetricsResult> MoqxRelayContext::aggreg
     // registry_ lives on the relay exec when there is one. Without one, config
     // forces threads==1, so the worker EVB is that single io thread.
     auto* exec = service.relay->getRelayExec();
-    matchTasks.push_back(folly::coro::co_withExecutor(
-        exec ? exec : static_cast<folly::Executor*>(workerEvb_),
-        matchOn(service.relay, nsPrefix, trackName ? &*trackName : nullptr, limit)
-    ));
+    matchTasks.push_back(
+        folly::coro::co_withExecutor(
+            exec ? exec : static_cast<folly::Executor*>(workerEvb_),
+            matchOn(service.relay, nsPrefix, trackName ? &*trackName : nullptr, limit)
+        )
+    );
   }
 
   TrackMetricsResult result;

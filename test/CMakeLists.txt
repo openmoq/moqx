@@ -76,6 +76,7 @@ moqx_add_gtest(moqx_relay_test
     MoqxRelayStateTests.cpp
     MoqxRelayRendezvousTests.cpp
     MoqxRelayTestModes.cpp
+    peering/PeeringAnnounceTest.cpp
   LIBS moqx_test_fixture moqx_test_main
 )
 
@@ -105,6 +106,11 @@ moqx_add_gtest(moqx_config_resolver_test
 moqx_add_gtest(moqx_config_serializer_test
   SRCS config/ConfigSerializerTest.cpp
   LIBS moqx_config_loader GTest::gtest_main GTest::gmock
+)
+
+moqx_add_gtest(moqx_peering_json_test
+  SRCS peering/PeerJsonTest.cpp peering/PeeringObjectTest.cpp
+  LIBS moqx_core Folly::folly_json_dynamic GTest::gtest_main GTest::gmock
 )
 
 moqx_add_gtest(moqx_pkcs12_test

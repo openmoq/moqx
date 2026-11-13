@@ -20,9 +20,15 @@
 #include <folly/SocketAddress.h>
 #include <folly/String.h>
 
+#include <openssl/bio.h>
 #include <openssl/crypto.h>
+#include <openssl/err.h>
+#include <openssl/evp.h>
+#include <openssl/pem.h>
+#include <openssl/x509.h>
 
 #include "auth/Action.h"
+#include "config/PeerEndpoint.h"
 #include "config/Pkcs12.h"
 
 namespace openmoq::moqx::config {
@@ -687,10 +693,12 @@ AuthConfig resolveAuth(const std::optional<ParsedAuthConfig>& parsed) {
   out.maxTokensPerMessage = parsed->max_tokens_per_message.value().value_or(0);
   if (parsed->hmac_keys.value()) {
     for (const auto& key : *parsed->hmac_keys.value()) {
-      out.hmacKeys.push_back(AuthConfig::HmacKey{
-          .id = key.id.value(),
-          .secret = key.secret.value(),
-      });
+      out.hmacKeys.push_back(
+          AuthConfig::HmacKey{
+              .id = key.id.value(),
+              .secret = key.secret.value(),
+          }
+      );
     }
   }
   if (parsed->anonymous_claim.value()) {
@@ -1211,6 +1219,330 @@ ServiceConfig resolveService(
   };
 }
 
+struct BioDelete {
+  void operator()(BIO* bio) const { BIO_free(bio); }
+};
+struct X509Delete {
+  void operator()(X509* cert) const { X509_free(cert); }
+};
+struct PKeyDelete {
+  void operator()(EVP_PKEY* key) const { EVP_PKEY_free(key); }
+};
+
+std::string opensslError() {
+  char buf[256];
+  unsigned long err = ERR_get_error();
+  ERR_clear_error();
+  if (err == 0) {
+    return "unreadable PEM";
+  }
+  ERR_error_string_n(err, buf, sizeof(buf));
+  return buf;
+}
+
+// Reads the certificate and key only to check them, then frees both. The key
+// bytes are not copied into a std::string and are not logged.
+void validatePeeringMaterial(
+    const std::string& certPath,
+    const std::string& keyPath,
+    std::vector<std::string>& errors,
+    std::vector<std::string>& warnings
+) {
+  auto rejectPath = [](const std::string& path) -> std::optional<std::string> {
+    if (path.empty() || path.size() > 4096 || path.find('\n') != std::string::npos ||
+        path.find('\r') != std::string::npos) {
+      return std::string("path is empty or contains a newline");
+    }
+    return std::nullopt;
+  };
+  if (auto problem = rejectPath(certPath)) {
+    errors.push_back("peering.moq_peering.tls.cert_file: " + *problem);
+    return;
+  }
+  if (auto problem = rejectPath(keyPath)) {
+    errors.push_back("peering.moq_peering.tls.key_file: " + *problem);
+    return;
+  }
+
+  auto checkRegular = [&](const std::string& path, const char* field) -> bool {
+    std::error_code ec;
+    const auto st = std::filesystem::status(path, ec);
+    if (ec || !std::filesystem::exists(st)) {
+      errors.push_back(std::string(field) + ": file does not exist");
+      return false;
+    }
+    if (!std::filesystem::is_regular_file(st)) {
+      errors.push_back(std::string(field) + ": not a regular file");
+      return false;
+    }
+    const auto size = std::filesystem::file_size(path, ec);
+    if (ec || size == 0 || size > 1024 * 1024) {
+      errors.push_back(std::string(field) + ": file must be between 1 byte and 1MB");
+      return false;
+    }
+    return true;
+  };
+  if (!checkRegular(certPath, "peering.moq_peering.tls.cert_file") ||
+      !checkRegular(keyPath, "peering.moq_peering.tls.key_file")) {
+    return;
+  }
+
+  std::unique_ptr<BIO, BioDelete> certBio(BIO_new_file(certPath.c_str(), "r"));
+  std::unique_ptr<X509, X509Delete> cert(
+      certBio ? PEM_read_bio_X509(certBio.get(), nullptr, nullptr, nullptr) : nullptr
+  );
+  if (!cert) {
+    errors.push_back(
+        "peering.moq_peering.tls.cert_file: not a PEM certificate (" + opensslError() + ")"
+    );
+    return;
+  }
+  ERR_clear_error();
+
+  const ASN1_TIME* notBefore = X509_get0_notBefore(cert.get());
+  const ASN1_TIME* notAfter = X509_get0_notAfter(cert.get());
+  if (!notBefore || X509_cmp_current_time(notBefore) > 0) {
+    errors.push_back("peering.moq_peering.tls.cert_file: certificate is not yet valid");
+  }
+  if (!notAfter || X509_cmp_current_time(notAfter) < 0) {
+    errors.push_back("peering.moq_peering.tls.cert_file: certificate is expired");
+  }
+
+  const int signature = X509_get_signature_nid(cert.get());
+  if (signature == NID_md5WithRSAEncryption || signature == NID_sha1WithRSAEncryption ||
+      signature == NID_md5 || signature == NID_sha1) {
+    errors.push_back("peering.moq_peering.tls.cert_file: certificate signature uses MD5 or SHA-1");
+  }
+
+  std::unique_ptr<EVP_PKEY, PKeyDelete> publicKey(X509_get_pubkey(cert.get()));
+  if (!publicKey) {
+    errors.push_back("peering.moq_peering.tls.cert_file: certificate has no public key");
+  } else {
+    const int baseId = EVP_PKEY_get_base_id(publicKey.get());
+    const int bits = EVP_PKEY_get_bits(publicKey.get());
+    if (baseId == EVP_PKEY_RSA && bits < 2048) {
+      errors.push_back("peering.moq_peering.tls.cert_file: RSA key is shorter than 2048 bits");
+    } else if (baseId == EVP_PKEY_EC && bits < 256) {
+      errors.push_back("peering.moq_peering.tls.cert_file: EC key is shorter than 256 bits");
+    } else if (baseId != EVP_PKEY_RSA && baseId != EVP_PKEY_EC) {
+      errors.push_back("peering.moq_peering.tls.cert_file: public key must be RSA or EC");
+    }
+  }
+
+  std::unique_ptr<BIO, BioDelete> keyBio(BIO_new_file(keyPath.c_str(), "r"));
+  // No password callback: an encrypted key is rejected instead of prompting.
+  std::unique_ptr<EVP_PKEY, PKeyDelete> privateKey(
+      keyBio ? PEM_read_bio_PrivateKey(keyBio.get(), nullptr, nullptr, nullptr) : nullptr
+  );
+  if (!privateKey) {
+    errors.push_back(
+        "peering.moq_peering.tls.key_file: key is encrypted or not a PEM private key (" +
+        opensslError() + ")"
+    );
+    return;
+  }
+  ERR_clear_error();
+  if (X509_check_private_key(cert.get(), privateKey.get()) != 1) {
+    errors.push_back(
+        "peering.moq_peering.tls.key_file: private key does not match the certificate"
+    );
+    ERR_clear_error();
+  }
+
+  std::error_code ec;
+  const auto perms = std::filesystem::status(keyPath, ec).permissions();
+  using std::filesystem::perms;
+  const auto exposed = perms::group_read | perms::group_write | perms::group_exec |
+                       perms::others_read | perms::others_write | perms::others_exec;
+  if (!ec && (perms & exposed) != perms::none) {
+    warnings.push_back(
+        "peering.moq_peering.tls.key_file is readable by group or others; restrict it to the "
+        "relay user (0600): " +
+        keyPath
+    );
+  }
+}
+
+bool nodeIdOk(const std::string& id, std::vector<std::string>& errors) {
+  if (auto problem = validateNodeId(id)) {
+    errors.push_back("peering.moq_peering.node_id: " + *problem);
+    return false;
+  }
+  return true;
+}
+
+void validateMoqPeering(
+    const ParsedConfig& config,
+    const ParsedMoqPeeringConfig& parsed,
+    std::vector<std::string>& errors,
+    std::vector<std::string>& warnings
+) {
+  if (const auto& nodeId = parsed.node_id.value()) {
+    nodeIdOk(*nodeId, errors);
+  } else if (const auto& relayId = config.relay_id.value()) {
+    if (auto problem = validateNodeId(*relayId)) {
+      errors.push_back("relay_id is used as the moq-peering node_id: " + *problem);
+    }
+  }
+
+  const uint16_t listenPort = parsed.listen_port.value().value_or(33434);
+  if (listenPort == 0) {
+    errors.push_back("peering.moq_peering.listen_port must be from 1 to 65535");
+  } else {
+    for (const auto& listener : config.listeners.value()) {
+      if (listener.udp.value().socket.value().port.value() == listenPort) {
+        warnings.push_back(
+            "peering.moq_peering.listen_port " + std::to_string(listenPort) +
+            " is also a MoQT listener port (" + listener.name.value() + ")"
+        );
+      }
+    }
+  }
+
+  if (const auto& interval = parsed.check_interval_ms.value()) {
+    if (*interval < 2000) {
+      errors.push_back("peering.moq_peering.check_interval_ms must be at least 2000");
+    }
+  }
+  if (const auto& queue = parsed.init_queue_size.value()) {
+    if (*queue == 0) {
+      errors.push_back("peering.moq_peering.init_queue_size must be at least 1");
+    }
+  }
+
+  std::unordered_set<std::string> seen;
+  const auto& peers = parsed.peers.value();
+  if (peers && peers->size() > 128) {
+    errors.push_back("peering.moq_peering.peers is limited to 128 entries");
+  }
+  if (peers) {
+    for (size_t i = 0; i < peers->size(); ++i) {
+      const auto& peer = (*peers)[i];
+      const std::string label = "peering.moq_peering.peers[" + std::to_string(i) + "]";
+      std::string host;
+      if (auto problem = normalizePeerHost(peer.host.value(), host)) {
+        errors.push_back(label + ": " + *problem);
+        continue;
+      }
+      const auto port = peer.port.value();
+      if (auto problem = validatePeerPort(port)) {
+        errors.push_back(label + ": " + *problem);
+        continue;
+      }
+      if ((host == "127.0.0.1" || host == "::1" || host == "localhost") && port == listenPort) {
+        errors.push_back(label + " dials this node's own listen port");
+      }
+      const std::string key = host + "\n" + std::to_string(port);
+      if (!seen.insert(key).second) {
+        errors.push_back(label + " duplicates " + host + ":" + std::to_string(port));
+      }
+    }
+  }
+
+  validatePeeringMaterial(
+      parsed.tls.value().cert_file.value(),
+      parsed.tls.value().key_file.value(),
+      errors,
+      warnings
+  );
+
+  std::vector<std::string> upstreamServices;
+  for (const auto& [name, svc] : config.services.value()) {
+    if (svc.upstream.value() || (svc.upstreams.value() && !svc.upstreams.value()->empty())) {
+      upstreamServices.push_back(name);
+    }
+  }
+  if (!upstreamServices.empty()) {
+    warnings.push_back(
+        "peering.method is moq-peering, so MoQ Cluster is off. Service upstreams still dial "
+        "MoQT (" +
+        folly::join(", ", upstreamServices) + ")"
+    );
+  }
+}
+
+PeeringMethod peeringMethodOf(const ParsedConfig& config) {
+  const auto& peering = config.peering.value();
+  if (!peering || !peering->method.value()) {
+    return PeeringMethod::Cluster;
+  }
+  if (peering->method.value()->str() == "moq-peering") {
+    return PeeringMethod::MoqPeering;
+  }
+  return PeeringMethod::Cluster;
+}
+
+void validatePeeringSelection(
+    const ParsedConfig& config,
+    std::vector<std::string>& errors,
+    std::vector<std::string>& warnings
+) {
+  const auto method = peeringMethodOf(config);
+  const auto& peering = config.peering.value();
+  const bool hasMoq = peering && peering->moq_peering.value().has_value();
+  if (method == PeeringMethod::Cluster && hasMoq) {
+    errors.push_back(
+        "peering.moq_peering is set, but peering.method is cluster. Only one peering method is used"
+    );
+  }
+  if (method == PeeringMethod::MoqPeering && !hasMoq) {
+    errors.push_back("peering.method is moq-peering, so peering.moq_peering is required");
+  }
+  if (method == PeeringMethod::MoqPeering && config.cluster.value() &&
+      config.cluster.value()->enabled.value().value_or(true)) {
+    errors.push_back(
+        "cluster is enabled, but peering.method is moq-peering. Omit cluster or set "
+        "cluster.enabled: false. Only one peering method is used"
+    );
+  }
+  if (method == PeeringMethod::MoqPeering && hasMoq) {
+    validateMoqPeering(config, *peering->moq_peering.value(), errors, warnings);
+  }
+}
+
+MoqPeeringNodeType resolveNodeType(const ParsedMoqPeeringConfig& parsed) {
+  if (!parsed.node_type.value()) {
+    return MoqPeeringNodeType::Edge;
+  }
+  const auto name = parsed.node_type.value()->str();
+  if (name == "via") {
+    return MoqPeeringNodeType::Via;
+  }
+  if (name == "stub") {
+    return MoqPeeringNodeType::Stub;
+  }
+  return MoqPeeringNodeType::Edge;
+}
+
+MoqPeeringConfig
+resolveMoqPeering(const ParsedMoqPeeringConfig& parsed, const std::string& relayID) {
+  MoqPeeringConfig resolved;
+  resolved.nodeId = parsed.node_id.value().value_or(relayID);
+  resolved.nodeType = resolveNodeType(parsed);
+  resolved.nodeMetric = parsed.node_metric.value().value_or(100);
+  resolved.listenPort = parsed.listen_port.value().value_or(33434);
+  resolved.objectTtlMs = parsed.object_ttl_ms.value().value_or(5000);
+  resolved.checkIntervalMs = parsed.check_interval_ms.value().value_or(5000);
+  resolved.initQueueSize = parsed.init_queue_size.value().value_or(5000);
+  resolved.debug = parsed.debug.value().value_or(false);
+  resolved.tls.certFile = parsed.tls.value().cert_file.value();
+  resolved.tls.keyFile = parsed.tls.value().key_file.value();
+  if (const auto& peers = parsed.peers.value()) {
+    resolved.peers.reserve(peers->size());
+    for (const auto& peer : *peers) {
+      MoqPeeringPeer out;
+      std::string host;
+      // Validation already accepted this host. Normalize again so brackets are stored off.
+      (void)normalizePeerHost(peer.host.value(), host);
+      out.host = std::move(host);
+      out.port = peer.port.value();
+      out.metric = peer.metric.value();
+      resolved.peers.push_back(std::move(out));
+    }
+  }
+  return resolved;
+}
+
 } // namespace
 
 folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& config) {
@@ -1364,6 +1696,8 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
     }
   }
 
+  validatePeeringSelection(config, errors, warnings);
+
   if (!errors.empty()) {
     return folly::makeUnexpected("Config validation failed:\n  - " + folly::join("\n  - ", errors));
   }
@@ -1408,21 +1742,25 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
     }
     if (auto maxLimit = adminOptional->track_metrics_endpoint_max_limit.value()) {
       if (*maxLimit <= 0) {
-        return folly::makeUnexpected(folly::to<std::string>(
-            "admin.track_metrics_endpoint_max_limit must be greater than 0, got ",
-            *maxLimit
-        ));
+        return folly::makeUnexpected(
+            folly::to<std::string>(
+                "admin.track_metrics_endpoint_max_limit must be greater than 0, got ",
+                *maxLimit
+            )
+        );
       }
       resolved.trackMetricsMaxLimit = *maxLimit;
     }
     if (resolved.trackMetricsLimit > resolved.trackMetricsMaxLimit) {
-      return folly::makeUnexpected(folly::to<std::string>(
-          "admin.track_metrics_endpoint_default_limit (",
-          resolved.trackMetricsLimit,
-          ") exceeds admin.track_metrics_endpoint_max_limit (",
-          resolved.trackMetricsMaxLimit,
-          ")"
-      ));
+      return folly::makeUnexpected(
+          folly::to<std::string>(
+              "admin.track_metrics_endpoint_default_limit (",
+              resolved.trackMetricsLimit,
+              ") exceeds admin.track_metrics_endpoint_max_limit (",
+              resolved.trackMetricsMaxLimit,
+              ")"
+          )
+      );
     }
     adminConfig = std::move(resolved);
   }
@@ -1430,12 +1768,19 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
   // Resolve relayID: use configured value or generate a random hex string
   std::string relayID = config.relay_id.value().value_or(generateRelayID());
 
+  const auto peeringMethod = peeringMethodOf(config);
+  std::optional<MoqPeeringConfig> moqPeering;
   std::optional<ClusterConfig> cluster;
-  const auto& parsedCluster = config.cluster.value();
-  if (!parsedCluster) {
-    cluster = ClusterConfig{.hopID = generateHopID()};
-  } else if (parsedCluster->enabled.value().value_or(true)) {
-    cluster = ClusterConfig{.hopID = parsedCluster->hop_id.value().value_or(generateHopID())};
+  if (peeringMethod == PeeringMethod::MoqPeering) {
+    // The cluster method stays off even when the cluster block is absent.
+    moqPeering = resolveMoqPeering(*config.peering.value()->moq_peering.value(), relayID);
+  } else {
+    const auto& parsedCluster = config.cluster.value();
+    if (!parsedCluster) {
+      cluster = ClusterConfig{.hopID = generateHopID()};
+    } else if (parsedCluster->enabled.value().value_or(true)) {
+      cluster = ClusterConfig{.hopID = parsedCluster->hop_id.value().value_or(generateHopID())};
+    }
   }
 
   // Resolve logging config
@@ -1513,6 +1858,8 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
               .mvfstBpfSteering = mvfstBpfSteering,
               .logging = std::move(loggingConfig),
               .cluster = cluster,
+              .peeringMethod = peeringMethod,
+              .moqPeering = std::move(moqPeering),
           },
       .warnings = std::move(warnings),
   };

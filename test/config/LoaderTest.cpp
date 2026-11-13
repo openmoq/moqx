@@ -673,5 +673,65 @@ TEST(ConfigLoader, ExampleYamlValid) {
 }
 #endif
 
+TEST(ConfigLoader, PeeringMethodParses) {
+  TempYamlFile yaml(R"(
+listeners:
+  - name: main
+    udp:
+      socket:
+        address: "::"
+        port: 9668
+    tls:
+      insecure: true
+    endpoint: "/moq-relay"
+services:
+  default:
+    match:
+      - authority: {any: true}
+        path: {prefix: "/"}
+peering:
+  method: moq-peering
+  moq_peering:
+    node_type: via
+    listen_port: 33434
+    tls:
+      cert_file: /tmp/moqx-cert.pem
+      key_file: /tmp/moqx-key.pem
+    peers:
+      - host: 192.0.2.10
+        port: 33440
+        metric: 150
+)");
+
+  auto cfg = loadConfig(yaml.path(), /*strict=*/true);
+  ASSERT_TRUE(cfg.peering.value());
+  EXPECT_EQ(cfg.peering.value()->method.value()->str(), "moq-peering");
+  ASSERT_TRUE(cfg.peering.value()->moq_peering.value());
+  EXPECT_EQ(cfg.peering.value()->moq_peering.value()->node_type.value()->str(), "via");
+}
+
+TEST(ConfigLoader, UnknownPeeringMethodRejected) {
+  TempYamlFile yaml(R"(
+listeners:
+  - name: main
+    udp:
+      socket:
+        address: "::"
+        port: 9668
+    tls:
+      insecure: true
+    endpoint: "/moq-relay"
+services:
+  default:
+    match:
+      - authority: {any: true}
+        path: {prefix: "/"}
+peering:
+  method: gossip
+)");
+
+  EXPECT_THROW(loadConfig(yaml.path(), /*strict=*/true), std::runtime_error);
+}
+
 } // namespace
 } // namespace openmoq::moqx::config

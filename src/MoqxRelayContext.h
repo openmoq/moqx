@@ -32,9 +32,15 @@
 
 namespace openmoq::moqx {
 
+namespace peering {
+class MoqPeeringRuntime;
+}
+
+class PeeringBridge;
+
 // Returns nullptr to use the system CAs. Throws if tls.ca_cert cannot be loaded.
-std::shared_ptr<fizz::CertificateVerifier> makeUpstreamVerifier(const config::UpstreamTlsConfig& tls
-);
+std::shared_ptr<fizz::CertificateVerifier>
+makeUpstreamVerifier(const config::UpstreamTlsConfig& tls);
 
 // Visitor interface for the top-level relay context state dump.
 // onServiceBegin returns the RelayStateVisitor to use for that service's relay.
@@ -78,8 +84,15 @@ public:
       bool useLocalForwarders = false,
       std::optional<config::ClusterConfig> cluster = config::ClusterConfig{}
   );
+  ~MoqxRelayContext();
 
   void setStatsRegistry(std::shared_ptr<stats::StatsRegistry> registry);
+
+  // Announces local PUBLISH and PUBLISH_NAMESPACE on this runtime, and injects
+  // peer announcements into every service relay.
+  void attachPeering(std::shared_ptr<peering::MoqPeeringRuntime> runtime);
+  // Clears the runtime callback. Destroy the runtime after this returns.
+  void detachPeering();
 
   // The HOP_ID to declare in SETUP. Unset when MoQ Cluster is disabled.
   std::optional<uint64_t> getRelayHopID() const {
@@ -184,6 +197,7 @@ private:
   std::vector<std::shared_ptr<stats::MoQStatsCollector>> statsCollectors_;
   folly::ThreadLocal<std::shared_ptr<stats::MoQStatsCollector>> tlStatsCollector_;
   folly::EventBase* workerEvb_{nullptr};
+  std::shared_ptr<PeeringBridge> peeringBridge_;
 };
 
 } // namespace openmoq::moqx

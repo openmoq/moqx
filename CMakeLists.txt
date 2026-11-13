@@ -350,6 +350,109 @@ add_library(moqx_warnings INTERFACE)
 target_compile_options(moqx_warnings INTERFACE
   -Wall -Wextra -Wpedantic -Wno-missing-field-initializers)
 
+# --- moq-peering --------------------------------------------------------------
+# A shared library so moq-peering's picoquic is a separate image from the
+# picoquic moxygen links into the relay. Objects are built hidden and
+# position-independent; only MoqPeeringRuntime is exported.
+set(MOQ_PEERING_BUILD_TESTS OFF CACHE BOOL "Build moq-peering tests")
+set(MOQ_PEERING_BUILD_EXAMPLES OFF CACHE BOOL "Build moq-peering examples")
+set(MOQ_PEERING_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../moq-peering" CACHE PATH
+    "Local moq-peering checkout. Used when that directory contains CMakeLists.txt.")
+
+set(_moqx_peering_src "")
+if(EXISTS "${MOQ_PEERING_SOURCE_DIR}/CMakeLists.txt")
+  set(_moqx_peering_src "${MOQ_PEERING_SOURCE_DIR}")
+elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../../ws-media10x/moq-peering/CMakeLists.txt")
+  set(_moqx_peering_src "${CMAKE_CURRENT_SOURCE_DIR}/../../ws-media10x/moq-peering")
+endif()
+
+# spdlog 1.17 does not compile against the fmt folly already provides. Bundle
+# fmt inside spdlog, and add that target before moq-peering so the library
+# keeps it instead of switching on SPDLOG_FMT_EXTERNAL.
+set(SPDLOG_FMT_EXTERNAL OFF CACHE BOOL
+    "Bundle fmt inside the moq-peering shared library" FORCE)
+CPMAddPackage("gh:gabime/spdlog@1.17.0")
+
+if(_moqx_peering_src)
+  message(STATUS "moq-peering: using ${_moqx_peering_src}")
+  CPMAddPackage(
+    NAME moq-peering
+    SOURCE_DIR "${_moqx_peering_src}"
+  )
+else()
+  message(STATUS "moq-peering: fetching ${MOQ_PEERING_REPOSITORY}@${MOQ_PEERING_REV}")
+  CPMAddPackage(
+    NAME moq-peering
+    GITHUB_REPOSITORY ${MOQ_PEERING_REPOSITORY}
+    GIT_TAG ${MOQ_PEERING_REV}
+  )
+endif()
+
+function(moqx_hide_peering_target tgt)
+  if(NOT TARGET ${tgt})
+    return()
+  endif()
+  get_target_property(_moqx_type ${tgt} TYPE)
+  if(_moqx_type STREQUAL "INTERFACE_LIBRARY" OR _moqx_type STREQUAL "UTILITY")
+    return()
+  endif()
+  set_target_properties(${tgt} PROPERTIES
+    C_VISIBILITY_PRESET hidden
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN ON
+    POSITION_INDEPENDENT_CODE ON
+  )
+  set_property(GLOBAL APPEND PROPERTY MOQX_HIDDEN_PEERING_TARGETS "${tgt}")
+endfunction()
+
+function(moqx_hide_peering_dir dir)
+  get_property(_moqx_tgts DIRECTORY "${dir}" PROPERTY BUILDSYSTEM_TARGETS)
+  foreach(_moqx_tgt IN LISTS _moqx_tgts)
+    moqx_hide_peering_target(${_moqx_tgt})
+  endforeach()
+  get_property(_moqx_subs DIRECTORY "${dir}" PROPERTY SUBDIRECTORIES)
+  foreach(_moqx_sub IN LISTS _moqx_subs)
+    moqx_hide_peering_dir("${_moqx_sub}")
+  endforeach()
+endfunction()
+
+set_property(GLOBAL PROPERTY MOQX_HIDDEN_PEERING_TARGETS "")
+if(DEFINED spdlog_SOURCE_DIR)
+  moqx_hide_peering_dir("${spdlog_SOURCE_DIR}")
+endif()
+if(DEFINED moq-peering_SOURCE_DIR)
+  moqx_hide_peering_dir("${moq-peering_SOURCE_DIR}")
+endif()
+get_property(_moqx_hidden_targets GLOBAL PROPERTY MOQX_HIDDEN_PEERING_TARGETS)
+list(LENGTH _moqx_hidden_targets _moqx_hidden_count)
+if(_moqx_hidden_count EQUAL 0)
+  message(FATAL_ERROR "moq-peering: failed to mark its targets hidden")
+endif()
+message(STATUS "moq-peering: hid ${_moqx_hidden_count} targets inside libmoqx_peering")
+
+add_library(moqx_peering SHARED
+  src/peering/MoqPeeringRuntime.cpp
+)
+target_include_directories(moqx_peering
+  PUBLIC
+    ${PROJECT_SOURCE_DIR}/src
+)
+target_link_libraries(moqx_peering
+  PRIVATE
+    moq::peering
+    moqx_warnings
+)
+set_target_properties(moqx_peering PROPERTIES
+  CXX_VISIBILITY_PRESET hidden
+  VISIBILITY_INLINES_HIDDEN ON
+  POSITION_INDEPENDENT_CODE ON
+)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Keep this image's picoquic bound to itself if a symbol is also global
+  # in the relay executable.
+  target_link_options(moqx_peering PRIVATE "LINKER:-Bsymbolic")
+endif()
+
 # --- Cache library (forked from moxygen) ---
 
 add_library(moqx_cache STATIC
@@ -409,10 +512,14 @@ add_library(moqx_core STATIC
   src/admin/ConfigHandler.cpp
   src/admin/ConnectionLogsHandler.cpp
   src/admin/MetricsHandler.cpp
+  src/admin/PeeringHandler.cpp
   src/admin/QLogCaptureHandler.cpp
   src/admin/TrackMetricsHandler.cpp
   src/admin/StateHandler.cpp
   src/admin/StateResponse.cpp
+  src/peering/PeerJson.cpp
+  src/peering/PeeringBridge.cpp
+  src/peering/PeeringObject.cpp
   src/stats/StatsRegistry.cpp
   src/stats/TrackStatsRegistry.cpp
   src/stats/MoQStatsCollector.cpp
@@ -444,6 +551,7 @@ target_include_directories(moqx_core
 target_link_libraries(moqx_core PUBLIC
   moqx_cache
   moqx_hmac_key
+  moqx_peering
   moxygen::moxygen_relay_moq_forwarder
   moxygen::moxygen_moq_relay_session
   moxygen::moxygen_moq_server

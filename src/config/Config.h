@@ -7,6 +7,7 @@
 #pragma once
 
 #include "auth/Action.h"
+#include "config/MoqPeeringConfig.h"
 
 #include <chrono>
 #include <cstddef>
@@ -185,6 +186,9 @@ struct ClusterConfig {
   uint64_t hopID{0}; // 0 is anonymous
 };
 
+// One method is selected at process start. The other is not started.
+enum class PeeringMethod { Cluster, MoqPeering };
+
 struct UpstreamConfig {
   std::string url;
   UpstreamTlsConfig tls;
@@ -284,6 +288,8 @@ struct Config {
   bool mvfstBpfSteering{true};
   std::optional<LoggingConfig> logging;
   std::optional<ClusterConfig> cluster; // unset when MoQ Cluster is disabled
+  PeeringMethod peeringMethod{PeeringMethod::Cluster};
+  std::optional<MoqPeeringConfig> moqPeering; // set only when peeringMethod is MoqPeering
 };
 
 } // namespace openmoq::moqx::config

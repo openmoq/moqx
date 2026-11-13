@@ -402,6 +402,74 @@ struct ParsedClusterConfig {
       hop_id;
 };
 
+using ParsedPeeringMethod = rfl::Literal<"cluster", "moq-peering">;
+using ParsedMoqPeeringNodeType = rfl::Literal<"edge", "via", "stub">;
+
+struct ParsedMoqPeeringTlsConfig {
+  rfl::Description<"PEM certificate this node presents", std::string> cert_file;
+  rfl::Description<"Matching unencrypted PEM private key", std::string> key_file;
+};
+
+struct ParsedMoqPeeringPeerConfig {
+  rfl::
+      Description<"Peer hostname or IP. Brackets around an IPv6 address are optional.", std::string>
+          host;
+  rfl::Description<"Peer UDP port, 1-65535", uint16_t> port;
+  rfl::Description<
+      "Session metric used when it is greater than node_metric. Omit to use node_metric.",
+      std::optional<uint64_t>>
+      metric;
+};
+
+struct ParsedMoqPeeringConfig {
+  rfl::Description<
+      "Contact label. The numeric node id is the hash of this string. Defaults to relay_id.",
+      std::optional<std::string>>
+      node_id;
+  rfl::Description<
+      "Relay role: edge, via, or stub (default: edge)",
+      std::optional<ParsedMoqPeeringNodeType>>
+      node_type;
+  rfl::Description<
+      "Cost advertised for this node. Lower path sums are preferred (default: 100).",
+      std::optional<uint64_t>>
+      node_metric;
+  rfl::Description<"UDP port for inbound peering (default: 33434)", std::optional<uint16_t>>
+      listen_port;
+  rfl::Description<
+      "Peers dialed when the process starts",
+      std::optional<std::vector<ParsedMoqPeeringPeerConfig>>>
+      peers;
+  rfl::Description<"Certificate and key this node presents", ParsedMoqPeeringTlsConfig> tls;
+  rfl::Description<
+      "TTL in milliseconds attached when a subgroup stream finishes (default: 5000)",
+      std::optional<uint32_t>>
+      object_ttl_ms;
+  rfl::Description<
+      "How often a disconnected outbound peer is dialed again. Values below 2000 are rejected "
+      "(default: 5000).",
+      std::optional<uint64_t>>
+      check_interval_ms;
+  rfl::Description<
+      "Accepted by moq-peering and not read by the current library (default: 5000)",
+      std::optional<uint32_t>>
+      init_queue_size;
+  rfl::Description<"Log extra subscriber-node-set detail (default: false)", std::optional<bool>>
+      debug;
+};
+
+struct ParsedPeeringConfig {
+  rfl::Description<
+      "Peering method started with the process: cluster or moq-peering (default: cluster). "
+      "Only the selected method is used.",
+      std::optional<ParsedPeeringMethod>>
+      method;
+  rfl::Description<
+      "moq-peering settings. Required when method is moq-peering, and rejected otherwise.",
+      std::optional<ParsedMoqPeeringConfig>>
+      moq_peering;
+};
+
 struct ParsedUpstreamConfig {
   rfl::Description<"Upstream MoQ server URL (moqt://host:port/path)", std::string> url;
   rfl::Description<"TLS configuration for upstream connection", ParsedUpstreamTlsConfig> tls;
@@ -649,6 +717,11 @@ struct ParsedConfig {
       mvfst_bpf_steering;
   rfl::Description<"Logging configuration", std::optional<ParsedLoggingConfig>> logging;
   rfl::Description<"MoQ Cluster settings", std::optional<ParsedClusterConfig>> cluster;
+  rfl::Description<
+      "Which peering method this process starts. cluster is MoQ Cluster. moq-peering dials "
+      "relays with the moq-peering library. Only one method is used.",
+      std::optional<ParsedPeeringConfig>>
+      peering;
 };
 
 } // namespace openmoq::moqx::config

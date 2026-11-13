@@ -23,7 +23,11 @@ relay_id: "my-relay"       # optional; auto-generated if absent
 threads: 1                 # optional; IO worker threads, default 1 (see Threading)
 
 cluster:                   # optional; MoQ Cluster negotiation and Hop ID
-  { ... }
+  { ... }                # used when peering.method is cluster (the default)
+
+peering:                   # optional; which interconnect starts with the process
+  method: cluster          # cluster (default) or moq-peering; only one is used
+  moq_peering: { ... }     # required when method is moq-peering
 
 listener_defaults:         # optional; QUIC defaults inherited by all listeners
   quic: { ... }
@@ -524,7 +528,57 @@ Keep any graph segment containing a relay without MoQ Cluster acyclic, because
 that relay cannot preserve the path needed to recognize a returning
 advertisement.
 
+### Peering method
+
+A process starts one interconnect. `peering.method` selects it:
+
+| Method | What starts |
+|---|---|
+| `cluster` | MoQ Cluster on draft 18+ links. This is the default, including when `peering` is omitted. |
+| `moq-peering` | A [moq-peering](https://github.com/Quicr/moq-peering) node. MoQ Cluster is not negotiated. |
+
+Setting both an enabled `cluster` block and `peering.method: moq-peering` is rejected. With `moq-peering`, omit `cluster` or set `cluster.enabled: false`. A `peering.moq_peering` block is rejected when the method is `cluster`.
+
+`moq-peering` binds a UDP port and dials the configured peers when the process starts. The settings follow `moq::peering::Config`:
+
+```yaml
+peering:
+  method: moq-peering
+  moq_peering:
+    node_id: edge-sea-1       # optional; defaults to relay_id. Hashed as the node id.
+    node_type: edge           # edge (default), via, or stub
+    node_metric: 100          # cost advertised for this node. Lower path sums are preferred.
+    listen_port: 33434        # UDP port for inbound peering
+    tls:
+      cert_file: /etc/moqx/cert.pem
+      key_file: /etc/moqx/key.pem
+    peers:                    # optional; omit to only accept connections
+      - host: 192.0.2.10
+        port: 33440
+        metric: 150           # optional session metric, used when greater than node_metric
+    object_ttl_ms: 5000
+    check_interval_ms: 5000   # reconnect interval; minimum 2000
+    init_queue_size: 5000     # accepted by the library and not read by the current library
+    debug: false
+```
+
+`node_id` is a contact label. The numeric node id is the hash of that string, printed by the admin API as `high.high:low.low`. Give every node a distinct label.
+
+`tls.cert_file` and `tls.key_file` are paths. The key must be an unencrypted PEM private key. moqx checks that the certificate is currently valid, that its key is RSA of at least 2048 bits or EC of at least 256 bits, that the signature is not MD5 or SHA-1, and that the key matches the certificate. A key that is readable by group or others produces a warning; restrict it to the relay user (`0600`). The private key is not written into the admin `/config` dump.
+
+moq-peering does not validate the peer's certificate. Treat the peering network as trusted, or terminate it where the packets are already authenticated. The admin routes that dial a peer belong on the existing admin listener; keep that listener on a trusted address. `add-peer` accepts a hostname or an IP literal, including private addresses, and rejects a URL.
+
+Service `upstream` entries still open MoQT sessions when `moq-peering` is selected. Those sessions do not negotiate MoQ Cluster. The load warns when any service has an upstream.
+
+The admin API can add, remove, and restart a peer after startup, and can read each session. See [Admin Server](#admin-server).
+
+With `moq-peering`, a client's `PUBLISH_NAMESPACE` is announced to peers as a namespace, and a client's `PUBLISH` is announced as a track. Withdrawing either message withdraws the announcement. A peer's namespace announcement is published into every service relay, so a local `SUBSCRIBE_NAMESPACE` receives it. A peer's track announcement is published the same way, so a local `SUBSCRIBE_TRACKS` receives the `PUBLISH`. Names learned from a peer are not announced back.
+
+Objects use that same split. When a peer subscribes to a locally published track, each object the publisher writes is sent on the peering session with the same MoQT framing a client session uses. A new subgroup stream starts with the subgroup header, and each following object on that stream is a MoQT object. A datagram is a MoQT datagram. When a local subscriber wants a track a peer announced, moqx subscribes on the peering session, parses those bytes with the client stream parser, and writes them into that publish, so the local subscriber gets them. Objects that arrived from a peer are not sent back out. The payload cap is 1MiB. `FETCH` stays on MoQT sessions.
+
 ### Cluster
+
+Used when `peering.method` is `cluster` (the default).
 
 ```yaml
 cluster:
@@ -639,6 +693,13 @@ Prometheus a series set that reshuffles between scrapes.  See [docs/metrics.md] 
 | `GET` | `/metrics` | Prometheus-format metrics. See [docs/metrics.md](metrics.md) (pending PR #137). |
 | `GET` | `/metrics/track` | Per-track Prometheus metrics for live tracks. See [docs/metrics.md](metrics.md). |
 | `GET` | `/state` | Relay state: connected peers, active subscriptions, namespace tree, and cache stats. Always `Transfer-Encoding: chunked`, streamed as the walk produces it. Per-subscription counters are ingress-side (`total_groups_received`, `total_objects_received`, `largest`), counted on the relay executor; for subscriber counts use `moqx_track_subscribers` from `/metrics/track`. |
+| `GET` | `/peering` | The peering method this process started. `cluster` returns `enabled` and, when MoQ Cluster is on, `hop_id`. `moq-peering` returns the local node id and each session from `PeerManager::Peers`: origin, link status, smoothed RTT, session and node metrics, subscribe and publish counts, and open streams. |
+| `POST` | `/peering/add-peer` | Dial a peer, or remember the address when that peer is already accepted. Body: `{"host":"...","port":33434,"metric":150}`. `metric` is optional. |
+| `POST` | `/peering/remove-peer` | Disconnect `{"host":"...","port":33434}` and drop its forwarding state. |
+| `POST` | `/peering/restart-peer` | Drop the connection and its forwarding state. A dialed peer is connected again. Body: `{"host":"...","port":33434}`. |
+| `POST` | `/peering/set-peer-metric` | Set the metric advertised on one session when it is greater than the node metric. Body: `{"host":"...","port":33434,"metric":200}`. |
+
+A peering POST that names the method which is not running answers `409`. A duplicate or missing peer answers `409` with the moq-peering result (`ok`, `action`, `message`). A host that is not a hostname or IP literal answers `400`. The body is at most 4096 bytes.
 
 ---
 

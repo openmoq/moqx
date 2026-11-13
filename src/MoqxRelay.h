@@ -14,6 +14,7 @@
 #include "SubscriptionRegistry.h"
 #include "UpstreamProvider.h"
 #include "config/Config.h"
+#include "peering/PeeringAnnouncer.h"
 #include "relay/ChannelSubscriber.h"
 #include "relay/ExecBound.h"
 #include "relay/ForwarderRef.h"
@@ -33,8 +34,12 @@
 #include <folly/ThreadLocal.h>
 #include <folly/container/F14Map.h>
 #include <folly/container/F14Set.h>
+#include <folly/executors/InlineExecutor.h>
 #include <functional>
+#include <map>
+#include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -160,6 +165,10 @@ public:
     }
   }
 
+  // Peering publishes bind their handle to this relay's executor. That executor
+  // is destroyed before the subscription registry, so drop those handles first.
+  ~MoqxRelay() override;
+
   folly::Executor* getRelayExec() const { return relayExec_; }
   uint64_t getRelayHopID() const { return relayHopID_; }
 
@@ -175,9 +184,11 @@ public:
   };
 
   // Must run on the relay exec.
-  TrackMatch
-  matchTracks(const moxygen::TrackNamespace& nsPrefix, const std::string* trackName, size_t limit)
-      const;
+  TrackMatch matchTracks(
+      const moxygen::TrackNamespace& nsPrefix,
+      const std::string* trackName,
+      size_t limit
+  ) const;
 
   void setAllowedNamespacePrefix(moxygen::TrackNamespace allowed) {
     allowedNamespacePrefix_ = std::move(allowed);
@@ -251,9 +262,10 @@ public:
       std::shared_ptr<PublishBlockedHandle> publishBlockedHandle = nullptr
   ) override;
 
-  folly::coro::Task<moxygen::Subscriber::PublishNamespaceResult>
-  publishNamespace(moxygen::PublishNamespace pubNs, std::shared_ptr<moxygen::Subscriber::PublishNamespaceCallback>)
-      override;
+  folly::coro::Task<moxygen::Subscriber::PublishNamespaceResult> publishNamespace(
+      moxygen::PublishNamespace pubNs,
+      std::shared_ptr<moxygen::Subscriber::PublishNamespaceCallback>
+  ) override;
 
   PublishResult publish(
       moxygen::PublishRequest pubReq,
@@ -264,8 +276,8 @@ public:
     XLOG(INFO) << "Processing goaway uri=" << goaway.newSessionUri;
   }
 
-  folly::coro::Task<moxygen::Publisher::TrackStatusResult> trackStatus(moxygen::TrackStatus req
-  ) override;
+  folly::coro::Task<moxygen::Publisher::TrackStatusResult>
+  trackStatus(moxygen::TrackStatus req) override;
 
   // Test accessors: the session of the best route, and the sessions of all routes, at the deepest
   // node covering ns.
@@ -312,6 +324,43 @@ public:
   // single io thread when there is none.
   void dumpState(RelayStateVisitor& visitor) const;
 
+  // moq-peering. The announcer is called when a local client publishes a
+  // namespace or track, and when objects or subscribe interest cross the
+  // peering session. Peer announcements and objects are injected back through
+  // the methods below, on the relay executor.
+  void setPeeringAnnouncer(std::shared_ptr<PeeringAnnouncer> announcer);
+  void deferOnRelay(folly::Function<void()> fn);
+  void injectPeeringNamespace(moxygen::TrackNamespace ns, bool withdrawn);
+  void injectPeeringTrack(moxygen::FullTrackName ftn, bool withdrawn);
+  void notePeerSubscribe(const moxygen::FullTrackName& ftn);
+  void notePeerUnsubscribe(const moxygen::FullTrackName& ftn);
+  void deliverPeeringObject(const moxygen::FullTrackName& ftn, const PeeringObject& object);
+  void acceptPeeringEvent(
+      const moxygen::FullTrackName& ftn,
+      uint64_t streamId,
+      const PeeringStreamReader::Event& event
+  );
+  void finishPeeringIngress(const moxygen::FullTrackName& ftn, uint64_t streamId, bool reset);
+  void finishPeeringSubgroup(
+      const moxygen::FullTrackName& ftn,
+      uint64_t group,
+      uint64_t subgroup,
+      bool reset
+  );
+  // Called from the ingest filter on the relay executor.
+  void forwardPublishedObject(
+      const moxygen::FullTrackName& ftn,
+      uint64_t group,
+      uint64_t subgroup,
+      uint64_t objectId,
+      uint8_t priority,
+      uint8_t status,
+      bool lastInGroup,
+      bool datagram,
+      const moxygen::Payload& payload,
+      const moxygen::Extensions& extensions
+  );
+
   // Test accessor: check if a publish exists and return node/publish state
   struct PublishState {
     bool nodeExists{false};                      // true if tree node exists
@@ -337,6 +386,27 @@ private:
   void unsubscribeTracks(const moxygen::TrackNamespace& prefix, moxygen::SessionId session);
 
   void onPublishDone(const moxygen::FullTrackName& ftn);
+
+  struct PeeringSnap {
+    std::shared_ptr<PeeringAnnouncer> announcer;
+    moxygen::SessionId sessionId;
+  };
+  PeeringSnap peeringSnap() const;
+  const Participant& peeringParticipant(moxygen::SessionId session);
+  bool
+  hasLocalNamespacePublisher(const moxygen::TrackNamespace& ns, moxygen::SessionId peering) const;
+  void noteLocalNamespace(const moxygen::TrackNamespace& ns, moxygen::SessionId publisher);
+  void noteLocalNamespaceDone(const moxygen::TrackNamespace& ns);
+  void noteLocalTrack(const moxygen::FullTrackName& ftn, moxygen::SessionId publisher);
+  void noteLocalTrackDone(const moxygen::FullTrackName& ftn);
+  void endPeeringTrack(const moxygen::FullTrackName& ftn);
+  uint64_t nextPeeringRequest();
+  bool isPeeringPublisher(const moxygen::FullTrackName& ftn);
+  bool peerWantsTrack(const moxygen::FullTrackName& ftn);
+  void noteLocalPeeringSubscribe(const moxygen::FullTrackName& ftn);
+  void noteLocalPeeringUnsubscribe(const moxygen::FullTrackName& ftn);
+  void attachPeerFanout(const moxygen::FullTrackName& ftn);
+  void detachPeerFanout(const moxygen::FullTrackName& ftn);
 
   NamespaceTree namespaceTree_;
 
@@ -647,8 +717,8 @@ private:
       moxygen::PublishNamespace pubNs,
       std::shared_ptr<moxygen::Subscriber::PublishNamespaceCallback> callback
   );
-  folly::coro::Task<moxygen::Publisher::TrackStatusResult> trackStatusImpl(moxygen::TrackStatus req
-  );
+  folly::coro::Task<moxygen::Publisher::TrackStatusResult>
+  trackStatusImpl(moxygen::TrackStatus req);
   // Must be scheduled on the publisher exec; looks the forwarder up in tlForwarders_ by FTN.
   // nullopt means no active sub, defer upstream.
   folly::coro::Task<std::optional<moxygen::TrackStatusOk>>
@@ -693,6 +763,15 @@ private:
   }
 
   folly::Executor* relayExec() const { return relayExec_ ? relayExec_ : sessionExec_; }
+
+  // Single-thread mode has no relay loop until a session arrives. Peering still
+  // needs an executor so publish handles can be released.
+  folly::Executor* peeringExecutor() const {
+    if (auto* exec = relayExec()) {
+      return exec;
+    }
+    return &folly::InlineExecutor::instance();
+  }
 
   // The relay's execution mode, derived from relayExec_/useLocalForwarders_:
   //   SingleThread   - relayExec_ == nullptr: everything inline on the I/O thread.
@@ -762,6 +841,24 @@ private:
 
   std::chrono::milliseconds idleTimeout_{kDefaultIdleTimeout};
   std::chrono::milliseconds activityThreshold_{kDefaultActivityThreshold};
+
+  mutable std::mutex peeringMu_;
+  std::shared_ptr<PeeringAnnouncer> peeringAnnouncer_;
+  moxygen::SessionId peeringSessionId_{};
+  Participant peeringParticipant_;
+  std::set<moxygen::TrackNamespace> announcedNamespaces_;
+  std::set<moxygen::FullTrackName> announcedTracks_;
+  std::map<moxygen::TrackNamespace, moxygen::RequestID> peeringNamespaceRequests_;
+  std::map<moxygen::FullTrackName, std::shared_ptr<moxygen::TrackConsumer>> peeringTracks_;
+  std::map<std::pair<moxygen::FullTrackName, uint64_t>, std::shared_ptr<moxygen::SubgroupConsumer>>
+      peerIngress_;
+  // Tracks a peer has subscribed to, and the fanout subscriber that keeps the
+  // local publisher forwarding. peeringPull_ is tracks we asked a peer for.
+  std::set<moxygen::FullTrackName> peerInterest_;
+  std::set<moxygen::FullTrackName> peerFanout_;
+  std::set<moxygen::FullTrackName> peeringPull_;
+  const moxygen::SessionId peerFanoutId_{makeSessionId()};
+  uint64_t peeringRequestSeq_{0};
 };
 
 // Creates a NamespacePublishHandle that bridges NAMESPACE/NAMESPACE_DONE

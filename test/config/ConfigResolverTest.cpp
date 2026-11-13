@@ -12,7 +12,14 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include <openssl/evp.h>
+#include <openssl/pem.h>
+#include <openssl/x509.h>
+
+#include <cstdio>
+#include <filesystem>
 #include <limits>
+#include <unistd.h>
 #include <variant>
 
 namespace openmoq::moqx::config {
@@ -1029,9 +1036,9 @@ TEST(ResolveConfig, AuthAnonymousClaimRejectsEmptyActionsList) {
   cfg.services.value().clear();
 
   auto auth = makeAuthConfig();
-  auth.anonymous_claim =
-      std::optional<std::vector<AnonymousScope>>{std::vector<AnonymousScope>{makeAnonymousScope({})}
-      };
+  auth.anonymous_claim = std::optional<std::vector<AnonymousScope>>{
+      std::vector<AnonymousScope>{makeAnonymousScope({})}
+  };
   cfg.services.value().emplace("svc", makeAuthService(std::move(auth)));
 
   auto result = resolveConfig(cfg);
@@ -1232,8 +1239,9 @@ TEST(ResolveConfig, ResolveExactAuthority) {
   ASSERT_TRUE(result.hasValue());
   const auto& entries = result.value().config.services.at("exact-svc").match;
   ASSERT_EQ(entries.size(), 1);
-  ASSERT_TRUE(std::holds_alternative<ServiceConfig::MatchEntry::ExactAuthority>(entries[0].authority
-  ));
+  ASSERT_TRUE(
+      std::holds_alternative<ServiceConfig::MatchEntry::ExactAuthority>(entries[0].authority)
+  );
   EXPECT_EQ(
       std::get<ServiceConfig::MatchEntry::ExactAuthority>(entries[0].authority).value,
       "live.example.com"
@@ -1601,6 +1609,8 @@ TEST(ResolveConfig, ClusterAbsentEnablesWithRandomHopID) {
   ASSERT_TRUE(r1.hasValue());
   ASSERT_TRUE(r2.hasValue());
   ASSERT_TRUE(r1.value().config.cluster && r2.value().config.cluster);
+  EXPECT_EQ(r1.value().config.peeringMethod, PeeringMethod::Cluster);
+  EXPECT_FALSE(r1.value().config.moqPeering);
   EXPECT_NE(r1.value().config.cluster->hopID, 0);
   EXPECT_NE(r1.value().config.cluster->hopID, r2.value().config.cluster->hopID);
 }
@@ -2459,6 +2469,230 @@ TEST(ResolveConfig, ListFormListenersWarnDeprecated) {
       result.value().warnings,
       ::testing::Contains(HasSubstr("listeners: the list form is deprecated"))
   );
+}
+
+// Ephemeral P-256 certificate for peering config tests. The key is written
+// with mode 0600 and deleted with the fixture. It is not a credential checked in.
+struct TempPeeringCert {
+  std::filesystem::path dir;
+  std::string cert;
+  std::string key;
+
+  explicit TempPeeringCert(bool expired = false) {
+    dir = std::filesystem::temp_directory_path() /
+          ("moqx-peering-" + std::to_string(static_cast<long>(::getpid())) + "-" +
+           std::to_string(++seq_));
+    std::filesystem::create_directories(dir);
+    cert = (dir / "cert.pem").string();
+    key = (dir / "key.pem").string();
+    if (!write(expired)) {
+      throw std::runtime_error("failed to generate peering test certificate");
+    }
+    std::filesystem::permissions(
+        key,
+        std::filesystem::perms::owner_read,
+        std::filesystem::perm_options::replace
+    );
+  }
+
+  ~TempPeeringCert() {
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+  }
+
+  TempPeeringCert(const TempPeeringCert&) = delete;
+  TempPeeringCert& operator=(const TempPeeringCert&) = delete;
+
+private:
+  bool write(bool expired) const {
+    EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_EC, nullptr);
+    if (!ctx || EVP_PKEY_keygen_init(ctx) != 1 ||
+        EVP_PKEY_CTX_set_ec_paramgen_curve_nid(ctx, NID_X9_62_prime256v1) != 1) {
+      EVP_PKEY_CTX_free(ctx);
+      return false;
+    }
+    EVP_PKEY* pkey = nullptr;
+    if (EVP_PKEY_keygen(ctx, &pkey) != 1) {
+      EVP_PKEY_CTX_free(ctx);
+      return false;
+    }
+    EVP_PKEY_CTX_free(ctx);
+
+    X509* x509 = X509_new();
+    if (!x509) {
+      EVP_PKEY_free(pkey);
+      return false;
+    }
+    ASN1_INTEGER_set(X509_get_serialNumber(x509), 1);
+    X509_gmtime_adj(X509_getm_notBefore(x509), expired ? -7200 : -60);
+    X509_gmtime_adj(X509_getm_notAfter(x509), expired ? -3600 : 3600);
+    X509_set_pubkey(x509, pkey);
+    X509_NAME* name = X509_get_subject_name(x509);
+    X509_NAME_add_entry_by_txt(
+        name,
+        "CN",
+        MBSTRING_ASC,
+        reinterpret_cast<const unsigned char*>("moqx-test.local"),
+        -1,
+        -1,
+        0
+    );
+    X509_set_issuer_name(x509, name);
+    if (X509_sign(x509, pkey, EVP_sha256()) == 0) {
+      X509_free(x509);
+      EVP_PKEY_free(pkey);
+      return false;
+    }
+
+    FILE* certFile = fopen(cert.c_str(), "w");
+    FILE* keyFile = fopen(key.c_str(), "w");
+    const bool wrote =
+        certFile && keyFile && PEM_write_X509(certFile, x509) == 1 &&
+        PEM_write_PrivateKey(keyFile, pkey, nullptr, nullptr, 0, nullptr, nullptr) == 1;
+    if (certFile) {
+      fclose(certFile);
+    }
+    if (keyFile) {
+      fclose(keyFile);
+    }
+    X509_free(x509);
+    EVP_PKEY_free(pkey);
+    return wrote;
+  }
+
+  static int seq_;
+};
+
+int TempPeeringCert::seq_ = 0;
+
+ParsedMoqPeeringConfig makeMoqPeering(const TempPeeringCert& files) {
+  ParsedMoqPeeringConfig moq;
+  moq.node_id = std::optional<std::string>{"edge-sea-1"};
+  moq.node_type = ParsedMoqPeeringNodeType::make<"edge">();
+  moq.node_metric = uint64_t{100};
+  moq.listen_port = uint16_t{33434};
+  ParsedMoqPeeringTlsConfig tls;
+  tls.cert_file = files.cert;
+  tls.key_file = files.key;
+  moq.tls = std::move(tls);
+  ParsedMoqPeeringPeerConfig peer;
+  peer.host = std::string{"[2001:db8::10]"};
+  peer.port = uint16_t{33440};
+  peer.metric = std::optional<uint64_t>{150};
+  moq.peers = std::optional<std::vector<ParsedMoqPeeringPeerConfig>>{
+      std::vector<ParsedMoqPeeringPeerConfig>{std::move(peer)}
+  };
+  return moq;
+}
+
+ParsedConfig makeMoqPeeringConfig(const TempPeeringCert& files) {
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedClusterConfig cluster;
+  cluster.enabled = false;
+  cfg.cluster = cluster;
+  ParsedPeeringConfig peering;
+  peering.method = ParsedPeeringMethod::make<"moq-peering">();
+  peering.moq_peering = makeMoqPeering(files);
+  cfg.peering = peering;
+  return cfg;
+}
+
+TEST(ResolveConfig, MoqPeeringResolvesAndStripsIpv6Brackets) {
+  TempPeeringCert files;
+  auto result = resolveConfig(makeMoqPeeringConfig(files));
+  ASSERT_TRUE(result.hasValue()) << result.error();
+  EXPECT_EQ(result.value().config.peeringMethod, PeeringMethod::MoqPeering);
+  EXPECT_FALSE(result.value().config.cluster);
+  ASSERT_TRUE(result.value().config.moqPeering);
+  const auto& peering = *result.value().config.moqPeering;
+  EXPECT_EQ(peering.nodeId, "edge-sea-1");
+  EXPECT_EQ(peering.nodeType, MoqPeeringNodeType::Edge);
+  EXPECT_EQ(peering.nodeMetric, 100u);
+  EXPECT_EQ(peering.listenPort, 33434);
+  EXPECT_EQ(peering.tls.certFile, files.cert);
+  EXPECT_EQ(peering.tls.keyFile, files.key);
+  ASSERT_EQ(peering.peers.size(), 1u);
+  EXPECT_EQ(peering.peers[0].host, "2001:db8::10");
+  EXPECT_EQ(peering.peers[0].port, 33440);
+  ASSERT_TRUE(peering.peers[0].metric);
+  EXPECT_EQ(*peering.peers[0].metric, 150u);
+  EXPECT_THAT(result.value().warnings, IsEmpty());
+}
+
+TEST(ResolveConfig, MoqPeeringDefaultsNodeIdToRelayId) {
+  TempPeeringCert files;
+  auto cfg = makeMoqPeeringConfig(files);
+  cfg.relay_id = std::optional<std::string>{"relay-a"};
+  cfg.peering.value()->moq_peering.value()->node_id = std::nullopt;
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue()) << result.error();
+  EXPECT_EQ(result.value().config.moqPeering->nodeId, "relay-a");
+}
+
+TEST(ResolveConfig, MoqPeeringRejectsClusterEnabled) {
+  TempPeeringCert files;
+  auto cfg = makeMoqPeeringConfig(files);
+  cfg.cluster.value()->enabled = true;
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("Only one peering method"));
+}
+
+TEST(ResolveConfig, ClusterMethodRejectsMoqPeeringBlock) {
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedPeeringConfig peering;
+  peering.method = ParsedPeeringMethod::make<"cluster">();
+  ParsedMoqPeeringConfig moq;
+  ParsedMoqPeeringTlsConfig tls;
+  tls.cert_file = std::string{"/cert.pem"};
+  tls.key_file = std::string{"/key.pem"};
+  moq.tls = std::move(tls);
+  peering.moq_peering = std::move(moq);
+  cfg.peering = std::move(peering);
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("peering.method is cluster"));
+}
+
+TEST(ResolveConfig, MoqPeeringRequiresItsBlock) {
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedPeeringConfig peering;
+  peering.method = ParsedPeeringMethod::make<"moq-peering">();
+  cfg.peering = peering;
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("peering.moq_peering is required"));
+}
+
+TEST(ResolveConfig, MoqPeeringRejectsExpiredCertificate) {
+  TempPeeringCert files(/*expired=*/true);
+  auto result = resolveConfig(makeMoqPeeringConfig(files));
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("expired"));
+}
+
+TEST(ResolveConfig, MoqPeeringRejectsBadHostAndShortInterval) {
+  TempPeeringCert files;
+  auto cfg = makeMoqPeeringConfig(files);
+  auto& peer = cfg.peering.value()->moq_peering.value()->peers.value()->front();
+  peer.host = std::string{"http://192.0.2.10/path"};
+  cfg.peering.value()->moq_peering.value()->check_interval_ms = uint64_t{1000};
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("not allowed"));
+  EXPECT_THAT(result.error(), HasSubstr("check_interval_ms"));
+}
+
+TEST(ResolveConfig, MoqPeeringWarnsWhenKeyIsGroupReadable) {
+  TempPeeringCert files;
+  std::filesystem::permissions(
+      files.key,
+      std::filesystem::perms::owner_read | std::filesystem::perms::group_read,
+      std::filesystem::perm_options::replace
+  );
+  auto result = resolveConfig(makeMoqPeeringConfig(files));
+  ASSERT_TRUE(result.hasValue()) << result.error();
+  EXPECT_THAT(result.value().warnings, ::testing::Contains(HasSubstr("0600")));
 }
 
 } // namespace

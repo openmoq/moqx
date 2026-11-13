@@ -23,10 +23,22 @@
 namespace {
 using namespace openmoq::moqx::config;
 
-static_assert(rfl::internal::num_fields<Config> == 10, "Config changed — update serializeConfig()");
+static_assert(rfl::internal::num_fields<Config> == 12, "Config changed — update serializeConfig()");
 static_assert(
     rfl::internal::num_fields<ClusterConfig> == 1,
     "ClusterConfig changed — update serializeConfig()"
+);
+static_assert(
+    rfl::internal::num_fields<MoqPeeringConfig> == 10,
+    "MoqPeeringConfig changed — update serializeConfig()"
+);
+static_assert(
+    rfl::internal::num_fields<MoqPeeringTlsConfig> == 2,
+    "MoqPeeringTlsConfig changed — update serializeConfig()"
+);
+static_assert(
+    rfl::internal::num_fields<MoqPeeringPeer> == 3,
+    "MoqPeeringPeer changed — update serializeConfig()"
 );
 static_assert(
     rfl::internal::num_fields<ListenerConfig> == 8,
@@ -218,6 +230,8 @@ TEST(ConfigSerializerTest, VisitsAllSections) {
   EXPECT_EQ(sink.scalars["threads"], "4");
   EXPECT_EQ(sink.scalars["cluster.enabled"], "true");
   EXPECT_EQ(sink.scalars["cluster.hop_id"], "1001");
+  EXPECT_EQ(sink.scalars["peering.method"], "cluster");
+  EXPECT_EQ(sink.scalars["peering.moq_peering"], "null");
   EXPECT_EQ(sink.scalars["admin.address"], "[::1]:9999");
   EXPECT_EQ(sink.scalars["admin.tls.cert_file"], "/etc/admin.crt");
 
@@ -244,6 +258,35 @@ TEST(ConfigSerializerTest, DisabledClusterOmitsHopID) {
   cfg.cluster.reset();
   RecordingSink sink;
   serializeConfig(cfg, sink);
+  EXPECT_EQ(sink.scalars["cluster.enabled"], "false");
+  EXPECT_EQ(sink.scalars.count("cluster.hop_id"), 0u);
+}
+
+TEST(ConfigSerializerTest, MoqPeeringOmitsClusterHopID) {
+  Config cfg = makeFullConfig();
+  cfg.cluster.reset();
+  cfg.peeringMethod = PeeringMethod::MoqPeering;
+  cfg.moqPeering = MoqPeeringConfig{};
+  cfg.moqPeering->nodeId = "edge-sea-1";
+  cfg.moqPeering->nodeType = MoqPeeringNodeType::Via;
+  cfg.moqPeering->nodeMetric = 100;
+  cfg.moqPeering->listenPort = 33434;
+  cfg.moqPeering->tls = MoqPeeringTlsConfig{"/etc/moqx/cert.pem", "/etc/moqx/key.pem"};
+  cfg.moqPeering->peers.push_back(MoqPeeringPeer{"192.0.2.10", 33440, 150});
+  cfg.moqPeering->objectTtlMs = 5000;
+  cfg.moqPeering->checkIntervalMs = 5000;
+  cfg.moqPeering->initQueueSize = 5000;
+  cfg.moqPeering->debug = false;
+
+  RecordingSink sink;
+  serializeConfig(cfg, sink);
+  EXPECT_EQ(sink.scalars["peering.method"], "moq-peering");
+  EXPECT_EQ(sink.scalars["peering.moq_peering.node_id"], "edge-sea-1");
+  EXPECT_EQ(sink.scalars["peering.moq_peering.node_type"], "via");
+  EXPECT_EQ(sink.scalars["peering.moq_peering.tls.cert_file"], "/etc/moqx/cert.pem");
+  EXPECT_EQ(sink.scalars["peering.moq_peering.tls.key_file"], "/etc/moqx/key.pem");
+  EXPECT_EQ(sink.scalars["peering.moq_peering.peers.*.host"], "192.0.2.10");
+  EXPECT_EQ(sink.scalars["peering.moq_peering.peers.*.metric"], "150");
   EXPECT_EQ(sink.scalars["cluster.enabled"], "false");
   EXPECT_EQ(sink.scalars.count("cluster.hop_id"), 0u);
 }

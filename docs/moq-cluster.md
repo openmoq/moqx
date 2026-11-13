@@ -26,8 +26,12 @@ listener `moqt_versions`.
 
 ## Configuration Model
 
-MoQ Cluster negotiation is on by default. The optional top-level `cluster`
-block controls it:
+MoQ Cluster is the default peering method. `peering.method: moq-peering` starts
+the moq-peering node instead, and this process does not negotiate MoQ Cluster.
+Only one method is used. See [config.md](config.md#peering-method).
+
+The optional top-level `cluster` block controls MoQ Cluster when that method is
+selected:
 
 ```yaml
 cluster:

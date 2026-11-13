@@ -119,9 +119,25 @@ logging:                    # Logging configuration (optional)
 
 # relay_id: "my-relay-1"     # Relay identity (optional; random hex string generated if absent)
 
-# cluster:                    # MoQ Cluster on draft 18+ relay links (optional)
+# cluster:                    # MoQ Cluster when peering.method is cluster (the default)
 #   enabled: true             # false: no loop detection; see docs/config.md#cluster (default: true)
 #   hop_id: 1001              # Hop ID (random if absent; 0 is anonymous)
+
+# peering:                    # One interconnect per process (default method: cluster)
+#   method: moq-peering       # cluster or moq-peering. cluster.enabled must not be true together with moq-peering.
+#   moq_peering:
+#     node_id: edge-sea-1     # optional; defaults to relay_id
+#     node_type: edge         # edge, via, or stub
+#     node_metric: 100
+#     listen_port: 33434
+#     tls:
+#       cert_file: /etc/moqx/cert.pem
+#       key_file: /etc/moqx/key.pem
+#     peers:
+#       - host: 192.0.2.10
+#         port: 33440
+#         metric: 150         # optional; used when greater than node_metric
+#     check_interval_ms: 5000
 
 # listener_defaults:          # Default settings inherited by all listeners
 #   quic:                     # QUIC transport tunables (optional; uses sensible defaults)

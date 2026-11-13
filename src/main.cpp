@@ -12,6 +12,7 @@
 #include "admin/ConfigHandler.h"
 #include "admin/ConnectionLogsHandler.h"
 #include "admin/MetricsHandler.h"
+#include "admin/PeeringHandler.h"
 #include "admin/QLogCaptureHandler.h"
 #include "admin/StateHandler.h"
 #include "admin/TrackMetricsHandler.h"
@@ -19,6 +20,7 @@
 #include "config/loader/ConfigInit.h"
 #include "logging/LogSetup.h"
 #include "moqx/Version.h"
+#include "peering/MoqPeeringRuntime.h"
 #include "stats/StatsRegistry.h"
 
 #include <csignal>
@@ -80,6 +82,21 @@ public:
     getEventBase()->terminateLoopSoon();
   }
 };
+
+void logPeering(peering::PeeringLogLevel level, const char* message) {
+  const std::string text = message ? message : "";
+  switch (level) {
+  case peering::PeeringLogLevel::Warning:
+    XLOG(WARNING) << text;
+    break;
+  case peering::PeeringLogLevel::Error:
+    XLOG(ERR) << text;
+    break;
+  case peering::PeeringLogLevel::Info:
+    XLOG(INFO) << text;
+    break;
+  }
+}
 
 } // namespace
 
@@ -155,6 +172,23 @@ int main(int argc, char* argv[]) {
   SignalHandler signalHandler(&evb);
 
   // === 4. Initialize resources ===
+  // One peering method per process. moq-peering binds its UDP port here, before
+  // listeners, so a failure exits without accepting MoQT sessions.
+  std::shared_ptr<peering::MoqPeeringRuntime> peeringRuntime;
+  if (config.peeringMethod == cfg::PeeringMethod::MoqPeering) {
+    if (!config.moqPeering) {
+      std::cerr << "Error: peering.method is moq-peering but it has no configuration\n";
+      return 1;
+    }
+    peering::MoqPeeringRuntime::setLogger(&logPeering);
+    try {
+      peeringRuntime = std::make_shared<peering::MoqPeeringRuntime>(*config.moqPeering);
+    } catch (const std::exception& ex) {
+      std::cerr << "Error: failed to start moq-peering: " << ex.what() << "\n";
+      return 1;
+    }
+  }
+
   quicReuseportSetEnabled(config.mvfstBpfSteering);
 
   // waitForAll: workers loop at exit until the EVB is idle, so a closing QUIC
@@ -179,6 +213,9 @@ int main(int argc, char* argv[]) {
       config.useLocalForwarders,
       config.cluster
   );
+  if (peeringRuntime) {
+    context->attachPeering(peeringRuntime);
+  }
 
   // === 6a. Stats registry ===
   auto statsRegistry = std::make_shared<stats::StatsRegistry>();
@@ -226,6 +263,12 @@ int main(int argc, char* argv[]) {
   }
   admin::registerTrackMetricsRoute(adminServer, context, trackLimits);
   admin::registerConfigRoute(adminServer, std::make_shared<const cfg::Config>(config));
+  admin::registerPeeringRoutes(
+      adminServer,
+      config.peeringMethod,
+      config.cluster ? std::optional<uint64_t>(config.cluster->hopID) : std::nullopt,
+      peeringRuntime
+  );
   admin::registerConnectionLogsRoutes(adminServer, config.logging);
   admin::registerQLogCaptureRoutes(adminServer, qlogCapture, qlogConfig ? qlogConfig->dir : "");
 
@@ -296,6 +339,10 @@ int main(int argc, char* argv[]) {
   // === 13. Clean up resources ===
   // Stop admin last — allows a final metrics scrape during drain.
   adminServer.stop();
+  // Stop announcements before the runtime joins its threads. The bridge stays
+  // alive until the context is destroyed, so a callback already inside it can finish.
+  context->detachPeering();
+  peeringRuntime.reset();
 
   // Stop servers before joining the IO pool — stop() needs worker EVBs alive,
   // and lingering shared_ptr refs could delay ~MoqxRelayServer past that point.

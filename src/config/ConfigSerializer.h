@@ -271,6 +271,57 @@ inline void serializeLogging(ConfigSink& s, const LoggingConfig& l) {
   s.endObject();
 }
 
+inline std::string_view peeringMethodName(PeeringMethod method) {
+  switch (method) {
+  case PeeringMethod::Cluster:
+    return "cluster";
+  case PeeringMethod::MoqPeering:
+    return "moq-peering";
+  }
+  return "cluster";
+}
+
+inline std::string_view moqPeeringNodeTypeName(MoqPeeringNodeType type) {
+  switch (type) {
+  case MoqPeeringNodeType::Via:
+    return "via";
+  case MoqPeeringNodeType::Edge:
+    return "edge";
+  case MoqPeeringNodeType::Stub:
+    return "stub";
+  }
+  return "edge";
+}
+
+inline void serializeMoqPeering(ConfigSink& s, const MoqPeeringConfig& cfg) {
+  s.stringField("node_id", cfg.nodeId);
+  s.stringField("node_type", moqPeeringNodeTypeName(cfg.nodeType));
+  s.uintField("node_metric", cfg.nodeMetric);
+  s.uintField("listen_port", cfg.listenPort);
+  s.beginArray("peers");
+  for (const auto& peer : cfg.peers) {
+    s.beginObject("");
+    s.stringField("host", peer.host);
+    s.uintField("port", peer.port);
+    if (peer.metric) {
+      s.uintField("metric", *peer.metric);
+    } else {
+      s.nullField("metric");
+    }
+    s.endObject();
+  }
+  s.endArray();
+  s.beginObject("tls");
+  s.stringField("cert_file", cfg.tls.certFile);
+  // Path only. The private key bytes are not part of the resolved config.
+  s.stringField("key_file", cfg.tls.keyFile);
+  s.endObject();
+  s.uintField("object_ttl_ms", cfg.objectTtlMs);
+  s.uintField("check_interval_ms", cfg.checkIntervalMs);
+  s.uintField("init_queue_size", cfg.initQueueSize);
+  s.boolField("debug", cfg.debug);
+}
+
 inline void serializeUpstream(ConfigSink& s, const UpstreamConfig& u, std::string_view key) {
   s.beginObject(key);
   s.stringField("url", u.url);
@@ -303,6 +354,16 @@ inline void serializeConfig(const Config& cfg, ConfigSink& s) {
   s.boolField("enabled", cfg.cluster.has_value());
   if (cfg.cluster) {
     s.uintField("hop_id", cfg.cluster->hopID);
+  }
+  s.endObject();
+  s.beginObject("peering");
+  s.stringField("method", peeringMethodName(cfg.peeringMethod));
+  if (cfg.moqPeering) {
+    s.beginObject("moq_peering");
+    serializeMoqPeering(s, *cfg.moqPeering);
+    s.endObject();
+  } else {
+    s.nullField("moq_peering");
   }
   s.endObject();
 
