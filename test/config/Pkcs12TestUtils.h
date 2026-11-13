@@ -38,7 +38,13 @@ inline std::string makeSelfSignedPkcs12Der(const std::string& password) {
   X509_gmtime_adj(X509_getm_notBefore(x509), 0);
   X509_gmtime_adj(X509_getm_notAfter(x509), 3600);
   X509_set_pubkey(x509, pkey);
-  X509_NAME* name = X509_get_subject_name(x509);
+  // OpenSSL 4 returns a const name from the getter. Build one and install it.
+  X509_NAME* name = X509_NAME_new();
+  if (!name) {
+    X509_free(x509);
+    EVP_PKEY_free(pkey);
+    throw std::runtime_error("X509_NAME_new failed");
+  }
   X509_NAME_add_entry_by_txt(
       name,
       "CN",
@@ -48,7 +54,9 @@ inline std::string makeSelfSignedPkcs12Der(const std::string& password) {
       -1,
       0
   );
+  X509_set_subject_name(x509, name);
   X509_set_issuer_name(x509, name); // self-signed
+  X509_NAME_free(name);
   bool ok = X509_sign(x509, pkey, EVP_sha256()) > 0;
 
   PKCS12* p12 = nullptr;

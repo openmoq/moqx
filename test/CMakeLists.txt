@@ -61,6 +61,17 @@ target_link_libraries(moqx_test_fixture
     moqx_warnings
 )
 
+# Unit tests share a few binaries, grouped by the libraries they link. A static
+# link includes only the objects a binary uses, so a group is about the size of
+# its largest member. Under ASAN that is 400-600M for a test that reaches the
+# relay stack.
+#
+# Add a new test file to the group whose libraries it needs, and add any missing
+# library to that group's LIBS. Start a new binary only for a test that needs
+# its own main or conflicting globals. Put a file-specific define on the source
+# with set_source_files_properties. ctest runs each test case in its own process.
+
+# In-process relay through MoqxRelayTestFixture.
 moqx_add_gtest(moqx_relay_test
   SRCS
     MoqxRelayPublishTests.cpp
@@ -77,206 +88,112 @@ moqx_add_gtest(moqx_relay_test
     MoqxRelayRendezvousTests.cpp
     MoqxRelayTestModes.cpp
     peering/PeeringAnnounceTest.cpp
+    MoqxTrackFilterTest.cpp
+    MoqxNamespaceTooLargeTest.cpp
+    MoqxRelayContextTest.cpp
   LIBS moqx_test_fixture moqx_test_main
 )
 
-moqx_add_gtest(moqx_namespace_tree_test
-  SRCS NamespaceTreeTest.cpp
-  LIBS moqx_core moqx_test_main GTest::gmock
-)
-
-moqx_add_gtest(moqx_tracks_tree_test
-  SRCS TracksTreeTest.cpp
-  LIBS moqx_core moqx_test_main
-)
-
-moqx_add_gtest(moqx_pending_rendezvous_tree_test
-  SRCS PendingRendezvousTreeTest.cpp
-  LIBS moqx_core moqx_test_main GTest::gmock
-)
-
-moqx_add_gtest(moqx_config_test
-  SRCS config/LoaderTest.cpp
-  LIBS moqx_config_loader GTest::gtest_main GTest::gmock
-)
-target_compile_definitions(moqx_config_test PRIVATE
-  CONFIG_EXAMPLE_PATH="${PROJECT_SOURCE_DIR}/config.example.yaml"
-)
-
-moqx_add_gtest(moqx_config_resolver_test
-  SRCS config/ConfigResolverTest.cpp
-  LIBS moqx_config_loader OpenSSL::Crypto GTest::gtest_main GTest::gmock
-)
-
-moqx_add_gtest(moqx_config_serializer_test
-  SRCS config/ConfigSerializerTest.cpp
-  LIBS moqx_config_loader GTest::gtest_main GTest::gmock
-)
-
-moqx_add_gtest(moqx_peering_json_test
-  SRCS peering/PeerJsonTest.cpp peering/PeeringObjectTest.cpp
-  LIBS moqx_core Folly::folly_json_dynamic GTest::gtest_main GTest::gmock
-)
-
-moqx_add_gtest(moqx_pkcs12_test
-  SRCS config/Pkcs12Test.cpp
-  LIBS moqx_config_loader OpenSSL::Crypto GTest::gtest_main GTest::gmock
-)
-
-# Header-only, tested in isolation — needs the src/ headers without moqx_core.
-moqx_add_gtest(moqx_bounded_histogram_test
-  SRCS stats/BoundedHistogramTest.cpp
-  LIBS GTest::gtest_main GTest::gmock
-)
-target_include_directories(moqx_bounded_histogram_test PRIVATE
-  ${PROJECT_SOURCE_DIR}/src
-)
-
-moqx_add_gtest(moqx_track_stats_test
-  SRCS stats/TrackStatsTest.cpp
-  LIBS moqx_core GTest::gtest_main GTest::gmock
-)
-target_include_directories(moqx_track_stats_test PRIVATE
-  ${PROJECT_SOURCE_DIR}/src
-)
-
-moqx_add_gtest(moqx_track_metrics_format_test
-  SRCS admin/TrackMetricsFormatTest.cpp
-  LIBS moqx_core GTest::gtest_main GTest::gmock
-)
-target_include_directories(moqx_track_metrics_format_test PRIVATE
-  ${PROJECT_SOURCE_DIR}/src
-)
-
-moqx_add_gtest(moqx_state_stream_test
-  SRCS admin/StateStreamTest.cpp
-  LIBS moqx_core GTest::gtest_main GTest::gmock
-)
-target_include_directories(moqx_state_stream_test PRIVATE
-  ${PROJECT_SOURCE_DIR}/src
-)
-
-moqx_add_gtest(moqx_state_response_test
-  SRCS admin/StateResponseTest.cpp
-  LIBS
-    moqx_core
-    GTest::gtest_main
-    GTest::gmock
-    Folly::folly_executors_manual_executor
-)
-target_include_directories(moqx_state_response_test PRIVATE
-  ${PROJECT_SOURCE_DIR}/src
-)
-
-moqx_add_gtest(moqx_track_stats_registry_test
-  SRCS stats/TrackStatsRegistryTest.cpp
-  LIBS moqx_core GTest::gtest_main GTest::gmock
-)
-target_include_directories(moqx_track_stats_registry_test PRIVATE
-  ${PROJECT_SOURCE_DIR}/src
-)
-
-moqx_add_gtest(moqx_logging_multi_flag_test
-  SRCS LoggingMultiFlagTest.cpp
-  LIBS moqx_core GTest::gtest_main GTest::gmock
-)
-
-moqx_add_gtest(moqx_qlog_capture_test
-  SRCS QLogCaptureTest.cpp
-  LIBS moqx_core GTest::gtest_main GTest::gmock
-)
-
-moqx_add_gtest(moqx_pico_quic_stats_test
-  SRCS stats/PicoQuicStatsCollectorTest.cpp
-  LIBS moqx_core GTest::gtest_main GTest::gmock
-)
-
-moqx_add_gtest(moqx_moq_stats_collector_test
-  SRCS stats/MoQStatsCollectorTest.cpp
-  LIBS moqx_core GTest::gtest_main GTest::gmock
-)
-
-moqx_add_gtest(moqx_service_matcher_test
-  SRCS ServiceMatcherTest.cpp
-  LIBS moqx_core moqx_config GTest::gtest_main GTest::gmock
-)
-
-moqx_add_gtest(moqx_auth_test
-  SRCS AuthTest.cpp
-  LIBS moqx_core moqx_issuer_lib GTest::gtest_main
-)
-
-moqx_add_gtest(moqx_auth_token_issuer_test
-  SRCS AuthTokenIssuerTest.cpp
-  LIBS moqx_core moqx_issuer_lib GTest::gtest_main
-)
-
-moqx_add_gtest(moqx_auth_filters_test
-  SRCS relay/AuthFiltersTest.cpp
-  LIBS
-    moqx_core
-    moqx_issuer_lib
-    GTest::gtest_main
-    GTest::gmock
-    moxygen::moqtest_utils
-)
-
-moqx_add_gtest(moqx_exec_bound_test
-  SRCS relay/ExecBoundTest.cpp
-  LIBS moqx_core GTest::gtest_main
-)
-
-moqx_add_gtest(moqx_route_codec_test
-  SRCS relay/RouteCodecTest.cpp
-  LIBS moqx_core GTest::gtest_main
-)
-
-moqx_add_gtest(moqx_session_participant_test
-  SRCS relay/SessionParticipantTest.cpp
-  LIBS
-    moqx_core
-    GTest::gtest_main
-    GTest::gmock
-    moxygen::moqtest_utils
-    Folly::folly_executors_manual_executor
-)
-# For MockClusterPeer.h.
-target_include_directories(moqx_session_participant_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-
-# Header-only decoder, tested in isolation — src/ headers without moqx_core.
-moqx_add_gtest(moqx_cbor_reader_test
-  SRCS CborReaderTest.cpp
-  LIBS GTest::gtest_main GTest::gmock
-)
-target_include_directories(moqx_cbor_reader_test PRIVATE
-  ${PROJECT_SOURCE_DIR}/src
-)
-
-moqx_add_gtest(moqx_safe_track_name_test
-  SRCS SafeTrackNameTest.cpp
-  LIBS moqx_core GTest::gtest_main
-)
-target_include_directories(moqx_safe_track_name_test PRIVATE
-  ${PROJECT_SOURCE_DIR}/src
-)
-
-moqx_add_gtest(moqx_relay_context_test
-  SRCS MoqxRelayContextTest.cpp
+# Relays and clients over real sockets.
+moqx_add_gtest(moqx_relay_integration_test
+  SRCS
+    MoqxRelayServerTest.cpp
+    RelaySessionCloseTest.cpp
+    UpstreamProviderTest.cpp
   LIBS
     moqx_core
     moqx_test_utils
     moqx_test_main
     GTest::gmock
     moxygen::moxygen_events_moq_folly_executor_impl
+    moxygen::moxygen_moqclient
+    moxygen::moxygen_util_quic_connector
+    moxygen::moxygen_moq_webtransport_client
+)
+set_source_files_properties(UpstreamProviderTest.cpp PROPERTIES COMPILE_DEFINITIONS
+  "TEST_CERT_PATH=\"${CMAKE_CURRENT_SOURCE_DIR}/test_cert.pem\";TEST_KEY_PATH=\"${CMAKE_CURRENT_SOURCE_DIR}/test_key.pem\""
 )
 
-moqx_add_gtest(moqx_relay_server_test
-  SRCS MoqxRelayServerTest.cpp
+# Relay components without a relay: trees, registries, filters, executor hops,
+# auth and the cache.
+moqx_add_gtest(moqx_relay_unit_test
+  SRCS
+    AuthTest.cpp
+    AuthTokenIssuerTest.cpp
+    CrossExecFilterTest.cpp
+    CrossExecForwarderCallbackTest.cpp
+    ForwarderRefTest.cpp
+    InitialTrackStateTest.cpp
+    LocalForwarderRegistryTest.cpp
+    MoqxCacheTest.cpp
+    NamespaceTreeTest.cpp
+    PendingRendezvousTreeTest.cpp
+    PropertyRankingBaseTest.cpp
+    PropertyRankingSelfExclusionTest.cpp
+    PublisherCrossExecFilterTest.cpp
+    SafeTrackNameTest.cpp
+    ServiceMatcherTest.cpp
+    SubscriberCrossExecFilterTest.cpp
+    SubscriptionRegistryTest.cpp
+    TopNFilterTest.cpp
+    TracksTreeTest.cpp
+    relay/AuthFiltersTest.cpp
+    relay/ExecBoundTest.cpp
+    relay/RouteCodecTest.cpp
+    relay/SessionParticipantTest.cpp
+    peering/PeerJsonTest.cpp
+    peering/PeeringObjectTest.cpp
+  LIBS
+    moqx_core
+    moqx_cache
+    moqx_config
+    moqx_issuer_lib
+    moqx_test_utils
+    moqx_test_main
+    GTest::gmock
+    moxygen::moqtest_utils
+    Folly::folly_coro_gtest_helpers
+    Folly::folly_executors_cpu_thread_pool_executor
+    Folly::folly_executors_manual_executor
+    Folly::folly_io_async_scoped_event_base_thread
+)
+target_include_directories(moqx_relay_unit_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
+
+moqx_add_gtest(moqx_admin_stats_test
+  SRCS
+    CborReaderTest.cpp
+    QLogCaptureTest.cpp
+    admin/StateResponseTest.cpp
+    admin/StateStreamTest.cpp
+    admin/TrackMetricsFormatTest.cpp
+    stats/BoundedHistogramTest.cpp
+    stats/MoQStatsCollectorTest.cpp
+    stats/PicoQuicStatsCollectorTest.cpp
+    stats/TrackStatsRegistryTest.cpp
+    stats/TrackStatsTest.cpp
   LIBS
     moqx_core
     moqx_test_main
-    moxygen::moxygen_util_quic_connector
-    moxygen::moxygen_moq_webtransport_client
+    GTest::gmock
+    Folly::folly_executors_manual_executor
+)
+target_include_directories(moqx_admin_stats_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
+
+moqx_add_gtest(moqx_config_test
+  SRCS
+    config/ConfigResolverTest.cpp
+    config/ConfigSerializerTest.cpp
+    config/LoaderTest.cpp
+    config/Pkcs12Test.cpp
+  LIBS moqx_config_loader OpenSSL::Crypto moqx_test_main GTest::gmock
+)
+set_source_files_properties(config/LoaderTest.cpp PROPERTIES COMPILE_DEFINITIONS
+  "CONFIG_EXAMPLE_PATH=\"${PROJECT_SOURCE_DIR}/config.example.yaml\""
+)
+
+moqx_add_gtest(moqx_logging_test
+  SRCS LoggingMultiFlagTest.cpp
+  LIBS moqx_core moqx_test_main
 )
 
 # Registers an integration test once per QUIC stack. The mvfst run keeps the
@@ -357,6 +274,13 @@ moqx_add_dual_stack_test(relay_sighup
   ENVIRONMENT "MOQBIN=${MOXYGEN_BIN_DIR}"
 )
 
+moqx_add_dual_stack_test(listener_services
+  COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/test_listener_services.py $<TARGET_FILE:moqx>
+  TIMEOUT 90
+  MOQT_VERSIONS 16 18
+  ENVIRONMENT "MOQBIN=${MOXYGEN_BIN_DIR}"
+)
+
 # QMUX is a TCP transport, not a QUIC stack, so this one sweeps drafts only.
 foreach(version 16 18)
   set(test_name qmux_relay)
@@ -413,85 +337,11 @@ moqx_add_dual_stack_test(admin_cache_purge_concurrency_test
   ENVIRONMENT "MOQBIN=${MOXYGEN_BIN_DIR}"
 )
 
-moqx_add_gtest(moqx_relay_session_close_test
-  SRCS RelaySessionCloseTest.cpp
-  LIBS
-    moqx_core
-    moqx_test_utils
-    moqx_test_main
-    moxygen::moxygen_events_moq_folly_executor_impl
-    moxygen::moxygen_moqclient
-    GTest::gmock
-)
-
-moqx_add_gtest(moqx_upstream_provider_test
-  SRCS UpstreamProviderTest.cpp
-  LIBS
-    moqx_core
-    moqx_test_utils
-    moqx_test_main
-    moxygen::moxygen_events_moq_folly_executor_impl
-    moxygen::moxygen_moqclient
-    GTest::gmock
-)
-target_compile_definitions(moqx_upstream_provider_test PRIVATE
-  TEST_CERT_PATH="${CMAKE_CURRENT_SOURCE_DIR}/test_cert.pem"
-  TEST_KEY_PATH="${CMAKE_CURRENT_SOURCE_DIR}/test_key.pem"
-)
-
-moqx_add_gtest(moqx_subscription_registry_test
-  SRCS SubscriptionRegistryTest.cpp
-  LIBS moqx_core moqx_test_main GTest::gmock Folly::folly_executors_manual_executor
-)
-
-moqx_add_gtest(moqx_initial_track_state_test
-  SRCS InitialTrackStateTest.cpp
-  LIBS moqx_core moqx_test_main GTest::gmock
-)
-
-moqx_add_gtest(moqx_local_forwarder_registry_test
-  SRCS LocalForwarderRegistryTest.cpp
-  LIBS moqx_core moqx_test_main GTest::gmock
-)
-
-# Header-only executor-affine handle.
-moqx_add_gtest(moqx_forwarder_ref_test
-  SRCS ForwarderRefTest.cpp
-  LIBS moqx_core moqx_test_main GTest::gmock
-)
-
-moqx_add_gtest(moqx_topn_filter_test
-  SRCS TopNFilterTest.cpp
-  LIBS moqx_core GTest::gtest_main GTest::gmock
-)
-
-# PropertyRanking base (no self-exclusion) vs. self-exclusion/waterline split.
-moqx_add_gtest(moqx_property_ranking_base_test
-  SRCS PropertyRankingBaseTest.cpp
-  LIBS moqx_core GTest::gtest_main GTest::gmock
-)
-
-moqx_add_gtest(moqx_property_ranking_self_exclusion_test
-  SRCS PropertyRankingSelfExclusionTest.cpp
-  LIBS moqx_core GTest::gtest_main GTest::gmock
-)
-
-# TRACK_FILTER integration tests (in-process relay, no live server)
-moqx_add_gtest(moqx_track_filter_test
-  SRCS MoqxTrackFilterTest.cpp
-  LIBS moqx_test_fixture moqx_test_main
-)
-
-# NAMESPACE_TOO_LARGE fan-out guard tests (in-process relay, no live server)
-moqx_add_gtest(moqx_namespace_too_large_test
-  SRCS MoqxNamespaceTooLargeTest.cpp
-  LIBS moqx_test_fixture moqx_test_main
-)
-
 # TrackFilterLoadTest: requires a live relay process.
 # Run manually: ./track_filter_load_test --relay_url=https://localhost:9668/moq-relay
-# Not registered with gtest_discover_tests — excluded from automated ctest.
-add_executable(track_filter_load_test
+# Build it on demand (`ninja track_filter_load_test`); the default build and
+# ctest skip it.
+add_executable(track_filter_load_test EXCLUDE_FROM_ALL
   TrackFilterLoadTest.cpp
 )
 target_link_libraries(track_filter_load_test PRIVATE
@@ -504,57 +354,4 @@ target_link_libraries(track_filter_load_test PRIVATE
   moxygen::moxygen_relay_moq_forwarder
   moxygen::moxygen_moq_relay_session
   moxygen::moxygen_util_insecure_verifier_dangerous_do_not_use_in_production
-)
-
-moqx_add_gtest(moqx_cross_exec_filter_test
-  SRCS CrossExecFilterTest.cpp
-  LIBS
-    moqx_core
-    GTest::gtest_main
-    GTest::gmock
-    moxygen::moqtest_utils
-    Folly::folly_executors_manual_executor
-)
-
-moqx_add_gtest(moqx_cross_exec_forwarder_callback_test
-  SRCS CrossExecForwarderCallbackTest.cpp
-  LIBS
-    moqx_core
-    GTest::gtest_main
-    GTest::gmock
-    Folly::folly_executors_manual_executor
-)
-
-moqx_add_gtest(moqx_publisher_cross_exec_filter_test
-  SRCS PublisherCrossExecFilterTest.cpp
-  LIBS
-    moqx_core
-    GTest::gtest_main
-    GTest::gmock
-    moxygen::moqtest_utils
-    Folly::folly_executors_manual_executor
-    Folly::folly_executors_cpu_thread_pool_executor
-)
-
-moqx_add_gtest(moqx_subscriber_cross_exec_filter_test
-  SRCS SubscriberCrossExecFilterTest.cpp
-  LIBS
-    moqx_core
-    GTest::gtest_main
-    GTest::gmock
-    moxygen::moqtest_utils
-    Folly::folly_executors_manual_executor
-    Folly::folly_executors_cpu_thread_pool_executor
-)
-
-moqx_add_gtest(moqx_cache_test
-  SRCS MoqxCacheTest.cpp
-  LIBS
-    moqx_cache
-    moqx_test_utils
-    moqx_test_main
-    moxygen::moqtest_utils
-    GTest::gmock
-    Folly::folly_coro_gtest_helpers
-    Folly::folly_io_async_scoped_event_base_thread
 )

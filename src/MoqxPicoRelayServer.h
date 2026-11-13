@@ -70,6 +70,7 @@ protected:
 private:
   config::ListenerConfig listenerCfg_;
   std::shared_ptr<MoqxRelayContext> context_;
+  MoqxRelayContext::ListenerMatcher listenerMatcher_;
   folly::IOThreadPoolExecutor* ioExecutor_;
   bool stopped_{false};
 };

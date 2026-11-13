@@ -66,7 +66,8 @@ public:
   virtual void onPeer(
       std::string_view address,
       std::string_view authority,
-      std::string_view relayID // empty if peer didn't include one
+      std::string_view relayID, // empty if peer didn't include one
+      std::string_view listener // can be empty for outbound connections
   ) = 0;
   virtual void onPeersEnd() = 0;
 

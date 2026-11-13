@@ -106,6 +106,8 @@ struct MvfstConfig {
   // Ignore the peer's path MTU and send full-size (max UDP payload) packets.
   // Useful for testing / controlled networks; off by default to respect PMTU.
   bool canIgnorePathMTU{false};
+  // Raise the loss time threshold past the lateness of each spurious loss.
+  bool adaptiveLossTimeThreshold{false};
 
   // BBR (BBR1) congestion control tunables.
   // conservativeRecovery is shared with BBR2.
@@ -247,6 +249,8 @@ struct ServiceConfig {
   };
 
   std::vector<MatchEntry> match;
+  // Listener names; empty binds the service to none. Absent in YAML resolves to every listener.
+  std::vector<std::string> listeners;
   CacheConfig cache;
   std::optional<UpstreamConfig> upstream; // set if this service chains to an upstream relay
   AuthConfig auth;

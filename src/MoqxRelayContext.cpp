@@ -37,7 +37,12 @@ MoqxRelayContext::MoqxRelayContext(
     std::optional<config::ClusterConfig> cluster,
     std::shared_ptr<peering::MoqPeeringRuntime> moqPeering
 )
-    : serviceMatcher_(services), relayID_(relayID), cluster_(cluster) {
+    : relayID_(relayID), cluster_(cluster) {
+  for (const auto& [name, svc] : services) {
+    for (const auto& listener : svc.listeners) {
+      listenerMatchers_.try_emplace(listener, services, listener);
+    }
+  }
   if (moqPeering) {
     moqPeering_ = std::make_shared<MoqPeeringCore>(std::move(moqPeering));
   }
@@ -324,12 +329,39 @@ void MoqxRelayContext::onNewSession(std::shared_ptr<MoQSession> clientSession) {
   }
 }
 
-void MoqxRelayContext::onSessionEnd(std::shared_ptr<MoQSession> session) {
+MoqxRelayContext::ListenerMatcher MoqxRelayContext::listenerMatcher(std::string_view listenerName
+) const {
+  auto it = listenerMatchers_.find(listenerName);
+  return ListenerMatcher(
+      std::string(listenerName),
+      it == listenerMatchers_.end() ? nullptr : &it->second
+  );
+}
+
+std::optional<std::string_view>
+MoqxRelayContext::ListenerMatcher::match(std::string_view authority, std::string_view path) const {
+  if (!matcher_) {
+    return std::nullopt;
+  }
+  return matcher_->match(authority, path);
+}
+
+std::vector<std::string> MoqxRelayContext::ListenerMatcher::exactPaths() const {
+  if (!matcher_) {
+    return {};
+  }
+  return matcher_->allExactPaths();
+}
+
+void MoqxRelayContext::onSessionEnd(
+    const ListenerMatcher& listener,
+    std::shared_ptr<MoQSession> session
+) {
   if (auto& collector = *tlStatsCollector_) {
     collector->onSessionEnd();
   }
   // The session belongs to whichever service its authority+path matched at setup.
-  if (auto name = serviceMatcher_.match(session->getAuthority(), session->getPath())) {
+  if (auto name = listener.match(session->getAuthority(), session->getPath())) {
     if (auto it = services_.find(*name); it != services_.end()) {
       auto relay = it->second.relay;
       runOnExec(relay->getRelayExec(), [relay, sessionId = session->sessionId()] {
@@ -342,6 +374,7 @@ void MoqxRelayContext::onSessionEnd(std::shared_ptr<MoQSession> session) {
 }
 
 folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayContext::validateAuthority(
+    const ListenerMatcher& listener,
     const ClientSetup& clientSetup,
     uint64_t /*negotiatedVersion*/,
     std::shared_ptr<MoQSession> session
@@ -349,9 +382,10 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayContext::validateAu
   // Match service by authority + path
   const auto& authority = session->getAuthority();
   const auto& path = session->getPath();
-  auto matchedName = serviceMatcher_.match(authority, path);
+  auto matchedName = listener.match(authority, path);
   if (!matchedName) {
-    XLOG(ERR) << "No service matched authority=" << authority << " path=" << path;
+    XLOG(ERR) << "No service matched on listener '" << listener.name()
+              << "' authority=" << authority << " path=" << path;
     return folly::makeUnexpected(SessionCloseErrorCode::INVALID_AUTHORITY);
   }
 
@@ -363,7 +397,8 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayContext::validateAu
   auto& entry = it->second;
   auto grants = auth::authenticateSetup(*entry.verifier, clientSetup.params);
   if (grants.hasError()) {
-    XLOG(ERR) << "Authorization failed for authority=" << authority << " path=" << path
+    XLOG(ERR) << "Authorization failed on listener '" << listener.name()
+              << "' authority=" << authority << " path=" << path
               << " reason=" << auth::toString(grants.error());
     switch (grants.error()) {
     case auth::AuthError::Expired:
@@ -404,10 +439,6 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayContext::validateAu
   settings.bufferingThresholds.perSubscription = config::subscriptionBufferBytes(entry.config);
   session->setMoqSettings(settings);
   return folly::unit;
-}
-
-std::vector<std::string> MoqxRelayContext::getExactServicePaths() const {
-  return serviceMatcher_.allExactPaths();
 }
 
 folly::coro::Task<MoqxRelayContext::TrackMetricsResult> MoqxRelayContext::aggregateTrackMetrics(
@@ -520,7 +551,7 @@ folly::coro::Task<void> reportPeers(
   co_await peering.visitPeers(collect);
   relayVisitor.onPeersBegin();
   for (const auto& link : collect.accepted) {
-    relayVisitor.onPeer(link.address, link.authority, link.relayID);
+    relayVisitor.onPeer(link.address, link.authority, link.relayID, link.listener);
   }
   relayVisitor.onPeersEnd();
   if (collect.upstreams.empty()) {

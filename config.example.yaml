@@ -24,6 +24,8 @@ listeners:                    # Map keyed by listener name
     quic:                     # Per-listener QUIC overrides (optional; inherits listener_defaults.quic)
       cc_algo: bbr2           # Congestion control (default: bbr); names differ per stack, see docs/config.md
       # max_data: 33554432    # Override connection flow control window for this listener
+    # mvfst:                  # mvfst transport tunables (optional; picoquic listeners ignore them)
+    #   adaptive_loss_time_threshold: true  # Raise the loss time threshold after spurious losses (default: false)
 
 service_defaults:
   # Per-service cache merges field-by-field: set only the fields you want to override.
@@ -47,6 +49,7 @@ service_defaults:
 
 services:
   live-streaming:
+    # listeners: [main]             # Optional: listeners this service is available on (default: all)
     match:
       - authority: {exact: "live.example.com"}
         path: {exact: "/moq-relay"}

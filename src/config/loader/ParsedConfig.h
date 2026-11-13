@@ -172,6 +172,12 @@ struct ParsedMvfstConfig {
       "path MTU is known; leave off to respect PMTU discovery.",
       std::optional<bool>>
       ignore_path_mtu;
+  rfl::Description<
+      "Adapt the loss detection time threshold after spurious losses (default: "
+      "false). Under delay jitter, a fixed 5/4 RTT threshold declares late packets "
+      "lost and throttles the congestion controller.",
+      std::optional<bool>>
+      adaptive_loss_time_threshold;
 
   // BBR (BBR1) congestion control tunables.
   // conservative_recovery is shared with BBR2 — set it here when using either.
@@ -609,6 +615,10 @@ struct ParsedServiceConfig {
   };
 
   rfl::Description<"Match rules for routing", std::vector<MatchRule>> match;
+  rfl::Description<
+      "Names of the listeners this service is available on (absent = all listeners)",
+      std::optional<std::vector<std::string>>>
+      listeners;
   rfl::Description<
       "Per-service cache settings (overrides service_defaults)",
       std::optional<ParsedCacheConfig>>
