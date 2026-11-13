@@ -545,10 +545,30 @@ TEST_P(MoQRelayTest, PeeringOpenSubgroupDisconnectUnpulls) {
     std::lock_guard<std::mutex> lock(announcer->mu);
     return announcer->unsubscribed.size() == 1u;
   }));
-  {
+
+  // The subgroup is still open, so the next subscriber joins that forwarder.
+  // Disconnecting them has to pause the publisher again.
+  auto subscriber2 = createMockSession();
+  auto mock2 = createMockConsumer();
+  auto mockSg2 = createMockSubgroupConsumer();
+  ON_CALL(*mock2, beginSubgroup(testing::_, testing::_, testing::_, testing::_))
+      .WillByDefault(
+          testing::Return(
+              folly::makeExpected<MoQPublishError>(
+                  std::static_pointer_cast<SubgroupConsumer>(mockSg2)
+              )
+          )
+      );
+  subscribeToTrack(subscriber2, kTestTrackName, mock2, RequestID(2));
+  ASSERT_TRUE(driveUntil([&] {
     std::lock_guard<std::mutex> lock(announcer->mu);
-    EXPECT_EQ(announcer->unsubscribed[0], kTestTrackName);
-  }
+    return announcer->subscribed.size() == 2u;
+  }));
+  removeSession(subscriber2);
+  ASSERT_TRUE(driveUntil([&] {
+    std::lock_guard<std::mutex> lock(announcer->mu);
+    return announcer->unsubscribed.size() == 2u;
+  }));
   if (exec_) {
     exec_->drive();
   }

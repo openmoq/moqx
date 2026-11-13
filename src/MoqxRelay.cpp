@@ -2661,7 +2661,14 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriber
     if (auto err = checkRangeNotInPast(readyFwd, subReq, subscriber.version)) {
       co_return folly::makeUnexpected(std::move(*err));
     }
-    co_return attachSubscriber(readyFwd, subscriber.sessionId, subReq, std::move(consumer));
+
+    // The forwarder is still here because a subgroup stayed open after the previous
+    // subscriber left. Clear forward before removal on this handle too.
+    auto attached = attachSubscriber(readyFwd, subscriber.sessionId, subReq, std::move(consumer));
+    if (attached.hasError()) {
+      co_return folly::makeUnexpected(std::move(attached.error()));
+    }
+    co_return pauseOnUnsubscribe(std::move(attached.value()));
   }
 
   // This thread owns setup. The claim stays open until the tail, so same-thread attachers
