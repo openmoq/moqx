@@ -264,6 +264,11 @@ moqx_add_gtest(moqx_access_log_test
   LIBS moqx_core moqx_test_main
 )
 
+moqx_add_gtest(moqx_access_log_request_test
+  SRCS logging/access/AccessLogRequestTest.cpp
+  LIBS moqx_core moqx_test_main GTest::gmock
+)
+
 moqx_add_gtest(moqx_relay_context_test
   SRCS MoqxRelayContextTest.cpp
   LIBS
