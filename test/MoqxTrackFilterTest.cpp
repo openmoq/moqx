@@ -704,6 +704,43 @@ TEST_F(MoqxTrackFilterTest, DirectAndFilterSubscriberCoexist) {
   cC->publishDone(makePublishDone());
 }
 
+// A direct SUBSCRIBE already holds the session's slot when TRACK_FILTER selects the same
+// track, so the selection sends no PUBLISH, and deselecting it must not end the SUBSCRIBE.
+TEST_F(MoqxTrackFilterTest, DirectSubscribeSurvivesTrackFilterEviction) {
+  auto pubSess = makeSession();
+  auto cA = doPublish(pubSess, "a", 100);
+  auto cB = doPublish(pubSess, "b", 20);
+  exec_->driveFor(10);
+
+  auto viewer = makeSession();
+  auto direct = createMockConsumer();
+  EXPECT_CALL(*direct, publishDone(_)).Times(0);
+  std::shared_ptr<Publisher::SubscriptionHandle> handle;
+  withSessionContext(viewer, [&] {
+    auto res = folly::coro::blockingWait(
+        relay_->subscribe(makeSubscribeRequest(RequestID(nextId_++), ftn("a")), direct),
+        exec_.get()
+    );
+    ASSERT_TRUE(res.hasValue());
+    handle = *res;
+  });
+  ASSERT_NE(handle, nullptr);
+
+  doSubscribeFilter(viewer, /*maxSelected=*/1);
+  exec_->driveFor(20);
+  EXPECT_EQ(publishCount(viewer.get(), ftn("a")), 0) << "the direct SUBSCRIBE holds a's slot";
+
+  sendValue(cB, 200);
+  exec_->driveFor(20);
+  EXPECT_EQ(publishCount(viewer.get(), ftn("b")), 1);
+  EXPECT_TRUE(testing::Mock::VerifyAndClearExpectations(direct.get()))
+      << "evicting a from the top-N must not end the direct SUBSCRIBE";
+
+  handle->unsubscribe();
+  cA->publishDone(makePublishDone());
+  cB->publishDone(makePublishDone());
+}
+
 // ---------------------------------------------------------------------------
 // Tests: trackFilterSubscribers_ cleanup on unsubscribe
 // ---------------------------------------------------------------------------
