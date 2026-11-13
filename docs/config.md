@@ -142,6 +142,7 @@ listeners use them; picoquic listeners ignore the block.
 | `max_server_recv_packets_per_loop` | 64 | Incoming packets handled per read callback; 0 = unlimited. |
 | `num_gro_buffers` | 1 | UDP GRO receive buffers; 1 = off, up to 64. |
 | `ignore_path_mtu` | `false` | Send full-size packets without path MTU discovery. Only for networks with a known MTU. |
+| `adaptive_loss_time_threshold` | `false` | After a spurious loss, raise the loss time threshold past that packet's lateness. Helps on paths with delay jitter. |
 | `max_cwnd_in_mss` | 860000 | Congestion window cap, in MSS. |
 | `pacing_enabled` | `true` | Required for `bbr` and `bbr2`. |
 

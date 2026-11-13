@@ -172,6 +172,12 @@ struct ParsedMvfstConfig {
       "path MTU is known; leave off to respect PMTU discovery.",
       std::optional<bool>>
       ignore_path_mtu;
+  rfl::Description<
+      "Adapt the loss detection time threshold after spurious losses (default: "
+      "false). Under delay jitter, a fixed 5/4 RTT threshold declares late packets "
+      "lost and throttles the congestion controller.",
+      std::optional<bool>>
+      adaptive_loss_time_threshold;
 
   // BBR (BBR1) congestion control tunables.
   // conservative_recovery is shared with BBR2 — set it here when using either.
