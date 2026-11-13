@@ -371,6 +371,8 @@ class Actor:
     listener: str | None = None  # None = the relay's first listener
     proc: subprocess.Popen | None = None
     deadline: float | None = None
+    # None until wait() or stop() ends the actor; False when either had to terminate it.
+    exited: bool | None = None
 
     def argv(self):
         relay = self.harness.relay_of(f"actor {self.name}", self.relay)
@@ -399,6 +401,7 @@ class Actor:
     def start(self):
         if self.proc is not None:
             raise HarnessError(f"actor_start: '{self.name}' already started")
+        self.exited = None
         with open(self.out_path, "wb") as out:
             self.proc = subprocess.Popen(
                 self.argv(), stdout=out, stderr=subprocess.STDOUT
@@ -408,8 +411,8 @@ class Actor:
         #
         # Unlike `timeout N cmd &`, nothing signals the child at N: the deadline
         # only bounds how long wait() blocks, so an actor whose wait() is
-        # deferred past its deadline lives until wait() runs. No test depends on
-        # the difference — they assert on what arrived, not on when it died.
+        # deferred past its deadline lives until wait() runs. expect_exited counts
+        # an actor that ended on its own before a late wait() as exited.
         self.deadline = time.monotonic() + self.timeout if self.timeout > 0 else None
 
     def wait(self):
@@ -417,19 +420,22 @@ class Actor:
 
         The status is not an assertion — an actor with a timeout is expected to
         be killed at its deadline, the way `timeout` reaps one at 124. Use
-        expect_received.
+        expect_received; for an actor that should end on its own, expect_exited.
         """
         if self.proc is None:
             raise HarnessError(f"actor_wait: '{self.name}' was never started")
         if self.deadline is None:
             self.proc.wait()
+            self.exited = True
         else:
             self._extend_past_startup()
             try:
                 self.proc.wait(timeout=max(0.0, self.deadline - time.monotonic()))
+                self.exited = True
             except subprocess.TimeoutExpired:
                 self.proc.terminate()
                 _reap(self.proc, ACTOR_GRACE)
+                self.exited = False
         self.proc = None
         self.deadline = None
 
@@ -461,6 +467,7 @@ class Actor:
     def stop(self):
         if self.proc is None:
             return
+        self.exited = self.proc.poll() is not None
         self.proc.terminate()
         _reap(self.proc, ACTOR_GRACE)
         self.proc = None
@@ -1031,6 +1038,15 @@ class Harness:
             self._dump_relay_log(actor.relay)
         else:
             self._pass(f"[{actor.name}] received nothing")
+
+    def expect_exited(self, actor):
+        if actor.exited is None:
+            raise HarnessError(f"expect_exited: '{actor.name}' was not waited on")
+        if actor.exited:
+            self._pass(f"[{actor.name}] exited by itself")
+        else:
+            self._fail(f"[{actor.name}] was terminated, not exited by itself")
+            print("\n".join(_tail(actor.out_path, 20)), file=sys.stderr)
 
     def expect_actor_output(self, actor, pattern):
         regex = re.compile(pattern)

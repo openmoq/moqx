@@ -203,9 +203,10 @@ early and waited on late gets the window the test declared. A subscriber that
 has not logged that it is running when `wait()` starts gets a new window of
 `timeout` from when it does. `wait()` polls up to 5s (`STARTUP_TIMEOUT`) for
 that log line, so budget a failing subscriber that much extra time. Nothing
-signals the child at the deadline itself: it lives until `wait()` runs. Exit
-status is never asserted — an actor with a timeout is *expected* to be killed.
-Assert on `expect_received` instead.
+signals the child at the deadline itself: it lives until `wait()` runs. An
+actor with a timeout is *expected* to be killed at it, so assert on
+`expect_received`. `expect_exited` is for an actor that should end by itself,
+such as a client the relay rejects.
 
 Output goes to `actor-<name>.out` in the scratch directory, which is what the
 assertions read and what failure dumps print.
@@ -277,6 +278,7 @@ tail, the actor's output, the publishers on that namespace.
 | `expect_received(actor)` | The actor's output has a data line |
 | `expect_nothing_received(actor)` | The actor's output has no data line |
 | `expect_actor_output(actor, pattern)` | A line of the actor's output matches the regex |
+| `expect_exited(actor)` | The actor ended on its own: neither `wait()` nor `stop()` terminated it |
 | `expect_no_errors(actor)` | No `SubscribeError` / failed fetch in its output |
 | `expect_relay_log(name, pattern, since=0)` | A line of the relay's log after `since` matches the regex; reliable for `WARN` and above, which the relay writes synchronously. Take `since` from `h.relay_log_mark(name)` before the action under test |
 | `expect_namespace_present(name, ns)` | `/state` `namespace_tree` contains `ns` |
