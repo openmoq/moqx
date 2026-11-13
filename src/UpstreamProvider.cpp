@@ -6,6 +6,8 @@
 
 #include "UpstreamProvider.h"
 #include "relay/SessionParticipant.h"
+#include <folly/CancellationToken.h>
+#include <folly/coro/CurrentExecutor.h>
 #include <folly/coro/Timeout.h>
 #include <moxygen/MoQFilters.h>
 #include <moxygen/MoQRelaySession.h>
@@ -360,6 +362,8 @@ void UpstreamProvider::onMoQSessionClosed(
 // --- Private methods ---
 
 folly::coro::Task<std::shared_ptr<MoQSession>> UpstreamProvider::getOrConnectSession() {
+  // coSubscribe() and the other slow-path forwarders do not keep the provider alive.
+  auto self = shared_from_this();
   if (stopped_) {
     XLOG(DBG1) << "UpstreamProvider::getOrConnectSession - stopped";
     co_yield folly::coro::co_error(std::runtime_error("UpstreamProvider stopped"));
@@ -386,7 +390,12 @@ folly::coro::Task<std::shared_ptr<MoQSession>> UpstreamProvider::getOrConnectSes
   connectPromise_.emplace();
 
   try {
-    co_await doConnect();
+    // The slow-path forwarders call in without stopSource_'s token.
+    auto token = folly::cancellation_token_merge(
+        co_await folly::coro::co_current_cancellation_token,
+        stopSource_.getToken()
+    );
+    co_await folly::coro::co_withCancellation(std::move(token), doConnect());
     state_ = State::Connected;
     XLOG(DBG1) << "UpstreamProvider: connected to upstream, session=" << session_.get();
     connectPromise_->setValue(folly::unit);
@@ -412,10 +421,12 @@ folly::coro::Task<void> UpstreamProvider::doConnect() {
     session->setMoqSettings(settings);
     return session;
   };
-  client_ = std::make_unique<MoQClient>(exec_, url_, std::move(sessionFactory), verifier_);
+  // This coroutine owns the client until setup succeeds, so stop() cannot destroy it mid-setup.
+  client_.reset();
+  auto client = std::make_unique<MoQClient>(exec_, url_, std::move(sessionFactory), verifier_);
   // The extension stays inactive unless the peer also declares a Hop ID.
   if (hopID_) {
-    client_->addExtension(std::make_shared<MoQClusterExtension>(*hopID_, relayCost_));
+    client->addExtension(std::make_shared<MoQClusterExtension>(*hopID_, relayCost_));
   }
 
   quic::TransportSettings ts;
@@ -435,7 +446,7 @@ folly::coro::Task<void> UpstreamProvider::doConnect() {
     sub = std::move(participant);
   }
   // Relay links use draft 18 only.
-  co_await client_->setupMoQSession(
+  co_await client->setupMoQSession(
       connectTimeout_,
       idleTimeout_,
       std::move(pub),
@@ -443,7 +454,11 @@ folly::coro::Task<void> UpstreamProvider::doConnect() {
       ts,
       getMoqtProtocols("18", /*useStandard=*/true)
   );
+  if (stopped_) {
+    co_yield folly::coro::co_error(std::runtime_error("UpstreamProvider stopped"));
+  }
 
+  client_ = std::move(client);
   session_ = client_->moqSession_;
   CHECK(session_) << "setupMoQSession succeeded but session is null";
 
