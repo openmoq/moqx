@@ -86,6 +86,8 @@ public:
 
 int main(int argc, char* argv[]) {
   SignalHandler::ignoreHangup();
+  // A write to a pipe or socket whose reader closed, such as stdout or stderr, fails with EPIPE.
+  std::signal(SIGPIPE, SIG_IGN);
 
   // === 1. Parse command-line flags/config ===
   // CLI args, config files, env vars
