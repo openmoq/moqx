@@ -24,7 +24,7 @@
    - Relay clustering must conform to `docs/ref/draft-lcurley-moq-cluster-01.txt` and `docs/moq-cluster.md`.
 
 4. **Documentation, Config & Metrics Consistency**:
-   - **Config (`src/config/**`)**: New or renamed fields must appear in `docs/dev/config.md`, `docs/config.md` (generated via `scripts/dev/config-schema-to-markdown.sh`), and `config.example.yaml`.
+   - **Config (`src/config/**`)**: New or renamed fields must appear in `docs/config.md` (user-facing reference) and `config.example.yaml`. A change to the config pipeline or its key files must update `docs/dev/config.md` (internals).
    - **Metrics (`src/{stats,admin}/**`)**: Renaming or dropping a Prometheus metric must update `docs/metrics.md`.
    - **Logging (`src/logging/**`)**: Keep new log statements on `XLOG` with an appropriate category (`docs/logging.md`).
    - **Changelog (`changelog.d/`)**: User-visible changes per `CONTRIBUTING.md#changelog` must include an entry file under `changelog.d/`, in the format of `changelog.d/README.md`.
