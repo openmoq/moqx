@@ -67,8 +67,8 @@ TEST_F(MoQStatsCollectorTest, UnknownResetCodeFallsIntoUnknownSlot) {
 
 TEST_F(MoQStatsCollectorTest, ObjectAckLatencyHistogram) {
   auto pub = collector_->publisherCallback();
-  pub->recordObjectAckLatency(120);
-  pub->recordObjectAckLatency(880);
+  pub->getObjectAckStatsCallback()->recordObjectAckLatency(120);
+  pub->getObjectAckStatsCallback()->recordObjectAckLatency(880);
 
   auto snap = collector_->snapshot();
   EXPECT_EQ(snap.moqObjectAckLatencyCount, 2);
@@ -78,7 +78,7 @@ TEST_F(MoQStatsCollectorTest, ObjectAckLatencyHistogram) {
 TEST_F(MoQStatsCollectorTest, PrometheusExportsResetAndAckLatency) {
   auto pub = collector_->publisherCallback();
   pub->onSubgroupReset(moxygen::ResetStreamErrorCode::DELIVERY_TIMEOUT);
-  pub->recordObjectAckLatency(300);
+  pub->getObjectAckStatsCallback()->recordObjectAckLatency(300);
 
   auto text = prometheusText(collector_->snapshot());
 
@@ -94,7 +94,7 @@ TEST_F(MoQStatsCollectorTest, PrometheusExportsResetAndAckLatency) {
 TEST_F(MoQStatsCollectorTest, PrometheusOmitMetadataDropsHelpAndType) {
   auto pub = collector_->publisherCallback();
   pub->onSubgroupReset(moxygen::ResetStreamErrorCode::DELIVERY_TIMEOUT);
-  pub->recordObjectAckLatency(300);
+  pub->getObjectAckStatsCallback()->recordObjectAckLatency(300);
 
   auto text = prometheusText(collector_->snapshot(), /*omitMetadata=*/true);
 
