@@ -42,6 +42,8 @@ moxygen::FullTrackName ftn(std::vector<std::string> ns, std::string name) {
 // One walk, exercising every section and both nesting levels of the tree.
 void walk(RelayContextVisitor& v) {
   v.onRelayBegin("relay-1", 3);
+  v.onClusterPeering(true, 123);
+  v.onServicesBegin();
   RelayStateVisitor& rv = v.onServiceBegin("default");
 
   rv.onPeersBegin();
@@ -104,6 +106,8 @@ TEST(StateStreamTest, ReportsEveryUpstreamInAList) {
   ChunkedJsonWriter writer(sinkInto(out), 1);
   JsonRelayContextVisitor visitor(writer);
   visitor.onRelayBegin("mesh", 0);
+  visitor.onClusterPeering(true, 55);
+  visitor.onServicesBegin();
   visitor.onServiceBegin("live");
   visitor.onServiceUpstreams({{"moqt://a/", "connected"}, {"moqt://b/", "disconnected"}});
   visitor.onServiceEnd();

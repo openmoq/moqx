@@ -562,6 +562,14 @@ peering:
     debug: false
 ```
 
+MoQ Peering does not make a client request wait for a peer connection or for
+its announcements. A request can therefore arrive before a route from a peer
+is known. When a peer connects or reconnects, MoQ Peering refreshes the
+announcement and subscription information for that session; routes and object
+delivery become available as that information is exchanged. This lets the
+relay start serving from learned routes without holding requests open for peer
+connectivity.
+
 `node_id` is a contact label. The numeric node id is the hash of that string, printed by the admin API as `high.high:low.low`. Give every node a distinct label.
 
 `tls.cert_file` and `tls.key_file` are paths. The key must be an unencrypted PEM private key. moqx checks that the certificate is currently valid, that its key is RSA of at least 2048 bits or EC of at least 256 bits, that the signature is not MD5 or SHA-1, and that the key matches the certificate. A key that is readable by group or others produces a warning; restrict it to the relay user (`0600`). The private key is not written into the admin `/config` dump.
@@ -692,7 +700,7 @@ Prometheus a series set that reshuffles between scrapes.  See [docs/metrics.md] 
 | `GET` | `/info` | Returns `{"service":"moqx","version":"...","start_time":<epoch seconds>,"uptime_seconds":<n>}`. |
 | `GET` | `/metrics` | Prometheus-format metrics. See [docs/metrics.md](metrics.md) (pending PR #137). |
 | `GET` | `/metrics/track` | Per-track Prometheus metrics for live tracks. See [docs/metrics.md](metrics.md). |
-| `GET` | `/state` | Relay state: connected peers, active subscriptions, namespace tree, and cache stats. Always `Transfer-Encoding: chunked`, streamed as the walk produces it. Per-subscription counters are ingress-side (`total_groups_received`, `total_objects_received`, `largest`), counted on the relay executor; for subscriber counts use `moqx_track_subscribers` from `/metrics/track`. |
+| `GET` | `/state` | Relay state: active subscriptions, namespace tree, cache stats, and peering status. The top-level `peering` object identifies the selected method; for `cluster`, service state includes downstream peers and upstream links, and for `moq-peering`, `peering` includes the node and peer session details also returned by `/peering`. Always `Transfer-Encoding: chunked`, streamed as the walk produces it. Per-subscription counters are ingress-side (`total_groups_received`, `total_objects_received`, `largest`), counted on the relay executor; for subscriber counts use `moqx_track_subscribers` from `/metrics/track`. |
 | `GET` | `/peering` | The peering method this process started. `cluster` returns `enabled` and, when MoQ Cluster is on, `hop_id`. `moq-peering` returns the local node id and each session from `PeerManager::Peers`: origin, link status, smoothed RTT, session and node metrics, subscribe and publish counts, and open streams. |
 | `POST` | `/peering/add-peer` | Dial a peer, or remember the address when that peer is already accepted. Body: `{"host":"...","port":33434,"metric":150}`. `metric` is optional. |
 | `POST` | `/peering/remove-peer` | Disconnect `{"host":"...","port":33434}` and drop its forwarding state. |

@@ -550,6 +550,12 @@ folly::coro::Task<void> MoqxRelayContext::dumpState(RelayContextVisitor& visitor
     activeSessions = (co_await statsRegistry_->aggregateAsync()).moqActiveSessions;
   }
   visitor.onRelayBegin(relayID_, activeSessions);
+  if (moqPeering_) {
+    visitor.onMoqPeering(moqPeeringStatus());
+  } else {
+    visitor.onClusterPeering(cluster_.has_value(), getRelayHopID());
+  }
+  visitor.onServicesBegin();
 
   // Copied by value: services_ belongs to this executor and must not be read
   // after the first hop below.
@@ -579,7 +585,9 @@ folly::coro::Task<void> MoqxRelayContext::dumpState(RelayContextVisitor& visitor
         exec ? exec : static_cast<folly::Executor*>(workerEvb_),
         dumpOnOwner(service.relay, &rv)
     );
-    co_await reportPeers(*service.peering, service.upstreamList, visitor, rv);
+    if (!moqPeering_) {
+      co_await reportPeers(*service.peering, service.upstreamList, visitor, rv);
+    }
     visitor.onServiceEnd();
   }
   visitor.onRelayEnd();

@@ -7,6 +7,10 @@
 #pragma once
 
 #include <chrono>
+#include <cstdint>
+#include <limits>
+#include <optional>
+#include <string>
 #include <string_view>
 
 #include "MoqxRelayContext.h"
@@ -21,14 +25,21 @@ namespace openmoq::moqx::admin {
 // finalization is needed here.
 class JsonRelayStateVisitor : public RelayStateVisitor {
 public:
-  explicit JsonRelayStateVisitor(ChunkedJsonWriter& c) : c_(c), w_(c.json()) {}
+  explicit JsonRelayStateVisitor(ChunkedJsonWriter& c, bool includeClusterDetails = true)
+      : c_(c), w_(c.json()), includeClusterDetails_(includeClusterDetails) {}
 
   void onPeersBegin() override {
+    if (!includeClusterDetails_) {
+      return;
+    }
     w_.key("downstream_peers");
     w_.beginArray();
   }
   void
   onPeer(std::string_view address, std::string_view authority, std::string_view relayID) override {
+    if (!includeClusterDetails_) {
+      return;
+    }
     w_.beginObject();
     w_.field("address", address);
     w_.field("authority", authority);
@@ -38,7 +49,11 @@ public:
     w_.endObject();
     c_.maybeFlush();
   }
-  void onPeersEnd() override { w_.endArray(); }
+  void onPeersEnd() override {
+    if (includeClusterDetails_) {
+      w_.endArray();
+    }
+  }
 
   void onSubscriptionsBegin() override {
     w_.key("subscriptions");
@@ -105,14 +120,16 @@ public:
         if (!route.peerID.empty()) {
           w_.field("peer_id", route.peerID);
         }
-        w_.key("hop_path");
-        w_.beginArray();
-        for (auto hop : route.path) {
-          w_.uintVal(hop);
+        if (includeClusterDetails_) {
+          w_.key("hop_path");
+          w_.beginArray();
+          for (auto hop : route.path) {
+            w_.uintVal(hop);
+          }
+          w_.endArray();
+          w_.field("cost", route.cost);
+          w_.field("from_peering", route.fromPeering);
         }
-        w_.endArray();
-        w_.field("cost", route.cost);
-        w_.field("from_peering", route.fromPeering);
         w_.endObject();
       }
       w_.endArray();
@@ -178,6 +195,7 @@ private:
   ChunkedJsonWriter& c_;
   JsonWriter& w_;
   MoqxCache::TimePoint now_{};
+  bool includeClusterDetails_{true};
 };
 
 // Builds the top-level envelope around the per-service walks. Shares one
@@ -185,14 +203,70 @@ private:
 // across the two layers and a chunk can be cut anywhere.
 class JsonRelayContextVisitor : public RelayContextVisitor {
 public:
-  explicit JsonRelayContextVisitor(ChunkedJsonWriter& c) : c_(c), w_(c.json()), relayVisitor_(c) {}
+  explicit JsonRelayContextVisitor(ChunkedJsonWriter& c, bool includeClusterDetails = true)
+      : c_(c), w_(c.json()), relayVisitor_(c, includeClusterDetails) {}
 
   void onRelayBegin(std::string_view relayID, int64_t activeSessions) override {
     w_.beginObject();
     w_.field("relay_id", relayID);
     w_.field("active_sessions", activeSessions);
+  }
+
+  void onServicesBegin() override {
     w_.key("services");
     w_.beginObject();
+  }
+
+  void onClusterPeering(bool enabled, std::optional<uint64_t> hopID) override {
+    w_.key("peering");
+    w_.beginObject();
+    w_.field("method", std::string_view("cluster"));
+    w_.field("enabled", enabled);
+    if (hopID) {
+      w_.field("hop_id", *hopID);
+    }
+    w_.endObject();
+  }
+
+  void onMoqPeering(const std::optional<peering::PeeringStatus>& maybeStatus) override {
+    w_.key("peering");
+    w_.beginObject();
+    w_.field("method", std::string_view("moq-peering"));
+    if (!maybeStatus) {
+      w_.endObject();
+      return;
+    }
+    const auto& status = *maybeStatus;
+    w_.field("node_id", status.nodeId);
+    w_.field("contact", status.contact);
+    w_.field("node_type", status.nodeType);
+    writeUint("node_metric", status.nodeMetric);
+    w_.field("listen_port", static_cast<uint64_t>(status.listenPort));
+    w_.key("peers");
+    w_.beginArray();
+    for (const auto& peer : status.peers) {
+      w_.beginObject();
+      writeUint("session_id", peer.sessionId);
+      w_.field("origin", peer.origin);
+      w_.field("status", peer.status);
+      w_.field("host", peer.host);
+      w_.field("port", static_cast<uint64_t>(peer.port));
+      w_.field("identified", peer.identified);
+      w_.field("node_id", peer.nodeId);
+      w_.field("contact", peer.contact);
+      w_.field("node_type", peer.nodeType);
+      writeUint("srtt_us", peer.srttUs);
+      writeUint("metric", peer.metric);
+      writeUint("node_metric", peer.nodeMetric);
+      writeUint("connect_time_us", peer.connectTimeUs);
+      writeUint("subscribe_tracks", peer.subscribeTracks);
+      writeUint("publishes", peer.publishes);
+      writeUint("active_streams", peer.activeStreams);
+      w_.endObject();
+      c_.maybeFlush();
+    }
+    w_.endArray();
+    w_.endObject();
   }
 
   RelayStateVisitor& onServiceBegin(std::string_view name) override {
@@ -235,6 +309,15 @@ public:
   bool alive() const override { return c_.alive(); }
 
 private:
+  void writeUint(std::string_view key, uint64_t value) {
+    w_.key(key);
+    if (value <= static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+      w_.uintVal(value);
+    } else {
+      w_.strVal(std::to_string(value));
+    }
+  }
+
   ChunkedJsonWriter& c_;
   JsonWriter& w_;
   JsonRelayStateVisitor relayVisitor_;

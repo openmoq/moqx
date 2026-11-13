@@ -46,6 +46,9 @@ class RelayContextVisitor {
 public:
   virtual ~RelayContextVisitor() = default;
   virtual void onRelayBegin(std::string_view relayID, int64_t activeSessions) = 0;
+  virtual void onServicesBegin() = 0;
+  virtual void onClusterPeering(bool enabled, std::optional<uint64_t> hopID) = 0;
+  virtual void onMoqPeering(const std::optional<peering::PeeringStatus>& status) = 0;
   // Called before relay->dumpState(). Returns the visitor to pass into dumpState.
   virtual RelayStateVisitor& onServiceBegin(std::string_view name) = 0;
   struct UpstreamState {

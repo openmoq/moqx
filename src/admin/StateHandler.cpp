@@ -46,7 +46,7 @@ folly::coro::Task<void> produceState(
       }
       return pipe.write(std::move(chunk));
     });
-    JsonRelayContextVisitor visitor(writer);
+    JsonRelayContextVisitor visitor(writer, ctx->getRelayHopID().has_value());
     auto result = co_await folly::coro::co_awaitTry(ctx->dumpState(visitor));
     if (result.hasException()) {
       failure = std::move(result).exception();
