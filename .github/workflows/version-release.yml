@@ -522,6 +522,8 @@ jobs:
 
       - name: Smoke test
         if: runner.os == 'Linux'
+        env:
+          TAG: ${{ needs.validate.outputs.tag }}
         run: |
           mkdir -p /tmp/moqx-smoke
           tar xzf "moqx-${{ matrix.platform }}.tar.gz" -C /tmp/moqx-smoke
@@ -531,6 +533,12 @@ jobs:
             echo "ERROR: missing shared libraries"
             exit 1
           fi
+          REPORTED=$(/tmp/moqx-smoke/bin/moqx --version 2>&1 || true)
+          echo "==> reported version: $REPORTED"
+          case "$REPORTED" in
+            *"$TAG"*) ;;
+            *) echo "ERROR: moqx does not report $TAG" >&2; exit 1 ;;
+          esac
 
       - name: Upload to release
         env:
