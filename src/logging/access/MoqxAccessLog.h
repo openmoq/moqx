@@ -17,6 +17,7 @@
 #include <string_view>
 #include <vector>
 
+#include <folly/CancellationToken.h>
 #include <folly/coro/UnboundedQueue.h>
 #include <folly/futures/Future.h>
 #include <folly/io/async/EventBase.h>
@@ -166,6 +167,8 @@ private:
   std::atomic<uint64_t> queueDropped_{0};
   std::atomic<State> state_{State::Created};
   std::chrono::steady_clock::time_point stopDeadline_{};
+  // stop() cancels a flush that the writer started before the Stop item.
+  folly::CancellationSource flushCancel_;
   folly::coro::UnboundedQueue<Item, /*SingleProducer=*/false, /*SingleConsumer=*/true> queue_;
   std::optional<folly::ScopedEventBaseThread> thread_;
   folly::SemiFuture<folly::Unit> done_{folly::makeSemiFuture()};
