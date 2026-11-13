@@ -18,6 +18,7 @@
 #include "bpf/QuicReuseportSteering.h"
 #include "config/loader/ConfigInit.h"
 #include "logging/LogSetup.h"
+#include "logging/access/AccessLogSetup.h"
 #include "moqx/Version.h"
 #include "stats/StatsRegistry.h"
 
@@ -150,6 +151,14 @@ int main(int argc, char* argv[]) {
   const cfg::QLogConfig* qlogConfig = *qlogResult;
   auto qlogCapture = qlogConfig ? std::make_shared<logging::QLogCapture>() : nullptr;
 
+  auto accessLogResult = logging::makeAccessLog(config);
+  if (!accessLogResult) {
+    std::cerr << "Error: failed to open the access log: " << accessLogResult.error() << "\n";
+    return 1;
+  }
+  auto accessLog = std::move(*accessLogResult);
+  accessLog->start();
+
   // === 3. Set up signal handling ===
   folly::EventBase evb;
   SignalHandler signalHandler(&evb);
@@ -179,6 +188,7 @@ int main(int argc, char* argv[]) {
       config.useLocalForwarders,
       config.cluster
   );
+  context->setAccessLog(accessLog);
 
   // === 6a. Stats registry ===
   auto statsRegistry = std::make_shared<stats::StatsRegistry>();
@@ -280,6 +290,7 @@ int main(int argc, char* argv[]) {
   // ============================================
 
   // === 9. Stop accepting new connections ===
+  accessLog->beginShutdown();
   // Signal upstreams to stop — cancels reconnect backoff so worker EVBs can
   // exit cleanly before servers drain them.
   context->stop();
@@ -311,6 +322,9 @@ int main(int argc, char* argv[]) {
   context->join();
   servers.clear();
   ioExecutor.reset();
+
+  // The IO EventBases that submitted records are gone, so the log can stop.
+  accessLog->stop(std::chrono::steady_clock::now() + std::chrono::seconds(2));
 
   // Join mlog write executor last: sessions are destroyed by the teardown above
   // (their outputLogs() calls schedule writes here), so we must not join until

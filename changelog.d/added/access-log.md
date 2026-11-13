@@ -1,0 +1,1 @@
+- An operator access log: [`logging.access`](/docs/config.md#loggingaccess) writes one line per session and per MoQT request to a file or stdout, with per-service sink selection, session sampling and nginx-style templates.
