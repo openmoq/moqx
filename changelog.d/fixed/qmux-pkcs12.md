@@ -1,0 +1,1 @@
+- A [`quic_stack: proxygen_qmux`](/docs/config.md#listeners) listener with `tls.pkcs12_file` failed to start with "no certificates read"; it now loads the bundle, and a failed PEM cert/key load names the files.

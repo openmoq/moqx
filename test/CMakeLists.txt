@@ -99,8 +99,10 @@ moqx_add_gtest(moqx_relay_integration_test
     MoqxRelayServerTest.cpp
     RelaySessionCloseTest.cpp
     UpstreamProviderTest.cpp
+    tls/FizzContextBuilderTest.cpp
   LIBS
     moqx_core
+    moqx_config_loader
     moqx_test_utils
     moqx_test_main
     GTest::gmock

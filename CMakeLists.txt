@@ -404,6 +404,7 @@ add_library(moqx_core STATIC
   src/MoqxPicoRelayServer.cpp
   src/MoqxQmuxRelayServer.cpp
   src/ServiceMatcher.cpp
+  src/tls/FizzContextBuilder.cpp
   src/admin/AdminServer.cpp
   src/admin/BuiltinRoutes.cpp
   src/admin/CachePurgeHandler.cpp
