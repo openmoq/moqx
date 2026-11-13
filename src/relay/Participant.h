@@ -10,6 +10,7 @@
 #include <moxygen/MoQTypes.h>
 #include <moxygen/Publisher.h>
 #include <moxygen/Subscriber.h>
+#include <moxygen/openmoq/extensions/MoQClusterExtension.h>
 
 #include <folly/Executor.h>
 #include <folly/coro/Invoke.h>
@@ -57,6 +58,7 @@ struct ParticipantInfo {
   folly::Executor* executor{nullptr};
   std::string address;
   std::string authority;
+  std::string listener; // empty for outbound connections
   ParticipantRouting routing;
 };
 

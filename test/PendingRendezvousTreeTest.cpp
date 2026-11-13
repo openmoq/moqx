@@ -6,6 +6,7 @@
 
 #include "PendingRendezvousTree.h"
 
+#include <folly/Utility.h>
 #include <folly/coro/BlockingWait.h>
 #include <folly/portability/GMock.h>
 #include <folly/portability/GTest.h>
@@ -182,8 +183,10 @@ TEST_F(PendingRendezvousTreeTest, TakeRendezvousTimeoutClampedToMax) {
 
   ASSERT_TRUE(clamped.has_value());
   EXPECT_EQ(*clamped, kMaxRendezvousTimeout);
-  EXPECT_EQ(sub.params.getFirstParam(TrackRequestParamKey::RENDEZVOUS_TIMEOUT), nullptr)
-      << "the per-hop param must be consumed regardless of clamping";
+  EXPECT_EQ(
+      sub.params.getFirstParam(folly::to_underlying(TrackRequestParamKey::RENDEZVOUS_TIMEOUT)),
+      nullptr
+  ) << "the per-hop param must be consumed regardless of clamping";
 }
 
 // A request under the ceiling passes through unclamped.

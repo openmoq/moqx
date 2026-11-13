@@ -49,10 +49,12 @@ TEST_ADMIN_CONNECTION_LOGS_ADMIN=9671
 TEST_CACHE_PURGE_RACE_RELAY=19678
 TEST_CACHE_PURGE_RACE_ADMIN=19679
 
-# test_qmux_relay.sh  (relay listener + admin, plus a throwaway dateserver listener)
+# test_qmux_relay.sh  (relay listener + admin, a throwaway dateserver listener,
+# and a relay listener no service is bound to)
 TEST_QMUX_RELAY_LISTEN=19680
 TEST_QMUX_RELAY_ADMIN=19681
 TEST_QMUX_DATESERVER_LISTEN=19682
+TEST_QMUX_RELAY_ISOLATED_LISTEN=19683
 
 # test_admin_track_metrics.sh
 TEST_ADMIN_TRACK_METRICS_LISTEN=19684
@@ -70,15 +72,17 @@ TEST_CONFORMANCE_PORT_MIN=19700
 TEST_CONFORMANCE_PORT_MAX=19799
 
 # test/lib/moq_harness.py — each harness test gets its own base, and each
-# h.relay() call takes the next listener/admin pair counting up from it.
+# h.relay() call takes the next ports counting up from it: one per listener,
+# plus one for admin.
 #
 # These MUST be distinct per test: scripts/test.sh runs ctest --parallel, so
 # harness tests execute concurrently. Sharing a base makes them fight over the
 # same ports, and a relay can even pass its readiness check against another
 # test's relay listening on the same admin port.
 #
-# Placed above the conformance span, not inside it. Ten ports per test = five
-# relay pairs. Set HARNESS_BASE_PORT to override.
+# Placed above the conformance span, not inside it. Ten ports per test, e.g.
+# five one-listener relays; h.relay() rejects a topology that needs more. Set
+# HARNESS_BASE_PORT to override.
 # Do not write literal port numbers in comments here: the duplicate check
 # greps every number in this file and cannot tell a comment from an assignment.
 TEST_HARNESS_CHAIN_BASE=19800
@@ -87,4 +91,5 @@ TEST_HARNESS_PYRAMID_BASE=19820
 TEST_HARNESS_UPSTREAMS_BASE=19830
 TEST_HARNESS_SIGHUP_BASE=19840
 TEST_HARNESS_CLUSTER_BASE=19850
-# Reserved for future harness tests through: 19859
+TEST_HARNESS_LISTENER_SERVICES_BASE=19860
+# Reserved for future harness tests through: 19879

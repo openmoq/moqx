@@ -119,6 +119,7 @@ inline void serializeMvfst(ConfigSink& s, const MvfstConfig& m) {
   s.uintField("max_server_recv_packets_per_loop", m.maxServerRecvPacketsPerLoop);
   s.uintField("num_gro_buffers", m.numGROBuffers);
   s.boolField("can_ignore_path_mtu", m.canIgnorePathMTU);
+  s.boolField("adaptive_loss_time_threshold", m.adaptiveLossTimeThreshold);
   s.uintField("udp_socket_buffer_bytes", m.udpSocketBufferBytes);
   s.uintField("h3_txn_timeout_ms", m.h3TxnTimeoutMs);
 
@@ -345,6 +346,11 @@ inline void serializeConfig(const Config& cfg, ConfigSink& s) {
     s.beginArray("match");
     for (const auto& m : svc.match) {
       serializeMatch(s, m);
+    }
+    s.endArray();
+    s.beginArray("listeners");
+    for (const auto& l : svc.listeners) {
+      s.stringField("", l);
     }
     s.endArray();
     serializeCache(s, svc.cache);

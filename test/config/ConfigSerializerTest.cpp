@@ -41,7 +41,7 @@ static_assert(
     "QuicConfig changed — update serializeQuic()"
 );
 static_assert(
-    rfl::internal::num_fields<MvfstConfig> == 15,
+    rfl::internal::num_fields<MvfstConfig> == 16,
     "MvfstConfig changed — update serializeMvfst()"
 );
 static_assert(
@@ -65,7 +65,7 @@ static_assert(
     "MvfstConfig::L4S changed — update serializeMvfst()"
 );
 static_assert(
-    rfl::internal::num_fields<ServiceConfig> == 6,
+    rfl::internal::num_fields<ServiceConfig> == 7,
     "ServiceConfig changed — update serializeConfig()"
 );
 static_assert(
@@ -192,6 +192,7 @@ Config makeFullConfig() {
   svc.match.push_back(
       {ServiceConfig::MatchEntry::AnyAuthority{}, ServiceConfig::MatchEntry::PrefixPath{"/"}}
   );
+  svc.listeners = {"main"};
   svc.cache.maxCachedTracks = 100;
   svc.cache.maxCachedGroupsPerTrack = 3;
   svc.maxSubscriptionBufferKb = 51200;
@@ -230,6 +231,7 @@ TEST(ConfigSerializerTest, VisitsAllSections) {
   EXPECT_EQ(sink.scalars["services.default.cache.enabled"], "true");
   EXPECT_EQ(sink.scalars["services.default.cache.max_cached_tracks"], "100");
   EXPECT_EQ(sink.scalars["services.default.match.*.path.prefix"], "/");
+  EXPECT_EQ(sink.scalars["services.default.listeners.[]"], "main");
   EXPECT_EQ(sink.scalars["services.default.upstream.url"], "https://upstream.example/relay");
   EXPECT_EQ(sink.scalars["services.default.upstream.tls.ca_cert_file"], "/etc/ca.pem");
   EXPECT_EQ(sink.scalars["services.default.max_subscription_buffer_kb"], "51200");

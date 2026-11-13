@@ -10,6 +10,7 @@
 #include "MoqxRelayContext.h"
 #include "peering/MoqtRelayBackend.h"
 #include "relay/SessionParticipant.h"
+#include <moxygen/openmoq/extensions/MoQClusterExtension.h>
 
 #include <folly/SocketAddress.h>
 #include <folly/coro/Baton.h>
@@ -231,11 +232,12 @@ protected:
   static constexpr uint64_t kNoRelayCost = std::numeric_limits<uint64_t>::max();
 
   void configureServer(moxygen::MoQServer& server) override {
-    server.addSetupParameter(SetupParameter(folly::to_underlying(SetupKey::HOP_ID), kServerHop));
+    server.addExtension(std::make_shared<moxygen::MoQClusterExtension>(kServerHop));
   }
 
   void onServerClientSetup(const moxygen::Setup& clientSetup) override {
-    const auto* cost = clientSetup.params.getFirstParam(SetupKey::RELAY_COST);
+    const auto* cost =
+        clientSetup.params.getFirstParam(moxygen::MoQClusterExtension::kRelayCostOption);
     clientRelayCost_ = cost ? cost->asUint64 : kNoRelayCost;
     clientSetupSeen_.post();
   }
@@ -273,8 +275,8 @@ TEST_F(UpstreamClusterTest, NegotiatesClusterOnDraft18) {
         EXPECT_NE(session, nullptr);
         if (session) {
           EXPECT_EQ(getDraftMajorVersion(*session->getNegotiatedVersion()), 18u);
-          EXPECT_TRUE(session->negotiatedSetupExtension(SetupExtension::RelayHops));
-          EXPECT_EQ(session->getPeerHopID(), kServerHop);
+          EXPECT_TRUE(moxygen::MoQClusterExtension::isNegotiated(*session));
+          EXPECT_EQ(moxygen::MoQClusterExtension::peerHopID(*session), kServerHop);
         }
       }(),
       &clientEvb()
@@ -290,7 +292,7 @@ TEST_F(UpstreamClusterTest, NoHopIDLeavesClusterOff) {
         auto session = provider_->currentSession();
         EXPECT_NE(session, nullptr);
         if (session) {
-          EXPECT_FALSE(session->negotiatedSetupExtension(SetupExtension::RelayHops));
+          EXPECT_FALSE(moxygen::MoQClusterExtension::isNegotiated(*session));
         }
       }(),
       &clientEvb()
@@ -728,10 +730,13 @@ TEST_F(UpstreamProviderTest, StopIsIdempotent) {
 
 // onDisconnect hook fires when the upstream session is closed.
 TEST_F(UpstreamProviderTest, OnDisconnectHookFires) {
-  // Replace the default (never-started) provider with one that has the hook. The hook also fires
-  // from TearDown's stop(), after this frame is gone.
-  auto firedState = std::make_shared<bool>(false);
-  auto& fired = *firedState;
+  // Replace the default (never-started) provider with one that has the hooks. They also fire from
+  // TearDown's stop(), after this frame is gone.
+  struct HookState {
+    bool fired{false};
+    int connects{0};
+  };
+  auto state = std::make_shared<HookState>();
   provider_ = std::make_shared<UpstreamProvider>(
       clientExec(),
       serverUrl(),
@@ -739,9 +744,13 @@ TEST_F(UpstreamProviderTest, OnDisconnectHookFires) {
       /*subscribeHandler=*/nullptr,
       /*relayExec=*/nullptr,
       std::make_shared<moxygen::test::InsecureVerifierDangerousDoNotUseInProduction>(),
-      /*onConnect=*/nullptr,
+      /*onConnect=*/
+      [state](std::shared_ptr<MoQSession>) -> folly::coro::Task<void> {
+        ++state->connects;
+        co_return;
+      },
       /*onDisconnect=*/
-      [firedState](std::shared_ptr<MoQSession> session) { *firedState = session != nullptr; }
+      [state](std::shared_ptr<MoQSession> session) { state->fired = session != nullptr; }
   );
 
   folly::coro::blockingWait(
@@ -752,8 +761,13 @@ TEST_F(UpstreamProviderTest, OnDisconnectHookFires) {
           co_return;
         }
         provider_->currentSession()->close(SessionCloseErrorCode::NO_ERROR);
-        co_await folly::coro::sleep(std::chrono::milliseconds(50));
-        EXPECT_TRUE(fired);
+        // Waiting for the reconnect keeps TearDown from stopping it mid-setup.
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (state->connects < 2 && std::chrono::steady_clock::now() < deadline) {
+          co_await folly::coro::sleep(std::chrono::milliseconds(10));
+        }
+        EXPECT_EQ(state->connects, 2);
+        EXPECT_TRUE(state->fired);
       }(),
       &clientEvb()
   );
@@ -935,6 +949,67 @@ TEST_F(UpstreamProviderTest, StopDuringOnConnectFailsSubscribe) {
   );
   EXPECT_TRUE(done);
   EXPECT_TRUE(threw);
+}
+
+// stop() cancels a setup that a slow-path subscribe started, rather than waiting out the connect
+// timeout. The upstream is a UDP socket that is bound but not read.
+TEST_F(UpstreamProviderTest, StopCancelsSlowPathSetup) {
+  int silentFd = ::socket(AF_INET6, SOCK_DGRAM, 0);
+  ASSERT_GE(silentFd, 0);
+  folly::SocketAddress bindAddr("::1", 0);
+  sockaddr_storage storage;
+  auto len = bindAddr.getAddress(&storage);
+  ASSERT_EQ(::bind(silentFd, reinterpret_cast<sockaddr*>(&storage), len), 0);
+  folly::SocketAddress silentAddr;
+  silentAddr.setFromLocalAddress(folly::NetworkSocket::fromFd(silentFd));
+
+  provider_ = std::make_shared<UpstreamProvider>(
+      clientExec(),
+      proxygen::URL(folly::to<std::string>("moqt://[::1]:", silentAddr.getPort(), "/test")),
+      /*publishHandler=*/nullptr,
+      /*subscribeHandler=*/nullptr,
+      /*relayExec=*/nullptr,
+      std::make_shared<moxygen::test::InsecureVerifierDangerousDoNotUseInProduction>(),
+      /*onConnect=*/nullptr,
+      /*onDisconnect=*/nullptr,
+      /*connectTimeout=*/std::chrono::seconds(10)
+  );
+
+  struct Outcome {
+    bool done{false};
+    bool threw{false};
+  };
+  auto outcome = std::make_shared<Outcome>();
+  // Parameters, not captures: on failure this coroutine outlives the test body.
+  auto subscribe = [](std::shared_ptr<Outcome> outcome,
+                      std::shared_ptr<UpstreamProvider> provider,
+                      SubscribeRequest sub,
+                      std::shared_ptr<ObjectReceiver> receiver) -> folly::coro::Task<void> {
+    auto result = co_await folly::coro::co_awaitTry(provider->subscribe(sub, std::move(receiver)));
+    outcome->threw = result.hasException();
+    outcome->done = true;
+  };
+  folly::coro::blockingWait(
+      [&]() -> folly::coro::Task<void> {
+        folly::coro::co_withExecutor(
+            &clientEvb(),
+            subscribe(outcome, provider_, makeSubscribeRequest(), makeReceiver())
+        )
+            .start();
+        while (provider_->stateString() != "connecting") {
+          co_await folly::coro::co_reschedule_on_current_executor;
+        }
+        provider_->stop();
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (!outcome->done && std::chrono::steady_clock::now() < deadline) {
+          co_await folly::coro::sleep(std::chrono::milliseconds(10));
+        }
+      }(),
+      &clientEvb()
+  );
+  EXPECT_TRUE(outcome->done);
+  EXPECT_TRUE(outcome->threw);
+  ::close(silentFd);
 }
 
 // ===== RelayUpstreamSubscribeRaceTest =============================================

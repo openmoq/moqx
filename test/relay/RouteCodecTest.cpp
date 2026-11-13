@@ -7,10 +7,9 @@
 #include "relay/MoqClusterRouteCodec.h"
 #include "relay/PlainRouteCodec.h"
 
-#include <folly/Utility.h>
 #include <folly/portability/GTest.h>
-#include <moxygen/MoQFramer.h>
 #include <moxygen/MoQVersions.h>
+#include <moxygen/openmoq/extensions/MoQClusterExtension.h>
 
 #include <algorithm>
 #include <limits>
@@ -33,10 +32,10 @@ ParticipantInfo clusterPeer(uint64_t peerHop, uint64_t linkCost = 2) {
 TrackRequestParameters clusterParams(const std::vector<uint64_t>& path, uint64_t cost) {
   TrackRequestParameters params(FrameType::PUBLISH_NAMESPACE);
   params.insertParam(Parameter(
-      folly::to_underlying(TrackRequestParamKey::HOP_PATH),
+      MoQClusterExtension::kHopPathParam,
       encodeRelayHopPath(path, kVersionDraft18).value()
   ));
-  params.insertParam(Parameter(folly::to_underlying(TrackRequestParamKey::ROUTE_COST), cost));
+  params.insertParam(Parameter(MoQClusterExtension::kRouteCostParam, cost));
   return params;
 }
 
@@ -60,7 +59,7 @@ TEST(MoqClusterRouteCodecTest, MissingRouteCostFallsBackToLinkCost) {
   MoqClusterRouteCodec codec(kLocalHop);
   TrackRequestParameters params(FrameType::PUBLISH_NAMESPACE);
   params.insertParam(Parameter(
-      folly::to_underlying(TrackRequestParamKey::HOP_PATH),
+      MoQClusterExtension::kHopPathParam,
       encodeRelayHopPath({3}, kVersionDraft18).value()
   ));
   auto route = codec.readRoute(params, clusterPeer(3, /*linkCost=*/4));
@@ -89,26 +88,25 @@ TEST(MoqClusterRouteCodecTest, WriteAppendsThisRelay) {
   TrackRequestParameters params(FrameType::PUBLISH_NAMESPACE);
   // Stale values from an earlier write, which writeRoute replaces.
   params.insertParam(Parameter(
-      folly::to_underlying(TrackRequestParamKey::HOP_PATH),
+      MoQClusterExtension::kHopPathParam,
       encodeRelayHopPath({5}, kVersionDraft18).value()
   ));
-  params.insertParam(Parameter(folly::to_underlying(TrackRequestParamKey::ROUTE_COST), uint64_t{99})
-  );
+  params.insertParam(Parameter(MoQClusterExtension::kRouteCostParam, uint64_t{99}));
   codec.writeRoute(params, clusterPeer(9), {3}, 12);
-  auto countOf = [&](TrackRequestParamKey key) {
+  auto countOf = [&](uint64_t key) {
     return std::count_if(params.begin(), params.end(), [&](const Parameter& p) {
-      return p.key == folly::to_underlying(key);
+      return p.key == key;
     });
   };
-  EXPECT_EQ(countOf(TrackRequestParamKey::HOP_PATH), 1);
-  EXPECT_EQ(countOf(TrackRequestParamKey::ROUTE_COST), 1);
-  const auto* hopPath = params.getFirstParam(TrackRequestParamKey::HOP_PATH);
+  EXPECT_EQ(countOf(MoQClusterExtension::kHopPathParam), 1);
+  EXPECT_EQ(countOf(MoQClusterExtension::kRouteCostParam), 1);
+  const auto* hopPath = params.getFirstParam(MoQClusterExtension::kHopPathParam);
   ASSERT_NE(hopPath, nullptr);
   EXPECT_EQ(
       decodeRelayHopPath(hopPath->asString, kVersionDraft18).value(),
       (std::vector<uint64_t>{3, kLocalHop})
   );
-  const auto* cost = params.getFirstParam(TrackRequestParamKey::ROUTE_COST);
+  const auto* cost = params.getFirstParam(MoQClusterExtension::kRouteCostParam);
   ASSERT_NE(cost, nullptr);
   EXPECT_EQ(cost->asUint64, 12u);
 }
@@ -128,8 +126,8 @@ TEST(PlainRouteCodecTest, WriteStripsParameters) {
   PlainRouteCodec codec;
   auto params = clusterParams({3}, 12);
   codec.writeRoute(params, clusterPeer(9), {3}, 12);
-  EXPECT_EQ(params.getFirstParam(TrackRequestParamKey::HOP_PATH), nullptr);
-  EXPECT_EQ(params.getFirstParam(TrackRequestParamKey::ROUTE_COST), nullptr);
+  EXPECT_EQ(params.getFirstParam(MoQClusterExtension::kHopPathParam), nullptr);
+  EXPECT_EQ(params.getFirstParam(MoQClusterExtension::kRouteCostParam), nullptr);
 }
 
 TEST(PlainRouteCodecTest, PlainRoutingKeepsSetupAndClearsPolicy) {

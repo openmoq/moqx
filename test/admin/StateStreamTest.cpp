@@ -45,8 +45,8 @@ void walk(RelayContextVisitor& v) {
   RelayStateVisitor& rv = v.onServiceBegin("default");
 
   rv.onPeersBegin();
-  rv.onPeer("10.0.0.1:1", "peer.example", "peer-a");
-  rv.onPeer("10.0.0.2:2", "other.example", "");
+  rv.onPeer("10.0.0.1:1", "peer.example", "peer-a", "internal");
+  rv.onPeer("10.0.0.2:2", "other.example", "", "");
   rv.onPeersEnd();
 
   rv.onSubscriptionsBegin();
@@ -189,6 +189,14 @@ TEST(StateStreamTest, PeersCarryAddressAndOmitEmptyRelayId) {
   EXPECT_EQ(peers[0]["address"].asString(), "10.0.0.1:1");
   EXPECT_EQ(peers[0]["relay_id"].asString(), "peer-a");
   EXPECT_EQ(peers[1].count("relay_id"), 0) << "an empty relay_id is omitted, not emitted as \"\"";
+}
+
+TEST(StateStreamTest, PeersCarryListenerAndOmitEmptyListener) {
+  auto parsed = folly::parseJson(bodyAtThreshold(1))["services"]["default"];
+  const auto& peers = parsed["downstream_peers"];
+  ASSERT_EQ(peers.size(), 2);
+  EXPECT_EQ(peers[0]["listener"].asString(), "internal");
+  EXPECT_EQ(peers[1].count("listener"), 0);
 }
 
 TEST(StateStreamTest, SubscriptionCarriesIngestCountersAndOmitsSubscriberCounts) {

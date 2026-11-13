@@ -6,6 +6,7 @@
 
 #include "relay/SessionParticipant.h"
 
+#include "MoqxRelaySession.h"
 #include "peering/PeeringBackend.h"
 #include "relay/ExecutorCheck.h"
 #include "relay/PlainRouteCodec.h"
@@ -13,6 +14,7 @@
 #include "relay/SubscriberCrossExecFilter.h"
 
 #include <folly/logging/xlog.h>
+#include <moxygen/openmoq/extensions/MoQClusterExtension.h>
 
 #include <utility>
 
@@ -191,11 +193,12 @@ SessionParticipant::snapshot(const moxygen::MoQSession& session, const PeeringBa
       .executor = session.getExecutor(),
       .address = session.getPeerAddress().describe(),
       .authority = session.getAuthority(),
+      .listener = std::string(MoqxRelaySession::listenerOf(session)),
       .routing =
           {
-              .relayHops = session.negotiatedSetupExtension(moxygen::SetupExtension::RelayHops),
-              .peerHopID = session.getPeerHopID(),
-              .linkCost = session.getRelayLinkCost(),
+              .relayHops = moxygen::MoQClusterExtension::isNegotiated(session),
+              .peerHopID = moxygen::MoQClusterExtension::peerHopID(session),
+              .linkCost = moxygen::MoQClusterExtension::linkCost(session),
           },
   };
   info.routing = peering ? peering->routingFor(info) : plainRouting(info.routing);

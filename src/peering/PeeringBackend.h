@@ -65,6 +65,7 @@ struct PeerLink {
   std::string address;                // upstream URL when dialed, remote address when accepted
   std::string authority;              // accepted links only
   std::string relayID;                // when the peer presented one
+  std::string listener;               // accepted links only; see RelayStateVisitor::onPeer
   std::optional<PeerMetrics> metrics; // set when the backend measures links
 };
 

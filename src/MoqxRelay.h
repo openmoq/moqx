@@ -12,6 +12,7 @@
 #include "NamespaceTree.h"
 #include "PendingRendezvousTree.h"
 #include "SubscriptionRegistry.h"
+#include "TracksTree.h"
 #include "config/Config.h"
 #include "peering/PeeringBackend.h"
 #include "relay/ChannelSubscriber.h"
@@ -61,7 +62,8 @@ public:
   virtual void onPeer(
       std::string_view address,
       std::string_view authority,
-      std::string_view relayID // empty if peer didn't include one
+      std::string_view relayID, // empty if peer didn't include one
+      std::string_view listener // can be empty for outbound connections
   ) = 0;
   virtual void onPeersEnd() = 0;
 
@@ -126,6 +128,9 @@ public:
   // Max namespace/track matches a SUBSCRIBE_NAMESPACE or SUBSCRIBE_TRACKS may enumerate before
   // NAMESPACE_TOO_LARGE (draft 18+).
   static constexpr uint64_t kMaxNamespaceMatches = 1000;
+  // Declared as MAX_TOP_TRACKS. moxygen closes the session of a peer that asks for more.
+  // Below kMaxNamespaceMatches, so a filter from the wire never counts toward that limit.
+  static constexpr uint64_t kMaxTopTracks = 100;
 
   // relayExec, when set, is owned by the relay and isolates all state on it;
   // null runs everything on the calling thread. useLocalForwarders (requires
@@ -302,7 +307,12 @@ private:
   class LocalSubscribeFilter;
   class LocalPublishFilter;
 
-  void unsubscribeNamespace(const moxygen::TrackNamespace& prefix, moxygen::SessionId session);
+  // tracks says whether the subscription registered in tracksTree_ too.
+  void unsubscribeNamespace(
+      const moxygen::TrackNamespace& prefix,
+      moxygen::SessionId session,
+      bool tracks
+  );
 
   // Draft 18+
   void unsubscribeTracks(const moxygen::TrackNamespace& prefix, moxygen::SessionId session);
@@ -311,9 +321,8 @@ private:
 
   NamespaceTree namespaceTree_;
 
-  // Draft 18+: parallel tree for SUBSCRIBE_TRACKS. Independent overlap space;
-  // only `children` and `sessions` are populated (no publishers, no callbacks).
-  NamespaceTree tracksTree_;
+  // Every subscription that wants tracks, from SUBSCRIBE_TRACKS or SUBSCRIBE_NAMESPACE.
+  TracksTree tracksTree_;
 
   void onEmpty(moxygen::MoQForwarder* forwarder) override;
   void forwardChanged(moxygen::MoQForwarder* forwarder, bool forward) override;
@@ -432,13 +441,19 @@ private:
       std::shared_ptr<moxygen::MoQForwarder> forwarder
   );
 
-  // Get or create PropertyRanking for the given property type on a namespace node.
-  // Retroactively registers any tracks already published under that node.
-  // ns must be the full namespace of `node` (used as BFS seed for track registration).
+  // Get or create the PropertyRanking for propertyType on node, the tracksTree_
+  // node at ns. A new ranking registers the tracks already published under ns.
   std::shared_ptr<PropertyRanking> getOrCreateRanking(
-      std::shared_ptr<NamespaceTree::NamespaceNode> node,
+      TracksTree::Node& node,
       uint64_t propertyType,
       const moxygen::TrackNamespace& ns
+  );
+
+  // Registers a track subscriber at prefix; a top-N subscriber also joins its ranking.
+  void addTrackSubscriber(
+      const moxygen::TrackNamespace& prefix,
+      const Participant& subscriber,
+      TrackSubscriberInfo info
   );
 
   // Called by PropertyRanking when a track enters a session's top-N selection.
