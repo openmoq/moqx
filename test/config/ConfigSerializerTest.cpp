@@ -65,7 +65,7 @@ static_assert(
     "MvfstConfig::L4S changed — update serializeMvfst()"
 );
 static_assert(
-    rfl::internal::num_fields<ServiceConfig> == 6,
+    rfl::internal::num_fields<ServiceConfig> == 7,
     "ServiceConfig changed — update serializeConfig()"
 );
 static_assert(
@@ -101,8 +101,24 @@ static_assert(
     "AdminConfig changed — update serializeConfig()"
 );
 static_assert(
-    rfl::internal::num_fields<LoggingConfig> == 2,
+    rfl::internal::num_fields<LoggingConfig> == 3,
     "LoggingConfig changed — update serializeLogging()"
+);
+static_assert(
+    rfl::internal::num_fields<AccessLogConfig> == 4,
+    "AccessLogConfig changed — update serializeLogging()"
+);
+static_assert(
+    rfl::internal::num_fields<AccessLogSinkConfig> == 6,
+    "AccessLogSinkConfig changed — update serializeLogging()"
+);
+static_assert(
+    rfl::internal::num_fields<AccessLogServiceConfig> == 2,
+    "AccessLogServiceConfig changed — update serializeAccessLogService()"
+);
+static_assert(
+    rfl::internal::num_fields<AccessLogSinkSelectionConfig> == 4,
+    "AccessLogSinkSelectionConfig changed — update serializeAccessLogService()"
 );
 static_assert(
     rfl::internal::num_fields<MLogConfig> == 2,
@@ -200,11 +216,24 @@ Config makeFullConfig() {
   svc.upstream = UpstreamConfig{};
   svc.upstream->url = "https://upstream.example/relay";
   svc.upstream->tls.caCertFile = "/etc/ca.pem";
+  svc.accessLog.sessionSample = 0.25;
+  svc.accessLog.sinks = {{.name = "main", .events = {"session"}, .errorsOnly = true}};
   cfg.services.emplace("default", std::move(svc));
 
   cfg.logging = LoggingConfig{};
   cfg.logging->mlog = MLogConfig{"/var/log/mlog", 0.5f};
   cfg.logging->qlog = QLogConfig{"/var/log/qlog", 1.0f};
+  AccessLogSinkConfig accessSink;
+  accessSink.name = "main";
+  accessSink.output = AccessLogFileOutput{"/var/log/moqx/access.log"};
+  accessSink.classFormats["session"] = "$event $session";
+  accessSink.eventFormats["FETCH"] = "$event $req";
+  cfg.logging->access = AccessLogConfig{
+      .queueLimit = 1024,
+      .vars = {{"tier", "edge"}},
+      .sinks = {accessSink},
+      .serviceDefaults = {.sessionSample = 0.5, .sinks = {{.name = "main"}}},
+  };
 
   return cfg;
 }
@@ -233,10 +262,23 @@ TEST(ConfigSerializerTest, VisitsAllSections) {
   EXPECT_EQ(sink.scalars["services.default.upstream.url"], "https://upstream.example/relay");
   EXPECT_EQ(sink.scalars["services.default.upstream.tls.ca_cert_file"], "/etc/ca.pem");
   EXPECT_EQ(sink.scalars["services.default.max_subscription_buffer_kb"], "51200");
+  EXPECT_EQ(sink.scalars["services.default.access_log.sample.session"], "0.250000");
+  EXPECT_EQ(sink.scalars["services.default.access_log.sinks.*.name"], "main");
+  EXPECT_EQ(sink.scalars["services.default.access_log.sinks.*.events.[]"], "session");
+  EXPECT_EQ(sink.scalars["services.default.access_log.sinks.*.errors_only"], "true");
 
   EXPECT_EQ(sink.scalars["logging.mlog.dir"], "/var/log/mlog");
   EXPECT_EQ(sink.scalars["logging.mlog.sample_rate"], "0.500000");
   EXPECT_EQ(sink.scalars["logging.qlog.dir"], "/var/log/qlog");
+  EXPECT_EQ(sink.scalars["logging.access_vars.tier"], "edge");
+  EXPECT_EQ(sink.scalars["logging.access_queue_limit"], "1024");
+  EXPECT_EQ(sink.scalars["logging.access.*.name"], "main");
+  EXPECT_EQ(sink.scalars["logging.access.*.file"], "/var/log/moqx/access.log");
+  EXPECT_EQ(sink.scalars["logging.access_service_defaults.sample.session"], "0.500000");
+  EXPECT_EQ(sink.scalars["logging.access_service_defaults.sinks.*.name"], "main");
+  EXPECT_EQ(sink.scalars["logging.access.*.batch.flush_ms"], "1000");
+  EXPECT_EQ(sink.scalars["logging.access.*.format.session"], "$event $session");
+  EXPECT_EQ(sink.scalars["logging.access.*.format.event.FETCH"], "$event $req");
 }
 
 TEST(ConfigSerializerTest, DisabledClusterOmitsHopID) {

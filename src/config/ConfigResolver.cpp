@@ -24,6 +24,8 @@
 
 #include "auth/Action.h"
 #include "config/Pkcs12.h"
+#include "logging/access/AccessLogTemplate.h"
+#include "logging/access/TemplateEncoder.h"
 
 namespace openmoq::moqx::config {
 
@@ -836,6 +838,265 @@ void validateService(
   validateServiceAuth(name, svc, config, mergedAuths, errors, warnings);
 }
 
+bool isAccessLogEventOrClass(const std::string& name) {
+  if (name == logging::kAccessLogMessages) {
+    return true;
+  }
+  if (auto event = logging::parseAccessLogEvent(name)) {
+    return logging::accessLogClass(*event) != logging::AccessLogClass::Internal;
+  }
+  auto cls = logging::parseAccessLogClass(name);
+  return cls && *cls != logging::AccessLogClass::Internal;
+}
+
+void validateAccessLogTemplate(
+    const std::string& label,
+    const std::string& text,
+    const logging::AccessLogStaticVars& vars,
+    std::vector<std::string>& errors
+) {
+  auto tmpl = logging::AccessLogTemplate::parse(text, vars);
+  if (tmpl.hasError()) {
+    errors.push_back(label + ": " + tmpl.error());
+  }
+}
+
+void validateAccessLog(
+    const ParsedLoggingConfig& logging,
+    bool relayIdSet,
+    std::vector<std::string>& errors,
+    std::vector<std::string>& warnings
+) {
+  const auto vars = logging.access_vars.value().value_or(logging::AccessLogStaticVars{});
+  for (const auto& [name, value] : vars) {
+    const std::string label = "logging.access_vars." + name;
+    if (name.empty() ||
+        name.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789_") != std::string::npos) {
+      errors.push_back(label + ": a name uses only a-z, 0-9 and _");
+    } else if (logging::findAccessLogVar(name)) {
+      errors.push_back(label + ": the name is a built-in variable");
+    }
+    // A value prints as literal text, so it must not split a field.
+    if (value.empty() || std::any_of(value.begin(), value.end(), [](unsigned char c) {
+          return c <= ' ' || c == 0x7f;
+        })) {
+      errors.push_back(label + ": a value must be non-empty, without spaces or control bytes");
+    }
+  }
+  if (logging.access_queue_limit.value().value_or(1) == 0) {
+    errors.push_back("logging.access_queue_limit must be >= 1");
+  }
+  const auto& sinks = logging.access.value();
+  if (!sinks || sinks->empty()) {
+    return;
+  }
+  if (sinks->size() > 64) {
+    errors.push_back("logging.access supports at most 64 sinks");
+  }
+  if (!relayIdSet) {
+    warnings.push_back(
+        "logging.access: relay_id is not set, so records carry a random relay_id per start"
+    );
+  }
+  std::unordered_set<std::string> names;
+  for (const auto& sink : *sinks) {
+    const auto& name = sink.name.value();
+    const std::string label = "logging.access '" + name + "'";
+    if (name.empty()) {
+      errors.push_back("logging.access: every sink needs a name");
+    } else if (!names.insert(name).second) {
+      errors.push_back(label + ": duplicate sink name");
+    }
+    // The one output key; syslog and otlp will be the others.
+    const auto& file = sink.file.value();
+    if (!file || file->empty()) {
+      errors.push_back(label + ": an output is required (file)");
+    } else if (*file != "-") {
+      auto parent = std::filesystem::path(*file).parent_path();
+      std::error_code ec;
+      if (!parent.empty() && !std::filesystem::is_directory(parent, ec)) {
+        errors.push_back(label + ": directory '" + parent.string() + "' does not exist");
+      }
+    }
+    if (auto batch = sink.batch.value()) {
+      if (batch->records.value().value_or(1) == 0) {
+        errors.push_back(label + ": batch.records must be >= 1");
+      }
+      if (batch->flush_ms.value().value_or(1) == 0) {
+        errors.push_back(label + ": batch.flush_ms must be >= 1");
+      }
+    }
+    if (auto format = sink.format.value()) {
+      auto errorsBefore = errors.size();
+      std::map<std::string, std::string> classFormats;
+      const std::pair<const char*, const std::optional<std::string>&> classes[] = {
+          {"session", format->session.value()},
+          {"request", format->request.value()},
+          {"periodic", format->periodic.value()},
+      };
+      for (const auto& [cls, text] : classes) {
+        if (text) {
+          validateAccessLogTemplate(label + " format." + cls, *text, vars, errors);
+          classFormats[cls] = *text;
+        }
+      }
+      const auto& eventFormats = format->event.value();
+      if (eventFormats) {
+        for (const auto& [event, text] : *eventFormats) {
+          if (!logging::parseAccessLogEvent(event)) {
+            errors.push_back(label + ": format.event: unknown event '" + event + "'");
+            continue;
+          }
+          validateAccessLogTemplate(label + " format.event." + event, text, vars, errors);
+        }
+      }
+      // With every template valid, check that they share one prefix through $event.
+      if (errors.size() == errorsBefore) {
+        auto encoder = logging::makeTemplateEncoder(
+            classFormats,
+            eventFormats.value_or(std::map<std::string, std::string>{}),
+            vars
+        );
+        if (encoder.hasError()) {
+          errors.push_back(label + ": format: " + encoder.error());
+        }
+      }
+    }
+  }
+}
+
+std::vector<std::string> accessLogSinkNames(const ParsedLoggingConfig* logging) {
+  std::vector<std::string> names;
+  if (logging) {
+    for (const auto& sink :
+         logging->access.value().value_or(std::vector<ParsedAccessLogSinkConfig>{})) {
+      names.push_back(sink.name.value());
+    }
+  }
+  return names;
+}
+
+// label is "service_defaults.access_log" or "service 'name' access_log".
+void validateAccessLogService(
+    const std::string& label,
+    const ParsedAccessLogServiceConfig& accessLog,
+    const std::vector<std::string>& sinkNames,
+    std::vector<std::string>& errors
+) {
+  if (auto sample = accessLog.sample.value()) {
+    if (auto rate = sample->session.value(); rate && !(*rate >= 0.0 && *rate <= 1.0)) {
+      errors.push_back(label + ": sample.session must be in [0.0, 1.0]");
+    }
+  }
+  std::unordered_set<std::string> seen;
+  for (const auto& selection :
+       accessLog.sinks.value().value_or(std::vector<ParsedAccessLogSinkSelection>{})) {
+    const auto& name = selection.name.value();
+    const std::string sinkLabel = label + " sink '" + name + "'";
+    if (std::find(sinkNames.begin(), sinkNames.end(), name) == sinkNames.end()) {
+      errors.push_back(sinkLabel + ": not defined in logging.access");
+    } else if (!seen.insert(name).second) {
+      errors.push_back(sinkLabel + ": listed more than once");
+    }
+    for (const auto& event : selection.events.value().value_or(std::vector<std::string>{})) {
+      if (!isAccessLogEventOrClass(event)) {
+        errors.push_back(sinkLabel + ": unknown event or class '" + event + "'");
+      }
+    }
+    for (const auto& peerClass :
+         selection.peer_classes.value().value_or(std::vector<std::string>{})) {
+      if (peerClass != logging::kAccessLogParticipant &&
+          peerClass != logging::kAccessLogRelayPeer) {
+        errors.push_back(sinkLabel + ": unknown peer class '" + peerClass + "'");
+      }
+    }
+  }
+}
+
+// A service's sample overrides the defaults key by key, and its sinks list replaces theirs.
+// Without a list anywhere, every sink takes every class of events.
+AccessLogServiceConfig resolveAccessLogService(
+    const ParsedAccessLogServiceConfig* defaults,
+    const ParsedAccessLogServiceConfig* service,
+    const std::vector<std::string>& sinkNames
+) {
+  AccessLogServiceConfig resolved;
+  const std::vector<ParsedAccessLogSinkSelection>* sinks = nullptr;
+  for (const auto* layer : {defaults, service}) {
+    if (!layer) {
+      continue;
+    }
+    if (auto sample = layer->sample.value()) {
+      resolved.sessionSample = sample->session.value().value_or(resolved.sessionSample);
+    }
+    if (const auto& list = layer->sinks.value()) {
+      sinks = &*list;
+    }
+  }
+  if (!sinks) {
+    for (const auto& name : sinkNames) {
+      resolved.sinks.push_back(AccessLogSinkSelectionConfig{.name = name});
+    }
+    return resolved;
+  }
+  for (const auto& parsed : *sinks) {
+    resolved.sinks.push_back(AccessLogSinkSelectionConfig{
+        .name = parsed.name.value(),
+        .events = parsed.events.value().value_or(std::vector<std::string>{}),
+        .peerClasses = parsed.peer_classes.value().value_or(std::vector<std::string>{}),
+        .errorsOnly = parsed.errors_only.value().value_or(false),
+    });
+  }
+  return resolved;
+}
+
+const ParsedAccessLogServiceConfig* serviceDefaultsAccessLog(const ParsedConfig& config) {
+  const auto& defaults = config.service_defaults.value();
+  if (!defaults || !defaults->access_log.value()) {
+    return nullptr;
+  }
+  return &*defaults->access_log.value();
+}
+
+std::optional<AccessLogConfig> resolveAccessLog(
+    const ParsedLoggingConfig& logging,
+    const ParsedAccessLogServiceConfig* serviceDefaults
+) {
+  const auto& sinks = logging.access.value();
+  const auto& queueLimit = logging.access_queue_limit.value();
+  if ((!sinks || sinks->empty()) && !queueLimit) {
+    return std::nullopt;
+  }
+  AccessLogConfig access;
+  access.queueLimit = queueLimit.value_or(access.queueLimit);
+  access.vars = logging.access_vars.value().value_or(std::map<std::string, std::string>{});
+  for (const auto& parsed : sinks.value_or(std::vector<ParsedAccessLogSinkConfig>{})) {
+    AccessLogSinkConfig sink;
+    sink.name = parsed.name.value();
+    sink.output = AccessLogFileOutput{parsed.file.value().value_or("")};
+    if (auto batch = parsed.batch.value()) {
+      sink.batchRecords = batch->records.value().value_or(sink.batchRecords);
+      sink.flushMs = batch->flush_ms.value().value_or(sink.flushMs);
+    }
+    if (auto format = parsed.format.value()) {
+      if (auto t = format->session.value()) {
+        sink.classFormats["session"] = *t;
+      }
+      if (auto t = format->request.value()) {
+        sink.classFormats["request"] = *t;
+      }
+      if (auto t = format->periodic.value()) {
+        sink.classFormats["periodic"] = *t;
+      }
+      sink.eventFormats = format->event.value().value_or(std::map<std::string, std::string>{});
+    }
+    access.sinks.push_back(std::move(sink));
+  }
+  access.serviceDefaults =
+      resolveAccessLogService(serviceDefaults, nullptr, accessLogSinkNames(&logging));
+  return access;
+}
+
 std::string generateRelayID() {
   std::random_device rd;
   const uint64_t val = (static_cast<uint64_t>(rd()) << 32) | static_cast<uint64_t>(rd());
@@ -1185,7 +1446,8 @@ ServiceConfig resolveService(
     const ParsedServiceConfig& svc,
     const ParsedCacheConfig& cache,
     const std::optional<ParsedAuthConfig>& auth,
-    uint32_t maxSubscriptionBufferKb
+    uint32_t maxSubscriptionBufferKb,
+    AccessLogServiceConfig accessLog
 ) {
   std::vector<ServiceConfig::MatchEntry> entries;
   for (const auto& entry : svc.match.value()) {
@@ -1208,6 +1470,7 @@ ServiceConfig resolveService(
       .auth = resolveAuth(auth),
       .upstreams = std::move(upstreams),
       .maxSubscriptionBufferKb = maxSubscriptionBufferKb,
+      .accessLog = std::move(accessLog),
   };
 }
 
@@ -1362,6 +1625,29 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
         }
       }
     }
+    validateAccessLog(logging, config.relay_id.value().has_value(), errors, warnings);
+  }
+  const ParsedLoggingConfig* loggingSection =
+      config.logging.value() ? &*config.logging.value() : nullptr;
+  const auto accessLogSinks = accessLogSinkNames(loggingSection);
+  const auto* accessLogDefaults = serviceDefaultsAccessLog(config);
+  if (accessLogDefaults) {
+    validateAccessLogService(
+        "service_defaults.access_log",
+        *accessLogDefaults,
+        accessLogSinks,
+        errors
+    );
+  }
+  for (const auto& [name, svc] : config.services.value()) {
+    if (const auto& accessLog = svc.access_log.value()) {
+      validateAccessLogService(
+          "service '" + name + "' access_log",
+          *accessLog,
+          accessLogSinks,
+          errors
+      );
+    }
   }
 
   if (!errors.empty()) {
@@ -1378,7 +1664,17 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
                                                : std::nullopt;
     resolvedServices.emplace(
         name,
-        resolveService(svc, mergedCaches.at(name), auth, *mergedSubscriptionBufferKb(svc, config))
+        resolveService(
+            svc,
+            mergedCaches.at(name),
+            auth,
+            *mergedSubscriptionBufferKb(svc, config),
+            resolveAccessLogService(
+                accessLogDefaults,
+                svc.access_log.value() ? &*svc.access_log.value() : nullptr,
+                accessLogSinks
+            )
+        )
     );
   }
 
@@ -1483,6 +1779,7 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
 
       resolved.qlog = std::move(qlogConfig);
     }
+    resolved.access = resolveAccessLog(parsedLogging, accessLogDefaults);
     loggingConfig = std::move(resolved);
   }
 

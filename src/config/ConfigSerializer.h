@@ -250,6 +250,32 @@ inline void serializeAuth(ConfigSink& s, const AuthConfig& a) {
   s.endObject();
 }
 
+inline void
+serializeAccessLogService(ConfigSink& s, std::string_view key, const AccessLogServiceConfig& a) {
+  auto strings = [&s](std::string_view key, const std::vector<std::string>& values) {
+    s.beginArray(key);
+    for (const auto& v : values) {
+      s.stringField("", v);
+    }
+    s.endArray();
+  };
+  s.beginObject(key);
+  s.beginObject("sample");
+  s.doubleField("session", a.sessionSample);
+  s.endObject();
+  s.beginArray("sinks");
+  for (const auto& sink : a.sinks) {
+    s.beginObject("");
+    s.stringField("name", sink.name);
+    strings("events", sink.events);
+    strings("peer_classes", sink.peerClasses);
+    s.boolField("errors_only", sink.errorsOnly);
+    s.endObject();
+  }
+  s.endArray();
+  s.endObject();
+}
+
 inline void serializeLogging(ConfigSink& s, const LoggingConfig& l) {
   s.beginObject("logging");
   if (l.mlog) {
@@ -267,6 +293,43 @@ inline void serializeLogging(ConfigSink& s, const LoggingConfig& l) {
     s.endObject();
   } else {
     s.nullField("qlog");
+  }
+  if (l.access) {
+    s.uintField("access_queue_limit", l.access->queueLimit);
+    s.beginObject("access_vars");
+    for (const auto& [name, value] : l.access->vars) {
+      s.stringField(name, value);
+    }
+    s.endObject();
+    s.beginArray("access");
+    for (const auto& sink : l.access->sinks) {
+      s.beginObject("");
+      s.stringField("name", sink.name);
+      std::visit(
+          [&s](const AccessLogFileOutput& file) { s.stringField("file", file.path); },
+          sink.output
+      );
+      s.beginObject("batch");
+      s.uintField("records", sink.batchRecords);
+      s.uintField("flush_ms", sink.flushMs);
+      s.endObject();
+      s.beginObject("format");
+      for (const auto& [cls, text] : sink.classFormats) {
+        s.stringField(cls, text);
+      }
+      s.beginObject("event");
+      for (const auto& [event, text] : sink.eventFormats) {
+        s.stringField(event, text);
+      }
+      s.endObject();
+      s.endObject();
+      s.endObject();
+    }
+    s.endArray();
+    // service_defaults.access_log, which sessions without a service use.
+    serializeAccessLogService(s, "access_service_defaults", l.access->serviceDefaults);
+  } else {
+    s.nullField("access");
   }
   s.endObject();
 }
@@ -350,6 +413,7 @@ inline void serializeConfig(const Config& cfg, ConfigSink& s) {
     serializeCache(s, svc.cache);
     serializeAuth(s, svc.auth);
     s.uintField("max_subscription_buffer_kb", svc.maxSubscriptionBufferKb);
+    serializeAccessLogService(s, "access_log", svc.accessLog);
     if (svc.upstream) {
       serializeUpstream(s, *svc.upstream, "upstream");
     }
