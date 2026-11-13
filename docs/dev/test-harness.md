@@ -278,8 +278,8 @@ makes a failing run readable.
 
 Assert on topology, not on schema. The shape of `/state` — field types,
 omission rules, nesting — is covered directly at the serializer level by
-`moqx_state_stream_test` and `moqx_state_response_test`, which is both stronger
-and cheaper than checking it through a live relay.
+`StateStreamTest` and `StateResponseTest` in `moqx_admin_stats_test`, which is
+both stronger and cheaper than checking it through a live relay.
 
 ## Taking a relay down
 
