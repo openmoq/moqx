@@ -189,7 +189,10 @@ set_source_files_properties(config/LoaderTest.cpp PROPERTIES COMPILE_DEFINITIONS
 )
 
 moqx_add_gtest(moqx_logging_test
-  SRCS LoggingMultiFlagTest.cpp
+  SRCS
+    LoggingMultiFlagTest.cpp
+    logging/access/AccessLogTemplateTest.cpp
+    logging/access/MoqxAccessLogTest.cpp
   LIBS moqx_core moqx_test_main
 )
 
