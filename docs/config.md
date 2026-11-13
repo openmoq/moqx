@@ -322,7 +322,7 @@ moqx-issuer \
 ```
 
 `--auth-namespace-match` selects how the namespace scope is matched. It accepts
-`exact` (the default), `prefix`, `suffix`, or `contains`; non-exact modes require
+`exact` (the default), `prefix`, or `suffix`; non-exact modes require
 `--auth-namespace`. For example, add
 `--auth-namespace-match prefix` to grant the selected actions to the given
 namespace and its descendants. Track-level actions also use this namespace

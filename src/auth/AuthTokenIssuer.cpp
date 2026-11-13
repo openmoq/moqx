@@ -149,9 +149,6 @@ MatchRuleType parseNamespaceMatchType(std::string_view value) {
   if (normalized == "suffix") {
     return MatchRuleType::Suffix;
   }
-  if (normalized == "contains") {
-    return MatchRuleType::Contains;
-  }
   throw std::invalid_argument("unknown namespace match mode: " + normalized);
 }
 

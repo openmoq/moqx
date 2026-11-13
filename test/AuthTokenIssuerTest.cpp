@@ -139,7 +139,7 @@ TEST(AuthTokenIssuerTest, ParsesNamespaceMatchModes) {
   EXPECT_EQ(parseNamespaceMatchType("exact"), MatchRuleType::Exact);
   EXPECT_EQ(parseNamespaceMatchType("prefix"), MatchRuleType::Prefix);
   EXPECT_EQ(parseNamespaceMatchType("suffix"), MatchRuleType::Suffix);
-  EXPECT_EQ(parseNamespaceMatchType("contains"), MatchRuleType::Contains);
+    EXPECT_THROW(parseNamespaceMatchType("contains"), std::invalid_argument);
   EXPECT_THROW(parseNamespaceMatchType("wildcard"), std::invalid_argument);
 }
 

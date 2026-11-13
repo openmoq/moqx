@@ -1,1 +1,1 @@
-- `moqx-issuer --auth-namespace-match` can issue CAT scopes using exact, prefix, suffix, or contains namespace matching; exact remains the default. See [Token Issuing](/docs/config.md#issuing-tokens).
+- `moqx-issuer --auth-namespace-match` can issue CAT scopes using exact, prefix, or suffix namespace matching; exact remains the default. See [Token Issuing](/docs/config.md#issuing-tokens).

@@ -37,7 +37,7 @@ DEFINE_string(auth_namespace, "", "Slash-separated track namespace");
 DEFINE_string(
     auth_namespace_match,
     "exact",
-    "Namespace match mode: exact, prefix, suffix, or contains"
+  "Namespace match mode: exact, prefix, or suffix"
 );
 DEFINE_string(auth_track, "", "Optional track name");
 DEFINE_int32(auth_ttl_seconds, 3600, "Token lifetime in seconds");
