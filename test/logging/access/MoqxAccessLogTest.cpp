@@ -5,6 +5,7 @@
  */
 
 #include "logging/access/MoqxAccessLog.h"
+#include "logging/access/AccessLogSetup.h"
 
 #include <atomic>
 #include <filesystem>
@@ -547,6 +548,77 @@ TEST(MoqxAccessLogTest, ABacklogDropKeepsAPartlyWrittenLine) {
   folly::coro::blockingWait(sink->close(relayInfo, 0));
   EXPECT_EQ(raw->out, "1 SUBSCRIBE\n4 SUBSCRIBE\n5 SUBSCRIBE\n6 SUBSCRIBE\nLOG_DROPPED\n");
   EXPECT_EQ(sink->stats().records, 5u);
+}
+
+TEST(AccessLogSetupTest, SinkSelectionExpandsClassesAndDefaultsToEveryClass) {
+  config::AccessLogSinkSelectionConfig selection;
+  auto all = makeAccessLogSinkSelection(selection, 0);
+  EXPECT_TRUE(all.events[size_t(AccessLogEvent::SETUP)]);
+  EXPECT_TRUE(all.events[size_t(AccessLogEvent::FETCH)]);
+  EXPECT_FALSE(all.events[size_t(AccessLogEvent::LOG_DROPPED)]);
+
+  EXPECT_FALSE(all.events[size_t(AccessLogEvent::NAMESPACE)]);
+
+  selection.events = {"session", "request", "FETCH", "PUBLISH_BLOCKED"};
+  auto some = makeAccessLogSinkSelection(selection, 0);
+  EXPECT_TRUE(some.events[size_t(AccessLogEvent::SESSION_END)]);
+  EXPECT_TRUE(some.events[size_t(AccessLogEvent::FETCH)]);
+  EXPECT_FALSE(some.events[size_t(AccessLogEvent::SUB_STATS)]);
+  EXPECT_FALSE(some.events[size_t(AccessLogEvent::NAMESPACE)]);
+  EXPECT_TRUE(some.events[size_t(AccessLogEvent::PUBLISH_BLOCKED)]);
+
+  selection.events = {"messages"};
+  auto messages = makeAccessLogSinkSelection(selection, 0);
+  EXPECT_TRUE(messages.events[size_t(AccessLogEvent::NAMESPACE)]);
+  EXPECT_TRUE(messages.events[size_t(AccessLogEvent::NAMESPACE_DONE)]);
+  EXPECT_FALSE(messages.events[size_t(AccessLogEvent::SUBSCRIBE)]);
+}
+
+TEST(AccessLogSetupTest, ServicesNumberSinksInConfigOrder) {
+  config::Config cfg;
+  cfg.logging = config::LoggingConfig{};
+  cfg.logging->access = config::AccessLogConfig{};
+  auto& access = *cfg.logging->access;
+  access.sinks.resize(2);
+  access.sinks[0].name = "control";
+  access.sinks[1].name = "data";
+  access.serviceDefaults.sinks = {{.name = "control"}};
+  auto& acme = cfg.services["acme"].accessLog;
+  acme.sessionSample = 0.5;
+  acme.sinks = {{.name = "data", .errorsOnly = true}, {.name = "control"}};
+
+  auto services = makeAccessLogServices(cfg);
+  ASSERT_EQ(services.defaults.sinks.size(), 1u);
+  EXPECT_EQ(services.defaults.sinks[0].sink, 0u);
+  const auto& selected = services.byName.at("acme");
+  EXPECT_EQ(selected.sessionSample, 0.5);
+  ASSERT_EQ(selected.sinks.size(), 2u);
+  EXPECT_EQ(selected.sinks[0].sink, 1u);
+  EXPECT_TRUE(selected.sinks[0].errorsOnly);
+  EXPECT_EQ(selected.sinks[1].sink, 0u);
+}
+
+TEST(AccessLogSetupTest, WithoutSinksTheAccessLogIsDisabled) {
+  config::Config cfg;
+  auto log = makeAccessLog(cfg);
+  ASSERT_TRUE(log.hasValue());
+  auto& accessLog = *log.value();
+  EXPECT_FALSE(accessLog.enabled());
+  accessLog.start();
+  accessLog.reopen();
+  accessLog.stop(std::chrono::steady_clock::now());
+}
+
+TEST(AccessLogSetupTest, UnopenableFileFails) {
+  config::Config cfg;
+  cfg.logging = config::LoggingConfig{};
+  config::AccessLogSinkConfig sink;
+  sink.name = "main";
+  sink.output = config::AccessLogFileOutput{"/nonexistent-moqx-dir/access.log"};
+  cfg.logging->access = config::AccessLogConfig{.queueLimit = 16, .sinks = {sink}};
+  auto log = makeAccessLog(cfg);
+  ASSERT_TRUE(log.hasError());
+  EXPECT_NE(log.error().find("cannot open"), std::string::npos);
 }
 
 } // namespace

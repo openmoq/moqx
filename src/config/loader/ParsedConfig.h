@@ -504,6 +504,35 @@ struct ParsedAuthConfig {
       max_tokens_per_message;
 };
 
+struct ParsedAccessLogSampleConfig {
+  rfl::Description<
+      "Fraction of sessions whose non-error records are written (0.0-1.0, default 1.0)",
+      std::optional<double>>
+      session;
+};
+
+struct ParsedAccessLogSinkSelection {
+  rfl::Description<"Sink name, from logging.access", std::string> name;
+  rfl::Description<
+      "Record classes (session, request, periodic), messages, and event names to write "
+      "(default: every class)",
+      std::optional<std::vector<std::string>>>
+      events;
+  rfl::Description<
+      "Only write sessions of these peer classes: participant, relay-peer (default: all)",
+      std::optional<std::vector<std::string>>>
+      peer_classes;
+  rfl::Description<"Write only error records (default: false)", std::optional<bool>> errors_only;
+};
+
+struct ParsedAccessLogServiceConfig {
+  rfl::Description<"Sampling rates", std::optional<ParsedAccessLogSampleConfig>> sample;
+  rfl::Description<
+      "Access log sinks that the sessions' records go to (default: every sink, every class)",
+      std::optional<std::vector<ParsedAccessLogSinkSelection>>>
+      sinks;
+};
+
 struct ParsedServiceConfig {
   struct MatchRule {
     struct ExactAuthority {
@@ -563,6 +592,10 @@ struct ParsedServiceConfig {
       "Required here or in service_defaults; overrides service_defaults",
       std::optional<uint32_t>>
       max_subscription_buffer_kb;
+  rfl::Description<
+      "Access log settings; sample overrides service_defaults key by key, sinks replaces its list",
+      std::optional<ParsedAccessLogServiceConfig>>
+      access_log;
 };
 
 struct ParsedListenerDefaultsConfig {
@@ -590,6 +623,10 @@ struct ParsedServiceDefaultsConfig {
       "max_subscription_buffer_kb for services that do not set their own",
       std::optional<uint32_t>>
       max_subscription_buffer_kb;
+  rfl::Description<
+      "Access log settings for services, and for sessions without a service",
+      std::optional<ParsedAccessLogServiceConfig>>
+      access_log;
 };
 
 struct ParsedMLogConfig {
@@ -607,10 +644,48 @@ struct ParsedQLogConfig {
       sample_rate;
 };
 
+struct ParsedAccessLogBatchConfig {
+  rfl::Description<"Records per write (default 256)", std::optional<uint32_t>> records;
+  rfl::Description<
+      "Longest a record waits for a write, in ms (default 1000)",
+      std::optional<uint32_t>>
+      flush_ms;
+};
+
+struct ParsedAccessLogFormatConfig {
+  rfl::Description<"Template for session records", std::optional<std::string>> session;
+  rfl::Description<"Template for request records", std::optional<std::string>> request;
+  rfl::Description<"Template for periodic records", std::optional<std::string>> periodic;
+  rfl::Description<
+      "Per-event templates that replace the class template, keyed by event name",
+      std::optional<std::map<std::string, std::string>>>
+      event;
+};
+
+struct ParsedAccessLogSinkConfig {
+  rfl::Description<"Sink name, unique across access log sinks", std::string> name;
+  rfl::Description<"Output file; \"-\" writes to stdout", std::optional<std::string>> file;
+  rfl::Description<"Write batching", std::optional<ParsedAccessLogBatchConfig>> batch;
+  rfl::Description<
+      "Line templates (default: one per class)",
+      std::optional<ParsedAccessLogFormatConfig>>
+      format;
+};
+
 struct ParsedLoggingConfig {
   rfl::Description<"MoQ-level (mlog) per-session logging", std::optional<ParsedMLogConfig>> mlog;
   rfl::Description<"QUIC-level (qlog) per-connection logging", std::optional<ParsedQLogConfig>>
       qlog;
+  rfl::Description<
+      "Access log template variables, such as region or pop, keyed by name",
+      std::optional<std::map<std::string, std::string>>>
+      access_vars;
+  rfl::Description<
+      "Access log records queued for the writer before new ones are dropped (default 65536)",
+      std::optional<uint32_t>>
+      access_queue_limit;
+  rfl::Description<"Access log sinks", std::optional<std::vector<ParsedAccessLogSinkConfig>>>
+      access;
 };
 
 struct ParsedConfig {
