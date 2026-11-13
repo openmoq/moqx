@@ -8,6 +8,10 @@
 
 language: en-US
 
+# Inherit settings from the CodeRabbit dashboard (repository UI settings).
+# Without this the UI config does nothing.
+inheritance: true
+
 reviews:
   profile: chill
   # Request changes on actionable findings; approve once they are resolved.
