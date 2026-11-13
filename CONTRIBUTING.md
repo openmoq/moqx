@@ -145,4 +145,5 @@ Files copied or substantially derived from moxygen keep Meta's copyright:
  */
 ```
 
-Put a file description in its own comment below the header.
+A file description below the header is optional. If a file has one, put it in
+its own comment.
