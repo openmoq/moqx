@@ -213,6 +213,37 @@ TEST_P(MoQRelayTest, PeeringSubscribeBeforeTrackInjectPulls) {
   exec_->drive();
 }
 
+// The subscriber connects before any publisher has announced. The subscribe has
+// to pull immediately, and the later announce must not drop that pull.
+TEST_P(MoQRelayTest, PeeringSubscribeBeforeAnnouncePulls) {
+  auto announcer = std::make_shared<RecordingAnnouncer>();
+  auto peering = makePeering(relay_, announcer);
+  ASSERT_TRUE(driveUntil([&] { return peering->ready(); }));
+
+  auto subscriber = createMockSession();
+  auto mock = createMockConsumer();
+  ASSERT_NE(subscribeToTrack(subscriber, kTestTrackName, mock, RequestID(1)), nullptr);
+  ASSERT_TRUE(driveUntil([&] {
+    std::lock_guard<std::mutex> lock(announcer->mu);
+    return announcer->subscribed.size() == 1u;
+  }));
+
+  verifyOnRelayExec([&] {
+    peering->onNamespace(kTestNamespace, false);
+    peering->onTrack(kTestTrackName, false);
+  });
+  int turns = 0;
+  driveUntil([&] { return ++turns > (relayEvb_ ? 8 : 0); });
+  {
+    std::lock_guard<std::mutex> lock(announcer->mu);
+    EXPECT_TRUE(announcer->unsubscribed.empty());
+    ASSERT_EQ(announcer->subscribed.size(), 1u);
+    EXPECT_EQ(announcer->subscribed[0], kTestTrackName);
+  }
+  removeSession(subscriber);
+  exec_->drive();
+}
+
 TEST_P(MoQRelayTest, PeeringSendsObjectsToSubscribedPeer) {
   auto announcer = std::make_shared<RecordingAnnouncer>();
   auto peering = makePeering(relay_, announcer);
@@ -268,6 +299,26 @@ TEST_P(MoQRelayTest, PeeringSubscribeResumesPausedPublisher) {
   ASSERT_TRUE(driveUntil([&] { return resumed; }));
   ASSERT_TRUE(Mock::VerifyAndClearExpectations(handle.get()));
 
+  removeSession(session);
+}
+
+// A peer subscriber is already interested when the publisher starts. PUBLISH_OK
+// has to carry forward=1, which the relay applies as a request update.
+TEST_P(MoQRelayTest, PeeringSubscribeBeforePublisherResumes) {
+  auto announcer = std::make_shared<RecordingAnnouncer>();
+  auto peering = makePeering(relay_, announcer);
+  ASSERT_TRUE(driveUntil([&] { return peering->ready(); }));
+  verifyOnRelayExec([&] { peering->onSubscribe(kTestTrackName); });
+
+  auto session = createMockSession();
+  doPublishNamespace(session, kTestNamespace);
+  auto handle = makePublishHandle();
+  bool resumed = false;
+  EXPECT_CALL(*handle, requestUpdateCalled(_)).WillOnce([&](const RequestUpdate& update) {
+    resumed = update.forward.has_value() && *update.forward;
+  });
+  doPublishWithHandle(session, kTestTrackName, handle);
+  ASSERT_TRUE(driveUntil([&] { return resumed; }));
   removeSession(session);
 }
 

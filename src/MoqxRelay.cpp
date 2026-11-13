@@ -2518,8 +2518,7 @@ folly::coro::Task<MoqxRelay::StatefulSubscribeResult> MoqxRelay::joinOrPrepareUp
       [this, &ftn](std::shared_ptr<MoQForwarder> f) { return buildFilterChain(ftn, std::move(f)); },
       [this, &ftn, &upstream, &exclusion](const std::shared_ptr<MoQForwarder>& f)
           -> std::optional<ForwarderRef> {
-        upstream =
-            namespaceTree_.findPublisher(ftn.trackNamespace, exclusion.value_or(RouteExclusion{}));
+        upstream = resolvePublisher(ftn.trackNamespace, exclusion.value_or(RouteExclusion{}));
         if (!upstream) {
           return std::nullopt;
         }
@@ -2813,8 +2812,7 @@ MoqxRelay::subscribeImpl(SubscribeRequest subReq, std::shared_ptr<TrackConsumer>
       [this, &ftn](std::shared_ptr<MoQForwarder> f) { return buildFilterChain(ftn, std::move(f)); },
       [this, &ftn, &upstream, &exclusion](const std::shared_ptr<MoQForwarder>& f)
           -> std::optional<ForwarderRef> {
-        upstream =
-            namespaceTree_.findPublisher(ftn.trackNamespace, exclusion.value_or(RouteExclusion{}));
+        upstream = resolvePublisher(ftn.trackNamespace, exclusion.value_or(RouteExclusion{}));
         if (!upstream) {
           return std::nullopt;
         }
@@ -3520,6 +3518,22 @@ void MoqxRelay::dumpState(RelayStateVisitor& visitor) const {
   }
 }
 
+std::optional<Participant> MoqxRelay::resolvePublisher(
+    const TrackNamespace& ns,
+    const RouteExclusion& exclusion
+) {
+  if (auto publisher = namespaceTree_.findPublisher(ns, exclusion)) {
+    return publisher;
+  }
+  if (!peeringFallback_) {
+    return std::nullopt;
+  }
+  if (exclusion.session && *exclusion.session == peeringFallback_->info->sessionId) {
+    return std::nullopt;
+  }
+  return peeringFallback_;
+}
+
 // Parks (at most once) until a publisher resolves for ftn or `timeout` elapses. A wake
 // is only a hint: if the publisher is gone again by the time we resume, the caller's
 // ordinary no-publisher path reports it.
@@ -3529,7 +3543,11 @@ folly::coro::Task<std::optional<SubscribeError>> MoqxRelay::rendezvousWithPublis
 ) {
   const auto& ftn = subReq.fullTrackName;
 
-  if (registry_.exists(ftn) || namespaceTree_.findPublisher(ftn.trackNamespace)) {
+  // A peering fallback can accept the subscribe now and pull the track. Waiting
+  // here would drop that interest if the publisher starts on another relay
+  // only after this timeout.
+  if (registry_.exists(ftn) || namespaceTree_.findPublisher(ftn.trackNamespace) ||
+      peeringFallback_) {
     co_return std::nullopt;
   }
 

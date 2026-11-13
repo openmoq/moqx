@@ -481,6 +481,9 @@ void MoqPeeringParticipant::detach() {
     return;
   }
   relay->deferOnRelay([self = shared_from_this()] {
+    if (auto relay = self->relay_.lock()) {
+      relay->clearPeeringFallback();
+    }
     for (const auto& ftn : self->announcedTracks_) {
       self->announcer_->withdrawTrack(ftn);
     }
@@ -528,6 +531,9 @@ folly::coro::Task<void> MoqPeeringParticipant::attachOnRelay() {
   } else {
     tracksSub_ = std::move(tracks.value());
   }
+  // A local subscribe can arrive before any peer has announced. Pull that track
+  // now so the publisher's relay already has a subscriber when the publisher starts.
+  relay->setPeeringFallback(asParticipant());
   ready_.store(true, std::memory_order_release);
 }
 

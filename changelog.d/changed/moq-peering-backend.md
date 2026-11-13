@@ -1,1 +1,0 @@
-- moq-peering is now the service peering backend. Selecting it no longer dials service upstreams alongside a separate peering bridge.

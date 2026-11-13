@@ -1,1 +1,0 @@
-- moq-peering object bytes now use the same MoQT subgroup header, stream object, and datagram encoding a client session uses. A peered subscriber receives those objects the same way a client subscriber does.

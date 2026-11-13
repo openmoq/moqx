@@ -1,1 +1,0 @@
-- A moq-peering subscribe now resumes a local publisher that was paused because it published before anyone was listening. Those objects are sent on the peering session to the subscriber behind the peer relay.

@@ -1,1 +1,0 @@
-- A local subscribe that arrives after a peered namespace and before its track is pulled across moq-peering. Injecting that track no longer cancels the pull, so the publisher is set to forward=1.

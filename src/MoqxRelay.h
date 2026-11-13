@@ -204,6 +204,12 @@ public:
 
   // Set before the relay serves requests.
   void setPeering(PeeringBackend* peering) { peering_ = peering; }
+
+  // Serves a SUBSCRIBE that arrives before any publisher has announced the track.
+  // The peering participant pulls the track so a publisher that starts later is
+  // already being asked to forward. Relay executor only.
+  void setPeeringFallback(Participant participant) { peeringFallback_ = std::move(participant); }
+  void clearPeeringFallback() { peeringFallback_.reset(); }
   void setReciprocalPeerHandler(ReciprocalMoqtPeerHandler* handler) { reciprocal_ = handler; }
 
   // Force-evicts a specific track unconditionally. Not thread-safe.
@@ -482,6 +488,7 @@ private:
   std::string relayID_;
   // Owned by the context, which keeps it alive while this relay serves requests.
   PeeringBackend* peering_{nullptr};
+  std::optional<Participant> peeringFallback_;
   // Part of *peering_, or null.
   ReciprocalMoqtPeerHandler* reciprocal_{nullptr};
 
@@ -703,6 +710,13 @@ private:
     co_return !namespaceTree_.findPublisher(ftn.trackNamespace, exclusion) &&
         namespaceTree_.findPublisher(ftn.trackNamespace);
   }
+
+  // A published namespace wins. Otherwise the peering fallback, unless this
+  // requester is that participant.
+  std::optional<Participant> resolvePublisher(
+      const moxygen::TrackNamespace& ns,
+      const RouteExclusion& exclusion
+  );
 
   std::shared_ptr<moxygen::Publisher> findUpstreamPublisher(
       const moxygen::TrackNamespace& ns,
