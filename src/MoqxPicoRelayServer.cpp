@@ -5,6 +5,7 @@
  */
 
 #include "MoqxPicoRelayServer.h"
+#include "MoqxRelaySession.h"
 
 #include "stats/EventBaseStatsCollector.h"
 #include "stats/PicoQuicStatsCollector.h"
@@ -148,6 +149,7 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxPicoRelayServer::validat
 ) {
   auto base = MoQPicoQuicShardedServer::validateAuthority(clientSetup, negotiatedVersion, session);
   if (!base.hasValue()) {
+    context_->onSetupRejected(session, base.error());
     return base;
   }
   return context_->validateAuthority(clientSetup, negotiatedVersion, std::move(session));
@@ -157,7 +159,7 @@ std::shared_ptr<MoQSession> MoqxPicoRelayServer::createSession(
     folly::MaybeManagedPtr<proxygen::WebTransport> wt,
     std::shared_ptr<MoQExecutor> executor
 ) {
-  return std::make_shared<MoQRelaySession>(
+  return MoqxRelaySession::make(
       folly::MaybeManagedPtr<proxygen::WebTransport>(std::move(wt)),
       *this,
       std::move(executor)

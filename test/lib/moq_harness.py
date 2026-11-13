@@ -316,6 +316,27 @@ admin:
 """
 )
 
+# Every relay writes an access log next to its config. --save-logs keeps it, along with
+# the relay's other logs.
+_CONFIG_ACCESS_LOG = Template(
+    """\
+logging:
+  access_vars: { pop: $pop }
+  access:
+    - name: harness
+      file: "$path"
+      format:
+        session: "$$schema $$time pop=$$pop $$event $$relay_id $$session $$opened $$peer $$local $$peer_class $$service $$authority $$path $$upstream $$version $$status $$latency_ms $$error_class $$error_code $$reason $$duration_ms $$requests"
+        request: "$$schema $$time pop=$$pop $$event $$relay_id $$session $$version $$dir $$req $$ftn $$alias $$status $$latency_ms $$error_class $$error_code $$reason $$end_reason $$age_ms $$largest"
+        event:
+          FETCH: "$$schema $$time pop=$$pop $$event $$relay_id $$session $$version $$dir $$req $$ftn $$fetch_type $$start $$end $$status $$latency_ms $$error_code $$reason $$end_reason $$fetch_ms"
+service_defaults:
+  access_log:
+    sinks:
+      - { name: harness, events: [session, request, messages] }
+"""
+)
+
 
 @dataclass
 class Relay:
@@ -582,6 +603,11 @@ class Harness:
                     )
                 )
         parts.append(_CONFIG_ADMIN.substitute(port=relay.admin))
+        parts.append(
+            _CONFIG_ACCESS_LOG.substitute(
+                path=self.tmpdir / f"{relay.name}-access.log", pop=relay.name
+            )
+        )
         path = self.tmpdir / f"{relay.name}.yaml"
         path.write_text("".join(parts), encoding="utf-8")
         relay.config_path = path
@@ -1187,7 +1213,24 @@ class Harness:
                 self._dump_relay_log(relay.name)
                 relay_failed = True
 
+        for relay in self.relays.values():
+            if relay.proc is not None and not relay.killed:
+                self._check_access_log(relay)
         return relay_failed
+
+    def _check_access_log(self, relay):
+        """Each line of a relay's access log carries that relay's pop=<name>."""
+        path = self.tmpdir / f"{relay.name}-access.log"
+        lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+        if not lines:
+            self._fail(f"[{relay.name}] access log is empty or missing")
+            return
+        expected = f"pop={relay.name}"
+        wrong = [line for line in lines if line.split(" ")[2:3] != [expected]]
+        if wrong:
+            self._fail(
+                f"[{relay.name}] {len(wrong)} access log lines lack {expected}: {wrong[0]}"
+            )
 
 
 def _resolve_moqbin(binary):
