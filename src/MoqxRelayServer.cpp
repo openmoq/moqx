@@ -5,6 +5,7 @@
  */
 
 #include "MoqxRelayServer.h"
+#include "MoqxRelaySession.h"
 #include "logging/CaptureQLogger.h"
 #include "stats/EventBaseStatsCollector.h"
 #include "stats/QuicStatsCollector.h"
@@ -295,6 +296,7 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayServer::validateAut
   // Base class format validation
   auto base = MoQServer::validateAuthority(clientSetup, negotiatedVersion, session);
   if (!base.hasValue()) {
+    context_->onSetupRejected(session, base.error());
     return base;
   }
   return context_->validateAuthority(clientSetup, negotiatedVersion, std::move(session));
@@ -304,7 +306,7 @@ std::shared_ptr<MoQSession> MoqxRelayServer::createSession(
     folly::MaybeManagedPtr<proxygen::WebTransport> wt,
     std::shared_ptr<MoQExecutor> executor
 ) {
-  return std::make_shared<MoQRelaySession>(
+  return MoqxRelaySession::make(
       folly::MaybeManagedPtr<proxygen::WebTransport>(std::move(wt)),
       *this,
       std::move(executor)
