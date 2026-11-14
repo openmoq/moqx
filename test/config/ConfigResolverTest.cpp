@@ -1331,13 +1331,22 @@ TEST(ResolveConfig, VersionsPopulated) {
   EXPECT_EQ(result.value().config.listeners[0].moqtVersions, "18");
 }
 
+TEST(ResolveConfig, VersionsWithDraft22) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.listeners.value()[0].moqt_versions = std::vector<uint32_t>{16, 18, 22};
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  EXPECT_EQ(result.value().config.listeners[0].moqtVersions, "16,18,22");
+}
+
 TEST(ResolveConfig, VersionsOutsideSupportedSetRejected) {
   auto cfg = makeMinimalInsecureConfig();
-  cfg.listeners.value()[0].moqt_versions = std::vector<uint32_t>{14, 16, 17};
+  cfg.listeners.value()[0].moqt_versions = std::vector<uint32_t>{14, 16, 17, 21};
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasError());
   EXPECT_THAT(result.error(), HasSubstr("moqt_versions entry 14"));
   EXPECT_THAT(result.error(), HasSubstr("moqt_versions entry 17"));
+  EXPECT_THAT(result.error(), HasSubstr("moqt_versions entry 21"));
   EXPECT_THAT(result.error(), Not(HasSubstr("moqt_versions entry 16")));
 }
 

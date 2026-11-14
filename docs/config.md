@@ -96,7 +96,9 @@ listeners:
 **TLS:** For development only, `tls: {insecure: true}` skips certificate
 verification. This is incompatible with `quic_stack: picoquic`.
 
-**moqt_versions:**: Supports 16 and 18; any other value is rejected.
+**moqt_versions:**: Supports 16, 18 and 22; any other value is rejected.
+Draft 22 support is partial: moxygen implements only part of the draft, including
+the Location Filter and fill fetch, so offer it only to clients known to work with it.
 
 **Duplicate listeners** (same address+port combination) are rejected.
 

@@ -1,0 +1,1 @@
+- Config: [`moqt_versions`](/docs/config.md#listeners) accepts 22, so a listener can offer MoQT draft 22. Support is partial: moxygen implements only part of the draft, including the Location Filter and fill fetch. The default stays draft 16 only.
