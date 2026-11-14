@@ -1,0 +1,1 @@
+- `moqx-issuer --auth-namespace-match` and `--auth-track-match` can issue CAT scopes using exact, prefix, or suffix matching; exact remains the default. See [Token Issuing](/docs/config.md#issuing-tokens).

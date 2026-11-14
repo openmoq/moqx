@@ -363,6 +363,18 @@ moqx-issuer \
   --auth-ttl-seconds 3600
 ```
 
+`--auth-namespace-match` selects how the namespace scope is matched. It accepts
+`exact` (the default), `prefix`, or `suffix`; non-exact modes require
+`--auth-namespace`. For example, add
+`--auth-namespace-match prefix` to grant the selected actions to the given
+namespace and its descendants. Track-level actions also use this namespace
+matcher.
+
+`--auth-track-match` selects how `--auth-track` is matched: `exact` (the
+default), `prefix`, or `suffix`. Non-exact modes require `--auth-track`. For
+example, `--auth-track video --auth-track-match prefix` matches `video` and
+`video-hd`. When `--auth-track` is omitted, any track name matches.
+
 The default output is `base64:<token>`, which is suitable for tools that accept
 a base64-prefixed CAT token string. Use `--auth-output base64`, `hex`, or `raw`
 when integrating with software that expects a different representation.
@@ -396,9 +408,10 @@ Supported action names are:
 The CLI also accepts the numeric draft action values `0` through `8`.
 `--auth-actions` defaults to `client_setup,publish_namespace,publish`, which is
 the common publisher case. The `client_setup` grant is unconstrained. Namespace
-actions are scoped by `--auth-namespace`, and track actions are scoped by
-`--auth-namespace` plus `--auth-track` when a track is provided. Namespace
-segments are slash-separated on the CLI, for example `live/event/main`.
+actions are scoped by `--auth-namespace` using `--auth-namespace-match`, and
+track actions are scoped by the same namespace matcher plus `--auth-track` and
+`--auth-track-match` when a track is provided. Namespace segments are
+slash-separated on the CLI, for example `live/event/main`.
 
 ### Using Auth From moqxr
 

@@ -115,6 +115,20 @@ bool isNamespaceAction(Action action) {
   return false;
 }
 
+MatchRuleType parseMatchType(std::string_view value, std::string_view target) {
+  const auto normalized = trim(value);
+  if (normalized == "exact") {
+    return MatchRuleType::Exact;
+  }
+  if (normalized == "prefix") {
+    return MatchRuleType::Prefix;
+  }
+  if (normalized == "suffix") {
+    return MatchRuleType::Suffix;
+  }
+  throw std::invalid_argument("unknown " + std::string(target) + " match mode: " + normalized);
+}
+
 } // namespace
 
 std::vector<Action> parseActions(std::string_view value) {
@@ -136,6 +150,14 @@ std::vector<Action> parseActions(std::string_view value) {
     throw std::invalid_argument("at least one CAT4MOQ action is required");
   }
   return actions;
+}
+
+MatchRuleType parseNamespaceMatchType(std::string_view value) {
+  return parseMatchType(value, "namespace");
+}
+
+MatchRuleType parseTrackMatchType(std::string_view value) {
+  return parseMatchType(value, "track");
 }
 
 moxygen::TrackNamespace parseTrackNamespace(std::string_view value) {
@@ -171,6 +193,13 @@ IssuedToken issueToken(const IssueTokenOptions& options) {
   if (options.ttl <= std::chrono::seconds::zero()) {
     throw std::invalid_argument("CAT4MOQ ttl must be greater than zero");
   }
+  if (options.trackNamespace.trackNamespace.empty() &&
+      options.namespaceMatchType != MatchRuleType::Exact) {
+    throw std::invalid_argument("namespace match mode requires a namespace");
+  }
+  if (!options.trackName.has_value() && options.trackMatchType != MatchRuleType::Exact) {
+    throw std::invalid_argument("track match mode requires a track");
+  }
 
   Grants grants;
   grants.expiresAt = options.now + options.ttl;
@@ -186,7 +215,7 @@ IssuedToken issueToken(const IssueTokenOptions& options) {
   std::vector<MatchRule> namespaceMatches;
   if (!options.trackNamespace.trackNamespace.empty()) {
     namespaceMatches.push_back(MatchRule{
-        .type = MatchRule::Type::Exact,
+        .type = options.namespaceMatchType,
         .value = canonicalNamespace(options.trackNamespace),
     });
   }
@@ -218,7 +247,7 @@ IssuedToken issueToken(const IssueTokenOptions& options) {
     std::vector<MatchRule> trackMatches;
     if (options.trackName.has_value()) {
       trackMatches.push_back(MatchRule{
-          .type = MatchRule::Type::Exact,
+          .type = options.trackMatchType,
           .value = *options.trackName,
       });
     }
