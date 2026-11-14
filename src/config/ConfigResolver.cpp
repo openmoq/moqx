@@ -51,10 +51,11 @@ std::string matchRuleErrorLabel(const std::string& name, size_t j) {
 }
 
 // Default versions when moqt_versions is unset. Excludes draft-18 (in moxygen's
-// kSupportedVersions but not yet interoperable); configure moqt_versions to opt in.
+// kSupportedVersions but not yet interoperable) and draft-22 (partial in moxygen);
+// configure moqt_versions to opt in.
 constexpr const char* kDefaultMoqtVersions = "16";
 // moxygen's kSupportedVersions from draft 16 up; this library does not link moxygen.
-constexpr std::array<uint32_t, 2> kSupportedMoqtVersions{16, 18};
+constexpr std::array<uint32_t, 3> kSupportedMoqtVersions{16, 18, 22};
 
 std::string moqtVersionsToString(const ParsedListenerConfig& listener) {
   if (!listener.moqt_versions.value().has_value() || listener.moqt_versions.value()->empty()) {

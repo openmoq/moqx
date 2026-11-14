@@ -20,7 +20,7 @@ listeners:                    # Map keyed by listener name
       # pkcs12_password: "inline-secret"             # Discouraged: persists in the config at rest
       insecure: true          # Skip TLS for local development
     endpoint: "/moq-relay"    # WebTransport endpoint path
-    # moqt_versions: [16, 18] # MOQT draft versions, 16 and/or 18 (empty = default 16)
+    # moqt_versions: [16, 18, 22] # MOQT draft versions, server preference order (empty = default [16])
     quic:                     # Per-listener QUIC overrides (optional; inherits listener_defaults.quic)
       cc_algo: bbr2           # Congestion control (default: bbr); names differ per stack, see docs/config.md
       # max_data: 33554432    # Override connection flow control window for this listener

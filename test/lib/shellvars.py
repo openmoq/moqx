@@ -34,7 +34,7 @@ def read_shell_vars(path):
     The right-hand side is lexed the way a shell would lex it, so one layer of
     matched quotes comes off and an unquoted trailing comment is dropped:
 
-        MOQT_TEST_VERSIONS="[16, 18]"      -> [16, 18]
+        MOQT_TEST_VERSIONS="[22, 18, 16]"  -> [22, 18, 16]
         MOQBIN='/some/path'  # generated   -> /some/path
 
     A '#' inside quotes stays data. Hand-rolling those two rules as separate

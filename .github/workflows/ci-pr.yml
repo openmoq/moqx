@@ -163,6 +163,14 @@ jobs:
             versions: "18"
             transport: ""
             stack: "mvfst"
+          - name: mvfst d22 Q
+            versions: "22"
+            transport: "Q"
+            stack: "mvfst"
+          - name: mvfst d22 WT
+            versions: "22"
+            transport: ""
+            stack: "mvfst"
           - name: pico d16 Q
             versions: "16"
             transport: "Q"
@@ -177,6 +185,14 @@ jobs:
             stack: "pico"
           - name: pico d18 WT
             versions: "18"
+            transport: ""
+            stack: "pico"
+          - name: pico d22 Q
+            versions: "22"
+            transport: "Q"
+            stack: "pico"
+          - name: pico d22 WT
+            versions: "22"
             transport: ""
             stack: "pico"
     name: conformance (${{ matrix.name }})
