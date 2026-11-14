@@ -20,16 +20,17 @@ moqx --config <path> --strict_config    # reject unknown fields,
 
 ```yaml
 relay_id: "my-relay"       # optional; auto-generated if absent
-threads: 1                 # optional; default 1 (only 1 currently supported)
+threads: 1                 # optional; IO worker threads, default 1 (see Threading)
 
 cluster:                   # optional; MoQ Cluster negotiation and Hop ID
   { ... }
 
 listener_defaults:         # optional; QUIC defaults inherited by all listeners
   quic: { ... }
+  mvfst: { ... }           # mvfst listeners only
 
 listeners:                 # required; at least one
-  - { ... }
+  main: { ... }
 
 service_defaults:          # optional; defaults inherited by all services
   cache: { ... }
@@ -38,6 +39,7 @@ service_defaults:          # optional; defaults inherited by all services
 
 services:                  # required; at least one
   my-service:
+    listeners: [ ... ]     # optional; default: all listeners
     match: [ ... ]
     cache: { ... }
     upstream: { ... }
@@ -46,18 +48,37 @@ admin:                     # optional; omit to disable the admin server
   { ... }
 ```
 
+**Duplicate keys** in any YAML mapping (two map-form listeners or two services
+with the same name, a field written twice) fail the load.
+
+---
+
+## Threading
+
+| Field | Default | Notes |
+|---|---|---|
+| `threads` | 1 | IO worker threads. Must be ≥ 1; more than 1 requires `use_relay_thread: true`. |
+| `use_relay_thread` | `true` | One dedicated thread per service holds that service's relay state. |
+| `use_local_forwarders` | `false` | Forward to each subscriber from its own IO thread, cutting cross-thread hops on the data path. Requires `use_relay_thread`. |
+| `mvfst_bpf_steering` | `true` | BPF reuseport filter that steers each packet to the mvfst worker named in its connection ID. Linux and mvfst only; `false` leaves distribution to the kernel. |
+
+`moqx-run.sh` and the Docker image run 4 threads, with local forwarders on and
+BPF steering off; see [tuning.md](tuning.md#relay-config).
+
 ---
 
 ## Listeners
 
-Each listener binds a port and accepts connections.  For now, only UDP+QUIC
-is supported, both MOQT using native QUIC and MOQT over HTTP/3 WebTransport.
-We will add support for HTTP/2 WebTransport and MOQT over QMux in the
-future.
+Each listener binds a port and accepts connections: MOQT over native QUIC and
+over HTTP/3 WebTransport, or, with `quic_stack: proxygen_qmux`, MOQT over QMux
+on TCP at the `udp.socket` address. HTTP/2 WebTransport is planned
+([#152](https://github.com/openmoq/moqx/issues/152)).
+
+`listeners` is a map keyed by listener name:
 
 ```yaml
 listeners:
-  - name: main
+  main:
     udp:
       socket:
         address: "::"
@@ -66,9 +87,10 @@ listeners:
       cert_file: /etc/moqx/cert.pem
       key_file:  /etc/moqx/key.pem
     endpoint: /moq-relay
-    quic_stack: mvfst         # optional; default mvfst
+    quic_stack: mvfst         # optional; mvfst (default), picoquic or proxygen_qmux
     moqt_versions: []         # optional; empty = default [16]
     quic: { ... }             # optional; overrides listener_defaults.quic
+    mvfst: { ... }            # optional; overrides listener_defaults.mvfst
 ```
 
 **TLS:** For development only, `tls: {insecure: true}` skips certificate
@@ -78,9 +100,14 @@ verification. This is incompatible with `quic_stack: picoquic`.
 
 **Duplicate listeners** (same address+port combination) are rejected.
 
+**WebTransport idle timeout (mvfst):** `mvfst.h3_txn_timeout_ms` (per listener
+or in `listener_defaults`) closes a WebTransport session after that many ms
+without new streams, stream data or datagrams. 0 (default) disables it; the
+maximum is a year.
+
 ### QUIC Settings
 
-Set under `listener_defaults.quic` (global defaults) or `listeners[n].quic`
+Set under `listener_defaults.quic` (global defaults) or `listeners.<name>.quic`
 (per-listener override).
 
 | Field | Default | Notes |
@@ -101,17 +128,39 @@ Set under `listener_defaults.quic` (global defaults) or `listeners[n].quic`
 - `picoquic`: `bbr`, `bbr1`, `c4`, `cubic`, `dcubic`, `fast`, `newreno`,
 `prague`, `reno`
 
+### mvfst Settings
+
+Set under `listener_defaults.mvfst` or `listeners[n].mvfst`. Only mvfst
+listeners use them; picoquic listeners ignore the block.
+
+| Field | Default | Notes |
+|---|---|---|
+| `udp_socket_buffer_bytes` | 0 | UDP socket send and receive buffer. 0 = moxygen's 1 MB. The kernel caps it at `net.core.wmem_max`/`rmem_max`; see [tuning.md](tuning.md#socket-buffers-the-relay-asks-for). |
+| `enable_gso` | `true` | Send with GSO; falls back to `sendmmsg` if unavailable. Disable only where GSO is advertised but broken. |
+| `max_conn_packets_sent_per_loop` | 48 | Packets written per connection per event-loop pass. |
+| `use_recvmmsg` | `true` | Read several packets per syscall. |
+| `max_server_recv_packets_per_loop` | 64 | Incoming packets handled per read callback; 0 = unlimited. |
+| `num_gro_buffers` | 1 | UDP GRO receive buffers; 1 = off, up to 64. |
+| `ignore_path_mtu` | `false` | Send full-size packets without path MTU discovery. Only for networks with a known MTU. |
+| `adaptive_loss_time_threshold` | `false` | After a spurious loss, raise the loss time threshold past that packet's lateness. Helps on paths with delay jitter. |
+| `max_cwnd_in_mss` | 860000 | Congestion window cap, in MSS. |
+| `pacing_enabled` | `true` | Required for `bbr` and `bbr2`. |
+
+Congestion control tunables nest under `bbr`, `bbr2`, `cubic`, `copa` and `l4s`;
+`moqx dump-config-schema` lists them with descriptions.
+
 ---
 
 ## Services
 
-Services define how incoming connections are routed and can match MOQT
-sessions arriving on any listener. Each service has one or more match rules,
-optional cache settings, and an optional upstream.
+Services define how incoming connections are routed. Each service has one or
+more match rules, an optional list of listeners it is available on, optional
+cache settings, and an optional upstream.
 
 ```yaml
 services:
   live:
+    listeners: [public, internal]   # optional; default: all listeners
     match:
       - authority: {exact: "live.example.com"}
         path:      {prefix: "/"}
@@ -163,11 +212,50 @@ authority and path rules both match.
 2. `{prefix: "/live/"}` — longest prefix wins; `{prefix: "/"}` matches
 any path
 
-Duplicate (authority, path) combinations across all services are rejected.
+Duplicate (authority, path) combinations within a service are rejected.
+Across services, they are rejected when the services share a listener.
 
 **picoquic limitation:** Only exact path matches work reliably with
-picoquic. Prefix path rules will generate a warning and connections may fail to
-route correctly.
+picoquic. Prefix path rules on a service bound to a picoquic listener generate
+a warning, and connections may fail to route correctly.
+
+### Listener Binding
+
+`listeners` names the listeners a service is available on. Omit it to make the
+service available on every listener.
+
+- Matching runs per listener, over only the services bound to it. A service
+  that is not bound to a listener does not exist there: the next-best bound
+  match wins, and a session with no bound match is rejected.
+- A service bound to several listeners is one service: a publisher on one
+  listener feeds subscribers on another.
+- An unknown listener name, or one listed twice, is a config error.
+- `listeners: []` is a warning: no incoming session can select the service.
+  Its upstreams still connect.
+- A listener that no service is bound to is a warning: it rejects every session.
+
+```yaml
+listeners:
+  public: { ... }
+  internal: { ... }
+services:
+  live:
+    listeners: [public, internal]
+    match:
+      - authority: {any: true}
+        path: {exact: "/moq-relay"}
+  ops:
+    listeners: [internal]
+    match:
+      - authority: {any: true}
+        path: {exact: "/ops"}
+```
+
+An mvfst listener accepts WebTransport sessions only on its `endpoint` path, so
+its WebTransport clients reach only the services that match that path.
+
+`/config` reports each service's resolved `listeners`. `/state` reports the
+listener each downstream peer connected on.
 
 ---
 
@@ -383,10 +471,6 @@ at the service level inherits from `service_defaults`.
 | `min_eviction_kb` | 64 | Eviction batch floor in KB. When the cache exceeds `max_cached_mb`, LRU tracks are evicted until usage falls to `max_cached_mb − min_eviction_kb`. |
 | `max_cache_duration_s` | 86400 (1 day) | Hard cap on how long any track can be cached. Must not be 0. Publisher-set durations are clamped to this value. Also used as the default track duration when `default_max_cache_duration_s` is absent. |
 | `default_max_cache_duration_s` | absent | Default TTL for tracks that don't carry a publisher-set duration. **absent** → use `max_cache_duration_s`. **0** → do not cache unless the publisher explicitly sets a duration (opt-in caching). **N** → cache for N seconds by default. |
-
-> **Note:** `max_cached_mb`, `min_eviction_kb`, `max_cache_duration_s`,
-> and `default_max_cache_duration_s` are pending in PR #140 and not yet
-> in the released config.
 
 ---
 

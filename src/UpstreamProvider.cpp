@@ -5,10 +5,14 @@
  */
 
 #include "UpstreamProvider.h"
+#include "relay/SessionParticipant.h"
+#include <folly/CancellationToken.h>
+#include <folly/coro/CurrentExecutor.h>
 #include <folly/coro/Timeout.h>
 #include <moxygen/MoQFilters.h>
 #include <moxygen/MoQRelaySession.h>
 #include <moxygen/MoQVersions.h>
+#include <moxygen/openmoq/extensions/MoQClusterExtension.h>
 
 using namespace moxygen;
 
@@ -81,19 +85,22 @@ UpstreamProvider::UpstreamProvider(
     proxygen::URL url,
     std::shared_ptr<Publisher> publishHandler,
     std::shared_ptr<Subscriber> subscribeHandler,
+    folly::Executor* relayExec,
     std::shared_ptr<fizz::CertificateVerifier> verifier,
     OnConnectHook onConnect,
     OnDisconnectHook onDisconnect,
     std::chrono::milliseconds connectTimeout,
     std::chrono::milliseconds idleTimeout,
     std::optional<uint64_t> hopID,
-    uint64_t relayCost
+    uint64_t relayCost,
+    const PeeringBackend* peering
 )
     : publishHandler_(std::move(publishHandler)), subscribeHandler_(std::move(subscribeHandler)),
-      url_(std::move(url)), exec_(std::move(exec)), verifier_(std::move(verifier)),
-      onConnect_(std::move(onConnect)), onDisconnect_(std::move(onDisconnect)),
-      connectTimeout_(connectTimeout), idleTimeout_(idleTimeout), hopID_(hopID),
-      relayCost_(relayCost) {
+      relayExec_(relayExec), url_(std::move(url)), exec_(std::move(exec)),
+      verifier_(std::move(verifier)), onConnect_(std::move(onConnect)),
+      onDisconnect_(std::move(onDisconnect)), connectTimeout_(connectTimeout),
+      idleTimeout_(idleTimeout), hopID_(hopID), relayCost_(relayCost), peering_(peering) {
+  XCHECK_EQ(!publishHandler_, !subscribeHandler_) << "a SessionParticipant needs both handlers";
   XLOG(DBG1) << "UpstreamProvider created, url=" << url_.getUrl();
 }
 
@@ -170,6 +177,9 @@ void UpstreamProvider::stopOnOwner() {
 
   // Cancel any in-progress backoff sleep or connect in reconnectLoop().
   stopSource_.requestCancellation();
+
+  // The relay releases the session's peering handles while this executor still runs.
+  resetSession();
 
   // Break the shared_ptr cycle: relay owns us via upstream_, and we hold
   // back-refs to relay through these members.
@@ -352,6 +362,8 @@ void UpstreamProvider::onMoQSessionClosed(
 // --- Private methods ---
 
 folly::coro::Task<std::shared_ptr<MoQSession>> UpstreamProvider::getOrConnectSession() {
+  // coSubscribe() and the other slow-path forwarders do not keep the provider alive.
+  auto self = shared_from_this();
   if (stopped_) {
     XLOG(DBG1) << "UpstreamProvider::getOrConnectSession - stopped";
     co_yield folly::coro::co_error(std::runtime_error("UpstreamProvider stopped"));
@@ -378,7 +390,12 @@ folly::coro::Task<std::shared_ptr<MoQSession>> UpstreamProvider::getOrConnectSes
   connectPromise_.emplace();
 
   try {
-    co_await doConnect();
+    // The slow-path forwarders call in without stopSource_'s token.
+    auto token = folly::cancellation_token_merge(
+        co_await folly::coro::co_current_cancellation_token,
+        stopSource_.getToken()
+    );
+    co_await folly::coro::co_withCancellation(std::move(token), doConnect());
     state_ = State::Connected;
     XLOG(DBG1) << "UpstreamProvider: connected to upstream, session=" << session_.get();
     connectPromise_->setValue(folly::unit);
@@ -404,13 +421,12 @@ folly::coro::Task<void> UpstreamProvider::doConnect() {
     session->setMoqSettings(settings);
     return session;
   };
-  client_ = std::make_unique<MoQClient>(exec_, url_, std::move(sessionFactory), verifier_);
+  // This coroutine owns the client until setup succeeds, so stop() cannot destroy it mid-setup.
+  client_.reset();
+  auto client = std::make_unique<MoQClient>(exec_, url_, std::move(sessionFactory), verifier_);
   // The extension stays inactive unless the peer also declares a Hop ID.
   if (hopID_) {
-    client_->addSetupParameter(SetupParameter(folly::to_underlying(SetupKey::HOP_ID), *hopID_));
-    client_->addSetupParameter(
-        SetupParameter(folly::to_underlying(SetupKey::RELAY_COST), relayCost_)
-    );
+    client->addExtension(std::make_shared<MoQClusterExtension>(*hopID_, relayCost_));
   }
 
   quic::TransportSettings ts;
@@ -420,16 +436,29 @@ folly::coro::Task<void> UpstreamProvider::doConnect() {
   ts.datagramConfig.writeBufSize = 1000;
   ts.datagramConfig.sendDropOldDataFirst = true;
 
+  // A SessionParticipant binds to one session, so each connection gets its own.
+  std::shared_ptr<Publisher> pub = publishHandler_;
+  std::shared_ptr<Subscriber> sub = subscribeHandler_;
+  if (pub) {
+    auto participant =
+        std::make_shared<SessionParticipant>(std::move(pub), std::move(sub), relayExec_, peering_);
+    pub = participant;
+    sub = std::move(participant);
+  }
   // Relay links use draft 18 only.
-  co_await client_->setupMoQSession(
+  co_await client->setupMoQSession(
       connectTimeout_,
       idleTimeout_,
-      publishHandler_,
-      subscribeHandler_,
+      std::move(pub),
+      std::move(sub),
       ts,
       getMoqtProtocols("18", /*useStandard=*/true)
   );
+  if (stopped_) {
+    co_yield folly::coro::co_error(std::runtime_error("UpstreamProvider stopped"));
+  }
 
+  client_ = std::move(client);
   session_ = client_->moqSession_;
   CHECK(session_) << "setupMoQSession succeeded but session is null";
 

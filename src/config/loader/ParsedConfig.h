@@ -172,6 +172,12 @@ struct ParsedMvfstConfig {
       "path MTU is known; leave off to respect PMTU discovery.",
       std::optional<bool>>
       ignore_path_mtu;
+  rfl::Description<
+      "Adapt the loss detection time threshold after spurious losses (default: "
+      "false). Under delay jitter, a fixed 5/4 RTT threshold declares late packets "
+      "lost and throttles the congestion controller.",
+      std::optional<bool>>
+      adaptive_loss_time_threshold;
 
   // BBR (BBR1) congestion control tunables.
   // conservative_recovery is shared with BBR2 — set it here when using either.
@@ -274,10 +280,18 @@ struct ParsedMvfstConfig {
       "default of 1 MB). Increase to reduce EAGAIN errors under high fan-out burst load.",
       std::optional<uint64_t>>
       udp_socket_buffer_bytes;
+  rfl::Description<
+      "HTTP/3 transaction idle timeout in ms; ends idle WebTransport sessions. "
+      "Default: 0 (none). At most a year (31536000000).",
+      std::optional<uint64_t>>
+      h3_txn_timeout_ms;
 };
 
-struct ParsedListenerConfig {
-  rfl::Description<"Listener name", std::string> name;
+// Named proxygen_qmux (not bare "qmux") so a second qmux impl can be added later.
+using ParsedQuicStack = rfl::Literal<"mvfst", "picoquic", "proxygen_qmux">;
+
+// A listener as written under its name in `listeners`.
+struct ParsedListenerEntry {
   rfl::Description<"UDP/QUIC transport config", ParsedUdpConfig> udp;
   rfl::Description<"TLS configuration", ParsedListenerTlsConfig> tls;
   rfl::Description<"WebTransport endpoint path", std::string> endpoint;
@@ -285,10 +299,7 @@ struct ParsedListenerConfig {
       "MOQT draft versions: 16 and/or 18 (empty = default 16)",
       std::optional<std::vector<uint32_t>>>
       moqt_versions;
-  rfl::Description<
-      "QUIC stack to use: \"mvfst\" (default) or \"picoquic\"",
-      std::optional<std::string>>
-      quic_stack;
+  rfl::Description<"QUIC stack to use (default: mvfst)", std::optional<ParsedQuicStack>> quic_stack;
   rfl::Description<
       "QUIC transport settings (overrides listener_defaults.quic)",
       std::optional<ParsedQuicConfig>>
@@ -297,6 +308,37 @@ struct ParsedListenerConfig {
       "mvfst-specific CC tunables (overrides listener_defaults.mvfst; mvfst stack only)",
       std::optional<ParsedMvfstConfig>>
       mvfst;
+};
+
+// A listener with its name. Not read from the file as is: see ParsedListeners.
+struct ParsedListenerConfig : ParsedListenerEntry {
+  rfl::Description<"Listener name", std::string> name;
+};
+
+// Deprecated: an entry of the list form of `listeners`.
+struct ParsedDeprecatedListenerListEntry {
+  rfl::Description<"Deprecated: key the listener by its name instead", std::string> name;
+  rfl::Flatten<ParsedListenerEntry> listener;
+};
+
+// `listeners` accepts a map keyed by listener name, or the deprecated list form.
+// Reading normalizes both into this list, in file order; writing emits the map.
+class ParsedListeners : public std::vector<ParsedListenerConfig> {
+public:
+  using ReflectionType = rfl::
+      Variant<rfl::Object<ParsedListenerEntry>, std::vector<ParsedDeprecatedListenerListEntry>>;
+
+  ParsedListeners() = default;
+  // Throws std::invalid_argument on an empty name; reflect-cpp reports it as a
+  // parse error.
+  explicit ParsedListeners(ReflectionType listeners);
+  ReflectionType reflection() const;
+
+  // True when read from the deprecated list form.
+  bool listForm() const { return listForm_; }
+
+private:
+  bool listForm_{false};
 };
 
 struct ParsedCacheConfig {
@@ -506,6 +548,10 @@ struct ParsedServiceConfig {
 
   rfl::Description<"Match rules for routing", std::vector<MatchRule>> match;
   rfl::Description<
+      "Names of the listeners this service is available on (absent = all listeners)",
+      std::optional<std::vector<std::string>>>
+      listeners;
+  rfl::Description<
       "Per-service cache settings (overrides service_defaults)",
       std::optional<ParsedCacheConfig>>
       cache;
@@ -578,10 +624,7 @@ struct ParsedLoggingConfig {
 };
 
 struct ParsedConfig {
-  rfl::Description<
-      "Listener definitions (currently exactly one supported)",
-      std::vector<ParsedListenerConfig>>
-      listeners;
+  rfl::Description<"Listener definitions, keyed by listener name", ParsedListeners> listeners;
   rfl::Description<
       "Default settings inherited by all services",
       std::optional<ParsedServiceDefaultsConfig>>

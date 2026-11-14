@@ -228,7 +228,16 @@ apt-get update && apt-get install -y \
 # Install jemalloc (optional, for production-like memory behavior)
 apt-get install -y libjemalloc2
 ln -sf /usr/lib/x86_64-linux-gnu/libjemalloc.so.2 /lib64/libjemalloc.so.2
+
+# UDP sysctls (from a checkout of this repo), then check the host
+install -m 0644 scripts/host/99-moqx-quic.conf /etc/sysctl.d/
+sysctl -p /etc/sysctl.d/99-moqx-quic.conf
+bash scripts/host-check.sh --strict
 ```
+
+Each run also tries to save both VMs' settings in `run-*.host.txt`. If SSH
+or the check fails for a VM, its section is missing and the run carries on.
+See [tuning.md](tuning.md) for what each setting does.
 
 ### 3. Configure SSH Access
 
@@ -275,6 +284,7 @@ The workflow stages a Pages artifact (`perf-out/`) and deploys it with
 | [`scripts/perf/perf-compare.py`](/scripts/perf/perf-compare.py) | Regression detection + markdown |
 | [`scripts/perf/perf-test.sh`](/scripts/perf/perf-test.sh) | Underlying test runner |
 | [`scripts/perf/perf-metrics.sh`](/scripts/perf/perf-metrics.sh) | Prometheus metrics poller |
+| [`scripts/host-check.sh`](/scripts/host-check.sh) | Host and relay-process report written to `run-*.host.txt` |
 | [`.github/workflows/perf-test.yml`](/.github/workflows/perf-test.yml) | Standalone perf workflow (run, compare, stage, deploy) |
 | [`status/index.html`](/status/index.html) | Dashboard shell (copied to Pages artifact root) |
 | `perf-out/perf/index.json` | Generated run manifest in Pages artifact |
@@ -284,7 +294,8 @@ The workflow stages a Pages artifact (`perf-out/`) and deploys it with
 
 - **Dashboard:** `https://openmoq.org/moqx/` (nightly trend)
 - **Perf data:** `https://openmoq.org/moqx/perf/index.json`
-- **Artifacts:** Available in the Actions run under "perf-results" (every run)
+- **Artifacts:** Available in the Actions run under "perf-results" (every run),
+  including each case's relay and client logs and `run-*.host.txt`
 - **Step summary:** Visible inline in the GitHub Actions job view
 - **PR comments:** Only when a manual/called run sets the `pr` input; otherwise
   the report stays in the step summary

@@ -12,7 +12,9 @@
 #pragma once
 
 #include "MoqxRelay.h"
+#include "peering/MoqtRelayBackend.h"
 #include "relay/PublisherCrossExecFilter.h"
+#include "relay/SessionParticipant.h"
 #include "relay/SubscriberCrossExecFilter.h"
 #include <atomic>
 #include <folly/Try.h>
@@ -64,7 +66,11 @@ inline const TrackNamespace kAllowedPrefix{{"test"}};
 inline const FullTrackName kTestTrackName{kTestNamespace, "track1"};
 
 // A draft-18 session that negotiated MoQ Cluster and declared peerHop.
-void negotiateCluster(MockMoQSession& session, uint64_t peerHop = 0);
+void negotiateCluster(
+    MockMoQSession& session,
+    uint64_t peerHop = 0,
+    std::optional<uint64_t> peerCost = std::nullopt
+);
 
 PublishNamespace
 clusterAdvert(std::vector<uint64_t> path, uint64_t cost, TrackNamespace ns = kTestNamespace);
@@ -209,9 +215,17 @@ protected:
     return done();
   }
 
+  // What the relay would hold for session.
+  Participant participantOf(const std::shared_ptr<MoQSession>& session) {
+    return SessionParticipant::makeParticipant(session, relay_->getRelayExec(), peering_.get());
+  }
+
   template <typename Func>
   auto withSessionContext(std::shared_ptr<MoQSession> session, Func&& func) -> decltype(func()) {
     folly::RequestContextScopeGuard guard;
+    attachParticipant(
+        SessionParticipant::makeParticipant(session, relay_->getRelayExec(), peering_.get())
+    );
     folly::RequestContext::get()->setContextData(
         sessionRequestToken(),
         std::make_unique<MoQSession::MoQSessionRequestData>(std::move(session))
@@ -324,6 +338,7 @@ protected:
 
   std::shared_ptr<TestMoQExecutor> exec_;
   std::shared_ptr<MoqxRelay> relay_;
+  std::unique_ptr<MoqtRelayBackend> peering_;
   std::unique_ptr<folly::ScopedEventBaseThread> relayThread_;
   folly::EventBase* relayEvb_{nullptr};
   std::vector<std::unique_ptr<AuxExec>> auxExecs_;

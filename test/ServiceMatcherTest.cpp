@@ -14,6 +14,16 @@ namespace {
 using namespace config;
 using ME = ServiceConfig::MatchEntry;
 
+constexpr std::string_view kListener = "main";
+
+// Binds every service to kListener, so the matcher sees all of them.
+ServiceMatcher matchOnListener(folly::F14FastMap<std::string, ServiceConfig> services) {
+  for (auto& [_, svc] : services) {
+    svc.listeners = {std::string(kListener)};
+  }
+  return ServiceMatcher(services, kListener);
+}
+
 // Helper to build a ServiceConfig with exact authorities (any path)
 std::pair<std::string, ServiceConfig> makeExactService(
     std::string name,
@@ -81,7 +91,7 @@ TEST(ServiceMatcher, ExactMatchHit) {
   folly::F14FastMap<std::string, ServiceConfig> services = {
       makeExactService("svc1", {"live.example.com", "cdn.example.com"}),
   };
-  ServiceMatcher matcher(services);
+  auto matcher = matchOnListener(std::move(services));
 
   EXPECT_EQ(matcher.match("live.example.com", ""), "svc1");
   EXPECT_EQ(matcher.match("cdn.example.com", ""), "svc1");
@@ -91,7 +101,7 @@ TEST(ServiceMatcher, ExactMatchMiss) {
   folly::F14FastMap<std::string, ServiceConfig> services = {
       makeExactService("svc1", {"live.example.com"}),
   };
-  ServiceMatcher matcher(services);
+  auto matcher = matchOnListener(std::move(services));
 
   EXPECT_EQ(matcher.match("other.example.com", ""), std::nullopt);
 }
@@ -100,7 +110,7 @@ TEST(ServiceMatcher, WildcardSingleLabelMatch) {
   folly::F14FastMap<std::string, ServiceConfig> services = {
       makeWildcardService("svc1", {"*.example.com"}),
   };
-  ServiceMatcher matcher(services);
+  auto matcher = matchOnListener(std::move(services));
 
   EXPECT_EQ(matcher.match("foo.example.com", ""), "svc1");
   EXPECT_EQ(matcher.match("bar.example.com", ""), "svc1");
@@ -110,7 +120,7 @@ TEST(ServiceMatcher, WildcardRejectsMultiLabel) {
   folly::F14FastMap<std::string, ServiceConfig> services = {
       makeWildcardService("svc1", {"*.example.com"}),
   };
-  ServiceMatcher matcher(services);
+  auto matcher = matchOnListener(std::move(services));
 
   EXPECT_EQ(matcher.match("foo.bar.example.com", ""), std::nullopt);
 }
@@ -120,7 +130,7 @@ TEST(ServiceMatcher, AnyAuthorityFallback) {
       makeExactService("svc1", {"live.example.com"}),
       makeAnyAuthorityService("any-svc"),
   };
-  ServiceMatcher matcher(services);
+  auto matcher = matchOnListener(std::move(services));
 
   EXPECT_EQ(matcher.match("live.example.com", ""), "svc1");
   EXPECT_EQ(matcher.match("unknown.com", ""), "any-svc");
@@ -133,7 +143,7 @@ TEST(ServiceMatcher, PriorityExactOverWildcardOverAny) {
       makeWildcardService("wild", {"*.example.com"}),
       makeAnyAuthorityService("any-svc"),
   };
-  ServiceMatcher matcher(services);
+  auto matcher = matchOnListener(std::move(services));
 
   // Exact match wins
   EXPECT_EQ(matcher.match("foo.example.com", ""), "exact");
@@ -162,7 +172,7 @@ TEST(ServiceMatcher, MixedMatchersOnOneService) {
            .cache = {100, 3},
        }},
   };
-  ServiceMatcher matcher(services);
+  auto matcher = matchOnListener(std::move(services));
 
   EXPECT_EQ(matcher.match("special.example.com", ""), "mixed");
   EXPECT_EQ(matcher.match("stream.live.example.com", ""), "mixed");
@@ -173,7 +183,7 @@ TEST(ServiceMatcher, EmptyAuthority) {
   folly::F14FastMap<std::string, ServiceConfig> services = {
       makeExactService("svc1", {"live.example.com"}),
   };
-  ServiceMatcher matcher(services);
+  auto matcher = matchOnListener(std::move(services));
 
   EXPECT_EQ(matcher.match("", ""), std::nullopt);
 }
@@ -183,7 +193,7 @@ TEST(ServiceMatcher, WildcardSuffixOnly) {
   folly::F14FastMap<std::string, ServiceConfig> services = {
       makeWildcardService("svc1", {"*.example.com"}),
   };
-  ServiceMatcher matcher(services);
+  auto matcher = matchOnListener(std::move(services));
 
   EXPECT_EQ(matcher.match("example.com", ""), std::nullopt);
 }
@@ -200,7 +210,7 @@ TEST(ServiceMatcher, ExactPathMatch) {
   folly::F14FastMap<std::string, ServiceConfig> services = {
       {"svc", ServiceConfig{.match = std::move(entries), .cache = {100, 3}}},
   };
-  ServiceMatcher matcher(services);
+  auto matcher = matchOnListener(std::move(services));
 
   EXPECT_EQ(matcher.match("a.com", "/moq-relay"), "svc");
   EXPECT_EQ(matcher.match("a.com", "/other"), std::nullopt);
@@ -217,7 +227,7 @@ TEST(ServiceMatcher, PrefixPathMatch) {
   folly::F14FastMap<std::string, ServiceConfig> services = {
       {"svc", ServiceConfig{.match = std::move(entries), .cache = {100, 3}}},
   };
-  ServiceMatcher matcher(services);
+  auto matcher = matchOnListener(std::move(services));
 
   EXPECT_EQ(matcher.match("a.com", "/live/"), "svc");
   EXPECT_EQ(matcher.match("a.com", "/live/stream"), "svc");
@@ -244,7 +254,7 @@ TEST(ServiceMatcher, LongestPrefixWins) {
            .cache = {100, 3},
        }},
   };
-  ServiceMatcher matcher(services);
+  auto matcher = matchOnListener(std::move(services));
 
   EXPECT_EQ(matcher.match("a.com", "/live/hd/stream"), "long");
   EXPECT_EQ(matcher.match("a.com", "/live/sd/stream"), "short");
@@ -269,7 +279,7 @@ TEST(ServiceMatcher, ExactPathOverPrefix) {
            .cache = {100, 3},
        }},
   };
-  ServiceMatcher matcher(services);
+  auto matcher = matchOnListener(std::move(services));
 
   // Exact path wins over prefix for exact match
   EXPECT_EQ(matcher.match("a.com", "/relay"), "exact");
@@ -296,7 +306,7 @@ TEST(ServiceMatcher, AnyPathFallback) {
            .cache = {100, 3},
        }},
   };
-  ServiceMatcher matcher(services);
+  auto matcher = matchOnListener(std::move(services));
 
   EXPECT_EQ(matcher.match("a.com", "/moq"), "specific");
   EXPECT_EQ(matcher.match("a.com", "/anything"), "any");
@@ -314,7 +324,7 @@ TEST(ServiceMatcher, PathWithWildcardAuthority) {
            .cache = {100, 3},
        }},
   };
-  ServiceMatcher matcher(services);
+  auto matcher = matchOnListener(std::move(services));
 
   EXPECT_EQ(matcher.match("foo.example.com", "/relay"), "wild-path");
   EXPECT_EQ(matcher.match("foo.example.com", "/other"), std::nullopt);
@@ -324,7 +334,7 @@ TEST(ServiceMatcher, AnyAuthorityMatchesAnyPath) {
   folly::F14FastMap<std::string, ServiceConfig> services = {
       makeAnyAuthorityService("any-svc"),
   };
-  ServiceMatcher matcher(services);
+  auto matcher = matchOnListener(std::move(services));
 
   EXPECT_EQ(matcher.match("any.host", "/any/path"), "any-svc");
   EXPECT_EQ(matcher.match("other", ""), "any-svc");
@@ -349,7 +359,7 @@ TEST(ServiceMatcher, AuthorityMatchButPathMismatchFallsToWildcard) {
            .cache = {100, 3},
        }},
   };
-  ServiceMatcher matcher(services);
+  auto matcher = matchOnListener(std::move(services));
 
   // Exact authority matches but path doesn't → falls through to wildcard
   EXPECT_EQ(matcher.match("foo.example.com", "/specific"), "exact-with-path");
@@ -362,7 +372,7 @@ TEST(ServiceMatcher, MultipleAnyAuthorityDifferentPaths) {
       makeAnyAuthorityService("live", ME::PrefixPath{"/live/"}),
       makeAnyAuthorityService("default", ME::PrefixPath{"/"}),
   };
-  ServiceMatcher matcher(services);
+  auto matcher = matchOnListener(std::move(services));
 
   EXPECT_EQ(matcher.match("anything.com", "/moq-relay"), "relay");
   EXPECT_EQ(matcher.match("anything.com", "/live/stream"), "live");
@@ -374,7 +384,7 @@ TEST(ServiceMatcher, AnyAuthorityExactPathOverPrefix) {
       makeAnyAuthorityService("prefix", ME::PrefixPath{"/relay"}),
       makeAnyAuthorityService("exact", ME::ExactPath{"/relay"}),
   };
-  ServiceMatcher matcher(services);
+  auto matcher = matchOnListener(std::move(services));
 
   // Exact path wins
   EXPECT_EQ(matcher.match("any.com", "/relay"), "exact");
@@ -394,11 +404,35 @@ TEST(ServiceMatcher, AuthorityMatchButPathMismatchFallsToAny) {
        }},
       makeAnyAuthorityService("any-svc"),
   };
-  ServiceMatcher matcher(services);
+  auto matcher = matchOnListener(std::move(services));
 
   // Exact authority matches but path doesn't → falls through to any-authority
   EXPECT_EQ(matcher.match("foo.com", "/specific"), "exact-with-path");
   EXPECT_EQ(matcher.match("foo.com", "/other"), "any-svc");
+}
+
+// --- Listener binding tests ---
+
+TEST(ServiceMatcher, SkipsServicesNotBoundToListener) {
+  folly::F14FastMap<std::string, ServiceConfig> services = {
+      makeExactService("public", {"a.com"}),
+      makeExactService("internal", {"b.com"}),
+      makeAnyAuthorityService("both"),
+  };
+  services.at("public").listeners = {"public"};
+  services.at("internal").listeners = {"internal"};
+  services.at("both").listeners = {"public", "internal"};
+
+  ServiceMatcher onPublic(services, "public");
+  EXPECT_EQ(onPublic.match("a.com", "/"), "public");
+  EXPECT_EQ(onPublic.match("b.com", "/"), "both");
+
+  ServiceMatcher onInternal(services, "internal");
+  EXPECT_EQ(onInternal.match("a.com", "/"), "both");
+  EXPECT_EQ(onInternal.match("b.com", "/"), "internal");
+
+  ServiceMatcher onOther(services, "other");
+  EXPECT_EQ(onOther.match("a.com", "/"), std::nullopt);
 }
 
 // --- allExactPaths() tests ---
@@ -408,7 +442,7 @@ TEST(ServiceMatcher, AllExactPathsEmpty) {
   folly::F14FastMap<std::string, ServiceConfig> services = {
       makeAnyAuthorityService("svc", ME::PrefixPath{"/"})
   };
-  ServiceMatcher matcher(services);
+  auto matcher = matchOnListener(std::move(services));
   EXPECT_TRUE(matcher.allExactPaths().empty());
 }
 
@@ -445,7 +479,7 @@ TEST(ServiceMatcher, AllExactPathsCollectsAcrossAuthorityTiers) {
        }}
   );
 
-  ServiceMatcher matcher(services);
+  auto matcher = matchOnListener(std::move(services));
   auto paths = matcher.allExactPaths();
   std::sort(paths.begin(), paths.end());
   EXPECT_EQ(paths, (std::vector<std::string>{"/cdn", "/fallback", "/moq-relay"}));
@@ -471,7 +505,7 @@ TEST(ServiceMatcher, AllExactPathsDeduplicates) {
        }}
   );
 
-  ServiceMatcher matcher(services);
+  auto matcher = matchOnListener(std::move(services));
   auto paths = matcher.allExactPaths();
   EXPECT_EQ(paths.size(), 1u);
   EXPECT_EQ(paths[0], "/moq");
@@ -491,7 +525,7 @@ TEST(ServiceMatcher, AllExactPathsIgnoresPrefixPaths) {
        }}
   );
 
-  ServiceMatcher matcher(services);
+  auto matcher = matchOnListener(std::move(services));
   auto paths = matcher.allExactPaths();
   EXPECT_EQ(paths, (std::vector<std::string>{"/exact"}));
 }

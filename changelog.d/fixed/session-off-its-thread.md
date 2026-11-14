@@ -1,0 +1,1 @@
+- With `use_relay_thread` or `use_local_forwarders`, the relay could destroy a session, or call into it, off the session's own thread.

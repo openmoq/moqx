@@ -105,6 +105,8 @@ struct MvfstConfig {
   // Ignore the peer's path MTU and send full-size (max UDP payload) packets.
   // Useful for testing / controlled networks; off by default to respect PMTU.
   bool canIgnorePathMTU{false};
+  // Raise the loss time threshold past the lateness of each spurious loss.
+  bool adaptiveLossTimeThreshold{false};
 
   // BBR (BBR1) congestion control tunables.
   // conservativeRecovery is shared with BBR2.
@@ -153,6 +155,10 @@ struct MvfstConfig {
   // UDP socket send/receive buffer size in bytes. 0 = use MoQServer default (1 MB).
   // Increase when high fan-out causes EAGAIN bursts under load.
   uint64_t udpSocketBufferBytes{0};
+
+  // HTTP/3 transaction and WebTransport session idle timeout. 0 = none.
+  uint64_t h3TxnTimeoutMs{0};
+  static constexpr uint64_t kMaxH3TxnTimeoutMs = 365ull * 24 * 60 * 60 * 1000;
 
   BBR bbr;
   BBR2 bbr2;
@@ -239,12 +245,18 @@ struct ServiceConfig {
   };
 
   std::vector<MatchEntry> match;
+  // Listener names; empty binds the service to none. Absent in YAML resolves to every listener.
+  std::vector<std::string> listeners;
   CacheConfig cache;
   std::optional<UpstreamConfig> upstream; // set if this service chains to an upstream relay
   AuthConfig auth;
   std::vector<UpstreamConfig> upstreams; // exclusive with upstream
   uint32_t maxSubscriptionBufferKb{0};   // 0 = unlimited
 };
+
+inline uint64_t subscriptionBufferBytes(const ServiceConfig& svc) {
+  return uint64_t(svc.maxSubscriptionBufferKb) * 1024;
+}
 
 struct AdminConfig {
   folly::SocketAddress address;

@@ -36,10 +36,12 @@ def resolve_anyof:
   end;
 
 # Fully resolve a property value to an object with .properties:
-# strip anyOf nullability, resolve $ref, and unwrap array items.
+# pick an anyOf variant (the map values, if any), resolve $ref, and unwrap array items.
 def resolve_prop:
-  resolve_anyof | resolve_ref |
-  if .type == "array" and .items then
+  resolve_ref |
+  if .anyOf then
+    (([.anyOf[] | .additionalProperties // empty] | first) // resolve_anyof) | resolve_prop
+  elif .type == "array" and .items then
     .items | resolve_ref
   else .
   end;
@@ -49,7 +51,7 @@ def type_str:
   resolve_anyof |
   if .type == "array" then
     (.items | resolve_ref | .type // "object") + "[]"
-  elif .type then .type
+  elif .type then .type + (if .enum then " (" + (.enum | join(", ")) + ")" else "" end)
   elif ."$ref" then "object"
   else "unknown"
   end;

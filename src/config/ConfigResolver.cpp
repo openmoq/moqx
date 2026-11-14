@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <iomanip>
+#include <map>
 #include <random>
 #include <sstream>
 #include <unordered_map>
@@ -29,16 +30,16 @@ namespace openmoq::moqx::config {
 
 namespace {
 
-constexpr const char* kStackMvfst = "mvfst";
-constexpr const char* kStackPicoquic = "picoquic";
-// Named proxygen_qmux (not bare "qmux") so a second qmux impl can be added later.
-constexpr const char* kStackProxygenQmux = "proxygen_qmux";
-
-QuicStack parseQuicStack(const std::string& stackStr) {
-  if (stackStr == kStackPicoquic) {
-    return QuicStack::Picoquic;
+QuicStack parseQuicStack(const std::optional<ParsedQuicStack>& stack) {
+  if (!stack.has_value()) {
+    return QuicStack::Mvfst;
   }
-  if (stackStr == kStackProxygenQmux) {
+  switch (stack->value()) {
+  case ParsedQuicStack::value_of<"mvfst">():
+    return QuicStack::Mvfst;
+  case ParsedQuicStack::value_of<"picoquic">():
+    return QuicStack::Picoquic;
+  case ParsedQuicStack::value_of<"proxygen_qmux">():
     return QuicStack::ProxygenQmux;
   }
   return QuicStack::Mvfst;
@@ -368,24 +369,15 @@ void validateListener(
       warnings
   );
 
-  // quic_stack validation
-  const auto& stackOpt = listener.quic_stack.value();
-  if (stackOpt.has_value() && *stackOpt != kStackMvfst && *stackOpt != kStackPicoquic &&
-      *stackOpt != kStackProxygenQmux) {
-    errors.push_back(
-        "Listener '" + listener.name.value() + "': unknown quic_stack '" + *stackOpt +
-        "' (expected \"mvfst\", \"picoquic\", or \"proxygen_qmux\")"
-    );
-  }
-  if (stackOpt.value_or(kStackMvfst) == kStackPicoquic && listener.tls.value().insecure.value()) {
+  const bool picoquic = parseQuicStack(listener.quic_stack.value()) == QuicStack::Picoquic;
+  if (picoquic && listener.tls.value().insecure.value()) {
     errors.push_back(
         "Listener '" + listener.name.value() +
         "': quic_stack \"picoquic\" requires real TLS credentials (insecure: true is not supported)"
     );
   }
   const auto& pkcs12File = listener.tls.value().pkcs12_file.value();
-  if (stackOpt.value_or(kStackMvfst) == kStackPicoquic && pkcs12File.has_value() &&
-      !pkcs12File->empty()) {
+  if (picoquic && pkcs12File.has_value() && !pkcs12File->empty()) {
     errors.push_back(
         "Listener '" + listener.name.value() +
         "': quic_stack \"picoquic\" does not support pkcs12_file yet; use cert_file/key_file"
@@ -747,11 +739,43 @@ mergedSubscriptionBufferKb(const ParsedServiceConfig& svc, const ParsedConfig& c
   return std::nullopt;
 }
 
+// Absent `listeners` binds the service to every listener, in listenerNames order.
+std::vector<std::string> resolveServiceListeners(
+    const std::string& name,
+    const ParsedServiceConfig& svc,
+    const std::vector<std::string>& listenerNames,
+    std::vector<std::string>& errors,
+    std::vector<std::string>& warnings
+) {
+  const auto& parsed = svc.listeners.value();
+  if (!parsed.has_value()) {
+    return listenerNames;
+  }
+  if (parsed->empty()) {
+    warnings.push_back(
+        "Service '" + name + "': listeners is empty; no incoming session can select the service"
+    );
+  }
+  std::vector<std::string> resolved;
+  std::unordered_set<std::string> seen;
+  for (const auto& listener : *parsed) {
+    if (std::find(listenerNames.begin(), listenerNames.end(), listener) == listenerNames.end()) {
+      errors.push_back("Service '" + name + "': unknown listener '" + listener + "'");
+    } else if (!seen.insert(listener).second) {
+      errors.push_back("Service '" + name + "': listener '" + listener + "' is listed twice");
+    } else {
+      resolved.push_back(listener);
+    }
+  }
+  return resolved;
+}
+
 void validateService(
     const std::string& name,
     const ParsedServiceConfig& svc,
     const ParsedConfig& config,
-    std::unordered_set<std::string>& compositeKeys,
+    const std::vector<std::string>& serviceListeners,
+    std::map<std::pair<std::string, std::string>, std::string>& ruleOwners,
     std::unordered_map<std::string, ParsedCacheConfig>& mergedCaches,
     std::unordered_map<std::string, ParsedAuthConfig>& mergedAuths,
     std::vector<std::string>& errors,
@@ -759,6 +783,7 @@ void validateService(
 ) {
 
   // Validate each match entry
+  std::unordered_set<std::string> ownKeys;
   const auto& matchEntries = svc.match.value();
   for (size_t j = 0; j < matchEntries.size(); ++j) {
     const auto& entry = matchEntries[j];
@@ -774,8 +799,24 @@ void validateService(
     }
 
     auto key = makeCompositeKey(authInfo->type, authInfo->value, entry.path.value());
-    if (!compositeKeys.insert(key).second) {
+    if (!ownKeys.insert(key).second) {
       errors.push_back("Duplicate (authority, path) combination in service '" + name + "': " + key);
+      continue;
+    }
+    // Rules of different services only collide when both are reachable on the same listener.
+    std::map<std::string, std::vector<std::string>> clashes; // other service → shared listeners
+    for (const auto& listener : serviceListeners) {
+      auto [it, inserted] = ruleOwners.try_emplace({listener, key}, name);
+      if (!inserted) {
+        clashes[it->second].push_back(listener);
+      }
+    }
+    for (const auto& [other, shared] : clashes) {
+      errors.push_back(
+          "Duplicate (authority, path) combination on listener" +
+          std::string(shared.size() > 1 ? "s" : "") + " '" + folly::join("', '", shared) +
+          "' in services '" + other + "' and '" + name + "': " + key
+      );
     }
   }
 
@@ -918,6 +959,8 @@ void applyMvfstOverride(MvfstConfig& base, const ParsedMvfstConfig& overlay) {
     base.numGROBuffers = *v;
   if (auto v = overlay.ignore_path_mtu.value())
     base.canIgnorePathMTU = *v;
+  if (auto v = overlay.adaptive_loss_time_threshold.value())
+    base.adaptiveLossTimeThreshold = *v;
   if (const auto& b = overlay.bbr.value()) {
     if (auto v = b->conservative_recovery.value())
       base.bbr.conservativeRecovery = *v;
@@ -972,6 +1015,8 @@ void applyMvfstOverride(MvfstConfig& base, const ParsedMvfstConfig& overlay) {
   }
   if (auto v = overlay.udp_socket_buffer_bytes.value())
     base.udpSocketBufferBytes = *v;
+  if (auto v = overlay.h3_txn_timeout_ms.value())
+    base.h3TxnTimeoutMs = *v;
 }
 
 MvfstConfig mergeMvfstConfig(
@@ -1067,6 +1112,12 @@ void validateMvfstConfig(
         ") exceeds 64; most kernels cap GRO at 64 buffers"
     );
   }
+  if (mvfst.h3TxnTimeoutMs > MvfstConfig::kMaxH3TxnTimeoutMs) {
+    errors.push_back(
+        context + " mvfst: h3_txn_timeout_ms must be <= " +
+        std::to_string(MvfstConfig::kMaxH3TxnTimeoutMs) + " (0 = none)"
+    );
+  }
   if (mvfst.copa.deltaParam <= 0.0 || mvfst.copa.deltaParam >= 1.0) {
     errors.push_back(
         context + " mvfst: copa.delta_param (" + std::to_string(mvfst.copa.deltaParam) +
@@ -1084,18 +1135,20 @@ void validateMvfstConfig(
 // For pico listeners, h3zero routes WebTransport CONNECT by prefix-up-to-'?'
 // path matching. Only exact service paths can be registered as WT endpoints;
 // prefix-path service rules will not route any pico connections.
-// Warnings are emitted once, naming all affected pico listeners, since services
-// are shared across all listeners.
 void validatePicoServicePaths(
+    const std::string& listenerName,
     const std::map<std::string, ParsedServiceConfig>& services,
-    const std::vector<std::string>& picoListenerNames,
+    const std::unordered_map<std::string, std::vector<std::string>>& serviceListeners,
     std::vector<std::string>& warnings
 ) {
-  auto listenerLabel = "Picoquic listener" + std::string(picoListenerNames.size() > 1 ? "s" : "") +
-                       " '" + folly::join("', '", picoListenerNames) + "'";
+  auto listenerLabel = "Picoquic listener '" + listenerName + "'";
 
   size_t exactPathCount = 0;
   for (const auto& [svcName, svc] : services) {
+    const auto& bound = serviceListeners.at(svcName);
+    if (std::find(bound.begin(), bound.end(), listenerName) == bound.end()) {
+      continue;
+    }
     const auto& matchRules = svc.match.value();
     for (size_t j = 0; j < matchRules.size(); ++j) {
       matchRules[j].path.value().visit([&](const auto& alt) {
@@ -1138,8 +1191,7 @@ ListenerConfig resolveListener(
     tlsMode = resolveTlsConfig(tls, std::move(material));
   }
 
-  const auto& stackStr = listener.quic_stack.value().value_or(kStackMvfst);
-  auto quicStack = parseQuicStack(stackStr);
+  auto quicStack = parseQuicStack(listener.quic_stack.value());
 
   return ListenerConfig{
       .name = listener.name.value(),
@@ -1185,6 +1237,7 @@ ServiceConfig::MatchEntry resolveMatchEntry(const ParsedServiceConfig::MatchRule
 
 ServiceConfig resolveService(
     const ParsedServiceConfig& svc,
+    std::vector<std::string> listeners,
     const ParsedCacheConfig& cache,
     const std::optional<ParsedAuthConfig>& auth,
     uint32_t maxSubscriptionBufferKb
@@ -1205,6 +1258,7 @@ ServiceConfig resolveService(
   }
   return ServiceConfig{
       .match = std::move(entries),
+      .listeners = std::move(listeners),
       .cache = resolveCacheConfig(cache),
       .upstream = std::move(upstream),
       .auth = resolveAuth(auth),
@@ -1236,9 +1290,26 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
   std::vector<QuicConfig> mergedQuicConfigs;
   std::vector<MvfstConfig> mergedMvfstConfigs;
   std::vector<std::optional<TlsMaterial>> listenerTlsMaterials;
+  std::vector<std::string> listenerNames; // unique, in config.listeners order
+  std::unordered_set<std::string> picoListenerNames;
+  if (config.listeners.value().listForm()) {
+    warnings.push_back("listeners: the list form is deprecated; key each listener by its name");
+  }
   {
     std::unordered_set<std::string> listenerAddrs;
+    std::unordered_set<std::string> seenNames;
+    std::unordered_set<std::string> duplicateNames;
     for (const auto& listener : config.listeners.value()) {
+      if (seenNames.insert(listener.name.value()).second) {
+        listenerNames.push_back(listener.name.value());
+      } else if (duplicateNames.insert(listener.name.value()).second) {
+        errors.push_back(
+            "Listener name '" + listener.name.value() + "' is used by several listeners"
+        );
+      }
+      if (parseQuicStack(listener.quic_stack.value()) == QuicStack::Picoquic) {
+        picoListenerNames.insert(listener.name.value());
+      }
       validateListener(listener, errors, warnings);
       // Transcode any PKCS#12 bundle now (skipped for insecure listeners) so a
       // bad password/file surfaces as a load-time config error.
@@ -1258,8 +1329,7 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
         errors.push_back("Duplicate listener address: " + addr);
       }
       auto quic = mergeQuicConfig(quicDefaults, listener.quic.value());
-      const auto stackStr = listener.quic_stack.value().value_or(kStackMvfst);
-      const auto stack = parseQuicStack(stackStr);
+      const auto stack = parseQuicStack(listener.quic_stack.value());
       validateQuicConfig(quic, stack, "Listener '" + listener.name.value() + "'", errors, warnings);
       mergedQuicConfigs.push_back(quic);
       mergedMvfstConfigs.push_back(mergeMvfstConfig(mvfstDefaults, listener.mvfst.value()));
@@ -1286,20 +1356,6 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
     }
   }
 
-  // === Validate pico listeners against service paths ===
-  // Services are shared, so warnings are emitted once naming all pico listeners.
-  {
-    std::vector<std::string> picoListenerNames;
-    for (const auto& listener : config.listeners.value()) {
-      if (listener.quic_stack.value().value_or(kStackMvfst) == kStackPicoquic) {
-        picoListenerNames.push_back(listener.name.value());
-      }
-    }
-    if (!picoListenerNames.empty()) {
-      validatePicoServicePaths(config.services.value(), picoListenerNames, warnings);
-    }
-  }
-
   // === Validate admin ===
   validateAdmin(config, errors);
 
@@ -1321,12 +1377,38 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
     errors.push_back("At least one service is required");
   }
 
-  std::unordered_set<std::string> compositeKeys;
+  // (listener, rule key) → the service that holds the rule there
+  std::map<std::pair<std::string, std::string>, std::string> ruleOwners;
+  std::unordered_map<std::string, std::vector<std::string>> serviceListeners;
+  std::unordered_set<std::string> boundListeners;
   std::unordered_map<std::string, ParsedCacheConfig> mergedCaches;
   std::unordered_map<std::string, ParsedAuthConfig> mergedAuths;
 
   for (const auto& [name, svc] : services) {
-    validateService(name, svc, config, compositeKeys, mergedCaches, mergedAuths, errors, warnings);
+    auto& bound = serviceListeners[name] =
+        resolveServiceListeners(name, svc, listenerNames, errors, warnings);
+    boundListeners.insert(bound.begin(), bound.end());
+    validateService(
+        name,
+        svc,
+        config,
+        bound,
+        ruleOwners,
+        mergedCaches,
+        mergedAuths,
+        errors,
+        warnings
+    );
+  }
+
+  for (const auto& name : listenerNames) {
+    if (!boundListeners.contains(name)) {
+      warnings.push_back(
+          "Listener '" + name + "': no service is available on it; all sessions are rejected"
+      );
+    } else if (picoListenerNames.contains(name)) {
+      validatePicoServicePaths(name, services, serviceListeners, warnings);
+    }
   }
 
   // === Validate threads ===
@@ -1377,7 +1459,13 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
                                                : std::nullopt;
     resolvedServices.emplace(
         name,
-        resolveService(svc, mergedCaches.at(name), auth, *mergedSubscriptionBufferKb(svc, config))
+        resolveService(
+            svc,
+            std::move(serviceListeners.at(name)),
+            mergedCaches.at(name),
+            auth,
+            *mergedSubscriptionBufferKb(svc, config)
+        )
     );
   }
 

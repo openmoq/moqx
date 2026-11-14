@@ -142,7 +142,7 @@ if [ "$MOQX_PICO_ENABLE" = "true" ] && [ "$MOQX_INSECURE" = "true" ]; then
 fi
 if [ "$MOQX_PICO_ENABLE" = "true" ]; then
   MOQX_PICO_LISTENER=$(cat <<PICO
-  - name: relay-pico
+  relay-pico:
     quic_stack: picoquic
     moqt_versions: ${MOQX_MOQT_VERSIONS}
     udp:

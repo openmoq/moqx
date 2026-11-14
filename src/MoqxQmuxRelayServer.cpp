@@ -5,11 +5,11 @@
  */
 
 #include "MoqxQmuxRelayServer.h"
+#include "MoqxRelaySession.h"
 
 #include "stats/EventBaseStatsCollector.h"
-#include <moxygen/MoQRelaySession.h>
+#include "tls/FizzContextBuilder.h"
 #include <moxygen/QmuxUtils.h>
-#include <proxygen/httpserver/samples/hq/FizzContext.h>
 
 #include <folly/logging/xlog.h>
 #include <quic/state/TransportSettings.h>
@@ -28,28 +28,7 @@ std::vector<std::string> buildQmuxAlpns(const std::string& versions) {
 
 std::shared_ptr<const fizz::server::FizzServerContext>
 buildFizzContext(const config::ListenerConfig& cfg) {
-  auto alpns = buildQmuxAlpns(cfg.moqtVersions);
-  return std::visit(
-      [&alpns](const auto& tls) -> std::shared_ptr<const fizz::server::FizzServerContext> {
-        using T = std::decay_t<decltype(tls)>;
-        if constexpr (std::is_same_v<T, config::Insecure>) {
-          return quic::samples::createFizzServerContextWithInsecureDefault(
-              alpns,
-              fizz::server::ClientAuthMode::None,
-              "",
-              ""
-          );
-        } else {
-          return quic::samples::createFizzServerContext(
-              alpns,
-              fizz::server::ClientAuthMode::Optional,
-              tls.certFile,
-              tls.keyFile
-          );
-        }
-      },
-      cfg.tlsMode
-  );
+  return tls::buildFizzServerContext(cfg.tlsMode, buildQmuxAlpns(cfg.moqtVersions));
 }
 
 // Translate the QUIC flow-control / idle-timeout knobs into the QMUX transport
@@ -81,11 +60,12 @@ MoqxQmuxRelayServer::MoqxQmuxRelayServer(
           buildFizzContext(listenerCfg),
           buildQmuxConfig(listenerCfg.quic)
       ),
-      listenerCfg_(listenerCfg), context_(std::move(context)), ioExecutor_(ioExecutor) {
+      listenerCfg_(listenerCfg), context_(std::move(context)),
+      listenerMatcher_(context_->listenerMatcher(listenerCfg_.name)), ioExecutor_(ioExecutor) {
   // Advertise on every listener: activation is bilateral and loop protection
   // must not vary by listener configuration.
-  if (const auto hopID = context_->getRelayHopID()) {
-    addSetupParameter(SetupParameter(folly::to_underlying(SetupKey::HOP_ID), *hopID));
+  for (auto& extension : context_->makeServerExtensions()) {
+    addExtension(std::move(extension));
   }
 }
 
@@ -132,7 +112,7 @@ void MoqxQmuxRelayServer::onNewSession(std::shared_ptr<MoQSession> clientSession
 }
 
 void MoqxQmuxRelayServer::terminateClientSession(std::shared_ptr<MoQSession> session) {
-  context_->onSessionEnd(session);
+  context_->onSessionEnd(listenerMatcher_, session);
   MoQQmuxServer::terminateClientSession(std::move(session));
 }
 
@@ -146,14 +126,16 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxQmuxRelayServer::validat
   if (!base.hasValue()) {
     return base;
   }
-  return context_->validateAuthority(clientSetup, negotiatedVersion, std::move(session));
+  return context_
+      ->validateAuthority(listenerMatcher_, clientSetup, negotiatedVersion, std::move(session));
 }
 
 std::shared_ptr<MoQSession> MoqxQmuxRelayServer::createSession(
     folly::MaybeManagedPtr<proxygen::WebTransport> wt,
     std::shared_ptr<MoQExecutor> executor
 ) {
-  return std::make_shared<MoQRelaySession>(
+  return std::make_shared<MoqxRelaySession>(
+      listenerMatcher_.name(),
       folly::MaybeManagedPtr<proxygen::WebTransport>(std::move(wt)),
       *this,
       std::move(executor)

@@ -21,16 +21,15 @@
 #include "relay/TrackStatsFilter.h"
 #include "relay/WeakRelayForwarderCallback.h"
 #include <algorithm>
-#include <folly/CancellationToken.h>
 #include <folly/container/F14Set.h>
-#include <folly/coro/Collect.h>
 #include <moxygen/FillFetch.h>
 #include <moxygen/MoQFilters.h>
 #include <moxygen/MoQTrackProperties.h>
 
+#include "relay/SessionConfined.h"
+
 namespace {
 constexpr uint8_t kDefaultUpstreamPriority = 128;
-constexpr std::chrono::seconds kUpstreamConnectWaitTimeout(5);
 
 // Fire-and-forget an upstream-update coroutine on exec — the
 // co_withExecutor(getKeepAliveToken(exec), ...).start() idiom shared by the
@@ -78,70 +77,33 @@ moxygen::TrackNamespace makeNamespaceSuffix(const moxygen::TrackNamespace& src, 
   );
 }
 
-void setOutgoingHopPath(
-    moxygen::TrackRequestParameters& params,
-    const std::shared_ptr<moxygen::MoQSession>& session,
-    const std::vector<uint64_t>& incomingPath,
-    uint64_t routeCost,
-    uint64_t localHopID
+// True when participant announced the route, or the route's path runs through participant's
+// exclusion hop. The relay does not advertise such a route to participant.
+bool touches(
+    const openmoq::moqx::NamespaceTree::NamespaceNode::Route& route,
+    const openmoq::moqx::ParticipantInfo& participant
 ) {
-  params.eraseAllParamsOfType(moxygen::TrackRequestParamKey::HOP_PATH);
-  params.eraseAllParamsOfType(moxygen::TrackRequestParamKey::ROUTE_COST);
-  if (!session->negotiatedSetupExtension(moxygen::SetupExtension::RelayHops)) {
-    return;
+  if (route.participant.info->sessionId == participant.sessionId) {
+    return true;
   }
-  auto version = session->getNegotiatedVersion();
-  XCHECK(version.has_value());
-  auto outgoingPath = incomingPath;
-  outgoingPath.push_back(localHopID);
-  auto encodedPath = moxygen::encodeRelayHopPath(outgoingPath, *version);
-  XCHECK(encodedPath.hasValue());
-  params.insertParam(moxygen::Parameter(
-      folly::to_underlying(moxygen::TrackRequestParamKey::HOP_PATH),
-      std::move(encodedPath.value())
-  ));
-  params.insertParam(
-      moxygen::Parameter(folly::to_underlying(moxygen::TrackRequestParamKey::ROUTE_COST), routeCost)
-  );
+  const auto& exclusion = participant.routing.exclusion;
+  return exclusion && openmoq::moqx::clusterPathContains(route.path, exclusion->hop);
 }
 
-// A peer must not be advertised a path that runs through it.
-bool shouldForwardNamespace(
-    const std::shared_ptr<moxygen::MoQSession>& publisherSession,
-    const std::shared_ptr<moxygen::MoQSession>& subscriberSession,
-    moxygen::SubscribeNamespaceOptions options,
-    const std::vector<uint64_t>& incomingPath,
-    uint64_t localHopID
-) {
-  const auto peerHop = subscriberSession->getPeerHopID();
-  return subscriberSession != publisherSession &&
-         (options == moxygen::SubscribeNamespaceOptions::NAMESPACE ||
-          options == moxygen::SubscribeNamespaceOptions::BOTH) &&
-         !openmoq::moqx::clusterPathContains(incomingPath, peerHop) &&
-         (peerHop == moxygen::kMoQClusterAnonHopId || peerHop != localHopID);
+bool shouldForwardNamespace(moxygen::SubscribeNamespaceOptions options) {
+  return options == moxygen::SubscribeNamespaceOptions::NAMESPACE ||
+         options == moxygen::SubscribeNamespaceOptions::BOTH;
 }
 
-// Routes that a request from requester may not use. Unset unless it negotiated MoQ Cluster.
-std::optional<openmoq::moqx::RouteExclusion>
-exclusionFor(const std::shared_ptr<moxygen::MoQSession>& requester) {
-  if (!requester || !requester->negotiatedSetupExtension(moxygen::SetupExtension::RelayHops)) {
-    return std::nullopt;
-  }
-  return openmoq::moqx::RouteExclusion{
-      .session = requester->sessionId(),
-      .hop = requester->getPeerHopID()
-  };
-}
-
-// Below draft 20, rejects a bounded subscription whose end group is already behind
-// the forwarder's largest group (the client should FETCH instead). Draft 20 accepts
+// Below draft 22, rejects a bounded subscription whose end group is already behind
+// the forwarder's largest group (the client should FETCH instead). Draft 22 accepts
 // it. Returns std::nullopt when the range is acceptable.
 std::optional<moxygen::SubscribeError> checkRangeNotInPast(
     moxygen::MoQForwarder& fwd,
     const moxygen::SubscribeRequest& subReq,
-    const moxygen::MoQSession& session
+    uint64_t subscriberVersion
 ) {
-  if (moxygen::useFillFetch(session.getNegotiatedVersion().value_or(0))) {
+  if (moxygen::useFillFetch(subscriberVersion)) {
     return std::nullopt;
   }
   auto endGroup = subReq.filter.legacyEndGroup();
@@ -155,24 +117,19 @@ std::optional<moxygen::SubscribeError> checkRangeNotInPast(
   return std::nullopt;
 }
 
-bool isV18Plus(const std::shared_ptr<moxygen::MoQSession>& session) {
-  auto version = session ? session->getNegotiatedVersion() : std::optional<uint64_t>{};
-  return version.has_value() && moxygen::getDraftMajorVersion(*version) >= 18;
-}
-
 // Derives the upstream SubscribeRequest from a downstream one: fetch from latest at
 // upstream priority/default group order, session-assigned requestID, caller's forward.
 moxygen::SubscribeRequest makeUpstreamSubReq(
     moxygen::SubscribeRequest base,
     bool forward,
-    const std::shared_ptr<moxygen::MoQSession>& upstreamSession
+    const openmoq::moqx::ParticipantInfo& upstream
 ) {
   // A downstream's RENDEZVOUS_TIMEOUT is for this hop only.
-  if (isV18Plus(upstreamSession)) {
+  if (moxygen::getDraftMajorVersion(upstream.version) >= 18) {
     base.params.eraseAllParamsOfType(moxygen::TrackRequestParamKey::RENDEZVOUS_TIMEOUT);
   }
   base.priority = kDefaultUpstreamPriority;
-  base.groupOrder = moxygen::GroupOrder::Default;
+  base.groupOrder.reset();
   base.filter = moxygen::LocationFilter::nextObject();
   // Downstream fills come from the cache and an upstream FETCH.
   base.fill.reset();
@@ -200,22 +157,18 @@ public:
       moxygen::SubscribeRequest subReq,
       std::shared_ptr<moxygen::TrackConsumer> consumer
   ) override {
-    auto session = moxygen::MoQSession::getRequestSession();
-    if (subReq.fullTrackName.trackNamespace.empty() && !MoqxRelay::emptyNamespaceAllowed(session)) {
+    const auto& subscriber = *requestParticipant().info;
+    if (subReq.fullTrackName.trackNamespace.empty() &&
+        !MoqxRelay::emptyNamespaceAllowed(subscriber)) {
       co_return folly::makeUnexpected(moxygen::SubscribeError{
           subReq.requestID,
           moxygen::SubscribeErrorCode::DOES_NOT_EXIST,
           "namespace required"
       });
     }
-    auto* subscriberExec = session->getExecutor();
-    // No executor hop: subscribeFromSubscriberExec starts on subscriberExec.
-    co_return co_await relay_->subscribeFromSubscriberExec(
-        std::move(subReq),
-        std::move(consumer),
-        std::move(session),
-        subscriberExec
-    );
+    // No executor hop: subscribeFromSubscriberExec starts on the subscriber's executor.
+    co_return co_await relay_
+        ->subscribeFromSubscriberExec(std::move(subReq), std::move(consumer), subscriber);
   }
 
   folly::coro::Task<TrackStatusResult> trackStatus(moxygen::TrackStatus req) override {
@@ -228,18 +181,13 @@ public:
 
   folly::coro::Task<FetchResult>
   fetch(moxygen::Fetch fetch, std::shared_ptr<moxygen::FetchConsumer> consumer) override {
-    auto session = moxygen::MoQSession::getRequestSession();
-    auto setup = relay_->resolveJoiningFetchOnSubscriberExec(fetch, *session);
+    const auto& subscriber = *requestParticipant().info;
+    auto setup = relay_->resolveJoiningFetchOnSubscriberExec(fetch, subscriber);
     if (setup.hasError()) {
       return folly::coro::makeTask<FetchResult>(folly::makeUnexpected(std::move(setup.error())));
     }
     if (!setup->isReady()) {
-      return fetchAfterSetup(
-          std::move(*setup),
-          std::move(fetch),
-          std::move(session),
-          std::move(consumer)
-      );
+      return fetchAfterSetup(std::move(*setup), std::move(fetch), subscriber, std::move(consumer));
     }
     // Base filter wraps + hops to relayExec_.
     return PublisherCrossExecFilter::fetch(std::move(fetch), std::move(consumer));
@@ -249,7 +197,7 @@ private:
   folly::coro::Task<FetchResult> fetchAfterSetup(
       folly::SemiFuture<folly::Unit> setup,
       moxygen::Fetch fetch,
-      std::shared_ptr<moxygen::MoQSession> session,
+      ParticipantInfo subscriber,
       std::shared_ptr<moxygen::FetchConsumer> consumer
   ) {
     // A joining fetch pipelined behind its SUBSCRIBE resolves against the Largest from that
@@ -257,7 +205,7 @@ private:
     // failed one.
     do {
       co_await folly::coro::co_awaitTry(std::move(setup));
-      auto next = relay_->resolveJoiningFetchOnSubscriberExec(fetch, *session);
+      auto next = relay_->resolveJoiningFetchOnSubscriberExec(fetch, subscriber);
       if (next.hasError()) {
         co_return folly::makeUnexpected(std::move(next.error()));
       }
@@ -293,8 +241,8 @@ public:
       moxygen::PublishRequest pub,
       std::shared_ptr<moxygen::SubscriptionHandle> handle
   ) override {
-    auto session = moxygen::MoQSession::getRequestSession();
-    return relay_->publishFromPublisherExec(std::move(pub), std::move(handle), std::move(session));
+    return relay_
+        ->publishFromPublisherExec(std::move(pub), std::move(handle), requestParticipant());
   }
 
 private:
@@ -358,11 +306,11 @@ class MoqxRelayNamespaceHandle : public Publisher::NamespacePublishHandle {
 public:
   MoqxRelayNamespaceHandle(
       std::weak_ptr<MoqxRelay> relay,
-      std::shared_ptr<MoQSession> session,
+      Participant publisher,
       std::string peerID = {},
       folly::Executor* relayExec = nullptr
   )
-      : relay_(std::move(relay)), session_(std::move(session)), peerID_(std::move(peerID)),
+      : relay_(std::move(relay)), publisher_(std::move(publisher)), peerID_(std::move(peerID)),
         relayExec_(relayExec) {}
 
   ~MoqxRelayNamespaceHandle() {
@@ -371,7 +319,7 @@ public:
       return;
     }
     for (const auto& ns : activeNamespaces_) {
-      runOnExec(relayExec_, [relay, ns, sessionId = session_->sessionId()]() mutable {
+      runOnExec(relayExec_, [relay, ns, sessionId = publisher_.info->sessionId]() mutable {
         relay->doPublishNamespaceDone(ns, sessionId);
       });
     }
@@ -386,9 +334,10 @@ public:
     }
     runOnExec(
         relayExec_,
-        [relay = relay_, pubNs = std::move(pubNs), session = session_, peerID = peerID_]() mutable {
+        [relay = relay_, pubNs = std::move(pubNs), publisher = publisher_, peerID = peerID_](
+        ) mutable {
           if (auto r = relay.lock()) {
-            r->doPublishNamespace(std::move(pubNs), session, nullptr, peerID);
+            r->doPublishNamespace(std::move(pubNs), publisher, nullptr, peerID);
           }
         }
     );
@@ -402,16 +351,19 @@ public:
 
   void namespaceDoneMsg(const TrackNamespace& suffix) override {
     activeNamespaces_.erase(suffix);
-    runOnExec(relayExec_, [relay = relay_, suffix, sessionId = session_->sessionId()]() mutable {
-      if (auto r = relay.lock()) {
-        r->doPublishNamespaceDone(suffix, sessionId);
-      }
-    });
+    runOnExec(
+        relayExec_,
+        [relay = relay_, suffix, sessionId = publisher_.info->sessionId]() mutable {
+          if (auto r = relay.lock()) {
+            r->doPublishNamespaceDone(suffix, sessionId);
+          }
+        }
+    );
   }
 
 private:
   std::weak_ptr<MoqxRelay> relay_;
-  std::shared_ptr<MoQSession> session_;
+  Participant publisher_;
   std::string peerID_;
   folly::Executor* relayExec_;
   folly::F14FastSet<TrackNamespace, TrackNamespace::hash> activeNamespaces_;
@@ -419,150 +371,80 @@ private:
 
 std::shared_ptr<Publisher::NamespacePublishHandle> makeNamespaceBridgeHandle(
     std::weak_ptr<MoqxRelay> relay,
-    std::shared_ptr<MoQSession> session,
+    Participant publisher,
     std::string peerID,
     folly::Executor* relayExec
 ) {
   return std::make_shared<MoqxRelayNamespaceHandle>(
       std::move(relay),
-      std::move(session),
+      std::move(publisher),
       std::move(peerID),
       relayExec
   );
 }
 
-folly::coro::Task<void> MoqxRelay::onUpstreamConnect(std::shared_ptr<MoQSession> session) {
-  co_return co_await onUpstreamConnectImpl(std::move(session));
-}
-
-folly::coro::Task<void> MoqxRelay::onUpstreamConnectImpl(std::shared_ptr<MoQSession> session) {
-  // A disconnect during the handshake erases this entry, so its handles are dropped.
-  const auto id = session->sessionId();
-  upstreamHandles_.try_emplace(id);
-  auto nsHandle = makeNamespaceBridgeHandle(weak_from_this(), session, {}, relayExec_);
-  auto subNs = makePeerSubNs(relayID_);
-  // subscribeNamespace must run on the upstream session's executor
-  auto result = co_await folly::coro::co_withExecutor(
-      folly::getKeepAliveToken(session->getExecutor()),
-      session->subscribeNamespace(std::move(subNs), nsHandle)
-  );
-  auto it = upstreamHandles_.find(id);
-  if (it == upstreamHandles_.end()) {
-    co_return;
-  }
-  if (result.hasValue()) {
-    it->second.subNs = std::move(result.value());
-  } else {
-    XLOG(ERR) << "MoqxRelay: upstream peer subNs failed: " << result.error().reasonPhrase;
-  }
-  if (getDraftMajorVersion(*session->getNegotiatedVersion()) < 18) {
-    co_return;
-  }
-  auto tracks = co_await folly::coro::co_withExecutor(
-      folly::getKeepAliveToken(session->getExecutor()),
-      session->subscribeTracks(makePeerSubTracks(relayID_), nullptr)
-  );
-  it = upstreamHandles_.find(id);
-  if (it == upstreamHandles_.end()) {
-    co_return;
-  }
-  if (tracks.hasValue()) {
-    it->second.tracks = std::move(tracks.value());
-  } else {
-    XLOG(ERR) << "MoqxRelay: upstream peer subTracks failed: " << tracks.error().reasonPhrase;
-  }
-}
-
-void MoqxRelay::onUpstreamDisconnect(const std::shared_ptr<MoQSession>& session) {
-  if (session) {
-    upstreamHandles_.erase(session->sessionId());
-  }
-}
-
-folly::coro::Task<void> MoqxRelay::waitForUpstreams(folly::Function<bool()> routed) {
-  folly::CancellationSource routedSource;
-  std::vector<folly::coro::Task<void>> waits;
-  waits.reserve(upstreams_.size());
-  for (const auto& upstream : upstreams_) {
-    waits.push_back(folly::coro::co_invoke(
-        [&routed, &routedSource, wait = upstream->waitForConnected(kUpstreamConnectWaitTimeout)](
-        ) mutable -> folly::coro::Task<void> {
-          co_await std::move(wait);
-          if (routed()) {
-            routedSource.requestCancellation();
-          }
-        }
-    ));
-  }
-  co_await folly::coro::co_withCancellation(
-      folly::cancellation_token_merge(
-          co_await folly::coro::co_current_cancellation_token,
-          routedSource.getToken()
-      ),
-      folly::coro::collectAllRange(std::move(waits))
-  );
-}
-
 std::shared_ptr<Subscriber::PublishNamespaceHandle> MoqxRelay::doPublishNamespace(
     PublishNamespace pubNs,
-    std::shared_ptr<MoQSession> session,
+    Participant publisher,
     std::shared_ptr<Subscriber::PublishNamespaceCallback> callback,
     std::string peerID
 ) {
   XLOG(DBG1) << __func__ << " ns=" << pubNs.trackNamespace;
-  auto route = ingestRoute(pubNs, session);
+  const auto sessionId = publisher.info->sessionId;
+  auto route = publisher.info->routing.codec->readRoute(pubNs.params, *publisher.info);
+  const bool fromPeering = publisher.info->routing.fromPeering;
   if (!route) {
+    XLOG(DBG1) << "Dropping looped namespace ns=" << pubNs.trackNamespace;
     // Remove the route of a peer whose repeated NAMESPACE now loops.
     if (!callback) {
-      doPublishNamespaceDone(pubNs.trackNamespace, session->sessionId());
+      doPublishNamespaceDone(pubNs.trackNamespace, sessionId);
     }
     return nullptr;
   }
   if (!pubNs.trackNamespace.startsWith(allowedNamespacePrefix_)) {
     return nullptr;
   }
-  auto [nodePtr, nsSubscribers, replacedSession] = namespaceTree_.setPublisher(
+  auto [nodePtr, nsSubscribers, replacedPublisher] = namespaceTree_.setPublisher(
       pubNs.trackNamespace,
-      session,
+      std::move(publisher),
       std::move(callback),
       std::move(peerID),
       pubNs.requestID,
       route->path,
       route->cost,
-      route->fromCluster
+      fromPeering
   );
-  if (replacedSession) {
-    XLOG(WARNING) << "PublishNamespace: Existing session (" << replacedSession.get()
+  if (replacedPublisher) {
+    XLOG(WARNING) << "PublishNamespace: Existing session (" << replacedPublisher->value
                   << ") has already published trackNamespace=" << pubNs.trackNamespace;
-    dropSubscriptionsFrom(pubNs.trackNamespace, replacedSession->sessionId());
+    dropSubscriptionsFrom(pubNs.trackNamespace, *replacedPublisher);
   }
-  for (auto& [outSession, info] : nsSubscribers) {
-    reconcileAdvertisement(*nodePtr, outSession, info);
+  for (auto& [subscriber, info] : nsSubscribers) {
+    reconcileAdvertisement(*nodePtr, *subscriber.info, info);
   }
 
   pendingRendezvous_.wakeUnderNamespace(pubNs.trackNamespace);
   return std::make_shared<NamespaceRouteHandle>(
       weak_from_this(),
       pubNs.trackNamespace,
-      session->sessionId(),
+      sessionId,
       pubNs.requestID
   );
 }
 
-std::vector<std::shared_ptr<MoQSession>>
-MoqxRelay::findPublishNamespaceSessions(const TrackNamespace& ns) {
-  std::vector<std::shared_ptr<MoQSession>> sessions;
+std::vector<SessionId> MoqxRelay::findNamespacePublishers(const TrackNamespace& ns) {
+  std::vector<SessionId> publishers;
   if (const auto* node = namespaceTree_.findRouteNode(ns)) {
     for (const auto& route : node->routes()) {
-      sessions.push_back(route.session);
+      publishers.push_back(route.participant.info->sessionId);
     }
   }
-  return sessions;
+  return publishers;
 }
 
 void MoqxRelay::dropSubscriptionsFrom(const TrackNamespace& ns, SessionId sessionId) {
   registry_.removeIf([&](const SubscriptionRegistry::EntryView& e) {
-    if (e.ftn.trackNamespace.startsWith(ns) && e.upstream && e.upstream->sessionId() == sessionId) {
+    if (e.ftn.trackNamespace.startsWith(ns) && e.upstream && e.upstream->sessionId == sessionId) {
       XLOG(DBG4) << "Erasing subscription to " << e.ftn;
       return true;
     }
@@ -576,6 +458,7 @@ Subscriber::PublishNamespaceHandle::RequestUpdateResult MoqxRelay::updatePublish
     RequestID requestID,
     const RequestUpdate& update
 ) {
+  XDCHECK(onRelayExec());
   auto fail = [&](RequestErrorCode code, std::string reason) {
     return folly::makeUnexpected(RequestError{update.requestID, code, std::move(reason)});
   };
@@ -584,27 +467,21 @@ Subscriber::PublishNamespaceHandle::RequestUpdateResult MoqxRelay::updatePublish
   if (!route || route->requestID != requestID) {
     return fail(RequestErrorCode::INTERNAL_ERROR, "no such PUBLISH_NAMESPACE");
   }
-  const auto& session = *route->session;
-  auto params =
-      readClusterParams(update.params, *session.getNegotiatedVersion(), session.getRelayLinkCost());
+  const auto& publisher = *route->participant.info;
+  auto params = publisher.routing.codec->readRouteUpdate(update.params, publisher);
   if (!params) {
     doPublishNamespaceDone(trackNamespace, sessionId, requestID);
-    return fail(
-        RequestErrorCode::UNINTERESTED,
-        fmt::format("HOP_PATH contains this relay's hop ID {}", relayHopID_)
-    );
+    return fail(RequestErrorCode::UNINTERESTED, "HOP_PATH contains this relay's hop ID");
   }
-  XCHECK(route->fromCluster || (params->path.empty() && !params->cost))
-      << "moxygen rejects cluster parameters from a session that did not negotiate MoQ Cluster";
   auto path = params->path.empty() ? route->path : std::move(params->path);
   auto cost = params->cost.value_or(route->cost);
   auto result = namespaceTree_.updateRoute(trackNamespace, sessionId, requestID, path, cost);
   XCHECK(result.hasValue()) << "findRoute found this route on the same executor";
-  if (result->replacedSession) {
-    dropSubscriptionsFrom(trackNamespace, result->replacedSession->sessionId());
+  if (result->replacedPublisher) {
+    dropSubscriptionsFrom(trackNamespace, *result->replacedPublisher);
   }
-  for (auto& [outSession, info] : result->subscribers) {
-    reconcileAdvertisement(*result->node, outSession, info);
+  for (auto& [subscriber, info] : result->subscribers) {
+    reconcileAdvertisement(*result->node, *subscriber.info, info);
   }
   RequestOk ok;
   ok.requestID = update.requestID;
@@ -629,27 +506,23 @@ bool MoqxRelay::excludesSource(
 
 const NamespaceTree::NamespaceNode::Route* MoqxRelay::advertisableRoute(
     const NamespaceNode& node,
-    const std::shared_ptr<MoQSession>& subscriber,
+    const ParticipantInfo& subscriber,
     const NamespaceNode::NamespaceSubscriberInfo& info
 ) const {
   return node.selectRoute([&](const NamespaceNode::Route& r) {
-    return (info.peerID.empty() || r.peerID != info.peerID) &&
-           shouldForwardNamespace(r.session, subscriber, info.options, r.path, relayHopID_);
+    return (info.peerID.empty() || r.peerID != info.peerID) && !touches(r, subscriber);
   });
 }
 
 void MoqxRelay::reconcileAdvertisement(
     NamespaceNode& node,
-    const std::shared_ptr<MoQSession>& subscriber,
+    const ParticipantInfo& subscriber,
     const NamespaceNode::NamespaceSubscriberInfo& info
 ) {
   if (!info.namespacePublishHandle) {
     return;
   }
-  const NamespaceNode::AdvertisementKey key{
-      subscriber->sessionId(),
-      info.trackNamespacePrefix.size()
-  };
+  const NamespaceNode::AdvertisementKey key{subscriber.sessionId, info.trackNamespacePrefix.size()};
   const auto* route = advertisableRoute(node, subscriber, info);
   const auto* sent = node.findSubscriberAdvertisement(key);
   auto suffix = makeNamespaceSuffix(node.trackNamespace, info.trackNamespacePrefix.size());
@@ -668,61 +541,18 @@ void MoqxRelay::reconcileAdvertisement(
   if (!route) {
     return;
   }
-  // Only send HOP_PATH and ROUTE_COST updates to subscribers that negotiated MoQ Cluster.
-  if (sent && (!subscriber->negotiatedSetupExtension(SetupExtension::RelayHops) ||
+  if (sent && (!subscriber.routing.wantsUpdates ||
                (sent->path == route->path && sent->cost == route->cost))) {
     return;
   }
   Namespace ns;
   ns.trackNamespaceSuffix = std::move(suffix);
-  setOutgoingHopPath(ns.params, subscriber, route->path, route->cost, relayHopID_);
+  subscriber.routing.codec->writeRoute(ns.params, subscriber, route->path, route->cost);
   info.namespacePublishHandle->namespaceMsg(ns);
   node.setSubscriberAdvertisement(
       key,
       NamespaceNode::Advertisement{route->seq, route->path, route->cost}
   );
-}
-
-std::optional<MoqxRelay::ClusterParams> MoqxRelay::readClusterParams(
-    const TrackRequestParameters& params,
-    uint64_t version,
-    uint64_t linkCost
-) const {
-  ClusterParams out;
-  if (const auto* hopPath = params.getFirstParam(TrackRequestParamKey::HOP_PATH)) {
-    auto decoded = decodeRelayHopPath(hopPath->asString, version);
-    XCHECK(decoded.hasValue()) << "moxygen rejects a malformed HOP_PATH";
-    if (clusterPathContains(decoded.value(), relayHopID_)) {
-      return std::nullopt;
-    }
-    out.path = std::move(decoded.value());
-  }
-  if (const auto* cost = params.getFirstParam(TrackRequestParamKey::ROUTE_COST)) {
-    out.cost = clusterAddCost(cost->asUint64, linkCost);
-  }
-  return out;
-}
-
-std::optional<MoqxRelay::IngestedRoute>
-MoqxRelay::ingestRoute(const PublishNamespace& pubNs, const std::shared_ptr<MoQSession>& session) {
-  IngestedRoute route{
-      .path = {kMoQClusterAnonHopId},
-      .cost = session->getRelayLinkCost(),
-      .fromCluster = false
-  };
-  if (!session->negotiatedSetupExtension(SetupExtension::RelayHops)) {
-    return route;
-  }
-  route.fromCluster = true;
-  auto params = readClusterParams(pubNs.params, *session->getNegotiatedVersion(), route.cost);
-  if (!params) {
-    XLOG(DBG1) << "Dropping looped namespace ns=" << pubNs.trackNamespace;
-    return std::nullopt;
-  }
-  XCHECK(!params->path.empty()) << "moxygen requires HOP_PATH from a MoQ Cluster session";
-  route.path = std::move(params->path);
-  route.cost = params->cost.value_or(route.cost);
-  return route;
 }
 
 folly::coro::Task<Subscriber::PublishNamespaceResult> MoqxRelay::publishNamespace(
@@ -736,10 +566,10 @@ folly::coro::Task<Subscriber::PublishNamespaceResult> MoqxRelay::publishNamespac
     PublishNamespace pubNs,
     std::shared_ptr<Subscriber::PublishNamespaceCallback> callback
 ) {
+  XDCHECK(onRelayExec());
   // TODO: store auth for forwarding on future SubscribeNamespace?
-  auto session = MoQSession::getRequestSession();
   auto requestID = pubNs.requestID;
-  auto result = doPublishNamespace(std::move(pubNs), session, std::move(callback));
+  auto result = doPublishNamespace(std::move(pubNs), requestParticipant(), std::move(callback));
   if (!result) {
     co_return folly::makeUnexpected(
         PublishNamespaceError{requestID, PublishNamespaceErrorCode::UNINTERESTED, "bad namespace"}
@@ -753,6 +583,7 @@ void MoqxRelay::doPublishNamespaceDone(
     SessionId sessionId,
     std::optional<RequestID> requestID
 ) {
+  XDCHECK(onRelayExec());
   XLOG(DBG1) << __func__ << " ns=" << trackNamespace;
   auto result = namespaceTree_.unpublishNamespace(trackNamespace, sessionId, requestID);
   if (result.hasError()) {
@@ -765,12 +596,13 @@ void MoqxRelay::doPublishNamespaceDone(
     return;
   }
   auto& node = *result.value().node;
-  for (auto& [outSession, info] : result.value().subscribers) {
-    reconcileAdvertisement(node, outSession, info);
+  for (auto& [subscriber, info] : result.value().subscribers) {
+    reconcileAdvertisement(node, *subscriber.info, info);
   }
 }
 
 void MoqxRelay::onPublishDone(const FullTrackName& ftn) {
+  XDCHECK(onRelayExec());
   XLOG(DBG1) << __func__ << " ftn=" << ftn;
 
   auto upstreamView = registry_.getUpstreamView(ftn);
@@ -810,10 +642,8 @@ std::optional<PublishError> MoqxRelay::validatePublishNamespace(
 }
 
 // Draft 18+ allows an empty track namespace (PUBLISH/SUBSCRIBE/FETCH/TRACK_STATUS).
-bool MoqxRelay::emptyNamespaceAllowed(const std::shared_ptr<MoQSession>& session) {
-  auto maybeNegotiatedVersion = session->getNegotiatedVersion();
-  XCHECK(maybeNegotiatedVersion.has_value());
-  return getDraftMajorVersion(*maybeNegotiatedVersion) >= 18;
+bool MoqxRelay::emptyNamespaceAllowed(const ParticipantInfo& participant) {
+  return getDraftMajorVersion(participant.version) >= 18;
 }
 
 // Chain and entry claim are one call: LocalForwarderCallback vacates the entry when the
@@ -845,12 +675,12 @@ LocalForwarderRegistry::ParkResult MoqxRelay::installPublisherForwarder(
 Subscriber::PublishResult MoqxRelay::publishFromPublisherExec(
     PublishRequest pub,
     std::shared_ptr<Publisher::SubscriptionHandle> handle,
-    std::shared_ptr<MoQSession> session
+    const Participant& publisher
 ) {
   if (auto err = validatePublishNamespace(
           pub.fullTrackName,
           pub.requestID,
-          emptyNamespaceAllowed(session)
+          emptyNamespaceAllowed(*publisher.info)
       )) {
     return folly::makeUnexpected(std::move(*err));
   }
@@ -858,7 +688,7 @@ Subscriber::PublishResult MoqxRelay::publishFromPublisherExec(
   auto localPubFwd = std::make_shared<MoQForwarder>(pub.fullTrackName);
   // Install the new forwarder and return the identity of the one that was displaced, if any.
   // Either a publisher or a subscriber forwarder could be displaced. Either way, the relay exec
-  // hop below initiates publishDone on the publisher forwarder's exec in publishWithSession.
+  // hop below initiates publishDone on the publisher forwarder's exec in publishWithParticipant.
   auto install =
       installPublisherForwarder(pub.fullTrackName, localPubFwd, InstallKind::FromPublish);
   install.claim.markReady(InitialTrackState{pub.largest, pub.extensions});
@@ -871,7 +701,7 @@ Subscriber::PublishResult MoqxRelay::publishFromPublisherExec(
   // does not count as a real forwarding subscriber.
   localPubFwd->addSubscriber(relayChannelId_, /*forward=*/true, crossExecFilter, /*passive=*/true);
 
-  auto publisherRef = makeForwarderRef(localPubFwd, session->getExecutor());
+  auto publisherRef = makeForwarderRef(localPubFwd, publisher.info->executor);
   auto ftn = pub.fullTrackName;
   auto reply = folly::coro::co_invoke(
       [exec = relayExec_,
@@ -880,7 +710,7 @@ Subscriber::PublishResult MoqxRelay::publishFromPublisherExec(
        displacedTicket = std::move(install.displaced),
        pub = std::move(pub),
        handle = std::move(handle),
-       session = std::move(session),
+       publisher,
        publisherRef = std::move(publisherRef),
        crossExecFilter]() mutable -> folly::coro::Task<folly::Expected<PublishOk, PublishError>> {
         auto result = co_await folly::coro::co_awaitTry(folly::coro::co_withExecutor(
@@ -888,7 +718,7 @@ Subscriber::PublishResult MoqxRelay::publishFromPublisherExec(
             relay->registerPublishOnRelayExec(
                 std::move(pub),
                 std::move(handle),
-                std::move(session),
+                std::move(publisher),
                 std::move(publisherRef),
                 std::move(crossExecFilter)
             )
@@ -911,17 +741,13 @@ Subscriber::PublishResult MoqxRelay::publishFromPublisherExec(
 folly::coro::Task<folly::Expected<PublishOk, PublishError>> MoqxRelay::registerPublishOnRelayExec(
     PublishRequest pub,
     std::shared_ptr<Publisher::SubscriptionHandle> handle,
-    std::shared_ptr<MoQSession> session,
+    Participant publisher,
     ForwarderRef publisherRef,
     std::shared_ptr<CrossExecFilter> relayChainFilter
 ) {
   auto ftn = pub.fullTrackName;
-  auto setup = publishWithSession(
-      std::move(pub),
-      std::move(handle),
-      std::move(session),
-      std::move(publisherRef)
-  );
+  auto setup =
+      publishWithParticipant(std::move(pub), std::move(handle), publisher, std::move(publisherRef));
   if (setup.hasError()) {
     co_return folly::makeUnexpected(setup.error());
   }
@@ -938,30 +764,27 @@ folly::coro::Task<folly::Expected<PublishOk, PublishError>> MoqxRelay::registerP
 // publishFromPublisherExec instead).
 Subscriber::PublishResult
 MoqxRelay::publish(PublishRequest pub, std::shared_ptr<Publisher::SubscriptionHandle> handle) {
+  XDCHECK(onRelayExec());
   XLOG(DBG1) << __func__ << " ftn=" << pub.fullTrackName;
   XCHECK(handle) << "Publish handle cannot be null";
-  // getRequestSession() stays valid on relayExec_: RequestContext propagates
+  // The participant stays valid on relayExec_: RequestContext propagates
   // across the filter's executor hop. Validate before touching state.
-  auto session = MoQSession::getRequestSession();
+  const auto& publisher = requestParticipant();
   if (auto err = validatePublishNamespace(
           pub.fullTrackName,
           pub.requestID,
-          emptyNamespaceAllowed(session)
+          emptyNamespaceAllowed(*publisher.info)
       )) {
     return folly::makeUnexpected(std::move(*err));
   }
   XCHECK(mode() != Mode::LocalForwarder) << "publish() bypassed by LocalPublishFilter in LF mode";
 
-  maybeSetSessionExec(*session);
+  maybeSetSessionExec(*publisher.info);
   auto forwarder = std::make_shared<MoQForwarder>(pub.fullTrackName, pub.largest);
   forwarder->setExtensions(pub.extensions);
-  auto publisherRef = makeForwarderRef(forwarder, session->getExecutor());
-  auto setup = publishWithSession(
-      std::move(pub),
-      std::move(handle),
-      std::move(session),
-      std::move(publisherRef)
-  );
+  auto publisherRef = makeForwarderRef(forwarder, publisher.info->executor);
+  auto setup =
+      publishWithParticipant(std::move(pub), std::move(handle), publisher, std::move(publisherRef));
   if (setup.hasError()) {
     return folly::makeUnexpected(setup.error());
   }
@@ -973,12 +796,13 @@ MoqxRelay::publish(PublishRequest pub, std::shared_ptr<Publisher::SubscriptionHa
   };
 }
 
-MoqxRelay::PublishSetupResult MoqxRelay::publishWithSession(
+MoqxRelay::PublishSetupResult MoqxRelay::publishWithParticipant(
     PublishRequest pub,
     std::shared_ptr<Publisher::SubscriptionHandle> handle,
-    std::shared_ptr<MoQSession> session,
+    const Participant& publisher,
     ForwarderRef publisherRef
 ) {
+  const auto publisherId = publisher.info->sessionId;
   std::shared_ptr<MoQForwarder> chainForwarder;
   if (mode() != Mode::LocalForwarder) {
     // Strong ref to forwarder is allowed in non-LF modes
@@ -986,12 +810,11 @@ MoqxRelay::PublishSetupResult MoqxRelay::publishWithSession(
   }
 
   // Handle duplicate publisher at relay level before registering in the tree.
-  auto publisherWrapped = maybeWrapPublisher(relayExec_, session);
   auto publishEntry = registry_.createFromPublish(
       pub.fullTrackName,
       publisherRef,
-      session,
-      std::move(publisherWrapped),
+      publisher.info,
+      publisher.publisher,
       pub.requestID,
       std::move(handle),
       [&] { return buildFilterChain(pub.fullTrackName, chainForwarder); }
@@ -1005,10 +828,7 @@ MoqxRelay::PublishSetupResult MoqxRelay::publishWithSession(
     auto& evicted = *publishEntry.evicted;
     // Null handle => previous publisher already terminated and onPublishDone() tore it down; skip.
     if (evicted.handle) {
-      // Depending on mode, this is inline or a hop to publisherExec.
-      runOnSessionExec(relayExec_, evicted.publisherExec, [h = evicted.handle] {
-        h->unsubscribe();
-      });
+      evicted.handle.post([](const auto& handle) { handle->unsubscribe(); });
       PublishDone done{
           RequestID(0),
           PublishDoneStatusCode::SUBSCRIPTION_ENDED,
@@ -1023,15 +843,13 @@ MoqxRelay::PublishSetupResult MoqxRelay::publishWithSession(
 
   auto topNFilter = registry_.getTopNView(pub.fullTrackName)->topNFilter;
 
-  // Register in the namespace tree. The ranking callback fires once per
-  // PropertyRanking on the path from this node to the root — registering the
-  // track and wiring observers so TRACK_FILTER subscribers see it.
-  auto [nodePtr, sessions] = namespaceTree_.addPublish(
-      pub.fullTrackName,
-      session,
+  namespaceTree_.addPublish(pub.fullTrackName, publisher);
+  // Register the track with every top-N ranking covering it.
+  tracksTree_.forEachRankingOnPath(
+      pub.fullTrackName.trackNamespace,
       [&](uint64_t propertyType, const std::shared_ptr<PropertyRanking>& ranking) {
         auto initialPropertyValue = pub.extensions.getIntExtension(propertyType);
-        ranking->registerTrack(pub.fullTrackName, initialPropertyValue, session);
+        ranking->registerTrack(pub.fullTrackName, initialPropertyValue, publisherId);
         topNFilter->registerObserver(
             propertyType,
             PropertyObserver{
@@ -1048,7 +866,7 @@ MoqxRelay::PublishSetupResult MoqxRelay::publishWithSession(
   case Mode::SingleThread:
   case Mode::RelayExec:
     // Weak ref breaks the registry → forwarder → callback → relay cycle.
-    XCHECK(chainForwarder) << "publishWithSession: null chainForwarder in non-LF mode";
+    XCHECK(chainForwarder) << "publishWithParticipant: null chainForwarder in non-LF mode";
     chainForwarder->setCallback(std::make_shared<WeakRelayForwarderCallback>(weak_from_this()));
     break;
   case Mode::LocalForwarder:
@@ -1059,44 +877,16 @@ MoqxRelay::PublishSetupResult MoqxRelay::publishWithSession(
 
   uint64_t nForwardingSubscribers = 0;
   bool hasTrackFilterSub = false;
-  for (auto& [outSession, info] : sessions) {
+  for (auto& [subscriber, info] :
+       tracksTree_.subscribersCovering(pub.fullTrackName.trackNamespace)) {
     if (info.trackFilter) {
-      // TRACK_FILTER subscribers: PropertyRanking handles selection via
-      // onTrackSelected; don't publish directly here.
+      // PropertyRanking selects these through onTrackSelected.
       hasTrackFilterSub = true;
       continue;
     }
-    if (outSession != session && (info.options == SubscribeNamespaceOptions::PUBLISH ||
-                                  info.options == SubscribeNamespaceOptions::BOTH)) {
+    if (subscriber.info->sessionId != publisherId && !publishedByPeer(publisherId, info.peerID)) {
       nForwardingSubscribers += info.forward ? 1 : 0;
-      if (!addSubscriberAndPublish(outSession, publisherRef, info.forward, /*pinned=*/true)) {
-        XLOG(ERR) << "addSubscriberAndPublish failed for " << pub.fullTrackName;
-        continue;
-      }
-    }
-  }
-
-  // Draft 18+: also fan out to SUBSCRIBE_TRACKS subscribers from the parallel
-  // tracks tree. They live in an independent overlap space and only want
-  // PUBLISH messages (no NAMESPACE / NAMESPACE_DONE).
-  NamespaceTree::SessionSubscriberList tracksSessions;
-  auto tracksNode = tracksTree_.findNode(
-      pub.fullTrackName.trackNamespace,
-      /*createMissingNodes=*/false,
-      &tracksSessions
-  );
-  if (tracksNode) {
-    tracksNode->forEachSubscriber(
-        [&](const std::shared_ptr<MoQSession>& outSession,
-            const NamespaceTree::NamespaceNode::NamespaceSubscriberInfo& info) {
-          tracksSessions.emplace_back(outSession, info);
-        }
-    );
-  }
-  for (auto& [outSession, info] : tracksSessions) {
-    if (outSession != session) {
-      nForwardingSubscribers += info.forward ? 1 : 0;
-      if (!addSubscriberAndPublish(outSession, publisherRef, info.forward, /*pinned=*/true)) {
+      if (!addSubscriberAndPublish(subscriber, publisherRef, info.forward, /*pinned=*/true)) {
         XLOG(ERR) << "addSubscriberAndPublish failed for " << pub.fullTrackName;
         continue;
       }
@@ -1158,54 +948,48 @@ folly::coro::Task<void> awaitPublishReply(
 
 } // namespace
 
-// Sync setup: addSubscriber → set pinned → session->publish (optionally via
-// SubscriberCrossExecFilter when subscriberExec is non-null) → set trackConsumer.
+// Sync setup: addSubscriber → set pinned → publish to subscriber → set trackConsumer.
 // Returns nullopt and cleans up on any synchronous failure.
 std::optional<MoqxRelay::PreparedPublish> MoqxRelay::startPublish(
-    std::shared_ptr<MoQSession> session,
+    moxygen::Subscriber& publishTo,
+    const Participant& subscriber,
     std::shared_ptr<MoQForwarder> forwarder,
     bool forward,
-    bool pinned,
-    folly::Executor* subscriberExec
+    bool pinned
 ) {
-  auto subscriber = forwarder->addSubscriber(session->sessionId(), forward);
-  if (!subscriber) {
+  auto fwdSubscriber = forwarder->addSubscriber(subscriber.info->sessionId, forward);
+  if (!fwdSubscriber) {
     XLOG(ERR) << "startPublish: addSubscriber null for " << forwarder->fullTrackName();
     return std::nullopt;
   }
-  subscriber->pinned = pinned;
+  fwdSubscriber->pinned = pinned;
+  std::shared_ptr<Publisher::SubscriptionHandle> peerHandle =
+      std::make_shared<ParticipantSubscriptionHandle>(fwdSubscriber, subscriber);
   // relayExec_ owns the forwarder, but the session calls unsubscribe() on its own io
   // thread, so the handle has to hop before it reaches subscribers_.
-  std::shared_ptr<Publisher::SubscriptionHandle> peerHandle = subscriber;
   if (mode() == Mode::RelayExec) {
-    peerHandle = std::make_shared<CrossExecSubscriptionHandle>(subscriber, relayExec_);
+    peerHandle = std::make_shared<CrossExecSubscriptionHandle>(std::move(peerHandle), relayExec_);
   }
-  Subscriber::PublishResult pub;
-  if (subscriberExec) {
-    SubscriberCrossExecFilter wrapped(subscriberExec, session);
-    pub = wrapped.publish(subscriber->getPublishRequest(), std::move(peerHandle));
-  } else {
-    pub = session->publish(subscriber->getPublishRequest(), std::move(peerHandle));
-  }
+  auto pub = publishTo.publish(fwdSubscriber->getPublishRequest(), std::move(peerHandle));
   if (pub.hasError()) {
     XLOG(ERR) << "startPublish: publish failed: " << pub.error().reasonPhrase;
-    subscriber->unsubscribe();
+    fwdSubscriber->unsubscribe();
     return std::nullopt;
   }
-  subscriber->trackConsumer = wrapWithTrackStats(
+  fwdSubscriber->trackConsumer = wrapWithTrackStats(
       trackStats_,
       forwarder->fullTrackName(),
       std::move(pub->consumer),
       stats::TrackDirection::Egress
   );
-  return PreparedPublish{std::move(subscriber), std::move(pub->reply)};
+  return PreparedPublish{std::move(fwdSubscriber), std::move(pub->reply)};
 }
 
 // In relay+local-forwarder mode: dispatches addSubscriberAndPublishViaLocalForwarder
 // to subscriberExec. Otherwise: calls startPublish sync and fires reply async.
 // Returns false on synchronous failure.
 bool MoqxRelay::addSubscriberAndPublish(
-    std::shared_ptr<MoQSession> subscriberSession,
+    const Participant& subscriber,
     const ForwarderRef& publisherRef,
     bool forward,
     bool pinned
@@ -1215,22 +999,24 @@ bool MoqxRelay::addSubscriberAndPublish(
     // TODO: we don't want to complete the publisher's replyTask until we've initiated
     // publish and attached the consumer for every SUB_NS subscriber.  So .start()
     // is not correct in LF mode.
-    co_withExecutor(
-        folly::getKeepAliveToken(subscriberSession->getExecutor()),
-        addSubscriberAndPublishViaLocalForwarder(
-            subscriberSession,
-            publisherRef.track(),
-            forward,
-            pinned
-        )
-    )
+    subscriber
+        .runOnExecutor([this, subscriber, track = publisherRef.track(), forward, pinned](
+                           Participant::OnExecutor onExecutor
+                       ) mutable {
+          return addSubscriberAndPublishViaLocalForwarder(
+              std::move(onExecutor),
+              std::move(subscriber),
+              std::move(track),
+              forward,
+              pinned
+          );
+        })
         .start();
     return true;
   }
   auto forwarder = publisherRef.getIfOwned();
   XCHECK(forwarder) << "addSubscriberAndPublish: remote ref outside LocalForwarder mode";
-  folly::Executor* subscriberExec = relayExec_ ? subscriberSession->getExecutor() : nullptr;
-  auto p = startPublish(subscriberSession, forwarder, forward, pinned, subscriberExec);
+  auto p = startPublish(*subscriber.subscriber, subscriber, forwarder, forward, pinned);
   if (!p) {
     return false;
   }
@@ -1495,19 +1281,20 @@ MoqxRelay::resolvePublisherOnItsExec(TrackRef track) {
 // Runs on subscriberExec. Gets or creates the thread-local forwarder, wires it to the publisher
 // forwarder as a channel subscriber (isNew path), and awaits the publish reply.
 folly::coro::Task<void> MoqxRelay::addSubscriberAndPublishViaLocalForwarder(
-    std::shared_ptr<MoQSession> subscriberSession,
+    Participant::OnExecutor onExecutor,
+    Participant subscriber,
     TrackRef track,
     bool forward,
     bool pinned
 ) {
-  auto* subscriberExec = subscriberSession->getExecutor();
+  auto* subscriberExec = subscriber.info->executor;
   const auto& ftn = track.ftn;
   auto* publisherExec = track.exec;
 
   // Fast path: local forwarder already exists on this thread.
   if (auto* localReg = tlForwarders_.get()) {
     if (auto localFwd = localReg->getIfReady(ftn)) {
-      auto p = startPublish(subscriberSession, localFwd, forward, pinned, nullptr);
+      auto p = startPublish(onExecutor.subscriber(), subscriber, localFwd, forward, pinned);
       if (p) {
         co_await awaitPublishReply(localFwd, std::move(p->subscriber), std::move(p->reply));
       }
@@ -1529,7 +1316,7 @@ folly::coro::Task<void> MoqxRelay::addSubscriberAndPublishViaLocalForwarder(
     co_return;
   }
 
-  auto p = startPublish(subscriberSession, localFwd, forward, pinned, nullptr);
+  auto p = startPublish(onExecutor.subscriber(), subscriber, localFwd, forward, pinned);
   if (!p) {
     if (isNew) {
       localReg->remove(ftn, localFwd.get());
@@ -1638,19 +1425,19 @@ class MoqxRelay::NamespaceSubscription : public Publisher::SubscribeNamespaceHan
 public:
   NamespaceSubscription(
       std::shared_ptr<MoqxRelay> relay,
-      std::shared_ptr<MoQSession> session,
+      SessionId session,
       SubscribeNamespaceOk ok,
-      TrackNamespace trackNamespacePrefix
+      TrackNamespace trackNamespacePrefix,
+      bool tracks
   )
       : Publisher::SubscribeNamespaceHandle(std::move(ok)), relay_(std::move(relay)),
-        session_(std::move(session)), trackNamespacePrefix_(std::move(trackNamespacePrefix)) {}
-
-  void unsubscribeNamespace() override {
-    if (relay_) {
-      relay_->unsubscribeNamespace(trackNamespacePrefix_, std::move(session_));
-      relay_.reset();
-    }
+        session_(session), trackNamespacePrefix_(std::move(trackNamespacePrefix)), tracks_(tracks) {
   }
+
+  // A caller cancelled after registration drops the handle without unsubscribing.
+  ~NamespaceSubscription() override { release(); }
+
+  void unsubscribeNamespace() override { release(); }
 
   folly::coro::Task<RequestUpdateResult> requestUpdate(RequestUpdate reqUpdate) override {
     co_return folly::makeUnexpected(RequestError{
@@ -1661,9 +1448,18 @@ public:
   }
 
 private:
+  void release() {
+    if (relay_) {
+      relay_->unsubscribeNamespace(trackNamespacePrefix_, session_, tracks_);
+      relay_.reset();
+    }
+  }
+
   std::shared_ptr<MoqxRelay> relay_;
-  std::shared_ptr<MoQSession> session_;
+  SessionId session_;
   TrackNamespace trackNamespacePrefix_;
+  // Only a PUBLISH or BOTH subscription made a tracks entry to remove.
+  bool tracks_;
 };
 
 // Draft 18+: handle returned from subscribeTracks(). Calls unsubscribeTracks()
@@ -1672,19 +1468,16 @@ class MoqxRelay::TracksSubscription : public Publisher::SubscribeTracksHandle {
 public:
   TracksSubscription(
       std::shared_ptr<MoqxRelay> relay,
-      std::shared_ptr<MoQSession> session,
+      SessionId session,
       RequestOk ok,
       TrackNamespace trackNamespacePrefix
   )
       : Publisher::SubscribeTracksHandle(std::move(ok)), relay_(std::move(relay)),
-        session_(std::move(session)), trackNamespacePrefix_(std::move(trackNamespacePrefix)) {}
+        session_(session), trackNamespacePrefix_(std::move(trackNamespacePrefix)) {}
 
-  void unsubscribeTracks() override {
-    if (relay_) {
-      relay_->unsubscribeTracks(trackNamespacePrefix_, std::move(session_));
-      relay_.reset();
-    }
-  }
+  ~TracksSubscription() override { release(); }
+
+  void unsubscribeTracks() override { release(); }
 
   folly::coro::Task<RequestUpdateResult> requestUpdate(RequestUpdate reqUpdate) override {
     // Draft-18 Section 10.9.2 allows REQUEST_UPDATE for SUBSCRIBE_TRACKS to update
@@ -1700,8 +1493,15 @@ public:
   }
 
 private:
+  void release() {
+    if (relay_) {
+      relay_->unsubscribeTracks(trackNamespacePrefix_, session_);
+      relay_.reset();
+    }
+  }
+
   std::shared_ptr<MoqxRelay> relay_;
-  std::shared_ptr<MoQSession> session_;
+  SessionId session_;
   TrackNamespace trackNamespacePrefix_;
 };
 
@@ -1863,7 +1663,7 @@ MoqxRelay::buildFilterChain(const FullTrackName& ftn, std::shared_ptr<MoQForward
   // Cache attaches as a passive subscriber of the forwarder.
   if (cache_) {
     forwarder->addSubscriber(
-        MoQSession::makeSessionId(),
+        makeSessionId(),
         /*forward=*/true,
         cache_->makePassiveConsumer(ftn),
         /*passive=*/true
@@ -1904,77 +1704,57 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
     SubscribeNamespace subNs,
     std::shared_ptr<NamespacePublishHandle> namespacePublishHandle
 ) {
+  XDCHECK(onRelayExec());
   XLOG(DBG1) << __func__ << " nsp=" << subNs.trackNamespacePrefix;
 
-  auto session = MoQSession::getRequestSession();
+  const Participant requester = requestParticipant();
+  const ParticipantInfo& subscriber = *requester.info;
 
-  // Relay peering: if the incoming subNs carries a relay auth token, the peer
-  // is a relay. Reciprocate with our own peer subNs so the peer gets our
-  // namespace announcements as publishers connect.
-  std::string incomingPeerID;
-  if (auto peerID = !relayID_.empty() ? getPeerRelayID(subNs) : std::nullopt) {
-    incomingPeerID = *peerID;
-    XLOG(INFO) << __func__ << ": peer relay detected peer_id=" << *peerID
-               << ", reciprocating peer subNs";
-    // Tag with the peer's relay ID so we suppress echoing these namespaces
-    // back to that peer on reconnect.
-    auto handle = makeNamespaceBridgeHandle(weak_from_this(), session, incomingPeerID, relayExec_);
-    auto peerSubNs = makePeerSubNs();
-    // maybeWrapPublisher runs the call on the peer session's executor and wraps
-    // the returned handle so its teardown hops there too (no token: reciprocal).
-    auto recipResult = co_await maybeWrapPublisher(relayExec_, session)
-                           ->subscribeNamespace(std::move(peerSubNs), handle);
-    // The reciprocal is not cancellable. If the session closed while it was
-    // pending, its cleanup has already run and nothing removes a registration.
-    co_await folly::coro::co_safe_point;
-    if (recipResult.hasError()) {
-      XLOG(ERR) << "Reciprocal peer subNs failed: " << recipResult.error().reasonPhrase;
-    } else {
-      std::shared_ptr<Publisher::SubscribeTracksHandle> recipTracks;
-      if (getDraftMajorVersion(*session->getNegotiatedVersion()) >= 18) {
-        auto tracks = co_await maybeWrapPublisher(relayExec_, session)
-                          ->subscribeTracks(makePeerSubTracks(relayID_), nullptr);
-        co_await folly::coro::co_safe_point;
-        if (tracks.hasValue()) {
-          recipTracks = std::move(tracks.value());
-        } else {
-          XLOG(ERR) << "Reciprocal peer subTracks failed: " << tracks.error().reasonPhrase;
-        }
-      }
-      peerSubNsHandles_.emplace(
-          session->sessionId(),
-          PeerInfo{
-              std::move(recipResult.value()),
-              std::move(recipTracks),
-              std::move(*peerID),
-              session->getPeerAddress().describe(),
-              std::string(session->getAuthority())
-          }
-      );
-    }
-    // Fall through: register the peer as a normal subNs subscriber so it
-    // receives namespace announcements as publishers connect.
+  // Either subscription's end would remove the one entry the trees keep per prefix.
+  const auto nsNode = namespaceTree_.findNode(subNs.trackNamespacePrefix);
+  if ((nsNode && nsNode->hasSubscriber(subscriber.sessionId)) ||
+      tracksTree_.hasSubscriber(
+          subNs.trackNamespacePrefix,
+          subscriber.sessionId,
+          TrackSubscriptionSource::SubscribeNamespace
+      )) {
+    co_return folly::makeUnexpected(SubscribeNamespaceError{
+        subNs.requestID,
+        SubscribeNamespaceErrorCode::DUPLICATE_SUBSCRIPTION,
+        "The session already has a SUBSCRIBE_NAMESPACE at this prefix"
+    });
   }
-  auto maybeNegotiatedVersion = session->getNegotiatedVersion();
-  CHECK(maybeNegotiatedVersion.has_value());
 
+  std::string incomingPeerID;
+  // Peering takes the empty prefix, once per session at a time.
+  if (reciprocal_ && subNs.trackNamespacePrefix.empty()) {
+    if (auto peerID = reciprocal_->authorizePeer(subNs.params)) {
+      XLOG(INFO) << __func__ << ": peer relay detected peer_id=" << *peerID
+                 << ", reciprocating peer subNs";
+      const bool accepted = co_await reciprocal_->onPeerConnected(requester, *peerID);
+      if (!accepted) {
+        co_return folly::makeUnexpected(SubscribeNamespaceError{
+            subNs.requestID,
+            SubscribeNamespaceErrorCode::DUPLICATE_SUBSCRIPTION,
+            "The session already has a peering SUBSCRIBE_NAMESPACE"
+        });
+      }
+      incomingPeerID = std::move(*peerID);
+    }
+  }
+  // Register the peer as a normal subNs subscriber so it receives namespace
+  // announcements as publishers connect.
   SubscribeNamespaceOptions effectiveOptions;
   effectiveOptions = subNs.options;
 
-  // Parse parameters defined for SUBSCRIBE_NAMESPACE.
-  std::optional<TrackFilter> trackFilter;
-  if (const auto* param = subNs.params.getFirstParam(TrackRequestParamKey::TRACK_FILTER)) {
-    trackFilter = param->asTrackFilter;
-  }
+  // moxygen has already checked the filter against kMaxTopTracks.
+  const auto trackFilter = TopTracksExtension::find(subNs.params, subscriber.version);
 
   // Collect-then-act: a single read-only subtree walk gathers every match this
   // subscription would forward
   NamespaceTree::NamespaceNode::NamespaceSubscriberInfo info{
-      subNs.forward,
-      effectiveOptions,
       namespacePublishHandle,
       subNs.trackNamespacePrefix,
-      trackFilter,
       incomingPeerID
   };
   struct NamespaceMatch {
@@ -1989,13 +1769,14 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
 
   // Peer relay subNs uses an empty prefix by design, so it is exempt from the limit;
   // NAMESPACE_TOO_LARGE doesn't apply pre-18.
-  bool enforceLimit = incomingPeerID.empty() && getDraftMajorVersion(*maybeNegotiatedVersion) >= 18;
+  bool enforceLimit = incomingPeerID.empty() && getDraftMajorVersion(subscriber.version) >= 18;
   // A small maxSelected only bounds track fan-out (via PropertyRanking); it doesn't
   // limit namespaceMatches, so namespace fan-out must always count toward the threshold.
   bool trackFilterExempt = trackFilter && trackFilter->maxSelected < kMaxNamespaceMatches;
+  const bool wantNamespaces = shouldForwardNamespace(effectiveOptions);
   // Always false for draft 18+ (parser forces NAMESPACE); skips the per-node track scan.
-  bool wantPublishes = subNs.options == SubscribeNamespaceOptions::BOTH ||
-                       subNs.options == SubscribeNamespaceOptions::PUBLISH;
+  const bool wantPublishes = effectiveOptions == SubscribeNamespaceOptions::BOTH ||
+                             effectiveOptions == SubscribeNamespaceOptions::PUBLISH;
   // TRACK_FILTER subscribers get tracks via PropertyRanking, so only their matches are counted.
   bool collectTracks = wantPublishes && !trackFilter;
   bool countTracks = wantPublishes && trackFilter && enforceLimit && !trackFilterExempt;
@@ -2017,19 +1798,19 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
           if (overLimit()) {
             return;
           }
-          if (advertisableRoute(*node, session, info)) {
+          if (wantNamespaces && advertisableRoute(*node, subscriber, info)) {
             namespaceMatches.push_back(NamespaceMatch{node});
           }
           if (!collectTracks && !countTracks) {
             return;
           }
-          node->forEachPublish([&](const std::string& trackName,
-                                   const std::shared_ptr<MoQSession>& publishSession) {
+          node->forEachPublish([&](const std::string& trackName, const Participant& publisher) {
             if (overLimit()) {
               return;
             }
-            if (publishSession == session ||
-                (!incomingPeerID.empty() && isPeerSession(publishSession, incomingPeerID))) {
+            const auto publisherId = publisher.info->sessionId;
+            if (publisherId == subscriber.sessionId ||
+                publishedByPeer(publisherId, incomingPeerID)) {
               return;
             }
             if (countTracks) {
@@ -2056,50 +1837,71 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> MoqxRelay::subscribeNames
     });
   }
 
-  auto nodePtr = namespaceTree_.addNamespaceSubscriber(subNs.trackNamespacePrefix, session, info);
-
-  // If TRACK_FILTER is present, enroll session in PropertyRanking for top-N selection.
-  // NOTE: onSelected callbacks fire synchronously within addSessionToTopNGroup() for
-  // tracks already in top-N, triggering onTrackSelected() before this call returns.
-  if (trackFilter) {
-    auto ranking =
-        getOrCreateRanking(nodePtr, trackFilter->propertyType, subNs.trackNamespacePrefix);
-    ranking->addSessionToTopNGroup(trackFilter->maxSelected, session, subNs.forward);
+  if (wantNamespaces) {
+    namespaceTree_.addNamespaceSubscriber(subNs.trackNamespacePrefix, requester, info);
+  }
+  if (wantPublishes) {
+    addTrackSubscriber(
+        subNs.trackNamespacePrefix,
+        requester,
+        TrackSubscriberInfo{
+            TrackSubscriptionSource::SubscribeNamespace,
+            subNs.forward,
+            trackFilter,
+            incomingPeerID
+        }
+    );
   }
 
   // Act phase: replay the collected matches (already filtered by options).
   for (auto& match : namespaceMatches) {
-    reconcileAdvertisement(*match.node, session, info);
+    reconcileAdvertisement(*match.node, subscriber, info);
   }
   // Empty for TRACK_FILTER subscribers: PropertyRanking drives selection via onTrackSelected.
   for (auto& match : trackMatches) {
-    if (!addSubscriberAndPublish(session, match.forwarder, subNs.forward, /*pinned=*/true)) {
+    if (!addSubscriberAndPublish(requester, match.forwarder, subNs.forward, /*pinned=*/true)) {
       XLOG(ERR) << "addSubscriberAndPublish failed for " << match.ftn;
     }
   }
   co_return std::make_shared<NamespaceSubscription>(
       shared_from_this(),
-      std::move(session),
+      subscriber.sessionId,
       SubscribeNamespaceOk{.requestID = subNs.requestID, .requestSpecificParams = {}},
-      subNs.trackNamespacePrefix
+      subNs.trackNamespacePrefix,
+      wantPublishes
   );
 }
 
-bool MoqxRelay::isPeerSession(const std::shared_ptr<MoQSession>& session, const std::string& peerID)
-    const {
-  auto it = peerSubNsHandles_.find(session->sessionId());
-  return it != peerSubNsHandles_.end() && it->second.relayID == peerID;
+bool MoqxRelay::publishedByPeer(SessionId publisher, const std::string& peerID) const {
+  return !peerID.empty() && reciprocal_ && reciprocal_->peerIdOf(publisher) == peerID;
+}
+
+void MoqxRelay::onSessionEnd(SessionId session) {
+  XDCHECK(onRelayExec());
+  if (reciprocal_ && reciprocal_->peerIdOf(session)) {
+    reciprocal_->onPeerClosed(session);
+  }
 }
 
 void MoqxRelay::unsubscribeNamespace(
     const TrackNamespace& trackNamespacePrefix,
-    std::shared_ptr<MoQSession> session
+    SessionId session,
+    bool tracks
 ) {
+  XDCHECK(onRelayExec());
   XLOG(DBG1) << __func__ << " nsp=" << trackNamespacePrefix;
-  // Clean up the reciprocal peer subNs handle for this session if present.
-  peerSubNsHandles_.erase(session->sessionId());
+  if (reciprocal_ && trackNamespacePrefix.empty() && reciprocal_->peerIdOf(session)) {
+    reciprocal_->onPeerDisconnected(session);
+  }
+  if (tracks) {
+    tracksTree_.removeSubscriber(
+        trackNamespacePrefix,
+        session,
+        TrackSubscriptionSource::SubscribeNamespace
+    );
+  }
   auto result = namespaceTree_.removeNamespaceSubscriber(trackNamespacePrefix, session);
-  if (result.hasError() && result.error() == NamespaceTree::Error::NotSubscribed) {
+  if (result.hasError() && result.error() == NamespaceTree::Error::NotSubscribed && !tracks) {
     XLOG(DBG1) << "Namespace prefix was not subscribed by this session";
   }
 }
@@ -2109,12 +1911,12 @@ folly::coro::Task<Publisher::SubscribeTracksResult> MoqxRelay::subscribeTracks(
     SubscribeTracks subTracks,
     std::shared_ptr<PublishBlockedHandle> /*publishBlockedHandle*/
 ) {
+  XDCHECK(onRelayExec());
   XLOG(DBG1) << __func__ << " nsp=" << subTracks.trackNamespacePrefix;
 
-  auto session = MoQSession::getRequestSession();
-  auto maybeNegotiatedVersion = session->getNegotiatedVersion();
-  XCHECK(maybeNegotiatedVersion.has_value());
-  if (getDraftMajorVersion(*maybeNegotiatedVersion) < 18) {
+  const Participant requester = requestParticipant();
+  const auto session = requester.info->sessionId;
+  if (getDraftMajorVersion(requester.info->version) < 18) {
     co_return folly::makeUnexpected(SubscribeTracksError{
         subTracks.requestID,
         SubscribeTracksErrorCode::NOT_SUPPORTED,
@@ -2122,7 +1924,7 @@ folly::coro::Task<Publisher::SubscribeTracksResult> MoqxRelay::subscribeTracks(
     });
   }
 
-  if (tracksTree_.hasOverlappingTracksSubscription(subTracks.trackNamespacePrefix, session)) {
+  if (tracksTree_.hasOverlap(subTracks.trackNamespacePrefix, session)) {
     co_return folly::makeUnexpected(SubscribeTracksError{
         subTracks.requestID,
         SubscribeTracksErrorCode::PREFIX_OVERLAP,
@@ -2136,15 +1938,25 @@ folly::coro::Task<Publisher::SubscribeTracksResult> MoqxRelay::subscribeTracks(
   };
   std::vector<TrackMatch> trackMatches;
   // Peer relays are exempt, as for SUBSCRIBE_NAMESPACE.
-  const auto peerID = relayID_.empty() ? std::nullopt : getPeerRelayID(subTracks.params);
+  const auto peerID = reciprocal_ ? reciprocal_->authorizePeer(subTracks.params) : std::nullopt;
   const bool enforceLimit = !peerID;
-  auto overLimit = [&] { return enforceLimit && trackMatches.size() > kMaxNamespaceMatches; };
+  // moxygen has already checked the filter against kMaxTopTracks.
+  const auto trackFilter = TopTracksExtension::find(subTracks.params, requester.info->version);
+  // A top-N subscriber gets its tracks from the ranking. Like SUBSCRIBE_NAMESPACE, it
+  // counts toward the limit only when maxSelected does not already bound it.
+  const bool collectTracks = !trackFilter;
+  const bool countTracks =
+      trackFilter && enforceLimit && trackFilter->maxSelected >= kMaxNamespaceMatches;
+  size_t trackCount = 0;
+  auto overLimit = [&] {
+    return enforceLimit && trackMatches.size() + trackCount > kMaxNamespaceMatches;
+  };
 
   // Walk the existing publish tree and emit PUBLISH for each matching
   // already-published track (backfill for new subscriber).
   auto pubNode =
       namespaceTree_.findNode(subTracks.trackNamespacePrefix, /*createMissingNodes=*/false);
-  if (pubNode) {
+  if (pubNode && (collectTracks || countTracks)) {
     namespaceTree_.forEachNodeInSubtree(
         subTracks.trackNamespacePrefix,
         pubNode,
@@ -2152,13 +1964,17 @@ folly::coro::Task<Publisher::SubscribeTracksResult> MoqxRelay::subscribeTracks(
           if (overLimit()) {
             return;
           }
-          node->forEachPublish([&](const std::string& trackName,
-                                   const std::shared_ptr<MoQSession>& publishSession) {
+          node->forEachPublish([&](const std::string& trackName, const Participant& publisher) {
             if (overLimit()) {
               return;
             }
-            if (publishSession == session || (peerID && isPeerSession(publishSession, *peerID))) {
+            const auto publisherId = publisher.info->sessionId;
+            if (publisherId == session || publishedByPeer(publisherId, peerID.value_or(""))) {
               // Don't echo the subscriber's own published tracks.
+              return;
+            }
+            if (countTracks) {
+              ++trackCount;
               return;
             }
             FullTrackName ftn{prefix, trackName};
@@ -2181,24 +1997,20 @@ folly::coro::Task<Publisher::SubscribeTracksResult> MoqxRelay::subscribeTracks(
     });
   }
 
-  // Register in the parallel tracks tree (independent overlap space).
-  // Tracks-tree entries always behave like PUBLISH-style subscribers;
-  // options is unused for this tree.
-  tracksTree_.addNamespaceSubscriber(
+  addTrackSubscriber(
       subTracks.trackNamespacePrefix,
-      session,
-      NamespaceTree::NamespaceNode::NamespaceSubscriberInfo{
+      requester,
+      TrackSubscriberInfo{
+          TrackSubscriptionSource::SubscribeTracks,
           subTracks.forward,
-          SubscribeNamespaceOptions::PUBLISH,
-          /*namespacePublishHandle=*/nullptr,
-          subTracks.trackNamespacePrefix,
-          /*trackFilter=*/std::nullopt
+          trackFilter,
+          peerID.value_or("")
       }
   );
 
   // emit PUBLISH for each matching already-published track (backfill for new subscriber).
   for (auto& match : trackMatches) {
-    if (!addSubscriberAndPublish(session, match.forwarder, subTracks.forward, /*pinned=*/true)) {
+    if (!addSubscriberAndPublish(requester, match.forwarder, subTracks.forward, /*pinned=*/true)) {
       XLOG(ERR) << "addSubscriberAndPublish failed for " << match.ftn;
     }
   }
@@ -2206,19 +2018,20 @@ folly::coro::Task<Publisher::SubscribeTracksResult> MoqxRelay::subscribeTracks(
   RequestOk subTracksOk{.requestID = subTracks.requestID};
   co_return std::make_shared<TracksSubscription>(
       shared_from_this(),
-      std::move(session),
+      session,
       std::move(subTracksOk),
       subTracks.trackNamespacePrefix
   );
 }
 
-void MoqxRelay::unsubscribeTracks(
-    const TrackNamespace& trackNamespacePrefix,
-    std::shared_ptr<MoQSession> session
-) {
+void MoqxRelay::unsubscribeTracks(const TrackNamespace& trackNamespacePrefix, SessionId session) {
+  XDCHECK(onRelayExec());
   XLOG(DBG1) << __func__ << " nsp=" << trackNamespacePrefix;
-  auto result = tracksTree_.removeNamespaceSubscriber(trackNamespacePrefix, session);
-  if (result.hasError() && result.error() == NamespaceTree::Error::NotSubscribed) {
+  if (!tracksTree_.removeSubscriber(
+          trackNamespacePrefix,
+          session,
+          TrackSubscriptionSource::SubscribeTracks
+      )) {
     XLOG(DBG1) << "Tracks prefix was not subscribed by this session";
   }
 }
@@ -2233,7 +2046,9 @@ MoqxRelay::PublishState MoqxRelay::findPublishState(const FullTrackName& ftn) {
 
   state.nodeExists = true;
 
-  state.session = nodePtr->findPublishSession(ftn.trackName);
+  if (const auto* publisher = nodePtr->findPublish(ftn.trackName)) {
+    state.publisher = publisher->info->sessionId;
+  }
 
   return state;
 }
@@ -2254,11 +2069,11 @@ SubscribeError makeAddSubscriberError(RequestID requestID) {
 // that attach to an already-live forwarder.
 Publisher::SubscribeResult attachSubscriber(
     MoQForwarder& fwd,
-    std::shared_ptr<MoQSession> session,
+    SessionId subscriberId,
     const SubscribeRequest& subReq,
     std::shared_ptr<TrackConsumer> consumer
 ) {
-  auto subscriber = fwd.addSubscriber(session->sessionId(), subReq, std::move(consumer));
+  auto subscriber = fwd.addSubscriber(subscriberId, subReq, std::move(consumer));
   if (!subscriber) {
     XLOG(ERR) << "addSubscriber returned null (draining?) for " << fwd.fullTrackName()
               << " reqID=" << subReq.requestID;
@@ -2279,15 +2094,15 @@ Publisher::SubscribeResult attachSubscriber(
 // already be set on upstreamSubReq.
 folly::coro::Task<folly::Expected<MoqxRelay::UpstreamOk, SubscribeError>>
 MoqxRelay::subscribeUpstreamAndApplyOk(
-    std::shared_ptr<Publisher> upstream,
+    Publisher& upstream,
+    folly::Executor* upstreamExec,
     SubscribeRequest upstreamSubReq,
     std::shared_ptr<TrackConsumer> upstreamConsumer,
     std::shared_ptr<MoQForwarder> publisherFwd,
     RequestID clientRequestID
 ) {
   auto params = upstreamSubReq.params; // copy before upstreamSubReq is moved
-  auto subRes =
-      co_await upstream->subscribe(std::move(upstreamSubReq), std::move(upstreamConsumer));
+  auto subRes = co_await upstream.subscribe(std::move(upstreamSubReq), std::move(upstreamConsumer));
   if (subRes.hasError()) {
     co_return folly::makeUnexpected(SubscribeError{
         clientRequestID,
@@ -2301,7 +2116,12 @@ MoqxRelay::subscribeUpstreamAndApplyOk(
   publisherFwd->tryProcessNewGroupRequest(params, /*fire=*/false);
   // Moving the handle shared_ptr keeps the pointee (and `ok`) alive, so reading ok.*
   // in the same initializer is well-defined.
-  co_return UpstreamOk{std::move(subRes.value()), ok.requestID, ok.extensions, ok.largest};
+  co_return UpstreamOk{
+      {std::move(subRes.value()), upstreamExec},
+      ok.requestID,
+      ok.extensions,
+      ok.largest
+  };
 }
 
 // Runs on relayExec_: fulfills `pending` and caches the OK's Largest and extensions, returning a
@@ -2311,14 +2131,14 @@ std::optional<SubscribeError> MoqxRelay::completeUpstreamSubscription(
     const FullTrackName& ftn,
     UpstreamOk& upstreamOk,
     SubscriptionRegistry::UpstreamSubscribePending& pending,
-    std::shared_ptr<MoQSession> upstreamSession,
+    std::shared_ptr<const ParticipantInfo> upstream,
     std::shared_ptr<Publisher> upstreamPublisher,
     RequestID clientRequestID
 ) {
   if (!pending.complete(
           std::move(upstreamOk.handle),
           upstreamOk.requestID,
-          std::move(upstreamSession),
+          std::move(upstream),
           std::move(upstreamPublisher)
       )) {
     XLOG(ERR) << "Subscription replaced by reconnecting publisher: " << ftn;
@@ -2346,13 +2166,14 @@ folly::coro::Task<MoqxRelay::PublisherAttachment> MoqxRelay::attachNewLocalForwa
     std::shared_ptr<CrossExecFilter> crossExecFilter,
     bool forward,
     SessionId subscriberId,
+    std::optional<RouteExclusion> exclusion,
     std::shared_ptr<TrackConsumer> consumer
 ) {
   // Runs on relayExec_.
   const auto& ftn = subReq.fullTrackName;
   PublisherAttachment attach;
 
-  auto sr = co_await joinOrPrepareUpstreamSubscription(subReq);
+  auto sr = co_await joinOrPrepareUpstreamSubscription(subReq, std::move(exclusion));
   if (sr.error) {
     attach.error = std::move(*sr.error);
     co_return attach; // pending dtor fires when sr is destroyed, cleaning the registry
@@ -2375,99 +2196,107 @@ folly::coro::Task<MoqxRelay::PublisherAttachment> MoqxRelay::attachNewLocalForwa
   // The first subscriber transfers ownership to the local registry, installs the
   // relay chain, and subscribes upstream.  All subscribers install their channel
   // subscriber, and capture the initialState.
-  co_await folly::coro::co_withExecutor(
-      folly::getKeepAliveToken(publisherExec),
-      [&]() -> folly::coro::Task<void> {
-        std::shared_ptr<MoQForwarder> publisherFwd;
-        const char* failure = nullptr;
-        if (sr.firstSetup) {
-          if (localRegistry().getIfReady(ftn)) {
-            // A PUBLISH here raced a SUBSCRIBE from another thread.
-            // TODO: join the publisher forwarder instead of failing the SUBSCRIBE.
-            failure = "publisher forwarder already installed";
-          } else {
-            publisherFwd = std::move(sr.firstSetup->publisherForwarder);
-          }
-        } else {
-          // Could be displaced by a reconnecting publisher, or the publisher could have gone away
-          publisherFwd = localRegistry().getIfReady(ftn);
-          if (!publisherFwd) {
-            failure = "publisher forwarder gone";
-          }
-        }
-        if (failure) {
-          XLOG(ERR) << failure << " during subscribe setup: " << ftn;
-          attach.error = folly::makeUnexpected(
-              SubscribeError{subReq.requestID, SubscribeErrorCode::INTERNAL_ERROR, failure}
-          );
-          co_return;
-        }
-        attach.publisherRef =
-            ForwarderRef::remote(publisherFwd, folly::getKeepAliveToken(publisherExec));
+  auto sortie = [&](std::optional<Participant::OnExecutor> upstream) -> folly::coro::Task<void> {
+    std::shared_ptr<MoQForwarder> publisherFwd;
+    const char* failure = nullptr;
+    if (sr.firstSetup) {
+      if (localRegistry().getIfReady(ftn)) {
+        // A PUBLISH here raced a SUBSCRIBE from another thread.
+        // TODO: join the publisher forwarder instead of failing the SUBSCRIBE.
+        failure = "publisher forwarder already installed";
+      } else {
+        publisherFwd = std::move(sr.firstSetup->publisherForwarder);
+      }
+    } else {
+      // Could be displaced by a reconnecting publisher, or the publisher could have gone away
+      publisherFwd = localRegistry().getIfReady(ftn);
+      if (!publisherFwd) {
+        failure = "publisher forwarder gone";
+      }
+    }
+    if (failure) {
+      XLOG(ERR) << failure << " during subscribe setup: " << ftn;
+      attach.error = folly::makeUnexpected(
+          SubscribeError{subReq.requestID, SubscribeErrorCode::INTERNAL_ERROR, failure}
+      );
+      co_return;
+    }
+    attach.publisherRef =
+        ForwarderRef::remote(publisherFwd, folly::getKeepAliveToken(publisherExec));
 
-        LocalForwarderRegistry::Claim publisherClaim;
-        if (sr.firstSetup) {
-          publisherClaim = std::move(
-              installPublisherForwarder(ftn, publisherFwd, InstallKind::FromSubscribe).claim
-          );
-        }
+    LocalForwarderRegistry::Claim publisherClaim;
+    if (sr.firstSetup) {
+      publisherClaim =
+          std::move(installPublisherForwarder(ftn, publisherFwd, InstallKind::FromSubscribe).claim);
+    }
 
-        if (publisherExec == subscriberExec) {
-          // This thread's entry holds publisherFwd, and joining FETCHes resolve against it.
-          attach.directPublisherSub = publisherFwd->addSubscriber(subscriberId, subReq, consumer);
-          if (!attach.directPublisherSub) {
-            attach.error = folly::makeUnexpected(makeAddSubscriberError(subReq.requestID));
-            co_return;
-          }
-        } else {
-          auto cbs = buildLocalToPublisherCallbacks(
-              subscriberReg,
-              ftn,
-              ChannelSubscriber(publisherFwd, publisherExec),
-              subscriberExec,
-              makeFillHandler()
-          );
-          attach.finalCallback = cbs.finalCallback;
+    if (publisherExec == subscriberExec) {
+      // This thread's entry holds publisherFwd, and joining FETCHes resolve against it.
+      attach.directPublisherSub = publisherFwd->addSubscriber(subscriberId, subReq, consumer);
+      if (!attach.directPublisherSub) {
+        attach.error = folly::makeUnexpected(makeAddSubscriberError(subReq.requestID));
+        co_return;
+      }
+    } else {
+      auto cbs = buildLocalToPublisherCallbacks(
+          subscriberReg,
+          ftn,
+          ChannelSubscriber(publisherFwd, publisherExec),
+          subscriberExec,
+          makeFillHandler()
+      );
+      attach.finalCallback = cbs.finalCallback;
 
-          installChannelSubscriber(
-              *cbs.channelCb,
-              *publisherFwd,
-              subscriberReg->channelId(),
-              forward,
-              crossExecFilter
-          );
-        }
+      installChannelSubscriber(
+          *cbs.channelCb,
+          *publisherFwd,
+          subscriberReg->channelId(),
+          forward,
+          crossExecFilter
+      );
+    }
 
-        if (sr.firstSetup) {
-          auto& setup = *sr.firstSetup;
-          // Passive relay chain (top-N/termination/cache): forward=true so it observes every
-          // object, passive=true so it doesn't count as a forwarding subscriber or in the
-          // onEmpty quorum (the publisher's onEmpty still fires when the last real sub leaves).
-          publisherFwd->addSubscriber(
-              relayChannelId_,
-              /*forward=*/true,
-              relayChainFilter,
-              /*passive=*/true
-          );
-          attach.ownsRelayChain = true;
-          setup.upstreamSubReq.forward = forward;
-          upstreamResult = co_await subscribeUpstreamAndApplyOk(
-              setup.upstreamSession,
-              std::move(setup.upstreamSubReq),
-              std::move(setup.upstreamConsumer),
-              publisherFwd,
-              setup.clientRequestID
-          );
-          if (upstreamResult->hasValue()) {
-            const auto& ok = upstreamResult->value();
-            publisherClaim.markReady(InitialTrackState{ok.largest, ok.extensions});
-          }
-        }
-        // Capture largest/extensions on publisherExec to set the initial state for the
-        // subscriber.  Captured but ignored when the firstSetup returned an error.
-        attach.initial = InitialTrackState::capture(*publisherFwd);
-      }()
-  );
+    if (sr.firstSetup) {
+      auto& setup = *sr.firstSetup;
+      // Passive relay chain (top-N/termination/cache): forward=true so it observes every
+      // object, passive=true so it doesn't count as a forwarding subscriber or in the
+      // onEmpty quorum (the publisher's onEmpty still fires when the last real sub leaves).
+      publisherFwd->addSubscriber(
+          relayChannelId_,
+          /*forward=*/true,
+          relayChainFilter,
+          /*passive=*/true
+      );
+      attach.ownsRelayChain = true;
+      setup.upstreamSubReq.forward = forward;
+      upstreamResult = co_await subscribeUpstreamAndApplyOk(
+          upstream->publisher(),
+          publisherExec,
+          std::move(setup.upstreamSubReq),
+          std::move(setup.upstreamConsumer),
+          publisherFwd,
+          setup.clientRequestID
+      );
+      if (upstreamResult->hasValue()) {
+        const auto& ok = upstreamResult->value();
+        publisherClaim.markReady(InitialTrackState{ok.largest, ok.extensions});
+      }
+    }
+    // Capture largest/extensions on publisherExec to set the initial state for the
+    // subscriber.  Captured but ignored when the firstSetup returned an error.
+    attach.initial = InitialTrackState::capture(*publisherFwd);
+  };
+  if (sr.firstSetup) {
+    XDCHECK_EQ(sr.firstSetup->upstream.info->executor, publisherExec);
+    co_await sr.firstSetup->upstream.runOnExecutor([&](Participant::OnExecutor upstream) {
+      return sortie(std::move(upstream));
+    });
+  } else {
+    co_await folly::coro::co_withExecutor(
+        folly::getKeepAliveToken(publisherExec),
+        sortie(std::nullopt)
+    );
+  }
   // Back on relayExec_.
 
   if (attach.error) {
@@ -2488,8 +2317,8 @@ folly::coro::Task<MoqxRelay::PublisherAttachment> MoqxRelay::attachNewLocalForwa
           ftn,
           upstreamOk,
           setup.pending,
-          setup.upstreamSession,
-          maybeWrapPublisher(relayExec_, setup.upstreamSession),
+          setup.upstream.info,
+          setup.upstream.publisher,
           setup.clientRequestID
       )) {
     // Reconnect race: matches prior behavior — no channel-sub teardown here; the tail
@@ -2503,36 +2332,35 @@ folly::coro::Task<MoqxRelay::PublisherAttachment> MoqxRelay::attachNewLocalForwa
 // Runs on relayExec_: registry lookup + FirstSubscriber setup. Defers the upstream
 // subscribe to attachNewLocalForwarderOnRelayExec (issued from its publisherExec sortie,
 // after the channel subs are installed); returns firstSetup for it to complete.
-folly::coro::Task<MoqxRelay::StatefulSubscribeResult>
-MoqxRelay::joinOrPrepareUpstreamSubscription(SubscribeRequest subReq) {
+folly::coro::Task<MoqxRelay::StatefulSubscribeResult> MoqxRelay::joinOrPrepareUpstreamSubscription(
+    SubscribeRequest subReq,
+    std::optional<RouteExclusion> exclusion
+) {
   const auto& ftn = subReq.fullTrackName;
-  const auto exclusion = exclusionFor(MoQSession::getRequestSession());
 
-  if (!registry_.exists(ftn) && !upstreams_.empty() &&
+  if (!registry_.exists(ftn) && peering_ && peering_->peersPending() &&
       !findUpstreamPublisher(ftn.trackNamespace, exclusion)) {
-    co_await waitForUpstreams([&] {
+    co_await peering_->waitForPeers([&] {
       return findUpstreamPublisher(ftn.trackNamespace, exclusion) != nullptr;
     });
   }
 
-  // upstreamSession is set by the factory for the first subscriber that needs to go upstream.
-  std::shared_ptr<MoQSession> upstreamSession;
+  // upstream is set by the factory for the first subscriber that needs to go upstream.
+  std::optional<Participant> upstream;
   auto firstOrSubsequent = registry_.getOrCreateFromSubscribe(
       ftn,
       // installPublisherForwarder puts the real chain on the forwarder's own exec instead;
       // a relay-direct callback would run there and touch registry_ off relayExec_.
       std::shared_ptr<MoQForwarder::Callback>(nullptr),
       [this, &ftn](std::shared_ptr<MoQForwarder> f) { return buildFilterChain(ftn, std::move(f)); },
-      [this, &ftn, &upstreamSession, &exclusion](const std::shared_ptr<MoQForwarder>& f
+      [this, &ftn, &upstream, &exclusion](const std::shared_ptr<MoQForwarder>& f
       ) -> std::optional<ForwarderRef> {
-        upstreamSession = namespaceTree_.findPublisherSession(
-            ftn.trackNamespace,
-            exclusion.value_or(RouteExclusion{})
-        );
-        if (!upstreamSession) {
+        upstream =
+            namespaceTree_.findPublisher(ftn.trackNamespace, exclusion.value_or(RouteExclusion{}));
+        if (!upstream) {
           return std::nullopt;
         }
-        return makeForwarderRef(f, upstreamSession->getExecutor());
+        return makeForwarderRef(f, upstream->info->executor);
       }
   );
 
@@ -2552,15 +2380,15 @@ MoqxRelay::joinOrPrepareUpstreamSubscription(SubscribeRequest subReq) {
     const auto clientRequestID = subReq.requestID;
     // forward updated to its real value in attachNewLocalForwarderOnRelayExec.
     SubscribeRequest upstreamSubReq =
-        makeUpstreamSubReq(subReq, /*forward=*/false, upstreamSession);
+        makeUpstreamSubReq(subReq, /*forward=*/false, *upstream->info);
 
-    // first->consumer is the publisher forwarder (lives on publisherExec == upstreamSession's
+    // first->consumer is the publisher forwarder (lives on publisherExec == upstream's
     // executor). No cross-exec wrapping — upstream delivers on that executor directly.
     auto upstreamConsumer = first->consumer;
-    StatefulSubscribeResult result{upstreamSession->getExecutor(), std::nullopt, std::nullopt};
+    StatefulSubscribeResult result{upstream->info->executor, std::nullopt, std::nullopt};
     result.firstSetup.emplace(StatefulSubscribeResult::FirstSubscriberSetup{
         first->forwarder,
-        upstreamSession,
+        *upstream,
         std::move(upstreamSubReq),
         std::move(upstreamConsumer),
         std::move(first->pending),
@@ -2597,16 +2425,17 @@ MoqxRelay::joinOrPrepareUpstreamSubscription(SubscribeRequest subReq) {
 folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriberExec(
     SubscribeRequest subReq,
     std::shared_ptr<TrackConsumer> consumer,
-    std::shared_ptr<MoQSession> session,
-    folly::Executor* subscriberExec
+    ParticipantInfo subscriber
 ) {
   const auto& ftn = subReq.fullTrackName;
   auto* localReg = &localRegistry();
+  auto* subscriberExec = subscriber.executor;
+  const auto exclusion = subscriber.routing.exclusion;
 
   // Park before claiming this thread's forwarder, so a later SUBSCRIBE for the same
   // ftn is never bound to our timeout. The gate keeps the relayExec_ hop off the
   // common path: a ready local forwarder means a publisher already resolved.
-  if (auto rendezvousTimeout = takeRendezvousTimeout(subReq, session);
+  if (auto rendezvousTimeout = takeRendezvousTimeout(subReq, subscriber.version);
       rendezvousTimeout && !localReg->getIfReady(ftn)) {
     if (auto rendezvousErr = co_await folly::coro::co_withExecutor(
             folly::getKeepAliveToken(relayExec_),
@@ -2619,10 +2448,10 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriber
   // Check a cluster peer's exclusion on relayExec_ before it joins this thread's forwarder.
   // A peer that joins a ready forwarder does not visit relayExec_ and could receive its own
   // data. A peer that claims the forwarder and is then refused would fail its waiters.
-  if (auto exclusion = exclusionFor(session); exclusion && co_await folly::coro::co_withExecutor(
-                                                               folly::getKeepAliveToken(relayExec_),
-                                                               refusedByExclusion(*exclusion, ftn)
-                                                           )) {
+  if (exclusion && co_await folly::coro::co_withExecutor(
+                       folly::getKeepAliveToken(relayExec_),
+                       refusedByExclusion(*exclusion, ftn)
+                   )) {
     co_return folly::makeUnexpected(SubscribeError{
         subReq.requestID,
         SubscribeErrorCode::DOES_NOT_EXIST,
@@ -2657,10 +2486,10 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriber
 
   if (auto* ready = std::get_if<LocalForwarderRegistry::Ready>(&joined)) {
     auto& readyFwd = *ready->forwarder;
-    if (auto err = checkRangeNotInPast(readyFwd, subReq, *session)) {
+    if (auto err = checkRangeNotInPast(readyFwd, subReq, subscriber.version)) {
       co_return folly::makeUnexpected(std::move(*err));
     }
-    co_return attachSubscriber(readyFwd, std::move(session), subReq, std::move(consumer));
+    co_return attachSubscriber(readyFwd, subscriber.sessionId, subReq, std::move(consumer));
   }
 
   // This thread owns setup. The claim stays open until the tail, so same-thread attachers
@@ -2680,7 +2509,7 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriber
 
   // addSubscriber before the relay hop: numForwardingSubscribers() must be correct
   // when the channel subscriber is added on publisherExec, so forward flag is right from the start.
-  auto sub = localFwd->addSubscriber(session->sessionId(), subReq, consumer);
+  auto sub = localFwd->addSubscriber(subscriber.sessionId, subReq, consumer);
   if (!sub) {
     co_return folly::makeUnexpected(makeAddSubscriberError(subReq.requestID));
   }
@@ -2696,7 +2525,8 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriber
           subscriberExec,
           crossExecFilter,
           forward,
-          session->sessionId(),
+          subscriber.sessionId,
+          exclusion,
           std::move(consumer)
       )
   );
@@ -2763,12 +2593,14 @@ MoqxRelay::subscribe(SubscribeRequest subReq, std::shared_ptr<TrackConsumer> con
 
 folly::coro::Task<Publisher::SubscribeResult>
 MoqxRelay::subscribeImpl(SubscribeRequest subReq, std::shared_ptr<TrackConsumer> consumer) {
-  auto session = MoQSession::getRequestSession();
-  maybeSetSessionExec(*session);
+  XDCHECK(onRelayExec());
+  const auto requesterInfo = requestParticipant().info;
+  const ParticipantInfo& requester = *requesterInfo;
+  maybeSetSessionExec(requester);
   // A copy: subReq moves upstream before the cache and registry use the name.
   const auto ftn = subReq.fullTrackName;
 
-  if (ftn.trackNamespace.empty() && !emptyNamespaceAllowed(session)) {
+  if (ftn.trackNamespace.empty() && !emptyNamespaceAllowed(requester)) {
     co_return folly::makeUnexpected(
         SubscribeError({subReq.requestID, SubscribeErrorCode::DOES_NOT_EXIST, "namespace required"})
     );
@@ -2777,7 +2609,7 @@ MoqxRelay::subscribeImpl(SubscribeRequest subReq, std::shared_ptr<TrackConsumer>
   // Resolve (or wait out our own rendezvous) before ever committing a
   // FirstSubscriber/SubsequentSubscriber entry, so a concurrent SUBSCRIBE for the
   // same ftn is never bound to our RENDEZVOUS_TIMEOUT.
-  if (auto rendezvousTimeout = takeRendezvousTimeout(subReq, session)) {
+  if (auto rendezvousTimeout = takeRendezvousTimeout(subReq, requester.version)) {
     if (auto rendezvousErr =
             co_await rendezvousWithPublisherOrTimeout(subReq, *rendezvousTimeout)) {
       co_return folly::makeUnexpected(std::move(*rendezvousErr));
@@ -2787,10 +2619,10 @@ MoqxRelay::subscribeImpl(SubscribeRequest subReq, std::shared_ptr<TrackConsumer>
   // TOCTOU fix: if we might be the first subscriber, wait for the upstream
   // connection before branching. A concurrent coroutine may emplace the entry
   // while we are suspended, so we re-check inside getOrCreateFromSubscribe.
-  const auto exclusion = exclusionFor(session);
-  if (!registry_.exists(ftn) && !upstreams_.empty() &&
+  const auto exclusion = requester.routing.exclusion;
+  if (!registry_.exists(ftn) && peering_ && peering_->peersPending() &&
       !findUpstreamPublisher(ftn.trackNamespace, exclusion)) {
-    co_await waitForUpstreams([&] {
+    co_await peering_->waitForPeers([&] {
       return findUpstreamPublisher(ftn.trackNamespace, exclusion) != nullptr;
     });
   }
@@ -2798,22 +2630,20 @@ MoqxRelay::subscribeImpl(SubscribeRequest subReq, std::shared_ptr<TrackConsumer>
   consumer =
       wrapWithTrackStats(trackStats_, ftn, std::move(consumer), stats::TrackDirection::Egress);
 
-  // upstreamSession is set by the factory for the first subscriber that needs to go upstream.
-  std::shared_ptr<MoQSession> upstreamSession;
+  // upstream is set by the factory for the first subscriber that needs to go upstream.
+  std::optional<Participant> upstream;
   auto firstOrSubsequent = registry_.getOrCreateFromSubscribe(
       ftn,
       shared_from_this(),
       [this, &ftn](std::shared_ptr<MoQForwarder> f) { return buildFilterChain(ftn, std::move(f)); },
-      [this, &ftn, &upstreamSession, &exclusion](const std::shared_ptr<MoQForwarder>& f
+      [this, &ftn, &upstream, &exclusion](const std::shared_ptr<MoQForwarder>& f
       ) -> std::optional<ForwarderRef> {
-        upstreamSession = namespaceTree_.findPublisherSession(
-            ftn.trackNamespace,
-            exclusion.value_or(RouteExclusion{})
-        );
-        if (!upstreamSession) {
+        upstream =
+            namespaceTree_.findPublisher(ftn.trackNamespace, exclusion.value_or(RouteExclusion{}));
+        if (!upstream) {
           return std::nullopt;
         }
-        return makeForwarderRef(f, upstreamSession->getExecutor());
+        return makeForwarderRef(f, upstream->info->executor);
       }
   );
 
@@ -2824,12 +2654,12 @@ MoqxRelay::subscribeImpl(SubscribeRequest subReq, std::shared_ptr<TrackConsumer>
   }
 
   if (auto* first = std::get_if<SubscriptionRegistry::FirstSubscriber>(&firstOrSubsequent)) {
-    auto upstreamPublisher = maybeWrapPublisher(relayExec_, upstreamSession);
+    auto upstreamPublisher = upstream->publisher;
 
     // Add subscriber first (with the client's original request) in case objects
     // arrive before subscribe OK.
     auto subscriber =
-        first->forwarder->addSubscriber(session->sessionId(), subReq, std::move(consumer));
+        first->forwarder->addSubscriber(requester.sessionId, subReq, std::move(consumer));
     if (!subscriber) {
       XLOG(ERR) << "addSubscriber returned null (draining?) for " << ftn
                 << " reqID=" << subReq.requestID;
@@ -2844,13 +2674,14 @@ MoqxRelay::subscribeImpl(SubscribeRequest subReq, std::shared_ptr<TrackConsumer>
     subReq = makeUpstreamSubReq(
         std::move(subReq),
         first->forwarder->numForwardingSubscribers() > 0,
-        upstreamSession
+        *upstream->info
     );
 
     // Upstream subscribe + apply OK to the forwarder (NGR recorded without firing).
     // pending destructor fires on the error path.
     auto okOrErr = co_await subscribeUpstreamAndApplyOk(
-        upstreamPublisher,
+        *upstreamPublisher,
+        upstream->info->executor,
         std::move(subReq),
         first->consumer,
         first->forwarder,
@@ -2865,7 +2696,7 @@ MoqxRelay::subscribeImpl(SubscribeRequest subReq, std::shared_ptr<TrackConsumer>
             ftn,
             ok,
             first->pending,
-            upstreamSession,
+            upstream->info,
             upstreamPublisher,
             clientRequestID
         )) {
@@ -2892,10 +2723,10 @@ MoqxRelay::subscribeImpl(SubscribeRequest subReq, std::shared_ptr<TrackConsumer>
     // the entry's ref is owned here.
     auto forwarder = sub.forwarder.getIfOwned();
     XCHECK(forwarder) << "subscribeImpl reached with a remote forwarder ref";
-    if (auto err = checkRangeNotInPast(*forwarder, subReq, *session)) {
+    if (auto err = checkRangeNotInPast(*forwarder, subReq, requester.version)) {
       co_return folly::makeUnexpected(std::move(*err));
     }
-    co_return attachSubscriber(*forwarder, std::move(session), subReq, std::move(consumer));
+    co_return attachSubscriber(*forwarder, requester.sessionId, subReq, std::move(consumer));
   }
 }
 
@@ -2909,6 +2740,9 @@ TrackStatusOk buildTrackStatusOk(MoQForwarder& fwd, const TrackStatus& req) {
   TrackStatusOk ok;
   ok.requestID = req.requestID;
   ok.groupOrder = fwd.groupOrder();
+  ok.trackProperties.insertMutableExtension(
+      Extension{kPublisherGroupOrderExtensionType, folly::to_underlying(fwd.groupOrder())}
+  );
   ok.largest = fwd.largest();
   return ok;
 }
@@ -2928,14 +2762,13 @@ MoqxRelay::trackStatusOnSubscriberExec(const TrackStatus& req) {
 }
 
 folly::Expected<folly::SemiFuture<folly::Unit>, FetchError>
-MoqxRelay::resolveJoiningFetchOnSubscriberExec(Fetch& fetch, const MoQSession& session) {
+MoqxRelay::resolveJoiningFetchOnSubscriberExec(Fetch& fetch, const ParticipantInfo& subscriber) {
   auto [standalone, joining] = fetchType(fetch);
   if (!joining) {
     return folly::makeSemiFuture();
   }
-  // A draft 20 FETCH carries no Fetch Type, so it always parses as standalone.
-  XCHECK(!useFillFetch(session.getNegotiatedVersion().value_or(0)))
-      << "joining FETCH under a draft 20 session";
+  // A draft 22 FETCH carries no Fetch Type, so it always parses as standalone.
+  XCHECK(!useFillFetch(subscriber.version)) << "joining FETCH under a draft 22 session";
   // All of a session's subscriptions are on its thread's forwarders.
   auto* localReg = tlForwarders_.get();
   auto state = localReg ? localReg->lookup(fetch.fullTrackName) : LocalForwarderRegistry::State{};
@@ -2950,7 +2783,7 @@ MoqxRelay::resolveJoiningFetchOnSubscriberExec(Fetch& fetch, const MoQSession& s
         "No subscription for joining fetch"
     });
   }
-  auto res = ready->forwarder->resolveJoiningFetch(session.sessionId(), *joining);
+  auto res = ready->forwarder->resolveJoiningFetch(subscriber.sessionId, *joining);
   if (res.hasError()) {
     return folly::makeUnexpected(std::move(res.error()));
   }
@@ -2960,18 +2793,19 @@ MoqxRelay::resolveJoiningFetchOnSubscriberExec(Fetch& fetch, const MoQSession& s
 
 folly::coro::Task<Publisher::FetchResult>
 MoqxRelay::fetchImpl(Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
-  auto session = MoQSession::getRequestSession();
+  XDCHECK(onRelayExec());
+  const auto subscriberInfo = requestParticipant().info;
+  const ParticipantInfo& subscriber = *subscriberInfo;
 
-  if (fetch.fullTrackName.trackNamespace.empty() && !emptyNamespaceAllowed(session)) {
+  if (fetch.fullTrackName.trackNamespace.empty() && !emptyNamespaceAllowed(subscriber)) {
     co_return folly::makeUnexpected(
         FetchError({fetch.requestID, FetchErrorCode::DOES_NOT_EXIST, "namespace required"})
     );
   }
 
   auto [standalone, joining] = fetchType(fetch);
-  // A draft 20 FETCH carries no Fetch Type, so it always parses as standalone.
-  XCHECK(!joining || !useFillFetch(session->getNegotiatedVersion().value_or(0)))
-      << "joining FETCH under a draft 20 session";
+  // A draft 22 FETCH carries no Fetch Type, so it always parses as standalone.
+  XCHECK(!joining || !useFillFetch(subscriber.version)) << "joining FETCH under a draft 22 session";
   // LF mode resolves joining fetches on the subscriber exec.
   if (joining && mode() != Mode::LocalForwarder) {
     auto fetchView = registry_.getFetchView(fetch.fullTrackName);
@@ -2984,7 +2818,7 @@ MoqxRelay::fetchImpl(Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
       // Non-LF only (guarded above): the entry's ref is owned here.
       auto forwarder = fetchView->forwarder.getIfOwned();
       XCHECK(forwarder) << "joining fetch against a remote-owned entry";
-      auto res = forwarder->resolveJoiningFetch(session->sessionId(), *joining);
+      auto res = forwarder->resolveJoiningFetch(subscriber.sessionId, *joining);
       if (res.hasError()) {
         co_return folly::makeUnexpected(res.error());
       }
@@ -3000,15 +2834,15 @@ MoqxRelay::fetchImpl(Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
   // Prefer an exact-track upstream (from publish/subscribe) over a broader
   // namespace-level publisher, matching subscribeImpl's resolution order.
   auto fetchView = registry_.getFetchView(fetch.fullTrackName);
-  const auto exclusion = exclusionFor(session);
+  const auto exclusion = subscriber.routing.exclusion;
   std::shared_ptr<Publisher> upstreamPublisher;
   // A fetch does not join the subscription, so an excluded source falls back to routing.
   if (fetchView && !excludedFromSubscription(exclusion, fetch.fullTrackName)) {
     upstreamPublisher = fetchView->publisher;
   } else {
     upstreamPublisher = findUpstreamPublisher(fetch.fullTrackName.trackNamespace, exclusion);
-    if (!upstreamPublisher && !upstreams_.empty()) {
-      co_await waitForUpstreams([&] {
+    if (!upstreamPublisher && peering_ && peering_->peersPending()) {
+      co_await peering_->waitForPeers([&] {
         upstreamPublisher = findUpstreamPublisher(fetch.fullTrackName.trackNamespace, exclusion);
         return upstreamPublisher != nullptr;
       });
@@ -3051,11 +2885,14 @@ folly::coro::Task<Publisher::TrackStatusResult> MoqxRelay::trackStatus(TrackStat
 
 folly::coro::Task<Publisher::TrackStatusResult> MoqxRelay::trackStatusImpl(TrackStatus trackStatus
 ) {
+  XDCHECK(onRelayExec());
   XLOG(DBG1) << __func__ << " ftn=" << trackStatus.fullTrackName;
 
-  auto session = MoQSession::getRequestSession();
+  const auto requesterInfo = requestParticipant().info;
 
-  if (trackStatus.fullTrackName.trackNamespace.empty() && !emptyNamespaceAllowed(session)) {
+  const ParticipantInfo& requester = *requesterInfo;
+
+  if (trackStatus.fullTrackName.trackNamespace.empty() && !emptyNamespaceAllowed(requester)) {
     co_return folly::makeUnexpected(TrackStatusError(
         {trackStatus.requestID, TrackStatusErrorCode::DOES_NOT_EXIST, "namespace required"}
     ));
@@ -3086,15 +2923,15 @@ folly::coro::Task<Publisher::TrackStatusResult> MoqxRelay::trackStatusImpl(Track
   // No active subscription — fall through to the upstream path.
   {
     // No active subscription — try registry publisher first, then namespace tree
-    const auto exclusion = exclusionFor(session);
+    const auto exclusion = requester.routing.exclusion;
     std::shared_ptr<Publisher> upstreamPublisher;
     if (upstreamView && !excludedFromSubscription(exclusion, trackStatus.fullTrackName)) {
       upstreamPublisher = upstreamView->publisher;
     } else {
       const auto& ns = trackStatus.fullTrackName.trackNamespace;
       upstreamPublisher = findUpstreamPublisher(ns, exclusion);
-      if (!upstreamPublisher && !upstreams_.empty()) {
-        co_await waitForUpstreams([&] {
+      if (!upstreamPublisher && peering_ && peering_->peersPending()) {
+        co_await peering_->waitForPeers([&] {
           upstreamPublisher = findUpstreamPublisher(ns, exclusion);
           return upstreamPublisher != nullptr;
         });
@@ -3124,33 +2961,29 @@ void MoqxRelay::onEmpty(MoQForwarder* forwarder) {
 }
 
 void MoqxRelay::onEmptyImpl(const FullTrackName& ftn) {
+  XDCHECK(onRelayExec());
   auto upstreamView = registry_.getUpstreamView(ftn);
   if (!upstreamView) {
     return;
   }
 
-  if (!upstreamView->handle) {
-    // Handle is null - publisher terminated via FilterConsumer
+  if (!upstreamView->upstreamLive) {
     XLOG(INFO) << "Publisher terminated for " << ftn;
     registry_.remove(ftn);
     return;
   }
 
-  // Handle exists - just last subscriber left. requestUpdate/unsubscribe mutate
+  // Upstream live - just last subscriber left. requestUpdate/unsubscribe mutate
   // the upstream session inline (no self-hop), so they must run on publisherExec.
   XLOG(INFO) << "Last subscriber removed for " << ftn;
-  XCHECK(upstreamView->publisherExec);
   if (upstreamView->isPublish) {
     // if it's publish, don't unsubscribe, just subscribeUpdate forward=false
     XLOG(DBG1) << "Updating upstream subscription forward=false";
-    launchUpdate(
-        upstreamView->publisherExec,
-        doSubscribeUpdate(upstreamView->handle, /*forward=*/false)
-    );
-  } else {
-    runOnSessionExec(relayExec_, upstreamView->publisherExec, [h = upstreamView->handle] {
-      h->unsubscribe();
+    registry_.launchOnHandle(ftn, [](const auto& handle) {
+      return doSubscribeUpdate(handle, /*forward=*/false);
     });
+  } else {
+    registry_.postToHandle(ftn, [](const auto& handle) { handle->unsubscribe(); });
     XLOG(DBG4) << "Erasing subscription to " << ftn;
     registry_.remove(ftn);
   }
@@ -3161,6 +2994,7 @@ void MoqxRelay::forwardChanged(MoQForwarder* forwarder, bool forward) {
 }
 
 void MoqxRelay::forwardChangedImpl(const FullTrackName& ftn, bool forward) {
+  XDCHECK(onRelayExec());
   auto upstreamView = registry_.getUpstreamView(ftn);
   if (!upstreamView) {
     return;
@@ -3169,16 +3003,15 @@ void MoqxRelay::forwardChangedImpl(const FullTrackName& ftn, bool forward) {
     // Ignore: it's the first subscriber, forward update not needed
     return;
   }
-  if (!upstreamView->handle) {
-    // Publisher terminated (onPublishDone cleared handle/upstream)
+  if (!upstreamView->upstreamLive) {
     XLOG(DBG4) << "Ignoring forward change for " << ftn << " - publisher terminated";
     return;
   }
   XLOG(INFO) << "Updating forward for " << ftn << " forward=" << forward;
 
-  // handle non-null (checked above) implies upstream is live, so publisherExec is set.
-  XCHECK(upstreamView->publisherExec);
-  launchUpdate(upstreamView->publisherExec, doSubscribeUpdate(upstreamView->handle, forward));
+  registry_.launchOnHandle(ftn, [forward](const auto& handle) {
+    return doSubscribeUpdate(handle, forward);
+  });
 }
 
 void MoqxRelay::newGroupRequested(MoQForwarder* forwarder, uint64_t group) {
@@ -3196,15 +3029,10 @@ void MoqxRelay::fillRequested(
     serveFill(std::move(consumer), std::move(fetch));
     return;
   }
-  auto session = MoQSession::getRequestSession();
-  if (!session) {
-    XLOG(ERR) << "Fill requested outside a session id=" << fetch.requestID;
-    return;
-  }
-  session->getExecutor()->add([self = shared_from_this(),
-                               ctx = folly::RequestContext::saveContext(),
-                               consumer = std::move(consumer),
-                               fetch = std::move(fetch)]() mutable {
+  requestParticipant().info->executor->add([self = shared_from_this(),
+                                            ctx = folly::RequestContext::saveContext(),
+                                            consumer = std::move(consumer),
+                                            fetch = std::move(fetch)]() mutable {
     folly::RequestContextScopeGuard guard(std::move(ctx));
     self->serveFill(std::move(consumer), std::move(fetch));
   });
@@ -3228,27 +3056,28 @@ void MoqxRelay::serveFill(std::shared_ptr<TrackConsumer> consumer, Fetch fetch) 
 }
 
 void MoqxRelay::newGroupRequestedImpl(const FullTrackName& ftn, uint64_t group) {
+  XDCHECK(onRelayExec());
   auto upstreamView = registry_.getUpstreamView(ftn);
   // Check if handle is still valid (publisher may have terminated)
-  if (!upstreamView || !upstreamView->handle) {
+  if (!upstreamView || !upstreamView->upstreamLive) {
     XLOG(DBG4) << "Ignoring NEW_GROUP_REQUEST for " << ftn << " - publisher terminated";
     return;
   }
   XLOG(INFO) << "New group request detected for " << ftn;
 
-  // handle non-null (checked above) implies upstream is live, so publisherExec is set.
-  XCHECK(upstreamView->publisherExec);
-  launchUpdate(upstreamView->publisherExec, doNewGroupRequestUpdate(upstreamView->handle, group));
+  registry_.launchOnHandle(ftn, [group](const auto& handle) {
+    return doNewGroupRequestUpdate(handle, group);
+  });
 }
 
 // TRACK_FILTER support
 
 std::shared_ptr<PropertyRanking> MoqxRelay::getOrCreateRanking(
-    std::shared_ptr<NamespaceTree::NamespaceNode> node,
+    TracksTree::Node& node,
     uint64_t propertyType,
     const TrackNamespace& ns
 ) {
-  auto& ranking = namespaceTree_.getOrInsertRanking(*node, propertyType);
+  auto& ranking = tracksTree_.ranking(node, propertyType);
   if (!ranking) {
     ranking = std::make_shared<PropertyRanking>(
         propertyType,
@@ -3262,28 +3091,32 @@ std::shared_ptr<PropertyRanking> MoqxRelay::getOrCreateRanking(
         // Batch callback: called once per track-selected event with all sessions
         [this](
             const FullTrackName& ftn,
-            const std::vector<std::pair<std::shared_ptr<MoQSession>, bool>>& sessions
+            const std::vector<std::pair<Participant, bool>>& subscribers
         ) {
-          for (const auto& [session, forward] : sessions) {
-            onTrackSelected(ftn, session, forward);
+          for (const auto& [subscriber, forward] : subscribers) {
+            onTrackSelected(ftn, subscriber, forward);
           }
         },
-        // Individual callback: called by addSessionToTopNGroup to notify a newly
+        // Individual callback: called by addSubscriberToTopNGroup to notify a newly
         // joined session of tracks already in top-N at the time it subscribes.
-        [this](const FullTrackName& ftn, std::shared_ptr<MoQSession> session, bool forward) {
-          onTrackSelected(ftn, session, forward);
+        [this](const FullTrackName& ftn, const Participant& subscriber, bool forward) {
+          onTrackSelected(ftn, subscriber, forward);
         },
         // Eviction callback
-        [this](const FullTrackName& ftn, std::shared_ptr<MoQSession> session) {
-          onTrackEvicted(ftn, session);
+        [this](const FullTrackName& ftn, const Participant& subscriber) {
+          onTrackEvicted(ftn, subscriber);
         }
     );
 
-    // Retroactively register tracks already published under this node and all
+    // Retroactively register tracks already published under ns and all
     // descendants. A subscriber at /conf should see tracks at /conf/room1/track1.
+    auto publishNode = namespaceTree_.findNode(ns, /*createMissingNodes=*/false);
+    if (!publishNode) {
+      return ranking;
+    }
     namespaceTree_.forEachNodeInSubtree(
         ns,
-        node,
+        publishNode,
         [&](const TrackNamespace& prefix, std::shared_ptr<NamespaceTree::NamespaceNode> current) {
           // Collect tracks at this level with their last-activity time and current
           // property value, then sort by lastObjectTime ascending so arrivalSeq
@@ -3291,15 +3124,14 @@ std::shared_ptr<PropertyRanking> MoqxRelay::getOrCreateRanking(
           // before the publishers.
           struct RetroTrack {
             std::string trackName;
-            std::shared_ptr<moxygen::MoQSession> publishSession;
+            SessionId publisher;
             std::optional<uint64_t> initialPropertyValue;
             std::chrono::steady_clock::time_point lastObjectTime;
           };
           std::vector<RetroTrack> retroTracks;
           retroTracks.reserve(current->publishCount());
 
-          current->forEachPublish([&](const std::string& trackName,
-                                      const std::shared_ptr<MoQSession>& publishSession) {
+          current->forEachPublish([&](const std::string& trackName, const Participant& publisher) {
             FullTrackName ftn{prefix, trackName};
             std::optional<uint64_t> initialPropertyValue;
             std::chrono::steady_clock::time_point lastObjectTime{};
@@ -3326,7 +3158,8 @@ std::shared_ptr<PropertyRanking> MoqxRelay::getOrCreateRanking(
                 );
               }
             }
-            retroTracks.push_back({trackName, publishSession, initialPropertyValue, lastObjectTime}
+            retroTracks.push_back(
+                {trackName, publisher.info->sessionId, initialPropertyValue, lastObjectTime}
             );
           });
 
@@ -3340,7 +3173,7 @@ std::shared_ptr<PropertyRanking> MoqxRelay::getOrCreateRanking(
 
           for (const auto& t : retroTracks) {
             FullTrackName ftn{prefix, t.trackName};
-            ranking->registerTrack(ftn, t.initialPropertyValue, t.publishSession);
+            ranking->registerTrack(ftn, t.initialPropertyValue, t.publisher);
             XLOG(DBG4) << "[getOrCreateRanking] Retroactively registered track " << ftn;
           }
         }
@@ -3349,18 +3182,33 @@ std::shared_ptr<PropertyRanking> MoqxRelay::getOrCreateRanking(
   return ranking;
 }
 
-void MoqxRelay::onTrackSelected(
-    const FullTrackName& ftn,
-    std::shared_ptr<MoQSession> session,
-    bool forward
+void MoqxRelay::addTrackSubscriber(
+    const TrackNamespace& prefix,
+    const Participant& subscriber,
+    TrackSubscriberInfo info
 ) {
-  XLOG(DBG4) << "[MoqxRelay] Track selected: " << ftn << " session=" << session.get()
-             << " forward=" << forward;
-
-  if (!session) {
-    XLOG(ERR) << "onTrackSelected: null session for " << ftn;
+  const auto filter = info.trackFilter;
+  const bool forward = info.forward;
+  auto* node = tracksTree_.addSubscriber(prefix, subscriber, std::move(info));
+  if (!node) {
+    // The first subscription stays, filter included, so a repeat must not join a ranking.
+    XLOG(DBG1) << "Repeated track subscription at " << prefix;
     return;
   }
+  if (filter) {
+    // Selects the tracks already in the top N before it returns.
+    getOrCreateRanking(*node, filter->propertyType, prefix)
+        ->addSubscriberToTopNGroup(filter->maxSelected, subscriber, forward);
+  }
+}
+
+void MoqxRelay::onTrackSelected(
+    const FullTrackName& ftn,
+    const Participant& subscriber,
+    bool forward
+) {
+  XLOG(DBG4) << "[MoqxRelay] Track selected: " << ftn
+             << " session=" << subscriber.info->sessionId.value << " forward=" << forward;
 
   auto trackForwarder = registry_.getForwarderRef(ftn);
   if (!trackForwarder) {
@@ -3369,20 +3217,16 @@ void MoqxRelay::onTrackSelected(
   }
 
   // TRACK_FILTER subscribers are unpinned so onTrackEvicted can remove them.
-  addSubscriberAndPublish(session, trackForwarder, forward, /*pinned=*/false);
+  addSubscriberAndPublish(subscriber, trackForwarder, forward, /*pinned=*/false);
 }
 
-void MoqxRelay::onTrackEvicted(const FullTrackName& ftn, std::shared_ptr<MoQSession> session) {
-  XLOG(DBG4) << "[MoqxRelay] Track evicted: " << ftn << " session=" << session.get();
-
-  if (!session) {
-    XLOG(WARN) << "onTrackEvicted: null session for " << ftn;
-    return;
-  }
+void MoqxRelay::onTrackEvicted(const FullTrackName& ftn, const Participant& subscriber) {
+  XLOG(DBG4) << "[MoqxRelay] Track evicted: " << ftn
+             << " session=" << subscriber.info->sessionId.value;
 
   // PublishDone makes removeSubscriber notify the downstream via publishDone() rather
   // than silently dropping it.
-  auto evict = [sessionId = session->sessionId()](const std::shared_ptr<MoQForwarder>& fwd) {
+  auto evict = [sessionId = subscriber.info->sessionId](const std::shared_ptr<MoQForwarder>& fwd) {
     if (!fwd) {
       return;
     }
@@ -3401,7 +3245,7 @@ void MoqxRelay::onTrackEvicted(const FullTrackName& ftn, std::shared_ptr<MoQSess
   if (mode() == Mode::LocalForwarder) {
     // The subscriber lives on the per-thread local forwarder, not the registry's
     // publisher forwarder; evict it on its owning exec.
-    folly::via(session->getExecutor(), [this, ftn, evict = std::move(evict)]() {
+    folly::via(subscriber.info->executor, [this, ftn, evict = std::move(evict)]() {
       auto* localReg = tlForwarders_.get();
       evict(localReg ? localReg->getForEviction(ftn) : nullptr);
     });
@@ -3430,20 +3274,11 @@ MoqxRelay::matchTracks(const TrackNamespace& nsPrefix, const std::string* trackN
 }
 
 void MoqxRelay::dumpState(RelayStateVisitor& visitor) const {
-  visitor.onPeersBegin();
-  for (const auto& [id, peer] : peerSubNsHandles_) {
-    visitor.onPeer(peer.address, peer.authority, peer.relayID);
-  }
-  visitor.onPeersEnd();
-  if (!visitor.alive()) {
-    return;
-  }
-
   visitor.onSubscriptionsBegin();
   registry_.forEach([&](const SubscriptionRegistry::EntryView& e) {
     std::string sourceAddr;
     if (e.upstream) {
-      sourceAddr = e.upstream->getPeerAddress().describe();
+      sourceAddr = e.upstream->address;
     }
     // Counted by RelayIngestFilter on this executor rather than read off the
     // forwarder, which in LocalForwarder mode is owned by another one. There
@@ -3472,11 +3307,11 @@ void MoqxRelay::dumpState(RelayStateVisitor& visitor) const {
         routes.reserve(ranked.size());
         for (const auto* route : ranked) {
           routes.push_back({
-              .address = route->session->getPeerAddress().describe(),
+              .address = route->participant.info->address,
               .peerID = route->peerID,
               .path = route->path,
               .cost = route->cost,
-              .fromCluster = route->fromCluster,
+              .fromPeering = route->fromPeering,
           });
         }
         visitor.beginNamespaceNode(childKey, node.trackNamespace, node.subscriberCount(), routes);
@@ -3506,7 +3341,7 @@ folly::coro::Task<std::optional<SubscribeError>> MoqxRelay::rendezvousWithPublis
 ) {
   const auto& ftn = subReq.fullTrackName;
 
-  if (registry_.exists(ftn) || namespaceTree_.findPublisherSession(ftn.trackNamespace)) {
+  if (registry_.exists(ftn) || namespaceTree_.findPublisher(ftn.trackNamespace)) {
     co_return std::nullopt;
   }
 

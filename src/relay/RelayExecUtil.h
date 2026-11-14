@@ -10,7 +10,6 @@
 #include "PublisherCrossExecFilter.h"
 #include <folly/Executor.h>
 #include <memory>
-#include <moxygen/MoQSession.h>
 #include <utility>
 
 namespace openmoq::moqx {
@@ -42,15 +41,6 @@ maybeCrossExec(folly::Executor* exec, std::shared_ptr<moxygen::Publisher> p) {
   return std::make_shared<PublisherCrossExecFilter>(exec, std::move(p));
 }
 
-// Wraps session as a Publisher, targeting its executor when relayExec is set.
-inline std::shared_ptr<moxygen::Publisher>
-maybeWrapPublisher(folly::Executor* relayExec, std::shared_ptr<moxygen::MoQSession> session) {
-  // Evaluate getExecutor() before std::move(session) to avoid unspecified
-  // argument evaluation order leaving session moved-from.
-  auto* exec = relayExec ? session->getExecutor() : nullptr;
-  return maybeCrossExec(exec, std::shared_ptr<moxygen::Publisher>(std::move(session)));
-}
-
 // Runs fn on exec (fire-and-forget) if exec is non-null; otherwise runs it
 // inline on the calling thread.
 template <typename Fn> void runOnExec(folly::Executor* exec, Fn&& fn) {
@@ -59,14 +49,6 @@ template <typename Fn> void runOnExec(folly::Executor* exec, Fn&& fn) {
   } else {
     std::forward<Fn>(fn)();
   }
-}
-
-// When relayExec is set, dispatches fn to sessionExec (fire-and-forget).
-// Otherwise runs fn inline (caller is already on the correct thread).
-// Use this when relay state changes need to notify a specific session's executor.
-template <typename Fn>
-void runOnSessionExec(folly::Executor* relayExec, folly::Executor* sessionExec, Fn&& fn) {
-  runOnExec(relayExec ? sessionExec : nullptr, std::forward<Fn>(fn));
 }
 
 } // namespace openmoq::moqx

@@ -73,7 +73,7 @@ tell its own entry from one a reconnecting publisher put in its place.
 [Pub]         ├─▶ co_invoke(reply) ⇢⇢▶ [Relay]               # runs in the background
 [Pub]         └─▶ return {consumer, replyTask}                # immediate; the publisher can write now
 [Relay]            └─▶ registerPublishOnRelayExec()
-[Relay]                 ├─▶ publishWithSession()              # registry (entry holds remote ForwarderRef) + namespace tree
+[Relay]                 ├─▶ publishWithParticipant()              # registry (entry holds remote ForwarderRef) + namespace tree
 [Relay]                 │     └─▶ addSubscriberAndPublish()   # attach existing SUBSCRIBE_NAMESPACE subs (see Publish fan-out)
 [Relay]                 └─▶ relayChainFilter->setDownstream(topNFilter)
 [Pub]         reply resumes ─▶ takeDisplaced(ftn, displaced)  # release the parked occupant
@@ -93,7 +93,7 @@ otherwise wait forever) — but it lives on its own executor, which may not be t
 mechanisms cooperate, both identity-keyed:
 
 - **The drain is a message routed by the evicted entry's `ForwarderRef`**
-  (`evicted.forwarder.post(publishDone)` in `publishWithSession`): it runs on the old
+  (`evicted.forwarder.post(publishDone)` in `publishWithParticipant`): it runs on the old
   forwarder's own exec and touches exactly the evicted forwarder, never whatever now occupies a
   slot.
 - **Parking anchors the lifetime while the answer travels.** `replaceAndPark` keeps the
@@ -140,7 +140,7 @@ here — that is already owned by the publisher's forwarder.
 [Sub]              └─▶ awaitPublishReply()
 ```
 
-Callers of `addSubscriberAndPublish` (all on `[Relay]`): `publishWithSession` (publisher
+Callers of `addSubscriberAndPublish` (all on `[Relay]`): `publishWithParticipant` (publisher
 arrives → attach existing namespace-subscribers), `subscribeNamespaceImpl` (namespace-subscriber
 arrives → attach existing publishes), `onTrackSelected` (ranking promotes a track).
 

@@ -5,7 +5,10 @@
  */
 
 #include "MoqxRelayTestFixture.h"
+#include "UpstreamProvider.h"
 
+#include <folly/CancellationToken.h>
+#include <folly/coro/Baton.h>
 #include <folly/json.h>
 
 #include "admin/JsonStateVisitors.h"
@@ -69,6 +72,178 @@ protected:
     return walk.finish();
   }
 };
+
+TEST_P(MoQRelayStateTest, PeerRelayIsReportedAsAnAcceptedLink) {
+  // A peer session that accepts the relay's reciprocal SUBSCRIBE_NAMESPACE.
+  class PeerSession : public NiceMock<MockMoQSession> {
+  public:
+    using NiceMock<MockMoQSession>::NiceMock;
+    folly::coro::Task<Publisher::SubscribeNamespaceResult> subscribeNamespace(
+        SubscribeNamespace subNs,
+        std::shared_ptr<Publisher::NamespacePublishHandle> /*handle*/
+    ) override {
+      co_return std::make_shared<NiceMock<MockSubscribeNamespaceHandle>>(
+          SubscribeNamespaceOk{subNs.requestID}
+      );
+    }
+  };
+  resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "sg-sin-2-1");
+  relay_->setAllowedNamespacePrefix(kAllowedPrefix);
+  auto peer = std::make_shared<PeerSession>(exec_);
+  ON_CALL(*peer, getNegotiatedVersion())
+      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
+  getOrCreateMockState(peer);
+  auto subscribe = [&](SubscribeNamespace subNs) {
+    return withSessionContext(peer, [&] {
+      auto result = folly::coro::blockingWait(
+          publisherInterface()->subscribeNamespace(
+              std::move(subNs),
+              std::make_shared<NiceMock<MockNamespacePublishHandle>>()
+          ),
+          exec_.get()
+      );
+      EXPECT_TRUE(result.hasValue());
+      return result.hasValue() ? *result : nullptr;
+    });
+  };
+  auto peering = subscribe(makePeerSubNs("jp-osa-1"));
+  // A second peering request on the session is refused while the first is open.
+  auto duplicate = withSessionContext(peer, [&] {
+    return folly::coro::blockingWait(
+        publisherInterface()->subscribeNamespace(
+            makePeerSubNs("jp-osa-1"),
+            std::make_shared<NiceMock<MockNamespacePublishHandle>>()
+        ),
+        exec_.get()
+    );
+  });
+  ASSERT_TRUE(duplicate.hasError());
+  EXPECT_EQ(duplicate.error().errorCode, SubscribeNamespaceErrorCode::DUPLICATE_SUBSCRIPTION);
+  SubscribeNamespace other = makePeerSubNs();
+  other.trackNamespacePrefix = kAllowedPrefix;
+  auto otherHandle = subscribe(std::move(other));
+  driveIfMultiThread();
+
+  struct Links : PeerVisitor {
+    std::vector<PeerLink> links;
+    void onPeer(const PeerLink& link) override { links.push_back(link); }
+  };
+  auto visitPeers = [&] {
+    Links links;
+    folly::coro::blockingWait(peering_->visitPeers(links), exec_.get());
+    return links.links;
+  };
+  auto links = visitPeers();
+  ASSERT_EQ(links.size(), 1u);
+  EXPECT_EQ(links[0].direction, PeerLink::Direction::Accepted);
+  EXPECT_EQ(links[0].relayID, "jp-osa-1");
+
+  auto peerIdOf = [&] {
+    std::optional<std::string> id;
+    verifyOnRelayExec([&] {
+      id = peering_->reciprocalMoqtPeerHandler()->peerIdOf(peer->sessionId());
+    });
+    return id;
+  };
+  auto holdsHandles = [&] {
+    bool holds = false;
+    verifyOnRelayExec([&] { holds = peering_->holdsSessionHandles(); });
+    return holds;
+  };
+  // Ending another SUBSCRIBE_NAMESPACE from the peer leaves peering in place.
+  withSessionContext(peer, [&] { otherHandle->unsubscribeNamespace(); });
+  driveIfMultiThread();
+  EXPECT_TRUE(holdsHandles());
+
+  // Ending the peering request releases the reciprocal, and the session stays the peer's.
+  withSessionContext(peer, [&] { peering->unsubscribeNamespace(); });
+  driveIfMultiThread();
+  EXPECT_FALSE(holdsHandles());
+  EXPECT_EQ(peerIdOf(), "jp-osa-1");
+
+  verifyOnRelayExec([&] { relay_->onSessionEnd(peer->sessionId()); });
+  EXPECT_FALSE(peerIdOf());
+  EXPECT_TRUE(visitPeers().empty());
+
+  removeSession(peer);
+  driveIfMultiThread();
+}
+
+// A peer's SUBSCRIBE_NAMESPACE that is cancelled during the reciprocal does not keep it.
+TEST_P(MoQRelayStateTest, CancelledPeerRequestReleasesItsReciprocal) {
+  // Accepts the reciprocal SUBSCRIBE_NAMESPACE, and holds its SUBSCRIBE_TRACKS reply until the
+  // test posts the gate.
+  class GatedPeer : public NiceMock<MockMoQSession> {
+  public:
+    using NiceMock<MockMoQSession>::NiceMock;
+    folly::coro::Task<Publisher::SubscribeNamespaceResult> subscribeNamespace(
+        SubscribeNamespace subNs,
+        std::shared_ptr<Publisher::NamespacePublishHandle> /*handle*/
+    ) override {
+      co_return std::make_shared<NiceMock<MockSubscribeNamespaceHandle>>(
+          SubscribeNamespaceOk{subNs.requestID}
+      );
+    }
+    folly::coro::Task<Publisher::SubscribeTracksResult>
+    subscribeTracks(SubscribeTracks subTracks, std::shared_ptr<Publisher::PublishBlockedHandle>)
+        override {
+      tracksRequested = true;
+      co_await gate;
+      SubscribeTracksOk ok;
+      ok.requestID = subTracks.requestID;
+      co_return std::make_shared<NiceMock<MockSubscribeTracksHandle>>(std::move(ok));
+    }
+    std::atomic<bool> tracksRequested{false};
+    folly::coro::Baton gate;
+  };
+  resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "sg-sin-2-1");
+  relay_->setAllowedNamespacePrefix(kAllowedPrefix);
+  auto peer = std::make_shared<GatedPeer>(exec_);
+  ON_CALL(*peer, getNegotiatedVersion())
+      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft18)));
+  getOrCreateMockState(peer);
+
+  folly::CancellationSource cancel;
+  auto request = withSessionContext(peer, [&] {
+    return folly::coro::co_withExecutor(
+               sessionExec(),
+               folly::coro::co_withCancellation(
+                   cancel.getToken(),
+                   publisherInterface()->subscribeNamespace(
+                       makePeerSubNs("jp-osa-1"),
+                       std::make_shared<NiceMock<MockNamespacePublishHandle>>()
+                   )
+               )
+    )
+        .start();
+  });
+  ASSERT_TRUE(driveUntil([&] { return peer->tracksRequested.load(); }));
+  cancel.requestCancellation();
+  peer->gate.post();
+  ASSERT_TRUE(driveUntil([&] { return request.isReady(); }));
+  driveIfMultiThread();
+
+  bool holds = true;
+  verifyOnRelayExec([&] { holds = peering_->holdsSessionHandles(); });
+  EXPECT_FALSE(holds);
+
+  // The cancelled request is no longer open, so the session can peer again.
+  auto again = withSessionContext(peer, [&] {
+    return folly::coro::blockingWait(
+        publisherInterface()->subscribeNamespace(
+            makePeerSubNs("jp-osa-1"),
+            std::make_shared<NiceMock<MockNamespacePublishHandle>>()
+        ),
+        exec_.get()
+    );
+  });
+  EXPECT_TRUE(again.hasValue());
+  driveIfMultiThread();
+  verifyOnRelayExec([&] { holds = peering_->holdsSessionHandles(); });
+  EXPECT_TRUE(holds);
+  removeSession(peer);
+  driveIfMultiThread();
+}
 
 TEST_P(MoQRelayStateTest, EmptyRelayHasRootTreeAndNoSubscriptions) {
   auto state = dumpState();
@@ -284,7 +459,7 @@ TEST_P(MoQRelayStateTest, NamespaceRoutesAreListedBestFirst) {
   ASSERT_EQ(routes.size(), 2) << folly::toJson(node);
   EXPECT_EQ(folly::toJson(routes[0]["hop_path"]), "[200]");
   EXPECT_EQ(routes[0]["cost"].asInt(), 2); // 1 plus the default link cost
-  EXPECT_TRUE(routes[0]["from_cluster"].asBool());
+  EXPECT_TRUE(routes[0]["from_peering"].asBool());
   EXPECT_EQ(folly::toJson(routes[1]["hop_path"]), "[100]");
   EXPECT_EQ(routes[1]["cost"].asInt(), 6);
   EXPECT_EQ(node["publisher"], routes[0]["address"]);

@@ -96,9 +96,10 @@ cmake --preset default && cmake --build build/default && ctest --test-dir build/
 A moxygen install already on `CMAKE_PREFIX_PATH` is used as-is (tried before any
 download). No prebuilt for your platform → configure errors and points here; force
 a published tag with `-DMOQX_PLATFORM=<tag>`. Platform tags are
-`ubuntu-<version_id>-<arch>`, `bookworm-<arch>` (Debian and its derivatives) and
-`macos-<major>-<arch>`, `<arch>` ∈ {`amd64`, `arm64`} — what is actually published
-is on [openmoq/moxygen's releases](https://github.com/openmoq/moxygen/releases).
+`ubuntu-<version_id>-<arch>` and `bookworm-<arch>` (Debian and its derivatives),
+`<arch>` ∈ {`amd64`, `arm64`} — what is actually published is on
+[openmoq/moxygen's releases](https://github.com/openmoq/moxygen/releases). macOS
+has no prebuilt; build from source.
 
 **From source:**
 
@@ -189,7 +190,9 @@ Like sanitizers, PGO and LTO need `--moxygen from-source`. Compiles run with
 ccache disabled (`CCACHE_DISABLE=1`), since a cache hit would ignore the profile.
 The stack is built without moxygen's tests, so moqx's tests stay off too.
 Training needs `libjemalloc2`. The `version release` workflow's `optimize` input
-runs these steps for linux-amd64.
+runs these steps for linux-amd64 and linux-arm64. arm64 builds with gcc-12, since
+gcc-11 fails on the stack at `-O3` there; set `CC`, `CXX` and, for `train.sh`,
+`GCOV_DUMP=gcov-dump-12` to match.
 
 ## Custom presets
 

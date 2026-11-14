@@ -49,7 +49,7 @@ A session that publishes tracks should not receive those same tracks in its own 
 
 ### Publisher Identity
 
-`RankedEntry` stores a raw `publisherRaw` pointer (`MoQSession*`). The raw pointer is safe because `removeTrack()` is always called before session destruction (via `publishDone` → relay cleanup), and is fast for hot-path comparisons. `publisherTrackCount_` maps session pointers to track counts for O(1) `isPublisher()` checks.
+`RankedEntry` stores the publisher's `SessionId`. `publisherTrackCount_` maps publisher ids to track counts for O(1) `isPublisher()` checks.
 
 ### The Waterline
 

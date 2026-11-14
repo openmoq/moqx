@@ -62,7 +62,7 @@ listener_defaults:
 # Single listener; switch stacks with MOQX_STACK / --quic-stack. The mvfst
 # tuning under listener_defaults is a no-op when the picoquic stack is selected.
 listeners:
-  - name: relay
+  relay:
     quic_stack: ${MOQX_STACK}
     moqt_versions: ${MOQX_MOQT_VERSIONS}
     udp:

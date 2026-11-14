@@ -5,6 +5,7 @@
  */
 
 #include "config/loader/Loader.h"
+#include "config/loader/ConfigResolver.h"
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
@@ -62,6 +63,36 @@ admin:
   EXPECT_EQ(svc.cache.value()->enabled.value(), true);
   EXPECT_EQ(svc.cache.value()->max_tracks.value(), 100);
   EXPECT_EQ(svc.cache.value()->max_groups_per_track.value(), 3);
+}
+
+TEST(ConfigLoader, ServiceListeners) {
+  TempYamlFile yaml(R"(
+listeners:
+  - name: public
+    udp:
+      socket:
+        address: "::"
+        port: 9668
+    tls:
+      insecure: true
+    endpoint: "/moq-relay"
+services:
+  bound:
+    listeners: [public]
+    match:
+      - authority: {any: true}
+        path: {prefix: "/"}
+  everywhere:
+    match:
+      - authority: {any: true}
+        path: {prefix: "/x/"}
+)");
+
+  auto cfg = loadConfig(yaml.path());
+  const auto& bound = cfg.services.value().at("bound").listeners.value();
+  ASSERT_TRUE(bound.has_value());
+  EXPECT_THAT(*bound, ::testing::ElementsAre("public"));
+  EXPECT_FALSE(cfg.services.value().at("everywhere").listeners.value().has_value());
 }
 
 TEST(ConfigLoader, FullConfig) {
@@ -288,6 +319,36 @@ services:
   EXPECT_FALSE(cfg.services.value().at("default").cache.value().has_value());
 }
 
+// The YAML reader wraps a negative uint64_t; the resolver's upper bound rejects it.
+TEST(ConfigLoader, NegativeH3TxnTimeoutRejected) {
+  TempYamlFile yaml(R"(
+listeners:
+  - name: main
+    udp:
+      socket:
+        address: "::"
+        port: 9668
+    tls:
+      insecure: true
+    endpoint: "/moq-relay"
+    mvfst:
+      h3_txn_timeout_ms: -1
+services:
+  default:
+    match:
+      - authority: {any: true}
+        path: {prefix: "/"}
+admin:
+  port: 9669
+  address: "::1"
+  plaintext: true
+)");
+
+  auto result = resolveConfig(loadConfig(yaml.path()));
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("h3_txn_timeout_ms"));
+}
+
 // --- Schema generation test ---
 
 TEST(ConfigSchema, GeneratesValidJson) {
@@ -354,6 +415,198 @@ TEST(ConfigLoader, LoadFromFileInvalidYaml) {
   EXPECT_THROW(loadConfig(yaml.path()), std::runtime_error);
 }
 
+// --- Listener map form and duplicate keys ---
+
+constexpr std::string_view kListenerBody = R"(
+    udp: {socket: {address: "::", port: 9668}}
+    tls: {insecure: true}
+    endpoint: "/moq-relay")";
+
+constexpr std::string_view kServices = R"(
+services:
+  default:
+    match: [{authority: {any: true}, path: {prefix: "/"}}]
+)";
+
+std::string listenersYaml(std::string_view entries) {
+  return "listeners:" + std::string(entries) + std::string(kServices);
+}
+
+TEST(ConfigLoader, ListenersMapFormNamesFromKeys) {
+  TempYamlFile yaml(listenersYaml(
+      "\n  public:" + std::string(kListenerBody) + "\n  internal:" + std::string(kListenerBody)
+  ));
+
+  auto cfg = loadConfig(yaml.path(), /*strict=*/true);
+  ASSERT_EQ(cfg.listeners.value().size(), 2);
+  EXPECT_EQ(cfg.listeners.value()[0].name.value(), "public");
+  EXPECT_EQ(cfg.listeners.value()[1].name.value(), "internal");
+  EXPECT_EQ(cfg.listeners.value()[1].endpoint.value(), "/moq-relay");
+  EXPECT_FALSE(cfg.listeners.value().listForm());
+}
+
+TEST(ConfigLoader, ListenersListFormRecorded) {
+  TempYamlFile yaml(listenersYaml("\n  - name: main" + std::string(kListenerBody)));
+
+  auto cfg = loadConfig(yaml.path(), /*strict=*/true);
+  ASSERT_EQ(cfg.listeners.value().size(), 1);
+  EXPECT_EQ(cfg.listeners.value()[0].name.value(), "main");
+  EXPECT_TRUE(cfg.listeners.value().listForm());
+}
+
+TEST(ConfigLoader, ListenersMapEntryWithNameRejectedWhenStrict) {
+  TempYamlFile yaml(listenersYaml("\n  public:\n    name: public" + std::string(kListenerBody)));
+  try {
+    loadConfig(yaml.path(), /*strict=*/true);
+    FAIL() << "expected a parse error";
+  } catch (const std::runtime_error& e) {
+    EXPECT_THAT(e.what(), HasSubstr("Value named 'name' not used"));
+  }
+}
+
+TEST(ConfigLoader, ListenersListEntryWithoutNameRejected) {
+  TempYamlFile yaml(listenersYaml(R"(
+  - udp: {socket: {address: "::", port: 9668}}
+    tls: {insecure: true}
+    endpoint: "/moq-relay")"));
+  try {
+    loadConfig(yaml.path());
+    FAIL() << "expected a parse error";
+  } catch (const std::runtime_error& e) {
+    EXPECT_THAT(e.what(), HasSubstr("Field named 'name' not found"));
+  }
+}
+
+TEST(ConfigLoader, ListenersListEntryWithEmptyNameRejected) {
+  TempYamlFile yaml(listenersYaml("\n  - name: \"\"" + std::string(kListenerBody)));
+  try {
+    loadConfig(yaml.path());
+    FAIL() << "expected a parse error";
+  } catch (const std::runtime_error& e) {
+    EXPECT_THAT(e.what(), HasSubstr("listeners[0]: name must not be empty"));
+  }
+}
+
+TEST(ConfigLoader, ListenersMapEmptyKeyRejected) {
+  TempYamlFile yaml(listenersYaml("\n  \"\":" + std::string(kListenerBody)));
+  try {
+    loadConfig(yaml.path());
+    FAIL() << "expected a parse error";
+  } catch (const std::runtime_error& e) {
+    EXPECT_THAT(e.what(), HasSubstr("listeners: a listener name must not be empty"));
+  }
+}
+
+TEST(ConfigLoader, DuplicateListenerKeyRejected) {
+  TempYamlFile yaml(listenersYaml(
+      "\n  public:" + std::string(kListenerBody) + "\n  public:" + std::string(kListenerBody)
+  ));
+  try {
+    loadConfig(yaml.path());
+    FAIL() << "expected a parse error";
+  } catch (const std::runtime_error& e) {
+    EXPECT_THAT(e.what(), HasSubstr("duplicate key 'public'"));
+  }
+}
+
+TEST(ConfigLoader, DuplicateServiceKeyRejected) {
+  TempYamlFile yaml(listenersYaml("\n  main:" + std::string(kListenerBody)) + R"(
+  default:
+    match: [{authority: {any: true}, path: {prefix: "/x/"}}]
+)");
+  try {
+    loadConfig(yaml.path());
+    FAIL() << "expected a parse error";
+  } catch (const std::runtime_error& e) {
+    EXPECT_THAT(e.what(), HasSubstr("duplicate key 'default'"));
+  }
+}
+
+TEST(ConfigLoader, DuplicateNestedFieldRejected) {
+  TempYamlFile yaml(listenersYaml(R"(
+  main:
+    udp: {socket: {address: "::", port: 9668, port: 9669}}
+    tls: {insecure: true}
+    endpoint: "/moq-relay")"));
+  try {
+    loadConfig(yaml.path());
+    FAIL() << "expected a parse error";
+  } catch (const std::runtime_error& e) {
+    EXPECT_THAT(e.what(), HasSubstr("duplicate key 'port'"));
+  }
+}
+
+TEST(ConfigLoader, NullListenerKeysCollide) {
+  TempYamlFile yaml(listenersYaml(
+      "\n  ~:" + std::string(kListenerBody) + "\n  null:" + std::string(kListenerBody)
+  ));
+  try {
+    loadConfig(yaml.path());
+    FAIL() << "expected a parse error";
+  } catch (const std::runtime_error& e) {
+    EXPECT_THAT(e.what(), HasSubstr("duplicate key 'null'"));
+  }
+}
+
+TEST(ConfigLoader, DuplicateAliasKeyRejected) {
+  TempYamlFile yaml(listenersYaml(
+      "\n  &name public:" + std::string(kListenerBody) + "\n  *name :" + std::string(kListenerBody)
+  ));
+  try {
+    loadConfig(yaml.path());
+    FAIL() << "expected a parse error";
+  } catch (const std::runtime_error& e) {
+    EXPECT_THAT(e.what(), HasSubstr("duplicate key 'public'"));
+  }
+}
+
+TEST(ConfigLoader, SelfReferencingAnchorAccepted) {
+  TempYamlFile yaml(
+      listenersYaml("\n  main:" + std::string(kListenerBody)) + "x-extension: &loop {self: *loop}\n"
+  );
+  EXPECT_NO_THROW(loadConfig(yaml.path()));
+}
+
+TEST(ConfigLoader, NestedAliasFanOutAccepted) {
+  // Expanding the aliases would visit 10^9 nodes.
+  std::string ext = "x-extension:\n  l0: &l0 [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]\n";
+  for (int i = 1; i <= 8; ++i) {
+    std::string prev = "*l" + std::to_string(i - 1);
+    ext += "  l" + std::to_string(i) + ": &l" + std::to_string(i) + " [" + prev;
+    for (int j = 1; j < 10; ++j) {
+      ext += ", " + prev;
+    }
+    ext += "]\n";
+  }
+  TempYamlFile yaml(listenersYaml("\n  main:" + std::string(kListenerBody)) + ext);
+  EXPECT_NO_THROW(loadConfig(yaml.path()));
+}
+
+TEST(ConfigLoader, CollectionKeyRejected) {
+  TempYamlFile yaml(
+      listenersYaml("\n  main:" + std::string(kListenerBody)) + "x-extension: {? [a, b]: 1}\n"
+  );
+  try {
+    loadConfig(yaml.path());
+    FAIL() << "expected a parse error";
+  } catch (const std::runtime_error& e) {
+    EXPECT_THAT(e.what(), HasSubstr("must be a scalar"));
+  }
+}
+
+TEST(ConfigLoader, AliasToCollectionKeyRejected) {
+  TempYamlFile yaml(
+      listenersYaml("\n  main:" + std::string(kListenerBody)) +
+      "x-extension:\n  base: &k [a]\n  *k : 1\n"
+  );
+  try {
+    loadConfig(yaml.path());
+    FAIL() << "expected a parse error";
+  } catch (const std::runtime_error& e) {
+    EXPECT_THAT(e.what(), HasSubstr("must be a scalar"));
+  }
+}
+
 // --- Unknown field tests ---
 
 TEST(ConfigLoader, UnknownFieldIgnoredNonStrict) {
@@ -414,6 +667,34 @@ admin:
 )");
 
   EXPECT_THROW(loadConfig(yaml.path(), /*strict=*/true), std::runtime_error);
+}
+
+TEST(ConfigLoader, UnknownQuicStackRejected) {
+  TempYamlFile yaml(R"(
+listeners:
+  - name: main
+    udp:
+      socket:
+        address: "::"
+        port: 9668
+    tls:
+      insecure: true
+    endpoint: "/moq-relay"
+    quic_stack: qmux
+services:
+  default:
+    match:
+      - authority: {any: true}
+        path: {prefix: "/"}
+)");
+
+  try {
+    loadConfig(yaml.path());
+    FAIL() << "expected an unknown quic_stack to fail the load";
+  } catch (const std::runtime_error& e) {
+    EXPECT_THAT(e.what(), HasSubstr("qmux"));
+    EXPECT_THAT(e.what(), HasSubstr("proxygen_qmux"));
+  }
 }
 
 #ifdef CONFIG_EXAMPLE_PATH

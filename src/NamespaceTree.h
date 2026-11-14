@@ -6,12 +6,12 @@
 
 #pragma once
 
-#include "relay/PropertyRanking.h"
+#include "relay/Participant.h"
 #include <folly/Expected.h>
 #include <folly/Unit.h>
 #include <folly/container/F14Map.h>
 #include <folly/hash/Hash.h>
-#include <moxygen/MoQSession.h>
+#include <moxygen/MoQFramer.h>
 #include <moxygen/MoQTypes.h>
 
 #include <deque>
@@ -21,14 +21,17 @@
 
 namespace openmoq::moqx {
 
-// Routes a request may not use.
-struct RouteExclusion {
-  std::optional<moxygen::SessionId> session;
-  uint64_t hop{moxygen::kMoQClusterAnonHopId};
+// GCC 12 fails to compile NamespaceNode's maps when this struct is nested inside it.
+struct NamespaceSubscriberInfo {
+  // Handle for NAMESPACE/NAMESPACE_DONE on the bidi stream.
+  std::shared_ptr<moxygen::Publisher::NamespacePublishHandle> namespacePublishHandle;
+  moxygen::TrackNamespace trackNamespacePrefix;
+  std::string peerID; // relay ID of a peer relay subscriber
 };
 
-// Hierarchical tree tracking PUBLISH_NAMESPACE announcements and
-// SUBSCRIBE_NAMESPACE subscriptions.
+// Hierarchical tree tracking PUBLISH_NAMESPACE announcements, published tracks,
+// and the SUBSCRIBE_NAMESPACE subscriptions that want NAMESPACE. Subscriptions
+// that want tracks live in TracksTree.
 //
 // A route is an announcement of a namespace that the relay received. A node
 // can hold several. An advertisement is what the relay last sent one
@@ -44,15 +47,7 @@ public:
       return !publishes_.empty() || !subscribers_.empty() || !routes_.empty();
     }
 
-    struct NamespaceSubscriberInfo {
-      bool forward{true};
-      moxygen::SubscribeNamespaceOptions options{moxygen::SubscribeNamespaceOptions::BOTH};
-      // Handle for NAMESPACE/NAMESPACE_DONE on the bidi stream; null for SUBSCRIBE_TRACKS entries.
-      std::shared_ptr<moxygen::Publisher::NamespacePublishHandle> namespacePublishHandle;
-      moxygen::TrackNamespace trackNamespacePrefix;
-      std::optional<moxygen::TrackFilter> trackFilter;
-      std::string peerID; // relay ID of a peer relay subscriber
-    };
+    using NamespaceSubscriberInfo = ::openmoq::moqx::NamespaceSubscriberInfo;
 
     // What one SUBSCRIBE_NAMESPACE was last told about this namespace.
     struct Advertisement {
@@ -74,14 +69,14 @@ public:
 
     // A session holds at most one route here.
     struct Route {
-      std::shared_ptr<moxygen::MoQSession> session;
+      Participant participant;
       std::shared_ptr<moxygen::Subscriber::PublishNamespaceCallback> callback;
       std::string peerID;
       moxygen::RequestID requestID; // with session, names the route
       std::vector<uint64_t> path;
       uint64_t cost{0};        // ROUTE_COST plus the sender's link cost
       uint64_t seq{0};         // route generation; newer wins ties
-      bool fromCluster{false}; // from a session that negotiated MoQ Cluster
+      bool fromPeering{false}; // learned through relay peering
     };
 
     const std::vector<Route>& routes() const { return routes_; }
@@ -105,23 +100,24 @@ public:
     }
 
     size_t subscriberCount() const { return subscribers_.size(); }
+    bool hasSubscriber(moxygen::SessionId session) const { return subscribers_.contains(session); }
 
-    std::shared_ptr<moxygen::MoQSession> findPublishSession(const std::string& trackName) const {
+    const Participant* findPublish(const std::string& trackName) const {
       auto it = publishes_.find(trackName);
-      return it != publishes_.end() ? it->second : nullptr;
+      return it != publishes_.end() ? &it->second : nullptr;
     }
 
     size_t publishCount() const { return publishes_.size(); }
 
     template <typename Fn> void forEachPublish(Fn&& fn) const {
-      for (const auto& [trackName, session] : publishes_) {
-        fn(trackName, session);
+      for (const auto& [trackName, publisher] : publishes_) {
+        fn(trackName, publisher);
       }
     }
 
     template <typename Fn> void forEachSubscriber(Fn&& fn) const {
-      for (const auto& [session, info] : subscribers_) {
-        fn(session, info);
+      for (const auto& [_, entry] : subscribers_) {
+        fn(entry.participant, entry.info);
       }
     }
 
@@ -139,18 +135,21 @@ public:
       }
     };
     folly::F14FastMap<AdvertisementKey, Advertisement, AdvertisementKeyHash> advertisements_;
-    folly::F14FastMap<std::string, std::shared_ptr<moxygen::MoQSession>> publishes_;
-    folly::F14FastMap<std::shared_ptr<moxygen::MoQSession>, NamespaceSubscriberInfo> subscribers_;
+    struct SubscriberEntry {
+      Participant participant;
+      NamespaceSubscriberInfo info;
+    };
+    folly::F14FastMap<std::string, Participant> publishes_;
+    folly::F14FastMap<moxygen::SessionId, SubscriberEntry, moxygen::SessionId::hash> subscribers_;
     folly::F14FastMap<std::string, std::shared_ptr<NamespaceNode>> children_;
-    folly::F14FastMap<uint64_t, std::shared_ptr<PropertyRanking>> rankings_;
   };
 
-  using SessionSubscriberList = std::vector<
-      std::pair<std::shared_ptr<moxygen::MoQSession>, NamespaceNode::NamespaceSubscriberInfo>>;
+  using SubscriberList =
+      std::vector<std::pair<Participant, NamespaceNode::NamespaceSubscriberInfo>>;
 
   struct UnpublishNamespaceResult {
     std::shared_ptr<NamespaceNode> node;
-    SessionSubscriberList subscribers;
+    SubscriberList subscribers;
     NamespaceNode::Route removed;
   };
 
@@ -180,37 +179,37 @@ public:
     }
   }
 
-  // Session of the best route at the deepest node covering ns that has routes.
-  // Null if that node has no eligible route: shorter prefixes are not consulted.
-  std::shared_ptr<moxygen::MoQSession>
-  findPublisherSession(const moxygen::TrackNamespace& ns, const RouteExclusion& exclusion = {});
+  // Participant of the best route at the deepest node covering ns that has routes.
+  // Unset if that node has no eligible route: shorter prefixes are not consulted.
+  std::optional<Participant>
+  findPublisher(const moxygen::TrackNamespace& ns, const RouteExclusion& exclusion = {});
 
   std::shared_ptr<NamespaceNode> findNode(
       const moxygen::TrackNamespace& ns,
       bool createMissingNodes = false,
-      SessionSubscriberList* subscribers = nullptr
+      SubscriberList* subscribers = nullptr
   );
 
-  // subscribers are all prefix + exact sessions. When replacedSession is set, its route was
+  // subscribers are all prefix + exact sessions. When replacedPublisher is set, its route was
   // displaced or changed origin, and the caller must drop its track subscriptions.
   struct SetPublisherResult {
     std::shared_ptr<NamespaceNode> node;
-    SessionSubscriberList subscribers;
-    std::shared_ptr<moxygen::MoQSession> replacedSession;
+    SubscriberList subscribers;
+    std::optional<moxygen::SessionId> replacedPublisher;
   };
 
-  // A route that is not fromCluster displaces the node's other such route, and a session's
+  // A local route (not fromPeering) displaces the node's other local route, and a session's
   // route displaces its own earlier one. A repeated NAMESPACE updates it in place. Other routes
   // coexist.
   SetPublisherResult setPublisher(
       const moxygen::TrackNamespace& ns,
-      std::shared_ptr<moxygen::MoQSession> session,
+      Participant publisher,
       std::shared_ptr<moxygen::Subscriber::PublishNamespaceCallback> callback,
       std::string peerID,
       moxygen::RequestID requestID,
       std::vector<uint64_t> relayHopPath = {},
       uint64_t routeCost = 0,
-      bool fromCluster = false
+      bool fromPeering = false
   );
 
   // Replaces the path and cost of sessionId's route for requestID. A new origin
@@ -235,44 +234,20 @@ public:
   folly::Expected<folly::Unit, Error>
   unpublishTrack(const moxygen::TrackNamespace& ns, const std::string& trackName);
 
-  struct AddPublishResult {
-    std::shared_ptr<NamespaceNode> node;
-    SessionSubscriberList subscribers;
-  };
-  using OnRankingFn = std::function<void(uint64_t, const std::shared_ptr<PropertyRanking>&)>;
+  // Records ftn.trackName→publisher.
+  std::shared_ptr<NamespaceNode>
+  addPublish(const moxygen::FullTrackName& ftn, Participant publisher);
 
-  // Records ftn.trackName→session, collects prefix+exact subscribers, and
-  // calls onRanking for every non-null PropertyRanking at the node and ancestors.
-  AddPublishResult addPublish(
-      const moxygen::FullTrackName& ftn,
-      std::shared_ptr<moxygen::MoQSession> session,
-      OnRankingFn onRanking = {}
-  );
-
-  // Returns the node so the caller can wire up PropertyRanking if needed.
   std::shared_ptr<NamespaceNode> addNamespaceSubscriber(
       const moxygen::TrackNamespace& ns,
-      std::shared_ptr<moxygen::MoQSession> session,
+      Participant subscriber,
       NamespaceNode::NamespaceSubscriberInfo info
   );
 
   // Also forgets what the subscription was told. NodeNotFound and NotSubscribed
   // are both ignorable (already gone).
-  folly::Expected<folly::Unit, Error> removeNamespaceSubscriber(
-      const moxygen::TrackNamespace& ns,
-      const std::shared_ptr<moxygen::MoQSession>& session
-  );
-
-  // Returns the PropertyRanking slot for propertyType at node, inserting null if absent.
-  std::shared_ptr<PropertyRanking>& getOrInsertRanking(NamespaceNode& node, uint64_t propertyType);
-
-  // Draft 18+ helpers for the SUBSCRIBE_TRACKS parallel tree.
-  // Checks whether any existing subscriber entry in this tree for `session`
-  // overlaps the given prefix (exact, ancestor, or descendant match).
-  bool hasOverlappingTracksSubscription(
-      const moxygen::TrackNamespace& trackNamespacePrefix,
-      const std::shared_ptr<moxygen::MoQSession>& session
-  ) const;
+  folly::Expected<folly::Unit, Error>
+  removeNamespaceSubscriber(const moxygen::TrackNamespace& ns, moxygen::SessionId session);
 
   // DFS walk. begin(childKey, node) is called on entry; end() on exit after
   // all children. childKey is empty for the root.
@@ -342,17 +317,14 @@ private:
   // Called after content is removed: prunes node from its parent if now empty.
   void tryPruneSelf(NamespaceNode& node, bool hadContent, const moxygen::TrackNamespace& ns);
 
+  static void appendSubscribers(const NamespaceNode& node, SubscriberList& out);
+
   void reviseRoute(
       NamespaceNode::Route& route,
       std::vector<uint64_t> path,
       uint64_t cost,
       SetPublisherResult& result
   );
-
-  bool hasTracksSubscriptionInSubtree(
-      const NamespaceNode& node,
-      const std::shared_ptr<moxygen::MoQSession>& session
-  ) const;
 
   void incrementActiveChildren(NamespaceNode& node);
   void tryPruneChild(NamespaceNode& parentNode, const std::string& childKey);

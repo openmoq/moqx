@@ -86,14 +86,31 @@ protected:
   auto startSubscribe(
       const std::shared_ptr<MockMoQSession>& session,
       SubscribeRequest sub,
-      const std::shared_ptr<MockTrackConsumer>& consumer
+      const std::shared_ptr<MockTrackConsumer>& consumer,
+      const folly::CancellationToken& cancel = {}
   ) {
     return withSessionContext(session, [&]() {
       auto task = publisherInterface()->subscribe(std::move(sub), consumer);
-      return co_withExecutor(static_cast<folly::DrivableExecutor*>(exec_.get()), std::move(task))
+      return folly::coro::co_withExecutor(
+                 static_cast<folly::DrivableExecutor*>(exec_.get()),
+                 folly::coro::co_withCancellation(
+                     folly::cancellation_token_merge(cancel, teardown_.getToken()),
+                     std::move(task)
+                 )
+      )
           .start();
     });
   }
+
+  // Cancels a subscribe that is still waiting after an early ASSERT return.
+  // Otherwise it resumes on the relay's executor after the relay frees it.
+  void TearDown() override {
+    teardown_.requestCancellation();
+    drainExecs();
+    MoQRelayTest::TearDown();
+  }
+
+  folly::CancellationSource teardown_;
 };
 
 // Pre-draft-18 sessions aren't rendezvous-eligible: a SUBSCRIBE for a track
@@ -143,11 +160,7 @@ TEST_P(MoqxRelayRendezvousTest, ResolvesWhenTrackPublished) {
   auto consumer = createMockConsumer();
   auto sub = makeRendezvousSubscribeRequest(kTestTrackName, /*timeoutMs=*/5000);
 
-  auto future = withSessionContext(subSession, [&]() {
-    auto task = publisherInterface()->subscribe(std::move(sub), consumer);
-    return co_withExecutor(static_cast<folly::DrivableExecutor*>(exec_.get()), std::move(task))
-        .start();
-  });
+  auto future = startSubscribe(subSession, std::move(sub), consumer);
 
   exec_->driveFor(10);
   ASSERT_FALSE(future.isReady()) << "subscribe should be parked awaiting rendezvous";
@@ -221,18 +234,10 @@ TEST_P(MoqxRelayRendezvousTest, IndependentTimeoutsOnSameIothread) {
   auto shortConsumer = createMockConsumer();
 
   auto longSub = makeRendezvousSubscribeRequest(kTestTrackName, /*timeoutMs=*/4000);
-  auto shortSub = makeRendezvousSubscribeRequest(kTestTrackName, /*timeoutMs=*/50);
+  auto shortSub = makeRendezvousSubscribeRequest(kTestTrackName, /*timeoutMs=*/500);
 
-  auto longFuture = withSessionContext(longSubSession, [&]() {
-    auto task = publisherInterface()->subscribe(std::move(longSub), longConsumer);
-    return co_withExecutor(static_cast<folly::DrivableExecutor*>(exec_.get()), std::move(task))
-        .start();
-  });
-  auto shortFuture = withSessionContext(shortSubSession, [&]() {
-    auto task = publisherInterface()->subscribe(std::move(shortSub), shortConsumer);
-    return co_withExecutor(static_cast<folly::DrivableExecutor*>(exec_.get()), std::move(task))
-        .start();
-  });
+  auto longFuture = startSubscribe(longSubSession, std::move(longSub), longConsumer);
+  auto shortFuture = startSubscribe(shortSubSession, std::move(shortSub), shortConsumer);
 
   exec_->driveFor(10);
   ASSERT_FALSE(longFuture.isReady()) << "long-timeout subscribe should be parked";
@@ -246,7 +251,7 @@ TEST_P(MoqxRelayRendezvousTest, IndependentTimeoutsOnSameIothread) {
   ASSERT_TRUE(shortFuture.isReady()) << "short-timeout subscribe never resolved";
   auto elapsed = std::chrono::steady_clock::now() - start;
   EXPECT_LT(elapsed, std::chrono::milliseconds(2000))
-      << "short-timeout subscribe should resolve near its own 50ms deadline, not be "
+      << "short-timeout subscribe should resolve near its own 500ms deadline, not be "
       << "serialized behind the long-timeout subscribe's 4s wait on the same iothread";
 
   auto shortResult = std::move(shortFuture).value();
@@ -300,7 +305,7 @@ TEST_P(MoqxRelayRendezvousTest, PublishNamespaceWakesParkedSubscribe) {
   driveIfMultiThread();
 }
 
-// findPublisherSession() is a prefix match, so a publisher at an ancestor namespace
+// findPublisher() is a prefix match, so a publisher at an ancestor namespace
 // serves deeper tracks. The subtree wake has to reach them.
 TEST_P(MoqxRelayRendezvousTest, AncestorPublishNamespaceWakesDeeperWaiter) {
   const TrackNamespace deepNs{{"test", "namespace", "deep"}};
@@ -411,7 +416,7 @@ TEST_P(MoqxRelayRendezvousTest, NoTimeoutSubscriberFailsWhileAnotherIsParked) {
 }
 
 // A publisher announcing the empty namespace claims every track, so waking the whole
-// trie is right and each waiter must then route to it. findPublisherSession() seeds
+// trie is right and each waiter must then route to it. findPublisher() seeds
 // deepestPublisher from root_.publisherSession_, so a root publisher does resolve.
 TEST_P(MoqxRelayRendezvousTest, EmptyNamespacePublishNamespaceResolvesWaiters) {
   relay_->setAllowedNamespacePrefix(TrackNamespace{});
@@ -543,14 +548,7 @@ TEST_P(MoqxRelayRendezvousTest, CancellationWhileParkedStopsWithoutResult) {
   auto sub = makeRendezvousSubscribeRequest(kTestTrackName, /*timeoutMs=*/5000);
 
   folly::CancellationSource cancelSource;
-  auto future = withSessionContext(subSession, [&]() {
-    auto task = publisherInterface()->subscribe(std::move(sub), consumer);
-    return co_withExecutor(
-               static_cast<folly::DrivableExecutor*>(exec_.get()),
-               folly::coro::co_withCancellation(cancelSource.getToken(), std::move(task))
-    )
-        .start();
-  });
+  auto future = startSubscribe(subSession, std::move(sub), consumer, cancelSource.getToken());
 
   exec_->driveFor(10);
   ASSERT_FALSE(future.isReady()) << "subscribe should be parked awaiting rendezvous";
@@ -571,6 +569,18 @@ TEST_P(MoqxRelayRendezvousTest, CancellationWhileParkedStopsWithoutResult) {
 
   removeSession(subSession);
   driveIfMultiThread();
+}
+
+// The test returns while its subscribe is still waiting. TearDown has to cancel it
+// before freeing the relay, or ASAN reports a heap-use-after-free.
+TEST_P(MoqxRelayRendezvousTest, WaiterAtTeardownIsCancelled) {
+  auto subSession = createV18Session();
+  auto consumer = createMockConsumer();
+  auto future =
+      startSubscribe(subSession, makeRendezvousSubscribeRequest(kTestTrackName, 4000), consumer);
+
+  exec_->driveFor(10);
+  ASSERT_FALSE(future.isReady()) << "subscribe should be parked awaiting rendezvous";
 }
 
 INSTANTIATE_TEST_SUITE_P(

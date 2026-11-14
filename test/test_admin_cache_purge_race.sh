@@ -138,7 +138,7 @@ wait_sessions() {
 # ── Config ─────────────────────────────────────────────────────────────────────
 cat >"$RELAY_CFG" <<EOF
 listeners:
-  - name: main
+  main:
     udp:
       socket:
         address: "::"

@@ -6,7 +6,6 @@
 
 - **Skip high-level PR summary poems and walkthroughs**: CodeRabbit already generates high-level PR summaries. Keep your top-level review comment brief and focus strictly on **actionable inline findings**.
 - **Prioritize high-severity defects**: Focus on correctness, memory/lifetime safety, executor/threading violations, and protocol compliance. Do not post style or formatting nitpicks already enforced by `.clang-format`, `.clang-tidy`, or `ruff.toml`.
-- **Review Event (`APPROVE` vs `COMMENT`)**: Override `<SUBMIT_REVIEW>` Step 3—when calling `submit_pending_pull_request_review`, pass `event: "APPROVE"` if you found no `CRITICAL`, `HIGH`, or `MEDIUM` issues (i.e. zero inline comments or only `LOW` findings); otherwise pass `event: "COMMENT"`.
 
 ## What to Prioritize
 
@@ -25,7 +24,7 @@
    - Relay clustering must conform to `docs/ref/draft-lcurley-moq-cluster-01.txt` and `docs/moq-cluster.md`.
 
 4. **Documentation, Config & Metrics Consistency**:
-   - **Config (`src/config/**`)**: New or renamed fields must appear in `docs/dev/config.md`, `docs/config.md` (generated via `scripts/dev/config-schema-to-markdown.sh`), and `config.example.yaml`.
+   - **Config (`src/config/**`)**: New or renamed fields must appear in `docs/config.md` (user-facing reference) and `config.example.yaml`. A change to the config pipeline or its key files must update `docs/dev/config.md` (internals).
    - **Metrics (`src/{stats,admin}/**`)**: Renaming or dropping a Prometheus metric must update `docs/metrics.md`.
    - **Logging (`src/logging/**`)**: Keep new log statements on `XLOG` with an appropriate category (`docs/logging.md`).
    - **Changelog (`changelog.d/`)**: User-visible changes per `CONTRIBUTING.md#changelog` must include an entry file under `changelog.d/`, in the format of `changelog.d/README.md`.

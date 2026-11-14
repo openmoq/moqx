@@ -47,7 +47,7 @@ import sys
 import tempfile
 import time
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from string import Template
 
@@ -63,10 +63,14 @@ POLL_INTERVAL = 0.1
 # can take a while to finish a response that started promptly.
 ADMIN_TIMEOUT = 5.0
 ACTOR_GRACE = 2.0
+# How long wait() polls for a subscriber to log that it is running.
+STARTUP_TIMEOUT = 5.0
 # Longer than the relay's own 10s teardown watchdog, so a relay that trips the
 # watchdog reports its _Exit(1) rather than being SIGKILLed here and blamed for
 # a hang it already diagnosed.
 RELAY_TERM_TIMEOUT = 15.0
+# The block each test claims in test_ports.sh.
+PORTS_PER_TEST = 10
 
 # urllib honours $http_proxy and does not exempt loopback, so a proxied dev box
 # or CI runner would send every admin call to the proxy and see it time out.
@@ -86,6 +90,8 @@ class HarnessError(Exception):
 
 
 _ACTOR_ERROR = re.compile(r"SubscribeError|Fetch.*failed")
+# moqtextclient logs this once it has started, before it connects.
+_SUBSCRIBER_RUNNING = re.compile(r"MoQTextClient\.cpp:\d+\] run$")
 
 
 def _lines(path):
@@ -93,6 +99,17 @@ def _lines(path):
         return Path(path).read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
         return []
+
+
+def _peers(service):
+    """A /state service's downstream_peers, or [] when absent or malformed."""
+    peers = _dig(service, "downstream_peers")
+    return peers if isinstance(peers, list) else []
+
+
+def _data_lines(lines):
+    """Subscriber output lines carrying an object; each starts with a digit."""
+    return [line for line in lines if line[:1].isdigit()]
 
 
 _SANITIZER_REPORT = re.compile(r"(ERROR|WARNING): \w+Sanitizer")
@@ -215,7 +232,12 @@ threads: 2
 use_relay_thread: true
 use_local_forwarders: true
 listeners:
-  - name: $name
+"""
+)
+
+_CONFIG_LISTENER = Template(
+    """\
+  $name:
 $quic_stack_line
     udp:
       socket:
@@ -224,8 +246,13 @@ $quic_stack_line
 $tls_block
     endpoint: "/moq-relay"
     moqt_versions: $moqt_versions
-services:
-  default:
+"""
+)
+
+_CONFIG_SERVICE = Template(
+    """\
+  $service:
+$service_listeners_line
     match:
       - authority: {any: true}
 $service_path_line
@@ -321,6 +348,12 @@ class Relay:
     upstream: str | None
     upstreams: list[str]
     relay_id: str
+    # Listener name -> port; the first entry listens on `listen`.
+    listeners: dict[str, int]
+    # Listener names the default service is bound to; None leaves it on all.
+    service_listeners: list[str] | None = None
+    # Further service name -> the listeners it is bound to.
+    extra_services: dict[str, list[str]] = field(default_factory=dict)
     proc: subprocess.Popen | None = None
     config_path: Path | None = None
     log_path: Path | None = None
@@ -340,11 +373,15 @@ class Actor:
     flags: list[str]
     timeout: float
     out_path: Path
+    listener: str | None = None  # None = the relay's first listener
     proc: subprocess.Popen | None = None
     deadline: float | None = None
+    # None until wait() or stop() ends the actor; False when either had to terminate it.
+    exited: bool | None = None
 
     def argv(self):
-        port = self.harness.relay_of(f"actor {self.name}", self.relay).listen
+        relay = self.harness.relay_of(f"actor {self.name}", self.relay)
+        port = relay.listeners[self.listener] if self.listener else relay.listen
         url = f"https://localhost:{port}/moq-relay"
         moqbin = self.harness.moqbin
         if self.kind == "publisher":
@@ -369,6 +406,7 @@ class Actor:
     def start(self):
         if self.proc is not None:
             raise HarnessError(f"actor_start: '{self.name}' already started")
+        self.exited = None
         with open(self.out_path, "wb") as out:
             self.proc = subprocess.Popen(
                 self.argv(), stdout=out, stderr=subprocess.STDOUT
@@ -378,8 +416,8 @@ class Actor:
         #
         # Unlike `timeout N cmd &`, nothing signals the child at N: the deadline
         # only bounds how long wait() blocks, so an actor whose wait() is
-        # deferred past its deadline lives until wait() runs. No test depends on
-        # the difference — they assert on what arrived, not on when it died.
+        # deferred past its deadline lives until wait() runs. expect_exited counts
+        # an actor that ended on its own before a late wait() as exited.
         self.deadline = time.monotonic() + self.timeout if self.timeout > 0 else None
 
     def wait(self):
@@ -387,20 +425,45 @@ class Actor:
 
         The status is not an assertion — an actor with a timeout is expected to
         be killed at its deadline, the way `timeout` reaps one at 124. Use
-        expect_received.
+        expect_received; for an actor that should end on its own, expect_exited.
         """
         if self.proc is None:
             raise HarnessError(f"actor_wait: '{self.name}' was never started")
         if self.deadline is None:
             self.proc.wait()
+            self.exited = True
         else:
+            self._extend_past_startup()
             try:
                 self.proc.wait(timeout=max(0.0, self.deadline - time.monotonic()))
+                self.exited = True
             except subprocess.TimeoutExpired:
                 self.proc.terminate()
                 _reap(self.proc, ACTOR_GRACE)
+                self.exited = False
         self.proc = None
         self.deadline = None
+
+    def _extend_past_startup(self):
+        """Restart a subscriber's window once it logs that it is running.
+
+        Sanitizer startup under load can take most of a short window. A subscriber that is already
+        running when wait() starts keeps its spawn deadline.
+        """
+
+        def running():
+            return any(
+                _SUBSCRIBER_RUNNING.search(line) for line in _lines(self.out_path)
+            )
+
+        if self.kind == "publisher" or running():
+            return
+        for _ in _until(STARTUP_TIMEOUT):
+            if self.proc.poll() is not None:
+                return
+            if running():
+                self.deadline = max(self.deadline, time.monotonic() + self.timeout)
+                return
 
     def run(self):
         self.start()
@@ -409,6 +472,7 @@ class Actor:
     def stop(self):
         if self.proc is None:
             return
+        self.exited = self.proc.poll() is not None
         self.proc.terminate()
         _reap(self.proc, ACTOR_GRACE)
         self.proc = None
@@ -435,6 +499,7 @@ class Harness:
             raise HarnessError(
                 "MOQT_CLIENT_VERSION is not declared in test/test_versions.sh"
             )
+        self.quic_stack = _QUIC_STACK
         self.relays: dict[str, Relay] = {}
         self.actors: dict[str, Actor] = {}
         self.failures = 0
@@ -476,10 +541,27 @@ class Harness:
         return sum(self._links(r).count(target) for r in self.relays.values())
 
     # ── Topology declaration ───────────────────────────────────────────────────
-    def relay(self, name, *, upstream=None, upstreams=None, relay_id=None):
-        """`upstream` writes the single-upstream form; `upstreams` writes a list.
+    def relay(
+        self,
+        name,
+        *,
+        upstream=None,
+        upstreams=None,
+        relay_id=None,
+        listeners=None,
+        service_listeners=None,
+        extra_services=None,
+    ):
+        """Declare a relay.
 
-        An `upstreams` entry is a relay name, or (name, relay_cost).
+        - upstream: writes the single-upstream form; upstreams: writes a list.
+          An `upstreams` entry is a relay name, or (name, relay_cost).
+        - listeners: listener names. Default: one, named after the relay.
+        - Peers, and actors without a listener, connect to the first listener.
+        - Extra listeners take the ports after the admin port.
+        - service_listeners: binds the default service to these listeners only.
+        - extra_services: service name -> listeners; each gets the default
+          service's match rule, so only the binding tells them apart.
         """
         if self.started:
             raise HarnessError(f"relay {name}: declared after start()")
@@ -487,8 +569,40 @@ class Harness:
             raise HarnessError(f"relay: duplicate relay '{name}'")
         if upstream and upstreams:
             raise HarnessError(f"relay {name}: upstream and upstreams are exclusive")
+        names = list(listeners) if listeners else [name]
+        if len(set(names)) != len(names):
+            raise HarnessError(f"relay {name}: duplicate listener name")
+        bound = list(service_listeners or [])
+        extra = {svc: list(on) for svc, on in (extra_services or {}).items()}
+        if "default" in extra:
+            raise HarnessError(f"relay {name}: extra_services may not name default")
+        for label, on in [("service_listeners", bound)] + [
+            (f"extra_services[{svc}]", on) for svc, on in extra.items()
+        ]:
+            if len(set(on)) != len(on):
+                raise HarnessError(f"relay {name}: duplicate {label} name")
+            unknown = set(on) - set(names)
+            if unknown:
+                raise HarnessError(f"relay {name}: unknown {label} {sorted(unknown)}")
+        # Every service gets the same match rule, so two on one listener collide.
+        owner = {}
+        default_on = names if service_listeners is None else bound
+        for svc, on in [("default", default_on)] + list(extra.items()):
+            for listener in on:
+                if listener in owner:
+                    raise HarnessError(
+                        f"relay {name}: services {owner[listener]} and {svc} share "
+                        f"listener '{listener}'; their identical match rules collide"
+                    )
+                owner[listener] = svc
+        if self._port_counter + 1 + len(names) > PORTS_PER_TEST:
+            raise HarnessError(
+                f"relay {name}: the topology needs more than the "
+                f"{PORTS_PER_TEST} ports claimed in test_ports.sh"
+            )
         listen = self.base_port + self._port_counter
-        self._port_counter += 2
+        ports = [listen] + [listen + 1 + i for i in range(1, len(names))]
+        self._port_counter += 1 + len(names)
         entry = Relay(
             name=name,
             listen=listen,
@@ -496,16 +610,23 @@ class Harness:
             upstream=upstream,
             upstreams=list(upstreams or []),
             relay_id=relay_id if relay_id else f"{name}-test",
+            listeners=dict(zip(names, ports)),
+            service_listeners=bound if service_listeners is not None else None,
+            extra_services=extra,
         )
         self.relays[name] = entry
         return entry
 
-    def actor(self, name, kind, relay, ns, track, flags=None, timeout=0):
+    def actor(self, name, kind, relay, ns, track, flags=None, timeout=0, listener=None):
         if name in self.actors:
             raise HarnessError(f"actor: duplicate actor '{name}'")
         if kind not in ("publisher", "subscriber"):
             raise HarnessError(f"actor {name}: kind must be publisher or subscriber")
-        self.relay_of(f"actor {name}", relay)
+        target = self.relay_of(f"actor {name}", relay)
+        if listener is not None and listener not in target.listeners:
+            raise HarnessError(
+                f"actor {name}: relay {relay} has no listener '{listener}'"
+            )
         if not ns:
             raise HarnessError(f"actor {name}: ns required")
         # Required for publishers too, though only the subscriber's argv uses it
@@ -524,6 +645,7 @@ class Harness:
             flags=_as_flags(flags),
             timeout=float(timeout),
             out_path=self.tmpdir / f"actor-{name}.out",
+            listener=listener,
         )
         self.actors[name] = entry
         return entry
@@ -531,17 +653,30 @@ class Harness:
     # ── Startup ────────────────────────────────────────────────────────────────
     def _write_config(self, relay):
         quic_stack_line, tls_block, service_path_line = _tls_config(self.tmpdir)
-        parts = [
-            _CONFIG_HEAD.substitute(
-                relay_id=relay.relay_id,
-                name=relay.name,
-                listen=relay.listen,
-                moqt_versions=self.moqt_versions,
-                quic_stack_line=quic_stack_line,
-                tls_block=tls_block,
+        parts = [_CONFIG_HEAD.substitute(relay_id=relay.relay_id)]
+        for listener_name, port in relay.listeners.items():
+            parts.append(
+                _CONFIG_LISTENER.substitute(
+                    name=json.dumps(listener_name),
+                    listen=port,
+                    moqt_versions=self.moqt_versions,
+                    quic_stack_line=quic_stack_line,
+                    tls_block=tls_block,
+                )
+            )
+
+        def service(name, listeners):
+            line = ""
+            if listeners is not None:
+                line = f"    listeners: {json.dumps(listeners)}\n"
+            return _CONFIG_SERVICE.substitute(
+                service=json.dumps(name),
+                service_listeners_line=line,
                 service_path_line=service_path_line,
             )
-        ]
+
+        parts.append("services:\n")
+        parts.append(service("default", relay.service_listeners))
         if relay.upstream:
             upstream = self.relay_of(f"relay {relay.name}", relay.upstream)
             parts.append(_CONFIG_UPSTREAM.substitute(port=upstream.listen))
@@ -555,6 +690,8 @@ class Harness:
                         port=upstream.listen, relay_cost=cost
                     )
                 )
+        for name, listeners in relay.extra_services.items():
+            parts.append(service(name, listeners))
         parts.append(_CONFIG_ADMIN.substitute(port=relay.admin))
         path = self.tmpdir / f"{relay.name}.yaml"
         path.write_text("".join(parts), encoding="utf-8")
@@ -562,10 +699,11 @@ class Harness:
 
     def _check_ports_free(self):
         for relay in self.relays.values():
-            for port, socktype, kind in (
-                (relay.listen, socket.SOCK_DGRAM, "udp"),
-                (relay.admin, socket.SOCK_STREAM, "tcp"),
-            ):
+            checks = [
+                (port, socket.SOCK_DGRAM, "udp") for port in relay.listeners.values()
+            ]
+            checks.append((relay.admin, socket.SOCK_STREAM, "tcp"))
+            for port, socktype, kind in checks:
                 if not _port_free(port, socktype):
                     print(
                         f"ERROR: {kind} port {port} already in use "
@@ -596,6 +734,15 @@ class Harness:
                     raise HarnessError(
                         f"relay {relay.name}: cannot be its own upstream"
                     )
+                upstream = self.relays[link]
+                first = next(iter(upstream.listeners))
+                if upstream.service_listeners is not None and (
+                    first not in upstream.service_listeners
+                ):
+                    raise HarnessError(
+                        f"relay {relay.name}: peers connect to {link}'s first "
+                        f"listener '{first}', which its service is not bound to"
+                    )
 
         self._check_ports_free()
 
@@ -623,6 +770,9 @@ class Harness:
             expected = self._expected_peers(relay.name)
             if expected:
                 self.wait_sessions_atleast(relay.name, expected)
+                # A peer's session counts at connect; it joins downstream_peers
+                # only once its namespace subscription completes.
+                self.wait_peer_count(relay.name, expected)
 
         for relay in self.relays.values():
             relay.baseline = self._sessions(relay.name)
@@ -756,11 +906,11 @@ class Harness:
             f"relay {name}: moqActiveSessions={value} < {want} after {READY_TIMEOUT:g}s"
         )
 
-    def wait_namespace(self, name, ns):
+    def wait_namespace(self, name, ns, service="default"):
         self.relay_of("wait_namespace", name)
         for _ in _until(READY_TIMEOUT):
             children = _dig(
-                self._state(name), "services", "default", "namespace_tree", "children"
+                self._state(name), "services", service, "namespace_tree", "children"
             )
             if isinstance(children, dict) and ns in children:
                 return
@@ -769,7 +919,7 @@ class Harness:
             print(body, file=sys.stderr)
         self._dump_relay_log(name)
         raise HarnessError(
-            f"namespace '{ns}' did not reach relay {name} after {READY_TIMEOUT:g}s"
+            f"namespace '{ns}' did not reach relay {name} service {service} after {READY_TIMEOUT:g}s"
         )
 
     def wait_relay_log(self, name, text):
@@ -924,7 +1074,7 @@ class Harness:
     # ── Assertions ─────────────────────────────────────────────────────────────
     def expect_received(self, actor):
         out = _lines(actor.out_path)
-        data = [line for line in out if line[:1] in "0123456789"]
+        data = _data_lines(out)
         if data:
             self._pass(f"[{actor.name}] received: {data[0]}")
         else:
@@ -932,6 +1082,50 @@ class Harness:
             print("\n".join(out), file=sys.stderr)
             self._dump_publishers(actor.ns)
             self._dump_relay_log(actor.relay)
+
+    def expect_nothing_received(self, actor):
+        out = _lines(actor.out_path)
+        data = _data_lines(out)
+        if data:
+            self._fail(f"[{actor.name}] received data, want none: {data[0]}")
+            self._dump_relay_log(actor.relay)
+        else:
+            self._pass(f"[{actor.name}] received nothing")
+
+    def expect_exited(self, actor):
+        if actor.exited is None:
+            raise HarnessError(f"expect_exited: '{actor.name}' was not waited on")
+        if actor.exited:
+            self._pass(f"[{actor.name}] exited by itself")
+        else:
+            self._fail(f"[{actor.name}] was terminated, not exited by itself")
+            print("\n".join(_tail(actor.out_path, 20)), file=sys.stderr)
+
+    def expect_actor_output(self, actor, pattern):
+        regex = re.compile(pattern)
+        if any(regex.search(line) for line in _lines(actor.out_path)):
+            self._pass(f"[{actor.name}] output matches /{pattern}/")
+        else:
+            self._fail(f"[{actor.name}] output does not match /{pattern}/")
+            print("\n".join(_tail(actor.out_path, 20)), file=sys.stderr)
+
+    def relay_log_mark(self, name):
+        """A position in the relay's log, for expect_relay_log(since=...)."""
+        relay = self.relay_of("relay_log_mark", name)
+        return len(_lines(relay.log_path)) if relay.log_path else 0
+
+    def expect_relay_log(self, name, pattern, since=0):
+        """`since`: a relay_log_mark(); only lines logged after it count."""
+        # Lines below WARN are written asynchronously and may not be there yet.
+        relay = self.relay_of("expect_relay_log", name)
+        regex = re.compile(pattern)
+        if relay.log_path and any(
+            regex.search(line) for line in _lines(relay.log_path)[since:]
+        ):
+            self._pass(f"[{name} log] matches /{pattern}/")
+        else:
+            self._fail(f"[{name} log] no line matches /{pattern}/")
+            self._dump_relay_log(name)
 
     def expect_no_errors(self, actor):
         bad = [line for line in _lines(actor.out_path) if _ACTOR_ERROR.search(line)]
@@ -978,8 +1172,9 @@ class Harness:
         self.relay_of("wait_peer_count", name)
         got = None
         for _ in _until(READY_TIMEOUT):
+            # A failed fetch is None, not 0: want=0 must not pass on it.
             peers = _dig(self._state(name), "services", "default", "downstream_peers")
-            got = len(peers) if isinstance(peers, list) else 0
+            got = len(peers) if isinstance(peers, list) else None
             if got == want:
                 return
         self._dump_relay_log(name)
@@ -999,7 +1194,10 @@ class Harness:
         if state is None:
             return
         peers = _dig(service, "downstream_peers")
-        got = len(peers) if isinstance(peers, list) else 0
+        if not isinstance(peers, list):
+            self._fail(f"[{name} /state] downstream_peers missing or malformed")
+            return
+        got = len(peers)
         if _cmp(got, op, want):
             self._pass(f"[{name} /state] downstream_peers={got} ({op} {want})")
         else:
@@ -1016,6 +1214,34 @@ class Harness:
             else None
         )
         return f"upstreams[{index}]", got or "none"
+
+    def expect_peer_listener(self, name, want):
+        state, service = self._fetch_state("expect_peer_listener", name)
+        if state is None:
+            return
+        got = [p.get("listener") for p in _peers(service)]
+        if want in got:
+            self._pass(f"[{name} /state] downstream peer on listener {want}")
+        else:
+            self._fail(f"[{name} /state] downstream peer listeners={got}, want {want}")
+
+    def expect_service_listeners(self, name, want):
+        self.relay_of("expect_service_listeners", name)
+        body = self._admin(name, "config")
+        if body is None:
+            self._fail(f"[{name} /config] request failed: {self._admin_error}")
+            return
+        try:
+            got = _dig(json.loads(body), "services", "default", "listeners")
+        except ValueError:
+            self._fail(f"[{name} /config] not valid JSON")
+            return
+        if got == want:
+            self._pass(f"[{name} /config] services.default.listeners={got}")
+        else:
+            self._fail(
+                f"[{name} /config] services.default.listeners={got}, want {want}"
+            )
 
     def expect_upstream_state(self, name, want, index=None):
         """`index` selects an entry of an `upstreams` list."""

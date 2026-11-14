@@ -27,13 +27,20 @@ public:
     w_.key("downstream_peers");
     w_.beginArray();
   }
-  void
-  onPeer(std::string_view address, std::string_view authority, std::string_view relayID) override {
+  void onPeer(
+      std::string_view address,
+      std::string_view authority,
+      std::string_view relayID,
+      std::string_view listener
+  ) override {
     w_.beginObject();
     w_.field("address", address);
     w_.field("authority", authority);
     if (!relayID.empty()) {
       w_.field("relay_id", relayID);
+    }
+    if (!listener.empty()) {
+      w_.field("listener", listener);
     }
     w_.endObject();
     c_.maybeFlush();
@@ -112,7 +119,7 @@ public:
         }
         w_.endArray();
         w_.field("cost", route.cost);
-        w_.field("from_cluster", route.fromCluster);
+        w_.field("from_peering", route.fromPeering);
         w_.endObject();
       }
       w_.endArray();

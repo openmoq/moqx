@@ -8,6 +8,8 @@
 
 #include <folly/logging/xlog.h>
 
+#include "relay/SessionConfined.h"
+
 namespace openmoq::moqx {
 
 PropertyRanking::PropertyRanking(
@@ -28,9 +30,8 @@ PropertyRanking::PropertyRanking(
 void PropertyRanking::registerTrack(
     const moxygen::FullTrackName& ftn,
     std::optional<uint64_t> initialPropertyValue,
-    std::shared_ptr<moxygen::MoQSession> publisher
+    moxygen::SessionId publisher
 ) {
-  XCHECK(publisher) << "registerTrack requires a publisher session";
   if (trackIndexByName_.find(ftn) != trackIndexByName_.end()) {
     XLOG(WARN) << "Track already registered: " << ftn;
     return;
@@ -39,13 +40,13 @@ void PropertyRanking::registerTrack(
   uint64_t value = initialPropertyValue.value_or(0);
   RankKey key{value, nextSeq_++};
 
-  publisherTrackCount_[publisher.get()]++;
+  publisherTrackCount_[publisher]++;
   // Update extended threshold since a publisher's track count changed.
   // This affects crossesThreshold() for publisher-subscribers with self-exclusion.
   updatePublisherExtendedThreshold();
 
   auto [iter, inserted] =
-      rankedTracks_.emplace(key, RankedEntry{.ftn = ftn, .publisherRaw = publisher.get()});
+      rankedTracks_.emplace(key, RankedEntry{.ftn = ftn, .publisher = publisher});
   trackIndexByName_[ftn] = RankIndex{.rankIter = iter, .cachedRank = UINT64_MAX};
   invalidateRankCache();
 
@@ -140,15 +141,13 @@ void PropertyRanking::removeTrack(const moxygen::FullTrackName& ftn) {
   auto& entry = it->second;
   uint64_t oldRank = getCachedRank(ftn);
 
-  if (auto raw = entry.rankIter->second.publisherRaw) {
-    auto countIt = publisherTrackCount_.find(raw);
-    if (countIt != publisherTrackCount_.end()) {
-      if (--countIt->second == 0) {
-        publisherTrackCount_.erase(countIt);
-      }
-      // Update extended threshold since a publisher's track count changed.
-      updatePublisherExtendedThreshold();
+  auto countIt = publisherTrackCount_.find(entry.rankIter->second.publisher);
+  if (countIt != publisherTrackCount_.end()) {
+    if (--countIt->second == 0) {
+      publisherTrackCount_.erase(countIt);
     }
+    // Update extended threshold since a publisher's track count changed.
+    updatePublisherExtendedThreshold();
   }
 
   rankedTracks_.erase(entry.rankIter);
@@ -208,16 +207,18 @@ TopNGroup& PropertyRanking::getOrCreateTopNGroup(uint64_t maxSelected) {
   return it->second;
 }
 
-void PropertyRanking::addSessionToTopNGroup(
+void PropertyRanking::addSubscriberToTopNGroup(
     uint64_t maxSelected,
-    std::shared_ptr<moxygen::MoQSession> session,
+    Participant subscriber,
     bool forward
 ) {
   XCHECK(!iteratingSessions_) << "Cannot add session while iterating";
-  XLOG(DBG4) << "addSessionToTopNGroup: maxSelected=" << maxSelected << " forward=" << forward;
+  XLOG(DBG4) << "addSubscriberToTopNGroup: maxSelected=" << maxSelected << " forward=" << forward;
 
   auto& topNGroup = getOrCreateTopNGroup(maxSelected);
+  const auto session = subscriber.info->sessionId;
   SessionInfo info;
+  info.participant = std::move(subscriber);
   info.forward = forward;
 
   topNGroup.sessions[session] = std::move(info);
@@ -240,22 +241,23 @@ void PropertyRanking::addSessionToTopNGroup(
         break;
       }
       if (onSelected_) {
-        onSelected_(entry.ftn, session, sessionInfo.forward);
+        onSelected_(entry.ftn, sessionInfo.participant, sessionInfo.forward);
       }
       rank++;
     }
   }
 }
 
-void PropertyRanking::removeSessionFromTopNGroup(
+void PropertyRanking::removeSubscriberFromTopNGroup(
     uint64_t maxSelected,
-    const std::shared_ptr<moxygen::MoQSession>& session
+    moxygen::SessionId session
 ) {
   XCHECK(!iteratingSessions_) << "Cannot remove session while iterating";
 
   auto it = topNGroups_.find(maxSelected);
   if (it == topNGroups_.end()) {
-    XLOG(WARN) << "removeSessionFromTopNGroup: TopNGroup not found for maxSelected=" << maxSelected;
+    XLOG(WARN) << "removeSubscriberFromTopNGroup: TopNGroup not found for maxSelected="
+               << maxSelected;
     return;
   }
 
@@ -274,25 +276,25 @@ void PropertyRanking::removeSessionFromTopNGroup(
   }
 }
 
-void PropertyRanking::updateSessionForward(
+void PropertyRanking::updateSubscriberForward(
     uint64_t maxSelected,
-    const std::shared_ptr<moxygen::MoQSession>& session,
+    moxygen::SessionId session,
     bool forward
 ) {
   auto it = topNGroups_.find(maxSelected);
   if (it == topNGroups_.end()) {
-    XLOG(WARN) << "updateSessionForward: TopNGroup not found for maxSelected=" << maxSelected;
+    XLOG(WARN) << "updateSubscriberForward: TopNGroup not found for maxSelected=" << maxSelected;
     return;
   }
 
   auto sessionIt = it->second.sessions.find(session);
   if (sessionIt == it->second.sessions.end()) {
-    XLOG(WARN) << "updateSessionForward: session not found in TopNGroup maxSelected="
+    XLOG(WARN) << "updateSubscriberForward: session not found in TopNGroup maxSelected="
                << maxSelected;
     return;
   }
 
-  XLOG(DBG4) << "updateSessionForward: maxSelected=" << maxSelected
+  XLOG(DBG4) << "updateSubscriberForward: maxSelected=" << maxSelected
              << " forward=" << sessionIt->second.forward << " -> " << forward;
   sessionIt->second.forward = forward;
 }
@@ -389,7 +391,7 @@ bool PropertyRanking::crossesThreshold(uint64_t oldRank, uint64_t newRank) const
     uint64_t maxExtended = maxN;
     for (const auto& [n, topNGroup] : topNGroups_) {
       for (const auto& [session, info] : topNGroup.sessions) {
-        auto countIt = publisherTrackCount_.find(session.get());
+        auto countIt = publisherTrackCount_.find(session);
         if (countIt != publisherTrackCount_.end()) {
           maxExtended = std::max(maxExtended, n + countIt->second);
         }
@@ -435,17 +437,18 @@ void PropertyRanking::recomputeTopNGroups(
     // non-self (a non-self move is the only thing that can shift the waterline).
     // Look up ftn's publisher once before the session loop.
     auto ftnIt = trackIndexByName_.find(ftn);
-    moxygen::MoQSession* const ftnPublisher =
-        ftnIt != trackIndexByName_.end() ? ftnIt->second.rankIter->second.publisherRaw : nullptr;
+    const std::optional<moxygen::SessionId> ftnPublisher =
+        ftnIt != trackIndexByName_.end() ? std::optional(ftnIt->second.rankIter->second.publisher)
+                                         : std::nullopt;
 
-    std::vector<std::pair<std::shared_ptr<moxygen::MoQSession>, bool>> viewerBatch;
+    std::vector<std::pair<Participant, bool>> viewerBatch;
     for (auto& [session, info] : topNGroup.sessions) {
       if (isPublisher(session)) {
-        if (session.get() != ftnPublisher) {
+        if (session != ftnPublisher) {
           reconcilePublisherSelection(info, n, session);
         }
       } else if (!wasInTopN && nowInTopN) {
-        viewerBatch.emplace_back(session, info.forward);
+        viewerBatch.emplace_back(info.participant, info.forward);
       }
     }
     if (!viewerBatch.empty() && onBatchSelected_) {
@@ -496,7 +499,7 @@ void PropertyRanking::updatePublisherExtendedThreshold() {
   uint64_t maxExtended = 0;
   for (const auto& [n, topNGroup] : topNGroups_) {
     for (const auto& [session, info] : topNGroup.sessions) {
-      auto countIt = publisherTrackCount_.find(session.get());
+      auto countIt = publisherTrackCount_.find(session);
       if (countIt != publisherTrackCount_.end()) {
         uint64_t selfCount = countIt->second;
         maxExtended = std::max(maxExtended, n + selfCount);
@@ -518,8 +521,8 @@ void PropertyRanking::trimDeselectedQueue(TopNGroup& topNGroup) {
 
     IterationGuard guard(*this);
     for (const auto& [session, info] : topNGroup.sessions) {
-      if (session && onEvicted_) {
-        onEvicted_(evicted, session);
+      if (onEvicted_) {
+        onEvicted_(evicted, info.participant);
       }
     }
   }
@@ -580,12 +583,12 @@ void PropertyRanking::promoteNextAvailableTrack(
 // alternative per-session callback (onSelected_) exists for cases needing
 // individual handling (e.g., a late-joining session).
 void PropertyRanking::notifyTrackSelected(const moxygen::FullTrackName& ftn, TopNGroup& topNGroup) {
-  std::vector<std::pair<std::shared_ptr<moxygen::MoQSession>, bool>> viewerBatch;
+  std::vector<std::pair<Participant, bool>> viewerBatch;
   for (auto& [session, info] : topNGroup.sessions) {
     if (isPublisher(session)) {
       reconcilePublisherSelection(info, topNGroup.maxSelected, session);
     } else {
-      viewerBatch.emplace_back(session, info.forward);
+      viewerBatch.emplace_back(info.participant, info.forward);
     }
   }
   if (!viewerBatch.empty() && onBatchSelected_) {
@@ -595,15 +598,13 @@ void PropertyRanking::notifyTrackSelected(const moxygen::FullTrackName& ftn, Top
   }
 }
 
-std::optional<RankKey> PropertyRanking::computeWaterlineKey(
-    const std::shared_ptr<moxygen::MoQSession>& session,
-    uint64_t maxSelected
-) const {
+std::optional<RankKey>
+PropertyRanking::computeWaterlineKey(moxygen::SessionId session, uint64_t maxSelected) const {
   // Find the Nth non-self track. Its RankKey is the waterline: all non-self
   // tracks ranked >= waterline should be selected for this session.
   uint64_t nonSelfCount = 0;
   for (const auto& [key, entry] : rankedTracks_) {
-    if (entry.publisherRaw != session.get()) {
+    if (entry.publisher != session) {
       nonSelfCount++;
       if (nonSelfCount == maxSelected) {
         return key;
@@ -618,7 +619,7 @@ std::optional<RankKey> PropertyRanking::computeWaterlineKey(
 void PropertyRanking::reconcilePublisherSelection(
     SessionInfo& info,
     uint64_t maxSelected,
-    const std::shared_ptr<moxygen::MoQSession>& session
+    moxygen::SessionId session
 ) {
   // Recompute the publisher's personal waterline.
   info.waterlineKey = computeWaterlineKey(session, maxSelected);
@@ -626,7 +627,7 @@ void PropertyRanking::reconcilePublisherSelection(
   // Determine what should currently be delivered to this publisher session.
   folly::F14FastSet<moxygen::FullTrackName, moxygen::FullTrackName::hash> nowSelected;
   for (const auto& [key, entry] : rankedTracks_) {
-    if (entry.publisherRaw != session.get() && (!info.waterlineKey || key >= *info.waterlineKey)) {
+    if (entry.publisher != session && (!info.waterlineKey || key >= *info.waterlineKey)) {
       nowSelected.insert(entry.ftn);
     }
   }
@@ -634,27 +635,25 @@ void PropertyRanking::reconcilePublisherSelection(
   // Evict tracks that left the publisher's personal top-N.
   for (const auto& ftn : info.selectedTracks) {
     if (nowSelected.count(ftn) == 0 && onEvicted_) {
-      onEvicted_(ftn, session);
+      onEvicted_(ftn, info.participant);
     }
   }
 
   // Notify tracks that entered the publisher's personal top-N.
   for (const auto& ftn : nowSelected) {
     if (info.selectedTracks.count(ftn) == 0 && onSelected_) {
-      onSelected_(ftn, session, info.forward);
+      onSelected_(ftn, info.participant, info.forward);
     }
   }
 
   info.selectedTracks = std::move(nowSelected);
 }
 
-bool PropertyRanking::isPublisher(const std::shared_ptr<moxygen::MoQSession>& session) const {
-  return publisherTrackCount_.count(session.get()) > 0;
+bool PropertyRanking::isPublisher(moxygen::SessionId session) const {
+  return publisherTrackCount_.count(session) > 0;
 }
 
-void PropertyRanking::reconcilePublisherInAllGroups(
-    const std::shared_ptr<moxygen::MoQSession>& session
-) {
+void PropertyRanking::reconcilePublisherInAllGroups(moxygen::SessionId session) {
   for (auto& [n, topNGroup] : topNGroups_) {
     auto sessionIt = topNGroup.sessions.find(session);
     if (sessionIt == topNGroup.sessions.end()) {

@@ -9,7 +9,7 @@
 #include "NamespaceTree.h"
 #include <folly/portability/GMock.h>
 #include <folly/portability/GTest.h>
-#include <moxygen/test/MockMoQSession.h>
+#include <moxygen/MoQSession.h>
 
 using namespace testing;
 using namespace moxygen;
@@ -20,33 +20,48 @@ class NamespaceTreeTest : public ::testing::Test {
 protected:
   NamespaceTree tree_;
 
-  std::shared_ptr<MoQSession> makeSession() {
-    return std::make_shared<NiceMock<moxygen::test::MockMoQSession>>();
+  // The tree only uses a participant's identity.
+  static Participant makeParticipant() {
+    return Participant(
+        std::make_shared<const ParticipantInfo>(
+            ParticipantInfo{.sessionId = MoQSession::makeSessionId()}
+        ),
+        nullptr,
+        nullptr
+    );
+  }
+
+  static SessionId idOf(const Participant& participant) { return participant.info->sessionId; }
+
+  std::optional<SessionId>
+  publisherOf(const TrackNamespace& ns, const RouteExclusion& exclusion = {}) {
+    auto publisher = tree_.findPublisher(ns, exclusion);
+    return publisher ? std::optional(idOf(*publisher)) : std::nullopt;
   }
 
   std::shared_ptr<NamespaceTree::NamespaceNode>
-  publish(const TrackNamespace& ns, std::shared_ptr<MoQSession> session) {
-    return tree_.setPublisher(ns, session, nullptr, {}, RequestID(0)).node;
+  publish(const TrackNamespace& ns, const Participant& participant) {
+    return tree_.setPublisher(ns, participant, nullptr, {}, RequestID(0)).node;
   }
 
-  void unpublish(const TrackNamespace& ns, const std::shared_ptr<MoQSession>& session) {
-    tree_.unpublishNamespace(ns, session->sessionId()); // NodeNotFound / NotOwner are ignorable
+  void unpublish(const TrackNamespace& ns, const Participant& participant) {
+    tree_.unpublishNamespace(ns, idOf(participant)); // NodeNotFound / NotOwner are ignorable
   }
 
-  void subscribe(const TrackNamespace& ns, std::shared_ptr<MoQSession> session) {
-    tree_.addNamespaceSubscriber(ns, std::move(session), {});
+  void subscribe(const TrackNamespace& ns, const Participant& participant) {
+    tree_.addNamespaceSubscriber(ns, participant, {});
   }
 
-  void unsubscribe(const TrackNamespace& ns, const std::shared_ptr<MoQSession>& session) {
-    tree_.removeNamespaceSubscriber(ns, session); // NotSubscribed is ignorable
+  void unsubscribe(const TrackNamespace& ns, const Participant& participant) {
+    tree_.removeNamespaceSubscriber(ns, idOf(participant)); // NotSubscribed is ignorable
   }
 
   void publishTrack(
       const TrackNamespace& ns,
       const std::string& trackName,
-      std::shared_ptr<MoQSession> session
+      const Participant& participant
   ) {
-    tree_.addPublish({ns, trackName}, std::move(session), {});
+    tree_.addPublish({ns, trackName}, participant);
   }
 };
 
@@ -54,8 +69,8 @@ protected:
 // Scenario: test/A/B/C and test/A/D both exist.
 // Removing B/C should prune B (and C) but keep A and D.
 TEST_F(NamespaceTreeTest, PruneLeafKeepSiblings) {
-  auto publisherABC = makeSession();
-  auto publisherAD = makeSession();
+  auto publisherABC = makeParticipant();
+  auto publisherAD = makeParticipant();
 
   TrackNamespace nsABC{{"test", "A", "B", "C"}};
   TrackNamespace nsAD{{"test", "A", "D"}};
@@ -65,30 +80,41 @@ TEST_F(NamespaceTreeTest, PruneLeafKeepSiblings) {
   // Removing B/C should prune B (and C) but keep A and D
   unpublish(nsABC, publisherABC);
 
-  EXPECT_EQ(tree_.findPublisherSession(nsAD), publisherAD);
+  EXPECT_EQ(publisherOf(nsAD), idOf(publisherAD));
 }
 
 // Test: SUBSCRIBE routes past a publisher-less node
 // Scenario: test/A has a publisher. A subscriber to test/A/B creates a node
 // there with no publisher of its own. Looking up test/A/B/C must still find
 // test/A's publisher instead of stopping at the publisher-less B.
-TEST_F(NamespaceTreeTest, FindPublisherSessionSkipsPublisherlessNode) {
-  auto publisher = makeSession();
+TEST_F(NamespaceTreeTest, FindPublisherSkipsPublisherlessNode) {
+  auto publisher = makeParticipant();
 
   TrackNamespace nsA{{"test", "A"}};
   TrackNamespace nsAB{{"test", "A", "B"}};
   TrackNamespace nsABC{{"test", "A", "B", "C"}};
 
   publish(nsA, publisher);
-  subscribe(nsAB, makeSession());
+  subscribe(nsAB, makeParticipant());
 
-  EXPECT_EQ(tree_.findPublisherSession(nsABC), publisher);
+  EXPECT_EQ(publisherOf(nsABC), idOf(publisher));
+}
+
+TEST_F(NamespaceTreeTest, FindPublisherReturnsTheStoredPublisher) {
+  auto publisherInterface = std::make_shared<moxygen::Publisher>();
+  Participant publisher(makeParticipant().info, publisherInterface, nullptr);
+  TrackNamespace nsA{{"test", "A"}};
+  publish(nsA, publisher);
+
+  auto found = tree_.findPublisher(nsA);
+  ASSERT_TRUE(found);
+  EXPECT_EQ(found->publisher, publisherInterface);
 }
 
 // Test: Tree pruning removes highest empty ancestor
 // Scenario: test/A/B/C only. Remove C should prune A (highest empty after test)
 TEST_F(NamespaceTreeTest, PruneHighestEmptyAncestor) {
-  auto publisher = makeSession();
+  auto publisher = makeParticipant();
 
   TrackNamespace nsABC{{"test", "A", "B", "C"}};
   publish(nsABC, publisher);
@@ -100,14 +126,14 @@ TEST_F(NamespaceTreeTest, PruneHighestEmptyAncestor) {
   EXPECT_EQ(tree_.findNode(nsABC), nullptr);
 
   // Re-publishing must create fresh nodes without crashing.
-  auto publisher2 = makeSession();
+  auto publisher2 = makeParticipant();
   auto node = publish(nsABC, publisher2);
   EXPECT_NE(node, nullptr);
 }
 
 // Test: Pruning happens after explicit unpublish (simulating removeSession)
 TEST_F(NamespaceTreeTest, PruneOnUnpublish) {
-  auto publisher = makeSession();
+  auto publisher = makeParticipant();
 
   TrackNamespace nsABCD{{"test", "A", "B", "C", "D"}};
   publish(nsABCD, publisher);
@@ -116,26 +142,26 @@ TEST_F(NamespaceTreeTest, PruneOnUnpublish) {
   EXPECT_EQ(tree_.findNode(nsABCD), nullptr);
 
   // Re-publishing must work after pruning.
-  auto publisher2 = makeSession();
+  auto publisher2 = makeParticipant();
   auto node = publish(nsABCD, publisher2);
   EXPECT_NE(node, nullptr);
 }
 
 // Test: Unpublish from the non-owner is ignored; new owner remains
 TEST_F(NamespaceTreeTest, NonOwnerUnpublishIsIgnored) {
-  auto publisher1 = makeSession();
-  auto publisher2 = makeSession();
+  auto publisher1 = makeParticipant();
+  auto publisher2 = makeParticipant();
 
   TrackNamespace nsAB{{"test", "A", "B"}};
   publish(nsAB, publisher1);
   publish(nsAB, publisher2);   // replaces publisher1 as owner
   unpublish(nsAB, publisher1); // NotOwner — should be ignored
-  EXPECT_EQ(tree_.findPublisherSession(nsAB), publisher2);
+  EXPECT_EQ(publisherOf(nsAB), idOf(publisher2));
 }
 
 // Test: unpublishTrack prunes node when it was the only content
 TEST_F(NamespaceTreeTest, PublishDonePrunesNode) {
-  auto publisher = makeSession();
+  auto publisher = makeParticipant();
 
   TrackNamespace nsABC{{"test", "A", "B", "C"}};
   auto node = publish(nsABC, publisher);
@@ -154,7 +180,7 @@ TEST_F(NamespaceTreeTest, PublishDonePrunesNode) {
 
 // Test: Mixed content types — node with publisher + active track publish
 TEST_F(NamespaceTreeTest, MixedContentPublishAndTrack) {
-  auto publisher = makeSession();
+  auto publisher = makeParticipant();
 
   TrackNamespace nsAB{{"test", "A", "B"}};
   auto node = publish(nsAB, publisher);
@@ -172,8 +198,8 @@ TEST_F(NamespaceTreeTest, MixedContentPublishAndTrack) {
 
 // Test: Mixed content types — node with publisher + namespace subscriber
 TEST_F(NamespaceTreeTest, MixedContentPublishAndSubscriber) {
-  auto publisher = makeSession();
-  auto subscriber = makeSession();
+  auto publisher = makeParticipant();
+  auto subscriber = makeParticipant();
 
   TrackNamespace nsAB{{"test", "A", "B"}};
   publish(nsAB, publisher);
@@ -184,14 +210,14 @@ TEST_F(NamespaceTreeTest, MixedContentPublishAndSubscriber) {
   EXPECT_NE(tree_.findNode(nsAB), nullptr);
 
   // New publisher can take the namespace
-  auto publisher2 = makeSession();
+  auto publisher2 = makeParticipant();
   publish(nsAB, publisher2);
-  EXPECT_EQ(tree_.findPublisherSession(nsAB), publisher2);
+  EXPECT_EQ(publisherOf(nsAB), idOf(publisher2));
 }
 
 // Test: Unsubscribe triggers pruning when node has no other content
 TEST_F(NamespaceTreeTest, PruneOnUnsubscribeNamespace) {
-  auto subscriber = makeSession();
+  auto subscriber = makeParticipant();
 
   TrackNamespace nsABC{{"test", "A", "B", "C"}};
   subscribe(nsABC, subscriber);
@@ -208,8 +234,8 @@ TEST_F(NamespaceTreeTest, PruneOnUnsubscribeNamespace) {
 // Scenario: test/A (has publisher), test/A/B (empty), test/A/B/C (has
 // publisher). Remove C should prune B but keep A.
 TEST_F(NamespaceTreeTest, PruneMiddleEmptyNode) {
-  auto publisherA = makeSession();
-  auto publisherC = makeSession();
+  auto publisherA = makeParticipant();
+  auto publisherC = makeParticipant();
 
   TrackNamespace nsA{{"test", "A"}};
   TrackNamespace nsABC{{"test", "A", "B", "C"}};
@@ -219,16 +245,16 @@ TEST_F(NamespaceTreeTest, PruneMiddleEmptyNode) {
   // Removing C should prune B and C but keep A
   unpublish(nsABC, publisherC);
 
-  EXPECT_EQ(tree_.findPublisherSession(nsA), publisherA);
+  EXPECT_EQ(publisherOf(nsA), idOf(publisherA));
 
   // Re-publishing nsABC works — B and C were pruned so fresh nodes are created
-  auto publisherC2 = makeSession();
+  auto publisherC2 = makeParticipant();
   EXPECT_NE(publish(nsABC, publisherC2), nullptr);
 }
 
 // Test: Double unpublish doesn't crash or corrupt state
 TEST_F(NamespaceTreeTest, DoubleUnpublishNamespace) {
-  auto publisher = makeSession();
+  auto publisher = makeParticipant();
 
   TrackNamespace nsAB{{"test", "A", "B"}};
   publish(nsAB, publisher);
@@ -238,14 +264,14 @@ TEST_F(NamespaceTreeTest, DoubleUnpublishNamespace) {
 
   unpublish(nsAB, publisher); // NodeNotFound — should not crash
 
-  auto publisher2 = makeSession();
+  auto publisher2 = makeParticipant();
   EXPECT_NE(publish(nsAB, publisher2), nullptr);
 }
 
 // Test: Unpublish from an unrelated session (child publisher) is also ignored
 TEST_F(NamespaceTreeTest, UnrelatedSessionUnpublishIsIgnored) {
-  auto publisher1 = makeSession();
-  auto publisher2 = makeSession();
+  auto publisher1 = makeParticipant();
+  auto publisher2 = makeParticipant();
 
   // publisher1 owns nsAB; publisher2 owns a child namespace
   TrackNamespace nsAB{{"test", "A", "B"}};
@@ -256,7 +282,7 @@ TEST_F(NamespaceTreeTest, UnrelatedSessionUnpublishIsIgnored) {
   // publisher2 tries to unpublish nsAB — NotOwner, ignored
   unpublish(nsAB, publisher2);
 
-  EXPECT_EQ(tree_.findPublisherSession(nsAB), publisher1)
+  EXPECT_EQ(publisherOf(nsAB), idOf(publisher1))
       << "Ownership check failed: wrong session returned after unrelated unpublish";
 }
 
@@ -264,9 +290,9 @@ TEST_F(NamespaceTreeTest, UnrelatedSessionUnpublishIsIgnored) {
 // Scenario: test/A has children B (publisher), C (subscriber), D (subscriber).
 // Remove B should prune B but keep A (with children C and D).
 TEST_F(NamespaceTreeTest, PruneOneOfMultipleChildren) {
-  auto publisherB = makeSession();
-  auto subscriberC = makeSession();
-  auto subscriberD = makeSession();
+  auto publisherB = makeParticipant();
+  auto subscriberC = makeParticipant();
+  auto subscriberD = makeParticipant();
 
   TrackNamespace nsAB{{"test", "A", "B"}};
   TrackNamespace nsAC{{"test", "A", "C"}};
@@ -284,7 +310,7 @@ TEST_F(NamespaceTreeTest, PruneOneOfMultipleChildren) {
 
 // Test: Empty namespace edge case — setPublisher with empty namespace must not crash
 TEST_F(NamespaceTreeTest, EmptyNamespacePublish) {
-  auto publisher = makeSession();
+  auto publisher = makeParticipant();
 
   TrackNamespace emptyNs{{}};
   auto result = tree_.setPublisher(emptyNs, publisher, nullptr, {}, RequestID(0));
@@ -295,9 +321,9 @@ TEST_F(NamespaceTreeTest, EmptyNamespacePublish) {
 
 // Test: Verify activeChildCount consistency after complex operations
 TEST_F(NamespaceTreeTest, ActiveChildCountConsistency) {
-  auto pub1 = makeSession();
-  auto pub2 = makeSession();
-  auto sub1 = makeSession();
+  auto pub1 = makeParticipant();
+  auto pub2 = makeParticipant();
+  auto sub1 = makeParticipant();
 
   TrackNamespace nsAB{{"test", "A", "B"}};
   TrackNamespace nsAC{{"test", "A", "C"}};
@@ -314,12 +340,12 @@ TEST_F(NamespaceTreeTest, ActiveChildCountConsistency) {
   unsubscribe(nsAC, sub1); // removes C; A's activeChildCount drops to 0
 
   // A itself has content (pub2's sourceSession), so it should not be pruned
-  EXPECT_EQ(tree_.findPublisherSession(nsA), pub2);
+  EXPECT_EQ(publisherOf(nsA), idOf(pub2));
 }
 
 // Test: Track publish keeps node alive while namespace is still published
 TEST_F(NamespaceTreeTest, PublishKeepsNodeAliveAfterNamespaceDone) {
-  auto publisher = makeSession();
+  auto publisher = makeParticipant();
 
   TrackNamespace nsAB{{"test", "A", "B"}};
   auto node = publish(nsAB, publisher);
@@ -342,8 +368,8 @@ TEST_F(NamespaceTreeTest, PublishKeepsNodeAliveAfterNamespaceDone) {
 
 // Test: Replacing a namespace's publisher leaves its ancestors prunable
 TEST_F(NamespaceTreeTest, ReplacedPublisherKeepsAncestorsPrunable) {
-  auto pub1 = makeSession();
-  auto pub2 = makeSession();
+  auto pub1 = makeParticipant();
+  auto pub2 = makeParticipant();
 
   TrackNamespace nsAB{{"test", "A", "B"}};
   TrackNamespace nsA{{"test", "A"}};
@@ -359,19 +385,19 @@ class NamespaceTreeRouteTest : public NamespaceTreeTest {
 protected:
   NamespaceTree::SetPublisherResult advertise(
       const TrackNamespace& ns,
-      std::shared_ptr<MoQSession> session,
+      const Participant& participant,
       std::vector<uint64_t> path,
       uint64_t cost
   ) {
     return tree_.setPublisher(
         ns,
-        std::move(session),
+        participant,
         nullptr,
         {},
         RequestID(0),
         std::move(path),
         cost,
-        /*fromCluster=*/true
+        /*fromPeering=*/true
     );
   }
 
@@ -380,80 +406,87 @@ protected:
 
 // The MoQ Cluster rule: no 0 in the path, then cost, then length, then newest.
 TEST_F(NamespaceTreeRouteTest, SelectsByAnonCostLengthThenNewest) {
-  auto anonCheap = makeSession();
-  auto expensive = makeSession();
-  auto longer = makeSession();
-  auto older = makeSession();
-  auto newer = makeSession();
+  auto anonCheap = makeParticipant();
+  auto expensive = makeParticipant();
+  auto longer = makeParticipant();
+  auto older = makeParticipant();
+  auto newer = makeParticipant();
   advertise(ns_, anonCheap, {0, 7}, 1);
   advertise(ns_, expensive, {1, 7}, 9);
-  EXPECT_EQ(tree_.findPublisherSession(ns_), expensive);
+  EXPECT_EQ(publisherOf(ns_), idOf(expensive));
   advertise(ns_, longer, {1, 2, 7}, 3);
-  EXPECT_EQ(tree_.findPublisherSession(ns_), longer);
+  EXPECT_EQ(publisherOf(ns_), idOf(longer));
   advertise(ns_, older, {1, 7}, 3);
-  EXPECT_EQ(tree_.findPublisherSession(ns_), older);
+  EXPECT_EQ(publisherOf(ns_), idOf(older));
   advertise(ns_, newer, {2, 7}, 3);
-  EXPECT_EQ(tree_.findPublisherSession(ns_), newer);
+  EXPECT_EQ(publisherOf(ns_), idOf(newer));
   EXPECT_EQ(tree_.findNode(ns_)->routes().size(), 5u);
 
-  std::vector<std::shared_ptr<MoQSession>> order;
+  std::vector<SessionId> order;
   for (const auto* route : tree_.findNode(ns_)->rankedRoutes()) {
-    order.push_back(route->session);
+    order.push_back(idOf(route->participant));
   }
   EXPECT_EQ(
       order,
-      (std::vector<std::shared_ptr<MoQSession>>{newer, older, longer, expensive, anonCheap})
+      (std::vector<
+          SessionId>{idOf(newer), idOf(older), idOf(longer), idOf(expensive), idOf(anonCheap)})
   );
 }
 
 TEST_F(NamespaceTreeRouteTest, PlainRouteReplacesOnlyThePlainRoute) {
-  auto cluster = makeSession();
-  auto plain1 = makeSession();
-  auto plain2 = makeSession();
+  auto cluster = makeParticipant();
+  auto plain1 = makeParticipant();
+  auto plain2 = makeParticipant();
   advertise(ns_, cluster, {1, 7}, 5);
-  EXPECT_EQ(tree_.setPublisher(ns_, plain1, nullptr, {}, RequestID(0)).replacedSession, nullptr);
-  EXPECT_EQ(tree_.setPublisher(ns_, plain2, nullptr, {}, RequestID(0)).replacedSession, plain1);
+  EXPECT_EQ(
+      tree_.setPublisher(ns_, plain1, nullptr, {}, RequestID(0)).replacedPublisher,
+      std::nullopt
+  );
+  EXPECT_EQ(
+      tree_.setPublisher(ns_, plain2, nullptr, {}, RequestID(0)).replacedPublisher,
+      idOf(plain1)
+  );
   const auto& routes = tree_.findNode(ns_)->routes();
   ASSERT_EQ(routes.size(), 2u);
-  EXPECT_EQ(routes[0].session, cluster);
-  EXPECT_EQ(routes[1].session, plain2);
+  EXPECT_EQ(idOf(routes[0].participant), idOf(cluster));
+  EXPECT_EQ(idOf(routes[1].participant), idOf(plain2));
 }
 
 TEST_F(NamespaceTreeRouteTest, SameSessionReplacesItsRoute) {
-  auto peer = makeSession();
+  auto peer = makeParticipant();
   advertise(ns_, peer, {1, 7}, 5);
-  EXPECT_EQ(advertise(ns_, peer, {2, 7}, 3).replacedSession, peer);
+  EXPECT_EQ(advertise(ns_, peer, {2, 7}, 3).replacedPublisher, idOf(peer));
   const auto& routes = tree_.findNode(ns_)->routes();
   ASSERT_EQ(routes.size(), 1u);
   EXPECT_EQ(routes[0].path, (std::vector<uint64_t>{2, 7}));
 }
 
 TEST_F(NamespaceTreeRouteTest, UnpublishRemovesOnlyThatSessionsRoute) {
-  auto a = makeSession();
-  auto b = makeSession();
+  auto a = makeParticipant();
+  auto b = makeParticipant();
   advertise(ns_, a, {1, 7}, 1);
   advertise(ns_, b, {2, 7}, 2);
-  auto result = tree_.unpublishNamespace(ns_, a->sessionId());
+  auto result = tree_.unpublishNamespace(ns_, idOf(a));
   ASSERT_TRUE(result.hasValue());
-  EXPECT_EQ(result->removed.session, a);
-  EXPECT_EQ(tree_.findPublisherSession(ns_), b);
+  EXPECT_EQ(idOf(result->removed.participant), idOf(a));
+  EXPECT_EQ(publisherOf(ns_), idOf(b));
   unpublish(ns_, b);
   EXPECT_EQ(tree_.findNode(ns_), nullptr);
 }
 
 // A repeated NAMESPACE keeps the advertisement while its origin holds.
 TEST_F(NamespaceTreeRouteTest, RepeatedNamespaceFromTheSameOriginUpdatesInPlace) {
-  auto peer = makeSession();
+  auto peer = makeParticipant();
   advertise(ns_, peer, {1, 7}, 5);
   const auto seq = tree_.findNode(ns_)->routes()[0].seq;
 
-  EXPECT_EQ(advertise(ns_, peer, {1, 8}, 3).replacedSession, nullptr);
+  EXPECT_EQ(advertise(ns_, peer, {1, 8}, 3).replacedPublisher, std::nullopt);
   auto route = tree_.findNode(ns_)->routes()[0];
   EXPECT_EQ(route.seq, seq);
   EXPECT_EQ(route.path, (std::vector<uint64_t>{1, 8}));
   EXPECT_EQ(route.cost, 3u);
 
-  EXPECT_EQ(advertise(ns_, peer, {2, 8}, 3).replacedSession, peer);
+  EXPECT_EQ(advertise(ns_, peer, {2, 8}, 3).replacedPublisher, idOf(peer));
   ASSERT_EQ(tree_.findNode(ns_)->routes().size(), 1u);
   EXPECT_NE(tree_.findNode(ns_)->routes()[0].seq, seq);
 }
@@ -461,9 +494,9 @@ TEST_F(NamespaceTreeRouteTest, RepeatedNamespaceFromTheSameOriginUpdatesInPlace)
 // A PUBLISH_NAMESPACE is named by its session and request ID, so a stale
 // request cannot change or end a newer one.
 TEST_F(NamespaceTreeRouteTest, RouteIsNamedBySessionAndRequestID) {
-  auto publisher = makeSession();
-  tree_.setPublisher(ns_, publisher, nullptr, {}, RequestID(4), {1, 7}, 5, /*fromCluster=*/true);
-  const auto id = publisher->sessionId();
+  auto publisher = makeParticipant();
+  tree_.setPublisher(ns_, publisher, nullptr, {}, RequestID(4), {1, 7}, 5, /*fromPeering=*/true);
+  const auto id = idOf(publisher);
   EXPECT_EQ(
       tree_.updateRoute(ns_, id, RequestID(3), {1, 7}, 1).error(),
       NamespaceTree::Error::NotOwner
@@ -480,17 +513,17 @@ TEST_F(NamespaceTreeRouteTest, RouteIsNamedBySessionAndRequestID) {
 // The deepest tier decides: when all of its routes are excluded, a shorter
 // prefix does not serve the request.
 TEST_F(NamespaceTreeRouteTest, ExclusionDoesNotFallBackToAShorterPrefix) {
-  auto parent = makeSession();
-  auto viaPeer = makeSession();
-  auto local = makeSession();
+  auto parent = makeParticipant();
+  auto viaPeer = makeParticipant();
+  auto local = makeParticipant();
   advertise(TrackNamespace{{"test"}}, parent, {3, 7}, 1);
   advertise(ns_, viaPeer, {1, 7}, 1);
   advertise(ns_, local, {2, 7}, 5);
 
-  EXPECT_EQ(tree_.findPublisherSession(ns_, {.hop = 1}), local);
-  EXPECT_EQ(tree_.findPublisherSession(ns_, {.session = viaPeer->sessionId()}), local);
+  EXPECT_EQ(publisherOf(ns_, {.hop = 1}), idOf(local));
+  EXPECT_EQ(publisherOf(ns_, {.session = idOf(viaPeer)}), idOf(local));
   unpublish(ns_, local);
-  EXPECT_EQ(tree_.findPublisherSession(ns_, {.hop = 1}), nullptr);
+  EXPECT_EQ(publisherOf(ns_, {.hop = 1}), std::nullopt);
 }
 
 } // namespace openmoq::moqx::test

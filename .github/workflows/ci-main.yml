@@ -7,7 +7,7 @@ name: ci main
 #
 #   check-format ──────────────────────────────────────────────────────────────────┐
 #   build (linux, asan debug) ── publish (docker+smoke) ── release ────────────────┼── notify
-#   microbenchmark (linux, macos) ────────────────────────────────────────────────-┤
+#   microbenchmark (linux) ───────────────────────────────────────────────────────-┤
 #                                                                                  └── prune-caches
 
 on:
@@ -64,10 +64,6 @@ jobs:
           # arm64 is validated by the publish-side docker build (publish arm64
           # entry below); skipped here to avoid the ubuntu-runner ↔ bookworm-tarball
           # glog ABI mismatch. arm64 issues surface at the publish step.
-          - name: macos
-            key: macos
-            preset: default
-            runner: macos-15
           # ASan on moqx's own TUs, over the uninstrumented prebuilt folly, for a
           # fast signal. Full-stack instrumentation needs a prebuilt instrumented
           # moxygen: openmoq/moqx#579.
@@ -227,11 +223,6 @@ jobs:
         include:
           - name: linux
             runner: ubuntu-22.04
-          - name: macos
-            # Pinned to the moxygen publish runner: releases ship
-            # moxygen-macos-15-arm64.tar.gz and no macos-26 one, so macos-latest
-            # 404s. Keep in lockstep with the build job above.
-            runner: macos-15
     name: microbenchmark (${{ matrix.name }})
     runs-on: ${{ matrix.runner }}
     # Ceiling for the from-source fallback; see the build job.

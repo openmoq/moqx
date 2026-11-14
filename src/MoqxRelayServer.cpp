@@ -5,26 +5,18 @@
  */
 
 #include "MoqxRelayServer.h"
+#include "MoqxRelaySession.h"
 #include "logging/CaptureQLogger.h"
 #include "stats/EventBaseStatsCollector.h"
 #include "stats/QuicStatsCollector.h"
-#include <moxygen/MoQRelaySession.h>
+#include "tls/FizzContextBuilder.h"
 #include <moxygen/events/MoQFollyExecutorImpl.h>
 #include <moxygen/util/InsecureVerifierDangerousDoNotUseInProduction.h>
-#include <proxygen/httpserver/samples/hq/FizzContext.h>
 
-#include <fizz/backend/openssl/certificate/CertUtils.h>
-#include <fizz/server/AeadTicketCipher.h>
-#include <fizz/server/DefaultCertManager.h>
-#include <fizz/server/ReplayCache.h>
-#include <fizz/server/TicketCodec.h>
-#include <fizz/util/Status.h>
 #include <folly/Random.h>
 #include <folly/logging/xlog.h>
 #include <quic/QuicConstants.h>
 #include <quic/logging/FileQLogger.h>
-
-#include <array>
 
 using namespace moxygen;
 
@@ -39,95 +31,9 @@ std::vector<std::string> buildAlpns(const std::string& versions) {
   return alpns;
 }
 
-// Build a FizzServerContext from in-memory PEM buffers so a PKCS#12-derived key
-// never touches disk. Mirrors quic::samples::createFizzServerContextImpl (the
-// path-based sample helper) to match the PEM-file path's TLS behavior.
-// TODO(#482): replace with a buffer-based helper in the moxygen fork.
-std::shared_ptr<const fizz::server::FizzServerContext> buildFizzContextFromMaterial(
-    const std::vector<std::string>& alpns,
-    fizz::server::ClientAuthMode clientAuth,
-    const std::string& certChainPem,
-    const std::string& keyPem
-) {
-  std::unique_ptr<fizz::SelfCert> cert;
-  fizz::Error err;
-  FIZZ_THROW_ON_ERROR(fizz::openssl::CertUtils::makeSelfCert(cert, err, certChainPem, keyPem), err);
-  auto certManager = std::make_shared<fizz::server::DefaultCertManager>();
-  certManager->addCertAndSetDefault(std::move(cert));
-
-  auto ctx = std::make_shared<fizz::server::FizzServerContext>();
-  ctx->setCertManager(certManager);
-  auto ticketCipher = std::make_shared<fizz::server::Aead128GCMTicketCipher<
-      fizz::server::TicketCodec<fizz::server::CertificateStorage::X509>>>(
-      ctx->getFactoryPtr(),
-      std::move(certManager)
-  );
-  std::array<uint8_t, 32> ticketSeed;
-  folly::Random::secureRandom(ticketSeed.data(), ticketSeed.size());
-  ticketCipher->setTicketSecrets({{folly::range(ticketSeed)}});
-  ctx->setTicketCipher(ticketCipher);
-  ctx->setClientAuthMode(clientAuth);
-  ctx->setSupportedAlpns(alpns);
-  ctx->setAlpnMode(fizz::server::AlpnMode::Required);
-  ctx->setSendNewSessionTicket(true);
-  ctx->setEarlyDataFbOnly(false);
-  ctx->setVersionFallbackEnabled(false);
-
-  fizz::server::ClockSkewTolerance tolerance;
-  tolerance.before = std::chrono::minutes(-5);
-  tolerance.after = std::chrono::minutes(5);
-  std::shared_ptr<fizz::server::ReplayCache> replayCache =
-      std::make_shared<fizz::server::AllowAllReplayReplayCache>();
-  ctx->setEarlyDataSettings(true, tolerance, std::move(replayCache));
-  return ctx;
-}
-
 std::shared_ptr<const fizz::server::FizzServerContext>
 buildFizzContext(const config::ListenerConfig& cfg) {
-  auto alpns = buildAlpns(cfg.moqtVersions);
-  return std::visit(
-      [&alpns](const auto& tls) -> std::shared_ptr<const fizz::server::FizzServerContext> {
-        using T = std::decay_t<decltype(tls)>;
-        if constexpr (std::is_same_v<T, config::Insecure>) {
-          return quic::samples::createFizzServerContextWithInsecureDefault(
-              alpns,
-              fizz::server::ClientAuthMode::None,
-              "",
-              ""
-          );
-        } else {
-          // PKCS#12 source: build the context from the in-memory PEM material
-          // (cert/key never written to disk).
-          if (tls.material.has_value()) {
-            return buildFizzContextFromMaterial(
-                alpns,
-                fizz::server::ClientAuthMode::Optional,
-                tls.material->certChainPem,
-                tls.material->keyPem
-            );
-          }
-          // createFizzServerContext throws (deep in fizz) when the cert/key
-          // can't be read or contain no certificate. Enrich the message with
-          // the offending paths so the caller can report it cleanly instead of
-          // letting an opaque "no certificates read" escape to std::terminate.
-          try {
-            return quic::samples::createFizzServerContext(
-                alpns,
-                fizz::server::ClientAuthMode::Optional,
-                tls.certFile,
-                tls.keyFile
-            );
-          } catch (const std::exception& e) {
-            throw std::runtime_error(
-                "failed to load TLS certificate/key (cert='" + tls.certFile + "', key='" +
-                tls.keyFile + "'): " + e.what() +
-                " - check the paths exist and are readable by this process"
-            );
-          }
-        }
-      },
-      cfg.tlsMode
-  );
+  return tls::buildFizzServerContext(cfg.tlsMode, buildAlpns(cfg.moqtVersions));
 }
 
 quic::TransportSettings
@@ -150,6 +56,7 @@ buildTransportSettings(const config::QuicConfig& quic, const config::MvfstConfig
   ts.maxRecvBatchSize = mvfst.maxServerRecvPacketsPerLoop;
   ts.numGROBuffers_ = mvfst.numGROBuffers;
   ts.canIgnorePathMTU = mvfst.canIgnorePathMTU;
+  ts.useAdaptiveLossTimeThresholds = mvfst.adaptiveLossTimeThreshold;
   ts.advertisedInitialConnectionFlowControlWindow = quic.maxData;
   ts.advertisedInitialBidiLocalStreamFlowControlWindow = quic.maxStreamData;
   ts.advertisedInitialBidiRemoteStreamFlowControlWindow = quic.maxStreamData;
@@ -207,6 +114,14 @@ buildTransportSettings(const config::QuicConfig& quic, const config::MvfstConfig
   return ts;
 }
 
+// MoQServer ignores a non-positive txnTimeout, so "none" is the maximum.
+std::chrono::milliseconds h3TxnTimeout(const config::MvfstConfig& mvfst) {
+  if (mvfst.h3TxnTimeoutMs == 0) {
+    return std::chrono::milliseconds(config::MvfstConfig::kMaxH3TxnTimeoutMs);
+  }
+  return std::chrono::milliseconds(mvfst.h3TxnTimeoutMs);
+}
+
 } // namespace
 
 MoqxRelayServer::MoqxRelayServer(
@@ -221,13 +136,15 @@ MoqxRelayServer::MoqxRelayServer(
               .transportSettings = buildTransportSettings(listenerCfg.quic, listenerCfg.mvfst),
               .udpSendBufferBytes = listenerCfg.mvfst.udpSocketBufferBytes,
               .udpRecvBufferBytes = listenerCfg.mvfst.udpSocketBufferBytes,
+              .txnTimeout = h3TxnTimeout(listenerCfg.mvfst),
           }
       ),
-      listenerCfg_(listenerCfg), context_(std::move(context)), ioExecutor_(ioExecutor) {
+      listenerCfg_(listenerCfg), context_(std::move(context)),
+      listenerMatcher_(context_->listenerMatcher(listenerCfg_.name)), ioExecutor_(ioExecutor) {
   // Advertise on every listener: activation is bilateral and loop protection
   // must not vary by listener configuration.
-  if (const auto hopID = context_->getRelayHopID()) {
-    addSetupParameter(SetupParameter(folly::to_underlying(SetupKey::HOP_ID), *hopID));
+  for (auto& extension : context_->makeServerExtensions()) {
+    addExtension(std::move(extension));
   }
 }
 
@@ -274,7 +191,7 @@ void MoqxRelayServer::onNewSession(std::shared_ptr<MoQSession> clientSession) {
 }
 
 void MoqxRelayServer::terminateClientSession(std::shared_ptr<MoQSession> session) {
-  context_->onSessionEnd(session);
+  context_->onSessionEnd(listenerMatcher_, session);
   MoQServer::terminateClientSession(std::move(session));
 }
 
@@ -288,14 +205,16 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayServer::validateAut
   if (!base.hasValue()) {
     return base;
   }
-  return context_->validateAuthority(clientSetup, negotiatedVersion, std::move(session));
+  return context_
+      ->validateAuthority(listenerMatcher_, clientSetup, negotiatedVersion, std::move(session));
 }
 
 std::shared_ptr<MoQSession> MoqxRelayServer::createSession(
     folly::MaybeManagedPtr<proxygen::WebTransport> wt,
     std::shared_ptr<MoQExecutor> executor
 ) {
-  return std::make_shared<MoQRelaySession>(
+  return std::make_shared<MoqxRelaySession>(
+      listenerMatcher_.name(),
       folly::MaybeManagedPtr<proxygen::WebTransport>(std::move(wt)),
       *this,
       std::move(executor)

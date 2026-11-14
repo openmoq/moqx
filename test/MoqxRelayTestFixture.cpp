@@ -7,24 +7,24 @@
  */
 
 #include "MoqxRelayTestFixture.h"
+#include "MockClusterPeer.h"
 
 namespace openmoq::moqx::test {
 
-void negotiateCluster(MockMoQSession& session, uint64_t peerHop) {
+void negotiateCluster(MockMoQSession& session, uint64_t peerHop, std::optional<uint64_t> peerCost) {
   ON_CALL(session, getNegotiatedVersion())
       .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft18)));
-  ON_CALL(session, negotiatedSetupExtension(SetupExtension::RelayHops)).WillByDefault(Return(true));
-  ON_CALL(session, getPeerHopID()).WillByDefault(Return(peerHop));
+  negotiateClusterPeer(session, peerHop, peerCost);
 }
 
 PublishNamespace clusterAdvert(std::vector<uint64_t> path, uint64_t cost, TrackNamespace ns) {
   PublishNamespace pubNs;
   pubNs.trackNamespace = std::move(ns);
   pubNs.params.insertParam(Parameter(
-      folly::to_underlying(TrackRequestParamKey::HOP_PATH),
+      MoQClusterExtension::kHopPathParam,
       encodeRelayHopPath(path, kVersionDraft18).value()
   ));
-  pubNs.params.insertParam(Parameter(folly::to_underlying(TrackRequestParamKey::ROUTE_COST), cost));
+  pubNs.params.insertParam(Parameter(MoQClusterExtension::kRouteCostParam, cost));
   return pubNs;
 }
 
@@ -83,16 +83,26 @@ void MoQRelayTest::resetRelay(
     relayExec = std::make_shared<moxygen::MoQFollyExecutorImpl>(relayEvb_);
   }
   bool useLocalForwarders = relayEvb_ && relayMode() == RelayMode::LocalForwarderMT;
+  if (relay_) {
+    relay_->setPeering(nullptr);
+    relay_->setReciprocalPeerHandler(nullptr);
+  }
   relay_ = std::make_shared<MoqxRelay>(
       std::move(cache),
       relayID,
-      relayHopID,
       std::move(relayExec),
       useLocalForwarders,
       MoqxRelay::kDefaultMaxDeselected,
       MoqxRelay::kDefaultIdleTimeout,
       MoqxRelay::kDefaultActivityThreshold
   );
+  peering_ = std::make_unique<MoqtRelayBackend>(
+      relay_,
+      config::ServiceConfig{},
+      relayHopID ? std::optional(relayHopID) : std::nullopt
+  );
+  relay_->setPeering(peering_.get());
+  relay_->setReciprocalPeerHandler(peering_->reciprocalMoqtPeerHandler());
   if (relayEvb_) {
     if (relayMode() == RelayMode::LocalForwarderMT) {
       publisherInterface_ = relay_->createPublisherFilter();
@@ -138,7 +148,13 @@ void MoQRelayTest::TearDown() {
   exec_->setRelayEvb(nullptr);
   publisherInterface_.reset();
   subscriberInterface_.reset();
+  // Something may still hold the relay, so it must not point at the freed backend.
+  if (relay_) {
+    relay_->setPeering(nullptr);
+    relay_->setReciprocalPeerHandler(nullptr);
+  }
   relay_.reset();
+  peering_.reset();
   relayThread_.reset();
   relayEvb_ = nullptr;
   drainExecs();
@@ -152,10 +168,6 @@ std::shared_ptr<MockMoQSession>
 MoQRelayTest::createMockSessionOn(std::shared_ptr<moxygen::MoQExecutor> exec, uint64_t version) {
   auto session = std::make_shared<NiceMock<MockMoQSession>>(std::move(exec));
   ON_CALL(*session, getNegotiatedVersion()).WillByDefault(Return(std::optional<uint64_t>(version)));
-  // A real session reports 1 when the peer did not declare RELAY_COST.
-  ON_CALL(*session, getRelayLinkCost()).WillByDefault(Return(uint64_t{1}));
-  ON_CALL(*session, negotiatedSetupExtension(SetupExtension::RelayHops))
-      .WillByDefault(Return(false));
   getOrCreateMockState(session);
   return session;
 }
@@ -244,7 +256,7 @@ std::shared_ptr<Publisher::SubscriptionHandle> MoQRelayTest::createMockSubscript
   ok.requestID = RequestID(0);
   ok.trackAlias = TrackAlias(0);
   ok.expires = std::chrono::milliseconds(0);
-  ok.groupOrder = GroupOrder::Default;
+  ok.groupOrder = GroupOrder::OldestFirst;
   auto handle = std::make_shared<NiceMock<MockSubscriptionHandle>>(std::move(ok));
   return handle;
 }
@@ -502,7 +514,7 @@ void MoQRelayTest::setupPublishSucceeds(std::shared_ptr<MockMoQSession> session)
                 pub.requestID,
                 /*forward=*/pub.forward,
                 /*priority=*/128,
-                GroupOrder::Default,
+                std::nullopt,
                 LocationFilter::nextObject()
             };
             return Subscriber::PublishConsumerAndReplyTask{
@@ -530,7 +542,7 @@ std::shared_ptr<NiceMock<MockSubscriptionHandle>> MoQRelayTest::makePublishHandl
   ok.requestID = RequestID(0);
   ok.trackAlias = TrackAlias(0);
   ok.expires = std::chrono::milliseconds(0);
-  ok.groupOrder = GroupOrder::Default;
+  ok.groupOrder = GroupOrder::OldestFirst;
   auto handle = std::make_shared<NiceMock<MockSubscriptionHandle>>(std::move(ok));
   ON_CALL(*handle, requestUpdateResult())
       .WillByDefault(Return(folly::makeExpected<RequestError>(RequestOk{})));

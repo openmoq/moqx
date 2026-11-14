@@ -43,6 +43,16 @@ MATCHER_P(HasPayload, expected, "") {
   return actual == expected;
 }
 
+MATCHER_P2(FetchRangeIs, start, end, "") {
+  auto [standalone, joining] = fetchType(arg);
+  return standalone && standalone->start == start && standalone->end == end;
+}
+
+folly::coro::Task<Publisher::FetchResult> fetchOkAfter(folly::coro::Baton& baton, FetchOk ok) {
+  co_await baton;
+  co_return std::make_shared<moxygen::MockFetchHandle>(std::move(ok));
+}
+
 // Helper to create extensions with Prior Object ID Gap
 Extensions makeObjectGapExtensions(uint64_t gap) {
   Extensions ext;
@@ -60,7 +70,7 @@ Extensions makeGroupGapExtensions(uint64_t gap) {
 Fetch getFetch(
     AbsoluteLocation start,
     AbsoluteLocation end,
-    GroupOrder order = GroupOrder::Default
+    GroupOrder order = GroupOrder::OldestFirst
 ) {
   return Fetch{0, kTestTrackName, start, end, kDefaultPriority, order};
 }
@@ -69,7 +79,7 @@ Fetch getFetch(
     const FullTrackName& ftn,
     AbsoluteLocation start,
     AbsoluteLocation end,
-    GroupOrder order = GroupOrder::Default
+    GroupOrder order = GroupOrder::OldestFirst
 ) {
   return Fetch{0, ftn, start, end, kDefaultPriority, order};
 }
@@ -320,6 +330,67 @@ protected:
           upstreamFetchHandle_ = std::make_shared<moxygen::MockFetchHandle>(ok);
           return folly::coro::makeTask<Publisher::FetchResult>(upstreamFetchHandle_);
         });
+  }
+
+  // Answers FETCH_OK and leaves the stream open for the test to drive via `out`.
+  void expectOpenUpstreamFetch(
+      AbsoluteLocation start,
+      AbsoluteLocation end,
+      AbsoluteLocation endLocation,
+      std::shared_ptr<FetchConsumer>& out
+  ) {
+    EXPECT_CALL(*upstream_, fetch(FetchRangeIs(start, end), _))
+        .WillOnce([endLocation, &out](Fetch, std::shared_ptr<FetchConsumer> consumer) {
+          out = std::move(consumer);
+          return folly::coro::makeTask<Publisher::FetchResult>(
+              std::make_shared<moxygen::MockFetchHandle>(
+                  FetchOk{0, GroupOrder::OldestFirst, false, endLocation, {}}
+              )
+          );
+        })
+        .RetiresOnSaturation();
+  }
+
+  // Accepts every delivery and posts `done` on the terminal event.
+  static std::shared_ptr<NiceMock<moxygen::MockFetchConsumer>>
+  makeLenientFetchConsumer(folly::coro::Baton& done) {
+    using Result = folly::Expected<folly::Unit, MoQPublishError>;
+    auto consumer = std::make_shared<NiceMock<moxygen::MockFetchConsumer>>();
+    ON_CALL(*consumer, object(_, _, _, _, _, _, _))
+        .WillByDefault([&done](auto, auto, auto, auto, const auto&, bool fin, auto) -> Result {
+          if (fin) {
+            done.post();
+          }
+          return folly::unit;
+        });
+    ON_CALL(*consumer, beginObject(_, _, _, _, _, _)).WillByDefault(Return(folly::unit));
+    ON_CALL(*consumer, objectPayload(_, _)).WillByDefault(Return(ObjectPublishStatus{}));
+    ON_CALL(*consumer, endOfGroup(_, _, _, _)).WillByDefault(Return(folly::unit));
+    ON_CALL(*consumer, endOfUnknownRange(_, _, _)).WillByDefault(Return(folly::unit));
+    ON_CALL(*consumer, endOfTrackAndGroup(_, _, _))
+        .WillByDefault([&done](auto, auto, auto) -> Result {
+          done.post();
+          return folly::unit;
+        });
+    ON_CALL(*consumer, endOfFetch()).WillByDefault([&done]() -> Result {
+      done.post();
+      return folly::unit;
+    });
+    ON_CALL(*consumer, reset(_)).WillByDefault([&done](auto) { done.post(); });
+    return consumer;
+  }
+
+  // Yields to background fetches until `ready` holds.
+  static folly::coro::Task<void> yieldUntil(std::function<bool()> ready) {
+    while (!ready()) {
+      co_await folly::coro::co_reschedule_on_current_executor;
+    }
+  }
+
+  static void serveObjects(FetchConsumer& upstream, uint64_t group, uint64_t from, uint64_t to) {
+    for (auto obj = from; obj < to; ++obj) {
+      EXPECT_TRUE(upstream.object(group, 0, obj, makeBuf(100)).hasValue());
+    }
   }
 
   void populateCacheRange(
@@ -2033,6 +2104,149 @@ CO_TEST_F(MoqxCacheTest, FetchWritebackUpdateInProgressDoubleCall) {
 
   auto res = co_await cache_.fetch(getFetch({0, 0}, {2, 0}), trackingConsumer_, upstream_);
   EXPECT_TRUE(res.hasValue());
+}
+
+CO_TEST_F(MoqxCacheTest, FetchInProgressKeyCollisionAfterUnknownRange) {
+  // Regression test for #909. Upstream reports {0,0}..{0,4} as unknown while A
+  // still holds the {0,0} key, so B fetches {0,0} upstream under the same key.
+  std::shared_ptr<FetchConsumer> upA;
+  std::shared_ptr<FetchConsumer> upB;
+  folly::coro::Baton doneA;
+  folly::coro::Baton doneB;
+  auto consumerA = makeLenientFetchConsumer(doneA);
+  auto consumerB = makeLenientFetchConsumer(doneB);
+  expectOpenUpstreamFetch({0, 0}, {0, 10}, {0, 10}, upA);
+  expectOpenUpstreamFetch({0, 0}, {0, 1}, {0, 1}, upB);
+
+  auto resA = co_await cache_.fetch(getFetch({0, 0}, {0, 10}), consumerA, upstream_);
+  EXPECT_TRUE(resA.hasValue());
+  upA->endOfUnknownRange(0, 4, false);
+
+  auto resB = co_await cache_.fetch(getFetch({0, 0}, {0, 1}), consumerB, upstream_);
+  EXPECT_TRUE(resB.hasValue());
+  co_await yieldUntil([&] { return upB != nullptr; });
+  serveObjects(*upB, 0, 0, 1);
+  upB->endOfFetch();
+  co_await doneB;
+
+  serveObjects(*upA, 0, 5, 10);
+  upA->endOfFetch();
+  co_await doneA;
+}
+
+CO_TEST_F(MoqxCacheTest, FetchUsesGapBelowReceivedObjectBeforeFetchOk) {
+  auto exec = co_await folly::coro::co_current_executor;
+  std::shared_ptr<FetchConsumer> upA;
+  folly::coro::Baton fetchOkA;
+  folly::coro::Baton doneA;
+  folly::coro::Baton doneB;
+  auto consumerA = makeLenientFetchConsumer(doneA);
+  auto consumerB = makeLenientFetchConsumer(doneB);
+  // {0,3} arrives before FETCH_OK. The gap below it is recorded immediately,
+  // so B finishes from the cache without going upstream.
+  EXPECT_CALL(*upstream_, fetch(FetchRangeIs(AbsoluteLocation{0, 0}, AbsoluteLocation{0, 10}), _))
+      .WillOnce([&](Fetch, std::shared_ptr<FetchConsumer> consumer) {
+        upA = std::move(consumer);
+        upA->object(0, 0, 3, makeBuf(100));
+        return fetchOkAfter(
+            fetchOkA,
+            FetchOk{0, GroupOrder::OldestFirst, false, AbsoluteLocation{0, 10}, {}}
+        );
+      });
+
+  auto futA = folly::coro::co_withExecutor(
+                  exec,
+                  cache_.fetch(getFetch({0, 0}, {0, 10}), consumerA, upstream_)
+  )
+                  .start();
+  co_await yieldUntil([&] { return upA != nullptr; });
+
+  auto resB = co_await cache_.fetch(getFetch({0, 0}, {0, 1}), consumerB, upstream_);
+  EXPECT_TRUE(resB.hasValue());
+  co_await doneB;
+
+  fetchOkA.post();
+  auto resA = co_await std::move(futA);
+  EXPECT_TRUE(resA.hasValue());
+  serveObjects(*upA, 0, 4, 10);
+  upA->endOfFetch();
+  co_await doneA;
+}
+
+CO_TEST_F(MoqxCacheTest, FetchInProgressKeyCollisionAfterTtlExpiry) {
+  auto currentTime = std::make_shared<MoqxCache::TimePoint>(MoqxCache::SteadyClock::now());
+  cache_.setClockForTesting([currentTime]() { return *currentTime; });
+  cache_.setDefaultMaxCacheDuration(std::chrono::milliseconds(1000));
+  std::shared_ptr<FetchConsumer> upA;
+  std::shared_ptr<FetchConsumer> upB;
+  folly::coro::Baton doneA;
+  folly::coro::Baton doneB;
+  auto consumerA = makeLenientFetchConsumer(doneA);
+  auto consumerB = makeLenientFetchConsumer(doneB);
+  expectOpenUpstreamFetch({0, 0}, {0, 10}, {0, 10}, upA);
+  expectOpenUpstreamFetch({0, 0}, {0, 1}, {0, 1}, upB);
+
+  auto resA = co_await cache_.fetch(getFetch({0, 0}, {0, 10}), consumerA, upstream_);
+  EXPECT_TRUE(resA.hasValue());
+  serveObjects(*upA, 0, 0, 1);
+  // {0,0} expires while A, still in group 0, holds the {0,0} key.
+  *currentTime += std::chrono::milliseconds(1001);
+
+  auto resB = co_await cache_.fetch(getFetch({0, 0}, {0, 1}), consumerB, upstream_);
+  EXPECT_TRUE(resB.hasValue());
+  co_await yieldUntil([&] { return upB != nullptr; });
+  serveObjects(*upB, 0, 0, 1);
+  upB->endOfFetch();
+  co_await doneB;
+
+  serveObjects(*upA, 0, 1, 10);
+  upA->endOfFetch();
+  co_await doneA;
+}
+
+CO_TEST_F(MoqxCacheTest, FetchFlushesMissRunBeforeWaiting) {
+  auto exec = co_await folly::coro::co_current_executor;
+  std::shared_ptr<FetchConsumer> upA;
+  std::shared_ptr<FetchConsumer> upC;
+  folly::coro::Baton doneA;
+  folly::coro::Baton doneB;
+  folly::coro::Baton doneC;
+  auto consumerA = makeLenientFetchConsumer(doneA);
+  auto consumerB = makeLenientFetchConsumer(doneB);
+  auto consumerC = makeLenientFetchConsumer(doneC);
+  expectOpenUpstreamFetch({0, 5}, {0, 10}, {0, 10}, upC);
+  expectOpenUpstreamFetch({0, 0}, {0, 5}, {0, 5}, upA);
+
+  auto resC = co_await cache_.fetch(getFetch({0, 5}, {0, 10}), consumerC, upstream_);
+  EXPECT_TRUE(resC.hasValue());
+  // A live object lands under C's cursor. A's miss run [{0,0}, {0,5}) then
+  // ends where C blocks it, and A sends the run upstream before waiting on C.
+  populateCacheRange({0, 5}, {0, 6});
+  auto futA = folly::coro::co_withExecutor(
+                  exec,
+                  cache_.fetch(getFetch({0, 0}, {0, 10}), consumerA, upstream_)
+  )
+                  .start();
+  co_await yieldUntil([&] { return upA != nullptr; });
+
+  // B waits on A's run and does not go upstream.
+  EXPECT_CALL(*consumerB, object(0, 0, 0, _, _, _, _));
+  EXPECT_CALL(*consumerB, reset(_)).Times(0);
+  auto resB = co_await cache_.fetch(getFetch({0, 0}, {0, 1}), consumerB, upstream_);
+  EXPECT_TRUE(resB.hasValue());
+  co_await folly::coro::co_reschedule_on_current_executor;
+  EXPECT_FALSE(doneB.ready());
+
+  serveObjects(*upA, 0, 0, 5);
+  upA->endOfFetch();
+  co_await doneB;
+  EXPECT_TRUE(upC->object(0, 0, 5, makeBuf(100), {}, false, true).hasValue());
+  serveObjects(*upC, 0, 6, 10);
+  upC->endOfFetch();
+  co_await doneC;
+  co_await doneA;
+  auto resA = co_await std::move(futA);
+  EXPECT_TRUE(resA.hasValue());
 }
 
 CO_TEST_F(MoqxCacheTest, TestFetchRangeExactlyAtGroupBoundary) {

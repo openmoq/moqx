@@ -12,6 +12,7 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include <limits>
 #include <variant>
 
 namespace openmoq::moqx::config {
@@ -201,7 +202,7 @@ TEST(ResolveConfig, InsecureFalseNoCerts) {
 
 TEST(ResolveConfig, PicoquicInsecureRejected) {
   auto cfg = makeMinimalInsecureConfig();
-  cfg.listeners.value()[0].quic_stack = std::string("picoquic");
+  cfg.listeners.value()[0].quic_stack = ParsedQuicStack::make<"picoquic">();
 
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasError());
@@ -357,7 +358,7 @@ TEST(ResolveConfig, Pkcs12PicoquicRejected) {
   tls.insecure = false;
   tls.pkcs12_file = p12.path();
   tls.pkcs12_password_file = pwFile.path();
-  cfg.listeners.value()[0].quic_stack = std::string("picoquic");
+  cfg.listeners.value()[0].quic_stack = ParsedQuicStack::make<"picoquic">();
 
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasError());
@@ -1933,7 +1934,7 @@ TEST(ResolveConfig, QuicCcAlgoPicoOnlyRejectedByMvfst) {
   EXPECT_THAT(result.error(), HasSubstr("cc_algo"));
   EXPECT_THAT(result.error(), HasSubstr("dcubic"));
 
-  cfg.listeners.value()[0].quic_stack = std::optional<std::string>{"picoquic"};
+  cfg.listeners.value()[0].quic_stack = ParsedQuicStack::make<"picoquic">();
   cfg.listeners.value()[0].tls.value().insecure = false;
   cfg.listeners.value()[0].tls.value().cert_file = std::optional<std::string>{"cert.pem"};
   cfg.listeners.value()[0].tls.value().key_file = std::optional<std::string>{"key.pem"};
@@ -1954,7 +1955,7 @@ TEST(ResolveConfig, QuicCcAlgoMvfstOnlyRejectedByPico) {
   ASSERT_TRUE(result.hasValue());
   EXPECT_EQ(result.value().config.listeners[0].quic.ccAlgo, "bbr2");
 
-  cfg.listeners.value()[0].quic_stack = std::optional<std::string>{"picoquic"};
+  cfg.listeners.value()[0].quic_stack = ParsedQuicStack::make<"picoquic">();
   cfg.listeners.value()[0].tls.value().insecure = false;
   cfg.listeners.value()[0].tls.value().cert_file = std::optional<std::string>{"cert.pem"};
   cfg.listeners.value()[0].tls.value().key_file = std::optional<std::string>{"key.pem"};
@@ -1982,7 +1983,7 @@ TEST(ResolveConfig, QuicCcAlgoRoundTrips) {
 ParsedConfig makeMinimalPicoConfig() {
   auto cfg = makeMinimalInsecureConfig();
   auto& lc = cfg.listeners.value()[0];
-  lc.quic_stack = std::optional<std::string>{"picoquic"};
+  lc.quic_stack = ParsedQuicStack::make<"picoquic">();
   lc.tls.value().insecure = false;
   lc.tls.value().cert_file = std::optional<std::string>{"cert.pem"};
   lc.tls.value().key_file = std::optional<std::string>{"key.pem"};
@@ -2231,12 +2232,14 @@ TEST(ResolveConfig, MvfstDefaultsRoundTrip) {
   EXPECT_EQ(mvfst.maxServerRecvPacketsPerLoop, 64u);
   EXPECT_EQ(mvfst.numGROBuffers, 1u);
   EXPECT_FALSE(mvfst.canIgnorePathMTU);
+  EXPECT_FALSE(mvfst.adaptiveLossTimeThreshold);
   EXPECT_DOUBLE_EQ(mvfst.copa.deltaParam, 0.05);
   EXPECT_FALSE(mvfst.bbr.conservativeRecovery);
   EXPECT_TRUE(mvfst.bbr2.exitStartupOnLoss);
   EXPECT_TRUE(mvfst.bbr2.enableRecoveryInStartup);
   EXPECT_TRUE(mvfst.bbr2.enableRecoveryInProbeStates);
   EXPECT_FLOAT_EQ(mvfst.l4s.ceTarget, 0.0f);
+  EXPECT_EQ(mvfst.h3TxnTimeoutMs, 0u);
 }
 
 // listener_defaults.mvfst propagates to listeners; per-listener overrides win;
@@ -2247,6 +2250,7 @@ TEST(ResolveConfig, MvfstInheritanceAndOverride) {
   ParsedMvfstConfig defaults;
   defaults.max_cwnd_in_mss = std::optional<uint64_t>{100000};
   defaults.num_gro_buffers = std::optional<uint32_t>{4};
+  defaults.h3_txn_timeout_ms = std::optional<uint64_t>{60000};
   ParsedListenerDefaultsConfig ld;
   ld.mvfst = std::optional<ParsedMvfstConfig>{std::move(defaults)};
   cfg.listener_defaults = std::optional<ParsedListenerDefaultsConfig>{std::move(ld)};
@@ -2260,6 +2264,7 @@ TEST(ResolveConfig, MvfstInheritanceAndOverride) {
   const auto& mvfst = result.value().config.listeners[0].mvfst;
   EXPECT_EQ(mvfst.maxCwndInMss, 200000u); // per-listener wins
   EXPECT_EQ(mvfst.numGROBuffers, 4u);     // from defaults
+  EXPECT_EQ(mvfst.h3TxnTimeoutMs, 60000u);
 
   // Validation uses merged values: max_conn_packets_sent_per_loop=0 in defaults
   // triggers error even when the per-listener fragment doesn't set it.
@@ -2295,6 +2300,24 @@ TEST(ResolveConfig, MvfstZeroValuesAreErrors) {
     ASSERT_TRUE(result.hasError()) << "expected error for " << tc.field;
     EXPECT_THAT(result.error(), HasSubstr(tc.field));
   }
+}
+
+TEST(ResolveConfig, MvfstH3TxnTimeoutAboveAYearIsError) {
+  constexpr uint64_t kMax = MvfstConfig::kMaxH3TxnTimeoutMs;
+  for (uint64_t bad : {kMax + 1, std::numeric_limits<uint64_t>::max()}) {
+    auto cfg = makeMinimalInsecureConfig();
+    ParsedMvfstConfig mvfst;
+    mvfst.h3_txn_timeout_ms = std::optional<uint64_t>{bad};
+    setListenerMvfst(cfg, std::move(mvfst));
+    auto result = resolveConfig(cfg);
+    ASSERT_TRUE(result.hasError()) << "h3_txn_timeout_ms=" << bad;
+    EXPECT_THAT(result.error(), HasSubstr("h3_txn_timeout_ms"));
+  }
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedMvfstConfig mvfst;
+  mvfst.h3_txn_timeout_ms = std::optional<uint64_t>{kMax};
+  setListenerMvfst(cfg, std::move(mvfst));
+  EXPECT_FALSE(resolveConfig(cfg).hasError());
 }
 
 // copa.delta_param must be in (0, 1); l4s.ce_target must be 0 or in (0, 1).
@@ -2367,6 +2390,18 @@ TEST(ResolveConfig, MvfstIgnorePathMtuRoundTrip) {
   }
 }
 
+TEST(ResolveConfig, MvfstAdaptiveLossTimeThresholdRoundTrip) {
+  for (bool adaptive : {true, false}) {
+    auto cfg = makeMinimalInsecureConfig();
+    ParsedMvfstConfig mvfst;
+    mvfst.adaptive_loss_time_threshold = std::optional<bool>{adaptive};
+    setListenerMvfst(cfg, std::move(mvfst));
+    auto result = resolveConfig(cfg);
+    ASSERT_TRUE(result.hasValue()) << "adaptive_loss_time_threshold=" << adaptive;
+    EXPECT_EQ(result.value().config.listeners[0].mvfst.adaptiveLossTimeThreshold, adaptive);
+  }
+}
+
 // Each algo sub-struct round-trips through resolveConfig correctly.
 TEST(ResolveConfig, MvfstAlgoFieldsRoundTrip) {
   auto cfg = makeMinimalInsecureConfig();
@@ -2418,6 +2453,235 @@ TEST(ResolveConfig, MvfstAlgoFieldsRoundTrip) {
 
   EXPECT_DOUBLE_EQ(out.copa.deltaParam, 0.1);
   EXPECT_FLOAT_EQ(out.l4s.ceTarget, 0.05f);
+}
+
+// --- Service listener binding ---
+
+// Appends an insecure mvfst listener on its own port.
+void addInsecureListener(ParsedConfig& cfg, std::string name, uint16_t port) {
+  ParsedListenerConfig lc;
+  lc.name = std::move(name);
+  ParsedSocketConfig sock;
+  sock.address = std::string("::");
+  sock.port = port;
+  ParsedUdpConfig udp;
+  udp.socket = std::move(sock);
+  lc.udp = std::move(udp);
+  ParsedListenerTlsConfig tls;
+  tls.insecure = true;
+  lc.tls = std::move(tls);
+  lc.endpoint = std::string("/moq-relay");
+  cfg.listeners.value().push_back(std::move(lc));
+}
+
+ParsedServiceConfig makeServiceOn(std::vector<std::string> listeners) {
+  auto svc = makeDefaultService();
+  svc.listeners = std::optional<std::vector<std::string>>{std::move(listeners)};
+  return svc;
+}
+
+TEST(ResolveConfig, ServiceListenersDefaultToAll) {
+  auto cfg = makeMinimalInsecureConfig("public");
+  addInsecureListener(cfg, "internal", 9670);
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue()) << result.error();
+  EXPECT_THAT(
+      result.value().config.services.at("default").listeners,
+      ElementsAre("public", "internal")
+  );
+}
+
+TEST(ResolveConfig, ServiceListenersExplicitSubset) {
+  auto cfg = makeMinimalInsecureConfig("public");
+  addInsecureListener(cfg, "internal", 9670);
+  cfg.services.value().at("default") = makeServiceOn({"internal"});
+  cfg.services.value().emplace("public-svc", makeServiceOn({"public"}));
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue()) << result.error();
+  EXPECT_THAT(result.value().config.services.at("default").listeners, ElementsAre("internal"));
+  EXPECT_THAT(result.value().config.services.at("public-svc").listeners, ElementsAre("public"));
+}
+
+TEST(ResolveConfig, ServiceListenersUnknownNameRejected) {
+  auto cfg = makeMinimalInsecureConfig("public");
+  cfg.services.value().at("default") = makeServiceOn({"public", "nope"});
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("unknown listener 'nope'"));
+}
+
+TEST(ResolveConfig, ServiceListenersListedTwiceRejected) {
+  auto cfg = makeMinimalInsecureConfig("public");
+  cfg.services.value().at("default") = makeServiceOn({"public", "public"});
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("listed twice"));
+}
+
+TEST(ResolveConfig, DuplicateListenerNameRejected) {
+  auto cfg = makeMinimalInsecureConfig("public");
+  addInsecureListener(cfg, "public", 9670);
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("Listener name 'public' is used by several listeners"));
+}
+
+TEST(ResolveConfig, ServiceListenersEmptyWarns) {
+  auto cfg = makeMinimalInsecureConfig("public");
+  // Same rule as "default": a service on no listener cannot collide with it.
+  cfg.services.value().emplace("unreachable", makeServiceOn({}));
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue()) << result.error();
+  EXPECT_THAT(
+      result.value().warnings,
+      ::testing::Contains(HasSubstr("Service 'unreachable': listeners is empty"))
+  );
+  EXPECT_THAT(result.value().config.services.at("unreachable").listeners, IsEmpty());
+}
+
+TEST(ResolveConfig, UnboundListenerWarns) {
+  auto cfg = makeMinimalInsecureConfig("public");
+  addInsecureListener(cfg, "idle", 9670);
+  cfg.services.value().at("default") = makeServiceOn({"public"});
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue()) << result.error();
+  EXPECT_THAT(
+      result.value().warnings,
+      ::testing::Contains(HasSubstr("Listener 'idle': no service is available on it"))
+  );
+  for (const auto& w : result.value().warnings) {
+    EXPECT_THAT(w, Not(HasSubstr("Listener 'public'")));
+  }
+}
+
+TEST(ResolveConfig, ListFormListenersWarnDeprecated) {
+  auto cfg = makeMinimalInsecureConfig("main");
+  auto noWarning = resolveConfig(cfg);
+  ASSERT_TRUE(noWarning.hasValue()) << noWarning.error();
+  EXPECT_THAT(noWarning.value().warnings, Not(::testing::Contains(HasSubstr("list form"))));
+
+  std::vector<ParsedDeprecatedListenerListEntry> entries;
+  for (const auto& listener : cfg.listeners.value()) {
+    entries.push_back({listener.name.value(), static_cast<const ParsedListenerEntry&>(listener)});
+  }
+  cfg.listeners = ParsedListeners(ParsedListeners::ReflectionType(std::move(entries)));
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue()) << result.error();
+  EXPECT_THAT(
+      result.value().warnings,
+      ::testing::Contains(HasSubstr("listeners: the list form is deprecated"))
+  );
+}
+
+size_t countOccurrences(std::string_view haystack, std::string_view needle) {
+  size_t n = 0;
+  for (auto pos = haystack.find(needle); pos != std::string_view::npos;
+       pos = haystack.find(needle, pos + needle.size())) {
+    ++n;
+  }
+  return n;
+}
+
+TEST(ResolveConfig, DuplicateRuleOnDisjointListenersAccepted) {
+  auto cfg = makeMinimalInsecureConfig("public");
+  addInsecureListener(cfg, "internal", 9670);
+  cfg.services.value().at("default") = makeServiceOn({"public"});
+  cfg.services.value().emplace("internal-svc", makeServiceOn({"internal"}));
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue()) << result.error();
+}
+
+TEST(ResolveConfig, DuplicateRuleOnSharedListenerRejected) {
+  auto cfg = makeMinimalInsecureConfig("public");
+  addInsecureListener(cfg, "internal", 9670);
+  cfg.services.value().at("default") = makeServiceOn({"public", "internal"});
+  cfg.services.value().emplace("internal-svc", makeServiceOn({"internal"}));
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(
+      result.error(),
+      HasSubstr(
+          "Duplicate (authority, path) combination on listener 'internal' in services 'default' "
+          "and 'internal-svc'"
+      )
+  );
+  EXPECT_THAT(result.error(), Not(HasSubstr("on listener 'public'")));
+}
+
+TEST(ResolveConfig, DuplicateRuleOnSeveralSharedListenersReportedOnce) {
+  auto cfg = makeMinimalInsecureConfig("public");
+  addInsecureListener(cfg, "internal", 9670);
+  cfg.services.value().at("default") = makeServiceOn({"public", "internal"});
+  cfg.services.value().emplace("other-svc", makeServiceOn({"public", "internal"}));
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_EQ(
+      countOccurrences(
+          result.error(),
+          "Duplicate (authority, path) combination on listeners 'public', 'internal'"
+      ),
+      1u
+  );
+  EXPECT_THAT(result.error(), Not(HasSubstr("on listener '")));
+}
+
+TEST(ResolveConfig, DuplicateRuleWithinServiceRejectedOnce) {
+  auto cfg = makeMinimalInsecureConfig("public");
+  addInsecureListener(cfg, "internal", 9670);
+  auto& rules = cfg.services.value().at("default").match.value();
+  rules.push_back(rules[0]);
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_EQ(
+      countOccurrences(result.error(), "Duplicate (authority, path) combination in service"),
+      1u
+  );
+  EXPECT_THAT(result.error(), Not(HasSubstr("on listener")));
+}
+
+TEST(ResolveConfig, DuplicateRuleWithinUnboundServiceRejected) {
+  auto cfg = makeMinimalInsecureConfig("public");
+  auto unbound = makeServiceOn({});
+  unbound.match.value()[0].path = PMatch{ParsedServiceConfig::MatchRule::PrefixPath{"/other/"}};
+  unbound.match.value().push_back(unbound.match.value()[0]);
+  cfg.services.value().emplace("unbound", std::move(unbound));
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(
+      result.error(),
+      HasSubstr("Duplicate (authority, path) combination in service 'unbound'")
+  );
+}
+
+TEST(ResolveConfig, PicoPathWarningsScopedToBoundServices) {
+  // The pico listener only serves the exact-path service, so the prefix-path
+  // service bound elsewhere must not trigger a pico warning.
+  auto cfg = makeMinimalPicoConfig();
+  addInsecureListener(cfg, "mvfst", 9670);
+  const auto picoName = cfg.listeners.value()[0].name.value();
+  cfg.services.value().at("default") = makeServiceOn({"mvfst"});
+
+  auto exact = makeServiceOn({picoName});
+  exact.match.value()[0].path = PMatch{ParsedServiceConfig::MatchRule::ExactPath{"/moq-relay"}};
+  cfg.services.value().emplace("exact-svc", std::move(exact));
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue()) << result.error();
+  for (const auto& w : result.value().warnings) {
+    EXPECT_THAT(w, Not(HasSubstr("Picoquic listener")));
+  }
 }
 
 } // namespace
