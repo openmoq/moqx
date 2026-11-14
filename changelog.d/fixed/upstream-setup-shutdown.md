@@ -1,1 +1,0 @@
-- Stopping the relay while an [upstream](/docs/config.md#upstreams) connection was still in setup could use the freed connection and crash, or wait out the connect timeout.
