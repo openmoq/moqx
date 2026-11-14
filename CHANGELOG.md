@@ -27,7 +27,7 @@ Entries for the next release are in [changelog.d/](/changelog.d/README.md).
 
 ## Changed
 
-- `docker/setup-host.sh` installs the recommended UDP sysctls from [`scripts/host/99-moqx-quic.conf`](/scripts/host/99-moqx-quic.conf), the values `moqx-run.sh` checks for. Re-running it raises `rmem_default`/`wmem_default` from 1 MB to 4 MB, `netdev_max_backlog` from 10000 to 65536 and `optmem_max` from 64 KB to 1 MB, and sets `udp_rmem_min` to 256 KB. ([#910](https://github.com/openmoq/moqx/pull/910))
+- `docker/setup-host.sh` installs the recommended UDP sysctls from [`scripts/host/99-moqx-quic.conf`](/scripts/host/99-moqx-quic.conf), the values `moqx-run.sh` checks for. Re-running it sets `rmem_default`/`wmem_default` to 4 MB (was 1 MB), `netdev_max_backlog` to 65536 (was 10000), `optmem_max` to 1 MB (was 64 KB) and `udp_rmem_min` to 256 KB. These replace the host's current values, even higher ones. ([#910](https://github.com/openmoq/moqx/pull/910))
 
 ## Deprecated
 
