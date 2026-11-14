@@ -1,1 +1,0 @@
-- [`mvfst.adaptive_loss_time_threshold`](/docs/config.md#mvfst-settings) raises the loss time threshold after spurious losses. On a subscriber's path with delay jitter or reordering, this can cut throughput reductions caused by losses that were not real. It is off by default.

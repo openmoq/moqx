@@ -1,1 +1,0 @@
-- **Breaking:** the config [load](/docs/config.md#top-level-structure) fails on a repeated key within a YAML mapping, such as two services with the same name, and on an empty or repeated listener name.
