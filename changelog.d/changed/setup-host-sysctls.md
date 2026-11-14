@@ -1,1 +1,0 @@
-- `docker/setup-host.sh` installs the recommended UDP sysctls from [`scripts/host/99-moqx-quic.conf`](/scripts/host/99-moqx-quic.conf), the values `moqx-run.sh` checks for. Re-running it raises `rmem_default`/`wmem_default` from 1 MB to 4 MB, `netdev_max_backlog` from 10000 to 65536 and `optmem_max` from 64 KB to 1 MB, and sets `udp_rmem_min` to 256 KB.

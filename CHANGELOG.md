@@ -11,6 +11,52 @@ How to add an entry: see [CONTRIBUTING.md](/CONTRIBUTING.md#changelog).
 
 Entries for the next release are in [changelog.d/](/changelog.d/README.md).
 
+[0.3.8] - 2026-11-14
+====================
+
+- **Breaking:** TRACK_FILTER is now the [Top Tracks Filter](https://github.com/moq-wg/moq-transport/pull/1981), with parameter 0x31. From draft 18 it is carried on SUBSCRIBE_TRACKS, so update clients along with the relay.
+- **Breaking:** the config load fails on a repeated YAML key, such as two services with the same name, and on an empty or repeated listener name.
+- [`listeners`](/docs/config.md#listeners) is now a map keyed by name, and [`services.<name>.listeners`](/docs/config.md#listener-binding) makes a service available on only the listeners it names. The list form still works but is deprecated.
+- The `linux-arm64` tarball and the arm64 image are profile-guided and link-time optimized, as `linux-amd64` has been since 0.3.7. See [PGO and LTO](/BUILD.md#pgo-and-lto).
+- Releases no longer include a macOS tarball. On macOS, [build from source](/BUILD.md#build).
+- Stability: fixes for crashes at shutdown, an abort on concurrent upstream FETCHes, sessions used off their own thread, WebTransport sessions closing after 60 s idle, and qmux listeners that could not load a PKCS#12 bundle.
+
+## Added
+
+- [Host and relay tuning guide](/docs/tuning.md) and [`scripts/host-check.sh`](/scripts/host-check.sh), a read-only report of the UDP sysctls, limits, jemalloc and NIC settings on a host or a running relay. `host-check.sh --strict` exits 1 if a sysctl is below the recommended value. Each perf-test run also tries to save the report for both VMs in `run-*.host.txt`; a failed check doesn't stop the run. ([#910](https://github.com/openmoq/moqx/pull/910))
+- A release cut with `optimize` also profile-guides and link-time optimizes the `linux-arm64` tarball and the arm64 image, so Graviton and Ampere hosts get the optimized relay. See [PGO and LTO](/BUILD.md#pgo-and-lto). ([#914](https://github.com/openmoq/moqx/pull/914))
+- Config: [`services.<name>.listeners`](/docs/config.md#listener-binding) makes a service available on only the listeners it names. ([#926](https://github.com/openmoq/moqx/pull/926))
+- [`mvfst.adaptive_loss_time_threshold`](/docs/config.md#mvfst-settings) raises the loss time threshold after spurious losses. On a subscriber's path with delay jitter or reordering, this can cut throughput reductions caused by losses that were not real. It is off by default. ([#985](https://github.com/openmoq/moqx/pull/985))
+
+## Changed
+
+- `docker/setup-host.sh` installs the recommended UDP sysctls from [`scripts/host/99-moqx-quic.conf`](/scripts/host/99-moqx-quic.conf), the values `moqx-run.sh` checks for. Re-running it raises `rmem_default`/`wmem_default` from 1 MB to 4 MB, `netdev_max_backlog` from 10000 to 65536 and `optmem_max` from 64 KB to 1 MB, and sets `udp_rmem_min` to 256 KB. ([#910](https://github.com/openmoq/moqx/pull/910))
+- Config: [`listeners`](/docs/config.md#listeners) is now a map keyed by listener name. ([#923](https://github.com/openmoq/moqx/pull/923))
+- **Breaking:** TRACK_FILTER is now the Top Tracks Filter from [moq-transport#1981](https://github.com/moq-wg/moq-transport/pull/1981): parameter 0x31 instead of 0x30, carried on SUBSCRIBE_TRACKS instead of SUBSCRIBE_NAMESPACE from draft 18, and capped by the relay's MAX_TOP_TRACKS of 100, so update clients along with the relay. ([#984](https://github.com/openmoq/moqx/pull/984))
+
+## Deprecated
+
+- Config: the list form of [`listeners`](/docs/config.md#listeners) is still supported but deprecated: it warns at startup, and `--strict_config` rejects it. ([#923](https://github.com/openmoq/moqx/pull/923))
+
+## Removed
+
+- Releases no longer include `moqx-macos-15-arm64.tar.gz`. On macOS, build from source: see [Build](/BUILD.md#build). ([#979](https://github.com/openmoq/moqx/pull/979))
+
+## Fixed
+
+- A WebTransport session on an mvfst listener no longer closes after 60 s of inactivity. [`mvfst.h3_txn_timeout_ms`](/docs/config.md#listeners) sets an idle timeout; 0 (the default) disables it. ([#882](https://github.com/openmoq/moqx/pull/882))
+- With `use_local_forwarders`, a subscriber could miss a track's last objects after the publisher's PUBLISH_DONE, and its stream was reset instead of ending normally. ([#912](https://github.com/openmoq/moqx/pull/912))
+- The relay could abort when two upstream FETCHes for the same track started at the same location. ([#913](https://github.com/openmoq/moqx/pull/913))
+- **Breaking:** the config [load](/docs/config.md#top-level-structure) fails on a repeated key within a YAML mapping, such as two services with the same name, and on an empty or repeated listener name. ([#923](https://github.com/openmoq/moqx/pull/923), [#926](https://github.com/openmoq/moqx/pull/926))
+- With `use_relay_thread` or `use_local_forwarders`, the relay could destroy a session, or call into it, off the session's own thread. ([#937](https://github.com/openmoq/moqx/pull/937))
+- Stopping the relay while an [upstream](/docs/config.md#upstreams) connection was still in setup could use the freed connection and crash, or wait out the connect timeout. ([#939](https://github.com/openmoq/moqx/pull/939))
+- When a session closed while the relay was registering its SUBSCRIBE_NAMESPACE or SUBSCRIBE_TRACKS, the relay kept sending to the closed session and could crash at shutdown. ([#956](https://github.com/openmoq/moqx/pull/956))
+- A [`quic_stack: proxygen_qmux`](/docs/config.md#listeners) listener with `tls.pkcs12_file` failed to start with "no certificates read"; it now loads the bundle, and a failed PEM cert/key load names the files. ([#978](https://github.com/openmoq/moqx/pull/978))
+
+## Dependencies
+
+- moxygen [v0.3.8](https://github.com/openmoq/moxygen/releases/tag/v0.3.8)
+
 [0.3.7] - 2026-10-31
 ====================
 

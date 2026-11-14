@@ -1,1 +1,0 @@
-- A release cut with `optimize` also profile-guides and link-time optimizes the `linux-arm64` tarball and the arm64 image, so Graviton and Ampere hosts get the optimized relay. See [PGO and LTO](/BUILD.md#pgo-and-lto).

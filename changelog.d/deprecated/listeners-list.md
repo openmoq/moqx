@@ -1,1 +1,0 @@
-- Config: the list form of [`listeners`](/docs/config.md#listeners) is still supported but deprecated: it warns at startup, and `--strict_config` rejects it.
