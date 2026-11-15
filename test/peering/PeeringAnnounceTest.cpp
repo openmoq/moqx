@@ -68,8 +68,10 @@ public:
   std::vector<FullTrackName> unsubscribed;
 };
 
-std::shared_ptr<MoqPeeringParticipant>
-makePeering(const std::shared_ptr<MoqxRelay>& relay, std::shared_ptr<RecordingAnnouncer> announcer) {
+std::shared_ptr<MoqPeeringParticipant> makePeering(
+    const std::shared_ptr<MoqxRelay>& relay,
+    std::shared_ptr<RecordingAnnouncer> announcer
+) {
   auto participant = std::make_shared<MoqPeeringParticipant>(std::move(announcer), relay);
   participant->attach();
   return participant;
@@ -163,17 +165,99 @@ TEST_P(MoQRelayTest, PeeringInjectsNamespaceAndTrack) {
     peering->onNamespace(kTestNamespace, true);
     peering->onTrack(kTestTrackName, true);
   });
-  bool cleared = false;
-  for (int i = 0; i < (relayEvb_ ? 20 : 1) && !cleared; ++i) {
-    if (relayEvb_) {
-      exec_->drive();
-    }
+  exec_->drive();
+  verifyOnRelayExec([&] {
+    EXPECT_TRUE(relay_->findNamespacePublisher(kTestNamespace).has_value());
+    auto track = relay_->findPublishState(kTestTrackName);
+    EXPECT_TRUE(track.publisher && *track.publisher == announcer->sessionId());
+  });
+}
+
+// The new publish is announced before the old one is withdrawn. The withdraw
+// must not remove the namespace or the track the new publish is using.
+TEST_P(MoQRelayTest, PeeringAnnounceBeforeWithdrawKeepsTrack) {
+  auto announcer = std::make_shared<RecordingAnnouncer>();
+  auto peering = makePeering(relay_, announcer);
+  ASSERT_TRUE(driveUntil([&] { return peering->ready(); }));
+  verifyOnRelayExec([&] {
+    peering->onNamespace(kTestNamespace, false);
+    peering->onTrack(kTestTrackName, false);
+  });
+  ASSERT_TRUE(driveUntil([&] {
+    bool published = false;
     verifyOnRelayExec([&] {
-      cleared = !relay_->findNamespacePublisher(kTestNamespace).has_value() &&
-                !relay_->findPublishState(kTestTrackName).publisher.has_value();
+      auto track = relay_->findPublishState(kTestTrackName);
+      published = track.publisher && *track.publisher == announcer->sessionId();
     });
-  }
-  EXPECT_TRUE(cleared);
+    return published;
+  }));
+
+  verifyOnRelayExec([&] {
+    peering->onNamespace(kTestNamespace, false);
+    peering->onTrack(kTestTrackName, false);
+    peering->onNamespace(kTestNamespace, true);
+    peering->onTrack(kTestTrackName, true);
+  });
+  exec_->drive();
+  verifyOnRelayExec([&] {
+    auto track = relay_->findPublishState(kTestTrackName);
+    EXPECT_TRUE(track.publisher && *track.publisher == announcer->sessionId());
+    EXPECT_TRUE(relay_->findNamespacePublisher(kTestNamespace).has_value());
+  });
+
+  auto subscriber = createMockSession();
+  auto mock = createMockConsumer();
+  auto mockSg = createMockSubgroupConsumer();
+  std::mutex gotMu;
+  std::string got;
+  EXPECT_CALL(*mock, beginSubgroup(9, 1, 4, testing::_))
+      .WillOnce(
+          testing::Return(
+              folly::makeExpected<MoQPublishError>(
+                  std::static_pointer_cast<SubgroupConsumer>(mockSg)
+              )
+          )
+      );
+  EXPECT_CALL(*mockSg, object(1, testing::_, testing::_, testing::_))
+      .WillOnce(testing::Invoke([&](uint64_t, Payload payload, Extensions, bool) {
+        std::string bytes;
+        if (payload && payload->computeChainDataLength() > 0) {
+          auto copy = payload->cloneCoalesced();
+          bytes.assign(reinterpret_cast<const char*>(copy->data()), copy->length());
+        }
+        std::lock_guard<std::mutex> lock(gotMu);
+        got = std::move(bytes);
+        return folly::makeExpected<MoQPublishError>(folly::unit);
+      }));
+  subscribeToTrack(subscriber, kTestTrackName, mock, RequestID(1));
+  ASSERT_TRUE(driveUntil([&] {
+    std::lock_guard<std::mutex> lock(announcer->mu);
+    return announcer->subscribed.size() == 1u;
+  }));
+
+  PeeringObject object;
+  object.group = 9;
+  object.subgroup = 1;
+  object.objectId = 1;
+  object.priority = 4;
+  object.payload = {'n', 'e', 'x', 't'};
+  PeeringSubgroupWriter writer(1);
+  auto encoded = writer.write(object, true);
+  ASSERT_TRUE(encoded.has_value());
+  PeeringStreamReader reader;
+  ASSERT_TRUE(reader.ingest(encoded->data(), encoded->size(), false));
+  auto events = reader.take();
+  verifyOnRelayExec([&] {
+    for (const auto& event : events) {
+      peering->acceptEvent(kTestTrackName, 40, event);
+    }
+  });
+  ASSERT_TRUE(driveUntil([&] {
+    std::lock_guard<std::mutex> lock(gotMu);
+    return got == "next";
+  }));
+  removeSession(subscriber);
+  exec_->drive();
 }
 
 // A subscriber can arrive once the peered namespace is published and before the
@@ -373,9 +457,11 @@ TEST_P(MoQRelayTest, PeeringUnsubscribeKeepsForwardingClient) {
   auto subscriber = createMockSession();
   auto mock = createMockConsumer();
   EXPECT_CALL(*mock, beginSubgroup(_, _, _, _))
-      .WillRepeatedly(Return(folly::makeExpected<MoQPublishError>(
-          std::static_pointer_cast<SubgroupConsumer>(createMockSubgroupConsumer())
-      )));
+      .WillRepeatedly(Return(
+          folly::makeExpected<MoQPublishError>(
+              std::static_pointer_cast<SubgroupConsumer>(createMockSubgroupConsumer())
+          )
+      ));
   bool forwarding = false;
   EXPECT_CALL(*handle, requestUpdateCalled(_)).WillRepeatedly([&](const RequestUpdate& update) {
     if (update.forward.has_value() && *update.forward) {
@@ -491,6 +577,229 @@ TEST_P(MoQRelayTest, PeeringDeliversObjectsToLocalSubscriber) {
   removeSession(subscriber);
 }
 
+// The peered publisher keeps the same subgroup after the local subscriber
+// leaves and comes back. The objects that arrived while nobody was listening
+// reset that subgroup, so the next object has to open it again.
+TEST_P(MoQRelayTest, PeeringResubscribeReceivesOpenSubgroup) {
+  auto announcer = std::make_shared<RecordingAnnouncer>();
+  auto peering = makePeering(relay_, announcer);
+  ASSERT_TRUE(driveUntil([&] { return peering->ready(); }));
+  verifyOnRelayExec([&] {
+    peering->onNamespace(kTestNamespace, false);
+    peering->onTrack(kTestTrackName, false);
+  });
+  bool published = false;
+  for (int i = 0; i < (relayEvb_ ? 20 : 1) && !published; ++i) {
+    if (relayEvb_) {
+      exec_->drive();
+    }
+    verifyOnRelayExec([&] {
+      auto track = relay_->findPublishState(kTestTrackName);
+      published = track.publisher && *track.publisher == announcer->sessionId();
+    });
+  }
+  ASSERT_TRUE(published);
+
+  auto subscriber = createMockSession();
+  auto mock = createMockConsumer();
+  auto mockSg = createMockSubgroupConsumer();
+  EXPECT_CALL(*mock, beginSubgroup(3, 1, 4, testing::_))
+      .WillOnce(
+          testing::Return(
+              folly::makeExpected<MoQPublishError>(
+                  std::static_pointer_cast<SubgroupConsumer>(mockSg)
+              )
+          )
+      );
+  EXPECT_CALL(*mockSg, object(testing::_, testing::_, testing::_, testing::_))
+      .WillRepeatedly(testing::Return(folly::makeExpected<MoQPublishError>(folly::unit)));
+  EXPECT_CALL(*mockSg, endOfSubgroup())
+      .WillRepeatedly(testing::Return(folly::makeExpected<MoQPublishError>(folly::unit)));
+  EXPECT_CALL(*mockSg, reset(testing::_)).WillRepeatedly(testing::Return());
+  subscribeToTrack(subscriber, kTestTrackName, mock, RequestID(1));
+  ASSERT_TRUE(driveUntil([&] {
+    std::lock_guard<std::mutex> lock(announcer->mu);
+    return announcer->subscribed.size() == 1u;
+  }));
+
+  PeeringSubgroupWriter writer(1);
+  PeeringStreamReader reader;
+  auto deliver = [&](uint64_t objectId, std::string bytes, bool start) {
+    PeeringObject object;
+    object.group = 3;
+    object.subgroup = 1;
+    object.objectId = objectId;
+    object.priority = 4;
+    object.payload.assign(bytes.begin(), bytes.end());
+    auto encoded = writer.write(object, start);
+    if (!encoded || !reader.ingest(encoded->data(), encoded->size(), false)) {
+      ADD_FAILURE() << "subgroup object did not encode";
+      return;
+    }
+    auto events = reader.take();
+    verifyOnRelayExec([&] {
+      for (const auto& event : events) {
+        peering->acceptEvent(kTestTrackName, 11, event);
+      }
+    });
+  };
+  deliver(8, "ping", true);
+  exec_->drive();
+
+  removeSession(subscriber);
+  ASSERT_TRUE(driveUntil([&] {
+    std::lock_guard<std::mutex> lock(announcer->mu);
+    return announcer->unsubscribed.size() == 1u;
+  }));
+  // One more object while nobody is forwarding. The relay drops the subgroup.
+  deliver(9, "gap", false);
+  exec_->drive();
+
+  auto again = createMockSession();
+  auto mockAgain = createMockConsumer();
+  auto sgAgain = createMockSubgroupConsumer();
+  std::mutex gotMu;
+  std::string got;
+  EXPECT_CALL(*mockAgain, beginSubgroup(3, 1, 4, testing::_))
+      .WillOnce(
+          testing::Return(
+              folly::makeExpected<MoQPublishError>(
+                  std::static_pointer_cast<SubgroupConsumer>(sgAgain)
+              )
+          )
+      );
+  EXPECT_CALL(*sgAgain, object(10, testing::_, testing::_, testing::_))
+      .WillOnce(testing::Invoke([&](uint64_t, Payload payload, Extensions, bool) {
+        std::string bytes;
+        if (payload && payload->computeChainDataLength() > 0) {
+          auto copy = payload->cloneCoalesced();
+          bytes.assign(reinterpret_cast<const char*>(copy->data()), copy->length());
+        }
+        std::lock_guard<std::mutex> lock(gotMu);
+        got = std::move(bytes);
+        return folly::makeExpected<MoQPublishError>(folly::unit);
+      }));
+  subscribeToTrack(again, kTestTrackName, mockAgain, RequestID(2));
+  ASSERT_TRUE(driveUntil([&] {
+    std::lock_guard<std::mutex> lock(announcer->mu);
+    return announcer->subscribed.size() == 2u;
+  }));
+  deliver(10, "pong", false);
+  ASSERT_TRUE(driveUntil([&] {
+    std::lock_guard<std::mutex> lock(gotMu);
+    return got.size() == 4u;
+  }));
+  {
+    std::lock_guard<std::mutex> lock(gotMu);
+    EXPECT_EQ(got, "pong");
+  }
+  removeSession(again);
+  exec_->drive();
+}
+
+// The publisher opens the subgroup again on a new stream. An object still
+// arriving on the previous stream must not open the subgroup over the new one.
+TEST_P(MoQRelayTest, PeeringOldStreamDoesNotResetNewSubgroup) {
+  auto announcer = std::make_shared<RecordingAnnouncer>();
+  auto peering = makePeering(relay_, announcer);
+  ASSERT_TRUE(driveUntil([&] { return peering->ready(); }));
+  verifyOnRelayExec([&] {
+    peering->onNamespace(kTestNamespace, false);
+    peering->onTrack(kTestTrackName, false);
+  });
+  bool published = false;
+  for (int i = 0; i < (relayEvb_ ? 20 : 1) && !published; ++i) {
+    if (relayEvb_) {
+      exec_->drive();
+    }
+    verifyOnRelayExec([&] {
+      auto track = relay_->findPublishState(kTestTrackName);
+      published = track.publisher && *track.publisher == announcer->sessionId();
+    });
+  }
+  ASSERT_TRUE(published);
+
+  auto subscriber = createMockSession();
+  auto mock = createMockConsumer();
+  auto mockSg = createMockSubgroupConsumer();
+  std::atomic<int> opened{0};
+  EXPECT_CALL(*mock, beginSubgroup(3, 1, 4, testing::_))
+      .WillRepeatedly(
+          testing::DoAll(
+              testing::InvokeWithoutArgs([&] { opened.fetch_add(1); }),
+              testing::Return(
+                  folly::makeExpected<MoQPublishError>(
+                      std::static_pointer_cast<SubgroupConsumer>(mockSg)
+                  )
+              )
+          )
+      );
+  std::mutex gotMu;
+  std::string got;
+  EXPECT_CALL(*mockSg, object(testing::_, testing::_, testing::_, testing::_))
+      .WillRepeatedly(testing::Invoke([&](uint64_t, Payload payload, Extensions, bool) {
+        std::string bytes;
+        if (payload && payload->computeChainDataLength() > 0) {
+          auto copy = payload->cloneCoalesced();
+          bytes.assign(reinterpret_cast<const char*>(copy->data()), copy->length());
+        }
+        std::lock_guard<std::mutex> lock(gotMu);
+        got = std::move(bytes);
+        return folly::makeExpected<MoQPublishError>(folly::unit);
+      }));
+  EXPECT_CALL(*mockSg, endOfSubgroup())
+      .WillRepeatedly(testing::Return(folly::makeExpected<MoQPublishError>(folly::unit)));
+  EXPECT_CALL(*mockSg, reset(testing::_)).WillRepeatedly(testing::Return());
+  subscribeToTrack(subscriber, kTestTrackName, mock, RequestID(1));
+  ASSERT_TRUE(driveUntil([&] {
+    std::lock_guard<std::mutex> lock(announcer->mu);
+    return announcer->subscribed.size() == 1u;
+  }));
+
+  auto deliver = [&](uint64_t streamId,
+                     PeeringSubgroupWriter& writer,
+                     PeeringStreamReader& reader,
+                     uint64_t objectId,
+                     std::string bytes,
+                     bool start) {
+    PeeringObject object;
+    object.group = 3;
+    object.subgroup = 1;
+    object.objectId = objectId;
+    object.priority = 4;
+    object.payload.assign(bytes.begin(), bytes.end());
+    auto encoded = writer.write(object, start);
+    if (!encoded || !reader.ingest(encoded->data(), encoded->size(), false)) {
+      ADD_FAILURE() << "subgroup object did not encode";
+      return;
+    }
+    auto events = reader.take();
+    verifyOnRelayExec([&] {
+      for (const auto& event : events) {
+        peering->acceptEvent(kTestTrackName, streamId, event);
+      }
+    });
+  };
+  PeeringSubgroupWriter firstWriter(1);
+  PeeringStreamReader firstReader;
+  PeeringSubgroupWriter nextWriter(1);
+  PeeringStreamReader nextReader;
+  deliver(11, firstWriter, firstReader, 1, "old1", true);
+  exec_->drive();
+  deliver(22, nextWriter, nextReader, 1, "new1", true);
+  ASSERT_TRUE(driveUntil([&] { return opened.load() == 2; }));
+  deliver(11, firstWriter, firstReader, 2, "late", false);
+  exec_->drive();
+  EXPECT_EQ(opened.load(), 2);
+  deliver(22, nextWriter, nextReader, 2, "live", false);
+  ASSERT_TRUE(driveUntil([&] {
+    std::lock_guard<std::mutex> lock(gotMu);
+    return got == "live";
+  }));
+  removeSession(subscriber);
+  exec_->drive();
+}
+
 // Data is still arriving when the last local subscriber disconnects. The open
 // subgroup must not hide forward=0, or the peered publisher keeps sending.
 TEST_P(MoQRelayTest, PeeringOpenSubgroupDisconnectUnpulls) {
@@ -518,14 +827,16 @@ TEST_P(MoQRelayTest, PeeringOpenSubgroupDisconnectUnpulls) {
   auto mockSg = createMockSubgroupConsumer();
   std::atomic<bool> opened{false};
   EXPECT_CALL(*mock, beginSubgroup(3, 1, 4, testing::_))
-      .WillOnce(testing::DoAll(
-          testing::InvokeWithoutArgs([&] { opened = true; }),
-          testing::Return(
-              folly::makeExpected<MoQPublishError>(
-                  std::static_pointer_cast<SubgroupConsumer>(mockSg)
+      .WillOnce(
+          testing::DoAll(
+              testing::InvokeWithoutArgs([&] { opened = true; }),
+              testing::Return(
+                  folly::makeExpected<MoQPublishError>(
+                      std::static_pointer_cast<SubgroupConsumer>(mockSg)
+                  )
               )
           )
-      ));
+      );
   subscribeToTrack(subscriber, kTestTrackName, mock, RequestID(1));
   ASSERT_TRUE(driveUntil([&] {
     std::lock_guard<std::mutex> lock(announcer->mu);

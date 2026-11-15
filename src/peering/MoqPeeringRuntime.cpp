@@ -169,13 +169,8 @@ class RelayDelegate : public moq::peering::Delegate {
 public:
   explicit RelayDelegate(RuntimeState* state) : state_(state) {}
 
-  void OnPeerUp(std::uint64_t sessionId) override {
-    emitLog(PeeringLogLevel::Info, "moq-peering session up id=" + std::to_string(sessionId));
-  }
-
-  void OnPeerDown(std::uint64_t sessionId) override {
-    emitLog(PeeringLogLevel::Info, "moq-peering session down id=" + std::to_string(sessionId));
-  }
+  void OnPeerUp(std::uint64_t sessionId) override;
+  void OnPeerDown(std::uint64_t sessionId) override;
 
   void OnPeerNamespace(const std::vector<std::vector<uint8_t>>& nameSpace, bool withdrawn) override;
 
@@ -211,6 +206,20 @@ struct RuntimeState {
 
   explicit RuntimeState(config::MoqPeeringConfig cfg) : config(std::move(cfg)), delegate(this) {}
 };
+
+void RelayDelegate::OnPeerUp(std::uint64_t sessionId) {
+  emitLog(PeeringLogLevel::Info, "moq-peering session up id=" + std::to_string(sessionId));
+  if (PeeringEvents* events = state_->events.load(std::memory_order_acquire)) {
+    events->onPeerUp(sessionId);
+  }
+}
+
+void RelayDelegate::OnPeerDown(std::uint64_t sessionId) {
+  emitLog(PeeringLogLevel::Info, "moq-peering session down id=" + std::to_string(sessionId));
+  if (PeeringEvents* events = state_->events.load(std::memory_order_acquire)) {
+    events->onPeerDown(sessionId);
+  }
+}
 
 void RelayDelegate::OnPeerNamespace(
     const std::vector<std::vector<uint8_t>>& nameSpace,

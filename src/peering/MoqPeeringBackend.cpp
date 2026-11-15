@@ -160,6 +160,8 @@ void MoqPeeringCore::detach(MoqxRelay& relay) {
       readers_.clear();
       peerSubs_.clear();
       pulls_.clear();
+      peerSessions_.clear();
+      restartStreams_ = false;
     }
   }
   if (gone) {
@@ -185,6 +187,8 @@ void MoqPeeringCore::disarm() {
     readers_.clear();
     peerSubs_.clear();
     pulls_.clear();
+    peerSessions_.clear();
+    restartStreams_ = false;
   }
   if (auto runtime = runtime_.lock()) {
     runtime->setEvents(nullptr);
@@ -302,9 +306,34 @@ void MoqPeeringCore::announceTrack(const moxygen::FullTrackName& ftn) {
 }
 
 void MoqPeeringCore::withdrawTrack(const moxygen::FullTrackName& ftn) {
-  if (auto runtime = runtime_.lock()) {
-    runtime->withdrawTrack(ftn.trackNamespace.trackNamespace, ftn.trackName);
+  auto runtime = runtime_.lock();
+  if (!runtime) {
+    return;
   }
+  // The replacement publish can reuse this group before the old subgroup
+  // closes. Drop the writer so the next object is a new stream, then withdraw.
+  std::vector<std::pair<uint64_t, uint64_t>> open;
+  if (auto hash = runtime->hashTrack(ftn.trackNamespace.trackNamespace, ftn.trackName)) {
+    std::lock_guard<std::mutex> lock(mu_);
+    for (auto it = writers_.begin(); it != writers_.end();) {
+      if (it->first.hash != *hash) {
+        ++it;
+        continue;
+      }
+      open.emplace_back(it->first.group, it->first.subgroup);
+      it = writers_.erase(it);
+    }
+  }
+  for (const auto& subgroup : open) {
+    runtime->endSubgroup(
+        ftn.trackNamespace.trackNamespace,
+        ftn.trackName,
+        subgroup.first,
+        subgroup.second,
+        true
+    );
+  }
+  runtime->withdrawTrack(ftn.trackNamespace.trackNamespace, ftn.trackName);
 }
 
 void MoqPeeringCore::sendObject(const moxygen::FullTrackName& ftn, PeeringObject object) {
@@ -329,6 +358,11 @@ void MoqPeeringCore::sendObject(const moxygen::FullTrackName& ftn, PeeringObject
       encoded = encodePeeringDatagram(*hash, object);
     } else {
       StreamKey key{*hash, object.group, object.subgroup};
+      // No live session owns the previous stream. Keep encoding this subgroup
+      // as a new stream until one is actually open again.
+      if (restartStreams_ || peerSessions_.empty()) {
+        writers_.erase(key);
+      }
       auto it = writers_.find(key);
       const bool start = it == writers_.end();
       if (start) {
@@ -345,6 +379,11 @@ void MoqPeeringCore::sendObject(const moxygen::FullTrackName& ftn, PeeringObject
       } else {
         kind = start ? peering::MoqPeeringRuntime::WireKind::NewStream
                      : peering::MoqPeeringRuntime::WireKind::ExistingStream;
+        if (start && peerSessions_.empty()) {
+          writers_.erase(key);
+        } else if (start) {
+          restartStreams_ = false;
+        }
         if (object.lastInGroup) {
           writers_.erase(key);
           finish = true;
@@ -447,6 +486,55 @@ void MoqPeeringCore::unsubscribeTrack(const moxygen::FullTrackName& ftn) {
     pulls_.erase(*hash);
   }
   runtime->unsubscribe(ftn.trackNamespace.trackNamespace, ftn.trackName);
+}
+
+void MoqPeeringCore::onPeerUp(uint64_t sessionId) {
+  if (sessionId == 0) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(mu_);
+  peerSessions_.insert(sessionId);
+}
+
+void MoqPeeringCore::onPeerDown(uint64_t sessionId) {
+  std::vector<std::pair<moxygen::FullTrackName, uint64_t>> open;
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (sessionId == 0) {
+      // The dialer drops the connection before the id can be read. With one
+      // session, that was the only peer. With several, the other sessions are
+      // still named and keep their streams.
+      if (peerSessions_.size() <= 1) {
+        peerSessions_.clear();
+      }
+    } else {
+      peerSessions_.erase(sessionId);
+    }
+    if (!peerSessions_.empty()) {
+      return;
+    }
+    // Every open subgroup belonged to a session that is gone. The next object
+    // on each one has to carry the subgroup header on a new stream.
+    restartStreams_ = true;
+    writers_.clear();
+    for (const auto& [key, reader] : readers_) {
+      (void)reader;
+      auto pull = pulls_.find(key.first);
+      if (pull != pulls_.end()) {
+        open.emplace_back(pull->second, key.second);
+      }
+    }
+    readers_.clear();
+  }
+  if (!open.empty()) {
+    XLOG(INFO) << "moq-peering closed " << open.size()
+               << " ingress streams after the last peer session";
+  }
+  for (const auto& [ftn, streamId] : open) {
+    dispatch([ftn, streamId](MoqPeeringParticipant& participant) {
+      participant.finishIngress(ftn, streamId, true);
+    });
+  }
 }
 
 void MoqPeeringCore::onNamespace(std::vector<std::string> nameSpace, bool withdrawn) {

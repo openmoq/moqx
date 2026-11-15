@@ -97,6 +97,11 @@ public:
       std::vector<uint8_t> /*bytes*/
   ) {}
   virtual void onStreamClosed(uint64_t /*trackHash*/, uint64_t /*streamId*/, bool /*reset*/) {}
+
+  // A peering session connected or closed. sessionId is 0 when the dialer has
+  // already dropped the connection and the id can no longer be read.
+  virtual void onPeerUp(uint64_t /*sessionId*/) {}
+  virtual void onPeerDown(uint64_t /*sessionId*/) {}
 };
 
 class MOQX_PEERING_EXPORT MoqPeeringRuntime {

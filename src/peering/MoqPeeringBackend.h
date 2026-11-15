@@ -19,6 +19,7 @@
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -86,6 +87,8 @@ public:
       std::vector<uint8_t> bytes
   ) override;
   void onStreamClosed(uint64_t trackHash, uint64_t streamId, bool reset) override;
+  void onPeerUp(uint64_t sessionId) override;
+  void onPeerDown(uint64_t sessionId) override;
 
 private:
   void dispatch(std::function<void(MoqPeeringParticipant&)> fn);
@@ -107,6 +110,10 @@ private:
   std::map<StreamKey, std::unique_ptr<PeeringSubgroupWriter>> writers_;
   std::map<std::pair<uint64_t, uint64_t>, std::unique_ptr<PeeringStreamReader>> readers_;
   bool armed_{false};
+  // Session ids that have reached connected. Empty means the next subgroup
+  // object has to open a new stream: the previous one died with the session.
+  std::unordered_set<uint64_t> peerSessions_;
+  bool restartStreams_{false};
 };
 
 // The PeeringBackend installed for each service when the process selected moq-peering.

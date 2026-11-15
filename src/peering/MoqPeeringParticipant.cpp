@@ -48,10 +48,8 @@ std::optional<std::vector<uint8_t>> copyPayload(const moxygen::Payload& payload)
   return std::vector<uint8_t>(data, data + copy->length());
 }
 
-folly::coro::Task<void> updateEgress(
-    std::shared_ptr<moxygen::SubscriptionHandle> handle,
-    moxygen::RequestUpdate update
-) {
+folly::coro::Task<void>
+updateEgress(std::shared_ptr<moxygen::SubscriptionHandle> handle, moxygen::RequestUpdate update) {
   co_await handle->requestUpdate(std::move(update));
 }
 
@@ -161,7 +159,9 @@ public:
     co_return moxygen::RequestOk{.requestID = update.requestID};
   }
 
-  void setConsumer(std::shared_ptr<moxygen::TrackConsumer> consumer) { consumer_ = std::move(consumer); }
+  void setConsumer(std::shared_ptr<moxygen::TrackConsumer> consumer) {
+    consumer_ = std::move(consumer);
+  }
 
 private:
   std::weak_ptr<MoqPeeringParticipant> owner_;
@@ -188,7 +188,13 @@ public:
       moxygen::Extensions extensions = moxygen::noExtensions(),
       bool finSubgroup = false
   ) override {
-    send(objectID, static_cast<uint8_t>(moxygen::ObjectStatus::NORMAL), finSubgroup, payload, extensions);
+    send(
+        objectID,
+        static_cast<uint8_t>(moxygen::ObjectStatus::NORMAL),
+        finSubgroup,
+        payload,
+        extensions
+    );
     if (finSubgroup) {
       end(false);
     }
@@ -366,15 +372,19 @@ public:
     return folly::makeSemiFuture(folly::unit);
   }
 
-  folly::Expected<folly::Unit, moxygen::MoQPublishError>
-  objectStream(const moxygen::ObjectHeader& header, moxygen::Payload payload, bool lastInGroup = false)
-      override {
+  folly::Expected<folly::Unit, moxygen::MoQPublishError> objectStream(
+      const moxygen::ObjectHeader& header,
+      moxygen::Payload payload,
+      bool lastInGroup = false
+  ) override {
     return send(header, std::move(payload), lastInGroup, false);
   }
 
-  folly::Expected<folly::Unit, moxygen::MoQPublishError>
-  datagram(const moxygen::ObjectHeader& header, moxygen::Payload payload, bool lastInGroup = false)
-      override {
+  folly::Expected<folly::Unit, moxygen::MoQPublishError> datagram(
+      const moxygen::ObjectHeader& header,
+      moxygen::Payload payload,
+      bool lastInGroup = false
+  ) override {
     return send(header, std::move(payload), lastInGroup, true);
   }
 
@@ -539,7 +549,9 @@ folly::coro::Task<void> MoqPeeringParticipant::attachOnRelay() {
 
 void MoqPeeringParticipant::onNamespace(moxygen::TrackNamespace ns, bool withdrawn) {
   if (withdrawn) {
-    withdrawPeerNamespace(ns);
+    // A replacement namespace is announced before this withdraw, and peering
+    // drops that announce while this one is still installed. Leave the
+    // namespace in place so subscribers can still resolve the tracks.
     return;
   }
   spawn(publishPeerNamespace(std::move(ns)));
@@ -547,7 +559,9 @@ void MoqPeeringParticipant::onNamespace(moxygen::TrackNamespace ns, bool withdra
 
 void MoqPeeringParticipant::onTrack(moxygen::FullTrackName ftn, bool withdrawn) {
   if (withdrawn) {
-    endPeerTrack(ftn);
+    // Same race as the namespace. Ending the publish here drops the track the
+    // replacement announce already lost, and reconnect has nothing to receive.
+    closePeerIngressStreams(ftn);
     return;
   }
   spawn(publishPeerTrack(std::move(ftn)));
@@ -611,8 +625,7 @@ folly::coro::Task<void> MoqPeeringParticipant::publishPeerTrack(moxygen::FullTra
   pub.forward = true;
   pub.groupOrder = moxygen::GroupOrder::OldestFirst;
   auto handle = std::make_shared<PeeringIngressHandle>(weak_from_this(), ftn, pub.requestID);
-  auto published =
-      relay->createSubscriberFilter()->publish(std::move(pub), std::move(handle));
+  auto published = relay->createSubscriberFilter()->publish(std::move(pub), std::move(handle));
   if (published.hasError()) {
     if (published.error().reasonPhrase == kTrackAlreadyServed) {
       // A local subscribe already pulled this track. Keep that subscription.
@@ -658,13 +671,11 @@ void MoqPeeringParticipant::withdrawPeerNamespace(const moxygen::TrackNamespace&
   peerNamespaces_.erase(it);
 }
 
-void MoqPeeringParticipant::endPeerTrack(const moxygen::FullTrackName& ftn) {
-  originated_.erase(ftn);
-  unpull(ftn);
+void MoqPeeringParticipant::closePeerIngressStreams(const moxygen::FullTrackName& ftn) {
   auto streams = ingressStreams_.begin();
   while (streams != ingressStreams_.end()) {
     if (streams->first.first == ftn) {
-      for (const auto& consumer : streams->second) {
+      for (const auto& consumer : streams->second.consumers) {
         if (consumer) {
           consumer->reset(moxygen::ResetStreamErrorCode::CANCELLED);
         }
@@ -674,26 +685,7 @@ void MoqPeeringParticipant::endPeerTrack(const moxygen::FullTrackName& ftn) {
       ++streams;
     }
   }
-  auto it = ingress_.find(ftn);
-  if (it == ingress_.end()) {
-    return;
-  }
-  auto consumer = std::move(it->second);
-  ingress_.erase(it);
-  if (!consumer) {
-    return;
-  }
-  auto done = consumer->publishDone(
-      moxygen::PublishDone{
-          .requestID = moxygen::RequestID(0),
-          .statusCode = moxygen::PublishDoneStatusCode::TRACK_ENDED,
-          .streamCount = 0,
-          .reasonPhrase = "peering withdraw"
-      }
-  );
-  if (done.hasError()) {
-    XLOG(DBG1) << "moq-peering track withdraw failed ftn=" << safeName(ftn);
-  }
+  ingressGeneration_.erase(ftn);
 }
 
 void MoqPeeringParticipant::onSubscribe(const moxygen::FullTrackName& ftn) {
@@ -735,7 +727,10 @@ void MoqPeeringParticipant::setEgressForward(const moxygen::FullTrackName& ftn, 
   spawn(updateEgress(std::move(handle), std::move(update)));
 }
 
-void MoqPeeringParticipant::sendLocalObject(const moxygen::FullTrackName& ftn, PeeringObject object) {
+void MoqPeeringParticipant::sendLocalObject(
+    const moxygen::FullTrackName& ftn,
+    PeeringObject object
+) {
   if (object.payload.size() > kMaxPeeringPayload) {
     XLOG(WARNING) << "moq-peering dropped an object larger than 1MiB";
     return;
@@ -864,18 +859,20 @@ moxygen::Subscriber::PublishResult MoqPeeringParticipant::publish(
   auto consumer = std::make_shared<PeeringEgressTrack>(weak_from_this(), pub.fullTrackName);
   return moxygen::Subscriber::PublishConsumerAndReplyTask{
       std::move(consumer),
-      folly::coro::co_invoke([self = std::move(self), ftn = std::move(ftn), requestID]() mutable
-                             -> folly::coro::Task<folly::Expected<moxygen::PublishOk, moxygen::PublishError>> {
-        moxygen::PublishOk ok;
-        ok.requestID = requestID;
-        ok.forward = false;
-        if (auto owner = self.lock()) {
-          if (auto it = owner->egressForward_.find(ftn); it != owner->egressForward_.end()) {
-            ok.forward = it->second;
+      folly::coro::co_invoke(
+          [self = std::move(self), ftn = std::move(ftn), requestID]() mutable
+              -> folly::coro::Task<folly::Expected<moxygen::PublishOk, moxygen::PublishError>> {
+            moxygen::PublishOk ok;
+            ok.requestID = requestID;
+            ok.forward = false;
+            if (auto owner = self.lock()) {
+              if (auto it = owner->egressForward_.find(ftn); it != owner->egressForward_.end()) {
+                ok.forward = it->second;
+              }
+            }
+            co_return folly::Expected<moxygen::PublishOk, moxygen::PublishError>(std::move(ok));
           }
-        }
-        co_return folly::Expected<moxygen::PublishOk, moxygen::PublishError>(std::move(ok));
-      }),
+      ),
       true
   };
 }
@@ -896,7 +893,10 @@ MoqPeeringParticipant::ingressTargets(const moxygen::FullTrackName& ftn) const {
   return targets;
 }
 
-void MoqPeeringParticipant::writeObject(const moxygen::FullTrackName& ftn, const PeeringObject& object) {
+void MoqPeeringParticipant::writeObject(
+    const moxygen::FullTrackName& ftn,
+    const PeeringObject& object
+) {
   if (object.payload.size() > kMaxPeeringPayload) {
     XLOG(WARNING) << "moq-peering dropped an object larger than 1MiB";
     return;
@@ -924,6 +924,46 @@ void MoqPeeringParticipant::deliverObject(
   writeObject(ftn, object);
 }
 
+bool MoqPeeringParticipant::openIngressSubgroup(
+    const moxygen::FullTrackName& ftn,
+    uint64_t streamId,
+    uint64_t objectId,
+    bool firstObject
+) {
+  const auto key = std::make_pair(ftn, streamId);
+  auto it = ingressStreams_.find(key);
+  if (it == ingressStreams_.end()) {
+    return false;
+  }
+  const auto group = it->second.group;
+  const auto subgroup = it->second.subgroup;
+  const auto priority = it->second.priority;
+  auto options = it->second.options;
+  // A continuation must not claim it starts at the first object. The first
+  // object of a stream that has not delivered anything yet keeps the header.
+  if (!firstObject) {
+    options.beginsWithFirstObject = false;
+    if (options.subgroupIDFormat == moxygen::SubgroupIDFormat::FirstObject &&
+        objectId != subgroup) {
+      options.subgroupIDFormat = moxygen::SubgroupIDFormat::Present;
+    }
+  }
+  std::vector<std::shared_ptr<moxygen::SubgroupConsumer>> opened;
+  for (const auto& track : ingressTargets(ftn)) {
+    auto begun = track->beginSubgroup(group, subgroup, priority, options);
+    if (!begun) {
+      continue;
+    }
+    opened.push_back(std::move(begun.value()));
+  }
+  it = ingressStreams_.find(key);
+  if (it == ingressStreams_.end()) {
+    return false;
+  }
+  it->second.consumers = std::move(opened);
+  return !it->second.consumers.empty();
+}
+
 void MoqPeeringParticipant::acceptEvent(
     const moxygen::FullTrackName& ftn,
     uint64_t streamId,
@@ -940,7 +980,12 @@ void MoqPeeringParticipant::acceptEvent(
     options.subgroupIDFormat = event.options.subgroupIDFormat;
     options.containsLastInGroup = event.options.hasEndOfGroup;
     options.beginsWithFirstObject = event.options.beginsWithFirstObject;
-    std::vector<std::shared_ptr<moxygen::SubgroupConsumer>> opened;
+    IngressSubgroup stream;
+    stream.group = event.object.group;
+    stream.subgroup = event.object.subgroup;
+    stream.priority = event.object.priority;
+    stream.options = options;
+    stream.generation = ++ingressGeneration_[ftn];
     for (const auto& track : ingressTargets(ftn)) {
       auto subgroup = track->beginSubgroup(
           event.object.group,
@@ -952,11 +997,11 @@ void MoqPeeringParticipant::acceptEvent(
         XLOG(DBG1) << "moq-peering subgroup not opened ftn=" << safeName(ftn);
         continue;
       }
-      opened.push_back(std::move(subgroup.value()));
+      stream.consumers.push_back(std::move(subgroup.value()));
     }
-    if (!opened.empty()) {
-      ingressStreams_[key] = std::move(opened);
-    }
+    // Keep the header even when nobody is listening. The next subscriber joins
+    // this subgroup, and the following object has to be able to open it.
+    ingressStreams_[key] = std::move(stream);
     return;
   }
 
@@ -966,18 +1011,15 @@ void MoqPeeringParticipant::acceptEvent(
   }
   auto payload = folly::IOBuf::copyBuffer(event.object.payload.data(), event.object.payload.size());
   const auto status = static_cast<moxygen::ObjectStatus>(event.object.status);
-  bool closed = false;
-  for (const auto& consumer : streams->second) {
+  auto deliver = [&](const std::shared_ptr<moxygen::SubgroupConsumer>& consumer) {
     if (!consumer) {
-      continue;
+      return false;
     }
     folly::Expected<folly::Unit, moxygen::MoQPublishError> result = folly::unit;
     if (status == moxygen::ObjectStatus::END_OF_GROUP) {
       result = consumer->endOfGroup(event.object.objectId);
-      closed = true;
     } else if (status == moxygen::ObjectStatus::END_OF_TRACK) {
       result = consumer->endOfTrackAndGroup(event.object.objectId);
-      closed = true;
     } else {
       result = consumer->object(
           event.object.objectId,
@@ -985,19 +1027,43 @@ void MoqPeeringParticipant::acceptEvent(
           event.object.extensions,
           event.fin
       );
-      if (event.fin) {
-        auto ended = consumer->endOfSubgroup();
-        if (ended.hasError() && result.hasValue()) {
-          result = ended;
-        }
-        closed = true;
+      if (event.fin && result.hasValue()) {
+        result = consumer->endOfSubgroup();
       }
     }
-    if (result.hasError()) {
-      XLOG(DBG1) << "moq-peering object not delivered ftn=" << safeName(ftn);
+    return result.hasValue();
+  };
+  bool delivered = false;
+  for (const auto& consumer : streams->second.consumers) {
+    delivered = deliver(consumer) || delivered;
+  }
+  // Forwarding stopped while this subgroup was open, and the relay reset it.
+  // The peer is still writing the same stream. Open it again for whoever is
+  // listening now. A newer subgroup header means the publisher moved on, and
+  // reopening this stream would reset that subscriber.
+  const auto generation = ingressGeneration_.find(ftn);
+  const bool current =
+      generation != ingressGeneration_.end() && streams->second.generation == generation->second;
+  if (!delivered && current &&
+      openIngressSubgroup(ftn, streamId, event.object.objectId, !streams->second.delivered)) {
+    streams = ingressStreams_.find(key);
+    if (streams != ingressStreams_.end()) {
+      for (const auto& consumer : streams->second.consumers) {
+        delivered = deliver(consumer) || delivered;
+      }
     }
   }
-  if (closed) {
+  if (delivered) {
+    streams = ingressStreams_.find(key);
+    if (streams != ingressStreams_.end()) {
+      streams->second.delivered = true;
+    }
+  }
+  if (!delivered) {
+    XLOG(DBG1) << "moq-peering object not delivered ftn=" << safeName(ftn);
+  }
+  if (delivered && (event.fin || status == moxygen::ObjectStatus::END_OF_GROUP ||
+                    status == moxygen::ObjectStatus::END_OF_TRACK)) {
     ingressStreams_.erase(key);
   }
 }
@@ -1011,7 +1077,7 @@ void MoqPeeringParticipant::finishIngress(
   if (it == ingressStreams_.end()) {
     return;
   }
-  auto consumers = std::move(it->second);
+  auto consumers = std::move(it->second.consumers);
   ingressStreams_.erase(it);
   for (const auto& consumer : consumers) {
     if (!consumer) {

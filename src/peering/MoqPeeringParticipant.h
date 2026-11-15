@@ -67,10 +67,8 @@ public:
       std::shared_ptr<moxygen::TrackConsumer> callback
   ) override;
 
-  PublishResult publish(
-      moxygen::PublishRequest pub,
-      std::shared_ptr<SubscriptionHandle> handle
-  ) override;
+  PublishResult
+  publish(moxygen::PublishRequest pub, std::shared_ptr<SubscriptionHandle> handle) override;
 
 private:
   struct PeerNamespace {
@@ -83,7 +81,9 @@ private:
   folly::coro::Task<void> publishPeerNamespace(moxygen::TrackNamespace ns);
   folly::coro::Task<void> publishPeerTrack(moxygen::FullTrackName ftn);
   void withdrawPeerNamespace(const moxygen::TrackNamespace& ns);
-  void endPeerTrack(const moxygen::FullTrackName& ftn);
+  // Closes subgroups for a withdrawn track without removing the publish. The
+  // replacement announce can be dropped while the old one is still installed.
+  void closePeerIngressStreams(const moxygen::FullTrackName& ftn);
 
   void pull(const moxygen::FullTrackName& ftn);
   void unpull(const moxygen::FullTrackName& ftn);
@@ -104,6 +104,14 @@ private:
   std::vector<std::shared_ptr<moxygen::TrackConsumer>>
   ingressTargets(const moxygen::FullTrackName& ftn) const;
   void writeObject(const moxygen::FullTrackName& ftn, const PeeringObject& object);
+  // Opens the subgroup on every ingress consumer. beginsWithFirstObject is cleared
+  // when the object is not the first, so a reopened stream does not claim object 0.
+  bool openIngressSubgroup(
+      const moxygen::FullTrackName& ftn,
+      uint64_t streamId,
+      uint64_t objectId,
+      bool firstObject
+  );
 
   Participant asParticipant() const;
 
@@ -124,10 +132,21 @@ private:
   std::map<moxygen::FullTrackName, std::shared_ptr<moxygen::TrackConsumer>> ingress_;
   std::map<moxygen::FullTrackName, std::vector<std::shared_ptr<moxygen::TrackConsumer>>>
       pullConsumers_;
-  std::map<
-      std::pair<moxygen::FullTrackName, uint64_t>,
-      std::vector<std::shared_ptr<moxygen::SubgroupConsumer>>>
-      ingressStreams_;
+  // group, subgroup, and header options stay after the consumers are reset.
+  // A subscriber that returns mid-subgroup needs them to open the stream again.
+  struct IngressSubgroup {
+    uint64_t group{0};
+    uint64_t subgroup{0};
+    uint8_t priority{0};
+    // Header order for this track. An older stream must not open the subgroup
+    // again after a newer one has started, or it resets the subscriber.
+    uint64_t generation{0};
+    bool delivered{false};
+    moxygen::BeginSubgroupOptions options{};
+    std::vector<std::shared_ptr<moxygen::SubgroupConsumer>> consumers;
+  };
+  std::map<std::pair<moxygen::FullTrackName, uint64_t>, IngressSubgroup> ingressStreams_;
+  std::map<moxygen::FullTrackName, uint64_t> ingressGeneration_;
   std::set<moxygen::FullTrackName> originated_;
   std::set<moxygen::FullTrackName> pulled_;
 
