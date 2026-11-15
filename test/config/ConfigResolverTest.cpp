@@ -1082,7 +1082,7 @@ TEST(ResolveConfig, FullTls) {
   tls.insecure = false;
   lc.tls = std::move(tls);
   lc.endpoint = std::string("/relay");
-  lc.moqt_versions = std::vector<uint32_t>{16, 18};
+  lc.moqt_versions = std::vector<uint32_t>{16, 18, 22};
   cfg.listeners.value().push_back(std::move(lc));
   cfg.services.value().emplace("default", makeDefaultService());
   cfg.service_defaults = std::optional<ParsedServiceDefaultsConfig>{makeServiceDefaults()};
@@ -1095,7 +1095,7 @@ TEST(ResolveConfig, FullTls) {
   EXPECT_EQ(resolved.listeners[0].name, "production");
   EXPECT_EQ(resolved.listeners[0].address.getPort(), 4443);
   EXPECT_EQ(resolved.listeners[0].endpoint, "/relay");
-  EXPECT_EQ(resolved.listeners[0].moqtVersions, "16,18");
+  EXPECT_EQ(resolved.listeners[0].moqtVersions, "16,18,22");
 
   ASSERT_TRUE(std::holds_alternative<TlsConfig>(resolved.listeners[0].tlsMode));
   const auto& creds = std::get<TlsConfig>(resolved.listeners[0].tlsMode);
@@ -1339,14 +1339,24 @@ TEST(ResolveConfig, VersionsPopulated) {
   EXPECT_EQ(result.value().config.listeners[0].moqtVersions, "18");
 }
 
+TEST(ResolveConfig, VersionsWithDraft22) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.listeners.value()[0].moqt_versions = std::vector<uint32_t>{16, 18, 22};
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  EXPECT_EQ(result.value().config.listeners[0].moqtVersions, "16,18,22");
+}
+
 TEST(ResolveConfig, VersionsOutsideSupportedSetRejected) {
   auto cfg = makeMinimalInsecureConfig();
-  cfg.listeners.value()[0].moqt_versions = std::vector<uint32_t>{14, 16, 17};
+  cfg.listeners.value()[0].moqt_versions = std::vector<uint32_t>{14, 16, 17, 21, 22};
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasError());
   EXPECT_THAT(result.error(), HasSubstr("moqt_versions entry 14"));
   EXPECT_THAT(result.error(), HasSubstr("moqt_versions entry 17"));
+  EXPECT_THAT(result.error(), HasSubstr("moqt_versions entry 21"));
   EXPECT_THAT(result.error(), Not(HasSubstr("moqt_versions entry 16")));
+  EXPECT_THAT(result.error(), Not(HasSubstr("moqt_versions entry 22")));
 }
 
 TEST(ResolveConfig, AddressResolution) {

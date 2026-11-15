@@ -1,1 +1,0 @@
-- Config: [`services.<name>.listeners`](/docs/config.md#listener-binding) makes a service available on only the listeners it names.

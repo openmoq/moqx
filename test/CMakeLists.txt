@@ -100,8 +100,10 @@ moqx_add_gtest(moqx_relay_integration_test
     MoqxRelayServerTest.cpp
     RelaySessionCloseTest.cpp
     UpstreamProviderTest.cpp
+    tls/FizzContextBuilderTest.cpp
   LIBS
     moqx_core
+    moqx_config_loader
     moqx_test_utils
     moqx_test_main
     GTest::gmock
@@ -236,35 +238,35 @@ endfunction()
 moqx_add_dual_stack_test(relay_chain
   COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/test_relay_chain.py $<TARGET_FILE:moqx>
   TIMEOUT 120
-  MOQT_VERSIONS 16 18
+  MOQT_VERSIONS 16 18 22
   ENVIRONMENT "MOQBIN=${MOXYGEN_BIN_DIR}"
 )
 
 moqx_add_dual_stack_test(relay_hops_cycle
   COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/test_relay_hops_cycle.py $<TARGET_FILE:moqx>
   TIMEOUT 90
-  MOQT_VERSIONS 16 18
+  MOQT_VERSIONS 16 18 22
   ENVIRONMENT "MOQBIN=${MOXYGEN_BIN_DIR}"
 )
 
 moqx_add_dual_stack_test(relay_pyramid
   COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/test_relay_pyramid.py $<TARGET_FILE:moqx>
   TIMEOUT 120
-  MOQT_VERSIONS 16 18
+  MOQT_VERSIONS 16 18 22
   ENVIRONMENT "MOQBIN=${MOXYGEN_BIN_DIR}"
 )
 
 moqx_add_dual_stack_test(relay_cluster_diamond
   COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/test_relay_cluster_diamond.py $<TARGET_FILE:moqx>
   TIMEOUT 120
-  MOQT_VERSIONS 16 18
+  MOQT_VERSIONS 16 18 22
   ENVIRONMENT "MOQBIN=${MOXYGEN_BIN_DIR}"
 )
 
 moqx_add_dual_stack_test(relay_upstreams
   COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/test_relay_upstreams.py $<TARGET_FILE:moqx>
   TIMEOUT 90
-  MOQT_VERSIONS 16 18
+  MOQT_VERSIONS 16 18 22
   ENVIRONMENT "MOQBIN=${MOXYGEN_BIN_DIR}"
 )
 
@@ -277,12 +279,12 @@ moqx_add_dual_stack_test(relay_sighup
 moqx_add_dual_stack_test(listener_services
   COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/test_listener_services.py $<TARGET_FILE:moqx>
   TIMEOUT 90
-  MOQT_VERSIONS 16 18
+  MOQT_VERSIONS 16 18 22
   ENVIRONMENT "MOQBIN=${MOXYGEN_BIN_DIR}"
 )
 
 # QMUX is a TCP transport, not a QUIC stack, so this one sweeps drafts only.
-foreach(version 16 18)
+foreach(version 16 18 22)
   set(test_name qmux_relay)
   if(NOT version STREQUAL "16")
     string(APPEND test_name "_d${version}")
@@ -316,7 +318,7 @@ moqx_add_dual_stack_test(admin_metrics_endpoint
 )
 moqx_add_dual_stack_test(admin_track_metrics_endpoint
   COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_admin_track_metrics.sh $<TARGET_FILE:moqx>
-  MOQT_VERSIONS 16 18
+  MOQT_VERSIONS 16 18 22
   ENVIRONMENT "MOQBIN=${MOXYGEN_BIN_DIR}"
 )
 moqx_add_dual_stack_test(admin_cache_purge_endpoint
@@ -333,7 +335,7 @@ moqx_add_dual_stack_test(admin_connection_logs_endpoint
 )
 moqx_add_dual_stack_test(admin_cache_purge_concurrency_test
   COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_admin_cache_purge_race.sh $<TARGET_FILE:moqx>
-  MOQT_VERSIONS 16 18
+  MOQT_VERSIONS 16 18 22
   ENVIRONMENT "MOQBIN=${MOXYGEN_BIN_DIR}"
 )
 

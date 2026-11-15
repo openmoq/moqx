@@ -1,1 +1,0 @@
-- Config: [`listeners`](/docs/config.md#listeners) is now a map keyed by listener name.

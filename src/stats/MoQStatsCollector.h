@@ -33,7 +33,8 @@ class MoQStatsCollector : public StatsCollectorBase,
                           public std::enable_shared_from_this<MoQStatsCollector> {
 public:
   // --- Inner callback: publisher role ---
-  class PublisherCallback : public moxygen::MoQPublisherStatsCallback {
+  class PublisherCallback : public moxygen::MoQPublisherStatsCallback,
+                            public moxygen::MoQPublisherStatsCallback::ObjectAckStatsCallback {
   public:
     explicit PublisherCallback(MoQStatsCollector& parent) : parent_(parent) {}
 
@@ -66,6 +67,12 @@ public:
     void recordPublishLatency(uint64_t latencyMsec) override;
     void onPublishError(moxygen::PublishErrorCode errorCode) override;
     void onPublishSuccess() override;
+
+    // Object ACK latency is always tracked.
+    moxygen::MoQPublisherStatsCallback::ObjectAckStatsCallback*
+    getObjectAckStatsCallback() override {
+      return this;
+    }
     void recordObjectAckLatency(uint64_t latencyUsec) override;
 
   private:
