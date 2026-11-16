@@ -257,6 +257,11 @@ private:
         TimePoint now,
         uint64_t offset = 0
     );
+
+    // Ends the group at lastObjectID, so later objects in it are gaps. Fails
+    // if the group already holds an object past lastObjectID.
+    folly::Expected<folly::Unit, moxygen::MoQPublishError>
+    markEndOfGroup(CacheTrack& track, uint64_t groupID, uint64_t lastObjectID);
   };
 
   // The key is the fetch range start, then the first location the fetch writes
