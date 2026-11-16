@@ -1,0 +1,1 @@
+- The relay cache now ends a group at a subgroup or datagram marked last in its group. Before, a FETCH that crossed the group boundary went upstream, and it failed when the publisher does not serve FETCH.
