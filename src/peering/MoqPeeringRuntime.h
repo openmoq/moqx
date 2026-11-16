@@ -14,9 +14,10 @@
 #include <string>
 #include <vector>
 
-// Lives in libmoqx_peering so moq-peering's picoquic stays out of the relay
-// binary, which already links moxygen's picoquic. Log lines are handed to a
-// callback in the main executable so they use that process's logger.
+// Lives in libmoqx_peering. That static archive carries moq-peering's picoquic
+// with local symbols, so it does not collide with the picoquic moxygen links
+// into the relay. Log lines are handed to a callback in the main executable so
+// they use that process's logger.
 
 #if defined(__GNUC__)
 #define MOQX_PEERING_EXPORT __attribute__((visibility("default")))

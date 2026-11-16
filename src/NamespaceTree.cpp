@@ -121,6 +121,17 @@ NamespaceTree::findPublisher(const TrackNamespace& ns, const RouteExclusion& exc
   return route ? std::optional(route->participant) : std::nullopt;
 }
 
+std::optional<Participant> NamespaceTree::findLocalPublisher(const TrackNamespace& ns) const {
+  for (const auto* node = findRouteNode(ns); node; node = node->parent_) {
+    for (const auto* route : node->rankedRoutes()) {
+      if (!route->fromPeering && route->participant.publisher) {
+        return route->participant;
+      }
+    }
+  }
+  return std::nullopt;
+}
+
 const NamespaceTree::NamespaceNode::Route*
 NamespaceTree::NamespaceNode::findRoute(SessionId sessionId) const {
   auto it = std::find_if(routes_.begin(), routes_.end(), [&](const Route& r) {
@@ -207,16 +218,18 @@ NamespaceTree::SetPublisherResult NamespaceTree::setPublisher(
     }
     node->routes_.erase(existing);
   }
-  node->routes_.push_back(NamespaceNode::Route{
-      .participant = std::move(publisher),
-      .callback = std::move(callback),
-      .peerID = std::move(peerID),
-      .requestID = requestID,
-      .path = std::move(relayHopPath),
-      .cost = routeCost,
-      .seq = ++nextRouteSeq_,
-      .fromPeering = fromPeering,
-  });
+  node->routes_.push_back(
+      NamespaceNode::Route{
+          .participant = std::move(publisher),
+          .callback = std::move(callback),
+          .peerID = std::move(peerID),
+          .requestID = requestID,
+          .path = std::move(relayHopPath),
+          .cost = routeCost,
+          .seq = ++nextRouteSeq_,
+          .fromPeering = fromPeering,
+      }
+  );
   node->trackNamespace = ns;
   return result;
 }

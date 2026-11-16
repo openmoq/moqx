@@ -272,6 +272,18 @@ public:
   }
   std::vector<moxygen::SessionId> findNamespacePublishers(const moxygen::TrackNamespace& ns);
 
+  // Client that sent PUBLISH_NAMESPACE for a prefix of ns. Peering routes are skipped.
+  // Runs on the relay executor.
+  std::optional<Participant> localNamespacePublisher(const moxygen::TrackNamespace& ns) const {
+    return namespaceTree_.findLocalPublisher(ns);
+  }
+  void forEachSubscribedTrack(folly::FunctionRef<void(const moxygen::FullTrackName&)> fn) const {
+    registry_.forEachName(fn);
+  }
+  std::optional<moxygen::SessionId> subscribedUpstream(const moxygen::FullTrackName& ftn) const {
+    return registry_.upstreamSessionId(ftn);
+  }
+
   // Sync cores of publishNamespace/publishNamespaceDone. Called by the
   // Subscriber coroutine interface and by MoqxRelayNamespaceHandle, which
   // passes the publisher explicitly.
@@ -714,10 +726,8 @@ private:
 
   // A published namespace wins. Otherwise the peering fallback, unless this
   // requester is that participant.
-  std::optional<Participant> resolvePublisher(
-      const moxygen::TrackNamespace& ns,
-      const RouteExclusion& exclusion
-  );
+  std::optional<Participant>
+  resolvePublisher(const moxygen::TrackNamespace& ns, const RouteExclusion& exclusion);
 
   std::shared_ptr<moxygen::Publisher> findUpstreamPublisher(
       const moxygen::TrackNamespace& ns,

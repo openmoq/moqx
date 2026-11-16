@@ -177,10 +177,11 @@ public:
       moxygen::FullTrackName ftn,
       uint64_t group,
       uint64_t subgroup,
-      uint8_t priority
+      uint8_t priority,
+      bool pulled
   )
       : owner_(std::move(owner)), ftn_(std::move(ftn)), group_(group), subgroup_(subgroup),
-        priority_(priority) {}
+        priority_(priority), pulled_(pulled) {}
 
   folly::Expected<folly::Unit, moxygen::MoQPublishError> object(
       uint64_t objectID,
@@ -298,7 +299,11 @@ private:
     object.objectId = objectID;
     object.extensions = extensions;
     object.payload = std::move(*bytes);
-    owner->sendLocalObject(ftn_, std::move(object));
+    if (pulled_) {
+      owner->postPulledObject(ftn_, std::move(object));
+    } else {
+      owner->sendLocalObject(ftn_, std::move(object));
+    }
   }
 
   void emit(bool lastInGroup) {
@@ -319,7 +324,11 @@ private:
     }
     closed_ = true;
     if (auto owner = owner_.lock()) {
-      owner->endLocalSubgroup(ftn_, group_, subgroup_, resetStream);
+      if (pulled_) {
+        owner->postPulledEnd(ftn_, group_, subgroup_, resetStream);
+      } else {
+        owner->endLocalSubgroup(ftn_, group_, subgroup_, resetStream);
+      }
     }
   }
 
@@ -336,14 +345,19 @@ private:
   uint64_t group_{0};
   uint64_t subgroup_{0};
   uint8_t priority_{0};
+  bool pulled_{false};
   bool closed_{false};
   Pending pending_;
 };
 
 class PeeringEgressTrack : public moxygen::TrackConsumer {
 public:
-  PeeringEgressTrack(std::weak_ptr<MoqPeeringParticipant> owner, moxygen::FullTrackName ftn)
-      : owner_(std::move(owner)), ftn_(std::move(ftn)) {}
+  PeeringEgressTrack(
+      std::weak_ptr<MoqPeeringParticipant> owner,
+      moxygen::FullTrackName ftn,
+      bool pulled = false
+  )
+      : owner_(std::move(owner)), ftn_(std::move(ftn)), pulled_(pulled) {}
 
   folly::Expected<folly::Unit, moxygen::MoQPublishError>
   setTrackAlias(moxygen::TrackAlias) override {
@@ -362,7 +376,8 @@ public:
         ftn_,
         groupID,
         subgroupID,
-        static_cast<uint8_t>(priority)
+        static_cast<uint8_t>(priority),
+        pulled_
     );
     return subgroup;
   }
@@ -391,7 +406,11 @@ public:
   folly::Expected<folly::Unit, moxygen::MoQPublishError>
   publishDone(moxygen::PublishDone) override {
     if (auto owner = owner_.lock()) {
-      owner->onLocalTrackDone(ftn_);
+      if (pulled_) {
+        owner->postPullFinished(ftn_);
+      } else {
+        owner->onLocalTrackDone(ftn_);
+      }
     }
     return folly::unit;
   }
@@ -422,15 +441,24 @@ private:
     object.objectId = header.id;
     object.extensions = header.extensions;
     object.payload = std::move(*bytes);
-    owner->sendLocalObject(ftn_, std::move(object));
+    if (pulled_) {
+      owner->postPulledObject(ftn_, std::move(object));
+    } else {
+      owner->sendLocalObject(ftn_, std::move(object));
+    }
     if (lastInGroup && !datagramObject) {
-      owner->endLocalSubgroup(ftn_, header.group, header.subgroup, false);
+      if (pulled_) {
+        owner->postPulledEnd(ftn_, header.group, header.subgroup, false);
+      } else {
+        owner->endLocalSubgroup(ftn_, header.group, header.subgroup, false);
+      }
     }
     return folly::unit;
   }
 
   std::weak_ptr<MoqPeeringParticipant> owner_;
   moxygen::FullTrackName ftn_;
+  bool pulled_{false};
 };
 
 template <typename T> void MoqPeeringParticipant::spawn(folly::coro::Task<T> task) {
@@ -509,6 +537,14 @@ void MoqPeeringParticipant::detach() {
     self->ingress_.clear();
     self->pullConsumers_.clear();
     self->ingressStreams_.clear();
+    for (auto& [_, pull] : self->namespacePulls_) {
+      pull.cancel = true;
+      if (pull.handle) {
+        pull.handle->unsubscribe();
+      }
+    }
+    self->namespacePulls_.clear();
+    self->peerTracks_.clear();
     self->egress_.clear();
     self->egressForward_.clear();
     self->ready_.store(false, std::memory_order_release);
@@ -691,11 +727,17 @@ void MoqPeeringParticipant::closePeerIngressStreams(const moxygen::FullTrackName
 void MoqPeeringParticipant::onSubscribe(const moxygen::FullTrackName& ftn) {
   XLOG(INFO) << "moq-peering subscribe ftn=" << safeName(ftn);
   setEgressForward(ftn, true);
+  peerTracks_.insert(ftn);
+  pullTrack(ftn);
 }
 
 void MoqPeeringParticipant::onUnsubscribe(const moxygen::FullTrackName& ftn) {
   XLOG(INFO) << "moq-peering unsubscribe ftn=" << safeName(ftn);
   setEgressForward(ftn, false);
+  peerTracks_.erase(ftn);
+  if (!hasLocalSubscription(ftn)) {
+    cancelNamespacePull(ftn);
+  }
 }
 
 void MoqPeeringParticipant::pull(const moxygen::FullTrackName& ftn) {
@@ -712,6 +754,227 @@ void MoqPeeringParticipant::unpull(const moxygen::FullTrackName& ftn) {
   }
   XLOG(INFO) << "moq-peering unsubscribe track ftn=" << safeName(ftn);
   announcer_->unsubscribeTrack(ftn);
+}
+
+bool MoqPeeringParticipant::hasLocalSubscription(const moxygen::FullTrackName& ftn) const {
+  auto relay = relay_.lock();
+  if (!relay) {
+    return false;
+  }
+  bool found = false;
+  relay->forEachSubscribedTrack([&](const moxygen::FullTrackName& name) {
+    if (name == ftn) {
+      found = true;
+    }
+  });
+  return found;
+}
+
+void MoqPeeringParticipant::pullPublishedNamespace(const moxygen::TrackNamespace& ns) {
+  std::vector<moxygen::FullTrackName> tracks;
+  for (const auto& ftn : peerTracks_) {
+    if (ftn.trackNamespace.startsWith(ns)) {
+      tracks.push_back(ftn);
+    }
+  }
+  if (auto relay = relay_.lock()) {
+    relay->forEachSubscribedTrack([&](const moxygen::FullTrackName& ftn) {
+      if (ftn.trackNamespace.startsWith(ns)) {
+        tracks.push_back(ftn);
+      }
+    });
+  }
+  for (const auto& ftn : tracks) {
+    pullTrack(ftn);
+  }
+}
+
+void MoqPeeringParticipant::pullTrack(const moxygen::FullTrackName& ftn, bool retry) {
+  // A PUBLISH for the track does not replace this subscribe. The client that
+  // sent PUBLISH_NAMESPACE accepts SUBSCRIBE only after that track exists, and
+  // the subscribe has to stay open so the client can send objects on it.
+  if (!executor_) {
+    return;
+  }
+  auto relay = relay_.lock();
+  if (!relay || !info_) {
+    return;
+  }
+  const bool peer = peerTracks_.contains(ftn);
+  const bool local = hasLocalSubscription(ftn);
+  if (!peer && !local) {
+    return;
+  }
+  auto publisher = relay->localNamespacePublisher(ftn.trackNamespace);
+  if (!publisher || !publisher->publisher || !publisher->info) {
+    XLOG(DBG1) << "moq-peering namespace publisher not ready ftn=" << safeName(ftn);
+    return;
+  }
+  const auto publisherId = publisher->info->sessionId;
+  if (publisherId == info_->sessionId) {
+    return;
+  }
+  if (!peer) {
+    if (auto upstream = relay->subscribedUpstream(ftn); upstream && *upstream == publisherId) {
+      return;
+    }
+  }
+  if (auto it = namespacePulls_.find(ftn); it != namespacePulls_.end()) {
+    if (it->second.publisher == publisherId && !it->second.cancel) {
+      return;
+    }
+    cancelNamespacePull(ftn);
+  }
+  const auto generation = nextPull_++;
+  NamespacePull pull;
+  pull.retried = retry;
+  pull.generation = generation;
+  pull.publisher = publisherId;
+  namespacePulls_.insert_or_assign(ftn, std::move(pull));
+  XLOG(INFO) << "moq-peering subscribe namespace publisher ftn=" << safeName(ftn);
+  spawn(subscribeNamespacePublisher(ftn, generation, std::move(publisher->publisher)));
+}
+
+void MoqPeeringParticipant::cancelNamespacePull(const moxygen::FullTrackName& ftn) {
+  auto it = namespacePulls_.find(ftn);
+  if (it == namespacePulls_.end()) {
+    return;
+  }
+  it->second.cancel = true;
+  if (it->second.handle) {
+    it->second.handle->unsubscribe();
+  }
+  namespacePulls_.erase(it);
+}
+
+folly::coro::Task<void> MoqPeeringParticipant::subscribeNamespacePublisher(
+    moxygen::FullTrackName ftn,
+    uint64_t generation,
+    std::shared_ptr<moxygen::Publisher> publisher
+) {
+  moxygen::SubscribeRequest req;
+  req.fullTrackName = ftn;
+  req.requestID = moxygen::RequestID(nextRequest_++);
+  req.forward = true;
+  req.priority = moxygen::kDefaultPriority;
+  req.filter = moxygen::LocationFilter::nextObject();
+  auto consumer = std::make_shared<PeeringEgressTrack>(weak_from_this(), ftn, true);
+  auto tried =
+      co_await folly::coro::co_awaitTry(publisher->subscribe(std::move(req), std::move(consumer)));
+  if (auto relay = relay_.lock()) {
+    relay->deferOnRelay([self = weak_from_this(),
+                         ftn = std::move(ftn),
+                         generation,
+                         tried = std::move(tried)]() mutable {
+      if (auto owner = self.lock()) {
+        owner->finishNamespacePull(ftn, generation, std::move(tried));
+      }
+    });
+  }
+}
+
+void MoqPeeringParticipant::finishNamespacePull(
+    const moxygen::FullTrackName& ftn,
+    uint64_t generation,
+    folly::Try<moxygen::Publisher::SubscribeResult> result
+) {
+  std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle;
+  if (!result.hasException() && result.value().hasValue()) {
+    handle = result.value().value();
+  }
+  auto it = namespacePulls_.find(ftn);
+  const bool current = it != namespacePulls_.end() && it->second.generation == generation;
+  const bool failed = result.hasException() || result.value().hasError();
+  if (!current || it->second.cancel || failed) {
+    if (handle) {
+      handle->unsubscribe();
+    }
+    // The client rejects SUBSCRIBE until it has published the track. Try once
+    // more after that PUBLISH is in place.
+    const bool retry = current && failed && !it->second.cancel && !it->second.retried &&
+                       egress_.contains(ftn);
+    if (current) {
+      if (result.hasException()) {
+        XLOG(INFO) << "moq-peering namespace subscribe failed ftn=" << safeName(ftn);
+      } else if (result.value().hasError()) {
+        XLOG(INFO) << "moq-peering namespace subscribe failed ftn=" << safeName(ftn)
+                   << " reason=" << result.value().error().reasonPhrase;
+      }
+      namespacePulls_.erase(it);
+    }
+    if (retry) {
+      pullTrack(ftn, true);
+    }
+    return;
+  }
+  it->second.handle = std::move(handle);
+}
+
+void MoqPeeringParticipant::postPulledObject(moxygen::FullTrackName ftn, PeeringObject object) {
+  auto relay = relay_.lock();
+  if (!relay) {
+    return;
+  }
+  relay->deferOnRelay(
+      [self = weak_from_this(), ftn = std::move(ftn), object = std::move(object)]() mutable {
+        if (auto owner = self.lock()) {
+          owner->deliverPulledObject(ftn, std::move(object));
+        }
+      }
+  );
+}
+
+void MoqPeeringParticipant::postPulledEnd(
+    moxygen::FullTrackName ftn,
+    uint64_t group,
+    uint64_t subgroup,
+    bool reset
+) {
+  auto relay = relay_.lock();
+  if (!relay) {
+    return;
+  }
+  relay->deferOnRelay(
+      [self = weak_from_this(), ftn = std::move(ftn), group, subgroup, reset]() mutable {
+        auto owner = self.lock();
+        if (!owner) {
+          return;
+        }
+        auto it = owner->namespacePulls_.find(ftn);
+        if (it == owner->namespacePulls_.end() || it->second.cancel) {
+          return;
+        }
+        if (owner->peerTracks_.contains(ftn)) {
+          owner->endLocalSubgroup(ftn, group, subgroup, reset);
+        }
+      }
+  );
+}
+
+void MoqPeeringParticipant::postPullFinished(moxygen::FullTrackName ftn) {
+  auto relay = relay_.lock();
+  if (!relay) {
+    return;
+  }
+  relay->deferOnRelay([self = weak_from_this(), ftn = std::move(ftn)]() mutable {
+    if (auto owner = self.lock()) {
+      owner->namespacePulls_.erase(ftn);
+    }
+  });
+}
+
+void MoqPeeringParticipant::deliverPulledObject(
+    const moxygen::FullTrackName& ftn,
+    PeeringObject object
+) {
+  auto it = namespacePulls_.find(ftn);
+  if (it == namespacePulls_.end() || it->second.cancel) {
+    return;
+  }
+  writeObject(ftn, object);
+  if (peerTracks_.contains(ftn)) {
+    sendLocalObject(ftn, std::move(object));
+  }
 }
 
 void MoqPeeringParticipant::setEgressForward(const moxygen::FullTrackName& ftn, bool forward) {
@@ -776,6 +1039,7 @@ void MoqPeeringParticipant::withdrawAnnouncedNamespace(const moxygen::TrackNames
 
 void MoqPeeringParticipant::namespaceMsg(const moxygen::TrackNamespace& trackNamespaceSuffix) {
   announceNamespaceOnce(trackNamespaceSuffix, true);
+  pullPublishedNamespace(trackNamespaceSuffix);
 }
 
 void MoqPeeringParticipant::namespaceDoneMsg(const moxygen::TrackNamespace& trackNamespaceSuffix) {
@@ -784,12 +1048,29 @@ void MoqPeeringParticipant::namespaceDoneMsg(const moxygen::TrackNamespace& trac
     return;
   }
   const auto session = info_ ? info_->sessionId : moxygen::SessionId{};
+  bool otherPublisher = false;
   for (const auto id : relay->findNamespacePublishers(trackNamespaceSuffix)) {
     if (id != session) {
-      return;
+      otherPublisher = true;
+      break;
     }
   }
-  withdrawAnnouncedNamespace(trackNamespaceSuffix);
+  if (!otherPublisher) {
+    withdrawAnnouncedNamespace(trackNamespaceSuffix);
+  }
+  std::vector<moxygen::FullTrackName> drop;
+  for (const auto& [ftn, pull] : namespacePulls_) {
+    if (!ftn.trackNamespace.startsWith(trackNamespaceSuffix)) {
+      continue;
+    }
+    auto publisher = relay->localNamespacePublisher(ftn.trackNamespace);
+    if (!publisher || !publisher->info || publisher->info->sessionId != pull.publisher) {
+      drop.push_back(ftn);
+    }
+  }
+  for (const auto& ftn : drop) {
+    cancelNamespacePull(ftn);
+  }
 }
 
 void MoqPeeringParticipant::onLocalTrackDone(const moxygen::FullTrackName& ftn) {
@@ -853,6 +1134,9 @@ moxygen::Subscriber::PublishResult MoqPeeringParticipant::publish(
     egressForward_[pub.fullTrackName] = false;
   }
   egress_[pub.fullTrackName] = handle;
+  // The track handler now exists on the client, so a matching subscribe can be
+  // accepted. An earlier subscribe that missed the track is retried from here.
+  pullTrack(pub.fullTrackName);
   auto self = weak_from_this();
   auto ftn = pub.fullTrackName;
   auto requestID = pub.requestID;

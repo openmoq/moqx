@@ -351,9 +351,10 @@ target_compile_options(moqx_warnings INTERFACE
   -Wall -Wextra -Wpedantic -Wno-missing-field-initializers)
 
 # --- moq-peering --------------------------------------------------------------
-# A shared library so moq-peering's picoquic is a separate image from the
-# picoquic moxygen links into the relay. Objects are built hidden and
-# position-independent; only MoqPeeringRuntime is exported.
+# A static archive. moq-peering's picoquic is linked into one relocatable
+# object and every symbol except MoqPeeringRuntime is made local, so this copy
+# stays separate from the picoquic moxygen links into the relay. Objects are
+# built hidden and position-independent.
 set(MOQ_PEERING_BUILD_TESTS OFF CACHE BOOL "Build moq-peering tests")
 set(MOQ_PEERING_BUILD_EXAMPLES OFF CACHE BOOL "Build moq-peering examples")
 set(MOQ_PEERING_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../moq-peering" CACHE PATH
@@ -370,7 +371,7 @@ endif()
 # fmt inside spdlog, and add that target before moq-peering so the library
 # keeps it instead of switching on SPDLOG_FMT_EXTERNAL.
 set(SPDLOG_FMT_EXTERNAL OFF CACHE BOOL
-    "Bundle fmt inside the moq-peering shared library" FORCE)
+    "Bundle fmt inside the moq-peering library" FORCE)
 CPMAddPackage("gh:gabime/spdlog@1.17.0")
 
 if(_moqx_peering_src)
@@ -402,6 +403,10 @@ function(moqx_hide_peering_target tgt)
     VISIBILITY_INLINES_HIDDEN ON
     POSITION_INDEPENDENT_CODE ON
   )
+  # Localization happens on the native object. LTO bytecode would undo it.
+  if(MOQX_LTO)
+    target_compile_options(${tgt} PRIVATE -fno-lto)
+  endif()
   set_property(GLOBAL APPEND PROPERTY MOQX_HIDDEN_PEERING_TARGETS "${tgt}")
 endfunction()
 
@@ -430,27 +435,172 @@ if(_moqx_hidden_count EQUAL 0)
 endif()
 message(STATUS "moq-peering: hid ${_moqx_hidden_count} targets inside libmoqx_peering")
 
-add_library(moqx_peering SHARED
+# Static libraries in the moq::peering closure are absorbed into one object.
+# Shared libraries and link flags (OpenSSL, brotli) stay on the final link.
+# picotls records brotli with link_directories() plus -lbrotlidec, which does
+# not travel with a bare -l flag, so resolve those against the collected dirs.
+function(moqx_peering_resolve_link item dirs out)
+  set(_name "")
+  if(item MATCHES "^-l(.+)$")
+    set(_name "${CMAKE_MATCH_1}")
+  elseif(item MATCHES "^[A-Za-z0-9_.+-]+$")
+    # picotls records brotli as a bare library name, not a target.
+    set(_name "${item}")
+  endif()
+  if(_name)
+    foreach(_dir IN LISTS dirs)
+      foreach(_ext IN ITEMS .dylib .so .a .tbd)
+        if(EXISTS "${_dir}/lib${_name}${_ext}")
+          set(${out} "${_dir}/lib${_name}${_ext}" PARENT_SCOPE)
+          return()
+        endif()
+      endforeach()
+    endforeach()
+  endif()
+  set(${out} "${item}" PARENT_SCOPE)
+endfunction()
+
+function(moqx_peering_closure root static_out link_out)
+  set(_queue "${root}")
+  set(_seen "")
+  set(_static "")
+  set(_raw_link "")
+  set(_dirs "")
+  while(_queue)
+    list(POP_FRONT _queue _item)
+    if(_item IN_LIST _seen)
+      continue()
+    endif()
+    list(APPEND _seen "${_item}")
+    if(_item MATCHES "^\\$<")
+      if(_item MATCHES "^\\$<LINK_ONLY:(.+)>$")
+        list(APPEND _queue "${CMAKE_MATCH_1}")
+      else()
+        message(FATAL_ERROR "moq-peering: unrecognized link item '${_item}'")
+      endif()
+      continue()
+    endif()
+    if(NOT TARGET "${_item}")
+      list(APPEND _raw_link "${_item}")
+      continue()
+    endif()
+    get_target_property(_aliased "${_item}" ALIASED_TARGET)
+    if(_aliased)
+      list(APPEND _queue "${_aliased}")
+      continue()
+    endif()
+    get_target_property(_type "${_item}" TYPE)
+    if(_type STREQUAL "STATIC_LIBRARY")
+      list(APPEND _static "${_item}")
+    elseif(_type STREQUAL "SHARED_LIBRARY" OR _type STREQUAL "UNKNOWN_LIBRARY")
+      list(APPEND _raw_link "${_item}")
+      continue()
+    elseif(NOT _type STREQUAL "INTERFACE_LIBRARY")
+      continue()
+    endif()
+    foreach(_prop LINK_DIRECTORIES INTERFACE_LINK_DIRECTORIES)
+      get_target_property(_ldirs "${_item}" ${_prop})
+      if(_ldirs)
+        list(APPEND _dirs ${_ldirs})
+      endif()
+    endforeach()
+    foreach(_dirprop BINARY_DIR SOURCE_DIR)
+      get_target_property(_tdir "${_item}" ${_dirprop})
+      if(_tdir)
+        get_property(_dldirs DIRECTORY "${_tdir}" PROPERTY LINK_DIRECTORIES)
+        if(_dldirs)
+          list(APPEND _dirs ${_dldirs})
+        endif()
+      endif()
+    endforeach()
+    foreach(_prop LINK_LIBRARIES INTERFACE_LINK_LIBRARIES)
+      get_target_property(_deps "${_item}" ${_prop})
+      if(_deps)
+        list(APPEND _queue ${_deps})
+      endif()
+    endforeach()
+  endwhile()
+  if(_dirs)
+    list(REMOVE_DUPLICATES _dirs)
+  endif()
+  set(_link "")
+  foreach(_item IN LISTS _raw_link)
+    moqx_peering_resolve_link("${_item}" "${_dirs}" _resolved)
+    list(APPEND _link "${_resolved}")
+  endforeach()
+  if(_link)
+    list(REMOVE_DUPLICATES _link)
+  endif()
+  set(${static_out} "${_static}" PARENT_SCOPE)
+  set(${link_out} "${_link}" PARENT_SCOPE)
+endfunction()
+
+moqx_peering_closure(moq::peering _moqx_peering_static _moqx_peering_link)
+if(NOT _moqx_peering_static)
+  message(FATAL_ERROR "moq-peering: no static libraries to bundle")
+endif()
+message(STATUS "moq-peering: bundling ${_moqx_peering_static}")
+message(STATUS "moq-peering: linking ${_moqx_peering_link}")
+
+if(NOT APPLE)
+  find_program(MOQX_OBJCOPY NAMES objcopy llvm-objcopy REQUIRED)
+endif()
+
+add_library(moqx_peering_obj OBJECT
   src/peering/MoqPeeringRuntime.cpp
 )
-target_include_directories(moqx_peering
+target_include_directories(moqx_peering_obj
   PUBLIC
     ${PROJECT_SOURCE_DIR}/src
 )
-target_link_libraries(moqx_peering
+target_link_libraries(moqx_peering_obj
   PRIVATE
     moq::peering
     moqx_warnings
 )
-set_target_properties(moqx_peering PROPERTIES
+set_target_properties(moqx_peering_obj PROPERTIES
   CXX_VISIBILITY_PRESET hidden
   VISIBILITY_INLINES_HIDDEN ON
   POSITION_INDEPENDENT_CODE ON
 )
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-  # Keep this image's picoquic bound to itself if a symbol is also global
-  # in the relay executable.
-  target_link_options(moqx_peering PRIVATE "LINKER:-Bsymbolic")
+if(MOQX_LTO)
+  target_compile_options(moqx_peering_obj PRIVATE -fno-lto)
+endif()
+
+set(_moqx_peering_bundle "${CMAKE_CURRENT_BINARY_DIR}/moqx_peering_bundle.o")
+set(_moqx_peering_archives "")
+foreach(_moqx_tgt IN LISTS _moqx_peering_static)
+  list(APPEND _moqx_peering_archives "$<TARGET_FILE:${_moqx_tgt}>")
+endforeach()
+add_custom_command(
+  OUTPUT "${_moqx_peering_bundle}"
+  COMMAND ${CMAKE_COMMAND}
+    -DMOQX_COMPILER=${CMAKE_CXX_COMPILER}
+    -DMOQX_NM=${CMAKE_NM}
+    -DMOQX_OUTPUT=${_moqx_peering_bundle}
+    -DMOQX_APPLE=${APPLE}
+    -DMOQX_OBJCOPY=${MOQX_OBJCOPY}
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/bundle-peering.cmake
+    --
+    $<TARGET_OBJECTS:moqx_peering_obj>
+    ${_moqx_peering_archives}
+  DEPENDS moqx_peering_obj ${_moqx_peering_static}
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/bundle-peering.cmake"
+  COMMENT "Bundling moq-peering into a static object"
+  VERBATIM
+)
+set_source_files_properties("${_moqx_peering_bundle}" PROPERTIES
+  EXTERNAL_OBJECT TRUE
+  GENERATED TRUE
+)
+add_library(moqx_peering STATIC "${_moqx_peering_bundle}")
+set_target_properties(moqx_peering PROPERTIES LINKER_LANGUAGE CXX)
+target_include_directories(moqx_peering
+  PUBLIC
+    ${PROJECT_SOURCE_DIR}/src
+)
+if(_moqx_peering_link)
+  target_link_libraries(moqx_peering PRIVATE ${_moqx_peering_link})
 endif()
 
 # --- Cache library (forked from moxygen) ---

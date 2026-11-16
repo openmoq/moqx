@@ -15,6 +15,8 @@
 #include <set>
 #include <vector>
 
+#include <folly/Try.h>
+
 #include <moxygen/MoQConsumers.h>
 #include <moxygen/MoQTypes.h>
 
@@ -25,7 +27,9 @@ class MoqxRelay;
 // One participant for every peer. moq-peering collapses peers into one subscribe
 // per track, so the relay sees a single publisher and a single subscriber.
 // Peer announces are published into the relay. Local publishes are announced
-// back out. Objects use the track consumers the relay already gives a client.
+// back out. A PUBLISH_NAMESPACE stays here: a matching local or peered subscribe
+// subscribes that track from the client that published the namespace. Objects
+// use the track consumers the relay already gives a client.
 //
 // announcer is kept alive until in-flight relay callbacks finish. Callbacks that
 // touch the relay run on the relay executor.
@@ -88,6 +92,26 @@ private:
   void pull(const moxygen::FullTrackName& ftn);
   void unpull(const moxygen::FullTrackName& ftn);
   void setEgressForward(const moxygen::FullTrackName& ftn, bool forward);
+  // Subscribes ftn from the client that published a covering namespace.
+  void pullPublishedNamespace(const moxygen::TrackNamespace& ns);
+  // retry is set when a subscribe was rejected before the track existed.
+  void pullTrack(const moxygen::FullTrackName& ftn, bool retry = false);
+  void cancelNamespacePull(const moxygen::FullTrackName& ftn);
+  bool hasLocalSubscription(const moxygen::FullTrackName& ftn) const;
+  folly::coro::Task<void> subscribeNamespacePublisher(
+      moxygen::FullTrackName ftn,
+      uint64_t generation,
+      std::shared_ptr<moxygen::Publisher> publisher
+  );
+  void finishNamespacePull(
+      const moxygen::FullTrackName& ftn,
+      uint64_t generation,
+      folly::Try<moxygen::Publisher::SubscribeResult> result
+  );
+  void postPulledObject(moxygen::FullTrackName ftn, PeeringObject object);
+  void postPulledEnd(moxygen::FullTrackName ftn, uint64_t group, uint64_t subgroup, bool reset);
+  void postPullFinished(moxygen::FullTrackName ftn);
+  void deliverPulledObject(const moxygen::FullTrackName& ftn, PeeringObject object);
   void onLocalTrackDone(const moxygen::FullTrackName& ftn);
   void sendLocalObject(const moxygen::FullTrackName& ftn, PeeringObject object);
   void endLocalSubgroup(
@@ -149,6 +173,17 @@ private:
   std::map<moxygen::FullTrackName, uint64_t> ingressGeneration_;
   std::set<moxygen::FullTrackName> originated_;
   std::set<moxygen::FullTrackName> pulled_;
+  // Peered subscribes that still want a track. Used to pull a PUBLISH_NAMESPACE client.
+  std::set<moxygen::FullTrackName> peerTracks_;
+  struct NamespacePull {
+    bool cancel{false};
+    bool retried{false};
+    uint64_t generation{0};
+    moxygen::SessionId publisher{};
+    std::shared_ptr<moxygen::Publisher::SubscriptionHandle> handle;
+  };
+  std::map<moxygen::FullTrackName, NamespacePull> namespacePulls_;
+  uint64_t nextPull_{1};
 
   std::map<moxygen::FullTrackName, std::shared_ptr<SubscriptionHandle>> egress_;
   // Last forward flag a peer subscribe asked for. PUBLISH_OK is filled from this

@@ -160,9 +160,11 @@ public:
 
   // True if sessionId's route at any node from the root through ns matches pred.
   template <typename Pred>
-  bool
-  hasRouteAlongPath(const moxygen::TrackNamespace& ns, moxygen::SessionId sessionId, Pred&& pred)
-      const {
+  bool hasRouteAlongPath(
+      const moxygen::TrackNamespace& ns,
+      moxygen::SessionId sessionId,
+      Pred&& pred
+  ) const {
     const NamespaceNode* node = &root_;
     for (size_t i = 0;; i++) {
       if (const auto* route = node->findRoute(sessionId); route && pred(*route)) {
@@ -183,6 +185,10 @@ public:
   // Unset if that node has no eligible route: shorter prefixes are not consulted.
   std::optional<Participant>
   findPublisher(const moxygen::TrackNamespace& ns, const RouteExclusion& exclusion = {});
+
+  // Deepest non-peering route that covers ns, walking toward the root when a
+  // more specific node only has peering routes.
+  std::optional<Participant> findLocalPublisher(const moxygen::TrackNamespace& ns) const;
 
   std::shared_ptr<NamespaceNode> findNode(
       const moxygen::TrackNamespace& ns,

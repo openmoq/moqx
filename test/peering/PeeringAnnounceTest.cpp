@@ -68,6 +68,25 @@ public:
   std::vector<FullTrackName> unsubscribed;
 };
 
+Publisher::SubscribeResult acceptNamespaceSubscribe(SubscribeRequest sub) {
+  SubscribeOk ok;
+  ok.requestID = sub.requestID;
+  ok.trackAlias = TrackAlias(0);
+  ok.expires = std::chrono::milliseconds(0);
+  ok.groupOrder = GroupOrder::OldestFirst;
+  return std::static_pointer_cast<Publisher::SubscriptionHandle>(
+      std::make_shared<NiceMock<MockSubscriptionHandle>>(std::move(ok))
+  );
+}
+
+void allowPublisherSubscribe(MockMoQSession& session) {
+  ON_CALL(session, subscribe(_, _)).WillByDefault([](SubscribeRequest sub, auto) {
+    return folly::coro::makeTask<Publisher::SubscribeResult>(
+        acceptNamespaceSubscribe(std::move(sub))
+    );
+  });
+}
+
 std::shared_ptr<MoqPeeringParticipant> makePeering(
     const std::shared_ptr<MoqxRelay>& relay,
     std::shared_ptr<RecordingAnnouncer> announcer
@@ -328,11 +347,132 @@ TEST_P(MoQRelayTest, PeeringSubscribeBeforeAnnouncePulls) {
   exec_->drive();
 }
 
+// A peered subscribe that matches a client's PUBLISH_NAMESPACE subscribes that
+// track from the client. A track outside the namespace does not.
+TEST_P(MoQRelayTest, PeeringNamespaceSubscribePullsPublisher) {
+  auto announcer = std::make_shared<RecordingAnnouncer>();
+  auto peering = makePeering(relay_, announcer);
+  ASSERT_TRUE(driveUntil([&] { return peering->ready(); }));
+  auto session = createMockSession();
+  std::atomic<int> pulls{0};
+  EXPECT_CALL(*session, subscribe(_, _))
+      .WillOnce([&](SubscribeRequest sub, std::shared_ptr<TrackConsumer>) {
+        EXPECT_EQ(sub.fullTrackName, kTestTrackName);
+        EXPECT_TRUE(sub.forward);
+        pulls.fetch_add(1);
+        return folly::coro::makeTask<Publisher::SubscribeResult>(
+            acceptNamespaceSubscribe(std::move(sub))
+        );
+      });
+  doPublishNamespace(session, kTestNamespace);
+  verifyOnRelayExec([&] { peering->onSubscribe(kTestTrackName); });
+  ASSERT_TRUE(driveUntil([&] { return pulls.load() == 1; }));
+
+  verifyOnRelayExec([&] {
+    peering->onSubscribe(FullTrackName{TrackNamespace{{"other"}}, "track"});
+  });
+  int turns = 0;
+  driveUntil([&] { return ++turns > (relayEvb_ ? 4 : 0); });
+  EXPECT_EQ(pulls.load(), 1);
+  removeSession(session);
+  exec_->drive();
+}
+
+// The peered subscribe can arrive before the namespace. The later
+// PUBLISH_NAMESPACE subscribes the matching track from that client.
+TEST_P(MoQRelayTest, PeeringSubscribeBeforeNamespacePullsPublisher) {
+  auto announcer = std::make_shared<RecordingAnnouncer>();
+  auto peering = makePeering(relay_, announcer);
+  ASSERT_TRUE(driveUntil([&] { return peering->ready(); }));
+  verifyOnRelayExec([&] { peering->onSubscribe(kTestTrackName); });
+
+  auto session = createMockSession();
+  std::atomic<bool> pulled{false};
+  EXPECT_CALL(*session, subscribe(_, _))
+      .WillOnce([&](SubscribeRequest sub, std::shared_ptr<TrackConsumer>) {
+        EXPECT_EQ(sub.fullTrackName, kTestTrackName);
+        EXPECT_TRUE(sub.forward);
+        pulled.store(true);
+        return folly::coro::makeTask<Publisher::SubscribeResult>(
+            acceptNamespaceSubscribe(std::move(sub))
+        );
+      });
+  doPublishNamespace(session, kTestNamespace);
+  ASSERT_TRUE(driveUntil([&] { return pulled.load(); }));
+  removeSession(session);
+  exec_->drive();
+}
+
+// A local SUBSCRIBE that matches a later PUBLISH_NAMESPACE subscribes the track
+// from that client.
+TEST_P(MoQRelayTest, PeeringLocalSubscribeBeforeNamespacePullsPublisher) {
+  auto announcer = std::make_shared<RecordingAnnouncer>();
+  auto peering = makePeering(relay_, announcer);
+  ASSERT_TRUE(driveUntil([&] { return peering->ready(); }));
+
+  auto subscriber = createMockSession();
+  auto mock = createMockConsumer();
+  ASSERT_NE(subscribeToTrack(subscriber, kTestTrackName, mock, RequestID(1)), nullptr);
+
+  auto session = createMockSession();
+  std::atomic<bool> pulled{false};
+  EXPECT_CALL(*session, subscribe(_, _))
+      .WillOnce([&](SubscribeRequest sub, std::shared_ptr<TrackConsumer>) {
+        EXPECT_EQ(sub.fullTrackName, kTestTrackName);
+        EXPECT_TRUE(sub.forward);
+        pulled.store(true);
+        return folly::coro::makeTask<Publisher::SubscribeResult>(
+            acceptNamespaceSubscribe(std::move(sub))
+        );
+      });
+  doPublishNamespace(session, kTestNamespace);
+  ASSERT_TRUE(driveUntil([&] { return pulled.load(); }));
+  removeSession(subscriber);
+  removeSession(session);
+  exec_->drive();
+}
+
+// The client rejects SUBSCRIBE until it has published the track. The relay
+// sends it again once that PUBLISH arrives.
+TEST_P(MoQRelayTest, PeeringNamespaceSubscribeRetriesAfterTrackPublish) {
+  auto announcer = std::make_shared<RecordingAnnouncer>();
+  auto peering = makePeering(relay_, announcer);
+  ASSERT_TRUE(driveUntil([&] { return peering->ready(); }));
+  verifyOnRelayExec([&] { peering->onSubscribe(kTestTrackName); });
+
+  auto session = createMockSession();
+  std::atomic<int> pulls{0};
+  EXPECT_CALL(*session, subscribe(_, _))
+      .WillOnce([&](SubscribeRequest sub, std::shared_ptr<TrackConsumer>) {
+        EXPECT_EQ(sub.fullTrackName, kTestTrackName);
+        pulls.fetch_add(1);
+        return folly::coro::makeTask<Publisher::SubscribeResult>(folly::makeUnexpected(
+            SubscribeError{sub.requestID, SubscribeErrorCode::DOES_NOT_EXIST, "Published track not found"}
+        ));
+      })
+      .WillOnce([&](SubscribeRequest sub, std::shared_ptr<TrackConsumer>) {
+        EXPECT_EQ(sub.fullTrackName, kTestTrackName);
+        EXPECT_TRUE(sub.forward);
+        pulls.fetch_add(1);
+        return folly::coro::makeTask<Publisher::SubscribeResult>(
+            acceptNamespaceSubscribe(std::move(sub))
+        );
+      });
+
+  doPublishNamespace(session, kTestNamespace);
+  ASSERT_TRUE(driveUntil([&] { return pulls.load() >= 1; }));
+  doPublish(session, kTestTrackName);
+  ASSERT_TRUE(driveUntil([&] { return pulls.load() == 2; }));
+  removeSession(session);
+  exec_->drive();
+}
+
 TEST_P(MoQRelayTest, PeeringSendsObjectsToSubscribedPeer) {
   auto announcer = std::make_shared<RecordingAnnouncer>();
   auto peering = makePeering(relay_, announcer);
   ASSERT_TRUE(driveUntil([&] { return peering->ready(); }));
   auto session = createMockSession();
+  allowPublisherSubscribe(*session);
   doPublishNamespace(session, kTestNamespace);
   auto consumer = doPublish(session, kTestTrackName);
   verifyOnRelayExec([&] { peering->onSubscribe(kTestTrackName); });
@@ -370,6 +510,7 @@ TEST_P(MoQRelayTest, PeeringSubscribeResumesPausedPublisher) {
   auto peering = makePeering(relay_, announcer);
   ASSERT_TRUE(driveUntil([&] { return peering->ready(); }));
   auto session = createMockSession();
+  allowPublisherSubscribe(*session);
   doPublishNamespace(session, kTestNamespace);
   auto handle = makePublishHandle();
   doPublishWithHandle(session, kTestTrackName, handle);
@@ -395,6 +536,11 @@ TEST_P(MoQRelayTest, PeeringSubscribeBeforePublisherResumes) {
   verifyOnRelayExec([&] { peering->onSubscribe(kTestTrackName); });
 
   auto session = createMockSession();
+  ON_CALL(*session, subscribe(_, _)).WillByDefault([](SubscribeRequest sub, auto) {
+    return folly::coro::makeTask<Publisher::SubscribeResult>(
+        acceptNamespaceSubscribe(std::move(sub))
+    );
+  });
   doPublishNamespace(session, kTestNamespace);
   auto handle = makePublishHandle();
   bool resumed = false;
@@ -414,6 +560,7 @@ TEST_P(MoQRelayTest, PeeringUnsubscribePausesPublisher) {
   auto peering = makePeering(relay_, announcer);
   ASSERT_TRUE(driveUntil([&] { return peering->ready(); }));
   auto session = createMockSession();
+  allowPublisherSubscribe(*session);
   doPublishNamespace(session, kTestNamespace);
   auto handle = makePublishHandle();
   auto consumer = doPublishWithHandle(session, kTestTrackName, handle);
@@ -450,6 +597,7 @@ TEST_P(MoQRelayTest, PeeringUnsubscribeKeepsForwardingClient) {
   auto peering = makePeering(relay_, announcer);
   ASSERT_TRUE(driveUntil([&] { return peering->ready(); }));
   auto session = createMockSession();
+  allowPublisherSubscribe(*session);
   doPublishNamespace(session, kTestNamespace);
   auto handle = makePublishHandle();
   ASSERT_NE(doPublishWithHandle(session, kTestTrackName, handle), nullptr);
