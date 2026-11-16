@@ -1114,7 +1114,7 @@ folly::coro::Task<moxygen::Publisher::SubscribeResult> MoqPeeringParticipant::su
 
 moxygen::Subscriber::PublishResult MoqPeeringParticipant::publish(
     moxygen::PublishRequest pub,
-    std::shared_ptr<SubscriptionHandle> handle
+    std::shared_ptr<moxygen::SubscriptionHandle> handle
 ) {
   if (originated_.contains(pub.fullTrackName)) {
     return folly::makeUnexpected(

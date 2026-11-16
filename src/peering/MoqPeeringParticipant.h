@@ -71,8 +71,10 @@ public:
       std::shared_ptr<moxygen::TrackConsumer> callback
   ) override;
 
-  PublishResult
-  publish(moxygen::PublishRequest pub, std::shared_ptr<SubscriptionHandle> handle) override;
+  PublishResult publish(
+      moxygen::PublishRequest pub,
+      std::shared_ptr<moxygen::SubscriptionHandle> handle
+  ) override;
 
 private:
   struct PeerNamespace {
@@ -185,7 +187,7 @@ private:
   std::map<moxygen::FullTrackName, NamespacePull> namespacePulls_;
   uint64_t nextPull_{1};
 
-  std::map<moxygen::FullTrackName, std::shared_ptr<SubscriptionHandle>> egress_;
+  std::map<moxygen::FullTrackName, std::shared_ptr<moxygen::SubscriptionHandle>> egress_;
   // Last forward flag a peer subscribe asked for. PUBLISH_OK is filled from this
   // when the relay reads it, so a subscribe that arrived first is not cleared
   // by a later forward=false ok.
