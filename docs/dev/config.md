@@ -125,7 +125,7 @@ If you need a new top-level section (not just a field), also:
 
 ## reflect-cpp notes
 
-- We use reflect-cpp v0.18.0 for YAML deserialization and JSON schema generation.
+- We use reflect-cpp v0.22.0 for YAML deserialization and JSON schema generation.
 - `rfl::Description<"text", T>` annotates fields for schema generation. Access the inner value with `.value()`.
 - `rfl::yaml::read<T>()` deserializes; `rfl::yaml::read<T, rfl::NoExtraFields>()` for strict mode.
 - `rfl::json::to_schema<T>()` generates JSON schema from the type structure.

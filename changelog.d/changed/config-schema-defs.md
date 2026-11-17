@@ -1,0 +1,1 @@
+- The JSON schema from [`moqx dump-config-schema`](/docs/config.md#tooling) keeps its definitions under `$defs`, the JSON Schema 2020-12 keyword, instead of `definitions`.
