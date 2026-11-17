@@ -277,7 +277,7 @@ inline std::string_view peeringMethodName(PeeringMethod method) {
   case PeeringMethod::Cluster:
     return "cluster";
   case PeeringMethod::MoqPeering:
-    return "moq-peering";
+    return "moq-fabric";
   }
   return "cluster";
 }
@@ -360,11 +360,11 @@ inline void serializeConfig(const Config& cfg, ConfigSink& s) {
   s.beginObject("peering");
   s.stringField("method", peeringMethodName(cfg.peeringMethod));
   if (cfg.moqPeering) {
-    s.beginObject("moq_peering");
+    s.beginObject("moq_fabric");
     serializeMoqPeering(s, *cfg.moqPeering);
     s.endObject();
   } else {
-    s.nullField("moq_peering");
+    s.nullField("moq_fabric");
   }
   s.endObject();
 

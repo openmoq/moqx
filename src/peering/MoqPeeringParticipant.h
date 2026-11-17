@@ -24,7 +24,7 @@ namespace openmoq::moqx {
 
 class MoqxRelay;
 
-// One participant for every peer. moq-peering collapses peers into one subscribe
+// One participant for every peer. moq-fabric collapses peers into one subscribe
 // per track, so the relay sees a single publisher and a single subscriber.
 // Peer announces are published into the relay. Local publishes are announced
 // back out. A PUBLISH_NAMESPACE stays here: a matching local or peered subscribe

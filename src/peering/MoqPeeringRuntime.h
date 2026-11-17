@@ -14,7 +14,7 @@
 #include <string>
 #include <vector>
 
-// Lives in libmoqx_peering. That static archive carries moq-peering's picoquic
+// Lives in libmoqx_peering. That static archive carries moq-fabric's picoquic
 // with local symbols, so it does not collide with the picoquic moxygen links
 // into the relay. Log lines are handed to a callback in the main executable so
 // they use that process's logger.
@@ -68,7 +68,7 @@ struct PeerCommandResult {
   std::string message;
 };
 
-// Callbacks from moq-peering. They run on peering threads and must return
+// Callbacks from moq-fabric. They run on peering threads and must return
 // without calling back into MoqPeeringRuntime.
 class MOQX_PEERING_EXPORT PeeringEvents {
 public:

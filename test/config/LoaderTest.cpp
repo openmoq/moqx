@@ -720,8 +720,8 @@ services:
       - authority: {any: true}
         path: {prefix: "/"}
 peering:
-  method: moq-peering
-  moq_peering:
+  method: moq-fabric
+  moq_fabric:
     node_type: via
     listen_port: 33434
     tls:
@@ -735,9 +735,9 @@ peering:
 
   auto cfg = loadConfig(yaml.path(), /*strict=*/true);
   ASSERT_TRUE(cfg.peering.value());
-  EXPECT_EQ(cfg.peering.value()->method.value()->str(), "moq-peering");
-  ASSERT_TRUE(cfg.peering.value()->moq_peering.value());
-  EXPECT_EQ(cfg.peering.value()->moq_peering.value()->node_type.value()->str(), "via");
+  EXPECT_EQ(cfg.peering.value()->method.value()->str(), "moq-fabric");
+  ASSERT_TRUE(cfg.peering.value()->moq_fabric.value());
+  EXPECT_EQ(cfg.peering.value()->moq_fabric.value()->node_type.value()->str(), "via");
 }
 
 TEST(ConfigLoader, UnknownPeeringMethodRejected) {

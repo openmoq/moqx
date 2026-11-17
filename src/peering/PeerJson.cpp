@@ -47,7 +47,7 @@ folly::dynamic peerDynamic(const PeerInfo& peer) {
 
 std::string peeringStatusJson(const PeeringStatus& status) {
   folly::dynamic obj = folly::dynamic::object();
-  obj["method"] = "moq-peering";
+  obj["method"] = "moq-fabric";
   obj["node_id"] = status.nodeId;
   obj["contact"] = status.contact;
   obj["node_type"] = status.nodeType;

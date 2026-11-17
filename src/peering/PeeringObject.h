@@ -17,7 +17,7 @@
 
 namespace openmoq::moqx {
 
-// One MoQT object carried on a moq-peering session. The bytes on the wire are
+// One MoQT object carried on a moq-fabric session. The bytes on the wire are
 // the subgroup header and object encoding a client session writes, or a MoQT
 // datagram. The payload cap is 1MiB.
 

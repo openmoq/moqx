@@ -1,4 +1,4 @@
-# Partial-link moq-peering and its static picoquic into one object, then make
+# Partial-link moq-fabric and its static picoquic into one object, then make
 # every symbol except MoqPeeringRuntime local. The relay already links a
 # different picoquic; the two copies share a process only if their symbols
 # do not collide.

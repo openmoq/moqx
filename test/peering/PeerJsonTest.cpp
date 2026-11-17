@@ -46,7 +46,7 @@ TEST(PeerJson, StatusCarriesPeerStateAndMetrics) {
   status.peers.push_back(peer);
 
   const auto parsed = folly::parseJson(peeringStatusJson(status));
-  EXPECT_EQ(parsed["method"].asString(), "moq-peering");
+  EXPECT_EQ(parsed["method"].asString(), "moq-fabric");
   EXPECT_EQ(parsed["node_id"].asString(), "1.0:2.0");
   EXPECT_EQ(parsed["contact"].asString(), "edge-sea-1");
   EXPECT_EQ(parsed["listen_port"].asInt(), 33434);

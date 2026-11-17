@@ -238,7 +238,7 @@ public:
   void onMoqPeering(const std::optional<peering::PeeringStatus>& maybeStatus) override {
     w_.key("peering");
     w_.beginObject();
-    w_.field("method", std::string_view("moq-peering"));
+    w_.field("method", std::string_view("moq-fabric"));
     if (!maybeStatus) {
       w_.endObject();
       return;

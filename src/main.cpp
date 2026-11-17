@@ -172,19 +172,19 @@ int main(int argc, char* argv[]) {
   SignalHandler signalHandler(&evb);
 
   // === 4. Initialize resources ===
-  // One peering method per process. moq-peering binds its UDP port here, before
+  // One peering method per process. moq-fabric binds its UDP port here, before
   // listeners, so a failure exits without accepting MoQT sessions.
   std::shared_ptr<peering::MoqPeeringRuntime> peeringRuntime;
   if (config.peeringMethod == cfg::PeeringMethod::MoqPeering) {
     if (!config.moqPeering) {
-      std::cerr << "Error: peering.method is moq-peering but it has no configuration\n";
+      std::cerr << "Error: peering.method is moq-fabric but it has no configuration\n";
       return 1;
     }
     peering::MoqPeeringRuntime::setLogger(&logPeering);
     try {
       peeringRuntime = std::make_shared<peering::MoqPeeringRuntime>(*config.moqPeering);
     } catch (const std::exception& ex) {
-      std::cerr << "Error: failed to start moq-peering: " << ex.what() << "\n";
+      std::cerr << "Error: failed to start moq-fabric: " << ex.what() << "\n";
       return 1;
     }
   }
@@ -339,7 +339,7 @@ int main(int argc, char* argv[]) {
   // === 13. Clean up resources ===
   // Stop admin last — allows a final metrics scrape during drain.
   adminServer.stop();
-  // stop() already cleared the moq-peering callback. Drop the runtime while the
+  // stop() already cleared the moq-fabric callback. Drop the runtime while the
   // context still holds the backend, so a callback that already entered can finish
   // and the peering threads join before the IO pool drains.
   peeringRuntime.reset();

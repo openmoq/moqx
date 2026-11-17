@@ -408,7 +408,7 @@ struct ParsedClusterConfig {
       hop_id;
 };
 
-using ParsedPeeringMethod = rfl::Literal<"cluster", "moq-peering">;
+using ParsedPeeringMethod = rfl::Literal<"cluster", "moq-fabric">;
 using ParsedMoqPeeringNodeType = rfl::Literal<"edge", "via", "stub">;
 
 struct ParsedMoqPeeringTlsConfig {
@@ -457,7 +457,7 @@ struct ParsedMoqPeeringConfig {
       std::optional<uint64_t>>
       check_interval_ms;
   rfl::Description<
-      "Accepted by moq-peering and not read by the current library (default: 5000)",
+      "Accepted by moq-fabric and not read by the current library (default: 5000)",
       std::optional<uint32_t>>
       init_queue_size;
   rfl::Description<"Log extra subscriber-node-set detail (default: false)", std::optional<bool>>
@@ -466,14 +466,14 @@ struct ParsedMoqPeeringConfig {
 
 struct ParsedPeeringConfig {
   rfl::Description<
-      "Peering method started with the process: cluster or moq-peering (default: cluster). "
+      "Peering method started with the process: cluster or moq-fabric (default: cluster). "
       "Only the selected method is used.",
       std::optional<ParsedPeeringMethod>>
       method;
   rfl::Description<
-      "moq-peering settings. Required when method is moq-peering, and rejected otherwise.",
+      "moq-fabric settings. Required when method is moq-fabric, and rejected otherwise.",
       std::optional<ParsedMoqPeeringConfig>>
-      moq_peering;
+      moq_fabric;
 };
 
 struct ParsedUpstreamConfig {
@@ -728,8 +728,8 @@ struct ParsedConfig {
   rfl::Description<"Logging configuration", std::optional<ParsedLoggingConfig>> logging;
   rfl::Description<"MoQ Cluster settings", std::optional<ParsedClusterConfig>> cluster;
   rfl::Description<
-      "Which peering method this process starts. cluster is MoQ Cluster. moq-peering dials "
-      "relays with the moq-peering library. Only one method is used.",
+      "Which peering method this process starts. cluster is MoQ Cluster. moq-fabric dials "
+      "relays with the moq-fabric library. Only one method is used.",
       std::optional<ParsedPeeringConfig>>
       peering;
 };

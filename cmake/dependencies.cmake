@@ -24,8 +24,8 @@ set(CATAPULT_REV "2bbf479fe2e65e425624316d335443a8c0fc0507")
 set(YAMLCPP_VERSION "0.8.0")
 set(REFLECTCPP_VERSION "v0.18.0")
 
-# moq-peering vendors its own picoquic. libmoqx_peering is a static archive
+# moq-fabric vendors its own picoquic. libmoqx_peering is a static archive
 # whose copy of those symbols is local, so they do not collide with the
 # picoquic moxygen already links into moqx.
-set(MOQ_PEERING_REPOSITORY "quicr/moq-peering")
-set(MOQ_PEERING_REV "d0bfdc9fd04646fddf32f062daa09be29f1b6930")
+set(MOQ_FABRIC_REPOSITORY "quicr/moq-fabric")
+set(MOQ_FABRIC_REV "f10e8bc5462cf5b34b8121b27e306d1f0756d62f")

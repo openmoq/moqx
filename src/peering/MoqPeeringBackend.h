@@ -30,9 +30,9 @@ class MoqxRelay;
 // host:port, with an IPv6 host in brackets. The form executePeerAdminOp parses.
 std::string moqPeerToken(std::string_view host, uint16_t port);
 
-// One moq-peering runtime for the process. Each service relay gets one
+// One moq-fabric runtime for the process. Each service relay gets one
 // MoqPeeringParticipant. Peer announcements, subscribes, and objects are
-// delivered to those participants. moq-peering does not open a MoQT session,
+// delivered to those participants. moq-fabric does not open a MoQT session,
 // so this is not a MoqtRelayBackend.
 class MoqPeeringCore : public PeeringAnnouncer,
                        public peering::PeeringEvents,
@@ -116,7 +116,7 @@ private:
   bool restartStreams_{false};
 };
 
-// The PeeringBackend installed for each service when the process selected moq-peering.
+// The PeeringBackend installed for each service when the process selected moq-fabric.
 // The services share one MoqPeeringCore.
 class MoqPeeringBackend : public PeeringBackend {
 public:

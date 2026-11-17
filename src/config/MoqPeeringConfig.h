@@ -11,7 +11,7 @@
 #include <string>
 #include <vector>
 
-// Resolved moq-peering settings. Field names follow moq::peering::Config.
+// Resolved moq-fabric settings. Field names follow moq::fabric::Config.
 // Certificate and key values are filesystem paths. The private key is never
 // copied into this struct.
 namespace openmoq::moqx::config {

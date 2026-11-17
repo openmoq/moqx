@@ -127,8 +127,8 @@ logging:                    # Logging configuration (optional)
 #   hop_id: 1001              # Hop ID (random if absent; 0 is anonymous)
 
 # peering:                    # One interconnect per process (default method: cluster)
-#   method: moq-peering       # cluster or moq-peering. cluster.enabled must not be true together with moq-peering.
-#   moq_peering:
+#   method: moq-fabric       # cluster or moq-fabric. cluster.enabled must not be true together with moq-fabric.
+#   moq_fabric:
 #     node_id: edge-sea-1     # optional; defaults to relay_id
 #     node_type: edge         # edge, via, or stub
 #     node_metric: 100

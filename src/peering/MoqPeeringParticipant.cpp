@@ -67,7 +67,7 @@ moxygen::ObjectHeader headerFrom(const PeeringObject& object) {
 } // namespace
 
 // Returned when a local subscribe is already serving a track we are injecting.
-constexpr std::string_view kTrackAlreadyServed = "moq-peering track already served";
+constexpr std::string_view kTrackAlreadyServed = "moq-fabric track already served";
 
 class PeeringIngressHandle : public moxygen::SubscriptionHandle {
 public:
@@ -210,7 +210,7 @@ public:
   ) override {
     pending_ = {};
     if (length > kMaxPeeringPayload) {
-      XLOG(WARNING) << "moq-peering dropped an object larger than 1MiB";
+      XLOG(WARNING) << "moq-fabric dropped an object larger than 1MiB";
       return folly::unit;
     }
     auto copied = copyPayload(initialPayload);
@@ -286,7 +286,7 @@ private:
     }
     auto bytes = copyPayload(payload);
     if (!bytes) {
-      XLOG(WARNING) << "moq-peering dropped an object larger than 1MiB";
+      XLOG(WARNING) << "moq-fabric dropped an object larger than 1MiB";
       return;
     }
     PeeringObject object;
@@ -428,7 +428,7 @@ private:
     }
     auto bytes = copyPayload(payload);
     if (!bytes) {
-      XLOG(WARNING) << "moq-peering dropped an object larger than 1MiB";
+      XLOG(WARNING) << "moq-fabric dropped an object larger than 1MiB";
       return folly::unit;
     }
     PeeringObject object;
@@ -482,7 +482,7 @@ void MoqPeeringParticipant::prepare() {
   info->sessionId = announcer_->sessionId();
   info->version = moxygen::kVersionDraft18;
   info->executor = executor_;
-  info->address = "moq-peering";
+  info->address = "moq-fabric";
   info->routing = plainRouting({});
   info->routing.fromPeering = true;
   info_ = std::move(info);
@@ -563,7 +563,7 @@ folly::coro::Task<void> MoqPeeringParticipant::attachOnRelay() {
   subNs.options = moxygen::SubscribeNamespaceOptions::NAMESPACE;
   auto ns = co_await relay->subscribeNamespace(std::move(subNs), shared_from_this());
   if (ns.hasError()) {
-    XLOG(WARNING) << "moq-peering namespace subscribe failed: " << ns.error().reasonPhrase;
+    XLOG(WARNING) << "moq-fabric namespace subscribe failed: " << ns.error().reasonPhrase;
   } else {
     namespaceSub_ = std::move(ns.value());
   }
@@ -573,7 +573,7 @@ folly::coro::Task<void> MoqPeeringParticipant::attachOnRelay() {
   subTracks.forward = false;
   auto tracks = co_await relay->subscribeTracks(std::move(subTracks));
   if (tracks.hasError()) {
-    XLOG(WARNING) << "moq-peering tracks subscribe failed: " << tracks.error().reasonPhrase;
+    XLOG(WARNING) << "moq-fabric tracks subscribe failed: " << tracks.error().reasonPhrase;
   } else {
     tracksSub_ = std::move(tracks.value());
   }
@@ -630,7 +630,7 @@ folly::coro::Task<void> MoqPeeringParticipant::publishPeerNamespace(moxygen::Tra
     co_return;
   }
   if (result.hasError()) {
-    XLOG(WARNING) << "moq-peering namespace rejected ns=" << safeName(ns)
+    XLOG(WARNING) << "moq-fabric namespace rejected ns=" << safeName(ns)
                   << " reason=" << result.error().reasonPhrase;
     peerNamespaces_.erase(it);
     co_return;
@@ -665,10 +665,10 @@ folly::coro::Task<void> MoqPeeringParticipant::publishPeerTrack(moxygen::FullTra
   if (published.hasError()) {
     if (published.error().reasonPhrase == kTrackAlreadyServed) {
       // A local subscribe already pulled this track. Keep that subscription.
-      XLOG(INFO) << "moq-peering injected track ftn=" << safeName(ftn);
+      XLOG(INFO) << "moq-fabric injected track ftn=" << safeName(ftn);
       co_return;
     }
-    XLOG(WARNING) << "moq-peering track rejected ftn=" << safeName(ftn)
+    XLOG(WARNING) << "moq-fabric track rejected ftn=" << safeName(ftn)
                   << " reason=" << published.error().reasonPhrase;
     originated_.erase(ftn);
     co_return;
@@ -677,14 +677,14 @@ folly::coro::Task<void> MoqPeeringParticipant::publishPeerTrack(moxygen::FullTra
     co_return;
   }
   ingress_[ftn] = published->consumer;
-  XLOG(INFO) << "moq-peering injected track ftn=" << safeName(ftn);
+  XLOG(INFO) << "moq-fabric injected track ftn=" << safeName(ftn);
   auto reply = co_await std::move(published->reply);
   if (reply.hasError()) {
     if (reply.error().reasonPhrase == kTrackAlreadyServed) {
       ingress_.erase(ftn);
       co_return;
     }
-    XLOG(WARNING) << "moq-peering track registration failed ftn=" << safeName(ftn)
+    XLOG(WARNING) << "moq-fabric track registration failed ftn=" << safeName(ftn)
                   << " reason=" << reply.error().reasonPhrase;
     co_return;
   }
@@ -725,14 +725,14 @@ void MoqPeeringParticipant::closePeerIngressStreams(const moxygen::FullTrackName
 }
 
 void MoqPeeringParticipant::onSubscribe(const moxygen::FullTrackName& ftn) {
-  XLOG(INFO) << "moq-peering subscribe ftn=" << safeName(ftn);
+  XLOG(INFO) << "moq-fabric subscribe ftn=" << safeName(ftn);
   setEgressForward(ftn, true);
   peerTracks_.insert(ftn);
   pullTrack(ftn);
 }
 
 void MoqPeeringParticipant::onUnsubscribe(const moxygen::FullTrackName& ftn) {
-  XLOG(INFO) << "moq-peering unsubscribe ftn=" << safeName(ftn);
+  XLOG(INFO) << "moq-fabric unsubscribe ftn=" << safeName(ftn);
   setEgressForward(ftn, false);
   peerTracks_.erase(ftn);
   if (!hasLocalSubscription(ftn)) {
@@ -744,7 +744,7 @@ void MoqPeeringParticipant::pull(const moxygen::FullTrackName& ftn) {
   if (!pulled_.insert(ftn).second) {
     return;
   }
-  XLOG(INFO) << "moq-peering subscribe track ftn=" << safeName(ftn);
+  XLOG(INFO) << "moq-fabric subscribe track ftn=" << safeName(ftn);
   announcer_->subscribeTrack(ftn);
 }
 
@@ -752,7 +752,7 @@ void MoqPeeringParticipant::unpull(const moxygen::FullTrackName& ftn) {
   if (pulled_.erase(ftn) == 0) {
     return;
   }
-  XLOG(INFO) << "moq-peering unsubscribe track ftn=" << safeName(ftn);
+  XLOG(INFO) << "moq-fabric unsubscribe track ftn=" << safeName(ftn);
   announcer_->unsubscribeTrack(ftn);
 }
 
@@ -807,7 +807,7 @@ void MoqPeeringParticipant::pullTrack(const moxygen::FullTrackName& ftn, bool re
   }
   auto publisher = relay->localNamespacePublisher(ftn.trackNamespace);
   if (!publisher || !publisher->publisher || !publisher->info) {
-    XLOG(DBG1) << "moq-peering namespace publisher not ready ftn=" << safeName(ftn);
+    XLOG(DBG1) << "moq-fabric namespace publisher not ready ftn=" << safeName(ftn);
     return;
   }
   const auto publisherId = publisher->info->sessionId;
@@ -831,7 +831,7 @@ void MoqPeeringParticipant::pullTrack(const moxygen::FullTrackName& ftn, bool re
   pull.generation = generation;
   pull.publisher = publisherId;
   namespacePulls_.insert_or_assign(ftn, std::move(pull));
-  XLOG(INFO) << "moq-peering subscribe namespace publisher ftn=" << safeName(ftn);
+  XLOG(INFO) << "moq-fabric subscribe namespace publisher ftn=" << safeName(ftn);
   spawn(subscribeNamespacePublisher(ftn, generation, std::move(publisher->publisher)));
 }
 
@@ -895,9 +895,9 @@ void MoqPeeringParticipant::finishNamespacePull(
                        egress_.contains(ftn);
     if (current) {
       if (result.hasException()) {
-        XLOG(INFO) << "moq-peering namespace subscribe failed ftn=" << safeName(ftn);
+        XLOG(INFO) << "moq-fabric namespace subscribe failed ftn=" << safeName(ftn);
       } else if (result.value().hasError()) {
-        XLOG(INFO) << "moq-peering namespace subscribe failed ftn=" << safeName(ftn)
+        XLOG(INFO) << "moq-fabric namespace subscribe failed ftn=" << safeName(ftn)
                    << " reason=" << result.value().error().reasonPhrase;
       }
       namespacePulls_.erase(it);
@@ -995,7 +995,7 @@ void MoqPeeringParticipant::sendLocalObject(
     PeeringObject object
 ) {
   if (object.payload.size() > kMaxPeeringPayload) {
-    XLOG(WARNING) << "moq-peering dropped an object larger than 1MiB";
+    XLOG(WARNING) << "moq-fabric dropped an object larger than 1MiB";
     return;
   }
   announcer_->sendObject(ftn, std::move(object));
@@ -1022,7 +1022,7 @@ void MoqPeeringParticipant::announceNamespaceOnce(
     return;
   }
   state.announced = true;
-  XLOG(INFO) << "moq-peering announce namespace ns=" << safeName(ns);
+  XLOG(INFO) << "moq-fabric announce namespace ns=" << safeName(ns);
   announcer_->announceNamespace(ns);
 }
 
@@ -1033,7 +1033,7 @@ void MoqPeeringParticipant::withdrawAnnouncedNamespace(const moxygen::TrackNames
   }
   it->second.announced = false;
   it->second.subscription = false;
-  XLOG(INFO) << "moq-peering withdraw namespace ns=" << safeName(ns);
+  XLOG(INFO) << "moq-fabric withdraw namespace ns=" << safeName(ns);
   announcer_->withdrawNamespace(ns);
 }
 
@@ -1079,7 +1079,7 @@ void MoqPeeringParticipant::onLocalTrackDone(const moxygen::FullTrackName& ftn) 
   if (!announcedTracks_.erase(ftn)) {
     return;
   }
-  XLOG(INFO) << "moq-peering withdraw track ftn=" << safeName(ftn);
+  XLOG(INFO) << "moq-fabric withdraw track ftn=" << safeName(ftn);
   announcer_->withdrawTrack(ftn);
   for (const auto& announced : announcedTracks_) {
     if (announced.trackNamespace == ftn.trackNamespace) {
@@ -1121,13 +1121,13 @@ moxygen::Subscriber::PublishResult MoqPeeringParticipant::publish(
         moxygen::PublishError{
             pub.requestID,
             moxygen::PublishErrorCode::INTERNAL_ERROR,
-            "moq-peering does not subscribe to its own publish"
+            "moq-fabric does not subscribe to its own publish"
         }
     );
   }
   announceNamespaceOnce(pub.fullTrackName.trackNamespace, false);
   if (announcedTracks_.insert(pub.fullTrackName).second) {
-    XLOG(INFO) << "moq-peering announce track ftn=" << safeName(pub.fullTrackName);
+    XLOG(INFO) << "moq-fabric announce track ftn=" << safeName(pub.fullTrackName);
     announcer_->announceTrack(pub.fullTrackName);
   }
   if (!egressForward_.contains(pub.fullTrackName)) {
@@ -1182,7 +1182,7 @@ void MoqPeeringParticipant::writeObject(
     const PeeringObject& object
 ) {
   if (object.payload.size() > kMaxPeeringPayload) {
-    XLOG(WARNING) << "moq-peering dropped an object larger than 1MiB";
+    XLOG(WARNING) << "moq-fabric dropped an object larger than 1MiB";
     return;
   }
   auto header = headerFrom(object);
@@ -1196,7 +1196,7 @@ void MoqPeeringParticipant::writeObject(
           consumer->objectStream(header, payload ? payload->clone() : nullptr, object.lastInGroup);
     }
     if (result.hasError()) {
-      XLOG(DBG1) << "moq-peering object not delivered ftn=" << safeName(ftn);
+      XLOG(DBG1) << "moq-fabric object not delivered ftn=" << safeName(ftn);
     }
   }
 }
@@ -1278,7 +1278,7 @@ void MoqPeeringParticipant::acceptEvent(
           options
       );
       if (!subgroup) {
-        XLOG(DBG1) << "moq-peering subgroup not opened ftn=" << safeName(ftn);
+        XLOG(DBG1) << "moq-fabric subgroup not opened ftn=" << safeName(ftn);
         continue;
       }
       stream.consumers.push_back(std::move(subgroup.value()));
@@ -1344,7 +1344,7 @@ void MoqPeeringParticipant::acceptEvent(
     }
   }
   if (!delivered) {
-    XLOG(DBG1) << "moq-peering object not delivered ftn=" << safeName(ftn);
+    XLOG(DBG1) << "moq-fabric object not delivered ftn=" << safeName(ftn);
   }
   if (delivered && (event.fin || status == moxygen::ObjectStatus::END_OF_GROUP ||
                     status == moxygen::ObjectStatus::END_OF_TRACK)) {
@@ -1373,7 +1373,7 @@ void MoqPeeringParticipant::finishIngress(
     }
     auto result = consumer->endOfSubgroup();
     if (result.hasError()) {
-      XLOG(DBG1) << "moq-peering subgroup end failed ftn=" << safeName(ftn);
+      XLOG(DBG1) << "moq-fabric subgroup end failed ftn=" << safeName(ftn);
     }
   }
 }

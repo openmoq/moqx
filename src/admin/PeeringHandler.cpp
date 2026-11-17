@@ -200,12 +200,12 @@ void registerPeeringRoutes(
         }
         auto ctx = weak.lock();
         if (!ctx) {
-          sendError(downstream, 503, "moq-peering is not running");
+          sendError(downstream, 503, "moq-fabric is not running");
           return;
         }
         auto status = ctx->moqPeeringStatus();
         if (!status) {
-          sendError(downstream, 503, "moq-peering is not running");
+          sendError(downstream, 503, "moq-fabric is not running");
           return;
         }
         sendJson(downstream, 200, peering::peeringStatusJson(*status));
@@ -246,7 +246,7 @@ void registerPeeringRoutes(
           }
           auto ctx = weak.lock();
           if (!ctx) {
-            sendError(downstream, 503, "moq-peering is not running");
+            sendError(downstream, 503, "moq-fabric is not running");
             return;
           }
           if (req && !contentTypeIsJson(*req)) {

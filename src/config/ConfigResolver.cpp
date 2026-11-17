@@ -1313,11 +1313,11 @@ void validatePeeringMaterial(
     return std::nullopt;
   };
   if (auto problem = rejectPath(certPath)) {
-    errors.push_back("peering.moq_peering.tls.cert_file: " + *problem);
+    errors.push_back("peering.moq_fabric.tls.cert_file: " + *problem);
     return;
   }
   if (auto problem = rejectPath(keyPath)) {
-    errors.push_back("peering.moq_peering.tls.key_file: " + *problem);
+    errors.push_back("peering.moq_fabric.tls.key_file: " + *problem);
     return;
   }
 
@@ -1339,8 +1339,8 @@ void validatePeeringMaterial(
     }
     return true;
   };
-  if (!checkRegular(certPath, "peering.moq_peering.tls.cert_file") ||
-      !checkRegular(keyPath, "peering.moq_peering.tls.key_file")) {
+  if (!checkRegular(certPath, "peering.moq_fabric.tls.cert_file") ||
+      !checkRegular(keyPath, "peering.moq_fabric.tls.key_file")) {
     return;
   }
 
@@ -1350,7 +1350,7 @@ void validatePeeringMaterial(
   );
   if (!cert) {
     errors.push_back(
-        "peering.moq_peering.tls.cert_file: not a PEM certificate (" + opensslError() + ")"
+        "peering.moq_fabric.tls.cert_file: not a PEM certificate (" + opensslError() + ")"
     );
     return;
   }
@@ -1359,30 +1359,30 @@ void validatePeeringMaterial(
   const ASN1_TIME* notBefore = X509_get0_notBefore(cert.get());
   const ASN1_TIME* notAfter = X509_get0_notAfter(cert.get());
   if (!notBefore || X509_cmp_current_time(notBefore) > 0) {
-    errors.push_back("peering.moq_peering.tls.cert_file: certificate is not yet valid");
+    errors.push_back("peering.moq_fabric.tls.cert_file: certificate is not yet valid");
   }
   if (!notAfter || X509_cmp_current_time(notAfter) < 0) {
-    errors.push_back("peering.moq_peering.tls.cert_file: certificate is expired");
+    errors.push_back("peering.moq_fabric.tls.cert_file: certificate is expired");
   }
 
   const int signature = X509_get_signature_nid(cert.get());
   if (signature == NID_md5WithRSAEncryption || signature == NID_sha1WithRSAEncryption ||
       signature == NID_md5 || signature == NID_sha1) {
-    errors.push_back("peering.moq_peering.tls.cert_file: certificate signature uses MD5 or SHA-1");
+    errors.push_back("peering.moq_fabric.tls.cert_file: certificate signature uses MD5 or SHA-1");
   }
 
   std::unique_ptr<EVP_PKEY, PKeyDelete> publicKey(X509_get_pubkey(cert.get()));
   if (!publicKey) {
-    errors.push_back("peering.moq_peering.tls.cert_file: certificate has no public key");
+    errors.push_back("peering.moq_fabric.tls.cert_file: certificate has no public key");
   } else {
     const int baseId = EVP_PKEY_get_base_id(publicKey.get());
     const int bits = EVP_PKEY_get_bits(publicKey.get());
     if (baseId == EVP_PKEY_RSA && bits < 2048) {
-      errors.push_back("peering.moq_peering.tls.cert_file: RSA key is shorter than 2048 bits");
+      errors.push_back("peering.moq_fabric.tls.cert_file: RSA key is shorter than 2048 bits");
     } else if (baseId == EVP_PKEY_EC && bits < 256) {
-      errors.push_back("peering.moq_peering.tls.cert_file: EC key is shorter than 256 bits");
+      errors.push_back("peering.moq_fabric.tls.cert_file: EC key is shorter than 256 bits");
     } else if (baseId != EVP_PKEY_RSA && baseId != EVP_PKEY_EC) {
-      errors.push_back("peering.moq_peering.tls.cert_file: public key must be RSA or EC");
+      errors.push_back("peering.moq_fabric.tls.cert_file: public key must be RSA or EC");
     }
   }
 
@@ -1393,7 +1393,7 @@ void validatePeeringMaterial(
   );
   if (!privateKey) {
     errors.push_back(
-        "peering.moq_peering.tls.key_file: key is encrypted or not a PEM private key (" +
+        "peering.moq_fabric.tls.key_file: key is encrypted or not a PEM private key (" +
         opensslError() + ")"
     );
     return;
@@ -1401,7 +1401,7 @@ void validatePeeringMaterial(
   ERR_clear_error();
   if (X509_check_private_key(cert.get(), privateKey.get()) != 1) {
     errors.push_back(
-        "peering.moq_peering.tls.key_file: private key does not match the certificate"
+        "peering.moq_fabric.tls.key_file: private key does not match the certificate"
     );
     ERR_clear_error();
   }
@@ -1413,7 +1413,7 @@ void validatePeeringMaterial(
                        perms::others_read | perms::others_write | perms::others_exec;
   if (!ec && (perms & exposed) != perms::none) {
     warnings.push_back(
-        "peering.moq_peering.tls.key_file is readable by group or others; restrict it to the "
+        "peering.moq_fabric.tls.key_file is readable by group or others; restrict it to the "
         "relay user (0600): " +
         keyPath
     );
@@ -1422,7 +1422,7 @@ void validatePeeringMaterial(
 
 bool nodeIdOk(const std::string& id, std::vector<std::string>& errors) {
   if (auto problem = validateNodeId(id)) {
-    errors.push_back("peering.moq_peering.node_id: " + *problem);
+    errors.push_back("peering.moq_fabric.node_id: " + *problem);
     return false;
   }
   return true;
@@ -1438,18 +1438,18 @@ void validateMoqPeering(
     nodeIdOk(*nodeId, errors);
   } else if (const auto& relayId = config.relay_id.value()) {
     if (auto problem = validateNodeId(*relayId)) {
-      errors.push_back("relay_id is used as the moq-peering node_id: " + *problem);
+      errors.push_back("relay_id is used as the moq-fabric node_id: " + *problem);
     }
   }
 
   const uint16_t listenPort = parsed.listen_port.value().value_or(33434);
   if (listenPort == 0) {
-    errors.push_back("peering.moq_peering.listen_port must be from 1 to 65535");
+    errors.push_back("peering.moq_fabric.listen_port must be from 1 to 65535");
   } else {
     for (const auto& listener : config.listeners.value()) {
       if (listener.udp.value().socket.value().port.value() == listenPort) {
         warnings.push_back(
-            "peering.moq_peering.listen_port " + std::to_string(listenPort) +
+            "peering.moq_fabric.listen_port " + std::to_string(listenPort) +
             " is also a MoQT listener port (" + listener.name.value() + ")"
         );
       }
@@ -1458,24 +1458,24 @@ void validateMoqPeering(
 
   if (const auto& interval = parsed.check_interval_ms.value()) {
     if (*interval < 2000) {
-      errors.push_back("peering.moq_peering.check_interval_ms must be at least 2000");
+      errors.push_back("peering.moq_fabric.check_interval_ms must be at least 2000");
     }
   }
   if (const auto& queue = parsed.init_queue_size.value()) {
     if (*queue == 0) {
-      errors.push_back("peering.moq_peering.init_queue_size must be at least 1");
+      errors.push_back("peering.moq_fabric.init_queue_size must be at least 1");
     }
   }
 
   std::unordered_set<std::string> seen;
   const auto& peers = parsed.peers.value();
   if (peers && peers->size() > 128) {
-    errors.push_back("peering.moq_peering.peers is limited to 128 entries");
+    errors.push_back("peering.moq_fabric.peers is limited to 128 entries");
   }
   if (peers) {
     for (size_t i = 0; i < peers->size(); ++i) {
       const auto& peer = (*peers)[i];
-      const std::string label = "peering.moq_peering.peers[" + std::to_string(i) + "]";
+      const std::string label = "peering.moq_fabric.peers[" + std::to_string(i) + "]";
       std::string host;
       if (auto problem = normalizePeerHost(peer.host.value(), host)) {
         errors.push_back(label + ": " + *problem);
@@ -1511,7 +1511,7 @@ void validateMoqPeering(
   }
   if (!upstreamServices.empty()) {
     warnings.push_back(
-        "peering.method is moq-peering, so service upstreams are not dialed (" +
+        "peering.method is moq-fabric, so service upstreams are not dialed (" +
         folly::join(", ", upstreamServices) + ")"
     );
   }
@@ -1522,7 +1522,7 @@ PeeringMethod peeringMethodOf(const ParsedConfig& config) {
   if (!peering || !peering->method.value()) {
     return PeeringMethod::Cluster;
   }
-  if (peering->method.value()->str() == "moq-peering") {
+  if (peering->method.value()->str() == "moq-fabric") {
     return PeeringMethod::MoqPeering;
   }
   return PeeringMethod::Cluster;
@@ -1535,24 +1535,24 @@ void validatePeeringSelection(
 ) {
   const auto method = peeringMethodOf(config);
   const auto& peering = config.peering.value();
-  const bool hasMoq = peering && peering->moq_peering.value().has_value();
+  const bool hasMoq = peering && peering->moq_fabric.value().has_value();
   if (method == PeeringMethod::Cluster && hasMoq) {
     errors.push_back(
-        "peering.moq_peering is set, but peering.method is cluster. Only one peering method is used"
+        "peering.moq_fabric is set, but peering.method is cluster. Only one peering method is used"
     );
   }
   if (method == PeeringMethod::MoqPeering && !hasMoq) {
-    errors.push_back("peering.method is moq-peering, so peering.moq_peering is required");
+    errors.push_back("peering.method is moq-fabric, so peering.moq_fabric is required");
   }
   if (method == PeeringMethod::MoqPeering && config.cluster.value() &&
       config.cluster.value()->enabled.value().value_or(true)) {
     errors.push_back(
-        "cluster is enabled, but peering.method is moq-peering. Omit cluster or set "
+        "cluster is enabled, but peering.method is moq-fabric. Omit cluster or set "
         "cluster.enabled: false. Only one peering method is used"
     );
   }
   if (method == PeeringMethod::MoqPeering && hasMoq) {
-    validateMoqPeering(config, *peering->moq_peering.value(), errors, warnings);
+    validateMoqPeering(config, *peering->moq_fabric.value(), errors, warnings);
   }
 }
 
@@ -1860,7 +1860,7 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
   std::optional<ClusterConfig> cluster;
   if (peeringMethod == PeeringMethod::MoqPeering) {
     // The cluster method stays off even when the cluster block is absent.
-    moqPeering = resolveMoqPeering(*config.peering.value()->moq_peering.value(), relayID);
+    moqPeering = resolveMoqPeering(*config.peering.value()->moq_fabric.value(), relayID);
   } else {
     const auto& parsedCluster = config.cluster.value();
     if (!parsedCluster) {

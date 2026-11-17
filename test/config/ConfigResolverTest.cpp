@@ -2728,8 +2728,8 @@ ParsedConfig makeMoqPeeringConfig(const TempPeeringCert& files) {
   cluster.enabled = false;
   cfg.cluster = cluster;
   ParsedPeeringConfig peering;
-  peering.method = ParsedPeeringMethod::make<"moq-peering">();
-  peering.moq_peering = makeMoqPeering(files);
+  peering.method = ParsedPeeringMethod::make<"moq-fabric">();
+  peering.moq_fabric = makeMoqPeering(files);
   cfg.peering = peering;
   return cfg;
 }
@@ -2760,7 +2760,7 @@ TEST(ResolveConfig, MoqPeeringDefaultsNodeIdToRelayId) {
   TempPeeringCert files;
   auto cfg = makeMoqPeeringConfig(files);
   cfg.relay_id = std::optional<std::string>{"relay-a"};
-  cfg.peering.value()->moq_peering.value()->node_id = std::nullopt;
+  cfg.peering.value()->moq_fabric.value()->node_id = std::nullopt;
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasValue()) << result.error();
   EXPECT_EQ(result.value().config.moqPeering->nodeId, "relay-a");
@@ -2784,7 +2784,7 @@ TEST(ResolveConfig, ClusterMethodRejectsMoqPeeringBlock) {
   tls.cert_file = std::string{"/cert.pem"};
   tls.key_file = std::string{"/key.pem"};
   moq.tls = std::move(tls);
-  peering.moq_peering = std::move(moq);
+  peering.moq_fabric = std::move(moq);
   cfg.peering = std::move(peering);
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasError());
@@ -2794,11 +2794,11 @@ TEST(ResolveConfig, ClusterMethodRejectsMoqPeeringBlock) {
 TEST(ResolveConfig, MoqPeeringRequiresItsBlock) {
   auto cfg = makeMinimalInsecureConfig();
   ParsedPeeringConfig peering;
-  peering.method = ParsedPeeringMethod::make<"moq-peering">();
+  peering.method = ParsedPeeringMethod::make<"moq-fabric">();
   cfg.peering = peering;
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasError());
-  EXPECT_THAT(result.error(), HasSubstr("peering.moq_peering is required"));
+  EXPECT_THAT(result.error(), HasSubstr("peering.moq_fabric is required"));
 }
 
 TEST(ResolveConfig, MoqPeeringRejectsExpiredCertificate) {
@@ -2811,9 +2811,9 @@ TEST(ResolveConfig, MoqPeeringRejectsExpiredCertificate) {
 TEST(ResolveConfig, MoqPeeringRejectsBadHostAndShortInterval) {
   TempPeeringCert files;
   auto cfg = makeMoqPeeringConfig(files);
-  auto& peer = cfg.peering.value()->moq_peering.value()->peers.value()->front();
+  auto& peer = cfg.peering.value()->moq_fabric.value()->peers.value()->front();
   peer.host = std::string{"http://192.0.2.10/path"};
-  cfg.peering.value()->moq_peering.value()->check_interval_ms = uint64_t{1000};
+  cfg.peering.value()->moq_fabric.value()->check_interval_ms = uint64_t{1000};
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasError());
   EXPECT_THAT(result.error(), HasSubstr("not allowed"));

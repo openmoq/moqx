@@ -24,7 +24,7 @@ class AdminServer;
 //
 // GET  /peering
 //   cluster:     {"method":"cluster","enabled":bool,"hop_id":n}
-//   moq-peering: method, local node id, and each session's state and metrics
+//   moq-fabric: method, local node id, and each session's state and metrics
 //
 // POST /peering/add-peer        {"host","port","metric"?}
 // POST /peering/remove-peer     {"host","port"}

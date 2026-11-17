@@ -350,42 +350,42 @@ add_library(moqx_warnings INTERFACE)
 target_compile_options(moqx_warnings INTERFACE
   -Wall -Wextra -Wpedantic -Wno-missing-field-initializers)
 
-# --- moq-peering --------------------------------------------------------------
-# A static archive. moq-peering's picoquic is linked into one relocatable
+# --- moq-fabric --------------------------------------------------------------
+# A static archive. moq-fabric's picoquic is linked into one relocatable
 # object and every symbol except MoqPeeringRuntime is made local, so this copy
 # stays separate from the picoquic moxygen links into the relay. Objects are
 # built hidden and position-independent.
-set(MOQ_PEERING_BUILD_TESTS OFF CACHE BOOL "Build moq-peering tests")
-set(MOQ_PEERING_BUILD_EXAMPLES OFF CACHE BOOL "Build moq-peering examples")
-set(MOQ_PEERING_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../moq-peering" CACHE PATH
-    "Local moq-peering checkout. Used when that directory contains CMakeLists.txt.")
+set(MOQ_FABRIC_BUILD_TESTS OFF CACHE BOOL "Build moq-fabric tests")
+set(MOQ_FABRIC_BUILD_EXAMPLES OFF CACHE BOOL "Build moq-fabric examples")
+set(MOQ_FABRIC_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../moq-fabric" CACHE PATH
+    "Local moq-fabric checkout. Used when that directory contains CMakeLists.txt.")
 
 set(_moqx_peering_src "")
-if(EXISTS "${MOQ_PEERING_SOURCE_DIR}/CMakeLists.txt")
-  set(_moqx_peering_src "${MOQ_PEERING_SOURCE_DIR}")
-elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../../ws-media10x/moq-peering/CMakeLists.txt")
-  set(_moqx_peering_src "${CMAKE_CURRENT_SOURCE_DIR}/../../ws-media10x/moq-peering")
+if(EXISTS "${MOQ_FABRIC_SOURCE_DIR}/CMakeLists.txt")
+  set(_moqx_peering_src "${MOQ_FABRIC_SOURCE_DIR}")
+elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../../ws-media10x/moq-fabric/CMakeLists.txt")
+  set(_moqx_peering_src "${CMAKE_CURRENT_SOURCE_DIR}/../../ws-media10x/moq-fabric")
 endif()
 
 # spdlog 1.17 does not compile against the fmt folly already provides. Bundle
-# fmt inside spdlog, and add that target before moq-peering so the library
+# fmt inside spdlog, and add that target before moq-fabric so the library
 # keeps it instead of switching on SPDLOG_FMT_EXTERNAL.
 set(SPDLOG_FMT_EXTERNAL OFF CACHE BOOL
-    "Bundle fmt inside the moq-peering library" FORCE)
+    "Bundle fmt inside the moq-fabric library" FORCE)
 CPMAddPackage("gh:gabime/spdlog@1.17.0")
 
 if(_moqx_peering_src)
-  message(STATUS "moq-peering: using ${_moqx_peering_src}")
+  message(STATUS "moq-fabric: using ${_moqx_peering_src}")
   CPMAddPackage(
-    NAME moq-peering
+    NAME moq-fabric
     SOURCE_DIR "${_moqx_peering_src}"
   )
 else()
-  message(STATUS "moq-peering: fetching ${MOQ_PEERING_REPOSITORY}@${MOQ_PEERING_REV}")
+  message(STATUS "moq-fabric: fetching ${MOQ_FABRIC_REPOSITORY}@${MOQ_FABRIC_REV}")
   CPMAddPackage(
-    NAME moq-peering
-    GITHUB_REPOSITORY ${MOQ_PEERING_REPOSITORY}
-    GIT_TAG ${MOQ_PEERING_REV}
+    NAME moq-fabric
+    GITHUB_REPOSITORY ${MOQ_FABRIC_REPOSITORY}
+    GIT_TAG ${MOQ_FABRIC_REV}
   )
 endif()
 
@@ -425,17 +425,17 @@ set_property(GLOBAL PROPERTY MOQX_HIDDEN_PEERING_TARGETS "")
 if(DEFINED spdlog_SOURCE_DIR)
   moqx_hide_peering_dir("${spdlog_SOURCE_DIR}")
 endif()
-if(DEFINED moq-peering_SOURCE_DIR)
-  moqx_hide_peering_dir("${moq-peering_SOURCE_DIR}")
+if(DEFINED moq-fabric_SOURCE_DIR)
+  moqx_hide_peering_dir("${moq-fabric_SOURCE_DIR}")
 endif()
 get_property(_moqx_hidden_targets GLOBAL PROPERTY MOQX_HIDDEN_PEERING_TARGETS)
 list(LENGTH _moqx_hidden_targets _moqx_hidden_count)
 if(_moqx_hidden_count EQUAL 0)
-  message(FATAL_ERROR "moq-peering: failed to mark its targets hidden")
+  message(FATAL_ERROR "moq-fabric: failed to mark its targets hidden")
 endif()
-message(STATUS "moq-peering: hid ${_moqx_hidden_count} targets inside libmoqx_peering")
+message(STATUS "moq-fabric: hid ${_moqx_hidden_count} targets inside libmoqx_peering")
 
-# Static libraries in the moq::peering closure are absorbed into one object.
+# Static libraries in the moq::fabric closure are absorbed into one object.
 # Shared libraries and link flags (OpenSSL, brotli) stay on the final link.
 # picotls records brotli with link_directories() plus -lbrotlidec, which does
 # not travel with a bare -l flag, so resolve those against the collected dirs.
@@ -476,7 +476,7 @@ function(moqx_peering_closure root static_out link_out)
       if(_item MATCHES "^\\$<LINK_ONLY:(.+)>$")
         list(APPEND _queue "${CMAKE_MATCH_1}")
       else()
-        message(FATAL_ERROR "moq-peering: unrecognized link item '${_item}'")
+        message(FATAL_ERROR "moq-fabric: unrecognized link item '${_item}'")
       endif()
       continue()
     endif()
@@ -535,12 +535,12 @@ function(moqx_peering_closure root static_out link_out)
   set(${link_out} "${_link}" PARENT_SCOPE)
 endfunction()
 
-moqx_peering_closure(moq::peering _moqx_peering_static _moqx_peering_link)
+moqx_peering_closure(moq::fabric _moqx_peering_static _moqx_peering_link)
 if(NOT _moqx_peering_static)
-  message(FATAL_ERROR "moq-peering: no static libraries to bundle")
+  message(FATAL_ERROR "moq-fabric: no static libraries to bundle")
 endif()
-message(STATUS "moq-peering: bundling ${_moqx_peering_static}")
-message(STATUS "moq-peering: linking ${_moqx_peering_link}")
+message(STATUS "moq-fabric: bundling ${_moqx_peering_static}")
+message(STATUS "moq-fabric: linking ${_moqx_peering_link}")
 
 if(NOT APPLE)
   find_program(MOQX_OBJCOPY NAMES objcopy llvm-objcopy REQUIRED)
@@ -555,7 +555,7 @@ target_include_directories(moqx_peering_obj
 )
 target_link_libraries(moqx_peering_obj
   PRIVATE
-    moq::peering
+    moq::fabric
     moqx_warnings
 )
 set_target_properties(moqx_peering_obj PROPERTIES
@@ -586,7 +586,7 @@ add_custom_command(
     ${_moqx_peering_archives}
   DEPENDS moqx_peering_obj ${_moqx_peering_static}
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/bundle-peering.cmake"
-  COMMENT "Bundling moq-peering into a static object"
+  COMMENT "Bundling moq-fabric into a static object"
   VERBATIM
 )
 set_source_files_properties("${_moqx_peering_bundle}" PROPERTIES

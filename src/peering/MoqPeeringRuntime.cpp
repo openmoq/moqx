@@ -11,7 +11,7 @@
 #include <optional>
 #include <utility>
 
-#include <moq/peering/peer_manager.h>
+#include <moq/fabric/peer_manager.h>
 
 namespace openmoq::moqx::peering {
 namespace {
@@ -34,29 +34,29 @@ void emitLog(PeeringLogLevel level, std::string message) {
 
 // Matches the default written into resolved config when node_metric is omitted.
 static_assert(
-    moq::peering::kDefaultNodeMetric == 100,
-    "MoqPeeringConfig::nodeMetric default must match moq-peering"
+    moq::fabric::kDefaultNodeMetric == 100,
+    "MoqPeeringConfig::nodeMetric default must match moq-fabric"
 );
 
-moq::peering::NodeType toLibrary(config::MoqPeeringNodeType type) {
+moq::fabric::NodeType toLibrary(config::MoqPeeringNodeType type) {
   switch (type) {
   case config::MoqPeeringNodeType::Via:
-    return moq::peering::NodeType::kVia;
+    return moq::fabric::NodeType::kVia;
   case config::MoqPeeringNodeType::Edge:
-    return moq::peering::NodeType::kEdge;
+    return moq::fabric::NodeType::kEdge;
   case config::MoqPeeringNodeType::Stub:
-    return moq::peering::NodeType::kStub;
+    return moq::fabric::NodeType::kStub;
   }
-  return moq::peering::NodeType::kEdge;
+  return moq::fabric::NodeType::kEdge;
 }
 
-const char* nodeTypeName(moq::peering::NodeType type) {
+const char* nodeTypeName(moq::fabric::NodeType type) {
   switch (type) {
-  case moq::peering::NodeType::kVia:
+  case moq::fabric::NodeType::kVia:
     return "via";
-  case moq::peering::NodeType::kEdge:
+  case moq::fabric::NodeType::kEdge:
     return "edge";
-  case moq::peering::NodeType::kStub:
+  case moq::fabric::NodeType::kStub:
     return "stub";
   }
   return "edge";
@@ -66,29 +66,29 @@ const char* nodeTypeName(config::MoqPeeringNodeType type) {
   return nodeTypeName(toLibrary(type));
 }
 
-const char* originName(moq::peering::PeerOrigin origin) {
+const char* originName(moq::fabric::PeerOrigin origin) {
   switch (origin) {
-  case moq::peering::PeerOrigin::kAccepted:
+  case moq::fabric::PeerOrigin::kAccepted:
     return "accepted";
-  case moq::peering::PeerOrigin::kDialed:
+  case moq::fabric::PeerOrigin::kDialed:
     return "dialed";
   }
   return "accepted";
 }
 
-const char* statusName(moq::peering::PeerLinkStatus status) {
+const char* statusName(moq::fabric::PeerLinkStatus status) {
   switch (status) {
-  case moq::peering::PeerLinkStatus::kConnecting:
+  case moq::fabric::PeerLinkStatus::kConnecting:
     return "connecting";
-  case moq::peering::PeerLinkStatus::kConnected:
+  case moq::fabric::PeerLinkStatus::kConnected:
     return "connected";
-  case moq::peering::PeerLinkStatus::kDisconnected:
+  case moq::fabric::PeerLinkStatus::kDisconnected:
     return "disconnected";
   }
   return "connecting";
 }
 
-PeerInfo toPeerInfo(const moq::peering::PeerSnapshot& peer) {
+PeerInfo toPeerInfo(const moq::fabric::PeerSnapshot& peer) {
   PeerInfo info;
   info.sessionId = peer.session_id;
   info.origin = originName(peer.origin);
@@ -97,7 +97,7 @@ PeerInfo toPeerInfo(const moq::peering::PeerSnapshot& peer) {
   info.port = peer.port;
   info.identified = peer.identified;
   if (peer.identified) {
-    info.nodeId = moq::peering::FormatNodeId(peer.node_id);
+    info.nodeId = moq::fabric::FormatNodeId(peer.node_id);
   }
   info.contact = peer.contact;
   info.nodeType = nodeTypeName(peer.node_type);
@@ -111,7 +111,7 @@ PeerInfo toPeerInfo(const moq::peering::PeerSnapshot& peer) {
   return info;
 }
 
-PeerCommandResult toCommand(const moq::peering::PeerAdminResult& result) {
+PeerCommandResult toCommand(const moq::fabric::PeerAdminResult& result) {
   PeerCommandResult out;
   out.ok = result.ok;
   out.host = result.host;
@@ -144,12 +144,12 @@ namespaceFromBytes(const std::vector<std::vector<uint8_t>>& raw) {
   return out;
 }
 
-std::optional<moq::peering::TrackName>
+std::optional<moq::fabric::TrackName>
 trackFromStrings(const std::vector<std::string>& nameSpace, const std::string& track) {
   if (nameSpace.size() > kMaxNameElements || track.size() > kMaxNameBytes) {
     return std::nullopt;
   }
-  moq::peering::TrackName name;
+  moq::fabric::TrackName name;
   name.name_space.reserve(nameSpace.size());
   for (const auto& part : nameSpace) {
     if (part.size() > kMaxNameBytes) {
@@ -165,7 +165,7 @@ trackFromStrings(const std::vector<std::string>& nameSpace, const std::string& t
 
 struct RuntimeState;
 
-class RelayDelegate : public moq::peering::Delegate {
+class RelayDelegate : public moq::fabric::Delegate {
 public:
   explicit RelayDelegate(RuntimeState* state) : state_(state) {}
 
@@ -174,12 +174,12 @@ public:
 
   void OnPeerNamespace(const std::vector<std::vector<uint8_t>>& nameSpace, bool withdrawn) override;
 
-  void OnPeerTrack(const moq::peering::TrackName& name, bool withdrawn) override;
+  void OnPeerTrack(const moq::fabric::TrackName& name, bool withdrawn) override;
 
   void OnPeerSubscribe(
-      const moq::peering::TrackName& name,
+      const moq::fabric::TrackName& name,
       std::uint64_t trackHash,
-      const moq::peering::SubscribeParams& params
+      const moq::fabric::SubscribeParams& params
   ) override;
 
   void OnPeerUnsubscribe(std::uint64_t trackHash, bool subscribersRemain) override;
@@ -201,21 +201,21 @@ struct RuntimeState {
   config::MoqPeeringConfig config;
   std::atomic<PeeringEvents*> events{nullptr};
   RelayDelegate delegate;
-  std::unique_ptr<moq::peering::PeerManager> manager;
+  std::unique_ptr<moq::fabric::PeerManager> manager;
   mutable std::mutex mu;
 
   explicit RuntimeState(config::MoqPeeringConfig cfg) : config(std::move(cfg)), delegate(this) {}
 };
 
 void RelayDelegate::OnPeerUp(std::uint64_t sessionId) {
-  emitLog(PeeringLogLevel::Info, "moq-peering session up id=" + std::to_string(sessionId));
+  emitLog(PeeringLogLevel::Info, "moq-fabric session up id=" + std::to_string(sessionId));
   if (PeeringEvents* events = state_->events.load(std::memory_order_acquire)) {
     events->onPeerUp(sessionId);
   }
 }
 
 void RelayDelegate::OnPeerDown(std::uint64_t sessionId) {
-  emitLog(PeeringLogLevel::Info, "moq-peering session down id=" + std::to_string(sessionId));
+  emitLog(PeeringLogLevel::Info, "moq-fabric session down id=" + std::to_string(sessionId));
   if (PeeringEvents* events = state_->events.load(std::memory_order_acquire)) {
     events->onPeerDown(sessionId);
   }
@@ -227,7 +227,7 @@ void RelayDelegate::OnPeerNamespace(
 ) {
   auto parsed = namespaceFromBytes(nameSpace);
   if (!parsed) {
-    emitLog(PeeringLogLevel::Warning, "moq-peering dropped a namespace that exceeds name limits");
+    emitLog(PeeringLogLevel::Warning, "moq-fabric dropped a namespace that exceeds name limits");
     return;
   }
   if (PeeringEvents* events = state_->events.load(std::memory_order_acquire)) {
@@ -235,10 +235,10 @@ void RelayDelegate::OnPeerNamespace(
   }
 }
 
-void RelayDelegate::OnPeerTrack(const moq::peering::TrackName& name, bool withdrawn) {
+void RelayDelegate::OnPeerTrack(const moq::fabric::TrackName& name, bool withdrawn) {
   auto parsed = namespaceFromBytes(name.name_space);
   if (!parsed || name.name.size() > kMaxNameBytes) {
-    emitLog(PeeringLogLevel::Warning, "moq-peering dropped a track that exceeds name limits");
+    emitLog(PeeringLogLevel::Warning, "moq-fabric dropped a track that exceeds name limits");
     return;
   }
   if (PeeringEvents* events = state_->events.load(std::memory_order_acquire)) {
@@ -251,13 +251,13 @@ void RelayDelegate::OnPeerTrack(const moq::peering::TrackName& name, bool withdr
 }
 
 void RelayDelegate::OnPeerSubscribe(
-    const moq::peering::TrackName& name,
+    const moq::fabric::TrackName& name,
     std::uint64_t trackHash,
-    const moq::peering::SubscribeParams& params
+    const moq::fabric::SubscribeParams& params
 ) {
   auto parsed = namespaceFromBytes(name.name_space);
   if (!parsed || name.name.size() > kMaxNameBytes) {
-    emitLog(PeeringLogLevel::Warning, "moq-peering dropped a subscribe that exceeds name limits");
+    emitLog(PeeringLogLevel::Warning, "moq-fabric dropped a subscribe that exceeds name limits");
     return;
   }
   if (PeeringEvents* events = state_->events.load(std::memory_order_acquire)) {
@@ -287,7 +287,7 @@ void RelayDelegate::OnPeerData(
     return;
   }
   if (data->size() > kMaxObjectBytes) {
-    emitLog(PeeringLogLevel::Warning, "moq-peering dropped an object that exceeds the size limit");
+    emitLog(PeeringLogLevel::Warning, "moq-fabric dropped an object that exceeds the size limit");
     return;
   }
   if (PeeringEvents* events = state_->events.load(std::memory_order_acquire)) {
@@ -314,12 +314,12 @@ void announce(
     RuntimeState& state,
     const std::vector<std::string>& nameSpace,
     const std::string& track,
-    moq::peering::Announcement kind,
+    moq::fabric::Announcement kind,
     bool withdraw
 ) {
   auto name = trackFromStrings(nameSpace, track);
   if (!name) {
-    emitLog(PeeringLogLevel::Warning, "moq-peering dropped a local name that exceeds name limits");
+    emitLog(PeeringLogLevel::Warning, "moq-fabric dropped a local name that exceeds name limits");
     return;
   }
   std::lock_guard<std::mutex> lock(state.mu);
@@ -353,7 +353,7 @@ void MoqPeeringRuntime::setLogger(PeeringLogFn fn) {
 
 MoqPeeringRuntime::MoqPeeringRuntime(const config::MoqPeeringConfig& config)
     : impl_(std::make_unique<Impl>(config)) {
-  moq::peering::Config library;
+  moq::fabric::Config library;
   library.node_id = config.nodeId;
   library.node_type = toLibrary(config.nodeType);
   library.node_metric = config.nodeMetric;
@@ -369,7 +369,7 @@ MoqPeeringRuntime::MoqPeeringRuntime(const config::MoqPeeringConfig& config)
   library.init_queue_size = config.initQueueSize;
   library.debug = config.debug;
 
-  impl_->state.manager = std::make_unique<moq::peering::PeerManager>(library);
+  impl_->state.manager = std::make_unique<moq::fabric::PeerManager>(library);
   impl_->state.manager->SetDelegate(&impl_->state.delegate);
 
   for (const auto& peer : config.peers) {
@@ -380,7 +380,7 @@ MoqPeeringRuntime::MoqPeeringRuntime(const config::MoqPeeringConfig& config)
     if (!result.ok) {
       emitLog(
           PeeringLogLevel::Warning,
-          "moq-peering failed to set metric for " + peer.host + ":" + std::to_string(peer.port) +
+          "moq-fabric failed to set metric for " + peer.host + ":" + std::to_string(peer.port) +
               ": " + result.message
       );
     }
@@ -388,9 +388,9 @@ MoqPeeringRuntime::MoqPeeringRuntime(const config::MoqPeeringConfig& config)
 
   emitLog(
       PeeringLogLevel::Info,
-      "moq-peering listening on UDP " + std::to_string(config.listenPort) +
+      "moq-fabric listening on UDP " + std::to_string(config.listenPort) +
           " contact=" + config.nodeId +
-          " node_id=" + moq::peering::FormatNodeId(impl_->state.manager->LocalNodeId()) +
+          " node_id=" + moq::fabric::FormatNodeId(impl_->state.manager->LocalNodeId()) +
           " type=" + nodeTypeName(config.nodeType)
   );
 }
@@ -402,25 +402,25 @@ void MoqPeeringRuntime::setEvents(PeeringEvents* events) {
 }
 
 void MoqPeeringRuntime::announceNamespace(const std::vector<std::string>& nameSpace) {
-  announce(impl_->state, nameSpace, "", moq::peering::Announcement::kNamespace, false);
+  announce(impl_->state, nameSpace, "", moq::fabric::Announcement::kNamespace, false);
 }
 
 void MoqPeeringRuntime::withdrawNamespace(const std::vector<std::string>& nameSpace) {
-  announce(impl_->state, nameSpace, "", moq::peering::Announcement::kNamespace, true);
+  announce(impl_->state, nameSpace, "", moq::fabric::Announcement::kNamespace, true);
 }
 
 void MoqPeeringRuntime::announceTrack(
     const std::vector<std::string>& nameSpace,
     const std::string& track
 ) {
-  announce(impl_->state, nameSpace, track, moq::peering::Announcement::kTrack, false);
+  announce(impl_->state, nameSpace, track, moq::fabric::Announcement::kTrack, false);
 }
 
 void MoqPeeringRuntime::withdrawTrack(
     const std::vector<std::string>& nameSpace,
     const std::string& track
 ) {
-  announce(impl_->state, nameSpace, track, moq::peering::Announcement::kTrack, true);
+  announce(impl_->state, nameSpace, track, moq::fabric::Announcement::kTrack, true);
 }
 
 void MoqPeeringRuntime::subscribe(
@@ -431,10 +431,10 @@ void MoqPeeringRuntime::subscribe(
 ) {
   auto name = trackFromStrings(nameSpace, track);
   if (!name) {
-    emitLog(PeeringLogLevel::Warning, "moq-peering dropped a subscribe that exceeds name limits");
+    emitLog(PeeringLogLevel::Warning, "moq-fabric dropped a subscribe that exceeds name limits");
     return;
   }
-  moq::peering::SubscribeParams params;
+  moq::fabric::SubscribeParams params;
   params.priority = priority;
   params.forward = forward ? 1 : 0;
   params.delivery_timeout_ms = impl_->state.config.objectTtlMs;
@@ -454,7 +454,7 @@ void MoqPeeringRuntime::unsubscribe(
   if (!name) {
     return;
   }
-  auto hash = moq::peering::PeerManager::HashTrack(*name);
+  auto hash = moq::fabric::PeerManager::HashTrack(*name);
   std::lock_guard<std::mutex> lock(impl_->state.mu);
   if (!impl_->state.manager) {
     return;
@@ -477,7 +477,7 @@ void MoqPeeringRuntime::sendData(
   if (bytes->size() > kMaxObjectBytes) {
     emitLog(
         PeeringLogLevel::Warning,
-        "moq-peering dropped an outbound object that exceeds the size limit"
+        "moq-fabric dropped an outbound object that exceeds the size limit"
     );
     return;
   }
@@ -485,16 +485,16 @@ void MoqPeeringRuntime::sendData(
   if (!name) {
     emitLog(
         PeeringLogLevel::Warning,
-        "moq-peering dropped an object whose name exceeds name limits"
+        "moq-fabric dropped an object whose name exceeds name limits"
     );
     return;
   }
-  auto hash = moq::peering::PeerManager::HashTrack(*name);
-  moq::peering::DataType type = moq::peering::DataType::kExistingStream;
+  auto hash = moq::fabric::PeerManager::HashTrack(*name);
+  moq::fabric::DataType type = moq::fabric::DataType::kExistingStream;
   if (kind == WireKind::Datagram) {
-    type = moq::peering::DataType::kDatagram;
+    type = moq::fabric::DataType::kDatagram;
   } else if (kind == WireKind::NewStream) {
-    type = moq::peering::DataType::kNewStream;
+    type = moq::fabric::DataType::kNewStream;
   }
   std::lock_guard<std::mutex> lock(impl_->state.mu);
   if (!impl_->state.manager) {
@@ -522,7 +522,7 @@ void MoqPeeringRuntime::endSubgroup(
   if (!name) {
     return;
   }
-  auto hash = moq::peering::PeerManager::HashTrack(*name);
+  auto hash = moq::fabric::PeerManager::HashTrack(*name);
   std::lock_guard<std::mutex> lock(impl_->state.mu);
   if (!impl_->state.manager) {
     return;
@@ -538,7 +538,7 @@ std::optional<uint64_t> MoqPeeringRuntime::hashTrack(
   if (!name) {
     return std::nullopt;
   }
-  return moq::peering::PeerManager::HashTrack(*name);
+  return moq::fabric::PeerManager::HashTrack(*name);
 }
 
 PeeringStatus MoqPeeringRuntime::status() const {
@@ -551,7 +551,7 @@ PeeringStatus MoqPeeringRuntime::status() const {
   if (!impl_->state.manager) {
     return out;
   }
-  out.nodeId = moq::peering::FormatNodeId(impl_->state.manager->LocalNodeId());
+  out.nodeId = moq::fabric::FormatNodeId(impl_->state.manager->LocalNodeId());
   auto peers = impl_->state.manager->Peers();
   out.peers.reserve(peers.size());
   for (const auto& peer : peers) {
@@ -564,7 +564,7 @@ PeerCommandResult
 MoqPeeringRuntime::addPeer(const std::string& host, uint16_t port, std::optional<uint64_t> metric) {
   std::lock_guard<std::mutex> lock(impl_->state.mu);
   if (!impl_->state.manager) {
-    return PeerCommandResult{.ok = false, .message = "moq-peering is not running"};
+    return PeerCommandResult{.ok = false, .message = "moq-fabric is not running"};
   }
   return toCommand(impl_->state.manager->AddPeer(host, port, metric));
 }
@@ -572,7 +572,7 @@ MoqPeeringRuntime::addPeer(const std::string& host, uint16_t port, std::optional
 PeerCommandResult MoqPeeringRuntime::removePeer(const std::string& host, uint16_t port) {
   std::lock_guard<std::mutex> lock(impl_->state.mu);
   if (!impl_->state.manager) {
-    return PeerCommandResult{.ok = false, .message = "moq-peering is not running"};
+    return PeerCommandResult{.ok = false, .message = "moq-fabric is not running"};
   }
   return toCommand(impl_->state.manager->RemovePeer(host, port));
 }
@@ -580,7 +580,7 @@ PeerCommandResult MoqPeeringRuntime::removePeer(const std::string& host, uint16_
 PeerCommandResult MoqPeeringRuntime::restartPeer(const std::string& host, uint16_t port) {
   std::lock_guard<std::mutex> lock(impl_->state.mu);
   if (!impl_->state.manager) {
-    return PeerCommandResult{.ok = false, .message = "moq-peering is not running"};
+    return PeerCommandResult{.ok = false, .message = "moq-fabric is not running"};
   }
   return toCommand(impl_->state.manager->RestartPeer(host, port));
 }
@@ -589,7 +589,7 @@ PeerCommandResult
 MoqPeeringRuntime::setPeerMetric(const std::string& host, uint16_t port, uint64_t metric) {
   std::lock_guard<std::mutex> lock(impl_->state.mu);
   if (!impl_->state.manager) {
-    return PeerCommandResult{.ok = false, .message = "moq-peering is not running"};
+    return PeerCommandResult{.ok = false, .message = "moq-fabric is not running"};
   }
   return toCommand(impl_->state.manager->SetPeerMetric(host, port, metric));
 }

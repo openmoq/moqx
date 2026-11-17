@@ -102,7 +102,7 @@ public:
     const ServiceMatcher* matcher_; // null when no service is bound to this listener
   };
 
-  // moqPeering is set when the process selected moq-peering. Each service then uses
+  // moqPeering is set when the process selected moq-fabric. Each service then uses
   // that backend instead of MoqtRelayBackend. Null selects MoQT relay peering.
   MoqxRelayContext(
       const folly::F14FastMap<std::string, config::ServiceConfig>& services,
@@ -120,11 +120,11 @@ public:
 
   void setStatsRegistry(std::shared_ptr<stats::StatsRegistry> registry);
 
-  // The local moq-peering node, when this process selected that method and the
+  // The local moq-fabric node, when this process selected that method and the
   // runtime is still alive.
   std::optional<peering::PeeringStatus> moqPeeringStatus() const;
 
-  // Runs the op on the moq-peering backend. Cluster peering answers Unsupported.
+  // Runs the op on the moq-fabric backend. Cluster peering answers Unsupported.
   folly::coro::Task<PeerAdminResult> executePeerAdminOp(PeerAdminOp op);
 
   // The HOP_ID to declare in SETUP. Unset when MoQ Cluster is disabled.
@@ -237,7 +237,7 @@ private:
   std::vector<std::shared_ptr<stats::MoQStatsCollector>> statsCollectors_;
   folly::ThreadLocal<std::shared_ptr<stats::MoQStatsCollector>> tlStatsCollector_;
   folly::EventBase* workerEvb_{nullptr};
-  // Process-wide moq-peering state. Null when the method is cluster.
+  // Process-wide moq-fabric state. Null when the method is cluster.
   // The destructor disarms it while the relays in services_ are still alive.
   std::shared_ptr<MoqPeeringCore> moqPeering_;
 };

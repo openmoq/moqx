@@ -804,7 +804,7 @@ Subscriber::PublishResult MoqxRelay::publishFromPublisherExec(
         PublishError{
             pub.requestID,
             PublishErrorCode::INTERNAL_ERROR,
-            "moq-peering track already served"
+            "moq-fabric track already served"
         }
     );
   }
@@ -941,7 +941,7 @@ MoqxRelay::PublishSetupResult MoqxRelay::publishWithParticipant(
         PublishError{
             pub.requestID,
             PublishErrorCode::INTERNAL_ERROR,
-            "moq-peering track already served"
+            "moq-fabric track already served"
         }
     );
   }

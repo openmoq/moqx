@@ -232,7 +232,7 @@ TEST(ConfigSerializerTest, VisitsAllSections) {
   EXPECT_EQ(sink.scalars["cluster.enabled"], "true");
   EXPECT_EQ(sink.scalars["cluster.hop_id"], "1001");
   EXPECT_EQ(sink.scalars["peering.method"], "cluster");
-  EXPECT_EQ(sink.scalars["peering.moq_peering"], "null");
+  EXPECT_EQ(sink.scalars["peering.moq_fabric"], "null");
   EXPECT_EQ(sink.scalars["admin.address"], "[::1]:9999");
   EXPECT_EQ(sink.scalars["admin.tls.cert_file"], "/etc/admin.crt");
 
@@ -282,13 +282,13 @@ TEST(ConfigSerializerTest, MoqPeeringOmitsClusterHopID) {
 
   RecordingSink sink;
   serializeConfig(cfg, sink);
-  EXPECT_EQ(sink.scalars["peering.method"], "moq-peering");
-  EXPECT_EQ(sink.scalars["peering.moq_peering.node_id"], "edge-sea-1");
-  EXPECT_EQ(sink.scalars["peering.moq_peering.node_type"], "via");
-  EXPECT_EQ(sink.scalars["peering.moq_peering.tls.cert_file"], "/etc/moqx/cert.pem");
-  EXPECT_EQ(sink.scalars["peering.moq_peering.tls.key_file"], "/etc/moqx/key.pem");
-  EXPECT_EQ(sink.scalars["peering.moq_peering.peers.*.host"], "192.0.2.10");
-  EXPECT_EQ(sink.scalars["peering.moq_peering.peers.*.metric"], "150");
+  EXPECT_EQ(sink.scalars["peering.method"], "moq-fabric");
+  EXPECT_EQ(sink.scalars["peering.moq_fabric.node_id"], "edge-sea-1");
+  EXPECT_EQ(sink.scalars["peering.moq_fabric.node_type"], "via");
+  EXPECT_EQ(sink.scalars["peering.moq_fabric.tls.cert_file"], "/etc/moqx/cert.pem");
+  EXPECT_EQ(sink.scalars["peering.moq_fabric.tls.key_file"], "/etc/moqx/key.pem");
+  EXPECT_EQ(sink.scalars["peering.moq_fabric.peers.*.host"], "192.0.2.10");
+  EXPECT_EQ(sink.scalars["peering.moq_fabric.peers.*.metric"], "150");
   EXPECT_EQ(sink.scalars["cluster.enabled"], "false");
   EXPECT_EQ(sink.scalars.count("cluster.hop_id"), 0u);
 }

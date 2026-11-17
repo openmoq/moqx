@@ -42,7 +42,7 @@ struct PeerAdminResult {
   std::optional<uint64_t> metric;
   // Detail for a human, such as why an op failed, or that a new metric applies on reconnect.
   std::string message;
-  // Verb the backend reports, such as moq-peering's "added". Empty when it has none.
+  // Verb the backend reports, such as moq-fabric's "added". Empty when it has none.
   std::string action;
 };
 

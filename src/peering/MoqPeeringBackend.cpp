@@ -213,7 +213,7 @@ PeerAdminResult MoqPeeringCore::execute(PeerAdminOp op) {
         .error = PeerAdminResult::Error::Invalid,
         .peer = std::move(op.peer),
         .metric = op.metric,
-        .message = "moq-peering is not running"
+        .message = "moq-fabric is not running"
     };
   }
   auto parsed = parsePeerToken(op.peer);
@@ -373,7 +373,7 @@ void MoqPeeringCore::sendObject(const moxygen::FullTrackName& ftn, PeeringObject
         writers_.erase(it);
         resetStream = !start;
         if (!resetStream) {
-          XLOG(WARNING) << "moq-peering dropped an object that could not be encoded";
+          XLOG(WARNING) << "moq-fabric dropped an object that could not be encoded";
           return;
         }
       } else {
@@ -392,7 +392,7 @@ void MoqPeeringCore::sendObject(const moxygen::FullTrackName& ftn, PeeringObject
     }
   }
   if (resetStream) {
-    XLOG(WARNING) << "moq-peering reset a subgroup after an object failed to encode";
+    XLOG(WARNING) << "moq-fabric reset a subgroup after an object failed to encode";
     runtime->endSubgroup(
         ftn.trackNamespace.trackNamespace,
         ftn.trackName,
@@ -403,7 +403,7 @@ void MoqPeeringCore::sendObject(const moxygen::FullTrackName& ftn, PeeringObject
     return;
   }
   if (!encoded || encoded->empty()) {
-    XLOG(WARNING) << "moq-peering dropped an object that could not be encoded";
+    XLOG(WARNING) << "moq-fabric dropped an object that could not be encoded";
     return;
   }
   auto bytes = std::make_shared<const std::vector<uint8_t>>(std::move(*encoded));
@@ -527,7 +527,7 @@ void MoqPeeringCore::onPeerDown(uint64_t sessionId) {
     readers_.clear();
   }
   if (!open.empty()) {
-    XLOG(INFO) << "moq-peering closed " << open.size()
+    XLOG(INFO) << "moq-fabric closed " << open.size()
                << " ingress streams after the last peer session";
   }
   for (const auto& [ftn, streamId] : open) {
@@ -617,7 +617,7 @@ void MoqPeeringCore::onData(
     if (!streamId) {
       datagram = decodePeeringDatagram(bytes.data(), bytes.size());
       if (!datagram) {
-        XLOG(WARNING) << "moq-peering dropped a datagram that could not be decoded";
+        XLOG(WARNING) << "moq-fabric dropped a datagram that could not be decoded";
         return;
       }
     } else {
@@ -628,13 +628,13 @@ void MoqPeeringCore::onData(
       }
       auto reader = readers_.find(key);
       if (reader == readers_.end()) {
-        XLOG(WARNING) << "moq-peering dropped stream bytes with no open stream";
+        XLOG(WARNING) << "moq-fabric dropped stream bytes with no open stream";
         return;
       }
       if (!reader->second->ingest(bytes.data(), bytes.size(), false)) {
         readers_.erase(reader);
         broken = true;
-        XLOG(WARNING) << "moq-peering dropped a stream that could not be decoded";
+        XLOG(WARNING) << "moq-fabric dropped a stream that could not be decoded";
       } else {
         events = reader->second->take();
       }
