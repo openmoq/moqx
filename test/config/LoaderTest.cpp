@@ -7,6 +7,12 @@
 #include "config/loader/Loader.h"
 #include "config/loader/ConfigResolver.h"
 
+#include <map>
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
+
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <rfl/json.hpp>
@@ -18,6 +24,7 @@ namespace {
 
 using test::TempYamlFile;
 using ::testing::HasSubstr;
+using ::testing::UnorderedElementsAreArray;
 
 // --- Parse tests ---
 
@@ -370,6 +377,39 @@ TEST(ConfigSchema, GeneratesValidJson) {
   EXPECT_THAT(schema, HasSubstr("\"any\""));
   EXPECT_THAT(schema, HasSubstr("\"exact\""));
   EXPECT_THAT(schema, HasSubstr("\"wildcard\""));
+}
+
+struct SchemaDefinition {
+  std::optional<std::vector<std::string>> required;
+};
+struct Schema {
+  rfl::Rename<"$defs", std::map<std::string, SchemaDefinition>> defs;
+};
+
+TEST(ConfigSchema, RequiredListsNonOptionalFieldsOnly) {
+  const auto schema = rfl::json::read<Schema>(generateSchema());
+  ASSERT_TRUE(schema.has_value()) << schema.error().what();
+
+  const std::vector<std::pair<std::string, std::vector<std::string>>> cases = {
+      {"ParsedConfig", {"listeners", "services"}},
+      {"ParsedListenerEntry", {"udp", "tls", "endpoint"}},
+      {"ParsedDeprecatedListenerListEntry", {"name", "udp", "tls", "endpoint"}},
+      {"ParsedListenerTlsConfig", {"insecure"}},
+      {"ParsedServiceConfig", {"match"}},
+      {"ParsedAuthConfig", {"enabled"}},
+      {"ParsedAdminConfig", {"port", "address", "plaintext"}},
+      {"ParsedMvfstConfig__ParsedBBR", {}},
+  };
+  const auto& defs = schema->defs.value();
+  for (const auto& [type, expected] : cases) {
+    SCOPED_TRACE(type);
+    const auto it = defs.find("openmoq__moqx__config__" + type);
+    ASSERT_NE(it, defs.end());
+    EXPECT_THAT(
+        it->second.required.value_or(std::vector<std::string>{}),
+        UnorderedElementsAreArray(expected)
+    );
+  }
 }
 
 // --- Load from file test ---
