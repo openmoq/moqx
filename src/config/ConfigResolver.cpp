@@ -19,6 +19,7 @@
 #include <unordered_set>
 
 #include <folly/FileUtil.h>
+#include <folly/ScopeGuard.h>
 #include <folly/SocketAddress.h>
 #include <folly/String.h>
 
@@ -1115,12 +1116,18 @@ void resolveStatelessResetSecret(
     );
     return;
   }
+  // Caps the read so a wrong path cannot pull in a huge file.
+  constexpr size_t kMaxSecretFileBytes = 4096;
   std::string contents;
-  if (!folly::readFile(path.c_str(), contents)) {
+  std::string bytes;
+  auto wipe = folly::makeGuard([&] {
+    OPENSSL_cleanse(contents.data(), contents.size());
+    OPENSSL_cleanse(bytes.data(), bytes.size());
+  });
+  if (!folly::readFile(path.c_str(), contents, kMaxSecretFileBytes)) {
     errors.push_back(context + " quic: failed to read stateless_reset_secret_file '" + path + "'");
     return;
   }
-  std::string bytes;
   auto hex = folly::trimWhitespace(contents);
   if (hex.size() == 2 * kStatelessResetSecretBytes && folly::unhexlify(hex, bytes)) {
     auto& secret = quic.statelessResetSecret.emplace();
@@ -1131,8 +1138,6 @@ void resolveStatelessResetSecret(
         "' must hold 64 hex digits (32 bytes)"
     );
   }
-  OPENSSL_cleanse(contents.data(), contents.size());
-  OPENSSL_cleanse(bytes.data(), bytes.size());
 }
 
 void validateMvfstConfig(

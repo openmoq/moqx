@@ -148,8 +148,12 @@ openssl rand -hex 32 > /etc/moqx/reset.key
   restarted relay must bind the same ones.
 - A client learns of the restart only when it next sends a packet. An idle
   subscriber with no keepalive still waits for its idle timeout.
-- Anyone holding the secret can reset the relay's connections. Keep the file
-  readable only by the relay's user.
+- Anyone holding the secret and seeing a connection's packets can close that
+  connection. The secret plays no part in TLS, so it cannot decrypt or alter
+  traffic. Keep the file readable only by the relay's user.
+- Each stateless reset reveals its token, and a persistent secret keeps those
+  tokens valid until the secret changes. Replace the file now and then, for
+  example at upgrades; only the restart that follows loses valid resets.
 
 ### mvfst Settings
 

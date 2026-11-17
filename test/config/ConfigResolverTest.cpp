@@ -2139,6 +2139,18 @@ TEST(ResolveConfig, StatelessResetSecretMalformedFileIsError) {
   }
 }
 
+TEST(ResolveConfig, StatelessResetSecretReadIsCapped) {
+  // Valid digits past the first 4 KiB are never read.
+  test::TempFile file(std::string(8192, ' ') + std::string(kResetSecretHex), ".key");
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.listeners.value()[0].quic =
+      std::optional<ParsedQuicConfig>{quicWithResetSecretFile(file.path())};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("must hold 64 hex digits"));
+}
+
 TEST(ResolveConfig, StatelessResetSecretWarnsOnPicoquic) {
   auto cfg = makeMinimalPicoConfig();
   cfg.listeners.value()[0].quic =
