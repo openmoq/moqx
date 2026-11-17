@@ -117,6 +117,13 @@ struct ParsedQuicConfig {
       "mvfst: bbr, bbr2, bbr2modular, copa, cubic, newreno, none.",
       std::optional<std::string>>
       cc_algo;
+  rfl::Description<
+      "File holding the stateless reset secret as 64 hex digits (32 bytes), e.g. from "
+      "`openssl rand -hex 32`. Keeps stateless resets valid across restarts, so clients "
+      "notice a restart at their next packet. Default: a random secret at each start. "
+      "mvfst listeners only.",
+      std::optional<std::string>>
+      stateless_reset_secret_file;
 };
 
 // mvfst-specific transport tunables organised by CC algorithm.

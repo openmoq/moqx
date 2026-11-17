@@ -124,11 +124,32 @@ Set under `listener_defaults.quic` (global defaults) or `listeners.<name>.quic`
 | `default_stream_priority` | 2 | Default stream priority. |
 | `default_datagram_priority` | 1 | Default datagram priority. |
 | `cc_algo` | `bbr` | Congestion control algorithm (see below). |
+| `stateless_reset_secret_file` | none | File holding the stateless reset secret (see below). mvfst listeners only; picoquic listeners warn and ignore it. |
 
 **Congestion control algorithms by stack:**
 - `mvfst`: `bbr`, `bbr2`, `bbr2modular`, `copa`, `cubic`, `newreno`
 - `picoquic`: `bbr`, `bbr1`, `c4`, `cubic`, `dcubic`, `fast`, `newreno`,
 `prague`, `reno`
+
+**Stateless reset secret:** a relay that has lost a connection's state, for
+example after a restart, answers the client's next packet with a stateless
+reset. The client accepts it only if the relay derives the same token as
+before, which needs the same secret. Without `stateless_reset_secret_file`,
+mvfst picks a random secret at each start, so clients of a restarted relay
+wait for their idle timeout instead.
+
+```bash
+openssl rand -hex 32 > /etc/moqx/reset.key
+```
+
+- The file holds 64 hex digits (32 bytes); surrounding whitespace is ignored.
+  moqx reads it at load, and a missing or malformed file fails the load.
+- The token also depends on the listener's bound address and port, so the
+  restarted relay must bind the same ones.
+- A client learns of the restart only when it next sends a packet. An idle
+  subscriber with no keepalive still waits for its idle timeout.
+- Anyone holding the secret can reset the relay's connections. Keep the file
+  readable only by the relay's user.
 
 ### mvfst Settings
 

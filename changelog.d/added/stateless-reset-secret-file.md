@@ -1,0 +1,1 @@
+- [`quic.stateless_reset_secret_file`](/docs/config.md#quic-settings) keeps the stateless reset secret across restarts. Clients of a restarted relay then notice the restart at their next packet instead of at their idle timeout. mvfst listeners only.

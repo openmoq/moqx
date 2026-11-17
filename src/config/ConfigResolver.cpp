@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <iomanip>
 #include <map>
@@ -928,6 +929,8 @@ void applyQuicOverride(QuicConfig& base, const ParsedQuicConfig& overlay) {
     base.defaultDatagramPriority = *v;
   if (auto v = overlay.cc_algo.value())
     base.ccAlgo = *v;
+  if (auto v = overlay.stateless_reset_secret_file.value())
+    base.statelessResetSecretFile = *v;
 }
 
 // Merge listener_defaults.quic and per-listener quic override into a resolved QuicConfig.
@@ -1090,6 +1093,46 @@ void validateQuicConfig(
         validList + ")"
     );
   }
+}
+
+// Loads quic.statelessResetSecretFile into quic.statelessResetSecret. qmux runs
+// over TCP and has no stateless reset; picoquic listeners ignore the secret.
+void resolveStatelessResetSecret(
+    QuicConfig& quic,
+    QuicStack stack,
+    const std::string& context,
+    std::vector<std::string>& errors,
+    std::vector<std::string>& warnings
+) {
+  const auto& path = quic.statelessResetSecretFile;
+  if (path.empty() || stack == QuicStack::ProxygenQmux) {
+    return;
+  }
+  if (stack == QuicStack::Picoquic) {
+    warnings.push_back(
+        context + " quic: stateless_reset_secret_file is not supported on picoquic listeners; this "
+                  "listener uses a random secret at each start"
+    );
+    return;
+  }
+  std::string contents;
+  if (!folly::readFile(path.c_str(), contents)) {
+    errors.push_back(context + " quic: failed to read stateless_reset_secret_file '" + path + "'");
+    return;
+  }
+  std::string bytes;
+  auto hex = folly::trimWhitespace(contents);
+  if (hex.size() == 2 * kStatelessResetSecretBytes && folly::unhexlify(hex, bytes)) {
+    auto& secret = quic.statelessResetSecret.emplace();
+    std::memcpy(secret.data(), bytes.data(), secret.size());
+  } else {
+    errors.push_back(
+        context + " quic: stateless_reset_secret_file '" + path +
+        "' must hold 64 hex digits (32 bytes)"
+    );
+  }
+  OPENSSL_cleanse(contents.data(), contents.size());
+  OPENSSL_cleanse(bytes.data(), bytes.size());
 }
 
 void validateMvfstConfig(
@@ -1332,6 +1375,13 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
       auto quic = mergeQuicConfig(quicDefaults, listener.quic.value());
       const auto stack = parseQuicStack(listener.quic_stack.value());
       validateQuicConfig(quic, stack, "Listener '" + listener.name.value() + "'", errors, warnings);
+      resolveStatelessResetSecret(
+          quic,
+          stack,
+          "Listener '" + listener.name.value() + "'",
+          errors,
+          warnings
+      );
       mergedQuicConfigs.push_back(quic);
       mergedMvfstConfigs.push_back(mergeMvfstConfig(mvfstDefaults, listener.mvfst.value()));
       // mvfst tunables don't apply to picoquic (PicoTransportConfig) or qmux

@@ -12,7 +12,11 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include <array>
 #include <limits>
+#include <numeric>
+#include <string>
+#include <string_view>
 #include <variant>
 
 namespace openmoq::moqx::config {
@@ -2059,6 +2063,94 @@ TEST(ResolveConfig, MvfstPrefixPathServiceNoWarning) {
   for (const auto& w : result.value().warnings) {
     EXPECT_THAT(w, ::testing::Not(HasSubstr("Picoquic listener")));
   }
+}
+
+// --- Stateless reset secret tests ---
+
+constexpr std::string_view kResetSecretHex =
+    "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+
+ParsedQuicConfig quicWithResetSecretFile(std::string path) {
+  ParsedQuicConfig quic;
+  quic.stateless_reset_secret_file = std::optional<std::string>{std::move(path)};
+  return quic;
+}
+
+TEST(ResolveConfig, StatelessResetSecretUnsetByDefault) {
+  auto cfg = makeMinimalInsecureConfig();
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  const auto& quic = result.value().config.listeners[0].quic;
+  EXPECT_TRUE(quic.statelessResetSecretFile.empty());
+  EXPECT_FALSE(quic.statelessResetSecret.has_value());
+}
+
+TEST(ResolveConfig, StatelessResetSecretReadFromFile) {
+  test::TempFile file(std::string(kResetSecretHex) + "\n", ".key");
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.listeners.value()[0].quic =
+      std::optional<ParsedQuicConfig>{quicWithResetSecretFile(file.path())};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue()) << result.error();
+  const auto& quic = result.value().config.listeners[0].quic;
+  EXPECT_EQ(quic.statelessResetSecretFile, file.path());
+  std::array<uint8_t, kStatelessResetSecretBytes> expected{};
+  std::iota(expected.begin(), expected.end(), uint8_t{0});
+  ASSERT_TRUE(quic.statelessResetSecret.has_value());
+  EXPECT_EQ(*quic.statelessResetSecret, expected);
+}
+
+TEST(ResolveConfig, StatelessResetSecretInheritedFromListenerDefaults) {
+  test::TempFile file(kResetSecretHex, ".key");
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedListenerDefaultsConfig ld;
+  ld.quic = std::optional<ParsedQuicConfig>{quicWithResetSecretFile(file.path())};
+  cfg.listener_defaults = std::optional<ParsedListenerDefaultsConfig>{std::move(ld)};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue()) << result.error();
+  EXPECT_TRUE(result.value().config.listeners[0].quic.statelessResetSecret.has_value());
+}
+
+TEST(ResolveConfig, StatelessResetSecretMissingFileIsError) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.listeners.value()[0].quic =
+      std::optional<ParsedQuicConfig>{quicWithResetSecretFile("/nonexistent/moqx-reset.key")};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("failed to read stateless_reset_secret_file"));
+}
+
+TEST(ResolveConfig, StatelessResetSecretMalformedFileIsError) {
+  const std::string hex(kResetSecretHex);
+  for (const std::string& contents :
+       {hex.substr(2), hex + "00", "zz" + hex.substr(2), std::string{}}) {
+    test::TempFile file(contents, ".key");
+    auto cfg = makeMinimalInsecureConfig();
+    cfg.listeners.value()[0].quic =
+        std::optional<ParsedQuicConfig>{quicWithResetSecretFile(file.path())};
+
+    auto result = resolveConfig(cfg);
+    ASSERT_TRUE(result.hasError()) << "contents=" << contents;
+    EXPECT_THAT(result.error(), HasSubstr("must hold 64 hex digits"));
+    EXPECT_THAT(result.error(), Not(HasSubstr("0405060708090a0b")));
+  }
+}
+
+TEST(ResolveConfig, StatelessResetSecretWarnsOnPicoquic) {
+  auto cfg = makeMinimalPicoConfig();
+  cfg.listeners.value()[0].quic =
+      std::optional<ParsedQuicConfig>{quicWithResetSecretFile("/nonexistent/moqx-reset.key")};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue()) << result.error();
+  EXPECT_FALSE(result.value().config.listeners[0].quic.statelessResetSecret.has_value());
+  EXPECT_THAT(
+      result.value().warnings,
+      ::testing::Contains(HasSubstr("stateless_reset_secret_file is not supported on picoquic"))
+  );
 }
 
 // --- maxCacheDuration tests ---
