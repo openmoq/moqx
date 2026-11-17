@@ -18,6 +18,7 @@ from pathlib import Path
 
 # Metrics to track with display configuration.
 # (key, display_name, unit, higher_is_better, threshold_pct)
+# A threshold of None reports the metric without flagging it.
 TRACKED_METRICS = [
     ("peak_subscribers", "Peak Subscribers", "", True, 5),
     ("throughput_mbps", "Throughput", "Mbps", True, 5),
@@ -29,7 +30,20 @@ TRACKED_METRICS = [
     ("rss_per_session_kb", "RSS/Session", "KB", False, 10),
     ("total_resets", "Total Resets", "", False, 50),
     ("udp_errors_per_sec", "UDP Errors/s", "", False, 50),
+    ("avg_latency_ms", "Avg Latency", "ms", False, 10),
+    ("latency_p95_ms", "p95 Latency", "ms", False, 15),
+    ("latency_p99_ms", "p99 Latency", "ms", False, 20),
+    ("latency_max_ms", "Max Latency (not flagged)", "ms", False, None),
 ]
+
+# Latency varies more from run to run than the --threshold override allows for,
+# so these metrics ignore it.
+OWN_THRESHOLD_METRICS = {
+    "avg_latency_ms",
+    "latency_p95_ms",
+    "latency_p99_ms",
+    "latency_max_ms",
+}
 
 
 def load_results_file(path: Path) -> dict:
@@ -147,14 +161,16 @@ def compare_results(
 
         current_val = float(current_val)
         baseline_val = float(baseline_val)
-        threshold = (
-            threshold_override if threshold_override is not None else default_threshold
-        )
+        threshold = default_threshold
+        if threshold_override is not None and key not in OWN_THRESHOLD_METRICS:
+            threshold = threshold_override
 
         delta_pct = ((current_val - baseline_val) / baseline_val) * 100
 
         # Determine if this is a regression
-        if higher_is_better:
+        if threshold is None:
+            is_regression = False
+        elif higher_is_better:
             is_regression = delta_pct < -threshold
         else:
             is_regression = delta_pct > threshold
