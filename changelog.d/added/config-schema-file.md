@@ -1,0 +1,1 @@
+- [`config.schema.json`](/docs/config.md#tooling), the config's JSON schema, ships in the repo; editors with YAML schema support load it by path or by its raw GitHub URL at the release tag.
