@@ -7,8 +7,10 @@
 #include "config/loader/Loader.h"
 #include "config/loader/ConfigResolver.h"
 
+#include <fstream>
 #include <map>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -740,6 +742,18 @@ services:
 #ifdef CONFIG_EXAMPLE_PATH
 TEST(ConfigLoader, ExampleYamlValid) {
   EXPECT_NO_THROW(loadConfig(CONFIG_EXAMPLE_PATH, /*strict=*/true));
+}
+#endif
+
+#ifdef CONFIG_SCHEMA_PATH
+TEST(ConfigSchema, CommittedSchemaIsCurrent) {
+  std::ifstream file(CONFIG_SCHEMA_PATH);
+  ASSERT_TRUE(file) << "Cannot open " << CONFIG_SCHEMA_PATH;
+  std::stringstream committed;
+  committed << file.rdbuf();
+  EXPECT_TRUE(committed.str() == generateSchema() + "\n")
+      << "config.schema.json is stale; regenerate it with: "
+         "moqx dump-config-schema > config.schema.json";
 }
 #endif
 

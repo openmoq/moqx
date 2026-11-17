@@ -187,7 +187,7 @@ moqx_add_gtest(moqx_config_test
   LIBS moqx_config_loader OpenSSL::Crypto moqx_test_main GTest::gmock
 )
 set_source_files_properties(config/LoaderTest.cpp PROPERTIES COMPILE_DEFINITIONS
-  "CONFIG_EXAMPLE_PATH=\"${PROJECT_SOURCE_DIR}/config.example.yaml\""
+  "CONFIG_EXAMPLE_PATH=\"${PROJECT_SOURCE_DIR}/config.example.yaml\";CONFIG_SCHEMA_PATH=\"${PROJECT_SOURCE_DIR}/config.schema.json\""
 )
 
 moqx_add_gtest(moqx_logging_test
