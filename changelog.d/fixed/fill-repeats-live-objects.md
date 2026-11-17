@@ -1,0 +1,1 @@
+- A draft 22 SUBSCRIBE with a fill could receive some objects twice: objects that arrived while the relay's upstream SUBSCRIBE was pending came live and again in the fill.

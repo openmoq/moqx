@@ -721,6 +721,61 @@ TEST_P(MoQRelayTest, SubscribeFillFetchesUpstreamThroughLargest) {
   driveIfMultiThread();
 }
 
+// A subscription that starts the track: upstream's SUBSCRIBE_OK has no Largest, and object
+// {0,0} arrives before the relay resumes. The subscriber gets {0,0} live, so its fill is empty.
+TEST_P(MoQRelayTest, FillOmitsObjectsDeliveredBeforeUpstreamOk) {
+  auto publisherSession = createMockSession();
+  auto subSession = createMockSession(kVersionDraft22);
+  doPublishNamespace(publisherSession, kTestNamespace);
+
+  SubscribeOk upstreamOk;
+  upstreamOk.requestID = RequestID(1);
+  upstreamOk.trackAlias = TrackAlias(1);
+  upstreamOk.expires = std::chrono::milliseconds(0);
+  upstreamOk.groupOrder = GroupOrder::OldestFirst;
+  EXPECT_CALL(*publisherSession, subscribe(_, _))
+      .WillOnce([upstreamOk](const auto& /*req*/, std::shared_ptr<TrackConsumer> upstreamConsumer) {
+        EXPECT_TRUE(upstreamConsumer
+                        ->objectStream(
+                            ObjectHeader(0, 0, 0, 0, uint64_t(1)),
+                            folly::IOBuf::copyBuffer("a"),
+                            false
+                        )
+                        .hasValue());
+        return folly::coro::makeTask<Publisher::SubscribeResult>(
+            folly::Expected<std::shared_ptr<SubscriptionHandle>, SubscribeError>(
+                std::make_shared<NiceMock<MockSubscriptionHandle>>(upstreamOk)
+            )
+        );
+      });
+  std::atomic<bool> upstreamFetched{false};
+  failUpstreamFetches(*publisherSession, upstreamFetched);
+
+  auto consumer = createMockConsumer();
+  std::atomic<bool> delivered{false};
+  EXPECT_CALL(*consumer, objectStream(_, _, _))
+      .WillOnce([&delivered](const ObjectHeader&, Payload, bool) {
+        delivered.store(true);
+        return folly::makeExpected<MoQPublishError>(folly::unit);
+      });
+  EXPECT_CALL(*consumer, beginFill(_)).Times(0);
+
+  auto sub = makeSubscribeRequest(RequestID(1));
+  sub.fill = FillParameters{};
+  sub.fill->locationFilter = LocationFilter::relativeStart(1);
+  auto pending = startSubscribe(sessionExec(), subSession, std::move(sub), consumer);
+  ASSERT_TRUE(driveUntil([&] { return pending.ready(); }));
+  getOrCreateMockState(subSession)->subscribeHandles.push_back(pending.handle());
+
+  ASSERT_TRUE(driveUntil([&] { return delivered.load(); })) << "{0,0} did not arrive live";
+  exec_->drive();
+  EXPECT_FALSE(upstreamFetched.load());
+
+  removeSession(publisherSession);
+  removeSession(subSession);
+  driveIfMultiThread();
+}
+
 // A subscriber that joins an existing subscription gets its fill too.
 TEST_P(MoQRelayTest, JoiningSubscriberFillFetchesUpstream) {
   auto publisherSession = createMockSession();
