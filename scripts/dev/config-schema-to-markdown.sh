@@ -20,11 +20,26 @@ HEADER
 echo "$SCHEMA" | jq -r '
 . as $root |
 
-# Resolve a $ref string to its definition object.
+# Resolve a local $ref (a JSON Pointer fragment, RFC 6901) to the schema it names.
 def resolve_ref:
   if ."$ref" then
-    (."$ref" | ltrimstr("#/definitions/")) as $name |
-    $root.definitions[$name]
+    ."$ref" as $ref |
+    if ($ref | test("^#(/|$)")) | not then
+      error("unsupported $ref, not a local JSON Pointer: \($ref)")
+    # jq 1.7 cannot percent-decode a URI fragment.
+    elif $ref | contains("%") then
+      error("unsupported percent-encoded $ref: \($ref)")
+    else
+      reduce ($ref | ltrimstr("#") | split("/")[1:][]
+          | gsub("~1"; "/") | gsub("~0"; "~")) as $token
+        ($root;
+          if type == "object" then .[$token]
+          elif type == "array" and ($token | test("^(0|[1-9][0-9]*)$")) then
+            .[$token | tonumber]
+          else null
+          end)
+      | if . == null then error("unresolved $ref: \($ref)") else . end
+    end
   else .
   end;
 
@@ -71,9 +86,7 @@ def walk_props(prefix):
   else empty
   end;
 
-# Start from the root $ref.
-(."$ref" | ltrimstr("#/definitions/")) as $root_name |
-.definitions[$root_name].properties | to_entries | sort_by(.key)[] |
+resolve_ref | .properties | to_entries | sort_by(.key)[] |
 .key as $section | .value as $prop |
 ($prop | resolve_prop) as $resolved |
 
