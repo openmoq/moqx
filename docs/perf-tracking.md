@@ -90,6 +90,12 @@ stacks overlaid. Compare mode shows all tracked metrics for both stacks within
 the selected profile; Single mode shows one stack's history. The profile
 selector appears to the right of the mode selector in Compare and Single modes.
 Stack colors and line styles are consistent across modes.
+Amber-outlined chart points and the expandable parameter-change list identify
+changes from the preceding run on the same branch, profile, and stack, including
+when that preceding run is outside the selected window. Hover over a marked
+point to see the old and new values. Only parameters recorded in both runs are
+compared; the measured client window is excluded because it can vary between
+otherwise identical tests.
 
 > **Branch under test:** there is no `ref` dispatch input — the run tests
 > whatever branch/tag is chosen in "Use workflow from". The `ref` input exists
