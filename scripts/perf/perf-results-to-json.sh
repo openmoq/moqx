@@ -33,7 +33,8 @@ set -euo pipefail
 # Bumped whenever the emitted shape changes; consumers (perf-compare.py, the
 # dashboard) treat missing stack/profile fields as mvfst/1mbps.
 # v4: CPU calibration target replaces aggregate throughput target.
-SCHEMA_VERSION=4
+# v5: latency percentiles, max and sample count.
+SCHEMA_VERSION=5
 
 # ── Defaults ───────────────────────────────────────────────────────────────────
 CLIENT_OUTPUT=""
@@ -150,6 +151,48 @@ if [[ -z "$AVG_LATENCY_MS" ]]; then
   AVG_LATENCY_MS=$(grep -oP '(Average Latency|Avg Latency):\s*\K[0-9]+(?:\.[0-9]+)?' "$CLIENT_OUTPUT" | tail -1 || true)
 fi
 [[ -z "$AVG_LATENCY_MS" ]] && AVG_LATENCY_MS="0"
+
+# Latency percentiles: sum the client's per-second [LATENCY_HIST] buckets
+# ("<ms>:<count>", keyed by the bucket's largest value) over the client window
+# and take nearest-rank quantiles. Max is the largest per-second interval max
+# from [AGGREGATE], which older clients also print.
+read -r LAT_P50 LAT_P90 LAT_P95 LAT_P99 LAT_P999 LAT_MAX LAT_SAMPLES < <(
+  awk -v s="$CLIENT_WINDOW_START" -v e="$CLIENT_WINDOW_END" '
+    function inwin(sec) { return s == "" || e == "" || (sec >= s + 0 && sec <= e + 0) }
+    /\[LATENCY_HIST\]/ {
+      if (!match($0, /\[LATENCY_HIST\] \[([0-9]+)s\](.*)$/, m) || !inwin(m[1] + 0)) next
+      nf = split(m[2], kv, " ")
+      for (i = 1; i <= nf; i++) {
+        if (split(kv[i], p, ":") == 2 && p[1] ~ /^[0-9]+$/ && p[2] ~ /^[0-9]+$/) {
+          cnt[p[1] + 0] += p[2]; total += p[2]
+        }
+      }
+      next
+    }
+    /\[AGGREGATE\]/ {
+      if (!match($0, /\[([0-9]+)s\]/, t) || !inwin(t[1] + 0)) next
+      if (match($0, /interval min\/avg\/max\): [0-9]+\/[0-9.]+\/([0-9]+) ms/, x) && x[1] + 0 > max) max = x[1] + 0
+    }
+    END {
+      n = asorti(cnt, keys, "@ind_num_asc")
+      split("0.5 0.9 0.95 0.99 0.999", qs, " ")
+      for (j = 1; j <= 5; j++) {
+        out = "null"
+        if (total > 0) {
+          r = qs[j] * total - 1e-9; rank = int(r); if (rank < r) rank++
+          if (rank < 1) rank = 1
+          if (rank > total) rank = total
+          run = 0
+          for (k = 1; k <= n; k++) { run += cnt[keys[k]]; if (run >= rank) { out = keys[k]; break } }
+        }
+        printf "%s ", out
+      }
+      printf "%s %d\n", (max > 0 ? max : "null"), total
+    }
+  ' "$CLIENT_OUTPUT")
+if [[ "$LAT_SAMPLES" -eq 0 ]]; then
+  echo "::warning::$PROFILE/$QUIC_STACK client log has no [LATENCY_HIST] samples in the window; latency percentiles are null"
+fi
 
 # Parse per-second aggregate lines for latency/delivery stats
 # Format: [AGGREGATE] [Ns] Subs: N | Obj/s: N | Mbps: N.NN | ...
@@ -316,6 +359,13 @@ cat > "$OUTPUT" <<EOF
     "throughput_mbps": $THROUGHPUT_MBPS,
     "throughput_full_run_mbps": $RUN_THROUGHPUT_MBPS,
     "avg_latency_ms": $AVG_LATENCY_MS,
+    "latency_p50_ms": $LAT_P50,
+    "latency_p90_ms": $LAT_P90,
+    "latency_p95_ms": $LAT_P95,
+    "latency_p99_ms": $LAT_P99,
+    "latency_p999_ms": $LAT_P999,
+    "latency_max_ms": $LAT_MAX,
+    "latency_samples": $LAT_SAMPLES,
     "peak_throughput_mbps": $PEAK_MBPS,
     "throughput_per_core_mbps": $THROUGHPUT_PER_CORE,
     "subscribers_per_core": $SUBS_PER_CORE,
