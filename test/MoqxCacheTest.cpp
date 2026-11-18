@@ -644,6 +644,159 @@ CO_TEST_F(MoqxCacheTest, TestFetchAllHitEOG) {
   EXPECT_EQ(res.value()->fetchOk().endLocation, (AbsoluteLocation{1, 0}));
 }
 
+// A flagged subgroup ends its group at its final object, whether the FIN comes with that
+// object or after it. A FETCH across the group boundary is then served from the cache.
+CO_TEST_F(MoqxCacheTest, LastInGroupSubgroupEndsGroup) {
+  auto writeback = cache_.getSubscribeWriteback(kTestTrackName, trackConsumer_);
+  auto group0 = writeback->beginSubgroup(0, 0, 0, {.containsLastInGroup = true});
+  CO_ASSERT_TRUE(group0.hasValue());
+  (*group0)->object(0, makeBuf(100), noExtensions(), false);
+  (*group0)->object(1, makeBuf(100), noExtensions(), true);
+  auto group1 = writeback->beginSubgroup(1, 0, 0, {.containsLastInGroup = true});
+  CO_ASSERT_TRUE(group1.hasValue());
+  (*group1)->object(0, makeBuf(100), noExtensions(), false);
+  (*group1)->object(1, makeBuf(100), noExtensions(), false);
+  (*group1)->endOfSubgroup();
+
+  expectFetchObjects({0, 0}, {2, 0}, false, /*objectsPerGroup=*/2);
+  auto res = co_await cache_.fetch(getFetch({0, 0}, {2, 0}), trackingConsumer_, upstream_);
+  EXPECT_TRUE(res.hasValue());
+}
+
+// A datagram marked as last in its group ends the group the same way.
+CO_TEST_F(MoqxCacheTest, LastInGroupDatagramEndsGroup) {
+  auto writeback = cache_.getSubscribeWriteback(kTestTrackName, trackConsumer_);
+  for (uint64_t group = 0; group < 2; group++) {
+    writeback->datagram(ObjectHeader(group, 0, 0, 0, 100), makeBuf(100));
+    writeback->datagram(ObjectHeader(group, 0, 1, 0, 100), makeBuf(100), /*lastInGroup=*/true);
+  }
+
+  expectFetchObjects({0, 0}, {2, 0}, false, /*objectsPerGroup=*/2);
+  auto res = co_await cache_.fetch(getFetch({0, 0}, {2, 0}), trackingConsumer_, upstream_);
+  EXPECT_TRUE(res.hasValue());
+}
+
+// A flagged subgroup that ends below a cached object is malformed. Downstream gets a reset
+// instead of the FIN, and the cache keeps the earlier end.
+CO_TEST_F(MoqxCacheTest, LastInGroupBeforeCachedObjectResets) {
+  auto writeback = cache_.getSubscribeWriteback(kTestTrackName, trackConsumer_);
+  for (uint64_t group = 0; group < 2; group++) {
+    auto last = writeback->beginSubgroup(group, 1, 0, {.containsLastInGroup = true});
+    CO_ASSERT_TRUE(last.hasValue());
+    (*last)->object(1, makeBuf(100), noExtensions(), true);
+  }
+
+  // The FIN comes with the final object, which is not forwarded.
+  auto downstream0 = makeSubgroupConsumer();
+  EXPECT_CALL(*trackConsumer_, beginSubgroup(0, 0, _, _)).WillOnce(Return(downstream0));
+  EXPECT_CALL(*downstream0, object(_, _, _, _)).Times(0);
+  EXPECT_CALL(*downstream0, reset(ResetStreamErrorCode::MALFORMED_TRACK));
+  auto early0 = writeback->beginSubgroup(0, 0, 0, {.containsLastInGroup = true});
+  CO_ASSERT_TRUE(early0.hasValue());
+  auto res0 = (*early0)->object(0, makeBuf(100), noExtensions(), true);
+  CO_ASSERT_TRUE(res0.hasError());
+  EXPECT_EQ(res0.error().code, MoQPublishError::MALFORMED_TRACK);
+
+  // The FIN comes after the final object, which is already forwarded.
+  auto downstream1 = makeSubgroupConsumer();
+  EXPECT_CALL(*trackConsumer_, beginSubgroup(1, 0, _, _)).WillOnce(Return(downstream1));
+  EXPECT_CALL(*downstream1, object(0, _, _, false));
+  EXPECT_CALL(*downstream1, endOfSubgroup()).Times(0);
+  EXPECT_CALL(*downstream1, reset(ResetStreamErrorCode::MALFORMED_TRACK));
+  auto early1 = writeback->beginSubgroup(1, 0, 0, {.containsLastInGroup = true});
+  CO_ASSERT_TRUE(early1.hasValue());
+  (*early1)->object(0, makeBuf(100), noExtensions(), false);
+  auto res1 = (*early1)->endOfSubgroup();
+  CO_ASSERT_TRUE(res1.hasError());
+  EXPECT_EQ(res1.error().code, MoQPublishError::MALFORMED_TRACK);
+
+  expectFetchObjects({0, 0}, {2, 0}, false, /*objectsPerGroup=*/2);
+  auto res = co_await cache_.fetch(getFetch({0, 0}, {2, 0}), trackingConsumer_, upstream_);
+  EXPECT_TRUE(res.hasValue());
+}
+
+TEST_F(MoqxCacheTest, EndOfGroupBeforeCachedObjectIsMalformed) {
+  auto writeback = cache_.getSubscribeWriteback(kTestTrackName, trackConsumer_);
+  auto later = writeback->beginSubgroup(0, 1, 0);
+  ASSERT_TRUE(later.hasValue());
+  (*later)->object(3, makeBuf(100), noExtensions(), false);
+  auto earlier = writeback->beginSubgroup(0, 0, 0);
+  ASSERT_TRUE(earlier.hasValue());
+  auto res = (*earlier)->endOfGroup(2);
+  ASSERT_TRUE(res.hasError());
+  EXPECT_EQ(res.error().code, MoQPublishError::MALFORMED_TRACK);
+}
+
+// A new PUBLISH or SUBSCRIBE_OK can pause and resume caching partway through a
+// flagged subgroup. The group still ends at the subgroup's final object.
+CO_TEST_F(MoqxCacheTest, LastInGroupEndsAtFinalObjectAfterCachingPause) {
+  auto writeback = cache_.getSubscribeWriteback(kTestTrackName, trackConsumer_);
+  auto sg = writeback->beginSubgroup(0, 0, 0, {.containsLastInGroup = true});
+  CO_ASSERT_TRUE(sg.hasValue());
+  (*sg)->object(0, makeBuf(100), noExtensions(), false);
+  cache_.setTrackState(kTestTrackName, std::nullopt, makeCacheDurationExt(0));
+  (*sg)->object(1, makeBuf(100), noExtensions(), false);
+  cache_.setTrackState(kTestTrackName, AbsoluteLocation{1, 0}, noExtensions());
+  CO_ASSERT_TRUE((*sg)->endOfSubgroup().hasValue());
+
+  // The uncached object 1 is still part of group 0, so a FETCH asks upstream for it.
+  expectFetchObjects({0, 0}, {0, 1}, false);
+  std::vector<AbsoluteLocation> upstreamStarts;
+  std::vector<std::shared_ptr<FetchConsumer>> upstreamConsumers;
+  std::vector<std::shared_ptr<moxygen::MockFetchHandle>> upstreamHandles;
+  EXPECT_CALL(*upstream_, fetch(_, _))
+      .WillRepeatedly([&](Fetch fetch, std::shared_ptr<FetchConsumer> consumer) {
+        auto [standalone, joining] = fetchType(fetch);
+        upstreamStarts.push_back(standalone->start);
+        upstreamConsumers.push_back(std::move(consumer));
+        upstreamHandles.push_back(std::make_shared<moxygen::MockFetchHandle>(
+            FetchOk{0, GroupOrder::OldestFirst, false, standalone->start, {}}
+        ));
+        return folly::coro::makeTask<Publisher::FetchResult>(upstreamHandles.back());
+      });
+  auto res = co_await cache_.fetch(getFetch({0, 0}, {2, 0}), consumer_, upstream_);
+  EXPECT_TRUE(res.hasValue());
+  co_await folly::coro::co_reschedule_on_current_executor;
+  CO_ASSERT_FALSE(upstreamStarts.empty());
+  EXPECT_EQ(upstreamStarts.front(), (AbsoluteLocation{0, 1}));
+
+  EXPECT_CALL(*consumer_, endOfFetch()).WillOnce(Return(folly::unit));
+  for (size_t i = 0; i < upstreamConsumers.size(); i++) {
+    upstreamConsumers[i]->endOfFetch();
+    co_await folly::coro::co_reschedule_on_current_executor;
+  }
+}
+
+// Caching can also pause at beginObject() and resume before the final payload's FIN.
+TEST_F(MoqxCacheTest, LastInGroupEndsAtFinalPayloadAfterCachingPause) {
+  auto writeback = cache_.getSubscribeWriteback(kTestTrackName, trackConsumer_);
+  auto sg = writeback->beginSubgroup(0, 0, 0, {.containsLastInGroup = true});
+  ASSERT_TRUE(sg.hasValue());
+  (*sg)->object(0, makeBuf(100), noExtensions(), false);
+  cache_.setTrackState(kTestTrackName, std::nullopt, makeCacheDurationExt(0));
+  ASSERT_TRUE((*sg)->beginObject(1, 200, makeBuf(100), noExtensions()).hasValue());
+  cache_.setTrackState(kTestTrackName, std::nullopt, noExtensions());
+  ASSERT_TRUE((*sg)->objectPayload(makeBuf(100), /*finSubgroup=*/true).hasValue());
+
+  // The group ended at object 1, so object 2 is in a known gap.
+  auto copy = writeback->beginSubgroup(0, 1, 0);
+  ASSERT_TRUE(copy.hasValue());
+  auto res = (*copy)->object(2, makeBuf(100), noExtensions(), false);
+  ASSERT_TRUE(res.hasError());
+  EXPECT_EQ(res.error().code, MoQPublishError::MALFORMED_TRACK);
+}
+
+// A datagram that ends its group below a cached object is malformed, and the
+// cache does not forward it.
+TEST_F(MoqxCacheTest, LastInGroupDatagramBeforeCachedObjectIsMalformed) {
+  auto writeback = cache_.getSubscribeWriteback(kTestTrackName, trackConsumer_);
+  writeback->datagram(ObjectHeader(0, 0, 3, 0, 100), makeBuf(100));
+  EXPECT_CALL(*trackConsumer_, datagram(_, _, _)).Times(0);
+  auto res = writeback->datagram(ObjectHeader(0, 0, 1, 0, 100), makeBuf(100), /*lastInGroup=*/true);
+  ASSERT_TRUE(res.hasError());
+  EXPECT_EQ(res.error().code, MoQPublishError::MALFORMED_TRACK);
+}
+
 // A zero-length object arrives from the codec with a null payload. Draft 16+
 // dropped Object Status from FETCH, so this is the ordinary encoding for an
 // empty object rather than something only a misbehaving peer sends.

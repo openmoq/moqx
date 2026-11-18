@@ -311,15 +311,15 @@ folly::Expected<folly::Unit, MoQPublishError> MoqxCache::CacheGroup::cacheObject
   // in the gap range (start at objectID instead of objectID+1), then infer
   // end-of-group/track from gap data when serving.
   if (status == ObjectStatus::END_OF_GROUP || status == ObjectStatus::END_OF_TRACK) {
-    if (auto next = AbsoluteLocation{groupID, objectID}.nextInGroup()) {
-      track.insertGap(*next, {groupID, kLocationMax.object});
+    auto endRes = markEndOfGroup(track, groupID, objectID);
+    if (endRes.hasError()) {
+      return endRes;
     }
     if (status == ObjectStatus::END_OF_TRACK) {
       if (auto nextGrp = AbsoluteLocation{groupID, 0}.nextGroup()) {
         track.insertGap(*nextGrp, kLocationMax);
       }
     }
-    endOfGroup = true;
   }
 
   // Cache the object (including END_OF_GROUP/END_OF_TRACK status)
@@ -407,6 +407,24 @@ folly::Expected<folly::Unit, MoQPublishError> MoqxCache::CacheGroup::cacheObject
   if (objectID >= maxCachedObject) {
     maxCachedObject = objectID;
   }
+  return folly::unit;
+}
+
+folly::Expected<folly::Unit, MoQPublishError>
+MoqxCache::CacheGroup::markEndOfGroup(CacheTrack& track, uint64_t groupID, uint64_t lastObjectID) {
+  if (maxCachedObject > lastObjectID) {
+    XLOG(DBG4) << "End of group before a cached object; group=" << groupID
+               << " end=" << lastObjectID << " maxCached=" << maxCachedObject;
+    return folly::makeUnexpected(
+        MoQPublishError(MoQPublishError::MALFORMED_TRACK, "Object past end of group")
+    );
+  }
+  if (auto next = AbsoluteLocation{groupID, lastObjectID}.nextInGroup()) {
+    track.insertGap(*next, {groupID, kLocationMax.object});
+  }
+  endOfGroup = true;
+  // FETCH reads the group's end from maxCachedObject, and the last object may be uncached.
+  maxCachedObject = lastObjectID;
   return folly::unit;
 }
 
@@ -628,12 +646,13 @@ public:
       std::shared_ptr<CacheTrack> cacheTrackPtr,
       std::shared_ptr<CacheGroup> cacheGroupPtr,
       MoqxCache& cache,
-      FullTrackName ftn
+      FullTrackName ftn,
+      bool containsLastInGroup
   )
       : group_(group), subgroup_(subgroup), consumer_(std::move(consumer)),
         cacheTrackPtr_(std::move(cacheTrackPtr)), cacheTrack_(*cacheTrackPtr_),
         cacheGroupPtr_(std::move(cacheGroupPtr)), cacheGroup_(*cacheGroupPtr_), cache_(cache),
-        ftn_(std::move(ftn)) {
+        ftn_(std::move(ftn)), containsLastInGroup_(containsLastInGroup) {
     cache_.pinGroup(cacheGroup_, cacheTrack_);
   }
   SubgroupWriteback() = delete;
@@ -650,6 +669,7 @@ public:
 
   folly::Expected<folly::Unit, MoQPublishError>
   object(uint64_t objID, Payload payload, Extensions ext, bool finSub) override {
+    lastObject_ = objID;
     if (cacheTrack_.shouldSkipCaching()) {
       return consumer_->object(objID, std::move(payload), std::move(ext), finSub);
     }
@@ -676,6 +696,12 @@ public:
       consumer_->reset(ResetStreamErrorCode::INTERNAL_ERROR);
       return cacheRes;
     }
+    if (finSub) {
+      auto endRes = endGroupIfLastInGroup();
+      if (endRes.hasError()) {
+        return endRes;
+      }
+    }
     return consumer_->object(objID, std::move(payload), std::move(ext), finSub);
   }
 
@@ -684,6 +710,7 @@ public:
   folly::Expected<folly::Unit, MoQPublishError>
   beginObject(uint64_t objectID, uint64_t length, Payload initialPayload, Extensions extensions)
       override {
+    lastObject_ = objectID;
     cachingCurrentObject_ = !cacheTrack_.shouldSkipCaching();
     if (!cachingCurrentObject_) {
       return consumer_
@@ -724,6 +751,12 @@ public:
   objectPayload(Payload payload, bool finSubgroup) override {
     // Duration changes apply from the next object; eviction stops caching immediately.
     if (!cachingCurrentObject_ || cacheTrack_.evicted) {
+      if (finSubgroup) {
+        auto endRes = endGroupIfLastInGroup();
+        if (endRes.hasError()) {
+          return folly::makeUnexpected(endRes.error());
+        }
+      }
       return consumer_->objectPayload(std::move(payload), finSubgroup);
     }
     size_t addedBytes = payload->computeChainDataLength();
@@ -754,6 +787,12 @@ public:
       return folly::makeUnexpected(cacheRes.error());
     }
     currentOffset_ += addedBytes;
+    if (finSubgroup) {
+      auto endRes = endGroupIfLastInGroup();
+      if (endRes.hasError()) {
+        return folly::makeUnexpected(endRes.error());
+      }
+    }
     return consumer_->objectPayload(std::move(payload), finSubgroup);
   }
 
@@ -820,12 +859,28 @@ public:
   }
 
   folly::Expected<folly::Unit, MoQPublishError> endOfSubgroup() override {
+    auto endRes = endGroupIfLastInGroup();
+    if (endRes.hasError()) {
+      return endRes;
+    }
     return consumer_->endOfSubgroup();
   }
 
   void reset(ResetStreamErrorCode error) override { return consumer_->reset(error); }
 
 private:
+  // Only a FIN proves the end of the group, so a malformed end resets the subgroup.
+  folly::Expected<folly::Unit, MoQPublishError> endGroupIfLastInGroup() {
+    if (!containsLastInGroup_ || !lastObject_ || cacheTrack_.shouldSkipCaching()) {
+      return folly::unit;
+    }
+    auto res = cacheGroup_.markEndOfGroup(cacheTrack_, group_, *lastObject_);
+    if (res.hasError()) {
+      consumer_->reset(ResetStreamErrorCode::MALFORMED_TRACK);
+    }
+    return res;
+  }
+
   uint64_t group_;
   uint64_t subgroup_;
   std::shared_ptr<SubgroupConsumer> consumer_;
@@ -835,6 +890,8 @@ private:
   CacheGroup& cacheGroup_;
   MoqxCache& cache_;
   FullTrackName ftn_;
+  bool containsLastInGroup_;
+  std::optional<uint64_t> lastObject_;
   uint64_t currentObject_{0};
   uint64_t currentLength_{0};        // Total length of the current object
   uint64_t currentOffset_{0};        // Payload length received so far
@@ -880,8 +937,7 @@ public:
       Priority priority,
       BeginSubgroupOptions options = {}
   ) override {
-    // TODO: Handle BeginSubgroupOptions (containsLastInGroup, beginsWithFirstObject)
-    // when caching
+    // TODO: Handle BeginSubgroupOptions::beginsWithFirstObject when caching
     // Check if the group is known to not exist
     if (isGroupNonExistent(track_.gaps, groupID)) {
       XLOG(ERR) << "Attempting to begin subgroup in group already marked as "
@@ -901,7 +957,8 @@ public:
           trackPtr_,
           trackPtr_->groups[groupID],
           cache_,
-          ftn_
+          ftn_,
+          options.containsLastInGroup
       );
     } else {
       return res;
@@ -965,6 +1022,16 @@ public:
     );
     if (cacheRes.hasError()) {
       return cacheRes;
+    }
+    if (lastInGroup) {
+      // The byte limit can evict the group once the object is cached.
+      auto groupIt = track_.groups.find(header.group);
+      if (groupIt != track_.groups.end()) {
+        auto endRes = groupIt->second->markEndOfGroup(track_, header.group, header.id);
+        if (endRes.hasError()) {
+          return endRes;
+        }
+      }
     }
     return consumer_->datagram(header, std::move(payload), lastInGroup);
   }
