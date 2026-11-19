@@ -57,6 +57,10 @@ buildTransportSettings(const config::QuicConfig& quic, const config::MvfstConfig
   ts.numGROBuffers_ = mvfst.numGROBuffers;
   ts.canIgnorePathMTU = mvfst.canIgnorePathMTU;
   ts.useAdaptiveLossTimeThresholds = mvfst.adaptiveLossTimeThreshold;
+  static_assert(config::kStatelessResetSecretBytes == quic::kStatelessResetTokenSecretLength);
+  if (quic.statelessResetSecret) {
+    ts.statelessResetTokenSecret = *quic.statelessResetSecret;
+  }
   ts.advertisedInitialConnectionFlowControlWindow = quic.maxData;
   ts.advertisedInitialBidiLocalStreamFlowControlWindow = quic.maxStreamData;
   ts.advertisedInitialBidiRemoteStreamFlowControlWindow = quic.maxStreamData;

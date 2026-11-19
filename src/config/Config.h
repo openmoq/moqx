@@ -8,6 +8,7 @@
 
 #include "auth/Action.h"
 
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -60,6 +61,9 @@ struct CacheConfig {
 // ProxygenQmux carries MoQ over QMUX-on-TCP + Fizz TLS, not QUIC/UDP.
 enum class QuicStack { Mvfst, Picoquic, ProxygenQmux };
 
+// Matches quic::kStatelessResetTokenSecretLength.
+inline constexpr size_t kStatelessResetSecretBytes = 32;
+
 struct QuicConfig {
   // Flow control
   uint64_t maxData{67108864};       // connection flow control window (bytes)
@@ -74,6 +78,11 @@ struct QuicConfig {
   uint8_t defaultStreamPriority{2};   // default stream priority
   uint8_t defaultDatagramPriority{1}; // default datagram priority
   std::string ccAlgo{"bbr"};          // congestion control algorithm name
+
+  // This listener's stateless reset secret, derived from statelessResetSecretFile.
+  // Unset: mvfst picks a random one at startup. Never log or serialize the bytes.
+  std::string statelessResetSecretFile;
+  std::optional<std::array<uint8_t, kStatelessResetSecretBytes>> statelessResetSecret;
 };
 
 // mvfst-specific transport tunables organised by congestion-control algorithm.
