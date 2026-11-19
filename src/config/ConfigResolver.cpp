@@ -9,7 +9,6 @@
 #include <algorithm>
 #include <array>
 #include <cstdlib>
-#include <cstring>
 #include <filesystem>
 #include <iomanip>
 #include <map>
@@ -24,6 +23,8 @@
 #include <folly/String.h>
 
 #include <openssl/crypto.h>
+#include <openssl/evp.h>
+#include <openssl/hmac.h>
 
 #include "auth/Action.h"
 #include "config/Pkcs12.h"
@@ -1096,11 +1097,14 @@ void validateQuicConfig(
   }
 }
 
-// Loads quic.statelessResetSecretFile into quic.statelessResetSecret. qmux runs
-// over TCP and has no stateless reset; picoquic listeners ignore the secret.
+// Sets quic.statelessResetSecret to HMAC-SHA256(file secret, listenerAddr).
+// mvfst mixes the bound address but not the port into each token, so listeners
+// sharing one file would otherwise issue identical tokens. qmux runs over TCP
+// and has no stateless reset; picoquic listeners ignore the secret.
 void resolveStatelessResetSecret(
     QuicConfig& quic,
     QuicStack stack,
+    const std::string& listenerAddr,
     const std::string& context,
     std::vector<std::string>& errors,
     std::vector<std::string>& warnings
@@ -1116,7 +1120,6 @@ void resolveStatelessResetSecret(
     );
     return;
   }
-  // Caps the read so a wrong path cannot pull in a huge file.
   constexpr size_t kMaxSecretFileBytes = 4096;
   std::string contents;
   std::string bytes;
@@ -1124,19 +1127,40 @@ void resolveStatelessResetSecret(
     OPENSSL_cleanse(contents.data(), contents.size());
     OPENSSL_cleanse(bytes.data(), bytes.size());
   });
-  if (!folly::readFile(path.c_str(), contents, kMaxSecretFileBytes)) {
+  // One byte past the cap tells a file that fits from a longer one.
+  if (!folly::readFile(path.c_str(), contents, kMaxSecretFileBytes + 1)) {
     errors.push_back(context + " quic: failed to read stateless_reset_secret_file '" + path + "'");
     return;
   }
+  if (contents.size() > kMaxSecretFileBytes) {
+    errors.push_back(
+        context + " quic: stateless_reset_secret_file '" + path + "' is larger than " +
+        std::to_string(kMaxSecretFileBytes) + " bytes"
+    );
+    return;
+  }
   auto hex = folly::trimWhitespace(contents);
-  if (hex.size() == 2 * kStatelessResetSecretBytes && folly::unhexlify(hex, bytes)) {
-    auto& secret = quic.statelessResetSecret.emplace();
-    std::memcpy(secret.data(), bytes.data(), secret.size());
-  } else {
+  if (hex.size() != 2 * kStatelessResetSecretBytes || !folly::unhexlify(hex, bytes)) {
     errors.push_back(
         context + " quic: stateless_reset_secret_file '" + path +
         "' must hold 64 hex digits (32 bytes)"
     );
+    return;
+  }
+  auto& secret = quic.statelessResetSecret.emplace();
+  unsigned int len = 0;
+  if (!HMAC(
+          EVP_sha256(),
+          bytes.data(),
+          static_cast<int>(bytes.size()),
+          reinterpret_cast<const unsigned char*>(listenerAddr.data()),
+          listenerAddr.size(),
+          secret.data(),
+          &len
+      ) ||
+      len != secret.size()) {
+    quic.statelessResetSecret.reset();
+    errors.push_back(context + " quic: failed to derive the stateless reset secret");
   }
 }
 
@@ -1383,6 +1407,7 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
       resolveStatelessResetSecret(
           quic,
           stack,
+          addr,
           "Listener '" + listener.name.value() + "'",
           errors,
           warnings

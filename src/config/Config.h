@@ -79,8 +79,8 @@ struct QuicConfig {
   uint8_t defaultDatagramPriority{1}; // default datagram priority
   std::string ccAlgo{"bbr"};          // congestion control algorithm name
 
-  // Stateless reset secret read from statelessResetSecretFile. Unset: mvfst
-  // picks a random one at startup. Never log or serialize the bytes.
+  // This listener's stateless reset secret, derived from statelessResetSecretFile.
+  // Unset: mvfst picks a random one at startup. Never log or serialize the bytes.
   std::string statelessResetSecretFile;
   std::optional<std::array<uint8_t, kStatelessResetSecretBytes>> statelessResetSecret;
 };

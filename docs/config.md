@@ -144,8 +144,9 @@ openssl rand -hex 32 > /etc/moqx/reset.key
 
 - The file holds 64 hex digits (32 bytes); surrounding whitespace is ignored.
   moqx reads it at load, and a missing or malformed file fails the load.
-- The token also depends on the listener's bound address and port, so the
-  restarted relay must bind the same ones.
+- Each listener derives its own secret from the file and its configured
+  address and port, so several listeners can share one file. The restarted
+  relay must keep each listener's address and port.
 - A client learns of the restart only when it next sends a packet. An idle
   subscriber with no keepalive still waits for its idle timeout.
 - Anyone holding the secret and seeing a connection's packets can close that

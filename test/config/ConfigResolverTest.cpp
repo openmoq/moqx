@@ -12,9 +12,9 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
-#include <array>
+#include <folly/String.h>
+
 #include <limits>
-#include <numeric>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -2069,11 +2069,24 @@ TEST(ResolveConfig, MvfstPrefixPathServiceNoWarning) {
 
 constexpr std::string_view kResetSecretHex =
     "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+// HMAC-SHA256(kResetSecretHex bytes, ":::9668") and (..., ":::9669").
+constexpr std::string_view kDerivedSecretHex9668 =
+    "023893b2b74b1bc72873361234241b8e423946fcb9d0f3cd8b460d1ff99c35c2";
+constexpr std::string_view kDerivedSecretHex9669 =
+    "1ba9ee129319f27f097355c6015692abac946da689b7ecd166dda0d0baaf8102";
 
 ParsedQuicConfig quicWithResetSecretFile(std::string path) {
   ParsedQuicConfig quic;
   quic.stateless_reset_secret_file = std::optional<std::string>{std::move(path)};
   return quic;
+}
+
+std::string secretHex(const QuicConfig& quic) {
+  if (!quic.statelessResetSecret) {
+    return "";
+  }
+  const auto& s = *quic.statelessResetSecret;
+  return folly::hexlify(folly::ByteRange(s.data(), s.size()));
 }
 
 TEST(ResolveConfig, StatelessResetSecretUnsetByDefault) {
@@ -2095,10 +2108,7 @@ TEST(ResolveConfig, StatelessResetSecretReadFromFile) {
   ASSERT_TRUE(result.hasValue()) << result.error();
   const auto& quic = result.value().config.listeners[0].quic;
   EXPECT_EQ(quic.statelessResetSecretFile, file.path());
-  std::array<uint8_t, kStatelessResetSecretBytes> expected{};
-  std::iota(expected.begin(), expected.end(), uint8_t{0});
-  ASSERT_TRUE(quic.statelessResetSecret.has_value());
-  EXPECT_EQ(*quic.statelessResetSecret, expected);
+  EXPECT_EQ(secretHex(quic), kDerivedSecretHex9668);
 }
 
 TEST(ResolveConfig, StatelessResetSecretInheritedFromListenerDefaults) {
@@ -2110,7 +2120,35 @@ TEST(ResolveConfig, StatelessResetSecretInheritedFromListenerDefaults) {
 
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasValue()) << result.error();
-  EXPECT_TRUE(result.value().config.listeners[0].quic.statelessResetSecret.has_value());
+  EXPECT_EQ(secretHex(result.value().config.listeners[0].quic), kDerivedSecretHex9668);
+}
+
+TEST(ResolveConfig, StatelessResetSecretDiffersPerListener) {
+  test::TempFile file(kResetSecretHex, ".key");
+  auto cfg = makeMinimalInsecureConfig("first");
+  ParsedListenerConfig lc2;
+  lc2.name = std::string("second");
+  ParsedSocketConfig sock2;
+  sock2.address = std::string("::");
+  sock2.port = uint16_t{9669};
+  ParsedUdpConfig udp2;
+  udp2.socket = std::move(sock2);
+  lc2.udp = std::move(udp2);
+  ParsedListenerTlsConfig tls2;
+  tls2.insecure = true;
+  lc2.tls = std::move(tls2);
+  lc2.endpoint = std::string("/moq-relay");
+  cfg.listeners.value().push_back(std::move(lc2));
+  ParsedListenerDefaultsConfig ld;
+  ld.quic = std::optional<ParsedQuicConfig>{quicWithResetSecretFile(file.path())};
+  cfg.listener_defaults = std::optional<ParsedListenerDefaultsConfig>{std::move(ld)};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue()) << result.error();
+  const auto& listeners = result.value().config.listeners;
+  ASSERT_EQ(listeners.size(), 2u);
+  EXPECT_EQ(secretHex(listeners[0].quic), kDerivedSecretHex9668);
+  EXPECT_EQ(secretHex(listeners[1].quic), kDerivedSecretHex9669);
 }
 
 TEST(ResolveConfig, StatelessResetSecretMissingFileIsError) {
@@ -2139,16 +2177,32 @@ TEST(ResolveConfig, StatelessResetSecretMalformedFileIsError) {
   }
 }
 
-TEST(ResolveConfig, StatelessResetSecretReadIsCapped) {
-  // Valid digits past the first 4 KiB are never read.
-  test::TempFile file(std::string(8192, ' ') + std::string(kResetSecretHex), ".key");
+TEST(ResolveConfig, StatelessResetSecretFileOverCapIsError) {
+  std::string contents(kResetSecretHex);
+  contents.resize(4096, ' ');
+  contents += "zz";
+  test::TempFile file(contents, ".key");
   auto cfg = makeMinimalInsecureConfig();
   cfg.listeners.value()[0].quic =
       std::optional<ParsedQuicConfig>{quicWithResetSecretFile(file.path())};
 
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasError());
-  EXPECT_THAT(result.error(), HasSubstr("must hold 64 hex digits"));
+  EXPECT_THAT(result.error(), HasSubstr("is larger than 4096 bytes"));
+  EXPECT_THAT(result.error(), Not(HasSubstr("0405060708090a0b")));
+}
+
+TEST(ResolveConfig, StatelessResetSecretFileAtCapIsRead) {
+  std::string contents(kResetSecretHex);
+  contents.resize(4096, ' ');
+  test::TempFile file(contents, ".key");
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.listeners.value()[0].quic =
+      std::optional<ParsedQuicConfig>{quicWithResetSecretFile(file.path())};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue()) << result.error();
+  EXPECT_EQ(secretHex(result.value().config.listeners[0].quic), kDerivedSecretHex9668);
 }
 
 TEST(ResolveConfig, StatelessResetSecretWarnsOnPicoquic) {
