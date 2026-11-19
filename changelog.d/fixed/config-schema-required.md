@@ -1,0 +1,1 @@
+- The JSON schema from [`moqx dump-config-schema`](/docs/config.md#tooling) listed optional config fields as required.
