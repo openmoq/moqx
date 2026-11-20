@@ -266,8 +266,11 @@ std::chrono::system_clock::time_point readTime(CborReader& reader) {
   return Clock::time_point(Seconds(seconds));
 }
 
-Grants
-readClaims(std::string_view payload, std::chrono::system_clock::time_point now, bool strictClaims) {
+Grants readClaims(
+    std::string_view payload,
+    std::chrono::system_clock::time_point now,
+    const ClaimPolicy& policy
+) {
   CborReader reader(payload);
   uint64_t count = 0;
   require(reader.readMapLen(count) && count <= reader.remaining() / 2);
@@ -298,7 +301,25 @@ readClaims(std::string_view payload, std::chrono::system_clock::time_point now, 
       if (version != 1) {
         unsupported();
       }
-    } else if (key == 1 || key == 2) {
+    } else if (key == 1) {
+      std::string_view value;
+      require(reader.readTextString(value));
+      grants.issuer = std::string(value);
+    } else if (key == 3) {
+      // RFC 8392: aud is a single StringOrURI or an array of them.
+      std::string_view value;
+      if (reader.peekMajor() == cbor::kMajorTextString) {
+        require(reader.readTextString(value));
+        grants.audiences.emplace_back(value);
+      } else {
+        uint64_t n = 0;
+        require(reader.readArrayLen(n) && n >= 1 && n <= 16 && n <= reader.remaining());
+        for (uint64_t j = 0; j < n; ++j) {
+          require(reader.readTextString(value));
+          grants.audiences.emplace_back(value);
+        }
+      }
+    } else if (key == 2) {
       std::string_view value;
       require(reader.readTextString(value));
       hasInformationalClaims = true;
@@ -310,7 +331,7 @@ readClaims(std::string_view payload, std::chrono::system_clock::time_point now, 
       require(reader.readByteString(value));
       hasInformationalClaims = true;
     } else {
-      // In particular: aud, cnf, catdpop, replay restrictions, and old moqt labels.
+      // In particular: cnf, catdpop, replay restrictions, and old moqt labels.
       // Skipping an unknown restriction can turn a scoped token into a broader grant.
       unsupported();
     }
@@ -322,7 +343,30 @@ readClaims(std::string_view payload, std::chrono::system_clock::time_point now, 
   if (notBefore && *notBefore > now) {
     throw C4mError(AuthError::NotYetValid, "C4M token not yet valid");
   }
-  if (strictClaims && hasInformationalClaims) {
+  if (policy.audiences.empty()) {
+    if (!grants.audiences.empty()) {
+      unsupported(); // No local audience to compare against; do not ignore the restriction.
+    }
+  } else if (std::none_of(
+                 grants.audiences.begin(),
+                 grants.audiences.end(),
+                 [&](const std::string& aud) {
+                   return std::find(policy.audiences.begin(), policy.audiences.end(), aud) !=
+                          policy.audiences.end();
+                 }
+             )) {
+    throw C4mError(AuthError::Forbidden, "C4M token audience not accepted");
+  }
+  if (!policy.issuers.empty()) {
+    if (!grants.issuer.has_value() ||
+        std::find(policy.issuers.begin(), policy.issuers.end(), *grants.issuer) ==
+            policy.issuers.end()) {
+      throw C4mError(AuthError::Forbidden, "C4M token issuer not accepted");
+    }
+  } else if (grants.issuer.has_value()) {
+    hasInformationalClaims = true;
+  }
+  if (policy.strict && hasInformationalClaims) {
     unsupported();
   }
   return grants;
@@ -344,8 +388,26 @@ std::string encodeClaims(const Grants& grants) {
   appendHead(
       out,
       5,
-      static_cast<unsigned>(expires) + static_cast<unsigned>(!grants.scopes.empty())
+      static_cast<unsigned>(expires) + static_cast<unsigned>(!grants.scopes.empty()) +
+          static_cast<unsigned>(grants.issuer.has_value()) +
+          static_cast<unsigned>(!grants.audiences.empty())
   );
+  if (grants.issuer) {
+    appendInt(out, 1);
+    appendHead(out, 3, grants.issuer->size());
+    out += *grants.issuer;
+  }
+  if (!grants.audiences.empty()) {
+    if (grants.audiences.size() > 16) {
+      throw std::invalid_argument("too many C4M audiences");
+    }
+    appendInt(out, 3);
+    appendHead(out, 4, grants.audiences.size());
+    for (const auto& aud : grants.audiences) {
+      appendHead(out, 3, aud.size());
+      out += aud;
+    }
+  }
   if (expires) {
     appendInt(out, 4);
     appendInt(
@@ -428,7 +490,7 @@ Grants verifyC4mToken(
     std::string_view token,
     const catapult::CryptographicAlgorithm& algorithm,
     std::chrono::system_clock::time_point now,
-    bool strictClaims
+    const ClaimPolicy& policy
 ) {
   const auto envelope = readEnvelope(token);
   if (envelope.algorithm != algorithm.algorithmId()) {
@@ -449,17 +511,17 @@ Grants verifyC4mToken(
   if (!verified) {
     throw C4mError(AuthError::BadSignature, "invalid C4M signature/MAC");
   }
-  return readClaims(envelope.payload, now, strictClaims);
+  return readClaims(envelope.payload, now, policy);
 }
 
 Grants verifyC4mToken(
     std::string_view token,
     std::span<const uint8_t> key,
     std::chrono::system_clock::time_point now,
-    bool strictClaims
+    const ClaimPolicy& policy
 ) {
   const auto algorithm = hmacAlgorithm(key);
-  return verifyC4mToken(token, algorithm, now, strictClaims);
+  return verifyC4mToken(token, algorithm, now, policy);
 }
 
 std::string signC4mToken(

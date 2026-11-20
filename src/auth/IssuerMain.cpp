@@ -46,6 +46,8 @@ DEFINE_string(
 );
 DEFINE_string(auth_namespace, "", "Slash-separated track namespace");
 DEFINE_string(auth_track, "", "Optional track name");
+DEFINE_string(auth_issuer, "", "Optional CWT iss claim");
+DEFINE_string(auth_audience, "", "Optional CWT aud claim; comma-separated for several audiences");
 DEFINE_int32(auth_ttl_seconds, 3600, "Token lifetime in seconds");
 DEFINE_string(auth_output, "base64-prefix", "Output encoding: base64-prefix, base64, hex, or raw");
 
@@ -117,6 +119,21 @@ auth::IssueTokenOptions makeIssueTokenOptions(const cfg::ResolvedConfig* resolve
   };
   if (!FLAGS_auth_namespace.empty()) {
     options.trackNamespace = auth::parseTrackNamespace(FLAGS_auth_namespace);
+  }
+  if (!FLAGS_auth_issuer.empty()) {
+    options.issuer = FLAGS_auth_issuer;
+  }
+  for (std::size_t start = 0;
+       !FLAGS_auth_audience.empty() && start <= FLAGS_auth_audience.size();) {
+    const auto comma = FLAGS_auth_audience.find(',', start);
+    const auto end = comma == std::string::npos ? FLAGS_auth_audience.size() : comma;
+    if (end > start) {
+      options.audiences.push_back(FLAGS_auth_audience.substr(start, end - start));
+    }
+    if (comma == std::string::npos) {
+      break;
+    }
+    start = comma + 1;
   }
   if (!FLAGS_auth_track.empty()) {
     options.trackName = FLAGS_auth_track;

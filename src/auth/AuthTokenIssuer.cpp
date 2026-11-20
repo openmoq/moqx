@@ -120,6 +120,8 @@ IssuedToken issueToken(const IssueTokenOptions& options) {
 
   Grants grants;
   grants.expiresAt = options.now + options.ttl;
+  grants.issuer = options.issuer;
+  grants.audiences = options.audiences;
 
   if (containsAction(options.actions, Action::ClientSetup)) {
     grants.scopes.push_back(Scope{

@@ -297,7 +297,9 @@ services:
 | `es256_keys` | empty | ES256 public keys: `{id, public_key_file}`. Each file must contain a PEM P-256 public key, loaded once when service auth is initialized. IDs must be unique across both key lists. Private keys and other curves are rejected. Paths resolve from the process working directory. Public-only services need no HMAC secret. |
 | `require_setup_token` | `true` | Requires a valid setup token authorizing `client_setup` during session setup. If `false`, clients can connect without setup grants; per-request actions still need an authorized token or a matching `anonymous_claim` entry. |
 | `allow_request_token_override` | `true` | Lets a token on a request count as one more candidate grant for that request, alongside the session's setup-token grants and `anonymous_claim`. If `false`, request tokens are ignored and authorization uses only the setup token grants and `anonymous_claim`. |
-| `strict_claims` | `false` | Also rejects informational `iss`, `sub`, `iat`, and `cti` claims. Unsupported restrictions and repeated claims are always rejected, regardless of this setting. |
+| `audiences` | none | CWT `aud` values this relay accepts. When set, a token must carry `aud` (a string or array of strings) and at least one value must equal an entry, otherwise it is rejected. When omitted, any token carrying `aud` is rejected. Entries must be non-empty. |
+| `issuers` | none | CWT `iss` values this relay accepts. When set, a token must carry a matching `iss`. When omitted, `iss` is informational. Entries must be non-empty. |
+| `strict_claims` | `false` | Also rejects informational `iss` (when `issuers` is unset), `sub`, `iat`, and `cti` claims. Unsupported restrictions and repeated claims are always rejected, regardless of this setting. |
 | `max_tokens_per_message` | none | Required when `enabled: true`, directly or via `service_defaults.auth.max_tokens_per_message`. Caps how many `AUTHORIZATION_TOKEN` params of the configured `token_type` a single SETUP or request message may carry; a message over the cap is rejected outright, not truncated. Params of other token types are not counted. Bounds per-message verification cost against a client attaching many tokens to one message. Must be >= 1. |
 | `anonymous_claim` | empty | Statically-granted scopes applied to every request on this service, regardless of what token (if any) authenticated it. See [Anonymous Claim](#anonymous-claim) below. |
 
@@ -327,7 +329,7 @@ are enforced, including duplicate-key and timestamp-range checks. Integer
 NumericDates are supported; floating-point time values are rejected. Optional
 `catv` must be `1`. Integer zero values for `catreplay` and `moqt-reval` are accepted. Tokens
 requiring DPoP (`cnf`/`catdpop`), replay protection, nonzero revalidation,
-composites, audience matching, or other unsupported restrictions are rejected.
+composites, or other unsupported restrictions are rejected. `aud` is rejected unless `audiences` is configured.
 `iss`/`sub`/`iat`/`cti` are informational and do not authenticate identities.
 The decoder accepts definite-length CBOR, at most 64 KiB per token, 1024 scopes,
 and 32 namespace fields per scope. Unsupported encodings are rejected.
@@ -400,6 +402,9 @@ moqx-issuer \
   --auth-track video \
   --auth-ttl-seconds 3600
 ```
+
+`--auth_issuer` and `--auth_audience` (comma-separated for several) add `iss` and `aud`
+claims for relays that configure `issuers`/`audiences`.
 
 The default output is `base64:<token>`, which is suitable for tools that accept
 a base64-prefixed CAT token string. Use `--auth-output base64`, `hex`, or `raw`

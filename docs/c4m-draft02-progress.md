@@ -20,6 +20,10 @@ with a C4M draft-02 bearer-token core.
 - Added ES256 public-key configuration for relay verification and a private-key
   issuer option. Keys are P-256; relay configuration loads public keys only.
   This addresses [issue #971](https://github.com/openmoq/moqx/issues/971).
+- Added `aud`/`iss` validation: per-service `audiences`/`issuers` config,
+  `ClaimPolicy` in the verifier, and `--auth_audience`/`--auth_issuer` issuer
+  flags. Verified live: matching token publishes, wrong or missing audience
+  is rejected.
 - Updated existing configuration/build documentation and examples to explain
   the subset, provisional labels, key handling, and unsupported features.
 - Pinned catapult's latest published release, v1.0.0, at
@@ -55,7 +59,7 @@ with a C4M draft-02 bearer-token core.
 
 - Protocol conformance gaps are tracked in
   [C4M draft-02 implementation gaps](c4m-draft02-gaps.md). The major gaps are
-  audience validation, nonzero revalidation, replay protection, DPoP,
+  nonzero revalidation, replay protection, DPoP,
   composite claims, and algorithm/claim-label interoperability.
 - Full default CTest reported 37 failures out of 1530. The same names failed
   in the prior pre-ES256 run, but this was not compared against an exact clean

@@ -70,6 +70,7 @@ private:
   };
 
   config::AuthConfig config_;
+  ClaimPolicy claimPolicy_;
   std::vector<VerificationKey> keys_;
   std::unordered_map<std::string, std::size_t> keyIdIndex_;
 };

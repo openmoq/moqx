@@ -64,6 +64,11 @@ verifyTokens(const AuthTokenVerifier& verifier, const std::vector<AuthToken>& to
 } // namespace
 
 AuthTokenVerifier::AuthTokenVerifier(config::AuthConfig config) : config_(std::move(config)) {
+  claimPolicy_ = ClaimPolicy{
+      .strict = config_.strictClaims,
+      .audiences = config_.audiences,
+      .issuers = config_.issuers,
+  };
   if (!config_.enabled) {
     return;
   }
@@ -107,7 +112,7 @@ folly::Expected<Grants, AuthError> AuthTokenVerifier::verify(const AuthToken& to
           token.tokenValue,
           *key.algorithm,
           std::chrono::system_clock::now(),
-          config_.strictClaims
+          claimPolicy_
       );
     } catch (const C4mError& error) {
       return folly::makeUnexpected(error.code());

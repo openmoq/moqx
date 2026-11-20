@@ -506,6 +506,15 @@ struct ParsedAuthConfig {
       std::optional<bool>>
       strict_claims;
   rfl::Description<
+      "CWT audience values this relay accepts. When set, tokens must carry a matching aud claim; "
+      "when omitted, tokens carrying aud are rejected",
+      std::optional<std::vector<std::string>>>
+      audiences;
+  rfl::Description<
+      "CWT issuer values this relay accepts. When set, tokens must carry a matching iss claim",
+      std::optional<std::vector<std::string>>>
+      issuers;
+  rfl::Description<
       "Anonymous (no-token) access grants applied to every request on this service, in "
       "addition to any verified setup/request token grants (default: none)",
       std::optional<std::vector<AnonymousScope>>>
