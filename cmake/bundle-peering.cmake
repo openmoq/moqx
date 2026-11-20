@@ -73,8 +73,27 @@ if(NOT MOQX_APPLE)
   if(NOT MOQX_OBJCOPY)
     message(FATAL_ERROR "bundle-peering: objcopy is required to localize hidden symbols")
   endif()
+  # Localize hidden GLOBAL definitions only. Hidden WEAK ones are COMDAT
+  # members: the final link may keep another object's copy of the group, so a
+  # local reference to the bundle's copy would point into a discarded section.
+  find_program(_readelf NAMES readelf llvm-readelf REQUIRED)
   execute_process(
-    COMMAND "${MOQX_OBJCOPY}" --localize-hidden "${MOQX_OUTPUT}"
+    COMMAND "${_readelf}" -sW "${MOQX_OUTPUT}"
+    OUTPUT_VARIABLE _elf
+    COMMAND_ERROR_IS_FATAL ANY
+  )
+  string(REPLACE "\n" ";" _lines "${_elf}")
+  set(_local "")
+  foreach(_line IN LISTS _lines)
+    if(_line MATCHES "^ *[0-9]+: [0-9a-f]+ +[0-9a-fx]+ [A-Z_]+ +GLOBAL +HIDDEN +[0-9]+ ([^ ]+)$")
+      list(APPEND _local "${CMAKE_MATCH_1}")
+    endif()
+  endforeach()
+  set(_local_file "${MOQX_OUTPUT}.localize")
+  list(JOIN _local "\n" _local_text)
+  file(WRITE "${_local_file}" "${_local_text}\n")
+  execute_process(
+    COMMAND "${MOQX_OBJCOPY}" "--localize-symbols=${_local_file}" "${MOQX_OUTPUT}"
     COMMAND_ERROR_IS_FATAL ANY
   )
 endif()
