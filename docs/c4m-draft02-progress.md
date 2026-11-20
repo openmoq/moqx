@@ -1,7 +1,7 @@
 # C4M draft-02 implementation progress
 
-Status on 2026-11-20, branch `feature/c4m-draft02`. Work is uncommitted and has
-not been pushed. The implementation replaces the former CAT4MOQ token format
+Status on 2026-11-20, branch `feature/c4m-draft02`. Implementation is committed
+as `a23be401` (PR 1015); this doc update is not yet committed. The implementation replaces the former CAT4MOQ token format
 with a C4M draft-02 bearer-token core.
 
 ## Completed
@@ -42,6 +42,14 @@ with a C4M draft-02 bearer-token core.
 - `clang-format-19 --dry-run --Werror` and `git diff --check` passed.
 - Independent C++ review found no concrete issue above its reporting
   threshold.
+- Live authenticated media delivery with the sibling `moqxr` publisher passed
+  (MoQT draft 18, WebTransport, HMAC-SHA256 token from `moqx-issuer`, token
+  type 1 via `--auth-profile c4m-01 --auth-token-file`):
+  - no token: session rejected with "missing authorization token";
+  - token for namespace `live`: namespace published with 3 tracks;
+  - `moqtextclient` subscribed to `vide_1` and received `moof`/`mdat` media;
+  - token for namespace `other` publishing `live`: rejected with
+    "authorization token does not permit action".
 
 ## Remaining work and limitations
 
@@ -52,10 +60,11 @@ with a C4M draft-02 bearer-token core.
 - Full default CTest reported 37 failures out of 1530. The same names failed
   in the prior pre-ES256 run, but this was not compared against an exact clean
   `main` build. One upstream handshake race test reported a cleanup segfault.
-- Live authenticated media delivery with the sibling `moqxr` publisher has
-  not been tested.
-- The work remains local and uncommitted; no remote branch update or issue
-  comment/closure was performed.
+- The live run covered one draft (18), HMAC only, and a small test MP4. The
+  subscriber was authorized by `anonymous_claim` because `moqtextclient` can
+  send only a type-0 token on SUBSCRIBE, so a token-carrying subscriber was not
+  tested. ES256 and mid-stream expiry were not exercised live.
+- No issue comment/closure was performed.
 
 Detailed run output was recorded at `/tmp/moqx-971-validation.txt` and
 `/tmp/moqx-971-full-tests.log` in the working environment.

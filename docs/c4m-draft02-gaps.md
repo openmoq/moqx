@@ -1,7 +1,7 @@
 # C4M draft-02 implementation gaps
 
-Status on 2026-11-20, branch `feature/c4m-draft02`. This describes the current
-uncommitted implementation against the checked-in
+Status on 2026-11-20, branch `feature/c4m-draft02`. This describes the
+implementation committed as `a23be401` against the checked-in
 [`draft-ietf-moq-c4m-02.txt`](ref/draft-ietf-moq-c4m-02.txt). It is a gap list,
 not a claim of draft conformance.
 
@@ -33,8 +33,12 @@ used for draft-02 parsing; ES256 DER signatures are adapted to COSE's fixed
 
 ## Integration and evidence gaps
 
-- No live authenticated media-delivery interoperability run was performed
-  with the sibling `moqxr` publisher.
+- A live run with the sibling `moqxr` publisher passed (draft 18,
+  WebTransport, HMAC token type 1): unauthenticated and wrong-namespace
+  publishers were rejected, a correctly scoped publisher delivered media to a
+  `moqtextclient` subscriber. Remaining gaps: the subscriber used
+  `anonymous_claim` (the client cannot send a setup token), and ES256, other
+  drafts, and mid-stream expiry were not exercised live.
 - The full default CTest run reported 37 failures out of 1530. The same test
   names failed in the earlier pre-ES256 run, but an exact clean-main baseline
   was not established. The failures are concentrated in loopback/upstream
@@ -55,4 +59,4 @@ used for draft-02 parsing; ES256 DER signatures are adapted to COSE's fixed
 - ASAN/UBSAN/LeakSanitizer focused tests: 113 passed across codec,
   authentication/issuer/filter, and configuration groups.
 - Full default CTest: 1493/1530 passed; 37 failed as described above.
-- No live authenticated media-delivery test was run.
+- Live moqxr publisher run: passed for HMAC, draft 18 (see above).
