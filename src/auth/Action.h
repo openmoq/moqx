@@ -8,8 +8,6 @@
 
 #include "util/ExhaustiveSwitch.h"
 
-#include <folly/String.h>
-
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
@@ -17,13 +15,11 @@
 #include <string>
 #include <string_view>
 
-// CAT4MOQ actions and their canonical names. Lightweight (moxygen-free) on
-// purpose.
+// draft-ietf-moq-c4m-02 section 2.1, Table 1.
 namespace openmoq::moqx::auth {
 
 enum class Action : uint64_t {
-  ClientSetup = 0,
-  ServerSetup = 1,
+  ClientSetup = 1,
   PublishNamespace = 2,
   SubscribeNamespace = 3,
   Subscribe = 4,
@@ -31,6 +27,7 @@ enum class Action : uint64_t {
   Publish = 6,
   Fetch = 7,
   TrackStatus = 8,
+  SubscribeTracks = 9,
 };
 
 enum class MatchRuleType : uint64_t { Exact = 0, Prefix = 1, Suffix = 2, Contains = 3 };
@@ -40,8 +37,6 @@ inline std::string_view actionName(Action action) {
   switch (action) {
   case Action::ClientSetup:
     return "client_setup";
-  case Action::ServerSetup:
-    return "server_setup";
   case Action::PublishNamespace:
     return "publish_namespace";
   case Action::SubscribeNamespace:
@@ -56,6 +51,8 @@ inline std::string_view actionName(Action action) {
     return "fetch";
   case Action::TrackStatus:
     return "track_status";
+  case Action::SubscribeTracks:
+    return "subscribe_tracks";
   }
   return "unknown";
 }
@@ -64,18 +61,20 @@ ENFORCE_EXHAUSTIVE_SWITCH_END
 // Canonicalizes an action name (aliases, numeric IDs, case/dash-insensitive)
 // to its Action, or nullopt if unrecognized.
 inline std::optional<Action> canonicalAction(std::string_view name) {
-  std::string normalized =
-      folly::trimWhitespace(folly::StringPiece(name.data(), name.size())).str();
+  while (!name.empty() && std::isspace(static_cast<unsigned char>(name.front()))) {
+    name.remove_prefix(1);
+  }
+  while (!name.empty() && std::isspace(static_cast<unsigned char>(name.back()))) {
+    name.remove_suffix(1);
+  }
+  std::string normalized(name);
   std::replace(normalized.begin(), normalized.end(), '-', '_');
   std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](unsigned char c) {
     return static_cast<char>(std::tolower(c));
   });
 
-  if (normalized == "client_setup" || normalized == "setup" || normalized == "0") {
+  if (normalized == "client_setup" || normalized == "setup" || normalized == "1") {
     return Action::ClientSetup;
-  }
-  if (normalized == "server_setup" || normalized == "1") {
-    return Action::ServerSetup;
   }
   if (normalized == "publish_namespace" || normalized == "announce" || normalized == "2") {
     return Action::PublishNamespace;
@@ -97,6 +96,9 @@ inline std::optional<Action> canonicalAction(std::string_view name) {
   }
   if (normalized == "track_status" || normalized == "8") {
     return Action::TrackStatus;
+  }
+  if (normalized == "subscribe_tracks" || normalized == "9") {
+    return Action::SubscribeTracks;
   }
   return std::nullopt;
 }

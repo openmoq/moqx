@@ -11,6 +11,113 @@
 using namespace moxygen;
 
 namespace openmoq::moqx {
+namespace {
+
+struct UpdateAuthorization {
+  std::shared_ptr<const auth::AuthTokenVerifier> verifier;
+  std::shared_ptr<const std::vector<auth::Grants>> grants;
+  TrackNamespace trackNamespace;
+  std::optional<std::string> trackName;
+
+  folly::Expected<folly::Unit, auth::AuthError> check(const RequestUpdate& update) const {
+    if (verifier->enabled()) {
+      for (const auto& param : update.params) {
+        // The core currently authorizes a fixed target. A prefix-changing update
+        // needs checks on both old and new targets before it can be supported.
+        if (param.key == static_cast<uint64_t>(TrackRequestParamKey::TRACK_NAMESPACE_PREFIX)) {
+          return folly::makeUnexpected(auth::AuthError::UnsupportedClaim);
+        }
+      }
+    }
+    return auth::authorize(
+        *verifier,
+        auth::Action::RequestUpdate,
+        update.params,
+        trackNamespace,
+        *grants,
+        trackName ? std::optional<std::string_view>(*trackName) : std::nullopt
+    );
+  }
+};
+
+template <typename Handle> class AuthUpdateHandle : public Handle {
+public:
+  AuthUpdateHandle(std::shared_ptr<Handle> inner, UpdateAuthorization authorization)
+      : inner_(std::move(inner)), authorization_(std::move(authorization)) {}
+
+  folly::coro::Task<typename Handle::RequestUpdateResult> requestUpdate(RequestUpdate update
+  ) override {
+    const auto authorized = authorization_.check(update);
+    if (authorized.hasError()) {
+      co_return folly::makeUnexpected(RequestError{
+          update.requestID,
+          RequestErrorCode::UNAUTHORIZED,
+          auth::toString(authorized.error())
+      });
+    }
+    co_return co_await inner_->requestUpdate(std::move(update));
+  }
+
+protected:
+  std::shared_ptr<Handle> inner_;
+
+private:
+  UpdateAuthorization authorization_;
+};
+
+class AuthSubscriptionHandle final : public AuthUpdateHandle<SubscriptionHandle> {
+public:
+  AuthSubscriptionHandle(
+      std::shared_ptr<SubscriptionHandle> inner,
+      UpdateAuthorization authorization
+  )
+      : AuthUpdateHandle(std::move(inner), std::move(authorization)) {
+    if (inner_->hasSubscribeOk()) {
+      setSubscribeOk(inner_->subscribeOk());
+    }
+  }
+  void unsubscribe() override { inner_->unsubscribe(); }
+  void cancelFill(RequestID id) override { inner_->cancelFill(id); }
+  const SubscribeOk& subscribeOk() const override { return inner_->subscribeOk(); }
+};
+
+class AuthFetchHandle final : public AuthUpdateHandle<Publisher::FetchHandle> {
+public:
+  using AuthUpdateHandle::AuthUpdateHandle;
+  void fetchCancel() override { inner_->fetchCancel(); }
+  const FetchOk& fetchOk() const override { return inner_->fetchOk(); }
+};
+
+class AuthSubscribeNamespaceHandle final
+    : public AuthUpdateHandle<Publisher::SubscribeNamespaceHandle> {
+public:
+  using AuthUpdateHandle::AuthUpdateHandle;
+  void unsubscribeNamespace() override { inner_->unsubscribeNamespace(); }
+  const SubscribeNamespaceOk& subscribeNamespaceOk() const override {
+    return inner_->subscribeNamespaceOk();
+  }
+};
+
+class AuthSubscribeTracksHandle final : public AuthUpdateHandle<Publisher::SubscribeTracksHandle> {
+public:
+  using AuthUpdateHandle::AuthUpdateHandle;
+  void unsubscribeTracks() override { inner_->unsubscribeTracks(); }
+  const SubscribeTracksOk& subscribeTracksOk() const override {
+    return inner_->subscribeTracksOk();
+  }
+};
+
+class AuthPublishNamespaceHandle final
+    : public AuthUpdateHandle<Subscriber::PublishNamespaceHandle> {
+public:
+  using AuthUpdateHandle::AuthUpdateHandle;
+  void publishNamespaceDone() override { inner_->publishNamespaceDone(); }
+  const PublishNamespaceOk& publishNamespaceOk() const override {
+    return inner_->publishNamespaceOk();
+  }
+};
+
+} // namespace
 
 folly::coro::Task<Publisher::SubscribeResult>
 AuthPublisherFilter::subscribe(SubscribeRequest sub, std::shared_ptr<TrackConsumer> consumer) {
@@ -23,11 +130,18 @@ AuthPublisherFilter::subscribe(SubscribeRequest sub, std::shared_ptr<TrackConsum
       sub.fullTrackName.trackName
   );
   if (ok.hasError()) {
-    return folly::coro::makeTask<Publisher::SubscribeResult>(folly::makeUnexpected(
+    co_return folly::makeUnexpected(
         SubscribeError{sub.requestID, SubscribeErrorCode::UNAUTHORIZED, auth::toString(ok.error())}
-    ));
+    );
   }
-  return downstream_->subscribe(std::move(sub), std::move(consumer));
+  UpdateAuthorization
+      target{verifier_, grants_, sub.fullTrackName.trackNamespace, sub.fullTrackName.trackName};
+  auto result = co_await downstream_->subscribe(std::move(sub), std::move(consumer));
+  if (result.hasValue()) {
+    result.value() =
+        std::make_shared<AuthSubscriptionHandle>(std::move(result.value()), std::move(target));
+  }
+  co_return result;
 }
 
 folly::coro::Task<Publisher::FetchResult>
@@ -41,11 +155,18 @@ AuthPublisherFilter::fetch(Fetch fetch, std::shared_ptr<FetchConsumer> consumer)
       fetch.fullTrackName.trackName
   );
   if (ok.hasError()) {
-    return folly::coro::makeTask<Publisher::FetchResult>(folly::makeUnexpected(
+    co_return folly::makeUnexpected(
         FetchError{fetch.requestID, FetchErrorCode::UNAUTHORIZED, auth::toString(ok.error())}
-    ));
+    );
   }
-  return downstream_->fetch(std::move(fetch), std::move(consumer));
+  UpdateAuthorization
+      target{verifier_, grants_, fetch.fullTrackName.trackNamespace, fetch.fullTrackName.trackName};
+  auto result = co_await downstream_->fetch(std::move(fetch), std::move(consumer));
+  if (result.hasValue()) {
+    result.value() =
+        std::make_shared<AuthFetchHandle>(std::move(result.value()), std::move(target));
+  }
+  co_return result;
 }
 
 folly::coro::Task<Publisher::SubscribeNamespaceResult> AuthPublisherFilter::subscribeNamespace(
@@ -64,44 +185,58 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> AuthPublisherFilter::subs
         *grants_
     );
     if (ok.hasError()) {
-      return folly::coro::makeTask<Publisher::SubscribeNamespaceResult>(
-          folly::makeUnexpected(SubscribeNamespaceError{
-              subNs.requestID,
-              SubscribeNamespaceErrorCode::UNAUTHORIZED,
-              auth::toString(ok.error())
-          })
-      );
+      co_return folly::makeUnexpected(SubscribeNamespaceError{
+          subNs.requestID,
+          SubscribeNamespaceErrorCode::UNAUTHORIZED,
+          auth::toString(ok.error())
+      });
     }
   }
-  return downstream_->subscribeNamespace(std::move(subNs), std::move(handle));
+  UpdateAuthorization target{verifier_, grants_, subNs.trackNamespacePrefix, std::nullopt};
+  auto result = co_await downstream_->subscribeNamespace(std::move(subNs), std::move(handle));
+  if (result.hasValue() && !isPeer) {
+    result.value() = std::make_shared<AuthSubscribeNamespaceHandle>(
+        std::move(result.value()),
+        std::move(target)
+    );
+  }
+  co_return result;
 }
 
 folly::coro::Task<Publisher::SubscribeTracksResult> AuthPublisherFilter::subscribeTracks(
     SubscribeTracks subTracks,
     std::shared_ptr<PublishBlockedHandle> publishBlockedHandle
 ) {
-  // SUBSCRIBE_TRACKS is namespace-level, like SUBSCRIBE_NAMESPACE; gate on the
-  // prefix. Peer relays skip grant checks, as for SUBSCRIBE_NAMESPACE.
+  // C4M gives SUBSCRIBE_TRACKS its own action, distinct from SUBSCRIBE_NAMESPACE.
+  // Peer relays use their separate relay-token policy.
   if (reciprocal_ && reciprocal_->authorizePeer(subTracks.params).has_value()) {
-    return downstream_->subscribeTracks(std::move(subTracks), std::move(publishBlockedHandle));
+    co_return co_await downstream_->subscribeTracks(
+        std::move(subTracks),
+        std::move(publishBlockedHandle)
+    );
   }
   auto ok = auth::authorize(
       *verifier_,
-      auth::Action::SubscribeNamespace,
+      auth::Action::SubscribeTracks,
       subTracks.params,
       subTracks.trackNamespacePrefix,
       *grants_
   );
   if (ok.hasError()) {
-    return folly::coro::makeTask<Publisher::SubscribeTracksResult>(
-        folly::makeUnexpected(SubscribeTracksError{
-            subTracks.requestID,
-            SubscribeTracksErrorCode::UNAUTHORIZED,
-            auth::toString(ok.error())
-        })
-    );
+    co_return folly::makeUnexpected(SubscribeTracksError{
+        subTracks.requestID,
+        SubscribeTracksErrorCode::UNAUTHORIZED,
+        auth::toString(ok.error())
+    });
   }
-  return downstream_->subscribeTracks(std::move(subTracks), std::move(publishBlockedHandle));
+  UpdateAuthorization target{verifier_, grants_, subTracks.trackNamespacePrefix, std::nullopt};
+  auto result =
+      co_await downstream_->subscribeTracks(std::move(subTracks), std::move(publishBlockedHandle));
+  if (result.hasValue()) {
+    result.value() =
+        std::make_shared<AuthSubscribeTracksHandle>(std::move(result.value()), std::move(target));
+  }
+  co_return result;
 }
 
 folly::coro::Task<Publisher::TrackStatusResult>
@@ -160,15 +295,19 @@ folly::coro::Task<Subscriber::PublishNamespaceResult> AuthSubscriberFilter::publ
       *grants_
   );
   if (ok.hasError()) {
-    return folly::coro::makeTask<Subscriber::PublishNamespaceResult>(
-        folly::makeUnexpected(PublishNamespaceError{
-            pubNs.requestID,
-            PublishNamespaceErrorCode::UNAUTHORIZED,
-            auth::toString(ok.error())
-        })
-    );
+    co_return folly::makeUnexpected(PublishNamespaceError{
+        pubNs.requestID,
+        PublishNamespaceErrorCode::UNAUTHORIZED,
+        auth::toString(ok.error())
+    });
   }
-  return downstream_->publishNamespace(std::move(pubNs), std::move(callback));
+  UpdateAuthorization target{verifier_, grants_, pubNs.trackNamespace, std::nullopt};
+  auto result = co_await downstream_->publishNamespace(std::move(pubNs), std::move(callback));
+  if (result.hasValue()) {
+    result.value() =
+        std::make_shared<AuthPublishNamespaceHandle>(std::move(result.value()), std::move(target));
+  }
+  co_return result;
 }
 
 void AuthSubscriberFilter::goaway(Goaway g) {

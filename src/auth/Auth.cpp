@@ -5,15 +5,11 @@
  */
 
 #include "auth/Auth.h"
-#include "auth/CborReader.h"
+#include "auth/Es256Key.h"
 #include "auth/HmacKey.h"
-#include "util/ExhaustiveSwitch.h"
 
-#include <catapult/claims.hpp>
 #include <catapult/crypto.hpp>
-#include <catapult/cwt.hpp>
-#include <catapult/error.hpp>
-#include <catapult/moqt_claims.hpp>
+
 #include <folly/Conv.h>
 #include <folly/Expected.h>
 #include <folly/Range.h>
@@ -32,142 +28,6 @@ using namespace moxygen;
 
 namespace openmoq::moqx::auth {
 namespace {
-
-std::vector<uint8_t> toBytes(std::string_view value) {
-  return std::vector<uint8_t>(
-      reinterpret_cast<const uint8_t*>(value.data()),
-      reinterpret_cast<const uint8_t*>(value.data()) + value.size()
-  );
-}
-
-std::string toString(const std::vector<uint8_t>& bytes) {
-  return std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size());
-}
-
-// catapult's CBOR decoder (parse_bin_match, cwt.cpp) falls back to EXACT for
-// an unrecognized BinaryMatchType, so the XLOG below is a tripwire against
-// that decoder changing; the exhaustive-switch check covers a missed case.
-ENFORCE_EXHAUSTIVE_SWITCH_BEGIN
-MatchRule::Type fromCatapultMatchType(catapult::BinaryMatchType type) {
-  switch (type) {
-  case catapult::BinaryMatchType::EXACT:
-    return MatchRule::Type::Exact;
-  case catapult::BinaryMatchType::PREFIX:
-    return MatchRule::Type::Prefix;
-  case catapult::BinaryMatchType::SUFFIX:
-    return MatchRule::Type::Suffix;
-  case catapult::BinaryMatchType::CONTAINS:
-    return MatchRule::Type::Contains;
-  }
-  XLOG(ERR) << "catapult BinaryMatchType " << static_cast<int>(type)
-            << " unrecognized; falling back to EXACT";
-  return MatchRule::Type::Exact;
-}
-ENFORCE_EXHAUSTIVE_SWITCH_END
-
-std::vector<MatchRule> fromCatapultMatch(const catapult::MoqtCompoundMatch& match) {
-  if (match.is_empty()) {
-    return {};
-  }
-  std::vector<MatchRule> rules;
-  rules.reserve(match.conditions().size());
-  for (const auto& cond : match.conditions()) {
-    rules.push_back(MatchRule{
-        .type = fromCatapultMatchType(cond.match_type),
-        .value = toString(cond.pattern),
-    });
-  }
-  return rules;
-}
-
-Grants grantsFromToken(const catapult::CatToken& token) {
-  Grants grants;
-  if (token.core.exp.has_value()) {
-    grants.expiresAt = std::chrono::system_clock::time_point(std::chrono::seconds(*token.core.exp));
-  }
-
-  const auto* moqt = token.extended.getMoqtClaimsReadOnly();
-  if (!moqt) {
-    return grants;
-  }
-
-  for (const auto& catScope : moqt->getScopes()) {
-    Scope scope;
-    scope.actions.reserve(catScope.actions.size());
-    for (auto action : catScope.actions) {
-      if (action < 0) {
-        continue;
-      }
-      scope.actions.push_back(static_cast<Action>(static_cast<uint64_t>(action)));
-    }
-    scope.namespaceMatches = fromCatapultMatch(catScope.namespace_match);
-    scope.trackMatches = fromCatapultMatch(catScope.track_match);
-    grants.scopes.push_back(std::move(scope));
-  }
-  return grants;
-}
-
-// strict_claims accepts only the claims that grantsFromToken enforces.
-bool hasOnlyEnforcedClaims(std::string_view cwtBytes) {
-  CborReader cose(cwtBytes);
-  uint64_t coseLen = 0;
-  std::string_view payload;
-  // COSE_Mac0 and COSE_Sign1 are [protected, unprotected, payload, tag].
-  if (!cose.readArrayLen(coseLen) || coseLen != 4 || !cose.skip() || !cose.skip() ||
-      !cose.readBytes(payload)) {
-    return false;
-  }
-  CborReader claims(payload);
-  uint64_t numClaims = 0;
-  if (!claims.readMapLen(numClaims)) {
-    return false;
-  }
-  bool seenExp = false;
-  bool seenMoqt = false;
-  for (uint64_t i = 0; i < numClaims; ++i) {
-    int64_t key = 0;
-    if (!claims.readInt(key)) {
-      return false;
-    }
-    if (key == catapult::CLAIM_EXP) {
-      // catapult drops any other exp, which leaves the token without an expiry.
-      uint64_t exp = 0;
-      if (std::exchange(seenExp, true) || !claims.readUInt(exp) ||
-          exp > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
-        return false;
-      }
-    } else if (key == catapult::CLAIM_MOQT) {
-      if (std::exchange(seenMoqt, true) || !claims.skip()) {
-        return false;
-      }
-    } else {
-      return false;
-    }
-  }
-  return claims.eof();
-}
-
-Grants buildAnonymousGrants(const std::vector<config::AuthConfig::AnonymousScope>& configScopes) {
-  Grants grants; // expiresAt stays time_point::max() -- a static claim never expires
-  for (const auto& configScope : configScopes) {
-    Scope scope;
-    scope.actions = configScope.actions;
-    if (configScope.namespaceSegments) {
-      scope.namespaceMatches.push_back(MatchRule{
-          .type = configScope.namespaceMatchMode,
-          .value = canonicalNamespace(TrackNamespace{*configScope.namespaceSegments}),
-      });
-    }
-    if (configScope.trackName) {
-      scope.trackMatches.push_back(MatchRule{
-          .type = configScope.trackMatchMode,
-          .value = *configScope.trackName,
-      });
-    }
-    grants.scopes.push_back(std::move(scope));
-  }
-  return grants;
-}
 
 struct VerifiedTokens {
   std::vector<Grants> grants;
@@ -204,15 +64,23 @@ verifyTokens(const AuthTokenVerifier& verifier, const std::vector<AuthToken>& to
 } // namespace
 
 AuthTokenVerifier::AuthTokenVerifier(config::AuthConfig config) : config_(std::move(config)) {
-  derivedKeys_.reserve(config_.hmacKeys.size());
-  for (const auto& key : config_.hmacKeys) {
-    const std::size_t idx = derivedKeys_.size();
-    derivedKeys_.push_back(DerivedKey{.id = key.id, .key = deriveHmacKey(key.secret)});
-    if (!key.id.empty()) {
-      keyIdIndex_.emplace(key.id, idx);
-    }
+  if (!config_.enabled) {
+    return;
   }
-  anonymousGrants_ = buildAnonymousGrants(config_.anonymousClaim);
+  keys_.reserve(config_.hmacKeys.size() + config_.es256Keys.size());
+  auto addKey = [&](std::string id,
+                    std::shared_ptr<const catapult::CryptographicAlgorithm> algorithm) {
+    if (id.empty() || !keyIdIndex_.emplace(id, keys_.size()).second) {
+      throw std::invalid_argument("auth key IDs must be non-empty and unique across algorithms");
+    }
+    keys_.push_back(VerificationKey{.id = std::move(id), .algorithm = std::move(algorithm)});
+  };
+  for (const auto& key : config_.hmacKeys) {
+    addKey(key.id, std::make_shared<catapult::HmacSha256Algorithm>(deriveHmacKey(key.secret)));
+  }
+  for (const auto& key : config_.es256Keys) {
+    addKey(key.id, loadEs256PublicKeyFile(key.publicKeyFile));
+  }
 }
 
 folly::Expected<Grants, AuthError> AuthTokenVerifier::verify(const AuthToken& token) const {
@@ -226,54 +94,87 @@ folly::Expected<Grants, AuthError> AuthTokenVerifier::verify(const AuthToken& to
     return folly::makeUnexpected(AuthError::Malformed);
   }
 
-  const auto tokenBytes = toBytes(token.tokenValue);
-  const auto span = std::span<const uint8_t>(tokenBytes.data(), tokenBytes.size());
-
-  // Peek the COSE protected header to extract kid without any crypto.
-  std::optional<std::string> tokenKid;
+  C4mHeader header;
   try {
-    auto header = catapult::Cwt::decodeHeader(span);
-    tokenKid = header.kid;
-  } catch (const catapult::CatError&) {
-    return folly::makeUnexpected(AuthError::Malformed);
+    header = c4mHeader(token.tokenValue);
+  } catch (const C4mError& error) {
+    return folly::makeUnexpected(error.code());
   }
 
-  auto tryVerify = [&](const DerivedKey& derived) -> folly::Expected<Grants, AuthError> {
+  auto tryVerify = [&](const VerificationKey& key) -> folly::Expected<Grants, AuthError> {
     try {
-      catapult::HmacSha256Algorithm hmac(derived.key);
-      auto cwt = catapult::Cwt::validateCwt(span, hmac);
-      auto grants = grantsFromToken(cwt.payload);
-      // Report Expired before Malformed so that the client refreshes its token.
-      if (grants.expiresAt <= std::chrono::system_clock::now()) {
-        return folly::makeUnexpected(AuthError::Expired);
-      }
-      if (config_.strictClaims && !hasOnlyEnforcedClaims(token.tokenValue)) {
-        return folly::makeUnexpected(AuthError::Malformed);
-      }
-      return grants;
-    } catch (const catapult::CryptoError&) {
-      return folly::makeUnexpected(AuthError::BadSignature);
-    } catch (const catapult::CatError&) {
-      return folly::makeUnexpected(AuthError::Malformed);
+      return verifyC4mToken(
+          token.tokenValue,
+          *key.algorithm,
+          std::chrono::system_clock::now(),
+          config_.strictClaims
+      );
+    } catch (const C4mError& error) {
+      return folly::makeUnexpected(error.code());
     }
   };
 
-  if (tokenKid.has_value()) {
-    auto it = keyIdIndex_.find(*tokenKid);
+  if (header.keyId.has_value()) {
+    auto it = keyIdIndex_.find(*header.keyId);
     if (it == keyIdIndex_.end()) {
       return folly::makeUnexpected(AuthError::BadSignature);
     }
-    return tryVerify(derivedKeys_[it->second]);
+    return tryVerify(keys_[it->second]);
   }
 
   // No kid — trial-verify against all configured keys.
-  for (const auto& derived : derivedKeys_) {
-    auto result = tryVerify(derived);
+  for (const auto& key : keys_) {
+    if (key.algorithm->algorithmId() != header.algorithm) {
+      continue;
+    }
+    auto result = tryVerify(key);
     if (result.hasValue() || result.error() != AuthError::BadSignature) {
       return result;
     }
   }
   return folly::makeUnexpected(AuthError::BadSignature);
+}
+
+bool AuthTokenVerifier::allowsAnonymous(
+    Action action,
+    const TrackNamespace& ns,
+    std::optional<std::string_view> trackName
+) const {
+  if (action == Action::ClientSetup) {
+    return false;
+  }
+  const auto nsBytes = canonicalNamespace(ns);
+  const auto matches = [](std::string_view actual, MatchRuleType mode, std::string_view value) {
+    switch (mode) {
+    case MatchRuleType::Exact:
+      return actual == value;
+    case MatchRuleType::Prefix:
+      return actual.starts_with(value);
+    case MatchRuleType::Suffix:
+      return actual.ends_with(value);
+    case MatchRuleType::Contains:
+      return actual.find(value) != std::string_view::npos;
+    }
+    return false;
+  };
+  for (const auto& scope : config_.anonymousClaim) {
+    if (std::find(scope.actions.begin(), scope.actions.end(), action) == scope.actions.end()) {
+      continue;
+    }
+    if (scope.namespaceSegments && !matches(
+                                       nsBytes,
+                                       scope.namespaceMatchMode,
+                                       canonicalNamespace(TrackNamespace{*scope.namespaceSegments})
+                                   )) {
+      continue;
+    }
+    if (scope.trackName &&
+        (!trackName || !matches(*trackName, scope.trackMatchMode, *scope.trackName))) {
+      continue;
+    }
+    return true;
+  }
+  return false;
 }
 
 folly::Expected<std::shared_ptr<const std::vector<Grants>>, AuthError>
@@ -336,18 +237,17 @@ folly::Expected<folly::Unit, AuthError> authorize(
   }
 
   // Any one of three sources is sufficient.
-  const auto& anonymousGrants = verifier.anonymousGrants();
   const auto now = std::chrono::system_clock::now();
   bool permitted = false;
   if (trackName) {
     const FullTrackName ftn{ns, std::string(*trackName)};
     permitted = allowsAny(requestGrants, action, ftn, now) ||
                 allowsAny(sessionGrants, action, ftn, now) ||
-                allows(anonymousGrants, action, ftn, now);
+                verifier.allowsAnonymous(action, ns, trackName);
   } else {
     permitted = allowsAny(requestGrants, action, ns, now) ||
                 allowsAny(sessionGrants, action, ns, now) ||
-                allows(anonymousGrants, action, ns, now);
+                verifier.allowsAnonymous(action, ns, std::nullopt);
   }
   if (!permitted) {
     XLOG(DBG1) << "authorize: action=" << static_cast<uint64_t>(action)
@@ -382,34 +282,9 @@ bool allowsImpl(
   if (grants.expiresAt <= now) {
     return false;
   }
-  const auto nsBytes = canonicalNamespace(ns);
-  const auto trackBytes = trackName.value_or(std::string_view());
-  for (const auto& scope : grants.scopes) {
-    if (std::find(scope.actions.begin(), scope.actions.end(), action) == scope.actions.end()) {
-      continue;
-    }
-    auto rulesMatch = [](std::string_view actual, const std::vector<MatchRule>& rules) {
-      return std::all_of(rules.begin(), rules.end(), [&](const auto& rule) {
-        const auto expected = std::string_view(rule.value);
-        switch (rule.type) {
-        case MatchRule::Type::Exact:
-          return actual == expected;
-        case MatchRule::Type::Prefix:
-          return actual.starts_with(expected);
-        case MatchRule::Type::Suffix:
-          return actual.size() >= expected.size() &&
-                 actual.substr(actual.size() - expected.size()) == expected;
-        case MatchRule::Type::Contains:
-          return actual.find(expected) != std::string_view::npos;
-        }
-        return false;
-      });
-    };
-    if (rulesMatch(nsBytes, scope.namespaceMatches) && rulesMatch(trackBytes, scope.trackMatches)) {
-      return true;
-    }
-  }
-  return false;
+  return std::any_of(grants.scopes.begin(), grants.scopes.end(), [&](const Scope& scope) {
+    return matchesC4mScope(scope, action, ns.trackNamespace, trackName);
+  });
 }
 
 } // namespace
@@ -466,6 +341,10 @@ const char* toString(AuthError error) {
     return "invalid authorization token signature";
   case AuthError::Expired:
     return "expired authorization token";
+  case AuthError::NotYetValid:
+    return "authorization token not yet valid";
+  case AuthError::UnsupportedClaim:
+    return "unsupported authorization token restriction";
   case AuthError::Forbidden:
     return "authorization token does not permit action";
   case AuthError::TooManyTokens:

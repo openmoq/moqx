@@ -200,6 +200,10 @@ struct AuthConfig {
     std::string id;
     std::string secret;
   };
+  struct Es256Key {
+    std::string id;
+    std::string publicKeyFile;
+  };
 
   // A statically-granted scope applied to every request, regardless of
   // token.
@@ -213,8 +217,9 @@ struct AuthConfig {
   };
 
   bool enabled{false};
-  uint64_t tokenType{0};
+  uint64_t tokenType{1}; // C4M CAT token type, draft-ietf-moq-c4m-02 section 8.2.
   std::vector<HmacKey> hmacKeys;
+  std::vector<Es256Key> es256Keys;
   bool requireSetupToken{true};
   bool allowRequestTokenOverride{true};
   bool strictClaims{false};

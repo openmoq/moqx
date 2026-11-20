@@ -17,8 +17,9 @@
 set(MOXYGEN_REPOSITORY "openmoq/moxygen")
 set(MOXYGEN_REV "b421f35d2ec1c9649c19efd04ec93043b4816af8")
 
+# Latest published release v1.0.0, pinned to its immutable commit.
 set(CATAPULT_REPOSITORY "Quicr/catapult")
-set(CATAPULT_REV "2bbf479fe2e65e425624316d335443a8c0fc0507")
+set(CATAPULT_REV "cc8aeb879c261c5b972b80e5bc426fceb8568e6d")
 
 # Release tags, not shas — these projects publish stable tagged releases.
 set(YAMLCPP_VERSION "0.8.0")
