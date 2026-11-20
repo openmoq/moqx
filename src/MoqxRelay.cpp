@@ -2243,7 +2243,7 @@ Publisher::SubscribeResult attachSubscriber(
   XLOG(DBG4) << "added subscriber for ftn=" << fwd.fullTrackName();
   fwd.tryProcessNewGroupRequest(subReq.params);
   if (subReq.fill) {
-    subscriber->requestFill(subReq.requestID, *subReq.fill);
+    subscriber->requestFill(subReq.requestID, *subReq.fill, subscriber->subscribeOk().largest);
   }
   return subscriber;
 }
@@ -2448,6 +2448,11 @@ folly::coro::Task<MoqxRelay::PublisherAttachment> MoqxRelay::attachNewLocalForwa
     // Capture largest/extensions on publisherExec to set the initial state for the
     // subscriber.  Captured but ignored when the firstSetup returned an error.
     attach.initial = InitialTrackState::capture(*publisherFwd);
+    // Objects past upstream's Largest reached the subscriber live during the upstream
+    // SUBSCRIBE, so its fill ends at upstream's Largest.
+    attach.fillLargest = (upstreamResult && upstreamResult->hasValue())
+                             ? upstreamResult->value().largest
+                             : attach.initial.largest;
   };
   if (sr.firstSetup) {
     XDCHECK_EQ(sr.firstSetup->upstream.info->executor, publisherExec);
@@ -2760,7 +2765,7 @@ folly::coro::Task<Publisher::SubscribeResult> MoqxRelay::subscribeFromSubscriber
   }
   claim.markReady();
   if (subReq.fill) {
-    sub->requestFill(subReq.requestID, *subReq.fill);
+    sub->requestFill(subReq.requestID, *subReq.fill, attach.fillLargest);
   }
   co_return pauseOnUnsubscribe(std::move(sub));
 }
@@ -2882,9 +2887,10 @@ MoqxRelay::subscribeImpl(SubscribeRequest subReq, std::shared_ptr<TrackConsumer>
         )) {
       co_return folly::makeUnexpected(std::move(*err));
     }
-    // Only now do the forwarder and the cache know upstream's Largest.
+    // Objects past upstream's Largest reached this subscriber live during the co_await,
+    // so the fill uses upstream's Largest.
     if (fill) {
-      subscriber->requestFill(clientRequestID, *fill);
+      subscriber->requestFill(clientRequestID, *fill, ok.largest);
     }
     co_return pauseOnUnsubscribe(std::move(subscriber));
 

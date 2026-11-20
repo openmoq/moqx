@@ -104,6 +104,7 @@ public:
   void onPacketForwarded() override {}
   void onForwardedPacketReceived() override {}
   void onForwardedPacketProcessed() override {}
+  void onPacketRoutedToLinkedWorker() override {}
   void onClientInitialReceived(quic::QuicVersion) override {}
   void onNewTokenReceived() override {}
   void onNewTokenIssued() override {}

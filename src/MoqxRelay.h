@@ -589,6 +589,8 @@ private:
     std::shared_ptr<moxygen::MoQForwarder::Callback> finalCallback;
     // Captured off the publisher forwarder on its own exec, the only race-free place.
     InitialTrackState initial;
+    // The Largest the subscriber's fill ends at. Later objects reach it live.
+    std::optional<moxygen::AbsoluteLocation> fillLargest;
     // Set when the subscriber shares publisherExec and joined the publisher forwarder.
     std::shared_ptr<moxygen::MoQForwarder::Subscriber> directPublisherSub;
     std::optional<SubscribeResult> error; // set => bail
