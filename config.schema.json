@@ -1,0 +1,1930 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$ref": "#/$defs/openmoq__moqx__config__ParsedConfig",
+    "description": "Configuration schema for the moqx relay.",
+    "$defs": {
+        "openmoq__moqx__config__ParsedAdminConfig": {
+            "type": "object",
+            "properties": {
+                "port": {
+                    "type": "integer",
+                    "description": "HTTP admin server port, 1-65535"
+                },
+                "address": {
+                    "type": "string",
+                    "description": "Bind address"
+                },
+                "plaintext": {
+                    "description": "Allow plain HTTP (mutually exclusive with tls)",
+                    "type": "boolean"
+                },
+                "tls": {
+                    "description": "TLS configuration",
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/openmoq__moqx__config__ParsedAdminTlsConfig"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "track_metrics_enabled": {
+                    "description": "Enable per-track counting and the /metrics/track endpoint (default false)",
+                    "anyOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "track_metrics_endpoint_default_limit": {
+                    "description": "Max tracks /metrics/track reports when the request omits limit (default 10)",
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "track_metrics_endpoint_max_limit": {
+                    "description": "Ceiling on the limit parameter accepted by /metrics/track (default 1000)",
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                }
+            },
+            "required": [
+                "port",
+                "address",
+                "plaintext"
+            ]
+        },
+        "openmoq__moqx__config__ParsedAdminTlsConfig": {
+            "type": "object",
+            "properties": {
+                "cert_file": {
+                    "description": "Path to TLS certificate file",
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "key_file": {
+                    "description": "Path to TLS private key file",
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "pkcs12_file": {
+                    "description": "Path to a PKCS#12 bundle (.p12/.pfx) carrying the cert chain + private key; mutually exclusive with cert_file/key_file. Decrypted in memory (key never hits disk).",
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "pkcs12_password": {
+                    "description": "Inline PKCS#12 password (discouraged; prefer pkcs12_password_file). Empty for password-less bundles.",
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "pkcs12_password_file": {
+                    "description": "Path to a file containing the PKCS#12 password (preferred over inline).",
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "pkcs12_password_env": {
+                    "description": "Name of an environment variable holding the PKCS#12 password (cloud-vault friendly: the secret stays out of the config file). Errors if the variable is unset.",
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "alpn": {
+                    "description": "ALPN protocol list",
+                    "anyOf": [
+                        {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            }
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                }
+            },
+            "required": []
+        },
+        "openmoq__moqx__config__ParsedAuthConfig": {
+            "type": "object",
+            "properties": {
+                "enabled": {
+                    "description": "Enable per-service authorization",
+                    "type": "boolean"
+                },
+                "token_type": {
+                    "description": "Expected MOQT AUTHORIZATION_TOKEN token type",
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "hmac_keys": {
+                    "description": "Accepted HMAC signing keys",
+                    "anyOf": [
+                        {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/$defs/openmoq__moqx__config__ParsedAuthConfig__HmacKey"
+                            }
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "require_setup_token": {
+                    "description": "Require a valid setup token during CLIENT_SETUP (default: true)",
+                    "anyOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "allow_request_token_override": {
+                    "description": "Allow request AUTHORIZATION_TOKEN to override setup credentials (default: true)",
+                    "anyOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "strict_claims": {
+                    "description": "Reject unsupported token claims instead of ignoring them (default: false)",
+                    "anyOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "anonymous_claim": {
+                    "description": "Anonymous (no-token) access grants applied to every request on this service, in addition to any verified setup/request token grants (default: none)",
+                    "anyOf": [
+                        {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/$defs/openmoq__moqx__config__ParsedAuthConfig__AnonymousScope"
+                            }
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "max_tokens_per_message": {
+                    "description": "Maximum AUTHORIZATION_TOKEN parameters allowed per SETUP or per request message; a message over the cap is rejected outright. Required (directly or via service_defaults.auth) when enabled: true -- bounds per-message verification cost.",
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                }
+            },
+            "required": [
+                "enabled"
+            ]
+        },
+        "openmoq__moqx__config__ParsedAuthConfig__AnonymousScope": {
+            "type": "object",
+            "properties": {
+                "actions": {
+                    "type": "array",
+                    "description": "CAT4MOQ action names this scope grants without any token; client_setup/server_setup are rejected -- the anonymous claim never authorizes session setup",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "namespace_match": {
+                    "description": "Namespace match; omit to match any namespace",
+                    "anyOf": [
+                        {
+                            "anyOf": [
+                                {
+                                    "$ref": "#/$defs/openmoq__moqx__config__ParsedAuthConfig__AnonymousScope__ExactNamespace"
+                                },
+                                {
+                                    "$ref": "#/$defs/openmoq__moqx__config__ParsedAuthConfig__AnonymousScope__PrefixNamespace"
+                                },
+                                {
+                                    "$ref": "#/$defs/openmoq__moqx__config__ParsedAuthConfig__AnonymousScope__SuffixNamespace"
+                                },
+                                {
+                                    "$ref": "#/$defs/openmoq__moqx__config__ParsedAuthConfig__AnonymousScope__ContainsNamespace"
+                                }
+                            ]
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "track_match": {
+                    "description": "Track match; omit to match any track",
+                    "anyOf": [
+                        {
+                            "anyOf": [
+                                {
+                                    "$ref": "#/$defs/openmoq__moqx__config__ParsedAuthConfig__AnonymousScope__ExactTrack"
+                                },
+                                {
+                                    "$ref": "#/$defs/openmoq__moqx__config__ParsedAuthConfig__AnonymousScope__PrefixTrack"
+                                },
+                                {
+                                    "$ref": "#/$defs/openmoq__moqx__config__ParsedAuthConfig__AnonymousScope__SuffixTrack"
+                                },
+                                {
+                                    "$ref": "#/$defs/openmoq__moqx__config__ParsedAuthConfig__AnonymousScope__ContainsTrack"
+                                }
+                            ]
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                }
+            },
+            "required": [
+                "actions"
+            ]
+        },
+        "openmoq__moqx__config__ParsedAuthConfig__AnonymousScope__ContainsNamespace": {
+            "type": "object",
+            "properties": {
+                "contains": {
+                    "type": "array",
+                    "description": "Match namespaces containing this segment list as a contiguous run",
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            },
+            "required": [
+                "contains"
+            ]
+        },
+        "openmoq__moqx__config__ParsedAuthConfig__AnonymousScope__ContainsTrack": {
+            "type": "object",
+            "properties": {
+                "contains": {
+                    "type": "string",
+                    "description": "Match track names containing this value"
+                }
+            },
+            "required": [
+                "contains"
+            ]
+        },
+        "openmoq__moqx__config__ParsedAuthConfig__AnonymousScope__ExactNamespace": {
+            "type": "object",
+            "properties": {
+                "exact": {
+                    "type": "array",
+                    "description": "Match this exact ordered namespace segment list",
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            },
+            "required": [
+                "exact"
+            ]
+        },
+        "openmoq__moqx__config__ParsedAuthConfig__AnonymousScope__ExactTrack": {
+            "type": "object",
+            "properties": {
+                "exact": {
+                    "type": "string",
+                    "description": "Match this exact track name"
+                }
+            },
+            "required": [
+                "exact"
+            ]
+        },
+        "openmoq__moqx__config__ParsedAuthConfig__AnonymousScope__PrefixNamespace": {
+            "type": "object",
+            "properties": {
+                "prefix": {
+                    "type": "array",
+                    "description": "Match namespaces whose leading segments equal this list",
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            },
+            "required": [
+                "prefix"
+            ]
+        },
+        "openmoq__moqx__config__ParsedAuthConfig__AnonymousScope__PrefixTrack": {
+            "type": "object",
+            "properties": {
+                "prefix": {
+                    "type": "string",
+                    "description": "Match track names starting with this value"
+                }
+            },
+            "required": [
+                "prefix"
+            ]
+        },
+        "openmoq__moqx__config__ParsedAuthConfig__AnonymousScope__SuffixNamespace": {
+            "type": "object",
+            "properties": {
+                "suffix": {
+                    "type": "array",
+                    "description": "Match namespaces whose trailing segments equal this list",
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            },
+            "required": [
+                "suffix"
+            ]
+        },
+        "openmoq__moqx__config__ParsedAuthConfig__AnonymousScope__SuffixTrack": {
+            "type": "object",
+            "properties": {
+                "suffix": {
+                    "type": "string",
+                    "description": "Match track names ending with this value"
+                }
+            },
+            "required": [
+                "suffix"
+            ]
+        },
+        "openmoq__moqx__config__ParsedAuthConfig__HmacKey": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "description": "Key identifier embedded in the token envelope"
+                },
+                "secret": {
+                    "type": "string",
+                    "description": "Shared HMAC secret for this key id"
+                }
+            },
+            "required": [
+                "id",
+                "secret"
+            ]
+        },
+        "openmoq__moqx__config__ParsedCacheConfig": {
+            "type": "object",
+            "properties": {
+                "enabled": {
+                    "description": "Enable relay cache",
+                    "anyOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "max_tracks": {
+                    "description": "Max cached tracks, ignored when disabled",
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "max_groups_per_track": {
+                    "description": "Max cached groups per track, ignored when disabled",
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "max_cached_mb": {
+                    "description": "Max total cache size in megabytes across all tracks. Default: 16. 0 is invalid. Ignored when cache is disabled.",
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "min_eviction_kb": {
+                    "description": "Eviction batch floor in kilobytes: when the cache exceeds the byte limit, evict LRU tracks until usage falls to max_cached_mb - min_eviction_kb. Default: 64. Ignored when cache is disabled.",
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "max_cache_duration_s": {
+                    "description": "Maximum cache duration (seconds) for any track; clamps publisher-set values. Also used as the default for tracks without a publisher-set duration when default_max_cache_duration_s is absent. Default: 86400 (1 day). 0 is invalid. Ignored when cache is disabled.",
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "default_max_cache_duration_s": {
+                    "description": "Default max cache duration (seconds) for tracks without a publisher-set cache duration. Absent: use max_cache_duration_s as the default. 0: opt-in-only — do not cache tracks unless the publisher sets a cache duration. N: use N seconds as the default for tracks without a publisher-set cache duration. Ignored when cache is disabled.",
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                }
+            },
+            "required": []
+        },
+        "openmoq__moqx__config__ParsedClusterConfig": {
+            "type": "object",
+            "properties": {
+                "enabled": {
+                    "description": "Negotiate MoQ Cluster on draft 18+ links (default: true)",
+                    "anyOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "hop_id": {
+                    "description": "MoQ Cluster Hop ID (optional; random if absent, 0 is anonymous)",
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                }
+            },
+            "required": []
+        },
+        "openmoq__moqx__config__ParsedConfig": {
+            "type": "object",
+            "properties": {
+                "listeners": {
+                    "$ref": "#/$defs/openmoq__moqx__config__ParsedListeners",
+                    "description": "Listener definitions, keyed by listener name"
+                },
+                "service_defaults": {
+                    "description": "Default settings inherited by all services",
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/openmoq__moqx__config__ParsedServiceDefaultsConfig"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "services": {
+                    "type": "object",
+                    "description": "Service definitions",
+                    "additionalProperties": {
+                        "$ref": "#/$defs/openmoq__moqx__config__ParsedServiceConfig"
+                    }
+                },
+                "admin": {
+                    "description": "Admin HTTP server settings",
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/openmoq__moqx__config__ParsedAdminConfig"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "relay_id": {
+                    "description": "Relay identity string (optional; random string generated if absent)",
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "listener_defaults": {
+                    "description": "Default settings inherited by all listeners",
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/openmoq__moqx__config__ParsedListenerDefaultsConfig"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "threads": {
+                    "description": "Number of IO worker threads (default: 1)",
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "use_relay_thread": {
+                    "description": "Dedicate one relay thread per service for relay state isolation (default: true). Disable for baseline performance comparison.",
+                    "anyOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "use_local_forwarders": {
+                    "description": "Use per-subscriber-thread local forwarders to minimize cross-thread hops on the data path (requires use_relay_thread; default: false). Disable to run all subscribes on the relay thread via subscribeImpl.",
+                    "anyOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "mvfst_bpf_steering": {
+                    "description": "Attach a classic BPF reuseport filter to steer QUIC packets to the correct mvfst worker based on the connection ID's workerId field (Linux only, mvfst stack only, default: true). Disable to fall back to kernel RSS distribution.",
+                    "anyOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "logging": {
+                    "description": "Logging configuration",
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/openmoq__moqx__config__ParsedLoggingConfig"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "cluster": {
+                    "description": "MoQ Cluster settings",
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/openmoq__moqx__config__ParsedClusterConfig"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                }
+            },
+            "required": [
+                "listeners",
+                "services"
+            ]
+        },
+        "openmoq__moqx__config__ParsedDeprecatedListenerListEntry": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Deprecated: key the listener by its name instead"
+                },
+                "udp": {
+                    "$ref": "#/$defs/openmoq__moqx__config__ParsedUdpConfig",
+                    "description": "UDP/QUIC transport config"
+                },
+                "tls": {
+                    "$ref": "#/$defs/openmoq__moqx__config__ParsedListenerTlsConfig",
+                    "description": "TLS configuration"
+                },
+                "endpoint": {
+                    "type": "string",
+                    "description": "WebTransport endpoint path"
+                },
+                "moqt_versions": {
+                    "description": "MOQT draft versions: any of 16, 18, 22 in server preference order (empty = default 16)",
+                    "anyOf": [
+                        {
+                            "type": "array",
+                            "items": {
+                                "type": "integer"
+                            }
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "quic_stack": {
+                    "description": "QUIC stack to use (default: mvfst)",
+                    "anyOf": [
+                        {
+                            "type": "string",
+                            "enum": [
+                                "mvfst",
+                                "picoquic",
+                                "proxygen_qmux"
+                            ]
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "quic": {
+                    "description": "QUIC transport settings (overrides listener_defaults.quic)",
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/openmoq__moqx__config__ParsedQuicConfig"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "mvfst": {
+                    "description": "mvfst-specific CC tunables (overrides listener_defaults.mvfst; mvfst stack only)",
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/openmoq__moqx__config__ParsedMvfstConfig"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                }
+            },
+            "required": [
+                "name",
+                "udp",
+                "tls",
+                "endpoint"
+            ]
+        },
+        "openmoq__moqx__config__ParsedListenerDefaultsConfig": {
+            "type": "object",
+            "properties": {
+                "quic": {
+                    "description": "Default QUIC transport settings for all listeners",
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/openmoq__moqx__config__ParsedQuicConfig"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "mvfst": {
+                    "description": "Default mvfst CC tunables for all listeners",
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/openmoq__moqx__config__ParsedMvfstConfig"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                }
+            },
+            "required": []
+        },
+        "openmoq__moqx__config__ParsedListenerEntry": {
+            "type": "object",
+            "properties": {
+                "udp": {
+                    "$ref": "#/$defs/openmoq__moqx__config__ParsedUdpConfig",
+                    "description": "UDP/QUIC transport config"
+                },
+                "tls": {
+                    "$ref": "#/$defs/openmoq__moqx__config__ParsedListenerTlsConfig",
+                    "description": "TLS configuration"
+                },
+                "endpoint": {
+                    "type": "string",
+                    "description": "WebTransport endpoint path"
+                },
+                "moqt_versions": {
+                    "description": "MOQT draft versions: any of 16, 18, 22 in server preference order (empty = default 16)",
+                    "anyOf": [
+                        {
+                            "type": "array",
+                            "items": {
+                                "type": "integer"
+                            }
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "quic_stack": {
+                    "description": "QUIC stack to use (default: mvfst)",
+                    "anyOf": [
+                        {
+                            "type": "string",
+                            "enum": [
+                                "mvfst",
+                                "picoquic",
+                                "proxygen_qmux"
+                            ]
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "quic": {
+                    "description": "QUIC transport settings (overrides listener_defaults.quic)",
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/openmoq__moqx__config__ParsedQuicConfig"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "mvfst": {
+                    "description": "mvfst-specific CC tunables (overrides listener_defaults.mvfst; mvfst stack only)",
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/openmoq__moqx__config__ParsedMvfstConfig"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                }
+            },
+            "required": [
+                "udp",
+                "tls",
+                "endpoint"
+            ]
+        },
+        "openmoq__moqx__config__ParsedListenerTlsConfig": {
+            "type": "object",
+            "properties": {
+                "cert_file": {
+                    "description": "Path to TLS certificate file",
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "key_file": {
+                    "description": "Path to TLS private key file",
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "pkcs12_file": {
+                    "description": "Path to a PKCS#12 bundle (.p12/.pfx) carrying the cert chain + private key; mutually exclusive with cert_file/key_file. Decrypted in memory (key never hits disk).",
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "pkcs12_password": {
+                    "description": "Inline PKCS#12 password (discouraged; prefer pkcs12_password_file). Empty for password-less bundles.",
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "pkcs12_password_file": {
+                    "description": "Path to a file containing the PKCS#12 password (preferred over inline).",
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "pkcs12_password_env": {
+                    "description": "Name of an environment variable holding the PKCS#12 password (cloud-vault friendly: the secret stays out of the config file). Errors if the variable is unset.",
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "insecure": {
+                    "description": "Insecure mode, use default compiled-in cert",
+                    "type": "boolean"
+                }
+            },
+            "required": [
+                "insecure"
+            ]
+        },
+        "openmoq__moqx__config__ParsedListeners": {
+            "anyOf": [
+                {
+                    "type": "object",
+                    "additionalProperties": {
+                        "$ref": "#/$defs/openmoq__moqx__config__ParsedListenerEntry"
+                    }
+                },
+                {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/$defs/openmoq__moqx__config__ParsedDeprecatedListenerListEntry"
+                    }
+                }
+            ]
+        },
+        "openmoq__moqx__config__ParsedLoggingConfig": {
+            "type": "object",
+            "properties": {
+                "mlog": {
+                    "description": "MoQ-level (mlog) per-session logging",
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/openmoq__moqx__config__ParsedMLogConfig"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "qlog": {
+                    "description": "QUIC-level (qlog) per-connection logging",
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/openmoq__moqx__config__ParsedQLogConfig"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                }
+            },
+            "required": []
+        },
+        "openmoq__moqx__config__ParsedMLogConfig": {
+            "type": "object",
+            "properties": {
+                "dir": {
+                    "type": "string",
+                    "description": "Directory for per-session MoQ log files (empty = disabled)"
+                },
+                "sample_rate": {
+                    "description": "Fraction of sessions to log (0.0-1.0, default 0.0)",
+                    "anyOf": [
+                        {
+                            "type": "number"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                }
+            },
+            "required": [
+                "dir"
+            ]
+        },
+        "openmoq__moqx__config__ParsedMvfstConfig": {
+            "type": "object",
+            "properties": {
+                "max_cwnd_in_mss": {
+                    "description": "Maximum congestion window in MSS (default: 860000 = quic::kLargeMaxCwndInMss). Applies to all CC algorithms.",
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "pacing_enabled": {
+                    "description": "Enable pacing (default: true). Required for bbr and bbr2; optional for copa and cubic; ignored (always off) for newreno and none.",
+                    "anyOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "enable_gso": {
+                    "description": "Enable GSO (Generic Segmentation Offload) for packet segmentation (default: true). Requires kernel GSO support. Falls back to sendmmsg automatically if GSO is unavailable at runtime. Disable only on kernels or VMs where GSO is advertised but broken.",
+                    "anyOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "max_conn_packets_sent_per_loop": {
+                    "description": "Max packets written per connection per event-loop iteration (default: 48). Written to both maxBatchSize and writeConnectionDataPacketsLimit so the cap applies in all batching modes.",
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "use_recvmmsg": {
+                    "description": "Use recvmmsg for batch receives in QuicServerWorker (default: true). Enables the recvmmsg kernel call to read multiple UDP packets per syscall, reducing overhead at high packet rates.",
+                    "anyOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "max_server_recv_packets_per_loop": {
+                    "description": "Max incoming packets processed per event-loop read callback. 0 = unlimited. Default 64.",
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "num_gro_buffers": {
+                    "description": "Number of UDP GRO (Generic Receive Offload) buffers. 1 = disabled (default). Values > 1 enable kernel-side packet coalescing: up to max value packets are merged per recvmsg call, reducing syscall overhead at high packet rates. Max 64. Requires kernel GRO support.",
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "ignore_path_mtu": {
+                    "description": "Ignore the peer's path MTU and send full-size (max UDP payload) packets (default: false). Useful for testing or controlled networks where the path MTU is known; leave off to respect PMTU discovery.",
+                    "anyOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "adaptive_loss_time_threshold": {
+                    "description": "Adapt the loss detection time threshold after spurious losses (default: false). Under delay jitter, a fixed 5/4 RTT threshold declares late packets lost and throttles the congestion controller.",
+                    "anyOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "bbr": {
+                    "description": "BBR congestion control tunables. conservative_recovery also applies to BBR2.",
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/openmoq__moqx__config__ParsedMvfstConfig__ParsedBBR"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "bbr2": {
+                    "description": "BBR2-specific congestion control tunables.",
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/openmoq__moqx__config__ParsedMvfstConfig__ParsedBBR2"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "cubic": {
+                    "description": "Cubic congestion control tunables.",
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/openmoq__moqx__config__ParsedMvfstConfig__ParsedCubic"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "copa": {
+                    "description": "Copa congestion control tunables.",
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/openmoq__moqx__config__ParsedMvfstConfig__ParsedCopa"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "l4s": {
+                    "description": "L4S tunables (ECN CE target). Usable alongside any ECN-aware CC algorithm.",
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/openmoq__moqx__config__ParsedMvfstConfig__ParsedL4S"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "udp_socket_buffer_bytes": {
+                    "description": "UDP socket send and receive buffer size in bytes. Default: 0 (use MoQServer built-in default of 1 MB). Increase to reduce EAGAIN errors under high fan-out burst load.",
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "h3_txn_timeout_ms": {
+                    "description": "HTTP/3 transaction idle timeout in ms; ends idle WebTransport sessions. Default: 0 (none). At most a year (31536000000).",
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                }
+            },
+            "required": []
+        },
+        "openmoq__moqx__config__ParsedMvfstConfig__ParsedBBR": {
+            "type": "object",
+            "properties": {
+                "conservative_recovery": {
+                    "description": "Enter conservative recovery on loss (also applies to BBR2).",
+                    "anyOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "large_probe_rtt_cwnd": {
+                    "description": "Use a large cwnd during PROBE_RTT.",
+                    "anyOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "enable_ack_aggregation_in_startup": {
+                    "description": "Estimate ACK aggregation in STARTUP for more aggressive cwnd growth.",
+                    "anyOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "probe_rtt_disabled_if_app_limited": {
+                    "description": "Skip PROBE_RTT rounds when the sender is app-limited.",
+                    "anyOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "drain_to_target": {
+                    "description": "Drain cwnd to the estimated BDP after STARTUP.",
+                    "anyOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                }
+            },
+            "required": []
+        },
+        "openmoq__moqx__config__ParsedMvfstConfig__ParsedBBR2": {
+            "type": "object",
+            "properties": {
+                "ignore_inflight_long_term": {
+                    "description": "Ignore long-term inflight samples when estimating bandwidth.",
+                    "anyOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "ignore_short_term": {
+                    "description": "Ignore short-term bandwidth samples.",
+                    "anyOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "exit_startup_on_loss": {
+                    "description": "Exit STARTUP on packet loss (default: true).",
+                    "anyOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "enable_recovery_in_startup": {
+                    "description": "Allow cwnd recovery inside STARTUP (default: true).",
+                    "anyOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "enable_recovery_in_probe_states": {
+                    "description": "Allow cwnd recovery during PROBE_BW and PROBE_RTT states (default: true).",
+                    "anyOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "enable_reno_coexistence": {
+                    "description": "Coexist with Reno/Cubic flows (halve cwnd on loss).",
+                    "anyOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "pace_init_cwnd": {
+                    "description": "Pace the initial cwnd instead of sending it as a burst.",
+                    "anyOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "override_cruise_pacing_gain": {
+                    "description": "Override the PROBE_BW cruise pacing gain; -1 = use BBR2 default (~1.0).",
+                    "anyOf": [
+                        {
+                            "type": "number"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "override_cruise_cwnd_gain": {
+                    "description": "Override the PROBE_BW cruise cwnd gain; -1 = use BBR2 default (~2.0).",
+                    "anyOf": [
+                        {
+                            "type": "number"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "override_startup_pacing_gain": {
+                    "description": "Override the STARTUP pacing gain; -1 = use BBR2 default (~2.77).",
+                    "anyOf": [
+                        {
+                            "type": "number"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "override_bw_short_beta": {
+                    "description": "Beta used to reduce the short-term bandwidth estimate; 0 = use BBR2 default.",
+                    "anyOf": [
+                        {
+                            "type": "number"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                }
+            },
+            "required": []
+        },
+        "openmoq__moqx__config__ParsedMvfstConfig__ParsedCopa": {
+            "type": "object",
+            "properties": {
+                "delta_param": {
+                    "description": "Delta parameter controlling the target utilisation (moqx default: 0.05).",
+                    "anyOf": [
+                        {
+                            "type": "number"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                }
+            },
+            "required": []
+        },
+        "openmoq__moqx__config__ParsedMvfstConfig__ParsedCubic": {
+            "type": "object",
+            "properties": {
+                "additive_increase_after_hystart": {
+                    "description": "Use additive cwnd increase instead of multiplicative after HyStart exit.",
+                    "anyOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "only_grow_cwnd_when_limited": {
+                    "description": "Only grow cwnd when the connection is cwnd-limited.",
+                    "anyOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "leave_headroom_for_cwnd_limited": {
+                    "description": "Leave headroom below cwnd for the OS send buffer when cwnd-limited.",
+                    "anyOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                }
+            },
+            "required": []
+        },
+        "openmoq__moqx__config__ParsedMvfstConfig__ParsedL4S": {
+            "type": "object",
+            "properties": {
+                "ce_target": {
+                    "description": "ECN CE marking threshold target (0 = disabled).",
+                    "anyOf": [
+                        {
+                            "type": "number"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                }
+            },
+            "required": []
+        },
+        "openmoq__moqx__config__ParsedQLogConfig": {
+            "type": "object",
+            "properties": {
+                "dir": {
+                    "type": "string",
+                    "description": "Directory for per-connection QUIC qlog files (empty = disabled)"
+                },
+                "sample_rate": {
+                    "description": "Fraction of connections to log (0.0-1.0, default 0.0; mvfst only)",
+                    "anyOf": [
+                        {
+                            "type": "number"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                }
+            },
+            "required": [
+                "dir"
+            ]
+        },
+        "openmoq__moqx__config__ParsedQuicConfig": {
+            "type": "object",
+            "properties": {
+                "max_data": {
+                    "description": "Connection flow control window in bytes (default: 64MB)",
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "max_stream_data": {
+                    "description": "Per-stream flow control window in bytes (default: 16MB)",
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "max_uni_streams": {
+                    "description": "Max concurrent unidirectional streams (default: 8192)",
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "max_bidi_streams": {
+                    "description": "Max concurrent bidirectional streams (default: 16)",
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "idle_timeout_ms": {
+                    "description": "Idle timeout in milliseconds (default: 30000)",
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "max_ack_delay_us": {
+                    "description": "Max ACK delay in microseconds (default: 25000, QUIC spec default); mvfst ignores this field (logs DBG1 if set)",
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "min_ack_delay_us": {
+                    "description": "Min ACK delay in microseconds (default: 1000)",
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "default_stream_priority": {
+                    "description": "Default stream priority (default: 2)",
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "default_datagram_priority": {
+                    "description": "Default datagram priority (default: 1)",
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "cc_algo": {
+                    "description": "Congestion control algorithm (default: bbr). picoquic: bbr, bbr1, c4, cubic, dcubic, fast, newreno, prague, reno. mvfst: bbr, bbr2, bbr2modular, copa, cubic, newreno, none.",
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                }
+            },
+            "required": []
+        },
+        "openmoq__moqx__config__ParsedServiceConfig": {
+            "type": "object",
+            "properties": {
+                "match": {
+                    "type": "array",
+                    "description": "Match rules for routing",
+                    "items": {
+                        "$ref": "#/$defs/openmoq__moqx__config__ParsedServiceConfig__MatchRule"
+                    }
+                },
+                "listeners": {
+                    "description": "Names of the listeners this service is available on (absent = all listeners)",
+                    "anyOf": [
+                        {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            }
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "cache": {
+                    "description": "Per-service cache settings (overrides service_defaults)",
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/openmoq__moqx__config__ParsedCacheConfig"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "upstream": {
+                    "description": "Upstream MoQ server for this service (optional; enables relay chaining)",
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/openmoq__moqx__config__ParsedUpstreamConfig"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "upstreams": {
+                    "description": "Several upstream MoQ servers for this service (optional; exclusive with upstream)",
+                    "anyOf": [
+                        {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/$defs/openmoq__moqx__config__ParsedUpstreamConfig"
+                            }
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "auth": {
+                    "description": "Authentication and authorization settings for this service",
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/openmoq__moqx__config__ParsedAuthConfig"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "max_subscription_buffer_kb": {
+                    "description": "KB of a subscription's data the relay may hold unacknowledged (mvfst) or unsent (picoquic) before it ends the subscription with TOO_FAR_BEHIND; 0 is unlimited. Required here or in service_defaults; overrides service_defaults",
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                }
+            },
+            "required": [
+                "match"
+            ]
+        },
+        "openmoq__moqx__config__ParsedServiceConfig__MatchRule": {
+            "type": "object",
+            "properties": {
+                "authority": {
+                    "description": "Authority matcher",
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/openmoq__moqx__config__ParsedServiceConfig__MatchRule__ExactAuthority"
+                        },
+                        {
+                            "$ref": "#/$defs/openmoq__moqx__config__ParsedServiceConfig__MatchRule__WildcardAuthority"
+                        },
+                        {
+                            "$ref": "#/$defs/openmoq__moqx__config__ParsedServiceConfig__MatchRule__AnyAuthority"
+                        }
+                    ]
+                },
+                "path": {
+                    "description": "Path matcher",
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/openmoq__moqx__config__ParsedServiceConfig__MatchRule__ExactPath"
+                        },
+                        {
+                            "$ref": "#/$defs/openmoq__moqx__config__ParsedServiceConfig__MatchRule__PrefixPath"
+                        }
+                    ]
+                }
+            },
+            "required": [
+                "authority",
+                "path"
+            ]
+        },
+        "openmoq__moqx__config__ParsedServiceConfig__MatchRule__AnyAuthority": {
+            "type": "object",
+            "properties": {
+                "any": {
+                    "description": "Must be true",
+                    "type": "boolean"
+                }
+            },
+            "required": [
+                "any"
+            ]
+        },
+        "openmoq__moqx__config__ParsedServiceConfig__MatchRule__ExactAuthority": {
+            "type": "object",
+            "properties": {
+                "exact": {
+                    "type": "string",
+                    "description": "Exact authority to match"
+                }
+            },
+            "required": [
+                "exact"
+            ]
+        },
+        "openmoq__moqx__config__ParsedServiceConfig__MatchRule__ExactPath": {
+            "type": "object",
+            "properties": {
+                "exact": {
+                    "type": "string",
+                    "description": "Exact path to match, must start with '/'"
+                }
+            },
+            "required": [
+                "exact"
+            ]
+        },
+        "openmoq__moqx__config__ParsedServiceConfig__MatchRule__PrefixPath": {
+            "type": "object",
+            "properties": {
+                "prefix": {
+                    "type": "string",
+                    "description": "Path prefix to match, must start with '/'. Uses simple string prefix matching (not segment-aware): prefix '/abc' matches '/abc', '/abc/def', and '/abcdef'. Use a trailing '/' (e.g. '/abc/') to restrict to path segments."
+                }
+            },
+            "required": [
+                "prefix"
+            ]
+        },
+        "openmoq__moqx__config__ParsedServiceConfig__MatchRule__WildcardAuthority": {
+            "type": "object",
+            "properties": {
+                "wildcard": {
+                    "type": "string",
+                    "description": "Wildcard pattern, e.g. '*.example.com'. Matches single-label subdomains only (foo.example.com), not the bare domain (example.com) or multi-label (a.b.example.com)."
+                }
+            },
+            "required": [
+                "wildcard"
+            ]
+        },
+        "openmoq__moqx__config__ParsedServiceDefaultsConfig": {
+            "type": "object",
+            "properties": {
+                "cache": {
+                    "description": "Default cache settings for services",
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/openmoq__moqx__config__ParsedCacheConfig"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "auth": {
+                    "description": "Default auth settings for services",
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/openmoq__moqx__config__ParsedServiceDefaultsConfig__AuthDefaults"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "max_subscription_buffer_kb": {
+                    "description": "max_subscription_buffer_kb for services that do not set their own",
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                }
+            },
+            "required": []
+        },
+        "openmoq__moqx__config__ParsedServiceDefaultsConfig__AuthDefaults": {
+            "type": "object",
+            "properties": {
+                "max_tokens_per_message": {
+                    "description": "Default auth.max_tokens_per_message for services that don't set their own",
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                }
+            },
+            "required": []
+        },
+        "openmoq__moqx__config__ParsedSocketConfig": {
+            "type": "object",
+            "properties": {
+                "address": {
+                    "type": "string",
+                    "description": "Bind address"
+                },
+                "port": {
+                    "type": "integer",
+                    "description": "Listen port, 1-65535"
+                }
+            },
+            "required": [
+                "address",
+                "port"
+            ]
+        },
+        "openmoq__moqx__config__ParsedUdpConfig": {
+            "type": "object",
+            "properties": {
+                "socket": {
+                    "$ref": "#/$defs/openmoq__moqx__config__ParsedSocketConfig",
+                    "description": "Socket configuration"
+                }
+            },
+            "required": [
+                "socket"
+            ]
+        },
+        "openmoq__moqx__config__ParsedUpstreamConfig": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "Upstream MoQ server URL (moqt://host:port/path)"
+                },
+                "tls": {
+                    "$ref": "#/$defs/openmoq__moqx__config__ParsedUpstreamTlsConfig",
+                    "description": "TLS configuration for upstream connection"
+                },
+                "connect_timeout_ms": {
+                    "description": "QUIC connect timeout in milliseconds (default: 5000)",
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "idle_timeout_ms": {
+                    "description": "MoQ session idle timeout in milliseconds (default: 5000)",
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "relay_cost": {
+                    "description": "MoQ Cluster RELAY_COST of what this relay sends on the link (default: 1; 0 is free)",
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                }
+            },
+            "required": [
+                "url",
+                "tls"
+            ]
+        },
+        "openmoq__moqx__config__ParsedUpstreamTlsConfig": {
+            "type": "object",
+            "properties": {
+                "insecure": {
+                    "description": "Skip TLS certificate verification (dev only)",
+                    "type": "boolean"
+                },
+                "ca_cert": {
+                    "description": "Path to CA certificate file for peer verification",
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                }
+            },
+            "required": [
+                "insecure"
+            ]
+        }
+    }
+}
