@@ -290,11 +290,15 @@ TEST(C4mTest, SignedTokensRoundtripWithBinaryKeyIdAndExactNamespace) {
 }
 
 TEST(C4mTest, IssuerRejectsLegacyCompoundAndContainsRules) {
+  // A valid namespace keeps the scope shape acceptable, so only the track rule can be rejected.
   Grants grants;
   grants.scopes.push_back(Scope{
       .actions = {Action::Publish},
-      .trackMatches = {MatchRule{.type = MatchRule::Type::Contains, .value = "a"}},
+      .namespaceMatches = {MatchRule{.value = "ns"}},
+      .trackMatches = {MatchRule{.value = "a"}},
   });
+  EXPECT_NO_THROW(signC4mToken("key", kKey, grants)); // control: one Exact track rule is accepted
+  grants.scopes[0].trackMatches = {MatchRule{.type = MatchRule::Type::Contains, .value = "a"}};
   EXPECT_THROW(signC4mToken("key", kKey, grants), std::invalid_argument);
   grants.scopes[0].trackMatches = {MatchRule{.value = "a"}, MatchRule{.value = "b"}};
   EXPECT_THROW(signC4mToken("key", kKey, grants), std::invalid_argument);

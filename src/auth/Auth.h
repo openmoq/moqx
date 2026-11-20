@@ -9,6 +9,8 @@
 #include "auth/C4m.h"
 #include "config/Config.h"
 
+#include <catapult/crypto.hpp>
+
 #include <folly/Expected.h>
 #include <folly/Unit.h>
 #include <folly/lang/Bits.h>
@@ -73,7 +75,7 @@ private:
 
   struct VerificationKey {
     std::string id;
-    std::shared_ptr<const catapult::CryptographicAlgorithm> algorithm;
+    std::unique_ptr<const catapult::CryptographicAlgorithm> algorithm;
   };
 
   config::AuthConfig config_;

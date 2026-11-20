@@ -6,19 +6,17 @@
 
 #pragma once
 
+#include <catapult/crypto.hpp>
+
 #include <memory>
 #include <string>
-
-namespace catapult {
-class CryptographicAlgorithm;
-}
 
 namespace openmoq::moqx::auth {
 
 // PEM files, restricted to P-256. The relay loads public material only.
-std::shared_ptr<const catapult::CryptographicAlgorithm>
+std::unique_ptr<const catapult::CryptographicAlgorithm>
 loadEs256PublicKeyFile(const std::string& path);
-std::shared_ptr<const catapult::CryptographicAlgorithm>
+std::unique_ptr<const catapult::CryptographicAlgorithm>
 loadEs256PrivateKeyFile(const std::string& path);
 
 } // namespace openmoq::moqx::auth

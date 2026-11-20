@@ -78,14 +78,14 @@ AuthTokenVerifier::AuthTokenVerifier(config::AuthConfig config) : config_(std::m
   }
   keys_.reserve(config_.hmacKeys.size() + config_.es256Keys.size());
   auto addKey = [&](std::string id,
-                    std::shared_ptr<const catapult::CryptographicAlgorithm> algorithm) {
+                    std::unique_ptr<const catapult::CryptographicAlgorithm> algorithm) {
     if (id.empty() || !keyIdIndex_.emplace(id, keys_.size()).second) {
       throw std::invalid_argument("auth key IDs must be non-empty and unique across algorithms");
     }
     keys_.push_back(VerificationKey{.id = std::move(id), .algorithm = std::move(algorithm)});
   };
   for (const auto& key : config_.hmacKeys) {
-    addKey(key.id, std::make_shared<catapult::HmacSha256Algorithm>(deriveHmacKey(key.secret)));
+    addKey(key.id, std::make_unique<catapult::HmacSha256Algorithm>(deriveHmacKey(key.secret)));
   }
   for (const auto& key : config_.es256Keys) {
     addKey(key.id, loadEs256PublicKeyFile(key.publicKeyFile));

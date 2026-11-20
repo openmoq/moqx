@@ -81,13 +81,13 @@ std::vector<uint8_t> publicDer(EVP_PKEY* key) {
 
 } // namespace
 
-std::shared_ptr<const catapult::CryptographicAlgorithm>
+std::unique_ptr<const catapult::CryptographicAlgorithm>
 loadEs256PublicKeyFile(const std::string& path) {
   auto key = readKey(path, false);
-  return std::make_shared<catapult::Es256Algorithm>(publicDer(key.get()));
+  return std::make_unique<catapult::Es256Algorithm>(publicDer(key.get()));
 }
 
-std::shared_ptr<const catapult::CryptographicAlgorithm>
+std::unique_ptr<const catapult::CryptographicAlgorithm>
 loadEs256PrivateKeyFile(const std::string& path) {
   auto key = readKey(path, true);
   const int size = i2d_PrivateKey(key.get(), nullptr);
@@ -99,7 +99,7 @@ loadEs256PrivateKeyFile(const std::string& path) {
   if (i2d_PrivateKey(key.get(), &output) != size) {
     throw std::runtime_error("cannot encode ES256 private key");
   }
-  return std::make_shared<catapult::Es256Algorithm>(der, publicDer(key.get()));
+  return std::make_unique<catapult::Es256Algorithm>(der, publicDer(key.get()));
 }
 
 } // namespace openmoq::moqx::auth
