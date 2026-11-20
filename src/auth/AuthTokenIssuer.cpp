@@ -10,7 +10,10 @@
 #include "auth/Es256Key.h"
 #include "auth/HmacKey.h"
 
+#include <openssl/rand.h>
+
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstdint>
 #include <stdexcept>
@@ -122,6 +125,14 @@ IssuedToken issueToken(const IssueTokenOptions& options) {
   grants.expiresAt = options.now + options.ttl;
   grants.issuer = options.issuer;
   grants.audiences = options.audiences;
+  if (options.replayProtected) {
+    std::array<unsigned char, 16> id{};
+    if (RAND_bytes(id.data(), static_cast<int>(id.size())) != 1) {
+      throw std::runtime_error("could not generate cti");
+    }
+    grants.cti = std::string(reinterpret_cast<const char*>(id.data()), id.size());
+    grants.replayProtected = true;
+  }
 
   if (containsAction(options.actions, Action::ClientSetup)) {
     grants.scopes.push_back(Scope{

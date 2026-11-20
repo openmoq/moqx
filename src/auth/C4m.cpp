@@ -290,7 +290,13 @@ Grants readClaims(
       notBefore = readTime(reader);
     } else if (key == kC4mMoqtClaim) {
       grants.scopes = readMoqt(reader);
-    } else if (key == kC4mRevalidationClaim || key == 308) {
+    } else if (key == 308) {
+      uint64_t value = 0;
+      if (!reader.readUInt(value) || value > 1) {
+        unsupported(); // catreplay 2 is implementation-defined; fail closed.
+      }
+      grants.replayProtected = value == 1;
+    } else if (key == kC4mRevalidationClaim) {
       uint64_t value = 0;
       if (!reader.readUInt(value) || value != 0) {
         unsupported();
@@ -329,6 +335,7 @@ Grants readClaims(
     } else if (key == 7) {
       std::string_view value;
       require(reader.readByteString(value));
+      grants.cti = std::string(value);
       hasInformationalClaims = true;
     } else {
       // In particular: cnf, catdpop, replay restrictions, and old moqt labels.
@@ -342,6 +349,11 @@ Grants readClaims(
   }
   if (notBefore && *notBefore > now) {
     throw C4mError(AuthError::NotYetValid, "C4M token not yet valid");
+  }
+  if (grants.replayProtected &&
+      (!grants.cti.has_value() || grants.expiresAt == std::chrono::system_clock::time_point::max()
+      )) {
+    throw C4mError(AuthError::Malformed, "catreplay token requires cti and exp");
   }
   if (policy.audiences.empty()) {
     if (!grants.audiences.empty()) {
@@ -390,8 +402,19 @@ std::string encodeClaims(const Grants& grants) {
       5,
       static_cast<unsigned>(expires) + static_cast<unsigned>(!grants.scopes.empty()) +
           static_cast<unsigned>(grants.issuer.has_value()) +
-          static_cast<unsigned>(!grants.audiences.empty())
+          static_cast<unsigned>(!grants.audiences.empty()) +
+          static_cast<unsigned>(grants.cti.has_value()) +
+          static_cast<unsigned>(grants.replayProtected)
   );
+  if (grants.cti) {
+    appendInt(out, 7);
+    appendHead(out, 2, grants.cti->size());
+    out += *grants.cti;
+  }
+  if (grants.replayProtected) {
+    appendInt(out, 308);
+    appendInt(out, 1);
+  }
   if (grants.issuer) {
     appendInt(out, 1);
     appendHead(out, 3, grants.issuer->size());

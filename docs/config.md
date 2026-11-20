@@ -327,8 +327,13 @@ A track-restricted scope cannot authorize a namespace-only request.
 This is a bearer-token subset, not full draft-02 conformance. `exp` and `nbf`
 are enforced, including duplicate-key and timestamp-range checks. Integer
 NumericDates are supported; floating-point time values are rejected. Optional
-`catv` must be `1`. Integer zero values for `catreplay` and `moqt-reval` are accepted. Tokens
-requiring DPoP (`cnf`/`catdpop`), replay protection, nonzero revalidation,
+`catv` must be `1`. `catreplay` 1 (single connection) is enforced: the token must carry `cti` and
+`exp`, and is bound to the connection that first presents a validly signed copy;
+any other connection is refused until the token expires. State is held in
+memory per service (bounded at 131072 live tokens, after which new `catreplay`
+tokens are refused), is lost on restart, and is not shared between relays.
+`catreplay` 2 is rejected. An integer zero `moqt-reval` is accepted. Tokens
+requiring DPoP (`cnf`/`catdpop`), nonzero revalidation,
 composites, or other unsupported restrictions are rejected. `aud` is rejected unless `audiences` is configured.
 `iss`/`sub`/`iat`/`cti` are informational and do not authenticate identities.
 The decoder accepts definite-length CBOR, at most 64 KiB per token, 1024 scopes,
@@ -403,7 +408,7 @@ moqx-issuer \
   --auth-ttl-seconds 3600
 ```
 
-`--auth_issuer` and `--auth_audience` (comma-separated for several) add `iss` and `aud`
+`--auth_replay_protect` adds `catreplay` 1 with a random `cti`. `--auth_issuer` and `--auth_audience` (comma-separated for several) add `iss` and `aud`
 claims for relays that configure `issuers`/`audiences`.
 
 The default output is `base64:<token>`, which is suitable for tools that accept

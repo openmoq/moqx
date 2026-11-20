@@ -231,7 +231,7 @@ TEST(C4mTest, RejectsUnsupportedRestrictionsEvenWithoutStrictClaims) {
   for (auto payload : {
            "a108a0",             // cnf
            "a119014101",         // catdpop
-           "a119013401",         // catreplay 1
+           "a119013402",         // catreplay 2 is implementation-defined; fail closed
            "a13a0001000119012c", // moqt-reval 300
            "a1036178",           // audience requires deployment-specific matching
            "a119013701",         // CAT network restriction
@@ -384,4 +384,27 @@ TEST(C4mTest, IssuerMustMatchConfiguredIssuer) {
       kNow,
       {.strict = true, .issuers = {"issuer-1"}}
   ));
+}
+
+TEST(C4mTest, ReplayProtectionRequiresCtiAndExpiration) {
+  // catreplay 1 with cti and exp: accepted and flagged.
+  auto grants = verifyC4mToken(
+      rawToken("a3041a7fffffff0743010203190134"
+               "01"),
+      kKey,
+      kNow
+  );
+  EXPECT_TRUE(grants.replayProtected);
+  EXPECT_EQ(grants.cti, std::string("\x01\x02\x03", 3));
+  // Missing cti or missing exp: rejected.
+  expectError(rawToken("a2041a7fffffff19013401"), AuthError::Malformed);
+  expectError(rawToken("a2074301020319013401"), AuthError::Malformed);
+  // Round trip through the signer.
+  Grants g;
+  g.expiresAt = kNow + std::chrono::hours(1);
+  g.cti = "abc";
+  g.replayProtected = true;
+  auto decoded = verifyC4mToken(signC4mToken("key", kKey, g), kKey, kNow);
+  EXPECT_TRUE(decoded.replayProtected);
+  EXPECT_EQ(decoded.cti, "abc");
 }

@@ -37,6 +37,7 @@ enum class AuthError {
   TooManyTokens,
   NotYetValid,
   UnsupportedClaim,
+  Replayed,
 };
 
 struct MatchRule {
@@ -60,6 +61,10 @@ struct Grants {
   // CWT iss (1) and aud (3). Only encoded when set; the relay validates them against ClaimPolicy.
   std::optional<std::string> issuer;
   std::vector<std::string> audiences;
+  // CWT cti (7) and catreplay (308) value 1: the token may be accepted on one connection only
+  // (draft-02 section 3). Enforcement needs connection identity and lives in the verifier.
+  std::optional<std::string> cti;
+  bool replayProtected{false};
 };
 
 // Relay-side validation of standard CWT claims (draft-02 section 8.2.1).

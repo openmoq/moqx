@@ -24,6 +24,10 @@ with a C4M draft-02 bearer-token core.
   `ClaimPolicy` in the verifier, and `--auth_audience`/`--auth_issuer` issuer
   flags. Verified live: matching token publishes, wrong or missing audience
   is rejected.
+- Added `catreplay` 1 enforcement: `cti`/`exp` required, token bound to the first
+  accepting connection (per-service in-memory state), other connections refused
+  (`AuthError::Replayed`). Issuer flag `--auth_replay_protect`. Verified live:
+  second connection reusing the token was rejected.
 - Updated existing configuration/build documentation and examples to explain
   the subset, provisional labels, key handling, and unsupported features.
 - Pinned catapult's latest published release, v1.0.0, at
@@ -59,8 +63,8 @@ with a C4M draft-02 bearer-token core.
 
 - Protocol conformance gaps are tracked in
   [C4M draft-02 implementation gaps](c4m-draft02-gaps.md). The major gaps are
-  nonzero revalidation, replay protection, DPoP,
-  composite claims, and algorithm/claim-label interoperability.
+  nonzero revalidation, DPoP,
+  composite claims (blocked on unassigned keys), and algorithm/claim-label interoperability.
 - Full default CTest reported 37 failures out of 1530. The same names failed
   in the prior pre-ES256 run, but this was not compared against an exact clean
   `main` build. One upstream handshake race test reported a cleanup segfault.

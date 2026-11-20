@@ -923,3 +923,53 @@ TEST(AuthTest, AuthorizeAnonymousClaimEmptyNamespaceListIsRestrictive) {
   ASSERT_TRUE(result.hasError());
   EXPECT_EQ(result.error(), AuthError::Forbidden);
 }
+
+namespace {
+Grants replayGrants(std::string cti) {
+  auto grants = makeGrants({Action::ClientSetup}, {}, {});
+  grants.cti = std::move(cti);
+  grants.replayProtected = true;
+  return grants;
+}
+} // namespace
+
+TEST(AuthTest, ReplayProtectedTokenBindsToFirstConnection) {
+  AuthTokenVerifier verifier(makeConfig());
+  const auto token = makeToken(replayGrants("id-1"));
+
+  EXPECT_TRUE(verifier.verify(token, 1).hasValue());
+  EXPECT_TRUE(verifier.verify(token, 1).hasValue()); // reuse on the same connection
+  auto other = verifier.verify(token, 2);
+  ASSERT_TRUE(other.hasError());
+  EXPECT_EQ(other.error(), AuthError::Replayed);
+  // A different token is independent.
+  EXPECT_TRUE(verifier.verify(makeToken(replayGrants("id-2")), 2).hasValue());
+}
+
+TEST(AuthTest, ReplayProtectedTokenNeedsConnectionIdentity) {
+  AuthTokenVerifier verifier(makeConfig());
+  EXPECT_TRUE(verifier.verify(makeToken(replayGrants("id-3")), 0).hasError());
+}
+
+TEST(AuthTest, UnverifiedReplayTokenDoesNotReserveCti) {
+  AuthTokenVerifier verifier(makeConfig());
+  // Signed with the wrong key: must not bind the cti to connection 9.
+  EXPECT_TRUE(verifier.verify(makeToken(replayGrants("id-4"), "wrong"), 9).hasError());
+  EXPECT_TRUE(verifier.verify(makeToken(replayGrants("id-4")), 1).hasValue());
+}
+
+TEST(AuthTest, ReplayBindingIsPerConnectionInAuthenticateSetupAndAuthorize) {
+  AuthTokenVerifier verifier(makeConfig());
+  Parameters params(FrameType::CLIENT_SETUP);
+  ASSERT_TRUE(params
+                  .insertParam(Parameter(
+                      static_cast<uint64_t>(TrackRequestParamKey::AUTHORIZATION_TOKEN),
+                      makeToken(replayGrants("id-5"))
+                  ))
+                  .hasValue());
+  EXPECT_TRUE(authenticateSetup(verifier, params, 1).hasValue());
+  EXPECT_TRUE(authenticateSetup(verifier, params, 1).hasValue());
+  auto stolen = authenticateSetup(verifier, params, 2);
+  ASSERT_TRUE(stolen.hasError());
+  EXPECT_EQ(stolen.error(), AuthError::Replayed);
+}
