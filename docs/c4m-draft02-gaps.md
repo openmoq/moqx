@@ -41,12 +41,13 @@ used for draft-02 parsing; ES256 DER signatures are adapted to COSE's fixed
   `moqtextclient` subscriber. Remaining gaps: the subscriber used
   `anonymous_claim` (the client cannot send a setup token), and ES256, other
   drafts, and mid-stream expiry were not exercised live.
-- The full default CTest run reported 37 failures out of 1530. The same test
-  names failed in the earlier pre-ES256 run, but an exact clean-main baseline
-  was not established. The failures are concentrated in loopback/upstream
-  tests; one upstream handshake race test ended with a cleanup segfault. See
-  `/tmp/moqx-971-validation.txt` and `/tmp/moqx-971-full-tests.log` for the
-  recorded run details.
+- Full default CTest on the final code: 11 failures among 1518 tests run with
+  `UpstreamProviderTest` excluded, plus widespread failures and hangs in
+  `UpstreamProviderTest` itself, all loopback/upstream connect problems
+  (`FutureTimeout`). The pre-PR commit `a191e99b` fails the same tests the same
+  way, so they predate this PR; the cause is undiagnosed and only the failing
+  tests (not the whole suite) were compared against it. See the progress doc
+  for the list.
 - A prebuilt, uninstrumented moxygen dependency was used for sanitizer runs;
   moqx and catapult crypto were instrumented. The sanitizer results therefore
   do not cover moxygen internals.
@@ -59,11 +60,10 @@ used for draft-02 parsing; ES256 DER signatures are adapted to COSE's fixed
 - Default build passed.
 - Focused default tests (C4m, Dpop, Auth, config, issuer): 294/294 passed after
   the `aud`/`iss`, `catreplay`, and DPoP changes.
-- ASAN/UBSAN/LeakSanitizer focused tests: 113 passed across codec,
-  authentication/issuer/filter, and configuration groups. Not rerun on the
-  `aud`/`iss`, `catreplay`, and DPoP code.
-- Full default CTest: 1493/1530 passed (37 failed as described above) in the
-  last full run, which predates those changes. Not rerun since.
+- ASAN/UBSAN/LeakSanitizer focused tests on the final code: 317/317 passed
+  across codec, DPoP, authentication, issuer, and configuration groups.
+- Full default CTest: see the integration gap above (11 pre-existing upstream
+  failures outside `UpstreamProviderTest`).
 - Live moqxr publisher run: passed for HMAC, draft 18 (see above). Live checks
   also passed for `aud`/`iss` rejection and `catreplay` second-connection
   rejection.

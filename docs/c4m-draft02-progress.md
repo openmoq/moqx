@@ -47,10 +47,11 @@ with the limits listed under Remaining work.
 - Focused default CTest selection (C4m, Dpop, Auth, config resolver/serializer,
   issuer) passed after the `aud`/`iss`, `catreplay`, and DPoP changes: 294/294.
   The earlier 125/125 selection predates those changes.
-- Sanitizer selections passed before the `aud`/`iss`, `catreplay`, and DPoP
-  work: 14 codec + 66 authentication/issuer/filter + 33 configuration tests =
-  113. moqx and catapult crypto were instrumented; the prebuilt moxygen
-  dependency was not. They have not been rerun on the new code.
+- Sanitizer (ASAN/UBSAN/LeakSanitizer, `build/san`) run on the final code,
+  including the `aud`/`iss`, `catreplay`, DPoP, and `unique_ptr` changes:
+  317/317 passed across codec, DPoP, authentication, issuer, and configuration
+  tests. moqx and catapult crypto were instrumented; the prebuilt moxygen
+  dependency was not.
 - The draft's ES256 vector verifies; a tampered signature fails.
 - Eight issuer CLI scenarios passed, covering direct/config ES256 issuance,
   missing or mismatched private keys, key ID selection, encrypted-key
@@ -78,14 +79,23 @@ with the limits listed under Remaining work.
   proof token type), composite claims (blocked on unassigned keys), and
   algorithm/claim-label interoperability (PS256, ES384/EdDSA proofs, final
   `moqt`/`moqt-reval` labels).
-- The full default CTest suite (1530 tests) has not been rerun since the
-  `aud`/`iss`, `catreplay`, and DPoP changes. Sanitizer runs have not covered
-  them either.
 - Replay state (`catreplay` bindings and DPoP proof `cti` values) is in memory
   per service: lost on restart and not shared between relays.
-- The last full default CTest run (before the work above) reported 37 failures
-  out of 1530. The same names failed in the prior pre-ES256 run, but this was not compared against an exact clean
-  `main` build. One upstream handshake race test reported a cleanup segfault.
+- Full default CTest on the final code (1548 tests): 11 failures among the 1518
+  run with `UpstreamProviderTest` excluded (21 more skipped by the tests
+  themselves), all in loopback/upstream tests: `MoqxRelayServerTest.H3TxnTimeout...`,
+  `RelaySessionCloseTest` (2), `UpstreamClusterTest` (2),
+  `UpstreamSetupCancelledTest`, `RelayUpstreamSubscribeRaceTest` (3, one
+  segfault), `RelayUpstreamHungPeerTest`, `UpstreamCACertSignedServerTest`.
+  `UpstreamProviderTest` (30 tests) mostly fails or hangs with a loopback
+  connect `FutureTimeout`: of the 22 that finished, 4 passed; eight hung for
+  about an hour and were killed, and eight never ran.
+- Baseline: the pre-PR commit `a191e99b` was built in a separate worktree and
+  all 11 failing tests above fail the same way there (failures, timeouts, and
+  the same segfault), as do the `UpstreamProviderTest` cases checked (3). The
+  failures predate this PR. The cause was not diagnosed, and the whole
+  pre-PR suite was not run, so a regression in another test would not show as
+  a difference.
 - The live run covered one draft (18), HMAC only, and a small test MP4. The
   subscriber was authorized by `anonymous_claim` because `moqtextclient` can
   send only a type-0 token on SUBSCRIBE, so a token-carrying subscriber was not
