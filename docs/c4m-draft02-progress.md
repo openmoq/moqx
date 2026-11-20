@@ -1,8 +1,10 @@
 # C4M draft-02 implementation progress
 
-Status on 2026-11-20, branch `feature/c4m-draft02`. Implementation is committed
-as `a23be401` (PR 1015); this doc update is not yet committed. The implementation replaces the former CAT4MOQ token format
-with a C4M draft-02 bearer-token core.
+Status on 2026-11-20, branch `feature/c4m-draft02` (PR 1015). All work is
+committed and pushed. The implementation replaces the former CAT4MOQ token
+format with a C4M draft-02 token core: HMAC/ES256 COSE tokens, `moqt` scopes,
+standard claim validation (`exp`, `nbf`, `aud`, `iss`), `catreplay` 1, and DPoP,
+with the limits listed under Remaining work.
 
 ## Completed
 
@@ -42,10 +44,13 @@ with a C4M draft-02 bearer-token core.
 ## Validation performed
 
 - Default build passed; the resolved catapult source matched the v1.0.0 tag.
-- Focused default CTest selection passed: 125/125.
-- Sanitizer selections passed: 14 codec + 66 authentication/issuer/filter +
-  33 configuration tests = 113. moqx and catapult crypto were instrumented;
-  the prebuilt moxygen dependency was not.
+- Focused default CTest selection (C4m, Dpop, Auth, config resolver/serializer,
+  issuer) passed after the `aud`/`iss`, `catreplay`, and DPoP changes: 294/294.
+  The earlier 125/125 selection predates those changes.
+- Sanitizer selections passed before the `aud`/`iss`, `catreplay`, and DPoP
+  work: 14 codec + 66 authentication/issuer/filter + 33 configuration tests =
+  113. moqx and catapult crypto were instrumented; the prebuilt moxygen
+  dependency was not. They have not been rerun on the new code.
 - The draft's ES256 vector verifies; a tampered signature fails.
 - Eight issuer CLI scenarios passed, covering direct/config ES256 issuance,
   missing or mismatched private keys, key ID selection, encrypted-key
@@ -68,10 +73,18 @@ with a C4M draft-02 bearer-token core.
 
 - Protocol conformance gaps are tracked in
   [C4M draft-02 implementation gaps](c4m-draft02-gaps.md). The major gaps are
-  nonzero revalidation, DPoP
-  interoperability (provisional labels), composite claims (blocked on unassigned keys), and algorithm/claim-label interoperability.
-- Full default CTest reported 37 failures out of 1530. The same names failed
-  in the prior pre-ES256 run, but this was not compared against an exact clean
+  nonzero revalidation (needs a design decision: end the affected action or the
+  whole session), DPoP interoperability (provisional `actx`/`ath` labels and
+  proof token type), composite claims (blocked on unassigned keys), and
+  algorithm/claim-label interoperability (PS256, ES384/EdDSA proofs, final
+  `moqt`/`moqt-reval` labels).
+- The full default CTest suite (1530 tests) has not been rerun since the
+  `aud`/`iss`, `catreplay`, and DPoP changes. Sanitizer runs have not covered
+  them either.
+- Replay state (`catreplay` bindings and DPoP proof `cti` values) is in memory
+  per service: lost on restart and not shared between relays.
+- The last full default CTest run (before the work above) reported 37 failures
+  out of 1530. The same names failed in the prior pre-ES256 run, but this was not compared against an exact clean
   `main` build. One upstream handshake race test reported a cleanup segfault.
 - The live run covered one draft (18), HMAC only, and a small test MP4. The
   subscriber was authorized by `anonymous_claim` because `moqtextclient` can

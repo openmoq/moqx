@@ -516,11 +516,15 @@ Clients must send the binary CWT in `AUTHORIZATION_TOKEN` with token type `1`
 (or the explicitly configured private type). Base64 is an application transport
 representation; decode it before forming the MOQT parameter.
 
-Use the sibling moqxr publisher for media interoperability testing once its
-selected auth path supports these tokens. Its legacy CAT4MOQ issuer/wrapper
-must not be assumed compatible: action IDs, claim labels, namespace matching,
-COSE tags, and MAC context have changed. This initial core implementation does
-not itself establish moqxr media interoperability.
+Use the sibling moqxr publisher for media interoperability testing. Passing a
+token minted by `moqx-issuer` to `openmoq-publisher` with
+`--auth-profile c4m-01 --auth-token-file <file>` (token type 1) has been
+verified for HMAC tokens over MoQT draft 18 and WebTransport: the relay accepts
+a correctly scoped publisher, rejects a missing or wrong-scope token, and
+delivers media to a subscriber. Its legacy CAT4MOQ issuer/wrapper must not be
+assumed compatible: action IDs, claim labels, namespace matching, COSE tags, and
+MAC context have changed, and its DPoP proofs use the draft-01 JWT form, which
+this relay does not accept.
 
 ### Docker Usage
 

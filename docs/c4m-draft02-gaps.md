@@ -1,16 +1,17 @@
 # C4M draft-02 implementation gaps
 
 Status on 2026-11-20, branch `feature/c4m-draft02`. This describes the
-implementation committed as `a23be401` against the checked-in
+implementation on PR 1015 (all work committed and pushed) against the checked-in
 [`draft-ietf-moq-c4m-02.txt`](ref/draft-ietf-moq-c4m-02.txt). It is a gap list,
 not a claim of draft conformance.
 
 ## Implemented coverage
 
-The current bearer-token core supports tagged COSE_Mac0 with HMAC-SHA256 and
+The current implementation supports tagged COSE_Mac0 with HMAC-SHA256 and
 tagged COSE_Sign1 with ES256, draft-02 action IDs, `moqt` scope matching,
-expiration and not-before checks, and the draft's Appendix private-use claim
-labels. ES256 public-key verification and issuer signing address
+expiration and not-before checks, `aud`/`iss` validation against per-service
+configuration, `catreplay` 1 connection binding, DPoP (`cnf`, `catdpop`, and
+per-action ES256 proofs), and the draft's Appendix private-use claim labels. ES256 public-key verification and issuer signing address
 [moqx issue #971](https://github.com/openmoq/moqx/issues/971). The legacy
 CAT4MOQ wire format is no longer accepted.
 
@@ -27,7 +28,7 @@ used for draft-02 parsing; ES256 DER signatures are adapted to COSE's fixed
 | `catreplay` processing (draft §3) | Value 1 is enforced: requires `cti` and `exp`, binds the token to the first connection that presents a validly signed copy, allows reuse there, and refuses other connections until expiry. State is in-memory per service, bounded, not persisted or shared across relays or restarts. Value 2 is rejected. | Decide whether replay state must survive restarts or be shared across relay instances, and whether value 2 should map to value 1. |
 | DPoP (draft §4) | Implemented for ES256 proofs: `cnf` `ckt`/`jkt`, `catdpop` window and replay, COSE_Sign1 proof checks (typ, kccs key vs cnf thumbprint, signature, `ath`, `iat` window, exact `actx` action/namespace/track), enforced at SETUP and on every action including session-granted ones. `actx`/`ath` labels (-65539/-65540) and the proof token type (17) are provisional because the draft assigns neither and ships no proof vectors. ES384/EdDSA are not supported. | Adopt final labels and proof carriage when assigned; add ES384/EdDSA (SHOULD); confirm interoperability against another implementation. The moqxr publisher's DPoP is the draft-01 JWT form and does not interoperate. |
 | Composite claims (draft §2.1.1 and Appendix A.6) | Unsupported and rejected. Blocked: the `or`/`and`/`nor` claim keys are unassigned, the appendix vectors encode all three as key `0` (not a valid claim key) and distinguish them only by test metadata, and the semantics come from the external draft-lemmons-cose-composite-claims, which is not in the repo. | Implement once keys are allocated and the composite draft is available to review. |
-| Algorithm coverage | HMAC-SHA256 and ES256 are implemented. PS256 is not. | Add any additional algorithms required by the selected CAT/draft interoperability profile, with matching issuer and verifier support. |
+| Algorithm coverage | HMAC-SHA256 and ES256 tokens, and ES256 DPoP proofs, are implemented. PS256 tokens and ES384/EdDSA proofs are not. | Add any additional algorithms required by the selected CAT/draft interoperability profile, with matching issuer and verifier support. |
 | Claim-label allocation | `moqt` and `moqt-reval` use Appendix private-use placeholders `-65537` and `-65538`; they are not assigned registry values. | Update the constants and interoperability vectors when the draft assigns final labels. Tokens using different labels will not interoperate with this build. |
 | CWT encoding coverage | Decoder accepts definite-length CBOR and enforces local token/scope/namespace limits. Floating-point NumericDates and unsupported forms are rejected. | Check these restrictions against deployment interoperability needs and broaden only where the relevant CWT/COSE requirements permit it. |
 
@@ -56,8 +57,13 @@ used for draft-02 parsing; ES256 DER signatures are adapted to COSE's fixed
 ## Validation snapshot
 
 - Default build passed.
-- Focused default tests: 125/125 passed.
+- Focused default tests (C4m, Dpop, Auth, config, issuer): 294/294 passed after
+  the `aud`/`iss`, `catreplay`, and DPoP changes.
 - ASAN/UBSAN/LeakSanitizer focused tests: 113 passed across codec,
-  authentication/issuer/filter, and configuration groups.
-- Full default CTest: 1493/1530 passed; 37 failed as described above.
-- Live moqxr publisher run: passed for HMAC, draft 18 (see above).
+  authentication/issuer/filter, and configuration groups. Not rerun on the
+  `aud`/`iss`, `catreplay`, and DPoP code.
+- Full default CTest: 1493/1530 passed (37 failed as described above) in the
+  last full run, which predates those changes. Not rerun since.
+- Live moqxr publisher run: passed for HMAC, draft 18 (see above). Live checks
+  also passed for `aud`/`iss` rejection and `catreplay` second-connection
+  rejection.
