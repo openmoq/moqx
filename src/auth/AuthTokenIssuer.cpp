@@ -7,6 +7,7 @@
 #include "auth/AuthTokenIssuer.h"
 
 #include "auth/Action.h"
+#include "auth/Dpop.h"
 #include "auth/Es256Key.h"
 #include "auth/HmacKey.h"
 
@@ -125,6 +126,17 @@ IssuedToken issueToken(const IssueTokenOptions& options) {
   grants.expiresAt = options.now + options.ttl;
   grants.issuer = options.issuer;
   grants.audiences = options.audiences;
+  if (!options.dpopKeyFile.empty()) {
+    const auto [x, y] = es256PublicCoordinates(options.dpopKeyFile);
+    grants.dpop = DpopRequirement{
+        DpopBinding{
+            options.dpopJkt ? DpopBinding::Kind::Jkt : DpopBinding::Kind::Ckt,
+            options.dpopJkt ? jwkThumbprint(x, y) : coseKeyThumbprint(x, y)
+        },
+        options.dpopWindow,
+        true,
+    };
+  }
   if (options.replayProtected) {
     std::array<unsigned char, 16> id{};
     if (RAND_bytes(id.data(), static_cast<int>(id.size())) != 1) {

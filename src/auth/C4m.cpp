@@ -278,6 +278,10 @@ Grants readClaims(
   Grants grants;
   std::optional<std::chrono::system_clock::time_point> notBefore;
   bool hasInformationalClaims = false;
+  std::optional<DpopBinding> dpopBinding;
+  std::chrono::seconds dpopWindow = kDefaultDpopWindow;
+  bool dpopReplay = true; // catdpop jti absent: detect replay (the safer reading)
+  bool hasCatDpop = false;
   for (uint64_t i = 0; i < count; ++i) {
     int64_t key = 0;
     if (reader.peekMajor() == cbor::kMajorTextString) {
@@ -301,6 +305,39 @@ Grants readClaims(
       if (!reader.readUInt(value) || value != 0) {
         unsupported();
       }
+    } else if (key == 8) {
+      uint64_t entries = 0;
+      require(reader.readMapLen(entries) && entries == 1);
+      int64_t method = 0;
+      std::string_view thumbprint;
+      require(reader.readInt(method) && reader.readByteString(thumbprint));
+      require(thumbprint.size() == 32);
+      if (method != 5 && method != 323) {
+        unsupported(); // Only ckt (5) and jkt (323) confirmation methods.
+      }
+      dpopBinding = DpopBinding{
+          method == 5 ? DpopBinding::Kind::Ckt : DpopBinding::Kind::Jkt,
+          std::string(thumbprint)
+      };
+    } else if (key == 321) {
+      uint64_t entries = 0;
+      require(reader.readMapLen(entries) && entries <= 2);
+      std::unordered_set<int64_t> dpopSeen;
+      for (uint64_t j = 0; j < entries; ++j) {
+        int64_t field = 0;
+        uint64_t value = 0;
+        require(reader.readInt(field) && dpopSeen.insert(field).second && reader.readUInt(value));
+        if (field == 0) {
+          require(value >= 1 && value <= 86400);
+          dpopWindow = std::chrono::seconds(value);
+        } else if (field == 1) {
+          require(value <= 1);
+          dpopReplay = value == 1;
+        } else {
+          unsupported();
+        }
+      }
+      hasCatDpop = true;
     } else if (key == 310) {
       uint64_t version = 0;
       require(reader.readUInt(version));
@@ -349,6 +386,12 @@ Grants readClaims(
   }
   if (notBefore && *notBefore > now) {
     throw C4mError(AuthError::NotYetValid, "C4M token not yet valid");
+  }
+  if (hasCatDpop && !dpopBinding) {
+    unsupported(); // catdpop without cnf has no key to bind.
+  }
+  if (dpopBinding) {
+    grants.dpop = DpopRequirement{*dpopBinding, dpopWindow, dpopReplay};
   }
   if (grants.replayProtected &&
       (!grants.cti.has_value() || grants.expiresAt == std::chrono::system_clock::time_point::max()
@@ -404,8 +447,21 @@ std::string encodeClaims(const Grants& grants) {
           static_cast<unsigned>(grants.issuer.has_value()) +
           static_cast<unsigned>(!grants.audiences.empty()) +
           static_cast<unsigned>(grants.cti.has_value()) +
-          static_cast<unsigned>(grants.replayProtected)
+          static_cast<unsigned>(grants.replayProtected) +
+          2 * static_cast<unsigned>(grants.dpop.has_value())
   );
+  if (grants.dpop) {
+    appendInt(out, 8);
+    appendHead(out, 5, 1);
+    appendInt(out, grants.dpop->binding.kind == DpopBinding::Kind::Ckt ? 5 : 323);
+    appendBytes(out, grants.dpop->binding.thumbprint);
+    appendInt(out, 321);
+    appendHead(out, 5, 2);
+    appendInt(out, 0);
+    appendInt(out, grants.dpop->window.count());
+    appendInt(out, 1);
+    appendInt(out, grants.dpop->detectReplay ? 1 : 0);
+  }
   if (grants.cti) {
     appendInt(out, 7);
     appendHead(out, 2, grants.cti->size());

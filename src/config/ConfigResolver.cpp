@@ -606,6 +606,17 @@ void validateAuth(
         }
       }
     }
+    const auto dpopType = auth.dpop_token_type.value().value_or(17);
+    if (dpopType >= kQuicVarintExclusiveUpperBound) {
+      errors.push_back(
+          "Service '" + serviceName + "': auth.dpop_token_type must fit in a QUIC varint"
+      );
+    }
+    if (dpopType == auth.token_type.value().value_or(1)) {
+      errors.push_back(
+          "Service '" + serviceName + "': auth.dpop_token_type must differ from auth.token_type"
+      );
+    }
     const auto& maxTokens = auth.max_tokens_per_message.value();
     if (!maxTokens.has_value()) {
       errors.push_back(
@@ -719,6 +730,7 @@ AuthConfig resolveAuth(const std::optional<ParsedAuthConfig>& parsed) {
   out.allowRequestTokenOverride = parsed->allow_request_token_override.value().value_or(true);
   out.strictClaims = parsed->strict_claims.value().value_or(false);
   out.maxTokensPerMessage = parsed->max_tokens_per_message.value().value_or(0);
+  out.dpopTokenType = parsed->dpop_token_type.value().value_or(17);
   if (parsed->audiences.value()) {
     out.audiences = *parsed->audiences.value();
   }

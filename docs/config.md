@@ -299,6 +299,7 @@ services:
 | `allow_request_token_override` | `true` | Lets a token on a request count as one more candidate grant for that request, alongside the session's setup-token grants and `anonymous_claim`. If `false`, request tokens are ignored and authorization uses only the setup token grants and `anonymous_claim`. |
 | `audiences` | none | CWT `aud` values this relay accepts. When set, a token must carry `aud` (a string or array of strings) and at least one value must equal an entry, otherwise it is rejected. When omitted, any token carrying `aud` is rejected. Entries must be non-empty. |
 | `issuers` | none | CWT `iss` values this relay accepts. When set, a token must carry a matching `iss`. When omitted, `iss` is informational. Entries must be non-empty. |
+| `dpop_token_type` | `17` | AUTHORIZATION_TOKEN type carrying DPoP proofs for `cnf`-bound tokens. The draft does not register a type for proofs; this value is provisional, must differ from `token_type`, and must fit in a QUIC variable integer. Proofs count toward `max_tokens_per_message`. |
 | `strict_claims` | `false` | Also rejects informational `iss` (when `issuers` is unset), `sub`, `iat`, and `cti` claims. Unsupported restrictions and repeated claims are always rejected, regardless of this setting. |
 | `max_tokens_per_message` | none | Required when `enabled: true`, directly or via `service_defaults.auth.max_tokens_per_message`. Caps how many `AUTHORIZATION_TOKEN` params of the configured `token_type` a single SETUP or request message may carry; a message over the cap is rejected outright, not truncated. Params of other token types are not counted. Bounds per-message verification cost against a client attaching many tokens to one message. Must be >= 1. |
 | `anonymous_claim` | empty | Statically-granted scopes applied to every request on this service, regardless of what token (if any) authenticated it. See [Anonymous Claim](#anonymous-claim) below. |
@@ -332,9 +333,23 @@ NumericDates are supported; floating-point time values are rejected. Optional
 any other connection is refused until the token expires. State is held in
 memory per service (bounded at 131072 live tokens, after which new `catreplay`
 tokens are refused), is lost on restart, and is not shared between relays.
-`catreplay` 2 is rejected. An integer zero `moqt-reval` is accepted. Tokens
-requiring DPoP (`cnf`/`catdpop`), nonzero revalidation,
+`catreplay` 2 is rejected. An integer zero `moqt-reval` is accepted. Nonzero revalidation,
 composites, or other unsupported restrictions are rejected. `aud` is rejected unless `audiences` is configured.
+
+DPoP (draft section 4) is enforced for tokens carrying `cnf` with `ckt` (key 5,
+RFC 9679 COSE Key Thumbprint) or `jkt` (key 323, RFC 7638 JWK Thumbprint) and
+optional `catdpop` (`0` window seconds, default 300; `1` proof `cti` replay
+detection, on unless `0`). Such a token is not a bearer token: SETUP and every
+later action it would authorize, including actions covered by the session's
+setup grants, must carry a COSE_Sign1 proof in an AUTHORIZATION_TOKEN of type
+`dpop_token_type`. The proof must be ES256 with `typ` `dpop-proof+cwt` and the
+client key in a `kccs` header; its key thumbprint must match `cnf`, `ath` must be
+the SHA-256 of the token as presented, `iat` must be within the window, and
+`actx` must name the exact action, namespace fields, and track name. A proof
+`cti` is accepted once per token within its window (in-memory, bounded). The
+claim labels for `actx` and `ath` are unassigned; moqx uses the provisional
+private-use values -65539 and -65540, so proofs from other implementations will
+not interoperate until final labels exist. ES384/EdDSA proofs are not supported.
 `iss`/`sub`/`iat`/`cti` are informational and do not authenticate identities.
 The decoder accepts definite-length CBOR, at most 64 KiB per token, 1024 scopes,
 and 32 namespace fields per scope. Unsupported encodings are rejected.
@@ -408,6 +423,8 @@ moqx-issuer \
   --auth-ttl-seconds 3600
 ```
 
+`--auth_dpop_key_file <pem>` binds the token to a client P-256 key with `cnf`
+(`ckt`, or `jkt` with `--auth_dpop_jkt`) and `catdpop` (`--auth_dpop_window_seconds`).
 `--auth_replay_protect` adds `catreplay` 1 with a random `cti`. `--auth_issuer` and `--auth_audience` (comma-separated for several) add `iss` and `aud`
 claims for relays that configure `issuers`/`audiences`.
 

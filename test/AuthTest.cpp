@@ -6,6 +6,7 @@
 
 #include "auth/Auth.h"
 #include "auth/AuthTokenIssuer.h"
+#include "auth/Dpop.h"
 #include "auth/Es256Key.h"
 #include "auth/HmacKey.h"
 
@@ -972,4 +973,118 @@ TEST(AuthTest, ReplayBindingIsPerConnectionInAuthenticateSetupAndAuthorize) {
   auto stolen = authenticateSetup(verifier, params, 2);
   ASSERT_TRUE(stolen.hasError());
   EXPECT_EQ(stolen.error(), AuthError::Replayed);
+}
+
+// ---- DPoP integration ----
+
+namespace {
+std::string dpopKeyPath() {
+  return std::string(TEST_C4M_KEY_DIR) + "/c4m_es256_private.pem";
+}
+
+Grants dpopGrants(std::vector<Action> actions) {
+  auto grants = makeGrants(std::move(actions), {}, {});
+  const auto [x, y] = es256PublicCoordinates(dpopKeyPath());
+  grants.dpop = DpopRequirement{
+      DpopBinding{DpopBinding::Kind::Ckt, coseKeyThumbprint(x, y)},
+      std::chrono::seconds(60),
+      true,
+  };
+  return grants;
+}
+
+void addParam(Parameters& params, uint64_t type, std::string value) {
+  ASSERT_TRUE(params
+                  .insertParam(Parameter(
+                      static_cast<uint64_t>(TrackRequestParamKey::AUTHORIZATION_TOKEN),
+                      AuthToken{
+                          .tokenType = type,
+                          .tokenValue = std::move(value),
+                          .alias = AuthToken::DontRegister
+                      }
+                  ))
+                  .hasValue());
+}
+
+std::string proofFor(
+    const AuthToken& token,
+    Action action,
+    TrackNamespace ns = {},
+    std::optional<std::string> track = std::nullopt,
+    std::string cti = "p1"
+) {
+  return signDpopProof(
+      dpopKeyPath(),
+      token.tokenValue,
+      DpopContext{action, ns.trackNamespace, std::move(track)},
+      cti
+  );
+}
+} // namespace
+
+TEST(AuthTest, DpopBoundTokenNeedsProofAtSetupAndPerAction) {
+  AuthTokenVerifier verifier(makeConfig());
+  const auto token = makeToken(dpopGrants({Action::ClientSetup, Action::Subscribe, Action::Fetch}));
+  const TrackNamespace ns{{"live"}};
+
+  // SETUP without a proof is refused; the cnf-bound token is not a bearer token.
+  Parameters bare(FrameType::CLIENT_SETUP);
+  addParam(bare, 77, token.tokenValue);
+  EXPECT_TRUE(authenticateSetup(verifier, bare, 1).hasError());
+
+  Parameters setup(FrameType::CLIENT_SETUP);
+  addParam(setup, 77, token.tokenValue);
+  addParam(setup, 17, proofFor(token, Action::ClientSetup));
+  auto grants = authenticateSetup(verifier, setup, 1);
+  ASSERT_TRUE(grants.hasValue());
+
+  // A later request on the session has no token of its own, so it needs its own proof.
+  Parameters noProof(FrameType::SUBSCRIBE);
+  EXPECT_TRUE(
+      authorize(verifier, Action::Subscribe, noProof, ns, *grants.value(), "video", 1).hasError()
+  );
+
+  Parameters ok(FrameType::SUBSCRIBE);
+  addParam(ok, 17, proofFor(token, Action::Subscribe, ns, "video", "p2"));
+  EXPECT_TRUE(authorize(verifier, Action::Subscribe, ok, ns, *grants.value(), "video", 1).hasValue()
+  );
+
+  // A proof is for one action and one track.
+  Parameters wrongAction(FrameType::SUBSCRIBE);
+  addParam(wrongAction, 17, proofFor(token, Action::Fetch, ns, "video", "p3"));
+  EXPECT_TRUE(authorize(verifier, Action::Subscribe, wrongAction, ns, *grants.value(), "video", 1)
+                  .hasError());
+  Parameters wrongTrack(FrameType::SUBSCRIBE);
+  addParam(wrongTrack, 17, proofFor(token, Action::Subscribe, ns, "audio", "p4"));
+  EXPECT_TRUE(
+      authorize(verifier, Action::Subscribe, wrongTrack, ns, *grants.value(), "video", 1).hasError()
+  );
+}
+
+TEST(AuthTest, DpopProofCtiCannotBeReplayed) {
+  AuthTokenVerifier verifier(makeConfig());
+  const auto token = makeToken(dpopGrants({Action::ClientSetup}));
+  Parameters setup(FrameType::CLIENT_SETUP);
+  addParam(setup, 77, token.tokenValue);
+  addParam(setup, 17, proofFor(token, Action::ClientSetup, {}, std::nullopt, "same"));
+  EXPECT_TRUE(authenticateSetup(verifier, setup, 1).hasValue());
+  EXPECT_TRUE(authenticateSetup(verifier, setup, 2).hasError());
+}
+
+TEST(AuthTest, DpopProofForAnotherTokenOrKeyIsRejected) {
+  AuthTokenVerifier verifier(makeConfig());
+  const auto token = makeToken(dpopGrants({Action::ClientSetup}));
+  const auto other = makeToken(dpopGrants({Action::ClientSetup, Action::Fetch}));
+  Parameters setup(FrameType::CLIENT_SETUP);
+  addParam(setup, 77, token.tokenValue);
+  addParam(setup, 17, proofFor(other, Action::ClientSetup));
+  EXPECT_TRUE(authenticateSetup(verifier, setup, 1).hasError());
+}
+
+TEST(AuthTest, TokenWithoutCnfIgnoresProofs) {
+  AuthTokenVerifier verifier(makeConfig());
+  const auto token = makeToken(makeGrants({Action::ClientSetup}, {}, {}));
+  Parameters setup(FrameType::CLIENT_SETUP);
+  addParam(setup, 77, token.tokenValue);
+  EXPECT_TRUE(authenticateSetup(verifier, setup, 1).hasValue());
 }

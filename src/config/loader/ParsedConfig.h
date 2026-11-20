@@ -506,6 +506,11 @@ struct ParsedAuthConfig {
       std::optional<bool>>
       strict_claims;
   rfl::Description<
+      "AUTHORIZATION_TOKEN type that carries DPoP proofs for cnf-bound tokens (default: 17; "
+      "not registered by the draft)",
+      std::optional<uint64_t>>
+      dpop_token_type;
+  rfl::Description<
       "CWT audience values this relay accepts. When set, tokens must carry a matching aud claim; "
       "when omitted, tokens carrying aud are rejected",
       std::optional<std::vector<std::string>>>

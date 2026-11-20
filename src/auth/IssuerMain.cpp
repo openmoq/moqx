@@ -49,6 +49,9 @@ DEFINE_string(auth_track, "", "Optional track name");
 DEFINE_string(auth_issuer, "", "Optional CWT iss claim");
 DEFINE_string(auth_audience, "", "Optional CWT aud claim; comma-separated for several audiences");
 DEFINE_bool(auth_replay_protect, false, "Add catreplay=1 with a random cti (single connection)");
+DEFINE_string(auth_dpop_key_file, "", "PEM P-256 client key to bind the token to (cnf + catdpop)");
+DEFINE_bool(auth_dpop_jkt, false, "Bind with jkt (RFC 7638) instead of ckt (RFC 9679)");
+DEFINE_int32(auth_dpop_window_seconds, 300, "DPoP proof freshness window (catdpop)");
 DEFINE_int32(auth_ttl_seconds, 3600, "Token lifetime in seconds");
 DEFINE_string(auth_output, "base64-prefix", "Output encoding: base64-prefix, base64, hex, or raw");
 
@@ -122,6 +125,9 @@ auth::IssueTokenOptions makeIssueTokenOptions(const cfg::ResolvedConfig* resolve
     options.trackNamespace = auth::parseTrackNamespace(FLAGS_auth_namespace);
   }
   options.replayProtected = FLAGS_auth_replay_protect;
+  options.dpopKeyFile = FLAGS_auth_dpop_key_file;
+  options.dpopJkt = FLAGS_auth_dpop_jkt;
+  options.dpopWindow = std::chrono::seconds(FLAGS_auth_dpop_window_seconds);
   if (!FLAGS_auth_issuer.empty()) {
     options.issuer = FLAGS_auth_issuer;
   }

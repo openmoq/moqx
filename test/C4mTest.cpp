@@ -229,8 +229,6 @@ TEST(C4mTest, RejectsMalformedOrUnsupportedScopeFormats) {
 
 TEST(C4mTest, RejectsUnsupportedRestrictionsEvenWithoutStrictClaims) {
   for (auto payload : {
-           "a108a0",             // cnf
-           "a119014101",         // catdpop
            "a119013402",         // catreplay 2 is implementation-defined; fail closed
            "a13a0001000119012c", // moqt-reval 300
            "a1036178",           // audience requires deployment-specific matching
@@ -241,6 +239,8 @@ TEST(C4mTest, RejectsUnsupportedRestrictionsEvenWithoutStrictClaims) {
     expectError(rawToken(payload), AuthError::UnsupportedClaim);
   }
   EXPECT_NO_THROW(verifyC4mToken(rawToken("a23a000100010019013400"), kKey, kNow));
+  expectError(rawToken("a108a0"), AuthError::Malformed);     // cnf without a method
+  expectError(rawToken("a119014101"), AuthError::Malformed); // catdpop is not a map
 }
 
 TEST(C4mTest, ValidatesTimeClaimsAndDuplicateKeys) {
@@ -407,4 +407,160 @@ TEST(C4mTest, ReplayProtectionRequiresCtiAndExpiration) {
   auto decoded = verifyC4mToken(signC4mToken("key", kKey, g), kKey, kNow);
   EXPECT_TRUE(decoded.replayProtected);
   EXPECT_EQ(decoded.cti, "abc");
+}
+
+// ---- DPoP (draft-02 section 4) ----
+
+namespace {
+const std::string kDraftX =
+    unhex("60fed4ba255a9d31c961eb74c6356d68c049b8923b61fa6ce669622e60f29fb6");
+const std::string kDraftY =
+    unhex("7903fe1008b8bc99a41ae9e95628bc64f2f1b20c2d7e9f5177a3c294d4462299");
+
+std::string keyPath() {
+  return std::string(TEST_C4M_KEY_DIR) + "/c4m_es256_private.pem";
+}
+
+DpopRequirement jktRequirement(std::chrono::seconds window = std::chrono::seconds(60)) {
+  return DpopRequirement{
+      DpopBinding{DpopBinding::Kind::Jkt, jwkThumbprint(kDraftX, kDraftY)},
+      window,
+      true,
+  };
+}
+} // namespace
+
+TEST(DpopTest, JwkThumbprintMatchesPublishedVector) {
+  EXPECT_EQ(
+      jwkThumbprint(kDraftX, kDraftY),
+      unhex("0cebf1bc9880748a95588905b79843b42ba75cb174055e3e246bf87fe00b4a6d")
+  );
+}
+
+TEST(DpopTest, TestKeyIsThePublishedKeyAndCoseThumbprintIsDeterministic) {
+  const auto [x, y] = es256PublicCoordinates(keyPath());
+  EXPECT_EQ(x, kDraftX);
+  EXPECT_EQ(y, kDraftY);
+  std::string canonical = unhex("a40102200121") + std::string("\x58\x20", 2) + kDraftX +
+                          std::string("\x22\x58\x20", 3) + kDraftY;
+  EXPECT_EQ(coseKeyThumbprint(kDraftX, kDraftY), sha256(canonical));
+}
+
+TEST(DpopTest, CoseKeyThumbprintMatchesDraftSection421Example) {
+  EXPECT_EQ(
+      coseKeyThumbprint(kDraftX, kDraftY),
+      unhex("750ca40795ab23e51a75dc76fa12c052f6f6c57ba8a732337b91f096592b6ef6")
+  );
+}
+
+TEST(DpopTest, TokenCarriesCnfAndCatdpop) {
+  // Published vector dpop_jwk_binding: cnf {323: jkt}, catdpop {0: 60, 1: 1}.
+  auto grants = verifyC4mToken(
+      rawToken(
+          "a401781868747470733a2f2f617574682e6578616d706c652e636f6d041a6555428008a119014358200ceb"
+          "f1bc9880748a95588905b79843b42ba75cb174055e3e246bf87fe00b4a6d190141a200183c0101"
+      ),
+      kKey,
+      kNow
+  );
+  ASSERT_TRUE(grants.dpop.has_value());
+  EXPECT_EQ(grants.dpop->binding.kind, DpopBinding::Kind::Jkt);
+  EXPECT_EQ(grants.dpop->window, std::chrono::seconds(60));
+  EXPECT_TRUE(grants.dpop->detectReplay);
+  // cnf with an unknown confirmation method, or catdpop without cnf, fails closed.
+  expectError(rawToken("a108a11901405820" + std::string(64, '0')), AuthError::UnsupportedClaim);
+  expectError(rawToken("a1190141a100183c"), AuthError::UnsupportedClaim);
+}
+
+TEST(DpopTest, ProofVerifiesForTheExactAction) {
+  const std::string token = "token-bytes";
+  const DpopContext context{Action::Subscribe, {"cdn", "example.com"}, std::string("/sports/live")};
+  const auto proof = signDpopProof(keyPath(), token, context, "cti-1", kNow);
+  const auto verified = verifyDpopProof(proof, sha256(token), jktRequirement(), context, kNow);
+  EXPECT_EQ(verified.cti, "cti-1");
+
+  auto expectRejected = [&](const DpopContext& other, std::string_view hashed = {}) {
+    EXPECT_THROW(
+        verifyDpopProof(
+            proof,
+            hashed.empty() ? sha256(token) : std::string(hashed),
+            jktRequirement(),
+            other,
+            kNow
+        ),
+        C4mError
+    );
+  };
+  expectRejected({Action::Fetch, context.trackNamespace, context.trackName});
+  expectRejected({Action::Subscribe, {"cdn", "other"}, context.trackName});
+  expectRejected({Action::Subscribe, context.trackNamespace, std::string("/sports/other")});
+  expectRejected({Action::Subscribe, context.trackNamespace, std::nullopt});
+  expectRejected(context, sha256("another token"));
+}
+
+TEST(DpopTest, ProofRejectsStaleKeyMismatchAndTampering) {
+  const std::string token = "t";
+  const DpopContext context{Action::ClientSetup, {}, std::nullopt};
+  const auto proof = signDpopProof(keyPath(), token, context, "c", kNow);
+
+  EXPECT_NO_THROW(verifyDpopProof(proof, sha256(token), jktRequirement(), context, kNow));
+  EXPECT_NO_THROW(verifyDpopProof(
+      proof,
+      sha256(token),
+      jktRequirement(),
+      context,
+      kNow + std::chrono::seconds(60)
+  ));
+  EXPECT_THROW(
+      verifyDpopProof(
+          proof,
+          sha256(token),
+          jktRequirement(),
+          context,
+          kNow + std::chrono::seconds(61)
+      ),
+      C4mError
+  );
+  EXPECT_THROW(
+      verifyDpopProof(
+          proof,
+          sha256(token),
+          jktRequirement(),
+          context,
+          kNow - std::chrono::seconds(61)
+      ),
+      C4mError
+  );
+
+  auto wrongKey = jktRequirement();
+  wrongKey.binding.thumbprint = sha256("another key");
+  EXPECT_THROW(verifyDpopProof(proof, sha256(token), wrongKey, context, kNow), C4mError);
+  // A ckt-bound token is not satisfied by a jkt thumbprint of the same key.
+  auto wrongMethod = jktRequirement();
+  wrongMethod.binding.kind = DpopBinding::Kind::Ckt;
+  EXPECT_THROW(verifyDpopProof(proof, sha256(token), wrongMethod, context, kNow), C4mError);
+  auto ckt = jktRequirement();
+  ckt.binding = DpopBinding{DpopBinding::Kind::Ckt, coseKeyThumbprint(kDraftX, kDraftY)};
+  EXPECT_NO_THROW(verifyDpopProof(proof, sha256(token), ckt, context, kNow));
+
+  for (size_t i = 0; i < proof.size(); i += 7) {
+    auto tampered = proof;
+    tampered[i] = static_cast<char>(tampered[i] ^ 0x01);
+    EXPECT_THROW(
+        verifyDpopProof(tampered, sha256(token), jktRequirement(), context, kNow),
+        C4mError
+    ) << "byte "
+      << i;
+  }
+  EXPECT_THROW(verifyDpopProof("", sha256(token), jktRequirement(), context, kNow), C4mError);
+  EXPECT_THROW(
+      verifyDpopProof(
+          proof.substr(0, proof.size() - 1),
+          sha256(token),
+          jktRequirement(),
+          context,
+          kNow
+      ),
+      C4mError
+  );
 }

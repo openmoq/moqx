@@ -100,11 +100,80 @@ uint64_t newConnectionId() {
 folly::Expected<Grants, AuthError>
 AuthTokenVerifier::verify(const AuthToken& token, uint64_t connectionId) const {
   auto result = verifySignature(token);
+  if (result.hasValue() && result.value().dpop) {
+    result.value().tokenHash = sha256(token.tokenValue);
+  }
   if (result.hasValue() && result.value().replayProtected &&
       !bindReplay(result.value(), connectionId)) {
     return folly::makeUnexpected(AuthError::Replayed);
   }
   return result;
+}
+
+bool AuthTokenVerifier::noteProofCti(
+    const Grants& grants,
+    const std::string& cti,
+    std::chrono::system_clock::time_point expiresAt
+) const {
+  std::string key = grants.tokenHash + cti;
+  const auto now = std::chrono::system_clock::now();
+  std::lock_guard lock(proofMutex_);
+  if (auto it = proofCtis_.find(key); it != proofCtis_.end()) {
+    if (it->second > now) {
+      return false;
+    }
+    it->second = expiresAt;
+    return true;
+  }
+  if (proofCtis_.size() >= kMaxReplayEntries) {
+    std::erase_if(proofCtis_, [&](const auto& e) { return e.second <= now; });
+    if (proofCtis_.size() >= kMaxReplayEntries) {
+      XLOG(WARN) << "DPoP replay state full; refusing proof";
+      return false;
+    }
+  }
+  proofCtis_.emplace(std::move(key), expiresAt);
+  return true;
+}
+
+std::vector<Grants> AuthTokenVerifier::applyDpop(
+    const std::vector<Grants>& grants,
+    const Parameters& params,
+    const DpopContext& context
+) const {
+  std::vector<Grants> usable;
+  std::vector<AuthToken> proofs;
+  bool proofsLoaded = false;
+  const auto now = std::chrono::system_clock::now();
+  for (const auto& grant : grants) {
+    if (!grant.dpop) {
+      usable.push_back(grant);
+      continue;
+    }
+    if (!proofsLoaded) {
+      proofs = findAuthTokens(params, config_.dpopTokenType);
+      if (proofs.size() > config_.maxTokensPerMessage) {
+        proofs.clear(); // Over the cap: treat as no usable proof rather than verify them all.
+      }
+      proofsLoaded = true;
+    }
+    for (const auto& proof : proofs) {
+      try {
+        // The proof names its token by hash, so only the matching grant's key will pass.
+        const auto verified =
+            verifyDpopProof(proof.tokenValue, grant.tokenHash, *grant.dpop, context, now);
+        if (grant.dpop->detectReplay &&
+            !noteProofCti(grant, verified.cti, verified.issuedAt + grant.dpop->window * 2)) {
+          continue;
+        }
+        usable.push_back(grant);
+        break;
+      } catch (const C4mError&) {
+        // Not a proof for this token; try the next one.
+      }
+    }
+  }
+  return usable;
 }
 
 // Binds a signature-verified, replay-protected token to its first connection. Binding happens
@@ -244,6 +313,9 @@ folly::Expected<std::shared_ptr<const std::vector<Grants>>, AuthError> authentic
     return folly::makeUnexpected(AuthError::TooManyTokens);
   }
   auto [verifiedGrants, firstError] = verifyTokens(verifier, tokens, connectionId);
+  // A cnf-bound token only counts when this SETUP carries a proof for it (section 4.3).
+  verifiedGrants =
+      verifier.applyDpop(verifiedGrants, setupParams, DpopContext{Action::ClientSetup, {}, {}});
 
   if (verifier.requireSetupToken()) {
     if (tokens.empty()) {
@@ -291,17 +363,33 @@ folly::Expected<folly::Unit, AuthError> authorize(
                << static_cast<uint64_t>(action) << " (allow_request_token_override is disabled)";
   }
 
+  // cnf-bound grants, from this message or the session, need a proof for this exact action.
+  DpopContext dpopContext{
+      action,
+      ns.trackNamespace,
+      trackName ? std::optional<std::string>(*trackName) : std::nullopt
+  };
+  requestGrants = verifier.applyDpop(requestGrants, params, dpopContext);
+  std::vector<Grants> dpopSessionGrants;
+  const std::vector<Grants>* sessionPool = &sessionGrants;
+  if (std::any_of(sessionGrants.begin(), sessionGrants.end(), [](const Grants& g) {
+        return g.dpop.has_value();
+      })) {
+    dpopSessionGrants = verifier.applyDpop(sessionGrants, params, dpopContext);
+    sessionPool = &dpopSessionGrants;
+  }
+
   // Any one of three sources is sufficient.
   const auto now = std::chrono::system_clock::now();
   bool permitted = false;
   if (trackName) {
     const FullTrackName ftn{ns, std::string(*trackName)};
     permitted = allowsAny(requestGrants, action, ftn, now) ||
-                allowsAny(sessionGrants, action, ftn, now) ||
+                allowsAny(*sessionPool, action, ftn, now) ||
                 verifier.allowsAnonymous(action, ns, trackName);
   } else {
     permitted = allowsAny(requestGrants, action, ns, now) ||
-                allowsAny(sessionGrants, action, ns, now) ||
+                allowsAny(*sessionPool, action, ns, now) ||
                 verifier.allowsAnonymous(action, ns, std::nullopt);
   }
   if (!permitted) {

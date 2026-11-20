@@ -393,7 +393,7 @@ target_link_libraries(moqx_hmac_key PRIVATE moqx_warnings)
 
 # --- C4M draft-02 bearer-token codec (no relay dependencies) ---
 
-add_library(moqx_c4m STATIC src/auth/C4m.cpp src/auth/Es256Key.cpp)
+add_library(moqx_c4m STATIC src/auth/C4m.cpp src/auth/Dpop.cpp src/auth/Es256Key.cpp)
 target_include_directories(moqx_c4m PUBLIC ${PROJECT_SOURCE_DIR}/src)
 target_link_libraries(moqx_c4m PUBLIC OpenSSL::Crypto catapult PRIVATE moqx_warnings)
 

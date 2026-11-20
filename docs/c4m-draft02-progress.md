@@ -28,6 +28,11 @@ with a C4M draft-02 bearer-token core.
   accepting connection (per-service in-memory state), other connections refused
   (`AuthError::Replayed`). Issuer flag `--auth_replay_protect`. Verified live:
   second connection reusing the token was rejected.
+- Added DPoP (draft section 4): `Dpop.{h,cpp}` proof verification and signing,
+  `cnf`/`catdpop` parsing, per-action enforcement in `authenticateSetup` and
+  `authorize`, proof `cti` replay cache, `auth.dpop_token_type`, and issuer flags
+  `--auth_dpop_key_file`/`--auth_dpop_jkt`. Unit-tested against the draft's
+  published `jkt` thumbprint vector.
 - Updated existing configuration/build documentation and examples to explain
   the subset, provisional labels, key handling, and unsupported features.
 - Pinned catapult's latest published release, v1.0.0, at
@@ -63,8 +68,8 @@ with a C4M draft-02 bearer-token core.
 
 - Protocol conformance gaps are tracked in
   [C4M draft-02 implementation gaps](c4m-draft02-gaps.md). The major gaps are
-  nonzero revalidation, DPoP,
-  composite claims (blocked on unassigned keys), and algorithm/claim-label interoperability.
+  nonzero revalidation, DPoP
+  interoperability (provisional labels), composite claims (blocked on unassigned keys), and algorithm/claim-label interoperability.
 - Full default CTest reported 37 failures out of 1530. The same names failed
   in the prior pre-ES256 run, but this was not compared against an exact clean
   `main` build. One upstream handshake race test reported a cleanup segfault.

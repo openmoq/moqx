@@ -7,6 +7,7 @@
 #pragma once
 
 #include "auth/Action.h"
+#include "auth/Dpop.h"
 
 #include <chrono>
 #include <optional>
@@ -65,6 +66,10 @@ struct Grants {
   // (draft-02 section 3). Enforcement needs connection identity and lives in the verifier.
   std::optional<std::string> cti;
   bool replayProtected{false};
+  // cnf + catdpop: every action using this token needs a matching DPoP proof (section 4).
+  std::optional<DpopRequirement> dpop;
+  // SHA-256 of the token as presented (proof "ath"); set by the verifier, not the codec.
+  std::string tokenHash;
 };
 
 // Relay-side validation of standard CWT claims (draft-02 section 8.2.1).
