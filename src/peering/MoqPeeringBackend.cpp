@@ -20,6 +20,23 @@ namespace {
 
 constexpr size_t kMaxPeerTokenBytes = 300;
 
+bool knownEncoding(uint8_t encoding) {
+  return encoding == 16 || encoding == 18 || encoding == 22;
+}
+
+std::optional<uint64_t> moqtVersion(uint8_t encoding) {
+  switch (encoding) {
+  case 16:
+    return moxygen::kVersionDraft16;
+  case 18:
+    return moxygen::kVersionDraft18;
+  case 22:
+    return moxygen::kVersionDraft22;
+  default:
+    return std::nullopt;
+  }
+}
+
 std::optional<std::pair<std::string, uint16_t>> parsePeerToken(std::string_view peer) {
   if (peer.empty() || peer.size() > kMaxPeerTokenBytes) {
     return std::nullopt;
@@ -287,28 +304,75 @@ std::vector<PeerLink> MoqPeeringCore::links() const {
   return out;
 }
 
-void MoqPeeringCore::announceNamespace(const moxygen::TrackNamespace& ns) {
-  if (auto runtime = runtime_.lock()) {
-    runtime->announceNamespace(ns.trackNamespace);
+std::optional<uint8_t> MoqPeeringCore::encodingFor(
+    const moxygen::FullTrackName& ftn,
+    const std::map<moxygen::FullTrackName, uint8_t>& tracks,
+    const std::map<moxygen::TrackNamespace, uint8_t>& namespaces
+) const {
+  if (auto it = tracks.find(ftn); it != tracks.end()) {
+    return it->second;
   }
+  std::optional<uint8_t> found;
+  size_t best = 0;
+  for (const auto& [ns, encoding] : namespaces) {
+    if (ftn.trackNamespace.startsWith(ns) && ns.trackNamespace.size() >= best) {
+      best = ns.trackNamespace.size();
+      found = encoding;
+    }
+  }
+  return found;
+}
+
+void MoqPeeringCore::announceNamespace(const moxygen::TrackNamespace& ns, uint8_t encoding) {
+  if (!knownEncoding(encoding)) {
+    XLOG(WARNING) << "moq-fabric dropped a namespace announce with an unknown encoding";
+    return;
+  }
+  auto runtime = runtime_.lock();
+  if (!runtime) {
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    localNamespaces_.emplace(ns, encoding);
+  }
+  runtime->announceNamespace(ns.trackNamespace, encoding);
 }
 
 void MoqPeeringCore::withdrawNamespace(const moxygen::TrackNamespace& ns) {
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    localNamespaces_.erase(ns);
+  }
   if (auto runtime = runtime_.lock()) {
     runtime->withdrawNamespace(ns.trackNamespace);
   }
 }
 
-void MoqPeeringCore::announceTrack(const moxygen::FullTrackName& ftn) {
-  if (auto runtime = runtime_.lock()) {
-    runtime->announceTrack(ftn.trackNamespace.trackNamespace, ftn.trackName);
+void MoqPeeringCore::announceTrack(const moxygen::FullTrackName& ftn, uint8_t encoding) {
+  if (!knownEncoding(encoding)) {
+    XLOG(WARNING) << "moq-fabric dropped a track announce with an unknown encoding";
+    return;
   }
+  auto runtime = runtime_.lock();
+  if (!runtime) {
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    localTracks_.emplace(ftn, encoding);
+  }
+  runtime->announceTrack(ftn.trackNamespace.trackNamespace, ftn.trackName, encoding);
 }
 
 void MoqPeeringCore::withdrawTrack(const moxygen::FullTrackName& ftn) {
   auto runtime = runtime_.lock();
   if (!runtime) {
     return;
+  }
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    localTracks_.erase(ftn);
   }
   // The replacement publish can reuse this group before the old subgroup
   // closes. Drop the writer so the next object is a new stream, then withdraw.
@@ -354,8 +418,14 @@ void MoqPeeringCore::sendObject(const moxygen::FullTrackName& ftn, PeeringObject
     if (!armed_) {
       return;
     }
+    const auto encoding = encodingFor(ftn, localTracks_, localNamespaces_);
+    const auto version = encoding ? moqtVersion(*encoding) : std::nullopt;
+    if (!version) {
+      XLOG(WARNING) << "moq-fabric dropped an object with no publish encoding";
+      return;
+    }
     if (object.datagram) {
-      encoded = encodePeeringDatagram(*hash, object);
+      encoded = encodePeeringDatagram(*hash, object, *version);
     } else {
       StreamKey key{*hash, object.group, object.subgroup};
       // No live session owns the previous stream. Keep encoding this subgroup
@@ -366,7 +436,7 @@ void MoqPeeringCore::sendObject(const moxygen::FullTrackName& ftn, PeeringObject
       auto it = writers_.find(key);
       const bool start = it == writers_.end();
       if (start) {
-        it = writers_.emplace(key, std::make_unique<PeeringSubgroupWriter>(*hash)).first;
+        it = writers_.emplace(key, std::make_unique<PeeringSubgroupWriter>(*hash, *version)).first;
       }
       encoded = it->second->write(object, start);
       if (!encoded) {
@@ -537,8 +607,16 @@ void MoqPeeringCore::onPeerDown(uint64_t sessionId) {
   }
 }
 
-void MoqPeeringCore::onNamespace(std::vector<std::string> nameSpace, bool withdrawn) {
+void MoqPeeringCore::onNamespace(
+    std::vector<std::string> nameSpace,
+    uint8_t encoding,
+    bool withdrawn
+) {
   moxygen::TrackNamespace ns{std::move(nameSpace)};
+  if (!withdrawn && knownEncoding(encoding)) {
+    std::lock_guard<std::mutex> lock(mu_);
+    peerNamespaceEncodings_.emplace(ns, encoding);
+  }
   dispatch([ns = std::move(ns), withdrawn](MoqPeeringParticipant& participant) {
     participant.onNamespace(ns, withdrawn);
   });
@@ -547,9 +625,14 @@ void MoqPeeringCore::onNamespace(std::vector<std::string> nameSpace, bool withdr
 void MoqPeeringCore::onTrack(
     std::vector<std::string> nameSpace,
     std::string track,
+    uint8_t encoding,
     bool withdrawn
 ) {
   moxygen::FullTrackName ftn{moxygen::TrackNamespace{std::move(nameSpace)}, std::move(track)};
+  if (!withdrawn && knownEncoding(encoding)) {
+    std::lock_guard<std::mutex> lock(mu_);
+    peerTrackEncodings_.emplace(ftn, encoding);
+  }
   dispatch([ftn = std::move(ftn), withdrawn](MoqPeeringParticipant& participant) {
     participant.onTrack(ftn, withdrawn);
   });
@@ -614,8 +697,14 @@ void MoqPeeringCore::onData(
       return;
     }
     ftn = it->second;
+    const auto encoding = encodingFor(ftn, peerTrackEncodings_, peerNamespaceEncodings_);
+    const auto version = encoding ? moqtVersion(*encoding) : std::nullopt;
+    if (!version) {
+      XLOG(WARNING) << "moq-fabric dropped peer data with no announce encoding";
+      return;
+    }
     if (!streamId) {
-      datagram = decodePeeringDatagram(bytes.data(), bytes.size());
+      datagram = decodePeeringDatagram(bytes.data(), bytes.size(), *version);
       if (!datagram) {
         XLOG(WARNING) << "moq-fabric dropped a datagram that could not be decoded";
         return;
@@ -624,7 +713,7 @@ void MoqPeeringCore::onData(
       const auto key = std::make_pair(trackHash, *streamId);
       if (isNewStream) {
         replaced = readers_.contains(key);
-        readers_[key] = std::make_unique<PeeringStreamReader>();
+        readers_[key] = std::make_unique<PeeringStreamReader>(*version);
       }
       auto reader = readers_.find(key);
       if (reader == readers_.end()) {

@@ -224,6 +224,15 @@ SubscriptionRegistry::upstreamSessionId(const moxygen::FullTrackName& ftn) const
   return it->second.upstream->sessionId;
 }
 
+std::optional<uint64_t>
+SubscriptionRegistry::publisherVersion(const moxygen::FullTrackName& ftn) const {
+  auto it = subscriptions_.find(ftn);
+  if (it == subscriptions_.end() || !it->second.upstream) {
+    return std::nullopt;
+  }
+  return it->second.upstream->version;
+}
+
 std::optional<SubscriptionRegistry::FetchView>
 SubscriptionRegistry::getFetchView(const moxygen::FullTrackName& ftn) const {
   auto it = subscriptions_.find(ftn);

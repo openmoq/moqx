@@ -12,6 +12,7 @@
 #include <atomic>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <vector>
 
@@ -122,7 +123,13 @@ private:
       uint64_t subgroup,
       bool reset
   );
-  void announceNamespaceOnce(const moxygen::TrackNamespace& ns, bool fromSubscription);
+  void announceNamespaceOnce(
+      const moxygen::TrackNamespace& ns,
+      bool fromSubscription,
+      uint8_t encoding
+  );
+  // Draft of an announced namespace that covers ns. The longest match wins.
+  std::optional<uint8_t> announcedEncoding(const moxygen::TrackNamespace& ns) const;
   void withdrawAnnouncedNamespace(const moxygen::TrackNamespace& ns);
 
   template <typename T> void spawn(folly::coro::Task<T> task);
@@ -196,6 +203,7 @@ private:
   struct AnnouncedNamespace {
     bool announced{false};
     bool subscription{false};
+    uint8_t encoding{0};
   };
   std::map<moxygen::TrackNamespace, AnnouncedNamespace> announcedNamespaces_;
 

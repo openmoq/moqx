@@ -18,6 +18,10 @@ namespace {
 
 std::atomic<PeeringLogFn> gLogger{nullptr};
 
+bool supportedMoqtEncoding(uint8_t encoding) {
+  return encoding == 16 || encoding == 18 || encoding == 22;
+}
+
 void emitLog(PeeringLogLevel level, std::string message) {
   if (message.size() > 512) {
     message.resize(512);
@@ -172,9 +176,17 @@ public:
   void OnPeerUp(std::uint64_t sessionId) override;
   void OnPeerDown(std::uint64_t sessionId) override;
 
-  void OnPeerNamespace(const std::vector<std::vector<uint8_t>>& nameSpace, bool withdrawn) override;
+  void OnPeerNamespace(
+      const std::vector<std::vector<uint8_t>>& nameSpace,
+      moq::fabric::Encoding encoding,
+      bool withdrawn
+  ) override;
 
-  void OnPeerTrack(const moq::fabric::TrackName& name, bool withdrawn) override;
+  void OnPeerTrack(
+      const moq::fabric::TrackName& name,
+      moq::fabric::Encoding encoding,
+      bool withdrawn
+  ) override;
 
   void OnPeerSubscribe(
       const moq::fabric::TrackName& name,
@@ -223,6 +235,7 @@ void RelayDelegate::OnPeerDown(std::uint64_t sessionId) {
 
 void RelayDelegate::OnPeerNamespace(
     const std::vector<std::vector<uint8_t>>& nameSpace,
+    moq::fabric::Encoding encoding,
     bool withdrawn
 ) {
   auto parsed = namespaceFromBytes(nameSpace);
@@ -230,21 +243,34 @@ void RelayDelegate::OnPeerNamespace(
     emitLog(PeeringLogLevel::Warning, "moq-fabric dropped a namespace that exceeds name limits");
     return;
   }
+  if (!supportedMoqtEncoding(static_cast<uint8_t>(encoding))) {
+    emitLog(PeeringLogLevel::Warning, "moq-fabric ignored a namespace announce with an unsupported draft");
+    return;
+  }
   if (PeeringEvents* events = state_->events.load(std::memory_order_acquire)) {
-    events->onNamespace(std::move(*parsed), withdrawn);
+    events->onNamespace(std::move(*parsed), static_cast<uint8_t>(encoding), withdrawn);
   }
 }
 
-void RelayDelegate::OnPeerTrack(const moq::fabric::TrackName& name, bool withdrawn) {
+void RelayDelegate::OnPeerTrack(
+    const moq::fabric::TrackName& name,
+    moq::fabric::Encoding encoding,
+    bool withdrawn
+) {
   auto parsed = namespaceFromBytes(name.name_space);
   if (!parsed || name.name.size() > kMaxNameBytes) {
     emitLog(PeeringLogLevel::Warning, "moq-fabric dropped a track that exceeds name limits");
+    return;
+  }
+  if (!supportedMoqtEncoding(static_cast<uint8_t>(encoding))) {
+    emitLog(PeeringLogLevel::Warning, "moq-fabric ignored a track announce with an unsupported draft");
     return;
   }
   if (PeeringEvents* events = state_->events.load(std::memory_order_acquire)) {
     events->onTrack(
         std::move(*parsed),
         std::string(reinterpret_cast<const char*>(name.name.data()), name.name.size()),
+        static_cast<uint8_t>(encoding),
         withdrawn
     );
   }
@@ -315,6 +341,7 @@ void announce(
     const std::vector<std::string>& nameSpace,
     const std::string& track,
     moq::fabric::Announcement kind,
+    moq::fabric::Encoding encoding,
     bool withdraw
 ) {
   auto name = trackFromStrings(nameSpace, track);
@@ -322,12 +349,20 @@ void announce(
     emitLog(PeeringLogLevel::Warning, "moq-fabric dropped a local name that exceeds name limits");
     return;
   }
+  if (!supportedMoqtEncoding(static_cast<uint8_t>(encoding))) {
+    emitLog(PeeringLogLevel::Warning, "moq-fabric dropped an announce with an unsupported draft");
+    return;
+  }
   std::lock_guard<std::mutex> lock(state.mu);
   if (!state.manager) {
     return;
   }
   // The delegate must not call back into the runtime. It only schedules relay work.
-  state.manager->Announce(*name, kind, withdraw);
+  if (withdraw) {
+    state.manager->Withdraw(*name, kind);
+  } else {
+    state.manager->Announce(*name, kind, encoding);
+  }
 }
 
 struct MoqPeeringRuntime::Impl {
@@ -401,26 +436,58 @@ void MoqPeeringRuntime::setEvents(PeeringEvents* events) {
   impl_->state.events.store(events, std::memory_order_release);
 }
 
-void MoqPeeringRuntime::announceNamespace(const std::vector<std::string>& nameSpace) {
-  announce(impl_->state, nameSpace, "", moq::fabric::Announcement::kNamespace, false);
+void MoqPeeringRuntime::announceNamespace(
+    const std::vector<std::string>& nameSpace,
+    uint8_t encoding
+) {
+  announce(
+      impl_->state,
+      nameSpace,
+      "",
+      moq::fabric::Announcement::kNamespace,
+      static_cast<moq::fabric::Encoding>(encoding),
+      false
+  );
 }
 
 void MoqPeeringRuntime::withdrawNamespace(const std::vector<std::string>& nameSpace) {
-  announce(impl_->state, nameSpace, "", moq::fabric::Announcement::kNamespace, true);
+  announce(
+      impl_->state,
+      nameSpace,
+      "",
+      moq::fabric::Announcement::kNamespace,
+      moq::fabric::Encoding::kMoqt18,
+      true
+  );
 }
 
 void MoqPeeringRuntime::announceTrack(
     const std::vector<std::string>& nameSpace,
-    const std::string& track
+    const std::string& track,
+    uint8_t encoding
 ) {
-  announce(impl_->state, nameSpace, track, moq::fabric::Announcement::kTrack, false);
+  announce(
+      impl_->state,
+      nameSpace,
+      track,
+      moq::fabric::Announcement::kTrack,
+      static_cast<moq::fabric::Encoding>(encoding),
+      false
+  );
 }
 
 void MoqPeeringRuntime::withdrawTrack(
     const std::vector<std::string>& nameSpace,
     const std::string& track
 ) {
-  announce(impl_->state, nameSpace, track, moq::fabric::Announcement::kTrack, true);
+  announce(
+      impl_->state,
+      nameSpace,
+      track,
+      moq::fabric::Announcement::kTrack,
+      moq::fabric::Encoding::kMoqt18,
+      true
+  );
 }
 
 void MoqPeeringRuntime::subscribe(

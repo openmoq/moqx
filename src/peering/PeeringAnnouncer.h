@@ -21,9 +21,11 @@ class PeeringAnnouncer {
 public:
   virtual ~PeeringAnnouncer() = default;
 
-  virtual void announceNamespace(const moxygen::TrackNamespace& ns) = 0;
+  // encoding is the publisher draft: 16, 18, or 22. A name keeps the first one.
+  // moqt-23 is not supported yet.
+  virtual void announceNamespace(const moxygen::TrackNamespace& ns, uint8_t encoding) = 0;
   virtual void withdrawNamespace(const moxygen::TrackNamespace& ns) = 0;
-  virtual void announceTrack(const moxygen::FullTrackName& ftn) = 0;
+  virtual void announceTrack(const moxygen::FullTrackName& ftn, uint8_t encoding) = 0;
   virtual void withdrawTrack(const moxygen::FullTrackName& ftn) = 0;
 
   // A locally published object a peer has subscribed to. The implementation

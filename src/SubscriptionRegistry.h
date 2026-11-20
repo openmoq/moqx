@@ -204,6 +204,8 @@ public:
   }
   // Unset while the first subscribe is still in flight.
   std::optional<moxygen::SessionId> upstreamSessionId(const moxygen::FullTrackName& ftn) const;
+  // Negotiated MoQT version of the track's publisher. Unset when the track has no publisher.
+  std::optional<uint64_t> publisherVersion(const moxygen::FullTrackName& ftn) const;
 
   // For fetch()
   struct FetchView {

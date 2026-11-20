@@ -22,17 +22,19 @@ class RecordingAnnouncer : public PeeringAnnouncer {
 public:
   RecordingAnnouncer() : session(makeSessionId()) {}
 
-  void announceNamespace(const TrackNamespace& ns) override {
+  void announceNamespace(const TrackNamespace& ns, uint8_t encoding) override {
     std::lock_guard<std::mutex> lock(mu);
     namespaces.push_back(ns);
+    namespaceEncodings.push_back(encoding);
   }
   void withdrawNamespace(const TrackNamespace& ns) override {
     std::lock_guard<std::mutex> lock(mu);
     withdrawnNamespaces.push_back(ns);
   }
-  void announceTrack(const FullTrackName& ftn) override {
+  void announceTrack(const FullTrackName& ftn, uint8_t encoding) override {
     std::lock_guard<std::mutex> lock(mu);
     tracks.push_back(ftn);
+    trackEncodings.push_back(encoding);
   }
   void withdrawTrack(const FullTrackName& ftn) override {
     std::lock_guard<std::mutex> lock(mu);
@@ -55,8 +57,10 @@ public:
   SessionId session;
   std::mutex mu;
   std::vector<TrackNamespace> namespaces;
+  std::vector<uint8_t> namespaceEncodings;
   std::vector<TrackNamespace> withdrawnNamespaces;
   std::vector<FullTrackName> tracks;
+  std::vector<uint8_t> trackEncodings;
   std::vector<FullTrackName> withdrawnTracks;
 
   struct SentObject {
@@ -260,10 +264,10 @@ TEST_P(MoQRelayTest, PeeringAnnounceBeforeWithdrawKeepsTrack) {
   object.objectId = 1;
   object.priority = 4;
   object.payload = {'n', 'e', 'x', 't'};
-  PeeringSubgroupWriter writer(1);
+  PeeringSubgroupWriter writer(1, moxygen::kVersionDraft18);
   auto encoded = writer.write(object, true);
   ASSERT_TRUE(encoded.has_value());
-  PeeringStreamReader reader;
+  PeeringStreamReader reader(moxygen::kVersionDraft18);
   ASSERT_TRUE(reader.ingest(encoded->data(), encoded->size(), false));
   auto events = reader.take();
   verifyOnRelayExec([&] {
@@ -697,10 +701,10 @@ TEST_P(MoQRelayTest, PeeringDeliversObjectsToLocalSubscriber) {
   object.objectId = 8;
   object.priority = 4;
   object.payload = {'p', 'i', 'n', 'g'};
-  PeeringSubgroupWriter writer(1);
+  PeeringSubgroupWriter writer(1, moxygen::kVersionDraft18);
   auto encoded = writer.write(object, true);
   ASSERT_TRUE(encoded.has_value());
-  PeeringStreamReader reader;
+  PeeringStreamReader reader(moxygen::kVersionDraft18);
   ASSERT_TRUE(reader.ingest(encoded->data(), encoded->size(), true));
   auto events = reader.take();
   verifyOnRelayExec([&] {
@@ -770,8 +774,8 @@ TEST_P(MoQRelayTest, PeeringResubscribeReceivesOpenSubgroup) {
     return announcer->subscribed.size() == 1u;
   }));
 
-  PeeringSubgroupWriter writer(1);
-  PeeringStreamReader reader;
+  PeeringSubgroupWriter writer(1, moxygen::kVersionDraft18);
+  PeeringStreamReader reader(moxygen::kVersionDraft18);
   auto deliver = [&](uint64_t objectId, std::string bytes, bool start) {
     PeeringObject object;
     object.group = 3;
@@ -928,10 +932,10 @@ TEST_P(MoQRelayTest, PeeringOldStreamDoesNotResetNewSubgroup) {
       }
     });
   };
-  PeeringSubgroupWriter firstWriter(1);
-  PeeringStreamReader firstReader;
-  PeeringSubgroupWriter nextWriter(1);
-  PeeringStreamReader nextReader;
+  PeeringSubgroupWriter firstWriter(1, moxygen::kVersionDraft18);
+  PeeringStreamReader firstReader(moxygen::kVersionDraft18);
+  PeeringSubgroupWriter nextWriter(1, moxygen::kVersionDraft18);
+  PeeringStreamReader nextReader(moxygen::kVersionDraft18);
   deliver(11, firstWriter, firstReader, 1, "old1", true);
   exec_->drive();
   deliver(22, nextWriter, nextReader, 1, "new1", true);

@@ -73,8 +73,12 @@ struct PeerCommandResult {
 class MOQX_PEERING_EXPORT PeeringEvents {
 public:
   virtual ~PeeringEvents() = default;
-  virtual void onNamespace(std::vector<std::string> nameSpace, bool withdrawn) = 0;
-  virtual void onTrack(std::vector<std::string> nameSpace, std::string track, bool withdrawn) = 0;
+  // encoding is the publisher draft from the announcement: 16, 18, or 22.
+  // moqt-23 is not supported yet and is not delivered.
+  virtual void onNamespace(std::vector<std::string> nameSpace, uint8_t encoding, bool withdrawn) = 0;
+  virtual void
+  onTrack(std::vector<std::string> nameSpace, std::string track, uint8_t encoding, bool withdrawn) =
+      0;
 
   // A peer subscribed to a local name. forward is 0 when the peer asked not
   // to receive objects; the relay still resumes a paused local publisher.
@@ -122,11 +126,17 @@ public:
   // already entered may still finish.
   void setEvents(PeeringEvents* events);
 
-  // Announce or withdraw a name. A namespace uses an empty track. Names that
-  // exceed the peering limits are dropped.
-  void announceNamespace(const std::vector<std::string>& nameSpace);
+  // Announce or withdraw a name. A namespace uses an empty track. encoding is the
+  // publisher draft, 16, 18, or 22. moqt-23 is not supported yet. Names that exceed
+  // the peering limits are dropped.
+  // A name keeps the first encoding. Withdraw sends that stored encoding.
+  void announceNamespace(const std::vector<std::string>& nameSpace, uint8_t encoding);
   void withdrawNamespace(const std::vector<std::string>& nameSpace);
-  void announceTrack(const std::vector<std::string>& nameSpace, const std::string& track);
+  void announceTrack(
+      const std::vector<std::string>& nameSpace,
+      const std::string& track,
+      uint8_t encoding
+  );
   void withdrawTrack(const std::vector<std::string>& nameSpace, const std::string& track);
 
   // Ask peers for a track they announced. Delivery timeout and expiry use

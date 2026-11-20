@@ -6,6 +6,8 @@
 
 #include "peering/MoqPeeringParticipant.h"
 
+#include <moxygen/MoQVersions.h>
+
 #include "MoqxRelay.h"
 #include "SafeTrackName.h"
 #include "relay/PlainRouteCodec.h"
@@ -62,6 +64,17 @@ moxygen::ObjectHeader headerFrom(const PeeringObject& object) {
       static_cast<moxygen::ObjectStatus>(object.status),
       object.extensions
   );
+}
+
+std::optional<uint8_t> encodingOf(uint64_t version) {
+  switch (moxygen::getDraftMajorVersion(version)) {
+  case 16:
+  case 18:
+  case 22:
+    return static_cast<uint8_t>(moxygen::getDraftMajorVersion(version));
+  default:
+    return std::nullopt;
+  }
 }
 
 } // namespace
@@ -1010,9 +1023,24 @@ void MoqPeeringParticipant::endLocalSubgroup(
   announcer_->endSubgroup(ftn, group, subgroup, reset);
 }
 
+std::optional<uint8_t>
+MoqPeeringParticipant::announcedEncoding(const moxygen::TrackNamespace& ns) const {
+  std::optional<uint8_t> found;
+  size_t best = 0;
+  for (const auto& [announced, state] : announcedNamespaces_) {
+    if (!state.announced || !ns.startsWith(announced) || announced.trackNamespace.size() < best) {
+      continue;
+    }
+    best = announced.trackNamespace.size();
+    found = state.encoding;
+  }
+  return found;
+}
+
 void MoqPeeringParticipant::announceNamespaceOnce(
     const moxygen::TrackNamespace& ns,
-    bool fromSubscription
+    bool fromSubscription,
+    uint8_t encoding
 ) {
   auto& state = announcedNamespaces_[ns];
   if (fromSubscription) {
@@ -1022,8 +1050,9 @@ void MoqPeeringParticipant::announceNamespaceOnce(
     return;
   }
   state.announced = true;
-  XLOG(INFO) << "moq-fabric announce namespace ns=" << safeName(ns);
-  announcer_->announceNamespace(ns);
+  state.encoding = encoding;
+  XLOG(INFO) << "moq-fabric announce namespace ns=" << safeName(ns) << " encoding=" << int(encoding);
+  announcer_->announceNamespace(ns, encoding);
 }
 
 void MoqPeeringParticipant::withdrawAnnouncedNamespace(const moxygen::TrackNamespace& ns) {
@@ -1038,7 +1067,18 @@ void MoqPeeringParticipant::withdrawAnnouncedNamespace(const moxygen::TrackNames
 }
 
 void MoqPeeringParticipant::namespaceMsg(const moxygen::TrackNamespace& trackNamespaceSuffix) {
-  announceNamespaceOnce(trackNamespaceSuffix, true);
+  auto relay = relay_.lock();
+  auto publisher = relay ? relay->localNamespacePublisher(trackNamespaceSuffix) : std::nullopt;
+  auto encoding = publisher && publisher->info ? encodingOf(publisher->info->version) : std::nullopt;
+  if (!encoding) {
+    encoding = announcedEncoding(trackNamespaceSuffix);
+  }
+  if (encoding) {
+    announceNamespaceOnce(trackNamespaceSuffix, true, *encoding);
+  } else {
+    XLOG(WARNING) << "moq-fabric did not announce namespace ns=" << safeName(trackNamespaceSuffix)
+                  << "; publisher draft is not 16, 18, or 22";
+  }
   pullPublishedNamespace(trackNamespaceSuffix);
 }
 
@@ -1125,10 +1165,26 @@ moxygen::Subscriber::PublishResult MoqPeeringParticipant::publish(
         }
     );
   }
-  announceNamespaceOnce(pub.fullTrackName.trackNamespace, false);
-  if (announcedTracks_.insert(pub.fullTrackName).second) {
-    XLOG(INFO) << "moq-fabric announce track ftn=" << safeName(pub.fullTrackName);
-    announcer_->announceTrack(pub.fullTrackName);
+  auto encoding = announcedEncoding(pub.fullTrackName.trackNamespace);
+  if (!encoding) {
+    if (auto relay = relay_.lock()) {
+      if (auto version = relay->publisherVersion(pub.fullTrackName)) {
+        encoding = encodingOf(*version);
+      }
+    }
+  }
+  if (encoding) {
+    // Announce the track first. An empty track name hashes the same as its namespace, and a
+    // peer that still keeps only the first announcement must keep the track so objects arrive.
+    if (announcedTracks_.insert(pub.fullTrackName).second) {
+      XLOG(INFO) << "moq-fabric announce track ftn=" << safeName(pub.fullTrackName)
+                 << " encoding=" << int(*encoding);
+      announcer_->announceTrack(pub.fullTrackName, *encoding);
+    }
+    announceNamespaceOnce(pub.fullTrackName.trackNamespace, false, *encoding);
+  } else {
+    XLOG(WARNING) << "moq-fabric did not announce track ftn=" << safeName(pub.fullTrackName)
+                  << "; publisher draft is not 16, 18, or 22";
   }
   if (!egressForward_.contains(pub.fullTrackName)) {
     egressForward_[pub.fullTrackName] = false;

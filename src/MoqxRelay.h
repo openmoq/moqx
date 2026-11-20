@@ -283,6 +283,10 @@ public:
   std::optional<moxygen::SessionId> subscribedUpstream(const moxygen::FullTrackName& ftn) const {
     return registry_.upstreamSessionId(ftn);
   }
+  // MoQT version of the client that published ftn. Runs on the relay executor.
+  std::optional<uint64_t> publisherVersion(const moxygen::FullTrackName& ftn) const {
+    return registry_.publisherVersion(ftn);
+  }
 
   // Sync cores of publishNamespace/publishNamespaceDone. Called by the
   // Subscriber coroutine interface and by MoqxRelayNamespaceHandle, which

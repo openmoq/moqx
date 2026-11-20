@@ -27,7 +27,7 @@ PeeringObject sampleObject() {
 } // namespace
 
 TEST(PeeringObjectTest, SubgroupRoundTrip) {
-  PeeringSubgroupWriter writer(42);
+  PeeringSubgroupWriter writer(42, moxygen::kVersionDraft18);
   auto firstObject = sampleObject();
   auto secondObject = firstObject;
   secondObject.objectId = 7;
@@ -38,7 +38,7 @@ TEST(PeeringObjectTest, SubgroupRoundTrip) {
   auto second = writer.write(secondObject, false);
   ASSERT_TRUE(second.has_value());
 
-  PeeringStreamReader reader;
+  PeeringStreamReader reader(moxygen::kVersionDraft18);
   ASSERT_TRUE(reader.ingest(first->data(), first->size(), false));
   auto events = reader.take();
   ASSERT_EQ(events.size(), 2u);
@@ -59,13 +59,13 @@ TEST(PeeringObjectTest, SubgroupRoundTrip) {
   EXPECT_EQ(events[0].object.objectId, 7u);
   EXPECT_EQ(events[0].object.payload, secondObject.payload);
 
-  PeeringSubgroupWriter zeroWriter(1);
+  PeeringSubgroupWriter zeroWriter(1, moxygen::kVersionDraft18);
   auto zero = sampleObject();
   zero.subgroup = 0;
   zero.objectId = 1;
   auto zeroBytes = zeroWriter.write(zero, true);
   ASSERT_TRUE(zeroBytes.has_value());
-  PeeringStreamReader zeroReader;
+  PeeringStreamReader zeroReader(moxygen::kVersionDraft18);
   ASSERT_TRUE(zeroReader.ingest(zeroBytes->data(), zeroBytes->size(), false));
   events = zeroReader.take();
   ASSERT_EQ(events.size(), 2u);
@@ -84,9 +84,9 @@ TEST(PeeringObjectTest, DatagramRoundTrip) {
   object.objectId = 11;
   object.payload = {1, 2, 3, 4};
 
-  auto encoded = encodePeeringDatagram(7, object);
+  auto encoded = encodePeeringDatagram(7, object, moxygen::kVersionDraft18);
   ASSERT_TRUE(encoded.has_value());
-  auto decoded = decodePeeringDatagram(encoded->data(), encoded->size());
+  auto decoded = decodePeeringDatagram(encoded->data(), encoded->size(), moxygen::kVersionDraft18);
   ASSERT_TRUE(decoded.has_value());
   EXPECT_TRUE(decoded->datagram);
   EXPECT_TRUE(decoded->lastInGroup);
@@ -102,24 +102,24 @@ TEST(PeeringObjectTest, DatagramRoundTrip) {
 TEST(PeeringObjectTest, RejectsMalformed) {
   PeeringObject object = sampleObject();
   object.status = 1;
-  PeeringSubgroupWriter writer(1);
+  PeeringSubgroupWriter writer(1, moxygen::kVersionDraft18);
   EXPECT_FALSE(writer.write(object, true).has_value());
-  EXPECT_FALSE(encodePeeringDatagram(1, object).has_value());
+  EXPECT_FALSE(encodePeeringDatagram(1, object, moxygen::kVersionDraft18).has_value());
 
   object.status = 0;
   object.payload.assign(kMaxPeeringPayload + 1, std::uint8_t{1});
   EXPECT_FALSE(writer.write(object, true).has_value());
-  EXPECT_FALSE(encodePeeringDatagram(1, object).has_value());
+  EXPECT_FALSE(encodePeeringDatagram(1, object, moxygen::kVersionDraft18).has_value());
 
   object.payload = {'a'};
-  auto encoded = encodePeeringDatagram(1, object);
+  auto encoded = encodePeeringDatagram(1, object, moxygen::kVersionDraft18);
   ASSERT_TRUE(encoded.has_value());
-  EXPECT_FALSE(decodePeeringDatagram(nullptr, encoded->size()).has_value());
-  EXPECT_FALSE(decodePeeringDatagram(encoded->data(), 0).has_value());
+  EXPECT_FALSE(decodePeeringDatagram(nullptr, encoded->size(), moxygen::kVersionDraft18).has_value());
+  EXPECT_FALSE(decodePeeringDatagram(encoded->data(), 0, moxygen::kVersionDraft18).has_value());
   auto badType = *encoded;
   badType[0] = 0xff;
-  EXPECT_FALSE(decodePeeringDatagram(badType.data(), badType.size()).has_value());
+  EXPECT_FALSE(decodePeeringDatagram(badType.data(), badType.size(), moxygen::kVersionDraft18).has_value());
 
   std::vector<uint8_t> garbage{0x00, 0x01, 0x02};
-  EXPECT_FALSE(decodePeeringDatagram(garbage.data(), garbage.size()).has_value());
+  EXPECT_FALSE(decodePeeringDatagram(garbage.data(), garbage.size(), moxygen::kVersionDraft18).has_value());
 }

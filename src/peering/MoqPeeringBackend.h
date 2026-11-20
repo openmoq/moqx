@@ -55,9 +55,9 @@ public:
   PeerAdminResult execute(PeerAdminOp op);
   std::vector<PeerLink> links() const;
 
-  void announceNamespace(const moxygen::TrackNamespace& ns) override;
+  void announceNamespace(const moxygen::TrackNamespace& ns, uint8_t encoding) override;
   void withdrawNamespace(const moxygen::TrackNamespace& ns) override;
-  void announceTrack(const moxygen::FullTrackName& ftn) override;
+  void announceTrack(const moxygen::FullTrackName& ftn, uint8_t encoding) override;
   void withdrawTrack(const moxygen::FullTrackName& ftn) override;
   void sendObject(const moxygen::FullTrackName& ftn, PeeringObject object) override;
   void endSubgroup(
@@ -70,8 +70,13 @@ public:
   void unsubscribeTrack(const moxygen::FullTrackName& ftn) override;
   moxygen::SessionId sessionId() const override { return sessionId_; }
 
-  void onNamespace(std::vector<std::string> nameSpace, bool withdrawn) override;
-  void onTrack(std::vector<std::string> nameSpace, std::string track, bool withdrawn) override;
+  void onNamespace(std::vector<std::string> nameSpace, uint8_t encoding, bool withdrawn) override;
+  void onTrack(
+      std::vector<std::string> nameSpace,
+      std::string track,
+      uint8_t encoding,
+      bool withdrawn
+  ) override;
   void onSubscribe(
       std::vector<std::string> nameSpace,
       std::string track,
@@ -92,6 +97,13 @@ public:
 
 private:
   void dispatch(std::function<void(MoqPeeringParticipant&)> fn);
+  // Caller holds mu_. The longest matching namespace is used when the track has none.
+  // encoding is the publisher draft: 16, 18, or 22. moqt-23 is not supported yet.
+  std::optional<uint8_t> encodingFor(
+      const moxygen::FullTrackName& ftn,
+      const std::map<moxygen::FullTrackName, uint8_t>& tracks,
+      const std::map<moxygen::TrackNamespace, uint8_t>& namespaces
+  ) const;
 
   std::weak_ptr<peering::MoqPeeringRuntime> runtime_;
   moxygen::SessionId sessionId_{makeSessionId()};
@@ -99,6 +111,12 @@ private:
   std::vector<std::shared_ptr<MoqPeeringParticipant>> participants_;
   std::map<uint64_t, moxygen::FullTrackName> peerSubs_;
   std::map<uint64_t, moxygen::FullTrackName> pulls_;
+  // First encoding for a local publish. SendData uses it. A later announce does not replace it.
+  std::map<moxygen::FullTrackName, uint8_t> localTracks_;
+  std::map<moxygen::TrackNamespace, uint8_t> localNamespaces_;
+  // Encoding learned from a peer announce. OnPeerData is parsed with it.
+  std::map<moxygen::FullTrackName, uint8_t> peerTrackEncodings_;
+  std::map<moxygen::TrackNamespace, uint8_t> peerNamespaceEncodings_;
   struct StreamKey {
     uint64_t hash{0};
     uint64_t group{0};

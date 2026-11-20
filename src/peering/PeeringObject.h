@@ -40,19 +40,20 @@ struct PeeringObject {
 // emit only the next object, with the object id delta the client session uses.
 class PeeringSubgroupWriter {
 public:
-  explicit PeeringSubgroupWriter(uint64_t trackAlias);
+  PeeringSubgroupWriter(uint64_t trackAlias, uint64_t version);
 
   std::optional<std::vector<uint8_t>> write(const PeeringObject& object, bool start);
 
 private:
   uint64_t alias_;
+  uint64_t version_;
   moxygen::MoQFrameWriter writer_;
   moxygen::StreamType streamType_{moxygen::StreamType::SUBGROUP_HEADER_SG};
   bool started_{false};
 };
 
 std::optional<std::vector<uint8_t>>
-encodePeeringDatagram(uint64_t trackAlias, const PeeringObject& object);
+encodePeeringDatagram(uint64_t trackAlias, const PeeringObject& object, uint64_t version);
 
 // Parses one peering subgroup stream with the client session's object codec.
 class PeeringStreamReader : public moxygen::MoQObjectStreamCodec::ObjectCallback {
@@ -64,7 +65,7 @@ public:
     bool fin{false};
   };
 
-  PeeringStreamReader();
+  explicit PeeringStreamReader(uint64_t version);
 
   bool ingest(const uint8_t* data, size_t size, bool endOfStream);
   std::vector<Event> take();
@@ -118,6 +119,7 @@ private:
   bool failed_{false};
 };
 
-std::optional<PeeringObject> decodePeeringDatagram(const uint8_t* data, size_t size);
+std::optional<PeeringObject>
+decodePeeringDatagram(const uint8_t* data, size_t size, uint64_t version);
 
 } // namespace openmoq::moqx

@@ -45,11 +45,11 @@ std::optional<std::vector<uint8_t>> takeBytes(folly::IOBufQueue& queue) {
   return std::vector<uint8_t>(buf->data(), buf->data() + buf->length());
 }
 
-moxygen::StreamType subgroupStreamType(const moxygen::ObjectHeader& header) {
+moxygen::StreamType subgroupStreamType(uint64_t version, const moxygen::ObjectHeader& header) {
   const auto format =
       header.subgroup == 0 ? moxygen::SubgroupIDFormat::Zero : moxygen::SubgroupIDFormat::Present;
   return moxygen::getSubgroupStreamType(
-      moxygen::kVersionDraft18,
+      version,
       format,
       true,
       false,
@@ -60,8 +60,9 @@ moxygen::StreamType subgroupStreamType(const moxygen::ObjectHeader& header) {
 
 } // namespace
 
-PeeringSubgroupWriter::PeeringSubgroupWriter(uint64_t trackAlias) : alias_(trackAlias) {
-  writer_.initializeVersion(moxygen::kVersionDraft18);
+PeeringSubgroupWriter::PeeringSubgroupWriter(uint64_t trackAlias, uint64_t version)
+    : alias_(trackAlias), version_(version) {
+  writer_.initializeVersion(version_);
 }
 
 std::optional<std::vector<uint8_t>>
@@ -71,7 +72,7 @@ PeeringSubgroupWriter::write(const PeeringObject& object, bool start) {
   }
   if (start) {
     writer_ = moxygen::MoQFrameWriter{};
-    writer_.initializeVersion(moxygen::kVersionDraft18);
+    writer_.initializeVersion(version_);
     started_ = false;
   }
   if (!started_ && !start) {
@@ -87,7 +88,7 @@ PeeringSubgroupWriter::write(const PeeringObject& object, bool start) {
     options.hasEndOfGroup = false;
     options.beginsWithFirstObject = true;
     options.priorityPresent = header.priority.has_value();
-    streamType_ = subgroupStreamType(header);
+    streamType_ = subgroupStreamType(version_, header);
     if (!writer_.writeSubgroupHeader(queue, moxygen::TrackAlias(alias_), header, options)) {
       return std::nullopt;
     }
@@ -105,13 +106,13 @@ PeeringSubgroupWriter::write(const PeeringObject& object, bool start) {
 }
 
 std::optional<std::vector<uint8_t>>
-encodePeeringDatagram(uint64_t trackAlias, const PeeringObject& object) {
+encodePeeringDatagram(uint64_t trackAlias, const PeeringObject& object, uint64_t version) {
   if (object.payload.size() > kMaxPeeringPayload || !validStatus(object.status)) {
     return std::nullopt;
   }
   folly::IOBufQueue queue{folly::IOBufQueue::cacheChainLength()};
   moxygen::MoQFrameWriter writer;
-  writer.initializeVersion(moxygen::kVersionDraft18);
+  writer.initializeVersion(version);
   auto header = headerFrom(object);
   moxygen::Payload payload;
   if (header.status == moxygen::ObjectStatus::NORMAL && !object.payload.empty()) {
@@ -129,8 +130,8 @@ encodePeeringDatagram(uint64_t trackAlias, const PeeringObject& object) {
   return takeBytes(queue);
 }
 
-PeeringStreamReader::PeeringStreamReader() : codec_(this) {
-  codec_.initializeVersion(moxygen::kVersionDraft18);
+PeeringStreamReader::PeeringStreamReader(uint64_t version) : codec_(this) {
+  codec_.initializeVersion(version);
 }
 
 bool PeeringStreamReader::ingest(const uint8_t* data, size_t size, bool endOfStream) {
@@ -286,7 +287,7 @@ void PeeringStreamReader::onConnectionError(moxygen::ErrorCode) {
   failed_ = true;
 }
 
-std::optional<PeeringObject> decodePeeringDatagram(const uint8_t* data, size_t size) {
+std::optional<PeeringObject> decodePeeringDatagram(const uint8_t* data, size_t size, uint64_t version) {
   if (data == nullptr || size == 0 || size > kMaxFrameBytes) {
     return std::nullopt;
   }
@@ -295,9 +296,9 @@ std::optional<PeeringObject> decodePeeringDatagram(const uint8_t* data, size_t s
   size_t remaining = queue.chainLength();
   folly::io::Cursor cursor(queue.front());
   moxygen::MoQFrameParser parser;
-  parser.initializeVersion(moxygen::kVersionDraft18);
+  parser.initializeVersion(version);
   auto type = parser.decodeVarint(cursor);
-  if (!type || !moxygen::isValidDatagramType(moxygen::kVersionDraft18, type->first)) {
+  if (!type || !moxygen::isValidDatagramType(version, type->first)) {
     return std::nullopt;
   }
   remaining -= type->second;
