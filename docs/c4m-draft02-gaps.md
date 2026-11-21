@@ -74,9 +74,11 @@ used for draft-02 parsing; ES256 DER signatures are adapted to COSE's fixed
 - Default build passed.
 - Focused default tests (relay fixture in all three threading modes, C4m, Dpop,
   Auth, filters, config, issuer, registry, namespace tree, cross-executor
-  filters): 727/727 passed on the final code.
-- ASAN/UBSAN/LeakSanitizer on the same groups: 765 passed (429 plus all 336
-  relay fixture tests).
+  filters): 731/731 passed on the final code.
+- ASAN/UBSAN/LeakSanitizer on the auth, codec, config, registry and filter
+  groups: 460 of 461 passed (the failure is the known loopback test
+  `UpstreamCACertSignedServerTest`); the 336 relay fixture tests passed under
+  them before the last review fixes, which do not touch code they exercise.
 - Full default CTest: 37 failures of 1561, all pre-existing loopback/upstream
   tests (see the integration gap above); every test added by this work passed.
 - Live moqxr publisher run: passed for HMAC, draft 18 (see above). Live checks

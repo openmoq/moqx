@@ -282,6 +282,7 @@ Grants readClaims(
   std::chrono::seconds dpopWindow = kDefaultDpopWindow;
   bool dpopReplay = true; // catdpop jti absent: detect replay (the safer reading)
   bool hasCatDpop = false;
+  bool hasCti = false;
   for (uint64_t i = 0; i < count; ++i) {
     int64_t key = 0;
     if (reader.peekMajor() == cbor::kMajorTextString) {
@@ -379,7 +380,7 @@ Grants readClaims(
       std::string_view value;
       require(reader.readByteString(value));
       grants.cti = std::string(value);
-      hasInformationalClaims = true;
+      hasCti = true;
     } else {
       // In particular: cnf, catdpop, replay restrictions, and old moqt labels.
       // Skipping an unknown restriction can turn a scoped token into a broader grant.
@@ -425,6 +426,10 @@ Grants readClaims(
       throw C4mError(AuthError::Forbidden, "C4M token issuer not accepted");
     }
   } else if (grants.issuer.has_value()) {
+    hasInformationalClaims = true;
+  }
+  // cti is required and enforced by catreplay 1; otherwise it is informational.
+  if (hasCti && !grants.replayProtected) {
     hasInformationalClaims = true;
   }
   if (policy.strict && hasInformationalClaims) {

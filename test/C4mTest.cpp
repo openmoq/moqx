@@ -15,6 +15,7 @@
 #include <openssl/pem.h>
 
 #include <array>
+#include <limits>
 #include <string>
 
 using namespace openmoq::moqx::auth;
@@ -743,4 +744,38 @@ TEST(DpopTest, UnsupportedProofAlgorithmsAreRejected) {
       verifyDpopProof(proof, sha256(token), bindingFor(key, DpopBinding::Kind::Ckt), context, kNow),
       C4mError
   );
+}
+
+// ---- review fixes: strict claims, iat range ----
+
+TEST(C4mTest, StrictClaimsAcceptsTheCtiThatReplayProtectionNeeds) {
+  ClaimPolicy strict{.strict = true};
+  Grants replay;
+  replay.expiresAt = kNow + std::chrono::hours(1);
+  replay.cti = "id";
+  replay.replayProtected = true;
+  EXPECT_NO_THROW(verifyC4mToken(signC4mToken("key", kKey, replay), kKey, kNow, strict));
+  // A cti that nothing uses is still informational, so strict mode refuses it.
+  Grants plain;
+  plain.expiresAt = kNow + std::chrono::hours(1);
+  plain.cti = "id";
+  EXPECT_THROW(verifyC4mToken(signC4mToken("key", kKey, plain), kKey, kNow, strict), C4mError);
+  EXPECT_NO_THROW(verifyC4mToken(signC4mToken("key", kKey, plain), kKey, kNow));
+}
+
+TEST(DpopTest, OutOfRangeIssuedAtIsRejectedWithoutOverflow) {
+  const std::string token = "t";
+  const DpopContext context{Action::ClientSetup, {}, std::nullopt};
+  const auto key = dpopPublicKey(keyFile("c4m_es256_private.pem"));
+  const auto binding = bindingFor(key, DpopBinding::Kind::Ckt);
+  for (auto seconds :
+       {std::numeric_limits<int64_t>::max(),
+        std::numeric_limits<int64_t>::min(),
+        std::numeric_limits<int64_t>::max() / 2,
+        int64_t{9223372036}}) {
+    const auto proof =
+        signDpopProofAtSeconds(keyFile("c4m_es256_private.pem"), token, context, "c", seconds);
+    EXPECT_THROW(verifyDpopProof(proof, sha256(token), binding, context, kNow), C4mError)
+        << seconds;
+  }
 }

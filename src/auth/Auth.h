@@ -99,7 +99,8 @@ public:
   std::vector<Grants> applyDpop(
       const std::vector<Grants>& grants,
       const moxygen::Parameters& params,
-      const DpopContext& context
+      const DpopContext& context,
+      uint64_t connectionId
   ) const;
 
 private:

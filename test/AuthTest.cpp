@@ -1191,3 +1191,36 @@ TEST(AuthTest, AuthorizeWithoutRevalidationClaimIsUnchanged) {
   ASSERT_TRUE(decision.hasValue());
   EXPECT_FALSE(decision.value().revalidation.has_value());
 }
+
+// Binding a catreplay token to a connection is the first thing a holder of the token alone could
+// do. For a DPoP-bound token the binding waits for a valid proof, so that cannot lock the real
+// holder out.
+TEST(AuthTest, ReplayBindingOfADpopBoundTokenWaitsForAValidProof) {
+  AuthTokenVerifier verifier(makeConfig());
+  auto grants = dpopGrants({Action::ClientSetup});
+  grants.cti = "bound-id";
+  grants.replayProtected = true;
+  const auto token = makeToken(grants);
+
+  // An attacker holding only the token tries first, with no proof, on connection 9.
+  Parameters noProof(FrameType::CLIENT_SETUP);
+  addParam(noProof, 77, token.tokenValue);
+  EXPECT_TRUE(authenticateSetup(verifier, noProof, 9).hasError());
+
+  // The real holder, with the key, is not locked out.
+  Parameters setup(FrameType::CLIENT_SETUP);
+  addParam(setup, 77, token.tokenValue);
+  addParam(setup, 17, proofFor(token, Action::ClientSetup, {}, std::nullopt, "p1"));
+  EXPECT_TRUE(authenticateSetup(verifier, setup, 1).hasValue());
+
+  // Now bound to connection 1: even a valid proof from the key cannot use it on another.
+  Parameters other(FrameType::CLIENT_SETUP);
+  addParam(other, 77, token.tokenValue);
+  addParam(other, 17, proofFor(token, Action::ClientSetup, {}, std::nullopt, "p2"));
+  EXPECT_TRUE(authenticateSetup(verifier, other, 2).hasError());
+  // And connection 1 keeps working with fresh proofs.
+  Parameters again(FrameType::CLIENT_SETUP);
+  addParam(again, 77, token.tokenValue);
+  addParam(again, 17, proofFor(token, Action::ClientSetup, {}, std::nullopt, "p3"));
+  EXPECT_TRUE(authenticateSetup(verifier, again, 1).hasValue());
+}

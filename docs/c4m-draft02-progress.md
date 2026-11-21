@@ -44,6 +44,13 @@ with the limits listed under Remaining work.
   generalized proof keys, `cnf` thumbprints for P-384 and OKP keys, and issuer
   binding to P-384/Ed25519 client keys. Thumbprints match RFC 9679 and RFC 8037
   vectors; no draft vectors exist for these algorithms.
+- Fixed six review findings from Copilot (five code changes; the sixth, curve
+  validation of the DPoP key, was already fixed): the replay binding of a
+  DPoP-bound token now waits for a valid proof; the issuer refuses DPoP windows
+  and revalidation intervals the relay would reject; `strict_claims` no longer
+  rejects the `cti` that `catreplay` needs; DPoP `iat` is range-checked and the
+  freshness comparison cannot overflow; configured ES256 issuance accepts the
+  audiences and revalidation interval it issues.
 - Updated existing configuration/build documentation and examples to explain
   the subset, provisional labels, key handling, and unsupported features.
 - Pinned catapult's latest published release, v1.0.0, at
@@ -56,14 +63,18 @@ with the limits listed under Remaining work.
 - Focused default CTest selection (relay fixture tests in all three threading
   modes, C4m, Dpop, Auth, config resolver/serializer, issuer, filters, registry,
   namespace tree, cross-executor filters) passed on the final code, which
-  includes every change above and the namespace revoke: 727/727. The earlier
+  includes every change above, the namespace revoke, and the Copilot review
+  fixes: 731/731. The earlier
   125/125 selection predates those changes.
 - Sanitizer (ASAN/UBSAN/LeakSanitizer, `build/san`) run on the final code,
   including the `aud`/`iss`, `catreplay`, DPoP, and `unique_ptr` changes:
-  765 passed: 429 across codec, DPoP, authentication, issuer, configuration,
+  460 of 461 passed across codec, DPoP, authentication, issuer, configuration,
   registry, namespace tree, cross-executor filters, and the revalidation filter
-  tests (including the timer-driven ones), plus all 336 relay fixture tests in
-  the three threading modes (including the namespace revoke). moqx and catapult
+  tests (including the timer-driven ones and the out-of-range DPoP `iat`
+  cases); the one failure is `UpstreamCACertSignedServerTest`, a loopback test
+  that fails the same way on the pre-PR build. The 336 relay fixture tests in
+  the three threading modes (including the namespace revoke) passed under the
+  sanitizers before the review fixes, which do not touch code they exercise. moqx and catapult
   crypto were instrumented; the prebuilt moxygen dependency was not.
 - The draft's ES256 vector verifies; a tampered signature fails.
 - Eight issuer CLI scenarios passed, covering direct/config ES256 issuance,

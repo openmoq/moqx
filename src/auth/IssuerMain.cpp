@@ -180,10 +180,17 @@ int runIssueCatTokenCommand(const char* programName) {
         return entry.id == options.keyID;
       });
       auto publicKey = auth::loadEs256PublicKeyFile(key->publicKeyFile);
+      // Only the signature is being checked, so accept the claims this token was issued with.
+      auth::ClaimPolicy policy;
+      policy.audiences = options.audiences;
+      policy.minRevalidation = std::chrono::seconds(1);
       try {
-        (void)auth::verifyC4mToken(token.tokenValue, *publicKey, options.now);
-      } catch (const auth::C4mError&) {
-        throw std::invalid_argument("ES256 private key does not match the selected public key");
+        (void)auth::verifyC4mToken(token.tokenValue, *publicKey, options.now, policy);
+      } catch (const auth::C4mError& error) {
+        if (error.code() == auth::AuthError::BadSignature) {
+          throw std::invalid_argument("ES256 private key does not match the selected public key");
+        }
+        throw std::invalid_argument(std::string("issued token is invalid: ") + error.what());
       }
     }
     if (FLAGS_auth_output == "base64-prefix") {

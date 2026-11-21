@@ -327,6 +327,7 @@ std::string encodeCoseKey(const DpopKey& key) {
 
 struct ProofClaims {
   std::chrono::system_clock::time_point issuedAt;
+  int64_t issuedAtSeconds{0};
   std::string cti;
   std::string athHash;
   std::string actionType;
@@ -347,7 +348,15 @@ ProofClaims readProofClaims(std::string_view payload) {
     if (label == 6) {
       int64_t seconds = 0;
       require(reader.readInt(seconds));
-      claims.issuedAt = std::chrono::system_clock::time_point(std::chrono::seconds(seconds));
+      // Reject what the clock cannot represent before converting (as C4m.cpp readTime does).
+      using Clock = std::chrono::system_clock;
+      using Seconds = std::chrono::seconds;
+      require(
+          seconds >= std::chrono::duration_cast<Seconds>(Clock::duration::min()).count() &&
+          seconds <= std::chrono::duration_cast<Seconds>(Clock::duration::max()).count()
+      );
+      claims.issuedAtSeconds = seconds;
+      claims.issuedAt = Clock::time_point(Seconds(seconds));
     } else if (label == 7) {
       std::string_view cti;
       require(reader.readByteString(cti) && !cti.empty() && cti.size() <= 64);
@@ -507,8 +516,13 @@ VerifiedDpopProof verifyDpopProof(
   if (claims.athHash != tokenHash) {
     reject("DPoP proof is bound to a different token");
   }
-  const auto skew = claims.issuedAt > now ? claims.issuedAt - now : now - claims.issuedAt;
-  if (skew > requirement.window) {
+  // Seconds, not clock ticks: both values are in range, so their difference cannot overflow.
+  const auto nowSeconds =
+      std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count();
+  const auto skewSeconds = claims.issuedAtSeconds > nowSeconds
+                               ? claims.issuedAtSeconds - nowSeconds
+                               : nowSeconds - claims.issuedAtSeconds;
+  if (skewSeconds > requirement.window.count()) {
     reject("DPoP proof is outside the freshness window");
   }
   if (claims.actionType != "moqt" || claims.action != static_cast<uint64_t>(context.action) ||
@@ -603,6 +617,22 @@ std::string signDpopProof(
     std::string_view cti,
     std::chrono::system_clock::time_point issuedAt
 ) {
+  return signDpopProofAtSeconds(
+      privateKeyPemPath,
+      token,
+      context,
+      cti,
+      std::chrono::duration_cast<std::chrono::seconds>(issuedAt.time_since_epoch()).count()
+  );
+}
+
+std::string signDpopProofAtSeconds(
+    const std::string& privateKeyPemPath,
+    std::string_view token,
+    const DpopContext& context,
+    std::string_view cti,
+    int64_t issuedAtSeconds
+) {
   const auto pkey = readPemKey(privateKeyPemPath, true);
   const auto key = dpopKeyOf(pkey.get(), privateKeyPemPath);
   const auto& shape = requireShape(key.algorithm);
@@ -623,10 +653,7 @@ std::string signDpopProof(
   std::string payload;
   appendHead(payload, 5, 4);
   appendInt(payload, 6);
-  appendInt(
-      payload,
-      std::chrono::duration_cast<std::chrono::seconds>(issuedAt.time_since_epoch()).count()
-  );
+  appendInt(payload, issuedAtSeconds);
   appendInt(payload, 7);
   appendString(payload, 2, cti);
   appendInt(payload, kDpopActxClaim);

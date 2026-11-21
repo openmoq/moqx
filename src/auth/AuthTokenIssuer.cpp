@@ -121,6 +121,15 @@ IssuedToken issueToken(const IssueTokenOptions& options) {
   if (options.ttl <= std::chrono::seconds::zero()) {
     throw std::invalid_argument("C4M ttl must be greater than zero");
   }
+  // The relay rejects tokens outside these ranges, so refuse to mint them.
+  if (!options.dpopKeyFile.empty() && (options.dpopWindow < std::chrono::seconds(1) ||
+                                       options.dpopWindow > std::chrono::seconds(86400))) {
+    throw std::invalid_argument("DPoP window must be 1 to 86400 seconds");
+  }
+  if (options.revalidateEvery < std::chrono::seconds::zero() ||
+      options.revalidateEvery > std::chrono::seconds(31536000)) {
+    throw std::invalid_argument("revalidation interval must be 0 to 31536000 seconds");
+  }
 
   Grants grants;
   grants.expiresAt = options.now + options.ttl;

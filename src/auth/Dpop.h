@@ -101,6 +101,15 @@ std::string signDpopProof(
 // computing cnf values.
 DpopKey dpopPublicKey(const std::string& pemPath);
 
+// As signDpopProof, with `iat` given as raw seconds (tests use it for out-of-range values).
+std::string signDpopProofAtSeconds(
+    const std::string& privateKeyPemPath,
+    std::string_view token,
+    const DpopContext& context,
+    std::string_view cti,
+    int64_t issuedAtSeconds
+);
+
 // Public x/y (32 bytes each) of a PEM P-256 private or public key, for computing cnf values.
 std::pair<std::string, std::string> es256PublicCoordinates(const std::string& pemPath);
 

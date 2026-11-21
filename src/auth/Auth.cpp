@@ -104,7 +104,9 @@ AuthTokenVerifier::verify(const AuthToken& token, uint64_t connectionId) const {
   if (result.hasValue() && result.value().dpop) {
     result.value().tokenHash = sha256(token.tokenValue);
   }
-  if (result.hasValue() && result.value().replayProtected &&
+  // A token that also needs a DPoP proof is bound once the proof validates (applyDpop), so
+  // someone holding only the token cannot claim the binding first and lock out its holder.
+  if (result.hasValue() && result.value().replayProtected && !result.value().dpop &&
       !bindReplay(result.value(), connectionId)) {
     return folly::makeUnexpected(AuthError::Replayed);
   }
@@ -140,7 +142,8 @@ bool AuthTokenVerifier::noteProofCti(
 std::vector<Grants> AuthTokenVerifier::applyDpop(
     const std::vector<Grants>& grants,
     const Parameters& params,
-    const DpopContext& context
+    const DpopContext& context,
+    uint64_t connectionId
 ) const {
   std::vector<Grants> usable;
   std::vector<AuthToken> proofs;
@@ -166,6 +169,9 @@ std::vector<Grants> AuthTokenVerifier::applyDpop(
         if (grant.dpop->detectReplay &&
             !noteProofCti(grant, verified.cti, verified.issuedAt + grant.dpop->window * 2)) {
           continue;
+        }
+        if (grant.replayProtected && !bindReplay(grant, connectionId)) {
+          break; // Bound to another connection: no other proof can make it usable here.
         }
         usable.push_back(grant);
         break;
@@ -315,8 +321,12 @@ folly::Expected<std::shared_ptr<const std::vector<Grants>>, AuthError> authentic
   }
   auto [verifiedGrants, firstError] = verifyTokens(verifier, tokens, connectionId);
   // A cnf-bound token only counts when this SETUP carries a proof for it (section 4.3).
-  verifiedGrants =
-      verifier.applyDpop(verifiedGrants, setupParams, DpopContext{Action::ClientSetup, {}, {}});
+  verifiedGrants = verifier.applyDpop(
+      verifiedGrants,
+      setupParams,
+      DpopContext{Action::ClientSetup, {}, {}},
+      connectionId
+  );
 
   if (verifier.requireSetupToken()) {
     if (tokens.empty()) {
@@ -370,13 +380,13 @@ folly::Expected<AuthDecision, AuthError> authorize(
       ns.trackNamespace,
       trackName ? std::optional<std::string>(*trackName) : std::nullopt
   };
-  requestGrants = verifier.applyDpop(requestGrants, params, dpopContext);
+  requestGrants = verifier.applyDpop(requestGrants, params, dpopContext, connectionId);
   std::vector<Grants> dpopSessionGrants;
   const std::vector<Grants>* sessionPool = &sessionGrants;
   if (std::any_of(sessionGrants.begin(), sessionGrants.end(), [](const Grants& g) {
         return g.dpop.has_value();
       })) {
-    dpopSessionGrants = verifier.applyDpop(sessionGrants, params, dpopContext);
+    dpopSessionGrants = verifier.applyDpop(sessionGrants, params, dpopContext, connectionId);
     sessionPool = &dpopSessionGrants;
   }
 

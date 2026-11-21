@@ -180,3 +180,29 @@ TEST(AuthTokenIssuerTest, IssuedRevalidationIntervalIsAcceptedByARelayThatAllows
   allows.minRevalidationSeconds = 0; // revalidation disabled: such tokens are refused
   EXPECT_TRUE(AuthTokenVerifier(allows).verify(token).hasError());
 }
+
+TEST(AuthTokenIssuerTest, RefusesValuesTheRelayWouldReject) {
+  const auto dpopKey = std::string(TEST_C4M_KEY_DIR) + "/c4m_es256_private.pem";
+  auto options = [&] {
+    return IssueTokenOptions{
+        .keyID = "k",
+        .secret = "operator-test-secret-with-enough-entropy",
+        .actions = {Action::ClientSetup},
+    };
+  };
+  auto badWindow = options();
+  badWindow.dpopKeyFile = dpopKey;
+  for (auto seconds : {0, -1, 86401}) {
+    badWindow.dpopWindow = std::chrono::seconds(seconds);
+    EXPECT_THROW(issueToken(badWindow), std::invalid_argument) << seconds;
+  }
+  for (auto seconds : {1, 86400}) {
+    badWindow.dpopWindow = std::chrono::seconds(seconds);
+    EXPECT_NO_THROW(issueToken(badWindow)) << seconds;
+  }
+  auto badReval = options();
+  for (auto seconds : {-1, 31536001}) {
+    badReval.revalidateEvery = std::chrono::seconds(seconds);
+    EXPECT_THROW(issueToken(badReval), std::invalid_argument) << seconds;
+  }
+}

@@ -31,6 +31,8 @@ services:
       es256_keys: [{id: "es-key", public_key_file: "'''
         + str(public)
         + """"}]
+      audiences: ["relay-a"]
+      min_revalidation_interval_seconds: 1
       max_tokens_per_message: 4
 """
     )
@@ -132,4 +134,45 @@ services:
         ["--auth_private_key_file=" + str(encrypted)],
         False,
     )
+    # The key-consistency check must accept the claims the token was issued with.
+    run(
+        "es256-config-with-audience",
+        [
+            *configured,
+            "--auth_private_key_file=" + str(private),
+            "--auth_audience=relay-a",
+        ],
+        True,
+    )
+    run(
+        "es256-config-with-revalidation",
+        [
+            *configured,
+            "--auth_private_key_file=" + str(private),
+            "--auth_revalidate_seconds=30",
+        ],
+        True,
+    )
+    # A bad signature is still reported as a key mismatch when claims are present.
+    run(
+        "mismatched-key-with-audience",
+        [
+            *configured,
+            "--auth_private_key_file=" + str(wrong),
+            "--auth_audience=relay-a",
+        ],
+        False,
+    )
+    # The relay accepts DPoP windows of 1 to 86400 seconds; the issuer must not mint others.
+    for window in ("0", "86401"):
+        run(
+            "dpop-window-" + window + "-is-refused",
+            [
+                "--auth_secret=local-validation-only",
+                "--auth_key_id=hmac-key",
+                "--auth_dpop_key_file=" + str(private),
+                "--auth_dpop_window_seconds=" + window,
+            ],
+            False,
+        )
     run("hmac", ["--auth_secret=local-validation-only", "--auth_key_id=hmac-key"], True)
