@@ -366,7 +366,7 @@ at least every N seconds and, once it has expired, ends only that action:
 | `fetch` | The fetch is cancelled and its stream is reset with `EXPIRED_AUTH_TOKEN`. |
 | `subscribe_namespace` | The relay stops sending NAMESPACE updates for that subscription. The subscriber gets no explicit end message. |
 | `subscribe_tracks` | The relay ends that SUBSCRIBE_TRACKS. |
-| `publish_namespace` | The namespace is withdrawn from the relay, then the publisher is told: on draft 18 and later by resetting the request stream (`CANCELLED`, since the draft removed PUBLISH_NAMESPACE_CANCEL), before that by PUBLISH_NAMESPACE_CANCEL with `EXPIRED_AUTH_TOKEN`. Tracks the relay is already forwarding are not stopped: the relay withdraws the announcement, and a publisher that ignores the cancel can keep sending on subscriptions that are already open. |
+| `publish_namespace` | The namespace is withdrawn from the relay, then the publisher is told: on draft 18 and later by resetting the request stream (`CANCELLED`, since the draft removed PUBLISH_NAMESPACE_CANCEL), before that by PUBLISH_NAMESPACE_CANCEL with `EXPIRED_AUTH_TOKEN`. The tracks that publisher session is sending under the namespace are ended too: the relay unsubscribes from the publisher and sends the tracks' subscribers PUBLISH_DONE `TRACK_ENDED`, so a publisher that ignores the cancel cannot keep feeding open subscriptions. |
 | `publish` | The relay unsubscribes from the publisher's track. The publisher is not sent a separate error. |
 
 The session and every other action on it are left alone. An action is ended only

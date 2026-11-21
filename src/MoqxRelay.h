@@ -272,6 +272,15 @@ public:
       std::optional<moxygen::RequestID> requestID = std::nullopt
   );
 
+  // Withdraws sessionId's route like doPublishNamespaceDone, then ends the tracks that session
+  // sends under trackNamespace: unsubscribes from the publisher and sends the track's subscribers
+  // PUBLISH_DONE TRACK_ENDED. For a publisher whose authorization for the namespace has lapsed.
+  void doRevokeNamespace(
+      const moxygen::TrackNamespace& trackNamespace,
+      moxygen::SessionId sessionId,
+      std::optional<moxygen::RequestID> requestID = std::nullopt
+  );
+
   // Applies a REQUEST_UPDATE to one route, found by sessionId and the requestID of its
   // PUBLISH_NAMESPACE. Omitted parameters are unchanged.
   moxygen::Subscriber::PublishNamespaceHandle::RequestUpdateResult updatePublishNamespace(

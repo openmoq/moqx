@@ -5,6 +5,7 @@
  */
 
 #include "relay/AuthFilters.h"
+#include "relay/NamespaceRevocable.h"
 
 #include "MoqxRelay.h"
 #include "UpstreamProvider.h"
@@ -945,4 +946,42 @@ TEST_F(AuthFiltersTest, RevalidationEndsTheActionInsideTheRequestContextThatStar
   auto future = sawMarker.get_future();
   ASSERT_EQ(future.wait_for(kRevalWait), std::future_status::ready);
   EXPECT_TRUE(future.get());
+}
+
+namespace {
+// A namespace handle that, like the relay's, can also end the tracks under it.
+class RevocableNamespaceHandle : public NiceMock<MockPublishNamespaceHandle>,
+                                 public NamespaceRevocable {
+public:
+  using NiceMock<MockPublishNamespaceHandle>::NiceMock;
+  MOCK_METHOD(void, revokeNamespace, (), (override));
+};
+} // namespace
+
+TEST_F(AuthFiltersTest, RevalidationRevokesARevocableNamespaceInsteadOfJustWithdrawingIt) {
+  auto subscriber = makeSubscriberFilter({revalidatedGrants({Action::PublishNamespace})});
+  auto pubHandle = std::make_shared<RevocableNamespaceHandle>(PublishNamespaceOk{});
+  auto callback = std::make_shared<NiceMock<MockPublishNamespaceCallback>>();
+  EXPECT_CALL(*subscriberInner_, publishNamespace(_, _)).WillOnce([pubHandle](auto, auto) {
+    return folly::coro::makeTask<Subscriber::PublishNamespaceResult>(
+        std::shared_ptr<Subscriber::PublishNamespaceHandle>(pubHandle)
+    );
+  });
+  std::promise<void> revoked;
+  testing::InSequence order;
+  EXPECT_CALL(*pubHandle, revokeNamespace()).Times(1).WillOnce([&] { revoked.set_value(); });
+  EXPECT_CALL(*pubHandle, publishNamespaceDone()).Times(0);
+  EXPECT_CALL(*callback, publishNamespaceCancel(RequestErrorCode::EXPIRED_AUTH_TOKEN, _));
+
+  folly::ScopedEventBaseThread eventBase;
+  PublishNamespace publish;
+  publish.requestID = RequestID(5);
+  publish.trackNamespace = TrackNamespace{{"live"}};
+  auto published = folly::coro::blockingWait(folly::coro::co_withExecutor(
+      eventBase.getEventBase(),
+      subscriber->publishNamespace(publish, callback)
+  ));
+  ASSERT_TRUE(published.hasValue());
+  EXPECT_EQ(revoked.get_future().wait_for(kRevalWait), std::future_status::ready);
+  std::this_thread::sleep_for(std::chrono::milliseconds(200)); // let the cancel follow
 }

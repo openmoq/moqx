@@ -53,15 +53,18 @@ with the limits listed under Remaining work.
 ## Validation performed
 
 - Default build passed; the resolved catapult source matched the v1.0.0 tag.
-- Focused default CTest selection (C4m, Dpop, Auth, config resolver/serializer,
-  issuer, filters) passed after the `aud`/`iss`, `catreplay`, DPoP, and
-  `moqt-reval` changes (including publish) and the error-code mapping, and ES384/EdDSA proofs, and the live-run fixes: 293/293.
-  The earlier 125/125 selection predates those changes.
+- Focused default CTest selection (relay fixture tests in all three threading
+  modes, C4m, Dpop, Auth, config resolver/serializer, issuer, filters, registry,
+  namespace tree, cross-executor filters) passed on the final code, which
+  includes every change above and the namespace revoke: 727/727. The earlier
+  125/125 selection predates those changes.
 - Sanitizer (ASAN/UBSAN/LeakSanitizer, `build/san`) run on the final code,
   including the `aud`/`iss`, `catreplay`, DPoP, and `unique_ptr` changes:
-  340/340 passed across codec, DPoP, authentication, issuer, configuration, and
-  revalidation filter tests (including the timer-driven ones). moqx and catapult crypto were instrumented; the prebuilt moxygen
-  dependency was not.
+  765 passed: 429 across codec, DPoP, authentication, issuer, configuration,
+  registry, namespace tree, cross-executor filters, and the revalidation filter
+  tests (including the timer-driven ones), plus all 336 relay fixture tests in
+  the three threading modes (including the namespace revoke). moqx and catapult
+  crypto were instrumented; the prebuilt moxygen dependency was not.
 - The draft's ES256 vector verifies; a tampered signature fails.
 - Eight issuer CLI scenarios passed, covering direct/config ES256 issuance,
   missing or mismatched private keys, key ID selection, encrypted-key
@@ -109,10 +112,14 @@ with the limits listed under Remaining work.
   this branch.
 - Live revalidation and DPoP checks against the moqxr publisher (draft 18, HMAC):
   - `publish_namespace` revalidation: with a 9 s token and `moqt-reval` 1, the
-    relay ended the action at expiry and the namespace left `/state` about 0.2 s
-    later. The track subscription already open kept delivering, because the
-    relay withdraws the announcement but does not stop tracks it is forwarding,
-    and moqxr ignores the cancel.
+    relay ended the action at expiry, the publisher's track ended for the
+    subscriber within a millisecond (the stream stopped growing and the client
+    finished), and the namespace left `/state` by the next poll. An earlier
+    version withdrew only the announcement and left already-open track
+    subscriptions flowing, because moqxr ignores the cancel; revoking now also
+    unsubscribes from the publisher's tracks under the namespace and sends their
+    subscribers PUBLISH_DONE TRACK_ENDED (tested in all three relay threading
+    modes).
   - The first live runs exposed two bugs the mock-based tests missed: (1) the
     session callback's cancel discards the session's handle, so the relay's
     route was never removed when the cancel came first (now the route is

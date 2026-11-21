@@ -7,6 +7,7 @@
 #include "relay/AuthFilters.h"
 
 #include "peering/PeeringBackend.h"
+#include "relay/NamespaceRevocable.h"
 
 #include <moxygen/MoQConsumers.h>
 
@@ -619,7 +620,12 @@ folly::coro::Task<Subscriber::PublishNamespaceResult> AuthSubscriberFilter::publ
           // Then tell the publisher its namespace was withdrawn.
           auto callback = weakCallback.lock();
           if (auto inner = weakInner.lock()) {
-            inner->publishNamespaceDone();
+            // Also ends the tracks the publisher is already sending under the namespace.
+            if (auto revocable = std::dynamic_pointer_cast<NamespaceRevocable>(inner)) {
+              revocable->revokeNamespace();
+            } else {
+              inner->publishNamespaceDone();
+            }
           }
           if (callback) {
             callback->publishNamespaceCancel(
