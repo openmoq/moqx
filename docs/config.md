@@ -350,6 +350,7 @@ at least every N seconds and, once it has expired, ends only that action:
 | `subscribe_namespace` | The relay stops sending NAMESPACE updates for that subscription. The subscriber gets no explicit end message. |
 | `subscribe_tracks` | The relay ends that SUBSCRIBE_TRACKS. |
 | `publish_namespace` | The publisher is sent a PUBLISH_NAMESPACE_CANCEL with `EXPIRED_AUTH_TOKEN` and the namespace is withdrawn. |
+| `publish` | The relay unsubscribes from the publisher's track. The publisher is not sent a separate error. |
 
 The session and every other action on it are left alone. An action is ended only
 when everything that authorizes it has expired: if it is also covered by a token
@@ -357,9 +358,11 @@ without `moqt-reval`, a token that never expires, or an `anonymous_claim`, it
 continues. When several revalidated tokens cover it, it ends after the latest
 expiry. New requests after expiry are refused by the normal expiry check.
 
-Limits: `publish` (a publisher-initiated track) and `setup` are not revalidated.
-A `setup` token that expires does not close the session, but the grants it
-supplied stop authorizing new requests. A token that carries `moqt-reval`
+Limits: `setup` is not revalidated. A `setup` token that expires does not close
+the session, but the grants it supplied stop authorizing new requests. A
+`publish` is watched from the moment the session awaits the PUBLISH reply (which
+it does on receipt); a refused PUBLISH is never watched, and the watch stops on
+its own once the relay releases the publisher's handle and track consumer. A token that carries `moqt-reval`
 without `exp` never changes, so there is nothing to end. Intervals must be
 integers; floating-point values are rejected.
 

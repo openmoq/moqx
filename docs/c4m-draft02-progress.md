@@ -38,8 +38,8 @@ with the limits listed under Remaining work.
 - Added `moqt-reval` revalidation: `min_revalidation_interval_seconds`,
   `authorize()` now reports which grants keep an action alive, and the auth
   filters run a per-action timer that ends only the affected action on expiry
-  (subscribe, fetch, subscribe_namespace, subscribe_tracks, publish_namespace).
-  `publish` and the session itself are not revalidated.
+  (subscribe, fetch, subscribe_namespace, subscribe_tracks, publish_namespace,
+  publish). The session itself is not revalidated.
 - Updated existing configuration/build documentation and examples to explain
   the subset, provisional labels, key handling, and unsupported features.
 - Pinned catapult's latest published release, v1.0.0, at
@@ -51,11 +51,11 @@ with the limits listed under Remaining work.
 - Default build passed; the resolved catapult source matched the v1.0.0 tag.
 - Focused default CTest selection (C4m, Dpop, Auth, config resolver/serializer,
   issuer, filters) passed after the `aud`/`iss`, `catreplay`, DPoP, and
-  `moqt-reval` changes: 281/281.
+  `moqt-reval` changes (including publish): 283/283.
   The earlier 125/125 selection predates those changes.
 - Sanitizer (ASAN/UBSAN/LeakSanitizer, `build/san`) run on the final code,
   including the `aud`/`iss`, `catreplay`, DPoP, and `unique_ptr` changes:
-  328/328 passed across codec, DPoP, authentication, issuer, configuration, and
+  330/330 passed across codec, DPoP, authentication, issuer, configuration, and
   revalidation filter tests (including the timer-driven ones). moqx and catapult crypto were instrumented; the prebuilt moxygen
   dependency was not.
 - The draft's ES256 vector verifies; a tampered signature fails.
@@ -80,7 +80,7 @@ with the limits listed under Remaining work.
 
 - Protocol conformance gaps are tracked in
   [C4M draft-02 implementation gaps](c4m-draft02-gaps.md). The major gaps are
-  `moqt-reval` for `publish` and `setup`, DPoP interoperability (provisional `actx`/`ath` labels and
+  `moqt-reval` for `setup`, DPoP interoperability (provisional `actx`/`ath` labels and
   proof token type), composite claims (blocked on unassigned keys), and
   algorithm/claim-label interoperability (PS256, ES384/EdDSA proofs, final
   `moqt`/`moqt-reval` labels).
