@@ -569,7 +569,7 @@ TEST_F(AuthFiltersTest, RevalidationEndsTheExpiredSubscriptionOnly) {
   std::promise<void> publishDone;
   EXPECT_CALL(*inner, unsubscribe()).Times(1).WillOnce([&] { unsubscribed.set_value(); });
   EXPECT_CALL(*consumer, publishDone(_)).WillOnce([&](PublishDone done) {
-    EXPECT_EQ(done.statusCode, PublishDoneStatusCode::EXPIRED);
+    EXPECT_EQ(done.statusCode, PublishDoneStatusCode::UNAUTHORIZED);
     EXPECT_EQ(done.requestID, RequestID(1));
     publishDone.set_value();
     return folly::Expected<folly::Unit, MoQPublishError>(folly::unit);
@@ -735,4 +735,128 @@ TEST_F(AuthFiltersTest, RevalidationIgnoresARefusedPublish) {
   );
   ASSERT_TRUE(reply.hasError());
   std::this_thread::sleep_for(std::chrono::seconds(4)); // past the token expiry
+}
+
+// ---- error codes for denied requests ----
+
+namespace {
+AuthToken makeExpiredToken(std::vector<Action> actions) {
+  auto grants = makeGrants(std::move(actions));
+  grants.expiresAt = std::chrono::system_clock::now() - std::chrono::seconds(30);
+  return AuthToken{
+      .tokenType = 77,
+      .tokenValue = signGrants("k1", "secret", grants),
+      .alias = AuthToken::DontRegister,
+  };
+}
+
+AuthToken makeBadSignatureToken(std::vector<Action> actions) {
+  return AuthToken{
+      .tokenType = 77,
+      .tokenValue = signGrants("k1", "another-secret", makeGrants(std::move(actions))),
+      .alias = AuthToken::DontRegister,
+  };
+}
+} // namespace
+
+// An expired token is reported as EXPIRED_AUTH_TOKEN on every request type; any other
+// failure to authorize stays UNAUTHORIZED. Request error codes are not converted per draft.
+TEST_F(AuthFiltersTest, ExpiredRequestTokenIsReportedAsExpiredAuthToken) {
+  auto publisher = makePublisherFilter({});
+  auto subscriber = makeSubscriberFilter({});
+  const auto track = FullTrackName{TrackNamespace{{"live"}}, "video"};
+  const auto expired = [](FrameType frame, Action action) {
+    return withAuthToken(frame, makeExpiredToken({action}));
+  };
+  const auto badSignature = [](FrameType frame, Action action) {
+    return withAuthToken(frame, makeBadSignatureToken({action}));
+  };
+
+  SubscribeRequest sub;
+  sub.requestID = RequestID(1);
+  sub.fullTrackName = track;
+  sub.params = expired(FrameType::SUBSCRIBE, Action::Subscribe);
+  EXPECT_EQ(
+      folly::coro::blockingWait(publisher->subscribe(sub, nullptr)).error().errorCode,
+      RequestErrorCode::EXPIRED_AUTH_TOKEN
+  );
+  sub.params = badSignature(FrameType::SUBSCRIBE, Action::Subscribe);
+  EXPECT_EQ(
+      folly::coro::blockingWait(publisher->subscribe(sub, nullptr)).error().errorCode,
+      RequestErrorCode::UNAUTHORIZED
+  );
+  sub.params = Parameters(FrameType::SUBSCRIBE); // no token at all
+  EXPECT_EQ(
+      folly::coro::blockingWait(publisher->subscribe(sub, nullptr)).error().errorCode,
+      RequestErrorCode::UNAUTHORIZED
+  );
+
+  Fetch fetch;
+  fetch.requestID = RequestID(2);
+  fetch.fullTrackName = track;
+  fetch.params = expired(FrameType::FETCH, Action::Fetch);
+  EXPECT_EQ(
+      folly::coro::blockingWait(publisher->fetch(fetch, nullptr)).error().errorCode,
+      RequestErrorCode::EXPIRED_AUTH_TOKEN
+  );
+
+  SubscribeNamespace subNs;
+  subNs.requestID = RequestID(3);
+  subNs.trackNamespacePrefix = TrackNamespace{{"live"}};
+  subNs.params = expired(FrameType::SUBSCRIBE_NAMESPACE, Action::SubscribeNamespace);
+  EXPECT_EQ(
+      folly::coro::blockingWait(publisher->subscribeNamespace(subNs, nullptr)).error().errorCode,
+      RequestErrorCode::EXPIRED_AUTH_TOKEN
+  );
+
+  SubscribeTracks subTracks;
+  subTracks.requestID = RequestID(4);
+  subTracks.trackNamespacePrefix = TrackNamespace{{"live"}};
+  subTracks.params = expired(FrameType::SUBSCRIBE_TRACKS, Action::SubscribeTracks);
+  EXPECT_EQ(
+      folly::coro::blockingWait(publisher->subscribeTracks(subTracks)).error().errorCode,
+      RequestErrorCode::EXPIRED_AUTH_TOKEN
+  );
+
+  TrackStatus status;
+  status.requestID = RequestID(5);
+  status.fullTrackName = track;
+  status.params = expired(FrameType::TRACK_STATUS, Action::TrackStatus);
+  EXPECT_EQ(
+      folly::coro::blockingWait(publisher->trackStatus(status)).error().errorCode,
+      RequestErrorCode::EXPIRED_AUTH_TOKEN
+  );
+
+  PublishRequest pub;
+  pub.requestID = RequestID(6);
+  pub.fullTrackName = track;
+  pub.params = expired(FrameType::PUBLISH, Action::Publish);
+  EXPECT_EQ(
+      subscriber->publish(pub, nullptr).error().errorCode,
+      RequestErrorCode::EXPIRED_AUTH_TOKEN
+  );
+
+  PublishNamespace pubNs;
+  pubNs.requestID = RequestID(7);
+  pubNs.trackNamespace = TrackNamespace{{"live"}};
+  pubNs.params = expired(FrameType::PUBLISH_NAMESPACE, Action::PublishNamespace);
+  EXPECT_EQ(
+      folly::coro::blockingWait(subscriber->publishNamespace(pubNs, nullptr)).error().errorCode,
+      RequestErrorCode::EXPIRED_AUTH_TOKEN
+  );
+}
+
+// Grants that came from a setup token and have since expired are not "a token in the message",
+// so a request relying on them is a plain UNAUTHORIZED.
+TEST_F(AuthFiltersTest, ExpiredSessionGrantsAreAPlainUnauthorized) {
+  auto grants = makeGrants({Action::Subscribe});
+  grants.expiresAt = std::chrono::system_clock::now() - std::chrono::seconds(30);
+  auto publisher = makePublisherFilter({grants});
+  SubscribeRequest sub;
+  sub.requestID = RequestID(1);
+  sub.fullTrackName = FullTrackName{TrackNamespace{{"live"}}, "video"};
+  EXPECT_EQ(
+      folly::coro::blockingWait(publisher->subscribe(sub, nullptr)).error().errorCode,
+      RequestErrorCode::UNAUTHORIZED
+  );
 }

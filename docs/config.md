@@ -336,6 +336,21 @@ memory per service (bounded at 131072 live tokens, after which new `catreplay`
 tokens are refused), is lost on restart, and is not shared between relays.
 `catreplay` 2 is rejected. Composites, or other unsupported restrictions are rejected. `aud` is rejected unless `audiences` is configured.
 
+### Error codes for refused requests
+
+A request refused because a token it carries has expired fails with
+`EXPIRED_AUTH_TOKEN` (request error code `0x5`, MoQT draft 18 section 10.2.2).
+Every other refusal stays `UNAUTHORIZED`: a missing, malformed or wrongly signed
+token, a token that does not cover the action, and grants from the session's
+setup token that have since expired (those are not a token in the message). A
+session whose setup token is already expired when it connects is closed with
+the session error `EXPIRED_AUTH_TOKEN`. moxygen sends request error codes
+unchanged for every MoQT draft, so drafts 16, 18 and 22 use the same values; the
+draft 22 text itself has not been checked. Revalidation uses different codes
+for the stream-level endings: PUBLISH_DONE `UNAUTHORIZED` and fetch reset
+`EXPIRED_AUTH_TOKEN`, which moxygen sends as `0x7` from draft 18 and as `0`
+before it.
+
 ### Revalidation (`moqt-reval`)
 
 A token with `moqt-reval` N (integer seconds, N at least
@@ -345,7 +360,7 @@ at least every N seconds and, once it has expired, ends only that action:
 
 | Action | What happens |
 |---|---|
-| `subscribe` | The relay unsubscribes and sends PUBLISH_DONE with status `EXPIRED` for that subscription. |
+| `subscribe` | The relay unsubscribes and sends PUBLISH_DONE with status `UNAUTHORIZED` ("no longer authorized") for that subscription. |
 | `fetch` | The fetch is cancelled and its stream is reset with `EXPIRED_AUTH_TOKEN`. |
 | `subscribe_namespace` | The relay stops sending NAMESPACE updates for that subscription. The subscriber gets no explicit end message. |
 | `subscribe_tracks` | The relay ends that SUBSCRIBE_TRACKS. |

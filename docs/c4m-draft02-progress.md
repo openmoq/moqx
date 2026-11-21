@@ -51,11 +51,11 @@ with the limits listed under Remaining work.
 - Default build passed; the resolved catapult source matched the v1.0.0 tag.
 - Focused default CTest selection (C4m, Dpop, Auth, config resolver/serializer,
   issuer, filters) passed after the `aud`/`iss`, `catreplay`, DPoP, and
-  `moqt-reval` changes (including publish): 283/283.
+  `moqt-reval` changes (including publish) and the error-code mapping: 285/285.
   The earlier 125/125 selection predates those changes.
 - Sanitizer (ASAN/UBSAN/LeakSanitizer, `build/san`) run on the final code,
   including the `aud`/`iss`, `catreplay`, DPoP, and `unique_ptr` changes:
-  330/330 passed across codec, DPoP, authentication, issuer, configuration, and
+  332/332 passed across codec, DPoP, authentication, issuer, configuration, and
   revalidation filter tests (including the timer-driven ones). moqx and catapult crypto were instrumented; the prebuilt moxygen
   dependency was not.
 - The draft's ES256 vector verifies; a tampered signature fails.
