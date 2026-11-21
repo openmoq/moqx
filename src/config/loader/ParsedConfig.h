@@ -428,6 +428,11 @@ struct ParsedAuthConfig {
     rfl::Description<"Key identifier embedded in the token envelope", std::string> id;
     rfl::Description<"Shared HMAC secret for this key id", std::string> secret;
   };
+  struct Es256Key {
+    rfl::Description<"Key identifier embedded in the token envelope", std::string> id;
+    rfl::Description<"PEM P-256 public key file used for ES256 verification", std::string>
+        public_key_file;
+  };
 
   // A statically-granted scope applied to every request on this service,
   // regardless of what token (if any) authenticated it (see docs/config.md).
@@ -472,7 +477,7 @@ struct ParsedAuthConfig {
     using TrackMatch = rfl::Variant<ExactTrack, PrefixTrack, SuffixTrack, ContainsTrack>;
 
     rfl::Description<
-        "CAT4MOQ action names this scope grants without any token; client_setup/server_setup are "
+        "C4M action names this scope grants without any token; setup/client_setup are "
         "rejected -- the anonymous claim never authorizes session setup",
         std::vector<std::string>>
         actions;
@@ -485,6 +490,8 @@ struct ParsedAuthConfig {
   rfl::Description<"Expected MOQT AUTHORIZATION_TOKEN token type", std::optional<uint64_t>>
       token_type;
   rfl::Description<"Accepted HMAC signing keys", std::optional<std::vector<HmacKey>>> hmac_keys;
+  rfl::Description<"Accepted ES256 public verification keys", std::optional<std::vector<Es256Key>>>
+      es256_keys;
   rfl::Description<
       "Require a valid setup token during CLIENT_SETUP (default: true)",
       std::optional<bool>>
@@ -494,9 +501,30 @@ struct ParsedAuthConfig {
       std::optional<bool>>
       allow_request_token_override;
   rfl::Description<
-      "Reject unsupported token claims instead of ignoring them (default: false)",
+      "Also reject informational CWT claims; unsupported restrictions are always rejected "
+      "(default: false)",
       std::optional<bool>>
       strict_claims;
+  rfl::Description<
+      "Smallest moqt-reval interval in seconds that tokens may request. Tokens at or above it are "
+      "honored by re-checking the token and ending the affected action; 0 rejects every token "
+      "carrying moqt-reval (default: 5)",
+      std::optional<uint32_t>>
+      min_revalidation_interval_seconds;
+  rfl::Description<
+      "AUTHORIZATION_TOKEN type that carries DPoP proofs for cnf-bound tokens (default: 17; "
+      "not registered by the draft)",
+      std::optional<uint64_t>>
+      dpop_token_type;
+  rfl::Description<
+      "CWT audience values this relay accepts. When set, tokens must carry a matching aud claim; "
+      "when omitted, tokens carrying aud are rejected",
+      std::optional<std::vector<std::string>>>
+      audiences;
+  rfl::Description<
+      "CWT issuer values this relay accepts. When set, tokens must carry a matching iss claim",
+      std::optional<std::vector<std::string>>>
+      issuers;
   rfl::Description<
       "Anonymous (no-token) access grants applied to every request on this service, in "
       "addition to any verified setup/request token grants (default: none)",

@@ -548,31 +548,74 @@ void validateAuth(
 ) {
   if (auth.enabled.value()) {
     const auto& keys = auth.hmac_keys.value();
-    if (!keys.has_value() || keys->empty()) {
+    const auto& esKeys = auth.es256_keys.value();
+    if ((!keys || keys->empty()) && (!esKeys || esKeys->empty())) {
       errors.push_back(
-          "Service '" + serviceName + "': auth.hmac_keys is required when auth is enabled"
+          "Service '" + serviceName +
+          "': auth.hmac_keys or auth.es256_keys is required when auth is enabled"
       );
-    } else {
-      std::unordered_set<std::string> keyIDs;
+    }
+    std::unordered_set<std::string> keyIDs;
+    auto validateId = [&](const std::string& id, const std::string& prefix) {
+      if (id.empty()) {
+        errors.push_back(prefix + ".id must be non-empty");
+      } else if (!keyIDs.insert(id).second) {
+        errors.push_back(prefix + ".id duplicates another auth key");
+      }
+    };
+    if (keys) {
       for (size_t i = 0; i < keys->size(); ++i) {
         const auto& key = (*keys)[i];
         const auto prefix =
             "Service '" + serviceName + "': auth.hmac_keys[" + std::to_string(i) + "]";
-        if (key.id.value().empty()) {
-          errors.push_back(prefix + ".id must be non-empty");
-        } else if (!keyIDs.insert(key.id.value()).second) {
-          errors.push_back(prefix + ".id duplicates another auth key");
-        }
+        validateId(key.id.value(), prefix);
         if (key.secret.value().empty()) {
           errors.push_back(prefix + ".secret must be non-empty");
         }
       }
     }
-    // token_type 0 is a valid MOQT AUTHORIZATION_TOKEN type, accepted as-is
-    // and not treated as "unset". An omitted token_type also resolves to 0
-    // (see resolveAuth): omitting it and setting token_type: 0 are identical.
-    if (auth.token_type.value().value_or(0) >= kQuicVarintExclusiveUpperBound) {
+    if (esKeys) {
+      for (size_t i = 0; i < esKeys->size(); ++i) {
+        const auto& key = (*esKeys)[i];
+        const auto prefix =
+            "Service '" + serviceName + "': auth.es256_keys[" + std::to_string(i) + "]";
+        validateId(key.id.value(), prefix);
+        if (key.public_key_file.value().empty()) {
+          errors.push_back(prefix + ".public_key_file must be non-empty");
+        }
+      }
+    }
+    // Type 0 remains an explicit private override; the C4M default is 1.
+    if (auth.token_type.value().value_or(1) >= kQuicVarintExclusiveUpperBound) {
       errors.push_back("Service '" + serviceName + "': auth.token_type must fit in a QUIC varint");
+    }
+    for (const auto& [field, values] :
+         {std::pair{"audiences", &auth.audiences.value()},
+          std::pair{"issuers", &auth.issuers.value()}}) {
+      if (!values->has_value()) {
+        continue;
+      }
+      if ((*values)->empty()) {
+        errors.push_back("Service '" + serviceName + "': auth." + field + " must not be empty");
+      }
+      for (const auto& v : **values) {
+        if (v.empty()) {
+          errors.push_back(
+              "Service '" + serviceName + "': auth." + field + " entries must be non-empty"
+          );
+        }
+      }
+    }
+    const auto dpopType = auth.dpop_token_type.value().value_or(17);
+    if (dpopType >= kQuicVarintExclusiveUpperBound) {
+      errors.push_back(
+          "Service '" + serviceName + "': auth.dpop_token_type must fit in a QUIC varint"
+      );
+    }
+    if (dpopType == auth.token_type.value().value_or(1)) {
+      errors.push_back(
+          "Service '" + serviceName + "': auth.dpop_token_type must differ from auth.token_type"
+      );
     }
     const auto& maxTokens = auth.max_tokens_per_message.value();
     if (!maxTokens.has_value()) {
@@ -612,8 +655,8 @@ void validateAuth(
     for (const auto& name : actions) {
       auto action = auth::canonicalAction(name);
       if (!action) {
-        errors.push_back(prefix + ".actions: '" + name + "' is not a recognized CAT4MOQ action");
-      } else if (*action == auth::Action::ClientSetup || *action == auth::Action::ServerSetup) {
+        errors.push_back(prefix + ".actions: '" + name + "' is not a recognized C4M action");
+      } else if (*action == auth::Action::ClientSetup) {
         errors.push_back(
             prefix + ".actions: '" + name +
             "' is not allowed here -- the anonymous claim never authorizes session setup"
@@ -682,17 +725,32 @@ AuthConfig resolveAuth(const std::optional<ParsedAuthConfig>& parsed) {
     return out;
   }
   out.enabled = parsed->enabled.value();
-  out.tokenType = parsed->token_type.value().value_or(0);
+  out.tokenType = parsed->token_type.value().value_or(1);
   out.requireSetupToken = parsed->require_setup_token.value().value_or(true);
   out.allowRequestTokenOverride = parsed->allow_request_token_override.value().value_or(true);
   out.strictClaims = parsed->strict_claims.value().value_or(false);
   out.maxTokensPerMessage = parsed->max_tokens_per_message.value().value_or(0);
+  out.minRevalidationSeconds = parsed->min_revalidation_interval_seconds.value().value_or(5);
+  out.dpopTokenType = parsed->dpop_token_type.value().value_or(17);
+  if (parsed->audiences.value()) {
+    out.audiences = *parsed->audiences.value();
+  }
+  if (parsed->issuers.value()) {
+    out.issuers = *parsed->issuers.value();
+  }
   if (parsed->hmac_keys.value()) {
     for (const auto& key : *parsed->hmac_keys.value()) {
       out.hmacKeys.push_back(AuthConfig::HmacKey{
           .id = key.id.value(),
           .secret = key.secret.value(),
       });
+    }
+  }
+  if (parsed->es256_keys.value()) {
+    for (const auto& key : *parsed->es256_keys.value()) {
+      out.es256Keys.push_back(
+          AuthConfig::Es256Key{.id = key.id.value(), .publicKeyFile = key.public_key_file.value()}
+      );
     }
   }
   if (parsed->anonymous_claim.value()) {

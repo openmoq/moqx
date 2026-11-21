@@ -6,8 +6,10 @@
 
 #pragma once
 
-#include "auth/Action.h"
+#include "auth/C4m.h"
 #include "config/Config.h"
+
+#include <catapult/crypto.hpp>
 
 #include <folly/Expected.h>
 #include <folly/Unit.h>
@@ -17,6 +19,7 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -25,36 +28,8 @@
 
 namespace openmoq::moqx::auth {
 
-enum class AuthError {
-  Missing,
-  WrongTokenType,
-  Malformed,
-  BadSignature,
-  Expired,
-  Forbidden,
-  TooManyTokens,
-};
-
-struct MatchRule {
-  using Type = MatchRuleType;
-  Type type{Type::Exact};
-  std::string value;
-};
-
-struct Scope {
-  std::vector<Action> actions;
-  std::vector<MatchRule> namespaceMatches;
-  std::vector<MatchRule> trackMatches;
-};
-
-struct Grants {
-  std::chrono::system_clock::time_point expiresAt{std::chrono::system_clock::time_point::max()};
-  std::vector<Scope> scopes;
-};
-
-// Length-prefixed byte-encoding of a namespace's segments, used both as a
-// MatchRule value and as the bytes matched against it. A stable wire format:
-// signer and verifier must produce byte-identical output independently.
+// Encoding for local anonymous-policy matching only. C4M token scopes match
+// individual fields and never use this representation.
 inline std::string canonicalNamespace(const moxygen::TrackNamespace& ns) {
   std::string out;
   for (const auto& field : ns.trackNamespace) {
@@ -71,6 +46,7 @@ public:
 
   bool enabled() const { return config_.enabled; }
   uint64_t tokenType() const { return config_.tokenType; }
+  uint64_t dpopTokenType() const { return config_.dpopTokenType; }
   bool requireSetupToken() const { return config_.requireSetupToken; }
   bool allowRequestTokenOverride() const { return config_.allowRequestTokenOverride; }
 
@@ -81,28 +57,67 @@ public:
   // when enabled().
   uint32_t maxTokensPerMessage() const { return config_.maxTokensPerMessage; }
 
-  // Statically-configured anonymous claim, applied as a floor on every
-  // request (see docs/config.md#anonymous-claim). Never covers
-  // Action::ClientSetup — it can't bypass a required setup token.
-  const Grants& anonymousGrants() const { return anonymousGrants_; }
+  bool allowsAnonymous(
+      Action action,
+      const moxygen::TrackNamespace& ns,
+      std::optional<std::string_view> trackName
+  ) const;
 
-  folly::Expected<Grants, AuthError> verify(const moxygen::AuthToken& token) const;
+  // connectionId identifies the accepting connection (see newConnectionId()). It binds tokens
+  // carrying catreplay 1 to that connection; 0 means unknown, which such tokens cannot use.
+  folly::Expected<Grants, AuthError>
+  verify(const moxygen::AuthToken& token, uint64_t connectionId = 0) const;
 
 private:
-  // HMAC key material derived once at construction. keyIdIndex_ maps each
-  // configured key's id to its index in derivedKeys_, enabling O(1) key
-  // selection when a token carries a kid header. Tokens without a kid fall
-  // back to trial-verification over the full derivedKeys_ list.
-  struct DerivedKey {
+  // Key material is loaded once. ES256 entries contain only a public key;
+  // kid routing never changes the key's configured algorithm.
+  folly::Expected<Grants, AuthError> verifySignature(const moxygen::AuthToken& token) const;
+
+  struct VerificationKey {
     std::string id;
-    std::vector<uint8_t> key;
+    std::unique_ptr<const catapult::CryptographicAlgorithm> algorithm;
   };
 
   config::AuthConfig config_;
-  std::vector<DerivedKey> derivedKeys_;
+  ClaimPolicy claimPolicy_;
+  std::vector<VerificationKey> keys_;
   std::unordered_map<std::string, std::size_t> keyIdIndex_;
-  Grants anonymousGrants_;
+
+  // Replay state for catreplay 1: token identity -> {connection, expiry}. Retained after the
+  // connection closes until the token expires, so reuse stays blocked. Bounded; when full of
+  // live entries new replay-protected tokens are refused rather than left unprotected.
+  struct ReplayEntry {
+    uint64_t connectionId;
+    std::chrono::system_clock::time_point expiresAt;
+  };
+  static constexpr std::size_t kMaxReplayEntries = 1u << 17;
+  bool bindReplay(const Grants& grants, uint64_t connectionId) const;
+
+public:
+  // DPoP: keeps the grants whose cnf binding is satisfied by a valid proof among `params` for this
+  // exact action (draft-02 section 4.3). Grants without cnf pass through unchanged.
+  std::vector<Grants> applyDpop(
+      const std::vector<Grants>& grants,
+      const moxygen::Parameters& params,
+      const DpopContext& context,
+      uint64_t connectionId
+  ) const;
+
+private:
+  // True the first time a proof cti is seen within its window; false for a replay or when full.
+  bool noteProofCti(
+      const Grants& grants,
+      const std::string& cti,
+      std::chrono::system_clock::time_point expiresAt
+  ) const;
+  mutable std::mutex proofMutex_;
+  mutable std::unordered_map<std::string, std::chrono::system_clock::time_point> proofCtis_;
+  mutable std::mutex replayMutex_;
+  mutable std::unordered_map<std::string, ReplayEntry> replay_;
 };
+
+// Process-unique, non-zero id for one accepted connection.
+uint64_t newConnectionId();
 
 // Returns every AUTHORIZATION_TOKEN parameter matching tokenType, not just the
 // first — a message may carry more than one, and a request is authorized if
@@ -149,19 +164,37 @@ const char* toString(AuthError error);
 // is set, connecting is additionally gated on whether any one of them
 // permits Action::ClientSetup; without it, verified grants pool into the
 // session with no ClientSetup check.
-folly::Expected<std::shared_ptr<const std::vector<Grants>>, AuthError>
-authenticateSetup(const AuthTokenVerifier& verifier, const moxygen::Parameters& setupParams);
+folly::Expected<std::shared_ptr<const std::vector<Grants>>, AuthError> authenticateSetup(
+    const AuthTokenVerifier& verifier,
+    const moxygen::Parameters& setupParams,
+    uint64_t connectionId = 0
+);
+
+// How long an authorized action may continue (moqt-reval, draft-02 section 2.2). Present only
+// when every source that authorizes the action expires and asks to be revalidated: the action
+// must end once `deadline` (the latest expiry among them) has passed, and until then the relay
+// re-checks at least every `interval`. Absent when the action is authorized by anything that does
+// not expire or does not ask for revalidation (anonymous_claim, a plain token).
+struct Revalidation {
+  std::chrono::system_clock::time_point deadline;
+  std::chrono::seconds interval;
+};
+
+struct AuthDecision {
+  std::optional<Revalidation> revalidation;
+};
 
 // Authorizes a request against session grants, or per-request token(s) when
 // allow_request_token_override is set. Permitted if any verified request
 // token, or any session grant, covers the action. Returns Unit when permitted.
-folly::Expected<folly::Unit, AuthError> authorize(
+folly::Expected<AuthDecision, AuthError> authorize(
     const AuthTokenVerifier& verifier,
     Action action,
     const moxygen::Parameters& params,
     const moxygen::TrackNamespace& ns,
     const std::vector<Grants>& sessionGrants,
-    std::optional<std::string_view> trackName = std::nullopt
+    std::optional<std::string_view> trackName = std::nullopt,
+    uint64_t connectionId = 0
 );
 
 } // namespace openmoq::moqx::auth

@@ -276,7 +276,7 @@ services:
         path: {exact: "/moq-relay"}
     auth:
       enabled: true
-      token_type: 16
+      token_type: 1
       hmac_keys:
         - id: "cat-dev"
           secret: "replace-with-long-random-secret"
@@ -291,17 +291,132 @@ services:
 
 | Field | Default | Notes |
 |---|---|---|
-| `enabled` | `false` | Enables CAT-style authorization for this service. When `false`, nothing is enforced and the other `auth` fields have no effect. |
-| `token_type` | `0` | MOQT `AUTHORIZATION_TOKEN` type to accept. Use `16` with CAT4MOQ tokens produced for moqxr's CAT wrapper. Type `0` is valid for private or out-of-band deployments. The value must fit in a QUIC variable integer. |
-| `hmac_keys` | empty | Required when `enabled: true`. Each key needs a non-empty `id` and `secret`; duplicate key IDs are rejected. The token issuer must use the same key ID and secret. |
+| `enabled` | `false` | Enables C4M draft-02 bearer-token authorization for this service. When `false`, nothing is enforced and the other `auth` fields have no effect. |
+| `token_type` | `1` | C4M CAT token type `0x01` (draft 02 section 8.2). An explicit override is for private deployments; it does not enable the legacy CAT4MOQ wire format. The value must fit in a QUIC variable integer. |
+| `hmac_keys` | empty | HMAC verification secrets. Each entry needs a non-empty `id` and `secret`. At least one HMAC or ES256 key is required when enabled. |
+| `es256_keys` | empty | ES256 public keys: `{id, public_key_file}`. Each file must contain a PEM P-256 public key, loaded once when service auth is initialized. IDs must be unique across both key lists. Private keys and other curves are rejected. Paths resolve from the process working directory. Public-only services need no HMAC secret. |
 | `require_setup_token` | `true` | Requires a valid setup token authorizing `client_setup` during session setup. If `false`, clients can connect without setup grants; per-request actions still need an authorized token or a matching `anonymous_claim` entry. |
 | `allow_request_token_override` | `true` | Lets a token on a request count as one more candidate grant for that request, alongside the session's setup-token grants and `anonymous_claim`. If `false`, request tokens are ignored and authorization uses only the setup token grants and `anonymous_claim`. |
-| `strict_claims` | `false` | When `true`, rejects a token that carries any claim other than `exp` and `moqt`, the claims the relay enforces. It also rejects a repeated claim and an `exp` that is not an unsigned integer. The relay does not enforce `moqt-reval`, so a token that carries it is rejected. Keep this `false` for current CAT4MOQ interop unless every issuer is known to send only supported claims. |
+| `audiences` | none | CWT `aud` values this relay accepts. When set, a token must carry `aud` (a string or array of strings) and at least one value must equal an entry, otherwise it is rejected. When omitted, any token carrying `aud` is rejected. Entries must be non-empty. |
+| `issuers` | none | CWT `iss` values this relay accepts. When set, a token must carry a matching `iss`. When omitted, `iss` is informational. Entries must be non-empty. |
+| `dpop_token_type` | `17` | AUTHORIZATION_TOKEN type carrying DPoP proofs for `cnf`-bound tokens. The draft does not register a type for proofs; this value is provisional, must differ from `token_type`, and must fit in a QUIC variable integer. Proofs count toward `max_tokens_per_message`. |
+| `min_revalidation_interval_seconds` | `5` | Smallest `moqt-reval` interval, in seconds, that tokens may request. A token with a shorter interval is rejected, and `0` rejects every token carrying a nonzero `moqt-reval` (the draft's "unable to revalidate" case). See [Revalidation](#revalidation-moqt-reval). |
+| `strict_claims` | `false` | Also rejects informational `iss` (when `issuers` is unset), `sub`, `iat`, and `cti` claims (a `cti` that `catreplay` 1 requires is not informational and is accepted). Unsupported restrictions and repeated claims are always rejected, regardless of this setting. |
 | `max_tokens_per_message` | none | Required when `enabled: true`, directly or via `service_defaults.auth.max_tokens_per_message`. Caps how many `AUTHORIZATION_TOKEN` params of the configured `token_type` a single SETUP or request message may carry; a message over the cap is rejected outright, not truncated. Params of other token types are not counted. Bounds per-message verification cost against a client attaching many tokens to one message. Must be >= 1. |
 | `anonymous_claim` | empty | Statically-granted scopes applied to every request on this service, regardless of what token (if any) authenticated it. See [Anonymous Claim](#anonymous-claim) below. |
 
 The relay only verifies tokens; it does not call an external grant handler.
-Grant decisions are encoded by the token issuer as CAT4MOQ actions and scopes.
+Grant decisions are encoded by the issuer using
+[`draft-ietf-moq-c4m-02`](ref/draft-ietf-moq-c4m-02.txt). This initial implementation
+accepts tagged COSE_Mac0 with HMAC-SHA256 (algorithm 5, `MAC0` context) and
+tagged COSE_Sign1 with ES256 (algorithm -7, `Signature1` context). The adapter
+uses catapult v1.0.0 cryptographic primitives, converts its DER ECDSA signatures
+to/from the COSE fixed-width 64-byte form, and retains draft-02 claim handling.
+The legacy CAT4MOQ token format is rejected; existing clients
+must obtain new tokens and select token type `1`.
+
+The `moqt` and `moqt-reval` claim labels are still unassigned. moqx uses the
+appendix's Private Use placeholders `-65537` and `-65538`, respectively; these
+are provisional interoperability values, not IANA assignments.
+
+C4M namespace matches apply separately to each namespace field. Exact matches
+are byte strings, prefix/suffix matches are `[1, bytes]` / `[2, bytes]`, and a
+final `nil` limits the namespace to exactly that number of fields. Without
+`nil`, matching namespace descendants are included. Track matching permits one
+exact, prefix, or suffix rule. Compound and contains rules are not token formats.
+A track-restricted scope cannot authorize a namespace-only request.
+
+This is a bearer-token subset, not full draft-02 conformance. `exp` and `nbf`
+are enforced, including duplicate-key and timestamp-range checks. Integer
+NumericDates are supported; floating-point time values are rejected. Optional
+`catv` must be `1`. `catreplay` 1 (single connection) is enforced: the token must carry `cti` and
+`exp`, and is bound to the connection that first presents a validly signed copy;
+any other connection is refused until the token expires. A token that is also
+DPoP-bound is bound only once its proof validates, so someone holding the token
+but not the key cannot claim the binding and lock the holder out. State is held in
+memory per service (bounded at 131072 live tokens, after which new `catreplay`
+tokens are refused), is lost on restart, and is not shared between relays.
+`catreplay` 2 is rejected. Composites, or other unsupported restrictions are rejected. `aud` is rejected unless `audiences` is configured.
+
+### Error codes for refused requests
+
+A request refused because a token it carries has expired fails with
+`EXPIRED_AUTH_TOKEN` (request error code `0x5`, MoQT draft 18 section 10.2.2),
+and one whose token cannot be decoded fails with `MALFORMED_AUTH_TOKEN` (`0x4`).
+Every other refusal stays `UNAUTHORIZED`: a missing or wrongly signed token, a
+token with a restriction the relay does not support (such as `aud` with no
+`audiences` configured), a token that does not cover the action, and grants from the session's
+setup token that have since expired (those are not a token in the message). A
+session whose setup token is already expired or undecodable when it connects is
+closed with the session error `EXPIRED_AUTH_TOKEN` or `MALFORMED_AUTH_TOKEN`. moxygen sends request error codes
+unchanged for every MoQT draft, so drafts 16, 18 and 22 use the same values; the
+draft 22 text itself has not been checked. Revalidation uses different codes
+for the stream-level endings: PUBLISH_DONE `UNAUTHORIZED` and fetch reset
+`EXPIRED_AUTH_TOKEN`, which moxygen sends as `0x7` from draft 18 and as `0`
+before it.
+
+### Revalidation (`moqt-reval`)
+
+A token with `moqt-reval` N (integer seconds, N at least
+`min_revalidation_interval_seconds`) and an `exp` stays good for an ongoing
+action only while it is acceptable. The relay re-checks the authorizing token
+at least every N seconds and, once it has expired, ends only that action:
+
+| Action | What happens |
+|---|---|
+| `subscribe` | The relay unsubscribes and sends PUBLISH_DONE with status `UNAUTHORIZED` ("no longer authorized") for that subscription. |
+| `fetch` | The fetch is cancelled and its stream is reset with `EXPIRED_AUTH_TOKEN`. |
+| `subscribe_namespace` | The relay stops sending NAMESPACE updates for that subscription. The subscriber gets no explicit end message. |
+| `subscribe_tracks` | The relay ends that SUBSCRIBE_TRACKS. |
+| `publish_namespace` | The namespace is withdrawn from the relay, then the publisher is told: on draft 18 and later by resetting the request stream (`CANCELLED`, since the draft removed PUBLISH_NAMESPACE_CANCEL), before that by PUBLISH_NAMESPACE_CANCEL with `EXPIRED_AUTH_TOKEN`. The tracks that publisher session is sending under the namespace are ended too: the relay unsubscribes from the publisher and sends the tracks' subscribers PUBLISH_DONE `TRACK_ENDED`, so a publisher that ignores the cancel cannot keep feeding open subscriptions. |
+| `publish` | The relay unsubscribes from the publisher's track. The publisher is not sent a separate error. |
+
+The session and every other action on it are left alone. An action is ended only
+when everything that authorizes it has expired: if it is also covered by a token
+without `moqt-reval`, a token that never expires, or an `anonymous_claim`, it
+continues. When several revalidated tokens cover it, it ends after the latest
+expiry. New requests after expiry are refused by the normal expiry check.
+
+The relay logs each ending at INFO (`revalidation: the token authorizing a ... is no
+longer acceptable; ending it`).
+
+Limits: `setup` is not revalidated. A `setup` token that expires does not close
+the session, but the grants it supplied stop authorizing new requests. A
+`publish` is watched from the moment the session awaits the PUBLISH reply (which
+it does on receipt); a refused PUBLISH is never watched, and the watch stops on
+its own once the relay releases the publisher's handle and track consumer. A token that carries `moqt-reval`
+without `exp` never changes, so there is nothing to end. Intervals must be
+integers; floating-point values are rejected.
+
+DPoP (draft section 4) is enforced for tokens carrying `cnf` with `ckt` (key 5,
+RFC 9679 COSE Key Thumbprint) or `jkt` (key 323, RFC 7638 JWK Thumbprint) and
+optional `catdpop` (`0` window seconds, default 300; `1` proof `cti` replay
+detection, on unless `0`). Such a token is not a bearer token: SETUP and every
+later action it would authorize, including actions covered by the session's
+setup grants, must carry a COSE_Sign1 proof in an AUTHORIZATION_TOKEN of type
+`dpop_token_type`. The proof must be ES256 with `typ` `dpop-proof+cwt` and the
+client key in a `kccs` header; its key thumbprint must match `cnf`, `ath` must be
+the SHA-256 of the token as presented, `iat` must be within the window, and
+`actx` must name the exact action, namespace fields, and track name. A proof
+`cti` is accepted once per token within its window (in-memory, bounded). The
+claim labels for `actx` and `ath` are unassigned; moqx uses the provisional
+private-use values -65539 and -65540, so proofs from other implementations will
+not interoperate until final labels exist. Proofs may be signed with ES256, ES384
+(P-384), or EdDSA (Ed25519); the proof's key type must match its `alg`, and a
+`cnf` thumbprint is computed over that key (`ckt`: RFC 9679, `jkt`: RFC 7638 and
+RFC 8037). Ed448 and other curves are not supported.
+`iss`/`sub`/`iat`/`cti` are informational and do not authenticate identities.
+The decoder accepts definite-length CBOR, at most 64 KiB per token, 1024 scopes,
+and 32 namespace fields per scope. Unsupported encodings are rejected.
+
+HMAC keys are derived from configured secrets using the existing HKDF-SHA256
+scheme (`salt=moqx-catapult-v1`, `info=moqx-catapult-hmac-token-verify`, 32 output
+bytes). Those strings remain fixed for configured-secret continuity; independent
+issuers must derive the same key. They are local deployment conventions, not
+requirements of C4M. COSE `kid` is a byte string; the issuer places it in the
+protected header. A configured key is never used with a different algorithm,
+even if its `kid` matches. Tokens without `kid` are tried only against keys of
+the algorithm named in their protected header.
 
 A message (SETUP or any per-request message) may carry more than one
 `AUTHORIZATION_TOKEN` of the configured `token_type`, up to
@@ -317,7 +432,7 @@ request outright, as long as some other token, the session's setup grants, or
 `anonymous_claim` grants a floor of access to every request on the service,
 whether or not the request carries a token at all, whether or not a setup
 token was presented, and regardless of what any presented token grants. It
-never authorizes `client_setup`/`server_setup` — connecting still needs a
+never authorizes `setup`/`client_setup` — connecting still needs a
 valid setup token whenever `require_setup_token: true`; the claim only ever
 widens what an already-connected session (or an anonymous one, when
 `require_setup_token: false`) can do per request.
@@ -337,17 +452,15 @@ auth:
 Each entry:
 - `actions` — one or more action names from the table below (aliases and
   numeric IDs accepted, same as `moqx-issuer`'s `--auth-actions`).
-  `client_setup`/`server_setup` are rejected.
+  `setup`/`client_setup` are rejected. The obsolete `server_setup` name is not accepted.
 - `namespace_match` — optional; a list of namespace segments matched by
   `exact`, `prefix`, `suffix`, or `contains`. Omit to match any namespace.
 - `track_match` — optional; a single track name matched by `exact`, `prefix`,
   `suffix`, or `contains`. Omit to match any track.
 
-The four match modes are the same `BinaryMatchType` (exact/prefix/suffix/contains)
-CAT4MOQ tokens use for their own namespace/track claims, so an `anonymous_claim`
-scope matches namespaces and tracks with identical semantics to a token-granted
-scope.
-
+Anonymous policies are local configuration, separate from C4M token scopes.
+Their existing whole-namespace matching and exact/prefix/suffix/contains modes
+remain available; they are not serialized into tokens.
 ### Issuing Tokens
 
 Use the standalone `moqx-issuer` binary as the deployment/operator tool. For
@@ -359,11 +472,17 @@ moqx-issuer \
   --config /etc/moqx/config.yaml \
   --auth-service live \
   --auth-key-id cat-dev \
-  --auth-actions client_setup,publish_namespace,publish \
+  --auth-actions setup,publish_namespace,publish \
   --auth-namespace live/event/main \
   --auth-track video \
   --auth-ttl-seconds 3600
 ```
+
+`--auth_dpop_window_seconds` must be 1 to 86400 and `--auth_revalidate_seconds` 0 to
+31536000, the ranges the relay accepts. `--auth_dpop_key_file <pem>` binds the token to a client P-256, P-384, or Ed25519 key with `cnf`
+(`ckt`, or `jkt` with `--auth_dpop_jkt`) and `catdpop` (`--auth_dpop_window_seconds`).
+`--auth_replay_protect` adds `catreplay` 1 with a random `cti`. `--auth_issuer` and `--auth_audience` (comma-separated for several) add `iss` and `aud`
+claims for relays that configure `issuers`/`audiences`.
 
 The default output is `base64:<token>`, which is suitable for tools that accept
 a base64-prefixed CAT token string. Use `--auth-output base64`, `hex`, or `raw`
@@ -376,55 +495,93 @@ reading relay config:
 moqx-issuer \
   --auth-key-id cat-dev \
   --auth-secret replace-with-long-random-secret \
-  --auth-actions client_setup,publish_namespace,publish \
+  --auth-actions setup,publish_namespace,publish \
   --auth-namespace live/event/main \
   --auth-track video
 ```
+
+For ES256, keep the private key on the issuer and distribute only the public key
+to relays. Generate a P-256 key pair on the issuer host:
+
+```bash
+openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out issuer-private.pem
+openssl pkey -in issuer-private.pem -pubout -out issuer-public.pem
+```
+
+Configure the relay without a signing secret:
+
+```yaml
+auth:
+  enabled: true
+  es256_keys:
+    - id: issuer-main
+      public_key_file: /etc/moqx/issuer-public.pem
+  max_tokens_per_message: 4
+```
+
+Sign on the issuer host:
+
+```bash
+moqx-issuer \
+  --auth-private-key-file /secure/issuer-private.pem \
+  --auth-key-id issuer-main \
+  --auth-actions setup,publish_namespace,publish \
+  --auth-namespace live/event/main \
+  --auth-track video
+```
+
+`--auth-private-key-file` and `--auth-secret` are mutually exclusive. The private
+key must be unencrypted PEM P-256; encrypted files are rejected without prompting.
+With `--config` and `--auth-service`, ES256 mode selects an `es256_keys` ID and
+checks that the private key produces tokens verifiable with that public key
+before printing a token. With no explicit ID it selects the first configured
+ES256 key; HMAC mode selects the first HMAC key. Tokens are signed with HMAC-SHA256 or
+ES256, the two algorithms the draft defines; PS256 tokens are not supported.
+This implements the ES256 signing/verification requested in
+[issue #971](https://github.com/openmoq/moqx/issues/971).
 
 Supported action names are:
 
 | Name | Draft action |
 |---|---|
-| `client_setup` or `setup` | `CLIENT_SETUP` |
-| `server_setup` | `SERVER_SETUP` |
-| `publish_namespace` or `announce` | `ANNOUNCE` |
+| `setup` or `client_setup` | `SETUP` (1) |
+| `publish_namespace` or `announce` | `PUBLISH_NAMESPACE` (2) |
 | `subscribe_namespace` | `SUBSCRIBE_NAMESPACE` |
 | `subscribe` | `SUBSCRIBE` |
-| `request_update` or `subscribe_update` | `SUBSCRIBE_UPDATE` |
+| `request_update` or `subscribe_update` | `REQUEST_UPDATE` (5) |
 | `publish` | `PUBLISH` |
 | `fetch` | `FETCH` |
-| `track_status` | `TRACK_STATUS` |
+| `track_status` | `TRACK_STATUS` (8) |
+| `subscribe_tracks` | `SUBSCRIBE_TRACKS` (9) |
 
-The CLI also accepts the numeric draft action values `0` through `8`.
-`--auth-actions` defaults to `client_setup,publish_namespace,publish`, which is
-the common publisher case. The `client_setup` grant is unconstrained. Namespace
+The CLI also accepts the numeric draft action values `1` through `9`.
+`--auth-actions` defaults to `setup,publish_namespace,publish`, which is
+the common publisher case. The `setup` grant is unconstrained. Namespace
 actions are scoped by `--auth-namespace`, and track actions are scoped by
 `--auth-namespace` plus `--auth-track` when a track is provided. Namespace
-segments are slash-separated on the CLI, for example `live/event/main`.
+segments are slash-separated on the CLI, for example `live/event/main`. The
+issuer terminates a supplied namespace with `nil`, so the token does not grant
+access to additional namespace fields. A track restriction without a supplied
+namespace is limited to the zero-field namespace. `SUBSCRIBE_TRACKS` requires
+its own grant; `subscribe_namespace` does not cover it. REQUEST_UPDATE requires
+an independent grant for the original request target. Namespace-changing
+REQUEST_UPDATE parameters are rejected by this initial core.
 
-### Using Auth From moqxr
+### Client Integration
 
-A publisher app should obtain a token before connecting or before issuing a
-request that needs narrower grants, then pass that token as the MOQT
-`AUTHORIZATION_TOKEN` value with the relay's configured token type. For moqxr's
-auth example, the easiest local setup is to call the moqx-issuer command:
+Clients must send the binary CWT in `AUTHORIZATION_TOKEN` with token type `1`
+(or the explicitly configured private type). Base64 is an application transport
+representation; decode it before forming the MOQT parameter.
 
-```bash
-export CATAPULT_CAT4MOQ_COMMAND='moqx-issuer \
-  --config /etc/moqx/config.yaml \
-  --auth-service live \
-  --auth-key-id cat-dev \
-  --auth-actions client_setup,publish_namespace,publish \
-  --auth-namespace {namespace} \
-  --auth-track {track}'
-```
-
-The placeholders are replaced by the publisher example. If a deployment issues
-one broad publisher token, keep the fixed action list shown above. If it issues
-request-specific tokens, include the `{action}` placeholder and map it to the
-grant set required by that request; for the current moqxr auth example, the
-publisher command is invoked with `{action}` set to `client_setup` for the setup
-token and `publish` for the action token.
+Use the sibling moqxr publisher for media interoperability testing. Passing a
+token minted by `moqx-issuer` to `openmoq-publisher` with
+`--auth-profile c4m-01 --auth-token-file <file>` (token type 1) has been
+verified for HMAC tokens over MoQT draft 18 and WebTransport: the relay accepts
+a correctly scoped publisher, rejects a missing or wrong-scope token, and
+delivers media to a subscriber. Its legacy CAT4MOQ issuer/wrapper must not be
+assumed compatible: action IDs, claim labels, namespace matching, COSE tags, and
+MAC context have changed, and its DPoP proofs use the draft-01 JWT form, which
+this relay does not accept.
 
 ### Docker Usage
 
@@ -439,7 +596,7 @@ docker run --rm \
   --config /etc/moqx/config.yaml \
   --auth-service live \
   --auth-key-id cat-dev \
-  --auth-actions client_setup,publish_namespace,publish \
+  --auth-actions setup,publish_namespace,publish \
   --auth-namespace live/event/main \
   --auth-track video
 ```

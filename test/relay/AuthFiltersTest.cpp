@@ -5,6 +5,7 @@
  */
 
 #include "relay/AuthFilters.h"
+#include "relay/NamespaceRevocable.h"
 
 #include "MoqxRelay.h"
 #include "UpstreamProvider.h"
@@ -13,9 +14,13 @@
 #include "auth/AuthTokenIssuer.h"
 
 #include <folly/coro/BlockingWait.h>
+#include <folly/io/async/ScopedEventBaseThread.h>
 #include <folly/portability/GMock.h>
 #include <folly/portability/GTest.h>
 #include <moxygen/test/Mocks.h>
+
+#include <future>
+#include <thread>
 
 using testing::_;
 using testing::NiceMock;
@@ -148,6 +153,207 @@ TEST_F(AuthFiltersTest, RelayWithoutAnIdChecksGrantsForRelayTokens) {
 
 // Two session-grants entries where only the second covers Subscribe: the
 // filter must permit it (any pool element satisfying is enough).
+TEST_F(AuthFiltersTest, C4mSubscribeTracksNeedsItsOwnAction) {
+  SubscribeTracks request;
+  request.requestID = RequestID(3);
+  request.trackNamespacePrefix = TrackNamespace{{"live"}};
+  EXPECT_CALL(*publisherInner_, subscribeTracks(_, _)).WillOnce([](SubscribeTracks s, auto) {
+    return folly::coro::makeTask<Publisher::SubscribeTracksResult>(folly::makeUnexpected(
+        SubscribeTracksError{s.requestID, RequestErrorCode::NOT_SUPPORTED, "inner"}
+    ));
+  });
+  auto denied = folly::coro::blockingWait(
+      makePublisherFilter({makeGrants({Action::SubscribeNamespace})})->subscribeTracks(request)
+  );
+  ASSERT_TRUE(denied.hasError());
+  EXPECT_EQ(denied.error().errorCode, RequestErrorCode::UNAUTHORIZED);
+  auto forwarded = folly::coro::blockingWait(
+      makePublisherFilter({makeGrants({Action::SubscribeTracks})})->subscribeTracks(request)
+  );
+  ASSERT_TRUE(forwarded.hasError());
+  EXPECT_EQ(forwarded.error().errorCode, RequestErrorCode::NOT_SUPPORTED);
+}
+
+TEST_F(AuthFiltersTest, C4mRequestUpdateNeedsIndependentGrantAndForwardsCancellation) {
+  auto filter = makePublisherFilter({makeGrants({Action::Subscribe})});
+  SubscribeOk ok;
+  ok.requestID = RequestID(1);
+  auto inner = std::make_shared<NiceMock<MockSubscriptionHandle>>(ok);
+  EXPECT_CALL(*publisherInner_, subscribe(_, _)).WillOnce([inner](auto, auto) {
+    return folly::coro::makeTask<Publisher::SubscribeResult>(
+        std::shared_ptr<SubscriptionHandle>(inner)
+    );
+  });
+  SubscribeRequest request;
+  request.requestID = RequestID(1);
+  request.fullTrackName = FullTrackName{TrackNamespace{{"live"}}, "video"};
+  auto subscribed = folly::coro::blockingWait(filter->subscribe(request, nullptr));
+  ASSERT_TRUE(subscribed.hasValue());
+  EXPECT_CALL(*inner, requestUpdateCalled(_)).Times(0);
+  RequestUpdate update;
+  update.requestID = RequestID(2);
+  auto denied = folly::coro::blockingWait(subscribed.value()->requestUpdate(update));
+  ASSERT_TRUE(denied.hasError());
+  EXPECT_EQ(denied.error().errorCode, RequestErrorCode::UNAUTHORIZED);
+  EXPECT_EQ(denied.error().requestID, update.requestID);
+  EXPECT_EQ(subscribed.value()->subscribeOk().requestID, ok.requestID);
+  EXPECT_CALL(*inner, unsubscribe()).Times(1);
+  subscribed.value()->unsubscribe();
+}
+
+TEST_F(AuthFiltersTest, C4mRequestUpdateAcceptsRequestTokenForOriginalTrack) {
+  auto filter = makePublisherFilter({makeGrants({Action::Subscribe})});
+  SubscribeOk ok;
+  ok.requestID = RequestID(1);
+  auto inner = std::make_shared<NiceMock<MockSubscriptionHandle>>(ok);
+  EXPECT_CALL(*publisherInner_, subscribe(_, _)).WillOnce([inner](auto, auto) {
+    return folly::coro::makeTask<Publisher::SubscribeResult>(
+        std::shared_ptr<SubscriptionHandle>(inner)
+    );
+  });
+  SubscribeRequest request;
+  request.requestID = RequestID(1);
+  request.fullTrackName = FullTrackName{TrackNamespace{{"live"}}, "video"};
+  auto subscribed = folly::coro::blockingWait(filter->subscribe(request, nullptr));
+  ASSERT_TRUE(subscribed.hasValue());
+  filter.reset(); // The returned handle owns its verifier and target context.
+  EXPECT_CALL(*inner, requestUpdateCalled(_)).Times(1);
+  EXPECT_CALL(*inner, requestUpdateResult()).WillOnce([] {
+    return folly::Expected<RequestOk, RequestError>(RequestOk{RequestID(2)});
+  });
+  RequestUpdate update;
+  update.requestID = RequestID(2);
+  auto grants = makeGrants({Action::RequestUpdate});
+  grants.scopes[0].namespaceMatches = {MatchRule{.value = "live"}};
+  grants.scopes[0].trackMatches = {MatchRule{.value = "other-video"}};
+  grants.scopes[0].exactNamespace = true;
+  auto scopedToken = [&] {
+    return AuthToken{
+        .tokenType = 77,
+        .tokenValue = signGrants("k1", "secret", grants),
+        .alias = AuthToken::DontRegister
+    };
+  };
+  update.params = withAuthToken(FrameType::REQUEST_UPDATE, scopedToken());
+  auto wrongTrack = folly::coro::blockingWait(subscribed.value()->requestUpdate(update));
+  ASSERT_TRUE(wrongTrack.hasError());
+  EXPECT_EQ(wrongTrack.error().errorCode, RequestErrorCode::UNAUTHORIZED);
+
+  grants.scopes[0].trackMatches[0].value = "video";
+  update.params = withAuthToken(FrameType::REQUEST_UPDATE, scopedToken());
+  auto forwarded = folly::coro::blockingWait(subscribed.value()->requestUpdate(update));
+  ASSERT_TRUE(forwarded.hasValue());
+  EXPECT_EQ(forwarded.value().requestID, update.requestID);
+
+  update.params.setMajorVersion(22);
+  ASSERT_TRUE(update.params
+                  .insertParam(Parameter(
+                      static_cast<uint64_t>(TrackRequestParamKey::TRACK_NAMESPACE_PREFIX),
+                      std::string("new-prefix")
+                  ))
+                  .hasValue());
+  auto changedNamespace = folly::coro::blockingWait(subscribed.value()->requestUpdate(update));
+  ASSERT_TRUE(changedNamespace.hasError());
+  EXPECT_EQ(changedNamespace.error().errorCode, RequestErrorCode::UNAUTHORIZED);
+}
+
+TEST_F(AuthFiltersTest, C4mAllReturnedHandleKindsGateRequestUpdates) {
+  auto filter = makePublisherFilter(
+      {makeGrants({Action::Fetch, Action::SubscribeNamespace, Action::SubscribeTracks})}
+  );
+  auto checkUpdates = [](auto handle, auto inner) {
+    RequestUpdate update;
+    update.requestID = RequestID(99);
+    auto result = folly::coro::blockingWait(handle->requestUpdate(update));
+    ASSERT_TRUE(result.hasError());
+    EXPECT_EQ(result.error().errorCode, RequestErrorCode::UNAUTHORIZED);
+    EXPECT_EQ(result.error().requestID, update.requestID);
+    EXPECT_CALL(*inner, requestUpdateCalled(_)).Times(1);
+    EXPECT_CALL(*inner, requestUpdateResult()).WillOnce([] {
+      return folly::Expected<RequestOk, RequestError>(RequestOk{RequestID(99)});
+    });
+    update.params =
+        withAuthToken(FrameType::REQUEST_UPDATE, makeSignedToken({Action::RequestUpdate}));
+    auto forwarded = folly::coro::blockingWait(handle->requestUpdate(update));
+    ASSERT_TRUE(forwarded.hasValue());
+    EXPECT_EQ(forwarded.value().requestID, update.requestID);
+  };
+
+  auto fetchHandle = std::make_shared<NiceMock<MockFetchHandle>>(FetchOk{});
+  EXPECT_CALL(*fetchHandle, requestUpdateCalled(_)).Times(0);
+  EXPECT_CALL(*publisherInner_, fetch(_, _)).WillOnce([fetchHandle](auto, auto) {
+    return folly::coro::makeTask<Publisher::FetchResult>(
+        std::shared_ptr<Publisher::FetchHandle>(fetchHandle)
+    );
+  });
+  Fetch fetch;
+  fetch.fullTrackName = FullTrackName{TrackNamespace{{"live"}}, "video"};
+  auto fetched = folly::coro::blockingWait(filter->fetch(fetch, nullptr));
+  ASSERT_TRUE(fetched.hasValue());
+  EXPECT_EQ(fetched.value()->fetchOk().requestID, fetchHandle->fetchOk().requestID);
+  checkUpdates(fetched.value(), fetchHandle);
+  EXPECT_CALL(*fetchHandle, fetchCancel()).Times(1);
+  fetched.value()->fetchCancel();
+
+  auto nsHandle = std::make_shared<NiceMock<MockSubscribeNamespaceHandle>>(SubscribeNamespaceOk{});
+  EXPECT_CALL(*nsHandle, requestUpdateCalled(_)).Times(0);
+  EXPECT_CALL(*publisherInner_, subscribeNamespace(_, _)).WillOnce([nsHandle](auto, auto) {
+    return folly::coro::makeTask<Publisher::SubscribeNamespaceResult>(
+        std::shared_ptr<Publisher::SubscribeNamespaceHandle>(nsHandle)
+    );
+  });
+  SubscribeNamespace subNs;
+  subNs.trackNamespacePrefix = TrackNamespace{{"live"}};
+  auto namespaces = folly::coro::blockingWait(filter->subscribeNamespace(subNs, nullptr));
+  ASSERT_TRUE(namespaces.hasValue());
+  EXPECT_EQ(
+      namespaces.value()->subscribeNamespaceOk().requestID,
+      nsHandle->subscribeNamespaceOk().requestID
+  );
+  checkUpdates(namespaces.value(), nsHandle);
+  EXPECT_CALL(*nsHandle, unsubscribeNamespace()).Times(1);
+  namespaces.value()->unsubscribeNamespace();
+
+  auto tracksHandle = std::make_shared<NiceMock<MockSubscribeTracksHandle>>(SubscribeTracksOk{});
+  EXPECT_CALL(*tracksHandle, requestUpdateCalled(_)).Times(0);
+  EXPECT_CALL(*publisherInner_, subscribeTracks(_, _)).WillOnce([tracksHandle](auto, auto) {
+    return folly::coro::makeTask<Publisher::SubscribeTracksResult>(
+        std::shared_ptr<Publisher::SubscribeTracksHandle>(tracksHandle)
+    );
+  });
+  SubscribeTracks subTracks;
+  subTracks.trackNamespacePrefix = TrackNamespace{{"live"}};
+  auto tracks = folly::coro::blockingWait(filter->subscribeTracks(subTracks));
+  ASSERT_TRUE(tracks.hasValue());
+  EXPECT_EQ(
+      tracks.value()->subscribeTracksOk().requestID,
+      tracksHandle->subscribeTracksOk().requestID
+  );
+  checkUpdates(tracks.value(), tracksHandle);
+  EXPECT_CALL(*tracksHandle, unsubscribeTracks()).Times(1);
+  tracks.value()->unsubscribeTracks();
+
+  auto subscriber = makeSubscriberFilter({makeGrants({Action::PublishNamespace})});
+  auto pubHandle = std::make_shared<NiceMock<MockPublishNamespaceHandle>>(PublishNamespaceOk{});
+  EXPECT_CALL(*pubHandle, requestUpdateCalled(_)).Times(0);
+  EXPECT_CALL(*subscriberInner_, publishNamespace(_, _)).WillOnce([pubHandle](auto, auto) {
+    return folly::coro::makeTask<Subscriber::PublishNamespaceResult>(
+        std::shared_ptr<Subscriber::PublishNamespaceHandle>(pubHandle)
+    );
+  });
+  PublishNamespace publish;
+  publish.trackNamespace = TrackNamespace{{"live"}};
+  auto published = folly::coro::blockingWait(subscriber->publishNamespace(publish, nullptr));
+  ASSERT_TRUE(published.hasValue());
+  EXPECT_EQ(
+      published.value()->publishNamespaceOk().requestID,
+      pubHandle->publishNamespaceOk().requestID
+  );
+  checkUpdates(published.value(), pubHandle);
+  EXPECT_CALL(*pubHandle, publishNamespaceDone()).Times(1);
+  published.value()->publishNamespaceDone();
+}
+
 TEST_F(AuthFiltersTest, SubscribeSucceedsWhenAnySessionGrantCoversIt) {
   auto filter =
       makePublisherFilter({makeGrants({Action::Publish}), makeGrants({Action::Subscribe})});
@@ -334,4 +540,448 @@ TEST(
   pubWithToken.fullTrackName = FullTrackName{TrackNamespace{{"live"}}, "video"};
   pubWithToken.params = withAuthToken(FrameType::PUBLISH, makeSignedToken({Action::Publish}));
   EXPECT_TRUE(subFilter.publish(std::move(pubWithToken), nullptr).hasValue());
+}
+
+// ---- moqt-reval: an expiring token ends only the action it authorized ----
+
+namespace {
+Grants revalidatedGrants(std::vector<Action> actions) {
+  auto grants = makeGrants(std::move(actions));
+  grants.expiresAt = std::chrono::system_clock::now() + std::chrono::seconds(2);
+  grants.revalidateEvery = std::chrono::seconds(1);
+  return grants;
+}
+
+constexpr auto kRevalWait = std::chrono::seconds(8);
+} // namespace
+
+TEST_F(AuthFiltersTest, RevalidationEndsTheExpiredSubscriptionOnly) {
+  auto filter = makePublisherFilter({revalidatedGrants({Action::Subscribe})});
+  SubscribeOk ok;
+  ok.requestID = RequestID(1);
+  auto inner = std::make_shared<NiceMock<MockSubscriptionHandle>>(ok);
+  auto consumer = std::make_shared<NiceMock<MockTrackConsumer>>();
+  EXPECT_CALL(*publisherInner_, subscribe(_, _)).WillOnce([inner](auto, auto) {
+    return folly::coro::makeTask<Publisher::SubscribeResult>(
+        std::shared_ptr<SubscriptionHandle>(inner)
+    );
+  });
+  std::promise<void> unsubscribed;
+  std::promise<void> publishDone;
+  EXPECT_CALL(*inner, unsubscribe()).Times(1).WillOnce([&] { unsubscribed.set_value(); });
+  EXPECT_CALL(*consumer, publishDone(_)).WillOnce([&](PublishDone done) {
+    EXPECT_EQ(done.statusCode, PublishDoneStatusCode::UNAUTHORIZED);
+    EXPECT_EQ(done.requestID, RequestID(1));
+    publishDone.set_value();
+    return folly::Expected<folly::Unit, MoQPublishError>(folly::unit);
+  });
+
+  folly::ScopedEventBaseThread eventBase;
+  SubscribeRequest request;
+  request.requestID = RequestID(1);
+  request.fullTrackName = FullTrackName{TrackNamespace{{"live"}}, "video"};
+  auto subscribed = folly::coro::blockingWait(
+      folly::coro::co_withExecutor(eventBase.getEventBase(), filter->subscribe(request, consumer))
+  );
+  ASSERT_TRUE(subscribed.hasValue());
+  EXPECT_EQ(publishDone.get_future().wait_for(kRevalWait), std::future_status::ready);
+  EXPECT_EQ(unsubscribed.get_future().wait_for(kRevalWait), std::future_status::ready);
+  // The session's own cleanup afterwards must not tear the subscription down a second time.
+  subscribed.value()->unsubscribe();
+}
+
+TEST_F(AuthFiltersTest, RevalidationStopsWhenTheSubscriptionEndsFirst) {
+  auto filter = makePublisherFilter({revalidatedGrants({Action::Subscribe})});
+  SubscribeOk ok;
+  ok.requestID = RequestID(1);
+  auto inner = std::make_shared<NiceMock<MockSubscriptionHandle>>(ok);
+  auto consumer = std::make_shared<NiceMock<MockTrackConsumer>>();
+  EXPECT_CALL(*publisherInner_, subscribe(_, _)).WillOnce([inner](auto, auto) {
+    return folly::coro::makeTask<Publisher::SubscribeResult>(
+        std::shared_ptr<SubscriptionHandle>(inner)
+    );
+  });
+  EXPECT_CALL(*inner, unsubscribe()).Times(1);
+  EXPECT_CALL(*consumer, publishDone(_)).Times(0);
+
+  folly::ScopedEventBaseThread eventBase;
+  SubscribeRequest request;
+  request.requestID = RequestID(1);
+  request.fullTrackName = FullTrackName{TrackNamespace{{"live"}}, "video"};
+  auto subscribed = folly::coro::blockingWait(
+      folly::coro::co_withExecutor(eventBase.getEventBase(), filter->subscribe(request, consumer))
+  );
+  ASSERT_TRUE(subscribed.hasValue());
+  subscribed.value()->unsubscribe();                    // ends normally, before the token expires
+  std::this_thread::sleep_for(std::chrono::seconds(4)); // past the token expiry
+}
+
+TEST_F(AuthFiltersTest, RevalidationEndsTheExpiredNamespacePublication) {
+  auto subscriber = makeSubscriberFilter({revalidatedGrants({Action::PublishNamespace})});
+  auto pubHandle = std::make_shared<NiceMock<MockPublishNamespaceHandle>>(PublishNamespaceOk{});
+  auto callback = std::make_shared<NiceMock<MockPublishNamespaceCallback>>();
+  EXPECT_CALL(*subscriberInner_, publishNamespace(_, _)).WillOnce([pubHandle](auto, auto) {
+    return folly::coro::makeTask<Subscriber::PublishNamespaceResult>(
+        std::shared_ptr<Subscriber::PublishNamespaceHandle>(pubHandle)
+    );
+  });
+  std::promise<void> cancelled;
+  std::promise<void> done;
+  // The route is dropped before the publisher is told: cancelling makes the session discard its
+  // handle, after which the relay's route could no longer be removed.
+  testing::InSequence order;
+  EXPECT_CALL(*pubHandle, publishNamespaceDone()).Times(1).WillOnce([&] { done.set_value(); });
+  EXPECT_CALL(*callback, publishNamespaceCancel(RequestErrorCode::EXPIRED_AUTH_TOKEN, _))
+      .WillOnce([&](auto, auto) { cancelled.set_value(); });
+
+  folly::ScopedEventBaseThread eventBase;
+  PublishNamespace publish;
+  publish.requestID = RequestID(5);
+  publish.trackNamespace = TrackNamespace{{"live"}};
+  auto published = folly::coro::blockingWait(folly::coro::co_withExecutor(
+      eventBase.getEventBase(),
+      subscriber->publishNamespace(publish, callback)
+  ));
+  ASSERT_TRUE(published.hasValue());
+  EXPECT_EQ(cancelled.get_future().wait_for(kRevalWait), std::future_status::ready);
+  EXPECT_EQ(done.get_future().wait_for(kRevalWait), std::future_status::ready);
+  published.value()->publishNamespaceDone(); // not repeated
+}
+
+TEST_F(AuthFiltersTest, RevalidationEndsTheExpiredFetch) {
+  auto filter = makePublisherFilter({revalidatedGrants({Action::Fetch})});
+  FetchOk ok;
+  ok.requestID = RequestID(2);
+  auto inner = std::make_shared<NiceMock<MockFetchHandle>>(ok);
+  auto consumer = std::make_shared<NiceMock<MockFetchConsumer>>();
+  EXPECT_CALL(*publisherInner_, fetch(_, _)).WillOnce([inner](auto, auto) {
+    return folly::coro::makeTask<Publisher::FetchResult>(
+        std::shared_ptr<Publisher::FetchHandle>(inner)
+    );
+  });
+  std::promise<void> cancelled;
+  std::promise<void> reset;
+  EXPECT_CALL(*inner, fetchCancel()).Times(1).WillOnce([&] { cancelled.set_value(); });
+  EXPECT_CALL(*consumer, reset(ResetStreamErrorCode::EXPIRED_AUTH_TOKEN)).WillOnce([&](auto) {
+    reset.set_value();
+  });
+
+  folly::ScopedEventBaseThread eventBase;
+  Fetch fetch;
+  fetch.requestID = RequestID(2);
+  fetch.fullTrackName = FullTrackName{TrackNamespace{{"live"}}, "video"};
+  auto fetched = folly::coro::blockingWait(
+      folly::coro::co_withExecutor(eventBase.getEventBase(), filter->fetch(fetch, consumer))
+  );
+  ASSERT_TRUE(fetched.hasValue());
+  EXPECT_EQ(cancelled.get_future().wait_for(kRevalWait), std::future_status::ready);
+  EXPECT_EQ(reset.get_future().wait_for(kRevalWait), std::future_status::ready);
+}
+
+TEST_F(AuthFiltersTest, RevalidationEndsTheExpiredPublish) {
+  auto subscriber = makeSubscriberFilter({revalidatedGrants({Action::Publish})});
+  auto consumer = std::make_shared<NiceMock<MockTrackConsumer>>();
+  SubscribeOk subscribeOk;
+  auto handle = std::make_shared<NiceMock<MockSubscriptionHandle>>(subscribeOk);
+  EXPECT_CALL(*subscriberInner_, publish(_, _))
+      .WillOnce([consumer](PublishRequest pub, auto) -> Subscriber::PublishResult {
+        PublishOk ok;
+        ok.requestID = pub.requestID;
+        return Subscriber::PublishConsumerAndReplyTask{
+            .consumer = consumer,
+            .reply = folly::coro::makeTask<folly::Expected<PublishOk, PublishError>>(std::move(ok)),
+            .consumerReady = true,
+        };
+      });
+  std::promise<void> unsubscribed;
+  EXPECT_CALL(*handle, unsubscribe()).Times(1).WillOnce([&] { unsubscribed.set_value(); });
+
+  PublishRequest pub;
+  pub.requestID = RequestID(9);
+  pub.fullTrackName = FullTrackName{TrackNamespace{{"live"}}, "video"};
+  auto result = subscriber->publish(pub, handle);
+  ASSERT_TRUE(result.hasValue());
+  folly::ScopedEventBaseThread eventBase;
+  // The session awaits the reply on its executor, which starts the revalidation timer.
+  auto reply = folly::coro::blockingWait(
+      folly::coro::co_withExecutor(eventBase.getEventBase(), std::move(result.value().reply))
+  );
+  ASSERT_TRUE(reply.hasValue());
+  EXPECT_EQ(unsubscribed.get_future().wait_for(kRevalWait), std::future_status::ready);
+}
+
+TEST_F(AuthFiltersTest, RevalidationIgnoresARefusedPublish) {
+  auto subscriber = makeSubscriberFilter({revalidatedGrants({Action::Publish})});
+  auto consumer = std::make_shared<NiceMock<MockTrackConsumer>>();
+  SubscribeOk subscribeOk;
+  auto handle = std::make_shared<NiceMock<MockSubscriptionHandle>>(subscribeOk);
+  EXPECT_CALL(*subscriberInner_, publish(_, _))
+      .WillOnce([consumer](PublishRequest pub, auto) -> Subscriber::PublishResult {
+        return Subscriber::PublishConsumerAndReplyTask{
+            .consumer = consumer,
+            .reply = folly::coro::makeTask<folly::Expected<PublishOk, PublishError>>(
+                folly::makeUnexpected(
+                    PublishError{pub.requestID, PublishErrorCode::UNAUTHORIZED, "refused"}
+                )
+            ),
+        };
+      });
+  EXPECT_CALL(*handle, unsubscribe()).Times(0);
+
+  PublishRequest pub;
+  pub.requestID = RequestID(9);
+  pub.fullTrackName = FullTrackName{TrackNamespace{{"live"}}, "video"};
+  auto result = subscriber->publish(pub, handle);
+  ASSERT_TRUE(result.hasValue());
+  folly::ScopedEventBaseThread eventBase;
+  auto reply = folly::coro::blockingWait(
+      folly::coro::co_withExecutor(eventBase.getEventBase(), std::move(result.value().reply))
+  );
+  ASSERT_TRUE(reply.hasError());
+  std::this_thread::sleep_for(std::chrono::seconds(4)); // past the token expiry
+}
+
+// ---- error codes for denied requests ----
+
+namespace {
+AuthToken makeExpiredToken(std::vector<Action> actions) {
+  auto grants = makeGrants(std::move(actions));
+  grants.expiresAt = std::chrono::system_clock::now() - std::chrono::seconds(30);
+  return AuthToken{
+      .tokenType = 77,
+      .tokenValue = signGrants("k1", "secret", grants),
+      .alias = AuthToken::DontRegister,
+  };
+}
+
+AuthToken makeBadSignatureToken(std::vector<Action> actions) {
+  return AuthToken{
+      .tokenType = 77,
+      .tokenValue = signGrants("k1", "another-secret", makeGrants(std::move(actions))),
+      .alias = AuthToken::DontRegister,
+  };
+}
+} // namespace
+
+// An expired token is reported as EXPIRED_AUTH_TOKEN on every request type; any other
+// failure to authorize stays UNAUTHORIZED. Request error codes are not converted per draft.
+TEST_F(AuthFiltersTest, ExpiredRequestTokenIsReportedAsExpiredAuthToken) {
+  auto publisher = makePublisherFilter({});
+  auto subscriber = makeSubscriberFilter({});
+  const auto track = FullTrackName{TrackNamespace{{"live"}}, "video"};
+  const auto expired = [](FrameType frame, Action action) {
+    return withAuthToken(frame, makeExpiredToken({action}));
+  };
+  const auto badSignature = [](FrameType frame, Action action) {
+    return withAuthToken(frame, makeBadSignatureToken({action}));
+  };
+
+  SubscribeRequest sub;
+  sub.requestID = RequestID(1);
+  sub.fullTrackName = track;
+  sub.params = expired(FrameType::SUBSCRIBE, Action::Subscribe);
+  EXPECT_EQ(
+      folly::coro::blockingWait(publisher->subscribe(sub, nullptr)).error().errorCode,
+      RequestErrorCode::EXPIRED_AUTH_TOKEN
+  );
+  sub.params = badSignature(FrameType::SUBSCRIBE, Action::Subscribe);
+  EXPECT_EQ(
+      folly::coro::blockingWait(publisher->subscribe(sub, nullptr)).error().errorCode,
+      RequestErrorCode::UNAUTHORIZED
+  );
+  sub.params = Parameters(FrameType::SUBSCRIBE); // no token at all
+  EXPECT_EQ(
+      folly::coro::blockingWait(publisher->subscribe(sub, nullptr)).error().errorCode,
+      RequestErrorCode::UNAUTHORIZED
+  );
+
+  Fetch fetch;
+  fetch.requestID = RequestID(2);
+  fetch.fullTrackName = track;
+  fetch.params = expired(FrameType::FETCH, Action::Fetch);
+  EXPECT_EQ(
+      folly::coro::blockingWait(publisher->fetch(fetch, nullptr)).error().errorCode,
+      RequestErrorCode::EXPIRED_AUTH_TOKEN
+  );
+
+  SubscribeNamespace subNs;
+  subNs.requestID = RequestID(3);
+  subNs.trackNamespacePrefix = TrackNamespace{{"live"}};
+  subNs.params = expired(FrameType::SUBSCRIBE_NAMESPACE, Action::SubscribeNamespace);
+  EXPECT_EQ(
+      folly::coro::blockingWait(publisher->subscribeNamespace(subNs, nullptr)).error().errorCode,
+      RequestErrorCode::EXPIRED_AUTH_TOKEN
+  );
+
+  SubscribeTracks subTracks;
+  subTracks.requestID = RequestID(4);
+  subTracks.trackNamespacePrefix = TrackNamespace{{"live"}};
+  subTracks.params = expired(FrameType::SUBSCRIBE_TRACKS, Action::SubscribeTracks);
+  EXPECT_EQ(
+      folly::coro::blockingWait(publisher->subscribeTracks(subTracks)).error().errorCode,
+      RequestErrorCode::EXPIRED_AUTH_TOKEN
+  );
+
+  TrackStatus status;
+  status.requestID = RequestID(5);
+  status.fullTrackName = track;
+  status.params = expired(FrameType::TRACK_STATUS, Action::TrackStatus);
+  EXPECT_EQ(
+      folly::coro::blockingWait(publisher->trackStatus(status)).error().errorCode,
+      RequestErrorCode::EXPIRED_AUTH_TOKEN
+  );
+
+  PublishRequest pub;
+  pub.requestID = RequestID(6);
+  pub.fullTrackName = track;
+  pub.params = expired(FrameType::PUBLISH, Action::Publish);
+  EXPECT_EQ(
+      subscriber->publish(pub, nullptr).error().errorCode,
+      RequestErrorCode::EXPIRED_AUTH_TOKEN
+  );
+
+  PublishNamespace pubNs;
+  pubNs.requestID = RequestID(7);
+  pubNs.trackNamespace = TrackNamespace{{"live"}};
+  pubNs.params = expired(FrameType::PUBLISH_NAMESPACE, Action::PublishNamespace);
+  EXPECT_EQ(
+      folly::coro::blockingWait(subscriber->publishNamespace(pubNs, nullptr)).error().errorCode,
+      RequestErrorCode::EXPIRED_AUTH_TOKEN
+  );
+}
+
+// A token that cannot be decoded is MALFORMED_AUTH_TOKEN; one that decodes but is wrongly signed
+// or carries a restriction the relay does not support is still UNAUTHORIZED.
+TEST_F(AuthFiltersTest, UndecodableRequestTokenIsReportedAsMalformedAuthToken) {
+  auto publisher = makePublisherFilter({});
+  SubscribeRequest sub;
+  sub.requestID = RequestID(1);
+  sub.fullTrackName = FullTrackName{TrackNamespace{{"live"}}, "video"};
+  sub.params = withAuthToken(
+      FrameType::SUBSCRIBE,
+      AuthToken{.tokenType = 77, .tokenValue = "not a cose token", .alias = AuthToken::DontRegister}
+  );
+  EXPECT_EQ(
+      folly::coro::blockingWait(publisher->subscribe(sub, nullptr)).error().errorCode,
+      RequestErrorCode::MALFORMED_AUTH_TOKEN
+  );
+  sub.params = withAuthToken(FrameType::SUBSCRIBE, makeBadSignatureToken({Action::Subscribe}));
+  EXPECT_EQ(
+      folly::coro::blockingWait(publisher->subscribe(sub, nullptr)).error().errorCode,
+      RequestErrorCode::UNAUTHORIZED
+  );
+  // aud with no configured audience is an unsupported restriction, not a serialization error.
+  auto grants = makeGrants({Action::Subscribe});
+  grants.audiences = {"somewhere"};
+  sub.params = withAuthToken(
+      FrameType::SUBSCRIBE,
+      AuthToken{
+          .tokenType = 77,
+          .tokenValue = signGrants("k1", "secret", grants),
+          .alias = AuthToken::DontRegister
+      }
+  );
+  EXPECT_EQ(
+      folly::coro::blockingWait(publisher->subscribe(sub, nullptr)).error().errorCode,
+      RequestErrorCode::UNAUTHORIZED
+  );
+}
+
+// Grants that came from a setup token and have since expired are not "a token in the message",
+// so a request relying on them is a plain UNAUTHORIZED.
+TEST_F(AuthFiltersTest, ExpiredSessionGrantsAreAPlainUnauthorized) {
+  auto grants = makeGrants({Action::Subscribe});
+  grants.expiresAt = std::chrono::system_clock::now() - std::chrono::seconds(30);
+  auto publisher = makePublisherFilter({grants});
+  SubscribeRequest sub;
+  sub.requestID = RequestID(1);
+  sub.fullTrackName = FullTrackName{TrackNamespace{{"live"}}, "video"};
+  EXPECT_EQ(
+      folly::coro::blockingWait(publisher->subscribe(sub, nullptr)).error().errorCode,
+      RequestErrorCode::UNAUTHORIZED
+  );
+}
+
+namespace {
+class MarkerData : public folly::RequestData {
+public:
+  bool hasCallback() override { return false; }
+};
+constexpr auto kMarker = "moqx-revalidation-test";
+} // namespace
+
+// moxygen finds the session that owns a handle through the request context of the message being
+// handled, so ending an action from a timer has to run inside the context that started it.
+TEST_F(AuthFiltersTest, RevalidationEndsTheActionInsideTheRequestContextThatStartedIt) {
+  auto filter = makePublisherFilter({revalidatedGrants({Action::Subscribe})});
+  SubscribeOk ok;
+  ok.requestID = RequestID(1);
+  auto inner = std::make_shared<NiceMock<MockSubscriptionHandle>>(ok);
+  auto consumer = std::make_shared<NiceMock<MockTrackConsumer>>();
+  EXPECT_CALL(*publisherInner_, subscribe(_, _)).WillOnce([inner](auto, auto) {
+    return folly::coro::makeTask<Publisher::SubscribeResult>(
+        std::shared_ptr<SubscriptionHandle>(inner)
+    );
+  });
+  std::promise<bool> sawMarker;
+  EXPECT_CALL(*inner, unsubscribe()).WillOnce([&] {
+    auto* context = folly::RequestContext::try_get();
+    sawMarker.set_value(context != nullptr && context->hasContextData(kMarker));
+  });
+
+  folly::ScopedEventBaseThread eventBase;
+  SubscribeRequest request;
+  request.requestID = RequestID(1);
+  request.fullTrackName = FullTrackName{TrackNamespace{{"live"}}, "video"};
+  auto context = std::make_shared<folly::RequestContext>();
+  context->setContextData(kMarker, std::make_unique<MarkerData>());
+  folly::Try<Publisher::SubscribeResult> subscribed;
+  {
+    folly::RequestContextScopeGuard guard(context);
+    subscribed = folly::coro::blockingWait(folly::coro::co_awaitTry(
+        folly::coro::co_withExecutor(eventBase.getEventBase(), filter->subscribe(request, consumer))
+    ));
+  }
+  ASSERT_TRUE(subscribed.hasValue());
+  auto future = sawMarker.get_future();
+  ASSERT_EQ(future.wait_for(kRevalWait), std::future_status::ready);
+  EXPECT_TRUE(future.get());
+}
+
+namespace {
+// A namespace handle that, like the relay's, can also end the tracks under it.
+class RevocableNamespaceHandle : public NiceMock<MockPublishNamespaceHandle>,
+                                 public NamespaceRevocable {
+public:
+  using NiceMock<MockPublishNamespaceHandle>::NiceMock;
+  MOCK_METHOD(void, revokeNamespace, (), (override));
+};
+} // namespace
+
+TEST_F(AuthFiltersTest, RevalidationRevokesARevocableNamespaceInsteadOfJustWithdrawingIt) {
+  auto subscriber = makeSubscriberFilter({revalidatedGrants({Action::PublishNamespace})});
+  auto pubHandle = std::make_shared<RevocableNamespaceHandle>(PublishNamespaceOk{});
+  auto callback = std::make_shared<NiceMock<MockPublishNamespaceCallback>>();
+  EXPECT_CALL(*subscriberInner_, publishNamespace(_, _)).WillOnce([pubHandle](auto, auto) {
+    return folly::coro::makeTask<Subscriber::PublishNamespaceResult>(
+        std::shared_ptr<Subscriber::PublishNamespaceHandle>(pubHandle)
+    );
+  });
+  std::promise<void> revoked;
+  testing::InSequence order;
+  EXPECT_CALL(*pubHandle, revokeNamespace()).Times(1).WillOnce([&] { revoked.set_value(); });
+  EXPECT_CALL(*pubHandle, publishNamespaceDone()).Times(0);
+  EXPECT_CALL(*callback, publishNamespaceCancel(RequestErrorCode::EXPIRED_AUTH_TOKEN, _));
+
+  folly::ScopedEventBaseThread eventBase;
+  PublishNamespace publish;
+  publish.requestID = RequestID(5);
+  publish.trackNamespace = TrackNamespace{{"live"}};
+  auto published = folly::coro::blockingWait(folly::coro::co_withExecutor(
+      eventBase.getEventBase(),
+      subscriber->publishNamespace(publish, callback)
+  ));
+  ASSERT_TRUE(published.hasValue());
+  EXPECT_EQ(revoked.get_future().wait_for(kRevalWait), std::future_status::ready);
+  std::this_thread::sleep_for(std::chrono::milliseconds(200)); // let the cancel follow
 }

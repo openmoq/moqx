@@ -4,10 +4,11 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-// moqx-issuer: standalone CLI that mints Catapult CAT4MOQ CWT tokens for a moqx
+// moqx-issuer: standalone CLI that mints C4M draft-02 CWT tokens for a moqx
 // relay. The relay only verifies tokens; issuing/signing lives here.
 
 #include "auth/AuthTokenIssuer.h"
+#include "auth/Es256Key.h"
 #include "config/loader/ConfigInit.h"
 
 #include <folly/String.h>
@@ -16,6 +17,7 @@
 
 #include <gflags/gflags.h>
 
+#include <algorithm>
 #include <chrono>
 #include <iostream>
 #include <optional>
@@ -26,15 +28,39 @@
 DEFINE_string(config, "", "Path to config file (for --auth_service key lookup)");
 DEFINE_bool(strict_config, false, "Reject unknown config fields");
 DEFINE_string(auth_service, "", "Service name to read the auth key from --config");
-DEFINE_string(auth_key_id, "", "HMAC key id; defaults to first configured key");
+DEFINE_string(
+    auth_key_id,
+    "",
+    "Signing key id; defaults to first configured key of the selected algorithm"
+);
 DEFINE_string(auth_secret, "", "HMAC secret; bypasses --config key lookup");
 DEFINE_string(
+    auth_private_key_file,
+    "",
+    "PEM P-256 private key for ES256 signing; excludes --auth_secret"
+);
+DEFINE_string(
     auth_actions,
-    "client_setup,publish_namespace,publish",
-    "Comma-separated CAT4MOQ actions"
+    "setup,publish_namespace,publish",
+    "Comma-separated C4M draft-02 actions"
 );
 DEFINE_string(auth_namespace, "", "Slash-separated track namespace");
 DEFINE_string(auth_track, "", "Optional track name");
+DEFINE_string(auth_issuer, "", "Optional CWT iss claim");
+DEFINE_string(auth_audience, "", "Optional CWT aud claim; comma-separated for several audiences");
+DEFINE_bool(auth_replay_protect, false, "Add catreplay=1 with a random cti (single connection)");
+DEFINE_string(
+    auth_dpop_key_file,
+    "",
+    "PEM P-256, P-384, or Ed25519 client key to bind the token to (cnf + catdpop)"
+);
+DEFINE_bool(auth_dpop_jkt, false, "Bind with jkt (RFC 7638) instead of ckt (RFC 9679)");
+DEFINE_int32(auth_dpop_window_seconds, 300, "DPoP proof freshness window (catdpop)");
+DEFINE_int32(
+    auth_revalidate_seconds,
+    0,
+    "moqt-reval interval in seconds (0 = none); the relay must allow it"
+);
 DEFINE_int32(auth_ttl_seconds, 3600, "Token lifetime in seconds");
 DEFINE_string(auth_output, "base64-prefix", "Output encoding: base64-prefix, base64, hex, or raw");
 
@@ -46,24 +72,51 @@ namespace cfg = config;
 
 constexpr std::string_view kServeCommand = "serve";
 
+const cfg::AuthConfig& selectedAuth(const cfg::ResolvedConfig* resolved) {
+  if (resolved == nullptr || FLAGS_auth_service.empty()) {
+    throw std::invalid_argument(
+        "--config and --auth_service are required to select a configured key"
+    );
+  }
+  const auto& services = resolved->config.services;
+  const auto it = services.find(FLAGS_auth_service);
+  if (it == services.end()) {
+    throw std::invalid_argument("unknown auth service: " + FLAGS_auth_service);
+  }
+  if (!it->second.auth.enabled) {
+    throw std::invalid_argument("service auth is not enabled");
+  }
+  return it->second.auth;
+}
+
 auth::IssueTokenOptions makeIssueTokenOptions(const cfg::ResolvedConfig* resolvedConfig) {
   std::string keyID = FLAGS_auth_key_id;
   std::string secret = FLAGS_auth_secret;
-  if (secret.empty()) {
-    if (resolvedConfig == nullptr) {
-      throw std::invalid_argument(
-          "--auth_secret is required unless --config and --auth_service select a configured key"
+  if (!FLAGS_auth_private_key_file.empty()) {
+    if (!secret.empty()) {
+      throw std::invalid_argument("--auth_secret and --auth_private_key_file are mutually exclusive"
       );
     }
-    if (FLAGS_auth_service.empty()) {
-      throw std::invalid_argument("--auth_service is required when issuing from --config");
+    if (resolvedConfig) {
+      const auto& authConfig = selectedAuth(resolvedConfig);
+      if (authConfig.es256Keys.empty()) {
+        throw std::invalid_argument("selected service has no ES256 keys");
+      }
+      if (keyID.empty()) {
+        keyID = authConfig.es256Keys.front().id;
+      }
+      if (std::none_of(
+              authConfig.es256Keys.begin(),
+              authConfig.es256Keys.end(),
+              [&](const auto& key) { return key.id == keyID; }
+          )) {
+        throw std::invalid_argument("selected service has no ES256 key with id: " + keyID);
+      }
+    } else if (keyID.empty()) {
+      keyID = "operator";
     }
-    const auto& services = resolvedConfig->config.services;
-    auto it = services.find(FLAGS_auth_service);
-    if (it == services.end()) {
-      throw std::invalid_argument("unknown auth service: " + FLAGS_auth_service);
-    }
-    auto key = auth::selectHmacKey(it->second.auth, FLAGS_auth_key_id);
+  } else if (secret.empty()) {
+    auto key = auth::selectHmacKey(selectedAuth(resolvedConfig), FLAGS_auth_key_id);
     keyID = std::move(key.id);
     secret = std::move(key.secret);
   } else if (keyID.empty()) {
@@ -75,9 +128,30 @@ auth::IssueTokenOptions makeIssueTokenOptions(const cfg::ResolvedConfig* resolve
       .secret = std::move(secret),
       .actions = auth::parseActions(FLAGS_auth_actions),
       .ttl = std::chrono::seconds(FLAGS_auth_ttl_seconds),
+      .privateKeyFile = FLAGS_auth_private_key_file,
   };
   if (!FLAGS_auth_namespace.empty()) {
     options.trackNamespace = auth::parseTrackNamespace(FLAGS_auth_namespace);
+  }
+  options.replayProtected = FLAGS_auth_replay_protect;
+  options.revalidateEvery = std::chrono::seconds(FLAGS_auth_revalidate_seconds);
+  options.dpopKeyFile = FLAGS_auth_dpop_key_file;
+  options.dpopJkt = FLAGS_auth_dpop_jkt;
+  options.dpopWindow = std::chrono::seconds(FLAGS_auth_dpop_window_seconds);
+  if (!FLAGS_auth_issuer.empty()) {
+    options.issuer = FLAGS_auth_issuer;
+  }
+  for (std::size_t start = 0;
+       !FLAGS_auth_audience.empty() && start <= FLAGS_auth_audience.size();) {
+    const auto comma = FLAGS_auth_audience.find(',', start);
+    const auto end = comma == std::string::npos ? FLAGS_auth_audience.size() : comma;
+    if (end > start) {
+      options.audiences.push_back(FLAGS_auth_audience.substr(start, end - start));
+    }
+    if (comma == std::string::npos) {
+      break;
+    }
+    start = comma + 1;
   }
   if (!FLAGS_auth_track.empty()) {
     options.trackName = FLAGS_auth_track;
@@ -97,9 +171,28 @@ int runIssueCatTokenCommand(const char* programName) {
   }
 
   try {
-    const auto token = auth::issueToken(
-        makeIssueTokenOptions(resolvedConfig.has_value() ? &resolvedConfig.value() : nullptr)
-    );
+    const auto options =
+        makeIssueTokenOptions(resolvedConfig.has_value() ? &resolvedConfig.value() : nullptr);
+    const auto token = auth::issueToken(options);
+    if (resolvedConfig && !FLAGS_auth_private_key_file.empty()) {
+      const auto& keys = selectedAuth(&*resolvedConfig).es256Keys;
+      const auto key = std::find_if(keys.begin(), keys.end(), [&](const auto& entry) {
+        return entry.id == options.keyID;
+      });
+      auto publicKey = auth::loadEs256PublicKeyFile(key->publicKeyFile);
+      // Only the signature is being checked, so accept the claims this token was issued with.
+      auth::ClaimPolicy policy;
+      policy.audiences = options.audiences;
+      policy.minRevalidation = std::chrono::seconds(1);
+      try {
+        (void)auth::verifyC4mToken(token.tokenValue, *publicKey, options.now, policy);
+      } catch (const auth::C4mError& error) {
+        if (error.code() == auth::AuthError::BadSignature) {
+          throw std::invalid_argument("ES256 private key does not match the selected public key");
+        }
+        throw std::invalid_argument(std::string("issued token is invalid: ") + error.what());
+      }
+    }
     if (FLAGS_auth_output == "base64-prefix") {
       std::cout << "base64:" << folly::base64Encode(token.tokenValue) << '\n';
     } else if (FLAGS_auth_output == "base64") {
@@ -116,7 +209,8 @@ int runIssueCatTokenCommand(const char* programName) {
     }
   } catch (const std::exception& e) {
     std::cerr << "Error: " << e.what() << '\n';
-    google::ShowUsageWithFlags(programName);
+    // gflags usage includes current flag values, including --auth_secret.
+    std::cerr << "Use --help for options.\n";
     return 1;
   }
   return 0;
@@ -125,10 +219,12 @@ int runIssueCatTokenCommand(const char* programName) {
 } // namespace
 
 int main(int argc, char* argv[]) {
-  google::SetUsageMessage("moqx-issuer — mint a Catapult CAT4MOQ CWT for publishers/subscribers\n\n"
-                          "Provide a key via --auth_secret, or via --config with --auth_service.\n"
-                          "Usage: moqx-issuer --auth_secret <secret> --auth_actions <a,b,c> "
-                          "[--auth_namespace <ns>] [--auth_track <t>]");
+  google::SetUsageMessage(
+      "moqx-issuer — mint a C4M draft-02 CWT for publishers/subscribers\n\n"
+      "Provide --auth_secret, --auth_private_key_file, or --config with --auth_service.\n"
+      "Usage: moqx-issuer --auth_secret <secret> --auth_actions <a,b,c> "
+      "[--auth_namespace <ns>] [--auth_track <t>]"
+  );
   folly::Init init(&argc, &argv, true);
   return runIssueCatTokenCommand(argv[0]);
 }

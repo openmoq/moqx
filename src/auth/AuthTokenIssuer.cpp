@@ -7,13 +7,14 @@
 #include "auth/AuthTokenIssuer.h"
 
 #include "auth/Action.h"
+#include "auth/Dpop.h"
+#include "auth/Es256Key.h"
 #include "auth/HmacKey.h"
 
-#include <catapult/crypto.hpp>
-#include <catapult/cwt.hpp>
-#include <catapult/moqt_claims.hpp>
+#include <openssl/rand.h>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstdint>
 #include <stdexcept>
@@ -23,57 +24,6 @@
 
 namespace openmoq::moqx::auth {
 namespace {
-
-catapult::MoqtCompoundMatch toCatapultMatch(const std::vector<MatchRule>& rules) {
-  if (rules.empty()) {
-    return catapult::MoqtCompoundMatch::any();
-  }
-  std::vector<catapult::MoqtBinaryMatch> conditions;
-  conditions.reserve(rules.size());
-  for (const auto& rule : rules) {
-    switch (rule.type) {
-    case MatchRule::Type::Exact:
-      conditions.push_back(catapult::MoqtBinaryMatch::exact(rule.value));
-      break;
-    case MatchRule::Type::Prefix:
-      conditions.push_back(catapult::MoqtBinaryMatch::prefix(rule.value));
-      break;
-    case MatchRule::Type::Suffix:
-      conditions.push_back(catapult::MoqtBinaryMatch::suffix(rule.value));
-      break;
-    case MatchRule::Type::Contains:
-      conditions.push_back(catapult::MoqtBinaryMatch::contains(rule.value));
-      break;
-    }
-  }
-  return catapult::MoqtCompoundMatch::all(std::move(conditions));
-}
-
-catapult::CatToken tokenFromGrants(const Grants& grants) {
-  catapult::CatToken token;
-  if (grants.expiresAt != std::chrono::system_clock::time_point::max()) {
-    token.core.exp =
-        std::chrono::duration_cast<std::chrono::seconds>(grants.expiresAt.time_since_epoch())
-            .count();
-  }
-
-  catapult::MoqtClaims moqt = catapult::MoqtClaims::create(grants.scopes.size());
-  for (const auto& scope : grants.scopes) {
-    std::vector<int> actions;
-    actions.reserve(scope.actions.size());
-    for (auto action : scope.actions) {
-      actions.push_back(static_cast<int>(action));
-    }
-    moqt.addScope(
-        actions,
-        toCatapultMatch(scope.namespaceMatches),
-        toCatapultMatch(scope.trackMatches)
-    );
-  }
-  token.extended.setMoqtClaims(std::move(moqt));
-  token.validateTokenStructure();
-  return token;
-}
 
 std::string trim(std::string_view value) {
   auto begin = value.begin();
@@ -91,7 +41,7 @@ Action parseAction(std::string_view value) {
   if (auto action = canonicalAction(value)) {
     return *action;
   }
-  throw std::invalid_argument("unknown CAT4MOQ action: " + std::string(value));
+  throw std::invalid_argument("unknown C4M action: " + std::string(value));
 }
 
 bool containsAction(const std::vector<Action>& actions, Action action) {
@@ -100,7 +50,7 @@ bool containsAction(const std::vector<Action>& actions, Action action) {
 
 bool isNamespaceAction(Action action) {
   switch (action) {
-  case Action::ServerSetup:
+  case Action::SubscribeTracks:
   case Action::PublishNamespace:
   case Action::SubscribeNamespace:
     return true;
@@ -133,7 +83,7 @@ std::vector<Action> parseActions(std::string_view value) {
     start = comma + 1;
   }
   if (actions.empty()) {
-    throw std::invalid_argument("at least one CAT4MOQ action is required");
+    throw std::invalid_argument("at least one C4M action is required");
   }
   return actions;
 }
@@ -160,20 +110,51 @@ moxygen::TrackNamespace parseTrackNamespace(std::string_view value) {
 
 IssuedToken issueToken(const IssueTokenOptions& options) {
   if (options.keyID.empty()) {
-    throw std::invalid_argument("CAT4MOQ key id must be non-empty");
+    throw std::invalid_argument("C4M key id must be non-empty");
   }
-  if (options.secret.empty()) {
-    throw std::invalid_argument("CAT4MOQ secret must be non-empty");
+  if (options.secret.empty() == options.privateKeyFile.empty()) {
+    throw std::invalid_argument("supply exactly one C4M HMAC secret or ES256 private key file");
   }
   if (options.actions.empty()) {
-    throw std::invalid_argument("at least one CAT4MOQ action is required");
+    throw std::invalid_argument("at least one C4M action is required");
   }
   if (options.ttl <= std::chrono::seconds::zero()) {
-    throw std::invalid_argument("CAT4MOQ ttl must be greater than zero");
+    throw std::invalid_argument("C4M ttl must be greater than zero");
+  }
+  // The relay rejects tokens outside these ranges, so refuse to mint them.
+  if (!options.dpopKeyFile.empty() && (options.dpopWindow < std::chrono::seconds(1) ||
+                                       options.dpopWindow > std::chrono::seconds(86400))) {
+    throw std::invalid_argument("DPoP window must be 1 to 86400 seconds");
+  }
+  if (options.revalidateEvery < std::chrono::seconds::zero() ||
+      options.revalidateEvery > std::chrono::seconds(31536000)) {
+    throw std::invalid_argument("revalidation interval must be 0 to 31536000 seconds");
   }
 
   Grants grants;
   grants.expiresAt = options.now + options.ttl;
+  grants.issuer = options.issuer;
+  grants.audiences = options.audiences;
+  grants.revalidateEvery = options.revalidateEvery;
+  if (!options.dpopKeyFile.empty()) {
+    const auto clientKey = dpopPublicKey(options.dpopKeyFile);
+    grants.dpop = DpopRequirement{
+        DpopBinding{
+            options.dpopJkt ? DpopBinding::Kind::Jkt : DpopBinding::Kind::Ckt,
+            options.dpopJkt ? jwkThumbprint(clientKey) : coseKeyThumbprint(clientKey)
+        },
+        options.dpopWindow,
+        true,
+    };
+  }
+  if (options.replayProtected) {
+    std::array<unsigned char, 16> id{};
+    if (RAND_bytes(id.data(), static_cast<int>(id.size())) != 1) {
+      throw std::runtime_error("could not generate cti");
+    }
+    grants.cti = std::string(reinterpret_cast<const char*>(id.data()), id.size());
+    grants.replayProtected = true;
+  }
 
   if (containsAction(options.actions, Action::ClientSetup)) {
     grants.scopes.push_back(Scope{
@@ -185,10 +166,9 @@ IssuedToken issueToken(const IssueTokenOptions& options) {
 
   std::vector<MatchRule> namespaceMatches;
   if (!options.trackNamespace.trackNamespace.empty()) {
-    namespaceMatches.push_back(MatchRule{
-        .type = MatchRule::Type::Exact,
-        .value = canonicalNamespace(options.trackNamespace),
-    });
+    for (const auto& field : options.trackNamespace.trackNamespace) {
+      namespaceMatches.push_back(MatchRule{.value = field});
+    }
   }
 
   std::vector<Action> namespaceActions;
@@ -211,6 +191,7 @@ IssuedToken issueToken(const IssueTokenOptions& options) {
         .actions = std::move(namespaceActions),
         .namespaceMatches = namespaceMatches,
         .trackMatches = {},
+        .exactNamespace = !options.trackNamespace.trackNamespace.empty(),
     });
   }
 
@@ -227,18 +208,20 @@ IssuedToken issueToken(const IssueTokenOptions& options) {
         .actions = std::move(trackActions),
         .namespaceMatches = std::move(namespaceMatches),
         .trackMatches = std::move(trackMatches),
+        .exactNamespace =
+            !options.trackNamespace.trackNamespace.empty() || options.trackName.has_value(),
     });
   }
 
+  if (!options.privateKeyFile.empty()) {
+    auto signer = loadEs256PrivateKeyFile(options.privateKeyFile);
+    return IssuedToken{.tokenValue = signC4mToken(options.keyID, *signer, grants)};
+  }
   return IssuedToken{.tokenValue = signGrants(options.keyID, options.secret, grants)};
 }
 
 std::string signGrants(std::string_view keyID, std::string_view secret, const Grants& grants) {
-  catapult::HmacSha256Algorithm hmac(deriveHmacKey(secret));
-  catapult::Cwt cwt(catapult::ALG_HMAC256_256, tokenFromGrants(grants));
-  cwt.withKeyId(std::string(keyID));
-  auto bytes = cwt.createCwt(catapult::CwtMode::MACed, hmac);
-  return std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+  return signC4mToken(keyID, deriveHmacKey(secret), grants);
 }
 
 config::AuthConfig::HmacKey selectHmacKey(const config::AuthConfig& auth, std::string_view keyID) {

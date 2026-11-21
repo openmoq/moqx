@@ -207,7 +207,19 @@ inline void serializeAuth(ConfigSink& s, const AuthConfig& a) {
   s.boolField("require_setup_token", a.requireSetupToken);
   s.boolField("allow_request_token_override", a.allowRequestTokenOverride);
   s.boolField("strict_claims", a.strictClaims);
+  s.uintField("dpop_token_type", a.dpopTokenType);
+  s.uintField("min_revalidation_interval_seconds", a.minRevalidationSeconds);
   s.uintField("max_tokens_per_message", a.maxTokensPerMessage);
+  s.beginArray("audiences");
+  for (const auto& aud : a.audiences) {
+    s.stringField("", aud);
+  }
+  s.endArray();
+  s.beginArray("issuers");
+  for (const auto& iss : a.issuers) {
+    s.stringField("", iss);
+  }
+  s.endArray();
   s.beginArray("hmac_keys");
   for (const auto& k : a.hmacKeys) {
     s.beginObject("");
@@ -215,6 +227,14 @@ inline void serializeAuth(ConfigSink& s, const AuthConfig& a) {
     // Signing secrets are never serialized — redacted at the source so no sink
     // can leak them (e.g. over the /config admin endpoint).
     s.stringField("secret", "<redacted>");
+    s.endObject();
+  }
+  s.endArray();
+  s.beginArray("es256_keys");
+  for (const auto& key : a.es256Keys) {
+    s.beginObject("");
+    s.stringField("id", key.id);
+    s.stringField("public_key_file", key.publicKeyFile);
     s.endObject();
   }
   s.endArray();

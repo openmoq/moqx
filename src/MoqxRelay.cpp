@@ -14,6 +14,7 @@
 #include "relay/CrossExecSubscriptionHandle.h"
 #include "relay/InitialTrackState.h"
 #include "relay/LocalForwarderCallback.h"
+#include "relay/NamespaceRevocable.h"
 #include "relay/NullConsumers.h"
 #include "relay/PublisherCrossExecFilter.h"
 #include "relay/SubscriberCrossExecFilter.h"
@@ -263,7 +264,7 @@ std::shared_ptr<moxygen::Subscriber> MoqxRelay::createSubscriberFilter() {
 
 namespace {
 // The PUBLISH_NAMESPACE handle for one route. Runs on the relay executor.
-class NamespaceRouteHandle : public Subscriber::PublishNamespaceHandle {
+class NamespaceRouteHandle : public Subscriber::PublishNamespaceHandle, public NamespaceRevocable {
 public:
   NamespaceRouteHandle(
       std::weak_ptr<MoqxRelay> relay,
@@ -278,6 +279,12 @@ public:
   void publishNamespaceDone() override {
     if (auto relay = relay_.lock()) {
       relay->doPublishNamespaceDone(ns_, sessionId_, requestID_);
+    }
+  }
+
+  void revokeNamespace() override {
+    if (auto relay = relay_.lock()) {
+      relay->doRevokeNamespace(ns_, sessionId_, requestID_);
     }
   }
 
@@ -598,6 +605,41 @@ void MoqxRelay::doPublishNamespaceDone(
   auto& node = *result.value().node;
   for (auto& [subscriber, info] : result.value().subscribers) {
     reconcileAdvertisement(node, *subscriber.info, info);
+  }
+}
+
+void MoqxRelay::doRevokeNamespace(
+    const TrackNamespace& trackNamespace,
+    SessionId sessionId,
+    std::optional<RequestID> requestID
+) {
+  XDCHECK(onRelayExec());
+  std::vector<FullTrackName> tracks;
+  registry_.forEach([&](const SubscriptionRegistry::EntryView& e) {
+    if (e.ftn.trackNamespace.startsWith(trackNamespace) && e.upstream &&
+        e.upstream->sessionId == sessionId) {
+      tracks.push_back(e.ftn);
+    }
+  });
+  doPublishNamespaceDone(trackNamespace, sessionId, requestID);
+  for (const auto& ftn : tracks) {
+    auto view = registry_.getUpstreamView(ftn);
+    if (!view || !view->upstreamLive) {
+      continue;
+    }
+    XLOG(INFO) << "Ending " << ftn << ": its publisher's authorization for the namespace ended";
+    // Stop the publisher, then end the track for its subscribers, as when a new publisher
+    // replaces this one. Both are posted to the executors that own them.
+    registry_.postToHandle(ftn, [](const auto& handle) { handle->unsubscribe(); });
+    view->forwarder.post([](MoQForwarder& f) {
+      f.publishDone(PublishDone{
+          RequestID(0),
+          PublishDoneStatusCode::TRACK_ENDED,
+          0, // filled in by session
+          "publisher authorization ended"
+      });
+    });
+    onPublishDone(ftn);
   }
 }
 

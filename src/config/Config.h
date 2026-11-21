@@ -200,6 +200,10 @@ struct AuthConfig {
     std::string id;
     std::string secret;
   };
+  struct Es256Key {
+    std::string id;
+    std::string publicKeyFile;
+  };
 
   // A statically-granted scope applied to every request, regardless of
   // token.
@@ -213,11 +217,18 @@ struct AuthConfig {
   };
 
   bool enabled{false};
-  uint64_t tokenType{0};
+  uint64_t tokenType{1}; // C4M CAT token type, draft-ietf-moq-c4m-02 section 8.2.
   std::vector<HmacKey> hmacKeys;
+  std::vector<Es256Key> es256Keys;
   bool requireSetupToken{true};
   bool allowRequestTokenOverride{true};
   bool strictClaims{false};
+  // AUTHORIZATION_TOKEN type carrying DPoP proofs (kDefaultDpopTokenType).
+  uint64_t dpopTokenType{17};
+  // Smallest moqt-reval interval accepted; 0 rejects every token carrying moqt-reval.
+  uint32_t minRevalidationSeconds{5};
+  std::vector<std::string> audiences; // CWT aud values this relay accepts; empty = reject aud
+  std::vector<std::string> issuers;   // CWT iss values accepted; empty = iss not checked
   std::vector<AnonymousScope> anonymousClaim; // empty = no anonymous access (default)
   uint32_t maxTokensPerMessage{0};
 };

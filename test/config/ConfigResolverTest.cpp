@@ -679,7 +679,7 @@ TEST(ResolveConfig, AuthEnabledRequiresHmacKeys) {
 
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasError());
-  EXPECT_THAT(result.error(), HasSubstr("auth.hmac_keys is required"));
+  EXPECT_THAT(result.error(), HasSubstr("auth.hmac_keys or auth.es256_keys is required"));
 }
 
 TEST(ResolveConfig, AuthEnabledRejectsEmptyHmacKeys) {
@@ -694,7 +694,7 @@ TEST(ResolveConfig, AuthEnabledRejectsEmptyHmacKeys) {
 
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasError());
-  EXPECT_THAT(result.error(), HasSubstr("auth.hmac_keys is required"));
+  EXPECT_THAT(result.error(), HasSubstr("auth.hmac_keys or auth.es256_keys is required"));
 }
 
 TEST(ResolveConfig, AuthRejectsDuplicateKeyIDs) {
@@ -743,7 +743,7 @@ TEST(ResolveConfig, AuthAccumulatesMissingKeysAndInvalidTokenType) {
 
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasError());
-  EXPECT_THAT(result.error(), HasSubstr("auth.hmac_keys is required"));
+  EXPECT_THAT(result.error(), HasSubstr("auth.hmac_keys or auth.es256_keys is required"));
   EXPECT_THAT(result.error(), HasSubstr("auth.token_type must fit in a QUIC varint"));
 }
 
@@ -799,10 +799,55 @@ TEST(ResolveConfig, AuthOptionalFieldsDefaultCorrectly) {
   ASSERT_TRUE(result.hasValue());
   const auto& authOut = result.value().config.services.at("svc").auth;
   EXPECT_TRUE(authOut.enabled);
-  EXPECT_EQ(authOut.tokenType, 0u);
+  EXPECT_EQ(authOut.tokenType, 1u);
   EXPECT_TRUE(authOut.requireSetupToken);
   EXPECT_TRUE(authOut.allowRequestTokenOverride);
   EXPECT_FALSE(authOut.strictClaims);
+}
+
+TEST(ResolveConfig, AuthEs256PublicKeysWorkWithoutHmacSecrets) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().clear();
+  auto auth = makeAuthConfig({});
+  ParsedAuthConfig::Es256Key key;
+  key.id = std::string("es-key");
+  key.public_key_file = std::string("/etc/moqx/token-public.pem");
+  auth.es256_keys = std::optional<std::vector<ParsedAuthConfig::Es256Key>>{{key}};
+  cfg.services.value().emplace("svc", makeAuthService(auth));
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue()) << result.error();
+  const auto& resolved = result.value().config.services.at("svc").auth;
+  EXPECT_TRUE(resolved.hmacKeys.empty());
+  ASSERT_EQ(resolved.es256Keys.size(), 1u);
+  EXPECT_EQ(resolved.es256Keys[0].id, "es-key");
+  EXPECT_EQ(resolved.es256Keys[0].publicKeyFile, "/etc/moqx/token-public.pem");
+}
+
+TEST(ResolveConfig, AuthKeyIdsMustBeUniqueAcrossAlgorithms) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().clear();
+  auto auth = makeAuthConfig();
+  ParsedAuthConfig::Es256Key key;
+  key.id = std::string("key-1");
+  key.public_key_file = std::string("public.pem");
+  auth.es256_keys = std::optional<std::vector<ParsedAuthConfig::Es256Key>>{{key}};
+  cfg.services.value().emplace("svc", makeAuthService(auth));
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("duplicates another auth key"));
+}
+
+TEST(ResolveConfig, AuthEs256RejectsEmptyPublicKeyPathAndId) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.services.value().clear();
+  auto auth = makeAuthConfig({});
+  auth.es256_keys =
+      std::optional<std::vector<ParsedAuthConfig::Es256Key>>{{ParsedAuthConfig::Es256Key{}}};
+  cfg.services.value().emplace("svc", makeAuthService(auth));
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("public_key_file must be non-empty"));
+  EXPECT_THAT(result.error(), HasSubstr(".id must be non-empty"));
 }
 
 TEST(ResolveConfig, AuthAbsentDefaultsDisabled) {
@@ -964,7 +1009,7 @@ TEST(ResolveConfig, AuthAnonymousClaimRejectsUnknownAction) {
 
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasError());
-  EXPECT_THAT(result.error(), HasSubstr("is not a recognized CAT4MOQ action"));
+  EXPECT_THAT(result.error(), HasSubstr("is not a recognized C4M action"));
 }
 
 // Regression: anonymous_claim must be validated even when auth.enabled is
@@ -983,7 +1028,7 @@ TEST(ResolveConfig, AuthAnonymousClaimValidatedEvenWhenAuthDisabled) {
 
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasError());
-  EXPECT_THAT(result.error(), HasSubstr("is not a recognized CAT4MOQ action"));
+  EXPECT_THAT(result.error(), HasSubstr("is not a recognized C4M action"));
 }
 
 TEST(ResolveConfig, AuthAnonymousClaimWarnsWhenAuthDisabled) {
@@ -1007,14 +1052,13 @@ TEST(ResolveConfig, AuthAnonymousClaimWarnsWhenAuthDisabled) {
   );
 }
 
-TEST(ResolveConfig, AuthAnonymousClaimRejectsClientSetupAndServerSetup) {
+TEST(ResolveConfig, AuthAnonymousClaimRejectsSetupActions) {
   auto cfg = makeMinimalInsecureConfig();
   cfg.services.value().clear();
 
   auto auth = makeAuthConfig();
   auth.anonymous_claim = std::optional<std::vector<AnonymousScope>>{std::vector<AnonymousScope>{
       makeAnonymousScope({"client_setup"}),
-      makeAnonymousScope({"server_setup"}),
       makeAnonymousScope({"setup"}), // alias for client_setup
   }};
   cfg.services.value().emplace("svc", makeAuthService(std::move(auth)));

@@ -1,0 +1,151 @@
+# C4M draft-02 implementation progress
+
+Status on 2026-11-20, branch `feature/c4m-draft02` (PR 1015). All work is
+committed and pushed. The implementation replaces the former CAT4MOQ token
+format with a C4M draft-02 token core: HMAC/ES256 COSE tokens, `moqt` scopes,
+standard claim validation (`exp`, `nbf`, `aud`, `iss`), `catreplay` 1, and DPoP,
+with the limits listed under Remaining work.
+
+## Completed
+
+- Downloaded and checked in locally the draft text at
+  [`ref/draft-ietf-moq-c4m-02.txt`](ref/draft-ietf-moq-c4m-02.txt) for review
+  and vector reference.
+- Added a bounded CBOR/COSE codec for tagged COSE_Mac0/HMAC-SHA256 and tagged
+  COSE_Sign1/ES256, using the correct MAC0 and Signature1 structures.
+- Implemented draft-02 action IDs and `moqt` scopes, including exact, prefix,
+  and suffix field matching, namespace termination with `nil`, and fail-closed
+  handling of unsupported restrictions.
+- Enforced expiration and not-before claims, rejected duplicate claims and
+  malformed/trailing encodings, and kept unsupported authorization claims
+  from silently broadening permissions.
+- Added ES256 public-key configuration for relay verification and a private-key
+  issuer option. Keys are P-256; relay configuration loads public keys only.
+  This addresses [issue #971](https://github.com/openmoq/moqx/issues/971).
+- Added `aud`/`iss` validation: per-service `audiences`/`issuers` config,
+  `ClaimPolicy` in the verifier, and `--auth_audience`/`--auth_issuer` issuer
+  flags. Verified live: matching token publishes, wrong or missing audience
+  is rejected.
+- Added `catreplay` 1 enforcement: `cti`/`exp` required, token bound to the first
+  accepting connection (per-service in-memory state), other connections refused
+  (`AuthError::Replayed`). Issuer flag `--auth_replay_protect`. Verified live:
+  second connection reusing the token was rejected.
+- Added DPoP (draft section 4): `Dpop.{h,cpp}` proof verification and signing,
+  `cnf`/`catdpop` parsing, per-action enforcement in `authenticateSetup` and
+  `authorize`, proof `cti` replay cache, `auth.dpop_token_type`, and issuer flags
+  `--auth_dpop_key_file`/`--auth_dpop_jkt`. Unit-tested against the draft's
+  published `jkt` thumbprint vector.
+- Added `moqt-reval` revalidation: `min_revalidation_interval_seconds`,
+  `authorize()` now reports which grants keep an action alive, and the auth
+  filters run a per-action timer that ends only the affected action on expiry
+  (subscribe, fetch, subscribe_namespace, subscribe_tracks, publish_namespace,
+  publish). The session itself is not revalidated.
+- Added ES384 and EdDSA (Ed25519) DPoP proofs, the draft's SHOULD algorithms:
+  generalized proof keys, `cnf` thumbprints for P-384 and OKP keys, and issuer
+  binding to P-384/Ed25519 client keys. Thumbprints match RFC 9679 and RFC 8037
+  vectors; no draft vectors exist for these algorithms.
+- Fixed six review findings from Copilot (five code changes; the sixth, curve
+  validation of the DPoP key, was already fixed): the replay binding of a
+  DPoP-bound token now waits for a valid proof; the issuer refuses DPoP windows
+  and revalidation intervals the relay would reject; `strict_claims` no longer
+  rejects the `cti` that `catreplay` needs; DPoP `iat` is range-checked and the
+  freshness comparison cannot overflow; configured ES256 issuance accepts the
+  audiences and revalidation interval it issues.
+- Updated existing configuration/build documentation and examples to explain
+  the subset, provisional labels, key handling, and unsupported features.
+- Pinned catapult's latest published release, v1.0.0, at
+  `cc8aeb879c261c5b972b80e5bc426fceb8568e6d` for crypto primitives. The
+  release's older token codec is not used for draft-02 wire parsing.
+
+## Validation performed
+
+- Default build passed; the resolved catapult source matched the v1.0.0 tag.
+- Focused default CTest selection (relay fixture tests in all three threading
+  modes, C4m, Dpop, Auth, config resolver/serializer, issuer, filters, registry,
+  namespace tree, cross-executor filters) passed on the final code, which
+  includes every change above, the namespace revoke, and the Copilot review
+  fixes: 731/731. The earlier
+  125/125 selection predates those changes.
+- Sanitizer (ASAN/UBSAN/LeakSanitizer, `build/san`) run on the final code,
+  including the `aud`/`iss`, `catreplay`, DPoP, and `unique_ptr` changes:
+  461 of 462 passed across codec, DPoP, authentication, issuer, configuration,
+  registry, namespace tree, cross-executor filters, and the revalidation filter
+  tests (including the timer-driven ones and the out-of-range DPoP `iat`
+  cases); the one failure is `UpstreamCACertSignedServerTest`, a loopback test
+  that fails the same way on the pre-PR build. The 336 relay fixture tests in
+  the three threading modes (including the namespace revoke) passed under the
+  sanitizers before the review fixes, which do not touch code they exercise. moqx and catapult
+  crypto were instrumented; the prebuilt moxygen dependency was not.
+- The draft's ES256 vector verifies; a tampered signature fails.
+- Eight issuer CLI scenarios passed, covering direct/config ES256 issuance,
+  missing or mismatched private keys, key ID selection, encrypted-key
+  rejection without prompting, secret-safe errors, and retained HMAC issuance.
+- Concurrent verification passed with 8 workers performing 64 verifications
+  each.
+- `clang-format-19 --dry-run --Werror` and `git diff --check` passed.
+- Independent C++ review found no concrete issue above its reporting
+  threshold.
+- Live authenticated media delivery with the sibling `moqxr` publisher passed
+  (MoQT draft 18, WebTransport, HMAC-SHA256 token from `moqx-issuer`, token
+  type 1 via `--auth-profile c4m-01 --auth-token-file`):
+  - no token: session rejected with "missing authorization token";
+  - token for namespace `live`: namespace published with 3 tracks;
+  - `moqtextclient` subscribed to `vide_1` and received `moof`/`mdat` media;
+  - token for namespace `other` publishing `live`: rejected with
+    "authorization token does not permit action".
+
+## Remaining work and limitations
+
+- Protocol conformance gaps are tracked in
+  [C4M draft-02 implementation gaps](c4m-draft02-gaps.md). The major gaps are
+  `moqt-reval` for `setup`, DPoP interoperability (provisional `actx`/`ath` labels and
+  proof token type), composite claims (blocked on unassigned keys), and
+  claim-label interoperability (final `moqt`/`moqt-reval` labels). PS256 tokens
+  are not implemented but the draft does not define them.
+- Replay state (`catreplay` bindings and DPoP proof `cti` values) is in memory
+  per service: lost on restart and not shared between relays.
+- CI (`linux` and `asan debug`) runs the whole suite (1575 tests). On the
+  runs for this PR, all loopback and upstream tests pass: the only failures were
+  10 tests of this work's DPoP code (7 `DpopTest`, 3 `AuthTest`), which fixed a
+  key-reading bug: the code required the public point from OpenSSL to be 65
+  bytes and uncompressed, but a key may store it compressed and CI's OpenSSL
+  returned that form. Coordinates are now read directly, with a test using a
+  compressed-point key.
+- On the development machine, 37 of 1561 tests fail, all loopback/upstream
+  tests (11 outside `UpstreamProviderTest`, 26 of its 30 cases, with connect
+  `FutureTimeout`s and hangs). The pre-PR commit `a191e99b` fails the same tests
+  the same way here, and CI does not, so these failures are specific to this
+  machine's network environment and are not caused by this PR. Every test added
+  by this work passed locally apart from the DPoP key-reading case above, which
+  this machine's OpenSSL did not trigger.
+- Live revalidation and DPoP checks against the moqxr publisher (draft 18, HMAC):
+  - `publish_namespace` revalidation: with a 9 s token and `moqt-reval` 1, the
+    relay ended the action at expiry, the publisher's track ended for the
+    subscriber within a millisecond (the stream stopped growing and the client
+    finished), and the namespace left `/state` by the next poll. An earlier
+    version withdrew only the announcement and left already-open track
+    subscriptions flowing, because moqxr ignores the cancel; revoking now also
+    unsubscribes from the publisher's tracks under the namespace and sends their
+    subscribers PUBLISH_DONE TRACK_ENDED (tested in all three relay threading
+    modes).
+  - The first live runs exposed two bugs the mock-based tests missed: (1) the
+    session callback's cancel discards the session's handle, so the relay's
+    route was never removed when the cancel came first (now the route is
+    dropped first, with an ordering test); (2) the timer ran outside the request
+    context moxygen uses to identify the owning session, so the request context
+    is now captured when the action starts and re-entered when it is ended (with
+    a regression test).
+  - DPoP: a `cnf`-bound token with no proof, and with moqxr's draft-01 JWT
+    proof, were both refused; an unbound token published. A positive DPoP run
+    was not possible: no available client sends the draft-02 CWT proof.
+  - Not run live: `publish`, `subscribe`, `fetch`, `subscribe_namespace` and
+    `subscribe_tracks` revalidation (moqxr sent no PUBLISH in the mode tried,
+    and moqtextclient cannot carry our binary tokens on a request).
+- The earlier live run covered one draft (18), HMAC only, and a small test MP4. The
+  subscriber was authorized by `anonymous_claim` because `moqtextclient` can
+  send only a type-0 token on SUBSCRIBE, so a token-carrying subscriber was not
+  tested. ES256 and mid-stream expiry were not exercised live.
+- No issue comment/closure was performed.
+
+Detailed run output was recorded at `/tmp/moqx-971-validation.txt` and
+`/tmp/moqx-971-full-tests.log` in the working environment.

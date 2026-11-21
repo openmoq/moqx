@@ -71,6 +71,15 @@ target_link_libraries(moqx_test_fixture
 # its own main or conflicting globals. Put a file-specific define on the source
 # with set_source_files_properties. ctest runs each test case in its own process.
 
+# The wire codec also runs independently under ASAN/UBSAN.
+moqx_add_gtest(moqx_c4m_test
+  SRCS C4mTest.cpp
+  LIBS moqx_c4m GTest::gtest_main
+)
+set_source_files_properties(C4mTest.cpp AuthTest.cpp AuthTokenIssuerTest.cpp PROPERTIES
+  COMPILE_DEFINITIONS "TEST_C4M_KEY_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}\""
+)
+
 # In-process relay through MoqxRelayTestFixture.
 moqx_add_gtest(moqx_relay_test
   SRCS
@@ -299,6 +308,12 @@ foreach(version 16 18 22)
 endforeach()
 
 # Validates config files only; binds no port and runs no stack.
+add_test(
+  NAME issue_es256
+  COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/test_issue_es256.py $<TARGET_FILE:moqx-issuer>
+)
+set_tests_properties(issue_es256 PROPERTIES TIMEOUT 30)
+
 add_test(
   NAME validate_config
   COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_validate_config.sh $<TARGET_FILE:moqx>
