@@ -366,7 +366,7 @@ at least every N seconds and, once it has expired, ends only that action:
 | `fetch` | The fetch is cancelled and its stream is reset with `EXPIRED_AUTH_TOKEN`. |
 | `subscribe_namespace` | The relay stops sending NAMESPACE updates for that subscription. The subscriber gets no explicit end message. |
 | `subscribe_tracks` | The relay ends that SUBSCRIBE_TRACKS. |
-| `publish_namespace` | The publisher is sent a PUBLISH_NAMESPACE_CANCEL with `EXPIRED_AUTH_TOKEN` and the namespace is withdrawn. |
+| `publish_namespace` | The namespace is withdrawn from the relay, then the publisher is told: on draft 18 and later by resetting the request stream (`CANCELLED`, since the draft removed PUBLISH_NAMESPACE_CANCEL), before that by PUBLISH_NAMESPACE_CANCEL with `EXPIRED_AUTH_TOKEN`. Tracks the relay is already forwarding are not stopped: the relay withdraws the announcement, and a publisher that ignores the cancel can keep sending on subscriptions that are already open. |
 | `publish` | The relay unsubscribes from the publisher's track. The publisher is not sent a separate error. |
 
 The session and every other action on it are left alone. An action is ended only
@@ -374,6 +374,9 @@ when everything that authorizes it has expired: if it is also covered by a token
 without `moqt-reval`, a token that never expires, or an `anonymous_claim`, it
 continues. When several revalidated tokens cover it, it ends after the latest
 expiry. New requests after expiry are refused by the normal expiry check.
+
+The relay logs each ending at INFO (`revalidation: the token authorizing a ... is no
+longer acceptable; ending it`).
 
 Limits: `setup` is not revalidated. A `setup` token that expires does not close
 the session, but the grants it supplied stop authorizing new requests. A

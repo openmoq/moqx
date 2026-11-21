@@ -126,6 +126,7 @@ IssuedToken issueToken(const IssueTokenOptions& options) {
   grants.expiresAt = options.now + options.ttl;
   grants.issuer = options.issuer;
   grants.audiences = options.audiences;
+  grants.revalidateEvery = options.revalidateEvery;
   if (!options.dpopKeyFile.empty()) {
     const auto clientKey = dpopPublicKey(options.dpopKeyFile);
     grants.dpop = DpopRequirement{

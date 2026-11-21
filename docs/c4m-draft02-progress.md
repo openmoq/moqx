@@ -55,11 +55,11 @@ with the limits listed under Remaining work.
 - Default build passed; the resolved catapult source matched the v1.0.0 tag.
 - Focused default CTest selection (C4m, Dpop, Auth, config resolver/serializer,
   issuer, filters) passed after the `aud`/`iss`, `catreplay`, DPoP, and
-  `moqt-reval` changes (including publish) and the error-code mapping, and ES384/EdDSA proofs: 291/291.
+  `moqt-reval` changes (including publish) and the error-code mapping, and ES384/EdDSA proofs, and the live-run fixes: 293/293.
   The earlier 125/125 selection predates those changes.
 - Sanitizer (ASAN/UBSAN/LeakSanitizer, `build/san`) run on the final code,
   including the `aud`/`iss`, `catreplay`, DPoP, and `unique_ptr` changes:
-  338/338 passed across codec, DPoP, authentication, issuer, configuration, and
+  340/340 passed across codec, DPoP, authentication, issuer, configuration, and
   revalidation filter tests (including the timer-driven ones). moqx and catapult crypto were instrumented; the prebuilt moxygen
   dependency was not.
 - The draft's ES256 vector verifies; a tampered signature fails.
@@ -107,7 +107,26 @@ with the limits listed under Remaining work.
   and the whole pre-PR suite was not run, so a regression in another test would
   not show as a difference. The failure count (37) matches the first full run of
   this branch.
-- The live run covered one draft (18), HMAC only, and a small test MP4. The
+- Live revalidation and DPoP checks against the moqxr publisher (draft 18, HMAC):
+  - `publish_namespace` revalidation: with a 9 s token and `moqt-reval` 1, the
+    relay ended the action at expiry and the namespace left `/state` about 0.2 s
+    later. The track subscription already open kept delivering, because the
+    relay withdraws the announcement but does not stop tracks it is forwarding,
+    and moqxr ignores the cancel.
+  - The first live runs exposed two bugs the mock-based tests missed: (1) the
+    session callback's cancel discards the session's handle, so the relay's
+    route was never removed when the cancel came first (now the route is
+    dropped first, with an ordering test); (2) the timer ran outside the request
+    context moxygen uses to identify the owning session, so the request context
+    is now captured when the action starts and re-entered when it is ended (with
+    a regression test).
+  - DPoP: a `cnf`-bound token with no proof, and with moqxr's draft-01 JWT
+    proof, were both refused; an unbound token published. A positive DPoP run
+    was not possible: no available client sends the draft-02 CWT proof.
+  - Not run live: `publish`, `subscribe`, `fetch`, `subscribe_namespace` and
+    `subscribe_tracks` revalidation (moqxr sent no PUBLISH in the mode tried,
+    and moqtextclient cannot carry our binary tokens on a request).
+- The earlier live run covered one draft (18), HMAC only, and a small test MP4. The
   subscriber was authorized by `anonymous_claim` because `moqtextclient` can
   send only a type-0 token on SUBSCRIBE, so a token-carrying subscriber was not
   tested. ES256 and mid-stream expiry were not exercised live.

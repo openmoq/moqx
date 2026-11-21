@@ -17,6 +17,7 @@
 #include <folly/coro/Timeout.h>
 #include <folly/coro/WithCancellation.h>
 #include <folly/futures/Future.h>
+#include <folly/io/async/Request.h>
 
 using namespace moxygen;
 
@@ -45,6 +46,10 @@ struct ActionMonitor {
   folly::CancellationSource cancel;
   // The loop already ended the action, so the normal teardown must not repeat it.
   bool ended{false};
+  // The request context of the message that started the action. moxygen finds the session that
+  // owns a handle through it (MoQSession::getRequestSession), so ending the action from a timer
+  // has to run inside the same context or the relay ignores the call.
+  std::shared_ptr<folly::RequestContext> requestContext;
   ~ActionMonitor() { cancel.requestCancellation(); }
 };
 
@@ -57,6 +62,7 @@ using EndAction = std::function<void(ActionMonitor&)>;
 // `keepAlive` (optional) is a strong reference to the monitor for actions that have no handle to
 // own it, such as PUBLISH: the loop then owns the monitor until the action ends.
 folly::coro::Task<void> revalidationLoop(
+    const char* action,
     auth::Revalidation revalidation,
     std::weak_ptr<ActionMonitor> weakMonitor,
     folly::CancellationToken token,
@@ -69,7 +75,10 @@ folly::coro::Task<void> revalidationLoop(
     if (now >= revalidation.deadline) {
       if (auto monitor = weakMonitor.lock(); monitor && !monitor->ended) {
         monitor->ended = true;
+        XLOG(INFO) << "revalidation: the token authorizing a " << action
+                   << " is no longer acceptable; ending it";
         try {
+          folly::RequestContextScopeGuard guard(monitor->requestContext);
           endAction(*monitor);
         } catch (const std::exception& e) {
           XLOG(WARN) << "revalidation: ending the action failed: " << e.what();
@@ -98,18 +107,29 @@ folly::coro::Task<void> revalidationLoop(
 // until the action is gone (see revalidationLoop); the returned pointer is then only a handle to
 // cancel it early.
 std::shared_ptr<ActionMonitor> startRevalidation(
+    const char* action,
     const std::optional<auth::Revalidation>& revalidation,
     folly::Executor* executor,
     EndAction endAction,
-    std::function<bool()> ongoing = nullptr
+    std::function<bool()> ongoing = nullptr,
+    std::shared_ptr<folly::RequestContext> requestContext = nullptr
 ) {
-  if (!revalidation || executor == nullptr) {
+  if (!revalidation) {
     return nullptr;
   }
+  if (executor == nullptr) {
+    XLOG(WARN) << "revalidation: no executor for a " << action << "; it will not be revalidated";
+    return nullptr;
+  }
+  XLOG(DBG1) << "revalidation: watching a " << action << ", every "
+             << revalidation->interval.count() << "s";
   auto monitor = std::make_shared<ActionMonitor>();
+  monitor->requestContext =
+      requestContext ? std::move(requestContext) : folly::RequestContext::saveContext();
   folly::coro::co_withExecutor(
       folly::getKeepAliveToken(executor),
       revalidationLoop(
+          action,
           *revalidation,
           monitor,
           monitor->cancel.getToken(),
@@ -131,10 +151,12 @@ PublishReply revalidatedPublishReply(
     PublishReply inner,
     std::optional<auth::Revalidation> revalidation,
     std::weak_ptr<SubscriptionHandle> weakHandle,
-    std::weak_ptr<TrackConsumer> weakConsumer
+    std::weak_ptr<TrackConsumer> weakConsumer,
+    std::shared_ptr<folly::RequestContext> requestContext
 ) {
   auto* executor = co_await folly::coro::co_current_executor;
   auto monitor = startRevalidation(
+      "publish",
       revalidation,
       executor,
       [weakHandle](ActionMonitor&) {
@@ -143,7 +165,8 @@ PublishReply revalidatedPublishReply(
           handle->unsubscribe();
         }
       },
-      [weakHandle, weakConsumer] { return !(weakHandle.expired() && weakConsumer.expired()); }
+      [weakHandle, weakConsumer] { return !(weakHandle.expired() && weakConsumer.expired()); },
+      std::move(requestContext)
   );
   auto result = co_await std::move(inner);
   if (monitor && result.hasError()) {
@@ -325,6 +348,7 @@ AuthPublisherFilter::subscribe(SubscribeRequest sub, std::shared_ptr<TrackConsum
     auto handle =
         std::make_shared<AuthSubscriptionHandle>(std::move(result.value()), std::move(target));
     handle->attachMonitor(startRevalidation(
+        "subscription",
         ok.value().revalidation,
         executor,
         [weakInner, weakConsumer, requestID](ActionMonitor&) {
@@ -380,6 +404,7 @@ AuthPublisherFilter::fetch(Fetch fetch, std::shared_ptr<FetchConsumer> consumer)
     std::weak_ptr<Publisher::FetchHandle> weakInner = result.value();
     auto handle = std::make_shared<AuthFetchHandle>(std::move(result.value()), std::move(target));
     handle->attachMonitor(startRevalidation(
+        "fetch",
         ok.value().revalidation,
         executor,
         [weakInner, weakConsumer](ActionMonitor&) {
@@ -434,12 +459,17 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> AuthPublisherFilter::subs
         std::move(result.value()),
         std::move(target)
     );
-    wrapped->attachMonitor(startRevalidation(revalidation, executor, [weakInner](ActionMonitor&) {
-      // Stops the NAMESPACE flow for this one subscription.
-      if (auto inner = weakInner.lock()) {
-        inner->unsubscribeNamespace();
-      }
-    }));
+    wrapped->attachMonitor(startRevalidation(
+        "subscribe_namespace",
+        revalidation,
+        executor,
+        [weakInner](ActionMonitor&) {
+          // Stops the NAMESPACE flow for this one subscription.
+          if (auto inner = weakInner.lock()) {
+            inner->unsubscribeNamespace();
+          }
+        }
+    ));
     result.value() = std::move(wrapped);
   }
   co_return result;
@@ -483,6 +513,7 @@ folly::coro::Task<Publisher::SubscribeTracksResult> AuthPublisherFilter::subscri
     auto wrapped =
         std::make_shared<AuthSubscribeTracksHandle>(std::move(result.value()), std::move(target));
     wrapped->attachMonitor(startRevalidation(
+        "subscribe_tracks",
         ok.value().revalidation,
         executor,
         [weakInner](ActionMonitor&) {
@@ -543,7 +574,8 @@ AuthSubscriberFilter::publish(PublishRequest pub, std::shared_ptr<SubscriptionHa
         std::move(result.value().reply),
         ok.value().revalidation,
         std::move(weakHandle),
-        std::move(weakConsumer)
+        std::move(weakConsumer),
+        folly::RequestContext::saveContext()
     );
   }
   return result;
@@ -578,18 +610,22 @@ folly::coro::Task<Subscriber::PublishNamespaceResult> AuthSubscriberFilter::publ
     auto wrapped =
         std::make_shared<AuthPublishNamespaceHandle>(std::move(result.value()), std::move(target));
     wrapped->attachMonitor(startRevalidation(
+        "publish_namespace",
         ok.value().revalidation,
         executor,
         [weakInner, weakCallback](ActionMonitor&) {
-          // Tell the publisher its namespace was withdrawn, then drop the route.
-          if (auto callback = weakCallback.lock()) {
+          // Drop the route first: publishNamespaceCancel makes the session erase its entry for
+          // this namespace, which destroys the handle and would leave the relay's route behind.
+          // Then tell the publisher its namespace was withdrawn.
+          auto callback = weakCallback.lock();
+          if (auto inner = weakInner.lock()) {
+            inner->publishNamespaceDone();
+          }
+          if (callback) {
             callback->publishNamespaceCancel(
                 PublishNamespaceErrorCode::EXPIRED_AUTH_TOKEN,
                 "authorization token no longer acceptable"
             );
-          }
-          if (auto inner = weakInner.lock()) {
-            inner->publishNamespaceDone();
           }
         }
     ));

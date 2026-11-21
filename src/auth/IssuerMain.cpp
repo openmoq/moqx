@@ -56,6 +56,11 @@ DEFINE_string(
 );
 DEFINE_bool(auth_dpop_jkt, false, "Bind with jkt (RFC 7638) instead of ckt (RFC 9679)");
 DEFINE_int32(auth_dpop_window_seconds, 300, "DPoP proof freshness window (catdpop)");
+DEFINE_int32(
+    auth_revalidate_seconds,
+    0,
+    "moqt-reval interval in seconds (0 = none); the relay must allow it"
+);
 DEFINE_int32(auth_ttl_seconds, 3600, "Token lifetime in seconds");
 DEFINE_string(auth_output, "base64-prefix", "Output encoding: base64-prefix, base64, hex, or raw");
 
@@ -129,6 +134,7 @@ auth::IssueTokenOptions makeIssueTokenOptions(const cfg::ResolvedConfig* resolve
     options.trackNamespace = auth::parseTrackNamespace(FLAGS_auth_namespace);
   }
   options.replayProtected = FLAGS_auth_replay_protect;
+  options.revalidateEvery = std::chrono::seconds(FLAGS_auth_revalidate_seconds);
   options.dpopKeyFile = FLAGS_auth_dpop_key_file;
   options.dpopJkt = FLAGS_auth_dpop_jkt;
   options.dpopWindow = std::chrono::seconds(FLAGS_auth_dpop_window_seconds);

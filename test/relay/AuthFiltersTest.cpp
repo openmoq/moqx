@@ -626,9 +626,12 @@ TEST_F(AuthFiltersTest, RevalidationEndsTheExpiredNamespacePublication) {
   });
   std::promise<void> cancelled;
   std::promise<void> done;
+  // The route is dropped before the publisher is told: cancelling makes the session discard its
+  // handle, after which the relay's route could no longer be removed.
+  testing::InSequence order;
+  EXPECT_CALL(*pubHandle, publishNamespaceDone()).Times(1).WillOnce([&] { done.set_value(); });
   EXPECT_CALL(*callback, publishNamespaceCancel(RequestErrorCode::EXPIRED_AUTH_TOKEN, _))
       .WillOnce([&](auto, auto) { cancelled.set_value(); });
-  EXPECT_CALL(*pubHandle, publishNamespaceDone()).Times(1).WillOnce([&] { done.set_value(); });
 
   folly::ScopedEventBaseThread eventBase;
   PublishNamespace publish;
@@ -896,4 +899,50 @@ TEST_F(AuthFiltersTest, ExpiredSessionGrantsAreAPlainUnauthorized) {
       folly::coro::blockingWait(publisher->subscribe(sub, nullptr)).error().errorCode,
       RequestErrorCode::UNAUTHORIZED
   );
+}
+
+namespace {
+class MarkerData : public folly::RequestData {
+public:
+  bool hasCallback() override { return false; }
+};
+constexpr auto kMarker = "moqx-revalidation-test";
+} // namespace
+
+// moxygen finds the session that owns a handle through the request context of the message being
+// handled, so ending an action from a timer has to run inside the context that started it.
+TEST_F(AuthFiltersTest, RevalidationEndsTheActionInsideTheRequestContextThatStartedIt) {
+  auto filter = makePublisherFilter({revalidatedGrants({Action::Subscribe})});
+  SubscribeOk ok;
+  ok.requestID = RequestID(1);
+  auto inner = std::make_shared<NiceMock<MockSubscriptionHandle>>(ok);
+  auto consumer = std::make_shared<NiceMock<MockTrackConsumer>>();
+  EXPECT_CALL(*publisherInner_, subscribe(_, _)).WillOnce([inner](auto, auto) {
+    return folly::coro::makeTask<Publisher::SubscribeResult>(
+        std::shared_ptr<SubscriptionHandle>(inner)
+    );
+  });
+  std::promise<bool> sawMarker;
+  EXPECT_CALL(*inner, unsubscribe()).WillOnce([&] {
+    auto* context = folly::RequestContext::try_get();
+    sawMarker.set_value(context != nullptr && context->hasContextData(kMarker));
+  });
+
+  folly::ScopedEventBaseThread eventBase;
+  SubscribeRequest request;
+  request.requestID = RequestID(1);
+  request.fullTrackName = FullTrackName{TrackNamespace{{"live"}}, "video"};
+  auto context = std::make_shared<folly::RequestContext>();
+  context->setContextData(kMarker, std::make_unique<MarkerData>());
+  folly::Try<Publisher::SubscribeResult> subscribed;
+  {
+    folly::RequestContextScopeGuard guard(context);
+    subscribed = folly::coro::blockingWait(folly::coro::co_awaitTry(
+        folly::coro::co_withExecutor(eventBase.getEventBase(), filter->subscribe(request, consumer))
+    ));
+  }
+  ASSERT_TRUE(subscribed.hasValue());
+  auto future = sawMarker.get_future();
+  ASSERT_EQ(future.wait_for(kRevalWait), std::future_status::ready);
+  EXPECT_TRUE(future.get());
 }
