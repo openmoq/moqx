@@ -41,12 +41,12 @@ used for draft-02 parsing; ES256 DER signatures are adapted to COSE's fixed
   `moqtextclient` subscriber. Remaining gaps: the subscriber used
   `anonymous_claim` (the client cannot send a setup token), and ES256, other
   drafts, and mid-stream expiry were not exercised live.
-- Full default CTest on the final code: 11 failures among 1518 tests run with
-  `UpstreamProviderTest` excluded, plus widespread failures and hangs in
-  `UpstreamProviderTest` itself, all loopback/upstream connect problems
-  (`FutureTimeout`). The pre-PR commit `a191e99b` fails the same tests the same
-  way, so they predate this PR; the cause is undiagnosed and only the failing
-  tests (not the whole suite) were compared against it. See the progress doc
+- Full default CTest on the final code (1561 tests, run to completion): 37
+  failures, all loopback/upstream tests (11 outside `UpstreamProviderTest`, 26
+  of its 30 cases), plus 21 self-skipped. The pre-PR commit `a191e99b` fails the
+  11 non-`UpstreamProviderTest` tests the same way (and the three
+  `UpstreamProviderTest` cases checked), so they predate this PR; the cause is
+  undiagnosed and the whole pre-PR suite was not compared. See the progress doc
   for the list.
 - A prebuilt, uninstrumented moxygen dependency was used for sanitizer runs;
   moqx and catapult crypto were instrumented. The sanitizer results therefore
@@ -63,8 +63,8 @@ used for draft-02 parsing; ES256 DER signatures are adapted to COSE's fixed
 - ASAN/UBSAN/LeakSanitizer focused tests on the final code: 330/330 passed
   across codec, DPoP, authentication, issuer, configuration, and revalidation
   filter groups.
-- Full default CTest: see the integration gap above (11 pre-existing upstream
-  failures outside `UpstreamProviderTest`).
+- Full default CTest: 37 failures of 1561, all pre-existing loopback/upstream
+  tests (see the integration gap above); every test added by this work passed.
 - Live moqxr publisher run: passed for HMAC, draft 18 (see above). Live checks
   also passed for `aud`/`iss` rejection and `catreplay` second-connection
   rejection.

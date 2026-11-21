@@ -86,21 +86,23 @@ with the limits listed under Remaining work.
   `moqt`/`moqt-reval` labels).
 - Replay state (`catreplay` bindings and DPoP proof `cti` values) is in memory
   per service: lost on restart and not shared between relays.
-- Full default CTest on the final code (1548 tests): 11 failures among the 1518
-  run with `UpstreamProviderTest` excluded (21 more skipped by the tests
-  themselves), all in loopback/upstream tests: `MoqxRelayServerTest.H3TxnTimeout...`,
-  `RelaySessionCloseTest` (2), `UpstreamClusterTest` (2),
-  `UpstreamSetupCancelledTest`, `RelayUpstreamSubscribeRaceTest` (3, one
-  segfault), `RelayUpstreamHungPeerTest`, `UpstreamCACertSignedServerTest`.
-  `UpstreamProviderTest` (30 tests) mostly fails or hangs with a loopback
-  connect `FutureTimeout`: of the 22 that finished, 4 passed; eight hung for
-  about an hour and were killed, and eight never ran.
+- Full default CTest on the final code, including `moqt-reval` for all actions
+  (1561 tests, 120 s per-test timeout, run to completion): 37 failed and 21 were
+  skipped by the tests themselves. All 37 failures are loopback/upstream
+  tests: 11 outside `UpstreamProviderTest` (`MoqxRelayServerTest.H3TxnTimeout...`,
+  `RelaySessionCloseTest` x2, `UpstreamClusterTest` x2,
+  `UpstreamSetupCancelledTest`, `RelayUpstreamSubscribeRaceTest` x3 with one
+  segfault, `RelayUpstreamHungPeerTest`, `UpstreamCACertSignedServerTest`) and 26
+  of the 30 `UpstreamProviderTest` cases (loopback connect `FutureTimeout`,
+  failing fast or hanging until the timeout). Every test added by this work
+  passed.
 - Baseline: the pre-PR commit `a191e99b` was built in a separate worktree and
-  all 11 failing tests above fail the same way there (failures, timeouts, and
-  the same segfault), as do the `UpstreamProviderTest` cases checked (3). The
-  failures predate this PR. The cause was not diagnosed, and the whole
-  pre-PR suite was not run, so a regression in another test would not show as
-  a difference.
+  all 11 non-`UpstreamProviderTest` failures above fail the same way there
+  (failures, timeouts, and the same segfault), as do the `UpstreamProviderTest`
+  cases checked (3). The failures predate this PR. The cause was not diagnosed,
+  and the whole pre-PR suite was not run, so a regression in another test would
+  not show as a difference. The failure count (37) matches the first full run of
+  this branch.
 - The live run covered one draft (18), HMAC only, and a small test MP4. The
   subscriber was authorized by `anonymous_claim` because `moqtextclient` can
   send only a type-0 token on SUBSCRIBE, so a token-carrying subscriber was not
