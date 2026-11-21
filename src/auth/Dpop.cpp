@@ -573,23 +573,23 @@ DpopKey dpopKeyOf(EVP_PKEY* key, const std::string& path) {
   }
   for (const auto& shape : kShapes) {
     if (shape.group != nullptr && std::string_view(group, groupLength) == shape.group) {
-      unsigned char point[1 + 2 * 48];
-      std::size_t length = 0;
-      if (EVP_PKEY_get_octet_string_param(
-              key,
-              OSSL_PKEY_PARAM_PUB_KEY,
-              point,
-              sizeof(point),
-              &length
-          ) != 1 ||
-          length != 1 + 2 * shape.size || point[0] != 0x04) {
+      // Ask for the affine coordinates rather than the encoded point: a key may store its point
+      // compressed or uncompressed, and OpenSSL hands the "pub" parameter back in that form.
+      BIGNUM* rawX = nullptr;
+      BIGNUM* rawY = nullptr;
+      const bool read = EVP_PKEY_get_bn_param(key, OSSL_PKEY_PARAM_EC_PUB_X, &rawX) == 1 &&
+                        EVP_PKEY_get_bn_param(key, OSSL_PKEY_PARAM_EC_PUB_Y, &rawY) == 1;
+      std::unique_ptr<BIGNUM, decltype(&BN_free)> x(rawX, BN_free);
+      std::unique_ptr<BIGNUM, decltype(&BN_free)> y(rawY, BN_free);
+      std::string xBytes(shape.size, '\0');
+      std::string yBytes(shape.size, '\0');
+      const int size = static_cast<int>(shape.size);
+      if (!read ||
+          BN_bn2binpad(x.get(), reinterpret_cast<unsigned char*>(xBytes.data()), size) != size ||
+          BN_bn2binpad(y.get(), reinterpret_cast<unsigned char*>(yBytes.data()), size) != size) {
         throw std::invalid_argument("cannot read the EC public key: " + path);
       }
-      return DpopKey{
-          shape.algorithm,
-          std::string(reinterpret_cast<char*>(point) + 1, shape.size),
-          std::string(reinterpret_cast<char*>(point) + 1 + shape.size, shape.size)
-      };
+      return DpopKey{shape.algorithm, std::move(xBytes), std::move(yBytes)};
     }
   }
   throw std::invalid_argument("only P-256, P-384 and Ed25519 keys are supported: " + path);

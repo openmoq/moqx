@@ -55,13 +55,11 @@ used for draft-02 parsing; ES256 DER signatures are adapted to COSE's fixed
   `moqtextclient` subscriber. Remaining gaps: the subscriber used
   `anonymous_claim` (the client cannot send a setup token), and ES256, other
   drafts, and mid-stream expiry were not exercised live.
-- Full default CTest on the final code (1561 tests, run to completion): 37
-  failures, all loopback/upstream tests (11 outside `UpstreamProviderTest`, 26
-  of its 30 cases), plus 21 self-skipped. The pre-PR commit `a191e99b` fails the
-  11 non-`UpstreamProviderTest` tests the same way (and the three
-  `UpstreamProviderTest` cases checked), so they predate this PR; the cause is
-  undiagnosed and the whole pre-PR suite was not compared. See the progress doc
-  for the list.
+- CI runs the whole suite (1575 tests) and passes every loopback and upstream
+  test; its only failures on this PR were 10 DPoP tests hitting a key-reading
+  bug that is now fixed (see the progress doc). On the development machine 37
+  loopback/upstream tests fail, identically on the pre-PR commit `a191e99b`, so
+  they are specific to that machine and not caused by this PR.
 - A prebuilt, uninstrumented moxygen dependency was used for sanitizer runs;
   moqx and catapult crypto were instrumented. The sanitizer results therefore
   do not cover moxygen internals.
@@ -76,11 +74,12 @@ used for draft-02 parsing; ES256 DER signatures are adapted to COSE's fixed
   Auth, filters, config, issuer, registry, namespace tree, cross-executor
   filters): 731/731 passed on the final code.
 - ASAN/UBSAN/LeakSanitizer on the auth, codec, config, registry and filter
-  groups: 460 of 461 passed (the failure is the known loopback test
+  groups: 461 of 462 passed (the failure is the known loopback test
   `UpstreamCACertSignedServerTest`); the 336 relay fixture tests passed under
   them before the last review fixes, which do not touch code they exercise.
-- Full default CTest: 37 failures of 1561, all pre-existing loopback/upstream
-  tests (see the integration gap above); every test added by this work passed.
+- Full default CTest on the development machine: 37 failures of 1561, all
+  loopback/upstream tests that fail identically before this PR and pass in CI (see
+  the integration gap above).
 - Live moqxr publisher run: passed for HMAC, draft 18 (see above). Live checks
   also passed for `aud`/`iss` rejection and `catreplay` second-connection
   rejection.

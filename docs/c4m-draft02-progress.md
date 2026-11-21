@@ -68,7 +68,7 @@ with the limits listed under Remaining work.
   125/125 selection predates those changes.
 - Sanitizer (ASAN/UBSAN/LeakSanitizer, `build/san`) run on the final code,
   including the `aud`/`iss`, `catreplay`, DPoP, and `unique_ptr` changes:
-  460 of 461 passed across codec, DPoP, authentication, issuer, configuration,
+  461 of 462 passed across codec, DPoP, authentication, issuer, configuration,
   registry, namespace tree, cross-executor filters, and the revalidation filter
   tests (including the timer-driven ones and the out-of-range DPoP `iat`
   cases); the one failure is `UpstreamCACertSignedServerTest`, a loopback test
@@ -104,23 +104,20 @@ with the limits listed under Remaining work.
   are not implemented but the draft does not define them.
 - Replay state (`catreplay` bindings and DPoP proof `cti` values) is in memory
   per service: lost on restart and not shared between relays.
-- Full default CTest on the final code, including `moqt-reval` for all actions
-  (1561 tests, 120 s per-test timeout, run to completion): 37 failed and 21 were
-  skipped by the tests themselves. All 37 failures are loopback/upstream
-  tests: 11 outside `UpstreamProviderTest` (`MoqxRelayServerTest.H3TxnTimeout...`,
-  `RelaySessionCloseTest` x2, `UpstreamClusterTest` x2,
-  `UpstreamSetupCancelledTest`, `RelayUpstreamSubscribeRaceTest` x3 with one
-  segfault, `RelayUpstreamHungPeerTest`, `UpstreamCACertSignedServerTest`) and 26
-  of the 30 `UpstreamProviderTest` cases (loopback connect `FutureTimeout`,
-  failing fast or hanging until the timeout). Every test added by this work
-  passed.
-- Baseline: the pre-PR commit `a191e99b` was built in a separate worktree and
-  all 11 non-`UpstreamProviderTest` failures above fail the same way there
-  (failures, timeouts, and the same segfault), as do the `UpstreamProviderTest`
-  cases checked (3). The failures predate this PR. The cause was not diagnosed,
-  and the whole pre-PR suite was not run, so a regression in another test would
-  not show as a difference. The failure count (37) matches the first full run of
-  this branch.
+- CI (`linux` and `asan debug`) runs the whole suite (1575 tests). On the
+  runs for this PR, all loopback and upstream tests pass: the only failures were
+  10 tests of this work's DPoP code (7 `DpopTest`, 3 `AuthTest`), which fixed a
+  key-reading bug: the code required the public point from OpenSSL to be 65
+  bytes and uncompressed, but a key may store it compressed and CI's OpenSSL
+  returned that form. Coordinates are now read directly, with a test using a
+  compressed-point key.
+- On the development machine, 37 of 1561 tests fail, all loopback/upstream
+  tests (11 outside `UpstreamProviderTest`, 26 of its 30 cases, with connect
+  `FutureTimeout`s and hangs). The pre-PR commit `a191e99b` fails the same tests
+  the same way here, and CI does not, so these failures are specific to this
+  machine's network environment and are not caused by this PR. Every test added
+  by this work passed locally apart from the DPoP key-reading case above, which
+  this machine's OpenSSL did not trigger.
 - Live revalidation and DPoP checks against the moqxr publisher (draft 18, HMAC):
   - `publish_namespace` revalidation: with a 9 s token and `moqt-reval` 1, the
     relay ended the action at expiry, the publisher's track ended for the

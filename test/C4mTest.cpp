@@ -779,3 +779,26 @@ TEST(DpopTest, OutOfRangeIssuedAtIsRejectedWithoutOverflow) {
         << seconds;
   }
 }
+
+// A PEM key may store its public point compressed. The coordinates must come out the same
+// either way: CI's OpenSSL returns the encoded point in that stored form.
+TEST(DpopTest, CompressedAndUncompressedPemKeysGiveTheSameCoordinates) {
+  const auto uncompressed = dpopPublicKey(keyFile("c4m_es256_private.pem"));
+  const auto compressed = dpopPublicKey(keyFile("c4m_es256_compressed_private.pem"));
+  EXPECT_EQ(compressed.algorithm, kDpopAlgEs256);
+  EXPECT_EQ(compressed.x, uncompressed.x);
+  EXPECT_EQ(compressed.y, uncompressed.y);
+  EXPECT_EQ(compressed.x, kDraftX);
+  // And a proof signed with it verifies against a binding computed from the same key.
+  const std::string token = "t";
+  const DpopContext context{Action::ClientSetup, {}, std::nullopt};
+  const auto proof =
+      signDpopProof(keyFile("c4m_es256_compressed_private.pem"), token, context, "c", kNow);
+  EXPECT_NO_THROW(verifyDpopProof(
+      proof,
+      sha256(token),
+      bindingFor(uncompressed, DpopBinding::Kind::Ckt),
+      context,
+      kNow
+  ));
+}
