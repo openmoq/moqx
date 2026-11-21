@@ -37,8 +37,10 @@ used for draft-02 parsing; ES256 DER signatures are adapted to COSE's fixed
 - A request carrying an expired token fails with request error `EXPIRED_AUTH_TOKEN`
   (0x5); other refusals stay `UNAUTHORIZED`. Request error codes are sent unchanged
   in every draft by moxygen, so drafts 16, 18 and 22 behave the same; draft 22's
-  text was not available to check. A missing or invalid (malformed) token is still
-  reported as `UNAUTHORIZED` rather than the draft's `MALFORMED_AUTH_TOKEN`.
+  text was not available to check. A token that cannot be decoded fails with
+  `MALFORMED_AUTH_TOKEN` (0x4). A bad signature, an unsupported claim, or no token
+  stays `UNAUTHORIZED`: the draft's "otherwise invalid" wording could be read to
+  cover a bad signature too, but its code description is about serialization.
 - Revalidation endings use PUBLISH_DONE `UNAUTHORIZED` (the draft's code for a
   subscriber that is no longer authorized; `EXPIRED` means the SUBSCRIBE_OK timeout)
   and, for fetch, stream reset `EXPIRED_AUTH_TOKEN` (0x7 from draft 18, `0` before).
@@ -69,9 +71,9 @@ used for draft-02 parsing; ES256 DER signatures are adapted to COSE's fixed
 ## Validation snapshot
 
 - Default build passed.
-- Focused default tests (C4m, Dpop, Auth, filters, config, issuer): 285/285
+- Focused default tests (C4m, Dpop, Auth, filters, config, issuer): 286/286
   passed after the `aud`/`iss`, `catreplay`, DPoP, and `moqt-reval` changes.
-- ASAN/UBSAN/LeakSanitizer focused tests on the final code: 332/332 passed
+- ASAN/UBSAN/LeakSanitizer focused tests on the final code: 333/333 passed
   across codec, DPoP, authentication, issuer, configuration, and revalidation
   filter groups.
 - Full default CTest: 37 failures of 1561, all pre-existing loopback/upstream

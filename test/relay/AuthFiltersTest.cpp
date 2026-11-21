@@ -846,6 +846,43 @@ TEST_F(AuthFiltersTest, ExpiredRequestTokenIsReportedAsExpiredAuthToken) {
   );
 }
 
+// A token that cannot be decoded is MALFORMED_AUTH_TOKEN; one that decodes but is wrongly signed
+// or carries a restriction the relay does not support is still UNAUTHORIZED.
+TEST_F(AuthFiltersTest, UndecodableRequestTokenIsReportedAsMalformedAuthToken) {
+  auto publisher = makePublisherFilter({});
+  SubscribeRequest sub;
+  sub.requestID = RequestID(1);
+  sub.fullTrackName = FullTrackName{TrackNamespace{{"live"}}, "video"};
+  sub.params = withAuthToken(
+      FrameType::SUBSCRIBE,
+      AuthToken{.tokenType = 77, .tokenValue = "not a cose token", .alias = AuthToken::DontRegister}
+  );
+  EXPECT_EQ(
+      folly::coro::blockingWait(publisher->subscribe(sub, nullptr)).error().errorCode,
+      RequestErrorCode::MALFORMED_AUTH_TOKEN
+  );
+  sub.params = withAuthToken(FrameType::SUBSCRIBE, makeBadSignatureToken({Action::Subscribe}));
+  EXPECT_EQ(
+      folly::coro::blockingWait(publisher->subscribe(sub, nullptr)).error().errorCode,
+      RequestErrorCode::UNAUTHORIZED
+  );
+  // aud with no configured audience is an unsupported restriction, not a serialization error.
+  auto grants = makeGrants({Action::Subscribe});
+  grants.audiences = {"somewhere"};
+  sub.params = withAuthToken(
+      FrameType::SUBSCRIBE,
+      AuthToken{
+          .tokenType = 77,
+          .tokenValue = signGrants("k1", "secret", grants),
+          .alias = AuthToken::DontRegister
+      }
+  );
+  EXPECT_EQ(
+      folly::coro::blockingWait(publisher->subscribe(sub, nullptr)).error().errorCode,
+      RequestErrorCode::UNAUTHORIZED
+  );
+}
+
 // Grants that came from a setup token and have since expired are not "a token in the message",
 // so a request relying on them is a plain UNAUTHORIZED.
 TEST_F(AuthFiltersTest, ExpiredSessionGrantsAreAPlainUnauthorized) {

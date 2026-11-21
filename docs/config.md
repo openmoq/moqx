@@ -339,12 +339,14 @@ tokens are refused), is lost on restart, and is not shared between relays.
 ### Error codes for refused requests
 
 A request refused because a token it carries has expired fails with
-`EXPIRED_AUTH_TOKEN` (request error code `0x5`, MoQT draft 18 section 10.2.2).
-Every other refusal stays `UNAUTHORIZED`: a missing, malformed or wrongly signed
-token, a token that does not cover the action, and grants from the session's
+`EXPIRED_AUTH_TOKEN` (request error code `0x5`, MoQT draft 18 section 10.2.2),
+and one whose token cannot be decoded fails with `MALFORMED_AUTH_TOKEN` (`0x4`).
+Every other refusal stays `UNAUTHORIZED`: a missing or wrongly signed token, a
+token with a restriction the relay does not support (such as `aud` with no
+`audiences` configured), a token that does not cover the action, and grants from the session's
 setup token that have since expired (those are not a token in the message). A
-session whose setup token is already expired when it connects is closed with
-the session error `EXPIRED_AUTH_TOKEN`. moxygen sends request error codes
+session whose setup token is already expired or undecodable when it connects is
+closed with the session error `EXPIRED_AUTH_TOKEN` or `MALFORMED_AUTH_TOKEN`. moxygen sends request error codes
 unchanged for every MoQT draft, so drafts 16, 18 and 22 use the same values; the
 draft 22 text itself has not been checked. Revalidation uses different codes
 for the stream-level endings: PUBLISH_DONE `UNAUTHORIZED` and fetch reset

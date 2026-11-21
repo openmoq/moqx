@@ -23,12 +23,20 @@ using namespace moxygen;
 namespace openmoq::moqx {
 namespace {
 
-// An expired token is reported as EXPIRED_AUTH_TOKEN (draft 18, section 10.2.2: a message that
-// carries an expired token fails with it); every other denial stays UNAUTHORIZED. Request error
-// codes go out on the wire unchanged in every draft, so this is also the code for drafts 16 and 22.
+// Draft 18, section 10.2.2: a message that carries an expired token fails with
+// EXPIRED_AUTH_TOKEN, and one whose token cannot be decoded fails with MALFORMED_AUTH_TOKEN. Every
+// other denial (no token, a bad signature, an unsupported claim, a token that does not cover the
+// action) stays UNAUTHORIZED. Request error codes go out on the wire unchanged in every draft, so
+// these are also the codes for drafts 16 and 22.
 RequestErrorCode requestErrorFor(auth::AuthError error) {
-  return error == auth::AuthError::Expired ? RequestErrorCode::EXPIRED_AUTH_TOKEN
-                                           : RequestErrorCode::UNAUTHORIZED;
+  switch (error) {
+  case auth::AuthError::Expired:
+    return RequestErrorCode::EXPIRED_AUTH_TOKEN;
+  case auth::AuthError::Malformed:
+    return RequestErrorCode::MALFORMED_AUTH_TOKEN;
+  default:
+    return RequestErrorCode::UNAUTHORIZED;
+  }
 }
 
 // One ongoing action authorized by a token with moqt-reval. Destroying it (the action ended
