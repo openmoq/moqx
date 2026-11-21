@@ -169,10 +169,24 @@ folly::Expected<std::shared_ptr<const std::vector<Grants>>, AuthError> authentic
     uint64_t connectionId = 0
 );
 
+// How long an authorized action may continue (moqt-reval, draft-02 section 2.2). Present only
+// when every source that authorizes the action expires and asks to be revalidated: the action
+// must end once `deadline` (the latest expiry among them) has passed, and until then the relay
+// re-checks at least every `interval`. Absent when the action is authorized by anything that does
+// not expire or does not ask for revalidation (anonymous_claim, a plain token).
+struct Revalidation {
+  std::chrono::system_clock::time_point deadline;
+  std::chrono::seconds interval;
+};
+
+struct AuthDecision {
+  std::optional<Revalidation> revalidation;
+};
+
 // Authorizes a request against session grants, or per-request token(s) when
 // allow_request_token_override is set. Permitted if any verified request
 // token, or any session grant, covers the action. Returns Unit when permitted.
-folly::Expected<folly::Unit, AuthError> authorize(
+folly::Expected<AuthDecision, AuthError> authorize(
     const AuthTokenVerifier& verifier,
     Action action,
     const moxygen::Parameters& params,

@@ -8,10 +8,87 @@
 
 #include "peering/PeeringBackend.h"
 
+#include <moxygen/MoQConsumers.h>
+
+#include <folly/CancellationToken.h>
+#include <folly/coro/Invoke.h>
+#include <folly/coro/Sleep.h>
+#include <folly/coro/Task.h>
+#include <folly/coro/Timeout.h>
+#include <folly/coro/WithCancellation.h>
+#include <folly/futures/Future.h>
+
 using namespace moxygen;
 
 namespace openmoq::moqx {
 namespace {
+
+// One ongoing action authorized by a token with moqt-reval. Destroying it (the action ended
+// normally) cancels the revalidation loop.
+struct ActionMonitor {
+  folly::CancellationSource cancel;
+  // The loop already ended the action, so the normal teardown must not repeat it.
+  bool ended{false};
+  ~ActionMonitor() { cancel.requestCancellation(); }
+};
+
+using EndAction = std::function<void(ActionMonitor&)>;
+
+// Re-checks the authorizing token every `interval` and, once it is no longer acceptable (its
+// latest expiry has passed), ends only this action through `endAction`.
+folly::coro::Task<void> revalidationLoop(
+    auth::Revalidation revalidation,
+    std::weak_ptr<ActionMonitor> weakMonitor,
+    folly::CancellationToken token,
+    EndAction endAction
+) {
+  for (;;) {
+    const auto now = std::chrono::system_clock::now();
+    if (now >= revalidation.deadline) {
+      if (auto monitor = weakMonitor.lock(); monitor && !monitor->ended) {
+        monitor->ended = true;
+        try {
+          endAction(*monitor);
+        } catch (const std::exception& e) {
+          XLOG(WARN) << "revalidation: ending the action failed: " << e.what();
+        }
+      }
+      co_return;
+    }
+    const auto wait = std::min<std::chrono::system_clock::duration>(
+        revalidation.interval,
+        revalidation.deadline - now
+    );
+    auto slept = co_await folly::coro::co_awaitTry(folly::coro::co_withCancellation(
+        token,
+        folly::coro::sleep(
+            std::chrono::duration_cast<std::chrono::milliseconds>(wait) +
+            std::chrono::milliseconds(1)
+        )
+    ));
+    if (slept.hasException() || !weakMonitor.lock()) {
+      co_return; // The action ended on its own.
+    }
+  }
+}
+
+// Returns null when no revalidation applies.
+std::shared_ptr<ActionMonitor> startRevalidation(
+    const std::optional<auth::Revalidation>& revalidation,
+    folly::Executor* executor,
+    EndAction endAction
+) {
+  if (!revalidation || executor == nullptr) {
+    return nullptr;
+  }
+  auto monitor = std::make_shared<ActionMonitor>();
+  folly::coro::co_withExecutor(
+      folly::getKeepAliveToken(executor),
+      revalidationLoop(*revalidation, monitor, monitor->cancel.getToken(), std::move(endAction))
+  )
+      .start();
+  return monitor;
+}
 
 struct UpdateAuthorization {
   std::shared_ptr<const auth::AuthTokenVerifier> verifier;
@@ -20,7 +97,7 @@ struct UpdateAuthorization {
   std::optional<std::string> trackName;
   uint64_t connectionId{0};
 
-  folly::Expected<folly::Unit, auth::AuthError> check(const RequestUpdate& update) const {
+  folly::Expected<auth::AuthDecision, auth::AuthError> check(const RequestUpdate& update) const {
     if (verifier->enabled()) {
       for (const auto& param : update.params) {
         // The core currently authorizes a fixed target. A prefix-changing update
@@ -60,11 +137,24 @@ public:
     co_return co_await inner_->requestUpdate(std::move(update));
   }
 
+  void attachMonitor(std::shared_ptr<ActionMonitor> monitor) { monitor_ = std::move(monitor); }
+
 protected:
+  // Call when the peer ends the action. True when revalidation already ended it, so the inner
+  // handle must not be torn down a second time.
+  bool endedByRevalidation() {
+    if (!monitor_) {
+      return false;
+    }
+    monitor_->cancel.requestCancellation();
+    return monitor_->ended;
+  }
+
   std::shared_ptr<Handle> inner_;
 
 private:
   UpdateAuthorization authorization_;
+  std::shared_ptr<ActionMonitor> monitor_;
 };
 
 class AuthSubscriptionHandle final : public AuthUpdateHandle<SubscriptionHandle> {
@@ -78,7 +168,11 @@ public:
       setSubscribeOk(inner_->subscribeOk());
     }
   }
-  void unsubscribe() override { inner_->unsubscribe(); }
+  void unsubscribe() override {
+    if (!endedByRevalidation()) {
+      inner_->unsubscribe();
+    }
+  }
   void cancelFill(RequestID id) override { inner_->cancelFill(id); }
   const SubscribeOk& subscribeOk() const override { return inner_->subscribeOk(); }
 };
@@ -86,7 +180,11 @@ public:
 class AuthFetchHandle final : public AuthUpdateHandle<Publisher::FetchHandle> {
 public:
   using AuthUpdateHandle::AuthUpdateHandle;
-  void fetchCancel() override { inner_->fetchCancel(); }
+  void fetchCancel() override {
+    if (!endedByRevalidation()) {
+      inner_->fetchCancel();
+    }
+  }
   const FetchOk& fetchOk() const override { return inner_->fetchOk(); }
 };
 
@@ -94,7 +192,11 @@ class AuthSubscribeNamespaceHandle final
     : public AuthUpdateHandle<Publisher::SubscribeNamespaceHandle> {
 public:
   using AuthUpdateHandle::AuthUpdateHandle;
-  void unsubscribeNamespace() override { inner_->unsubscribeNamespace(); }
+  void unsubscribeNamespace() override {
+    if (!endedByRevalidation()) {
+      inner_->unsubscribeNamespace();
+    }
+  }
   const SubscribeNamespaceOk& subscribeNamespaceOk() const override {
     return inner_->subscribeNamespaceOk();
   }
@@ -103,7 +205,11 @@ public:
 class AuthSubscribeTracksHandle final : public AuthUpdateHandle<Publisher::SubscribeTracksHandle> {
 public:
   using AuthUpdateHandle::AuthUpdateHandle;
-  void unsubscribeTracks() override { inner_->unsubscribeTracks(); }
+  void unsubscribeTracks() override {
+    if (!endedByRevalidation()) {
+      inner_->unsubscribeTracks();
+    }
+  }
   const SubscribeTracksOk& subscribeTracksOk() const override {
     return inner_->subscribeTracksOk();
   }
@@ -113,7 +219,11 @@ class AuthPublishNamespaceHandle final
     : public AuthUpdateHandle<Subscriber::PublishNamespaceHandle> {
 public:
   using AuthUpdateHandle::AuthUpdateHandle;
-  void publishNamespaceDone() override { inner_->publishNamespaceDone(); }
+  void publishNamespaceDone() override {
+    if (!endedByRevalidation()) {
+      inner_->publishNamespaceDone();
+    }
+  }
   const PublishNamespaceOk& publishNamespaceOk() const override {
     return inner_->publishNamespaceOk();
   }
@@ -144,10 +254,34 @@ AuthPublisherFilter::subscribe(SubscribeRequest sub, std::shared_ptr<TrackConsum
       sub.fullTrackName.trackName,
       connectionId_
   };
+  auto* executor = co_await folly::coro::co_current_executor;
+  const auto requestID = sub.requestID;
+  std::weak_ptr<TrackConsumer> weakConsumer = consumer;
   auto result = co_await downstream_->subscribe(std::move(sub), std::move(consumer));
   if (result.hasValue()) {
-    result.value() =
+    std::weak_ptr<SubscriptionHandle> weakInner = result.value();
+    auto handle =
         std::make_shared<AuthSubscriptionHandle>(std::move(result.value()), std::move(target));
+    handle->attachMonitor(startRevalidation(
+        ok.value().revalidation,
+        executor,
+        [weakInner, weakConsumer, requestID](ActionMonitor&) {
+          // Only this subscription ends; the session and its other actions are untouched.
+          auto consumer = weakConsumer.lock();
+          if (auto inner = weakInner.lock()) {
+            inner->unsubscribe();
+          }
+          if (consumer) {
+            (void)consumer->publishDone(PublishDone{
+                requestID,
+                PublishDoneStatusCode::EXPIRED,
+                0,
+                "authorization token no longer acceptable"
+            });
+          }
+        }
+    ));
+    result.value() = std::move(handle);
   }
   co_return result;
 }
@@ -175,10 +309,26 @@ AuthPublisherFilter::fetch(Fetch fetch, std::shared_ptr<FetchConsumer> consumer)
       fetch.fullTrackName.trackName,
       connectionId_
   };
+  auto* executor = co_await folly::coro::co_current_executor;
+  std::weak_ptr<FetchConsumer> weakConsumer = consumer;
   auto result = co_await downstream_->fetch(std::move(fetch), std::move(consumer));
   if (result.hasValue()) {
-    result.value() =
-        std::make_shared<AuthFetchHandle>(std::move(result.value()), std::move(target));
+    std::weak_ptr<Publisher::FetchHandle> weakInner = result.value();
+    auto handle = std::make_shared<AuthFetchHandle>(std::move(result.value()), std::move(target));
+    handle->attachMonitor(startRevalidation(
+        ok.value().revalidation,
+        executor,
+        [weakInner, weakConsumer](ActionMonitor&) {
+          auto consumer = weakConsumer.lock();
+          if (auto inner = weakInner.lock()) {
+            inner->fetchCancel();
+          }
+          if (consumer) {
+            consumer->reset(ResetStreamErrorCode::EXPIRED_AUTH_TOKEN);
+          }
+        }
+    ));
+    result.value() = std::move(handle);
   }
   co_return result;
 }
@@ -190,6 +340,7 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> AuthPublisherFilter::subs
   // Peer relays authenticate via their relay token, validated downstream;
   // only non-peer subscribers go through grant-based auth here.
   bool isPeer = reciprocal_ && reciprocal_->authorizePeer(subNs.params).has_value();
+  std::optional<auth::Revalidation> revalidation;
   if (!isPeer) {
     auto ok = auth::authorize(
         *verifier_,
@@ -207,15 +358,25 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> AuthPublisherFilter::subs
           auth::toString(ok.error())
       });
     }
+    revalidation = ok.value().revalidation;
   }
   UpdateAuthorization
       target{verifier_, grants_, subNs.trackNamespacePrefix, std::nullopt, connectionId_};
+  auto* executor = co_await folly::coro::co_current_executor;
   auto result = co_await downstream_->subscribeNamespace(std::move(subNs), std::move(handle));
   if (result.hasValue() && !isPeer) {
-    result.value() = std::make_shared<AuthSubscribeNamespaceHandle>(
+    std::weak_ptr<Publisher::SubscribeNamespaceHandle> weakInner = result.value();
+    auto wrapped = std::make_shared<AuthSubscribeNamespaceHandle>(
         std::move(result.value()),
         std::move(target)
     );
+    wrapped->attachMonitor(startRevalidation(revalidation, executor, [weakInner](ActionMonitor&) {
+      // Stops the NAMESPACE flow for this one subscription.
+      if (auto inner = weakInner.lock()) {
+        inner->unsubscribeNamespace();
+      }
+    }));
+    result.value() = std::move(wrapped);
   }
   co_return result;
 }
@@ -250,11 +411,23 @@ folly::coro::Task<Publisher::SubscribeTracksResult> AuthPublisherFilter::subscri
   }
   UpdateAuthorization
       target{verifier_, grants_, subTracks.trackNamespacePrefix, std::nullopt, connectionId_};
+  auto* executor = co_await folly::coro::co_current_executor;
   auto result =
       co_await downstream_->subscribeTracks(std::move(subTracks), std::move(publishBlockedHandle));
   if (result.hasValue()) {
-    result.value() =
+    std::weak_ptr<Publisher::SubscribeTracksHandle> weakInner = result.value();
+    auto wrapped =
         std::make_shared<AuthSubscribeTracksHandle>(std::move(result.value()), std::move(target));
+    wrapped->attachMonitor(startRevalidation(
+        ok.value().revalidation,
+        executor,
+        [weakInner](ActionMonitor&) {
+          if (auto inner = weakInner.lock()) {
+            inner->unsubscribeTracks();
+          }
+        }
+    ));
+    result.value() = std::move(wrapped);
   }
   co_return result;
 }
@@ -326,10 +499,30 @@ folly::coro::Task<Subscriber::PublishNamespaceResult> AuthSubscriberFilter::publ
     });
   }
   UpdateAuthorization target{verifier_, grants_, pubNs.trackNamespace, std::nullopt, connectionId_};
+  auto* executor = co_await folly::coro::co_current_executor;
+  std::weak_ptr<PublishNamespaceCallback> weakCallback = callback;
   auto result = co_await downstream_->publishNamespace(std::move(pubNs), std::move(callback));
   if (result.hasValue()) {
-    result.value() =
+    std::weak_ptr<Subscriber::PublishNamespaceHandle> weakInner = result.value();
+    auto wrapped =
         std::make_shared<AuthPublishNamespaceHandle>(std::move(result.value()), std::move(target));
+    wrapped->attachMonitor(startRevalidation(
+        ok.value().revalidation,
+        executor,
+        [weakInner, weakCallback](ActionMonitor&) {
+          // Tell the publisher its namespace was withdrawn, then drop the route.
+          if (auto callback = weakCallback.lock()) {
+            callback->publishNamespaceCancel(
+                PublishNamespaceErrorCode::EXPIRED_AUTH_TOKEN,
+                "authorization token no longer acceptable"
+            );
+          }
+          if (auto inner = weakInner.lock()) {
+            inner->publishNamespaceDone();
+          }
+        }
+    ));
+    result.value() = std::move(wrapped);
   }
   co_return result;
 }

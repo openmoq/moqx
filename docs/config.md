@@ -300,6 +300,7 @@ services:
 | `audiences` | none | CWT `aud` values this relay accepts. When set, a token must carry `aud` (a string or array of strings) and at least one value must equal an entry, otherwise it is rejected. When omitted, any token carrying `aud` is rejected. Entries must be non-empty. |
 | `issuers` | none | CWT `iss` values this relay accepts. When set, a token must carry a matching `iss`. When omitted, `iss` is informational. Entries must be non-empty. |
 | `dpop_token_type` | `17` | AUTHORIZATION_TOKEN type carrying DPoP proofs for `cnf`-bound tokens. The draft does not register a type for proofs; this value is provisional, must differ from `token_type`, and must fit in a QUIC variable integer. Proofs count toward `max_tokens_per_message`. |
+| `min_revalidation_interval_seconds` | `5` | Smallest `moqt-reval` interval, in seconds, that tokens may request. A token with a shorter interval is rejected, and `0` rejects every token carrying a nonzero `moqt-reval` (the draft's "unable to revalidate" case). See [Revalidation](#revalidation-moqt-reval). |
 | `strict_claims` | `false` | Also rejects informational `iss` (when `issuers` is unset), `sub`, `iat`, and `cti` claims. Unsupported restrictions and repeated claims are always rejected, regardless of this setting. |
 | `max_tokens_per_message` | none | Required when `enabled: true`, directly or via `service_defaults.auth.max_tokens_per_message`. Caps how many `AUTHORIZATION_TOKEN` params of the configured `token_type` a single SETUP or request message may carry; a message over the cap is rejected outright, not truncated. Params of other token types are not counted. Bounds per-message verification cost against a client attaching many tokens to one message. Must be >= 1. |
 | `anonymous_claim` | empty | Statically-granted scopes applied to every request on this service, regardless of what token (if any) authenticated it. See [Anonymous Claim](#anonymous-claim) below. |
@@ -333,8 +334,34 @@ NumericDates are supported; floating-point time values are rejected. Optional
 any other connection is refused until the token expires. State is held in
 memory per service (bounded at 131072 live tokens, after which new `catreplay`
 tokens are refused), is lost on restart, and is not shared between relays.
-`catreplay` 2 is rejected. An integer zero `moqt-reval` is accepted. Nonzero revalidation,
-composites, or other unsupported restrictions are rejected. `aud` is rejected unless `audiences` is configured.
+`catreplay` 2 is rejected. Composites, or other unsupported restrictions are rejected. `aud` is rejected unless `audiences` is configured.
+
+### Revalidation (`moqt-reval`)
+
+A token with `moqt-reval` N (integer seconds, N at least
+`min_revalidation_interval_seconds`) and an `exp` stays good for an ongoing
+action only while it is acceptable. The relay re-checks the authorizing token
+at least every N seconds and, once it has expired, ends only that action:
+
+| Action | What happens |
+|---|---|
+| `subscribe` | The relay unsubscribes and sends PUBLISH_DONE with status `EXPIRED` for that subscription. |
+| `fetch` | The fetch is cancelled and its stream is reset with `EXPIRED_AUTH_TOKEN`. |
+| `subscribe_namespace` | The relay stops sending NAMESPACE updates for that subscription. The subscriber gets no explicit end message. |
+| `subscribe_tracks` | The relay ends that SUBSCRIBE_TRACKS. |
+| `publish_namespace` | The publisher is sent a PUBLISH_NAMESPACE_CANCEL with `EXPIRED_AUTH_TOKEN` and the namespace is withdrawn. |
+
+The session and every other action on it are left alone. An action is ended only
+when everything that authorizes it has expired: if it is also covered by a token
+without `moqt-reval`, a token that never expires, or an `anonymous_claim`, it
+continues. When several revalidated tokens cover it, it ends after the latest
+expiry. New requests after expiry are refused by the normal expiry check.
+
+Limits: `publish` (a publisher-initiated track) and `setup` are not revalidated.
+A `setup` token that expires does not close the session, but the grants it
+supplied stop authorizing new requests. A token that carries `moqt-reval`
+without `exp` never changes, so there is nothing to end. Intervals must be
+integers; floating-point values are rejected.
 
 DPoP (draft section 4) is enforced for tokens carrying `cnf` with `ckt` (key 5,
 RFC 9679 COSE Key Thumbprint) or `jkt` (key 323, RFC 7638 JWK Thumbprint) and

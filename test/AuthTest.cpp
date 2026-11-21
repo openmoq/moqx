@@ -447,10 +447,26 @@ TEST(AuthTest, StrictClaimsRejectsMalformedExp) {
   }
 }
 
-TEST(AuthTest, StrictClaimsRejectsMoqtReval) {
-  auto strict = verifyStrict(makeRawCwt("a2041af48657003a00010001183c")); // {exp, moqt-reval: 60}
-  ASSERT_TRUE(strict.hasError());
-  EXPECT_EQ(strict.error(), AuthError::UnsupportedClaim);
+TEST(AuthTest, MoqtRevalIsHonoredAtOrAboveTheConfiguredMinimum) {
+  // {exp, moqt-reval: 60}: a restriction the relay enforces, not an informational claim.
+  const auto token = makeRawCwt("a2041af48657003a00010001183c");
+  auto accepted = verifyStrict(token);
+  ASSERT_TRUE(accepted.hasValue());
+  EXPECT_EQ(accepted.value().revalidateEvery, std::chrono::seconds(60));
+
+  auto config = makeConfig();
+  config.minRevalidationSeconds = 61; // the relay cannot revalidate that often
+  auto tooFrequent = AuthTokenVerifier(config).verify(token);
+  ASSERT_TRUE(tooFrequent.hasError());
+  EXPECT_EQ(tooFrequent.error(), AuthError::UnsupportedClaim);
+}
+
+TEST(AuthTest, MoqtRevalIsRejectedWhenRevalidationIsDisabled) {
+  auto config = makeConfig();
+  config.minRevalidationSeconds = 0; // draft-02 2.2: unable to revalidate, so reject all
+  auto rejected = AuthTokenVerifier(config).verify(makeRawCwt("a2041af48657003a00010001183c"));
+  ASSERT_TRUE(rejected.hasError());
+  EXPECT_EQ(rejected.error(), AuthError::UnsupportedClaim);
 }
 
 TEST(AuthTest, StrictClaimsReportsExpiryFirst) {
@@ -1087,4 +1103,92 @@ TEST(AuthTest, TokenWithoutCnfIgnoresProofs) {
   Parameters setup(FrameType::CLIENT_SETUP);
   addParam(setup, 77, token.tokenValue);
   EXPECT_TRUE(authenticateSetup(verifier, setup, 1).hasValue());
+}
+
+// ---- moqt-reval: which grants keep an action alive ----
+
+namespace {
+Grants revalGrants(std::chrono::seconds expiresIn, std::chrono::seconds every) {
+  auto grants = makeGrants({Action::Subscribe}, {}, {});
+  grants.expiresAt = std::chrono::system_clock::now() + expiresIn;
+  grants.revalidateEvery = every;
+  return grants;
+}
+
+Parameters noParams() {
+  return Parameters(FrameType::SUBSCRIBE);
+}
+} // namespace
+
+TEST(AuthTest, AuthorizeReportsRevalidationForAnExpiringRevalidatedGrant) {
+  AuthTokenVerifier verifier(makeConfig());
+  const auto grants =
+      std::vector<Grants>{revalGrants(std::chrono::seconds(100), std::chrono::seconds(10))};
+  auto decision =
+      authorize(verifier, Action::Subscribe, noParams(), TrackNamespace{{"live"}}, grants, "v");
+  ASSERT_TRUE(decision.hasValue());
+  ASSERT_TRUE(decision.value().revalidation.has_value());
+  EXPECT_EQ(decision.value().revalidation->interval, std::chrono::seconds(10));
+  EXPECT_EQ(decision.value().revalidation->deadline, grants[0].expiresAt);
+}
+
+TEST(AuthTest, AuthorizeReportsNoRevalidationWhenAnyPermittingSourceDoesNotExpire) {
+  AuthTokenVerifier verifier(makeConfig());
+  auto plain = makeGrants({Action::Subscribe}, {}, {});
+  auto decision = authorize(
+      verifier,
+      Action::Subscribe,
+      noParams(),
+      TrackNamespace{{"live"}},
+      std::vector<Grants>{revalGrants(std::chrono::seconds(100), std::chrono::seconds(10)), plain},
+      "v"
+  );
+  ASSERT_TRUE(decision.hasValue());
+  EXPECT_FALSE(decision.value().revalidation.has_value());
+
+  // Revalidated grants that do not permit the action are irrelevant to it.
+  auto other = revalGrants(std::chrono::seconds(100), std::chrono::seconds(10));
+  other.scopes[0].actions = {Action::Fetch};
+  auto onlyOther = authorize(
+      verifier,
+      Action::Subscribe,
+      noParams(),
+      TrackNamespace{{"live"}},
+      std::vector<Grants>{other, plain},
+      "v"
+  );
+  ASSERT_TRUE(onlyOther.hasValue());
+  EXPECT_FALSE(onlyOther.value().revalidation.has_value());
+}
+
+TEST(AuthTest, AuthorizeCombinesRevalidatedGrantsByLatestExpiryAndShortestInterval) {
+  AuthTokenVerifier verifier(makeConfig());
+  const auto a = revalGrants(std::chrono::seconds(100), std::chrono::seconds(30));
+  const auto b = revalGrants(std::chrono::seconds(500), std::chrono::seconds(10));
+  auto decision = authorize(
+      verifier,
+      Action::Subscribe,
+      noParams(),
+      TrackNamespace{{"live"}},
+      std::vector<Grants>{a, b},
+      "v"
+  );
+  ASSERT_TRUE(decision.hasValue());
+  ASSERT_TRUE(decision.value().revalidation.has_value());
+  EXPECT_EQ(decision.value().revalidation->deadline, b.expiresAt);
+  EXPECT_EQ(decision.value().revalidation->interval, std::chrono::seconds(10));
+}
+
+TEST(AuthTest, AuthorizeWithoutRevalidationClaimIsUnchanged) {
+  AuthTokenVerifier verifier(makeConfig());
+  auto decision = authorize(
+      verifier,
+      Action::Subscribe,
+      noParams(),
+      TrackNamespace{{"live"}},
+      std::vector<Grants>{makeGrants({Action::Subscribe}, {}, {})},
+      "v"
+  );
+  ASSERT_TRUE(decision.hasValue());
+  EXPECT_FALSE(decision.value().revalidation.has_value());
 }

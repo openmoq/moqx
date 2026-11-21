@@ -70,6 +70,9 @@ struct Grants {
   std::optional<DpopRequirement> dpop;
   // SHA-256 of the token as presented (proof "ath"); set by the verifier, not the codec.
   std::string tokenHash;
+  // moqt-reval: while an action this token authorizes is ongoing, the relay re-checks the token at
+  // least this often and ends the action once the token is no longer acceptable. Zero = never.
+  std::chrono::seconds revalidateEvery{0};
 };
 
 // Relay-side validation of standard CWT claims (draft-02 section 8.2.1).
@@ -81,6 +84,9 @@ struct ClaimPolicy {
   std::vector<std::string> audiences;
   // When non-empty, iss is required and must equal one entry.
   std::vector<std::string> issuers;
+  // Smallest moqt-reval interval the relay will honor. Tokens asking for a shorter interval are
+  // rejected, as are all tokens with moqt-reval when this is zero (draft-02 section 2.2).
+  std::chrono::seconds minRevalidation{0};
 };
 
 class C4mError final : public std::runtime_error {

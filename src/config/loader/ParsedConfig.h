@@ -506,6 +506,12 @@ struct ParsedAuthConfig {
       std::optional<bool>>
       strict_claims;
   rfl::Description<
+      "Smallest moqt-reval interval in seconds that tokens may request. Tokens at or above it are "
+      "honored by re-checking the token and ending the affected action; 0 rejects every token "
+      "carrying moqt-reval (default: 5)",
+      std::optional<uint32_t>>
+      min_revalidation_interval_seconds;
+  rfl::Description<
       "AUTHORIZATION_TOKEN type that carries DPoP proofs for cnf-bound tokens (default: 17; "
       "not registered by the draft)",
       std::optional<uint64_t>>

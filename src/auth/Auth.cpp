@@ -72,6 +72,7 @@ AuthTokenVerifier::AuthTokenVerifier(config::AuthConfig config) : config_(std::m
       .strict = config_.strictClaims,
       .audiences = config_.audiences,
       .issuers = config_.issuers,
+      .minRevalidation = std::chrono::seconds(config_.minRevalidationSeconds),
   };
   if (!config_.enabled) {
     return;
@@ -331,7 +332,7 @@ folly::Expected<std::shared_ptr<const std::vector<Grants>>, AuthError> authentic
   return std::make_shared<const std::vector<Grants>>(std::move(verifiedGrants));
 }
 
-folly::Expected<folly::Unit, AuthError> authorize(
+folly::Expected<AuthDecision, AuthError> authorize(
     const AuthTokenVerifier& verifier,
     Action action,
     const Parameters& params,
@@ -341,7 +342,7 @@ folly::Expected<folly::Unit, AuthError> authorize(
     uint64_t connectionId
 ) {
   if (!verifier.enabled()) {
-    return folly::unit;
+    return AuthDecision{};
   }
 
   auto tokens = findAuthTokens(params, verifier.tokenType());
@@ -397,7 +398,37 @@ folly::Expected<folly::Unit, AuthError> authorize(
                << " not permitted for ns=" << ns;
     return folly::makeUnexpected(denialError(requestGrants, firstError));
   }
-  return folly::unit;
+
+  // moqt-reval: the action stays authorized only while some permitting source does. Any source
+  // that never expires or never asks for revalidation keeps it authorized indefinitely.
+  bool unconditional = trackName ? verifier.allowsAnonymous(action, ns, trackName)
+                                 : verifier.allowsAnonymous(action, ns, std::nullopt);
+  std::optional<Revalidation> revalidation;
+  const auto consider = [&](const std::vector<Grants>& list) {
+    for (const auto& grants : list) {
+      const bool permits =
+          trackName ? allows(grants, action, FullTrackName{ns, std::string(*trackName)}, now)
+                    : allows(grants, action, ns, now);
+      if (!permits) {
+        continue;
+      }
+      if (grants.revalidateEvery.count() <= 0 ||
+          grants.expiresAt == std::chrono::system_clock::time_point::max()) {
+        unconditional = true;
+      } else if (!revalidation) {
+        revalidation = Revalidation{grants.expiresAt, grants.revalidateEvery};
+      } else {
+        revalidation->deadline = std::max(revalidation->deadline, grants.expiresAt);
+        revalidation->interval = std::min(revalidation->interval, grants.revalidateEvery);
+      }
+    }
+  };
+  consider(requestGrants);
+  consider(*sessionPool);
+  if (unconditional) {
+    revalidation.reset();
+  }
+  return AuthDecision{revalidation};
 }
 
 std::vector<AuthToken> findAuthTokens(const Parameters& params, uint64_t tokenType) {

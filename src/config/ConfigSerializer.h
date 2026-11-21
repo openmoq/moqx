@@ -208,6 +208,7 @@ inline void serializeAuth(ConfigSink& s, const AuthConfig& a) {
   s.boolField("allow_request_token_override", a.allowRequestTokenOverride);
   s.boolField("strict_claims", a.strictClaims);
   s.uintField("dpop_token_type", a.dpopTokenType);
+  s.uintField("min_revalidation_interval_seconds", a.minRevalidationSeconds);
   s.uintField("max_tokens_per_message", a.maxTokensPerMessage);
   s.beginArray("audiences");
   for (const auto& aud : a.audiences) {

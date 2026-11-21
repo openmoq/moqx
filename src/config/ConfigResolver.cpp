@@ -730,6 +730,7 @@ AuthConfig resolveAuth(const std::optional<ParsedAuthConfig>& parsed) {
   out.allowRequestTokenOverride = parsed->allow_request_token_override.value().value_or(true);
   out.strictClaims = parsed->strict_claims.value().value_or(false);
   out.maxTokensPerMessage = parsed->max_tokens_per_message.value().value_or(0);
+  out.minRevalidationSeconds = parsed->min_revalidation_interval_seconds.value().value_or(5);
   out.dpopTokenType = parsed->dpop_token_type.value().value_or(17);
   if (parsed->audiences.value()) {
     out.audiences = *parsed->audiences.value();

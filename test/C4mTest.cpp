@@ -568,3 +568,44 @@ TEST(DpopTest, ProofRejectsStaleKeyMismatchAndTampering) {
       C4mError
   );
 }
+
+// ---- moqt-reval (draft-02 section 2.2) ----
+
+TEST(C4mTest, RevalidationIntervalHonoredOnlyWhenAtLeastTheConfiguredMinimum) {
+  // -65538 (moqt-reval): 300 seconds, with exp.
+  const auto token = rawToken("a23a0001000119012c041a7fffffff");
+  ClaimPolicy policy{.minRevalidation = std::chrono::seconds(5)};
+  auto grants = verifyC4mToken(token, kKey, kNow, policy);
+  EXPECT_EQ(grants.revalidateEvery, std::chrono::seconds(300));
+
+  // Shorter than the relay can revalidate, or revalidation disabled: rejected (section 2.2).
+  policy.minRevalidation = std::chrono::seconds(301);
+  EXPECT_THROW(verifyC4mToken(token, kKey, kNow, policy), C4mError);
+  EXPECT_THROW(verifyC4mToken(token, kKey, kNow), C4mError);
+  // Zero means never revalidate and is always accepted.
+  const auto zero = rawToken("a23a0001000100041a7fffffff");
+  EXPECT_EQ(verifyC4mToken(zero, kKey, kNow).revalidateEvery, std::chrono::seconds(0));
+  // A non-integer interval is malformed.
+  EXPECT_THROW(
+      verifyC4mToken(
+          rawToken("a13a000100016161"),
+          kKey,
+          kNow,
+          {.minRevalidation = std::chrono::seconds(5)}
+      ),
+      C4mError
+  );
+}
+
+TEST(C4mTest, RevalidationIntervalRoundTripsThroughTheSigner) {
+  Grants g;
+  g.expiresAt = kNow + std::chrono::hours(1);
+  g.revalidateEvery = std::chrono::seconds(60);
+  auto decoded = verifyC4mToken(
+      signC4mToken("key", kKey, g),
+      kKey,
+      kNow,
+      ClaimPolicy{.minRevalidation = std::chrono::seconds(1)}
+  );
+  EXPECT_EQ(decoded.revalidateEvery, std::chrono::seconds(60));
+}
