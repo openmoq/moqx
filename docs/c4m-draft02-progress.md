@@ -40,6 +40,10 @@ with the limits listed under Remaining work.
   filters run a per-action timer that ends only the affected action on expiry
   (subscribe, fetch, subscribe_namespace, subscribe_tracks, publish_namespace,
   publish). The session itself is not revalidated.
+- Added ES384 and EdDSA (Ed25519) DPoP proofs, the draft's SHOULD algorithms:
+  generalized proof keys, `cnf` thumbprints for P-384 and OKP keys, and issuer
+  binding to P-384/Ed25519 client keys. Thumbprints match RFC 9679 and RFC 8037
+  vectors; no draft vectors exist for these algorithms.
 - Updated existing configuration/build documentation and examples to explain
   the subset, provisional labels, key handling, and unsupported features.
 - Pinned catapult's latest published release, v1.0.0, at
@@ -51,11 +55,11 @@ with the limits listed under Remaining work.
 - Default build passed; the resolved catapult source matched the v1.0.0 tag.
 - Focused default CTest selection (C4m, Dpop, Auth, config resolver/serializer,
   issuer, filters) passed after the `aud`/`iss`, `catreplay`, DPoP, and
-  `moqt-reval` changes (including publish) and the error-code mapping: 286/286.
+  `moqt-reval` changes (including publish) and the error-code mapping, and ES384/EdDSA proofs: 291/291.
   The earlier 125/125 selection predates those changes.
 - Sanitizer (ASAN/UBSAN/LeakSanitizer, `build/san`) run on the final code,
   including the `aud`/`iss`, `catreplay`, DPoP, and `unique_ptr` changes:
-  333/333 passed across codec, DPoP, authentication, issuer, configuration, and
+  338/338 passed across codec, DPoP, authentication, issuer, configuration, and
   revalidation filter tests (including the timer-driven ones). moqx and catapult crypto were instrumented; the prebuilt moxygen
   dependency was not.
 - The draft's ES256 vector verifies; a tampered signature fails.
@@ -82,8 +86,8 @@ with the limits listed under Remaining work.
   [C4M draft-02 implementation gaps](c4m-draft02-gaps.md). The major gaps are
   `moqt-reval` for `setup`, DPoP interoperability (provisional `actx`/`ath` labels and
   proof token type), composite claims (blocked on unassigned keys), and
-  algorithm/claim-label interoperability (PS256, ES384/EdDSA proofs, final
-  `moqt`/`moqt-reval` labels).
+  claim-label interoperability (final `moqt`/`moqt-reval` labels). PS256 tokens
+  are not implemented but the draft does not define them.
 - Replay state (`catreplay` bindings and DPoP proof `cti` values) is in memory
   per service: lost on restart and not shared between relays.
 - Full default CTest on the final code, including `moqt-reval` for all actions

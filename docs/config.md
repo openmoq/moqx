@@ -396,7 +396,10 @@ the SHA-256 of the token as presented, `iat` must be within the window, and
 `cti` is accepted once per token within its window (in-memory, bounded). The
 claim labels for `actx` and `ath` are unassigned; moqx uses the provisional
 private-use values -65539 and -65540, so proofs from other implementations will
-not interoperate until final labels exist. ES384/EdDSA proofs are not supported.
+not interoperate until final labels exist. Proofs may be signed with ES256, ES384
+(P-384), or EdDSA (Ed25519); the proof's key type must match its `alg`, and a
+`cnf` thumbprint is computed over that key (`ckt`: RFC 9679, `jkt`: RFC 7638 and
+RFC 8037). Ed448 and other curves are not supported.
 `iss`/`sub`/`iat`/`cti` are informational and do not authenticate identities.
 The decoder accepts definite-length CBOR, at most 64 KiB per token, 1024 scopes,
 and 32 namespace fields per scope. Unsupported encodings are rejected.
@@ -470,7 +473,7 @@ moqx-issuer \
   --auth-ttl-seconds 3600
 ```
 
-`--auth_dpop_key_file <pem>` binds the token to a client P-256 key with `cnf`
+`--auth_dpop_key_file <pem>` binds the token to a client P-256, P-384, or Ed25519 key with `cnf`
 (`ckt`, or `jkt` with `--auth_dpop_jkt`) and `catdpop` (`--auth_dpop_window_seconds`).
 `--auth_replay_protect` adds `catreplay` 1 with a random `cti`. `--auth_issuer` and `--auth_audience` (comma-separated for several) add `iss` and `aud`
 claims for relays that configure `issuers`/`audiences`.
@@ -526,7 +529,8 @@ key must be unencrypted PEM P-256; encrypted files are rejected without promptin
 With `--config` and `--auth-service`, ES256 mode selects an `es256_keys` ID and
 checks that the private key produces tokens verifiable with that public key
 before printing a token. With no explicit ID it selects the first configured
-ES256 key; HMAC mode selects the first HMAC key. PS256 remains unsupported.
+ES256 key; HMAC mode selects the first HMAC key. Tokens are signed with HMAC-SHA256 or
+ES256, the two algorithms the draft defines; PS256 tokens are not supported.
 This implements the ES256 signing/verification requested in
 [issue #971](https://github.com/openmoq/moqx/issues/971).
 

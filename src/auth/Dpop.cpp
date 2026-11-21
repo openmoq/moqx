@@ -28,8 +28,41 @@ namespace openmoq::moqx::auth {
 namespace {
 
 constexpr std::size_t kMaxProofBytes = 8192;
-constexpr std::size_t kCoordinateBytes = 32;
 constexpr std::string_view kProofType = "dpop-proof+cwt";
+
+// The proof algorithms and the key shape each requires (RFC 9053 / RFC 8037).
+struct KeyShape {
+  int64_t algorithm;
+  int64_t kty;      // COSE key type: 2 = EC2, 1 = OKP
+  int64_t crv;      // COSE curve: 1 = P-256, 2 = P-384, 6 = Ed25519
+  std::size_t size; // coordinate size in bytes
+  const char* jwkKty;
+  const char* jwkCrv;
+  const char* group; // OpenSSL group name for EC keys, null for Ed25519
+};
+
+constexpr KeyShape kShapes[] = {
+    {kDpopAlgEs256, 2, 1, 32, "EC", "P-256", "prime256v1"},
+    {kDpopAlgEs384, 2, 2, 48, "EC", "P-384", "secp384r1"},
+    {kDpopAlgEdDsa, 1, 6, 32, "OKP", "Ed25519", nullptr},
+};
+
+const KeyShape* shapeForAlgorithm(int64_t algorithm) {
+  for (const auto& shape : kShapes) {
+    if (shape.algorithm == algorithm) {
+      return &shape;
+    }
+  }
+  return nullptr;
+}
+
+const KeyShape& requireShape(int64_t algorithm) {
+  const auto* shape = shapeForAlgorithm(algorithm);
+  if (shape == nullptr) {
+    throw std::invalid_argument("unsupported DPoP key algorithm");
+  }
+  return *shape;
+}
 
 [[noreturn]] void reject(const char* why) {
   throw C4mError(AuthError::Forbidden, why);
@@ -93,18 +126,35 @@ std::string base64Url(std::string_view data) {
 
 using PkeyPtr = std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)>;
 
-PkeyPtr publicKeyFromCoordinates(std::string_view x, std::string_view y) {
-  if (x.size() != kCoordinateBytes || y.size() != kCoordinateBytes) {
-    reject("DPoP key is not a P-256 key");
+PkeyPtr publicKeyFromKey(const DpopKey& key) {
+  const auto& shape = requireShape(key.algorithm);
+  if (key.x.size() != shape.size || (shape.group != nullptr && key.y.size() != shape.size) ||
+      (shape.group == nullptr && !key.y.empty())) {
+    reject("DPoP key has the wrong size for its algorithm");
+  }
+  if (shape.group == nullptr) {
+    PkeyPtr edKey(
+        EVP_PKEY_new_raw_public_key(
+            EVP_PKEY_ED25519,
+            nullptr,
+            reinterpret_cast<const unsigned char*>(key.x.data()),
+            key.x.size()
+        ),
+        EVP_PKEY_free
+    );
+    if (!edKey) {
+      reject("DPoP key is not a valid Ed25519 key");
+    }
+    return edKey;
   }
   std::string point(1, '\x04');
-  point.append(x).append(y);
+  point.append(key.x).append(key.y);
   std::unique_ptr<OSSL_PARAM_BLD, decltype(&OSSL_PARAM_BLD_free)> builder(
       OSSL_PARAM_BLD_new(),
       OSSL_PARAM_BLD_free
   );
   if (!builder ||
-      OSSL_PARAM_BLD_push_utf8_string(builder.get(), OSSL_PKEY_PARAM_GROUP_NAME, "prime256v1", 0) !=
+      OSSL_PARAM_BLD_push_utf8_string(builder.get(), OSSL_PKEY_PARAM_GROUP_NAME, shape.group, 0) !=
           1 ||
       OSSL_PARAM_BLD_push_octet_string(
           builder.get(),
@@ -125,7 +175,7 @@ PkeyPtr publicKeyFromCoordinates(std::string_view x, std::string_view y) {
   EVP_PKEY* raw = nullptr;
   if (!params || !ctx || EVP_PKEY_fromdata_init(ctx.get()) != 1 ||
       EVP_PKEY_fromdata(ctx.get(), &raw, EVP_PKEY_PUBLIC_KEY, params.get()) != 1) {
-    reject("DPoP key is not a valid P-256 point");
+    reject("DPoP key is not a valid point on its curve");
   }
   return PkeyPtr(raw, EVP_PKEY_free);
 }
@@ -139,14 +189,43 @@ std::string signatureInput(std::string_view protectedHeader, std::string_view pa
   return out;
 }
 
-bool verifyEs256(EVP_PKEY* key, std::string_view message, std::string_view raw) {
-  if (raw.size() != 2 * kCoordinateBytes) {
+const EVP_MD* digestFor(int64_t algorithm) {
+  return algorithm == kDpopAlgEs384   ? EVP_sha384()
+         : algorithm == kDpopAlgEs256 ? EVP_sha256()
+                                      : nullptr;
+}
+
+bool verifyProofSignature(
+    const DpopKey& key,
+    EVP_PKEY* publicKey,
+    std::string_view message,
+    std::string_view raw
+) {
+  const auto& shape = requireShape(key.algorithm);
+  std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> ctx(EVP_MD_CTX_new(), EVP_MD_CTX_free);
+  if (!ctx) {
+    return false;
+  }
+  const auto* message_ = reinterpret_cast<const unsigned char*>(message.data());
+  if (shape.group == nullptr) {
+    // Ed25519 signs the message directly (no digest) and the signature is already 64 raw bytes.
+    return raw.size() == 64 &&
+           EVP_DigestVerifyInit(ctx.get(), nullptr, nullptr, nullptr, publicKey) == 1 &&
+           EVP_DigestVerify(
+               ctx.get(),
+               reinterpret_cast<const unsigned char*>(raw.data()),
+               raw.size(),
+               message_,
+               message.size()
+           ) == 1;
+  }
+  if (raw.size() != 2 * shape.size) {
     return false;
   }
   using BnPtr = std::unique_ptr<BIGNUM, decltype(&BN_free)>;
   const auto* bytes = reinterpret_cast<const unsigned char*>(raw.data());
-  BnPtr r(BN_bin2bn(bytes, kCoordinateBytes, nullptr), BN_free);
-  BnPtr s(BN_bin2bn(bytes + kCoordinateBytes, kCoordinateBytes, nullptr), BN_free);
+  BnPtr r(BN_bin2bn(bytes, static_cast<int>(shape.size), nullptr), BN_free);
+  BnPtr s(BN_bin2bn(bytes + shape.size, static_cast<int>(shape.size), nullptr), BN_free);
   std::unique_ptr<ECDSA_SIG, decltype(&ECDSA_SIG_free)> sig(ECDSA_SIG_new(), ECDSA_SIG_free);
   if (!r || !s || !sig || ECDSA_SIG_set0(sig.get(), r.get(), s.get()) != 1) {
     return false;
@@ -159,42 +238,48 @@ bool verifyEs256(EVP_PKEY* key, std::string_view message, std::string_view raw) 
     return false;
   }
   std::unique_ptr<unsigned char, decltype(&free)> derOwner(der, free);
-  std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> ctx(EVP_MD_CTX_new(), EVP_MD_CTX_free);
-  return ctx && EVP_DigestVerifyInit(ctx.get(), nullptr, EVP_sha256(), nullptr, key) == 1 &&
+  return EVP_DigestVerifyInit(ctx.get(), nullptr, digestFor(key.algorithm), nullptr, publicKey) ==
+             1 &&
          EVP_DigestVerify(
              ctx.get(),
              der,
              static_cast<std::size_t>(derLength),
-             reinterpret_cast<const unsigned char*>(message.data()),
+             message_,
              message.size()
          ) == 1;
 }
 
+// A COSE_Key as it appears in a proof, before it is matched to the proof's algorithm.
 struct CoseKey {
+  int64_t kty{0};
+  int64_t crv{0};
   std::string x;
   std::string y;
+  bool hasY{false};
 };
 
 CoseKey readCoseKey(CborReader& reader) {
   uint64_t count = 0;
-  require(reader.readMapLen(count) && count == 4);
+  require(reader.readMapLen(count) && (count == 3 || count == 4));
   CoseKey key;
   std::unordered_set<int64_t> seen;
   for (uint64_t i = 0; i < count; ++i) {
     int64_t label = 0;
     require(reader.readInt(label) && seen.insert(label).second);
-    if (label == 1 || label == -1) {
-      int64_t value = 0;
-      require(reader.readInt(value));
-      require(value == (label == 1 ? 2 : 1), "DPoP key is not EC2 P-256");
+    if (label == 1) {
+      require(reader.readInt(key.kty));
+    } else if (label == -1) {
+      require(reader.readInt(key.crv));
     } else if (label == -2 || label == -3) {
       std::string_view coordinate;
-      require(reader.readByteString(coordinate) && coordinate.size() == kCoordinateBytes);
+      require(reader.readByteString(coordinate) && coordinate.size() <= 66);
       (label == -2 ? key.x : key.y) = std::string(coordinate);
+      key.hasY = key.hasY || label == -3;
     } else {
       require(false);
     }
   }
+  require(seen.contains(1) && seen.contains(-1) && seen.contains(-2));
   return key;
 }
 
@@ -207,6 +292,37 @@ CoseKey readKccs(CborReader& reader) {
   require(reader.readMapLen(count) && count == 1);
   require(reader.readInt(label) && label == 1);
   return readCoseKey(reader);
+}
+
+// The key the proof's algorithm needs, or a rejection when the key is of another type.
+DpopKey keyForAlgorithm(int64_t algorithm, const CoseKey& key) {
+  const auto* shape = shapeForAlgorithm(algorithm);
+  if (shape == nullptr) {
+    reject("unsupported DPoP proof algorithm"); // Symmetric and other algorithms are not allowed.
+  }
+  if (key.kty != shape->kty || key.crv != shape->crv || key.x.size() != shape->size ||
+      (shape->group != nullptr ? (!key.hasY || key.y.size() != shape->size) : key.hasY)) {
+    reject("DPoP key does not match the proof algorithm");
+  }
+  return DpopKey{algorithm, key.x, key.y};
+}
+
+// Deterministic CBOR of the required members, in bytewise key order (RFC 9679 section 3).
+std::string encodeCoseKey(const DpopKey& key) {
+  const auto& shape = requireShape(key.algorithm);
+  std::string out;
+  appendHead(out, 5, shape.group != nullptr ? 4 : 3);
+  appendInt(out, 1);
+  appendInt(out, shape.kty);
+  appendInt(out, -1);
+  appendInt(out, shape.crv);
+  appendInt(out, -2);
+  appendString(out, 2, key.x);
+  if (shape.group != nullptr) {
+    appendInt(out, -3);
+    appendString(out, 2, key.y);
+  }
+  return out;
 }
 
 struct ProofClaims {
@@ -293,26 +409,27 @@ std::string sha256(std::string_view data) {
   return out;
 }
 
+std::string coseKeyThumbprint(const DpopKey& key) {
+  return sha256(encodeCoseKey(key));
+}
+
+std::string jwkThumbprint(const DpopKey& key) {
+  // RFC 7638: required members in lexicographic order, no whitespace. RFC 8037 for OKP.
+  const auto& shape = requireShape(key.algorithm);
+  std::string json = std::string(R"({"crv":")") + shape.jwkCrv + R"(","kty":")" + shape.jwkKty +
+                     R"(","x":")" + base64Url(key.x) + '"';
+  if (shape.group != nullptr) {
+    json += R"(,"y":")" + base64Url(key.y) + '"';
+  }
+  return sha256(json + '}');
+}
+
 std::string coseKeyThumbprint(std::string_view x, std::string_view y) {
-  // RFC 9679: deterministic CBOR of the required EC2 members, in bytewise key order.
-  std::string canonical;
-  appendHead(canonical, 5, 4);
-  appendInt(canonical, 1);
-  appendInt(canonical, 2);
-  appendInt(canonical, -1);
-  appendInt(canonical, 1);
-  appendInt(canonical, -2);
-  appendString(canonical, 2, x);
-  appendInt(canonical, -3);
-  appendString(canonical, 2, y);
-  return sha256(canonical);
+  return coseKeyThumbprint(DpopKey{kDpopAlgEs256, std::string(x), std::string(y)});
 }
 
 std::string jwkThumbprint(std::string_view x, std::string_view y) {
-  // RFC 7638: required members in lexicographic order, no whitespace.
-  return sha256(
-      R"({"crv":"P-256","kty":"EC","x":")" + base64Url(x) + R"(","y":")" + base64Url(y) + R"("})"
-  );
+  return jwkThumbprint(DpopKey{kDpopAlgEs256, std::string(x), std::string(y)});
 }
 
 VerifiedDpopProof verifyDpopProof(
@@ -342,15 +459,16 @@ VerifiedDpopProof verifyDpopProof(
   uint64_t entries = 0;
   require(header.readMapLen(entries) && entries == 3);
   std::unordered_set<int64_t> seen;
-  std::optional<CoseKey> key;
+  std::optional<CoseKey> coseKey;
+  int64_t algorithm = 0;
   for (uint64_t i = 0; i < entries; ++i) {
     int64_t label = 0;
     require(header.readInt(label) && seen.insert(label).second);
     if (label == 1) {
-      int64_t alg = 0;
-      require(header.readInt(alg));
-      if (alg != -7) {
-        reject("unsupported DPoP proof algorithm"); // Only ES256; symmetric algs are forbidden.
+      require(header.readInt(algorithm));
+      // ES256 (MUST), ES384 and EdDSA (SHOULD). Symmetric algorithms are forbidden.
+      if (shapeForAlgorithm(algorithm) == nullptr) {
+        reject("unsupported DPoP proof algorithm");
       }
     } else if (label == 16) {
       std::string_view type;
@@ -359,22 +477,29 @@ VerifiedDpopProof verifyDpopProof(
         reject("DPoP proof has the wrong typ");
       }
     } else if (label == 14) {
-      key = readKccs(header);
+      coseKey = readKccs(header);
     } else {
       require(false);
     }
   }
-  require(header.eof() && seen.contains(1) && seen.contains(16) && key.has_value());
+  require(header.eof() && seen.contains(1) && seen.contains(16) && coseKey.has_value());
 
-  // The proof's key must match the token's cnf before it is trusted to sign anything.
+  // The key must be of the type the algorithm needs, and match the token's cnf, before it is
+  // trusted to sign anything.
+  const auto key = keyForAlgorithm(algorithm, *coseKey);
   const auto thumbprint = requirement.binding.kind == DpopBinding::Kind::Ckt
-                              ? coseKeyThumbprint(key->x, key->y)
-                              : jwkThumbprint(key->x, key->y);
+                              ? coseKeyThumbprint(key)
+                              : jwkThumbprint(key);
   if (thumbprint != requirement.binding.thumbprint) {
     reject("DPoP key does not match token binding");
   }
-  const auto publicKey = publicKeyFromCoordinates(key->x, key->y);
-  if (!verifyEs256(publicKey.get(), signatureInput(protectedHeader, payload), signature)) {
+  const auto publicKey = publicKeyFromKey(key);
+  if (!verifyProofSignature(
+          key,
+          publicKey.get(),
+          signatureInput(protectedHeader, payload),
+          signature
+      )) {
     reject("invalid DPoP proof signature");
   }
 
@@ -393,34 +518,82 @@ VerifiedDpopProof verifyDpopProof(
   return VerifiedDpopProof{claims.cti, claims.issuedAt};
 }
 
-std::pair<std::string, std::string> es256PublicCoordinates(const std::string& pemPath) {
-  std::unique_ptr<BIO, decltype(&BIO_free)> bio(BIO_new_file(pemPath.c_str(), "r"), BIO_free);
+namespace {
+
+PkeyPtr readPemKey(const std::string& path, bool privateKey) {
+  std::unique_ptr<BIO, decltype(&BIO_free)> bio(BIO_new_file(path.c_str(), "r"), BIO_free);
   if (!bio) {
-    throw std::invalid_argument("cannot read key file: " + pemPath);
+    throw std::invalid_argument("cannot read key file: " + path);
   }
   const auto noPassword = [](char*, int, int, void*) { return 0; };
   PkeyPtr key(PEM_read_bio_PrivateKey(bio.get(), nullptr, noPassword, nullptr), EVP_PKEY_free);
-  if (!key) {
+  if (!key && !privateKey) {
     BIO_seek(bio.get(), 0);
     key.reset(PEM_read_bio_PUBKEY(bio.get(), nullptr, noPassword, nullptr));
   }
-  unsigned char point[65];
-  std::size_t length = 0;
-  if (!key ||
-      EVP_PKEY_get_octet_string_param(
-          key.get(),
-          OSSL_PKEY_PARAM_PUB_KEY,
-          point,
-          sizeof(point),
-          &length
-      ) != 1 ||
-      length != sizeof(point) || point[0] != 0x04) {
+  if (!key) {
+    throw std::invalid_argument("not an unencrypted PEM key: " + path);
+  }
+  return key;
+}
+
+DpopKey dpopKeyOf(EVP_PKEY* key, const std::string& path) {
+  if (EVP_PKEY_id(key) == EVP_PKEY_ED25519) {
+    unsigned char raw[32];
+    std::size_t length = sizeof(raw);
+    if (EVP_PKEY_get_raw_public_key(key, raw, &length) != 1 || length != sizeof(raw)) {
+      throw std::invalid_argument("cannot read the Ed25519 public key: " + path);
+    }
+    return DpopKey{kDpopAlgEdDsa, std::string(reinterpret_cast<char*>(raw), length), {}};
+  }
+  char group[64];
+  std::size_t groupLength = 0;
+  if (EVP_PKEY_id(key) != EVP_PKEY_EC || EVP_PKEY_get_utf8_string_param(
+                                             key,
+                                             OSSL_PKEY_PARAM_GROUP_NAME,
+                                             group,
+                                             sizeof(group),
+                                             &groupLength
+                                         ) != 1) {
+    throw std::invalid_argument("not an EC P-256, EC P-384, or Ed25519 key: " + path);
+  }
+  for (const auto& shape : kShapes) {
+    if (shape.group != nullptr && std::string_view(group, groupLength) == shape.group) {
+      unsigned char point[1 + 2 * 48];
+      std::size_t length = 0;
+      if (EVP_PKEY_get_octet_string_param(
+              key,
+              OSSL_PKEY_PARAM_PUB_KEY,
+              point,
+              sizeof(point),
+              &length
+          ) != 1 ||
+          length != 1 + 2 * shape.size || point[0] != 0x04) {
+        throw std::invalid_argument("cannot read the EC public key: " + path);
+      }
+      return DpopKey{
+          shape.algorithm,
+          std::string(reinterpret_cast<char*>(point) + 1, shape.size),
+          std::string(reinterpret_cast<char*>(point) + 1 + shape.size, shape.size)
+      };
+    }
+  }
+  throw std::invalid_argument("only P-256, P-384 and Ed25519 keys are supported: " + path);
+}
+
+} // namespace
+
+DpopKey dpopPublicKey(const std::string& pemPath) {
+  const auto key = readPemKey(pemPath, false);
+  return dpopKeyOf(key.get(), pemPath);
+}
+
+std::pair<std::string, std::string> es256PublicCoordinates(const std::string& pemPath) {
+  auto key = dpopPublicKey(pemPath);
+  if (key.algorithm != kDpopAlgEs256) {
     throw std::invalid_argument("not an unencrypted PEM P-256 key: " + pemPath);
   }
-  return {
-      std::string(reinterpret_cast<char*>(point) + 1, kCoordinateBytes),
-      std::string(reinterpret_cast<char*>(point) + 1 + kCoordinateBytes, kCoordinateBytes)
-  };
+  return {std::move(key.x), std::move(key.y)};
 }
 
 std::string signDpopProof(
@@ -430,24 +603,14 @@ std::string signDpopProof(
     std::string_view cti,
     std::chrono::system_clock::time_point issuedAt
 ) {
-  std::unique_ptr<BIO, decltype(&BIO_free)> bio(
-      BIO_new_file(privateKeyPemPath.c_str(), "r"),
-      BIO_free
-  );
-  const auto noPassword = [](char*, int, int, void*) { return 0; };
-  PkeyPtr key(
-      bio ? PEM_read_bio_PrivateKey(bio.get(), nullptr, noPassword, nullptr) : nullptr,
-      EVP_PKEY_free
-  );
-  if (!key) {
-    throw std::invalid_argument("cannot load unencrypted PEM private key: " + privateKeyPemPath);
-  }
-  const auto [x, y] = es256PublicCoordinates(privateKeyPemPath);
+  const auto pkey = readPemKey(privateKeyPemPath, true);
+  const auto key = dpopKeyOf(pkey.get(), privateKeyPemPath);
+  const auto& shape = requireShape(key.algorithm);
 
   std::string protectedHeader;
   appendHead(protectedHeader, 5, 3);
   appendInt(protectedHeader, 1);
-  appendInt(protectedHeader, -7);
+  appendInt(protectedHeader, key.algorithm);
   appendInt(protectedHeader, 16);
   appendString(protectedHeader, 3, kProofType);
   appendInt(protectedHeader, 14);
@@ -455,15 +618,7 @@ std::string signDpopProof(
   appendInt(protectedHeader, 8);
   appendHead(protectedHeader, 5, 1);
   appendInt(protectedHeader, 1);
-  appendHead(protectedHeader, 5, 4);
-  appendInt(protectedHeader, 1);
-  appendInt(protectedHeader, 2);
-  appendInt(protectedHeader, -1);
-  appendInt(protectedHeader, 1);
-  appendInt(protectedHeader, -2);
-  appendString(protectedHeader, 2, x);
-  appendInt(protectedHeader, -3);
-  appendString(protectedHeader, 2, y);
+  protectedHeader += encodeCoseKey(key);
 
   std::string payload;
   appendHead(payload, 5, 4);
@@ -500,45 +655,50 @@ std::string signDpopProof(
 
   const auto message = signatureInput(protectedHeader, payload);
   std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> ctx(EVP_MD_CTX_new(), EVP_MD_CTX_free);
-  std::size_t derLength = 0;
-  std::string der;
-  if (!ctx || EVP_DigestSignInit(ctx.get(), nullptr, EVP_sha256(), nullptr, key.get()) != 1 ||
-      EVP_DigestSign(
-          ctx.get(),
-          nullptr,
-          &derLength,
-          reinterpret_cast<const unsigned char*>(message.data()),
-          message.size()
-      ) != 1) {
+  // Ed25519 signs the message itself; ECDSA signs its ES256/ES384 digest.
+  if (!ctx ||
+      EVP_DigestSignInit(ctx.get(), nullptr, digestFor(key.algorithm), nullptr, pkey.get()) != 1) {
     throw std::runtime_error("cannot sign DPoP proof");
   }
-  der.resize(derLength);
+  std::size_t signatureLength = 0;
+  const auto* messageBytes = reinterpret_cast<const unsigned char*>(message.data());
+  if (EVP_DigestSign(ctx.get(), nullptr, &signatureLength, messageBytes, message.size()) != 1) {
+    throw std::runtime_error("cannot sign DPoP proof");
+  }
+  std::string signed_(signatureLength, '\0');
   if (EVP_DigestSign(
           ctx.get(),
-          reinterpret_cast<unsigned char*>(der.data()),
-          &derLength,
-          reinterpret_cast<const unsigned char*>(message.data()),
+          reinterpret_cast<unsigned char*>(signed_.data()),
+          &signatureLength,
+          messageBytes,
           message.size()
       ) != 1) {
     throw std::runtime_error("cannot sign DPoP proof");
   }
-  const auto* derBytes = reinterpret_cast<const unsigned char*>(der.data());
-  std::unique_ptr<ECDSA_SIG, decltype(&ECDSA_SIG_free)> sig(
-      d2i_ECDSA_SIG(nullptr, &derBytes, static_cast<long>(derLength)),
-      ECDSA_SIG_free
-  );
-  const BIGNUM* r = nullptr;
-  const BIGNUM* s = nullptr;
-  if (!sig) {
-    throw std::runtime_error("cannot parse DPoP signature");
-  }
-  ECDSA_SIG_get0(sig.get(), &r, &s);
-  std::string raw(2 * kCoordinateBytes, '\0');
-  auto* rawBytes = reinterpret_cast<unsigned char*>(raw.data());
-  if (BN_bn2binpad(r, rawBytes, kCoordinateBytes) != static_cast<int>(kCoordinateBytes) ||
-      BN_bn2binpad(s, rawBytes + kCoordinateBytes, kCoordinateBytes) !=
-          static_cast<int>(kCoordinateBytes)) {
-    throw std::runtime_error("cannot encode DPoP signature");
+  signed_.resize(signatureLength);
+
+  std::string raw;
+  if (shape.group == nullptr) {
+    raw = std::move(signed_); // Ed25519: already the 64 raw signature bytes.
+  } else {
+    // ECDSA: DER (r, s) to the fixed-width r || s of COSE.
+    const auto* derBytes = reinterpret_cast<const unsigned char*>(signed_.data());
+    std::unique_ptr<ECDSA_SIG, decltype(&ECDSA_SIG_free)> sig(
+        d2i_ECDSA_SIG(nullptr, &derBytes, static_cast<long>(signed_.size())),
+        ECDSA_SIG_free
+    );
+    const BIGNUM* r = nullptr;
+    const BIGNUM* s = nullptr;
+    if (!sig) {
+      throw std::runtime_error("cannot parse DPoP signature");
+    }
+    ECDSA_SIG_get0(sig.get(), &r, &s);
+    raw.assign(2 * shape.size, '\0');
+    auto* rawBytes = reinterpret_cast<unsigned char*>(raw.data());
+    const int size = static_cast<int>(shape.size);
+    if (BN_bn2binpad(r, rawBytes, size) != size || BN_bn2binpad(s, rawBytes + size, size) != size) {
+      throw std::runtime_error("cannot encode DPoP signature");
+    }
   }
 
   std::string out;

@@ -998,11 +998,10 @@ std::string dpopKeyPath() {
   return std::string(TEST_C4M_KEY_DIR) + "/c4m_es256_private.pem";
 }
 
-Grants dpopGrants(std::vector<Action> actions) {
+Grants dpopGrants(std::vector<Action> actions, const std::string& keyPath = dpopKeyPath()) {
   auto grants = makeGrants(std::move(actions), {}, {});
-  const auto [x, y] = es256PublicCoordinates(dpopKeyPath());
   grants.dpop = DpopRequirement{
-      DpopBinding{DpopBinding::Kind::Ckt, coseKeyThumbprint(x, y)},
+      DpopBinding{DpopBinding::Kind::Ckt, coseKeyThumbprint(dpopPublicKey(keyPath))},
       std::chrono::seconds(60),
       true,
   };

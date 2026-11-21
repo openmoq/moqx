@@ -609,3 +609,138 @@ TEST(C4mTest, RevalidationIntervalRoundTripsThroughTheSigner) {
   );
   EXPECT_EQ(decoded.revalidateEvery, std::chrono::seconds(60));
 }
+
+// ---- ES384 and EdDSA proofs (draft-02 section 4.2: SHOULD) ----
+
+namespace {
+std::string keyFile(const char* name) {
+  return std::string(TEST_C4M_KEY_DIR) + "/" + name;
+}
+
+struct ProofKeyCase {
+  const char* file;
+  int64_t algorithm;
+};
+
+const ProofKeyCase kProofKeys[] = {
+    {"c4m_es256_private.pem", kDpopAlgEs256},
+    {"c4m_es384_private.pem", kDpopAlgEs384},
+    {"c4m_ed25519_private.pem", kDpopAlgEdDsa},
+};
+
+DpopRequirement bindingFor(const DpopKey& key, DpopBinding::Kind kind) {
+  return DpopRequirement{
+      DpopBinding{
+          kind,
+          kind == DpopBinding::Kind::Ckt ? coseKeyThumbprint(key) : jwkThumbprint(key)
+      },
+      std::chrono::seconds(60),
+      true,
+  };
+}
+} // namespace
+
+TEST(DpopTest, ThumbprintsMatchTheRfcVectors) {
+  // RFC 9679 section 6: COSE Key Thumbprint of an EC2 P-256 key.
+  EXPECT_EQ(
+      coseKeyThumbprint(
+          unhex("65eda5a12577c2bae829437fe338701a10aaa375e1bb5b5de108de439c08551d"),
+          unhex("1e52ed75701163f7f9e40ddf9f341b3dc9ba860af7e0ca7ca7e9eecd0084d19c")
+      ),
+      unhex("496bd8afadf307e5b08c64b0421bf9dc01528a344a43bda88fadd1669da253ec")
+  );
+  // RFC 8037 appendix A.3: JWK Thumbprint of an Ed25519 key (x as base64url
+  // 11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo, thumbprint
+  // kPrK_qmxVWaYVA9wwBF6Iuo3vVzz7TxHCTwXBygrS4k).
+  DpopKey ed{
+      kDpopAlgEdDsa,
+      unhex("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"),
+      {}
+  };
+  EXPECT_EQ(
+      jwkThumbprint(ed),
+      unhex("90facafea9b1556698540f70c0117a22ea37bd5cf3ed3c47093c1707282b4b89")
+  );
+}
+
+TEST(DpopTest, KeysAreReadFromPemWithTheRightAlgorithm) {
+  for (const auto& c : kProofKeys) {
+    SCOPED_TRACE(c.file);
+    const auto key = dpopPublicKey(keyFile(c.file));
+    EXPECT_EQ(key.algorithm, c.algorithm);
+    EXPECT_EQ(key.x.size(), c.algorithm == kDpopAlgEs384 ? 48u : 32u);
+    EXPECT_EQ(
+        key.y.size(),
+        c.algorithm == kDpopAlgEdDsa ? 0u : (c.algorithm == kDpopAlgEs384 ? 48u : 32u)
+    );
+  }
+}
+
+TEST(DpopTest, ProofsVerifyForEveryAlgorithmAndBindingMethod) {
+  const std::string token = "token-bytes";
+  const DpopContext context{Action::Subscribe, {"cdn", "example.com"}, std::string("/sports/live")};
+  for (const auto& c : kProofKeys) {
+    SCOPED_TRACE(c.file);
+    const auto key = dpopPublicKey(keyFile(c.file));
+    const auto proof = signDpopProof(keyFile(c.file), token, context, "cti-1", kNow);
+    for (auto kind : {DpopBinding::Kind::Ckt, DpopBinding::Kind::Jkt}) {
+      const auto verified =
+          verifyDpopProof(proof, sha256(token), bindingFor(key, kind), context, kNow);
+      EXPECT_EQ(verified.cti, "cti-1");
+    }
+    const auto binding = bindingFor(key, DpopBinding::Kind::Ckt);
+    EXPECT_THROW(
+        verifyDpopProof(
+            proof,
+            sha256(token),
+            binding,
+            {Action::Fetch, context.trackNamespace, context.trackName},
+            kNow
+        ),
+        C4mError
+    );
+    EXPECT_THROW(verifyDpopProof(proof, sha256("other"), binding, context, kNow), C4mError);
+    EXPECT_THROW(
+        verifyDpopProof(proof, sha256(token), binding, context, kNow + std::chrono::seconds(61)),
+        C4mError
+    );
+    for (size_t i = 0; i < proof.size(); i += 5) {
+      auto tampered = proof;
+      tampered[i] = static_cast<char>(tampered[i] ^ 0x01);
+      EXPECT_THROW(verifyDpopProof(tampered, sha256(token), binding, context, kNow), C4mError)
+          << "byte " << i;
+    }
+  }
+}
+
+TEST(DpopTest, AProofIsOnlyAcceptedForTheKeyTheTokenIsBoundTo) {
+  const std::string token = "t";
+  const DpopContext context{Action::ClientSetup, {}, std::nullopt};
+  for (const auto& signer : kProofKeys) {
+    const auto proof = signDpopProof(keyFile(signer.file), token, context, "c", kNow);
+    for (const auto& bound : kProofKeys) {
+      const auto binding = bindingFor(dpopPublicKey(keyFile(bound.file)), DpopBinding::Kind::Ckt);
+      if (signer.algorithm == bound.algorithm) {
+        EXPECT_NO_THROW(verifyDpopProof(proof, sha256(token), binding, context, kNow));
+      } else {
+        EXPECT_THROW(verifyDpopProof(proof, sha256(token), binding, context, kNow), C4mError)
+            << signer.file << " proof against " << bound.file << " binding";
+      }
+    }
+  }
+}
+
+TEST(DpopTest, UnsupportedProofAlgorithmsAreRejected) {
+  const std::string token = "t";
+  const DpopContext context{Action::ClientSetup, {}, std::nullopt};
+  const auto key = dpopPublicKey(keyFile("c4m_es384_private.pem"));
+  auto proof = signDpopProof(keyFile("c4m_es384_private.pem"), token, context, "c", kNow);
+  // alg -35 is "38 22"; -36 ("38 23") is not a supported algorithm.
+  const auto at = proof.find("\x01\x38\x22");
+  ASSERT_NE(at, std::string::npos);
+  proof[at + 2] = '\x23';
+  EXPECT_THROW(
+      verifyDpopProof(proof, sha256(token), bindingFor(key, DpopBinding::Kind::Ckt), context, kNow),
+      C4mError
+  );
+}

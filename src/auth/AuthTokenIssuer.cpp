@@ -127,11 +127,11 @@ IssuedToken issueToken(const IssueTokenOptions& options) {
   grants.issuer = options.issuer;
   grants.audiences = options.audiences;
   if (!options.dpopKeyFile.empty()) {
-    const auto [x, y] = es256PublicCoordinates(options.dpopKeyFile);
+    const auto clientKey = dpopPublicKey(options.dpopKeyFile);
     grants.dpop = DpopRequirement{
         DpopBinding{
             options.dpopJkt ? DpopBinding::Kind::Jkt : DpopBinding::Kind::Ckt,
-            options.dpopJkt ? jwkThumbprint(x, y) : coseKeyThumbprint(x, y)
+            options.dpopJkt ? jwkThumbprint(clientKey) : coseKeyThumbprint(clientKey)
         },
         options.dpopWindow,
         true,

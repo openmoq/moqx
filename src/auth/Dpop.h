@@ -27,6 +27,19 @@ constexpr int64_t kDpopAthClaim = -65540;
 constexpr uint64_t kDefaultDpopTokenType = 17;
 constexpr std::chrono::seconds kDefaultDpopWindow{300};
 
+// Proof signature algorithms (COSE): ES256 is required, ES384 and EdDSA (Ed25519) are optional.
+constexpr int64_t kDpopAlgEs256 = -7;
+constexpr int64_t kDpopAlgEs384 = -35;
+constexpr int64_t kDpopAlgEdDsa = -8;
+
+// A proof key: P-256 (ES256), P-384 (ES384) or Ed25519 (EdDSA, `y` empty). Coordinates are raw
+// big-endian bytes.
+struct DpopKey {
+  int64_t algorithm{kDpopAlgEs256};
+  std::string x;
+  std::string y;
+};
+
 // cnf confirmation method carried by the token.
 struct DpopBinding {
   enum class Kind { Ckt, Jkt };
@@ -56,7 +69,10 @@ struct VerifiedDpopProof {
 // SHA-256 over raw bytes.
 std::string sha256(std::string_view data);
 
-// RFC 9679 COSE Key Thumbprint and RFC 7638 JWK Thumbprint for a P-256 key.
+// RFC 9679 COSE Key Thumbprint and RFC 7638 / RFC 8037 JWK Thumbprint (SHA-256). The two-argument
+// forms are for P-256 keys.
+std::string coseKeyThumbprint(const DpopKey& key);
+std::string jwkThumbprint(const DpopKey& key);
 std::string coseKeyThumbprint(std::string_view x, std::string_view y);
 std::string jwkThumbprint(std::string_view x, std::string_view y);
 
@@ -71,8 +87,8 @@ VerifiedDpopProof verifyDpopProof(
     std::chrono::system_clock::time_point now = std::chrono::system_clock::now()
 );
 
-// Client-side proof creation from an unencrypted PEM P-256 private key. Used by tests and
-// operator tooling; the relay never signs.
+// Client-side proof creation from an unencrypted PEM private key (P-256, P-384 or Ed25519). Used by
+// tests and operator tooling; the relay never signs.
 std::string signDpopProof(
     const std::string& privateKeyPemPath,
     std::string_view token,
@@ -80,6 +96,10 @@ std::string signDpopProof(
     std::string_view cti,
     std::chrono::system_clock::time_point issuedAt = std::chrono::system_clock::now()
 );
+
+// The public key of an unencrypted PEM private or public key (P-256, P-384 or Ed25519), for
+// computing cnf values.
+DpopKey dpopPublicKey(const std::string& pemPath);
 
 // Public x/y (32 bytes each) of a PEM P-256 private or public key, for computing cnf values.
 std::pair<std::string, std::string> es256PublicCoordinates(const std::string& pemPath);
