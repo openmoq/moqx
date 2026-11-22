@@ -503,6 +503,22 @@ TEST(DpopTest, ProofVerifiesForTheExactAction) {
   expectRejected(context, sha256("another token"));
 }
 
+TEST(DpopTest, ProofIdLengthIsCheckedBeforeSigning) {
+  const std::string token = "t";
+  const DpopContext context{Action::ClientSetup, {}, std::nullopt};
+  // The verifier accepts proof ids of 1 to 64 bytes, so the signer must not mint any other.
+  EXPECT_THROW(signDpopProof(keyPath(), token, context, "", kNow), std::runtime_error);
+  EXPECT_THROW(
+      signDpopProof(keyPath(), token, context, std::string(65, 'c'), kNow),
+      std::runtime_error
+  );
+  for (const size_t length : {size_t{1}, size_t{64}}) {
+    const auto proof = signDpopProof(keyPath(), token, context, std::string(length, 'c'), kNow);
+    EXPECT_NO_THROW(verifyDpopProof(proof, sha256(token), jktRequirement(), context, kNow))
+        << "cti length " << length;
+  }
+}
+
 TEST(DpopTest, ProofRejectsStaleKeyMismatchAndTampering) {
   const std::string token = "t";
   const DpopContext context{Action::ClientSetup, {}, std::nullopt};
