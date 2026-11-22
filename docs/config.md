@@ -394,7 +394,7 @@ optional `catdpop` (`0` window seconds, default 300; `1` proof `cti` replay
 detection, on unless `0`). Such a token is not a bearer token: SETUP and every
 later action it would authorize, including actions covered by the session's
 setup grants, must carry a COSE_Sign1 proof in an AUTHORIZATION_TOKEN of type
-`dpop_token_type`. The proof must be ES256 with `typ` `dpop-proof+cwt` and the
+`dpop_token_type`. The proof must have `typ` `dpop-proof+cwt` and carry the
 client key in a `kccs` header; its key thumbprint must match `cnf`, `ath` must be
 the SHA-256 of the token as presented, `iat` must be within the window, and
 `actx` must name the exact action, namespace fields, and track name. A proof

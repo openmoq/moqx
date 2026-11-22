@@ -13,7 +13,7 @@ else is fetched at configure time by
   current CMake from PyPI when the distro's is older (e.g. Ubuntu 22.04 ships
   3.22, but reflect-cpp needs 3.23).
 - **System libraries** — [`scripts/install-system-deps.sh`](/scripts/install-system-deps.sh)
-  (apt/dnf/brew), or install by hand: OpenSSL, boost, glog, gflags,
+  (apt/dnf/brew), or install by hand: OpenSSL 3.0+, boost, glog, gflags,
   double-conversion, libevent, sodium, zstd, fmt, c-ares, libunwind, zlib, brotli,
   gperf. Both modes need them: folly & co. resolve them from the system.
 - **ccache** is used automatically when it's on `PATH`.

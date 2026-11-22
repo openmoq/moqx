@@ -102,7 +102,11 @@ folly::Expected<Grants, AuthError>
 AuthTokenVerifier::verify(const AuthToken& token, uint64_t connectionId) const {
   auto result = verifySignature(token);
   if (result.hasValue() && result.value().dpop) {
-    result.value().tokenHash = sha256(token.tokenValue);
+    try {
+      result.value().tokenHash = sha256(token.tokenValue);
+    } catch (const C4mError&) {
+      return folly::makeUnexpected(AuthError::Malformed);
+    }
   }
   // A token that also needs a DPoP proof is bound once the proof validates (applyDpop), so
   // someone holding only the token cannot claim the binding first and lock out its holder.
@@ -304,6 +308,16 @@ bool AuthTokenVerifier::allowsAnonymous(
   return false;
 }
 
+// Bearer tokens and DPoP proofs both count toward max_tokens_per_message.
+static size_t
+countAuthTokens(const AuthTokenVerifier& verifier, const Parameters& params, size_t bearers) {
+  size_t proofs = 0;
+  if (verifier.dpopTokenType() != verifier.tokenType()) {
+    proofs = findAuthTokens(params, verifier.dpopTokenType()).size();
+  }
+  return bearers + proofs;
+}
+
 folly::Expected<std::shared_ptr<const std::vector<Grants>>, AuthError> authenticateSetup(
     const AuthTokenVerifier& verifier,
     const Parameters& setupParams,
@@ -314,8 +328,9 @@ folly::Expected<std::shared_ptr<const std::vector<Grants>>, AuthError> authentic
   }
 
   auto tokens = findAuthTokens(setupParams, verifier.tokenType());
-  if (tokens.size() > verifier.maxTokensPerMessage()) {
-    XLOG(WARN) << "authenticateSetup: " << tokens.size() << " setup tokens exceeds "
+  if (const auto total = countAuthTokens(verifier, setupParams, tokens.size());
+      total > verifier.maxTokensPerMessage()) {
+    XLOG(WARN) << "authenticateSetup: " << total << " setup tokens exceeds "
                << "max_tokens_per_message=" << verifier.maxTokensPerMessage() << "; rejecting";
     return folly::makeUnexpected(AuthError::TooManyTokens);
   }
@@ -356,8 +371,9 @@ folly::Expected<AuthDecision, AuthError> authorize(
   }
 
   auto tokens = findAuthTokens(params, verifier.tokenType());
-  if (tokens.size() > verifier.maxTokensPerMessage()) {
-    XLOG(WARN) << "authorize: " << tokens.size() << " request tokens exceeds "
+  if (const auto total = countAuthTokens(verifier, params, tokens.size());
+      total > verifier.maxTokensPerMessage()) {
+    XLOG(WARN) << "authorize: " << total << " request tokens exceeds "
                << "max_tokens_per_message=" << verifier.maxTokensPerMessage()
                << " for action=" << static_cast<uint64_t>(action) << "; rejecting";
     return folly::makeUnexpected(AuthError::TooManyTokens);

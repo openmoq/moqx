@@ -584,10 +584,11 @@ TEST_F(AuthFiltersTest, RevalidationEndsTheExpiredSubscriptionOnly) {
       folly::coro::co_withExecutor(eventBase.getEventBase(), filter->subscribe(request, consumer))
   );
   ASSERT_TRUE(subscribed.hasValue());
-  EXPECT_EQ(publishDone.get_future().wait_for(kRevalWait), std::future_status::ready);
-  EXPECT_EQ(unsubscribed.get_future().wait_for(kRevalWait), std::future_status::ready);
-  // The session's own cleanup afterwards must not tear the subscription down a second time.
-  subscribed.value()->unsubscribe();
+  ASSERT_EQ(publishDone.get_future().wait_for(kRevalWait), std::future_status::ready);
+  ASSERT_EQ(unsubscribed.get_future().wait_for(kRevalWait), std::future_status::ready);
+  // The session's own cleanup afterwards must not tear the subscription down a second time. It
+  // runs on the event base, where the revalidation timer also runs.
+  eventBase.getEventBase()->runInEventBaseThreadAndWait([&] { subscribed.value()->unsubscribe(); });
 }
 
 TEST_F(AuthFiltersTest, RevalidationStopsWhenTheSubscriptionEndsFirst) {
@@ -612,7 +613,8 @@ TEST_F(AuthFiltersTest, RevalidationStopsWhenTheSubscriptionEndsFirst) {
       folly::coro::co_withExecutor(eventBase.getEventBase(), filter->subscribe(request, consumer))
   );
   ASSERT_TRUE(subscribed.hasValue());
-  subscribed.value()->unsubscribe();                    // ends normally, before the token expires
+  // Ends normally, before the token expires, on the event base like the revalidation timer.
+  eventBase.getEventBase()->runInEventBaseThreadAndWait([&] { subscribed.value()->unsubscribe(); });
   std::this_thread::sleep_for(std::chrono::seconds(4)); // past the token expiry
 }
 
@@ -643,9 +645,12 @@ TEST_F(AuthFiltersTest, RevalidationEndsTheExpiredNamespacePublication) {
       subscriber->publishNamespace(publish, callback)
   ));
   ASSERT_TRUE(published.hasValue());
-  EXPECT_EQ(cancelled.get_future().wait_for(kRevalWait), std::future_status::ready);
-  EXPECT_EQ(done.get_future().wait_for(kRevalWait), std::future_status::ready);
-  published.value()->publishNamespaceDone(); // not repeated
+  ASSERT_EQ(cancelled.get_future().wait_for(kRevalWait), std::future_status::ready);
+  ASSERT_EQ(done.get_future().wait_for(kRevalWait), std::future_status::ready);
+  // Not repeated; run on the event base where the revalidation timer runs.
+  eventBase.getEventBase()->runInEventBaseThreadAndWait([&] {
+    published.value()->publishNamespaceDone();
+  });
 }
 
 TEST_F(AuthFiltersTest, RevalidationEndsTheExpiredFetch) {

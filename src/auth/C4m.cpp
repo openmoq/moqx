@@ -484,6 +484,10 @@ std::string encodeClaims(const Grants& grants) {
     out += *grants.cti;
   }
   if (grants.replayProtected) {
+    if (!grants.cti || grants.cti->empty() ||
+        grants.expiresAt == std::chrono::system_clock::time_point::max()) {
+      throw std::invalid_argument("catreplay requires cti and an expiry");
+    }
     appendInt(out, 308);
     appendInt(out, 1);
   }

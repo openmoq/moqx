@@ -1006,8 +1006,10 @@ TEST_P(MoQRelayTest, RevokingANamespaceEndsTheTracksItsPublisherSends) {
   std::atomic<bool> publisherStopped{false};
   EXPECT_CALL(*publisherHandle, unsubscribe()).Times(1).WillOnce([&] { publisherStopped = true; });
   EXPECT_CALL(*otherHandle, unsubscribe()).Times(0);
-  EXPECT_CALL(*consumer, publishDone(_)).WillOnce([](PublishDone done) {
+  std::atomic<bool> gotPublishDone{false};
+  EXPECT_CALL(*consumer, publishDone(_)).WillOnce([&](PublishDone done) {
     EXPECT_EQ(done.statusCode, PublishDoneStatusCode::TRACK_ENDED);
+    gotPublishDone = true;
     return folly::makeExpected<MoQPublishError>(folly::unit);
   });
   EXPECT_CALL(*otherConsumer, publishDone(_)).Times(0);
@@ -1018,6 +1020,7 @@ TEST_P(MoQRelayTest, RevokingANamespaceEndsTheTracksItsPublisherSends) {
   // The unsubscribe is posted to the publisher's executor, which SingleThread mode only runs on
   // a loop turn.
   EXPECT_TRUE(driveUntil([&] { return publisherStopped.load(); }));
+  EXPECT_TRUE(driveUntil([&] { return gotPublishDone.load(); }));
   driveIfMultiThread();
   // Only the revoke is under test: tearing the sessions down below unsubscribes the rest.
   testing::Mock::VerifyAndClearExpectations(publisherHandle.get());

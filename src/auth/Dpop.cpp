@@ -237,7 +237,9 @@ bool verifyProofSignature(
   if (derLength <= 0) {
     return false;
   }
-  std::unique_ptr<unsigned char, decltype(&free)> derOwner(der, free);
+  std::unique_ptr<unsigned char, void (*)(unsigned char*)> derOwner(der, [](unsigned char* p) {
+    OPENSSL_free(p);
+  });
   return EVP_DigestVerifyInit(ctx.get(), nullptr, digestFor(key.algorithm), nullptr, publicKey) ==
              1 &&
          EVP_DigestVerify(
@@ -250,17 +252,21 @@ bool verifyProofSignature(
 }
 
 // A COSE_Key as it appears in a proof, before it is matched to the proof's algorithm.
+constexpr size_t kMaxProofCtiBytes = 64;
+
 struct CoseKey {
   int64_t kty{0};
   int64_t crv{0};
   std::string x;
   std::string y;
   bool hasY{false};
+  bool hasAlg{false};
+  int64_t alg{0};
 };
 
 CoseKey readCoseKey(CborReader& reader) {
   uint64_t count = 0;
-  require(reader.readMapLen(count) && (count == 3 || count == 4));
+  require(reader.readMapLen(count) && count >= 3 && count <= 5);
   CoseKey key;
   std::unordered_set<int64_t> seen;
   for (uint64_t i = 0; i < count; ++i) {
@@ -275,6 +281,9 @@ CoseKey readCoseKey(CborReader& reader) {
       require(reader.readByteString(coordinate) && coordinate.size() <= 66);
       (label == -2 ? key.x : key.y) = std::string(coordinate);
       key.hasY = key.hasY || label == -3;
+    } else if (label == 3) {
+      require(reader.readInt(key.alg));
+      key.hasAlg = true;
     } else {
       require(false);
     }
@@ -303,6 +312,9 @@ DpopKey keyForAlgorithm(int64_t algorithm, const CoseKey& key) {
   if (key.kty != shape->kty || key.crv != shape->crv || key.x.size() != shape->size ||
       (shape->group != nullptr ? (!key.hasY || key.y.size() != shape->size) : key.hasY)) {
     reject("DPoP key does not match the proof algorithm");
+  }
+  if (key.hasAlg && key.alg != algorithm) {
+    reject("DPoP key alg does not match the proof algorithm");
   }
   return DpopKey{algorithm, key.x, key.y};
 }
@@ -359,7 +371,7 @@ ProofClaims readProofClaims(std::string_view payload) {
       claims.issuedAt = Clock::time_point(Seconds(seconds));
     } else if (label == 7) {
       std::string_view cti;
-      require(reader.readByteString(cti) && !cti.empty() && cti.size() <= 64);
+      require(reader.readByteString(cti) && !cti.empty() && cti.size() <= kMaxProofCtiBytes);
       claims.cti = std::string(cti);
     } else if (label == kDpopAthClaim) {
       std::string_view hash;
@@ -410,11 +422,13 @@ ProofClaims readProofClaims(std::string_view payload) {
 
 std::string sha256(std::string_view data) {
   std::string out(SHA256_DIGEST_LENGTH, '\0');
-  SHA256(
-      reinterpret_cast<const unsigned char*>(data.data()),
-      data.size(),
-      reinterpret_cast<unsigned char*>(out.data())
-  );
+  if (SHA256(
+          reinterpret_cast<const unsigned char*>(data.data()),
+          data.size(),
+          reinterpret_cast<unsigned char*>(out.data())
+      ) == nullptr) {
+    throw C4mError(AuthError::Malformed, "SHA-256 computation failed");
+  }
   return out;
 }
 
@@ -633,6 +647,9 @@ std::string signDpopProofAtSeconds(
     std::string_view cti,
     int64_t issuedAtSeconds
 ) {
+  if (cti.empty() || cti.size() > kMaxProofCtiBytes) {
+    throw std::runtime_error("DPoP proof cti must be 1 to 64 bytes");
+  }
   const auto pkey = readPemKey(privateKeyPemPath, true);
   const auto key = dpopKeyOf(pkey.get(), privateKeyPemPath);
   const auto& shape = requireShape(key.algorithm);
