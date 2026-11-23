@@ -22,4 +22,4 @@ set(CATAPULT_REV "2bbf479fe2e65e425624316d335443a8c0fc0507")
 
 # Release tags, not shas — these projects publish stable tagged releases.
 set(YAMLCPP_VERSION "0.8.0")
-set(REFLECTCPP_VERSION "v0.18.0")
+set(REFLECTCPP_VERSION "v0.22.0")
