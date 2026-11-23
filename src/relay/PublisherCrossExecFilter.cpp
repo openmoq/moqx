@@ -128,10 +128,10 @@ private:
 
 folly::coro::Task<moxygen::Publisher::TrackStatusResult>
 PublisherCrossExecFilter::trackStatus(moxygen::TrackStatus trackStatus) {
-  co_return co_await folly::coro::co_withExecutor(
-      folly::getKeepAliveToken(targetExec_),
-      inner_->trackStatus(std::move(trackStatus))
-  );
+  auto start = [inner = inner_, trackStatus = std::move(trackStatus)]() mutable {
+    return inner->trackStatus(std::move(trackStatus));
+  };
+  co_return co_await runOn(targetExec_, std::move(start));
 }
 
 folly::coro::Task<moxygen::Publisher::SubscribeResult> PublisherCrossExecFilter::subscribe(
@@ -142,10 +142,9 @@ folly::coro::Task<moxygen::Publisher::SubscribeResult> PublisherCrossExecFilter:
   auto wrappedConsumer =
       CrossExecFilter::create(callerExec, std::move(callback), /*deepCopyPayload=*/false);
   auto* targetExec = targetExec_;
-  auto result = co_await folly::coro::co_withExecutor(
-      folly::getKeepAliveToken(targetExec),
-      inner_->subscribe(std::move(sub), std::move(wrappedConsumer))
-  );
+  auto start = [inner = inner_, sub = std::move(sub), wrappedConsumer = std::move(wrappedConsumer)](
+               ) mutable { return inner->subscribe(std::move(sub), std::move(wrappedConsumer)); };
+  auto result = co_await runOn(targetExec, std::move(start));
   if (result.hasValue()) {
     auto handle =
         std::make_shared<CrossExecSubscriptionHandle>(std::move(result.value()), targetExec);
@@ -164,10 +163,12 @@ folly::coro::Task<moxygen::Publisher::FetchResult> PublisherCrossExecFilter::fet
       FetchCrossExecFilter::create(callerExec, std::move(fetchCallback), /*deepCopyPayload=*/false);
   auto consumerRef = wrappedConsumer;
   auto* targetExec = targetExec_;
-  auto result = co_await folly::coro::co_withExecutor(
-      folly::getKeepAliveToken(targetExec),
-      inner_->fetch(std::move(fetchReq), std::move(wrappedConsumer))
-  );
+  auto start = [inner = inner_,
+                fetchReq = std::move(fetchReq),
+                wrappedConsumer = std::move(wrappedConsumer)]() mutable {
+    return inner->fetch(std::move(fetchReq), std::move(wrappedConsumer));
+  };
+  auto result = co_await runOn(targetExec, std::move(start));
   if (result.hasValue()) {
     auto handle = std::make_shared<CrossExecFetchHandle>(std::move(result.value()), targetExec);
     co_await folly::coro::co_safe_point;
@@ -191,10 +192,11 @@ PublisherCrossExecFilter::subscribeNamespace(
                                                 )
                                               : nullptr;
   auto* targetExec = targetExec_;
-  auto result = co_await folly::coro::co_withExecutor(
-      folly::getKeepAliveToken(targetExec),
-      inner_->subscribeNamespace(std::move(subNs), std::move(wrappedHandle))
-  );
+  auto start = [inner = inner_, subNs = std::move(subNs), wrappedHandle = std::move(wrappedHandle)](
+               ) mutable {
+    return inner->subscribeNamespace(std::move(subNs), std::move(wrappedHandle));
+  };
+  auto result = co_await runOn(targetExec, std::move(start));
   if (result.hasValue()) {
     auto handle =
         std::make_shared<CrossExecSubscribeNamespaceHandle>(std::move(result.value()), targetExec);
@@ -216,10 +218,10 @@ PublisherCrossExecFilter::subscribeTracks(
                                               )
                                             : nullptr;
   auto* targetExec = targetExec_;
-  auto result = co_await folly::coro::co_withExecutor(
-      folly::getKeepAliveToken(targetExec),
-      inner_->subscribeTracks(std::move(subTracks), std::move(wrappedHandle))
-  );
+  auto start =
+      [inner = inner_, subTracks = std::move(subTracks), wrappedHandle = std::move(wrappedHandle)](
+      ) mutable { return inner->subscribeTracks(std::move(subTracks), std::move(wrappedHandle)); };
+  auto result = co_await runOn(targetExec, std::move(start));
   if (result.hasValue()) {
     auto handle =
         std::make_shared<CrossExecSubscribeTracksHandle>(std::move(result.value()), targetExec);

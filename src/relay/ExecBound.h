@@ -104,6 +104,15 @@ private:
   folly::Executor* exec_{nullptr};
 };
 
+// Calls start(), which returns a Task, on exec, so the code before its first suspension runs
+// there too.
+template <typename Start> auto runOn(folly::Executor* exec, Start start) {
+  return folly::coro::co_withExecutor(
+      folly::getKeepAliveToken(exec),
+      folly::coro::co_invoke(std::move(start))
+  );
+}
+
 // Runs handle->requestUpdate(update) on its executor. handle must outlive the await.
 template <typename T, typename Update>
 auto forwardRequestUpdate(const ExecBound<T>& handle, Update update)

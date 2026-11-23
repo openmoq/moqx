@@ -70,6 +70,27 @@ TEST_F(PublisherCrossExecFilterTest, SubscribeForwardsToInner) {
   EXPECT_TRUE(result.hasValue());
 }
 
+TEST_F(PublisherCrossExecFilterTest, SubscribeCallsInnerOnTheTargetExecutor) {
+  std::thread::id targetThread;
+  folly::Baton<> recorded;
+  targetExec_->add([&] {
+    targetThread = std::this_thread::get_id();
+    recorded.post();
+  });
+  recorded.wait();
+  std::optional<std::thread::id> calledOn;
+  EXPECT_CALL(*inner_, subscribe(_, _))
+      .WillOnce([&](SubscribeRequest, std::shared_ptr<TrackConsumer>) {
+        calledOn = std::this_thread::get_id();
+        return folly::coro::makeTask<Publisher::SubscribeResult>(folly::makeUnexpected(
+            SubscribeError{RequestID(1), SubscribeErrorCode::NOT_SUPPORTED, "nope"}
+        ));
+      });
+
+  folly::coro::blockingWait(filter_->subscribe(SubscribeRequest{}, nullptr));
+  EXPECT_EQ(calledOn, targetThread);
+}
+
 TEST_F(PublisherCrossExecFilterTest, SubscribeReturnsError) {
   EXPECT_CALL(*inner_, subscribe(_, _))
       .WillOnce(
