@@ -9,12 +9,15 @@
 #include <algorithm>
 #include <optional>
 
+#include <folly/coro/Sleep.h>
+
 namespace openmoq::moqx::logging {
 
 namespace {
 
 constexpr std::chrono::milliseconds kMinRetry{1000};
 constexpr std::chrono::milliseconds kMaxRetry{30000};
+constexpr std::chrono::milliseconds kDrainRetry{10};
 // A sink in retry keeps at most this many batches. Older lines are dropped and show up
 // as seq gaps.
 constexpr size_t kMaxRetainedBatches = 4;
@@ -125,9 +128,9 @@ void AccessLogSink::clearPending() {
   firstLinePartial_ = false;
 }
 
-folly::coro::Task<void> AccessLogSink::flush() {
+folly::coro::Task<AccessLogWriteStatus> AccessLogSink::flush() {
   if (lines_.empty() || std::chrono::steady_clock::now() < retryAt_) {
-    co_return;
+    co_return AccessLogWriteStatus::Ok;
   }
   auto result = co_await transport_->write(*pendingLines_.front());
   switch (result.status) {
@@ -138,10 +141,17 @@ folly::coro::Task<void> AccessLogSink::flush() {
     retryDelay_ = {};
     break;
   case AccessLogWriteStatus::Retry:
+  case AccessLogWriteStatus::Failed:
     stats_.writeErrors++;
     consume(result.bytesWritten);
-    retryDelay_ = std::min(std::max({result.retryAfter, kMinRetry, retryDelay_ * 2}), kMaxRetry);
-    retryAt_ = std::chrono::steady_clock::now() + retryDelay_;
+    if (result.status == AccessLogWriteStatus::Retry && result.bytesWritten > 0) {
+      // A write that sent bytes shows that the reader is draining the output.
+      retryDelay_ = {};
+      retryAt_ = std::chrono::steady_clock::now() + kDrainRetry;
+    } else {
+      retryDelay_ = std::min(std::max({result.retryAfter, kMinRetry, retryDelay_ * 2}), kMaxRetry);
+      retryAt_ = std::chrono::steady_clock::now() + retryDelay_;
+    }
     dropBacklog();
     break;
   }
@@ -149,6 +159,7 @@ folly::coro::Task<void> AccessLogSink::flush() {
     reopenPending_ = false;
     transport_->reopen();
   }
+  co_return result.status;
 }
 
 void AccessLogSink::reopen() {
@@ -162,9 +173,18 @@ void AccessLogSink::reopen() {
 folly::coro::Task<void>
 AccessLogSink::close(const AccessLogRelayInfo& relayInfo, uint64_t queueDropped) {
   reportDrops(relayInfo, queueDropped);
-  retryAt_ = {};
-  // A cancelled flush leaves its lines pending, and they count as dropped below.
-  co_await folly::coro::co_awaitTry(flush());
+  // Retry a full output until it drains or the stop deadline cancels the loop. A
+  // cancelled flush leaves its lines pending, and they count as dropped below.
+  while (!lines_.empty()) {
+    retryAt_ = {};
+    auto status = co_await folly::coro::co_awaitTry(flush());
+    if (!status.hasValue() || *status == AccessLogWriteStatus::Failed || lines_.empty()) {
+      break;
+    }
+    if ((co_await folly::coro::co_awaitTry(folly::coro::sleep(kDrainRetry))).hasException()) {
+      break;
+    }
+  }
   stats_.dropped += lines_.size();
   clearPending();
   co_await transport_->close();

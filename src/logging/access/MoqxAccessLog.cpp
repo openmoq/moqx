@@ -118,6 +118,7 @@ void MoqxAccessLog::stop(std::chrono::steady_clock::time_point deadline) {
   state_.store(State::Stopped, std::memory_order_release);
   stopDeadline_ = deadline;
   queue_.enqueue(Item{ItemKind::Stop, {}});
+  flushCancel_.requestCancellation();
   auto remaining = deadline + kStopGrace - std::chrono::steady_clock::now();
   if (!std::move(done_).wait(std::chrono::ceil<std::chrono::milliseconds>(
           std::max(remaining, std::chrono::steady_clock::duration::zero())
@@ -357,7 +358,9 @@ folly::coro::Task<void> MoqxAccessLog::run() {
         co_return;
       }
     }
-    co_await flushDue();
+    co_await folly::coro::co_awaitTry(
+        folly::coro::co_withCancellation(flushCancel_.getToken(), flushDue())
+    );
   }
 }
 

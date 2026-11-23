@@ -1,0 +1,1 @@
+- The relay exited on SIGPIPE when the reader of its stdout, stderr or access log pipe closed. It now ignores SIGPIPE, and the write fails with EPIPE.

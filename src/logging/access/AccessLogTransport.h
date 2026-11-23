@@ -14,12 +14,13 @@
 
 namespace openmoq::moqx::logging {
 
-enum class AccessLogWriteStatus { Ok, Retry };
+// Retry: the output is full and may drain. Failed: the output reported an error.
+enum class AccessLogWriteStatus { Ok, Retry, Failed };
 
 struct AccessLogWriteResult {
   AccessLogWriteStatus status{AccessLogWriteStatus::Ok};
   std::chrono::milliseconds retryAfter{0};
-  // On Retry, the bytes sent before the failure. The next write starts after them.
+  // On Retry or Failed, the bytes sent before the failure. The next write starts after them.
   size_t bytesWritten{0};
 };
 
