@@ -68,8 +68,7 @@ TEST_P(MoQRelayTest, PublishEmptyNamespaceRejectedPreV18) {
 TEST_P(MoQRelayTest, PublishEmptyNamespaceAllowedV18) {
   relay_->setAllowedNamespacePrefix(TrackNamespace{{}});
   auto session = createMockSession();
-  ON_CALL(*session, getNegotiatedVersion())
-      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft18)));
+  ON_CALL(*session, getNegotiatedVersion()).WillByDefault(Return(kVersionDraft18));
 
   PublishRequest pub;
   pub.fullTrackName = FullTrackName{TrackNamespace{{}}, "track1"};

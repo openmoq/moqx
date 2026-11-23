@@ -34,8 +34,7 @@ TEST_P(MoQRelayTest, TrackStatusEmptyNamespaceRejectedPreV18) {
 // namespace on draft-18+ — it falls through to the normal not-found path.
 TEST_P(MoQRelayTest, TrackStatusEmptyNamespaceAllowedV18) {
   auto session = createMockSession();
-  ON_CALL(*session, getNegotiatedVersion())
-      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft18)));
+  ON_CALL(*session, getNegotiatedVersion()).WillByDefault(Return(kVersionDraft18));
 
   TrackStatus trackStatus;
   trackStatus.fullTrackName = FullTrackName{TrackNamespace{{}}, "track1"};

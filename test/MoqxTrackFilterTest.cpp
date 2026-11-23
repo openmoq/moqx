@@ -56,8 +56,7 @@ protected:
   // publish() calls are recorded in publishedTracks_[session.get()].
   std::shared_ptr<MockMoQSession> makeSession(uint64_t version = kVersionDraft16) {
     auto session = std::make_shared<NiceMock<MockMoQSession>>(exec_);
-    ON_CALL(*session, getNegotiatedVersion())
-        .WillByDefault(Return(std::optional<uint64_t>(version)));
+    ON_CALL(*session, getNegotiatedVersion()).WillByDefault(Return(version));
 
     auto* raw = session.get();
     ON_CALL(*session, publish(_, _))
@@ -180,7 +179,7 @@ protected:
     subTracks.forward = true;
     subTracks.params.insertParam(TopTracksExtension::encode(
         TrackFilter{kPropType, maxSelected},
-        session->getNegotiatedVersion().value()
+        session->getNegotiatedVersion()
     ));
     std::shared_ptr<Publisher::SubscribeTracksHandle> handle;
     withSessionContext(session, [&] {

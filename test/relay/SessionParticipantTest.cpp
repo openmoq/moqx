@@ -36,8 +36,7 @@ class SessionParticipantTest : public ::testing::Test {
 protected:
   std::shared_ptr<MockMoQSession> makeSession() {
     auto session = std::make_shared<NiceMock<MockMoQSession>>(exec_);
-    ON_CALL(*session, getNegotiatedVersion())
-        .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
+    ON_CALL(*session, getNegotiatedVersion()).WillByDefault(Return(kVersionDraft16));
     openmoq::moqx::test::negotiateClusterPeer(*session, 7, 3);
     return session;
   }

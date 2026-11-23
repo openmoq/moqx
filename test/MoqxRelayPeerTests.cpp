@@ -90,8 +90,7 @@ TEST_P(MoQRelayTest, PeerNamespaceNotEchoedBackOnReconnect) {
   // Step 2: jp-osa-1 reconnects as session2 and sends a peer SUBSCRIBE_NAMESPACE.
   // Peer-to-peer sessions negotiate draft-16 (empty prefix is a 16+ feature).
   auto session2 = createMockSession();
-  ON_CALL(*session2, getNegotiatedVersion())
-      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
+  ON_CALL(*session2, getNegotiatedVersion()).WillByDefault(Return(kVersionDraft16));
 
   // The relay delivers existing namespaces via namespacePublishHandle->namespaceMsg
   // (draft-16 synchronous path).  Use a mock handle to detect any echo.
@@ -125,8 +124,7 @@ TEST_P(MoQRelayTest, LocalNamespaceDeliveredToPeerOnReconnect) {
 
   // Peer "jp-osa-1" subscribes with a draft-16 session.
   auto peerSession = createMockSession();
-  ON_CALL(*peerSession, getNegotiatedVersion())
-      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
+  ON_CALL(*peerSession, getNegotiatedVersion()).WillByDefault(Return(kVersionDraft16));
 
   auto nsHandle = std::make_shared<NiceMock<MockNamespacePublishHandle>>();
   bool delivered = false;
@@ -209,8 +207,7 @@ TEST_P(MoQRelayTest, PeerNamespaceNotEchoedBack_FullProductionPath) {
     // lifetime: the handle lives in the coroutine frame, separate from the session.
     std::shared_ptr<Publisher::NamespacePublishHandle> bridgeHandle1;
     auto session1 = std::make_shared<PeerAnnounceSession>(exec_, kTestNamespace, bridgeHandle1);
-    ON_CALL(*session1, getNegotiatedVersion())
-        .WillByDefault(Return(std::optional<uint64_t>(version)));
+    ON_CALL(*session1, getNegotiatedVersion()).WillByDefault(Return(version));
     getOrCreateMockState(session1);
 
     auto nsHandle1 = std::make_shared<NiceMock<MockNamespacePublishHandle>>();
@@ -232,8 +229,7 @@ TEST_P(MoQRelayTest, PeerNamespaceNotEchoedBack_FullProductionPath) {
     // Step 2: jp-osa-1 reconnects as session2 and re-subscribes.
     // kTestNamespace must NOT be echoed back.
     auto session2 = createMockSession();
-    ON_CALL(*session2, getNegotiatedVersion())
-        .WillByDefault(Return(std::optional<uint64_t>(version)));
+    ON_CALL(*session2, getNegotiatedVersion()).WillByDefault(Return(version));
 
     auto nsHandle2 = std::make_shared<NiceMock<MockNamespacePublishHandle>>();
     bool echoedBack = false;
@@ -320,8 +316,7 @@ TEST_P(MoQRelayTest, PeerClosedDuringReciprocalIsNotRegistered) {
   resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "sg-sin-2-1");
   relay_->setAllowedNamespacePrefix(kAllowedPrefix);
   auto peer = std::make_shared<StalledReciprocalSession>(exec_);
-  ON_CALL(*peer, getNegotiatedVersion())
-      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
+  ON_CALL(*peer, getNegotiatedVersion()).WillByDefault(Return(kVersionDraft16));
   getOrCreateMockState(peer);
 
   auto nsHandle = std::make_shared<NiceMock<MockNamespacePublishHandle>>();
@@ -480,7 +475,7 @@ TEST_P(MoQRelayTest, UpstreamPeeringSubscribesTracksOnDraft18) {
   for (auto version : {kVersionDraft16, kVersionDraft18}) {
     SCOPED_TRACE(version);
     auto peer = std::make_shared<PeerTracksSession>(exec_);
-    ON_CALL(*peer, getNegotiatedVersion()).WillByDefault(Return(std::optional<uint64_t>(version)));
+    ON_CALL(*peer, getNegotiatedVersion()).WillByDefault(Return(version));
     getOrCreateMockState(peer);
 
     if (auto* relayExec = relay_->getRelayExec()) {
@@ -522,8 +517,7 @@ TEST_P(MoQRelayTest, UpstreamDisconnectReleasesOnlyThatSession) {
   std::vector<std::shared_ptr<PeerTracksSession>> peers;
   for (int i = 0; i < 2; ++i) {
     auto peer = std::make_shared<PeerTracksSession>(exec_);
-    ON_CALL(*peer, getNegotiatedVersion())
-        .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft18)));
+    ON_CALL(*peer, getNegotiatedVersion()).WillByDefault(Return(kVersionDraft18));
     getOrCreateMockState(peer);
     if (auto* relayExec = relay_->getRelayExec()) {
       folly::coro::co_withExecutor(
@@ -588,8 +582,7 @@ public:
 TEST_P(MoQRelayTest, UpstreamDisconnectDuringHandshakeDropsItsHandles) {
   resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "sg-sin-2-1");
   auto peer = std::make_shared<GatedPeerSession>(exec_);
-  ON_CALL(*peer, getNegotiatedVersion())
-      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft18)));
+  ON_CALL(*peer, getNegotiatedVersion()).WillByDefault(Return(kVersionDraft18));
   getOrCreateMockState(peer);
   if (auto* relayExec = relay_->getRelayExec()) {
     folly::coro::co_withExecutor(
@@ -616,7 +609,7 @@ TEST_P(MoQRelayTest, ReciprocalPeeringSubscribesTracksOnDraft18) {
   for (auto version : {kVersionDraft16, kVersionDraft18}) {
     SCOPED_TRACE(version);
     auto peer = std::make_shared<PeerTracksSession>(exec_);
-    ON_CALL(*peer, getNegotiatedVersion()).WillByDefault(Return(std::optional<uint64_t>(version)));
+    ON_CALL(*peer, getNegotiatedVersion()).WillByDefault(Return(version));
     getOrCreateMockState(peer);
 
     std::shared_ptr<Publisher::SubscribeNamespaceHandle> peerSub;

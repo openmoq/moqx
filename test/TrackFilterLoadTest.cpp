@@ -729,7 +729,7 @@ private:
   // subscription lasts as long as the returned handle.
   folly::coro::Task<std::shared_ptr<void>>
   subscribeTopN(std::shared_ptr<MoQSession> session, RequestID requestID) {
-    const auto version = session->getNegotiatedVersion().value();
+    const auto version = session->getNegotiatedVersion();
     const TrackNamespace prefix(std::vector<std::string>{FLAGS_namespace_prefix, "audio"});
     auto filter = TopTracksExtension::encode(
         TrackFilter{kAudioLevelPropertyType, static_cast<uint64_t>(FLAGS_top_n)},

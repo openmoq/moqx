@@ -132,11 +132,13 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxQmuxRelayServer::validat
 
 std::shared_ptr<MoQSession> MoqxQmuxRelayServer::createSession(
     folly::MaybeManagedPtr<proxygen::WebTransport> wt,
+    uint64_t negotiatedVersion,
     std::shared_ptr<MoQExecutor> executor
 ) {
   return std::make_shared<MoqxRelaySession>(
       listenerMatcher_.name(),
       folly::MaybeManagedPtr<proxygen::WebTransport>(std::move(wt)),
+      negotiatedVersion,
       *this,
       std::move(executor)
   );

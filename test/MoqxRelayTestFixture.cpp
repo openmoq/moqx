@@ -12,8 +12,7 @@
 namespace openmoq::moqx::test {
 
 void negotiateCluster(MockMoQSession& session, uint64_t peerHop, std::optional<uint64_t> peerCost) {
-  ON_CALL(session, getNegotiatedVersion())
-      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft18)));
+  ON_CALL(session, getNegotiatedVersion()).WillByDefault(Return(kVersionDraft18));
   negotiateClusterPeer(session, peerHop, peerCost);
 }
 
@@ -167,7 +166,7 @@ std::shared_ptr<MockMoQSession> MoQRelayTest::createMockSession(uint64_t version
 std::shared_ptr<MockMoQSession>
 MoQRelayTest::createMockSessionOn(std::shared_ptr<moxygen::MoQExecutor> exec, uint64_t version) {
   auto session = std::make_shared<NiceMock<MockMoQSession>>(std::move(exec));
-  ON_CALL(*session, getNegotiatedVersion()).WillByDefault(Return(std::optional<uint64_t>(version)));
+  ON_CALL(*session, getNegotiatedVersion()).WillByDefault(Return(version));
   getOrCreateMockState(session);
   return session;
 }
