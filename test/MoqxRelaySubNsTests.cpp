@@ -335,8 +335,7 @@ TEST_P(MoQRelayTest, NonNegotiatedSubscriberReceivesNamespaceWithoutHopPath) {
   auto publisher = createMockSession();
   negotiateCluster(*publisher);
   auto subscriber = createMockSession();
-  ON_CALL(*subscriber, getNegotiatedVersion())
-      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
+  ON_CALL(*subscriber, getNegotiatedVersion()).WillByDefault(Return(kVersionDraft16));
   auto namespaceHandle = std::make_shared<RecordingNamespacePublishHandle>();
   doSubscribeNamespace(subscriber, kTestNamespace, true, namespaceHandle);
 

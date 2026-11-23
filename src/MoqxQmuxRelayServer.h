@@ -52,6 +52,7 @@ public:
 protected:
   std::shared_ptr<moxygen::MoQSession> createSession(
       folly::MaybeManagedPtr<proxygen::WebTransport> wt,
+      uint64_t negotiatedVersion,
       std::shared_ptr<moxygen::MoQExecutor> executor
   ) override;
 

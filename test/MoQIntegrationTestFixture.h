@@ -182,10 +182,12 @@ private:
   protected:
     std::shared_ptr<moxygen::MoQSession> createSession(
         folly::MaybeManagedPtr<proxygen::WebTransport> wt,
+        uint64_t negotiatedVersion,
         std::shared_ptr<moxygen::MoQExecutor> executor
     ) override {
       return std::make_shared<moxygen::MoQRelaySession>(
           folly::MaybeManagedPtr<proxygen::WebTransport>(std::move(wt)),
+          negotiatedVersion,
           *this,
           std::move(executor)
       );

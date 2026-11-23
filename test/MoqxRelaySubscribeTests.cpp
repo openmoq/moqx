@@ -38,13 +38,11 @@ TEST_P(MoQRelayTest, SubscribeEmptyNamespaceAllowedV18) {
   FullTrackName emptyNsTrack{TrackNamespace{{}}, "track1"};
 
   auto publisherSession = createMockSession();
-  ON_CALL(*publisherSession, getNegotiatedVersion())
-      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft18)));
+  ON_CALL(*publisherSession, getNegotiatedVersion()).WillByDefault(Return(kVersionDraft18));
   doPublish(publisherSession, emptyNsTrack);
 
   auto subSession = createMockSession();
-  ON_CALL(*subSession, getNegotiatedVersion())
-      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft18)));
+  ON_CALL(*subSession, getNegotiatedVersion()).WillByDefault(Return(kVersionDraft18));
   auto consumer = createMockConsumer();
   auto handle = subscribeToTrack(subSession, emptyNsTrack, consumer, RequestID(0));
   ASSERT_NE(handle, nullptr);
@@ -518,8 +516,7 @@ TEST_P(MoQRelayTest, UpstreamSubscribeThrowDoesNotStrandGate) {
 
   auto makeSessionOnPubThread = [&] {
     auto session = std::make_shared<NiceMock<MockMoQSession>>(pubExec);
-    ON_CALL(*session, getNegotiatedVersion())
-        .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
+    ON_CALL(*session, getNegotiatedVersion()).WillByDefault(Return(kVersionDraft16));
     getOrCreateMockState(session);
     return session;
   };
@@ -615,8 +612,7 @@ TEST_P(MoQRelayTest, CrossThreadSubsequentSubscriberSeedingRace) {
   auto& subAux = makeAuxExec("sub2-thread");
   auto subExec = subAux.exec;
   auto subSession2 = std::make_shared<NiceMock<MockMoQSession>>(subExec);
-  ON_CALL(*subSession2, getNegotiatedVersion())
-      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
+  ON_CALL(*subSession2, getNegotiatedVersion()).WillByDefault(Return(kVersionDraft16));
   getOrCreateMockState(subSession2);
 
   doPublishNamespace(publisherSession, kTestNamespace);
@@ -734,8 +730,7 @@ TEST_P(MoQRelayTest, PublishFanoutDuringParkedSubscribeSetup) {
   auto* pubEvb = pubAux.evb;
   auto pubExec = pubAux.exec;
   auto publisherSession = std::make_shared<NiceMock<MockMoQSession>>(pubExec);
-  ON_CALL(*publisherSession, getNegotiatedVersion())
-      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
+  ON_CALL(*publisherSession, getNegotiatedVersion()).WillByDefault(Return(kVersionDraft16));
   getOrCreateMockState(publisherSession);
 
   // One session on exec_ holding both the SUBSCRIBE_NAMESPACE that makes it a fanout
