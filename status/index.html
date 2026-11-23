@@ -54,6 +54,12 @@
   .overview-table tr.mvfst th { border-left: 3px solid #58a6ff; }
   .overview-table tr.picoquic th { border-left: 3px dashed #f0883e; }
   #overview-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .parameter-note { color: #8b949e; font-size: 0.85rem; margin-bottom: 12px; }
+  .parameter-marker { color: #d29922; font-size: 1.1rem; }
+  .parameter-changes { margin-bottom: 20px; font-size: 0.85rem; }
+  .parameter-changes summary { color: #d29922; cursor: pointer; }
+  .parameter-changes ul { margin: 8px 0 0 20px; color: #e6edf3; }
+  .parameter-changes li { margin-bottom: 6px; }
   a { color: #58a6ff; text-decoration: none; }
   a:hover { text-decoration: underline; }
   .loading { text-align: center; padding: 40px; color: #8b949e; }
@@ -108,6 +114,12 @@
     </select>
   </label>
 </div>
+
+<p class="parameter-note"><span class="parameter-marker">◉</span> Amber-outlined points mark parameter changes from the previous run of the same profile and stack. Hover for details; missing historical parameters are not compared.</p>
+<details id="parameter-changes" class="parameter-changes" hidden>
+  <summary id="parameter-changes-summary"></summary>
+  <ul id="parameter-changes-list"></ul>
+</details>
 
 <div id="summary" class="summary"></div>
 
@@ -232,6 +244,23 @@ const CHARTS = [
 let allData = [];
 let charts = {};
 let viewMode = 'overview';
+let parameterChanges = new WeakMap();
+
+// client_window describes the measured window, which can vary between identical tests.
+const PARAMETER_FIELDS = [
+  ['subscriber_max', 'Subscribers'],
+  ['ramp', 'Subscriber ramp'],
+  ['duration', 'Duration'],
+  ['io_threads', 'I/O threads'],
+  ['client_threads', 'Client threads'],
+  ['delivery_timeout_ms', 'Delivery timeout (ms)'],
+  ['transport', 'Transport'],
+  ['target_cpu_pct', 'CPU target (%)'],
+  ['profile_rate_mbps', 'Nominal rate (Mbps)'],
+  ['first_object_size', 'First object size (bytes)'],
+  ['other_object_size', 'Other object size (bytes)'],
+  ['cc', 'Congestion control'],
+];
 
 function getRunStack(run) {
   return run?.params?.quic_stack || 'mvfst';
@@ -239,6 +268,42 @@ function getRunStack(run) {
 
 function getRunProfile(run) {
   return run?.params?.profile || '1mbps';
+}
+
+function findParameterChanges(runs) {
+  const changes = new WeakMap();
+  const previous = new Map();
+  const chronological = [...runs].sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || ''));
+  for (const run of chronological) {
+    const key = JSON.stringify([run.branch, getRunProfile(run), getRunStack(run)]);
+    const before = previous.get(key);
+    if (before) {
+      const differences = PARAMETER_FIELDS.flatMap(([field, label]) => {
+        const oldValue = before.params?.[field];
+        const newValue = run.params?.[field];
+        return oldValue != null && newValue != null && oldValue !== newValue
+          ? [`${label}: ${oldValue} → ${newValue}`] : [];
+      });
+      if (differences.length) changes.set(run, differences);
+    }
+    previous.set(key, run);
+  }
+  return changes;
+}
+
+function renderParameterChanges(runs) {
+  const entries = runs.filter(run => parameterChanges.has(run));
+  const details = document.getElementById('parameter-changes');
+  details.hidden = entries.length === 0;
+  document.getElementById('parameter-changes-summary').textContent =
+    `${entries.length} run${entries.length === 1 ? '' : 's'} with parameter changes in the displayed window`;
+  const list = document.getElementById('parameter-changes-list');
+  list.replaceChildren(...entries.map(run => {
+    const item = document.createElement('li');
+    const label = run.commit_short || run.commit?.slice(0, 7) || '?';
+    item.textContent = `${run.timestamp?.split('T')[0] || 'Unknown date'} · ${label} · ${getRunProfile(run)} · ${getRunStack(run)}: ${parameterChanges.get(run).join('; ')}`;
+    return item;
+  }));
 }
 
 function isMeaningfullyBetter(value, otherValue, higherIsBetter) {
@@ -322,6 +387,7 @@ async function loadData() {
     );
 
     allData = results.filter(Boolean).reverse(); // chronological order
+    parameterChanges = findParameterChanges(allData);
     populateBranchFilter();
     populateStackFilter();
     populateProfileFilter();
@@ -386,6 +452,7 @@ function renderDashboard() {
     : viewMode === 'compare' ? getComparisonData() : getFilteredData();
   if (data.length === 0) {
     document.getElementById('summary').replaceChildren();
+    renderParameterChanges([]);
     document.getElementById('loading').textContent = 'No data for selected filters.';
     document.getElementById('loading').style.display = 'block';
     return;
@@ -393,6 +460,9 @@ function renderDashboard() {
   document.getElementById('loading').style.display = 'none';
 
   if (overview) {
+    renderParameterChanges(PROFILE_IDS.flatMap(profile =>
+      getComparisonData(profile).flatMap(group => Object.values(group.runs))
+    ));
     renderOverviewSummary(data);
     for (const [suffix, metric] of [
       ['-cpu', 'relay_cpu_pct'],
@@ -408,8 +478,10 @@ function renderDashboard() {
   }
 
   if (viewMode === 'compare') {
+    renderParameterChanges(data.flatMap(group => Object.values(group.runs)));
     renderComparisonSummary(data);
   } else {
+    renderParameterChanges(data);
     renderSummary(data);
   }
   for (const [canvasId, metric, color] of CHARTS) {
@@ -541,8 +613,11 @@ function renderChart(canvasId, data, metric, color) {
         borderColor: stackColor,
         backgroundColor: stackColor + '20',
         borderWidth: 2,
-        pointRadius: 3,
+        pointHitRadius: 12,
         pointHoverRadius: 5,
+        pointRadius: context => parameterChanges.has(data[context.dataIndex]) ? 5 : 3,
+        pointBorderColor: context => parameterChanges.has(data[context.dataIndex]) ? CHART_COLORS.warning : stackColor,
+        pointBorderWidth: context => parameterChanges.has(data[context.dataIndex]) ? 2 : 1,
         fill: true,
         tension: 0.2,
       }]
@@ -558,7 +633,8 @@ function renderChart(canvasId, data, metric, color) {
               const idx = items[0].dataIndex;
               const d = data[idx];
               return `${d.commit_short || d.commit?.slice(0,7)} (${d.timestamp?.split('T')[0] || ''})`;
-            }
+            },
+            afterLabel: item => parameterChanges.get(data[item.dataIndex]) || [],
           }
         }
       },
@@ -602,8 +678,11 @@ function renderComparisonChart(canvasId, data, metric) {
         borderDash: stack === 'picoquic' ? [6, 4] : [],
         pointStyle: stack === 'picoquic' ? 'triangle' : 'circle',
         borderWidth: 2,
-        pointRadius: 3,
+        pointHitRadius: 12,
         pointHoverRadius: 5,
+        pointRadius: context => parameterChanges.has(data[context.dataIndex]?.runs[stack]) ? 5 : 3,
+        pointBorderColor: context => parameterChanges.has(data[context.dataIndex]?.runs[stack]) ? CHART_COLORS.warning : STACK_COLORS[stack],
+        pointBorderWidth: context => parameterChanges.has(data[context.dataIndex]?.runs[stack]) ? 2 : 1,
         fill: false,
         spanGaps: false,
         tension: 0.2,
@@ -624,6 +703,7 @@ function renderComparisonChart(canvasId, data, metric) {
               const group = data[items[0].dataIndex];
               return `${group.label} (${group.timestamp?.split('T')[0] || ''})`;
             },
+            afterLabel: item => parameterChanges.get(data[item.dataIndex]?.runs[item.dataset.label]) || [],
           },
         },
       },

@@ -1,0 +1,1 @@
+- The performance dashboard highlights parameter changes from the previous run with marked chart points and an expandable list; see [performance tracking](/docs/perf-tracking.md#triggering).
