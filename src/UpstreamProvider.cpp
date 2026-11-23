@@ -5,6 +5,7 @@
  */
 
 #include "UpstreamProvider.h"
+#include "logging/access/AccessLogSessionContext.h"
 #include "relay/SessionParticipant.h"
 #include <folly/CancellationToken.h>
 #include <folly/coro/CurrentExecutor.h>
@@ -436,24 +437,56 @@ folly::coro::Task<void> UpstreamProvider::doConnect() {
   ts.datagramConfig.writeBufSize = 1000;
   ts.datagramConfig.sendDropOldDataFirst = true;
 
+  std::shared_ptr<logging::AccessLogSessionContext> accessLogContext;
+  if (accessLog_) {
+    accessLogContext = std::make_shared<logging::AccessLogSessionContext>(
+        accessLog_,
+        logging::AccessLogOpenedBy::Relay
+    );
+  }
   // A SessionParticipant binds to one session, so each connection gets its own.
   std::shared_ptr<Publisher> pub = publishHandler_;
   std::shared_ptr<Subscriber> sub = subscribeHandler_;
   if (pub) {
-    auto participant =
-        std::make_shared<SessionParticipant>(std::move(pub), std::move(sub), relayExec_, peering_);
+    auto participant = std::make_shared<SessionParticipant>(
+        std::move(pub),
+        std::move(sub),
+        relayExec_,
+        peering_,
+        accessLogContext
+    );
     pub = participant;
     sub = std::move(participant);
   }
   // Relay links use draft 18 only.
-  co_await client->setupMoQSession(
+  auto setup = co_await folly::coro::co_awaitTry(client->setupMoQSession(
       connectTimeout_,
       idleTimeout_,
       std::move(pub),
       std::move(sub),
       ts,
       getMoqtProtocols("18", /*useStandard=*/true)
-  );
+  ));
+  if (accessLogContext && client->moqSession_) {
+    accessLogContext->setup(
+        client->moqSession_,
+        accessLogService_,
+        std::string(logging::kAccessLogRelayPeer),
+        url_.getUrl()
+    );
+    accessLogContext->writeSetup(
+        setup.hasException() ? logging::AccessLogStatus::Rejected : logging::AccessLogStatus::Ok,
+        std::nullopt,
+        setup.hasException() ? std::string(setup.exception().what()) : std::string()
+    );
+    // The session closes when this coroutine releases the client after stop().
+    if (setup.hasException() || stopped_) {
+      accessLogContext->writeSessionEnd(*client->moqSession_);
+    }
+  }
+  if (setup.hasException()) {
+    co_yield folly::coro::co_error(std::move(setup.exception()));
+  }
   if (stopped_) {
     co_yield folly::coro::co_error(std::runtime_error("UpstreamProvider stopped"));
   }
@@ -464,10 +497,11 @@ folly::coro::Task<void> UpstreamProvider::doConnect() {
 
   // Register for close notifications
   session_->setSessionCloseCallback(this);
+  accessLogContext_ = accessLogContext;
 
   // stop() can clear onConnect_ while the hook's coroutine still runs in its closure.
   if (auto onConnect = onConnect_) {
-    co_await onConnect(session_);
+    co_await onConnect(session_, std::move(accessLogContext));
   }
   if (stopped_) {
     co_yield folly::coro::co_error(std::runtime_error("UpstreamProvider stopped"));
@@ -505,6 +539,13 @@ void UpstreamProvider::resetSession() {
     session_->setSessionCloseCallback(nullptr);
     if (onDisconnect_) {
       onDisconnect_(session_);
+    }
+    // SESSION_END is posted so that it follows the end lines that close() writes after this
+    // returns.
+    if (auto accessLogContext = std::exchange(accessLogContext_, nullptr)) {
+      exec_->add([accessLogContext = std::move(accessLogContext), session = session_] {
+        accessLogContext->writeSessionEnd(*session);
+      });
     }
   }
   session_.reset();

@@ -27,6 +27,11 @@ namespace openmoq::moqx {
 
 class PeeringBackend;
 
+namespace logging {
+class AccessLog;
+class AccessLogSessionContext;
+} // namespace logging
+
 // --- Relay peering auth helpers ---
 // Used by UpstreamProvider (initiating peer subNs) and MoqxRelay (reciprocation).
 
@@ -60,8 +65,11 @@ class UpstreamProvider : public moxygen::Publisher,
                          public moxygen::MoQSession::MoQSessionCloseCallback,
                          public std::enable_shared_from_this<UpstreamProvider> {
 public:
-  using OnConnectHook =
-      std::function<folly::coro::Task<void>(std::shared_ptr<moxygen::MoQSession>)>;
+  // accessLogContext is null when the access log is off.
+  using OnConnectHook = std::function<folly::coro::Task<void>(
+      std::shared_ptr<moxygen::MoQSession>,
+      std::shared_ptr<logging::AccessLogSessionContext> accessLogContext
+  )>;
   using OnDisconnectHook = std::function<void(std::shared_ptr<moxygen::MoQSession>)>;
 
   // publishHandler and subscribeHandler are both set or both null.
@@ -85,6 +93,11 @@ public:
 
   // Takes effect on the next connect; 0 is unlimited.
   void setSubscriptionBufferBytes(uint64_t bytes) { subscriptionBufferBytes_ = bytes; }
+  // Takes effect on the next connect.
+  void setAccessLog(std::shared_ptr<logging::AccessLog> log, std::string service) {
+    accessLog_ = std::move(log);
+    accessLogService_ = std::move(service);
+  }
 
   // Initiates the first connection to the upstream server.
   folly::coro::Task<void> start();
@@ -233,6 +246,9 @@ private:
   // The backend that chooses each session's routing. Null gives plain routing.
   const PeeringBackend* peering_;
   uint64_t subscriptionBufferBytes_{0};
+  std::shared_ptr<logging::AccessLog> accessLog_;
+  std::string accessLogService_;
+  std::shared_ptr<logging::AccessLogSessionContext> accessLogContext_;
   bool stopped_{false};
 
   // Connection gating: when Connecting, operations co_await this

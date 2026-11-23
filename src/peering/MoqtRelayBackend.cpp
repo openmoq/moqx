@@ -68,9 +68,12 @@ void MoqtRelayBackend::startUpstream(
   // The hooks run on the upstream session's executor. The context keeps this backend until after
   // stop() and the shutdown drain, so neither the hooks nor the work they post outlive it. A
   // suspended handshake depends on its session's close failing it during that drain.
-  auto onConnect = [this,
-                    relayExec](std::shared_ptr<MoQSession> session) -> folly::coro::Task<void> {
-    auto upstream = SessionParticipant::makeParticipant(session, relayExec, this);
+  auto onConnect = [this, relayExec](
+                       std::shared_ptr<MoQSession> session,
+                       std::shared_ptr<logging::AccessLogSessionContext> accessLogContext
+                   ) -> folly::coro::Task<void> {
+    auto upstream =
+        SessionParticipant::makeParticipant(session, relayExec, this, std::move(accessLogContext));
     if (relayExec) {
       co_return co_await folly::coro::co_withExecutor(
           folly::getKeepAliveToken(relayExec),
@@ -104,6 +107,7 @@ void MoqtRelayBackend::startUpstream(
       this
   );
   provider->setSubscriptionBufferBytes(subscriptionBufferBytes_);
+  provider->setAccessLog(accessLog_, accessLogService_);
   upstreams_.push_back(provider);
 
   // Eagerly connect so the peering handshake fires before any subscribers

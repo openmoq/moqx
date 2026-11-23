@@ -108,7 +108,7 @@ void MoqxQmuxRelayServer::start(const folly::SocketAddress& /*addr*/) {
 }
 
 void MoqxQmuxRelayServer::onNewSession(std::shared_ptr<MoQSession> clientSession) {
-  context_->onNewSession(std::move(clientSession));
+  context_->onNewSession(listenerMatcher_, std::move(clientSession));
 }
 
 void MoqxQmuxRelayServer::terminateClientSession(std::shared_ptr<MoQSession> session) {
@@ -124,6 +124,7 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxQmuxRelayServer::validat
   // Base class format validation (lives on MoQServerBase).
   auto base = MoQQmuxServer::validateAuthority(clientSetup, negotiatedVersion, session);
   if (!base.hasValue()) {
+    context_->onSetupRejected(listenerMatcher_, session, base.error());
     return base;
   }
   return context_
@@ -134,7 +135,7 @@ std::shared_ptr<MoQSession> MoqxQmuxRelayServer::createSession(
     folly::MaybeManagedPtr<proxygen::WebTransport> wt,
     std::shared_ptr<MoQExecutor> executor
 ) {
-  return std::make_shared<MoqxRelaySession>(
+  return MoqxRelaySession::make(
       listenerMatcher_.name(),
       folly::MaybeManagedPtr<proxygen::WebTransport>(std::move(wt)),
       *this,
