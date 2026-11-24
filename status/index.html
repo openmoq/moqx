@@ -161,6 +161,18 @@
     <canvas id="chart-overview-latency-16mbps"></canvas>
   </div>
   <div class="card">
+    <h3>1 Mbps · p99 latency (ms)</h3>
+    <canvas id="chart-overview-p99-1mbps"></canvas>
+  </div>
+  <div class="card">
+    <h3>4 Mbps · p99 latency (ms)</h3>
+    <canvas id="chart-overview-p99-4mbps"></canvas>
+  </div>
+  <div class="card">
+    <h3>16 Mbps · p99 latency (ms)</h3>
+    <canvas id="chart-overview-p99-16mbps"></canvas>
+  </div>
+  <div class="card">
     <h3>1 Mbps · RSS per session (KB)</h3>
     <canvas id="chart-overview-rss-session-1mbps"></canvas>
   </div>
@@ -190,6 +202,18 @@
   <div class="card">
     <h3>Avg Latency (ms)</h3>
     <canvas id="chart-latency"></canvas>
+  </div>
+  <div class="card">
+    <h3>p95 Latency (ms)</h3>
+    <canvas id="chart-latency-p95"></canvas>
+  </div>
+  <div class="card">
+    <h3>p99 Latency (ms)</h3>
+    <canvas id="chart-latency-p99"></canvas>
+  </div>
+  <div class="card">
+    <h3>Max Latency (ms)</h3>
+    <canvas id="chart-latency-max"></canvas>
   </div>
   <div class="card">
     <h3>Delivery Success (%)</h3>
@@ -234,6 +258,9 @@ const CHARTS = [
   ['chart-throughput', 'throughput_mbps', CHART_COLORS.primary],
   ['chart-throughput-core', 'throughput_per_core_mbps', CHART_COLORS.primary],
   ['chart-latency', 'avg_latency_ms', CHART_COLORS.secondary],
+  ['chart-latency-p95', 'latency_p95_ms', CHART_COLORS.secondary],
+  ['chart-latency-p99', 'latency_p99_ms', CHART_COLORS.secondary],
+  ['chart-latency-max', 'latency_max_ms', CHART_COLORS.danger],
   ['chart-delivery', 'delivery_success_pct', CHART_COLORS.secondary],
   ['chart-resets', 'total_resets', CHART_COLORS.danger],
   ['chart-cpu', 'relay_cpu_pct', CHART_COLORS.warning],
@@ -468,6 +495,7 @@ function renderDashboard() {
       ['-cpu', 'relay_cpu_pct'],
       ['', 'throughput_per_core_mbps'],
       ['-latency', 'avg_latency_ms'],
+      ['-p99', 'latency_p99_ms'],
       ['-rss-session', 'rss_per_session_kb'],
     ]) {
       for (const profile of PROFILE_IDS) {
@@ -529,6 +557,7 @@ function renderRunSummary(stackRuns) {
         <td class="${betterClass(stack, 'relay_cpu_pct', false)}">${results.relay_cpu_pct == null ? '—' : `${results.relay_cpu_pct}%`}</td>
         <td class="${betterClass(stack, 'relay_rss_mb', false)}">${results.relay_rss_mb ?? '—'} MB</td>
         <td class="${betterClass(stack, 'avg_latency_ms', false)}">${results.avg_latency_ms ?? '—'} ms</td>
+        <td class="${betterClass(stack, 'latency_p99_ms', false)}">${results.latency_p99_ms ?? '—'} ms</td>
         <td class="${betterClass(stack, 'rss_per_session_kb', false)}">${results.rss_per_session_kb ?? '—'} KB</td>
         <td>${commit ? `<a class="commit-link" href="${REPO_URL}/commit/${commit}">${commitLabel}</a>` : commitLabel}</td>
       </tr>
@@ -536,7 +565,7 @@ function renderRunSummary(stackRuns) {
   }).join('');
   container.innerHTML = `
     <table class="stack-comparison">
-      <thead><tr><th scope="col">Stack / CC</th><th scope="col">Throughput</th><th scope="col">Mbps / core</th><th scope="col">Peak subscribers</th><th scope="col">Relay CPU</th><th scope="col">RSS</th><th scope="col">Average latency</th><th scope="col">RSS / session</th><th scope="col">Latest commit</th></tr></thead>
+      <thead><tr><th scope="col">Stack / CC</th><th scope="col">Throughput</th><th scope="col">Mbps / core</th><th scope="col">Peak subscribers</th><th scope="col">Relay CPU</th><th scope="col">RSS</th><th scope="col">Average latency</th><th scope="col">p99 latency</th><th scope="col">RSS / session</th><th scope="col">Latest commit</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>
   `;
@@ -549,6 +578,7 @@ function renderOverviewSummary(branchData) {
     ['relay_cpu_pct', 'Relay CPU', '%', false],
     ['throughput_per_core_mbps', 'TP/core', 'Mbps', true],
     ['avg_latency_ms', 'Average latency', 'ms', false],
+    ['latency_p99_ms', 'p99 latency', 'ms', false],
     ['rss_per_session_kb', 'RSS per session', 'KB', false],
   ];
   const latestRunsByProfile = new Map(PROFILE_IDS.map(profile => [
