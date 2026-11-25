@@ -77,7 +77,7 @@ static_assert(
     "CacheConfig changed — update serializeCache()"
 );
 static_assert(
-    rfl::internal::num_fields<AuthConfig> == 12,
+    rfl::internal::num_fields<AuthConfig> == 13,
     "AuthConfig changed — update serializeAuth()"
 );
 static_assert(

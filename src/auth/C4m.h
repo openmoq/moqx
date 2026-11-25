@@ -7,6 +7,7 @@
 #pragma once
 
 #include "auth/Action.h"
+#include "auth/Dpop.h"
 
 #include <chrono>
 #include <optional>
@@ -65,6 +66,10 @@ struct Grants {
   // (draft-02 section 3). Enforcement needs connection identity and lives in the verifier.
   std::optional<std::string> cti;
   bool replayProtected{false};
+  // cnf + catdpop: every action using this token needs a matching DPoP proof (section 4).
+  std::optional<DpopRequirement> dpop;
+  // SHA-256 of the token as presented (proof "ath"); set by the verifier, not the codec.
+  std::string tokenHash;
   // moqt-reval: while an action this token authorizes is ongoing, the relay re-checks the token at
   // least this often and ends the action once the token is no longer acceptable. Zero = never.
   std::chrono::seconds revalidateEvery{0};

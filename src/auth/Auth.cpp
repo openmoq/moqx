@@ -101,11 +101,90 @@ uint64_t newConnectionId() {
 folly::Expected<Grants, AuthError>
 AuthTokenVerifier::verify(const AuthToken& token, uint64_t connectionId) const {
   auto result = verifySignature(token);
-  if (result.hasValue() && result.value().replayProtected &&
+  if (result.hasValue() && result.value().dpop) {
+    try {
+      result.value().tokenHash = sha256(token.tokenValue);
+    } catch (const C4mError&) {
+      return folly::makeUnexpected(AuthError::Malformed);
+    }
+  }
+  // A token that also needs a DPoP proof is bound once the proof validates (applyDpop), so
+  // someone holding only the token cannot claim the binding first and lock out its holder.
+  if (result.hasValue() && result.value().replayProtected && !result.value().dpop &&
       !bindReplay(result.value(), connectionId)) {
     return folly::makeUnexpected(AuthError::Replayed);
   }
   return result;
+}
+
+bool AuthTokenVerifier::noteProofCti(
+    const Grants& grants,
+    const std::string& cti,
+    std::chrono::system_clock::time_point expiresAt
+) const {
+  std::string key = grants.tokenHash + cti;
+  const auto now = std::chrono::system_clock::now();
+  std::lock_guard lock(proofMutex_);
+  if (auto it = proofCtis_.find(key); it != proofCtis_.end()) {
+    if (it->second > now) {
+      return false;
+    }
+    it->second = expiresAt;
+    return true;
+  }
+  if (proofCtis_.size() >= kMaxReplayEntries) {
+    std::erase_if(proofCtis_, [&](const auto& e) { return e.second <= now; });
+    if (proofCtis_.size() >= kMaxReplayEntries) {
+      XLOG(WARN) << "DPoP replay state full; refusing proof";
+      return false;
+    }
+  }
+  proofCtis_.emplace(std::move(key), expiresAt);
+  return true;
+}
+
+std::vector<Grants> AuthTokenVerifier::applyDpop(
+    const std::vector<Grants>& grants,
+    const Parameters& params,
+    const DpopContext& context,
+    uint64_t connectionId
+) const {
+  std::vector<Grants> usable;
+  std::vector<AuthToken> proofs;
+  bool proofsLoaded = false;
+  const auto now = std::chrono::system_clock::now();
+  for (const auto& grant : grants) {
+    if (!grant.dpop) {
+      usable.push_back(grant);
+      continue;
+    }
+    if (!proofsLoaded) {
+      proofs = findAuthTokens(params, config_.dpopTokenType);
+      if (proofs.size() > config_.maxTokensPerMessage) {
+        proofs.clear(); // Over the cap: treat as no usable proof rather than verify them all.
+      }
+      proofsLoaded = true;
+    }
+    for (const auto& proof : proofs) {
+      try {
+        // The proof names its token by hash, so only the matching grant's key will pass.
+        const auto verified =
+            verifyDpopProof(proof.tokenValue, grant.tokenHash, *grant.dpop, context, now);
+        if (grant.dpop->detectReplay &&
+            !noteProofCti(grant, verified.cti, verified.issuedAt + grant.dpop->window * 2)) {
+          continue;
+        }
+        if (grant.replayProtected && !bindReplay(grant, connectionId)) {
+          break; // Bound to another connection: no other proof can make it usable here.
+        }
+        usable.push_back(grant);
+        break;
+      } catch (const C4mError&) {
+        // Not a proof for this token; try the next one.
+      }
+    }
+  }
+  return usable;
 }
 
 // Binds a signature-verified, replay-protected token to its first connection. Binding happens
@@ -229,6 +308,16 @@ bool AuthTokenVerifier::allowsAnonymous(
   return false;
 }
 
+// Bearer tokens and DPoP proofs both count toward max_tokens_per_message.
+static size_t
+countAuthTokens(const AuthTokenVerifier& verifier, const Parameters& params, size_t bearers) {
+  size_t proofs = 0;
+  if (verifier.dpopTokenType() != verifier.tokenType()) {
+    proofs = findAuthTokens(params, verifier.dpopTokenType()).size();
+  }
+  return bearers + proofs;
+}
+
 folly::Expected<std::shared_ptr<const std::vector<Grants>>, AuthError> authenticateSetup(
     const AuthTokenVerifier& verifier,
     const Parameters& setupParams,
@@ -239,12 +328,20 @@ folly::Expected<std::shared_ptr<const std::vector<Grants>>, AuthError> authentic
   }
 
   auto tokens = findAuthTokens(setupParams, verifier.tokenType());
-  if (tokens.size() > verifier.maxTokensPerMessage()) {
-    XLOG(WARN) << "authenticateSetup: " << tokens.size() << " setup tokens exceeds "
+  if (const auto total = countAuthTokens(verifier, setupParams, tokens.size());
+      total > verifier.maxTokensPerMessage()) {
+    XLOG(WARN) << "authenticateSetup: " << total << " setup tokens exceeds "
                << "max_tokens_per_message=" << verifier.maxTokensPerMessage() << "; rejecting";
     return folly::makeUnexpected(AuthError::TooManyTokens);
   }
   auto [verifiedGrants, firstError] = verifyTokens(verifier, tokens, connectionId);
+  // A cnf-bound token only counts when this SETUP carries a proof for it (section 4.3).
+  verifiedGrants = verifier.applyDpop(
+      verifiedGrants,
+      setupParams,
+      DpopContext{Action::ClientSetup, {}, {}},
+      connectionId
+  );
 
   if (verifier.requireSetupToken()) {
     if (tokens.empty()) {
@@ -274,8 +371,9 @@ folly::Expected<AuthDecision, AuthError> authorize(
   }
 
   auto tokens = findAuthTokens(params, verifier.tokenType());
-  if (tokens.size() > verifier.maxTokensPerMessage()) {
-    XLOG(WARN) << "authorize: " << tokens.size() << " request tokens exceeds "
+  if (const auto total = countAuthTokens(verifier, params, tokens.size());
+      total > verifier.maxTokensPerMessage()) {
+    XLOG(WARN) << "authorize: " << total << " request tokens exceeds "
                << "max_tokens_per_message=" << verifier.maxTokensPerMessage()
                << " for action=" << static_cast<uint64_t>(action) << "; rejecting";
     return folly::makeUnexpected(AuthError::TooManyTokens);
@@ -292,17 +390,33 @@ folly::Expected<AuthDecision, AuthError> authorize(
                << static_cast<uint64_t>(action) << " (allow_request_token_override is disabled)";
   }
 
+  // cnf-bound grants, from this message or the session, need a proof for this exact action.
+  DpopContext dpopContext{
+      action,
+      ns.trackNamespace,
+      trackName ? std::optional<std::string>(*trackName) : std::nullopt
+  };
+  requestGrants = verifier.applyDpop(requestGrants, params, dpopContext, connectionId);
+  std::vector<Grants> dpopSessionGrants;
+  const std::vector<Grants>* sessionPool = &sessionGrants;
+  if (std::any_of(sessionGrants.begin(), sessionGrants.end(), [](const Grants& g) {
+        return g.dpop.has_value();
+      })) {
+    dpopSessionGrants = verifier.applyDpop(sessionGrants, params, dpopContext, connectionId);
+    sessionPool = &dpopSessionGrants;
+  }
+
   // Any one of three sources is sufficient.
   const auto now = std::chrono::system_clock::now();
   bool permitted = false;
   if (trackName) {
     const FullTrackName ftn{ns, std::string(*trackName)};
     permitted = allowsAny(requestGrants, action, ftn, now) ||
-                allowsAny(sessionGrants, action, ftn, now) ||
+                allowsAny(*sessionPool, action, ftn, now) ||
                 verifier.allowsAnonymous(action, ns, trackName);
   } else {
     permitted = allowsAny(requestGrants, action, ns, now) ||
-                allowsAny(sessionGrants, action, ns, now) ||
+                allowsAny(*sessionPool, action, ns, now) ||
                 verifier.allowsAnonymous(action, ns, std::nullopt);
   }
   if (!permitted) {
@@ -336,7 +450,7 @@ folly::Expected<AuthDecision, AuthError> authorize(
     }
   };
   consider(requestGrants);
-  consider(sessionGrants);
+  consider(*sessionPool);
   if (unconditional) {
     revalidation.reset();
   }

@@ -223,6 +223,8 @@ struct AuthConfig {
   bool requireSetupToken{true};
   bool allowRequestTokenOverride{true};
   bool strictClaims{false};
+  // AUTHORIZATION_TOKEN type carrying DPoP proofs (kDefaultDpopTokenType).
+  uint64_t dpopTokenType{17};
   // Smallest moqt-reval interval accepted; 0 rejects every token carrying moqt-reval.
   uint32_t minRevalidationSeconds{5};
   std::vector<std::string> audiences; // CWT aud values this relay accepts; empty = reject aud
