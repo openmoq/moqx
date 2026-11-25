@@ -57,11 +57,13 @@ public:
   bool hasPending() const { return !lines_.empty(); }
   // flush() does not write before this time.
   std::chrono::steady_clock::time_point retryAt() const { return retryAt_; }
+  // A retrying sink flushes at retryAt(), whatever its batch size.
+  bool retrying() const { return retryAt_ != std::chrono::steady_clock::time_point{}; }
 
-  folly::coro::Task<void> flush();
+  folly::coro::Task<AccessLogWriteStatus> flush();
   void reopen();
-  // Writes a final LOG_DROPPED line if needed, flushes once, counts what is left as
-  // dropped, and closes the transport.
+  // Writes a final LOG_DROPPED line if needed, flushes until the output drains or a write
+  // fails, counts what is left as dropped, and closes the transport.
   folly::coro::Task<void> close(const AccessLogRelayInfo& relayInfo, uint64_t queueDropped);
 
 private:

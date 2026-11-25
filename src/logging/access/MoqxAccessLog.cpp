@@ -118,6 +118,7 @@ void MoqxAccessLog::stop(std::chrono::steady_clock::time_point deadline) {
   state_.store(State::Stopped, std::memory_order_release);
   stopDeadline_ = deadline;
   queue_.enqueue(Item{ItemKind::Stop, {}});
+  flushCancel_.requestCancellation();
   auto remaining = deadline + kStopGrace - std::chrono::steady_clock::now();
   if (!std::move(done_).wait(std::chrono::ceil<std::chrono::milliseconds>(
           std::max(remaining, std::chrono::steady_clock::duration::zero())
@@ -244,7 +245,8 @@ std::optional<std::chrono::steady_clock::time_point> MoqxAccessLog::nextFlush() 
     if (!sink.hasPending()) {
       continue;
     }
-    auto due = sink.batchFull() ? now : lastFlush_[i] + sink.options().flushInterval;
+    auto due =
+        sink.batchFull() || sink.retrying() ? now : lastFlush_[i] + sink.options().flushInterval;
     due = std::max(due, sink.retryAt());
     next = next ? std::min(*next, due) : due;
   }
@@ -259,7 +261,8 @@ folly::coro::Task<void> MoqxAccessLog::flushDue() {
       lastFlush_[i] = now;
       continue;
     }
-    if (sink.batchFull() || now - lastFlush_[i] >= sink.options().flushInterval) {
+    if (sink.batchFull() || sink.retrying() ||
+        now - lastFlush_[i] >= sink.options().flushInterval) {
       co_await sink.flush();
       lastFlush_[i] = now;
     }
@@ -357,7 +360,9 @@ folly::coro::Task<void> MoqxAccessLog::run() {
         co_return;
       }
     }
-    co_await flushDue();
+    co_await folly::coro::co_awaitTry(
+        folly::coro::co_withCancellation(flushCancel_.getToken(), flushDue())
+    );
   }
 }
 
