@@ -140,7 +140,7 @@ install_ubuntu() {
         libdouble-conversion-dev libevent-dev libsodium-dev libzstd-dev \
         libboost-dev libboost-context-dev libboost-filesystem-dev \
         libboost-program-options-dev libboost-regex-dev libboost-thread-dev \
-        libfmt-dev zlib1g-dev libc-ares-dev libbrotli-dev python3 gperf \
+        libfmt-dev zlib1g-dev libc-ares-dev libbrotli-dev libatomic1 python3 gperf \
         jq curl
     ensure_recent_cmake
 }
@@ -151,7 +151,7 @@ install_fedora() {
         gcc gcc-c++ make cmake git pkgconf-pkg-config ccache \
         openssl-devel libunwind-devel glog-devel gflags-devel \
         double-conversion-devel libevent-devel libsodium-devel libzstd-devel \
-        boost-devel fmt-devel zlib-devel c-ares-devel brotli-devel python3 gperf \
+        boost-devel fmt-devel zlib-devel c-ares-devel brotli-devel libatomic python3 gperf \
         jq curl
     if ! command -v ninja &>/dev/null; then
         $SUDO dnf install -y ninja-build 2>/dev/null || \

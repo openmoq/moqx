@@ -72,7 +72,7 @@ FROM debian:bookworm-slim AS interop-client
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libunwind8 libsodium23 libboost-context1.74.0 \
         libgoogle-glog0v6 libgflags2.2 libdouble-conversion3 \
-        libevent-2.1-7 \
+        libevent-2.1-7 libatomic1 \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
@@ -94,7 +94,7 @@ FROM debian:bookworm-slim AS relay-base
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libunwind8 libsodium23 libboost-context1.74.0 \
         libgoogle-glog0v6 libgflags2.2 libdouble-conversion3 \
-        libevent-2.1-7 \
+        libevent-2.1-7 libatomic1 \
         libjemalloc2 \
         curl gettext-base \
     && rm -rf /var/lib/apt/lists/*
