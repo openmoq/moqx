@@ -19,6 +19,8 @@ YAML file  →  ParsedConfig  →  resolveConfig()  →  Config (via ResolvedCon
 
 The split between `ParsedConfig` and `Config` exists because the YAML-facing shape (flat fields, optionals, description annotations) differs from what the application needs (e.g. `folly::SocketAddress`, `std::variant<Insecure, TlsConfig>`).
 
+`loadAndResolveConfig(configPath, strictConfig)` (`ConfigInit.h`) is the shared entry point that runs stages 1 and 2 back to back: `loadConfig()` (exceptions are caught) followed by `resolveConfig()`. It does no printing and never exits; on failure it returns `folly::Expected` holding a `std::vector<std::string>` of error lines. A load or resolve failure yields a single message. With `strictConfig` (`--strict_config`), any warning collected by `resolveConfig()` is also treated as an error: the result is a header line (`Config warnings treated as errors (--strict_config):`) followed by one entry per warning. Without strict mode, warnings are kept in `ResolvedConfig::warnings`. `handleConfigSubcommand()` calls it and does the printing/exit-code handling (`validate-config` prints the warnings and `Config is valid.`).
+
 ## Key files
 
 | File | Role |
@@ -30,8 +32,8 @@ The split between `ParsedConfig` and `Config` exists because the YAML-facing sha
 | `src/config/Loader.cpp` | Load & parse implementation |
 | `src/config/loader/ConfigResolver.h` | `resolveConfig()` |
 | `src/config/ConfigResolver.cpp` | Validation & resolution logic |
-| `src/config/loader/ConfigInit.h` | CLI subcommand handling (`validate-config`, `dump-config-schema`) |
-| `src/config/ConfigInit.cpp` | Subcommand orchestration |
+| `src/config/loader/ConfigInit.h` | CLI subcommand handling (`validate-config`, `dump-config-schema`) and `loadAndResolveConfig()` |
+| `src/config/ConfigInit.cpp` | Subcommand orchestration; shared load-and-resolve step (`loadAndResolveConfig()`) |
 | `src/config/loader/StringLiteral.h` | Compile-time string utilities for descriptions |
 | `config.example.yaml` | Example config file |
 | `config.schema.json` | Generated JSON schema, checked by `ConfigSchema.CommittedSchemaIsCurrent` |

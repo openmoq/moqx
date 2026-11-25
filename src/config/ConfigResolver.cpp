@@ -25,6 +25,7 @@
 
 #include "auth/Action.h"
 #include "config/Pkcs12.h"
+#include "config/ServiceRoutes.h"
 #include "logging/access/AccessLogTemplate.h"
 #include "logging/access/TemplateEncoder.h"
 
@@ -778,7 +779,7 @@ void validateService(
     const ParsedServiceConfig& svc,
     const ParsedConfig& config,
     const std::vector<std::string>& serviceListeners,
-    std::map<std::pair<std::string, std::string>, std::string>& ruleOwners,
+    RuleOwners& ruleOwners,
     std::unordered_map<std::string, ParsedCacheConfig>& mergedCaches,
     std::unordered_map<std::string, ParsedAuthConfig>& mergedAuths,
     std::vector<std::string>& errors,
@@ -807,13 +808,7 @@ void validateService(
       continue;
     }
     // Rules of different services only collide when both are reachable on the same listener.
-    std::map<std::string, std::vector<std::string>> clashes; // other service → shared listeners
-    for (const auto& listener : serviceListeners) {
-      auto [it, inserted] = ruleOwners.try_emplace({listener, key}, name);
-      if (!inserted) {
-        clashes[it->second].push_back(listener);
-      }
-    }
+    auto clashes = claimRule(ruleOwners, name, serviceListeners, key);
     for (const auto& [other, shared] : clashes) {
       errors.push_back(
           "Duplicate (authority, path) combination on listener" +
@@ -1651,7 +1646,7 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
   }
 
   // (listener, rule key) → the service that holds the rule there
-  std::map<std::pair<std::string, std::string>, std::string> ruleOwners;
+  RuleOwners ruleOwners;
   std::unordered_map<std::string, std::vector<std::string>> serviceListeners;
   std::unordered_set<std::string> boundListeners;
   std::unordered_map<std::string, ParsedCacheConfig> mergedCaches;
@@ -1816,14 +1811,20 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
   }
 
   // Resolve relayID: use configured value or generate a random hex string
-  std::string relayID = config.relay_id.value().value_or(generateRelayID());
+  const auto& configuredRelayID = config.relay_id.value();
+  const bool relayIdGenerated = !configuredRelayID.has_value();
+  std::string relayID = configuredRelayID.value_or(generateRelayID());
 
   std::optional<ClusterConfig> cluster;
+  bool hopIdGenerated = false;
   const auto& parsedCluster = config.cluster.value();
   if (!parsedCluster) {
+    hopIdGenerated = true;
     cluster = ClusterConfig{.hopID = generateHopID()};
   } else if (parsedCluster->enabled.value().value_or(true)) {
-    cluster = ClusterConfig{.hopID = parsedCluster->hop_id.value().value_or(generateHopID())};
+    const auto& configuredHopID = parsedCluster->hop_id.value();
+    hopIdGenerated = !configuredHopID.has_value();
+    cluster = ClusterConfig{.hopID = configuredHopID.value_or(generateHopID())};
   }
 
   // Resolve logging config
@@ -1904,6 +1905,8 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
               .cluster = cluster,
           },
       .warnings = std::move(warnings),
+      .relayIdGenerated = relayIdGenerated,
+      .hopIdGenerated = hopIdGenerated,
   };
 }
 

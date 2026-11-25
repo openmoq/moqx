@@ -16,6 +16,9 @@ namespace openmoq::moqx::config {
 struct ResolvedConfig {
   Config config;
   std::vector<std::string> warnings;
+  // True when the value was generated rather than set in the file.
+  bool relayIdGenerated;
+  bool hopIdGenerated;
 };
 
 } // namespace openmoq::moqx::config

@@ -24,6 +24,7 @@
 // helper in ConfigSerializer.h (the single source of truth for the /config dump).
 // A field-count static_assert in test/config/ConfigSerializerTest.cpp breaks the
 // build until you do. See docs/dev/config.md ("How to add a new config field").
+
 namespace openmoq::moqx::config {
 
 // Resolved, in-memory TLS material produced by transcoding a PKCS#12 bundle
@@ -32,6 +33,7 @@ namespace openmoq::moqx::config {
 struct TlsMaterial {
   std::string certChainPem; // leaf + intermediates, concatenated PEM
   std::string keyPem;       // unencrypted private key PEM
+  bool operator==(const TlsMaterial&) const = default;
 };
 
 struct TlsConfig {
@@ -42,9 +44,12 @@ struct TlsConfig {
   // in-memory PEM buffers instead of reading certFile/keyFile from disk.
   // certFile/keyFile are empty in that case.
   std::optional<TlsMaterial> material;
+  bool operator==(const TlsConfig&) const = default;
 };
 
-struct Insecure {};
+struct Insecure {
+  bool operator==(const Insecure&) const = default;
+};
 
 using TlsMode = std::variant<Insecure, TlsConfig>;
 
@@ -56,6 +61,7 @@ struct CacheConfig {
   std::chrono::milliseconds maxCacheDuration{std::chrono::hours(24)}; // cap on any track duration
   std::optional<std::chrono::milliseconds>
       defaultMaxCacheDuration; // nullopt = use maxCacheDuration; 0ms = opt-in only
+  bool operator==(const CacheConfig&) const = default;
 };
 
 // ProxygenQmux carries MoQ over QMUX-on-TCP + Fizz TLS, not QUIC/UDP.
@@ -75,6 +81,7 @@ struct QuicConfig {
   uint8_t defaultStreamPriority{2};   // default stream priority
   uint8_t defaultDatagramPriority{1}; // default datagram priority
   std::string ccAlgo{"bbr"};          // congestion control algorithm name
+  bool operator==(const QuicConfig&) const = default;
 };
 
 // mvfst-specific transport tunables organised by congestion-control algorithm.
@@ -117,6 +124,7 @@ struct MvfstConfig {
     bool enableAckAggregationInStartup{false};
     bool probeRttDisabledIfAppLimited{false};
     bool drainToTarget{false};
+    bool operator==(const BBR&) const = default;
   };
 
   // BBR2 congestion control tunables (BBR2-specific fields only;
@@ -133,6 +141,7 @@ struct MvfstConfig {
     float overrideCruiseCwndGain{-1.0f};    // -1 = use BBR2 default
     float overrideStartupPacingGain{-1.0f}; // -1 = use BBR2 default
     float overrideBwShortBeta{0.0f};
+    bool operator==(const BBR2&) const = default;
   };
 
   // Cubic congestion control tunables.
@@ -140,17 +149,20 @@ struct MvfstConfig {
     bool additiveIncreaseAfterHystart{false};
     bool onlyGrowCwndWhenLimited{false};
     bool leaveHeadroomForCwndLimited{false};
+    bool operator==(const Cubic&) const = default;
   };
 
   // Copa congestion control tunables.
   struct Copa {
     // Target utilisation sensitivity (moqx default: 0.05).
     double deltaParam{0.05};
+    bool operator==(const Copa&) const = default;
   };
 
   // L4S tunables (usable alongside any ECN-aware CC algorithm).
   struct L4S {
     float ceTarget{0.0f}; // 0 = disabled
+    bool operator==(const L4S&) const = default;
   };
 
   // UDP socket send/receive buffer size in bytes. 0 = use MoQServer default (1 MB).
@@ -166,6 +178,7 @@ struct MvfstConfig {
   Cubic cubic;
   Copa copa;
   L4S l4s;
+  bool operator==(const MvfstConfig&) const = default;
 };
 
 struct ListenerConfig {
@@ -177,15 +190,18 @@ struct ListenerConfig {
   QuicStack quicStack{QuicStack::Mvfst};
   QuicConfig quic;   // merged from listener_defaults.quic + per-listener quic override
   MvfstConfig mvfst; // merged from listener_defaults.mvfst + per-listener mvfst override
+  bool operator==(const ListenerConfig&) const = default;
 };
 
 struct UpstreamTlsConfig {
   bool insecure{false};
   std::optional<std::string> caCertFile; // mutually exclusive with insecure=true
+  bool operator==(const UpstreamTlsConfig&) const = default;
 };
 
 struct ClusterConfig {
   uint64_t hopID{0}; // 0 is anonymous
+  bool operator==(const ClusterConfig&) const = default;
 };
 
 struct UpstreamConfig {
@@ -194,12 +210,14 @@ struct UpstreamConfig {
   std::chrono::milliseconds connectTimeout{5000};
   std::chrono::milliseconds idleTimeout{5000};
   uint64_t relayCost{1}; // declared as RELAY_COST; 0 is free
+  bool operator==(const UpstreamConfig&) const = default;
 };
 
 struct AuthConfig {
   struct HmacKey {
     std::string id;
     std::string secret;
+    bool operator==(const HmacKey&) const = default;
   };
 
   // A statically-granted scope applied to every request, regardless of
@@ -211,6 +229,7 @@ struct AuthConfig {
     auth::MatchRuleType namespaceMatchMode{auth::MatchRuleType::Exact};
     std::optional<std::string> trackName; // nullopt = match any track
     auth::MatchRuleType trackMatchMode{auth::MatchRuleType::Exact};
+    bool operator==(const AnonymousScope&) const = default;
   };
 
   bool enabled{false};
@@ -221,6 +240,7 @@ struct AuthConfig {
   bool strictClaims{false};
   std::vector<AnonymousScope> anonymousClaim; // empty = no anonymous access (default)
   uint32_t maxTokensPerMessage{0};
+  bool operator==(const AuthConfig&) const = default;
 };
 
 // How one service's sessions reach one access log sink.
@@ -229,6 +249,7 @@ struct AccessLogSinkSelectionConfig {
   std::vector<std::string> events;      // class and event names; empty = every class
   std::vector<std::string> peerClasses; // empty = all
   bool errorsOnly{false};
+  bool operator==(const AccessLogSinkSelectionConfig&) const = default;
 };
 
 struct AccessLogServiceConfig {
@@ -236,28 +257,36 @@ struct AccessLogServiceConfig {
   double periodicSample{1.0};
   uint32_t periodicIntervalMs{5000};
   std::vector<AccessLogSinkSelectionConfig> sinks;
+  bool operator==(const AccessLogServiceConfig&) const = default;
 };
 
 struct ServiceConfig {
   struct MatchEntry {
     struct ExactAuthority {
       std::string value;
+      bool operator==(const ExactAuthority&) const = default;
     };
     struct WildcardAuthority {
       std::string pattern; // e.g. "*.example.com"
+      bool operator==(const WildcardAuthority&) const = default;
     };
-    struct AnyAuthority {};
+    struct AnyAuthority {
+      bool operator==(const AnyAuthority&) const = default;
+    };
 
     struct ExactPath {
       std::string value;
+      bool operator==(const ExactPath&) const = default;
     };
     struct PrefixPath {
       std::string value;
+      bool operator==(const PrefixPath&) const = default;
     };
     using PathMatcher = std::variant<ExactPath, PrefixPath>;
 
     std::variant<ExactAuthority, WildcardAuthority, AnyAuthority> authority;
     PathMatcher path; // PrefixPath{"/"} matches any path
+    bool operator==(const MatchEntry&) const = default;
   };
 
   std::vector<MatchEntry> match;
@@ -269,6 +298,7 @@ struct ServiceConfig {
   std::vector<UpstreamConfig> upstreams; // exclusive with upstream
   uint32_t maxSubscriptionBufferKb{0};   // 0 = unlimited
   AccessLogServiceConfig accessLog;
+  bool operator==(const ServiceConfig&) const = default;
 };
 
 inline uint64_t subscriptionBufferBytes(const ServiceConfig& svc) {
@@ -281,21 +311,25 @@ struct AdminConfig {
   bool trackMetricsEnabled{false};
   uint32_t trackMetricsLimit{10};
   uint32_t trackMetricsMaxLimit{1000};
+  bool operator==(const AdminConfig&) const = default;
 };
 
 struct MLogConfig {
   std::string dir;        // output directory; empty = disabled
   float sampleRate{1.0f}; // 1.0 = log all sessions, 0.0 = none
+  bool operator==(const MLogConfig&) const = default;
 };
 
 struct QLogConfig {
   std::string dir;        // output directory; empty = disabled
   float sampleRate{1.0f}; // fraction of connections to log (0.0–1.0); mvfst only
+  bool operator==(const QLogConfig&) const = default;
 };
 
 // Each output type is its own config key, so syslog and OTLP outputs can join the variant.
 struct AccessLogFileOutput {
   std::string path; // "-" = stdout
+  bool operator==(const AccessLogFileOutput&) const = default;
 };
 using AccessLogOutput = std::variant<AccessLogFileOutput>;
 
@@ -307,6 +341,7 @@ struct AccessLogSinkConfig {
   uint32_t flushMs{1000};
   std::map<std::string, std::string> classFormats; // class name -> template
   std::map<std::string, std::string> eventFormats; // event name -> template
+  bool operator==(const AccessLogSinkConfig&) const = default;
 };
 
 struct AccessLogConfig {
@@ -315,12 +350,14 @@ struct AccessLogConfig {
   std::vector<AccessLogSinkConfig> sinks;
   // For sessions without a service.
   AccessLogServiceConfig serviceDefaults;
+  bool operator==(const AccessLogConfig&) const = default;
 };
 
 struct LoggingConfig {
   std::optional<MLogConfig> mlog;
   std::optional<QLogConfig> qlog;
   std::optional<AccessLogConfig> access;
+  bool operator==(const LoggingConfig&) const = default;
 };
 
 struct Config {
