@@ -3,6 +3,231 @@
     "$ref": "#/$defs/openmoq__moqx__config__ParsedConfig",
     "description": "Configuration schema for the moqx relay.",
     "$defs": {
+        "openmoq__moqx__config__ParsedAccessLogBatchConfig": {
+            "type": "object",
+            "properties": {
+                "records": {
+                    "description": "Records per write (default 256)",
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "flush_ms": {
+                    "description": "Longest a record waits for a write, in ms (default 1000)",
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                }
+            },
+            "required": []
+        },
+        "openmoq__moqx__config__ParsedAccessLogFormatConfig": {
+            "type": "object",
+            "properties": {
+                "session": {
+                    "description": "Template for session records",
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "request": {
+                    "description": "Template for request records",
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "periodic": {
+                    "description": "Template for periodic records",
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "event": {
+                    "description": "Per-event templates that replace the class template, keyed by event name",
+                    "anyOf": [
+                        {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                }
+            },
+            "required": []
+        },
+        "openmoq__moqx__config__ParsedAccessLogSampleConfig": {
+            "type": "object",
+            "properties": {
+                "session": {
+                    "description": "Fraction of sessions whose non-error records are written (0.0-1.0, default 1.0)",
+                    "anyOf": [
+                        {
+                            "type": "number"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                }
+            },
+            "required": []
+        },
+        "openmoq__moqx__config__ParsedAccessLogServiceConfig": {
+            "type": "object",
+            "properties": {
+                "sample": {
+                    "description": "Sampling rates",
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/openmoq__moqx__config__ParsedAccessLogSampleConfig"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "sinks": {
+                    "description": "Access log sinks that the sessions' records go to (default: every sink, every class)",
+                    "anyOf": [
+                        {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/$defs/openmoq__moqx__config__ParsedAccessLogSinkSelection"
+                            }
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                }
+            },
+            "required": []
+        },
+        "openmoq__moqx__config__ParsedAccessLogSinkConfig": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Sink name, unique across access log sinks"
+                },
+                "file": {
+                    "description": "Output file; \"-\" writes to stdout",
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "batch": {
+                    "description": "Write batching",
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/openmoq__moqx__config__ParsedAccessLogBatchConfig"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "format": {
+                    "description": "Line templates (default: one per class)",
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/openmoq__moqx__config__ParsedAccessLogFormatConfig"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                }
+            },
+            "required": [
+                "name"
+            ]
+        },
+        "openmoq__moqx__config__ParsedAccessLogSinkSelection": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Sink name, from logging.access"
+                },
+                "events": {
+                    "description": "Record classes (session, request, periodic), messages, and event names to write (default: every class)",
+                    "anyOf": [
+                        {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            }
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "peer_classes": {
+                    "description": "Only write sessions of these peer classes: participant, relay-peer (default: all)",
+                    "anyOf": [
+                        {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            }
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "errors_only": {
+                    "description": "Write only error records (default: false)",
+                    "anyOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                }
+            },
+            "required": [
+                "name"
+            ]
+        },
         "openmoq__moqx__config__ParsedAdminConfig": {
             "type": "object",
             "properties": {
@@ -978,6 +1203,45 @@
                             "type": "null"
                         }
                     ]
+                },
+                "access_vars": {
+                    "description": "Access log template variables, such as region or pop, keyed by name",
+                    "anyOf": [
+                        {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "access_queue_limit": {
+                    "description": "Access log records queued for the writer before new ones are dropped (default 65536)",
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "access": {
+                    "description": "Access log sinks",
+                    "anyOf": [
+                        {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/$defs/openmoq__moqx__config__ParsedAccessLogSinkConfig"
+                            }
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
                 }
             },
             "required": []
@@ -1668,6 +1932,17 @@
                             "type": "null"
                         }
                     ]
+                },
+                "access_log": {
+                    "description": "Access log settings; sample overrides service_defaults key by key, sinks replaces its list",
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/openmoq__moqx__config__ParsedAccessLogServiceConfig"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
                 }
             },
             "required": [
@@ -1798,6 +2073,17 @@
                     "anyOf": [
                         {
                             "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "access_log": {
+                    "description": "Access log settings for services, and for sessions without a service",
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/openmoq__moqx__config__ParsedAccessLogServiceConfig"
                         },
                         {
                             "type": "null"
