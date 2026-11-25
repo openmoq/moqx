@@ -590,7 +590,7 @@ std::string signC4mToken(
   const auto input = cryptoInput(algorithmId, header, payload);
   auto signature = algorithm.sign(asBytes(input));
   if (algorithmId == -7) {
-    // Catapult uses DER internally; COSE ES256 requires fixed-width R || S.
+    // Catapult v1.0.0 uses DER internally; COSE ES256 requires fixed-width R || S.
     signature = signatureToCose(signature);
   }
   require(signature.size() == (algorithmId == 5 ? 32 : 64));

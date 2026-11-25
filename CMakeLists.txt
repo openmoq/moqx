@@ -91,7 +91,7 @@ set(GFLAGS_SHARED ON CACHE BOOL "" FORCE)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 # Some fetched deps declare pre-3.5 minimums that CMake >= 4 refuses to
-# configure (yaml-cpp 0.8.0: 3.4; catapult's bundled libcbor/doctest: 3.5).
+# configure (yaml-cpp 0.8.0: 3.4).
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 
 # MOQX_DEPS_CACHE + CPM_SOURCE_CACHE, shared with the superbuild.
@@ -327,10 +327,9 @@ add_compile_options(
   -fdebug-prefix-map=${_moqx_root_rel}=.)
 add_compile_definitions("FOLLY_XLOG_STRIP_PREFIXES=\"moqx-build\"")
 
-# --- catapult (CAT/CWT/MOQT auth implementation) ---
-# Nested deps (external/libcbor, …) arrive through FetchContent's recursive
-# submodule clone. Develop against a local checkout with -DCPM_catapult_SOURCE,
-# which must have its own submodules initialised.
+# Catapult v1.0.0 supplies cryptographic primitives. C4M draft-02 framing and
+# claims remain in moqx because the release's CWT/MOQT codecs predate this draft.
+enable_language(C)
 CPMAddPackage(
   NAME catapult
   GITHUB_REPOSITORY ${CATAPULT_REPOSITORY}
@@ -339,6 +338,9 @@ CPMAddPackage(
   OPTIONS
     "ENABLE_LOGGING OFF"
     "CATAPULT_ENABLE_JSON OFF"
+    "WITH_EXAMPLES OFF"
+    "SANITIZE OFF"
+    "CMAKE_INTERPROCEDURAL_OPTIMIZATION OFF"
 )
 
 # Strict warnings for first-party code; linked PRIVATE per target so nothing

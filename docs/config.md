@@ -317,7 +317,7 @@ Grant decisions are encoded by the issuer using
 [`draft-ietf-moq-c4m-02`](ref/draft-ietf-moq-c4m-02.txt). This initial implementation
 accepts tagged COSE_Mac0 with HMAC-SHA256 (algorithm 5, `MAC0` context) and
 tagged COSE_Sign1 with ES256 (algorithm -7, `Signature1` context). The adapter
-uses catapult cryptographic primitives, converts its DER ECDSA signatures
+uses catapult v1.0.0 cryptographic primitives, converts its DER ECDSA signatures
 to/from the COSE fixed-width 64-byte form, and retains draft-02 claim handling.
 The legacy CAT4MOQ token format is rejected; existing clients
 must obtain new tokens and select token type `1`.
