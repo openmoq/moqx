@@ -56,12 +56,20 @@ struct Scope {
 struct Grants {
   std::chrono::system_clock::time_point expiresAt{std::chrono::system_clock::time_point::max()};
   std::vector<Scope> scopes;
+  // CWT iss (1) and aud (3). Only encoded when set; the relay validates them against ClaimPolicy.
+  std::optional<std::string> issuer;
+  std::vector<std::string> audiences;
 };
 
-// Relay-side handling of standard CWT claims (draft-02 section 8.2.1).
+// Relay-side validation of standard CWT claims (draft-02 section 8.2.1).
 struct ClaimPolicy {
   // Also reject informational claims that the relay does not validate.
   bool strict{false};
+  // When non-empty, aud is required and at least one token audience must equal one entry.
+  // When empty, a token carrying aud is rejected because its semantics cannot be honored.
+  std::vector<std::string> audiences;
+  // When non-empty, iss is required and must equal one entry.
+  std::vector<std::string> issuers;
 };
 
 class C4mError final : public std::runtime_error {

@@ -26,7 +26,9 @@ struct IssueTokenOptions {
   std::optional<std::string> trackName;
   std::chrono::seconds ttl{3600};
   std::chrono::system_clock::time_point now{std::chrono::system_clock::now()};
-  std::string privateKeyFile; // PEM P-256 private key; mutually exclusive with secret.
+  std::optional<std::string> issuer;  // CWT iss
+  std::vector<std::string> audiences; // CWT aud
+  std::string privateKeyFile;         // PEM P-256 private key; mutually exclusive with secret.
 };
 
 struct IssuedToken {

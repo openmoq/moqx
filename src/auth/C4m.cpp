@@ -296,7 +296,25 @@ Grants readClaims(
       if (version != 1) {
         unsupported();
       }
-    } else if (key == 1 || key == 2) { // iss, sub
+    } else if (key == 1) {
+      std::string_view value;
+      require(reader.readTextString(value));
+      grants.issuer = std::string(value);
+    } else if (key == 3) {
+      // RFC 8392: aud is a single StringOrURI or an array of them.
+      std::string_view value;
+      if (reader.peekMajor() == cbor::kMajorTextString) {
+        require(reader.readTextString(value));
+        grants.audiences.emplace_back(value);
+      } else {
+        uint64_t n = 0;
+        require(reader.readArrayLen(n) && n >= 1 && n <= 16 && n <= reader.remaining());
+        for (uint64_t j = 0; j < n; ++j) {
+          require(reader.readTextString(value));
+          grants.audiences.emplace_back(value);
+        }
+      }
+    } else if (key == 2) {
       std::string_view value;
       require(reader.readTextString(value));
       hasInformationalClaims = true;
@@ -320,6 +338,29 @@ Grants readClaims(
   if (notBefore && *notBefore > now) {
     throw C4mError(AuthError::NotYetValid, "C4M token not yet valid");
   }
+  if (policy.audiences.empty()) {
+    if (!grants.audiences.empty()) {
+      unsupported(); // No local audience to compare against; do not ignore the restriction.
+    }
+  } else if (std::none_of(
+                 grants.audiences.begin(),
+                 grants.audiences.end(),
+                 [&](const std::string& aud) {
+                   return std::find(policy.audiences.begin(), policy.audiences.end(), aud) !=
+                          policy.audiences.end();
+                 }
+             )) {
+    throw C4mError(AuthError::Forbidden, "C4M token audience not accepted");
+  }
+  if (!policy.issuers.empty()) {
+    if (!grants.issuer.has_value() ||
+        std::find(policy.issuers.begin(), policy.issuers.end(), *grants.issuer) ==
+            policy.issuers.end()) {
+      throw C4mError(AuthError::Forbidden, "C4M token issuer not accepted");
+    }
+  } else if (grants.issuer.has_value()) {
+    hasInformationalClaims = true;
+  }
   if (policy.strict && hasInformationalClaims) {
     unsupported();
   }
@@ -342,8 +383,26 @@ std::string encodeClaims(const Grants& grants) {
   appendHead(
       out,
       5,
-      static_cast<unsigned>(expires) + static_cast<unsigned>(!grants.scopes.empty())
+      static_cast<unsigned>(expires) + static_cast<unsigned>(!grants.scopes.empty()) +
+          static_cast<unsigned>(grants.issuer.has_value()) +
+          static_cast<unsigned>(!grants.audiences.empty())
   );
+  if (grants.issuer) {
+    appendInt(out, 1);
+    appendHead(out, 3, grants.issuer->size());
+    out += *grants.issuer;
+  }
+  if (!grants.audiences.empty()) {
+    if (grants.audiences.size() > 16) {
+      throw std::invalid_argument("too many C4M audiences");
+    }
+    appendInt(out, 3);
+    appendHead(out, 4, grants.audiences.size());
+    for (const auto& aud : grants.audiences) {
+      appendHead(out, 3, aud.size());
+      out += aud;
+    }
+  }
   if (expires) {
     appendInt(out, 4);
     appendInt(

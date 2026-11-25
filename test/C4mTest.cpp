@@ -330,3 +330,62 @@ TEST(C4mTest, PreservesBinaryFieldsAndDistinguishesEmptyTrackFromNoTrack) {
   auto decoded = verifyC4mToken(signC4mToken("key", kKey, grants), kKey, kNow);
   EXPECT_TRUE(matchesC4mScope(decoded.scopes.at(0), Action::Subscribe, ns, ""));
 }
+
+namespace {
+std::string audToken(std::vector<std::string> audiences, std::optional<std::string> issuer = {}) {
+  Grants grants;
+  grants.audiences = std::move(audiences);
+  grants.issuer = std::move(issuer);
+  return signC4mToken("key", kKey, grants);
+}
+} // namespace
+
+TEST(C4mTest, AudienceMustMatchConfiguredAudience) {
+  ClaimPolicy policy{.audiences = {"relay-a", "relay-b"}};
+  auto grants = verifyC4mToken(audToken({"other", "relay-b"}), kKey, kNow, policy);
+  EXPECT_EQ(grants.audiences.size(), 2u);
+  EXPECT_NO_THROW(verifyC4mToken(audToken({"relay-a"}), kKey, kNow, policy));
+
+  for (auto token : {audToken({"other"}), audToken({})}) {
+    try {
+      (void)verifyC4mToken(token, kKey, kNow, policy);
+      FAIL() << "audience mismatch or absence must be rejected";
+    } catch (const C4mError& e) {
+      EXPECT_EQ(e.code(), AuthError::Forbidden);
+    }
+  }
+  // Without a configured audience a token carrying aud stays rejected.
+  try {
+    (void)verifyC4mToken(audToken({"relay-a"}), kKey, kNow);
+    FAIL() << "aud must be rejected when no audience is configured";
+  } catch (const C4mError& e) {
+    EXPECT_EQ(e.code(), AuthError::UnsupportedClaim);
+  }
+}
+
+TEST(C4mTest, AudienceAcceptsSingleStringForm) {
+  // {3: "relay-a"} per RFC 8392 (single StringOrURI).
+  ClaimPolicy policy{.audiences = {"relay-a"}};
+  EXPECT_NO_THROW(verifyC4mToken(rawToken("a1036772656c61792d61"), kKey, kNow, policy));
+  EXPECT_THROW(verifyC4mToken(rawToken("a1036772656c61792d62"), kKey, kNow, policy), C4mError);
+  // Empty array and non-text members are malformed.
+  EXPECT_THROW(verifyC4mToken(rawToken("a10380"), kKey, kNow, policy), C4mError);
+  EXPECT_THROW(verifyC4mToken(rawToken("a1038101"), kKey, kNow, policy), C4mError);
+}
+
+TEST(C4mTest, IssuerMustMatchConfiguredIssuer) {
+  ClaimPolicy policy{.issuers = {"issuer-1"}};
+  EXPECT_NO_THROW(verifyC4mToken(audToken({}, "issuer-1"), kKey, kNow, policy));
+  EXPECT_THROW(verifyC4mToken(audToken({}, "issuer-2"), kKey, kNow, policy), C4mError);
+  EXPECT_THROW(verifyC4mToken(audToken({}), kKey, kNow, policy), C4mError);
+  // Unconfigured: iss is informational, rejected only under strict.
+  EXPECT_NO_THROW(verifyC4mToken(audToken({}, "issuer-2"), kKey, kNow));
+  EXPECT_THROW(verifyC4mToken(audToken({}, "issuer-2"), kKey, kNow, {.strict = true}), C4mError);
+  // A validated iss is not "unvalidated informational" under strict.
+  EXPECT_NO_THROW(verifyC4mToken(
+      audToken({}, "issuer-1"),
+      kKey,
+      kNow,
+      {.strict = true, .issuers = {"issuer-1"}}
+  ));
+}

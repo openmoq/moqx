@@ -589,6 +589,23 @@ void validateAuth(
     if (auth.token_type.value().value_or(1) >= kQuicVarintExclusiveUpperBound) {
       errors.push_back("Service '" + serviceName + "': auth.token_type must fit in a QUIC varint");
     }
+    for (const auto& [field, values] :
+         {std::pair{"audiences", &auth.audiences.value()},
+          std::pair{"issuers", &auth.issuers.value()}}) {
+      if (!values->has_value()) {
+        continue;
+      }
+      if ((*values)->empty()) {
+        errors.push_back("Service '" + serviceName + "': auth." + field + " must not be empty");
+      }
+      for (const auto& v : **values) {
+        if (v.empty()) {
+          errors.push_back(
+              "Service '" + serviceName + "': auth." + field + " entries must be non-empty"
+          );
+        }
+      }
+    }
     const auto& maxTokens = auth.max_tokens_per_message.value();
     if (!maxTokens.has_value()) {
       errors.push_back(
@@ -702,6 +719,12 @@ AuthConfig resolveAuth(const std::optional<ParsedAuthConfig>& parsed) {
   out.allowRequestTokenOverride = parsed->allow_request_token_override.value().value_or(true);
   out.strictClaims = parsed->strict_claims.value().value_or(false);
   out.maxTokensPerMessage = parsed->max_tokens_per_message.value().value_or(0);
+  if (parsed->audiences.value()) {
+    out.audiences = *parsed->audiences.value();
+  }
+  if (parsed->issuers.value()) {
+    out.issuers = *parsed->issuers.value();
+  }
   if (parsed->hmac_keys.value()) {
     for (const auto& key : *parsed->hmac_keys.value()) {
       out.hmacKeys.push_back(AuthConfig::HmacKey{

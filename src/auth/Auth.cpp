@@ -66,6 +66,8 @@ verifyTokens(const AuthTokenVerifier& verifier, const std::vector<AuthToken>& to
 AuthTokenVerifier::AuthTokenVerifier(config::AuthConfig config) : config_(std::move(config)) {
   claimPolicy_ = ClaimPolicy{
       .strict = config_.strictClaims,
+      .audiences = config_.audiences,
+      .issuers = config_.issuers,
   };
   if (!config_.enabled) {
     return;
