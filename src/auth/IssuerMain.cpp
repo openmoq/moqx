@@ -49,6 +49,11 @@ DEFINE_string(auth_track, "", "Optional track name");
 DEFINE_string(auth_issuer, "", "Optional CWT iss claim");
 DEFINE_string(auth_audience, "", "Optional CWT aud claim; comma-separated for several audiences");
 DEFINE_bool(auth_replay_protect, false, "Add catreplay=1 with a random cti (single connection)");
+DEFINE_int32(
+    auth_revalidate_seconds,
+    0,
+    "moqt-reval interval in seconds (0 = none); the relay must allow it"
+);
 DEFINE_int32(auth_ttl_seconds, 3600, "Token lifetime in seconds");
 DEFINE_string(auth_output, "base64-prefix", "Output encoding: base64-prefix, base64, hex, or raw");
 
@@ -122,6 +127,7 @@ auth::IssueTokenOptions makeIssueTokenOptions(const cfg::ResolvedConfig* resolve
     options.trackNamespace = auth::parseTrackNamespace(FLAGS_auth_namespace);
   }
   options.replayProtected = FLAGS_auth_replay_protect;
+  options.revalidateEvery = std::chrono::seconds(FLAGS_auth_revalidate_seconds);
   if (!FLAGS_auth_issuer.empty()) {
     options.issuer = FLAGS_auth_issuer;
   }
@@ -167,6 +173,7 @@ int runIssueCatTokenCommand(const char* programName) {
       // Only the signature is being checked, so accept the claims this token was issued with.
       auth::ClaimPolicy policy;
       policy.audiences = options.audiences;
+      policy.minRevalidation = std::chrono::seconds(1);
       try {
         (void)auth::verifyC4mToken(token.tokenValue, *publicKey, options.now, policy);
       } catch (const auth::C4mError& error) {

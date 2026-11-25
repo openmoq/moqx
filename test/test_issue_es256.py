@@ -32,6 +32,7 @@ services:
         + str(public)
         + """"}]
       audiences: ["relay-a"]
+      min_revalidation_interval_seconds: 1
       max_tokens_per_message: 4
 """
     )
@@ -140,6 +141,15 @@ services:
             *configured,
             "--auth_private_key_file=" + str(private),
             "--auth_audience=relay-a",
+        ],
+        True,
+    )
+    run(
+        "es256-config-with-revalidation",
+        [
+            *configured,
+            "--auth_private_key_file=" + str(private),
+            "--auth_revalidate_seconds=30",
         ],
         True,
     )

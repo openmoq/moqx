@@ -155,3 +155,43 @@ TEST(AuthTokenIssuerTest, SelectsConfiguredHmacKeyByID) {
   EXPECT_EQ(key.id, "active");
   EXPECT_EQ(key.secret, "active-secret");
 }
+
+TEST(AuthTokenIssuerTest, IssuedRevalidationIntervalIsAcceptedByARelayThatAllowsIt) {
+  auto issued = issueToken(IssueTokenOptions{
+      .keyID = "k",
+      .secret = "operator-test-secret-with-enough-entropy",
+      .actions = {Action::ClientSetup},
+      .revalidateEvery = std::chrono::seconds(30),
+  });
+  const auto token = moxygen::AuthToken{
+      .tokenType = 1,
+      .tokenValue = issued.tokenValue,
+      .alias = moxygen::AuthToken::DontRegister,
+  };
+  auto allows = config::AuthConfig{
+      .enabled = true,
+      .hmacKeys = {{.id = "k", .secret = "operator-test-secret-with-enough-entropy"}},
+      .minRevalidationSeconds = 5,
+      .maxTokensPerMessage = 4,
+  };
+  auto accepted = AuthTokenVerifier(allows).verify(token);
+  ASSERT_TRUE(accepted.hasValue());
+  EXPECT_EQ(accepted.value().revalidateEvery, std::chrono::seconds(30));
+  allows.minRevalidationSeconds = 0; // revalidation disabled: such tokens are refused
+  EXPECT_TRUE(AuthTokenVerifier(allows).verify(token).hasError());
+}
+
+TEST(AuthTokenIssuerTest, RefusesValuesTheRelayWouldReject) {
+  auto options = [&] {
+    return IssueTokenOptions{
+        .keyID = "k",
+        .secret = "operator-test-secret-with-enough-entropy",
+        .actions = {Action::ClientSetup},
+    };
+  };
+  auto badReval = options();
+  for (auto seconds : {-1, 31536001}) {
+    badReval.revalidateEvery = std::chrono::seconds(seconds);
+    EXPECT_THROW(issueToken(badReval), std::invalid_argument) << seconds;
+  }
+}

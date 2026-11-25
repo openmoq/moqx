@@ -307,6 +307,7 @@ services:
 | `allow_request_token_override` | `true` | Lets a token on a request count as one more candidate grant for that request, alongside the session's setup-token grants and `anonymous_claim`. If `false`, request tokens are ignored and authorization uses only the setup token grants and `anonymous_claim`. |
 | `audiences` | none | CWT `aud` values this relay accepts. When set, a token must carry `aud` (a string or array of strings) and at least one value must equal an entry, otherwise it is rejected. When omitted, any token carrying `aud` is rejected. Entries must be non-empty. |
 | `issuers` | none | CWT `iss` values this relay accepts. When set, a token must carry a matching `iss`. When omitted, `iss` is informational. Entries must be non-empty. |
+| `min_revalidation_interval_seconds` | `5` | Smallest `moqt-reval` interval, in seconds, that tokens may request. A token with a shorter interval is rejected, and `0` rejects every token carrying a nonzero `moqt-reval` (the draft's "unable to revalidate" case). See [Revalidation](#revalidation-moqt-reval). |
 | `strict_claims` | `false` | Also rejects informational `iss` (when `issuers` is unset), `sub`, `iat`, and `cti` claims (a `cti` that `catreplay` 1 requires is not informational and is accepted). Unsupported restrictions and repeated claims are always rejected, regardless of this setting. |
 | `max_tokens_per_message` | none | Required when `enabled: true`, directly or via `service_defaults.auth.max_tokens_per_message`. Caps how many `AUTHORIZATION_TOKEN` params of the configured `token_type` a single SETUP or request message may carry; a message over the cap is rejected outright, not truncated. Params of other token types are not counted. Bounds per-message verification cost against a client attaching many tokens to one message. Must be >= 1. |
 | `anonymous_claim` | empty | Statically-granted scopes applied to every request on this service, regardless of what token (if any) authenticated it. See [Anonymous Claim](#anonymous-claim) below. |
@@ -321,9 +322,9 @@ to/from the COSE fixed-width 64-byte form, and retains draft-02 claim handling.
 The legacy CAT4MOQ token format is rejected; existing clients
 must obtain new tokens and select token type `1`.
 
-The `moqt` claim label is still unassigned. moqx uses the appendix's Private Use
-placeholder `-65537`; this is a provisional interoperability value, not an IANA
-assignment. `moqt-reval` is not supported: a token carrying it is rejected.
+The `moqt` and `moqt-reval` claim labels are still unassigned. moqx uses the
+appendix's Private Use placeholders `-65537` and `-65538`, respectively; these
+are provisional interoperability values, not IANA assignments.
 
 C4M namespace matches apply separately to each namespace field. Exact matches
 are byte strings, prefix/suffix matches are `[1, bytes]` / `[2, bytes]`, and a
@@ -342,9 +343,6 @@ memory per service (bounded at 131072 live tokens, after which new `catreplay`
 tokens are refused), is lost on restart, and is not shared between relays.
 `catreplay` 2 is rejected. Composites, or other unsupported restrictions are rejected. `aud` is rejected unless `audiences` is configured.
 
-DPoP (draft section 4) is not supported: tokens carrying `cnf` or `catdpop` are
-rejected.
-
 ### Error codes for refused requests
 
 A request refused because a token it carries has expired fails with
@@ -357,7 +355,46 @@ setup token that have since expired (those are not a token in the message). A
 session whose setup token is already expired or undecodable when it connects is
 closed with the session error `EXPIRED_AUTH_TOKEN` or `MALFORMED_AUTH_TOKEN`. moxygen sends request error codes
 unchanged for every MoQT draft, so drafts 16, 18 and 22 use the same values; the
-draft 22 text itself has not been checked.
+draft 22 text itself has not been checked. Revalidation uses different codes
+for the stream-level endings: PUBLISH_DONE `UNAUTHORIZED` and fetch reset
+`EXPIRED_AUTH_TOKEN`, which moxygen sends as `0x7` from draft 18 and as `0`
+before it.
+
+### Revalidation (`moqt-reval`)
+
+A token with `moqt-reval` N (integer seconds, N at least
+`min_revalidation_interval_seconds`) and an `exp` stays good for an ongoing
+action only while it is acceptable. The relay re-checks the authorizing token
+at least every N seconds and, once it has expired, ends only that action:
+
+| Action | What happens |
+|---|---|
+| `subscribe` | The relay unsubscribes and sends PUBLISH_DONE with status `UNAUTHORIZED` ("no longer authorized") for that subscription. |
+| `fetch` | The fetch is cancelled and its stream is reset with `EXPIRED_AUTH_TOKEN`. |
+| `subscribe_namespace` | The relay stops sending NAMESPACE updates for that subscription. The subscriber gets no explicit end message. |
+| `subscribe_tracks` | The relay ends that SUBSCRIBE_TRACKS. |
+| `publish_namespace` | The namespace is withdrawn from the relay, then the publisher is told: on draft 18 and later by resetting the request stream (`CANCELLED`, since the draft removed PUBLISH_NAMESPACE_CANCEL), before that by PUBLISH_NAMESPACE_CANCEL with `EXPIRED_AUTH_TOKEN`. The tracks that publisher session is sending under the namespace are ended too: the relay unsubscribes from the publisher and sends the tracks' subscribers PUBLISH_DONE `TRACK_ENDED`, so a publisher that ignores the cancel cannot keep feeding open subscriptions. |
+| `publish` | The relay unsubscribes from the publisher's track. The publisher is not sent a separate error. |
+
+The session and every other action on it are left alone. An action is ended only
+when everything that authorizes it has expired: if it is also covered by a token
+without `moqt-reval`, a token that never expires, or an `anonymous_claim`, it
+continues. When several revalidated tokens cover it, it ends after the latest
+expiry. New requests after expiry are refused by the normal expiry check.
+
+The relay logs each ending at INFO (`revalidation: the token authorizing a ... is no
+longer acceptable; ending it`).
+
+Limits: `setup` is not revalidated. A `setup` token that expires does not close
+the session, but the grants it supplied stop authorizing new requests. A
+`publish` is watched from the moment the session awaits the PUBLISH reply (which
+it does on receipt); a refused PUBLISH is never watched, and the watch stops on
+its own once the relay releases the publisher's handle and track consumer. A token that carries `moqt-reval`
+without `exp` never changes, so there is nothing to end. Intervals must be
+integers; floating-point values are rejected.
+
+DPoP (draft section 4) is not supported: tokens carrying `cnf` or `catdpop` are
+rejected.
 `iss`/`sub`/`iat`/`cti` are informational and do not authenticate identities.
 The decoder accepts definite-length CBOR, at most 64 KiB per token, 1024 scopes,
 and 32 namespace fields per scope. Unsupported encodings are rejected.
@@ -431,6 +468,7 @@ moqx-issuer \
   --auth-ttl-seconds 3600
 ```
 
+`--auth_revalidate_seconds` must be 0 to 31536000, the range the relay accepts.
 `--auth_replay_protect` adds `catreplay` 1 with a random `cti`. `--auth_issuer` and `--auth_audience` (comma-separated for several) add `iss` and `aud`
 claims for relays that configure `issuers`/`audiences`.
 

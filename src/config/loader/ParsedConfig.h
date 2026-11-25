@@ -506,6 +506,12 @@ struct ParsedAuthConfig {
       std::optional<bool>>
       strict_claims;
   rfl::Description<
+      "Smallest moqt-reval interval in seconds that tokens may request. Tokens at or above it are "
+      "honored by re-checking the token and ending the affected action; 0 rejects every token "
+      "carrying moqt-reval (default: 5)",
+      std::optional<uint32_t>>
+      min_revalidation_interval_seconds;
+  rfl::Description<
       "CWT audience values this relay accepts. When set, tokens must carry a matching aud claim; "
       "when omitted, tokens carrying aud are rejected",
       std::optional<std::vector<std::string>>>

@@ -7,6 +7,7 @@
  */
 
 #include "MoqxRelayTestFixture.h"
+#include "relay/NamespaceRevocable.h"
 #include <atomic>
 
 #include <folly/coro/Baton.h>
@@ -977,6 +978,58 @@ TEST_P(MoQRelayTest, RejectedPublishReleasesConsumerWithOpenSubgroup) {
 
   removeSession(subscriberSession);
   removeSession(publisherSession);
+  driveIfMultiThread();
+}
+
+// A publisher whose authorization for its namespace lapses loses the namespace and the tracks it
+// is sending under it, in every threading mode. Another publisher's tracks are left alone.
+TEST_P(MoQRelayTest, RevokingANamespaceEndsTheTracksItsPublisherSends) {
+  auto publisherSession = createMockSession();
+  auto otherPublisherSession = createMockSession();
+  auto subSession = createMockSession();
+  const TrackNamespace otherNamespace{{"test", "other"}};
+  const FullTrackName otherTrack{otherNamespace, "track1"};
+
+  auto namespaceHandle = doPublishNamespace(publisherSession, kTestNamespace);
+  doPublishNamespace(otherPublisherSession, otherNamespace);
+  auto publisherHandle = makePublishHandle();
+  auto otherHandle = makePublishHandle();
+  doPublishWithHandle(publisherSession, kTestTrackName, publisherHandle);
+  doPublishWithHandle(otherPublisherSession, otherTrack, otherHandle);
+
+  auto consumer = createMockConsumer();
+  auto otherConsumer = createMockConsumer();
+  ASSERT_NE(subscribeToTrack(subSession, kTestTrackName, consumer, RequestID(0)), nullptr);
+  ASSERT_NE(subscribeToTrack(subSession, otherTrack, otherConsumer, RequestID(1)), nullptr);
+
+  std::atomic<bool> publisherStopped{false};
+  EXPECT_CALL(*publisherHandle, unsubscribe()).Times(1).WillOnce([&] { publisherStopped = true; });
+  EXPECT_CALL(*otherHandle, unsubscribe()).Times(0);
+  std::atomic<bool> gotPublishDone{false};
+  EXPECT_CALL(*consumer, publishDone(_)).WillOnce([&](PublishDone done) {
+    EXPECT_EQ(done.statusCode, PublishDoneStatusCode::TRACK_ENDED);
+    gotPublishDone = true;
+    return folly::makeExpected<MoQPublishError>(folly::unit);
+  });
+  EXPECT_CALL(*otherConsumer, publishDone(_)).Times(0);
+
+  auto* revocable = dynamic_cast<NamespaceRevocable*>(namespaceHandle.get());
+  ASSERT_NE(revocable, nullptr);
+  revocable->revokeNamespace();
+  // The unsubscribe is posted to the publisher's executor, which SingleThread mode only runs on
+  // a loop turn.
+  EXPECT_TRUE(driveUntil([&] { return publisherStopped.load(); }));
+  EXPECT_TRUE(driveUntil([&] { return gotPublishDone.load(); }));
+  driveIfMultiThread();
+  // Only the revoke is under test: tearing the sessions down below unsubscribes the rest.
+  testing::Mock::VerifyAndClearExpectations(publisherHandle.get());
+  testing::Mock::VerifyAndClearExpectations(otherHandle.get());
+  testing::Mock::VerifyAndClearExpectations(consumer.get());
+  testing::Mock::VerifyAndClearExpectations(otherConsumer.get());
+
+  removeSession(publisherSession);
+  removeSession(otherPublisherSession);
+  removeSession(subSession);
   driveIfMultiThread();
 }
 
