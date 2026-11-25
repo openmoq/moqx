@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <limits>
 #include <memory>
 #include <span>
@@ -45,11 +46,14 @@ denialError(const std::vector<Grants>& verifiedGrants, std::optional<AuthError> 
 // Verifies every token, pooling grants from the ones that succeed. A token
 // that fails to verify is dropped as a non-viable candidate; `firstError`
 // keeps the earliest failure for a caller with nothing else to report.
-VerifiedTokens
-verifyTokens(const AuthTokenVerifier& verifier, const std::vector<AuthToken>& tokens) {
+VerifiedTokens verifyTokens(
+    const AuthTokenVerifier& verifier,
+    const std::vector<AuthToken>& tokens,
+    uint64_t connectionId
+) {
   VerifiedTokens result;
   for (const auto& token : tokens) {
-    auto verified = verifier.verify(token);
+    auto verified = verifier.verify(token, connectionId);
     if (verified.hasError()) {
       if (!result.firstError) {
         result.firstError = verified.error();
@@ -88,7 +92,49 @@ AuthTokenVerifier::AuthTokenVerifier(config::AuthConfig config) : config_(std::m
   }
 }
 
-folly::Expected<Grants, AuthError> AuthTokenVerifier::verify(const AuthToken& token) const {
+uint64_t newConnectionId() {
+  static std::atomic<uint64_t> next{1};
+  return next.fetch_add(1, std::memory_order_relaxed);
+}
+
+folly::Expected<Grants, AuthError>
+AuthTokenVerifier::verify(const AuthToken& token, uint64_t connectionId) const {
+  auto result = verifySignature(token);
+  if (result.hasValue() && result.value().replayProtected &&
+      !bindReplay(result.value(), connectionId)) {
+    return folly::makeUnexpected(AuthError::Replayed);
+  }
+  return result;
+}
+
+// Binds a signature-verified, replay-protected token to its first connection. Binding happens
+// only after the signature verifies so an unauthenticated peer cannot reserve arbitrary cti values.
+bool AuthTokenVerifier::bindReplay(const Grants& grants, uint64_t connectionId) const {
+  if (connectionId == 0 || !grants.cti) {
+    return false;
+  }
+  std::string key = grants.issuer.value_or(std::string()) + '\0' + *grants.cti;
+  const auto now = std::chrono::system_clock::now();
+  std::lock_guard lock(replayMutex_);
+  if (auto it = replay_.find(key); it != replay_.end()) {
+    if (it->second.expiresAt > now) {
+      return it->second.connectionId == connectionId;
+    }
+    replay_.erase(it);
+  }
+  if (replay_.size() >= kMaxReplayEntries) {
+    std::erase_if(replay_, [&](const auto& e) { return e.second.expiresAt <= now; });
+    if (replay_.size() >= kMaxReplayEntries) {
+      XLOG(WARN) << "replay state full; refusing catreplay token";
+      return false;
+    }
+  }
+  replay_.emplace(std::move(key), ReplayEntry{connectionId, grants.expiresAt});
+  return true;
+}
+
+folly::Expected<Grants, AuthError> AuthTokenVerifier::verifySignature(const AuthToken& token
+) const {
   if (!config_.enabled) {
     return Grants{};
   }
@@ -182,8 +228,11 @@ bool AuthTokenVerifier::allowsAnonymous(
   return false;
 }
 
-folly::Expected<std::shared_ptr<const std::vector<Grants>>, AuthError>
-authenticateSetup(const AuthTokenVerifier& verifier, const Parameters& setupParams) {
+folly::Expected<std::shared_ptr<const std::vector<Grants>>, AuthError> authenticateSetup(
+    const AuthTokenVerifier& verifier,
+    const Parameters& setupParams,
+    uint64_t connectionId
+) {
   if (!verifier.enabled()) {
     return std::shared_ptr<const std::vector<Grants>>{};
   }
@@ -194,7 +243,7 @@ authenticateSetup(const AuthTokenVerifier& verifier, const Parameters& setupPara
                << "max_tokens_per_message=" << verifier.maxTokensPerMessage() << "; rejecting";
     return folly::makeUnexpected(AuthError::TooManyTokens);
   }
-  auto [verifiedGrants, firstError] = verifyTokens(verifier, tokens);
+  auto [verifiedGrants, firstError] = verifyTokens(verifier, tokens, connectionId);
 
   if (verifier.requireSetupToken()) {
     if (tokens.empty()) {
@@ -216,7 +265,8 @@ folly::Expected<folly::Unit, AuthError> authorize(
     const Parameters& params,
     const TrackNamespace& ns,
     const std::vector<Grants>& sessionGrants,
-    std::optional<std::string_view> trackName
+    std::optional<std::string_view> trackName,
+    uint64_t connectionId
 ) {
   if (!verifier.enabled()) {
     return folly::unit;
@@ -233,7 +283,7 @@ folly::Expected<folly::Unit, AuthError> authorize(
   std::vector<Grants> requestGrants;
   std::optional<AuthError> firstError;
   if (verifier.allowRequestTokenOverride()) {
-    auto verified = verifyTokens(verifier, tokens);
+    auto verified = verifyTokens(verifier, tokens, connectionId);
     requestGrants = std::move(verified.grants);
     firstError = verified.firstError;
   } else if (!tokens.empty()) {
@@ -355,6 +405,8 @@ const char* toString(AuthError error) {
     return "authorization token does not permit action";
   case AuthError::TooManyTokens:
     return "too many authorization tokens in message";
+  case AuthError::Replayed:
+    return "authorization token already bound to another connection";
   }
   return "authorization failed";
 }

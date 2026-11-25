@@ -19,6 +19,7 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -61,11 +62,16 @@ public:
       std::optional<std::string_view> trackName
   ) const;
 
-  folly::Expected<Grants, AuthError> verify(const moxygen::AuthToken& token) const;
+  // connectionId identifies the accepting connection (see newConnectionId()). It binds tokens
+  // carrying catreplay 1 to that connection; 0 means unknown, which such tokens cannot use.
+  folly::Expected<Grants, AuthError>
+  verify(const moxygen::AuthToken& token, uint64_t connectionId = 0) const;
 
 private:
   // Key material is loaded once. ES256 entries contain only a public key;
   // kid routing never changes the key's configured algorithm.
+  folly::Expected<Grants, AuthError> verifySignature(const moxygen::AuthToken& token) const;
+
   struct VerificationKey {
     std::string id;
     std::unique_ptr<const catapult::CryptographicAlgorithm> algorithm;
@@ -75,7 +81,24 @@ private:
   ClaimPolicy claimPolicy_;
   std::vector<VerificationKey> keys_;
   std::unordered_map<std::string, std::size_t> keyIdIndex_;
+
+  // Replay state for catreplay 1: token identity -> {connection, expiry}. Retained after the
+  // connection closes until the token expires, so reuse stays blocked. Bounded; when full of
+  // live entries new replay-protected tokens are refused rather than left unprotected.
+  struct ReplayEntry {
+    uint64_t connectionId;
+    std::chrono::system_clock::time_point expiresAt;
+  };
+  static constexpr std::size_t kMaxReplayEntries = 1u << 17;
+  bool bindReplay(const Grants& grants, uint64_t connectionId) const;
+
+private:
+  mutable std::mutex replayMutex_;
+  mutable std::unordered_map<std::string, ReplayEntry> replay_;
 };
+
+// Process-unique, non-zero id for one accepted connection.
+uint64_t newConnectionId();
 
 // Returns every AUTHORIZATION_TOKEN parameter matching tokenType, not just the
 // first — a message may carry more than one, and a request is authorized if
@@ -122,8 +145,11 @@ const char* toString(AuthError error);
 // is set, connecting is additionally gated on whether any one of them
 // permits Action::ClientSetup; without it, verified grants pool into the
 // session with no ClientSetup check.
-folly::Expected<std::shared_ptr<const std::vector<Grants>>, AuthError>
-authenticateSetup(const AuthTokenVerifier& verifier, const moxygen::Parameters& setupParams);
+folly::Expected<std::shared_ptr<const std::vector<Grants>>, AuthError> authenticateSetup(
+    const AuthTokenVerifier& verifier,
+    const moxygen::Parameters& setupParams,
+    uint64_t connectionId = 0
+);
 
 // Authorizes a request against session grants, or per-request token(s) when
 // allow_request_token_override is set. Permitted if any verified request
@@ -134,7 +160,8 @@ folly::Expected<folly::Unit, AuthError> authorize(
     const moxygen::Parameters& params,
     const moxygen::TrackNamespace& ns,
     const std::vector<Grants>& sessionGrants,
-    std::optional<std::string_view> trackName = std::nullopt
+    std::optional<std::string_view> trackName = std::nullopt,
+    uint64_t connectionId = 0
 );
 
 } // namespace openmoq::moqx::auth

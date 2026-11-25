@@ -354,7 +354,8 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayContext::validateAu
   auto it = services_.find(*matchedName);
   CHECK(it != services_.end()) << "Service '" << *matchedName << "' matched but no entry found";
   auto& entry = it->second;
-  auto grants = auth::authenticateSetup(*entry.verifier, clientSetup.params);
+  const uint64_t connectionId = auth::newConnectionId();
+  auto grants = auth::authenticateSetup(*entry.verifier, clientSetup.params, connectionId);
   if (grants.hasError()) {
     XLOG(ERR) << "Authorization failed on listener '" << listener.name()
               << "' authority=" << authority << " path=" << path
@@ -369,6 +370,7 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayContext::validateAu
     case auth::AuthError::Missing:
     case auth::AuthError::WrongTokenType:
     case auth::AuthError::TooManyTokens:
+    case auth::AuthError::Replayed:
       return folly::makeUnexpected(SessionCloseErrorCode::UNAUTHORIZED);
     }
     return folly::makeUnexpected(SessionCloseErrorCode::UNAUTHORIZED);
@@ -382,9 +384,15 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayContext::validateAu
         std::move(pub),
         entry.verifier,
         grants.value(),
-        entry.peering->reciprocalMoqtPeerHandler()
+        entry.peering->reciprocalMoqtPeerHandler(),
+        connectionId
     );
-    sub = std::make_shared<AuthSubscriberFilter>(std::move(sub), entry.verifier, grants.value());
+    sub = std::make_shared<AuthSubscriberFilter>(
+        std::move(sub),
+        entry.verifier,
+        grants.value(),
+        connectionId
+    );
   }
   auto participant = std::make_shared<SessionParticipant>(
       std::move(pub),

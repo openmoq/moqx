@@ -26,10 +26,11 @@ public:
       std::shared_ptr<moxygen::Publisher> downstream,
       std::shared_ptr<const auth::AuthTokenVerifier> verifier,
       std::shared_ptr<const std::vector<auth::Grants>> grants,
-      const ReciprocalMoqtPeerHandler* reciprocal
+      const ReciprocalMoqtPeerHandler* reciprocal,
+      uint64_t connectionId = 0
   )
       : downstream_(std::move(downstream)), verifier_(std::move(verifier)),
-        grants_(std::move(grants)), reciprocal_(reciprocal) {}
+        grants_(std::move(grants)), reciprocal_(reciprocal), connectionId_(connectionId) {}
 
   folly::coro::Task<SubscribeResult> subscribe(
       moxygen::SubscribeRequest sub,
@@ -59,6 +60,7 @@ private:
   std::shared_ptr<const std::vector<auth::Grants>> grants_;
   // Owned by the peering backend, which outlives every session. Null without reciprocal peering.
   const ReciprocalMoqtPeerHandler* reciprocal_;
+  uint64_t connectionId_;
 };
 
 // Per-session subscriber-side auth gate: authorizes PUBLISH/PUBLISH_NAMESPACE,
@@ -68,10 +70,11 @@ public:
   AuthSubscriberFilter(
       std::shared_ptr<moxygen::Subscriber> downstream,
       std::shared_ptr<const auth::AuthTokenVerifier> verifier,
-      std::shared_ptr<const std::vector<auth::Grants>> grants
+      std::shared_ptr<const std::vector<auth::Grants>> grants,
+      uint64_t connectionId = 0
   )
       : downstream_(std::move(downstream)), verifier_(std::move(verifier)),
-        grants_(std::move(grants)) {}
+        grants_(std::move(grants)), connectionId_(connectionId) {}
 
   PublishResult publish(
       moxygen::PublishRequest pub,
@@ -89,6 +92,7 @@ private:
   std::shared_ptr<moxygen::Subscriber> downstream_;
   std::shared_ptr<const auth::AuthTokenVerifier> verifier_;
   std::shared_ptr<const std::vector<auth::Grants>> grants_;
+  uint64_t connectionId_;
 };
 
 } // namespace openmoq::moqx
