@@ -6,8 +6,10 @@
 
 #pragma once
 
-#include "auth/Action.h"
+#include "auth/C4m.h"
 #include "config/Config.h"
+
+#include <catapult/crypto.hpp>
 
 #include <folly/Expected.h>
 #include <folly/Unit.h>
@@ -25,36 +27,8 @@
 
 namespace openmoq::moqx::auth {
 
-enum class AuthError {
-  Missing,
-  WrongTokenType,
-  Malformed,
-  BadSignature,
-  Expired,
-  Forbidden,
-  TooManyTokens,
-};
-
-struct MatchRule {
-  using Type = MatchRuleType;
-  Type type{Type::Exact};
-  std::string value;
-};
-
-struct Scope {
-  std::vector<Action> actions;
-  std::vector<MatchRule> namespaceMatches;
-  std::vector<MatchRule> trackMatches;
-};
-
-struct Grants {
-  std::chrono::system_clock::time_point expiresAt{std::chrono::system_clock::time_point::max()};
-  std::vector<Scope> scopes;
-};
-
-// Length-prefixed byte-encoding of a namespace's segments, used both as a
-// MatchRule value and as the bytes matched against it. A stable wire format:
-// signer and verifier must produce byte-identical output independently.
+// Encoding for local anonymous-policy matching only. C4M token scopes match
+// individual fields and never use this representation.
 inline std::string canonicalNamespace(const moxygen::TrackNamespace& ns) {
   std::string out;
   for (const auto& field : ns.trackNamespace) {
@@ -81,27 +55,26 @@ public:
   // when enabled().
   uint32_t maxTokensPerMessage() const { return config_.maxTokensPerMessage; }
 
-  // Statically-configured anonymous claim, applied as a floor on every
-  // request (see docs/config.md#anonymous-claim). Never covers
-  // Action::ClientSetup — it can't bypass a required setup token.
-  const Grants& anonymousGrants() const { return anonymousGrants_; }
+  bool allowsAnonymous(
+      Action action,
+      const moxygen::TrackNamespace& ns,
+      std::optional<std::string_view> trackName
+  ) const;
 
   folly::Expected<Grants, AuthError> verify(const moxygen::AuthToken& token) const;
 
 private:
-  // HMAC key material derived once at construction. keyIdIndex_ maps each
-  // configured key's id to its index in derivedKeys_, enabling O(1) key
-  // selection when a token carries a kid header. Tokens without a kid fall
-  // back to trial-verification over the full derivedKeys_ list.
-  struct DerivedKey {
+  // Key material is loaded once. ES256 entries contain only a public key;
+  // kid routing never changes the key's configured algorithm.
+  struct VerificationKey {
     std::string id;
-    std::vector<uint8_t> key;
+    std::unique_ptr<const catapult::CryptographicAlgorithm> algorithm;
   };
 
   config::AuthConfig config_;
-  std::vector<DerivedKey> derivedKeys_;
+  ClaimPolicy claimPolicy_;
+  std::vector<VerificationKey> keys_;
   std::unordered_map<std::string, std::size_t> keyIdIndex_;
-  Grants anonymousGrants_;
 };
 
 // Returns every AUTHORIZATION_TOKEN parameter matching tokenType, not just the

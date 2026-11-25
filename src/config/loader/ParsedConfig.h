@@ -428,6 +428,11 @@ struct ParsedAuthConfig {
     rfl::Description<"Key identifier embedded in the token envelope", std::string> id;
     rfl::Description<"Shared HMAC secret for this key id", std::string> secret;
   };
+  struct Es256Key {
+    rfl::Description<"Key identifier embedded in the token envelope", std::string> id;
+    rfl::Description<"PEM P-256 public key file used for ES256 verification", std::string>
+        public_key_file;
+  };
 
   // A statically-granted scope applied to every request on this service,
   // regardless of what token (if any) authenticated it (see docs/config.md).
@@ -472,7 +477,7 @@ struct ParsedAuthConfig {
     using TrackMatch = rfl::Variant<ExactTrack, PrefixTrack, SuffixTrack, ContainsTrack>;
 
     rfl::Description<
-        "CAT4MOQ action names this scope grants without any token; client_setup/server_setup are "
+        "C4M action names this scope grants without any token; setup/client_setup are "
         "rejected -- the anonymous claim never authorizes session setup",
         std::vector<std::string>>
         actions;
@@ -485,6 +490,8 @@ struct ParsedAuthConfig {
   rfl::Description<"Expected MOQT AUTHORIZATION_TOKEN token type", std::optional<uint64_t>>
       token_type;
   rfl::Description<"Accepted HMAC signing keys", std::optional<std::vector<HmacKey>>> hmac_keys;
+  rfl::Description<"Accepted ES256 public verification keys", std::optional<std::vector<Es256Key>>>
+      es256_keys;
   rfl::Description<
       "Require a valid setup token during CLIENT_SETUP (default: true)",
       std::optional<bool>>
@@ -494,7 +501,8 @@ struct ParsedAuthConfig {
       std::optional<bool>>
       allow_request_token_override;
   rfl::Description<
-      "Reject unsupported token claims instead of ignoring them (default: false)",
+      "Also reject informational CWT claims; unsupported restrictions are always rejected "
+      "(default: false)",
       std::optional<bool>>
       strict_claims;
   rfl::Description<

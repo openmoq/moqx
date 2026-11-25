@@ -42,6 +42,23 @@ public:
   explicit CborReader(std::string_view data) : data_(data) {}
 
   bool eof() const { return pos_ == data_.size(); }
+  size_t remaining() const { return data_.size() - pos_; }
+  uint8_t peekMajor() const {
+    return eof() ? 0xff : static_cast<uint8_t>(data_[pos_]) >> cbor::kMajorShift;
+  }
+  bool readNull() {
+    if (eof() || static_cast<uint8_t>(data_[pos_]) != 0xf6) {
+      return false;
+    }
+    ++pos_;
+    return true;
+  }
+  bool readTag(uint64_t& tag) {
+    uint8_t major = 0;
+    return readType(major, tag) && major == 6;
+  }
+  bool readByteString(std::string_view& out) { return readString(cbor::kMajorByteString, out); }
+  bool readTextString(std::string_view& out) { return readString(cbor::kMajorTextString, out); }
 
   bool readUInt(uint64_t& out) {
     uint8_t major = 0;
@@ -99,7 +116,10 @@ public:
     return readType(major, len) && major == cbor::kMajorMap;
   }
 
-  bool skip() {
+  bool skip(size_t depth = 0) {
+    if (depth > 32) {
+      return false;
+    }
     uint8_t major = 0;
     uint64_t value = 0;
     if (!readType(major, value)) {
@@ -117,18 +137,28 @@ public:
       pos_ += static_cast<size_t>(value);
       return true;
     case cbor::kMajorArray:
+      if (value > remaining()) {
+        return false;
+      }
       for (uint64_t i = 0; i < value; ++i) {
-        if (!skip()) {
+        if (!skip(depth + 1)) {
           return false;
         }
       }
       return true;
     case cbor::kMajorMap:
-      for (uint64_t i = 0; i < value * 2; ++i) {
-        if (!skip()) {
+      if (value > remaining() / 2) {
+        return false;
+      }
+      for (uint64_t i = 0; i < value; ++i) {
+        if (!skip(depth + 1) || !skip(depth + 1)) {
           return false;
         }
       }
+      return true;
+    case 6:
+      return skip(depth + 1);
+    case 7:
       return true;
     default:
       return false;
@@ -136,6 +166,17 @@ public:
   }
 
 private:
+  bool readString(uint8_t expectedMajor, std::string_view& out) {
+    uint8_t major = 0;
+    uint64_t len = 0;
+    if (!readType(major, len) || major != expectedMajor || len > remaining()) {
+      return false;
+    }
+    out = data_.substr(pos_, static_cast<size_t>(len));
+    pos_ += static_cast<size_t>(len);
+    return true;
+  }
+
   bool readType(uint8_t& major, uint64_t& value) {
     if (pos_ >= data_.size()) {
       return false;

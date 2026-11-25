@@ -77,12 +77,16 @@ static_assert(
     "CacheConfig changed — update serializeCache()"
 );
 static_assert(
-    rfl::internal::num_fields<AuthConfig> == 8,
+    rfl::internal::num_fields<AuthConfig> == 9,
     "AuthConfig changed — update serializeAuth()"
 );
 static_assert(
     rfl::internal::num_fields<AuthConfig::HmacKey> == 2,
     "HmacKey changed — update serializeAuth()"
+);
+static_assert(
+    rfl::internal::num_fields<AuthConfig::Es256Key> == 2,
+    "Es256Key changed — update serializeAuth()"
 );
 static_assert(
     rfl::internal::num_fields<AuthConfig::AnonymousScope> == 5,
@@ -298,6 +302,20 @@ TEST(ConfigSerializerTest, RedactsHmacSecret) {
   for (const auto& [_, value] : sink.scalars) {
     EXPECT_NE(value, "super-secret-value") << "secret leaked into serialized config";
   }
+}
+
+TEST(ConfigSerializerTest, SerializesEs256PublicKeyConfiguration) {
+  Config cfg = makeFullConfig();
+  cfg.services.at("default").auth.es256Keys = {
+      {.id = "es-key", .publicKeyFile = "/etc/moqx/token-public.pem"}
+  };
+  RecordingSink sink;
+  serializeConfig(cfg, sink);
+  EXPECT_EQ(sink.scalars["services.default.auth.es256_keys.*.id"], "es-key");
+  EXPECT_EQ(
+      sink.scalars["services.default.auth.es256_keys.*.public_key_file"],
+      "/etc/moqx/token-public.pem"
+  );
 }
 
 } // namespace

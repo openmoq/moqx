@@ -389,6 +389,12 @@ target_link_libraries(moqx_hmac_key PUBLIC OpenSSL::Crypto)
 
 target_link_libraries(moqx_hmac_key PRIVATE moqx_warnings)
 
+# --- C4M draft-02 bearer-token codec (no relay dependencies) ---
+
+add_library(moqx_c4m STATIC src/auth/C4m.cpp src/auth/Es256Key.cpp)
+target_include_directories(moqx_c4m PUBLIC ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(moqx_c4m PUBLIC OpenSSL::Crypto catapult PRIVATE moqx_warnings)
+
 # --- Core library ---
 
 add_library(moqx_core STATIC
@@ -461,7 +467,7 @@ target_link_libraries(moqx_core PUBLIC
   Folly::folly_io_async_fdsock_async_fd_socket
   moxygen::moxygen_moqclient
   OpenSSL::Crypto
-  catapult
+  moqx_c4m
   moxygen::moxygen_mlog_file_mlogger
   moxygen::moxygen_mlog_mlogger_factory
   moxygen::moxygen_mlog_sampling_mlogger_factory
@@ -536,7 +542,7 @@ endif()
 
 target_link_libraries(moqx PRIVATE moqx_core moqx_config_loader)
 
-# --- CAT4MOQ token issuer (signing) library, shared by the CLI and tests ---
+# --- C4M token issuer (signing) library, shared by the CLI and tests ---
 
 add_library(moqx_issuer_lib STATIC
   src/auth/AuthTokenIssuer.cpp
@@ -550,7 +556,7 @@ target_include_directories(moqx_issuer_lib
 target_link_libraries(moqx_issuer_lib PUBLIC
   moqx_hmac_key
   moqx_config
-  catapult
+  moqx_c4m
   moxygen::moxygen_moq_types
 )
 

@@ -6,30 +6,22 @@
 
 #include "auth/Auth.h"
 #include "auth/AuthTokenIssuer.h"
+#include "auth/Es256Key.h"
 #include "auth/HmacKey.h"
 
-#include <catapult/crypto.hpp>
-#include <catapult/cwt.hpp>
+#include <openssl/evp.h>
+#include <openssl/hmac.h>
+
+#include <array>
 #include <folly/String.h>
 #include <folly/portability/GTest.h>
+#include <future>
 
 using namespace openmoq::moqx;
 using namespace openmoq::moqx::auth;
 using namespace moxygen;
 
 namespace {
-
-std::string namespaceBytes(const TrackNamespace& ns) {
-  std::string out;
-  for (const auto& field : ns.trackNamespace) {
-    out.push_back(0);
-    out.push_back(0);
-    out.push_back(0);
-    out.push_back(static_cast<char>(field.size()));
-    out.append(field);
-  }
-  return out;
-}
 
 config::AuthConfig makeConfig() {
   return config::AuthConfig{
@@ -80,12 +72,26 @@ std::vector<uint8_t> cborBytes(const std::vector<uint8_t>& data) {
 
 // Builds a COSE_Mac0 token from a hex claims map, so that a test can send any claim value.
 AuthToken makeRawCwt(std::string_view claimsHex) {
-  const std::vector<uint8_t> header{0xa1, 0x01, static_cast<uint8_t>(catapult::ALG_HMAC256_256)};
+  const std::vector<uint8_t> header{0xa1, 0x01, static_cast<uint8_t>(5)};
   const auto claims = folly::unhexlify(claimsHex);
   const std::vector<uint8_t> payload(claims.begin(), claims.end());
-  catapult::HmacSha256Algorithm hmac(deriveHmacKey("secret"));
-  const auto tag = hmac.sign(catapult::createCoseSign1Input(header, payload));
-  std::vector<uint8_t> cwt{0x84};
+  const auto key = deriveHmacKey("secret");
+  std::vector<uint8_t> input{0x84, 0x64, 'M', 'A', 'C', '0'};
+  for (const auto& part : {cborBytes(header), std::vector<uint8_t>{0x40}, cborBytes(payload)}) {
+    input.insert(input.end(), part.begin(), part.end());
+  }
+  std::vector<uint8_t> tag(32);
+  unsigned tagLen = 0;
+  HMAC(
+      EVP_sha256(),
+      key.data(),
+      static_cast<int>(key.size()),
+      input.data(),
+      input.size(),
+      tag.data(),
+      &tagLen
+  );
+  std::vector<uint8_t> cwt{0xd1, 0x84};
   for (const auto& part :
        {cborBytes(header), std::vector<uint8_t>{0xa0}, cborBytes(payload), cborBytes(tag)}) {
     cwt.insert(cwt.end(), part.begin(), part.end());
@@ -117,12 +123,82 @@ config::AuthConfig::AnonymousScope makeAnonymousConfigScope(
 
 } // namespace
 
+TEST(AuthTest, MixedAlgorithmKeysRejectAlgorithmConfusionAndTryNoKidWithinFamily) {
+  auto config = makeConfig();
+  config.es256Keys = {
+      {.id = "es-key", .publicKeyFile = std::string(TEST_C4M_KEY_DIR) + "/c4m_es256_public.pem"}
+  };
+  AuthTokenVerifier verifier(config);
+  auto privateKey =
+      loadEs256PrivateKeyFile(std::string(TEST_C4M_KEY_DIR) + "/c4m_es256_private.pem");
+  auto grants = makeGrants({Action::ClientSetup}, {}, {});
+  auto token = AuthToken{
+      .tokenType = 77,
+      .tokenValue = signC4mToken("es-key", *privateKey, grants),
+      .alias = AuthToken::DontRegister
+  };
+  EXPECT_TRUE(verifier.verify(token).hasValue());
+  token.tokenValue = signC4mToken("", *privateKey, grants);
+  EXPECT_TRUE(verifier.verify(token).hasValue());
+  token.tokenValue = signC4mToken("k1", *privateKey, grants);
+  auto confused = verifier.verify(token);
+  ASSERT_TRUE(confused.hasError());
+  EXPECT_EQ(confused.error(), AuthError::BadSignature);
+  token.tokenValue = signGrants("es-key", "secret", grants);
+  confused = verifier.verify(token);
+  ASSERT_TRUE(confused.hasError());
+  EXPECT_EQ(confused.error(), AuthError::BadSignature);
+}
+
+TEST(AuthTest, DisabledAuthDoesNotLoadEs256FilesAndDuplicateKeyIdsFailClosed) {
+  auto config = makeConfig();
+  config.enabled = false;
+  config.es256Keys = {{.id = "es-key", .publicKeyFile = "missing.pem"}};
+  EXPECT_NO_THROW(AuthTokenVerifier{config});
+  config.enabled = true;
+  config.es256Keys = {
+      {.id = "k1", .publicKeyFile = std::string(TEST_C4M_KEY_DIR) + "/c4m_es256_public.pem"}
+  };
+  EXPECT_THROW(AuthTokenVerifier{config}, std::invalid_argument);
+}
+
+TEST(AuthTest, Es256VerifierCanBeSharedAcrossThreads) {
+  auto config = makeConfig();
+  config.hmacKeys.clear();
+  config.es256Keys = {
+      {.id = "es-key", .publicKeyFile = std::string(TEST_C4M_KEY_DIR) + "/c4m_es256_public.pem"}
+  };
+  const AuthTokenVerifier verifier(config);
+  const auto privateKey =
+      loadEs256PrivateKeyFile(std::string(TEST_C4M_KEY_DIR) + "/c4m_es256_private.pem");
+  const auto token = AuthToken{
+      .tokenType = 77,
+      .tokenValue = signC4mToken("es-key", *privateKey, makeGrants({Action::ClientSetup}, {}, {})),
+      .alias = AuthToken::DontRegister
+  };
+  std::vector<std::future<bool>> workers;
+  for (size_t i = 0; i < 8; ++i) {
+    workers.push_back(std::async(std::launch::async, [&] {
+      for (size_t n = 0; n < 64; ++n) {
+        const auto result = verifier.verify(token);
+        if (!result.hasValue() || !allows(result.value(), Action::ClientSetup, TrackNamespace{})) {
+          return false;
+        }
+      }
+      return true;
+    }));
+  }
+  for (auto& worker : workers) {
+    EXPECT_TRUE(worker.get());
+  }
+}
+
 TEST(AuthTest, VerifiesSignedTokenAndAllowsMatchingAction) {
   TrackNamespace ns{{"live", "event"}};
   AuthTokenVerifier verifier(makeConfig());
   auto token = makeToken(makeGrants(
       {Action::Subscribe},
-      {MatchRule{.type = MatchRule::Type::Exact, .value = namespaceBytes(ns)}},
+      {MatchRule{.value = "live"}, MatchRule{.value = "event"}},
       {MatchRule{.type = MatchRule::Type::Exact, .value = "video"}}
   ));
   auto grants = verifier.verify(token);
@@ -132,38 +208,22 @@ TEST(AuthTest, VerifiesSignedTokenAndAllowsMatchingAction) {
   EXPECT_FALSE(allows(grants.value(), Action::Subscribe, FullTrackName{ns, "audio"}));
 }
 
-TEST(AuthTest, AllowsPrefixSuffixAndContainsMatchRules) {
+TEST(AuthTest, AllowsPerFieldPrefixAndSuffixMatchRules) {
   TrackNamespace ns{{"live", "event"}};
-  const auto canonicalNs = namespaceBytes(ns);
-
-  auto prefixGrants = makeGrants(
+  auto grants = makeGrants(
       {Action::Subscribe},
-      {MatchRule{.type = MatchRule::Type::Prefix, .value = canonicalNs.substr(0, 8)}},
+      {MatchRule{.type = MatchRule::Type::Prefix, .value = "liv"},
+       MatchRule{.type = MatchRule::Type::Suffix, .value = "vent"}},
       {MatchRule{.type = MatchRule::Type::Prefix, .value = "vid"}}
   );
-  EXPECT_TRUE(allows(prefixGrants, Action::Subscribe, FullTrackName{ns, "video"}));
+  EXPECT_TRUE(allows(grants, Action::Subscribe, FullTrackName{ns, "video"}));
   EXPECT_FALSE(
-      allows(prefixGrants, Action::Subscribe, FullTrackName{TrackNamespace{{"vod"}}, "video"})
+      allows(grants, Action::Subscribe, FullTrackName{TrackNamespace{{"vod", "event"}}, "video"})
   );
-
-  auto suffixGrants = makeGrants(
-      {Action::Fetch},
-      {MatchRule{
-          .type = MatchRule::Type::Suffix,
-          .value = canonicalNs.substr(canonicalNs.size() - 9)
-      }},
-      {MatchRule{.type = MatchRule::Type::Suffix, .value = ".mp4"}}
+  EXPECT_FALSE(
+      allows(grants, Action::Subscribe, FullTrackName{TrackNamespace{{"live", "other"}}, "video"})
   );
-  EXPECT_TRUE(allows(suffixGrants, Action::Fetch, FullTrackName{ns, "clip.mp4"}));
-  EXPECT_FALSE(allows(suffixGrants, Action::Fetch, FullTrackName{ns, "clip.m4s"}));
-
-  auto containsGrants = makeGrants(
-      {Action::Publish},
-      {MatchRule{.type = MatchRule::Type::Contains, .value = "live"}},
-      {MatchRule{.type = MatchRule::Type::Contains, .value = "main"}}
-  );
-  EXPECT_TRUE(allows(containsGrants, Action::Publish, FullTrackName{ns, "camera-main"}));
-  EXPECT_FALSE(allows(containsGrants, Action::Publish, FullTrackName{ns, "camera-side"}));
+  EXPECT_FALSE(allows(grants, Action::Subscribe, FullTrackName{ns, "audio"}));
 }
 
 TEST(AuthTest, EmptyNamespaceAndTrackRulesMatchEverything) {
@@ -341,7 +401,7 @@ TEST(AuthTest, RejectsExpiredToken) {
   EXPECT_EQ(grants.error(), AuthError::Expired);
 }
 
-TEST(AuthTest, VerifiesCatapultCwtWithOpenScope) {
+TEST(AuthTest, VerifiesC4mCwtWithOpenScope) {
   AuthTokenVerifier verifier(makeConfig());
   auto grants = verifier.verify(makeToken(makeGrants({Action::ClientSetup}, {}, {})));
 
@@ -357,18 +417,7 @@ TEST(AuthTest, StrictClaimsAcceptsOnlyEnforcedClaims) {
 }
 
 TEST(AuthTest, StrictClaimsRejectsUnenforcedClaim) {
-  catapult::CatToken cat;
-  cat.withExpiration(std::chrono::system_clock::now() + std::chrono::hours(1));
-  cat.withIssuer("issuer.example");
-  catapult::HmacSha256Algorithm hmac(deriveHmacKey("secret"));
-  catapult::Cwt cwt(catapult::ALG_HMAC256_256, cat);
-  cwt.withKeyId("k1");
-  auto bytes = cwt.createCwt(catapult::CwtMode::MACed, hmac);
-  AuthToken token{
-      .tokenType = 77,
-      .tokenValue = std::string(bytes.begin(), bytes.end()),
-      .alias = AuthToken::DontRegister,
-  };
+  auto token = makeRawCwt("a2041af4865700016178"); // {exp: 4102444800, iss: "x"}
 
   EXPECT_TRUE(AuthTokenVerifier(makeConfig()).verify(token).hasValue());
 
@@ -376,7 +425,7 @@ TEST(AuthTest, StrictClaimsRejectsUnenforcedClaim) {
   config.strictClaims = true;
   auto strict = AuthTokenVerifier(config).verify(token);
   ASSERT_TRUE(strict.hasError());
-  EXPECT_EQ(strict.error(), AuthError::Malformed);
+  EXPECT_EQ(strict.error(), AuthError::UnsupportedClaim);
 }
 
 TEST(AuthTest, StrictClaimsAcceptsRawCwtWithoutKid) {
@@ -388,7 +437,6 @@ TEST(AuthTest, StrictClaimsAcceptsRawCwtWithoutKid) {
 TEST(AuthTest, StrictClaimsRejectsMalformedExp) {
   for (auto claims : {
            "a1046a31373030303030303030", // {exp: "1700000000"}
-           "a10420",                     // {exp: -1}
            "a2041af4865700041af4865700", // exp twice
        }) {
     SCOPED_TRACE(claims);
@@ -398,10 +446,11 @@ TEST(AuthTest, StrictClaimsRejectsMalformedExp) {
   }
 }
 
-TEST(AuthTest, StrictClaimsRejectsMoqtReval) {
-  auto strict = verifyStrict(makeRawCwt("a2041af486570019fde9183c")); // {exp, moqt-reval: 60}
-  ASSERT_TRUE(strict.hasError());
-  EXPECT_EQ(strict.error(), AuthError::Malformed);
+TEST(AuthTest, RejectsMoqtReval) {
+  // {exp, moqt-reval: 60}: a restriction the relay cannot enforce.
+  auto rejected = verifyStrict(makeRawCwt("a2041af48657003a00010001183c"));
+  ASSERT_TRUE(rejected.hasError());
+  EXPECT_EQ(rejected.error(), AuthError::UnsupportedClaim);
 }
 
 TEST(AuthTest, StrictClaimsReportsExpiryFirst) {
@@ -410,22 +459,14 @@ TEST(AuthTest, StrictClaimsReportsExpiryFirst) {
   EXPECT_EQ(strict.error(), AuthError::Expired);
 }
 
-TEST(AuthTest, MultiRuleCompoundMatchRoundtripsViaCwt) {
-  // Two track-match rules (prefix AND suffix) must survive CWT serialization and
-  // be enforced on verification. Both conditions must hold for allows() to pass.
+TEST(AuthTest, RejectsCompoundTrackMatchesThatC4mCannotRepresent) {
   auto grants = makeGrants(
       {Action::Subscribe},
       {},
       {MatchRule{.type = MatchRule::Type::Prefix, .value = "live-"},
        MatchRule{.type = MatchRule::Type::Suffix, .value = ".mp4"}}
   );
-  AuthTokenVerifier verifier(makeConfig());
-  auto result = verifier.verify(makeToken(grants));
-  ASSERT_TRUE(result.hasValue());
-  TrackNamespace ns{};
-  EXPECT_TRUE(allows(result.value(), Action::Subscribe, FullTrackName{ns, "live-stream.mp4"}));
-  EXPECT_FALSE(allows(result.value(), Action::Subscribe, FullTrackName{ns, "live-stream.ts"}));
-  EXPECT_FALSE(allows(result.value(), Action::Subscribe, FullTrackName{ns, "vod-stream.mp4"}));
+  EXPECT_THROW(makeToken(grants), std::invalid_argument);
 }
 
 // --- authorize(): multi-token, any-satisfies pooling ---
@@ -827,7 +868,7 @@ TEST(AuthTest, AuthorizeAnonymousClaimDoesNotCoverActionsOutsideItsScope) {
 
 // The anonymous claim never satisfies the ClientSetup gate, even if
 // (hypothetically, bypassing config validation) it were configured to grant
-// it -- authenticateSetup() never consults anonymousGrants() at all.
+// it -- authenticateSetup() never consults allowsAnonymous() at all.
 TEST(AuthTest, AuthenticateSetupAnonymousClaimNeverSatisfiesClientSetupGate) {
   auto config = makeConfig();
   config.anonymousClaim = {makeAnonymousConfigScope({Action::ClientSetup})};

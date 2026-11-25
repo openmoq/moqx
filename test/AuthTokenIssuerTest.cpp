@@ -14,13 +14,78 @@ using namespace openmoq::moqx;
 using namespace openmoq::moqx::auth;
 using namespace moxygen;
 
+TEST(AuthTokenIssuerTest, C4mDraft02UsesSetupActionOne) {
+  EXPECT_EQ(static_cast<uint64_t>(Action::ClientSetup), 1);
+  EXPECT_THROW(parseActions("server_setup"), std::invalid_argument);
+  EXPECT_THROW(parseActions("0"), std::invalid_argument);
+}
+
+TEST(AuthTokenIssuerTest, C4mDraft02IssuesTaggedCoseMac0) {
+  auto issued = issueToken(IssueTokenOptions{
+      .keyID = "c4m-dev",
+      .secret = "operator-test-secret-with-enough-entropy",
+      .actions = {Action::ClientSetup},
+  });
+  ASSERT_FALSE(issued.tokenValue.empty());
+  EXPECT_EQ(static_cast<uint8_t>(issued.tokenValue.front()), 0xd1);
+}
+
+TEST(AuthTokenIssuerTest, Es256IssuerWorksWithPublicOnlyRelayConfiguration) {
+  auto issued = issueToken(IssueTokenOptions{
+      .keyID = "es-key",
+      .actions = {Action::ClientSetup, Action::Publish},
+      .trackNamespace = TrackNamespace{{"live", "event"}},
+      .trackName = "video",
+      .privateKeyFile = std::string(TEST_C4M_KEY_DIR) + "/c4m_es256_private.pem",
+  });
+  auto config = config::AuthConfig{
+      .enabled = true,
+      .es256Keys =
+          {{.id = "es-key", .publicKeyFile = std::string(TEST_C4M_KEY_DIR) + "/c4m_es256_public.pem"
+          }},
+  };
+  AuthTokenVerifier verifier(config);
+  auto token =
+      AuthToken{.tokenType = 1, .tokenValue = issued.tokenValue, .alias = AuthToken::DontRegister};
+  auto result = verifier.verify(token);
+  ASSERT_TRUE(result.hasValue());
+  EXPECT_TRUE(config.hmacKeys.empty());
+  EXPECT_TRUE(allows(result.value(), Action::ClientSetup, TrackNamespace{}));
+  EXPECT_TRUE(allows(
+      result.value(),
+      Action::Publish,
+      FullTrackName{TrackNamespace{{"live", "event"}}, "video"}
+  ));
+  EXPECT_FALSE(allows(
+      result.value(),
+      Action::Publish,
+      FullTrackName{TrackNamespace{{"live", "event"}}, "audio"}
+  ));
+  token.tokenValue.back() ^= 1;
+  auto corrupt = verifier.verify(token);
+  ASSERT_TRUE(corrupt.hasError());
+  EXPECT_EQ(corrupt.error(), AuthError::BadSignature);
+}
+
+TEST(AuthTokenIssuerTest, RejectsAmbiguousHmacAndEs256SigningOptions) {
+  EXPECT_THROW(
+      issueToken(IssueTokenOptions{
+          .keyID = "es-key",
+          .secret = "secret",
+          .actions = {Action::ClientSetup},
+          .privateKeyFile = std::string(TEST_C4M_KEY_DIR) + "/c4m_es256_private.pem",
+      }),
+      std::invalid_argument
+  );
+}
+
 TEST(AuthTokenIssuerTest, IssuesSetupAndPublishTokenAcceptedByVerifier) {
   const std::string secret = "operator-test-secret-with-enough-entropy";
   IssueTokenOptions options{
       .keyID = "cat-dev",
       .secret = secret,
       .actions = {Action::ClientSetup, Action::PublishNamespace, Action::Publish},
-      .trackNamespace = TrackNamespace{{"cat4moq.example"}},
+      .trackNamespace = TrackNamespace{{"c4m.example"}},
       .trackName = "video",
       .ttl = std::chrono::seconds(3600),
       .now = std::chrono::system_clock::time_point(std::chrono::seconds(1'800'000'000)),
@@ -30,30 +95,29 @@ TEST(AuthTokenIssuerTest, IssuesSetupAndPublishTokenAcceptedByVerifier) {
 
   AuthTokenVerifier verifier(config::AuthConfig{
       .enabled = true,
-      .tokenType = 16,
+      .tokenType = 1,
       .hmacKeys = {config::AuthConfig::HmacKey{.id = "cat-dev", .secret = secret}},
       .requireSetupToken = true,
       .allowRequestTokenOverride = true,
   });
   auto grants = verifier.verify(AuthToken{
-      .tokenType = 16,
+      .tokenType = 1,
       .tokenValue = issued.tokenValue,
       .alias = AuthToken::DontRegister,
   });
 
   ASSERT_TRUE(grants.hasValue());
   EXPECT_TRUE(allows(grants.value(), Action::ClientSetup, TrackNamespace{}));
-  EXPECT_TRUE(allows(grants.value(), Action::PublishNamespace, TrackNamespace{{"cat4moq.example"}})
-  );
+  EXPECT_TRUE(allows(grants.value(), Action::PublishNamespace, TrackNamespace{{"c4m.example"}}));
   EXPECT_TRUE(allows(
       grants.value(),
       Action::Publish,
-      FullTrackName{TrackNamespace{{"cat4moq.example"}}, "video"}
+      FullTrackName{TrackNamespace{{"c4m.example"}}, "video"}
   ));
   EXPECT_FALSE(allows(
       grants.value(),
       Action::Publish,
-      FullTrackName{TrackNamespace{{"cat4moq.example"}}, "audio"}
+      FullTrackName{TrackNamespace{{"c4m.example"}}, "audio"}
   ));
 }
 
@@ -78,7 +142,7 @@ TEST(AuthTokenIssuerTest, ParsesSlashSeparatedNamespace) {
 TEST(AuthTokenIssuerTest, SelectsConfiguredHmacKeyByID) {
   config::AuthConfig auth{
       .enabled = true,
-      .tokenType = 16,
+      .tokenType = 1,
       .hmacKeys =
           {
               config::AuthConfig::HmacKey{.id = "old", .secret = "old-secret"},

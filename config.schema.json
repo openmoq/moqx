@@ -187,6 +187,20 @@
                         }
                     ]
                 },
+                "es256_keys": {
+                    "description": "Accepted ES256 public verification keys",
+                    "anyOf": [
+                        {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/$defs/openmoq__moqx__config__ParsedAuthConfig__Es256Key"
+                            }
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
                 "require_setup_token": {
                     "description": "Require a valid setup token during CLIENT_SETUP (default: true)",
                     "anyOf": [
@@ -210,7 +224,7 @@
                     ]
                 },
                 "strict_claims": {
-                    "description": "Reject unsupported token claims instead of ignoring them (default: false)",
+                    "description": "Also reject informational CWT claims; unsupported restrictions are always rejected (default: false)",
                     "anyOf": [
                         {
                             "type": "boolean"
@@ -255,7 +269,7 @@
             "properties": {
                 "actions": {
                     "type": "array",
-                    "description": "CAT4MOQ action names this scope grants without any token; client_setup/server_setup are rejected -- the anonymous claim never authorizes session setup",
+                    "description": "C4M action names this scope grants without any token; setup/client_setup are rejected -- the anonymous claim never authorizes session setup",
                     "items": {
                         "type": "string"
                     }
@@ -419,6 +433,23 @@
             },
             "required": [
                 "suffix"
+            ]
+        },
+        "openmoq__moqx__config__ParsedAuthConfig__Es256Key": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "description": "Key identifier embedded in the token envelope"
+                },
+                "public_key_file": {
+                    "type": "string",
+                    "description": "PEM P-256 public key file used for ES256 verification"
+                }
+            },
+            "required": [
+                "id",
+                "public_key_file"
             ]
         },
         "openmoq__moqx__config__ParsedAuthConfig__HmacKey": {
