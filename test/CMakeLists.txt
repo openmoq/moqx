@@ -180,6 +180,7 @@ target_include_directories(moqx_admin_stats_test PRIVATE ${PROJECT_SOURCE_DIR}/s
 
 moqx_add_gtest(moqx_config_test
   SRCS
+    config/ConfigDiffTest.cpp
     config/ConfigResolverTest.cpp
     config/ConfigSerializerTest.cpp
     config/LoaderTest.cpp

@@ -17,13 +17,18 @@
 // you add or remove a field in Config.h, the matching assert fails and you must
 // bump the count *and* update serializeConfig() in ConfigSerializer.h. This is
 // the single tripwire that keeps the serializer in sync with the config types.
+// For Config it also keeps planReload() in ConfigDiff.cpp in sync, since that
+// compares the top-level fields one by one.
 //
 // rfl lives only in the loader/test targets (moqx_config stays rfl-free), so
 // the check lives here rather than next to the serializer.
 namespace {
 using namespace openmoq::moqx::config;
 
-static_assert(rfl::internal::num_fields<Config> == 10, "Config changed — update serializeConfig()");
+static_assert(
+    rfl::internal::num_fields<Config> == 10,
+    "Config changed — update serializeConfig() and planReload()"
+);
 static_assert(
     rfl::internal::num_fields<ClusterConfig> == 1,
     "ClusterConfig changed — update serializeConfig()"

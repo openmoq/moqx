@@ -8,6 +8,7 @@
 
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include <folly/Expected.h>
 
@@ -21,13 +22,20 @@ constexpr std::string_view kValidateConfigCommand = "validate-config";
 /// Returns usage lines for config-specific subcommands.
 std::string configSubcommandUsage();
 
-/// Handle config-specific subcommands or load+resolve config.
-/// Returns ResolvedConfig (with warnings) or an exit code.
+/// Handle config-specific subcommands or load+resolve config (via loadAndResolveConfig),
+/// printing errors to stderr. Returns ResolvedConfig (with warnings) or an exit code.
 folly::Expected<ResolvedConfig, int> handleConfigSubcommand(
     std::string_view subcommand,
     std::string_view configPath,
     bool strictConfig,
     const char* programName
 );
+
+/// Load, resolve, and (when strict) reject warnings. No printing, no exit.
+/// On failure returns the error lines: a single message for load/resolve
+/// failures, or a header followed by one entry per warning for the
+/// strict-warnings rule.
+folly::Expected<ResolvedConfig, std::vector<std::string>>
+loadAndResolveConfig(std::string_view configPath, bool strictConfig);
 
 } // namespace openmoq::moqx::config
