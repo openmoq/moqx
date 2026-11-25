@@ -38,24 +38,12 @@ folly::Expected<ResolvedConfig, int> handleConfigSubcommand(
     return folly::makeUnexpected(1);
   }
 
-  ParsedConfig parsed;
-  try {
-    parsed = loadConfig(std::string(configPath), strictConfig);
-  } catch (const std::exception& e) {
-    std::cerr << "Error: " << e.what() << std::endl;
-    return folly::makeUnexpected(1);
-  }
-
-  auto result = resolveConfig(parsed);
+  auto result = loadAndResolveConfig(configPath, strictConfig);
   if (result.hasError()) {
-    std::cerr << "Error: " << result.error() << std::endl;
-    return folly::makeUnexpected(1);
-  }
-
-  if (strictConfig && !result.value().warnings.empty()) {
-    std::cerr << "Error: Config warnings treated as errors (--strict_config):";
-    for (const auto& w : result.value().warnings) {
-      std::cerr << "\n  - " << w;
+    const auto& errors = result.error();
+    std::cerr << "Error: " << errors.front();
+    for (size_t i = 1; i < errors.size(); ++i) {
+      std::cerr << "\n  - " << errors[i];
     }
     std::cerr << std::endl;
     return folly::makeUnexpected(1);
@@ -69,6 +57,30 @@ folly::Expected<ResolvedConfig, int> handleConfigSubcommand(
     return folly::makeUnexpected(0);
   }
 
+  return std::move(result.value());
+}
+
+folly::Expected<ResolvedConfig, std::vector<std::string>>
+loadAndResolveConfig(std::string_view configPath, bool strictConfig) {
+  ParsedConfig parsed;
+  try {
+    parsed = loadConfig(std::string(configPath), strictConfig);
+  } catch (const std::exception& e) {
+    return folly::makeUnexpected(std::vector<std::string>{e.what()});
+  }
+
+  auto result = resolveConfig(parsed);
+  if (result.hasError()) {
+    return folly::makeUnexpected(std::vector<std::string>{result.error()});
+  }
+
+  if (strictConfig && !result.value().warnings.empty()) {
+    std::vector<std::string> errors{"Config warnings treated as errors (--strict_config):"};
+    for (auto& w : result.value().warnings) {
+      errors.push_back(std::move(w));
+    }
+    return folly::makeUnexpected(std::move(errors));
+  }
   return std::move(result.value());
 }
 
