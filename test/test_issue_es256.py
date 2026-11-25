@@ -163,4 +163,16 @@ services:
         ],
         False,
     )
+    # The relay accepts DPoP windows of 1 to 86400 seconds; the issuer must not mint others.
+    for window in ("0", "86401"):
+        run(
+            "dpop-window-" + window + "-is-refused",
+            [
+                "--auth_secret=local-validation-only",
+                "--auth_key_id=hmac-key",
+                "--auth_dpop_key_file=" + str(private),
+                "--auth_dpop_window_seconds=" + window,
+            ],
+            False,
+        )
     run("hmac", ["--auth_secret=local-validation-only", "--auth_key_id=hmac-key"], True)

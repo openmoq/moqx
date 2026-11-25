@@ -7,6 +7,7 @@
 #include "auth/AuthTokenIssuer.h"
 
 #include "auth/Action.h"
+#include "auth/Dpop.h"
 #include "auth/Es256Key.h"
 #include "auth/HmacKey.h"
 
@@ -121,6 +122,10 @@ IssuedToken issueToken(const IssueTokenOptions& options) {
     throw std::invalid_argument("C4M ttl must be greater than zero");
   }
   // The relay rejects tokens outside these ranges, so refuse to mint them.
+  if (!options.dpopKeyFile.empty() && (options.dpopWindow < std::chrono::seconds(1) ||
+                                       options.dpopWindow > std::chrono::seconds(86400))) {
+    throw std::invalid_argument("DPoP window must be 1 to 86400 seconds");
+  }
   if (options.revalidateEvery < std::chrono::seconds::zero() ||
       options.revalidateEvery > std::chrono::seconds(31536000)) {
     throw std::invalid_argument("revalidation interval must be 0 to 31536000 seconds");
@@ -131,6 +136,17 @@ IssuedToken issueToken(const IssueTokenOptions& options) {
   grants.issuer = options.issuer;
   grants.audiences = options.audiences;
   grants.revalidateEvery = options.revalidateEvery;
+  if (!options.dpopKeyFile.empty()) {
+    const auto clientKey = dpopPublicKey(options.dpopKeyFile);
+    grants.dpop = DpopRequirement{
+        DpopBinding{
+            options.dpopJkt ? DpopBinding::Kind::Jkt : DpopBinding::Kind::Ckt,
+            options.dpopJkt ? jwkThumbprint(clientKey) : coseKeyThumbprint(clientKey)
+        },
+        options.dpopWindow,
+        true,
+    };
+  }
   if (options.replayProtected) {
     std::array<unsigned char, 16> id{};
     if (RAND_bytes(id.data(), static_cast<int>(id.size())) != 1) {

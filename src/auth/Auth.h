@@ -46,6 +46,7 @@ public:
 
   bool enabled() const { return config_.enabled; }
   uint64_t tokenType() const { return config_.tokenType; }
+  uint64_t dpopTokenType() const { return config_.dpopTokenType; }
   bool requireSetupToken() const { return config_.requireSetupToken; }
   bool allowRequestTokenOverride() const { return config_.allowRequestTokenOverride; }
 
@@ -92,7 +93,25 @@ private:
   static constexpr std::size_t kMaxReplayEntries = 1u << 17;
   bool bindReplay(const Grants& grants, uint64_t connectionId) const;
 
+public:
+  // DPoP: keeps the grants whose cnf binding is satisfied by a valid proof among `params` for this
+  // exact action (draft-02 section 4.3). Grants without cnf pass through unchanged.
+  std::vector<Grants> applyDpop(
+      const std::vector<Grants>& grants,
+      const moxygen::Parameters& params,
+      const DpopContext& context,
+      uint64_t connectionId
+  ) const;
+
 private:
+  // True the first time a proof cti is seen within its window; false for a replay or when full.
+  bool noteProofCti(
+      const Grants& grants,
+      const std::string& cti,
+      std::chrono::system_clock::time_point expiresAt
+  ) const;
+  mutable std::mutex proofMutex_;
+  mutable std::unordered_map<std::string, std::chrono::system_clock::time_point> proofCtis_;
   mutable std::mutex replayMutex_;
   mutable std::unordered_map<std::string, ReplayEntry> replay_;
 };
