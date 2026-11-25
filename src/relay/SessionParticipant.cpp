@@ -189,7 +189,7 @@ ParticipantInfo
 SessionParticipant::snapshot(const moxygen::MoQSession& session, const PeeringBackend* peering) {
   ParticipantInfo info{
       .sessionId = session.sessionId(),
-      .version = session.getNegotiatedVersion().value_or(0),
+      .version = session.getNegotiatedVersion(),
       .executor = session.getExecutor(),
       .address = session.getPeerAddress().describe(),
       .authority = session.getAuthority(),

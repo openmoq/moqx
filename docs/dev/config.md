@@ -34,6 +34,7 @@ The split between `ParsedConfig` and `Config` exists because the YAML-facing sha
 | `src/config/ConfigInit.cpp` | Subcommand orchestration |
 | `src/config/loader/StringLiteral.h` | Compile-time string utilities for descriptions |
 | `config.example.yaml` | Example config file |
+| `config.schema.json` | Generated JSON schema, checked by `ConfigSchema.CommittedSchemaIsCurrent` |
 
 ## How to add a new config field
 
@@ -111,9 +112,12 @@ field breaks the build until you bump the count and update the serializer.
 Redact secrets (e.g. HMAC keys) here — the serializer emits `"<redacted>"` so
 no sink can leak them.
 
-### 5. Update `config.example.yaml`
+### 5. Update `config.example.yaml` and `config.schema.json`
 
 Add the new field with a comment explaining it.
+
+Regenerate `config.schema.json`: `moqx dump-config-schema > config.schema.json`.
+`ConfigSchema.CommittedSchemaIsCurrent` fails while it is stale.
 
 ### 6. Adding a new config section
 
@@ -125,7 +129,7 @@ If you need a new top-level section (not just a field), also:
 
 ## reflect-cpp notes
 
-- We use reflect-cpp v0.18.0 for YAML deserialization and JSON schema generation.
+- We use reflect-cpp v0.22.0 for YAML deserialization and JSON schema generation.
 - `rfl::Description<"text", T>` annotates fields for schema generation. Access the inner value with `.value()`.
 - `rfl::yaml::read<T>()` deserializes; `rfl::yaml::read<T, rfl::NoExtraFields>()` for strict mode.
 - `rfl::json::to_schema<T>()` generates JSON schema from the type structure.

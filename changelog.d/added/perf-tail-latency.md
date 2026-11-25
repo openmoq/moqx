@@ -1,0 +1,1 @@
+- Performance dashboard: nightly runs record p50, p90, p95, p99, p99.9 and max object latency. The dashboard charts p99 for each profile and p95, p99 and max for each stack, and comparison reports flag increases in average, p95 and p99 latency. See [perf tracking](/docs/perf-tracking.md#tracked-metrics).

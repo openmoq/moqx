@@ -414,8 +414,9 @@ folly::coro::Task<void> UpstreamProvider::doConnect() {
   XLOG(DBG1) << "UpstreamProvider::doConnect url=" << url_.getUrl();
 
   auto sessionFactory = [makeRelaySession = MoQRelaySession::createRelaySessionFactory(),
-                         bufferBytes = subscriptionBufferBytes_](auto wt, auto exec) {
-    auto session = makeRelaySession(std::move(wt), std::move(exec));
+                         bufferBytes =
+                             subscriptionBufferBytes_](auto wt, uint64_t version, auto exec) {
+    auto session = makeRelaySession(std::move(wt), version, std::move(exec));
     auto settings = session->getMoqSettings();
     settings.bufferingThresholds.perSubscription = bufferBytes;
     session->setMoqSettings(settings);

@@ -25,8 +25,7 @@ protected:
   // Like createMockSession() but reports draft 18 for the negotiated version.
   std::shared_ptr<MockMoQSession> createV18Session() {
     auto session = std::make_shared<NiceMock<MockMoQSession>>(exec_);
-    ON_CALL(*session, getNegotiatedVersion())
-        .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft18)));
+    ON_CALL(*session, getNegotiatedVersion()).WillByDefault(Return(kVersionDraft18));
     getOrCreateMockState(session);
     return session;
   }

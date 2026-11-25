@@ -16,6 +16,14 @@ moqx --config <path> --strict_config    # reject unknown fields,
                                         # promote warnings to errors
 ```
 
+[`config.schema.json`](../config.schema.json) holds the schema.
+An editor with YAML schema support picks it up from the `yaml-language-server: $schema=` comment in [`config.example.yaml`](../config.example.yaml).
+A config outside the repo may use the following form:
+
+```yaml
+# yaml-language-server: $schema=https://raw.githubusercontent.com/openmoq/moqx/v<version>/config.schema.json
+```
+
 ## Top-Level Structure
 
 ```yaml

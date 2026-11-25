@@ -1,3 +1,5 @@
+# yaml-language-server: $schema=config.schema.json
+# Outside the repo, replace the path above with https://raw.githubusercontent.com/openmoq/moqx/v<version>/config.schema.json
 # moqx relay configuration
 # See: moqx dump-config-schema | scripts/dev/config-schema-to-markdown.sh
 

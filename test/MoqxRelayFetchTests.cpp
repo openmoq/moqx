@@ -100,8 +100,7 @@ TEST_P(MoQRelayTest, FetchEmptyNamespaceRejectedPreV18) {
 // draft-18+ — it falls through to the normal "no such upstream" resolution.
 TEST_P(MoQRelayTest, FetchEmptyNamespaceAllowedV18) {
   auto session = createMockSession();
-  ON_CALL(*session, getNegotiatedVersion())
-      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft18)));
+  ON_CALL(*session, getNegotiatedVersion()).WillByDefault(Return(kVersionDraft18));
 
   Fetch fetch(
       RequestID(0),
@@ -386,8 +385,7 @@ TEST_P(MoQRelayTest, JoiningFetchWaitsForItsSubscribeSetup) {
   auto& pubAux = makeAuxExec("pub-iothread");
   auto* pubEvb = pubAux.evb;
   auto publisherSession = std::make_shared<NiceMock<MockMoQSession>>(pubAux.exec);
-  ON_CALL(*publisherSession, getNegotiatedVersion())
-      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
+  ON_CALL(*publisherSession, getNegotiatedVersion()).WillByDefault(Return(kVersionDraft16));
   getOrCreateMockState(publisherSession);
   auto subSession = createMockSession();
   doPublishNamespace(publisherSession, kTestNamespace);
@@ -517,8 +515,7 @@ TEST_P(MoQRelayTest, JoiningFetchFailsWithItsSubscribe) {
   auto& pubAux = makeAuxExec("pub-iothread");
   auto* pubEvb = pubAux.evb;
   auto publisherSession = std::make_shared<NiceMock<MockMoQSession>>(pubAux.exec);
-  ON_CALL(*publisherSession, getNegotiatedVersion())
-      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
+  ON_CALL(*publisherSession, getNegotiatedVersion()).WillByDefault(Return(kVersionDraft16));
   getOrCreateMockState(publisherSession);
   auto subSession = createMockSession();
   doPublishNamespace(publisherSession, kTestNamespace);

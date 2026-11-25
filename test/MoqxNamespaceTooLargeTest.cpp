@@ -86,7 +86,7 @@ protected:
     if (trackFilterMaxSelected) {
       subNs.params.insertParam(TopTracksExtension::encode(
           TrackFilter{kPropType, *trackFilterMaxSelected},
-          session->getNegotiatedVersion().value()
+          session->getNegotiatedVersion()
       ));
     }
     return withSessionContext(session, [&] {
@@ -108,7 +108,7 @@ protected:
     if (trackFilterMaxSelected) {
       subTracks.params.insertParam(TopTracksExtension::encode(
           TrackFilter{kPropType, *trackFilterMaxSelected},
-          session->getNegotiatedVersion().value()
+          session->getNegotiatedVersion()
       ));
     }
     return withSessionContext(session, [&] {

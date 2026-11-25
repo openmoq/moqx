@@ -50,7 +50,6 @@ buildTransportSettings(const config::QuicConfig& quic, const config::MvfstConfig
                                     : quic::QuicBatchingMode::BATCHING_MODE_SENDMMSG;
   ts.maxBatchSize = mvfst.maxConnPacketsSentPerLoop;
   ts.writeConnectionDataPacketsLimit = mvfst.maxConnPacketsSentPerLoop;
-  ts.dataPathType = quic::DataPathType::ContinuousMemory;
   ts.shouldUseWrapperRecvmmsgForBatchRecv = mvfst.useRecvmmsg;
   ts.maxServerRecvPacketsPerLoop = mvfst.maxServerRecvPacketsPerLoop;
   ts.maxRecvBatchSize = mvfst.maxServerRecvPacketsPerLoop;
@@ -211,11 +210,13 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayServer::validateAut
 
 std::shared_ptr<MoQSession> MoqxRelayServer::createSession(
     folly::MaybeManagedPtr<proxygen::WebTransport> wt,
+    uint64_t negotiatedVersion,
     std::shared_ptr<MoQExecutor> executor
 ) {
   return std::make_shared<MoqxRelaySession>(
       listenerMatcher_.name(),
       folly::MaybeManagedPtr<proxygen::WebTransport>(std::move(wt)),
+      negotiatedVersion,
       *this,
       std::move(executor)
   );

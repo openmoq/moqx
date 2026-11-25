@@ -90,6 +90,12 @@ stacks overlaid. Compare mode shows all tracked metrics for both stacks within
 the selected profile; Single mode shows one stack's history. The profile
 selector appears to the right of the mode selector in Compare and Single modes.
 Stack colors and line styles are consistent across modes.
+Amber-outlined chart points and the expandable parameter-change list identify
+changes from the preceding run on the same branch, profile, and stack, including
+when that preceding run is outside the selected window. Hover over a marked
+point to see the old and new values. Only parameters recorded in both runs are
+compared; the measured client window is excluded because it can vary between
+otherwise identical tests.
 
 > **Branch under test:** there is no `ref` dispatch input — the run tests
 > whatever branch/tag is chosen in "Use workflow from". The `ref` input exists
@@ -135,9 +141,14 @@ Stack colors and line styles are consistent across modes.
 | RSS per Session | KB | ✗ | 10% |
 | Total Resets | count | ✗ | 50% |
 | UDP Errors/s | count | ✗ | 50% |
+| Avg Latency | ms | ✗ | 10% |
+| p95 Latency | ms | ✗ | 15% |
+| p99 Latency | ms | ✗ | 20% |
+| Max Latency | ms | ✗ | reported, not flagged |
 
 Regression detection uses a rolling 10-run average on `main` for the same QUIC
-stack and workload profile. Missing `schema_version`, `params.quic_stack`, and
+stack and workload profile. The latency metrics keep their own thresholds
+even when `--threshold` overrides the others. Missing `schema_version`, `params.quic_stack`, and
 `params.profile` in historical results are treated as version 1, mvfst, and
 `1mbps` respectively. Warnings are non-blocking (PRs are not failed).
 
@@ -152,6 +163,13 @@ Schema version 4 records the CPU calibration target as `params.target_cpu_pct`.
 Client-stat anomaly detection checks full-run totals
 against measured throughput and flags peaks above ten times the full-run
 throughput; it no longer uses an assumed aggregate throughput target.
+
+Schema version 5 adds `latency_p50_ms`, `latency_p90_ms`, `latency_p95_ms`,
+`latency_p99_ms`, `latency_p999_ms`, `latency_max_ms` and `latency_samples`.
+The percentiles add up the client's per-second `[LATENCY_HIST]` lines over the
+steady-state window. They are exact to 1 ms below 128 ms and within 1/32 of
+the value above that. They are null when the client doesn't print those
+lines. `latency_max_ms` is the largest per-second maximum in the window.
 
 On the first nightly run with the profile matrix, only `mvfst/1mbps` has a
 compatible published baseline: legacy runs are interpreted as that series.

@@ -10,9 +10,9 @@
     {
       "id": "4mbps",
       "mbps_per_subscriber": 4,
-      "subscribers_at_300pct_cpu": 336,
+      "subscribers_at_300pct_cpu": 424,
       "first_object_size": 106064,
-      "other_object_size": 26516
+      "other_object_size": 15152
     },
     {
       "id": "16mbps",

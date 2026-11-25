@@ -274,7 +274,7 @@ TEST_F(UpstreamClusterTest, NegotiatesClusterOnDraft18) {
         auto session = provider_->currentSession();
         EXPECT_NE(session, nullptr);
         if (session) {
-          EXPECT_EQ(getDraftMajorVersion(*session->getNegotiatedVersion()), 18u);
+          EXPECT_EQ(getDraftMajorVersion(session->getNegotiatedVersion()), 18u);
           EXPECT_TRUE(moxygen::MoQClusterExtension::isNegotiated(*session));
           EXPECT_EQ(moxygen::MoQClusterExtension::peerHopID(*session), kServerHop);
         }
@@ -307,10 +307,8 @@ TEST_F(UpstreamProviderTest, ConnectsWithDraft18) {
         co_await provider_->start();
         auto session = provider_->currentSession();
         EXPECT_NE(session, nullptr);
-        auto version = session ? session->getNegotiatedVersion() : std::nullopt;
-        EXPECT_TRUE(version.has_value());
-        if (version) {
-          EXPECT_EQ(getDraftMajorVersion(*version), 18u);
+        if (session) {
+          EXPECT_EQ(getDraftMajorVersion(session->getNegotiatedVersion()), 18u);
         }
       }(),
       &clientEvb()
@@ -1094,11 +1092,9 @@ protected:
 
     // Mock sessions representing two downstream subscribers.
     subSession1_ = std::make_shared<NiceMock<moxygen::test::MockMoQSession>>(clientExec());
-    ON_CALL(*subSession1_, getNegotiatedVersion())
-        .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
+    ON_CALL(*subSession1_, getNegotiatedVersion()).WillByDefault(Return(kVersionDraft16));
     subSession2_ = std::make_shared<NiceMock<moxygen::test::MockMoQSession>>(clientExec());
-    ON_CALL(*subSession2_, getNegotiatedVersion())
-        .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
+    ON_CALL(*subSession2_, getNegotiatedVersion()).WillByDefault(Return(kVersionDraft16));
   }
 
   void TearDown() override {

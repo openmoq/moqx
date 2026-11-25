@@ -90,8 +90,7 @@ TEST_P(MoQRelayStateTest, PeerRelayIsReportedAsAnAcceptedLink) {
   resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "sg-sin-2-1");
   relay_->setAllowedNamespacePrefix(kAllowedPrefix);
   auto peer = std::make_shared<PeerSession>(exec_);
-  ON_CALL(*peer, getNegotiatedVersion())
-      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft16)));
+  ON_CALL(*peer, getNegotiatedVersion()).WillByDefault(Return(kVersionDraft16));
   getOrCreateMockState(peer);
   auto subscribe = [&](SubscribeNamespace subNs) {
     return withSessionContext(peer, [&] {
@@ -199,8 +198,7 @@ TEST_P(MoQRelayStateTest, CancelledPeerRequestReleasesItsReciprocal) {
   resetRelay(config::CacheConfig{.maxCachedTracks = 0}, "sg-sin-2-1");
   relay_->setAllowedNamespacePrefix(kAllowedPrefix);
   auto peer = std::make_shared<GatedPeer>(exec_);
-  ON_CALL(*peer, getNegotiatedVersion())
-      .WillByDefault(Return(std::optional<uint64_t>(kVersionDraft18)));
+  ON_CALL(*peer, getNegotiatedVersion()).WillByDefault(Return(kVersionDraft18));
   getOrCreateMockState(peer);
 
   folly::CancellationSource cancel;

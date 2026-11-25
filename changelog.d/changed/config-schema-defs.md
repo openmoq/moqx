@@ -1,0 +1,1 @@
+- The JSON schema from [`moqx dump-config-schema`](/docs/config.md#tooling) changed with the reflect-cpp update and is JSON Schema compliant.
