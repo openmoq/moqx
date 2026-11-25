@@ -31,6 +31,7 @@ services:
       es256_keys: [{id: "es-key", public_key_file: "'''
         + str(public)
         + """"}]
+      audiences: ["relay-a"]
       max_tokens_per_message: 4
 """
     )
@@ -130,6 +131,26 @@ services:
     run(
         "encrypted-private-key-does-not-prompt",
         ["--auth_private_key_file=" + str(encrypted)],
+        False,
+    )
+    # The key-consistency check must accept the claims the token was issued with.
+    run(
+        "es256-config-with-audience",
+        [
+            *configured,
+            "--auth_private_key_file=" + str(private),
+            "--auth_audience=relay-a",
+        ],
+        True,
+    )
+    # A bad signature is still reported as a key mismatch when claims are present.
+    run(
+        "mismatched-key-with-audience",
+        [
+            *configured,
+            "--auth_private_key_file=" + str(wrong),
+            "--auth_audience=relay-a",
+        ],
         False,
     )
     run("hmac", ["--auth_secret=local-validation-only", "--auth_key_id=hmac-key"], True)

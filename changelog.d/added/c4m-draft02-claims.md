@@ -1,1 +1,1 @@
-- [`auth`](/docs/config.md#authentication-and-authorization) gains ES256 public-key verification (`es256_keys`). `moqx-issuer` gains `--auth_private_key_file`.
+- [`auth`](/docs/config.md#authentication-and-authorization) gains ES256 public-key verification (`es256_keys`), `audiences` and `issuers` checks for the `aud` and `iss` claims. `moqx-issuer` gains `--auth_private_key_file`, `--auth_audience` and `--auth_issuer`.

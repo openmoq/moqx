@@ -223,6 +223,8 @@ struct AuthConfig {
   bool requireSetupToken{true};
   bool allowRequestTokenOverride{true};
   bool strictClaims{false};
+  std::vector<std::string> audiences; // CWT aud values this relay accepts; empty = reject aud
+  std::vector<std::string> issuers;   // CWT iss values accepted; empty = iss not checked
   std::vector<AnonymousScope> anonymousClaim; // empty = no anonymous access (default)
   uint32_t maxTokensPerMessage{0};
 };

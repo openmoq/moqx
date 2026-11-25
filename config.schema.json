@@ -234,6 +234,34 @@
                         }
                     ]
                 },
+                "audiences": {
+                    "description": "CWT audience values this relay accepts. When set, tokens must carry a matching aud claim; when omitted, tokens carrying aud are rejected",
+                    "anyOf": [
+                        {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            }
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "issuers": {
+                    "description": "CWT issuer values this relay accepts. When set, tokens must carry a matching iss claim",
+                    "anyOf": [
+                        {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            }
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
                 "anonymous_claim": {
                     "description": "Anonymous (no-token) access grants applied to every request on this service, in addition to any verified setup/request token grants (default: none)",
                     "anyOf": [
