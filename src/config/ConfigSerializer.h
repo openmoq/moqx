@@ -218,6 +218,14 @@ inline void serializeAuth(ConfigSink& s, const AuthConfig& a) {
     s.endObject();
   }
   s.endArray();
+  s.beginArray("es256_keys");
+  for (const auto& key : a.es256Keys) {
+    s.beginObject("");
+    s.stringField("id", key.id);
+    s.stringField("public_key_file", key.publicKeyFile);
+    s.endObject();
+  }
+  s.endArray();
   s.beginArray("anonymous_claim");
   for (const auto& scope : a.anonymousClaim) {
     s.beginObject("");

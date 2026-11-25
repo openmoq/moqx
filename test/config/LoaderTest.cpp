@@ -30,6 +30,33 @@ using ::testing::UnorderedElementsAreArray;
 
 // --- Parse tests ---
 
+TEST(ConfigLoader, Es256PublicKeyAuthParsesAndResolvesWithoutHmac) {
+  TempYamlFile yaml(R"(
+listeners:
+  main:
+    udp: {socket: {address: "127.0.0.1", port: 9668}}
+    tls: {insecure: true}
+    endpoint: "/moq"
+service_defaults:
+  max_subscription_buffer_kb: 51200
+services:
+  live:
+    match: [{authority: {any: true}, path: {prefix: "/"}}]
+    cache: {enabled: true, max_tracks: 100, max_groups_per_track: 3}
+    auth:
+      enabled: true
+      es256_keys: [{id: "es-key", public_key_file: "/etc/moqx/token-public.pem"}]
+      max_tokens_per_message: 4
+)");
+  auto parsed = loadConfig(yaml.path(), true);
+  auto resolved = resolveConfig(parsed);
+  ASSERT_TRUE(resolved.hasValue()) << resolved.error();
+  const auto& auth = resolved.value().config.services.at("live").auth;
+  EXPECT_TRUE(auth.hmacKeys.empty());
+  ASSERT_EQ(auth.es256Keys.size(), 1u);
+  EXPECT_EQ(auth.es256Keys[0].publicKeyFile, "/etc/moqx/token-public.pem");
+}
+
 TEST(ConfigLoader, MinimalConfig) {
   TempYamlFile yaml(R"(
 listeners:

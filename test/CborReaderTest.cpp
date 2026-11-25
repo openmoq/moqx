@@ -207,3 +207,10 @@ TEST(CborReaderTest, EofReflectsConsumption) {
   ASSERT_TRUE(reader.readUInt(out));
   EXPECT_TRUE(reader.eof());
 }
+
+TEST(CborReaderTest, SkipRejectsMapCountOverflowAndExcessiveNesting) {
+  const std::string overflow("\xbb\x80\x00\x00\x00\x00\x00\x00\x00", 9);
+  EXPECT_FALSE(CborReader(overflow).skip());
+  const std::string nested = std::string(128, '\x81') + '\x00';
+  EXPECT_FALSE(CborReader(nested).skip());
+}
