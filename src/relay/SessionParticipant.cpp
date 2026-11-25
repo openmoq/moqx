@@ -7,6 +7,7 @@
 #include "relay/SessionParticipant.h"
 
 #include "MoqxRelaySession.h"
+#include "logging/access/AccessLogFilters.h"
 #include "peering/PeeringBackend.h"
 #include "relay/ExecutorCheck.h"
 #include "relay/PlainRouteCodec.h"
@@ -57,7 +58,7 @@ public:
 
   folly::coro::Task<TrackStatusResult> trackStatus(moxygen::TrackStatus req) override {
     moxygen::TrackStatusError closed{
-        req.requestID,
+        moxygen::MoQSession::failedLocalRequestID(),
         moxygen::TrackStatusErrorCode::INTERNAL_ERROR,
         std::string(kSessionClosed)
     };
@@ -75,7 +76,7 @@ public:
       std::shared_ptr<moxygen::TrackConsumer> consumer
   ) override {
     moxygen::SubscribeError closed{
-        sub.requestID,
+        moxygen::MoQSession::failedLocalRequestID(),
         moxygen::SubscribeErrorCode::INTERNAL_ERROR,
         std::string(kSessionClosed)
     };
@@ -90,7 +91,7 @@ public:
   folly::coro::Task<FetchResult>
   fetch(moxygen::Fetch fetch, std::shared_ptr<moxygen::FetchConsumer> consumer) override {
     moxygen::FetchError closed{
-        fetch.requestID,
+        moxygen::MoQSession::failedLocalRequestID(),
         moxygen::FetchErrorCode::INTERNAL_ERROR,
         std::string(kSessionClosed)
     };
@@ -107,7 +108,7 @@ public:
       std::shared_ptr<NamespacePublishHandle> handle
   ) override {
     moxygen::SubscribeNamespaceError closed{
-        subNs.requestID,
+        moxygen::MoQSession::failedLocalRequestID(),
         moxygen::SubscribeNamespaceErrorCode::INTERNAL_ERROR,
         std::string(kSessionClosed)
     };
@@ -124,7 +125,7 @@ public:
       std::shared_ptr<PublishBlockedHandle> publishBlockedHandle
   ) override {
     moxygen::SubscribeTracksError closed{
-        subTracks.requestID,
+        moxygen::MoQSession::failedLocalRequestID(),
         moxygen::SubscribeTracksErrorCode::INTERNAL_ERROR,
         std::string(kSessionClosed)
     };
@@ -152,7 +153,7 @@ public:
       std::shared_ptr<PublishNamespaceCallback> callback
   ) override {
     moxygen::PublishNamespaceError closed{
-        pubNs.requestID,
+        moxygen::MoQSession::failedLocalRequestID(),
         moxygen::PublishNamespaceErrorCode::INTERNAL_ERROR,
         std::string(kSessionClosed)
     };
@@ -171,7 +172,7 @@ public:
     auto session = session_.lock();
     if (!session) {
       return folly::makeUnexpected(moxygen::PublishError{
-          pub.requestID,
+          moxygen::MoQSession::failedLocalRequestID(),
           moxygen::PublishErrorCode::INTERNAL_ERROR,
           std::string(kSessionClosed)
       });
@@ -184,6 +185,21 @@ private:
 };
 
 } // namespace
+
+SessionParticipant::SessionParticipant(
+    std::shared_ptr<moxygen::Publisher> publisher,
+    std::shared_ptr<moxygen::Subscriber> subscriber,
+    folly::Executor* relayExec,
+    const PeeringBackend* peering,
+    std::shared_ptr<logging::AccessLogSessionContext> accessLogContext
+)
+    : publisher_(
+          logging::logPublisher(std::move(publisher), accessLogContext, logging::AccessLogDir::Rx)
+      ),
+      subscriber_(
+          logging::logSubscriber(std::move(subscriber), accessLogContext, logging::AccessLogDir::Rx)
+      ),
+      relayExec_(relayExec), peering_(peering), accessLogContext_(std::move(accessLogContext)) {}
 
 ParticipantInfo
 SessionParticipant::snapshot(const moxygen::MoQSession& session, const PeeringBackend* peering) {
@@ -208,12 +224,19 @@ SessionParticipant::snapshot(const moxygen::MoQSession& session, const PeeringBa
 Participant SessionParticipant::makeParticipant(
     const std::shared_ptr<moxygen::MoQSession>& session,
     folly::Executor* relayExec,
-    const PeeringBackend* peering
+    const PeeringBackend* peering,
+    std::shared_ptr<logging::AccessLogSessionContext> accessLogContext
 ) {
-  std::shared_ptr<moxygen::Publisher> onExecutorPublisher =
-      std::make_shared<WeakSessionPublisher>(WeakSession(session));
-  std::shared_ptr<moxygen::Subscriber> onExecutorSubscriber =
-      std::make_shared<WeakSessionSubscriber>(WeakSession(session));
+  auto onExecutorPublisher = logging::logPublisher(
+      std::make_shared<WeakSessionPublisher>(WeakSession(session)),
+      accessLogContext,
+      logging::AccessLogDir::Tx
+  );
+  auto onExecutorSubscriber = logging::logSubscriber(
+      std::make_shared<WeakSessionSubscriber>(WeakSession(session)),
+      std::move(accessLogContext),
+      logging::AccessLogDir::Tx
+  );
   auto publisher = onExecutorPublisher;
   auto subscriber = onExecutorSubscriber;
   if (relayExec) {
@@ -235,7 +258,7 @@ void SessionParticipant::attachToRequest() {
     auto session = getSession();
     XCHECK(session) << "a session request outlived its session";
     XDCHECK(onExecutor(session->getExecutor())) << "session request off its executor";
-    participant_ = makeParticipant(session, relayExec_, peering_);
+    participant_ = makeParticipant(session, relayExec_, peering_, accessLogContext_);
   }
   attachParticipant(*participant_);
 }

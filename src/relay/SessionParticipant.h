@@ -19,30 +19,36 @@ namespace openmoq::moqx {
 
 class PeeringBackend;
 
+namespace logging {
+class AccessLogSessionContext;
+}
+
 // The relay's publish and subscribe handler for one MoQ session. Attaches the session's Participant
 // to each request.
 class SessionParticipant : public moxygen::Publisher,
                            public moxygen::Subscriber,
                            public moxygen::SessionScoped {
 public:
+  // With an accessLogContext, the peer's requests are logged as rx.
   SessionParticipant(
       std::shared_ptr<moxygen::Publisher> publisher,
       std::shared_ptr<moxygen::Subscriber> subscriber,
       folly::Executor* relayExec,
-      const PeeringBackend* peering = nullptr
-  )
-      : publisher_(std::move(publisher)), subscriber_(std::move(subscriber)), relayExec_(relayExec),
-        peering_(peering) {}
+      const PeeringBackend* peering = nullptr,
+      std::shared_ptr<logging::AccessLogSessionContext> accessLogContext = nullptr
+  );
 
   // Must run on the session's executor, after SETUP. peering chooses the session's routing;
   // without one, the session gets plain routing.
   static ParticipantInfo
   snapshot(const moxygen::MoQSession& session, const PeeringBackend* peering = nullptr);
-  // With a relayExec, calls from the relay hop to the session's executor.
+  // With a relayExec, calls from the relay hop to the session's executor. With an
+  // accessLogContext, the relay's requests to the session are logged as tx.
   static Participant makeParticipant(
       const std::shared_ptr<moxygen::MoQSession>& session,
       folly::Executor* relayExec,
-      const PeeringBackend* peering = nullptr
+      const PeeringBackend* peering = nullptr,
+      std::shared_ptr<logging::AccessLogSessionContext> accessLogContext = nullptr
   );
 
   folly::coro::Task<TrackStatusResult> trackStatus(moxygen::TrackStatus req) override;
@@ -84,6 +90,7 @@ private:
   std::shared_ptr<moxygen::Subscriber> subscriber_;
   folly::Executor* relayExec_;
   const PeeringBackend* peering_;
+  std::shared_ptr<logging::AccessLogSessionContext> accessLogContext_;
   // Built on the first request, after SETUP.
   std::optional<Participant> participant_;
   bool goawayForwarded_{false};
