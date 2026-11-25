@@ -42,7 +42,8 @@ folly/fizz/wangle/mvfst/proxygen plus the
 pinned inside moxygen, in its
 [`build/deps/github_hashes/`](https://github.com/openmoq/moxygen/tree/main/build/deps/github_hashes),
 not here. moqx's [/cmake/dependencies.cmake](/cmake/dependencies.cmake) pins the CPM
-ones: moxygen, catapult, reflect-cpp, yaml-cpp.
+ones: moxygen, catapult, reflect-cpp, yaml-cpp. The C4M adapter uses catapult
+v1.0.0 for HMAC/ES256 cryptography and retains draft-02 framing and claim checks.
 
 The resolved dependencies live in a cache outside the repo. After a configure,
 `deps/<name>` links to each dependency's source and `build/<profile>/moxygen` to
@@ -136,9 +137,6 @@ prefix. `--moxygen-dir` is the only flag you need: `configure.sh` passes both th
 prefix and the matching find-modules to the moqx configure. By hand that is two
 flags — `-DCMAKE_PREFIX_PATH` for the libraries **and**
 `-DCPM_moxygen_SOURCE=/path` for moxygen's MODULE-mode find-modules.
-
-Develop a local catapult instead with `-DCPM_catapult_SOURCE=/path` on the moqx
-build — it compiles in-tree, no prefix needed.
 
 ## Sanitizers
 
