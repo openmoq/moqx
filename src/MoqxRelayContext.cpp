@@ -5,6 +5,8 @@
  */
 
 #include "MoqxRelayContext.h"
+#include "MoqxRelaySession.h"
+#include "logging/access/AccessLogSessionContext.h"
 #include "peering/MoqtRelayBackend.h"
 #include "relay/AuthFilters.h"
 #include "relay/PublisherCrossExecFilter.h"
@@ -279,12 +281,55 @@ void MoqxRelayContext::initThreadStatsCollectors(
   }
 }
 
-void MoqxRelayContext::onNewSession(std::shared_ptr<MoQSession> clientSession) {
+void MoqxRelayContext::onNewSession(
+    const ListenerMatcher& listener,
+    std::shared_ptr<MoQSession> clientSession
+) {
   auto& collector = *tlStatsCollector_;
   if (collector) {
     clientSession->setPublisherStatsCallback(collector->publisherCallback());
     clientSession->setSubscriberStatsCallback(collector->subscriberCallback());
     collector->onSessionStart();
+  }
+  if (accessLog_) {
+    if (auto* session = dynamic_cast<MoqxRelaySession*>(clientSession.get())) {
+      auto context = std::make_shared<logging::AccessLogSessionContext>(
+          accessLog_,
+          logging::AccessLogOpenedBy::Peer
+      );
+      // Only a WebTransport session has a path before CLIENT_SETUP.
+      std::optional<std::string_view> matchedName;
+      if (!clientSession->getPath().empty()) {
+        matchedName = listener.match(clientSession->getAuthority(), clientSession->getPath());
+      }
+      context->setup(
+          clientSession,
+          std::string(matchedName.value_or("")),
+          std::string(logging::kAccessLogParticipant),
+          {},
+          session->localAddress()
+      );
+      session->setAccessLogContext(std::move(context));
+    }
+  }
+}
+
+void MoqxRelayContext::setAccessLog(std::shared_ptr<logging::AccessLog> accessLog) {
+  accessLog_ = accessLog->enabled() ? std::move(accessLog) : nullptr;
+  for (auto& [name, entry] : services_) {
+    entry.peering->setAccessLog(accessLog_, name);
+  }
+}
+
+void MoqxRelayContext::onSetupRejected(
+    const ListenerMatcher& listener,
+    const std::shared_ptr<MoQSession>& session,
+    SessionCloseErrorCode error
+) {
+  if (auto accessLogContext = MoqxRelaySession::accessLogContextOf(*session)) {
+    auto matchedName = listener.match(session->getAuthority(), session->getPath());
+    accessLogContext->setService(*session, std::string(matchedName.value_or("")));
+    accessLogContext->writeSetup(logging::AccessLogStatus::Rejected, folly::to_underlying(error));
   }
 }
 
@@ -319,6 +364,9 @@ void MoqxRelayContext::onSessionEnd(
   if (auto& collector = *tlStatsCollector_) {
     collector->onSessionEnd();
   }
+  if (auto accessLogContext = MoqxRelaySession::accessLogContextOf(*session)) {
+    accessLogContext->writeSessionEnd(*session);
+  }
   // The session belongs to whichever service its authority+path matched at setup.
   if (auto name = listener.match(session->getAuthority(), session->getPath())) {
     if (auto it = services_.find(*name); it != services_.end()) {
@@ -339,9 +387,34 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayContext::validateAu
     std::shared_ptr<MoQSession> session
 ) {
   // Match service by authority + path
+  auto matchedName = listener.match(session->getAuthority(), session->getPath());
+  auto accessLogContext = MoqxRelaySession::accessLogContextOf(*session);
+  if (accessLogContext) {
+    accessLogContext->setService(*session, std::string(matchedName.value_or("")));
+  }
+  auto result = authorizeSession(listener, clientSetup, session, matchedName, accessLogContext);
+  if (accessLogContext) {
+    if (result.hasValue()) {
+      accessLogContext->writeSetup(logging::AccessLogStatus::Ok);
+    } else {
+      accessLogContext->writeSetup(
+          logging::AccessLogStatus::Rejected,
+          folly::to_underlying(result.error())
+      );
+    }
+  }
+  return result;
+}
+
+folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayContext::authorizeSession(
+    const ListenerMatcher& listener,
+    const ClientSetup& clientSetup,
+    const std::shared_ptr<MoQSession>& session,
+    std::optional<std::string_view> matchedName,
+    std::shared_ptr<logging::AccessLogSessionContext> accessLogContext
+) {
   const auto& authority = session->getAuthority();
   const auto& path = session->getPath();
-  auto matchedName = listener.match(authority, path);
   if (!matchedName) {
     XLOG(ERR) << "No service matched on listener '" << listener.name()
               << "' authority=" << authority << " path=" << path;
@@ -390,7 +463,8 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayContext::validateAu
       std::move(pub),
       std::move(sub),
       entry.relay->getRelayExec(),
-      entry.peering.get()
+      entry.peering.get(),
+      std::move(accessLogContext)
   );
   session->setPublishHandler(participant);
   session->setSubscribeHandler(std::move(participant));
