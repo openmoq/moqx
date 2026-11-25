@@ -15,6 +15,22 @@ using namespace moxygen;
 namespace openmoq::moqx {
 namespace {
 
+// Draft 18, section 10.2.2: a message that carries an expired token fails with
+// EXPIRED_AUTH_TOKEN, and one whose token cannot be decoded fails with MALFORMED_AUTH_TOKEN. Every
+// other denial (no token, a bad signature, an unsupported claim, a token that does not cover the
+// action) stays UNAUTHORIZED. Request error codes go out on the wire unchanged in every draft, so
+// these are also the codes for drafts 16 and 22.
+RequestErrorCode requestErrorFor(auth::AuthError error) {
+  switch (error) {
+  case auth::AuthError::Expired:
+    return RequestErrorCode::EXPIRED_AUTH_TOKEN;
+  case auth::AuthError::Malformed:
+    return RequestErrorCode::MALFORMED_AUTH_TOKEN;
+  default:
+    return RequestErrorCode::UNAUTHORIZED;
+  }
+}
+
 struct UpdateAuthorization {
   std::shared_ptr<const auth::AuthTokenVerifier> verifier;
   std::shared_ptr<const std::vector<auth::Grants>> grants;
@@ -53,7 +69,7 @@ public:
     if (authorized.hasError()) {
       co_return folly::makeUnexpected(RequestError{
           update.requestID,
-          RequestErrorCode::UNAUTHORIZED,
+          requestErrorFor(authorized.error()),
           auth::toString(authorized.error())
       });
     }
@@ -133,7 +149,7 @@ AuthPublisherFilter::subscribe(SubscribeRequest sub, std::shared_ptr<TrackConsum
   );
   if (ok.hasError()) {
     co_return folly::makeUnexpected(
-        SubscribeError{sub.requestID, RequestErrorCode::UNAUTHORIZED, auth::toString(ok.error())}
+        SubscribeError{sub.requestID, requestErrorFor(ok.error()), auth::toString(ok.error())}
     );
   }
   UpdateAuthorization
@@ -158,7 +174,7 @@ AuthPublisherFilter::fetch(Fetch fetch, std::shared_ptr<FetchConsumer> consumer)
   );
   if (ok.hasError()) {
     co_return folly::makeUnexpected(
-        FetchError{fetch.requestID, RequestErrorCode::UNAUTHORIZED, auth::toString(ok.error())}
+        FetchError{fetch.requestID, requestErrorFor(ok.error()), auth::toString(ok.error())}
     );
   }
   UpdateAuthorization
@@ -189,7 +205,7 @@ folly::coro::Task<Publisher::SubscribeNamespaceResult> AuthPublisherFilter::subs
     if (ok.hasError()) {
       co_return folly::makeUnexpected(SubscribeNamespaceError{
           subNs.requestID,
-          RequestErrorCode::UNAUTHORIZED,
+          requestErrorFor(ok.error()),
           auth::toString(ok.error())
       });
     }
@@ -227,7 +243,7 @@ folly::coro::Task<Publisher::SubscribeTracksResult> AuthPublisherFilter::subscri
   if (ok.hasError()) {
     co_return folly::makeUnexpected(SubscribeTracksError{
         subTracks.requestID,
-        RequestErrorCode::UNAUTHORIZED,
+        requestErrorFor(ok.error()),
         auth::toString(ok.error())
     });
   }
@@ -253,7 +269,7 @@ AuthPublisherFilter::trackStatus(const TrackStatus req) {
   );
   if (ok.hasError()) {
     return folly::coro::makeTask<Publisher::TrackStatusResult>(folly::makeUnexpected(
-        TrackStatusError{req.requestID, RequestErrorCode::UNAUTHORIZED, auth::toString(ok.error())}
+        TrackStatusError{req.requestID, requestErrorFor(ok.error()), auth::toString(ok.error())}
     ));
   }
   return downstream_->trackStatus(req);
@@ -275,7 +291,7 @@ AuthSubscriberFilter::publish(PublishRequest pub, std::shared_ptr<SubscriptionHa
   );
   if (ok.hasError()) {
     return folly::makeUnexpected(
-        PublishError{pub.requestID, RequestErrorCode::UNAUTHORIZED, auth::toString(ok.error())}
+        PublishError{pub.requestID, requestErrorFor(ok.error()), auth::toString(ok.error())}
     );
   }
   return downstream_->publish(std::move(pub), std::move(handle));
@@ -295,7 +311,7 @@ folly::coro::Task<Subscriber::PublishNamespaceResult> AuthSubscriberFilter::publ
   if (ok.hasError()) {
     co_return folly::makeUnexpected(PublishNamespaceError{
         pubNs.requestID,
-        RequestErrorCode::UNAUTHORIZED,
+        requestErrorFor(ok.error()),
         auth::toString(ok.error())
     });
   }
