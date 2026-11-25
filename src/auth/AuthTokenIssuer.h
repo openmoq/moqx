@@ -28,6 +28,7 @@ struct IssueTokenOptions {
   std::chrono::system_clock::time_point now{std::chrono::system_clock::now()};
   std::optional<std::string> issuer;  // CWT iss
   std::vector<std::string> audiences; // CWT aud
+  bool replayProtected{false};        // catreplay 1 with a random cti: single connection
   std::string privateKeyFile;         // PEM P-256 private key; mutually exclusive with secret.
 };
 

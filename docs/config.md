@@ -307,7 +307,7 @@ services:
 | `allow_request_token_override` | `true` | Lets a token on a request count as one more candidate grant for that request, alongside the session's setup-token grants and `anonymous_claim`. If `false`, request tokens are ignored and authorization uses only the setup token grants and `anonymous_claim`. |
 | `audiences` | none | CWT `aud` values this relay accepts. When set, a token must carry `aud` (a string or array of strings) and at least one value must equal an entry, otherwise it is rejected. When omitted, any token carrying `aud` is rejected. Entries must be non-empty. |
 | `issuers` | none | CWT `iss` values this relay accepts. When set, a token must carry a matching `iss`. When omitted, `iss` is informational. Entries must be non-empty. |
-| `strict_claims` | `false` | Also rejects informational `iss` (when `issuers` is unset), `sub`, `iat`, and `cti` claims. Unsupported restrictions and repeated claims are always rejected, regardless of this setting. |
+| `strict_claims` | `false` | Also rejects informational `iss` (when `issuers` is unset), `sub`, `iat`, and `cti` claims (a `cti` that `catreplay` 1 requires is not informational and is accepted). Unsupported restrictions and repeated claims are always rejected, regardless of this setting. |
 | `max_tokens_per_message` | none | Required when `enabled: true`, directly or via `service_defaults.auth.max_tokens_per_message`. Caps how many `AUTHORIZATION_TOKEN` params of the configured `token_type` a single SETUP or request message may carry; a message over the cap is rejected outright, not truncated. Params of other token types are not counted. Bounds per-message verification cost against a client attaching many tokens to one message. Must be >= 1. |
 | `anonymous_claim` | empty | Statically-granted scopes applied to every request on this service, regardless of what token (if any) authenticated it. See [Anonymous Claim](#anonymous-claim) below. |
 
@@ -335,8 +335,12 @@ A track-restricted scope cannot authorize a namespace-only request.
 This is a bearer-token subset, not full draft-02 conformance. `exp` and `nbf`
 are enforced, including duplicate-key and timestamp-range checks. Integer
 NumericDates are supported; floating-point time values are rejected. Optional
-`catv` must be `1`. `catreplay` is not supported: a token carrying a nonzero value is
-rejected. Composites, or other unsupported restrictions are rejected. `aud` is rejected unless `audiences` is configured.
+`catv` must be `1`. `catreplay` 1 (single connection) is enforced: the token must carry `cti` and
+`exp`, and is bound to the connection that first presents a validly signed copy;
+any other connection is refused until the token expires. State is held in
+memory per service (bounded at 131072 live tokens, after which new `catreplay`
+tokens are refused), is lost on restart, and is not shared between relays.
+`catreplay` 2 is rejected. Composites, or other unsupported restrictions are rejected. `aud` is rejected unless `audiences` is configured.
 
 DPoP (draft section 4) is not supported: tokens carrying `cnf` or `catdpop` are
 rejected.
@@ -427,7 +431,7 @@ moqx-issuer \
   --auth-ttl-seconds 3600
 ```
 
-`--auth_issuer` and `--auth_audience` (comma-separated for several) add `iss` and `aud`
+`--auth_replay_protect` adds `catreplay` 1 with a random `cti`. `--auth_issuer` and `--auth_audience` (comma-separated for several) add `iss` and `aud`
 claims for relays that configure `issuers`/`audiences`.
 
 The default output is `base64:<token>`, which is suitable for tools that accept
