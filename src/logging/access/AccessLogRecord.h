@@ -57,6 +57,9 @@ AccessLogClass accessLogClass(AccessLogEvent event);
 // by kAccessLogMessages, and the request class does not include them.
 bool accessLogMessage(AccessLogEvent event);
 inline constexpr std::string_view kAccessLogMessages = "messages";
+// The peer_class of a session that a client opened, and of one that the relay opened upstream.
+inline constexpr std::string_view kAccessLogParticipant = "participant";
+inline constexpr std::string_view kAccessLogRelayPeer = "relay-peer";
 std::string_view accessLogEventName(AccessLogEvent event);
 std::optional<AccessLogEvent> parseAccessLogEvent(std::string_view name);
 std::string_view accessLogClassName(AccessLogClass cls);
