@@ -8,6 +8,7 @@
 
 #include "relay/CrossExecFilter.h"
 #include "relay/ExecBound.h"
+#include "relay/NamespaceRevocable.h"
 
 namespace openmoq::moqx {
 
@@ -40,7 +41,8 @@ private:
 // Wraps a PublishNamespaceHandle so that publishNamespaceDone() and
 // requestUpdate() are dispatched to targetExec_ (the inner session's exec).
 // Held by the caller and invoked from the caller's executor.
-class CrossExecPublishNamespaceHandle : public moxygen::Subscriber::PublishNamespaceHandle {
+class CrossExecPublishNamespaceHandle : public moxygen::Subscriber::PublishNamespaceHandle,
+                                        public NamespaceRevocable {
 public:
   CrossExecPublishNamespaceHandle(
       std::shared_ptr<moxygen::Subscriber::PublishNamespaceHandle> inner,
@@ -50,6 +52,16 @@ public:
 
   void publishNamespaceDone() override {
     inner_.add([](const auto& inner) { inner->publishNamespaceDone(); });
+  }
+
+  void revokeNamespace() override {
+    inner_.add([](const auto& inner) {
+      if (auto revocable = std::dynamic_pointer_cast<NamespaceRevocable>(inner)) {
+        revocable->revokeNamespace();
+      } else {
+        inner->publishNamespaceDone();
+      }
+    });
   }
 
   folly::coro::Task<RequestUpdateResult> requestUpdate(moxygen::RequestUpdate update) override {

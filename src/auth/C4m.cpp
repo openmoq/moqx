@@ -297,6 +297,17 @@ Grants readClaims(
         unsupported(); // catreplay 2 is implementation-defined; fail closed.
       }
       grants.replayProtected = value == 1;
+    } else if (key == kC4mRevalidationClaim) {
+      uint64_t value = 0;
+      require(reader.readUInt(value));
+      if (value != 0) {
+        // Shorter than the relay can honor, or revalidation disabled: reject (section 2.2).
+        if (policy.minRevalidation.count() <= 0 ||
+            value < static_cast<uint64_t>(policy.minRevalidation.count()) || value > 31536000) {
+          unsupported();
+        }
+        grants.revalidateEvery = std::chrono::seconds(value);
+      }
     } else if (key == 310) {
       uint64_t version = 0;
       require(reader.readUInt(version));
@@ -403,9 +414,14 @@ std::string encodeClaims(const Grants& grants) {
       static_cast<unsigned>(expires) + static_cast<unsigned>(!grants.scopes.empty()) +
           static_cast<unsigned>(grants.issuer.has_value()) +
           static_cast<unsigned>(!grants.audiences.empty()) +
+          static_cast<unsigned>(grants.revalidateEvery.count() > 0) +
           static_cast<unsigned>(grants.cti.has_value()) +
           static_cast<unsigned>(grants.replayProtected)
   );
+  if (grants.revalidateEvery.count() > 0) {
+    appendInt(out, kC4mRevalidationClaim);
+    appendInt(out, grants.revalidateEvery.count());
+  }
   if (grants.cti) {
     appendInt(out, 7);
     appendHead(out, 2, grants.cti->size());

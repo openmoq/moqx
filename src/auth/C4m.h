@@ -25,6 +25,7 @@ namespace openmoq::moqx::auth {
 constexpr uint64_t kC4mTokenType = 0x01;
 // Unassigned in draft 02; these are the Private Use labels in Appendix A.
 constexpr int64_t kC4mMoqtClaim = -65537;
+constexpr int64_t kC4mRevalidationClaim = -65538;
 
 enum class AuthError {
   Missing,
@@ -64,6 +65,9 @@ struct Grants {
   // (draft-02 section 3). Enforcement needs connection identity and lives in the verifier.
   std::optional<std::string> cti;
   bool replayProtected{false};
+  // moqt-reval: while an action this token authorizes is ongoing, the relay re-checks the token at
+  // least this often and ends the action once the token is no longer acceptable. Zero = never.
+  std::chrono::seconds revalidateEvery{0};
 };
 
 // Relay-side validation of standard CWT claims (draft-02 section 8.2.1).
@@ -75,6 +79,9 @@ struct ClaimPolicy {
   std::vector<std::string> audiences;
   // When non-empty, iss is required and must equal one entry.
   std::vector<std::string> issuers;
+  // Smallest moqt-reval interval the relay will honor. Tokens asking for a shorter interval are
+  // rejected, as are all tokens with moqt-reval when this is zero (draft-02 section 2.2).
+  std::chrono::seconds minRevalidation{0};
 };
 
 class C4mError final : public std::runtime_error {

@@ -120,10 +120,17 @@ IssuedToken issueToken(const IssueTokenOptions& options) {
   if (options.ttl <= std::chrono::seconds::zero()) {
     throw std::invalid_argument("C4M ttl must be greater than zero");
   }
+  // The relay rejects tokens outside these ranges, so refuse to mint them.
+  if (options.revalidateEvery < std::chrono::seconds::zero() ||
+      options.revalidateEvery > std::chrono::seconds(31536000)) {
+    throw std::invalid_argument("revalidation interval must be 0 to 31536000 seconds");
+  }
+
   Grants grants;
   grants.expiresAt = options.now + options.ttl;
   grants.issuer = options.issuer;
   grants.audiences = options.audiences;
+  grants.revalidateEvery = options.revalidateEvery;
   if (options.replayProtected) {
     std::array<unsigned char, 16> id{};
     if (RAND_bytes(id.data(), static_cast<int>(id.size())) != 1) {
