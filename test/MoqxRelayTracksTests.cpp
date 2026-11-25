@@ -160,9 +160,9 @@ TEST_P(MoqxRelayTracksTest, CancelledSubscribeTracksLeavesNoSubscriber) {
   driveIfMultiThread();
 }
 
-// Draft 18 §10.19: a SUBSCRIBE_TRACKS from a session that already has a
-// registration at an exact / ancestor / descendant prefix must be rejected
-// with PREFIX_OVERLAP. Cross-session overlap is permitted.
+// A SUBSCRIBE_TRACKS from a session that already has a registration at an
+// exact / ancestor / descendant prefix must be rejected with PREFIX_OVERLAP.
+// Cross-session overlap is permitted.
 TEST_P(MoqxRelayTracksTest, OverlappingSubscribeTracksRejected) {
   auto session = createV18Session();
   const TrackNamespace base{{"a", "b"}};
