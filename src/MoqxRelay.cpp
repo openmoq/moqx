@@ -128,6 +128,8 @@ moxygen::SubscribeRequest makeUpstreamSubReq(
   if (moxygen::getDraftMajorVersion(upstream.version) >= 18) {
     base.params.eraseAllParamsOfType(moxygen::TrackRequestParamKey::RENDEZVOUS_TIMEOUT);
   }
+  // A downstream's SUBGROUP_DELIVERY_TIMEOUT applies to its own subscription only.
+  base.params.eraseAllParamsOfType(moxygen::TrackRequestParamKey::SUBGROUP_DELIVERY_TIMEOUT);
   base.priority = kDefaultUpstreamPriority;
   base.groupOrder.reset();
   base.filter = moxygen::LocationFilter::nextObject();

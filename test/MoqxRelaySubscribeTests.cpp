@@ -247,6 +247,58 @@ TEST_P(MoQRelayTest, FirstSubscriberViaUpstreamSubscribeReceivesData) {
   driveIfMultiThread();
 }
 
+// A downstream's SUBGROUP_DELIVERY_TIMEOUT is not sent in the upstream SUBSCRIBE.
+TEST_P(MoQRelayTest, UpstreamSubscribeOmitsSubgroupDeliveryTimeout) {
+  auto publisherSession = createMockSession(kVersionDraft18);
+  auto subSession = createMockSession(kVersionDraft18);
+  doPublishNamespace(publisherSession, kTestNamespace);
+
+  SubscribeOk upstreamOk;
+  upstreamOk.requestID = RequestID(1);
+  upstreamOk.trackAlias = TrackAlias(1);
+  upstreamOk.expires = std::chrono::milliseconds(0);
+  upstreamOk.groupOrder = GroupOrder::OldestFirst;
+  std::atomic<bool> sawUpstream{false};
+  std::atomic<bool> upstreamHasTimeout{false};
+  EXPECT_CALL(*publisherSession, subscribe(_, _))
+      .WillOnce([&sawUpstream,
+                 &upstreamHasTimeout,
+                 upstreamOk](const SubscribeRequest& req, std::shared_ptr<TrackConsumer>) {
+        upstreamHasTimeout.store(req.params.hasParam(
+            folly::to_underlying(TrackRequestParamKey::SUBGROUP_DELIVERY_TIMEOUT)
+        ));
+        sawUpstream.store(true);
+        auto handle = std::make_shared<NiceMock<MockSubscriptionHandle>>(upstreamOk);
+        return folly::coro::makeTask<Publisher::SubscribeResult>(
+            folly::Expected<std::shared_ptr<SubscriptionHandle>, SubscribeError>(handle)
+        );
+      });
+
+  constexpr uint64_t kTimeoutMs = 500;
+  auto sub = makeSubscribeRequest(RequestID(0));
+  sub.params.setMajorVersion(getDraftMajorVersion(kVersionDraft18));
+  ASSERT_TRUE(sub.params
+                  .insertParam(Parameter(
+                      folly::to_underlying(TrackRequestParamKey::SUBGROUP_DELIVERY_TIMEOUT),
+                      kTimeoutMs
+                  ))
+                  .hasValue());
+  auto consumer = createMockConsumer();
+  auto result = withSessionContext(subSession, [&]() {
+    auto task = publisherInterface()->subscribe(std::move(sub), consumer);
+    return folly::coro::blockingWait(std::move(task), exec_.get());
+  });
+  ASSERT_TRUE(result.hasValue());
+  getOrCreateMockState(subSession)->subscribeHandles.push_back(*result);
+
+  ASSERT_TRUE(sawUpstream.load()) << "relay should have issued an upstream subscribe";
+  EXPECT_FALSE(upstreamHasTimeout.load());
+
+  removeSession(publisherSession);
+  removeSession(subSession);
+  driveIfMultiThread();
+}
+
 // A range that ends before Largest Object is refused below draft 22 and accepted at 22.
 TEST_P(MoQRelayTest, PastRangeRefusedOnlyBelowDraft22) {
   auto publisherSession = createMockSession();
