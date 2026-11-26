@@ -205,6 +205,25 @@ TEST(MoqxAccessLogTest, ErrorsBypassSamplingAndErrorsOnlySinksTakeOnlyErrors) {
   EXPECT_EQ(log->eventMask(gate, AccessLogEvent::SUBSCRIBE, true), 0b11u);
 }
 
+TEST(MoqxAccessLogTest, EachServiceSetsItsPeriodicSampleAndInterval) {
+  std::vector<std::unique_ptr<AccessLogSink>> sinks;
+  sinks.push_back(callbackSink(std::make_shared<Captured>()));
+  AccessLogServices services;
+  services.defaults.sinks.push_back(allEvents(0));
+  auto& quiet = services.byName["quiet"];
+  quiet.sinks = services.defaults.sinks;
+  quiet.periodicSample = 0.0;
+  quiet.periodicInterval = std::chrono::milliseconds(2000);
+  auto log = makeLog(std::move(sinks), 1024, std::move(services));
+
+  auto gate = log->gateSession("live", "viewer", "s1");
+  EXPECT_EQ(log->periodicMask(gate, "s1:0"), 0b1u);
+  EXPECT_EQ(log->periodicInterval(gate), std::chrono::milliseconds(5000));
+  gate = log->gateSession("quiet", "viewer", "s1");
+  EXPECT_EQ(log->periodicMask(gate, "s1:0"), 0u);
+  EXPECT_EQ(log->periodicInterval(gate), std::chrono::milliseconds(2000));
+}
+
 TEST(MoqxAccessLogTest, SampleKeyIsDeterministicAndUniform) {
   EXPECT_EQ(accessLogSampleKey("abc"), accessLogSampleKey("abc"));
   size_t below = 0;

@@ -6,13 +6,34 @@
 
 #include "logging/access/AccessLogSessionContext.h"
 
+#include "logging/access/AccessLogPeriodic.h"
+
 #include <folly/IPAddress.h>
 #include <folly/logging/xlog.h>
 #include <moxygen/MoQVersions.h>
+#include <moxygen/events/MoQFollyExecutorImpl.h>
 
 #include "relay/ExecutorCheck.h"
 
 namespace openmoq::moqx::logging {
+
+uint64_t
+msBetween(std::chrono::steady_clock::time_point from, std::chrono::steady_clock::time_point to) {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(to - from).count();
+}
+
+AccessLogSinkMask AccessLogSessionContext::periodicMask(uint64_t requestID) const {
+  return log_->periodicMask(gate_, folly::to<std::string>(info_->session, ":", requestID));
+}
+
+bool AccessLogSessionContext::schedulePeriodic(std::weak_ptr<AccessLogRequest> logRequest) {
+  auto interval = log_->periodicInterval(gate_);
+  if (interval.count() == 0 || !evb_) {
+    return false;
+  }
+  AccessLogPeriodic::on(*evb_, interval).add(std::move(logRequest));
+  return true;
+}
 
 uint64_t msSince(std::chrono::steady_clock::time_point start) {
   auto elapsed = std::chrono::steady_clock::now() - start;
@@ -76,6 +97,9 @@ void AccessLogSessionContext::setup(
   gate_ = log_->gateSession(info_->service, info_->peerClass, info_->session);
   session_ = session;
   exec_ = session->getExecutor();
+  if (auto* follyExec = dynamic_cast<moxygen::MoQFollyExecutorImpl*>(exec_)) {
+    evb_ = follyExec->getBackingEventBase();
+  }
 }
 
 void AccessLogSessionContext::setService(const moxygen::MoQSession& session, std::string service) {
@@ -118,7 +142,29 @@ void AccessLogSessionContext::writeSessionEnd(std::optional<uint64_t> errorCode)
     record.errorCode = errorCode;
     record.durationMs = msSince(openedAt_);
     record.requests = requests_;
+    addTransportStats(record);
   });
+}
+
+void AccessLogSessionContext::addTransportStats(AccessLogRecord& record) const {
+  XDCHECK(!exec_ || onExecutor(exec_)) << "transport stats read off the session's executor";
+  auto session = session_.lock();
+  if (!session) {
+    return;
+  }
+  auto info = session->getTransportInfo();
+  if (info.srtt.count() == 0) {
+    return;
+  }
+  record.srttUs = info.srtt.count();
+  if (info.maybeMinRtt) {
+    record.minRttUs = info.maybeMinRtt->count();
+  }
+  record.cwnd = info.congestionWindow;
+  record.inflight = info.bytesInFlight;
+  record.pktsSent = info.totalPacketsSent;
+  record.pktsLost = info.totalPacketsMarkedLost;
+  record.bytesRetx = info.totalBytesRetransmitted;
 }
 
 AccessLogSessionState AccessLogSessionContext::state() const {

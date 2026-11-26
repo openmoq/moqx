@@ -69,6 +69,8 @@ AccessLogServices makeAccessLogServices(const config::Config& config) {
   auto convert = [&](const config::AccessLogServiceConfig& accessLog) {
     AccessLogServiceOptions options;
     options.sessionSample = accessLog.sessionSample;
+    options.periodicSample = accessLog.periodicSample;
+    options.periodicInterval = std::chrono::milliseconds(accessLog.periodicIntervalMs);
     for (const auto& selection : accessLog.sinks) {
       auto it = std::find_if(sinks.begin(), sinks.end(), [&](const auto& sink) {
         return sink.name == selection.name;

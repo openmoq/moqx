@@ -2733,6 +2733,8 @@ TEST(ResolveConfig, AccessLogResolvesSinkAndDefaults) {
   const auto& serviceLog = result.value().config.services.at("default").accessLog;
   for (const auto* accessLog : {&access->serviceDefaults, &serviceLog}) {
     EXPECT_EQ(accessLog->sessionSample, 1.0);
+    EXPECT_EQ(accessLog->periodicSample, 1.0);
+    EXPECT_EQ(accessLog->periodicIntervalMs, 5000u);
     ASSERT_EQ(accessLog->sinks.size(), 1u);
     EXPECT_EQ(accessLog->sinks[0].name, "main");
     EXPECT_TRUE(accessLog->sinks[0].events.empty());
@@ -2746,16 +2748,23 @@ ParsedAccessLogSinkSelection selectSink(std::string name) {
   return selection;
 }
 
-ParsedAccessLogSampleConfig sessionSample(double rate) {
+ParsedAccessLogSampleConfig
+samples(std::optional<double> session, std::optional<double> periodic = std::nullopt) {
   ParsedAccessLogSampleConfig sample;
-  sample.session = rate;
+  sample.session = session;
+  sample.periodic = periodic;
   return sample;
+}
+
+ParsedAccessLogSampleConfig sessionSample(double rate) {
+  return samples(rate);
 }
 
 TEST(ResolveConfig, AccessLogServiceOverridesTheDefaults) {
   auto cfg = withAccessSinks({makeAccessSink("control"), makeAccessSink("errors")});
   ParsedAccessLogServiceConfig defaults;
-  defaults.sample = sessionSample(0.1);
+  defaults.sample = samples(0.1, 0.5);
+  defaults.periodic_interval_ms = 2000u;
   auto errors = selectSink("errors");
   errors.errors_only = true;
   defaults.sinks = std::vector<ParsedAccessLogSinkSelection>{selectSink("control"), errors};
@@ -2763,6 +2772,7 @@ TEST(ResolveConfig, AccessLogServiceOverridesTheDefaults) {
 
   auto acme = makeAuthorityService({makeExactAuthorityMatch("acme.example")});
   ParsedAccessLogServiceConfig acmeLog;
+  acmeLog.sample = samples(std::nullopt, 0.25);
   auto control = selectSink("control");
   control.events = std::vector<std::string>{"session"};
   control.peer_classes = std::vector<std::string>{"participant"};
@@ -2778,9 +2788,13 @@ TEST(ResolveConfig, AccessLogServiceOverridesTheDefaults) {
   ASSERT_EQ(fallback.sinks.size(), 2u);
   EXPECT_TRUE(fallback.sinks[1].errorsOnly);
   EXPECT_EQ(config.services.at("default").accessLog.sinks.size(), 2u);
-  // acme keeps the default sample and replaces the default sinks.
+  EXPECT_EQ(fallback.periodicSample, 0.5);
+  EXPECT_EQ(fallback.periodicIntervalMs, 2000u);
+  // acme keeps the default session sample and interval and replaces the default sinks.
   const auto& acmeResolved = config.services.at("acme").accessLog;
   EXPECT_EQ(acmeResolved.sessionSample, 0.1);
+  EXPECT_EQ(acmeResolved.periodicSample, 0.25);
+  EXPECT_EQ(acmeResolved.periodicIntervalMs, 2000u);
   ASSERT_EQ(acmeResolved.sinks.size(), 1u);
   EXPECT_EQ(acmeResolved.sinks[0].name, "control");
   EXPECT_EQ(acmeResolved.sinks[0].events, (std::vector<std::string>{"session"}));
@@ -2824,7 +2838,8 @@ TEST(ResolveConfig, AccessLogServiceSinksNeedLoggingAccess) {
 TEST(ResolveConfig, AccessLogRejectsBadServiceSelections) {
   auto cfg = withAccessSinks({makeAccessSink()});
   ParsedAccessLogServiceConfig defaults;
-  defaults.sample = sessionSample(1.5);
+  defaults.sample = samples(1.5, -1.0);
+  defaults.periodic_interval_ms = 0u;
   auto bad = selectSink("main");
   bad.events = std::vector<std::string>{"session", "nope", "internal", "LOG_DROPPED"};
   bad.peer_classes = std::vector<std::string>{"participant", "relay_peer"};
@@ -2837,6 +2852,8 @@ TEST(ResolveConfig, AccessLogRejectsBadServiceSelections) {
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasError());
   EXPECT_THAT(result.error(), HasSubstr("service_defaults.access_log: sample.session must be in"));
+  EXPECT_THAT(result.error(), HasSubstr("sample.periodic must be in [0.0, 1.0]"));
+  EXPECT_THAT(result.error(), HasSubstr("periodic_interval_ms must be >= 1"));
   EXPECT_THAT(result.error(), HasSubstr("unknown event or class 'nope'"));
   EXPECT_THAT(result.error(), HasSubstr("unknown event or class 'internal'"));
   EXPECT_THAT(result.error(), HasSubstr("unknown event or class 'LOG_DROPPED'"));

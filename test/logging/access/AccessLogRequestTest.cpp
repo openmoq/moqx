@@ -7,9 +7,12 @@
 #include "logging/access/AccessLogRequest.h"
 #include "logging/access/AccessLogFilters.h"
 #include "logging/access/AccessLogHandles.h"
+#include "logging/access/AccessLogPeriodic.h"
 
+#include <algorithm>
 #include <folly/coro/BlockingWait.h>
 #include <folly/io/async/EventBase.h>
+
 #include <gtest/gtest.h>
 #include <moxygen/events/MoQFollyExecutorImpl.h>
 #include <moxygen/test/MockMoQSession.h>
@@ -34,10 +37,83 @@ public:
   void submit(std::unique_ptr<AccessLogRecord> record, AccessLogSinkMask) override {
     records.push_back(std::move(record));
   }
+  std::chrono::milliseconds periodicInterval(const AccessLogSessionGate&) const override {
+    return interval;
+  }
 
   std::vector<std::unique_ptr<AccessLogRecord>> records;
+  std::chrono::milliseconds interval{0};
   AccessLogSessionGate gate{.matched = 1, .sampled = true};
   bool errorsOnly{false};
+};
+
+// Accepts every call and discards it.
+class NullSubgroupConsumer : public moxygen::SubgroupConsumer {
+public:
+  folly::Expected<folly::Unit, moxygen::MoQPublishError>
+  object(uint64_t, moxygen::Payload, moxygen::Extensions, bool) override {
+    return folly::unit;
+  }
+  folly::Expected<folly::Unit, moxygen::MoQPublishError>
+  beginObject(uint64_t, uint64_t, moxygen::Payload, moxygen::Extensions) override {
+    return folly::unit;
+  }
+  folly::Expected<moxygen::ObjectPublishStatus, moxygen::MoQPublishError>
+  objectPayload(moxygen::Payload, bool) override {
+    return moxygen::ObjectPublishStatus::IN_PROGRESS;
+  }
+  folly::Expected<folly::Unit, moxygen::MoQPublishError> endOfGroup(uint64_t) override {
+    return folly::unit;
+  }
+  folly::Expected<folly::Unit, moxygen::MoQPublishError> endOfTrackAndGroup(uint64_t) override {
+    return folly::unit;
+  }
+  folly::Expected<folly::Unit, moxygen::MoQPublishError> endOfSubgroup() override {
+    return folly::unit;
+  }
+  void reset(moxygen::ResetStreamErrorCode) override {}
+  folly::Expected<folly::SemiFuture<uint64_t>, moxygen::MoQPublishError>
+  awaitReadyToConsume() override {
+    return folly::makeSemiFuture<uint64_t>(0);
+  }
+};
+
+class NullTrackConsumer : public moxygen::TrackConsumer {
+public:
+  folly::Expected<folly::Unit, moxygen::MoQPublishError> setTrackAlias(moxygen::TrackAlias
+  ) override {
+    return folly::unit;
+  }
+  folly::Expected<std::shared_ptr<moxygen::SubgroupConsumer>, moxygen::MoQPublishError>
+  beginSubgroup(uint64_t, uint64_t, moxygen::Priority, BeginSubgroupOptions) override {
+    return std::make_shared<NullSubgroupConsumer>();
+  }
+  folly::Expected<folly::SemiFuture<folly::Unit>, moxygen::MoQPublishError>
+  awaitStreamCredit() override {
+    return folly::makeSemiFuture();
+  }
+  folly::Expected<folly::Unit, moxygen::MoQPublishError>
+  objectStream(const moxygen::ObjectHeader&, moxygen::Payload, bool) override {
+    return folly::unit;
+  }
+  folly::Expected<folly::Unit, moxygen::MoQPublishError>
+  datagram(const moxygen::ObjectHeader&, moxygen::Payload, bool) override {
+    return folly::unit;
+  }
+  folly::Expected<folly::Unit, moxygen::MoQPublishError> publishDone(moxygen::PublishDone
+  ) override {
+    return folly::unit;
+  }
+};
+
+// A consumer that the session provides, with the counts that the session keeps.
+class StatsTrackConsumer : public NullTrackConsumer, public moxygen::MoQTrackStatsSource {
+public:
+  std::shared_ptr<const moxygen::MoQTrackStats> getTrackStats() const override {
+    return trackStats;
+  }
+
+  std::shared_ptr<moxygen::MoQTrackStats> trackStats{std::make_shared<moxygen::MoQTrackStats>()};
 };
 
 class FakeSubscriptionHandle : public moxygen::SubscriptionHandle {
@@ -50,16 +126,27 @@ public:
 };
 
 // Replies to SUBSCRIBE with a handle whose SUBSCRIBE_OK carries request ID 11.
+// A session's publisher: its SUBSCRIBE handles have stats.
 class FakePublisher : public moxygen::Publisher {
 public:
   folly::coro::Task<SubscribeResult>
   subscribe(moxygen::SubscribeRequest, std::shared_ptr<moxygen::TrackConsumer>) override {
-    class Handle : public FakeSubscriptionHandle {
+    class Handle : public FakeSubscriptionHandle, public moxygen::MoQTrackStatsSource {
     public:
-      Handle() { setSubscribeOk(moxygen::SubscribeOk{11, 0}); }
+      explicit Handle(std::shared_ptr<moxygen::MoQTrackStats> stats) : stats_(std::move(stats)) {
+        setSubscribeOk(moxygen::SubscribeOk{11, 0});
+      }
+      std::shared_ptr<const moxygen::MoQTrackStats> getTrackStats() const override {
+        return stats_;
+      }
+
+    private:
+      std::shared_ptr<moxygen::MoQTrackStats> stats_;
     };
-    co_return std::make_shared<Handle>();
+    co_return std::make_shared<Handle>(trackStats);
   }
+
+  std::shared_ptr<moxygen::MoQTrackStats> trackStats{std::make_shared<moxygen::MoQTrackStats>()};
 };
 
 class AccessLogRequestTest : public testing::Test {
@@ -169,9 +256,27 @@ TEST_F(AccessLogRequestTest, PublisherFilterTakesRxIdFromRequestAndTxIdFromReply
   EXPECT_EQ(line(1).dir, AccessLogDir::Tx);
 }
 
-TEST_F(AccessLogRequestTest, FilterIsSkippedWithoutContext) {
+TEST_F(AccessLogRequestTest, TxSubscribeThroughTheFilterWritesReceivingSubStats) {
+  log_->interval = std::chrono::milliseconds(1000);
+  auto sub = moxygen::SubscribeRequest::make(
+      moxygen::FullTrackName{moxygen::TrackNamespace({"live"}), "video"}
+  );
   auto inner = std::make_shared<FakePublisher>();
-  EXPECT_EQ(logPublisher(inner, nullptr, AccessLogDir::Rx), inner);
+  auto publisher = logPublisher(inner, context_, AccessLogDir::Tx);
+  auto result = folly::coro::blockingWait(publisher->subscribe(sub, nullptr));
+  ASSERT_TRUE(result.hasValue());
+  // The filter wraps the reply before ok(), so the request has stats when SUB_STATS starts.
+  auto& periodic = AccessLogPeriodic::on(evb_, log_->interval);
+  EXPECT_EQ(periodic.size(), 1u);
+  inner->trackStats->onGroup(1);
+  inner->trackStats->onObject(7);
+  periodic.timeoutExpired();
+  ASSERT_EQ(events(), (std::vector{Event::SUBSCRIBE, Event::SUB_STATS}));
+  EXPECT_EQ(line(1).dObjects, 1);
+  EXPECT_EQ(line(1).dBytes, 7);
+  // The relay receives this subscription's data, so the send-only fields are absent.
+  EXPECT_FALSE(line(1).dBytesWritten.has_value());
+  EXPECT_FALSE(line(1).bytesQueued.has_value());
 }
 
 TEST_F(AccessLogRequestTest, FilterIsSkippedWithoutContextOrWhenFilteredOut) {
@@ -410,6 +515,164 @@ TEST_F(AccessLogRequestTest, NamespaceMessagesExtendThePrefix) {
   EXPECT_TRUE(line(1).namespaceOnly);
   EXPECT_EQ(line(1).requestID, 2);
   EXPECT_EQ(line(1).dir, AccessLogDir::Tx);
+}
+
+TEST_F(AccessLogRequestTest, EndLineCarriesTheSessionsTotals) {
+  auto pending = request(Event::SUBSCRIBE, AccessLogDir::Rx);
+  auto session = std::make_shared<StatsTrackConsumer>();
+  auto consumer = logged(std::shared_ptr<moxygen::TrackConsumer>(session), pending, false);
+  pending->ok(std::nullopt);
+  auto& stats = *session->trackStats;
+  stats.onGroup(1);
+  stats.onObject(10);
+  stats.onGroup(2);
+  stats.onObject(5);
+  stats.subgroups = 1;
+  stats.datagrams = 1;
+  stats.bytesQueued = 50;
+  stats.payloadBytesQueued = 15;
+  stats.bytesWritten = 40;
+  stats.bytesAcked = 30;
+  stats.objectsWritten = 2;
+  stats.objectsAcked = 1;
+  stats.ackLatencyUsSum = 300;
+  stats.ackLatencyUsMax = 300;
+  stats.statusObjects = 1;
+  stats.onReset(5);
+  consumer->publishDone({4, moxygen::PublishDoneStatusCode::TRACK_ENDED, 0, ""});
+  ASSERT_EQ(events(), (std::vector{Event::SUBSCRIBE, Event::PUBLISH_DONE}));
+  const auto& end = line(1);
+  EXPECT_EQ(end.objects, 2);
+  EXPECT_EQ(end.bytes, 15);
+  EXPECT_EQ(end.groups, 2);
+  EXPECT_EQ(end.subgroups, 1);
+  EXPECT_EQ(end.datagrams, 1);
+  EXPECT_EQ(end.bytesQueued, 50);
+  EXPECT_EQ(end.payloadBytesQueued, 15);
+  EXPECT_EQ(end.bytesWritten, 40);
+  EXPECT_EQ(end.bytesAcked, 30);
+  EXPECT_EQ(end.objectsWritten, 2);
+  EXPECT_EQ(end.objectsAcked, 1);
+  EXPECT_EQ(end.ackUsAvg, 300);
+  EXPECT_EQ(end.ackUsMax, 300);
+  EXPECT_EQ(end.statusObjects, 1);
+  EXPECT_EQ(end.resets, 1);
+  EXPECT_EQ(end.lastResetCode, 5);
+  EXPECT_TRUE(end.ttfoMs.has_value());
+}
+
+TEST_F(AccessLogRequestTest, OnlyTheSessionsOwnObjectsGiveStats) {
+  // The relay's consumer on a tx SUBSCRIBE can lead to another session's counts.
+  auto tx = request(Event::SUBSCRIBE, AccessLogDir::Tx, std::nullopt);
+  auto relays = std::make_shared<StatsTrackConsumer>();
+  relays->trackStats->onObject(10);
+  auto txConsumer = logged(std::shared_ptr<moxygen::TrackConsumer>(relays), tx, true);
+  tx->ok(7);
+  tx->ended(Event::UNSUBSCRIBE, Reason::Unsubscribed, false);
+  EXPECT_FALSE(line(1).objects.has_value());
+
+  // A tx SUBSCRIBE's handle receives the data, so it does not write bytes to the transport.
+  class StatsHandle : public FakeSubscriptionHandle, public moxygen::MoQTrackStatsSource {
+  public:
+    std::shared_ptr<const moxygen::MoQTrackStats> getTrackStats() const override {
+      return trackStats;
+    }
+    std::shared_ptr<moxygen::MoQTrackStats> trackStats{std::make_shared<moxygen::MoQTrackStats>()};
+  };
+  auto receiving = request(Event::SUBSCRIBE, AccessLogDir::Tx, std::nullopt);
+  auto sessionHandle = std::make_shared<StatsHandle>();
+  sessionHandle->trackStats->onObject(10);
+  auto handle =
+      logged(std::shared_ptr<moxygen::SubscriptionHandle>(sessionHandle), receiving, false);
+  receiving->ok(8);
+  handle->unsubscribe();
+  EXPECT_EQ(line(3).objects, 1);
+  EXPECT_FALSE(line(3).bytesWritten.has_value());
+}
+
+TEST_F(AccessLogRequestTest, ARequestAddedDuringASweepWaitsForTheNextInterval) {
+  log_->interval = std::chrono::milliseconds(1000);
+  auto& periodic = AccessLogPeriodic::on(evb_, log_->interval);
+  std::vector<std::shared_ptr<AccessLogRequest>> requests;
+  std::vector<std::shared_ptr<moxygen::TrackConsumer>> consumers;
+  auto start = [&](uint64_t requestID) {
+    requests.push_back(request(Event::SUBSCRIBE, AccessLogDir::Rx, requestID));
+    consumers.push_back(logged(
+        std::shared_ptr<moxygen::TrackConsumer>(std::make_shared<StatsTrackConsumer>()),
+        requests.back(),
+        false
+    ));
+    requests.back()->ok(std::nullopt);
+  };
+  for (uint64_t i = 0; i <= AccessLogPeriodic::kPerLoop; ++i) {
+    start(i);
+  }
+  periodic.cancelTimeout();
+  periodic.timeoutExpired();
+  start(1000);
+  EXPECT_FALSE(periodic.isScheduled());
+  evb_.loopOnce();
+  EXPECT_TRUE(periodic.isScheduled());
+  auto all = events();
+  EXPECT_EQ(std::count(all.begin(), all.end(), Event::SUB_STATS), AccessLogPeriodic::kPerLoop + 1);
+  EXPECT_EQ(periodic.size(), AccessLogPeriodic::kPerLoop + 2);
+}
+
+TEST_F(AccessLogRequestTest, PeriodicWritesDeltasUntilTheRequestEnds) {
+  log_->interval = std::chrono::milliseconds(1000);
+  auto pending = request(Event::SUBSCRIBE, AccessLogDir::Rx);
+  auto session = std::make_shared<StatsTrackConsumer>();
+  auto consumer = logged(std::shared_ptr<moxygen::TrackConsumer>(session), pending, false);
+  pending->ok(std::nullopt);
+  auto& periodic = AccessLogPeriodic::on(evb_, log_->interval);
+  EXPECT_EQ(periodic.size(), 1u);
+  EXPECT_EQ(AccessLogPeriodic::on(evb_, std::chrono::milliseconds(2000)).size(), 0u);
+  auto& stats = *session->trackStats;
+  stats.onObject(10);
+  stats.bytesWritten = 14;
+  periodic.timeoutExpired();
+  stats.onObject(6);
+  stats.bytesQueued = 30;
+  stats.payloadBytesQueued = 16;
+  stats.bytesWritten = 24;
+  stats.bytesAcked = 14;
+  stats.objectsAcked = 2;
+  stats.ackLatencyUsSum = 500;
+  periodic.timeoutExpired();
+  ASSERT_EQ(events(), (std::vector{Event::SUBSCRIBE, Event::SUB_STATS, Event::SUB_STATS}));
+  EXPECT_EQ(line(1).dObjects, 1);
+  EXPECT_EQ(line(1).dBytes, 10);
+  EXPECT_EQ(line(1).dBytesWritten, 14);
+  EXPECT_EQ(line(1).dBytesAcked, 0);
+  EXPECT_EQ(line(2).dObjects, 1);
+  EXPECT_EQ(line(2).dBytes, 6);
+  EXPECT_EQ(line(2).dBytesQueued, 30);
+  EXPECT_EQ(line(2).dPayloadBytesQueued, 16);
+  EXPECT_EQ(line(2).dBytesWritten, 10);
+  EXPECT_EQ(line(2).dBytesAcked, 14);
+  EXPECT_EQ(line(2).dObjectsAcked, 2);
+  EXPECT_EQ(line(2).dAckUsAvg, 250);
+  EXPECT_FALSE(line(1).dAckUsAvg.has_value());
+  EXPECT_EQ(line(2).objects, 2);
+  EXPECT_EQ(line(2).bytes, 16);
+  EXPECT_EQ(line(2).requestID, 4);
+
+  pending->ended(Event::UNSUBSCRIBE, Reason::Unsubscribed, false);
+  periodic.timeoutExpired();
+  EXPECT_EQ(periodic.size(), 0u);
+  EXPECT_EQ(events().back(), Event::UNSUBSCRIBE);
+}
+
+TEST(AccessLogPeriodicTest, IntervalsEndOnWallClockMultiples) {
+  using std::chrono::milliseconds;
+  using Time = std::chrono::system_clock::time_point;
+  auto at = Time(milliseconds(12'345));
+  EXPECT_EQ(nextMultiple(at, milliseconds(1000)), Time(milliseconds(13'000)));
+  EXPECT_EQ(nextMultiple(at, milliseconds(10'000)), Time(milliseconds(20'000)));
+  EXPECT_EQ(
+      nextMultiple(Time(milliseconds(13'000)), milliseconds(1000)),
+      Time(milliseconds(14'000))
+  );
 }
 
 TEST_F(AccessLogRequestTest, SessionEndWritesOnce) {

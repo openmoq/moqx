@@ -102,12 +102,13 @@ folly::coro::Task<folly::Expected<T, E>> logReply(
     co_yield folly::coro::co_error(std::move(result.exception()));
   }
   if (result->hasValue()) {
+    std::optional<uint64_t> requestID;
     if constexpr (kDir == AccessLogDir::Tx) {
-      logRequest->ok(requestIDFromReply(result->value()));
-    } else {
-      logRequest->ok(std::nullopt);
+      requestID = requestIDFromReply(result->value());
     }
+    // The wrapper gives the request the session's stats before ok() starts SUB_STATS.
     result->value() = wrap(std::move(result->value()));
+    logRequest->ok(requestID);
   } else {
     auto requestID =
         kDir == AccessLogDir::Tx ? txRequestID(result->error().requestID) : std::nullopt;

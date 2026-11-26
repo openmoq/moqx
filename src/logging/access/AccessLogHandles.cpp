@@ -139,6 +139,9 @@ public:
     if (inner_->hasSubscribeOk()) {
       setSubscribeOk(inner_->subscribeOk());
     }
+    if (!sessionHeld) {
+      logRequest_->setStats(moxygen::trackStatsOf(*inner_), /*sending=*/false);
+    }
   }
 
   const moxygen::SubscribeOk& subscribeOk() const override { return inner_->subscribeOk(); }
@@ -158,7 +161,11 @@ public:
       std::shared_ptr<AccessLogRequest> logRequest,
       bool sessionHeld
   )
-      : TrackConsumerFilter(std::move(inner)), logRequest_(std::move(logRequest), sessionHeld) {}
+      : TrackConsumerFilter(std::move(inner)), logRequest_(std::move(logRequest), sessionHeld) {
+    if (!sessionHeld) {
+      logRequest_->setStats(moxygen::trackStatsOf(*downstream_), /*sending=*/true);
+    }
+  }
 
   folly::Expected<std::shared_ptr<moxygen::FetchConsumer>, MoQPublishError>
   beginFill(moxygen::RequestID requestID) override {
@@ -184,7 +191,16 @@ private:
 
 class LoggedFetchHandle : public LoggedUpdatable<moxygen::Publisher::FetchHandle> {
 public:
-  using LoggedUpdatable::LoggedUpdatable;
+  LoggedFetchHandle(
+      std::shared_ptr<moxygen::Publisher::FetchHandle> inner,
+      std::shared_ptr<AccessLogRequest> logRequest,
+      bool sessionHeld
+  )
+      : LoggedUpdatable(std::move(inner), std::move(logRequest), sessionHeld) {
+    if (!sessionHeld) {
+      logRequest_->setStats(moxygen::trackStatsOf(*inner_), /*sending=*/false);
+    }
+  }
 
   const moxygen::FetchOk& fetchOk() const override { return inner_->fetchOk(); }
 
@@ -196,7 +212,16 @@ public:
 
 class LoggedFetchConsumer : public LoggedHandle<moxygen::FetchConsumer> {
 public:
-  using LoggedHandle::LoggedHandle;
+  LoggedFetchConsumer(
+      std::shared_ptr<moxygen::FetchConsumer> inner,
+      std::shared_ptr<AccessLogRequest> logRequest,
+      bool sessionHeld
+  )
+      : LoggedHandle(std::move(inner), std::move(logRequest), sessionHeld) {
+    if (!sessionHeld) {
+      logRequest_->setStats(moxygen::trackStatsOf(*inner_), /*sending=*/true);
+    }
+  }
 
   folly::Expected<folly::Unit, MoQPublishError> object(
       uint64_t groupID,

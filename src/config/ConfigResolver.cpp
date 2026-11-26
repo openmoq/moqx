@@ -1038,6 +1038,12 @@ void validateAccessLogService(
     if (auto rate = sample->session.value(); rate && !(*rate >= 0.0 && *rate <= 1.0)) {
       errors.push_back(label + ": sample.session must be in [0.0, 1.0]");
     }
+    if (auto rate = sample->periodic.value(); rate && !(*rate >= 0.0 && *rate <= 1.0)) {
+      errors.push_back(label + ": sample.periodic must be in [0.0, 1.0]");
+    }
+  }
+  if (accessLog.periodic_interval_ms.value().value_or(1) == 0) {
+    errors.push_back(label + ": periodic_interval_ms must be >= 1");
   }
   std::unordered_set<std::string> seen;
   for (const auto& selection :
@@ -1064,8 +1070,8 @@ void validateAccessLogService(
   }
 }
 
-// A service's sample overrides the defaults key by key, and its sinks list replaces theirs.
-// Without a list anywhere, every sink takes every class of events.
+// A service's sample and interval override the defaults key by key, and its sinks list
+// replaces theirs. Without a list anywhere, every sink takes every class of events.
 AccessLogServiceConfig resolveAccessLogService(
     const ParsedAccessLogServiceConfig* defaults,
     const ParsedAccessLogServiceConfig* service,
@@ -1079,7 +1085,10 @@ AccessLogServiceConfig resolveAccessLogService(
     }
     if (auto sample = layer->sample.value()) {
       resolved.sessionSample = sample->session.value().value_or(resolved.sessionSample);
+      resolved.periodicSample = sample->periodic.value().value_or(resolved.periodicSample);
     }
+    resolved.periodicIntervalMs =
+        layer->periodic_interval_ms.value().value_or(resolved.periodicIntervalMs);
     if (const auto& list = layer->sinks.value()) {
       sinks = &*list;
     }

@@ -159,6 +159,24 @@ struct AccessLogRecord {
   std::optional<uint64_t> objects;
   std::optional<uint64_t> bytes;
   std::optional<uint64_t> groups;
+  std::optional<uint64_t> subgroups;
+  std::optional<uint64_t> datagrams;
+  std::optional<uint64_t> statusObjects;
+  std::optional<uint64_t> resets;
+  std::optional<uint64_t> lastResetCode;
+  std::optional<uint64_t> openSubgroups;
+  // Set when the session sends the data. The byte counts other than payloadBytesQueued include
+  // headers.
+  std::optional<uint64_t> bytesQueued;
+  std::optional<uint64_t> payloadBytesQueued;
+  std::optional<uint64_t> bytesWritten;
+  std::optional<uint64_t> bytesAcked;
+  std::optional<uint64_t> bytesDropped;
+  std::optional<uint64_t> bytesCancelled;
+  std::optional<uint64_t> objectsWritten;
+  std::optional<uint64_t> objectsAcked;
+  std::optional<uint64_t> ackUsAvg;
+  std::optional<uint64_t> ackUsMax;
   std::optional<uint64_t> ageMs;
   std::optional<uint64_t> ttfoMs;
   std::optional<uint64_t> fetchMs;
@@ -167,6 +185,34 @@ struct AccessLogRecord {
   std::string goawayUri;
   std::optional<uint64_t> durationMs;
   std::optional<uint64_t> requests;
+
+  // The session's QUIC transport when the line was written, on SESSION_END and SUB_STATS.
+  std::optional<uint64_t> srttUs;
+  std::optional<uint64_t> minRttUs;
+  std::optional<uint64_t> cwnd;
+  std::optional<uint64_t> inflight;
+  std::optional<uint64_t> pktsSent;
+  std::optional<uint64_t> pktsLost;
+  std::optional<uint64_t> bytesRetx;
+
+  // SUB_STATS: the interval and the deltas within it. The totals above are cumulative.
+  std::optional<std::chrono::system_clock::time_point> intervalStart;
+  std::optional<uint64_t> intervalMs;
+  std::optional<uint64_t> dObjects;
+  std::optional<uint64_t> dBytes;
+  std::optional<uint64_t> dGroups;
+  std::optional<uint64_t> dSubgroups;
+  std::optional<uint64_t> dDatagrams;
+  std::optional<uint64_t> dBytesQueued;
+  std::optional<uint64_t> dPayloadBytesQueued;
+  std::optional<uint64_t> dBytesWritten;
+  std::optional<uint64_t> dBytesAcked;
+  std::optional<uint64_t> dObjectsWritten;
+  std::optional<uint64_t> dObjectsAcked;
+  // The mean ack latency of the objects acked in the interval.
+  std::optional<uint64_t> dAckUsAvg;
+  std::optional<uint64_t> dStatusObjects;
+  std::optional<uint64_t> dResets;
 
   // LOG_DROPPED
   std::optional<uint64_t> dropped;
