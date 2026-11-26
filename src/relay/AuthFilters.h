@@ -10,6 +10,7 @@
 
 #include <moxygen/Publisher.h>
 #include <moxygen/Subscriber.h>
+#include <moxygen/events/MoQExecutor.h>
 
 #include <folly/coro/Task.h>
 #include <memory>
@@ -27,10 +28,12 @@ public:
       std::shared_ptr<const auth::AuthTokenVerifier> verifier,
       std::shared_ptr<const std::vector<auth::Grants>> grants,
       const ReciprocalMoqtPeerHandler* reciprocal,
+      moxygen::MoQExecutor* exec,
       uint64_t connectionId = 0
   )
       : downstream_(std::move(downstream)), verifier_(std::move(verifier)),
-        grants_(std::move(grants)), reciprocal_(reciprocal), connectionId_(connectionId) {}
+        grants_(std::move(grants)), reciprocal_(reciprocal), exec_(exec),
+        connectionId_(connectionId) {}
 
   folly::coro::Task<SubscribeResult> subscribe(
       moxygen::SubscribeRequest sub,
@@ -60,6 +63,8 @@ private:
   std::shared_ptr<const std::vector<auth::Grants>> grants_;
   // Owned by the peering backend, which outlives every session. Null without reciprocal peering.
   const ReciprocalMoqtPeerHandler* reciprocal_;
+  // The session's executor, which runs revalidation timers.
+  moxygen::MoQExecutor* exec_;
   uint64_t connectionId_;
 };
 
@@ -71,10 +76,11 @@ public:
       std::shared_ptr<moxygen::Subscriber> downstream,
       std::shared_ptr<const auth::AuthTokenVerifier> verifier,
       std::shared_ptr<const std::vector<auth::Grants>> grants,
+      moxygen::MoQExecutor* exec,
       uint64_t connectionId = 0
   )
       : downstream_(std::move(downstream)), verifier_(std::move(verifier)),
-        grants_(std::move(grants)), connectionId_(connectionId) {}
+        grants_(std::move(grants)), exec_(exec), connectionId_(connectionId) {}
 
   PublishResult publish(
       moxygen::PublishRequest pub,
@@ -92,6 +98,8 @@ private:
   std::shared_ptr<moxygen::Subscriber> downstream_;
   std::shared_ptr<const auth::AuthTokenVerifier> verifier_;
   std::shared_ptr<const std::vector<auth::Grants>> grants_;
+  // The session's executor, which runs revalidation timers.
+  moxygen::MoQExecutor* exec_;
   uint64_t connectionId_;
 };
 

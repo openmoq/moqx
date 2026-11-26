@@ -385,12 +385,14 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayContext::validateAu
         entry.verifier,
         grants.value(),
         entry.peering->reciprocalMoqtPeerHandler(),
+        session->getExecutor(),
         connectionId
     );
     sub = std::make_shared<AuthSubscriberFilter>(
         std::move(sub),
         entry.verifier,
         grants.value(),
+        session->getExecutor(),
         connectionId
     );
   }

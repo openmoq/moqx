@@ -17,6 +17,7 @@
 #include <folly/io/async/ScopedEventBaseThread.h>
 #include <folly/portability/GMock.h>
 #include <folly/portability/GTest.h>
+#include <moxygen/events/MoQFollyExecutorImpl.h>
 #include <moxygen/test/Mocks.h>
 
 #include <future>
@@ -80,7 +81,8 @@ protected:
         publisherInner_,
         verifier_,
         std::make_shared<const std::vector<Grants>>(std::move(sessionGrants)),
-        /*peering=*/nullptr
+        /*peering=*/nullptr,
+        &exec_
     );
   }
 
@@ -88,13 +90,17 @@ protected:
     return std::make_shared<AuthSubscriberFilter>(
         subscriberInner_,
         verifier_,
-        std::make_shared<const std::vector<Grants>>(std::move(sessionGrants))
+        std::make_shared<const std::vector<Grants>>(std::move(sessionGrants)),
+        &exec_
     );
   }
 
   std::shared_ptr<const AuthTokenVerifier> verifier_;
   std::shared_ptr<NiceMock<MockPublisher>> publisherInner_;
   std::shared_ptr<NiceMock<MockSubscriber>> subscriberInner_;
+  // The session's thread: filter calls and revalidation timers run here.
+  folly::ScopedEventBaseThread eventBase_;
+  MoQFollyExecutorImpl exec_{eventBase_.getEventBase()};
 };
 
 } // namespace
@@ -107,7 +113,8 @@ TEST_F(AuthFiltersTest, PeerRelaySkipsGrantChecks) {
       publisherInner_,
       verifier_,
       std::make_shared<const std::vector<Grants>>(),
-      backend.reciprocalMoqtPeerHandler()
+      backend.reciprocalMoqtPeerHandler(),
+      &exec_
   );
   auto unsupported = [](RequestID id) {
     return folly::makeUnexpected(RequestError{id, RequestErrorCode::NOT_SUPPORTED, "inner"});
@@ -138,7 +145,8 @@ TEST_F(AuthFiltersTest, RelayWithoutAnIdChecksGrantsForRelayTokens) {
       publisherInner_,
       verifier_,
       std::make_shared<const std::vector<Grants>>(),
-      backend.reciprocalMoqtPeerHandler()
+      backend.reciprocalMoqtPeerHandler(),
+      &exec_
   );
   EXPECT_CALL(*publisherInner_, subscribeNamespace(_, _)).Times(0);
   EXPECT_CALL(*publisherInner_, subscribeTracks(_, _)).Times(0);
@@ -475,8 +483,16 @@ TEST(
   auto subscriberInner = std::make_shared<NiceMock<MockSubscriber>>();
   auto emptySessionGrants = std::make_shared<const std::vector<Grants>>();
 
-  AuthPublisherFilter pubFilter(publisherInner, verifier, emptySessionGrants, /*peering=*/nullptr);
-  AuthSubscriberFilter subFilter(subscriberInner, verifier, emptySessionGrants);
+  folly::ScopedEventBaseThread eventBase;
+  MoQFollyExecutorImpl exec(eventBase.getEventBase());
+  AuthPublisherFilter pubFilter(
+      publisherInner,
+      verifier,
+      emptySessionGrants,
+      /*peering=*/nullptr,
+      &exec
+  );
+  AuthSubscriberFilter subFilter(subscriberInner, verifier, emptySessionGrants, &exec);
 
   // Subscribe: anonymous claim covers it.
   SubscribeOk subOk;
@@ -576,7 +592,7 @@ TEST_F(AuthFiltersTest, RevalidationEndsTheExpiredSubscriptionOnly) {
     return folly::Expected<folly::Unit, MoQPublishError>(folly::unit);
   });
 
-  folly::ScopedEventBaseThread eventBase;
+  auto& eventBase = eventBase_;
   SubscribeRequest request;
   request.requestID = RequestID(1);
   request.fullTrackName = FullTrackName{TrackNamespace{{"live"}}, "video"};
@@ -605,7 +621,7 @@ TEST_F(AuthFiltersTest, RevalidationStopsWhenTheSubscriptionEndsFirst) {
   EXPECT_CALL(*inner, unsubscribe()).Times(1);
   EXPECT_CALL(*consumer, publishDone(_)).Times(0);
 
-  folly::ScopedEventBaseThread eventBase;
+  auto& eventBase = eventBase_;
   SubscribeRequest request;
   request.requestID = RequestID(1);
   request.fullTrackName = FullTrackName{TrackNamespace{{"live"}}, "video"};
@@ -636,7 +652,7 @@ TEST_F(AuthFiltersTest, RevalidationEndsTheExpiredNamespacePublication) {
   EXPECT_CALL(*callback, publishNamespaceCancel(RequestErrorCode::EXPIRED_AUTH_TOKEN, _))
       .WillOnce([&](auto, auto) { cancelled.set_value(); });
 
-  folly::ScopedEventBaseThread eventBase;
+  auto& eventBase = eventBase_;
   PublishNamespace publish;
   publish.requestID = RequestID(5);
   publish.trackNamespace = TrackNamespace{{"live"}};
@@ -671,7 +687,7 @@ TEST_F(AuthFiltersTest, RevalidationEndsTheExpiredFetch) {
     reset.set_value();
   });
 
-  folly::ScopedEventBaseThread eventBase;
+  auto& eventBase = eventBase_;
   Fetch fetch;
   fetch.requestID = RequestID(2);
   fetch.fullTrackName = FullTrackName{TrackNamespace{{"live"}}, "video"};
@@ -688,8 +704,10 @@ TEST_F(AuthFiltersTest, RevalidationEndsTheExpiredPublish) {
   auto consumer = std::make_shared<NiceMock<MockTrackConsumer>>();
   SubscribeOk subscribeOk;
   auto handle = std::make_shared<NiceMock<MockSubscriptionHandle>>(subscribeOk);
+  std::shared_ptr<SubscriptionHandle> relayHeld; // the relay keeps the handle while it publishes
   EXPECT_CALL(*subscriberInner_, publish(_, _))
-      .WillOnce([consumer](PublishRequest pub, auto) -> Subscriber::PublishResult {
+      .WillOnce([consumer, &relayHeld](PublishRequest pub, auto held) -> Subscriber::PublishResult {
+        relayHeld = std::move(held);
         PublishOk ok;
         ok.requestID = pub.requestID;
         return Subscriber::PublishConsumerAndReplyTask{
@@ -706,7 +724,7 @@ TEST_F(AuthFiltersTest, RevalidationEndsTheExpiredPublish) {
   pub.fullTrackName = FullTrackName{TrackNamespace{{"live"}}, "video"};
   auto result = subscriber->publish(pub, handle);
   ASSERT_TRUE(result.hasValue());
-  folly::ScopedEventBaseThread eventBase;
+  auto& eventBase = eventBase_;
   // The session awaits the reply on its executor, which starts the revalidation timer.
   auto reply = folly::coro::blockingWait(
       folly::coro::co_withExecutor(eventBase.getEventBase(), std::move(result.value().reply))
@@ -738,7 +756,7 @@ TEST_F(AuthFiltersTest, RevalidationIgnoresARefusedPublish) {
   pub.fullTrackName = FullTrackName{TrackNamespace{{"live"}}, "video"};
   auto result = subscriber->publish(pub, handle);
   ASSERT_TRUE(result.hasValue());
-  folly::ScopedEventBaseThread eventBase;
+  auto& eventBase = eventBase_;
   auto reply = folly::coro::blockingWait(
       folly::coro::co_withExecutor(eventBase.getEventBase(), std::move(result.value().reply))
   );
@@ -934,7 +952,7 @@ TEST_F(AuthFiltersTest, RevalidationEndsTheActionInsideTheRequestContextThatStar
     sawMarker.set_value(context != nullptr && context->hasContextData(kMarker));
   });
 
-  folly::ScopedEventBaseThread eventBase;
+  auto& eventBase = eventBase_;
   SubscribeRequest request;
   request.requestID = RequestID(1);
   request.fullTrackName = FullTrackName{TrackNamespace{{"live"}}, "video"};
@@ -978,7 +996,7 @@ TEST_F(AuthFiltersTest, RevalidationRevokesARevocableNamespaceInsteadOfJustWithd
   EXPECT_CALL(*pubHandle, publishNamespaceDone()).Times(0);
   EXPECT_CALL(*callback, publishNamespaceCancel(RequestErrorCode::EXPIRED_AUTH_TOKEN, _));
 
-  folly::ScopedEventBaseThread eventBase;
+  auto& eventBase = eventBase_;
   PublishNamespace publish;
   publish.requestID = RequestID(5);
   publish.trackNamespace = TrackNamespace{{"live"}};
