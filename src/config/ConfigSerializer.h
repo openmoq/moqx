@@ -299,13 +299,14 @@ inline void serializeLogging(ConfigSink& s, const LoggingConfig& l) {
     s.nullField("qlog");
   }
   if (l.access) {
-    s.uintField("access_queue_limit", l.access->queueLimit);
-    s.beginObject("access_vars");
+    s.beginObject("access_log");
+    s.uintField("queue_limit", l.access->queueLimit);
+    s.beginObject("vars");
     for (const auto& [name, value] : l.access->vars) {
       s.stringField(name, value);
     }
     s.endObject();
-    s.beginArray("access");
+    s.beginArray("sinks");
     for (const auto& sink : l.access->sinks) {
       s.beginObject("");
       s.stringField("name", sink.name);
@@ -331,9 +332,10 @@ inline void serializeLogging(ConfigSink& s, const LoggingConfig& l) {
     }
     s.endArray();
     // service_defaults.access_log, which sessions without a service use.
-    serializeAccessLogService(s, "access_service_defaults", l.access->serviceDefaults);
+    serializeAccessLogService(s, "service_defaults", l.access->serviceDefaults);
+    s.endObject();
   } else {
-    s.nullField("access");
+    s.nullField("access_log");
   }
   s.endObject();
 }

@@ -22,11 +22,11 @@ folly::Expected<std::shared_ptr<MoqxAccessLog>, std::string>
 makeAccessLog(const config::Config& config);
 
 // Class names in the events list expand to their events, and an empty list takes every class.
-// sink is the selected sink's index in logging.access.
+// sink is the selected sink's index in logging.access_log.sinks.
 AccessLogSinkSelection
 makeAccessLogSinkSelection(const config::AccessLogSinkSelectionConfig& selection, size_t sink);
 
-// Every service's sink selections, with sinks numbered in logging.access order.
+// Every service's sink selections, with sinks numbered in logging.access_log.sinks order.
 AccessLogServices makeAccessLogServices(const config::Config& config);
 
 } // namespace openmoq::moqx::logging

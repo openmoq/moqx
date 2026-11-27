@@ -912,15 +912,22 @@ void validateAccessLogTemplate(
   }
 }
 
+const ParsedAccessLogConfig* accessLogSection(const ParsedLoggingConfig* logging) {
+  if (!logging || !logging->access_log.value()) {
+    return nullptr;
+  }
+  return &*logging->access_log.value();
+}
+
 void validateAccessLog(
-    const ParsedLoggingConfig& logging,
+    const ParsedAccessLogConfig& access,
     bool relayIdSet,
     std::vector<std::string>& errors,
     std::vector<std::string>& warnings
 ) {
-  const auto vars = logging.access_vars.value().value_or(logging::AccessLogStaticVars{});
+  const auto vars = access.vars.value().value_or(logging::AccessLogStaticVars{});
   for (const auto& [name, value] : vars) {
-    const std::string label = "logging.access_vars." + name;
+    const std::string label = "logging.access_log.vars." + name;
     if (name.empty() ||
         name.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789_") != std::string::npos) {
       errors.push_back(label + ": a name uses only a-z, 0-9 and _");
@@ -934,27 +941,27 @@ void validateAccessLog(
       errors.push_back(label + ": a value must be non-empty, without spaces or control bytes");
     }
   }
-  if (logging.access_queue_limit.value().value_or(1) == 0) {
-    errors.push_back("logging.access_queue_limit must be >= 1");
+  if (access.queue_limit.value().value_or(1) == 0) {
+    errors.push_back("logging.access_log.queue_limit must be >= 1");
   }
-  const auto& sinks = logging.access.value();
+  const auto& sinks = access.sinks.value();
   if (!sinks || sinks->empty()) {
     return;
   }
   if (sinks->size() > 64) {
-    errors.push_back("logging.access supports at most 64 sinks");
+    errors.push_back("logging.access_log supports at most 64 sinks");
   }
   if (!relayIdSet) {
     warnings.push_back(
-        "logging.access: relay_id is not set, so records carry a random relay_id per start"
+        "logging.access_log: relay_id is not set, so records carry a random relay_id per start"
     );
   }
   std::unordered_set<std::string> names;
   for (const auto& sink : *sinks) {
     const auto& name = sink.name.value();
-    const std::string label = "logging.access '" + name + "'";
+    const std::string label = "logging.access_log sink '" + name + "'";
     if (name.empty()) {
-      errors.push_back("logging.access: every sink needs a name");
+      errors.push_back("logging.access_log: every sink needs a name");
     } else if (!names.insert(name).second) {
       errors.push_back(label + ": duplicate sink name");
     }
@@ -1016,11 +1023,11 @@ void validateAccessLog(
   }
 }
 
-std::vector<std::string> accessLogSinkNames(const ParsedLoggingConfig* logging) {
+std::vector<std::string> accessLogSinkNames(const ParsedAccessLogConfig* access) {
   std::vector<std::string> names;
-  if (logging) {
+  if (access) {
     for (const auto& sink :
-         logging->access.value().value_or(std::vector<ParsedAccessLogSinkConfig>{})) {
+         access->sinks.value().value_or(std::vector<ParsedAccessLogSinkConfig>{})) {
       names.push_back(sink.name.value());
     }
   }
@@ -1051,7 +1058,7 @@ void validateAccessLogService(
     const auto& name = selection.name.value();
     const std::string sinkLabel = label + " sink '" + name + "'";
     if (std::find(sinkNames.begin(), sinkNames.end(), name) == sinkNames.end()) {
-      errors.push_back(sinkLabel + ": not defined in logging.access");
+      errors.push_back(sinkLabel + ": not defined in logging.access_log.sinks");
     } else if (!seen.insert(name).second) {
       errors.push_back(sinkLabel + ": listed more than once");
     }
@@ -1120,17 +1127,20 @@ const ParsedAccessLogServiceConfig* serviceDefaultsAccessLog(const ParsedConfig&
 }
 
 std::optional<AccessLogConfig> resolveAccessLog(
-    const ParsedLoggingConfig& logging,
+    const ParsedAccessLogConfig* parsedAccess,
     const ParsedAccessLogServiceConfig* serviceDefaults
 ) {
-  const auto& sinks = logging.access.value();
-  const auto& queueLimit = logging.access_queue_limit.value();
+  if (!parsedAccess) {
+    return std::nullopt;
+  }
+  const auto& sinks = parsedAccess->sinks.value();
+  const auto& queueLimit = parsedAccess->queue_limit.value();
   if ((!sinks || sinks->empty()) && !queueLimit) {
     return std::nullopt;
   }
   AccessLogConfig access;
   access.queueLimit = queueLimit.value_or(access.queueLimit);
-  access.vars = logging.access_vars.value().value_or(std::map<std::string, std::string>{});
+  access.vars = parsedAccess->vars.value().value_or(std::map<std::string, std::string>{});
   for (const auto& parsed : sinks.value_or(std::vector<ParsedAccessLogSinkConfig>{})) {
     AccessLogSinkConfig sink;
     sink.name = parsed.name.value();
@@ -1154,7 +1164,7 @@ std::optional<AccessLogConfig> resolveAccessLog(
     access.sinks.push_back(std::move(sink));
   }
   access.serviceDefaults =
-      resolveAccessLogService(serviceDefaults, nullptr, accessLogSinkNames(&logging));
+      resolveAccessLogService(serviceDefaults, nullptr, accessLogSinkNames(parsedAccess));
   return access;
 }
 
@@ -1717,11 +1727,13 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
         }
       }
     }
-    validateAccessLog(logging, config.relay_id.value().has_value(), errors, warnings);
+    if (const auto* access = accessLogSection(&logging)) {
+      validateAccessLog(*access, config.relay_id.value().has_value(), errors, warnings);
+    }
   }
   const ParsedLoggingConfig* loggingSection =
       config.logging.value() ? &*config.logging.value() : nullptr;
-  const auto accessLogSinks = accessLogSinkNames(loggingSection);
+  const auto accessLogSinks = accessLogSinkNames(accessLogSection(loggingSection));
   const auto* accessLogDefaults = serviceDefaultsAccessLog(config);
   if (accessLogDefaults) {
     validateAccessLogService(
@@ -1872,7 +1884,7 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
 
       resolved.qlog = std::move(qlogConfig);
     }
-    resolved.access = resolveAccessLog(parsedLogging, accessLogDefaults);
+    resolved.access = resolveAccessLog(accessLogSection(&parsedLogging), accessLogDefaults);
     loggingConfig = std::move(resolved);
   }
 

@@ -2703,8 +2703,10 @@ ParsedAccessLogSinkConfig makeAccessSink(std::string name = "main") {
 
 ParsedConfig withAccessSinks(std::vector<ParsedAccessLogSinkConfig> sinks) {
   auto cfg = makeMinimalInsecureConfig();
+  ParsedAccessLogConfig access;
+  access.sinks = std::move(sinks);
   ParsedLoggingConfig logging;
-  logging.access = std::move(sinks);
+  logging.access_log = std::move(access);
   cfg.logging = std::move(logging);
   return cfg;
 }
@@ -2835,7 +2837,7 @@ TEST(ResolveConfig, AccessLogServiceSinksNeedLoggingAccess) {
   cfg.services.value().at("default").access_log = std::move(serviceLog);
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasError());
-  EXPECT_THAT(result.error(), HasSubstr("sink 'main': not defined in logging.access"));
+  EXPECT_THAT(result.error(), HasSubstr("sink 'main': not defined in logging.access_log.sinks"));
 }
 
 TEST(ResolveConfig, AccessLogRejectsBadServiceSelections) {
@@ -2865,7 +2867,7 @@ TEST(ResolveConfig, AccessLogRejectsBadServiceSelections) {
   EXPECT_THAT(result.error(), Not(HasSubstr("unknown peer class 'participant'")));
   EXPECT_THAT(
       result.error(),
-      HasSubstr("service 'default' access_log sink 'mian': not defined in logging.access")
+      HasSubstr("service 'default' access_log sink 'mian': not defined in logging.access_log.sinks")
   );
 }
 
@@ -2894,18 +2896,19 @@ TEST(ResolveConfig, AccessLogVarsWorkInTemplates) {
   format.request = std::string("$schema $time $event $region $req");
   sink.format = std::move(format);
   auto cfg = withAccessSinks({std::move(sink)});
-  cfg.logging.value()->access_vars = std::map<std::string, std::string>{{"region", "us-east-1"}};
+  cfg.logging.value()->access_log.value()->vars =
+      std::map<std::string, std::string>{{"region", "us-east-1"}};
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasValue()) << result.error();
   EXPECT_EQ(result.value().config.logging->access->vars.at("region"), "us-east-1");
 
-  cfg.logging.value()->access_vars =
+  cfg.logging.value()->access_log.value()->vars =
       std::map<std::string, std::string>{{"Region", "x"}, {"host", "y"}, {"pop", "a b"}};
   result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasError());
-  EXPECT_THAT(result.error(), HasSubstr("access_vars.Region: a name uses only a-z, 0-9 and _"));
-  EXPECT_THAT(result.error(), HasSubstr("access_vars.host: the name is a built-in variable"));
-  EXPECT_THAT(result.error(), HasSubstr("access_vars.pop: a value must be non-empty"));
+  EXPECT_THAT(result.error(), HasSubstr("access_log.vars.Region: a name uses only a-z, 0-9 and _"));
+  EXPECT_THAT(result.error(), HasSubstr("access_log.vars.host: the name is a built-in variable"));
+  EXPECT_THAT(result.error(), HasSubstr("access_log.vars.pop: a value must be non-empty"));
   EXPECT_THAT(result.error(), HasSubstr("unknown variable $region"));
 }
 
@@ -2939,8 +2942,10 @@ TEST(ResolveConfig, AccessLogRejectsANanSampleRate) {
 
 TEST(ResolveConfig, AccessLogKeepsAQueueLimitWithoutSinks) {
   auto cfg = makeMinimalInsecureConfig();
+  ParsedAccessLogConfig access;
+  access.queue_limit = 1024u;
   ParsedLoggingConfig logging;
-  logging.access_queue_limit = 1024u;
+  logging.access_log = std::move(access);
   cfg.logging = std::move(logging);
   auto result = resolveConfig(cfg);
   ASSERT_TRUE(result.hasValue()) << result.error();

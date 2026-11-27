@@ -52,7 +52,7 @@ service_defaults:
   #   sample: { session: 0.1, periodic: 1.0 }  # Fractions of sessions, and of their subscriptions
   #                                      # with SUB_STATS lines; errors bypass sampling
   #   periodic_interval_ms: 5000         # Interval between a subscription's SUB_STATS lines
-  #   sinks:                             # Default: every sink in logging.access, every class
+  #   sinks:                             # Default: every sink in logging.access_log.sinks, every class
   #     - { name: main, events: [session, request, periodic] }
   #     - { name: errors, errors_only: true }
 
@@ -131,16 +131,17 @@ logging:                    # Logging configuration (optional)
     dir: "/tmp/moqx-qlog"          # Output directory; files named <cid_hex>.qlog (mvfst)
     sample_rate: 1.0       # Fraction of connections to log (0.0–1.0, default: 0.0; mvfst only)
 
-  # access_vars:            # Access log template variables (optional): $region, $pop, $tier
-  #   region: us-east-1
-  #   pop: iad3
-  #   tier: edge
-  # access_queue_limit: 65536  # Access log records queued for the writer before new ones are dropped
-  # access:                 # Access log sinks (optional); see docs/config.md#loggingaccess
-  #   - name: main
-  #     file: "/tmp/moqx-access.log"   # "-" writes to stdout
-  #   - name: errors
-  #     file: "/tmp/moqx-access-errors.log"
+  # access_log:             # Access log (optional); see docs/config.md#loggingaccess_log
+  #   vars:                 # Template variables (optional): $region, $pop, $tier
+  #     region: us-east-1
+  #     pop: iad3
+  #     tier: edge
+  #   queue_limit: 65536    # Records queued for the writer before new ones are dropped
+  #   sinks:
+  #     - name: main
+  #       file: "/tmp/moqx-access.log"   # "-" writes to stdout
+  #     - name: errors
+  #       file: "/tmp/moqx-access-errors.log"
 
 # relay_id: "my-relay-1"     # Relay identity (optional; random hex string generated if absent)
 

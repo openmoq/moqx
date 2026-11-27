@@ -276,15 +276,15 @@ TEST(ConfigSerializerTest, VisitsAllSections) {
   EXPECT_EQ(sink.scalars["logging.mlog.dir"], "/var/log/mlog");
   EXPECT_EQ(sink.scalars["logging.mlog.sample_rate"], "0.500000");
   EXPECT_EQ(sink.scalars["logging.qlog.dir"], "/var/log/qlog");
-  EXPECT_EQ(sink.scalars["logging.access_vars.tier"], "edge");
-  EXPECT_EQ(sink.scalars["logging.access_queue_limit"], "1024");
-  EXPECT_EQ(sink.scalars["logging.access.*.name"], "main");
-  EXPECT_EQ(sink.scalars["logging.access.*.file"], "/var/log/moqx/access.log");
-  EXPECT_EQ(sink.scalars["logging.access_service_defaults.sample.session"], "0.500000");
-  EXPECT_EQ(sink.scalars["logging.access_service_defaults.sinks.*.name"], "main");
-  EXPECT_EQ(sink.scalars["logging.access.*.batch.flush_ms"], "1000");
-  EXPECT_EQ(sink.scalars["logging.access.*.format.session"], "$event $session");
-  EXPECT_EQ(sink.scalars["logging.access.*.format.event.FETCH"], "$event $req");
+  EXPECT_EQ(sink.scalars["logging.access_log.vars.tier"], "edge");
+  EXPECT_EQ(sink.scalars["logging.access_log.queue_limit"], "1024");
+  EXPECT_EQ(sink.scalars["logging.access_log.sinks.*.name"], "main");
+  EXPECT_EQ(sink.scalars["logging.access_log.sinks.*.file"], "/var/log/moqx/access.log");
+  EXPECT_EQ(sink.scalars["logging.access_log.service_defaults.sample.session"], "0.500000");
+  EXPECT_EQ(sink.scalars["logging.access_log.service_defaults.sinks.*.name"], "main");
+  EXPECT_EQ(sink.scalars["logging.access_log.sinks.*.batch.flush_ms"], "1000");
+  EXPECT_EQ(sink.scalars["logging.access_log.sinks.*.format.session"], "$event $session");
+  EXPECT_EQ(sink.scalars["logging.access_log.sinks.*.format.event.FETCH"], "$event $req");
 }
 
 TEST(ConfigSerializerTest, DisabledClusterOmitsHopID) {

@@ -344,16 +344,17 @@ admin:
 _CONFIG_ACCESS_LOG = Template(
     """\
 logging:
-  access_vars: { pop: $pop }
-  access:
-    - name: harness
-      file: "$path"
-      format:
-        session: "$$schema $$time pop=$$pop $$event $$relay_id $$session $$opened $$peer $$local $$peer_class $$service $$authority $$path $$upstream $$version $$status $$latency_ms $$error_class $$error_code $$reason $$duration_ms $$requests"
-        request: "$$schema $$time pop=$$pop $$event $$relay_id $$session $$version $$dir $$req $$ftn $$alias $$status $$latency_ms $$error_class $$error_code $$reason $$end_reason $$age_ms $$largest $$objects $$bytes $$groups $$ttfo_ms"
-        periodic: "$$schema $$time pop=$$pop $$event $$relay_id $$session $$dir $$req $$ftn $$interval_start $$interval_ms $$d_objects $$d_bytes $$d_groups $$d_subgroups $$d_datagrams $$objects $$bytes $$groups $$age_ms"
-        event:
-          FETCH: "$$schema $$time pop=$$pop $$event $$relay_id $$session $$version $$dir $$req $$ftn $$fetch_type $$start $$end $$status $$latency_ms $$error_code $$reason $$end_reason $$fetch_ms $$objects $$bytes $$ttfo_ms"
+  access_log:
+    vars: { pop: $pop }
+    sinks:
+      - name: harness
+        file: "$path"
+        format:
+          session: "$$schema $$time pop=$$pop $$event $$relay_id $$session $$opened $$peer $$local $$peer_class $$service $$authority $$path $$upstream $$version $$status $$latency_ms $$error_class $$error_code $$reason $$duration_ms $$requests"
+          request: "$$schema $$time pop=$$pop $$event $$relay_id $$session $$version $$dir $$req $$ftn $$alias $$status $$latency_ms $$error_class $$error_code $$reason $$end_reason $$age_ms $$largest $$objects $$bytes $$groups $$ttfo_ms"
+          periodic: "$$schema $$time pop=$$pop $$event $$relay_id $$session $$dir $$req $$ftn $$interval_start $$interval_ms $$d_objects $$d_bytes $$d_groups $$d_subgroups $$d_datagrams $$objects $$bytes $$groups $$age_ms"
+          event:
+            FETCH: "$$schema $$time pop=$$pop $$event $$relay_id $$session $$version $$dir $$req $$ftn $$fetch_type $$start $$end $$status $$latency_ms $$error_code $$reason $$end_reason $$fetch_ms $$objects $$bytes $$ttfo_ms"
 service_defaults:
   access_log:
     periodic_interval_ms: 1000

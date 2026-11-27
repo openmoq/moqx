@@ -523,7 +523,7 @@ struct ParsedAccessLogSampleConfig {
 };
 
 struct ParsedAccessLogSinkSelection {
-  rfl::Description<"Sink name, from logging.access", std::string> name;
+  rfl::Description<"Sink name, from logging.access_log.sinks", std::string> name;
   rfl::Description<
       "Record classes (session, request, periodic), messages, and event names to write "
       "(default: every class)",
@@ -695,20 +695,23 @@ struct ParsedAccessLogSinkConfig {
       format;
 };
 
+struct ParsedAccessLogConfig {
+  rfl::Description<
+      "Template variables, such as region or pop, keyed by name",
+      std::optional<std::map<std::string, std::string>>>
+      vars;
+  rfl::Description<
+      "Records queued for the writer before new ones are dropped (default 65536)",
+      std::optional<uint32_t>>
+      queue_limit;
+  rfl::Description<"Access log sinks", std::optional<std::vector<ParsedAccessLogSinkConfig>>> sinks;
+};
+
 struct ParsedLoggingConfig {
   rfl::Description<"MoQ-level (mlog) per-session logging", std::optional<ParsedMLogConfig>> mlog;
   rfl::Description<"QUIC-level (qlog) per-connection logging", std::optional<ParsedQLogConfig>>
       qlog;
-  rfl::Description<
-      "Access log template variables, such as region or pop, keyed by name",
-      std::optional<std::map<std::string, std::string>>>
-      access_vars;
-  rfl::Description<
-      "Access log records queued for the writer before new ones are dropped (default 65536)",
-      std::optional<uint32_t>>
-      access_queue_limit;
-  rfl::Description<"Access log sinks", std::optional<std::vector<ParsedAccessLogSinkConfig>>>
-      access;
+  rfl::Description<"Operator-facing access log", std::optional<ParsedAccessLogConfig>> access_log;
 };
 
 struct ParsedConfig {
