@@ -229,6 +229,7 @@ struct AccessLogSinkSelectionConfig {
   std::vector<std::string> events;      // class and event names; empty = every class
   std::vector<std::string> peerClasses; // empty = all
   bool errorsOnly{false};
+  bool unsampledErrors{true};
 };
 
 struct AccessLogServiceConfig {

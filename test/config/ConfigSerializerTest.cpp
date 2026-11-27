@@ -117,7 +117,7 @@ static_assert(
     "AccessLogServiceConfig changed — update serializeAccessLogService()"
 );
 static_assert(
-    rfl::internal::num_fields<AccessLogSinkSelectionConfig> == 4,
+    rfl::internal::num_fields<AccessLogSinkSelectionConfig> == 5,
     "AccessLogSinkSelectionConfig changed — update serializeAccessLogService()"
 );
 static_assert(
@@ -271,6 +271,7 @@ TEST(ConfigSerializerTest, VisitsAllSections) {
   EXPECT_EQ(sink.scalars["services.default.access_log.sinks.*.name"], "main");
   EXPECT_EQ(sink.scalars["services.default.access_log.sinks.*.events.[]"], "session");
   EXPECT_EQ(sink.scalars["services.default.access_log.sinks.*.errors_only"], "true");
+  EXPECT_EQ(sink.scalars["services.default.access_log.sinks.*.unsampled_errors"], "true");
 
   EXPECT_EQ(sink.scalars["logging.mlog.dir"], "/var/log/mlog");
   EXPECT_EQ(sink.scalars["logging.mlog.sample_rate"], "0.500000");

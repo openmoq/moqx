@@ -205,6 +205,29 @@ TEST(MoqxAccessLogTest, ErrorsBypassSamplingAndErrorsOnlySinksTakeOnlyErrors) {
   EXPECT_EQ(log->eventMask(gate, AccessLogEvent::SUBSCRIBE, true), 0b11u);
 }
 
+TEST(MoqxAccessLogTest, ASinkCanSkipErrorsFromUnsampledSessions) {
+  std::vector<std::unique_ptr<AccessLogSink>> sinks;
+  sinks.push_back(callbackSink(std::make_shared<Captured>()));
+  sinks.push_back(callbackSink(std::make_shared<Captured>()));
+  AccessLogServices services;
+  services.defaults.sinks.push_back(allEvents(0));
+  services.defaults.sinks.push_back(allEvents(1));
+  services.defaults.sinks.back().unsampledErrors = false;
+  auto& unsampled = services.byName["unsampled"];
+  unsampled.sessionSample = 0.0;
+  unsampled.sinks = services.defaults.sinks;
+  auto& quiet = services.byName["quiet"];
+  quiet.sessionSample = 0.0;
+  quiet.sinks = {services.defaults.sinks.back()};
+  auto log = makeLog(std::move(sinks), 1024, std::move(services));
+
+  EXPECT_EQ(log->gateSession("live", "viewer", "s1").matched, 0b11u);
+  auto gate = log->gateSession("unsampled", "viewer", "s1");
+  EXPECT_EQ(gate.matched, 0b01u);
+  EXPECT_EQ(log->eventMask(gate, AccessLogEvent::SUBSCRIBE, true), 0b01u);
+  EXPECT_EQ(log->gateSession("quiet", "viewer", "s1").matched, 0u);
+}
+
 TEST(MoqxAccessLogTest, EachServiceSetsItsPeriodicSampleAndInterval) {
   std::vector<std::unique_ptr<AccessLogSink>> sinks;
   sinks.push_back(callbackSink(std::make_shared<Captured>()));

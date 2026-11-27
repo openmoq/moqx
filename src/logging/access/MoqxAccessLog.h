@@ -43,6 +43,8 @@ struct AccessLogSinkSelection {
   // Indexed by AccessLogEvent; true where the sink takes the event.
   std::array<bool, size_t(AccessLogEvent::LOG_DROPPED) + 1> events{};
   bool errorsOnly{false};
+  // False applies session sampling to errors too.
+  bool unsampledErrors{true};
   // Empty takes every peer class.
   std::vector<std::string> peerClasses;
 };
@@ -163,6 +165,7 @@ private:
     // Indexed by AccessLogEvent: the sinks that take it.
     std::vector<AccessLogSinkMask> eventSinks;
     AccessLogSinkMask errorsOnly{0};
+    AccessLogSinkMask sampledOnly{0};
     std::vector<std::pair<AccessLogSinkMask, std::vector<std::string>>> peerClasses;
   };
   ServiceSelection makeServiceSelection(const AccessLogServiceOptions& options) const;

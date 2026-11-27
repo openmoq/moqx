@@ -1105,6 +1105,7 @@ AccessLogServiceConfig resolveAccessLogService(
         .events = parsed.events.value().value_or(std::vector<std::string>{}),
         .peerClasses = parsed.peer_classes.value().value_or(std::vector<std::string>{}),
         .errorsOnly = parsed.errors_only.value().value_or(false),
+        .unsampledErrors = parsed.unsampled_errors.value().value_or(true),
     });
   }
   return resolved;
