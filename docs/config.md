@@ -728,6 +728,7 @@ session's QUIC transport stats.
 | `resets`, `last_reset_code` | request, periodic | Subgroup and fetch streams that either side reset, and the last reset code. |
 | `ttfo_ms` | request, periodic | Time to the first object: from the reply for a subscription, and from the request for a `FETCH`. |
 | `age_ms` | request, periodic | Time since the reply. |
+| `namespace_msgs`, `namespace_done_msgs`, `publish_blocked_msgs` | request | `NAMESPACE`, `NAMESPACE_DONE` and `PUBLISH_BLOCKED` messages within a `SUBSCRIBE_NAMESPACE` or `SUBSCRIBE_TRACKS`, on its end line. They count every message, including those of sinks that do not write the message lines. |
 | `bytes_queued`, `payload_bytes_queued` | request, periodic | Stream bytes queued to send, headers included, and the payload within them. Send only. |
 | `bytes_written`, `bytes_acked` | request, periodic | Stream bytes written to QUIC, and the bytes the peer acked. Send only. |
 | `bytes_dropped` | request, periodic | Queued bytes discarded by a reset or a write error before they were written. Send only. |

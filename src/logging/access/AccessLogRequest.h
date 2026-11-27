@@ -140,6 +140,10 @@ private:
     std::chrono::steady_clock::time_point steadyStart;
   };
   std::optional<Interval> interval_;
+  // NAMESPACE, NAMESPACE_DONE and PUBLISH_BLOCKED, whether or not a sink took their lines.
+  uint64_t namespaceMsgs_{0};
+  uint64_t namespaceDoneMsgs_{0};
+  uint64_t publishBlockedMsgs_{0};
   State state_{State::Pending};
   std::optional<uint64_t> latencyMs_;
   // An end that arrived before the reply, or a FETCH's end of data.
