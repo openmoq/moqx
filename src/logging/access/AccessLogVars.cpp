@@ -368,6 +368,9 @@ const std::
                         {"end_reason", kRequest, MOQX_RECORD_TEXT(endReason)},
                         {"ttfo_ms", kRequest | kPeriodic, MOQX_RECORD_OPT(ttfoMs)},
                         {"fetch_ms", kRequest, MOQX_RECORD_OPT(fetchMs)},
+                        {"namespace_msgs", kRequest, MOQX_RECORD_OPT(namespaceMsgs)},
+                        {"namespace_done_msgs", kRequest, MOQX_RECORD_OPT(namespaceDoneMsgs)},
+                        {"publish_blocked_msgs", kRequest, MOQX_RECORD_OPT(publishBlockedMsgs)},
 
                         // Periodic
                         {"interval_start", kPeriodic, renderIntervalStart},

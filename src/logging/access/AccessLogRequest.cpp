@@ -292,6 +292,12 @@ void AccessLogRequest::writeEnd(End end) {
     setEnd(record, end);
     setTotals(record, established_);
     record.ageMs = msSince(established_);
+    if (startEvent_ == AccessLogEvent::SUBSCRIBE_NAMESPACE ||
+        startEvent_ == AccessLogEvent::SUBSCRIBE_TRACKS) {
+      record.namespaceMsgs = namespaceMsgs_;
+      record.namespaceDoneMsgs = namespaceDoneMsgs_;
+      record.publishBlockedMsgs = publishBlockedMsgs_;
+    }
   });
 }
 
@@ -399,6 +405,19 @@ void AccessLogRequest::writeMessage(
     const moxygen::TrackNamespace& suffix,
     std::string_view trackName
 ) {
+  switch (event) {
+  case AccessLogEvent::NAMESPACE:
+    namespaceMsgs_++;
+    break;
+  case AccessLogEvent::NAMESPACE_DONE:
+    namespaceDoneMsgs_++;
+    break;
+  case AccessLogEvent::PUBLISH_BLOCKED:
+    publishBlockedMsgs_++;
+    break;
+  default:
+    break;
+  }
   context_->write(event, false, logRecord_, [&](auto& record) {
     auto ftn = std::make_shared<moxygen::FullTrackName>();
     if (logRecord_.ftn) {

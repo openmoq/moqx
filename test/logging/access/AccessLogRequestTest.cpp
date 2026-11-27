@@ -549,6 +549,28 @@ TEST_F(AccessLogRequestTest, NamespaceMessagesExtendThePrefix) {
   EXPECT_EQ(line(1).dir, AccessLogDir::Tx);
 }
 
+TEST_F(AccessLogRequestTest, ANamespaceEndLineCountsItsMessages) {
+  auto pending = request(Event::SUBSCRIBE_NAMESPACE, AccessLogDir::Tx, std::nullopt);
+  pending->ok(2);
+  pending->writeMessage(Event::NAMESPACE, moxygen::TrackNamespace({"ch1"}));
+  pending->writeMessage(Event::NAMESPACE, moxygen::TrackNamespace({"ch2"}));
+  pending->writeMessage(Event::NAMESPACE_DONE, moxygen::TrackNamespace({"ch1"}));
+  pending->ended(Event::UNSUBSCRIBE_NAMESPACE, AccessLogEndReason::Unsubscribed, false);
+  ASSERT_EQ(events().back(), Event::UNSUBSCRIBE_NAMESPACE);
+  const auto& end = *log_->records.back();
+  EXPECT_EQ(end.namespaceMsgs, 2u);
+  EXPECT_EQ(end.namespaceDoneMsgs, 1u);
+  EXPECT_EQ(end.publishBlockedMsgs, 0u);
+}
+
+TEST_F(AccessLogRequestTest, ATrackEndLineDoesNotCountMessages) {
+  auto pending = request(Event::SUBSCRIBE, AccessLogDir::Tx, std::nullopt);
+  pending->ok(2);
+  pending->ended(Event::UNSUBSCRIBE, AccessLogEndReason::Unsubscribed, false);
+  ASSERT_EQ(events().back(), Event::UNSUBSCRIBE);
+  EXPECT_EQ(log_->records.back()->namespaceMsgs, std::nullopt);
+}
+
 TEST_F(AccessLogRequestTest, EndLineCarriesTheSessionsTotals) {
   auto pending = request(Event::SUBSCRIBE, AccessLogDir::Rx);
   auto session = std::make_shared<StatsTrackConsumer>();

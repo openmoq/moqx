@@ -180,6 +180,10 @@ struct AccessLogRecord {
   std::optional<uint64_t> ageMs;
   std::optional<uint64_t> ttfoMs;
   std::optional<uint64_t> fetchMs;
+  // Messages within a SUBSCRIBE_NAMESPACE or SUBSCRIBE_TRACKS, on its end line.
+  std::optional<uint64_t> namespaceMsgs;
+  std::optional<uint64_t> namespaceDoneMsgs;
+  std::optional<uint64_t> publishBlockedMsgs;
 
   // Session class
   std::string goawayUri;
