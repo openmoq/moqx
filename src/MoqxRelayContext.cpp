@@ -89,6 +89,12 @@ std::vector<std::shared_ptr<MoQExtension>> MoqxRelayContext::makeServerExtension
   return extensions;
 }
 
+std::string_view MoqxRelayContext::accessLogPeerClass(const ClientSetup& clientSetup) const {
+  return getRelayHopID() && clientSetup.params.hasParam(MoQClusterExtension::kHopIdOption)
+             ? logging::kAccessLogRelayPeer
+             : logging::kAccessLogParticipant;
+}
+
 void MoqxRelayContext::addService(
     const std::string& name,
     const config::ServiceConfig& svc,
@@ -328,7 +334,11 @@ void MoqxRelayContext::onSetupRejected(
 ) {
   if (auto accessLogContext = MoqxRelaySession::accessLogContextOf(*session)) {
     auto matchedName = listener.match(session->getAuthority(), session->getPath());
-    accessLogContext->setService(*session, std::string(matchedName.value_or("")));
+    accessLogContext->setService(
+        *session,
+        std::string(matchedName.value_or("")),
+        std::string(logging::kAccessLogParticipant)
+    );
     accessLogContext->writeSetup(logging::AccessLogStatus::Rejected, folly::to_underlying(error));
   }
 }
@@ -390,7 +400,11 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayContext::validateAu
   auto matchedName = listener.match(session->getAuthority(), session->getPath());
   auto accessLogContext = MoqxRelaySession::accessLogContextOf(*session);
   if (accessLogContext) {
-    accessLogContext->setService(*session, std::string(matchedName.value_or("")));
+    accessLogContext->setService(
+        *session,
+        std::string(matchedName.value_or("")),
+        std::string(accessLogPeerClass(clientSetup))
+    );
   }
   auto result = authorizeSession(listener, clientSetup, session, matchedName, accessLogContext);
   if (accessLogContext) {

@@ -102,9 +102,14 @@ void AccessLogSessionContext::setup(
   }
 }
 
-void AccessLogSessionContext::setService(const moxygen::MoQSession& session, std::string service) {
+void AccessLogSessionContext::setService(
+    const moxygen::MoQSession& session,
+    std::string service,
+    std::string peerClass
+) {
   auto info = std::make_shared<AccessLogSessionInfo>(*info_);
   info->service = std::move(service);
+  info->peerClass = std::move(peerClass);
   readSetupFields(*info, session);
   info_ = std::move(info);
   gate_ = log_->gateSession(info_->service, info_->peerClass, info_->session);

@@ -46,9 +46,9 @@ public:
       std::string upstream = {},
       const folly::SocketAddress& local = {}
   );
-  // At CLIENT_SETUP: sets the service, rereads the authority, path and version, and picks
-  // the sinks again.
-  void setService(const moxygen::MoQSession& session, std::string service);
+  // At CLIENT_SETUP: sets the service and peer class, rereads the authority, path and version,
+  // and picks the sinks again.
+  void setService(const moxygen::MoQSession& session, std::string service, std::string peerClass);
 
   // Builds a record and calls setFields(record) only when a sink takes the event.
   template <typename SetFields>

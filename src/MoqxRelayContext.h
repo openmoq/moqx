@@ -120,6 +120,10 @@ public:
     return cluster_ ? std::optional<uint64_t>(cluster_->hopID) : std::nullopt;
   }
 
+  // The access log peer_class: relay-peer when this relay and clientSetup both declare a MoQ
+  // Cluster HOP_ID.
+  std::string_view accessLogPeerClass(const moxygen::ClientSetup& clientSetup) const;
+
   // The extensions every listener adds: MoQ Cluster when it is enabled, and Top
   // Tracks so subscribers may send TOP_TRACKS_FILTER.
   std::vector<std::shared_ptr<moxygen::MoQExtension>> makeServerExtensions() const;
