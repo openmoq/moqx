@@ -210,6 +210,38 @@ TEST(AccessLogTemplateTest, VariableNamesAreUnique) {
   }
 }
 
+// A string_view value points into the relay info, which must outlive the value.
+const AccessLogRelayInfo kRelayInfo{.relayId = "edge-1"};
+
+AccessLogValue valueOf(std::string_view name, const AccessLogRecord& record) {
+  const auto* var = findAccessLogVar(name);
+  EXPECT_NE(var, nullptr) << name;
+  return var ? accessLogVarValue(*var, record, AccessLogRenderContext{kRelayInfo, 7})
+             : AccessLogValue{};
+}
+
+TEST(AccessLogTemplateTest, VariablesGiveTypedUnescapedValues) {
+  AccessLogRecord r;
+  r.event = AccessLogEvent::SUBSCRIBE;
+  r.time = kTime;
+  r.session = makeSession();
+  r.bytes = 0;
+  r.reason = "no such track";
+  r.forward = true;
+  r.largest = moxygen::AbsoluteLocation{3, 4};
+  EXPECT_EQ(std::get<uint64_t>(valueOf("bytes", r)), 0u);
+  EXPECT_EQ(std::get<uint64_t>(valueOf("seq", r)), 7u);
+  EXPECT_EQ(std::get<std::string_view>(valueOf("reason", r)), "no such track");
+  EXPECT_EQ(std::get<std::string_view>(valueOf("relay_id", r)), "edge-1");
+  EXPECT_EQ(std::get<std::string_view>(valueOf("event", r)), "SUBSCRIBE");
+  EXPECT_TRUE(std::get<bool>(valueOf("forward", r)));
+  EXPECT_EQ(std::get<moxygen::AbsoluteLocation>(valueOf("largest", r)).group, 3u);
+  EXPECT_EQ(std::get<std::chrono::system_clock::time_point>(valueOf("time", r)), kTime);
+  // Unset, and outside the record's class.
+  EXPECT_TRUE(std::holds_alternative<std::monostate>(valueOf("objects", r)));
+  EXPECT_TRUE(std::holds_alternative<std::monostate>(valueOf("duration_ms", r)));
+}
+
 TEST(AccessLogTemplateTest, EmptyNamespaceKeepsItsColumn) {
   AccessLogRecord r;
   r.event = AccessLogEvent::SUBSCRIBE_NAMESPACE;
