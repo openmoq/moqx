@@ -37,7 +37,7 @@ static_assert(
     "TlsConfig changed — update serializeTls()"
 );
 static_assert(
-    rfl::internal::num_fields<QuicConfig> == 10,
+    rfl::internal::num_fields<QuicConfig> == 12,
     "QuicConfig changed — update serializeQuic()"
 );
 static_assert(
@@ -331,6 +331,22 @@ TEST(ConfigSerializerTest, SerializesUpstreamsList) {
   EXPECT_FALSE(sink.scalars.contains("services.default.upstream.url"));
   EXPECT_EQ(sink.scalars["services.default.upstreams.*.url"], "moqt://a:4433/");
   EXPECT_EQ(sink.scalars["services.default.upstreams.*.relay_cost"], "0");
+}
+
+TEST(ConfigSerializerTest, StatelessResetSecretShowsOnlyThePath) {
+  Config cfg = makeFullConfig();
+  auto& quic = cfg.listeners[0].quic;
+  quic.statelessResetSecretFile = "/etc/moqx/reset.key";
+  quic.statelessResetSecret.emplace();
+  quic.statelessResetSecret->fill(0xab);
+  RecordingSink sink;
+  serializeConfig(cfg, sink);
+
+  EXPECT_EQ(sink.scalars["listeners.*.quic.stateless_reset_secret_file"], "/etc/moqx/reset.key");
+  for (const auto& [path, value] : sink.scalars) {
+    EXPECT_EQ(value.find("abab"), std::string::npos) << "secret leaked as hex at " << path;
+    EXPECT_EQ(value.find("\xab\xab"), std::string::npos) << "secret leaked as bytes at " << path;
+  }
 }
 
 TEST(ConfigSerializerTest, RedactsHmacSecret) {

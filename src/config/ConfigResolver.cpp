@@ -18,10 +18,13 @@
 #include <unordered_set>
 
 #include <folly/FileUtil.h>
+#include <folly/ScopeGuard.h>
 #include <folly/SocketAddress.h>
 #include <folly/String.h>
 
 #include <openssl/crypto.h>
+#include <openssl/evp.h>
+#include <openssl/hmac.h>
 
 #include "auth/Action.h"
 #include "config/Pkcs12.h"
@@ -1198,6 +1201,8 @@ void applyQuicOverride(QuicConfig& base, const ParsedQuicConfig& overlay) {
     base.defaultDatagramPriority = *v;
   if (auto v = overlay.cc_algo.value())
     base.ccAlgo = *v;
+  if (auto v = overlay.stateless_reset_secret_file.value())
+    base.statelessResetSecretFile = *v;
 }
 
 // Merge listener_defaults.quic and per-listener quic override into a resolved QuicConfig.
@@ -1359,6 +1364,73 @@ void validateQuicConfig(
         " (valid: " +
         validList + ")"
     );
+  }
+}
+
+// Sets quic.statelessResetSecret to HMAC-SHA256(file secret, listenerAddr).
+// mvfst mixes the bound address but not the port into each token, so listeners
+// sharing one file would otherwise issue identical tokens. qmux runs over TCP
+// and has no stateless reset; picoquic listeners ignore the secret.
+void resolveStatelessResetSecret(
+    QuicConfig& quic,
+    QuicStack stack,
+    const std::string& listenerAddr,
+    const std::string& context,
+    std::vector<std::string>& errors,
+    std::vector<std::string>& warnings
+) {
+  const auto& path = quic.statelessResetSecretFile;
+  if (path.empty() || stack == QuicStack::ProxygenQmux) {
+    return;
+  }
+  if (stack == QuicStack::Picoquic) {
+    warnings.push_back(
+        context + " quic: stateless_reset_secret_file is not supported on picoquic listeners; this "
+                  "listener uses a random secret at each start"
+    );
+    return;
+  }
+  constexpr size_t kMaxSecretFileBytes = 4096;
+  std::string contents;
+  std::string bytes;
+  auto wipe = folly::makeGuard([&] {
+    OPENSSL_cleanse(contents.data(), contents.size());
+    OPENSSL_cleanse(bytes.data(), bytes.size());
+  });
+  // One byte past the cap tells a file that fits from a longer one.
+  if (!folly::readFile(path.c_str(), contents, kMaxSecretFileBytes + 1)) {
+    errors.push_back(context + " quic: failed to read stateless_reset_secret_file '" + path + "'");
+    return;
+  }
+  if (contents.size() > kMaxSecretFileBytes) {
+    errors.push_back(
+        context + " quic: stateless_reset_secret_file '" + path + "' is larger than " +
+        std::to_string(kMaxSecretFileBytes) + " bytes"
+    );
+    return;
+  }
+  auto hex = folly::trimWhitespace(contents);
+  if (hex.size() != 2 * kStatelessResetSecretBytes || !folly::unhexlify(hex, bytes)) {
+    errors.push_back(
+        context + " quic: stateless_reset_secret_file '" + path +
+        "' must hold 64 hex digits (32 bytes)"
+    );
+    return;
+  }
+  auto& secret = quic.statelessResetSecret.emplace();
+  unsigned int len = 0;
+  if (!HMAC(
+          EVP_sha256(),
+          bytes.data(),
+          static_cast<int>(bytes.size()),
+          reinterpret_cast<const unsigned char*>(listenerAddr.data()),
+          listenerAddr.size(),
+          secret.data(),
+          &len
+      ) ||
+      len != secret.size()) {
+    quic.statelessResetSecret.reset();
+    errors.push_back(context + " quic: failed to derive the stateless reset secret");
   }
 }
 
@@ -1604,6 +1676,14 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
       auto quic = mergeQuicConfig(quicDefaults, listener.quic.value());
       const auto stack = parseQuicStack(listener.quic_stack.value());
       validateQuicConfig(quic, stack, "Listener '" + listener.name.value() + "'", errors, warnings);
+      resolveStatelessResetSecret(
+          quic,
+          stack,
+          addr,
+          "Listener '" + listener.name.value() + "'",
+          errors,
+          warnings
+      );
       mergedQuicConfigs.push_back(quic);
       mergedMvfstConfigs.push_back(mergeMvfstConfig(mvfstDefaults, listener.mvfst.value()));
       // mvfst tunables don't apply to picoquic (PicoTransportConfig) or qmux

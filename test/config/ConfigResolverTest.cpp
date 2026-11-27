@@ -12,7 +12,11 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include <folly/String.h>
+
 #include <limits>
+#include <string>
+#include <string_view>
 #include <variant>
 
 namespace openmoq::moqx::config {
@@ -2059,6 +2063,160 @@ TEST(ResolveConfig, MvfstPrefixPathServiceNoWarning) {
   for (const auto& w : result.value().warnings) {
     EXPECT_THAT(w, ::testing::Not(HasSubstr("Picoquic listener")));
   }
+}
+
+// --- Stateless reset secret tests ---
+
+constexpr std::string_view kResetSecretHex =
+    "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+// HMAC-SHA256(kResetSecretHex bytes, ":::9668") and (..., ":::9669").
+constexpr std::string_view kDerivedSecretHex9668 =
+    "023893b2b74b1bc72873361234241b8e423946fcb9d0f3cd8b460d1ff99c35c2";
+constexpr std::string_view kDerivedSecretHex9669 =
+    "1ba9ee129319f27f097355c6015692abac946da689b7ecd166dda0d0baaf8102";
+
+ParsedQuicConfig quicWithResetSecretFile(std::string path) {
+  ParsedQuicConfig quic;
+  quic.stateless_reset_secret_file = std::optional<std::string>{std::move(path)};
+  return quic;
+}
+
+std::string secretHex(const QuicConfig& quic) {
+  if (!quic.statelessResetSecret) {
+    return "";
+  }
+  const auto& s = *quic.statelessResetSecret;
+  return folly::hexlify(folly::ByteRange(s.data(), s.size()));
+}
+
+TEST(ResolveConfig, StatelessResetSecretUnsetByDefault) {
+  auto cfg = makeMinimalInsecureConfig();
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue());
+  const auto& quic = result.value().config.listeners[0].quic;
+  EXPECT_TRUE(quic.statelessResetSecretFile.empty());
+  EXPECT_FALSE(quic.statelessResetSecret.has_value());
+}
+
+TEST(ResolveConfig, StatelessResetSecretReadFromFile) {
+  test::TempFile file(std::string(kResetSecretHex) + "\n", ".key");
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.listeners.value()[0].quic =
+      std::optional<ParsedQuicConfig>{quicWithResetSecretFile(file.path())};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue()) << result.error();
+  const auto& quic = result.value().config.listeners[0].quic;
+  EXPECT_EQ(quic.statelessResetSecretFile, file.path());
+  EXPECT_EQ(secretHex(quic), kDerivedSecretHex9668);
+}
+
+TEST(ResolveConfig, StatelessResetSecretInheritedFromListenerDefaults) {
+  test::TempFile file(kResetSecretHex, ".key");
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedListenerDefaultsConfig ld;
+  ld.quic = std::optional<ParsedQuicConfig>{quicWithResetSecretFile(file.path())};
+  cfg.listener_defaults = std::optional<ParsedListenerDefaultsConfig>{std::move(ld)};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue()) << result.error();
+  EXPECT_EQ(secretHex(result.value().config.listeners[0].quic), kDerivedSecretHex9668);
+}
+
+TEST(ResolveConfig, StatelessResetSecretDiffersPerListener) {
+  test::TempFile file(kResetSecretHex, ".key");
+  auto cfg = makeMinimalInsecureConfig("first");
+  ParsedListenerConfig lc2;
+  lc2.name = std::string("second");
+  ParsedSocketConfig sock2;
+  sock2.address = std::string("::");
+  sock2.port = uint16_t{9669};
+  ParsedUdpConfig udp2;
+  udp2.socket = std::move(sock2);
+  lc2.udp = std::move(udp2);
+  ParsedListenerTlsConfig tls2;
+  tls2.insecure = true;
+  lc2.tls = std::move(tls2);
+  lc2.endpoint = std::string("/moq-relay");
+  cfg.listeners.value().push_back(std::move(lc2));
+  ParsedListenerDefaultsConfig ld;
+  ld.quic = std::optional<ParsedQuicConfig>{quicWithResetSecretFile(file.path())};
+  cfg.listener_defaults = std::optional<ParsedListenerDefaultsConfig>{std::move(ld)};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue()) << result.error();
+  const auto& listeners = result.value().config.listeners;
+  ASSERT_EQ(listeners.size(), 2u);
+  EXPECT_EQ(secretHex(listeners[0].quic), kDerivedSecretHex9668);
+  EXPECT_EQ(secretHex(listeners[1].quic), kDerivedSecretHex9669);
+}
+
+TEST(ResolveConfig, StatelessResetSecretMissingFileIsError) {
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.listeners.value()[0].quic =
+      std::optional<ParsedQuicConfig>{quicWithResetSecretFile("/nonexistent/moqx-reset.key")};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("failed to read stateless_reset_secret_file"));
+}
+
+TEST(ResolveConfig, StatelessResetSecretMalformedFileIsError) {
+  const std::string hex(kResetSecretHex);
+  for (const std::string& contents :
+       {hex.substr(2), hex + "00", "zz" + hex.substr(2), std::string{}}) {
+    test::TempFile file(contents, ".key");
+    auto cfg = makeMinimalInsecureConfig();
+    cfg.listeners.value()[0].quic =
+        std::optional<ParsedQuicConfig>{quicWithResetSecretFile(file.path())};
+
+    auto result = resolveConfig(cfg);
+    ASSERT_TRUE(result.hasError()) << "contents=" << contents;
+    EXPECT_THAT(result.error(), HasSubstr("must hold 64 hex digits"));
+    EXPECT_THAT(result.error(), Not(HasSubstr("0405060708090a0b")));
+  }
+}
+
+TEST(ResolveConfig, StatelessResetSecretFileOverCapIsError) {
+  std::string contents(kResetSecretHex);
+  contents.resize(4096, ' ');
+  contents += "zz";
+  test::TempFile file(contents, ".key");
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.listeners.value()[0].quic =
+      std::optional<ParsedQuicConfig>{quicWithResetSecretFile(file.path())};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), HasSubstr("is larger than 4096 bytes"));
+  EXPECT_THAT(result.error(), Not(HasSubstr("0405060708090a0b")));
+}
+
+TEST(ResolveConfig, StatelessResetSecretFileAtCapIsRead) {
+  std::string contents(kResetSecretHex);
+  contents.resize(4096, ' ');
+  test::TempFile file(contents, ".key");
+  auto cfg = makeMinimalInsecureConfig();
+  cfg.listeners.value()[0].quic =
+      std::optional<ParsedQuicConfig>{quicWithResetSecretFile(file.path())};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue()) << result.error();
+  EXPECT_EQ(secretHex(result.value().config.listeners[0].quic), kDerivedSecretHex9668);
+}
+
+TEST(ResolveConfig, StatelessResetSecretWarnsOnPicoquic) {
+  auto cfg = makeMinimalPicoConfig();
+  cfg.listeners.value()[0].quic =
+      std::optional<ParsedQuicConfig>{quicWithResetSecretFile("/nonexistent/moqx-reset.key")};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue()) << result.error();
+  EXPECT_FALSE(result.value().config.listeners[0].quic.statelessResetSecret.has_value());
+  EXPECT_THAT(
+      result.value().warnings,
+      ::testing::Contains(HasSubstr("stateless_reset_secret_file is not supported on picoquic"))
+  );
 }
 
 // --- maxCacheDuration tests ---

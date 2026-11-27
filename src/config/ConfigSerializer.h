@@ -106,6 +106,8 @@ inline void serializeQuic(ConfigSink& s, const QuicConfig& q) {
   s.uintField("default_stream_priority", q.defaultStreamPriority);
   s.uintField("default_datagram_priority", q.defaultDatagramPriority);
   s.stringField("cc_algo", q.ccAlgo);
+  // The path only; the secret never leaves the process.
+  s.stringField("stateless_reset_secret_file", q.statelessResetSecretFile);
   s.endObject();
 }
 
