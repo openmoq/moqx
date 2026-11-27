@@ -190,6 +190,10 @@ void registerTrackMetricsRoute(
           );
           return;
         }
+        if (!context->ready()) {
+          sendError(downstream, 503, "relay not ready\n");
+          return;
+        }
 
         // An empty prefix matches every namespace, as an empty service matches
         // every service; limit is what bounds the scrape either way.

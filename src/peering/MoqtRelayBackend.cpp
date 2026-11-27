@@ -30,38 +30,36 @@ namespace {
 
 constexpr std::chrono::seconds kUpstreamConnectWaitTimeout(5);
 
-std::vector<config::UpstreamConfig> upstreamConfigs(const config::ServiceConfig& svc) {
-  if (svc.upstream) {
-    return {*svc.upstream};
-  }
-  return svc.upstreams;
-}
-
 } // namespace
 
 MoqtRelayBackend::MoqtRelayBackend(
     std::shared_ptr<MoqxRelay> relay,
     const config::ServiceConfig& service,
-    std::optional<uint64_t> hopID
+    std::optional<uint64_t> hopID,
+    std::optional<UpstreamVerifiers> verifiers
 )
     : relay_(relay), relayExec_(relay->getRelayExec()), relayID_(relay->getRelayID()),
       clusterCodec_(hopID ? std::make_shared<const MoqClusterRouteCodec>(*hopID) : nullptr),
-      configs_(upstreamConfigs(service)), hopID_(hopID),
-      subscriptionBufferBytes_(config::subscriptionBufferBytes(service)) {}
+      configs_(upstreamConfigs(service)), verifiers_(std::move(verifiers)), hopID_(hopID),
+      subscriptionBufferBytes_(config::subscriptionBufferBytes(service)) {
+  XCHECK(!verifiers_ || verifiers_->size() == configs_.size()) << "one verifier per upstream";
+}
 
 void MoqtRelayBackend::start(folly::EventBase* workerEvb) {
   workerEvb_ = workerEvb;
   auto workerExec = std::make_shared<moxygen::MoQFollyExecutorImpl>(workerEvb);
-  for (const auto& cfg : configs_) {
-    startUpstream(cfg, workerExec);
+  for (size_t i = 0; i < configs_.size(); ++i) {
+    auto verifier = verifiers_ ? (*verifiers_)[i] : makeUpstreamVerifier(configs_[i].tls);
+    startUpstream(configs_[i], std::move(verifier), workerExec);
   }
+  verifiers_.reset(); // the providers hold what they need
 }
 
 void MoqtRelayBackend::startUpstream(
     const config::UpstreamConfig& cfg,
+    std::shared_ptr<fizz::CertificateVerifier> verifier,
     const std::shared_ptr<moxygen::MoQFollyExecutorImpl>& workerExec
 ) {
-  auto verifier = makeUpstreamVerifier(cfg.tls);
   auto relay = relay_.lock();
   XCHECK(relay) << "start() runs while the context holds the relay";
   auto* relayExec = relayExec_;
@@ -383,6 +381,14 @@ folly::coro::Task<PeerAdminResult> MoqtRelayBackend::executePeerAdminOp(PeerAdmi
       .metric = op.metric,
       .message = "MoQT relay peering does not support peer admin"
   };
+}
+
+std::vector<config::UpstreamConfig>
+MoqtRelayBackend::upstreamConfigs(const config::ServiceConfig& svc) {
+  if (svc.upstream) {
+    return {*svc.upstream};
+  }
+  return svc.upstreams;
 }
 
 } // namespace openmoq::moqx

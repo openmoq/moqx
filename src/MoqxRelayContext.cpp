@@ -9,6 +9,7 @@
 #include "logging/access/AccessLogSessionContext.h"
 #include "peering/MoqtRelayBackend.h"
 #include "relay/AuthFilters.h"
+#include "relay/ExecutorCheck.h"
 #include "relay/PublisherCrossExecFilter.h"
 #include "relay/RelayExecUtil.h"
 #include "relay/SessionParticipant.h"
@@ -37,46 +38,25 @@ MoqxRelayContext::MoqxRelayContext(
     bool useLocalForwarders,
     std::optional<config::ClusterConfig> cluster
 )
-    : relayID_(relayID), cluster_(cluster) {
-  for (const auto& [name, svc] : services) {
-    for (const auto& listener : svc.listeners) {
-      listenerMatchers_.try_emplace(listener, services, listener);
-    }
-  }
+    : relayID_(relayID), cluster_(cluster), useRelayThread_(useRelayThread),
+      useLocalForwarders_(useLocalForwarders) {
+  std::vector<folly::Executor::KeepAlive<folly::EventBase>> evbs;
   if (useRelayThread && !services.empty()) {
     relayThreadPool_ = std::make_unique<folly::IOThreadPoolExecutor>(
         services.size(),
         std::make_shared<folly::NamedThreadFactory>("moqx-relay")
     );
-    auto evbs = relayThreadPool_->getAllEventBases();
+    evbs = relayThreadPool_->getAllEventBases();
     XCHECK_EQ(evbs.size(), services.size());
-    size_t i = 0;
-    for (const auto& [name, svc] : services) {
-      auto relay = std::make_shared<MoqxRelay>(
-          svc.cache,
-          relayID,
-          std::make_shared<moxygen::MoQFollyExecutorImpl>(evbs[i++].get()),
-          useLocalForwarders,
-          MoqxRelay::kDefaultMaxDeselected,
-          MoqxRelay::kDefaultIdleTimeout,
-          MoqxRelay::kDefaultActivityThreshold
-      );
-      addService(name, svc, std::move(relay));
-    }
-  } else {
-    for (const auto& [name, svc] : services) {
-      auto relay = std::make_shared<MoqxRelay>(
-          svc.cache,
-          relayID,
-          nullptr,
-          false,
-          MoqxRelay::kDefaultMaxDeselected,
-          MoqxRelay::kDefaultIdleTimeout,
-          MoqxRelay::kDefaultActivityThreshold
-      );
-      addService(name, svc, std::move(relay));
-    }
   }
+  size_t i = 0;
+  for (const auto& [name, svc] : services) {
+    addService(name, svc, evbs.empty() ? nullptr : evbs[i++].get());
+  }
+
+  // The constructing thread reads its view directly (pico constructors, tests);
+  // other threads get theirs from installServiceViews().
+  *tlServiceView_ = buildView();
 }
 
 std::vector<std::shared_ptr<MoQExtension>> MoqxRelayContext::makeServerExtensions() const {
@@ -92,19 +72,39 @@ std::vector<std::shared_ptr<MoQExtension>> MoqxRelayContext::makeServerExtension
 void MoqxRelayContext::addService(
     const std::string& name,
     const config::ServiceConfig& svc,
-    std::shared_ptr<MoqxRelay> relay
+    folly::EventBase* evb
 ) {
-  auto peering = std::make_unique<MoqtRelayBackend>(relay, svc, getRelayHopID());
+  services_.emplace(name, prepareService(svc, evb, std::nullopt));
+}
+
+std::unique_ptr<MoqxRelayContext::ServiceEntry> MoqxRelayContext::prepareService(
+    const config::ServiceConfig& svc,
+    folly::EventBase* evb,
+    std::optional<UpstreamVerifiers> verifiers
+) const {
+  auto relay = makeRelay(svc, evb);
+  auto peering =
+      std::make_unique<MoqtRelayBackend>(relay, svc, getRelayHopID(), std::move(verifiers));
   relay->setPeering(peering.get());
   relay->setReciprocalPeerHandler(peering->reciprocalMoqtPeerHandler());
-  services_.emplace(
-      name,
-      ServiceEntry{
-          svc,
-          std::move(peering),
-          std::move(relay),
-          std::make_shared<const auth::AuthTokenVerifier>(svc.auth)
-      }
+  return std::make_unique<ServiceEntry>(
+      svc,
+      std::move(peering),
+      std::move(relay),
+      std::make_shared<const auth::AuthTokenVerifier>(svc.auth)
+  );
+}
+
+std::shared_ptr<MoqxRelay>
+MoqxRelayContext::makeRelay(const config::ServiceConfig& svc, folly::EventBase* evb) const {
+  return std::make_shared<MoqxRelay>(
+      svc.cache,
+      relayID_,
+      evb ? std::make_shared<moxygen::MoQFollyExecutorImpl>(evb) : nullptr,
+      useLocalForwarders_ && evb != nullptr, // single-threaded mode wouldn't have an evb
+      MoqxRelay::kDefaultMaxDeselected,
+      MoqxRelay::kDefaultIdleTimeout,
+      MoqxRelay::kDefaultActivityThreshold
   );
 }
 
@@ -142,23 +142,40 @@ std::shared_ptr<fizz::CertificateVerifier> makeUpstreamVerifier(const config::Up
   return verifier;
 }
 
+folly::Expected<UpstreamVerifiers, std::string>
+buildUpstreamVerifiers(const config::ServiceConfig& svc) {
+  UpstreamVerifiers out;
+  const auto configs = MoqtRelayBackend::upstreamConfigs(svc);
+  out.reserve(configs.size());
+  for (size_t i = 0; i < configs.size(); ++i) {
+    try {
+      out.push_back(makeUpstreamVerifier(configs[i].tls));
+    } catch (const std::exception& e) {
+      return folly::makeUnexpected(
+          "upstreams[" + std::to_string(i) + "] (" + configs[i].url + "): " + e.what()
+      );
+    }
+  }
+  return out;
+}
+
 void MoqxRelayContext::initUpstreams(folly::EventBase* workerEvb) {
   CHECK(workerEvb) << "initUpstreams: workerEvb must not be null";
   workerEvb_ = workerEvb;
   for (auto& [name, entry] : services_) {
-    entry.peering->start(workerEvb);
+    entry->peering->start(workerEvb);
   }
 }
 
 void MoqxRelayContext::stop() {
   for (auto& [name, entry] : services_) {
-    entry.peering->stop();
+    entry->peering->stop();
   }
 }
 
 void MoqxRelayContext::join() {
   for (auto& [name, entry] : services_) {
-    entry.peering->join();
+    entry->peering->join();
   }
 }
 
@@ -178,10 +195,10 @@ void MoqxRelayContext::drainExecs(
   }
   for (auto& [name, entry] : services_) {
     // Null in single-thread mode, where relay state runs on the io threads.
-    if (auto* relayExec = entry.relay->getRelayExec()) {
+    if (auto* relayExec = entry->relay->getRelayExec()) {
       execs.push_back(relayExec);
     }
-    for (auto* exec : entry.peering->executors()) {
+    for (auto* exec : entry->peering->executors()) {
       execs.push_back(exec);
     }
   }
@@ -196,15 +213,16 @@ void MoqxRelayContext::drainExecs(
   }
 
   // Once the IO threads stop, releasing a leftover handle would post to a freed executor.
+  // Reads services_ directly on the main thread on purpose: it is the table's owner.
   if constexpr (folly::kIsDebug) {
     for (auto& [name, entry] : services_) {
-      auto* exec = entry.relay->getRelayExec();
+      auto* exec = entry->relay->getRelayExec();
       if (!exec && execs.empty()) {
         continue;
       }
       folly::via(
           exec ? exec : execs.front(),
-          [relay = entry.relay, peering = entry.peering.get(), name = name] {
+          [relay = entry->relay, peering = entry->peering.get(), name = name] {
             XCHECK(!relay->holdsSessionHandles() && !peering->holdsSessionHandles())
                 << "relay " << name << " still holds session handles";
           }
@@ -220,15 +238,17 @@ MoqxRelayContext::purgeCache(
     std::optional<moxygen::TrackNamespace> ns
 ) {
   XCHECK(workerEvb_) << "purgeCache: initUpstreams must run first";
-  auto it = services_.end();
+  const auto& view = *tlServiceView_;
+  XCHECK(view) << "No service view installed for the current thread";
+  auto it = view->services.end();
   if (serviceName.empty()) {
-    if (services_.size() != 1) {
+    if (view->services.size() != 1) {
       co_return folly::makeUnexpected(PurgeError::ServiceRequired);
     }
-    it = services_.begin();
+    it = view->services.begin();
   } else {
-    it = services_.find(std::string(serviceName));
-    if (it == services_.end()) {
+    it = view->services.find(std::string(serviceName));
+    if (it == view->services.end()) {
       co_return folly::makeUnexpected(PurgeError::UnknownService);
     }
   }
@@ -246,10 +266,10 @@ MoqxRelayContext::purgeCache(
   };
   XLOG(DBG1) << "Purging service: " << it->first;
   // Config allows a null relay exec only with threads==1, where the worker EVB owns the cache.
-  auto* exec = it->second.relay->getRelayExec();
+  auto* exec = it->second->relay->getRelayExec();
   co_return co_await folly::coro::co_withExecutor(
       exec ? exec : static_cast<folly::Executor*>(workerEvb_),
-      purgeOn(it->second.relay, std::move(ftn), std::move(ns))
+      purgeOn(it->second->relay, std::move(ftn), std::move(ns))
   );
 }
 
@@ -274,10 +294,10 @@ void MoqxRelayContext::initThreadStatsCollectors(
   }
   for (auto& [name, entry] : services_) {
     auto execs = ioExecs;
-    if (auto* relayExec = entry.relay->getRelayExec()) {
+    if (auto* relayExec = entry->relay->getRelayExec()) {
       execs.push_back(relayExec);
     }
-    entry.relay->trackStatsRegistry().bindAll(execs);
+    entry->relay->trackStatsRegistry().bindAll(execs);
   }
 }
 
@@ -317,7 +337,7 @@ void MoqxRelayContext::onNewSession(
 void MoqxRelayContext::setAccessLog(std::shared_ptr<logging::AccessLog> accessLog) {
   accessLog_ = accessLog->enabled() ? std::move(accessLog) : nullptr;
   for (auto& [name, entry] : services_) {
-    entry.peering->setAccessLog(accessLog_, name);
+    entry->peering->setAccessLog(accessLog_, name);
   }
 }
 
@@ -335,42 +355,52 @@ void MoqxRelayContext::onSetupRejected(
 
 MoqxRelayContext::ListenerMatcher MoqxRelayContext::listenerMatcher(std::string_view listenerName
 ) const {
-  auto it = listenerMatchers_.find(listenerName);
-  return ListenerMatcher(
-      std::string(listenerName),
-      it == listenerMatchers_.end() ? nullptr : &it->second
-  );
+  return ListenerMatcher(std::string(listenerName), this);
 }
 
 std::optional<std::string_view>
 MoqxRelayContext::ListenerMatcher::match(std::string_view authority, std::string_view path) const {
-  if (!matcher_) {
+  const auto* matcher = current();
+  if (!matcher) {
     return std::nullopt;
   }
-  return matcher_->match(authority, path);
+  return matcher->match(authority, path);
 }
 
 std::vector<std::string> MoqxRelayContext::ListenerMatcher::exactPaths() const {
-  if (!matcher_) {
+  const auto* matcher = current();
+  if (!matcher) {
     return {};
   }
-  return matcher_->allExactPaths();
+  return matcher->allExactPaths();
 }
 
-void MoqxRelayContext::onSessionEnd(
-    const ListenerMatcher& listener,
-    std::shared_ptr<MoQSession> session
-) {
+const ServiceMatcher* MoqxRelayContext::ListenerMatcher::current() const {
+  const auto& view = *ctx_->tlServiceView_;
+  if (!view) {
+    return nullptr;
+  }
+  auto it = view->listenerMatchers.find(name_);
+  return it == view->listenerMatchers.end() ? nullptr : &it->second;
+}
+
+void MoqxRelayContext::onSessionEnd(std::shared_ptr<MoQSession> session) {
   if (auto& collector = *tlStatsCollector_) {
     collector->onSessionEnd();
   }
   if (auto accessLogContext = MoqxRelaySession::accessLogContextOf(*session)) {
     accessLogContext->writeSessionEnd(*session);
   }
-  // The session belongs to whichever service its authority+path matched at setup.
-  if (auto name = listener.match(session->getAuthority(), session->getPath())) {
-    if (auto it = services_.find(*name); it != services_.end()) {
-      auto relay = it->second.relay;
+  XDCHECK(onExecutor(session->getExecutor())) << "teardown off the session's executor";
+  // The service chosen at SETUP, not a fresh match: a service added since may match now.
+  if (auto service = MoqxRelaySession::serviceOf(*session); !service.empty()) {
+    const auto& view = *tlServiceView_;
+    XCHECK(view) << "No service view installed for the current thread";
+    auto it = view->services.find(service);
+    if (it == view->services.end()) {
+      XLOG(DFATAL) << "Session bound to service '" << service << "' but the thread's view lacks it";
+    } else {
+      auto relay = it->second->relay;
       runOnExec(relay->getRelayExec(), [relay, sessionId = session->sessionId()] {
         relay->onSessionEnd(sessionId);
       });
@@ -424,9 +454,12 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayContext::authorizeS
   // Route: verify the setup token, then install the session's filter handlers.
   // createPublisher/SubscriberFilter wraps the relay in cross-exec filters when
   // the service runs on a dedicated relay thread.
-  auto it = services_.find(*matchedName);
-  CHECK(it != services_.end()) << "Service '" << *matchedName << "' matched but no entry found";
-  auto& entry = it->second;
+  const auto& view = *tlServiceView_;
+  XCHECK(view) << "No service view installed for the current thread";
+  auto it = view->services.find(*matchedName);
+  CHECK(it != view->services.end())
+      << "Service '" << *matchedName << "' matched but no entry found";
+  auto& entry = *it->second;
   auto grants = auth::authenticateSetup(*entry.verifier, clientSetup.params);
   if (grants.hasError()) {
     XLOG(ERR) << "Authorization failed on listener '" << listener.name()
@@ -471,6 +504,11 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayContext::authorizeS
   auto settings = session->getMoqSettings();
   settings.bufferingThresholds.perSubscription = config::subscriptionBufferBytes(entry.config);
   session->setMoqSettings(settings);
+  XDCHECK(onExecutor(session->getExecutor())) << "SETUP off the session's executor";
+  // Last step before success, so a failed SETUP never records a service.
+  if (auto* accepted = dynamic_cast<MoqxRelaySession*>(session.get())) {
+    accepted->bindService(*matchedName);
+  }
   return folly::unit;
 }
 
@@ -480,6 +518,8 @@ folly::coro::Task<MoqxRelayContext::TrackMetricsResult> MoqxRelayContext::aggreg
     std::optional<std::string> trackName,
     size_t limit
 ) const {
+  const auto& view = *tlServiceView_;
+  XCHECK(view) << "Service view must be installed for the current thread";
   struct Service {
     std::string name;
     std::shared_ptr<MoqxRelay> relay;
@@ -487,9 +527,9 @@ folly::coro::Task<MoqxRelayContext::TrackMetricsResult> MoqxRelayContext::aggreg
   };
 
   std::vector<Service> services;
-  for (const auto& [name, entry] : services_) {
+  for (const auto& [name, entry] : view->services) {
     if (serviceName.empty() || name == serviceName) {
-      services.push_back({name, entry.relay, {}});
+      services.push_back({name, entry->relay, {}});
     }
   }
 
@@ -613,6 +653,8 @@ folly::coro::Task<void> MoqxRelayContext::dumpState(RelayContextVisitor& visitor
   }
   visitor.onRelayBegin(relayID_, activeSessions);
 
+  auto& view = *tlServiceView_;
+  XCHECK(view) << "Service view must be installed for the current thread";
   // Copied by value: services_ belongs to this executor and must not be read
   // after the first hop below.
   struct Service {
@@ -622,10 +664,10 @@ folly::coro::Task<void> MoqxRelayContext::dumpState(RelayContextVisitor& visitor
     bool upstreamList; // the service configured an `upstreams` list
   };
   std::vector<Service> services;
-  services.reserve(services_.size());
-  for (const auto& [name, entry] : services_) {
+  services.reserve(view->services.size());
+  for (const auto& [name, entry] : view->services) {
     services.push_back(
-        Service{name, entry.relay, entry.peering.get(), !entry.config.upstreams.empty()}
+        Service{name, entry->relay, entry->peering.get(), !entry->config.upstreams.empty()}
     );
   }
 
@@ -645,6 +687,40 @@ folly::coro::Task<void> MoqxRelayContext::dumpState(RelayContextVisitor& visitor
     visitor.onServiceEnd();
   }
   visitor.onRelayEnd();
+}
+
+std::unique_ptr<MoqxRelayContext::ThreadServiceView> MoqxRelayContext::buildView() const {
+  auto view = std::make_unique<ThreadServiceView>();
+  folly::F14FastMap<std::string, config::ServiceConfig> configs;
+  folly::F14FastSet<std::string> listeners;
+  for (const auto& [name, entry] : services_) {
+    configs.emplace(name, entry->config);
+    view->services.emplace(name, entry.get());
+    listeners.insert(entry->config.listeners.begin(), entry->config.listeners.end());
+  }
+  for (const auto& listener : listeners) {
+    view->listenerMatchers.try_emplace(listener, configs, listener);
+  }
+  return view;
+}
+
+void MoqxRelayContext::installServiceViews(
+    const std::vector<folly::Executor::KeepAlive<folly::EventBase>>& evbs
+) {
+  // Each thread gets its own copy, built here from the main-thread-owned table.
+  std::vector<folly::SemiFuture<folly::Unit>> pending;
+  pending.reserve(evbs.size());
+  for (const auto& ka : evbs) {
+    auto* evb = ka.get();
+    // Waiting on the loop we are running on would deadlock. A loop that has not
+    // started yet is fine: the swap runs once it does.
+    XCHECK(!evb->inRunningEventBaseThread())
+        << "installServiceViews: must not be called from a target EventBase's own thread";
+    pending.push_back(folly::via(evb, [this, view = buildView()]() mutable {
+                        *tlServiceView_ = std::move(view);
+                      }).semi());
+  }
+  folly::collectAll(std::move(pending)).get();
 }
 
 } // namespace openmoq::moqx

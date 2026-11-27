@@ -5,8 +5,10 @@
  */
 
 #include "MoqxRelayContext.h"
+#include "MoqxRelaySession.h"
 
 #include <folly/coro/BlockingWait.h>
+#include <folly/futures/Future.h>
 #include <folly/io/async/ScopedEventBaseThread.h>
 #include <folly/portability/GMock.h>
 #include <folly/portability/GTest.h>
@@ -71,6 +73,19 @@ makeSession(std::shared_ptr<MoQExecutor> exec, std::string authority, std::strin
   auto session = std::make_shared<NiceMock<test::MockMoQSession>>(exec);
   session->setAuthority(std::move(authority));
   session->setPath(std::move(path));
+  return session;
+}
+
+// A real MoqxRelaySession, so the service binding's dynamic_cast is exercised.
+std::shared_ptr<MoqxRelaySession>
+makeRelaySession(std::shared_ptr<MoQExecutor> exec, std::string authority) {
+  auto session = std::make_shared<MoqxRelaySession>(
+      std::string(kListener),
+      folly::MaybeManagedPtr<proxygen::WebTransport>(nullptr),
+      uint64_t{0},
+      std::move(exec)
+  );
+  session->setAuthority(std::move(authority));
   return session;
 }
 
@@ -338,6 +353,114 @@ TEST_F(MoqxRelayContextTest, ExactServicePathsAreScopedToListener) {
   EXPECT_THAT(ctx.listenerMatcher("other").exactPaths(), IsEmpty());
 }
 
+// --- installServiceViews ---
+
+namespace {
+config::ServiceConfig makeExactPathService(std::string path) {
+  return config::ServiceConfig{
+      .match = {MatchEntry{
+          .authority = MatchEntry::AnyAuthority{},
+          .path = MatchEntry::ExactPath{std::move(path)},
+      }},
+      .listeners = {std::string(kListener)},
+      .cache = {100, 3},
+  };
+}
+
+template <typename F> auto runOn(folly::ScopedEventBaseThread& thread, F&& fn) {
+  return folly::via(thread.getEventBase(), std::forward<F>(fn)).get();
+}
+} // namespace
+
+TEST_F(MoqxRelayContextTest, InstallServiceViews_IoThreadResolvesAndRoutes) {
+  MoqxRelayContext ctx({{"svc", makeService("live.example.com")}}, "test-relay");
+  folly::ScopedEventBaseThread io;
+  ctx.installServiceViews({folly::getKeepAliveToken(io.getEventBase())});
+
+  auto matched = runOn(io, [&]() -> std::optional<std::string> {
+    auto name = ctx.listenerMatcher(kListener).match("live.example.com", "/");
+    return name ? std::optional<std::string>(*name) : std::nullopt;
+  });
+  EXPECT_EQ(matched, std::optional<std::string>("svc"));
+
+  auto accepted = runOn(io, [&] {
+    auto workerExec = std::make_shared<MoQFollyExecutorImpl>(io.getEventBase());
+    auto session = makeSession(workerExec, "live.example.com");
+    return ctx.validateAuthority(ctx.listenerMatcher(kListener), emptySetup_, anyVersion_, session)
+        .hasValue();
+  });
+  EXPECT_TRUE(accepted);
+}
+
+TEST_F(MoqxRelayContextTest, InstallServiceViews_AdminThreadResolves) {
+  MoqxRelayContext ctx({{"relay", makeExactPathService("/moq-relay")}}, "test-relay");
+  folly::ScopedEventBaseThread admin;
+  ctx.installServiceViews({folly::getKeepAliveToken(admin.getEventBase())});
+
+  auto paths = runOn(admin, [&] { return ctx.listenerMatcher(kListener).exactPaths(); });
+  EXPECT_THAT(paths, UnorderedElementsAre("/moq-relay"));
+}
+
+// A thread that was not given a view matches nothing, even after others were.
+TEST_F(MoqxRelayContextTest, InstallServiceViews_UninstalledThreadMatchesNothing) {
+  MoqxRelayContext ctx({{"relay", makeExactPathService("/moq-relay")}}, "test-relay");
+  folly::ScopedEventBaseThread installed;
+  folly::ScopedEventBaseThread other;
+  ctx.installServiceViews({folly::getKeepAliveToken(installed.getEventBase())});
+
+  auto matched = runOn(other, [&] {
+    return ctx.listenerMatcher(kListener).match("any.host", "/moq-relay").has_value();
+  });
+  EXPECT_FALSE(matched);
+  EXPECT_THAT(runOn(other, [&] { return ctx.listenerMatcher(kListener).exactPaths(); }), IsEmpty());
+}
+
+TEST_F(MoqxRelayContextTest, InstallServiceViews_EveryTargetGetsAView) {
+  MoqxRelayContext ctx({{"svc", makeService("live.example.com")}}, "test-relay");
+  folly::ScopedEventBaseThread io1;
+  folly::ScopedEventBaseThread io2;
+  folly::ScopedEventBaseThread admin;
+  ctx.installServiceViews(
+      {folly::getKeepAliveToken(io1.getEventBase()),
+       folly::getKeepAliveToken(io2.getEventBase()),
+       folly::getKeepAliveToken(admin.getEventBase())}
+  );
+
+  for (auto* thread : {&io1, &io2, &admin}) {
+    EXPECT_TRUE(runOn(*thread, [&] {
+      return ctx.listenerMatcher(kListener).match("live.example.com", "/").has_value();
+    }));
+  }
+}
+
+// ready() is per calling thread: it needs initUpstreams and that thread's view.
+TEST_F(MoqxRelayContextTest, Ready_IsPerThread) {
+  MoqxRelayContext ctx({{"svc", makeService("live.example.com")}}, "test-relay");
+  folly::ScopedEventBaseThread worker;
+  folly::ScopedEventBaseThread other;
+  EXPECT_FALSE(ctx.ready());
+
+  ctx.initUpstreams(worker.getEventBase());
+  EXPECT_TRUE(ctx.ready());
+  EXPECT_FALSE(runOn(worker, [&] { return ctx.ready(); }));
+
+  ctx.installServiceViews({folly::getKeepAliveToken(worker.getEventBase())});
+  EXPECT_TRUE(runOn(worker, [&] { return ctx.ready(); }));
+  EXPECT_FALSE(runOn(other, [&] { return ctx.ready(); }));
+}
+
+// Blocking on the loop we are running on would deadlock.
+TEST_F(MoqxRelayContextTest, InstallServiceViews_RejectsCallingFromTargetThread) {
+  MoqxRelayContext ctx({{"svc", makeService("live.example.com")}}, "test-relay");
+  EXPECT_DEATH(
+      {
+        folly::ScopedEventBaseThread io;
+        runOn(io, [&] { ctx.installServiceViews({folly::getKeepAliveToken(io.getEventBase())}); });
+      },
+      "must not be called from a target EventBase's own thread"
+  );
+}
+
 // --- validateAuthority: anonymous claim ---
 
 TEST_F(
@@ -394,6 +517,87 @@ TEST_F(MoqxRelayContextTest, ValidateAuthority_AnonymousClaimDoesNotBypassRequir
   EXPECT_EQ(result.error(), SessionCloseErrorCode::UNAUTHORIZED);
 }
 
+// --- session-to-service binding ---
+
+TEST_F(MoqxRelayContextTest, ValidateAuthority_BindsMatchedService) {
+  MoqxRelayContext ctx(
+      {{"svc-a", makeService("a.example.com")}, {"svc-b", makeService("b.example.com")}},
+      "test-relay"
+  );
+
+  auto session = makeRelaySession(exec_, "b.example.com");
+  ASSERT_TRUE(
+      ctx.validateAuthority(ctx.listenerMatcher(kListener), emptySetup_, anyVersion_, session)
+          .hasValue()
+  );
+  EXPECT_EQ(MoqxRelaySession::serviceOf(*session), "svc-b");
+}
+
+TEST_F(MoqxRelayContextTest, OnSessionEnd_KeepsBindingInsteadOfRematching) {
+  MoqxRelayContext ctx(
+      {{"svc-a", makeService("a.example.com")}, {"svc-b", makeService("b.example.com")}},
+      "test-relay"
+  );
+  auto session = makeRelaySession(exec_, "a.example.com");
+  ASSERT_TRUE(
+      ctx.validateAuthority(ctx.listenerMatcher(kListener), emptySetup_, anyVersion_, session)
+          .hasValue()
+  );
+
+  // Stands in for a service added after SETUP that would now match this session.
+  session->setAuthority("b.example.com");
+  ctx.onSessionEnd(session);
+
+  EXPECT_EQ(MoqxRelaySession::serviceOf(*session), "svc-a");
+}
+
+TEST_F(MoqxRelayContextTest, ValidateAuthority_FailedSetupBindsNothing) {
+  MoqxRelayContext ctx(
+      {{"svc", makeServiceWithAuth("a.example.com", requireSetupTokenAuth())}},
+      "test-relay"
+  );
+
+  auto session = makeRelaySession(exec_, "a.example.com");
+  auto result =
+      ctx.validateAuthority(ctx.listenerMatcher(kListener), emptySetup_, anyVersion_, session);
+
+  ASSERT_FALSE(result.hasValue());
+  EXPECT_EQ(result.error(), SessionCloseErrorCode::UNAUTHORIZED);
+  EXPECT_TRUE(MoqxRelaySession::serviceOf(*session).empty());
+  ctx.onSessionEnd(session);
+}
+
+TEST_F(MoqxRelayContextTest, ValidateAuthority_NoMatchBindsNothing) {
+  MoqxRelayContext ctx({{"svc", makeService("a.example.com")}}, "test-relay");
+
+  auto session = makeRelaySession(exec_, "unknown.example.com");
+  auto result =
+      ctx.validateAuthority(ctx.listenerMatcher(kListener), emptySetup_, anyVersion_, session);
+
+  ASSERT_FALSE(result.hasValue());
+  EXPECT_EQ(result.error(), SessionCloseErrorCode::INVALID_AUTHORITY);
+  EXPECT_TRUE(MoqxRelaySession::serviceOf(*session).empty());
+}
+
+TEST_F(MoqxRelayContextTest, ValidateAuthority_RepeatDoesNotRebind) {
+  MoqxRelayContext ctx(
+      {{"svc-a", makeService("a.example.com")}, {"svc-b", makeService("b.example.com")}},
+      "test-relay"
+  );
+  auto session = makeRelaySession(exec_, "a.example.com");
+  ASSERT_TRUE(
+      ctx.validateAuthority(ctx.listenerMatcher(kListener), emptySetup_, anyVersion_, session)
+          .hasValue()
+  );
+
+  session->setAuthority("b.example.com");
+  ASSERT_TRUE(
+      ctx.validateAuthority(ctx.listenerMatcher(kListener), emptySetup_, anyVersion_, session)
+          .hasValue()
+  );
+  EXPECT_EQ(MoqxRelaySession::serviceOf(*session), "svc-a");
+}
+
 // --- purgeCache ---
 
 TEST_F(MoqxRelayContextTest, PurgeCache_TwoServicesRequireName) {
@@ -435,6 +639,53 @@ TEST_F(MoqxRelayContextTest, UnreadableUpstreamCACertFailsStartup) {
           testing::HasSubstr("upstream.tls.ca_cert: cannot load /nonexistent/ca.pem")
       )
   );
+}
+
+config::UpstreamConfig makeUpstream(std::string url, config::UpstreamTlsConfig tls = {}) {
+  return config::UpstreamConfig{.url = std::move(url), .tls = std::move(tls)};
+}
+
+TEST_F(MoqxRelayContextTest, BuildUpstreamVerifiersReportsABadCAInsteadOfThrowing) {
+  auto svc = makeService("a.example.com");
+  svc.upstreams = {
+      makeUpstream("moqt://one.example.com:4433/", {.insecure = true}),
+      makeUpstream("moqt://two.example.com:4433/", {.caCertFile = "/nonexistent/ca.pem"}),
+      makeUpstream("moqt://three.example.com:4433/"),
+  };
+  folly::Expected<UpstreamVerifiers, std::string> result;
+  EXPECT_NO_THROW(result = buildUpstreamVerifiers(svc));
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(result.error(), testing::HasSubstr("upstreams[1]"));
+  EXPECT_THAT(result.error(), testing::HasSubstr("moqt://two.example.com:4433/"));
+  EXPECT_THAT(result.error(), testing::HasSubstr("cannot load /nonexistent/ca.pem"));
+}
+
+TEST_F(MoqxRelayContextTest, BuildUpstreamVerifiersKeepsUpstreamOrderAndNullMeansSystemCAs) {
+  auto svc = makeService("a.example.com");
+  svc.upstreams = {
+      makeUpstream("moqt://one.example.com:4433/", {.insecure = true}),
+      makeUpstream("moqt://two.example.com:4433/"),
+      makeUpstream("moqt://three.example.com:4433/", {.insecure = true}),
+  };
+  auto result = buildUpstreamVerifiers(svc);
+  ASSERT_TRUE(result.hasValue());
+  ASSERT_EQ(result->size(), 3u);
+  EXPECT_NE((*result)[0], nullptr);
+  EXPECT_EQ((*result)[1], nullptr);
+  EXPECT_NE((*result)[2], nullptr);
+}
+
+TEST_F(MoqxRelayContextTest, BuildUpstreamVerifiersHandlesTheLegacySingleUpstreamAndNone) {
+  auto svc = makeService("a.example.com");
+  auto none = buildUpstreamVerifiers(svc);
+  ASSERT_TRUE(none.hasValue());
+  EXPECT_TRUE(none->empty());
+
+  svc.upstream = makeUpstream("moqt://origin.example.com:4433/", {.insecure = true});
+  auto single = buildUpstreamVerifiers(svc);
+  ASSERT_TRUE(single.hasValue());
+  ASSERT_EQ(single->size(), 1u);
+  EXPECT_NE((*single)[0], nullptr);
 }
 
 } // namespace

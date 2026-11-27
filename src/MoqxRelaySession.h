@@ -20,7 +20,8 @@ namespace logging {
 class AccessLogSessionContext;
 }
 
-// A session accepted on one of the relay's listeners. It carries moqx's own per-session state.
+// A session accepted on one of the relay's listeners. Carries the listener's name and, once SETUP
+// succeeds, the name of the service it was bound to.
 class MoqxRelaySession : public moxygen::MoQRelaySession {
 public:
   template <typename... Args>
@@ -61,10 +62,26 @@ public:
     accessLogContext_ = std::move(context);
   }
 
+  // Records the service chosen at SETUP. Only the first call has effect.
+  // Call on the session's executor.
+  void bindService(std::string_view service) {
+    if (service_.empty()) {
+      service_ = service;
+    }
+  }
+
+  // The service recorded at SETUP; empty for failed SETUP, outbound sessions, and sessions that
+  // are not MoqxRelaySession. Call on the session's executor.
+  static std::string_view serviceOf(const moxygen::MoQSession& session) {
+    const auto* accepted = dynamic_cast<const MoqxRelaySession*>(&session);
+    return accepted ? std::string_view(accepted->service_) : std::string_view();
+  }
+
 private:
   std::string listener_;
   std::shared_ptr<logging::AccessLogSessionContext> accessLogContext_;
   folly::SocketAddress localAddress_;
+  std::string service_;
 };
 
 } // namespace openmoq::moqx

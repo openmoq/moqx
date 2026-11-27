@@ -13,6 +13,7 @@
 #include <folly/coro/Sleep.h>
 #include <folly/coro/Task.h>
 #include <functional>
+#include <memory>
 #include <moxygen/MoQClient.h>
 #include <moxygen/MoQSession.h>
 #include <moxygen/MoQTypes.h>
@@ -22,6 +23,7 @@
 #include <optional>
 #include <proxygen/lib/utils/URL.h>
 #include <string>
+#include <vector>
 
 namespace openmoq::moqx {
 
@@ -31,6 +33,10 @@ namespace logging {
 class AccessLog;
 class AccessLogSessionContext;
 } // namespace logging
+
+// One verifier per upstream, in MoqtRelayBackend::upstreamConfigs order.
+// A null element means "use the system CAs", not "missing".
+using UpstreamVerifiers = std::vector<std::shared_ptr<fizz::CertificateVerifier>>;
 
 // --- Relay peering auth helpers ---
 // Used by UpstreamProvider (initiating peer subNs) and MoqxRelay (reciprocation).

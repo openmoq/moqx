@@ -112,7 +112,7 @@ void MoqxQmuxRelayServer::onNewSession(std::shared_ptr<MoQSession> clientSession
 }
 
 void MoqxQmuxRelayServer::terminateClientSession(std::shared_ptr<MoQSession> session) {
-  context_->onSessionEnd(listenerMatcher_, session);
+  context_->onSessionEnd(session);
   MoQQmuxServer::terminateClientSession(std::move(session));
 }
 
