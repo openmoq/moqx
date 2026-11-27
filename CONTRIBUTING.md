@@ -92,6 +92,7 @@ PR description if preserving history on `main` is warranted.
 
 - A PR adds an entry file for its user-visible changes to [changelog.d/](changelog.d/README.md); that README defines the format.
 - An entry covers what an operator or client of the shipped product can observe.
+- Wording, format and routing of diagnostic log messages (XLOG and XCHECK output) are not user-visible; the access log is.
 - A headline feature goes in `changelog.d/headline/`.
 - Everything else goes in the matching section directory: `added`, `changed`, `deprecated`, `removed`, `fixed` or `security`.
 - `Dependencies` belongs to the release PR (see [docs/release.md](docs/release.md#changelog)). Other PRs do not add or edit it.

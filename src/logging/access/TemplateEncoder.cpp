@@ -7,7 +7,7 @@
 #include "logging/access/TemplateEncoder.h"
 
 #include <fmt/format.h>
-#include <glog/logging.h>
+#include <folly/logging/xlog.h>
 
 namespace openmoq::moqx::logging {
 
@@ -15,7 +15,7 @@ namespace {
 
 AccessLogTemplate mustParse(std::string_view text, const AccessLogStaticVars& staticVars = {}) {
   auto tmpl = AccessLogTemplate::parse(text, staticVars);
-  CHECK(tmpl.hasValue()) << tmpl.error();
+  XCHECK(tmpl.hasValue()) << tmpl.error();
   return std::move(*tmpl);
 }
 
