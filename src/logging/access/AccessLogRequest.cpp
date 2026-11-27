@@ -119,6 +119,15 @@ AccessLogRequest::AccessLogRequest(
   context_->countRequest();
 }
 
+void AccessLogRequest::setStats(std::shared_ptr<const moxygen::MoQTrackStats> stats, bool sending) {
+  // SUB_STATS deltas start from the stats that the request had when they began.
+  XDCHECK(!interval_) << "stats set after SUB_STATS started";
+  if (stats) {
+    stats_ = std::move(stats);
+    sending_ = sending;
+  }
+}
+
 AccessLogRequest::~AccessLogRequest() {
   if (state_ == State::Pending) {
     aborted();
@@ -152,6 +161,8 @@ void AccessLogRequest::ok(std::optional<uint64_t> requestID) {
     state_ = State::Established;
     if (end_) {
       writeEnd(std::move(*std::exchange(end_, std::nullopt)));
+    } else {
+      startPeriodic();
     }
     break;
   }
@@ -279,8 +290,95 @@ void AccessLogRequest::writeEnd(End end) {
   state_ = State::Done;
   context_->write(end.event, end.isError, logRecord_, [&](auto& record) {
     setEnd(record, end);
+    setTotals(record, established_);
     record.ageMs = msSince(established_);
   });
+}
+
+void AccessLogRequest::setTotals(
+    AccessLogRecord& record,
+    std::chrono::steady_clock::time_point from
+) const {
+  if (!stats_) {
+    return;
+  }
+  record.objects = stats_->objects;
+  record.bytes = stats_->bytes;
+  record.groups = stats_->groups;
+  record.subgroups = stats_->subgroups;
+  record.datagrams = stats_->datagrams;
+  record.statusObjects = stats_->statusObjects;
+  record.resets = stats_->resets;
+  record.lastResetCode = stats_->lastResetCode;
+  record.openSubgroups = stats_->openSubgroups;
+  if (sending_) {
+    record.bytesQueued = stats_->bytesQueued;
+    record.payloadBytesQueued = stats_->payloadBytesQueued;
+    record.bytesWritten = stats_->bytesWritten;
+    record.bytesAcked = stats_->bytesAcked;
+    record.bytesDropped = stats_->bytesDropped;
+    record.bytesCancelled = stats_->bytesCancelled;
+    record.objectsWritten = stats_->objectsWritten;
+    record.objectsAcked = stats_->objectsAcked;
+    if (stats_->objectsAcked > 0) {
+      record.ackUsAvg = stats_->ackLatencyUsSum / stats_->objectsAcked;
+      record.ackUsMax = stats_->ackLatencyUsMax;
+    }
+  }
+  // ttfo_ms counts from the reply for a subscription and from the request for a FETCH. A
+  // subscription's data can arrive before its reply.
+  if (stats_->firstObject) {
+    record.ttfoMs = *stats_->firstObject > from ? msBetween(from, *stats_->firstObject) : 0;
+  }
+}
+
+void AccessLogRequest::startPeriodic() {
+  if (!stats_ || !logRecord_.requestID) {
+    return;
+  }
+  auto mask = context_->periodicMask(*logRecord_.requestID);
+  if (mask == 0 || !context_->schedulePeriodic(weak_from_this())) {
+    return;
+  }
+  interval_ =
+      Interval{mask, *stats_, std::chrono::system_clock::now(), std::chrono::steady_clock::now()};
+}
+
+bool AccessLogRequest::writePeriodic() {
+  if (state_ != State::Established || !interval_) {
+    return false;
+  }
+  const auto& last = interval_->stats;
+  const auto& now = *stats_;
+  context_->writeTo(interval_->mask, AccessLogEvent::SUB_STATS, logRecord_, [&](auto& record) {
+    record.intervalStart = interval_->start;
+    record.intervalMs = msSince(interval_->steadyStart);
+    record.dObjects = now.objects - last.objects;
+    record.dBytes = now.bytes - last.bytes;
+    record.dGroups = now.groups - last.groups;
+    record.dSubgroups = now.subgroups - last.subgroups;
+    record.dDatagrams = now.datagrams - last.datagrams;
+    record.dStatusObjects = now.statusObjects - last.statusObjects;
+    record.dResets = now.resets - last.resets;
+    if (sending_) {
+      record.dBytesQueued = now.bytesQueued - last.bytesQueued;
+      record.dPayloadBytesQueued = now.payloadBytesQueued - last.payloadBytesQueued;
+      record.dBytesWritten = now.bytesWritten - last.bytesWritten;
+      record.dBytesAcked = now.bytesAcked - last.bytesAcked;
+      record.dObjectsWritten = now.objectsWritten - last.objectsWritten;
+      record.dObjectsAcked = now.objectsAcked - last.objectsAcked;
+      if (auto acked = now.objectsAcked - last.objectsAcked; acked > 0) {
+        record.dAckUsAvg = (now.ackLatencyUsSum - last.ackLatencyUsSum) / acked;
+      }
+    }
+    setTotals(record, established_);
+    record.ageMs = msSince(established_);
+    context_->addTransportStats(record);
+  });
+  interval_->stats = now;
+  interval_->start = std::chrono::system_clock::now();
+  interval_->steadyStart = std::chrono::steady_clock::now();
+  return true;
 }
 
 void AccessLogRequest::writeFetch(AccessLogStatus status) {
@@ -289,6 +387,7 @@ void AccessLogRequest::writeFetch(AccessLogStatus status) {
   auto isError = status != AccessLogStatus::Ok;
   context_->write(AccessLogEvent::FETCH, isError, logRecord_, [&](auto& record) {
     setEnd(record, end);
+    setTotals(record, start_);
     record.status = status;
     record.latencyMs = latencyMs_;
     record.fetchMs = msSince(start_);

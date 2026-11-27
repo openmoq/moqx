@@ -461,6 +461,7 @@ add_library(moqx_core STATIC
   src/logging/access/MoqxAccessLog.cpp
   src/logging/access/AccessLogFilters.cpp
   src/logging/access/AccessLogHandles.cpp
+  src/logging/access/AccessLogPeriodic.cpp
   src/logging/access/AccessLogRequest.cpp
   src/logging/access/AccessLogSessionContext.cpp
   src/logging/access/AccessLogSetup.cpp

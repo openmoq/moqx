@@ -669,6 +669,9 @@ logging:
         request: "$schema $time $event pop=$pop $session $dir $req $ftn $status $latency_ms"
         event:
           FETCH: "$schema $time $event pop=$pop $session $req $ftn $status $end_reason $fetch_ms"
+    - name: data
+      file: /var/log/moqx/data.log
+      batch: { records: 1024, flush_ms: 5000 }
     - name: errors
       file: /var/log/moqx/access-errors.log
     - name: acme
@@ -676,9 +679,11 @@ logging:
 
 service_defaults:
   access_log:
-    sample: { session: 0.05 }
+    sample: { session: 0.05, periodic: 0.1 }
+    periodic_interval_ms: 5000
     sinks:
       - { name: control, events: [session, request] }
+      - { name: data, events: [periodic] }
       - { name: errors, errors_only: true }
 
 services:
@@ -708,16 +713,50 @@ In a rendered line, `-` means the field does not apply to the record or is not k
 `0` is a real zero. Names use the `safeName()` form (`ns1-ns2--track`), and free text
 escapes space, `"`, `\` and non-printable bytes as `\xHH`.
 
+#### Data and transport variables
+
+A request's end line, `FETCH` and `SUB_STATS` carry the request's data counts, and
+`SUB_STATS` adds the change over its interval. `SESSION_END` and `SUB_STATS` carry the
+session's QUIC transport stats.
+
+| Variable | Classes | Meaning |
+|---|---|---|
+| `objects`, `bytes` | request, periodic | Data objects and their payload bytes, sent or received. Status objects do not count. |
+| `groups`, `subgroups`, `open_subgroups` | request, periodic | Groups and subgroups of the request's data, and the subgroup streams open now. |
+| `datagrams` | request, periodic | Data datagrams. A status datagram counts in `status_objects`. |
+| `status_objects` | request, periodic | Status objects, such as end of group. |
+| `resets`, `last_reset_code` | request, periodic | Subgroup and fetch streams that either side reset, and the last reset code. |
+| `ttfo_ms` | request, periodic | Time to the first object: from the reply for a subscription, and from the request for a `FETCH`. |
+| `age_ms` | request, periodic | Time since the reply. |
+| `bytes_queued`, `payload_bytes_queued` | request, periodic | Stream bytes queued to send, headers included, and the payload within them. Send only. |
+| `bytes_written`, `bytes_acked` | request, periodic | Stream bytes written to QUIC, and the bytes the peer acked. Send only. |
+| `bytes_dropped` | request, periodic | Queued bytes discarded by a reset or a write error before they were written. Send only. |
+| `bytes_cancelled` | request, periodic | Written bytes cancelled by a reset before the peer acked them. Send only. |
+| `objects_written` | request, periodic | Data objects written, datagrams included. Send only. |
+| `objects_acked`, `ack_us_avg`, `ack_us_max` | request, periodic | Acked data objects, and the average and maximum time from queueing an object to its ack. They count only when the track has a delivery callback or a delivery timeout, or the session has an object-ack stats callback. Datagrams are not acked. Send only. |
+| `interval_start`, `interval_ms` | periodic | Start time and length of the `SUB_STATS` interval. The first interval starts at the reply, so it is shorter. |
+| `d_objects`, `d_bytes`, `d_groups`, `d_subgroups`, `d_datagrams`, `d_status_objects`, `d_resets` | periodic | Change in the matching count over the interval. |
+| `d_bytes_queued`, `d_payload_bytes_queued`, `d_bytes_written`, `d_bytes_acked`, `d_objects_written`, `d_objects_acked` | periodic | Change in the matching count over the interval. Send only. |
+| `d_ack_us_avg` | periodic | Average time from queueing to ack for the objects acked in the interval. Send only. |
+| `srtt_us`, `min_rtt_us`, `cwnd`, `inflight` | session, periodic | Smoothed and minimum RTT, congestion window and bytes in flight, when the line is written. |
+| `pkts_sent`, `pkts_lost`, `bytes_retx` | session, periodic | Packets sent and declared lost, and bytes retransmitted, over the session so far. |
+
+Send-only variables apply to data that the relay sends, such as the objects of a
+subscription that a peer made to the relay. They print `-` on data that the relay
+receives. The transport variables print `-` until the connection has an RTT sample.
+
 #### Choosing records per service
 
 `service_defaults.access_log` applies to every service, and to sessions that do not match a
-service. A service's own `access_log` overrides `sample` key by key, and its `sinks` list
-replaces the default list. Without a `sinks` list anywhere, every sink takes every class of
-events. An empty `sinks` list turns off the access log for the service.
+service. A service's own `access_log` overrides `sample` and `periodic_interval_ms` key by key,
+and its `sinks` list replaces the default list. Without a `sinks` list anywhere, every sink
+takes every class of events. An empty `sinks` list turns off the access log for the service.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `access_log.sample.session` | `double` | `1.0` | Fraction of sessions whose non-error records are written. The choice is a hash of the session ID, so a session sampled at one rate is also sampled at every higher rate. Errors bypass sampling. |
+| `access_log.sample.periodic` | `double` | `1.0` | Fraction of a sampled session's subscriptions with `SUB_STATS` records. The choice is a hash of the session and request IDs. |
+| `access_log.periodic_interval_ms` | `uint32` | `5000` | Interval between a subscription's `SUB_STATS` records. Intervals end on wall-clock multiples of the interval. |
 | `access_log.sinks[].name` | `string` | required | A sink from `logging.access`, listed at most once. |
 | `access_log.sinks[].events` | `[string]` | every class | Classes (`session`, `request`, `periodic`) and event names (`SETUP`, `SUBSCRIBE`, `FETCH`, ...). `NAMESPACE`, `NAMESPACE_DONE` and `PUBLISH_BLOCKED` are written only to sinks that list them by name or by `messages`. |
 | `access_log.sinks[].peer_classes` | `[string]` | all | Only sessions of these peer classes (`participant`, `relay-peer`). |

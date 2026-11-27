@@ -515,6 +515,11 @@ struct ParsedAccessLogSampleConfig {
       "Fraction of sessions whose non-error records are written (0.0-1.0, default 1.0)",
       std::optional<double>>
       session;
+  rfl::Description<
+      "Fraction of a sampled session's subscriptions with SUB_STATS records (0.0-1.0, "
+      "default 1.0)",
+      std::optional<double>>
+      periodic;
 };
 
 struct ParsedAccessLogSinkSelection {
@@ -533,6 +538,10 @@ struct ParsedAccessLogSinkSelection {
 
 struct ParsedAccessLogServiceConfig {
   rfl::Description<"Sampling rates", std::optional<ParsedAccessLogSampleConfig>> sample;
+  rfl::Description<
+      "Interval between a subscription's SUB_STATS records, in ms (default 5000)",
+      std::optional<uint32_t>>
+      periodic_interval_ms;
   rfl::Description<
       "Access log sinks that the sessions' records go to (default: every sink, every class)",
       std::optional<std::vector<ParsedAccessLogSinkSelection>>>

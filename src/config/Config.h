@@ -233,6 +233,8 @@ struct AccessLogSinkSelectionConfig {
 
 struct AccessLogServiceConfig {
   double sessionSample{1.0};
+  double periodicSample{1.0};
+  uint32_t periodicIntervalMs{5000};
   std::vector<AccessLogSinkSelectionConfig> sinks;
 };
 

@@ -49,6 +49,9 @@ struct AccessLogSinkSelection {
 
 struct AccessLogServiceOptions {
   double sessionSample{1.0};
+  // The fraction of a sampled session's subscriptions with SUB_STATS lines.
+  double periodicSample{1.0};
+  std::chrono::milliseconds periodicInterval{5000};
   // Each sink appears at most once, which the access log checks.
   std::vector<AccessLogSinkSelection> sinks;
 };
@@ -94,6 +97,11 @@ public:
   // loop iteration, and the queue limit is checked once per batch. A record that arrives
   // after stop() is dropped and counted.
   void submit(std::unique_ptr<AccessLogRecord> record, AccessLogSinkMask mask) override;
+  AccessLogSinkMask
+  periodicMask(const AccessLogSessionGate& gate, std::string_view key) const override;
+  std::chrono::milliseconds periodicInterval(const AccessLogSessionGate& gate) const override {
+    return services_[gate.service].periodicInterval;
+  }
 
   // Thread-safe. Each sink reopens its transport on the access log thread.
   void reopen();
@@ -150,6 +158,8 @@ private:
   std::vector<std::unique_ptr<AccessLogSink>> sinks_;
   struct ServiceSelection {
     double sessionSample{1.0};
+    double periodicSample{1.0};
+    std::chrono::milliseconds periodicInterval{0};
     // Indexed by AccessLogEvent: the sinks that take it.
     std::vector<AccessLogSinkMask> eventSinks;
     AccessLogSinkMask errorsOnly{0};

@@ -18,7 +18,13 @@
 
 #include "logging/access/AccessLog.h"
 
+namespace folly {
+class EventBase;
+}
+
 namespace openmoq::moqx::logging {
+
+class AccessLogRequest;
 
 enum class AccessLogSessionState : uint8_t { Open, Closed, ShuttingDown };
 
@@ -55,6 +61,18 @@ public:
   write(AccessLogEvent event, bool isError, const AccessLogRecord& base, SetFields&& setFields) {
     writeFrom(event, isError, &base, setFields);
   }
+  // The same, to the sinks in mask.
+  template <typename SetFields>
+  void writeTo(
+      AccessLogSinkMask mask,
+      AccessLogEvent event,
+      const AccessLogRecord& base,
+      SetFields&& setFields
+  ) {
+    if (mask != 0) {
+      submit(mask, event, &base, setFields);
+    }
+  }
 
   void writeSetup(
       AccessLogStatus status,
@@ -64,6 +82,8 @@ public:
   // Writes SESSION_END once.
   void writeSessionEnd(const moxygen::MoQSession& session);
   void writeSessionEnd(std::optional<uint64_t> errorCode);
+  // Copies the session's QUIC transport stats, when the transport has measured an RTT.
+  void addTransportStats(AccessLogRecord& record) const;
 
   // ShuttingDown during relay shutdown, and Closed once the session is closing or
   // destroyed. close() sets the closed flag before it tears down requests, so after that
@@ -78,14 +98,29 @@ public:
 
   void countRequest() { ++requests_; }
 
+  // The sinks that take SUB_STATS for one of the session's subscriptions.
+  AccessLogSinkMask periodicMask(uint64_t requestID) const;
+  // Registers logRequest with the timer for its interval on the session's EventBase, which calls
+  // writePeriodic() every interval. False when the session does not run on an EventBase.
+  bool schedulePeriodic(std::weak_ptr<AccessLogRequest> logRequest);
+
 private:
   template <typename SetFields>
   void
   writeFrom(AccessLogEvent event, bool isError, const AccessLogRecord* base, SetFields& setFields) {
     auto mask = log_->eventMask(gate_, event, isError);
-    if (mask == 0) {
-      return;
+    if (mask != 0) {
+      submit(mask, event, base, setFields);
     }
+  }
+
+  template <typename SetFields>
+  void submit(
+      AccessLogSinkMask mask,
+      AccessLogEvent event,
+      const AccessLogRecord* base,
+      SetFields& setFields
+  ) {
     auto record =
         base ? std::make_unique<AccessLogRecord>(*base) : std::make_unique<AccessLogRecord>();
     record->event = event;
@@ -100,6 +135,7 @@ private:
   std::shared_ptr<AccessLogSessionInfo> info_;
   std::weak_ptr<moxygen::MoQSession> session_;
   folly::Executor* exec_{nullptr};
+  folly::EventBase* evb_{nullptr};
   std::chrono::steady_clock::time_point openedAt_;
   uint64_t requests_{0};
   bool ended_{false};
@@ -109,5 +145,7 @@ private:
 std::string truncatePeerAddress(const folly::SocketAddress& addr);
 
 uint64_t msSince(std::chrono::steady_clock::time_point start);
+uint64_t
+msBetween(std::chrono::steady_clock::time_point from, std::chrono::steady_clock::time_point to);
 
 } // namespace openmoq::moqx::logging

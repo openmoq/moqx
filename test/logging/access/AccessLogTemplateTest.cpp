@@ -238,11 +238,11 @@ TEST(TemplateEncoderTest, AlignPrefixesGivesLogDroppedTheSharedPrefix) {
   encoder.encode(r, AccessLogRenderContext{relayInfo, 0}, out);
   EXPECT_EQ(out, "2026-10-09T17:02:10.020Z LOG_DROPPED 4");
 
-  // A class without a template prints the shared prefix.
+  // The default SUB_STATS line takes the shared prefix too.
   r.event = AccessLogEvent::SUB_STATS;
   out.clear();
   encoder.encode(r, AccessLogRenderContext{relayInfo, 0}, out);
-  EXPECT_EQ(out, "2026-10-09T17:02:10.020Z SUB_STATS");
+  EXPECT_EQ(out, "2026-10-09T17:02:10.020Z SUB_STATS - - - - - - - - - - -");
 }
 
 TEST(TemplateEncoderTest, AStaticVarInThePrefixReachesLogDropped) {
