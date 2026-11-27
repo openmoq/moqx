@@ -54,7 +54,8 @@ public:
   using Callback = std::function<void(const folly::IOBuf&)>;
   explicit CallbackTransport(Callback cb) : cb_(std::move(cb)) {}
 
-  folly::coro::Task<AccessLogWriteResult> write(const folly::IOBuf& data) override {
+  folly::coro::Task<AccessLogWriteResult>
+  write(const folly::IOBuf& data, std::span<const size_t>) override {
     cb_(data);
     co_return AccessLogWriteResult{};
   }
@@ -373,7 +374,8 @@ public:
   )
       : cancelled_(std::move(cancelled)), started_(std::move(started)) {}
 
-  folly::coro::Task<AccessLogWriteResult> write(const folly::IOBuf&) override {
+  folly::coro::Task<AccessLogWriteResult>
+  write(const folly::IOBuf&, std::span<const size_t>) override {
     if (started_ && !started_->ready()) {
       started_->post();
     }
@@ -461,7 +463,7 @@ TEST(MoqxAccessLogTest, FileTransportReturnsRetryOnAFullFifo) {
   constexpr size_t kSize = 4 << 20;
   auto data = folly::IOBuf::copyBuffer(std::string(kSize, 'x'));
   auto start = std::chrono::steady_clock::now();
-  auto result = folly::coro::blockingWait((*transport)->write(*data));
+  auto result = folly::coro::blockingWait((*transport)->write(*data, {}));
   EXPECT_LT(std::chrono::steady_clock::now() - start, 1s);
   EXPECT_EQ(result.status, AccessLogWriteStatus::Retry);
   EXPECT_GT(result.bytesWritten, 0u);
@@ -478,12 +480,12 @@ TEST(MoqxAccessLogTest, StdoutTransportSurvivesASocketWhoseReaderClosed) {
   ::dup2(fds[0], STDOUT_FILENO);
   auto transport = StdoutTransport::open();
   auto line = folly::IOBuf::copyBuffer(std::string("SETUP\n"));
-  auto delivered = folly::coro::blockingWait(transport->write(*line));
+  auto delivered = folly::coro::blockingWait(transport->write(*line, {}));
   char buf[16] = {};
   auto received = ::read(fds[1], buf, sizeof(buf));
   ::close(fds[1]);
   // Without MSG_NOSIGNAL, this write raises SIGPIPE and ends the test binary.
-  auto broken = folly::coro::blockingWait(transport->write(*line));
+  auto broken = folly::coro::blockingWait(transport->write(*line, {}));
   folly::coro::blockingWait(transport->close());
   ::dup2(savedStdout, STDOUT_FILENO);
   ::close(savedStdout);
@@ -506,7 +508,7 @@ TEST(MoqxAccessLogTest, StdoutTransportReturnsRetryOnAFullPipe) {
   auto transport = StdoutTransport::open();
   constexpr size_t kSize = 4 << 20;
   auto data = folly::IOBuf::copyBuffer(std::string(kSize, 'x'));
-  auto result = folly::coro::blockingWait(transport->write(*data));
+  auto result = folly::coro::blockingWait(transport->write(*data, {}));
   int flags = ::fcntl(STDOUT_FILENO, F_GETFL);
   folly::coro::blockingWait(transport->close());
   ::dup2(savedStdout, STDOUT_FILENO);
@@ -533,13 +535,13 @@ TEST(MoqxAccessLogTest, FileTransportReopensAfterRotation) {
   auto transport = FileTransport::open(path);
   ASSERT_TRUE(transport.hasValue()) << transport.error();
   auto result =
-      folly::coro::blockingWait((*transport)->write(*folly::IOBuf::copyBuffer("one\ntwo\n")));
+      folly::coro::blockingWait((*transport)->write(*folly::IOBuf::copyBuffer("one\ntwo\n"), {}));
   EXPECT_EQ(result.status, AccessLogWriteStatus::Ok);
 
   auto rotated = path + ".1";
   std::filesystem::rename(path, rotated);
   (*transport)->reopen();
-  folly::coro::blockingWait((*transport)->write(*folly::IOBuf::copyBuffer("three\n")));
+  folly::coro::blockingWait((*transport)->write(*folly::IOBuf::copyBuffer("three\n"), {}));
   folly::coro::blockingWait((*transport)->close());
 
   auto read = [](const std::string& p) {
@@ -564,7 +566,8 @@ public:
       size_t failures = std::numeric_limits<size_t>::max()
   )
       : status_(status), failures_(failures) {}
-  folly::coro::Task<AccessLogWriteResult> write(const folly::IOBuf&) override {
+  folly::coro::Task<AccessLogWriteResult>
+  write(const folly::IOBuf&, std::span<const size_t>) override {
     if (writes++ < failures_) {
       co_return AccessLogWriteResult{status_, 0ms};
     }
@@ -621,7 +624,8 @@ TEST(MoqxAccessLogTest, LinesLostToTheBacklogAreReportedAtClose) {
 // Sends the first four bytes of each write.
 class TrickleTransport : public AccessLogTransport {
 public:
-  folly::coro::Task<AccessLogWriteResult> write(const folly::IOBuf&) override {
+  folly::coro::Task<AccessLogWriteResult>
+  write(const folly::IOBuf&, std::span<const size_t>) override {
     co_return AccessLogWriteResult{AccessLogWriteStatus::Retry, 1000ms, 4};
   }
   folly::coro::Task<void> close() override { co_return; }
@@ -645,7 +649,8 @@ class HalvingTransport : public AccessLogTransport {
 public:
   explicit HalvingTransport(std::shared_ptr<std::atomic<bool>> drained)
       : drained_(std::move(drained)) {}
-  folly::coro::Task<AccessLogWriteResult> write(const folly::IOBuf& data) override {
+  folly::coro::Task<AccessLogWriteResult>
+  write(const folly::IOBuf& data, std::span<const size_t>) override {
     auto size = data.computeChainDataLength();
     if (size <= 1) {
       drained_->store(true);
@@ -744,7 +749,9 @@ TEST(MoqxAccessLogTest, CloseStopsOnAFailedWrite) {
 class PartialTransport : public AccessLogTransport {
 public:
   explicit PartialTransport(size_t limit) : limit_(limit) {}
-  folly::coro::Task<AccessLogWriteResult> write(const folly::IOBuf& data) override {
+  folly::coro::Task<AccessLogWriteResult>
+  write(const folly::IOBuf& data, std::span<const size_t> lineLengths) override {
+    lengths.emplace_back(lineLengths.begin(), lineLengths.end());
     auto text = data.to<std::string>();
     if (failed_) {
       out += text;
@@ -758,6 +765,7 @@ public:
   folly::coro::Task<void> close() override { co_return; }
 
   std::string out;
+  std::vector<std::vector<size_t>> lengths;
 
 private:
   size_t limit_;
@@ -799,7 +807,8 @@ class ReopenCountingTransport : public AccessLogTransport {
 public:
   explicit ReopenCountingTransport(std::shared_ptr<std::atomic<int>> reopens)
       : reopens_(std::move(reopens)) {}
-  folly::coro::Task<AccessLogWriteResult> write(const folly::IOBuf&) override {
+  folly::coro::Task<AccessLogWriteResult>
+  write(const folly::IOBuf&, std::span<const size_t>) override {
     co_return AccessLogWriteResult{};
   }
   void reopen() override { reopens_->fetch_add(1); }
@@ -838,6 +847,23 @@ TEST(MoqxAccessLogTest, APartialWriteResumesWhereItStopped) {
   EXPECT_EQ(raw->out, "1 SUBSCRIBE\n2 SUBSCRIBE\n3 SUBSCRIBE\n");
   EXPECT_EQ(sink->stats().records, 3u);
   EXPECT_EQ(sink->stats().dropped, 0u);
+}
+
+TEST(MoqxAccessLogTest, TheTransportGetsTheLengthOfEachLine) {
+  auto transport = std::make_unique<PartialTransport>(/*limit=*/16);
+  auto* raw = transport.get();
+  auto sink = sinkWith(std::move(transport));
+  AccessLogRelayInfo relayInfo;
+  for (int i = 0; i < 3; ++i) {
+    sink->append(*record(AccessLogEvent::SUBSCRIBE), relayInfo, 0);
+  }
+  folly::coro::blockingWait(sink->flush());
+  folly::coro::blockingWait(sink->close(relayInfo, 0));
+  // The first write sends line 1 and 4 bytes of line 2. The second starts with the rest of
+  // line 2.
+  ASSERT_EQ(raw->lengths.size(), 2u);
+  EXPECT_EQ(raw->lengths[0], (std::vector<size_t>{12, 12, 12}));
+  EXPECT_EQ(raw->lengths[1], (std::vector<size_t>{8, 12}));
 }
 
 TEST(MoqxAccessLogTest, AReopenWaitsForAPartlyWrittenLine) {

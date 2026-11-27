@@ -8,6 +8,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <folly/io/IOBufQueue.h>
 #include <quic/common/CircularDeque.h>
@@ -47,6 +48,8 @@ private:
   folly::IOBufQueue pendingLines_;
   // The length of each pending line. Excludes any bytes that a partial write already sent.
   quic::CircularDeque<size_t> lengths_;
+  // lengths_ copied into contiguous memory for the transport.
+  std::vector<size_t> lineLengths_;
   bool firstLinePartial_{false};
   bool reopenPending_{false};
 };
