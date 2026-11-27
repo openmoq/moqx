@@ -52,6 +52,7 @@ protected:
         },
         "test-relay"
     );
+    context->installServiceViews(ioExecutor_.getAllEventBases());
     server_ = std::make_unique<MoqxRelayServer>(listener, std::move(context), &ioExecutor_);
     server_->start();
   }

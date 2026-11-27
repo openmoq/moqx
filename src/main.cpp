@@ -248,6 +248,7 @@ int main(int argc, char* argv[]) {
   int exitCode = 0;
   if (!servers.empty()) {
     try {
+      context->installServiceViews(ioExecutor->getAllEventBases());
       context->initUpstreams(ioExecutor->getAllEventBases()[0].get());
     } catch (const std::exception& e) {
       std::cerr << "Error: failed to initialize upstreams: " << e.what() << "\n";
@@ -267,6 +268,8 @@ int main(int argc, char* argv[]) {
       XLOG(FATAL) << "Failed to start admin server on " << config.admin->address.describe();
     }
 
+    context->installServiceViews({folly::getKeepAliveToken(adminServer.evb())});
+    // Until the admin view lands, admin requests get 503 from ready().
     XLOG(INFO) << "Admin server listening on " << config.admin->address.describe();
   }
 

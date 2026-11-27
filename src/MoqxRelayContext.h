@@ -23,6 +23,7 @@
 #include <folly/Expected.h>
 #include <folly/ThreadLocal.h>
 #include <folly/container/F14Map.h>
+#include <folly/container/F14Set.h>
 #include <folly/coro/Task.h>
 #include <folly/executors/IOThreadPoolExecutor.h>
 #include <folly/io/async/EventBase.h>
@@ -41,6 +42,11 @@ class AccessLogSessionContext;
 // Returns nullptr to use the system CAs. Throws if tls.ca_cert cannot be loaded.
 std::shared_ptr<fizz::CertificateVerifier> makeUpstreamVerifier(const config::UpstreamTlsConfig& tls
 );
+
+// One verifier per upstream, in MoqtRelayBackend::upstreamConfigs order. Never throws;
+// the error names the failing upstream. A null element means "system CAs".
+folly::Expected<UpstreamVerifiers, std::string>
+buildUpstreamVerifiers(const config::ServiceConfig& svc);
 
 // Visitor interface for the top-level relay context state dump.
 // onServiceBegin returns the RelayStateVisitor to use for that service's relay.
@@ -81,7 +87,8 @@ public:
 
   // Matches services bound to one listener.
   // The context must outlive the matcher.
-  // Safe to use from any thread.
+  // Reads the calling thread's service view, so a thread that has not had a view
+  // installed matches nothing. Use the result before the view is swapped.
   class ListenerMatcher {
   public:
     const std::string& name() const { return name_; }
@@ -94,11 +101,14 @@ public:
 
   private:
     friend class MoqxRelayContext;
-    ListenerMatcher(std::string name, const ServiceMatcher* matcher)
-        : name_(std::move(name)), matcher_(matcher) {}
+    ListenerMatcher(std::string name, const MoqxRelayContext* ctx)
+        : name_(std::move(name)), ctx_(ctx) {}
+
+    // The calling thread's matcher for this listener, or null.
+    const ServiceMatcher* current() const;
 
     std::string name_;
-    const ServiceMatcher* matcher_; // null when no service is bound to this listener
+    const MoqxRelayContext* ctx_;
   };
 
   MoqxRelayContext(
@@ -129,7 +139,8 @@ public:
   void initUpstreams(folly::EventBase* workerEvb);
 
   // False until initUpstreams() runs, before which there is nothing to walk.
-  bool ready() const { return workerEvb_ != nullptr; }
+  // False until the service view is installed for the current thread.
+  bool ready() const { return workerEvb_ != nullptr && *tlServiceView_ != nullptr; }
 
   // Walks every service, calling visitor methods as it goes. Each service's
   // walk is placed on the executor that owns that service's state; the visitor
@@ -186,7 +197,9 @@ public:
   // --- Delegation targets for MoqxRelayServer virtual overrides ---
 
   void onNewSession(const ListenerMatcher& listener, std::shared_ptr<moxygen::MoQSession> session);
-  void onSessionEnd(const ListenerMatcher& listener, std::shared_ptr<moxygen::MoQSession> session);
+  // Ends the session on the service recorded at SETUP, looked up by name in the calling
+  // thread's service view. Call on the session's executor.
+  void onSessionEnd(std::shared_ptr<moxygen::MoQSession> session);
   // The server rejected the setup before validateAuthority ran.
   void onSetupRejected(
       const ListenerMatcher& listener,
@@ -211,6 +224,12 @@ public:
       std::shared_ptr<moxygen::MoQSession> session
   );
 
+  // Gives each target thread its own service view, swapped in on that thread so the
+  // old view is destroyed where it was used. Blocks until every swap has run, so call
+  // it only when no target needs the calling thread (startup, tests).
+  // Targets are the I/O and admin EventBases; do not include the constructing thread's.
+  void installServiceViews(const std::vector<folly::Executor::KeepAlive<folly::EventBase>>& evbs);
+
 private:
   folly::Expected<folly::Unit, moxygen::SessionCloseErrorCode> authorizeSession(
       const ListenerMatcher& listener,
@@ -220,27 +239,47 @@ private:
       std::shared_ptr<logging::AccessLogSessionContext> accessLogContext
   );
 
-  void addService(
-      const std::string& name,
+  // Startup only: passes no verifiers, so a bad CA throws from initUpstreams(), which main
+  // catches. Throwing here would escape the constructor.
+  void addService(const std::string& name, const config::ServiceConfig& svc, folly::EventBase* evb);
+
+  // evb is the relay's own thread, or null in single-thread mode. Local forwarders need a
+  // relay EventBase; without one they stay off.
+  std::shared_ptr<MoqxRelay>
+  makeRelay(const config::ServiceConfig& svc, folly::EventBase* evb) const;
+
+  // Builds a service without inserting it or touching any thread's view; the entry's address
+  // is fixed from here on. Does not call peering->start(), so an entry that was never started
+  // can be discarded. verifiers: prebuilt (reload), or nullopt to have start() build them
+  // (startup).
+  std::unique_ptr<ServiceEntry> prepareService(
       const config::ServiceConfig& svc,
-      std::shared_ptr<MoqxRelay> relay
-  );
+      folly::EventBase* evb,
+      std::optional<UpstreamVerifiers> verifiers
+  ) const;
+
+  struct ThreadServiceView {
+    folly::F14NodeMap<std::string, ServiceMatcher> listenerMatchers;
+    folly::F14FastMap<std::string, ServiceEntry*> services;
+  };
+
+  std::unique_ptr<ThreadServiceView> buildView() const;
 
   // When use_relay_thread=true: one dedicated thread per service, each with its
   // own executor, isolating relay state from I/O threads.  Null when disabled.
   // Each relay owns its MoQFollyExecutorImpl; the pool just keeps threads alive.
   std::unique_ptr<folly::IOThreadPoolExecutor> relayThreadPool_;
 
-  folly::F14FastMap<std::string, ServiceEntry> services_;
-  // Keyed by listener name; no entry when no service is bound to the listener.
-  // Node map: ListenerMatcher points into it.
-  folly::F14NodeMap<std::string, ServiceMatcher> listenerMatchers_;
+  folly::F14FastMap<std::string, std::unique_ptr<ServiceEntry>> services_;
   std::string relayID_;
   std::optional<config::ClusterConfig> cluster_;
+  bool useRelayThread_;
+  bool useLocalForwarders_;
   std::shared_ptr<stats::StatsRegistry> statsRegistry_;
   // One collector per io thread; tlStatsCollector_ binds each to its own thread.
   std::vector<std::shared_ptr<stats::MoQStatsCollector>> statsCollectors_;
   folly::ThreadLocal<std::shared_ptr<stats::MoQStatsCollector>> tlStatsCollector_;
+  folly::ThreadLocal<std::unique_ptr<ThreadServiceView>> tlServiceView_;
   folly::EventBase* workerEvb_{nullptr};
   std::shared_ptr<logging::AccessLog> accessLog_;
 };

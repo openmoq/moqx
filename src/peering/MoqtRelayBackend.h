@@ -32,7 +32,8 @@ public:
   MoqtRelayBackend(
       std::shared_ptr<MoqxRelay> relay,
       const config::ServiceConfig& service,
-      std::optional<uint64_t> hopID
+      std::optional<uint64_t> hopID,
+      std::optional<UpstreamVerifiers> verifiers = std::nullopt
   );
   ~MoqtRelayBackend() override;
 
@@ -72,9 +73,14 @@ public:
     upstreams_.push_back(std::move(upstream));
   }
 
+  // The upstreams as dialed: the legacy single upstream, else the list. Shared with
+  // buildUpstreamVerifiers so the two orders match.
+  static std::vector<config::UpstreamConfig> upstreamConfigs(const config::ServiceConfig& svc);
+
 private:
   void startUpstream(
       const config::UpstreamConfig& cfg,
+      std::shared_ptr<fizz::CertificateVerifier> verifier,
       const std::shared_ptr<moxygen::MoQFollyExecutorImpl>& workerExec
   );
 
@@ -86,6 +92,7 @@ private:
   // MoQ Cluster's codec, set when this relay has a Hop ID.
   std::shared_ptr<const RouteCodec> clusterCodec_;
   std::vector<config::UpstreamConfig> configs_;
+  std::optional<UpstreamVerifiers> verifiers_;
   std::optional<uint64_t> hopID_;
   uint64_t subscriptionBufferBytes_;
   std::shared_ptr<logging::AccessLog> accessLog_;
