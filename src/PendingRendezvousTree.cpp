@@ -33,45 +33,48 @@ PendingRendezvousTree::Node& PendingRendezvousTree::findOrCreateNode(const Track
 
 void PendingRendezvousTree::addWaiter(
     const FullTrackName& ftn,
-    const std::shared_ptr<moxygen::TimedBaton>& waiter
+    std::shared_ptr<RendezvousWaiter> waiter
 ) {
   auto& node = findOrCreateNode(ftn.trackNamespace);
-  node.waitersByTrack[ftn.trackName].push_back(waiter);
+  node.waitersByTrack[ftn.trackName].push_back(std::move(waiter));
 }
 
-void PendingRendezvousTree::eraseWaiter(
-    const FullTrackName& ftn,
-    const std::shared_ptr<moxygen::TimedBaton>& waiter
-) {
+void PendingRendezvousTree::eraseWaiter(const FullTrackName& ftn, const RendezvousWaiter* waiter) {
   applyAtNamespaceNode(ftn.trackNamespace, [&](Node& node) {
     auto waitersIt = node.waitersByTrack.find(ftn.trackName);
     if (waitersIt == node.waitersByTrack.end()) {
       return;
     }
     auto& waiters = waitersIt->second;
-    waiters.erase(std::remove(waiters.begin(), waiters.end(), waiter), waiters.end());
+    waiters.erase(
+        std::remove_if(
+            waiters.begin(),
+            waiters.end(),
+            [&](const std::shared_ptr<RendezvousWaiter>& w) { return w.get() == waiter; }
+        ),
+        waiters.end()
+    );
     if (waiters.empty()) {
       node.waitersByTrack.erase(waitersIt);
     }
   });
 }
 
-// Removes every waiter in this subtree from the tree (namespace-level
-// publish/publishNamespace) into `out`, since all of it is now resolved.
-// Does NOT signal: see collectSubtree's declaration comment.
+// Marks every unsignalled waiter in this subtree and appends it to `out`
+// without removing it from the tree. Does NOT signal: see collectSubtree's
+// declaration comment.
 void PendingRendezvousTree::collectSubtree(Node& node, Node::WaiterList& out) {
   for (auto& [_, trackWaiters] : node.waitersByTrack) {
-    out.insert(
-        out.end(),
-        std::make_move_iterator(trackWaiters.begin()),
-        std::make_move_iterator(trackWaiters.end())
-    );
+    for (auto& waiter : trackWaiters) {
+      if (!waiter->signalled) {
+        waiter->signalled = true;
+        out.push_back(waiter);
+      }
+    }
   }
-  node.waitersByTrack.clear();
   for (auto& [_, child] : node.children) {
     collectSubtree(*child, out);
   }
-  node.children.clear();
 }
 
 void PendingRendezvousTree::applyAtNamespaceNode(
@@ -94,7 +97,7 @@ void PendingRendezvousTree::applyAtNamespaceNode(
   if (foundNamespace) {
     onNode(*node);
   }
-  // defensive clean up after waking
+  // Prune any ancestors made empty by `onNode` (e.g. eraseWaiter).
   for (auto it = path.rbegin(); it != path.rend() && node->empty(); ++it) {
     auto* parent = it->first;
     parent->children.erase(it->second);
@@ -106,16 +109,23 @@ void PendingRendezvousTree::wakeForTrack(const FullTrackName& ftn) {
   Node::WaiterList toWake;
   applyAtNamespaceNode(ftn.trackNamespace, [&](Node& node) {
     auto waitersIt = node.waitersByTrack.find(ftn.trackName);
-    if (waitersIt != node.waitersByTrack.end()) {
-      toWake = std::move(waitersIt->second);
-      node.waitersByTrack.erase(waitersIt);
+    if (waitersIt == node.waitersByTrack.end()) {
+      return;
+    }
+
+    for (auto& waiter : waitersIt->second) {
+      if (!waiter->signalled) {
+        waiter->signalled = true;
+        toWake.push_back(waiter);
+      }
     }
   });
+
   // Signal only once the tree walk/prune above is fully done: TimedBaton::signal()
   // may resume the parked coroutine synchronously, re-entering eraseWaiter()
   // which must not observe (or corrupt) a container we were still iterating/mutating.
   for (auto& waiter : toWake) {
-    waiter->signal();
+    waiter->baton.signal();
   }
 }
 
@@ -124,8 +134,32 @@ void PendingRendezvousTree::wakeUnderNamespace(const TrackNamespace& ns) {
   applyAtNamespaceNode(ns, [&](Node& node) { collectSubtree(node, toWake); });
   // See the comment in wakeForTrack: signal strictly after all tree mutation completes.
   for (auto& waiter : toWake) {
-    waiter->signal();
+    waiter->baton.signal();
   }
+}
+
+bool PendingRendezvousTree::isWaiting(const FullTrackName& ftn, SessionId sessionId) const {
+  if (root_.empty()) {
+    return false;
+  }
+  const Node* node = &root_;
+  for (const auto& part : ftn.trackNamespace.trackNamespace) {
+    auto childIt = node->children.find(part);
+    if (childIt == node->children.end()) {
+      return false;
+    }
+    node = childIt->second.get();
+  }
+  auto waitersIt = node->waitersByTrack.find(ftn.trackName);
+  if (waitersIt == node->waitersByTrack.end()) {
+    return false;
+  }
+  for (auto& waiter : waitersIt->second) {
+    if (waiter->sessionId == sessionId) {
+      return true;
+    }
+  }
+  return false;
 }
 
 std::optional<std::chrono::milliseconds>
