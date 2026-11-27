@@ -15,6 +15,7 @@
 #include <folly/logging/xlog.h>
 
 #include "logging/access/FileTransport.h"
+#include "logging/access/LineSink.h"
 #include "moqx/Version.h"
 
 namespace openmoq::moqx::logging {
@@ -143,11 +144,9 @@ makeAccessLog(const config::Config& config) {
     options.name = sinkConfig.name;
     options.batchRecords = sinkConfig.batchRecords;
     options.flushInterval = std::chrono::milliseconds(sinkConfig.flushMs);
-    sinks.push_back(std::make_unique<AccessLogSink>(
-        std::move(options),
-        std::move(*encoder),
-        std::move(transport)
-    ));
+    sinks.push_back(
+        std::make_unique<LineSink>(std::move(options), std::move(*encoder), std::move(transport))
+    );
   }
   return std::make_shared<MoqxAccessLog>(
       std::move(relay),
