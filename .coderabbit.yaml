@@ -131,6 +131,15 @@ reviews:
         below them or narrate how the code came to be, such as rejected
         alternatives or what an earlier version did.
 
+        Flag a comment that cites a specification where the code would not
+        surprise a reader. A citation belongs where a reader would ask "why
+        are we doing this?", or on a test that validates a specific
+        requirement. Where a citation belongs, it names the message,
+        parameter or section title. It gives a draft section number only
+        together with the draft revision, and names a revision only when the
+        code is gated on that version. An RFC section number is stable, but
+        still question whether the comment needs it.
+
     - path: "src/relay/**"
       instructions: |
         Read docs/dev/local-forwarder-flow.md before judging threading. In

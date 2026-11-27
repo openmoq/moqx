@@ -1482,11 +1482,10 @@ public:
   void unsubscribeTracks() override { release(); }
 
   folly::coro::Task<RequestUpdateResult> requestUpdate(RequestUpdate reqUpdate) override {
-    // Draft-18 Section 10.9.2 allows REQUEST_UPDATE for SUBSCRIBE_TRACKS to update
-    // the TRACK_NAMESPACE_PREFIX parameter. However, moxygen's MoQSession::onRequestUpdate()
-    // only routes REQUEST_UPDATE to SUBSCRIBE and FETCH handles, not SUBSCRIBE_TRACKS.
-    // This is a moxygen limitation; when fixed upstream, we can implement prefix updates here
-    // by removing and re-adding the subscription with the new prefix, checking for overlaps.
+    // MOQT lets REQUEST_UPDATE change a SUBSCRIBE_TRACKS' TRACK_NAMESPACE_PREFIX, but
+    // MoQSession::onRequestUpdate() routes REQUEST_UPDATE only to SUBSCRIBE and FETCH.
+    // Once moxygen fixes that, remove and re-add the subscription with the new prefix,
+    // checking for overlaps.
     co_return folly::makeUnexpected(RequestError{
         reqUpdate.requestID,
         RequestErrorCode::NOT_SUPPORTED,
