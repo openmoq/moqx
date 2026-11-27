@@ -10,6 +10,7 @@
 #include <folly/CancellationToken.h>
 #include <folly/coro/CurrentExecutor.h>
 #include <folly/coro/Timeout.h>
+#include <folly/logging/xlog.h>
 #include <moxygen/MoQFilters.h>
 #include <moxygen/MoQRelaySession.h>
 #include <moxygen/MoQVersions.h>
@@ -377,7 +378,7 @@ folly::coro::Task<std::shared_ptr<MoQSession>> UpstreamProvider::getOrConnectSes
   if (state_ == State::Connecting) {
     XLOG(DBG1) << "UpstreamProvider::getOrConnectSession - waiting for "
                   "in-progress connection";
-    CHECK(connectPromise_);
+    XCHECK(connectPromise_);
     co_await connectPromise_->getFuture();
     if (!session_) {
       co_yield folly::coro::co_error(std::runtime_error("Connection failed"));
@@ -494,7 +495,7 @@ folly::coro::Task<void> UpstreamProvider::doConnect() {
 
   client_ = std::move(client);
   session_ = client_->moqSession_;
-  CHECK(session_) << "setupMoQSession succeeded but session is null";
+  XCHECK(session_) << "setupMoQSession succeeded but session is null";
 
   // Register for close notifications
   session_->setSessionCloseCallback(this);

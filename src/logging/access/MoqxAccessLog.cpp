@@ -63,7 +63,7 @@ MoqxAccessLog::MoqxAccessLog(
 )
     : relayInfo_(std::move(relayInfo)), sinks_(std::move(sinks)), lastFlush_(sinks_.size()),
       queueLimit_(queueLimit) {
-  CHECK_LE(sinks_.size(), kMaxAccessLogSinks);
+  XCHECK_LE(sinks_.size(), kMaxAccessLogSinks);
   if (!sinks_.empty()) {
     thread_.emplace("moqx-accesslog");
   }
@@ -81,9 +81,9 @@ MoqxAccessLog::makeServiceSelection(const AccessLogServiceOptions& options) cons
   result.sessionSample = options.sessionSample;
   result.eventSinks.assign(kEventCount, 0);
   for (const auto& selection : options.sinks) {
-    CHECK_LT(selection.sink, sinks_.size());
+    XCHECK_LT(selection.sink, sinks_.size());
     AccessLogSinkMask bit = AccessLogSinkMask(1) << selection.sink;
-    CHECK(!(used & bit)) << "sink " << selection.sink << " is selected twice";
+    XCHECK(!(used & bit)) << "sink " << selection.sink << " is selected twice";
     used |= bit;
     for (size_t e = 0; e < kEventCount; ++e) {
       if (selection.events[e]) {
@@ -230,7 +230,7 @@ void MoqxAccessLog::reopen() {
 void MoqxAccessLog::handleRecords(const std::vector<Entry>& entries) {
   auto dropped = queueDropped();
   for (const auto& entry : entries) {
-    DCHECK(sinks_.size() == kMaxAccessLogSinks || (entry.mask >> sinks_.size()) == 0);
+    XDCHECK(sinks_.size() == kMaxAccessLogSinks || (entry.mask >> sinks_.size()) == 0);
     forEachSink(entry.mask, [&](size_t i) {
       sinks_[i]->append(*entry.record, relayInfo_, dropped);
     });
