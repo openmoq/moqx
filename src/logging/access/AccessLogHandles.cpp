@@ -6,6 +6,8 @@
 
 #include "logging/access/AccessLogHandles.h"
 
+#include <type_traits>
+
 #include <folly/coro/Task.h>
 #include <moxygen/MoQFilters.h>
 #include <moxygen/MoQSession.h>
@@ -139,6 +141,9 @@ public:
     if (inner_->hasSubscribeOk()) {
       setSubscribeOk(inner_->subscribeOk());
     }
+    if (!sessionHeld) {
+      logRequest_->setStats(moxygen::trackStatsOf(*inner_), /*sending=*/false);
+    }
   }
 
   const moxygen::SubscribeOk& subscribeOk() const override { return inner_->subscribeOk(); }
@@ -158,7 +163,11 @@ public:
       std::shared_ptr<AccessLogRequest> logRequest,
       bool sessionHeld
   )
-      : TrackConsumerFilter(std::move(inner)), logRequest_(std::move(logRequest), sessionHeld) {}
+      : TrackConsumerFilter(std::move(inner)), logRequest_(std::move(logRequest), sessionHeld) {
+    if (!sessionHeld) {
+      logRequest_->setStats(moxygen::trackStatsOf(*downstream_), /*sending=*/true);
+    }
+  }
 
   folly::Expected<std::shared_ptr<moxygen::FetchConsumer>, MoQPublishError>
   beginFill(moxygen::RequestID requestID) override {
@@ -184,7 +193,16 @@ private:
 
 class LoggedFetchHandle : public LoggedUpdatable<moxygen::Publisher::FetchHandle> {
 public:
-  using LoggedUpdatable::LoggedUpdatable;
+  LoggedFetchHandle(
+      std::shared_ptr<moxygen::Publisher::FetchHandle> inner,
+      std::shared_ptr<AccessLogRequest> logRequest,
+      bool sessionHeld
+  )
+      : LoggedUpdatable(std::move(inner), std::move(logRequest), sessionHeld) {
+    if (!sessionHeld) {
+      logRequest_->setStats(moxygen::trackStatsOf(*inner_), /*sending=*/false);
+    }
+  }
 
   const moxygen::FetchOk& fetchOk() const override { return inner_->fetchOk(); }
 
@@ -196,7 +214,16 @@ public:
 
 class LoggedFetchConsumer : public LoggedHandle<moxygen::FetchConsumer> {
 public:
-  using LoggedHandle::LoggedHandle;
+  LoggedFetchConsumer(
+      std::shared_ptr<moxygen::FetchConsumer> inner,
+      std::shared_ptr<AccessLogRequest> logRequest,
+      bool sessionHeld
+  )
+      : LoggedHandle(std::move(inner), std::move(logRequest), sessionHeld) {
+    if (!sessionHeld) {
+      logRequest_->setStats(moxygen::trackStatsOf(*inner_), /*sending=*/true);
+    }
+  }
 
   folly::Expected<folly::Unit, MoQPublishError> object(
       uint64_t groupID,
@@ -207,16 +234,17 @@ public:
       bool finFetch,
       bool forwardingPreferenceIsDatagram
   ) override {
-    finIf(finFetch);
-    return inner_->object(
-        groupID,
-        subgroupID,
-        objectID,
-        std::move(payload),
-        std::move(extensions),
-        finFetch,
-        forwardingPreferenceIsDatagram
-    );
+    return finAfter(finFetch, [&] {
+      return inner_->object(
+          groupID,
+          subgroupID,
+          objectID,
+          std::move(payload),
+          std::move(extensions),
+          finFetch,
+          forwardingPreferenceIsDatagram
+      );
+    });
   }
 
   void checkpoint() override { inner_->checkpoint(); }
@@ -241,25 +269,25 @@ public:
 
   folly::Expected<moxygen::ObjectPublishStatus, MoQPublishError>
   objectPayload(moxygen::Payload payload, bool finFetch) override {
-    finIf(finFetch);
-    return inner_->objectPayload(std::move(payload), finFetch);
+    return finAfter(finFetch, [&] { return inner_->objectPayload(std::move(payload), finFetch); });
   }
 
   folly::Expected<folly::Unit, MoQPublishError>
   endOfGroup(uint64_t groupID, uint64_t subgroupID, uint64_t objectID, bool finFetch) override {
-    finIf(finFetch);
-    return inner_->endOfGroup(groupID, subgroupID, objectID, finFetch);
+    return finAfter(finFetch, [&] {
+      return inner_->endOfGroup(groupID, subgroupID, objectID, finFetch);
+    });
   }
 
   folly::Expected<folly::Unit, MoQPublishError>
   endOfTrackAndGroup(uint64_t groupID, uint64_t subgroupID, uint64_t objectID) override {
-    finIf(true);
-    return inner_->endOfTrackAndGroup(groupID, subgroupID, objectID);
+    return finAfter(true, [&] {
+      return inner_->endOfTrackAndGroup(groupID, subgroupID, objectID);
+    });
   }
 
   folly::Expected<folly::Unit, MoQPublishError> endOfFetch() override {
-    finIf(true);
-    return inner_->endOfFetch();
+    return finAfter(true, [&] { return inner_->endOfFetch(); });
   }
 
   void reset(moxygen::ResetStreamErrorCode error) override {
@@ -280,15 +308,23 @@ public:
 
   folly::Expected<folly::Unit, MoQPublishError>
   endOfUnknownRange(uint64_t groupID, uint64_t objectID, bool finFetch) override {
-    finIf(finFetch);
-    return inner_->endOfUnknownRange(groupID, objectID, finFetch);
+    return finAfter(finFetch, [&] {
+      return inner_->endOfUnknownRange(groupID, objectID, finFetch);
+    });
   }
 
 private:
-  void finIf(bool fin) {
+  // Ends the FETCH after the inner call, so that the line counts the object that call delivers.
+  template <typename Call> std::invoke_result_t<Call> finAfter(bool fin, Call&& call) {
+    std::shared_ptr<AccessLogRequest> request;
     if (fin) {
-      logRequest_->ended(AccessLogEvent::FETCH, AccessLogEndReason::Fin, false);
+      request = logRequest_.get();
     }
+    auto result = std::forward<Call>(call)();
+    if (request) {
+      request->ended(AccessLogEvent::FETCH, AccessLogEndReason::Fin, false);
+    }
+    return result;
   }
 };
 

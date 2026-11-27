@@ -79,6 +79,8 @@ MoqxAccessLog::makeServiceSelection(const AccessLogServiceOptions& options) cons
   ServiceSelection result;
   AccessLogSinkMask used{0};
   result.sessionSample = options.sessionSample;
+  result.periodicSample = options.periodicSample;
+  result.periodicInterval = options.periodicInterval;
   result.eventSinks.assign(kEventCount, 0);
   for (const auto& selection : options.sinks) {
     CHECK_LT(selection.sink, sinks_.size());
@@ -161,6 +163,14 @@ MoqxAccessLog::eventMask(const AccessLogSessionGate& gate, AccessLogEvent event,
     return accepting;
   }
   return gate.sampled ? accepting & ~selected.errorsOnly : 0;
+}
+
+AccessLogSinkMask
+MoqxAccessLog::periodicMask(const AccessLogSessionGate& gate, std::string_view key) const {
+  if (accessLogSampleKey(key) >= services_[gate.service].periodicSample) {
+    return 0;
+  }
+  return eventMask(gate, AccessLogEvent::SUB_STATS, false);
 }
 
 void MoqxAccessLog::submit(std::unique_ptr<AccessLogRecord> record, AccessLogSinkMask mask) {

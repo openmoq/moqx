@@ -28,8 +28,8 @@ public:
   encode(const AccessLogRecord& record, const AccessLogRenderContext& ctx, std::string& out) const;
 
   // Fails if two templates differ up to and including $event. Otherwise gives that
-  // prefix to the LOG_DROPPED line and to each class without a template. staticVars are
-  // the ones that the templates were parsed with.
+  // prefix to the LOG_DROPPED line, the default SUB_STATS line, and each class without a
+  // template. staticVars are the ones that the templates were parsed with.
   std::optional<std::string> alignPrefixes(const AccessLogStaticVars& staticVars = {});
 
 private:

@@ -263,7 +263,9 @@ serializeAccessLogService(ConfigSink& s, std::string_view key, const AccessLogSe
   s.beginObject(key);
   s.beginObject("sample");
   s.doubleField("session", a.sessionSample);
+  s.doubleField("periodic", a.periodicSample);
   s.endObject();
+  s.uintField("periodic_interval_ms", a.periodicIntervalMs);
   s.beginArray("sinks");
   for (const auto& sink : a.sinks) {
     s.beginObject("");

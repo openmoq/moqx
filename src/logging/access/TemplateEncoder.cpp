@@ -76,6 +76,14 @@ std::optional<std::string> TemplateEncoder::alignPrefixes(const AccessLogStaticV
   if (first) {
     auto prefix = std::string(first->prefixText());
     classTemplates_[size_t(AccessLogClass::Internal)] = mustParse(prefix + " $dropped", staticVars);
+    auto& periodic = classTemplates_[size_t(AccessLogClass::Periodic)];
+    if (!periodic) {
+      periodic = mustParse(
+          prefix + " $session $dir $req $ftn $interval_ms $d_objects $d_bytes $d_bytes_written "
+                   "$d_bytes_acked $objects $bytes",
+          staticVars
+      );
+    }
     for (auto& tmpl : classTemplates_) {
       if (!tmpl) {
         tmpl = mustParse(prefix, staticVars);
@@ -94,7 +102,8 @@ TemplateEncoder defaultTemplateEncoder() {
   );
   encoder.setClassTemplate(
       AccessLogClass::Request,
-      mustParse("$schema $time $event $session $dir $req $ftn $status $latency_ms $error_class")
+      mustParse("$schema $time $event $session $dir $req $ftn $status $latency_ms $error_class "
+                "$objects $bytes $ttfo_ms")
   );
   encoder.setClassTemplate(AccessLogClass::Internal, mustParse("$schema $time $event $dropped"));
   return encoder;

@@ -12,6 +12,7 @@
 #include <optional>
 #include <string>
 
+#include <moxygen/MoQTrackStats.h>
 #include <moxygen/MoQTypes.h>
 
 #include "logging/access/AccessLogSessionContext.h"
@@ -38,7 +39,7 @@ std::string_view accessLogEndReasonName(AccessLogEndReason reason, std::optional
 // One request's log lines: a transaction line at the reply, then one end line for a
 // long-lived request. FETCH has a single line, written once the reply and the end of its data
 // are both known. Its wrappers share it, and every call runs on the session's executor.
-class AccessLogRequest {
+class AccessLogRequest : public std::enable_shared_from_this<AccessLogRequest> {
 public:
   // startEvent names the request: SUBSCRIBE, FETCH, PUBLISH_NAMESPACE and so on. Each line
   // starts as a copy of logRecord, which holds the request's identity and parameters.
@@ -92,6 +93,15 @@ public:
 
   AccessLogDir dir() const { return logRecord_.dir.value_or(AccessLogDir::Rx); }
 
+  // The session's counts for the request's data, from the consumer or handle that the session
+  // provides. sending is true for the session's consumer. A null stats leaves them unchanged.
+  void setStats(std::shared_ptr<const moxygen::MoQTrackStats> stats, bool sending);
+
+  // Writes SUB_STATS for the interval that ends now. Returns false once the request has ended.
+  // The first interval starts at the reply, so it is shorter than the rest. The end line carries
+  // the totals, so the access log does not write a final SUB_STATS line.
+  bool writePeriodic();
+
 private:
   struct End {
     AccessLogEvent event;
@@ -106,6 +116,8 @@ private:
   // The request and its reply, written when the reply arrives.
   void writeTransaction(AccessLogStatus status, const moxygen::RequestError* err);
   static void setEnd(AccessLogRecord& record, End& end);
+  void setTotals(AccessLogRecord& record, std::chrono::steady_clock::time_point from) const;
+  void startPeriodic();
   void writeEnd(End end);
   void writeFetch(AccessLogStatus status);
   static AccessLogStatus fetchStatus(const End& end);
@@ -118,6 +130,16 @@ private:
   AccessLogRecord logRecord_;
   std::chrono::steady_clock::time_point start_;
   std::chrono::steady_clock::time_point established_;
+  std::shared_ptr<const moxygen::MoQTrackStats> stats_;
+  bool sending_{false};
+  // The counts and times at the start of the current SUB_STATS interval.
+  struct Interval {
+    AccessLogSinkMask mask{0};
+    moxygen::MoQTrackStats stats;
+    std::chrono::system_clock::time_point start;
+    std::chrono::steady_clock::time_point steadyStart;
+  };
+  std::optional<Interval> interval_;
   State state_{State::Pending};
   std::optional<uint64_t> latencyMs_;
   // An end that arrived before the reply, or a FETCH's end of data.

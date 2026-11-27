@@ -97,6 +97,17 @@
                             "type": "null"
                         }
                     ]
+                },
+                "periodic": {
+                    "description": "Fraction of a sampled session's subscriptions with SUB_STATS records (0.0-1.0, default 1.0)",
+                    "anyOf": [
+                        {
+                            "type": "number"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
                 }
             },
             "required": []
@@ -109,6 +120,17 @@
                     "anyOf": [
                         {
                             "$ref": "#/$defs/openmoq__moqx__config__ParsedAccessLogSampleConfig"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "periodic_interval_ms": {
+                    "description": "Interval between a subscription's SUB_STATS records, in ms (default 5000)",
+                    "anyOf": [
+                        {
+                            "type": "integer"
                         },
                         {
                             "type": "null"

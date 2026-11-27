@@ -7,6 +7,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <string_view>
@@ -44,6 +45,15 @@ public:
   virtual AccessLogSinkMask
   eventMask(const AccessLogSessionGate& gate, AccessLogEvent event, bool isError) const = 0;
   virtual void submit(std::unique_ptr<AccessLogRecord> record, AccessLogSinkMask mask) = 0;
+  // The sinks that take SUB_STATS for the subscription with that key.
+  virtual AccessLogSinkMask
+  periodicMask(const AccessLogSessionGate& gate, std::string_view /*key*/) const {
+    return eventMask(gate, AccessLogEvent::SUB_STATS, false);
+  }
+  // How often the access log writes SUB_STATS for the session's subscriptions.
+  virtual std::chrono::milliseconds periodicInterval(const AccessLogSessionGate& /*gate*/) const {
+    return std::chrono::milliseconds(0);
+  }
 
   // After this, a request that ends gets end_reason "shutdown".
   void beginShutdown() { shuttingDown_.store(true, std::memory_order_relaxed); }

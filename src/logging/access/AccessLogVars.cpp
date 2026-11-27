@@ -121,8 +121,8 @@ using Ctx = AccessLogRenderContext;
     return appendText(c.relayInfo.member, out);                                                    \
   }
 
-bool renderTime(const Rec& r, const Ctx&, std::string& out) {
-  auto [secs, millis] = splitMillis(r.time);
+bool renderTimeOf(std::chrono::system_clock::time_point time, std::string& out) {
+  auto [secs, millis] = splitMillis(time);
   std::time_t t = secs;
   std::tm tm{};
   gmtime_r(&t, &tm);
@@ -138,6 +138,14 @@ bool renderTime(const Rec& r, const Ctx&, std::string& out) {
       millis
   );
   return true;
+}
+
+bool renderTime(const Rec& r, const Ctx&, std::string& out) {
+  return renderTimeOf(r.time, out);
+}
+
+bool renderIntervalStart(const Rec& r, const Ctx&, std::string& out) {
+  return r.intervalStart && renderTimeOf(*r.intervalStart, out);
 }
 
 bool renderMsec(const Rec& r, const Ctx&, std::string& out) {
@@ -328,13 +336,56 @@ const std::
                         {"ngr", kRequest, MOQX_RECORD_OPT(ngr)},
                         {"fetch_type", kRequest, MOQX_RECORD_TEXT(fetchType)},
                         {"largest", kRequest, MOQX_RECORD_OPT(largest)},
-                        {"objects", kRequest, MOQX_RECORD_OPT(objects)},
-                        {"bytes", kRequest, MOQX_RECORD_OPT(bytes)},
-                        {"groups", kRequest, MOQX_RECORD_OPT(groups)},
-                        {"age_ms", kRequest, MOQX_RECORD_OPT(ageMs)},
+                        {"objects", kRequest | kPeriodic, MOQX_RECORD_OPT(objects)},
+                        {"bytes", kRequest | kPeriodic, MOQX_RECORD_OPT(bytes)},
+                        {"groups", kRequest | kPeriodic, MOQX_RECORD_OPT(groups)},
+                        {"subgroups", kRequest | kPeriodic, MOQX_RECORD_OPT(subgroups)},
+                        {"datagrams", kRequest | kPeriodic, MOQX_RECORD_OPT(datagrams)},
+                        {"status_objects", kRequest | kPeriodic, MOQX_RECORD_OPT(statusObjects)},
+                        {"resets", kRequest | kPeriodic, MOQX_RECORD_OPT(resets)},
+                        {"last_reset_code", kRequest | kPeriodic, MOQX_RECORD_OPT(lastResetCode)},
+                        {"open_subgroups", kRequest | kPeriodic, MOQX_RECORD_OPT(openSubgroups)},
+                        {"bytes_queued", kRequest | kPeriodic, MOQX_RECORD_OPT(bytesQueued)},
+                        {"payload_bytes_queued",
+                         kRequest | kPeriodic,
+                         MOQX_RECORD_OPT(payloadBytesQueued)},
+                        {"bytes_written", kRequest | kPeriodic, MOQX_RECORD_OPT(bytesWritten)},
+                        {"bytes_acked", kRequest | kPeriodic, MOQX_RECORD_OPT(bytesAcked)},
+                        {"bytes_dropped", kRequest | kPeriodic, MOQX_RECORD_OPT(bytesDropped)},
+                        {"bytes_cancelled", kRequest | kPeriodic, MOQX_RECORD_OPT(bytesCancelled)},
+                        {"objects_written", kRequest | kPeriodic, MOQX_RECORD_OPT(objectsWritten)},
+                        {"objects_acked", kRequest | kPeriodic, MOQX_RECORD_OPT(objectsAcked)},
+                        {"ack_us_avg", kRequest | kPeriodic, MOQX_RECORD_OPT(ackUsAvg)},
+                        {"ack_us_max", kRequest | kPeriodic, MOQX_RECORD_OPT(ackUsMax)},
+                        {"srtt_us", kSession | kPeriodic, MOQX_RECORD_OPT(srttUs)},
+                        {"min_rtt_us", kSession | kPeriodic, MOQX_RECORD_OPT(minRttUs)},
+                        {"cwnd", kSession | kPeriodic, MOQX_RECORD_OPT(cwnd)},
+                        {"inflight", kSession | kPeriodic, MOQX_RECORD_OPT(inflight)},
+                        {"pkts_sent", kSession | kPeriodic, MOQX_RECORD_OPT(pktsSent)},
+                        {"pkts_lost", kSession | kPeriodic, MOQX_RECORD_OPT(pktsLost)},
+                        {"bytes_retx", kSession | kPeriodic, MOQX_RECORD_OPT(bytesRetx)},
+                        {"age_ms", kRequest | kPeriodic, MOQX_RECORD_OPT(ageMs)},
                         {"end_reason", kRequest, MOQX_RECORD_TEXT(endReason)},
-                        {"ttfo_ms", kRequest, MOQX_RECORD_OPT(ttfoMs)},
+                        {"ttfo_ms", kRequest | kPeriodic, MOQX_RECORD_OPT(ttfoMs)},
                         {"fetch_ms", kRequest, MOQX_RECORD_OPT(fetchMs)},
+
+                        // Periodic
+                        {"interval_start", kPeriodic, renderIntervalStart},
+                        {"interval_ms", kPeriodic, MOQX_RECORD_OPT(intervalMs)},
+                        {"d_objects", kPeriodic, MOQX_RECORD_OPT(dObjects)},
+                        {"d_bytes", kPeriodic, MOQX_RECORD_OPT(dBytes)},
+                        {"d_groups", kPeriodic, MOQX_RECORD_OPT(dGroups)},
+                        {"d_subgroups", kPeriodic, MOQX_RECORD_OPT(dSubgroups)},
+                        {"d_datagrams", kPeriodic, MOQX_RECORD_OPT(dDatagrams)},
+                        {"d_bytes_queued", kPeriodic, MOQX_RECORD_OPT(dBytesQueued)},
+                        {"d_payload_bytes_queued", kPeriodic, MOQX_RECORD_OPT(dPayloadBytesQueued)},
+                        {"d_bytes_written", kPeriodic, MOQX_RECORD_OPT(dBytesWritten)},
+                        {"d_bytes_acked", kPeriodic, MOQX_RECORD_OPT(dBytesAcked)},
+                        {"d_objects_written", kPeriodic, MOQX_RECORD_OPT(dObjectsWritten)},
+                        {"d_objects_acked", kPeriodic, MOQX_RECORD_OPT(dObjectsAcked)},
+                        {"d_ack_us_avg", kPeriodic, MOQX_RECORD_OPT(dAckUsAvg)},
+                        {"d_status_objects", kPeriodic, MOQX_RECORD_OPT(dStatusObjects)},
+                        {"d_resets", kPeriodic, MOQX_RECORD_OPT(dResets)},
 
                         // Internal
                         {"dropped", kInternal, MOQX_RECORD_OPT(dropped)},

@@ -113,7 +113,7 @@ static_assert(
     "AccessLogSinkConfig changed — update serializeLogging()"
 );
 static_assert(
-    rfl::internal::num_fields<AccessLogServiceConfig> == 2,
+    rfl::internal::num_fields<AccessLogServiceConfig> == 4,
     "AccessLogServiceConfig changed — update serializeAccessLogService()"
 );
 static_assert(
@@ -218,6 +218,7 @@ Config makeFullConfig() {
   svc.upstream->url = "https://upstream.example/relay";
   svc.upstream->tls.caCertFile = "/etc/ca.pem";
   svc.accessLog.sessionSample = 0.25;
+  svc.accessLog.periodicIntervalMs = 2000;
   svc.accessLog.sinks = {{.name = "main", .events = {"session"}, .errorsOnly = true}};
   cfg.services.emplace("default", std::move(svc));
 
@@ -265,6 +266,8 @@ TEST(ConfigSerializerTest, VisitsAllSections) {
   EXPECT_EQ(sink.scalars["services.default.upstream.tls.ca_cert_file"], "/etc/ca.pem");
   EXPECT_EQ(sink.scalars["services.default.max_subscription_buffer_kb"], "51200");
   EXPECT_EQ(sink.scalars["services.default.access_log.sample.session"], "0.250000");
+  EXPECT_EQ(sink.scalars["services.default.access_log.sample.periodic"], "1.000000");
+  EXPECT_EQ(sink.scalars["services.default.access_log.periodic_interval_ms"], "2000");
   EXPECT_EQ(sink.scalars["services.default.access_log.sinks.*.name"], "main");
   EXPECT_EQ(sink.scalars["services.default.access_log.sinks.*.events.[]"], "session");
   EXPECT_EQ(sink.scalars["services.default.access_log.sinks.*.errors_only"], "true");
