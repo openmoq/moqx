@@ -7,8 +7,8 @@
 #include "stats/QuicStatsCollector.h"
 
 #include <folly/io/async/EventBaseManager.h>
+#include <folly/logging/xlog.h>
 #include <folly/tracing/StaticTracepoint.h>
-#include <glog/logging.h>
 
 namespace openmoq::moqx::stats {
 
@@ -157,7 +157,7 @@ private:
       return;
     }
     auto* evb = folly::EventBaseManager::get()->getExistingEventBase();
-    CHECK(evb) << "QuicStatsCollector::Callback: first callback not on an EventBase thread";
+    XCHECK(evb) << "QuicStatsCollector::Callback: first callback not on an EventBase thread";
     data_->owningEvb_.store(evb, std::memory_order_relaxed);
 
     if (auto reg = registry_.lock()) {

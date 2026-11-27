@@ -131,6 +131,13 @@ reviews:
         below them or narrate how the code came to be, such as rejected
         alternatives or what an earlier version did.
 
+        moqx logs and asserts through folly logging. Flag native glog usage:
+        LOG, VLOG, DLOG, PLOG and their _IF/_EVERY_N variants, CHECK, DCHECK
+        and their _EQ/_NE/_LT/_LE/_GT/_GE/_NOTNULL forms, and
+        #include <glog/logging.h>. Suggest the XLOG, XCHECK or XDCHECK
+        equivalent and <folly/logging/xlog.h>. gflags calls in the google::
+        namespace, such as google::SetUsageMessage, are fine.
+
     - path: "src/relay/**"
       instructions: |
         Read docs/dev/local-forwarder-flow.md before judging threading. In

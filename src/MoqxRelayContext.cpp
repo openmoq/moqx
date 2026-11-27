@@ -143,7 +143,7 @@ std::shared_ptr<fizz::CertificateVerifier> makeUpstreamVerifier(const config::Up
 }
 
 void MoqxRelayContext::initUpstreams(folly::EventBase* workerEvb) {
-  CHECK(workerEvb) << "initUpstreams: workerEvb must not be null";
+  XCHECK(workerEvb) << "initUpstreams: workerEvb must not be null";
   workerEvb_ = workerEvb;
   for (auto& [name, entry] : services_) {
     entry.peering->start(workerEvb);
@@ -425,7 +425,7 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayContext::authorizeS
   // createPublisher/SubscriberFilter wraps the relay in cross-exec filters when
   // the service runs on a dedicated relay thread.
   auto it = services_.find(*matchedName);
-  CHECK(it != services_.end()) << "Service '" << *matchedName << "' matched but no entry found";
+  XCHECK(it != services_.end()) << "Service '" << *matchedName << "' matched but no entry found";
   auto& entry = it->second;
   auto grants = auth::authenticateSetup(*entry.verifier, clientSetup.params);
   if (grants.hasError()) {
