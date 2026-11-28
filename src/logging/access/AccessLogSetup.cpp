@@ -56,6 +56,7 @@ makeAccessLogSinkSelection(const config::AccessLogSinkSelectionConfig& selection
     result.events[e] = take;
   }
   result.errorsOnly = selection.errorsOnly;
+  result.unsampledErrors = selection.unsampledErrors;
   result.peerClasses = selection.peerClasses;
   return result;
 }

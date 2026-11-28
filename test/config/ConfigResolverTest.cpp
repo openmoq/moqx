@@ -2767,6 +2767,7 @@ TEST(ResolveConfig, AccessLogServiceOverridesTheDefaults) {
   defaults.periodic_interval_ms = 2000u;
   auto errors = selectSink("errors");
   errors.errors_only = true;
+  errors.unsampled_errors = false;
   defaults.sinks = std::vector<ParsedAccessLogSinkSelection>{selectSink("control"), errors};
   cfg.service_defaults.value()->access_log = std::move(defaults);
 
@@ -2787,6 +2788,8 @@ TEST(ResolveConfig, AccessLogServiceOverridesTheDefaults) {
   EXPECT_EQ(fallback.sessionSample, 0.1);
   ASSERT_EQ(fallback.sinks.size(), 2u);
   EXPECT_TRUE(fallback.sinks[1].errorsOnly);
+  EXPECT_TRUE(fallback.sinks[0].unsampledErrors);
+  EXPECT_FALSE(fallback.sinks[1].unsampledErrors);
   EXPECT_EQ(config.services.at("default").accessLog.sinks.size(), 2u);
   EXPECT_EQ(fallback.periodicSample, 0.5);
   EXPECT_EQ(fallback.periodicIntervalMs, 2000u);

@@ -95,6 +95,9 @@ MoqxAccessLog::makeServiceSelection(const AccessLogServiceOptions& options) cons
     if (selection.errorsOnly) {
       result.errorsOnly |= bit;
     }
+    if (!selection.unsampledErrors) {
+      result.sampledOnly |= bit;
+    }
     result.peerClasses.emplace_back(bit, selection.peerClasses);
   }
   return result;
@@ -151,6 +154,9 @@ AccessLogSessionGate MoqxAccessLog::gateSession(
     }
   }
   gate.sampled = accessLogSampleKey(sampleKey) < selected.sessionSample;
+  if (!gate.sampled) {
+    gate.matched &= ~selected.sampledOnly;
+  }
   return gate;
 }
 

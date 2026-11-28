@@ -534,6 +534,10 @@ struct ParsedAccessLogSinkSelection {
       std::optional<std::vector<std::string>>>
       peer_classes;
   rfl::Description<"Write only error records (default: false)", std::optional<bool>> errors_only;
+  rfl::Description<
+      "Write error records from unsampled sessions (default: true)",
+      std::optional<bool>>
+      unsampled_errors;
 };
 
 struct ParsedAccessLogServiceConfig {

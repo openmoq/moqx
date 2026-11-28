@@ -244,6 +244,17 @@
                             "type": "null"
                         }
                     ]
+                },
+                "unsampled_errors": {
+                    "description": "Write error records from unsampled sessions (default: true)",
+                    "anyOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
                 }
             },
             "required": [

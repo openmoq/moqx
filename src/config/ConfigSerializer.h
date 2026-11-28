@@ -273,6 +273,7 @@ serializeAccessLogService(ConfigSink& s, std::string_view key, const AccessLogSe
     strings("events", sink.events);
     strings("peer_classes", sink.peerClasses);
     s.boolField("errors_only", sink.errorsOnly);
+    s.boolField("unsampled_errors", sink.unsampledErrors);
     s.endObject();
   }
   s.endArray();
