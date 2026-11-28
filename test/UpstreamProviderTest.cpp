@@ -1202,6 +1202,42 @@ TEST_F(RelayUpstreamSubscribeRaceTest, BackendReportsItsDialedUpstream) {
   clientEvb().loop();
 }
 
+// A backend given prebuilt verifiers uses them and never builds its own, so a CA that cannot be
+// loaded does not fail start().
+TEST_F(RelayUpstreamSubscribeRaceTest, PrebuiltVerifiersBypassTheBuildInStart) {
+  ON_CALL(*serverPublisher_, subscribeNamespace(_, _))
+      .WillByDefault(
+          [](SubscribeNamespace subNs, std::shared_ptr<Publisher::NamespacePublishHandle>)
+              -> folly::coro::Task<Publisher::SubscribeNamespaceResult> {
+            co_return makeSubscribeNamespaceOk(subNs);
+          }
+      );
+  config::ServiceConfig service;
+  service.upstream = config::UpstreamConfig{
+      .url = serverUrl().getUrl(),
+      .tls = {.caCertFile = "/nonexistent/ca.pem"},
+  };
+  MoqtRelayBackend unbuilt(relay_, service, /*hopID=*/std::nullopt);
+  EXPECT_THROW(unbuilt.start(&clientEvb()), std::runtime_error);
+
+  MoqtRelayBackend backend(
+      relay_,
+      service,
+      /*hopID=*/std::nullopt,
+      UpstreamVerifiers{makeUpstreamVerifier(config::UpstreamTlsConfig{.insecure = true})}
+  );
+  EXPECT_NO_THROW(backend.start(&clientEvb()));
+  EXPECT_TRUE(backend.peersPending());
+  for (int i = 0; i < 2000 && backend.peersPending(); ++i) {
+    clientEvb().loopOnce(EVLOOP_NONBLOCK);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  EXPECT_FALSE(backend.peersPending());
+
+  backend.stop();
+  clientEvb().loop();
+}
+
 // Peers stay pending until the peering handshake finishes, so a subscribe that arrives during the
 // handshake waits for the route that the handshake brings.
 TEST_F(RelayUpstreamSubscribeRaceTest, SubscribeDuringTheHandshakeWaitsForItsRoute) {
@@ -1437,6 +1473,23 @@ TEST_F(UpstreamCACertSignedServerTest, ConnectsWhenTheConfiguredCASignedTheServe
 
 TEST_F(UpstreamCACertTest, RejectsAServerCertOutsideTheConfiguredCA) {
   EXPECT_FALSE(connectTrustingTestCA());
+}
+
+// One verifier per upstream: a list from a different mapping than the backend's is a bug.
+TEST(MoqtRelayBackendDeathTest, VerifierCountMustMatchTheUpstreams) {
+  testing::FLAGS_gtest_death_test_style = "threadsafe";
+  config::ServiceConfig service;
+  service.upstream = config::UpstreamConfig{.url = "moqt://origin.example.com:4433/"};
+  auto relay = std::make_shared<MoqxRelay>(config::CacheConfig{});
+  EXPECT_DEATH(
+      MoqtRelayBackend(
+          relay,
+          service,
+          /*hopID=*/std::nullopt,
+          UpstreamVerifiers{nullptr, nullptr}
+      ),
+      "one verifier per upstream"
+  );
 }
 
 } // namespace openmoq::moqx::test

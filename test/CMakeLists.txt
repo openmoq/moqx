@@ -162,6 +162,7 @@ moqx_add_gtest(moqx_admin_stats_test
   SRCS
     CborReaderTest.cpp
     QLogCaptureTest.cpp
+    admin/AdminServerTest.cpp
     admin/StateResponseTest.cpp
     admin/StateStreamTest.cpp
     admin/TrackMetricsFormatTest.cpp

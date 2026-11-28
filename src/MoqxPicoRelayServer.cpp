@@ -138,7 +138,7 @@ void MoqxPicoRelayServer::onNewSession(std::shared_ptr<MoQSession> clientSession
 }
 
 void MoqxPicoRelayServer::terminateClientSession(std::shared_ptr<MoQSession> session) {
-  context_->onSessionEnd(listenerMatcher_, session);
+  context_->onSessionEnd(session);
   MoQPicoQuicShardedServer::terminateClientSession(std::move(session));
 }
 

@@ -23,6 +23,10 @@ class HTTPMessage;
 class ResponseHandler;
 } // namespace proxygen
 
+namespace folly {
+class EventBase;
+} // namespace folly
+
 namespace openmoq::moqx::admin {
 
 class EgressGate;
@@ -46,6 +50,8 @@ struct Route {
   std::string path;
   RouteHandler handler;
 };
+
+struct EvbCapture;
 
 // Wraps proxygen::HTTPServer with a simple method+path route table.
 //
@@ -73,8 +79,13 @@ public:
   // Stop the admin server.
   void stop();
 
+  // Valid after start() returns true, until stop(). It is the admin server's single
+  // worker thread (kAdminServerThreads = 1); post work to it to run on the admin thread.
+  folly::EventBase* evb() const;
+
 private:
   std::vector<Route> routes_;
+  std::unique_ptr<EvbCapture> evbCapture_;
   std::unique_ptr<proxygen::ScopedHTTPServer> httpServer_;
 };
 

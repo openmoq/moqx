@@ -12,6 +12,7 @@
 #include <folly/io/IOBufQueue.h>
 #include <folly/io/async/EventBaseManager.h>
 #include <folly/logging/xlog.h>
+#include <folly/synchronization/Baton.h>
 #include <proxygen/httpserver/RequestHandler.h>
 #include <proxygen/httpserver/RequestHandlerFactory.h>
 #include <proxygen/httpserver/ResponseBuilder.h>
@@ -22,6 +23,11 @@
 #include "admin/EgressGate.h"
 
 namespace openmoq::moqx::admin {
+
+struct EvbCapture {
+  folly::Baton<> baton;
+  folly::EventBase* evb{nullptr};
+};
 
 // ---------------------------------------------------------------------------
 // AdminRequestHandler — generic request aggregator
@@ -78,9 +84,13 @@ private:
 // ---------------------------------------------------------------------------
 class AdminHandlerFactory : public proxygen::RequestHandlerFactory {
 public:
-  explicit AdminHandlerFactory(std::vector<Route> routes) : routes_(std::move(routes)) {}
+  explicit AdminHandlerFactory(std::vector<Route> routes, EvbCapture* evbCapture)
+      : routes_(std::move(routes)), evbCapture_(evbCapture) {}
 
-  void onServerStart(folly::EventBase* /*evb*/) noexcept override {}
+  void onServerStart(folly::EventBase* evb) noexcept override {
+    evbCapture_->evb = evb;
+    evbCapture_->baton.post();
+  }
   void onServerStop() noexcept override {}
 
   proxygen::RequestHandler*
@@ -109,6 +119,7 @@ public:
 
 private:
   std::vector<Route> routes_;
+  EvbCapture* evbCapture_{nullptr};
 };
 
 // ---------------------------------------------------------------------------
@@ -124,11 +135,15 @@ void AdminServer::addRoute(std::string method, std::string path, RouteHandler ha
 }
 
 static constexpr int kAdminServerThreads = 1;
+static constexpr auto kEvbCaptureTimeout = std::chrono::seconds(5);
 
 bool AdminServer::start(const config::AdminConfig& adminConfig) {
   proxygen::HTTPServerOptions options;
   options.threads = kAdminServerThreads;
-  options.handlerFactories.push_back(std::make_unique<AdminHandlerFactory>(routes_));
+  evbCapture_ = std::make_unique<EvbCapture>();
+  options.handlerFactories.push_back(
+      std::make_unique<AdminHandlerFactory>(routes_, evbCapture_.get())
+  );
 
   proxygen::HTTPServer::IPConfig cfg{
       adminConfig.address,
@@ -153,16 +168,29 @@ bool AdminServer::start(const config::AdminConfig& adminConfig) {
 
   try {
     httpServer_ = proxygen::ScopedHTTPServer::start(std::move(cfg), std::move(options));
-    return true;
   } catch (const std::exception& ex) {
     XLOG(ERR) << "AdminServer failed to start on " << adminConfig.address.describe() << ": "
               << ex.what();
+    evbCapture_.reset();
     return false;
   }
+  if (!evbCapture_->baton.try_wait_for(kEvbCaptureTimeout)) {
+    XLOG(ERR) << "AdminServer: worker EventBase was not reported within "
+              << kEvbCaptureTimeout.count() << "s";
+    httpServer_.reset(); // joins workers first
+    evbCapture_.reset(); // only then free what the hook points at
+    return false;
+  }
+  return true;
 }
 
 void AdminServer::stop() {
   httpServer_.reset();
+  evbCapture_.reset();
+}
+
+folly::EventBase* AdminServer::evb() const {
+  return evbCapture_ ? evbCapture_->evb : nullptr;
 }
 
 } // namespace openmoq::moqx::admin
