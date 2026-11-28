@@ -72,7 +72,7 @@ AccessLogServices allAccessLogSinks(size_t sinkCount);
 class MoqxAccessLog : public AccessLog {
 public:
   MoqxAccessLog(
-      AccessLogRelayInfo relayInfo,
+      std::shared_ptr<const AccessLogRelayInfo> relayInfo,
       std::vector<std::unique_ptr<AccessLogSink>> sinks,
       AccessLogServices services,
       size_t queueLimit
@@ -108,7 +108,7 @@ public:
   // Thread-safe. Each sink reopens its transport on the access log thread.
   void reopen();
 
-  const AccessLogRelayInfo& relayInfo() const { return relayInfo_; }
+  const AccessLogRelayInfo& relayInfo() const { return *relayInfo_; }
   size_t queueDepth() const { return depth_.load(std::memory_order_relaxed); }
   uint64_t queueDropped() const { return queueDropped_.load(std::memory_order_relaxed); }
 
@@ -156,7 +156,7 @@ private:
   folly::coro::Task<void> untilStopDeadline(folly::coro::Task<void> task);
   void reportStats(AccessLogStatsVisitor& visitor);
 
-  AccessLogRelayInfo relayInfo_;
+  std::shared_ptr<const AccessLogRelayInfo> relayInfo_;
   std::vector<std::unique_ptr<AccessLogSink>> sinks_;
   struct ServiceSelection {
     double sessionSample{1.0};

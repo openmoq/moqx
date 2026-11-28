@@ -12,10 +12,11 @@ namespace openmoq::moqx::logging {
 
 LineSink::LineSink(
     AccessLogSinkOptions options,
+    std::shared_ptr<const AccessLogRelayInfo> relayInfo,
     TemplateEncoder encoder,
     std::unique_ptr<AccessLogTransport> transport
 )
-    : AccessLogSink(std::move(options)), encoder_(std::move(encoder)),
+    : AccessLogSink(std::move(options), std::move(relayInfo)), encoder_(std::move(encoder)),
       transport_(std::move(transport)) {}
 
 void LineSink::addRecord(const AccessLogRecord& record, const AccessLogRenderContext& ctx) {

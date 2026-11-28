@@ -93,7 +93,7 @@ folly::Expected<std::shared_ptr<MoqxAccessLog>, std::string>
 makeAccessLog(const config::Config& config) {
   if (!config.logging || !config.logging->access || config.logging->access->sinks.empty()) {
     return std::make_shared<MoqxAccessLog>(
-        AccessLogRelayInfo{},
+        std::make_shared<const AccessLogRelayInfo>(),
         std::vector<std::unique_ptr<AccessLogSink>>{},
         AccessLogServices{},
         0
@@ -102,11 +102,13 @@ makeAccessLog(const config::Config& config) {
   const auto& logging = *config.logging;
   const auto& access = *logging.access;
 
-  AccessLogRelayInfo relay;
-  relay.relayId = config.relayID;
-  relay.bootId = fmt::format("{:016x}", folly::Random::rand64());
-  relay.host = hostName();
-  relay.moqxVersion = std::string(kVersion);
+  auto relay = std::make_shared<const AccessLogRelayInfo>(AccessLogRelayInfo{
+      .relayId = config.relayID,
+      .bootId = fmt::format("{:016x}", folly::Random::rand64()),
+      .host = hostName(),
+      .moqxVersion = std::string(kVersion),
+      .vars = access.vars,
+  });
 
   std::vector<std::unique_ptr<AccessLogSink>> sinks;
   for (const auto& sinkConfig : access.sinks) {
@@ -144,9 +146,12 @@ makeAccessLog(const config::Config& config) {
     options.name = sinkConfig.name;
     options.batchRecords = sinkConfig.batchRecords;
     options.flushInterval = std::chrono::milliseconds(sinkConfig.flushMs);
-    sinks.push_back(
-        std::make_unique<LineSink>(std::move(options), std::move(*encoder), std::move(transport))
-    );
+    sinks.push_back(std::make_unique<LineSink>(
+        std::move(options),
+        relay,
+        std::move(*encoder),
+        std::move(transport)
+    ));
   }
   return std::make_shared<MoqxAccessLog>(
       std::move(relay),

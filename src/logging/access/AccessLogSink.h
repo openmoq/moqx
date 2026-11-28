@@ -7,6 +7,7 @@
 #pragma once
 
 #include <chrono>
+#include <memory>
 #include <string>
 
 #include <folly/coro/Task.h>
@@ -48,17 +49,17 @@ struct AccessLogSinkWriteResult {
 // the pending records and writes them.
 class AccessLogSink {
 public:
-  explicit AccessLogSink(AccessLogSinkOptions options) : options_(std::move(options)) {}
+  AccessLogSink(AccessLogSinkOptions options, std::shared_ptr<const AccessLogRelayInfo> relayInfo);
   virtual ~AccessLogSink() = default;
 
   const AccessLogSinkOptions& options() const { return options_; }
   const AccessLogSinkStats& stats() const { return stats_; }
+  const AccessLogRelayInfo& relayInfo() const { return *relayInfo_; }
 
   // Assigns seq and stores the record. queueDropped is the access log's running count of
   // records it dropped. If anything was lost since this sink's last LOG_DROPPED record and
   // the sink is not waiting to retry, it stores another first.
-  void
-  append(const AccessLogRecord& record, const AccessLogRelayInfo& relayInfo, uint64_t queueDropped);
+  void append(const AccessLogRecord& record, uint64_t queueDropped);
 
   bool batchFull() const { return pending_.size() >= options_.batchRecords; }
   bool hasPending() const { return !pending_.empty(); }
@@ -71,7 +72,7 @@ public:
   virtual void reopen() {}
   // Stores a final LOG_DROPPED record if needed, flushes until the output drains or a write
   // fails, counts what is left as dropped, and closes the output.
-  folly::coro::Task<void> close(const AccessLogRelayInfo& relayInfo, uint64_t queueDropped);
+  folly::coro::Task<void> close(uint64_t queueDropped);
 
 protected:
   // Adds a record after the pending ones. A string_view value is valid only during the call.
@@ -84,11 +85,12 @@ protected:
   virtual folly::coro::Task<void> closeOutput() = 0;
 
 private:
-  void reportDrops(const AccessLogRelayInfo& relayInfo, uint64_t queueDropped);
-  void store(const AccessLogRecord& record, const AccessLogRelayInfo& relayInfo);
+  void reportDrops(uint64_t queueDropped);
+  void store(const AccessLogRecord& record);
   void dropBacklog();
 
   AccessLogSinkOptions options_;
+  std::shared_ptr<const AccessLogRelayInfo> relayInfo_;
   AccessLogSinkStats stats_;
   uint64_t queueDropsReported_{0};
   uint64_t lostSinceReport_{0};
