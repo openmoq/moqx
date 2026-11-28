@@ -8,6 +8,7 @@
 #include "logging/access/AccessLogFilters.h"
 #include "logging/access/AccessLogHandles.h"
 #include "logging/access/AccessLogPeriodic.h"
+#include "logging/access/MoQSessionAccessLog.h"
 
 #include <algorithm>
 #include <folly/coro/BlockingWait.h>
@@ -156,7 +157,11 @@ protected:
     exec_ = std::make_shared<moxygen::MoQFollyExecutorImpl>(&evb_);
     session_ = std::make_shared<NiceMock<MockMoQSession>>(exec_);
     context_ = std::make_shared<AccessLogSessionContext>(log_, AccessLogOpenedBy::Peer);
-    context_->setup(session_, "live", "participant");
+    setUpContext(*context_);
+  }
+
+  void setUpContext(AccessLogSessionContext& context) {
+    context.setup(accessLogSource(session_), accessLogSetup(*session_, "live", "participant"));
   }
 
   std::shared_ptr<AccessLogRequest>
@@ -293,7 +298,7 @@ TEST_F(AccessLogRequestTest, FilterIsSkippedWithoutContextOrWhenFilteredOut) {
   log_->gate = {0, 0};
   auto filteredOut = std::make_shared<AccessLogSessionContext>(log_, AccessLogOpenedBy::Peer);
   EXPECT_NE(logPublisher(inner, filteredOut, AccessLogDir::Rx), inner);
-  filteredOut->setup(session_, "live", "participant");
+  setUpContext(*filteredOut);
   EXPECT_EQ(logPublisher(inner, filteredOut, AccessLogDir::Rx), inner);
 }
 
@@ -734,9 +739,36 @@ TEST(AccessLogPeriodicTest, IntervalsEndOnWallClockMultiples) {
   );
 }
 
+TEST_F(AccessLogRequestTest, AProbeReportsTheStateOfASessionWithoutMoQSession) {
+  class FakeProbe : public AccessLogSessionProbe {
+  public:
+    explicit FakeProbe(const bool& closed) : closed_(closed) {}
+    bool closed() const override { return closed_; }
+    void addTransportStats(AccessLogRecord& record) const override { record.srttUs = 1500; }
+
+  private:
+    const bool& closed_;
+  };
+  bool closed = false;
+  context_ = std::make_shared<AccessLogSessionContext>(log_, AccessLogOpenedBy::Peer);
+  context_->setup(
+      {.sessionId = "peer-7", .evb = &evb_, .probe = std::make_unique<FakeProbe>(closed)},
+      {.service = "live", .peerClass = "relay-peer"}
+  );
+  auto pending = request(Event::SUBSCRIBE, AccessLogDir::Rx);
+  pending->ok(std::nullopt);
+  closed = true;
+  pending.reset();
+  context_->writeSessionEnd(std::nullopt);
+  ASSERT_EQ(events(), (std::vector{Event::SUBSCRIBE, Event::UNSUBSCRIBE, Event::SESSION_END}));
+  EXPECT_EQ(line(0).session->session, "peer-7");
+  EXPECT_EQ(line(1).endReason, "session_closed");
+  EXPECT_EQ(line(2).srttUs, 1500);
+}
+
 TEST_F(AccessLogRequestTest, SessionEndWritesOnce) {
   context_->writeSessionEnd(std::optional<uint64_t>(0));
-  context_->writeSessionEnd(*session_);
+  context_->writeSessionEnd(accessLogCloseCode(*session_));
   ASSERT_EQ(events(), (std::vector{Event::SESSION_END}));
   EXPECT_EQ(line(0).status, AccessLogStatus::Ok);
 }

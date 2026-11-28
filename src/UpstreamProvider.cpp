@@ -5,7 +5,7 @@
  */
 
 #include "UpstreamProvider.h"
-#include "logging/access/AccessLogSessionContext.h"
+#include "logging/access/MoQSessionAccessLog.h"
 #include "relay/SessionParticipant.h"
 #include <folly/CancellationToken.h>
 #include <folly/coro/CurrentExecutor.h>
@@ -471,10 +471,12 @@ folly::coro::Task<void> UpstreamProvider::doConnect() {
   ));
   if (accessLogContext && client->moqSession_) {
     accessLogContext->setup(
-        client->moqSession_,
-        accessLogService_,
-        std::string(logging::kAccessLogRelayPeer),
-        url_.getUrl()
+        logging::accessLogSource(client->moqSession_, url_.getUrl()),
+        logging::accessLogSetup(
+            *client->moqSession_,
+            accessLogService_,
+            std::string(logging::kAccessLogRelayPeer)
+        )
     );
     accessLogContext->writeSetup(
         setup.hasException() ? logging::AccessLogStatus::Rejected : logging::AccessLogStatus::Ok,
@@ -483,7 +485,7 @@ folly::coro::Task<void> UpstreamProvider::doConnect() {
     );
     // The session closes when this coroutine releases the client after stop().
     if (setup.hasException() || stopped_) {
-      accessLogContext->writeSessionEnd(*client->moqSession_);
+      accessLogContext->writeSessionEnd(logging::accessLogCloseCode(*client->moqSession_));
     }
   }
   if (setup.hasException()) {
@@ -546,7 +548,7 @@ void UpstreamProvider::resetSession() {
     // returns.
     if (auto accessLogContext = std::exchange(accessLogContext_, nullptr)) {
       exec_->add([accessLogContext = std::move(accessLogContext), session = session_] {
-        accessLogContext->writeSessionEnd(*session);
+        accessLogContext->writeSessionEnd(logging::accessLogCloseCode(*session));
       });
     }
   }

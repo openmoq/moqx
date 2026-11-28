@@ -8,6 +8,8 @@
 
 #include <optional>
 
+#include "relay/SessionConfined.h"
+
 namespace openmoq::moqx::logging {
 
 LineSink::LineSink(
