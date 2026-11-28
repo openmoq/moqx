@@ -30,6 +30,7 @@
 #include <gtest/gtest.h>
 
 #include "logging/access/FileTransport.h"
+#include "logging/access/LineSink.h"
 #include "stats/AccessLogPrometheus.h"
 
 namespace openmoq::moqx::logging {
@@ -97,7 +98,7 @@ callbackSink(std::shared_ptr<Captured> captured, std::string_view tmpl = "$seq $
   AccessLogSinkOptions opts;
   opts.name = "test";
   opts.batchRecords = 1;
-  return std::make_unique<AccessLogSink>(
+  return std::make_unique<LineSink>(
       std::move(opts),
       encoderFor(tmpl),
       std::make_unique<CallbackTransport>([captured](const folly::IOBuf& data) {
@@ -392,7 +393,7 @@ TEST(MoqxAccessLogTest, StopCancelsAWriteThatPassesTheDeadline) {
   AccessLogSinkOptions opts;
   opts.name = "stuck";
   std::vector<std::unique_ptr<AccessLogSink>> sinks;
-  sinks.push_back(std::make_unique<AccessLogSink>(
+  sinks.push_back(std::make_unique<LineSink>(
       std::move(opts),
       encoderFor("$seq $event"),
       std::make_unique<StuckTransport>(cancelled)
@@ -419,7 +420,7 @@ TEST(MoqxAccessLogTest, StopCancelsAFlushThatStartedBeforeIt) {
   opts.name = "stuck";
   opts.batchRecords = 1;
   std::vector<std::unique_ptr<AccessLogSink>> sinks;
-  sinks.push_back(std::make_unique<AccessLogSink>(
+  sinks.push_back(std::make_unique<LineSink>(
       std::move(opts),
       encoderFor("$seq $event"),
       std::make_unique<StuckTransport>(cancelled, started)
@@ -585,7 +586,7 @@ sinkWith(std::unique_ptr<AccessLogTransport> transport, size_t batchRecords = 25
   opts.batchRecords = batchRecords;
   TemplateEncoder encoder;
   encoder.setClassTemplate(AccessLogClass::Request, *AccessLogTemplate::parse("$seq $event"));
-  return std::make_unique<AccessLogSink>(std::move(opts), std::move(encoder), std::move(transport));
+  return std::make_unique<LineSink>(std::move(opts), std::move(encoder), std::move(transport));
 }
 
 TEST(MoqxAccessLogTest, RetryKeepsABoundedBacklog) {
@@ -665,7 +666,7 @@ TEST(MoqxAccessLogTest, TheWriterRetriesAPartialWriteBeforeTheFlushInterval) {
   opts.batchRecords = 5;
   opts.flushInterval = 5s;
   std::vector<std::unique_ptr<AccessLogSink>> sinks;
-  sinks.push_back(std::make_unique<AccessLogSink>(
+  sinks.push_back(std::make_unique<LineSink>(
       std::move(opts),
       encoderFor("$seq $event"),
       std::make_unique<HalvingTransport>(drained)
@@ -781,7 +782,7 @@ TEST(MoqxAccessLogTest, ATrimmedLogDroppedLineKeepsItsCount) {
   AccessLogSinkOptions opts;
   opts.name = "trimmed";
   opts.batchRecords = 1;
-  AccessLogSink sink(std::move(opts), encoderFor("$seq $event"), std::move(transport));
+  LineSink sink(std::move(opts), encoderFor("$seq $event"), std::move(transport));
   AccessLogRelayInfo relayInfo;
   // Five queue drops put a LOG_DROPPED line first. The failed write starts a retry wait.
   sink.append(*record(AccessLogEvent::SUBSCRIBE), relayInfo, 5);
@@ -811,7 +812,7 @@ private:
 TEST(MoqxAccessLogTest, ReopenRunsOnTheWriter) {
   auto reopens = std::make_shared<std::atomic<int>>(0);
   std::vector<std::unique_ptr<AccessLogSink>> sinks;
-  sinks.push_back(std::make_unique<AccessLogSink>(
+  sinks.push_back(std::make_unique<LineSink>(
       AccessLogSinkOptions{},
       encoderFor("$event"),
       std::make_unique<ReopenCountingTransport>(reopens)

@@ -10,6 +10,7 @@
 #include <optional>
 
 #include <folly/coro/Sleep.h>
+#include <folly/logging/xlog.h>
 
 namespace openmoq::moqx::logging {
 
@@ -24,14 +25,6 @@ constexpr size_t kMaxRetainedBatches = 4;
 
 } // namespace
 
-AccessLogSink::AccessLogSink(
-    AccessLogSinkOptions options,
-    TemplateEncoder encoder,
-    std::unique_ptr<AccessLogTransport> transport
-)
-    : options_(std::move(options)), encoder_(std::move(encoder)), transport_(std::move(transport)) {
-}
-
 void AccessLogSink::append(
     const AccessLogRecord& record,
     const AccessLogRelayInfo& relayInfo,
@@ -43,7 +36,7 @@ void AccessLogSink::append(
   if (!waiting) {
     reportDrops(relayInfo, queueDropped);
   }
-  encodeLine(record, relayInfo);
+  store(record, relayInfo);
   if (waiting) {
     dropBacklog();
   }
@@ -62,89 +55,61 @@ void AccessLogSink::reportDrops(const AccessLogRelayInfo& relayInfo, uint64_t qu
   drop.event = AccessLogEvent::LOG_DROPPED;
   drop.time = std::chrono::system_clock::now();
   drop.dropped = lost;
-  encodeLine(drop, relayInfo);
+  store(drop, relayInfo);
 }
 
-void AccessLogSink::encodeLine(const AccessLogRecord& record, const AccessLogRelayInfo& relayInfo) {
-  scratch_.clear();
-  encoder_.encode(record, AccessLogRenderContext{relayInfo, nextSeq_++}, scratch_);
-  scratch_.push_back('\n');
-  pendingLines_.append(scratch_);
-  lines_.push_back({scratch_.size(), record.dropped.value_or(0)});
-}
-
-void AccessLogSink::consume(size_t bytes) {
-  pendingLines_.trimStart(bytes);
-  while (bytes && !lines_.empty() && bytes >= lines_.front().length) {
-    bytes -= lines_.front().length;
-    lines_.pop_front();
-    stats_.records++;
-    firstLinePartial_ = false;
-  }
-  if (bytes) {
-    lines_.front().length -= bytes;
-    firstLinePartial_ = true;
-  }
+void AccessLogSink::store(const AccessLogRecord& record, const AccessLogRelayInfo& relayInfo) {
+  addRecord(record, AccessLogRenderContext{relayInfo, nextSeq_++});
+  pending_.push_back(record.dropped.value_or(0));
 }
 
 void AccessLogSink::dropBacklog() {
   auto limit = std::max<size_t>(options_.batchRecords, 1) * kMaxRetainedBatches;
-  if (lines_.size() <= limit) {
+  if (pending_.size() <= limit) {
     return;
   }
-  // The oldest lines go first, except a partly written first line. Its remaining bytes
-  // must be the next ones written, or the file gets half a line.
-  std::optional<Line> partial;
-  if (firstLinePartial_) {
-    partial = lines_.front();
-    lines_.pop_front();
+  auto excess = pending_.size() - limit;
+  // The sink keeps a partly written record, so its entry stays too.
+  std::optional<uint64_t> kept;
+  if (partial_) {
+    kept = pending_.front();
+    pending_.pop_front();
   }
-  auto excess = lines_.size() + (partial ? 1 : 0) - limit;
-  size_t dropBytes = 0;
   for (size_t i = 0; i < excess; ++i) {
-    dropBytes += lines_.front().length;
     // The next LOG_DROPPED line includes the count of a dropped one.
-    lostSinceReport_ += lines_.front().dropped ? lines_.front().dropped : 1;
-    lines_.pop_front();
+    lostSinceReport_ += pending_.front() ? pending_.front() : 1;
+    pending_.pop_front();
   }
-  // Remove the dropped bytes from between the partial line and the lines that stay.
-  std::unique_ptr<folly::IOBuf> head;
-  if (partial) {
-    head = pendingLines_.split(partial->length);
-    lines_.push_front(*partial);
+  if (kept) {
+    pending_.push_front(*kept);
   }
-  pendingLines_.trimStart(dropBytes);
-  if (head) {
-    auto rest = pendingLines_.move();
-    pendingLines_.append(std::move(head));
-    pendingLines_.append(std::move(rest));
-  }
+  dropOldest(excess);
   stats_.dropped += excess;
 }
 
-void AccessLogSink::clearPending() {
-  pendingLines_.move();
-  lines_.clear();
-  firstLinePartial_ = false;
-}
-
 folly::coro::Task<AccessLogWriteStatus> AccessLogSink::flush() {
-  if (lines_.empty() || std::chrono::steady_clock::now() < retryAt_) {
+  if (pending_.empty() || std::chrono::steady_clock::now() < retryAt_) {
     co_return AccessLogWriteStatus::Ok;
   }
-  auto result = co_await transport_->write(*pendingLines_.front());
+  auto result = co_await writePending();
+  XDCHECK_LE(result.records, pending_.size());
+  XDCHECK(result.status != AccessLogWriteStatus::Ok || result.records > 0);
+  for (size_t i = 0; i < result.records; ++i) {
+    pending_.pop_front();
+  }
+  partial_ = result.partial;
+  stats_.records += result.records;
   switch (result.status) {
   case AccessLogWriteStatus::Ok:
-    stats_.records += lines_.size();
-    clearPending();
-    retryAt_ = {};
     retryDelay_ = {};
+    // A sink that sends part of its records per write is due again at once.
+    retryAt_ = pending_.empty() ? std::chrono::steady_clock::time_point{}
+                                : std::chrono::steady_clock::now();
     break;
   case AccessLogWriteStatus::Retry:
   case AccessLogWriteStatus::Failed:
     stats_.writeErrors++;
-    consume(result.bytesWritten);
-    if (result.status == AccessLogWriteStatus::Retry && result.bytesWritten > 0) {
+    if (result.status == AccessLogWriteStatus::Retry && result.progressed) {
       // A write that sent bytes shows that the reader is draining the output.
       retryDelay_ = {};
       retryAt_ = std::chrono::steady_clock::now() + kDrainRetry;
@@ -155,19 +120,7 @@ folly::coro::Task<AccessLogWriteStatus> AccessLogSink::flush() {
     dropBacklog();
     break;
   }
-  if (reopenPending_ && !firstLinePartial_) {
-    reopenPending_ = false;
-    transport_->reopen();
-  }
   co_return result.status;
-}
-
-void AccessLogSink::reopen() {
-  if (firstLinePartial_) {
-    reopenPending_ = true;
-    return;
-  }
-  transport_->reopen();
 }
 
 folly::coro::Task<void>
@@ -175,19 +128,21 @@ AccessLogSink::close(const AccessLogRelayInfo& relayInfo, uint64_t queueDropped)
   reportDrops(relayInfo, queueDropped);
   // Retry a full output until it drains or the stop deadline cancels the loop. A
   // cancelled flush leaves its lines pending, and they count as dropped below.
-  while (!lines_.empty()) {
+  while (!pending_.empty()) {
     retryAt_ = {};
     auto status = co_await folly::coro::co_awaitTry(flush());
-    if (!status.hasValue() || *status == AccessLogWriteStatus::Failed || lines_.empty()) {
+    if (!status.hasValue() || *status == AccessLogWriteStatus::Failed || pending_.empty()) {
       break;
     }
-    if ((co_await folly::coro::co_awaitTry(folly::coro::sleep(kDrainRetry))).hasException()) {
+    if (*status != AccessLogWriteStatus::Ok &&
+        (co_await folly::coro::co_awaitTry(folly::coro::sleep(kDrainRetry))).hasException()) {
       break;
     }
   }
-  stats_.dropped += lines_.size();
-  clearPending();
-  co_await transport_->close();
+  stats_.dropped += pending_.size();
+  pending_.clear();
+  partial_ = false;
+  co_await closeOutput();
 }
 
 } // namespace openmoq::moqx::logging
