@@ -24,6 +24,7 @@ class LineSink : public AccessLogSink {
 public:
   LineSink(
       AccessLogSinkOptions options,
+      std::shared_ptr<const AccessLogRelayInfo> relayInfo,
       TemplateEncoder encoder,
       std::unique_ptr<AccessLogTransport> transport
   );

@@ -25,24 +25,28 @@ constexpr size_t kMaxRetainedBatches = 4;
 
 } // namespace
 
-void AccessLogSink::append(
-    const AccessLogRecord& record,
-    const AccessLogRelayInfo& relayInfo,
-    uint64_t queueDropped
-) {
+AccessLogSink::AccessLogSink(
+    AccessLogSinkOptions options,
+    std::shared_ptr<const AccessLogRelayInfo> relayInfo
+)
+    : options_(std::move(options)), relayInfo_(std::move(relayInfo)) {
+  XCHECK(relayInfo_);
+}
+
+void AccessLogSink::append(const AccessLogRecord& record, uint64_t queueDropped) {
   // While the sink waits to retry, the drop count grows. The first line after a successful
   // write reports it.
   bool waiting = retryAt_ != std::chrono::steady_clock::time_point{};
   if (!waiting) {
-    reportDrops(relayInfo, queueDropped);
+    reportDrops(queueDropped);
   }
-  store(record, relayInfo);
+  store(record);
   if (waiting) {
     dropBacklog();
   }
 }
 
-void AccessLogSink::reportDrops(const AccessLogRelayInfo& relayInfo, uint64_t queueDropped) {
+void AccessLogSink::reportDrops(uint64_t queueDropped) {
   // Every sink reports the queue's drops, because the queue does not keep the masks of the
   // records that it dropped.
   auto lost = queueDropped - queueDropsReported_ + lostSinceReport_;
@@ -55,11 +59,11 @@ void AccessLogSink::reportDrops(const AccessLogRelayInfo& relayInfo, uint64_t qu
   drop.event = AccessLogEvent::LOG_DROPPED;
   drop.time = std::chrono::system_clock::now();
   drop.dropped = lost;
-  store(drop, relayInfo);
+  store(drop);
 }
 
-void AccessLogSink::store(const AccessLogRecord& record, const AccessLogRelayInfo& relayInfo) {
-  addRecord(record, AccessLogRenderContext{relayInfo, nextSeq_++});
+void AccessLogSink::store(const AccessLogRecord& record) {
+  addRecord(record, AccessLogRenderContext{*relayInfo_, nextSeq_++});
   pending_.push_back(record.dropped.value_or(0));
 }
 
@@ -123,9 +127,8 @@ folly::coro::Task<AccessLogWriteStatus> AccessLogSink::flush() {
   co_return result.status;
 }
 
-folly::coro::Task<void>
-AccessLogSink::close(const AccessLogRelayInfo& relayInfo, uint64_t queueDropped) {
-  reportDrops(relayInfo, queueDropped);
+folly::coro::Task<void> AccessLogSink::close(uint64_t queueDropped) {
+  reportDrops(queueDropped);
   // Retry a full output until it drains or the stop deadline cancels the loop. A
   // cancelled flush leaves its lines pending, and they count as dropped below.
   while (!pending_.empty()) {

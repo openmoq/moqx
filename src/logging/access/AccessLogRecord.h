@@ -8,6 +8,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -80,6 +81,8 @@ struct AccessLogRelayInfo {
   std::string bootId;
   std::string host;
   std::string moqxVersion;
+  // logging.access_log.vars. A line template copies them in when it is parsed.
+  std::map<std::string, std::string> vars;
 };
 
 // Fields that are the same for every record of one session. Filled once at SETUP and

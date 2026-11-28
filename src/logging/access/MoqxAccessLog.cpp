@@ -56,13 +56,14 @@ AccessLogServices allAccessLogSinks(size_t sinkCount) {
 }
 
 MoqxAccessLog::MoqxAccessLog(
-    AccessLogRelayInfo relayInfo,
+    std::shared_ptr<const AccessLogRelayInfo> relayInfo,
     std::vector<std::unique_ptr<AccessLogSink>> sinks,
     AccessLogServices services,
     size_t queueLimit
 )
     : relayInfo_(std::move(relayInfo)), sinks_(std::move(sinks)), lastFlush_(sinks_.size()),
       queueLimit_(queueLimit) {
+  XCHECK(relayInfo_);
   XCHECK_LE(sinks_.size(), kMaxAccessLogSinks);
   if (!sinks_.empty()) {
     thread_.emplace("moqx-accesslog");
@@ -247,9 +248,7 @@ void MoqxAccessLog::handleRecords(const std::vector<Entry>& entries) {
   auto dropped = queueDropped();
   for (const auto& entry : entries) {
     XDCHECK(sinks_.size() == kMaxAccessLogSinks || (entry.mask >> sinks_.size()) == 0);
-    forEachSink(entry.mask, [&](size_t i) {
-      sinks_[i]->append(*entry.record, relayInfo_, dropped);
-    });
+    forEachSink(entry.mask, [&](size_t i) { sinks_[i]->append(*entry.record, dropped); });
   }
 }
 
@@ -327,7 +326,7 @@ folly::coro::Task<void> MoqxAccessLog::untilStopDeadline(folly::coro::Task<void>
 folly::coro::Task<void> MoqxAccessLog::closeSinks() {
   std::vector<folly::coro::Task<void>> closes;
   for (auto& sink : sinks_) {
-    closes.push_back(sink->close(relayInfo_, queueDropped()));
+    closes.push_back(sink->close(queueDropped()));
   }
   co_await untilStopDeadline(folly::coro::collectAllRange(std::move(closes)));
 }

@@ -94,13 +94,22 @@ TemplateEncoder encoderFor(std::string_view tmpl) {
   return encoder;
 }
 
-std::unique_ptr<AccessLogSink>
-callbackSink(std::shared_ptr<Captured> captured, std::string_view tmpl = "$seq $event $session") {
+std::shared_ptr<const AccessLogRelayInfo> testRelayInfo() {
+  static const auto relayInfo = std::make_shared<const AccessLogRelayInfo>();
+  return relayInfo;
+}
+
+std::unique_ptr<AccessLogSink> callbackSink(
+    std::shared_ptr<Captured> captured,
+    std::string_view tmpl = "$seq $event $session",
+    std::shared_ptr<const AccessLogRelayInfo> relayInfo = testRelayInfo()
+) {
   AccessLogSinkOptions opts;
   opts.name = "test";
   opts.batchRecords = 1;
   return std::make_unique<LineSink>(
       std::move(opts),
+      std::move(relayInfo),
       encoderFor(tmpl),
       std::make_unique<CallbackTransport>([captured](const folly::IOBuf& data) {
         auto lines = splitLines(data);
@@ -127,7 +136,7 @@ std::unique_ptr<MoqxAccessLog> makeLog(
 ) {
   auto resolved = services ? std::move(*services) : allAccessLogSinks(sinks.size());
   return std::make_unique<MoqxAccessLog>(
-      AccessLogRelayInfo{},
+      testRelayInfo(),
       std::move(sinks),
       std::move(resolved),
       queueLimit
@@ -150,6 +159,21 @@ TEST(MoqxAccessLogTest, WritesRecordsInOrderWithSeq) {
       captured->get(),
       (std::vector<std::string>{"1 SETUP s1", "2 SUBSCRIBE s1", "3 SESSION_END s1"})
   );
+}
+
+TEST(MoqxAccessLogTest, SinksGetTheLogsRelayInfo) {
+  auto captured = std::make_shared<Captured>();
+  auto relayInfo =
+      std::make_shared<const AccessLogRelayInfo>(AccessLogRelayInfo{.relayId = "edge-1"});
+  std::vector<std::unique_ptr<AccessLogSink>> sinks;
+  sinks.push_back(callbackSink(captured, "$event $relay_id", relayInfo));
+  auto log =
+      std::make_unique<MoqxAccessLog>(relayInfo, std::move(sinks), allAccessLogSinks(1), 1024);
+  log->start();
+  auto gate = log->gateSession("live", "viewer", "s1");
+  log->submit(record(AccessLogEvent::SETUP), log->eventMask(gate, AccessLogEvent::SETUP, false));
+  log->stop(std::chrono::steady_clock::now() + 5s);
+  EXPECT_EQ(captured->get(), (std::vector<std::string>{"SETUP edge-1"}));
 }
 
 TEST(MoqxAccessLogTest, EachServiceSelectsItsSinksEventsAndPeerClasses) {
@@ -397,6 +421,7 @@ TEST(MoqxAccessLogTest, StopCancelsAWriteThatPassesTheDeadline) {
   std::vector<std::unique_ptr<AccessLogSink>> sinks;
   sinks.push_back(std::make_unique<LineSink>(
       std::move(opts),
+      testRelayInfo(),
       encoderFor("$seq $event"),
       std::make_unique<StuckTransport>(cancelled)
   ));
@@ -424,6 +449,7 @@ TEST(MoqxAccessLogTest, StopCancelsAFlushThatStartedBeforeIt) {
   std::vector<std::unique_ptr<AccessLogSink>> sinks;
   sinks.push_back(std::make_unique<LineSink>(
       std::move(opts),
+      testRelayInfo(),
       encoderFor("$seq $event"),
       std::make_unique<StuckTransport>(cancelled, started)
   ));
@@ -589,14 +615,18 @@ sinkWith(std::unique_ptr<AccessLogTransport> transport, size_t batchRecords = 25
   opts.batchRecords = batchRecords;
   TemplateEncoder encoder;
   encoder.setClassTemplate(AccessLogClass::Request, *AccessLogTemplate::parse("$seq $event"));
-  return std::make_unique<LineSink>(std::move(opts), std::move(encoder), std::move(transport));
+  return std::make_unique<LineSink>(
+      std::move(opts),
+      testRelayInfo(),
+      std::move(encoder),
+      std::move(transport)
+  );
 }
 
 TEST(MoqxAccessLogTest, RetryKeepsABoundedBacklog) {
   auto sink = sinkWith(std::make_unique<RetryTransport>(), /*batchRecords=*/2);
-  AccessLogRelayInfo relayInfo;
   for (int i = 0; i < 10; ++i) {
-    sink->append(*record(AccessLogEvent::SUBSCRIBE), relayInfo, 0);
+    sink->append(*record(AccessLogEvent::SUBSCRIBE), 0);
   }
   folly::coro::blockingWait(sink->flush());
   EXPECT_EQ(sink->stats().writeErrors, 1u);
@@ -610,13 +640,12 @@ TEST(MoqxAccessLogTest, LinesLostToTheBacklogAreReportedAtClose) {
       std::make_unique<RetryTransport>(AccessLogWriteStatus::Failed),
       /*batchRecords=*/1
   );
-  AccessLogRelayInfo relayInfo;
   for (int i = 0; i < 6; ++i) {
-    sink->append(*record(AccessLogEvent::SUBSCRIBE), relayInfo, 0);
+    sink->append(*record(AccessLogEvent::SUBSCRIBE), 0);
   }
   folly::coro::blockingWait(sink->flush());
   EXPECT_EQ(sink->stats().dropped, 2u);
-  folly::coro::blockingWait(sink->close(relayInfo, 0));
+  folly::coro::blockingWait(sink->close(0));
   // The final LOG_DROPPED line could not be written either, so every pending line counts.
   EXPECT_EQ(sink->stats().dropped, 2u + 5u);
 }
@@ -633,9 +662,8 @@ public:
 
 TEST(MoqxAccessLogTest, ARetryThatWroteBytesRetriesSoon) {
   auto sink = sinkWith(std::make_unique<TrickleTransport>());
-  AccessLogRelayInfo relayInfo;
   for (int i = 0; i < 5; ++i) {
-    sink->append(*record(AccessLogEvent::SUBSCRIBE), relayInfo, 0);
+    sink->append(*record(AccessLogEvent::SUBSCRIBE), 0);
   }
   for (int i = 0; i < 3; ++i) {
     folly::coro::blockingWait(sink->flush());
@@ -673,6 +701,7 @@ TEST(MoqxAccessLogTest, TheWriterRetriesAPartialWriteBeforeTheFlushInterval) {
   std::vector<std::unique_ptr<AccessLogSink>> sinks;
   sinks.push_back(std::make_unique<LineSink>(
       std::move(opts),
+      testRelayInfo(),
       encoderFor("$seq $event"),
       std::make_unique<HalvingTransport>(drained)
   ));
@@ -697,8 +726,7 @@ TEST(MoqxAccessLogTest, TheWriterRetriesAPartialWriteBeforeTheFlushInterval) {
 
 TEST(MoqxAccessLogTest, ARetryThatWroteNothingBacksOff) {
   auto sink = sinkWith(std::make_unique<RetryTransport>());
-  AccessLogRelayInfo relayInfo;
-  sink->append(*record(AccessLogEvent::SUBSCRIBE), relayInfo, 0);
+  sink->append(*record(AccessLogEvent::SUBSCRIBE), 0);
   folly::coro::blockingWait(sink->flush());
   EXPECT_GE(sink->retryAt() - std::chrono::steady_clock::now(), 500ms);
 }
@@ -707,11 +735,10 @@ TEST(MoqxAccessLogTest, CloseRetriesAFullOutputUntilItDrains) {
   auto transport = std::make_unique<RetryTransport>(AccessLogWriteStatus::Retry, /*failures=*/2);
   auto* raw = transport.get();
   auto sink = sinkWith(std::move(transport));
-  AccessLogRelayInfo relayInfo;
   for (int i = 0; i < 3; ++i) {
-    sink->append(*record(AccessLogEvent::SUBSCRIBE), relayInfo, 0);
+    sink->append(*record(AccessLogEvent::SUBSCRIBE), 0);
   }
-  folly::coro::blockingWait(sink->close(relayInfo, 0));
+  folly::coro::blockingWait(sink->close(0));
   EXPECT_EQ(raw->writes, 3u);
   EXPECT_EQ(sink->stats().records, 3u);
   EXPECT_EQ(sink->stats().dropped, 0u);
@@ -721,12 +748,11 @@ TEST(MoqxAccessLogTest, CloseRetriesAFullOutputUntilCancelled) {
   auto transport = std::make_unique<RetryTransport>();
   auto* raw = transport.get();
   auto sink = sinkWith(std::move(transport));
-  AccessLogRelayInfo relayInfo;
   for (int i = 0; i < 3; ++i) {
-    sink->append(*record(AccessLogEvent::SUBSCRIBE), relayInfo, 0);
+    sink->append(*record(AccessLogEvent::SUBSCRIBE), 0);
   }
   folly::coro::blockingWait(
-      folly::coro::co_awaitTry(folly::coro::timeoutNoDiscard(sink->close(relayInfo, 0), 100ms))
+      folly::coro::co_awaitTry(folly::coro::timeoutNoDiscard(sink->close(0), 100ms))
   );
   EXPECT_GT(raw->writes, 1u);
   EXPECT_EQ(sink->stats().dropped, 3u);
@@ -736,11 +762,10 @@ TEST(MoqxAccessLogTest, CloseStopsOnAFailedWrite) {
   auto transport = std::make_unique<RetryTransport>(AccessLogWriteStatus::Failed);
   auto* raw = transport.get();
   auto sink = sinkWith(std::move(transport));
-  AccessLogRelayInfo relayInfo;
   for (int i = 0; i < 3; ++i) {
-    sink->append(*record(AccessLogEvent::SUBSCRIBE), relayInfo, 0);
+    sink->append(*record(AccessLogEvent::SUBSCRIBE), 0);
   }
-  folly::coro::blockingWait(sink->close(relayInfo, 0));
+  folly::coro::blockingWait(sink->close(0));
   EXPECT_EQ(raw->writes, 1u);
   EXPECT_EQ(sink->stats().dropped, 3u);
 }
@@ -774,12 +799,11 @@ private:
 
 TEST(MoqxAccessLogTest, BacklogStaysBoundedWhileWaitingToRetry) {
   auto sink = sinkWith(std::make_unique<RetryTransport>(), /*batchRecords=*/1);
-  AccessLogRelayInfo relayInfo;
-  sink->append(*record(AccessLogEvent::SUBSCRIBE), relayInfo, 0);
+  sink->append(*record(AccessLogEvent::SUBSCRIBE), 0);
   folly::coro::blockingWait(sink->flush());
   // The sink waits to retry, and new lines still respect the four-line limit.
   for (int i = 0; i < 10; ++i) {
-    sink->append(*record(AccessLogEvent::SUBSCRIBE), relayInfo, 0);
+    sink->append(*record(AccessLogEvent::SUBSCRIBE), 0);
   }
   EXPECT_EQ(sink->stats().dropped, 7u);
 }
@@ -790,16 +814,15 @@ TEST(MoqxAccessLogTest, ATrimmedLogDroppedLineKeepsItsCount) {
   AccessLogSinkOptions opts;
   opts.name = "trimmed";
   opts.batchRecords = 1;
-  LineSink sink(std::move(opts), encoderFor("$seq $event"), std::move(transport));
-  AccessLogRelayInfo relayInfo;
+  LineSink sink(std::move(opts), testRelayInfo(), encoderFor("$seq $event"), std::move(transport));
   // Five queue drops put a LOG_DROPPED line first. The failed write starts a retry wait.
-  sink.append(*record(AccessLogEvent::SUBSCRIBE), relayInfo, 5);
+  sink.append(*record(AccessLogEvent::SUBSCRIBE), 5);
   folly::coro::blockingWait(sink.flush());
   // The fifth line pushes the LOG_DROPPED line out of the backlog.
   for (int i = 0; i < 3; ++i) {
-    sink.append(*record(AccessLogEvent::SUBSCRIBE), relayInfo, 5);
+    sink.append(*record(AccessLogEvent::SUBSCRIBE), 5);
   }
-  folly::coro::blockingWait(sink.close(relayInfo, 5));
+  folly::coro::blockingWait(sink.close(5));
   EXPECT_EQ(raw->out, "2 SUBSCRIBE\n3 SUBSCRIBE\n4 SUBSCRIBE\n5 SUBSCRIBE\n6 LOG_DROPPED 5\n");
 }
 
@@ -823,6 +846,7 @@ TEST(MoqxAccessLogTest, ReopenRunsOnTheWriter) {
   std::vector<std::unique_ptr<AccessLogSink>> sinks;
   sinks.push_back(std::make_unique<LineSink>(
       AccessLogSinkOptions{},
+      testRelayInfo(),
       encoderFor("$event"),
       std::make_unique<ReopenCountingTransport>(reopens)
   ));
@@ -837,13 +861,12 @@ TEST(MoqxAccessLogTest, APartialWriteResumesWhereItStopped) {
   auto transport = std::make_unique<PartialTransport>(/*limit=*/16);
   auto* raw = transport.get();
   auto sink = sinkWith(std::move(transport));
-  AccessLogRelayInfo relayInfo;
   for (int i = 0; i < 3; ++i) {
-    sink->append(*record(AccessLogEvent::SUBSCRIBE), relayInfo, 0);
+    sink->append(*record(AccessLogEvent::SUBSCRIBE), 0);
   }
   folly::coro::blockingWait(sink->flush());
   EXPECT_EQ(sink->stats().records, 1u);
-  folly::coro::blockingWait(sink->close(relayInfo, 0));
+  folly::coro::blockingWait(sink->close(0));
   EXPECT_EQ(raw->out, "1 SUBSCRIBE\n2 SUBSCRIBE\n3 SUBSCRIBE\n");
   EXPECT_EQ(sink->stats().records, 3u);
   EXPECT_EQ(sink->stats().dropped, 0u);
@@ -853,12 +876,11 @@ TEST(MoqxAccessLogTest, TheTransportGetsTheLengthOfEachLine) {
   auto transport = std::make_unique<PartialTransport>(/*limit=*/16);
   auto* raw = transport.get();
   auto sink = sinkWith(std::move(transport));
-  AccessLogRelayInfo relayInfo;
   for (int i = 0; i < 3; ++i) {
-    sink->append(*record(AccessLogEvent::SUBSCRIBE), relayInfo, 0);
+    sink->append(*record(AccessLogEvent::SUBSCRIBE), 0);
   }
   folly::coro::blockingWait(sink->flush());
-  folly::coro::blockingWait(sink->close(relayInfo, 0));
+  folly::coro::blockingWait(sink->close(0));
   // The first write sends line 1 and 4 bytes of line 2. The second starts with the rest of
   // line 2.
   ASSERT_EQ(raw->lengths.size(), 2u);
@@ -870,12 +892,11 @@ TEST(MoqxAccessLogTest, AReopenWaitsForAPartlyWrittenLine) {
   auto transport = std::make_unique<PartialTransport>(/*limit=*/5);
   auto* raw = transport.get();
   auto sink = sinkWith(std::move(transport));
-  AccessLogRelayInfo relayInfo;
-  sink->append(*record(AccessLogEvent::SUBSCRIBE), relayInfo, 0);
+  sink->append(*record(AccessLogEvent::SUBSCRIBE), 0);
   folly::coro::blockingWait(sink->flush());
   sink->reopen();
   EXPECT_EQ(raw->out, "1 SUB");
-  folly::coro::blockingWait(sink->close(relayInfo, 0));
+  folly::coro::blockingWait(sink->close(0));
   EXPECT_EQ(raw->out, "1 SUBSCRIBE\n<reopen>");
 }
 
@@ -883,14 +904,13 @@ TEST(MoqxAccessLogTest, ABacklogDropKeepsAPartlyWrittenLine) {
   auto transport = std::make_unique<PartialTransport>(/*limit=*/3);
   auto* raw = transport.get();
   auto sink = sinkWith(std::move(transport), /*batchRecords=*/1);
-  AccessLogRelayInfo relayInfo;
   for (int i = 0; i < 6; ++i) {
-    sink->append(*record(AccessLogEvent::SUBSCRIBE), relayInfo, 0);
+    sink->append(*record(AccessLogEvent::SUBSCRIBE), 0);
   }
   folly::coro::blockingWait(sink->flush());
   // Four lines are kept: the rest of line 1, then lines 4 to 6.
   EXPECT_EQ(sink->stats().dropped, 2u);
-  folly::coro::blockingWait(sink->close(relayInfo, 0));
+  folly::coro::blockingWait(sink->close(0));
   EXPECT_EQ(raw->out, "1 SUBSCRIBE\n4 SUBSCRIBE\n5 SUBSCRIBE\n6 SUBSCRIBE\nLOG_DROPPED\n");
   EXPECT_EQ(sink->stats().records, 5u);
 }
@@ -952,6 +972,24 @@ TEST(AccessLogSetupTest, WithoutSinksTheAccessLogIsDisabled) {
   accessLog.start();
   accessLog.reopen();
   accessLog.stop(std::chrono::steady_clock::now());
+}
+
+TEST(AccessLogSetupTest, RelayInfoCarriesTheVars) {
+  config::Config cfg;
+  cfg.logging = config::LoggingConfig{};
+  config::AccessLogSinkConfig sink;
+  sink.name = "main";
+  sink.output = config::AccessLogFileOutput{"-"};
+  cfg.logging->access = config::AccessLogConfig{
+      .vars = {{"region", "us-east-1"}, {"pop", "iad3"}},
+      .sinks = {sink},
+  };
+  auto log = makeAccessLog(cfg);
+  ASSERT_TRUE(log.hasValue()) << log.error();
+  EXPECT_EQ(
+      log.value()->relayInfo().vars,
+      (std::map<std::string, std::string>{{"pop", "iad3"}, {"region", "us-east-1"}})
+  );
 }
 
 TEST(AccessLogSetupTest, UnopenableFileFails) {
