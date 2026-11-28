@@ -39,6 +39,8 @@
 #                         (default: subscriber_max/ramp + 10)
 #   --cooldown N          Seconds before the client finishes to stop sampling,
 #                         excluding teardown noise (default: 5)
+#   --dry-run             Check the options and local inputs, print the relay
+#                         settings and exit without contacting either VM
 #
 # The relay config is rendered on the relay VM by scripts/moqx-run.sh from
 # scripts/perf/config.bench.yaml — the SAME path scripts/perf/perf-test.sh uses — so the
@@ -70,6 +72,7 @@ KEY=""
 CLIENT_EXTRA_ARGS=()
 WARMUP=""          # empty = auto (subscriber_max/ramp + 10); see below
 COOLDOWN=5
+DRY_RUN=false
 
 RELAY_HOST="${PERF_RELAY_HOST:-}"
 CLIENT_HOST="${PERF_CLIENT_HOST:-}"
@@ -102,6 +105,7 @@ while [[ $# -gt 0 ]]; do
     --key)             KEY="$2";             shift 2 ;;
     --warmup)          WARMUP="$2";          shift 2 ;;
     --cooldown)        COOLDOWN="$2";        shift 2 ;;
+    --dry-run)         DRY_RUN=true;         shift ;;
     *) echo "Unknown option: $1" >&2; exit 1 ;;
   esac
 done
@@ -136,8 +140,9 @@ case "$QUIC_STACK" in
   *) echo "ERROR: --quic-stack must be 'mvfst' or 'picoquic'" >&2; exit 1 ;;
 esac
 
-RELAY_BIND_ADDR="::"
-[[ "$QUIC_STACK" == "picoquic" ]] && RELAY_BIND_ADDR="0.0.0.0"
+# Same bind for every stack. The publisher and the client reach the relay over
+# IPv4, and a :: listener would send to them through IPv4-mapped addresses.
+RELAY_BIND_ADDR="0.0.0.0"
 
 # Each stack spells BBR differently and the relay rejects the other's name.
 if [[ -z "$CC" ]]; then
@@ -173,6 +178,11 @@ for f in "$BINARY" "$MOQTEST_SERVER" "$MOQPERF_CLIENT" "$RELAY_RUN_SCRIPT" "$REL
     echo "ERROR: not found: $f" >&2; exit 1
   fi
 done
+
+if [[ "$DRY_RUN" == true ]]; then
+  echo "stack=$QUIC_STACK cc=$CC bind=$RELAY_BIND_ADDR port=$RELAY_PORT admin_port=$ADMIN_PORT threads=$IO_THREADS"
+  exit 0
+fi
 
 # ── Collect shared libraries ────────────────────────────────────────────────────
 echo "Collecting shared library dependencies..."

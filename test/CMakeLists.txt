@@ -308,6 +308,15 @@ add_test(
   COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_validate_config.sh $<TARGET_FILE:moqx>
 )
 
+# Dry-runs the perf harnesses with stand-in binaries; binds no port and
+# contacts no host. Skips the perf-test.sh cases (exit 77) without envsubst
+# or bash 4, which scripts/moqx-run.sh needs.
+add_test(
+  NAME perf_harness_bind
+  COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_perf_bind.sh
+)
+set_tests_properties(perf_harness_bind PROPERTIES SKIP_RETURN_CODE 77)
+
 moqx_add_dual_stack_test(admin_info_endpoint
   COMMAND bash ${PROJECT_SOURCE_DIR}/test/test_admin_info.sh $<TARGET_FILE:moqx>
 )
