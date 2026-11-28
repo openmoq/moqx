@@ -136,7 +136,7 @@ Set under `listener_defaults.quic` (global defaults) or `listeners.<name>.quic`
 | `cc_algo` | `bbr` | Congestion control algorithm (see below). |
 
 **Congestion control algorithms by stack:**
-- `mvfst`: `bbr`, `bbr2`, `bbr2modular`, `copa`, `cubic`, `newreno`
+- `mvfst`: `bbr`, `bbr2`, `bbr2modular`, `bbr3`, `copa`, `cubic`, `newreno`
 - `picoquic`: `bbr`, `bbr1`, `c4`, `cubic`, `dcubic`, `fast`, `newreno`,
 `prague`, `reno`
 

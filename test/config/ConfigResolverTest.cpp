@@ -1987,6 +1987,35 @@ TEST(ResolveConfig, QuicCcAlgoRoundTrips) {
   EXPECT_EQ(result.value().config.listeners[0].quic.ccAlgo, "cubic");
 }
 
+// mvfst listeners accept cc_algo bbr3 (mvfst's BBRv3).
+TEST(ResolveConfig, MvfstCcAlgoAcceptsBbr3) {
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedQuicConfig quicCfg;
+  quicCfg.cc_algo = std::optional<std::string>{"bbr3"};
+  cfg.listeners.value()[0].quic = std::optional<ParsedQuicConfig>{std::move(quicCfg)};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasValue()) << result.error();
+  EXPECT_EQ(result.value().config.listeners[0].quicStack, QuicStack::Mvfst);
+  EXPECT_EQ(result.value().config.listeners[0].quic.ccAlgo, "bbr3");
+}
+
+// pacing_enabled: false is refused with bbr3, as with the other BBR versions.
+TEST(ResolveConfig, MvfstPacingDisabledRejectsBbr3) {
+  auto cfg = makeMinimalInsecureConfig();
+  ParsedQuicConfig quicCfg;
+  quicCfg.cc_algo = std::optional<std::string>{"bbr3"};
+  cfg.listeners.value()[0].quic = std::optional<ParsedQuicConfig>{std::move(quicCfg)};
+  ParsedMvfstConfig mvfst;
+  mvfst.pacing_enabled = std::optional<bool>{false};
+  cfg.listeners.value()[0].mvfst = std::optional<ParsedMvfstConfig>{std::move(mvfst)};
+
+  auto result = resolveConfig(cfg);
+  ASSERT_TRUE(result.hasError()) << "bbr3 with pacing_enabled: false was accepted";
+  EXPECT_THAT(result.error(), HasSubstr("pacing_enabled"));
+  EXPECT_THAT(result.error(), HasSubstr("bbr3"));
+}
+
 // --- Pico WebTransport path validation tests ---
 
 // Helper: make a minimal pico listener config (TLS required for picoquic).
