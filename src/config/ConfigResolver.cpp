@@ -1347,11 +1347,11 @@ void validateQuicConfig(
   static const std::unordered_set<std::string> kPicoCcAlgos =
       {"bbr", "bbr1", "c4", "cubic", "dcubic", "fast", "newreno", "prague", "reno"};
   static const std::unordered_set<std::string> kMvfstCcAlgos =
-      {"bbr", "bbr2", "bbr2modular", "copa", "cubic", "newreno", "none"};
+      {"bbr", "bbr2", "bbr2modular", "bbr3", "copa", "cubic", "newreno", "none"};
   const auto& validAlgos = (stack == QuicStack::Picoquic) ? kPicoCcAlgos : kMvfstCcAlgos;
   const auto& validList = (stack == QuicStack::Picoquic)
                               ? "bbr, bbr1, c4, cubic, dcubic, fast, newreno, prague, reno"
-                              : "bbr, bbr2, bbr2modular, copa, cubic, newreno, none";
+                              : "bbr, bbr2, bbr2modular, bbr3, copa, cubic, newreno, none";
   if (!validAlgos.count(quic.ccAlgo)) {
     errors.push_back(
         context + " quic: cc_algo '" + quic.ccAlgo +
@@ -1617,11 +1617,11 @@ folly::Expected<ResolvedConfig, std::string> resolveConfig(const ParsedConfig& c
         );
         if (!mergedMvfstConfigs.back().pacingEnabled) {
           const auto& cc = quic.ccAlgo;
-          if (cc == "bbr" || cc == "bbr2" || cc == "bbr2modular") {
+          if (cc == "bbr" || cc == "bbr2" || cc == "bbr2modular" || cc == "bbr3") {
             errors.push_back(
                 "Listener '" + listener.name.value() +
                 "': mvfst: pacing_enabled: false is incompatible with cc_algo '" + cc +
-                "' (bbr, bbr2, and bbr2modular require pacing)"
+                "' (bbr, bbr2, bbr2modular, and bbr3 require pacing)"
             );
           }
         }

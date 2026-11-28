@@ -1,0 +1,1 @@
+- [`cc_algo: bbr3`](/docs/config.md#quic-settings) on mvfst listeners selects mvfst's BBRv3; `pacing_enabled: false` is refused with it, as with the other BBR versions.

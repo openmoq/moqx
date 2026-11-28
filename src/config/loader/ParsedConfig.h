@@ -114,7 +114,7 @@ struct ParsedQuicConfig {
   rfl::Description<
       "Congestion control algorithm (default: bbr). "
       "picoquic: bbr, bbr1, c4, cubic, dcubic, fast, newreno, prague, reno. "
-      "mvfst: bbr, bbr2, bbr2modular, copa, cubic, newreno, none.",
+      "mvfst: bbr, bbr2, bbr2modular, bbr3, copa, cubic, newreno, none.",
       std::optional<std::string>>
       cc_algo;
 };

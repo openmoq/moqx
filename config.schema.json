@@ -1860,7 +1860,7 @@
                     ]
                 },
                 "cc_algo": {
-                    "description": "Congestion control algorithm (default: bbr). picoquic: bbr, bbr1, c4, cubic, dcubic, fast, newreno, prague, reno. mvfst: bbr, bbr2, bbr2modular, copa, cubic, newreno, none.",
+                    "description": "Congestion control algorithm (default: bbr). picoquic: bbr, bbr1, c4, cubic, dcubic, fast, newreno, prague, reno. mvfst: bbr, bbr2, bbr2modular, bbr3, copa, cubic, newreno, none.",
                     "anyOf": [
                         {
                             "type": "string"
