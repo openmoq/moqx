@@ -528,6 +528,7 @@ add_library(moqx_config_loader STATIC
   src/config/ConfigResolver.cpp
   src/config/ConfigInit.cpp
   src/config/Pkcs12.cpp
+  src/config/ConfigDiff.cpp
 )
 
 target_include_directories(moqx_config_loader
