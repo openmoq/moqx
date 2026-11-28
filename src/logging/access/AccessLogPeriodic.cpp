@@ -14,6 +14,8 @@
 
 #include "logging/access/AccessLogRequest.h"
 
+#include "relay/SessionConfined.h"
+
 namespace openmoq::moqx::logging {
 
 std::chrono::system_clock::time_point

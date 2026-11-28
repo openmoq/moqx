@@ -16,6 +16,8 @@
 #include <folly/io/async/EventBaseManager.h>
 #include <folly/logging/xlog.h>
 
+#include "relay/SessionConfined.h"
+
 namespace openmoq::moqx::logging {
 
 namespace {

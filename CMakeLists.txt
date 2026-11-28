@@ -464,6 +464,7 @@ add_library(moqx_core STATIC
   src/logging/access/AccessLogPeriodic.cpp
   src/logging/access/AccessLogRequest.cpp
   src/logging/access/AccessLogSessionContext.cpp
+  src/logging/access/MoQSessionAccessLog.cpp
   src/logging/access/AccessLogSetup.cpp
   src/logging/access/AccessLogSink.cpp
   src/logging/access/LineSink.cpp

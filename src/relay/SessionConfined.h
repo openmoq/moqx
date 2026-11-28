@@ -6,6 +6,7 @@
 
 #pragma once
 
-// Relay-core .cpp files include this last, so that the headers before it can still name a session.
-// Relay state holds Participants, and only SessionParticipant reaches a session, on its executor.
+// Relay-core and access log .cpp files include this last, so that earlier headers can name a
+// session. Relay state holds Participants, and only SessionParticipant reaches a session, on its
+// executor.
 #pragma GCC poison MoQSession MoQRelaySession getRequestSession getSession currentSession SessionParticipant

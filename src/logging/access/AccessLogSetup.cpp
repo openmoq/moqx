@@ -18,6 +18,8 @@
 #include "logging/access/LineSink.h"
 #include "moqx/Version.h"
 
+#include "relay/SessionConfined.h"
+
 namespace openmoq::moqx::logging {
 
 namespace {

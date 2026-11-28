@@ -6,7 +6,7 @@
 
 #include "MoqxRelayContext.h"
 #include "MoqxRelaySession.h"
-#include "logging/access/AccessLogSessionContext.h"
+#include "logging/access/MoQSessionAccessLog.h"
 #include "peering/MoqtRelayBackend.h"
 #include "relay/AuthFilters.h"
 #include "relay/PublisherCrossExecFilter.h"
@@ -309,11 +309,12 @@ void MoqxRelayContext::onNewSession(
         matchedName = listener.match(clientSession->getAuthority(), clientSession->getPath());
       }
       context->setup(
-          clientSession,
-          std::string(matchedName.value_or("")),
-          std::string(logging::kAccessLogParticipant),
-          {},
-          session->localAddress()
+          logging::accessLogSource(clientSession, {}, session->localAddress()),
+          logging::accessLogSetup(
+              *clientSession,
+              std::string(matchedName.value_or("")),
+              std::string(logging::kAccessLogParticipant)
+          )
       );
       session->setAccessLogContext(std::move(context));
     }
@@ -334,11 +335,11 @@ void MoqxRelayContext::onSetupRejected(
 ) {
   if (auto accessLogContext = MoqxRelaySession::accessLogContextOf(*session)) {
     auto matchedName = listener.match(session->getAuthority(), session->getPath());
-    accessLogContext->setService(
+    accessLogContext->update(logging::accessLogSetup(
         *session,
         std::string(matchedName.value_or("")),
         std::string(logging::kAccessLogParticipant)
-    );
+    ));
     accessLogContext->writeSetup(logging::AccessLogStatus::Rejected, folly::to_underlying(error));
   }
 }
@@ -375,7 +376,7 @@ void MoqxRelayContext::onSessionEnd(
     collector->onSessionEnd();
   }
   if (auto accessLogContext = MoqxRelaySession::accessLogContextOf(*session)) {
-    accessLogContext->writeSessionEnd(*session);
+    accessLogContext->writeSessionEnd(logging::accessLogCloseCode(*session));
   }
   // The session belongs to whichever service its authority+path matched at setup.
   if (auto name = listener.match(session->getAuthority(), session->getPath())) {
@@ -400,11 +401,11 @@ folly::Expected<folly::Unit, SessionCloseErrorCode> MoqxRelayContext::validateAu
   auto matchedName = listener.match(session->getAuthority(), session->getPath());
   auto accessLogContext = MoqxRelaySession::accessLogContextOf(*session);
   if (accessLogContext) {
-    accessLogContext->setService(
+    accessLogContext->update(logging::accessLogSetup(
         *session,
         std::string(matchedName.value_or("")),
         std::string(accessLogPeerClass(clientSetup))
-    );
+    ));
   }
   auto result = authorizeSession(listener, clientSetup, session, matchedName, accessLogContext);
   if (accessLogContext) {

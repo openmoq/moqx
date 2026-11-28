@@ -14,7 +14,6 @@
 #include <string_view>
 
 #include <folly/SocketAddress.h>
-#include <moxygen/MoQSession.h>
 
 #include "logging/access/AccessLog.h"
 
@@ -28,6 +27,38 @@ class AccessLogRequest;
 
 enum class AccessLogSessionState : uint8_t { Open, Closed, ShuttingDown };
 
+// The session fields that CLIENT_SETUP can change. The service and peer class choose the sinks.
+struct AccessLogSessionSetup {
+  std::string service;
+  std::string peerClass;
+  std::optional<uint64_t> version;
+  std::string authority;
+  // With its query, which can carry tokens.
+  std::string path;
+};
+
+// Reads a live session for the access log, on the session's EventBase.
+class AccessLogSessionProbe {
+public:
+  virtual ~AccessLogSessionProbe() = default;
+  // True once the session is closing or destroyed.
+  virtual bool closed() const = 0;
+  // Sets the record's transport fields once the transport has measured an RTT.
+  virtual void addTransportStats(AccessLogRecord& record) const = 0;
+};
+
+// The session fields that do not change after setup(), and how to read the session.
+struct AccessLogSessionSource {
+  std::string sessionId;
+  folly::SocketAddress peer;
+  folly::SocketAddress local;
+  // The upstream URL, on sessions the relay connected.
+  std::string upstream;
+  // Null when the session does not run on an EventBase, which turns off SUB_STATS.
+  folly::EventBase* evb{nullptr};
+  std::unique_ptr<AccessLogSessionProbe> probe;
+};
+
 // One session's access log state. All calls run on the session's executor.
 class AccessLogSessionContext {
 public:
@@ -39,16 +70,9 @@ public:
 
   // Picks the session's sinks and sets the fields that every record carries. A sink does
   // not take a record written before this.
-  void setup(
-      const std::shared_ptr<moxygen::MoQSession>& session,
-      std::string service,
-      std::string peerClass,
-      std::string upstream = {},
-      const folly::SocketAddress& local = {}
-  );
-  // At CLIENT_SETUP: sets the service and peer class, rereads the authority, path and version,
-  // and picks the sinks again.
-  void setService(const moxygen::MoQSession& session, std::string service, std::string peerClass);
+  void setup(AccessLogSessionSource source, AccessLogSessionSetup setup);
+  // At CLIENT_SETUP: replaces the AccessLogSessionSetup fields and picks the sinks again.
+  void update(AccessLogSessionSetup setup);
 
   // Builds a record and calls setFields(record) only when a sink takes the event.
   template <typename SetFields>
@@ -80,9 +104,7 @@ public:
       std::string reason = {}
   );
   // Writes SESSION_END once.
-  void writeSessionEnd(const moxygen::MoQSession& session);
   void writeSessionEnd(std::optional<uint64_t> errorCode);
-  // Copies the session's QUIC transport stats, when the transport has measured an RTT.
   void addTransportStats(AccessLogRecord& record) const;
 
   // ShuttingDown during relay shutdown, and Closed once the session is closing or
@@ -94,7 +116,7 @@ public:
   // are not tracked.
   bool active() const { return gate_.matched != 0; }
   // True once setup() has found that the session reaches zero sinks.
-  bool filteredOut() const { return exec_ && !active(); }
+  bool filteredOut() const { return probe_ && !active(); }
 
   void countRequest() { ++requests_; }
 
@@ -133,8 +155,7 @@ private:
   std::shared_ptr<AccessLog> log_;
   AccessLogSessionGate gate_;
   std::shared_ptr<AccessLogSessionInfo> info_;
-  std::weak_ptr<moxygen::MoQSession> session_;
-  folly::Executor* exec_{nullptr};
+  std::unique_ptr<AccessLogSessionProbe> probe_;
   folly::EventBase* evb_{nullptr};
   std::chrono::steady_clock::time_point openedAt_;
   uint64_t requests_{0};

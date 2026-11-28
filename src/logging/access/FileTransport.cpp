@@ -19,6 +19,8 @@
 #include <folly/FileUtil.h>
 #include <folly/logging/xlog.h>
 
+#include "relay/SessionConfined.h"
+
 namespace openmoq::moqx::logging {
 
 namespace {

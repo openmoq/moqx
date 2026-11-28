@@ -9,11 +9,10 @@
 #include "logging/access/AccessLogPeriodic.h"
 
 #include <folly/IPAddress.h>
+#include <folly/io/async/EventBase.h>
 #include <folly/logging/xlog.h>
-#include <moxygen/MoQVersions.h>
-#include <moxygen/events/MoQFollyExecutorImpl.h>
 
-#include "relay/ExecutorCheck.h"
+#include "relay/SessionConfined.h"
 
 namespace openmoq::moqx::logging {
 
@@ -42,10 +41,12 @@ uint64_t msSince(std::chrono::steady_clock::time_point start) {
 
 namespace {
 
-void readSetupFields(AccessLogSessionInfo& info, const moxygen::MoQSession& session) {
-  info.version = moxygen::getDraftMajorVersion(session.getNegotiatedVersion());
-  info.authority = session.getAuthority();
-  info.pathRaw = session.getPath();
+void setSetupFields(AccessLogSessionInfo& info, AccessLogSessionSetup setup) {
+  info.service = std::move(setup.service);
+  info.peerClass = std::move(setup.peerClass);
+  info.version = setup.version;
+  info.authority = std::move(setup.authority);
+  info.pathRaw = std::move(setup.path);
   info.path = info.pathRaw.substr(0, info.pathRaw.find('?'));
 }
 
@@ -69,48 +70,30 @@ AccessLogSessionContext::AccessLogSessionContext(
   info_->openedBy = openedBy;
 }
 
-void AccessLogSessionContext::setup(
-    const std::shared_ptr<moxygen::MoQSession>& session,
-    std::string service,
-    std::string peerClass,
-    std::string upstream,
-    const folly::SocketAddress& local
-) {
+void AccessLogSessionContext::setup(AccessLogSessionSource source, AccessLogSessionSetup setup) {
   // Records share info_, so setup() builds a new one.
   auto info = std::make_shared<AccessLogSessionInfo>(*info_);
-  info->session = folly::to<std::string>(session->sessionId().value);
-  info->service = std::move(service);
-  info->peerClass = std::move(peerClass);
-  info->upstream = std::move(upstream);
-  auto peer = session->getPeerAddress();
-  if (peer.isInitialized()) {
-    info->peer = peer.describe();
-    info->peerTrunc = truncatePeerAddress(peer);
+  info->session = std::move(source.sessionId);
+  info->upstream = std::move(source.upstream);
+  if (source.peer.isInitialized()) {
+    info->peer = source.peer.describe();
+    info->peerTrunc = truncatePeerAddress(source.peer);
   }
   // TODO: every session on a listener has the same local address, so its string could be
   // rendered once and shared.
-  if (local.isInitialized()) {
-    info->local = local.describe();
+  if (source.local.isInitialized()) {
+    info->local = source.local.describe();
   }
-  readSetupFields(*info, *session);
+  setSetupFields(*info, std::move(setup));
   info_ = std::move(info);
   gate_ = log_->gateSession(info_->service, info_->peerClass, info_->session);
-  session_ = session;
-  exec_ = session->getExecutor();
-  if (auto* follyExec = dynamic_cast<moxygen::MoQFollyExecutorImpl*>(exec_)) {
-    evb_ = follyExec->getBackingEventBase();
-  }
+  probe_ = std::move(source.probe);
+  evb_ = source.evb;
 }
 
-void AccessLogSessionContext::setService(
-    const moxygen::MoQSession& session,
-    std::string service,
-    std::string peerClass
-) {
+void AccessLogSessionContext::update(AccessLogSessionSetup setup) {
   auto info = std::make_shared<AccessLogSessionInfo>(*info_);
-  info->service = std::move(service);
-  info->peerClass = std::move(peerClass);
-  readSetupFields(*info, session);
+  setSetupFields(*info, std::move(setup));
   info_ = std::move(info);
   gate_ = log_->gateSession(info_->service, info_->peerClass, info_->session);
 }
@@ -129,14 +112,6 @@ void AccessLogSessionContext::writeSetup(
   });
 }
 
-void AccessLogSessionContext::writeSessionEnd(const moxygen::MoQSession& session) {
-  std::optional<uint64_t> errorCode;
-  if (const auto& result = session.getCloseResult()) {
-    errorCode = folly::to_underlying(result->error);
-  }
-  writeSessionEnd(errorCode);
-}
-
 void AccessLogSessionContext::writeSessionEnd(std::optional<uint64_t> errorCode) {
   if (std::exchange(ended_, true)) {
     return;
@@ -152,39 +127,21 @@ void AccessLogSessionContext::writeSessionEnd(std::optional<uint64_t> errorCode)
 }
 
 void AccessLogSessionContext::addTransportStats(AccessLogRecord& record) const {
-  XDCHECK(!exec_ || onExecutor(exec_)) << "transport stats read off the session's executor";
-  auto session = session_.lock();
-  if (!session) {
-    return;
+  XDCHECK(!evb_ || evb_->isInEventBaseThread()) << "transport stats read off the session's thread";
+  if (probe_) {
+    probe_->addTransportStats(record);
   }
-  auto info = session->getTransportInfo();
-  if (info.srtt.count() == 0) {
-    return;
-  }
-  record.srttUs = info.srtt.count();
-  if (info.maybeMinRtt) {
-    record.minRttUs = info.maybeMinRtt->count();
-  }
-  record.cwnd = info.congestionWindow;
-  record.inflight = info.bytesInFlight;
-  record.pktsSent = info.totalPacketsSent;
-  record.pktsLost = info.totalPacketsMarkedLost;
-  record.bytesRetx = info.totalBytesRetransmitted;
 }
 
 AccessLogSessionState AccessLogSessionContext::state() const {
   if (log_->shuttingDown()) {
     return AccessLogSessionState::ShuttingDown;
   }
-  if (!exec_) {
+  if (!probe_) {
     return AccessLogSessionState::Open;
   }
-  XDCHECK(onExecutor(exec_)) << "access log session read off its executor";
-  auto session = session_.lock();
-  if (!session || session->isClosed()) {
-    return AccessLogSessionState::Closed;
-  }
-  return AccessLogSessionState::Open;
+  XDCHECK(!evb_ || evb_->isInEventBaseThread()) << "access log session read off its thread";
+  return probe_->closed() ? AccessLogSessionState::Closed : AccessLogSessionState::Open;
 }
 
 } // namespace openmoq::moqx::logging
