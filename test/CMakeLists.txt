@@ -195,6 +195,7 @@ moqx_add_gtest(moqx_logging_test
     LoggingMultiFlagTest.cpp
     logging/access/AccessLogTemplateTest.cpp
     logging/access/MoqxAccessLogTest.cpp
+    logging/access/FieldSinkTest.cpp
     logging/access/AccessLogRequestTest.cpp
   LIBS moqx_core moqx_test_main GTest::gmock
 )
