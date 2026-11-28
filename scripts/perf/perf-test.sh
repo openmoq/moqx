@@ -58,6 +58,11 @@
 #   --udp-socket-buffer-bytes N
 #                          UDP socket send/recv buffer size in bytes for the
 #                          relay listener (defaults to net.core.wmem_max).
+#   --dry-run              Print the run parameters and the relay settings
+#                          (scripts/moqx-run.sh --dry-run), then exit without
+#                          starting the relay, publisher or client. Writes
+#                          run_params.txt and relay.yaml to a new directory
+#                          under $TMPDIR (default /tmp)
 #
 # Linux-only options (not supported on macOS):
 #   --metrics, --perf-duration, --perf-events, --perf-stat, --jemalloc,
@@ -89,6 +94,7 @@ RUN_METRICS=false
 PERF_DURATION=0
 PERF_EVENTS=""
 RUN_PERF_STAT=false
+DRY_RUN=false
 REMOTE_CLIENT_HOST=""
 UDP_SOCKET_BUFFER_BYTES=$(cat /proc/sys/net/core/wmem_max 2>/dev/null || echo 1048576)
 TRACE_SCRIPT=""
@@ -130,6 +136,7 @@ while [[ $# -gt 0 ]]; do
     --client-metrics)   METRICS_OUT="$2";         shift 2 ;;
     --remote-client)    REMOTE_CLIENT_HOST="$2";  shift 2 ;;
     --udp-socket-buffer-bytes) UDP_SOCKET_BUFFER_BYTES="$2"; shift 2 ;;
+    --dry-run)          DRY_RUN=true;              shift ;;
     *) echo "Unknown option: $1" >&2; exit 1 ;;
   esac
 done
@@ -173,8 +180,13 @@ if [[ -n "$JEMALLOC" && -z "$REMOTE_CLIENT_HOST" ]]; then
 fi
 
 # ── Log directory (always on) ─────────────────────────────────────────────────
-LOG_DIR="/tmp/moqx-perf-$(date +%Y%m%d-%H%M%S)"
-mkdir -p "$LOG_DIR"
+# A dry run gets a new directory of its own, never a real run's.
+if [[ "$DRY_RUN" == true ]]; then
+  LOG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/moqx-perf-dry-run.XXXXXX")"
+else
+  LOG_DIR="/tmp/moqx-perf-$(date +%Y%m%d-%H%M%S)"
+  mkdir -p "$LOG_DIR"
+fi
 RELAY_LOG="$LOG_DIR/relay.log"
 SERVER_LOG="$LOG_DIR/server.log"
 CLIENT_LOG="$LOG_DIR/client.log"
@@ -269,7 +281,7 @@ is_port_in_use() {
   fi
 }
 for port in "$RELAY_PORT" "$RELAY_ADMIN_PORT"; do
-  if is_port_in_use "$port"; then
+  if [[ "$DRY_RUN" != true ]] && is_port_in_use "$port"; then
     echo "ERROR: port $port already in use" >&2; exit 1
   fi
 done
@@ -366,7 +378,7 @@ echo "Starting relay (quic_stack=$QUIC_STACK, use_relay_thread=$USE_RELAY_THREAD
 RELAY_RUN_ARGS=(
   --no-cache --ignore-path-mtu
   --bin        "$BINARY"
-  --bind       "::"        # all interfaces: the perf client may run on another box
+  --bind       "0.0.0.0"   # all IPv4 interfaces: the clients use IPv4 and may run on another box
   --port       "$RELAY_PORT"
   --admin-port "$RELAY_ADMIN_PORT"
   --endpoint   "$ENDPOINT"
@@ -391,6 +403,11 @@ fi
 # Relay identity + render the resolved config straight into the run's log dir.
 export MOQX_RELAY_ID="perf-test-relay"
 export MOQX_RESOLVED_CONFIG="$LOG_DIR/relay.yaml"
+
+if [[ "$DRY_RUN" == true ]]; then
+  "$REPO/scripts/moqx-run.sh" "${RELAY_RUN_ARGS[@]}" --dry-run
+  exit 0
+fi
 
 "$REPO/scripts/moqx-run.sh" "${RELAY_RUN_ARGS[@]}" >"$RELAY_LOG" 2>&1 &
 RELAY_PID=$!     # moqx-run execs moqx, so $! is the relay process itself
