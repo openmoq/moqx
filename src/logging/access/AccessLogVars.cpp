@@ -55,30 +55,6 @@ void appendLocation(const moxygen::AbsoluteLocation& loc, std::string& out) {
   fmt::format_to(std::back_inserter(out), "{}:{}", loc.group, loc.object);
 }
 
-bool appendText(std::string_view text, std::string& out) {
-  if (text.empty()) {
-    return false;
-  }
-  appendEscaped(text, out);
-  return true;
-}
-
-bool appendOptional(const std::optional<uint64_t>& value, std::string& out) {
-  if (!value) {
-    return false;
-  }
-  appendUint(*value, out);
-  return true;
-}
-
-bool appendOptional(const std::optional<moxygen::AbsoluteLocation>& loc, std::string& out) {
-  if (!loc) {
-    return false;
-  }
-  appendLocation(*loc, out);
-  return true;
-}
-
 std::string_view statusName(AccessLogStatus status) {
   switch (status) {
   case AccessLogStatus::Ok:
@@ -106,22 +82,80 @@ std::pair<int64_t, int64_t> splitMillis(std::chrono::system_clock::time_point ti
 
 using Rec = AccessLogRecord;
 using Ctx = AccessLogRenderContext;
+using Value = AccessLogValue;
+
+Value textValue(std::string_view text) {
+  return text.empty() ? Value{} : Value{text};
+}
+
+template <typename T> Value optionalValue(const std::optional<T>& value) {
+  return value ? Value{*value} : Value{};
+}
 
 // Records without a session (LOG_DROPPED) print "-" for session fields.
 #define MOQX_SESSION_TEXT(member)                                                                  \
-  +[](const Rec& r, const Ctx&, std::string& out) -> bool {                                        \
-    return r.session && appendText(r.session->member, out);                                        \
+  +[](const Rec& r, const Ctx&) -> Value {                                                         \
+    return r.session ? textValue(r.session->member) : Value{};                                     \
   }
 #define MOQX_RECORD_TEXT(member)                                                                   \
-  +[](const Rec& r, const Ctx&, std::string& out) -> bool { return appendText(r.member, out); }
+  +[](const Rec& r, const Ctx&) -> Value { return textValue(r.member); }
 #define MOQX_RECORD_OPT(member)                                                                    \
-  +[](const Rec& r, const Ctx&, std::string& out) -> bool { return appendOptional(r.member, out); }
+  +[](const Rec& r, const Ctx&) -> Value { return optionalValue(r.member); }
 #define MOQX_RELAY_TEXT(member)                                                                    \
-  +[](const Rec&, const Ctx& c, std::string& out) -> bool {                                        \
-    return appendText(c.relayInfo.member, out);                                                    \
-  }
+  +[](const Rec&, const Ctx& c) -> Value { return textValue(c.relayInfo.member); }
 
-bool renderTimeOf(std::chrono::system_clock::time_point time, std::string& out) {
+Value valueOpened(const Rec& r, const Ctx&) {
+  if (!r.session) {
+    return {};
+  }
+  return std::string_view(
+      r.session->openedBy == AccessLogOpenedBy::Peer ? "accepted" : "connected"
+  );
+}
+
+Value valueDir(const Rec& r, const Ctx&) {
+  if (!r.dir) {
+    return {};
+  }
+  return std::string_view(*r.dir == AccessLogDir::Rx ? "rx" : "tx");
+}
+
+Value valueNamespace(const Rec& r, const Ctx&) {
+  if (!r.ftn) {
+    return {};
+  }
+  return safeName(r.ftn->trackNamespace);
+}
+
+Value valueTrack(const Rec& r, const Ctx&) {
+  if (!r.ftn || r.namespaceOnly) {
+    return {};
+  }
+  return safeName(r.ftn->trackName);
+}
+
+Value valueNsPrefix(const Rec& r, const Ctx& c) {
+  return r.namespaceOnly ? valueNamespace(r, c) : Value{};
+}
+
+Value valueFtn(const Rec& r, const Ctx& c) {
+  if (r.namespaceOnly) {
+    return valueNamespace(r, c);
+  }
+  if (!r.ftn) {
+    return {};
+  }
+  return safeName(*r.ftn);
+}
+
+Value valueGroupOrder(const Rec& r, const Ctx&) {
+  if (!r.groupOrder) {
+    return {};
+  }
+  return std::string_view(*r.groupOrder == moxygen::GroupOrder::OldestFirst ? "oldest" : "newest");
+}
+
+void renderTimeOf(std::chrono::system_clock::time_point time, std::string& out) {
   auto [secs, millis] = splitMillis(time);
   std::time_t t = secs;
   std::tm tm{};
@@ -137,37 +171,6 @@ bool renderTimeOf(std::chrono::system_clock::time_point time, std::string& out) 
       tm.tm_sec,
       millis
   );
-  return true;
-}
-
-bool renderTime(const Rec& r, const Ctx&, std::string& out) {
-  return renderTimeOf(r.time, out);
-}
-
-bool renderIntervalStart(const Rec& r, const Ctx&, std::string& out) {
-  return r.intervalStart && renderTimeOf(*r.intervalStart, out);
-}
-
-bool renderMsec(const Rec& r, const Ctx&, std::string& out) {
-  auto [secs, millis] = splitMillis(r.time);
-  fmt::format_to(std::back_inserter(out), "{}.{:03}", secs, millis);
-  return true;
-}
-
-bool renderOpened(const Rec& r, const Ctx&, std::string& out) {
-  if (!r.session) {
-    return false;
-  }
-  out.append(r.session->openedBy == AccessLogOpenedBy::Peer ? "accepted" : "connected");
-  return true;
-}
-
-bool renderDir(const Rec& r, const Ctx&, std::string& out) {
-  if (!r.dir) {
-    return false;
-  }
-  out.append(*r.dir == AccessLogDir::Rx ? "rx" : "tx");
-  return true;
 }
 
 // An empty name is a real value, so it renders as "" to keep its column. A '"' cannot
@@ -180,40 +183,47 @@ void appendName(std::string_view name, std::string& out) {
   }
 }
 
-bool renderNamespace(const Rec& r, const Ctx&, std::string& out) {
-  if (!r.ftn) {
-    return false;
+void appendText(std::string_view text, AccessLogTextForm form, std::string& out) {
+  switch (form) {
+  case AccessLogTextForm::Escaped:
+    appendEscaped(text, out);
+    return;
+  case AccessLogTextForm::Name:
+    appendName(text, out);
+    return;
+  default:
+    out.append(text);
+    return;
   }
-  appendName(safeName(r.ftn->trackNamespace), out);
-  return true;
 }
 
-bool renderTrack(const Rec& r, const Ctx&, std::string& out) {
-  if (!r.ftn || r.namespaceOnly) {
-    return false;
-  }
-  appendName(safeName(r.ftn->trackName), out);
-  return true;
-}
-
-bool renderNsPrefix(const Rec& r, const Ctx& c, std::string& out) {
-  return r.namespaceOnly && renderNamespace(r, c, out);
-}
-
-bool renderFtn(const Rec& r, const Ctx& c, std::string& out) {
-  if (r.namespaceOnly) {
-    return renderNamespace(r, c, out);
-  }
-  if (!r.ftn) {
-    return false;
-  }
-  out.append(safeName(*r.ftn));
-  return true;
-}
-
-bool renderFlag(bool value, std::string& out) {
-  out.push_back(value ? '1' : '0');
-  return true;
+// Appends the value and returns true, or returns false for "-".
+bool renderValue(const Value& value, AccessLogTextForm form, std::string& out) {
+  return std::visit(
+      [&](const auto& v) -> bool {
+        using T = std::decay_t<decltype(v)>;
+        if constexpr (std::is_same_v<T, std::monostate>) {
+          return false;
+        } else if constexpr (std::is_same_v<T, uint64_t>) {
+          appendUint(v, out);
+        } else if constexpr (std::is_same_v<T, bool>) {
+          out.push_back(v ? '1' : '0');
+        } else if constexpr (std::is_same_v<T, moxygen::AbsoluteLocation>) {
+          appendLocation(v, out);
+        } else if constexpr (std::is_same_v<T, std::chrono::system_clock::time_point>) {
+          if (form == AccessLogTextForm::EpochMsec) {
+            auto [secs, millis] = splitMillis(v);
+            fmt::format_to(std::back_inserter(out), "{}.{:03}", secs, millis);
+          } else {
+            renderTimeOf(v, out);
+          }
+        } else {
+          appendText(v, form, out);
+        }
+        return true;
+      },
+      value
+  );
 }
 
 constexpr uint8_t kSession = accessLogClassBit(AccessLogClass::Session);
@@ -222,178 +232,150 @@ constexpr uint8_t kPeriodic = accessLogClassBit(AccessLogClass::Periodic);
 constexpr uint8_t kInternal = accessLogClassBit(AccessLogClass::Internal);
 constexpr uint8_t kAll = kAllAccessLogClasses;
 
-const std::
-    array
-        kVars =
-            std::
-                to_array<AccessLogVar>(
-                    {
-                        // Common
-                        {"time", kAll, renderTime},
-                        {"msec", kAll, renderMsec},
-                        {"event",
-                         kAll,
-                         +[](const Rec& r, const Ctx&, std::string& out) -> bool {
-                           out.append(accessLogEventName(r.event));
-                           return true;
-                         }},
-                        {"class",
-                         kAll,
-                         +[](const Rec& r, const Ctx&, std::string& out) -> bool {
-                           out.append(accessLogClassName(accessLogClass(r.event)));
-                           return true;
-                         }},
-                        {"schema",
-                         kAll,
-                         +[](const Rec&, const Ctx&, std::string& out) -> bool {
-                           out.append(kAccessLogSchema);
-                           return true;
-                         }},
-                        {"seq",
-                         kAll,
-                         +[](const Rec&, const Ctx& c, std::string& out) -> bool {
-                           appendUint(c.seq, out);
-                           return true;
-                         }},
-                        {"relay_id", kAll, MOQX_RELAY_TEXT(relayId)},
-                        {"boot_id", kAll, MOQX_RELAY_TEXT(bootId)},
-                        {"host", kAll, MOQX_RELAY_TEXT(host)},
-                        {"moqx_version", kAll, MOQX_RELAY_TEXT(moqxVersion)},
-                        {"service", kAll, MOQX_SESSION_TEXT(service)},
-                        {"session", kAll, MOQX_SESSION_TEXT(session)},
-                        {"opened", kAll, renderOpened},
-                        {"peer", kAll, MOQX_SESSION_TEXT(peer)},
-                        {"local", kAll, MOQX_SESSION_TEXT(local)},
-                        {"peer_trunc", kAll, MOQX_SESSION_TEXT(peerTrunc)},
-                        {"peer_class", kAll, MOQX_SESSION_TEXT(peerClass)},
-                        {"version",
-                         kAll,
-                         +[](const Rec& r, const Ctx&, std::string& out
-                          ) -> bool { return r.session && appendOptional(r.session->version, out); }
-                        },
-                        {"authority", kAll, MOQX_SESSION_TEXT(authority)},
-                        {"path", kAll, MOQX_SESSION_TEXT(path)},
-                        {"path_raw", kAll, MOQX_SESSION_TEXT(pathRaw)},
-                        {"upstream", kAll, MOQX_SESSION_TEXT(upstream)},
+constexpr auto kPlain = AccessLogTextForm::Plain;
+constexpr auto kEscaped = AccessLogTextForm::Escaped;
+constexpr auto kName = AccessLogTextForm::Name;
+constexpr auto kIsoTime = AccessLogTextForm::IsoTime;
+constexpr auto kEpochMsec = AccessLogTextForm::EpochMsec;
 
-                        // Session and request
-                        {"status",
-                         kSession | kRequest,
-                         +[](const Rec& r, const Ctx&, std::string& out) -> bool {
-                           if (!r.status) {
-                             return false;
-                           }
-                           out.append(statusName(*r.status));
-                           return true;
-                         }},
-                        {"latency_ms", kSession | kRequest, MOQX_RECORD_OPT(latencyMs)},
-                        {"error_code", kSession | kRequest, MOQX_RECORD_OPT(errorCode)},
-                        {"error_class", kSession | kRequest, MOQX_RECORD_TEXT(errorClass)},
-                        {"reason", kSession | kRequest, MOQX_RECORD_TEXT(reason)},
-                        {"dir", kSession | kRequest | kPeriodic, renderDir},
+const auto kVars = std::to_array<AccessLogVar>({
+    // Common
+    {"time", kAll, kIsoTime, +[](const Rec& r, const Ctx&) -> Value { return r.time; }},
+    {"msec", kAll, kEpochMsec, +[](const Rec& r, const Ctx&) -> Value { return r.time; }},
+    {"event",
+     kAll,
+     kPlain,
+     +[](const Rec& r, const Ctx&) -> Value { return accessLogEventName(r.event); }},
+    {"class",
+     kAll,
+     kPlain,
+     +[](const Rec& r, const Ctx&) -> Value { return accessLogClassName(accessLogClass(r.event)); }
+    },
+    {"schema", kAll, kPlain, +[](const Rec&, const Ctx&) -> Value { return kAccessLogSchema; }},
+    {"seq", kAll, kPlain, +[](const Rec&, const Ctx& c) -> Value { return c.seq; }},
+    {"relay_id", kAll, kEscaped, MOQX_RELAY_TEXT(relayId)},
+    {"boot_id", kAll, kEscaped, MOQX_RELAY_TEXT(bootId)},
+    {"host", kAll, kEscaped, MOQX_RELAY_TEXT(host)},
+    {"moqx_version", kAll, kEscaped, MOQX_RELAY_TEXT(moqxVersion)},
+    {"service", kAll, kEscaped, MOQX_SESSION_TEXT(service)},
+    {"session", kAll, kEscaped, MOQX_SESSION_TEXT(session)},
+    {"opened", kAll, kPlain, valueOpened},
+    {"peer", kAll, kEscaped, MOQX_SESSION_TEXT(peer)},
+    {"local", kAll, kEscaped, MOQX_SESSION_TEXT(local)},
+    {"peer_trunc", kAll, kEscaped, MOQX_SESSION_TEXT(peerTrunc)},
+    {"peer_class", kAll, kEscaped, MOQX_SESSION_TEXT(peerClass)},
+    {"version",
+     kAll,
+     kPlain,
+     +[](const Rec& r, const Ctx&) -> Value {
+       return r.session ? optionalValue(r.session->version) : Value{};
+     }},
+    {"authority", kAll, kEscaped, MOQX_SESSION_TEXT(authority)},
+    {"path", kAll, kEscaped, MOQX_SESSION_TEXT(path)},
+    {"path_raw", kAll, kEscaped, MOQX_SESSION_TEXT(pathRaw)},
+    {"upstream", kAll, kEscaped, MOQX_SESSION_TEXT(upstream)},
 
-                        // Session
-                        {"goaway_uri", kSession, MOQX_RECORD_TEXT(goawayUri)},
-                        {"duration_ms", kSession, MOQX_RECORD_OPT(durationMs)},
-                        {"requests", kSession, MOQX_RECORD_OPT(requests)},
+    // Session and request
+    {"status",
+     kSession | kRequest,
+     kPlain,
+     +[](const Rec& r, const Ctx&) -> Value {
+       return r.status ? Value{statusName(*r.status)} : Value{};
+     }},
+    {"latency_ms", kSession | kRequest, kPlain, MOQX_RECORD_OPT(latencyMs)},
+    {"error_code", kSession | kRequest, kPlain, MOQX_RECORD_OPT(errorCode)},
+    {"error_class", kSession | kRequest, kEscaped, MOQX_RECORD_TEXT(errorClass)},
+    {"reason", kSession | kRequest, kEscaped, MOQX_RECORD_TEXT(reason)},
+    {"dir", kSession | kRequest | kPeriodic, kPlain, valueDir},
 
-                        // Request
-                        {"req", kRequest | kPeriodic, MOQX_RECORD_OPT(requestID)},
-                        {"alias", kRequest | kPeriodic, MOQX_RECORD_OPT(alias)},
-                        {"namespace", kRequest | kPeriodic, renderNamespace},
-                        {"track", kRequest | kPeriodic, renderTrack},
-                        {"ns_prefix", kRequest, renderNsPrefix},
-                        {"ftn", kRequest | kPeriodic, renderFtn},
-                        {"filter", kRequest, MOQX_RECORD_TEXT(filter)},
-                        {"start", kRequest, MOQX_RECORD_OPT(start)},
-                        {"end", kRequest, MOQX_RECORD_OPT(end)},
-                        {"priority",
-                         kRequest,
-                         +[](const Rec& r, const Ctx&, std::string& out) -> bool {
-                           if (!r.priority) {
-                             return false;
-                           }
-                           appendUint(*r.priority, out);
-                           return true;
-                         }},
-                        {"group_order",
-                         kRequest,
-                         +[](const Rec& r, const Ctx&, std::string& out) -> bool {
-                           if (!r.groupOrder) {
-                             return false;
-                           }
-                           out.append(
-                               *r.groupOrder == moxygen::GroupOrder::OldestFirst ? "oldest"
-                                                                                 : "newest"
-                           );
-                           return true;
-                         }},
-                        {"forward",
-                         kRequest,
-                         +[](const Rec& r, const Ctx&, std::string& out) -> bool {
-                           return r.forward && renderFlag(*r.forward, out);
-                         }},
-                        {"ngr", kRequest, MOQX_RECORD_OPT(ngr)},
-                        {"fetch_type", kRequest, MOQX_RECORD_TEXT(fetchType)},
-                        {"largest", kRequest, MOQX_RECORD_OPT(largest)},
-                        {"objects", kRequest | kPeriodic, MOQX_RECORD_OPT(objects)},
-                        {"bytes", kRequest | kPeriodic, MOQX_RECORD_OPT(bytes)},
-                        {"groups", kRequest | kPeriodic, MOQX_RECORD_OPT(groups)},
-                        {"subgroups", kRequest | kPeriodic, MOQX_RECORD_OPT(subgroups)},
-                        {"datagrams", kRequest | kPeriodic, MOQX_RECORD_OPT(datagrams)},
-                        {"status_objects", kRequest | kPeriodic, MOQX_RECORD_OPT(statusObjects)},
-                        {"resets", kRequest | kPeriodic, MOQX_RECORD_OPT(resets)},
-                        {"last_reset_code", kRequest | kPeriodic, MOQX_RECORD_OPT(lastResetCode)},
-                        {"open_subgroups", kRequest | kPeriodic, MOQX_RECORD_OPT(openSubgroups)},
-                        {"bytes_queued", kRequest | kPeriodic, MOQX_RECORD_OPT(bytesQueued)},
-                        {"payload_bytes_queued",
-                         kRequest | kPeriodic,
-                         MOQX_RECORD_OPT(payloadBytesQueued)},
-                        {"bytes_written", kRequest | kPeriodic, MOQX_RECORD_OPT(bytesWritten)},
-                        {"bytes_acked", kRequest | kPeriodic, MOQX_RECORD_OPT(bytesAcked)},
-                        {"bytes_dropped", kRequest | kPeriodic, MOQX_RECORD_OPT(bytesDropped)},
-                        {"bytes_cancelled", kRequest | kPeriodic, MOQX_RECORD_OPT(bytesCancelled)},
-                        {"objects_written", kRequest | kPeriodic, MOQX_RECORD_OPT(objectsWritten)},
-                        {"objects_acked", kRequest | kPeriodic, MOQX_RECORD_OPT(objectsAcked)},
-                        {"ack_us_avg", kRequest | kPeriodic, MOQX_RECORD_OPT(ackUsAvg)},
-                        {"ack_us_max", kRequest | kPeriodic, MOQX_RECORD_OPT(ackUsMax)},
-                        {"srtt_us", kSession | kPeriodic, MOQX_RECORD_OPT(srttUs)},
-                        {"min_rtt_us", kSession | kPeriodic, MOQX_RECORD_OPT(minRttUs)},
-                        {"cwnd", kSession | kPeriodic, MOQX_RECORD_OPT(cwnd)},
-                        {"inflight", kSession | kPeriodic, MOQX_RECORD_OPT(inflight)},
-                        {"pkts_sent", kSession | kPeriodic, MOQX_RECORD_OPT(pktsSent)},
-                        {"pkts_lost", kSession | kPeriodic, MOQX_RECORD_OPT(pktsLost)},
-                        {"bytes_retx", kSession | kPeriodic, MOQX_RECORD_OPT(bytesRetx)},
-                        {"age_ms", kRequest | kPeriodic, MOQX_RECORD_OPT(ageMs)},
-                        {"end_reason", kRequest, MOQX_RECORD_TEXT(endReason)},
-                        {"ttfo_ms", kRequest | kPeriodic, MOQX_RECORD_OPT(ttfoMs)},
-                        {"fetch_ms", kRequest, MOQX_RECORD_OPT(fetchMs)},
-                        {"namespace_msgs", kRequest, MOQX_RECORD_OPT(namespaceMsgs)},
-                        {"namespace_done_msgs", kRequest, MOQX_RECORD_OPT(namespaceDoneMsgs)},
-                        {"publish_blocked_msgs", kRequest, MOQX_RECORD_OPT(publishBlockedMsgs)},
+    // Session
+    {"goaway_uri", kSession, kEscaped, MOQX_RECORD_TEXT(goawayUri)},
+    {"duration_ms", kSession, kPlain, MOQX_RECORD_OPT(durationMs)},
+    {"requests", kSession, kPlain, MOQX_RECORD_OPT(requests)},
 
-                        // Periodic
-                        {"interval_start", kPeriodic, renderIntervalStart},
-                        {"interval_ms", kPeriodic, MOQX_RECORD_OPT(intervalMs)},
-                        {"d_objects", kPeriodic, MOQX_RECORD_OPT(dObjects)},
-                        {"d_bytes", kPeriodic, MOQX_RECORD_OPT(dBytes)},
-                        {"d_groups", kPeriodic, MOQX_RECORD_OPT(dGroups)},
-                        {"d_subgroups", kPeriodic, MOQX_RECORD_OPT(dSubgroups)},
-                        {"d_datagrams", kPeriodic, MOQX_RECORD_OPT(dDatagrams)},
-                        {"d_bytes_queued", kPeriodic, MOQX_RECORD_OPT(dBytesQueued)},
-                        {"d_payload_bytes_queued", kPeriodic, MOQX_RECORD_OPT(dPayloadBytesQueued)},
-                        {"d_bytes_written", kPeriodic, MOQX_RECORD_OPT(dBytesWritten)},
-                        {"d_bytes_acked", kPeriodic, MOQX_RECORD_OPT(dBytesAcked)},
-                        {"d_objects_written", kPeriodic, MOQX_RECORD_OPT(dObjectsWritten)},
-                        {"d_objects_acked", kPeriodic, MOQX_RECORD_OPT(dObjectsAcked)},
-                        {"d_ack_us_avg", kPeriodic, MOQX_RECORD_OPT(dAckUsAvg)},
-                        {"d_status_objects", kPeriodic, MOQX_RECORD_OPT(dStatusObjects)},
-                        {"d_resets", kPeriodic, MOQX_RECORD_OPT(dResets)},
+    // Request
+    {"req", kRequest | kPeriodic, kPlain, MOQX_RECORD_OPT(requestID)},
+    {"alias", kRequest | kPeriodic, kPlain, MOQX_RECORD_OPT(alias)},
+    {"namespace", kRequest | kPeriodic, kName, valueNamespace},
+    {"track", kRequest | kPeriodic, kName, valueTrack},
+    {"ns_prefix", kRequest, kName, valueNsPrefix},
+    {"ftn", kRequest | kPeriodic, kName, valueFtn},
+    {"filter", kRequest, kEscaped, MOQX_RECORD_TEXT(filter)},
+    {"start", kRequest, kPlain, MOQX_RECORD_OPT(start)},
+    {"end", kRequest, kPlain, MOQX_RECORD_OPT(end)},
+    {"priority",
+     kRequest,
+     kPlain,
+     +[](const Rec& r, const Ctx&) -> Value {
+       return r.priority ? Value{uint64_t(*r.priority)} : Value{};
+     }},
+    {"group_order", kRequest, kPlain, valueGroupOrder},
+    {"forward",
+     kRequest,
+     kPlain,
+     +[](const Rec& r, const Ctx&) -> Value { return r.forward ? Value{*r.forward} : Value{}; }},
+    {"ngr", kRequest, kPlain, MOQX_RECORD_OPT(ngr)},
+    {"fetch_type", kRequest, kEscaped, MOQX_RECORD_TEXT(fetchType)},
+    {"largest", kRequest, kPlain, MOQX_RECORD_OPT(largest)},
+    {"objects", kRequest | kPeriodic, kPlain, MOQX_RECORD_OPT(objects)},
+    {"bytes", kRequest | kPeriodic, kPlain, MOQX_RECORD_OPT(bytes)},
+    {"groups", kRequest | kPeriodic, kPlain, MOQX_RECORD_OPT(groups)},
+    {"subgroups", kRequest | kPeriodic, kPlain, MOQX_RECORD_OPT(subgroups)},
+    {"datagrams", kRequest | kPeriodic, kPlain, MOQX_RECORD_OPT(datagrams)},
+    {"status_objects", kRequest | kPeriodic, kPlain, MOQX_RECORD_OPT(statusObjects)},
+    {"resets", kRequest | kPeriodic, kPlain, MOQX_RECORD_OPT(resets)},
+    {"last_reset_code", kRequest | kPeriodic, kPlain, MOQX_RECORD_OPT(lastResetCode)},
+    {"open_subgroups", kRequest | kPeriodic, kPlain, MOQX_RECORD_OPT(openSubgroups)},
+    {"bytes_queued", kRequest | kPeriodic, kPlain, MOQX_RECORD_OPT(bytesQueued)},
+    {"payload_bytes_queued", kRequest | kPeriodic, kPlain, MOQX_RECORD_OPT(payloadBytesQueued)},
+    {"bytes_written", kRequest | kPeriodic, kPlain, MOQX_RECORD_OPT(bytesWritten)},
+    {"bytes_acked", kRequest | kPeriodic, kPlain, MOQX_RECORD_OPT(bytesAcked)},
+    {"bytes_dropped", kRequest | kPeriodic, kPlain, MOQX_RECORD_OPT(bytesDropped)},
+    {"bytes_cancelled", kRequest | kPeriodic, kPlain, MOQX_RECORD_OPT(bytesCancelled)},
+    {"objects_written", kRequest | kPeriodic, kPlain, MOQX_RECORD_OPT(objectsWritten)},
+    {"objects_acked", kRequest | kPeriodic, kPlain, MOQX_RECORD_OPT(objectsAcked)},
+    {"ack_us_avg", kRequest | kPeriodic, kPlain, MOQX_RECORD_OPT(ackUsAvg)},
+    {"ack_us_max", kRequest | kPeriodic, kPlain, MOQX_RECORD_OPT(ackUsMax)},
+    {"srtt_us", kSession | kPeriodic, kPlain, MOQX_RECORD_OPT(srttUs)},
+    {"min_rtt_us", kSession | kPeriodic, kPlain, MOQX_RECORD_OPT(minRttUs)},
+    {"cwnd", kSession | kPeriodic, kPlain, MOQX_RECORD_OPT(cwnd)},
+    {"inflight", kSession | kPeriodic, kPlain, MOQX_RECORD_OPT(inflight)},
+    {"pkts_sent", kSession | kPeriodic, kPlain, MOQX_RECORD_OPT(pktsSent)},
+    {"pkts_lost", kSession | kPeriodic, kPlain, MOQX_RECORD_OPT(pktsLost)},
+    {"bytes_retx", kSession | kPeriodic, kPlain, MOQX_RECORD_OPT(bytesRetx)},
+    {"age_ms", kRequest | kPeriodic, kPlain, MOQX_RECORD_OPT(ageMs)},
+    {"end_reason", kRequest, kEscaped, MOQX_RECORD_TEXT(endReason)},
+    {"ttfo_ms", kRequest | kPeriodic, kPlain, MOQX_RECORD_OPT(ttfoMs)},
+    {"fetch_ms", kRequest, kPlain, MOQX_RECORD_OPT(fetchMs)},
+    {"namespace_msgs", kRequest, kPlain, MOQX_RECORD_OPT(namespaceMsgs)},
+    {"namespace_done_msgs", kRequest, kPlain, MOQX_RECORD_OPT(namespaceDoneMsgs)},
+    {"publish_blocked_msgs", kRequest, kPlain, MOQX_RECORD_OPT(publishBlockedMsgs)},
 
-                        // Internal
-                        {"dropped", kInternal, MOQX_RECORD_OPT(dropped)},
-                    }
-                );
+    // Periodic
+    {"interval_start",
+     kPeriodic,
+     kIsoTime,
+     +[](const Rec& r,
+         const Ctx&) -> Value { return r.intervalStart ? Value{*r.intervalStart} : Value{}; }},
+    {"interval_ms", kPeriodic, kPlain, MOQX_RECORD_OPT(intervalMs)},
+    {"d_objects", kPeriodic, kPlain, MOQX_RECORD_OPT(dObjects)},
+    {"d_bytes", kPeriodic, kPlain, MOQX_RECORD_OPT(dBytes)},
+    {"d_groups", kPeriodic, kPlain, MOQX_RECORD_OPT(dGroups)},
+    {"d_subgroups", kPeriodic, kPlain, MOQX_RECORD_OPT(dSubgroups)},
+    {"d_datagrams", kPeriodic, kPlain, MOQX_RECORD_OPT(dDatagrams)},
+    {"d_bytes_queued", kPeriodic, kPlain, MOQX_RECORD_OPT(dBytesQueued)},
+    {"d_payload_bytes_queued", kPeriodic, kPlain, MOQX_RECORD_OPT(dPayloadBytesQueued)},
+    {"d_bytes_written", kPeriodic, kPlain, MOQX_RECORD_OPT(dBytesWritten)},
+    {"d_bytes_acked", kPeriodic, kPlain, MOQX_RECORD_OPT(dBytesAcked)},
+    {"d_objects_written", kPeriodic, kPlain, MOQX_RECORD_OPT(dObjectsWritten)},
+    {"d_objects_acked", kPeriodic, kPlain, MOQX_RECORD_OPT(dObjectsAcked)},
+    {"d_ack_us_avg", kPeriodic, kPlain, MOQX_RECORD_OPT(dAckUsAvg)},
+    {"d_status_objects", kPeriodic, kPlain, MOQX_RECORD_OPT(dStatusObjects)},
+    {"d_resets", kPeriodic, kPlain, MOQX_RECORD_OPT(dResets)},
+
+    // Internal
+    {"dropped", kInternal, kPlain, MOQX_RECORD_OPT(dropped)},
+});
 
 #undef MOQX_SESSION_TEXT
 #undef MOQX_RECORD_TEXT
@@ -461,14 +443,24 @@ const AccessLogVar* findAccessLogVar(std::string_view name) {
   return nullptr;
 }
 
+AccessLogValue accessLogVarValue(
+    const AccessLogVar& var,
+    const AccessLogRecord& record,
+    const AccessLogRenderContext& ctx
+) {
+  if (!(var.classes & accessLogClassBit(accessLogClass(record.event)))) {
+    return {};
+  }
+  return var.value(record, ctx);
+}
+
 void renderAccessLogVar(
     const AccessLogVar& var,
     const AccessLogRecord& record,
     const AccessLogRenderContext& ctx,
     std::string& out
 ) {
-  if (!(var.classes & accessLogClassBit(accessLogClass(record.event))) ||
-      !var.render(record, ctx, out)) {
+  if (!renderValue(accessLogVarValue(var, record, ctx), var.form, out)) {
     out.push_back('-');
   }
 }
