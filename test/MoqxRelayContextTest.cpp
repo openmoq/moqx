@@ -5,6 +5,7 @@
  */
 
 #include "MoqxRelayContext.h"
+#include "logging/access/AccessLogRecord.h"
 
 #include <folly/coro/BlockingWait.h>
 #include <folly/io/async/ScopedEventBaseThread.h>
@@ -12,6 +13,7 @@
 #include <folly/portability/GTest.h>
 #include <moxygen/MoQTypes.h>
 #include <moxygen/events/MoQFollyExecutorImpl.h>
+#include <moxygen/openmoq/extensions/MoQClusterExtension.h>
 #include <moxygen/test/MockMoQSession.h>
 
 using namespace testing;
@@ -213,6 +215,29 @@ TEST_F(MoqxRelayContextTest, ValidateAuthority_PathRouting) {
       ctx.validateAuthority(ctx.listenerMatcher(kListener), emptySetup_, anyVersion_, sessionOther);
   ASSERT_FALSE(miss.hasValue());
   EXPECT_EQ(miss.error(), SessionCloseErrorCode::INVALID_AUTHORITY);
+}
+
+TEST_F(MoqxRelayContextTest, AccessLogPeerClassFollowsTheClusterHopID) {
+  folly::F14FastMap<std::string, config::ServiceConfig> services = {
+      {"svc", makeService("live.example.com")},
+  };
+  ClientSetup fromRelay;
+  ASSERT_TRUE(
+      fromRelay.params.insertParam(SetupParameter(MoQClusterExtension::kHopIdOption, 7)).hasValue()
+  );
+
+  MoqxRelayContext clustered(services, "test-relay");
+  EXPECT_EQ(clustered.accessLogPeerClass(fromRelay), openmoq::moqx::logging::kAccessLogRelayPeer);
+  EXPECT_EQ(
+      clustered.accessLogPeerClass(emptySetup_),
+      openmoq::moqx::logging::kAccessLogParticipant
+  );
+
+  MoqxRelayContext unclustered(services, "test-relay", true, false, std::nullopt);
+  EXPECT_EQ(
+      unclustered.accessLogPeerClass(fromRelay),
+      openmoq::moqx::logging::kAccessLogParticipant
+  );
 }
 
 // --- validateAuthority: listener binding ---

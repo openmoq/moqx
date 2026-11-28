@@ -760,7 +760,7 @@ takes every class of events. An empty `sinks` list turns off the access log for 
 | `access_log.periodic_interval_ms` | `uint32` | `5000` | Interval between a subscription's `SUB_STATS` records. Intervals end on wall-clock multiples of the interval. |
 | `access_log.sinks[].name` | `string` | required | A sink from `logging.access`, listed at most once. |
 | `access_log.sinks[].events` | `[string]` | every class | Classes (`session`, `request`, `periodic`) and event names (`SETUP`, `SUBSCRIBE`, `FETCH`, ...). `NAMESPACE`, `NAMESPACE_DONE` and `PUBLISH_BLOCKED` are written only to sinks that list them by name or by `messages`. |
-| `access_log.sinks[].peer_classes` | `[string]` | all | Only sessions of these peer classes (`participant`, `relay-peer`). |
+| `access_log.sinks[].peer_classes` | `[string]` | all | Only sessions of these peer classes. A session is `relay-peer` when the relay opened it upstream, or when its CLIENT_SETUP carries a MoQ Cluster HOP_ID and [`cluster`](#cluster) is enabled. Every other session is `participant`. |
 | `access_log.sinks[].errors_only` | `bool` | `false` | Write only error records. |
 | `access_log.sinks[].unsampled_errors` | `bool` | `true` | Write error records from sessions that `sample.session` did not sample. With `false`, the sink does not write any record for those sessions. The relay does not install the access log filters on a session whose sinks all set `false`. |
 
