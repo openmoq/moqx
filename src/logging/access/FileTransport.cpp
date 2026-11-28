@@ -142,7 +142,8 @@ std::unique_ptr<StdoutTransport> StdoutTransport::open() {
   );
 }
 
-folly::coro::Task<AccessLogWriteResult> FileTransport::write(const folly::IOBuf& data) {
+folly::coro::Task<AccessLogWriteResult>
+FileTransport::write(const folly::IOBuf& data, std::span<const size_t>) {
   return writeTo(file_, /*socket=*/false, data);
 }
 
@@ -160,7 +161,8 @@ folly::coro::Task<void> FileTransport::close() {
   co_return;
 }
 
-folly::coro::Task<AccessLogWriteResult> StdoutTransport::write(const folly::IOBuf& data) {
+folly::coro::Task<AccessLogWriteResult>
+StdoutTransport::write(const folly::IOBuf& data, std::span<const size_t>) {
   return writeTo(file_, socket_, data);
 }
 

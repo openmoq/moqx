@@ -76,7 +76,8 @@ void LineSink::clearPending() {
 }
 
 folly::coro::Task<AccessLogSinkWriteResult> LineSink::writePending() {
-  auto result = co_await transport_->write(*pendingLines_.front());
+  lineLengths_.assign(lengths_.begin(), lengths_.end());
+  auto result = co_await transport_->write(*pendingLines_.front(), lineLengths_);
   AccessLogSinkWriteResult written{result.status, result.retryAfter};
   if (result.status == AccessLogWriteStatus::Ok) {
     written.records = lengths_.size();

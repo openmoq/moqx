@@ -8,6 +8,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <span>
 
 #include <folly/coro/Task.h>
 #include <folly/io/IOBuf.h>
@@ -29,7 +30,10 @@ struct AccessLogWriteResult {
 class AccessLogTransport {
 public:
   virtual ~AccessLogTransport() = default;
-  virtual folly::coro::Task<AccessLogWriteResult> write(const folly::IOBuf& data) = 0;
+  // lineLengths has the length of each line in data, newline included. The first line can
+  // be the rest of one that an earlier write sent part of.
+  virtual folly::coro::Task<AccessLogWriteResult>
+  write(const folly::IOBuf& data, std::span<const size_t> lineLengths) = 0;
   virtual void reopen() {}
   virtual folly::coro::Task<void> close() = 0;
 };

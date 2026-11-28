@@ -22,7 +22,8 @@ class FileTransport : public AccessLogTransport {
 public:
   static folly::Expected<std::unique_ptr<FileTransport>, std::string> open(std::string path);
 
-  folly::coro::Task<AccessLogWriteResult> write(const folly::IOBuf& data) override;
+  folly::coro::Task<AccessLogWriteResult>
+  write(const folly::IOBuf& data, std::span<const size_t> lineLengths) override;
   void reopen() override;
   folly::coro::Task<void> close() override;
 
@@ -40,7 +41,8 @@ class StdoutTransport : public AccessLogTransport {
 public:
   static std::unique_ptr<StdoutTransport> open();
 
-  folly::coro::Task<AccessLogWriteResult> write(const folly::IOBuf& data) override;
+  folly::coro::Task<AccessLogWriteResult>
+  write(const folly::IOBuf& data, std::span<const size_t> lineLengths) override;
   void reopen() override {}
   folly::coro::Task<void> close() override;
 
