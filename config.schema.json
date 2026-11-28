@@ -31,6 +31,51 @@
             },
             "required": []
         },
+        "openmoq__moqx__config__ParsedAccessLogConfig": {
+            "type": "object",
+            "properties": {
+                "vars": {
+                    "description": "Template variables, such as region or pop, keyed by name",
+                    "anyOf": [
+                        {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "queue_limit": {
+                    "description": "Records queued for the writer before new ones are dropped (default 65536)",
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "sinks": {
+                    "description": "Access log sinks",
+                    "anyOf": [
+                        {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/$defs/openmoq__moqx__config__ParsedAccessLogSinkConfig"
+                            }
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                }
+            },
+            "required": []
+        },
         "openmoq__moqx__config__ParsedAccessLogFormatConfig": {
             "type": "object",
             "properties": {
@@ -204,7 +249,7 @@
             "properties": {
                 "name": {
                     "type": "string",
-                    "description": "Sink name, from logging.access"
+                    "description": "Sink name, from logging.access_log.sinks"
                 },
                 "events": {
                     "description": "Record classes (session, request, periodic), messages, and event names to write (default: every class)",
@@ -1237,39 +1282,11 @@
                         }
                     ]
                 },
-                "access_vars": {
-                    "description": "Access log template variables, such as region or pop, keyed by name",
+                "access_log": {
+                    "description": "Operator-facing access log",
                     "anyOf": [
                         {
-                            "type": "object",
-                            "additionalProperties": {
-                                "type": "string"
-                            }
-                        },
-                        {
-                            "type": "null"
-                        }
-                    ]
-                },
-                "access_queue_limit": {
-                    "description": "Access log records queued for the writer before new ones are dropped (default 65536)",
-                    "anyOf": [
-                        {
-                            "type": "integer"
-                        },
-                        {
-                            "type": "null"
-                        }
-                    ]
-                },
-                "access": {
-                    "description": "Access log sinks",
-                    "anyOf": [
-                        {
-                            "type": "array",
-                            "items": {
-                                "$ref": "#/$defs/openmoq__moqx__config__ParsedAccessLogSinkConfig"
-                            }
+                            "$ref": "#/$defs/openmoq__moqx__config__ParsedAccessLogConfig"
                         },
                         {
                             "type": "null"
